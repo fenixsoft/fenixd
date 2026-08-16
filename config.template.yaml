@@ -1,0 +1,74 @@
+# Fenix Loop Engineering Framework Configuration
+# ================================================
+# This file controls all aspects of the fenixd daemon and its Agents.
+# Modify values to adapt the framework to your project.
+#
+# 该模板由 `fenix-init` 生成项目配置时渲染；
+# {{PROJECT_NAME}} 与 {{PROJECT_TYPE}} 会被替换为实际项目名/类型。
+
+# ---- Project Identity ----
+project:
+  name: "{{PROJECT_NAME}}"           # Project name (used in reports)
+  type: "{{PROJECT_TYPE}}"           # web | cli | library | api
+  root: "."                       # Project root relative to .fenix/
+
+# ---- Scheduling ----
+schedule:
+  # Interval (minutes) for periodic full-state scan as fallback
+  poll_interval_minutes: 30
+  # Time of day for daily report generation (HH:MM, 24h format)
+  daily_report_time: "09:00"
+  # Threshold (minutes) for detecting a SPEC stuck in implementing/testing
+  stuck_threshold_minutes: 60
+
+# ---- Agent Configuration ----
+agents:
+  # Maximum concurrent Agent runs
+  max_concurrent: 2
+  # Maximum retry attempts for a failed Agent run
+  max_retries: 3
+  # Maximum turns per Agent invocation (claude -p --max-turns)
+  max_turns: 50
+  # Daily limit on total Agent runs (0 = unlimited)
+  daily_run_limit: 50
+  # Timeout in seconds for a single Agent run
+  run_timeout_seconds: 1800
+  # 使用三步验证流水线（Planner → VerifyEngine → Judge），比旧版 verifier 快 5-10x
+  use_new_verifier: true
+
+# ---- Worktree Configuration ----
+worktree:
+  # Base directory for git worktrees
+  base_dir: ".claude/worktrees"
+  # Branch prefix for implementer worktrees
+  implement_branch_prefix: "fenix"
+  # Branch prefix for verifier worktrees
+  verify_branch_prefix: "fenix/verify"
+
+# ---- Gate Configuration ----
+gates:
+  # The ONLY human gate: push approval
+  # All other stages are fully automated
+  require_push_approval: true
+
+# ---- Project-Specific Commands ----
+commands:
+  # Test command (how to run the test suite)
+  test: "echo 'No tests configured yet'"
+  # Build command
+  build: "echo 'No build configured yet'"
+  # Start command (for verifier to launch the project)
+  start: "echo 'No start command configured yet'"
+
+# ---- Logging ----
+logging:
+  # Log directory
+  dir: ".fenix/logs"
+  # Log level: DEBUG | INFO | WARNING | ERROR
+  level: "INFO"
+  # Maximum log file size before rotation (MB)
+  max_size_mb: 10
+  # Number of rotated log files to keep
+  backup_count: 5
+  # Days to retain logs
+  retain_days: 30

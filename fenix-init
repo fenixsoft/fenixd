@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""
+fenix-init — Fenix Loop Engineering Framework 项目初始化命令。
+
+在目标目录生成使用 fenixd 所需的工程骨架：
+  - .fenix/（项目配置 config.yaml + 运行时目录 + 指向框架的软链接）
+  - STATE.md / PROJECT_LOG.md
+  - openspec/{changes,specs}/
+  - .claude/agents/（软链接）与 .claude/worktrees/
+  - 追加 fenix 相关 .gitignore 条目
+
+用法:
+    fenix-init [DIR] [--name NAME] [--type web|cli|library|api]
+"""
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+# 框架根目录 = 本脚本所在目录（经 .resolve() 跟随软链接，以定位真实安装位置）
+FENIXD_HOME = Path(__file__).resolve().parent
+
+VALID_TYPES = ("web", "cli", "library", "api")
+
+# 需要软链到项目 .fenix/ 的框架文件
+FENIX_LINKS = ["core", "bin", "tests", "fenixd.py", "launch-extension.cjs", "__init__.py"]
+
+# 需要软链到项目 .claude/agents/ 的 agent 定义
+AGENT_LINKS = ["implementer.md", "verifier.md"]
+
+
+def log(msg: str):
+    print(msg)
+
+
+def ensure_dir(path: Path):
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def symlink(target: Path, link: Path):
+    """创建软链接；若目标已存在则跳过，避免覆盖用户文件。"""
+    if link.exists() or link.is_symlink():
+        log(f"  ⏭  {link.name} 已存在，跳过")
+        return
+    os.symlink(str(target), str(link))
+    log(f"  ✅ {link.name} -> {target}")
+
+
+def render_config(project_name: str, project_type: str) -> str:
+    template = FENIXD_HOME / "config.template.yaml"
+    if not template.exists():
+        sys.exit(f"错误：找不到配置模板 {template}")
+    content = template.read_text(encoding="utf-8")
+    content = content.replace("{{PROJECT_NAME}}", project_name)
+    content = content.replace("{{PROJECT_TYPE}}", project_type)
+    return content
+
+
+def append_gitignore(project_root: Path):
+    """将 fenix 相关条目追加到 .gitignore（避免重复）。"""
+    snippet_path = FENIXD_HOME / "templates" / "gitignore-fenix.txt"
+    snippet = snippet_path.read_text(encoding="utf-8") if snippet_path.exists() else ""
+
+    gitignore = project_root / ".gitignore"
+    if gitignore.exists():
+        existing = gitignore.read_text(encoding="utf-8")
+        # 已含标记则跳过
+        if "Fenix Loop Engineering Framework" in existing:
+            log("  ⏭  .gitignore 已包含 fenix 条目，跳过")
+            return
+        if not existing.endswith("\n"):
+            existing += "\n"
+        gitignore.write_text(existing + "\n" + snippet, encoding="utf-8")
+        log("  ✅ 已追加 fenix 条目到 .gitignore")
+    else:
+        gitignore.write_text(snippet, encoding="utf-8")
+        log("  ✅ 已创建 .gitignore")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="初始化 fenixd 工程骨架")
+    parser.add_argument("dir", nargs="?", default=".", help="目标项目目录（默认当前目录）")
+    parser.add_argument("--name", default=None, help="项目名（默认取目录名）")
+    parser.add_argument("--type", default="web", choices=VALID_TYPES, help="项目类型（默认 web）")
+    args = parser.parse_args()
+
+    project_root = Path(args.dir).expanduser().resolve()
+    project_name = args.name or project_root.name or "fenix-project"
+    project_type = args.type
+
+    log("fenix-init — 生成 Fenix 工程骨架")
+    log(f"  项目目录: {project_root}")
+    log(f"  项目名:   {project_name}")
+    log(f"  项目类型: {project_type}")
+    log(f"  框架目录: {FENIXD_HOME}")
+    log("")
+
+    ensure_dir(project_root)
+
+    # 1. .fenix/ —— 项目配置 + 运行时目录 + 框架软链接
+    fenix_dir = project_root / ".fenix"
+    ensure_dir(fenix_dir)
+    for sub in ("logs", "verify-progress", "screenshots"):
+        ensure_dir(fenix_dir / sub)
+
+    config_path = fenix_dir / "config.yaml"
+    if config_path.exists():
+        log("  ⏭  .fenix/config.yaml 已存在，跳过")
+    else:
+        config_path.write_text(render_config(project_name, project_type), encoding="utf-8")
+        log("  ✅ .fenix/config.yaml")
+
+    for name in FENIX_LINKS:
+        symlink(FENIXD_HOME / name, fenix_dir / name)
+
+    # 2. 根目录状态文件
+    for fname in ("STATE.md", "PROJECT_LOG.md"):
+        target = project_root / fname
+        if target.exists():
+            log(f"  ⏭  {fname} 已存在，跳过")
+        else:
+            template = FENIXD_HOME / "templates" / fname
+            target.write_text(template.read_text(encoding="utf-8") if template.exists() else "", encoding="utf-8")
+            log(f"  ✅ {fname}")
+
+    # 3. openspec 目录
+    for sub in ("changes", "specs"):
+        ensure_dir(project_root / "openspec" / sub)
+    log("  ✅ openspec/{changes,specs}/")
+
+    # 4. .claude/agents（软链接）+ .claude/worktrees
+    agents_dir = project_root / ".claude" / "agents"
+    ensure_dir(agents_dir)
+    for name in AGENT_LINKS:
+        symlink(FENIXD_HOME / "agents" / name, agents_dir / name)
+    ensure_dir(project_root / ".claude" / "worktrees")
+
+    # 5. .gitignore
+    append_gitignore(project_root)
+
+    log("")
+    log("工程骨架已生成。下一步：")
+    log("  1. 进入项目目录并启动框架: /fenix-setup")
+    log("  2. 创建第一个需求: /fenix-new \"你的想法\"")
+    log("  3. 查看状态: /fenix-status")
+
+
+if __name__ == "__main__":
+    main()

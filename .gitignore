@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# 虚拟环境
+venv/
+.venv/
+
+# 系统文件
+.DS_Store
+Thumbs.db

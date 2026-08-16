@@ -1,0 +1,23 @@
+# ── Fenix Loop Engineering Framework ──
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+.fenix/logs/*.log
+.fenix/logs/*.log.*
+
+# Worktrees (managed by fenixd)
+.claude/worktrees/
+
+# Runtime state
+.fenix/state.json
+.fenix/queue.json
+.fenix-run-result.json
+
+# Verification artifacts (screenshots, progress files)
+.fenix/verify-progress/
+.fenix/screenshot/
+.fenix/screenshots/

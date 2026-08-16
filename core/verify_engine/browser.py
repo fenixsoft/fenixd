@@ -1,0 +1,676 @@
+"""
+browser.py — Playwright 浏览器管理器
+
+职责：
+  - 浏览器生命周期管理（启动/复用/关闭）
+  - 用户操作执行（click/type/scroll/select/wait/navigate）
+  - 数据采集（DOM快照、截图、console日志、网络错误）
+  - 布局稳定性等待（networkidle + CLS稳定）
+  - 扩展项目支持：自动启动本地 HTTP 服务器提供 dist/ 目录
+
+设计决策：
+  - 单浏览器实例 + 每场景独立 context（隔离 + 复用）
+  - 使用 Playwright 异步 API
+  - 操作前自动等待元素可交互（Playwright 内置 auto-wait）
+  - 点击时自动检测 interception（Playwright 原生错误）
+  - 对 Chrome 扩展项目，自动启动 HTTP 服务器并将 about:blank 重定向到应用
+"""
+
+import asyncio
+import http.server
+import json
+import socket
+import socketserver
+import threading
+from pathlib import Path
+from typing import Optional
+
+
+def _find_free_port() -> int:
+    """查找一个可用的端口号。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
+class _SingleThreadHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    """单线程 HTTP 服务器，用于提供静态文件服务。"""
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+class _StaticFileHandler(http.server.SimpleHTTPRequestHandler):
+    """静态文件处理器，从指定目录提供服务。"""
+
+    def __init__(self, *args, directory: str, **kwargs):
+        self.directory = directory
+        super().__init__(*args, directory=directory, **kwargs)
+
+    def log_message(self, format, *args):
+        """抑制 HTTP 日志输出。"""
+        pass
+
+
+def _make_handler(directory: str):
+    """创建绑定到指定目录的处理器类。"""
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=directory, **kwargs)
+
+        def log_message(self, format, *args):
+            pass  # 抑制日志
+
+        def end_headers(self):
+            # 添加 CORS 头以支持跨域请求
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+            super().end_headers()
+
+    return Handler
+
+
+class BrowserManager:
+    """Playwright 浏览器管理器。
+
+    使用 Playwright 异步 API。
+    支持 Chrome 扩展项目的本地 HTTP 服务器自动启动。
+    """
+
+    def __init__(self, project_root: Optional[Path] = None, logger=None):
+        self._playwright = None
+        self._browser = None
+        self._started = False
+        self._project_root = project_root
+        self._logger = logger
+
+        # 扩展项目 HTTP 服务器
+        self._dev_server: Optional[http.server.HTTPServer] = None
+        self._dev_server_port: int = 0
+        self._base_url: str = ""
+        self._is_extension_project: bool = False
+
+        # 独立 HTML 入口点支持
+        self._use_verify_html: bool = False
+
+    # ── 扩展项目检测 ───────────────────────────────────────────
+
+    def _detect_extension_project(self) -> bool:
+        """检测项目是否为 Chrome 扩展（存在 dist/manifest.json）。"""
+        if not self._project_root:
+            return False
+        manifest = self._project_root / "dist" / "manifest.json"
+        return manifest.exists()
+
+    # ── 本地 HTTP 服务器 ───────────────────────────────────────
+
+    def _start_dev_server(self):
+        """启动本地 HTTP 服务器提供 dist/ 目录的静态文件。"""
+        if self._dev_server is not None:
+            return  # 已启动
+
+        dist_dir = self._project_root / "dist"
+        handler = _make_handler(str(dist_dir))
+        self._dev_server_port = _find_free_port()
+        self._base_url = f"http://127.0.0.1:{self._dev_server_port}"
+
+        self._dev_server = _SingleThreadHTTPServer(
+            ("127.0.0.1", self._dev_server_port), handler
+        )
+
+        thread = threading.Thread(target=self._dev_server.serve_forever, daemon=True)
+        thread.start()
+
+        # 生成独立可运行的 HTML 入口点（绕过 CRXJS 扩展外壳）
+        self._generate_standalone_html()
+
+    def _stop_dev_server(self):
+        """停止本地 HTTP 服务器。"""
+        if self._dev_server:
+            self._dev_server.shutdown()
+            self._dev_server.server_close()
+            self._dev_server = None
+            self._dev_server_port = 0
+            self._base_url = ""
+
+    def _generate_standalone_html(self):
+        """扫描 dist/assets 找到编译后的主应用资源，生成可独立运行的 verify.html。
+
+        CRXJS 构建产出的 dist/index.html 是扩展开发外壳，会尝试连接
+        Vite 开发服务器（localhost:5199），在独立 HTTP 服务器上下文中无法工作。
+        此方法扫描 dist/assets/ 中的实际应用 bundle 文件并生成可独立加载的 HTML。
+
+        该方法被 try/except 完整包裹，确保任何 I/O 错误都不会导致
+        _use_verify_html 处于不确定状态。
+        """
+        try:
+            self._generate_standalone_html_impl()
+        except Exception as e:
+            self._use_verify_html = False
+            self._log("error", f"生成 verify.html 失败: {type(e).__name__}: {e}")
+
+    def _generate_standalone_html_impl(self):
+        """_generate_standalone_html 的实现逻辑。"""
+        if not self._project_root:
+            self._use_verify_html = False
+            return
+
+        assets_dir = self._project_root / "dist" / "assets"
+        if not assets_dir.exists():
+            self._log("warning", f"dist/assets/ 目录不存在，回退到 index.html")
+            self._use_verify_html = False
+            return
+
+        # 扫描主 JS 文件: index.html-{hash}.js
+        js_files = sorted(assets_dir.glob("index.html-*.js"))
+        # 扫描主 CSS 文件: index-{hash}.css
+        css_files = sorted(assets_dir.glob("index-*.css"))
+
+        if not js_files:
+            self._log("warning", "未找到 index.html-*.js 文件，回退到 index.html")
+            self._use_verify_html = False
+            return
+        if not css_files:
+            self._log("warning", "未找到 index-*.css 文件，回退到 index.html")
+            self._use_verify_html = False
+            return
+
+        js_path = js_files[0].name
+        css_path = css_files[0].name
+
+        # 生成独立 HTML，参考根 index.html 结构
+        html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fenix New Tab - Verify</title>
+    <link rel="stylesheet" href="/assets/{css_path}" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/assets/{js_path}"></script>
+  </body>
+</html>"""
+
+        verify_path = self._project_root / "dist" / "verify.html"
+        # 自动清理旧文件，确保每次生成都是最新内容
+        verify_path.unlink(missing_ok=True)
+        verify_path.write_text(html, encoding="utf-8")
+        self._use_verify_html = True
+        self._log("info", f"已生成独立 HTML 入口: verify.html (JS={js_path}, CSS={css_path})")
+
+    def _log(self, level: str, message: str):
+        """内部日志辅助方法。
+
+        兼容两种 logger 接口：
+        - 标准 logging.Logger / _NullLogger: info(msg) → 单参数消息
+        - fenixd Logger: info(component, message) → 双参数（component 作为第一参数）
+
+        先尝试标准单参数调用，失败再回退到 fenixd 双参数调用，
+        避免标准 logging 的 %-格式化 TypeError 噪音。
+        """
+        if self._logger:
+            log_fn = getattr(self._logger, level, None)
+            if log_fn:
+                try:
+                    # 先尝试标准单参数调用（兼容 logging.Logger / _NullLogger）
+                    log_fn(f"[browser] {message}")
+                except TypeError:
+                    # 回退到 fenixd Logger 的 (component, message) 调用
+                    log_fn("browser", message)
+
+    # ── 生命周期 ───────────────────────────────────────────────
+
+    async def start(self, headless: bool = True):
+        """启动浏览器实例（单例）。
+
+        对扩展项目自动启动本地 HTTP 服务器。
+        """
+        if self._started:
+            return
+
+        self._is_extension_project = self._detect_extension_project()
+
+        if self._is_extension_project:
+            self._start_dev_server()
+
+        from playwright.async_api import async_playwright
+
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.launch(
+            headless=headless,
+            args=[
+                "--disable-animations",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--font-render-hinting=none",
+            ],
+        )
+        self._started = True
+
+    async def stop(self):
+        """停止浏览器并释放资源。"""
+        if self._browser:
+            await self._browser.close()
+            self._browser = None
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
+        self._started = False
+
+        self._stop_dev_server()
+
+    async def new_context(self) -> "BrowserContext":
+        """创建隔离的浏览器上下文。
+
+        每个场景一个独立的 context，实现状态隔离。
+        """
+        if not self._started:
+            raise RuntimeError("浏览器未启动，请先调用 start()")
+
+        context = await self._browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            reduced_motion="reduce",
+            locale="zh-CN",
+            timezone_id="Asia/Shanghai",
+        )
+
+        # 收集控制台错误和网络错误
+        console_errors: list[str] = []
+        network_errors: list[str] = []
+
+        context.on("page", lambda p: p.on("console", lambda msg: (
+            console_errors.append(f"[{msg.type}] {msg.text}")
+            if msg.type == "error" else None
+        )))
+        context.on("page", lambda p: p.on("response", lambda resp: (
+            network_errors.append(f"{resp.status} {resp.url}")
+            if resp.status >= 400 else None
+        )))
+
+        # 将错误收集器挂到 context 上供断言使用
+        context._console_errors = console_errors
+        context._network_errors = network_errors
+
+        return context
+
+    # ── 属性 ───────────────────────────────────────────────────
+
+    @property
+    def is_extension_project(self) -> bool:
+        """是否为 Chrome 扩展项目。"""
+        return self._is_extension_project
+
+    @property
+    def base_url(self) -> str:
+        """本地 HTTP 服务器的基础 URL（扩展项目有效）。"""
+        return self._base_url
+
+    # ── 页面导航辅助 ─────────────────────────────────────────
+
+    async def navigate_to_app(self, page) -> bool:
+        """将页面导航到应用首页（扩展项目专用）。
+
+        仅在 is_extension_project 为 True 且 base_url 非空时执行。
+        优先使用自动生成的 verify.html（独立可运行），回退到 index.html。
+
+        Returns:
+            True 表示导航成功，False 表示跳过或失败
+        """
+        if not self._is_extension_project or not self._base_url:
+            return False
+        target = "verify.html" if self._use_verify_html else "index.html"
+        url = f"{self._base_url}/{target}"
+        try:
+            await page.goto(
+                url,
+                wait_until="networkidle",
+                timeout=15000,
+            )
+            await self._wait_stable(page)
+            return True
+        except Exception as e:
+            self._log("warning", f"navigate_to_app 失败 ({target}): {type(e).__name__}: {e}")
+            return False
+
+    # ── 操作执行 ───────────────────────────────────────────────
+
+    def _register_dialog_handler(self, page, mode: str) -> None:
+        """注册一次性对话框处理器，处理下一个 window.confirm/alert/prompt。
+
+        Playwright 对未处理的 dialog 默认自动 dismiss（相当于点击「取消」），
+        导致切换/删除用户等正向场景被误判失败。此方法让场景显式声明
+        accept（确认）或 dismiss（取消）行为。
+        """
+        def _handle(dialog, _mode=mode):
+            try:
+                task = dialog.accept() if _mode == "accept" else dialog.dismiss()
+                asyncio.ensure_future(task)
+            except Exception:
+                pass
+
+        page.once("dialog", _handle)
+
+    async def execute_action(self, page, step: dict) -> dict:
+        """执行单个用户操作。
+
+        支持的操作类型：
+        - navigate: 页面导航
+        - click: 点击元素（自动检测click interception）
+        - type: 输入文本（先清空再填充）
+        - clear: 清空输入框
+        - select: 下拉选择
+        - scroll: 滚动到元素
+        - wait: 等待指定选择器可见
+
+        对扩展项目：
+        - navigate to about:blank 自动重定向到本地 HTTP 服务器的应用页面
+
+        Returns:
+            {"success": bool, "action": str, "target"?: str, "error"?: str,
+             "error_type"?: str, ...}
+        """
+        action = step.get("action", "")
+        target = step.get("target", "")
+        value = step.get("value", "")
+
+        try:
+            if action == "navigate":
+                # 扩展项目：将 about:blank 重定向到验证 HTML
+                actual_url = value
+                if self._is_extension_project and (value == "about:blank" or value == "" or value.startswith("about:")):
+                    target = "verify.html" if self._use_verify_html else "index.html"
+                    actual_url = f"{self._base_url}/{target}"
+
+                await page.goto(actual_url, wait_until="networkidle", timeout=15000)
+                await self._wait_stable(page)
+                return {"success": True, "action": action, "detail": f"已导航到 {actual_url}"}
+
+            # wait 操作可以没有 target（此时使用 value 作为暂停毫秒数）
+            if action == "wait" and not target:
+                try:
+                    timeout_ms = float(value) if value else 1000
+                    await page.wait_for_timeout(timeout_ms)
+                    return {
+                        "success": True, "action": action,
+                        "detail": f"等待 {timeout_ms}ms",
+                    }
+                except Exception as e:
+                    return {
+                        "success": False, "action": action,
+                        "error": f"wait 超时: {e}",
+                    }
+
+            # dialog 操作无需 CSS target：注册一次性对话框处理器，
+            # 供后续 click 触发的 window.confirm 使用
+            if action == "dialog":
+                mode = (value or "accept").lower()
+                if mode not in ("accept", "dismiss"):
+                    return {
+                        "success": False, "action": action,
+                        "error": f"dialog 模式无效: {value}（应为 accept/dismiss）",
+                    }
+                self._register_dialog_handler(page, mode)
+                return {
+                    "success": True, "action": action,
+                    "detail": f"注册对话框处理器: {mode}",
+                }
+
+            # 所有其他操作都需要 target
+            if not target:
+                return {"success": False, "action": action, "error": "缺少 target 选择器"}
+
+            # seed 的 target 是 localStorage 键（非 CSS 选择器），需在通用选择器等待前处理
+            if action == "seed":
+                # 写入 localStorage 后重载页面，使应用按新数据重新渲染：
+                # target = 存储键，value = 原始 JSON 字符串（直接写入，不解析）
+                await page.evaluate(
+                    "(kv) => localStorage.setItem(kv[0], kv[1])",
+                    [target, value],
+                )
+                await page.reload(wait_until="networkidle", timeout=15000)
+                await self._wait_stable(page)
+                return {"success": True, "action": action, "target": target}
+
+            # 等待目标元素可交互（.first 避免 strict mode violation）
+            locator = page.locator(target).first
+            await locator.wait_for(state="visible", timeout=5000)
+            await self._wait_stable(page)
+
+            if action == "click":
+                # 支持 click 步骤携带 dialog 处理（accept/dismiss），
+                # 处理点击后同步弹出的 window.confirm 对话框
+                dialog_mode = (step.get("dialog") or "").lower()
+                if dialog_mode:
+                    if dialog_mode not in ("accept", "dismiss"):
+                        return {
+                            "success": False, "action": action, "target": target,
+                            "error": f"dialog 模式无效: {dialog_mode}（应为 accept/dismiss）",
+                        }
+                    self._register_dialog_handler(page, dialog_mode)
+                await locator.click(timeout=5000)
+                await self._wait_stable(page)
+                return {"success": True, "action": action, "target": target}
+
+            elif action == "type":
+                await locator.fill(value)
+                return {
+                    "success": True, "action": action,
+                    "target": target, "value": value,
+                }
+
+            elif action == "clear":
+                await locator.fill("")
+                return {"success": True, "action": action, "target": target}
+
+            elif action == "select":
+                await locator.select_option(value)
+                return {
+                    "success": True, "action": action,
+                    "target": target, "value": value,
+                }
+
+            elif action == "scroll":
+                await locator.scroll_into_view_if_needed()
+                return {"success": True, "action": action, "target": target}
+
+            elif action == "hover":
+                await locator.hover()
+                await self._wait_stable(page)
+                return {"success": True, "action": action, "target": target}
+
+            elif action == "wait":
+                await page.wait_for_selector(target, state="visible", timeout=10000)
+                return {"success": True, "action": action, "target": target}
+
+            elif action == "contextmenu":
+                # 右键点击，触发 React onContextMenu（自定义右键菜单/原生菜单阻止）
+                await locator.click(button="right", timeout=5000)
+                await self._wait_stable(page)
+                return {"success": True, "action": action, "target": target}
+
+            elif action == "drag":
+                # 长按拖拽（模拟 pointer 手势）：target = 源卡片选择器，
+                # value = 目标选择器（普通字符串）或 JSON 配置：
+                #   {"to": 目标选择器, "hold": 长按ms(默认450),
+                #    "dwell": 驻留ms(默认600), "via": 中间悬停选择器,
+                #    "via_wait": 中间悬停ms(默认300)}
+                try:
+                    cfg = json.loads(value) if value.strip().startswith("{") else {"to": value}
+                except Exception:
+                    cfg = {"to": value}
+                to_sel = cfg.get("to", "")
+                if not to_sel:
+                    return {"success": False, "action": action, "error": "drag 缺少目标选择器（value 或 value.to）"}
+                hold = int(cfg.get("hold", 450))
+                dwell = int(cfg.get("dwell", 600))
+                via_sel = cfg.get("via", "")
+                via_wait = int(cfg.get("via_wait", 300))
+
+                src_box = await locator.bounding_box()
+                if not src_box:
+                    return {"success": False, "action": action, "error": f"源元素不可见: {target}"}
+                to_locator = page.locator(to_sel).first
+                await to_locator.wait_for(state="visible", timeout=5000)
+                to_box = await to_locator.bounding_box()
+                if not to_box:
+                    return {"success": False, "action": action, "error": f"目标元素不可见: {to_sel}"}
+
+                sx = src_box["x"] + src_box["width"] / 2
+                sy = src_box["y"] + src_box["height"] / 2
+                await page.mouse.move(sx, sy)
+                await page.mouse.down()
+                await page.wait_for_timeout(hold)  # 长按进入拖拽
+
+                if via_sel:
+                    via_locator = page.locator(via_sel).first
+                    await via_locator.wait_for(state="visible", timeout=5000)
+                    via_box = await via_locator.bounding_box()
+                    if via_box:
+                        vx = via_box["x"] + via_box["width"] / 2
+                        vy = via_box["y"] + via_box["height"] / 2
+                        await page.mouse.move(vx, vy, steps=8)
+                        await page.wait_for_timeout(via_wait)
+
+                tx = to_box["x"] + to_box["width"] / 2
+                ty = to_box["y"] + to_box["height"] / 2
+                await page.mouse.move(tx, ty, steps=8)
+                await page.wait_for_timeout(dwell)
+                await page.mouse.up()
+                await page.wait_for_timeout(400)  # 等待 React 重渲染与持久化
+                await self._wait_stable(page)
+                return {"success": True, "action": action, "target": target}
+
+            else:
+                return {
+                    "success": False, "action": action,
+                    "error": f"不支持的操作: {action}",
+                }
+
+        except Exception as e:
+            error_msg = str(e)
+            # 错误分类
+            if "intercepts pointer events" in error_msg:
+                error_type = "click_intercepted"
+            elif "timeout" in error_msg.lower():
+                error_type = "element_not_found_or_not_actionable"
+            elif "not visible" in error_msg.lower():
+                error_type = "element_not_visible"
+            else:
+                error_type = "unknown"
+
+            return {
+                "success": False,
+                "action": action,
+                "target": target,
+                "error_type": error_type,
+                "error": error_msg,
+            }
+
+    # ── 稳定等待 ───────────────────────────────────────────────
+
+    async def _wait_stable(self, page):
+        """等待页面布局稳定。
+
+        1. 等待网络空闲（networkidle）
+        2. 等待布局偏移分数（CLS）稳定
+        """
+        # 网络空闲
+        try:
+            await page.wait_for_load_state("networkidle", timeout=3000)
+        except Exception:
+            pass  # 超时容忍
+
+        # CLS 稳定
+        try:
+            await page.evaluate("""() => {
+                return new Promise((resolve) => {
+                    let lastScore = 0;
+                    let stableCount = 0;
+                    const observer = new PerformanceObserver((list) => {
+                        for (const entry of list.getEntries()) {
+                            if (entry.hadRecentInput) continue;
+                            const currentScore = entry.value;
+                            if (Math.abs(currentScore - lastScore) < 0.001) {
+                                stableCount++;
+                                if (stableCount >= 3) {
+                                    observer.disconnect();
+                                    resolve(true);
+                                }
+                            } else {
+                                stableCount = 0;
+                                lastScore = currentScore;
+                            }
+                        }
+                    });
+                    observer.observe({type: 'layout-shift', buffered: true});
+                    // 500ms内无布局偏移事件也认为稳定
+                    setTimeout(() => {
+                        observer.disconnect();
+                        resolve(true);
+                    }, 500);
+                });
+            }""")
+        except Exception:
+            pass  # 浏览器不支持 CLS API 时跳过
+
+    # ── 数据采集 ───────────────────────────────────────────────
+
+    async def screenshot(self, page, name: str, output_dir: Path) -> str:
+        """截图并保存到磁盘。
+
+        Returns:
+            截图文件的绝对路径
+        """
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / f"{name}.png"
+        await page.screenshot(path=str(path), full_page=False)
+        return str(path)
+
+    async def capture_dom_snapshot(self, page) -> dict:
+        """捕获结构化DOM快照（用于断言和调试）。
+
+        递归采集可见元素的 tag/id/classes/text/rect/attributes。
+        最大深度 10 层，防止无限递归。
+        """
+        return await page.evaluate("""() => {
+            function snapshot(el, depth) {
+                if (!el || depth > 10) return null;
+                const info = {
+                    tag: el.tagName ? el.tagName.toLowerCase() : null,
+                    id: el.id || null,
+                    classes: el.className
+                        ? (typeof el.className === 'string'
+                            ? el.className.split(' ').filter(c => c)
+                            : [])
+                        : [],
+                    text: (el.textContent || '').trim().substring(0, 200),
+                    visible: el.offsetParent !== null,
+                    rect: el.getBoundingClientRect(),
+                    attributes: {},
+                    children: []
+                };
+                // 关键属性
+                for (const attr of ['data-testid', 'href', 'type', 'placeholder',
+                                     'value', 'aria-label', 'role']) {
+                    const val = el.getAttribute(attr);
+                    if (val) info.attributes[attr] = val;
+                }
+                // 递归子元素
+                for (const child of el.children) {
+                    const s = snapshot(child, depth + 1);
+                    if (s) info.children.push(s);
+                }
+                return info;
+            }
+            return snapshot(document.body, 0);
+        }""")
+
+    def get_console_errors(self, context) -> list[str]:
+        """获取在 context 生命周期中收集的控制台错误。"""
+        return getattr(context, "_console_errors", [])
+
+    def get_network_errors(self, context) -> list[str]:
+        """获取在 context 生命周期中收集的网络错误。"""
+        return getattr(context, "_network_errors", [])
