@@ -311,10 +311,11 @@ class VerifyEngine:
         # ── 运行断言 ──
         assertion_defs = [a.to_dict() for a in scenario.assertions]
 
-        # 注入运行时数据（console/network错误）
+        # 注入运行时数据（console/network错误 + 场景级外部 API 网络豁免标记）
         for a_def in assertion_defs:
             if a_def.get("type") == "no_console_error":
                 a_def["_console_errors"] = self.browser.get_console_errors(context)
+                a_def["_external_net_errors_ok"] = scenario.external_net_errors_ok
             if a_def.get("type") == "no_network_error":
                 a_def["_network_errors"] = self.browser.get_network_errors(context)
 

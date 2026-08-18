@@ -432,12 +432,36 @@ class AssertionRunner:
 
         注意：console_errors 由 BrowserManager 在 context 生命周期中收集，
         通过 assertion 的 _console_errors 字段传入。
+
+        外部 API 网络错误过滤：当场景声明 external_net_errors_ok 为 True（涉及
+        外部 API 真实请求，如 timeapi.io / open-meteo），net::ERR_ 等网络层
+        错误视为测试环境网络不可达（外部服务端/环境因素，非产品缺陷），
+        从失败集合中过滤；其余控制台错误（含签名/认证类）仍严格失败。
         """
         errors = a.get("_console_errors", [])
+        allow_network = a.get("_external_net_errors_ok", False)
+
+        filtered: list[str] = []
+        if allow_network:
+            # 网络层错误特征：浏览器网络栈失败 / 资源加载失败 / fetch 失败 / CORS 拦截
+            network_markers = (
+                "net::ERR_",
+                "Failed to load resource",
+                "Failed to fetch",
+                "has been blocked by CORS policy",
+                "NetworkError",
+                "network error",
+            )
+            # 注意：不得重绑定 errors 后再遍历（会遍历空列表）；
+            # 用推导式在原列表上分拣
+            filtered = [e for e in errors if any(m in e for m in network_markers)]
+            errors = [e for e in errors if not any(m in e for m in network_markers)]
+
         return {
             "type": "no_console_error", "layer": 3,
             "pass": len(errors) == 0,
             "errors": errors,
+            "filtered_network": filtered,
         }
 
     async def _assert_no_network_error(self, page, a: dict) -> dict:

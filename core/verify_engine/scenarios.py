@@ -11,7 +11,7 @@ from typing import Optional
 
 # ── 常量 ──────────────────────────────────────────────────────────
 
-VALID_ACTIONS = {"click", "type", "clear", "select", "scroll", "hover", "wait", "navigate", "drag", "contextmenu", "seed", "dialog"}
+VALID_ACTIONS = {"click", "type", "clear", "select", "scroll", "hover", "wait", "navigate", "drag", "contextmenu", "seed", "dialog", "mock_api"}
 
 VALID_ASSERTIONS = {
     # 第1层：元素存在性（确定性，0误判）
@@ -40,8 +40,8 @@ ASSERTIONS_REQUIRING_SELECTOR = VALID_ASSERTIONS - {
     "text_contains", "no_console_error", "no_network_error", "no_auth_error",
 }
 
-# 需要target选择器的操作
-ACTIONS_REQUIRING_TARGET = {"click", "type", "clear", "select", "scroll", "drag", "contextmenu", "seed"}
+# 需要target选择器的操作（mock_api 的 target 为 URL 模式，seed 为 localStorage 键）
+ACTIONS_REQUIRING_TARGET = {"click", "type", "clear", "select", "scroll", "drag", "contextmenu", "seed", "mock_api"}
 
 
 # ── 数据类 ────────────────────────────────────────────────────────
@@ -153,6 +153,10 @@ class TestScenario:
         assertions: 断言列表
         visual_baseline: 视觉对比基线名称（可选，用于截图SSIM对比）
         depends_on: 依赖的场景ID列表（这些场景必须先执行完成）
+        external_net_errors_ok: 场景是否允许「外部 API 网络类控制台错误」。
+            涉及外部 API（如 timeapi.io / open-meteo）真实请求的场景置 True，
+            no_console_error 断言将过滤 net::ERR_ 等网络层错误（视为环境因素），
+            其余控制台错误（含签名/认证类）仍严格失败。
     """
     id: str
     description: str = ""
@@ -160,6 +164,7 @@ class TestScenario:
     assertions: list[Assertion] = field(default_factory=list)
     visual_baseline: str = ""
     depends_on: list[str] = field(default_factory=list)
+    external_net_errors_ok: bool = False
 
     def validate(self) -> list[str]:
         """验证场景定义的合法性，返回错误列表。
@@ -209,6 +214,8 @@ class TestScenario:
             d["visual_baseline"] = self.visual_baseline
         if self.depends_on:
             d["depends_on"] = self.depends_on
+        if self.external_net_errors_ok:
+            d["external_net_errors_ok"] = True
         return d
 
     @classmethod
@@ -220,6 +227,7 @@ class TestScenario:
             assertions=[Assertion.from_dict(a) for a in d.get("assertions", [])],
             visual_baseline=d.get("visual_baseline", ""),
             depends_on=d.get("depends_on", []),
+            external_net_errors_ok=d.get("external_net_errors_ok", False),
         )
 
 

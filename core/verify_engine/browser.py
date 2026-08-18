@@ -383,7 +383,7 @@ class BrowserManager:
                     target = "verify.html" if self._use_verify_html else "index.html"
                     actual_url = f"{self._base_url}/{target}"
 
-                await page.goto(actual_url, wait_until="networkidle", timeout=15000)
+                await page.goto(actual_url, wait_until="domcontentloaded", timeout=15000)
                 await self._wait_stable(page)
                 return {"success": True, "action": action, "detail": f"已导航到 {actual_url}"}
 
@@ -429,9 +429,36 @@ class BrowserManager:
                     "(kv) => localStorage.setItem(kv[0], kv[1])",
                     [target, value],
                 )
-                await page.reload(wait_until="networkidle", timeout=15000)
+                await page.reload(wait_until="domcontentloaded", timeout=15000)
                 await self._wait_stable(page)
                 return {"success": True, "action": action, "target": target}
+
+            # mock_api：拦截 URL 模式并返回固定 JSON，用于离线验证依赖外部 API
+            # 的场景（如 Open-Meteo / 时间服务器）。target = URL 模式（Playwright
+            # glob，如 https://api.open-meteo.com/*），value = JSON 响应体。
+            # route 注册在 page 上，reload/导航后仍保留（同一 page 对象）。
+            if action == "mock_api":
+                try:
+                    # Playwright URL glob：`*` 不匹配 `/`，结尾 `/*` 补成 `/**`
+                    # （否则 https://host/* 无法匹配多段路径 /v1/forecast）
+                    route_pattern = target[:-1] + "**" if target.endswith("/*") else target
+                    await page.route(
+                        route_pattern,
+                        lambda route: route.fulfill(
+                            status=200,
+                            content_type="application/json",
+                            body=value,
+                        ),
+                    )
+                    return {
+                        "success": True, "action": action, "target": target,
+                        "detail": f"已 mock API: {target}",
+                    }
+                except Exception as e:
+                    return {
+                        "success": False, "action": action, "target": target,
+                        "error": f"mock_api 失败: {e}",
+                    }
 
             # 等待目标元素可交互（.first 避免 strict mode violation）
             locator = page.locator(target).first

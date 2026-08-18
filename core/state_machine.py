@@ -170,15 +170,36 @@ class StateParser:
 
 # ── State Machine ───────────────────────────────────────────────────
 
+class _NullLogger:
+    """静默日志器：logger 为 None 时兜底，避免各方法无条件调用 self.logger 崩溃。
+
+    适用于脚本直接构造 StateMachine（如 openspec 流程）且不需要日志的场景。
+    """
+
+    def debug(self, *args, **kwargs):
+        pass
+
+    def info(self, *args, **kwargs):
+        pass
+
+    def warning(self, *args, **kwargs):
+        pass
+
+    def error(self, *args, **kwargs):
+        pass
+
+
 class StateMachine:
     """
     Manages the lifecycle state machine for all SPECs.
     Provides atomic read/write access to STATE.md.
     """
 
-    def __init__(self, state_path: Path, logger):
+    def __init__(self, state_path: Path, logger=None):
         self.state_path = Path(state_path)
-        self.logger = logger
+        # logger 允许为 None（脚本场景）：兜底为静默日志器，保证 add_spec/transition 等
+        # 方法内无条件 self.logger.* 调用不崩溃
+        self.logger = logger if logger is not None else _NullLogger()
         self._lockfile = Path(str(state_path) + ".lock")
 
     # ── Read / Write ───────────────────────────────────────────────
