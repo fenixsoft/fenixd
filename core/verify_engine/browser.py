@@ -379,7 +379,18 @@ class BrowserManager:
             if action == "navigate":
                 # 扩展项目：将 about:blank 重定向到验证 HTML
                 actual_url = value
-                if self._is_extension_project and (value == "about:blank" or value == "" or value.startswith("about:")):
+                # chrome-extension:// URL 在当前验证浏览器（未加载扩展）中不可达
+                # （Planner 可能生成 chrome-extension://__MSG_@@extension_id__/ 之类目标），
+                # 统一回退到本地 HTTP 服务器（navigate_to_app 同款入口），避免场景判 fail。
+                if self._is_extension_project and value.startswith("chrome-extension://"):
+                    self._log(
+                        "warning",
+                        f"navigate 目标 {value} 为 chrome-extension:// URL"
+                        "（验证浏览器未加载扩展），已回退到本地 HTTP 服务器",
+                    )
+                    target = "verify.html" if self._use_verify_html else "index.html"
+                    actual_url = f"{self._base_url}/{target}"
+                elif self._is_extension_project and (value == "about:blank" or value == "" or value.startswith("about:")):
                     target = "verify.html" if self._use_verify_html else "index.html"
                     actual_url = f"{self._base_url}/{target}"
 
