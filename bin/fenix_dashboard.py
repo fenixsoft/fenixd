@@ -1,35 +1,51 @@
 #!/usr/bin/env python3
 """
-Fenix Dashboard — 实时开发进度控制台仪表盘。
+Fenix Dashboard — 统一入口（Web / TUI / 项目注册）。
 
-用法: python3 fenix_dashboard.py [--interval N]
+用法:
+  python3 fenix_dashboard.py --serve [--port N]     # 启动 Web Dashboard（默认，跨项目）
+  python3 fenix_dashboard.py --tui [--interval N]   # 终端仪表盘（原 TUI，保留）
+  python3 fenix_dashboard.py --add-project <path>   # 注册项目到监控列表
+  python3 fenix_dashboard.py --list-projects        # 列出已注册项目
 
 数据源:
-  - STATE.md           → SPEC 状态机
+  - STATE.md            → SPEC 状态机
   - tasks.md            → 任务完成进度
-  - fenixd.log          → 实时事件流
-  - verify-progress/    → 验证进度
-  - ps aux              → 活跃 agent 进程
-  - git worktree list   → 活跃工作区
+  - .fenix/logs/*.log   → 实时事件流
+  - .fenix/verify-progress/ → 验证进度 / 报告 / 截图
+  - .fenix/runs/*.jsonl → Agent 运行产物流（实时 LLM 对话 / 工具调用）
+  - ~/.config/fenixd/dashboard.yaml → 多项目监控配置
+
+路径解析（兼容两种调用）:
+  - 经项目内 .fenix/bin/ 软链接调用 → 项目根 = ../../..，core 在 ../.. (.fenix)
+  - 直接以框架 bin/ 调用             → 项目根 = ..，core 在 ..
 """
 
+import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
-import shutil
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from pathlib import Path
 
 # 使用 .absolute()（不跟随软链接）：脚本经项目内 .fenix/bin/ 软链接调用
-PROJECT_ROOT = Path(__file__).absolute().parent.parent.parent
+_THIS_DIR = Path(__file__).absolute().parent
+_FENIX_DIR = _THIS_DIR.parent
+PROJECT_ROOT = _FENIX_DIR.parent if _FENIX_DIR.name == ".fenix" else _FENIX_DIR
+if str(_FENIX_DIR) not in sys.path:
+    sys.path.insert(0, str(_FENIX_DIR))
+
+from core.dashboard import data as dash_data           # noqa: E402
+from core.dashboard.registry import Registry, DEFAULT_PORT  # noqa: E402
+from core.dashboard.server import serve, STATIC_DIR   # noqa: E402
+
 STATE_PATH = PROJECT_ROOT / "STATE.md"
-CHANGES_DIR = PROJECT_ROOT / "openspec" / "changes"
 LOGS_DIR = PROJECT_ROOT / ".fenix" / "logs"
 PROGRESS_DIR = PROJECT_ROOT / ".fenix" / "verify-progress"
-WORKTREES_DIR = PROJECT_ROOT / ".claude" / "worktrees"
 
 # ANSI 颜色
 GREEN = "\033[32m"; YELLOW = "\033[33m"; CYAN = "\033[36m"
@@ -49,85 +65,30 @@ STATUS_COLORS = {
     "drafted": GRAY, "ready": BLUE, "implemented": MAGENTA,
 }
 
-# ── 数据解析 ──────────────────────────────────────────────────
 
-def parse_state():
-    if not STATE_PATH.exists():
-        return {}
-    specs = {}
-    current_name = None; current_entry = {}
-    for line in STATE_PATH.read_text(encoding="utf-8").split("\n"):
-        m = re.match(r"^###\s+(.+)$", line)
-        if m:
-            if current_name and current_entry and "status" in current_entry:
-                specs[current_name] = current_entry
-            current_name = m.group(1).strip(); current_entry = {}
-            continue
-        m = re.match(r"^-\s+([a-z_]+):\s*(.*)$", line)
-        if m and current_name:
-            key = m.group(1); val = m.group(2).strip()
-            if key == "priority":
-                try: val = int(val)
-                except: val = 999
-            elif val.lower() in ("null", "none", ""): val = None
-            current_entry[key] = val
-    if current_name and current_entry and "status" in current_entry:
-        specs[current_name] = current_entry
-    return specs
+# ── 项目注册子命令 ──────────────────────────────────────────────
+
+def cmd_add_project(path: str) -> int:
+    reg = Registry()
+    target = str(Path(path).expanduser().absolute())
+    added, msg = reg.add_project(target)
+    print(msg)
+    return 0 if added else 1
 
 
-def parse_tasks(spec_name):
-    tasks_path = CHANGES_DIR / spec_name / "tasks.md"
-    if not tasks_path.exists():
-        return []
-    groups = []; current_group = None
-    for line in tasks_path.read_text(encoding="utf-8").split("\n"):
-        m = re.match(r"^##\s+\d+\.\s+(.+)$", line)
-        if m:
-            current_group = {"title": m.group(1), "tasks": [], "done": 0, "total": 0}
-            groups.append(current_group); continue
-        m = re.match(r"^- \[(x| )\] (\d+\.\d+) (.+)$", line)
-        if m and current_group is not None:
-            is_done = m.group(1) == "x"
-            current_group["tasks"].append({
-                "done": is_done, "id": m.group(2), "desc": m.group(3).strip()
-            })
-            if is_done: current_group["done"] += 1
-            current_group["total"] += 1
-    return groups
+def cmd_list_projects() -> int:
+    reg = Registry()
+    projects = reg.list_projects()
+    if not projects:
+        print("（尚未注册任何项目）")
+        return 0
+    print("已注册监控项目：")
+    for p in projects:
+        print(f"  - {p['name']}: {p['path']}")
+    return 0
 
 
-def count_scenarios(spec_name):
-    specs_dir = CHANGES_DIR / spec_name / "specs"
-    if not specs_dir.exists(): return 0
-    count = 0
-    try:
-        for sf in specs_dir.rglob("*.md"):
-            for line in sf.read_text(encoding="utf-8").split("\n"):
-                if re.match(r"^####\s+Scenario:", line): count += 1
-    except: pass
-    return count
-
-
-def get_recent_events(minutes=5):
-    """获取最近 N 分钟的 fenixd 日志事件"""
-    log_files = sorted(LOGS_DIR.glob("fenixd*.log"), reverse=True)
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
-    events = []
-    for lf in log_files[:2]:
-        try:
-            for line in lf.read_text(encoding="utf-8").split("\n"):
-                if not line.strip(): continue
-                try:
-                    entry = json.loads(line)
-                    ts = entry.get("timestamp", "")
-                    if ts < cutoff: continue
-                    events.append(entry)
-                except json.JSONDecodeError: continue
-        except: continue
-    # 取最近 30 条
-    return events[-30:]
-
+# ── TUI 渲染（原终端仪表盘，保留） ───────────────────────────────
 
 def get_active_agents():
     """获取活跃的 claude agent 进程"""
@@ -178,25 +139,18 @@ def get_worktrees():
 
 
 def get_verify_progress():
-    """获取验证进度"""
+    """获取验证进度（复用共享解析，损坏条目跳过）"""
     if not PROGRESS_DIR.exists(): return []
     results = []
     for pf in sorted(PROGRESS_DIR.glob("*.json")):
-        try:
-            data = json.loads(pf.read_text())
-            results.append({
-                "spec": pf.stem,
-                "total": data.get("total", 0),
-                "done": data.get("done", 0),
-                "current": data.get("current", ""),
-            })
-        except: pass
+        data = dash_data.parse_verify_progress(PROJECT_ROOT, pf.stem)
+        results.append({
+            "spec": pf.stem,
+            "total": data.get("total", 0),
+            "done": data.get("done", 0),
+            "current": data.get("current", ""),
+        })
     return results
-
-
-# ── 渲染函数 ──────────────────────────────────────────────────
-
-TERM_WIDTH = 120
 
 
 def bar(pct, width=20, style="block"):
@@ -234,9 +188,9 @@ def render_overview(specs, daemon_ok):
     # 计算总体实现进度
     grand_total = grand_done = 0
     for name in specs:
-        tasks = parse_tasks(name)
-        grand_total += sum(g["total"] for g in tasks)
-        grand_done += sum(g["done"] for g in tasks)
+        d, t = dash_data.task_progress(PROJECT_ROOT, name)
+        grand_total += t
+        grand_done += d
 
     # daemon 状态
     d_icon = f"{GREEN}🟢 运行中{RESET}" if daemon_ok else f"{RED}🔴 已停止{RESET}"
@@ -300,7 +254,7 @@ def render_active_specs(specs):
         prio = entry.get("priority", "?")
 
         # 任务进度
-        groups = parse_tasks(name)
+        groups = dash_data.parse_tasks(PROJECT_ROOT, name)
         all_tasks = []
         for g in groups:
             all_tasks.extend(g["tasks"])
@@ -348,7 +302,7 @@ def render_active_specs(specs):
 
 def render_event_feed(specs):
     """渲染最近事件流"""
-    events = get_recent_events(minutes=10)
+    events = dash_data.get_recent_events(PROJECT_ROOT, minutes=10)
     if not events:
         return f"  {GRAY}(最近 10 分钟无事件){RESET}"
 
@@ -399,7 +353,7 @@ def render_stats_panel(specs):
             lines.append(f"    {icon} {st:14s}: {count}")
 
     # 场景统计
-    total_scenarios = sum(count_scenarios(n) for n in specs)
+    total_scenarios = sum(dash_data.count_scenarios(PROJECT_ROOT, n) for n in specs)
     if total_scenarios > 0:
         lines.append(f"    📋 场景总数: {total_scenarios}")
 
@@ -411,30 +365,29 @@ def clear_screen():
     sys.stdout.flush()
 
 
-# ── 主循环 ──────────────────────────────────────────────────
+def check_daemon():
+    """检查当前项目 daemon 是否运行（唯一 session 名，见 bin/fenix_session.py）"""
+    try:
+        helper = _THIS_DIR / "fenix_session.py"
+        r = subprocess.run(
+            ["python3", str(helper), "running", str(PROJECT_ROOT)],
+            capture_output=True, timeout=2,
+        )
+        return r.stdout.strip() == "YES"
+    except Exception:
+        return False
 
-def main():
-    interval = 3
-    if len(sys.argv) >= 3 and sys.argv[1] == "--interval":
-        try: interval = int(sys.argv[2])
-        except: pass
 
+def run_tui(interval=3):
+    """终端仪表盘主循环（原 TUI，保留）"""
     print(f"{DIM}Fenix Dashboard — 每 {interval}s 刷新，Ctrl+C 退出{RESET}")
     time.sleep(1)
 
     try:
         while True:
             clear_screen()
-
-            # 检查 daemon
-            daemon_ok = False
-            try:
-                r = subprocess.run(["tmux", "has-session", "-t", "fenixd"],
-                                   capture_output=True, timeout=2)
-                daemon_ok = r.returncode == 0
-            except: pass
-
-            specs = parse_state()
+            daemon_ok = check_daemon()
+            specs = dash_data.parse_state(PROJECT_ROOT)
 
             # 标题
             now = datetime.now().strftime("%H:%M:%S")
@@ -473,6 +426,62 @@ def main():
     except KeyboardInterrupt:
         clear_screen()
         print(f"{GREEN}✅ Fenix Dashboard 已退出{RESET}")
+
+
+# ── Web 模式 ────────────────────────────────────────────────────
+
+def run_serve(port_override=None):
+    """启动 Web Dashboard（跨项目）。端口优先级：--port > 用户配置(registry) > 项目 dashboard.port > 8787。"""
+    reg = Registry()
+    cfg = reg.load()
+    port = port_override or cfg.get("port")
+    if not port_override and port in (None, DEFAULT_PORT):
+        # 用户未显式指定端口 → 回退项目级 .fenix/config.yaml 的可选 dashboard.port
+        # （config.template.yaml 已含模板字段；跨项目场景下用户级配置优先级最高）
+        try:
+            from core.config import ConfigLoader
+            pconf = ConfigLoader.load(PROJECT_ROOT / ".fenix" / "config.yaml")
+            pport = ConfigLoader.get(pconf, "dashboard.port", None)
+            if pport is not None:
+                port = int(pport)
+        except Exception:
+            pass
+    try:
+        port = int(port) if port is not None else DEFAULT_PORT
+    except (TypeError, ValueError):
+        port = DEFAULT_PORT
+    serve(reg, port=port)
+
+
+# ── 入口 ────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Fenix Dashboard — Web / TUI / 项目注册",
+    )
+    parser.add_argument("--serve", action="store_true",
+                        help="启动 Web Dashboard（默认，跨项目监控）")
+    parser.add_argument("--tui", action="store_true",
+                        help="启动终端仪表盘（原 TUI）")
+    parser.add_argument("--add-project", metavar="PATH",
+                        help="注册项目到监控列表（按路径去重）")
+    parser.add_argument("--list-projects", action="store_true",
+                        help="列出已注册监控项目")
+    parser.add_argument("--port", type=int,
+                        help="Web 端口（默认取配置，或 8787；被占用自动上探）")
+    parser.add_argument("--interval", type=int, default=3,
+                        help="TUI 刷新间隔（秒）")
+    args = parser.parse_args()
+
+    if args.add_project:
+        sys.exit(cmd_add_project(args.add_project))
+    if args.list_projects:
+        sys.exit(cmd_list_projects())
+    if args.tui:
+        run_tui(args.interval)
+    else:
+        # 默认 Web 模式（--serve）
+        run_serve(args.port)
 
 
 if __name__ == "__main__":
