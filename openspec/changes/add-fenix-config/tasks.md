@@ -13,8 +13,8 @@
 
 ## 3. 自动审批
 
-- [ ] 3.1 在 `core/pm_engine.py` 新增 `_auto_approve(spec_name)`：解析分支（STATE.md `branch` 字段优先，否则 `{worktree.implement_branch_prefix}/{spec_name}`），在 project_root 执行 `git push origin <branch>`（subprocess + 超时），成功则 `transition(spec_name, "pushed")` 并写 PROJECT_LOG，失败则保留 done 并记录 error
-- [ ] 3.2 在 SPEC 到达 `done` 的路径（`_on_spec_done` 及已验证转 done 路径）接入：`approve_mode == "auto"` 且状态非 pushed 时触发 `_auto_approve`，并保证重复扫描不重复推送
+- [x] 3.1 在 `core/pm_engine.py` 新增 `_auto_approve(spec_name)`：解析分支（STATE.md `branch` 字段优先，否则 `{worktree.implement_branch_prefix}/{spec_name}`），在 project_root 执行 `git push origin <branch>`（subprocess + 超时），成功则 `transition(spec_name, "pushed")` 并写 PROJECT_LOG，失败则保留 done 并记录 error
+- [x] 3.2 在 SPEC 到达 `done` 的路径（`_on_spec_done` 及已验证转 done 路径）接入：`approve_mode == "auto"` 且状态非 pushed 时触发 `_auto_approve`，并保证重复扫描不重复推送
 
 ## 4. Dashboard 配置端到端
 

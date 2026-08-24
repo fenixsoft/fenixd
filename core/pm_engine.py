@@ -6,8 +6,11 @@ concurrency control, daily reporting, and the single human gate (push approval).
 """
 
 import json
+import re
 import subprocess
 import threading
+import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -261,7 +264,13 @@ class PMEngine:
         self._enqueue(fix_spec_name, "implementer")
 
     def _on_spec_done(self, spec_name: str):
-        """SPEC is done — log, re-verify parent if this was a fix SPEC."""
+        """SPEC is done — log, re-verify parent if this was a fix SPEC.
+
+        若 gates.approve_mode == "auto"，自动执行 git push 并推进到 pushed。
+        """
+        spec = self.state_machine.read_one(spec_name) or {}
+        status = spec.get("status", "")
+
         self.logger.info(
             "pm_engine",
             f"SPEC '{spec_name}' is done — awaiting push approval",
@@ -270,6 +279,12 @@ class PMEngine:
         self._append_project_log(
             f"✅ SPEC completed: **{spec_name}** — awaiting push approval"
         )
+
+        # 自动审批：approve_mode=auto 且状态为 done 时触发
+        # （若已 pushed 则 _auto_approve 内部幂等跳过，不重复推送）
+        approve_mode = self._get_approve_mode()
+        if approve_mode == "auto" and status == "done":
+            self._auto_approve(spec_name)
 
         # If this is a fix SPEC, re-trigger verification of the original SPEC
         if spec_name.startswith("fix-"):
@@ -611,6 +626,108 @@ class PMEngine:
                     "error": f"All verification methods failed: {e2}",
                 })
 
+    # ── 应用可达性自愈（最终用户验证必选）────────────────────────
+
+    def _ensure_app_reachable(self, spec_name: str) -> tuple:
+        """验证前确保应用可达：自动启动 commands.start、处理端口冲突。
+
+        最终用户验证为必选项：场景执行前先保证应用可被浏览器访问；
+        若不可达则自动启动服务（commands.start），端口冲突时换端口重试
+        （改写场景 URL）。仅在「需用户参与（如收验证码/登录）」或
+        「判定无法解决」时才返回不可达，由上层判定而非静默通过。
+
+        Returns:
+            (reachable, user_blocked, note)
+            - reachable: 自愈后应用是否可达
+            - user_blocked: 是否为需用户参与而无法自动验证（预留判定位）
+            - note: 人类可读说明（供错误展示）
+        """
+        scenarios_path = (self.project_root / ".fenix" / "verify-progress"
+                          / spec_name / "test_scenarios.json")
+        if not scenarios_path.exists():
+            return True, False, ""
+        try:
+            data = json.loads(scenarios_path.read_text(encoding="utf-8"))
+        except Exception:
+            return True, False, ""
+
+        # 收集场景 navigate 目标 URL（应用入口）
+        urls: list[str] = []
+        for sc in (data if isinstance(data, list) else []):
+            if not isinstance(sc, dict):
+                continue
+            for step in sc.get("steps", []) or []:
+                if isinstance(step, dict) and step.get("action") == "navigate":
+                    u = str(step.get("url") or step.get("target") or "")
+                    if u.startswith("http") and u not in urls:
+                        urls.append(u)
+        if not urls:
+            return True, False, ""
+
+        def _probe(u: str, timeout: float = 2.0) -> bool:
+            try:
+                req = urllib.request.Request(u, method="GET",
+                                             headers={"User-Agent": "fenix-verify-probe"})
+                with urllib.request.urlopen(req, timeout=timeout):
+                    return True
+            except Exception:
+                return False
+
+        # 1) 直接探测：已可达则无需自愈
+        if all(_probe(u) for u in urls):
+            return True, False, ""
+
+        # 2) 自愈：读取 commands.start 自动启动应用
+        start_cmd = str(self._get_config("commands.start", "") or "").strip()
+        if not start_cmd or start_cmd in ("echo 'No start command configured yet'",):
+            return False, False, "应用不可达且未配置 commands.start（无法自动启动验证目标应用）"
+
+        base_port = None
+        pm = re.search(r"(?:--port|-p)\s+(\d+)", start_cmd)
+        if pm:
+            base_port = int(pm.group(1))
+
+        self.logger.warning(
+            "pm_engine",
+            f"验证目标应用不可达，自动启动服务: {start_cmd}",
+        )
+
+        # 启动一次（后台、脱离会话、输出丢弃）；随后等待可达或扫描邻近端口
+        try:
+            subprocess.Popen(start_cmd, shell=True, cwd=str(self.project_root),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except Exception as e:
+            return False, False, f"启动验证目标应用失败: {e}"
+
+        for _ in range(30):
+            time.sleep(1)
+            if all(_probe(u) for u in urls):
+                return True, False, "已自动启动应用服务"
+
+        # 端口自动递增场景（如 --port 被占用时服务上探到邻近端口）：
+        # 扫描 base_port 附近的端口，命中则改写场景 URL 并确认可达
+        if base_port:
+            for port in range(base_port + 1, base_port + 51):
+                if _probe(f"http://127.0.0.1:{port}/"):
+                    urls_new = [re.sub(r":%d(?=[/\?]|$)" % base_port, f":{port}", u) for u in urls]
+                    if all(_probe(u) for u in urls_new):
+                        self._rewrite_scenario_port(scenarios_path, base_port, port)
+                        return True, False, f"已自动启动应用服务（端口冲突，改用 {port}）"
+
+        return False, False, ("应用仍不可达：已自动执行 commands.start 并扫描邻近端口，"
+                              "仍无法连接（可能需人工启动/换端口，或属需用户参与的验证场景）")
+
+    def _rewrite_scenario_port(self, scenarios_path: Path, old_port: int, new_port: int):
+        """端口冲突换端口后，重写 test_scenarios.json 中的 URL 端口。"""
+        try:
+            content = scenarios_path.read_text(encoding="utf-8")
+            content = re.sub(r":%d(?=[/\?\"']|$)" % old_port, f":{new_port}", content)
+            scenarios_path.write_text(content, encoding="utf-8")
+            self.logger.info("pm_engine", f"已重写验证场景端口 {old_port} → {new_port}")
+        except Exception as e:
+            self.logger.warning("pm_engine", f"重写验证场景端口失败: {e}")
+
     def _run_three_stage_verification(self, spec_name: str):
         """三步验证流水线主逻辑。"""
         import asyncio
@@ -674,6 +791,15 @@ class PMEngine:
         )
         scenarios = load_scenarios(scenarios_path)
 
+        # ── 阶段2.5: 应用可达性自愈（最终用户验证必选）──
+        # 场景执行前确保应用可被浏览器访问；不可达时自动启动 commands.start、
+        # 端口冲突换端口重试。自愈失败由下方验证门禁兜底，不静默判定通过。
+        app_reachable, _user_blocked, reach_note = self._ensure_app_reachable(spec_name)
+        self.logger.info(
+            "pm_engine",
+            f"[阶段2] 应用可达性: {'OK' if app_reachable else '不可达'} — {reach_note or '无 navigate 依赖'}",
+        )
+
         engine = VerifyEngine(
             spec_name, self.project_root, self.logger, self.config
         )
@@ -687,6 +813,23 @@ class PMEngine:
             f"{report['summary']['warnings']}警告, "
             f"{fail_count}失败",
         )
+
+        # ── 阶段2 验证门禁：应用不可达且场景全失败时不判定 verified ──
+        # 最终用户验证为必选项：若自愈后应用仍不可达、0 场景通过，则本次验证
+        # 并未真正触达最终用户可见功能，不得静默判定 verified/done；将问题与
+        # 已尝试的解决方案写入 error 暴露（而非 "0通过/31失败" 却标完成）。
+        if (not app_reachable
+                and report["summary"]["passed"] == 0
+                and fail_count == report["summary"]["total"]):
+            self.state_machine.update_spec(spec_name, {
+                "tester_run": "blocked:app-unreachable",
+                "error": f"验证无法执行（最终用户验证未完成）: {reach_note or '应用不可达'}",
+            })
+            self.logger.error(
+                "pm_engine",
+                f"验证门禁: '{spec_name}' 应用不可达，未判定 verified — {reach_note}",
+            )
+            return
 
         # ── 阶段3: Planner 判定结果 ──
         self.logger.info("pm_engine", f"[阶段3] Planner 判定: {spec_name}")
@@ -813,18 +956,89 @@ class PMEngine:
         return self.state_machine.get_by_status("done")
 
     def approve_push(self, spec_name: str):
-        """Approve and push a done SPEC."""
+        """Approve and push a done SPEC.
+
+        执行真实 git push，成功后将状态推进到 pushed。
+        推送失败返回 False，状态保持 done。
+        """
         spec = self.state_machine.read_one(spec_name)
         if not spec or spec.get("status") != "done":
             self.logger.warning("pm_engine", f"Cannot push '{spec_name}': not in done state")
             return False
 
-        # In POC, the actual git push is handled by the /fenix:approve skill
-        # Here we just transition the state
+        branch = self._resolve_push_branch(spec_name, spec)
+        success, error = self._git_push_branch(branch)
+        if not success:
+            self.logger.error(
+                "pm_engine",
+                f"git push failed for '{spec_name}' (branch={branch}): {error}",
+            )
+            self.state_machine.update_spec(spec_name, {
+                "error": f"git push failed: {error}",
+            })
+            return False
+
         self.state_machine.transition(spec_name, "pushed")
-        self._append_project_log(f"🚀 SPEC pushed: **{spec_name}**")
-        self.logger.info("pm_engine", f"SPEC pushed: {spec_name}")
+        self._append_project_log(f"🚀 SPEC pushed: **{spec_name}** (branch: {branch})")
+        self.logger.info("pm_engine", f"SPEC pushed: {spec_name} (branch={branch})")
         return True
+
+    def _auto_approve(self, spec_name: str):
+        """自动审批：在 auto 模式下 SPEC 到达 done 后自动执行 git push 并推进到 pushed。
+
+        幂等：若 SPEC 已处于 pushed 状态则直接返回 True（不重复推送）。
+        推送失败保留 done 状态并记录 error，供人工兜底。
+        """
+        spec = self.state_machine.read_one(spec_name)
+        if not spec:
+            return False
+        status = spec.get("status", "")
+        if status == "pushed":
+            # 已 pushed，不重复触发
+            return True
+        if status != "done":
+            self.logger.warning(
+                "pm_engine",
+                f"_auto_approve: '{spec_name}' is in '{status}', not done — skipping",
+            )
+            return False
+
+        self.logger.info("pm_engine", f"Auto-approving '{spec_name}' (approve_mode=auto)")
+        return self.approve_push(spec_name)
+
+    def _resolve_push_branch(self, spec_name: str, spec: dict) -> str:
+        """解析 SPEC 的推送分支名。
+
+        优先使用 STATE.md 中的 branch 字段，否则按
+        {worktree.implement_branch_prefix}/{spec_name} 构造（默认 fenix/<spec_name>）。
+        """
+        branch = spec.get("branch")
+        if branch and isinstance(branch, str) and branch.strip():
+            return branch.strip()
+        prefix = self._get_config("worktree.implement_branch_prefix", "fenix")
+        return f"{prefix}/{spec_name}"
+
+    def _git_push_branch(self, branch: str) -> tuple:
+        """在 project_root 执行 git push origin <branch>。
+
+        Returns: (success: bool, error_message: str)
+        """
+        try:
+            result = subprocess.run(
+                ["git", "push", "origin", branch],
+                cwd=str(self.project_root),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode == 0:
+                return True, ""
+            error = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+            return False, error
+        except subprocess.TimeoutExpired:
+            return False, "git push timed out after 120s"
+        except Exception as e:
+            return False, str(e)
 
     # ── Helpers ────────────────────────────────────────────────────
 
@@ -834,6 +1048,11 @@ class PMEngine:
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"\n- [{timestamp}] {message}")
+
+    def _get_approve_mode(self) -> str:
+        """Return the approve_mode, defaulting to 'manual'."""
+        from .config import ConfigLoader
+        return ConfigLoader.get_approve_mode(self.config)
 
     def _get_config(self, key: str, default=None):
         """Get a nested config value."""
