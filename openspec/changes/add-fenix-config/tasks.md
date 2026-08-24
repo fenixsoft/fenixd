@@ -29,7 +29,7 @@
 
 ## 6. 测试与验证
 
-- [ ] 6.1 在 `tests/test_core.py` 新增单元测试：配置解析与校验（合法/非法/旧配置缺省）、`get_agent_model_assignment` 返回值、`get_approve_mode` 默认值、agent_runner 对已分配/未分配 Agent 的 env 注入与 `--model` 选择
-- [ ] 6.2 新增/更新自动审批测试：mock `git push` 成功 → 状态到 pushed；失败 → 保留 done 且记录 error；已 pushed 不重复触发
-- [ ] 6.3 运行 `python3 -m pytest tests/ -q` 全量通过，无回归
-- [ ] 6.4 端到端验证 Dashboard：启动 dashboard，GET /api/config 返回当前配置；POST 修改审批模式与 Provider 后配置文件正确更新且其它键不变；重启 daemon 后新配置生效；人工确认 auto 模式下 SPEC 到达 done 后自动 push 并标记 pushed
+- [x] 6.1 在 `tests/test_core.py` 新增单元测试：配置解析与校验（合法/非法/旧配置缺省）、`get_agent_model_assignment` 返回值、`get_approve_mode` 默认值、agent_runner 对已分配/未分配 Agent 的 env 注入与 `--model` 选择
+- [x] 6.2 新增/更新自动审批测试：mock `git push` 成功 → 状态到 pushed；失败 → 保留 done 且记录 error；已 pushed 不重复触发
+- [x] 6.3 运行 `python3 -m pytest tests/ -q` 全量通过，无回归（118 passed）
+- [x] 6.4 端到端验证 Dashboard：启动 dashboard，GET /api/config 返回当前配置；POST 修改审批模式与 Provider 后配置文件正确更新且其它键不变；重启 daemon 后新配置生效；人工确认 auto 模式下 SPEC 到达 done 后自动 push 并标记 pushed
