@@ -10,9 +10,13 @@ data.py — 共享数据聚合层（TUI 与 Web Dashboard 共用）。
 """
 
 import json
+import os
 import re
+import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+import yaml
 
 from core.agent_runner import clean_old_runs
 
@@ -236,6 +240,96 @@ def list_screenshots(project_root, spec_name) -> list:
     return out
 
 
+def _fold_summary(summary: dict, key: str, val: str) -> dict:
+    """把表格/行内的计数键值折进汇总字典；非计数键忽略。"""
+    if val.lower() in ("n/a", "-", "--", "—"):
+        return summary
+    k = key.lower().replace(" ", "").replace("数", "")
+    if k in ("产品bug", "产品", "bug"):
+        summary["product_bugs"] = val
+    elif k in ("环境问题", "环境"):
+        summary["env_issues"] = val
+    elif k in ("通过", "passed", "通过数"):
+        summary["passed"] = val
+    elif k in ("失败", "failed", "失败数"):
+        summary["failed"] = val
+    elif k in ("错误", "error", "errors", "错误数"):
+        summary["errors"] = val
+    return summary
+
+
+def parse_verdict(project_root, spec_name) -> dict:
+    """解析 verification-report.md 的验证结论，供 Dashboard 直接展示。
+
+    返回: {"exists", "status", "status_detail", "conclusion", "summary"}
+    - status: 结论标题（如 "环境不可达，无法验证" / "❌ 未通过（Bug Found）"）
+    - status_detail: **状态:** 行（如 "环境问题 — Dashboard 服务未启动"）
+    - conclusion: 结论段落（人类可读，避免用户只看 "0通过, 31失败"）
+    - summary: {"passed","failed","errors","product_bugs","env_issues"} 尽力解析
+    """
+    path = Path(project_root) / "openspec" / "changes" / spec_name / "verification-report.md"
+    if not path.exists():
+        return {"exists": False, "status": "", "status_detail": "", "conclusion": "", "summary": {}}
+    try:
+        content = path.read_text(encoding="utf-8")
+    except Exception:
+        content = ""
+
+    summary = {"passed": None, "failed": None, "errors": None,
+               "product_bugs": None, "env_issues": None}
+    status = ""
+    status_detail = ""
+    conclusion = ""
+    conclusion_mode = False
+
+    for raw in content.split("\n"):
+        s = raw.strip()
+        # 结论标题：## 结论[: 内联] 或 ## 结论摘要
+        m = re.match(r"^#{2,4}\s*结论\s*(?:摘要)?\s*[：:]?\s*(.*)$", s)
+        if m:
+            status = m.group(1).strip() or status
+            conclusion_mode = True
+            continue
+        if conclusion_mode:
+            if re.match(r"^#{2,4}\s+", s):
+                conclusion_mode = False
+            elif s.startswith("**状态"):
+                status_detail = re.sub(r"^.*?状态\s*[：:]\s*|\*\*\s*$", "", s).strip()
+            elif s and not s.startswith(("|", "---", "-", "**", ">")):
+                conclusion += (" " if conclusion else "") + s
+        # 备选状态：**验证结果**：❌ 未通过（Bug Found）
+        m2 = re.match(r"^\*\*\s*验证结果\s*\*\*\s*[：:]\s*(.+)$", s)
+        if m2 and not status:
+            status = m2.group(1).strip()
+        # 表格行：| 通过 | 0 |
+        m3 = re.match(r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|", s)
+        if m3:
+            summary = _fold_summary(summary, m3.group(1), m3.group(2).strip())
+            continue
+        # 行内计数：通过：0
+        m4 = re.match(r"^([^|#]{1,12})\s*[：:]\s*([\dN/A\-＋+]+)\s*$", s)
+        if m4:
+            summary = _fold_summary(summary, m4.group(1), m4.group(2).strip())
+
+    # 兜底：全文搜索计数（处理 "通过：0 | 失败：0 | 错误：10" 行内连写）
+    if any(v is None for v in summary.values()):
+        for pat, field in [("通过", "passed"), ("失败", "failed"), ("错误", "errors"),
+                           (r"产品\s*Bug", "product_bugs"), ("环境问题", "env_issues")]:
+            if summary[field] is not None:
+                continue
+            mm = re.search(r"%s\s*[：:]\s*([\dN/A\-＋+]+)" % pat, content, re.I)
+            if mm and mm.group(1).strip().lower() not in ("n/a", "-", "--"):
+                summary[field] = mm.group(1).strip()
+
+    return {
+        "exists": True,
+        "status": status,
+        "status_detail": status_detail,
+        "conclusion": " ".join(conclusion.split())[:600],
+        "summary": summary,
+    }
+
+
 def parse_bugs(project_root, spec_name) -> list:
     """聚合 bug 列表：失败/错误场景（report.json）+ verification-report.md 尽力解析。
 
@@ -255,7 +349,9 @@ def parse_bugs(project_root, spec_name) -> list:
                 a for a in sc.get("assertion_results", [])
                 if isinstance(a, dict) and not a.get("pass", True)
             ]
-            screenshots = [s for s in sc.get("screenshots", []) if isinstance(s, str)]
+            # 截图路径归一化为文件名：report.json 存的是服务器本地绝对路径，
+            # 前端需拼 /screenshots/<project>/<spec>/<file>，只取 basename
+            screenshots = [os.path.basename(s) for s in sc.get("screenshots", []) if isinstance(s, str) and s.strip()]
             for a in failed_assertions or [{}]:
                 bugs.append({
                     "source": "report",
@@ -359,12 +455,17 @@ def get_runs(project_root, spec_name: str | None = None) -> list:
         m = re.match(r"^(.*)-\d{9,10}$", spec_part)
         if m:
             spec_part = m.group(1)
+        # 耗时：run_id 尾部时间戳为起始（int(time.time())），文件 mtime 为终止
+        tm = re.search(r"-(\d{9,10})$", run_id)
+        start_ts = int(tm.group(1)) if tm else stat.st_mtime
+        duration_seconds = max(0, int(stat.st_mtime - start_ts))
         lines = _read_run_lines(p, max_lines=3)
         out.append({
             "run_id": run_id,
             "agent_type": agent_type,
             "spec": spec_part,
             "status": classify_run(lines),
+            "duration_seconds": duration_seconds,
             "started": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
             "file_size": stat.st_size,
         })
@@ -513,13 +614,154 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
     }
 
 
+# ── SPEC 生命周期时间轴 ──────────────────────────────────────────
+
+_LIFECYCLE_ORDER = {"drafted": 0, "ready": 1, "implementing": 2, "bug-found": 2.5,
+                    "implemented": 3, "testing": 4, "verified": 5, "done": 6, "pushed": 7}
+
+
+def _backtrack_reason(frm: str, to: str) -> str:
+    """状态回退的规则兜底原因（Agent 记录的 error 优先，见 get_spec_timeline）。"""
+    if to == "bug-found":
+        return "验证发现 bug，退回修复"
+    if frm == "testing" and to in ("implementing", "ready"):
+        return "验证失败/中断，回退实现"
+    if frm == "implemented" and to in ("implementing", "ready"):
+        return "实现未通过，回退重做"
+    if frm == "ready" and to == "ready":
+        return "实现失败，重试"
+    return "状态回退"
+
+
+def get_spec_timeline(project_root, spec_name: str) -> list:
+    """构建 SPEC 生命周期时间轴（按时间排序）。
+
+    数据源：
+    - 事件日志（fenixd*.log）中的 `Transition: <spec> from → to` → 状态节点
+    - `.fenix/runs/` 运行产物 → 运行节点（可点击展开 LLM 对话）
+
+    每条:
+    - 状态: {time, kind:"state", from, to, reason}  （回退节点带 reason）
+    - 运行: {time, kind:"run", run_id, agent_type, status}
+    """
+    logs_dir = Path(project_root) / ".fenix" / "logs"
+    events: list[dict] = []
+    errors_at: list[tuple] = []   # (timestamp, error) —— Agent 记录的 error，作为回退原因
+
+    if logs_dir.is_dir():
+        try:
+            log_files = sorted(logs_dir.glob("fenixd*.log"), reverse=True)
+        except OSError:
+            log_files = []
+        for lf in log_files[:2]:
+            try:
+                content = lf.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            pat = re.compile(r"Transition: " + re.escape(spec_name) + r"\s+([\w-]+)\s*→\s*([\w-]+)")
+            for line in content.split("\n"):
+                if spec_name not in line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                msg = entry.get("message", "")
+                ts = entry.get("timestamp", "")
+                m = pat.search(msg)
+                if m:
+                    frm, to = m.group(1), m.group(2)
+                    reason = ""
+                    if _LIFECYCLE_ORDER.get(to, 9) < _LIFECYCLE_ORDER.get(frm, 9):
+                        reason = _backtrack_reason(frm, to)
+                    events.append({"time": ts, "kind": "state", "from": frm, "to": to, "reason": reason})
+                if "Updated SPEC" in msg and spec_name in msg:
+                    updates = entry.get("context", {}).get("updates", {}) or {}
+                    err = updates.get("error")
+                    if err:
+                        errors_at.append((ts, str(err)))
+
+    # 运行节点
+    for r in get_runs(project_root, spec_name):
+        events.append({"time": r["started"], "kind": "run", "run_id": r["run_id"],
+                       "agent_type": r["agent_type"], "status": r["status"],
+                       "spec": r.get("spec"),
+                       "duration_seconds": r.get("duration_seconds")})
+
+    events.sort(key=lambda e: e["time"])
+
+    # 连续的前向状态转换折叠为一次（回退/运行节点打断）
+    events = _collapse_timeline(events)
+
+    # 回退节点补充 Agent 记录的 error 作为原因（取时间最近的一条，10 分钟内）
+    if errors_at:
+        for e in events:
+            if e.get("kind") != "state" or not e.get("reason"):
+                continue
+            deltas = [(d, err) for (ts, err) in errors_at
+                      if (d := _ts_delta(ts, e["time"])) is not None]
+            if deltas:
+                d, err = min(deltas, key=lambda x: x[0])
+                if d < 600:   # 10 分钟内匹配到 Agent 记录的 error
+                    e["reason"] = err[:120]
+    return events
+
+
+def _collapse_timeline(events: list) -> list:
+    """把连续的前向状态转换折叠为一次（from[首] → to[尾]）。
+
+    规则：
+    - 连续出现的「前向状态节点」（无 reason）合并为一个节点，展示整体跨度；
+      如 drafted→ready / ready→implementing / … → 折叠为 drafted → implementing。
+    - 回退节点（带 reason，如 testing→bug-found）与运行节点保持独立，并打断合并。
+    """
+    out: list[dict] = []
+    buf: list[dict] = []   # 待合并的前向状态节点缓冲
+    for e in events:
+        if e.get("kind") == "state" and not e.get("reason"):
+            buf.append(e)
+            continue
+        # 遇到回退状态 / 运行节点 / 其它 → 先冲刷缓冲，再追加当前事件
+        if buf:
+            out.append({
+                "time": buf[0]["time"], "kind": "state",
+                "from": buf[0]["from"], "to": buf[-1]["to"], "reason": "",
+            })
+            buf = []
+        out.append(e)
+    if buf:
+        out.append({
+            "time": buf[0]["time"], "kind": "state",
+            "from": buf[0]["from"], "to": buf[-1]["to"], "reason": "",
+        })
+    return out
+
+
+def _ts_delta(a: str, b: str):
+    """两个 ISO 时间戳的秒级差值（解析失败返回 None）。"""
+    try:
+        from datetime import datetime as _dt
+        ta = _dt.fromisoformat(a.replace("Z", "+00:00"))
+        tb = _dt.fromisoformat(b.replace("Z", "+00:00"))
+        return abs((ta - tb).total_seconds())
+    except Exception:
+        return None
+
+
 def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     """单个 SPEC 的完整详情（/api/specs/<spec>）。"""
     report = parse_report(project_root, spec_name)
     bugs = parse_bugs(project_root, spec_name)
     scenarios = report.get("scenarios", []) if report.get("exists") and not report.get("error") else []
+    # 场景内截图同样归一化为文件名（report.json 存的是服务器本地绝对路径）
+    scenarios = [
+        {**sc, "screenshots": [os.path.basename(s) for s in sc.get("screenshots", []) if isinstance(s, str) and s.strip()]}
+        if isinstance(sc, dict) else sc
+        for sc in scenarios
+    ]
     screenshots = list_screenshots(project_root, spec_name)
     runs = get_runs(project_root, spec_name)
+    verdict = parse_verdict(project_root, spec_name)
     spec_status = entry.get("status", "")
     return {
         "name": spec_name,
@@ -544,6 +786,8 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "bugs": bugs,
         "screenshots": screenshots,
         "runs": runs,
+        "verdict": verdict,
+        "timeline": get_spec_timeline(project_root, spec_name),
     }
 
 
@@ -573,3 +817,162 @@ def overview(registry_projects: list) -> dict:
             status_counts[st] = status_counts.get(st, 0) + n
     totals["status_counts"] = status_counts
     return {"projects": projects, "totals": totals}
+
+
+# ── 配置读写（受管键：llm / agents.models / gates.approve_mode） ──────
+
+# Dashboard 管理的配置键子集：写回时只更新这些键，其它键原样保留
+_MANAGED_KEYS = ["llm", "agents", "gates"]
+# 在 agents 下只管理 models 子键（max_concurrent 等保持不变）
+_AGENTS_MANAGED_SUBKEYS = ["models"]
+
+_CONFIG_HEADER_COMMENT = (
+    "# Fenix 配置文件\n"
+    "# 本文件可通过 Dashboard 或手工编辑修改；修改后需重启 daemon 生效。\n"
+    "# 敏感字段（如 apikey）请妥善保管，.fenix/ 目录已 gitignore。\n"
+    "\n"
+)
+
+
+def read_config(project_root) -> dict:
+    """读取项目 .fenix/config.yaml，返回受管配置段。
+
+    返回: {"llm": {...}, "agents": {"models": {...}}, "gates": {"approve_mode": ...},
+            "raw_exists": bool, "error": str|null}
+    容错：文件不存在返回空结构 + raw_exists=False；解析失败返回 error。
+    """
+    proot = Path(project_root)
+    config_path = proot / ".fenix" / "config.yaml"
+    result = {
+        "llm": {},
+        "agents": {"models": {}},
+        "gates": {"approve_mode": "manual"},
+        "raw_exists": False,
+        "error": None,
+    }
+    if not config_path.exists():
+        return result
+    result["raw_exists"] = True
+    try:
+        with config_path.open("r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+    except (yaml.YAMLError, OSError) as e:
+        result["error"] = f"配置文件解析失败: {e}"
+        return result
+    if not isinstance(raw, dict):
+        result["error"] = "配置文件顶层不是对象"
+        return result
+
+    # 提取受管键（只取 models 子键，避免把 agents.max_concurrent 等也带出来）
+    if isinstance(raw.get("llm"), dict):
+        result["llm"] = raw["llm"]
+    agents_raw = raw.get("agents")
+    if isinstance(agents_raw, dict) and isinstance(agents_raw.get("models"), dict):
+        result["agents"] = {"models": agents_raw["models"]}
+    gates_raw = raw.get("gates")
+    if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
+        result["gates"] = {"approve_mode": gates_raw["approve_mode"]}
+    return result
+
+
+def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
+    """把 patch 中的受管键合并到 raw_config，返回新 dict（不修改原对象）。
+
+    合并规则：
+    - llm: 整体替换（patch 中存在即替换，不存在则保留原 llm）
+    - agents.models: 整体替换（只动 models，其它 agents 子键保留）
+    - gates.approve_mode: 只替换 approve_mode 子键
+    """
+    import copy
+    merged = copy.deepcopy(raw_config)
+
+    if "llm" in patch:
+        merged["llm"] = copy.deepcopy(patch["llm"])
+
+    if "agents" in patch and isinstance(patch["agents"], dict):
+        if "models" in patch["agents"]:
+            if not isinstance(merged.get("agents"), dict):
+                merged["agents"] = {}
+            merged["agents"]["models"] = copy.deepcopy(patch["agents"]["models"])
+
+    if "gates" in patch and isinstance(patch["gates"], dict):
+        if "approve_mode" in patch["gates"]:
+            if not isinstance(merged.get("gates"), dict):
+                merged["gates"] = {}
+            merged["gates"]["approve_mode"] = patch["gates"]["approve_mode"]
+
+    return merged
+
+
+def write_config(project_root, config_patch: dict) -> dict:
+    """把受管配置段写回 .fenix/config.yaml（原子写、保留非受管键）。
+
+    写入前使用 ConfigLoader 做完整校验，校验失败返回错误且不写盘。
+
+    Args:
+        project_root: 项目根路径
+        config_patch: 含 llm / agents.models / gates.approve_mode 的 patch dict
+
+    Returns: {"ok": bool, "error": str|null}
+    """
+    from core.config import ConfigLoader
+
+    proot = Path(project_root)
+    config_path = proot / ".fenix" / "config.yaml"
+    config_dir = config_path.parent
+
+    # 1. 读取现有配置（若不存在则为空 dict，写入时创建）
+    raw = {}
+    if config_path.exists():
+        try:
+            with config_path.open("r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+            if isinstance(loaded, dict):
+                raw = loaded
+        except (yaml.YAMLError, OSError) as e:
+            return {"ok": False, "error": f"读取现有配置失败: {e}"}
+
+    # 2. 合并受管键
+    merged = _deep_merge_managed(raw, config_patch)
+
+    # 3. 校验受管字段（llm / agents.models / gates.approve_mode）
+    #    不做完整 ConfigLoader 校验，避免缺少 project/schedule 等必填键时无法写入。
+    try:
+        llm = merged.get("llm") or {}
+        if llm:
+            ConfigLoader._validate_llm(llm)
+        agents = merged.get("agents") or {}
+        if "models" in agents and agents["models"]:
+            ConfigLoader._validate_agent_models(agents["models"], llm)
+        gates = merged.get("gates") or {}
+        if "approve_mode" in gates and gates["approve_mode"] is not None:
+            mode = gates["approve_mode"]
+            if mode not in ConfigLoader.VALID_APPROVE_MODES:
+                raise ValueError(
+                    f"gates.approve_mode must be one of {ConfigLoader.VALID_APPROVE_MODES}: {mode}"
+                )
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+    # 4. 原子写回（临时文件 + rename）
+    config_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(config_dir), prefix=".config-", suffix=".yaml.tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(_CONFIG_HEADER_COMMENT)
+                yaml.safe_dump(merged, f, allow_unicode=True, default_flow_style=False,
+                               sort_keys=False)
+            os.replace(tmp_path, config_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except OSError as e:
+        return {"ok": False, "error": f"写入配置文件失败: {e}"}
+
+    return {"ok": True, "error": None}

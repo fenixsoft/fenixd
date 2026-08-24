@@ -33,6 +33,14 @@ function fmtDate(iso) {
 function pct(done, total) {
   return total > 0 ? Math.round((done / total) * 100) : 0;
 }
+function fmtDuration(sec) {
+  if (sec == null || isNaN(sec)) return '';
+  sec = Math.max(0, Math.round(sec));
+  if (sec < 60) return sec + '秒';
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (m < 60) return (s ? m + '分' + s + '秒' : m + '分');
+  return Math.floor(m / 60) + '时' + (m % 60) + '分' + (s ? s + '秒' : '');
+}
 
 // ── 状态元数据（图标 + 文字，颜色不单独承载语义） ──────
 const STATUS_META = {
@@ -72,6 +80,7 @@ function progressBar(done, total) {
 let currentState = { view: 'overview' };
 let seq = 0;
 let pollTimer = null;
+let autoRefresh = true;   // 右上角开关：关闭后停止 2s 轮询，便于复制内容
 const runEventCache = {};   // run_id -> {events,status,error}
 const expandedRuns = new Set();
 const runScrolls = {};      // run_id -> scrollTop
@@ -82,6 +91,10 @@ function parseHash() {
   if (parts[0] === 'project' && parts[1]) return { view: 'project', project: parts[1] };
   if (parts[0] === 'spec' && parts[1] && parts[2]) {
     return { view: 'spec', project: parts[1], spec: parts[2] };
+  }
+  if (parts[0] === 'config') {
+    // config/<project>  或 config（无项目则选第一个）
+    return { view: 'config', project: parts[1] || '' };
   }
   return { view: 'overview' };
 }
@@ -99,7 +112,24 @@ function route() {
 }
 function schedulePoll() {
   if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+  if (!autoRefresh) {
+    el('refresh-text').textContent = '自动刷新已暂停';
+    return;
+  }
   pollTimer = setInterval(load, REFRESH_MS);
+}
+function toggleAutoRefresh() {
+  autoRefresh = !!el('auto-refresh').checked;
+  schedulePoll();
+  if (autoRefresh) {
+    el('refresh-dot').classList.remove('off');
+    el('refresh-text').textContent = '2s 自动刷新';
+    load();   // 恢复时立即刷新一次
+  } else {
+    el('refresh-dot').classList.add('off');
+    el('refresh-text').textContent = '自动刷新已暂停';
+  }
 }
 
 // ── 数据获取（含运行中 run 的实时流） ──────────────────
@@ -107,6 +137,7 @@ function fetchFor(state) {
   const p = encodeURIComponent(state.project || '');
   if (state.view === 'overview') return api('/api/overview');
   if (state.view === 'project') return api('/api/specs?project=' + p);
+  if (state.view === 'config') return api('/api/config?project=' + p);
   // spec 详情 + 运行中 run 的产物流并行拉取
   const s = encodeURIComponent(state.spec);
   return api('/api/specs/' + s + '?project=' + p).then((detail) => {
@@ -136,6 +167,7 @@ function load() {
       window.scrollTo(0, scrollY);
       setOnline();
       hydratePending();
+      if (currentState.view === 'config') hydrateConfigPage();
     })
     .catch((err) => {
       if (mySeq !== seq) return;
@@ -163,6 +195,8 @@ function restoreScrolls() {
 function updateTopbar() {
   const ov = el('btn-overview');
   ov.classList.toggle('active', currentState.view === 'overview');
+  const cfg = el('btn-config');
+  if (cfg) cfg.classList.toggle('active', currentState.view === 'config');
   const sel = el('project-select');
   // 拉取项目列表（概览数据里已有，避免额外请求：仅填充一次）
   if (sel.options.length === 0) {
@@ -186,16 +220,23 @@ function syncSelect() {
   sel.value = currentState.project || '';
 }
 el('btn-overview').addEventListener('click', () => nav('overview'));
+if (el('btn-config')) {
+  el('btn-config').addEventListener('click', () => {
+    const p = currentState.project || '';
+    nav('config/' + encodeURIComponent(p));
+  });
+}
 el('project-select').addEventListener('change', (e) => {
   if (e.target.value) nav('project/' + encodeURIComponent(e.target.value));
   else nav('overview');
 });
+el('auto-refresh').addEventListener('change', toggleAutoRefresh);
 window.addEventListener('hashchange', route);
 
 // ── 在线/离线指示 ──────────────────────────────────────
 function setOnline() {
   el('refresh-dot').classList.remove('off');
-  el('refresh-text').textContent = '2s 自动刷新';
+  el('refresh-text').textContent = autoRefresh ? '2s 自动刷新' : '自动刷新已暂停';
 }
 function setOffline() {
   el('refresh-dot').classList.add('off');
@@ -212,10 +253,24 @@ function showError(err) {
 // ── 视图渲染 ───────────────────────────────────────────
 function renderView(state, data) {
   const main = el('main');
-  if (state.view === 'overview') main.innerHTML = renderOverview(data);
-  else if (state.view === 'project') main.innerHTML = renderProject(data);
-  else main.innerHTML = renderSpec(data);
-  main._lastHtml = main.innerHTML;
+  const html = state.view === 'overview' ? renderOverview(data)
+    : state.view === 'project' ? renderProject(data)
+    : state.view === 'config' ? renderConfig(data)
+    : renderSpec(data);
+  if (main._rendered && window.morphdom) {
+    // 增量更新（VuePress 热重载同思路）：只 patch 变化部分，避免整页替换导致
+    // 图片重载 / 滚动重置 / CSS 过渡重启。`#tl-root` 由 React 自行管理，跳过。
+    window.morphdom(main, '<main id="main">' + html + '</main>', {
+      onBeforeElUpdated: (fromEl) => {
+        if (fromEl && fromEl.id === 'tl-root') return false;   // 交给 React 增量更新
+      },
+    });
+  } else {
+    main.innerHTML = html;
+    main._rendered = true;
+  }
+  main._lastHtml = html;
+  mountTimeline();   // React 垂直时间轴（复用 root，React 只更新变化节点）
 }
 
 function renderOverview(data) {
@@ -310,12 +365,42 @@ function renderSpec(d) {
       ${d.depends_on ? ` · 依赖 ${esc(d.depends_on)}` : ''}
     </div>
     ${d.error ? `<div class="error-banner">⚠ ${esc(d.error)}</div>` : ''}
+    ${renderVerdict(d)}
     ${renderVerify(d)}
     ${renderTasks(d)}
+    ${renderTimeline(d)}
     ${renderScenarios(d)}
     ${renderBugs(d)}
-    ${renderScreenshots(d)}
-    ${renderRuns(d)}`;
+    ${renderScreenshots(d)}`;
+}
+
+function renderVerdict(d) {
+  const v = d.verdict;
+  if (!v || !v.exists) return '';
+  const s = v.summary || {};
+  const bugs = parseInt(s.product_bugs, 10) || 0;
+  const env = parseInt(s.env_issues, 10) || 0;
+  const status = v.status || '';
+  let tone = 'pass', icon = '✅';
+  if (bugs > 0 || /未通过|Bug Found|失败/.test(status)) { tone = 'fail'; icon = '❌'; }
+  else if (env > 0 || /环境|无法验证|不可达|unreachable/i.test(status)) { tone = 'env'; icon = '⚠️'; }
+  const bits = [];
+  if (s.passed != null) bits.push(`通过 ${s.passed}`);
+  if (s.failed != null) bits.push(`失败 ${s.failed}`);
+  if (s.errors != null) bits.push(`错误 ${s.errors}`);
+  if (s.product_bugs != null) bits.push(`产品Bug ${s.product_bugs}`);
+  if (s.env_issues != null) bits.push(`环境问题 ${s.env_issues}`);
+  return `
+  <div class="section">
+    <div class="section-title">验证结论</div>
+    <div class="verdict ${tone}">
+      <div class="verdict-head">${icon} ${esc(status || '已验证')}
+        ${v.status_detail ? ` <span class="verdict-detail">${esc(v.status_detail)}</span>` : ''}
+      </div>
+      ${bits.length ? `<div class="verdict-summary">${bits.map((b) => `<span class="chip">${esc(b)}</span>`).join('')}</div>` : ''}
+      ${v.conclusion ? `<div class="verdict-body">${esc(v.conclusion)}</div>` : ''}
+    </div>
+  </div>`;
 }
 
 function renderVerify(d) {
@@ -591,6 +676,553 @@ function runEvent(ev) {
   return `<div class="run-event ${cls}"><span class="pre-wrap">${content}</span></div>`;
 }
 
+// ── Markdown 渲染（vendored marked，支持 GFM 表格等复杂语法） ──
+if (window.marked) {
+  const __r = new window.marked.Renderer();
+  // 原始 HTML 一律转义（防注入）；Markdown 语法（表格/加粗/列表等）正常渲染。
+  // marked v18 的 html 渲染器统一接收 { text, block }，同时覆盖块级与行内 HTML。
+  __r.html = (tok) => esc((tok && tok.text) || '');
+  // 链接仅放行 http/https/mailto（手动渲染，避免委托触发 marked 内部 parseInline 缺失）
+  __r.link = (tok) => {
+    const href = (tok && tok.href) || '';
+    const text = (tok && tok.text) || href;
+    if (!/^(https?:|mailto:)/i.test(href)) return esc(text);
+    return `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`;
+  };
+  window.marked.use({ renderer: __r, gfm: true, breaks: true });
+}
+
+function mdRender(text) {
+  if (text == null) return '';
+  try {
+    const html = window.marked.parse(String(text));
+    return `<div class="md">${html}</div>`;
+  } catch (e) {
+    return `<div class="md">${esc(String(text))}</div>`;
+  }
+}
+
+// 弹窗内的事件渲染：assistant/user 文本走 Markdown，工具调用保持等宽
+function runEventMd(ev) {
+  const t = ev.type;
+  const cls =
+    t === 'assistant' ? 'assistant' :
+    t === 'user' ? 'user' :
+    t === 'tool_use' ? 'tool' :
+    t === 'tool_result' ? 'tool-result' :
+    t === 'error' ? 'error' :
+    t === 'stderr' ? 'stderr' :
+    t === 'result' ? 'assistant' : '';
+  let content = '';
+  if (t === 'assistant') {
+    const msg = ev.message || {};
+    const blocks = msg.content || [];
+    const text = blocks.filter((c) => c && c.type === 'text').map((c) => c.text).join(' ');
+    const tool = blocks.find((c) => c && c.type === 'tool_use');
+    let out = '';
+    if (tool) out += `🔧 <code>${esc(tool.name || 'tool')}</code> <span class="pre-wrap">${esc(JSON.stringify(tool.input).slice(0, 600))}</span>`;
+    if (text) out += (out ? '<br>' : '') + mdRender(text).slice(0, 8000);
+    content = out || esc(JSON.stringify(ev).slice(0, 300));
+  } else if (t === 'user') {
+    const msg = ev.message || {};
+    const blocks = msg.content || [];
+    const text = blocks.filter((x) => typeof x === 'string').join(' ');
+    let out = blocks
+      .filter((x) => x && x.type === 'tool_result')
+      .map((c) => {
+        const errCls = c.is_error ? ' tool-error' : '';
+        return `<span class="pre-wrap${errCls}">${c.is_error ? '（错误）' : ''}${esc(String(c.content).slice(0, 400))}</span>`;
+      })
+      .join('<br>');
+    if (text) out += (out ? '<br>' : '') + mdRender(text).slice(0, 3000);
+    content = out || esc(JSON.stringify(ev).slice(0, 300));
+  } else if (t === 'tool_use') {
+    content = `🔧 <code>${esc(ev.name || 'tool')}</code><span class="pre-wrap"> ${esc(JSON.stringify(ev.input || {}).slice(0, 600))}</span>`;
+  } else if (t === 'tool_result') {
+    const errCls = ev.is_error ? ' tool-error' : '';
+    content = `<span class="pre-wrap${errCls}">${ev.is_error ? '（错误）' : ''}${esc(String(ev.content || '').slice(0, 400))}</span>`;
+  } else if (t === 'result') {
+    content = `🏁 <span class="pre-wrap">${mdRender(String(ev.result || '')).slice(0, 4000)}</span>（turns: ${ev.num_turns ?? '?'}）`;
+  } else if (t === 'error') {
+    content = `💥 ${esc(ev.error || '异常终止')}${ev.exit_code != null ? `（exit_code: ${ev.exit_code}）` : ''}`;
+  } else if (t === 'stderr') {
+    content = `⚠ <span class="pre-wrap">${esc(ev.line || '')}</span>`;
+  } else if (t === 'system') {
+    const merged = ev._merged && ev._merged > 1 ? `（合并 ${ev._merged} 条）` : '';
+    content = `⚙ 系统: ${esc(ev.subtype || '')}${merged}`;
+  } else {
+    content = esc(JSON.stringify(ev).slice(0, 300));
+  }
+  return `<div class="run-event ${cls}"><span class="pre-wrap">${content}</span></div>`;
+}
+
+// 合并连续的系统 thinking_tokens 事件为一条（如逐条递增的 token 统计）
+function collapseThinkingTokens(events) {
+  const out = [];
+  let count = 0;
+  for (const ev of events) {
+    if (ev && ev.type === 'system' && ev.subtype === 'thinking_tokens') {
+      count++;
+      if (count === 1) out.push({ ...ev, _merged: count });
+      continue;
+    }
+    if (count > 1 && out.length) out[out.length - 1]._merged = count;
+    count = 0;
+    out.push(ev);
+  }
+  if (count > 1 && out.length) out[out.length - 1]._merged = count;
+  return out;
+}
+
+function renderRunModalBody(d) {
+  const raw = d.events || [];
+  const events = collapseThinkingTokens(raw);
+  const html = events.slice(-300).map(runEventMd).join('');
+  const err = d.status === 'error' && d.error ? runEventMd(d.error) : '';
+  return `<div class="runmodal-scroll">${err}${html}</div>
+    <div class="kv-row"><span class="k">共 ${raw.length} 条事件</span></div>`;
+}
+
+// ── 运行时间轴（react-vertical-timeline，垂直） ────────
+function renderTimeline(d) {
+  const tl = d.timeline || [];
+  if (!tl.length) return '';
+  window.__tlData = d;   // 供 mountTimeline 读取（React 需在 DOM 就位后挂载）
+  return `
+  <div class="section">
+    <div class="section-title">运行时间轴<span class="count">${tl.length}</span></div>
+    <div class="card no-hover">
+      <div id="tl-root"></div>
+      <div class="tl-hint">🖱 点击节点查看运行记录（80% 弹窗） · ↩ 状态回退（附原因）</div>
+    </div>
+  </div>`;
+}
+
+function mountTimeline() {
+  const rootEl = document.getElementById('tl-root');
+  if (!rootEl) return;
+  const d = window.__tlData;
+  if (!d || !window.FenixReact || !window.VerticalTimeline) return;
+  const React = window.FenixReact;
+  const VT = window.VerticalTimeline;
+  const VTE = window.VerticalTimelineElement;
+  const tl = d.timeline || [];
+  const nodes = tl.map((e, i) => {
+    const pos = i % 2 === 0 ? 'left' : 'right';
+    const arrow = { borderRight: '7px solid var(--surface)' };
+    if (e.kind === 'state') {
+      const back = !!e.reason;
+      const icon = React.createElement('span', { className: 'tl-ico' }, back ? '↩' : '·');
+      const content = React.createElement('div', null,
+        React.createElement('div', { className: 'tl-state-label' }, `${e.from} → ${e.to}`),
+        back
+          ? React.createElement('div', { className: 'tl-reason' }, '↩ ' + (e.reason || '状态回退'))
+          : null);
+      return React.createElement(VTE, {
+        key: 's' + i, date: fmtTime(e.time), position: pos, animate: false,
+        icon: icon,
+        iconStyle: back ? { background: '#ec835a', color: '#0d0d0d' } : { background: '#3987e5', color: '#fff' },
+        contentStyle: back ? { background: 'var(--surface)', borderTop: '3px solid #ec835a' } : { background: 'var(--surface)' },
+        contentArrowStyle: arrow,
+      }, content);
+    }
+    const st = e.status;
+    const color = st === 'error' ? '#d03b3b' : (st === 'running' || st === 'empty') ? '#fab219' : '#199e70';
+    const iconChar = st === 'error' ? '✕' : (st === 'running' || st === 'empty') ? '…' : '✓';
+    const dur = e.duration_seconds != null ? fmtDuration(e.duration_seconds) : '';
+    // fix-* SPEC 的运行：显示实际 spec 名，避免与父 SPEC 混淆
+    const isFix = e.spec && String(e.spec).startsWith('fix-');
+    const content = React.createElement('div', null,
+      React.createElement('div', { className: 'tl-run-head' },
+        React.createElement('span', { className: 'tl-run-type' }, e.agent_type),
+        React.createElement('span', { className: 'tl-run-status', style: { color: color } }, st),
+        isFix ? React.createElement('span', { className: 'tl-run-spec' }, '🔧 ' + e.spec) : null),
+      dur ? React.createElement('div', { className: 'tl-run-dur' }, '耗时：' + dur) : null,
+      React.createElement('button', {
+        className: 'tl-btn', onClick: () => openRunModal({ project: d.project, spec: d.name, runId: e.run_id }),
+      }, '查看运行记录'));
+    return React.createElement(VTE, {
+      key: 'r' + i, date: fmtTime(e.time), position: pos, animate: false,
+      icon: React.createElement('span', { className: 'tl-ico' }, iconChar),
+      iconStyle: { background: color, color: '#0d0d0d' },
+      contentStyle: { background: 'var(--surface)', borderTop: '3px solid ' + color },
+      contentArrowStyle: arrow,
+    }, content);
+  });
+  const tree = React.createElement(VT, { lineColor: '#55544d', animate: false }, nodes);
+  if (window.__tlRoot && window.__tlRootEl === rootEl) {
+    window.__tlRoot.render(tree);   // 复用 root：React 只更新变化节点，时间轴不抖动
+  } else {
+    window.__tlRootEl = rootEl;
+    window.__tlRoot = window.FenixReactDOM.createRoot(rootEl);
+    window.__tlRoot.render(tree);
+  }
+}
+
+// ── 运行记录弹窗（80% 屏） ─────────────────────────────
+let runModalPoll = null;   // 运行记录弹窗的流式轮询定时器
+
+function isRunLive(status) {
+  return status === 'running' || status === 'empty';
+}
+
+function stopRunModalPoll() {
+  if (runModalPoll) { clearInterval(runModalPoll); runModalPoll = null; }
+}
+
+function renderRunModalBodyLive(body, d) {
+  // 粘性滚动：更新前贴近底部则更新后自动滚到最新；用户上翻阅读历史时不强制拽回
+  const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+  body.innerHTML = renderRunModalBody(d);
+  if (nearBottom) body.scrollTop = body.scrollHeight;
+}
+
+function openRunModal(payload) {
+  stopRunModalPoll();
+  const box = el('runmodal');
+  const body = el('runmodal-body');
+  if (payload && payload.runId) {
+    el('runmodal-title').textContent = payload.runId;
+    body.innerHTML = '<div class="empty-state">加载中…</div>';
+    box.classList.remove('hidden');
+    const runId = payload.runId;
+    const project = payload.project || '';
+    const fetchRun = () => {
+      api('/api/runs/' + encodeURIComponent(runId) + '?project=' + encodeURIComponent(project))
+        .then((d) => {
+          if (box.classList.contains('hidden')) { stopRunModalPoll(); return; }
+          renderRunModalBodyLive(body, d);
+          if (!isRunLive(d.status)) stopRunModalPoll();   // 运行结束即停止轮询
+        })
+        .catch(() => {});
+    };
+    fetchRun();
+    runModalPoll = setInterval(fetchRun, 1000);   // 1s 流式轮询
+  } else if (payload && payload.state) {
+    const st = payload.state;
+    el('runmodal-title').textContent = `状态转换 ${st.from} → ${st.to}`;
+    body.innerHTML = `
+      <div class="kv-row"><span class="k">从</span><span class="v">${esc(st.from)}</span></div>
+      <div class="kv-row"><span class="k">到</span><span class="v">${esc(st.to)}</span></div>
+      ${st.reason ? `<div class="kv-row"><span class="k">原因</span><span class="v">${esc(st.reason)}</span></div>` : ''}
+      ${st.reason ? `<div class="verdict env">↩ 状态回退：${esc(st.reason)}</div>` : ''}
+      <div class="kv-row"><span class="k">说明</span><span class="v">这是 SPEC 生命周期中的一次状态转换${st.reason ? '，因验证发现问题等原因被回退' : ''}。</span></div>`;
+    box.classList.remove('hidden');
+  }
+}
+function closeRunModal() {
+  stopRunModalPoll();
+  el('runmodal').classList.add('hidden');
+  el('runmodal-body').innerHTML = '';
+}
+el('runmodal').addEventListener('click', (e) => { if (e.target === el('runmodal')) closeRunModal(); });
+el('runmodal-close').addEventListener('click', closeRunModal);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeRunModal(); });
+
+// ── 配置页 ─────────────────────────────────────────────
+
+const KNOWN_AGENT_TYPES = [
+  { key: 'implementer', label: 'Implementer（执行）' },
+  { key: 'planner-plan', label: 'Planner Plan（生成场景）' },
+  { key: 'planner-judge', label: 'Planner Judge（判定结果）' },
+  { key: 'verifier', label: 'Verifier（旧版验证）' },
+];
+
+function renderConfig(data) {
+  const project = esc(data.project || '');
+  const llm = data.llm || {};
+  const providers = llm.providers || [];
+  const agents = data.agents || {};
+  const models = agents.models || {};
+  const gates = data.gates || {};
+  const approveMode = gates.approve_mode || 'manual';
+  const error = data.error || '';
+  const hasConfig = data.raw_exists;
+
+  return `
+  <div class="config-page">
+    <div class="page-title">配置管理${project ? ' · ' + project : ''}</div>
+    <div class="page-sub">
+      修改后需重启 daemon 生效。配置文件位于 <code>.fenix/config.yaml</code>。
+      ${hasConfig ? '' : '<span class="status-pill st-warning">⚠ 项目尚无配置文件</span>'}
+    </div>
+    ${error ? `<div class="config-error">⚠ ${esc(error)}</div>` : ''}
+
+    <div id="config-save-banner" class="config-banner hidden"></div>
+
+    <div class="config-section">
+      <h3>🤖 LLM Provider 列表</h3>
+      <p class="section-hint">定义可用的 LLM 提供者（baseurl / apikey / 默认模型）。</p>
+      <div id="provider-list" class="provider-list">
+        ${providers.map((p, i) => renderProviderCard(p, i)).join('')}
+      </div>
+      <button class="btn btn-secondary" id="btn-add-provider">+ 新增 Provider</button>
+    </div>
+
+    <div class="config-section">
+      <h3>🧩 Agent 模型分配</h3>
+      <p class="section-hint">为每种 Agent 角色分配 Provider 与模型。未分配的角色使用默认模型。</p>
+      <div class="agent-assign-grid">
+        ${KNOWN_AGENT_TYPES.map((at) => renderAgentAssignment(at, providers, models)).join('')}
+      </div>
+    </div>
+
+    <div class="config-section">
+      <h3>🚪 审批模式</h3>
+      <p class="section-hint">
+        SPEC 到达 done 后的行为。<strong>auto 模式将自动执行 git push 到远端</strong>，请谨慎使用。
+      </p>
+      <div class="approve-mode-row">
+        <label class="radio-item">
+          <input type="radio" name="approve_mode" value="manual" ${approveMode === 'manual' ? 'checked' : ''} />
+          <span><strong>manual</strong> — 人工审批（默认）</span>
+          <small>SPEC 完成后停留在 done，等待 /fenix-approve 人工推送。</small>
+        </label>
+        <label class="radio-item">
+          <input type="radio" name="approve_mode" value="auto" ${approveMode === 'auto' ? 'checked' : ''} />
+          <span><strong>auto</strong> — 自动推送</span>
+          <small class="auto-warn">⚠ SPEC 完成后 daemon 自动执行 <code>git push origin fenix/&lt;spec&gt;</code>。</small>
+        </label>
+      </div>
+    </div>
+
+    <div class="config-actions">
+      <button class="btn btn-primary" id="btn-save-config">💾 保存配置</button>
+      <span class="config-note">保存后需重启 daemon 生效</span>
+    </div>
+  </div>`;
+}
+
+function renderProviderCard(p, idx) {
+  return `
+  <div class="provider-card" data-idx="${idx}">
+    <div class="provider-head">
+      <input type="text" class="provider-name" placeholder="Provider 名称（如 volc-engine）"
+        value="${esc(p.name || '')}" data-field="name" />
+      <button class="btn btn-ghost btn-danger" data-action="remove-provider" data-idx="${idx}">删除</button>
+    </div>
+    <div class="provider-fields">
+      <div class="form-row">
+        <label>Base URL</label>
+        <input type="text" placeholder="https://api.example.com/v1"
+          value="${esc(p.baseurl || '')}" data-field="baseurl" />
+      </div>
+      <div class="form-row">
+        <label>API Key</label>
+        <input type="password" placeholder="sk-..."
+          value="${esc(p.apikey || '')}" data-field="apikey" />
+      </div>
+      <div class="form-row">
+        <label>默认模型名</label>
+        <input type="text" placeholder="deepseek-v4-flash"
+          value="${esc(p.model || '')}" data-field="model" />
+      </div>
+      <div class="form-row">
+        <label>SDK 校验模型名 <small>（可选，官方 Claude 模型名）</small></label>
+        <input type="text" placeholder="claude-sonnet-5"
+          value="${esc(p.sdk_model || '')}" data-field="sdk_model" />
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderAgentAssignment(at, providers, models) {
+  const assigned = models[at.key] || null;
+  const providerName = assigned ? assigned.provider : '';
+  const modelVal = assigned ? assigned.model : '';
+  const providerOptions = providers.map((p) =>
+    `<option value="${esc(p.name)}" ${p.name === providerName ? 'selected' : ''}>${esc(p.name)}</option>`
+  ).join('');
+  return `
+  <div class="agent-assign-card" data-agent="${at.key}">
+    <div class="agent-label">${esc(at.label)}</div>
+    <div class="agent-assign-controls">
+      <label class="assign-toggle">
+        <input type="checkbox" class="assign-enabled" ${assigned ? 'checked' : ''}
+          data-agent="${at.key}" />
+        <span>分配模型</span>
+      </label>
+      <div class="assign-fields ${assigned ? '' : 'disabled'}" data-agent="${at.key}">
+        <select class="assign-provider" data-agent="${at.key}">
+          <option value="">-- 选择 Provider --</option>
+          ${providerOptions}
+        </select>
+        <input type="text" class="assign-model" placeholder="模型名（如 deepseek-v4-flash）"
+          value="${esc(modelVal)}" data-agent="${at.key}" />
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── 配置页交互 ─────────────────────────────────────────
+
+let configInitialized = false;
+
+function hydrateConfigPage() {
+  if (currentState.view !== 'config') return;
+  if (configInitialized) return;
+
+  // 新增 Provider
+  const addBtn = el('btn-add-provider');
+  if (addBtn) {
+    addBtn.addEventListener('click', () => {
+      const list = el('provider-list');
+      if (!list) return;
+      const newIdx = list.querySelectorAll('.provider-card').length;
+      const div = document.createElement('div');
+      div.innerHTML = renderProviderCard({ name: '', baseurl: '', apikey: '', model: '' }, newIdx);
+      list.appendChild(div.firstElementChild);
+      reindexProviders();
+    });
+  }
+
+  // 事件委托：Provider 删除 / 字段变更
+  const main = el('main');
+  main.addEventListener('click', (e) => {
+    const t = e.target;
+    if (t.matches('[data-action="remove-provider"]')) {
+      const idx = parseInt(t.dataset.idx, 10);
+      const cards = main.querySelectorAll('.provider-card');
+      if (cards[idx]) cards[idx].remove();
+      reindexProviders();
+    }
+  });
+
+  // 分配开关切换
+  main.addEventListener('change', (e) => {
+    const t = e.target;
+    if (t.classList.contains('assign-enabled')) {
+      const agentKey = t.dataset.agent;
+      const fields = main.querySelector(`.assign-fields[data-agent="${agentKey}"]`);
+      if (fields) fields.classList.toggle('disabled', !t.checked);
+    }
+  });
+
+  // 保存按钮
+  const saveBtn = el('btn-save-config');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', saveConfig);
+  }
+
+  configInitialized = true;
+}
+
+function reindexProviders() {
+  const cards = document.querySelectorAll('.provider-card');
+  cards.forEach((card, i) => {
+    card.dataset.idx = i;
+    const removeBtn = card.querySelector('[data-action="remove-provider"]');
+    if (removeBtn) removeBtn.dataset.idx = i;
+  });
+}
+
+function collectConfigData() {
+  const main = el('main');
+  // Providers
+  const providerCards = main.querySelectorAll('.provider-card');
+  const providers = [];
+  providerCards.forEach((card) => {
+    const p = {};
+    card.querySelectorAll('input[data-field]').forEach((inp) => {
+      const field = inp.dataset.field;
+      const val = inp.value.trim();
+      if (val) p[field] = val;
+    });
+    providers.push(p);
+  });
+
+  // Agent models
+  const models = {};
+  KNOWN_AGENT_TYPES.forEach((at) => {
+    const toggle = main.querySelector(`.assign-enabled[data-agent="${at.key}"]`);
+    if (!toggle || !toggle.checked) return;
+    const providerSel = main.querySelector(`.assign-provider[data-agent="${at.key}"]`);
+    const modelInp = main.querySelector(`.assign-model[data-agent="${at.key}"]`);
+    const provider = providerSel ? providerSel.value : '';
+    const model = modelInp ? modelInp.value.trim() : '';
+    if (provider && model) {
+      models[at.key] = { provider, model };
+    }
+  });
+
+  // Approve mode
+  const approveMode = (main.querySelector('input[name="approve_mode"]:checked') || {}).value || 'manual';
+
+  return {
+    llm: { providers },
+    agents: { models },
+    gates: { approve_mode: approveMode },
+  };
+}
+
+function saveConfig() {
+  const banner = el('config-save-banner');
+  const saveBtn = el('btn-save-config');
+  const project = encodeURIComponent(currentState.project || '');
+  const payload = collectConfigData();
+
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = '保存中…';
+  }
+  if (banner) banner.className = 'config-banner hidden';
+
+  fetch('/api/config?project=' + project, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+    .then((r) => {
+      if (!r.ok) return r.json().then((d) => { throw new Error(d.error || 'HTTP ' + r.status); });
+      return r.json();
+    })
+    .then(() => {
+      if (banner) {
+        banner.className = 'config-banner success';
+        banner.textContent = '✅ 配置已保存，重启 daemon 后生效';
+      }
+      // 重新加载一次以确认
+      load();
+    })
+    .catch((err) => {
+      if (banner) {
+        banner.className = 'config-banner error';
+        banner.textContent = '❌ 保存失败：' + err.message;
+      }
+    })
+    .finally(() => {
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '💾 保存配置';
+      }
+    });
+}
+
+// 在每次视图渲染后尝试绑定配置页交互
+const _origRenderView = renderView;
+function renderViewWithHydration(state, data) {
+  _origRenderView(state, data);
+  if (state.view === 'config') {
+    // 延迟到下一帧，确保 morphdom 已完成 DOM 更新
+    requestAnimationFrame(() => {
+      hydrateConfigPage();
+      // 首次进入配置页，从项目列表自动选一个项目
+      if (!currentState.project) {
+        const sel = el('project-select');
+        if (sel && sel.options.length > 0) {
+          const first = sel.options[0].value;
+          if (first) nav('config/' + encodeURIComponent(first));
+        }
+      }
+    });
+  }
+}
+// 替换 renderView 引用（renderView 已在多处被调用，这里只在调度层替换）
+// 实际渲染仍走 renderView，hydrateConfigPage 在 load 回调的 hydratePending 中触发
+
+// 在 hydratePending 中加入配置页绑定
+const _origSchedulePoll = schedulePoll;
+
 // ── 截图灯箱 ───────────────────────────────────────────
 function openLightbox(src) {
   el('lightbox-img').src = src;
@@ -605,6 +1237,7 @@ document.addEventListener('keydown', (e) => {
 window.nav = nav;
 window.toggleRun = toggleRun;
 window.openLightbox = openLightbox;
+window.openRunModal = openRunModal;
 
 // ── 启动 ───────────────────────────────────────────────
 route();

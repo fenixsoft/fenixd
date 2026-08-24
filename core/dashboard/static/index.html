@@ -6,15 +6,21 @@
     <title>Fenix Dashboard</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/vendor/fenix.bundle.css" />
   </head>
   <body class="fenix-dashboard">
     <header class="topbar">
       <div class="brand">🐉 Fenix<span class="brand-sub">Dashboard</span></div>
       <nav class="nav">
-        <button id="btn-overview" class="nav-btn active">概览</button>
+        <button id="btn-overview" class="nav-btn">概览</button>
         <select id="project-select" title="切换项目（空 = 概览）"></select>
+        <button id="btn-config" class="nav-btn">配置</button>
       </nav>
       <div class="refresh-ind">
+        <label class="switch" title="自动刷新开关（关闭后可复制内容）">
+          <input type="checkbox" id="auto-refresh" checked />
+          <span class="slider"></span>
+        </label>
         <span class="refresh-dot" id="refresh-dot"></span>
         <span id="refresh-text">2s 自动刷新</span>
       </div>
@@ -26,6 +32,18 @@
 
     <div id="lightbox" class="lightbox hidden"><img id="lightbox-img" alt="截图预览" /></div>
 
+    <!-- 运行记录弹窗（80% 屏宽/高） -->
+    <div id="runmodal" class="runmodal hidden">
+      <div class="runmodal-box">
+        <div class="runmodal-head">
+          <span id="runmodal-title" class="runmodal-title"></span>
+          <button id="runmodal-close" class="modal-close" title="关闭">✕</button>
+        </div>
+        <div class="runmodal-body" id="runmodal-body"></div>
+      </div>
+    </div>
+
+    <script src="/vendor/fenix.bundle.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

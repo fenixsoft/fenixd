@@ -18,9 +18,9 @@
 
 ## 4. Dashboard 配置端到端
 
-- [ ] 4.1 在 `core/dashboard/server.py` 新增 `GET /api/config?project=<name>`（返回该项目的 `llm` / `agents.models` / `gates.approve_mode` 等受管配置）与 `POST /api/config?project=<name>`（校验请求体大小与项目归属 → 校验配置 → 原子写回 `.fenix/config.yaml`，仅更新受管键，其余键原样保留；校验失败返回 400 不写盘）
-- [ ] 4.2 在 `core/dashboard/data.py` 新增配置读取/合并/原子写入辅助函数（含写回时保留头部说明注释块）
-- [ ] 4.3 在 `core/dashboard/static/` 新增「配置」页前端：Provider 列表（增删改）、Agent 模型分配下拉（未分配 / provider+model）、审批模式单选（auto 选中时显示真实推送风险提示），保存后提示「配置已保存，重启 daemon 后生效」；导航与样式与现有 Dashboard 一致
+- [x] 4.1 在 `core/dashboard/server.py` 新增 `GET /api/config?project=<name>`（返回该项目的 `llm` / `agents.models` / `gates.approve_mode` 等受管配置）与 `POST /api/config?project=<name>`（校验请求体大小与项目归属 → 校验配置 → 原子写回 `.fenix/config.yaml`，仅更新受管键，其余键原样保留；校验失败返回 400 不写盘）
+- [x] 4.2 在 `core/dashboard/data.py` 新增配置读取/合并/原子写入辅助函数（含写回时保留头部说明注释块）
+- [x] 4.3 在 `core/dashboard/static/` 新增「配置」页前端：Provider 列表（增删改）、Agent 模型分配下拉（未分配 / provider+model）、审批模式单选（auto 选中时显示真实推送风险提示），保存后提示「配置已保存，重启 daemon 后生效」；导航与样式与现有 Dashboard 一致
 
 ## 5. 文档与 Skill 同步
 

@@ -15,6 +15,8 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     GET /api/specs/<spec>?project=<name> → 单个 SPEC 完整详情
     GET /api/runs/<run_id>?project=<name> → 单次运行产物流
     GET /api/events?project=<name>&minutes=N → 最近 N 分钟结构化事件
+    GET /api/config?project=<name> → 读取受管配置（llm / agents.models / gates.approve_mode）
+    POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
     GET /screenshots/<project>/<spec>/<file> → 截图（防路径穿越，仅限注册项目）
 """
 
@@ -75,51 +77,54 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         return None
 
 
+# POST 请求体最大字节数（256KB，避免大内存占用）
+MAX_POST_BODY = 256 * 1024
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
-    """只处理 GET/HEAD 请求，输出 JSON 或静态资源。"""
+    """处理 GET/HEAD/POST 请求，输出 JSON 或静态资源。"""
 
     server: DashboardHTTPServer  # 类型标注，便于 IDE
 
     # ── 基础 ─────────────────────────────────────────────────
 
     def do_GET(self):
-        self._handle()
+        self._handle(method="GET")
 
     def do_HEAD(self):
-        self._handle()
+        self._handle(method="HEAD")
+
+    def do_POST(self):
+        self._handle(method="POST")
 
     def log_message(self, fmt, *args):
         # 静默访问日志，避免污染运行终端
         pass
 
-    def _handle(self):
+    def _handle(self, method: str = "GET"):
         try:
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
 
+            if path.startswith("/api/"):
+                if method == "POST":
+                    self._handle_api_post(path, query)
+                else:
+                    self._handle_api(path, query)
+                return
+
+            if method != "GET" and method != "HEAD":
+                self._error(405, "Method Not Allowed")
+                return
+
             if path == "/" or path == "/index.html":
                 self._serve_static("index.html")
-            elif path in ("/app.js", "/style.css"):
-                self._serve_static(path.lstrip("/"))
-            elif path == "/api/projects":
-                self._json(self._api_projects())
-            elif path == "/api/overview":
-                self._json(self._api_overview())
-            elif path == "/api/specs":
-                self._json(self._api_specs(query))
-            elif path.startswith("/api/specs/"):
-                spec = urllib.parse.unquote(path[len("/api/specs/"):])
-                self._json(self._api_spec_detail(spec, query))
-            elif path.startswith("/api/runs/"):
-                run_id = urllib.parse.unquote(path[len("/api/runs/"):])
-                self._json(self._api_run(run_id, query))
-            elif path == "/api/events":
-                self._json(self._api_events(query))
             elif path.startswith("/screenshots/"):
                 self._serve_screenshot(path)
             else:
-                self._error(404, "Not Found")
+                # 其它静态资源（/app.js /style.css /vendor/*）；_serve_static 内含防穿越校验
+                self._serve_static(path.lstrip("/"))
         except BrokenPipeError:
             pass
         except Exception as e:  # noqa: BLE001 兜底：绝不让请求崩溃进程
@@ -127,6 +132,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._error(500, f"Internal Server Error: {e}")
             except Exception:
                 pass
+
+    def _handle_api(self, path: str, query: dict):
+        if path == "/api/projects":
+            self._json(self._api_projects())
+        elif path == "/api/overview":
+            self._json(self._api_overview())
+        elif path == "/api/specs":
+            self._json(self._api_specs(query))
+        elif path.startswith("/api/specs/"):
+            spec = urllib.parse.unquote(path[len("/api/specs/"):])
+            self._json(self._api_spec_detail(spec, query))
+        elif path.startswith("/api/runs/"):
+            run_id = urllib.parse.unquote(path[len("/api/runs/"):])
+            self._json(self._api_run(run_id, query))
+        elif path == "/api/events":
+            self._json(self._api_events(query))
+        elif path == "/api/config":
+            self._json(self._api_config_get(query))
+        else:
+            self._error(404, "Not Found")
 
     # ── API 实现 ─────────────────────────────────────────────
 
@@ -201,6 +226,72 @@ class DashboardHandler(BaseHTTPRequestHandler):
             minutes = 10
         events = dashboard_data.get_recent_events(Path(project["path"]), minutes=minutes)
         return {"project": project["name"], "events": events}
+
+    def _api_config_get(self, query) -> dict:
+        project = self._project_from_query(query)
+        if project is None:
+            return {"error": "unknown project"}
+        if not project.get("exists"):
+            return {"error": "project not found"}
+        config = dashboard_data.read_config(project["path"])
+        config["project"] = project["name"]
+        return config
+
+    # ── POST API ────────────────────────────────────────────
+
+    def _handle_api_post(self, path: str, query: dict):
+        if path == "/api/config":
+            self._api_config_post(query)
+        else:
+            self._error(404, "Not Found")
+
+    def _read_json_body(self) -> dict:
+        """读取并解析 JSON 请求体，做大小限制。失败返回 None 并自行发送错误。"""
+        try:
+            content_length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            self._error(400, "Invalid Content-Length")
+            return None
+        if content_length <= 0:
+            self._error(400, "Empty request body")
+            return None
+        if content_length > MAX_POST_BODY:
+            self._error(413, "Request body too large")
+            return None
+        try:
+            raw = self.rfile.read(content_length)
+            body = json.loads(raw.decode("utf-8"))
+            if not isinstance(body, dict):
+                self._error(400, "Request body must be a JSON object")
+                return None
+            return body
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._error(400, "Invalid JSON body")
+            return None
+
+    def _api_config_post(self, query):
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(400, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(400, "project not found")
+            return
+
+        body = self._read_json_body()
+        if body is None:
+            return
+
+        result = dashboard_data.write_config(project["path"], body)
+        if not result["ok"]:
+            self._error(400, result["error"] or "配置写入失败")
+            return
+
+        # 成功后返回最新配置（读回以确认）
+        config = dashboard_data.read_config(project["path"])
+        config["project"] = project["name"]
+        config["saved"] = True
+        self._json(config)
 
     def _project_from_query(self, query):
         name = query.get("project", [None])[0]
