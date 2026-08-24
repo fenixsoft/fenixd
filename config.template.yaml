@@ -51,6 +51,11 @@ gates:
   # All other stages are fully automated
   require_push_approval: true
 
+# ---- Dashboard (optional) ----
+# Web Dashboard 默认端口（可选）。优先级: --port > ~/.config/fenixd/dashboard.yaml 的 port > 本字段 > 8787
+dashboard:
+  port: 8787
+
 # ---- Project-Specific Commands ----
 commands:
   # Test command (how to run the test suite)
