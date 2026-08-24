@@ -29,10 +29,14 @@ CHANGES_DIR = PROJECT_ROOT / "openspec" / "changes"
 # ── Daemon check ──────────────────────────────────────────────────
 
 def check_fenixd() -> str:
+    """检测本项目 daemon 是否运行（唯一 session 名，见 bin/fenix_session.py）。"""
     try:
-        r = subprocess.run(["tmux", "has-session", "-t", "fenixd"],
-                           capture_output=True, timeout=2)
-        return "🟢" if r.returncode == 0 else "🔴"
+        helper = Path(__file__).resolve().parent / "fenix_session.py"
+        r = subprocess.run(
+            ["python3", str(helper), "running", str(PROJECT_ROOT)],
+            capture_output=True, timeout=2,
+        )
+        return "🟢" if r.stdout.strip() == "YES" else "🔴"
     except Exception:
         return "⚪"
 
@@ -76,11 +80,43 @@ def parse_state() -> dict:
     return specs
 
 
+# ── worktree helpers ──────────────────────────────────────────────
+
+WORKTREES_DIR = PROJECT_ROOT / ".claude" / "worktrees"
+
+def find_implementer_worktree(spec_name: str) -> Path | None:
+    """Find the newest implementer worktree for a SPEC, or None."""
+    if not WORKTREES_DIR.is_dir():
+        return None
+    prefix = f"impl-{spec_name}-"
+    candidates = []
+    for d in WORKTREES_DIR.iterdir():
+        if d.is_dir() and d.name.startswith(prefix):
+            try:
+                candidates.append((d.stat().st_mtime, d))
+            except OSError:
+                pass
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
 # ── tasks.md parser ───────────────────────────────────────────────
 
-def parse_tasks(spec_name: str) -> dict:
-    """Parse tasks.md for a SPEC, return {total, done, current_task}."""
+def parse_tasks(spec_name: str, status: str = "") -> dict:
+    """Parse tasks.md for a SPEC, return {total, done, current_task}.
+
+    For implementing SPECs, reads from the active implementer worktree first,
+    falling back to the main repository.
+    """
     tasks_path = CHANGES_DIR / spec_name / "tasks.md"
+    if status == "implementing":
+        wt = find_implementer_worktree(spec_name)
+        if wt:
+            wt_tasks = wt / "openspec" / "changes" / spec_name / "tasks.md"
+            if wt_tasks.exists():
+                tasks_path = wt_tasks
     if not tasks_path.exists():
         return {"total": 0, "done": 0, "current_task": None}
 
@@ -184,7 +220,8 @@ def main():
     active_task = None
 
     for name, entry in specs.items():
-        tasks = parse_tasks(name)
+        status = entry.get("status", "")
+        tasks = parse_tasks(name, status)
         grand_total += tasks["total"]
         grand_done += tasks["done"]
 

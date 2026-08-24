@@ -94,6 +94,11 @@ class WorktreeManager:
                 return None
 
             self._active_worktrees.add(str(wt_path))
+
+            # Seed SPEC files for implementer worktrees
+            if agent_type == "implementer":
+                self._seed_spec(spec_name, wt_path)
+
             self.logger.info("worktree_manager", f"Worktree created: {wt_path}")
             return wt_path
 
@@ -105,6 +110,70 @@ class WorktreeManager:
             self.logger.error("worktree_manager", f"Worktree creation error: {e}")
             self._spec_locks.discard(lock_key)
             return None
+
+    def _seed_spec(self, spec_name: str, wt_path: Path):
+        """Seed SPEC source files into a new worktree.
+
+        If openspec/changes/<spec>/ exists in the main worktree but not in the
+        new worktree (the branch HEAD doesn't contain it), copy the directory
+        into the worktree and commit it to the isolated branch.
+
+        Failures are logged but never block — the implementer falls back to
+        the main repository path.
+        """
+        try:
+            main_spec_dir = self.project_root / "openspec" / "changes" / spec_name
+            wt_spec_dir = wt_path / "openspec" / "changes" / spec_name
+
+            if not main_spec_dir.is_dir():
+                return
+            if wt_spec_dir.is_dir():
+                return
+
+            self.logger.info(
+                "worktree_manager",
+                f"Seeding SPEC '{spec_name}' into worktree",
+            )
+
+            # Copy the entire SPEC directory
+            wt_spec_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(str(main_spec_dir), str(wt_spec_dir))
+
+            # Git add + commit in the worktree
+            result = subprocess.run(
+                ["git", "-C", str(wt_path), "add", "openspec/changes/"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"git add failed during seeding: {result.stderr}",
+                )
+                return
+
+            result = subprocess.run(
+                [
+                    "git", "-C", str(wt_path),
+                    "commit", "-m", f"[fenix] spec: {spec_name}",
+                ],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"git commit failed during seeding: {result.stderr}",
+                )
+                return
+
+            self.logger.info(
+                "worktree_manager",
+                f"SPEC '{spec_name}' seeded and committed in worktree",
+            )
+        except Exception as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"SPEC seeding failed (non-fatal): {e}",
+            )
 
     def cleanup(self, wt_path: Path, success: bool = True):
         """
@@ -224,3 +293,24 @@ class WorktreeManager:
     def has_active_worktree(self, spec_name: str) -> bool:
         """Check if any worktree is active for the given SPEC."""
         return any(spec_name in lock for lock in self._spec_locks)
+
+    def find_implementer_worktree(self, spec_name: str) -> Optional[Path]:
+        """Find the most recent active implementer worktree for a SPEC.
+
+        Looks for directories matching impl-<spec>-* in the base dir.
+        Returns the path of the newest one (by mtime), or None if none found.
+        """
+        if not self.base_dir.is_dir():
+            return None
+        candidates = []
+        prefix = f"impl-{spec_name}-"
+        for d in self.base_dir.iterdir():
+            if d.is_dir() and d.name.startswith(prefix):
+                try:
+                    candidates.append((d.stat().st_mtime, d))
+                except OSError:
+                    pass
+        if not candidates:
+            return None
+        candidates.sort(reverse=True)
+        return candidates[0][1]

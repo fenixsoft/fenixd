@@ -58,9 +58,37 @@ def parse_state(project_root) -> dict:
     return specs
 
 
-def parse_tasks(project_root, spec_name) -> list:
-    """解析 tasks.md 为分组任务结构：[{title, tasks:[{id,desc,done}], done, total}]。"""
+def find_implementer_worktree(project_root, spec_name):
+    """Find the newest implementer worktree for a SPEC, or None."""
+    wt_dir = Path(project_root) / ".claude" / "worktrees"
+    if not wt_dir.is_dir():
+        return None
+    prefix = f"impl-{spec_name}-"
+    candidates = []
+    for d in wt_dir.iterdir():
+        if d.is_dir() and d.name.startswith(prefix):
+            try:
+                candidates.append((d.stat().st_mtime, d))
+            except OSError:
+                pass
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+def parse_tasks(project_root, spec_name, spec_status: str = "") -> list:
+    """解析 tasks.md 为分组任务结构：[{title, tasks:[{id,desc,done}], done, total}]。
+
+    For implementing SPECs, reads from the active implementer worktree first.
+    """
     tasks_path = Path(project_root) / "openspec" / "changes" / spec_name / "tasks.md"
+    if spec_status == "implementing":
+        wt = find_implementer_worktree(project_root, spec_name)
+        if wt:
+            wt_tasks = wt / "openspec" / "changes" / spec_name / "tasks.md"
+            if wt_tasks.exists():
+                tasks_path = wt_tasks
     if not tasks_path.exists():
         return []
     groups = []
@@ -88,9 +116,9 @@ def parse_tasks(project_root, spec_name) -> list:
     return groups
 
 
-def task_progress(project_root, spec_name):
+def task_progress(project_root, spec_name, spec_status: str = ""):
     """返回 (done, total)，无任务时为 (0, 0)。"""
-    groups = parse_tasks(project_root, spec_name)
+    groups = parse_tasks(project_root, spec_name, spec_status)
     done = sum(g["done"] for g in groups)
     total = sum(g["total"] for g in groups)
     return done, total
@@ -435,10 +463,10 @@ def project_summary(project_root, name: str, path: str) -> dict:
     grand_done = grand_total = 0
     problems = 0
     for sname in specs:
-        d, t = task_progress(proot, sname)
+        entry = specs[sname]
+        d, t = task_progress(proot, sname, entry.get("status", ""))
         grand_done += d
         grand_total += t
-        entry = specs[sname]
         if entry.get("error") and entry.get("status") not in ("done", "pushed"):
             problems += 1
 
@@ -461,7 +489,7 @@ def project_summary(project_root, name: str, path: str) -> dict:
 
 def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
     """单个 SPEC 的摘要（/api/specs 列表项）。"""
-    done, total = task_progress(project_root, spec_name)
+    done, total = task_progress(project_root, spec_name, entry.get("status", ""))
     vp = parse_verify_progress(project_root, spec_name)
     runs = get_runs(project_root, spec_name)
     return {
@@ -487,6 +515,7 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     scenarios = report.get("scenarios", []) if report.get("exists") and not report.get("error") else []
     screenshots = list_screenshots(project_root, spec_name)
     runs = get_runs(project_root, spec_name)
+    spec_status = entry.get("status", "")
     return {
         "name": spec_name,
         "status": entry.get("status"),
@@ -498,7 +527,7 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "implementer_run": entry.get("implementer_run"),
         "tester_run": entry.get("tester_run"),
         "depends_on": entry.get("depends_on"),
-        "tasks": parse_tasks(project_root, spec_name),
+        "tasks": parse_tasks(project_root, spec_name, spec_status),
         "verify_progress": parse_verify_progress(project_root, spec_name),
         "report": {
             "exists": report.get("exists", False),

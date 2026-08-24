@@ -214,18 +214,38 @@ class StateMachine:
         return all_specs.get(spec_name)
 
     def write_all(self, specs: Dict[str, dict]):
-        """Atomically write all SPEC entries to STATE.md with file locking."""
-        content = StateParser.serialize(specs)
+        """Atomically write all SPEC entries to STATE.md with file locking.
 
-        # Write to temp file, then atomic rename
-        tmp_path = self.state_path.parent / f".STATE.md.{os.getpid()}.tmp"
+        Thread-safe: each call uses a unique temp file (pid + tid + counter),
+        and the final STATE.md write is serialized by flock on a lock file.
+        """
+        import threading
+
+        content = StateParser.serialize(specs)
+        parent = self.state_path.parent
+
+        # Use per-thread unique temp name to avoid threads clobbering each other
+        tid = threading.get_ident()
+        tmp_fd, tmp_path_str = tempfile.mkstemp(
+            prefix=f".STATE.md.{os.getpid()}.{tid}.",
+            suffix=".tmp",
+            dir=str(parent),
+        )
+        tmp_path = Path(tmp_path_str)
         try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                 f.write(content)
                 f.flush()
                 os.fsync(f.fileno())
-            os.rename(str(tmp_path), str(self.state_path))
+
+            # Serialize the final rename via flock on a dedicated lock file
+            lock_path = parent / ".STATE.md.lock"
+            with open(lock_path, "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    os.rename(str(tmp_path), str(self.state_path))
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
         finally:
             if tmp_path.exists():
                 try:

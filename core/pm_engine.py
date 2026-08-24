@@ -7,6 +7,7 @@ concurrency control, daily reporting, and the single human gate (push approval).
 
 import json
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -38,6 +39,7 @@ class PMEngine:
         self._active_runs = 0
         self._run_queue = []  # Pending (spec_name, agent_type) tuples
         self._handling_events = set()  # 防重入：正在处理的 (event_kind, spec_name)
+        self._queue_lock = threading.Lock()  # 保护 _run_queue 和 _active_runs
 
         # Blocker detection state
         self._last_blocker_check = None
@@ -117,6 +119,14 @@ class PMEngine:
         try:
             self.logger.info("pm_engine", f"Verification passed: '{spec_name}' → done")
             self.state_machine.transition(spec_name, "done")
+            # 同步触发 spec_done 处理（fix done → 自动重新验证父 SPEC）。
+            # 背景：daemon 启动时 full_scan 在 EventBus watcher 启动前同步调度，
+            # 阻塞完成整个 fix 生命周期，使 verified→done 变化在快照初始化前发生，
+            # spec_done 事件被吞掉，父 SPEC 永远不被重新验证。这里提供同步直接
+            # 调用路径（框架原则：状态转换不能只依赖异步事件轮询）。
+            # 幂等：父 SPEC 若已非 implementing，transition 校验失败自动跳过；
+            # _enqueue 亦有去重。事件总线后续若重复发出 spec_done 亦无害。
+            self._on_spec_done(spec_name)
         finally:
             self._handling_events.discard(event_key)
 
@@ -341,6 +351,48 @@ class PMEngine:
         except Exception as e:
             self.logger.warning("pm_engine", f"发送桌面通知失败: {e}")
 
+    def _find_implementer_worktree(self, spec_name: str) -> Optional[Path]:
+        """Find the active implementer worktree for a SPEC, or None."""
+        wt_mgr = getattr(self.agent_runner, 'worktree_manager', None)
+        if wt_mgr is None:
+            return None
+        return wt_mgr.find_implementer_worktree(spec_name)
+
+    def _read_implementer_result(self, spec_name: str) -> Optional[dict]:
+        """读取 implementer 写入的 .fenix-run-result.json，优先从活跃 worktree 读取。
+
+        Returns the parsed dict, or None if not found/invalid.
+        """
+        result_path = None
+        # Try worktree first
+        wt_path = self._find_implementer_worktree(spec_name)
+        if wt_path:
+            wt_result = wt_path / ".fenix-run-result.json"
+            if wt_result.exists():
+                result_path = wt_result
+                self.logger.debug(
+                    "pm_engine",
+                    f"Reading implementer result from worktree: {wt_result}",
+                )
+        # Fallback to project root
+        if result_path is None:
+            root_result = self.project_root / ".fenix-run-result.json"
+            if root_result.exists():
+                result_path = root_result
+                self.logger.debug(
+                    "pm_engine",
+                    f"Reading implementer result from project root: {root_result}",
+                )
+        if result_path is None:
+            return None
+        try:
+            data = json.loads(result_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+        return None
+
     def _read_verifier_result(self, result_path: Path) -> str | None:
         """读取 verifier 写入的 .fenix-run-result.json，返回 status 字段。
 
@@ -381,18 +433,38 @@ class PMEngine:
     # ── Queue Management ───────────────────────────────────────────
 
     def _enqueue(self, spec_name: str, agent_type: str):
-        """Add a run request to the queue."""
+        """Add a run request to the queue (thread-safe)."""
         entry = (spec_name, agent_type)
-        if entry not in self._run_queue:
-            self._run_queue.append(entry)
-            self.logger.debug("pm_engine", f"Queued: {spec_name} ({agent_type})")
+        with self._queue_lock:
+            if entry not in self._run_queue:
+                self._run_queue.append(entry)
+                self.logger.debug("pm_engine", f"Queued: {spec_name} ({agent_type})")
+
+    def _enqueue_front(self, spec_name: str, agent_type: str):
+        """Add a run request to the FRONT of the queue (thread-safe)."""
+        entry = (spec_name, agent_type)
+        with self._queue_lock:
+            # Remove if already present to avoid duplicates
+            if entry in self._run_queue:
+                self._run_queue.remove(entry)
+            self._run_queue.insert(0, entry)
+            self.logger.debug("pm_engine", f"Queued at front: {spec_name} ({agent_type})")
 
     def _process_queue(self):
-        """Process the run queue. After implement finishes, immediately verify."""
+        """Process the run queue — dispatches agents in worker threads.
+
+        Returns immediately after starting available runs (non-blocking).
+        Each agent runs in its own thread; when it finishes, it decrements
+        _active_runs and calls _process_queue again to pick up the next item.
+        """
         max_concurrent = self._get_config("agents.max_concurrent", 2)
 
-        while self._run_queue and self._active_runs < max_concurrent:
-            spec_name, agent_type = self._run_queue.pop(0)
+        while True:
+            # Atomically check and claim a slot + pop a queue item
+            with self._queue_lock:
+                if not self._run_queue or self._active_runs >= max_concurrent:
+                    return
+                spec_name, agent_type = self._run_queue.pop(0)
 
             # Verify the SPEC is still in the expected state
             spec = self.state_machine.read_one(spec_name)
@@ -411,63 +483,95 @@ class PMEngine:
             elif agent_type == "verifier":
                 self.state_machine.transition(spec_name, "testing")
 
-            self._active_runs += 1
+            # Increment active count and start worker thread
+            with self._queue_lock:
+                self._active_runs += 1
+                active_count = self._active_runs
 
-            # Run agent
             self.logger.info(
                 "pm_engine",
                 f"Dispatching {agent_type} for '{spec_name}'",
-                {"active_runs": self._active_runs},
+                {"active_runs": active_count},
             )
 
-            try:
-                if agent_type == "implementer":
-                    result = self.agent_runner.run_implementer(spec_name)
-                    if result.success:
-                        self.state_machine.transition(spec_name, "implemented")
+            t = threading.Thread(
+                target=self._run_agent_worker,
+                args=(spec_name, agent_type),
+                daemon=True,
+                name=f"fenix-{agent_type}-{spec_name}",
+            )
+            t.start()
+
+    def _run_agent_worker(self, spec_name: str, agent_type: str):
+        """Worker thread body: run the agent and handle result.
+
+        Always decrements _active_runs and re-triggers queue processing
+        in finally, so slots are released even on exceptions.
+        """
+        try:
+            if agent_type == "implementer":
+                result = self.agent_runner.run_implementer(spec_name)
+                # Read .fenix-run-result.json (worktree first, project root fallback)
+                # to determine true status — file is more authoritative than
+                # process exit code for semantic success/error.
+                impl_result = self._read_implementer_result(spec_name)
+                impl_status = None
+                impl_error = None
+                if impl_result:
+                    impl_status = impl_result.get("status")
+                    if impl_status == "error":
+                        impl_error = impl_result.get("error") or result.error
+                    elif impl_status != "success":
+                        impl_error = result.error
+                is_success = result.success and (
+                    impl_status is None or impl_status == "success"
+                )
+                final_error = impl_error or result.error
+
+                if is_success:
+                    self.state_machine.transition(spec_name, "implemented")
+                    self.state_machine.update_spec(spec_name, {
+                        "implementer_run": result.run_id,
+                        "error": None,
+                    })
+                    # Immediately queue verifier at FRONT so it runs next
+                    self._enqueue_front(spec_name, "verifier")
+                    self.logger.info("pm_engine", f"Implement done, verifier queued for '{spec_name}'")
+                else:
+                    # Retry or mark error
+                    spec_entry = self.state_machine.read_one(spec_name)
+                    retries = spec_entry.get("_retry_count", 0) + 1
+                    max_r = self._get_config("agents.max_retries", 3)
+                    if retries >= max_r:
                         self.state_machine.update_spec(spec_name, {
-                            "implementer_run": result.run_id,
-                            "error": None,
+                            "status": "ready",
+                            "error": final_error,
+                            "_retry_count": 0,
                         })
-                        # Immediately queue verifier at FRONT so it runs next
-                        self._run_queue.insert(0, (spec_name, "verifier"))
-                        self.logger.info("pm_engine", f"Implement done, verifier queued for '{spec_name}'")
+                        self.logger.error(
+                            "pm_engine",
+                            f"All retries exhausted for '{spec_name}'",
+                        )
                     else:
-                        # Retry or mark error
-                        spec_entry = self.state_machine.read_one(spec_name)
-                        retries = spec_entry.get("_retry_count", 0) + 1
-                        max_r = self._get_config("agents.max_retries", 3)
-                        if retries >= max_r:
-                            self.state_machine.update_spec(spec_name, {
-                                "status": "ready",
-                                "error": result.error,
-                                "_retry_count": 0,
-                            })
-                            self.logger.error(
-                                "pm_engine",
-                                f"All retries exhausted for '{spec_name}'",
-                            )
-                        else:
-                            self.state_machine.update_spec(spec_name, {
-                                "status": "ready",
-                                "error": result.error,
-                                "_retry_count": retries,
-                            })
-                            self.logger.warning(
-                                "pm_engine",
-                                f"Retry {retries}/{max_r} for '{spec_name}'",
-                            )
+                        self.state_machine.update_spec(spec_name, {
+                            "status": "ready",
+                            "error": final_error,
+                            "_retry_count": retries,
+                        })
+                        self.logger.warning(
+                            "pm_engine",
+                            f"Retry {retries}/{max_r} for '{spec_name}'",
+                        )
 
-                elif agent_type == "verifier":
-                    self._run_verification_pipeline(spec_name)
+            elif agent_type == "verifier":
+                self._run_verification_pipeline(spec_name)
 
-            except Exception as e:
-                self.logger.error("pm_engine", f"Agent run exception: {e}")
-            finally:
+        except Exception as e:
+            self.logger.error("pm_engine", f"Agent run exception: {e}")
+        finally:
+            # Release the concurrency slot and try to dispatch more work
+            with self._queue_lock:
                 self._active_runs -= 1
-
-        # Re-process in case we have more capacity
-        if self._run_queue:
             self._process_queue()
 
     # ── Verification Pipeline ─────────────────────────────────────
