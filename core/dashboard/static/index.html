@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fenix Dashboard</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">🐉 Fenix<span class="brand-sub">Dashboard</span></div>
+      <nav class="nav">
+        <button id="btn-overview" class="nav-btn active">概览</button>
+        <select id="project-select" title="切换项目（空 = 概览）"></select>
+      </nav>
+      <div class="refresh-ind">
+        <span class="refresh-dot" id="refresh-dot"></span>
+        <span id="refresh-text">2s 自动刷新</span>
+      </div>
+    </header>
+
+    <main id="main">
+      <div class="empty-state">加载中…</div>
+    </main>
+
+    <div id="lightbox" class="lightbox hidden"><img id="lightbox-img" alt="截图预览" /></div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
