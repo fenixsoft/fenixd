@@ -179,13 +179,30 @@ class AgentRunner:
             # Build and execute the prompt
             try:
                 prompt = self._build_prompt(spec_name, agent_type)
-                # 统一显式指定官方 Claude model 名。环境通过 ANTHROPIC_MODEL=deepseek-v4-flash
-                # 走火山代理，但 claude-code SDK 只识别官方 model 名；任何 agent 一旦在内部
-                # 通过 Agent SDK 派生子代理（verifier/planner-judge 必触发，fix implementer
-                # 也会触发），未识别的 model 名即报 unrecognized_model 致命错误。用官方 model
-                # 名覆盖可彻底规避（实际请求仍走 ANTHROPIC_BASE_URL 代理）。
-                model_override = self._get_config("agents.subagent_model", None)
-                output, turns = self._run_claude(prompt, wt_path, run_id, model_override)
+                # 解析该 agent_type 的模型分配：
+                # - 已分配：注入 ANTHROPIC_BASE_URL/API_KEY/MODEL 环境变量，
+                #   --model 取 provider.sdk_model 或 agents.subagent_model（官方名过 SDK 校验）
+                # - 未分配：完全维持现状（不注入覆盖，--model 用 agents.subagent_model）
+                assignment = self._get_agent_model_assignment(agent_type)
+                env_overrides: Dict[str, str] = {}
+                if assignment is not None:
+                    provider, model = assignment
+                    env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
+                    env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
+                    env_overrides["ANTHROPIC_MODEL"] = model
+                    model_override = provider.get("sdk_model") or self._get_config(
+                        "agents.subagent_model", "claude-sonnet-5"
+                    )
+                else:
+                    # 统一显式指定官方 Claude model 名。环境通过 ANTHROPIC_MODEL=deepseek-v4-flash
+                    # 走火山代理，但 claude-code SDK 只识别官方 model 名；任何 agent 一旦在内部
+                    # 通过 Agent SDK 派生子代理（verifier/planner-judge 必触发，fix implementer
+                    # 也会触发），未识别的 model 名即报 unrecognized_model 致命错误。用官方 model
+                    # 名覆盖可彻底规避（实际请求仍走 ANTHROPIC_BASE_URL 代理）。
+                    # 未配置 agents.subagent_model 时默认 claude-sonnet-5（官方 model 名，仅用于
+                    # 通过 SDK 校验），保证子代理派发始终可用。
+                    model_override = self._get_config("agents.subagent_model", "claude-sonnet-5")
+                output, turns = self._run_claude(prompt, wt_path, run_id, model_override, env_overrides)
                 success = True
                 error = None
             except Exception as e:
@@ -443,7 +460,8 @@ class AgentRunner:
             )
 
     def _run_claude(self, prompt: str, cwd: Path, run_id: str,
-                    model_override: str | None = None) -> tuple:
+                    model_override: str | None = None,
+                    env_overrides: Dict[str, str] | None = None) -> tuple:
         """
         Execute claude CLI with the given prompt, streaming events to disk.
 
@@ -462,18 +480,24 @@ class AgentRunner:
             prompt: The instruction prompt for the agent.
             cwd: Worktree directory the agent operates in.
             run_id: 本次运行唯一 id（如 `impl-<spec>-<ts>`），决定产物文件名。
-            model_override: If set, pass `--model <value>` explicitly. Needed for agent
+            model_override: Pass `--model <value>` explicitly. Needed for agent
                 types that spawn subagents via the Agent SDK: the environment runs on
                 ANTHROPIC_MODEL=deepseek-v4-flash (a non-Claude model name the SDK
                 rejects with unrecognized_model, which is fatal on subagent spawn paths).
                 An official Claude model name bypasses that check while requests still
-                route through ANTHROPIC_BASE_URL.
+                route through ANTHROPIC_BASE_URL. 调用方未配置 agents.subagent_model 时
+                默认传入 claude-sonnet-5，保证始终通过 SDK 校验。
+            env_overrides: 额外注入到子进程的环境变量（每线程独立 env 副本，不串扰）。
+                用于按 agent_type 注入不同 Provider 的 baseurl/apikey/model。
 
         Returns: (output, turns_used)
         """
         timeout = self._get_config("agents.run_timeout_seconds", 1800)
 
+        # 每线程独立 env 副本，多 agent_type 并发时环境覆盖互不串扰
         env = os.environ.copy()
+        if env_overrides:
+            env.update(env_overrides)
 
         # Progress dir for verifier to write incremental progress
         progress_dir = self.project_root / ".fenix" / "verify-progress"
@@ -488,6 +512,7 @@ class AgentRunner:
             "claude",
             "-p", prompt,
             "--output-format", "stream-json",
+            "--verbose",  # claude CLI 要求: --print + --output-format=stream-json 必须带 --verbose
             "--add-dir", str(cwd),
             "--add-dir", str(progress_dir),
             "--permission-mode", "bypassPermissions",
@@ -607,6 +632,15 @@ class AgentRunner:
         limit = self._get_config("agents.daily_run_limit", 50)
         if limit > 0 and self._daily_run_count >= limit:
             raise RuntimeError(f"Daily agent run limit ({limit}) reached")
+
+    def _get_agent_model_assignment(self, agent_type: str):
+        """Return (provider_dict, model_name) for agent_type, or None if unassigned.
+
+        Wraps ConfigLoader.get_agent_model_assignment. 每次调用都从 config 重新解析，
+        避免缓存状态不一致；同时保证每线程拿到独立的 env 覆盖字典。
+        """
+        from .config import ConfigLoader
+        return ConfigLoader.get_agent_model_assignment(self.config, agent_type)
 
     def _get_config(self, key: str, default=None):
         """Get a nested config value."""

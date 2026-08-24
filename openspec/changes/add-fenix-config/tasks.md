@@ -8,8 +8,8 @@
 
 ## 2. Agent 运行时模型路由
 
-- [ ] 2.1 在 `agent_runner.py` 让 `_execute_agent`/`_run_claude` 按 agent_type 解析模型分配：已分配则注入 `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` 环境变量，`--model` 取 `provider.sdk_model or agents.subagent_model`（官方名校验）；未分配则完全维持现状
-- [ ] 2.2 确保 `_build_prompt` 与运行层透传正确 agent_type（implementer / planner-plan / planner-judge / verifier），且多 agent_type 并发时环境覆盖互不串扰（每线程独立 env 副本）
+- [x] 2.1 在 `agent_runner.py` 让 `_execute_agent`/`_run_claude` 按 agent_type 解析模型分配：已分配则注入 `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` 环境变量，`--model` 取 `provider.sdk_model or agents.subagent_model`（官方名校验）；未分配则完全维持现状
+- [x] 2.2 确保 `_build_prompt` 与运行层透传正确 agent_type（implementer / planner-plan / planner-judge / verifier），且多 agent_type 并发时环境覆盖互不串扰（每线程独立 env 副本）
 
 ## 3. 自动审批
 
