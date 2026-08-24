@@ -375,24 +375,29 @@ def _read_run_lines(path: Path, max_lines: int = 3) -> list:
     """读取产物文件最后几行 JSON，逐行容错。"""
     out = []
     try:
-        with path.open("r", encoding="utf-8") as f:
-            # 只读末尾几行判断终态：若文件较小直接读完
+        with path.open("rb") as f:
             f.seek(0, 2)
             size = f.tell()
             if size > 4096:
                 f.seek(max(0, size - 4096))
             else:
                 f.seek(0)
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    out.append(json.loads(line))
-                except json.JSONDecodeError:
-                    out.append({"type": "stderr", "line": line})
-                if len(out) > max_lines:
-                    out.pop(0)
+            raw = f.read()
+        # 向前扫描到合法 UTF-8 起始字节，避免 seek 落在多字节字符中间
+        start = 0
+        while start < len(raw) and (raw[start] & 0xC0) == 0x80:
+            start += 1
+        text = raw[start:].decode("utf-8", errors="replace")
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                out.append({"type": "stderr", "line": line})
+            if len(out) > max_lines:
+                out.pop(0)
     except OSError:
         pass
     return out
@@ -411,7 +416,7 @@ def get_run_events(project_root, run_id: str) -> dict:
     events = []
     error = None
     try:
-        with run_file.open("r", encoding="utf-8") as f:
+        with run_file.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
