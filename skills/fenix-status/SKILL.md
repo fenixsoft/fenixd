@@ -23,11 +23,20 @@ description: Use when the user wants to check Fenix framework status, view all S
 
 ### 1. 守护进程状态
 
+session 名由项目根路径派生（唯一，支持多项目并行），并兼容旧版固定名 `fenixd`（见 `bin/fenix_session.py`）。
+
 ```bash
+SESSION_NAME=$(python3 .fenix/bin/fenix_session.py name "$(pwd)" 2>/dev/null)
+REAL_SESSION=""
+if [ -n "${SESSION_NAME}" ] && tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
+    REAL_SESSION="${SESSION_NAME}"
+elif tmux has-session -t fenixd 2>/dev/null; then
+    REAL_SESSION="fenixd"   # 兼容旧版固定名
+fi
 echo -n "守护进程: "
-if tmux has-session -t fenixd 2>/dev/null; then
-    pid=$(tmux list-panes -t fenixd -F '#{pane_pid}' 2>/dev/null | head -1)
-    echo "🟢 运行中 (PID: ${pid:-unknown})"
+if [ -n "${REAL_SESSION}" ]; then
+    pid=$(tmux list-panes -t "${REAL_SESSION}" -F '#{pane_pid}' 2>/dev/null | head -1)
+    echo "🟢 运行中 (PID: ${pid:-unknown}, session: ${REAL_SESSION})"
 else
     echo "🔴 已停止 — 运行 /fenix-setup 启动"
 fi
@@ -69,7 +78,10 @@ for name, entry in specs.items():
     # implementing：不再用 updated 时间戳判卡住（daemon 有 attempt 重试机制兜底）
 
 import subprocess
-daemon_ok = subprocess.run(['tmux','has-session','-t','fenixd'], capture_output=True).returncode == 0
+# 本项目 daemon 检测：唯一 session 名 + 旧版 fenixd 兼容（见 bin/fenix_session.py）
+_r = subprocess.run(['python3', '.fenix/bin/fenix_session.py', 'running'],
+                    capture_output=True, text=True)
+daemon_ok = _r.stdout.strip() == 'YES'
 
 # 生成总结
 parts = []
@@ -126,8 +138,34 @@ for name, entry in items:
 blocked = sum(1 for e in specs.values() if e.get('error') and e.get('status') not in ('done','pushed'))
 pending_push = sum(1 for e in specs.values() if e.get("status") == 'done')
 c = subprocess.run(['ps','aux'], capture_output=True, text=True).stdout.count('claude ')
+
+# 读取审批模式与模型分配（尽力而为，失败不影响主输出）
+approve_mode = 'manual'
+providers_count = 0
+assigned_agents = 0
+try:
+    import yaml
+    with open('.fenix/config.yaml', 'r') as f:
+        cfg = yaml.safe_load(f) or {}
+    mode = (cfg.get('gates') or {}).get('approve_mode', 'manual')
+    if mode in ('manual', 'auto'):
+        approve_mode = mode
+    providers = ((cfg.get('llm') or {}).get('providers')) or []
+    providers_count = len(providers) if isinstance(providers, list) else 0
+    models = ((cfg.get('agents') or {}).get('models')) or {}
+    assigned_agents = len(models) if isinstance(models, dict) else 0
+except Exception:
+    pass
+
+mode_label = '🔒 manual（人工审批）' if approve_mode == 'manual' else '🤖 auto（自动推送）'
 print(f'\n📊 总计 {len(specs)} 个 SPEC | ✅ {done_count} 完成 | 🔨 {active_count} 进行中 | ⚠️ {blocked} 阻塞 | Claude 进程: {c}')
-if pending_push > 0: print(f'🚀 {pending_push} 个 SPEC 等待推送 — 运行 /fenix-approve')
+print(f'   审批模式: {mode_label}')
+if providers_count > 0:
+    print(f'   LLM Provider: {providers_count} 个 | 已分配 Agent: {assigned_agents} 个')
+if pending_push > 0 and approve_mode == 'manual':
+    print(f'🚀 {pending_push} 个 SPEC 等待推送 — 运行 /fenix-approve')
+elif pending_push > 0 and approve_mode == 'auto':
+    print(f'⚠️ {pending_push} 个 SPEC 在 done（auto 模式下可能推送失败，可运行 /fenix-approve 人工兜底）')
 PYEOF
 ```
 
@@ -142,10 +180,17 @@ files = list(progress_dir.glob('*.json'))
 if files:
     print('验证进度:')
     for f in files:
-        d = json.loads(f.read_text())
-        done = d.get('done',0); total = d.get('total',0)
-        pct = f'({int(done/total*100)}%)' if total > 0 else ''
-        print(f'  🔍 {f.stem}: {done}/{total} {pct} — {d.get("current","")[:60]}')
+        # 容错：历史遗留进度文件可能字段为 null，或整体非 dict（如 list）
+        try:
+            d = json.loads(f.read_text())
+            if not isinstance(d, dict):
+                print(f'  ⚠️ {f.stem}: 进度文件结构异常（非对象），跳过')
+                continue
+            done = d.get('done') or 0; total = d.get('total') or 0
+            pct = f'({int(done/total*100)}%)' if total > 0 else '(无总量)'
+            print(f'  🔍 {f.stem}: {done}/{total} {pct} — {str(d.get("current") or "")[:60]}')
+        except Exception as e:
+            print(f'  ⚠️ {f.stem}: 进度文件读取失败（{e}），跳过')
 else:
     print('验证进度: (无活跃验证任务)')
 PYEOF

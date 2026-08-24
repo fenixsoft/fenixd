@@ -7,6 +7,16 @@ description: Use when the user wants to review completed SPECs and approve them 
 
 审查已完成的工作并推送到远程仓库。这是 Fenix 框架中**唯一的人工门禁点**。
 
+## 审批模式说明
+
+`.fenix/config.yaml` 中的 `gates.approve_mode` 控制审批行为：
+
+- **`manual`（默认）**：SPEC 到达 `done` 后等待人工通过 `/fenix-approve` 审批推送。
+- **`auto`**：SPEC 到达 `done` 后 daemon 自动执行 `git push origin fenix/<spec>` 并将状态推进到 `pushed`，无需人工介入。
+
+> auto 模式下，已完成的 SPEC 会被自动推送，人工门禁可跳过。
+> 若自动推送失败，SPEC 会保留在 `done` 状态并记录错误，此时仍可使用 `/fenix-approve` 人工兜底。
+
 ## 步骤
 
 ### 1. 列出待推送的 SPEC

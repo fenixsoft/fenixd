@@ -24,8 +24,8 @@
 
 ## 5. 文档与 Skill 同步
 
-- [ ] 5.1 更新 `skills/fenix-approve/SKILL.md`：说明 auto 模式下 SPEC 已完成自动推送，人工门禁可跳过
-- [ ] 5.2 更新 `skills/fenix-status/SKILL.md` / `fenix-dashboard/SKILL.md`：状态概览或 Dashboard 展示当前审批模式与模型分配
+- [x] 5.1 更新 `skills/fenix-approve/SKILL.md`：说明 auto 模式下 SPEC 已完成自动推送，人工门禁可跳过
+- [x] 5.2 更新 `skills/fenix-status/SKILL.md` / `fenix-dashboard/SKILL.md`：状态概览或 Dashboard 展示当前审批模式与模型分配
 
 ## 6. 测试与验证
 

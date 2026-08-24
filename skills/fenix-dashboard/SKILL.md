@@ -111,3 +111,11 @@ python3 "$DASH" --list-projects
 - 已监控项目列表（`--list-projects` 输出）
 - 若服务为本轮新启动，说明 tmux session 名 `fenix-dashboard` 与停止方式（`tmux kill-session -t fenix-dashboard`）
 - 提示：Dashboard 每 2 秒自动刷新，仅本机可访问
+
+## 功能概览
+
+- **概览**：跨项目 SPEC 状态统计、任务进度、问题告警、活跃运行
+- **项目详情**：SPEC 列表、任务进度、验证结果、bug 列表、运行记录、时间轴
+- **配置页**：可视化编辑 LLM Provider、Agent 模型分配、审批模式（manual/auto）
+  - 配置修改后写入 `.fenix/config.yaml`，**需重启 daemon 生效**
+  - `approve_mode=auto` 时 SPEC 完成后会自动 `git push` 到远端，请谨慎使用
