@@ -6,6 +6,7 @@ Run with: python3 -m pytest .fenix/tests/ -v
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -383,6 +384,180 @@ class TestAgentRunResult(unittest.TestCase):
         d = result.to_dict()
         self.assertEqual(d["success"], False)
         self.assertEqual(d["error"], "Bug found: login redirect broken")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Agent Runner Streaming Tests (agent-run-artifacts, tasks 1.1-1.4)
+# ═══════════════════════════════════════════════════════════════════
+
+class _FakeProc:
+    """Minimal stand-in for subprocess.Popen: line streams + wait/kill."""
+
+    def __init__(self, stdout_lines=(), stderr_lines=(), returncode=0, timeout=False):
+        import io
+        self.stdout = io.StringIO("\n".join(stdout_lines) + "\n")
+        self.stderr = io.StringIO("\n".join(stderr_lines) + "\n")
+        self._returncode = returncode
+        self._timeout = timeout
+
+    def wait(self, timeout=None):
+        if self._timeout:
+            raise subprocess.TimeoutExpired("claude", timeout)
+        return self._returncode
+
+    def kill(self):
+        pass
+
+
+class TestRunClaudeStreaming(unittest.TestCase):
+    """_run_claude 流式落盘兼容性（agent-run-artifacts 1.1-1.4）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        self.config = {"agents": {"run_timeout_seconds": 5}}
+        self.logger = MagicMock()
+        from core.agent_runner import AgentRunner
+        self.runner = AgentRunner(
+            self.config, MagicMock(), MagicMock(), self.project_root, self.logger,
+        )
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _artifact(self, run_id):
+        return self.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+
+    def _run(self, run_id, stdout_lines=(), stderr_lines=(), returncode=0, timeout=False):
+        proc = _FakeProc(stdout_lines, stderr_lines, returncode, timeout)
+        with patch("subprocess.Popen", return_value=proc):
+            return self.runner._run_claude("prompt", Path(self.tmpdir), run_id)
+
+    def test_normal_completion_restores_output_and_turns(self):
+        run_id = "impl-demo-spec-1700000000"
+        result_event = {
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "All tasks complete", "num_turns": 7, "session_id": "sess-1",
+        }
+        stdout = [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "working"}]}}),
+            json.dumps(result_event),
+        ]
+        output, turns = self._run(run_id, stdout_lines=stdout)
+        self.assertEqual(output, "All tasks complete")
+        self.assertEqual(turns, 7)
+        artifact = self._artifact(run_id)
+        self.assertTrue(artifact.exists())
+        lines = [json.loads(l) for l in artifact.read_text().splitlines()]
+        self.assertEqual(lines[-1]["type"], "result")
+        self.assertEqual(lines[-1]["num_turns"], 7)
+
+    def test_timeout_writes_error_terminal_and_raises(self):
+        run_id = "impl-hang-spec-1700000001"
+        with self.assertRaises(RuntimeError):
+            self._run(run_id, stdout_lines=[json.dumps({"type": "assistant", "message": {}})], timeout=True)
+        artifact = self._artifact(run_id)
+        lines = [json.loads(l) for l in artifact.read_text().splitlines()]
+        self.assertEqual(lines[-1]["type"], "error")
+        self.assertIn("Timeout", lines[-1]["error"])
+
+    def test_nonzero_exit_writes_error_and_raises(self):
+        run_id = "impl-fail-spec-1700000002"
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run(run_id, stderr_lines=["boom"], returncode=1)
+        self.assertIn("boom", str(ctx.exception))
+        artifact = self._artifact(run_id)
+        lines = [json.loads(l) for l in artifact.read_text().splitlines()]
+        self.assertEqual(lines[-1]["type"], "error")
+        self.assertEqual(lines[-1]["exit_code"], 1)
+
+    def test_stderr_noise_fallback_parseable(self):
+        run_id = "impl-noise-spec-1700000003"
+        result_event = {"type": "result", "subtype": "success", "result": "ok", "num_turns": 2}
+        stdout = [
+            json.dumps({"type": "assistant", "message": {"content": []}}),
+            json.dumps(result_event),
+        ]
+        output, turns = self._run(run_id, stdout_lines=stdout, stderr_lines=["non-json noise"])
+        self.assertEqual(output, "ok")
+        artifact = self._artifact(run_id)
+        lines = [json.loads(l) for l in artifact.read_text().splitlines()]
+        self.assertTrue(any(
+            l.get("type") == "stderr" and l.get("line") == "non-json noise" for l in lines
+        ))
+        # 文件整体仍可逐行 JSON 解析，且最后一行是 result
+        self.assertEqual(lines[-1]["type"], "result")
+
+    def test_running_artifact_grows_in_real_time(self):
+        """运行期间产物文件实时增长：进程阻塞时文件已含已产生的事件。"""
+        import threading as _t
+
+        release = _t.Event()
+
+        class BlockingProc(_FakeProc):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.wait_called = _t.Event()
+
+            def wait(self, timeout=None):
+                self.wait_called.set()
+                if not release.wait(timeout or 10):
+                    raise subprocess.TimeoutExpired("claude", timeout)
+                return 0
+
+        run_id = "impl-live-spec-1700000004"
+        result_event = {"type": "result", "subtype": "success", "result": "done", "num_turns": 1}
+        proc = BlockingProc(stdout_lines=[
+            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "first"}]}}),
+            json.dumps(result_event),
+        ])
+        results = {}
+
+        def target():
+            with patch("subprocess.Popen", return_value=proc):
+                results["ret"] = self.runner._run_claude("prompt", Path(self.tmpdir), run_id)
+
+        t = _t.Thread(target=target)
+        t.start()
+        self.assertTrue(proc.wait_called.wait(5))
+        artifact = self._artifact(run_id)
+        for _ in range(50):
+            if artifact.exists() and artifact.read_text().strip():
+                break
+            time.sleep(0.05)
+        first_lines = [json.loads(l) for l in artifact.read_text().splitlines()]
+        # 进程仍在运行（wait 未返回）时，产物文件已包含已产生的事件
+        self.assertTrue(any(l.get("type") == "assistant" for l in first_lines))
+        release.set()
+        t.join(timeout=5)
+        self.assertEqual(results["ret"][0], "done")
+
+    def test_clean_old_runs_keeps_latest(self):
+        from core.agent_runner import clean_old_runs
+        runs_dir = self.project_root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True)
+        for i in range(25):
+            p = runs_dir / f"run-{i}.jsonl"
+            p.write_text("{}")
+            os.utime(p, (i, i))
+        removed = clean_old_runs(runs_dir, keep=20)
+        self.assertEqual(removed, 5)
+        self.assertEqual(len(list(runs_dir.glob("*.jsonl"))), 20)
+
+    def test_clean_old_runs_skips_active(self):
+        from core.agent_runner import clean_old_runs
+        runs_dir = self.project_root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True)
+        for i in range(25):
+            p = runs_dir / f"run-{i}.jsonl"
+            p.write_text("{}")
+            os.utime(p, (i, i))
+        # run-24 最旧但处于活动状态 → 被排除在候选外（24 个候选，保留 20，删 4）
+        removed = clean_old_runs(runs_dir, keep=20, active_ids={"run-24"})
+        self.assertEqual(removed, 4)
+        self.assertTrue((runs_dir / "run-24.jsonl").exists())
 
 
 # ═══════════════════════════════════════════════════════════════════

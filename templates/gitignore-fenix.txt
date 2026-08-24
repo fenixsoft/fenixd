@@ -21,3 +21,6 @@ __pycache__/
 .fenix/verify-progress/
 .fenix/screenshot/
 .fenix/screenshots/
+
+# Agent run artifacts (streamed JSONL, see agent-run-artifacts)
+.fenix/runs/

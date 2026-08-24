@@ -8,11 +8,15 @@ Handles result parsing, retry logic, and token/turn budget control.
 import json
 import os
 import subprocess
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
+
+# .fenix/runs/ 保留的最近运行产物数量上限（默认 20，见 D1 / spec agent-run-artifacts）
+RUNS_KEEP = 20
 
 
 class AgentRunResult:
@@ -41,6 +45,55 @@ class AgentRunResult:
             "error": self.error,
             "output_summary": self.output[-500:] if self.output else "",
         }
+
+
+def append_run_line(run_file: Path, entry: dict) -> None:
+    """向运行产物文件追加一行 JSON 并立即 flush，保证运行期间 Dashboard 可读。
+
+    每行独立 open("a") + flush，两个读线程并发写入时依赖 O_APPEND 的原子性，
+    避免长行被交错切碎。
+    """
+    with run_file.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        f.flush()
+
+
+def append_run_error(run_file: Path, error: str, exit_code: int) -> None:
+    """异常/超时/kill 终止时向产物文件追加 error 终态行。"""
+    append_run_line(run_file, {"type": "error", "error": error, "exit_code": exit_code})
+
+
+def clean_old_runs(runs_dir: Path, keep: int = RUNS_KEEP, active_ids=None) -> int:
+    """清理 .fenix/runs/ 中超出保留上限的最旧产物，跳过正在增长的活动产物。
+
+    Args:
+        runs_dir: .fenix/runs/ 目录。
+        keep: 保留的最近产物数量。
+        active_ids: 仍处于运行中的 run_id 集合，其产物一律跳过不删。
+
+    Returns: 删除的文件数。
+    """
+    if not runs_dir.is_dir():
+        return 0
+    active_ids = set(active_ids or ())
+    try:
+        candidates = [
+            p for p in runs_dir.glob("*.jsonl")
+            if p.stem not in active_ids
+        ]
+    except OSError:
+        return 0
+    # 按最近修改时间排序，旧的在前
+    candidates.sort(key=lambda p: p.stat().st_mtime)
+    removed = 0
+    while len(candidates) > keep:
+        victim = candidates.pop(0)
+        try:
+            victim.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 class AgentRunner:
@@ -126,7 +179,13 @@ class AgentRunner:
             # Build and execute the prompt
             try:
                 prompt = self._build_prompt(spec_name, agent_type)
-                output, turns = self._run_claude(prompt, wt_path)
+                # 统一显式指定官方 Claude model 名。环境通过 ANTHROPIC_MODEL=deepseek-v4-flash
+                # 走火山代理，但 claude-code SDK 只识别官方 model 名；任何 agent 一旦在内部
+                # 通过 Agent SDK 派生子代理（verifier/planner-judge 必触发，fix implementer
+                # 也会触发），未识别的 model 名即报 unrecognized_model 致命错误。用官方 model
+                # 名覆盖可彻底规避（实际请求仍走 ANTHROPIC_BASE_URL 代理）。
+                model_override = self._get_config("agents.subagent_model", None)
+                output, turns = self._run_claude(prompt, wt_path, run_id, model_override)
                 success = True
                 error = None
             except Exception as e:
@@ -383,11 +442,34 @@ class AgentRunner:
                 f"IMPORTANT: Do NOT modify STATE.md."
             )
 
-    def _run_claude(self, prompt: str, cwd: Path) -> tuple:
+    def _run_claude(self, prompt: str, cwd: Path, run_id: str,
+                    model_override: str | None = None) -> tuple:
         """
-        Execute claude CLI with the given prompt.
+        Execute claude CLI with the given prompt, streaming events to disk.
 
-        Returns: (stdout, turns_used)
+        与旧版 `--output-format json` + subprocess.run 的差异（见 D1 / agent-run-artifacts）：
+        - 改用 `subprocess.Popen` + `--output-format stream-json`，将运行期间逐行
+          JSON 事件（system/assistant/user/tool_use/tool_result/result）原样追加写入
+          `.fenix/runs/<run_id>.jsonl`，供 Web Dashboard 实时轮询。
+        - stdout/stderr 各由一条守护线程逐行读取；非 JSON 行（stderr 噪声）以
+          `{"type":"stderr","line":...}` 兜底写入，保证产物文件始终可逐行解析。
+        - 结束时从流中最后一个 `result` 事件还原 `output`（result 文本）与 `turns`
+          （num_turns），与旧版解析结果等价。
+        - 超时/kill/非零退出时向产物文件追加 `{"type":"error",...}` 终态行，并仍按
+          现状语义抛出 RuntimeError。
+
+        Args:
+            prompt: The instruction prompt for the agent.
+            cwd: Worktree directory the agent operates in.
+            run_id: 本次运行唯一 id（如 `impl-<spec>-<ts>`），决定产物文件名。
+            model_override: If set, pass `--model <value>` explicitly. Needed for agent
+                types that spawn subagents via the Agent SDK: the environment runs on
+                ANTHROPIC_MODEL=deepseek-v4-flash (a non-Claude model name the SDK
+                rejects with unrecognized_model, which is fatal on subagent spawn paths).
+                An official Claude model name bypasses that check while requests still
+                route through ANTHROPIC_BASE_URL.
+
+        Returns: (output, turns_used)
         """
         timeout = self._get_config("agents.run_timeout_seconds", 1800)
 
@@ -397,38 +479,104 @@ class AgentRunner:
         progress_dir = self.project_root / ".fenix" / "verify-progress"
         progress_dir.mkdir(parents=True, exist_ok=True)
 
+        # 运行产物目录（.fenix/runs/），加入模板 gitignore，不入版本控制
+        runs_dir = self.project_root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        run_file = runs_dir / f"{run_id}.jsonl"
+
         cmd = [
             "claude",
             "-p", prompt,
-            "--output-format", "json",
+            "--output-format", "stream-json",
             "--add-dir", str(cwd),
             "--add-dir", str(progress_dir),
             "--permission-mode", "bypassPermissions",
         ]
+        if model_override:
+            cmd += ["--model", model_override]
 
-        self.logger.debug("agent_runner", f"Running: claude -p '...' --add-dir {cwd}")
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
+        self.logger.debug(
+            "agent_runner",
+            f"Running: claude -p '...' --output-format stream-json --add-dir {cwd}",
+            {"run_id": run_id, "run_file": str(run_file)},
         )
 
-        output = result.stdout
-        turns = 0
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,  # 行缓冲，保证实时可读
+            env=env,
+        )
+        self._running_agents[run_id] = proc
 
-        # Try to parse turn count from output
+        # 两条守护线程分别读 stdout / stderr，避免单线程 readline 卡死。
+        # 共享状态由主线程在 join 之后读取，天然构成 happens-before。
+        last_result: Dict[str, Any] = {}
+        stdout_lines: list = []
+        stderr_lines: list = []
+
+        def _read_stream(stream, is_stderr: bool) -> None:
+            try:
+                for line in iter(stream.readline, ""):
+                    line = line.rstrip("\n")
+                    if not line.strip():
+                        continue
+                    if is_stderr:
+                        # stderr 噪声：不保证是 JSON，一律按 stderr 兜底写入
+                        stderr_lines.append(line)
+                        append_run_line(run_file, {"type": "stderr", "line": line})
+                        continue
+                    stdout_lines.append(line)
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        entry = {"type": "stderr", "line": line}
+                    if isinstance(entry, dict) and entry.get("type") == "result":
+                        # 记录最后一个 result 事件（含 num_turns / result 文本）
+                        last_result.clear()
+                        last_result.update(entry)
+                    append_run_line(run_file, entry)
+            except Exception:
+                # 读取线程异常不应导致主流程崩溃；半成品产物仍可被 Dashboard 读取
+                pass
+
+        t_out = threading.Thread(target=_read_stream, args=(proc.stdout, False), daemon=True)
+        t_err = threading.Thread(target=_read_stream, args=(proc.stderr, True), daemon=True)
+        t_out.start()
+        t_err.start()
+
+        returncode = None
+        timeout_error = None
         try:
-            if output.strip():
-                data = json.loads(output)
-                turns = data.get("num_turns", data.get("turns", 0))
-        except json.JSONDecodeError:
-            pass
+            try:
+                returncode = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                returncode = -9
+                timeout_error = f"Timeout after {timeout}s"
+        finally:
+            # 等待读线程把残留行刷完，再决定终态，保证 error 终态行是文件最后一行
+            t_out.join(timeout=5)
+            t_err.join(timeout=5)
+            self._running_agents.pop(run_id, None)
+            # 产物文件可能因崩溃等遗留为"活动但不再增长"，清理时按时间淘汰即可
 
-        if result.returncode != 0:
-            error_msg = result.stderr[:500] if result.stderr else f"Exit code: {result.returncode}"
+        if timeout_error is not None:
+            append_run_error(run_file, timeout_error, returncode)
+            raise RuntimeError(f"claude CLI timed out after {timeout}s")
+
+        output = last_result.get("result", "") if last_result else ""
+        turns = last_result.get("num_turns", 0)
+
+        if returncode != 0:
+            error_msg = "\n".join(stderr_lines[-5:])[:500] if stderr_lines else f"Exit code: {returncode}"
+            append_run_error(run_file, error_msg, returncode)
             raise RuntimeError(f"claude CLI failed: {error_msg}")
 
         return output, turns
