@@ -9,6 +9,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -346,6 +348,513 @@ class TestConfigLoader(unittest.TestCase):
         config = ConfigLoader.load(self.config_path)
         self.assertEqual(ConfigLoader.get(config, "agents.max_turns"), 50)
         self.assertEqual(ConfigLoader.get(config, "nonexistent.key", "default"), "default")
+
+    # ── 新增：llm.providers 校验 ──────────────────────────
+
+    def _base_config(self):
+        return {
+            "project": {"name": "test", "type": "web"},
+            "schedule": {"poll_interval_minutes": 30},
+            "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
+            "worktree": {"base_dir": ".", "implement_branch_prefix": "f", "verify_branch_prefix": "v"},
+            "gates": {"require_push_approval": True},
+            "commands": {"test": "", "build": "", "start": ""},
+            "logging": {"dir": ".", "level": "INFO"},
+        }
+
+    def test_llm_providers_valid(self):
+        cfg = self._base_config()
+        cfg["llm"] = {
+            "providers": [
+                {"name": "volc", "baseurl": "https://a.com", "apikey": "sk-1", "model": "m1"},
+                {"name": "openrouter", "baseurl": "https://b.com", "apikey": "sk-2", "sdk_model": "claude-sonnet-5"},
+            ]
+        }
+        self._write_config(cfg)
+        config = ConfigLoader.load(self.config_path)
+        providers = ConfigLoader.get(config, "llm.providers", [])
+        self.assertEqual(len(providers), 2)
+        self.assertEqual(providers[0]["name"], "volc")
+        self.assertEqual(providers[1].get("sdk_model"), "claude-sonnet-5")
+
+    def test_llm_providers_not_list_raises(self):
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": "not_a_list"}
+        self._write_config(cfg)
+        with self.assertRaises(ValueError):
+            ConfigLoader.load(self.config_path)
+
+    def test_llm_providers_missing_apikey_raises(self):
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [{"name": "p1", "baseurl": "https://a.com"}]}
+        self._write_config(cfg)
+        with self.assertRaises(ValueError):
+            ConfigLoader.load(self.config_path)
+
+    def test_llm_providers_duplicate_name_raises(self):
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [
+            {"name": "p1", "baseurl": "https://a.com", "apikey": "k1"},
+            {"name": "p1", "baseurl": "https://b.com", "apikey": "k2"},
+        ]}
+        self._write_config(cfg)
+        with self.assertRaises(ValueError) as ctx:
+            ConfigLoader.load(self.config_path)
+        self.assertIn("unique", str(ctx.exception))
+
+    def test_llm_providers_absent_is_okay(self):
+        """旧配置无 llm 段应正常加载（向后兼容）。"""
+        self._write_config(self._base_config())
+        config = ConfigLoader.load(self.config_path)
+        self.assertIsNone(ConfigLoader.get(config, "llm.providers"))
+
+    # ── 新增：agents.models 校验 ──────────────────────────
+
+    def test_agent_models_valid(self):
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [
+            {"name": "volc", "baseurl": "https://a.com", "apikey": "k1"},
+        ]}
+        cfg["agents"]["models"] = {
+            "implementer": {"provider": "volc", "model": "deepseek-v4-flash"},
+            "planner-plan": {"provider": "volc", "model": "deepseek-v4-pro"},
+        }
+        self._write_config(cfg)
+        config = ConfigLoader.load(self.config_path)
+        self.assertEqual(
+            ConfigLoader.get(config, "agents.models.implementer.provider"),
+            "volc"
+        )
+
+    def test_agent_models_unknown_provider_raises(self):
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [
+            {"name": "volc", "baseurl": "https://a.com", "apikey": "k1"},
+        ]}
+        cfg["agents"]["models"] = {
+            "implementer": {"provider": "nonexistent", "model": "m1"},
+        }
+        self._write_config(cfg)
+        with self.assertRaises(ValueError) as ctx:
+            ConfigLoader.load(self.config_path)
+        self.assertIn("unknown provider", str(ctx.exception))
+
+    def test_agent_models_unknown_agent_type_raises(self):
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [
+            {"name": "volc", "baseurl": "https://a.com", "apikey": "k1"},
+        ]}
+        cfg["agents"]["models"] = {
+            "super-agent": {"provider": "volc", "model": "m1"},
+        }
+        self._write_config(cfg)
+        with self.assertRaises(ValueError) as ctx:
+            ConfigLoader.load(self.config_path)
+        self.assertIn("known agent type", str(ctx.exception))
+
+    def test_agent_models_empty_model_raises(self):
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [
+            {"name": "volc", "baseurl": "https://a.com", "apikey": "k1"},
+        ]}
+        cfg["agents"]["models"] = {
+            "implementer": {"provider": "volc", "model": ""},
+        }
+        self._write_config(cfg)
+        with self.assertRaises(ValueError):
+            ConfigLoader.load(self.config_path)
+
+    def test_agent_models_absent_is_okay(self):
+        """未配置 agents.models 时应正常加载（向后兼容）。"""
+        self._write_config(self._base_config())
+        config = ConfigLoader.load(self.config_path)
+        self.assertIsNone(ConfigLoader.get(config, "agents.models"))
+
+    # ── 新增：approve_mode 校验 ────────────────────────────
+
+    def test_approve_mode_manual_valid(self):
+        cfg = self._base_config()
+        cfg["gates"]["approve_mode"] = "manual"
+        self._write_config(cfg)
+        config = ConfigLoader.load(self.config_path)
+        self.assertEqual(ConfigLoader.get(config, "gates.approve_mode"), "manual")
+
+    def test_approve_mode_auto_valid(self):
+        cfg = self._base_config()
+        cfg["gates"]["approve_mode"] = "auto"
+        self._write_config(cfg)
+        config = ConfigLoader.load(self.config_path)
+        self.assertEqual(ConfigLoader.get(config, "gates.approve_mode"), "auto")
+
+    def test_approve_mode_invalid_raises(self):
+        cfg = self._base_config()
+        cfg["gates"]["approve_mode"] = "always"
+        self._write_config(cfg)
+        with self.assertRaises(ValueError):
+            ConfigLoader.load(self.config_path)
+
+    def test_approve_mode_default_manual(self):
+        """未配置 approve_mode 时 get_approve_mode 应返回 'manual'。"""
+        self._write_config(self._base_config())
+        config = ConfigLoader.load(self.config_path)
+        self.assertEqual(ConfigLoader.get_approve_mode(config), "manual")
+
+    # ── 新增：get_agent_model_assignment ────────────────────
+
+    def test_get_agent_model_assignment_returns_tuple(self):
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [
+            {"name": "volc", "baseurl": "https://a.com", "apikey": "k1", "sdk_model": "claude-sonnet-5"},
+        ]}
+        cfg["agents"]["models"] = {
+            "implementer": {"provider": "volc", "model": "deepseek-v4-flash"},
+        }
+        self._write_config(cfg)
+        config = ConfigLoader.load(self.config_path)
+        result = ConfigLoader.get_agent_model_assignment(config, "implementer")
+        self.assertIsNotNone(result)
+        provider, model = result
+        self.assertEqual(provider["name"], "volc")
+        self.assertEqual(provider["baseurl"], "https://a.com")
+        self.assertEqual(model, "deepseek-v4-flash")
+
+    def test_get_agent_model_assignment_unassigned_returns_none(self):
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [
+            {"name": "volc", "baseurl": "https://a.com", "apikey": "k1"},
+        ]}
+        cfg["agents"]["models"] = {
+            "implementer": {"provider": "volc", "model": "m1"},
+        }
+        self._write_config(cfg)
+        config = ConfigLoader.load(self.config_path)
+        # planner-judge 未分配
+        self.assertIsNone(ConfigLoader.get_agent_model_assignment(config, "planner-judge"))
+
+    def test_get_agent_model_assignment_no_models_section(self):
+        self._write_config(self._base_config())
+        config = ConfigLoader.load(self.config_path)
+        self.assertIsNone(ConfigLoader.get_agent_model_assignment(config, "implementer"))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Agent Runner Model Routing Tests
+# ═══════════════════════════════════════════════════════════════════
+
+class TestAgentRunnerModelRouting(unittest.TestCase):
+    """测试 AgentRunner 的模型分配与 env 注入逻辑。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_runner(self, config: dict):
+        from core.agent_runner import AgentRunner
+        logger = MagicMock()
+        logger.info = MagicMock()
+        logger.warning = MagicMock()
+        logger.error = MagicMock()
+        logger.debug = MagicMock()
+        wm = MagicMock()
+        wm.create = MagicMock(return_value=self.project_root)
+        wm.cleanup = MagicMock()
+        wm.find_implementer_worktree = MagicMock(return_value=None)
+        sm = MagicMock()
+        return AgentRunner(config, wm, sm, self.project_root, logger)
+
+    def test_get_agent_model_assignment_assigned(self):
+        config = {
+            "llm": {"providers": [
+                {"name": "volc", "baseurl": "https://api.example.com", "apikey": "sk-test", "sdk_model": "claude-sonnet-5"},
+            ]},
+            "agents": {
+                "max_concurrent": 2, "max_retries": 1, "max_turns": 50,
+                "models": {"implementer": {"provider": "volc", "model": "deepseek-v4-flash"}},
+            },
+        }
+        runner = self._make_runner(config)
+        result = runner._get_agent_model_assignment("implementer")
+        self.assertIsNotNone(result)
+        provider, model = result
+        self.assertEqual(provider["baseurl"], "https://api.example.com")
+        self.assertEqual(provider["apikey"], "sk-test")
+        self.assertEqual(model, "deepseek-v4-flash")
+
+    def test_get_agent_model_assignment_unassigned(self):
+        config = {"agents": {"max_concurrent": 2, "max_retries": 1, "max_turns": 50}}
+        runner = self._make_runner(config)
+        result = runner._get_agent_model_assignment("planner-judge")
+        self.assertIsNone(result)
+
+    def test_run_claude_env_overrides_per_call(self):
+        """验证 _run_claude 每次调用使用独立 env 副本，多 agent_type 不串扰。"""
+        config = {
+            "llm": {"providers": [
+                {"name": "p1", "baseurl": "https://a.com", "apikey": "key-a"},
+                {"name": "p2", "baseurl": "https://b.com", "apikey": "key-b"},
+            ]},
+            "agents": {
+                "max_concurrent": 2, "max_retries": 1, "max_turns": 50, "run_timeout_seconds": 10,
+                "models": {
+                    "implementer": {"provider": "p1", "model": "model-a"},
+                    "planner-judge": {"provider": "p2", "model": "model-b"},
+                },
+                "subagent_model": "claude-sonnet-5",
+            },
+        }
+        runner = self._make_runner(config)
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["env"] = dict(kwargs.get("env", {}))
+            fake = MagicMock()
+            fake.stdout = []
+            fake.stderr = []
+            fake.wait = MagicMock(return_value=0)
+            fake.kill = MagicMock()
+            return fake
+
+        with patch("core.agent_runner.subprocess.Popen", side_effect=fake_popen):
+            try:
+                runner._run_claude("test prompt", self.project_root, "test-run-1",
+                                   "claude-sonnet-5",
+                                   {"ANTHROPIC_BASE_URL": "https://a.com",
+                                    "ANTHROPIC_API_KEY": "key-a",
+                                    "ANTHROPIC_MODEL": "model-a"})
+            except Exception:
+                pass
+
+        self.assertEqual(captured["env"]["ANTHROPIC_BASE_URL"], "https://a.com")
+        self.assertEqual(captured["env"]["ANTHROPIC_API_KEY"], "key-a")
+        self.assertEqual(captured["env"]["ANTHROPIC_MODEL"], "model-a")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Auto-Approve Tests
+# ═══════════════════════════════════════════════════════════════════
+
+class TestAutoApprove(unittest.TestCase):
+    """测试 pm_engine 自动审批逻辑。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir()
+
+        # 初始化 git repo
+        subprocess.run(["git", "init", "-q", "-b", "main"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "test"],
+                       cwd=str(self.project_root), capture_output=True)
+        (self.project_root / "README.md").write_text("# test\n")
+        subprocess.run(["git", "add", "."], cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"],
+                       cwd=str(self.project_root), capture_output=True)
+
+        self.sm = MagicMock()
+        self.sm.read_one = MagicMock(return_value={"status": "done", "branch": "fenix/test-spec"})
+        self.sm.transition = MagicMock()
+        self.sm.update_spec = MagicMock()
+        self.sm.get_by_status = MagicMock(return_value={})
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_engine(self, config: dict):
+        from core.pm_engine import PMEngine
+        logger = MagicMock()
+        logger.info = MagicMock()
+        logger.warning = MagicMock()
+        logger.error = MagicMock()
+        logger.debug = MagicMock()
+        ar = MagicMock()
+        return PMEngine(self.sm, ar, config, self.project_root, logger)
+
+    def test_get_approve_mode_default_manual(self):
+        engine = self._make_engine({})
+        self.assertEqual(engine._get_approve_mode(), "manual")
+
+    def test_get_approve_mode_auto(self):
+        engine = self._make_engine({"gates": {"approve_mode": "auto"}})
+        self.assertEqual(engine._get_approve_mode(), "auto")
+
+    def test_resolve_push_branch_from_state(self):
+        engine = self._make_engine({})
+        spec = {"branch": "fenix/custom-branch"}
+        self.assertEqual(engine._resolve_push_branch("test-spec", spec), "fenix/custom-branch")
+
+    def test_resolve_push_branch_default_prefix(self):
+        engine = self._make_engine({"worktree": {"implement_branch_prefix": "fenix"}})
+        self.assertEqual(engine._resolve_push_branch("test-spec", {}), "fenix/test-spec")
+
+    def test_auto_approve_pushed_state_skips(self):
+        """已处于 pushed 状态的 SPEC 不重复触发，直接返回 True。"""
+        self.sm.read_one = MagicMock(return_value={"status": "pushed"})
+        engine = self._make_engine({"gates": {"approve_mode": "auto"}})
+        result = engine._auto_approve("test-spec")
+        self.assertTrue(result)
+        self.sm.transition.assert_not_called()
+
+    def test_auto_approve_non_done_state_skips(self):
+        """非 done 状态的 SPEC 不触发自动推送。"""
+        self.sm.read_one = MagicMock(return_value={"status": "ready"})
+        engine = self._make_engine({"gates": {"approve_mode": "auto"}})
+        result = engine._auto_approve("test-spec")
+        self.assertFalse(result)
+        self.sm.transition.assert_not_called()
+
+    def test_git_push_failure_returns_false(self):
+        """推送不存在的远端应返回失败。"""
+        engine = self._make_engine({})
+        success, error = engine._git_push_branch("nonexistent-branch")
+        self.assertFalse(success)
+        self.assertTrue(len(error) > 0)
+
+    def test_approve_push_success_transitions_to_pushed(self):
+        """mock 成功推送后 transition 到 pushed。"""
+        engine = self._make_engine({})
+        self.sm.read_one = MagicMock(return_value={"status": "done"})
+        with patch.object(engine, '_git_push_branch', return_value=(True, "")):
+            result = engine.approve_push("test-spec")
+            self.assertTrue(result)
+            self.sm.transition.assert_called_once_with("test-spec", "pushed")
+
+    def test_approve_push_failure_updates_error(self):
+        """推送失败时不推进状态，但记录 error。"""
+        engine = self._make_engine({})
+        self.sm.read_one = MagicMock(return_value={"status": "done"})
+        with patch.object(engine, '_git_push_branch', return_value=(False, "remote rejected")):
+            result = engine.approve_push("test-spec")
+            self.assertFalse(result)
+            self.sm.transition.assert_not_called()
+            self.sm.update_spec.assert_called_once()
+            update_args = self.sm.update_spec.call_args[0]
+            self.assertIn("error", update_args[1])
+            self.assertIn("remote rejected", update_args[1]["error"])
+
+    def test_on_spec_done_auto_mode_triggers_approve(self):
+        """auto 模式下 _on_spec_done 应调用 _auto_approve。"""
+        self.sm.read_one = MagicMock(return_value={"status": "done"})
+        self.sm.read_all = MagicMock(return_value={"test-spec": {"status": "pushed"}})
+        engine = self._make_engine({"gates": {"approve_mode": "auto"}})
+        with patch.object(engine, '_auto_approve') as mock_approve:
+            engine._on_spec_done("test-spec")
+            mock_approve.assert_called_once_with("test-spec")
+
+    def test_on_spec_done_manual_mode_skips(self):
+        """manual 模式下 _on_spec_done 不调用 _auto_approve。"""
+        self.sm.read_one = MagicMock(return_value={"status": "done"})
+        self.sm.read_all = MagicMock(return_value={"test-spec": {"status": "pushed"}})
+        engine = self._make_engine({"gates": {"approve_mode": "manual"}})
+        with patch.object(engine, '_auto_approve') as mock_approve:
+            engine._on_spec_done("test-spec")
+            mock_approve.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Dashboard Config I/O Tests
+# ═══════════════════════════════════════════════════════════════════
+
+class TestDashboardConfigIO(unittest.TestCase):
+    """测试 dashboard data.py 中的配置读写。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_read_config_empty_returns_defaults(self):
+        from core.dashboard.data import read_config
+        result = read_config(self.project_root)
+        self.assertFalse(result["raw_exists"])
+        self.assertEqual(result["llm"], {})
+        self.assertEqual(result["agents"], {"models": {}, "max_concurrent": 2})
+        self.assertEqual(result["gates"], {"approve_mode": "manual"})
+
+    def test_write_and_read_roundtrip(self):
+        from core.dashboard.data import write_config, read_config
+        patch = {
+            "llm": {"providers": [
+                {"name": "volc", "baseurl": "https://api.example.com",
+                 "apikey": "sk-test", "model": "deepseek-v4-flash"},
+            ]},
+            "agents": {"models": {
+                "implementer": {"provider": "volc", "model": "deepseek-v4-pro"},
+            }},
+            "gates": {"approve_mode": "auto"},
+        }
+        result = write_config(self.project_root, patch)
+        self.assertTrue(result["ok"], result.get("error"))
+        readback = read_config(self.project_root)
+        self.assertTrue(readback["raw_exists"])
+        self.assertEqual(len(readback["llm"]["providers"]), 1)
+        self.assertEqual(readback["llm"]["providers"][0]["name"], "volc")
+        self.assertEqual(readback["agents"]["models"]["implementer"]["provider"], "volc")
+        self.assertEqual(readback["gates"]["approve_mode"], "auto")
+
+    def test_write_preserves_non_managed_keys(self):
+        """写入受管键时不应影响项目内的其他配置键。"""
+        import yaml
+        from core.dashboard.data import write_config
+        config_path = self.project_root / ".fenix" / "config.yaml"
+        full_config = {
+            "project": {"name": "myproj", "type": "web"},
+            "schedule": {"poll_interval_minutes": 30},
+            "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
+            "gates": {"require_push_approval": True, "approve_mode": "manual"},
+            "logging": {"dir": ".fenix/logs", "level": "INFO"},
+        }
+        with open(config_path, "w") as f:
+            yaml.safe_dump(full_config, f)
+        result = write_config(self.project_root, {"gates": {"approve_mode": "auto"}})
+        self.assertTrue(result["ok"], result.get("error"))
+        with open(config_path, "r") as f:
+            updated = yaml.safe_load(f)
+        self.assertEqual(updated["project"]["name"], "myproj")
+        self.assertEqual(updated["schedule"]["poll_interval_minutes"], 30)
+        self.assertEqual(updated["agents"]["max_concurrent"], 2)
+        self.assertEqual(updated["gates"]["require_push_approval"], True)
+        self.assertEqual(updated["gates"]["approve_mode"], "auto")
+        self.assertIn("logging", updated)
+
+    def test_write_validation_rejects_duplicate_provider(self):
+        from core.dashboard.data import write_config
+        bad_patch = {"llm": {"providers": [
+            {"name": "dup", "baseurl": "https://a.com", "apikey": "k1"},
+            {"name": "dup", "baseurl": "https://b.com", "apikey": "k2"},
+        ]}}
+        result = write_config(self.project_root, bad_patch)
+        self.assertFalse(result["ok"])
+        self.assertIn("unique", result["error"] or "")
+
+    def test_write_atomic_no_partial_write(self):
+        """校验失败时文件内容保持不变。"""
+        import yaml
+        from core.dashboard.data import write_config
+        config_path = self.project_root / ".fenix" / "config.yaml"
+        original = {"project": {"name": "orig", "type": "web"},
+                    "gates": {"approve_mode": "manual"}}
+        with open(config_path, "w") as f:
+            yaml.safe_dump(original, f)
+        bad_patch = {"gates": {"approve_mode": "invalid_mode"}}
+        result = write_config(self.project_root, bad_patch)
+        self.assertFalse(result["ok"])
+        with open(config_path, "r") as f:
+            after = yaml.safe_load(f)
+        self.assertEqual(after["project"]["name"], "orig")
+        self.assertEqual(after["gates"]["approve_mode"], "manual")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -696,8 +1205,9 @@ class TestPMEngineBugFound(unittest.TestCase):
         self.assertEqual(fix2["status"], "ready")
         # 原 SPEC 应回到 implementing（而非卡在 bug-found）
         self.assertEqual(self.sm.read_one("quick-links-folders")["status"], "implementing")
-        # 第二轮 fix 应被排队
-        self.assertIn(("fix-fix-quick-links-folders", "implementer"), self.engine._run_queue)
+        # 第二轮 fix 应被排队（队列条目结构：(priority, spec_name, agent_type)）
+        queued_specs = [(e[1], e[2]) for e in self.engine._run_queue]
+        self.assertIn(("fix-fix-quick-links-folders", "implementer"), queued_specs)
 
     def test_bug_found_writes_fix_spec_files(self):
         # 回归：fix SPEC 必须同时在磁盘上生成 proposal.md / tasks.md，
@@ -741,6 +1251,665 @@ class TestPMEngineBugFound(unittest.TestCase):
         # 不应被防重入跳过：应创建 fix SPEC 并把原 SPEC 转回 implementing
         self.assertIsNotNone(self.sm.read_one("fix-quick-links-folders"))
         self.assertEqual(self.sm.read_one("quick-links-folders")["status"], "implementing")
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Priority Parallel Scheduler Tests (add-parallelism)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestPriorityScheduler(unittest.TestCase):
+    """测试严格优先级并行调度器（pm_engine._process_queue）。
+
+    通过 mock state_machine 与拦截线程启动来验证派发顺序与并行度。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        self.logger = MagicMock()
+        self.logger.info = MagicMock()
+        self.logger.warning = MagicMock()
+        self.logger.error = MagicMock()
+        self.logger.debug = MagicMock()
+
+        self.sm = MagicMock()
+        self.agent_runner = MagicMock()
+        self.config = {"agents": {"max_concurrent": 2}}
+        self.engine = PMEngine(
+            self.sm, self.agent_runner, self.config,
+            self.project_root, self.logger,
+        )
+
+        # 拦截 worker 线程启动：不真的运行，只记录派发的条目
+        self.dispatched = []  # [(priority, spec_name, agent_type)]
+        self._orig_thread_start = threading.Thread.start
+
+        def fake_start(thread_self):
+            name = thread_self.name
+            # 只记录 fenix worker 线程，跳过测试辅助线程
+            if not name.startswith("fenix-"):
+                # 对非 fenix 线程，调用真正的 start
+                self._orig_thread_start(thread_self)
+                return
+            # 从 thread name 反推：fenix-{agent_type}-{spec_name}
+            parts = name.split("-", 2)  # ["fenix", agent_type, spec_name]
+            agent_type = parts[1]
+            spec_name = parts[2]
+            # 从 _active_priorities 推断（不变量：只含一个值）
+            with self.engine._queue_lock:
+                prios = list(self.engine._active_priorities)
+            priority = prios[0] if prios else 5
+            self.dispatched.append((priority, spec_name, agent_type))
+
+        threading.Thread.start = fake_start
+
+    def tearDown(self):
+        threading.Thread.start = self._orig_thread_start
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _set_specs(self, specs):
+        """设置 mock state_machine 的 read_one 返回值。
+
+        specs: {spec_name: {"status": ..., "priority": ...}}
+        """
+        def read_one(name):
+            return specs.get(name)
+        self.sm.read_one = MagicMock(side_effect=read_one)
+
+    def test_high_priority_dispatches_first(self):
+        """高低优先级同时就绪时，高优先级先派发（P1 先于 P5）。"""
+        self._set_specs({
+            "spec-a": {"status": "ready", "priority": 1},
+            "spec-b": {"status": "ready", "priority": 5},
+        })
+        self.sm.transition = MagicMock(return_value=True)
+
+        # 入队（低的先入，高的后入，验证调度器不按 FIFO）
+        self.engine._enqueue("spec-b", "implementer")  # P5
+        self.engine._enqueue("spec-a", "implementer")  # P1
+
+        self.engine._process_queue()
+
+        # 并行度 2，但不同优先级不并行——应该只派发 P1
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0][1], "spec-a")
+        self.assertEqual(self.dispatched[0][0], 1)
+
+    def test_same_priority_parallel(self):
+        """同优先级任务并行至并行度上限。"""
+        self._set_specs({
+            "spec-a": {"status": "ready", "priority": 3},
+            "spec-b": {"status": "ready", "priority": 3},
+            "spec-c": {"status": "ready", "priority": 3},
+        })
+        self.sm.transition = MagicMock(return_value=True)
+
+        self.engine._enqueue("spec-a", "implementer")
+        self.engine._enqueue("spec-b", "implementer")
+        self.engine._enqueue("spec-c", "implementer")
+
+        self.engine._process_queue()
+
+        # 并行度 2 → 应该派发 2 个同优先级任务
+        self.assertEqual(len(self.dispatched), 2)
+        self.assertEqual(self.dispatched[0][0], 3)
+        self.assertEqual(self.dispatched[1][0], 3)
+        names = [d[1] for d in self.dispatched]
+        self.assertIn("spec-a", names)
+        self.assertIn("spec-b", names)
+        # spec-c 还在队列里
+        queued_specs = [e[1] for e in self.engine._run_queue]
+        self.assertIn("spec-c", queued_specs)
+
+    def test_different_priority_no_parallel(self):
+        """不同优先级不并行：有高优先级运行时，即使有空槽也不派发低优先级。"""
+        self._set_specs({
+            "spec-high": {"status": "ready", "priority": 1},
+            "spec-low": {"status": "ready", "priority": 5},
+        })
+        self.sm.transition = MagicMock(return_value=True)
+
+        # 先手动设置一个 P1 正在运行（模拟场景）
+        with self.engine._queue_lock:
+            self.engine._active_runs = 1
+            self.engine._active_priorities.add(1)
+
+        # 队列里有 P5 就绪任务
+        self.engine._enqueue("spec-low", "implementer")
+
+        self.engine._process_queue()
+
+        # 不应派发 P5（尽管有空闲槽位）
+        self.assertEqual(len(self.dispatched), 0)
+        self.assertEqual(self.engine._active_runs, 1)
+
+    def test_same_bucket_fills_idle_slot(self):
+        """同档任务在运行期间允许补齐并行度。"""
+        self._set_specs({
+            "spec-a": {"status": "ready", "priority": 2},
+            "spec-b": {"status": "ready", "priority": 2},
+        })
+        self.sm.transition = MagicMock(return_value=True)
+
+        # P2 已有 1 个在运行，1 个槽位空闲
+        with self.engine._queue_lock:
+            self.engine._active_runs = 1
+            self.engine._active_priorities.add(2)
+
+        self.engine._enqueue("spec-b", "implementer")
+
+        self.engine._process_queue()
+
+        # 同 P2 档应补齐空闲槽位
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0][1], "spec-b")
+        self.assertEqual(self.dispatched[0][0], 2)
+
+    def test_high_priority_no_preempt(self):
+        """高优先级到达不抢占正在运行的低优先级，但低优先级不新增。"""
+        self._set_specs({
+            "spec-low-running": {"status": "implementing", "priority": 5},
+            "spec-high": {"status": "ready", "priority": 1},
+            "spec-low2": {"status": "ready", "priority": 5},
+        })
+        self.sm.transition = MagicMock(return_value=True)
+
+        # P5 已有 1 个在运行
+        with self.engine._queue_lock:
+            self.engine._active_runs = 1
+            self.engine._active_priorities.add(5)
+
+        # P1 和另一个 P5 都就绪
+        self.engine._enqueue("spec-high", "implementer")  # P1
+        self.engine._enqueue("spec-low2", "implementer")   # P5
+
+        self.engine._process_queue()
+
+        # 不应派发任何新任务：
+        # - P5 在运行 → 不能派发 P1（不同优先级不并行）
+        # - P5 有空闲槽位？ 有。但 P5 档是否有就绪？ spec-low2 是 ready。
+        # 但严格优先级：当有更高优先级任务在队列中等待时，同档是否仍可补齐？
+        # 设计 D1：有运行任务时，只派发与运行档同优先级的就绪条目。
+        # 所以应该还能派发一个 P5（spec-low2），因为运行档是 P5，同档补齐。
+        # 不——让我再看设计...
+        # 重新审视："有运行任务时仅派发与运行档相同优先级的就绪条目（同档补齐并行度）"
+        # 所以 spec-low2 应当被派发（补齐 P5 档的并行度）
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0][1], "spec-low2")
+        self.assertEqual(self.dispatched[0][0], 5)
+
+        # spec-high (P1) 仍在队列等待
+        queued_specs = [e[1] for e in self.engine._run_queue]
+        self.assertIn("spec-high", queued_specs)
+
+    def test_all_same_priority_fifo_parallel(self):
+        """全部同优先级时按入队顺序并行，等价于 FIFO + 并发上限。"""
+        self._set_specs({
+            "spec-1": {"status": "ready", "priority": 5},
+            "spec-2": {"status": "ready", "priority": 5},
+            "spec-3": {"status": "ready", "priority": 5},
+        })
+        self.sm.transition = MagicMock(return_value=True)
+
+        # 按 1, 2, 3 顺序入队
+        self.engine._enqueue("spec-1", "implementer")
+        self.engine._enqueue("spec-2", "implementer")
+        self.engine._enqueue("spec-3", "implementer")
+
+        self.engine._process_queue()
+
+        # 并行度 2 → 前两个先派发，按入队顺序
+        self.assertEqual(len(self.dispatched), 2)
+        self.assertEqual(self.dispatched[0][1], "spec-1")
+        self.assertEqual(self.dispatched[1][1], "spec-2")
+
+    def test_max_concurrent_not_exceeded(self):
+        """并行度上限不被突破。"""
+        self._set_specs({
+            f"spec-{i}": {"status": "ready", "priority": 3}
+            for i in range(5)
+        })
+        self.sm.transition = MagicMock(return_value=True)
+
+        for i in range(5):
+            self.engine._enqueue(f"spec-{i}", "implementer")
+
+        self.engine._process_queue()
+
+        self.assertEqual(len(self.dispatched), 2)
+        self.assertEqual(self.engine._active_runs, 2)
+
+    def test_default_priority_is_5(self):
+        """SPEC 无 priority 字段时，默认按 priority=5 处理。"""
+        self._set_specs({
+            "spec-high": {"status": "ready", "priority": 1},
+            "spec-no-prio": {"status": "ready"},  # 无 priority 字段
+        })
+        self.sm.transition = MagicMock(return_value=True)
+
+        self.engine._enqueue("spec-no-prio", "implementer")
+        self.engine._enqueue("spec-high", "implementer")
+
+        self.engine._process_queue()
+
+        # 应只派发 P1（高优先级），spec-no-prio 默认 P5 不派发
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0][1], "spec-high")
+
+    def test_verifier_immediately_after_implementer_same_bucket(self):
+        """verifier 紧随 implementer 派发——同档 FCFS 顺序不回退。
+
+        verifier 通过 _enqueue_front 入队，应在同一 priority 档内紧接
+        implementer 之后（或同档最前面），保证验证顺序。
+        """
+        self._set_specs({
+            "spec-a": {"status": "implemented", "priority": 3},
+            "spec-b": {"status": "ready", "priority": 3},
+            "spec-c": {"status": "ready", "priority": 3},
+        })
+        self.sm.transition = MagicMock(return_value=True)
+
+        # spec-b 和 spec-c 的 implementer 先入队
+        self.engine._enqueue("spec-b", "implementer")  # P3
+        self.engine._enqueue("spec-c", "implementer")  # P3
+
+        # 然后 spec-a 的 implementer 完成，verifier 通过 _enqueue_front 入队
+        self.engine._enqueue_front("spec-a", "verifier")  # P3, 插到同档前面
+
+        # 并行度 2，一次派发 2 个
+        self.engine._process_queue()
+
+        self.assertEqual(len(self.dispatched), 2)
+        # verifier 应该被最先派发（因为 _enqueue_front 插到同档前面）
+        self.assertEqual(self.dispatched[0][1], "spec-a")
+        self.assertEqual(self.dispatched[0][2], "verifier")
+        # 第二个是 spec-b
+        self.assertEqual(self.dispatched[1][1], "spec-b")
+        self.assertEqual(self.dispatched[1][2], "implementer")
+
+    def test_invalid_status_entries_skipped(self):
+        """状态不合法的队列条目被跳过（implementer 非 ready / verifier 非 implemented）。"""
+        self._set_specs({
+            "spec-bad": {"status": "implementing", "priority": 1},  # implementer 不能从 implementing 启动
+            "spec-good": {"status": "ready", "priority": 5},
+        })
+        self.sm.transition = MagicMock(return_value=True)
+
+        self.engine._enqueue("spec-bad", "implementer")  # P1，但状态不对
+        self.engine._enqueue("spec-good", "implementer")  # P5，状态对
+
+        self.engine._process_queue()
+
+        # spec-bad 状态不合法被跳过；P5 是当前最高的合法优先级
+        self.assertEqual(len(self.dispatched), 1)
+        self.assertEqual(self.dispatched[0][1], "spec-good")
+
+    def test_e2e_priority_tiers_serial_and_parallel(self):
+        """端到端：高优先级档完成后，低优先级档才启动；档内并行。
+
+        场景：
+        - 并行度 2
+        - P1: 3 个就绪任务 (a, b, c)
+        - P5: 2 个就绪任务 (x, y)
+        期望：
+        1. 先派发 P1 的 a, b（并行度满）
+        2. a 完成 → 释放槽位 → 派发 P1 的 c（同档补齐）
+        3. P1 全部完成后 → 派发 P5 的 x, y
+        """
+        specs = {
+            "p1-a": {"status": "ready", "priority": 1},
+            "p1-b": {"status": "ready", "priority": 1},
+            "p1-c": {"status": "ready", "priority": 1},
+            "p5-x": {"status": "ready", "priority": 5},
+            "p5-y": {"status": "ready", "priority": 5},
+        }
+        self._set_specs(specs)
+        self.sm.transition = MagicMock(return_value=True)
+
+        # 全部入队（先 P5 后 P1，验证调度器不按 FIFO）
+        self.engine._enqueue("p5-x", "implementer")
+        self.engine._enqueue("p5-y", "implementer")
+        self.engine._enqueue("p1-a", "implementer")
+        self.engine._enqueue("p1-b", "implementer")
+        self.engine._enqueue("p1-c", "implementer")
+
+        # 第一轮派发：只派 P1 的 2 个（并行度 2）
+        self.engine._process_queue()
+        self.assertEqual(len(self.dispatched), 2)
+        self.assertEqual(self.dispatched[0][0], 1)  # P1
+        self.assertEqual(self.dispatched[1][0], 1)  # P1
+        names = [d[1] for d in self.dispatched]
+        self.assertIn("p1-a", names)
+        self.assertIn("p1-b", names)
+        self.assertEqual(self.engine._active_runs, 2)
+        self.assertEqual(self.engine._active_priorities, {1})
+
+        # 模拟 p1-a 完成（释放一个槽位，并触发 _process_queue）
+        # 这模拟 _run_agent_worker 的 finally 块
+        with self.engine._queue_lock:
+            self.engine._active_runs -= 1
+            if self.engine._active_runs == 0:
+                self.engine._active_priorities.discard(1)
+        self.engine._process_queue()
+
+        # 第二轮：P1 档仍有 1 个在运行（p1-b），同档补齐 → 派发 p1-c
+        self.assertEqual(len(self.dispatched), 3)
+        self.assertEqual(self.dispatched[2][1], "p1-c")
+        self.assertEqual(self.dispatched[2][0], 1)
+        self.assertEqual(self.engine._active_runs, 2)
+
+        # 模拟 p1-b 完成
+        with self.engine._queue_lock:
+            self.engine._active_runs -= 1
+            if self.engine._active_runs == 0:
+                self.engine._active_priorities.discard(1)
+        self.engine._process_queue()
+
+        # 第三轮：P1 档还剩 p1-c 在运行（active_runs=1），
+        # 同档无更多就绪 → 本轮不派发（active_priorities={1}，
+        # 不会跳到 P5）
+        self.assertEqual(len(self.dispatched), 3)
+        self.assertEqual(self.engine._active_runs, 1)
+        self.assertEqual(self.engine._active_priorities, {1})
+
+        # 模拟 p1-c 完成（P1 档全部排空）
+        with self.engine._queue_lock:
+            self.engine._active_runs -= 1
+            if self.engine._active_runs == 0:
+                self.engine._active_priorities.discard(1)
+        self.engine._process_queue()
+
+        # P1 全完成 → 开始派发 P5 档（并行度 2，一次派 2 个）
+        self.assertEqual(len(self.dispatched), 5)
+        self.assertEqual(self.dispatched[3][0], 5)
+        self.assertEqual(self.dispatched[4][0], 5)
+        p5_names = [d[1] for d in self.dispatched[3:]]
+        self.assertIn("p5-x", p5_names)
+        self.assertIn("p5-y", p5_names)
+
+    def test_e2e_concurrent_process_queue_thread_safe(self):
+        """多线程并发调用 _process_queue 不突破并行度上限。
+
+        模拟多个 worker 同时完成、同时调用 _process_queue 的竞态场景。
+        """
+        import random
+
+        specs = {f"spec-{i}": {"status": "ready", "priority": 2} for i in range(10)}
+        self._set_specs(specs)
+        self.sm.transition = MagicMock(return_value=True)
+
+        for i in range(10):
+            self.engine._enqueue(f"spec-{i}", "implementer")
+
+        # 用 5 个线程并发调用 _process_queue
+        errors = []
+        def worker():
+            try:
+                self.engine._process_queue()
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        self.assertEqual(len(errors), 0, f"并发出错: {errors}")
+        # 并行度上限 2，active_runs 不应超过 2
+        self.assertLessEqual(self.engine._active_runs, 2)
+        # 总共派发了 2 个（并行度上限）
+        self.assertEqual(len(self.dispatched), 2)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Dashboard Parallelism Config Tests (add-parallelism)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestDashboardParallelismConfig(unittest.TestCase):
+    """测试 Dashboard 配置中并行度（agents.max_concurrent）的读写。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_read_config_includes_max_concurrent(self):
+        """read_config 应返回 agents.max_concurrent。"""
+        import yaml
+        from core.dashboard.data import read_config
+        config_path = self.project_root / ".fenix" / "config.yaml"
+        full_config = {
+            "project": {"name": "p", "type": "web"},
+            "agents": {"max_concurrent": 4, "max_retries": 3, "max_turns": 50},
+        }
+        with open(config_path, "w") as f:
+            yaml.safe_dump(full_config, f)
+        result = read_config(self.project_root)
+        self.assertEqual(result["agents"]["max_concurrent"], 4)
+        # models 也应存在（默认空）
+        self.assertIn("models", result["agents"])
+
+    def test_write_max_concurrent_preserves_other_agents_keys(self):
+        """写并行度后 agents 下其它子键（subagent_model/max_retries/max_turns）保持不变。"""
+        import yaml
+        from core.dashboard.data import write_config
+        config_path = self.project_root / ".fenix" / "config.yaml"
+        original = {
+            "project": {"name": "p", "type": "web"},
+            "agents": {
+                "max_concurrent": 2,
+                "max_retries": 3,
+                "max_turns": 50,
+                "subagent_model": "claude-sonnet-5",
+            },
+            "llm": {"providers": [{"name": "p1", "baseurl": "https://a.com", "apikey": "k1"}]},
+            "gates": {"approve_mode": "manual", "require_push_approval": True},
+        }
+        with open(config_path, "w") as f:
+            yaml.safe_dump(original, f)
+
+        result = write_config(self.project_root, {
+            "agents": {"max_concurrent": 6},
+        })
+        self.assertTrue(result["ok"], result.get("error"))
+
+        with open(config_path, "r") as f:
+            updated = yaml.safe_load(f)
+        # 并行度被更新
+        self.assertEqual(updated["agents"]["max_concurrent"], 6)
+        # 其它 agents 子键不变
+        self.assertEqual(updated["agents"]["max_retries"], 3)
+        self.assertEqual(updated["agents"]["max_turns"], 50)
+        self.assertEqual(updated["agents"]["subagent_model"], "claude-sonnet-5")
+        # llm 不变
+        self.assertEqual(len(updated["llm"]["providers"]), 1)
+        # gates 不变
+        self.assertEqual(updated["gates"]["approve_mode"], "manual")
+        self.assertEqual(updated["gates"]["require_push_approval"], True)
+
+    def test_write_invalid_max_concurrent_rejected(self):
+        """非法并行度（非正整数）POST 返回失败且不写盘。"""
+        import yaml
+        from core.dashboard.data import write_config
+        config_path = self.project_root / ".fenix" / "config.yaml"
+        original = {"agents": {"max_concurrent": 2}}
+        with open(config_path, "w") as f:
+            yaml.safe_dump(original, f)
+
+        # 0 — 非法
+        result = write_config(self.project_root, {"agents": {"max_concurrent": 0}})
+        self.assertFalse(result["ok"])
+        self.assertIn("max_concurrent", result["error"] or "")
+
+        with open(config_path, "r") as f:
+            after = yaml.safe_load(f)
+        self.assertEqual(after["agents"]["max_concurrent"], 2)
+
+    def test_write_negative_max_concurrent_rejected(self):
+        """负数并行度被拒绝。"""
+        from core.dashboard.data import write_config
+        result = write_config(self.project_root, {"agents": {"max_concurrent": -1}})
+        self.assertFalse(result["ok"])
+
+    def test_write_max_concurrent_roundtrip(self):
+        """并行度写后读回一致。"""
+        from core.dashboard.data import write_config, read_config
+        result = write_config(self.project_root, {
+            "agents": {"max_concurrent": 8},
+            "gates": {"approve_mode": "auto"},
+        })
+        self.assertTrue(result["ok"], result.get("error"))
+        readback = read_config(self.project_root)
+        self.assertEqual(readback["agents"]["max_concurrent"], 8)
+        self.assertEqual(readback["gates"]["approve_mode"], "auto")
+
+    def test_max_concurrent_default_when_missing(self):
+        """配置文件无 max_concurrent 时 read_config 返回默认值 2。"""
+        import yaml
+        from core.dashboard.data import read_config
+        config_path = self.project_root / ".fenix" / "config.yaml"
+        with open(config_path, "w") as f:
+            yaml.safe_dump({"agents": {"max_retries": 3}}, f)
+        result = read_config(self.project_root)
+        self.assertEqual(result["agents"]["max_concurrent"], 2)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Dashboard SPEC 列表表格化测试（add-dashboard-spec-table）
+# ═══════════════════════════════════════════════════════════════════
+
+class TestSpecSummaryCreatedUpdated(unittest.TestCase):
+    """spec_summary 应暴露 created/updated 字段（缺失为 None）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_spec_summary_includes_created_and_updated(self):
+        from core.dashboard.data import spec_summary
+        entry = {
+            "status": "ready",
+            "priority": 2,
+            "created": "2026-08-10T14:00:00+08:00",
+            "updated": "2026-08-11T09:00:00+08:00",
+            "error": None,
+        }
+        result = spec_summary(str(self.project_root), "test-spec", entry)
+        self.assertEqual(result["created"], "2026-08-10T14:00:00+08:00")
+        self.assertEqual(result["updated"], "2026-08-11T09:00:00+08:00")
+        self.assertIn("name", result)
+        self.assertIn("status", result)
+
+    def test_spec_summary_missing_created_returns_none(self):
+        from core.dashboard.data import spec_summary
+        entry = {
+            "status": "drafted",
+            "priority": 3,
+            "error": None,
+        }
+        result = spec_summary(str(self.project_root), "old-spec", entry)
+        self.assertIsNone(result["created"])
+        self.assertIsNone(result["updated"])
+
+
+class TestApiSpecsSortOrder(unittest.TestCase):
+    """/api/specs 按 created 倒序（新在前），缺失 created 排最后。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / "openspec" / "changes").mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_state(self, specs_text):
+        state_path = self.project_root / "STATE.md"
+        state_path.write_text("## Specs\n\n" + specs_text, encoding="utf-8")
+
+    def _get_specs_sorted(self):
+        """调用 _api_specs 的排序逻辑（通过 parse_state + spec_summary + sort）。"""
+        from core.dashboard import data as dashboard_data
+        specs = dashboard_data.parse_state(str(self.project_root))
+        items = [
+            dashboard_data.spec_summary(str(self.project_root), name, entry)
+            for name, entry in specs.items()
+        ]
+        # 与 server.py 中相同的排序
+        items.sort(key=lambda s: s.get("created") or "", reverse=True)
+        return [s["name"] for s in items]
+
+    def test_sorted_by_created_descending(self):
+        self._write_state("""
+### old-spec
+- status: done
+- priority: 1
+- created: 2026-01-01T00:00:00Z
+- updated: 2026-01-01T00:00:00Z
+- error: null
+
+### newest-spec
+- status: implementing
+- priority: 2
+- created: 2026-08-10T00:00:00Z
+- updated: 2026-08-10T00:00:00Z
+- error: null
+
+### middle-spec
+- status: ready
+- priority: 3
+- created: 2026-05-01T00:00:00Z
+- updated: 2026-05-01T00:00:00Z
+- error: null
+""")
+        names = self._get_specs_sorted()
+        self.assertEqual(names, ["newest-spec", "middle-spec", "old-spec"])
+
+    def test_missing_created_sorted_last(self):
+        self._write_state("""
+### has-created
+- status: ready
+- priority: 1
+- created: 2026-06-01T00:00:00Z
+- updated: 2026-06-01T00:00:00Z
+- error: null
+
+### no-created
+- status: done
+- priority: 2
+- error: null
+""")
+        names = self._get_specs_sorted()
+        self.assertEqual(names[0], "has-created")
+        self.assertEqual(names[-1], "no-created")
+
+    def test_all_missing_created_stable(self):
+        self._write_state("""
+### spec-a
+- status: ready
+- priority: 1
+- error: null
+
+### spec-b
+- status: done
+- priority: 2
+- error: null
+""")
+        names = self._get_specs_sorted()
+        self.assertEqual(len(names), 2)
 
 
 if __name__ == "__main__":

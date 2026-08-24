@@ -37,7 +37,10 @@ agents:
   # 官方 Claude model 名，用于通过 claude-code SDK 的 model 校验（请求仍走 ANTHROPIC_BASE_URL 代理）。
   # 未配置时 agent_runner 默认传 claude-sonnet-5。
   subagent_model: "claude-sonnet-5"
-  # Maximum concurrent Agent runs
+  # 并行度：同时运行的 Agent 进程数上限。
+  # 调度采用严格优先级并行：高优先级（priority 数值小）先执行；
+  # 同一优先级内的任务可并行至该上限；不同优先级不并行
+  # （低优先级等高优先级全部完成后才启动，不抢占已在运行的任务）。
   max_concurrent: 2
   # Maximum retry attempts for a failed Agent run
   max_retries: 3

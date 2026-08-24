@@ -84,6 +84,7 @@ let autoRefresh = true;   // 右上角开关：关闭后停止 2s 轮询，便�
 const runEventCache = {};   // run_id -> {events,status,error}
 const expandedRuns = new Set();
 const runScrolls = {};      // run_id -> scrollTop
+const specFilter = { q: '', status: '' };  // 项目视图过滤状态，跨刷新保持
 
 function parseHash() {
   const h = decodeURIComponent(location.hash.slice(1) || 'overview');
@@ -168,6 +169,7 @@ function load() {
       setOnline();
       hydratePending();
       if (currentState.view === 'config') hydrateConfigPage();
+      if (currentState.view === 'project') hydrateProjectFilter();
     })
     .catch((err) => {
       if (mySeq !== seq) return;
@@ -322,35 +324,113 @@ function projectCard(p) {
 function renderProject(data) {
   const specs = data.specs || [];
   const project = esc(data.project);
+
+  // 前端排序：按 created 倒序（新在前），缺失 created 排最后
+  const sorted = specs.slice().sort((a, b) => {
+    const ac = a.created || '';
+    const bc = b.created || '';
+    if (!ac && !bc) return 0;
+    if (!ac) return 1;
+    if (!bc) return -1;
+    return bc.localeCompare(ac);
+  });
+
+  // 前端过滤
+  const q = specFilter.q.toLowerCase();
+  const filtered = sorted.filter((s) => {
+    if (q && !s.name.toLowerCase().includes(q)) return false;
+    if (specFilter.status && s.status !== specFilter.status) return false;
+    return true;
+  });
+
+  // 状态下拉选项：全部状态 + STATUS_META 各状态
+  const statusOptions = Object.entries(STATUS_META).map(([k, m]) =>
+    `<option value="${esc(k)}" ${specFilter.status === k ? 'selected' : ''}>${m.icon} ${esc(m.label)}</option>`
+  ).join('');
+
+  const rowsHtml = filtered.length
+    ? filtered.map((s) => specRow(data.project, s)).join('')
+    : '';
+
+  const emptyHtml = specs.length === 0
+    ? '<div class="empty-state">该项目暂无 SPEC</div>'
+    : filtered.length === 0
+      ? '<div class="empty-state">无匹配的 SPEC</div>'
+      : '';
+
   return `
     <div class="breadcrumb"><button onclick="nav('overview')">← 概览</button><span class="sep">/</span>${project}</div>
     <div class="page-title">${project}</div>
     <div class="page-sub">${specs.length} 个 SPEC · 每 2 秒自动刷新</div>
-    ${specs.map((s) => specRow(data.project, s)).join('')}
-    ${specs.length === 0 ? '<div class="empty-state">该项目暂无 SPEC</div>' : ''}`;
+    <div class="spec-filter">
+      <input type="text" id="spec-filter-q" placeholder="搜索名称…" value="${esc(specFilter.q)}" />
+      <select id="spec-filter-status">
+        <option value="" ${specFilter.status === '' ? 'selected' : ''}>全部状态</option>
+        ${statusOptions}
+      </select>
+    </div>
+    ${rowsHtml ? `
+    <div class="spec-table-wrap">
+      <table class="spec-table">
+        <thead>
+          <tr>
+            <th>状态</th>
+            <th>名称</th>
+            <th>优先级</th>
+            <th>创建时间</th>
+            <th>任务进度</th>
+            <th>验证</th>
+            <th>错误</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>` : ''}
+    ${emptyHtml}`;
 }
 
 function specRow(project, s) {
   const pp = pct(s.task_done, s.task_total);
   const cls = pp === 100 ? 'good' : pp >= 60 ? '' : pp > 0 ? 'warn' : 'serious';
   const verify = s.verify_total > 0
-    ? `<span title="验证进度">验证 ${s.verify_done}/${s.verify_total}</span>`
-    : '';
+    ? `<span title="验证进度">${s.verify_done}/${s.verify_total}</span>`
+    : '<span class="muted">—</span>';
   const err = s.error
     ? `<span class="err-tag" title="${esc(s.error)}">⚠ ${esc(String(s.error).slice(0, 50))}</span>`
     : '';
+  const created = s.created ? fmtDate(s.created) : '<span class="muted">—</span>';
   return `
-  <div class="spec-row" onclick="nav('spec/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}')">
-    ${statusPill(s.status)}
-    <span class="spec-name">${esc(s.name)}</span>
-    <div class="spec-metrics">
-      <span title="优先级">P${s.priority ?? '?'}</span>
-      <div class="progress ${cls}" style="width:120px"><div class="fill" style="width:${pp}%"></div></div>
-      <span title="任务进度">${s.task_done}/${s.task_total}</span>
-      ${verify}
-    </div>
-    ${err}
-  </div>`;
+  <tr class="spec-row" onclick="nav('spec/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}')">
+    <td>${statusPill(s.status)}</td>
+    <td class="spec-name-cell">${esc(s.name)}</td>
+    <td>P${s.priority ?? '?'}</td>
+    <td class="created-cell">${created}</td>
+    <td class="progress-cell">
+      <div class="progress ${cls}"><div class="fill" style="width:${pp}%"></div></div>
+      <div class="progress-labels"><span>${s.task_done}/${s.task_total}</span><span>${pp}%</span></div>
+    </td>
+    <td>${verify}</td>
+    <td>${err}</td>
+  </tr>`;
+}
+
+function hydrateProjectFilter() {
+  const qInput = el('spec-filter-q');
+  const sSelect = el('spec-filter-status');
+  if (!qInput || !sSelect) return;
+
+  if (qInput._bound) return;
+  qInput._bound = true;
+  sSelect._bound = true;
+
+  qInput.addEventListener('input', (e) => {
+    specFilter.q = e.target.value;
+    load();
+  });
+  sSelect.addEventListener('change', (e) => {
+    specFilter.status = e.target.value;
+    load();
+  });
 }
 
 function renderSpec(d) {
@@ -968,6 +1048,21 @@ function renderConfig(data) {
     </div>
 
     <div class="config-section">
+      <h3>⚡ 并行度设置</h3>
+      <p class="section-hint">
+        同时运行的 Agent 进程数上限。调度采用<strong>严格优先级并行</strong>：
+        高优先级任务先执行；同一优先级内可并行至该上限；
+        不同优先级不并行（低优先级等高优先级全部完成后才启动）。
+      </p>
+      <div class="form-row">
+        <label>并行度（agents.max_concurrent）</label>
+        <input type="number" id="cfg-max-concurrent" min="1" step="1"
+          value="${esc(agents.max_concurrent ?? 2)}" />
+        <small>默认 2。修改后需重启 daemon 生效。</small>
+      </div>
+    </div>
+
+    <div class="config-section">
       <h3>🚪 审批模式</h3>
       <p class="section-hint">
         SPEC 到达 done 后的行为。<strong>auto 模式将自动执行 git push 到远端</strong>，请谨慎使用。
@@ -1145,12 +1240,16 @@ function collectConfigData() {
     }
   });
 
+  // Max concurrent (parallelism)
+  const maxConcurrentInput = main.querySelector('#cfg-max-concurrent');
+  const maxConcurrent = maxConcurrentInput ? parseInt(maxConcurrentInput.value, 10) : 2;
+
   // Approve mode
   const approveMode = (main.querySelector('input[name="approve_mode"]:checked') || {}).value || 'manual';
 
   return {
     llm: { providers },
-    agents: { models },
+    agents: { models, max_concurrent: maxConcurrent },
     gates: { approve_mode: approveMode },
   };
 }

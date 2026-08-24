@@ -602,6 +602,8 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         "name": spec_name,
         "status": entry.get("status"),
         "priority": entry.get("priority"),
+        "created": entry.get("created"),
+        "updated": entry.get("updated"),
         "error": entry.get("error"),
         "task_done": done,
         "task_total": total,
@@ -819,12 +821,12 @@ def overview(registry_projects: list) -> dict:
     return {"projects": projects, "totals": totals}
 
 
-# ── 配置读写（受管键：llm / agents.models / gates.approve_mode） ──────
+# ── 配置读写（受管键：llm / agents.models / agents.max_concurrent / gates.approve_mode） ──
 
 # Dashboard 管理的配置键子集：写回时只更新这些键，其它键原样保留
 _MANAGED_KEYS = ["llm", "agents", "gates"]
-# 在 agents 下只管理 models 子键（max_concurrent 等保持不变）
-_AGENTS_MANAGED_SUBKEYS = ["models"]
+# 在 agents 下管理的子键白名单
+_AGENTS_MANAGED_SUBKEYS = ["models", "max_concurrent"]
 
 _CONFIG_HEADER_COMMENT = (
     "# Fenix 配置文件\n"
@@ -837,15 +839,15 @@ _CONFIG_HEADER_COMMENT = (
 def read_config(project_root) -> dict:
     """读取项目 .fenix/config.yaml，返回受管配置段。
 
-    返回: {"llm": {...}, "agents": {"models": {...}}, "gates": {"approve_mode": ...},
-            "raw_exists": bool, "error": str|null}
+    返回: {"llm": {...}, "agents": {"models": {...}, "max_concurrent": int},
+            "gates": {"approve_mode": ...}, "raw_exists": bool, "error": str|null}
     容错：文件不存在返回空结构 + raw_exists=False；解析失败返回 error。
     """
     proot = Path(project_root)
     config_path = proot / ".fenix" / "config.yaml"
     result = {
         "llm": {},
-        "agents": {"models": {}},
+        "agents": {"models": {}, "max_concurrent": 2},
         "gates": {"approve_mode": "manual"},
         "raw_exists": False,
         "error": None,
@@ -863,12 +865,20 @@ def read_config(project_root) -> dict:
         result["error"] = "配置文件顶层不是对象"
         return result
 
-    # 提取受管键（只取 models 子键，避免把 agents.max_concurrent 等也带出来）
+    # 提取受管键（白名单：llm / agents.models / agents.max_concurrent / gates.approve_mode）
     if isinstance(raw.get("llm"), dict):
         result["llm"] = raw["llm"]
     agents_raw = raw.get("agents")
-    if isinstance(agents_raw, dict) and isinstance(agents_raw.get("models"), dict):
-        result["agents"] = {"models": agents_raw["models"]}
+    if isinstance(agents_raw, dict):
+        agents_result = {}
+        if isinstance(agents_raw.get("models"), dict):
+            agents_result["models"] = agents_raw["models"]
+        if isinstance(agents_raw.get("max_concurrent"), int):
+            agents_result["max_concurrent"] = agents_raw["max_concurrent"]
+        if agents_result:
+            # 只在结果中有受管键时覆盖默认，避免清空默认值
+            for k, v in agents_result.items():
+                result["agents"][k] = v
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         result["gates"] = {"approve_mode": gates_raw["approve_mode"]}
@@ -878,9 +888,10 @@ def read_config(project_root) -> dict:
 def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     """把 patch 中的受管键合并到 raw_config，返回新 dict（不修改原对象）。
 
-    合并规则：
+    合并规则（白名单化）：
     - llm: 整体替换（patch 中存在即替换，不存在则保留原 llm）
     - agents.models: 整体替换（只动 models，其它 agents 子键保留）
+    - agents.max_concurrent: 替换（仅 patch 中提供且为正整数时）
     - gates.approve_mode: 只替换 approve_mode 子键
     """
     import copy
@@ -890,10 +901,12 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         merged["llm"] = copy.deepcopy(patch["llm"])
 
     if "agents" in patch and isinstance(patch["agents"], dict):
+        if not isinstance(merged.get("agents"), dict):
+            merged["agents"] = {}
         if "models" in patch["agents"]:
-            if not isinstance(merged.get("agents"), dict):
-                merged["agents"] = {}
             merged["agents"]["models"] = copy.deepcopy(patch["agents"]["models"])
+        if "max_concurrent" in patch["agents"]:
+            merged["agents"]["max_concurrent"] = patch["agents"]["max_concurrent"]
 
     if "gates" in patch and isinstance(patch["gates"], dict):
         if "approve_mode" in patch["gates"]:
@@ -935,7 +948,7 @@ def write_config(project_root, config_patch: dict) -> dict:
     # 2. 合并受管键
     merged = _deep_merge_managed(raw, config_patch)
 
-    # 3. 校验受管字段（llm / agents.models / gates.approve_mode）
+    # 3. 校验受管字段（llm / agents.models / agents.max_concurrent / gates.approve_mode）
     #    不做完整 ConfigLoader 校验，避免缺少 project/schedule 等必填键时无法写入。
     try:
         llm = merged.get("llm") or {}
@@ -944,6 +957,12 @@ def write_config(project_root, config_patch: dict) -> dict:
         agents = merged.get("agents") or {}
         if "models" in agents and agents["models"]:
             ConfigLoader._validate_agent_models(agents["models"], llm)
+        if "max_concurrent" in agents:
+            mc = agents["max_concurrent"]
+            if not isinstance(mc, int) or mc <= 0:
+                raise ValueError(
+                    f"agents.max_concurrent must be a positive integer: {mc}"
+                )
         gates = merged.get("gates") or {}
         if "approve_mode" in gates and gates["approve_mode"] is not None:
             mode = gates["approve_mode"]

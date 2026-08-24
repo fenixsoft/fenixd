@@ -40,9 +40,10 @@ class PMEngine:
         self.logger = logger
 
         self._active_runs = 0
-        self._run_queue = []  # Pending (spec_name, agent_type) tuples
+        self._run_queue = []  # Pending (priority, spec_name, agent_type) tuples
+        self._active_priorities = set()  # 当前正在运行条目的 priority 集合（不变量：至多一个值）
         self._handling_events = set()  # 防重入：正在处理的 (event_kind, spec_name)
-        self._queue_lock = threading.Lock()  # 保护 _run_queue 和 _active_runs
+        self._queue_lock = threading.Lock()  # 保护 _run_queue / _active_runs / _active_priorities
 
         # Blocker detection state
         self._last_blocker_check = None
@@ -447,50 +448,133 @@ class PMEngine:
 
     # ── Queue Management ───────────────────────────────────────────
 
+    def _get_spec_priority(self, spec_name: str) -> int:
+        """读取 SPEC 的 priority，缺省为 5。"""
+        spec = self.state_machine.read_one(spec_name)
+        if spec and isinstance(spec.get("priority"), int):
+            return spec["priority"]
+        return 5
+
     def _enqueue(self, spec_name: str, agent_type: str):
-        """Add a run request to the queue (thread-safe)."""
-        entry = (spec_name, agent_type)
+        """Add a run request to the queue (thread-safe).
+
+        条目结构：(priority, spec_name, agent_type)。
+        priority 从 STATE.md 读取（缺省 5）。
+        """
+        priority = self._get_spec_priority(spec_name)
+        entry = (priority, spec_name, agent_type)
         with self._queue_lock:
-            if entry not in self._run_queue:
+            # 去重：忽略 priority 差异，只看 (spec, agent)
+            if not any(e[1] == spec_name and e[2] == agent_type for e in self._run_queue):
                 self._run_queue.append(entry)
-                self.logger.debug("pm_engine", f"Queued: {spec_name} ({agent_type})")
+                self.logger.debug(
+                    "pm_engine",
+                    f"Queued: {spec_name} ({agent_type}, P{priority})"
+                )
 
     def _enqueue_front(self, spec_name: str, agent_type: str):
-        """Add a run request to the FRONT of the queue (thread-safe)."""
-        entry = (spec_name, agent_type)
+        """Insert a run request at the front of its priority bucket (thread-safe).
+
+        在优先级调度下，「队首」语义改为同档优先：verifier 与 implementer
+        属于同一 SPEC、同一 priority，插入后落回同一档且保持档内 FCFS。
+        """
+        priority = self._get_spec_priority(spec_name)
+        entry = (priority, spec_name, agent_type)
         with self._queue_lock:
-            # Remove if already present to avoid duplicates
-            if entry in self._run_queue:
-                self._run_queue.remove(entry)
-            self._run_queue.insert(0, entry)
-            self.logger.debug("pm_engine", f"Queued at front: {spec_name} ({agent_type})")
+            # Remove existing duplicate (ignoring priority)
+            self._run_queue = [
+                e for e in self._run_queue
+                if not (e[1] == spec_name and e[2] == agent_type)
+            ]
+            # 插入到同优先级档的最前面（保持同一档内的顺序）
+            insert_idx = 0
+            for i, e in enumerate(self._run_queue):
+                if e[0] == priority:
+                    insert_idx = i
+                    break
+                if e[0] > priority:
+                    insert_idx = i
+                    break
+                insert_idx = i + 1
+            self._run_queue.insert(insert_idx, entry)
+            self.logger.debug(
+                "pm_engine",
+                f"Queued at front of P{priority}: {spec_name} ({agent_type})"
+            )
 
     def _process_queue(self):
-        """Process the run queue — dispatches agents in worker threads.
+        """Process the run queue — strict-priority parallel scheduling.
 
-        Returns immediately after starting available runs (non-blocking).
-        Each agent runs in its own thread; when it finishes, it decrements
-        _active_runs and calls _process_queue again to pick up the next item.
+        调度规则（严格优先级并行）：
+        - 高优先级档（priority 数值小）先执行；同一档内多个任务可并行至 max_concurrent。
+        - 不同优先级不并行：有其它档位正在运行时，不派发新档位（即使有空闲槽位）。
+        - 不抢占：已在运行的低优先级任务不会被高优先级到达中断。
+        - 每轮只派发与当前运行档同优先级的就绪条目；无运行任务时派发最高优先级档。
         """
         max_concurrent = self._get_config("agents.max_concurrent", 2)
 
         while True:
-            # Atomically check and claim a slot + pop a queue item
+            entry_to_dispatch = None
+
             with self._queue_lock:
-                if not self._run_queue or self._active_runs >= max_concurrent:
+                if self._active_runs >= max_concurrent:
                     return
-                spec_name, agent_type = self._run_queue.pop(0)
+                if not self._run_queue:
+                    return
 
-            # Verify the SPEC is still in the expected state
-            spec = self.state_machine.read_one(spec_name)
-            if not spec:
-                continue
+                # 确定当前应派发的目标优先级
+                # 1) 有正在运行的任务：只派发与运行档同优先级的条目
+                # 2) 无运行任务：派发就绪条目中的最高优先级档
+                if self._active_priorities:
+                    # 不变量：运行档至多一个优先级
+                    target_prio = min(self._active_priorities)
+                else:
+                    # 找队列中所有状态合法条目的最高 priority
+                    # （先不 pop，只扫描以确定 target）
+                    best_valid_prio = None
+                    for entry in self._run_queue:
+                        prio, sname, atype = entry
+                        spec = self.state_machine.read_one(sname)
+                        if not spec:
+                            continue
+                        status = spec.get("status")
+                        if atype == "implementer" and status != "ready":
+                            continue
+                        if atype == "verifier" and status != "implemented":
+                            continue
+                        if best_valid_prio is None or prio < best_valid_prio:
+                            best_valid_prio = prio
+                    if best_valid_prio is None:
+                        return  # 无就绪条目
+                    target_prio = best_valid_prio
 
-            status = spec.get("status")
-            if agent_type == "implementer" and status != "ready":
-                continue
-            if agent_type == "verifier" and status != "implemented":
-                continue
+                # 从队列头部开始找第一个 priority == target_prio 且状态合法的条目
+                dispatch_idx = None
+                for i, entry in enumerate(self._run_queue):
+                    prio, sname, atype = entry
+                    if prio != target_prio:
+                        continue
+                    spec = self.state_machine.read_one(sname)
+                    if not spec:
+                        continue
+                    status = spec.get("status")
+                    if atype == "implementer" and status != "ready":
+                        continue
+                    if atype == "verifier" and status != "implemented":
+                        continue
+                    dispatch_idx = i
+                    break
+
+                if dispatch_idx is None:
+                    # 目标档位无就绪条目（可能有但状态不合法），本轮不派发
+                    return
+
+                entry_to_dispatch = self._run_queue.pop(dispatch_idx)
+                self._active_runs += 1
+                self._active_priorities.add(target_prio)
+                active_count = self._active_runs
+
+            priority, spec_name, agent_type = entry_to_dispatch
 
             # Update state to in-progress
             if agent_type == "implementer":
@@ -498,30 +582,26 @@ class PMEngine:
             elif agent_type == "verifier":
                 self.state_machine.transition(spec_name, "testing")
 
-            # Increment active count and start worker thread
-            with self._queue_lock:
-                self._active_runs += 1
-                active_count = self._active_runs
-
             self.logger.info(
                 "pm_engine",
-                f"Dispatching {agent_type} for '{spec_name}'",
+                f"Dispatching {agent_type} for '{spec_name}' (P{priority})",
                 {"active_runs": active_count},
             )
 
             t = threading.Thread(
                 target=self._run_agent_worker,
-                args=(spec_name, agent_type),
+                args=(spec_name, agent_type, priority),
                 daemon=True,
                 name=f"fenix-{agent_type}-{spec_name}",
             )
             t.start()
 
-    def _run_agent_worker(self, spec_name: str, agent_type: str):
+    def _run_agent_worker(self, spec_name: str, agent_type: str, priority: int):
         """Worker thread body: run the agent and handle result.
 
         Always decrements _active_runs and re-triggers queue processing
         in finally, so slots are released even on exceptions.
+        priority 参数用于 finally 中从 _active_priorities 移除对应档位。
         """
         try:
             if agent_type == "implementer":
@@ -587,6 +667,10 @@ class PMEngine:
             # Release the concurrency slot and try to dispatch more work
             with self._queue_lock:
                 self._active_runs -= 1
+                # 如果该档位最后一个运行任务结束，从 active_priorities 移除
+                # （不变量：任意时刻至多一个 active priority；减到 0 时移除）
+                if self._active_runs == 0:
+                    self._active_priorities.discard(priority)
             self._process_queue()
 
     # ── Verification Pipeline ─────────────────────────────────────
