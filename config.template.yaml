@@ -21,8 +21,22 @@ schedule:
   # Threshold (minutes) for detecting a SPEC stuck in implementing/testing
   stuck_threshold_minutes: 60
 
+# ---- LLM Provider 注册表（可选）----
+# 定义多个 LLM Provider，供 agents.models 引用。
+# 未配置时所有 Agent 使用默认环境变量模型（现状行为）。
+# llm:
+#   providers:
+#     - name: "volc-engine"            # 唯一标识，被 agents.models 引用
+#       baseurl: "https://api.example.com/v1"
+#       apikey: "sk-xxx"               # 敏感信息，.fenix/config.yaml 已 gitignore
+#       model: "deepseek-v4-flash"     # 该 Provider 的默认模型名（真实路由用）
+#       sdk_model: "claude-sonnet-5"   # 可选；用于通过 claude-code SDK 模型名校验
+
 # ---- Agent Configuration ----
 agents:
+  # 官方 Claude model 名，用于通过 claude-code SDK 的 model 校验（请求仍走 ANTHROPIC_BASE_URL 代理）。
+  # 未配置时 agent_runner 默认传 claude-sonnet-5。
+  subagent_model: "claude-sonnet-5"
   # Maximum concurrent Agent runs
   max_concurrent: 2
   # Maximum retry attempts for a failed Agent run
@@ -35,6 +49,16 @@ agents:
   run_timeout_seconds: 1800
   # 使用三步验证流水线（Planner → VerifyEngine → Judge），比旧版 verifier 快 5-10x
   use_new_verifier: true
+
+  # 按 Agent 角色分配模型（可选）。未列出的角色使用默认模型。
+  # 角色可选: implementer | planner-plan | planner-judge | verifier
+  # models:
+  #   implementer:
+  #     provider: "volc-engine"       # 引用 llm.providers 中的 name
+  #     model: "deepseek-v4-flash"    # 该角色使用的真实模型名
+  #   planner-plan:
+  #     provider: "volc-engine"
+  #     model: "deepseek-v4-pro"
 
 # ---- Worktree Configuration ----
 worktree:
@@ -50,6 +74,10 @@ gates:
   # The ONLY human gate: push approval
   # All other stages are fully automated
   require_push_approval: true
+
+  # 审批模式: manual（默认，人工审批） | auto（done 后自动 push）
+  # auto 模式下 SPEC 到达 done 后 daemon 会自动 git push 并推进到 pushed 状态
+  approve_mode: "manual"
 
 # ---- Dashboard (optional) ----
 # Web Dashboard 默认端口（可选）。优先级: --port > ~/.config/fenixd/dashboard.yaml 的 port > 本字段 > 8787
