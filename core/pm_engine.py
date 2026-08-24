@@ -522,30 +522,37 @@ class PMEngine:
                 if not self._run_queue:
                     return
 
+                # 找队列中所有状态合法条目的最高 priority
+                # （先不 pop，只扫描以确定 queued_best）
+                best_valid_prio = None
+                for entry in self._run_queue:
+                    prio, sname, atype = entry
+                    spec = self.state_machine.read_one(sname)
+                    if not spec:
+                        continue
+                    status = spec.get("status")
+                    if atype == "implementer" and status != "ready":
+                        continue
+                    if atype == "verifier" and status != "implemented":
+                        continue
+                    if best_valid_prio is None or prio < best_valid_prio:
+                        best_valid_prio = prio
+                if best_valid_prio is None:
+                    return  # 无就绪条目
+
                 # 确定当前应派发的目标优先级
-                # 1) 有正在运行的任务：只派发与运行档同优先级的条目
+                # 1) 有正在运行的任务：仅当队列最高就绪优先级 == 运行档优先级时
+                #    才派发同档条目（有更高优先级等待时不新增低优先级任务）
                 # 2) 无运行任务：派发就绪条目中的最高优先级档
                 if self._active_priorities:
                     # 不变量：运行档至多一个优先级
-                    target_prio = min(self._active_priorities)
+                    active_prio = min(self._active_priorities)
+                    if best_valid_prio != active_prio:
+                        # 队列中有更高/更低优先级任务在等待，但运行档未排空
+                        # 严格优先级：不派发新档位，也不新增同档（若有更高优等待）
+                        return
+                    target_prio = active_prio
                 else:
-                    # 找队列中所有状态合法条目的最高 priority
-                    # （先不 pop，只扫描以确定 target）
-                    best_valid_prio = None
-                    for entry in self._run_queue:
-                        prio, sname, atype = entry
-                        spec = self.state_machine.read_one(sname)
-                        if not spec:
-                            continue
-                        status = spec.get("status")
-                        if atype == "implementer" and status != "ready":
-                            continue
-                        if atype == "verifier" and status != "implemented":
-                            continue
-                        if best_valid_prio is None or prio < best_valid_prio:
-                            best_valid_prio = prio
-                    if best_valid_prio is None:
-                        return  # 无就绪条目
                     target_prio = best_valid_prio
 
                 # 从队列头部开始找第一个 priority == target_prio 且状态合法的条目

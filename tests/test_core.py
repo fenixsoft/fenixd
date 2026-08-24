@@ -1409,7 +1409,12 @@ class TestPriorityScheduler(unittest.TestCase):
         self.assertEqual(self.dispatched[0][0], 2)
 
     def test_high_priority_no_preempt(self):
-        """高优先级到达不抢占正在运行的低优先级，但低优先级不新增。"""
+        """高优先级到达不抢占正在运行的低优先级，且期间不派发新的低优先级任务。
+
+        严格优先级语义：当有更高优先级任务在队列中等待时，即使当前运行档
+        （低优先级）有空闲槽位，也不再派发新的低优先级同档任务，
+        以避免高优先级任务被不必要地延迟。
+        """
         self._set_specs({
             "spec-low-running": {"status": "implementing", "priority": 5},
             "spec-high": {"status": "ready", "priority": 1},
@@ -1429,21 +1434,16 @@ class TestPriorityScheduler(unittest.TestCase):
         self.engine._process_queue()
 
         # 不应派发任何新任务：
-        # - P5 在运行 → 不能派发 P1（不同优先级不并行）
-        # - P5 有空闲槽位？ 有。但 P5 档是否有就绪？ spec-low2 是 ready。
-        # 但严格优先级：当有更高优先级任务在队列中等待时，同档是否仍可补齐？
-        # 设计 D1：有运行任务时，只派发与运行档同优先级的就绪条目。
-        # 所以应该还能派发一个 P5（spec-low2），因为运行档是 P5，同档补齐。
-        # 不——让我再看设计...
-        # 重新审视："有运行任务时仅派发与运行档相同优先级的就绪条目（同档补齐并行度）"
-        # 所以 spec-low2 应当被派发（补齐 P5 档的并行度）
-        self.assertEqual(len(self.dispatched), 1)
-        self.assertEqual(self.dispatched[0][1], "spec-low2")
-        self.assertEqual(self.dispatched[0][0], 5)
+        # - 有更高优先级 P1 在队列中等待 → 不再派发 P5 档的新任务
+        # - 不抢占已在运行的 P5 任务（仍保持运行）
+        self.assertEqual(len(self.dispatched), 0)
+        self.assertEqual(self.engine._active_runs, 1)
+        self.assertEqual(self.engine._active_priorities, {5})
 
-        # spec-high (P1) 仍在队列等待
+        # spec-high 和 spec-low2 都仍在队列等待
         queued_specs = [e[1] for e in self.engine._run_queue]
         self.assertIn("spec-high", queued_specs)
+        self.assertIn("spec-low2", queued_specs)
 
     def test_all_same_priority_fifo_parallel(self):
         """全部同优先级时按入队顺序并行，等价于 FIFO + 并发上限。"""
