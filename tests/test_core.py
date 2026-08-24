@@ -349,6 +349,46 @@ class TestConfigLoader(unittest.TestCase):
         self.assertEqual(ConfigLoader.get(config, "agents.max_turns"), 50)
         self.assertEqual(ConfigLoader.get(config, "nonexistent.key", "default"), "default")
 
+    def test_max_concurrent_optional_default_when_missing(self):
+        """agents.max_concurrent 为可选字段，缺失时加载成功（消费方自行取默认值）。"""
+        cfg = self._base_config()
+        del cfg["agents"]["max_concurrent"]
+        self._write_config(cfg)
+        config = ConfigLoader.load(self.config_path)
+        self.assertNotIn("max_concurrent", config["agents"])
+
+    def test_max_retries_optional_default_when_missing(self):
+        """agents.max_retries 为可选字段，缺失时加载成功。"""
+        cfg = self._base_config()
+        del cfg["agents"]["max_retries"]
+        self._write_config(cfg)
+        config = ConfigLoader.load(self.config_path)
+        self.assertNotIn("max_retries", config["agents"])
+
+    def test_max_turns_optional_default_when_missing(self):
+        """agents.max_turns 为可选字段，缺失时加载成功。"""
+        cfg = self._base_config()
+        del cfg["agents"]["max_turns"]
+        self._write_config(cfg)
+        config = ConfigLoader.load(self.config_path)
+        self.assertNotIn("max_turns", config["agents"])
+
+    def test_max_concurrent_invalid_zero_rejected(self):
+        """agents.max_concurrent 显式为 0 时被拒绝。"""
+        cfg = self._base_config()
+        cfg["agents"]["max_concurrent"] = 0
+        self._write_config(cfg)
+        with self.assertRaises(ValueError):
+            ConfigLoader.load(self.config_path)
+
+    def test_max_concurrent_invalid_negative_rejected(self):
+        """agents.max_concurrent 显式为负数时被拒绝。"""
+        cfg = self._base_config()
+        cfg["agents"]["max_concurrent"] = -1
+        self._write_config(cfg)
+        with self.assertRaises(ValueError):
+            ConfigLoader.load(self.config_path)
+
     # ── 新增：llm.providers 校验 ──────────────────────────
 
     def _base_config(self):

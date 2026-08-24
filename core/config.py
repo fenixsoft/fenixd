@@ -54,11 +54,14 @@ class ConfigLoader:
         if not isinstance(poll, (int, float)) or poll <= 0:
             raise ValueError(f"schedule.poll_interval_minutes must be positive: {poll}")
 
-        # Validate agents
+        # Validate agents — max_concurrent / max_retries / max_turns 均为可选，
+        # 缺失时由各消费方使用默认值；仅当显式提供时才校验必须为正整数。
         agents = config["agents"]
         for field in ["max_concurrent", "max_retries", "max_turns"]:
-            if not isinstance(agents.get(field, 0), int) or agents[field] <= 0:
-                raise ValueError(f"agents.{field} must be a positive integer: {agents.get(field)}")
+            if field in agents:
+                val = agents[field]
+                if not isinstance(val, int) or val <= 0:
+                    raise ValueError(f"agents.{field} must be a positive integer: {val}")
 
         # Validate project type
         ptype = config["project"].get("type", "")
