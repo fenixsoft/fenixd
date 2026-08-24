@@ -36,8 +36,8 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
         "# Fenix Project State\n\n## Specs\n\n"
         "### myspec\n- status: testing\n- priority: 2\n- created: 2026-01-01T00:00:00+00:00\n"
         "- updated: 2026-01-02T00:00:00+00:00\n- error: null\n- depends_on: null\n\n"
-        "### otherspec\n- status: done\n- priority: 1\n- created: 2026-01-01T00:00:00+00:00\n"
-        "- updated: 2026-01-02T00:00:00+00:00\n- error: null\n- depends_on: null\n",
+        "### otherspec\n- status: done\n- priority: 1\n- created: 2026-02-01T00:00:00+00:00\n"
+        "- updated: 2026-02-02T00:00:00+00:00\n- error: null\n- depends_on: null\n",
         encoding="utf-8",
     )
 
@@ -359,8 +359,48 @@ class TestServerAPI:
         _, srv = server_fx
         status, data = srv.get("/api/specs?project=proj-a")
         assert status == 200
-        names = {s["name"] for s in data["specs"]}
+        specs = data["specs"]
+        names = {s["name"] for s in specs}
         assert "myspec" in names and "otherspec" in names
+        # 每个摘要项包含 created / updated
+        for s in specs:
+            assert "created" in s
+            assert "updated" in s
+        # 按 created 倒序排列（新在前）：otherspec (2026-02) 在 myspec (2026-01) 前
+        spec_names_order = [s["name"] for s in specs]
+        assert spec_names_order.index("otherspec") < spec_names_order.index("myspec")
+
+    def test_api_specs_created_missing_last(self, tmp_path):
+        """缺失 created 的 SPEC 排在有创建时间条目的末尾。"""
+        proot = tmp_path / "proj-nc"
+        (proot / "openspec" / "changes" / "old" / "specs").mkdir(parents=True, exist_ok=True)
+        (proot / "openspec" / "changes" / "new" / "specs").mkdir(parents=True, exist_ok=True)
+        (proot / "openspec" / "changes" / "ancient" / "specs").mkdir(parents=True, exist_ok=True)
+        (proot / "STATE.md").write_text(
+            "# State\n\n## Specs\n\n"
+            "### new\n- status: ready\n- priority: 1\n- created: 2026-03-01T00:00:00+00:00\n"
+            "- error: null\n\n"
+            "### ancient\n- status: done\n- priority: 9\n"
+            "- error: null\n\n"
+            "### old\n- status: testing\n- priority: 5\n- created: 2026-01-01T00:00:00+00:00\n"
+            "- error: null\n",
+            encoding="utf-8",
+        )
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-nc", "path": str(proot)}], "scan_dirs": []})
+        srv = _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+        try:
+            status, data = srv.get("/api/specs?project=proj-nc")
+            assert status == 200
+            names = [s["name"] for s in data["specs"]]
+            # 顺序：new（最新） → old（较旧） → ancient（无 created，排最后）
+            assert names == ["new", "old", "ancient"]
+            # ancient 的 created 为 None
+            ancient = next(s for s in data["specs"] if s["name"] == "ancient")
+            assert ancient["created"] is None
+        finally:
+            srv.stop()
 
     def test_api_spec_detail(self, server_fx):
         _, srv = server_fx
