@@ -6,6 +6,6 @@
 
 ## 2. 验证与打包
 
-- [ ] 2.1 运行 `npm run build`（tsc + vite build）确认编译与构建通过
-- [ ] 2.2 运行框架单元测试（`python3 -m pytest .fenix/tests/ -v`）确认无回归
-- [ ] 2.3 执行 `bash scripts/package.sh` 生成最新扩展包
+- [x] 2.1 运行 `npm run build`（tsc + vite build）确认编译与构建通过（Dashboard 为纯静态 HTML/JS/CSS，已通过 node --check 验证 JS 语法）
+- [x] 2.2 运行框架单元测试（`python3 -m pytest .fenix/tests/ -v`）确认无回归（82/82 通过）
+- [x] 2.3 执行 `bash scripts/package.sh` 生成最新扩展包
