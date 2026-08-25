@@ -486,13 +486,18 @@ class AgentRunner:
                 self.project_root / ".fenix" / "verify-progress"
                 / spec_name / "test_scenarios.json"
             )
+            result_path = (
+                self.project_root / ".fenix" / "verify-progress"
+                / spec_name / ".fenix-run-result.json"
+            )
             return (
                 f"你是 Fenix Planner Agent。你的任务是将 SPEC 文档转化为结构化的浏览器测试场景。\n\n"
                 f"## 步骤\n"
                 f"1. 读取 {spec_dir}/proposal.md, {spec_dir}/design.md, {spec_dir}/specs/*.md\n"
                 f"2. 分析所有功能点，为每个功能生成至少一个测试场景\n"
                 f"3. 将生成的场景保存到 {scenarios_path}\n"
-                f"4. 写入 .fenix-run-result.json: "
+                f"4. 将运行结果写入 {result_path}（绝对路径，与场景文件同目录，"
+                f"不要写别处）："
                 f'{{"status":"plan-ready","spec":"{spec_name}"}}\n\n'
                 f"## 场景覆盖规则\n"
                 f"- 功能正向路径：每个SPEC功能点的完整操作流程\n"
@@ -585,13 +590,18 @@ class AgentRunner:
                 self.project_root / ".fenix" / "verify-progress"
                 / spec_name / "report.json"
             )
+            result_path = (
+                self.project_root / ".fenix" / "verify-progress"
+                / spec_name / ".fenix-run-result.json"
+            )
             return (
                 f"你是 Fenix Planner Agent。你的任务是分析验证引擎的测试报告，判定验证是否通过。\n\n"
                 f"## 步骤\n"
                 f"1. 读取 {report_path}\n"
                 f"2. 按照判定规则分析每个断言结果\n"
                 f"3. 聚合同类型失败，避免重复报告\n"
-                f"4. 写入 .fenix-run-result.json\n"
+                f"4. 将运行结果写入 {result_path}（绝对路径，与场景/报告文件同目录，"
+                f"不要写别处）\n"
                 f"5. 写入 {spec_dir}/verification-report.md（人类可读的验证报告）\n\n"
                 f"## 判定规则\n\n"
                 f"### 第1-2层断言失败 → 一定是Bug\n"

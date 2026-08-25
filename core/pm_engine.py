@@ -412,6 +412,28 @@ class PMEngine:
             )
             return None
 
+    def _read_planner_result(self, spec_name: str) -> str | None:
+        """读取 Planner 写入的结果文件，返回 status 字段。
+
+        优先读 verify-progress/<spec>/.fenix-run-result.json（Planner prompt 中
+        指定的确定性产物路径），回退项目根 .fenix-run-result.json（兼容旧行为：
+        planner 把结果写到 worktree 根、由 _execute_agent 复制到主树的情况）。
+
+        背景：项目根 .fenix-run-result.json 是共享文件，implementer 成功时也会
+        写入（status=success/error）。planner 若把 plan-ready/verified 写到别处，
+        pm_engine 误读项目根会看到 implementer 残留状态（不在
+        verified/bug-found/plan-ready 白名单），误判「Planner 未生成有效场景」，
+        进而降级旧版 verifier 导致验证反复失败（admin 处置根因）。
+        """
+        primary = (
+            self.project_root / ".fenix" / "verify-progress"
+            / spec_name / ".fenix-run-result.json"
+        )
+        if primary.exists():
+            return self._read_verifier_result(primary)
+        fallback = self.project_root / ".fenix-run-result.json"
+        return self._read_verifier_result(fallback)
+
     # ── Queue Management ───────────────────────────────────────────
 
     def _get_spec_priority(self, spec_name: str) -> int:
@@ -920,8 +942,7 @@ class PMEngine:
             raise RuntimeError(f"Planner plan 失败: {plan_result.error}")
 
         # 验证 Planner 是否成功生成场景文件
-        run_result_path = self.project_root / ".fenix-run-result.json"
-        plan_status = self._read_verifier_result(run_result_path)
+        plan_status = self._read_planner_result(spec_name)
         if plan_status != "plan-ready":
             raise RuntimeError(f"Planner 未生成有效场景，status={plan_status}")
 
@@ -981,7 +1002,7 @@ class PMEngine:
             raise RuntimeError(f"Planner judge 失败: {judge_result.error}")
 
         # 读取判定结果
-        verifier_status = self._read_verifier_result(run_result_path)
+        verifier_status = self._read_planner_result(spec_name)
         if verifier_status == "bug-found":
             self.state_machine.transition(spec_name, "bug-found")
             self.state_machine.update_spec(spec_name, {
