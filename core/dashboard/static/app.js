@@ -111,26 +111,32 @@ function route() {
   schedulePoll();
   load();
 }
+// 刷新是否暂停：开关关闭，或当前处于「配置」页（表单编辑中不可被轮询整页重绘）
+function refreshPaused() {
+  return !autoRefresh || currentState.view === 'config';
+}
+function refreshLabel() {
+  if (!autoRefresh) return '自动刷新已暂停';
+  if (currentState.view === 'config') return '配置页不自动刷新';
+  return '2s 自动刷新';
+}
 function schedulePoll() {
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = null;
-  if (!autoRefresh) {
-    el('refresh-text').textContent = '自动刷新已暂停';
+  if (refreshPaused()) {
+    el('refresh-dot').classList.add('off');
+    el('refresh-text').textContent = refreshLabel();
     return;
   }
+  el('refresh-dot').classList.remove('off');
+  el('refresh-text').textContent = '2s 自动刷新';
   pollTimer = setInterval(load, REFRESH_MS);
 }
 function toggleAutoRefresh() {
   autoRefresh = !!el('auto-refresh').checked;
   schedulePoll();
-  if (autoRefresh) {
-    el('refresh-dot').classList.remove('off');
-    el('refresh-text').textContent = '2s 自动刷新';
-    load();   // 恢复时立即刷新一次
-  } else {
-    el('refresh-dot').classList.add('off');
-    el('refresh-text').textContent = '自动刷新已暂停';
-  }
+  // 恢复时立即刷新一次；但配置页不重载，避免冲掉正在编辑的表单
+  if (autoRefresh && currentState.view !== 'config') load();
 }
 
 // ── 数据获取（含运行中 run 的实时流） ──────────────────
@@ -237,8 +243,8 @@ window.addEventListener('hashchange', route);
 
 // ── 在线/离线指示 ──────────────────────────────────────
 function setOnline() {
-  el('refresh-dot').classList.remove('off');
-  el('refresh-text').textContent = autoRefresh ? '2s 自动刷新' : '自动刷新已暂停';
+  el('refresh-dot').classList.toggle('off', refreshPaused());
+  el('refresh-text').textContent = refreshLabel();
 }
 function setOffline() {
   el('refresh-dot').classList.add('off');
@@ -854,6 +860,155 @@ function collapseThinkingTokens(events) {
   return out;
 }
 
+// ── RunView: FlowToken 驱动的运行记录 React 视图 ──────────
+let __runModalRoot = null;
+let __runModalRootEl = null;
+
+function runEventElement(React, ev) {
+  const t = ev.type;
+  const cls =
+    t === 'assistant' ? 'assistant' :
+    t === 'user' ? 'user' :
+    t === 'tool_use' ? 'tool' :
+    t === 'tool_result' ? 'tool-result' :
+    t === 'error' ? 'error' :
+    t === 'stderr' ? 'stderr' :
+    t === 'result' ? 'assistant' : '';
+
+  let content;
+  const AM = window.FlowToken?.AnimatedMarkdown;
+
+  if (t === 'assistant') {
+    const msg = ev.message || {};
+    const blocks = msg.content || [];
+    const text = blocks.filter((c) => c && c.type === 'text').map((c) => c.text).join(' ');
+    const tool = blocks.find((c) => c && c.type === 'tool_use');
+    const parts = [];
+    if (tool) {
+      parts.push(React.createElement('div', { key: 'tool', className: 'run-inline-tool' },
+        '🔧 ',
+        React.createElement('code', null, tool.name || 'tool'),
+        ' ',
+        React.createElement('span', { className: 'pre-wrap' }, JSON.stringify(tool.input).slice(0, 600))
+      ));
+    }
+    if (text) {
+      if (AM) {
+        parts.push(React.createElement('div', { key: 'md', className: 'flowtoken-md' },
+          React.createElement(AM, { content: text, animation: null })
+        ));
+      } else {
+        parts.push(React.createElement('div', { key: 'md', className: 'md', dangerouslySetInnerHTML: { __html: mdRender(text) } }));
+      }
+    }
+    if (!parts.length) {
+      parts.push(React.createElement('span', { className: 'pre-wrap' }, esc(JSON.stringify(ev).slice(0, 300))));
+    }
+    content = parts;
+  } else if (t === 'user') {
+    const msg = ev.message || {};
+    const blocks = msg.content || [];
+    const text = blocks.filter((x) => typeof x === 'string').join(' ');
+    const parts = [];
+    const toolResults = blocks.filter((x) => x && x.type === 'tool_result');
+    if (toolResults.length) {
+      toolResults.forEach((c, i) => {
+        const errCls = c.is_error ? ' tool-error' : '';
+        parts.push(React.createElement('span', { key: 'tr' + i, className: 'pre-wrap' + errCls },
+          (c.is_error ? '（错误）' : '') + String(c.content).slice(0, 400)
+        ));
+      });
+    }
+    if (text) {
+      if (AM) {
+        parts.push(React.createElement('div', { key: 'md', className: 'flowtoken-md' },
+          React.createElement(AM, { content: text, animation: null })
+        ));
+      } else {
+        parts.push(React.createElement('div', { key: 'md', dangerouslySetInnerHTML: { __html: mdRender(text) } }));
+      }
+    }
+    if (!parts.length) {
+      parts.push(React.createElement('span', { className: 'pre-wrap' }, esc(JSON.stringify(ev).slice(0, 300))));
+    }
+    content = parts;
+  } else if (t === 'tool_use') {
+    content = React.createElement('span', { className: 'pre-wrap' },
+      '🔧 ',
+      React.createElement('code', null, ev.name || 'tool'),
+      ' ' + JSON.stringify(ev.input || {}).slice(0, 600)
+    );
+  } else if (t === 'tool_result') {
+    const errCls = ev.is_error ? ' tool-error' : '';
+    content = React.createElement('span', { className: 'pre-wrap' + errCls },
+      (ev.is_error ? '（错误）' : '') + String(ev.content || '').slice(0, 400)
+    );
+  } else if (t === 'result') {
+    const resultText = String(ev.result || '');
+    const turns = ev.num_turns ?? '?';
+    content = React.createElement('span', null,
+      '🏁 ',
+      AM
+        ? React.createElement('span', { className: 'flowtoken-md' },
+            React.createElement(AM, { content: resultText, animation: null })
+          )
+        : React.createElement('span', { dangerouslySetInnerHTML: { __html: mdRender(resultText) } }),
+      `（turns: ${turns}）`
+    );
+  } else if (t === 'error') {
+    content = `💥 ${ev.error || '异常终止'}${ev.exit_code != null ? `（exit_code: ${ev.exit_code}）` : ''}`;
+  } else if (t === 'stderr') {
+    content = React.createElement('span', { className: 'pre-wrap' }, '⚠ ' + (ev.line || ''));
+  } else if (t === 'system') {
+    const merged = ev._merged && ev._merged > 1 ? `（合并 ${ev._merged} 条）` : '';
+    content = `⚙ 系统: ${ev.subtype || ''}${merged}`;
+  } else {
+    content = esc(JSON.stringify(ev).slice(0, 300));
+  }
+
+  return React.createElement('div', { className: 'run-event ' + cls, key: ev._key || null },
+    React.createElement('span', { className: 'pre-wrap' }, typeof content === 'string' ? content : content)
+  );
+}
+
+function RunView(React, props) {
+  const events = collapseThinkingTokens(props.events || []);
+  const tail = events.slice(-300);
+  const elements = tail.map((ev, i) => {
+    ev._key = i;
+    return runEventElement(React, ev);
+  });
+  if (props.status === 'error' && props.error) {
+    elements.unshift(runEventElement(React, { ...props.error, _key: 'err' }));
+  }
+  const total = (props.events || []).length;
+  return React.createElement('div', null,
+    React.createElement('div', { className: 'runmodal-scroll' }, elements),
+    React.createElement('div', { className: 'kv-row' },
+      React.createElement('span', { className: 'k' }, `共 ${total} 条事件`)
+    )
+  );
+}
+
+function mountRunModalRoot(body) {
+  const React = window.FlowToken?.React;
+  const ReactDOM = window.FlowToken?.ReactDOM;
+  if (!React || !ReactDOM) return null;
+  if (__runModalRoot && __runModalRootEl === body) return __runModalRoot;
+  unmountRunModalRoot();
+  __runModalRootEl = body;
+  __runModalRoot = ReactDOM.createRoot(body);
+  return __runModalRoot;
+}
+
+function unmountRunModalRoot() {
+  if (__runModalRoot && __runModalRootEl) {
+    try { __runModalRoot.unmount(); } catch (e) { /* ignore */ }
+  }
+  __runModalRoot = null;
+  __runModalRootEl = null;
+}
+
 function renderRunModalBody(d) {
   const raw = d.events || [];
   const events = collapseThinkingTokens(raw);
@@ -953,12 +1108,23 @@ function stopRunModalPoll() {
 function renderRunModalBodyLive(body, d) {
   // 粘性滚动：更新前贴近底部则更新后自动滚到最新；用户上翻阅读历史时不强制拽回
   const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
-  body.innerHTML = renderRunModalBody(d);
+  const React = window.FlowToken?.React;
+  const root = mountRunModalRoot(body);
+  if (root && React) {
+    root.render(RunView(React, {
+      events: d.events || [],
+      status: d.status,
+      error: d.error,
+    }));
+  } else {
+    body.innerHTML = renderRunModalBody(d);
+  }
   if (nearBottom) body.scrollTop = body.scrollHeight;
 }
 
 function openRunModal(payload) {
   stopRunModalPoll();
+  unmountRunModalRoot();
   const box = el('runmodal');
   const body = el('runmodal-body');
   if (payload && payload.runId) {
@@ -992,6 +1158,7 @@ function openRunModal(payload) {
 }
 function closeRunModal() {
   stopRunModalPoll();
+  unmountRunModalRoot();
   el('runmodal').classList.add('hidden');
   el('runmodal-body').innerHTML = '';
 }
@@ -1088,6 +1255,20 @@ function renderConfig(data) {
   </div>`;
 }
 
+function renderEnvRow(k, v) {
+  return `
+    <div class="env-row">
+      <input type="text" class="env-key" placeholder="参数名（如 CLAUDE_CODE_MAX_CONTEXT_TOKENS）"
+        value="${esc(k)}" />
+      <input type="text" class="env-value" placeholder="值（如 1000000）"
+        value="${esc(v)}" />
+      <button type="button" class="btn btn-ghost btn-danger" data-action="remove-env" title="删除此参数">✕</button>
+    </div>`;
+}
+function renderEnvRows(env) {
+  return Object.entries(env || {}).map(([k, v]) => renderEnvRow(k, v)).join('');
+}
+
 function renderProviderCard(p, idx) {
   return `
   <div class="provider-card" data-idx="${idx}">
@@ -1116,6 +1297,13 @@ function renderProviderCard(p, idx) {
         <label>SDK 校验模型名 <small>（可选，官方 Claude 模型名）</small></label>
         <input type="text" placeholder="claude-sonnet-5"
           value="${esc(p.sdk_model || '')}" data-field="sdk_model" />
+      </div>
+      <div class="form-row env-section">
+        <label>自定义环境变量 <small>（选填，运行时注入子进程，如 CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000）</small></label>
+        <div class="env-list">
+          ${renderEnvRows(p.env)}
+        </div>
+        <button type="button" class="btn btn-ghost btn-add-env" data-action="add-env">+ 添加参数</button>
       </div>
     </div>
   </div>`;
@@ -1171,7 +1359,7 @@ function hydrateConfigPage() {
     });
   }
 
-  // 事件委托：Provider 删除 / 字段变更
+  // 事件委托：Provider 删除 / 自定义环境变量增删
   const main = el('main');
   main.addEventListener('click', (e) => {
     const t = e.target;
@@ -1180,6 +1368,16 @@ function hydrateConfigPage() {
       const cards = main.querySelectorAll('.provider-card');
       if (cards[idx]) cards[idx].remove();
       reindexProviders();
+    } else if (t.matches('[data-action="add-env"]')) {
+      const list = t.closest('.provider-card')?.querySelector('.env-list');
+      if (list) {
+        const div = document.createElement('div');
+        div.innerHTML = renderEnvRow('', '');
+        list.appendChild(div.firstElementChild);
+      }
+    } else if (t.matches('[data-action="remove-env"]')) {
+      const row = t.closest('.env-row');
+      if (row) row.remove();
     }
   });
 
@@ -1223,6 +1421,14 @@ function collectConfigData() {
       const val = inp.value.trim();
       if (val) p[field] = val;
     });
+    // 自定义环境变量（仅收键值都非空的行）
+    const env = {};
+    card.querySelectorAll('.env-row').forEach((row) => {
+      const k = row.querySelector('.env-key').value.trim();
+      const v = row.querySelector('.env-value').value.trim();
+      if (k && v) env[k] = v;
+    });
+    if (Object.keys(env).length > 0) p.env = env;
     providers.push(p);
   });
 
