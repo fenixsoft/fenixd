@@ -8,6 +8,7 @@ dashboard 模块测试（add-fenix-dashboard 阶段 B/C：dashboard-server + das
 """
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -225,6 +226,189 @@ class TestDataParse:
         assert overview["totals"]["spec_count"] == 2
         assert overview["totals"]["active_runs"] == 1
         assert overview["projects"][0]["name"] == "proj-a"
+
+
+# ── 实时任务进度叠加（run 记录 TaskUpdate → tasks.md） ──────────────────
+
+def _write_flowspec_tasks(proot: Path) -> None:
+    """写入 7 个任务的 tasks.md（1.1..3.1），复刻真实 add-flowtoken-run-view 结构。"""
+    spec_dir = proot / "openspec" / "changes" / "flowspec"
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    (spec_dir / "tasks.md").write_text(
+        "## 1. 打包接入\n\n"
+        "- [ ] 1.1 任务A\n"
+        "- [ ] 1.2 任务B\n"
+        "- [ ] 1.3 任务C\n"
+        "## 2. 弹窗重写\n\n"
+        "- [ ] 2.1 任务D\n"
+        "- [ ] 2.2 任务E\n"
+        "- [ ] 2.3 任务F\n"
+        "## 3. 测试\n\n"
+        "- [ ] 3.1 任务G\n",
+        encoding="utf-8",
+    )
+
+
+def _write_impl_run(proot: Path, spec: str, ts: int, creates, updates) -> Path:
+    """写一个含 TaskCreate（subjects）/TaskUpdate（taskId,status）的 impl run 产物。"""
+    run_file = proot / ".fenix" / "runs" / f"impl-{spec}-{ts}.jsonl"
+    lines = []
+    for subj in creates:
+        lines.append(json.dumps({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "name": "TaskCreate",
+                 "input": {"subject": subj, "description": "d", "activeForm": "a"}}
+            ]},
+        }, ensure_ascii=False))
+    for tid, status in updates:
+        lines.append(json.dumps({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "name": "TaskUpdate",
+                 "input": {"taskId": str(tid), "status": status}}
+            ]},
+        }, ensure_ascii=False))
+    run_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return run_file
+
+
+class TestTaskLiveOverlay:
+    """实时任务进度叠加：implementer 用 TaskUpdate 汇报，Dashboard 从 run 产物解析。"""
+
+    def _mk(self, tmp_path):
+        proot = make_project(tmp_path)
+        _write_flowspec_tasks(proot)
+        return proot
+
+    def _creates7(self):
+        return [f"Task {tid}: desc" for tid in ("1.1", "1.2", "1.3", "2.1", "2.2", "2.3", "3.1")]
+
+    def test_parse_tasks_live_overlay_implementing(self, tmp_path):
+        proot = self._mk(tmp_path)
+        _write_impl_run(proot, "flowspec", 1789000000, self._creates7(),
+                        [(i, "completed") for i in range(1, 7)] + [(7, "in_progress")])
+
+        groups = dash_data.parse_tasks(proot, "flowspec", "implementing")
+        flat = [t for g in groups for t in g["tasks"]]
+        by_id = {t["id"]: t for t in flat}
+        assert len(flat) == 7
+        assert by_id["1.1"]["done"] is True
+        assert by_id["1.3"]["done"] is True
+        assert by_id["2.3"]["done"] is True
+        assert by_id["3.1"]["done"] is False
+        # 分组计数重算（前端分组头依赖 g.done / g.total）
+        assert [g["done"] for g in groups] == [3, 3, 0]
+        assert [g["total"] for g in groups] == [3, 3, 1]
+        assert dash_data.task_progress(proot, "flowspec", "implementing") == (6, 7)
+
+    def test_parse_tasks_live_overlay_id_mismatch(self, tmp_path):
+        # 复刻真实缺陷：tasks.md 8 任务（补 3.2），run 建 7、completed 1-6 → 3.2 保持未勾
+        proot = self._mk(tmp_path)
+        tf = proot / "openspec" / "changes" / "flowspec" / "tasks.md"
+        tf.write_text(tf.read_text(encoding="utf-8") + "- [ ] 3.2 任务H\n", encoding="utf-8")
+        _write_impl_run(proot, "flowspec", 1789000000, self._creates7(),
+                        [(i, "completed") for i in range(1, 7)])
+
+        flat = [t for g in dash_data.parse_tasks(proot, "flowspec", "implementing") for t in g["tasks"]]
+        assert len(flat) == 8
+        by_id = {t["id"]: t for t in flat}
+        assert by_id["3.2"]["done"] is False
+        assert sum(1 for t in flat if t["done"]) == 6
+        assert dash_data.task_progress(proot, "flowspec", "implementing") == (6, 8)
+
+    def test_parse_tasks_live_overlay_post_implement(self, tmp_path):
+        # 防 R1 回跳：实现完成后各生命周期状态仍叠加（tasks.md 仍全未勾选时）
+        proot = self._mk(tmp_path)
+        _write_impl_run(proot, "flowspec", 1789000000, self._creates7(),
+                        [(i, "completed") for i in range(1, 7)])
+        for status in ("implemented", "testing", "bug-found", "done", "pushed"):
+            assert dash_data.task_progress(proot, "flowspec", status) == (6, 7), status
+
+    def test_parse_tasks_overlay_disabled(self, tmp_path):
+        proot = self._mk(tmp_path)
+        _write_impl_run(proot, "flowspec", 1789000000, self._creates7(),
+                        [(i, "completed") for i in range(1, 7)])
+        # live=False / ready / 空状态 → 不叠加
+        assert sum(g["done"] for g in dash_data.parse_tasks(proot, "flowspec", "implementing", live=False)) == 0
+        assert dash_data.task_progress(proot, "flowspec", "ready") == (0, 7)
+        assert dash_data.task_progress(proot, "flowspec", "") == (0, 7)
+
+    def test_parse_tasks_no_run_file_fallback(self, tmp_path):
+        proot = self._mk(tmp_path)
+        assert dash_data.task_progress(proot, "flowspec", "implementing") == (0, 7)
+
+    def test_parse_run_task_done_corrupt_and_variants(self, tmp_path):
+        proot = self._mk(tmp_path)
+        run_file = proot / ".fenix" / "runs" / "impl-flowspec-1789000000.jsonl"
+        lines = [
+            "not json {{{",
+            "12345",
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "TaskCreate", "input": {"subject": "Task 2.1: x"}}]}}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "TaskCreate", "input": {"subject": ""}}]}}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "TaskUpdate", "input": {"taskId": "2", "status": "completed"}}]}}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "TaskUpdate", "input": {"taskId": 1, "status": "completed"}}]}}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "TaskUpdate", "input": {"taskId": "abc", "status": "completed"}}]}}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "TaskUpdate", "input": {"taskId": "99", "status": "completed"}}]}}),
+            json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "TaskUpdate", "input": {"taskId": "3", "status": "in_progress"}}]}}),
+        ]
+        run_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        rd = dash_data._parse_run_task_done(run_file)
+        # 2 个 TaskCreate：2.1 有 id、空 subject 无 id；taskId 2/1 completed → done_ids={2.1}，flat_done={0,1}
+        assert rd["created_count"] == 2
+        assert rd["done_ids"] == {"2.1"}
+        assert rd["flat_done"] == {0, 1}
+
+    def test_parse_run_task_done_flat_fallback(self, tmp_path):
+        proot = self._mk(tmp_path)
+        _write_impl_run(proot, "flowspec", 1789000000,
+                        ["Implement A", "Implement B", "Implement C"],
+                        [(1, "completed"), (2, "completed")])
+        rd = dash_data._parse_run_task_done(proot / ".fenix" / "runs" / "impl-flowspec-1789000000.jsonl")
+        assert rd["done_ids"] == set()
+        assert rd["flat_done"] == {0, 1}
+        # 无 id 时回退扁平下标对齐：前 2 个任务被标记
+        assert dash_data.task_progress(proot, "flowspec", "implementing") == (2, 7)
+
+    def test_find_impl_run_file_newest_and_missing(self, tmp_path):
+        proot = self._mk(tmp_path)
+        old = proot / ".fenix" / "runs" / "impl-flowspec-100.jsonl"
+        new = proot / ".fenix" / "runs" / "impl-flowspec-200.jsonl"
+        old.write_text("{}\n", encoding="utf-8")
+        new.write_text("{}\n", encoding="utf-8")
+        os.utime(old, (1000000, 1000000))
+        os.utime(new, (2000000, 2000000))
+        # 无关前缀不误匹配
+        (proot / ".fenix" / "runs" / "impl-other-300.jsonl").write_text("{}\n", encoding="utf-8")
+        (proot / ".fenix" / "runs" / "verify-flowspec-400.jsonl").write_text("{}\n", encoding="utf-8")
+        assert dash_data._find_impl_run_file(proot, "flowspec") == new
+        assert dash_data._find_impl_run_file(proot, "nope") is None
+
+    def test_live_propagates_to_summary(self, tmp_path):
+        proot = self._mk(tmp_path)
+        # STATE.md 注册 flowspec 为 implementing
+        state = proot / "STATE.md"
+        state.write_text(state.read_text(encoding="utf-8") +
+                         "\n### flowspec\n- status: implementing\n- priority: 5\n- created: 2026-01-01T00:00:00+00:00\n"
+                         "- updated: 2026-01-01T00:00:00+00:00\n- error: null\n- depends_on: null\n",
+                         encoding="utf-8")
+        _write_impl_run(proot, "flowspec", 1789000000, self._creates7(),
+                        [(i, "completed") for i in range(1, 7)])
+
+        s = dash_data.spec_summary(proot, "flowspec", {"status": "implementing", "created": "x", "updated": "y"})
+        assert s["task_done"] == 6 and s["task_total"] == 7
+        p = dash_data.project_summary(proot, "proj-a", str(proot))
+        assert p["task_done"] == 6 + 1  # flowspec(6) + myspec(1)
+        assert p["task_total"] == 7 + 3
 
 
 # ── registry.py ───────────────────────────────────────────────────────
@@ -487,3 +671,99 @@ class TestServerAPI:
             s.listen(1)
             free = find_free_port(occupied)
             assert free != occupied
+
+
+# ── parse_tasks worktree 路径对齐测试（fix-worktree-agent-cwd） ──
+
+class TestParseTasksWorktreeAlignment:
+    """parse_tasks 在 implementing 状态读 worktree tasks.md，implemented 后读主树 tasks.md。"""
+
+    def _mk(self, tmp_path):
+        proot = make_project(tmp_path)
+        # 注册一个新 SPEC wtspec，初始全部未勾选
+        spec_dir = proot / "openspec" / "changes" / "wtspec"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "tasks.md").write_text(
+            "## 1. 组一\n\n"
+            "- [ ] 1.1 任务A\n"
+            "- [ ] 1.2 任务B\n",
+            encoding="utf-8",
+        )
+        return proot
+
+    def _mk_worktree(self, proot, spec_name, tasks_content):
+        """在 .claude/worktrees/ 下创建一个 impl-<spec>-<ts> 目录模拟 worktree。"""
+        wt_dir = proot / ".claude" / "worktrees" / f"impl-{spec_name}-9999999999"
+        wt_spec_dir = wt_dir / "openspec" / "changes" / spec_name
+        wt_spec_dir.mkdir(parents=True, exist_ok=True)
+        (wt_spec_dir / "tasks.md").write_text(tasks_content, encoding="utf-8")
+        return wt_dir
+
+    def test_implementing_reads_worktree_tasks(self, tmp_path):
+        """implementing 状态应读取 worktree 中的 tasks.md（实现者实时勾选处）。"""
+        proot = self._mk(tmp_path)
+        # worktree 中 1.1 已勾选，主树中全部未勾
+        self._mk_worktree(proot, "wtspec",
+            "## 1. 组一\n\n"
+            "- [x] 1.1 任务A\n"
+            "- [ ] 1.2 任务B\n")
+
+        groups = dash_data.parse_tasks(proot, "wtspec", "implementing", live=False)
+        flat = [t for g in groups for t in g["tasks"]]
+        by_id = {t["id"]: t for t in flat}
+        # 应该读到 worktree 的勾选状态（1.1 done）
+        assert by_id["1.1"]["done"] is True
+        assert by_id["1.2"]["done"] is False
+
+    def test_implemented_reads_main_tree_tasks(self, tmp_path):
+        """implemented 状态应读取主树 tasks.md（merge 已把勾选带回主树）。"""
+        proot = self._mk(tmp_path)
+        # 主树中 1.1 已勾选（模拟 merge-back 后）
+        spec_dir = proot / "openspec" / "changes" / "wtspec"
+        (spec_dir / "tasks.md").write_text(
+            "## 1. 组一\n\n"
+            "- [x] 1.1 任务A\n"
+            "- [x] 1.2 任务B\n",
+            encoding="utf-8",
+        )
+        # worktree 中状态不同（模拟 worktree 已清理或内容不同）
+        self._mk_worktree(proot, "wtspec",
+            "## 1. 组一\n\n"
+            "- [x] 1.1 任务A\n"
+            "- [ ] 1.2 任务B\n")
+
+        groups = dash_data.parse_tasks(proot, "wtspec", "implemented", live=False)
+        flat = [t for g in groups for t in g["tasks"]]
+        by_id = {t["id"]: t for t in flat}
+        # 应该读到主树的勾选状态（都 done）
+        assert by_id["1.1"]["done"] is True
+        assert by_id["1.2"]["done"] is True
+
+    def test_testing_reads_main_tree_tasks(self, tmp_path):
+        """testing 状态也应读主树 tasks.md（merge-back 后）。"""
+        proot = self._mk(tmp_path)
+        spec_dir = proot / "openspec" / "changes" / "wtspec"
+        (spec_dir / "tasks.md").write_text(
+            "## 1. 组一\n\n"
+            "- [x] 1.1 任务A\n"
+            "- [x] 1.2 任务B\n",
+            encoding="utf-8",
+        )
+        self._mk_worktree(proot, "wtspec",
+            "## 1. 组一\n\n"
+            "- [ ] 1.1 任务A\n"
+            "- [ ] 1.2 任务B\n")
+
+        groups = dash_data.parse_tasks(proot, "wtspec", "testing", live=False)
+        done = sum(t["done"] for g in groups for t in g["tasks"])
+        assert done == 2  # 主树两个都勾了
+
+    def test_implementing_no_worktree_falls_back_to_main(self, tmp_path):
+        """implementing 状态但无 worktree 时，回退读主树 tasks.md。"""
+        proot = self._mk(tmp_path)
+        # 不创建 worktree
+        groups = dash_data.parse_tasks(proot, "wtspec", "implementing", live=False)
+        flat = [t for g in groups for t in g["tasks"]]
+        # 主树全部未勾 → 0 done
+        done = sum(t["done"] for t in flat)
+        assert done == 0

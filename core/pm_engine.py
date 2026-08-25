@@ -631,14 +631,51 @@ class PMEngine:
                 final_error = impl_error or result.error
 
                 if is_success:
-                    self.state_machine.transition(spec_name, "implemented")
-                    self.state_machine.update_spec(spec_name, {
-                        "implementer_run": result.run_id,
-                        "error": None,
-                    })
-                    # Immediately queue verifier at FRONT so it runs next
-                    self._enqueue_front(spec_name, "verifier")
-                    self.logger.info("pm_engine", f"Implement done, verifier queued for '{spec_name}'")
+                    # Merge worktree branch back into main tree before advancing state.
+                    # worktree 已被 agent_runner 清理，但分支仍保留（success 路径不删分支），
+                    # 所以用分支名直接 merge。merge 失败则回退到 ready 并记录 error，
+                    # 交由现有重试机制重建 worktree 重试。
+                    merge_ok = True
+                    merge_error = ""
+                    if result.branch and hasattr(self.agent_runner, 'worktree_manager'):
+                        wm = self.agent_runner.worktree_manager
+                        merge_ok, merge_error = wm.merge_back_from_branch(result.branch)
+
+                    if not merge_ok:
+                        # merge 失败：算作一次失败尝试，走重试逻辑
+                        spec_entry = self.state_machine.read_one(spec_name)
+                        retries = spec_entry.get("_retry_count", 0) + 1
+                        max_r = self._get_config("agents.max_retries", 3)
+                        final_error = f"Merge-back failed: {merge_error}"
+                        if retries >= max_r:
+                            self.state_machine.update_spec(spec_name, {
+                                "status": "ready",
+                                "error": final_error,
+                                "_retry_count": 0,
+                            })
+                            self.logger.error(
+                                "pm_engine",
+                                f"All retries exhausted for '{spec_name}' (merge-back failures)",
+                            )
+                        else:
+                            self.state_machine.update_spec(spec_name, {
+                                "status": "ready",
+                                "error": final_error,
+                                "_retry_count": retries,
+                            })
+                            self.logger.warning(
+                                "pm_engine",
+                                f"Retry {retries}/{max_r} for '{spec_name}' (merge-back failed)",
+                            )
+                    else:
+                        self.state_machine.transition(spec_name, "implemented")
+                        self.state_machine.update_spec(spec_name, {
+                            "implementer_run": result.run_id,
+                            "error": None,
+                        })
+                        # Immediately queue verifier at FRONT so it runs next
+                        self._enqueue_front(spec_name, "verifier")
+                        self.logger.info("pm_engine", f"Implement done, verifier queued for '{spec_name}'")
                 else:
                     # Retry or mark error
                     spec_entry = self.state_machine.read_one(spec_name)

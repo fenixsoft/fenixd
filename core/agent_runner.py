@@ -24,7 +24,8 @@ class AgentRunResult:
 
     def __init__(self, run_id: str, spec_name: str, agent_type: str,
                  success: bool, duration_seconds: float,
-                 turns_used: int = 0, error: str = None, output: str = ""):
+                 turns_used: int = 0, error: str = None, output: str = "",
+                 branch: str | None = None):
         self.run_id = run_id
         self.spec_name = spec_name
         self.agent_type = agent_type
@@ -33,6 +34,7 @@ class AgentRunResult:
         self.turns_used = turns_used
         self.error = error
         self.output = output
+        self.branch = branch  # worktree 分支名（成功时由 _execute_agent 填入）
 
     def to_dict(self) -> dict:
         return {
@@ -43,6 +45,7 @@ class AgentRunResult:
             "duration_seconds": self.duration_seconds,
             "turns_used": self.turns_used,
             "error": self.error,
+            "branch": self.branch,
             "output_summary": self.output[-500:] if self.output else "",
         }
 
@@ -190,6 +193,9 @@ class AgentRunner:
                     env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
                     env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
                     env_overrides["ANTHROPIC_MODEL"] = model
+                    # 注入 provider 自定义环境变量（如 CLAUDE_CODE_MAX_CONTEXT_TOKENS）
+                    for k, v in (provider.get("env") or {}).items():
+                        env_overrides[k] = v
                     model_override = provider.get("sdk_model") or self._get_config(
                         "agents.subagent_model", "claude-sonnet-5"
                     )
@@ -211,6 +217,25 @@ class AgentRunner:
                 success = False
                 error = str(e)
 
+            # 记录分支名（在 cleanup 之前，cleanup 会从 _wt_branches 中移除）
+            branch = self.worktree_manager.get_branch_name(wt_path) if success else None
+
+            # 成功时，把 worktree 中的 .fenix-run-result.json 复制到主树。
+            # 原因：implementer 的 cwd 现在是 worktree，结果文件写在 worktree 内；
+            # cleanup 后 worktree 被删除，pm_engine._read_implementer_result 回退读主树。
+            # 复制一份到主树，既保证 pm_engine 读得到，也让 merge 后结果保留在主树历史中。
+            if success:
+                wt_result = wt_path / ".fenix-run-result.json"
+                root_result = self.project_root / ".fenix-run-result.json"
+                if wt_result.exists():
+                    try:
+                        root_result.write_text(
+                            wt_result.read_text(encoding="utf-8"),
+                            encoding="utf-8",
+                        )
+                    except OSError:
+                        pass
+
             # Clean up worktree
             self.worktree_manager.cleanup(wt_path, success=success)
 
@@ -226,6 +251,7 @@ class AgentRunner:
                     run_id, spec_name, agent_type,
                     success=True, duration_seconds=duration,
                     turns_used=turns, output=output,
+                    branch=branch,
                 )
             else:
                 self.logger.warning(
@@ -533,6 +559,7 @@ class AgentRunner:
             text=True,
             bufsize=1,  # 行缓冲，保证实时可读
             env=env,
+            cwd=str(cwd),
         )
         self._running_agents[run_id] = proc
 

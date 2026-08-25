@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional, Set
+from typing import Optional, Set, Dict
 
 
 class WorktreeManager:
@@ -27,6 +27,7 @@ class WorktreeManager:
         self.project_root = Path(project_root)
         self.logger = logger
         self._active_worktrees: Set[str] = set()
+        self._wt_branches: Dict[str, str] = {}  # wt_path -> branch name
         self._spec_locks: Set[str] = set()  # SPECs currently being worked on
 
     def create(self, spec_name: str, agent_type: str = "implementer") -> Optional[Path]:
@@ -94,6 +95,7 @@ class WorktreeManager:
                 return None
 
             self._active_worktrees.add(str(wt_path))
+            self._wt_branches[str(wt_path)] = branch
 
             # Seed SPEC files for implementer worktrees
             if agent_type == "implementer":
@@ -246,6 +248,7 @@ class WorktreeManager:
                 self.logger.info("worktree_manager", f"Deleted branch: {branch}")
 
             self._active_worktrees.discard(wt_str)
+            self._wt_branches.pop(wt_str, None)
 
         except Exception as e:
             self.logger.error("worktree_manager", f"Cleanup error: {e}")
@@ -293,6 +296,80 @@ class WorktreeManager:
     def has_active_worktree(self, spec_name: str) -> bool:
         """Check if any worktree is active for the given SPEC."""
         return any(spec_name in lock for lock in self._spec_locks)
+
+    def get_branch_name(self, wt_path: Path) -> Optional[str]:
+        """Return the branch name for an active worktree, or None if unknown."""
+        return self._wt_branches.get(str(wt_path))
+
+    def merge_back_from_branch(self, branch: str) -> tuple:
+        """Merge a worktree branch into the main tree (project_root HEAD).
+
+        与 merge_back(wt_path) 等价，但直接接受分支名。用于 worktree 已被清理、
+        但分支仍保留的场景（implementer 成功路径）。
+
+        Returns: (success: bool, error_message: str)
+        """
+        if not branch:
+            return False, "Empty branch name"
+
+        try:
+            # Idempotency check: is branch already an ancestor of HEAD?
+            ancestor = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "merge-base", "--is-ancestor", branch, "HEAD"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if ancestor.returncode == 0:
+                self.logger.info(
+                    "worktree_manager",
+                    f"Branch '{branch}' already merged — skipping merge-back",
+                )
+                return True, "already merged"
+
+            # Merge with --no-ff to preserve worktree history
+            result = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "merge", "--no-ff", branch,
+                 "-m", f"[fenix] merge implementer branch {branch}"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                self.logger.info(
+                    "worktree_manager",
+                    f"Merged branch '{branch}' into main tree",
+                )
+                return True, ""
+
+            error = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+            self.logger.error(
+                "worktree_manager",
+                f"Merge failed for branch '{branch}': {error}",
+            )
+            # Abort the merge so main tree is left clean for retry
+            subprocess.run(
+                ["git", "-C", str(self.project_root), "merge", "--abort"],
+                capture_output=True, text=True, timeout=30,
+            )
+            return False, error
+
+        except subprocess.TimeoutExpired:
+            return False, "git merge timed out after 120s"
+        except Exception as e:
+            return False, str(e)
+
+    def merge_back(self, wt_path: Path) -> tuple:
+        """Merge the worktree's branch into the main tree (project_root HEAD).
+
+        Uses `git merge --no-ff` to preserve history. Idempotent: if the branch
+        is already an ancestor of HEAD, skips and reports success.
+
+        Returns: (success: bool, error_message: str)
+        """
+        wt_str = str(wt_path)
+        branch = self._wt_branches.get(wt_str)
+        if not branch:
+            return False, f"Unknown worktree (no branch recorded): {wt_path}"
+        return self.merge_back_from_branch(branch)
 
     def find_implementer_worktree(self, spec_name: str) -> Optional[Path]:
         """Find the most recent active implementer worktree for a SPEC.

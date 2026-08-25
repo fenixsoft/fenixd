@@ -448,6 +448,39 @@ class TestConfigLoader(unittest.TestCase):
         config = ConfigLoader.load(self.config_path)
         self.assertIsNone(ConfigLoader.get(config, "llm.providers"))
 
+    def test_llm_providers_env_valid(self):
+        """provider 可携带自定义 env 字典（如 CLAUDE_CODE_MAX_CONTEXT_TOKENS），应通过校验并完整读回。"""
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [
+            {"name": "volc", "baseurl": "https://a.com", "apikey": "k1",
+             "env": {"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000", "ANTHROPIC_TIMEOUT": "120"}},
+        ]}
+        self._write_config(cfg)
+        config = ConfigLoader.load(self.config_path)
+        providers = ConfigLoader.get(config, "llm.providers", [])
+        self.assertEqual(providers[0]["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "1000000")
+        self.assertEqual(providers[0]["env"]["ANTHROPIC_TIMEOUT"], "120")
+
+    def test_llm_providers_env_not_dict_raises(self):
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [
+            {"name": "volc", "baseurl": "https://a.com", "apikey": "k1", "env": "oops"},
+        ]}
+        self._write_config(cfg)
+        with self.assertRaises(ValueError) as ctx:
+            ConfigLoader.load(self.config_path)
+        self.assertIn("env", str(ctx.exception))
+
+    def test_llm_providers_env_non_string_value_raises(self):
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [
+            {"name": "volc", "baseurl": "https://a.com", "apikey": "k1",
+             "env": {"MAX_CONTEXT": 1000000}},
+        ]}
+        self._write_config(cfg)
+        with self.assertRaises(ValueError):
+            ConfigLoader.load(self.config_path)
+
     # ── 新增：agents.models 校验 ──────────────────────────
 
     def test_agent_models_valid(self):
@@ -672,6 +705,31 @@ class TestAgentRunnerModelRouting(unittest.TestCase):
         self.assertEqual(captured["env"]["ANTHROPIC_BASE_URL"], "https://a.com")
         self.assertEqual(captured["env"]["ANTHROPIC_API_KEY"], "key-a")
         self.assertEqual(captured["env"]["ANTHROPIC_MODEL"], "model-a")
+
+    def test_run_agent_injects_provider_env(self):
+        """provider.env 自定义参数（如 CLAUDE_CODE_MAX_CONTEXT_TOKENS）应合并进 env_overrides。"""
+        config = {
+            "llm": {"providers": [
+                {"name": "p1", "baseurl": "https://a.com", "apikey": "key-a",
+                 "env": {"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000"}},
+            ]},
+            "agents": {
+                "max_concurrent": 2, "max_retries": 1, "max_turns": 50,
+                "models": {"implementer": {"provider": "p1", "model": "model-a"}},
+                "subagent_model": "claude-sonnet-5",
+            },
+        }
+        runner = self._make_runner(config)
+        runner._build_prompt = MagicMock(return_value="test prompt")
+        runner._run_claude = MagicMock(return_value=("ok", 1))
+        result = runner.run_implementer("test-spec")
+        self.assertTrue(result.success)
+        # _run_claude(prompt, cwd, run_id, model_override, env_overrides) —— env_overrides 是第 5 个位置参数
+        env = runner._run_claude.call_args.args[4]
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://a.com")
+        self.assertEqual(env["ANTHROPIC_API_KEY"], "key-a")
+        self.assertEqual(env["ANTHROPIC_MODEL"], "model-a")
+        self.assertEqual(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "1000000")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1950,6 +2008,335 @@ class TestApiSpecsSortOrder(unittest.TestCase):
 """)
         names = self._get_specs_sorted()
         self.assertEqual(len(names), 2)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Worktree CWD & Merge-Back Tests (fix-worktree-agent-cwd)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestRunClaudeCwd(unittest.TestCase):
+    """_run_claude 的 Popen 应传入 cwd=worktree 路径（修复 implementer 不在 worktree 工作的 Bug）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        self.config = {"agents": {"run_timeout_seconds": 5}}
+        self.logger = MagicMock()
+        from core.agent_runner import AgentRunner
+        self.runner = AgentRunner(
+            self.config, MagicMock(), MagicMock(), self.project_root, self.logger,
+        )
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_popen_receives_cwd_equal_to_worktree(self):
+        """Popen 调用时 cwd 参数应等于传入的 worktree 路径。"""
+        captured = {}
+        wt_path = Path(self.tmpdir) / "impl-test-spec-1234567890"
+        wt_path.mkdir(parents=True, exist_ok=True)
+
+        def fake_popen(cmd, **kwargs):
+            captured["cwd"] = kwargs.get("cwd")
+            fake = MagicMock()
+            fake.stdout = []
+            fake.stderr = []
+            fake.wait = MagicMock(return_value=0)
+            fake.kill = MagicMock()
+            return fake
+
+        with patch("core.agent_runner.subprocess.Popen", side_effect=fake_popen):
+            try:
+                self.runner._run_claude("test prompt", wt_path, "test-run-cwd")
+            except Exception:
+                pass
+
+        self.assertIn("cwd", captured)
+        self.assertEqual(captured["cwd"], str(wt_path))
+
+    def test_popen_cwd_is_not_project_root(self):
+        """cwd 应该是 worktree 路径，不是 project_root（回归原 Bug：子进程继承 daemon cwd）。"""
+        captured = {}
+        wt_path = Path(self.tmpdir) / "impl-test-abc-9999999999"
+        wt_path.mkdir(parents=True, exist_ok=True)
+
+        def fake_popen(cmd, **kwargs):
+            captured["cwd"] = kwargs.get("cwd")
+            fake = MagicMock()
+            fake.stdout = []
+            fake.stderr = []
+            fake.wait = MagicMock(return_value=0)
+            fake.kill = MagicMock()
+            return fake
+
+        with patch("core.agent_runner.subprocess.Popen", side_effect=fake_popen):
+            try:
+                self.runner._run_claude("test", wt_path, "r2")
+            except Exception:
+                pass
+
+        self.assertNotEqual(captured["cwd"], str(self.project_root))
+        self.assertTrue(captured["cwd"].endswith("impl-test-abc-9999999999"))
+
+
+class TestWorktreeMergeBack(unittest.TestCase):
+    """worktree_manager 的 merge_back_from_branch 三种场景：成功 / 已合并（幂等） / 冲突。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir) / "main"
+        self.project_root.mkdir()
+        self.wt_base = Path(self.tmpdir) / "worktrees"
+
+        # 初始化 git repo（主树）
+        subprocess.run(["git", "init", "-q", "-b", "main"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "test"],
+                       cwd=str(self.project_root), capture_output=True)
+        (self.project_root / "README.md").write_text("# main\n")
+        subprocess.run(["git", "add", "."], cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"],
+                       cwd=str(self.project_root), capture_output=True)
+
+        self.logger = MagicMock()
+        from core.worktree_manager import WorktreeManager
+        self.wm = WorktreeManager(self.wt_base, self.project_root, self.logger)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_merge_back_success(self):
+        """分支上有新提交时，merge --no-ff 应成功合并到主树。"""
+        # 创建 worktree 并在分支上提交
+        wt_path = self.wm.create("test-spec", "implementer")
+        self.assertIsNotNone(wt_path)
+        (wt_path / "feature.txt").write_text("new feature\n")
+        subprocess.run(["git", "add", "feature.txt"],
+                       cwd=str(wt_path), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add feature"],
+                       cwd=str(wt_path), capture_output=True)
+        branch = self.wm.get_branch_name(wt_path)
+        self.assertIsNotNone(branch)
+
+        # cleanup（保留分支）
+        self.wm.cleanup(wt_path, success=True)
+
+        # merge-back
+        success, error = self.wm.merge_back_from_branch(branch)
+        self.assertTrue(success, f"merge failed: {error}")
+        # 主树应包含 feature.txt
+        self.assertTrue((self.project_root / "feature.txt").exists())
+        # git log 中应有 merge commit（--no-ff）
+        result = subprocess.run(
+            ["git", "log", "--oneline"],
+            cwd=str(self.project_root), capture_output=True, text=True,
+        )
+        lines = result.stdout.strip().split("\n")
+        self.assertTrue(any("merge implementer branch" in l for l in lines))
+
+    def test_merge_back_already_merged_idempotent(self):
+        """分支已合并时，再次调用应幂等跳过（不产生新 merge commit，不报错）。"""
+        wt_path = self.wm.create("test-spec2", "implementer")
+        (wt_path / "a.txt").write_text("a\n")
+        subprocess.run(["git", "add", "a.txt"],
+                       cwd=str(wt_path), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add a"],
+                       cwd=str(wt_path), capture_output=True)
+        branch = self.wm.get_branch_name(wt_path)
+        self.wm.cleanup(wt_path, success=True)
+
+        # 第一次 merge
+        ok1, err1 = self.wm.merge_back_from_branch(branch)
+        self.assertTrue(ok1, err1)
+
+        # 记录当前 HEAD
+        head_before = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(self.project_root), capture_output=True, text=True,
+        ).stdout.strip()
+
+        # 第二次 merge（已合并）
+        ok2, err2 = self.wm.merge_back_from_branch(branch)
+        self.assertTrue(ok2, f"second merge failed: {err2}")
+
+        # HEAD 不应变化
+        head_after = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(self.project_root), capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual(head_before, head_after)
+        self.assertEqual(err2, "already merged")
+
+    def test_merge_back_conflict_returns_error(self):
+        """merge 冲突时返回失败，并 abort 保持主树干净。"""
+        # 先在主树改 README
+        (self.project_root / "README.md").write_text("# main modified on main\n")
+        subprocess.run(["git", "commit", "-a", "-q", "-m", "modify readme on main"],
+                       cwd=str(self.project_root), capture_output=True)
+
+        # 创建 worktree（基于当前 HEAD 的父提交 —— 制造冲突）
+        # 简化方案：直接创建一个分支并在 worktree 中改 README
+        wt_path = self.wm.create("conflict-spec", "implementer")
+        self.assertIsNotNone(wt_path)
+        # 在 worktree 中修改 README（与主树不同的修改，制造冲突）
+        # 注意：worktree 是从 HEAD 创建的，HEAD 是刚才的 "modify readme on main"
+        # 所以我们需要先在 worktree 上回退再改，或者换一个文件制造冲突
+        # 用另一个文件更简单
+        (wt_path / "shared.txt").write_text("worktree version\n")
+        subprocess.run(["git", "add", "shared.txt"],
+                       cwd=str(wt_path), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add shared from wt"],
+                       cwd=str(wt_path), capture_output=True)
+
+        # 在主树也加一个不同版本的 shared.txt（制造冲突）
+        (self.project_root / "shared.txt").write_text("main version\n")
+        subprocess.run(["git", "add", "shared.txt"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add shared from main"],
+                       cwd=str(self.project_root), capture_output=True)
+
+        branch = self.wm.get_branch_name(wt_path)
+        self.wm.cleanup(wt_path, success=True)
+
+        # merge-back 应失败
+        success, error = self.wm.merge_back_from_branch(branch)
+        self.assertFalse(success)
+        self.assertTrue(len(error) > 0)
+
+        # 主树应保持干净（merge --abort 成功）
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(self.project_root), capture_output=True, text=True,
+        )
+        self.assertEqual(status.stdout.strip(), "")
+        # 不处于 merging 状态
+        self.assertFalse((self.project_root / ".git" / "MERGE_HEAD").exists())
+
+    def test_merge_back_empty_branch_fails(self):
+        """空分支名应返回失败。"""
+        success, error = self.wm.merge_back_from_branch("")
+        self.assertFalse(success)
+        self.assertIn("branch", error.lower())
+
+
+class TestPMEngineMergeBackIntegration(unittest.TestCase):
+    """pm_engine 在 implementer 成功后执行 merge-back，失败不推进到 implemented。"""
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+
+        # 初始化 git repo
+        subprocess.run(["git", "init", "-q", "-b", "main"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "test"],
+                       cwd=str(self.project_root), capture_output=True)
+        (self.project_root / "README.md").write_text("# test\n")
+        subprocess.run(["git", "add", "."], cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"],
+                       cwd=str(self.project_root), capture_output=True)
+
+        self.logger = MagicMock()
+        from core.state_machine import StateMachine
+        self.state_path = self.project_root / "STATE.md"
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.sm.add_spec("test-spec", {"priority": 3})
+        self.sm.transition("test-spec", "ready")
+        self.sm.transition("test-spec", "implementing")
+
+        self.engine = PMEngine(self.sm, MagicMock(), {}, self.project_root, self.logger)
+        self.engine._process_queue = MagicMock()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_merge_success_transitions_to_implemented(self):
+        """merge-back 成功时，状态推进到 implemented 并排队 verifier。"""
+        from core.agent_runner import AgentRunResult
+        result = AgentRunResult(
+            run_id="impl-test-spec-123", spec_name="test-spec",
+            agent_type="implementer", success=True, duration_seconds=10,
+            turns_used=5, branch="fenix/test-spec-123",
+        )
+
+        # mock agent_runner.run_implementer 返回成功结果
+        self.engine.agent_runner.run_implementer = MagicMock(return_value=result)
+        # mock merge_back_from_branch 成功
+        self.engine.agent_runner.worktree_manager = MagicMock()
+        self.engine.agent_runner.worktree_manager.merge_back_from_branch = MagicMock(
+            return_value=(True, "")
+        )
+        # mock _read_implementer_result 返回 success
+        self.engine._read_implementer_result = MagicMock(
+            return_value={"status": "success"}
+        )
+        # mock _enqueue_front
+        self.engine._enqueue_front = MagicMock()
+
+        self.engine._run_agent_worker("test-spec", "implementer", 3)
+
+        # 状态应推进到 implemented
+        spec = self.sm.read_one("test-spec")
+        self.assertEqual(spec["status"], "implemented")
+        # verifier 应被排队
+        self.engine._enqueue_front.assert_called_once_with("test-spec", "verifier")
+
+    def test_merge_failure_stays_in_ready(self):
+        """merge-back 失败时，状态回退到 ready，不推进到 implemented，记录 error。"""
+        from core.agent_runner import AgentRunResult
+        result = AgentRunResult(
+            run_id="impl-test-spec-456", spec_name="test-spec",
+            agent_type="implementer", success=True, duration_seconds=10,
+            turns_used=5, branch="fenix/test-spec-456",
+        )
+
+        self.engine.agent_runner.run_implementer = MagicMock(return_value=result)
+        self.engine.agent_runner.worktree_manager = MagicMock()
+        self.engine.agent_runner.worktree_manager.merge_back_from_branch = MagicMock(
+            return_value=(False, "Merge conflict: README.md")
+        )
+        self.engine._read_implementer_result = MagicMock(
+            return_value={"status": "success"}
+        )
+        self.engine._enqueue_front = MagicMock()
+
+        self.engine._run_agent_worker("test-spec", "implementer", 3)
+
+        # 状态应为 ready（不是 implemented）
+        spec = self.sm.read_one("test-spec")
+        self.assertEqual(spec["status"], "ready")
+        # error 应包含 merge 失败信息
+        self.assertIn("Merge-back", spec.get("error", ""))
+        # verifier 不应被排队
+        self.engine._enqueue_front.assert_not_called()
+
+    def test_no_branch_skips_merge(self):
+        """结果中无 branch 字段时，跳过 merge（向后兼容），仍正常推进。"""
+        from core.agent_runner import AgentRunResult
+        result = AgentRunResult(
+            run_id="impl-test-spec-789", spec_name="test-spec",
+            agent_type="implementer", success=True, duration_seconds=10,
+            turns_used=5, branch=None,
+        )
+
+        self.engine.agent_runner.run_implementer = MagicMock(return_value=result)
+        self.engine._read_implementer_result = MagicMock(
+            return_value={"status": "success"}
+        )
+        self.engine._enqueue_front = MagicMock()
+
+        self.engine._run_agent_worker("test-spec", "implementer", 3)
+
+        spec = self.sm.read_one("test-spec")
+        self.assertEqual(spec["status"], "implemented")
 
 
 if __name__ == "__main__":
