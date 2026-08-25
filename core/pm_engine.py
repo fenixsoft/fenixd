@@ -42,7 +42,8 @@ class PMEngine:
 
         self._active_runs = 0
         self._run_queue = []  # Pending (priority, spec_name, agent_type) tuples
-        self._active_priorities = set()  # 当前正在运行条目的 priority 集合（不变量：至多一个值）
+        self._active_priorities = set()  # 当前活动 priority 集合（宽松优先级下可含多个档）
+        self._active_priority_counts: Dict[int, int] = {}  # priority → 活动 run 数
         self._handling_events = set()  # 防重入：正在处理的 (event_kind, spec_name)
         self._queue_lock = threading.Lock()  # 保护 _run_queue / _active_runs / _active_priorities
 
@@ -266,9 +267,9 @@ class PMEngine:
             })
             self.logger.info("pm_engine", f"Created fix SPEC: {fix_spec_name}")
 
-        # Re-queue the original SPEC for re-implementation AFTER fix
-        self.state_machine.transition(spec_name, "implementing")
-
+        # 父 spec 保持在 bug-found，等 fix 完成后由 _on_spec_done 重新验证
+        # （bug-found → implemented）。不在此过渡到 implementing——那会让父 spec
+        # 呈现「无进程却在 implementing」的僵尸假象，且 fix 若卡死父 spec 会永久滞留。
         self._append_project_log(f"🐛 Bug found in **{spec_name}** → scheduling **{fix_spec_name}**")
 
         # Immediately schedule the fix
@@ -308,7 +309,7 @@ class PMEngine:
             if original_spec:
                 current_status = original_spec.get("status", "")
                 # 幂等保护：若父SPEC已在 testing（验证中），说明已有verifier在处理，跳过
-                # 注：implementing 是合法状态（_on_spec_bug_found 放置），不应跳过
+                # 注：父 spec 现在保持在 bug-found 等 fix（不再放置为 implementing）
                 if current_status == "testing":
                     self.logger.info(
                         "pm_engine",
@@ -468,13 +469,14 @@ class PMEngine:
             )
 
     def _process_queue(self):
-        """Process the run queue — strict-priority parallel scheduling.
+        """Process the run queue — relaxed-priority parallel scheduling.
 
-        调度规则（严格优先级并行）：
-        - 高优先级档（priority 数值小）先执行；同一档内多个任务可并行至 max_concurrent。
-        - 不同优先级不并行：有其它档位正在运行时，不派发新档位（即使有空闲槽位）。
-        - 不抢占：已在运行的低优先级任务不会被高优先级到达中断。
-        - 每轮只派发与当前运行档同优先级的就绪条目；无运行任务时派发最高优先级档。
+        调度规则（宽松优先级并行，fix-fenix-token-waste 后按用户要求调整）：
+        - 任务 X 可派发当且仅当没有比 X 更重要的活动任务
+          （即 min(active_priorities) >= X）：有 P6 在跑时 P5 可并发、P7 不行。
+        - 同一档内多个任务可并行至 max_concurrent；不同档可并发（只要满足上述规则）。
+        - 不抢占：已在运行的任务不会被新到的高优先级中断。
+        - 每轮派发队列中最高优先级的合法就绪条目。
         """
         max_concurrent = self._get_config("agents.max_concurrent", 2)
 
@@ -505,20 +507,17 @@ class PMEngine:
                 if best_valid_prio is None:
                     return  # 无就绪条目
 
-                # 确定当前应派发的目标优先级
-                # 1) 有正在运行的任务：仅当队列最高就绪优先级 == 运行档优先级时
-                #    才派发同档条目（有更高优先级等待时不新增低优先级任务）
-                # 2) 无运行任务：派发就绪条目中的最高优先级档
+                # 确定当前应派发的目标优先级（宽松优先级）：
+                # 任务 X 可派发当且仅当没有比 X 更重要的活动任务
+                # （即 min(active) >= X；有 P6 在跑时 P5 可并发、P7 不行）。
+                # 无活动任务时派发就绪条目中最高优先级档。
                 if self._active_priorities:
-                    # 不变量：运行档至多一个优先级
-                    active_prio = min(self._active_priorities)
-                    if best_valid_prio != active_prio:
-                        # 队列中有更高/更低优先级任务在等待，但运行档未排空
-                        # 严格优先级：不派发新档位，也不新增同档（若有更高优等待）
+                    min_active = min(self._active_priorities)
+                    if best_valid_prio > min_active:
+                        # 队列中最优就绪任务比活动任务更低优先（数值更大）：
+                        # 被更高优先的活动任务挡住，本轮不派发
                         return
-                    target_prio = active_prio
-                else:
-                    target_prio = best_valid_prio
+                target_prio = best_valid_prio
 
                 # 从队列头部开始找第一个 priority == target_prio 且状态合法的条目
                 dispatch_idx = None
@@ -543,6 +542,9 @@ class PMEngine:
 
                 entry_to_dispatch = self._run_queue.pop(dispatch_idx)
                 self._active_runs += 1
+                self._active_priority_counts[target_prio] = (
+                    self._active_priority_counts.get(target_prio, 0) + 1
+                )
                 self._active_priorities.add(target_prio)
                 active_count = self._active_runs
 
@@ -706,10 +708,14 @@ class PMEngine:
             # Release the concurrency slot and try to dispatch more work
             with self._queue_lock:
                 self._active_runs -= 1
-                # 如果该档位最后一个运行任务结束，从 active_priorities 移除
-                # （不变量：任意时刻至多一个 active priority；减到 0 时移除）
-                if self._active_runs == 0:
+                # 宽松优先级：按优先级计数释放，仅当该档最后一个 run 结束才移除该档，
+                # 避免多档并发时把仍活动的档位误移除（fix：多档并发）
+                cnt = self._active_priority_counts.get(priority, 0) - 1
+                if cnt <= 0:
+                    self._active_priority_counts.pop(priority, None)
                     self._active_priorities.discard(priority)
+                else:
+                    self._active_priority_counts[priority] = cnt
             self._process_queue()
 
     @staticmethod

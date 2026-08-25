@@ -45,7 +45,7 @@ VALID_TRANSITIONS: Dict[str, List[str]] = {
     SpecStatus.IMPLEMENTING: [SpecStatus.IMPLEMENTED, SpecStatus.READY, SpecStatus.BLOCKED],  # ready=retry, blocked=熔断
     SpecStatus.IMPLEMENTED:  [SpecStatus.TESTING],
     SpecStatus.TESTING:      [SpecStatus.VERIFIED, SpecStatus.BUG_FOUND],
-    SpecStatus.BUG_FOUND:    [SpecStatus.IMPLEMENTING],
+    SpecStatus.BUG_FOUND:    [SpecStatus.IMPLEMENTING, SpecStatus.IMPLEMENTED],  # implemented=fix 完成后重新验证
     SpecStatus.BLOCKED:      [SpecStatus.READY],  # 人工确认后恢复
     SpecStatus.VERIFIED:     [SpecStatus.DONE],
     SpecStatus.DONE:         [SpecStatus.PUSHED],

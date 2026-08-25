@@ -1306,8 +1306,8 @@ class TestPMEngineBugFound(unittest.TestCase):
         fix2 = self.sm.read_one("fix-fix-quick-links-folders")
         self.assertIsNotNone(fix2)
         self.assertEqual(fix2["status"], "ready")
-        # 原 SPEC 应回到 implementing（而非卡在 bug-found）
-        self.assertEqual(self.sm.read_one("quick-links-folders")["status"], "implementing")
+        # 原 SPEC 保持在 bug-found（等 fix 完成后重新验证），不再过渡到 implementing
+        self.assertEqual(self.sm.read_one("quick-links-folders")["status"], "bug-found")
         # 第二轮 fix 应被排队（队列条目结构：(priority, spec_name, agent_type)）
         queued_specs = [(e[1], e[2]) for e in self.engine._run_queue]
         self.assertIn(("fix-fix-quick-links-folders", "implementer"), queued_specs)
@@ -1351,9 +1351,9 @@ class TestPMEngineBugFound(unittest.TestCase):
         finally:
             self.engine._handling_events.discard(("spec_bug_found", "quick-links-folders"))
 
-        # 不应被防重入跳过：应创建 fix SPEC 并把原 SPEC 转回 implementing
+        # 不应被防重入跳过：应创建 fix SPEC；原 SPEC 保持在 bug-found
         self.assertIsNotNone(self.sm.read_one("fix-quick-links-folders"))
-        self.assertEqual(self.sm.read_one("quick-links-folders")["status"], "implementing")
+        self.assertEqual(self.sm.read_one("quick-links-folders")["status"], "bug-found")
 
 
 
@@ -1400,10 +1400,12 @@ class TestPriorityScheduler(unittest.TestCase):
             parts = name.split("-", 2)  # ["fenix", agent_type, spec_name]
             agent_type = parts[1]
             spec_name = parts[2]
-            # 从 _active_priorities 推断（不变量：只含一个值）
-            with self.engine._queue_lock:
-                prios = list(self.engine._active_priorities)
-            priority = prios[0] if prios else 5
+            # 从线程 args 取 priority（宽松优先级下 _active_priorities 可含多档，
+            # 不能再从中推断）：args = (spec_name, agent_type, priority)
+            try:
+                priority = thread_self._args[2]
+            except (IndexError, TypeError):
+                priority = 5
             self.dispatched.append((priority, spec_name, agent_type))
 
         threading.Thread.start = fake_start
@@ -1511,12 +1513,10 @@ class TestPriorityScheduler(unittest.TestCase):
         self.assertEqual(self.dispatched[0][1], "spec-b")
         self.assertEqual(self.dispatched[0][0], 2)
 
-    def test_high_priority_no_preempt(self):
-        """高优先级到达不抢占正在运行的低优先级，且期间不派发新的低优先级任务。
+    def test_higher_priority_joins_running_lower_priority(self):
+        """宽松优先级：P5 在跑时，更高优先的 P1 可并发加入；同档 P5 新任务被 P1 挡住。
 
-        严格优先级语义：当有更高优先级任务在队列中等待时，即使当前运行档
-        （低优先级）有空闲槽位，也不再派发新的低优先级同档任务，
-        以避免高优先级任务被不必要地延迟。
+        用户规则：有 P6 时 P5 可并发，但 P7 不行（更低优先级被更高优先级挡住）。
         """
         self._set_specs({
             "spec-low-running": {"status": "implementing", "priority": 5},
@@ -1528,6 +1528,7 @@ class TestPriorityScheduler(unittest.TestCase):
         # P5 已有 1 个在运行
         with self.engine._queue_lock:
             self.engine._active_runs = 1
+            self.engine._active_priority_counts[5] = 1
             self.engine._active_priorities.add(5)
 
         # P1 和另一个 P5 都就绪
@@ -1536,17 +1537,41 @@ class TestPriorityScheduler(unittest.TestCase):
 
         self.engine._process_queue()
 
-        # 不应派发任何新任务：
-        # - 有更高优先级 P1 在队列中等待 → 不再派发 P5 档的新任务
-        # - 不抢占已在运行的 P5 任务（仍保持运行）
-        self.assertEqual(len(self.dispatched), 0)
-        self.assertEqual(self.engine._active_runs, 1)
-        self.assertEqual(self.engine._active_priorities, {5})
-
-        # spec-high 和 spec-low2 都仍在队列等待
+        # 高优先级 P1 加入（无更高优先级任务挡住它），与 P5 并发
+        self.assertEqual(self.dispatched, [(1, "spec-high", "implementer")])
+        self.assertEqual(self.engine._active_runs, 2)
+        self.assertEqual(self.engine._active_priorities, {1, 5})
+        # 同档 P5 的新任务被 P1 挡住（1 < 5），仍在队列等待
         queued_specs = [e[1] for e in self.engine._run_queue]
-        self.assertIn("spec-high", queued_specs)
         self.assertIn("spec-low2", queued_specs)
+        self.assertNotIn("spec-high", queued_specs)
+
+    def test_relaxed_priority_p6_active_p5_runs_p7_blocked(self):
+        """用户规则：有 P6 在跑时 P5 可并发、P7 不行。"""
+        self._set_specs({
+            "s6": {"status": "implementing", "priority": 6},
+            "s5": {"status": "ready", "priority": 5},
+            "s7": {"status": "ready", "priority": 7},
+        })
+        self.sm.transition = MagicMock(return_value=True)
+
+        # P6 已有 1 个在运行
+        with self.engine._queue_lock:
+            self.engine._active_runs = 1
+            self.engine._active_priority_counts[6] = 1
+            self.engine._active_priorities.add(6)
+
+        self.engine._enqueue("s5", "implementer")  # P5
+        self.engine._enqueue("s7", "implementer")  # P7
+
+        self.engine._process_queue()
+
+        # P5 派发（5 <= 6 可并发），P7 被挡（7 > 6）
+        self.assertEqual(self.dispatched, [(5, "s5", "implementer")])
+        self.assertEqual(self.engine._active_priorities, {5, 6})
+        queued = [e[1] for e in self.engine._run_queue]
+        self.assertIn("s7", queued)
+        self.assertNotIn("s5", queued)
 
     def test_all_same_priority_fifo_parallel(self):
         """全部同优先级时按入队顺序并行，等价于 FIFO + 并发上限。"""
@@ -2556,6 +2581,12 @@ class TestBlockedState(unittest.TestCase):
         self.assertEqual(int(entry["_retry_count"] or 0), 0)
         # 恢复后进入 ready 集合，可被正常调度
         self.assertIn("s1", [n for n, _ in self.sm.get_ready_specs()])
+
+    def test_bug_found_to_implemented_for_fix_reverify(self):
+        """fix 完成后父 spec 从 bug-found → implemented 重新验证（fix-fenix-token-waste）。"""
+        self.sm.add_spec("s1", {"status": "bug-found", "priority": 5})
+        self.assertTrue(self.sm.transition("s1", "implemented"))
+        self.assertEqual(self.sm.read_one("s1")["status"], "implemented")
 
 
 class TestMergeCircuitBreakerFingerprint(unittest.TestCase):
