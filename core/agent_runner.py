@@ -713,10 +713,12 @@ class AgentRunner:
 
     @staticmethod
     def _extract_session_id(run_file: Path) -> str | None:
-        """从 run 产物尾部提取最后一个 result 事件的 session_id（供 --resume 续跑）。
+        """从 run 产物提取 session_id（供 --resume 续跑）。
 
-        claude CLI 失败时仍会输出 result 事件（含 session_id）；读取产物尾部
-        64KB 内的最后一个 result 事件即可拿到 session。文件不存在/损坏返回 None。
+        session_id 出现在两类事件：开头的 system/init 事件（会话建立时），以及
+        结尾的 result 事件。max_turns/超时强杀时 CLI 不会输出 result 事件，
+        必须从 init 事件取，否则 resume 在 Max turns 场景失效（fix）。
+        文件不存在/损坏返回 None。
         """
         try:
             size = run_file.stat().st_size
@@ -724,17 +726,24 @@ class AgentRunner:
                 if size > 65536:
                     f.seek(size - 65536)
                 tail = f.read().decode("utf-8", "replace")
+                f.seek(0)
+                head = f.read(65536).decode("utf-8", "replace")
         except OSError:
             return None
-        sid = None
-        for line in tail.splitlines():
-            try:
-                e = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(e, dict) and e.get("type") == "result" and e.get("session_id"):
-                sid = e["session_id"]
-        return sid
+        for chunk in (head, tail):
+            for line in chunk.splitlines():
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(e, dict):
+                    continue
+                if e.get("type") == "result" and e.get("session_id"):
+                    return e["session_id"]
+                if (e.get("type") == "system" and e.get("subtype") == "init"
+                        and e.get("session_id")):
+                    return e["session_id"]
+        return None
 
     def wait_for_running_agents(self, timeout: int = 300):
         """Wait for all running Agent subprocesses to complete (for graceful shutdown)."""

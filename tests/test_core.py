@@ -2728,6 +2728,25 @@ class TestExecuteAgentAttemptRunId(unittest.TestCase):
         from core.agent_runner import AgentRunner
         self.runner = AgentRunner(self.config, self.wm, MagicMock(), self.project_root, self.logger)
 
+    def test_extract_session_id_from_init_event_when_no_result(self):
+        """max_turns/超时强杀时 CLI 无 result 事件，session_id 从 init 事件提取（fix）。"""
+        run_file = self.project_root / ".fenix" / "runs" / "impl-x-a1.jsonl"
+        run_file.write_text(
+            json.dumps({"type": "system", "subtype": "init", "session_id": "sess-init"}) + "\n"
+            + json.dumps({"type": "assistant", "message": {}}) + "\n"
+            + json.dumps({"type": "error", "error": "Max turns (150) reached"}) + "\n"
+        )
+        self.assertEqual(self.runner._extract_session_id(run_file), "sess-init")
+
+    def test_extract_session_id_from_result_event(self):
+        """正常失败路径（有 result 事件）仍从 result 取 session_id。"""
+        run_file = self.project_root / ".fenix" / "runs" / "impl-y-a1.jsonl"
+        run_file.write_text(
+            json.dumps({"type": "assistant", "message": {}}) + "\n"
+            + json.dumps({"type": "result", "is_error": True, "session_id": "sess-result"}) + "\n"
+        )
+        self.assertEqual(self.runner._extract_session_id(run_file), "sess-result")
+
     def test_implementer_retry_resumes_session(self):
         run_ids = []
         resume_ids = []
