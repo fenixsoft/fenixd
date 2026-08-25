@@ -142,6 +142,15 @@ main { padding: 20px; max-width: 1280px; margin: 0 auto; }
 .st-muted { color: var(--muted); }
 .st-aqua { color: var(--aqua); border-color: rgba(25, 158, 112, 0.45); }
 
+/* daemon 健康徽标（复用 status-pill 基类；状态点继承 st-good/st-warning 颜色） */
+.daemon-pill::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
 /* ── 进度条（细、圆端、锚定基线） ──────────────────── */
 .progress {
   height: 8px;
