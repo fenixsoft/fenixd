@@ -2626,6 +2626,25 @@ class TestMainTreeHealthCheck(unittest.TestCase):
         self.assertTrue(any("stash" in c and "push" in c for c in calls))
         self.assertTrue(any("--include-untracked" in c for c in calls))
 
+    def test_ensure_clean_tree_excludes_openspec_changes(self):
+        """autostash 必须排除 openspec/changes/，否则未跟踪的 spec 文件被卷走，
+        implementer 找不到 SPEC 而空转（fix：曾烧 ~450 轮）。"""
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if "status" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout="?? openspec/changes/x/proposal.md\n", stderr="")
+            # stash 命令：唯一脏内容被排除 → git 报 No local changes
+            return subprocess.CompletedProcess(cmd, 0, stdout="No local changes to save", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            stashed = self.wm.ensure_clean_tree()
+        self.assertFalse(stashed)  # 唯一脏内容是 openspec/changes → 实际未 stash
+        stash_cmd = next(c for c in calls if "stash" in c and "push" in c)
+        self.assertTrue(any("openspec/changes" in a for a in stash_cmd))
+        self.assertTrue(any(a.startswith(":(exclude)") for a in stash_cmd))
+
     def test_ensure_clean_tree_noop_when_clean(self):
         def fake_run(cmd, **kw):
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")

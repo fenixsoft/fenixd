@@ -305,6 +305,11 @@ class WorktreeManager:
         若主树存在未提交改动（含未跟踪文件），自动 `git stash push
         --include-untracked`。返回 True 表示执行过 stash（merge 成功后需
         restore_after_merge 恢复）；False 表示主树本来就干净。
+
+        重要：stash 排除 `openspec/changes/`——该目录下未跟踪的 spec 文件
+        （proposal/design/specs/tasks）是框架运行必需，一旦被卷进 stash，
+        implementer 就找不到 SPEC 文件而空转（fix：曾因此烧掉 ~450 轮）。
+        spec 文件应在创建时提交；此处排除作为兜底。
         """
         result = subprocess.run(
             ["git", "-C", str(self.project_root), "status", "--porcelain"],
@@ -314,7 +319,8 @@ class WorktreeManager:
             return False
         stash = subprocess.run(
             ["git", "-C", str(self.project_root), "stash", "push", "--include-untracked",
-             "-m", "fenix: pre-dispatch autostash"],
+             "-m", "fenix: pre-dispatch autostash",
+             "--", ".", ":(exclude)openspec/changes"],
             capture_output=True, text=True, timeout=30,
         )
         if stash.returncode != 0:
@@ -322,6 +328,9 @@ class WorktreeManager:
                 "worktree_manager",
                 f"Autostash failed (proceed with dirty tree): {stash.stderr.strip()}",
             )
+            return False
+        if "No local changes" in (stash.stdout + stash.stderr):
+            # 唯一脏内容就是被排除的 openspec/changes，实际未 stash
             return False
         self.logger.info("worktree_manager", "Autostashed dirty main tree before dispatch")
         return True
