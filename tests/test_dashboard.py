@@ -606,7 +606,9 @@ def server_fx(tmp_path):
     proot = make_project(tmp_path)
     cfg = tmp_path / "dashboard.yaml"
     reg = Registry(config_path=cfg)
-    reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}], "scan_dirs": []})
+    # scan_dirs 指向不存在的目录：避免默认扫描回退到真实主目录 ~，保持测试隔离
+    reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+              "scan_dirs": [str(tmp_path / "scan-empty")]})
     srv = _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
     yield proot, srv
     srv.stop()

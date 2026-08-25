@@ -12,6 +12,10 @@ registry.py — 多项目发现与注册（dashboard-server D3）。
 `discover()` 合并显式 projects 与 scan_dirs 扫描结果；扫描仅当目录同时存在
 `STATE.md` 与 `.fenix/config.yaml` 才识别为 Fenixd 项目。显式注册的项目始终
 出现在监控列表（即使目录不存在，标记 exists=False）。
+
+默认扫描：`scan_dirs` 未配置（或为空）时，自动以用户主目录 `~` 为唯一扫描根
+遍历一级子目录做发现（自动发现为主）；显式配置 `scan_dirs` 可覆盖该默认。
+显式注册（`add_project`）为扫描的补充，可纳入扫描范围之外的路径。
 """
 
 import os
@@ -90,7 +94,12 @@ class Registry:
                 "exists": rp.is_dir(),
             })
 
-        for sd in data.get("scan_dirs", []):
+        # 扫描根：显式配置 scan_dirs 时沿用该配置（覆盖默认）；未配置（或为空）
+        # 时默认以用户主目录 ~ 为唯一扫描根，遍历其一级子目录做自动发现。
+        scan_dirs = data.get("scan_dirs", [])
+        if not scan_dirs:
+            scan_dirs = [str(Path.home())]
+        for sd in scan_dirs:
             base = Path(sd).expanduser()
             if not base.is_dir():
                 continue
@@ -152,6 +161,41 @@ class Registry:
         })
         self.save(data)
         return True, f"已注册项目: {key}"
+
+    def remove_project(self, path) -> tuple:
+        """从配置 `projects` 移除显式注册的项目（按规范化路径匹配）并写回。
+
+        未在配置中显式注册（含仅由扫描自动发现的项目）时返回未变更提示，
+        不报错。返回: (removed: bool, message: str)
+        """
+        try:
+            rp = Path(path).expanduser().resolve()
+        except (OSError, RuntimeError):
+            return False, f"无效路径: {path}"
+        key = str(rp)
+
+        data = self.load()
+        remaining = []
+        removed = False
+        for p in data.get("projects", []):
+            if not isinstance(p, dict):
+                remaining.append(p)
+                continue
+            try:
+                existing = str(Path(p.get("path", "")).expanduser().resolve())
+            except (OSError, RuntimeError):
+                remaining.append(p)
+                continue
+            if existing == key:
+                removed = True
+                continue
+            remaining.append(p)
+
+        if not removed:
+            return False, f"项目未在监控列表（无法移除）: {key}"
+        data["projects"] = remaining
+        self.save(data)
+        return True, f"已从监控列表移除: {key}"
 
     def list_projects(self) -> list:
         """仅返回配置中显式注册的项目（供 --list-projects）。"""

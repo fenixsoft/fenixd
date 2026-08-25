@@ -13,12 +13,14 @@ import json
 import os
 import re
 import tempfile
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import yaml
 
 from core.agent_runner import clean_old_runs
+from core.fenix_session import is_running as _is_running
 
 # 运行产物文件保留上限（与 agent_runner.RUNS_KEEP 一致）
 RUNS_KEEP = 20
@@ -702,6 +704,34 @@ def active_run_count(project_root) -> int:
     return sum(1 for r in get_runs(project_root) if r["status"] in ("running", "empty"))
 
 
+# ── daemon 健康检测（D4：TTL memo 避免高频轮询重复 spawn tmux） ──────
+
+_DAEMON_HEALTH_TTL = 5.0   # 秒；结果在 TTL 内复用
+_DAEMON_HEALTH_CACHE: dict = {}   # key=规范化项目根, value=(状态, 时间戳)
+
+
+def daemon_health(project_root) -> str:
+    """项目 fenixd daemon 是否在运行，返回 "running"/"stopped"。
+
+    判定复用 core.fenix_session.is_running（唯一 tmux session + 旧版 `fenixd`
+    session cwd 匹配）。tmux 不可用、subprocess 异常或均未命中一律 "stopped"，
+    不抛异常。带短 TTL memo，避免 overview 每 2s 轮询重复 spawn 子进程。
+    """
+    key = str(Path(project_root).expanduser().resolve())
+    now = time.monotonic()
+    cached = _DAEMON_HEALTH_CACHE.get(key)
+    if cached is not None and now - cached[1] < _DAEMON_HEALTH_TTL:
+        return cached[0]
+    try:
+        status = "running" if _is_running(key) else "stopped"
+    except Exception:
+        status = "stopped"
+    if len(_DAEMON_HEALTH_CACHE) > 256:
+        _DAEMON_HEALTH_CACHE.clear()
+    _DAEMON_HEALTH_CACHE[key] = (status, now)
+    return status
+
+
 def project_summary(project_root, name: str, path: str) -> dict:
     """单个项目的聚合摘要（/api/projects、/api/overview 共用）。"""
     proot = Path(path)
@@ -728,6 +758,7 @@ def project_summary(project_root, name: str, path: str) -> dict:
     return {
         "name": name,
         "path": str(path),
+        "daemon": daemon_health(proot),
         "spec_count": len(specs),
         "status_counts": status_counts,
         "task_done": grand_done,
@@ -949,7 +980,7 @@ def overview(registry_projects: list) -> dict:
         if not p.get("exists"):
             projects.append({
                 "name": p["name"], "path": p["path"], "discovered": p.get("discovered", False),
-                "exists": False, "error": "项目路径不存在",
+                "exists": False, "daemon": "stopped", "error": "项目路径不存在",
             })
             continue
         s = project_summary(p["path"], p["name"], p["path"])

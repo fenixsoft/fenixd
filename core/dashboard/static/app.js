@@ -57,6 +57,16 @@ function statusPill(status) {
   const m = STATUS_META[status] || { cls: 'st-muted', icon: '❓', label: status || '未知' };
   return `<span class="status-pill ${m.cls}">${m.icon} ${esc(m.label)}</span>`;
 }
+// daemon 健康徽标：running → 「运行中」（正向色），stopped → 「未运行」（警示色）
+function daemonBadge(daemon) {
+  if (daemon === 'running') {
+    return `<span class="status-pill daemon-pill st-good" title="fenixd daemon 运行中">运行中</span>`;
+  }
+  if (daemon === 'stopped') {
+    return `<span class="status-pill daemon-pill st-warning" title="fenixd daemon 未运行">未运行</span>`;
+  }
+  return '';
+}
 function progressBar(done, total) {
   const p = pct(done, total);
   const cls = p === 100 ? 'good' : p >= 60 ? '' : p > 0 ? 'warn' : 'serious';
@@ -307,6 +317,7 @@ function projectCard(p) {
   return `
   <div class="card" onclick="nav('project/${encodeURIComponent(p.name)}')">
     <h3>${esc(p.name)}
+      ${daemonBadge(p.daemon)}
       ${p.discovered ? '<span class="status-pill st-muted">自动发现</span>' : ''}
     </h3>
     <div class="card-meta">${esc(p.path)}</div>

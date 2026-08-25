@@ -6,6 +6,7 @@ Fenix Dashboard — 统一入口（Web / TUI / 项目注册）。
   python3 fenix_dashboard.py --serve [--port N]     # 启动 Web Dashboard（默认，跨项目）
   python3 fenix_dashboard.py --tui [--interval N]   # 终端仪表盘（原 TUI，保留）
   python3 fenix_dashboard.py --add-project <path>   # 注册项目到监控列表
+  python3 fenix_dashboard.py --remove-project <path>  # 从监控列表移除已注册项目
   python3 fenix_dashboard.py --list-projects        # 列出已注册项目
 
 数据源:
@@ -74,6 +75,14 @@ def cmd_add_project(path: str) -> int:
     added, msg = reg.add_project(target)
     print(msg)
     return 0 if added else 1
+
+
+def cmd_remove_project(path: str) -> int:
+    reg = Registry()
+    target = str(Path(path).expanduser().absolute())
+    removed, msg = reg.remove_project(target)
+    print(msg)
+    return 0 if removed else 1
 
 
 def cmd_list_projects() -> int:
@@ -465,6 +474,8 @@ def main():
                         help="启动终端仪表盘（原 TUI）")
     parser.add_argument("--add-project", metavar="PATH",
                         help="注册项目到监控列表（按路径去重）")
+    parser.add_argument("--remove-project", metavar="PATH",
+                        help="从监控列表移除已注册项目（未注册时不报错）")
     parser.add_argument("--list-projects", action="store_true",
                         help="列出已注册监控项目")
     parser.add_argument("--port", type=int,
@@ -475,6 +486,8 @@ def main():
 
     if args.add_project:
         sys.exit(cmd_add_project(args.add_project))
+    if args.remove_project:
+        sys.exit(cmd_remove_project(args.remove_project))
     if args.list_projects:
         sys.exit(cmd_list_projects())
     if args.tui:

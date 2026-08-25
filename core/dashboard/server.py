@@ -254,7 +254,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 projects.append({
                     "name": p["name"], "path": p["path"],
                     "discovered": p.get("discovered", False),
-                    "exists": False, "error": "项目路径不存在",
+                    "exists": False, "daemon": "stopped", "error": "项目路径不存在",
                 })
                 continue
             s = dashboard_data.project_summary(p["path"], p["name"], p["path"])
