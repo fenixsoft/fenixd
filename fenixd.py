@@ -23,6 +23,7 @@ Architecture:
 import os
 import sys
 import signal
+import threading
 import time
 import fcntl
 from pathlib import Path
@@ -40,6 +41,8 @@ from core.state_machine import StateMachine
 from core.event_bus import EventBus
 from core.worktree_manager import WorktreeManager
 from core.agent_runner import AgentRunner
+from core.admin_store import AdminStore
+from core.admin_monitor import AdminMonitor
 from core.pm_engine import PMEngine
 
 
@@ -54,6 +57,9 @@ class FenixDaemon:
         self.event_bus = None
         self.worktree_manager = None
         self.agent_runner = None
+        self.admin_store = None
+        self.admin_monitor = None
+        self._admin_thread = None
         self.pm_engine = None
 
     def initialize(self):
@@ -87,6 +93,26 @@ class FenixDaemon:
             self.logger,
         )
         self.logger.info("fenixd", "AgentRunner initialized")
+
+        # 5.5. Initialize AdminStore + AdminMonitor（零成本健康监视 + 困境唤起）
+        self.admin_store = AdminStore(PROJECT_ROOT, self.logger)
+        self.admin_monitor = AdminMonitor(
+            self.config,
+            self.state_machine,
+            PROJECT_ROOT,
+            self.logger,
+            store=self.admin_store,
+            agent_runner=self.agent_runner,
+        )
+        if self.admin_monitor.enabled:
+            self.logger.info(
+                "fenixd",
+                "AdminMonitor initialized "
+                f"(interval: {self.admin_monitor.interval_minutes}m, "
+                f"cooldown: {self.admin_monitor.cooldown_minutes}m)",
+            )
+        else:
+            self.logger.info("fenixd", "AdminMonitor disabled (admin.enabled: false)")
 
         # 6. Initialize PMEngine
         self.pm_engine = PMEngine(
@@ -131,6 +157,16 @@ class FenixDaemon:
         # Start event bus monitoring
         self.event_bus.start()
 
+        # 启动 Administrator 监视线程（admin.enabled 时；间隔见 admin.interval_minutes）
+        if self.admin_monitor and self.admin_monitor.enabled:
+            self._admin_thread = threading.Thread(
+                target=self._admin_monitor_loop,
+                name="fenixd-admin-monitor",
+                daemon=True,
+            )
+            self._admin_thread.start()
+            self.logger.info("fenixd", "Admin monitor thread started")
+
         # Main loop — keep the process alive
         self.logger.info("fenixd", "Entering main loop")
         try:
@@ -141,11 +177,25 @@ class FenixDaemon:
         finally:
             self.shutdown()
 
+    def _admin_monitor_loop(self):
+        """周期运行健康检查（间隔 admin.interval_minutes）。"""
+        interval = max(float(self.admin_monitor.interval_minutes), 0.5)
+        while self.running:
+            time.sleep(interval * 60)
+            if not self.running:
+                break
+            try:
+                self.admin_monitor.run_once()
+            except Exception as e:
+                self.logger.error("admin_monitor", f"Admin monitor check failed: {e}")
+
     def shutdown(self):
         """Graceful shutdown."""
         self.logger.info("fenixd", "Shutting down...")
         self.running = False
 
+        if self._admin_thread:
+            self._admin_thread.join(timeout=5)
         if self.event_bus:
             self.event_bus.stop()
         if self.agent_runner:

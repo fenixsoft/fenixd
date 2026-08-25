@@ -17,6 +17,8 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     GET /api/events?project=<name>&minutes=N → 最近 N 分钟结构化事件
     GET /api/config?project=<name> → 读取受管配置（llm / agents.models / gates.approve_mode）
     POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
+    GET /api/alerts?project=<name> → Administrator 告警/处置记录（缺省跨项目聚合未处理告警）
+    POST /api/alerts/<id>/handled?project=<name> → 标记升级告警已处理
     GET /screenshots/<project>/<spec>/<file> → 截图（防路径穿越，仅限注册项目）
 """
 
@@ -240,6 +242,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json(self._api_run(rest, query))
         elif path == "/api/events":
             self._json(self._api_events(query))
+        elif path == "/api/alerts":
+            self._json(self._api_alerts(query))
         elif path == "/api/config":
             self._json(self._api_config_get(query))
         else:
@@ -347,11 +351,77 @@ class DashboardHandler(BaseHTTPRequestHandler):
         config["project"] = project["name"]
         return config
 
+    def _api_alerts(self, query) -> dict:
+        """读取 Administrator 告警。
+
+        ?project=<name> → 该项目全部告警/处置记录 + 摘要；
+        缺省 → 跨项目聚合所有未处理升级告警（供顶部横幅）。
+        """
+        project_name = query.get("project", [None])[0]
+        if project_name:
+            project = self.server.project_by_name(project_name)
+            if project is None or not project.get("exists"):
+                return {"error": "project not found"}
+            proot = Path(project["path"])
+            return {
+                "project": project["name"],
+                "alerts": dashboard_data.get_alerts(proot),
+                "summary": dashboard_data.alerts_summary(proot),
+            }
+
+        projects_out = []
+        all_unhandled = []
+        total = 0
+        for p in self.server.projects():
+            if not p.get("exists"):
+                continue
+            proot = Path(p["path"])
+            summary = dashboard_data.alerts_summary(proot)
+            projects_out.append({"name": p["name"], **summary})
+            total += summary["unhandled_count"]
+            for a in dashboard_data.get_unhandled_alerts(proot):
+                item = dict(a)
+                item["project"] = p["name"]
+                all_unhandled.append(item)
+        all_unhandled.sort(key=lambda a: a.get("created", ""), reverse=True)
+        return {
+            "total_unhandled": total,
+            "projects": projects_out,
+            "alerts": all_unhandled,
+        }
+
+    def _api_alert_handled(self, alert_id: str, query) -> dict:
+        """标记某条升级告警为已处理；成功后广播让前端横幅刷新。"""
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(400, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(400, "project not found")
+            return
+        if not alert_id:
+            self._error(400, "missing alert id")
+            return
+        if not dashboard_data.mark_alert_handled(Path(project["path"]), alert_id):
+            self._error(404, "alert not found or already handled")
+            return
+        try:
+            self.server.sse_hub.broadcast({
+                "project": project["name"], "type": "alerts",
+                "summary": dashboard_data.alerts_summary(Path(project["path"])),
+            })
+        except Exception:
+            pass
+        self._json({"ok": True, "id": alert_id})
+
     # ── POST API ────────────────────────────────────────────
 
     def _handle_api_post(self, path: str, query: dict):
         if path == "/api/config":
             self._api_config_post(query)
+        elif path.startswith("/api/alerts/") and path.endswith("/handled"):
+            alert_id = urllib.parse.unquote(path[len("/api/alerts/"):-len("/handled")])
+            self._api_alert_handled(alert_id, query)
         elif path.startswith("/api/runs/") and path.endswith("/watch"):
             rest = urllib.parse.unquote(path[len("/api/runs/"):-len("/watch")])
             self._json(self._api_run_watch(rest, query, watch=True))

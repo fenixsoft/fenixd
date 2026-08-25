@@ -20,6 +20,7 @@ Thumbs.db
 
 # 运行时/敏感目录（.fenix/config.yaml 含 API Key，绝不提交）
 .fenix/
+.fenix/admin_alerts.json
 .claude/scheduled_tasks.json
 .claude/scheduled_tasks.lock
 .playwright-cli/

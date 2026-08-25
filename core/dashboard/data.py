@@ -26,6 +26,44 @@ from core.fenix_session import is_running as _is_running
 RUNS_KEEP = 20
 
 
+# ── Administrator 告警（.fenix/admin_alerts.json） ─────────────────
+
+def get_alerts(project_root) -> list:
+    """读取项目全部 Administrator 告警/处置记录（最新在前）。缺失/损坏返回 []。"""
+    from core.admin_store import AdminStore
+    return AdminStore(project_root).read_all()
+
+
+def get_unhandled_alerts(project_root) -> list:
+    """读取项目未处理的升级告警（最新在前）。"""
+    from core.admin_store import AdminStore
+    return AdminStore(project_root).unhandled()
+
+
+def mark_alert_handled(project_root, alert_id: str) -> bool:
+    """标记某条升级告警为已处理。返回是否找到并更新。"""
+    from core.admin_store import AdminStore
+    return AdminStore(project_root).mark_handled(alert_id)
+
+
+def alerts_summary(project_root) -> dict:
+    """项目告警摘要：{unhandled_count, max_severity, latest}。
+
+    max_severity 取未处理告警中最高严重度（critical > major > minor）；
+    latest 为最新一条未处理告警。无未处理时三者为空/0。
+    """
+    unhandled = get_unhandled_alerts(project_root)
+    if not unhandled:
+        return {"unhandled_count": 0, "max_severity": None, "latest": None}
+    sev_rank = {"critical": 3, "major": 2, "minor": 1}
+    top = max(unhandled, key=lambda a: sev_rank.get(a.get("severity"), 0))
+    return {
+        "unhandled_count": len(unhandled),
+        "max_severity": top.get("severity"),
+        "latest": unhandled[0],
+    }
+
+
 # ── 基础解析（源自 bin/fenix_dashboard.py，TUI / Web 共用） ────────────
 
 def parse_state(project_root) -> dict:

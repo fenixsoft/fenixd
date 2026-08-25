@@ -83,6 +83,86 @@ a:hover { text-decoration: underline; }
   max-width: 260px;
 }
 
+/* ── 人工升级告警横幅 ─────────────────────────────────── */
+.alert-banner {
+  position: sticky;
+  top: 48px;
+  z-index: 19;
+  margin: 0 auto;
+  max-width: 1280px;
+  width: calc(100% - 40px);
+  background: rgba(20, 12, 12, 0.96);
+  border: 1px solid var(--critical);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.alert-banner-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  flex-wrap: wrap;
+}
+.alert-banner-title { font-weight: 700; color: var(--critical); }
+.alert-banner-meta { color: var(--ink-2); font-size: 13px; }
+.alert-banner-summary {
+  color: var(--ink-2); font-size: 13px; flex: 1; min-width: 160px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.alert-toggle {
+  background: transparent; border: 1px solid var(--hairline-strong);
+  color: var(--ink-2); padding: 3px 10px; border-radius: var(--radius-sm);
+  cursor: pointer; font-size: 12px;
+}
+.alert-toggle:hover { background: var(--surface-2); color: var(--ink); }
+
+.alert-list {
+  border-top: 1px solid var(--hairline);
+  max-height: 45vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+}
+.alert-item {
+  border: 1px solid var(--hairline-strong);
+  border-left: 3px solid var(--muted);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  background: var(--surface);
+}
+.alert-item.sev-critical { border-left-color: var(--critical); }
+.alert-item.sev-major { border-left-color: var(--serious); }
+.alert-item.sev-minor { border-left-color: var(--warning); }
+.alert-item-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.alert-sev-pill {
+  font-size: 11px; font-weight: 700; padding: 1px 8px;
+  border-radius: 999px; border: 1px solid currentColor;
+}
+.alert-sev-pill.sev-critical { color: var(--critical); }
+.alert-sev-pill.sev-major { color: var(--serious); }
+.alert-sev-pill.sev-minor { color: var(--warning); }
+.alert-item-proj, .alert-item-spec {
+  color: var(--blue); font-size: 13px; font-weight: 600;
+}
+.alert-item-time { color: var(--muted); font-size: 12px; margin-left: auto; }
+.alert-handled-btn {
+  background: transparent; border: 1px solid var(--hairline-strong);
+  color: var(--ink-2); padding: 2px 10px; border-radius: var(--radius-sm);
+  cursor: pointer; font-size: 12px;
+}
+.alert-handled-btn:hover { background: var(--good); border-color: var(--good); color: #fff; }
+.alert-item-desc { color: var(--ink-2); font-size: 13px; }
+.alert-item-evidence, .alert-item-action, .alert-item-reco {
+  color: var(--muted); font-size: 12px; margin-top: 2px;
+  word-break: break-word;
+}
+
 /* ── 主容器 ───────────────────────────────────────────── */
 main { padding: 20px; max-width: 1280px; margin: 0 auto; }
 

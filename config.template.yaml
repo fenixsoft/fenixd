@@ -87,6 +87,23 @@ gates:
 dashboard:
   port: 8787
 
+# ---- Administrator 自愈（可选）----
+# Fenixd 无人值守自愈：轻量监视器零成本检测困境信号，困境才唤起 Administrator Agent 处置，
+# 处置不了再升级人工（Dashboard 告警横幅）。admin.enabled: false 即整体停用。
+admin:
+  # 是否启用 Administrator 自愈
+  enabled: true
+  # 监视线程周期（分钟）
+  interval_minutes: 5
+  # Administrator Agent 使用的模型名（官方 Claude 模型名；未配置时复用 agents.subagent_model）
+  agent_model: "claude-sonnet-5"
+  # 同 spec 同类困境信号的唤起冷却（分钟），避免反复唤起烧钱
+  escalation_cooldown_minutes: 15
+  # 卡死阈值（分钟）；未配置时复用 schedule.stuck_threshold_minutes（默认 60）
+  stuck_threshold_minutes: 60
+  # merge 熔断阈值（复用 agents.merge_breaker_threshold 默认 2）
+  # merge_breaker_threshold: 2
+
 # ---- Project-Specific Commands ----
 commands:
   # Test command (how to run the test suite)

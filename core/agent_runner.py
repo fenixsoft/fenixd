@@ -50,6 +50,38 @@ class AgentRunResult:
         }
 
 
+class AdminDisposition:
+    """Administrator Agent 一次处置的结果（run_administrator 返回）。"""
+
+    def __init__(self, run_id: str, spec: str | None = None, success: bool = True,
+                 problem: str = "", actions_taken: str = "", result: str = "",
+                 escalate: bool = False, recommended_action: str = "",
+                 error: str = "", output: str = ""):
+        self.run_id = run_id
+        self.spec = spec
+        self.success = success
+        self.problem = problem
+        self.actions_taken = actions_taken
+        self.result = result
+        self.escalate = escalate
+        self.recommended_action = recommended_action
+        self.error = error
+        self.output = output
+
+    def to_dict(self) -> dict:
+        return {
+            "run_id": self.run_id,
+            "spec": self.spec,
+            "success": self.success,
+            "problem": self.problem,
+            "actions_taken": self.actions_taken,
+            "result": self.result,
+            "escalate": self.escalate,
+            "recommended_action": self.recommended_action,
+            "error": self.error,
+        }
+
+
 def append_run_line(run_file: Path, entry: dict) -> None:
     """向运行产物文件追加一行 JSON 并立即 flush，保证运行期间 Dashboard 可读。
 
@@ -149,6 +181,86 @@ class AgentRunner:
             raise ValueError(f"mode 必须是 'plan' 或 'judge'，实际: {mode}")
         run_id = f"planner-{mode}-{spec_name}-{int(time.time())}"
         return self._execute_agent(spec_name, f"planner-{mode}", run_id)
+
+    def run_administrator(self, signal: dict) -> AdminDisposition:
+        """唤起 Administrator Agent 处置困境信号（administrator-agent spec）。
+
+        与 implementer/verifier 不同：Administrator 是运维角色，直接在 main 树
+        （project_root）操作框架，不创建 worktree（design D4）。产物写入
+        .fenix/runs/admin-<spec>-<ts>.jsonl；处置结果从管理员按 prompt 写入的
+        .fenix/admin_disposition.json 读取，由 daemon 落盘到 admin_alerts.json。
+
+        Args:
+            signal: admin_monitor 检测到的困境信号 dict
+                （signal_type/spec/severity/description/evidence/recommended_action）。
+        """
+        spec = signal.get("spec") or "global"
+        run_id = f"admin-{spec}-{int(time.time())}"
+        prompt = self._build_prompt(spec, "administrator", detail=signal)
+        model_override = self._get_admin_model()
+        self._clear_admin_disposition()
+        try:
+            output, turns, _session_id = self._run_claude(
+                prompt, self.project_root, run_id, model_override,
+                max_turns=self._get_config("agents.max_turns", 50),
+            )
+            success = True
+            error = ""
+        except Exception as e:
+            output = ""
+            success = False
+            error = str(e)
+
+        disp = self._read_admin_disposition()
+        return AdminDisposition(
+            run_id=run_id,
+            spec=disp.get("spec") or signal.get("spec"),
+            success=success,
+            problem=disp.get("problem") or signal.get("description", ""),
+            actions_taken=disp.get("actions_taken") or "",
+            result=disp.get("result") or ("resolved" if success else "failed"),
+            escalate=bool(disp.get("escalate", False)),
+            recommended_action=disp.get("recommended_action") or "",
+            error=error,
+            output=output,
+        )
+
+    def _clear_admin_disposition(self):
+        """清空上次的处置记录，避免运行失败时读到陈旧数据。"""
+        disp_path = self.project_root / ".fenix" / "admin_disposition.json"
+        try:
+            if disp_path.exists():
+                disp_path.unlink()
+        except OSError:
+            pass
+
+    def _read_admin_disposition(self) -> dict:
+        """读取管理员按 prompt 写入的处置记录 .fenix/admin_disposition.json。
+
+        文件缺失/损坏返回空 dict（调用方用信号详情兜底）。
+        """
+        disp_path = self.project_root / ".fenix" / "admin_disposition.json"
+        try:
+            data = json.loads(disp_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        at = data.get("actions_taken")
+        if isinstance(at, list):
+            data["actions_taken"] = "；".join(str(x) for x in at if x)
+        elif at is None:
+            data["actions_taken"] = ""
+        elif not isinstance(at, str):
+            data["actions_taken"] = str(at)
+        return data
+
+    def _get_admin_model(self) -> str:
+        """Administrator 模型名：admin.agent_model > agents.subagent_model > 默认。"""
+        admin_model = self._get_config("admin.agent_model", None)
+        if admin_model:
+            return admin_model
+        return self._get_config("agents.subagent_model", "claude-sonnet-5")
 
     def _execute_agent(self, spec_name: str, agent_type: str, run_id: str) -> AgentRunResult:
         """Core agent execution logic with retry support.
@@ -308,8 +420,11 @@ class AgentRunner:
             error=f"All {max_retries} attempts failed. Last error: {error}",
         )
 
-    def _build_prompt(self, spec_name: str, agent_type: str) -> str:
-        """Build the claude CLI prompt for the Agent."""
+    def _build_prompt(self, spec_name: str, agent_type: str, detail: dict | None = None) -> str:
+        """Build the claude CLI prompt for the Agent.
+
+        detail: 可选。administrator 分支接收困境信号 dict。
+        """
         spec_dir = f"openspec/changes/{spec_name}"
 
         if agent_type == "implementer":
@@ -521,6 +636,50 @@ class AgentRunner:
                 f'  "summary": "验证总结"\n'
                 f'}}\n\n'
                 f"IMPORTANT: Do NOT modify STATE.md."
+            )
+
+        elif agent_type == "administrator":
+            sig = detail or {}
+            sig_spec = sig.get("spec") or spec_name
+            sig_type = sig.get("signal_type") or "unknown"
+            severity = sig.get("severity") or "major"
+            description = sig.get("description") or ""
+            evidence = sig.get("evidence") or ""
+            recommendation = sig.get("recommended_action") or ""
+            return (
+                f"You are the Fenix Administrator Agent — 运维角色，"
+                f"负责处置 Agent 无法自行脱困的困境。\n\n"
+                f"## 困境信号\n"
+                f"- 类型: {sig_type}\n"
+                f"- spec: {sig_spec}\n"
+                f"- 严重度: {severity}\n"
+                f"- 描述: {description}\n"
+                f"- 证据: {evidence}\n"
+                f"- 建议处置: {recommendation}\n\n"
+                f"## 你的高级权限（自主处置，无需询问）\n"
+                f"- 杀死/重启进行中的 Agent 子进程与 fenixd 本身（先 ps 确认归属再操作）\n"
+                f"- git 清理：worktree prune / stash / reset / commit / 分支管理\n"
+                f"- 直接修改 Fenixd 自身代码（当前已在主树）并提交\n"
+                f"- 发起新的 SPEC（创建 openspec/changes/<name>/ 并更新 STATE.md）\n"
+                f"- 重置/修复 spec 状态（将卡死 spec 更新为 ready/blocked 并清空陈旧字段）\n\n"
+                f"## 铁律\n"
+                f"1. 只处置困境，不开发功能、不实现 SPEC 需求。\n"
+                f"2. 先只读诊断（日志/STATE.md/进程/run 转录），确认根因再动手。\n"
+                f"3. 所有处置动作留痕（在处置记录中说明）。\n"
+                f"4. 若确实无法自主处置（需人类决策、连续失败、不可逆操作），"
+                f"将 escalate 置为 true 并给出 recommended_action。\n\n"
+                f"## 完成后\n"
+                f"把处置记录写入 .fenix/admin_disposition.json（当前目录即主树）：\n"
+                f'{{\n'
+                f'  "spec": "{sig_spec}",\n'
+                f'  "problem": "处理的困境问题",\n'
+                f'  "actions_taken": ["动作1", "动作2"],\n'
+                f'  "result": "resolved | partially-resolved | escalated",\n'
+                f'  "escalate": true/false,\n'
+                f'  "recommended_action": "若升级，给出人类应做的操作"\n'
+                f'}}\n'
+                f"然后结束，无需额外输出。不要直接编辑 .fenix/admin_alerts.json——"
+                f"daemon 会基于你的处置记录写入。\n"
             )
 
     def _run_claude(self, prompt: str, cwd: Path, run_id: str,
