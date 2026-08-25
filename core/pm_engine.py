@@ -5,6 +5,7 @@ Handles SPEC auto-review, Agent scheduling, priority management,
 concurrency control, daily reporting, and the single human gate (push approval).
 """
 
+import hashlib
 import json
 import re
 import subprocess
@@ -99,6 +100,15 @@ class PMEngine:
 
     def _on_spec_ready(self, spec_name: str):
         """Schedule implementer for ready SPEC (if dependencies are satisfied)."""
+        # 防双派发：该 spec 已有活动 implementer worktree 时跳过。
+        # 背景（fix-fenix-token-waste）：启动扫描与 event_bus 都会触发 spec_ready，
+        # 第二次派发因 worktree 锁失败会把 spec 打回 ready，形成空转反馈环。
+        if self.agent_runner.worktree_manager.has_active_worktree(spec_name):
+            self.logger.debug(
+                "pm_engine",
+                f"Skipping '{spec_name}': worktree already active",
+            )
+            return
         if not self._dependencies_satisfied(spec_name):
             self.logger.info(
                 "pm_engine",
@@ -567,6 +577,10 @@ class PMEngine:
         """
         try:
             if agent_type == "implementer":
+                wm = self.agent_runner.worktree_manager
+                # 主树健康检查（fix-fenix-token-waste）：dispatch 前自动 stash 主树脏改动，
+                # 保证 merge-back 有干净基线；成功后 restore_after_merge 恢复原改动。
+                stashed = wm.ensure_clean_tree()
                 result = self.agent_runner.run_implementer(spec_name)
                 # Read .fenix-run-result.json (worktree first, project root fallback)
                 # to determine true status — file is more authoritative than
@@ -588,34 +602,42 @@ class PMEngine:
                 if is_success:
                     # Merge worktree branch back into main tree before advancing state.
                     # worktree 已被 agent_runner 清理，但分支仍保留（success 路径不删分支），
-                    # 所以用分支名直接 merge。merge 失败则回退到 ready 并记录 error，
-                    # 交由现有重试机制重建 worktree 重试。
+                    # 所以用分支名直接 merge。
                     merge_ok = True
                     merge_error = ""
-                    if result.branch and hasattr(self.agent_runner, 'worktree_manager'):
-                        wm = self.agent_runner.worktree_manager
+                    if result.branch:
                         merge_ok, merge_error = wm.merge_back_from_branch(result.branch)
 
                     if not merge_ok:
-                        # merge 失败：算作一次失败尝试，走重试逻辑
+                        # merge 失败：指纹熔断（fix-fenix-token-waste）。
+                        # 同一错误指纹连续失败 ≥ 阈值 → spec 进入 blocked 停止自动重试，
+                        # 避免「根因不消除 → 全量重跑 → 再败」的无限烧钱循环。
                         spec_entry = self.state_machine.read_one(spec_name)
-                        retries = spec_entry.get("_retry_count", 0) + 1
                         max_r = self._get_config("agents.max_retries", 3)
-                        final_error = f"Merge-back failed: {merge_error}"
-                        if retries >= max_r:
+                        fp = self._merge_fingerprint(merge_error)
+                        prev_fp = spec_entry.get("_merge_fp")
+                        streak = (spec_entry.get("_merge_streak", 0) + 1) if prev_fp == fp else 1
+                        final_error = f"Merge-back failed (fp={fp}): {merge_error}"
+                        breaker_threshold = self._get_config("agents.merge_breaker_threshold", 2)
+                        if streak >= breaker_threshold:
+                            self.state_machine.transition(spec_name, "blocked")
                             self.state_machine.update_spec(spec_name, {
-                                "status": "ready",
                                 "error": final_error,
+                                "_merge_fp": fp,
+                                "_merge_streak": streak,
                                 "_retry_count": 0,
                             })
                             self.logger.error(
                                 "pm_engine",
-                                f"All retries exhausted for '{spec_name}' (merge-back failures)",
+                                f"Circuit breaker tripped for '{spec_name}' (fp={fp}) — spec blocked",
                             )
                         else:
+                            retries = spec_entry.get("_retry_count", 0) + 1
                             self.state_machine.update_spec(spec_name, {
                                 "status": "ready",
                                 "error": final_error,
+                                "_merge_fp": fp,
+                                "_merge_streak": streak,
                                 "_retry_count": retries,
                             })
                             self.logger.warning(
@@ -623,10 +645,16 @@ class PMEngine:
                                 f"Retry {retries}/{max_r} for '{spec_name}' (merge-back failed)",
                             )
                     else:
+                        # 恢复 dispatch 前自动 stash 的主树改动（冲突时保留 stash，不阻塞）
+                        if stashed:
+                            wm.restore_after_merge()
                         self.state_machine.transition(spec_name, "implemented")
                         self.state_machine.update_spec(spec_name, {
                             "implementer_run": result.run_id,
                             "error": None,
+                            "_retry_count": 0,
+                            "_merge_fp": None,
+                            "_merge_streak": 0,
                         })
                         # Immediately queue verifier at FRONT so it runs next
                         self._enqueue_front(spec_name, "verifier")
@@ -671,6 +699,16 @@ class PMEngine:
                 if self._active_runs == 0:
                     self._active_priorities.discard(priority)
             self._process_queue()
+
+    @staticmethod
+    def _merge_fingerprint(error: str) -> str:
+        """对 merge 错误计算稳定指纹（fix-fenix-token-waste）。
+
+        归一化：整体去空白后取 sha1 前 12 位。git 对同一根因的报错逐字节一致，
+        因此可用字符串归一化哈希；不同根因会得到不同指纹。
+        """
+        norm = "".join((error or "").split())
+        return hashlib.sha1(norm.encode("utf-8", "replace")).hexdigest()[:12]
 
     # ── Verification Pipeline ─────────────────────────────────────
 

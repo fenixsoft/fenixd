@@ -49,6 +49,7 @@ const STATUS_META = {
   testing: { cls: 'st-info', icon: '🔍', label: '验证中' },
   verified: { cls: 'st-good', icon: '✅', label: '已验证' },
   'bug-found': { cls: 'st-critical', icon: '🐛', label: '有Bug' },
+  blocked: { cls: 'st-critical', icon: '🛑', label: '阻塞' },
   done: { cls: 'st-good', icon: '🎯', label: '完成' },
   pushed: { cls: 'st-good', icon: '🚀', label: '已推送' },
 };

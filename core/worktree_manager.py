@@ -297,6 +297,93 @@ class WorktreeManager:
         """Check if any worktree is active for the given SPEC."""
         return any(spec_name in lock for lock in self._spec_locks)
 
+    # ── 主树健康检查（fix-fenix-token-waste） ──────────────────────
+
+    def ensure_clean_tree(self) -> bool:
+        """dispatch 前确保主树干净，保证 merge-back 可成功。
+
+        若主树存在未提交改动（含未跟踪文件），自动 `git stash push
+        --include-untracked`。返回 True 表示执行过 stash（merge 成功后需
+        restore_after_merge 恢复）；False 表示主树本来就干净。
+        """
+        result = subprocess.run(
+            ["git", "-C", str(self.project_root), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return False
+        stash = subprocess.run(
+            ["git", "-C", str(self.project_root), "stash", "push", "--include-untracked",
+             "-m", "fenix: pre-dispatch autostash"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if stash.returncode != 0:
+            self.logger.warning(
+                "worktree_manager",
+                f"Autostash failed (proceed with dirty tree): {stash.stderr.strip()}",
+            )
+            return False
+        self.logger.info("worktree_manager", "Autostashed dirty main tree before dispatch")
+        return True
+
+    def restore_after_merge(self) -> bool:
+        """merge-back 成功后恢复 dispatch 前自动 stash 的主树改动。
+
+        Returns: True 恢复成功；False pop 冲突（stash 条目保留，可 git stash list 找回）。
+        """
+        result = subprocess.run(
+            ["git", "-C", str(self.project_root), "stash", "pop"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            self.logger.info("worktree_manager", "Stash popped after merge")
+            return True
+        self.logger.warning(
+            "worktree_manager",
+            f"Stash pop failed (stash preserved): "
+            f"{result.stderr.strip() or result.stdout.strip()}",
+        )
+        return False
+
+    def cleanup_stale_worktrees(self):
+        """启动时全量清理孤儿 worktree：删除所有不在活动集合的目录 + 对应分支 + prune。
+
+        与 shutdown 的 cleanup_orphans 互补：后者清活动集合内残留，本方法清
+        上次异常退出遗留的孤儿。失败记 WARNING，不阻塞 daemon 启动。
+        """
+        if not self.base_dir.exists():
+            return
+        for wt_dir in self.base_dir.iterdir():
+            if not wt_dir.is_dir() or str(wt_dir) in self._active_worktrees:
+                continue
+            self.logger.info("worktree_manager", f"Cleaning up stale worktree: {wt_dir}")
+            try:
+                branch = None
+                br = subprocess.run(
+                    ["git", "-C", str(wt_dir), "rev-parse", "--abbrev-ref", "HEAD"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if br.returncode == 0:
+                    branch = br.stdout.strip()
+                res = subprocess.run(
+                    ["git", "-C", str(self.project_root), "worktree", "remove",
+                     str(wt_dir), "--force"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if res.returncode != 0:
+                    shutil.rmtree(str(wt_dir), ignore_errors=True)
+                if branch and branch != "HEAD":
+                    subprocess.run(
+                        ["git", "-C", str(self.project_root), "branch", "-D", branch],
+                        capture_output=True, timeout=10,
+                    )
+            except Exception as e:
+                self.logger.warning("worktree_manager", f"Stale worktree cleanup failed: {e}")
+        subprocess.run(
+            ["git", "-C", str(self.project_root), "worktree", "prune"],
+            capture_output=True, timeout=10,
+        )
+
     def get_branch_name(self, wt_path: Path) -> Optional[str]:
         """Return the branch name for an active worktree, or None if unknown."""
         return self._wt_branches.get(str(wt_path))

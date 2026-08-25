@@ -151,32 +151,50 @@ class AgentRunner:
         return self._execute_agent(spec_name, f"planner-{mode}", run_id)
 
     def _execute_agent(self, spec_name: str, agent_type: str, run_id: str) -> AgentRunResult:
-        """Core agent execution logic with retry support."""
+        """Core agent execution logic with retry support.
+
+        fix-fenix-token-waste：
+        - 每次 attempt 使用独立 run_id（-a<attempt>），产物文件与尝试一一对应
+        - implementer 失败重试复用同一 worktree + `claude --resume` 续跑，不从零
+          全量重跑；其余 agent_type 维持每次全新 worktree
+        - max_turns 在 _run_claude 内强制
+        """
         max_retries = self._get_config("agents.max_retries", 3)
         start_time = time.time()
+        wt_path = None
+        session_id = None
 
         for attempt in range(1, max_retries + 1):
+            attempt_run_id = f"{run_id}-a{attempt}"
             self.logger.info(
                 "agent_runner",
                 f"Running {agent_type} for '{spec_name}' (attempt {attempt}/{max_retries})",
-                {"run_id": run_id},
+                {"run_id": attempt_run_id},
             )
 
             # Check daily run limit
             self._check_daily_limit()
 
-            # Create worktree
-            wt_path = self.worktree_manager.create(spec_name, agent_type)
+            reuse_worktree = (agent_type == "implementer" and wt_path is not None)
+
+            # Create or reuse worktree
             if wt_path is None:
-                error_msg = "Failed to create worktree"
-                self.logger.error("agent_runner", error_msg)
-                if attempt < max_retries:
-                    time.sleep(5)
-                    continue
-                return AgentRunResult(
-                    run_id, spec_name, agent_type,
-                    success=False, duration_seconds=time.time() - start_time,
-                    error=error_msg,
+                wt_path = self.worktree_manager.create(spec_name, agent_type)
+                if wt_path is None:
+                    error_msg = "Failed to create worktree"
+                    self.logger.error("agent_runner", error_msg)
+                    if attempt < max_retries:
+                        time.sleep(5)
+                        continue
+                    return AgentRunResult(
+                        attempt_run_id, spec_name, agent_type,
+                        success=False, duration_seconds=time.time() - start_time,
+                        error=error_msg,
+                    )
+            else:
+                self.logger.info(
+                    "agent_runner",
+                    f"Reusing worktree {wt_path} for '{spec_name}' (attempt {attempt}, resume)",
                 )
 
             # Build and execute the prompt
@@ -208,7 +226,13 @@ class AgentRunner:
                     # 未配置 agents.subagent_model 时默认 claude-sonnet-5（官方 model 名，仅用于
                     # 通过 SDK 校验），保证子代理派发始终可用。
                     model_override = self._get_config("agents.subagent_model", "claude-sonnet-5")
-                output, turns = self._run_claude(prompt, wt_path, run_id, model_override, env_overrides)
+                output, turns, run_session_id = self._run_claude(
+                    prompt, wt_path, attempt_run_id, model_override, env_overrides,
+                    resume_session_id=session_id if reuse_worktree else None,
+                    max_turns=self._get_config("agents.max_turns", 50),
+                )
+                if run_session_id:
+                    session_id = run_session_id
                 success = True
                 error = None
             except Exception as e:
@@ -216,6 +240,12 @@ class AgentRunner:
                 turns = 0
                 success = False
                 error = str(e)
+                # implementer 失败后从产物尾部提取 session_id，供下一次 attempt --resume 续跑
+                if agent_type == "implementer":
+                    run_file = self.project_root / ".fenix" / "runs" / f"{attempt_run_id}.jsonl"
+                    sid = self._extract_session_id(run_file)
+                    if sid:
+                        session_id = sid
 
             # 记录分支名（在 cleanup 之前，cleanup 会从 _wt_branches 中移除）
             branch = self.worktree_manager.get_branch_name(wt_path) if success else None
@@ -236,19 +266,18 @@ class AgentRunner:
                     except OSError:
                         pass
 
-            # Clean up worktree
-            self.worktree_manager.cleanup(wt_path, success=success)
-
             if success:
+                # 成功：清理 worktree（保留分支供 merge-back），返回结果
+                self.worktree_manager.cleanup(wt_path, success=True)
                 duration = time.time() - start_time
                 self._daily_run_count += 1
                 self.logger.info(
                     "agent_runner",
                     f"{agent_type} succeeded for '{spec_name}'",
-                    {"run_id": run_id, "attempt": attempt, "turns": turns},
+                    {"run_id": attempt_run_id, "attempt": attempt, "turns": turns},
                 )
                 return AgentRunResult(
-                    run_id, spec_name, agent_type,
+                    attempt_run_id, spec_name, agent_type,
                     success=True, duration_seconds=duration,
                     turns_used=turns, output=output,
                     branch=branch,
@@ -257,10 +286,19 @@ class AgentRunner:
                 self.logger.warning(
                     "agent_runner",
                     f"{agent_type} failed for '{spec_name}' (attempt {attempt})",
-                    {"run_id": run_id, "error": error},
+                    {"run_id": attempt_run_id, "error": error},
                 )
+                # 失败后的 worktree 处理：
+                # - implementer 且还有重试：保留 worktree，下次 attempt 用 --resume 续跑
+                # - 其他：清理 worktree 并删除分支，下次 attempt 全新创建
                 if attempt < max_retries:
                     time.sleep(10)  # Wait before retry
+                    if agent_type != "implementer":
+                        self.worktree_manager.cleanup(wt_path, success=False)
+                        wt_path = None
+                else:
+                    self.worktree_manager.cleanup(wt_path, success=False)
+                    wt_path = None
 
         # All retries exhausted
         duration = time.time() - start_time
@@ -487,7 +525,9 @@ class AgentRunner:
 
     def _run_claude(self, prompt: str, cwd: Path, run_id: str,
                     model_override: str | None = None,
-                    env_overrides: Dict[str, str] | None = None) -> tuple:
+                    env_overrides: Dict[str, str] | None = None,
+                    resume_session_id: str | None = None,
+                    max_turns: int | None = None) -> tuple:
         """
         Execute claude CLI with the given prompt, streaming events to disk.
 
@@ -502,10 +542,16 @@ class AgentRunner:
         - 超时/kill/非零退出时向产物文件追加 `{"type":"error",...}` 终态行，并仍按
           现状语义抛出 RuntimeError。
 
+        fix-fenix-token-waste：
+        - `thinking_tokens` 遥测事件不再落盘（占旧转录 ~75% 的纯噪音）
+        - `max_turns` 由本方法强制：统计流中 assistant 事件数，达到上限即 kill，
+          按失败路径触发重试（claude CLI 无 --max-turns flag，故在 daemon 侧强制）
+        - `resume_session_id` 传入时追加 `--resume`，从失败处续跑而非全量重跑
+
         Args:
             prompt: The instruction prompt for the agent.
             cwd: Worktree directory the agent operates in.
-            run_id: 本次运行唯一 id（如 `impl-<spec>-<ts>`），决定产物文件名。
+            run_id: 本次运行唯一 id（如 `impl-<spec>-<ts>-a<attempt>`），决定产物文件名。
             model_override: Pass `--model <value>` explicitly. Needed for agent
                 types that spawn subagents via the Agent SDK: the environment runs on
                 ANTHROPIC_MODEL=deepseek-v4-flash (a non-Claude model name the SDK
@@ -515,8 +561,10 @@ class AgentRunner:
                 默认传入 claude-sonnet-5，保证始终通过 SDK 校验。
             env_overrides: 额外注入到子进程的环境变量（每线程独立 env 副本，不串扰）。
                 用于按 agent_type 注入不同 Provider 的 baseurl/apikey/model。
+            resume_session_id: 非 None 时以 `--resume <id>` 续跑该 session。
+            max_turns: 单次运行轮次上限；达到即 kill（None 表示不限制）。
 
-        Returns: (output, turns_used)
+        Returns: (output, turns_used, session_id)
         """
         timeout = self._get_config("agents.run_timeout_seconds", 1800)
 
@@ -545,10 +593,13 @@ class AgentRunner:
         ]
         if model_override:
             cmd += ["--model", model_override]
+        if resume_session_id:
+            cmd += ["--resume", resume_session_id]
 
         self.logger.debug(
             "agent_runner",
-            f"Running: claude -p '...' --output-format stream-json --add-dir {cwd}",
+            f"Running: claude -p '...' --output-format stream-json --add-dir {cwd}"
+            + (" (resume)" if resume_session_id else ""),
             {"run_id": run_id, "run_file": str(run_file)},
         )
 
@@ -566,6 +617,7 @@ class AgentRunner:
         # 两条守护线程分别读 stdout / stderr，避免单线程 readline 卡死。
         # 共享状态由主线程在 join 之后读取，天然构成 happens-before。
         last_result: Dict[str, Any] = {}
+        turn_count = [0]  # 被读线程递增；主线程轮询读取（GIL 保证可见性）
         stdout_lines: list = []
         stderr_lines: list = []
 
@@ -585,10 +637,17 @@ class AgentRunner:
                         entry = json.loads(line)
                     except json.JSONDecodeError:
                         entry = {"type": "stderr", "line": line}
-                    if isinstance(entry, dict) and entry.get("type") == "result":
-                        # 记录最后一个 result 事件（含 num_turns / result 文本）
-                        last_result.clear()
-                        last_result.update(entry)
+                    if isinstance(entry, dict):
+                        # fix-fenix-token-waste：thinking_tokens 遥测噪音不落盘
+                        if (entry.get("type") == "system"
+                                and entry.get("subtype") == "thinking_tokens"):
+                            continue
+                        if entry.get("type") == "assistant":
+                            turn_count[0] += 1
+                        if entry.get("type") == "result":
+                            # 记录最后一个 result 事件（含 num_turns / result 文本 / session_id）
+                            last_result.clear()
+                            last_result.update(entry)
                     append_run_line(run_file, entry)
             except Exception:
                 # 读取线程异常不应导致主流程崩溃；半成品产物仍可被 Dashboard 读取
@@ -599,19 +658,33 @@ class AgentRunner:
         t_out.start()
         t_err.start()
 
+        # 轮询等待：同时支持超时与 max_turns 强制（claude CLI 无 --max-turns flag）
         returncode = None
         timeout_error = None
+        turn_limit_error = None
+        deadline = time.time() + timeout
         try:
-            try:
-                returncode = proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    proc.kill()
+                    timeout_error = f"Timeout after {timeout}s"
+                    break
+                if max_turns and turn_count[0] >= max_turns:
+                    proc.kill()
+                    turn_limit_error = f"Max turns ({max_turns}) reached"
+                    break
+                rc = proc.poll()
+                if rc is not None:
+                    returncode = rc
+                    break
+                time.sleep(1)
+            if timeout_error or turn_limit_error:
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     pass
                 returncode = -9
-                timeout_error = f"Timeout after {timeout}s"
         finally:
             # 等待读线程把残留行刷完，再决定终态，保证 error 终态行是文件最后一行
             t_out.join(timeout=5)
@@ -623,15 +696,45 @@ class AgentRunner:
             append_run_error(run_file, timeout_error, returncode)
             raise RuntimeError(f"claude CLI timed out after {timeout}s")
 
+        if turn_limit_error is not None:
+            append_run_error(run_file, turn_limit_error, returncode)
+            raise RuntimeError(f"claude CLI {turn_limit_error}")
+
         output = last_result.get("result", "") if last_result else ""
         turns = last_result.get("num_turns", 0)
+        session_id = last_result.get("session_id") if last_result else None
 
         if returncode != 0:
             error_msg = "\n".join(stderr_lines[-5:])[:500] if stderr_lines else f"Exit code: {returncode}"
             append_run_error(run_file, error_msg, returncode)
             raise RuntimeError(f"claude CLI failed: {error_msg}")
 
-        return output, turns
+        return output, turns, session_id
+
+    @staticmethod
+    def _extract_session_id(run_file: Path) -> str | None:
+        """从 run 产物尾部提取最后一个 result 事件的 session_id（供 --resume 续跑）。
+
+        claude CLI 失败时仍会输出 result 事件（含 session_id）；读取产物尾部
+        64KB 内的最后一个 result 事件即可拿到 session。文件不存在/损坏返回 None。
+        """
+        try:
+            size = run_file.stat().st_size
+            with run_file.open("rb") as f:
+                if size > 65536:
+                    f.seek(size - 65536)
+                tail = f.read().decode("utf-8", "replace")
+        except OSError:
+            return None
+        sid = None
+        for line in tail.splitlines():
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(e, dict) and e.get("type") == "result" and e.get("session_id"):
+                sid = e["session_id"]
+        return sid
 
     def wait_for_running_agents(self, timeout: int = 300):
         """Wait for all running Agent subprocesses to complete (for graceful shutdown)."""

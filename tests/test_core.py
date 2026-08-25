@@ -253,7 +253,7 @@ class TestSpecStatus(unittest.TestCase):
     """Test status constants and transition definitions."""
 
     def test_all_statuses_defined(self):
-        self.assertEqual(len(SpecStatus.ALL), 9)
+        self.assertEqual(len(SpecStatus.ALL), 10)
 
     def test_valid_transitions_cover_all_states(self):
         for status in SpecStatus.ALL:
@@ -721,7 +721,7 @@ class TestAgentRunnerModelRouting(unittest.TestCase):
         }
         runner = self._make_runner(config)
         runner._build_prompt = MagicMock(return_value="test prompt")
-        runner._run_claude = MagicMock(return_value=("ok", 1))
+        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1"))
         result = runner.run_implementer("test-spec")
         self.assertTrue(result.success)
         # _run_claude(prompt, cwd, run_id, model_override, env_overrides) —— env_overrides 是第 5 个位置参数
@@ -998,7 +998,7 @@ class TestAgentRunResult(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════
 
 class _FakeProc:
-    """Minimal stand-in for subprocess.Popen: line streams + wait/kill."""
+    """Minimal stand-in for subprocess.Popen: line streams + wait/kill/poll."""
 
     def __init__(self, stdout_lines=(), stderr_lines=(), returncode=0, timeout=False):
         import io
@@ -1011,6 +1011,10 @@ class _FakeProc:
         if self._timeout:
             raise subprocess.TimeoutExpired("claude", timeout)
         return self._returncode
+
+    def poll(self):
+        # fix-fenix-token-waste：_run_claude 改用轮询等待；timeout 模拟进程永不退出
+        return None if self._timeout else self._returncode
 
     def kill(self):
         pass
@@ -1052,9 +1056,10 @@ class TestRunClaudeStreaming(unittest.TestCase):
             json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "working"}]}}),
             json.dumps(result_event),
         ]
-        output, turns = self._run(run_id, stdout_lines=stdout)
+        output, turns, sess_id = self._run(run_id, stdout_lines=stdout)
         self.assertEqual(output, "All tasks complete")
         self.assertEqual(turns, 7)
+        self.assertEqual(sess_id, "sess-1")
         artifact = self._artifact(run_id)
         self.assertTrue(artifact.exists())
         lines = [json.loads(l) for l in artifact.read_text().splitlines()]
@@ -1087,7 +1092,7 @@ class TestRunClaudeStreaming(unittest.TestCase):
             json.dumps({"type": "assistant", "message": {"content": []}}),
             json.dumps(result_event),
         ]
-        output, turns = self._run(run_id, stdout_lines=stdout, stderr_lines=["non-json noise"])
+        output, turns, _ = self._run(run_id, stdout_lines=stdout, stderr_lines=["non-json noise"])
         self.assertEqual(output, "ok")
         artifact = self._artifact(run_id)
         lines = [json.loads(l) for l in artifact.read_text().splitlines()]
@@ -1106,12 +1111,12 @@ class TestRunClaudeStreaming(unittest.TestCase):
         class BlockingProc(_FakeProc):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
-                self.wait_called = _t.Event()
+                self.poll_called = _t.Event()
 
-            def wait(self, timeout=None):
-                self.wait_called.set()
+            def poll(self, timeout=None):
+                self.poll_called.set()
                 if not release.wait(timeout or 10):
-                    raise subprocess.TimeoutExpired("claude", timeout)
+                    return None
                 return 0
 
         run_id = "impl-live-spec-1700000004"
@@ -1128,7 +1133,7 @@ class TestRunClaudeStreaming(unittest.TestCase):
 
         t = _t.Thread(target=target)
         t.start()
-        self.assertTrue(proc.wait_called.wait(5))
+        self.assertTrue(proc.poll_called.wait(5))
         artifact = self._artifact(run_id)
         for _ in range(50):
             if artifact.exists() and artifact.read_text().strip():
@@ -2509,6 +2514,220 @@ class TestEnsureAppReachableFieldFix(unittest.TestCase):
 
         self.assertTrue(reachable)
         self.assertEqual(note, "")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# fix-fenix-token-waste 单元测试
+# ═══════════════════════════════════════════════════════════════════
+
+class TestBlockedState(unittest.TestCase):
+    """blocked 状态流转：implementing→blocked（熔断）、blocked→ready（人工恢复）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        from core.state_machine import StateMachine
+        self.sm = StateMachine(Path(self.tmpdir) / "STATE.md", None)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_implementing_to_blocked_and_back_to_ready(self):
+        self.sm.add_spec("s1", {"status": "implementing", "priority": 1})
+        self.assertTrue(self.sm.transition("s1", "blocked"))
+        self.assertEqual(self.sm.read_one("s1")["status"], "blocked")
+        # blocked 不被自动调度
+        self.assertNotIn("s1", [n for n, _ in self.sm.get_ready_specs()])
+        # 人工恢复 blocked → ready → implementing
+        self.assertTrue(self.sm.transition("s1", "ready"))
+        self.assertTrue(self.sm.transition("s1", "implementing"))
+
+
+class TestMergeCircuitBreakerFingerprint(unittest.TestCase):
+    """merge 失败指纹：同一错误稳定、不同错误区分。"""
+
+    def test_fingerprint_is_stable_and_distinct(self):
+        from core.pm_engine import PMEngine
+        err1 = ("error: Your local changes to the following files would be overwritten by merge:\n"
+                "\tcore/dashboard/data.py\nPlease commit your changes or stash them before you merge.")
+        err2 = "error: fatal: refusing to merge unrelated histories"
+        self.assertEqual(PMEngine._merge_fingerprint(err1), PMEngine._merge_fingerprint(err1))
+        self.assertNotEqual(PMEngine._merge_fingerprint(err1), PMEngine._merge_fingerprint(err2))
+        self.assertEqual(len(PMEngine._merge_fingerprint(err1)), 12)
+
+
+class TestMainTreeHealthCheck(unittest.TestCase):
+    """主树健康检查：脏树自动 stash、干净不动、merge 后 pop、冲突保留。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        from core.worktree_manager import WorktreeManager
+        self.wm = WorktreeManager(Path(self.tmpdir) / "wts", self.project_root, MagicMock())
+
+    def test_ensure_clean_tree_stashes_when_dirty(self):
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if "status" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, stdout=" M core/x.py\n?? y.py\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            stashed = self.wm.ensure_clean_tree()
+        self.assertTrue(stashed)
+        self.assertTrue(any("stash" in c and "push" in c for c in calls))
+        self.assertTrue(any("--include-untracked" in c for c in calls))
+
+    def test_ensure_clean_tree_noop_when_clean(self):
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            self.assertFalse(self.wm.ensure_clean_tree())
+
+    def test_restore_after_merge_pop_success(self):
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            self.assertTrue(self.wm.restore_after_merge())
+
+    def test_restore_after_merge_pop_conflict_keeps_stash(self):
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="CONFLICT (content): Merge conflict")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            self.assertFalse(self.wm.restore_after_merge())
+
+
+class TestCostControl(unittest.TestCase):
+    """agent-cost-control：thinking_tokens 过滤 + max_turns 强制。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        self.config = {"agents": {"run_timeout_seconds": 10}}
+        self.logger = MagicMock()
+        from core.agent_runner import AgentRunner
+        self.runner = AgentRunner(self.config, MagicMock(), MagicMock(), self.project_root, self.logger)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _artifact(self, run_id):
+        return self.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+
+    def test_thinking_tokens_are_filtered_from_artifact(self):
+        run_id = "impl-fp-1"
+        stdout = [
+            json.dumps({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 1}),
+            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}),
+            json.dumps({"type": "result", "result": "ok", "num_turns": 1, "session_id": "s1"}),
+        ]
+        proc = _FakeProc(stdout_lines=stdout)
+        with patch("subprocess.Popen", return_value=proc):
+            out, turns, sid = self.runner._run_claude("p", Path(self.tmpdir), run_id)
+        text = self._artifact(run_id).read_text()
+        self.assertNotIn("thinking_tokens", text)
+        self.assertIn("assistant", text)
+        self.assertEqual(sid, "s1")
+
+    def test_max_turns_kills_run(self):
+        run_id = "impl-mt-1"
+        stdout = [json.dumps({"type": "assistant", "message": {"content": []}}) for _ in range(3)]
+        stdout.append(json.dumps({"type": "result", "result": "x", "num_turns": 3, "session_id": "s2"}))
+        proc = _FakeProc(stdout_lines=stdout, timeout=True)  # 进程永不退出
+        with patch("subprocess.Popen", return_value=proc):
+            with self.assertRaises(RuntimeError) as ctx:
+                self.runner._run_claude("p", Path(self.tmpdir), run_id, max_turns=3)
+        self.assertIn("Max turns", str(ctx.exception))
+        self.assertIn("Max turns", self._artifact(run_id).read_text())
+
+
+class TestExecuteAgentAttemptRunId(unittest.TestCase):
+    """retry-resume：attempt 独立 run_id + implementer 重试复用 worktree + --resume。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix" / "runs").mkdir(parents=True)
+        self.config = {"agents": {"max_retries": 2, "max_turns": 50, "subagent_model": "claude-sonnet-5"}}
+        self.logger = MagicMock()
+        self.wm = MagicMock()
+        self.wt = Path(self.tmpdir) / "wt"
+        self.wm.create.return_value = self.wt
+        self.wm.get_branch_name.return_value = "fenix/test-1"
+        from core.agent_runner import AgentRunner
+        self.runner = AgentRunner(self.config, self.wm, MagicMock(), self.project_root, self.logger)
+
+    def test_implementer_retry_resumes_session(self):
+        run_ids = []
+        resume_ids = []
+
+        def fake_run_claude(prompt, cwd, run_id, model_override=None, env_overrides=None,
+                            resume_session_id=None, max_turns=None):
+            run_ids.append(run_id)
+            resume_ids.append(resume_session_id)
+            if len(run_ids) == 1:
+                # attempt 1：先落盘 result 事件（含 session_id）再抛失败
+                rf = self.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+                rf.write_text(json.dumps({"type": "result", "result": "", "num_turns": 1,
+                                          "session_id": "sess-a1"}) + "\n")
+                raise RuntimeError("attempt 1 failed")
+            return ("ok", 5, "sess-final")
+
+        self.runner._build_prompt = MagicMock(return_value="p")
+        self.runner._run_claude = fake_run_claude
+
+        result = self.runner._execute_agent("test-spec", "implementer", "impl-test-spec-100")
+        self.assertTrue(result.success)
+        # 两次 attempt run_id 不同（-a1 / -a2），产物一一对应
+        self.assertEqual(run_ids, ["impl-test-spec-100-a1", "impl-test-spec-100-a2"])
+        # 第二次以 attempt1 的 session_id resume
+        self.assertEqual(resume_ids, [None, "sess-a1"])
+        # worktree 只创建一次（复用），成功后以 success=True 清理
+        self.assertEqual(self.wm.create.call_count, 1)
+        self.wm.cleanup.assert_called_once_with(self.wt, success=True)
+
+    def test_non_implementer_retry_recreates_worktree(self):
+        run_ids = []
+        resume_ids = []
+
+        def fake_run_claude(prompt, cwd, run_id, model_override=None, env_overrides=None,
+                            resume_session_id=None, max_turns=None):
+            run_ids.append(run_id)
+            resume_ids.append(resume_session_id)
+            if len(run_ids) == 1:
+                raise RuntimeError("attempt 1 failed")
+            return ("ok", 1, "s")
+
+        self.runner._build_prompt = MagicMock(return_value="p")
+        self.runner._run_claude = fake_run_claude
+
+        result = self.runner._execute_agent("test-spec", "verifier", "verify-test-spec-100")
+        self.assertTrue(result.success)
+        # verifier 重试全新创建 worktree（两次 create）
+        self.assertEqual(self.wm.create.call_count, 2)
+        self.assertEqual(resume_ids, [None, None])
+
+
+class TestDaemonSingletonFlock(unittest.TestCase):
+    """daemon-singleton：flock 排他锁语义（第二个实例被拒，释放后可获取）。"""
+
+    def test_second_acquire_is_rejected_until_release(self):
+        import fcntl
+        lock_path = Path(tempfile.mkdtemp()) / "daemon.lock"
+        fd1 = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(fd1, fcntl.LOCK_EX | fcntl.LOCK_NB)  # 第一个实例持有
+        fd2 = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+        with self.assertRaises(OSError):
+            fcntl.flock(fd2, fcntl.LOCK_EX | fcntl.LOCK_NB)  # 第二个实例被拒
+        os.close(fd1)  # 第一个实例退出 → 锁释放
+        fcntl.flock(fd2, fcntl.LOCK_EX | fcntl.LOCK_NB)  # 第三个实例可获取
+        os.close(fd2)
 
 
 if __name__ == "__main__":

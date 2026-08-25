@@ -28,12 +28,13 @@ class SpecStatus:
     TESTING = "testing"
     VERIFIED = "verified"
     BUG_FOUND = "bug-found"
+    BLOCKED = "blocked"
     DONE = "done"
     PUSHED = "pushed"
 
     ALL = [
         DRAFTED, READY, IMPLEMENTING, IMPLEMENTED,
-        TESTING, VERIFIED, BUG_FOUND, DONE, PUSHED,
+        TESTING, VERIFIED, BUG_FOUND, BLOCKED, DONE, PUSHED,
     ]
 
 
@@ -41,10 +42,11 @@ class SpecStatus:
 VALID_TRANSITIONS: Dict[str, List[str]] = {
     SpecStatus.DRAFTED:      [SpecStatus.READY],
     SpecStatus.READY:        [SpecStatus.IMPLEMENTING],
-    SpecStatus.IMPLEMENTING: [SpecStatus.IMPLEMENTED, SpecStatus.READY],  # ready = retry
+    SpecStatus.IMPLEMENTING: [SpecStatus.IMPLEMENTED, SpecStatus.READY, SpecStatus.BLOCKED],  # ready=retry, blocked=熔断
     SpecStatus.IMPLEMENTED:  [SpecStatus.TESTING],
     SpecStatus.TESTING:      [SpecStatus.VERIFIED, SpecStatus.BUG_FOUND],
     SpecStatus.BUG_FOUND:    [SpecStatus.IMPLEMENTING],
+    SpecStatus.BLOCKED:      [SpecStatus.READY],  # 人工确认后恢复
     SpecStatus.VERIFIED:     [SpecStatus.DONE],
     SpecStatus.DONE:         [SpecStatus.PUSHED],
     SpecStatus.PUSHED:       [],  # terminal state

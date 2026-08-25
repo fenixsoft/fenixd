@@ -24,6 +24,7 @@ import os
 import sys
 import signal
 import time
+import fcntl
 from pathlib import Path
 
 # Ensure .fenix/ is on the Python path
@@ -116,6 +117,10 @@ class FenixDaemon:
 
         # Scan initial state
         self.logger.info("fenixd", "Performing initial STATE.md scan...")
+
+        # 启动清理孤儿 worktree（fix-fenix-token-waste）：上次异常退出的残留
+        self.worktree_manager.cleanup_stale_worktrees()
+
         self.event_bus.full_scan()
 
         # Start event bus monitoring
@@ -147,8 +152,34 @@ class FenixDaemon:
         sys.exit(0)
 
 
+# 单实例锁：fd 保持全局引用，进程生命周期内持有，退出时 OS 自动释放
+_LOCK_FD = None
+
+
+def _acquire_singleton_lock() -> None:
+    """获取 daemon 单实例 flock 排他锁（fix-fenix-token-waste）。
+
+    同一项目重复启动第二个实例时打印提示并立即退出（非零码），
+    防止双 daemon 并发读取 STATE.md 造成双派发。
+    """
+    global _LOCK_FD
+    lock_path = FENIX_DIR / "daemon.lock"
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        print(
+            f"Fenixd 已在运行（单实例锁被持有: {lock_path}），本实例退出",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    _LOCK_FD = fd
+
+
 def main():
     """Entry point for fenixd."""
+    _acquire_singleton_lock()
     daemon = FenixDaemon()
 
     # Register signal handlers
