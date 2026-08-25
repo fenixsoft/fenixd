@@ -958,6 +958,23 @@ class TestFileWatcher:
         w.scan_once()
         assert hub.events == []
 
+    def test_periodic_heartbeat_broadcasts_refresh(self, tmp_path):
+        # daemon 健康状态/新项目发现不产生文件变更，scan_once 感知不到；
+        # 需周期性广播 refresh，否则概览徽标不会自动更新（验证发现的真实缺陷）。
+        proot, hub, _ = self._mk(tmp_path)
+        w = FileWatcher(
+            lambda: [{"name": "proj-a", "path": str(proot), "exists": True}],
+            hub, interval=0.01, heartbeat=0.02,
+        )
+        w.scan_once()  # 建立基线（首轮会广播一次 state，之后无变化不再广播）
+        hub.events.clear()
+        w.start()
+        time.sleep(0.15)
+        w.stop()
+        refreshes = [e for e, _ in hub.events if e["type"] == "refresh"]
+        assert refreshes, "周期性心跳应广播 refresh 事件"
+        assert not any(e["type"] == "state" for e, _ in hub.events), "无文件变化不应广播 state"
+
     def test_run_events_not_pushed_when_unwatched(self, tmp_path):
         proot, hub, w = self._mk(tmp_path)
         w.scan_once()  # 无人订阅
