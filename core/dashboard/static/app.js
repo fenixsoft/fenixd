@@ -1,9 +1,7 @@
 /* Fenix Dashboard — 原生 JS 单页应用（无 CDN）
    视图: #overview（跨项目概览） / #project/<name>（SPEC 列表） / #spec/<proj>/<spec>（详情）
-   刷新: 2 秒轮询；刷新不丢滚动位置；接口失败/空数据兜底展示。 */
-
-const REFRESH_MS = 2000;
-const RUN_EVENTS_TAIL = 150;   // 运行中实时渲染的事件条数上限
+   数据: 服务端 FileWatcher 监听数据源文件，经 SSE（/api/stream）推送变更，前端不轮询。
+   run 对话流（LLM 事件）仅在展开/弹窗时按需拉取尾部 + SSE 增量。 */
 
 const el = (id) => document.getElementById(id);
 const $ = (sel, root) => (root || document).querySelector(sel);
@@ -58,17 +56,6 @@ function statusPill(status) {
   const m = STATUS_META[status] || { cls: 'st-muted', icon: '❓', label: status || '未知' };
   return `<span class="status-pill ${m.cls}">${m.icon} ${esc(m.label)}</span>`;
 }
-function runStatusPill(status) {
-  const map = {
-    running: { cls: 'st-warning', icon: '⏳', label: '运行中' },
-    empty: { cls: 'st-warning', icon: '⏳', label: '启动中' },
-    done: { cls: 'st-good', icon: '✅', label: '已完成' },
-    error: { cls: 'st-critical', icon: '💥', label: '异常终止' },
-    missing: { cls: 'st-muted', icon: '—', label: '无记录' },
-  };
-  const m = map[status] || { cls: 'st-muted', icon: '❓', label: status };
-  return `<span class="status-pill ${m.cls}">${m.icon} ${esc(m.label)}</span>`;
-}
 function progressBar(done, total) {
   const p = pct(done, total);
   const cls = p === 100 ? 'good' : p >= 60 ? '' : p > 0 ? 'warn' : 'serious';
@@ -79,11 +66,6 @@ function progressBar(done, total) {
 // ── 路由与状态 ──────────────────────────────────────────
 let currentState = { view: 'overview' };
 let seq = 0;
-let pollTimer = null;
-let autoRefresh = true;   // 右上角开关：关闭后停止 2s 轮询，便于复制内容
-const runEventCache = {};   // run_id -> {events,status,error}
-const expandedRuns = new Set();
-const runScrolls = {};      // run_id -> scrollTop
 const specFilter = { q: '', status: '' };  // 项目视图过滤状态，跨刷新保持
 
 function parseHash() {
@@ -104,99 +86,116 @@ function nav(hash) {
   else location.hash = hash;
 }
 function route() {
-  for (const k in runEventCache) delete runEventCache[k];
-  expandedRuns.clear();
   currentState = parseHash();
   updateTopbar();
-  schedulePoll();
   load();
 }
-// 刷新是否暂停：开关关闭，或当前处于「配置」页（表单编辑中不可被轮询整页重绘）
-function refreshPaused() {
-  return !autoRefresh || currentState.view === 'config';
-}
-function refreshLabel() {
-  if (!autoRefresh) return '自动刷新已暂停';
-  if (currentState.view === 'config') return '配置页不自动刷新';
-  return '2s 自动刷新';
-}
-function schedulePoll() {
-  if (pollTimer) clearInterval(pollTimer);
-  pollTimer = null;
-  if (refreshPaused()) {
-    el('refresh-dot').classList.add('off');
-    el('refresh-text').textContent = refreshLabel();
-    return;
-  }
-  el('refresh-dot').classList.remove('off');
-  el('refresh-text').textContent = '2s 自动刷新';
-  pollTimer = setInterval(load, REFRESH_MS);
-}
-function toggleAutoRefresh() {
-  autoRefresh = !!el('auto-refresh').checked;
-  schedulePoll();
-  // 恢复时立即刷新一次；但配置页不重载，避免冲掉正在编辑的表单
-  if (autoRefresh && currentState.view !== 'config') load();
-}
 
-// ── 数据获取（含运行中 run 的实时流） ──────────────────
+// ── 数据获取 ────────────────────────────────────────────
+// spec 详情只含 run 元数据（状态/时长），不含事件流；事件流由弹窗按需拉取。
 function fetchFor(state) {
   const p = encodeURIComponent(state.project || '');
   if (state.view === 'overview') return api('/api/overview');
   if (state.view === 'project') return api('/api/specs?project=' + p);
   if (state.view === 'config') return api('/api/config?project=' + p);
-  // spec 详情 + 运行中 run 的产物流并行拉取
   const s = encodeURIComponent(state.spec);
-  return api('/api/specs/' + s + '?project=' + p).then((detail) => {
-    const running = (detail.runs || []).filter((r) => r.status === 'running' || r.status === 'empty');
-    const fetches = running.map((r) =>
-      api('/api/runs/' + encodeURIComponent(r.run_id) + '?project=' + p)
-        .then((rd) => ({ id: r.run_id, run: rd }))
-        .catch(() => ({ id: r.run_id, run: null }))
-    );
-    return Promise.all(fetches).then((rds) => {
-      detail._runStreams = {};
-      rds.forEach((x) => { if (x.run) detail._runStreams[x.id] = x.run; });
-      return detail;
-    });
-  });
+  return api('/api/specs/' + s + '?project=' + p);
 }
 
 function load() {
   const mySeq = ++seq;
-  captureScrolls();
   fetchFor(currentState)
     .then((data) => {
       if (mySeq !== seq) return;
       const scrollY = window.scrollY;
       renderView(currentState, data);
-      restoreScrolls();
       window.scrollTo(0, scrollY);
-      setOnline();
-      hydratePending();
       if (currentState.view === 'config') hydrateConfigPage();
       if (currentState.view === 'project') hydrateProjectFilter();
     })
     .catch((err) => {
       if (mySeq !== seq) return;
       showError(err);
-      setOffline();
     });
 }
 
-// ── 滚动保持 ───────────────────────────────────────────
-function captureScrolls() {
-  document.querySelectorAll('[data-run-scroll]').forEach((el2) => {
-    runScrolls[el2.dataset.runScroll] = el2.scrollTop;
-  });
+// ── SSE 推送订阅（服务端 FileWatcher 监听文件变更 → 推送，替代轮询） ──
+let sse = null;
+let sseCid = null;            // 本页 SSE 连接 id（注册 run 增量订阅用）
+const pendingWatches = [];    // 尚未拿到 cid 时的待注册 run
+let lastRefresh = 0;
+
+function refreshView() {
+  if (currentState.view === 'config') return;   // 配置页表单编辑中，不整页重绘
+  const now = Date.now();
+  if (now - lastRefresh < 500) return;   // 前缘节流：突发事件合并为一次刷新
+  lastRefresh = now;
+  load();
 }
-function restoreScrolls() {
-  document.querySelectorAll('[data-run-scroll]').forEach((el2) => {
-    const id = el2.dataset.runScroll;
-    const prev = runScrolls[id];
-    const nearBottom = prev == null || (el2.scrollHeight - el2.scrollTop - el2.clientHeight < 60);
-    el2.scrollTop = nearBottom ? el2.scrollHeight : prev;
-  });
+
+function handleSSEEvent(msg) {
+  if (msg.type === 'state') {
+    // 概览聚合所有项目，任何项目变化都整体重拉
+    if (currentState.view === 'overview') { refreshView(); return; }
+    if (msg.project !== currentState.project) return;
+    if (currentState.view === 'project' && msg.specs) {
+      renderView(currentState, { project: currentState.project, specs: msg.specs });
+    } else if (currentState.view === 'spec') {
+      const d = msg.details && msg.details[currentState.spec];
+      if (d) renderView(currentState, d);
+      else refreshView();   // 不在推送详情里 → 回退到一次 REST 拉取
+    }
+    return;
+  }
+  if (msg.type === 'detail') {
+    if (currentState.view !== 'spec') return;
+    if (msg.project !== currentState.project || msg.spec !== currentState.spec) return;
+    renderView(currentState, msg.data);
+    return;
+  }
+  if (msg.type === 'run_meta' || msg.type === 'refresh') {
+    refreshView();
+    return;
+  }
+  if (msg.type === 'run_events' && modalRunId === msg.run_id) {
+    appendModalEvents(msg);
+  }
+}
+
+function connectSSE() {
+  if (sse) sse.close();
+  sse = new EventSource('/api/stream');
+  sse._firstOpen = true;
+  sse.onopen = () => {
+    // 首次连接 route() 已初始加载；重连（新 cid）则补拉当前视图 + 重订阅弹窗 run
+    if (sse._firstOpen) { sse._firstOpen = false; return; }
+    load();
+    if (modalRunId) pendingWatches.push(modalRunId);
+  };
+  sse.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    if (msg.type === 'hello') {
+      sseCid = msg.cid;
+      while (pendingWatches.length) registerWatch(pendingWatches.shift());
+      return;
+    }
+    handleSSEEvent(msg);
+  };
+  // onerror：EventSource 原生自动重连，无需手动处理
+}
+
+function registerWatch(runId) {
+  if (!sseCid) { pendingWatches.push(runId); return; }
+  fetch('/api/runs/' + encodeURIComponent(runId) + '/watch'
+    + '?project=' + encodeURIComponent(currentState.project || '')
+    + '&cid=' + encodeURIComponent(sseCid), { method: 'POST' }).catch(() => {});
+}
+function unregisterWatch(runId) {
+  if (!sseCid) return;
+  fetch('/api/runs/' + encodeURIComponent(runId) + '/watch'
+    + '?project=' + encodeURIComponent(currentState.project || '')
+    + '&cid=' + encodeURIComponent(sseCid), { method: 'DELETE' }).catch(() => {});
 }
 
 // ── 顶栏 ───────────────────────────────────────────────
@@ -238,18 +237,9 @@ el('project-select').addEventListener('change', (e) => {
   if (e.target.value) nav('project/' + encodeURIComponent(e.target.value));
   else nav('overview');
 });
-el('auto-refresh').addEventListener('change', toggleAutoRefresh);
 window.addEventListener('hashchange', route);
 
 // ── 在线/离线指示 ──────────────────────────────────────
-function setOnline() {
-  el('refresh-dot').classList.toggle('off', refreshPaused());
-  el('refresh-text').textContent = refreshLabel();
-}
-function setOffline() {
-  el('refresh-dot').classList.add('off');
-  el('refresh-text').textContent = '接口不可达';
-}
 function showError(err) {
   const main = el('main');
   main.innerHTML =
@@ -287,7 +277,7 @@ function renderOverview(data) {
   const projects = data.projects || [];
   return `
     <div class="page-title">跨项目概览</div>
-    <div class="page-sub">监控 ${projects.length} 个项目 · 每 2 秒自动刷新</div>
+    <div class="page-sub">监控 ${projects.length} 个项目</div>
     <div class="totals-row">
       <div class="stat-tile"><div class="num">${t.spec_count ?? 0}</div><div class="label">SPEC 总数</div></div>
       <div class="stat-tile"><div class="num">${t.task_done ?? 0}/${t.task_total ?? 0}</div><div class="label">任务进度</div></div>
@@ -367,7 +357,7 @@ function renderProject(data) {
   return `
     <div class="breadcrumb"><button onclick="nav('overview')">← 概览</button><span class="sep">/</span>${project}</div>
     <div class="page-title">${project}</div>
-    <div class="page-sub">${specs.length} 个 SPEC · 每 2 秒自动刷新</div>
+    <div class="page-sub">${specs.length} 个 SPEC</div>
     <div class="spec-filter">
       <input type="text" id="spec-filter-q" placeholder="搜索名称…" value="${esc(specFilter.q)}" />
       <select id="spec-filter-status">
@@ -621,146 +611,8 @@ function renderScreenshots(d) {
 }
 
 // ── 运行记录 + 实时 LLM 对话 ───────────────────────────
-function renderRuns(d) {
-  const runs = d.runs || [];
-  const items = runs.map((r) => {
-    const live = r.status === 'running' || r.status === 'empty';
-    const stream = d._runStreams ? d._runStreams[r.run_id] : null;
-    return runCard(d, r, stream, live);
-  }).join('');
-  const total = runs.length;
-  return `
-  <div class="section">
-    <div class="section-title">运行记录<span class="count">${total}</span></div>
-    ${items || '<div class="empty-state">暂无运行记录</div>'}
-  </div>`;
-}
-
-function runCard(d, r, stream, live) {
-  const expanded = live || expandedRuns.has(r.run_id);
-  let body;
-  if (live) {
-    body = liveRunBody(stream);
-  } else if (runEventCache[r.run_id]) {
-    body = cachedRunBody(runEventCache[r.run_id]);
-  } else if (expanded) {
-    body = '<div class="empty-state">加载中…</div>';
-    pendingHydrates.push(r.run_id);
-  } else {
-    body = '<div class="empty-state">点击展开加载对话</div>';
-  }
-  return `
-  <div class="run-card">
-    <div class="run-head" onclick="toggleRun('${esc(r.run_id)}')">
-      <span class="run-id">${esc(r.run_id)}</span>
-      <span class="run-type">${esc(r.agent_type)}</span>
-      ${runStatusPill(r.status)}
-      <span class="run-type">${fmtTime(r.started)}</span>
-    </div>
-    <div class="run-body ${expanded ? '' : 'hidden'}" id="run-body-${esc(r.run_id)}">${body}</div>
-  </div>`;
-}
-
-let pendingHydrates = [];
-function hydratePending() {
-  if (!pendingHydrates.length) return;
-  const list = pendingHydrates;
-  pendingHydrates = [];
-  list.forEach((id) => {
-    const body = document.getElementById('run-body-' + id);
-    if (body) hydrateRun(id, body);
-  });
-}
-function hydrateRun(runId, body) {
-  api('/api/runs/' + encodeURIComponent(runId) + '?project=' + encodeURIComponent(currentState.project))
-    .then((d) => {
-      runEventCache[runId] = d;
-      if (body.isConnected) body.innerHTML = cachedRunBody(d);
-    })
-    .catch(() => { if (body.isConnected) body.innerHTML = '<div class="empty-state">加载失败</div>'; });
-}
-function toggleRun(runId) {
-  const body = document.getElementById('run-body-' + runId);
-  if (!body) return;
-  const hidden = body.classList.contains('hidden');
-  if (hidden) {
-    expandedRuns.add(runId);
-    body.classList.remove('hidden');
-    if (!runEventCache[runId]) hydrateRun(runId, body);
-  } else {
-    expandedRuns.delete(runId);
-    body.classList.add('hidden');
-  }
-}
-
-function liveRunBody(stream) {
-  if (!stream || !(stream.events || []).length) {
-    return '<div class="empty-state">等待事件…（jsonl 尚未产生内容，实时轮询中）</div>';
-  }
-  const events = stream.events;
-  const tail = events.slice(-RUN_EVENTS_TAIL);
-  return `<div class="run-events-scroll" data-run-scroll="${esc(stream.run_id)}">${tail.map(runEvent).join('')}</div>
-    <div class="kv-row"><span class="k">已捕获 ${events.length} 条事件（显示最近 ${tail.length} 条）</span><span class="k st-warning">● 实时</span></div>`;
-}
-function cachedRunBody(d) {
-  const events = d.events || [];
-  const bodyHtml = events.slice(-200).map(runEvent).join('');
-  const err = d.status === 'error' && d.error ? runEvent(d.error) : '';
-  return `<div class="run-events-scroll" data-run-scroll="${esc(d.run_id)}">${err}${bodyHtml}</div>
-    <div class="kv-row"><span class="k">共 ${events.length} 条事件</span></div>`;
-}
-
-function runEvent(ev) {
-  const t = ev.type;
-  const cls =
-    t === 'assistant' ? 'assistant' :
-    t === 'user' ? 'user' :
-    t === 'tool_use' ? 'tool' :
-    t === 'tool_result' ? 'tool-result' :
-    t === 'error' ? 'error' :
-    t === 'stderr' ? 'stderr' :
-    t === 'result' ? 'assistant' : '';
-  let content = '';
-  if (t === 'assistant') {
-    // stream-json 中 tool_use 是 assistant 消息的内容块，非顶层事件
-    const msg = ev.message || {};
-    const blocks = msg.content || [];
-    const text = blocks.filter((c) => c && c.type === 'text').map((c) => c.text).join(' ');
-    const tool = blocks.find((c) => c && c.type === 'tool_use');
-    let out = '';
-    if (tool) {
-      out += `🔧 ${esc(tool.name || 'tool')}<span class="pre-wrap"> ${esc(JSON.stringify(tool.input).slice(0, 500))}</span>`;
-    }
-    if (text) out += (out ? '<br>' : '') + esc(text).slice(0, 2000);
-    content = out || esc(JSON.stringify(ev).slice(0, 300));
-  } else if (t === 'user') {
-    // tool_result 是 user 消息的内容块
-    const msg = ev.message || {};
-    const blocks = msg.content || [];
-    const text = blocks.filter((x) => typeof x === 'string').join(' ');
-    let out = blocks
-      .filter((x) => x && x.type === 'tool_result')
-      .map((c) => `⚙️${c.is_error ? '（错误）' : ''} ${esc(String(c.content).slice(0, 300))}`)
-      .join('<br>');
-    if (text) out += (out ? '<br>' : '') + `🧑 ${esc(text.slice(0, 300))}`;
-    content = out || esc(JSON.stringify(ev).slice(0, 300));
-  } else if (t === 'tool_use') {
-    content = `🔧 ${esc(ev.name || 'tool')}<span class="pre-wrap"> ${esc(JSON.stringify(ev.input || {}).slice(0, 500))}</span>`;
-  } else if (t === 'tool_result') {
-    content = `⚙️ ${esc(String(ev.content || '').slice(0, 300))}`;
-  } else if (t === 'result') {
-    content = `🏁 ${esc(String(ev.result || '')).slice(0, 500)}（turns: ${ev.num_turns ?? '?'}）`;
-  } else if (t === 'error') {
-    content = `💥 ${esc(ev.error || '异常终止')}${ev.exit_code != null ? `（exit_code: ${ev.exit_code}）` : ''}`;
-  } else if (t === 'stderr') {
-    content = `⚠ ${esc(ev.line || '')}`;
-  } else if (t === 'system') {
-    content = `⚙ 系统: ${esc(ev.subtype || '')}`;
-  } else {
-    content = esc(JSON.stringify(ev).slice(0, 300));
-  }
-  return `<div class="run-event ${cls}"><span class="pre-wrap">${content}</span></div>`;
-}
+// 运行记录在时间轴节点上通过「查看运行记录」打开弹窗查看（openRunModal），
+// 事件流按需拉取尾部 + SSE 增量，spec 视图本身不含事件流。
 
 // ── Markdown 渲染（vendored marked，支持 GFM 表格等复杂语法） ──
 if (window.marked) {
@@ -860,162 +712,14 @@ function collapseThinkingTokens(events) {
   return out;
 }
 
-// ── RunView: FlowToken 驱动的运行记录 React 视图 ──────────
-let __runModalRoot = null;
-let __runModalRootEl = null;
-
-function runEventElement(React, ev) {
-  const t = ev.type;
-  const cls =
-    t === 'assistant' ? 'assistant' :
-    t === 'user' ? 'user' :
-    t === 'tool_use' ? 'tool' :
-    t === 'tool_result' ? 'tool-result' :
-    t === 'error' ? 'error' :
-    t === 'stderr' ? 'stderr' :
-    t === 'result' ? 'assistant' : '';
-
-  let content;
-  const AM = window.FlowToken?.AnimatedMarkdown;
-
-  if (t === 'assistant') {
-    const msg = ev.message || {};
-    const blocks = msg.content || [];
-    const text = blocks.filter((c) => c && c.type === 'text').map((c) => c.text).join(' ');
-    const tool = blocks.find((c) => c && c.type === 'tool_use');
-    const parts = [];
-    if (tool) {
-      parts.push(React.createElement('div', { key: 'tool', className: 'run-inline-tool' },
-        '🔧 ',
-        React.createElement('code', null, tool.name || 'tool'),
-        ' ',
-        React.createElement('span', { className: 'pre-wrap' }, JSON.stringify(tool.input).slice(0, 600))
-      ));
-    }
-    if (text) {
-      if (AM) {
-        parts.push(React.createElement('div', { key: 'md', className: 'flowtoken-md' },
-          React.createElement(AM, { content: text, animation: null })
-        ));
-      } else {
-        parts.push(React.createElement('div', { key: 'md', className: 'md', dangerouslySetInnerHTML: { __html: mdRender(text) } }));
-      }
-    }
-    if (!parts.length) {
-      parts.push(React.createElement('span', { className: 'pre-wrap' }, esc(JSON.stringify(ev).slice(0, 300))));
-    }
-    content = parts;
-  } else if (t === 'user') {
-    const msg = ev.message || {};
-    const blocks = msg.content || [];
-    const text = blocks.filter((x) => typeof x === 'string').join(' ');
-    const parts = [];
-    const toolResults = blocks.filter((x) => x && x.type === 'tool_result');
-    if (toolResults.length) {
-      toolResults.forEach((c, i) => {
-        const errCls = c.is_error ? ' tool-error' : '';
-        parts.push(React.createElement('span', { key: 'tr' + i, className: 'pre-wrap' + errCls },
-          (c.is_error ? '（错误）' : '') + String(c.content).slice(0, 400)
-        ));
-      });
-    }
-    if (text) {
-      if (AM) {
-        parts.push(React.createElement('div', { key: 'md', className: 'flowtoken-md' },
-          React.createElement(AM, { content: text, animation: null })
-        ));
-      } else {
-        parts.push(React.createElement('div', { key: 'md', dangerouslySetInnerHTML: { __html: mdRender(text) } }));
-      }
-    }
-    if (!parts.length) {
-      parts.push(React.createElement('span', { className: 'pre-wrap' }, esc(JSON.stringify(ev).slice(0, 300))));
-    }
-    content = parts;
-  } else if (t === 'tool_use') {
-    content = React.createElement('span', { className: 'pre-wrap' },
-      '🔧 ',
-      React.createElement('code', null, ev.name || 'tool'),
-      ' ' + JSON.stringify(ev.input || {}).slice(0, 600)
-    );
-  } else if (t === 'tool_result') {
-    const errCls = ev.is_error ? ' tool-error' : '';
-    content = React.createElement('span', { className: 'pre-wrap' + errCls },
-      (ev.is_error ? '（错误）' : '') + String(ev.content || '').slice(0, 400)
-    );
-  } else if (t === 'result') {
-    const resultText = String(ev.result || '');
-    const turns = ev.num_turns ?? '?';
-    content = React.createElement('span', null,
-      '🏁 ',
-      AM
-        ? React.createElement('span', { className: 'flowtoken-md' },
-            React.createElement(AM, { content: resultText, animation: null })
-          )
-        : React.createElement('span', { dangerouslySetInnerHTML: { __html: mdRender(resultText) } }),
-      `（turns: ${turns}）`
-    );
-  } else if (t === 'error') {
-    content = `💥 ${ev.error || '异常终止'}${ev.exit_code != null ? `（exit_code: ${ev.exit_code}）` : ''}`;
-  } else if (t === 'stderr') {
-    content = React.createElement('span', { className: 'pre-wrap' }, '⚠ ' + (ev.line || ''));
-  } else if (t === 'system') {
-    const merged = ev._merged && ev._merged > 1 ? `（合并 ${ev._merged} 条）` : '';
-    content = `⚙ 系统: ${ev.subtype || ''}${merged}`;
-  } else {
-    content = esc(JSON.stringify(ev).slice(0, 300));
-  }
-
-  return React.createElement('div', { className: 'run-event ' + cls, key: ev._key || null },
-    React.createElement('span', { className: 'pre-wrap' }, typeof content === 'string' ? content : content)
-  );
-}
-
-function RunView(React, props) {
-  const events = collapseThinkingTokens(props.events || []);
-  const tail = events.slice(-300);
-  const elements = tail.map((ev, i) => {
-    ev._key = i;
-    return runEventElement(React, ev);
-  });
-  if (props.status === 'error' && props.error) {
-    elements.unshift(runEventElement(React, { ...props.error, _key: 'err' }));
-  }
-  const total = (props.events || []).length;
-  return React.createElement('div', null,
-    React.createElement('div', { className: 'runmodal-scroll' }, elements),
-    React.createElement('div', { className: 'kv-row' },
-      React.createElement('span', { className: 'k' }, `共 ${total} 条事件`)
-    )
-  );
-}
-
-function mountRunModalRoot(body) {
-  const React = window.FlowToken?.React;
-  const ReactDOM = window.FlowToken?.ReactDOM;
-  if (!React || !ReactDOM) return null;
-  if (__runModalRoot && __runModalRootEl === body) return __runModalRoot;
-  unmountRunModalRoot();
-  __runModalRootEl = body;
-  __runModalRoot = ReactDOM.createRoot(body);
-  return __runModalRoot;
-}
-
-function unmountRunModalRoot() {
-  if (__runModalRoot && __runModalRootEl) {
-    try { __runModalRoot.unmount(); } catch (e) { /* ignore */ }
-  }
-  __runModalRoot = null;
-  __runModalRootEl = null;
-}
-
 function renderRunModalBody(d) {
   const raw = d.events || [];
   const events = collapseThinkingTokens(raw);
   const html = events.slice(-300).map(runEventMd).join('');
   const err = d.status === 'error' && d.error ? runEventMd(d.error) : '';
+  const total = d.total_events != null ? d.total_events : raw.length;
   return `<div class="runmodal-scroll">${err}${html}</div>
-    <div class="kv-row"><span class="k">共 ${raw.length} 条事件</span></div>`;
+    <div class="kv-row"><span class="k">共 ${total} 条事件</span></div>`;
 }
 
 // ── 运行时间轴（react-vertical-timeline，垂直） ────────
@@ -1094,56 +798,80 @@ function mountTimeline() {
   }
 }
 
-// ── 运行记录弹窗（80% 屏） ─────────────────────────────
-let runModalPoll = null;   // 运行记录弹窗的流式轮询定时器
+// ── 运行记录弹窗（80% 屏，按需拉取 + SSE 增量） ────────
+let modalRunId = null;      // 当前弹窗打开的 run（null = 未打开 / 状态弹窗）
+let modalProject = '';
+let modalEvents = [];       // 事件缓冲：初始尾部 + 增量追加
+let modalTotal = 0;
 
 function isRunLive(status) {
   return status === 'running' || status === 'empty';
 }
 
-function stopRunModalPoll() {
-  if (runModalPoll) { clearInterval(runModalPoll); runModalPoll = null; }
-}
-
 function renderRunModalBodyLive(body, d) {
   // 粘性滚动：更新前贴近底部则更新后自动滚到最新；用户上翻阅读历史时不强制拽回
   const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
-  const React = window.FlowToken?.React;
-  const root = mountRunModalRoot(body);
-  if (root && React) {
-    root.render(RunView(React, {
-      events: d.events || [],
-      status: d.status,
-      error: d.error,
-    }));
-  } else {
-    body.innerHTML = renderRunModalBody(d);
-  }
+  body.innerHTML = renderRunModalBody(d);
   if (nearBottom) body.scrollTop = body.scrollHeight;
 }
 
+function fetchRunTail(runId, project) {
+  api('/api/runs/' + encodeURIComponent(runId)
+    + '?project=' + encodeURIComponent(project) + '&tail=300')
+    .then((d) => {
+      const box = el('runmodal');
+      const body = el('runmodal-body');
+      if (modalRunId !== runId || box.classList.contains('hidden')) {
+        unregisterWatch(runId);
+        return;
+      }
+      modalEvents = d.events || [];
+      modalTotal = d.total_events != null ? d.total_events : modalEvents.length;
+      renderRunModalBodyLive(body, {
+        run_id: runId, status: d.status, error: d.error,
+        events: modalEvents, total_events: modalTotal,
+      });
+      if (isRunLive(d.status)) registerWatch(runId);   // 运行中 → 订阅增量推送
+      else unregisterWatch(runId);
+    })
+    .catch(() => {});
+}
+
+function appendModalEvents(msg) {
+  const box = el('runmodal');
+  const body = el('runmodal-body');
+  if (!body || box.classList.contains('hidden') || modalRunId !== msg.run_id) return;
+  if (msg.reset) {
+    // 产物被轮转/截断：重新拉取完整尾部并重新订阅
+    unregisterWatch(msg.run_id);
+    fetchRunTail(msg.run_id, modalProject);
+    return;
+  }
+  modalEvents = modalEvents.concat(msg.events || []);
+  modalTotal = msg.total_events != null ? msg.total_events : modalEvents.length;
+  renderRunModalBodyLive(body, {
+    run_id: msg.run_id, status: msg.status || 'running', error: null,
+    events: modalEvents, total_events: modalTotal,
+  });
+  if (!isRunLive(msg.status)) unregisterWatch(msg.run_id);   // 运行结束即停订阅
+}
+
 function openRunModal(payload) {
-  stopRunModalPoll();
-  unmountRunModalRoot();
+  if (modalRunId) unregisterWatch(modalRunId);
+  modalRunId = null;
   const box = el('runmodal');
   const body = el('runmodal-body');
   if (payload && payload.runId) {
-    el('runmodal-title').textContent = payload.runId;
+    const runId = payload.runId;
+    const project = payload.project || currentState.project || '';
+    el('runmodal-title').textContent = runId;
     body.innerHTML = '<div class="empty-state">加载中…</div>';
     box.classList.remove('hidden');
-    const runId = payload.runId;
-    const project = payload.project || '';
-    const fetchRun = () => {
-      api('/api/runs/' + encodeURIComponent(runId) + '?project=' + encodeURIComponent(project))
-        .then((d) => {
-          if (box.classList.contains('hidden')) { stopRunModalPoll(); return; }
-          renderRunModalBodyLive(body, d);
-          if (!isRunLive(d.status)) stopRunModalPoll();   // 运行结束即停止轮询
-        })
-        .catch(() => {});
-    };
-    fetchRun();
-    runModalPoll = setInterval(fetchRun, 1000);   // 1s 流式轮询
+    modalRunId = runId;
+    modalProject = project;
+    modalEvents = [];
+    modalTotal = 0;
+    fetchRunTail(runId, project);
   } else if (payload && payload.state) {
     const st = payload.state;
     el('runmodal-title').textContent = `状态转换 ${st.from} → ${st.to}`;
@@ -1157,8 +885,10 @@ function openRunModal(payload) {
   }
 }
 function closeRunModal() {
-  stopRunModalPoll();
-  unmountRunModalRoot();
+  if (modalRunId) unregisterWatch(modalRunId);
+  modalRunId = null;
+  modalEvents = [];
+  modalTotal = 0;
   el('runmodal').classList.add('hidden');
   el('runmodal-body').innerHTML = '';
 }
@@ -1503,31 +1233,6 @@ function saveConfig() {
     });
 }
 
-// 在每次视图渲染后尝试绑定配置页交互
-const _origRenderView = renderView;
-function renderViewWithHydration(state, data) {
-  _origRenderView(state, data);
-  if (state.view === 'config') {
-    // 延迟到下一帧，确保 morphdom 已完成 DOM 更新
-    requestAnimationFrame(() => {
-      hydrateConfigPage();
-      // 首次进入配置页，从项目列表自动选一个项目
-      if (!currentState.project) {
-        const sel = el('project-select');
-        if (sel && sel.options.length > 0) {
-          const first = sel.options[0].value;
-          if (first) nav('config/' + encodeURIComponent(first));
-        }
-      }
-    });
-  }
-}
-// 替换 renderView 引用（renderView 已在多处被调用，这里只在调度层替换）
-// 实际渲染仍走 renderView，hydrateConfigPage 在 load 回调的 hydratePending 中触发
-
-// 在 hydratePending 中加入配置页绑定
-const _origSchedulePoll = schedulePoll;
-
 // ── 截图灯箱 ───────────────────────────────────────────
 function openLightbox(src) {
   el('lightbox-img').src = src;
@@ -1540,9 +1245,9 @@ document.addEventListener('keydown', (e) => {
 
 // 导出到全局供内联 onclick 使用
 window.nav = nav;
-window.toggleRun = toggleRun;
 window.openLightbox = openLightbox;
 window.openRunModal = openRunModal;
 
 // ── 启动 ───────────────────────────────────────────────
 route();
+connectSSE();

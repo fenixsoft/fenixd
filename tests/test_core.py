@@ -2339,5 +2339,177 @@ class TestPMEngineMergeBackIntegration(unittest.TestCase):
         self.assertEqual(spec["status"], "implemented")
 
 
+# ═══════════════════════════════════════════════════════════════════
+# VerifyEngine 截图时机（fix: 步骤失败导致断言未执行时不截图）
+# ═══════════════════════════════════════════════════════════════════
+
+class TestVerifyEngineScreenshotTiming(unittest.TestCase):
+    """断言真正执行且失败才截图；步骤失败导致断言未执行时不截图。
+
+    背景：add-parallelism 验证时 navigate 到错误端口（8765 → 新标签页），
+    navigate 请求拿到 200 返回 success，但点击 #btn-config 失败 → break，
+    断言从未执行。旧实现在步骤失败处无条件截图，产生 10 张相同的新标签页
+    截图并被误判为 bug。修复后：断言未执行 ⇒ 无截图。
+    """
+
+    @staticmethod
+    def _make_scenario() -> dict:
+        from core.verify_engine.scenarios import TestScenario
+        return TestScenario.from_dict({
+            "id": "steps-fail-before-assert",
+            "description": "步骤失败且断言从未执行",
+            "depends_on": [],
+            "steps": [
+                {"action": "navigate", "value": "http://127.0.0.1:8765/"},
+                {"action": "click", "target": "#btn-config"},
+            ],
+            "assertions": [
+                {"type": "element_visible", "selector": "#cfg-max-concurrent",
+                 "label": "并行度输入框可见"},
+            ],
+        })
+
+    def test_no_screenshot_when_assertion_never_ran(self):
+        """步骤失败导致 break、断言未执行 ⇒ browser.screenshot 不被调用。"""
+        import asyncio
+        from core.verify_engine.engine import VerifyEngine
+        from unittest.mock import AsyncMock, MagicMock
+
+        engine = VerifyEngine.__new__(VerifyEngine)
+        engine.spec_name = "test-spec"
+        engine.project_root = Path(tempfile.mkdtemp())
+        engine.logger = MagicMock()
+        engine.browser = MagicMock()
+        # navigate 成功，click 失败（add-parallelism 场景）
+        engine.browser.execute_action = AsyncMock(side_effect=[
+            {"success": True, "action": "navigate", "detail": "已导航到 http://127.0.0.1:8765/"},
+            {"success": False, "action": "click", "target": "#btn-config",
+             "error": "Locator.wait_for: Timeout exceeded",
+             "error_type": "element_not_found_or_not_actionable"},
+        ])
+        engine.browser.screenshot = AsyncMock(return_value="/tmp/x.png")
+        engine.asserter = MagicMock()
+        engine.asserter.run = AsyncMock(return_value=[])
+        engine.differ = None
+
+        scenario = self._make_scenario()
+        context = MagicMock()
+        page = MagicMock()
+
+        async def _run():
+            return await engine._execute_scenario(scenario, page, context)
+
+        result = asyncio.run(_run())
+
+        self.assertEqual(result["status"], "fail")
+        # 断言从未执行 ⇒ 不应截图（修复后）
+        engine.browser.screenshot.assert_not_called()
+        self.assertEqual(result["screenshots"], [])
+
+    def test_screenshot_after_assert_failure(self):
+        """断言真正执行且失败 ⇒ 应截图（保留取证能力）。"""
+        import asyncio
+        from core.verify_engine.engine import VerifyEngine
+        from unittest.mock import AsyncMock, MagicMock
+
+        engine = VerifyEngine.__new__(VerifyEngine)
+        engine.spec_name = "test-spec"
+        engine.project_root = Path(tempfile.mkdtemp())
+        engine.logger = MagicMock()
+        engine.browser = MagicMock()
+        engine.browser.execute_action = AsyncMock(return_value={
+            "success": True, "action": "navigate", "detail": "已导航到 http://127.0.0.1:8787/",
+        })
+        engine.browser.screenshot = AsyncMock(return_value="/tmp/ok.png")
+        engine.asserter = MagicMock()
+        # 断言真实执行且失败
+        engine.asserter.run = AsyncMock(return_value=[
+            {"type": "element_visible", "layer": 1, "selector": "#cfg-max-concurrent",
+             "pass": False, "error": "Locator.wait_for: Timeout exceeded"},
+        ])
+        engine.differ = None
+
+        from core.verify_engine.scenarios import TestScenario
+        scenario = TestScenario.from_dict({
+            "id": "assert-fails",
+            "description": "断言执行且失败",
+            "depends_on": [],
+            "steps": [{"action": "navigate", "value": "http://127.0.0.1:8787/"}],
+            "assertions": [
+                {"type": "element_visible", "selector": "#cfg-max-concurrent",
+                 "label": "并行度输入框可见"},
+            ],
+        })
+        context = MagicMock()
+        page = MagicMock()
+
+        async def _run():
+            return await engine._execute_scenario(scenario, page, context)
+
+        result = asyncio.run(_run())
+
+        self.assertEqual(result["status"], "fail")
+        # 断言失败 ⇒ 已截图取证
+        engine.browser.screenshot.assert_called_once()
+        self.assertEqual(len(result["screenshots"]), 1)
+
+
+class TestEnsureAppReachableFieldFix(unittest.TestCase):
+    """_ensure_app_reachable 应读取 navigate 步骤的 value 字段识别目标 URL。
+
+    背景：navigate 目标 URL 存于 scenarios.TestStep.value（191 个场景全部如此），
+    但旧代码读 url/target，导致 urls 恒空、恒判可达，可达性门禁永不触发。
+    修复后应正确解析 value 中的 URL；目标不可达且无 start 命令时返回不可达。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.logger = MagicMock()
+        self.sm = StateMachine(Path(self.tmpdir) / "STATE.md", self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
+        )
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_unreachable_target_returns_not_reachable(self):
+        """value 指向不可达 URL 且无 start 命令 ⇒ 应识别为不可达。"""
+        spec_dir = Path(self.tmpdir) / ".fenix" / "verify-progress" / "add-parallelism"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "test_scenarios.json").write_text(json.dumps([
+            {"id": "sc1", "description": "x", "depends_on": [],
+             "steps": [{"action": "navigate", "value": "http://127.0.0.1:8765/"}],
+             "assertions": []},
+        ]), encoding="utf-8")
+
+        # 目标不可达（urlopen 抛异常）；无 start 命令
+        with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
+            self.engine._get_config = MagicMock(return_value="")
+            reachable, user_blocked, note = self.engine._ensure_app_reachable("add-parallelism")
+
+        self.assertFalse(reachable)
+        self.assertFalse(user_blocked)
+        self.assertIn("不可达", note)
+
+    def test_reachable_target_returns_reachable(self):
+        """value 指向可达 URL ⇒ 识别为可达（urlopen 不抛异常）。"""
+        spec_dir = Path(self.tmpdir) / ".fenix" / "verify-progress" / "myspec"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "test_scenarios.json").write_text(json.dumps([
+            {"id": "sc1", "description": "x", "depends_on": [],
+             "steps": [{"action": "navigate", "value": "http://127.0.0.1:8787/"}],
+             "assertions": []},
+        ]), encoding="utf-8")
+
+        with patch("urllib.request.urlopen", return_value=MagicMock(__enter__=MagicMock())):
+            reachable, user_blocked, note = self.engine._ensure_app_reachable("myspec")
+
+        self.assertTrue(reachable)
+        self.assertEqual(note, "")
+
+
 if __name__ == "__main__":
     unittest.main()

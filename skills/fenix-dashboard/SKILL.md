@@ -42,9 +42,12 @@ PYEOF
 （其它 web 服务如 SPA fallback 会对任意路径返回 200，会误判）。
 
 ```bash
-# 探测函数：仅当响应是 Dashboard 的 JSON（含 "projects" 字段）才算存活
+# 探测函数：/api/projects 是 Dashboard JSON 且首页返回 HTML 才算存活。
+# 两个条件都满足才判定存活——陈旧实例（cwd 指向已删除的 worktree）API 正常
+# 但静态资源 404，仅查 "projects" 会误判存活导致一直复用坏实例。
 probe() {
-  curl -s -m 2 "http://localhost:$1/api/projects" 2>/dev/null | grep -q '"projects"'
+  curl -s -m 2 "http://localhost:$1/api/projects" 2>/dev/null | grep -q '"projects"' \
+    && [ "$(curl -s -m 2 -o /dev/null -w '%{http_code}' "http://localhost:$1/")" = "200" ]
 }
 TMUX_RUNNING=""
 if tmux has-session -t fenix-dashboard 2>/dev/null; then

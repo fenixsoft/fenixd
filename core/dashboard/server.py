@@ -22,7 +22,9 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
 
 import json
 import mimetypes
+import queue
 import socket
+import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,9 +32,77 @@ from pathlib import Path
 
 from . import data as dashboard_data
 from .registry import Registry
+from .watcher import FileWatcher
 
 STATIC_DIR = Path(__file__).parent / "static"
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+
+class SSEConnection:
+    """一条浏览器 SSE 长连接：自带事件队列 + 该连接订阅的 run。
+
+    慢客户端不阻塞广播者：队列满则丢弃最旧事件，队列上限防止内存无界增长。
+    """
+
+    def __init__(self, cid: str):
+        self.id = cid
+        self.queue = queue.Queue(maxsize=256)
+        self.watched_runs = set()  # 该连接打开的 run 弹窗（增量推送目标）
+
+    def send(self, event: dict):
+        if self.queue.full():
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                pass
+        try:
+            self.queue.put_nowait(event)
+        except queue.Full:
+            pass
+
+
+class SSEHub:
+    """SSE 连接注册 / 广播 / run 订阅管理（供 watcher 推送 + handler 注册）。"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._conns = {}   # cid -> SSEConnection
+        self._seq = 0
+
+    def register(self) -> SSEConnection:
+        with self._lock:
+            self._seq += 1
+            conn = SSEConnection(f"c{self._seq}")
+            self._conns[conn.id] = conn
+        return conn
+
+    def unregister(self, conn: SSEConnection):
+        with self._lock:
+            self._conns.pop(conn.id, None)
+
+    def broadcast(self, event: dict, run_id: str | None = None):
+        """广播事件；run_id 非空时只发给订阅了该 run 的连接。"""
+        with self._lock:
+            conns = list(self._conns.values())
+        for conn in conns:
+            if run_id is None or run_id in conn.watched_runs:
+                conn.send(event)
+
+    def watch(self, cid: str, run_id: str):
+        with self._lock:
+            conn = self._conns.get(cid)
+            if conn:
+                conn.watched_runs.add(run_id)
+
+    def unwatch(self, cid: str, run_id: str):
+        with self._lock:
+            conn = self._conns.get(cid)
+            if conn:
+                conn.watched_runs.discard(run_id)
+
+    def is_watched(self, run_id: str) -> bool:
+        with self._lock:
+            return any(run_id in c.watched_runs for c in self._conns.values())
 
 
 def find_free_port(start: int, max_attempts: int = 50) -> int:
@@ -58,6 +128,8 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         super().__init__(addr, DashboardHandler)
         self.registry = registry
         self.static_dir = Path(static_dir)
+        self.sse_hub = SSEHub()
+        self.watcher = None  # serve() 中创建并启动
         self._projects_cache = []
         self._cache_ts = 0.0
         self._cache_ttl = 10.0
@@ -82,9 +154,15 @@ MAX_POST_BODY = 256 * 1024
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    """处理 GET/HEAD/POST 请求，输出 JSON 或静态资源。"""
+    """处理 GET/HEAD/POST/DELETE 请求，输出 JSON 或静态资源。
+
+    protocol_version=HTTP/1.1：SSE 需要 keep-alive 长连接 + chunked 传输
+    （普通响应均带 Content-Length，不受影响）。
+    """
 
     server: DashboardHTTPServer  # 类型标注，便于 IDE
+
+    protocol_version = "HTTP/1.1"
 
     # ── 基础 ─────────────────────────────────────────────────
 
@@ -97,6 +175,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._handle(method="POST")
 
+    def do_DELETE(self):
+        self._handle(method="DELETE")
+
     def log_message(self, fmt, *args):
         # 静默访问日志，避免污染运行终端
         pass
@@ -108,8 +189,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             query = urllib.parse.parse_qs(parsed.query)
 
             if path.startswith("/api/"):
+                if path == "/api/stream":
+                    if method == "GET":
+                        self._handle_sse()
+                        return
+                    self._error(405, "Method Not Allowed")
+                    return
                 if method == "POST":
                     self._handle_api_post(path, query)
+                elif method == "DELETE":
+                    self._handle_api_delete(path, query)
                 else:
                     self._handle_api(path, query)
                 return
@@ -144,8 +233,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             spec = urllib.parse.unquote(path[len("/api/specs/"):])
             self._json(self._api_spec_detail(spec, query))
         elif path.startswith("/api/runs/"):
-            run_id = urllib.parse.unquote(path[len("/api/runs/"):])
-            self._json(self._api_run(run_id, query))
+            rest = urllib.parse.unquote(path[len("/api/runs/"):])
+            if rest.endswith("/watch"):
+                self._json(self._api_run_watch(rest[: -len("/watch")], query, watch=True))
+            else:
+                self._json(self._api_run(rest, query))
         elif path == "/api/events":
             self._json(self._api_events(query))
         elif path == "/api/config":
@@ -186,7 +278,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             dashboard_data.spec_summary(proot, name, entry)
             for name, entry in specs.items()
         ]
-        items.sort(key=lambda s: (s.get("status") != "pushed", s.get("priority", 999)))
+        items.sort(key=lambda s: s.get("created") or "", reverse=True)
         return {"project": project["name"], "specs": items}
 
     def _api_spec_detail(self, spec: str, query) -> dict:
@@ -210,9 +302,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return {"error": "unknown project"}
         if not project.get("exists"):
             return {"error": "project not found"}
-        run = dashboard_data.get_run_events(Path(project["path"]), run_id)
+        try:
+            tail = min(int(query.get("tail", ["300"])[0]), 2000)
+        except (TypeError, ValueError):
+            tail = 300
+        run = dashboard_data.get_run_events(Path(project["path"]), run_id, tail=tail)
         run["project"] = project["name"]
         return run
+
+    def _api_run_watch(self, run_id: str, query, watch: bool) -> dict:
+        """注册/取消某条 SSE 连接的 run 增量订阅（弹窗打开/关闭时调用）。"""
+        project = self._project_from_query(query)
+        if project is None or not project.get("exists"):
+            return {"error": "unknown project"}
+        cid = query.get("cid", [None])[0]
+        if not cid:
+            return {"error": "missing cid"}
+        if watch:
+            self.server.sse_hub.watch(cid, run_id)
+        else:
+            self.server.sse_hub.unwatch(cid, run_id)
+        return {"ok": True}
 
     def _api_events(self, query) -> dict:
         project = self._project_from_query(query)
@@ -242,6 +352,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _handle_api_post(self, path: str, query: dict):
         if path == "/api/config":
             self._api_config_post(query)
+        elif path.startswith("/api/runs/") and path.endswith("/watch"):
+            rest = urllib.parse.unquote(path[len("/api/runs/"):-len("/watch")])
+            self._json(self._api_run_watch(rest, query, watch=True))
+        else:
+            self._error(404, "Not Found")
+
+    def _handle_api_delete(self, path: str, query: dict):
+        if path.startswith("/api/runs/") and path.endswith("/watch"):
+            rest = urllib.parse.unquote(path[len("/api/runs/"):-len("/watch")])
+            self._json(self._api_run_watch(rest, query, watch=False))
         else:
             self._error(404, "Not Found")
 
@@ -298,6 +418,52 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not name:
             return None
         return self.server.project_by_name(name)
+
+    # ── SSE 推送流 ──────────────────────────────────────────────
+
+    def _handle_sse(self):
+        """GET /api/stream —— 常驻 SSE 长连接，收到 watcher 广播即推送。
+
+        首次事件为 hello（携带 cid，供前端注册 run 增量订阅）；此后持续阻塞
+        读取连接事件队列，25s 无事件发心跳注释帧保活。客户端断开即清理。
+        """
+        conn = self.server.sse_hub.register()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        try:
+            self._sse_send({"type": "hello", "cid": conn.id})
+            while True:
+                try:
+                    event = conn.queue.get(timeout=25)
+                except queue.Empty:
+                    self._sse_send(None)  # 心跳注释帧
+                    continue
+                if event is None:  # 关闭信号
+                    break
+                self._sse_send(event)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+            pass
+        finally:
+            self.server.sse_hub.unregister(conn)
+
+    def _sse_send(self, event: dict | None):
+        """以 HTTP/1.1 chunked 帧写入一条 SSE 消息；event=None 写心跳注释。
+
+        不带 event: 命名行——命名事件不触发前端 onmessage，只有默认事件才触发；
+        事件类型已由 data 中的 type 字段区分。
+        """
+        if event is None:
+            frame = b": ping\n\n"
+        else:
+            data = json.dumps(event, ensure_ascii=False)
+            frame = ("data: %s\n\n" % data).encode("utf-8")
+        chunk = b"%X\r\n" % len(frame) + frame + b"\r\n"
+        self.wfile.write(chunk)
+        self.wfile.flush()
 
     # ── 静态资源与截图 ────────────────────────────────────────
 
@@ -382,6 +548,9 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
         ("127.0.0.1", actual), registry,
         static_dir or STATIC_DIR,
     )
+    watcher = FileWatcher(lambda: httpd.projects(), httpd.sse_hub)
+    httpd.watcher = watcher
+    watcher.start()
     url = f"http://localhost:{actual}"
     # flush=True：被 Ctrl+C / timeout 杀进程时 URL 必须已输出（供 skill 解析）
     print("=" * 60, flush=True)
@@ -395,4 +564,5 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
     except KeyboardInterrupt:
         print("\nDashboard 已退出")
     finally:
+        watcher.stop()
         httpd.server_close()

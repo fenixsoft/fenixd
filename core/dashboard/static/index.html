@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" class="dark">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,7 +7,6 @@
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/style.css" />
     <link rel="stylesheet" href="/vendor/fenix.bundle.css" />
-    <link rel="stylesheet" href="/vendor/flowtoken.bundle.css" />
   </head>
   <body class="fenix-dashboard">
     <header class="topbar">
@@ -17,14 +16,6 @@
         <select id="project-select" title="切换项目（空 = 概览）"></select>
         <button id="btn-config" class="nav-btn">配置</button>
       </nav>
-      <div class="refresh-ind">
-        <label class="switch" title="自动刷新开关（关闭后可复制内容）">
-          <input type="checkbox" id="auto-refresh" checked />
-          <span class="slider"></span>
-        </label>
-        <span class="refresh-dot" id="refresh-dot"></span>
-        <span id="refresh-text">2s 自动刷新</span>
-      </div>
     </header>
 
     <main id="main">
@@ -45,7 +36,6 @@
     </div>
 
     <script src="/vendor/fenix.bundle.js"></script>
-    <script src="/vendor/flowtoken.bundle.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

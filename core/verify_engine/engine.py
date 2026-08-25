@@ -114,27 +114,36 @@ class VerifyEngine:
     async def _execute_parallel(self, scenarios: list[TestScenario]) -> list[dict]:
         """按依赖关系分层，同层场景通过信号量控制的并发池并行执行。"""
         # ── 场景执行前健康检查 ──
-        health_ok = await self._perform_health_check()
-        if not health_ok:
-            self.logger.error(
+        # 健康检查仅对扩展项目做硬阻断：扩展项目的场景依赖 navigate_to_app
+        # 自动注入应用页面，若加载失败则所有场景必然失败。
+        # 非扩展项目（如自带 HTTP 服务的 Web 应用）由场景自身的 navigate
+        # 步骤负责加载页面，健康检查不做前置阻断。
+        if self.browser.is_extension_project:
+            health_ok = await self._perform_health_check()
+            if not health_ok:
+                self.logger.error(
+                    "verify_engine",
+                    "扩展应用页面加载失败，无法执行场景验证",
+                )
+                return [
+                    {
+                        "scenario_id": s.id,
+                        "description": s.description,
+                        "status": "error",
+                        "error": "应用页面加载失败：.fenix-dashboard 元素不存在，"
+                                 "请确认 dist/ 构建产物完整",
+                        "step_results": [],
+                        "assertion_results": [],
+                        "visual_results": [],
+                        "screenshots": [],
+                    }
+                    for s in scenarios
+                ]
+        else:
+            self.logger.info(
                 "verify_engine",
-                "应用页面加载失败，无法执行场景验证",
+                "非扩展项目，跳过前置健康检查（场景自行导航）",
             )
-            # 为所有场景生成明确的错误报告，避免在空白页上执行断言
-            return [
-                {
-                    "scenario_id": s.id,
-                    "description": s.description,
-                    "status": "error",
-                    "error": "应用页面加载失败：.fenix-dashboard 元素不存在，"
-                             "请确认 dist/ 构建产物完整",
-                    "step_results": [],
-                    "assertion_results": [],
-                    "visual_results": [],
-                    "screenshots": [],
-                }
-                for s in scenarios
-            ]
 
         semaphore = asyncio.Semaphore(self.max_parallel)
         results: list[dict] = []
@@ -164,12 +173,14 @@ class VerifyEngine:
                     context = await self.browser.new_context()
                     page = await context.new_page()
                     # 扩展项目：确保页面已加载应用内容（不依赖场景的 navigate 步骤）
-                    nav_ok = await self.browser.navigate_to_app(page)
-                    if not nav_ok:
-                        self.logger.warning(
-                            "verify_engine",
-                            f"场景'{scenario.id}': navigate_to_app 失败，页面可能为空白",
-                        )
+                    # 非扩展项目由场景自身的 navigate 步骤负责
+                    if self.browser.is_extension_project:
+                        nav_ok = await self.browser.navigate_to_app(page)
+                        if not nav_ok:
+                            self.logger.warning(
+                                "verify_engine",
+                                f"场景'{scenario.id}': navigate_to_app 失败，页面可能为空白",
+                            )
                     try:
                         return await self._execute_scenario(scenario, page, context)
                     finally:
@@ -280,25 +291,21 @@ class VerifyEngine:
         )
 
         # ── 执行操作步骤 ──
+        steps_failed = False
         for i, step in enumerate(scenario.steps):
             step_dict = step.to_dict()
 
             result = await self.browser.execute_action(page, step_dict)
             step_results.append(result)
 
-            # 操作失败时截图当前状态
+            # 操作失败即停止后续步骤，且跳过断言执行（断言「根本没进行」）。
+            # 此时不截图：截图只在断言真正执行且失败时发生（见下方），
+            # 避免环境未正确加载时对同一错误页面产生重复取证。
             if not result.get("success"):
-                try:
-                    ss = await self.browser.screenshot(
-                        page, f"{scenario.id}_step{i}_fail", screenshot_dir
-                    )
-                    screenshots.append(ss)
-                except Exception:
-                    pass
-                # 操作失败即停止后续步骤
+                steps_failed = True
                 break
 
-            # 标记需要截图的关键步骤
+            # 标记为关键步骤的成功操作：按场景声明截图
             if step_dict.get("screenshot", False):
                 try:
                     ss = await self.browser.screenshot(
@@ -308,7 +315,7 @@ class VerifyEngine:
                 except Exception:
                     pass
 
-        # ── 运行断言 ──
+        # ── 运行断言（步骤失败 → 断言未进行，跳过）──
         assertion_defs = [a.to_dict() for a in scenario.assertions]
 
         # 注入运行时数据（console/network错误 + 场景级外部 API 网络豁免标记）
@@ -319,7 +326,20 @@ class VerifyEngine:
             if a_def.get("type") == "no_network_error":
                 a_def["_network_errors"] = self.browser.get_network_errors(context)
 
-        assertion_results = await self.asserter.run(page, assertion_defs)
+        assertion_results: list[dict] = []
+        if not steps_failed:
+            assertion_results = await self.asserter.run(page, assertion_defs)
+
+            # 断言真正执行且至少一个失败 → 截图取证（真实产品缺陷）。
+            # 断言全部通过则不截图。步骤失败已在上方 break，不进入此分支。
+            if any(not a.get("pass", True) for a in assertion_results):
+                try:
+                    ss = await self.browser.screenshot(
+                        page, f"{scenario.id}_assert_fail", screenshot_dir
+                    )
+                    screenshots.append(ss)
+                except Exception:
+                    pass
 
         # ── 视觉对比 ──
         visual_results: list[dict] = []

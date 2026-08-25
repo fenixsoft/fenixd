@@ -110,6 +110,18 @@ class ConfigLoader:
                 raise ValueError(f"llm.providers[{idx}].baseurl must be a non-empty string")
             if not apikey or not isinstance(apikey, str):
                 raise ValueError(f"llm.providers[{idx}].apikey must be a non-empty string")
+            # 可选的自定义环境变量字典（运行时注入子进程，如 CLAUDE_CODE_MAX_CONTEXT_TOKENS）
+            env = provider.get("env")
+            if env is not None:
+                if not isinstance(env, dict):
+                    raise ValueError(
+                        f"llm.providers[{idx}].env must be a dict, got: {type(env).__name__}"
+                    )
+                for k, v in env.items():
+                    if not isinstance(k, str) or not isinstance(v, str):
+                        raise ValueError(
+                            f"llm.providers[{idx}].env keys/values must be strings: {k!r}={v!r}"
+                        )
             if name in seen_names:
                 raise ValueError(f"llm.providers[{idx}].name must be unique: duplicate '{name}'")
             seen_names.add(name)

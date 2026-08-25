@@ -21,4 +21,4 @@
 - [x] 4.1 单元测试：mock `Popen` 断言收到 `cwd=worktree`；merge-back 在成功/冲突/已合并三种情况的行为（含幂等跳过与失败不推进状态）
 - [x] 4.2 集成测试：`data.parse_tasks` 在 `implementing`（worktree）与 `implemented`（主树）两态读取位置正确、进度与实现者标记一致
 - [x] 4.3 回归：`python3 -m pytest tests/ -q` 全量通过，无既有用例回归
-- [ ] 4.4 端到端：跑一个完整 implement→verify 周期，确认 worktree 隔离生效、merge 后主树含实现、verifier 验证合并代码、Dashboard 任务进度正常
+- [x] 4.4 端到端：跑一个完整 implement→verify 周期，确认 worktree 隔离生效、merge 后主树含实现、verifier 验证合并代码、Dashboard 任务进度正常（手动端到端验证通过）

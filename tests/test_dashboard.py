@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.dashboard import data as dash_data
 from core.dashboard.registry import Registry
 from core.dashboard.server import DashboardHTTPServer, DashboardHandler, find_free_port
+from core.dashboard.watcher import FileWatcher
 
 
 # ── 辅助：构造一个可用的 Fenixd 项目目录 ──────────────────────────────
@@ -164,9 +165,69 @@ class TestDataParse:
         assert report["exists"] and len(report["scenarios"]) == 2
 
         bugs = dash_data.parse_bugs(proot, "myspec")
-        assert bugs, "应从 report + verification-report.md 聚合到 bug"
-        assert any(b["source"] == "report" and b["severity"] == "major" for b in bugs)
-        assert any(b["source"] == "report-md" for b in bugs)
+        assert bugs, "应从 report.json 聚合到 bug"
+        assert all(b["source"] == "report" for b in bugs)
+        assert any(b["severity"] == "major" for b in bugs)
+        # sc-2 是 fail 场景且 text_match 断言失败 → 计入 bug
+        assert any(b["description"] == "失败场景" for b in bugs)
+        # bug 携带截图（report.json 中的截图归一化为文件名）
+        assert any("fail.png" in b["screenshots"] for b in bugs)
+
+    def test_parse_bugs_no_report_md_from_markdown(self, tmp_path):
+        """bug 只来自结构化 report.json，不再从 verification-report.md 逐行抓取。
+
+        回归：parse_bugs 曾把 Markdown 里「环境失败」「无产品 Bug 可确认」「失败
+        （环境原因）」「被修复缺陷的背景描述」等行误判为 bug，导致 Dashboard 展示
+        大量虚假 bug（add-parallelism、fix-worktree-agent-cwd、fix-add-parallelism
+        均曾受影响）。移除 report-md 源后，仅写 Markdown（无 report.json）不产生 bug。
+        """
+        proot = Path(tmp_path)
+        spec_dir = proot / "openspec" / "changes" / "env-spec"
+        (spec_dir / "specs").mkdir(parents=True, exist_ok=True)
+        # 仅环境误报的 Markdown 报告，无 report.json
+        (spec_dir / "verification-report.md").write_text(
+            "# 验证报告\n\n"
+            "**验证结论**: ❌ **环境失败，无法验证**\n"
+            "**总场景数**: 12 | 通过: 0 | 失败: 12\n"
+            "**无产品功能 Bug 可确认。** 所有断言失败均由环境问题导致，不构成产品 Bug 证据。\n"
+            "- **状态**: ❌ 失败（环境原因）\n"
+            "- **判定**: 页面未加载，环境问题\n",
+            encoding="utf-8",
+        )
+
+        bugs = dash_data.parse_bugs(proot, "env-spec")
+        assert bugs == [], f"无 report.json 时不应产生 bug：{bugs}"
+
+    def test_parse_bugs_from_report_json_not_markdown(self, tmp_path):
+        """真实缺陷来自 report.json；Markdown 里的缺陷描述不再被当作 bug 源。"""
+        proot = Path(tmp_path)
+        spec_dir = proot / "openspec" / "changes" / "real-spec"
+        (spec_dir / "specs").mkdir(parents=True, exist_ok=True)
+        # Markdown 报告写了「严重缺陷」，但无 report.json → 不产生 bug
+        (spec_dir / "verification-report.md").write_text(
+            "# 验证报告\n\n"
+            "## Bug 汇总\n"
+            "- 严重缺陷：点击保存按钮无反应\n"
+            "  根因：事件未绑定\n",
+            encoding="utf-8",
+        )
+        # 结构化 report.json 含真实 fail 场景 → 产生 bug
+        vp = proot / ".fenix" / "verify-progress" / "real-spec"
+        vp.mkdir(parents=True, exist_ok=True)
+        (vp / "report.json").write_text(json.dumps({
+            "summary": {"total": 1, "passed": 0, "failed": 1, "warnings": 0, "errors": 0},
+            "scenarios": [
+                {"scenario_id": "sc-1", "status": "fail", "description": "保存按钮无反应",
+                 "assertion_results": [{"type": "click", "pass": False,
+                                         "message": "按钮不可点击"}],
+                 "screenshots": [],
+                 "step_results": []},
+            ],
+        }), encoding="utf-8")
+
+        bugs = dash_data.parse_bugs(proot, "real-spec")
+        assert all(b["source"] == "report" for b in bugs), bugs
+        assert any("保存按钮无反应" in b["description"] for b in bugs), bugs
 
     def test_list_screenshots(self, tmp_path):
         proot = make_project(tmp_path)
@@ -184,8 +245,25 @@ class TestDataParse:
 
         detail = dash_data.get_run_events(proot, "impl-myspec-1780000000")
         assert detail["status"] == "done"
+        assert detail["total_events"] == 3
         types = [e["type"] for e in detail["events"]]
         assert types == ["system", "assistant", "result"]
+
+    def test_get_run_events_tail_truncation(self, tmp_path):
+        proot = make_project(tmp_path)
+        detail = dash_data.get_run_events(proot, "impl-myspec-1780000000", tail=2)
+        assert detail["total_events"] == 3   # 真实总数不受截断影响
+        assert [e["type"] for e in detail["events"]] == ["assistant", "result"]
+
+    def test_read_run_events_between(self, tmp_path):
+        """增量读取：按字节偏移只读新增部分（弹窗实时推送用）。"""
+        proot = make_project(tmp_path)
+        run_file = proot / ".fenix" / "runs" / "impl-myspec-1780000000.jsonl"
+        offset = run_file.stat().st_size
+        with run_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "追加"}]}}) + "\n")
+        events = dash_data.read_run_events_between(proot, "impl-myspec-1780000000", offset)
+        assert len(events) == 1 and events[0]["type"] == "assistant"
 
     def test_get_runs_filtered_by_spec(self, tmp_path):
         proot = make_project(tmp_path)
@@ -501,6 +579,23 @@ class _TestServer:
         finally:
             conn.close()
 
+    def _req(self, method: str, path: str):
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.request(method, path)
+            resp = conn.getresponse()
+            body = resp.read()
+            return resp.status, json.loads(body)
+        finally:
+            conn.close()
+
+    def post(self, path: str):
+        return self._req("POST", path)
+
+    def delete(self, path: str):
+        return self._req("DELETE", path)
+
     def stop(self):
         self.httpd.shutdown()
         self.httpd.server_close()
@@ -767,3 +862,177 @@ class TestParseTasksWorktreeAlignment:
         # 主树全部未勾 → 0 done
         done = sum(t["done"] for t in flat)
         assert done == 0
+
+
+# ── FileWatcher（推送数据源监听） ──────────────────────────────────────
+
+class _FakeHub:
+    """记录广播事件的替身 hub（不真的推送给浏览器）。"""
+
+    def __init__(self):
+        self.events = []      # [(event_dict, run_id)]
+        self.watched = set()
+
+    def broadcast(self, event, run_id=None):
+        self.events.append((event, run_id))
+
+    def is_watched(self, run_id):
+        return run_id in self.watched
+
+
+class TestFileWatcher:
+    def _mk(self, tmp_path):
+        proot = make_project(tmp_path)
+        hub = _FakeHub()
+        w = FileWatcher(
+            lambda: [{"name": "proj-a", "path": str(proot), "exists": True}], hub
+        )
+        return proot, hub, w
+
+    def test_state_change_pushes_overview_specs_and_changed_detail(self, tmp_path):
+        proot, hub, w = self._mk(tmp_path)
+        w.scan_once()  # 建立基线
+        hub.events.clear()
+        # STATE.md 中 myspec 状态变化
+        state = proot / "STATE.md"
+        state.write_text(state.read_text(encoding="utf-8")
+                         .replace("- status: testing", "- status: implemented"),
+                         encoding="utf-8")
+        w.scan_once()
+        state_events = [e for e, _ in hub.events if e["type"] == "state"]
+        assert state_events, "STATE.md 变化应广播 state 事件"
+        ev = state_events[0]
+        assert ev["project"] == "proj-a"
+        assert ev["overview"]["totals"]["spec_count"] == 2
+        names = {s["name"] for s in ev["specs"]["specs"]}
+        assert names == {"myspec", "otherspec"}
+        # 变化 SPEC 的详情随事件推送，且不含事件流
+        assert "myspec" in ev["details"]
+        assert "events" not in ev["details"]["myspec"]
+
+    def test_spec_file_change_pushes_detail(self, tmp_path):
+        proot, hub, w = self._mk(tmp_path)
+        w.scan_once()
+        hub.events.clear()
+        tasks = proot / "openspec" / "changes" / "myspec" / "tasks.md"
+        tasks.write_text(tasks.read_text(encoding="utf-8") + "- [x] 1.2 任务二\n", encoding="utf-8")
+        w.scan_once()
+        detail_events = [e for e, _ in hub.events if e["type"] == "detail"]
+        assert detail_events and detail_events[0]["spec"] == "myspec"
+        assert detail_events[0]["data"]["status"] == "testing"
+
+    def test_run_growth_pushes_incremental_events_when_watched(self, tmp_path):
+        proot, hub, w = self._mk(tmp_path)
+        hub.watched.add("impl-myspec-1780000000")
+        w.scan_once()  # 建立 run 基线
+        hub.events.clear()
+        run_file = proot / ".fenix" / "runs" / "impl-myspec-1780000000.jsonl"
+        with run_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "追加"}]}}, ensure_ascii=False) + "\n")
+        w.scan_once()
+        run_events = [e for e, _ in hub.events if e["type"] == "run_events"]
+        assert run_events and run_events[0]["run_id"] == "impl-myspec-1780000000"
+        assert len(run_events[0]["events"]) == 1
+        assert run_events[0]["events"][0]["type"] == "assistant"
+        assert run_events[0].get("reset") is not True
+
+    def test_run_status_transition_pushes_run_meta(self, tmp_path):
+        proot, hub, w = self._mk(tmp_path)
+        w.scan_once()
+        hub.events.clear()
+        # 追加 result 行 → 该 run 从 running 变为 done（fixture 的 verify run 是 running）
+        run_file = proot / ".fenix" / "runs" / "verify-myspec-1780001000.jsonl"
+        with run_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "result", "result": "ok", "num_turns": 1}) + "\n")
+        w.scan_once()
+        metas = [e for e, _ in hub.events if e["type"] == "run_meta"]
+        assert metas and metas[0]["run_id"] == "verify-myspec-1780001000"
+        assert metas[0]["status"] == "done"
+
+    def test_no_change_no_broadcast(self, tmp_path):
+        proot, hub, w = self._mk(tmp_path)
+        w.scan_once()
+        hub.events.clear()
+        w.scan_once()
+        assert hub.events == []
+
+    def test_run_events_not_pushed_when_unwatched(self, tmp_path):
+        proot, hub, w = self._mk(tmp_path)
+        w.scan_once()  # 无人订阅
+        hub.events.clear()
+        run_file = proot / ".fenix" / "runs" / "impl-myspec-1780000000.jsonl"
+        with run_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "x"}]}}) + "\n")
+        w.scan_once()
+        assert not any(e["type"] == "run_events" for e, _ in hub.events)
+
+
+# ── SSE Hub ────────────────────────────────────────────────────────────
+
+class TestSSEHub:
+    def test_register_broadcast_unregister(self):
+        from core.dashboard.server import SSEHub
+        hub = SSEHub()
+        conn = hub.register()
+        got = []
+        hub.broadcast({"type": "refresh"})
+        assert conn.id
+        assert conn.queue.qsize() == 1
+        hub.unregister(conn)
+        hub.broadcast({"type": "detail", "spec": "x", "data": {}})
+        assert conn.queue.qsize() == 1  # 注销后不再接收
+
+
+# ── server.py：SSE 流 / tail / watch 端点 ──────────────────────────────
+
+class TestServerPush:
+    def test_api_run_tail_truncation(self, server_fx):
+        _, srv = server_fx
+        status, data = srv.get("/api/runs/impl-myspec-1780000000?project=proj-a&tail=1")
+        assert status == 200
+        assert data["total_events"] == 3
+        assert len(data["events"]) == 1
+        assert data["events"][-1]["type"] == "result"
+
+    def test_api_spec_detail_has_no_run_events(self, server_fx):
+        _, srv = server_fx
+        status, data = srv.get("/api/specs/myspec?project=proj-a")
+        assert status == 200
+        assert "events" not in data
+        for r in data["runs"]:
+            assert "events" not in r
+
+    def test_api_run_watch_roundtrip(self, server_fx):
+        _, srv = server_fx
+        conn = srv.httpd.sse_hub.register()
+        cid = conn.id
+        run_id = "impl-myspec-1780000000"
+        status, data = srv.post(f"/api/runs/{run_id}/watch?project=proj-a&cid={cid}")
+        assert status == 200 and data.get("ok")
+        assert srv.httpd.sse_hub.is_watched(run_id)
+        status, data = srv.delete(f"/api/runs/{run_id}/watch?project=proj-a&cid={cid}")
+        assert status == 200
+        assert not srv.httpd.sse_hub.is_watched(run_id)
+
+    def test_api_run_watch_missing_cid(self, server_fx):
+        _, srv = server_fx
+        status, data = srv.post("/api/runs/impl-myspec-1780000000/watch?project=proj-a")
+        assert status == 200
+        assert data.get("error") == "missing cid"
+
+    def test_sse_stream_hello_and_broadcast(self, server_fx):
+        _, srv = server_fx
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=5)
+        try:
+            conn.request("GET", "/api/stream")
+            resp = conn.getresponse()
+            assert resp.status == 200
+            assert resp.getheader("Content-Type") == "text/event-stream"
+            first = resp.read1(65536)
+            assert b"hello" in first and b'"cid"' in first
+            srv.httpd.sse_hub.broadcast({"type": "refresh", "project": "proj-a"})
+            second = resp.read1(65536)
+            assert b'"refresh"' in second or b'"type": "refresh"' in second
+        finally:
+            conn.close()

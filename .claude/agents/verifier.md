@@ -1,0 +1,1 @@
+/root/fenixd/agents/verifier.md

@@ -123,7 +123,7 @@ fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]
 /fenix-setup
 ```
 
-它会在 tmux 会话 `fenixd` 中启动守护进程。
+它会在 tmux 会话中启动守护进程。session 名由项目根路径派生（`fenixd-<目录名>-<哈希>`，见 `bin/fenix_session.py`），因此**同一台机器可同时用 fenixd 开发多个项目**，各自拥有独立的守护进程与 session，互不干扰。可通过 `tmux ls` 查看所有 fenixd session。
 
 ### 3. 创建需求
 

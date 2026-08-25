@@ -81,10 +81,125 @@ def find_implementer_worktree(project_root, spec_name):
     return candidates[0][1]
 
 
-def parse_tasks(project_root, spec_name, spec_status: str = "") -> list:
+# ── 实时任务完成状态叠加（run 记录 → tasks.md） ───────────────────
+#
+# 背景：implementer Agent 用 Claude 会话内 TaskCreate/TaskUpdate 工具实时汇报
+# 任务完成（见 .fenix/runs/impl-<spec>-*.jsonl 的 assistant tool_use），从不编辑
+# tasks.md，导致 Dashboard 任务进度永远 0/N。这里从最新 impl run 产物解析实时
+# 完成状态，叠加到 tasks.md 快照上（逐任务并集），使 Dashboard 实时反映进度。
+_TASK_ID_RE = re.compile(r"Task\s+#?\s*(\d+\.\d+)")
+# _parse_run_task_done 的 memo 缓存：run 文件 O_APPEND 只增，mtime/size 不变即命中。
+# 上限 64 项，超出整体清空，防止 append-only 文件每次追加换键导致无界增长。
+_RUN_TASK_CACHE: dict = {}
+
+
+def _find_impl_run_file(project_root, spec_name) -> Path | None:
+    """最新一次 impl-<spec>-*.jsonl 运行产物，或 None。
+
+    运行中 STATE.md 的 implementer_run 字段为空，不能用它定位；
+    按 mtime 取最新与 worktree 选择（find_implementer_worktree）一致。
+    """
+    runs_dir = Path(project_root) / ".fenix" / "runs"
+    if not runs_dir.is_dir():
+        return None
+    candidates = []
+    try:
+        for p in runs_dir.glob(f"impl-{spec_name}-*.jsonl"):
+            try:
+                candidates.append((p.stat().st_mtime, p))
+            except OSError:
+                pass
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+def _parse_run_task_done(run_file: Path) -> dict:
+    """解析 impl run 产物的 harness 任务完成状态（容错：任何损坏都不抛异常）。
+
+    TaskCreate 的 input.subject 内嵌 tasks.md id（如 "Task 1.1: ..."）；
+    TaskUpdate 的 taskId 为 1 基创建序（tool_result 形如 "Task #1 created ..."）。
+
+    Returns:
+        {"done_ids": set[str],   # 已完成且已创建的 tasks.md id（如 {"1.1","2.3"}）
+         "created_count": int,    # TaskCreate 次数（flat 回退对齐上限）
+         "flat_done": set[int]}   # 已完成任务的创建序下标（0-based，flat 回退用）
+    """
+    try:
+        st = run_file.stat()
+        key = (str(run_file), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {"done_ids": set(), "created_count": 0, "flat_done": set()}
+    cached = _RUN_TASK_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    created_ordered: list = []  # 按创建序的 subject 提取 tasks.md id（无 id 记 None）
+    completed_idx: set = set()  # TaskUpdate completed 的 taskId - 1
+    try:
+        with run_file.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict) or entry.get("type") != "assistant":
+                    continue
+                for c in (entry.get("message") or {}).get("content") or []:
+                    if not isinstance(c, dict) or c.get("type") != "tool_use":
+                        continue
+                    if c.get("name") == "TaskCreate":
+                        m = _TASK_ID_RE.search(str((c.get("input") or {}).get("subject") or ""))
+                        created_ordered.append(m.group(1) if m else None)
+                    elif c.get("name") == "TaskUpdate":
+                        inp = c.get("input") or {}
+                        try:
+                            n = int(str(inp.get("taskId")))  # 兼容 str/int
+                        except (TypeError, ValueError):
+                            continue
+                        if inp.get("status") == "completed":
+                            completed_idx.add(n - 1)
+    except OSError:
+        return {"done_ids": set(), "created_count": 0, "flat_done": set()}
+
+    created_count = len(created_ordered)
+    done_ids = set()
+    for idx in completed_idx:
+        if 0 <= idx < created_count and created_ordered[idx]:
+            done_ids.add(created_ordered[idx])
+    flat_done = {i for i in completed_idx if 0 <= i < created_count}
+
+    result = {"done_ids": done_ids, "created_count": created_count, "flat_done": flat_done}
+    if len(_RUN_TASK_CACHE) > 64:
+        _RUN_TASK_CACHE.clear()
+    _RUN_TASK_CACHE[key] = result
+    return result
+
+
+# 实时叠加生效的生命周期状态（含实现完成后的验证期）。ready/drafted 不叠加，
+# 避免重试过渡期旧 run 的完成数误导。
+_LIVE_OVERLAY_STATUSES = {"implementing", "implemented", "testing", "bug-found"}
+
+
+def _should_overlay(spec_status: str, has_uncompleted: bool) -> bool:
+    """是否需要用 run 记录实时完成状态叠加 tasks.md 快照。"""
+    if spec_status in _LIVE_OVERLAY_STATUSES:
+        return True
+    # done/pushed：仅当 tasks.md 仍有未勾选任务时叠加（覆盖实现者从不勾 tasks.md 的现状）
+    return spec_status in ("done", "pushed") and has_uncompleted
+
+
+def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = True) -> list:
     """解析 tasks.md 为分组任务结构：[{title, tasks:[{id,desc,done}], done, total}]。
 
     For implementing SPECs, reads from the active implementer worktree first.
+    live=True 时按 _should_overlay 叠加最新 impl run 的实时完成状态（并集）。
     """
     tasks_path = Path(project_root) / "openspec" / "changes" / spec_name / "tasks.md"
     if spec_status == "implementing":
@@ -117,6 +232,36 @@ def parse_tasks(project_root, spec_name, spec_status: str = "") -> list:
                 current_group["total"] += 1
     except (OSError, UnicodeDecodeError):
         pass
+    if not groups:
+        return groups
+    # 实时叠加：最新 impl run 的 TaskUpdate 完成状态与 tasks.md 勾选取并集。
+    # 主路径按 tasks.md id 精确对齐；subject 无 id（未来 harness 变体）时回退扁平下标。
+    if live and _should_overlay(
+        spec_status, any(not t["done"] for g in groups for t in g["tasks"])
+    ):
+        run_file = _find_impl_run_file(project_root, spec_name)
+        if run_file is not None:
+            rd = _parse_run_task_done(run_file)
+            overlaid = False
+            if rd["done_ids"]:
+                by_id = {t["id"]: t for g in groups for t in g["tasks"]}
+                for tid in rd["done_ids"]:
+                    t = by_id.get(tid)
+                    if t is not None:
+                        t["done"] = True
+                        overlaid = True
+            elif rd["flat_done"]:
+                flat = [t for g in groups for t in g["tasks"]]
+                bound = min(rd["created_count"], len(flat))
+                for i in rd["flat_done"]:
+                    if 0 <= i < bound:
+                        flat[i]["done"] = True
+                        overlaid = True
+            if overlaid:
+                # 重算分组计数（前端分组头依赖 g.done / g.total）
+                for g in groups:
+                    g["done"] = sum(1 for t in g["tasks"] if t["done"])
+                    g["total"] = len(g["tasks"])
     return groups
 
 
@@ -331,71 +476,45 @@ def parse_verdict(project_root, spec_name) -> dict:
 
 
 def parse_bugs(project_root, spec_name) -> list:
-    """聚合 bug 列表：失败/错误场景（report.json）+ verification-report.md 尽力解析。
+    """聚合 bug 列表：来自 report.json 的失败/错误场景。
 
-    返回: [{"source": "report"|"report-md", "severity", "scenario_ids", "assertion_type",
+    返回: [{"source": "report", "severity", "scenario_ids", "assertion_type",
             "description", "evidence", "screenshots"}]
+
+    bug 只从结构化的 report.json 提取（每条失败/错误场景 + 失败断言 + 截图）。
+    不再从 verification-report.md 逐行正则猜测——Markdown 是人读文档，逐行抓
+    「bug/缺陷/失败」关键词会把「环境失败」「被修复缺陷的背景描述」「通过型报告」
+    误判为产品缺陷（add-parallelism、fix-worktree-agent-cwd、fix-add-parallelism 等
+    均因此产生过大量虚假 bug）。
     """
     bugs = []
     report = parse_report(project_root, spec_name)
-    if report.get("exists") and not report.get("error"):
-        for sc in report.get("scenarios", []):
-            if not isinstance(sc, dict):
-                continue
-            status = sc.get("status")
-            if status not in ("fail", "error"):
-                continue
-            failed_assertions = [
-                a for a in sc.get("assertion_results", [])
-                if isinstance(a, dict) and not a.get("pass", True)
-            ]
-            # 截图路径归一化为文件名：report.json 存的是服务器本地绝对路径，
-            # 前端需拼 /screenshots/<project>/<spec>/<file>，只取 basename
-            screenshots = [os.path.basename(s) for s in sc.get("screenshots", []) if isinstance(s, str) and s.strip()]
-            for a in failed_assertions or [{}]:
-                bugs.append({
-                    "source": "report",
-                    "severity": "major" if status == "fail" else "critical",
-                    "scenario_ids": [sc.get("scenario_id", "?")],
-                    "assertion_type": a.get("type", "step"),
-                    "description": sc.get("description", "未命名场景"),
-                    "evidence": a.get("message") or a.get("detail") or a.get("actual") or "",
-                    "screenshots": screenshots,
-                    "scenario_status": status,
-                })
-
-    # verification-report.md 尽力解析（宽松：抓取 bug 相关行）
-    report_md = Path(project_root) / "openspec" / "changes" / spec_name / "verification-report.md"
-    if report_md.exists():
-        try:
-            content = report_md.read_text(encoding="utf-8")
-            lines = content.split("\n")
-            current = None
-            for i, line in enumerate(lines):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                if re.match(r"^(#{2,4})\s+", line):
-                    current = re.sub(r"^#+\s*", "", stripped)
-                    continue
-                if re.search(r"(bug|Bug|BUG|缺陷|问题|失败|根因)", stripped) and not stripped.startswith(("#", "- [")):
-                    severity = "major"
-                    if any(k in stripped.lower() for k in ("critical", "严重", "致命", "阻断")):
-                        severity = "critical"
-                    elif any(k in stripped.lower() for k in ("minor", "轻微", "低")):
-                        severity = "minor"
-                    bugs.append({
-                        "source": "report-md",
-                        "severity": severity,
-                        "scenario_ids": [],
-                        "assertion_type": "",
-                        "description": stripped[:200],
-                        "evidence": (lines[i + 1].strip()[:200] if i + 1 < len(lines) else ""),
-                        "screenshots": [],
-                        "section": current,
-                    })
-        except (OSError, UnicodeDecodeError):
-            pass
+    if not report.get("exists") or report.get("error"):
+        return bugs
+    for sc in report.get("scenarios", []):
+        if not isinstance(sc, dict):
+            continue
+        status = sc.get("status")
+        if status not in ("fail", "error"):
+            continue
+        failed_assertions = [
+            a for a in sc.get("assertion_results", [])
+            if isinstance(a, dict) and not a.get("pass", True)
+        ]
+        # 截图路径归一化为文件名：report.json 存的是服务器本地绝对路径，
+        # 前端需拼 /screenshots/<project>/<spec>/<file>，只取 basename
+        screenshots = [os.path.basename(s) for s in sc.get("screenshots", []) if isinstance(s, str) and s.strip()]
+        for a in failed_assertions or [{}]:
+            bugs.append({
+                "source": "report",
+                "severity": "major" if status == "fail" else "critical",
+                "scenario_ids": [sc.get("scenario_id", "?")],
+                "assertion_type": a.get("type", "step"),
+                "description": sc.get("description", "未命名场景"),
+                "evidence": a.get("message") or a.get("detail") or a.get("actual") or "",
+                "screenshots": screenshots,
+                "scenario_status": status,
+            })
     return bugs
 
 
@@ -504,43 +623,70 @@ def _read_run_lines(path: Path, max_lines: int = 3) -> list:
     return out
 
 
-def get_run_events(project_root, run_id: str) -> dict:
-    """读取单次运行的完整产物流。
+def _parse_run_lines(lines) -> list:
+    """逐行解析 JSONL 行序列为事件（容错：损坏行降级为 stderr 条目）。"""
+    events = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            entry = {"type": "stderr", "line": line}
+        if not isinstance(entry, dict):
+            entry = {"type": "stderr", "line": str(entry)}
+        events.append(entry)
+    return events
 
-    返回: {run_id, exists, status, events, error}
-    events 为逐行解析结果；终态行（result/error）同时以字段暴露。
+
+def get_run_events(project_root, run_id: str, tail: int = 300) -> dict:
+    """读取单次运行产物流的尾部（前端只展示最近 N 条，全量拉取是浪费）。
+
+    返回: {run_id, exists, status, events, total_events, error}
+    events 为最后 tail 条逐行解析结果；status/error 仍由全文件判定
+    （终态行 result/error 决定），total_events 为实际总事件数。
     """
     run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
     if not run_file.exists():
         return {"run_id": run_id, "exists": False, "status": "missing",
-                "events": [], "error": None}
+                "events": [], "total_events": 0, "error": None}
     events = []
     error = None
     try:
         with run_file.open("r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    entry = {"type": "stderr", "line": line}
-                if not isinstance(entry, dict):
-                    entry = {"type": "stderr", "line": str(entry)}
+            for entry in _parse_run_lines(f):
                 events.append(entry)
                 if entry.get("type") == "error":
                     error = entry
     except OSError:
         return {"run_id": run_id, "exists": True, "status": "error",
-                "events": [], "error": {"error": "unreadable"}}
+                "events": [], "total_events": 0, "error": {"error": "unreadable"}}
     return {
         "run_id": run_id,
         "exists": True,
         "status": classify_run(events),
-        "events": events,
+        "events": events[-tail:],
+        "total_events": len(events),
         "error": error,
     }
+
+
+def read_run_events_between(project_root, run_id: str, start_offset: int) -> list:
+    """读取运行产物从 start_offset 字节到 EOF 的事件（增量推送用）。
+
+    O_APPEND 只增写：按上次记录的字节偏移读取新增部分，避免整文件重读。
+    跨扫描边界被截断的半个 JSON 行会降级为 stderr 条目（_parse_run_lines 容错）。
+    """
+    run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
+    try:
+        with run_file.open("rb") as f:
+            f.seek(start_offset)
+            raw = f.read()
+    except OSError:
+        return []
+    text = raw.decode("utf-8", errors="replace")
+    return _parse_run_lines(text.splitlines())
 
 
 def cleanup_runs(project_root) -> int:

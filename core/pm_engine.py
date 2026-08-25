@@ -322,51 +322,6 @@ class PMEngine:
                 })
                 self._enqueue(original, "verifier")
 
-        # 检查是否所有 SPEC 都已 done，是则发送桌面通知
-        self._notify_all_done_if_complete()
-
-    # ── All-Done Notification ──────────────────────────────────────
-
-    def _notify_all_done_if_complete(self):
-        """检查是否所有 SPEC 都已完成，如果是则通过 Window Flash Notify 发送桌面通知。"""
-        all_specs = self.state_machine.read_all()
-        if not all_specs:
-            return
-
-        # 统计非 done/pushed/verified 的 SPEC（verified 会自动转 done）
-        pending = [
-            name for name, entry in all_specs.items()
-            if entry.get("status") not in ("done", "pushed")
-        ]
-
-        if pending:
-            return  # 还有未完成的 SPEC
-
-        done_count = len(all_specs)
-        self.logger.info(
-            "pm_engine",
-            f"🎯 所有 {done_count} 个 SPEC 已完成！发送桌面通知...",
-        )
-
-        # 构建通知消息
-        message = f"🎯 所有 {done_count} 个 SPEC 已完成！运行 /fenix-approve 审查推送"
-
-        # 调用 Window Flash Notify
-        try:
-            subprocess.run(
-                [
-                    "curl", "-fsS", "--max-time", "3",
-                    "-X", "POST", "http://127.0.0.1:7531/notify",
-                    "-H", "Content-Type: application/json",
-                    "--data", f'{{"message":"{message}","type":"info","action":"flash","sound":true,"showToast":true,"toastTimeout":0}}',
-                ],
-                capture_output=True,
-                timeout=5,
-            )
-            self.logger.info("pm_engine", "桌面通知已发送")
-        except Exception as e:
-            self.logger.warning("pm_engine", f"发送桌面通知失败: {e}")
-
     def _find_implementer_worktree(self, spec_name: str) -> Optional[Path]:
         """Find the active implementer worktree for a SPEC, or None."""
         wt_mgr = getattr(self.agent_runner, 'worktree_manager', None)
@@ -786,7 +741,10 @@ class PMEngine:
                 continue
             for step in sc.get("steps", []) or []:
                 if isinstance(step, dict) and step.get("action") == "navigate":
-                    u = str(step.get("url") or step.get("target") or "")
+                    # navigate 目标 URL 存于 value（见 scenarios.TestStep）：191 个场景
+                    # 全部用 value 携带链接，target/url 为空。旧代码读 url/target 导致
+                    # urls 恒空，_ensure_app_reachable 恒判可达，可达性门禁永不触发。
+                    u = str(step.get("value") or step.get("url") or step.get("target") or "")
                     if u.startswith("http") and u not in urls:
                         urls.append(u)
         if not urls:
