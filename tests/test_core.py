@@ -1361,6 +1361,48 @@ class TestPMEngineBugFound(unittest.TestCase):
 # Priority Parallel Scheduler Tests (add-parallelism)
 # ═══════════════════════════════════════════════════════════════════
 
+class TestPlannerResultReadback(unittest.TestCase):
+    """验证管道 readback bug：planner 结果读 verify-progress 优先，不误读项目根共享文件。"""
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        self.engine = PMEngine(MagicMock(), MagicMock(), {}, self.project_root, MagicMock())
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_reads_verify_progress_primary_over_stale_root(self):
+        """旧 bug 场景：planner 写了 plan-ready 到 verify-progress，项目根残留
+        implementer 的 success（共享文件被污染）。修复前误读根 → 判未生成场景
+        → 降级 verifier 反复失败。"""
+        vp_dir = self.project_root / ".fenix" / "verify-progress" / "myspec"
+        vp_dir.mkdir(parents=True)
+        (vp_dir / ".fenix-run-result.json").write_text(
+            json.dumps({"status": "plan-ready", "spec": "myspec"}), encoding="utf-8"
+        )
+        (self.project_root / ".fenix-run-result.json").write_text(
+            json.dumps({"status": "success", "spec": "myspec"}), encoding="utf-8"
+        )
+        self.assertEqual(self.engine._read_planner_result("myspec"), "plan-ready")
+
+    def test_falls_back_to_project_root_when_no_vp_product(self):
+        """无 verify-progress 产物时回退项目根（兼容旧行为）。"""
+        (self.project_root / ".fenix-run-result.json").write_text(
+            json.dumps({"status": "bug-found", "bugs": [{"severity": "major"}]}), encoding="utf-8"
+        )
+        self.assertEqual(self.engine._read_planner_result("myspec"), "bug-found")
+
+    def test_stale_success_root_returns_none(self):
+        """项目根只有 implementer 的 success（不在白名单）→ 返回 None（视为已验证）。"""
+        (self.project_root / ".fenix-run-result.json").write_text(
+            json.dumps({"status": "success", "spec": "myspec"}), encoding="utf-8"
+        )
+        self.assertIsNone(self.engine._read_planner_result("myspec"))
+
+
 class TestPriorityScheduler(unittest.TestCase):
     """测试严格优先级并行调度器（pm_engine._process_queue）。
 
