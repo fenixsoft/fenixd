@@ -164,8 +164,13 @@ function handleSSEEvent(msg) {
     renderView(currentState, msg.data);
     return;
   }
-  if (msg.type === 'run_meta' || msg.type === 'refresh') {
+  if (msg.type === 'run_meta') {
     refreshView();
+    return;
+  }
+  if (msg.type === 'refresh') {
+    // 周期心跳：daemon 状态/新项目发现不产生文件变更，仅概览需自动重拉跟随
+    if (currentState.view === 'overview') refreshView();
     return;
   }
   if (msg.type === 'run_events' && modalRunId === msg.run_id) {

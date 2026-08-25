@@ -19,15 +19,18 @@ from pathlib import Path
 
 from . import data as dashboard_data
 
-SCAN_INTERVAL = 1.0  # 数据源文件轮询周期（秒）
+SCAN_INTERVAL = 1.0       # 数据源文件轮询周期（秒）
+REFRESH_HEARTBEAT = 2.0   # 周期性刷新心跳（秒）：daemon 状态/新项目发现不产生文件变更，需周期推送
 
 
 class FileWatcher:
-    def __init__(self, projects_fn, hub, interval: float = SCAN_INTERVAL):
+    def __init__(self, projects_fn, hub, interval: float = SCAN_INTERVAL,
+                 heartbeat: float | None = None):
         """projects_fn: 无参可调用，返回 [{"name", "path", "exists", ...}]。"""
         self.projects_fn = projects_fn
         self.hub = hub
         self.interval = interval
+        self.heartbeat = heartbeat if heartbeat is not None else REFRESH_HEARTBEAT
 
         self._running = False
         self._thread = None
@@ -49,11 +52,21 @@ class FileWatcher:
             self._thread.join(timeout=5)
 
     def _loop(self):
+        tick = 0
         while self._running:
             try:
                 self.scan_once()
             except Exception:
                 pass  # 监听绝不崩溃：单轮失败下轮重试
+            # 周期性心跳：daemon 健康状态 / 新项目发现等变化不产生数据源文件变更，
+            # scan_once 感知不到，需周期广播 refresh 让前端在 2s 自动刷新周期内反映
+            tick += 1
+            if tick * self.interval >= self.heartbeat:
+                tick = 0
+                try:
+                    self.hub.broadcast({"type": "refresh"})
+                except Exception:
+                    pass
             time.sleep(self.interval)
 
     # ── 主扫描 ───────────────────────────────────────────────
