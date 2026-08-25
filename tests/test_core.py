@@ -2542,6 +2542,21 @@ class TestBlockedState(unittest.TestCase):
         self.assertTrue(self.sm.transition("s1", "ready"))
         self.assertTrue(self.sm.transition("s1", "implementing"))
 
+    def test_recover_interrupted_reverts_to_ready_and_clears_run_fields(self):
+        from core.state_machine import SpecStatus
+        self.sm.add_spec("s1", {"status": "implementing", "priority": 1,
+                                "implementer_run": "impl-s1-1", "branch": "fenix/s1",
+                                "_retry_count": 2})
+        recovered = self.sm.recover_interrupted()
+        self.assertIn("s1", recovered)
+        entry = self.sm.read_one("s1")
+        self.assertEqual(entry["status"], SpecStatus.READY)
+        self.assertIsNone(entry["implementer_run"])
+        self.assertIsNone(entry["branch"])
+        self.assertEqual(int(entry["_retry_count"] or 0), 0)
+        # 恢复后进入 ready 集合，可被正常调度
+        self.assertIn("s1", [n for n, _ in self.sm.get_ready_specs()])
+
 
 class TestMergeCircuitBreakerFingerprint(unittest.TestCase):
     """merge 失败指纹：同一错误稳定、不同错误区分。"""

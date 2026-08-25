@@ -165,6 +165,13 @@ class StateParser:
                 if val is None:
                     val = "null"
                 lines.append(f"- {key}: {val}")
+            # 追加内部状态字段（_ 前缀，如 _retry_count/_merge_fp/_merge_streak），
+            # 使其跨 daemon 重启持久化（fix-fenix-token-waste：熔断计数依赖它）
+            for key, val in entry.items():
+                if key.startswith("_") and key != "updated":
+                    if val is None:
+                        val = "null"
+                    lines.append(f"- {key}: {val}")
             lines.append("")
 
         return "\n".join(lines)
@@ -375,9 +382,17 @@ class StateMachine:
                     "state_machine",
                     f"Recovering interrupted SPEC: {name} (was {status})",
                 )
+                # 清空陈旧的 run 字段，否则 full_scan 的恢复派发会因
+                # implementer_run 非空而跳过重新调度（fix-fenix-token-waste）
                 self.update_spec(name, {
                     "status": SpecStatus.READY,
                     "error": f"Recovered from interrupted state: {status}",
+                    "implementer_run": None,
+                    "tester_run": None,
+                    "branch": None,
+                    "_retry_count": 0,
+                    "_merge_fp": None,
+                    "_merge_streak": 0,
                 })
                 recovered.append(name)
         return recovered

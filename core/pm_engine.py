@@ -616,7 +616,11 @@ class PMEngine:
                         max_r = self._get_config("agents.max_retries", 3)
                         fp = self._merge_fingerprint(merge_error)
                         prev_fp = spec_entry.get("_merge_fp")
-                        streak = (spec_entry.get("_merge_streak", 0) + 1) if prev_fp == fp else 1
+                        try:
+                            prev_streak = int(spec_entry.get("_merge_streak", 0) or 0)
+                        except (TypeError, ValueError):
+                            prev_streak = 0
+                        streak = prev_streak + 1 if prev_fp == fp else 1
                         final_error = f"Merge-back failed (fp={fp}): {merge_error}"
                         breaker_threshold = self._get_config("agents.merge_breaker_threshold", 2)
                         if streak >= breaker_threshold:
@@ -632,7 +636,11 @@ class PMEngine:
                                 f"Circuit breaker tripped for '{spec_name}' (fp={fp}) — spec blocked",
                             )
                         else:
-                            retries = spec_entry.get("_retry_count", 0) + 1
+                            try:
+                                prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
+                            except (TypeError, ValueError):
+                                prev_retries = 0
+                            retries = prev_retries + 1
                             self.state_machine.update_spec(spec_name, {
                                 "status": "ready",
                                 "error": final_error,
@@ -662,7 +670,11 @@ class PMEngine:
                 else:
                     # Retry or mark error
                     spec_entry = self.state_machine.read_one(spec_name)
-                    retries = spec_entry.get("_retry_count", 0) + 1
+                    try:
+                        prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
+                    except (TypeError, ValueError):
+                        prev_retries = 0
+                    retries = prev_retries + 1
                     max_r = self._get_config("agents.max_retries", 3)
                     if retries >= max_r:
                         self.state_machine.update_spec(spec_name, {
@@ -1265,7 +1277,10 @@ class PMEngine:
             # Check for persistent errors
             error = entry.get("error")
             if error and status == "ready":
-                retries = entry.get("_retry_count", 0)
+                try:
+                    retries = int(entry.get("_retry_count", 0) or 0)
+                except (TypeError, ValueError):
+                    retries = 0
                 if retries > 0:
                     warnings.append({
                         "spec": name,

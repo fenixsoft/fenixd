@@ -121,6 +121,11 @@ class FenixDaemon:
         # 启动清理孤儿 worktree（fix-fenix-token-waste）：上次异常退出的残留
         self.worktree_manager.cleanup_stale_worktrees()
 
+        # 恢复上次异常退出遗留的中断状态（implementing/testing → ready）。
+        # recover_interrupted 此前定义了但从未被调用，导致 daemon 重启后卡死的
+        # spec 永远不被重新调度（fix-fenix-token-waste）。
+        self.state_machine.recover_interrupted()
+
         self.event_bus.full_scan()
 
         # Start event bus monitoring
