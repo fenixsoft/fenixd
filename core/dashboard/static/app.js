@@ -12,8 +12,8 @@ function esc(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
-function api(path) {
-  return fetch(path).then((r) => {
+function api(path, options) {
+  return fetch(path, options || {}).then((r) => {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r.json();
   });
@@ -100,6 +100,7 @@ function route() {
   currentState = parseHash();
   updateTopbar();
   load();
+  loadAlerts();
 }
 
 // ── 数据获取 ────────────────────────────────────────────
@@ -176,6 +177,10 @@ function handleSSEEvent(msg) {
   if (msg.type === 'run_events' && modalRunId === msg.run_id) {
     appendModalEvents(msg);
   }
+  if (msg.type === 'alerts') {
+    // 告警标记已处理 / 新告警写入 → 刷新横幅
+    loadAlerts();
+  }
 }
 
 function connectSSE() {
@@ -212,6 +217,87 @@ function unregisterWatch(runId) {
   fetch('/api/runs/' + encodeURIComponent(runId) + '/watch'
     + '?project=' + encodeURIComponent(currentState.project || '')
     + '&cid=' + encodeURIComponent(sseCid), { method: 'DELETE' }).catch(() => {});
+}
+
+// ── 人工升级告警横幅（/api/alerts） ─────────────────────
+function loadAlerts() {
+  api('/api/alerts')
+    .then((data) => {
+      if (data && data.error) return;
+      renderAlertBanner(data);
+    })
+    .catch(() => {});
+}
+
+function sevLabel(sev) {
+  return ({ critical: '严重', major: '较高', minor: '一般' })[sev] || sev || '未知';
+}
+function sevRank(sev) {
+  return ({ critical: 3, major: 2, minor: 1 })[sev] || 0;
+}
+
+function renderAlertBanner(data) {
+  const banner = el('alert-banner');
+  if (!banner) return;
+  const alerts = (data && data.alerts) || [];
+  const count = (data && data.total_unhandled) || alerts.length;
+  if (count === 0 || alerts.length === 0) {
+    banner.classList.add('hidden');
+    banner.innerHTML = '';
+    return;
+  }
+  const top = alerts.reduce((m, a) => (sevRank(a.severity) > sevRank(m.severity) ? a : m), alerts[0]);
+  const latest = alerts[0];
+  const listHtml = alerts.map(alertItemHtml).join('');
+
+  banner.classList.remove('hidden');
+  banner.innerHTML = `
+    <div class="alert-banner-bar">
+      <span class="alert-banner-title">⚠ 需人工介入</span>
+      <span class="alert-banner-meta">${count} 条未处理</span>
+      <span class="alert-sev-pill sev-${esc(top.severity || 'major')}">${sevLabel(top.severity)}</span>
+      <span class="alert-banner-summary">${esc((latest.project ? '[' + latest.project + '] ' : '') + (latest.description || latest.action_taken || ''))}</span>
+      <button id="alert-toggle" class="alert-toggle">展开列表</button>
+    </div>
+    <div id="alert-list" class="alert-list hidden">${listHtml}</div>`;
+
+  el('alert-toggle').addEventListener('click', () => {
+    const list = el('alert-list');
+    const btn = el('alert-toggle');
+    list.classList.toggle('hidden');
+    btn.textContent = list.classList.contains('hidden') ? '展开列表' : '收起列表';
+  });
+  document.querySelectorAll('.alert-handled-btn').forEach((b) => {
+    b.addEventListener('click', () => markAlertHandled(b.dataset.project, b.dataset.id));
+  });
+}
+
+function alertItemHtml(a) {
+  const sev = a.severity || 'major';
+  const proj = a.project ? `<span class="alert-item-proj">${esc(a.project)}</span>` : '';
+  const spec = a.spec ? `<span class="alert-item-spec">${esc(a.spec)}</span>` : '';
+  const time = a.created ? fmtDate(a.created) : '';
+  const evidence = a.evidence ? `<div class="alert-item-evidence">证据：${esc(a.evidence)}</div>` : '';
+  const action = a.action_taken ? `<div class="alert-item-action">处置：${esc(a.action_taken)}</div>` : '';
+  const reco = a.recommended_action
+    ? `<div class="alert-item-reco">建议：${esc(a.recommended_action)}</div>` : '';
+  return `<div class="alert-item sev-${esc(sev)}">
+    <div class="alert-item-head">
+      <span class="alert-sev-pill sev-${esc(sev)}">${sevLabel(sev)}</span>${proj}${spec}
+      <span class="alert-item-time">${esc(time)}</span>
+      <button class="alert-handled-btn" data-project="${esc(a.project || '')}" data-id="${esc(a.id || '')}">标记已处理</button>
+    </div>
+    <div class="alert-item-desc">${esc(a.description || '')}</div>
+    ${evidence}${action}${reco}
+  </div>`;
+}
+
+function markAlertHandled(project, id) {
+  if (!project || !id) return;
+  api('/api/alerts/' + encodeURIComponent(id) + '/handled?project=' + encodeURIComponent(project),
+    { method: 'POST' })
+    .then(() => loadAlerts())
+    .catch(() => {});
 }
 
 // ── 顶栏 ───────────────────────────────────────────────

@@ -89,6 +89,16 @@ class ConfigLoader:
                     f"gates.approve_mode must be one of {cls.VALID_APPROVE_MODES}: {mode}"
                 )
 
+        # Validate admin.* (optional — 缺省使用默认值，见 get_admin_config)
+        admin = config.get("admin") or {}
+        if "enabled" in admin and not isinstance(admin["enabled"], bool):
+            raise ValueError(f"admin.enabled must be a boolean: {admin['enabled']}")
+        for field in ("interval_minutes", "escalation_cooldown_minutes"):
+            if field in admin and admin[field] is not None:
+                val = admin[field]
+                if not isinstance(val, (int, float)) or val <= 0:
+                    raise ValueError(f"admin.{field} must be positive: {val}")
+
     @classmethod
     def _validate_llm(cls, llm: Dict[str, Any]):
         providers = llm.get("providers")
@@ -187,6 +197,36 @@ class ConfigLoader:
         if mode not in cls.VALID_APPROVE_MODES:
             return "manual"
         return mode
+
+    @classmethod
+    def get_admin_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the admin.* configuration段，缺失项填默认值。
+
+        默认值（见 design D1/D2 与 Migration Plan）：
+        - enabled: True
+        - interval_minutes: 5
+        - agent_model: None（未配置时复用 agents.subagent_model 默认）
+        - escalation_cooldown_minutes: 15
+        - stuck_threshold_minutes: 复用 schedule.stuck_threshold_minutes（默认 60）
+        - merge_breaker_threshold: 复用 agents.merge_breaker_threshold（默认 2）
+        """
+        admin = config.get("admin") or {}
+        stuck = cls.get(config, "admin.stuck_threshold_minutes", None)
+        if stuck is None:
+            stuck = cls.get(config, "schedule.stuck_threshold_minutes", 60)
+        breaker = cls.get(config, "admin.merge_breaker_threshold", None)
+        if breaker is None:
+            breaker = cls.get(config, "agents.merge_breaker_threshold", 2)
+        return {
+            "enabled": bool(admin.get("enabled", True)),
+            "interval_minutes": float(admin.get("interval_minutes", 5)),
+            "agent_model": admin.get("agent_model") or None,
+            "escalation_cooldown_minutes": float(
+                admin.get("escalation_cooldown_minutes", 15)
+            ),
+            "stuck_threshold_minutes": float(stuck),
+            "merge_breaker_threshold": int(breaker),
+        }
 
     @classmethod
     def get(cls, config: Dict[str, Any], dotted_key: str, default=None):
