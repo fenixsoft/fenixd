@@ -198,6 +198,26 @@ class AgentRunner:
         run_id = f"admin-{spec}-{int(time.time())}"
         prompt = self._build_prompt(spec, "administrator", detail=signal)
         model_override = self._get_admin_model()
+
+        # fix-admin-self-heal：唤起前先落 pending disposition，保证即使 admin 被
+        # kill（如 daemon 重启/崩溃）也有记录可回溯；monitor 会检测无最终结果的
+        # pending 并升级人工，避免「admin 死了但没有任何告警」。
+        try:
+            from .admin_store import AdminStore, DISPOSITION
+            AdminStore(self.project_root, getattr(self, "logger", None)).append({
+                "kind": DISPOSITION,
+                "status": "pending",
+                "signal_type": signal.get("signal_type"),
+                "spec": spec,
+                "admin_run_id": run_id,
+                "description": (f"Administrator 处置中（run {run_id}），尚未完成；"
+                                f"若长时间无最终结果，AdminMonitor 会自动升级人工"),
+                "result": "pending",
+                "recommended_action": signal.get("recommended_action"),
+            })
+        except Exception:
+            pass
+
         self._clear_admin_disposition()
         try:
             output, turns, _session_id = self._run_claude(
@@ -478,6 +498,8 @@ class AgentRunner:
                 f"MANDATORY: Write progress after EVERY step and EVERY scenario.\n"
                 f"MANDATORY: Use playwright-cli for browser testing. NO shortcuts.\n"
                 f"MANDATORY: If you cannot start the REAL project, report it as a failure.\n"
+                f"IMPORTANT: Do NOT Read image/screenshot files (.png/.jpg) — 当前模型不支持图像输入，"
+                f"读图会被 hook 拦截；截图仅作为证据文件保存到报告，验证用 DOM snapshot 文本。\n"
                 f"IMPORTANT: Do NOT modify STATE.md."
             )
 
@@ -582,6 +604,8 @@ class AgentRunner:
                 f"\"value\": \"{{\\\"current\\\": ...}}\"}}（target 为 URL 模式，value 为 JSON 响应体；"
                 f"注意 Playwright glob 中 `*` 不匹配 `/`，多段路径需用 `**`，引擎会自动把结尾 "
                 f"`/*` 补成 `/**`）。mock 注册在 page 上，reload/导航后仍保留；仅作用于当前场景。\n\n"
+                f"IMPORTANT: 当前模型不支持图像输入——不要 Read 图片/截图文件（会被 hook 拦截），"
+                f"截图仅作为证据文件。\n"
                 f"IMPORTANT: Do NOT modify STATE.md."
             )
 
@@ -667,7 +691,10 @@ class AgentRunner:
                 f"- 证据: {evidence}\n"
                 f"- 建议处置: {recommendation}\n\n"
                 f"## 你的高级权限（自主处置，无需询问）\n"
-                f"- 杀死/重启进行中的 Agent 子进程与 fenixd 本身（先 ps 确认归属再操作）\n"
+                f"- 杀死进行中的 Agent 子进程（先 ps 确认归属再操作）\n"
+                f"- 需要重启 fenixd 时：写 .fenix/restart_request 文件（内容随意），"
+                f"supervisor 会负责重启；【不要】直接 kill daemon——daemon 是你的宿主进程，"
+                f"kill 它会连带杀死你，导致重启和处置记录都丢失\n"
                 f"- git 清理：worktree prune / stash / reset / commit / 分支管理\n"
                 f"- 直接修改 Fenixd 自身代码（当前已在主树）并提交\n"
                 f"- 发起新的 SPEC（创建 openspec/changes/<name>/ 并更新 STATE.md）\n"
@@ -676,10 +703,13 @@ class AgentRunner:
                 f"1. 只处置困境，不开发功能、不实现 SPEC 需求。\n"
                 f"2. 先只读诊断（日志/STATE.md/进程/run 转录），确认根因再动手。\n"
                 f"3. 所有处置动作留痕（在处置记录中说明）。\n"
-                f"4. 若确实无法自主处置（需人类决策、连续失败、不可逆操作），"
+                f"4. 持久化优先：完成诊断后【先】写一次 .fenix/admin_disposition.json"
+                f"（含初步结论与计划动作），再执行破坏性动作；任何时刻被杀都不丢处置记录。\n"
+                f"5. 若确实无法自主处置（需人类决策、连续失败、不可逆操作），"
                 f"将 escalate 置为 true 并给出 recommended_action。\n\n"
                 f"## 完成后\n"
-                f"把处置记录写入 .fenix/admin_disposition.json（当前目录即主树）：\n"
+                f"把最终处置记录写入 .fenix/admin_disposition.json（当前目录即主树），"
+                f"覆盖之前的初步记录：\n"
                 f'{{\n'
                 f'  "spec": "{sig_spec}",\n'
                 f'  "problem": "处理的困境问题",\n'
@@ -760,6 +790,12 @@ class AgentRunner:
             "--add-dir", str(progress_dir),
             "--permission-mode", "bypassPermissions",
         ]
+        # 注入 agent 专用 settings（PreToolUse hook：阻止 Read 图片文件）。
+        # 模型（deepseek-v4-flash 经本地代理）不支持图像输入，verifier/planner
+        # 读截图会把图片送进对话导致 400 整轮失败。
+        agent_settings = self.project_root / ".fenix" / "agent-settings.json"
+        if agent_settings.exists():
+            cmd += ["--settings", str(agent_settings)]
         if model_override:
             cmd += ["--model", model_override]
         if resume_session_id:

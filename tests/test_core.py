@@ -2856,6 +2856,44 @@ class TestDaemonSingletonFlock(unittest.TestCase):
         os.close(fd2)
 
 
+class TestShutdownStopsDispatch(unittest.TestCase):
+    """fix-admin-self-heal：daemon 优雅关闭期间 dispatcher 不再派发新 agent。"""
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.sm = MagicMock()
+        self.runner = MagicMock()
+        self.config = {"agents": {"max_concurrent": 2}}
+        self.engine = PMEngine(
+            self.sm, self.runner, self.config, Path(self.tmpdir), MagicMock(),
+        )
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_process_queue_paused_when_shutting_down(self):
+        self.engine.shutting_down = True
+        self.engine._enqueue("spec-a", "implementer")
+        self.engine._process_queue()
+        self.assertEqual(self.engine._active_runs, 0)
+        self.assertEqual(len(self.engine._run_queue), 1)  # 队列未被消费
+        # 未启动任何 worker 线程（intercept start 验证）
+        started = []
+        orig = threading.Thread.start
+
+        def fake_start(thread_self):
+            started.append(thread_self.name)
+            if not thread_self.name.startswith("fenix-"):
+                orig(thread_self)
+
+        with patch("threading.Thread.start", side_effect=fake_start):
+            self.engine._process_queue()
+        self.assertEqual(self.engine._active_runs, 0)
+        self.assertFalse(any(n.startswith("fenix-") for n in started))
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Multi-Project Monitoring Tests (add-multi-project-monitoring)
 # ═══════════════════════════════════════════════════════════════════

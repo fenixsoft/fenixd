@@ -47,6 +47,10 @@ class PMEngine:
         self._handling_events = set()  # 防重入：正在处理的 (event_kind, spec_name)
         self._queue_lock = threading.Lock()  # 保护 _run_queue / _active_runs / _active_priorities
 
+        # 优雅关闭标志（fix-admin-self-heal）：daemon 关闭期间禁止派发新 agent，
+        # 否则 shutdown 的 wait_for_running_agents 会陷入「杀一个又起一个」的死循环
+        self.shutting_down = False
+
         # Blocker detection state
         self._last_blocker_check = None
         self._last_blocker_report_time = None
@@ -101,6 +105,9 @@ class PMEngine:
 
     def _on_spec_ready(self, spec_name: str):
         """Schedule implementer for ready SPEC (if dependencies are satisfied)."""
+        # 优雅关闭期间不再派发（fix-admin-self-heal）
+        if self.shutting_down:
+            return
         # 防双派发：该 spec 已有活动 implementer worktree 时跳过。
         # 背景（fix-fenix-token-waste）：启动扫描与 event_bus 都会触发 spec_ready，
         # 第二次派发因 worktree 锁失败会把 spec 打回 ready，形成空转反馈环。
@@ -500,6 +507,10 @@ class PMEngine:
         - 不抢占：已在运行的任务不会被新到的高优先级中断。
         - 每轮派发队列中最高优先级的合法就绪条目。
         """
+        # 优雅关闭期间不再派发（fix-admin-self-heal）
+        if self.shutting_down:
+            self.logger.debug("pm_engine", "Shutting down — dispatch paused")
+            return
         max_concurrent = self._get_config("agents.max_concurrent", 2)
 
         while True:

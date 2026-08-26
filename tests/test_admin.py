@@ -4,6 +4,7 @@
 """
 
 import json
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -102,6 +103,8 @@ def make_monitor(tmp_path, specs: dict, config=None, runner=None):
 
 
 # ── 4.2 admin_store 读写 + 标记已处理 ───────────────────
+
+
 
 class TestAdminStore:
     def test_append_fills_defaults(self, tmp_path):
@@ -333,6 +336,89 @@ class TestAdminMonitorThrottle:
 # ── run_administrator：处置文件读取 + 陈旧清理 ──────────
 
 class TestRunAdministrator:
+    def test_run_administrator_writes_pending_disposition(self, tmp_path):
+        """唤起前落 pending disposition，保证 admin 被杀也有记录（fix-admin-self-heal）。"""
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.project_root = proot
+        runner._get_config = lambda key, default=None: default
+        runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._build_prompt = lambda *a, **k: "prompt"
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, max_turns):
+            return "output", 5, "sess"
+
+        runner._run_claude = fake_run_claude
+        runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
+        recs = AdminStore(proot, FakeLogger()).read_all()
+        pendings = [r for r in recs if r.get("kind") == DISPOSITION and r.get("status") == "pending"]
+        assert len(pendings) == 1
+        assert pendings[0]["spec"] == "spec-a"
+        assert pendings[0]["admin_run_id"].startswith("admin-spec-a-")
+
+    def test_orphaned_pending_escalates(self, tmp_path):
+        """pending disposition 超时无最终结果 → 升级人工（admin 被 kill 场景）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        store = AdminStore(proot, FakeLogger())
+        rec = store.append({
+            "kind": DISPOSITION, "status": "pending", "result": "pending",
+            "signal_type": "stuck", "spec": "spec-a", "admin_run_id": "admin-spec-a-1",
+        })
+        # 把 created 改成 20 分钟前（超过 cooldown 15m）
+        alerts = json.loads((proot / ".fenix" / "admin_alerts.json").read_text())
+        for r in alerts:
+            if r["id"] == rec["id"]:
+                r["created"] = iso_ago(20)
+        (proot / ".fenix" / "admin_alerts.json").write_text(json.dumps(alerts), encoding="utf-8")
+        mon._recover_orphaned_dispositions()
+        recs = store.read_all()
+        esc = [r for r in recs if r.get("kind") == ESCALATION]
+        assert len(esc) == 1
+        assert "处置中断" in esc[0]["description"]
+
+    def test_pending_with_final_result_not_escalated(self, tmp_path):
+        """有最终结果的 pending 不升级。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        store = AdminStore(proot, FakeLogger())
+        store.append({"kind": DISPOSITION, "status": "pending", "result": "pending",
+                      "signal_type": "stuck", "spec": "spec-a", "admin_run_id": "admin-x"})
+        store.append({"kind": DISPOSITION, "status": "done", "result": "resolved",
+                      "signal_type": "stuck", "spec": "spec-a", "admin_run_id": "admin-x"})
+        mon._recover_orphaned_dispositions()
+        recs = store.read_all()
+        assert not any(r.get("kind") == ESCALATION for r in recs)
+
+    def test_restart_request_failure_escalates(self, tmp_path):
+        """restart_request 过期未清除 → 重启失败 → 升级人工。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        rr = proot / ".fenix" / "restart_request"
+        rr.parent.mkdir(parents=True, exist_ok=True)
+        rr.write_text("restart", encoding="utf-8")
+        os.utime(rr, (time.time() - 60 * 30, time.time() - 60 * 30))  # 30 分钟前
+        result = mon._detect_restart_failure(time.time())
+        assert result == ["restart_failed"]
+        recs = AdminStore(proot, FakeLogger()).read_all()
+        assert any(r.get("kind") == ESCALATION and r.get("signal_type") == "restart_failed"
+                   for r in recs)
+
+    def test_restart_request_fresh_not_escalated(self, tmp_path):
+        """restart_request 刚发出（窗口内）不升级。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        rr = proot / ".fenix" / "restart_request"
+        rr.parent.mkdir(parents=True, exist_ok=True)
+        rr.write_text("restart", encoding="utf-8")  # mtime = now
+        assert mon._detect_restart_failure(time.time()) == []
+
     def test_clear_stale_disposition(self, tmp_path):
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)

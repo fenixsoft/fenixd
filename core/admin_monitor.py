@@ -34,6 +34,7 @@ FLAPPING_WINDOW_MINUTES = 10
 FLAPPING_THRESHOLD = 3
 DAEMON_ERROR_THRESHOLD = 3
 STUCK_GRACE_MINUTES = 10  # run 文件 mtime 距现在小于此值视为"有进度"，不算卡死
+RESTART_REQUEST_TIMEOUT_MINUTES = 10  # restart_request 超时未清除 → 重启失败 → 升级
 
 # 信号 → 严重度/建议处置
 SIGNAL_SEVERITY = {
@@ -115,6 +116,10 @@ class AdminMonitor:
 
         for signal in signals:
             self._handle_signal(signal)
+
+        # fix-admin-self-heal：孤儿处置与重启失败的兜底升级（非 per-spec 信号）
+        self._recover_orphaned_dispositions()
+        self._detect_restart_failure(now)
         return signals
 
     # ── 检测规则 ────────────────────────────────────────────────
@@ -328,6 +333,104 @@ class AdminMonitor:
         if self.store.unhandled_for(spec, signal_type) is not None:
             return True
         return False
+
+    # ── 兜底升级（fix-admin-self-heal） ──────────────────────────
+
+    def _recover_orphaned_dispositions(self):
+        """检测「admin 被唤起但未完成处置」（pending 无最终结果）→ 升级人工。
+
+        admin 是 daemon 子进程，若其在处置中被 kill（daemon 重启/崩溃），不会留下
+        最终 disposition、也不会走升级分支。此方法每次巡检兜底：pending 记录超时
+        无最终结果 → 转为人工升级告警，保证「admin 死了也有告警」。
+        """
+        records = self.store.read_all()
+        grace = max(self.cooldown_minutes, 1) * 60
+        now = time.time()
+        by_run: dict = {}
+        for rec in records:
+            if rec.get("kind") != DISPOSITION:
+                continue
+            rid = rec.get("admin_run_id")
+            if not rid:
+                continue
+            status = rec.get("status") or rec.get("result")
+            by_run.setdefault(rid, {"final": False, "rec": rec})
+            if status != "pending":
+                by_run[rid]["final"] = True
+
+        for rid, info in by_run.items():
+            if info["final"]:
+                continue
+            pending = info["rec"]
+            try:
+                created = datetime.fromisoformat(
+                    (pending.get("created") or "").replace("Z", "+00:00")
+                )
+            except (ValueError, TypeError):
+                continue
+            if now - created.timestamp() < grace:
+                continue
+            spec = pending.get("spec")
+            sig_type = pending.get("signal_type")
+            if self.store.unhandled_for(spec, sig_type) is not None:
+                continue
+            self.store.append({
+                "kind": ESCALATION,
+                "signal_type": sig_type,
+                "spec": spec,
+                "severity": "critical",
+                "description": (
+                    f"Administrator 处置中断（run {rid}）：被唤起后未在 "
+                    f"{int(grace / 60)} 分钟内完成处置，疑似 daemon 重启/崩溃连带杀死 "
+                    f"admin，需人工介入"
+                ),
+                "evidence": f"pending disposition 超时无最终结果（admin_run_id={rid}）",
+                "action_taken": "AdminMonitor 孤儿检测：pending 超时自动升级",
+                "admin_run_id": rid,
+                "recommended_action": (
+                    "人工检查 daemon/AdminMonitor 状态与 .fenix/logs/supervisor.log，"
+                    "确认框架是否健康运行"
+                ),
+            })
+            self.logger.warning(
+                "admin_monitor",
+                f"Orphaned admin disposition escalated to human: {rid}",
+            )
+
+    def _detect_restart_failure(self, now: float):
+        """restart_request 存在且过期 → 重启未完成 → 升级人工。
+
+        admin 请求重启后由 supervisor 负责实际重启并清除 restart_request。
+        若文件一直存在，说明 supervisor 未运行或重启失败，需人工介入。
+        """
+        rr = self.project_root / ".fenix" / "restart_request"
+        if not rr.exists():
+            return []
+        try:
+            mtime = rr.stat().st_mtime
+        except OSError:
+            return []
+        if now - mtime < RESTART_REQUEST_TIMEOUT_MINUTES * 60:
+            return []  # 刚请求，窗口内不升级
+        if self.store.unhandled_for(None, "restart_failed") is not None:
+            return []
+        self.store.append({
+            "kind": ESCALATION,
+            "signal_type": "restart_failed",
+            "spec": None,
+            "severity": "critical",
+            "description": (
+                "daemon 重启请求未完成：.fenix/restart_request 存在超过 "
+                f"{RESTART_REQUEST_TIMEOUT_MINUTES} 分钟，supervisor 未重启 daemon"
+            ),
+            "evidence": f"restart_request mtime={mtime}，supervisor 应清除该文件",
+            "action_taken": "AdminMonitor 重启验证：请求未完成自动升级",
+            "recommended_action": (
+                "人工检查 supervisor 是否在运行（tmux/进程），必要时手动启动 "
+                "`.fenix/bin/fenixd_supervisor.py`"
+            ),
+        })
+        return ["restart_failed"]
 
     def _invoke_administrator(self, signal: dict, signal_rec: dict):
         """唤起 Administrator 处置；失败或升级时落升级告警。"""

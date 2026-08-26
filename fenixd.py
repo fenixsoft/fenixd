@@ -194,6 +194,12 @@ class FenixDaemon:
         self.logger.info("fenixd", "Shutting down...")
         self.running = False
 
+        # 关闭期间禁止派发新 agent（fix-admin-self-heal）：
+        # 否则 wait_for_running_agents 等待期间 dispatcher 持续起新 agent，
+        # 造成「杀一个又起一个」的关闭死循环
+        if self.pm_engine:
+            self.pm_engine.shutting_down = True
+
         if self._admin_thread:
             self._admin_thread.join(timeout=5)
         if self.event_bus:
