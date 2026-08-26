@@ -10,8 +10,8 @@
 
 ## 2. Daemon 加载切换
 
-- [ ] 2.1 `fenixd.py` 第 68-69 行改为 `self.config = ConfigLoader.resolve_config(PROJECT_ROOT)`，废弃 `FENIX_DIR / "config.yaml"` 直读路径
-- [ ] 2.2 运行 `pytest tests/ -q` 回归（现有 daemon/agent/admin 测试不因加载路径变化而失败）
+- [x] 2.1 `fenixd.py` 第 68-69 行改为 `self.config = ConfigLoader.resolve_config(PROJECT_ROOT)`，废弃 `FENIX_DIR / "config.yaml"` 直读路径
+- [x] 2.2 运行 `pytest tests/ -q` 回归（现有 daemon/agent/admin 测试不因加载路径变化而失败）
 
 ## 3. Dashboard data 层：作用域化读写
 
