@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from core.dashboard.data import find_impl_run_file, parse_run_task_done
+
 
 class PMEngine:
     """
@@ -139,6 +141,20 @@ class PMEngine:
             return
         self._handling_events.add(event_key)
         try:
+            # verified→done 一致性门禁（add-task-progress-sync）：
+            # run 声明 success 但存在「未勾选且不在 done_ids」的任务时，阻断自动推送，
+            # 把缺口写入 error 字段供人工裁决；全部可确认完成时放行；无 run 记录放行。
+            blocker = self._task_completion_blocker(spec_name)
+            if blocker:
+                self.logger.warning(
+                    "pm_engine",
+                    f"任务完成一致性门禁拦截 '{spec_name}'（保持 verified）: {blocker}",
+                )
+                self.state_machine.update_spec(spec_name, {
+                    "error": f"任务完成不一致，未自动推进到 done：{blocker}",
+                })
+                return
+
             self.logger.info("pm_engine", f"Verification passed: '{spec_name}' → done")
             self.state_machine.transition(spec_name, "done")
             # 同步触发 spec_done 处理（fix done → 自动重新验证父 SPEC）。
@@ -380,6 +396,162 @@ class PMEngine:
                 return data
         except (json.JSONDecodeError, OSError):
             pass
+        return None
+
+    # ── 任务进度写侧回写（add-task-progress-sync） ───────────────────
+    #
+    # implementer run 成功后，从 run 产物确定性解析已完成任务集，把主树
+    # tasks.md 对应 id 的 `- [ ]` 改成 `- [x]`，不撤销任何既有勾选（只增不减）。
+
+    _TASK_LINE_RE = re.compile(r"^(\s*-\s+)\[(\s|x)\](\s+)(\d+\.\d+)(.*)$")
+
+    def _sync_task_progress(self, spec_name: str):
+        """把已成功完成的任务勾选确定性回写进主树 tasks.md 并 commit。
+
+        幂等：已勾选的条目跳过；无 run 产物 / 解析为空 / 工作树不干净时
+        直接返回（不报错、不产生空 commit）。任何异常由调用方捕获，不阻塞主流程。
+        """
+        tasks_path = self.project_root / "openspec" / "changes" / spec_name / "tasks.md"
+        if not tasks_path.exists():
+            self.logger.debug("pm_engine", f"任务回写跳过（无 tasks.md）：{spec_name}")
+            return
+
+        run_file = find_impl_run_file(self.project_root, spec_name)
+        if run_file is None:
+            self.logger.debug("pm_engine", f"任务回写跳过（无 run 产物）：{spec_name}")
+            return
+
+        rd = parse_run_task_done(run_file)
+        done_ids = rd.get("done_ids") or set()
+        if not done_ids:
+            self.logger.debug("pm_engine", f"任务回写跳过（done_ids 为空）：{spec_name}")
+            return
+
+        # 工作树不干净时跳过（如 merge-back 冲突恢复期），留待下个调度周期重试
+        if self._worktree_is_dirty():
+            self.logger.debug("pm_engine", f"任务回写跳过（工作树不干净）：{spec_name}")
+            return
+
+        try:
+            text = tasks_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return
+        lines = text.split("\n")
+        changed = False
+        new_lines = []
+        for line in lines:
+            m = self._TASK_LINE_RE.match(line)
+            if m and m.group(4) in done_ids and m.group(2) != "x":
+                # `- [ ]` → `- [x]`，仅当该 id 在 done_ids 且当前未勾选
+                new_lines.append(f"{m.group(1)}[x]{m.group(3)}{m.group(4)}{m.group(5)}")
+                changed = True
+            else:
+                new_lines.append(line)
+        if not changed:
+            self.logger.debug("pm_engine", f"任务回写跳过（无新勾选）：{spec_name}")
+            return
+
+        tasks_path.write_text("\n".join(new_lines), encoding="utf-8")
+        commit_msg = f"[fenix] {spec_name}: sync task progress from run record"
+        ok, err = self._git_commit([str(tasks_path)], commit_msg)
+        if not ok:
+            self.logger.warning("pm_engine", f"任务回写 commit 失败 '{spec_name}': {err}")
+            return
+        self.logger.info(
+            "pm_engine",
+            f"任务进度回写成功 '{spec_name}'：勾选 {len(done_ids)} 个任务",
+        )
+
+    def _worktree_is_dirty(self) -> bool:
+        """主树工作区是否存在未提交改动（add-task-progress-sync 回写的安全闸门）。"""
+        try:
+            result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=str(self.project_root),
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                return True  # 无法判断时保守视为脏，跳过回写
+            return bool(result.stdout.strip())
+        except Exception:
+            return True
+
+    def _git_commit(self, paths: list, message: str) -> tuple:
+        """在 project_root 对指定路径执行 git add + commit。
+
+        Returns: (success: bool, error_message: str)
+        """
+        try:
+            add = subprocess.run(
+                ["git", "add", "--"] + paths,
+                cwd=str(self.project_root),
+                capture_output=True, text=True, timeout=60,
+            )
+            if add.returncode != 0:
+                return False, add.stderr.strip() or f"git add exit {add.returncode}"
+            commit = subprocess.run(
+                ["git", "commit", "-m", message, "--"] + paths,
+                cwd=str(self.project_root),
+                capture_output=True, text=True, timeout=120,
+            )
+            if commit.returncode != 0:
+                return False, commit.stderr.strip() or f"git commit exit {commit.returncode}"
+            return True, ""
+        except subprocess.TimeoutExpired:
+            return False, "git commit timed out"
+        except Exception as e:
+            return False, str(e)
+
+    def _task_completion_blocker(self, spec_name: str) -> str | None:
+        """verified→done 任务完成一致性门禁（add-task-progress-sync）。
+
+        返回 None 表示门禁通过（可推进到 done）；返回非空字符串表示缺口描述，
+        此时应阻断 auto approve / verified→done，把缺口写入 error 字段供人工裁决。
+
+        判定规则：
+        - 无 run 记录可查（.fenix-run-result.json 缺失/无效）→ 放行（无法证伪即放行）。
+        - run 声明 success，但存在「tasks.md 未勾选 且 不在 run done_ids」的任务
+          → 阻断，返回缺口清单（任务 id 列表）。
+        - 全部任务可确认完成（勾选 ∪ done_ids 覆盖全部）→ 放行。
+        - fix-* SPEC 走完全相同规则。
+        """
+        result = self._read_implementer_result(spec_name)
+        # 无法证伪即放行（无 run 记录 / 非 implementer 产物）
+        if not result:
+            return None
+        impl_status = result.get("status")
+        # 仅当 run 声明 success 时才做一致性校验；其它状态（error/缺失）放行。
+        if impl_status != "success":
+            return None
+
+        tasks_path = self.project_root / "openspec" / "changes" / spec_name / "tasks.md"
+        if not tasks_path.exists():
+            return None
+
+        # 解析 tasks.md 的勾选状态与全部任务 id
+        checked_ids: set = set()
+        all_ids: list = []
+        try:
+            for line in tasks_path.read_text(encoding="utf-8").split("\n"):
+                m = re.match(r"^- \[(x| )\] (\d+\.\d+)", line)
+                if m:
+                    tid = m.group(2)
+                    all_ids.append(tid)
+                    if m.group(1) == "x":
+                        checked_ids.add(tid)
+        except (OSError, UnicodeDecodeError):
+            return None
+
+        # 解析 run 记录的完成任务 id
+        run_file = find_impl_run_file(self.project_root, spec_name)
+        done_ids: set = set()
+        if run_file is not None:
+            done_ids = parse_run_task_done(run_file).get("done_ids") or set()
+
+        # 缺口：未勾选 且 不在 done_ids 中的任务
+        gap = [tid for tid in all_ids if tid not in checked_ids and tid not in done_ids]
+        if gap:
+            return "未完成任务：" + "、".join(gap)
         return None
 
     def _read_verifier_result(self, result_path: Path) -> str | None:
@@ -702,6 +874,15 @@ class PMEngine:
                             "_merge_fp": None,
                             "_merge_streak": 0,
                         })
+                        # 写侧确定性回写：把已完成的任务勾选同步进主树 tasks.md
+                        # （add-task-progress-sync）。任何异常都不阻塞 run 终态主流程。
+                        try:
+                            self._sync_task_progress(spec_name)
+                        except Exception as e:
+                            self.logger.warning(
+                                "pm_engine",
+                                f"任务进度回写未成功 '{spec_name}'（非阻塞）: {e}",
+                            )
                         # Immediately queue verifier at FRONT so it runs next
                         self._enqueue_front(spec_name, "verifier")
                         self.logger.info("pm_engine", f"Implement done, verifier queued for '{spec_name}'")

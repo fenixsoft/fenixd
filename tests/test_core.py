@@ -3702,3 +3702,295 @@ class TestOverviewDaemonField(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ═══════════════════════════════════════════════════════════════════
+# Task Progress Sync — write-side backfill (add-task-progress-sync 2.1/2.2)
+# ═══════════════════════════════════════════════════════════════════
+
+def _write_impl_run_for_spec(proot: Path, spec: str, ts: int, creates, updates) -> Path:
+    """写一个含 TaskCreate/TaskUpdate 的 impl run 产物。"""
+    runs_dir = proot / ".fenix" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    run_file = runs_dir / f"impl-{spec}-{ts}.jsonl"
+    lines = []
+    for subj in creates:
+        lines.append(json.dumps({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "name": "TaskCreate",
+                 "input": {"subject": subj, "description": "d", "activeForm": "a"}}
+            ]},
+        }, ensure_ascii=False))
+    for tid, status in updates:
+        lines.append(json.dumps({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "name": "TaskUpdate",
+                 "input": {"taskId": str(tid), "status": status}}
+            ]},
+        }, ensure_ascii=False))
+    run_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return run_file
+
+
+class TestTaskProgressSync(unittest.TestCase):
+    """implementer run 成功后 daemon 确定性回写主树 tasks.md 勾选。"""
+
+    def setUp(self):
+        import shutil
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "test"],
+                       cwd=str(self.project_root), capture_output=True)
+        # .fenix/ 运行时产物走 gitignore，不计入工作树脏检测
+        (self.project_root / ".gitignore").write_text(".fenix/\n", encoding="utf-8")
+        (self.project_root / "README.md").write_text("# test\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"],
+                       cwd=str(self.project_root), capture_output=True)
+
+        self.sm = MagicMock()
+        self.sm.read_one = MagicMock(return_value={"status": "done"})
+        self.sm.transition = MagicMock()
+        self.sm.update_spec = MagicMock()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_engine(self, config=None):
+        from core.pm_engine import PMEngine
+        logger = MagicMock()
+        for m in ("info", "warning", "error", "debug"):
+            setattr(logger, m, MagicMock())
+        ar = MagicMock()
+        return PMEngine(self.sm, ar, config or {}, self.project_root, logger)
+
+    def _write_spec_tasks(self, spec_name: str, content: str) -> Path:
+        spec_dir = self.project_root / "openspec" / "changes" / spec_name
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        p = spec_dir / "tasks.md"
+        p.write_text(content, encoding="utf-8")
+        return p
+
+    def _commit_spec(self, spec_name: str):
+        """把 spec 目录提交进主树，模拟 ensure_spec_committed 后的干净基线。"""
+        subprocess.run(["git", "add", "--", "openspec"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", f"spec {spec_name}"],
+                       cwd=str(self.project_root), capture_output=True)
+
+    def _head(self):
+        return subprocess.run(["git", "rev-parse", "HEAD"],
+                              cwd=str(self.project_root), capture_output=True, text=True).stdout.strip()
+
+    def test_sync_backfills_unchecked_done_ids(self):
+        """run 声明 2.1/2.2 完成，主树未勾 → 回写勾选并 commit。"""
+        tasks = ("# Tasks: demo\n\n"
+                 "## 2. 实现\n\n"
+                 "- [ ] 2.1 build\n"
+                 "- [ ] 2.2 test\n"
+                 "- [ ] 2.3 doc\n")
+        self._write_spec_tasks("demo", tasks)
+        self._commit_spec("demo")
+        _write_impl_run_for_spec(self.project_root, "demo", 1789000000,
+                                 ["Task 2.1: build", "Task 2.2: test", "Task 2.3: doc"],
+                                 [(1, "completed"), (2, "completed")])
+        engine = self._make_engine()
+        engine._sync_task_progress("demo")
+
+        text = (self.project_root / "openspec" / "changes" / "demo" / "tasks.md").read_text()
+        self.assertIn("- [x] 2.1 build", text)
+        self.assertIn("- [x] 2.2 test", text)
+        self.assertIn("- [ ] 2.3 doc", text)  # 未出现在 done_ids 的不勾
+
+        res = subprocess.run(["git", "log", "--oneline"],
+                             cwd=str(self.project_root), capture_output=True, text=True)
+        self.assertIn("sync task progress from run record", res.stdout)
+
+    def test_sync_idempotent_no_extra_commit(self):
+        """二次执行不产生新 commit。"""
+        tasks = ("# Tasks: demo\n\n"
+                 "## 2. 实现\n\n"
+                 "- [ ] 2.1 build\n"
+                 "- [ ] 2.2 test\n")
+        self._write_spec_tasks("demo", tasks)
+        self._commit_spec("demo")
+        _write_impl_run_for_spec(self.project_root, "demo", 1789000000,
+                                 ["Task 2.1: build", "Task 2.2: test"],
+                                 [(1, "completed"), (2, "completed")])
+        engine = self._make_engine()
+        engine._sync_task_progress("demo")
+        first = self._head()
+        engine._sync_task_progress("demo")  # 已全勾选，跳过
+        self.assertEqual(first, self._head())
+
+    def test_sync_preserves_agent_checked(self):
+        """agent 已勾选但 run 记录缺失的任务不被撤销（只增不减）。"""
+        tasks = ("# Tasks: demo\n\n"
+                 "## 1. 实现\n\n"
+                 "- [x] 1.1 already done by agent\n"
+                 "- [ ] 1.2 not in run\n")
+        self._write_spec_tasks("demo", tasks)
+        self._commit_spec("demo")
+        _write_impl_run_for_spec(self.project_root, "demo", 1789000000,
+                                 ["Task 1.1: already done by agent", "Task 1.2: not in run"],
+                                 [(1, "completed")])
+        engine = self._make_engine()
+        engine._sync_task_progress("demo")
+        text = (self.project_root / "openspec" / "changes" / "demo" / "tasks.md").read_text()
+        self.assertIn("- [x] 1.1 already done by agent", text)
+        self.assertIn("- [ ] 1.2 not in run", text)
+        # 无新勾选 → 不 commit（HEAD 不变）
+        self.assertEqual(self._head(), self._head())
+
+    def test_sync_skips_when_no_run_file(self):
+        """无 run 产物时不动作、不 commit。"""
+        tasks = ("# Tasks: demo\n\n## 1. 实现\n\n- [ ] 1.1 x\n")
+        self._write_spec_tasks("demo", tasks)
+        self._commit_spec("demo")
+        engine = self._make_engine()
+        engine._sync_task_progress("demo")
+        self.assertEqual(self._head(), self._head())
+
+    def test_sync_skips_when_dirty_tree(self):
+        """工作树不干净时跳过回写（非阻塞），不 commit。"""
+        tasks = ("# Tasks: demo\n\n## 1. 实现\n\n- [ ] 1.1 x\n")
+        self._write_spec_tasks("demo", tasks)
+        self._commit_spec("demo")
+        _write_impl_run_for_spec(self.project_root, "demo", 1789000000,
+                                 ["Task 1.1: x"], [(1, "completed")])
+        engine = self._make_engine()
+        with patch.object(engine, "_worktree_is_dirty", return_value=True):
+            engine._sync_task_progress("demo")
+        self.assertEqual(self._head(), self._head())
+
+
+
+
+
+class TestTaskCompletionGate(unittest.TestCase):
+    """verified→done 任务完成一致性门禁（add-task-progress-sync 3.1/3.2）。"""
+
+    def setUp(self):
+        import shutil
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "test"],
+                       cwd=str(self.project_root), capture_output=True)
+        (self.project_root / ".gitignore").write_text(".fenix/\n", encoding="utf-8")
+        (self.project_root / "README.md").write_text("# test\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"],
+                       cwd=str(self.project_root), capture_output=True)
+
+        self.sm = MagicMock()
+        self.sm.read_one = MagicMock(return_value={"status": "verified"})
+        self.sm.transition = MagicMock()
+        self.sm.update_spec = MagicMock()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_engine(self, config=None):
+        from core.pm_engine import PMEngine
+        logger = MagicMock()
+        for m in ("info", "warning", "error", "debug"):
+            setattr(logger, m, MagicMock())
+        ar = MagicMock()
+        # worktree_manager.find_implementer_worktree 返回 None，
+        # 使 _read_implementer_result 走项目根 .fenix-run-result.json 回退路径。
+        ar.worktree_manager.find_implementer_worktree.return_value = None
+        return PMEngine(self.sm, ar, config or {}, self.project_root, logger)
+
+    def _write_spec_tasks(self, spec_name, content):
+        spec_dir = self.project_root / "openspec" / "changes" / spec_name
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "tasks.md").write_text(content, encoding="utf-8")
+
+    def _write_impl_result(self, spec_name, status):
+        """写 .fenix-run-result.json 到项目根（_read_implementer_result 回退路径）。"""
+        (self.project_root / ".fenix-run-result.json").write_text(
+            json.dumps({"status": status, "spec": spec_name}), encoding="utf-8")
+
+    def _write_run_done(self, spec_name, done_ids):
+        """写 impl run 产物，使其 done_ids 为给定集合。"""
+        _write_impl_run_for_spec(
+            self.project_root, spec_name, 1789000000,
+            [f"Task {tid}: desc" for tid in done_ids] +
+            [f"Task {i}.x: extra" for i in range(len(done_ids), 4)],
+            [(i + 1, "completed") for i in range(len(done_ids))],
+        )
+
+    def test_gate_blocks_on_gap(self):
+        """run 声明 success 但 4.1 未勾选且不在 done_ids → 阻断，error 含任务 id。"""
+        tasks = ("# Tasks: demo\n\n## 4. 实现\n\n"
+                 "- [x] 4.1 done\n- [ ] 4.2 done\n- [ ] 4.3 notdone\n")
+        self._write_spec_tasks("demo", tasks)
+        self._write_impl_result("demo", "success")
+        self._write_run_done("demo", ["4.1", "4.2"])
+        engine = self._make_engine()
+        blocker = engine._task_completion_blocker("demo")
+        self.assertIsNotNone(blocker)
+        self.assertIn("4.3", blocker)
+        # 通过 _on_spec_verified 端到端验证：阻断时不 transition，写 error
+        engine._on_spec_verified("demo")
+        self.sm.transition.assert_not_called()
+        update_kwargs = self.sm.update_spec.call_args[0][1]
+        self.assertIn("4.3", update_kwargs["error"])
+
+    def test_gate_passes_when_all_confirmed(self):
+        """全部任务确认完成（勾选 ∪ done_ids 覆盖全部）→ 放行。"""
+        tasks = ("# Tasks: demo\n\n## 1. 实现\n\n"
+                 "- [x] 1.1 done\n- [ ] 1.2 done\n")
+        self._write_spec_tasks("demo", tasks)
+        self._write_impl_result("demo", "success")
+        self._write_run_done("demo", ["1.2"])  # 1.2 在 done_ids，1.1 已勾选
+        engine = self._make_engine()
+        self.assertIsNone(engine._task_completion_blocker("demo"))
+        engine._on_spec_verified("demo")
+        self.sm.transition.assert_called_once_with("demo", "done")
+
+    def test_gate_passes_without_run_record(self):
+        """无 run 记录可查（.fenix-run-result.json 缺失）→ 放行（无法证伪）。"""
+        tasks = ("# Tasks: demo\n\n## 1. 实现\n\n- [ ] 1.1 x\n")
+        self._write_spec_tasks("demo", tasks)
+        # 不写 .fenix-run-result.json
+        engine = self._make_engine()
+        self.assertIsNone(engine._task_completion_blocker("demo"))
+
+    def test_gate_passes_when_run_not_success(self):
+        """run 声明非 success（如 error）→ 放行（仅 success 触发校验）。"""
+        tasks = ("# Tasks: demo\n\n## 1. 实现\n\n- [ ] 1.1 x\n")
+        self._write_spec_tasks("demo", tasks)
+        self._write_impl_result("demo", "error")
+        engine = self._make_engine()
+        self.assertIsNone(engine._task_completion_blocker("demo"))
+
+    def test_gate_applies_to_fix_spec(self):
+        """fix-* SPEC 走相同规则：缺口任务阻断。"""
+        tasks = ("# Tasks: fix-demo\n\n## 1. 修复\n\n"
+                 "- [x] 1.1 done\n- [ ] 1.2 notdone\n")
+        self._write_spec_tasks("fix-demo", tasks)
+        self._write_impl_result("fix-demo", "success")
+        self._write_run_done("fix-demo", ["1.1"])
+        engine = self._make_engine()
+        blocker = engine._task_completion_blocker("fix-demo")
+        self.assertIsNotNone(blocker)
+        self.assertIn("1.2", blocker)
+        engine._on_spec_verified("fix-demo")
+        self.sm.transition.assert_not_called()
+
+if __name__ == "__main__":
+    unittest.main()
