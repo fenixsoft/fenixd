@@ -5,7 +5,7 @@ fenix-init — Fenix Loop Engineering Framework 项目初始化命令。
 在目标目录生成使用 fenixd 所需的工程骨架：
   - .fenix/（项目配置 config.yaml + 运行时目录 + 指向框架的软链接）
   - STATE.md / PROJECT_LOG.md
-  - openspec/{changes,specs}/
+  - openspec/{changes,specs}/ 与 openspec/changes/archive/
   - .claude/agents/（软链接）与 .claude/worktrees/
   - 追加 fenix 相关 .gitignore 条目
 
@@ -127,7 +127,8 @@ def main():
     # 3. openspec 目录
     for sub in ("changes", "specs"):
         ensure_dir(project_root / "openspec" / sub)
-    log("  ✅ openspec/{changes,specs}/")
+    ensure_dir(project_root / "openspec" / "changes" / "archive")
+    log("  ✅ openspec/{changes,specs}/ 与 openspec/changes/archive/")
 
     # 4. .claude/agents（软链接）+ .claude/worktrees
     agents_dir = project_root / ".claude" / "agents"

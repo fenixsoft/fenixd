@@ -7,11 +7,16 @@ Run with: python3 -m pytest tests/test_spec_gen.py -q
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.spec_gen import instructions, new_change, status
+
+# bin/ 下的独立脚本（fenix_archive.py）以模块方式导入以复用归档逻辑
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
+from fenix_archive import archive_change
 
 
 class TestNewChange(unittest.TestCase):
@@ -197,6 +202,54 @@ class TestInstructions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValueError):
                 instructions(Path(tmp), "proposal", "not-exist")
+
+
+class TestArchive(unittest.TestCase):
+    """archive_change：移动成功 / 日期冲突报错不覆盖 / 不存在报错。"""
+
+    def test_archive_moves_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            name = "add-user-login"
+            change_dir = new_change(root, name)
+            (change_dir / "tasks.md").write_text("# T", encoding="utf-8")
+
+            result = archive_change(root, name)
+
+            self.assertTrue(result["from"].endswith(f"openspec/changes/{name}"))
+            expected_to = root / "openspec" / "changes" / "archive" / f"{date.today().isoformat()}-{name}"
+            self.assertEqual(result["to"], str(expected_to))
+            self.assertTrue(expected_to.is_dir())
+            self.assertFalse(change_dir.exists())
+            self.assertTrue((expected_to / "tasks.md").exists())
+            self.assertTrue((expected_to / ".openspec.yaml").exists())
+
+    def test_archive_date_conflict_does_not_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            name = "add-user-login"
+            change_dir = new_change(root, name)
+            sentinel = change_dir / "sentinel.txt"
+            sentinel.write_text("keep", encoding="utf-8")
+
+            # 预置同名目标（模拟同一天重复归档）
+            target = root / "openspec" / "changes" / "archive" / f"{date.today().isoformat()}-{name}"
+            target.mkdir(parents=True)
+            (target / "existing.txt").write_text("old", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                archive_change(root, name)
+
+            # 原目录未被移动或覆盖
+            self.assertTrue(change_dir.is_dir())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
+            self.assertTrue((target / "existing.txt").exists())
+
+    def test_archive_missing_change_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(ValueError):
+                archive_change(root, "not-exist")
 
 
 if __name__ == "__main__":
