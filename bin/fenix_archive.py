@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""
+fenix_archive.py — 将已完成的 change 归档到 openspec/changes/archive/YYYY-MM-DD-<name>。
+
+用法（项目根目录下经 .fenix 软链接调用）:
+    python3 .fenix/bin/fenix_archive.py <name>
+"""
+
+import argparse
+import json
+import shutil
+import sys
+from datetime import date
+from pathlib import Path
+
+# 项目根（经 .fenix/bin/ 软链接调用时 = 项目目录）
+PROJECT_ROOT = Path(__file__).absolute().parent.parent.parent
+
+
+def archive_change(project_root: Path, name: str) -> dict:
+    """将 `openspec/changes/<name>/` 移动到 `openspec/changes/archive/YYYY-MM-DD-<name>`。
+
+    Returns:
+        dict: {"from": 原路径, "to": 目标路径}
+
+    Raises:
+        ValueError: change 不存在，或目标归档路径已存在（不覆盖）。
+    """
+    change_dir = project_root / "openspec" / "changes" / name
+    if not change_dir.is_dir():
+        raise ValueError(f"Change '{name}' not found at {change_dir}")
+
+    target = (
+        project_root / "openspec" / "changes" / "archive"
+        / f"{date.today().isoformat()}-{name}"
+    )
+    if target.exists():
+        raise ValueError(
+            f"Archive target already exists: {target} — 请改名或改日再归档，原目录不会被覆盖"
+        )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    moved = Path(shutil.move(str(change_dir), str(target)))
+    return {"from": str(change_dir), "to": str(moved)}
+
+
+def main():
+    parser = argparse.ArgumentParser(description="归档 change 到 openspec/changes/archive/")
+    parser.add_argument("name", help="要归档的 change 名称")
+    parser.add_argument(
+        "--project",
+        default=None,
+        help="项目根目录（默认由脚本位置推断，经 .fenix/bin/ 调用时即项目目录）",
+    )
+    args = parser.parse_args()
+
+    project_root = Path(args.project).expanduser().resolve() if args.project else PROJECT_ROOT
+
+    try:
+        result = archive_change(project_root, args.name)
+        payload = {"ok": True, "from": result["from"], "to": result["to"], "error": None}
+    except ValueError as e:
+        payload = {"ok": False, "from": None, "to": None, "error": str(e)}
+
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if not payload["ok"]:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

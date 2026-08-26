@@ -24,9 +24,41 @@ description: Use when the user wants to create a new development requirement, as
 - "添加用户登录功能" → `add-user-login`
 - "修复移动端首页布局" → `fix-mobile-homepage`
 
-### 3. 使用 openspec-propose skill 生成 SPEC
+### 3. 使用 fenix 原生 SPEC 生成器创建 SPEC
 
-调用 openspec-propose skill 创建完整的 change（proposal、design、specs、tasks）。
+fenix 内置原生 SPEC 生成器（`bin/fenix_spec.py`），无需额外安装任何工具或外部 skill。
+按以下流程创建完整的 change（proposal、design、specs、tasks）：
+
+**3.1 创建 change 脚手架**
+
+```bash
+python3 .fenix/bin/fenix_spec.py new <name>
+```
+
+输出 JSON `{ok, path, error}`。若 `ok` 为 false（如名称非法或同名 change 已存在），
+根据 `error` 调整名称或与用户确认后重试，不要强行覆盖已有 change。
+
+**3.2 按依赖顺序生成 artifact**
+
+```bash
+python3 .fenix/bin/fenix_spec.py status --change <name>
+```
+
+`status` 输出每个 artifact 的状态：`done`（已生成）/ `ready`（依赖就绪，可生成）/
+`blocked`（依赖未完成，附 `missingDeps`）。按依赖顺序逐个处理：
+
+1. 对每个 `ready` 的 artifact，获取其生成指引：
+   ```bash
+   python3 .fenix/bin/fenix_spec.py instructions <artifact-id> --change <name>
+   ```
+   `instructions` 返回 `outputPath`、`instruction`、`template`（可直接作为文件骨架）
+   与 `dependencies`。据此编写对应文件：
+   - `proposal.md` → 明确 Why / What Changes / Capabilities / Impact
+   - `specs/<capability>/spec.md` → 每个新能力一个 spec 文件，含 ADDED Requirements 与 Scenario
+   - `design.md` → Context / Goals / Decisions / Risks
+   - `tasks.md` → `##` 分组 + `- [ ] x.y` 勾选任务
+2. 每完成一个 artifact 后重跑 `status`，继续处理下一个 `ready` artifact。
+3. 重复直到所有 artifact 为 `done`（`isComplete` 为 true，`applyRequires` 的 `tasks` 就绪）。
 
 ### 4. 注册到 STATE.md
 
@@ -43,7 +75,7 @@ print(f'SPEC <spec-name> registered')
 "
 ```
 
-告知用户：SPEC 已创建。fenixd 会自动拾取并开始实现。
+告知用户：**「SPEC `<name>` 已创建并注册。fenixd 会自动拾取并开始实现。」**
 
 ## SPEC 修改
 
