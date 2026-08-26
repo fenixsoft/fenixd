@@ -422,6 +422,18 @@ class AdminMonitor:
                     "确认框架是否健康运行"
                 ),
             })
+            # 升级即终结：补非 pending 记录，避免 escalation 被 handled 后 unhandled_for
+            # 节流失效、同一孤儿在下轮巡检再次升级造成循环告警
+            self.store.append({
+                "kind": DISPOSITION,
+                "status": "escalated",
+                "signal_type": sig_type,
+                "spec": spec,
+                "admin_run_id": rid,
+                "result": "escalated",
+                "actions_taken": "AdminMonitor 孤儿检测：pending 超时升级人工并终结该 run",
+                "description": f"Administrator 处置中断已升级人工（run {rid}），pending 终结",
+            })
             self.logger.warning(
                 "admin_monitor",
                 f"Orphaned admin disposition escalated to human: {rid}",
@@ -501,20 +513,27 @@ class AdminMonitor:
             })
             return
 
-        # 处置记录（任何情况下都留痕）
-        self.store.append({
-            "kind": DISPOSITION,
-            "signal_type": signal.get("signal_type"),
-            "spec": signal.get("spec") or disp.spec,
-            "severity": signal.get("severity"),
-            "description": disp.problem or signal.get("description"),
-            "action_taken": disp.actions_taken,
-            "result": disp.result,
-            "recommended_action": disp.recommended_action,
-            "summary": disp.summary,
-            "admin_run_id": disp.run_id,
-            "escalate": bool(disp.escalate),
-        })
+        # 处置记录（任何情况下都留痕）；落盘失败不能丢 final 判定（否则该 run
+        # 的 pending 会变孤儿触发人工升级），记日志后继续
+        try:
+            self.store.append({
+                "kind": DISPOSITION,
+                "signal_type": signal.get("signal_type"),
+                "spec": signal.get("spec") or disp.spec,
+                "severity": signal.get("severity"),
+                "description": disp.problem or signal.get("description"),
+                "action_taken": disp.actions_taken,
+                "result": disp.result,
+                "recommended_action": disp.recommended_action,
+                "summary": disp.summary,
+                "admin_run_id": disp.run_id,
+                "escalate": bool(disp.escalate),
+            })
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor",
+                f"Failed to persist administrator disposition for run {disp.run_id}: {e}",
+            )
 
         if disp.escalate:
             # Administrator 判定无法自主处置 → 升级人工

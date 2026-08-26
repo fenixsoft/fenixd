@@ -422,6 +422,40 @@ class TestRunAdministrator:
         recs = store.read_all()
         assert not any(r.get("kind") == ESCALATION for r in recs)
 
+    def test_escalated_orphan_not_re_escalated(self, tmp_path):
+        """孤儿升级人工后不再重复升级（升级即终结，避免循环告警）。
+
+        回归：add-hierarchical-config 孤儿 run 因升级不终结 pending，escalation
+        被 handled 后每次巡检又生成新升级，导致同一条告警反复出现。
+        """
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        store = AdminStore(proot, FakeLogger())
+        rec = store.append({
+            "kind": DISPOSITION, "status": "pending", "result": "pending",
+            "signal_type": "stuck", "spec": "spec-a", "admin_run_id": "admin-spec-a-1",
+        })
+        alerts = json.loads((proot / ".fenix" / "admin_alerts.json").read_text())
+        for r in alerts:
+            if r["id"] == rec["id"]:
+                r["created"] = iso_ago(20)
+        (proot / ".fenix" / "admin_alerts.json").write_text(json.dumps(alerts), encoding="utf-8")
+
+        mon._recover_orphaned_dispositions()
+        # 模拟人工已处理该升级（handled 后 unhandled_for 节流失效，循环 bug 触发点）
+        esc = [r for r in store.read_all() if r.get("kind") == ESCALATION]
+        assert len(esc) == 1
+        assert store.mark_handled(esc[0]["id"]) is True
+        mon._recover_orphaned_dispositions()  # 再次巡检：不得重复升级
+        recs = store.read_all()
+        esc = [r for r in recs if r.get("kind") == ESCALATION]
+        assert len(esc) == 1  # 升级只发生一次
+        # 升级应终结 pending：同 run 存在非 pending 记录
+        rid = rec["admin_run_id"]
+        assert any(r.get("admin_run_id") == rid and (r.get("status") or r.get("result")) != "pending"
+                   for r in recs)
+
     def test_restart_request_failure_escalates(self, tmp_path):
         """restart_request 过期未清除 → 重启失败 → 升级人工。"""
         proot, mon = make_monitor(tmp_path, {
