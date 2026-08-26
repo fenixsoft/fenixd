@@ -212,6 +212,26 @@ playwright-cli eval "(()=>{
   - `low`: cosmetic issue, typo, improvement suggestion
 - **Don't touch STATE.md**: The fenixd daemon manages SPEC state.
 
+## SPEC 表格「耗时」列真实性断言（verification-completion-gate）
+
+仪表盘 SPEC 表格含「耗时」列，值为该 SPEC 全部运行记录的 `total_duration` 聚合。
+验证该列时必须区分两种"—"：
+
+- **合法占位 —**：该 SPEC 在 `.fenix/runs/` **无任何运行记录**（草稿/从未触发的 SPEC）。
+  属 `spec-table-improvements` 的占位语义，判定通过。
+- **缺陷 — / 0**：该 SPEC 在 `.fenix/runs/` **存在运行记录**，但「耗时」列显示「—」或 `0`。
+  说明时长计算异常（`duration_seconds` 聚合为 0），MUST 判定为缺陷（severity：high），
+  报告写明：该 SPEC 有 N 条运行记录而总耗时异常为 0，附判定依据（run 文件清单）。
+
+判定步骤：
+1. 打开 dashboard 的 SPEC 表格，定位目标 SPEC 行的「耗时」列值。
+2. `ls .fenix/runs/ | grep '<spec-name>'` 统计该 SPEC 的运行记录数。
+3. 有记录且值为「—」或 0 → 缺陷；有记录且值为可读时长（如「12分36秒」）→ 通过；
+   无记录 → 占位通过。
+
+报告归因：缺陷场景下 MUST 记录被检查 SPEC 的 run 数量与判定依据，使「有记录而空」
+与「无记录占位」在报告中可区分（不可笼统记为"耗时显示—"）。
+
 ## Tier 2: Chrome Extension Integration Verification
 
 In addition to the Tier 1 (Smoke) verification above, you MUST run **Tier 2**

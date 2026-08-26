@@ -145,13 +145,19 @@ class PMEngine:
             # run 声明 success 但存在「未勾选且不在 done_ids」的任务时，阻断自动推送，
             # 把缺口写入 error 字段供人工裁决；全部可确认完成时放行；无 run 记录放行。
             blocker = self._task_completion_blocker(spec_name)
+            # 验证完成度闸门（verification-completion-gate）：
+            # 验证流程已启动但 done < total → 阻断放行，保留 verified 状态。
+            # 与任务完成门禁结论一致时合并为单个拦截原因，不出现双 error 覆盖。
+            vblocker = self._check_verification_gate(spec_name)
+            if vblocker:
+                blocker = (blocker + "; " if blocker else "") + vblocker
             if blocker:
                 self.logger.warning(
                     "pm_engine",
-                    f"任务完成一致性门禁拦截 '{spec_name}'（保持 verified）: {blocker}",
+                    f"验证放行门禁拦截 '{spec_name}'（保持 verified）: {blocker}",
                 )
                 self.state_machine.update_spec(spec_name, {
-                    "error": f"任务完成不一致，未自动推进到 done：{blocker}",
+                    "error": blocker,
                 })
                 return
 
@@ -552,6 +558,31 @@ class PMEngine:
         gap = [tid for tid in all_ids if tid not in checked_ids and tid not in done_ids]
         if gap:
             return "未完成任务：" + "、".join(gap)
+        return None
+
+    def _check_verification_gate(self, spec_name: str) -> str | None:
+        """验证完成度放行闸门（verification-completion-gate）。
+
+        返回 None 表示门禁通过（可推进到 done）；返回非空字符串表示未完成原因，
+        此时应阻断 verified→done，把原因写入 error 字段供人工裁决。
+
+        判定规则：
+        - 无进度文件（.fenix/verify-progress/<spec>.json 缺失）→ 放行
+          （验证流程未启动，维持原推进路径，不影响存量 spec）。
+        - 进度文件存在但解析失败 / 字段缺失 / done < total → 阻断，
+          返回「验证未完成：done/total（+最近 current）」。
+        - done == total → 放行。
+        """
+        from core.dashboard.data import parse_verify_progress
+        vp = parse_verify_progress(self.project_root, spec_name)
+        if not vp.get("exists"):
+            return None
+        total = vp.get("total") or 0
+        done = vp.get("done") or 0
+        if vp.get("error") == "corrupt" or total <= 0 or done < total:
+            current = vp.get("current") or ""
+            tail = f"（当前：{current}）" if current else ""
+            return f"验证未完成：{done}/{total}{tail}"
         return None
 
     def _read_verifier_result(self, result_path: Path) -> str | None:

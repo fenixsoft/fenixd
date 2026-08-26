@@ -22,7 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.dashboard import data as dash_data
 from core.dashboard.registry import Registry
-from core.dashboard.server import DashboardHTTPServer, DashboardHandler, find_free_port
+from core.dashboard.server import (
+    DashboardHTTPServer, DashboardHandler, find_free_port,
+    serve, _find_dashboard_occupant, _is_dashboard_serve_cmd,
+)
 from core.dashboard.watcher import FileWatcher
 
 
@@ -293,6 +296,29 @@ class TestDataParse:
         proot = make_project(tmp_path)
         runs = dash_data.get_runs(proot, "myspec")
         assert all("myspec" in r["run_id"] for r in runs)
+
+    def test_get_runs_attempt_suffix_duration_and_spec(self, tmp_path):
+        """修复 run_id 含 -a<n> 后缀（agent_runner 每次 attempt 追加）时：
+        - duration_seconds 以时间戳段为 start_ts 真实计算（非恒 0）
+        - spec 字段不残留时间戳/尝试段
+        """
+        proot = make_project(tmp_path)
+        runs_dir = proot / ".fenix" / "runs"
+        # 模拟 attempt 2 的 run 文件：时间戳 1787757864，mtime 设为 1787758000
+        p = runs_dir / "impl-add-parallelism-1787757864-a2.jsonl"
+        p.write_text(json.dumps({"type": "result"}) + "\n", encoding="utf-8")
+        os.utime(p, (1787758000, 1787758000))
+        # 旧格式（无 attempt 后缀）仍应兼容
+        p2 = runs_dir / "impl-old-1787750000.jsonl"
+        p2.write_text(json.dumps({"type": "result"}) + "\n", encoding="utf-8")
+        os.utime(p2, (1787750100, 1787750100))
+
+        runs = dash_data.get_runs(proot)
+        by_id = {r["run_id"]: r for r in runs}
+        assert by_id["impl-add-parallelism-1787757864-a2"]["duration_seconds"] == 136
+        assert by_id["impl-add-parallelism-1787757864-a2"]["spec"] == "add-parallelism"
+        assert by_id["impl-old-1787750000"]["duration_seconds"] == 100
+        assert by_id["impl-old-1787750000"]["spec"] == "old"
 
     def test_classify_run(self):
         assert dash_data.classify_run([{"type": "result"}]) == "done"
@@ -1591,3 +1617,135 @@ class TestServerPush:
             assert b'"refresh"' in second or b'"type": "refresh"' in second
         finally:
             conn.close()
+
+
+# ── 端口占用接管（dashboard-instance-lifecycle） ─────────────────────
+
+def _spawn_dashboard_on_port(port: int, *, serve_arg=True):
+    """在子进程启动一个真实的 fenix_dashboard.py --serve 实例，返回其 PID。"""
+    import subprocess
+    env = dict(os.environ)
+    script = str(Path(__file__).resolve().parents[1] / "bin" / "fenix_dashboard.py")
+    args = [sys.executable, script]
+    if serve_arg:
+        args += ["--serve", "--port", str(port)]
+    proc = subprocess.Popen(args, env=env, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    return proc
+
+
+def test_find_dashboard_occupant_detects_serve_instance():
+    """_find_dashboard_occupant 能定位占用端口的真实 dashboard --serve 实例。"""
+    port = find_free_port(29100)
+    proc = _spawn_dashboard_on_port(port)
+    try:
+        # 等待实例监听
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            occ = _find_dashboard_occupant(port)
+            if occ:
+                break
+            time.sleep(0.2)
+        assert occ is not None, "未检测到占用端口的 dashboard 实例"
+        assert occ["pid"] == proc.pid
+        assert _is_dashboard_serve_cmd(occ["cmdline"])
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except Exception:
+            proc.kill()
+
+
+def test_serve_takes_over_old_dashboard_instance():
+    """旧 dashboard --serve 实例占用端口时，新 serve() 接管（杀旧绑新）。"""
+    port = find_free_port(29120)
+    reg = Registry()
+    old_proc = _spawn_dashboard_on_port(port)
+    # 等待旧实例监听
+    deadline = time.time() + 5
+    occupied = False
+    while time.time() < deadline:
+        if _find_dashboard_occupant(port):
+            occupied = True
+            break
+        time.sleep(0.2)
+    assert occupied, "旧 dashboard 实例未成功监听端口"
+
+    # 新实例在子线程内 serve()（接管旧实例后绑定同一端口）
+    srv_ready = threading.Event()
+    captured = {}
+
+    def run_new():
+        try:
+            serve(reg, port, static_dir=Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+        except SystemExit as e:
+            captured["exit"] = e.code
+        finally:
+            srv_ready.set()
+
+    new_thread = threading.Thread(target=run_new, daemon=True)
+    new_thread.start()
+    srv_ready.wait(timeout=6)
+
+    try:
+        # 旧实例应已被 terminate
+        assert not old_proc.poll() is None, "旧 dashboard 实例未被接管终止"
+        # 新实例成功绑定并响应
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/api/projects")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        conn.close()
+    finally:
+        # 清理新实例持有的端口（通过占用者定位并终止）
+        occ = _find_dashboard_occupant(port)
+        if occ and _is_dashboard_serve_cmd(occ["cmdline"]) and occ["pid"] != old_proc.pid:
+            try:
+                os.kill(occ["pid"], 15)
+            except OSError:
+                pass
+
+
+def test_serve_errors_on_non_dashboard_occupant():
+    """端口被非 dashboard 进程占用时，serve() 打印占用信息并以非 0 退出。"""
+    import subprocess, http.server, socketserver
+
+    # 用标准库 http.server 占用一个端口（非 dashboard 进程）
+    port = find_free_port(29140)
+    handler = http.server.SimpleHTTPRequestHandler
+    httpd = socketserver.TCPServer(("127.0.0.1", port), handler)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        # 等待监听
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if _find_dashboard_occupant(port):
+                break
+            time.sleep(0.2)
+
+        # serve() 在子进程内运行（捕获 SystemExit 与非 0 退出码）
+        import core.dashboard.server as srv_mod
+        captured = {}
+        real_exit = sys.exit
+
+        def fake_exit(code=0):
+            captured["code"] = code
+            raise SystemExit(code)
+
+        srv_mod.sys.exit = fake_exit
+        try:
+            srv_mod.serve(Registry(), port,
+                          static_dir=Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+        except SystemExit:
+            pass
+        finally:
+            srv_mod.sys.exit = real_exit
+
+        assert captured.get("code", 0) != 0, "非 dashboard 占用时应非 0 退出"
+        # 原占用进程未被终止
+        assert t.is_alive(), "不应终止非 dashboard 占用进程"
+    finally:
+        httpd.shutdown()

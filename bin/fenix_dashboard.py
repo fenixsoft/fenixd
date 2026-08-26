@@ -479,7 +479,7 @@ def main():
     parser.add_argument("--list-projects", action="store_true",
                         help="列出已注册监控项目")
     parser.add_argument("--port", type=int,
-                        help="Web 端口（默认取配置，或 8787；被占用自动上探）")
+                        help="Web 端口（默认取配置，或 8787；被占用时按端口接管语义处理）")
     parser.add_argument("--interval", type=int, default=3,
                         help="TUI 刷新间隔（秒）")
     args = parser.parse_args()

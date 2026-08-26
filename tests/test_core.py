@@ -3992,5 +3992,114 @@ class TestTaskCompletionGate(unittest.TestCase):
         engine._on_spec_verified("fix-demo")
         self.sm.transition.assert_not_called()
 
+
+class TestVerificationCompletionGate(unittest.TestCase):
+    """verified→done 验证完成度放行闸门（verification-completion-gate 3.1/3.2/3.3）。"""
+
+    def setUp(self):
+        import shutil
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "test"],
+                       cwd=str(self.project_root), capture_output=True)
+        (self.project_root / ".gitignore").write_text(".fenix/\n", encoding="utf-8")
+        (self.project_root / "README.md").write_text("# test\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"],
+                       cwd=str(self.project_root), capture_output=True)
+
+        self.sm = MagicMock()
+        self.sm.read_one = MagicMock(return_value={"status": "verified"})
+        self.sm.transition = MagicMock()
+        self.sm.update_spec = MagicMock()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_engine(self, config=None):
+        from core.pm_engine import PMEngine
+        logger = MagicMock()
+        for m in ("info", "warning", "error", "debug"):
+            setattr(logger, m, MagicMock())
+        ar = MagicMock()
+        ar.worktree_manager.find_implementer_worktree.return_value = None
+        return PMEngine(self.sm, ar, config or {}, self.project_root, logger)
+
+    def _write_verify_progress(self, spec_name, data):
+        vp_dir = self.project_root / ".fenix" / "verify-progress"
+        vp_dir.mkdir(parents=True, exist_ok=True)
+        (vp_dir / f"{spec_name}.json").write_text(
+            json.dumps(data), encoding="utf-8")
+
+    def test_gate_blocks_when_not_complete(self):
+        """进度 done < total ⇒ 阻断，error 含 'done/total'。"""
+        self._write_verify_progress("improve-dashboard-sections",
+                                    {"total": 34, "done": 0, "current": "初始化..."})
+        engine = self._make_engine()
+        blocker = engine._check_verification_gate("improve-dashboard-sections")
+        self.assertIsNotNone(blocker)
+        self.assertIn("0/34", blocker)
+        # 端到端：阻断时不 transition，保持 verified，error 含原因
+        engine._on_spec_verified("improve-dashboard-sections")
+        self.sm.transition.assert_not_called()
+        update_kwargs = self.sm.update_spec.call_args[0][1]
+        self.assertIn("0/34", update_kwargs["error"])
+
+    def test_gate_passes_when_complete(self):
+        """进度 done == total ⇒ 放行，正常推进 done。"""
+        self._write_verify_progress("demo", {"total": 32, "done": 32})
+        engine = self._make_engine()
+        self.assertIsNone(engine._check_verification_gate("demo"))
+        engine._on_spec_verified("demo")
+        self.sm.transition.assert_called_once_with("demo", "done")
+
+    def test_gate_passes_without_progress_file(self):
+        """无进度文件（验证未启动）⇒ 放行，不影响原路径。"""
+        engine = self._make_engine()
+        self.assertIsNone(engine._check_verification_gate("demo"))
+        engine._on_spec_verified("demo")
+        self.sm.transition.assert_called_once_with("demo", "done")
+
+    def test_gate_blocks_on_corrupt_progress(self):
+        """进度文件损坏 ⇒ 视同未完成，阻断。"""
+        vp_dir = self.project_root / ".fenix" / "verify-progress"
+        vp_dir.mkdir(parents=True, exist_ok=True)
+        (vp_dir / "demo.json").write_text("not json {{{", encoding="utf-8")
+        engine = self._make_engine()
+        blocker = engine._check_verification_gate("demo")
+        self.assertIsNotNone(blocker)
+        self.assertIn("0/0", blocker)
+
+    def test_gate_merges_with_task_blocker(self):
+        """任务门禁与验证门禁同时触发 ⇒ 合并为单条 error，不双覆盖。"""
+        self._write_verify_progress("demo", {"total": 10, "done": 5})
+        tasks = ("# Tasks: demo\n\n## 1. 实现\n\n- [x] 1.1 done\n- [ ] 1.2 notdone\n")
+        spec_dir = self.project_root / "openspec" / "changes" / "demo"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "tasks.md").write_text(tasks, encoding="utf-8")
+        (self.project_root / ".fenix-run-result.json").write_text(
+            json.dumps({"status": "success", "spec": "demo"}), encoding="utf-8")
+        _write_impl_run_for_spec(
+            self.project_root, "demo", 1789000000,
+            [f"Task {tid}: desc" for tid in ["1.1"]] + ["Task 1.2: extra"],
+            [(1, "completed")],
+        )
+        engine = self._make_engine()
+        engine._on_spec_verified("demo")
+        self.sm.transition.assert_not_called()
+        update_kwargs = self.sm.update_spec.call_args[0][1]
+        err = update_kwargs["error"]
+        self.assertIn("1.2", err)       # 任务门禁原因
+        self.assertIn("5/10", err)       # 验证门禁原因
+        # 仅写一次 error（不双覆盖）
+        self.assertEqual(self.sm.update_spec.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
