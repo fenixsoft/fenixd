@@ -36,6 +36,7 @@ from pathlib import Path
 from . import data as dashboard_data
 from .registry import Registry
 from .watcher import FileWatcher
+from core.fenix_session import start_daemon, stop_daemon
 
 STATIC_DIR = Path(__file__).parent / "static"
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -445,6 +446,93 @@ class DashboardHandler(BaseHTTPRequestHandler):
             pass
         self._json({"ok": True, "id": alert_id})
 
+    # ── 项目管理端点（启停 daemon / 软删除） ──────────────
+
+    def _resolve_project_or_400(self, path: str, prefix: str):
+        """从 /api/projects/<name>[/start|/stop] 或 /api/projects/<name> 解析项目名。
+
+        路径可能带 /start、/stop 动作后缀，先剥离再按项目名匹配。
+        项目不存在（不在监控列表）或目录不存在返回 None，调用方发 400。
+        """
+        if not path.startswith(prefix):
+            return None
+        name = urllib.parse.unquote(path[len(prefix):])
+        # 剥离可能的动作后缀（/start、/stop）
+        for suffix in ("/start", "/stop"):
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+                break
+        if not name:
+            return None
+        project = self.server.project_by_name(name)
+        if project is None or not project.get("exists"):
+            return None
+        return project
+
+    def _api_project_lifecycle(self, action: str, path: str, query: dict):
+        """POST /api/projects/<name>/start|stop。成功广播 refresh 让概览自动刷新。"""
+        project = self._resolve_project_or_400(path, "/api/projects/")
+        if project is None:
+            self._error(400, "项目不存在或未监控")
+            return
+        try:
+            if action == "start":
+                result = start_daemon(project["path"])
+            else:
+                result = stop_daemon(project["path"])
+        except Exception as e:  # 环境异常（tmux 不可用等）→ 返回错误对象，不 500
+            self._json({"ok": False, "error": f"操作失败: {e}"})
+            return
+        if not result.get("ok"):
+            self._json({"ok": False, "error": result.get("error", "未知错误")})
+            return
+        # 成功：广播 refresh，概览在自动刷新周期内跟随更新 daemon 状态
+        try:
+            self.server.sse_hub.broadcast({"type": "refresh"})
+        except Exception:
+            pass
+        self._json({
+            "ok": True,
+            "session": result.get("session"),
+            "already": result.get("already", False),
+            "was_running": result.get("was_running", False),
+        })
+
+    def _api_project_delete(self, path: str, query: dict):
+        """DELETE /api/projects/<name> —— 软删除：停止 daemon + 写入忽略列表。"""
+        project = self._resolve_project_or_400(path, "/api/projects/")
+        if project is None:
+            self._error(400, "项目不存在或未监控")
+            return
+        errors = []
+        # 1) 停止 daemon（幂等，未运行不报错）
+        try:
+            stop_result = stop_daemon(project["path"])
+            if not stop_result.get("ok"):
+                errors.append(stop_result.get("error", "停止 daemon 失败"))
+        except Exception as e:
+            errors.append(f"停止 daemon 失败: {e}")
+        # 2) 停止显式注册项 + 写入忽略列表（忽略优先：即便再次显式注册也被忽略）
+        try:
+            self.server.registry.remove_project(project["path"])
+        except Exception:
+            pass
+        try:
+            add_result = self.server.registry.add_ignored(project["path"])
+            if not add_result[0]:
+                errors.append(add_result[1])
+        except Exception as e:
+            errors.append(f"写入忽略列表失败: {e}")
+        if errors:
+            self._json({"ok": False, "error": "；".join(errors)})
+            return
+        # 成功：广播 refresh，概览不再返回该项目
+        try:
+            self.server.sse_hub.broadcast({"type": "refresh"})
+        except Exception:
+            pass
+        self._json({"ok": True, "path": project["path"]})
+
     # ── POST API ────────────────────────────────────────────
 
     def _handle_api_post(self, path: str, query: dict):
@@ -456,6 +544,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/runs/") and path.endswith("/watch"):
             rest = urllib.parse.unquote(path[len("/api/runs/"):-len("/watch")])
             self._json(self._api_run_watch(rest, query, watch=True))
+        elif path.endswith("/start"):
+            # POST /api/projects/<name>/start —— 启动项目 daemon
+            self._api_project_lifecycle("start", path, query)
+        elif path.endswith("/stop"):
+            # POST /api/projects/<name>/stop —— 停止项目 daemon
+            self._api_project_lifecycle("stop", path, query)
         else:
             self._error(404, "Not Found")
 
@@ -463,6 +557,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/runs/") and path.endswith("/watch"):
             rest = urllib.parse.unquote(path[len("/api/runs/"):-len("/watch")])
             self._json(self._api_run_watch(rest, query, watch=False))
+        elif path.startswith("/api/projects/") and len(path) > len("/api/projects/"):
+            # DELETE /api/projects/<name> —— 软删除项目（停止 + 忽略列表）
+            self._api_project_delete(path, query)
         else:
             self._error(404, "Not Found")
 

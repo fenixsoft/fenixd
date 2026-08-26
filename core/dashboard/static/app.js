@@ -78,6 +78,9 @@ function progressBar(done, total) {
 let currentState = { view: 'overview' };
 let seq = 0;
 const specFilter = { q: '', status: '' };  // 项目视图过滤状态，跨刷新保持
+let activitiesTab = 'all';  // 运维记录跨项目视图的页签：'all' 或项目名（跨刷新保持）
+let specSort = { key: '', dir: '' };  // 概览表格排序状态：key/dir(asc|desc|'')，跨刷新保持
+let specTab = 'timeline';  // spec 详情页页签：timeline|scenarios|bugs|screenshots，跨刷新保持
 
 function parseHash() {
   const h = decodeURIComponent(location.hash.slice(1) || 'overview');
@@ -324,15 +327,37 @@ function resultPill(result) {
 
 function renderActivities(data) {
   if (data.projects) {
-    // 跨项目聚合：按项目分组
+    // 跨项目聚合：页签栏（全部 + 各项目名），页签切换为模块级状态 activitiesTab
+    const names = (data.projects || []).map((g) => g.name).sort();
+    const tabs = ['all', ...names];
+    // 页签选择失效（项目消失）时回退到全部
+    if (activitiesTab !== 'all' && !names.includes(activitiesTab)) activitiesTab = 'all';
+    const tabBar = tabs.map((t) => {
+      const label = t === 'all' ? '全部' : esc(t);
+      const active = t === activitiesTab ? ' active' : '';
+      const count = t === 'all'
+        ? (data.projects || []).reduce((n, g) => n + (g.activities || []).length, 0)
+        : (data.projects.find((g) => g.name === t).activities || []).length;
+      return `<button class="tab-btn${active}" onclick="setActivitiesTab('${esc(t)}')">${label}<span class="tab-count">${count}</span></button>`;
+    }).join('');
+    // 当前页签内容：全部 → 按项目分段聚合；某项目 → 仅该项目卡片
+    const body = activitiesTab === 'all'
+      ? (data.projects || []).map((g) => `
+          <div class="section">
+            <div class="section-title">${esc(g.name)}<span class="count">${(g.activities || []).length} 条</span></div>
+            ${(g.activities || []).length ? renderActivityCards(g.activities) : '<div class="empty-state">暂无运维记录</div>'}
+          </div>`).join('')
+      : (() => {
+          const g = data.projects.find((x) => x.name === activitiesTab);
+          const acts = (g && g.activities) || [];
+          return acts.length ? renderActivityCards(acts) : '<div class="empty-state">暂无运维记录</div>';
+        })();
     return `
+      <div class="breadcrumb"><button onclick="nav('overview')">← 概览</button></div>
       <div class="page-title">运维记录</div>
       <div class="page-sub">跨项目 Administrator 活动</div>
-      ${data.projects.map((g) => `
-        <div class="section">
-          <div class="section-title">${esc(g.name)}<span class="count">${(g.activities || []).length} 条</span></div>
-          ${(g.activities || []).length ? renderActivityCards(g.activities) : '<div class="empty-state">暂无运维记录</div>'}
-        </div>`).join('')}`;
+      <div class="tab-bar">${tabBar}</div>
+      ${body}`;
   }
   const acts = data.activities || [];
   const title = data.project ? '运维记录 · ' + esc(data.project) : '运维记录';
@@ -344,6 +369,35 @@ function renderActivities(data) {
     <div class="page-title">${title}</div>
     <div class="page-sub">${sub}</div>
     ${acts.length ? renderActivityCards(acts) : '<div class="empty-state">暂无运维记录</div>'}`;
+}
+
+function setActivitiesTab(name) {
+  activitiesTab = name;
+  // 仅重绘当前视图（保持滚动位置，不整页 load）
+  if (currentState.view === 'activities' && !currentState.project) {
+    const mySeq = ++seq;
+    fetchFor(currentState).then((data) => {
+      if (mySeq !== seq) return;
+      renderActivitiesInPlace(data);
+    }).catch(() => {});
+  }
+}
+
+function renderActivitiesInPlace(data) {
+  const main = el('main');
+  // 复用 morphdom 增量更新；无 morphdom 则直接重设
+  if (main._rendered && window.morphdom) {
+    const html = renderActivities(data);
+    window.morphdom(main, '<main id="main">' + html + '</main>', {
+      onBeforeElUpdated: (fromEl) => {
+        if (fromEl && fromEl.id === 'tl-root') return false;
+      },
+    });
+  } else {
+    main.innerHTML = renderActivities(data);
+    main._rendered = true;
+  }
+  main._lastHtml = renderActivities(data);
 }
 
 function renderActivityCards(acts) {
@@ -504,6 +558,17 @@ function projectCard(p) {
     })
     .join(' ');
   const pp = pct(p.task_done, p.task_total);
+  const running = p.daemon === 'running';
+  // 生命周期控制按钮：按 daemon 状态禁用对应项；删除需二次确认
+  const controls = `
+    <div class="card-actions" onclick="event.stopPropagation()">
+      <button class="ctl-btn ${running ? 'disabled' : ''}" ${running ? 'disabled' : ''}
+        onclick="startProject('${esc(p.name)}')">▶ 启动</button>
+      <button class="ctl-btn ${running ? '' : 'disabled'}" ${running ? '' : 'disabled'}
+        onclick="stopProject('${esc(p.name)}')">■ 停止</button>
+      <button class="ctl-btn ctl-danger"
+        onclick="deleteProject('${esc(p.name)}')">🗑 删除</button>
+    </div>`;
   return `
   <div class="card" onclick="nav('project/${encodeURIComponent(p.name)}')">
     <h3>${esc(p.name)}
@@ -516,26 +581,166 @@ function projectCard(p) {
     <div class="kv-row"><span class="k">活跃运行</span><span class="v" style="color:${(p.active_runs || 0) ? 'var(--warning)' : ''}">${p.active_runs}</span></div>
     ${progressBar(p.task_done, p.task_total)}
     <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px">${pills}</div>
+    ${controls}
   </div>`;
+}
+
+// ── 项目生命周期控制（概览卡片：启动/停止/删除） ──────
+function _lifecycleRequest(name, action) {
+  // action: "start" | "stop" → POST /api/projects/<name>/<action>；"delete" → DELETE
+  const base = '/api/projects/' + encodeURIComponent(name);
+  const method = action === 'delete' ? 'DELETE' : 'POST';
+  const url = action === 'delete' ? base : base + '/' + action;
+  return fetch(url, { method: method }).then((r) => {
+    if (!r.ok) {
+      return r.json().catch(() => ({})).then((d) => {
+        throw new Error(d.error || ('HTTP ' + r.status));
+      });
+    }
+    return r.json();
+  });
+}
+
+function startProject(name) {
+  _lifecycleRequest(name, 'start')
+    .then((d) => { load(); })
+    .catch((err) => projectControlError(name, err));
+}
+function stopProject(name) {
+  _lifecycleRequest(name, 'stop')
+    .then((d) => { load(); })
+    .catch((err) => projectControlError(name, err));
+}
+function deleteProject(name) {
+  if (!confirm(
+    `确认从监控移除项目「${name}」？\n\n`
+    + '该项目 daemon 会被停止，但项目文件、STATE.md、openspec/、.fenix/ 等数据全部保留在磁盘。\n'
+    + '此操作仅为"软删除"（停止监控）——可通过手工编辑 ~/.config/fenixd/dashboard.yaml，'
+    + '从 ignored 列表中删除对应路径来恢复监控。'
+  )) return;
+  _lifecycleRequest(name, 'delete')
+    .then((d) => { load(); })
+    .catch((err) => projectControlError(name, err));
+}
+function projectControlError(name, err) {
+  // 操作失败：仅在该卡片上显示可读错误提示，不影响其它卡片
+  showProjectError(name, err.message || String(err));
+}
+function showProjectError(name, msg) {
+  const banner = document.createElement('div');
+  banner.className = 'toast-error';
+  banner.textContent = `项目「${name}」操作失败：${msg}`;
+  document.body.appendChild(banner);
+  setTimeout(() => banner.remove(), 6000);
+}
+
+// ── SPEC 表格：排序 / 耗时列 / fix 树（前端状态驱动，design D6） ──
+
+// 状态生命周期顺序：drafted→ready→…→pushed
+const _LIFECYCLE_RANK = {
+  drafted: 0, ready: 1, implementing: 2, 'bug-found': 2.5, implemented: 3,
+  testing: 4, verified: 5, done: 6, pushed: 7, blocked: 8,
+};
+
+// 构建表格行：先按 fix 树分组（根为粒度整体排序，不拆散子树），再排序
+function buildSpecRows(projectName, specs) {
+  const byName = {};
+  specs.forEach((s) => { byName[s.name] = s; });
+  const isFix = (n) => n.startsWith('fix-');
+
+  // 计算每棵 fix 树的根（递归去 fix- 后的基名，若基名本身是 fix 则继续）
+  // 顶层行 = 非 fix 规格 + 根为自身的 fix（父不在 specs 中，归入「无父级」）
+  const childrenMap = {};   // 根名 → [子名...]
+  const roots = [];         // 顶层行规格名
+  const orphanFix = [];     // 无父级 fix 规格名
+
+  const specNames = new Set(specs.map((s) => s.name));
+  specs.forEach((s) => {
+    if (!isFix(s.name)) {
+      roots.push(s.name);
+      return;
+    }
+    // fix 规格：逐级向上找父
+    let parent = null;
+    let base = s.name;
+    let guard = 0;
+    while (base.startsWith('fix-')) {
+      base = base.slice(4);
+      guard += 1;
+      if (guard > 20) break;
+    }
+    // 父 = 最近的、存在于 specs 中且非自身的 fix 前缀链
+    // 递归：fix-fix-a 的父是 fix-a（若存在），否则 a（若存在）
+    let candidate = s.name;
+    while (candidate.startsWith('fix-')) {
+      const up = candidate.slice(4);
+      if (up === s.name) break;
+      if (specNames.has(up)) { parent = up; break; }
+      candidate = up;
+    }
+    if (parent == null) {
+      orphanFix.push(s.name);
+    } else {
+      (childrenMap[parent] = childrenMap[parent] || []).push(s.name);
+    }
+  });
+
+  // 排序键比较器（按 specSort）
+  function cmp(a, b) {
+    const key = specSort.key;
+    const dir = specSort.dir === 'desc' ? -1 : 1;
+    if (!key) {
+      // 默认：created 倒序，缺失排末尾
+      const ac = a.created || '', bc = b.created || '';
+      if (!ac && !bc) return 0;
+      if (!ac) return 1;
+      if (!bc) return -1;
+      return bc.localeCompare(ac);
+    }
+    const va = sortValue(a, key), vb = sortValue(b, key);
+    // 缺失值恒排末尾
+    const ma = va === null || va === undefined || va === '', mb = vb === null || vb === undefined || vb === '';
+    if (ma && mb) return 0;
+    if (ma) return 1;
+    if (mb) return -1;
+    if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir;
+    return String(va).localeCompare(String(vb)) * dir;
+  }
+  function sortValue(s, key) {
+    switch (key) {
+      case 'status': return _LIFECYCLE_RANK[s.status] != null ? _LIFECYCLE_RANK[s.status] : 99;
+      case 'name': return s.name;
+      case 'priority': return s.priority == null ? null : Number(s.priority);
+      case 'created': return s.created || null;
+      case 'task': return s.task_total ? (s.task_done / s.task_total) : (s.task_total === 0 ? 0 : null);
+      case 'verify': return s.verify_total ? s.verify_done : (s.verify_total === 0 ? 0 : null);
+      case 'duration': return s.total_duration == null ? 0 : Number(s.total_duration);
+      case 'error': return s.error ? s.error : null;
+      default: return null;
+    }
+  }
+
+  // 对顶层行排序；子行在父行下按名排序
+  roots.sort(cmp);
+  orphanFix.sort(cmp);
+  const ordered = [];
+  roots.forEach((rn) => {
+    ordered.push({ name: rn, depth: 0 });
+    (childrenMap[rn] || []).sort(cmp).forEach((cn) => ordered.push({ name: cn, depth: 1 }));
+  });
+  // 无父级 fix 独立一组（置于末尾），同样按 sortValue 排序
+  orphanFix.forEach((fn) => ordered.push({ name: fn, depth: 1, orphan: true }));
+
+  return ordered.map((o) => specRow(projectName, byName[o.name], o.depth, o.orphan));
 }
 
 function renderProject(data) {
   const specs = data.specs || [];
   const project = esc(data.project);
 
-  // 前端排序：按 created 倒序（新在前），缺失 created 排最后
-  const sorted = specs.slice().sort((a, b) => {
-    const ac = a.created || '';
-    const bc = b.created || '';
-    if (!ac && !bc) return 0;
-    if (!ac) return 1;
-    if (!bc) return -1;
-    return bc.localeCompare(ac);
-  });
-
   // 前端过滤
   const q = specFilter.q.toLowerCase();
-  const filtered = sorted.filter((s) => {
+  const filtered = specs.filter((s) => {
     if (q && !s.name.toLowerCase().includes(q)) return false;
     if (specFilter.status && s.status !== specFilter.status) return false;
     return true;
@@ -546,9 +751,26 @@ function renderProject(data) {
     `<option value="${esc(k)}" ${specFilter.status === k ? 'selected' : ''}>${m.icon} ${esc(m.label)}</option>`
   ).join('');
 
-  const rowsHtml = filtered.length
-    ? filtered.map((s) => specRow(data.project, s)).join('')
-    : '';
+  // 表头定义：key 用于排序轮换；显示名
+  const headers = [
+    { key: 'status', label: '状态' },
+    { key: 'name', label: '名称' },
+    { key: 'priority', label: '优先级' },
+    { key: 'created', label: '创建时间' },
+    { key: 'task', label: '任务进度' },
+    { key: 'verify', label: '验证' },
+    { key: 'duration', label: '耗时' },
+    { key: 'error', label: '错误' },
+  ];
+  const arrows = { asc: ' ▲', desc: ' ▼' };
+  const thead = headers.map((h) => {
+    const active = specSort.key === h.key;
+    const arrow = active ? (arrows[specSort.dir] || '') : '';
+    const cls = active ? ' sort-active' : '';
+    return `<th class="sortable${cls}" onclick="sortSpecs('${h.key}')">${h.label}${arrow}</th>`;
+  }).join('');
+
+  const rowsHtml = filtered.length ? buildSpecRows(data.project, filtered).join('') : '';
 
   const emptyHtml = specs.length === 0
     ? '<div class="empty-state">该项目暂无 SPEC</div>'
@@ -570,24 +792,30 @@ function renderProject(data) {
     ${rowsHtml ? `
     <div class="spec-table-wrap">
       <table class="spec-table">
-        <thead>
-          <tr>
-            <th>状态</th>
-            <th>名称</th>
-            <th>优先级</th>
-            <th>创建时间</th>
-            <th>任务进度</th>
-            <th>验证</th>
-            <th>错误</th>
-          </tr>
-        </thead>
+        <thead><tr>${thead}</tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
     </div>` : ''}
     ${emptyHtml}`;
 }
 
-function specRow(project, s) {
+function sortSpecs(key) {
+  // 同列点击：asc → desc → 取消（默认 created 倒序）
+  if (specSort.key !== key) {
+    specSort.key = key;
+    specSort.dir = 'asc';
+  } else if (specSort.dir === 'asc') {
+    specSort.dir = 'desc';
+  } else if (specSort.dir === 'desc') {
+    specSort.key = '';
+    specSort.dir = '';
+  } else {
+    specSort.dir = 'asc';
+  }
+  load();
+}
+
+function specRow(project, s, depth = 0, orphan = false) {
   const pp = pct(s.task_done, s.task_total);
   const cls = pp === 100 ? 'good' : pp >= 60 ? '' : pp > 0 ? 'warn' : 'serious';
   const verify = s.verify_total > 0
@@ -597,10 +825,18 @@ function specRow(project, s) {
     ? `<span class="err-tag" title="${esc(s.error)}">⚠ ${esc(String(s.error).slice(0, 50))}</span>`
     : '';
   const created = s.created ? fmtDate(s.created) : '<span class="muted">—</span>';
+  const dur = (s.total_duration && Number(s.total_duration) > 0)
+    ? fmtDuration(Number(s.total_duration))
+    : '<span class="muted">—</span>';
+  // fix 子规格：缩进 + 🔧 标记
+  const indent = depth > 0 ? `<span class="fix-indent" style="padding-left:${depth * 18}px"></span>` : '';
+  const fixMark = depth > 0 ? '🔧 ' : '';
+  const orphanClass = orphan ? ' orphan-fix' : '';
+  const nameCell = `${indent}${fixMark}${esc(s.name)}`;
   return `
-  <tr class="spec-row" onclick="nav('spec/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}')">
+  <tr class="spec-row${orphanClass}" onclick="nav('spec/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}')">
     <td>${statusPill(s.status)}</td>
-    <td class="spec-name-cell">${esc(s.name)}</td>
+    <td class="spec-name-cell">${nameCell}</td>
     <td>P${s.priority ?? '?'}</td>
     <td class="created-cell">${created}</td>
     <td class="progress-cell">
@@ -608,6 +844,7 @@ function specRow(project, s) {
       <div class="progress-labels"><span>${s.task_done}/${s.task_total}</span><span>${pp}%</span></div>
     </td>
     <td>${verify}</td>
+    <td>${dur}</td>
     <td>${err}</td>
   </tr>`;
 }
@@ -632,6 +869,32 @@ function hydrateProjectFilter() {
 }
 
 function renderSpec(d) {
+  // 顶部常驻：验证结论 / 验证进度 / 任务清单（不被页签收纳）
+  // 下方四个长区块：运行时间轴 / 场景 / Bug 列表 / 失败截图 → 独立页签
+  const tabs = [
+    { key: 'timeline', label: '运行时间轴', empty: !(d.timeline && d.timeline.length) },
+    { key: 'scenarios', label: '场景结果', empty: !((d.scenarios && d.scenarios.length) || (d.report && d.report.error)) },
+    { key: 'bugs', label: 'Bug 列表', empty: !(d.bugs && d.bugs.length) },
+    { key: 'screenshots', label: '失败截图', empty: !(d.screenshots && d.screenshots.length) },
+  ];
+  // 若当前 tab 已无数据，回退到默认 timeline
+  if (!tabs.find((t) => t.key === specTab)) specTab = 'timeline';
+  const tabBar = tabs.map((t) => {
+    const active = t.key === specTab ? ' active' : '';
+    const count = t.empty ? '' : '';
+    return `<button class="tab-btn${active}" onclick="setSpecTab('${t.key}')">${esc(t.label)}</button>`;
+  }).join('');
+  // 仅渲染当前页签内容（其它页签 DOM 不展开，但占位由相同结构提供）
+  let tabBody;
+  if (specTab === 'timeline') tabBody = renderTimeline(d);
+  else if (specTab === 'scenarios') tabBody = renderScenarios(d);
+  else if (specTab === 'bugs') tabBody = renderBugs(d);
+  else tabBody = renderScreenshots(d);
+  // 空数据页签占位（即便该 tab 无内容也保持页签项可见可点）
+  if (!tabBody) {
+    const labels = { timeline: '暂无运行时间轴', scenarios: '暂无场景结果', bugs: '暂无 Bug', screenshots: '暂无失败截图' };
+    tabBody = `<div class="section"><div class="section-title">${tabs.find((t) => t.key === specTab).label}</div><div class="empty-state">${labels[specTab]}</div></div>`;
+  }
   return `
     <div class="breadcrumb">
       <button onclick="nav('project/${encodeURIComponent(d.project)}')">← ${esc(d.project)}</button>
@@ -646,10 +909,35 @@ function renderSpec(d) {
     ${renderVerdict(d)}
     ${renderVerify(d)}
     ${renderTasks(d)}
-    ${renderTimeline(d)}
-    ${renderScenarios(d)}
-    ${renderBugs(d)}
-    ${renderScreenshots(d)}`;
+    <div class="tab-bar">${tabBar}</div>
+    <div class="spec-tab-body">${tabBody}</div>`;
+}
+
+function setSpecTab(key) {
+  specTab = key;
+  // 仅重绘当前视图（保持滚动）；切换回时间轴时需在 DOM 就位后挂载
+  const mySeq = ++seq;
+  fetchFor(currentState).then((data) => {
+    if (mySeq !== seq) return;
+    renderSpecInPlace(data);
+    if (key === 'timeline') mountTimeline();
+  }).catch(() => {});
+}
+
+function renderSpecInPlace(d) {
+  const main = el('main');
+  if (main._rendered && window.morphdom) {
+    const html = renderSpec(d);
+    window.morphdom(main, '<main id="main">' + html + '</main>', {
+      onBeforeElUpdated: (fromEl) => {
+        if (fromEl && fromEl.id === 'tl-root') return false;
+      },
+    });
+  } else {
+    main.innerHTML = renderSpec(d);
+    main._rendered = true;
+  }
+  main._lastHtml = renderSpec(d);
 }
 
 function renderVerdict(d) {
