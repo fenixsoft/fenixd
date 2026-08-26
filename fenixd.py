@@ -246,7 +246,10 @@ class FenixDaemon:
         if self.event_bus:
             self.event_bus.stop()
         if self.agent_runner:
-            self.agent_runner.wait_for_running_agents(timeout=300)
+            # fix-graceful-shutdown-agents：wait_for_running_agents 已改为 terminate 流程
+            # （SIGTERM→interrupted 标记→≤10s 缓冲→SIGKILL），默认 grace 窗口即收口，
+            # 不传 timeout 以沿用 AGENT_TERMINATE_GRACE_SECONDS，确保总关停 ≪ supervisor 60s
+            self.agent_runner.wait_for_running_agents()
         if self.worktree_manager:
             self.worktree_manager.cleanup_orphans()
 

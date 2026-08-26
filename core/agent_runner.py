@@ -24,6 +24,12 @@ RUNS_KEEP = 20
 # 发给网关的模型名，ANTHROPIC_MODEL 被 --model 覆盖不生效。本常量只作 fallback。
 DEFAULT_GATEWAY_MODEL = "claude-sonnet-5"
 
+# 优雅退出时对每个在跑 agent 的 SIGTERM 缓冲窗口（秒）。daemon 收到关闭信号后对所有
+# 在跑 agent 发 SIGTERM，等此窗口让其收尾（关会话/flush 输出）；窗口结束仍未退出的
+# 用 SIGKILL 兜底。取 claude 收尾所需量级，模块级常量便于测试注入短值。
+# 见 spec agent-shutdown-interrupt：总关闭时长需压到 ≪ supervisor 60s SIGKILL 窗口。
+AGENT_TERMINATE_GRACE_SECONDS = 10
+
 
 class AgentRunResult:
     """Result of a single Agent run."""
@@ -1056,21 +1062,101 @@ class AgentRunner:
                     return e["session_id"]
         return None
 
-    def wait_for_running_agents(self, timeout: int = 300):
-        """Wait for all running Agent subprocesses to complete (for graceful shutdown)."""
-        deadline = time.time() + timeout
-        for name, proc in list(self._running_agents.items()):
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                self.logger.warning("agent_runner", f"Killing agent: {name}")
-                proc.kill()
-                continue
+    def wait_for_running_agents(self, timeout: int = AGENT_TERMINATE_GRACE_SECONDS):
+        """优雅退出时终止全部在跑 agent（terminate 流程），不再逐 agent 等待完成。
+
+        fix-graceful-shutdown-agents：原实现每 agent 最多等待 timeout（300s）串行叠加，
+        叠加 supervisor 固定 60s SIGKILL 窗口必触发 kill -9，丢失在跑 agent 的 run 结果。
+
+        新流程（D5 并行终止）：
+          1. 对所有在跑 agent 立即发 SIGTERM（不等待完成）；
+          2. 同步向各自 run 文件追加 interrupted 标记（标记 daemon 侧已知中断，
+             与"疑似崩溃"区分，且不影响已 finalize 的完成 run）；
+          3. 统一等待 ≤ grace 缓冲窗口（默认 10s），让 claude 收尾；
+          4. 窗口结束仍未退出的 agent 用 SIGKILL 兜底。
+
+        总终止时长恒 ≲ grace，不随 agent 数量线性增长，确保 daemon 在 supervisor 60s
+        窗口内退出。
+
+        Args:
+            timeout: 缓冲窗口秒数（子类/测试可覆写短值避免真实等待）。
+        """
+        grace = max(0, timeout)
+        running = list(self._running_agents.items())
+        if not running:
+            return
+
+        # 第一步：统一 SIGTERM，并行通知所有在跑 agent 收尾
+        for name, proc in running:
             try:
-                proc.wait(timeout=remaining)
-                self.logger.info("agent_runner", f"Agent completed during shutdown: {name}")
+                proc.terminate()  # SIGTERM：让 claude 关会话/flush 输出
+                self.logger.info("agent_runner", f"Sent SIGTERM to running agent: {name}")
+            except ProcessLookupError:
+                # 进程已退出（竞态），标记清理后跳过
+                self._running_agents.pop(name, None)
+            except Exception as e:  # pragma: no cover - 防御性
+                self.logger.warning("agent_runner", f"SIGTERM failed for agent {name}: {e}")
+
+        # 第二步：同步写入 interrupted 标记。running 快照只含未完成 agent（完成的已
+        # finalize 并移除），不会误标已完成 run。对每个被终止 agent 都写标记——无论其
+        # 是否已在 SIGTERM 后快速退出（design D2：标记由 daemon 侧同步写入，不依赖
+        # agent 优雅退出，保证"已知中断"证据完整）。读线程以 append 模式单行写入，
+        # O_APPEND 原子追加不破坏 JSONL 结构。
+        runs_dir = self.project_root / ".fenix" / "runs"
+        for name, proc in running:
+            run_file = runs_dir / f"{name}.jsonl"
+            try:
+                append_run_line(run_file, {
+                    "type": "interrupted",
+                    "reason": "daemon shutdown",
+                    "by": "agent_runner",
+                })
+            except Exception as e:  # pragma: no cover - run 文件写入失败不影响退出
+                self.logger.warning(
+                    "agent_runner", f"Failed to write interrupted marker for {name}: {e}"
+                )
+
+        # 第三步 + 第四步：统一缓冲窗口，窗口内未退出者 SIGKILL 兜底
+        if grace > 0:
+            deadline = time.time() + grace
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                alive = [n for n, p in self._running_agents.items() if p.poll() is None]
+                if not alive:
+                    break
+                time.sleep(min(0.2, remaining))
+            # 缓冲窗口结束仍未退出的，强制 SIGKILL（标记已写入，不依赖优雅退出）
+            for name, proc in list(self._running_agents.items()):
+                if proc.poll() is None:
+                    self.logger.warning(
+                        "agent_runner", f"Agent did not exit within {grace}s, SIGKILL: {name}"
+                    )
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    except Exception as e:  # pragma: no cover - 防御性
+                        self.logger.warning("agent_runner", f"SIGKILL failed for {name}: {e}")
+        else:
+            # grace=0：直接 SIGKILL 兜底
+            for name, proc in list(self._running_agents.items()):
+                if proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+
+        # 收割所有子进程，避免僵尸进程
+        for name, proc in list(self._running_agents.items()):
+            try:
+                proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                self.logger.warning("agent_runner", f"Killing agent (timeout): {name}")
-                proc.kill()
+                pass
+            except Exception:  # pragma: no cover - 防御性
+                pass
+            self._running_agents.pop(name, None)
 
     def _check_daily_limit(self):
         """Check and reset daily run counter."""

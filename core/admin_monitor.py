@@ -404,6 +404,31 @@ class AdminMonitor:
             sig_type = pending.get("signal_type")
             if self.store.unhandled_for(spec, sig_type) is not None:
                 continue
+
+            # fix-graceful-shutdown-agents：先验 run 文件是否含 interrupted 标记（daemon
+            # 优雅退出所致已知中断）。含标记 → 判定已知中断：终结 pending disposition 且
+            # 不产生人工升级告警；无标记/文件缺失 → 维持现有"疑似 daemon 崩溃"升级兜底
+            # （保守方向：宁可多告警不漏告警，files 被 prune 删除也按无标记处理）。
+            if self._run_has_interrupted_marker(rid):
+                self.store.append({
+                    "kind": DISPOSITION,
+                    "status": "interrupted",
+                    "signal_type": sig_type,
+                    "spec": spec,
+                    "admin_run_id": rid,
+                    "result": "interrupted",
+                    "actions_taken": (
+                        "AdminMonitor 孤儿检测：run 文件含 interrupted 标记，"
+                        "判定为 daemon 优雅退出已知中断，终结该 run 且不升级人工"
+                    ),
+                    "description": f"Administrator 处置因 daemon 关闭被中断（run {rid}），已知中断已终结",
+                })
+                self.logger.info(
+                    "admin_monitor",
+                    f"Orphaned admin disposition marked interrupted (known shutdown): {rid}",
+                )
+                continue
+
             self.store.append({
                 "kind": ESCALATION,
                 "signal_type": sig_type,
@@ -438,6 +463,36 @@ class AdminMonitor:
                 "admin_monitor",
                 f"Orphaned admin disposition escalated to human: {rid}",
             )
+
+    def _run_has_interrupted_marker(self, admin_run_id: str) -> bool:
+        """检查 admin_run_id 对应的 run 产物是否含 interrupted 标记（已知 daemon 中断）。
+
+        fix-graceful-shutdown-agents：admin agent 被 daemon 优雅退出终止时，agent_runner
+        会向 `.fenix/runs/<admin_run_id>.jsonl` 追加 `{"type": "interrupted"}` 记录。孤儿
+        检测据此区分"已知中断"（与 run 共存）与"疑似崩溃"（run 无标记）。run 文件被 prune
+        删除或读不到标记，一律按 False（无证据 → 升级兜底，保守方向）。
+
+        Args:
+            admin_run_id: admin disposition 的 admin_run_id（形如 admin-<spec>-<ts>）。
+        """
+        run_file = self.project_root / ".fenix" / "runs" / f"{admin_run_id}.jsonl"
+        if not run_file.is_file():
+            return False
+        try:
+            with run_file.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(entry, dict) and entry.get("type") == "interrupted":
+                        return True
+        except OSError:
+            return False
+        return False
 
     def _detect_restart_failure(self, now: float):
         """restart_request 存在且过期 → 重启未完成 → 升级人工。

@@ -408,6 +408,98 @@ class TestRunAdministrator:
         assert len(esc) == 1
         assert "处置中断" in esc[0]["description"]
 
+    def test_orphaned_pending_with_interrupted_marker_resolved_no_escalation(self, tmp_path):
+        """run 含 interrupted 标记 + pending 超时 → 终结且不升级人工（已知 daemon 中断）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        store = AdminStore(proot, FakeLogger())
+        rec = store.append({
+            "kind": DISPOSITION, "status": "pending", "result": "pending",
+            "signal_type": "stuck", "spec": "spec-a", "admin_run_id": "admin-spec-a-1",
+        })
+        alerts = json.loads((proot / ".fenix" / "admin_alerts.json").read_text())
+        for r in alerts:
+            if r["id"] == rec["id"]:
+                r["created"] = iso_ago(20)
+        (proot / ".fenix" / "admin_alerts.json").write_text(json.dumps(alerts), encoding="utf-8")
+
+        # 写入含 interrupted 标记的 run 文件（agent_runner 关闭时写入）
+        (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix" / "runs" / "admin-spec-a-1.jsonl").write_text(
+            json.dumps({"type": "assistant", "message": {"content": []}}) + "\n"
+            + json.dumps({"type": "interrupted", "reason": "daemon shutdown",
+                          "by": "agent_runner"}) + "\n",
+            encoding="utf-8",
+        )
+
+        mon._recover_orphaned_dispositions()
+
+        recs = store.read_all()
+        esc = [r for r in recs if r.get("kind") == ESCALATION]
+        assert len(esc) == 0  # 不升级人工
+        # 应追加 interrupted 终结记录
+        assert any(r.get("admin_run_id") == "admin-spec-a-1"
+                   and (r.get("status") or r.get("result")) == "interrupted"
+                   for r in recs)
+
+    def test_orphaned_pending_without_marker_escalates(self, tmp_path):
+        """run 无 interrupted 标记（文件缺失）→ 维持升级兜底。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        store = AdminStore(proot, FakeLogger())
+        rec = store.append({
+            "kind": DISPOSITION, "status": "pending", "result": "pending",
+            "signal_type": "stuck", "spec": "spec-a", "admin_run_id": "admin-spec-a-2",
+        })
+        alerts = json.loads((proot / ".fenix" / "admin_alerts.json").read_text())
+        for r in alerts:
+            if r["id"] == rec["id"]:
+                r["created"] = iso_ago(20)
+        (proot / ".fenix" / "admin_alerts.json").write_text(json.dumps(alerts), encoding="utf-8")
+        # 不写 run 文件 → 无证据 → 升级兜底
+
+        mon._recover_orphaned_dispositions()
+
+        recs = store.read_all()
+        esc = [r for r in recs if r.get("kind") == ESCALATION]
+        assert len(esc) == 1  # 升级人工
+        # 升级同时追加终结记录（防循环告警）
+        assert any(r.get("admin_run_id") == "admin-spec-a-2"
+                   and (r.get("status") or r.get("result")) == "escalated"
+                   for r in recs)
+
+    def test_orphaned_pending_marker_preempts_re_escalation(self, tmp_path):
+        """interrupted 终结后下轮巡检不再处理（终结即 final，去重）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        store = AdminStore(proot, FakeLogger())
+        rec = store.append({
+            "kind": DISPOSITION, "status": "pending", "result": "pending",
+            "signal_type": "stuck", "spec": "spec-a", "admin_run_id": "admin-spec-a-3",
+        })
+        alerts = json.loads((proot / ".fenix" / "admin_alerts.json").read_text())
+        for r in alerts:
+            if r["id"] == rec["id"]:
+                r["created"] = iso_ago(20)
+        (proot / ".fenix" / "admin_alerts.json").write_text(json.dumps(alerts), encoding="utf-8")
+        (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix" / "runs" / "admin-spec-a-3.jsonl").write_text(
+            json.dumps({"type": "interrupted", "reason": "daemon shutdown",
+                        "by": "agent_runner"}) + "\n",
+            encoding="utf-8",
+        )
+
+        mon._recover_orphaned_dispositions()  # 第一次：终结不升级
+        mon._recover_orphaned_dispositions()  # 第二次：已终结，跳过
+        recs = store.read_all()
+        esc = [r for r in recs if r.get("kind") == ESCALATION]
+        assert len(esc) == 0
+        interrupted = [r for r in recs if (r.get("status") or r.get("result")) == "interrupted"]
+        assert len(interrupted) == 1  # 终结只发生一次
+
     def test_pending_with_final_result_not_escalated(self, tmp_path):
         """有最终结果的 pending 不升级。"""
         proot, mon = make_monitor(tmp_path, {
