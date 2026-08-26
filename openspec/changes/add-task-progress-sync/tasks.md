@@ -19,6 +19,6 @@
 
 ## 4. 集成验证与打包
 
-- [ ] 4.1 运行全量 pytest（`python3 -m pytest tests/ -q`）确认无回归
-- [ ] 4.2 端到端验证：构造一个含 2 个任务的测试 SPEC，跑通 implementer success → 回写勾选 → verified 门禁放行链路；再构造缺勾场景验证阻断
-- [ ] 4.3 运行 `bash scripts/package.sh` 生成最新扩展包
+- [x] 4.1 运行全量 pytest（`python3 -m pytest tests/ -q`）确认无回归
+- [x] 4.2 端到端验证：构造一个含 2 个任务的测试 SPEC，跑通 implementer success → 回写勾选 → verified 门禁放行链路；再构造缺勾场景验证阻断
+- [x] 4.3 运行 `bash scripts/package.sh` 生成最新扩展包
