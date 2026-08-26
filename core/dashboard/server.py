@@ -15,6 +15,7 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     GET /api/specs/<spec>?project=<name> → 单个 SPEC 完整详情
     GET /api/runs/<run_id>?project=<name> → 单次运行产物流
     GET /api/events?project=<name>&minutes=N → 最近 N 分钟结构化事件
+    GET /api/spec-doc?project=<name>&spec=<name>&doc=<proposal|design> → SPEC 文档原文（found + content）
     GET /api/config?project=<name> → 读取受管配置（llm / agents.models / gates.approve_mode）
     POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
     GET /api/alerts?project=<name> → Administrator 告警/处置记录（缺省跨项目聚合未处理告警）
@@ -250,6 +251,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(self._api_admin_activities(query))
         elif path == "/api/config":
             self._json(self._api_config_get(query))
+        elif path == "/api/spec-doc":
+            self._json(self._api_spec_doc(query))
         else:
             self._error(404, "Not Found")
 
@@ -303,6 +306,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
         detail = dashboard_data.spec_detail(proot, spec, entry)
         detail["project"] = project["name"]
         return detail
+
+    def _api_spec_doc(self, query) -> dict:
+        """GET /api/spec-doc?project=<name>&spec=<name>&doc=<proposal|design>
+
+        读取 SPEC 的 proposal.md / design.md 原文返回 {found, content}。
+        - doc 非法 → 400
+        - spec 非法 / 不在项目 STATE.md → 404（且不读取任何 changes 目录外文件）
+        - 文件不存在 → 200 + {found: false, content: ""}
+        """
+        doc = query.get("doc", [None])[0]
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(400, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        # 文件缺失是常态分支，但 spec 必须真在项目 STATE.md 中（D2：仅未知 spec 才 404）
+        proot = Path(project["path"])
+        specs = dashboard_data.parse_state(proot)
+        if spec not in specs:
+            self._error(404, f"spec not found: {spec}")
+            return
+        try:
+            result = dashboard_data.get_spec_doc(proot, spec, doc)
+        except dashboard_data.InvalidSpecDoc:
+            self._error(400, f"invalid doc: {doc}")
+            return
+        except dashboard_data.InvalidSpecName:
+            self._error(404, f"invalid spec: {spec}")
+            return
+        self._json({**result, "project": project["name"], "spec": spec, "doc": doc})
 
     def _api_run(self, run_id: str, query) -> dict:
         project = self._project_from_query(query)

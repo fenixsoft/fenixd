@@ -693,6 +693,20 @@ tr.orphan-fix > td { border-left: 2px solid rgba(144, 133, 233, 0.5); }
 .runmodal-body { flex: 1; overflow-y: auto; padding: 16px; }
 .runmodal-scroll { display: flex; flex-direction: column; gap: 10px; }
 
+/* ── SPEC 文档按钮（列表行内紧凑按钮，不破坏表格布局） ──────── */
+.doc-actions { white-space: nowrap; }
+.doc-col { width: 1%; white-space: nowrap; text-align: left; }
+.doc-btn {
+  font-size: 11px; line-height: 1; padding: 3px 7px; margin-right: 4px;
+  border: 1px solid var(--hairline-strong); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--ink-2); cursor: pointer;
+}
+.doc-btn:last-child { margin-right: 0; }
+.doc-btn:hover { background: var(--violet); color: #fff; border-color: var(--violet); }
+
+/* 文档弹窗错误态 */
+.docmodal .err-state { color: var(--danger, #ff6b6b); }
+
 /* ── Markdown 渲染 ──────────────────────────────────────── */
 .md { line-height: 1.65; }
 .md p { margin: 6px 0; }
