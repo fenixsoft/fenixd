@@ -15,10 +15,10 @@
 
 ## 3. Dashboard data 层：作用域化读写
 
-- [ ] 3.1 `core/dashboard/data.py` 新增 `USER_CONFIG_PATH = Path.home() / ".fenix" / "config.yaml"`，`read_config` 增加 `scope`（`user`/`project`）参数：`scope="user"` 读用户文件，`scope="project"` 读项目文件
-- [ ] 3.2 `core/dashboard/data.py` 新增 `read_effective_config(project_root)`：对受管键（llm / agents.models / agents.max_concurrent / gates.approve_mode）返回有效合并值 + `sources` 标注（该键在项目级文件显式定义 → `project`，否则 `user`）+ `scope` + `raw_exists`（当前作用域文件是否存在）
-- [ ] 3.3 `core/dashboard/data.py` `write_config` 增加 `scope` 参数：`scope="user"` 写 `~/.fenix/config.yaml`（自动建目录），`scope="project"` 维持现状写项目文件；返回中携带 `scope` 与写入路径
-- [ ] 3.4 `tests/test_dashboard.py` 新增 data 层单测：用户级读写、项目级有效合并与 sources 标注、写回保留非受管键、用户文件缺失兜底
+- [x] 3.1 `core/dashboard/data.py` 新增 `USER_CONFIG_PATH = Path.home() / ".fenix" / "config.yaml"`，`read_config` 增加 `scope`（`user`/`project`）参数：`scope="user"` 读用户文件，`scope="project"` 读项目文件
+- [x] 3.2 `core/dashboard/data.py` 新增 `read_effective_config(project_root)`：对受管键（llm / agents.models / agents.max_concurrent / gates.approve_mode）返回有效合并值 + `sources` 标注（该键在项目级文件显式定义 → `project`，否则 `user`）+ `scope` + `raw_exists`（当前作用域文件是否存在）
+- [x] 3.3 `core/dashboard/data.py` `write_config` 增加 `scope` 参数：`scope="user"` 写 `~/.fenix/config.yaml`（自动建目录），`scope="project"` 维持现状写项目文件；返回中携带 `scope` 与写入路径
+- [x] 3.4 `tests/test_dashboard.py` 新增 data 层单测：用户级读写、项目级有效合并与 sources 标注、写回保留非受管键、用户文件缺失兜底
 
 ## 4. Dashboard server API 作用域化
 

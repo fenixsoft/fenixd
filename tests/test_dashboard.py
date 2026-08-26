@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 import sys
 
@@ -553,6 +554,130 @@ class TestRegistry:
         reg.save({"port": 8787, "projects": [{"name": "gone", "path": str(missing)}], "scan_dirs": []})
         projects = reg.discover()
         assert projects[0]["exists"] is False
+
+
+# ── data.py 配置分级（add-hierarchical-config） ─────────────────
+
+def _patch_config_paths(monkeypatch, tmp_path, user_dir_name="user-fenix"):
+    """把用户级配置路径重定向到临时目录，返回 (user_config_path, project_root)。"""
+    user_dir = tmp_path / user_dir_name
+    user_config = user_dir / "config.yaml"
+    monkeypatch.setattr(dash_data, "USER_CONFIG_PATH", user_config)
+    monkeypatch.setattr("core.config.USER_CONFIG_DIR", user_dir)
+    proot = tmp_path / "proj"
+    (proot / ".fenix").mkdir(parents=True)
+    return user_config, proot
+
+
+class TestConfigHierarchyData:
+    def test_read_config_user_scope_missing(self, tmp_path, monkeypatch):
+        user_config, proot = _patch_config_paths(monkeypatch, tmp_path)
+        result = dash_data.read_config(proot, scope="user")
+        assert result["scope"] == "user"
+        assert result["raw_exists"] is False
+        assert result["llm"] == {}
+        assert result["agents"] == {"models": {}, "max_concurrent": 2}
+        assert result["gates"] == {"approve_mode": "manual"}
+        assert set(result["sources"].values()) == {"user"}
+
+    def test_read_config_user_scope_values(self, tmp_path, monkeypatch):
+        user_config, proot = _patch_config_paths(monkeypatch, tmp_path)
+        user_config.parent.mkdir()
+        user_config.write_text(yaml.safe_dump({
+            "llm": {"providers": [{"name": "volc", "baseurl": "https://a.com",
+                                   "apikey": "sk-1", "model": "m1"}]},
+            "agents": {"max_concurrent": 4, "max_retries": 3},
+            "gates": {"approve_mode": "manual"},
+        }), encoding="utf-8")
+        result = dash_data.read_config(proot, scope="user")
+        assert result["raw_exists"] is True
+        assert result["llm"]["providers"][0]["name"] == "volc"
+        assert result["agents"]["max_concurrent"] == 4
+        assert result["sources"]["agents.max_concurrent"] == "user"
+        # 非受管键 max_retries 不应出现在结果里
+        assert "max_retries" not in result["agents"]
+
+    def test_write_config_user_scope_creates_file(self, tmp_path, monkeypatch):
+        user_config, proot = _patch_config_paths(monkeypatch, tmp_path)
+        patch = {
+            "llm": {"providers": [{"name": "volc", "baseurl": "https://a.com",
+                                   "apikey": "sk-1", "model": "m1"}]},
+            "agents": {"max_concurrent": 3},
+            "gates": {"approve_mode": "auto"},
+        }
+        result = dash_data.write_config(proot, patch, scope="user")
+        assert result["ok"], result.get("error")
+        assert result["scope"] == "user"
+        assert result["path"] == str(user_config)
+        assert user_config.exists()  # 自动建目录 + 创建文件
+        written = yaml.safe_load(user_config.read_text(encoding="utf-8"))
+        assert written["agents"]["max_concurrent"] == 3
+        assert written["gates"]["approve_mode"] == "auto"
+
+    def test_write_config_user_scope_preserves_non_managed(self, tmp_path, monkeypatch):
+        user_config, proot = _patch_config_paths(monkeypatch, tmp_path)
+        user_config.parent.mkdir()
+        user_config.write_text(yaml.safe_dump({
+            "project": {"name": "x", "type": "web"},
+            "gates": {"approve_mode": "manual", "require_push_approval": True},
+        }), encoding="utf-8")
+        result = dash_data.write_config(proot, {"gates": {"approve_mode": "auto"}}, scope="user")
+        assert result["ok"], result.get("error")
+        written = yaml.safe_load(user_config.read_text(encoding="utf-8"))
+        assert written["project"]["name"] == "x"
+        assert written["gates"]["approve_mode"] == "auto"
+        assert written["gates"]["require_push_approval"] is True
+
+    def test_write_config_validation_rejects_user_scope(self, tmp_path, monkeypatch):
+        user_config, proot = _patch_config_paths(monkeypatch, tmp_path)
+        bad = {"gates": {"approve_mode": "bogus"}}
+        result = dash_data.write_config(proot, bad, scope="user")
+        assert not result["ok"]
+        assert not user_config.exists()  # 校验失败不写盘
+
+    def test_read_effective_config_merge_and_sources(self, tmp_path, monkeypatch):
+        user_config, proot = _patch_config_paths(monkeypatch, tmp_path)
+        user_config.parent.mkdir()
+        user_config.write_text(yaml.safe_dump({
+            "agents": {"max_concurrent": 4},
+            "gates": {"approve_mode": "manual"},
+        }), encoding="utf-8")
+        (proot / ".fenix" / "config.yaml").write_text(yaml.safe_dump({
+            "project": {"name": "proj", "type": "web"},
+            "agents": {"max_concurrent": 2},
+        }), encoding="utf-8")
+
+        result = dash_data.read_effective_config(proot)
+        assert result["scope"] == "project"
+        assert result["raw_exists"] is True
+        # 有效合并值：项目级覆盖 max_concurrent，gates 继承用户级
+        assert result["agents"]["max_concurrent"] == 2
+        assert result["gates"]["approve_mode"] == "manual"
+        # 来源标注
+        assert result["sources"]["agents.max_concurrent"] == "project"
+        assert result["sources"]["gates.approve_mode"] == "user"
+
+    def test_read_effective_config_project_file_missing(self, tmp_path, monkeypatch):
+        user_config, proot = _patch_config_paths(monkeypatch, tmp_path)
+        user_config.parent.mkdir()
+        user_config.write_text(yaml.safe_dump({
+            "agents": {"max_concurrent": 6},
+            "gates": {"approve_mode": "auto"},
+        }), encoding="utf-8")
+
+        result = dash_data.read_effective_config(proot)
+        assert result["raw_exists"] is False
+        assert result["agents"]["max_concurrent"] == 6  # 全部继承用户级
+        assert set(result["sources"].values()) == {"user"}
+
+    def test_read_effective_config_error_on_invalid_project(self, tmp_path, monkeypatch):
+        user_config, proot = _patch_config_paths(monkeypatch, tmp_path)
+        (proot / ".fenix" / "config.yaml").write_text(yaml.safe_dump({
+            "gates": {"approve_mode": "bogus"},
+        }), encoding="utf-8")
+        result = dash_data.read_effective_config(proot)
+        assert result["error"]  # 校验失败不 500，返回 error 标记
+        assert result["sources"]["gates.approve_mode"] == "project"
 
 
 # ── server.py ─────────────────────────────────────────────────────────

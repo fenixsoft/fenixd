@@ -1100,6 +1100,12 @@ _MANAGED_KEYS = ["llm", "agents", "gates"]
 # 在 agents 下管理的子键白名单
 _AGENTS_MANAGED_SUBKEYS = ["models", "max_concurrent"]
 
+# 用户级配置文件路径（与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定）
+USER_CONFIG_PATH = Path.home() / ".fenix" / "config.yaml"
+
+# 受管键的来源标注键（前端用于「继承自用户级」badge）
+_SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent", "gates.approve_mode"]
+
 _CONFIG_HEADER_COMMENT = (
     "# Fenix 配置文件\n"
     "# 本文件可通过 Dashboard 或手工编辑修改；修改后需重启 daemon 生效。\n"
@@ -1108,22 +1114,49 @@ _CONFIG_HEADER_COMMENT = (
 )
 
 
-def read_config(project_root) -> dict:
-    """读取项目 .fenix/config.yaml，返回受管配置段。
+def _managed_key_sources(raw: dict) -> dict:
+    """计算每个受管键的来源层级：在该文件中显式定义 → "project"，否则 "user"。
+
+    "user" 表示该键未在此文件定义，由用户级配置或内置默认值兜底。
+    """
+    sources = {k: "user" for k in _SOURCE_KEYS}
+    if isinstance(raw.get("llm"), dict):
+        sources["llm"] = "project"
+    agents_raw = raw.get("agents")
+    if isinstance(agents_raw, dict):
+        if isinstance(agents_raw.get("models"), dict):
+            sources["agents.models"] = "project"
+        if "max_concurrent" in agents_raw:
+            sources["agents.max_concurrent"] = "project"
+    gates_raw = raw.get("gates")
+    if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
+        sources["gates.approve_mode"] = "project"
+    return sources
+
+
+def read_config(scope_root, scope: str = "project") -> dict:
+    """读取指定作用域文件的受管配置段。
+
+    scope="project"：读 <scope_root>/.fenix/config.yaml（现状）；
+    scope="user"：读 ~/.fenix/config.yaml（scope_root 忽略）。
 
     返回: {"llm": {...}, "agents": {"models": {...}, "max_concurrent": int},
-            "gates": {"approve_mode": ...}, "raw_exists": bool, "error": str|null}
+            "gates": {"approve_mode": ...}, "scope": "user"|"project",
+            "raw_exists": bool, "sources": {...}, "error": str|null}
     容错：文件不存在返回空结构 + raw_exists=False；解析失败返回 error。
     """
-    proot = Path(project_root)
-    config_path = proot / ".fenix" / "config.yaml"
+    config_path = USER_CONFIG_PATH if scope == "user" else Path(scope_root) / ".fenix" / "config.yaml"
     result = {
         "llm": {},
         "agents": {"models": {}, "max_concurrent": 2},
         "gates": {"approve_mode": "manual"},
+        "scope": scope,
         "raw_exists": False,
+        "sources": _managed_key_sources({}),
         "error": None,
     }
+    if scope == "user":
+        result["sources"] = {k: "user" for k in _SOURCE_KEYS}
     if not config_path.exists():
         return result
     result["raw_exists"] = True
@@ -1136,6 +1169,9 @@ def read_config(project_root) -> dict:
     if not isinstance(raw, dict):
         result["error"] = "配置文件顶层不是对象"
         return result
+
+    if scope == "project":
+        result["sources"] = _managed_key_sources(raw)
 
     # 提取受管键（白名单：llm / agents.models / agents.max_concurrent / gates.approve_mode）
     if isinstance(raw.get("llm"), dict):
@@ -1154,6 +1190,63 @@ def read_config(project_root) -> dict:
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         result["gates"] = {"approve_mode": gates_raw["approve_mode"]}
+    return result
+
+
+def read_effective_config(project_root) -> dict:
+    """项目模式有效配置视图：受管键取 resolve_config 有效合并值 + sources 标注。
+
+    返回: {"llm": {...}, "agents": {"models": {...}, "max_concurrent": int},
+            "gates": {"approve_mode": ...}, "scope": "project", "raw_exists": bool,
+            "sources": {...}, "error": str|null}
+    sources[key] = "project" 当该键在项目级文件显式定义，否则 "user"（继承用户级或默认）。
+    """
+    from core.config import ConfigLoader
+
+    proot = Path(project_root)
+    proj_path = proot / ".fenix" / "config.yaml"
+
+    result = {
+        "llm": {},
+        "agents": {"models": {}, "max_concurrent": 2},
+        "gates": {"approve_mode": "manual"},
+        "scope": "project",
+        "raw_exists": proj_path.exists(),
+        "sources": _managed_key_sources({}),
+        "error": None,
+    }
+
+    # 项目级文件显式定义 → sources 标注；解析失败记录 error 不阻断合并视图
+    if proj_path.exists():
+        try:
+            with proj_path.open("r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+            if isinstance(loaded, dict):
+                result["sources"] = _managed_key_sources(loaded)
+            else:
+                result["error"] = "配置文件顶层不是对象"
+        except (yaml.YAMLError, OSError) as e:
+            result["error"] = f"配置文件解析失败: {e}"
+
+    try:
+        effective = ConfigLoader.resolve_config(proot)
+    except Exception as e:
+        result["error"] = f"有效配置解析失败: {e}"
+        return result
+
+    # 提取受管键（有效合并值）
+    if isinstance(effective.get("llm"), dict):
+        result["llm"] = effective["llm"]
+    agents_eff = effective.get("agents")
+    if isinstance(agents_eff, dict):
+        if isinstance(agents_eff.get("models"), dict):
+            result["agents"]["models"] = agents_eff["models"]
+        if isinstance(agents_eff.get("max_concurrent"), int):
+            result["agents"]["max_concurrent"] = agents_eff["max_concurrent"]
+    gates_eff = effective.get("gates")
+    if isinstance(gates_eff, dict) and "approve_mode" in gates_eff:
+        result["gates"] = {"approve_mode": gates_eff["approve_mode"]}
+
     return result
 
 
@@ -1189,22 +1282,26 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     return merged
 
 
-def write_config(project_root, config_patch: dict) -> dict:
-    """把受管配置段写回 .fenix/config.yaml（原子写、保留非受管键）。
+def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict:
+    """把受管配置段写回作用域文件（原子写、保留非受管键）。
 
-    写入前使用 ConfigLoader 做完整校验，校验失败返回错误且不写盘。
+    写入前使用 ConfigLoader 做受管字段局部校验，校验失败返回错误且不写盘。
 
     Args:
-        project_root: 项目根路径
+        scope_root: 项目根路径（scope="project" 时使用；scope="user" 忽略）
         config_patch: 含 llm / agents.models / gates.approve_mode 的 patch dict
+        scope: "user" 写 ~/.fenix/config.yaml（自动建目录）；"project" 写项目文件
 
-    Returns: {"ok": bool, "error": str|null}
+    Returns: {"ok": bool, "error": str|null, "scope": "user"|"project", "path": str}
     """
     from core.config import ConfigLoader
 
-    proot = Path(project_root)
-    config_path = proot / ".fenix" / "config.yaml"
+    if scope == "user":
+        config_path = USER_CONFIG_PATH
+    else:
+        config_path = Path(scope_root) / ".fenix" / "config.yaml"
     config_dir = config_path.parent
+    fail = lambda err: {"ok": False, "error": err, "scope": scope, "path": str(config_path)}
 
     # 1. 读取现有配置（若不存在则为空 dict，写入时创建）
     raw = {}
@@ -1215,7 +1312,7 @@ def write_config(project_root, config_patch: dict) -> dict:
             if isinstance(loaded, dict):
                 raw = loaded
         except (yaml.YAMLError, OSError) as e:
-            return {"ok": False, "error": f"读取现有配置失败: {e}"}
+            return fail(f"读取现有配置失败: {e}")
 
     # 2. 合并受管键
     merged = _deep_merge_managed(raw, config_patch)
@@ -1243,7 +1340,7 @@ def write_config(project_root, config_patch: dict) -> dict:
                     f"gates.approve_mode must be one of {ConfigLoader.VALID_APPROVE_MODES}: {mode}"
                 )
     except ValueError as e:
-        return {"ok": False, "error": str(e)}
+        return fail(str(e))
 
     # 4. 原子写回（临时文件 + rename）
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -1264,6 +1361,6 @@ def write_config(project_root, config_patch: dict) -> dict:
                 pass
             raise
     except OSError as e:
-        return {"ok": False, "error": f"写入配置文件失败: {e}"}
+        return fail(f"写入配置文件失败: {e}")
 
-    return {"ok": True, "error": None}
+    return {"ok": True, "error": None, "scope": scope, "path": str(config_path)}
