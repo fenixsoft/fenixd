@@ -731,6 +731,132 @@ class TestAgentRunnerModelRouting(unittest.TestCase):
         self.assertEqual(env["ANTHROPIC_MODEL"], "model-a")
         self.assertEqual(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "1000000")
 
+    # ── add-agent-llm-isolation：CLAUDE_CONFIG_DIR 隔离 ────────────────
+
+    def test_run_agent_injects_claude_config_dir_when_provider(self):
+        """配置 Provider 时 env_overrides 含 CLAUDE_CONFIG_DIR 指向隔离目录（spec 3.1）。"""
+        config = {
+            "llm": {"providers": [
+                {"name": "p1", "baseurl": "https://a.com", "apikey": "key-a"},
+            ]},
+            "agents": {
+                "max_concurrent": 2, "max_retries": 1, "max_turns": 50,
+                "models": {"implementer": {"provider": "p1", "model": "model-a"}},
+                "subagent_model": "claude-sonnet-5",
+            },
+        }
+        runner = self._make_runner(config)
+        runner._build_prompt = MagicMock(return_value="test prompt")
+        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1"))
+        result = runner.run_implementer("test-spec")
+        self.assertTrue(result.success)
+        env = runner._run_claude.call_args.args[4]
+        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://a.com")
+        self.assertEqual(env["CLAUDE_CONFIG_DIR"],
+                         str(self.project_root / ".fenix" / "agent-config" / "p1"))
+        # 隔离目录应实际生成
+        self.assertTrue((self.project_root / ".fenix" / "agent-config" / "p1" / "settings.json").exists())
+
+    def test_run_agent_no_claude_config_dir_when_unassigned(self):
+        """未配置 Provider 时不设 CLAUDE_CONFIG_DIR，透传当前 settings.json（spec 3.1）。"""
+        config = {
+            "agents": {
+                "max_concurrent": 2, "max_retries": 1, "max_turns": 50,
+                "subagent_model": "claude-sonnet-5",
+            },
+        }
+        runner = self._make_runner(config)
+        runner._build_prompt = MagicMock(return_value="test prompt")
+        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1"))
+        result = runner.run_verifier("test-spec")
+        self.assertTrue(result.success)
+        env = runner._run_claude.call_args.args[4]
+        self.assertNotIn("CLAUDE_CONFIG_DIR", env)
+        self.assertNotIn("ANTHROPIC_BASE_URL", env)
+
+    def _fake_home(self, with_env=None, with_plugins=True):
+        """构造受控 ~/.claude 假 home（settings.json + skills/plugins 源目录）。"""
+        fake_home = Path(self.tmpdir) / "home"
+        (fake_home / ".claude").mkdir(parents=True)
+        settings = {"enabledPlugins": {"superpowers@claude-plugins-official": True}}
+        if with_env is not None:
+            settings["env"] = with_env
+        (fake_home / ".claude" / "settings.json").write_text(
+            json.dumps(settings), encoding="utf-8")
+        if with_plugins:
+            (fake_home / ".claude" / "skills").mkdir()
+            (fake_home / ".claude" / "skills" / "playwright-cli").mkdir()
+            (fake_home / ".claude" / "plugins").mkdir()
+        return fake_home
+
+    def test_isolated_settings_no_credentials(self):
+        """隔离 settings.json 复制模型映射 env，不含 baseurl/apikey（spec 3.2）。"""
+        runner = self._make_runner({})
+        fake_home = self._fake_home(with_env={
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
+            "ANTHROPIC_AUTH_TOKEN": "PROXY_MANAGED",
+            "ANTHROPIC_API_KEY": "sk-secret",
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-6[1M]",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "deepseek-v4-flash",
+            "CLAUDE_CODE_SUBAGENT_MODEL": "claude-haiku-4-5",
+        })
+        # .fenix/agent-settings.json（hooks：block-image-read）
+        (self.project_root / ".fenix" / "agent-settings.json").write_text(json.dumps({
+            "hooks": {"PreToolUse": [{
+                "matcher": "Read",
+                "hooks": [{"type": "command", "command": "block-image-read.py"}],
+            }]},
+        }), encoding="utf-8")
+
+        with patch("core.agent_runner.Path.home", return_value=fake_home):
+            cfg_dir = runner._ensure_agent_config_dir("ark")
+
+        settings = json.loads((cfg_dir / "settings.json").read_text(encoding="utf-8"))
+        # 模型映射类 env 复制
+        self.assertEqual(settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"], "claude-sonnet-4-6[1M]")
+        self.assertEqual(settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"], "deepseek-v4-flash")
+        self.assertEqual(settings["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "claude-haiku-4-5")
+        self.assertEqual(settings["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "1000000")
+        # 凭据不落盘
+        self.assertNotIn("ANTHROPIC_BASE_URL", settings["env"])
+        self.assertNotIn("ANTHROPIC_AUTH_TOKEN", settings["env"])
+        self.assertNotIn("ANTHROPIC_API_KEY", settings["env"])
+        # enabledPlugins / hooks 保留
+        self.assertEqual(settings["enabledPlugins"], {"superpowers@claude-plugins-official": True})
+        self.assertIn("PreToolUse", settings["hooks"])
+
+    def test_ensure_agent_config_dir_idempotent_and_symlinks(self):
+        """隔离目录幂等 + skills/plugins symlink 正确（spec 3.3）。"""
+        runner = self._make_runner({})
+        fake_home = self._fake_home(with_env={"ANTHROPIC_DEFAULT_SONNET_MODEL": "m"})
+
+        with patch("core.agent_runner.Path.home", return_value=fake_home):
+            d1 = runner._ensure_agent_config_dir("ark")
+            d2 = runner._ensure_agent_config_dir("ark")
+
+        self.assertEqual(d1, d2)
+        self.assertTrue((d2 / "settings.json").is_file())
+        self.assertTrue((d2 / "skills").is_symlink())
+        self.assertTrue((d2 / "plugins").is_symlink())
+        self.assertEqual((d2 / "skills").resolve(),
+                         (fake_home / ".claude" / "skills").resolve())
+        # 连续两次调用 settings.json 内容一致（幂等，无重建副作用）
+        self.assertEqual((d1 / "settings.json").read_text(encoding="utf-8"),
+                         (d2 / "settings.json").read_text(encoding="utf-8"))
+
+    def test_ensure_agent_config_dir_missing_source_ok(self):
+        """~/.claude 源目录缺失时优雅降级：跳过 symlink，不报错（spec 3.3）。"""
+        runner = self._make_runner({})
+        fake_home = self._fake_home(with_env=None, with_plugins=False)
+
+        with patch("core.agent_runner.Path.home", return_value=fake_home):
+            cfg_dir = runner._ensure_agent_config_dir("ark")
+
+        self.assertTrue((cfg_dir / "settings.json").is_file())
+        self.assertFalse((cfg_dir / "skills").exists())
+        self.assertFalse((cfg_dir / "plugins").exists())
+
 
 # ═══════════════════════════════════════════════════════════════════
 # Auto-Approve Tests

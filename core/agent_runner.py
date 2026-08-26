@@ -18,6 +18,14 @@ from typing import Optional, Dict, Any
 # .fenix/runs/ 保留的最近运行产物数量上限（默认 20，见 D1 / spec agent-run-artifacts）
 RUNS_KEEP = 20
 
+# add-agent-llm-isolation：隔离 settings.json 中允许从 ~/.claude/settings.json 复制的
+# 模型映射类 env 键（spec D3）。仅复制映射（ANTHROPIC_DEFAULT_* / 子代理模型 / 上下文
+# 上限），**不含** baseurl/apikey——Provider 连接凭据只经进程环境注入，不落盘。
+ISOLATED_ENV_MAPPING_PREFIXES = ("ANTHROPIC_DEFAULT_",)
+ISOLATED_ENV_MAPPING_KEYS = frozenset(
+    ("CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_MAX_CONTEXT_TOKENS")
+)
+
 
 class AgentRunResult:
     """Result of a single Agent run."""
@@ -282,6 +290,89 @@ class AgentRunner:
             return admin_model
         return self._get_config("agents.subagent_model", "claude-sonnet-5")
 
+    def _build_isolated_settings(self) -> dict:
+        """构造隔离 settings.json：enabledPlugins / hooks / 模型映射 env（spec D2/D3）。
+
+        从 ~/.claude/settings.json 复制 enabledPlugins（缺省 superpowers）与模型映射类
+        env 键（ANTHROPIC_DEFAULT_* / CLAUDE_CODE_SUBAGENT_MODEL / ...），**不含**
+        baseurl/apikey——Provider 凭据不落盘。hooks 从 .fenix/agent-settings.json
+        复制（PreToolUse block-image-read）。
+        """
+        settings: Dict[str, Any] = {}
+        source: Dict[str, Any] = {}
+        home_settings = Path.home() / ".claude" / "settings.json"
+        try:
+            if home_settings.is_file():
+                loaded = json.loads(home_settings.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    source = loaded
+        except (OSError, json.JSONDecodeError):
+            source = {}
+
+        plugins = source.get("enabledPlugins")
+        if isinstance(plugins, dict) and plugins:
+            settings["enabledPlugins"] = plugins
+        else:
+            settings["enabledPlugins"] = {"superpowers@claude-plugins-official": True}
+
+        agent_settings = self.project_root / ".fenix" / "agent-settings.json"
+        if agent_settings.is_file():
+            try:
+                loaded = json.loads(agent_settings.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict) and isinstance(loaded.get("hooks"), dict):
+                    settings["hooks"] = loaded["hooks"]
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        src_env = source.get("env")
+        if isinstance(src_env, dict):
+            mapped = {
+                k: v for k, v in src_env.items()
+                if k.startswith(ISOLATED_ENV_MAPPING_PREFIXES)
+                or k in ISOLATED_ENV_MAPPING_KEYS
+            }
+            if mapped:
+                settings["env"] = mapped
+        return settings
+
+    def _ensure_agent_config_dir(self, provider_name: str) -> Path:
+        """按需生成并返回 Provider 的隔离配置目录（spec D1/D2/D5）。
+
+        目录：.fenix/agent-config/<provider_name>/，含 settings.json 与指向
+        ~/.claude 的 skills/plugins symlink（源目录不存在则跳过，优雅降级）。
+        幂等：settings.json 已存在则跳过重建；并发首次创建由原子 mkdir +
+        temp+rename 写文件兜底，内容确定无副作用。
+        """
+        cfg_dir = self.project_root / ".fenix" / "agent-config" / provider_name
+        marker = cfg_dir / "settings.json"
+        if marker.is_file():
+            return cfg_dir
+        try:
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return cfg_dir
+
+        settings = self._build_isolated_settings()
+        try:
+            tmp = cfg_dir / ".settings.tmp"
+            tmp.write_text(
+                json.dumps(settings, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(tmp, marker)
+        except OSError:
+            pass
+
+        for name in ("skills", "plugins"):
+            src = Path.home() / ".claude" / name
+            dst = cfg_dir / name
+            try:
+                if src.is_dir() and not dst.exists():
+                    dst.symlink_to(src, target_is_directory=True)
+            except OSError:
+                pass
+        return cfg_dir
+
     def _execute_agent(self, spec_name: str, agent_type: str, run_id: str) -> AgentRunResult:
         """Core agent execution logic with retry support.
 
@@ -343,6 +434,12 @@ class AgentRunner:
                     env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
                     env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
                     env_overrides["ANTHROPIC_MODEL"] = model
+                    # add-agent-llm-isolation：Provider 生效时完全隔离——CLAUDE_CONFIG_DIR
+                    # 指向独立配置目录，彻底绕过 ~/.claude/settings.json 的 env 覆盖，
+                    # 使 Provider 的 baseurl/apikey/model 绝对生效（spec D1）。
+                    env_overrides["CLAUDE_CONFIG_DIR"] = str(
+                        self._ensure_agent_config_dir(provider["name"])
+                    )
                     # 注入 provider 自定义环境变量（如 CLAUDE_CODE_MAX_CONTEXT_TOKENS）
                     for k, v in (provider.get("env") or {}).items():
                         env_overrides[k] = v
