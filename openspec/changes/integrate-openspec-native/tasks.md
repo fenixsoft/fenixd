@@ -2,8 +2,8 @@
 
 ## 1. Vendoring schema 数据
 
-- [ ] 1.1 在 fenix 框架根新建 `schemas/spec-driven/`，从 `/usr/lib/node_modules/@fission-ai/openspec/schemas/spec-driven/` 复制 `schema.yaml` 与 `templates/{proposal,design,spec,tasks}.md`
-- [ ] 1.2 在 `schemas/spec-driven/` 下新增 `README.md` 注明来源与版本（@fission-ai/openspec v1.3.1，MIT），便于后续升级
+- [x] 1.1 在 fenix 框架根新建 `schemas/spec-driven/`，从 `/usr/lib/node_modules/@fission-ai/openspec/schemas/spec-driven/` 复制 `schema.yaml` 与 `templates/{proposal,design,spec,tasks}.md`
+- [x] 1.2 在 `schemas/spec-driven/` 下新增 `README.md` 注明来源与版本（@fission-ai/openspec v1.3.1，MIT），便于后续升级
 
 ## 2. core/spec_gen.py 实现
 
