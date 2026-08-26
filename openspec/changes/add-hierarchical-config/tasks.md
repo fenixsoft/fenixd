@@ -34,11 +34,11 @@
 
 ## 6. Registry 发现放宽
 
-- [ ] 6.1 `core/dashboard/registry.py` `discover()` 扫描判定从「`STATE.md` 且 `.fenix/config.yaml`」改为仅 `STATE.md`（确认 `add_project` 仅依赖 `STATE.md`，无需改动）
-- [ ] 6.2 `tests/test_dashboard.py` 新增 registry 单测：仅含 `STATE.md` 的目录被发现、`add_project` 对无 config 目录成功
+- [x] 6.1 `core/dashboard/registry.py` `discover()` 扫描判定从「`STATE.md` 且 `.fenix/config.yaml`」改为仅 `STATE.md`（确认 `add_project` 仅依赖 `STATE.md`，无需改动）
+- [x] 6.2 `tests/test_dashboard.py` 新增 registry 单测：仅含 `STATE.md` 的目录被发现、`add_project` 对无 config 目录成功
 
 ## 7. 全量回归与收尾
 
-- [ ] 7.1 运行 `pytest tests/ -q` 全量通过
-- [ ] 7.2 检查 `grep -rn "unknown project" core/dashboard/` 确认 `/api/config` 路径不再产生该错误（其他 API 保持现状）
-- [ ] 7.3 更新 README / 相关文档：说明配置分级与继承语义（用户级 `~/.fenix/config.yaml`、项目级覆盖、受管键来源标注）
+- [x] 7.1 运行 `pytest tests/ -q` 全量通过
+- [x] 7.2 检查 `grep -rn "unknown project" core/dashboard/` 确认 `/api/config` 路径不再产生该错误（其他 API 保持现状）
+- [x] 7.3 更新 README / 相关文档：说明配置分级与继承语义（用户级 `~/.fenix/config.yaml`、项目级覆盖、受管键来源标注）
