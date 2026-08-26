@@ -28,9 +28,9 @@
 
 ## 5. Dashboard 前端双作用域渲染
 
-- [ ] 5.1 `static/app.js` `renderConfig` 适配 `scope` 与 `sources`：`scope=user` 标题「配置管理 · 用户级」、`raw_exists=false` 提示「用户级配置文件尚不存在，保存后创建」；`scope=project` 显示合并值，对 `sources[key]=user` 的键显示「继承自用户级」badge
-- [ ] 5.2 `static/app.js` `saveConfig`：用户模式 `POST /api/config`（无 project），项目模式 `POST /api/config?project=<name>`；保存成功横幅提示实际写入路径（`~/.fenix/config.yaml` 或 `<project>/.fenix/config.yaml`）
-- [ ] 5.3 启动 dashboard（`bin/fenix_dashboard.py --serve`），浏览器验证：无项目进配置页为用户模式、选项目显示合并值 + 继承 badge、两种作用域保存写对文件
+- [x] 5.1 `static/app.js` `renderConfig` 适配 `scope` 与 `sources`：`scope=user` 标题「配置管理 · 用户级」、`raw_exists=false` 提示「用户级配置文件尚不存在，保存后创建」；`scope=project` 显示合并值，对 `sources[key]=user` 的键显示「继承自用户级」badge
+- [x] 5.2 `static/app.js` `saveConfig`：用户模式 `POST /api/config`（无 project），项目模式 `POST /api/config?project=<name>`；保存成功横幅提示实际写入路径（`~/.fenix/config.yaml` 或 `<project>/.fenix/config.yaml`）
+- [x] 5.3 启动 dashboard（`bin/fenix_dashboard.py --serve`），浏览器验证：无项目进配置页为用户模式、选项目显示合并值 + 继承 badge、两种作用域保存写对文件
 
 ## 6. Registry 发现放宽
 

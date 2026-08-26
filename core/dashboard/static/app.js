@@ -1108,6 +1108,8 @@ const KNOWN_AGENT_TYPES = [
 ];
 
 function renderConfig(data) {
+  const scope = data.scope || 'project';
+  const isUser = scope === 'user';
   const project = esc(data.project || '');
   const llm = data.llm || {};
   const providers = llm.providers || [];
@@ -1117,20 +1119,33 @@ function renderConfig(data) {
   const approveMode = gates.approve_mode || 'manual';
   const error = data.error || '';
   const hasConfig = data.raw_exists;
+  const sources = data.sources || {};
+  const fromUser = (key) =>
+    sources[key] === 'user'
+      ? '<span class="config-inherit-badge">继承自用户级</span>'
+      : '';
+
+  const title = isUser ? '配置管理 · 用户级' : '配置管理' + (project ? ' · ' + project : '');
+  const sub = isUser
+    ? '维护跨项目通用设置，写入 <code>~/.fenix/config.yaml</code>，其他项目未覆盖的键将继承此处值。修改后需重启 daemon 生效。'
+    : '修改后需重启 daemon 生效。配置文件位于 <code>.fenix/config.yaml</code>。';
+  const missingNote = isUser
+    ? (hasConfig ? '' : '<span class="status-pill st-warning">⚠ 用户级配置文件尚不存在，保存后创建</span>')
+    : (hasConfig ? '' : '<span class="status-pill st-warning">⚠ 项目尚无配置文件</span>');
 
   return `
   <div class="config-page">
-    <div class="page-title">配置管理${project ? ' · ' + project : ''}</div>
+    <div class="page-title">${title}</div>
     <div class="page-sub">
-      修改后需重启 daemon 生效。配置文件位于 <code>.fenix/config.yaml</code>。
-      ${hasConfig ? '' : '<span class="status-pill st-warning">⚠ 项目尚无配置文件</span>'}
+      ${sub}
+      ${missingNote}
     </div>
     ${error ? `<div class="config-error">⚠ ${esc(error)}</div>` : ''}
 
     <div id="config-save-banner" class="config-banner hidden"></div>
 
     <div class="config-section">
-      <h3>🤖 LLM Provider 列表</h3>
+      <h3>🤖 LLM Provider 列表 ${fromUser('llm')}</h3>
       <p class="section-hint">定义可用的 LLM 提供者（baseurl / apikey / 默认模型）。</p>
       <div id="provider-list" class="provider-list">
         ${providers.map((p, i) => renderProviderCard(p, i)).join('')}
@@ -1139,7 +1154,7 @@ function renderConfig(data) {
     </div>
 
     <div class="config-section">
-      <h3>🧩 Agent 模型分配</h3>
+      <h3>🧩 Agent 模型分配 ${fromUser('agents.models')}</h3>
       <p class="section-hint">为每种 Agent 角色分配 Provider 与模型。未分配的角色使用默认模型。</p>
       <div class="agent-assign-grid">
         ${KNOWN_AGENT_TYPES.map((at) => renderAgentAssignment(at, providers, models)).join('')}
@@ -1147,7 +1162,7 @@ function renderConfig(data) {
     </div>
 
     <div class="config-section">
-      <h3>⚡ 并行度设置</h3>
+      <h3>⚡ 并行度设置 ${fromUser('agents.max_concurrent')}</h3>
       <p class="section-hint">
         同时运行的 Agent 进程数上限。调度采用<strong>严格优先级并行</strong>：
         高优先级任务先执行；同一优先级内可并行至该上限；
@@ -1162,7 +1177,7 @@ function renderConfig(data) {
     </div>
 
     <div class="config-section">
-      <h3>🚪 审批模式</h3>
+      <h3>🚪 审批模式 ${fromUser('gates.approve_mode')}</h3>
       <p class="section-hint">
         SPEC 到达 done 后的行为。<strong>auto 模式将自动执行 git push 到远端</strong>，请谨慎使用。
       </p>
@@ -1395,8 +1410,11 @@ function collectConfigData() {
 function saveConfig() {
   const banner = el('config-save-banner');
   const saveBtn = el('btn-save-config');
-  const project = encodeURIComponent(currentState.project || '');
   const payload = collectConfigData();
+  // 用户模式（无项目）→ POST /api/config；项目模式 → POST /api/config?project=<name>
+  const url = currentState.project
+    ? '/api/config?project=' + encodeURIComponent(currentState.project)
+    : '/api/config';
 
   if (saveBtn) {
     saveBtn.disabled = true;
@@ -1404,7 +1422,7 @@ function saveConfig() {
   }
   if (banner) banner.className = 'config-banner hidden';
 
-  fetch('/api/config?project=' + project, {
+  fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -1413,13 +1431,15 @@ function saveConfig() {
       if (!r.ok) return r.json().then((d) => { throw new Error(d.error || 'HTTP ' + r.status); });
       return r.json();
     })
-    .then(() => {
+    .then((data) => {
       if (banner) {
         banner.className = 'config-banner success';
-        banner.textContent = '✅ 配置已保存，重启 daemon 后生效';
+        banner.textContent = data.path
+          ? `✅ 配置已写入 ${data.path}，重启 daemon 后生效`
+          : '✅ 配置已保存，重启 daemon 后生效';
       }
-      // 重新加载一次以确认
-      load();
+      // 稍后重新加载确认（避免立即重绘吞掉保存成功提示）
+      setTimeout(load, 1200);
     })
     .catch((err) => {
       if (banner) {
