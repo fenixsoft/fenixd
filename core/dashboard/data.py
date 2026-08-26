@@ -83,9 +83,28 @@ def get_admin_activities(project_root) -> list:
             unhandled_by_run.setdefault(rec["admin_run_id"], rec.get("id"))
 
     activities = []
+    # 按 admin_run_id 归并：pending 是 admin 唤起时的标记记录，同 run 一旦产生
+    # 最终 disposition（result != pending）即以最终为准，避免页面出现"永久处置中"。
+    best_by_run: dict = {}
     for rec in records:
         if rec.get("kind") != DISPOSITION:
             continue
+        rid = rec.get("admin_run_id") or f"run-{id(rec)}"
+        status = rec.get("status") or rec.get("result")
+        is_pending = status == "pending"
+        existing = best_by_run.get(rid)
+        if existing is None:
+            best_by_run[rid] = (is_pending, rec)
+            continue
+        # 非 pending 优先于 pending；同为非 pending 取最新
+        if is_pending and not existing[0]:
+            continue
+        if not is_pending and existing[0]:
+            best_by_run[rid] = (False, rec)
+        elif (rec.get("created") or "") > (existing[1].get("created") or ""):
+            best_by_run[rid] = (is_pending, rec)
+
+    for _is_pending, rec in best_by_run.values():
         item = dict(rec)
         esc_id = unhandled_by_run.get(rec.get("admin_run_id"))
         item["handled"] = esc_id is None

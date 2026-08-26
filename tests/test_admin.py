@@ -785,6 +785,43 @@ class TestDashboardAdminActivitiesAPI:
         assert old["actions_taken"] == "清理缓存"
         assert old["result"] == "resolved"
 
+    def test_admin_activities_pending_dedup(self, tmp_path):
+        """同 admin_run_id 的 pending + 最终记录归并：只显示最终，不出现"永久处置中"。"""
+        proot = tmp_path / "proj-dedup"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+        store = AdminStore(proot, FakeLogger())
+        # run A：pending + 最终 → 只显示最终
+        store.append({"kind": DISPOSITION, "status": "pending", "result": "pending",
+                      "signal_type": "stuck", "spec": "spec-a", "admin_run_id": "run-a",
+                      "created": iso_ago(30)})
+        store.append({"kind": DISPOSITION, "status": None, "result": "resolved",
+                      "signal_type": "stuck", "spec": "spec-a", "admin_run_id": "run-a",
+                      "actions_taken": "已处置", "created": iso_ago(10)})
+        # run B：只有 pending（admin 仍在处置/被中断）→ 显示处置中
+        store.append({"kind": DISPOSITION, "status": "pending", "result": "pending",
+                      "signal_type": "flapping", "spec": "spec-b", "admin_run_id": "run-b",
+                      "created": iso_ago(5)})
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787,
+                  "projects": [{"name": "proj-dedup", "path": str(proot)}],
+                  "scan_dirs": []})
+        srv = _AlertTestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+        try:
+            status, data = srv.get("/api/admin-activities?project=proj-dedup")
+            assert status == 200
+            acts = data["activities"]
+            specs = [a["spec"] for a in acts]
+            assert "spec-a" in specs and specs.count("spec-a") == 1  # 归并后只有一条
+            a_run = next(a for a in acts if a["spec"] == "spec-a")
+            assert a_run["result"] == "resolved"                      # 以最终为准
+            assert a_run.get("status") != "pending"
+            b_run = next(a for a in acts if a["spec"] == "spec-b")
+            assert b_run["result"] == "pending"                       # 无最终 → 显示处置中
+        finally:
+            srv.stop()
+
     def test_admin_activities_empty_list(self, tmp_path):
         """无任何记录 → 空列表且不报错。"""
         proot = tmp_path / "proj-empty"
