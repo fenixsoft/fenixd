@@ -3199,8 +3199,8 @@ class TestRegistryDefaultDiscovery(unittest.TestCase):
         self.home.mkdir()
         self.proj_a = _mk_fenix_project(self.home, "projectA")
         self.proj_b = _mk_fenix_project(self.home, "projectB")
-        # 非 Fenixd 目录：只有 STATE.md 而无 .fenix/config.yaml
-        fake = self.home / "not-a-project"
+        # 轻量 Fenixd 目录：仅 STATE.md 即被发现（无需 .fenix/config.yaml）
+        fake = self.home / "lite-project"
         fake.mkdir()
         (fake / "STATE.md").write_text("# not a project", encoding="utf-8")
         self.cfg = self.tmpdir / "dashboard.yaml"
@@ -3219,8 +3219,9 @@ class TestRegistryDefaultDiscovery(unittest.TestCase):
         self.assertIn("projectA", by_name)
         self.assertIn("projectB", by_name)
         self.assertTrue(by_name["projectA"]["discovered"])
-        # 非 Fenixd 目录被排除
-        self.assertNotIn("not-a-project", by_name)
+        # 仅 STATE.md 的目录也被扫描命中
+        self.assertIn("lite-project", by_name)
+        self.assertTrue(by_name["lite-project"]["discovered"])
 
     def test_explicit_scan_dirs_overrides_default(self):
         from core.dashboard.registry import Registry
@@ -3241,7 +3242,7 @@ class TestRegistryDefaultDiscovery(unittest.TestCase):
         matches = [p for p in projects if p["name"] == "projectA"]
         self.assertEqual(len(matches), 1)           # 去重：只出现一次
         self.assertFalse(matches[0]["discovered"])  # 显式注册优先
-        self.assertNotIn("not-a-project", {p["name"] for p in projects})
+        self.assertIn("lite-project", {p["name"] for p in projects})
 
 
 class TestRegistryRemoveProject(unittest.TestCase):

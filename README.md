@@ -190,7 +190,9 @@ fenixd/
 
 ## 配置说明
 
-项目配置位于 `.fenix/config.yaml`（由 `config.template.yaml` 渲染生成），关键配置项：
+Fenixd 采用**分级配置**：用户级 `~/.fenix/config.yaml` 与项目级 `<项目根>/.fenix/config.yaml`（由 `config.template.yaml` 渲染生成）进行深度合并，**项目级覆盖用户级**；`~/.fenix/config.yaml` 缺失或解析失败时以项目级为准，反之亦然。daemon 启动时通过 `ConfigLoader.resolve_config(project_root)` 加载合并后的有效配置。
+
+关键配置项：
 
 - `project.type`：项目类型（web / cli / library / api）
 - `agents.max_concurrent` / `max_retries` / `max_turns`：Agent 并发、重试与每轮上限
@@ -198,6 +200,15 @@ fenixd/
 - `worktree.base_dir`：git worktree 存放目录
 - `gates.require_push_approval`：推送审批门禁开关
 - `commands.test` / `build` / `start`：项目自身的测试、构建、启动命令
+
+### 配置作用域与继承
+
+Dashboard 配置管理页区分两种作用域：
+
+- **用户级**（无项目时）：读写 `~/.fenix/config.yaml`
+- **项目级**（选中项目时）：显示用户级与项目级合并后的有效视图，项目级文件未显式定义的受管键（`llm`、`agents.models`、`agents.max_concurrent`、`gates.approve_mode`）标注「继承自用户级」，保存时写入项目级 `<项目>/.fenix/config.yaml`
+
+项目发现仅要求目录存在 `STATE.md` 即可识别为 Fenixd 项目，无需预置 `.fenix/config.yaml`。
 
 ## 许可证
 
