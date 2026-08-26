@@ -27,10 +27,10 @@
 
 ## 5. 原生归档（命令 + skill + init）
 
-- [ ] 5.1 新增 `bin/fenix_archive.py <name>`：校验 change 存在；目标 `openspec/changes/archive/YYYY-MM-DD-<name>` 已存在则报错提示改名/换日期；否则 `shutil.move`；输出 JSON `{ok, from, to, error}`
-- [ ] 5.2 新增 `skills/fenix-archive/SKILL.md`：列出 `openspec/changes/` 下未归档 changes（AskUserQuestion 选择）→ 确认 → 调 `bin/fenix_archive.py`；未完成任务仅提示不阻塞
-- [ ] 5.3 `fenix-init` 步骤 3 增加创建 `openspec/changes/archive/` 目录
-- [ ] 5.4 `tests/` 新增归档单测：移动成功、日期冲突报错不覆盖、不存在 change 报错；运行通过
+- [x] 5.1 新增 `bin/fenix_archive.py <name>`：校验 change 存在；目标 `openspec/changes/archive/YYYY-MM-DD-<name>` 已存在则报错提示改名/换日期；否则 `shutil.move`；输出 JSON `{ok, from, to, error}`
+- [x] 5.2 新增 `skills/fenix-archive/SKILL.md`：列出 `openspec/changes/` 下未归档 changes（AskUserQuestion 选择）→ 确认 → 调 `bin/fenix_archive.py`；未完成任务仅提示不阻塞
+- [x] 5.3 `fenix-init` 步骤 3 增加创建 `openspec/changes/archive/` 目录
+- [x] 5.4 `tests/` 新增归档单测：移动成功、日期冲突报错不覆盖、不存在 change 报错；运行通过
 
 ## 6. 收尾与回归
 
