@@ -49,7 +49,7 @@ agents:
   # Daily limit on total Agent runs (0 = unlimited)
   daily_run_limit: 50
   # Timeout in seconds for a single Agent run
-  run_timeout_seconds: 1800
+  run_timeout_seconds: 3600
   # 使用三步验证流水线（Planner → VerifyEngine → Judge），比旧版 verifier 快 5-10x
   use_new_verifier: true
 

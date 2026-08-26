@@ -1296,7 +1296,7 @@ class TestDashboardConfigIO(unittest.TestCase):
         result = read_config(self.project_root)
         self.assertFalse(result["raw_exists"])
         self.assertEqual(result["llm"], {})
-        self.assertEqual(result["agents"], {"models": {}, "max_concurrent": 2})
+        self.assertEqual(result["agents"], {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600})
         self.assertEqual(result["gates"], {"approve_mode": "manual"})
 
     def test_write_and_read_roundtrip(self):

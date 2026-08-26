@@ -1175,7 +1175,13 @@ function renderConfig(data) {
         <label>并行度（agents.max_concurrent）</label>
         <input type="number" id="cfg-max-concurrent" min="1" step="1"
           value="${esc(agents.max_concurrent ?? 2)}" />
-        <small>默认 2。修改后需重启 daemon 生效。</small>
+        <small>默认 2。保存后约 30 秒内热加载生效。</small>
+      </div>
+      <div class="form-row">
+        <label>单次运行时长上限（agents.run_timeout_seconds，秒）</label>
+        <input type="number" id="cfg-run-timeout" min="60" step="60"
+          value="${esc(agents.run_timeout_seconds ?? 3600)}" />
+        <small>默认 3600（1 小时）。单个 Agent 运行超时即终止并触发重试。</small>
       </div>
     </div>
 
@@ -1410,12 +1416,16 @@ function collectConfigData() {
   const maxConcurrentInput = main.querySelector('#cfg-max-concurrent');
   const maxConcurrent = maxConcurrentInput ? parseInt(maxConcurrentInput.value, 10) : 2;
 
+  // Run timeout (single agent run limit, seconds)
+  const runTimeoutInput = main.querySelector('#cfg-run-timeout');
+  const runTimeout = runTimeoutInput ? parseInt(runTimeoutInput.value, 10) : 3600;
+
   // Approve mode
   const approveMode = (main.querySelector('input[name="approve_mode"]:checked') || {}).value || 'manual';
 
   return {
     llm: { providers },
-    agents: { models, max_concurrent: maxConcurrent },
+    agents: { models, max_concurrent: maxConcurrent, run_timeout_seconds: runTimeout },
     gates: { approve_mode: approveMode },
   };
 }

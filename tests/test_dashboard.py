@@ -602,7 +602,7 @@ class TestConfigHierarchyData:
         assert result["scope"] == "user"
         assert result["raw_exists"] is False
         assert result["llm"] == {}
-        assert result["agents"] == {"models": {}, "max_concurrent": 2}
+        assert result["agents"] == {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600}
         assert result["gates"] == {"approve_mode": "manual"}
         assert set(result["sources"].values()) == {"user"}
 

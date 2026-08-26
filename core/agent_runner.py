@@ -875,7 +875,7 @@ class AgentRunner:
 
         Returns: (output, turns_used, session_id)
         """
-        timeout = self._get_config("agents.run_timeout_seconds", 1800)
+        timeout = self._get_config("agents.run_timeout_seconds", 3600)
 
         # 每线程独立 env 副本，多 agent_type 并发时环境覆盖互不串扰
         env = os.environ.copy()
