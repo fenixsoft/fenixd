@@ -62,9 +62,31 @@ def _legacy_session_matches(root: Path) -> bool:
     return False
 
 
-def is_running(root: str | None = None) -> bool:
-    """该项目是否有 daemon 在运行（唯一名 + 旧版兼容）。"""
-    proot = resolve_root(root)
+def _daemon_procs_under(root: Path) -> bool:
+    """项目根下是否有活跃的 fenixd daemon 进程。
+
+    daemon 自 fix-admin-self-heal 起由 supervisor 直启（不在 tmux 内），
+    tmux session 判定会漏报；以 /proc 的 cwd+cmdline 匹配项目根的
+    fenixd.py / fenixd_supervisor.py 进程为准，覆盖 tmux 与直启两种模式。
+    """
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+            if Path(cwd).expanduser().resolve() != root:
+                continue
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmdline = f.read().decode("utf-8", errors="replace").replace("\x00", " ")
+        except (OSError, ValueError):
+            continue
+        if ".fenix/fenixd.py" in cmdline or "fenixd_supervisor" in cmdline:
+            return True
+    return False
+
+
+def _tmux_match(proot: Path) -> bool:
+    """回退判定：唯一名 session（+ 旧版固定 `fenixd` cwd 匹配）。"""
     try:
         r = subprocess.run(
             ["tmux", "has-session", "-t", session_name(proot)],
@@ -76,3 +98,18 @@ def is_running(root: str | None = None) -> bool:
     except Exception:
         pass
     return _legacy_session_matches(proot)
+
+
+def is_running(root: str | None = None) -> bool:
+    """该项目是否有 daemon 在运行。
+
+    主判定为进程检测（supervisor/直启/tmux 内 daemon 均命中，不会像 tmux
+    session 判定那样漏报直启模式或误报残留 session）；/proc 不可用时回退
+    tmux 判定（唯一名 + 旧版兼容）。
+    """
+    proot = resolve_root(root)
+    try:
+        return _daemon_procs_under(proot)
+    except Exception:
+        pass
+    return _tmux_match(proot)

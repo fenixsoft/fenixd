@@ -638,7 +638,8 @@ def alerts_fx(tmp_path):
     reg = Registry(config_path=cfg)
     reg.save({"port": 8787,
               "projects": [{"name": "proj-alerts", "path": str(proot)}],
-              "scan_dirs": []})
+              # 指向不存在目录的 scan_dirs：避免空列表触发默认扫描真实主目录 ~ 混入
+              "scan_dirs": [str(tmp_path / "scan-empty")]})
     srv = _AlertTestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
     yield proot, store, srv
     srv.stop()
@@ -672,7 +673,8 @@ def activities_fx(tmp_path):
     reg = Registry(config_path=cfg)
     reg.save({"port": 8787,
               "projects": [{"name": "proj-act", "path": str(proot)}],
-              "scan_dirs": []})
+              # 指向不存在目录的 scan_dirs：避免空列表触发默认扫描真实主目录 ~ 混入
+              "scan_dirs": [str(tmp_path / "scan-empty")]})
     srv = _AlertTestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
     yield proot, store, srv
     srv.stop()
@@ -765,7 +767,8 @@ class TestDashboardAdminActivitiesAPI:
         reg = Registry(config_path=cfg)
         reg.save({"port": 8787,
                   "projects": [{"name": "proj-sort", "path": str(proot)}],
-                  "scan_dirs": []})
+                  # 指向不存在目录的 scan_dirs：避免空列表触发默认扫描真实主目录 ~ 混入
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
         srv = _AlertTestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
         try:
             status, data = srv.get("/api/admin-activities?project=proj-sort")
@@ -806,7 +809,8 @@ class TestDashboardAdminActivitiesAPI:
         reg = Registry(config_path=cfg)
         reg.save({"port": 8787,
                   "projects": [{"name": "proj-dedup", "path": str(proot)}],
-                  "scan_dirs": []})
+                  # 指向不存在目录的 scan_dirs：避免空列表触发默认扫描真实主目录 ~ 混入
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
         srv = _AlertTestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
         try:
             status, data = srv.get("/api/admin-activities?project=proj-dedup")
@@ -831,7 +835,8 @@ class TestDashboardAdminActivitiesAPI:
         reg = Registry(config_path=cfg)
         reg.save({"port": 8787,
                   "projects": [{"name": "proj-empty", "path": str(proot)}],
-                  "scan_dirs": []})
+                  # 指向不存在目录的 scan_dirs：避免空列表触发默认扫描真实主目录 ~ 混入
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
         srv = _AlertTestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
         try:
             status, data = srv.get("/api/admin-activities?project=proj-empty")

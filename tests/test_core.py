@@ -3493,7 +3493,8 @@ class TestDaemonHealth(unittest.TestCase):
 
 
 class TestFenixSessionIsRunning(unittest.TestCase):
-    """core.fenix_session.is_running：唯一 session 命中 / 旧版 cwd 匹配 / 容错。"""
+    """core.fenix_session.is_running：进程检测为主（/proc cwd+cmdline），
+    /proc 不可用（非 Linux）时回退 tmux 判定；残留 session 不误报。"""
 
     def setUp(self):
         self.tmpdir = Path(tempfile.mkdtemp())
@@ -3514,32 +3515,52 @@ class TestFenixSessionIsRunning(unittest.TestCase):
 
         return fake
 
-    def test_unique_session_hit_running(self):
+    def test_daemon_process_under_root_running(self):
+        """supervisor 直启 daemon（无 tmux session）→ running。"""
         from core.fenix_session import is_running
-        with patch("core.fenix_session.subprocess.run",
-                   side_effect=self._fake_run([0, 0])):
+        with patch("core.fenix_session._daemon_procs_under", return_value=True):
             self.assertTrue(is_running(self.tmpdir))
 
-    def test_legacy_session_cwd_match_running(self):
+    def test_stale_session_without_process_stopped(self):
+        """残留 tmux session 但无存活 daemon 进程（verify-tmp 场景）→ stopped。"""
         from core.fenix_session import is_running
-        proot = Path(self.tmpdir).resolve()
-        with patch("core.fenix_session.subprocess.run",
-                   side_effect=self._fake_run([1, 0], legacy_stdout=str(proot))):
-            self.assertTrue(is_running(proot))
+        with patch("core.fenix_session._daemon_procs_under", return_value=False):
+            self.assertFalse(is_running(self.tmpdir))
 
     def test_miss_stopped(self):
         from core.fenix_session import is_running
-        with patch("core.fenix_session.subprocess.run",
-                   side_effect=self._fake_run([1, 0], legacy_stdout="/other")):
+        with patch("core.fenix_session._daemon_procs_under", return_value=False):
             self.assertFalse(is_running(self.tmpdir))
+
+    def test_proc_scan_unavailable_falls_back_to_tmux(self):
+        """/proc 不可用（非 Linux）时回退 tmux 唯一 session / 旧版 cwd 判定。"""
+        from core.fenix_session import is_running
+
+        def proc_boom(root):
+            raise OSError("no /proc")
+
+        proot = Path(self.tmpdir).resolve()
+        with patch("core.fenix_session._daemon_procs_under", side_effect=proc_boom), \
+             patch("core.fenix_session.subprocess.run",
+                   side_effect=self._fake_run([0, 0])):
+            self.assertTrue(is_running(proot))
+
+    def test_legacy_session_cwd_match_running_when_proc_unavailable(self):
+        from core.fenix_session import is_running
+
+        def proc_boom(root):
+            raise OSError("no /proc")
+
+        proot = Path(self.tmpdir).resolve()
+        with patch("core.fenix_session._daemon_procs_under", side_effect=proc_boom), \
+             patch("core.fenix_session.subprocess.run",
+                   side_effect=self._fake_run([1, 0], legacy_stdout=str(proot))):
+            self.assertTrue(is_running(proot))
 
     def test_subprocess_exception_stopped(self):
         from core.fenix_session import is_running
-
-        def boom(args, **kw):
-            raise OSError("tmux unavailable")
-
-        with patch("core.fenix_session.subprocess.run", side_effect=boom):
+        with patch("core.fenix_session._daemon_procs_under", return_value=False), \
+             patch("core.fenix_session.subprocess.run", side_effect=OSError("tmux unavailable")):
             self.assertFalse(is_running(self.tmpdir))
 
 

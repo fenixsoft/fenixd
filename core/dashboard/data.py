@@ -808,8 +808,9 @@ _DAEMON_HEALTH_CACHE: dict = {}   # key=规范化项目根, value=(状态, 时�
 def daemon_health(project_root) -> str:
     """项目 fenixd daemon 是否在运行，返回 "running"/"stopped"。
 
-    判定复用 core.fenix_session.is_running（唯一 tmux session + 旧版 `fenixd`
-    session cwd 匹配）。tmux 不可用、subprocess 异常或均未命中一律 "stopped"，
+    判定复用 core.fenix_session.is_running（进程检测为主：项目根下的
+    fenixd.py / fenixd_supervisor.py 进程；/proc 不可用时回退 tmux session）。
+    tmux 不可用、subprocess 异常或均未命中一律 "stopped"，
     不抛异常。带短 TTL memo，避免 overview 每 2s 轮询重复 spawn 子进程。
     """
     key = str(Path(project_root).expanduser().resolve())
