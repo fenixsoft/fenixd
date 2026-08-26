@@ -330,7 +330,9 @@ def _write_flowspec_tasks(proot: Path) -> None:
 
 def _write_impl_run(proot: Path, spec: str, ts: int, creates, updates) -> Path:
     """写一个含 TaskCreate（subjects）/TaskUpdate（taskId,status）的 impl run 产物。"""
-    run_file = proot / ".fenix" / "runs" / f"impl-{spec}-{ts}.jsonl"
+    runs_dir = proot / ".fenix" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    run_file = runs_dir / f"impl-{spec}-{ts}.jsonl"
     lines = []
     for subj in creates:
         lines.append(json.dumps({
@@ -490,7 +492,52 @@ class TestTaskLiveOverlay:
         assert p["task_total"] == 7 + 3
 
 
-# ── registry.py ───────────────────────────────────────────────────────
+class TestParseRunTaskDoneShared:
+    """add-task-progress-sync 1.2：parse_run_task_done 作为 dashboard 与 pm_engine
+    共用的公有解析函数——返回正确 done_ids / flat 回退 / 文件缺失损坏返回空集不抛异常。"""
+
+    def test_done_ids_from_subject_and_completed(self, tmp_path):
+        proot = tmp_path / "p"
+        proot.mkdir()
+        run_file = proot / ".fenix" / "runs" / "impl-spec-1789000000.jsonl"
+        _write_impl_run(proot, "spec", 1789000000,
+                        ["Task 2.1: build", "Task 2.2: test", "Task 2.3: doc"],
+                        [(1, "completed"), (2, "completed")])
+        rd = dash_data.parse_run_task_done(run_file)
+        assert rd["done_ids"] == {"2.1", "2.2"}
+        assert rd["created_count"] == 3
+
+    def test_flat_fallback_when_subject_missing_id(self, tmp_path):
+        proot = tmp_path / "p"
+        proot.mkdir()
+        run_file = _write_impl_run(proot, "spec", 1789000000,
+                                   ["Implement A", "Implement B", "Implement C"],
+                                   [(1, "completed"), (3, "completed")])
+        rd = dash_data.parse_run_task_done(run_file)
+        # subject 无 id → done_ids 空；但 flat_done 仍按创建序下标记录（供显示回退）
+        assert rd["done_ids"] == set()
+        assert rd["flat_done"] == {0, 2}
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        proot = tmp_path / "p"
+        proot.mkdir()
+        missing = proot / ".fenix" / "runs" / "impl-spec-1.jsonl"
+        rd = dash_data.parse_run_task_done(missing)
+        assert rd == {"done_ids": set(), "created_count": 0, "flat_done": set()}
+
+    def test_corrupt_file_returns_empty(self, tmp_path):
+        proot = tmp_path / "p"
+        proot.mkdir()
+        (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
+        run_file = proot / ".fenix" / "runs" / "impl-spec-1.jsonl"
+        run_file.write_text("{ not valid json {{{ \n 12345 \n", encoding="utf-8")
+        rd = dash_data.parse_run_task_done(run_file)
+        assert rd == {"done_ids": set(), "created_count": 0, "flat_done": set()}
+
+    def test_public_alias_reference_equals_private(self, tmp_path):
+        # data.py 内部调用点（parse_tasks）使用 _parse_run_task_done 别名，须指向同一函数
+        assert dash_data._parse_run_task_done is dash_data.parse_run_task_done
+        assert dash_data._find_impl_run_file is dash_data.find_impl_run_file
 
 class TestRegistry:
     def test_load_missing_defaults(self, tmp_path):
