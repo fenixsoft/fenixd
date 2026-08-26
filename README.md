@@ -88,6 +88,10 @@ drafted ─▶ ready ─▶ implementing ─▶ implemented ─▶ testing ─�
 pip3 install pyyaml
 ```
 
+> SPEC 生成已原生集成进 fenix：`/fenix-new` 使用内置生成器
+> （`core/spec_gen.py` + `bin/fenix_spec.py`，数据 vendored 于 `schemas/spec-driven/`），
+> 不再需要独立安装 openspec CLI 或 openspec skills。
+
 ## 安装
 
 ```bash
@@ -176,13 +180,17 @@ fenixd/
 │   ├── worktree_manager.py # worktree 管理
 │   ├── config.py           # 配置加载
 │   ├── logger.py           # 结构化日志
+│   ├── spec_gen.py         # 原生 SPEC 生成器（new/status/instructions）
 │   └── verify_engine/      # 确定性验证引擎
+├── schemas/spec-driven/    # vendored spec-driven schema（模板与指令）
 ├── bin/                    # 辅助脚本
 │   ├── fenix_dashboard.py  # 实时进度仪表盘
 │   ├── fenix_process.py    # 单 SPEC 进展查看
+│   ├── fenix_spec.py       # 原生 SPEC 生成 CLI（new/status/instructions）
+│   ├── fenix_archive.py    # change 归档 CLI
 │   ├── statusline.py       # Claude Code 状态栏
 │   └── launch-chrome-extension.js  # 扩展集成验证（Tier 2）
-├── skills/                 # Claude Code skills（/fenix-* 命令）
+├── skills/                 # Claude Code skills（/fenix-* 命令，含 fenix-new/fenix-archive）
 ├── agents/                 # 实现/验证 Agent 定义
 ├── templates/              # 工程骨架模板
 └── tests/                  # 单元测试
