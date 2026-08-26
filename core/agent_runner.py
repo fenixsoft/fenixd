@@ -211,7 +211,24 @@ class AgentRunner:
         spec = signal.get("spec") or "global"
         run_id = f"admin-{spec}-{int(time.time())}"
         prompt = self._build_prompt(spec, "administrator", detail=signal)
-        model_override = self._get_admin_model()
+
+        # improve-config-ui-tabs：Administrator 运行时解析链（design D4）
+        #   1. agents.models.administrator assignment → 用分配 model 并注入 provider env（直连）
+        #   2. 无 assignment → 沿用旧逻辑 _get_admin_model()（admin.agent_model → 默认网关）
+        assignment = self._get_agent_model_assignment("administrator")
+        env_overrides: Dict[str, str] = {}
+        if assignment is not None:
+            provider, model_override = assignment
+            env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
+            env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
+            env_overrides["ANTHROPIC_MODEL"] = model_override
+            env_overrides["CLAUDE_CONFIG_DIR"] = str(
+                self._ensure_agent_config_dir(provider["name"])
+            )
+            for k, v in (provider.get("env") or {}).items():
+                env_overrides[k] = v
+        else:
+            model_override = self._get_admin_model()
 
         # fix-admin-self-heal：唤起前先落 pending disposition，保证即使 admin 被
         # kill（如 daemon 重启/崩溃）也有记录可回溯；monitor 会检测无最终结果的
@@ -235,7 +252,7 @@ class AgentRunner:
         self._clear_admin_disposition()
         try:
             output, turns, _session_id = self._run_claude(
-                prompt, self.project_root, run_id, model_override,
+                prompt, self.project_root, run_id, model_override, env_overrides,
                 max_turns=self._get_config("agents.max_turns", 50),
             )
             success = True

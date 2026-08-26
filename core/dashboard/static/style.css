@@ -837,6 +837,30 @@ tr.orphan-fix > td { border-left: 2px solid rgba(144, 133, 233, 0.5); }
   margin: 0 auto;
   padding: 20px;
 }
+/* ── 配置页页签（improve-config-ui-tabs） ──────────────── */
+.config-tabs {
+  margin-top: 18px;
+}
+.config-tabs .tab-bar {
+  margin-top: 0;
+}
+.config-tabs .tab-pane {
+  border: 1px solid var(--hairline);
+  border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  padding: 20px;
+  background: var(--surface);
+}
+.config-tabs .tab-pane[hidden] { display: none; }
+.config-tabs .tab-pane .config-section {
+  border: none;
+  padding: 0;
+  margin-bottom: 0;
+  background: transparent;
+}
+.config-tabs .tab-pane .config-section + .config-section {
+  margin-top: 16px;
+}
 .config-section {
   background: var(--surface);
   border: 1px solid var(--hairline);
