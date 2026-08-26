@@ -22,9 +22,9 @@
 
 ## 4. Dashboard server API 作用域化
 
-- [ ] 4.1 `core/dashboard/server.py` `_api_config_get`：无 project 参数 → 返回用户级配置（`scope=user`，不再返回 `unknown project`）；带 project → 校验存在性后用 `read_effective_config` 返回合并视图 + sources
-- [ ] 4.2 `core/dashboard/server.py` `_api_config_post`：无 project 参数 → 写用户级配置；带 project → 写项目级；响应携带 `scope` 与写入路径
-- [ ] 4.3 `tests/test_dashboard.py` 新增 API 层单测：无 project GET/POST、带 project 合并视图与来源、无 project 不再报 `unknown project`
+- [x] 4.1 `core/dashboard/server.py` `_api_config_get`：无 project 参数 → 返回用户级配置（`scope=user`，不再返回 `unknown project`）；带 project → 校验存在性后用 `read_effective_config` 返回合并视图 + sources
+- [x] 4.2 `core/dashboard/server.py` `_api_config_post`：无 project 参数 → 写用户级配置；带 project → 写项目级；响应携带 `scope` 与写入路径
+- [x] 4.3 `tests/test_dashboard.py` 新增 API 层单测：无 project GET/POST、带 project 合并视图与来源、无 project 不再报 `unknown project`
 
 ## 5. Dashboard 前端双作用域渲染
 

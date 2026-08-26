@@ -347,10 +347,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _api_config_get(self, query) -> dict:
         project = self._project_from_query(query)
         if project is None:
-            return {"error": "unknown project"}
+            # 无项目 → 用户级配置（scope=user，不再返回 unknown project）
+            return dashboard_data.read_config(None, scope="user")
         if not project.get("exists"):
             return {"error": "project not found"}
-        config = dashboard_data.read_config(project["path"])
+        config = dashboard_data.read_effective_config(project["path"])
         config["project"] = project["name"]
         return config
 
@@ -490,27 +491,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return None
 
     def _api_config_post(self, query):
-        project = self._project_from_query(query)
-        if project is None:
-            self._error(400, "unknown project")
-            return
-        if not project.get("exists"):
-            self._error(400, "project not found")
-            return
-
         body = self._read_json_body()
         if body is None:
             return
 
-        result = dashboard_data.write_config(project["path"], body)
+        project = self._project_from_query(query)
+        if project is None:
+            # 用户模式：写 ~/.fenix/config.yaml
+            result = dashboard_data.write_config(None, body, scope="user")
+        else:
+            if not project.get("exists"):
+                self._error(400, "project not found")
+                return
+            result = dashboard_data.write_config(project["path"], body, scope="project")
+
         if not result["ok"]:
             self._error(400, result["error"] or "配置写入失败")
             return
 
-        # 成功后返回最新配置（读回以确认）
-        config = dashboard_data.read_config(project["path"])
-        config["project"] = project["name"]
+        # 成功后返回最新配置（读回以确认）+ scope / 写入路径
+        if project is None:
+            config = dashboard_data.read_config(None, scope="user")
+        else:
+            config = dashboard_data.read_effective_config(project["path"])
+            config["project"] = project["name"]
         config["saved"] = True
+        config["scope"] = result["scope"]
+        config["path"] = result["path"]
         self._json(config)
 
     def _project_from_query(self, query):

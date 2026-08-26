@@ -718,6 +718,22 @@ class _TestServer:
     def post(self, path: str):
         return self._req("POST", path)
 
+    def post_json(self, path: str, payload: dict):
+        import http.client
+        body = json.dumps(payload).encode("utf-8")
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.request(
+                "POST", path, body=body,
+                headers={"Content-Type": "application/json",
+                         "Content-Length": str(len(body))},
+            )
+            resp = conn.getresponse()
+            data = resp.read()
+            return resp.status, json.loads(data)
+        finally:
+            conn.close()
+
     def delete(self, path: str):
         return self._req("DELETE", path)
 
@@ -893,6 +909,137 @@ class TestServerAPI:
             s.listen(1)
             free = find_free_port(occupied)
             assert free != occupied
+
+
+# ── server.py 配置 API 作用域化（add-hierarchical-config） ──────────
+
+class TestConfigAPI:
+    """/api/config GET/POST：无 project = 用户级，带 project = 项目级合并视图。"""
+
+    STATIC_DIR = Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static"
+
+    def _serve(self, tmp_path, monkeypatch, with_user=True):
+        user_dir = tmp_path / "user-fenix"
+        user_config = user_dir / "config.yaml"
+        monkeypatch.setattr(dash_data, "USER_CONFIG_PATH", user_config)
+        monkeypatch.setattr("core.config.USER_CONFIG_DIR", user_dir)
+        proot = make_project(tmp_path, "proj-a")
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = _TestServer(reg, self.STATIC_DIR)
+        return user_config, proot, srv
+
+    def test_config_get_no_project_user_mode(self, tmp_path, monkeypatch):
+        user_config, proot, srv = self._serve(tmp_path, monkeypatch)
+        try:
+            status, data = srv.get("/api/config")
+            assert status == 200
+            assert data["scope"] == "user"
+            assert data["raw_exists"] is False
+            assert data["error"] is None          # 不再是 unknown project 错误
+            assert data["gates"]["approve_mode"] == "manual"
+        finally:
+            srv.stop()
+
+    def test_config_get_no_project_returns_user_values(self, tmp_path, monkeypatch):
+        user_config, proot, srv = self._serve(tmp_path, monkeypatch)
+        user_config.parent.mkdir()
+        user_config.write_text(yaml.safe_dump({
+            "agents": {"max_concurrent": 4},
+            "gates": {"approve_mode": "auto"},
+        }), encoding="utf-8")
+        try:
+            status, data = srv.get("/api/config")
+            assert status == 200
+            assert data["scope"] == "user"
+            assert data["raw_exists"] is True
+            assert data["agents"]["max_concurrent"] == 4
+            assert data["gates"]["approve_mode"] == "auto"
+            assert set(data["sources"].values()) == {"user"}
+        finally:
+            srv.stop()
+
+    def test_config_get_project_merged_view_with_sources(self, tmp_path, monkeypatch):
+        user_config, proot, srv = self._serve(tmp_path, monkeypatch)
+        user_config.parent.mkdir()
+        user_config.write_text(yaml.safe_dump({
+            "agents": {"max_concurrent": 4},
+            "gates": {"approve_mode": "manual"},
+        }), encoding="utf-8")
+        # 项目级只覆盖 max_concurrent
+        (proot / ".fenix" / "config.yaml").write_text(yaml.safe_dump({
+            "project": {"name": "proj-a", "type": "web"},
+            "agents": {"max_concurrent": 2},
+        }), encoding="utf-8")
+        try:
+            status, data = srv.get("/api/config?project=proj-a")
+            assert status == 200
+            assert data["project"] == "proj-a"
+            assert data["scope"] == "project"
+            assert data["raw_exists"] is True
+            # 有效合并值：项目级覆盖 max_concurrent，gates 继承用户级
+            assert data["agents"]["max_concurrent"] == 2
+            assert data["gates"]["approve_mode"] == "manual"
+            assert data["sources"]["agents.max_concurrent"] == "project"
+            assert data["sources"]["gates.approve_mode"] == "user"
+        finally:
+            srv.stop()
+
+    def test_config_post_no_project_writes_user(self, tmp_path, monkeypatch):
+        user_config, proot, srv = self._serve(tmp_path, monkeypatch)
+        payload = {
+            "llm": {"providers": [{"name": "volc", "baseurl": "https://a.com",
+                                   "apikey": "sk-1", "model": "m1"}]},
+            "agents": {"models": {}, "max_concurrent": 3},
+            "gates": {"approve_mode": "auto"},
+        }
+        try:
+            status, data = srv.post_json("/api/config", payload)
+            assert status == 200
+            assert data["scope"] == "user"
+            assert data["saved"] is True
+            assert data["path"] == str(user_config)
+            assert user_config.exists()
+            written = yaml.safe_load(user_config.read_text(encoding="utf-8"))
+            assert written["agents"]["max_concurrent"] == 3
+            assert written["gates"]["approve_mode"] == "auto"
+        finally:
+            srv.stop()
+
+    def test_config_post_project_writes_project(self, tmp_path, monkeypatch):
+        user_config, proot, srv = self._serve(tmp_path, monkeypatch)
+        proj_cfg = proot / ".fenix" / "config.yaml"
+        proj_cfg.write_text(yaml.safe_dump({
+            "project": {"name": "proj-a", "type": "web"},
+        }), encoding="utf-8")
+        payload = {
+            "agents": {"models": {}, "max_concurrent": 5},
+            "gates": {"approve_mode": "manual"},
+        }
+        try:
+            status, data = srv.post_json("/api/config?project=proj-a", payload)
+            assert status == 200
+            assert data["scope"] == "project"
+            assert data["project"] == "proj-a"
+            assert data["saved"] is True
+            assert data["path"] == str(proj_cfg)
+            written = yaml.safe_load(proj_cfg.read_text(encoding="utf-8"))
+            assert written["project"]["name"] == "proj-a"   # 非受管键保留
+            assert written["agents"]["max_concurrent"] == 5
+            assert written["gates"]["approve_mode"] == "manual"
+        finally:
+            srv.stop()
+
+    def test_config_post_invalid_payload_rejected(self, tmp_path, monkeypatch):
+        user_config, proot, srv = self._serve(tmp_path, monkeypatch)
+        try:
+            status, data = srv.post_json("/api/config", {"gates": {"approve_mode": "bogus"}})
+            assert status == 400
+            assert not user_config.exists()  # 校验失败不写盘
+        finally:
+            srv.stop()
 
 
 # ── parse_tasks worktree 路径对齐测试（fix-worktree-agent-cwd） ──
