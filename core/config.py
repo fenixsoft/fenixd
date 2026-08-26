@@ -87,6 +87,18 @@ class ConfigLoader:
         return effective
 
     @classmethod
+    def resolve_config_into(cls, config: Dict[str, Any], project_root) -> None:
+        """把最新有效配置原地写入 config（热更新），保持 dict 对象身份不变。
+
+        所有组件持有同一 config 引用，原地 clear+update 后自动看到新值。
+        解析或校验失败时抛异常且不触碰 config（保留旧值，运行中配置不被坏文件清空）。
+        """
+        fresh = cls.resolve_config(project_root)
+        cls._validate(fresh, require_project=False)
+        config.clear()
+        config.update(fresh)
+
+    @classmethod
     def _load_optional_yaml(cls, path: Path, label: str) -> Dict[str, Any]:
         """读取单个配置文件，失败/非 dict 时记录日志并按空 dict 兜底。"""
         try:

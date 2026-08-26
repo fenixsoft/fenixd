@@ -1155,7 +1155,10 @@ function renderConfig(data) {
 
     <div class="config-section">
       <h3>🧩 Agent 模型分配 ${fromUser('agents.models')}</h3>
-      <p class="section-hint">为每种 Agent 角色分配 Provider 与模型。未分配的角色使用默认模型。</p>
+      <p class="section-hint">为每种 Agent 角色分配 Provider 与模型。模型名留空时使用所选 Provider 的默认模型。</p>
+      ${isUser && providers.length === 0
+        ? '<p class="section-hint config-warn-hint">⚠ 当前作用域没有可用的 LLM Provider，无法为 Agent 分配模型。请先在上方「LLM Provider 列表」添加 Provider 并保存，再回来分配；或切换到项目级配置（选择项目后进入配置页）进行分配。</p>'
+        : ''}
       <div class="agent-assign-grid">
         ${KNOWN_AGENT_TYPES.map((at) => renderAgentAssignment(at, providers, models)).join('')}
       </div>
@@ -1356,12 +1359,10 @@ function reindexProviders() {
   });
 }
 
-function collectConfigData() {
+function readProviderCards() {
   const main = el('main');
-  // Providers
-  const providerCards = main.querySelectorAll('.provider-card');
   const providers = [];
-  providerCards.forEach((card) => {
+  main.querySelectorAll('.provider-card').forEach((card) => {
     const p = {};
     card.querySelectorAll('input[data-field]').forEach((inp) => {
       const field = inp.dataset.field;
@@ -1378,6 +1379,13 @@ function collectConfigData() {
     if (Object.keys(env).length > 0) p.env = env;
     providers.push(p);
   });
+  return providers;
+}
+
+function collectConfigData() {
+  const main = el('main');
+  // Providers
+  const providers = readProviderCards();
 
   // Agent models
   const models = {};
@@ -1387,7 +1395,12 @@ function collectConfigData() {
     const providerSel = main.querySelector(`.assign-provider[data-agent="${at.key}"]`);
     const modelInp = main.querySelector(`.assign-model[data-agent="${at.key}"]`);
     const provider = providerSel ? providerSel.value : '';
-    const model = modelInp ? modelInp.value.trim() : '';
+    let model = modelInp ? modelInp.value.trim() : '';
+    // 模型名留空 → 回退到该 Provider 的默认模型名
+    if (!model && provider) {
+      const prov = providers.find((p) => p.name === provider);
+      model = (prov && prov.model) || '';
+    }
     if (provider && model) {
       models[at.key] = { provider, model };
     }
@@ -1410,7 +1423,40 @@ function collectConfigData() {
 function saveConfig() {
   const banner = el('config-save-banner');
   const saveBtn = el('btn-save-config');
+  const main = el('main');
   const payload = collectConfigData();
+
+  // 校验：已勾选「分配模型」的 Agent 不能静默丢弃。模型名留空时回退到 Provider 默认模型；
+  // 仅当未选 Provider，或 Provider 与默认模型都没有时才阻止保存。
+  const providerDefaults = {};
+  readProviderCards().forEach((p) => { if (p.name) providerDefaults[p.name] = p.model || ''; });
+  const missingProvider = [];
+  const missingModel = [];
+  KNOWN_AGENT_TYPES.forEach((at) => {
+    const toggle = main.querySelector(`.assign-enabled[data-agent="${at.key}"]`);
+    if (!toggle || !toggle.checked) return;
+    const providerSel = main.querySelector(`.assign-provider[data-agent="${at.key}"]`);
+    const modelInp = main.querySelector(`.assign-model[data-agent="${at.key}"]`);
+    const provider = providerSel ? providerSel.value.trim() : '';
+    const model = modelInp ? modelInp.value.trim() : '';
+    if (!provider) {
+      missingProvider.push(at.label);
+    } else if (!model && !providerDefaults[provider]) {
+      missingModel.push(at.label + '（Provider「' + provider + '」）');
+    }
+  });
+
+  if (missingProvider.length > 0 || missingModel.length > 0) {
+    const parts = [];
+    if (missingProvider.length) parts.push(missingProvider.join('、') + ' 未选择 Provider');
+    if (missingModel.length) parts.push(missingModel.join('、') + ' 未配置默认模型，请填写模型名');
+    if (banner) {
+      banner.className = 'config-banner error';
+      banner.textContent = '❌ 保存失败：' + parts.join('；') + '。';
+    }
+    return;
+  }
+
   // 用户模式（无项目）→ POST /api/config；项目模式 → POST /api/config?project=<name>
   const url = currentState.project
     ? '/api/config?project=' + encodeURIComponent(currentState.project)

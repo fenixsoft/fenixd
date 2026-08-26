@@ -695,6 +695,13 @@ main { padding: 20px; max-width: 1280px; margin: 0 auto; }
   margin-bottom: 14px;
 }
 
+/* 配置页警示提示（如用户级无 Provider 无法分配模型） */
+.config-warn-hint {
+  color: var(--warning);
+  border-left: 3px solid var(--warning);
+  padding-left: 8px;
+}
+
 /* 配置分级：来源层级 badge（继承自用户级） */
 .config-inherit-badge {
   display: inline-block;

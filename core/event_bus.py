@@ -134,9 +134,15 @@ class EventBus:
             time.sleep(2)  # Poll every 2 seconds
 
     def _periodic_scan_loop(self, interval_minutes: int):
-        """Periodic full scan as fallback."""
+        """Periodic full scan as fallback. 每轮热读 poll_interval（配置热更新生效）。"""
         while self._running:
-            time.sleep(interval_minutes * 60)
+            try:
+                interval = float(
+                    self.config.get("schedule", {}).get("poll_interval_minutes", interval_minutes)
+                )
+            except (TypeError, ValueError):
+                interval = interval_minutes
+            time.sleep(max(interval, 0.5) * 60)
             if self._running:
                 self.logger.debug("event_bus", "Periodic scan triggered")
                 self.full_scan()

@@ -758,6 +758,83 @@ class TestResolveConfig(unittest.TestCase):
             self._resolve()
 
 
+class TestConfigHotReload(unittest.TestCase):
+    """配置热更新：resolve_config_into 原地更新现有 dict，组件共享引用自动看到新值。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir) / "myproj"
+        (self.project_root / ".fenix").mkdir(parents=True)
+        self.user_dir = Path(self.tmpdir) / "user-fenix"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_project(self, config):
+        import yaml
+        with (self.project_root / ".fenix" / "config.yaml").open("w", encoding="utf-8") as f:
+            yaml.safe_dump(config, f)
+
+    def _reload_into(self, cfg):
+        from core.config import ConfigLoader
+        with patch("core.config.USER_CONFIG_DIR", self.user_dir):
+            ConfigLoader.resolve_config_into(cfg, self.project_root)
+
+    def test_in_place_update_same_object_new_values(self):
+        from core.config import ConfigLoader
+        self._write_project({"agents": {"max_concurrent": 2}})
+        cfg = {}
+        with patch("core.config.USER_CONFIG_DIR", self.user_dir):
+            fresh = ConfigLoader.resolve_config(self.project_root)
+        cfg.update(fresh)
+        holder = cfg
+        self._write_project({"agents": {"max_concurrent": 8}})
+        self._reload_into(holder)
+        self.assertIs(holder, cfg)
+        self.assertEqual(holder["agents"]["max_concurrent"], 8)
+
+    def test_removed_key_cleared(self):
+        self._write_project({"agents": {"max_concurrent": 2}, "gates": {"approve_mode": "auto"}})
+        cfg = {}
+        self._reload_into(cfg)
+        self.assertEqual(cfg["gates"]["approve_mode"], "auto")
+        self._write_project({"agents": {"max_concurrent": 4}})
+        self._reload_into(cfg)
+        self.assertNotIn("gates", cfg)
+        self.assertEqual(cfg["agents"]["max_concurrent"], 4)
+
+    def test_agent_model_assignment_visible_after_reload(self):
+        from core.config import ConfigLoader
+        self._write_project({})
+        with patch("core.config.USER_CONFIG_DIR", self.user_dir):
+            cfg = ConfigLoader.resolve_config(self.project_root)
+        self.assertIsNone(ConfigLoader.get_agent_model_assignment(cfg, "implementer"))
+        import yaml
+        self.user_dir.mkdir(exist_ok=True)
+        with (self.user_dir / "config.yaml").open("w", encoding="utf-8") as f:
+            yaml.safe_dump({
+                "llm": {"providers": [{"name": "p1", "baseurl": "https://x.example", "apikey": "sk-t", "model": "m1"}]},
+                "agents": {"models": {"implementer": {"provider": "p1", "model": "m1"}}},
+            }, f)
+        self._reload_into(cfg)
+        assignment = ConfigLoader.get_agent_model_assignment(cfg, "implementer")
+        self.assertIsNotNone(assignment)
+        self.assertEqual(assignment[0]["name"], "p1")
+        self.assertEqual(assignment[1], "m1")
+
+    def test_invalid_config_keeps_previous_values(self):
+        from core.config import ConfigLoader
+        self._write_project({"agents": {"max_concurrent": 4}})
+        cfg = ConfigLoader.resolve_config(self.project_root)
+        old_val = cfg["agents"]["max_concurrent"]
+        self._write_project({"schedule": {"poll_interval_minutes": -5}})
+        with patch("core.config.USER_CONFIG_DIR", self.user_dir):
+            with self.assertRaises(ValueError):
+                ConfigLoader.resolve_config_into(cfg, self.project_root)
+        self.assertEqual(cfg["agents"]["max_concurrent"], old_val)
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Agent Runner Model Routing Tests
 # ═══════════════════════════════════════════════════════════════════
@@ -853,6 +930,73 @@ class TestAgentRunnerModelRouting(unittest.TestCase):
         self.assertEqual(captured["env"]["ANTHROPIC_BASE_URL"], "https://a.com")
         self.assertEqual(captured["env"]["ANTHROPIC_API_KEY"], "key-a")
         self.assertEqual(captured["env"]["ANTHROPIC_MODEL"], "model-a")
+
+    def test_run_claude_strips_inherited_auth_token_when_provider_set(self):
+        """Provider 覆盖生效时，继承的 ANTHROPIC_AUTH_TOKEN 必须被清除（防 401）。"""
+        config = {
+            "llm": {"providers": [
+                {"name": "p1", "baseurl": "https://a.com", "apikey": "key-a"},
+            ]},
+            "agents": {
+                "max_concurrent": 2, "max_retries": 1, "max_turns": 50, "run_timeout_seconds": 10,
+                "models": {"implementer": {"provider": "p1", "model": "model-a"}},
+                "subagent_model": "claude-sonnet-5",
+            },
+        }
+        runner = self._make_runner(config)
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["env"] = dict(kwargs.get("env", {}))
+            fake = MagicMock()
+            fake.stdout = []
+            fake.stderr = []
+            fake.wait = MagicMock(return_value=0)
+            fake.kill = MagicMock()
+            return fake
+
+        with patch.dict(os.environ, {"ANTHROPIC_AUTH_TOKEN": "ark-xyz", "ANTHROPIC_BASE_URL": "https://ark.example"},
+                        clear=False):
+            with patch("core.agent_runner.subprocess.Popen", side_effect=fake_popen):
+                try:
+                    runner._run_claude("test prompt", self.project_root, "test-run-auth",
+                                       "claude-sonnet-5",
+                                       {"ANTHROPIC_BASE_URL": "https://a.com",
+                                        "ANTHROPIC_API_KEY": "key-a",
+                                        "ANTHROPIC_MODEL": "model-a"})
+                except Exception:
+                    pass
+
+        self.assertEqual(captured["env"]["ANTHROPIC_BASE_URL"], "https://a.com")
+        self.assertEqual(captured["env"]["ANTHROPIC_API_KEY"], "key-a")
+        self.assertNotIn("ANTHROPIC_AUTH_TOKEN", captured["env"],
+                        "Provider 覆盖时必须清除继承的 AUTH_TOKEN，否则 claude 用它认证 → 401")
+
+    def test_run_claude_keeps_auth_token_when_no_provider(self):
+        """未走 Provider 覆盖（无 ANTHROPIC_API_KEY）时，保留继承的 AUTH_TOKEN（维持现状）。"""
+        config = {"agents": {"max_concurrent": 2, "max_retries": 1, "max_turns": 50,
+                             "run_timeout_seconds": 10}}
+        runner = self._make_runner(config)
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["env"] = dict(kwargs.get("env", {}))
+            fake = MagicMock()
+            fake.stdout = []
+            fake.stderr = []
+            fake.wait = MagicMock(return_value=0)
+            fake.kill = MagicMock()
+            return fake
+
+        with patch.dict(os.environ, {"ANTHROPIC_AUTH_TOKEN": "ark-xyz"}, clear=False):
+            with patch("core.agent_runner.subprocess.Popen", side_effect=fake_popen):
+                try:
+                    runner._run_claude("test prompt", self.project_root, "test-run-noauth",
+                                       None, {})
+                except Exception:
+                    pass
+
+        self.assertEqual(captured["env"].get("ANTHROPIC_AUTH_TOKEN"), "ark-xyz")
 
     def test_run_agent_injects_provider_env(self):
         """provider.env 自定义参数（如 CLAUDE_CODE_MAX_CONTEXT_TOKENS）应合并进 env_overrides。"""

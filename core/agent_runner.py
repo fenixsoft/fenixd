@@ -881,6 +881,11 @@ class AgentRunner:
         env = os.environ.copy()
         if env_overrides:
             env.update(env_overrides)
+            # Provider 覆盖生效时清除继承的 ANTHROPIC_AUTH_TOKEN（如 supervisor/tmux 环境
+            # 里残留的火山 ark token）。claude-code 认证时 AUTH_TOKEN 优先于 API_KEY，
+            # 残留 token 会让请求以错误的 Bearer 认证打到 Provider → 401。
+            if "ANTHROPIC_API_KEY" in env_overrides:
+                env.pop("ANTHROPIC_AUTH_TOKEN", None)
 
         # Progress dir for verifier to write incremental progress
         progress_dir = self.project_root / ".fenix" / "verify-progress"

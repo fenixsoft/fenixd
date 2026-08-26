@@ -136,6 +136,9 @@ class FenixDaemon:
 
         self.logger.info("fenixd", "All components initialized successfully")
 
+        # 记录启动时配置文件 mtime，供主循环热更新检测基线
+        self._config_snapshot = self._config_mtimes()
+
     def start(self):
         """Start the daemon main loop."""
         self.running = True
@@ -167,15 +170,53 @@ class FenixDaemon:
             self._admin_thread.start()
             self.logger.info("fenixd", "Admin monitor thread started")
 
-        # Main loop — keep the process alive
+        # Main loop — keep the process alive + 配置热更新轮询
         self.logger.info("fenixd", "Entering main loop")
+        config_check_ts = time.time()
         try:
             while self.running:
                 time.sleep(1)
+                # 配置热更新：每 30s 检查配置文件 mtime，变更则原地重载
+                if time.time() - config_check_ts >= 30:
+                    config_check_ts = time.time()
+                    try:
+                        self._maybe_reload_config()
+                    except Exception as e:
+                        self.logger.error("fenixd", f"Config hot-reload failed: {e}")
         except KeyboardInterrupt:
             self.logger.info("fenixd", "Received interrupt signal")
         finally:
             self.shutdown()
+
+    def _config_mtimes(self):
+        """两个配置文件的当前 mtime（不存在计为 None）。"""
+        from core.config import USER_CONFIG_DIR
+        mtimes = []
+        for p in (USER_CONFIG_DIR / "config.yaml", PROJECT_ROOT / ".fenix" / "config.yaml"):
+            try:
+                mtimes.append(p.stat().st_mtime_ns)
+            except OSError:
+                mtimes.append(None)
+        return tuple(mtimes)
+
+    def _maybe_reload_config(self):
+        """配置文件 mtime 变化时热加载：原地更新共享 config dict，组件自动看到新值。
+
+        校验失败保留旧值并告警；成功则刷新 admin_cfg 快照。
+        """
+        current = self._config_mtimes()
+        if current == getattr(self, "_config_snapshot", None):
+            return
+        ConfigLoader.resolve_config_into(self.config, PROJECT_ROOT)
+        # admin_monitor 的 admin_cfg 是启动快照，同步刷新
+        if self.admin_monitor is not None:
+            from core.config import ConfigLoader as _CL
+            self.admin_monitor.admin_cfg = _CL.get_admin_config(self.config)
+        self._config_snapshot = current
+        self.logger.info(
+            "fenixd",
+            "Configuration hot-reloaded (user/project config.yaml changed)",
+        )
 
     def _admin_monitor_loop(self):
         """周期运行健康检查（间隔 admin.interval_minutes）。"""
