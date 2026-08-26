@@ -498,15 +498,75 @@ tr.orphan-fix > td { border-left: 2px solid rgba(144, 133, 233, 0.5); }
   width: 120px;
 }
 .spec-table .muted { color: var(--muted); }
-.spec-table .err-tag {
-  color: var(--critical);
-  font-size: 12px;
-  max-width: 200px;
-  display: inline-block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.spec-table .spec-name-cell { cursor: help; }
+
+/* ── 信息子行（替换「错误」列，add-spec-list-hover-hint） ── */
+.spec-table tbody tr.spec-info-row td {
+  padding: 8px 14px 10px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--hairline);
+  white-space: pre-wrap;       /* 保留消息内换行，长消息不破坏表格宽度 */
+  word-break: break-word;
+  vertical-align: top;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.5;
 }
+.spec-table tbody tr.spec-info-row .info-badge {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+.spec-table tbody tr.spec-info-row .info-msg { color: var(--ink-2); }
+
+/* ── 名称 hover Why 提示框（div 模拟，add-spec-list-hover-hint） ── */
+#spec-name-hint {
+  position: fixed;
+  z-index: 60;
+  max-width: 420px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+  padding: 12px 14px;
+  font-size: 13px;
+}
+#spec-name-hint.hidden { display: none !important; }
+#spec-name-hint .why-loading {
+  color: var(--muted);
+  font-size: 12px;
+}
+/* 复用 .md 正文排版（与文档弹窗一致） */
+#spec-name-hint .md { line-height: 1.65; }
+#spec-name-hint .md p { margin: 6px 0; }
+#spec-name-hint .md h1,
+#spec-name-hint .md h2,
+#spec-name-hint .md h3,
+#spec-name-hint .md h4,
+#spec-name-hint .md h5,
+#spec-name-hint .md h6 { margin: 10px 0 6px; line-height: 1.3; }
+#spec-name-hint .md h1 { font-size: 19px; }
+#spec-name-hint .md h2 { font-size: 17px; }
+#spec-name-hint .md h3 { font-size: 15px; }
+#spec-name-hint .md h4,
+#spec-name-hint .md h5,
+#spec-name-hint .md h6 { font-size: 14px; }
+#spec-name-hint .md strong { font-weight: 700; color: var(--ink); }
+#spec-name-hint .md em { color: var(--ink-2); }
+#spec-name-hint .md ul,
+#spec-name-hint .md ol { margin: 6px 0; padding-left: 22px; }
+#spec-name-hint .md li { margin: 2px 0; }
+#spec-name-hint .md code { background: var(--surface-2); }
+#spec-name-hint .md a { color: var(--blue); }
 
 /* ── 详情：任务组 ───────────────────────────────────── */
 .task-group { margin-bottom: 14px; }

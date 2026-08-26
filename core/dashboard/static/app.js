@@ -715,7 +715,6 @@ function buildSpecRows(projectName, specs) {
       case 'task': return s.task_total ? (s.task_done / s.task_total) : (s.task_total === 0 ? 0 : null);
       case 'verify': return s.verify_total ? s.verify_done : (s.verify_total === 0 ? 0 : null);
       case 'duration': return s.total_duration == null ? 0 : Number(s.total_duration);
-      case 'error': return s.error ? s.error : null;
       default: return null;
     }
   }
@@ -767,7 +766,6 @@ function renderProject(data) {
     { key: 'task', label: '任务进度' },
     { key: 'verify', label: '验证' },
     { key: 'duration', label: '耗时' },
-    { key: 'error', label: '错误' },
   ];
   const arrows = { asc: ' ▲', desc: ' ▼' };
   const thead = headers.map((h) => {
@@ -835,9 +833,6 @@ function specRow(project, s, depth = 0, orphan = false) {
   const verify = s.verify_total > 0
     ? `<span title="验证进度">${s.verify_done}/${s.verify_total}</span>`
     : '<span class="muted">—</span>';
-  const err = s.error
-    ? `<span class="err-tag" title="${esc(s.error)}">⚠ ${esc(String(s.error).slice(0, 50))}</span>`
-    : '';
   const created = s.created ? fmtDate(s.created) : '<span class="muted">—</span>';
   const dur = (s.total_duration && Number(s.total_duration) > 0)
     ? fmtDuration(Number(s.total_duration))
@@ -847,10 +842,11 @@ function specRow(project, s, depth = 0, orphan = false) {
   const fixMark = depth > 0 ? '🔧 ' : '';
   const orphanClass = orphan ? ' orphan-fix' : '';
   const nameCell = `${indent}${fixMark}${esc(s.name)}`;
-  return `
+  // 主行（不再含「错误」列），名称单元格带 data-project/data-spec 供 hover 提示定位
+  const mainRow = `
   <tr class="spec-row${orphanClass}" onclick="nav('spec/${encodeURIComponent(project)}/${encodeURIComponent(s.name)}')">
     <td>${statusPill(s.status)}</td>
-    <td class="spec-name-cell">${nameCell}</td>
+    <td class="spec-name-cell" data-project="${esc(project)}" data-spec="${esc(s.name)}">${nameCell}</td>
     <td>P${s.priority ?? '?'}</td>
     <td class="created-cell">${created}</td>
     <td class="progress-cell">
@@ -859,12 +855,22 @@ function specRow(project, s, depth = 0, orphan = false) {
     </td>
     <td>${verify}</td>
     <td>${dur}</td>
-    <td>${err}</td>
     <td class="doc-actions">
       <button class="doc-btn" title="查看背景文档" onclick="event.stopPropagation(); openDocModal('${encodeURIComponent(project)}', '${encodeURIComponent(s.name)}', 'proposal')">背景</button>
       <button class="doc-btn" title="查看设计文档" onclick="event.stopPropagation(); openDocModal('${encodeURIComponent(project)}', '${encodeURIComponent(s.name)}', 'design')">设计</button>
     </td>
   </tr>`;
+  // 信息子行：error 非空时跨全列显示完整消息（不再截断），空则不渲染、不占行高
+  if (s.error) {
+    return mainRow + `
+  <tr class="spec-info-row">
+    <td colspan="${SPEC_COL_COUNT}">
+      <span class="info-badge">信息</span>
+      <span class="info-msg">${esc(String(s.error))}</span>
+    </td>
+  </tr>`;
+  }
+  return mainRow;
 }
 
 function hydrateProjectFilter() {
@@ -1152,6 +1158,140 @@ function mdRender(text) {
   } catch (e) {
     return `<div class="md">${esc(String(text))}</div>`;
   }
+}
+
+// ── SPEC 名称 hover Why 提示（add-spec-list-hover-hint） ──
+// 表头列数（移除「错误」列后）：状态/名称/优先级/创建时间/任务进度/验证/耗时/文档
+const SPEC_COL_COUNT = 8;
+// 按 (project, spec) 内存缓存 proposal.md 的 Why 段渲染结果
+// 值形态：{status:'loading', promise} | {status:'done', html} | {status:'empty', html:null}
+const whyCache = new Map();
+
+// 从 proposal.md 源文本提取 `## Why` 段（含 GFM 语义，渲染前提取）
+function extractWhy(markdown) {
+  if (!markdown) return null;
+  const lines = String(markdown).split('\n');
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^##\s+why\s*$/i.test(lines[i])) { start = i + 1; break; }
+  }
+  if (start === -1) return null;
+  const collected = [];
+  for (let i = start; i < lines.length; i++) {
+    // 遇到下一个二级标题（## ）即段尾（含 Why 内部的 ### 子标题不受影响）
+    if (/^##\s/.test(lines[i])) break;
+    collected.push(lines[i]);
+  }
+  const text = collected.join('\n').trim();
+  return text || null;
+}
+
+// 按需获取并渲染 Why 段；返回 Promise<html|null>（null = 无提示）
+function fetchWhy(project, spec) {
+  const key = project + '│' + spec;
+  const cached = whyCache.get(key);
+  if (cached) {
+    if (cached.status === 'done') return Promise.resolve(cached.html);
+    if (cached.status === 'empty') return Promise.resolve(null);
+    if (cached.status === 'loading') return cached.promise;   // 复用进行中的请求
+  }
+  const p = api(`/api/spec-doc?project=${encodeURIComponent(project)}`
+      + `&spec=${encodeURIComponent(spec)}&doc=proposal`)
+    .then((d) => {
+      if (!d.found) {                       // 文档缺失 / 无 Why 段 → 负缓存，避免反复无效请求
+        whyCache.set(key, { status: 'empty', html: null });
+        return null;
+      }
+      const why = extractWhy(d.content);
+      if (!why) {
+        whyCache.set(key, { status: 'empty', html: null });
+        return null;
+      }
+      const html = mdRender(why);           // Why 已是 markdown 子串，直接经既有管线渲染
+      whyCache.set(key, { status: 'done', html });
+      return html;
+    })
+    .catch((err) => {
+      whyCache.delete(key);                 // 请求失败不缓存，下次 hover 自动重试
+      return null;
+    });
+  whyCache.set(key, { status: 'loading', promise: p, html: null });
+  return p;
+}
+
+function ensureHintEl() {
+  let h = el('spec-name-hint');
+  if (!h) {
+    h = document.createElement('div');
+    h.id = 'spec-name-hint';
+    h.className = 'hidden';
+    document.body.appendChild(h);
+  }
+  return h;
+}
+
+// 按视口坐标定位 hint：优先名称下方，空间不足时向上/向左翻转，避免溢出
+function positionHint(h, rect) {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const r = h.getBoundingClientRect();
+  let top = rect.bottom + 6;
+  let left = rect.left;
+  if (top + r.height > vh && rect.top - 6 - r.height > 0) top = rect.top - 6 - r.height;
+  if (left + r.width > vw) left = Math.max(8, vw - r.width - 8);
+  h.style.top = Math.max(8, top) + 'px';
+  h.style.left = Math.max(8, left) + 'px';
+}
+
+function showWhyHint(cell, project, spec) {
+  if (!cell.isConnected) return;            // 重渲染后旧节点已脱离 DOM，跳过
+  const h = ensureHintEl();
+  const rect = cell.getBoundingClientRect();
+  h.classList.remove('hidden');
+  h.innerHTML = '<div class="why-loading">加载中…</div>';
+  positionHint(h, rect);
+  fetchWhy(project, spec).then((html) => {
+    if (!html) { h.classList.add('hidden'); return; }   // empty / 无 Why 段 → 不显示
+    if (!cell.isConnected) { h.classList.add('hidden'); return; }
+    h.innerHTML = html;
+    positionHint(h, rect);
+  }).catch(() => { h.classList.add('hidden'); });
+}
+
+function hideWhyHint() {
+  const h = el('spec-name-hint');
+  if (h) h.classList.add('hidden');
+}
+
+// 事件委托绑定 hover / 关闭路径（name cell 会被 2 秒重渲染，故委托到 document）
+let _hoverTimer = null;
+let _hoverCell = null;
+function initWhyHint() {
+  if (initWhyHint._done) return;
+  initWhyHint._done = true;
+
+  document.addEventListener('mouseover', (e) => {
+    const cell = e.target.closest ? e.target.closest('.spec-name-cell') : null;
+    if (!cell) return;
+    if (_hoverCell === cell) return;        // 同一单元格内移动，重置计时器
+    if (_hoverTimer) clearTimeout(_hoverTimer);
+    _hoverCell = cell;
+    const project = cell.dataset.project, spec = cell.dataset.spec;
+    _hoverTimer = setTimeout(() => showWhyHint(cell, project, spec), 200);
+  });
+
+  document.addEventListener('mouseout', (e) => {
+    const cell = e.target.closest ? e.target.closest('.spec-name-cell') : null;
+    if (!cell) return;
+    const to = e.relatedTarget;
+    if (to && cell.contains(to)) return;    // 仍在单元格内，不算离开
+    if (_hoverTimer) clearTimeout(_hoverTimer);
+    if (_hoverCell === cell) _hoverCell = null;
+    hideWhyHint();
+  });
+
+  // 点击（含行跳转）与任意滚动（表格 wrap / 窗口）均关闭
+  document.addEventListener('click', () => hideWhyHint(), true);
+  document.addEventListener('scroll', () => hideWhyHint(), true);
 }
 
 // 弹窗内的事件渲染：assistant/user 文本走 Markdown，工具调用保持等宽
@@ -1878,3 +2018,4 @@ window.openRunModal = openRunModal;
 // ── 启动 ───────────────────────────────────────────────
 route();
 connectSSE();
+initWhyHint();
