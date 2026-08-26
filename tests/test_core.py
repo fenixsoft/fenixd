@@ -611,6 +611,154 @@ class TestConfigLoader(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# 配置分级：deep_merge / resolve_config（add-hierarchical-config）
+# ═══════════════════════════════════════════════════════════════════
+
+class TestDeepMerge(unittest.TestCase):
+    """纯函数 deep_merge：dict 递归合并（override 优先）、标量/list 整体替换、不修改入参。"""
+
+    def test_nested_dict_merge_override_wins(self):
+        from core.config import deep_merge
+        base = {"agents": {"max_concurrent": 4, "max_retries": 3}, "gates": {"approve_mode": "manual"}}
+        override = {"agents": {"max_concurrent": 2}}
+        merged = deep_merge(base, override)
+        self.assertEqual(merged["agents"]["max_concurrent"], 2)
+        self.assertEqual(merged["agents"]["max_retries"], 3)
+        self.assertEqual(merged["gates"]["approve_mode"], "manual")
+
+    def test_list_whole_replacement(self):
+        from core.config import deep_merge
+        base = {"llm": {"providers": [{"name": "a"}, {"name": "b"}]}}
+        override = {"llm": {"providers": [{"name": "c"}]}}
+        merged = deep_merge(base, override)
+        self.assertEqual(merged["llm"]["providers"], [{"name": "c"}])
+
+    def test_scalar_replacement_and_new_keys(self):
+        from core.config import deep_merge
+        merged = deep_merge({"a": 1}, {"a": 2, "b": 3})
+        self.assertEqual(merged, {"a": 2, "b": 3})
+
+    def test_does_not_mutate_inputs(self):
+        from core.config import deep_merge
+        base = {"agents": {"max_concurrent": 4}}
+        override = {"agents": {"max_concurrent": 2}}
+        deep_merge(base, override)
+        self.assertEqual(base["agents"]["max_concurrent"], 4)
+
+    def test_no_override_returns_base_copy(self):
+        from core.config import deep_merge
+        base = {"project": {"name": "p", "type": "web"}}
+        merged = deep_merge(base, {})
+        self.assertEqual(merged, base)
+        self.assertIsNot(merged, base)
+
+
+class TestResolveConfig(unittest.TestCase):
+    """有效配置解析：用户级 + 项目级深合并、缺失兜底、project.name 补齐、校验放宽。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir) / "myproj"
+        (self.project_root / ".fenix").mkdir(parents=True)
+        self.user_dir = Path(self.tmpdir) / "user-fenix"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_user(self, config):
+        import yaml
+        self.user_dir.mkdir(exist_ok=True)
+        with (self.user_dir / "config.yaml").open("w", encoding="utf-8") as f:
+            yaml.safe_dump(config, f)
+
+    def _write_project(self, config):
+        import yaml
+        with (self.project_root / ".fenix" / "config.yaml").open("w", encoding="utf-8") as f:
+            yaml.safe_dump(config, f)
+
+    def _resolve(self, project_root=None):
+        with patch("core.config.USER_CONFIG_DIR", self.user_dir):
+            return ConfigLoader.resolve_config(project_root or self.project_root)
+
+    def test_both_missing_returns_minimal_with_project_name(self):
+        cfg = self._resolve()
+        self.assertEqual(cfg["project"]["name"], "myproj")
+        self.assertNotIn("schedule", cfg)
+
+    def test_only_user_exists_uses_user_and_fills_project_name(self):
+        self._write_user({
+            "agents": {"max_concurrent": 4},
+            "gates": {"approve_mode": "manual"},
+        })
+        cfg = self._resolve()
+        self.assertEqual(cfg["agents"]["max_concurrent"], 4)
+        self.assertEqual(cfg["gates"]["approve_mode"], "manual")
+        self.assertEqual(cfg["project"]["name"], "myproj")
+
+    def test_user_project_name_overridden_by_root_name(self):
+        """用户级写了 project.name 且项目级未写 → 用项目根目录名覆盖（设计 Open Question）。"""
+        self._write_user({"project": {"name": "shared-name", "type": "web"}})
+        cfg = self._resolve()
+        self.assertEqual(cfg["project"]["name"], "myproj")
+
+    def test_project_override_and_inheritance(self):
+        """项目级覆盖个别键，其余键继承用户级（D2 合并语义）。"""
+        self._write_user({
+            "agents": {"max_concurrent": 4, "max_retries": 3},
+            "gates": {"approve_mode": "manual"},
+        })
+        self._write_project({
+            "project": {"name": "myproj", "type": "web"},
+            "agents": {"max_concurrent": 2},
+        })
+        cfg = self._resolve()
+        self.assertEqual(cfg["agents"]["max_concurrent"], 2)  # 项目级覆盖
+        self.assertEqual(cfg["agents"]["max_retries"], 3)     # 继承用户级
+        self.assertEqual(cfg["gates"]["approve_mode"], "manual")
+        self.assertEqual(cfg["project"]["name"], "myproj")
+
+    def test_project_name_kept_from_project_level(self):
+        self._write_project({"project": {"name": "custom-name", "type": "cli"}})
+        cfg = self._resolve()
+        self.assertEqual(cfg["project"]["name"], "custom-name")
+
+    def test_list_whole_replacement_in_resolve(self):
+        self._write_user({"llm": {"providers": [
+            {"name": "a", "baseurl": "https://a.com", "apikey": "k1"}]}})
+        self._write_project({"llm": {"providers": [
+            {"name": "b", "baseurl": "https://b.com", "apikey": "k2"}]}})
+        cfg = self._resolve()
+        self.assertEqual(cfg["llm"]["providers"], [{"name": "b", "baseurl": "https://b.com", "apikey": "k2"}])
+
+    def test_validation_still_checks_present_keys(self):
+        """宽松路径仍对已存在键做值级校验：非法 approve_mode 报错。"""
+        self._write_user({"gates": {"approve_mode": "bogus"}})
+        with self.assertRaises(ValueError):
+            self._resolve()
+
+    def test_parse_error_falls_back_without_raising(self):
+        """项目级文件 YAML 解析失败 → 按空 dict 兜底，不抛异常。"""
+        self._write_user({"gates": {"approve_mode": "manual"}})
+        (self.project_root / ".fenix" / "config.yaml").write_text(": : bad yaml [", encoding="utf-8")
+        cfg = self._resolve()
+        self.assertEqual(cfg["gates"]["approve_mode"], "manual")
+        self.assertEqual(cfg["project"]["name"], "myproj")
+
+    def test_missing_project_type_not_validated(self):
+        """宽松路径下 project 缺 type 不参与校验（设计 D3 步骤 4）。"""
+        self._write_project({"project": {"name": "myproj"}})
+        cfg = self._resolve()
+        self.assertEqual(cfg["project"]["name"], "myproj")
+
+    def test_invalid_project_type_still_rejected(self):
+        """宽松路径下显式提供非法 project.type 仍被拒绝。"""
+        self._write_project({"project": {"name": "myproj", "type": "bogus"}})
+        with self.assertRaises(ValueError):
+            self._resolve()
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Agent Runner Model Routing Tests
 # ═══════════════════════════════════════════════════════════════════
 
@@ -3051,8 +3199,8 @@ class TestRegistryDefaultDiscovery(unittest.TestCase):
         self.home.mkdir()
         self.proj_a = _mk_fenix_project(self.home, "projectA")
         self.proj_b = _mk_fenix_project(self.home, "projectB")
-        # 非 Fenixd 目录：只有 STATE.md 而无 .fenix/config.yaml
-        fake = self.home / "not-a-project"
+        # 轻量 Fenixd 目录：仅 STATE.md 即被发现（无需 .fenix/config.yaml）
+        fake = self.home / "lite-project"
         fake.mkdir()
         (fake / "STATE.md").write_text("# not a project", encoding="utf-8")
         self.cfg = self.tmpdir / "dashboard.yaml"
@@ -3071,8 +3219,9 @@ class TestRegistryDefaultDiscovery(unittest.TestCase):
         self.assertIn("projectA", by_name)
         self.assertIn("projectB", by_name)
         self.assertTrue(by_name["projectA"]["discovered"])
-        # 非 Fenixd 目录被排除
-        self.assertNotIn("not-a-project", by_name)
+        # 仅 STATE.md 的目录也被扫描命中
+        self.assertIn("lite-project", by_name)
+        self.assertTrue(by_name["lite-project"]["discovered"])
 
     def test_explicit_scan_dirs_overrides_default(self):
         from core.dashboard.registry import Registry
@@ -3093,7 +3242,7 @@ class TestRegistryDefaultDiscovery(unittest.TestCase):
         matches = [p for p in projects if p["name"] == "projectA"]
         self.assertEqual(len(matches), 1)           # 去重：只出现一次
         self.assertFalse(matches[0]["discovered"])  # 显式注册优先
-        self.assertNotIn("not-a-project", {p["name"] for p in projects})
+        self.assertIn("lite-project", {p["name"] for p in projects})
 
 
 class TestRegistryRemoveProject(unittest.TestCase):

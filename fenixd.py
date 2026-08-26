@@ -64,9 +64,9 @@ class FenixDaemon:
 
     def initialize(self):
         """Load config and initialize all components."""
-        # 1. Load configuration
-        config_path = FENIX_DIR / "config.yaml"
-        self.config = ConfigLoader.load(config_path)
+        # 1. Load configuration（有效配置：用户级 ~/.fenix/config.yaml + 项目级
+        #    .fenix/config.yaml 深合并；任一或全部缺失都允许，内置默认兜底）
+        self.config = ConfigLoader.resolve_config(PROJECT_ROOT)
 
         # 2. Initialize logger
         log_dir = PROJECT_ROOT / self.config.get("logging.dir", ".fenix/logs")

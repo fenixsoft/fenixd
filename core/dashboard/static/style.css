@@ -695,6 +695,19 @@ main { padding: 20px; max-width: 1280px; margin: 0 auto; }
   margin-bottom: 14px;
 }
 
+/* 配置分级：来源层级 badge（继承自用户级） */
+.config-inherit-badge {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 8px;
+  padding: 1px 8px;
+  font-size: 11px;
+  border-radius: 999px;
+  color: var(--muted);
+  border: 1px solid var(--hairline);
+  background: var(--surface);
+}
+
 /* Provider 卡片 */
 .provider-list {
   display: flex;
