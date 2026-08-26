@@ -409,6 +409,7 @@ tr.orphan-fix > td { border-left: 2px solid rgba(144, 133, 233, 0.5); }
 /* ── SPEC 列表（表格化 + 过滤） ──────────────────────── */
 .spec-filter {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
   margin-bottom: 12px;
