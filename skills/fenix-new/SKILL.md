@@ -77,6 +77,21 @@ print(f'SPEC <spec-name> registered')
 
 告知用户：**「SPEC `<name>` 已创建并注册。fenixd 会自动拾取并开始实现。」**
 
+### 5. 自动提交 spec（防 merge-back autostash 熔断）
+
+**必须在告知用户前完成提交。** 未提交的新 spec 目录会在 agent 派发时被 autostash 吞掉、且首个 merge-back 必熔断（已复现 2 次）。流程：
+
+```bash
+git add openspec/changes/<spec-name>/
+git commit -m "[fenix] spec: <spec-name>"
+```
+
+- 只 add 该 spec 目录，**禁止 `git add .` / `-A`**（避免带入无关改动）
+- STATE.md 已被 `.gitignore` 忽略，属运行时文件，**无需提交**
+- 提交前检查脚手架产物完整：`.openspec.yaml` 缺失时补写（内容为 `schema: spec-driven` + `created: <年-月-日>` 两行，与其它 change 一致）
+- 提交失败（pre-commit hook 报错等）时修复后重新提交，不要跳过 hook
+- `--modify <name>` 更新完 artifacts 后同样执行本节提交
+
 ## SPEC 修改
 
 如果用户传入 `--modify <name>`：读取现有 SPEC → 理解变更 → 更新 artifacts → 重置状态为 drafted。
