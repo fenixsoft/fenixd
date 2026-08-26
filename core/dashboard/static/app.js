@@ -686,7 +686,14 @@ function buildSpecRows(projectName, specs) {
   });
 
   // 排序键比较器（按 specSort）
+  // roots / orphanFix /childrenMap 存的是 spec 名（字符串），而 sortValue 需要
+  // spec 对象取 total_duration / status 等字段；此处先经 byName 把名解析为对象，
+  // 避免 a.total_duration 为 undefined → 所有比较恒等、排序静默失效（表头点击不重排）。
   function cmp(a, b) {
+    const sa = typeof a === 'string' ? byName[a] : a;
+    const sb = typeof b === 'string' ? byName[b] : b;
+    a = sa || a;
+    b = sb || b;
     const key = specSort.key;
     const dir = specSort.dir === 'desc' ? -1 : 1;
     if (!key) {
