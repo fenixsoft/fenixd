@@ -42,7 +42,7 @@ class ConfigLoader:
     VALID_PROJECT_TYPES = ["web", "cli", "library", "api"]
 
     # Known agent types for model assignment
-    KNOWN_AGENT_TYPES = ["implementer", "planner-plan", "planner-judge", "verifier"]
+    KNOWN_AGENT_TYPES = ["implementer", "planner-plan", "planner-judge", "verifier", "administrator"]
 
     # Valid approve modes
     VALID_APPROVE_MODES = ["manual", "auto"]

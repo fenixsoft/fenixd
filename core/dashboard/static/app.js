@@ -1599,6 +1599,7 @@ const KNOWN_AGENT_TYPES = [
   { key: 'planner-plan', label: 'Planner Plan（生成场景）' },
   { key: 'planner-judge', label: 'Planner Judge（判定结果）' },
   { key: 'verifier', label: 'Verifier（旧版验证）' },
+  { key: 'administrator', label: 'Administrator（运维）' },
 ];
 
 function renderConfig(data) {
@@ -1627,17 +1628,7 @@ function renderConfig(data) {
     ? (hasConfig ? '' : '<span class="status-pill st-warning">⚠ 用户级配置文件尚不存在，保存后创建</span>')
     : (hasConfig ? '' : '<span class="status-pill st-warning">⚠ 项目尚无配置文件</span>');
 
-  return `
-  <div class="config-page">
-    <div class="page-title">${title}</div>
-    <div class="page-sub">
-      ${sub}
-      ${missingNote}
-    </div>
-    ${error ? `<div class="config-error">⚠ ${esc(error)}</div>` : ''}
-
-    <div id="config-save-banner" class="config-banner hidden"></div>
-
+  const providerSection = `
     <div class="config-section">
       <h3>🤖 LLM Provider 列表 ${fromUser('llm')}</h3>
       <p class="section-hint">定义可用的 LLM 提供者（baseurl / apikey / 默认模型）。</p>
@@ -1645,8 +1636,9 @@ function renderConfig(data) {
         ${providers.map((p, i) => renderProviderCard(p, i)).join('')}
       </div>
       <button class="btn btn-secondary" id="btn-add-provider">+ 新增 Provider</button>
-    </div>
+    </div>`;
 
+  const assignSection = `
     <div class="config-section">
       <h3>🧩 Agent 模型分配 ${fromUser('agents.models')}</h3>
       <p class="section-hint">为每种 Agent 角色分配 Provider 与模型。模型名留空时使用所选 Provider 的默认模型。</p>
@@ -1656,8 +1648,9 @@ function renderConfig(data) {
       <div class="agent-assign-grid">
         ${KNOWN_AGENT_TYPES.map((at) => renderAgentAssignment(at, providers, models)).join('')}
       </div>
-    </div>
+    </div>`;
 
+  const parallelSection = `
     <div class="config-section">
       <h3>⚡ 并行度设置 ${fromUser('agents.max_concurrent')}</h3>
       <p class="section-hint">
@@ -1677,8 +1670,9 @@ function renderConfig(data) {
           value="${esc(agents.run_timeout_seconds ?? 3600)}" />
         <small>默认 3600（1 小时）。单个 Agent 运行超时即终止并触发重试。</small>
       </div>
-    </div>
+    </div>`;
 
+  const approveSection = `
     <div class="config-section">
       <h3>🚪 审批模式 ${fromUser('gates.approve_mode')}</h3>
       <p class="section-hint">
@@ -1696,10 +1690,35 @@ function renderConfig(data) {
           <small class="auto-warn">⚠ SPEC 完成后 daemon 自动执行 <code>git push origin fenix/&lt;spec&gt;</code>。</small>
         </label>
       </div>
+    </div>`;
+
+  return `
+  <div class="config-page">
+    <div class="page-title">${title}</div>
+    <div class="page-sub">
+      ${sub}
+      ${missingNote}
+    </div>
+    ${error ? `<div class="config-error">⚠ ${esc(error)}</div>` : ''}
+
+    <div id="config-save-banner" class="config-banner hidden"></div>
+
+    <div class="config-tabs" data-testid="config-tabs">
+      <div class="tab-bar" role="tablist">
+        <button class="tab-btn active" data-testid="tab-llm-provider" data-tab="llm-provider" role="tab">🤖 LLM Provider</button>
+        <button class="tab-btn" data-testid="tab-agent-models" data-tab="agent-models" role="tab">🧩 Agent 模型分配</button>
+        <button class="tab-btn" data-testid="tab-parallel" data-tab="parallel" role="tab">⚡ 并行度设置</button>
+        <button class="tab-btn" data-testid="tab-approve" data-tab="approve" role="tab">🚪 审批模式</button>
+      </div>
+
+      <div class="tab-pane active" data-testid="pane-llm-provider" data-pane="llm-provider">${providerSection}</div>
+      <div class="tab-pane" data-testid="pane-agent-models" data-pane="agent-models" hidden>${assignSection}</div>
+      <div class="tab-pane" data-testid="pane-parallel" data-pane="parallel" hidden>${parallelSection}</div>
+      <div class="tab-pane" data-testid="pane-approve" data-pane="approve" hidden>${approveSection}</div>
     </div>
 
     <div class="config-actions">
-      <button class="btn btn-primary" id="btn-save-config">💾 保存配置</button>
+      <button class="btn btn-primary" id="btn-save-config" data-testid="btn-save-config">💾 保存配置</button>
       <span class="config-note">保存后需重启 daemon 生效</span>
     </div>
   </div>`;
@@ -1835,6 +1854,29 @@ function hydrateConfigPage() {
       if (fields) fields.classList.toggle('disabled', !t.checked);
     }
   });
+
+  // 页签切换（仅显隐 pane，不重渲染、不丢表单输入）
+  const tabBar = main.querySelector('.config-tabs .tab-bar');
+  if (tabBar && !main.querySelector('.config-tabs[data-bound="1"]')) {
+    tabBar.addEventListener('click', (e) => {
+      const btn = e.target.closest('.tab-btn');
+      if (!btn) return;
+      const tab = btn.dataset.tab;
+      // 更新 tab 激活态
+      tabBar.querySelectorAll('.tab-btn').forEach((b) =>
+        b.classList.toggle('active', b === btn)
+      );
+      // 切换 pane 显隐（保留全部 pane 的 DOM 与输入状态）
+      main.querySelectorAll('.config-tabs .tab-pane').forEach((pane) => {
+        const active = pane.dataset.pane === tab;
+        pane.classList.toggle('active', active);
+        if (active) pane.removeAttribute('hidden');
+        else pane.setAttribute('hidden', '');
+      });
+    });
+    const tabsWrap = main.querySelector('.config-tabs');
+    if (tabsWrap) tabsWrap.setAttribute('data-bound', '1');
+  }
 
   // 保存按钮
   const saveBtn = el('btn-save-config');
@@ -1980,7 +2022,7 @@ function saveConfig() {
       if (banner) {
         banner.className = 'config-banner success';
         banner.textContent = data.path
-          ? `✅ 配置已写入 ${data.path}，重启 daemon 后生效`
+          ? `✅ 配置已保存并写入 ${data.path}，重启 daemon 后生效`
           : '✅ 配置已保存，重启 daemon 后生效';
       }
       // 稍后重新加载确认（避免立即重绘吞掉保存成功提示）

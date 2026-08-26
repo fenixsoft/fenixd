@@ -373,9 +373,10 @@ class TestRunAdministrator:
         runner.project_root = proot
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._get_agent_model_assignment = lambda agent_type: None
         runner._build_prompt = lambda *a, **k: "prompt"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, max_turns):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns):
             return "output", 5, "sess"
 
         runner._run_claude = fake_run_claude
@@ -592,9 +593,10 @@ class TestRunAdministrator:
         runner.project_root = proot
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._get_agent_model_assignment = lambda agent_type: None
         runner._build_prompt = lambda *a, **k: "prompt"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, max_turns):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns):
             (proot / ".fenix" / "admin_disposition.json").write_text(json.dumps({
                 "spec": "spec-a",
                 "problem": "卡死",
@@ -622,10 +624,11 @@ class TestRunAdministrator:
         runner.project_root = proot
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._get_agent_model_assignment = lambda agent_type: None
         runner._build_prompt = lambda *a, **k: "prompt"
         summary = "根因是工作树状态陈旧；已清理并重新调度；无需人工介入。"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, max_turns):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns):
             (proot / ".fenix" / "admin_disposition.json").write_text(json.dumps({
                 "spec": "spec-a",
                 "problem": "卡死",
@@ -650,9 +653,10 @@ class TestRunAdministrator:
         runner.project_root = proot
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._get_agent_model_assignment = lambda agent_type: None
         runner._build_prompt = lambda *a, **k: "prompt"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, max_turns):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns):
             (proot / ".fenix" / "admin_disposition.json").write_text(json.dumps({
                 "spec": "spec-a", "result": "resolved",
             }), encoding="utf-8")
@@ -698,6 +702,7 @@ class TestRunAdministrator:
         runner.project_root = proot
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._get_agent_model_assignment = lambda agent_type: None
         runner._build_prompt = lambda *a, **k: "prompt"
 
         def failing_run_claude(*a, **k):
@@ -710,6 +715,63 @@ class TestRunAdministrator:
         assert "claude 崩溃" in disp.error
         # 失败时无处置文件 → 用信号详情兜底
         assert disp.problem == "卡死"
+
+    def test_run_administrator_injects_provider_env_when_assigned(self, tmp_path):
+        """agents.models.administrator 已分配 → --model 用分配模型并注入 provider env（直连）。"""
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.project_root = proot
+        runner._get_config = lambda key, default=None: default
+        runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._get_agent_model_assignment = lambda agent_type: (
+            {"name": "volc", "baseurl": "https://v.com", "apikey": "sk-v"},
+            "deepseek-v4-flash",
+        ) if agent_type == "administrator" else None
+        runner._build_prompt = lambda *a, **k: "prompt"
+
+        captured = {}
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns):
+            captured["model"] = model_override
+            captured["env"] = env_overrides
+            (proot / ".fenix" / "admin_disposition.json").write_text(
+                json.dumps({"spec": "spec-a", "result": "resolved"}), encoding="utf-8")
+            return "output", 5, "sess"
+
+        runner._run_claude = fake_run_claude
+        runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
+        assert captured["model"] == "deepseek-v4-flash"
+        assert captured["env"]["ANTHROPIC_BASE_URL"] == "https://v.com"
+        assert captured["env"]["ANTHROPIC_API_KEY"] == "sk-v"
+        assert captured["env"]["ANTHROPIC_MODEL"] == "deepseek-v4-flash"
+        assert "CLAUDE_CONFIG_DIR" in captured["env"]
+
+    def test_run_administrator_legacy_fallback_when_unassigned(self, tmp_path):
+        """未分配 administrator → 走 admin.agent_model → 默认网关，不注入 provider env。"""
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.project_root = proot
+        runner._get_config = lambda key, default=None: default
+        runner._get_admin_model = lambda: "claude-opus-4"
+        runner._get_agent_model_assignment = lambda agent_type: None
+        runner._build_prompt = lambda *a, **k: "prompt"
+
+        captured = {}
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns):
+            captured["model"] = model_override
+            captured["env"] = env_overrides
+            (proot / ".fenix" / "admin_disposition.json").write_text(
+                json.dumps({"spec": "spec-a", "result": "resolved"}), encoding="utf-8")
+            return "output", 5, "sess"
+
+        runner._run_claude = fake_run_claude
+        runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
+        assert captured["model"] == "claude-opus-4"
+        assert "ANTHROPIC_BASE_URL" not in captured["env"]
+        assert "ANTHROPIC_API_KEY" not in captured["env"]
 
 
 # ── 4.3 Dashboard alerts API ────────────────────────────
