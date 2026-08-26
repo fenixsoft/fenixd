@@ -529,9 +529,11 @@ class TestRegistry:
     def test_discover_explicit_and_scan(self, tmp_path):
         proj_a = make_project(tmp_path, "proj-a")
         proj_b = make_project(tmp_path, "proj-b")
-        # 误检目录：有 STATE.md 但无 .fenix/config.yaml
-        (tmp_path / "fake-proj").mkdir()
-        (tmp_path / "fake-proj" / "STATE.md").write_text("# state", encoding="utf-8")
+        # 仅 STATE.md 的目录：无需 .fenix/config.yaml 也应被发现
+        (tmp_path / "lite-proj").mkdir()
+        (tmp_path / "lite-proj" / "STATE.md").write_text("# state", encoding="utf-8")
+        # 无 STATE.md 的目录仍被排除
+        (tmp_path / "plain").mkdir()
 
         cfg = tmp_path / "dashboard.yaml"
         reg = Registry(config_path=cfg)
@@ -545,7 +547,31 @@ class TestRegistry:
         assert "proj-a" in by_name          # 显式
         assert "proj-b" in by_name          # 扫描命中
         assert by_name["proj-b"]["discovered"] is True
-        assert "fake-proj" not in by_name   # 误检目录被排除
+        assert "lite-proj" in by_name       # 仅 STATE.md 也被扫描命中
+        assert by_name["lite-proj"]["discovered"] is True
+        assert "plain" not in by_name       # 无 STATE.md 的目录被排除
+
+    def test_discover_requires_state_only(self, tmp_path):
+        # 仅含 STATE.md（无 .fenix/config.yaml）的目录被识别为 Fenixd 项目
+        (tmp_path / "lite-proj").mkdir()
+        (tmp_path / "lite-proj" / "STATE.md").write_text("# state", encoding="utf-8")
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [], "scan_dirs": [str(tmp_path)]})
+        projects = reg.discover()
+        names = {p["name"] for p in projects}
+        assert "lite-proj" in names
+
+    def test_add_project_without_config_ok(self, tmp_path):
+        # add_project 对无 .fenix/config.yaml 的目录（仅 STATE.md）成功
+        proot = tmp_path / "lite-proj"
+        proot.mkdir()
+        (proot / "STATE.md").write_text("# state", encoding="utf-8")
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        added, msg = reg.add_project(str(proot))
+        assert added
+        assert "已注册项目" in msg
 
     def test_discover_missing_explicit_flagged(self, tmp_path):
         missing = tmp_path / "gone"
