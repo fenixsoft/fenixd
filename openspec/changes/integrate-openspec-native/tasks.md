@@ -34,6 +34,6 @@
 
 ## 6. 收尾与回归
 
-- [ ] 6.1 全仓 `grep -rn "openspec-propose\|/opsx:apply\|openspec-apply-change"`（排除 `openspec/changes/`）确认 fenix 代码与 skills 无残留引用
-- [ ] 6.2 确认 `install.sh` 无需改动（不涉及 openspec）；README 补充「不再需要独立安装 openspec」说明（可选）
-- [ ] 6.3 运行 `pytest tests/ -q` 全量通过
+- [x] 6.1 全仓 `grep -rn "openspec-propose\|/opsx:apply\|openspec-apply-change"`（排除 `openspec/changes/`）确认 fenix 代码与 skills 无残留引用
+- [x] 6.2 确认 `install.sh` 无需改动（不涉及 openspec）；README 补充「不再需要独立安装 openspec」说明（可选）
+- [x] 6.3 运行 `pytest tests/ -q` 全量通过
