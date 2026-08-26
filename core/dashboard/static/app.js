@@ -77,7 +77,7 @@ function progressBar(done, total) {
 // ── 路由与状态 ──────────────────────────────────────────
 let currentState = { view: 'overview' };
 let seq = 0;
-const specFilter = { q: '', status: '' };  // 项目视图过滤状态，跨刷新保持
+const specFilter = { q: '', status: '', type: '' };  // 项目视图过滤状态，跨刷新保持；type: '' 全部 / 'req' 仅需求 / 'issue' 仅问题
 let activitiesTab = 'all';  // 运维记录跨项目视图的页签：'all' 或项目名（跨刷新保持）
 let specSort = { key: '', dir: '' };  // 概览表格排序状态：key/dir(asc|desc|'')，跨刷新保持
 let specTab = 'timeline';  // spec 详情页页签：timeline|scenarios|bugs|screenshots，跨刷新保持
@@ -744,9 +744,12 @@ function renderProject(data) {
 
   // 前端过滤
   const q = specFilter.q.toLowerCase();
+  const type = specFilter.type;
   const filtered = specs.filter((s) => {
     if (q && !s.name.toLowerCase().includes(q)) return false;
     if (specFilter.status && s.status !== specFilter.status) return false;
+    if (type === 'req' && s.name.startsWith('fix-')) return false;       // 仅需求：隐藏 fix-*
+    if (type === 'issue' && !s.name.startsWith('fix-')) return false;    // 仅问题：只保留 fix-*
     return true;
   });
 
@@ -791,6 +794,11 @@ function renderProject(data) {
       <select id="spec-filter-status">
         <option value="" ${specFilter.status === '' ? 'selected' : ''}>全部状态</option>
         ${statusOptions}
+      </select>
+      <select id="spec-filter-type">
+        <option value="" ${specFilter.type === '' ? 'selected' : ''}>全部</option>
+        <option value="req" ${specFilter.type === 'req' ? 'selected' : ''}>仅需求</option>
+        <option value="issue" ${specFilter.type === 'issue' ? 'selected' : ''}>仅问题</option>
       </select>
     </div>
     ${rowsHtml ? `
@@ -856,11 +864,13 @@ function specRow(project, s, depth = 0, orphan = false) {
 function hydrateProjectFilter() {
   const qInput = el('spec-filter-q');
   const sSelect = el('spec-filter-status');
-  if (!qInput || !sSelect) return;
+  const tSelect = el('spec-filter-type');
+  if (!qInput || !sSelect || !tSelect) return;
 
   if (qInput._bound) return;
   qInput._bound = true;
   sSelect._bound = true;
+  tSelect._bound = true;
 
   qInput.addEventListener('input', (e) => {
     specFilter.q = e.target.value;
@@ -868,6 +878,10 @@ function hydrateProjectFilter() {
   });
   sSelect.addEventListener('change', (e) => {
     specFilter.status = e.target.value;
+    load();
+  });
+  tSelect.addEventListener('change', (e) => {
+    specFilter.type = e.target.value;
     load();
   });
 }
