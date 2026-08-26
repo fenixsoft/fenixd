@@ -64,6 +64,7 @@ class FakeRunner:
             problem=signal.get("description", ""),
             actions_taken="测试处置",
             result="resolved",
+            summary="诊断结论：测试困境；处置时间线：测试处置；结果：已解决。",
         )
 
 
@@ -349,6 +350,16 @@ class TestAdminMonitorThrottle:
         assert disp["result"] == "resolved"
         assert disp["admin_run_id"] == "admin-test-1"
 
+    def test_disposition_recorded_with_summary(self, tmp_path):
+        """_invoke_administrator 把 disp.summary 透传到 admin_alerts.json 的处置记录。"""
+        runner = FakeRunner()
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": iso_ago(120)},
+        }, runner=runner)
+        mon.run_once()
+        disp = next(r for r in mon.store.read_all() if r["kind"] == DISPOSITION)
+        assert disp["summary"] == "诊断结论：测试困境；处置时间线：测试处置；结果：已解决。"
+
 
 # ── run_administrator：处置文件读取 + 陈旧清理 ──────────
 
@@ -476,6 +487,83 @@ class TestRunAdministrator:
         assert disp.escalate is False
         assert disp.spec == "spec-a"
 
+    def test_run_administrator_passes_summary(self, tmp_path):
+        """admin_disposition 的 summary 透传到 AdminDisposition（叙述总结）。"""
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.project_root = proot
+        runner._get_config = lambda key, default=None: default
+        runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._build_prompt = lambda *a, **k: "prompt"
+        summary = "根因是工作树状态陈旧；已清理并重新调度；无需人工介入。"
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, max_turns):
+            (proot / ".fenix" / "admin_disposition.json").write_text(json.dumps({
+                "spec": "spec-a",
+                "problem": "卡死",
+                "actions_taken": ["clean", "reset"],
+                "result": "resolved",
+                "escalate": False,
+                "summary": summary,
+            }), encoding="utf-8")
+            return "output", 5, "sess"
+
+        runner._run_claude = fake_run_claude
+        disp = runner.run_administrator(
+            {"spec": "spec-a", "signal_type": "stuck", "description": "卡死"})
+        assert disp.summary == summary
+
+    def test_run_administrator_summary_default_empty(self, tmp_path):
+        """旧处置文件无 summary → AdminDisposition.summary 为空字符串（不报错）。"""
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.project_root = proot
+        runner._get_config = lambda key, default=None: default
+        runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._build_prompt = lambda *a, **k: "prompt"
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, max_turns):
+            (proot / ".fenix" / "admin_disposition.json").write_text(json.dumps({
+                "spec": "spec-a", "result": "resolved",
+            }), encoding="utf-8")
+            return "output", 5, "sess"
+
+        runner._run_claude = fake_run_claude
+        disp = runner.run_administrator(
+            {"spec": "spec-a", "signal_type": "stuck", "description": "卡死"})
+        assert disp.summary == ""
+
+    def test_read_admin_disposition_summary_normalized(self, tmp_path):
+        """_read_admin_disposition 把列表/非字符串 summary 归一化为字符串。"""
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        disp_path = proot / ".fenix" / "admin_disposition.json"
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.project_root = proot
+
+        # 列表 → 用分号拼接
+        disp_path.write_text(json.dumps({
+            "summary": ["诊断：根因是构建缓存损坏", "处置：清理缓存", "结果：恢复"],
+        }), encoding="utf-8")
+        assert runner._read_admin_disposition()["summary"] == "诊断：根因是构建缓存损坏；处置：清理缓存；结果：恢复"
+
+        # 缺失 → 空字符串
+        disp_path.write_text(json.dumps({"actions_taken": "x"}), encoding="utf-8")
+        assert runner._read_admin_disposition()["summary"] == ""
+
+        # 非字符串 → str 化
+        disp_path.write_text(json.dumps({"summary": 123}), encoding="utf-8")
+        assert runner._read_admin_disposition()["summary"] == "123"
+
+        # 损坏文件 → 空 dict（调用方兜底）
+        disp_path.write_text("not json{", encoding="utf-8")
+        assert runner._read_admin_disposition() == {}
+
     def test_run_administrator_failure_falls_back(self, tmp_path):
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
@@ -556,6 +644,40 @@ def alerts_fx(tmp_path):
     srv.stop()
 
 
+@pytest.fixture()
+def activities_fx(tmp_path):
+    """运维记录 API 测试数据：排序/置顶/缺 summary 降级。"""
+    proot = tmp_path / "proj-act"
+    (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+    (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+    store = AdminStore(proot, FakeLogger())
+    # 旧记录：无 summary（降级测试），时间最早
+    store.append({"kind": DISPOSITION, "signal_type": "stuck", "spec": "spec-old",
+                  "action_taken": "清理缓存", "result": "resolved", "escalate": False,
+                  "created": iso_ago(60)})
+    # 新记录：有 summary，时间最晚
+    store.append({"kind": DISPOSITION, "signal_type": "flapping", "spec": "spec-new",
+                  "action_taken": "重置状态", "result": "resolved", "escalate": False,
+                  "summary": "诊断结论：状态机空转；处置：重置；结果：恢复。",
+                  "created": iso_ago(10)})
+    # 升级关联：disposition escalate + 未处理 escalation 同 admin_run_id（应置顶）
+    store.append({"kind": DISPOSITION, "signal_type": "merge_streak", "spec": "spec-esc",
+                  "action_taken": "尝试清理", "result": "escalated", "escalate": True,
+                  "summary": "诊断结论：merge 冲突无法自动解决；需人工决策。",
+                  "admin_run_id": "admin-spec-esc-1", "created": iso_ago(30)})
+    esc = store.append({"kind": ESCALATION, "signal_type": "merge_streak", "spec": "spec-esc",
+                        "severity": "critical", "admin_run_id": "admin-spec-esc-1",
+                        "created": iso_ago(29)})
+    cfg = tmp_path / "dashboard.yaml"
+    reg = Registry(config_path=cfg)
+    reg.save({"port": 8787,
+              "projects": [{"name": "proj-act", "path": str(proot)}],
+              "scan_dirs": []})
+    srv = _AlertTestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+    yield proot, store, srv
+    srv.stop()
+
+
 class TestDashboardAlertsAPI:
     def test_api_alerts_project(self, alerts_fx):
         proot, store, srv = alerts_fx
@@ -598,5 +720,101 @@ class TestDashboardAlertsAPI:
     def test_api_alerts_unknown_project(self, alerts_fx):
         proot, store, srv = alerts_fx
         status, data = srv.get("/api/alerts?project=nope")
+        assert status == 200
+        assert "error" in data
+
+
+# ── 4.2 /api/admin-activities（运维记录 API） ───────────
+
+class TestDashboardAdminActivitiesAPI:
+    def test_admin_activities_only_dispositions(self, activities_fx):
+        proot, store, srv = activities_fx
+        status, data = srv.get("/api/admin-activities?project=proj-act")
+        assert status == 200
+        assert len(data["activities"]) == 3  # 只有 disposition，不含 escalation
+        assert all("actions_taken" in a and "result" in a for a in data["activities"])
+
+    def test_admin_activities_unhandled_pinned(self, activities_fx):
+        """未处理升级关联的处置置顶并标记 handled=False + escalation_id。"""
+        proot, store, srv = activities_fx
+        status, data = srv.get("/api/admin-activities?project=proj-act")
+        assert status == 200
+        acts = data["activities"]
+        assert acts[0]["spec"] == "spec-esc"           # 关联未处理升级 → 置顶
+        assert acts[0]["handled"] is False
+        assert acts[0]["escalation_id"] is not None
+        assert acts[0]["escalate"] is True
+        # 其余按时间倒序且 handled=True
+        rest = acts[1:]
+        assert all(a["handled"] is True for a in rest)
+        assert [a["spec"] for a in rest] == ["spec-new", "spec-old"]
+
+    def test_admin_activities_sorted_desc(self, tmp_path):
+        """无升级干扰时按时间倒序。"""
+        proot = tmp_path / "proj-sort"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+        store = AdminStore(proot, FakeLogger())
+        store.append({"kind": DISPOSITION, "signal_type": "stuck", "spec": "oldest",
+                      "created": iso_ago(60)})
+        store.append({"kind": DISPOSITION, "signal_type": "stuck", "spec": "middle",
+                      "created": iso_ago(30)})
+        store.append({"kind": DISPOSITION, "signal_type": "stuck", "spec": "newest",
+                      "created": iso_ago(10)})
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787,
+                  "projects": [{"name": "proj-sort", "path": str(proot)}],
+                  "scan_dirs": []})
+        srv = _AlertTestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+        try:
+            status, data = srv.get("/api/admin-activities?project=proj-sort")
+            assert status == 200
+            assert [a["spec"] for a in data["activities"]] == ["newest", "middle", "oldest"]
+        finally:
+            srv.stop()
+
+    def test_admin_activities_missing_summary_degrade(self, activities_fx):
+        """旧记录无 summary 时正常返回，结构化字段齐全（界面降级依据）。"""
+        proot, store, srv = activities_fx
+        status, data = srv.get("/api/admin-activities?project=proj-act")
+        assert status == 200
+        old = next(a for a in data["activities"] if a["spec"] == "spec-old")
+        assert not old.get("summary")
+        # action_taken 归一化为 actions_taken
+        assert old["actions_taken"] == "清理缓存"
+        assert old["result"] == "resolved"
+
+    def test_admin_activities_empty_list(self, tmp_path):
+        """无任何记录 → 空列表且不报错。"""
+        proot = tmp_path / "proj-empty"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787,
+                  "projects": [{"name": "proj-empty", "path": str(proot)}],
+                  "scan_dirs": []})
+        srv = _AlertTestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+        try:
+            status, data = srv.get("/api/admin-activities?project=proj-empty")
+            assert status == 200
+            assert data["activities"] == []
+        finally:
+            srv.stop()
+
+    def test_admin_activities_aggregated_by_project(self, activities_fx):
+        """缺省 project → 跨项目聚合，按项目分组。"""
+        proot, store, srv = activities_fx
+        status, data = srv.get("/api/admin-activities")
+        assert status == 200
+        groups = {g["name"]: g for g in data["projects"]}
+        assert "proj-act" in groups
+        assert len(groups["proj-act"]["activities"]) == 3
+        assert all(a["project"] == "proj-act" for a in groups["proj-act"]["activities"])
+
+    def test_admin_activities_unknown_project(self, activities_fx):
+        proot, store, srv = activities_fx
+        status, data = srv.get("/api/admin-activities?project=nope")
         assert status == 200
         assert "error" in data

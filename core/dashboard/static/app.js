@@ -90,6 +90,10 @@ function parseHash() {
     // config/<project>  或 config（无项目则选第一个）
     return { view: 'config', project: parts[1] || '' };
   }
+  if (parts[0] === 'activities') {
+    // activities/<project>（无项目 → 跨项目聚合）
+    return { view: 'activities', project: parts[1] || '' };
+  }
   return { view: 'overview' };
 }
 function nav(hash) {
@@ -110,6 +114,7 @@ function fetchFor(state) {
   if (state.view === 'overview') return api('/api/overview');
   if (state.view === 'project') return api('/api/specs?project=' + p);
   if (state.view === 'config') return api('/api/config?project=' + p);
+  if (state.view === 'activities') return api('/api/admin-activities?project=' + p);
   const s = encodeURIComponent(state.spec);
   return api('/api/specs/' + s + '?project=' + p);
 }
@@ -178,8 +183,9 @@ function handleSSEEvent(msg) {
     appendModalEvents(msg);
   }
   if (msg.type === 'alerts') {
-    // 告警标记已处理 / 新告警写入 → 刷新横幅
+    // 告警标记已处理 / 新告警写入 → 刷新横幅；运维记录页同步刷新
     loadAlerts();
+    if (currentState.view === 'activities') refreshView();
   }
 }
 
@@ -296,14 +302,93 @@ function markAlertHandled(project, id) {
   if (!project || !id) return;
   api('/api/alerts/' + encodeURIComponent(id) + '/handled?project=' + encodeURIComponent(project),
     { method: 'POST' })
-    .then(() => loadAlerts())
+    .then(() => {
+      loadAlerts();
+      if (currentState.view === 'activities') load();
+    })
     .catch(() => {});
+}
+
+// ── 运维记录（/api/admin-activities） ──────────────────
+const RESULT_META = {
+  resolved: { cls: 'st-good', icon: '✅', label: '已解决' },
+  'partially-resolved': { cls: 'st-warning', icon: '⚠️', label: '部分解决' },
+  escalated: { cls: 'st-critical', icon: '🚨', label: '已升级' },
+  failed: { cls: 'st-critical', icon: '❌', label: '失败' },
+  pending: { cls: 'st-muted', icon: '⏳', label: '处置中' },
+};
+function resultPill(result) {
+  const m = RESULT_META[result] || { cls: 'st-muted', icon: '❓', label: result || '未知' };
+  return `<span class="status-pill ${m.cls}">${m.icon} ${esc(m.label)}</span>`;
+}
+
+function renderActivities(data) {
+  if (data.projects) {
+    // 跨项目聚合：按项目分组
+    return `
+      <div class="page-title">运维记录</div>
+      <div class="page-sub">跨项目 Administrator 活动</div>
+      ${data.projects.map((g) => `
+        <div class="section">
+          <div class="section-title">${esc(g.name)}<span class="count">${(g.activities || []).length} 条</span></div>
+          ${(g.activities || []).length ? renderActivityCards(g.activities) : '<div class="empty-state">暂无运维记录</div>'}
+        </div>`).join('')}`;
+  }
+  const acts = data.activities || [];
+  const title = data.project ? '运维记录 · ' + esc(data.project) : '运维记录';
+  const sub = `${acts.length} 条 Administrator 处置记录 · 未处理升级置顶高亮`;
+  return `
+    <div class="breadcrumb"><button onclick="nav('overview')">← 概览</button>
+      ${data.project ? `<span class="sep">/</span>${esc(data.project)}` : ''}
+    </div>
+    <div class="page-title">${title}</div>
+    <div class="page-sub">${sub}</div>
+    ${acts.length ? renderActivityCards(acts) : '<div class="empty-state">暂无运维记录</div>'}`;
+}
+
+function renderActivityCards(acts) {
+  return `<div class="activity-timeline">${acts.map(activityCard).join('')}</div>`;
+}
+
+function activityCard(a) {
+  const unhandled = a.handled === false;   // 关联未处理升级 → 置顶高亮
+  const sev = a.severity || 'major';
+  const spec = a.spec ? `<span class="activity-spec">${esc(a.spec)}</span>` : '';
+  const sig = a.signal_type ? `<span class="activity-sig">${esc(a.signal_type)}</span>` : '';
+  const project = a.project
+    ? `<span class="alert-item-proj">${esc(a.project)}</span>` : '';
+  // 旧记录无 summary → 降级显示结构化字段（不崩溃）
+  const body = a.summary
+    ? `<div class="activity-summary">${esc(a.summary)}</div>`
+    : `<div class="activity-fallback">（无叙述总结）处置：${esc(a.actions_taken || '—')} · 结果：${esc(a.result || '—')}</div>`;
+  const action = a.actions_taken
+    ? `<div class="activity-action">处置：${esc(a.actions_taken)}</div>` : '';
+  const reco = a.recommended_action
+    ? `<div class="activity-reco">建议：${esc(a.recommended_action)}</div>` : '';
+  const needHuman = unhandled
+    ? `<span class="status-pill st-critical" title="需人工决策">需人工决策</span>` : '';
+  const markBtn = unhandled
+    ? `<button class="alert-handled-btn activity-handled-btn"
+        data-project="${esc(a.project || currentState.project || '')}"
+        data-id="${esc(a.escalation_id || '')}">标记已处理</button>` : '';
+  return `<div class="activity-card ${unhandled ? 'unhandled' : ''} sev-${esc(sev)}">
+    <div class="activity-head">
+      <span class="activity-time">${esc(fmtDate(a.created))}</span>
+      ${project}${spec}${sig}
+      ${resultPill(a.result)}
+      ${needHuman}
+      ${markBtn}
+    </div>
+    ${body}${action}${reco}
+  </div>`;
 }
 
 // ── 顶栏 ───────────────────────────────────────────────
 function updateTopbar() {
   const ov = el('btn-overview');
   ov.classList.toggle('active', currentState.view === 'overview');
+  const act = el('btn-activities');
+  if (act) act.classList.toggle('active', currentState.view === 'activities');
   const cfg = el('btn-config');
   if (cfg) cfg.classList.toggle('active', currentState.view === 'config');
   const sel = el('project-select');
@@ -329,6 +414,12 @@ function syncSelect() {
   sel.value = currentState.project || '';
 }
 el('btn-overview').addEventListener('click', () => nav('overview'));
+if (el('btn-activities')) {
+  el('btn-activities').addEventListener('click', () => {
+    const p = currentState.project || '';
+    nav('activities/' + encodeURIComponent(p));
+  });
+}
 if (el('btn-config')) {
   el('btn-config').addEventListener('click', () => {
     const p = currentState.project || '';
@@ -338,6 +429,13 @@ if (el('btn-config')) {
 el('project-select').addEventListener('change', (e) => {
   if (e.target.value) nav('project/' + encodeURIComponent(e.target.value));
   else nav('overview');
+});
+// 运维记录页「标记已处理」：事件委托（morphdom 重绘 #main 后仍生效）
+el('main').addEventListener('click', (e) => {
+  const t = e.target;
+  if (t.matches('.activity-handled-btn')) {
+    markAlertHandled(t.dataset.project, t.dataset.id);
+  }
 });
 window.addEventListener('hashchange', route);
 
@@ -356,6 +454,7 @@ function renderView(state, data) {
   const html = state.view === 'overview' ? renderOverview(data)
     : state.view === 'project' ? renderProject(data)
     : state.view === 'config' ? renderConfig(data)
+    : state.view === 'activities' ? renderActivities(data)
     : renderSpec(data);
   if (main._rendered && window.morphdom) {
     // 增量更新（VuePress 热重载同思路）：只 patch 变化部分，避免整页替换导致

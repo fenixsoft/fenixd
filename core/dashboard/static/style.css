@@ -163,6 +163,45 @@ a:hover { text-decoration: underline; }
   word-break: break-word;
 }
 
+/* ── 运维记录（/api/admin-activities） ────────────────── */
+.activity-timeline {
+  display: flex; flex-direction: column; gap: 12px;
+}
+.activity-card {
+  border: 1px solid var(--hairline-strong);
+  border-left: 3px solid var(--muted);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  background: var(--surface);
+}
+.activity-card.sev-critical { border-left-color: var(--critical); }
+.activity-card.sev-major { border-left-color: var(--serious); }
+.activity-card.sev-minor { border-left-color: var(--warning); }
+.activity-card.unhandled {
+  border-color: var(--critical);
+  background: rgba(208, 59, 59, 0.08);
+  box-shadow: 0 0 0 1px var(--critical);
+}
+.activity-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.activity-time { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.activity-spec, .activity-sig {
+  color: var(--blue); font-weight: 600; font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.activity-summary {
+  color: var(--ink); font-size: 13px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+}
+.activity-fallback { color: var(--muted); font-size: 12px; }
+.activity-action, .activity-reco {
+  color: var(--muted); font-size: 12px; margin-top: 4px;
+  word-break: break-word;
+}
+.activity-action { color: var(--ink-2); }
+
 /* ── 主容器 ───────────────────────────────────────────── */
 main { padding: 20px; max-width: 1280px; margin: 0 auto; }
 
