@@ -2,8 +2,8 @@
 
 ## 1. 解析函数共享化
 
-- [ ] 1.1 将 `core/dashboard/data.py` 的 `_parse_run_task_done` 解析核心提升为可复用公有函数（保持 memo 缓存与容错语义），dashboard 与 pm_engine 共用；`data.py` 内部调用点改为引用共享版本
-- [ ] 1.2 新增/扩展单元测试：run 产物含 TaskCreate subject id + TaskUpdate completed 时返回正确 done_ids；subject 无 id 时 flat 回退；文件缺失/损坏时返回空集不抛异常
+- [x] 1.1 将 `core/dashboard/data.py` 的 `_parse_run_task_done` 解析核心提升为可复用公有函数（保持 memo 缓存与容错语义），dashboard 与 pm_engine 共用；`data.py` 内部调用点改为引用共享版本
+- [x] 1.2 新增/扩展单元测试：run 产物含 TaskCreate subject id + TaskUpdate completed 时返回正确 done_ids；subject 无 id 时 flat 回退；文件缺失/损坏时返回空集不抛异常
 
 ## 2. daemon 写侧回写
 

@@ -185,12 +185,12 @@ def find_implementer_worktree(project_root, spec_name):
 # tasks.md，导致 Dashboard 任务进度永远 0/N。这里从最新 impl run 产物解析实时
 # 完成状态，叠加到 tasks.md 快照上（逐任务并集），使 Dashboard 实时反映进度。
 _TASK_ID_RE = re.compile(r"Task\s+#?\s*(\d+\.\d+)")
-# _parse_run_task_done 的 memo 缓存：run 文件 O_APPEND 只增，mtime/size 不变即命中。
+# parse_run_task_done 的 memo 缓存：run 文件 O_APPEND 只增，mtime/size 不变即命中。
 # 上限 64 项，超出整体清空，防止 append-only 文件每次追加换键导致无界增长。
 _RUN_TASK_CACHE: dict = {}
 
 
-def _find_impl_run_file(project_root, spec_name) -> Path | None:
+def find_impl_run_file(project_root, spec_name) -> Path | None:
     """最新一次 impl-<spec>-*.jsonl 运行产物，或 None。
 
     运行中 STATE.md 的 implementer_run 字段为空，不能用它定位；
@@ -214,8 +214,11 @@ def _find_impl_run_file(project_root, spec_name) -> Path | None:
     return candidates[0][1]
 
 
-def _parse_run_task_done(run_file: Path) -> dict:
+def parse_run_task_done(run_file: Path) -> dict:
     """解析 impl run 产物的 harness 任务完成状态（容错：任何损坏都不抛异常）。
+
+    该函数为 dashboard 实时叠加与 pm_engine 写侧回写共用的解析核心，
+    避免两套正则漂移。详见 _parse_run_task_done 历史语义说明。
 
     TaskCreate 的 input.subject 内嵌 tasks.md id（如 "Task 1.1: ..."）；
     TaskUpdate 的 taskId 为 1 基创建序（tool_result 形如 "Task #1 created ..."）。
@@ -277,6 +280,11 @@ def _parse_run_task_done(run_file: Path) -> dict:
         _RUN_TASK_CACHE.clear()
     _RUN_TASK_CACHE[key] = result
     return result
+
+
+# 向后兼容别名：旧调用点（tests / 历史引用）仍可用下划线前缀名。
+_parse_run_task_done = parse_run_task_done
+_find_impl_run_file = find_impl_run_file
 
 
 # 实时叠加生效的生命周期状态（含实现完成后的验证期）。ready/drafted 不叠加，
