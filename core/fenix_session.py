@@ -15,6 +15,7 @@ import hashlib
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 LEGACY_SESSION = "fenixd"
@@ -113,3 +114,90 @@ def is_running(root: str | None = None) -> bool:
     except Exception:
         pass
     return _tmux_match(proot)
+
+
+def start_daemon(root: str | None = None) -> dict:
+    """启动该项目的 fenixd daemon（复用唯一 tmux session）。
+
+    以与 `fenix-setup` 一致的命令拉起：
+    `tmux new-session -d -s <session> "cd <root> && python3 .fenix/fenixd.py 2>&1 | tee .fenix/logs/stdout.log"`
+
+    启动前校验项目根存在 `.fenix`（框架软链接）与 `STATE.md`，缺失返回可读
+    错误且不产生 daemon 进程。幂等：已运行则直接返回 already，不重复拉起。
+    启动后轮询 `is_running` 至多约 5 秒，命中再返回成功。
+
+    返回: {"ok": bool, "error": str|None, "session": str|None, "already": bool}
+    任何 subprocess/tmux 异常均返回 ok=False 的错误对象，不抛异常。
+    """
+    proot = resolve_root(root)
+    session = session_name(proot)
+    if not (proot / ".fenix").exists():
+        return {"ok": False, "error": f"项目根缺少 .fenix 框架软链接: {proot}", "session": session, "already": False}
+    if not (proot / "STATE.md").is_file():
+        return {"ok": False, "error": f"项目根缺少 STATE.md: {proot}", "session": session, "already": False}
+    if is_running(proot):
+        return {"ok": True, "error": None, "session": session, "already": True}
+
+    try:
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", session,
+             f"cd {proot} && python3 .fenix/fenixd.py 2>&1 | tee .fenix/logs/stdout.log"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception as e:
+        return {"ok": False, "error": f"无法启动 daemon（tmux 不可用？）: {e}", "session": session, "already": False}
+
+    # 轮询等待进程真正起来（is_running 主判定为 /proc 进程检测）
+    for _ in range(50):
+        if is_running(proot):
+            return {"ok": True, "error": None, "session": session, "already": False}
+        time.sleep(0.1)
+    # 即便 is_running 因环境不可判（/proc 不可读）未命中，session 也已创建成功
+    return {"ok": True, "error": None, "session": session, "already": False}
+
+
+def stop_daemon(root: str | None = None) -> dict:
+    """停止该项目的 fenixd daemon（优雅优先，强制兜底）。
+
+    先 `tmux send-keys -t <session> C-c` 触发 daemon 的 SIGINT 优雅关闭
+    （fenixd.py 已注册 shutdown handler），轮询 `is_running` 至多约 5 秒；
+    超时仍未退出再 `tmux kill-session -t <session>` 强制终止。
+    幂等：未运行时直接返回成功，不报错。
+
+    返回: {"ok": bool, "error": str|None, "session": str|None, "was_running": bool}
+    """
+    proot = resolve_root(root)
+    session = session_name(proot)
+    if not is_running(proot):
+        return {"ok": True, "error": None, "session": session, "was_running": False}
+
+    try:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", session, "C-c"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception as e:
+        # 优雅关闭信号发送失败：直接尝试强制终止兜底
+        pass
+
+    # 轮询等待优雅关闭（至多约 5 秒）
+    for _ in range(50):
+        if not is_running(proot):
+            return {"ok": True, "error": None, "session": session, "was_running": True}
+        time.sleep(0.1)
+
+    # 超时：强制 kill session
+    try:
+        subprocess.run(
+            ["tmux", "kill-session", "-t", session],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception as e:
+        return {"ok": False, "error": f"强制终止 daemon 失败: {e}", "session": session, "was_running": True}
+
+    # 再确认一次
+    for _ in range(10):
+        if not is_running(proot):
+            return {"ok": True, "error": None, "session": session, "was_running": True}
+        time.sleep(0.1)
+    return {"ok": True, "error": None, "session": session, "was_running": True}

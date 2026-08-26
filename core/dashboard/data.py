@@ -871,6 +871,9 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
     done, total = task_progress(project_root, spec_name, entry.get("status", ""))
     vp = parse_verify_progress(project_root, spec_name)
     runs = get_runs(project_root, spec_name)
+    # 耗时 = 该 spec 全部运行记录（implementer/verifier/planner/tester 等）的
+    # duration_seconds 求和；无任何运行记录时为 0。
+    total_duration = sum(int(r.get("duration_seconds") or 0) for r in runs)
     return {
         "name": spec_name,
         "status": entry.get("status"),
@@ -884,6 +887,7 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         "verify_total": vp.get("total", 0),
         "verify_error": vp.get("error"),
         "scenario_count": count_scenarios(project_root, spec_name),
+        "total_duration": total_duration,
         "latest_run": runs[0]["run_id"] if runs else None,
         "latest_run_status": runs[0]["status"] if runs else None,
     }

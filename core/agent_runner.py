@@ -277,14 +277,16 @@ class AgentRunner:
             return {}
         at = data.get("actions_taken")
         if isinstance(at, list):
-            data["actions_taken"] = "；".join(str(x) for x in at if x)
+            # 列表型动作以换行符连接，每条动作独立一行（design D5）
+            data["actions_taken"] = "\n".join(str(x) for x in at if x)
         elif at is None:
             data["actions_taken"] = ""
         elif not isinstance(at, str):
             data["actions_taken"] = str(at)
         sm = data.get("summary")
         if isinstance(sm, list):
-            data["summary"] = "；".join(str(x) for x in sm if x)
+            # 列表型叙述以换行符连接，每段独立一行
+            data["summary"] = "\n".join(str(x) for x in sm if x)
         elif sm is None:
             data["summary"] = ""
         elif not isinstance(sm, str):

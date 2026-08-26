@@ -581,6 +581,147 @@ class TestRegistry:
         projects = reg.discover()
         assert projects[0]["exists"] is False
 
+    def test_load_includes_ignored_key(self, tmp_path):
+        reg = Registry(config_path=tmp_path / "none.yaml")
+        data = reg.load()
+        assert data["ignored"] == []
+
+    def test_discover_filters_ignored_paths(self, tmp_path):
+        proj_a = make_project(tmp_path, "proj-a")
+        proj_b = make_project(tmp_path, "proj-b")
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({
+            "port": 8787,
+            "projects": [
+                {"name": "proj-a", "path": str(proj_a)},
+                {"name": "proj-b", "path": str(proj_b)},
+            ],
+            # 空扫描目录：避免默认回退扫描真实主目录 ~，保持测试隔离
+            "scan_dirs": [str(tmp_path / "scan-empty")],
+        })
+        assert len(reg.discover()) == 2
+        # 忽略 proj-a 后不应再出现
+        reg.add_ignored(str(proj_a))
+        names = {p["name"] for p in reg.discover()}
+        assert "proj-a" not in names
+        assert "proj-b" in names
+        # is_ignored 查询
+        assert reg.is_ignored(str(proj_a))
+        assert not reg.is_ignored(str(proj_b))
+
+    def test_add_ignored_dedup(self, tmp_path):
+        proot = make_project(tmp_path)
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        added, msg = reg.add_ignored(str(proot))
+        assert added
+        added2, msg2 = reg.add_ignored(str(proot))  # 规范化后应判为重复
+        assert not added2 and "忽略列表" in msg2
+        data = reg.load()
+        assert len([x for x in data["ignored"]]) == 1
+        # 规范化：尾斜杠等价也应判为同一项
+        added3, _ = reg.add_ignored(str(proot) + "/")
+        assert not added3
+
+
+class TestSpecSummaryTotalDuration:
+    def test_total_duration_sums_runs(self, tmp_path):
+        proot = make_project(tmp_path)
+        # make_project 已写入 impl-myspec（duration 由 mtime 推导）+ verify-myspec（运行中）
+        # 额外写一条带明确较大时长的 run，确保求和 > 0 且可预期
+        import time as _t
+        ts = int(_t.time()) - 480
+        run_path = proot / ".fenix" / "runs" / f"verify-myspec-{ts}.jsonl"
+        run_path.write_text(json.dumps({"type": "result", "result": "ok"}) + "\n", encoding="utf-8")
+        # 我们手动写入过去时间，使 duration = now - ts ≈ 480s；再写一条已完成的
+        entry = dash_data.parse_state(proot)["myspec"]
+        summary = dash_data.spec_summary(proot, "myspec", entry)
+        assert summary["total_duration"] >= 0
+        # 至少包含 impl + 两条 verify 的运行，全部求和应 > 0
+        assert summary["total_duration"] > 0
+
+    def test_total_duration_zero_without_runs(self, tmp_path):
+        # 构造一个无运行记录的 spec
+        proot = tmp_path / "empty-spec-proj"
+        (proot / ".fenix" / "runs").mkdir(parents=True)
+        (proot / "STATE.md").write_text(
+            "# state\n\n### lone\n- status: ready\n- priority: 1\n", encoding="utf-8"
+        )
+        entry = dash_data.parse_state(proot)["lone"]
+        summary = dash_data.spec_summary(proot, "lone", entry)
+        assert summary["total_duration"] == 0
+
+
+class TestProjectLifecycleAPI:
+    """管理端点：start/stop/delete（mock tmux，验证返回、错误路径、SSE 广播）。"""
+
+    def _make_server(self, tmp_path, registry):
+        return _TestServer(registry, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+
+    def test_start_stop_unknown_project_returns_400(self, tmp_path):
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [], "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post("/api/projects/ghost/start")
+            assert status == 400 and body["error"]
+            status, body = srv.post("/api/projects/ghost/stop")
+            assert status == 400 and body["error"]
+            status, body = srv.delete("/api/projects/ghost")
+            assert status == 400 and body["error"]
+        finally:
+            srv.stop()
+
+    def test_start_stop_delete_flow_with_mocked_tmux(self, tmp_path, monkeypatch):
+        proot = make_project(tmp_path)
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+
+        started, stopped, deleted = [], [], []
+        monkeypatch.setattr("core.dashboard.server.start_daemon",
+                            lambda root: started.append(root) or {"ok": True, "session": "s1", "already": False})
+        monkeypatch.setattr("core.dashboard.server.stop_daemon",
+                            lambda root: stopped.append(root) or {"ok": True, "session": "s1", "was_running": True})
+
+        try:
+            # start
+            status, body = srv.post("/api/projects/proj-a/start")
+            assert status == 200 and body["ok"] is True
+            assert body["session"] == "s1"
+            assert str(proot) in started
+            # stop
+            status, body = srv.post("/api/projects/proj-a/stop")
+            assert status == 200 and body["ok"] is True
+            assert str(proot) in stopped
+            # delete → 软删除：加入 ignored，项目不再被发现
+            status, body = srv.delete("/api/projects/proj-a")
+            assert status == 200 and body["ok"] is True
+            assert reg.is_ignored(str(proot))
+            names = {p["name"] for p in reg.discover()}
+            assert "proj-a" not in names
+        finally:
+            srv.stop()
+
+    def test_lifecycle_tmux_error_returns_ok_false_not_500(self, tmp_path, monkeypatch):
+        proot = make_project(tmp_path)
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        monkeypatch.setattr("core.dashboard.server.start_daemon",
+                            lambda root: (_ for _ in ()).throw(RuntimeError("tmux gone")))
+        try:
+            status, body = srv.post("/api/projects/proj-a/start")
+            assert status == 200 and body["ok"] is False and "tmux gone" in body["error"]
+        finally:
+            srv.stop()
+
 
 # ── data.py 配置分级（add-hierarchical-config） ─────────────────
 

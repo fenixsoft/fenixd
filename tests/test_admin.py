@@ -516,7 +516,7 @@ class TestRunAdministrator:
         disp = runner.run_administrator(
             {"spec": "spec-a", "signal_type": "stuck", "description": "卡死"})
         assert disp.success is True
-        assert disp.actions_taken == "kill；reset"
+        assert disp.actions_taken == "kill\nreset"
         assert disp.result == "resolved"
         assert disp.escalate is False
         assert disp.spec == "spec-a"
@@ -580,11 +580,11 @@ class TestRunAdministrator:
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
 
-        # 列表 → 用分号拼接
+        # 列表 → 用换行符拼接（每条独立一行，design D5）
         disp_path.write_text(json.dumps({
             "summary": ["诊断：根因是构建缓存损坏", "处置：清理缓存", "结果：恢复"],
         }), encoding="utf-8")
-        assert runner._read_admin_disposition()["summary"] == "诊断：根因是构建缓存损坏；处置：清理缓存；结果：恢复"
+        assert runner._read_admin_disposition()["summary"] == "诊断：根因是构建缓存损坏\n处置：清理缓存\n结果：恢复"
 
         # 缺失 → 空字符串
         disp_path.write_text(json.dumps({"actions_taken": "x"}), encoding="utf-8")

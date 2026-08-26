@@ -32,11 +32,21 @@ class Registry:
     def __init__(self, config_path=None):
         self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG
 
+    # ── 忽略列表（软删除：被忽略路径不再被显式/扫描发现） ──────────
+
+    @staticmethod
+    def _norm(path) -> str:
+        """规范化路径（展开 ~ 与软链接，解析为绝对路径）。"""
+        try:
+            return str(Path(path).expanduser().resolve())
+        except (OSError, RuntimeError):
+            return str(Path(path).expanduser())
+
     # ── 配置读写 ─────────────────────────────────────────────
 
     def load(self) -> dict:
         """读取配置；缺失/损坏时返回默认结构。"""
-        defaults = {"port": DEFAULT_PORT, "projects": [], "scan_dirs": []}
+        defaults = {"port": DEFAULT_PORT, "projects": [], "scan_dirs": [], "ignored": []}
         if not self.config_path.exists():
             return defaults
         try:
@@ -49,11 +59,14 @@ class Registry:
             "port": data.get("port") or DEFAULT_PORT,
             "projects": data.get("projects") or [],
             "scan_dirs": data.get("scan_dirs") or [],
+            "ignored": data.get("ignored") or [],
         }
         if not isinstance(out["projects"], list):
             out["projects"] = []
         if not isinstance(out["scan_dirs"], list):
             out["scan_dirs"] = []
+        if not isinstance(out["ignored"], list):
+            out["ignored"] = []
         return out
 
     def save(self, data: dict):
@@ -69,8 +82,13 @@ class Registry:
     # ── 发现 ─────────────────────────────────────────────────
 
     def discover(self) -> list:
-        """合并显式配置与目录扫描，返回 [{name, path, discovered, exists}]。"""
+        """合并显式配置与目录扫描，返回 [{name, path, discovered, exists}]。
+
+        合并后按 `ignored` 列表过滤规范化路径——被忽略项目（无论显式注册
+        还是自动发现）一律不再出现在监控列表，实现软删除语义。
+        """
         data = self.load()
+        ignored = {self._norm(x) for x in data.get("ignored", []) if x}
         projects = []
         seen = set()
 
@@ -83,6 +101,8 @@ class Registry:
             except (OSError, RuntimeError):
                 continue
             key = str(rp)
+            if key in ignored:
+                continue
             if key in seen:
                 continue
             seen.add(key)
@@ -114,6 +134,8 @@ class Registry:
                     continue
                 rp = child.resolve()
                 key = str(rp)
+                if key in ignored:
+                    continue
                 if key in seen:
                     continue
                 seen.add(key)
@@ -194,6 +216,39 @@ class Registry:
         data["projects"] = remaining
         self.save(data)
         return True, f"已从监控列表移除: {key}"
+
+    def add_ignored(self, path) -> tuple:
+        """把规范化路径追加进 `ignored` 列表（去重）并写回。
+
+        软删除项目的实现：被忽略路径不再被显式/扫描发现（discover 过滤）。
+        项目文件、配置、数据全部保留；恢复 = 手工从列表移除该路径。
+
+        Returns: (added: bool, message: str)
+        """
+        try:
+            key = self._norm(path)
+        except (OSError, RuntimeError):
+            return False, f"无效路径: {path}"
+
+        data = self.load()
+        ignored = data.get("ignored") or []
+        if not isinstance(ignored, list):
+            ignored = []
+        if key in {self._norm(x) for x in ignored if x}:
+            return False, f"项目已在忽略列表: {key}"
+        ignored.append(key)
+        data["ignored"] = ignored
+        self.save(data)
+        return True, f"已加入忽略列表: {key}"
+
+    def is_ignored(self, path) -> bool:
+        """查询某路径是否已被忽略（按规范化路径比较）。"""
+        try:
+            key = self._norm(path)
+        except (OSError, RuntimeError):
+            return False
+        data = self.load()
+        return key in {self._norm(x) for x in data.get("ignored", []) if x}
 
     def list_projects(self) -> list:
         """仅返回配置中显式注册的项目（供 --list-projects）。"""

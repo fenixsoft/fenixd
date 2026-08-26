@@ -195,12 +195,14 @@ a:hover { text-decoration: underline; }
   color: var(--ink); font-size: 13px; line-height: 1.6;
   white-space: pre-wrap; word-break: break-word;
 }
-.activity-fallback { color: var(--muted); font-size: 12px; }
-.activity-action, .activity-reco {
-  color: var(--muted); font-size: 12px; margin-top: 4px;
-  word-break: break-word;
+.activity-fallback {
+  color: var(--muted); font-size: 12px;
+  white-space: pre-wrap; word-break: break-word;
 }
-.activity-action { color: var(--ink-2); }
+.activity-action, .activity-reco {
+  color: var(--ink-2); font-size: 12px; margin-top: 4px;
+  white-space: pre-wrap; word-break: break-word;
+}
 
 /* ── 主容器 ───────────────────────────────────────────── */
 main { padding: 20px; max-width: 1280px; margin: 0 auto; }
@@ -321,6 +323,88 @@ main { padding: 20px; max-width: 1280px; margin: 0 auto; }
   gap: 8px;
 }
 .section-title .count { color: var(--muted); font-weight: 400; font-size: 12px; }
+
+/* ── 页签栏（运维记录 / spec 详情） ──────────────────────── */
+.tab-bar {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 18px;
+  border-bottom: 1px solid var(--hairline);
+  padding-bottom: 0;
+}
+.tab-btn {
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-strong);
+  border-bottom: none;
+  color: var(--ink-2);
+  padding: 7px 16px;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.tab-btn:hover { background: var(--surface); color: var(--ink); }
+.tab-btn.active {
+  background: var(--surface);
+  border-color: var(--hairline-strong);
+  color: var(--ink);
+  font-weight: 600;
+  border-top: 2px solid var(--blue);
+}
+.tab-count {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.spec-tab-body { margin-top: 0; }
+
+/* ── 概览卡片生命周期控制按钮 ─────────────────────────── */
+.card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.ctl-btn {
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-strong);
+  color: var(--ink-2);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 12px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.ctl-btn:hover:not(.disabled) { background: var(--surface-2); border-color: var(--muted); color: var(--ink); }
+.ctl-btn.disabled { opacity: 0.4; cursor: not-allowed; }
+.ctl-btn.ctl-danger { color: var(--critical); border-color: rgba(208, 59, 59, 0.4); }
+.ctl-btn.ctl-danger:hover:not(.disabled) { background: rgba(208, 59, 59, 0.12); border-color: var(--critical); }
+
+/* 操作失败提示（toast） */
+.toast-error {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20, 12, 12, 0.96);
+  border: 1px solid var(--critical);
+  color: var(--ink);
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  z-index: 50;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  max-width: 90vw;
+}
+
+/* ── SPEC 表格：可排序表头 / fix 树缩进 ───────────────── */
+.spec-table thead th.sortable { cursor: pointer; user-select: none; }
+.spec-table thead th.sortable:hover { color: var(--ink); }
+.spec-table thead th.sort-active { color: var(--blue); }
+.fix-indent { display: inline-block; color: var(--muted); }
+tr.orphan-fix > td { border-left: 2px solid rgba(144, 133, 233, 0.5); }
 
 /* ── SPEC 列表（表格化 + 过滤） ──────────────────────── */
 .spec-filter {
