@@ -21,9 +21,9 @@
 
 ## 4. fenix-new skill 重写为自包含
 
-- [ ] 4.1 重写 `skills/fenix-new/SKILL.md` 步骤 3：改为「使用 fenix 原生 SPEC 生成器」——`python3 .fenix/bin/fenix_spec.py new <name>` → `status` → 依依赖顺序对每个 ready artifact 调 `instructions <id> --change <name>` 写 `outputPath` → 重跑 status 直到 applyRequires 全 done
-- [ ] 4.2 修改输出文案：注册 STATE.md 后告知「SPEC <name> 已创建并注册。fenixd 会自动拾取并开始实现。」；全文移除 `/opsx:apply`、`openspec-propose`、openspec CLI 字样
-- [ ] 4.3 保留步骤 1/2/4、SPEC 修改（--modify）与规则部分；`grep -rn "openspec-propose\|/opsx:apply\|openspec new\|openspec status\|openspec instructions" skills/` 确认无残留
+- [x] 4.1 重写 `skills/fenix-new/SKILL.md` 步骤 3：改为「使用 fenix 原生 SPEC 生成器」——`python3 .fenix/bin/fenix_spec.py new <name>` → `status` → 依依赖顺序对每个 ready artifact 调 `instructions <id> --change <name>` 写 `outputPath` → 重跑 status 直到 applyRequires 全 done
+- [x] 4.2 修改输出文案：注册 STATE.md 后告知「SPEC <name> 已创建并注册。fenixd 会自动拾取并开始实现。」；全文移除 `/opsx:apply`、`openspec-propose`、openspec CLI 字样
+- [x] 4.3 保留步骤 1/2/4、SPEC 修改（--modify）与规则部分；`grep -rn "openspec-propose\|/opsx:apply\|openspec new\|openspec status\|openspec instructions" skills/` 确认无残留
 
 ## 5. 原生归档（命令 + skill + init）
 
