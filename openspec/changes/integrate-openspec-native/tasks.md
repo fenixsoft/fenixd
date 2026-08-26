@@ -7,11 +7,11 @@
 
 ## 2. core/spec_gen.py 实现
 
-- [ ] 2.1 新增 `core/spec_gen.py`：`SCHEMA_DIR`（`Path(__file__).parent.parent / "schemas" / "spec-driven"`）+ `load_schema()` 读取 `schema.yaml`
-- [ ] 2.2 实现 `new_change(project_root, name)`：kebab-case 校验、同名已存在返回错误、创建 `openspec/changes/<name>/` 并写 `.openspec.yaml`（`schema: spec-driven` / `created: YYYY-MM-DD`）
-- [ ] 2.3 实现 `status(project_root, name) -> dict`：按 `generates` glob 存在性计算每个 artifact 的 `done`/`ready`/`blocked`（含 `missingDeps`），输出与 openspec `status --json` 同构（`changeName`/`schemaName`/`isComplete`/`applyRequires=["tasks"]`/`artifacts`），`specs/**/*.md` 以 `specs/` 下存在任意 `.md` 判定
-- [ ] 2.4 实现 `instructions(project_root, artifact_id, name) -> dict`：返回 `outputPath`/`description`/`instruction`/`template`（读 vendored 模板）/`dependencies`（已完成 requires 的绝对路径）
-- [ ] 2.5 `tests/` 新增 `test_spec_gen.py`：new_change（创建/重名错误/kebab-case 拒绝）、status（空 change 初始态、全完成 isComplete）、instructions（proposal/tasks 内容与依赖）；运行 `pytest tests/test_spec_gen.py -q` 通过
+- [x] 2.1 新增 `core/spec_gen.py`：`SCHEMA_DIR`（`Path(__file__).parent.parent / "schemas" / "spec-driven"`）+ `load_schema()` 读取 `schema.yaml`
+- [x] 2.2 实现 `new_change(project_root, name)`：kebab-case 校验、同名已存在返回错误、创建 `openspec/changes/<name>/` 并写 `.openspec.yaml`（`schema: spec-driven` / `created: YYYY-MM-DD`）
+- [x] 2.3 实现 `status(project_root, name) -> dict`：按 `generates` glob 存在性计算每个 artifact 的 `done`/`ready`/`blocked`（含 `missingDeps`），输出与 openspec `status --json` 同构（`changeName`/`schemaName`/`isComplete`/`applyRequires=["tasks"]`/`artifacts`），`specs/**/*.md` 以 `specs/` 下存在任意 `.md` 判定
+- [x] 2.4 实现 `instructions(project_root, artifact_id, name) -> dict`：返回 `outputPath`/`description`/`instruction`/`template`（读 vendored 模板）/`dependencies`（已完成 requires 的绝对路径）
+- [x] 2.5 `tests/` 新增 `test_spec_gen.py`：new_change（创建/重名错误/kebab-case 拒绝）、status（空 change 初始态、全完成 isComplete）、instructions（proposal/tasks 内容与依赖）；运行 `pytest tests/test_spec_gen.py -q` 通过
 
 ## 3. bin/fenix_spec.py CLI
 
