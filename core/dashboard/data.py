@@ -675,12 +675,16 @@ def get_runs(project_root, spec_name: str | None = None) -> list:
                 agent_type = at
                 spec_part = run_id[len(prefix):]
                 break
-        # 去掉末尾时间戳（-<ts>）
+        # 去掉 attempt 段（-a<n>，每个 attempt 追加的后缀），再剥末尾时间戳（-<ts>）。
+        # 先剥 -a<n> 再剥时间戳，使 spec_part 不残留时间戳/尝试段。
+        spec_part = re.sub(r"-a\d+$", "", spec_part)
         m = re.match(r"^(.*)-\d{9,10}$", spec_part)
         if m:
             spec_part = m.group(1)
-        # 耗时：run_id 尾部时间戳为起始（int(time.time())），文件 mtime 为终止
-        tm = re.search(r"-(\d{9,10})$", run_id)
+        # 耗时：run_id 起始时间戳为 attempt 段前的 10 位 unix 秒（int(time.time())），
+        # 文件 mtime 为终止。优先匹配 `-<ts>-a<n>`（含 attempt 后缀的真实格式），
+        # 回退 `-<ts>`（旧格式无 attempt 后缀），再无则退化 mtime（现状兜底）。
+        tm = re.search(r"-(\d{9,10})-a\d+$", run_id) or re.search(r"-(\d{9,10})$", run_id)
         start_ts = int(tm.group(1)) if tm else stat.st_mtime
         duration_seconds = max(0, int(stat.st_mtime - start_ts))
         lines = _read_run_lines(p, max_lines=3)

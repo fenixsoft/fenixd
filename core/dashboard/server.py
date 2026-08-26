@@ -2,7 +2,9 @@
 server.py — Fenix Web Dashboard 服务器（dashboard-server）。
 
 - 基于 Python 标准库 http.server.ThreadingHTTPServer，零新增依赖（D2）。
-- 仅绑定 127.0.0.1，默认端口 8787；被占用时自动向上探测空闲端口（D7）。
+- 仅绑定 127.0.0.1，默认端口 8787；被占用时由 serve() 执行端口接管语义
+  （dashboard-instance-lifecycle）：旧 dashboard --serve 实例自动终止接管，
+  非 dashboard 进程占用则报错退出，绝不静默僵挂。
 - REST JSON API + 截图等静态资源服务。
 - 所有 API 容错：数据源损坏以字段标记返回，不 500。
 
@@ -25,7 +27,10 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
 
 import json
 import mimetypes
+import os
 import queue
+import sys
+import signal
 import socket
 import threading
 import time
@@ -745,13 +750,122 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
 
+def _find_dashboard_occupant(port: int) -> dict | None:
+    """定位占用目标端口的进程（仅 Linux）。
+
+    返回 {"pid": int, "cmdline": str} 或 None（无占用 / 无法判定）。
+
+    判定（inode 映射，避免 /proc/<pid>/net/tcp 按网络命名空间而非进程返回错误 PID）：
+    1. 读 /proc/net/tcp 找到监听 127.0.0.1:port 的 socket inode；
+    2. 遍历 /proc/<pid>/fd/* 软链接，匹配 socket:[inode] 得到真正持有该
+       端口的 PID；
+    3. 读取该进程 cmdline。
+    """
+    try:
+        port_hex = f"{port & 0xffff:04X}"
+        inode = None
+        net_tcp = Path("/proc/net/tcp")
+        if not net_tcp.exists():
+            return None
+        for line in net_tcp.read_text(encoding="utf-8", errors="replace").split("\n")[1:]:
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            local = parts[1]
+            state = parts[3]
+            if state != "0A":  # 0A = LISTEN
+                continue
+            if ":" not in local:
+                continue
+            addr, p = local.split(":", 1)
+            if p.upper() == port_hex and addr.upper() == "0100007F":
+                inode = parts[9]
+                break
+        if not inode:
+            return None
+        # 通过 /proc/<pid>/fd 软链接匹配 inode → 真正持有端口的 PID
+        for pid_dir in Path("/proc").glob("[0-9]*"):
+            fd_dir = pid_dir / "fd"
+            if not fd_dir.is_dir():
+                continue
+            try:
+                for link in fd_dir.iterdir():
+                    try:
+                        target = os.readlink(str(link))
+                    except OSError:
+                        continue
+                    if target == f"socket:[{inode}]":
+                        try:
+                            raw = (pid_dir / "cmdline").read_bytes()
+                            cmdline = raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+                        except OSError:
+                            cmdline = ""
+                        return {"pid": int(pid_dir.name), "cmdline": cmdline}
+            except OSError:
+                continue
+    except Exception:
+        return None
+    return None
+
+
+def _is_dashboard_serve_cmd(cmdline: str) -> bool:
+    """cmdline 是否为 fenix_dashboard.py --serve 实例。"""
+    return "fenix_dashboard.py" in cmdline and "--serve" in cmdline
+
+
 def serve(registry: Registry, port: int = 8787, static_dir=None):
-    """启动 Dashboard 服务（阻塞）。端口被占用时自动向上探测。"""
-    actual = find_free_port(port)
-    httpd = DashboardHTTPServer(
-        ("127.0.0.1", actual), registry,
-        static_dir or STATIC_DIR,
-    )
+    """启动 Dashboard 服务（阻塞）。
+
+    端口独占语义（dashboard-instance-lifecycle）：目标端口被占用时，
+    - 占用者为旧的 `fenix_dashboard.py --serve` 实例 → SIGTERM 终止旧实例，
+      等待其退出（≤3s）后重新绑定一次；
+    - 占用者为其它进程（非 dashboard 实例）→ 打印占用信息后非 0 退出；
+    - 任何启动失败 MUST 在 5 秒内退出，不留僵尸实例。
+    仅对最终确定的单一端口做上述占用检测（不再自动上探）。
+    """
+    actual = port
+    try:
+        httpd = DashboardHTTPServer(
+            ("127.0.0.1", actual), registry,
+            static_dir or STATIC_DIR,
+        )
+    except OSError as e:
+        if not isinstance(e, OSError) or e.errno not in (98, 48, 56):
+            # 非「地址已占用」错误（如权限）直接抛出
+            raise
+        # EADDRINUSE：地址已被占用 → 端口接管逻辑
+        occupant = _find_dashboard_occupant(actual)
+        if occupant and _is_dashboard_serve_cmd(occupant["cmdline"]):
+            try:
+                os.kill(occupant["pid"], signal.SIGTERM)
+            except OSError:
+                pass
+            # 等待旧实例退出（≤3s）
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                if not _is_process_alive(occupant["pid"]):
+                    break
+                time.sleep(0.1)
+            # 重新绑定一次
+            try:
+                httpd = DashboardHTTPServer(
+                    ("127.0.0.1", actual), registry,
+                    static_dir or STATIC_DIR,
+                )
+            except OSError as e2:
+                sys.stderr.write(
+                    f"端口 {actual} 接管旧 dashboard 实例后仍无法绑定：{e2}\n")
+                sys.exit(1)
+        else:
+            # 占用者为非 dashboard 进程（或无法判定）→ 明确报错非 0 退出
+            info = occupant["cmdline"] if occupant else "未知进程"
+            pid = occupant["pid"] if occupant else "?"
+            sys.stderr.write(
+                f"端口 {actual} 已被占用（PID {pid}，cmdline: {info}）；\n"
+                f"该占用者不是 fenix_dashboard.py --serve 实例，恕不接管。\n"
+                f"请释放该端口后重试，或使用其它 --port。\n")
+            sys.exit(1)
+
     watcher = FileWatcher(lambda: httpd.projects(), httpd.sse_hub)
     httpd.watcher = watcher
     watcher.start()
@@ -760,7 +874,7 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
     print("=" * 60, flush=True)
     print("  Fenix Web Dashboard", flush=True)
     print(f"  地址: {url}", flush=True)
-    print(f"  端口: {actual}（默认 {port} 被占用则自动上探）", flush=True)
+    print(f"  端口: {actual}", flush=True)
     print("  Ctrl+C 退出", flush=True)
     print("=" * 60, flush=True)
     try:
@@ -770,3 +884,11 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
     finally:
         watcher.stop()
         httpd.server_close()
+
+
+def _is_process_alive(pid: int) -> bool:
+    """进程是否存活（/proc/<pid> 目录存在即视为存活，Linux 限定）。"""
+    try:
+        return Path(f"/proc/{pid}").exists()
+    except OSError:
+        return False
