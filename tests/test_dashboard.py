@@ -839,7 +839,7 @@ class TestConfigHierarchyData:
         assert result["scope"] == "user"
         assert result["raw_exists"] is False
         assert result["llm"] == {}
-        assert result["agents"] == {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600}
+        assert result["agents"] == {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300}
         assert result["gates"] == {"approve_mode": "manual"}
         assert set(result["sources"].values()) == {"user"}
 
@@ -1328,6 +1328,55 @@ class TestConfigAPI:
             status, data = srv.post_json("/api/config", {"gates": {"approve_mode": "bogus"}})
             assert status == 400
             assert not user_config.exists()  # 校验失败不写盘
+        finally:
+            srv.stop()
+
+    def test_max_turns_default_in_read_view(self, tmp_path, monkeypatch):
+        """GET /api/config 返回默认 max_turns=300，且包含在 agents 段。"""
+        user_config, proot, srv = self._serve(tmp_path, monkeypatch)
+        try:
+            status, data = srv.get("/api/config")
+            assert status == 200
+            assert data["agents"]["max_turns"] == 300
+        finally:
+            srv.stop()
+
+    def test_write_and_read_max_turns_roundtrip(self, tmp_path, monkeypatch):
+        """修改 max_turns 并保存后，读回为新值，且其它 agents 子键保持不变。"""
+        user_config, proot, srv = self._serve(tmp_path, monkeypatch)
+        user_config.parent.mkdir()
+        user_config.write_text(yaml.safe_dump({
+            "agents": {"max_concurrent": 4, "subagent_model": "claude-sonnet-5",
+                       "max_retries": 3},
+            "gates": {"approve_mode": "manual"},
+        }), encoding="utf-8")
+        try:
+            status, data = srv.post_json("/api/config", {
+                "agents": {"max_turns": 300, "max_concurrent": 4},
+                "gates": {"approve_mode": "manual"},
+            })
+            assert status == 200
+            # 回读确认
+            _, rd = srv.get("/api/config")
+            assert rd["agents"]["max_turns"] == 300
+            # 其它 agents 子键原值不变
+            assert rd["agents"]["max_concurrent"] == 4
+            # 非受管键 subagent_model / max_retries 不应被清空（写回保留非受管键）
+            raw = yaml.safe_load(user_config.read_text(encoding="utf-8"))
+            assert raw["agents"]["subagent_model"] == "claude-sonnet-5"
+            assert raw["agents"]["max_retries"] == 3
+        finally:
+            srv.stop()
+
+    def test_write_invalid_max_turns_rejected(self, tmp_path, monkeypatch):
+        """提交非法 max_turns（非正整数）被拒绝（400）且不写盘。"""
+        user_config, proot, srv = self._serve(tmp_path, monkeypatch)
+        try:
+            status, data = srv.post_json("/api/config", {
+                "agents": {"max_turns": 0},
+            })
+            assert status == 400
+            assert not user_config.exists()
         finally:
             srv.stop()
 

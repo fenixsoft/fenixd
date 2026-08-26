@@ -253,7 +253,7 @@ class AgentRunner:
         try:
             output, turns, _session_id = self._run_claude(
                 prompt, self.project_root, run_id, model_override, env_overrides,
-                max_turns=self._get_config("agents.max_turns", 50),
+                max_turns=self._get_config("agents.max_turns", 300),
             )
             success = True
             error = ""
@@ -478,7 +478,7 @@ class AgentRunner:
                 output, turns, run_session_id = self._run_claude(
                     prompt, wt_path, attempt_run_id, model_override, env_overrides,
                     resume_session_id=session_id if reuse_worktree else None,
-                    max_turns=self._get_config("agents.max_turns", 50),
+                    max_turns=self._get_config("agents.max_turns", 300),
                 )
                 if run_session_id:
                     session_id = run_session_id
@@ -584,6 +584,31 @@ class AgentRunner:
             )
         elif agent_type == "verifier":
             progress_path = self.project_root / ".fenix" / "verify-progress" / f"{spec_name}.json"
+            # 断点续跑（verifier-checkpoint-resume spec）：读取上次 attempt 的进度文件，
+            # 存在且 done>0 时把断点信息注入提示词，让新 agent 从 done+1 场景继续，
+            # 不再从头重跑。文件缺失 / done==0 / JSON 损坏 → 不注入、全新开始，损坏文件
+            # 移除以免污染后续 attempt。
+            breakpoint_section = ""
+            progress = self._read_verify_progress(spec_name)
+            if progress is not None:
+                total = progress.get("total")
+                done = progress.get("done") or 0
+                current = progress.get("current") or ""
+                if isinstance(done, int) and done > 0:
+                    initial_done = done
+                    start_scenario = done + 1
+                    breakpoint_section = (
+                        f"\n⚠️ RESUME CHECKPOINT (断点续跑) — 你是从上次中断处续跑的验证 Agent。\n"
+                        f"上次验证进度：total={total}, done={done}, 上次进行中的场景: '{current}'\n"
+                        f"指令：\n"
+                        f"  1. 跳过已完成的 {done} 个场景，从第 {start_scenario} 个场景开始执行\n"
+                        f"     （场景总数保持 {total} 不变，不要重新数；已完成的场景视为已通过）。\n"
+                        f"  2. 首次写入进度时直接写 done={initial_done}（不要重置为 0），"
+                        f"之后每完成一个场景将 done 递增 1 并更新 current。\n"
+                        f"  3. 直至 done 达到 {total}，写入 done={total} 与最终结果。\n"
+                        f"  4. 不要重复执行已完成场景的截图/报告，但需确保本次从断点起的场景全部真实在\n"
+                        f"     浏览器中跑通（DOM snapshot 文本验证）。\n\n"
+                    )
             return (
                 f"You are the Fenix Verifier Agent. Independently verify the SPEC at {spec_dir}/.\n\n"
                 f"CRITICAL: You MUST test in a REAL browser/user environment.\n"
@@ -618,6 +643,7 @@ class AgentRunner:
                 f"IMPORTANT: Do NOT Read image/screenshot files (.png/.jpg) — 当前模型不支持图像输入，"
                 f"读图会被 hook 拦截；截图仅作为证据文件保存到报告，验证用 DOM snapshot 文本。\n"
                 f"IMPORTANT: Do NOT modify STATE.md."
+                f"{breakpoint_section}"
             )
 
         elif agent_type == "planner-plan":
@@ -1199,3 +1225,37 @@ class AgentRunner:
         """Get a nested config value."""
         from .config import ConfigLoader
         return ConfigLoader.get(self.config, key, default)
+
+    def _read_verify_progress(self, spec_name: str) -> dict | None:
+        """读取 verifier 断点进度文件（verifier-checkpoint-resume spec）。
+
+        返回解析后的 dict（含 total/done/current），用于构造续跑提示词；以下情况
+        返回 None（视作无断点、全新开始）：
+        - 文件不存在
+        - 内容不是合法 JSON
+        - 缺少 done / total 字段，或 done 非整数
+        文件损坏时移除该文件，避免污染后续 attempt（设计 D1 / 安全降级）。
+        """
+        progress_path = self.project_root / ".fenix" / "verify-progress" / f"{spec_name}.json"
+        try:
+            data = json.loads(progress_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            # 损坏文件：移除以免后续 attempt 读到半截内容
+            try:
+                if progress_path.exists():
+                    progress_path.unlink()
+            except OSError:
+                pass
+            return None
+        if not isinstance(data, dict):
+            try:
+                if progress_path.exists():
+                    progress_path.unlink()
+            except OSError:
+                pass
+            return None
+        done = data.get("done")
+        total = data.get("total")
+        if not isinstance(total, int) or not isinstance(done, int):
+            return None
+        return data
