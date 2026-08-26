@@ -29,14 +29,10 @@ schedule:
 #     - name: "volc-engine"            # 唯一标识，被 agents.models 引用
 #       baseurl: "https://api.example.com/v1"
 #       apikey: "sk-xxx"               # 敏感信息，.fenix/config.yaml 已 gitignore
-#       model: "deepseek-v4-flash"     # 该 Provider 的默认模型名（真实路由用）
-#       sdk_model: "claude-sonnet-5"   # 可选；用于通过 claude-code SDK 模型名校验
+#       model: "deepseek-v4-flash"     # 该 Provider 的默认模型名（实际发给网关的模型名）
 
 # ---- Agent Configuration ----
 agents:
-  # 官方 Claude model 名，用于通过 claude-code SDK 的 model 校验（请求仍走 ANTHROPIC_BASE_URL 代理）。
-  # 未配置时 agent_runner 默认传 claude-sonnet-5。
-  subagent_model: "claude-sonnet-5"
   # 并行度：同时运行的 Agent 进程数上限。
   # 调度采用严格优先级并行：高优先级（priority 数值小）先执行；
   # 同一优先级内的任务可并行至该上限；不同优先级不并行
@@ -95,7 +91,7 @@ admin:
   enabled: true
   # 监视线程周期（分钟）
   interval_minutes: 5
-  # Administrator Agent 使用的模型名（官方 Claude 模型名；未配置时复用 agents.subagent_model）
+  # Administrator Agent 使用的模型名（官方 Claude 模型名；未配置时复用框架默认 cc-switch 网关模型）
   agent_model: "claude-sonnet-5"
   # 同 spec 同类困境信号的唤起冷却（分钟），避免反复唤起烧钱
   escalation_cooldown_minutes: 15

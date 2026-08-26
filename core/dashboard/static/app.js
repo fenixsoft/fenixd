@@ -1249,11 +1249,6 @@ function renderProviderCard(p, idx) {
         <input type="text" placeholder="deepseek-v4-flash"
           value="${esc(p.model || '')}" data-field="model" />
       </div>
-      <div class="form-row">
-        <label>SDK 校验模型名 <small>（可选，官方 Claude 模型名）</small></label>
-        <input type="text" placeholder="claude-sonnet-5"
-          value="${esc(p.sdk_model || '')}" data-field="sdk_model" />
-      </div>
       <div class="form-row env-section">
         <label>自定义环境变量 <small>（选填，运行时注入子进程，如 CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000）</small></label>
         <div class="env-list">

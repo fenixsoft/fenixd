@@ -613,6 +613,9 @@ class PMEngine:
         try:
             if agent_type == "implementer":
                 wm = self.agent_runner.worktree_manager
+                # 派发前把 spec 目录提交进主树（fix-merge-back-deadlock 根因修复）：
+                # 消除「spec 在主树 untracked + 分支 commit 同名路径」导致的 merge-back 冲突。
+                wm.ensure_spec_committed(spec_name)
                 # 主树健康检查（fix-fenix-token-waste）：dispatch 前自动 stash 主树脏改动，
                 # 保证 merge-back 有干净基线；成功后 restore_after_merge 恢复原改动。
                 stashed = wm.ensure_clean_tree()

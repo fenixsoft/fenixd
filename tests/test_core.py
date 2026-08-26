@@ -1023,6 +1023,38 @@ class TestAgentRunnerModelRouting(unittest.TestCase):
         self.assertEqual(env["ANTHROPIC_MODEL"], "model-a")
         self.assertEqual(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "1000000")
 
+    def test_model_override_uses_assignment_model_not_sdk_model(self):
+        """--model 用 agent 分配的 model（网关模型名），不再读 provider.sdk_model。"""
+        config = {
+            "llm": {"providers": [
+                {"name": "p1", "baseurl": "https://a.com", "apikey": "key-a",
+                 "model": "deepseek-v4-flash", "sdk_model": "claude-sonnet-5"},
+            ]},
+            "agents": {
+                "max_concurrent": 2, "max_retries": 1, "max_turns": 50,
+                "models": {"implementer": {"provider": "p1", "model": "deepseek-v4-flash"}},
+            },
+        }
+        runner = self._make_runner(config)
+        runner._build_prompt = MagicMock(return_value="test prompt")
+        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1"))
+        result = runner.run_implementer("test-spec")
+        self.assertTrue(result.success)
+        # _run_claude(prompt, cwd, run_id, model_override, env_overrides) —— model_override 是第 4 个位置参数
+        model_override = runner._run_claude.call_args.args[3]
+        self.assertEqual(model_override, "deepseek-v4-flash")
+
+    def test_model_override_unassigned_uses_default_gateway_model(self):
+        """未分配 Provider 时 --model 用默认网关常量 claude-sonnet-5。"""
+        config = {"agents": {"max_concurrent": 2, "max_retries": 1, "max_turns": 50}}
+        runner = self._make_runner(config)
+        runner._build_prompt = MagicMock(return_value="test prompt")
+        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1"))
+        result = runner.run_verifier("test-spec")
+        self.assertTrue(result.success)
+        model_override = runner._run_claude.call_args.args[3]
+        self.assertEqual(model_override, "claude-sonnet-5")
+
     # ── add-agent-llm-isolation：CLAUDE_CONFIG_DIR 隔离 ────────────────
 
     def test_run_agent_injects_claude_config_dir_when_provider(self):
@@ -1082,7 +1114,7 @@ class TestAgentRunnerModelRouting(unittest.TestCase):
         return fake_home
 
     def test_isolated_settings_no_credentials(self):
-        """隔离 settings.json 复制模型映射 env，不含 baseurl/apikey（spec 3.2）。"""
+        """隔离 settings.json 不含任何 env（模型名映射/凭据都不落盘），保留 plugins/hooks。"""
         runner = self._make_runner({})
         fake_home = self._fake_home(with_env={
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721",
@@ -1105,15 +1137,9 @@ class TestAgentRunnerModelRouting(unittest.TestCase):
             cfg_dir = runner._ensure_agent_config_dir("ark")
 
         settings = json.loads((cfg_dir / "settings.json").read_text(encoding="utf-8"))
-        # 模型映射类 env 复制
-        self.assertEqual(settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"], "claude-sonnet-4-6[1M]")
-        self.assertEqual(settings["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"], "deepseek-v4-flash")
-        self.assertEqual(settings["env"]["CLAUDE_CODE_SUBAGENT_MODEL"], "claude-haiku-4-5")
-        self.assertEqual(settings["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "1000000")
-        # 凭据不落盘
-        self.assertNotIn("ANTHROPIC_BASE_URL", settings["env"])
-        self.assertNotIn("ANTHROPIC_AUTH_TOKEN", settings["env"])
-        self.assertNotIn("ANTHROPIC_API_KEY", settings["env"])
+        # 隔离 settings 不再复制任何 env（ANTHROPIC_DEFAULT_* / CLAUDE_CODE_SUBAGENT_MODEL
+        # 等 cc-switch 网关映射）——直连 Provider 不需要，且会毒化子代理模型解析。
+        self.assertNotIn("env", settings)
         # enabledPlugins / hooks 保留
         self.assertEqual(settings["enabledPlugins"], {"superpowers@claude-plugins-official": True})
         self.assertIn("PreToolUse", settings["hooks"])
@@ -2711,6 +2737,68 @@ class TestWorktreeMergeBack(unittest.TestCase):
         success, error = self.wm.merge_back_from_branch("")
         self.assertFalse(success)
         self.assertIn("branch", error.lower())
+
+    def test_ensure_spec_committed_tracks_untracked_spec(self):
+        """untracked spec 目录被 ensure_spec_committed 提交进主树（fix-merge-back-deadlock）。"""
+        spec = self.project_root / "openspec" / "changes" / "spec-a" / "proposal.md"
+        spec.parent.mkdir(parents=True, exist_ok=True)
+        spec.write_text("# proposal\n")
+
+        ok = self.wm.ensure_spec_committed("spec-a")
+        self.assertTrue(ok)
+
+        # spec 已 tracked 且 clean
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--", "openspec/changes/spec-a"],
+            cwd=str(self.project_root), capture_output=True, text=True,
+        )
+        self.assertEqual(status.stdout.strip(), "")
+        log = subprocess.run(
+            ["git", "log", "--oneline", "-1"],
+            cwd=str(self.project_root), capture_output=True, text=True,
+        )
+        self.assertIn("[fenix] spec: spec-a", log.stdout)
+
+    def test_ensure_spec_committed_noop_when_clean(self):
+        """本已无改动时 no-op（返回 True，不产生新提交）。"""
+        head_before = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(self.project_root), capture_output=True, text=True,
+        ).stdout.strip()
+
+        ok = self.wm.ensure_spec_committed("nonexistent-spec")
+        self.assertTrue(ok)
+
+        head_after = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(self.project_root), capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual(head_before, head_after)
+
+    def test_merge_back_with_untracked_spec_no_deadlock(self):
+        """主树 spec 目录 untracked + 分支 commit 同名路径时，merge 不再死锁（Layer 2 兜底）。"""
+        # 主树放一个 untracked spec 文件（模拟 fenix-new 未提交的 spec）
+        spec = self.project_root / "openspec" / "changes" / "test-spec" / "proposal.md"
+        spec.parent.mkdir(parents=True, exist_ok=True)
+        spec.write_text("# untracked spec\n")
+
+        # create() 会 _seed_spec：把主树 untracked spec 复制进分支并 commit
+        wt_path = self.wm.create("test-spec", "implementer")
+        self.assertIsNotNone(wt_path)
+        branch = self.wm.get_branch_name(wt_path)
+        self.wm.cleanup(wt_path, success=True)
+
+        # 主树仍有 untracked 副本 → merge 本会 untracked 冲突，现在应成功
+        success, error = self.wm.merge_back_from_branch(branch)
+        self.assertTrue(success, f"merge failed: {error}")
+        # 合并后 spec 目录为 tracked + clean（分支 commit 版本已合入）
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--", "openspec/changes/test-spec"],
+            cwd=str(self.project_root), capture_output=True, text=True,
+        )
+        self.assertEqual(status.stdout.strip(), "")
+        # 备份目录已被清理
+        self.assertFalse((self.project_root / ".fenix" / "merge-backup").exists())
 
 
 class TestPMEngineMergeBackIntegration(unittest.TestCase):

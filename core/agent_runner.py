@@ -18,13 +18,11 @@ from typing import Optional, Dict, Any
 # .fenix/runs/ 保留的最近运行产物数量上限（默认 20，见 D1 / spec agent-run-artifacts）
 RUNS_KEEP = 20
 
-# add-agent-llm-isolation：隔离 settings.json 中允许从 ~/.claude/settings.json 复制的
-# 模型映射类 env 键（spec D3）。仅复制映射（ANTHROPIC_DEFAULT_* / 子代理模型 / 上下文
-# 上限），**不含** baseurl/apikey——Provider 连接凭据只经进程环境注入，不落盘。
-ISOLATED_ENV_MAPPING_PREFIXES = ("ANTHROPIC_DEFAULT_",)
-ISOLATED_ENV_MAPPING_KEYS = frozenset(
-    ("CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_MAX_CONTEXT_TOKENS")
-)
+# 无 provider 分配的 agent（含 Administrator）走默认网关（cc-switch）时 --model 用的
+# 官方模型名。provider 已分配的 agent，其 --model 直接取该 agent 分配的网关模型名
+# （model 字段，如 deepseek-v4-flash）——见 fenixd-sdk-model-routing：--model 即实际
+# 发给网关的模型名，ANTHROPIC_MODEL 被 --model 覆盖不生效。本常量只作 fallback。
+DEFAULT_GATEWAY_MODEL = "claude-sonnet-5"
 
 
 class AgentRunResult:
@@ -294,19 +292,19 @@ class AgentRunner:
         return data
 
     def _get_admin_model(self) -> str:
-        """Administrator 模型名：admin.agent_model > agents.subagent_model > 默认。"""
+        """Administrator 模型名：admin.agent_model > 默认网关 fallback 常量。"""
         admin_model = self._get_config("admin.agent_model", None)
         if admin_model:
             return admin_model
-        return self._get_config("agents.subagent_model", "claude-sonnet-5")
+        return DEFAULT_GATEWAY_MODEL
 
     def _build_isolated_settings(self) -> dict:
-        """构造隔离 settings.json：enabledPlugins / hooks / 模型映射 env（spec D2/D3）。
+        """构造隔离 settings.json：enabledPlugins / hooks（spec D2/D3）。
 
-        从 ~/.claude/settings.json 复制 enabledPlugins（缺省 superpowers）与模型映射类
-        env 键（ANTHROPIC_DEFAULT_* / CLAUDE_CODE_SUBAGENT_MODEL / ...），**不含**
-        baseurl/apikey——Provider 凭据不落盘。hooks 从 .fenix/agent-settings.json
-        复制（PreToolUse block-image-read）。
+        从 ~/.claude/settings.json 复制 enabledPlugins（缺省 superpowers）。hooks 从
+        .fenix/agent-settings.json 复制（PreToolUse block-image-read）。不复制任何 env
+        模型名映射——那属于 cc-switch 网关、对直连 Provider 无用且有毒化子代理解析的
+        风险（如陈旧 hy3）。Provider 的 ANTHROPIC_MODEL/BASE_URL/API_KEY 经进程 env 注入。
         """
         settings: Dict[str, Any] = {}
         source: Dict[str, Any] = {}
@@ -334,15 +332,8 @@ class AgentRunner:
             except (OSError, json.JSONDecodeError):
                 pass
 
-        src_env = source.get("env")
-        if isinstance(src_env, dict):
-            mapped = {
-                k: v for k, v in src_env.items()
-                if k.startswith(ISOLATED_ENV_MAPPING_PREFIXES)
-                or k in ISOLATED_ENV_MAPPING_KEYS
-            }
-            if mapped:
-                settings["env"] = mapped
+        # 不复制 ~/.claude/settings.json 的 env（ANTHROPIC_DEFAULT_* / CLAUDE_CODE_SUBAGENT_MODEL
+        # 等 cc-switch 网关映射）——直连 Provider 不需要，且会毒化子代理模型解析（陈旧 hy3）。
         return settings
 
     def _ensure_agent_config_dir(self, provider_name: str) -> Path:
@@ -434,9 +425,10 @@ class AgentRunner:
             try:
                 prompt = self._build_prompt(spec_name, agent_type)
                 # 解析该 agent_type 的模型分配：
-                # - 已分配：注入 ANTHROPIC_BASE_URL/API_KEY/MODEL 环境变量，
-                #   --model 取 provider.sdk_model 或 agents.subagent_model（官方名过 SDK 校验）
-                # - 未分配：完全维持现状（不注入覆盖，--model 用 agents.subagent_model）
+                # - 已分配：注入 ANTHROPIC_BASE_URL/API_KEY/MODEL 环境变量，--model 直接取
+                #   该 agent 分配的网关模型名（model，如 deepseek-v4-flash）——这是实际发给
+                #   网关的模型名（见 fenixd-sdk-model-routing）。
+                # - 未分配：不注入覆盖，--model 用默认网关 fallback 常量（走 cc-switch）。
                 assignment = self._get_agent_model_assignment(agent_type)
                 env_overrides: Dict[str, str] = {}
                 if assignment is not None:
@@ -453,18 +445,11 @@ class AgentRunner:
                     # 注入 provider 自定义环境变量（如 CLAUDE_CODE_MAX_CONTEXT_TOKENS）
                     for k, v in (provider.get("env") or {}).items():
                         env_overrides[k] = v
-                    model_override = provider.get("sdk_model") or self._get_config(
-                        "agents.subagent_model", "claude-sonnet-5"
-                    )
+                    model_override = model
                 else:
-                    # 统一显式指定官方 Claude model 名。环境通过 ANTHROPIC_MODEL=deepseek-v4-flash
-                    # 走火山代理，但 claude-code SDK 只识别官方 model 名；任何 agent 一旦在内部
-                    # 通过 Agent SDK 派生子代理（verifier/planner-judge 必触发，fix implementer
-                    # 也会触发），未识别的 model 名即报 unrecognized_model 致命错误。用官方 model
-                    # 名覆盖可彻底规避（实际请求仍走 ANTHROPIC_BASE_URL 代理）。
-                    # 未配置 agents.subagent_model 时默认 claude-sonnet-5（官方 model 名，仅用于
-                    # 通过 SDK 校验），保证子代理派发始终可用。
-                    model_override = self._get_config("agents.subagent_model", "claude-sonnet-5")
+                    # 未分配 agent（含 Administrator）走默认网关（cc-switch），--model 用
+                    # 官方模型名常量，由 cc-switch 网关自行映射到可用模型。
+                    model_override = DEFAULT_GATEWAY_MODEL
                 output, turns, run_session_id = self._run_claude(
                     prompt, wt_path, attempt_run_id, model_override, env_overrides,
                     resume_session_id=session_id if reuse_worktree else None,
@@ -861,13 +846,11 @@ class AgentRunner:
             prompt: The instruction prompt for the agent.
             cwd: Worktree directory the agent operates in.
             run_id: 本次运行唯一 id（如 `impl-<spec>-<ts>-a<attempt>`），决定产物文件名。
-            model_override: Pass `--model <value>` explicitly. Needed for agent
-                types that spawn subagents via the Agent SDK: the environment runs on
-                ANTHROPIC_MODEL=deepseek-v4-flash (a non-Claude model name the SDK
-                rejects with unrecognized_model, which is fatal on subagent spawn paths).
-                An official Claude model name bypasses that check while requests still
-                route through ANTHROPIC_BASE_URL. 调用方未配置 agents.subagent_model 时
-                默认传入 claude-sonnet-5，保证始终通过 SDK 校验。
+            model_override: Pass `--model <value>` explicitly. 这是**实际发给网关的模型名**
+                （claude CLI 的 --model 覆盖 ANTHROPIC_MODEL，见 fenixd-sdk-model-routing）。
+                已分配 provider 的 agent 传该 agent 的 `model`（网关模型名，如
+                deepseek-v4-flash）；未分配（含 Administrator）传 DEFAULT_GATEWAY_MODEL
+                （默认网关 cc-switch 的官方模型名）。
             env_overrides: 额外注入到子进程的环境变量（每线程独立 env 副本，不串扰）。
                 用于按 agent_type 注入不同 Provider 的 baseurl/apikey/model。
             resume_session_id: 非 None 时以 `--resume <id>` 续跑该 session。

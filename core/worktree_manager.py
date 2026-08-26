@@ -177,6 +177,108 @@ class WorktreeManager:
                 f"SPEC seeding failed (non-fatal): {e}",
             )
 
+    def ensure_spec_committed(self, spec_name: str) -> bool:
+        """派发 implementer 前把 spec 目录提交进主树（fix-merge-back-deadlock 根因修复）。
+
+        spec 目录（openspec/changes/<spec>/）若在主树 untracked，而 worktree 分支里
+        _seed_spec 已 commit 一份同名路径，merge-back 时 git 会拒绝「untracked working
+        tree files would be overwritten by merge」。在派发前把 spec 提交进主树使其被跟踪，
+        分支从新 HEAD 建即可直接包含 spec（_seed_spec 跳过），merge 变为干净三方合并。
+
+        Returns: True 表示已提交或本已无改动（干净）；False 表示提交失败。
+        """
+        rel = f"openspec/changes/{spec_name}"
+        try:
+            status = subprocess.run(
+                ["git", "-C", str(self.project_root), "status", "--porcelain", "--", rel],
+                capture_output=True, text=True, timeout=30,
+            )
+            if status.returncode != 0:
+                return False
+            if not status.stdout.strip():
+                return True  # 本已 tracked + clean，无需提交
+
+            add = subprocess.run(
+                ["git", "-C", str(self.project_root), "add", "--", rel],
+                capture_output=True, text=True, timeout=30,
+            )
+            if add.returncode != 0:
+                return False
+
+            commit = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "commit", "-m", f"[fenix] spec: {spec_name}"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if commit.returncode != 0:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"SPEC commit failed: {commit.stderr.strip() or commit.stdout.strip()}",
+                )
+                return False
+            self.logger.info("worktree_manager", f"Committed SPEC '{spec_name}' into main tree")
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+
+    def _backup_untracked_spec_files(self):
+        """merge 前把 openspec/changes/ 下 untracked 文件移到 .fenix/merge-backup/ 备份。
+
+        返回备份目录路径（无 untracked 文件时返回 None）。merge 成功后调用
+        _drop_backup 删除备份；merge 失败调用 _restore_backup 移回（不丢数据）。
+        """
+        try:
+            ls = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "ls-files", "--others", "--exclude-standard", "--", "openspec/changes"],
+                capture_output=True, text=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            return None
+        rels = [ln.strip() for ln in ls.stdout.splitlines() if ln.strip()]
+        if not rels:
+            return None
+
+        backup = self.project_root / ".fenix" / "merge-backup" / str(int(time.time()))
+        for rel in rels:
+            src = self.project_root / rel
+            dst = backup / rel
+            if not src.exists():
+                continue
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+            except OSError:
+                continue
+        return backup
+
+    def _drop_backup(self, backup) -> None:
+        """merge 成功后删除备份目录（含空父目录）。"""
+        if backup is None:
+            return
+        try:
+            shutil.rmtree(str(backup))
+            parent = backup.parent
+            if parent.exists():
+                parent.rmdir()  # 空父目录一并清理；非空时抛 OSError 忽略
+        except OSError:
+            pass
+
+    def _restore_backup(self, backup) -> None:
+        """merge 失败后把备份文件移回原位。"""
+        if backup is None or not backup.is_dir():
+            return
+        for p in backup.rglob("*"):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(backup)
+            dst = self.project_root / rel
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(p), str(dst))
+            except OSError:
+                continue
+
     def cleanup(self, wt_path: Path, success: bool = True):
         """
         Clean up a worktree after an Agent run.
@@ -422,6 +524,10 @@ class WorktreeManager:
                 )
                 return True, "already merged"
 
+            # merge 前把 openspec/changes 下 untracked 文件移开（Layer 2 兜底）：
+            # 即使 spec 未被 ensure_spec_committed 提交，也不让 merge 因 untracked 冲突死锁。
+            backup = self._backup_untracked_spec_files()
+
             # Merge with --no-ff to preserve worktree history
             result = subprocess.run(
                 ["git", "-C", str(self.project_root),
@@ -430,6 +536,7 @@ class WorktreeManager:
                 capture_output=True, text=True, timeout=120,
             )
             if result.returncode == 0:
+                self._drop_backup(backup)
                 self.logger.info(
                     "worktree_manager",
                     f"Merged branch '{branch}' into main tree",
@@ -446,6 +553,8 @@ class WorktreeManager:
                 ["git", "-C", str(self.project_root), "merge", "--abort"],
                 capture_output=True, text=True, timeout=30,
             )
+            # 恢复被移开的 untracked 文件（不丢数据，供下一轮重试）
+            self._restore_backup(backup)
             return False, error
 
         except subprocess.TimeoutExpired:
