@@ -720,16 +720,20 @@ function buildSpecRows(projectName, specs) {
     }
   }
 
-  // 对顶层行排序；子行在父行下按名排序
+  // 对顶层行排序；子行在父行下按名排序，并递归向下展开各层 fix 子规格
+  // （fix-fix-* 挂在 fix-* 下，后者再挂在基名规格下 → 多层树，深度逐层 +1）
   roots.sort(cmp);
   orphanFix.sort(cmp);
   const ordered = [];
-  roots.forEach((rn) => {
-    ordered.push({ name: rn, depth: 0 });
-    (childrenMap[rn] || []).sort(cmp).forEach((cn) => ordered.push({ name: cn, depth: 1 }));
-  });
-  // 无父级 fix 独立一组（置于末尾），同样按 sortValue 排序
-  orphanFix.forEach((fn) => ordered.push({ name: fn, depth: 1, orphan: true }));
+  function pushTree(name, depth, orphan) {
+    if (!byName[name]) return;          // 数据缺失的行不渲染
+    ordered.push({ name, depth, orphan: !!orphan });
+    // 父链严格递减 fix- 前缀数 → 递归必然收敛，不会成环
+    (childrenMap[name] || []).sort(cmp).forEach((cn) => pushTree(cn, depth + 1, orphan));
+  }
+  roots.forEach((rn) => pushTree(rn, 0, false));
+  // 无父级 fix 独立一组（置于末尾），其下仍可继续展开更深层的 fix 子规格
+  orphanFix.forEach((fn) => pushTree(fn, 1, true));
 
   return ordered.map((o) => specRow(projectName, byName[o.name], o.depth, o.orphan));
 }
