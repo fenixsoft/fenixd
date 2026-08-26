@@ -41,7 +41,9 @@ agents:
   # Maximum retry attempts for a failed Agent run
   max_retries: 3
   # Maximum turns per Agent invocation (claude -p --max-turns)
-  max_turns: 50
+  # 默认 300：单次 Agent 运行轮次上限（覆盖旧默认值 50/150）。该值为「上限」而非目标，
+  # 超时/强杀保护仍在；对 32 场景级别验证为合理预算。
+  max_turns: 300
   # Daily limit on total Agent runs (0 = unlimited)
   daily_run_limit: 50
   # Timeout in seconds for a single Agent run

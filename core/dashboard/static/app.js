@@ -1672,6 +1672,12 @@ function renderConfig(data) {
         <small>默认 2。保存后约 30 秒内热加载生效。</small>
       </div>
       <div class="form-row">
+        <label>单次 Agent 运行轮次上限（agents.max_turns）</label>
+        <input type="number" id="cfg-max-turns" min="1" step="1"
+          value="${esc(agents.max_turns ?? 300)}" />
+        <small>默认 300（上限而非目标值）。单个 Agent 运行轮次达到此值即被终止并触发重试。</small>
+      </div>
+      <div class="form-row">
         <label>单次运行时长上限（agents.run_timeout_seconds，秒）</label>
         <input type="number" id="cfg-run-timeout" min="60" step="60"
           value="${esc(agents.run_timeout_seconds ?? 3600)}" />
@@ -1954,6 +1960,10 @@ function collectConfigData() {
   const maxConcurrentInput = main.querySelector('#cfg-max-concurrent');
   const maxConcurrent = maxConcurrentInput ? parseInt(maxConcurrentInput.value, 10) : 2;
 
+  // Max turns per agent run (single agent run turn limit)
+  const maxTurnsInput = main.querySelector('#cfg-max-turns');
+  const maxTurns = maxTurnsInput ? parseInt(maxTurnsInput.value, 10) : 300;
+
   // Run timeout (single agent run limit, seconds)
   const runTimeoutInput = main.querySelector('#cfg-run-timeout');
   const runTimeout = runTimeoutInput ? parseInt(runTimeoutInput.value, 10) : 3600;
@@ -1963,7 +1973,7 @@ function collectConfigData() {
 
   return {
     llm: { providers },
-    agents: { models, max_concurrent: maxConcurrent, run_timeout_seconds: runTimeout },
+    agents: { models, max_concurrent: maxConcurrent, max_turns: maxTurns, run_timeout_seconds: runTimeout },
     gates: { approve_mode: approveMode },
   };
 }

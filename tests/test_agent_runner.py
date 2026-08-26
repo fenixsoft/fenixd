@@ -179,3 +179,73 @@ class TestWaitForRunningAgents:
     def test_grace_constant_default(self):
         """AGENT_TERMINATE_GRACE_SECONDS 默认 10s，供 fenixd 优雅退出使用。"""
         assert AGENT_TERMINATE_GRACE_SECONDS == 10
+
+
+class TestVerifierCheckpointResume:
+    """verifier-checkpoint-resume：构造提示词时读取 verify-progress 断点（spec
+    verifier-checkpoint-resume 3.1 / 3.2）。"""
+
+    def test_prompt_includes_breakpoint_when_done_gt_0(self, tmp_path):
+        """存在 done>0 的进度文件时，verifier 提示词含断点信息并从 done+1 继续。"""
+        proot = tmp_path / "proj"
+        vprog = proot / ".fenix" / "verify-progress"
+        vprog.mkdir(parents=True, exist_ok=True)
+        (vprog / "myspec.json").write_text(
+            json.dumps({"total": 32, "done": 5, "current": "场景5: 计算器"}),
+            encoding="utf-8",
+        )
+        runner = make_runner(proot)
+        prompt = runner._build_prompt("myspec", "verifier")
+        assert "RESUME CHECKPOINT" in prompt
+        assert "total=32" in prompt
+        assert "done=5" in prompt
+        assert "32" in prompt  # 任务总数保持
+        # 从 done+1 开始
+        assert "从第 6 个场景开始" in prompt
+        # 首次写入保留断点起点
+        assert "done=5（不要重置为 0）" in prompt
+
+    def test_prompt_fresh_start_when_no_progress(self, tmp_path):
+        """进度文件缺失时，verifier 提示词不含断点信息，全新开始。"""
+        proot = tmp_path / "proj"
+        runner = make_runner(proot)
+        prompt = runner._build_prompt("myspec", "verifier")
+        assert "RESUME CHECKPOINT" not in prompt
+
+    def test_prompt_fresh_start_when_done_zero(self, tmp_path):
+        """进度文件 done==0 时视作全新开始，不注入断点。"""
+        proot = tmp_path / "proj"
+        vprog = proot / ".fenix" / "verify-progress"
+        vprog.mkdir(parents=True, exist_ok=True)
+        (vprog / "myspec.json").write_text(
+            json.dumps({"total": 32, "done": 0, "current": "初始化"}),
+            encoding="utf-8",
+        )
+        runner = make_runner(proot)
+        prompt = runner._build_prompt("myspec", "verifier")
+        assert "RESUME CHECKPOINT" not in prompt
+
+    def test_corrupt_progress_removed_and_fresh_start(self, tmp_path):
+        """进度文件 JSON 损坏时安全降级：移除以免污染后续 attempt，提示词全新开始。"""
+        proot = tmp_path / "proj"
+        vprog = proot / ".fenix" / "verify-progress"
+        vprog.mkdir(parents=True, exist_ok=True)
+        bad = vprog / "myspec.json"
+        bad.write_text("{not valid json,,,", encoding="utf-8")
+        runner = make_runner(proot)
+        prompt = runner._build_prompt("myspec", "verifier")
+        assert "RESUME CHECKPOINT" not in prompt
+        # 损坏文件已被移除
+        assert not bad.exists()
+
+    def test_progress_missing_total_field_safe_degrade(self, tmp_path):
+        """进度文件缺少 total 字段时不注入断点（视作无断点）。"""
+        proot = tmp_path / "proj"
+        vprog = proot / ".fenix" / "verify-progress"
+        vprog.mkdir(parents=True, exist_ok=True)
+        (vprog / "myspec.json").write_text(
+            json.dumps({"done": 5}), encoding="utf-8"
+        )
+        runner = make_runner(proot)
+        prompt = runner._build_prompt("myspec", "verifier")
+        assert "RESUME CHECKPOINT" not in prompt
