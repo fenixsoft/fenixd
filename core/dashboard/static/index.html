@@ -39,6 +39,17 @@
       </div>
     </div>
 
+    <!-- SPEC 文档弹窗（复用 runmodal 视觉，独立 docmodal 语义） -->
+    <div id="docmodal" class="runmodal hidden">
+      <div class="runmodal-box">
+        <div class="runmodal-head">
+          <span id="docmodal-title" class="runmodal-title"></span>
+          <button id="docmodal-close" class="modal-close" title="关闭">✕</button>
+        </div>
+        <div class="runmodal-body" id="docmodal-body"></div>
+      </div>
+    </div>
+
     <script src="/vendor/fenix.bundle.js"></script>
     <script src="/app.js"></script>
   </body>

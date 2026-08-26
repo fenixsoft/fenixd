@@ -773,6 +773,8 @@ function renderProject(data) {
     const cls = active ? ' sort-active' : '';
     return `<th class="sortable${cls}" onclick="sortSpecs('${h.key}')">${h.label}${arrow}</th>`;
   }).join('');
+  // 文档操作列（不排序，常显「背景」「设计」按钮）
+  const theadAll = thead + '<th class="doc-col">文档</th>';
 
   const rowsHtml = filtered.length ? buildSpecRows(data.project, filtered).join('') : '';
 
@@ -796,7 +798,7 @@ function renderProject(data) {
     ${rowsHtml ? `
     <div class="spec-table-wrap">
       <table class="spec-table">
-        <thead><tr>${thead}</tr></thead>
+        <thead><tr>${theadAll}</tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
     </div>` : ''}
@@ -850,6 +852,10 @@ function specRow(project, s, depth = 0, orphan = false) {
     <td>${verify}</td>
     <td>${dur}</td>
     <td>${err}</td>
+    <td class="doc-actions">
+      <button class="doc-btn" title="查看背景文档" onclick="event.stopPropagation(); openDocModal('${encodeURIComponent(project)}', '${encodeURIComponent(s.name)}', 'proposal')">背景</button>
+      <button class="doc-btn" title="查看设计文档" onclick="event.stopPropagation(); openDocModal('${encodeURIComponent(project)}', '${encodeURIComponent(s.name)}', 'design')">设计</button>
+    </td>
   </tr>`;
 }
 
@@ -1388,6 +1394,48 @@ function closeRunModal() {
 }
 el('runmodal').addEventListener('click', (e) => { if (e.target === el('runmodal')) closeRunModal(); });
 el('runmodal-close').addEventListener('click', closeRunModal);
+
+// ── SPEC 文档弹窗（proposal.md / design.md） ─────────────────────────
+
+const DOC_LABELS = { proposal: '背景', design: '设计' };
+const DOC_EMPTY_TEXT = { proposal: '该 spec 未提供背景文档', design: '该 spec 未提供设计文档' };
+
+function openDocModal(project, spec, doc) {
+  const box = el('docmodal');
+  const body = el('docmodal-body');
+  const title = el('docmodal-title');
+  const docLabel = DOC_LABELS[doc] || doc;
+  title.textContent = `${decodeURIComponent(spec)} · ${docLabel}`;
+  body.innerHTML = '<div class="empty-state">加载中…</div>';
+  box.classList.remove('hidden');
+
+  fetch(`/api/spec-doc?project=${project}&spec=${spec}&doc=${doc}`)
+    .then((resp) => {
+      if (!resp.ok) {
+        if (resp.status === 404) throw new Error('not-found');
+        throw new Error('fetch-failed');
+      }
+      return resp.json();
+    })
+    .then((d) => {
+      if (!d.found) {
+        body.innerHTML = `<div class="empty-state">${DOC_EMPTY_TEXT[doc] || '文档不存在'}</div>`;
+        return;
+      }
+      body.innerHTML = mdRender(d.content);
+    })
+    .catch((err) => {
+      body.innerHTML = `<div class="empty-state err-state">加载失败，请稍后重试</div>`;
+    });
+}
+
+function closeDocModal() {
+  el('docmodal').classList.add('hidden');
+  el('docmodal-body').innerHTML = '';
+}
+
+el('docmodal').addEventListener('click', (e) => { if (e.target === el('docmodal')) closeDocModal(); });
+el('docmodal-close').addEventListener('click', closeDocModal);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeRunModal(); });
 
 // ── 配置页 ─────────────────────────────────────────────

@@ -121,6 +121,58 @@ def get_admin_activities(project_root) -> list:
     return activities
 
 
+# ── SPEC 文档读取（proposal.md / design.md，add-spec-doc-buttons） ──
+
+# kebab-case：小写字母/数字开头，仅含小写字母/数字/连字符（防御路径穿越）
+_SPEC_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# doc 白名单：仅允许读取这两份核心设计文档
+_SPEC_DOC_WHITELIST = ("proposal", "design")
+
+
+class InvalidSpecName(ValueError):
+    """spec 名称非法（非 kebab-case 或含路径穿越）。"""
+
+
+class InvalidSpecDoc(ValueError):
+    """doc 参数非法（不在 {proposal, design} 白名单）。"""
+
+
+def get_spec_doc(project_root, spec: str, doc: str) -> dict:
+    """读取 SPEC 的 proposal.md / design.md 原文。
+
+    Args:
+        project_root: 项目根目录
+        spec: SPEC 名称（须 kebab-case）
+        doc: 文档类型，仅 "proposal" / "design"
+
+    Returns:
+        {"found": bool, "content": str}
+        - 文件存在：found=True, content=文件原文
+        - 文件不存在：found=False, content=""
+
+    Raises:
+        InvalidSpecName: spec 非 kebab-case（含可能的路径穿越片段）
+        InvalidSpecDoc: doc 不在白名单
+    """
+    if not isinstance(spec, str) or not _SPEC_NAME_RE.match(spec):
+        raise InvalidSpecName(spec)
+    if doc not in _SPEC_DOC_WHITELIST:
+        raise InvalidSpecDoc(doc)
+
+    changes_root = Path(project_root) / "openspec" / "changes"
+    target = (changes_root / spec / f"{doc}.md").resolve()
+    # 防御性校验：解析后必须仍位于 changes 目录内，杜绝任何 `..` 拼接越界
+    if not target.is_relative_to(changes_root.resolve()):
+        raise InvalidSpecName(spec)
+    if not target.is_file():
+        return {"found": False, "content": ""}
+    try:
+        content = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {"found": False, "content": ""}
+    return {"found": True, "content": content}
+
+
 # ── 基础解析（源自 bin/fenix_dashboard.py，TUI / Web 共用） ────────────
 
 def parse_state(project_root) -> dict:

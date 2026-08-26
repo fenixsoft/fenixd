@@ -134,6 +134,29 @@ class TestDataParse:
         proot = make_project(tmp_path)
         assert dash_data.count_scenarios(proot, "myspec") == 2
 
+    def test_get_spec_doc(self, tmp_path):
+        proot = make_project(tmp_path)
+        doc_path = proot / "openspec" / "changes" / "myspec" / "proposal.md"
+        doc_path.write_text("# 背景\n\n- 列表项\n", encoding="utf-8")
+        # 存在
+        res = dash_data.get_spec_doc(proot, "myspec", "proposal")
+        assert res["found"] is True
+        assert "背景" in res["content"]
+        # 缺失 → found=False，content=""
+        res = dash_data.get_spec_doc(proot, "myspec", "design")
+        assert res == {"found": False, "content": ""}
+
+    def test_get_spec_doc_invalid(self, tmp_path):
+        proot = make_project(tmp_path)
+        # doc 白名单外
+        with pytest.raises(dash_data.InvalidSpecDoc):
+            dash_data.get_spec_doc(proot, "myspec", "readme")
+        # spec 非 kebab-case（含大写、含路径穿越片段）
+        with pytest.raises(dash_data.InvalidSpecName):
+            dash_data.get_spec_doc(proot, "../../etc/passwd", "proposal")
+        with pytest.raises(dash_data.InvalidSpecName):
+            dash_data.get_spec_doc(proot, "MySpec", "proposal")
+
     def test_get_recent_events(self, tmp_path):
         proot = make_project(tmp_path)
         events = dash_data.get_recent_events(proot, minutes=10)
@@ -1049,6 +1072,33 @@ class TestServerAPI:
         assert len(data["screenshots"]) == 1
         assert len(data["runs"]) == 2
         assert data["verify_progress"]["total"] == 3
+
+    def test_api_spec_doc(self, server_fx):
+        proot, srv = server_fx
+        (proot / "openspec" / "changes" / "myspec" / "proposal.md").write_text(
+            "# 背景\n\n- 列表项\n", encoding="utf-8"
+        )
+        # 读取存在的文档
+        status, data = srv.get("/api/spec-doc?project=proj-a&spec=myspec&doc=proposal")
+        assert status == 200
+        assert data["found"] is True
+        assert "背景" in data["content"]
+        # 缺失文档 → 200 + found=False
+        status, data = srv.get("/api/spec-doc?project=proj-a&spec=myspec&doc=design")
+        assert status == 200
+        assert data == {"found": False, "content": "", "project": "proj-a", "spec": "myspec", "doc": "design"}
+        # 非法 doc → 400
+        status, _ = srv.get("/api/spec-doc?project=proj-a&spec=myspec&doc=readme")
+        assert status == 400
+        # 未知 spec → 404（且不读取 changes 目录外文件）
+        status, _ = srv.get("/api/spec-doc?project=proj-a&spec=ghost&doc=proposal")
+        assert status == 404
+        # 路径穿越 spec → 404，不泄露文件内容
+        status, data = srv.get("/api/spec-doc?project=proj-a&spec=../../etc/passwd&doc=proposal")
+        assert status == 404
+        # 未知项目 → 400
+        status, _ = srv.get("/api/spec-doc?project=ghost&spec=myspec&doc=proposal")
+        assert status == 400
 
     def test_api_run(self, server_fx):
         _, srv = server_fx
