@@ -64,6 +64,44 @@ def alerts_summary(project_root) -> dict:
     }
 
 
+def get_admin_activities(project_root) -> list:
+    """返回 Administrator 处置活动记录（运维记录时间线数据源）。
+
+    从 admin_alerts.json 过滤 kind=disposition，按时间倒序；与未处理升级
+    escalation 关联（同 admin_run_id）的记录置顶，并标记 handled=False +
+    escalation_id（供前端 mark-handled）。旧记录无 summary 时原样返回，
+    界面降级显示结构化字段（design D1，向后兼容）。
+    """
+    from core.admin_store import AdminStore, DISPOSITION, ESCALATION
+    records = AdminStore(project_root).read_all()
+
+    # 未处理升级 → 关联 disposition（按 admin_run_id 匹配）
+    unhandled_by_run: dict = {}
+    for rec in records:
+        if (rec.get("kind") == ESCALATION and not rec.get("handled")
+                and rec.get("admin_run_id")):
+            unhandled_by_run.setdefault(rec["admin_run_id"], rec.get("id"))
+
+    activities = []
+    for rec in records:
+        if rec.get("kind") != DISPOSITION:
+            continue
+        item = dict(rec)
+        esc_id = unhandled_by_run.get(rec.get("admin_run_id"))
+        item["handled"] = esc_id is None
+        item["escalation_id"] = esc_id
+        item["actions_taken"] = rec.get("actions_taken") or rec.get("action_taken") or ""
+        item["_pin"] = esc_id is not None
+        activities.append(item)
+
+    # 未处理升级关联置顶，组内按时间倒序
+    activities.sort(
+        key=lambda a: (a["_pin"], a.get("created") or ""), reverse=True)
+    for a in activities:
+        a.pop("_pin", None)
+    return activities
+
+
 # ── 基础解析（源自 bin/fenix_dashboard.py，TUI / Web 共用） ────────────
 
 def parse_state(project_root) -> dict:

@@ -56,7 +56,7 @@ class AdminDisposition:
     def __init__(self, run_id: str, spec: str | None = None, success: bool = True,
                  problem: str = "", actions_taken: str = "", result: str = "",
                  escalate: bool = False, recommended_action: str = "",
-                 error: str = "", output: str = ""):
+                 summary: str = "", error: str = "", output: str = ""):
         self.run_id = run_id
         self.spec = spec
         self.success = success
@@ -65,6 +65,7 @@ class AdminDisposition:
         self.result = result
         self.escalate = escalate
         self.recommended_action = recommended_action
+        self.summary = summary
         self.error = error
         self.output = output
 
@@ -78,6 +79,7 @@ class AdminDisposition:
             "result": self.result,
             "escalate": self.escalate,
             "recommended_action": self.recommended_action,
+            "summary": self.summary,
             "error": self.error,
         }
 
@@ -241,6 +243,7 @@ class AgentRunner:
             result=disp.get("result") or ("resolved" if success else "failed"),
             escalate=bool(disp.get("escalate", False)),
             recommended_action=disp.get("recommended_action") or "",
+            summary=disp.get("summary") or "",
             error=error,
             output=output,
         )
@@ -273,6 +276,13 @@ class AgentRunner:
             data["actions_taken"] = ""
         elif not isinstance(at, str):
             data["actions_taken"] = str(at)
+        sm = data.get("summary")
+        if isinstance(sm, list):
+            data["summary"] = "；".join(str(x) for x in sm if x)
+        elif sm is None:
+            data["summary"] = ""
+        elif not isinstance(sm, str):
+            data["summary"] = str(sm)
         return data
 
     def _get_admin_model(self) -> str:
@@ -709,12 +719,15 @@ class AgentRunner:
                 f"将 escalate 置为 true 并给出 recommended_action。\n\n"
                 f"## 完成后\n"
                 f"把最终处置记录写入 .fenix/admin_disposition.json（当前目录即主树），"
-                f"覆盖之前的初步记录：\n"
+                f"覆盖之前的初步记录。其中 summary 字段为必填：一段人类可读的叙述性总结，"
+                f"必须包含诊断结论（问题是什么、根因）、处置时间线（做了什么、顺序）、"
+                f"最终结果，以及如需人工介入时的具体建议：\n"
                 f'{{\n'
                 f'  "spec": "{sig_spec}",\n'
                 f'  "problem": "处理的困境问题",\n'
                 f'  "actions_taken": ["动作1", "动作2"],\n'
                 f'  "result": "resolved | partially-resolved | escalated",\n'
+                f'  "summary": "人类可读叙述：诊断结论 + 处置时间线 + 最终结果 + 对人类的建议",\n'
                 f'  "escalate": true/false,\n'
                 f'  "recommended_action": "若升级，给出人类应做的操作"\n'
                 f'}}\n'
@@ -850,9 +863,12 @@ class AgentRunner:
                         if entry.get("type") == "assistant":
                             turn_count[0] += 1
                         if entry.get("type") == "result":
-                            # 记录最后一个 result 事件（含 num_turns / result 文本 / session_id）
+                            # 记录最后一个 result 事件（含 num_turns / result 文本 / session_id）；
+                            # 落盘推迟到读线程 join 后，保证 result 终态是文件最后一行
+                            # （并发 stderr 噪声不会落在其后，Dashboard 状态分类不受干扰）
                             last_result.clear()
                             last_result.update(entry)
+                            continue
                     append_run_line(run_file, entry)
             except Exception:
                 # 读取线程异常不应导致主流程崩溃；半成品产物仍可被 Dashboard 读取
@@ -895,6 +911,9 @@ class AgentRunner:
             t_out.join(timeout=5)
             t_err.join(timeout=5)
             self._running_agents.pop(run_id, None)
+            # result 终态事件最后落盘（读线程里跳过内联写），保证是文件最后一行
+            if last_result:
+                append_run_line(run_file, dict(last_result))
             # 产物文件可能因崩溃等遗留为"活动但不再增长"，清理时按时间淘汰即可
 
         if timeout_error is not None:
