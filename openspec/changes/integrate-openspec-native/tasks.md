@@ -15,9 +15,9 @@
 
 ## 3. bin/fenix_spec.py CLI
 
-- [ ] 3.1 新增 `bin/fenix_spec.py`（仿 `bin/fenix_process.py`：脚本头 `sys.path.insert(0, 框架根)`）：argparse 子命令 `new <name>`、`status --change <name>`、`instructions <artifact-id> --change <name>`，均输出 JSON
-- [ ] 3.2 在 fenixd 项目内冒烟验证三个子命令输出结构（对照 openspec `status/instructions --json` 字段一致）
-- [ ] 3.3 确认在**未安装 openspec CLI** 的环境中 `python3 .fenix/bin/fenix_spec.py status --change <name>` 可正常运行（不引用 `openspec` 命令）
+- [x] 3.1 新增 `bin/fenix_spec.py`（仿 `bin/fenix_process.py`：脚本头 `sys.path.insert(0, 框架根)`）：argparse 子命令 `new <name>`、`status --change <name>`、`instructions <artifact-id> --change <name>`，均输出 JSON
+- [x] 3.2 在 fenixd 项目内冒烟验证三个子命令输出结构（对照 openspec `status/instructions --json` 字段一致）
+- [x] 3.3 确认在**未安装 openspec CLI** 的环境中 `python3 .fenix/bin/fenix_spec.py status --change <name>` 可正常运行（不引用 `openspec` 命令）
 
 ## 4. fenix-new skill 重写为自包含
 
