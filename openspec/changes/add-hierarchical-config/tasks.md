@@ -2,11 +2,11 @@
 
 ## 1. ConfigLoader 核心：深度合并与有效配置解析
 
-- [ ] 1.1 `core/config.py` 新增常量 `USER_CONFIG_DIR = Path.home() / ".fenix"`，并新增纯函数 `deep_merge(base, override) -> dict`：dict 递归合并（override 优先）、标量/list 整体替换、不修改入参
-- [ ] 1.2 `core/config.py` 新增 `resolve_config(project_root) -> dict`：读用户级 `~/.fenix/config.yaml` 与项目级 `<project_root>/.fenix/config.yaml`（任一或全部缺失按空 dict 兜底，解析失败记录 error 不阻断），`deep_merge(user, proj)`，缺 `project.name` 时以 `Path(project_root).name` 补齐，校验后返回
-- [ ] 1.3 `core/config.py` 放宽校验：`_validate` 增加 `require_project` 参数（默认 True），`resolve_config` 调用时传 False；仅当 `project` 存在时才校验 `project.type`；`REQUIRED_KEYS` 缺失不再抛错改为逐键存在性校验（缺省交由消费方默认值兜底）
-- [ ] 1.4 `tests/test_core.py` 新增 `deep_merge` / `resolve_config` 单测：覆盖 D2 合并语义（个别键覆盖、列表替换、无用户级时不变）、缺失文件兜底、`project.name` 补齐、校验放宽
-- [ ] 1.5 运行 `pytest tests/test_core.py -q`，新单测全部通过
+- [x] 1.1 `core/config.py` 新增常量 `USER_CONFIG_DIR = Path.home() / ".fenix"`，并新增纯函数 `deep_merge(base, override) -> dict`：dict 递归合并（override 优先）、标量/list 整体替换、不修改入参
+- [x] 1.2 `core/config.py` 新增 `resolve_config(project_root) -> dict`：读用户级 `~/.fenix/config.yaml` 与项目级 `<project_root>/.fenix/config.yaml`（任一或全部缺失按空 dict 兜底，解析失败记录 error 不阻断），`deep_merge(user, proj)`，缺 `project.name` 时以 `Path(project_root).name` 补齐，校验后返回
+- [x] 1.3 `core/config.py` 放宽校验：`_validate` 增加 `require_project` 参数（默认 True），`resolve_config` 调用时传 False；仅当 `project` 存在时才校验 `project.type`；`REQUIRED_KEYS` 缺失不再抛错改为逐键存在性校验（缺省交由消费方默认值兜底）
+- [x] 1.4 `tests/test_core.py` 新增 `deep_merge` / `resolve_config` 单测：覆盖 D2 合并语义（个别键覆盖、列表替换、无用户级时不变）、缺失文件兜底、`project.name` 补齐、校验放宽
+- [x] 1.5 运行 `pytest tests/test_core.py -q`，新单测全部通过
 
 ## 2. Daemon 加载切换
 

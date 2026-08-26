@@ -4,10 +4,32 @@ config.py — Configuration loader for fenixd.
 Reads and validates config.yaml, providing typed access to all settings.
 """
 
+import copy
+import logging
 import yaml
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+
+# 用户级配置目录：与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定
+USER_CONFIG_DIR = Path.home() / ".fenix"
+
+_logger = logging.getLogger("fenixd.config")
+
+
+def deep_merge(base: dict, override: dict) -> dict:
+    """深度合并两个配置 dict，返回新 dict（不修改入参）。
+
+    规则：两值均为 dict → 递归合并（override 优先）；否则（标量 / list / None）
+    → override 整体替换 base。用户级配置为基础、项目级配置为覆盖。
+    """
+    result = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
 
 
 class ConfigLoader:
@@ -26,6 +48,59 @@ class ConfigLoader:
     VALID_APPROVE_MODES = ["manual", "auto"]
 
     @classmethod
+    def resolve_config(cls, project_root) -> Dict[str, Any]:
+        """解析某项目的有效配置：用户级 + 项目级深合并（项目级优先）。
+
+        读取用户级 `~/.fenix/config.yaml` 与项目级 `<project_root>/.fenix/config.yaml`，
+        任一或全部缺失按空 dict 兜底；解析失败记录错误日志但不阻断。
+        有效配置缺失 `project.name` 时以项目根目录名补齐（用户级 project 键不参与身份）。
+        校验采用宽松模式（require_project=False）：不强制顶层必填键，已存在键做值级校验。
+
+        Returns: 有效配置 dict，始终含 `project.name`。
+        """
+        proot = Path(project_root)
+
+        user = {}
+        user_path = USER_CONFIG_DIR / "config.yaml"
+        if user_path.exists():
+            user = cls._load_optional_yaml(user_path, "用户级")
+
+        proj = {}
+        proj_path = proot / ".fenix" / "config.yaml"
+        if proj_path.exists():
+            proj = cls._load_optional_yaml(proj_path, "项目级")
+
+        effective = deep_merge(user, proj)
+
+        # 补全项目身份：仅项目级显式定义的 project.name 生效；否则用项目根目录名
+        project = effective.get("project")
+        if not isinstance(project, dict):
+            project = {}
+            effective["project"] = project
+        proj_name = None
+        proj_project = proj.get("project")
+        if isinstance(proj_project, dict):
+            proj_name = proj_project.get("name")
+        project["name"] = proj_name or proot.name
+
+        cls._validate(effective, require_project=False)
+        return effective
+
+    @classmethod
+    def _load_optional_yaml(cls, path: Path, label: str) -> Dict[str, Any]:
+        """读取单个配置文件，失败/非 dict 时记录日志并按空 dict 兜底。"""
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+            if not isinstance(loaded, dict):
+                _logger.error("%s配置顶层不是对象，按空配置处理: %s", label, path)
+                return {}
+            return loaded
+        except (yaml.YAMLError, OSError) as e:
+            _logger.error("%s配置解析失败，按空配置处理: %s (%s)", label, path, e)
+            return {}
+
+    @classmethod
     def load(cls, config_path: Path) -> Dict[str, Any]:
         """Load config from path, validate, and return as dict."""
         if not os.path.exists(config_path):
@@ -41,34 +116,43 @@ class ConfigLoader:
         return config
 
     @classmethod
-    def _validate(cls, config: Dict[str, Any]):
-        """Validate configuration structure and values."""
-        # Check required keys
-        for key in cls.REQUIRED_KEYS:
-            if key not in config:
-                raise ValueError(f"Missing required config key: '{key}'")
+    def _validate(cls, config: Dict[str, Any], require_project: bool = True):
+        """Validate configuration structure and values.
+
+        require_project=True（load 严格路径）：顶层 REQUIRED_KEYS 必须全部存在，
+        且 project.type 必须有效。
+        require_project=False（resolve_config 宽松路径）：不强制顶层键存在（缺省
+        交由消费方默认值兜底），仅校验已存在的键；project.type 缺失时不参与校验。
+        """
+        # 顶层必填键检查（仅严格路径）
+        if require_project:
+            for key in cls.REQUIRED_KEYS:
+                if key not in config:
+                    raise ValueError(f"Missing required config key: '{key}'")
 
         # Validate schedule
-        schedule = config["schedule"]
+        schedule = config.get("schedule") or {}
         poll = schedule.get("poll_interval_minutes", 30)
         if not isinstance(poll, (int, float)) or poll <= 0:
             raise ValueError(f"schedule.poll_interval_minutes must be positive: {poll}")
 
         # Validate agents — max_concurrent / max_retries / max_turns 均为可选，
         # 缺失时由各消费方使用默认值；仅当显式提供时才校验必须为正整数。
-        agents = config["agents"]
+        agents = config.get("agents") or {}
         for field in ["max_concurrent", "max_retries", "max_turns"]:
             if field in agents:
                 val = agents[field]
                 if not isinstance(val, int) or val <= 0:
                     raise ValueError(f"agents.{field} must be a positive integer: {val}")
 
-        # Validate project type
-        ptype = config["project"].get("type", "")
-        if ptype not in cls.VALID_PROJECT_TYPES:
-            raise ValueError(
-                f"project.type must be one of {cls.VALID_PROJECT_TYPES}: {ptype}"
-            )
+        # Validate project type — 仅当 project 存在且（严格路径 或 显式提供 type）时校验
+        project = config.get("project")
+        if isinstance(project, dict) and (require_project or "type" in project):
+            ptype = project.get("type", "")
+            if ptype not in cls.VALID_PROJECT_TYPES:
+                raise ValueError(
+                    f"project.type must be one of {cls.VALID_PROJECT_TYPES}: {ptype}"
+                )
 
         # Validate llm.providers (optional — absence means empty registry)
         llm = config.get("llm") or {}
