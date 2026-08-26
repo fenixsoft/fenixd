@@ -42,6 +42,7 @@ SIGNAL_SEVERITY = {
     "flapping": "major",
     "stuck": "major",
     "merge_streak": "critical",
+    "blocked_stuck": "critical",
     "daemon_errors": "critical",
 }
 SIGNAL_RECOMMENDATION = {
@@ -49,6 +50,7 @@ SIGNAL_RECOMMENDATION = {
     "flapping": "检查 spec 状态机空转回路（ready↔implementing），修复派发/恢复逻辑或人工介入",
     "stuck": "检查卡死 Agent 子进程（kill 并按需重启），或重置 spec 状态重新调度",
     "merge_streak": "检查 merge-back 冲突根因（stash/分支冲突），清理 git 状态后重新 merge",
+    "blocked_stuck": "检查 blocked 是否误置（误判派生的假 spec）或确需人工决策；清理假 spec 或重置后重新调度，必要时升级",
     "daemon_errors": "检查 fenixd 连续 ERROR 的根因，必要时重启 daemon",
 }
 
@@ -131,7 +133,35 @@ class AdminMonitor:
         signals.extend(self._detect_flapping(specs, now))
         signals.extend(self._detect_stuck(specs, now))
         signals.extend(self._detect_merge_streak(specs))
+        signals.extend(self._detect_blocked_stuck(specs, now))
         signals.extend(self._detect_daemon_errors(now))
+        return signals
+
+    def _detect_blocked_stuck(self, specs: dict, now: float) -> list:
+        """blocked 状态超时未处理 → 唤起 admin 处置（fix-admin-self-heal）。
+
+        熔断把 spec 置 blocked 后等待人工；但部分 blocked 是误置（如误判派生的
+        假 spec），且人工未必及时看到。超过阈值仍滞留 → 交给 admin 判定是清理
+        还是升级。
+        """
+        signals = []
+        threshold = max(self.cooldown_minutes, 15)
+        for name, entry in specs.items():
+            if entry.get("status") != "blocked":
+                continue
+            updated_str = entry.get("updated") or entry.get("created") or ""
+            try:
+                updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            elapsed = (now - updated.timestamp()) / 60
+            if elapsed <= threshold:
+                continue
+            signals.append(self._make_signal(
+                "blocked_stuck", name,
+                f"'{name}' 处于 blocked 超过 {int(elapsed)} 分钟未处理",
+                f"updated={updated_str}，阈值 {threshold} 分钟",
+            ))
         return signals
 
     def _make_signal(self, signal_type: str, spec, description: str, evidence: str) -> dict:

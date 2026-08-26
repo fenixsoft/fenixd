@@ -249,6 +249,23 @@ class TestAdminMonitorDetection:
         signals = mon.run_once()
         assert any(s["signal_type"] == "merge_streak" for s in signals)
 
+    def test_blocked_stuck(self, tmp_path):
+        """blocked 超时未处理 → 唤起 admin（fix-admin-self-heal）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "blocked", "updated": iso_ago(40)},
+            "spec-b": {"status": "implementing", "updated": utcnow_iso()},  # 触发检测前置条件
+        })
+        signals = mon.run_once()
+        assert any(s["signal_type"] == "blocked_stuck" for s in signals)
+
+    def test_blocked_recent_not_detected(self, tmp_path):
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "blocked", "updated": utcnow_iso()},  # 刚 blocked
+            "spec-b": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        signals = mon.run_once()
+        assert all(s["signal_type"] != "blocked_stuck" for s in signals)
+
     def test_daemon_errors(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
