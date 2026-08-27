@@ -273,19 +273,48 @@ class PMEngine:
 
         existing_fix = self.state_machine.read_one(fix_spec_name)
         if existing_fix:
-            # 复用可重置的 fix SPEC
-            self.logger.info(
-                "pm_engine",
-                f"Fix SPEC '{fix_spec_name}' already exists "
-                f"(status={existing_fix.get('status', '')}) — resetting to ready",
-            )
-            self.state_machine.update_spec(fix_spec_name, {
-                "status": "ready",
-                "error": f"Re-triggered from bug found in {spec_name}",
-                "implementer_run": None,
-                "tester_run": None,
-                "branch": None,
-            })
+            # 复用可重置的 fix SPEC。先按幂等守卫判定（fix-dispatch-orphan D2）：
+            # 子 SPEC 处于推进态或终态（implementing/testing/implemented/verified/
+            # done/pushed）时，本次 re-trigger 绝不动其状态、绝不清空
+            # implementer_run/tester_run（保留历史 run id 供诊断与排队去重），
+            # 仅记日志跳过，避免把已 implemented 甚至进行中的子 SPEC 打回 ready。
+            guard_status = existing_fix.get("status", "")
+            if guard_status in (
+                "implementing", "testing", "implemented",
+                "verified", "done", "pushed",
+            ):
+                self.logger.info(
+                    "pm_engine",
+                    f"Fix SPEC '{fix_spec_name}' 处于 '{guard_status}' "
+                    f"— bug-found 重发幂等守卫：跳过重置，保留状态与 run 字段",
+                )
+                # 不可复用现有 _on_spec_ready 直调（design D1）：此时子 SPEC 不在
+                # ready 态，直调会被 _dependencies_satisfied/状态校验挡下，无副作用；
+                # 但若未来扩展此分支需重新派发，应在此显式接 D1 补发路径。
+            else:
+                # 可重置态（drafted/ready/bug-found）：保留现有 reset 行为，但
+                # 不再清空 implementer_run/tester_run 历史值（D2：清空制造的孤儿
+                # 问题远大于收益，字段唯一用途是排队去重与诊断）。
+                self.logger.info(
+                    "pm_engine",
+                    f"Fix SPEC '{fix_spec_name}' already exists "
+                    f"(status={guard_status}) — resetting to ready",
+                )
+                reset_fields = {
+                    "status": "ready",
+                    "error": f"Re-triggered from bug found in {spec_name}",
+                }
+                # 仅当 run 字段当前为空时才补 None；已有历史 run id 一律保留。
+                if existing_fix.get("implementer_run") is None:
+                    reset_fields["implementer_run"] = None
+                if existing_fix.get("tester_run") is None:
+                    reset_fields["tester_run"] = None
+                self.state_machine.update_spec(fix_spec_name, reset_fields)
+                # D1 同状态行动性重置补发：ready→ready（或 bug-found→ready）属
+                # 「状态未变但语义需要行动」的重置，必须触达 dispatch 路径。
+                # 直调 _on_spec_ready（复用 L106 启动路径先例，不走事件比较）：
+                # 若 fix spec 已在 ready，本次重置后重新排队实现器。
+                self._on_spec_ready(fix_spec_name)
         else:
             # 新建 fix SPEC（跳过 drafted —— 自动生成，无需人工评审）
             self.state_machine.add_spec(fix_spec_name, {
@@ -1009,6 +1038,10 @@ class PMEngine:
                                 "pm_engine",
                                 f"All retries exhausted for '{spec_name}'",
                             )
+                            # 3.2 行动性同状态更新补发（fix-dispatch-orphan D1）：
+                            # 失败落回 ready 后可能无后续事件触达（daemon 重启间隙 /
+                            # 轮询节流），立即重新排队实现器，避免滞留为孤儿。
+                            self._enqueue(spec_name, "implementer")
                         else:
                             self.state_machine.update_spec(spec_name, {
                                 "status": "ready",

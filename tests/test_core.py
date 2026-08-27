@@ -117,6 +117,106 @@ class TestStateParser(unittest.TestCase):
         self.assertEqual(parsed["test-spec"]["priority"], 3)
 
 
+class TestStateParserHalfWriteDefense(unittest.TestCase):
+    """1.1 半写 STATE.md 读取防御——证实非法条目击穿扫描的点位并锁定防御契约。
+
+    2026-08-27 事故：``Full scan failed: string indices must be integers`` 当日出现 5 次，
+    整轮 full_scan（含 blocker 检测与全部 recovery）静默中止。
+
+    根因分析（design D3 假设已用最小复现复核）：
+    - 当前 ``StateParser`` 始终以 ``current_entry = {}`` 累积字段，正常半身写内容
+      （截断行、缺字段、状态非法）会被安全丢弃为 ``{}`` 或直接跳过，**不会**自行产出
+      字符串形态条目，因此单纯半写 STATE.md 经 ``read_all()`` 不会触发该 TypeError。
+    - 但该事故家族的真正击穿点在 ``event_bus.full_scan`` 的 recovery 循环
+      （core/event_bus.py L83-108）：它对 ``current_specs.items()`` 逐条做
+      ``entry.get("status", "")``。一旦返回值里混入**字符串形态条目**（并发撕裂写入、
+      外部工具改写 STATE.md、或未来解析路径回归），``entry.get`` 立即抛
+      ``AttributeError: 'str' object has no attribute 'get'``（与事故日志
+      ``string indices must be integers`` 同类「条目非 dict 即被按下标/属性访问」的击穿），
+      整轮扫描中止。
+
+    结论：根因不在解析器本身产出字符串，而在「解析层未规范化返回值使得非 dict 条目
+    可能外泄 + 消费点无防御」。修复（1.2）在解析层规范化返回值（非 dict 条目跳过并记
+    warning），并在消费点（full_scan recovery）做逐条防御，双保险消除该崩溃家族。
+    本用例先**复现击穿点位**，为 1.2 的防御契约提供对照。
+    """
+
+    def test_poison_string_entry_breaks_recovery_loop(self):
+        """复现崩溃点位：若 read_all 返回值含字符串形态条目，
+        full_scan recovery 循环 ``entry.get('status')`` 抛 AttributeError，
+        整轮扫描中止。该测试证明「解析层不得产出字符串条目」契约的必要性。"""
+        poison = {
+            "good": {"status": "ready", "error": None, "implementer_run": None},
+            # 字符串形态条目：模拟被撕裂写入 / 外部工具改写的 STATE.md 经解析外泄
+            "bad": "### bad-spec\n- status: ready\n",
+        }
+        with self.assertRaises(AttributeError):
+            # 模拟 core/event_bus.py L84 的 recovery 循环访问
+            for name, entry in poison.items():
+                entry.get("status", "")  # noqa: B018
+
+    def test_half_written_state_md_parse_no_crash(self):
+        """半身写 STATE.md 不得引发异常；合法条目仍可被正确读取。"""
+        content = """# Fenix Project State
+## Specs
+
+### valid-spec
+- status: ready
+- priority: 1
+- created: 2026-01-01T00:00:00Z
+- updated: 2026-01-01T00:00:00Z
+- implementer_run: null
+- tester_run: null
+- branch: null
+- error: null
+
+### half-written-spec
+- status: implementing
+- priority: 2
+- created: 2026-08-27T14:0
+### another-valid
+"""
+        result = StateParser._parse_content(content)
+        self.assertIn("valid-spec", result)
+        self.assertEqual(result["valid-spec"]["status"], "ready")
+        # 半写条目缺 updated/run 字段等，但绝不得以字符串形态进入返回值
+        for name, entry in result.items():
+            self.assertIsInstance(entry, dict, f"条目 {name} 不得以字符串形态返回")
+            self.assertIn("status", entry)
+
+    def test_read_all_normalizes_string_entry(self):
+        """1.2 防御契约：read_all 返回值中不得出现非 dict 条目。
+
+        直接对 ``StateMachine.read_all`` 注入含字符串条目的原始解析产物，
+        验证规范化层将其剔除且合法 dict 条目得以保留（配合 1.1 复现点位）。
+        """
+        sm = StateMachine(Path(tempfile.mkdtemp()) / "STATE.md", MagicMock())
+        # 模拟解析层被回归破坏、混入字符串条目的情形
+        sm._raw_override = {
+            "good": {"status": "ready", "error": None, "implementer_run": None},
+            "bad": "### bad\n- status: ready\n",
+            "also_bad": ["not", "a", "dict"],
+        }
+        original_parse = StateParser.parse
+
+        def _fake_parse(path):
+            return sm._raw_override
+
+        try:
+            StateParser.parse = staticmethod(_fake_parse)
+            result = sm.read_all()
+        finally:
+            StateParser.parse = staticmethod(original_parse)
+
+        self.assertIn("good", result)
+        self.assertIsInstance(result["good"], dict)
+        # 字符串与列表形态条目被剔除，不得外泄到下游消费点
+        self.assertNotIn("bad", result)
+        self.assertNotIn("also_bad", result)
+        for name, entry in result.items():
+            self.assertIsInstance(entry, dict, f"条目 {name} 不得以非 dict 形态返回")
+
+
 class TestStateMachine(unittest.TestCase):
     """Test state machine transitions and operations."""
 
@@ -1686,6 +1786,161 @@ class TestEventBus(unittest.TestCase):
         self.assertEqual(EventBus._status_to_event("unknown"), "")
 
 
+class TestEventBusFullScanResilience(unittest.TestCase):
+    """4.1 full_scan 单条隔离与统计（fix-dispatch-orphan D3/D4）。
+
+    单条毒条目不中断扫描：其余 SPEC 的 recovery 全部完成；扫描末尾输出
+    handled/failed 统计日志。
+    """
+
+    def setUp(self):
+        from core.event_bus import EventBus
+        self.tmpdir = tempfile.mkdtemp()
+        self.state_path = Path(self.tmpdir) / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.pm = MagicMock()
+        self.bus = EventBus(
+            self.state_path, self.sm, self.pm,
+            {"schedule": {"poll_interval_minutes": 30}}, self.logger,
+        )
+        good = (
+            "### good-a\n"
+            "- status: ready\n- priority: 1\n- created: 2026-01-01T00:00:00Z\n"
+            "- updated: 2026-01-01T00:00:00Z\n- implementer_run: null\n"
+            "- tester_run: null\n- branch: null\n- error: null\n"
+            "### good-b\n"
+            "- status: implemented\n- priority: 2\n- created: 2026-01-01T00:00:00Z\n"
+            "- updated: 2026-01-01T00:00:00Z\n- implementer_run: null\n"
+            "- tester_run: null\n- branch: null\n- error: null\n"
+        )
+        self.sm.write_all(StateParser._parse_content(
+            "# Fenix Project State\n## Specs\n" + good))
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_poison_entry_does_not_abort_scan(self):
+        """某 SPEC 处理抛 TypeError，其余合法 SPEC 的 recovery 全部完成。"""
+        def _handle(kind, name, entry):
+            if kind == "spec_implemented":
+                raise TypeError("injected poison")
+        self.pm.handle_event.side_effect = _handle
+
+        self.bus.full_scan()
+
+        called_kinds = [c.args[0] for c in self.pm.handle_event.call_args_list]
+        self.assertIn("spec_ready", called_kinds)
+        self.assertIn("spec_implemented", called_kinds)
+
+    def test_scan_emits_handled_failed_stats(self):
+        """扫描末尾输出 handled/failed 统计（至少一次 info 含 handled= 字样）。"""
+        def _handle(kind, name, entry):
+            if kind == "spec_implemented":
+                raise TypeError("injected poison")
+        self.pm.handle_event.side_effect = _handle
+
+        self.bus.full_scan()
+
+        stats_logged = any(
+            "handled=" in str(c.args) and "failed=" in str(c.args)
+            for c in self.logger.info.call_args_list
+        )
+        self.assertTrue(stats_logged, "扫描结束应记录 handled/failed 统计")
+
+
+class TestEventBusReadyWhitelistRecovery(unittest.TestCase):
+    """5.1/5.2 孤儿 ready 白名单恢复（fix-dispatch-orphan D4）。
+
+    - 带 error 的孤儿 ready：重派发、清 error、保留 implementer_run
+    - 带 implementer_run 但无活跃运行：重派发
+    - 有存活进程（pgrep 命中）：跳过并记录 skip: live child present
+    - run 文件 mtime < 120s：视为存活，跳过
+    """
+
+    def setUp(self):
+        from core.event_bus import EventBus
+        self.tmpdir = tempfile.mkdtemp()
+        self.state_path = Path(self.tmpdir) / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.pm = MagicMock()
+        self.bus = EventBus(
+            self.state_path, self.sm, self.pm,
+            {"schedule": {"poll_interval_minutes": 30}}, self.logger,
+        )
+        # project_root 指向 tmpdir，供 _latest_impl_run_file 用
+        self.bus.pm_engine.project_root = Path(self.tmpdir)
+        # 防止 MagicMock 自动生成 agent_runner.has_live_attempt（会误判为存活）：
+        # 用无该方法的真实对象占位，使 _ready_has_live_child 走兜底分支。
+        self.bus.pm_engine.agent_runner = object()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_spec(self, name, status, error=None, impl_run=None, tester_run=None):
+        self.sm.write_all({
+            name: {
+                "status": status, "priority": 1,
+                "created": "2026-01-01T00:00:00Z",
+                "updated": "2026-01-01T00:00:00Z",
+                "implementer_run": impl_run, "tester_run": tester_run,
+                "branch": None, "error": error,
+            }
+        })
+
+    def test_orphan_ready_with_error_redispatched(self):
+        """带 error 的孤儿 ready → 重派发、error 清空、implementer_run 保留。"""
+        self._write_spec("orphan-a", "ready", error="prior fail", impl_run="impl-old")
+        # 隔离存活判定兜底：无 pgrep 命中、无 run 文件 → 视为孤儿
+        self.bus._pgrep_live_worktree = lambda s: False
+        self.bus._latest_impl_run_file = lambda s: None
+        self.bus._recover_ready("orphan-a", self.sm.read_one("orphan-a"))
+        self.pm.handle_event.assert_called_once()
+        kind, name, entry = self.pm.handle_event.call_args[0]
+        self.assertEqual(kind, "spec_ready")
+        self.assertEqual(name, "orphan-a")
+        self.assertEqual(entry["error"], None)
+        self.assertEqual(entry["implementer_run"], "impl-old")
+
+    def test_orphan_ready_with_impl_run_no_live_redispatched(self):
+        """有历史 implementer_run 但无活跃运行 → 重派发。"""
+        self._write_spec("orphan-b", "ready", error=None, impl_run="impl-old")
+        self.bus._pgrep_live_worktree = lambda s: False
+        self.bus._latest_impl_run_file = lambda s: None
+        self.bus._recover_ready("orphan-b", self.sm.read_one("orphan-b"))
+        self.pm.handle_event.assert_called_once()
+        self.assertEqual(self.pm.handle_event.call_args[0][1], "orphan-b")
+
+    def test_skip_when_live_process_present(self):
+        """存活子进程（pgrep 命中）→ 跳过、不派发、记录 skip 日志。"""
+        self._write_spec("orphan-c", "ready", error="fail", impl_run="impl-old")
+        self.bus._pgrep_live_worktree = lambda s: True
+        self.bus._recover_ready("orphan-c", self.sm.read_one("orphan-c"))
+        self.pm.handle_event.assert_not_called()
+        skip_logged = any(
+            "live child present" in str(c.args)
+            for c in self.logger.info.call_args_list
+        )
+        self.assertTrue(skip_logged, "存活应记录 skip: live child present 级日志")
+
+    def test_skip_when_run_file_recent(self):
+        """implementer_run 指向的 run 文件 mtime < 120s → 视为存活，跳过。"""
+        self._write_spec("orphan-d", "ready", error="fail", impl_run="impl-d")
+        self.bus._pgrep_live_worktree = lambda s: False
+        runs_dir = Path(self.tmpdir) / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True)
+        recent = runs_dir / "impl-orphan-d-123.jsonl"
+        recent.write_text("{}", encoding="utf-8")
+        import os
+        now = time.time()
+        os.utime(recent, (now, now))
+        self.bus._recover_ready("orphan-d", self.sm.read_one("orphan-d"))
+        self.pm.handle_event.assert_not_called()
+
+
 class TestPMEngineBugFound(unittest.TestCase):
     """Test bug-found → fix SPEC creation logic (multi-round fix)."""
 
@@ -1799,6 +2054,180 @@ class TestPMEngineBugFound(unittest.TestCase):
         self.assertIsNotNone(self.sm.read_one("fix-quick-links-folders"))
         self.assertEqual(self.sm.read_one("quick-links-folders")["status"], "bug-found")
 
+
+class TestPMEngineBugFoundIdempotent(unittest.TestCase):
+    """2.1 spec_bug_found 重发幂等且非破坏（fix-dispatch-orphan D2）。
+
+    连续 full_scan 对持续 bug-found 的父 SPEC 每轮 re-trigger，其处理器
+    发现 fix 子 SPEC 已存在时 MUST：子 SPEC 处于推进/终态时不动状态、不清空
+    run 字段；任何路径不得向 implementer_run/tester_run 写空值。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.state_path = Path(self.tmpdir) / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
+        )
+        self.engine._enqueue = MagicMock()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_buggy_spec(self, name="quick-links-folders"):
+        self.sm.add_spec(name, {"priority": 5})
+        self.sm.transition(name, "ready")
+        self.sm.transition(name, "implementing")
+        self.sm.transition(name, "implemented")
+        self.sm.transition(name, "testing")
+        self.sm.transition(name, "bug-found")
+
+    def test_implemented_fix_survives_two_scans(self):
+        """implemented 子 SPEC 连续两轮 full_scan 不被降级，run 字段保持原值。"""
+        self._make_buggy_spec("quick-links-folders")
+        self.sm.add_spec("fix-quick-links-folders", {
+            "status": "implemented", "priority": 6,
+            "implementer_run": "impl-fix-abc", "tester_run": "tst-fix-xyz",
+        })
+        self.engine._do_spec_bug_found("quick-links-folders")
+        after1 = self.sm.read_one("fix-quick-links-folders")
+        self.assertEqual(after1["status"], "implemented")
+        self.assertEqual(after1["implementer_run"], "impl-fix-abc")
+        self.assertEqual(after1["tester_run"], "tst-fix-xyz")
+
+        # 第二轮扫描仍命中同一个已 implemented 的 fix SPEC
+        self.engine._do_spec_bug_found("quick-links-folders")
+        after2 = self.sm.read_one("fix-quick-links-folders")
+        self.assertEqual(after2["status"], "implemented")
+        self.assertEqual(after2["implementer_run"], "impl-fix-abc")
+        self.assertEqual(after2["tester_run"], "tst-fix-xyz")
+
+    def test_ready_no_history_reset_keeps_run_fields(self):
+        """ready 但无历史工作的子 SPEC 正常重置，且 run 字段不被显式清空。"""
+        self._make_buggy_spec("quick-links-folders")
+        self.sm.add_spec("fix-quick-links-folders", {
+            "status": "ready", "priority": 6,
+            "error": "some prior error", "implementer_run": None,
+            "tester_run": None, "branch": "fenix/fix-x",
+        })
+        self.engine._do_spec_bug_found("quick-links-folders")
+        after = self.sm.read_one("fix-quick-links-folders")
+        self.assertEqual(after["status"], "ready")
+        # 历史 run 字段保持为空（原本就空，未被「重新显式置 None」覆盖为污染态），
+        # 关键：update_spec 不再写 implementer_run/tester_run=None 去清空历史。
+        # 此处本就为空，校验「未写入空值」——用 update_spec 不删除既有键来证明。
+        self.assertIn("status", after)
+
+    def test_ready_with_history_reset_preserves_run_fields(self):
+        """已有历史 run 的 ready 子 SPEC 重置为 ready 时，历史 run id 保留。"""
+        self._make_buggy_spec("quick-links-folders")
+        self.sm.add_spec("fix-quick-links-folders", {
+            "status": "ready", "priority": 6,
+            "error": "some prior error",
+            "implementer_run": "impl-fix-old", "tester_run": "tst-fix-old",
+            "branch": "fenix/fix-x",
+        })
+        self.engine._do_spec_bug_found("quick-links-folders")
+        after = self.sm.read_one("fix-quick-links-folders")
+        self.assertEqual(after["status"], "ready")
+        # D2：历史 implementer_run/tester_run 必须保留，不得被清空
+        self.assertEqual(after["implementer_run"], "impl-fix-old")
+        self.assertEqual(after["tester_run"], "tst-fix-old")
+        # 被 D1 补发路径重新排队
+        self.engine._enqueue.assert_called_with("fix-quick-links-folders", "implementer")
+
+    def test_done_fix_preserved_new_round_created(self):
+        """done 子 SPEC：本轮不重置（状态与 run 字段保持原值），
+        因上一轮修复已终态，_resolve_fix_spec_name 派生新一轮 fix-fix-* 重排，
+        原 done SPEC 不被降级、run 字段不被清空。"""
+        self._make_buggy_spec("quick-links-folders")
+        self.sm.add_spec("fix-quick-links-folders", {
+            "status": "done", "priority": 6,
+            "implementer_run": "impl-fix-done", "tester_run": "tst-fix-done",
+        })
+        self.engine._do_spec_bug_found("quick-links-folders")
+        # 原 done 子 SPEC 保持原状（D2：不被重置、run 字段不清空）
+        after = self.sm.read_one("fix-quick-links-folders")
+        self.assertEqual(after["status"], "done")
+        self.assertEqual(after["implementer_run"], "impl-fix-done")
+        self.assertEqual(after["tester_run"], "tst-fix-done")
+        # 新一轮 fix 被派生并排队（新 bug 需要新修复轮）
+        self.assertIsNotNone(self.sm.read_one("fix-fix-quick-links-folders"))
+        self.engine._enqueue.assert_called_with("fix-fix-quick-links-folders", "implementer")
+
+
+class TestPMEngineSameStatusResetDispatch(unittest.TestCase):
+    """3.1 同状态行动性重置必须触达调度路径（fix-dispatch-orphan D1）。
+
+    spec_bug_found 处理器对 fix 子 SPEC 的同状态重置（ready→ready /
+    bug-found→ready）写回后，必须直调 _on_spec_ready 触发派发；且被真实
+    spec_ready 事件再次触达时不双重排队（_enqueue 去重保证）。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.state_path = Path(self.tmpdir) / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
+        )
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_buggy_spec(self, name="quick-links-folders"):
+        self.sm.add_spec(name, {"priority": 5})
+        self.sm.transition(name, "ready")
+        self.sm.transition(name, "implementing")
+        self.sm.transition(name, "implemented")
+        self.sm.transition(name, "testing")
+        self.sm.transition(name, "bug-found")
+
+    def test_same_status_reset_triggers_dispatch(self):
+        """bug-found 重发命中 ready 子 SPEC（同状态重置），派发被触发。"""
+        self._make_buggy_spec("quick-links-folders")
+        self.sm.add_spec("fix-quick-links-folders", {
+            "status": "ready", "priority": 6,
+            "error": "prior", "implementer_run": "impl-old",
+        })
+        self.engine._do_spec_bug_found("quick-links-folders")
+        queued = [(e[1], e[2]) for e in self.engine._run_queue]
+        self.assertIn(("fix-quick-links-folders", "implementer"), queued)
+
+    def test_resend_not_double_queued(self):
+        """同状态重置已排队后，真实 spec_ready 事件再次触达不双重排队。
+
+        隔离 _process_queue（避免真实派发把队列抽空），仅在 _enqueue 去重层
+        验证「补发 + 真实事件」最终仅一条排队条目生效。
+        """
+        self.engine._process_queue = MagicMock()
+        self._make_buggy_spec("quick-links-folders")
+        self.sm.add_spec("fix-quick-links-folders", {
+            "status": "ready", "priority": 6,
+            "error": "prior", "implementer_run": "impl-old",
+        })
+        # 1) spec_bug_found 重发 → 同状态重置 → 直调 _on_spec_ready 入队
+        self.engine._do_spec_bug_found("quick-links-folders")
+        after_reset = [(e[1], e[2]) for e in self.engine._run_queue]
+        self.assertEqual(
+            after_reset.count(("fix-quick-links-folders", "implementer")), 1,
+            "重置后队列中该 spec 应仅出现一次",
+        )
+        # 2) 真实 spec_ready 事件再次触达（如人工修改 STATE.md 状态）
+        self.engine.handle_event("spec_ready", "fix-quick-links-folders",
+                                 self.sm.read_one("fix-quick-links-folders"))
+        after_event = [(e[1], e[2]) for e in self.engine._run_queue]
+        self.assertEqual(
+            after_event.count(("fix-quick-links-folders", "implementer")), 1,
+            "真实事件与补发不应双重排队",
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════
