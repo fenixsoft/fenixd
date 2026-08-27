@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Fenix Dashboard</title>
     <link rel="icon" href="data:," />
+    <!-- 首帧防闪烁：在任何外部样式表渲染前先行应用主题，避免浅色偏好用户刷新时闪一下深色 -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('fenix.theme');
+          if (t !== 'light' && t !== 'dark') t = 'dark';
+          document.documentElement.dataset.theme = t;
+        } catch (e) { document.documentElement.dataset.theme = 'dark'; }
+      })();
+    </script>
     <link rel="stylesheet" href="/style.css" />
     <link rel="stylesheet" href="/vendor/fenix.bundle.css" />
   </head>
