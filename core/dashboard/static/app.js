@@ -1715,7 +1715,7 @@ el('docmodal-close').addEventListener('click', closeDocModal);
 document.querySelectorAll('#docmodal .doc-tab-btn').forEach((b) => {
   b.addEventListener('click', () => loadDocTab(b.dataset.doc));
 });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeRunModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDocModal(); });
 
 // ── 配置页 ─────────────────────────────────────────────
 
