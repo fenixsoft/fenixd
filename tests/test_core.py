@@ -2852,6 +2852,10 @@ class TestPMEngineMergeBackIntegration(unittest.TestCase):
         self.engine.agent_runner.worktree_manager.merge_back_from_branch = MagicMock(
             return_value=(True, "")
         )
+        # restore_after_merge 现返回 (ok, conflict_files) 元组（fix-stashpop-deadlock）
+        self.engine.agent_runner.worktree_manager.restore_after_merge = MagicMock(
+            return_value=(True, [])
+        )
         # mock _read_implementer_result 返回 success
         self.engine._read_implementer_result = MagicMock(
             return_value={"status": "success"}
@@ -2910,8 +2914,84 @@ class TestPMEngineMergeBackIntegration(unittest.TestCase):
             return_value={"status": "success"}
         )
         self.engine._enqueue_front = MagicMock()
+        # restore_after_merge 现返回 (ok, conflict_files) 元组（fix-stashpop-deadlock）
+        self.engine.agent_runner.worktree_manager.restore_after_merge = MagicMock(
+            return_value=(True, [])
+        )
 
         self.engine._run_agent_worker("test-spec", "implementer", 3)
+
+        spec = self.sm.read_one("test-spec")
+        self.assertEqual(spec["status"], "implemented")
+
+    def test_circuit_open_failure_holds_state_no_retry(self):
+        """provider 熔断期派发失败不计入 _retry_count、不翻转状态机（design D5）。
+
+        error 含 "provider circuit open" 时 spec 保持 implementing 原状，由冷却结束后
+        的既有轮询自然重排；不触发 retry 计数、不回退到 ready、不创建新 worktree。
+        """
+        from core.agent_runner import AgentRunResult
+        result = AgentRunResult(
+            run_id="impl-test-spec-circuit", spec_name="test-spec",
+            agent_type="implementer", success=False, duration_seconds=10,
+            turns_used=1, error="provider circuit open: volc (HTTP 404 x3) — cooldown 120s remaining",
+        )
+        self.engine.agent_runner.run_implementer = MagicMock(return_value=result)
+        self.engine._read_implementer_result = MagicMock(return_value=None)
+        self.engine._enqueue_front = MagicMock()
+        # restore_after_merge 现返回 (ok, conflict_files) 元组（fix-stashpop-deadlock）
+        self.engine.agent_runner.worktree_manager = MagicMock()
+        self.engine.agent_runner.worktree_manager.restore_after_merge = MagicMock(
+            return_value=(True, [])
+        )
+
+        self.engine._run_agent_worker("test-spec", "implementer", 3)
+
+        spec = self.sm.read_one("test-spec")
+        # 状态保持 implementing，未翻转回 ready、未推进
+        self.assertEqual(spec["status"], "implementing")
+        # 不计入 _retry_count
+        self.assertNotIn("_retry_count", spec or {})
+        self.assertIsNone(spec.get("_retry_count"))
+        # error 保留 circuit open 信息，供 admin/dashboard 区分 provider 故障
+        self.assertIn("provider circuit open", spec.get("error", ""))
+
+    def test_stash_pop_conflict_reported_to_error(self):
+        """merge-back 后 stash pop 冲突自愈时，冲突文件清单写入 spec error（fix-stashpop-deadlock）。
+
+        自愈后主树已干净、状态仍推进到 implemented，但 error 字段需含 "stash pop conflict"
+        与受影响文件名单，触发 admin 告警、便于人工 git stash show 找回被丢弃改动。
+        """
+        from core.agent_runner import AgentRunResult
+        result = AgentRunResult(
+            run_id="impl-test-spec-stash", spec_name="test-spec",
+            agent_type="implementer", success=True, duration_seconds=10,
+            turns_used=5, branch="fenix/test-spec-stash",
+        )
+        self.engine.agent_runner.run_implementer = MagicMock(return_value=result)
+        self.engine.agent_runner.worktree_manager = MagicMock()
+        self.engine.agent_runner.worktree_manager.merge_back_from_branch = MagicMock(
+            return_value=(True, "")
+        )
+        # restore_after_merge 返回冲突清单（真实实现会自愈并返回受影响文件）
+        self.engine.agent_runner.worktree_manager.restore_after_merge = MagicMock(
+            return_value=(True, ["src/foo.py", "src/bar.py"])
+        )
+        self.engine._read_implementer_result = MagicMock(return_value={"status": "success"})
+        self.engine._enqueue_front = MagicMock()
+
+        self.engine._run_agent_worker("test-spec", "implementer", 3)
+
+        spec = self.sm.read_one("test-spec")
+        # 状态仍正常推进到 implemented（自愈不阻塞 merge-back）
+        self.assertEqual(spec["status"], "implemented")
+        # error 含冲突信息与被丢弃文件名单
+        err = spec.get("error", "")
+        self.assertIn("stash pop conflict", err)
+        self.assertIn("src/foo.py", err)
+        self.assertIn("src/bar.py", err)
+        # verifier 已排队
+        self.engine._enqueue_front.assert_called_once_with("test-spec", "verifier")
 
         spec = self.sm.read_one("test-spec")
         self.assertEqual(spec["status"], "implemented")
@@ -3205,14 +3285,159 @@ class TestMainTreeHealthCheck(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=fake_run):
-            self.assertTrue(self.wm.restore_after_merge())
+            ok, files = self.wm.restore_after_merge()
+        self.assertTrue(ok)
+        self.assertEqual(files, [])
 
     def test_restore_after_merge_pop_conflict_keeps_stash(self):
+        """pop 冲突进入自愈：返回 (True, [UU files])，stash 条目保留不 drop。
+
+        非冲突类失败（无 CONFLICT）仍返回 (False, []) 兼容旧语义。
+        """
+        captured = {}
+
         def fake_run(cmd, **kw):
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="CONFLICT (content): Merge conflict")
+            # stash pop 返回冲突；自愈需 ls-files -u 枚举 + checkout -f + reset
+            if cmd[:3] == ["git", "-C", str(self.project_root)] and cmd[3:5] == ["stash", "pop"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="CONFLICT (content): Merge conflict in a.py")
+            if cmd[3:] == ["ls-files", "-u"]:
+                # 模拟 a.py 处于 stage 2/3 未合并
+                return subprocess.CompletedProcess(cmd, 0, stdout="100644 abc 2\ta.py\n100644 def 3\ta.py\n")
+            captured["ran"] = [c for c in (cmd[3:] if len(cmd) > 3 else cmd)]
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=fake_run):
-            self.assertFalse(self.wm.restore_after_merge())
+            ok, files = self.wm.restore_after_merge()
+        self.assertTrue(ok)
+        self.assertEqual(files, ["a.py"])
+        # stash drop 不得被调用
+        self.assertNotIn("drop", str(captured.get("ran", [])))
+
+    def test_restore_after_merge_non_conflict_failure_returns_false(self):
+        """非冲突类 stash pop 失败（无 CONFLICT）保持旧 False 语义，不自愈。"""
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            if cmd[3:5] == ["stash", "pop"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="fatal: unknown error")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            ok, files = self.wm.restore_after_merge()
+        self.assertFalse(ok)
+        self.assertEqual(files, [])
+        # 不应触发自愈的 ls-files / checkout / reset
+        self.assertFalse(any(c[3:] == ["ls-files", "-u"] for c in calls))
+
+
+class TestStashPopConflictSelfHeal(unittest.TestCase):
+    """真实 git 场景：stash pop 冲突自愈（fix-stashpop-deadlock）。
+
+    构造：主树 A 文件有未提交改动 → dispatch 前 autostash → HEAD 被推进改同文件
+    → merge-back 后再 pop 撞内容冲突（UU 半合并）。
+    断言：自愈后 UU 清空、index 干净、git 写命令恢复、conflict_files 正确、stash 保留。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        self.git = lambda *a, **k: subprocess.run(
+            ["git", "-C", str(self.project_root), *a],
+            capture_output=True, text=True, **k,
+        )
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "user.email", "test@test.com")
+        self.git("config", "user.name", "test")
+        # 初始提交：A 文件
+        (self.project_root / "A.py").write_text("base\n")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "init")
+        from core.worktree_manager import WorktreeManager
+        self.wm = WorktreeManager(self.project_root / "wts", self.project_root, MagicMock())
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _status_porcelain(self) -> str:
+        return self.git("status", "--porcelain").stdout
+
+    def _unmerged_files(self) -> list:
+        out = self.git("ls-files", "-u").stdout
+        paths = set()
+        for line in out.splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) == 2:
+                paths.add(parts[1].strip())
+        return sorted(paths)
+
+    def _make_pop_conflict(self):
+        """在主树制造 autostash + 后续 HEAD 推进同文件，使 restore_after_merge pop 冲突。
+
+        模拟框架流：dispatch 前 autostash（主树脏改动第一行的散落修改）→ 其它 spec 推进
+        改同文件同行为 HEAD 前进 → restore_after_merge 的 stash pop 与 HEAD 同文件同
+        行内容冲突 → UU 半合并。stash 条目**保留**在主树，由 restore_after_merge 去 pop
+        从而触发冲突自愈。
+        """
+        # 初始提交：A.py 首行 base
+        # 1) dispatch 前 autostash（框架行为）：主树首行散落改动（模拟「修复中的前端文件」）
+        (self.project_root / "A.py").write_text("main tree dirty change\n")
+        stash = self.git("stash", "push", "-m", "fenix: pre-dispatch autostash",
+                         "--", ".", ":(exclude)openspec/changes")
+        self.assertEqual(stash.returncode, 0)
+        # 主树此刻干净
+        self.assertEqual(self._status_porcelain().strip(), "")
+        # 2) HEAD 被其它 spec 推进：改同文件 A.py 首行为 HEAD 版本（模拟另一个 merge
+        #    已合入主树）。主树此时仍 autostash 干净——唯一的 stash（#1 含首行 dirty
+        #    分支）保留着。后续 restore_after_merge 的 pop 将以 stash 的 base=base、
+        #    stash other=dirty、HEAD=merged 三方合并，同文件首行内容各异 → 冲突 → UU。
+        (self.project_root / "A.py").write_text("merged implementation\n")
+        self.git("add", "A.py")
+        self.git("commit", "-q", "-m", "[fenix] merge other spec into A.py")
+        # 主树此刻干净（autostash 仍在、未 pop），符合框架 merge-back 前的真实状态
+        self.assertEqual(self._status_porcelain().strip(), "")
+        # 确认 stash 列表里只有那一条 pre-dispatch autostash
+        self.assertIn("fenix: pre-dispatch autostash",
+                      self.git("stash", "list").stdout)
+
+    def test_pop_conflict_self_heals_and_preserves_stash(self):
+        self._make_pop_conflict()
+        # 主树此刻干净（autostash 已在主树，HEAD 已含 A.py 实现）
+        self.assertEqual(self._status_porcelain().strip(), "")
+        self.assertFalse(self._unmerged_files())
+
+        # restore_after_merge 的 pop 与已推进的 HEAD 冲突 → 自愈
+        ok, files = self.wm.restore_after_merge()
+
+        # 自愈成功，返回冲突文件清单
+        self.assertTrue(ok)
+        self.assertEqual(files, ["A.py"])
+        # UU 半合并已清空
+        self.assertEqual(self._unmerged_files(), [])
+        # index 干净、工作区可写
+        self.assertEqual(self._status_porcelain().strip(), "")
+        # 工作区保留的是 merge 后的实现（HEAD 版本），而非 stash 版本
+        self.assertEqual((self.project_root / "A.py").read_text(), "merged implementation\n")
+        # 后续 git 写命令恢复正常：再次 stash / commit 不报 unmerged/index 错误
+        (self.project_root / "A.py").write_text("post-heal write ok\n")
+        re_stash = self.git("stash", "push", "-m", "probe", "--", ".",
+                             ":(exclude)openspec/changes")
+        self.assertEqual(re_stash.returncode, 0, re_stash.stderr)
+        self.git("stash", "pop")  # 清理 probe
+        # stash 条目保留：被自愈丢弃内容的那个 autostash 仍在列表中可找回
+        stash_list = self.git("stash", "list").stdout
+        self.assertIn("fenix: pre-dispatch autostash", stash_list)
+
+    def test_no_conflict_path_returns_true_empty(self):
+        """无 stash / pop 成功路径回归：返回 (True, [])，行为兼容旧版 True。"""
+        # 主树干净、无 stash → pop 报 No stash entries（返回码 0 或 1，但无 CONFLICT）
+        ok, files = self.wm.restore_after_merge()
+        self.assertTrue(ok)
+        self.assertEqual(files, [])
+        # 主树无 UU、无副作用
+        self.assertEqual(self._unmerged_files(), [])
+        self.assertEqual(self._status_porcelain().strip(), "")
 
 
 class TestCostControl(unittest.TestCase):

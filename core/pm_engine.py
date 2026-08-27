@@ -913,8 +913,9 @@ class PMEngine:
                             )
                     else:
                         # 恢复 dispatch 前自动 stash 的主树改动（冲突时保留 stash，不阻塞）
+                        conflict_files = []
                         if stashed:
-                            wm.restore_after_merge()
+                            _ok, conflict_files = wm.restore_after_merge()
                         self.state_machine.transition(spec_name, "implemented")
                         self.state_machine.update_spec(spec_name, {
                             "implementer_run": result.run_id,
@@ -923,6 +924,12 @@ class PMEngine:
                             "_merge_fp": None,
                             "_merge_streak": 0,
                         })
+                        # pop 冲突自愈后：被丢弃的 stash 改动文件清单写入 error 字段，
+                        # 触发 admin 告警（stash 条目保留、可 git stash show 找回，
+                        # 不阻塞 merge-back 与状态推进）。须放在上面 update_spec(error=None)
+                        # 之后，避免被清空。见 fix-stashpop-deadlock。
+                        if conflict_files:
+                            self._report_stash_pop_conflict(spec_name, conflict_files)
                         # 写侧确定性回写：把已完成的任务勾选同步进主树 tasks.md
                         # （add-task-progress-sync）。任何异常都不阻塞 run 终态主流程。
                         try:
@@ -936,34 +943,51 @@ class PMEngine:
                         self._enqueue_front(spec_name, "verifier")
                         self.logger.info("pm_engine", f"Implement done, verifier queued for '{spec_name}'")
                 else:
-                    # Retry or mark error
-                    spec_entry = self.state_machine.read_one(spec_name)
-                    try:
-                        prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
-                    except (TypeError, ValueError):
-                        prev_retries = 0
-                    retries = prev_retries + 1
-                    max_r = self._get_config("agents.max_retries", 3)
-                    if retries >= max_r:
-                        self.state_machine.update_spec(spec_name, {
-                            "status": "ready",
-                            "error": final_error,
-                            "_retry_count": 0,
-                        })
-                        self.logger.error(
-                            "pm_engine",
-                            f"All retries exhausted for '{spec_name}'",
-                        )
-                    else:
-                        self.state_machine.update_spec(spec_name, {
-                            "status": "ready",
-                            "error": final_error,
-                            "_retry_count": retries,
-                        })
+                    # ── provider 熔断拦截（fix-stashpop-deadlock：provider-fault-fuse） ──
+                    # 熔断期派发失败（error 含 "provider circuit open"）属「provider 故障」，
+                    # 不是 spec 自身问题：不计入 _retry_count / _merge_streak、不翻转状态机、
+                    # 不创建新 worktree/autostash（design D5）。spec 保持 implementing 原状，
+                    # 由冷却结束后的既有轮询/事件机制自然重排；持续过久由 admin_monitor
+                    # 按 stuck 规则唤起人工（充值/换模型）。
+                    if final_error and "provider circuit open" in final_error:
                         self.logger.warning(
                             "pm_engine",
-                            f"Retry {retries}/{max_r} for '{spec_name}'",
+                            f"Provider circuit open for '{spec_name}' — holding state, "
+                            f"no retry/state flip: {final_error}",
                         )
+                        # 写入 error 供 dashboard/admin 可见，但不翻转状态、不增 retry
+                        self.state_machine.update_spec(spec_name, {
+                            "error": final_error,
+                        })
+                    else:
+                        # Retry or mark error
+                        spec_entry = self.state_machine.read_one(spec_name)
+                        try:
+                            prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
+                        except (TypeError, ValueError):
+                            prev_retries = 0
+                        retries = prev_retries + 1
+                        max_r = self._get_config("agents.max_retries", 3)
+                        if retries >= max_r:
+                            self.state_machine.update_spec(spec_name, {
+                                "status": "ready",
+                                "error": final_error,
+                                "_retry_count": 0,
+                            })
+                            self.logger.error(
+                                "pm_engine",
+                                f"All retries exhausted for '{spec_name}'",
+                            )
+                        else:
+                            self.state_machine.update_spec(spec_name, {
+                                "status": "ready",
+                                "error": final_error,
+                                "_retry_count": retries,
+                            })
+                            self.logger.warning(
+                                "pm_engine",
+                                f"Retry {retries}/{max_r} for '{spec_name}'",
+                            )
 
             elif agent_type == "verifier":
                 self._run_verification_pipeline(spec_name)
@@ -1047,6 +1071,31 @@ class PMEngine:
                 self._enqueue(spec_name, "implementer")
         except Exception as e2:
             self.logger.error("pm_engine", f"State rollback failed for '{spec_name}': {e2}")
+
+    def _report_stash_pop_conflict(self, spec_name: str, conflict_files: list) -> None:
+        """pop 冲突自愈后上报被丢弃的 stash 改动文件清单（fix-stashpop-deadlock）。
+
+        主树已通过 checkout HEAD + reset 自愈回到干净可写状态，merge 结果不丢失、
+        状态正常推进到 implemented；此处仅把「被丢弃的 stash 改动文件」写入 spec 的
+        error 字段（覆盖 None），利用既有 admin_monitor distressed 规则触发告警，
+        提示人工用 ``git stash show`` 找回内容。零新增持久化状态。
+
+        error 文本格式（供 dashboard/admin 可读）：``stash pop conflict: files=[...]``
+        """
+        if not conflict_files:
+            return
+        msg = f"stash pop conflict: files={conflict_files}"
+        try:
+            self.state_machine.update_spec(spec_name, {"error": msg})
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"stash pop conflict 上报失败 '{spec_name}'（非阻塞）: {e}",
+            )
+        self.logger.error(
+            "pm_engine",
+            f"'{spec_name}' {msg} —— stash 保留，可用 git stash show 找回被丢弃改动",
+        )
 
     @staticmethod
     def _merge_fingerprint(error: str) -> str:
