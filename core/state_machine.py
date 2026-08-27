@@ -332,6 +332,25 @@ class StateMachine:
         self.logger.info("state_machine", f"Added SPEC '{spec_name}'", {"status": entry["status"]})
         return True
 
+    def remove_spec(self, spec_name: str) -> bool:
+        """Remove a SPEC entry atomically. Returns True if removed, False if absent.
+
+        Mutates only the in-memory dict then atomically writes back, so a
+        concurrent writer cannot resurrect the entry. Used by soft-delete
+        (add-spec-priority-and-delete-api): the caller is responsible for
+        moving the spec's openspec directory into archive beforehand/afterward
+        and keeping the two operations consistent.
+        """
+        specs = self.read_all()
+        if spec_name not in specs:
+            self.logger.warning("state_machine", f"Cannot remove nonexistent SPEC: {spec_name}")
+            return False
+
+        specs.pop(spec_name)
+        self.write_all(specs)
+        self.logger.info("state_machine", f"Removed SPEC '{spec_name}'")
+        return True
+
     # ── State Transitions ──────────────────────────────────────────
 
     def transition(self, spec_name: str, new_status: str) -> bool:
