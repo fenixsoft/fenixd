@@ -18,8 +18,9 @@ schedule:
   poll_interval_minutes: 30
   # Time of day for daily report generation (HH:MM, 24h format)
   daily_report_time: "09:00"
-  # Threshold (minutes) for detecting a SPEC stuck in implementing/testing
-  stuck_threshold_minutes: 60
+  # 注：schedule.stuck_threshold_minutes 已弃用。stuck 判定阈值改为由
+  # agents.run_timeout_seconds 单源派生（run_timeout + 600s 宽限），旧键不再生效。
+  # 此处不再保留该配置行，避免与超时参数再次手工漂移脱钩。
 
 # ---- LLM Provider 注册表（可选）----
 # 定义多个 LLM Provider，供 agents.models 引用。
@@ -97,10 +98,21 @@ admin:
   agent_model: "claude-sonnet-5"
   # 同 spec 同类困境信号的唤起冷却（分钟），避免反复唤起烧钱
   escalation_cooldown_minutes: 15
-  # 卡死阈值（分钟）；未配置时复用 schedule.stuck_threshold_minutes（默认 60）
-  stuck_threshold_minutes: 60
+  # 注：admin.stuck_threshold_minutes 已弃用。stuck 阈值现由 agents.run_timeout_seconds
+  # 单源派生（run_timeout + 600s 宽限），此处不再保留该配置行。
   # merge 熔断阈值（复用 agents.merge_breaker_threshold 默认 2）
   # merge_breaker_threshold: 2
+
+# ---- Agent Run 超时护栏（可选）----
+# timeout_supervision 监控单次 Agent 运行的墙钟上限，防止超时参数再次与 run 超时脱钩。
+# 护栏联动（design D5）：absolute_max_seconds MUST ≥ agents.run_timeout_seconds +
+# 续期上限(7200s)，否则启动/热更新打 ERROR 并按 run_timeout_seconds + 7200 兜底生效。
+timeout_supervision:
+  # 是否启用 supervision（false 时整段不参与校验，也不对运行施加额外墙钟上限）
+  enabled: false
+  # 单次运行墙钟硬上限（秒）。默认值 14400 = run_timeout(3600) + 续期上限(7200) 对齐，
+  # 与超时参数单源联动，杜绝「absolute_max 远小于跑满的运行」类脱钩事故。
+  absolute_max_seconds: 14400
 
 # ---- PM（派发与治理，可选）----
 # 全部缺省均向后兼容：不配置时进入默认行为（老化关闭、族谱上限 3/2）。

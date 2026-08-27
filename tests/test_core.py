@@ -6,6 +6,7 @@ Run with: python3 -m pytest .fenix/tests/ -v
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -5075,6 +5076,188 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
             {"_dispatch_backoff_until": int(time.time()) - 10}))
         self.assertTrue(self.engine._dispatch_backoffed(
             {"_dispatch_backoff_until": int(time.time()) + 300}))
+
+
+class TestStuckThresholdUnify(unittest.TestCase):
+    """fix-stuck-threshold-unify：stuck 阈值单源派生 + 旧键弃用 + absolute_max 护栏。
+
+    覆盖 spec stuck-timeout-single-source 全部 Scenario 与 tasks 1.1/1.2/1.3/2.1。
+    """
+
+    def setUp(self):
+        ConfigLoader.reset_stuck_threshold_state()
+
+    def tearDown(self):
+        ConfigLoader.reset_stuck_threshold_state()
+
+    # ── 1.1 派生助手 ──────────────────────────────────────
+
+    def test_derivation_tracks_timeout_9000(self):
+        """run_timeout_seconds=9000 → 生效阈值 9600s（design D1 场景）。"""
+        cfg = {"agents": {"run_timeout_seconds": 9000}}
+        self.assertEqual(
+            ConfigLoader.effective_stuck_threshold_seconds(cfg), 9600.0)
+
+    def test_derivation_default_timeout_fallback(self):
+        """run_timeout 缺省（非正数）回退 4200s 并打 WARNING（D4）。"""
+        with self.assertLogs("fenixd.config", level="WARNING") as cm:
+            val = ConfigLoader.effective_stuck_threshold_seconds({"agents": {}})
+        self.assertEqual(val, 4200.0)
+        self.assertTrue(any("4200" in m for m in cm.output))
+
+    def test_derivation_zero_timeout_fallback_warn(self):
+        """run_timeout=0 视为非正数，回退 4200s + WARNING。"""
+        with self.assertLogs("fenixd.config", level="WARNING") as cm:
+            val = ConfigLoader.effective_stuck_threshold_seconds(
+                {"agents": {"run_timeout_seconds": 0}})
+        self.assertEqual(val, 4200.0)
+        self.assertTrue(any("run_timeout_seconds" in m for m in cm.output))
+
+    def test_explicit_old_key_does_not_affect_derived(self):
+        """显式残留旧键（schedule/admin.stuck_threshold_minutes=240）不影响派生值。"""
+        cfg = {
+            "agents": {"run_timeout_seconds": 9000},
+            "schedule": {"stuck_threshold_minutes": 240},
+            "admin": {"stuck_threshold_minutes": 240},
+        }
+        self.assertEqual(
+            ConfigLoader.effective_stuck_threshold_seconds(cfg), 9600.0)
+
+    # ── 1.2 get_admin_config / check_blockers 取派生值 ──────
+
+    def test_get_admin_config_uses_derived_value(self):
+        """admin.stuck_threshold_minutes 改为派生值（秒/60），旧键不再生效。"""
+        cfg = {"agents": {"run_timeout_seconds": 9000}}
+        admin_cfg = ConfigLoader.get_admin_config(cfg)
+        self.assertEqual(admin_cfg["stuck_threshold_minutes"], 160.0)  # 9600/60
+
+    def test_get_admin_config_ignores_old_admin_key(self):
+        """admin.stuck_threshold_minutes=240 旧键被忽略，取派生值。"""
+        cfg = {
+            "agents": {"run_timeout_seconds": 3600},
+            "admin": {"stuck_threshold_minutes": 240},
+        }
+        admin_cfg = ConfigLoader.get_admin_config(cfg)
+        # 派生 = (3600+600)/60 = 70，而非 240
+        self.assertEqual(admin_cfg["stuck_threshold_minutes"], 70.0)
+
+    def test_check_blockers_uses_derived_threshold(self):
+        """pm_engine.check_blockers 取派生阈值：100 分钟静止实现不触发恢复（D1 场景）。"""
+        from core.pm_engine import PMEngine
+        from core.state_machine import StateMachine
+        from datetime import datetime, timedelta, timezone
+        tmpdir = tempfile.mkdtemp()
+        try:
+            project_root = Path(tmpdir)
+            (project_root / ".fenix").mkdir()
+            logger = MagicMock()
+            sm = StateMachine(project_root / "STATE.md", logger)
+            # run_timeout=9000 → 派生阈值 9600s=160m；100 分钟静止远未到
+            config = {"agents": {"run_timeout_seconds": 9000}}
+            engine = PMEngine(sm, MagicMock(), config, project_root, logger)
+            sm.add_spec("s1", {"priority": 5})
+            sm.transition("s1", "ready")
+            sm.transition("s1", "implementing")
+            specs = sm.read_all()
+            specs["s1"]["updated"] = (
+                datetime.now(timezone.utc) - timedelta(minutes=100)).isoformat()
+            sm.write_all(specs)
+            engine.check_blockers()
+            self.assertEqual(sm.read_one("s1")["status"], "implementing")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_check_blockers_derived_threshold_triggers_when_exceeded(self):
+        """派生阈值（160m）被越过时仍正确恢复（派生不改变恢复语义本身）。"""
+        from core.pm_engine import PMEngine
+        from core.state_machine import StateMachine
+        from datetime import datetime, timedelta, timezone
+        tmpdir = tempfile.mkdtemp()
+        try:
+            project_root = Path(tmpdir)
+            (project_root / ".fenix").mkdir()
+            logger = MagicMock()
+            sm = StateMachine(project_root / "STATE.md", logger)
+            config = {"agents": {"run_timeout_seconds": 9000}}  # 阈值 160m
+            engine = PMEngine(sm, MagicMock(), config, project_root, logger)
+            sm.add_spec("s1", {"priority": 5})
+            sm.transition("s1", "ready")
+            sm.transition("s1", "implementing")
+            specs = sm.read_all()
+            specs["s1"]["updated"] = (
+                datetime.now(timezone.utc) - timedelta(minutes=200)).isoformat()
+            sm.write_all(specs)
+            engine.check_blockers()
+            self.assertEqual(sm.read_one("s1")["status"], "ready")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # ── 1.3 旧键弃用一次性告警 ──────────────────────────────
+
+    def test_deprecation_warning_first_time(self):
+        """旧键存在时首次调用打一次性 WARNING。"""
+        cfg = {"schedule": {"stuck_threshold_minutes": 240}}
+        with self.assertLogs("fenixd.config", level="WARNING") as cm:
+            ConfigLoader.effective_stuck_threshold_seconds(cfg)
+        self.assertTrue(any("弃用" in m or "stuck_threshold_minutes" in m for m in cm.output))
+
+    def test_deprecation_warning_silent_second_time(self):
+        """同一生命周期内第二次调用保持静默（D3 节流）。"""
+        cfg = {
+            "agents": {"run_timeout_seconds": 3600},
+            "admin": {"stuck_threshold_minutes": 240},
+        }
+        with self.assertLogs("fenixd.config", level="WARNING") as cm1:
+            ConfigLoader.effective_stuck_threshold_seconds(cfg)
+        self.assertTrue(any("弃用" in m for m in cm1.output))  # 首次弃用告警
+        # 同生命周期内再触发 getter，弃用告警应保持静默（D3 节流）
+        with self.assertNoLogs("fenixd.config", level="WARNING"):
+            ConfigLoader.get_admin_config(cfg)
+
+    def test_no_deprecation_warning_without_old_key(self):
+        """无旧键时不应打弃用告警（仅有 timeout 缺省回退告警才可能出现）。"""
+        cfg = {"agents": {"run_timeout_seconds": 9000}}
+        with self.assertNoLogs("fenixd.config", level="WARNING"):
+            ConfigLoader.effective_stuck_threshold_seconds(cfg)
+
+    # ── 2.1 absolute_max 联动护栏 ───────────────────────────
+
+    def test_absolute_max_below_timeout_corrected(self):
+        """absolute_max=7200 而 run_timeout=9000 → ERROR 且兜底 16200（D5 场景）。"""
+        cfg = {
+            "agents": {"run_timeout_seconds": 9000},
+            "timeout_supervision": {"enabled": True, "absolute_max_seconds": 7200},
+        }
+        with self.assertLogs("fenixd.config", level="ERROR") as cm:
+            eff = ConfigLoader.effective_supervision_absolute_max_seconds(cfg)
+        self.assertEqual(eff, 16200.0)  # 9000 + 7200
+        self.assertTrue(any("absolute_max" in m for m in cm.output))
+
+    def test_absolute_max_legal_value_untouched(self):
+        """合法 absolute_max（≥ run_timeout+7200）不干预、不打 ERROR。"""
+        cfg = {
+            "agents": {"run_timeout_seconds": 9000},
+            "timeout_supervision": {"enabled": True, "absolute_max_seconds": 20000},
+        }
+        with self.assertNoLogs("fenixd.config", level="ERROR"):
+            eff = ConfigLoader.effective_supervision_absolute_max_seconds(cfg)
+        self.assertEqual(eff, 20000.0)
+
+    def test_supervision_disabled_skips_validation(self):
+        """enabled=false 时不校验、返回 None。"""
+        cfg = {
+            "agents": {"run_timeout_seconds": 9000},
+            "timeout_supervision": {"enabled": False, "absolute_max_seconds": 7200},
+        }
+        with self.assertNoLogs("fenixd.config", level="ERROR"):
+            eff = ConfigLoader.effective_supervision_absolute_max_seconds(cfg)
+        self.assertIsNone(eff)
+
+    def test_supervision_absent_returns_none(self):
+        """无 timeout_supervision 段时返回 None（不校验）。"""
+        eff = ConfigLoader.effective_supervision_absolute_max_seconds(
+            {"agents": {"run_timeout_seconds": 9000}})
+        self.assertIsNone(eff)
 
 
 if __name__ == "__main__":

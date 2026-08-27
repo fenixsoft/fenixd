@@ -2028,7 +2028,8 @@ class PMEngine:
         self._last_blocker_check = datetime.now(timezone.utc)
         all_specs = self.state_machine.read_all()
 
-        stuck_threshold_minutes = self._get_config("schedule.stuck_threshold_minutes", 60)
+        from .config import ConfigLoader
+        stuck_threshold_minutes = ConfigLoader.effective_stuck_threshold_seconds(self.config) / 60.0
         now = datetime.now(timezone.utc)
 
         blockers = []

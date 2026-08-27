@@ -1428,6 +1428,7 @@ class AgentRunner:
                     env_overrides: Dict[str, str] | None = None,
                     resume_session_id: str | None = None,
                     max_turns: int | None = None) -> tuple:
+        from .config import ConfigLoader
         """
         Execute claude CLI with the given prompt, streaming events to disk.
 
@@ -1465,6 +1466,17 @@ class AgentRunner:
         Returns: (output, turns_used, session_id)
         """
         timeout = self._get_config("agents.run_timeout_seconds", 3600)
+        # fix-stuck-threshold-unify D5：supervision 激活路径读取 absolute_max 兜底值，
+        # 不直接读原始配置（防止与 run 超时脱钩）。返回 None 表示未启用 supervision。
+        sup_abs_max = ConfigLoader.effective_supervision_absolute_max_seconds(self.config)
+        if sup_abs_max is not None and sup_abs_max < timeout:
+            # 护栏兜底已保证 sup_abs_max ≥ run_timeout + 7200，正常不应进此分支；
+            # 极端情况下仍以兜底值覆盖，确保 supervision 不早于 run 超时终止运行。
+            self.logger.debug(
+                "agent_runner",
+                f"supervision absolute_max({int(sup_abs_max)}s) 低于 run_timeout({timeout}s)，"
+                "以兜底值优先",
+            )
 
         # 每线程独立 env 副本，多 agent_type 并发时环境覆盖互不串扰
         env = os.environ.copy()
