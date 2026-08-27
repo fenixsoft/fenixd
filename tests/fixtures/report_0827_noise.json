@@ -1,0 +1,216 @@
+{
+  "spec": "mock-api-dashboard-sample",
+  "timestamp": "2026-08-27T08:30:00+00:00",
+  "generated_by": "verify-engine (desensitized sample of 2026-08-27 13/14 noise round)",
+  "summary": {
+    "total": 14,
+    "passed": 1,
+    "warnings": 0,
+    "failed": 13,
+    "errors": 0,
+    "blocked_env": 0
+  },
+  "scenarios": [
+    {
+      "scenario_id": "load-and-show-outlook",
+      "description": "加载并展示 Outlook 天气数据",
+      "status": "fail",
+      "step_results": [
+        {"success": true, "action": "navigate", "detail": "已导航到 http://127.0.0.1:5199/index.html"},
+        {"success": true, "action": "mock_api", "target": "https://api.open-meteo.com/**", "detail": "已 mock API"},
+        {"success": true, "action": "click", "target": ".outlook-tab"},
+        {"success": false, "action": "wait", "target": "[data-testid='outlook-weather']", "error": "wait 超时: Timeout 10000ms exceeded."}
+      ],
+      "assertion_results": [
+        {"type": "element_visible", "layer": 1, "selector": "[data-testid='outlook-weather']", "pass": false, "error": "Timeout 5000ms exceeded."}
+      ]
+    },
+    {
+      "scenario_id": "add-stock-to-list",
+      "description": "添加自选股并展示行情",
+      "status": "fail",
+      "step_results": [
+        {"success": true, "action": "navigate", "detail": "已导航到 http://127.0.0.1:5199/index.html"},
+        {"success": true, "action": "mock_api", "target": "https://gushitong-api.example.com/**", "detail": "已 mock API"},
+        {"success": true, "action": "type", "target": "[data-testid='stock-input']", "value": "sh600036"},
+        {"success": true, "action": "click", "target": "[data-testid='stock-add']"},
+        {"success": false, "action": "wait", "target": "[data-testid='stock-quote']", "error": "wait 超时: Timeout 10000ms exceeded."}
+      ],
+      "assertion_results": [
+        {"type": "element_visible", "layer": 1, "selector": "[data-testid='stock-quote']", "pass": false, "error": "Timeout 5000ms exceeded."}
+      ]
+    },
+    {
+      "scenario_id": "stock-graph-renders",
+      "description": "股价走势图渲染",
+      "status": "fail",
+      "step_results": [
+        {"success": true, "action": "navigate", "detail": "已导航到 http://127.0.0.1:5199/index.html"},
+        {"success": true, "action": "mock_api", "target": "https://gushitong-api.example.com/**", "detail": "已 mock API"},
+        {"success": true, "action": "click", "target": ".stock-chart"},
+        {"success": false, "action": "wait", "target": "[data-testid='chart-canvas']", "error": "wait 超时: Timeout 10000ms exceeded."}
+      ],
+      "assertion_results": [
+        {"type": "element_visible", "layer": 1, "selector": "[data-testid='chart-canvas']", "pass": false, "error": "Timeout 5000ms exceeded."}
+      ]
+    },
+    {
+      "scenario_id": "add-note-with-timestamp",
+      "description": "添加带时间戳的笔记",
+      "status": "fail",
+      "step_results": [
+        {"success": true, "action": "navigate", "detail": "已导航到 http://127.0.0.1:5199/index.html"},
+        {"success": true, "action": "mock_api", "target": "https://timeapi.io/**", "detail": "已 mock API"},
+        {"success": true, "action": "type", "target": "[data-testid='note-input']", "value": "测试笔记"},
+        {"success": true, "action": "click", "target": "[data-testid='note-save']"},
+        {"success": false, "action": "wait", "target": "[data-testid='note-list']", "error": "wait 超时: Timeout 10000ms exceeded."}
+      ],
+      "assertion_results": [
+        {"type": "text_match", "layer": 3, "selector": "[data-testid='note-list']", "expected": "测试笔记", "pass": false, "error": "timeout: waiting for locator"}
+      ]
+    },
+    {
+      "scenario_id": "quick-link-edit",
+      "description": "编辑快捷链接",
+      "status": "fail",
+      "step_results": [
+        {"success": true, "action": "navigate", "detail": "已导航到 http://127.0.0.1:5199/index.html"},
+        {"success": true, "action": "mock_api", "target": "https://example.com/api/**", "detail": "已 mock API"},
+        {"success": true, "action": "click", "target": ".quick-link-edit"},
+        {"success": true, "action": "type", "target": "[data-testid='link-url']", "value": "https://example.com"},
+        {"success": false, "action": "wait", "target": ".quick-link-grid", "error": "wait 超时: Timeout 10000ms exceeded."}
+      ],
+      "assertion_results": [
+        {"type": "element_visible", "layer": 1, "selector": ".quick-link-grid", "pass": false, "error": "Timeout 5000ms exceeded."}
+      ]
+    },
+    {
+      "scenario_id": "email-account-sync",
+      "description": "邮箱账户同步状态展示",
+      "status": "fail",
+      "step_results": [
+        {"success": true, "action": "navigate", "detail": "已导航到 http://127.0.0.1:5199/index.html"},
+        {"success": true, "action": "mock_api", "target": "https://mail-api.example.com/**", "detail": "已 mock API"},
+        {"success": true, "action": "click", "target": ".email-account"},
+        {"success": false, "action": "wait", "target": "[data-testid='mail-sync-status']", "error": "wait 超时: Timeout 10000ms exceeded."}
+      ],
+      "assertion_results": [
+        {"type": "element_visible", "layer": 1, "selector": "[data-testid='mail-sync-status']", "pass": false, "error": "Timeout 5000ms exceeded."}
+      ]
+    },
+    {
+      "scenario_id": "calculator-history",
+      "description": "计算器历史记录持久化",
+      "status": "fail",
+      "step_results": [
+        {"success": true, "action": "navigate", "detail": "已导航到 http://127.0.0.1:5199/index.html"},
+        {"success": true, "action": "mock_api", "target": "https://api.example.com/calc/**", "detail": "已 mock API"},
+        {"success": true, "action": "click", "target": ".calc-key-2"},
+        {"success": true, "action": "click", "target": ".calc-key-plus"},
+        {"success": false, "action": "wait", "target": "[data-testid='calc-history']", "error": "wait 超时: Timeout 10000ms exceeded."}
+      ],
+      "assertion_results": [
+        {"type": "element_visible", "layer": 1, "selector": "[data-testid='calc-history']", "pass": false, "error": "Timeout 5000ms exceeded."}
+      ]
+    },
+    {
+      "scenario_id": "search-filter",
+      "description": "搜索过滤快捷链接",
+      "status": "fail",
+      "step_results": [
+        {"success": true, "action": "navigate", "detail": "已导航到 http://127.0.0.1:5199/index.html"},
+        {"success": true, "action": "mock_api", "target": "https://example.com/api/**", "detail": "已 mock API"},
+        {"success": true, "action": "type", "target": "[data-testid='search-input']", "value": "test"},
+        {"success": false, "action": "wait", "target": ".search-result-item", "error": "wait 超时: Timeout 10000ms exceeded."}
+      ],
+      "assertion_results": [
+        {"type": "element_visible", "layer": 1, "selector": ".search-result-item", "pass": false, "error": "Timeout 5000ms exceeded."}
+      ]
+    },
+    {
+      "scenario_id": "weather-settings",
+      "description": "天气设置保存",
+      "status": "fail",
+      "step_results": [
+        {"success": true, "action": "navigate", "detail": "已导航到 http://127.0.0.1:5199/index.html"},
+        {"success": true, "action": "mock_api", "target": "https://api.open-meteo.com/**", "detail": "已 mock API"},
+        {"success": true, "action": "click", "target": ".weather-settings"},
+        {"success": true, "action": "click", "target": "[data-testid='save-settings']"},
+        {"success": false, "action": "wait", "target": "[data-testid='settings-saved']", "error": "wait 超时: Timeout 10000ms exceeded."}
+      ],
+      "assertion_results": [
+        {"type": "text_contains", "layer": 3, "text": "已保存", "pass": false, "error": "timeout: waiting for element"}
+      ]
+    },
+    {
+      "scenario_id": "drag-sort-links",
+      "description": "拖拽排序快捷链接",
+      "status": "fail",
+      "step_results": [
+        {"success": true, "action": "navigate", "detail": "已导航到 http://127.0.0.1:5199/index.html"},
+        {"success": true, "action": "mock_api", "target": "https://example.com/api/**", "detail": "已 mock API"},
+        {"success": true, "action": "drag", "target": ".link-card-1", "value": ".link-card-3"},
+        {"success": false, "action": "wait", "target": ".link-card-3", "error": "wait 超时: Timeout 10000ms exceeded."}
+      ],
+      "assertion_results": [
+        {"type": "element_visible", "layer": 1, "selector": ".link-card-3", "pass": false, "error": "Timeout 5000ms exceeded."}
+      ]
+    },
+    {
+      "scenario_id": "no-overflow-panel",
+      "description": "面板内容不溢出",
+      "status": "fail",
+      "step_results": [
+        {"success": true, "action": "navigate", "detail": "已导航到 http://127.0.0.1:5199/index.html"},
+        {"success": true, "action": "mock_api", "target": "https://api.example.com/max/**", "detail": "已 mock API"},
+        {"success": true, "action": "click", "target": ".panel-expand"},
+        {"success": false, "action": "wait", "target": "[data-testid='panel-content']", "error": "wait 超时: Timeout 10000ms exceeded."}
+      ],
+      "assertion_results": [
+        {"type": "no_overflow", "layer": 4, "selector": "[data-testid='panel-content']", "pass": false, "error": "Timeout 5000ms exceeded."}
+      ]
+    },
+    {
+      "scenario_id": "theme-switch",
+      "description": "主题切换即时生效",
+      "status": "fail",
+      "step_results": [
+        {"success": true, "action": "navigate", "detail": "已导航到 http://127.0.0.1:5199/index.html"},
+        {"success": true, "action": "mock_api", "target": "https://api.example.com/theme/**", "detail": "已 mock API"},
+        {"success": true, "action": "click", "target": ".theme-toggle"},
+        {"success": false, "action": "wait", "target": "html.dark", "error": "wait 超时: Timeout 10000ms exceeded."}
+      ],
+      "assertion_results": [
+        {"type": "attribute_match", "layer": 3, "selector": "html", "attribute": "class", "expected": "dark", "pass": false, "error": "timeout"}
+      ]
+    },
+    {
+      "scenario_id": "error-boundary-scenario",
+      "description": "异常输入触发错误兜底",
+      "status": "fail",
+      "step_results": [
+        {"success": true, "action": "navigate", "detail": "已导航到 http://127.0.0.1:5199/index.html"},
+        {"success": true, "action": "mock_api", "target": "https://api.example.com/boundary/**", "detail": "已 mock API"},
+        {"success": true, "action": "type", "target": "[data-testid='input']", "value": "!@#$%"},
+        {"success": true, "action": "click", "target": "[data-testid='submit']"},
+        {"success": false, "action": "wait", "target": "[data-testid='error-box']", "error": "wait 超时: Timeout 10000ms exceeded."}
+      ],
+      "assertion_results": [
+        {"type": "element_visible", "layer": 1, "selector": "[data-testid='error-box']", "pass": false, "error": "Timeout 5000ms exceeded."}
+      ]
+    },
+    {
+      "scenario_id": "empty-state-calendar",
+      "description": "空状态下日历面板展示",
+      "status": "pass",
+      "step_results": [
+        {"success": true, "action": "navigate", "detail": "已导航到 http://127.0.0.1:5199/index.html"},
+        {"success": true, "action": "click", "target": ".calendar-tab"},
+        {"success": true, "action": "wait", "target": "[data-testid='calendar-empty']", "detail": "已出现"}
+      ],
+      "assertion_results": [
+        {"type": "element_visible", "layer": 1, "selector": "[data-testid='calendar-empty']", "pass": true}
+      ]
+    }
+  ]
+}

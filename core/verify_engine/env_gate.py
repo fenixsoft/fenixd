@@ -1,0 +1,198 @@
+"""
+env_gate.py — 验证环境健全性门（verify-environment-sanity-gate）。
+
+问题：mock_api 步骤在验证环境中斩断真实推送（SSE）时，页面 DOM 永不更新，
+后续断言（Locator.wait_for / 引擎 wait 步骤）全部进入纯等待超时 → 整批场景
+被误判为产品缺陷 → 每个假阴性都派生 fix 子 SPEC 空转完整实现+验证周期。
+
+本模块实现「场景结算后的统一后置分类」（design D1，纯函数，可单测）：
+  候选 degrade = 步骤序列含 mock_api 且失败项属于纯等待超时（无业务信息）
+  降级 blocked-env = 候选 且 环境探针确认实例失联/推流中断
+  探针健康 = 维持 fail（此时确属真缺陷或慢场景）
+
+三条件同时成立才降级（design Risks 防误伤），任一不满足保持原判定。
+"""
+
+from __future__ import annotations
+
+import logging
+import urllib.request
+
+_logger = logging.getLogger("fenixd.verify.env_gate")
+
+# 纯等待超时特征指纹（Playwright / 引擎 wait 步骤）
+_WAIT_TIMEOUT_MARKERS = (
+    "timeout ",
+    "timed out",
+    "wait_for",
+    "waiting for locator",
+    "wait 超时",
+    "超时",
+    "exceeded",
+    "locator does not exist",
+    "did not appear",
+)
+
+
+def is_wait_timeout_error(error: str) -> bool:
+    """判断断言/步骤失败是否属于纯等待超时（无业务信息）。
+
+    特征包括:
+    - Playwright 统一超时文案: "Timeout 3000ms exceeded."
+    - 等待过程描述: "waiting for locator" / "wait_for"
+    - 元素缺席描述: "did not appear" / "locator does not exist"
+    - 引擎 wait 步骤封装: "wait 超时: ..." / "...超时..."
+    """
+    if not error:
+        return False
+    lowered = error.lower()
+    return any(marker in lowered for marker in _WAIT_TIMEOUT_MARKERS)
+
+
+def has_mock_api_step(scenario_result: dict) -> bool:
+    """报告场景的 step_results 中是否含 mock_api 操作步骤。
+
+    仅信任 step_results 中显式的 action 字段；缺失即视为无 mock
+    （不可测即不降级，保守方向）。
+    """
+    step_results = scenario_result.get("step_results")
+    if not isinstance(step_results, list):
+        return False
+    for step in step_results:
+        if isinstance(step, dict) and step.get("action") == "mock_api":
+            return True
+    return False
+
+
+def _failed_wait_errors(scenario_result: dict, field: str) -> list[str]:
+    """提取指定字段（steps/assertions）中失败且为等待超时类的错误文本。"""
+    items = scenario_result.get(field)
+    if not isinstance(items, list):
+        return []
+    out: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        passed = item.get("pass")
+        success = item.get("success")
+        # assertions 用 pass、steps 用 success；缺失视为未失败（保守）
+        if passed is False or success is False:
+            if is_wait_timeout_error(str(item.get("error") or "")):
+                out.append(str(item.get("error") or ""))
+        elif passed is True or success is True:
+            pass  # 通过项忽略
+    return out
+
+
+def is_env_candidate(scenario_result: dict) -> bool:
+    """判定某失败场景是否可降级为 blocked-env 的候选。
+
+    候选 = 步骤序列含 mock_api 且（失败断言或失败步骤）属于纯等待超时。
+    调用方须确保场景 status == "fail"（本函数不做状态判断，保持单一职责）。
+    """
+    if not has_mock_api_step(scenario_result):
+        return False
+    wait_errors = _failed_wait_errors(scenario_result, "assertion_results")
+    wait_errors += _failed_wait_errors(scenario_result, "step_results")
+    return bool(wait_errors)
+
+
+def finalize_scenario_status(scenario_result: dict, probe_healthy: bool) -> str:
+    """场景状态最终结算：对 fail 候选做 blocked-env 后置分类。
+
+    Args:
+        scenario_result: report 中的场景结果 dict（含 status/step_results/
+            assertion_results）。
+        probe_healthy: 该轮验证的环境探针结果（True=实例在线推流正常）。
+
+    Returns:
+        有效状态: pass / warning / fail / blocked-env。
+    """
+    status = scenario_result.get("status", "pass")
+    if status != "fail":
+        return status
+    # 探针健康 → 维持真失败（design D1：此时确属真缺陷或慢场景）
+    if probe_healthy:
+        return "fail"
+    # 探针失联 + 候选 → blocked-env（计入 warning 统计，不计入 fail）
+    if is_env_candidate(scenario_result):
+        return "blocked-env"
+    return "fail"
+
+
+def probe_http_health(base_url: str, timeout: float = 2.0) -> bool:
+    """对被测实例发起连通性探测（含等价数据端点检查）。
+
+    顺序探测: 根路径 → /api/state（dashboard 实时数据源）→ /api/overview
+    （dashboard 等价端点）。任一返回 2xx/3xx 视为连通。争议端点不可探测时
+    仅凭根路径结果判定（非 dashboard 应用不误降级）。
+
+    Args:
+        base_url: 实例入口 URL（应含 scheme://host[:port]）。
+        timeout: 单次探测超时（秒）。
+
+    Returns:
+        True 表示连通且数据端点可达；False 表示实例失联。
+    """
+    candidates: list[str] = []
+    base = (base_url or "").rstrip("/")
+    if base.startswith("chrome-extension://"):
+        # 扩展内页无法在验证上下文直接 HTTP 探测：视为无法完成探测（保守健康）
+        return True
+    if not base:
+        return True
+    candidates.append(base + "/")
+    if base.startswith(("http://", "https://")):
+        for ep in ("/api/state", "/api/overview"):
+            candidates.append(base + ep)
+    for url in candidates:
+        try:
+            req = urllib.request.Request(
+                url, method="GET", headers={"User-Agent": "fenix-env-probe"}
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status < 400:
+                    return True
+        except Exception:
+            continue
+    _logger.debug("env_probe 失联: %s", base)
+    return False
+
+
+async def probe_push_health(
+    page_loader: "object",
+    selector: str = ".fenix-dashboard [data-live], .fenix-dashboard [data-state], #root [data-live]",
+    timeout_ms: int = 3000,
+) -> bool:
+    """推流检查：真实加载应用页面并等待数据渲染域出现。
+
+    mock 斩断 SSE 时数据节点永不渲染 → 等待超时 → 判定推流中断。
+    page_loader 需提供 `async def navigate() -> bool` 与
+    `async def wait_selector(selector, timeout_ms) -> bool`；由引擎注入，
+    便于在无浏览器环境下用假 loader 单测两分支。
+    """
+    try:
+        async def _navigate() -> bool:
+            if hasattr(page_loader, "navigate"):
+                return await page_loader.navigate()
+            return True
+
+        async def _wait() -> bool:
+            if hasattr(page_loader, "wait_selector"):
+                return await page_loader.wait_selector(selector, timeout_ms)
+            return True
+
+        ok = await _navigate()
+        if not ok:
+            _logger.debug("env_probe 推流: navigate 失败")
+            return False
+        try:
+            await _wait()
+            _logger.debug("env_probe 推流: 数据域已渲染")
+            return True
+        except Exception as e:
+            _logger.debug("env_probe 推流中断: %s: %s", type(e).__name__, e)
+            return False
+    except Exception as e:  # 无 Playwright / loader 缺方法 → 无法完成，保守健康
+        _logger.debug("env_probe 推流检查不可用: %s", e)
+        return True

@@ -43,7 +43,10 @@ class PMEngine:
         self.logger = logger
 
         self._active_runs = 0
-        self._run_queue = []  # Pending (priority, spec_name, agent_type) tuples
+        # Pending (priority, spec_name, agent_type, enqueued_at) tuples。
+        # enqueued_at 为入队时刻 time.time()，仅供内存态老化计时（design D3）：
+        # 不持久化，daemon 重启重建队列即视为等待清零。
+        self._run_queue = []
         self._active_priorities = set()  # 当前活动 priority 集合（宽松优先级下可含多个档）
         self._active_priority_counts: Dict[int, int] = {}  # priority → 活动 run 数
         self._handling_events = set()  # 防重入：正在处理的 (event_kind, spec_name)
@@ -253,6 +256,106 @@ class PMEngine:
         (spec_dir / "tasks.md").write_text(tasks, encoding="utf-8")
         self.logger.info("pm_engine", f"Ensured fix SPEC files: {fix_spec_name}")
 
+    # ── fix 族谱收敛治理（fix-family-convergence-governor / design D4）──
+
+    @staticmethod
+    def _fix_prefix_depth(name: str) -> int:
+        """深度：规范名中连续 `fix-` 前缀层数（name 为子 SPEC 名）。
+
+        fix-x → 1；fix-fix-fix-x → 3。非 fix 名 → 0。
+        """
+        depth = 0
+        s = name
+        while s.startswith("fix-"):
+            depth += 1
+            s = s[len("fix-"):]
+        return depth
+
+    @staticmethod
+    def _fix_strip_all(name: str) -> str:
+        """剥除全部连续 `fix-` 前缀，得到家族根名（fix-fix-x → x）。"""
+        return name[4 * PMEngine._fix_prefix_depth(name):] if name.startswith("fix-") else name
+
+    def _family_width(self, child_name: str) -> int:
+        """宽度：同根（剥除全部 fix- 前缀后同名）且未完成（非 done/pushed）的 fix 子代数量。
+
+        口径依据 STATE 全量 read_all（design D4：不受 ready 清空字段保留策略影响，
+        对历史存在的四层命名按现值评估，不追溯惩罚已 done/pushed 祖先）。
+        """
+        root = self._fix_strip_all(child_name)
+        specs = self.state_machine.read_all() or {}
+        count = 0
+        for name, entry in specs.items():
+            if not isinstance(name, str) or not name.startswith("fix-") or name == child_name:
+                continue
+            if self._fix_strip_all(name) != root:
+                continue
+            status = (entry or {}).get("status", "")
+            if status in ("done", "pushed"):
+                continue
+            count += 1
+        return count
+
+    def _family_waiver_set(self, spec_name: str) -> bool:
+        """父 SPEC 是否持有放行豁免位 `_family_waiver=true`（单次）。"""
+        spec = self.state_machine.read_one(spec_name) or {}
+        raw = str(spec.get("_family_waiver") or "").strip().lower()
+        return raw in ("true", "1", "yes")
+
+    def _consume_family_waiver(self, spec_name: str) -> bool:
+        """消费豁免位：若存在则复位为 False，返回原值。"""
+        had = self._family_waiver_set(spec_name)
+        if had:
+            self.state_machine.update_spec(spec_name, {"_family_waiver": False})
+        return had
+
+    def _family_gate_blocked(self, parent_name: str, child_name: str) -> bool:
+        """越界判定：候选子 SPEC 的深度/宽度是否超过 pm.family 上限。
+
+        深度 > max_depth（默认 3）或 宽度 >= max_width（默认 2，新成员将越界）
+        时返回 True。enabled 语义由 config 承载：未配置即采用默认值。
+        """
+        iw = self._get_config("pm.family.max_depth")
+        ns = self._get_config("pm.family.max_width")
+        max_depth = int(iw if iw is not None else 3)
+        max_width = int(ns if ns is not None else 2)
+        depth = self._fix_prefix_depth(child_name)
+        if depth > max_depth:
+            return True
+        width = self._family_width(child_name)
+        return width >= max_width
+
+    def _signal_family_explosion(self, parent_name: str, child_name: str, detail: str):
+        """越界派生请求转 family_explosion 困境信号（severity=major）写入 admin store。
+
+        不改父 SPEC 状态、不产生 bug-found 处理副作用（design D4）。信号进入既有
+        admin_monitor 唤起链（Administrator 处置 → 可对父 SPEC 放行一次）。
+        """
+        from .admin_store import AdminStore, SIGNAL
+        store = AdminStore(self.project_root, self.logger)
+        try:
+            store.append({
+                "kind": SIGNAL,
+                "signal_type": "family_explosion",
+                "spec": parent_name,
+                "severity": "major",
+                "description": (f"fix 族谱爆炸：'{parent_name}' 派生 {child_name} 被"
+                                f"深度/宽度上限拦截（{detail}），自动创建已中止"),
+                "evidence": f"candidate={child_name}; {detail}",
+                "recommended_action": ("人工检修根因环境；若确认放行一次，对该父 SPEC "
+                                       "设置 _family_waiver=true（下轮允许再创建一个子 SPEC）"),
+            })
+            self.logger.error(
+                "pm_engine",
+                f"fix 族谱收敛拦截: '{parent_name}' → {child_name} 自动创建中止（{detail}）"
+                f"，已写入 family_explosion 信号",
+            )
+        except Exception as e:
+            self.logger.error(
+                "pm_engine",
+                f"family_explosion 信号写入 admin store 失败: {e}",
+            )
+
     def _do_spec_bug_found(self, spec_name: str):
         """实际执行 bug-found 处理逻辑。"""
         parent_prio = (self.state_machine.read_one(spec_name) or {}).get("priority", 5)
@@ -267,6 +370,27 @@ class PMEngine:
                 f"skipping duplicate bug-found handling",
             )
             return
+
+        # ── fix 族谱收敛治理（design D4）──
+        # 仅在「新建子 SPEC」路径拦截：复用/重置既有 fix SPEC 不新增家族成员。
+        # 拦截时不改父状态、无 spec_bug_found 处理副作用；Administrator 已放行
+        # （_family_waiver=true）则放行恰好一次并随即复位豁免位。
+        if self.state_machine.read_one(fix_spec_name) is None:
+            if self._family_gate_blocked(spec_name, fix_spec_name):
+                if self._consume_family_waiver(spec_name):
+                    self.logger.warning(
+                        "pm_engine",
+                        f"family_explosion 人工放行：'{spec_name}' 本轮豁免一次，"
+                        f"继续创建 {fix_spec_name}",
+                    )
+                else:
+                    detail = (f"深度={self._fix_prefix_depth(fix_spec_name)}, "
+                              f"宽度={self._family_width(fix_spec_name)}")
+                    self._signal_family_explosion(spec_name, fix_spec_name, detail)
+                    return  # 拦截：父保持 bug-found，不创建不派发
+            elif self._family_waiver_set(spec_name):
+                # 未触发拦截的平凡创建也消耗豁免位（放行恰好一次）
+                self._consume_family_waiver(spec_name)
 
         # 确保 fix SPEC 在磁盘上有 proposal/tasks，否则 implementer 找不到 SPEC 文件
         self._ensure_fix_spec_files(fix_spec_name, spec_name)
@@ -727,11 +851,12 @@ class PMEngine:
     def _enqueue(self, spec_name: str, agent_type: str):
         """Add a run request to the queue (thread-safe).
 
-        条目结构：(priority, spec_name, agent_type)。
-        priority 从 STATE.md 读取（缺省 5）。
+        条目结构：(priority, spec_name, agent_type, enqueued_at)。
+        priority 从 STATE.md 读取（缺省 5）；enqueued_at = time.time() 供
+        派发队列老化计时（design D3，内存态、不持久化）。
         """
         priority = self._get_spec_priority(spec_name)
-        entry = (priority, spec_name, agent_type)
+        entry = (priority, spec_name, agent_type, time.time())
         with self._queue_lock:
             # 去重：忽略 priority 差异，只看 (spec, agent)
             if not any(e[1] == spec_name and e[2] == agent_type for e in self._run_queue):
@@ -748,7 +873,7 @@ class PMEngine:
         属于同一 SPEC、同一 priority，插入后落回同一档且保持档内 FCFS。
         """
         priority = self._get_spec_priority(spec_name)
-        entry = (priority, spec_name, agent_type)
+        entry = (priority, spec_name, agent_type, time.time())
         with self._queue_lock:
             # Remove existing duplicate (ignoring priority)
             self._run_queue = [
@@ -771,6 +896,49 @@ class PMEngine:
                 f"Queued at front of P{priority}: {spec_name} ({agent_type})"
             )
 
+    # ── 派发队列老化（dispatch-queue-aging / design D3）─────────
+
+    def _aging_bonus(self, enqueued_at: float, now: float) -> int:
+        """队列等待老化收益：条目等待越久，参与比较的优先级档越高。
+
+        方向说明：本项目 priority 数值越小代表越重要、越早派发。放宽规则为
+        「任务 X 可派发当且仅当 min(active_priorities) >= X」——因此等待条目的
+        *比较档位* 必须随等待降低（effective = base - bonus）才能在 P4/P5 家族
+        持续占用下给 P6 打开派发窗口（spec Scenario: P6 条目获得窗口）。设计
+        文档中的字面 `base + …` 公式与自身 Scenario 相悖（只会让 P6 更晚派发），
+        本实现以行为需求为准：effective = max(0, base - bonus)。
+
+        config: pm.dispatch.aging.
+            enabled (默认 false) —— 关闭时恒返回 0，行为与现状完全一致；
+            initial_wait_minutes (默认 30) —— 等待不足此值不老化的零窗口；
+            step_down_minutes (默认 15) —— 每满一档老化时间降一级比较；
+            floor_levels (默认 4) —— 单条目等效降级总量上限（P6 最低可比至 P2，
+              仍天然低于新到的 P1，高优家族先占）。
+        """
+        from .config import ConfigLoader
+        cfg = self.config or {}
+        a = dict(ConfigLoader.get(cfg, "pm.dispatch.aging", {}) or {})
+        enabled = a.get("enabled", False)
+        if not enabled:
+            return 0
+        # 注意：不能用 `or 默认值` 取参 —— 配置 0（initial_wait/step_down）合法且常见，
+        # 0 为假值会被误替换为默认值。
+        iw = a.get("initial_wait_minutes")
+        sw = a.get("step_down_minutes")
+        fl = a.get("floor_levels")
+        initial_wait = max(0.0, float(iw if iw is not None else 30)) * 60.0
+        step_down = max(0.0, float(sw if sw is not None else 15)) * 60.0
+        floor_levels = max(0, int(fl if fl is not None else 4))
+        elapsed = max(0.0, now - (enqueued_at or now))
+        if step_down <= 0 or elapsed < initial_wait:
+            return 0
+        steps = int((elapsed - initial_wait) // step_down)
+        return min(floor_levels, max(0, steps))
+
+    def _effective_priority(self, base: int, enqueued_at: float, now: float) -> int:
+        """条目参与优先级判定时的有效档位（activity 追踪仍用 base，活动任务不老化）。"""
+        return max(0, base - self._aging_bonus(enqueued_at, now))
+
     def _process_queue(self):
         """Process the run queue — relaxed-priority parallel scheduling.
 
@@ -780,6 +948,14 @@ class PMEngine:
         - 同一档内多个任务可并行至 max_concurrent；不同档可并发（只要满足上述规则）。
         - 不抢占：已在运行的任务不会被新到的高优先级中断。
         - 每轮派发队列中最高优先级的合法就绪条目。
+
+        队列老化（dispatch-queue-aging / design D3）：比较用 effective 档位
+        （base - 等待老化收益）；派发后活动集合 _active_priorities 记 base 原值
+        —— 活动任务不参与老化降级（spec Scenario: 持久运行的 P4 不会被降级）；
+        同级（effective 相等）条目保持「先入队先派发」的队首顺序（先入队者
+        老化收益 ≥ 后入队者，队首扫描天然保持同级 FCFS，spec Scenario: 同级
+        顺序稳定）。老化仅内存态 —— enqueued_at 随进程存活，daemon 重启重建
+        队列即从零计时。
         """
         # 优雅关闭期间不再派发（fix-admin-self-heal）
         if self.shutting_down:
@@ -795,12 +971,14 @@ class PMEngine:
                     return
                 if not self._run_queue:
                     return
+                now = time.time()
 
-                # 找队列中所有状态合法条目的最高 priority
+                # 找队列中所有状态合法条目的最高 effective 档位
                 # （先不 pop，只扫描以确定 queued_best）
                 best_valid_prio = None
                 for entry in self._run_queue:
-                    prio, sname, atype = entry
+                    prio, sname, atype, enqueued_at = entry
+                    eff = self._effective_priority(prio, enqueued_at, now)
                     spec = self.state_machine.read_one(sname)
                     if not spec:
                         continue
@@ -811,12 +989,12 @@ class PMEngine:
                         continue
                     if self._dispatch_backoffed(spec):
                         continue
-                    if best_valid_prio is None or prio < best_valid_prio:
-                        best_valid_prio = prio
+                    if best_valid_prio is None or eff < best_valid_prio:
+                        best_valid_prio = eff
                 if best_valid_prio is None:
                     return  # 无就绪条目
 
-                # 确定当前应派发的目标优先级（宽松优先级）：
+                # 确定当前应派发的目标档位（宽松优先级）：
                 # 任务 X 可派发当且仅当没有比 X 更重要的活动任务
                 # （即 min(active) >= X；有 P6 在跑时 P5 可并发、P7 不行）。
                 # 无活动任务时派发就绪条目中最高优先级档。
@@ -828,11 +1006,12 @@ class PMEngine:
                         return
                 target_prio = best_valid_prio
 
-                # 从队列头部开始找第一个 priority == target_prio 且状态合法的条目
+                # 从队列头部开始找第一个 effective == target 且状态合法的条目。
+                # 队首即同档最老条目（enqueued_at 单调不减）：同级 FCFS 不被老化扰动。
                 dispatch_idx = None
                 for i, entry in enumerate(self._run_queue):
-                    prio, sname, atype = entry
-                    if prio != target_prio:
+                    prio, sname, atype, enqueued_at = entry
+                    if self._effective_priority(prio, enqueued_at, now) != target_prio:
                         continue
                     spec = self.state_machine.read_one(sname)
                     if not spec:
@@ -853,13 +1032,16 @@ class PMEngine:
 
                 entry_to_dispatch = self._run_queue.pop(dispatch_idx)
                 self._active_runs += 1
-                self._active_priority_counts[target_prio] = (
-                    self._active_priority_counts.get(target_prio, 0) + 1
+                # 活动追踪记 base 原值：活动任务不老化
+                # （spec Scenario: 持久运行的 P4 不会被降级，min_active 语义不变）。
+                base_prio = entry_to_dispatch[0]
+                self._active_priority_counts[base_prio] = (
+                    self._active_priority_counts.get(base_prio, 0) + 1
                 )
-                self._active_priorities.add(target_prio)
+                self._active_priorities.add(base_prio)
                 active_count = self._active_runs
 
-            priority, spec_name, agent_type = entry_to_dispatch
+            priority, spec_name, agent_type, _ = entry_to_dispatch
 
             # Update state to in-progress
             if agent_type == "implementer":
@@ -1173,6 +1355,88 @@ class PMEngine:
 
     # ── Verification Pipeline ─────────────────────────────────────
 
+    # ── 环境性失联门禁（verify-environment-sanity-gate）───────────
+
+    def _read_verify_report(self, spec_name: str) -> dict:
+        """读取 verify-progress/<spec>/report.json（尽力解析，失败返回空 dict）。"""
+        path = (
+            self.project_root / ".fenix" / "verify-progress"
+            / spec_name / "report.json"
+        )
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _handle_env_blocked_inconclusive(self, spec_name: str, report: dict) -> bool:
+        """环境性失联门禁：全批 blocked-env → inconclusive → 保持 testing 重派新 attempt。
+
+        inconclusive 判据（design D2）：summary.blocked_env > 0 且有效失败
+        （failed + errors）为 0，即该轮原始失败全部为 blocked-env。
+
+        处理：spec 回 implemented（verifier 派发门禁要求）→ 排队重验新 attempt；
+        **不向 admin store 发 repeated_failures 信号**——本方法不产生 error 终态
+        run 产物，repeated_failures 检测天然不累积（连续 inconclusive 不唤醒
+        Administrator，对应 spec Scenario）。
+
+        重验上限沿用 attempts=3（verify_engine.inconclusive_max_attempts 可调）：
+        连续超限后停止自动重验、保持 implemented 并写 error 暴露，由
+        admin_monitor stuck 检测唤起人工，不再无界自动重验。
+
+        Returns:
+            True 表示本轮已按 inconclusive 处理（调用方跳过 bug-found/verified
+            判定）；False 表示无环境性失联，按既有判定继续。
+        """
+        summary = report.get("summary") or {}
+        blocked_env = int(summary.get("blocked_env", 0) or 0)
+        failed = int(summary.get("failed", 0) or 0)
+        errors = int(summary.get("errors", 0) or 0)
+        if blocked_env <= 0 or (failed + errors) > 0:
+            return False
+
+        spec = self.state_machine.read_one(spec_name) or {}
+        try:
+            attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
+        except (TypeError, ValueError):
+            attempts = 1
+        max_attempts = int(
+            self._get_config("verify_engine.inconclusive_max_attempts", 3) or 3
+        )
+
+        if attempts < max_attempts:
+            self.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' 本轮 {blocked_env} 个失败场景全部为 blocked-env"
+                f"（环境性失联），verdict=inconclusive，第 {attempts}/{max_attempts} 次重验",
+            )
+            self.state_machine.update_spec(spec_name, {
+                "status": "implemented",
+                "tester_run": None,
+                "error": (f"环境性失联：{blocked_env} 个失败场景均 blocked-env，"
+                          f"第 {attempts}/{max_attempts} 次重验（inconclusive 不判 fail）"),
+                "_inconclusive_attempts": attempts,
+            })
+            self._enqueue(spec_name, "verifier")
+            return True
+
+        # 连续 ≥max_attempts 轮全部环境性失联：停止自动重验，暴露错误等待人工。
+        # 置 _dispatch_backoff_until 吸收同状态 update 触发的即时重派振荡。
+        self.logger.error(
+            "pm_engine",
+            f"'{spec_name}' 连续 {attempts} 轮验证全部 blocked-env，"
+            f"疑为 mock/SSE 推送环境故障，暂停自动重验",
+        )
+        self.state_machine.update_spec(spec_name, {
+            "status": "implemented",
+            "tester_run": None,
+            "error": (f"连续 {attempts} 轮验证全部环境性失联（blocked-env），"
+                      f"请人工检查 mock/SSE 推送环境；不产生 bug-found 信号"),
+            "_inconclusive_attempts": attempts,
+            "_dispatch_backoff_until": int(datetime.now(timezone.utc).timestamp()) + 1800,
+        })
+        return True
+
     def _run_verification_pipeline(self, spec_name: str):
         """执行三步验证流水线。
 
@@ -1428,6 +1692,12 @@ class PMEngine:
             )
             return
 
+        # ── 阶段2.6 环境性失联门禁（verify-environment-sanity-gate / design D2）──
+        # 全批 blocked-env → inconclusive：回 testing 重派新 attempt，不判 bug-found、
+        # 不产生 repeated_failures 信号。阻断后直接 return（跳过 judge / 终态判定）。
+        if self._handle_env_blocked_inconclusive(spec_name, report):
+            return
+
         # ── 阶段3: Planner 判定结果 ──
         self.logger.info("pm_engine", f"[阶段3] Planner 判定: {spec_name}")
         judge_result = self.agent_runner.run_planner(spec_name, "judge")
@@ -1455,6 +1725,8 @@ class PMEngine:
             self.state_machine.update_spec(spec_name, {
                 "tester_run": judge_result.run_id,
                 "error": "Verification found bugs — see verification report",
+                # 明确非环境性失联：复位 inconclusive 计数（环境恢复后从零重算）
+                "_inconclusive_attempts": 0,
             })
             self.logger.warning(
                 "pm_engine",
@@ -1466,6 +1738,7 @@ class PMEngine:
             self.state_machine.update_spec(spec_name, {
                 "tester_run": judge_result.run_id,
                 "error": None,
+                "_inconclusive_attempts": 0,
             })
             self._on_spec_verified(spec_name)
 
@@ -1490,6 +1763,12 @@ class PMEngine:
             return
 
         if result.success:
+            # 环境性失联门禁（legacy 路径同样生效）：旧版 verifier 若在 report.json
+            # 中标记了 blocked-env 且全批环境性失联，则同样判定 inconclusive 重派，
+            # 不判 bug-found（防假阴性派生 fix 家族）。
+            report = self._read_verify_report(spec_name)
+            if self._handle_env_blocked_inconclusive(spec_name, report):
+                return
             run_result_path = self.project_root / ".fenix-run-result.json"
             verifier_status = self._read_verifier_result(run_result_path)
             if verifier_status == "bug-found":
@@ -1497,6 +1776,7 @@ class PMEngine:
                 self.state_machine.update_spec(spec_name, {
                     "tester_run": result.run_id,
                     "error": "Verification found bugs — see verification report",
+                    "_inconclusive_attempts": 0,
                 })
                 self.logger.warning(
                     "pm_engine",
@@ -1508,6 +1788,7 @@ class PMEngine:
                 self.state_machine.update_spec(spec_name, {
                     "tester_run": result.run_id,
                     "error": None,
+                    "_inconclusive_attempts": 0,
                 })
                 self._on_spec_verified(spec_name)
         else:

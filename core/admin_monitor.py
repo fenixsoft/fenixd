@@ -44,6 +44,7 @@ SIGNAL_SEVERITY = {
     "merge_streak": "critical",
     "blocked_stuck": "critical",
     "daemon_errors": "critical",
+    "family_explosion": "major",
 }
 SIGNAL_RECOMMENDATION = {
     "repeated_failures": "检查重复失败的根因（如构建/测试命令错误），必要时重置 spec 状态或修复框架配置",
@@ -52,6 +53,7 @@ SIGNAL_RECOMMENDATION = {
     "merge_streak": "检查 merge-back 冲突根因（stash/分支冲突），清理 git 状态后重新 merge",
     "blocked_stuck": "检查 blocked 是否误置（误判派生的假 spec）或确需人工决策；清理假 spec 或重置后重新调度，必要时升级",
     "daemon_errors": "检查 fenixd 连续 ERROR 的根因，必要时重启 daemon",
+    "family_explosion": "检修根因环境（如验证报告互相咬合导致 fix 递归）；确认放行一次则对父 SPEC 设置 _family_waiver=true",
 }
 
 # run_id 前缀 → 计入"失败 run"的 agent 类型
@@ -108,21 +110,31 @@ class AdminMonitor:
         """
         if not self.enabled:
             return []
+
+        # 族谱爆炸信号由 pm_engine 在拦截时直接写入 store（父 SPEC 保持 bug-found，
+        # 不满足 has_in_progress_specs 门控，却同样需要送达 Administrator）。
+        # 该摄取在门控之前完成：_detect_family_explosion 内部直接唤起 Administrator
+        # 并把源记录标记 escalated，返回仅供审计/测试（不再经 _handle_signal 节流，
+        # 否则 pm_engine 刚写入的 SIGNAL 记录会被 latest_signal 误判为「已唤起」）。
+        family_signals = self._detect_family_explosion()
+
         if not self.has_in_progress_specs():
-            self.logger.debug("admin_monitor", "No in-progress SPECs, skipping health check")
-            return []
+            self.logger.debug(
+                "admin_monitor", "No in-progress SPECs, draining family_explosion signals only",
+            )
+            return family_signals
 
         specs = self.state_machine.read_all()
         now = time.time()
-        signals = self._detect(specs, now)
+        regular = self._detect(specs, now)
 
-        for signal in signals:
+        for signal in regular:
             self._handle_signal(signal)
 
         # fix-admin-self-heal：孤儿处置与重启失败的兜底升级（非 per-spec 信号）
         self._recover_orphaned_dispositions()
         self._detect_restart_failure(now)
-        return signals
+        return family_signals + regular
 
     # ── 检测规则 ────────────────────────────────────────────────
 
@@ -162,6 +174,44 @@ class AdminMonitor:
                 f"'{name}' 处于 blocked 超过 {int(elapsed)} 分钟未处理",
                 f"updated={updated_str}，阈值 {threshold} 分钟",
             ))
+        return signals
+
+    def _detect_family_explosion(self) -> list:
+        """摄取 pm_engine 直接写入 store 的 family_explosion 信号并唤起 Administrator。
+
+        pm_engine 在族谱越界拦截时（design D4）向 admin store 写入
+        kind=SIGNAL/signal_type=family_explosion 记录，但常规检测规则只读
+        STATE/runs，不会发现它；且 pm_engine 没有 agent_runner，无法自唤起。
+        本规则在 run_once 中摄取这批记录：
+        - 每条未 escalated 的 family_explosion 记录 → 转为信号、标记 escalated、
+          直接唤起 Administrator（处置可对父 SPEC 放行一次 → _family_waiver）。
+        - 已 escalated 的记录跳过（同记录不反复唤起）。
+
+        返回本次摄取的信号列表（仅审计/测试用；唤起动作在内部完成）。
+        """
+        signals = []
+        for rec in self.store.read_all():
+            if rec.get("kind") != SIGNAL or rec.get("signal_type") != "family_explosion":
+                continue
+            if rec.get("escalated"):
+                continue  # 已唤起过，跳过
+            spec = rec.get("spec")
+            if not spec:
+                continue
+            signal = self._make_signal(
+                "family_explosion", spec,
+                rec.get("description") or "fix 族谱越界派生被拦截",
+                rec.get("evidence") or "拦截详情见 pm_engine 日志",
+            )
+            signals.append(signal)
+            # 先落 escalated 再唤起：即使唤起过程异常中止，下一 tick 也会跳过该记录
+            self.store.mark_escalated(rec.get("id"))
+            self.logger.warning(
+                "admin_monitor",
+                f"family_explosion: invoking Administrator for '{spec}'",
+                {"signal": signal},
+            )
+            self._invoke_administrator(signal, rec)
         return signals
 
     def _make_signal(self, signal_type: str, spec, description: str, evidence: str) -> dict:
@@ -590,6 +640,11 @@ class AdminMonitor:
                 f"Failed to persist administrator disposition for run {disp.run_id}: {e}",
             )
 
+        # family_explosion 处置：Administrator「放行一次」→ 设置父 SPEC 豁免位
+        # （fix-family-convergence-governor / design D4）。结构字段优先级最高；
+        # 文本动作（放行 / _family_waiver / waive）兜底，兼容自由文本处置。
+        self._apply_family_waiver(signal, disp)
+
         if disp.escalate:
             # Administrator 判定无法自主处置 → 升级人工
             self.store.append({
@@ -610,6 +665,48 @@ class AdminMonitor:
             )
 
     # ── 辅助 ────────────────────────────────────────────────────
+
+    def _apply_family_waiver(self, signal: dict, disp) -> None:
+        """family_explosion 处置「放行一次」→ 设置父 SPEC 豁免位 _family_waiver=true。
+
+        判定：结构字段 disp.family_waiver 为 True；或自由文本
+        actions_taken/recommended_action 含放行意图（_family_waiver / 放行 / waive）。
+        豁免位由 pm_engine 族谱门在下一轮实际创建工作开始时消费并复位（单次）。
+
+        Args:
+            signal: 本次唤起信号 dict（含 signal_type/spec）。
+            disp: AdminDisposition 处置结果。
+        """
+        if signal.get("signal_type") != "family_explosion":
+            return
+        spec = signal.get("spec")
+        if not spec:
+            return
+        text = f"{(disp.actions_taken or '')} {(disp.recommended_action or '')}"
+        # 否定语义优先：显式「未放行/不放行/拒绝/否决」不属于放行动作。
+        # 结构字段 family_waiver=True 优先级最高（Administrator 结构化回填不受文本兜底影响）。
+        if bool(getattr(disp, "family_waiver", False)):
+            waived = True
+        else:
+            negated = any(n in text for n in ("未放行", "不放行", "拒绝放行", "不予放行"))
+            waived = (not negated) and any(
+                token in text for token in ("_family_waiver", "放行", "waive")
+            )
+        if not waived:
+            return
+        sm = self.state_machine
+        if not hasattr(sm, "update_spec"):
+            # 测试替身等最小状态机：仅能检测，无法落位（放行仍判定为本次已放行）
+            self.logger.warning("admin_monitor", f"family_explosion 放行但状态机不支持写豁免位（spec={spec}）")
+            return
+        try:
+            sm.update_spec(spec, {"_family_waiver": "true"})
+            self.logger.info(
+                "admin_monitor",
+                f"family_explosion 人工放行: '{spec}' 已设置 _family_waiver=true（单次豁免）",
+            )
+        except Exception as e:
+            self.logger.warning("admin_monitor", f"family_explosion 豁免位设置失败: {e}")
 
     @staticmethod
     def _spec_from_run_id(run_id: str):
