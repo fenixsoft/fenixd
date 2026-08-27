@@ -329,11 +329,25 @@ class PMEngine:
 
         # If this is a fix SPEC, re-trigger verification of the original SPEC
         if spec_name.startswith("fix-"):
-            # 连续剥离所有 fix- 前缀，得到根 SPEC
-            # （fix-fix-{spec} 是 {spec} 的第二轮修复，完成后应重新验证 {spec}）
-            original = spec_name
-            while original.startswith("fix-"):
-                original = original[4:]
+            # 剥离 fix- 前缀逐级生成的候选根名；取「最深且存在」的候选，避免
+            # 全剥光后根名本身也带 fix- 前缀（如 fix-dashboard-...）时定位失败，
+            # 导致父 SPEC 的 bug-found 永不闭环、full_scan 反复派生新 fix。
+            original = None
+            name = spec_name
+            candidates = []
+            while name.startswith("fix-"):
+                name = name[4:]
+                candidates.append(name)
+            for cand in reversed(candidates):
+                if self.state_machine.read_one(cand):
+                    original = cand
+                    break
+            if original is None:
+                self.logger.warning(
+                    "pm_engine",
+                    f"Fix done — no original SPEC found for '{spec_name}', skipping re-verify",
+                )
+                return
             original_spec = self.state_machine.read_one(original)
             if original_spec:
                 current_status = original_spec.get("status", "")
@@ -738,6 +752,8 @@ class PMEngine:
                         continue
                     if atype == "verifier" and status != "implemented":
                         continue
+                    if self._dispatch_backoffed(spec):
+                        continue
                     if best_valid_prio is None or prio < best_valid_prio:
                         best_valid_prio = prio
                 if best_valid_prio is None:
@@ -768,6 +784,8 @@ class PMEngine:
                     if atype == "implementer" and status != "ready":
                         continue
                     if atype == "verifier" and status != "implemented":
+                        continue
+                    if self._dispatch_backoffed(spec):
                         continue
                     dispatch_idx = i
                     break
@@ -952,6 +970,10 @@ class PMEngine:
 
         except Exception as e:
             self.logger.error("pm_engine", f"Agent run exception: {e}")
+            # 派发/执行异常必须回滚滞留中间态的 spec（fix: 伪 bug 卡死根因）。
+            # 此前只记日志：日限额耗尽等异常使 run 从未启动，spec 却已滞留在
+            # implementing/testing，无 run 痕迹、永久卡死。
+            self._rollback_failed_dispatch(spec_name, agent_type, e)
         finally:
             # Release the concurrency slot and try to dispatch more work
             with self._queue_lock:
@@ -965,6 +987,66 @@ class PMEngine:
                 else:
                     self._active_priority_counts[priority] = cnt
             self._process_queue()
+
+    @staticmethod
+    def _dispatch_backoffed(spec: dict) -> bool:
+        """判断 spec 是否处于派发退避期（派发基础设施失败后防振荡）。
+
+        返回 True 表示本轮不可派发；条目保留在队列中，退避过期后自然恢复，
+        配合 periodic full_scan 的 recovery 兜底最多延迟一个扫描周期。
+        """
+        until = spec.get("_dispatch_backoff_until")
+        if not until:
+            return False
+        try:
+            return float(until) > datetime.now(timezone.utc).timestamp()
+        except (TypeError, ValueError):
+            return False
+
+    def _rollback_failed_dispatch(self, spec_name: str, agent_type: str, exc: Exception):
+        """派发/执行异常时回滚滞留中间态的 spec 到可重试态（fix: 伪 bug 卡死）。
+
+        - implementer 失败：implementing → ready，清空 run 字段；error 置 None 以便
+          full_scan 的 spec_ready recovery 再次拾起（错误详情记入 _last_dispatch_error）。
+        - verifier 失败：testing → implemented，清 tester_run；实现保留（不重实现）。
+        设置 _dispatch_backoff_until（5 分钟）吸收 inotify 触发的即时重派振荡；
+        重试由队列条目 + full_scan recovery 兜底（最长 30 分钟窗口）。
+        """
+        try:
+            spec_entry = self.state_machine.read_one(spec_name)
+            if not spec_entry:
+                return
+            status = spec_entry.get("status")
+            backoff_until = int(datetime.now(timezone.utc).timestamp()) + 300
+            if agent_type == "verifier" and status == "testing":
+                self.state_machine.update_spec(spec_name, {
+                    "status": "implemented",
+                    "tester_run": None,
+                    "error": f"Verification infrastructure failure (retryable): {exc}",
+                    "_dispatch_backoff_until": backoff_until,
+                })
+                self.logger.warning(
+                    "pm_engine",
+                    f"Rolled back '{spec_name}' testing → implemented (verifier never started): {exc}",
+                )
+                self._enqueue(spec_name, "verifier")
+            elif agent_type == "implementer" and status == "implementing":
+                self.state_machine.update_spec(spec_name, {
+                    "status": "ready",
+                    "implementer_run": None,
+                    "tester_run": None,
+                    "branch": None,
+                    "error": None,
+                    "_last_dispatch_error": f"Implementation dispatch failed (retryable): {exc}",
+                    "_dispatch_backoff_until": backoff_until,
+                })
+                self.logger.warning(
+                    "pm_engine",
+                    f"Rolled back '{spec_name}' implementing → ready (implementer never started): {exc}",
+                )
+                self._enqueue(spec_name, "implementer")
+        except Exception as e2:
+            self.logger.error("pm_engine", f"State rollback failed for '{spec_name}': {e2}")
 
     @staticmethod
     def _merge_fingerprint(error: str) -> str:
@@ -1007,11 +1089,10 @@ class PMEngine:
                     "pm_engine",
                     f"旧版 verifier 也失败了 '{spec_name}': {e2}",
                 )
-                self.state_machine.transition(spec_name, "bug-found")
-                self.state_machine.update_spec(spec_name, {
-                    "tester_run": "failed",
-                    "error": f"All verification methods failed: {e2}",
-                })
+                # 两条验证路径都抛异常 = 验证基础设施未能运行（run 未启动），
+                # 与产品 bug 无关：不得 transition bug-found（那会派生伪 fix 级联，
+                # 本事故烧 token 的直接原因）。回 implemented + 退避重试。
+                self._rollback_failed_dispatch(spec_name, "verifier", e2)
 
     # ── 应用可达性自愈（最终用户验证必选）────────────────────────
 
@@ -1570,12 +1651,31 @@ class PMEngine:
             # Auto-recovery: reset stuck SPECs to previous state so they get retried
             for b in blockers:
                 spec_name = b["spec"]
-                self.logger.info("pm_engine", f"Auto-recovering stuck SPEC: {spec_name}")
-                self.state_machine.update_spec(spec_name, {
-                    "status": "implemented",
-                    "error": f"Auto-recovered from stuck {b['status']} state ({b['elapsed_minutes']} min)",
-                })
-                self._enqueue(spec_name, "verifier")
+                stuck_status = b["status"]
+                self.logger.info(
+                    "pm_engine",
+                    f"Auto-recovering stuck SPEC: {spec_name} (was {stuck_status})",
+                )
+                if stuck_status == "implementing":
+                    # 实现卡住且可能从未运行（implementer_run=null）：不得伪标 implemented
+                    # 直接推给 verifier——「无实现即验证」会产出伪 bug 并派生 fix 级联
+                    # （本事故 5 代 fix 链的肇因）。回 ready 重新排队实现器。
+                    self.state_machine.update_spec(spec_name, {
+                        "status": "ready",
+                        "implementer_run": None,
+                        "tester_run": None,
+                        "branch": None,
+                        "error": f"Auto-recovered from stuck implementing ({b['elapsed_minutes']} min)",
+                    })
+                    self._enqueue(spec_name, "implementer")
+                else:  # testing
+                    # 验证卡住：实现已完成，回 implemented 重新派发 verifier
+                    self.state_machine.update_spec(spec_name, {
+                        "status": "implemented",
+                        "tester_run": None,
+                        "error": f"Auto-recovered from stuck testing ({b['elapsed_minutes']} min)",
+                    })
+                    self._enqueue(spec_name, "verifier")
 
         return {"blockers": blockers, "warnings": warnings, "checked_at": now.isoformat()}
 

@@ -1171,14 +1171,15 @@ def overview(registry_projects: list) -> dict:
 # Dashboard 管理的配置键子集：写回时只更新这些键，其它键原样保留
 _MANAGED_KEYS = ["llm", "agents", "gates"]
 # 在 agents 下管理的子键白名单
-_AGENTS_MANAGED_SUBKEYS = ["models", "max_concurrent", "run_timeout_seconds", "max_turns"]
+_AGENTS_MANAGED_SUBKEYS = ["models", "max_concurrent", "run_timeout_seconds", "max_turns", "daily_run_limit"]
 
 # 用户级配置文件路径（与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定）
 USER_CONFIG_PATH = Path.home() / ".fenix" / "config.yaml"
 
 # 受管键的来源标注键（前端用于「继承自用户级」badge）
 _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
-                "agents.run_timeout_seconds", "agents.max_turns", "gates.approve_mode"]
+                "agents.run_timeout_seconds", "agents.max_turns", "agents.daily_run_limit",
+                "gates.approve_mode"]
 
 _CONFIG_HEADER_COMMENT = (
     "# Fenix 配置文件\n"
@@ -1206,6 +1207,8 @@ def _managed_key_sources(raw: dict) -> dict:
             sources["agents.run_timeout_seconds"] = "project"
         if "max_turns" in agents_raw:
             sources["agents.max_turns"] = "project"
+        if "daily_run_limit" in agents_raw:
+            sources["agents.daily_run_limit"] = "project"
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         sources["gates.approve_mode"] = "project"
@@ -1226,7 +1229,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
     config_path = USER_CONFIG_PATH if scope == "user" else Path(scope_root) / ".fenix" / "config.yaml"
     result = {
         "llm": {},
-        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300},
+        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50},
         "gates": {"approve_mode": "manual"},
         "scope": scope,
         "raw_exists": False,
@@ -1265,6 +1268,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
             agents_result["run_timeout_seconds"] = agents_raw["run_timeout_seconds"]
         if isinstance(agents_raw.get("max_turns"), int):
             agents_result["max_turns"] = agents_raw["max_turns"]
+        if isinstance(agents_raw.get("daily_run_limit"), int):
+            agents_result["daily_run_limit"] = agents_raw["daily_run_limit"]
         if agents_result:
             # 只在结果中有受管键时覆盖默认，避免清空默认值
             for k, v in agents_result.items():
@@ -1290,7 +1295,7 @@ def read_effective_config(project_root) -> dict:
 
     result = {
         "llm": {},
-        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300},
+        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50},
         "gates": {"approve_mode": "manual"},
         "scope": "project",
         "raw_exists": proj_path.exists(),
@@ -1329,6 +1334,8 @@ def read_effective_config(project_root) -> dict:
             result["agents"]["run_timeout_seconds"] = agents_eff["run_timeout_seconds"]
         if isinstance(agents_eff.get("max_turns"), int):
             result["agents"]["max_turns"] = agents_eff["max_turns"]
+        if isinstance(agents_eff.get("daily_run_limit"), int):
+            result["agents"]["daily_run_limit"] = agents_eff["daily_run_limit"]
     gates_eff = effective.get("gates")
     if isinstance(gates_eff, dict) and "approve_mode" in gates_eff:
         result["gates"] = {"approve_mode": gates_eff["approve_mode"]}
@@ -1362,6 +1369,8 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["agents"]["run_timeout_seconds"] = patch["agents"]["run_timeout_seconds"]
         if "max_turns" in patch["agents"]:
             merged["agents"]["max_turns"] = patch["agents"]["max_turns"]
+        if "daily_run_limit" in patch["agents"]:
+            merged["agents"]["daily_run_limit"] = patch["agents"]["daily_run_limit"]
 
     if "gates" in patch and isinstance(patch["gates"], dict):
         if "approve_mode" in patch["gates"]:
@@ -1433,6 +1442,12 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             if not isinstance(mt, int) or mt <= 0:
                 raise ValueError(
                     f"agents.max_turns must be a positive integer: {mt}"
+                )
+        if "daily_run_limit" in agents:
+            drl = agents["daily_run_limit"]
+            if not isinstance(drl, int) or drl < 0:
+                raise ValueError(
+                    f"agents.daily_run_limit must be a non-negative integer: {drl}"
                 )
         gates = merged.get("gates") or {}
         if "approve_mode" in gates and gates["approve_mode"] is not None:

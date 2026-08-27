@@ -1688,6 +1688,12 @@ function renderConfig(data) {
           value="${esc(agents.run_timeout_seconds ?? 3600)}" />
         <small>默认 3600（1 小时）。单个 Agent 运行超时即终止并触发重试。</small>
       </div>
+      <div class="form-row">
+        <label>每日 Agent 运行限额（agents.daily_run_limit，0 = 不限）</label>
+        <input type="number" id="cfg-daily-run-limit" min="0" step="1"
+          value="${esc(agents.daily_run_limit ?? 50)}" />
+        <small>默认 50。单个 UTC 自然日内所有 Agent 类型成功运行的累计上限（实现/验证/管理共用一个池），达到后当日停止派发，UTC 次日 0 点自动归零。设为 0 表示不限制。</small>
+      </div>
     </div>`;
 
   const approveSection = `
@@ -1987,12 +1993,16 @@ function collectConfigData() {
   const runTimeoutInput = main.querySelector('#cfg-run-timeout');
   const runTimeout = numOr(runTimeoutInput, loadedAgents.run_timeout_seconds, 3600);
 
+  // Daily run limit (0 = unlimited)
+  const dailyRunLimitInput = main.querySelector('#cfg-daily-run-limit');
+  const dailyRunLimit = numOr(dailyRunLimitInput, loadedAgents.daily_run_limit, 50);
+
   // Approve mode
   const approveMode = (main.querySelector('input[name="approve_mode"]:checked') || {}).value || 'manual';
 
   return {
     llm: { providers },
-    agents: { models, max_concurrent: maxConcurrent, max_turns: maxTurns, run_timeout_seconds: runTimeout },
+    agents: { models, max_concurrent: maxConcurrent, max_turns: maxTurns, run_timeout_seconds: runTimeout, daily_run_limit: dailyRunLimit },
     gates: { approve_mode: approveMode },
   };
 }
