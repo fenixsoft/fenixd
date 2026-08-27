@@ -1301,6 +1301,33 @@ class TestServerAPI:
         assert "myspec" in dash_data.parse_state(proot)
         assert (proot / "openspec" / "changes" / "myspec").exists()
 
+    def test_api_spec_admin_invoke(self, server_fx):
+        """手动唤起端点：成功写信号文件、重复唤起 409、spec 不存在 404。"""
+        proot, srv = server_fx
+        # 成功唤起：写入 .fenix/admin_invoke_request.json 且含 spec/created
+        status, data = srv.post("/api/spec-admin-invoke?project=proj-a&spec=myspec")
+        assert status == 200
+        assert data["ok"] is True
+        req_path = proot / ".fenix" / "admin_invoke_request.json"
+        assert req_path.exists()
+        payload = json.loads(req_path.read_text(encoding="utf-8"))
+        assert payload["spec"] == "myspec"
+        assert payload["source"] == "manual"
+        assert "created" in payload
+        # 重复唤起（请求文件未消费）→ 409，文件保持不变
+        status, _ = srv.post("/api/spec-admin-invoke?project=proj-a&spec=myspec")
+        assert status == 409
+        payload2 = json.loads(req_path.read_text(encoding="utf-8"))
+        assert payload2 == payload, "请求文件不应被覆盖"
+        # spec 不存在 → 404，且不产生任何文件（清掉刚才的再验证）
+        req_path.unlink()
+        status, _ = srv.post("/api/spec-admin-invoke?project=proj-a&spec=ghost")
+        assert status == 404
+        assert not req_path.exists()
+        # 项目不存在 → 404
+        status, _ = srv.post("/api/spec-admin-invoke?project=ghost&spec=myspec")
+        assert status == 404
+
     def test_api_run(self, server_fx):
         _, srv = server_fx
         status, data = srv.get("/api/runs/impl-myspec-1780000000?project=proj-a")

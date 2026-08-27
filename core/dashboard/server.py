@@ -21,6 +21,7 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     POST /api/spec-error-clear?project=<name>&spec=<name> → 在线清除 SPEC 的 error 字段（置空并原子写回 STATE.md）
     POST /api/spec-priority?project=<name>&spec=<name>  → 设置 SPEC 优先级（body: {"priority": 1-9}，400 校验 / 404 / 200）
     POST /api/spec-delete?project=<name>&spec=<name>  → 软删除 SPEC（STATE.md 剔除 + 目录移入 archive，运行中返回 409）
+    POST /api/spec-admin-invoke?project=<name>&spec=<name>  → 手动唤起 Admin（写 .fenix/admin_invoke_request.json，进行中返回 409）
     GET /api/config?project=<name> → 读取受管配置（llm / agents.models / gates.approve_mode）
     POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
     GET /api/alerts?project=<name> → Administrator 告警/处置记录（缺省跨项目聚合未处理告警）
@@ -460,6 +461,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "archived": result.get("archived", False),
                     "archive_path": result.get("archive_path")})
 
+    def _api_spec_admin_invoke(self, query):
+        """POST /api/spec-admin-invoke?project=<name>&spec=<name>
+
+        手动唤起 Administrator：写入 .fenix/admin_invoke_request.json 文件信号，
+        由 daemon 主循环下一轮扫描拾取并唤起。
+        - project 不存在 → 404
+        - spec 不在项目 STATE.md → 404
+        - 已有未消费请求（进行中处置）→ 409「已有进行中的 Admin 处置」
+        - 成功 → 200 + {ok: true, created}
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        proot = Path(project["path"])
+        try:
+            result = dashboard_data.request_admin_invoke(proot, spec)
+        except Exception as e:  # noqa: BLE001 兜底：写文件异常不崩溃进程
+            self._error(500, f"admin invoke request failed: {e}")
+            return
+        if not result.get("found"):
+            self._error(404, result.get("error") or f"spec not found: {spec}")
+            return
+        if result.get("conflict"):
+            self._error(409, result.get("error") or "已有进行中的 Admin 处置")
+            return
+        self._json({"ok": True, "project": project["name"], "spec": spec,
+                    "created": result.get("created")})
+
     def _api_run(self, run_id: str, query) -> dict:
         project = self._project_from_query(query)
         if project is None:
@@ -717,6 +754,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_spec_priority(query)
         elif path == "/api/spec-delete":
             self._api_spec_delete(query)
+        elif path == "/api/spec-admin-invoke":
+            self._api_spec_admin_invoke(query)
         elif path == "/api/alerts/clear":
             self._api_alerts_clear()
         elif path.startswith("/api/alerts/") and path.endswith("/handled"):

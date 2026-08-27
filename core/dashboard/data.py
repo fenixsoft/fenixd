@@ -128,6 +128,60 @@ def get_admin_activities(project_root) -> list:
     return activities
 
 
+# ── 手动唤起 Administrator（add-spec-manual-admin-invoke） ─────────
+
+# daemon 主循环轮询的请求信号文件名（与 fenixd.py 约定一致）
+ADMIN_INVOKE_REQUEST = ".fenix/admin_invoke_request.json"
+
+
+def request_admin_invoke(project_root, spec: str) -> dict:
+    """写入手动唤起 Administrator 的文件信号（.fenix/admin_invoke_request.json）。
+
+    校验 spec 须存在于项目 STATE.md，且当前不存在未消费的请求文件，否则返回
+    对应拒绝状态（spec 不存在 → {found: False}；已有进行中 → {conflict: True}）。
+    通过校验后原子写入 {spec, source: "manual", created: <ISO>} 返回 {ok: True}。
+
+    文件信号模式与 restart_request 同构：server 进程不直接起 agent（绕过
+    state_machine 与 token 预算），由 daemon 主循环下一轮扫描拾取并唤起。
+
+    Returns:
+        {"ok": bool, "found": bool, "conflict": bool,
+         "file": str|null, "created": str|null, "error": str|null}
+    """
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "found": False, "conflict": False,
+                "file": None, "created": None,
+                "error": f"spec not found: {spec}"}
+
+    req_path = proot / ADMIN_INVOKE_REQUEST
+    if req_path.exists():
+        return {"ok": False, "found": True, "conflict": True,
+                "file": str(req_path), "created": None,
+                "error": "已有进行中的 Admin 处置"}
+
+    created = datetime.now(timezone.utc).isoformat()
+    payload = {"spec": spec, "source": "manual", "created": created}
+    req_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(req_path.parent), prefix=".admin_invoke_request.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, req_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    return {"ok": True, "found": True, "conflict": False,
+            "file": str(req_path), "created": created, "error": None}
+
+
 # ── SPEC 文档读取（proposal.md / design.md，add-spec-doc-buttons） ──
 
 # kebab-case：小写字母/数字开头，仅含小写字母/数字/连字符（防御路径穿越）

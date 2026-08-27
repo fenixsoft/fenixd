@@ -8,7 +8,7 @@
 
 ## 2. 后端：手动唤起 Admin 通路
 
-- [ ] 2.1 server.py 新增 POST `/api/spec-admin-invoke` handler：spec 存在性校验（404）、`.fenix/admin_invoke_request.json` 已存在则 409「已有进行中的 Admin 处置」，否则原子写入 `{spec, source:"manual", created:<ISO>}`，补测试
+- [x] 2.1 server.py 新增 POST `/api/spec-admin-invoke` handler：spec 存在性校验（404）、`.fenix/admin_invoke_request.json` 已存在则 409「已有进行中的 Admin 处置」，否则原子写入 `{spec, source:"manual", created:<ISO>}`，补测试
 - [ ] 2.2 fenixd.py 主循环新增拾取分支：存在请求文件→读取并删除→`agent_runner.run_administrator({"signal_type":"manual-intervention","spec":name,"severity":"major","description":"人工呼叫：检查 SPEC <name> 出现什么问题并尝试处置",...})`；调用异常时写 admin_store 记录不丢痕，补单元测试
 - [ ] 2.3 验证固定指令进入 prompt：`_build_prompt("x","administrator",detail={"signal_type":"manual-intervention",...})` 渲染包含检查任务描述与目标 spec（沿用现有 administrator 分支无需改动即通过）
 
