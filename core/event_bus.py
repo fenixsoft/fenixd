@@ -173,8 +173,20 @@ class EventBus:
             return
         # 无存活子进程：孤儿 ready 必须重新派发。重派发前清 error 字段
         # （避免旧 error 一直阻塞），但保留 implementer_run 作为历史记录（D2）。
+        # 关键：error 清空必须写回 STATE.md，否则下轮 full_scan 仍读到此 error，
+        # 该孤儿每 30 分钟被重复重置派发（事故家族「孤儿滞留」的直接成因，
+        # 与白名单反转想消除的盲区同源）。dispatch 只消费内存副本 updated，
+        # 不会回写，因此此处显式持久化 error=None（补 D4 遗漏点）。
         updated = {k: v for k, v in entry.items() if k != "error"}
         updated["error"] = None
+        try:
+            self.state_machine.update_spec(name, {"error": None})
+        except Exception as e:
+            # 写回失败不阻断派发：本就靠后续扫描兜底，仅记日志
+            self.logger.error(
+                "event_bus",
+                f"Recovery: failed to persist error-clear for orphan '{name}': {e}",
+            )
         self.logger.info(
             "event_bus",
             f"Recovery: re-triggering implement for orphan ready '{name}' "
