@@ -437,10 +437,26 @@ class WorktreeManager:
         self.logger.info("worktree_manager", "Autostashed dirty main tree before dispatch")
         return True
 
-    def restore_after_merge(self) -> bool:
+    def restore_after_merge(self) -> tuple:
         """merge-back 成功后恢复 dispatch 前自动 stash 的主树改动。
 
-        Returns: True 恢复成功；False pop 冲突（stash 条目保留，可 git stash list 找回）。
+        返回 ``(ok, conflict_files)``：
+
+        - ``(True, [])``：pop 成功 / 无 stash 可恢复（与旧版返回 True 兼容）。
+        - ``(True, [file, ...])``：pop 发生冲突但已完成自愈——主树回到干净可写状态，
+          ``conflict_files`` 为被丢弃 stash 改动的文件清单（stash 条目保留，可
+          ``git stash list`` / ``git stash show`` 找回）。
+        - ``(False, [])``：pop 失败且非冲突类（如其它 git 错误），stash 保留；调用方按
+          旧版 False 语义处理（主树可能仍半合并，需人工处置）。
+
+        **自愈（fix-stashpop-deadlock）**：当 pop 返回非 0 且输出含 ``CONFLICT`` 时，
+        主树会陷入 UU 半合并状态、index.lock 满，导致后续所有 git 写操作瘫痪。此时：
+          1. 用 ``git ls-files -u`` 枚举全部 UU 未合并文件；
+          2. 对每个 UU 文件 ``git checkout -f HEAD -- <file>``（``-f`` 因路径处于 unmerged
+             状态，普通 checkout 会报 "path is unmerged"）——丢弃 stash 版本、保留已
+             merge 进 HEAD 的实现（最不可丢失的产物）；
+          3. ``git reset`` 清空 index 残留的 staged 冲突条目，主树恢复干净可写。
+        stash 条目**不**自动 drop，被丢弃内容可由人工从 stash 中找回。
         """
         result = subprocess.run(
             ["git", "-C", str(self.project_root), "stash", "pop"],
@@ -448,13 +464,100 @@ class WorktreeManager:
         )
         if result.returncode == 0:
             self.logger.info("worktree_manager", "Stash popped after merge")
-            return True
-        self.logger.warning(
-            "worktree_manager",
-            f"Stash pop failed (stash preserved): "
-            f"{result.stderr.strip() or result.stdout.strip()}",
-        )
-        return False
+            return True, []
+
+        output = (result.stderr or "") + (result.stdout or "")
+        # 无 stash 可恢复（ensure_clean_tree 未 stash / 已被消费）：
+        # 返回码非 0 但属正常情况，视为成功且无害（与旧版返回 True 兼容）。
+        if "No stash entries" in output:
+            self.logger.info("worktree_manager", "No stash to pop after merge")
+            return True, []
+
+        if "CONFLICT" not in output:
+            # 非冲突类失败（其它 git 错误等）：保留旧版 False 语义，不自愈
+            self.logger.warning(
+                "worktree_manager",
+                f"Stash pop failed (non-conflict, stash preserved): "
+                f"{result.stderr.strip() or result.stdout.strip()}",
+            )
+            return False, []
+
+        # ── pop 冲突：进入自愈（fix-stashpop-deadlock） ──
+        conflict_files = self._list_unmerged_files()
+        if conflict_files:
+            self._heal_unmerged_files(conflict_files)
+            self.logger.warning(
+                "worktree_manager",
+                f"Stash pop conflict self-healed; discarded stash changes on "
+                f"{len(conflict_files)} file(s): {conflict_files} "
+                f"(stash preserved, recover via git stash show)",
+            )
+        else:
+            # 输出含 CONFLICT 但已无 UU 条目（罕见：冲突已自行消解）——照常处理
+            self.logger.warning(
+                "worktree_manager",
+                f"Stash pop conflict reported but no UU files found; "
+                f"stash preserved: {output.strip()}",
+            )
+        return True, conflict_files
+
+    def _list_unmerged_files(self) -> list:
+        """枚举主树中全部 UU 未合并文件（merge 冲突 / stash pop 冲突残留）。
+
+        ``git ls-files -u`` 对每个冲突文件输出 1~3 行（stage 1/2/3），行末为路径；
+        去重后返回排序后的路径列表。命令失败返回空列表（不阻塞自愈）。
+        """
+        try:
+            ls = subprocess.run(
+                ["git", "-C", str(self.project_root), "ls-files", "-u"],
+                capture_output=True, text=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            return []
+        if ls.returncode != 0 or not ls.stdout.strip():
+            return []
+        paths: set = set()
+        for line in ls.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # 行格式：<mode> <hash> <stage>\t<path>
+            tab = line.split("\t", 1)
+            if len(tab) == 2 and tab[1].strip():
+                paths.add(tab[1].strip())
+        return sorted(paths)
+
+    def _heal_unmerged_files(self, conflict_files: list) -> None:
+        """对 UU 文件执行自愈：丢弃 stash 版本、保留 merge 结果、清空 index。
+
+        每个 UU 文件处于 unmerged 状态，普通 ``git checkout HEAD -- <file>`` 会报
+        "path is unmerged"，因此用 ``-f`` 强制从 HEAD 还原（清空 stage 1/2/3、工作区
+        覆盖为已 merge 的实现）。随后 ``git reset`` 兜底清空 index 中任何残留的 staged
+        冲突条目，使主树回到干净可写状态。
+        """
+        for f in conflict_files:
+            try:
+                subprocess.run(
+                    ["git", "-C", str(self.project_root), "checkout", "-f",
+                     "HEAD", "--", f],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"checkout -f HEAD -- {f} timed out during self-heal",
+                )
+        # 清空 index 残留的 staged 冲突条目（mixed reset，不动工作区）
+        try:
+            subprocess.run(
+                ["git", "-C", str(self.project_root), "reset"],
+                capture_output=True, text=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            self.logger.warning(
+                "worktree_manager",
+                "git reset timed out during stash-pop self-heal",
+            )
 
     def cleanup_stale_worktrees(self):
         """启动时全量清理孤儿 worktree：删除所有不在活动集合的目录 + 对应分支 + prune。

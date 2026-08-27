@@ -7,6 +7,7 @@ Handles result parsing, retry logic, and token/turn budget control.
 
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -29,6 +30,19 @@ DEFAULT_GATEWAY_MODEL = "claude-sonnet-5"
 # 用 SIGKILL 兜底。取 claude 收尾所需量级，模块级常量便于测试注入短值。
 # 见 spec agent-shutdown-interrupt：总关闭时长需压到 ≪ supervisor 60s SIGKILL 窗口。
 AGENT_TERMINATE_GRACE_SECONDS = 10
+
+# ── provider 熔断（fix-stashpop-deadlock：provider-fault-fuse） ──────────────
+# 同一 provider 在滚动窗口内累计 HTTP 4xx（400/401/404）达阈值 → circuit_open，
+# 冷却期内不再派发该 provider（直接失败、不启动 claude、不计入 spec 连续失败重试、
+# 不触发状态机回退）。冷却结束后首个派发作半开探针，200 闭合、仍 4xx 重新冷却。
+# 5xx/网络错误不计数（属瞬态，走既有 retry）。常量化便于调参，不落盘（见 design D3）。
+PROVIDER_CIRCUIT_WINDOW_SECONDS = 300      # 滚动窗口 5 分钟
+PROVIDER_CIRCUIT_THRESHOLD = 3             # 窗口内 4xx 达此次数 → 熔断
+PROVIDER_CIRCUIT_COOLDOWN_SECONDS = 1800   # 冷却 30 分钟
+# 计入熔断的 HTTP 4xx 状态码（401 与 400/404 一并计数：余额不足同样要防烧钱）
+PROVIDER_CIRCUIT_4XX = (400, 401, 404)
+# 半开探针成功判据：claude CLI 正常退出（视作网关 200）。解析不到 code 视为失败、不计数。
+PROVIDER_CIRCUIT_PROBE_SUCCESS_CODE = 0
 
 
 class AgentRunResult:
@@ -163,6 +177,166 @@ class AgentRunner:
         self._running_agents: Dict[str, subprocess.Popen] = {}
         self._daily_run_count = 0
         self._daily_reset_date = datetime.now(timezone.utc).date()
+
+        # provider 熔断状态（fix-stashpop-deadlock：provider-fault-fuse）。
+        # 进程内存、不落盘（design D3）：{provider_name: {
+        #   "code": int,            # 触发熔断的 HTTP 4xx code
+        #   "events": [ts, ...],     # 滚动窗口内 4xx 时间戳（单调秒）
+        #   "count": int,           # 窗口内 4xx 次数
+        #   "open_since": float,     # 进入 open 的时间戳
+        #   "cooldown_until": float, # 冷却到期时间戳
+        #   "half_open": bool,       # 冷却到期后首个派发作为探针
+        # }}
+        self.provider_circuits: Dict[str, dict] = {}
+
+    # ── provider 熔断（fix-stashpop-deadlock：provider-fault-fuse） ──────────────
+
+    @staticmethod
+    def parse_api_error_status(error_text: str) -> Optional[int]:
+        """从 claude CLI 错误输出解析网关返回的 HTTP 状态码（fix-stashpop-deadlock）。
+
+        claude CLI 在 provider 网关 4xx 时把错误打到 stderr，典型形如
+        ``HTTP 404`` / ``API error (404)`` / ``status code 401``；网关经 SDK 包装时
+        也可能出现 ``unrecognized_model``（对应 404）等字样。这里只认明确解析出的数字
+        状态码（design D4）；解析不到返回 None（视为非 4xx、不计数、探针失败也不计数——
+        R2 防护：避免把偶发解析不出 code 的响应误判闭合）。
+
+        返回 int 状态码；非 4xx（5xx/网络错误）返回 None。
+        """
+        if not error_text:
+            return None
+        # 顺序匹配：HTTP <code> / (404) / status code <code> / code <code>
+        for pat in (r"HTTP\s+(\d{3})", r"\((\d{3})\)", r"status\s*code\s*[:=]?\s*(\d{3})",
+                    r"\bcode\s*[:=]?\s*(\d{3})"):
+            m = re.search(pat, error_text, re.IGNORECASE)
+            if m:
+                try:
+                    code = int(m.group(1))
+                except (TypeError, ValueError):
+                    return None
+                return code
+        return None
+
+    def _now(self) -> float:
+        """单调时间戳（测试可覆写）。用 time.monotonic 避免时钟回拨影响窗口。"""
+        return time.monotonic()
+
+    def _circuit_state(self, provider_name: str) -> dict:
+        """返回（惰性创建）某 provider 的熔断状态 dict。"""
+        st = self.provider_circuits.get(provider_name)
+        if st is None:
+            st = {
+                "code": None,
+                "events": [],
+                "count": 0,
+                "open_since": 0.0,
+                "cooldown_until": 0.0,
+                "half_open": False,
+            }
+            self.provider_circuits[provider_name] = st
+        return st
+
+    def is_circuit_open(self, provider_name: str, now: float | None = None) -> bool:
+        """判断某 provider 当前是否处于熔断拦截态（open 且冷却未到期）。
+
+        半开态（冷却到期、首个探针未发）仍视为 open（拦截并由首个派发当探针）。
+        """
+        if not provider_name:
+            return False
+        st = self.provider_circuits.get(provider_name)
+        if st is None:
+            return False
+        now = self._now() if now is None else now
+        return st["cooldown_until"] > now
+
+    def _circuit_open_error(self, provider_name: str, now: float | None = None) -> str:
+        """构造熔断拦截错误信息（design D5 / spec 故障可见性）。
+
+        含 provider 名、HTTP code、次数与冷却剩余/到期信息，经 error → STATE.md /
+        admin_monitor / dashboard 链路可见，便于区分「provider 故障」与「spec 自身问题」。
+        """
+        st = self.provider_circuits.get(provider_name) or {}
+        now = self._now() if now is None else now
+        code = st.get("code") or "?"
+        count = st.get("count") or 0
+        cooldown_until = st.get("cooldown_until") or 0.0
+        remaining = max(0, int(cooldown_until - now))
+        if remaining > 0:
+            cooldown_info = f"cooldown {remaining}s remaining"
+        else:
+            cooldown_info = "cooldown expired (probing)"
+        return (f"provider circuit open: {provider_name} "
+                f"(HTTP {code} x {count}) — {cooldown_info}")
+
+    def _record_provider_4xx(self, provider_name: str, code: int,
+                             now: float | None = None) -> None:
+        """记录一次 provider 网关 4xx，按滚动窗口计数，达阈值置 open。
+
+        5xx / 网络错误不调用本方法（design D4）。窗口外的旧事件先滑出。
+        """
+        if not provider_name:
+            return
+        now = self._now() if now is None else now
+        st = self._circuit_state(provider_name)
+        window = self._get_config("agents.provider_circuit_window_seconds",
+                                  PROVIDER_CIRCUIT_WINDOW_SECONDS)
+        threshold = self._get_config("agents.provider_circuit_threshold",
+                                     PROVIDER_CIRCUIT_THRESHOLD)
+        cooldown = self._get_config("agents.provider_circuit_cooldown_seconds",
+                                    PROVIDER_CIRCUIT_COOLDOWN_SECONDS)
+
+        # 滑出滚动窗口外的旧事件
+        st["events"] = [t for t in st["events"] if now - t <= window]
+        st["events"].append(now)
+        st["count"] = len(st["events"])
+        st["code"] = code
+
+        if st["count"] >= threshold:
+            # 进入熔断（或重新进入冷却）。半开探针仍 4xx → 重新冷却，记录 open_since。
+            st["open_since"] = now
+            st["cooldown_until"] = now + cooldown
+            st["half_open"] = False
+            self.logger.error(
+                "agent_runner",
+                f"Provider circuit OPEN for '{provider_name}' "
+                f"(HTTP {code} x{st['count']} within {int(window)}s), "
+                f"cooldown {int(cooldown)}s — suppress dispatch until probe recovers",
+            )
+
+    def _record_provider_probe(self, provider_name: str, success: bool,
+                               now: float | None = None) -> None:
+        """半开探针结果：成功闭合（closed）、失败重新冷却（design D4/D5）。
+
+        成功：清空计数、回到 closed。失败：重新进入冷却期（沿用上次 code），不进计数
+        （避免探针失败被反复计数导致无限冷却；R2 防护：解析不出 code 的失败也不计数）。
+        """
+        if not provider_name:
+            return
+        st = self.provider_circuits.get(provider_name)
+        if st is None:
+            return
+        now = self._now() if now is None else now
+        cooldown = self._get_config("agents.provider_circuit_cooldown_seconds",
+                                    PROVIDER_CIRCUIT_COOLDOWN_SECONDS)
+        if success:
+            self.logger.info(
+                "agent_runner",
+                f"Provider circuit CLOSED for '{provider_name}' — probe recovered",
+            )
+            # 回到 closed：清空窗口计数与冷却，但保留 code 信息供诊断
+            st["events"] = []
+            st["count"] = 0
+            st["cooldown_until"] = 0.0
+            st["open_since"] = 0.0
+            st["half_open"] = False
+        else:
+            st["cooldown_until"] = now + cooldown
+            st["half_open"] = False
+            self.logger.warning(
+                "agent_runner",
+                f"Provider circuit re-cooled for '{provider_name}' — probe still failing, "
+                f"cooldown {int(cooldown)}s",
+            )
 
     def run_implementer(self, spec_name: str) -> AgentRunResult:
         """
@@ -424,6 +598,27 @@ class AgentRunner:
             # Check daily run limit
             self._check_daily_limit()
 
+            # ── provider 熔断拦截（fix-stashpop-deadlock：provider-fault-fuse） ──
+            # 解析该 agent_type 的 provider 分配；若已熔断（冷却未到期），直接失败返回、
+            # 不启动 claude、不创建 worktree/autostash、不计入 spec 连续失败重试（design D5）。
+            # 熔断期失败也不触发状态机回退——spec 保持当前状态，由冷却结束后的既有轮询自然重排。
+            # 冷却到期后首个真实派发作为半开探针（design D4）：本循环正常放行，成功则闭合、
+            # 仍 4xx 则重新冷却（见成功/失败分支的 _record_provider_probe）。
+            assignment = self._get_agent_model_assignment(agent_type)
+            provider_name = assignment[0]["name"] if assignment else None
+            if provider_name and self.is_circuit_open(provider_name):
+                circuit_err = self._circuit_open_error(provider_name)
+                self.logger.warning(
+                    "agent_runner",
+                    f"Suppressed {agent_type} dispatch for '{spec_name}': {circuit_err}",
+                )
+                # 不创建 worktree、不进入重试计数。直接以熔断错误返回。
+                return AgentRunResult(
+                    attempt_run_id, spec_name, agent_type,
+                    success=False, duration_seconds=time.time() - start_time,
+                    error=circuit_err,
+                )
+
             reuse_worktree = (agent_type == "implementer" and wt_path is not None)
 
             # Create or reuse worktree
@@ -489,6 +684,22 @@ class AgentRunner:
                 turns = 0
                 success = False
                 error = str(e)
+                # provider 熔断计数（fix-stashpop-deadlock：provider-fault-fuse）。
+                # 仅对「已分配 provider」且错误文本能解析出 HTTP 4xx 的情况计数（design D4）；
+                # 5xx/网络错误不计数（瞬态，走既有 retry）。解析不到 code 视为失败、不计数。
+                if provider_name:
+                    code = self.parse_api_error_status(error)
+                    if code is not None and code in PROVIDER_CIRCUIT_4XX:
+                        was_half_open = False
+                        st = self.provider_circuits.get(provider_name)
+                        if st and st.get("count", 0) >= PROVIDER_CIRCUIT_THRESHOLD \
+                                and st.get("cooldown_until", 0) > 0 \
+                                and st["cooldown_until"] <= self._now():
+                            # 半开探针仍 4xx → 重新冷却（design D4），不重复计数。
+                            was_half_open = True
+                        self._record_provider_4xx(provider_name, code)
+                        if was_half_open:
+                            self._record_provider_probe(provider_name, success=False)
                 # implementer 失败后从产物尾部提取 session_id，供下一次 attempt --resume 续跑
                 if agent_type == "implementer":
                     run_file = self.project_root / ".fenix" / "runs" / f"{attempt_run_id}.jsonl"
@@ -516,6 +727,12 @@ class AgentRunner:
                         pass
 
             if success:
+                # 半开探针闭合（fix-stashpop-deadlock）：若该 provider 此前已进入熔断但
+                # 冷却已到期（半开），此派发成功即视为网关恢复，闭合熔断（design D4）。
+                if provider_name:
+                    st = self.provider_circuits.get(provider_name)
+                    if st and st.get("cooldown_until", 0) > 0 and st["cooldown_until"] <= self._now():
+                        self._record_provider_probe(provider_name, success=True)
                 # 成功：清理 worktree（保留分支供 merge-back），返回结果
                 self.worktree_manager.cleanup(wt_path, success=True)
                 duration = time.time() - start_time
