@@ -7,6 +7,7 @@ import json
 import os
 import threading
 import time
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1092,3 +1093,118 @@ class TestDashboardAdminActivitiesAPI:
         status, data = srv.get("/api/admin-activities?project=nope")
         assert status == 200
         assert "error" in data
+
+
+# ── 手动唤起 Admin：daemon 主循环拾取（add-spec-manual-admin-invoke 2.2） ──
+
+import fenixd as _fenixd_mod
+
+
+class _FakeDaemon:
+    """最小化 FenixDaemon 替身：仅装配 _check_admin_invoke_requests 所需属性。
+
+    _check_admin_invoke_requests 只读 PROJECT_ROOT（模块全局，会被 monkeypatch）、
+    agent_runner、admin_store、logger；直接构造裸对象设入这些属性即可测试，
+    无需启动完整 daemon（避免加载 config / event_bus / pm_engine）。
+    """
+
+    def __init__(self, project_root: Path, logger, runner, store):
+        self.running = True
+        self.agent_runner = runner
+        self.admin_store = store
+        self.logger = logger
+        self._project_root = project_root
+
+    # 注入 PROJECT_ROOT 的本地视图，避免修改模块全局
+    @property
+    def PROJECT_ROOT(self):
+        return self._project_root
+
+
+class TestAdminInvokePickup:
+    def test_pickup_invokes_administrator_and_deletes_file(self, tmp_path):
+        """请求文件存在 → 唤起 manual-intervention 信号并删除文件。"""
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = FakeRunner()
+        store = AdminStore(proot, FakeLogger())
+        daemon = _FakeDaemon(proot, FakeLogger(), runner, store)
+
+        req_path = proot / ".fenix" / "admin_invoke_request.json"
+        req_path.write_text(
+            json.dumps({"spec": "myspec", "source": "manual",
+                        "created": utcnow_iso()}), encoding="utf-8")
+
+        # 临时把模块全局 PROJECT_ROOT 指向临时项目根（方法用全局变量）
+        saved = _fenixd_mod.PROJECT_ROOT
+        try:
+            _fenixd_mod.PROJECT_ROOT = proot
+            # 把方法绑到替身上调用（方法只依赖全局 PROJECT_ROOT 与实例属性）
+            _fenixd_mod.FenixDaemon._check_admin_invoke_requests.__get__(daemon)()
+        finally:
+            _fenixd_mod.PROJECT_ROOT = saved
+
+        # 文件被消费删除
+        assert not req_path.exists()
+        # 唤起信号正确
+        assert len(runner.calls) == 1
+        sig = runner.calls[0]
+        assert sig["signal_type"] == "manual-intervention"
+        assert sig["spec"] == "myspec"
+        assert sig["severity"] == "major"
+        assert "检查 SPEC myspec 出现什么问题" in sig["description"]
+        # 无失败 disposition 落盘
+        assert store.read_all() == []
+
+    def test_pickup_without_file_is_noop(self, tmp_path):
+        """无请求文件 → 不唤起、不报错。"""
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = FakeRunner()
+        store = AdminStore(proot, FakeLogger())
+        daemon = _FakeDaemon(proot, FakeLogger(), runner, store)
+
+        saved = _fenixd_mod.PROJECT_ROOT
+        try:
+            _fenixd_mod.PROJECT_ROOT = proot
+            _fenixd_mod.FenixDaemon._check_admin_invoke_requests.__get__(daemon)()
+        finally:
+            _fenixd_mod.PROJECT_ROOT = saved
+
+        assert runner.calls == []
+
+    def test_pickup_exception_records_failed_disposition(self, tmp_path):
+        """唤起异常 → 不丢痕：写 failed disposition 且文件已删。"""
+
+        class _BoomRunner:
+            def run_administrator(self, signal):
+                raise RuntimeError("claude 未授权")
+
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = _BoomRunner()
+        store = AdminStore(proot, FakeLogger())
+        daemon = _FakeDaemon(proot, FakeLogger(), runner, store)
+
+        req_path = proot / ".fenix" / "admin_invoke_request.json"
+        req_path.write_text(
+            json.dumps({"spec": "myspec", "source": "manual",
+                        "created": utcnow_iso()}), encoding="utf-8")
+
+        saved = _fenixd_mod.PROJECT_ROOT
+        try:
+            _fenixd_mod.PROJECT_ROOT = proot
+            _fenixd_mod.FenixDaemon._check_admin_invoke_requests.__get__(daemon)()
+        finally:
+            _fenixd_mod.PROJECT_ROOT = saved
+
+        assert not req_path.exists()
+        records = store.read_all()
+        assert len(records) == 1
+        assert records[0]["kind"] == DISPOSITION
+        assert records[0]["status"] == "failed"
+        assert records[0]["spec"] == "myspec"
+        assert "claude 未授权" in records[0]["description"]
