@@ -161,6 +161,23 @@ class AdminStore:
             return changed
         return self._mutate(mutate)
 
+    def mark_escalated(self, alert_id: str) -> bool:
+        """将某条信号标记为已唤起 Administrator（escalated=True）。
+
+        供「写入即待唤起」型信号（family_explosion：pm_engine 直接落库、由
+        AdminMonitor 摄取唤起）去重使用：同记录只唤起一次。
+        返回是否找到并更新。
+        """
+        def mutate(records):
+            changed = False
+            for rec in records:
+                if rec.get("id") == alert_id:
+                    if not rec.get("escalated"):
+                        rec["escalated"] = True
+                        changed = True
+            return changed
+        return self._mutate(mutate)
+
     def mark_all_handled(self) -> int:
         """将所有未处理升级告警标记为已处理。返回处理数量。"""
         def mutate(records):

@@ -256,6 +256,106 @@ class PMEngine:
         (spec_dir / "tasks.md").write_text(tasks, encoding="utf-8")
         self.logger.info("pm_engine", f"Ensured fix SPEC files: {fix_spec_name}")
 
+    # ── fix 族谱收敛治理（fix-family-convergence-governor / design D4）──
+
+    @staticmethod
+    def _fix_prefix_depth(name: str) -> int:
+        """深度：规范名中连续 `fix-` 前缀层数（name 为子 SPEC 名）。
+
+        fix-x → 1；fix-fix-fix-x → 3。非 fix 名 → 0。
+        """
+        depth = 0
+        s = name
+        while s.startswith("fix-"):
+            depth += 1
+            s = s[len("fix-"):]
+        return depth
+
+    @staticmethod
+    def _fix_strip_all(name: str) -> str:
+        """剥除全部连续 `fix-` 前缀，得到家族根名（fix-fix-x → x）。"""
+        return name[4 * PMEngine._fix_prefix_depth(name):] if name.startswith("fix-") else name
+
+    def _family_width(self, child_name: str) -> int:
+        """宽度：同根（剥除全部 fix- 前缀后同名）且未完成（非 done/pushed）的 fix 子代数量。
+
+        口径依据 STATE 全量 read_all（design D4：不受 ready 清空字段保留策略影响，
+        对历史存在的四层命名按现值评估，不追溯惩罚已 done/pushed 祖先）。
+        """
+        root = self._fix_strip_all(child_name)
+        specs = self.state_machine.read_all() or {}
+        count = 0
+        for name, entry in specs.items():
+            if not isinstance(name, str) or not name.startswith("fix-") or name == child_name:
+                continue
+            if self._fix_strip_all(name) != root:
+                continue
+            status = (entry or {}).get("status", "")
+            if status in ("done", "pushed"):
+                continue
+            count += 1
+        return count
+
+    def _family_waiver_set(self, spec_name: str) -> bool:
+        """父 SPEC 是否持有放行豁免位 `_family_waiver=true`（单次）。"""
+        spec = self.state_machine.read_one(spec_name) or {}
+        raw = str(spec.get("_family_waiver") or "").strip().lower()
+        return raw in ("true", "1", "yes")
+
+    def _consume_family_waiver(self, spec_name: str) -> bool:
+        """消费豁免位：若存在则复位为 False，返回原值。"""
+        had = self._family_waiver_set(spec_name)
+        if had:
+            self.state_machine.update_spec(spec_name, {"_family_waiver": False})
+        return had
+
+    def _family_gate_blocked(self, parent_name: str, child_name: str) -> bool:
+        """越界判定：候选子 SPEC 的深度/宽度是否超过 pm.family 上限。
+
+        深度 > max_depth（默认 3）或 宽度 >= max_width（默认 2，新成员将越界）
+        时返回 True。enabled 语义由 config 承载：未配置即采用默认值。
+        """
+        iw = self._get_config("pm.family.max_depth")
+        ns = self._get_config("pm.family.max_width")
+        max_depth = int(iw if iw is not None else 3)
+        max_width = int(ns if ns is not None else 2)
+        depth = self._fix_prefix_depth(child_name)
+        if depth > max_depth:
+            return True
+        width = self._family_width(child_name)
+        return width >= max_width
+
+    def _signal_family_explosion(self, parent_name: str, child_name: str, detail: str):
+        """越界派生请求转 family_explosion 困境信号（severity=major）写入 admin store。
+
+        不改父 SPEC 状态、不产生 bug-found 处理副作用（design D4）。信号进入既有
+        admin_monitor 唤起链（Administrator 处置 → 可对父 SPEC 放行一次）。
+        """
+        from .admin_store import AdminStore, SIGNAL
+        store = AdminStore(self.project_root, self.logger)
+        try:
+            store.append({
+                "kind": SIGNAL,
+                "signal_type": "family_explosion",
+                "spec": parent_name,
+                "severity": "major",
+                "description": (f"fix 族谱爆炸：'{parent_name}' 派生 {child_name} 被"
+                                f"深度/宽度上限拦截（{detail}），自动创建已中止"),
+                "evidence": f"candidate={child_name}; {detail}",
+                "recommended_action": ("人工检修根因环境；若确认放行一次，对该父 SPEC "
+                                       "设置 _family_waiver=true（下轮允许再创建一个子 SPEC）"),
+            })
+            self.logger.error(
+                "pm_engine",
+                f"fix 族谱收敛拦截: '{parent_name}' → {child_name} 自动创建中止（{detail}）"
+                f"，已写入 family_explosion 信号",
+            )
+        except Exception as e:
+            self.logger.error(
+                "pm_engine",
+                f"family_explosion 信号写入 admin store 失败: {e}",
+            )
+
     def _do_spec_bug_found(self, spec_name: str):
         """实际执行 bug-found 处理逻辑。"""
         parent_prio = (self.state_machine.read_one(spec_name) or {}).get("priority", 5)
@@ -270,6 +370,27 @@ class PMEngine:
                 f"skipping duplicate bug-found handling",
             )
             return
+
+        # ── fix 族谱收敛治理（design D4）──
+        # 仅在「新建子 SPEC」路径拦截：复用/重置既有 fix SPEC 不新增家族成员。
+        # 拦截时不改父状态、无 spec_bug_found 处理副作用；Administrator 已放行
+        # （_family_waiver=true）则放行恰好一次并随即复位豁免位。
+        if self.state_machine.read_one(fix_spec_name) is None:
+            if self._family_gate_blocked(spec_name, fix_spec_name):
+                if self._consume_family_waiver(spec_name):
+                    self.logger.warning(
+                        "pm_engine",
+                        f"family_explosion 人工放行：'{spec_name}' 本轮豁免一次，"
+                        f"继续创建 {fix_spec_name}",
+                    )
+                else:
+                    detail = (f"深度={self._fix_prefix_depth(fix_spec_name)}, "
+                              f"宽度={self._family_width(fix_spec_name)}")
+                    self._signal_family_explosion(spec_name, fix_spec_name, detail)
+                    return  # 拦截：父保持 bug-found，不创建不派发
+            elif self._family_waiver_set(spec_name):
+                # 未触发拦截的平凡创建也消耗豁免位（放行恰好一次）
+                self._consume_family_waiver(spec_name)
 
         # 确保 fix SPEC 在磁盘上有 proposal/tasks，否则 implementer 找不到 SPEC 文件
         self._ensure_fix_spec_files(fix_spec_name, spec_name)

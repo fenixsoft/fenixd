@@ -82,7 +82,8 @@ class AdminDisposition:
     def __init__(self, run_id: str, spec: str | None = None, success: bool = True,
                  problem: str = "", actions_taken: str = "", result: str = "",
                  escalate: bool = False, recommended_action: str = "",
-                 summary: str = "", error: str = "", output: str = ""):
+                 summary: str = "", error: str = "", output: str = "",
+                 family_waiver: bool = False):
         self.run_id = run_id
         self.spec = spec
         self.success = success
@@ -94,6 +95,9 @@ class AdminDisposition:
         self.summary = summary
         self.error = error
         self.output = output
+        # family_explosion 处置：Administrator 对该父 SPEC「放行一次」。
+        # 由 admin_monitor 落成 _family_waiver=true（单次豁免，用后复位）。
+        self.family_waiver = family_waiver
 
     def to_dict(self) -> dict:
         return {
@@ -451,6 +455,7 @@ class AgentRunner:
             summary=disp.get("summary") or "",
             error=error,
             output=output,
+            family_waiver=bool(disp.get("family_waiver", False)),
         )
 
     def _clear_admin_disposition(self):

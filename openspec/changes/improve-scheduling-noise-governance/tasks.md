@@ -14,9 +14,9 @@
 
 ## 3. fix 族谱收敛（design D4）
 
-- [ ] 3.1 族谱度量函数（深度=fix- 前缀层数、宽度=同父未完成兄弟数，基于 read_all 全量）；_on_spec_bug_found 创建前接线拦截；补单测（四层请求拦截 / 宽度第二拦截 / 历史命名不追溯）
-- [ ] 3.2 family_explosion 信号接入 admin store 与 disposition 流程；「放行一次」豁免位 `_family_waiver` 设置/消费/复位；补单测（信号产生 / 放行单次通行 / 未放行持续拦截）
-- [ ] 3.3 config.yaml 增补 pm.family 与 pm.dispatch.aging 注释默认值；dashboard 无需改动的前提下确认 family_explosion 在既有 activity view 可见（手动冒烟）
+- [x] 3.1 族谱度量函数（深度=fix- 前缀层数、宽度=同父未完成兄弟数，基于 read_all 全量）；_on_spec_bug_found 创建前接线拦截；补单测（四层请求拦截 / 宽度第二拦截 / 历史命名不追溯）
+- [x] 3.2 family_explosion 信号接入 admin store 与 disposition 流程；「放行一次」豁免位 `_family_waiver` 设置/消费/复位；补单测（信号产生 / 放行单次通行 / 未放行持续拦截）
+- [x] 3.3 config.yaml 增补 pm.family 与 pm.dispatch.aging 注释默认值；dashboard 无需改动的前提下确认 family_explosion 在既有 activity view 可见（手动冒烟）
 
 ## 4. 回归与核验
 
