@@ -39,12 +39,17 @@
       </div>
     </div>
 
-    <!-- SPEC 文档弹窗（复用 runmodal 视觉，独立 docmodal 语义） -->
+    <!-- SPEC 文档弹窗（复用 runmodal 视觉，独立 docmodal 语义；三页签承载背景/设计/任务清单） -->
     <div id="docmodal" class="runmodal hidden">
       <div class="runmodal-box">
         <div class="runmodal-head">
           <span id="docmodal-title" class="runmodal-title"></span>
           <button id="docmodal-close" class="modal-close" title="关闭">✕</button>
+        </div>
+        <div class="docmodal-tabs">
+          <button class="doc-tab-btn" data-doc="proposal">需求背景</button>
+          <button class="doc-tab-btn" data-doc="design">详细设计</button>
+          <button class="doc-tab-btn" data-doc="tasks">任务清单</button>
         </div>
         <div class="runmodal-body" id="docmodal-body"></div>
       </div>

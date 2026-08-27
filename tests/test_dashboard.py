@@ -1147,6 +1147,57 @@ class TestServerAPI:
         status, _ = srv.get("/api/spec-doc?project=ghost&spec=myspec&doc=proposal")
         assert status == 400
 
+    def test_api_spec_doc_tasks_whitelist(self, server_fx):
+        """spec-doc 白名单扩展 tasks：读取 tasks.md 与 proposal/design 同目录。"""
+        proot, srv = server_fx
+        (proot / "openspec" / "changes" / "myspec" / "tasks.md").write_text(
+            "## 1. 阶段一\n\n- [x] 1.1 任务一\n", encoding="utf-8"
+        )
+        # tasks 读取成功
+        status, data = srv.get("/api/spec-doc?project=proj-a&spec=myspec&doc=tasks")
+        assert status == 200
+        assert data["found"] is True
+        assert "任务一" in data["content"]
+        # tasks 缺失 → found=False（不回归既有 proposal/design 分支）
+        status, data = srv.get("/api/spec-doc?project=proj-a&spec=otherspec&doc=tasks")
+        assert status == 200
+        assert data == {"found": False, "content": "", "project": "proj-a", "spec": "otherspec", "doc": "tasks"}
+        # proposal/design 既有分支不受影响
+        status, _ = srv.get("/api/spec-doc?project=proj-a&spec=myspec&doc=proposal")
+        assert status == 200
+        status, _ = srv.get("/api/spec-doc?project=proj-a&spec=myspec&doc=readme")
+        assert status == 400
+
+    def test_api_spec_error_clear(self, server_fx):
+        """清除端点：成功置空 error 且其余字段不变；spec 不存在 / 项目不存在 → 404。"""
+        proot, srv = server_fx
+        # 预先给 myspec 写入一条 error（STATE.md 默认 error: null，需手动设值）
+        state = proot / "STATE.md"
+        state.write_text(
+            state.read_text(encoding="utf-8").replace(
+                "### myspec\n- status: testing\n- priority: 2\n- created: 2026-01-01T00:00:00+00:00\n"
+                "- updated: 2026-01-02T00:00:00+00:00\n- error: null\n- depends_on: null\n",
+                "### myspec\n- status: testing\n- priority: 2\n- created: 2026-01-01T00:00:00+00:00\n"
+                "- updated: 2026-01-02T00:00:00+00:00\n- error: 恢复自中断状态\n- depends_on: null\n",
+            ),
+            encoding="utf-8",
+        )
+        # 成功清除
+        status, data = srv.post("/api/spec-error-clear?project=proj-a&spec=myspec")
+        assert status == 200
+        assert data == {"ok": True, "project": "proj-a", "spec": "myspec"}
+        # STATE.md 中 error 已置空，其余字段不变
+        specs = dash_data.parse_state(proot)
+        assert specs["myspec"]["error"] is None
+        assert specs["myspec"]["status"] == "testing"
+        assert specs["myspec"]["priority"] == 2
+        # spec 不存在 → 404
+        status, _ = srv.post("/api/spec-error-clear?project=proj-a&spec=ghost")
+        assert status == 404
+        # 项目不存在 → 404
+        status, _ = srv.post("/api/spec-error-clear?project=ghost&spec=myspec")
+        assert status == 404
+
     def test_api_run(self, server_fx):
         _, srv = server_fx
         status, data = srv.get("/api/runs/impl-myspec-1780000000?project=proj-a")

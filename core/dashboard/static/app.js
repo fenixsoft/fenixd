@@ -881,21 +881,48 @@ function specRow(project, s, depth = 0, orphan = false) {
     <td>${verify}</td>
     <td>${dur}</td>
     <td class="doc-actions">
-      <button class="doc-btn" title="查看背景文档" onclick="event.stopPropagation(); openDocModal('${encodeURIComponent(project)}', '${encodeURIComponent(s.name)}', 'proposal')">背景</button>
-      <button class="doc-btn" title="查看设计文档" onclick="event.stopPropagation(); openDocModal('${encodeURIComponent(project)}', '${encodeURIComponent(s.name)}', 'design')">设计</button>
+      <a class="doc-link" href="javascript:void(0)" title="查看文档（背景/设计/任务清单）"
+        onclick="event.stopPropagation(); openDocModal('${encodeURIComponent(project)}', '${encodeURIComponent(s.name)}')">文档</a>
     </td>
   </tr>`;
-  // 信息子行：error 非空时跨全列显示完整消息（不再截断），空则不渲染、不占行高
+  // 信息子行：error 非空时跨全列显示「信息」badge 与消息同行（flex 布局，详见 style.css），
+  // 尾部「清除」按钮在线清理 STATE.md error；空则不渲染、不占行高
   if (s.error) {
     return mainRow + `
-  <tr class="spec-info-row">
+  <tr class="spec-info-row" onclick="event.stopPropagation()">
     <td colspan="${SPEC_COL_COUNT}">
-      <span class="info-badge">信息</span>
-      <span class="info-msg">${esc(String(s.error))}</span>
+      <span class="info-badge">信息</span><span class="info-msg">${esc(String(s.error))}</span>
+      <button class="info-clear-btn" data-project="${esc(project)}" data-spec="${esc(s.name)}"
+        onclick="event.stopPropagation(); clearSpecError('${esc(project)}', '${esc(s.name)}')">清除</button>
     </td>
   </tr>`;
   }
   return mainRow;
+}
+
+// 在线清除 SPEC 的 error 字段（POST /api/spec-error-clear）
+// 成功依赖 watcher / 2 秒轮询自动刷新列表（子行消失），无需额外处理；
+// 失败则按钮短暂进入禁用+错误态，STATE.md 不变。
+function clearSpecError(project, spec) {
+  const btn = (typeof event !== 'undefined' && event) ? event.currentTarget : null;
+  fetch('/api/spec-error-clear?project=' + encodeURIComponent(project)
+      + '&spec=' + encodeURIComponent(spec), { method: 'POST' })
+    .then((r) => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(() => { /* 列表自动刷新，子行消失 */ })
+    .catch(() => {
+      if (!btn) return;
+      btn.disabled = true;
+      btn.classList.add('info-clear-err');
+      btn.textContent = '清除失败';
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.classList.remove('info-clear-err');
+        btn.textContent = '清除';
+      }, 2000);
+    });
 }
 
 function hydrateProjectFilter() {
@@ -1574,38 +1601,100 @@ function closeRunModal() {
 el('runmodal').addEventListener('click', (e) => { if (e.target === el('runmodal')) closeRunModal(); });
 el('runmodal-close').addEventListener('click', closeRunModal);
 
-// ── SPEC 文档弹窗（proposal.md / design.md） ─────────────────────────
+// ── SPEC 文档弹窗（proposal.md / design.md / tasks.md，三页签） ──
 
-const DOC_LABELS = { proposal: '背景', design: '设计' };
-const DOC_EMPTY_TEXT = { proposal: '该 spec 未提供背景文档', design: '该 spec 未提供设计文档' };
+// 文档页签定义（顺序即页签顺序；默认激活第一个 proposal）
+const DOC_TABS = [
+  { doc: 'proposal', label: '需求背景', empty: '该 spec 未提供背景文档' },
+  { doc: 'design', label: '详细设计', empty: '该 spec 未提供设计文档' },
+  { doc: 'tasks', label: '任务清单', empty: '该 spec 未提供任务清单文档' },
+];
 
-function openDocModal(project, spec, doc) {
+// 当前弹窗的 (project, spec) 与已加载/在途缓存：键 = project│spec│doc
+let docModalCtx = { project: '', spec: '', active: 'proposal' };
+const docCache = new Map();   // (project, spec, doc) → {status:'loading'|'done'|'empty'|'error', promise?, html?}
+
+function _docCacheKey(project, spec, doc) {
+  return project + '│' + spec + '│' + doc;
+}
+
+function openDocModal(project, spec) {
+  docModalCtx = { project: decodeURIComponent(project), spec: decodeURIComponent(spec), active: 'proposal' };
   const box = el('docmodal');
   const body = el('docmodal-body');
   const title = el('docmodal-title');
-  const docLabel = DOC_LABELS[doc] || doc;
-  title.textContent = `${decodeURIComponent(spec)} · ${docLabel}`;
+  title.textContent = docModalCtx.spec;
+  // 页签栏激活态重置到「需求背景」
+  document.querySelectorAll('#docmodal .doc-tab-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.doc === 'proposal');
+  });
   body.innerHTML = '<div class="empty-state">加载中…</div>';
   box.classList.remove('hidden');
+  loadDocTab('proposal');
+}
 
-  fetch(`/api/spec-doc?project=${project}&spec=${spec}&doc=${doc}`)
+// 加载某个页签内容（懒加载 + in-flight/结果缓存，复用 fetchWhy 模式）
+function loadDocTab(doc) {
+  docModalCtx.active = doc;
+  document.querySelectorAll('#docmodal .doc-tab-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.doc === doc);
+  });
+  const { project, spec } = docModalCtx;
+  const key = _docCacheKey(project, spec, doc);
+  const cached = docCache.get(key);
+  const body = el('docmodal-body');
+  if (cached) {
+    if (cached.status === 'done') { body.innerHTML = cached.html; return; }
+    if (cached.status === 'empty') { body.innerHTML = emptyDocHtml(doc); return; }
+    if (cached.status === 'error') { body.innerHTML = errorDocHtml(); return; }
+    if (cached.status === 'loading') {
+      // 复用进行中的请求：等待其完成（done/empty/error 任一）后由 .then 写入 DOM
+      body.innerHTML = '<div class="empty-state">加载中…</div>';
+      cached.promise.then(() => {
+        if (docModalCtx.active === doc && docCache.get(key)) applyDocToBody(doc);
+      }).catch(() => {});
+      return;
+    }
+  }
+  body.innerHTML = '<div class="empty-state">加载中…</div>';
+  const p = fetch(`/api/spec-doc?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}&doc=${doc}`)
     .then((resp) => {
-      if (!resp.ok) {
-        if (resp.status === 404) throw new Error('not-found');
-        throw new Error('fetch-failed');
-      }
+      if (!resp.ok) throw new Error('fetch-failed:' + resp.status);
       return resp.json();
     })
     .then((d) => {
       if (!d.found) {
-        body.innerHTML = `<div class="empty-state">${DOC_EMPTY_TEXT[doc] || '文档不存在'}</div>`;
+        docCache.set(key, { status: 'empty', html: null });
+        if (docModalCtx.active === doc) body.innerHTML = emptyDocHtml(doc);
         return;
       }
-      body.innerHTML = mdRender(d.content);
+      const html = mdRender(d.content);
+      docCache.set(key, { status: 'done', html: html });
+      if (docModalCtx.active === doc) body.innerHTML = html;
     })
-    .catch((err) => {
-      body.innerHTML = `<div class="empty-state err-state">加载失败，请稍后重试</div>`;
+    .catch(() => {
+      docCache.set(key, { status: 'error', html: null });
+      if (docModalCtx.active === doc) body.innerHTML = errorDocHtml();
     });
+  docCache.set(key, { status: 'loading', promise: p, html: null });
+}
+
+function applyDocToBody(doc) {
+  const key = _docCacheKey(docModalCtx.project, docModalCtx.spec, doc);
+  const cached = docCache.get(key);
+  const body = el('docmodal-body');
+  if (!cached) return;
+  if (cached.status === 'done') body.innerHTML = cached.html;
+  else if (cached.status === 'empty') body.innerHTML = emptyDocHtml(doc);
+  else if (cached.status === 'error') body.innerHTML = errorDocHtml();
+}
+
+function emptyDocHtml(doc) {
+  const t = DOC_TABS.find((x) => x.doc === doc);
+  return `<div class="empty-state">${esc(t ? t.empty : '文档不存在')}</div>`;
+}
+function errorDocHtml() {
+  return `<div class="empty-state err-state">加载失败，请稍后重试</div>`;
 }
 
 function closeDocModal() {
@@ -1615,6 +1704,10 @@ function closeDocModal() {
 
 el('docmodal').addEventListener('click', (e) => { if (e.target === el('docmodal')) closeDocModal(); });
 el('docmodal-close').addEventListener('click', closeDocModal);
+// 文档弹窗页签切换：按需加载 + 缓存
+document.querySelectorAll('#docmodal .doc-tab-btn').forEach((b) => {
+  b.addEventListener('click', () => loadDocTab(b.dataset.doc));
+});
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeRunModal(); });
 
 // ── 配置页 ─────────────────────────────────────────────

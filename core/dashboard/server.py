@@ -17,7 +17,8 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     GET /api/specs/<spec>?project=<name> → 单个 SPEC 完整详情
     GET /api/runs/<run_id>?project=<name> → 单次运行产物流
     GET /api/events?project=<name>&minutes=N → 最近 N 分钟结构化事件
-    GET /api/spec-doc?project=<name>&spec=<name>&doc=<proposal|design> → SPEC 文档原文（found + content）
+    GET /api/spec-doc?project=<name>&spec=<name>&doc=<proposal|design|tasks> → SPEC 文档原文（found + content）
+    POST /api/spec-error-clear?project=<name>&spec=<name> → 在线清除 SPEC 的 error 字段（置空并原子写回 STATE.md）
     GET /api/config?project=<name> → 读取受管配置（llm / agents.models / gates.approve_mode）
     POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
     GET /api/alerts?project=<name> → Administrator 告警/处置记录（缺省跨项目聚合未处理告警）
@@ -313,9 +314,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return detail
 
     def _api_spec_doc(self, query) -> dict:
-        """GET /api/spec-doc?project=<name>&spec=<name>&doc=<proposal|design>
+        """GET /api/spec-doc?project=<name>&spec=<name>&doc=<proposal|design|tasks>
 
-        读取 SPEC 的 proposal.md / design.md 原文返回 {found, content}。
+        读取 SPEC 的 proposal.md / design.md / tasks.md 原文返回 {found, content}。
         - doc 非法 → 400
         - spec 非法 / 不在项目 STATE.md → 404（且不读取任何 changes 目录外文件）
         - 文件不存在 → 200 + {found: false, content: ""}
@@ -347,6 +348,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._error(404, f"invalid spec: {spec}")
             return
         self._json({**result, "project": project["name"], "spec": spec, "doc": doc})
+
+    def _api_spec_error_clear(self, query) -> dict:
+        """POST /api/spec-error-clear?project=<name>&spec=<name>
+
+        在线清除 SPEC 的 error 字段（置空并原子写回 STATE.md）。
+        - project 不存在 → 404
+        - spec 非法 / 不在项目 STATE.md → 404
+        - 成功 → 200 + {ok: true}；其余字段不受影响
+        - 写回异常 → 500
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        proot = Path(project["path"])
+        try:
+            result = dashboard_data.clear_spec_error(proot, spec)
+        except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
+            self._error(500, f"clear spec error failed: {e}")
+            return
+        if not result.get("found"):
+            self._error(404, f"spec not found: {spec}")
+            return
+        self._json({"ok": True, "project": project["name"], "spec": spec})
 
     def _api_run(self, run_id: str, query) -> dict:
         project = self._project_from_query(query)
@@ -582,6 +614,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _handle_api_post(self, path: str, query: dict):
         if path == "/api/config":
             self._api_config_post(query)
+        elif path == "/api/spec-error-clear":
+            self._api_spec_error_clear(query)
         elif path.startswith("/api/alerts/") and path.endswith("/handled"):
             alert_id = urllib.parse.unquote(path[len("/api/alerts/"):-len("/handled")])
             self._api_alert_handled(alert_id, query)
