@@ -73,6 +73,14 @@ function progressBar(done, total) {
   return `<div class="progress ${cls}"><div class="fill" style="width:${p}%"></div></div>
     <div class="progress-labels"><span>${done}/${total}</span><span>${p}%</span></div>`;
 }
+// 非阻塞轻提示（成功/错误）：复用 .toast-error 样式（见 style.css），成功态加 .toast-ok
+function toast(msg, isError) {
+  const t = document.createElement('div');
+  t.className = 'toast-error' + (isError ? '' : ' toast-ok');
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), isError ? 6000 : 3000);
+}
 
 // ── 路由与状态 ──────────────────────────────────────────
 let currentState = { view: 'overview' };
@@ -2313,7 +2321,161 @@ window.nav = nav;
 window.openLightbox = openLightbox;
 window.openRunModal = openRunModal;
 
+// ── SPEC 行右键上下文菜单（add-spec-context-menu） ────────────────
+
+// 菜单单例：全局复用，避免每次右键重建 DOM
+let _specCtxMenuEl = null;
+let _specCtxMenuSpec = null;  // 当前菜单关联的 {project, spec, priority, status}
+let _specCtxMenuCloseHandler = null;
+
+function _ensureSpecContextMenu() {
+  if (_specCtxMenuEl) return _specCtxMenuEl;
+  const menu = document.createElement('div');
+  menu.id = 'spec-ctx-menu';
+  menu.className = 'spec-ctx-menu';
+  menu.innerHTML =
+    '<div class="ctx-item" data-action="admin-invoke">呼叫 Admin 介入</div>' +
+    '<div class="ctx-item" data-action="priority">调整优先级</div>' +
+    '<div class="ctx-item ctx-danger" data-action="delete">删除 Spec</div>';
+  document.body.appendChild(menu);
+  _specCtxMenuEl = menu;
+
+  menu.addEventListener('click', (e) => {
+    const item = e.target.closest('.ctx-item');
+    if (!item || !_specCtxMenuSpec) return;
+    const action = item.dataset.action;
+    const { project, spec } = _specCtxMenuSpec;
+    _hideSpecContextMenu();
+    if (action === 'admin-invoke') _ctxAdminInvoke(project, spec);
+    else if (action === 'priority') _ctxSetPriority(project, spec);
+    else if (action === 'delete') _ctxDeleteSpec(project, spec);
+  });
+
+  return menu;
+}
+
+function _showSpecContextMenu(x, y, meta) {
+  const menu = _ensureSpecContextMenu();
+  _specCtxMenuSpec = meta;
+  menu.style.display = 'block';
+
+  // 视口翻转定位：防止超出窗口边缘
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  if (x + mw > vw) x = Math.max(0, vw - mw - 4);
+  if (y + mh > vh) y = Math.max(0, vh - mh - 4);
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+
+  // 关闭：Esc / 点击外部 / 滚动
+  _specCtxMenuCloseHandler = (e) => {
+    if (e.type === 'keydown' && e.key === 'Escape') { _hideSpecContextMenu(); return; }
+    if (e.type === 'click' && !menu.contains(e.target)) { _hideSpecContextMenu(); return; }
+    if (e.type === 'scroll') { _hideSpecContextMenu(); return; }
+  };
+  // 使用 capture 阶段确保在其它 click handler 之前拦截
+  document.addEventListener('click', _specCtxMenuCloseHandler, { capture: true });
+  document.addEventListener('keydown', _specCtxMenuCloseHandler, { capture: true });
+  document.addEventListener('scroll', _specCtxMenuCloseHandler, { capture: true });
+}
+
+function _hideSpecContextMenu() {
+  if (_specCtxMenuEl) _specCtxMenuEl.style.display = 'none';
+  _specCtxMenuSpec = null;
+  if (_specCtxMenuCloseHandler) {
+    document.removeEventListener('click', _specCtxMenuCloseHandler, { capture: true });
+    document.removeEventListener('keydown', _specCtxMenuCloseHandler, { capture: true });
+    document.removeEventListener('scroll', _specCtxMenuCloseHandler, { capture: true });
+    _specCtxMenuCloseHandler = null;
+  }
+}
+
+// ── 菜单项动作 ──────────────────────────────────────
+
+function _ctxAdminInvoke(project, spec) {
+  fetch('/api/spec-admin-invoke?project=' + encodeURIComponent(project)
+      + '&spec=' + encodeURIComponent(spec), { method: 'POST' })
+    .then((r) => { if (!r.ok) return r.json().then(d => { throw new Error(d.error || 'HTTP ' + r.status); }); return r.json(); })
+    .then(() => {
+      toast('已呼叫 Admin 介入检查');
+      // 刷新运维活动区（若在运维记录视图）
+      if (currentState.view === 'activities') load();
+    })
+    .catch((err) => toast(err.message || '呼叫失败', true));
+}
+
+function _ctxSetPriority(project, spec) {
+  // 预填当前值：从 spec 行的 DOM 中读取 P 值
+  let currentP = 5;
+  try {
+    const nameCells = document.querySelectorAll(`.spec-row .spec-name-cell[data-spec="${CSS.escape(spec)}"]`);
+    if (nameCells.length) {
+      const row = nameCells[0].closest('tr');
+      if (row) {
+        const tds = row.querySelectorAll('td');
+        // 优先级在第 3 列（index 2）
+        if (tds[2]) {
+          const m = tds[2].textContent.match(/(\d)/);
+          if (m) currentP = parseInt(m[1], 10);
+        }
+      }
+    }
+  } catch (_) { /* ignore read failure */ }
+
+  const input = prompt('请输入优先级（P1 最高，P9 最低）：', currentP);
+  if (input === null) return; // 取消
+  const priority = parseInt(input, 10);
+  if (isNaN(priority) || priority < 1 || priority > 9) {
+    toast('请输入 1-9 的整数', true);
+    return;
+  }
+  fetch('/api/spec-priority?project=' + encodeURIComponent(project)
+      + '&spec=' + encodeURIComponent(spec), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ priority }),
+  })
+    .then((r) => { if (!r.ok) return r.json().then(d => { throw new Error(d.error || 'HTTP ' + r.status); }); return r.json(); })
+    .then(() => { toast('优先级已更新'); })
+    .catch((err) => toast(err.message || '更新失败', true));
+}
+
+function _ctxDeleteSpec(project, spec) {
+  if (!confirm('确认删除 Spec「' + spec + '」？\n\n软删除：STATE.md 移除该条目，\nopenspec/changes/' + spec + '/ 目录移入 archive 归档。\n归档路径：openspec/changes/archive/' + spec + '-<时间戳>/')) return;
+  fetch('/api/spec-delete?project=' + encodeURIComponent(project)
+      + '&spec=' + encodeURIComponent(spec), { method: 'POST' })
+    .then((r) => { if (!r.ok) return r.json().then(d => { throw new Error(d.error || 'HTTP ' + r.status); }); return r.json(); })
+    .then((d) => {
+      toast('Spec「' + spec + '」已删除');
+      load(); // 刷新列表使行消失
+    })
+    .catch((err) => toast(err.message || '删除失败', true));
+}
+
+function initSpecContextMenu() {
+  document.addEventListener('contextmenu', (e) => {
+    // 只在 spec 行内拦截（.spec-name-cell 含 data-spec）
+    const nameCell = e.target.closest('.spec-name-cell[data-spec]');
+    if (!nameCell) return;
+    e.preventDefault();
+    const spec = nameCell.dataset.spec;
+    const project = nameCell.dataset.project;
+    // 从该行获取优先级（供 prompt 预填）
+    let priority = 5;
+    const row = nameCell.closest('tr');
+    if (row) {
+      const tds = row.querySelectorAll('td');
+      if (tds[2]) {
+        const m = tds[2].textContent.match(/(\d)/);
+        if (m) priority = parseInt(m[1], 10);
+      }
+    }
+    _showSpecContextMenu(e.clientX, e.clientY, { project, spec, priority });
+  });
+}
+
 // ── 启动 ───────────────────────────────────────────────
 route();
 connectSSE();
 initWhyHint();
+initSpecContextMenu();

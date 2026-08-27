@@ -14,10 +14,10 @@
 
 ## 3. 前端：右键菜单与三项交互
 
-- [ ] 3.1 app.js 新增全局 contextmenu 处理与自绘菜单组件（复用单例元素、视口翻转定位、Esc/click-outside/scroll 关闭）；style.css 菜单样式（--surface/--hairline 变量、明暗主题一致）
-- [ ] 3.2 「呼叫 Admin 介入」项：POST /api/spec-admin-invoke，成功 toast「已呼叫 Admin 介入检查」+ 触发 admin 活动区刷新；409 展示返回原因
-- [ ] 3.3 「调整优先级」项：prompt() 弹窗预填当前值，确认后 POST /api/spec-priority，成功后更新列表行显示（利用现有 2 秒轮询自然回刷即可）；取消无副作用
-- [ ] 3.4 「删除 Spec」项：确认弹窗（说明软删除与归档路径）→ POST /api/spec-delete → 成功后行消失；409 显示进行中提示
+- [x] 3.1 app.js 新增全局 contextmenu 处理与自绘菜单组件（复用单例元素、视口翻转定位、Esc/click-outside/scroll 关闭）；style.css 菜单样式（--surface/--hairline 变量、明暗主题一致）
+- [x] 3.2 「呼叫 Admin 介入」项：POST /api/spec-admin-invoke，成功 toast「已呼叫 Admin 介入检查」+ 触发 admin 活动区刷新；409 展示返回原因
+- [x] 3.3 「调整优先级」项：prompt() 弹窗预填当前值，确认后 POST /api/spec-priority，成功后更新列表行显示（利用现有 2 秒轮询自然回刷即可）；取消无副作用
+- [x] 3.4 「删除 Spec」项：确认弹窗（说明软删除与归档路径）→ POST /api/spec-delete → 成功后行消失；409 显示进行中提示
 
 ## 4. 验证
 

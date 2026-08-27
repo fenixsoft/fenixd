@@ -442,6 +442,42 @@ main { padding: 20px; max-width: 1280px; margin: 0 auto; }
   box-shadow: 0 8px 30px var(--shadow-md);
   max-width: 90vw;
 }
+.toast-ok {
+  background: rgba(12, 20, 12, 0.96);
+  border-color: var(--good);
+}
+
+/* ── SPEC 行右键上下文菜单（add-spec-context-menu） ───── */
+.spec-ctx-menu {
+  position: fixed;
+  display: none;
+  min-width: 160px;
+  background: var(--surface);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 30px var(--shadow-md);
+  padding: 4px;
+  z-index: 60;
+  font-size: 13px;
+  user-select: none;
+}
+.spec-ctx-menu .ctx-item {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.spec-ctx-menu .ctx-item:hover {
+  background: var(--surface-2);
+}
+.spec-ctx-menu .ctx-item.ctx-danger {
+  color: var(--critical);
+}
+.spec-ctx-menu .ctx-item.ctx-danger:hover {
+  background: rgba(255, 80, 80, 0.12);
+}
+
 
 /* ── SPEC 表格：可排序表头 / fix 树缩进 ───────────────── */
 .spec-table thead th.sortable { cursor: pointer; user-select: none; }
