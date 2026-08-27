@@ -599,7 +599,11 @@ class TestConfigLoader(unittest.TestCase):
             "volc"
         )
 
-    def test_agent_models_unknown_provider_raises(self):
+    def test_agent_models_unknown_provider_logs_error_not_blocking(self):
+        """add-provider-failover：未知 provider 名只打 ERROR 不阻塞加载（design D3）。
+
+        运行期该链元素被跳过，整链都未知时 assignment 返回 None（走默认网关）。
+        """
         cfg = self._base_config()
         cfg["llm"] = {"providers": [
             {"name": "volc", "baseurl": "https://a.com", "apikey": "k1"},
@@ -608,9 +612,10 @@ class TestConfigLoader(unittest.TestCase):
             "implementer": {"provider": "nonexistent", "model": "m1"},
         }
         self._write_config(cfg)
-        with self.assertRaises(ValueError) as ctx:
-            ConfigLoader.load(self.config_path)
-        self.assertIn("unknown provider", str(ctx.exception))
+        # 加载不抛异常（沿用热更新哲学，坏一个名字不整 daemon 起不来）
+        config = ConfigLoader.load(self.config_path)
+        # 该角色 assignment 因链元素全未知而解析为 None（安全降级）
+        self.assertIsNone(ConfigLoader.get_agent_model_assignment(config, "implementer"))
 
     def test_agent_models_unknown_agent_type_raises(self):
         cfg = self._base_config()
@@ -674,7 +679,7 @@ class TestConfigLoader(unittest.TestCase):
 
     # ── 新增：get_agent_model_assignment ────────────────────
 
-    def test_get_agent_model_assignment_returns_tuple(self):
+    def test_get_agent_model_assignment_returns_chain(self):
         cfg = self._base_config()
         cfg["llm"] = {"providers": [
             {"name": "volc", "baseurl": "https://a.com", "apikey": "k1", "sdk_model": "claude-sonnet-5"},
@@ -684,12 +689,34 @@ class TestConfigLoader(unittest.TestCase):
         }
         self._write_config(cfg)
         config = ConfigLoader.load(self.config_path)
+        # add-provider-failover：单值 provider 解析为单元素候选链 list[(provider, model)]
         result = ConfigLoader.get_agent_model_assignment(config, "implementer")
         self.assertIsNotNone(result)
-        provider, model = result
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        provider, model = result[0]
         self.assertEqual(provider["name"], "volc")
         self.assertEqual(provider["baseurl"], "https://a.com")
         self.assertEqual(model, "deepseek-v4-flash")
+
+    def test_get_agent_model_assignment_returns_list_chain(self):
+        """provider 为 list 时解析为按序候选链。"""
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [
+            {"name": "inferaiapi.com", "baseurl": "https://a.com", "apikey": "k1"},
+            {"name": "aliyun", "baseurl": "https://b.com", "apikey": "k2"},
+        ]}
+        cfg["agents"]["models"] = {
+            "implementer": {"provider": ["inferaiapi.com", "aliyun"],
+                            "model": "deepseek-v4-flash"},
+        }
+        self._write_config(cfg)
+        config = ConfigLoader.load(self.config_path)
+        result = ConfigLoader.get_agent_model_assignment(config, "implementer")
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0][0]["name"], "inferaiapi.com")
+        self.assertEqual(result[1][0]["name"], "aliyun")
 
     def test_get_agent_model_assignment_unassigned_returns_none(self):
         cfg = self._base_config()
@@ -920,8 +947,8 @@ class TestConfigHotReload(unittest.TestCase):
         self._reload_into(cfg)
         assignment = ConfigLoader.get_agent_model_assignment(cfg, "implementer")
         self.assertIsNotNone(assignment)
-        self.assertEqual(assignment[0]["name"], "p1")
-        self.assertEqual(assignment[1], "m1")
+        self.assertEqual(assignment[0][0]["name"], "p1")
+        self.assertEqual(assignment[0][1], "m1")
 
     def test_invalid_config_keeps_previous_values(self):
         from core.config import ConfigLoader
@@ -978,7 +1005,9 @@ class TestAgentRunnerModelRouting(unittest.TestCase):
         runner = self._make_runner(config)
         result = runner._get_agent_model_assignment("implementer")
         self.assertIsNotNone(result)
-        provider, model = result
+        # add-provider-failover：返回候选链（list of (provider, model)）
+        self.assertEqual(len(result), 1)
+        provider, model = result[0]
         self.assertEqual(provider["baseurl"], "https://api.example.com")
         self.assertEqual(provider["apikey"], "sk-test")
         self.assertEqual(model, "deepseek-v4-flash")

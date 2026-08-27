@@ -9,7 +9,7 @@ import logging
 import yaml
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # 用户级配置目录：与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定
 USER_CONFIG_DIR = Path.home() / ".fenix"
@@ -253,11 +253,30 @@ class ConfigLoader:
                 raise ValueError(f"agents.models.{agent_type} must be a dict")
             provider = assignment.get("provider")
             model = assignment.get("model")
-            if not provider or not isinstance(provider, str):
-                raise ValueError(f"agents.models.{agent_type}.provider must be a non-empty string")
-            if provider not in provider_names:
+            # add-provider-failover：provider 支持 str（单值链）或 list[str]（按序候选链）。
+            # 非 str/list 形态视为配置错误直接拒绝；list 内每个元素也必须是非空字符串。
+            if isinstance(provider, str):
+                provider_chain = [provider] if provider else []
+            elif isinstance(provider, list):
+                provider_chain = [p for p in provider if isinstance(p, str) and p]
+                if any(not isinstance(p, str) for p in provider):
+                    raise ValueError(
+                        f"agents.models.{agent_type}.provider list must contain only strings"
+                    )
+            else:
                 raise ValueError(
-                    f"agents.models.{agent_type}.provider references unknown provider '{provider}'"
+                    f"agents.models.{agent_type}.provider must be a string or list of strings"
+                )
+            if not provider_chain:
+                raise ValueError(f"agents.models.{agent_type}.provider must be a non-empty string or list")
+            # add-provider-failover：未知 provider 名只打 ERROR 不阻塞加载（design D3：
+            # 沿用热更新哲学，运行期该链元素被跳过）。不再抛 ValueError，否则坏一个名字
+            # 就整 daemon 起不来。
+            unknown = [n for n in provider_chain if n not in provider_names]
+            if unknown:
+                _logger.error(
+                    "agents.models.%s.provider 引用了不存在的 provider（已跳过，不阻塞加载）: %s",
+                    agent_type, ", ".join(unknown),
                 )
             if not model or not isinstance(model, str):
                 raise ValueError(f"agents.models.{agent_type}.model must be a non-empty string")
@@ -265,25 +284,54 @@ class ConfigLoader:
     @classmethod
     def get_agent_model_assignment(
         cls, config: Dict[str, Any], agent_type: str
-    ) -> Optional[Tuple[Dict[str, Any], str]]:
-        """Return (provider_dict, model_name) for the given agent_type, or None if unassigned."""
+    ) -> Optional[List[Tuple[Dict[str, Any], str]]]:
+        """Return the candidate provider chain for the given agent_type.
+
+        add-provider-failover：返回**按序候选链**——`list[(provider_dict, model)]`，
+        链首项为首选；`agents.models.<role>.provider` 为 `str` 时解析为单元素链，与变更前
+        逐字段一致。返回 `None` 表示该角色未分配 provider（走默认网关）。
+
+        链条目仅引用 provider 名；未知名字在 `_validate_agent_models` 已打 ERROR，此处
+        直接跳过（运行期安全降级）。整条链都被跳过/不存在时返回 `None`。
+
+        model 解析（design D1 / spec provider-chain-config「模型名按 provider 独立解析」）：
+        优先用角色级 `model` 字段（与变更前一致，保证 resume 续跑时跨 provider 用同一逻辑
+        模型名不丢上下文）；角色级 `model` 缺失时回退到该 provider 项自身的 `model` 字段。
+        """
         agents = config.get("agents") or {}
         models = agents.get("models") or {}
         assignment = models.get(agent_type)
-        if not assignment:
+        if not isinstance(assignment, dict):
             return None
 
-        provider_name = assignment.get("provider")
-        model = assignment.get("model")
-        if not provider_name or not model:
+        raw_provider = assignment.get("provider")
+        role_model = assignment.get("model")
+        # 解析 provider 为链：str → 单元素；list → 顺序候选；其余 → 空链
+        if isinstance(raw_provider, str):
+            chain_names = [raw_provider] if raw_provider else []
+        elif isinstance(raw_provider, list):
+            chain_names = [n for n in raw_provider if isinstance(n, str) and n]
+        else:
+            chain_names = []
+        if not chain_names:
             return None
 
         llm = config.get("llm") or {}
         providers = llm.get("providers") or []
-        for p in providers:
-            if isinstance(p, dict) and p.get("name") == provider_name:
-                return (p, model)
-        return None
+        by_name = {p.get("name"): p for p in providers if isinstance(p, dict)}
+
+        result: List[Tuple[Dict[str, Any], str]] = []
+        for name in chain_names:
+            provider = by_name.get(name)
+            if provider is None:
+                # 未知名字已在校验阶段打 ERROR，运行期跳过该元素
+                continue
+            # model：角色级优先，回退 provider 自带 model
+            model = role_model if (role_model and isinstance(role_model, str)) else provider.get("model")
+            if not model:
+                continue
+            result.append((provider, model))
+        return result if result else None
 
     @classmethod
     def get_approve_mode(cls, config: Dict[str, Any]) -> str:

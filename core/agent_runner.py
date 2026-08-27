@@ -44,6 +44,33 @@ PROVIDER_CIRCUIT_4XX = (400, 401, 404)
 # 半开探针成功判据：claude CLI 正常退出（视作网关 200）。解析不到 code 视为失败、不计数。
 PROVIDER_CIRCUIT_PROBE_SUCCESS_CODE = 0
 
+# ── provider 切换冷却（add-provider-failover：failover-dispatch） ──────────
+# 与 4xx 熔断（provider-fault-fuse）独立的字段：切换类错误（unrecognized_model / 5xx /
+# 网络错误）不计入 4xx 计数，而是把该 provider 推进到"switch 冷却"，链选择时跳过冷却中
+# 候选；冷却到期主链自动复位优先（design D3：只触发链前进+短冷却，不永久拉黑）。
+# 默认 300s，可配 pm.failover.switch_cooldown_seconds。
+PROVIDER_SWITCH_COOLDOWN_SECONDS = 300
+# 今日（2026-08-27）真实故障文本 fixture（inferaiapi / aliyun 各自拒绝 deepseek 变体）：
+# claude CLI 经 SDK 包装时把 unrecognized_model 打到 stderr，形如下列；用于 classify_switch_error
+# 文本匹配（design D2）。中央化便于日后新增网关报错形态。
+SWITCH_ERROR_TEXT_PATTERNS = (
+    r"unrecognized_model",
+    r"unrecognized model",
+    r"model.*not.*found",
+)
+# 连接类异常关键字（网络错误 / DNS / 超时 / 连接拒绝）——属瞬态，驱动链前进
+SWITCH_ERROR_CONN_PATTERNS = (
+    r"connection.*(refused|reset|error|timeout)",
+    r"connect.*(refused|reset|error|timeout)",
+    r"failed to connect",
+    r"name or service not known",   # DNS 解析失败
+    r"temporarily unavailable",
+    r"network is unreachable",
+)
+# per-provider 当日 attempt 计数告警上限（design D5：防备备份 provider 悄悄烧贵）；
+# 可配 pm.failover.daily_attempts_warn，默认 50。
+PROVIDER_DAILY_ATTEMPTS_WARN = 50
+
 
 class AgentRunResult:
     """Result of a single Agent run."""
@@ -51,7 +78,9 @@ class AgentRunResult:
     def __init__(self, run_id: str, spec_name: str, agent_type: str,
                  success: bool, duration_seconds: float,
                  turns_used: int = 0, error: str = None, output: str = "",
-                 branch: str | None = None):
+                 branch: str | None = None,
+                 provider_used: str | None = None, model_used: str | None = None,
+                 chain_exhausted: bool = False):
         self.run_id = run_id
         self.spec_name = spec_name
         self.agent_type = agent_type
@@ -61,6 +90,13 @@ class AgentRunResult:
         self.error = error
         self.output = output
         self.branch = branch  # worktree 分支名（成功时由 _execute_agent 填入）
+        # add-provider-failover（design D5 / spec failover-dispatch「切换可观测」）：
+        # 本次 run 实际使用的 provider 名与 model 名（链选择/切换后落盘可查）。
+        self.provider_used = provider_used
+        self.model_used = model_used
+        # chain_exhausted：链上全部候选均处于 switch 冷却期，attempt 直接失败返回
+        # （不启动进程、不计入 spec 重试消耗；design D3 / spec failover-dispatch）。
+        self.chain_exhausted = chain_exhausted
 
     def to_dict(self) -> dict:
         return {
@@ -72,6 +108,9 @@ class AgentRunResult:
             "turns_used": self.turns_used,
             "error": self.error,
             "branch": self.branch,
+            "provider_used": self.provider_used,
+            "model_used": self.model_used,
+            "chain_exhausted": self.chain_exhausted,
             "output_summary": self.output[-500:] if self.output else "",
         }
 
@@ -184,6 +223,12 @@ class AgentRunner:
         self._daily_run_count = 0
         self._daily_reset_date = datetime.now(timezone.utc).date()
 
+        # add-provider-failover（design D5 / spec failover-dispatch 4.2）：per-provider
+        # 当日 attempt 计数与单次告警标记。进程内存、按 UTC 日期滚动重置；超过
+        # pm.failover.daily_attempts_warn（默认 50）时打 WARNING 且当日只告警一次。
+        self._daily_provider_attempts: Dict[str, int] = {}
+        self._daily_provider_warned: Dict[str, bool] = {}
+
         # provider 熔断状态（fix-stashpop-deadlock：provider-fault-fuse）。
         # 进程内存、不落盘（design D3）：{provider_name: {
         #   "code": int,            # 触发熔断的 HTTP 4xx code
@@ -192,6 +237,7 @@ class AgentRunner:
         #   "open_since": float,     # 进入 open 的时间戳
         #   "cooldown_until": float, # 冷却到期时间戳
         #   "half_open": bool,       # 冷却到期后首个派发作为探针
+        #   "switch_cooldown_until": float,  # add-provider-failover 切换类错误冷却到期
         # }}
         self.provider_circuits: Dict[str, dict] = {}
 
@@ -223,12 +269,52 @@ class AgentRunner:
                 return code
         return None
 
+    @staticmethod
+    def classify_switch_error(error_text: str) -> bool:
+        """判断错误文本是否属于「切换类错误」（add-provider-failover：design D2）。
+
+        切换类错误驱动 failover 链前进：unrecognized_model 文本 / HTTP 5xx / 连接类异常。
+        以下情形**不**返回 True（维持既有 4xx 熔断语义、不纳入链前进）：
+        - HTTP 4xx（配额/鉴权，parsed code ∈ PROVIDER_CIRCUIT_4XX）——走 provider-fault-fuse
+        - 空文本 / 解析不到 code 且不匹配任何切换文本
+
+        返回 True 表示该 attempt 失败应以「链前进 + switch 短冷却」处理。
+
+        Args:
+            error_text: claude CLI 打到 stderr / 被 runner 转成 str 的错误文本。
+        """
+        if not error_text:
+            return False
+        text = error_text
+        # 1) HTTP 5xx（5xx 属瞬态网关故障，驱动切换；5xx 的 code 解析不出也算失败但会被
+        #    下方连接/文本兜底覆盖）。先排除明确 4xx（解析出的 4xx 不触发切换）。
+        code = AgentRunner.parse_api_error_status(text)
+        if code is not None:
+            if code in PROVIDER_CIRCUIT_4XX:
+                return False  # 4xx 配额/鉴权：交既有熔断，不切换
+            if 500 <= code <= 599:
+                return True  # 5xx：切换
+        # 2) unrecognized_model 文本（今日真实故障：inferaiapi/aliyun 各自拒绝 deepseek 变体）
+        for pat in SWITCH_ERROR_TEXT_PATTERNS:
+            if re.search(pat, text, re.IGNORECASE):
+                return True
+        # 3) 连接类异常（网络错误 / DNS / 超时 / 连接拒绝）——瞬态，切换
+        for pat in SWITCH_ERROR_CONN_PATTERNS:
+            if re.search(pat, text, re.IGNORECASE):
+                return True
+        return False
+
     def _now(self) -> float:
         """单调时间戳（测试可覆写）。用 time.monotonic 避免时钟回拨影响窗口。"""
         return time.monotonic()
 
     def _circuit_state(self, provider_name: str) -> dict:
-        """返回（惰性创建）某 provider 的熔断状态 dict。"""
+        """返回（惰性创建）某 provider 的熔断状态 dict。
+
+        add-provider-failover：在既有 provider-fault-fuse 字段外新增 `switch_cooldown_until`
+        （切换类错误冷却到期时间戳），与 4xx 熔断 `cooldown_until` 键隔离（design D3），
+        避免两类计数互相污染。
+        """
         st = self.provider_circuits.get(provider_name)
         if st is None:
             st = {
@@ -238,6 +324,7 @@ class AgentRunner:
                 "open_since": 0.0,
                 "cooldown_until": 0.0,
                 "half_open": False,
+                "switch_cooldown_until": 0.0,  # 切换类错误冷却到期时间戳（add-provider-failover）
             }
             self.provider_circuits[provider_name] = st
         return st
@@ -254,6 +341,94 @@ class AgentRunner:
             return False
         now = self._now() if now is None else now
         return st["cooldown_until"] > now
+
+    # ── provider 切换冷却（add-provider-failover：failover-dispatch） ──────────
+
+    def is_switch_cooldown(self, provider_name: str, now: float | None = None) -> bool:
+        """判断某 provider 当前是否处于「切换类冷却」态（链路选择跳过）。
+
+        与 is_circuit_open 键隔离：仅由 classify_switch_error 触发的短冷却，不读 4xx 熔断
+        的 cooldown_until。冷却到期后该 provider 自动复位、链选择优先复用（design D3）。
+        """
+        if not provider_name:
+            return False
+        st = self.provider_circuits.get(provider_name)
+        if st is None:
+            return False
+        now = self._now() if now is None else now
+        return st.get("switch_cooldown_until", 0.0) > now
+
+    def _record_switch_cooldown(self, provider_name: str, now: float | None = None) -> None:
+        """记录一次切换类错误：把该 provider 推进到 switch 短冷却（design D2/D3）。
+
+        默认 300s（PROVIDER_SWITCH_COOLDOWN_SECONDS），可配 pm.failover.switch_cooldown_seconds。
+        与 4xx 熔断计数完全独立：仅设置 switch_cooldown_until，不动 4xx 的 events/count/
+        cooldown_until。冷却到期后链选择自动复位优先。
+        """
+        if not provider_name:
+            return
+        now = self._now() if now is None else now
+        st = self._circuit_state(provider_name)
+        cooldown = self._get_config("pm.failover.switch_cooldown_seconds",
+                                    PROVIDER_SWITCH_COOLDOWN_SECONDS)
+        st["switch_cooldown_until"] = now + cooldown
+        self.logger.info(
+            "agent_runner",
+            f"Provider switch-cooldown for '{provider_name}' "
+            f"(add-provider-failover) — {int(cooldown)}s, advance chain",
+        )
+
+    def _write_provider_marker(self, run_id: str, spec_name: str, agent_type: str,
+                               provider_name: str, model: str, chain_index: int,
+                               chain_len: int) -> None:
+        """向 run jsonl 写入 provider_marker 行（design D5 / spec failover-dispatch「产物可追溯」）。
+
+        在 attempt 启动、进程派发前写入，供 Dashboard / 事后审计确认本次 run 实际使用的
+        provider/model 与链内下标；三件套摘要（baseurl/apikey 不落盘，仅记 provider 名）。
+        """
+        if not provider_name:
+            return
+        runs_dir = self.project_root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        run_file = runs_dir / f"{run_id}.jsonl"
+        try:
+            append_run_line(run_file, {
+                "type": "provider_marker",
+                "spec": spec_name,
+                "agent_type": agent_type,
+                "provider": provider_name,
+                "model": model,
+                "chain_index": chain_index,
+                "chain_len": chain_len,
+            })
+        except OSError:
+            pass
+
+    def _record_daily_provider_attempt(self, provider_name: str) -> None:
+        """per-provider 当日 attempt 计数 + 单次 WARNING 告警（design D5 / spec 4.2）。
+
+        按 UTC 日期滚动：跨天自动重置计数与告警标记。当日计数超
+        pm.failover.daily_attempts_warn（默认 50）时打 WARNING，且当日只告警一次（防备
+        备份 provider 悄悄烧贵）。进程内存、不落盘。
+        """
+        if not provider_name:
+            return
+        today = datetime.now(timezone.utc).date()
+        if today != self._daily_reset_date:
+            self._daily_provider_attempts = {}
+            self._daily_provider_warned = {}
+            self._daily_reset_date = today
+        count = self._daily_provider_attempts.get(provider_name, 0) + 1
+        self._daily_provider_attempts[provider_name] = count
+        warn = self._get_config("pm.failover.daily_attempts_warn",
+                                PROVIDER_DAILY_ATTEMPTS_WARN)
+        if warn and count > warn and not self._daily_provider_warned.get(provider_name, False):
+            self._daily_provider_warned[provider_name] = True
+            self.logger.warning(
+                "agent_runner",
+                f"Provider '{provider_name}' daily attempts ({count}) exceeded "
+                f"pm.failover.daily_attempts_warn ({warn}) — check for silent cost",
+            )
 
     def _circuit_open_error(self, provider_name: str, now: float | None = None) -> str:
         """构造熔断拦截错误信息（design D5 / spec 故障可见性）。
@@ -397,8 +572,9 @@ class AgentRunner:
         #   2. 无 assignment → 沿用旧逻辑 _get_admin_model()（admin.agent_model → 默认网关）
         assignment = self._get_agent_model_assignment("administrator")
         env_overrides: Dict[str, str] = {}
-        if assignment is not None:
-            provider, model_override = assignment
+        if assignment:
+            # 取链首选（Administrator 不接入 attempt 级 failover，仅用首选直连）
+            provider, model_override = assignment[0]
             env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
             env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
             env_overrides["ANTHROPIC_MODEL"] = model_override
@@ -580,6 +756,28 @@ class AgentRunner:
                 pass
         return cfg_dir
 
+    def _select_chain_candidate(self, chain, spec_name: str, agent_type: str,
+                                 now: float | None = None) -> int:
+        """在候选链上选择首个「未熔断且未处于 switch 冷却」的候选下标（add-provider-failover）。
+
+        design D3：链选择跳过 switch-cooldown 中或 4xx 熔断中的候选；返回值用于落点。
+        全部候选都冷却 → 返回 -1（调用方据 chain_exhausted 失败语义处理，不启动进程、
+        不计入 spec 重试消耗）。
+
+        Args:
+            chain: ConfigLoader.get_agent_model_assignment 返回的候选链
+                （list[(provider_dict, model)]），可为空。
+        """
+        now = self._now() if now is None else now
+        for idx, (provider, _model) in enumerate(chain):
+            name = provider["name"]
+            if self.is_circuit_open(name, now=now):
+                continue
+            if self.is_switch_cooldown(name, now=now):
+                continue
+            return idx
+        return -1
+
     def _execute_agent(self, spec_name: str, agent_type: str, run_id: str) -> AgentRunResult:
         """Core agent execution logic with retry support.
 
@@ -588,11 +786,23 @@ class AgentRunner:
         - implementer 失败重试复用同一 worktree + `claude --resume` 续跑，不从零
           全量重跑；其余 agent_type 维持每次全新 worktree
         - max_turns 在 _run_claude 内强制
+
+        add-provider-failover（design D1/D2/D3/D4/D5）：
+        - 该 agent_type 的 provider 分配为**按序候选链**；每次 attempt 启动前用
+          _select_chain_candidate 选首个未冷却候选（链指针按 agent_type 记忆于本实例）。
+        - 切换类错误（classify_switch_error）失败 → 该 provider 进入 switch 短冷却，同 run
+          后续 attempt 自动前进到下一候选并 --resume 原会话；4xx 配额类维持既有熔断不前进。
+        - 全链冷却 → 直接失败返回（chain_exhausted，不启动进程、不消耗 spec 重试）。
+        - 切换后 CLAUDE_CONFIG_DIR 隔离目录随候选同步切换；run jsonl 写 provider_marker；
+          AgentRunResult 带 provider_used/model_used；每 provider 当日计数超阈值告警。
         """
         max_retries = self._get_config("agents.max_retries", 3)
         start_time = time.time()
         wt_path = None
         session_id = None
+        # 实例级链指针（design D1：cursor 按 agent_type 记忆）。-1 表示尚未选定。
+        chain_cursor = -1
+        last_provider_used = None  # 用于 "provider switched" 跨 attempt 打点
 
         for attempt in range(1, max_retries + 1):
             attempt_run_id = f"{run_id}-a{attempt}"
@@ -605,28 +815,89 @@ class AgentRunner:
             # Check daily run limit
             self._check_daily_limit()
 
-            # ── provider 熔断拦截（fix-stashpop-deadlock：provider-fault-fuse） ──
-            # 解析该 agent_type 的 provider 分配；若已熔断（冷却未到期），直接失败返回、
-            # 不启动 claude、不创建 worktree/autostash、不计入 spec 连续失败重试（design D5）。
-            # 熔断期失败也不触发状态机回退——spec 保持当前状态，由冷却结束后的既有轮询自然重排。
-            # 冷却到期后首个真实派发作为半开探针（design D4）：本循环正常放行，成功则闭合、
-            # 仍 4xx 则重新冷却（见成功/失败分支的 _record_provider_probe）。
-            assignment = self._get_agent_model_assignment(agent_type)
-            provider_name = assignment[0]["name"] if assignment else None
-            if provider_name and self.is_circuit_open(provider_name):
-                circuit_err = self._circuit_open_error(provider_name)
-                self.logger.warning(
-                    "agent_runner",
-                    f"Suppressed {agent_type} dispatch for '{spec_name}': {circuit_err}",
-                )
-                # 不创建 worktree、不进入重试计数。直接以熔断错误返回。
-                return AgentRunResult(
-                    attempt_run_id, spec_name, agent_type,
-                    success=False, duration_seconds=time.time() - start_time,
-                    error=circuit_err,
-                )
+            # ── 候选链解析与选择（add-provider-failover） ──
+            chain = self._get_agent_model_assignment(agent_type) or []
+            if not chain:
+                # 无 provider 分配：走默认网关（cc-switch），无链可选。provider_name=None。
+                provider_name = None
+                provider = None
+                model = None
+            else:
+                # 链指针推进：上次因切换类失败已前移的，保持前移（design D1/D3）；
+                # 否则从头选首个未冷却候选。4xx 熔断拦截态也算"不可用"跳过。
+                if chain_cursor < 0:
+                    chain_cursor = self._select_chain_candidate(chain, spec_name, agent_type)
+                if chain_cursor < 0:
+                    # 无可用候选。区分两类根因（design D3 / spec failover-dispatch）：
+                    # - 全部候选仅因 4xx 熔断（is_circuit_open）被跳过 → 维持既有
+                    #   "provider circuit open" 错误语义（不污染 error 文本、便于 admin/dashboard
+                    #   区分 provider 故障），报告首个 4xx 熔断候选。
+                    # - 否则（含 switch 冷却 / 全链冷却）→ chain_exhausted 失败语义，
+                    #   不启动进程、不计入 spec 重试消耗。
+                    first_4xx_open = None
+                    for (provider, _m) in chain:
+                        if self.is_circuit_open(provider["name"]):
+                            first_4xx_open = provider["name"]
+                            break
+                    if first_4xx_open is not None:
+                        circuit_err = self._circuit_open_error(first_4xx_open)
+                        self.logger.warning(
+                            "agent_runner",
+                            f"Suppressed {agent_type} dispatch for '{spec_name}': {circuit_err}",
+                        )
+                        return AgentRunResult(
+                            attempt_run_id, spec_name, agent_type,
+                            success=False, duration_seconds=time.time() - start_time,
+                            error=circuit_err, provider_used=first_4xx_open,
+                        )
+                    exhausted_err = (
+                        f"provider chain exhausted for {agent_type} '{spec_name}': "
+                        f"all {len(chain)} candidates in switch/4xx cooldown"
+                    )
+                    self.logger.error("agent_runner", exhausted_err)
+                    return AgentRunResult(
+                        attempt_run_id, spec_name, agent_type,
+                        success=False, duration_seconds=time.time() - start_time,
+                        error=exhausted_err, chain_exhausted=True,
+                    )
+                provider, model = chain[chain_cursor]
+                provider_name = provider["name"]
+
+                # ── 4xx 熔断拦截（fix-stashpop-deadlock：provider-fault-fuse） ──
+                # 仅对当前选中候选生效；若已熔断（冷却未到期），直接失败返回、不启动 claude、
+                # 不创建 worktree/autostash、不计入 spec 连续失败重试（design D5）。冷却到期后
+                # 首个真实派发作为半开探针（design D4）。
+                if self.is_circuit_open(provider_name):
+                    circuit_err = self._circuit_open_error(provider_name)
+                    self.logger.warning(
+                        "agent_runner",
+                        f"Suppressed {agent_type} dispatch for '{spec_name}': {circuit_err}",
+                    )
+                    # 不创建 worktree、不进入重试计数。直接以熔断错误返回。
+                    return AgentRunResult(
+                        attempt_run_id, spec_name, agent_type,
+                        success=False, duration_seconds=time.time() - start_time,
+                        error=circuit_err, provider_used=provider_name, model_used=model,
+                    )
+
+                # 选中且未熔断 → 计一次当日 attempt（design D5 / spec 4.2），后续跨 attempt
+                # 切换打点依赖 last_provider_used。
+                self._record_daily_provider_attempt(provider_name)
 
             reuse_worktree = (agent_type == "implementer" and wt_path is not None)
+
+            # 跨 attempt 切换打点（design D5 / spec failover-dispatch「切换留痕」）：
+            # 本次实际使用的 provider 与上一次不同 → 输出 "provider switched" 日志。
+            # 放在 reuse_worktree 判断之后、运行之前，确保本次 dispatch 的 provider 已确定。
+            if last_provider_used is not None and provider_name is not None \
+                    and provider_name != last_provider_used:
+                self.logger.info(
+                    "agent_runner",
+                    f"provider switched {last_provider_used} → {provider_name} "
+                    f"for '{spec_name}'",
+                )
+            # 更新记忆：下次 attempt 据以判断切换并打点（design D5）。
+            last_provider_used = provider_name
 
             # Create or reuse worktree
             if wt_path is None:
@@ -640,7 +911,7 @@ class AgentRunner:
                     return AgentRunResult(
                         attempt_run_id, spec_name, agent_type,
                         success=False, duration_seconds=time.time() - start_time,
-                        error=error_msg,
+                        error=error_msg, provider_used=provider_name, model_used=model,
                     )
             else:
                 self.logger.info(
@@ -648,24 +919,26 @@ class AgentRunner:
                     f"Reusing worktree {wt_path} for '{spec_name}' (attempt {attempt}, resume)",
                 )
 
+            # ── 观测：run jsonl 写 provider_marker（design D5 / spec failover-dispatch） ──
+            # attempt 启动时写入，指明所用 provider/model 与链内下标，事后可追溯实际网关。
+            if provider_name is not None:
+                self._write_provider_marker(
+                    attempt_run_id, spec_name, agent_type,
+                    provider_name, model, chain_cursor, len(chain),
+                )
+
             # Build and execute the prompt
             try:
                 prompt = self._build_prompt(spec_name, agent_type)
-                # 解析该 agent_type 的模型分配：
-                # - 已分配：注入 ANTHROPIC_BASE_URL/API_KEY/MODEL 环境变量，--model 直接取
-                #   该 agent 分配的网关模型名（model，如 deepseek-v4-flash）——这是实际发给
-                #   网关的模型名（见 fenixd-sdk-model-routing）。
-                # - 未分配：不注入覆盖，--model 用默认网关 fallback 常量（走 cc-switch）。
-                assignment = self._get_agent_model_assignment(agent_type)
                 env_overrides: Dict[str, str] = {}
-                if assignment is not None:
-                    provider, model = assignment
+                if provider is not None:
                     env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
                     env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
                     env_overrides["ANTHROPIC_MODEL"] = model
                     # add-agent-llm-isolation：Provider 生效时完全隔离——CLAUDE_CONFIG_DIR
                     # 指向独立配置目录，彻底绕过 ~/.claude/settings.json 的 env 覆盖，
                     # 使 Provider 的 baseurl/apikey/model 绝对生效（spec D1）。
+                    # add-provider-failover：隔离目录随候选同步切换（design D4 / task 3.2）。
                     env_overrides["CLAUDE_CONFIG_DIR"] = str(
                         self._ensure_agent_config_dir(provider["name"])
                     )
@@ -691,7 +964,7 @@ class AgentRunner:
                 turns = 0
                 success = False
                 error = str(e)
-                # provider 熔断计数（fix-stashpop-deadlock：provider-fault-fuse）。
+                # 4xx 熔断计数（fix-stashpop-deadlock：provider-fault-fuse）。
                 # 仅对「已分配 provider」且错误文本能解析出 HTTP 4xx 的情况计数（design D4）；
                 # 5xx/网络错误不计数（瞬态，走既有 retry）。解析不到 code 视为失败、不计数。
                 if provider_name:
@@ -707,6 +980,15 @@ class AgentRunner:
                         self._record_provider_4xx(provider_name, code)
                         if was_half_open:
                             self._record_provider_probe(provider_name, success=False)
+                    # add-provider-failover（design D2/D3）：切换类错误 → 该 provider 进入
+                    # switch 短冷却，同 run 后续 attempt 前进到下一候选并 resume 原会话。
+                    # 4xx 配额/鉴权类不触发（维持既有熔断语义、链指针不动）。
+                    elif self.classify_switch_error(error):
+                        self._record_switch_cooldown(provider_name)
+                        # 仅当链上还有后续候选才前进指针；否则保持当前（全链耗尽将在下一
+                        # attempt 的 _select_chain_candidate 中判定为 chain_exhausted）。
+                        if chain_cursor + 1 < len(chain):
+                            chain_cursor += 1
                 # implementer 失败后从产物尾部提取 session_id，供下一次 attempt --resume 续跑
                 if agent_type == "implementer":
                     run_file = self.project_root / ".fenix" / "runs" / f"{attempt_run_id}.jsonl"
@@ -718,9 +1000,6 @@ class AgentRunner:
             branch = self.worktree_manager.get_branch_name(wt_path) if success else None
 
             # 成功时，把 worktree 中的 .fenix-run-result.json 复制到主树。
-            # 原因：implementer 的 cwd 现在是 worktree，结果文件写在 worktree 内；
-            # cleanup 后 worktree 被删除，pm_engine._read_implementer_result 回退读主树。
-            # 复制一份到主树，既保证 pm_engine 读得到，也让 merge 后结果保留在主树历史中。
             if success:
                 wt_result = wt_path / ".fenix-run-result.json"
                 root_result = self.project_root / ".fenix-run-result.json"
@@ -747,19 +1026,20 @@ class AgentRunner:
                 self.logger.info(
                     "agent_runner",
                     f"{agent_type} succeeded for '{spec_name}'",
-                    {"run_id": attempt_run_id, "attempt": attempt, "turns": turns},
+                    {"run_id": attempt_run_id, "attempt": attempt, "turns": turns,
+                     "provider": provider_name, "model": model},
                 )
                 return AgentRunResult(
                     attempt_run_id, spec_name, agent_type,
                     success=True, duration_seconds=duration,
                     turns_used=turns, output=output,
-                    branch=branch,
+                    branch=branch, provider_used=provider_name, model_used=model,
                 )
             else:
                 self.logger.warning(
                     "agent_runner",
                     f"{agent_type} failed for '{spec_name}' (attempt {attempt})",
-                    {"run_id": attempt_run_id, "error": error},
+                    {"run_id": attempt_run_id, "error": error, "provider": provider_name},
                 )
                 # 失败后的 worktree 处理：
                 # - implementer 且还有重试：保留 worktree，下次 attempt 用 --resume 续跑
@@ -779,6 +1059,7 @@ class AgentRunner:
             run_id, spec_name, agent_type,
             success=False, duration_seconds=duration,
             error=f"All {max_retries} attempts failed. Last error: {error}",
+            provider_used=provider_name, model_used=model,
         )
 
     def _build_prompt(self, spec_name: str, agent_type: str, detail: dict | None = None) -> str:
