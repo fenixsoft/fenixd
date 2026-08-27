@@ -275,3 +275,37 @@ class TestVerifierReportJson:
         keep_line = [l for l in prompt.split("\n") if "保留：verification-report.md、" in l]
         assert keep_line
         assert "report.json" in keep_line[0]
+
+
+class TestManualInterventionPrompt:
+    """手动唤起 Admin 的固定指令必须进入 administrator prompt（2.3）。
+
+    设计 D3：manual-intervention 信号复用现有 administrator 分支，无需新增
+    prompt 分支；这里断言该分支把 signal 的 spec / description 渲染进 prompt。
+    """
+
+    def test_manual_intervention_renders_in_prompt(self, tmp_path):
+        proot = tmp_path / "proj"
+        runner = make_runner(proot)
+        signal = {
+            "signal_type": "manual-intervention",
+            "spec": "stuck-spec",
+            "severity": "major",
+            "description": "人工呼叫：检查 SPEC stuck-spec 出现什么问题并尝试处置",
+        }
+        prompt = runner._build_prompt("stuck-spec", "administrator", detail=signal)
+        # 困境信号块包含目标 spec 与固定检查指令描述
+        assert "- spec: stuck-spec" in prompt
+        assert "- 类型: manual-intervention" in prompt
+        assert "检查 SPEC stuck-spec 出现什么问题并尝试处置" in prompt
+        # 仍是 Administrator 完整铁律提示（不破坏既有分支）
+        assert "Fenix Administrator Agent" in prompt
+        assert "先只读诊断" in prompt
+
+    def test_manual_intervention_missing_spec_falls_back(self, tmp_path):
+        """signal 缺 spec 时回退到 spec_name 参数。"""
+        proot = tmp_path / "proj"
+        runner = make_runner(proot)
+        signal = {"signal_type": "manual-intervention", "description": "人工呼叫"}
+        prompt = runner._build_prompt("fallback-spec", "administrator", detail=signal)
+        assert "- spec: fallback-spec" in prompt

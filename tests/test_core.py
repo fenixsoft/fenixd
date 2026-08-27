@@ -328,6 +328,29 @@ class TestStateMachine(unittest.TestCase):
     def test_transition_nonexistent(self):
         self.assertFalse(self.sm.transition("nonexistent", "ready"))
 
+    def test_remove_spec(self):
+        self.sm.add_spec("to-remove", {"priority": 2})
+        self.sm.add_spec("keep", {"priority": 3})
+        self.assertTrue(self.sm.remove_spec("to-remove"))
+        self.assertIsNone(self.sm.read_one("to-remove"))
+        # Other specs must remain intact after atomic rewrite
+        self.assertEqual(self.sm.read_one("keep")["priority"], 3)
+        # State file no longer contains the removed header
+        self.assertNotIn("to-remove", self.state_path.read_text(encoding="utf-8"))
+
+    def test_remove_nonexistent(self):
+        # With an existing STATE.md, removing an absent entry leaves the file intact.
+        self.sm.add_spec("present", {"priority": 1})
+        self.assertFalse(self.sm.remove_spec("does-not-exist"))
+        self.assertTrue(self.state_path.exists())
+        self.assertEqual(self.sm.read_one("present")["priority"], 1)
+        # With no STATE.md at all, the call is still a safe no-op returning False.
+        empty_dir = tempfile.mkdtemp()
+        fresh_sm = StateMachine(Path(empty_dir) / "STATE.md", MagicMock())
+        self.assertFalse(fresh_sm.remove_spec("absent"))
+        self.assertFalse((Path(empty_dir) / "STATE.md").exists())
+        shutil.rmtree(empty_dir, ignore_errors=True)
+
     def test_priority_sorting_same_priority(self):
         """Same priority uses created time (earlier first)."""
         self.sm.add_spec("later", {"priority": 3, "created": "2026-02-01T00:00:00Z", "status": "ready"})

@@ -12,6 +12,7 @@ data.py — 共享数据聚合层（TUI 与 Web Dashboard 共用）。
 import json
 import os
 import re
+import shutil
 import tempfile
 import time
 from datetime import datetime, timezone, timedelta
@@ -127,6 +128,60 @@ def get_admin_activities(project_root) -> list:
     return activities
 
 
+# ── 手动唤起 Administrator（add-spec-manual-admin-invoke） ─────────
+
+# daemon 主循环轮询的请求信号文件名（与 fenixd.py 约定一致）
+ADMIN_INVOKE_REQUEST = ".fenix/admin_invoke_request.json"
+
+
+def request_admin_invoke(project_root, spec: str) -> dict:
+    """写入手动唤起 Administrator 的文件信号（.fenix/admin_invoke_request.json）。
+
+    校验 spec 须存在于项目 STATE.md，且当前不存在未消费的请求文件，否则返回
+    对应拒绝状态（spec 不存在 → {found: False}；已有进行中 → {conflict: True}）。
+    通过校验后原子写入 {spec, source: "manual", created: <ISO>} 返回 {ok: True}。
+
+    文件信号模式与 restart_request 同构：server 进程不直接起 agent（绕过
+    state_machine 与 token 预算），由 daemon 主循环下一轮扫描拾取并唤起。
+
+    Returns:
+        {"ok": bool, "found": bool, "conflict": bool,
+         "file": str|null, "created": str|null, "error": str|null}
+    """
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "found": False, "conflict": False,
+                "file": None, "created": None,
+                "error": f"spec not found: {spec}"}
+
+    req_path = proot / ADMIN_INVOKE_REQUEST
+    if req_path.exists():
+        return {"ok": False, "found": True, "conflict": True,
+                "file": str(req_path), "created": None,
+                "error": "已有进行中的 Admin 处置"}
+
+    created = datetime.now(timezone.utc).isoformat()
+    payload = {"spec": spec, "source": "manual", "created": created}
+    req_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(req_path.parent), prefix=".admin_invoke_request.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, req_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    return {"ok": True, "found": True, "conflict": False,
+            "file": str(req_path), "created": created, "error": None}
+
+
 # ── SPEC 文档读取（proposal.md / design.md，add-spec-doc-buttons） ──
 
 # kebab-case：小写字母/数字开头，仅含小写字母/数字/连字符（防御路径穿越）
@@ -141,6 +196,10 @@ class InvalidSpecName(ValueError):
 
 class InvalidSpecDoc(ValueError):
     """doc 参数非法（不在 {proposal, design, tasks} 白名单）。"""
+
+
+class InvalidPriority(ValueError):
+    """优先级非法（非 1-9 整数）。"""
 
 
 def get_spec_doc(project_root, spec: str, doc: str) -> dict:
@@ -202,6 +261,108 @@ def clear_spec_error(project_root, spec: str) -> dict:
     sm = StateMachine(proot / "STATE.md")
     sm.update_spec(spec, {"error": None})
     return {"found": True}
+
+
+def set_spec_priority(project_root, spec: str, priority) -> dict:
+    """设置 SPEC 的 priority 字段（1-9，P1 最高）并原子写回 STATE.md。
+
+    校验优先级须为 1-9 整数（含可转 int 的 str，如 "2"）；校验失败抛
+    InvalidPriority。spec 须存在于项目 STATE.md，不存在返回 {found: False}。
+    成功后复用 StateMachine.update_spec（flock + 原子 rename 写回），
+    同时刷新 updated 时间戳，并返回写入后的 priority。
+
+    Returns:
+        {"found": bool, "priority": int}  — found=False 表示 spec 不在 STATE.md
+    Raises:
+        InvalidPriority: priority 不在 1-9 或不可转为整数
+    """
+    # 1-9 整数校验（兼容可被 int() 消费的字符串）
+    try:
+        p = int(priority)
+    except (TypeError, ValueError):
+        raise InvalidPriority(priority)
+    if p < 1 or p > 9:
+        raise InvalidPriority(priority)
+
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"found": False}
+
+    from core.state_machine import StateMachine
+    sm = StateMachine(proot / "STATE.md")
+    sm.update_spec(spec, {"priority": p})
+    return {"found": True, "priority": p}
+
+
+def soft_delete_spec(project_root, spec: str) -> dict:
+    """软删除 SPEC：STATE.md 移除条目 + openspec/changes/<name>/ 移入 archive。
+
+    两步任一失败则尽量回滚以保持两端数据一致，由调用方依据返回码处理：
+    - STATE.md 不含该 spec → {found: False}（幂等，不发任何文件操作）
+    - 运行中检测：runs 目录该 spec 有 mtime 在最近 120 秒内的运行产物 →
+      {running: True, error: "spec 有进行中的运行"}（409 拒绝，不改数据）
+    - 正常：remove_spec 原子剔除条目；目录若存在则 shutil.move 到
+      openspec/changes/archive/<name>-<Unix秒>/；目录缺失仅清状态（幂等）。
+    - 归档同名冲突（极小概率）：在名字追加毫秒后缀重试，直至成功。
+
+    Returns:
+        {"found", "running", "archived": bool, "archive_path": str|null,
+         "error": str|null}
+    """
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"found": False}
+
+    # 运行中保护：runs 目录该 spec 的任意 run 文件 mtime < 120s → 拒绝
+    runs_dir = proot / ".fenix" / "runs"
+    protect_window = 120
+    now = time.time()
+    if runs_dir.is_dir():
+        try:
+            for p in runs_dir.glob(f"*{spec}*.jsonl"):
+                try:
+                    if now - p.stat().st_mtime < protect_window:
+                        return {"found": True, "running": True,
+                                "error": "spec 有进行中的运行"}
+                except OSError:
+                    continue
+        except OSError:
+            pass
+
+    from core.state_machine import StateMachine
+    sm = StateMachine(proot / "STATE.md")
+
+    # 1. 先移动目录（若失败，STATE.md 尚未改动，天然一致）
+    changes_root = proot / "openspec" / "changes"
+    spec_dir = changes_root / spec
+    archive_root = changes_root / "archive"
+    archived = False
+    archive_path = None
+    if spec_dir.is_dir():
+        archive_root.mkdir(parents=True, exist_ok=True)
+        ts = int(now)
+        base_name = f"{spec}-{ts}"
+        dest = archive_root / base_name
+        # 同名冲突：追加毫秒后缀重试，避免 shutil.move 覆盖丢失数据
+        if dest.exists():
+            import datetime as _dt
+            ms = _dt.datetime.now().strftime("%f")
+            dest = archive_root / f"{base_name}-{ms}"
+            # 极端极端情况仍冲突，再用递增序号兜底
+            n = 1
+            while dest.exists():
+                dest = archive_root / f"{base_name}-{ms}-{n}"
+                n += 1
+        shutil.move(str(spec_dir), str(dest))
+        archived = True
+        archive_path = str(dest)
+
+    # 2. 再原子剔除 STATE.md 条目
+    sm.remove_spec(spec)
+    return {"found": True, "running": False, "archived": archived,
+            "archive_path": archive_path, "error": None}
 
 
 # ── 基础解析（源自 bin/fenix_dashboard.py，TUI / Web 共用） ────────────

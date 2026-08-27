@@ -25,6 +25,7 @@ import sys
 import signal
 import threading
 import time
+import json
 import fcntl
 from pathlib import Path
 
@@ -176,6 +177,13 @@ class FenixDaemon:
         try:
             while self.running:
                 time.sleep(1)
+                # 手动唤起 Admin 文件信号拾取（add-spec-manual-admin-invoke）：
+                # dashboard 写入 .fenix/admin_invoke_request.json，主循环下一轮
+                # （≤2s）扫描并立即唤起 Administrator，处理完即删。
+                try:
+                    self._check_admin_invoke_requests()
+                except Exception as e:
+                    self.logger.error("fenixd", f"admin_invoke pickup failed: {e}")
                 # 配置热更新：每 30s 检查配置文件 mtime，变更则原地重载
                 if time.time() - config_check_ts >= 30:
                     config_check_ts = time.time()
@@ -229,6 +237,76 @@ class FenixDaemon:
                 self.admin_monitor.run_once()
             except Exception as e:
                 self.logger.error("admin_monitor", f"Admin monitor check failed: {e}")
+
+    def _check_admin_invoke_requests(self):
+        """主循环每轮扫描手动唤起 Admin 的文件信号并立即唤起 Administrator。
+
+        dashboard 的 /api/spec-admin-invoke 会原子写入
+        .fenix/admin_invoke_request.json（含 spec/source/created）；本方法在
+        主循环（1s 粒度）中检测其存在：读取→删除→构造 manual-intervention 信号
+        调 agent_runner.run_administrator。与 admin_monitor 自动检测共存：二者
+        各自走 store 记录与节流锚点，互不吞并。
+
+        调用异常时不丢痕——写一条 failed disposition 到 admin_store 记录原因，
+        供前端时间线/告警可见，且请求文件已删避免反复重试。
+        """
+        req_path = PROJECT_ROOT / ".fenix" / "admin_invoke_request.json"
+        if not req_path.exists():
+            return
+        try:
+            with req_path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            # 损坏的信号文件：删除避免每轮报错卡死
+            try:
+                req_path.unlink()
+            except OSError:
+                pass
+            return
+        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
+        try:
+            req_path.unlink()
+        except OSError:
+            return
+
+        spec = payload.get("spec")
+        if not spec:
+            self.logger.warning("fenixd", "admin_invoke 请求缺少 spec，忽略")
+            return
+
+        signal = {
+            "signal_type": "manual-intervention",
+            "spec": spec,
+            "severity": "major",
+            "source": payload.get("source", "manual"),
+            "created": payload.get("created"),
+            "description": f"人工呼叫：检查 SPEC {spec} 出现什么问题并尝试处置",
+        }
+        self.logger.info(
+            "fenixd",
+            f"手动唤起 Administrator 处置 SPEC {spec}（manual-intervention）",
+        )
+        try:
+            self.agent_runner.run_administrator(signal)
+        except Exception as e:
+            self.logger.error(
+                "fenixd",
+                f"手动唤起 Administrator 失败（SPEC {spec}）：{e}",
+            )
+            # 不丢痕：写 failed disposition 记录，供 admin 活动区/告警可见
+            try:
+                from core.admin_store import DISPOSITION
+                self.admin_store.append({
+                    "kind": DISPOSITION,
+                    "status": "failed",
+                    "signal_type": "manual-intervention",
+                    "spec": spec,
+                    "admin_run_id": None,
+                    "description": f"手动唤起 Administrator 处理 SPEC {spec} 时出错：{e}",
+                    "result": "failed",
+                })
+            except Exception:
+                pass
 
     def shutdown(self):
         """Graceful shutdown."""
