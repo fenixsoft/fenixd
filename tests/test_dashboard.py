@@ -11,6 +11,7 @@ import json
 import os
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -319,6 +320,26 @@ class TestDataParse:
         assert by_id["impl-add-parallelism-1787757864-a2"]["spec"] == "add-parallelism"
         assert by_id["impl-old-1787750000"]["duration_seconds"] == 100
         assert by_id["impl-old-1787750000"]["spec"] == "old"
+
+    def test_get_runs_started_reflects_real_timestamp_not_mtime(self, tmp_path):
+        """`started` 必须用 run_id 解析出的真实开始时间戳，而非文件 mtime（运行结束时间）。
+
+        duration_seconds = mtime - start_ts 已真实计算；若 started 仍取 mtime，运行列表/时间轴
+        会把每次运行显示为「在结束时刻才开始」，与真实耗时自相矛盾。回归：fix-fix-fix-fix-dashboard-duration。
+        """
+        proot = make_project(tmp_path)
+        runs_dir = proot / ".fenix" / "runs"
+        p = runs_dir / "impl-add-parallelism-1787757864-a2.jsonl"
+        p.write_text(json.dumps({"type": "result"}) + "\n", encoding="utf-8")
+        os.utime(p, (1787758000, 1787758000))
+        runs = dash_data.get_runs(proot)
+        by_id = {r["run_id"]: r for r in runs}
+        r = by_id["impl-add-parallelism-1787757864-a2"]
+        # started 应为 run_id 中的开始时间戳 1787757864，而非 mtime 1787758000
+        assert r["started"] == datetime.fromtimestamp(1787757864, tz=timezone.utc).isoformat()
+        # 且 started 须早于文件 mtime 结束时刻（与 duration_seconds=136 一致）
+        assert r["duration_seconds"] == 136
+        assert datetime.fromisoformat(r["started"]) < datetime.fromtimestamp(1787758000, tz=timezone.utc)
 
     def test_classify_run(self):
         assert dash_data.classify_run([{"type": "result"}]) == "done"
