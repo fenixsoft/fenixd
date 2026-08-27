@@ -1298,6 +1298,20 @@ class PMEngine:
         plan_result = self.agent_runner.run_planner(spec_name, "plan")
 
         if not plan_result.success:
+            # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
+            # 熔断期 planner 派发失败属「provider 故障」，不是验证逻辑失败：
+            # 不得 raise（会触发 legacy 降级 → bug-found → 伪 fix 级联），
+            # 保持 spec 在 implemented（由 full_scan recovery 兜底重排）。
+            if plan_result.error and "provider circuit open" in plan_result.error:
+                self.state_machine.update_spec(spec_name, {
+                    "error": plan_result.error,
+                })
+                self.logger.warning(
+                    "pm_engine",
+                    f"Provider circuit open — planner suppressed for '{spec_name}', "
+                    f"holding implemented: {plan_result.error}",
+                )
+                return
             raise RuntimeError(f"Planner plan 失败: {plan_result.error}")
 
         # 验证 Planner 是否成功生成场景文件
@@ -1358,6 +1372,19 @@ class PMEngine:
         judge_result = self.agent_runner.run_planner(spec_name, "judge")
 
         if not judge_result.success:
+            # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
+            # 同阶段1：熔断期 planner judge 失败属「provider 故障」，
+            # 不得 raise → legacy 降级 → bug-found → 伪 fix 级联。
+            if judge_result.error and "provider circuit open" in judge_result.error:
+                self.state_machine.update_spec(spec_name, {
+                    "error": judge_result.error,
+                })
+                self.logger.warning(
+                    "pm_engine",
+                    f"Provider circuit open — planner judge suppressed for "
+                    f"'{spec_name}', holding implemented: {judge_result.error}",
+                )
+                return
             raise RuntimeError(f"Planner judge 失败: {judge_result.error}")
 
         # 读取判定结果
@@ -1384,6 +1411,23 @@ class PMEngine:
     def _run_legacy_verification(self, spec_name: str):
         """降级方案：使用旧版单体 Verifier Agent。"""
         result = self.agent_runner.run_verifier(spec_name)
+
+        # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
+        # 熔断期 verifier 派发失败属「provider 故障」，不是真实验证失败：
+        # 不得 transition bug-found / 调用 _on_spec_bug_found（否则会派生伪 fix
+        # 级联，与 implementer 路径的 fix-fix-stashpop-deadlock 同理）。保持 spec
+        # 在 implemented（由 full_scan recovery 兜底重排），写入 error 供 dashboard 可见。
+        if result.error and "provider circuit open" in result.error:
+            self.state_machine.update_spec(spec_name, {
+                "error": result.error,
+            })
+            self.logger.warning(
+                "pm_engine",
+                f"Provider circuit open — verifier suppressed for '{spec_name}', "
+                f"holding implemented: {result.error}",
+            )
+            return
+
         if result.success:
             run_result_path = self.project_root / ".fenix-run-result.json"
             verifier_status = self._read_verifier_result(run_result_path)
