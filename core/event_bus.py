@@ -6,10 +6,11 @@ internal events to the PM Engine. Includes periodic full-scan fallback.
 """
 
 import hashlib
+import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 
 
 class EventBus:
@@ -71,46 +72,183 @@ class EventBus:
 
     def full_scan(self):
         """Perform a complete scan of STATE.md, dispatch events, and run blocker check.
-        Also recovers actionable states that may have been missed on daemon restart."""
+        Also recovers actionable states that may have been missed on daemon restart.
+
+        韧性（fix-dispatch-orphan D3/D4）：单条 SPEC 的处理异常只跳过该条并记日志，
+        不中止整轮扫描；扫描末尾输出 handled/failed 统计。
+        """
         self.logger.debug("event_bus", "Performing full scan...")
         try:
             current_specs = self.state_machine.read_all()
+        except Exception as e:
+            # 读取阶段异常：无论如何不得静默中止（事故家族 Full scan failed）
+            self.logger.error("event_bus", f"Full scan read failed: {e}")
+            return
+
+        # dispatch_changes 内部已逐条捕获 PM Engine 异常，此处整体包裹兜底
+        try:
             self._dispatch_changes(current_specs)
+        except Exception as e:
+            self.logger.error("event_bus", f"Full scan dispatch failed: {e}")
 
-            # Recovery: explicitly re-trigger actionable states that may have been
-            # missed due to daemon restart (known_specs already matches current state).
-            # Skip specs that already completed their action to avoid re-trigger loops.
-            for name, entry in current_specs.items():
-                status = entry.get("status", "")
-                if status == "drafted":
-                    self.logger.info("event_bus", f"Recovery: re-triggering promote for '{name}'")
-                    self.pm_engine.handle_event("spec_drafted", name, entry)
-                elif status == "implemented":
-                    # Skip if already had a tester run (already verified, avoid re-trigger loop)
-                    if entry.get("tester_run"):
-                        self.logger.debug("event_bus", f"Skipping recovery for '{name}': already verified")
-                        continue
-                    self.logger.info("event_bus", f"Recovery: re-triggering verify for '{name}'")
-                    self.pm_engine.handle_event("spec_implemented", name, entry)
-                elif status == "ready" and not entry.get("error"):
-                    # Skip if already had an implementer run
-                    if entry.get("implementer_run"):
-                        self.logger.debug("event_bus", f"Skipping recovery for '{name}': already implemented")
-                        continue
-                    self.logger.info("event_bus", f"Recovery: re-triggering implement for '{name}'")
-                    self.pm_engine.handle_event("spec_ready", name, entry)
-                elif status == "bug-found":
-                    self.logger.info("event_bus", f"Recovery: re-triggering bug_found for '{name}'")
-                    self.pm_engine.handle_event("spec_bug_found", name, entry)
-                elif status == "verified":
-                    # Skip if already done (verified→done transition already happened)
-                    self.logger.info("event_bus", f"Recovery: re-triggering verified→done for '{name}'")
-                    self.pm_engine.handle_event("spec_verified", name, entry)
+        # Recovery：逐条隔离，单条异常只跳过该条并记 error，其余 SPEC 继续
+        handled = 0
+        failed = 0
+        for name, entry in current_specs.items():
+            if not isinstance(entry, dict):
+                # 解析层已规范化（1.2），此处双保险：非 dict 条目直接跳过
+                self.logger.warning(
+                    "event_bus",
+                    f"Recovery 跳过非法条目 '{name}'（非 dict），以防扫描崩溃",
+                )
+                failed += 1
+                continue
+            ok = self._recover_one(name, entry)
+            if ok:
+                handled += 1
+            else:
+                failed += 1
 
-            # Run blocker detection as part of full scan
+        # blocker 检测同样整体包裹，单条异常不影响 recovery 已完成的动作
+        try:
             self.pm_engine.check_blockers()
         except Exception as e:
-            self.logger.error("event_bus", f"Full scan failed: {e}")
+            self.logger.error("event_bus", f"Blocker check failed: {e}")
+
+        # 扫描统计可观测：handled = 成功处理的条目数，failed = 跳过/失败的条目数
+        self.logger.info(
+            "event_bus",
+            f"Full scan complete: handled={handled}, failed={failed}, "
+            f"total={len(current_specs)}",
+        )
+
+    def _recover_one(self, name: str, entry: dict) -> bool:
+        """对单个 SPEC 执行 recovery 动作；返回 True 表示处理成功（含有意跳过）。
+
+        单条异常在此捕获并记 error（含 spec 名），调用方据此计入 failed 统计，
+        但不中止整轮扫描。
+        """
+        try:
+            status = entry.get("status", "")
+            if status == "drafted":
+                self.logger.info("event_bus", f"Recovery: re-triggering promote for '{name}'")
+                self.pm_engine.handle_event("spec_drafted", name, entry)
+            elif status == "implemented":
+                # Skip if already had a tester run (already verified, avoid re-trigger loop)
+                if entry.get("tester_run"):
+                    self.logger.debug("event_bus", f"Skipping recovery for '{name}': already verified")
+                    return True
+                self.logger.info("event_bus", f"Recovery: re-triggering verify for '{name}'")
+                self.pm_engine.handle_event("spec_implemented", name, entry)
+            elif status == "ready":
+                self._recover_ready(name, entry)
+            elif status == "bug-found":
+                self.logger.info("event_bus", f"Recovery: re-triggering bug_found for '{name}'")
+                self.pm_engine.handle_event("spec_bug_found", name, entry)
+            elif status == "verified":
+                # Skip if already done (verified→done transition already happened)
+                self.logger.info("event_bus", f"Recovery: re-triggering verified→done for '{name}'")
+                self.pm_engine.handle_event("spec_verified", name, entry)
+            return True
+        except Exception as e:
+            self.logger.error(
+                "event_bus",
+                f"Recovery failed for spec '{name}': {type(e).__name__}: {e}",
+            )
+            return False
+
+    def _recover_ready(self, name: str, entry: dict):
+        """recovery 的 ready 分支（fix-dispatch-orphan D4 白名单）。
+
+        存活判定（有存活 agent 子进程 / 未超时活跃 worktree 锁）由
+        ``_ready_has_live_child`` 给出；存活则跳过并记「skip: live child present」，
+        不重置状态、不清字段；否则重新派发前清 error、保留 implementer_run。
+        """
+        # 白名单判定：存在存活 agent 子进程 → 视为正在工作，跳过并保留状态
+        if self._ready_has_live_child(name):
+            self.logger.info(
+                "event_bus",
+                f"Recovery: skip '{name}' — live child present",
+            )
+            return
+        # 无存活子进程：孤儿 ready 必须重新派发。重派发前清 error 字段
+        # （避免旧 error 一直阻塞），但保留 implementer_run 作为历史记录（D2）。
+        updated = {k: v for k, v in entry.items() if k != "error"}
+        updated["error"] = None
+        self.logger.info(
+            "event_bus",
+            f"Recovery: re-triggering implement for orphan ready '{name}' "
+            f"(error cleared, implementer_run preserved)",
+        )
+        self.pm_engine.handle_event("spec_ready", name, updated)
+
+    def _ready_has_live_child(self, spec_name: str) -> bool:
+        """判定 SPEC 是否仍有存活的 agent 子进程（D4 白名单存活依据）。
+
+        接口选型（fix-dispatch-orphan 5.1）：优先复用姊妹变更
+        improve-run-lifecycle-governance 落地的 ``agent_runner.has_live_attempt(spec)``；
+        该接口当前尚未合入（core/agent_runner.py 中不存在），按 design D4 兜底实现：
+        pgrep 匹配 ``.claude/worktrees/{impl,verify}-<spec>-*`` 的 claude 进程 +
+        STATE.md 中 implementer_run 指向的最新 run 文件 mtime < 120s。
+
+        不重复造锁机制（锁归姊妹变更）；此处仅做「进程表 + run 文件 mtime」的
+        轻量存活探测，与姊妹变更语义一致即满足白名单需求。
+        """
+        # 1) 优先：若姊妹变更已落地 has_live_attempt，直接复用
+        agent_runner = getattr(self.pm_engine, "agent_runner", None)
+        if agent_runner is not None and hasattr(agent_runner, "has_live_attempt"):
+            try:
+                if agent_runner.has_live_attempt(spec_name):
+                    return True
+            except Exception:
+                pass
+
+        # 2) 兜底：pgrep 匹配 worktree 下的 claude 进程
+        if self._pgrep_live_worktree(spec_name):
+            return True
+
+        # 3) 兜底：implementer_run 指向的最新 run 文件 mtime < 120s（视为活跃）
+        run_file = self._latest_impl_run_file(spec_name)
+        if run_file is not None and self._run_file_recent(run_file, 120):
+            return True
+
+        return False
+
+    @staticmethod
+    def _pgrep_live_worktree(spec_name: str) -> bool:
+        """pgrep 匹配 ``.claude/worktrees/{impl,verify}-<spec>-*`` 的 claude 进程。"""
+        try:
+            for prefix in ("impl", "verify"):
+                pattern = f"{prefix}-{spec_name}-"
+                res = subprocess.run(
+                    ["pgrep", "-f", pattern],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    return True
+        except (subprocess.SubprocessError, OSError):
+            return False
+        return False
+
+    def _latest_impl_run_file(self, spec_name: str) -> Optional[Path]:
+        """STATE.md implementer_run 指向的最新 run 文件（复用 dashboard 解析）。"""
+        try:
+            from core.dashboard.data import find_impl_run_file
+            project_root = getattr(self.pm_engine, "project_root", None)
+            if project_root is None:
+                return None
+            return find_impl_run_file(Path(project_root), spec_name)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _run_file_recent(run_file: Path, seconds: int) -> bool:
+        """run 文件 mtime 在 seconds 内视为活跃。"""
+        try:
+            mtime = run_file.stat().st_mtime
+            return (time.time() - mtime) < seconds
+        except OSError:
+            return False
 
     # ── Internal ──────────────────────────────────────────────────
 

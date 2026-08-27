@@ -214,8 +214,38 @@ class StateMachine:
     # ── Read / Write ───────────────────────────────────────────────
 
     def read_all(self) -> Dict[str, dict]:
-        """Read all SPEC entries from STATE.md."""
-        return StateParser.parse(self.state_path)
+        """Read all SPEC entries from STATE.md.
+
+        防御层（fix-dispatch-orphan D3）：解析结果必须被规范化为
+        ``{name: dict}``。若解析产物混入非 dict 条目（并发撕裂写入、
+        外部工具改写 STATE.md、或未来解析路径回归），跳过该条目并记
+        warning，绝不使其进入返回值——否则下游 ``entry.get("status")``
+        会抛 ``AttributeError``/``TypeError``（事故家族
+        ``string indices must be integers``），整轮 full_scan 静默中止。
+        """
+        raw = StateParser.parse(self.state_path)
+        return self._normalize_entries(raw)
+
+    @staticmethod
+    def _normalize_entries(raw: Dict[str, dict]) -> Dict[str, dict]:
+        """过滤非 dict 条目，保证返回值的每个条目都是 dict。
+
+        不修改合法条目的任何字段，仅把非法条目（字符串/列表/None 等）
+        剔除并记日志。返回新 dict，不改动入参。
+        """
+        normalized: Dict[str, dict] = {}
+        for name, entry in raw.items():
+            if isinstance(entry, dict):
+                normalized[name] = entry
+                continue
+            # 非法条目：不得进入返回值，记 warning（用全局静默日志器兜底，
+            # 避免 logger 为 None 时崩溃——见 _NullLogger）。
+            _NullLogger().warning(
+                "state_machine",
+                f"跳过非法条目 '{name}'：期望 dict，实际为 "
+                f"{type(entry).__name__}，已忽略以防扫描崩溃",
+            )
+        return normalized
 
     def read_one(self, spec_name: str) -> Optional[dict]:
         """Read a single SPEC entry."""
