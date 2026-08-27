@@ -746,7 +746,11 @@ def get_runs(project_root, spec_name: str | None = None) -> list:
             "spec": spec_part,
             "status": classify_run(lines),
             "duration_seconds": duration_seconds,
-            "started": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            # started 用 run_id 解析出的真实开始时间戳（start_ts），而非文件 mtime
+            # （mtime 是运行 *结束* 时间）。duration_seconds = mtime - start_ts 已真实计算，
+            # 若 started 仍取 mtime，则运行列表/时间轴会把每次运行显示为「在结束时刻才开始」，
+            # 与真实耗时自相矛盾（耗时列为真实秒数而开始时间却是结束时刻）。
+            "started": datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat(),
             "file_size": stat.st_size,
         })
     return out
