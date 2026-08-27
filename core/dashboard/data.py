@@ -125,8 +125,8 @@ def get_admin_activities(project_root) -> list:
 
 # kebab-case：小写字母/数字开头，仅含小写字母/数字/连字符（防御路径穿越）
 _SPEC_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-# doc 白名单：仅允许读取这两份核心设计文档
-_SPEC_DOC_WHITELIST = ("proposal", "design")
+# doc 白名单：仅允许读取这些核心设计文档（tasks.md 与 proposal.md 同目录）
+_SPEC_DOC_WHITELIST = ("proposal", "design", "tasks")
 
 
 class InvalidSpecName(ValueError):
@@ -134,16 +134,16 @@ class InvalidSpecName(ValueError):
 
 
 class InvalidSpecDoc(ValueError):
-    """doc 参数非法（不在 {proposal, design} 白名单）。"""
+    """doc 参数非法（不在 {proposal, design, tasks} 白名单）。"""
 
 
 def get_spec_doc(project_root, spec: str, doc: str) -> dict:
-    """读取 SPEC 的 proposal.md / design.md 原文。
+    """读取 SPEC 的 proposal.md / design.md / tasks.md 原文。
 
     Args:
         project_root: 项目根目录
         spec: SPEC 名称（须 kebab-case）
-        doc: 文档类型，仅 "proposal" / "design"
+        doc: 文档类型，仅 "proposal" / "design" / "tasks"
 
     Returns:
         {"found": bool, "content": str}
@@ -171,6 +171,31 @@ def get_spec_doc(project_root, spec: str, doc: str) -> dict:
     except (OSError, UnicodeDecodeError):
         return {"found": False, "content": ""}
     return {"found": True, "content": content}
+
+
+def clear_spec_error(project_root, spec: str) -> dict:
+    """清除 SPEC 的 error 字段（置空并原子写回 STATE.md）。
+
+    校验 spec 须存在于项目 STATE.md（不存在返回 {found: False}），再实例化
+    StateMachine 调用 update_spec(spec, {"error": None})——复用其 flock + 原子
+    rename 写回，与 daemon 并发写安全。不影响 status/priority 等其它字段；
+    error 已为 null 时仍为成功（幂等）。
+
+    Args:
+        project_root: 项目根目录
+        spec: SPEC 名称（须 kebab-case，且已在 STATE.md 注册）
+
+    Returns:
+        {"found": bool}  — found=True 表示已清除（含本就为空），False 表示 spec 不存在
+    """
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"found": False}
+    from core.state_machine import StateMachine
+    sm = StateMachine(proot / "STATE.md")
+    sm.update_spec(spec, {"error": None})
+    return {"found": True}
 
 
 # ── 基础解析（源自 bin/fenix_dashboard.py，TUI / Web 共用） ────────────

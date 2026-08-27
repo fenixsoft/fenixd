@@ -500,21 +500,23 @@ tr.orphan-fix > td { border-left: 2px solid rgba(144, 133, 233, 0.5); }
 .spec-table .muted { color: var(--muted); }
 .spec-table .spec-name-cell { cursor: help; }
 
-/* ── 信息子行（替换「错误」列，add-spec-list-hover-hint） ── */
+/* ── 信息子行（替换「错误」列，add-spec-list-hover-hint；信息/内容同行 + 清除按钮） ── */
 .spec-table tbody tr.spec-info-row td {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   padding: 8px 14px 10px;
   background: var(--surface-2);
   border-bottom: 1px solid var(--hairline);
-  white-space: pre-wrap;       /* 保留消息内换行，长消息不破坏表格宽度 */
-  word-break: break-word;
   vertical-align: top;
   color: var(--ink-2);
   font-size: 12.5px;
   line-height: 1.5;
 }
 .spec-table tbody tr.spec-info-row .info-badge {
+  flex: 0 0 auto;
   display: inline-block;
-  margin-right: 8px;
+  margin-right: 0;
   padding: 1px 7px;
   border-radius: 999px;
   background: var(--blue);
@@ -522,8 +524,52 @@ tr.orphan-fix > td { border-left: 2px solid rgba(144, 133, 233, 0.5); }
   font-size: 11px;
   font-weight: 600;
   vertical-align: 1px;
+  white-space: nowrap;
 }
-.spec-table tbody tr.spec-info-row .info-msg { color: var(--ink-2); }
+.spec-table tbody tr.spec-info-row .info-msg {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;       /* 保留消息内换行，长消息不破坏表格宽度 */
+  word-break: break-word;
+  color: var(--ink-2);
+}
+/* 信息子行尾部「清除」按钮：小尺寸、静默样式 */
+.spec-table tbody tr.spec-info-row .info-clear-btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 1px 9px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.spec-table tbody tr.spec-info-row .info-clear-btn:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+.spec-table tbody tr.spec-info-row .info-clear-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.spec-table tbody tr.spec-info-row .info-clear-btn.info-clear-err {
+  border-color: var(--danger, #ff6b6b);
+  color: var(--danger, #ff6b6b);
+}
+/* 文档列：单个「文档」链接，替代「背景」「设计」两按钮 */
+.doc-link {
+  color: var(--blue);
+  text-decoration: none;
+  border-bottom: 1px dashed var(--blue);
+  cursor: pointer;
+  font-size: 13px;
+}
+.doc-link:hover {
+  color: var(--violet);
+  border-bottom-color: var(--violet);
+}
 
 /* ── 名称 hover Why 提示框（div 模拟，add-spec-list-hover-hint） ── */
 #spec-name-hint {
@@ -764,6 +810,40 @@ tr.orphan-fix > td { border-left: 2px solid rgba(144, 133, 233, 0.5); }
 }
 .doc-btn:last-child { margin-right: 0; }
 .doc-btn:hover { background: var(--violet); color: #fff; border-color: var(--violet); }
+
+/* 文档弹窗页签栏（三页签：需求背景 / 详细设计 / 任务清单） */
+.docmodal-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 16px 0;
+  border-bottom: 1px solid var(--hairline);
+  flex-wrap: wrap;
+}
+.doc-tab-btn {
+  font-size: 13px;
+  padding: 7px 14px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.doc-tab-btn:hover {
+  color: var(--ink-2);
+  background: var(--surface-2);
+}
+.doc-tab-btn.active {
+  color: var(--blue);
+  background: var(--surface);
+  border-color: var(--hairline);
+  font-weight: 600;
+  position: relative;
+  top: 1px;
+  margin-bottom: -1px;
+}
 
 /* 文档弹窗错误态 */
 .docmodal .err-state { color: var(--danger, #ff6b6b); }
