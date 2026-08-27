@@ -1221,6 +1221,86 @@ class TestServerAPI:
         status, _ = srv.post("/api/spec-error-clear?project=ghost&spec=myspec")
         assert status == 404
 
+    def test_api_spec_priority(self, server_fx):
+        """优先级端点：合法写回、非法值 400、spec 不存在 404。"""
+        proot, srv = server_fx
+        # 合法优先级写回
+        status, data = srv.post_json("/api/spec-priority?project=proj-a&spec=myspec",
+                                     {"priority": 2})
+        assert status == 200
+        assert data["priority"] == 2
+        assert dash_data.parse_state(proot)["myspec"]["priority"] == 2
+        # 非法值（0 / 10 / 非数字） → 400，STATE.md 不变
+        for bad in (0, 10, "abc", None):
+            status, _ = srv.post_json("/api/spec-priority?project=proj-a&spec=myspec",
+                                      {"priority": bad})
+            assert status == 400, f"priority={bad!r} 应被拒"
+        assert dash_data.parse_state(proot)["myspec"]["priority"] == 2
+        # body 缺 priority → 400
+        status, _ = srv.post_json("/api/spec-priority?project=proj-a&spec=myspec", {})
+        assert status == 400
+        # spec 不存在 → 404
+        status, _ = srv.post_json("/api/spec-priority?project=proj-a&spec=ghost",
+                                  {"priority": 3})
+        assert status == 404
+        # 项目不存在 → 404
+        status, _ = srv.post_json("/api/spec-priority?project=ghost&spec=myspec",
+                                  {"priority": 3})
+        assert status == 404
+
+    def test_api_spec_delete(self, server_fx):
+        """删除端点：成功软删除两处一致、目录缺失仅清状态、spec 不存在 404。"""
+        proot, srv = server_fx
+        # 既有 fixture run 文件 mtime 较新，会被运行保护误判为「进行中」；
+        # 把它们压到 120s 窗口之外以模拟已完成运行。
+        old = time.time() - 600
+        for rf in (proot / ".fenix" / "runs").glob("*.jsonl"):
+            os.utime(rf, (old, old))
+        # myspec 目录与 STATE 条目均存在 → 软删除两处一致
+        status, data = srv.post("/api/spec-delete?project=proj-a&spec=myspec")
+        assert status == 200, f"expected 200, got {status}: {data}"
+        assert data["archived"] is True
+        assert data["archive_path"]
+        # STATE.md 不含该条目
+        assert "myspec" not in dash_data.parse_state(proot)
+        # 原目录已移入 archive/<name>-<ts>
+        assert not (proot / "openspec" / "changes" / "myspec").exists()
+        archive_entries = list((proot / "openspec" / "changes" / "archive").glob("myspec-*"))
+        assert archive_entries, "归档目录应存在"
+        # 目录原文件完整（tasks.md / spec.md）
+        assert (archive_entries[0] / "tasks.md").exists()
+        # 列表接口不再返回该 spec
+        _, specs_data = srv.get("/api/specs?project=proj-a")
+        assert "myspec" not in {s["name"] for s in specs_data["specs"]}
+
+        # otherspec：STATE 中存在，但 openspec 目录缺失 → 仅清状态且幂等 ok
+        status, data = srv.post("/api/spec-delete?project=proj-a&spec=otherspec")
+        assert status == 200
+        assert data["archived"] is False
+        assert "otherspec" not in dash_data.parse_state(proot)
+
+        # spec 不存在 → 404（且不再触发任何文件操作）
+        status, _ = srv.post("/api/spec-delete?project=proj-a&spec=ghost")
+        assert status == 404
+        # 项目不存在 → 404
+        status, _ = srv.post("/api/spec-delete?project=ghost&spec=myspec")
+        assert status == 404
+
+    def test_api_spec_delete_running_protected(self, server_fx):
+        """运行中 spec（runs 目录近期 mtime）删除被拒 409，数据不变。"""
+        proot, srv = server_fx
+        # 制造一个 mtime 在当前时间附近的 run 文件（指定 spec 名 myspec）
+        run_file = proot / ".fenix" / "runs" / "impl-myspec-2000000000.jsonl"
+        run_file.write_text("{\"type\":\"assistant\"}\n", encoding="utf-8")
+        # 强制 mtime 落进 120s 保护窗口
+        now = time.time()
+        os.utime(run_file, (now, now))
+        status, _ = srv.post("/api/spec-delete?project=proj-a&spec=myspec")
+        assert status == 409
+        # STATE.md 与目录均不变
+        assert "myspec" in dash_data.parse_state(proot)
+        assert (proot / "openspec" / "changes" / "myspec").exists()
+
     def test_api_run(self, server_fx):
         _, srv = server_fx
         status, data = srv.get("/api/runs/impl-myspec-1780000000?project=proj-a")

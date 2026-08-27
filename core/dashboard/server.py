@@ -19,6 +19,8 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     GET /api/events?project=<name>&minutes=N → 最近 N 分钟结构化事件
     GET /api/spec-doc?project=<name>&spec=<name>&doc=<proposal|design|tasks> → SPEC 文档原文（found + content）
     POST /api/spec-error-clear?project=<name>&spec=<name> → 在线清除 SPEC 的 error 字段（置空并原子写回 STATE.md）
+    POST /api/spec-priority?project=<name>&spec=<name>  → 设置 SPEC 优先级（body: {"priority": 1-9}，400 校验 / 404 / 200）
+    POST /api/spec-delete?project=<name>&spec=<name>  → 软删除 SPEC（STATE.md 剔除 + 目录移入 archive，运行中返回 409）
     GET /api/config?project=<name> → 读取受管配置（llm / agents.models / gates.approve_mode）
     POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
     GET /api/alerts?project=<name> → Administrator 告警/处置记录（缺省跨项目聚合未处理告警）
@@ -381,6 +383,83 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._json({"ok": True, "project": project["name"], "spec": spec})
 
+    def _api_spec_priority(self, query):
+        """POST /api/spec-priority?project=<name>&spec=<name>  body: {"priority": N}
+
+        设置 SPEC 优先级（1-9，P1 最高）。
+        - project 不存在 → 404
+        - spec 不在项目 STATE.md → 404
+        - body 缺 priority / 非法值（0、10、非整数）→ 400
+        - 成功 → 200 + {ok: true, priority: N}
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        body = self._read_json_body()
+        if body is None:
+            return
+        if "priority" not in body:
+            self._error(400, "priority required in request body")
+            return
+        proot = Path(project["path"])
+        try:
+            result = dashboard_data.set_spec_priority(proot, spec, body["priority"])
+        except dashboard_data.InvalidPriority:
+            self._error(400, "priority must be an integer between 1 and 9")
+            return
+        except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
+            self._error(500, f"set spec priority failed: {e}")
+            return
+        if not result.get("found"):
+            self._error(404, f"spec not found: {spec}")
+            return
+        self._json({"ok": True, "project": project["name"], "spec": spec,
+                    "priority": result["priority"]})
+
+    def _api_spec_delete(self, query):
+        """POST /api/spec-delete?project=<name>&spec=<name>
+
+        软删除 SPEC：STATE.md 移除条目 + openspec 目录移入 archive。
+        - project 不存在 → 404
+        - spec 不在项目 STATE.md → 404（幂等，不发文件操作）
+        - spec 有进行中的运行（runs 目录 mtime<120s）→ 409「spec 有进行中的运行」
+        - 成功 → 200 + {ok: true, archived, archive_path}
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        proot = Path(project["path"])
+        try:
+            result = dashboard_data.soft_delete_spec(proot, spec)
+        except Exception as e:  # noqa: BLE001 兜底：写回/移动异常不崩溃进程
+            self._error(500, f"delete spec failed: {e}")
+            return
+        if not result.get("found"):
+            self._error(404, f"spec not found: {spec}")
+            return
+        if result.get("running"):
+            self._error(409, result.get("error") or "spec 有进行中的运行")
+            return
+        self._json({"ok": True, "project": project["name"], "spec": spec,
+                    "archived": result.get("archived", False),
+                    "archive_path": result.get("archive_path")})
+
     def _api_run(self, run_id: str, query) -> dict:
         project = self._project_from_query(query)
         if project is None:
@@ -634,6 +713,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_config_post(query)
         elif path == "/api/spec-error-clear":
             self._api_spec_error_clear(query)
+        elif path == "/api/spec-priority":
+            self._api_spec_priority(query)
+        elif path == "/api/spec-delete":
+            self._api_spec_delete(query)
         elif path == "/api/alerts/clear":
             self._api_alerts_clear()
         elif path.startswith("/api/alerts/") and path.endswith("/handled"):
