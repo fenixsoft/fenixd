@@ -20,5 +20,26 @@
 
 ## 4. 回归与核验
 
-- [ ] 4.1 全量 pytest 通过（重点 tests/test_core.py、verify 相关及新增用例），无既有用例回归
-- [ ] 4.2 对照三个 capability spec 的全部 Scenario 逐条核对实现覆盖并记录结论
+- [x] 4.1 全量 pytest 通过（重点 tests/test_core.py、verify 相关及新增用例），无既有用例回归
+  - 结果：`pytest tests/` 全量 544 pass、0 fail、0 error（preserve+ci 亦通过），无既有用例回归。
+  - 新增用例：test_env_sanity_gate.py 37 例、test_dispatch_aging.py 10 例、test_family_governor.py 24 例。
+- [x] 4.2 对照三个 capability spec 的全部 Scenario 逐条核对实现覆盖并记录结论
+  - **verify-environment-sanity-gate**（5 Scenario）：
+    - S1 mock 断链下的 UI 超时被降级 → `test_candidate_mock_plus_wait_timeout` + `test_probe_down_candidate_degrades` + `test_probe_down_classifies_candidates_only` ✓
+    - S2 探针健康时维持真失败 → `test_probe_healthy_keeps_fail`（finalize 与 engine 后置分类两处）✓
+    - S3 全批环境性失联触发重验 → `test_all_blocked_inconclusive_reenqueues` + `test_attempts_exhausted_holds_backoff` + `test_fixture_noise_round_overall_inconclusive`（14 场景 fixture 13/14 转 blocked-env）✓
+    - S4 连续 inconclusive 不唤醒 Administrator → `test_two_consecutive_inconclusive_rounds_no_signal` + 对照组 `test_control_error_runs_still_detect` ✓
+    - S5 环境恢复后的真失败照常晋级 → `test_probe_healthy_keeps_fail` + `test_genuine_failure_not_inconclusive` + 旧报告兼容 `test_legacy_report_without_blocked_env_field_is_compatible` ✓
+  - **dispatch-queue-aging**（4 Scenario）：
+    - S1 P6 条目获得窗口 → `test_starved_p6_gets_window_under_constant_p4`（P4 常驻时饿死 P6 老化后获得派发窗口）✓
+    - S2 未达阈值行为完全不变 → `test_disabled_by_default_returns_zero` + `test_below_initial_wait_no_aging` + `test_control_p6_starved_without_aging`（关闭/未达阈值为零行为差异）✓
+    - S3 持久运行的 P4 不会被降级 → `test_active_set_records_base_priority_not_effective`（活动集记录 base 而非 effective）✓
+    - S4 同级顺序稳定 → `test_same_effective_fcfs_order_stable`（effective 相等保 FCFS 稳定序）✓
+    - 补充：`test_floor_levels_cap` / `test_effective_never_negative`（floor 封顶）、`test_enqueue_records_timestamp_for_zerotimer_restart`（daemon 重启从零计时）✓
+  - **fix-family-convergence-governor**（3 组 Scenario）：
+    - S1 深度上限：四层嵌套（fix-fix-fix-fix-x）请求被拦截 → `test_four_layer_request_intercepted` + `test_four_layer_intercepted_writes_signal` ✓
+    - S1 宽度上限：同根未完成第二兄弟被拦截 → `test_width_second_sibling_intercepted` + `test_width_intercepted_writes_signal` + `test_width_below_limit_allowed`（未越界放行）✓
+    - S2 越界转人工处置：拦截产生 family_explosion signal → `test_signal_picked_up_and_administrator_invoked` + `test_picked_up_even_without_in_progress_specs` + `test_same_record_not_reinvoked_next_tick`（escalated 去重）✓
+    - S2 人工放行单次通行 → `test_waiver_allows_exactly_one_then_resets` + `test_waiver_reset_after_usage_then_reblocked` + `test_admin_waiver_sets_family_waiver_on_spec` + `test_waiver_via_text_token` + 未放行持续拦截 `test_non_waiver_does_not_set_family_waiver` + `test_non_waiver_continuously_intercepted` ✓
+    - S3 计数口径与既有数据兼容 → `test_historical_four_layer_names_evaluated_by_current_value` + `test_width_excludes_done_and_pushed` + `test_depth_not_fooled_by_name_containing_fix`（done 祖先不追溯）+ `family_waiver` 豁免消费 `test_waiver_consumed_even_when_below_limit` / `test_family_waiver_consumed_once_only` ✓
+  - 结论：三 capability 全部 Scenario 均有实现 + 单测覆盖，无未覆盖缺口。
