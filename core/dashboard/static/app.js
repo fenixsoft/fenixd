@@ -1609,7 +1609,12 @@ const KNOWN_AGENT_TYPES = [
   { key: 'administrator', label: 'Administrator（运维）' },
 ];
 
+// 最近一次加载的配置数据快照（含完整 agents/gates/llm），供 collectConfigData()
+// 在输入框为空/非法时回退到真实已加载值，而非硬编码默认值（避免保存时覆盖其它子键）。
+let lastConfigData = null;
+
 function renderConfig(data) {
+  lastConfigData = data;
   const scope = data.scope || 'project';
   const isUser = scope === 'user';
   const project = esc(data.project || '');
@@ -1956,17 +1961,31 @@ function collectConfigData() {
     }
   });
 
+  // 已加载配置快照（供输入框为空/非法时回退真实值，避免用硬编码默认值覆盖）
+  const loadedAgents = (lastConfigData && lastConfigData.agents) || {};
+
+  // 解析数字输入：空串 / 非数字（NaN）→ 回退到已加载真实值；回退值仍非数字（首次无配置）
+  // 才用领域默认值。这样保存「仅编辑 max_turns」时不会把 max_concurrent 重置为硬编码 2。
+  const numOr = (input, fallback, domainDefault) => {
+    if (!input) return (fallback != null ? fallback : domainDefault);
+    const raw = input.value.trim();
+    if (raw === '') return (fallback != null ? fallback : domainDefault);
+    const n = parseInt(raw, 10);
+    if (Number.isNaN(n)) return (fallback != null ? fallback : domainDefault);
+    return n;
+  };
+
   // Max concurrent (parallelism)
   const maxConcurrentInput = main.querySelector('#cfg-max-concurrent');
-  const maxConcurrent = maxConcurrentInput ? parseInt(maxConcurrentInput.value, 10) : 2;
+  const maxConcurrent = numOr(maxConcurrentInput, loadedAgents.max_concurrent, 2);
 
   // Max turns per agent run (single agent run turn limit)
   const maxTurnsInput = main.querySelector('#cfg-max-turns');
-  const maxTurns = maxTurnsInput ? parseInt(maxTurnsInput.value, 10) : 300;
+  const maxTurns = numOr(maxTurnsInput, loadedAgents.max_turns, 300);
 
   // Run timeout (single agent run limit, seconds)
   const runTimeoutInput = main.querySelector('#cfg-run-timeout');
-  const runTimeout = runTimeoutInput ? parseInt(runTimeoutInput.value, 10) : 3600;
+  const runTimeout = numOr(runTimeoutInput, loadedAgents.run_timeout_seconds, 3600);
 
   // Approve mode
   const approveMode = (main.querySelector('input[name="approve_mode"]:checked') || {}).value || 'manual';
