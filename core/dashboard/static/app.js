@@ -450,6 +450,12 @@ function updateTopbar() {
   if (sel.options.length === 0) {
     api('/api/projects')
       .then((d) => {
+        // 首个「无项目」空选项：切到项目级（配置/SPEC 列表/运维记录）后可选它回到
+        // 跨项目形态（用户级配置 / 概览 / 聚合视图），否则无法主动退出项目级。
+        const none = document.createElement('option');
+        none.value = '';
+        none.textContent = '无项目';
+        sel.appendChild(none);
         (d.projects || []).forEach((p) => {
           const o = document.createElement('option');
           o.value = p.name;
@@ -481,8 +487,20 @@ if (el('btn-config')) {
   });
 }
 el('project-select').addEventListener('change', (e) => {
-  if (e.target.value) nav('project/' + encodeURIComponent(e.target.value));
-  else nav('overview');
+  // 切换项目时保持当前视图类型（spec 列表/配置页/运维记录均原地更换项目），
+  // 仅 spec 详情无跨项目形态，降级到该项目 SPEC 列表。
+  const p = e.target.value;
+  const v = currentState.view;
+  if (!p) {
+    if (v === 'config') nav('config');                       // 用户级配置
+    else if (v === 'activities') nav('activities');          // 跨项目运维聚合
+    else nav('overview');                                    // project/spec/overview → 概览
+    return;
+  }
+  if (v === 'project') nav('project/' + encodeURIComponent(p));
+  else if (v === 'config') nav('config/' + encodeURIComponent(p));
+  else if (v === 'activities') nav('activities/' + encodeURIComponent(p));
+  else nav('project/' + encodeURIComponent(p));              // overview/spec → 项目 SPEC 列表
 });
 // 运维记录页「标记已处理」：事件委托（morphdom 重绘 #main 后仍生效）
 el('main').addEventListener('click', (e) => {
@@ -1827,15 +1845,20 @@ function renderAgentAssignment(at, providers, models) {
 
 // ── 配置页交互 ─────────────────────────────────────────
 
-let configInitialized = false;
+// #main 元素全程常驻（morphdom 只 patch 其内部，不替换根），委托事件绑定一次
+// 即可作用于所有重绘后的配置页 DOM；而按钮节点会被替换/复用，防重标记必须
+// 挂在 JS 属性上（data-* 属性会在 morphdom patch 时被抹掉，造成 listener 累积）。
+let configDelegated = false;
 
 function hydrateConfigPage() {
   if (currentState.view !== 'config') return;
-  if (configInitialized) return;
+  const main = el('main');
+  if (!main) return;
 
-  // 新增 Provider
+  // 新增 Provider（按钮节点随渲染重建/复用）
   const addBtn = el('btn-add-provider');
-  if (addBtn) {
+  if (addBtn && !addBtn._bound) {
+    addBtn._bound = true;
     addBtn.addEventListener('click', () => {
       const list = el('provider-list');
       if (!list) return;
@@ -1847,8 +1870,18 @@ function hydrateConfigPage() {
     });
   }
 
-  // 事件委托：Provider 删除 / 自定义环境变量增删
-  const main = el('main');
+  // 保存按钮（节点随渲染重建/复用）
+  const saveBtn = el('btn-save-config');
+  if (saveBtn && !saveBtn._bound) {
+    saveBtn._bound = true;
+    saveBtn.addEventListener('click', saveConfig);
+  }
+
+  if (configDelegated) return;
+  configDelegated = true;
+
+  // 事件委托（#main 常驻，一次绑定全视图有效）：
+  // Provider 删除 / 自定义环境变量增删 / 页签切换
   main.addEventListener('click', (e) => {
     const t = e.target;
     if (t.matches('[data-action="remove-provider"]')) {
@@ -1866,6 +1899,20 @@ function hydrateConfigPage() {
     } else if (t.matches('[data-action="remove-env"]')) {
       const row = t.closest('.env-row');
       if (row) row.remove();
+    } else {
+      const btn = t.closest ? t.closest('.config-tabs .tab-btn') : null;
+      if (!btn) return;
+      // 仅显隐 pane，不重渲染、不丢表单输入
+      const tab = btn.dataset.tab;
+      main.querySelectorAll('.config-tabs .tab-btn').forEach((b) =>
+        b.classList.toggle('active', b === btn)
+      );
+      main.querySelectorAll('.config-tabs .tab-pane').forEach((pane) => {
+        const active = pane.dataset.pane === tab;
+        pane.classList.toggle('active', active);
+        if (active) pane.removeAttribute('hidden');
+        else pane.setAttribute('hidden', '');
+      });
     }
   });
 
@@ -1878,37 +1925,6 @@ function hydrateConfigPage() {
       if (fields) fields.classList.toggle('disabled', !t.checked);
     }
   });
-
-  // 页签切换（仅显隐 pane，不重渲染、不丢表单输入）
-  const tabBar = main.querySelector('.config-tabs .tab-bar');
-  if (tabBar && !main.querySelector('.config-tabs[data-bound="1"]')) {
-    tabBar.addEventListener('click', (e) => {
-      const btn = e.target.closest('.tab-btn');
-      if (!btn) return;
-      const tab = btn.dataset.tab;
-      // 更新 tab 激活态
-      tabBar.querySelectorAll('.tab-btn').forEach((b) =>
-        b.classList.toggle('active', b === btn)
-      );
-      // 切换 pane 显隐（保留全部 pane 的 DOM 与输入状态）
-      main.querySelectorAll('.config-tabs .tab-pane').forEach((pane) => {
-        const active = pane.dataset.pane === tab;
-        pane.classList.toggle('active', active);
-        if (active) pane.removeAttribute('hidden');
-        else pane.setAttribute('hidden', '');
-      });
-    });
-    const tabsWrap = main.querySelector('.config-tabs');
-    if (tabsWrap) tabsWrap.setAttribute('data-bound', '1');
-  }
-
-  // 保存按钮
-  const saveBtn = el('btn-save-config');
-  if (saveBtn) {
-    saveBtn.addEventListener('click', saveConfig);
-  }
-
-  configInitialized = true;
 }
 
 function reindexProviders() {
