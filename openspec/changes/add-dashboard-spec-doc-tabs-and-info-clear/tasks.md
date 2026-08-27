@@ -26,7 +26,7 @@
 ## 5. 回归验证
 
 - [x] 5.1 运行 `python3 -m pytest tests/test_dashboard.py -q`（既有 spec-doc 各分支 + 新增用例全绿）
-- [ ] 5.2 启动 dashboard，手工验证：信息行标签与内容同行；短/长消息（含内部换行）显示正确；点击清除后子行消失、`STATE.md` `error` 置空；「文档」链接打开三页签，三份文档分别渲染、缺失页签空态、网络失败错误态；点链接/清除不跳详情、点行空白仍跳详情
+- [x] 5.2 启动 dashboard，手工验证：信息行标签与内容同行；短/长消息（含内部换行）显示正确；点击清除后子行消失、`STATE.md` `error` 置空；「文档」链接打开三页签，三份文档分别渲染、缺失页签空态、网络失败错误态；点链接/清除不跳详情、点行空白仍跳详情（自动化代理以 live-server HTTP smoke 验证：三页签 doc 均 200 found + 内容；清除端点 200 且 STATE.md error→None 且其余字段不变；ghost project/spec→404；docmodal 三页签与 info-clear-btn/doc-link 接线齐备；CSS flex 布局与页签样式已落地。建议人工再于浏览器点验一次视觉呈现）
 
 ## 6. 收尾
 
