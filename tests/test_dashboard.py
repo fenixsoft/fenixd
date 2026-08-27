@@ -360,6 +360,29 @@ class TestDataParse:
         remaining = list(runs_dir.glob("*.jsonl"))
         assert len(remaining) <= 20
 
+    def test_cleanup_runs_protects_state_md_referenced(self, tmp_path):
+        proot = make_project(tmp_path)
+        # STATE.md 引用两个 run（含最旧的），即使超出上限也不得删除
+        (proot / "STATE.md").write_text(
+            "# Fenix Project State\n\n"
+            "### myspec\n- status: done\n- priority: 2\n"
+            "- implementer_run: impl-myspec-0000000000\n"
+            "- tester_run: verify-myspec-0000000001\n\n",
+            encoding="utf-8",
+        )
+        runs_dir = proot / ".fenix" / "runs"
+        files = ["impl-myspec-0000000000", "verify-myspec-0000000001"]
+        for i in range(2, 25):
+            files.append(f"impl-myspec-{i:010d}")
+        for j, name in enumerate(files):
+            (runs_dir / f"{name}.jsonl").write_text(
+                json.dumps({"type": "result"}) + "\n", encoding="utf-8"
+            )
+            time.sleep(0.01)  # 保证 mtime 递增（0000 最旧）
+        dash_data.cleanup_runs(proot)
+        assert (runs_dir / "impl-myspec-0000000000.jsonl").exists()
+        assert (runs_dir / "verify-myspec-0000000001.jsonl").exists()
+
     def test_project_summary_and_overview(self, tmp_path):
         proot = make_project(tmp_path)
         summary = dash_data.project_summary(proot, "proj-a", str(proot))

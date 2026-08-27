@@ -249,3 +249,29 @@ class TestVerifierCheckpointResume:
         runner = make_runner(proot)
         prompt = runner._build_prompt("myspec", "verifier")
         assert "RESUME CHECKPOINT" not in prompt
+
+
+class TestVerifierReportJson:
+    """降级路径 verifier 提示词要求产出结构化 report.json（Dashboard 场景/缺陷数据源）。
+
+    背景：新验证流程（planner-plan → verify_engine）失败降级到旧版 verifier 时不产
+    report.json，导致 spec 详情页场景结果与 bug 列表恒为空（add-spec-list-hover-hint
+    实证）。修复：提示词强制按 verify_engine 兼容结构写 report.json。
+    """
+
+    def test_prompt_requires_report_json(self, tmp_path):
+        proot = tmp_path / "proj"
+        runner = make_runner(proot)
+        prompt = runner._build_prompt("myspec", "verifier")
+        # 报告写入主树 verify-progress/<spec>/report.json（dashboard 读取位置）
+        assert str(proot / ".fenix" / "verify-progress" / "myspec" / "report.json") in prompt
+        # 结构关键字（verify_engine 兼容：scenario_id/status/assertion_results/screenshots）
+        assert '"scenario_id"' in prompt
+        assert '"assertion_results"' in prompt
+        assert '"screenshots"' in prompt
+        # status 判定规则（parse_bugs 依赖 fail/error 场景产出缺陷）
+        assert "fail=断言/步骤失败(产品缺陷)" in prompt
+        # Step 8 清理保留清单包含 report.json（防止 agent 自我清理误删）
+        keep_line = [l for l in prompt.split("\n") if "保留：verification-report.md、" in l]
+        assert keep_line
+        assert "report.json" in keep_line[0]

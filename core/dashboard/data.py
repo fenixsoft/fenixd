@@ -886,9 +886,20 @@ def read_run_events_between(project_root, run_id: str, start_offset: int) -> lis
 
 
 def cleanup_runs(project_root) -> int:
-    """清理超出保留上限的旧运行产物（跳过活动产物），返回删除数。"""
+    """清理超出保留上限的旧运行产物（跳过活动产物），返回删除数。
+
+    额外保护：STATE.md 中任一 spec 的 implementer_run / tester_run 引用的 run
+    文件永久保留——它们是历史 spec 时间轴的数据源，不能因 RUNS_KEEP 上限被
+    淘汰（否则 spec 详情页的时间轴、任务进度随即消失）。
+    """
     runs_dir = Path(project_root) / ".fenix" / "runs"
-    return clean_old_runs(runs_dir, keep=RUNS_KEEP)
+    protected = set()
+    for entry in parse_state(project_root).values():
+        for key in ("implementer_run", "tester_run"):
+            rid = entry.get(key)
+            if rid:
+                protected.add(str(rid))
+    return clean_old_runs(runs_dir, keep=RUNS_KEEP, active_ids=protected)
 
 
 # ── 聚合视图（供 Web API / 概览 / 详情） ──────────────────────────

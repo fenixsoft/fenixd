@@ -113,12 +113,14 @@ def append_run_error(run_file: Path, error: str, exit_code: int) -> None:
 
 
 def clean_old_runs(runs_dir: Path, keep: int = RUNS_KEEP, active_ids=None) -> int:
-    """清理 .fenix/runs/ 中超出保留上限的最旧产物，跳过正在增长的活动产物。
+    """清理 .fenix/runs/ 中超出保留上限的最旧产物，跳过受保护的产物。
 
     Args:
         runs_dir: .fenix/runs/ 目录。
         keep: 保留的最近产物数量。
-        active_ids: 仍处于运行中的 run_id 集合，其产物一律跳过不删。
+        active_ids: 不删除的 run_id 集合——既含仍在增长的活动产物，也含
+            STATE.md 引用的历史产物（implementer_run/tester_run，清理时由
+            data.cleanup_runs 传入），被引用的 run 是 spec 时间轴数据源。
 
     Returns: 删除的文件数。
     """
@@ -584,6 +586,11 @@ class AgentRunner:
             )
         elif agent_type == "verifier":
             progress_path = self.project_root / ".fenix" / "verify-progress" / f"{spec_name}.json"
+            # 结构化报告（与 verify_engine 产物同位置，Dashboard 场景/缺陷列表数据源）
+            report_path = (
+                self.project_root / ".fenix" / "verify-progress"
+                / spec_name / "report.json"
+            )
             # 断点续跑（verifier-checkpoint-resume spec）：读取上次 attempt 的进度文件，
             # 存在且 done>0 时把断点信息注入提示词，让新 agent 从 done+1 场景继续，
             # 不再从头重跑。文件缺失 / done==0 / JSON 损坏 → 不注入、全新开始，损坏文件
@@ -633,6 +640,24 @@ class AgentRunner:
                 f"    Format: {{\"total\": N, \"done\": D, \"current\": \"scenario description\"}}\n"
                 f"  Step 4: Test edge cases (empty input, long input, resize, rapid clicks).\n"
                 f"  Step 5: Write {spec_dir}/verification-report.md with screenshots.\n"
+                f"    Also write {report_path} — structured report.json（Dashboard 的\n"
+                f"    场景/缺陷列表数据源，全部场景执行完毕后一次写入，MUST exist before\n"
+                f"    you finish）:\n"
+                f"    {{\n"
+                f'      "spec": "{spec_name}",\n'
+                f'      "timestamp": "<ISO8601 当前时间>",\n'
+                f'      "summary": {{"total": N, "passed": P, "warnings": W, "failed": F, "errors": E}},\n'
+                f'      "scenarios": [\n'
+                f'        {{"scenario_id": "s1", "description": "场景描述",\n'
+                f'          "status": "pass | fail | error | warning",\n'
+                f'          "assertion_results": [{{"type": "step", "pass": true, "message": ""}}],\n'
+                f'          "screenshots": ["/绝对路径/证据截图.png"]}}\n'
+                f"      ]\n"
+                f"    }}\n"
+                f"    status 判定: pass=全部断言与步骤通过; fail=断言/步骤失败(产品缺陷);\n"
+                f"    error=不可测或环境故障(非产品缺陷); warning=仅视觉或第4层断言差异。\n"
+                f"    每个真实执行的场景都必须出现在 scenarios；summary 计数与 scenarios 一致；\n"
+                f"    fail/error 场景在 assertion_results 中给出未通过断言（含凭证 message）。\n"
                 f"  Step 6: All pass → write .fenix-run-result.json: "
                 f'{{"status":"verified","spec":"{spec_name}","bugs":[]}}\n'
                 f"  Step 7: Bugs found → write .fenix-run-result.json: "
@@ -643,7 +668,7 @@ class AgentRunner:
                 f"（如 /tmp/fenix-verify-*、/tmp/verify-* 等本次新建的目录）\n"
                 f"    - 终止自己为本次验证启动的 mock/辅助服务器进程\n"
                 f"    - 删除自己创建的临时脚本与临时产物文件\n"
-                f"    - 保留：verification-report.md、.fenix-run-result.json、"
+                f"    - 保留：verification-report.md、{report_path}、.fenix-run-result.json、"
                 f"{progress_path}，以及 verify worktree 自身\n"
                 f"    - 禁止删除被测项目内的任何文件（含 worktree 内的报告与结果文件）\n"
                 f"    - 清理失败或文件被占用时跳过即可，不得阻塞结果上报、不得误删项目文件\n\n"
