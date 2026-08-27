@@ -16,6 +16,22 @@ USER_CONFIG_DIR = Path.home() / ".fenix"
 
 _logger = logging.getLogger("fenixd.config")
 
+# ── fix-stuck-threshold-unify：stuck 阈值单源派生 ──────────────────
+# D1：派生宽限常量（秒），非配置项。阈值 = run_timeout_seconds + 该宽限，
+# 保证 runner 自身超时终止与 auto-recovery 恢复判定之间留确定性时序余量。
+STUCK_GRACE_SECONDS = 600
+# D4：run_timeout_seconds 缺失或 ≤0 时的派生回退基准（3600+600=4200）。
+RUN_TIMEOUT_FALLBACK_SECONDS = 3600
+STUCK_FALLBACK_SECONDS = RUN_TIMEOUT_FALLBACK_SECONDS + STUCK_GRACE_SECONDS
+# D5：absolute_max 联动兜底续期上限（秒）。absolute_max 低于
+# run_timeout_seconds + 该值时按 run_timeout_seconds + 该值兜底生效。
+SUPERVISION_EXTENSION_SECONDS = 7200
+
+# D3：旧键弃用告警 / D5：absolute_max 兜底 ERROR 的生命周期去重标记，
+# 避免 30 分钟扫描热更新时反复刷屏。
+_DEPRECATED_STUCK_WARNED = False
+_SUPERVISION_BOUNDS_WARNED = False
+
 
 def deep_merge(base: dict, override: dict) -> dict:
     """深度合并两个配置 dict，返回新 dict（不修改入参）。
@@ -185,6 +201,10 @@ class ConfigLoader:
                     f"gates.approve_mode must be one of {cls.VALID_APPROVE_MODES}: {mode}"
                 )
 
+        # D5：timeout_supervision.absolute_max_seconds 联动护栏，启动/热更新时校验；
+        # enabled=true 且配置值低于 run_timeout + 续期上限时打 ERROR 并按兜底值生效。
+        cls.effective_supervision_absolute_max_seconds(config)
+
         # Validate admin.* (optional — 缺省使用默认值，见 get_admin_config)
         admin = config.get("admin") or {}
         if "enabled" in admin and not isinstance(admin["enabled"], bool):
@@ -351,13 +371,14 @@ class ConfigLoader:
         - interval_minutes: 5
         - agent_model: None（未配置时复用 agents.subagent_model 默认）
         - escalation_cooldown_minutes: 15
-        - stuck_threshold_minutes: 复用 schedule.stuck_threshold_minutes（默认 60）
+        - stuck_threshold_minutes: 由 agents.run_timeout_seconds 单源派生（见
+          effective_stuck_threshold_seconds，旧 schedule/admin.stuck_threshold_minutes
+          键已弃用、不再生效）
         - merge_breaker_threshold: 复用 agents.merge_breaker_threshold（默认 2）
         """
         admin = config.get("admin") or {}
-        stuck = cls.get(config, "admin.stuck_threshold_minutes", None)
-        if stuck is None:
-            stuck = cls.get(config, "schedule.stuck_threshold_minutes", 60)
+        # D2：stuck 阈值单源派生，旧键不再作为生效输入（告警在助手内节流）。
+        stuck_seconds = cls.effective_stuck_threshold_seconds(config)
         breaker = cls.get(config, "admin.merge_breaker_threshold", None)
         if breaker is None:
             breaker = cls.get(config, "agents.merge_breaker_threshold", 2)
@@ -368,9 +389,99 @@ class ConfigLoader:
             "escalation_cooldown_minutes": float(
                 admin.get("escalation_cooldown_minutes", 15)
             ),
-            "stuck_threshold_minutes": float(stuck),
+            "stuck_threshold_minutes": stuck_seconds / 60.0,
             "merge_breaker_threshold": int(breaker),
         }
+
+    @classmethod
+    def effective_stuck_threshold_seconds(cls, config: Dict[str, Any]) -> float:
+        """stuck 判定阈值单源派生自 run 超时（design D1/D2/D4）。
+
+        effective_threshold = run_timeout_seconds + STUCK_GRACE_SECONDS（600s）。
+        run_timeout_seconds 缺失或非正数时回退 4200s 并打 WARNING（D4：
+        防有人把超时关掉导致恢复永不触发）。旧键
+        schedule/admin.stuck_threshold_minutes 不论是否配置都不影响结果（D3 告警）。
+
+        pm_engine.check_blockers 与 admin_monitor 的 stuck 检测 MUST 调用本助手，
+        不再各自读取旧键。
+        """
+        cls._maybe_warn_deprecated_stuck_keys(config)
+        agents = config.get("agents") or {}
+        rt = agents.get("run_timeout_seconds")
+        if not isinstance(rt, (int, float)) or rt <= 0:
+            _logger.warning(
+                "agents.run_timeout_seconds 缺失或 ≤0，stuck 阈值按 %ss 回退生效"
+                "（=3600 默认超时 + %ss 宽限）；建议显式配置 run_timeout_seconds",
+                STUCK_FALLBACK_SECONDS, STUCK_GRACE_SECONDS,
+            )
+            return float(STUCK_FALLBACK_SECONDS)
+        return float(rt) + STUCK_GRACE_SECONDS
+
+    @classmethod
+    def _maybe_warn_deprecated_stuck_keys(cls, config: Dict[str, Any]) -> None:
+        """旧键弃用告警，生命周期内只打一次（design D3）。
+
+        schedule.stuck_threshold_minutes / admin.stuck_threshold_minutes 仍可能残留在
+        配置中（向后兼容读取不报错），但其值已不再作为 stuck 阈值输入——阈值改为由
+        run 超时派生。存在任一旧键时打一次 WARNING 指明新语义。
+        """
+        global _DEPRECATED_STUCK_WARNED
+        if _DEPRECATED_STUCK_WARNED:
+            return
+        schedule = config.get("schedule") or {}
+        admin = config.get("admin") or {}
+        if "stuck_threshold_minutes" in schedule or "stuck_threshold_minutes" in admin:
+            _logger.warning(
+                "检测到已弃用的 stuck_threshold_minutes 配置键（schedule/admin）：stuck 阈值"
+                "已改为由 agents.run_timeout_seconds 单源派生（run_timeout + %ss 宽限），"
+                "旧键值不再生效",
+                STUCK_GRACE_SECONDS,
+            )
+            _DEPRECATED_STUCK_WARNED = True
+
+    @classmethod
+    def effective_supervision_absolute_max_seconds(cls, config: Dict[str, Any]) -> Optional[float]:
+        """timeout_supervision.absolute_max_seconds 的生效值（含联动兜底，design D5）。
+
+        enabled=true 时：配置值 MUST ≥ run_timeout_seconds + SUPERVISION_EXTENSION_SECONDS，
+        否则打 ERROR 并按 run_timeout_seconds + 该续期上限兜底返回。
+        enabled=false 或段缺失：返回 None（不启用 supervision，不校验）。
+        absolute_max 未配置：返回 None（由消费方按各自默认处理，本护栏只约束显式值）。
+
+        agent_runner 的 supervision 激活路径 MUST 调本助手读取兜底值，而非直读原始配置。
+        """
+        sup = config.get("timeout_supervision") or {}
+        if not sup.get("enabled", False):
+            return None
+        configured = sup.get("absolute_max_seconds")
+        if not isinstance(configured, (int, float)):
+            return None
+        agents = config.get("agents") or {}
+        rt = agents.get("run_timeout_seconds")
+        if not isinstance(rt, (int, float)) or rt <= 0:
+            rt = RUN_TIMEOUT_FALLBACK_SECONDS
+        required = float(rt) + SUPERVISION_EXTENSION_SECONDS
+        if float(configured) < required:
+            global _SUPERVISION_BOUNDS_WARNED
+            if not _SUPERVISION_BOUNDS_WARNED:
+                _logger.error(
+                    "timeout_supervision.absolute_max_seconds=%s 低于 run_timeout_seconds(%s)"
+                    "+ 续期上限(%s)=%s，按 %s 兜底生效（supervision 不会先于墙钟终止运行）",
+                    configured, rt, SUPERVISION_EXTENSION_SECONDS, required, required,
+                )
+                _SUPERVISION_BOUNDS_WARNED = True
+            return required
+        return float(configured)
+
+    @classmethod
+    def reset_stuck_threshold_state(cls) -> None:
+        """重置弃用/兜底告警的生命周期去重标记（供测试与 daemon 重启隔离）。
+
+        正常 daemon 生命周期内只打一次；单测需多次验证「首次告警 / 二次静默」时显式重置。
+        """
+        global _DEPRECATED_STUCK_WARNED, _SUPERVISION_BOUNDS_WARNED
+        _DEPRECATED_STUCK_WARNED = False
+        _SUPERVISION_BOUNDS_WARNED = False
 
     @classmethod
     def get(cls, config: Dict[str, Any], dotted_key: str, default=None):
