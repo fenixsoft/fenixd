@@ -43,7 +43,10 @@ class PMEngine:
         self.logger = logger
 
         self._active_runs = 0
-        self._run_queue = []  # Pending (priority, spec_name, agent_type) tuples
+        # Pending (priority, spec_name, agent_type, enqueued_at) tuples。
+        # enqueued_at 为入队时刻 time.time()，仅供内存态老化计时（design D3）：
+        # 不持久化，daemon 重启重建队列即视为等待清零。
+        self._run_queue = []
         self._active_priorities = set()  # 当前活动 priority 集合（宽松优先级下可含多个档）
         self._active_priority_counts: Dict[int, int] = {}  # priority → 活动 run 数
         self._handling_events = set()  # 防重入：正在处理的 (event_kind, spec_name)
@@ -727,11 +730,12 @@ class PMEngine:
     def _enqueue(self, spec_name: str, agent_type: str):
         """Add a run request to the queue (thread-safe).
 
-        条目结构：(priority, spec_name, agent_type)。
-        priority 从 STATE.md 读取（缺省 5）。
+        条目结构：(priority, spec_name, agent_type, enqueued_at)。
+        priority 从 STATE.md 读取（缺省 5）；enqueued_at = time.time() 供
+        派发队列老化计时（design D3，内存态、不持久化）。
         """
         priority = self._get_spec_priority(spec_name)
-        entry = (priority, spec_name, agent_type)
+        entry = (priority, spec_name, agent_type, time.time())
         with self._queue_lock:
             # 去重：忽略 priority 差异，只看 (spec, agent)
             if not any(e[1] == spec_name and e[2] == agent_type for e in self._run_queue):
@@ -748,7 +752,7 @@ class PMEngine:
         属于同一 SPEC、同一 priority，插入后落回同一档且保持档内 FCFS。
         """
         priority = self._get_spec_priority(spec_name)
-        entry = (priority, spec_name, agent_type)
+        entry = (priority, spec_name, agent_type, time.time())
         with self._queue_lock:
             # Remove existing duplicate (ignoring priority)
             self._run_queue = [
@@ -771,6 +775,49 @@ class PMEngine:
                 f"Queued at front of P{priority}: {spec_name} ({agent_type})"
             )
 
+    # ── 派发队列老化（dispatch-queue-aging / design D3）─────────
+
+    def _aging_bonus(self, enqueued_at: float, now: float) -> int:
+        """队列等待老化收益：条目等待越久，参与比较的优先级档越高。
+
+        方向说明：本项目 priority 数值越小代表越重要、越早派发。放宽规则为
+        「任务 X 可派发当且仅当 min(active_priorities) >= X」——因此等待条目的
+        *比较档位* 必须随等待降低（effective = base - bonus）才能在 P4/P5 家族
+        持续占用下给 P6 打开派发窗口（spec Scenario: P6 条目获得窗口）。设计
+        文档中的字面 `base + …` 公式与自身 Scenario 相悖（只会让 P6 更晚派发），
+        本实现以行为需求为准：effective = max(0, base - bonus)。
+
+        config: pm.dispatch.aging.
+            enabled (默认 false) —— 关闭时恒返回 0，行为与现状完全一致；
+            initial_wait_minutes (默认 30) —— 等待不足此值不老化的零窗口；
+            step_down_minutes (默认 15) —— 每满一档老化时间降一级比较；
+            floor_levels (默认 4) —— 单条目等效降级总量上限（P6 最低可比至 P2，
+              仍天然低于新到的 P1，高优家族先占）。
+        """
+        from .config import ConfigLoader
+        cfg = self.config or {}
+        a = dict(ConfigLoader.get(cfg, "pm.dispatch.aging", {}) or {})
+        enabled = a.get("enabled", False)
+        if not enabled:
+            return 0
+        # 注意：不能用 `or 默认值` 取参 —— 配置 0（initial_wait/step_down）合法且常见，
+        # 0 为假值会被误替换为默认值。
+        iw = a.get("initial_wait_minutes")
+        sw = a.get("step_down_minutes")
+        fl = a.get("floor_levels")
+        initial_wait = max(0.0, float(iw if iw is not None else 30)) * 60.0
+        step_down = max(0.0, float(sw if sw is not None else 15)) * 60.0
+        floor_levels = max(0, int(fl if fl is not None else 4))
+        elapsed = max(0.0, now - (enqueued_at or now))
+        if step_down <= 0 or elapsed < initial_wait:
+            return 0
+        steps = int((elapsed - initial_wait) // step_down)
+        return min(floor_levels, max(0, steps))
+
+    def _effective_priority(self, base: int, enqueued_at: float, now: float) -> int:
+        """条目参与优先级判定时的有效档位（activity 追踪仍用 base，活动任务不老化）。"""
+        return max(0, base - self._aging_bonus(enqueued_at, now))
+
     def _process_queue(self):
         """Process the run queue — relaxed-priority parallel scheduling.
 
@@ -780,6 +827,14 @@ class PMEngine:
         - 同一档内多个任务可并行至 max_concurrent；不同档可并发（只要满足上述规则）。
         - 不抢占：已在运行的任务不会被新到的高优先级中断。
         - 每轮派发队列中最高优先级的合法就绪条目。
+
+        队列老化（dispatch-queue-aging / design D3）：比较用 effective 档位
+        （base - 等待老化收益）；派发后活动集合 _active_priorities 记 base 原值
+        —— 活动任务不参与老化降级（spec Scenario: 持久运行的 P4 不会被降级）；
+        同级（effective 相等）条目保持「先入队先派发」的队首顺序（先入队者
+        老化收益 ≥ 后入队者，队首扫描天然保持同级 FCFS，spec Scenario: 同级
+        顺序稳定）。老化仅内存态 —— enqueued_at 随进程存活，daemon 重启重建
+        队列即从零计时。
         """
         # 优雅关闭期间不再派发（fix-admin-self-heal）
         if self.shutting_down:
@@ -795,12 +850,14 @@ class PMEngine:
                     return
                 if not self._run_queue:
                     return
+                now = time.time()
 
-                # 找队列中所有状态合法条目的最高 priority
+                # 找队列中所有状态合法条目的最高 effective 档位
                 # （先不 pop，只扫描以确定 queued_best）
                 best_valid_prio = None
                 for entry in self._run_queue:
-                    prio, sname, atype = entry
+                    prio, sname, atype, enqueued_at = entry
+                    eff = self._effective_priority(prio, enqueued_at, now)
                     spec = self.state_machine.read_one(sname)
                     if not spec:
                         continue
@@ -811,12 +868,12 @@ class PMEngine:
                         continue
                     if self._dispatch_backoffed(spec):
                         continue
-                    if best_valid_prio is None or prio < best_valid_prio:
-                        best_valid_prio = prio
+                    if best_valid_prio is None or eff < best_valid_prio:
+                        best_valid_prio = eff
                 if best_valid_prio is None:
                     return  # 无就绪条目
 
-                # 确定当前应派发的目标优先级（宽松优先级）：
+                # 确定当前应派发的目标档位（宽松优先级）：
                 # 任务 X 可派发当且仅当没有比 X 更重要的活动任务
                 # （即 min(active) >= X；有 P6 在跑时 P5 可并发、P7 不行）。
                 # 无活动任务时派发就绪条目中最高优先级档。
@@ -828,11 +885,12 @@ class PMEngine:
                         return
                 target_prio = best_valid_prio
 
-                # 从队列头部开始找第一个 priority == target_prio 且状态合法的条目
+                # 从队列头部开始找第一个 effective == target 且状态合法的条目。
+                # 队首即同档最老条目（enqueued_at 单调不减）：同级 FCFS 不被老化扰动。
                 dispatch_idx = None
                 for i, entry in enumerate(self._run_queue):
-                    prio, sname, atype = entry
-                    if prio != target_prio:
+                    prio, sname, atype, enqueued_at = entry
+                    if self._effective_priority(prio, enqueued_at, now) != target_prio:
                         continue
                     spec = self.state_machine.read_one(sname)
                     if not spec:
@@ -853,13 +911,16 @@ class PMEngine:
 
                 entry_to_dispatch = self._run_queue.pop(dispatch_idx)
                 self._active_runs += 1
-                self._active_priority_counts[target_prio] = (
-                    self._active_priority_counts.get(target_prio, 0) + 1
+                # 活动追踪记 base 原值：活动任务不老化
+                # （spec Scenario: 持久运行的 P4 不会被降级，min_active 语义不变）。
+                base_prio = entry_to_dispatch[0]
+                self._active_priority_counts[base_prio] = (
+                    self._active_priority_counts.get(base_prio, 0) + 1
                 )
-                self._active_priorities.add(target_prio)
+                self._active_priorities.add(base_prio)
                 active_count = self._active_runs
 
-            priority, spec_name, agent_type = entry_to_dispatch
+            priority, spec_name, agent_type, _ = entry_to_dispatch
 
             # Update state to in-progress
             if agent_type == "implementer":

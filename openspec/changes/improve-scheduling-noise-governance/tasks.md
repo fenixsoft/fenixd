@@ -9,8 +9,8 @@
 
 ## 2. 派发队列老化（design D3）
 
-- [ ] 2.1 _run_queue 条目结构加 enqueued_at；_process_queue/_on_spec_ready 比较改用 effective_priority 计算（config: pm.dispatch.aging.*，默认 enabled=false）；补单测（P6 饿死案例获得窗口 / 未达阈值零行为差异 / floor 封顶）
-- [ ] 2.2 同级稳定序保障与活动任务不老化；daemon 重启语义（重建队列从零计时）注释与单测
+- [x] 2.1 _run_queue 条目结构加 enqueued_at；_process_queue/_on_spec_ready 比较改用 effective_priority 计算（config: pm.dispatch.aging.*，默认 enabled=false）；补单测（P6 饿死案例获得窗口 / 未达阈值零行为差异 / floor 封顶）
+- [x] 2.2 同级稳定序保障与活动任务不老化；daemon 重启语义（重建队列从零计时）注释与单测
 
 ## 3. fix 族谱收敛（design D4）
 

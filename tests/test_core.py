@@ -4938,7 +4938,7 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
         self.assertIsNone(entry["error"])
         self.assertIn("dispatch failed", entry["_last_dispatch_error"])
         self.assertGreater(int(entry["_dispatch_backoff_until"]), int(time.time()))
-        self.assertTrue(any(e[1:] == ("s1", "implementer") for e in self.engine._run_queue))
+        self.assertTrue(any((e[1], e[2]) == ("s1", "implementer") for e in self.engine._run_queue))
 
     def test_verifier_dispatch_failure_rolls_back_to_implemented(self):
         self.sm.add_spec("s1", {"priority": 5})
@@ -4952,7 +4952,7 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
         self.assertEqual(entry["status"], "implemented")
         self.assertIsNone(entry["tester_run"])
         self.assertIn("retryable", entry["error"])
-        self.assertTrue(any(e[1:] == ("s1", "verifier") for e in self.engine._run_queue))
+        self.assertTrue(any((e[1], e[2]) == ("s1", "verifier") for e in self.engine._run_queue))
 
     def test_rollback_ignores_status_mismatch(self):
         self.sm.add_spec("s1", {"priority": 5})  # drafted
@@ -4988,7 +4988,7 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
         entry = self.sm.read_one("s1")
         self.assertEqual(entry["status"], "ready")
         self.assertIn("Auto-recovered from stuck implementing", entry["error"])
-        self.assertTrue(any(e[1:] == ("s1", "implementer") for e in self.engine._run_queue))
+        self.assertTrue(any((e[1], e[2]) == ("s1", "implementer") for e in self.engine._run_queue))
 
     def test_check_blockers_testing_rolls_back_to_implemented(self):
         self.sm.add_spec("s1", {"priority": 5})
@@ -5000,7 +5000,7 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
         self.engine.check_blockers()
         entry = self.sm.read_one("s1")
         self.assertEqual(entry["status"], "implemented")
-        self.assertTrue(any(e[1:] == ("s1", "verifier") for e in self.engine._run_queue))
+        self.assertTrue(any((e[1], e[2]) == ("s1", "verifier") for e in self.engine._run_queue))
 
     def test_check_blockers_fresh_state_not_touched(self):
         """updated 为近期的 implementing 不触发 auto-recover。"""
