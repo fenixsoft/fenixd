@@ -1940,6 +1940,26 @@ class TestEventBusReadyWhitelistRecovery(unittest.TestCase):
         self.bus._recover_ready("orphan-d", self.sm.read_one("orphan-d"))
         self.pm.handle_event.assert_not_called()
 
+    def test_orphan_ready_error_clear_persisted(self):
+        """带 error 的孤儿 ready 重派发后，error 清空须写回 STATE.md。
+
+        真实产品 Bug（fix-dispatch-orphan D4 遗漏点）：``_recover_ready`` 原仅
+        在内存副本 ``updated`` 上清空 error 再 dispatch，``handle_event`` 只消费
+        内存副本不回写，导致下一轮 full_scan 仍读到此 error，孤儿每周期被重复
+        重置派发（事故家族「孤儿滞留」的直接成因）。修复后 error=None 必须持久化。
+        """
+        self._write_spec("orphan-e", "ready", error="prior fail", impl_run="impl-old")
+        self.bus._pgrep_live_worktree = lambda s: False
+        self.bus._latest_impl_run_file = lambda s: None
+        self.bus._recover_ready("orphan-e", self.sm.read_one("orphan-e"))
+        # dispatch 仍发生
+        self.pm.handle_event.assert_called_once()
+        # error 已写回 STATE.md（无存活子进程 → 必须清空，不再阻塞）
+        persisted = self.sm.read_one("orphan-e")
+        self.assertIsNone(persisted.get("error"))
+        # implementer_run 历史值保留（D2）
+        self.assertEqual(persisted.get("implementer_run"), "impl-old")
+
 
 class TestPMEngineBugFound(unittest.TestCase):
     """Test bug-found → fix SPEC creation logic (multi-round fix)."""
