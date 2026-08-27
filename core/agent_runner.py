@@ -637,6 +637,16 @@ class AgentRunner:
                 f'{{"status":"verified","spec":"{spec_name}","bugs":[]}}\n'
                 f"  Step 7: Bugs found → write .fenix-run-result.json: "
                 f'{{"status":"bug-found","spec":"{spec_name}","bugs":[...]}}\n\n'
+                f"  Step 8: CLEANUP — 验证结果已写出后，主动清理本次验证创建的临时资源，"
+                f"不要留给用户打扫:\n"
+                f"    - 删除自己为本次验证复制/创建的 mock、临时或测试项目目录"
+                f"（如 /tmp/fenix-verify-*、/tmp/verify-* 等本次新建的目录）\n"
+                f"    - 终止自己为本次验证启动的 mock/辅助服务器进程\n"
+                f"    - 删除自己创建的临时脚本与临时产物文件\n"
+                f"    - 保留：verification-report.md、.fenix-run-result.json、"
+                f"{progress_path}，以及 verify worktree 自身\n"
+                f"    - 禁止删除被测项目内的任何文件（含 worktree 内的报告与结果文件）\n"
+                f"    - 清理失败或文件被占用时跳过即可，不得阻塞结果上报、不得误删项目文件\n\n"
                 f"MANDATORY: Write progress after EVERY step and EVERY scenario.\n"
                 f"MANDATORY: Use playwright-cli for browser testing. NO shortcuts.\n"
                 f"MANDATORY: If you cannot start the REAL project, report it as a failure.\n"
