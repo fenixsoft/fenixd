@@ -413,6 +413,18 @@ class PMEngine:
         try:
             data = json.loads(result_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
+                # 共享结果文件护栏：文件携带的 spec 与当前 spec 不符时，
+                # 视作其它 spec 的残留（主树 .fenix-run-result.json 是共享文件，
+                # 任何 spec 成功都会覆盖写它），避免「CLI 成功退出却被残留文件
+                # 误判为失败 → 无谓重试」（admin 处置 add-spec-context-menu 根因）。
+                stamped = data.get("spec")
+                if isinstance(stamped, str) and stamped and stamped != spec_name:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"Ignoring stale result file {result_path}: "
+                        f"spec='{stamped}' != '{spec_name}'",
+                    )
+                    return None
                 return data
         except (json.JSONDecodeError, OSError):
             pass
@@ -656,6 +668,22 @@ class PMEngine:
         if primary.exists():
             return self._read_verifier_result(primary)
         fallback = self.project_root / ".fenix-run-result.json"
+        # 共享结果文件护栏：项目根文件携带的 spec 与当前 spec 不符时视为残留忽略
+        # （与 _read_implementer_result 相同语义），避免误读其它 spec 的
+        # implementer 残留状态。
+        if fallback.exists():
+            try:
+                fb_data = json.loads(fallback.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                return self._read_verifier_result(fallback)
+            stamped = fb_data.get("spec") if isinstance(fb_data, dict) else None
+            if isinstance(stamped, str) and stamped and stamped != spec_name:
+                self.logger.warning(
+                    "pm_engine",
+                    f"Ignoring stale result file {fallback}: "
+                    f"spec='{stamped}' != '{spec_name}'",
+                )
+                return None
         return self._read_verifier_result(fallback)
 
     # ── Queue Management ───────────────────────────────────────────
