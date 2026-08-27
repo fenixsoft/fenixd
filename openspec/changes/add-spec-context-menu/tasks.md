@@ -21,5 +21,5 @@
 
 ## 4. 验证
 
-- [ ] 4.1 全量 pytest 通过（tests/test_dashboard.py、test_agent_runner.py 及状态机新用例）
-- [ ] 4.2 playwright-cli 实测：右键弹出/关闭/边缘翻转三个 UI 场景 + 呼叫 Admin 端到端（真实拉起 admin run 且活动时间线可见）+ 优先级改写生效 + 删除软删除两处数据一致
+- [x] 4.1 全量 pytest 通过（tests/test_dashboard.py、test_agent_runner.py 及状态机新用例）
+- [x] 4.2 playwright-cli 实测：右键弹出/关闭/边缘翻转三个 UI 场景 + 呼叫 Admin 端到端（真实拉起 admin run 且活动时间线可见）+ 优先级改写生效 + 删除软删除两处数据一致
