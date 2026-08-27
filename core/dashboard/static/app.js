@@ -463,12 +463,6 @@ function updateTopbar() {
   if (sel.options.length === 0) {
     api('/api/projects')
       .then((d) => {
-        // 首个「无项目」空选项：切到项目级（配置/SPEC 列表/运维记录）后可选它回到
-        // 跨项目形态（用户级配置 / 概览 / 聚合视图），否则无法主动退出项目级。
-        const none = document.createElement('option');
-        none.value = '';
-        none.textContent = '无项目';
-        sel.appendChild(none);
         (d.projects || []).forEach((p) => {
           const o = document.createElement('option');
           o.value = p.name;
