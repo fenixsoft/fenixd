@@ -266,9 +266,10 @@ function renderAlertBanner(data) {
     banner.innerHTML = '';
     return;
   }
-  // 重建前保留列表展开状态：标记已处理 / 新告警触发 loadAlerts 重建横幅时列表不收起
+  // 重建前保留列表展开状态：标记已处理 / 新告警触发 loadAlerts 重建横幅时列表不收起。
+  // 默认展开：告警项与「标记已处理」按钮须对管理员可见可处置，否则升级通道形同虚设。
   const oldList = el('alert-list');
-  const expanded = !!oldList && !oldList.classList.contains('hidden');
+  const expanded = !oldList || !oldList.classList.contains('hidden');
   const top = alerts.reduce((m, a) => (sevRank(a.severity) > sevRank(m.severity) ? a : m), alerts[0]);
   const latest = alerts[0];
   const listHtml = alerts.map(alertItemHtml).join('');
@@ -413,8 +414,8 @@ function renderActivitiesInPlace(data) {
   if (main._rendered && window.morphdom) {
     const html = renderActivities(data);
     window.morphdom(main, '<main id="main">' + html + '</main>', {
-      onBeforeElUpdated: (fromEl) => {
-        if (fromEl && fromEl.id === 'tl-root') return false;
+      onBeforeElUpdated: (fromEl, toEl) => {
+        if (fromEl && fromEl.id === 'tl-root' && toEl && toEl.id === 'tl-root') return false;
       },
     });
   } else {
@@ -550,8 +551,10 @@ function renderView(state, data) {
     // 增量更新（VuePress 热重载同思路）：只 patch 变化部分，避免整页替换导致
     // 图片重载 / 滚动重置 / CSS 过渡重启。`#tl-root` 由 React 自行管理，跳过。
     window.morphdom(main, '<main id="main">' + html + '</main>', {
-      onBeforeElUpdated: (fromEl) => {
-        if (fromEl && fromEl.id === 'tl-root') return false;   // 交给 React 增量更新
+      onBeforeElUpdated: (fromEl, toEl) => {
+        // 仅当新旧节点都是时间轴根 #tl-root（保持 React 托管）时才跳过；
+        // 切离时间轴页签时须让 morphdom 正常移除 #tl-root，否则场景/Bug 卡片分支会被丢弃。
+        if (fromEl && fromEl.id === 'tl-root' && toEl && toEl.id === 'tl-root') return false;
       },
     });
   } else {
@@ -923,7 +926,8 @@ function specRow(project, s, depth = 0, orphan = false) {
 }
 
 // 在线清除 SPEC 的 error 字段（POST /api/spec-error-clear）
-// 成功依赖 watcher / 2 秒轮询自动刷新列表（子行消失），无需额外处理；
+// 成功后立即从 DOM 移除对应信息子行（不让它依赖 watcher/轮询刷新才消失——否则
+// 清除后子行残留），并触发一次列表刷新以保持与 STATE.md 一致；
 // 失败则按钮短暂进入禁用+错误态，STATE.md 不变。
 function clearSpecError(project, spec) {
   const btn = (typeof event !== 'undefined' && event) ? event.currentTarget : null;
@@ -933,7 +937,13 @@ function clearSpecError(project, spec) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     })
-    .then(() => { /* 列表自动刷新，子行消失 */ })
+    .then(() => {
+      // 立即移除信息子行：从按钮向上找到所属 .spec-info-row 并删除
+      const row = btn ? btn.closest('.spec-info-row') : null;
+      if (row) row.remove();
+      // 兜底：若 watcher 已推送最新数据，整体刷新一次确保一致（子行已无则无副作用）
+      if (currentState.view === 'project') load();
+    })
     .catch(() => {
       if (!btn) return;
       btn.disabled = true;
@@ -996,8 +1006,12 @@ function renderSpec(d) {
   else tabBody = renderScreenshots(d);
   // 空数据页签占位（即便该 tab 无内容也保持页签项可见可点）
   if (!tabBody) {
+    // 场景结果页签的空状态需区分两种语义：report.json 损坏/不可读 vs 无场景结果，
+    // 与 renderScenarios 的损坏分支保持一致，满足验证 SPEC 文案要求。
     const labels = { timeline: '暂无运行时间轴', scenarios: '暂无场景结果', bugs: '暂无 Bug', screenshots: '暂无失败截图' };
-    tabBody = `<div class="section"><div class="section-title">${tabs.find((t) => t.key === specTab).label}</div><div class="empty-state">${labels[specTab]}</div></div>`;
+    let emptyText = labels[specTab] || '暂无数据';
+    if (specTab === 'scenarios' && d.report && d.report.error) emptyText = 'report.json 损坏或不可读';
+    tabBody = `<div class="section"><div class="section-title">${tabs.find((t) => t.key === specTab).label}</div><div class="empty-state">${emptyText}</div></div>`;
   }
   return `
     <div class="breadcrumb">
@@ -1033,8 +1047,10 @@ function renderSpecInPlace(d) {
   if (main._rendered && window.morphdom) {
     const html = renderSpec(d);
     window.morphdom(main, '<main id="main">' + html + '</main>', {
-      onBeforeElUpdated: (fromEl) => {
-        if (fromEl && fromEl.id === 'tl-root') return false;
+      onBeforeElUpdated: (fromEl, toEl) => {
+        // 仅当新旧节点都是时间轴根 #tl-root 时跳过；切离时间轴页签须正常移除 #tl-root，
+        // 否则场景/Bug 卡片分支（.scenario.fail / .bug-card）会被 morphdom 丢弃而不渲染。
+        if (fromEl && fromEl.id === 'tl-root' && toEl && toEl.id === 'tl-root') return false;
       },
     });
   } else {
