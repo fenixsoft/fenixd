@@ -110,12 +110,14 @@ a:hover { text-decoration: underline; }
   color: var(--ink-2); font-size: 13px; flex: 1; min-width: 160px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.alert-toggle {
+.alert-toggle, .alert-clear-all {
   background: transparent; border: 1px solid var(--hairline-strong);
   color: var(--ink-2); padding: 3px 10px; border-radius: var(--radius-sm);
   cursor: pointer; font-size: 12px;
 }
 .alert-toggle:hover { background: var(--surface-2); color: var(--ink); }
+.alert-clear-all { color: var(--critical); border-color: var(--critical); }
+.alert-clear-all:hover { background: var(--critical); color: #fff; }
 
 .alert-list {
   border-top: 1px solid var(--hairline);

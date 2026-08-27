@@ -255,6 +255,9 @@ function renderAlertBanner(data) {
     banner.innerHTML = '';
     return;
   }
+  // 重建前保留列表展开状态：标记已处理 / 新告警触发 loadAlerts 重建横幅时列表不收起
+  const oldList = el('alert-list');
+  const expanded = !!oldList && !oldList.classList.contains('hidden');
   const top = alerts.reduce((m, a) => (sevRank(a.severity) > sevRank(m.severity) ? a : m), alerts[0]);
   const latest = alerts[0];
   const listHtml = alerts.map(alertItemHtml).join('');
@@ -266,15 +269,25 @@ function renderAlertBanner(data) {
       <span class="alert-banner-meta">${count} 条未处理</span>
       <span class="alert-sev-pill sev-${esc(top.severity || 'major')}">${sevLabel(top.severity)}</span>
       <span class="alert-banner-summary">${esc((latest.project ? '[' + latest.project + '] ' : '') + (latest.description || latest.action_taken || ''))}</span>
-      <button id="alert-toggle" class="alert-toggle">展开列表</button>
+      <button id="alert-toggle" class="alert-toggle">${expanded ? '收起列表' : '展开列表'}</button>
+      <button id="alert-clear-all" class="alert-clear-all">清理所有事件</button>
     </div>
-    <div id="alert-list" class="alert-list hidden">${listHtml}</div>`;
+    <div id="alert-list" class="alert-list${expanded ? '' : ' hidden'}">${listHtml}</div>`;
 
   el('alert-toggle').addEventListener('click', () => {
     const list = el('alert-list');
     const btn = el('alert-toggle');
     list.classList.toggle('hidden');
     btn.textContent = list.classList.contains('hidden') ? '展开列表' : '收起列表';
+  });
+  el('alert-clear-all').addEventListener('click', () => {
+    if (!confirm('确认将所有未处理事件标记为已处理？')) return;
+    api('/api/alerts/clear', { method: 'POST' })
+      .then(() => {
+        loadAlerts();
+        if (currentState.view === 'activities') load();
+      })
+      .catch(() => {});
   });
   document.querySelectorAll('.alert-handled-btn').forEach((b) => {
     b.addEventListener('click', () => markAlertHandled(b.dataset.project, b.dataset.id));

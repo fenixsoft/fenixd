@@ -23,6 +23,7 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
     GET /api/alerts?project=<name> → Administrator 告警/处置记录（缺省跨项目聚合未处理告警）
     POST /api/alerts/<id>/handled?project=<name> → 标记升级告警已处理
+    POST /api/alerts/clear → 清理所有事件：全部项目未处理告警一次标记已处理
     GET /api/admin-activities?project=<name> → Administrator 活动记录（运维记录时间线，未处理升级关联置顶）
     GET /screenshots/<project>/<spec>/<file> → 截图（防路径穿越，仅限注册项目）
 """
@@ -522,6 +523,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             pass
         self._json({"ok": True, "id": alert_id})
 
+    def _api_alerts_clear(self):
+        """清理所有事件：把全部项目未处理升级告警标记为已处理；逐项目广播刷新横幅。"""
+        cleared = 0
+        for p in self.server.projects():
+            if not p.get("exists"):
+                continue
+            proot = Path(p["path"])
+            cleared += dashboard_data.mark_all_alerts_handled(proot)
+            try:
+                self.server.sse_hub.broadcast({
+                    "project": p["name"], "type": "alerts",
+                    "summary": dashboard_data.alerts_summary(proot),
+                })
+            except Exception:
+                pass
+        self._json({"ok": True, "cleared": cleared})
+
     # ── 项目管理端点（启停 daemon / 软删除） ──────────────
 
     def _resolve_project_or_400(self, path: str, prefix: str):
@@ -616,6 +634,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_config_post(query)
         elif path == "/api/spec-error-clear":
             self._api_spec_error_clear(query)
+        elif path == "/api/alerts/clear":
+            self._api_alerts_clear()
         elif path.startswith("/api/alerts/") and path.endswith("/handled"):
             alert_id = urllib.parse.unquote(path[len("/api/alerts/"):-len("/handled")])
             self._api_alert_handled(alert_id, query)

@@ -152,6 +152,17 @@ class TestAdminStore:
         sig = store.append({"kind": SIGNAL, "signal_type": "stuck"})
         assert store.mark_handled(sig["id"]) is False
 
+    def test_mark_all_handled(self, tmp_path):
+        store = AdminStore(tmp_path, FakeLogger())
+        store.append({"kind": ESCALATION, "signal_type": "stuck", "spec": "s1"})
+        store.append({"kind": ESCALATION, "signal_type": "flapping", "spec": "s2"})
+        store.append({"kind": SIGNAL, "signal_type": "stuck", "spec": "s1"})  # 非升级不处理
+        assert store.mark_all_handled() == 2
+        assert store.unhandled() == []
+        assert all(r["handled"] for r in store.read_all() if r["kind"] == ESCALATION)
+        # 幂等：再次调用返回 0
+        assert store.mark_all_handled() == 0
+
     def test_latest_signal_within_window(self, tmp_path):
         store = AdminStore(tmp_path, FakeLogger())
         store.append({"kind": SIGNAL, "signal_type": "stuck", "spec": "s1"})
@@ -912,6 +923,39 @@ class TestDashboardAlertsAPI:
         status, data = srv.get("/api/alerts?project=nope")
         assert status == 200
         assert "error" in data
+
+    def test_api_alerts_clear_all(self, tmp_path):
+        """跨项目一次性清理：POST /api/alerts/clear 标记所有未处理告警。"""
+        proot1 = tmp_path / "proj-clear-1"
+        proot2 = tmp_path / "proj-clear-2"
+        for p in (proot1, proot2):
+            (p / ".fenix").mkdir(parents=True, exist_ok=True)
+            (p / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+        AdminStore(proot1, FakeLogger()).append(
+            {"kind": ESCALATION, "signal_type": "stuck", "spec": "spec-a",
+             "severity": "critical"})
+        AdminStore(proot2, FakeLogger()).append(
+            {"kind": ESCALATION, "signal_type": "flapping", "spec": "spec-b"})
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787,
+                  "projects": [{"name": "proj-clear-1", "path": str(proot1)},
+                               {"name": "proj-clear-2", "path": str(proot2)}],
+                  # 指向不存在目录的 scan_dirs：避免空列表触发默认扫描真实主目录 ~ 混入
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = _AlertTestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+        try:
+            _, before = srv.get("/api/alerts")
+            assert before["total_unhandled"] == 2
+            status, data = srv.post("/api/alerts/clear")
+            assert status == 200
+            assert data["cleared"] == 2
+            _, after = srv.get("/api/alerts")
+            assert after["total_unhandled"] == 0
+            _, per_proj = srv.get("/api/alerts?project=proj-clear-1")
+            assert per_proj["summary"]["unhandled_count"] == 0
+        finally:
+            srv.stop()
 
 
 # ── 4.2 /api/admin-activities（运维记录 API） ───────────

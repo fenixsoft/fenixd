@@ -161,6 +161,18 @@ class AdminStore:
             return changed
         return self._mutate(mutate)
 
+    def mark_all_handled(self) -> int:
+        """将所有未处理升级告警标记为已处理。返回处理数量。"""
+        def mutate(records):
+            changed = 0
+            for rec in records:
+                if rec.get("kind") == ESCALATION and not rec.get("handled"):
+                    rec["handled"] = True
+                    rec["handled_at"] = _utcnow_iso()
+                    changed += 1
+            return changed
+        return self._mutate(mutate)
+
     def latest_signal(self, spec: Optional[str], signal_type: str,
                       within_minutes: float) -> Optional[dict]:
         """返回最近一条匹配（spec, signal_type）的记录，供节流判断。

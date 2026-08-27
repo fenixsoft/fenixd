@@ -46,6 +46,12 @@ def mark_alert_handled(project_root, alert_id: str) -> bool:
     return AdminStore(project_root).mark_handled(alert_id)
 
 
+def mark_all_alerts_handled(project_root) -> int:
+    """将项目所有未处理升级告警标记为已处理。返回处理数量。"""
+    from core.admin_store import AdminStore
+    return AdminStore(project_root).mark_all_handled()
+
+
 def alerts_summary(project_root) -> dict:
     """项目告警摘要：{unhandled_count, max_severity, latest}。
 
