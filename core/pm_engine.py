@@ -1173,6 +1173,88 @@ class PMEngine:
 
     # ── Verification Pipeline ─────────────────────────────────────
 
+    # ── 环境性失联门禁（verify-environment-sanity-gate）───────────
+
+    def _read_verify_report(self, spec_name: str) -> dict:
+        """读取 verify-progress/<spec>/report.json（尽力解析，失败返回空 dict）。"""
+        path = (
+            self.project_root / ".fenix" / "verify-progress"
+            / spec_name / "report.json"
+        )
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _handle_env_blocked_inconclusive(self, spec_name: str, report: dict) -> bool:
+        """环境性失联门禁：全批 blocked-env → inconclusive → 保持 testing 重派新 attempt。
+
+        inconclusive 判据（design D2）：summary.blocked_env > 0 且有效失败
+        （failed + errors）为 0，即该轮原始失败全部为 blocked-env。
+
+        处理：spec 回 implemented（verifier 派发门禁要求）→ 排队重验新 attempt；
+        **不向 admin store 发 repeated_failures 信号**——本方法不产生 error 终态
+        run 产物，repeated_failures 检测天然不累积（连续 inconclusive 不唤醒
+        Administrator，对应 spec Scenario）。
+
+        重验上限沿用 attempts=3（verify_engine.inconclusive_max_attempts 可调）：
+        连续超限后停止自动重验、保持 implemented 并写 error 暴露，由
+        admin_monitor stuck 检测唤起人工，不再无界自动重验。
+
+        Returns:
+            True 表示本轮已按 inconclusive 处理（调用方跳过 bug-found/verified
+            判定）；False 表示无环境性失联，按既有判定继续。
+        """
+        summary = report.get("summary") or {}
+        blocked_env = int(summary.get("blocked_env", 0) or 0)
+        failed = int(summary.get("failed", 0) or 0)
+        errors = int(summary.get("errors", 0) or 0)
+        if blocked_env <= 0 or (failed + errors) > 0:
+            return False
+
+        spec = self.state_machine.read_one(spec_name) or {}
+        try:
+            attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
+        except (TypeError, ValueError):
+            attempts = 1
+        max_attempts = int(
+            self._get_config("verify_engine.inconclusive_max_attempts", 3) or 3
+        )
+
+        if attempts < max_attempts:
+            self.logger.warning(
+                "pm_engine",
+                f"'{spec_name}' 本轮 {blocked_env} 个失败场景全部为 blocked-env"
+                f"（环境性失联），verdict=inconclusive，第 {attempts}/{max_attempts} 次重验",
+            )
+            self.state_machine.update_spec(spec_name, {
+                "status": "implemented",
+                "tester_run": None,
+                "error": (f"环境性失联：{blocked_env} 个失败场景均 blocked-env，"
+                          f"第 {attempts}/{max_attempts} 次重验（inconclusive 不判 fail）"),
+                "_inconclusive_attempts": attempts,
+            })
+            self._enqueue(spec_name, "verifier")
+            return True
+
+        # 连续 ≥max_attempts 轮全部环境性失联：停止自动重验，暴露错误等待人工。
+        # 置 _dispatch_backoff_until 吸收同状态 update 触发的即时重派振荡。
+        self.logger.error(
+            "pm_engine",
+            f"'{spec_name}' 连续 {attempts} 轮验证全部 blocked-env，"
+            f"疑为 mock/SSE 推送环境故障，暂停自动重验",
+        )
+        self.state_machine.update_spec(spec_name, {
+            "status": "implemented",
+            "tester_run": None,
+            "error": (f"连续 {attempts} 轮验证全部环境性失联（blocked-env），"
+                      f"请人工检查 mock/SSE 推送环境；不产生 bug-found 信号"),
+            "_inconclusive_attempts": attempts,
+            "_dispatch_backoff_until": int(datetime.now(timezone.utc).timestamp()) + 1800,
+        })
+        return True
+
     def _run_verification_pipeline(self, spec_name: str):
         """执行三步验证流水线。
 
@@ -1428,6 +1510,12 @@ class PMEngine:
             )
             return
 
+        # ── 阶段2.6 环境性失联门禁（verify-environment-sanity-gate / design D2）──
+        # 全批 blocked-env → inconclusive：回 testing 重派新 attempt，不判 bug-found、
+        # 不产生 repeated_failures 信号。阻断后直接 return（跳过 judge / 终态判定）。
+        if self._handle_env_blocked_inconclusive(spec_name, report):
+            return
+
         # ── 阶段3: Planner 判定结果 ──
         self.logger.info("pm_engine", f"[阶段3] Planner 判定: {spec_name}")
         judge_result = self.agent_runner.run_planner(spec_name, "judge")
@@ -1455,6 +1543,8 @@ class PMEngine:
             self.state_machine.update_spec(spec_name, {
                 "tester_run": judge_result.run_id,
                 "error": "Verification found bugs — see verification report",
+                # 明确非环境性失联：复位 inconclusive 计数（环境恢复后从零重算）
+                "_inconclusive_attempts": 0,
             })
             self.logger.warning(
                 "pm_engine",
@@ -1466,6 +1556,7 @@ class PMEngine:
             self.state_machine.update_spec(spec_name, {
                 "tester_run": judge_result.run_id,
                 "error": None,
+                "_inconclusive_attempts": 0,
             })
             self._on_spec_verified(spec_name)
 
@@ -1490,6 +1581,12 @@ class PMEngine:
             return
 
         if result.success:
+            # 环境性失联门禁（legacy 路径同样生效）：旧版 verifier 若在 report.json
+            # 中标记了 blocked-env 且全批环境性失联，则同样判定 inconclusive 重派，
+            # 不判 bug-found（防假阴性派生 fix 家族）。
+            report = self._read_verify_report(spec_name)
+            if self._handle_env_blocked_inconclusive(spec_name, report):
+                return
             run_result_path = self.project_root / ".fenix-run-result.json"
             verifier_status = self._read_verifier_result(run_result_path)
             if verifier_status == "bug-found":
@@ -1497,6 +1594,7 @@ class PMEngine:
                 self.state_machine.update_spec(spec_name, {
                     "tester_run": result.run_id,
                     "error": "Verification found bugs — see verification report",
+                    "_inconclusive_attempts": 0,
                 })
                 self.logger.warning(
                     "pm_engine",
@@ -1508,6 +1606,7 @@ class PMEngine:
                 self.state_machine.update_spec(spec_name, {
                     "tester_run": result.run_id,
                     "error": None,
+                    "_inconclusive_attempts": 0,
                 })
                 self._on_spec_verified(spec_name)
         else:

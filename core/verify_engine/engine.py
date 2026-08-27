@@ -14,6 +14,7 @@ engine.py — 验证引擎主控
 
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -22,6 +23,12 @@ from .browser import BrowserManager
 from .assertions import AssertionRunner
 from .visual_diff import VisualDiffer
 from .scenarios import TestScenario
+from .env_gate import (
+    finalize_scenario_status,
+    is_env_candidate,
+    probe_http_health,
+    probe_push_health,
+)
 
 
 class VerifyEngine:
@@ -94,6 +101,11 @@ class VerifyEngine:
 
         try:
             results = await self._execute_parallel(normalized)
+            # ── 环境健全性门：场景结算后的统一后置分类（design D1）──
+            # mock 环境断流时等待类超时整批假阴性，不能逐场景烧 token 重验。
+            # 探针在该轮验证中只执行一次（首个候选场景触达即 memoize），
+            # 全部候选场景共享同一探针结论：失联 → 降级 blocked-env。
+            await self._post_classify_environment(normalized, results)
         finally:
             await self.browser.stop()
 
@@ -418,6 +430,115 @@ class VerifyEngine:
 
         return "pass"
 
+    # ── 环境健全性门（design D1/D2）───────────────────────────
+
+    async def _post_classify_environment(
+        self, scenarios: list[TestScenario], results: list[dict]
+    ) -> dict:
+        """对全部场景结果做统一后置分类：候选场景 → 环境探针 → blocked-env。
+
+        - 候选 = 场景 status==fail 且（mock_api 步骤 + 纯等待超时失败）。
+        - 探针只跑一次（本方法入口即整轮验证的首次触达），结果 memoize 在
+          self._env_probe，供候选场景共享。探针健康 → 维持 fail。
+        - 探针失联 → 全部候选降级为 blocked-env。
+
+        Returns:
+            {"probe_healthy": bool, "blocked_env": int, "probe_detail": str}
+        """
+        candidates = [r for r in results if is_env_candidate(r)]
+        if not candidates:
+            self._env_probe = {"healthy": True, "detail": "无候选场景，跳过探针"}
+            return {"probe_healthy": True, "blocked_env": 0, "probe_detail": self._env_probe["detail"]}
+
+        # 首个候选触达时执行探针（整轮一次）
+        if not getattr(self, "_env_probe", None):
+            self._env_probe = await self._run_environment_probe(candidates)
+
+        probe = self._env_probe
+        healthy = bool(probe.get("healthy", True))
+        blocked_env = 0
+        for r in results:
+            effective = finalize_scenario_status(r, healthy)
+            if effective == "blocked-env":
+                r["status"] = "blocked-env"
+                r["env_blocked"] = True
+                r["env_probe_detail"] = probe.get("detail", "")
+                blocked_env += 1
+
+        self.logger.info(
+            "verify_engine",
+            f"环境健全性门: 候选={len(candidates)}, 探针={'健康' if healthy else '失联'}, "
+            f"blocked-env={blocked_env} — {probe.get('detail', '')}",
+        )
+        return {"probe_healthy": healthy, "blocked_env": blocked_env,
+                "probe_detail": probe.get("detail", "")}
+
+    async def _run_environment_probe(self, candidates: list[dict]) -> dict:
+        """环境健全性探针：连通 + 推流检查。
+
+        1) HTTP 连通性 + 数据端点（dashboard /api/state 等价端点）探测；
+        2) 扩展项目额外做真实页面推流检查（DOM 数据域是否渲染）。
+        探针本身无法完成（无入口/异常）时保守判健康，避免误降级真缺陷。
+        """
+        base = self.browser.base_url
+        detail = ""
+        healthy = True
+        if not base and self.project_root:
+            base = self._locate_app_base_url(candidates)
+        if base:
+            healthy = probe_http_health(base, timeout=2.0)
+            detail = f"HTTP 探测 {base}: {'连通' if healthy else '失联'}"
+        # 推流检查（扩展项目 / 浏览器可用时）
+        if healthy and self.browser.is_extension_project:
+            try:
+                push_ok = await self._probe_push_in_browser()
+                healthy = healthy and push_ok
+                detail += f"；推流{'正常' if push_ok else '中断'}"
+            except Exception as e:
+                self.logger.debug("verify_engine", f"推流检查不可用，跳过: {e}")
+        return {"healthy": healthy, "detail": detail.strip("；")}
+
+    def _locate_app_base_url(self, candidates: list[dict]) -> str:
+        """从候选场景的 navigate 步骤定位被测应用入口（回退路径）。"""
+        for r in candidates:
+            for step in r.get("step_results") or []:
+                if not isinstance(step, dict) or step.get("action") != "navigate":
+                    continue
+                detail = str(step.get("detail") or "")
+                m = re.search(r"(https?://[^\s'\");]+)", detail)
+                if m:
+                    url = m.group(1).rstrip("/")
+                    # 截断到 origin（路径部分留给 /api 端点探测）
+                    from urllib.parse import urlsplit
+                    parts = urlsplit(url)
+                    if parts.scheme and parts.netloc:
+                        return f"{parts.scheme}://{parts.netloc}"
+        return ""
+
+    async def _probe_push_in_browser(self) -> bool:
+        """在真实浏览器中验证数据推流：加载应用并等待数据域渲染。
+
+        mock 斩断 SSE 时数据节点永不渲染 → 等待超时 → 判定推流中断。
+        复用 browser.navigate_to_app + wait_selector，与场景执行同一浏览器实例。
+        """
+        context = await self.browser.new_context()
+        page = await context.new_page()
+        try:
+            nav_ok = await self.browser.navigate_to_app(page)
+            if not nav_ok:
+                return False
+            try:
+                await page.wait_for_selector(
+                    ".fenix-dashboard [data-live], .fenix-dashboard [data-state], "
+                    "#root [data-live]",
+                    timeout=3000,
+                )
+                return True
+            except Exception:
+                return False
+        finally:
+            await context.close()
+
     # ── 报告生成 ───────────────────────────────────────────────
 
     def _build_report(self, scenario_results: list[dict]) -> dict:
@@ -427,6 +548,11 @@ class VerifyEngine:
         warnings = sum(1 for r in scenario_results if r["status"] == "warning")
         failed = sum(1 for r in scenario_results if r["status"] == "fail")
         errors = sum(1 for r in scenario_results if r["status"] == "error")
+        blocked_env = sum(1 for r in scenario_results if r["status"] == "blocked-env")
+
+        # blocked-env 计入 warning 统计而非 fail（spec verify-environment-sanity-gate），
+        # 并以独立 blocked_env 字段供放行门禁换算（旧 report 无该字段读为 0）。
+        warnings += blocked_env
 
         return {
             "spec": self.spec_name,
@@ -437,6 +563,7 @@ class VerifyEngine:
                 "warnings": warnings,
                 "failed": failed,
                 "errors": errors,
+                "blocked_env": blocked_env,
             },
             "scenarios": scenario_results,
         }

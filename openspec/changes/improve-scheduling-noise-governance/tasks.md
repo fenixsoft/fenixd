@@ -2,10 +2,10 @@
 
 ## 1. 验证环境健全性门（design D1/D2/D5）
 
-- [ ] 1.1 verify_engine 增加后置分类函数：识别「mock_api 存在 + 纯 Locator/wait_for 等待类断言错误」组合并触发环境探针（dashboard `/api/state` 连通+推流检查）；补单元测试（探针通/断两分支）
-- [ ] 1.2 场景结算接入 blocked-env 分类与 summary.blocked_env 统计；报告字段与既有 schema 向后兼容（旧 report 无该字段读为 0）；补单测
-- [ ] 1.3 verdict 换算接入：有效失败=failed-blocked_env；全批 blocked-env 判 inconclusive → 保持 testing 重派；inconclusive 轮次不累计 repeated_failures（信号抑制标记传递到 admin store）；补单测四例（含今日 fixture 期望值断言）
-- [ ] 1.4 今日真实 report 脱敏入库 `tests/fixtures/report_0827_noise.json`，回归断言：≥12 场景转 blocked-env、整体 inconclusive
+- [x] 1.1 verify_engine 增加后置分类函数：识别「mock_api 存在 + 纯 Locator/wait_for 等待类断言错误」组合并触发环境探针（dashboard `/api/state` 连通+推流检查）；补单元测试（探针通/断两分支）
+- [x] 1.2 场景结算接入 blocked-env 分类与 summary.blocked_env 统计；报告字段与既有 schema 向后兼容（旧 report 无该字段读为 0）；补单测
+- [x] 1.3 verdict 换算接入：有效失败=failed-blocked_env；全批 blocked-env 判 inconclusive → 保持 testing 重派；inconclusive 轮次不累计 repeated_failures（信号抑制标记传递到 admin store）；补单测四例（含今日 fixture 期望值断言）
+- [x] 1.4 今日真实 report 脱敏入库 `tests/fixtures/report_0827_noise.json`，回归断言：≥12 场景转 blocked-env、整体 inconclusive
 
 ## 2. 派发队列老化（design D3）
 
