@@ -2998,6 +2998,125 @@ class TestPMEngineMergeBackIntegration(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Verifier / Planner circuit-open 拦截（fix-fix-stashpop-deadlock）
+# ═══════════════════════════════════════════════════════════════════
+
+class TestVerifierCircuitOpenHoldsState(unittest.TestCase):
+    """provider 熔断期 verifier/planner 派发失败不得 transition bug-found / 派生 fix 级联。
+
+    与 implementer 路径同理（design D5）：熔断期失败属「provider 故障」，
+    不是 spec 自身问题或真实验证失败——spec 保持 implemented，由 full_scan recovery
+    兜底重排；不调用 _on_spec_bug_found（否则产生伪 fix 级联、烧 token）。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        from core.state_machine import StateMachine
+        self.sm = StateMachine(Path(tempfile.mkdtemp()) / "STATE.md")
+        self.sm.add_spec("test-spec", {"status": "testing", "priority": 5})
+        self.logger = MagicMock()
+        self.agent_runner = MagicMock()
+        self.wm = MagicMock()
+        self.agent_runner.worktree_manager = self.wm
+        self.engine = PMEngine(self.sm, self.agent_runner, {}, Path("/tmp"), self.logger)
+
+    def test_verifier_circuit_open_holds_implemented(self):
+        """legacy verifier 返回 circuit open error → spec 保持 implemented，不 bug-found。"""
+        from core.agent_runner import AgentRunResult
+        circuit_result = AgentRunResult(
+            run_id="verify-circuit-1", spec_name="test-spec",
+            agent_type="verifier", success=False, duration_seconds=10,
+            error="provider circuit open: volc (HTTP 404 x3) — cooldown 120s remaining",
+        )
+        self.agent_runner.run_verifier = MagicMock(return_value=circuit_result)
+        self.engine._on_spec_bug_found = MagicMock()
+
+        self.engine._run_legacy_verification("test-spec")
+
+        spec = self.sm.read_one("test-spec")
+        # 不得 transition 到 bug-found（不派生伪 fix 级联）
+        self.assertNotEqual(spec["status"], "bug-found")
+        # _on_spec_bug_found 不得被调用
+        self.engine._on_spec_bug_found.assert_not_called()
+        # error 含 circuit open 信息供 dashboard 可见
+        self.assertIn("provider circuit open", spec.get("error", ""))
+
+    def test_verifier_real_failure_still_bugs_found(self):
+        """verifier 真实失败（非 circuit open）→ 正常 transition bug-found。"""
+        from core.agent_runner import AgentRunResult
+        real_failure = AgentRunResult(
+            run_id="verify-real-1", spec_name="test-spec",
+            agent_type="verifier", success=False, duration_seconds=10,
+            error="claude CLI crashed: segfault",
+        )
+        self.agent_runner.run_verifier = MagicMock(return_value=real_failure)
+        self.engine._on_spec_bug_found = MagicMock()
+
+        self.engine._run_legacy_verification("test-spec")
+
+        spec = self.sm.read_one("test-spec")
+        # 真实失败 → bug-found
+        self.assertEqual(spec["status"], "bug-found")
+        self.assertIn("Verifier agent failed", spec.get("error", ""))
+
+    def test_planner_plan_circuit_open_holds_implemented(self):
+        """三步流水线 planner plan 返回 circuit open → spec 保持 implemented，不 raise。"""
+        from core.agent_runner import AgentRunResult
+        circuit_result = AgentRunResult(
+            run_id="planner-plan-circuit-1", spec_name="test-spec",
+            agent_type="planner-plan", success=False, duration_seconds=10,
+            error="provider circuit open: volc (HTTP 404 x3) — cooldown 120s remaining",
+        )
+        self.agent_runner.run_planner = MagicMock(return_value=circuit_result)
+        self.engine._on_spec_bug_found = MagicMock()
+
+        # 不得抛 RuntimeError
+        self.engine._run_three_stage_verification("test-spec")
+
+        spec = self.sm.read_one("test-spec")
+        self.assertNotEqual(spec["status"], "bug-found")
+        self.engine._on_spec_bug_found.assert_not_called()
+        self.assertIn("provider circuit open", spec.get("error", ""))
+
+    def test_planner_judge_circuit_open_holds_implemented(self):
+        """三步流水线 planner judge 返回 circuit open → spec 保持 implemented，不 raise。
+
+        直接测试 _run_three_stage_verification 的 judge 阶段 circuit-open 拦截，
+        通过 mock run_planner 的 side_effect 覆盖 plan 成功 + judge 熔断路径。
+        """
+        from core.agent_runner import AgentRunResult
+        circuit_err = "provider circuit open: volc (HTTP 404 x3) — cooldown 120s remaining"
+        judge_circuit = AgentRunResult(
+            run_id="planner-judge-circuit-1", spec_name="test-spec",
+            agent_type="planner-judge", success=False, duration_seconds=10,
+            error=circuit_err,
+        )
+        self.agent_runner.run_planner = MagicMock(return_value=judge_circuit)
+        self.engine._on_spec_bug_found = MagicMock()
+
+        # 需要 patch verify_engine 模块引用，因为函数内部 from .verify_engine import VerifyEngine
+        with patch.dict("sys.modules", {
+            "core.verify_engine": MagicMock(),
+            "core.verify_engine.scenarios": MagicMock(),
+            "core.verify_engine.engine": MagicMock(),
+        }), patch("core.pm_engine.VerifyEngine", create=True) as MockEngine, \
+             patch("core.pm_engine.load_scenarios", create=True) as mock_scenarios:
+            mock_engine_instance = MagicMock()
+            mock_engine_instance.run = MagicMock(return_value={
+                "summary": {"total": 0, "passed": 0, "warnings": 0, "failed": 0, "errors": 0}
+            })
+            MockEngine.return_value = mock_engine_instance
+            mock_scenarios.return_value = []
+
+            self.engine._run_three_stage_verification("test-spec")
+
+        spec = self.sm.read_one("test-spec")
+        self.assertNotEqual(spec["status"], "bug-found")
+        self.engine._on_spec_bug_found.assert_not_called()
+        self.assertIn("provider circuit open", spec.get("error", ""))
+
+
+# ═══════════════════════════════════════════════════════════════════
 # VerifyEngine 截图时机（fix: 步骤失败导致断言未执行时不截图）
 # ═══════════════════════════════════════════════════════════════════
 
