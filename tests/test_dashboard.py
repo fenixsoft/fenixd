@@ -1612,7 +1612,11 @@ class TestFileWatcher:
         ev = state_events[0]
         assert ev["project"] == "proj-a"
         assert ev["overview"]["totals"]["spec_count"] == 2
-        names = {s["name"] for s in ev["specs"]["specs"]}
+        # specs 必须是与 GET /api/specs 同形的数组：app.js 把 msg.specs 直接
+        # 作为 renderProject 的 data.specs 消费，嵌套对象会让 specs.filter 抛
+        # TypeError、视图停留在旧 DOM（清除按钮"不生效"即此因）
+        assert isinstance(ev["specs"], list), "state 事件 specs 应为数组"
+        names = {s["name"] for s in ev["specs"]}
         assert names == {"myspec", "otherspec"}
         # 变化 SPEC 的详情随事件推送，且不含事件流
         assert "myspec" in ev["details"]

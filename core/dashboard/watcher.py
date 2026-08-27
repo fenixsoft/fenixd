@@ -195,11 +195,14 @@ class FileWatcher:
             (dashboard_data.spec_summary(proot, n, e) for n, e in cur.items()),
             key=lambda s: s.get("created") or "", reverse=True,
         )
+        # specs 必须与 GET /api/specs 同形（数组）：app.js 把 msg.specs 直接
+        # 喂给 renderProject 的 data.specs，嵌套对象会令 specs.filter 抛 TypeError、
+        # 视图停在旧 DOM（清障按钮等写操作因此看似"无效"）
         self.hub.broadcast({
             "project": name,
             "type": "state",
             "overview": overview,
-            "specs": {"project": name, "specs": specs},
+            "specs": specs,
             "details": details,
         })
 
