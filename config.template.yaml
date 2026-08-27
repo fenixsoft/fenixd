@@ -45,7 +45,7 @@ agents:
   # 超时/强杀保护仍在；对 32 场景级别验证为合理预算。
   max_turns: 300
   # Daily limit on total Agent runs (0 = unlimited)
-  daily_run_limit: 50
+  daily_run_limit: 300
   # Timeout in seconds for a single Agent run
   run_timeout_seconds: 3600
   # 使用三步验证流水线（Planner → VerifyEngine → Judge），比旧版 verifier 快 5-10x
