@@ -46,6 +46,8 @@ def make_runner(proot: Path, config: dict | None = None) -> AgentRunner:
     runner._running_agents = {}
     runner._daily_run_count = 0
     runner._daily_reset_date = None
+    runner._daily_provider_attempts = {}
+    runner._daily_provider_warned = {}
     runner.provider_circuits = {}
     return runner
 

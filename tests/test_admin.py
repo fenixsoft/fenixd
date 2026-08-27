@@ -736,10 +736,10 @@ class TestRunAdministrator:
         runner.project_root = proot
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
-        runner._get_agent_model_assignment = lambda agent_type: (
-            {"name": "volc", "baseurl": "https://v.com", "apikey": "sk-v"},
-            "deepseek-v4-flash",
-        ) if agent_type == "administrator" else None
+        runner._get_agent_model_assignment = lambda agent_type: [
+            ({"name": "volc", "baseurl": "https://v.com", "apikey": "sk-v"},
+             "deepseek-v4-flash"),
+        ] if agent_type == "administrator" else None
         runner._build_prompt = lambda *a, **k: "prompt"
 
         captured = {}
