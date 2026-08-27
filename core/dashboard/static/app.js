@@ -892,15 +892,19 @@ function specRow(project, s, depth = 0, orphan = false) {
         onclick="event.stopPropagation(); openDocModal('${encodeURIComponent(project)}', '${encodeURIComponent(s.name)}')">文档</a>
     </td>
   </tr>`;
-  // 信息子行：error 非空时跨全列显示「信息」badge 与消息同行（flex 布局，详见 style.css），
+  // 信息子行：error 非空时跨全列显示「信息」badge 与消息同行。
+  // 注意 td 必须保持 table-cell（否则 colspan 失效、宽度塌缩到首列），
+  // flex 布局放在内层 .info-line 上（详见 style.css）。
   // 尾部「清除」按钮在线清理 STATE.md error；空则不渲染、不占行高
   if (s.error) {
     return mainRow + `
   <tr class="spec-info-row" onclick="event.stopPropagation()">
     <td colspan="${SPEC_COL_COUNT}">
-      <span class="info-badge">信息</span><span class="info-msg">${esc(String(s.error))}</span>
-      <button class="info-clear-btn" data-project="${esc(project)}" data-spec="${esc(s.name)}"
-        onclick="event.stopPropagation(); clearSpecError('${esc(project)}', '${esc(s.name)}')">清除</button>
+      <div class="info-line">
+        <span class="info-badge">信息</span><span class="info-msg">${esc(String(s.error))}</span>
+        <button class="info-clear-btn" data-project="${esc(project)}" data-spec="${esc(s.name)}"
+          onclick="event.stopPropagation(); clearSpecError('${esc(project)}', '${esc(s.name)}')">清除</button>
+      </div>
     </td>
   </tr>`;
   }

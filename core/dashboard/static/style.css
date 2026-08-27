@@ -502,18 +502,21 @@ tr.orphan-fix > td { border-left: 2px solid rgba(144, 133, 233, 0.5); }
 .spec-table .muted { color: var(--muted); }
 .spec-table .spec-name-cell { cursor: help; }
 
-/* ── 信息子行（替换「错误」列，add-spec-list-hover-hint；信息/内容同行 + 清除按钮） ── */
+/* ── 信息子行（替换「错误」列，add-spec-list-hover-hint；信息/内容同行 + 清除按钮） ──
+   td 保持 table-cell（display:flex 会让 colspan 失效、宽度塌缩到首列），
+   flex 布局放在内层 .info-line 上 */
 .spec-table tbody tr.spec-info-row td {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
   padding: 8px 14px 10px;
   background: var(--surface-2);
   border-bottom: 1px solid var(--hairline);
-  vertical-align: top;
   color: var(--ink-2);
   font-size: 12.5px;
   line-height: 1.5;
+}
+.spec-table tbody tr.spec-info-row .info-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
 }
 .spec-table tbody tr.spec-info-row .info-badge {
   flex: 0 0 auto;
