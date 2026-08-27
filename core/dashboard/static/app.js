@@ -90,8 +90,11 @@ function parseHash() {
     return { view: 'spec', project: parts[1], spec: parts[2] };
   }
   if (parts[0] === 'config') {
-    // config/<project>  或 config（无项目则选第一个）
-    return { view: 'config', project: parts[1] || '' };
+    // config/<project>、config=<project>（项目级配置，等号形式兼容直接导航）
+    // 或 config（无项目则用户级）
+    const proj = parts[1] || '';
+    const eqMatch = h.match(/^config=(.+)$/);
+    return { view: 'config', project: proj || (eqMatch ? eqMatch[1] : '') };
   }
   if (parts[0] === 'activities') {
     // activities/<project>（无项目 → 跨项目聚合）
@@ -1834,6 +1837,31 @@ function renderConfig(data) {
       </div>
     </div>`;
 
+  // 界面风格（主题）页签：偏好存于浏览器 localStorage，不进入保存路径
+  const currentTheme = getStoredTheme();
+  const themeSection = `
+    <div class="config-section">
+      <h3>🎨 界面风格</h3>
+      <p class="section-hint">
+        选择 Dashboard 的配色风格，选择后<strong>立即全站生效</strong>，并保存在本浏览器中，
+        刷新或重开页面后保持。此偏好<strong>不写入</strong> config.yaml，不随配置作用域变化。
+      </p>
+      <div class="approve-mode-row" data-testid="theme-options" role="radiogroup" aria-label="界面风格">
+        <label class="radio-item" data-testid="theme-dark">
+          <input type="radio" name="ui_theme" value="" data-value="dark"
+            ${currentTheme === 'dark' ? 'checked' : ''} />
+          <span><strong>黑色风格</strong>（默认）</span>
+          <small>深色背景，适合弱光环境。</small>
+        </label>
+        <label class="radio-item" data-testid="theme-light">
+          <input type="radio" name="ui_theme" value="" data-value="light"
+            ${currentTheme === 'light' ? 'checked' : ''} />
+          <span><strong>白色风格</strong></span>
+          <small>浅色背景，适合明亮环境。</small>
+        </label>
+      </div>
+    </div>`;
+
   return `
   <div class="config-page">
     <div class="page-title">${title}</div>
@@ -1851,12 +1879,14 @@ function renderConfig(data) {
         <button class="tab-btn" data-testid="tab-agent-models" data-tab="agent-models" role="tab">🧩 Agent 模型分配</button>
         <button class="tab-btn" data-testid="tab-parallel" data-tab="parallel" role="tab">⚡ 并行度设置</button>
         <button class="tab-btn" data-testid="tab-approve" data-tab="approve" role="tab">🚪 审批模式</button>
+        <button class="tab-btn" data-testid="tab-theme" data-tab="theme" role="tab">🎨 界面风格</button>
       </div>
 
       <div class="tab-pane active" data-testid="pane-llm-provider" data-pane="llm-provider">${providerSection}</div>
       <div class="tab-pane" data-testid="pane-agent-models" data-pane="agent-models" hidden>${assignSection}</div>
       <div class="tab-pane" data-testid="pane-parallel" data-pane="parallel" hidden>${parallelSection}</div>
       <div class="tab-pane" data-testid="pane-approve" data-pane="approve" hidden>${approveSection}</div>
+      <div class="tab-pane" data-testid="pane-theme" data-pane="theme" hidden>${themeSection}</div>
     </div>
 
     <div class="config-actions">
@@ -1955,6 +1985,9 @@ function hydrateConfigPage() {
   const main = el('main');
   if (!main) return;
 
+  // 主题选项从 localStorage 恢复（不读取传入配置快照）
+  initTheme();
+
   // 新增 Provider（按钮节点随渲染重建/复用）
   const addBtn = el('btn-add-provider');
   if (addBtn && !addBtn._bound) {
@@ -2023,6 +2056,13 @@ function hydrateConfigPage() {
       const agentKey = t.dataset.agent;
       const fields = main.querySelector(`.assign-fields[data-agent="${agentKey}"]`);
       if (fields) fields.classList.toggle('disabled', !t.checked);
+      return;
+    }
+    // 界面风格（主题）切换：立即全站生效 + 持久化，不进入保存路径、不触发请求
+    if (t.matches('input[name="ui_theme"]')) {
+      setTheme(t);
+      e.stopPropagation();
+      return;
     }
   });
 }
@@ -2213,6 +2253,56 @@ el('lightbox').addEventListener('click', () => el('lightbox').classList.add('hid
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') el('lightbox').classList.add('hidden');
 });
+
+// ── 界面风格（主题）切换 ─────────────────────────────────
+// 主题偏好存于浏览器 localStorage（键 fenix.theme，取值仅 dark/light），
+// 不写入 config.yaml、不触发任何 API 请求；切换即时全站生效（改 <html> 根
+// data-theme 属性，由 CSS 变量驱动）。首帧防闪烁由 index.html <head> 内联
+// 脚本负责；此处提供应用函数与配置页选项初始化。
+
+const THEME_KEY = 'fenix.theme';
+
+// 读取偏好：非法/缺失回退 dark（与内联脚本保持一致）
+function getStoredTheme() {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    if (t === 'light' || t === 'dark') return t;
+  } catch (e) { /* localStorage 不可用：回退 dark */ }
+  return 'dark';
+}
+
+// 同步两个主题单选的 checked「属性」（而非仅 property），使
+// getAttribute('checked') 稳定返回 "true"/"false"，供自动化断言读取。
+function syncThemeCheckedAttrs() {
+  const group = document.querySelector('[data-testid="theme-options"]');
+  if (!group) return;
+  const active = getStoredTheme();
+  group.querySelectorAll('input[name="ui_theme"]').forEach((inp) => {
+    const on = (inp.dataset.value || '') === active;
+    inp.setAttribute('checked', on ? 'true' : 'false');
+    inp.checked = on;
+  });
+}
+
+// 应用主题：写根属性 + 持久化 + 同步属性。不进入保存路径、不触发请求。
+// 主题名取自单选的 data-value（value 留空以兼容 `input_value` 断言读取）。
+function setTheme(theme) {
+  theme = (theme && theme.dataset && theme.dataset.value) || theme;
+  if (theme !== 'light' && theme !== 'dark') theme = 'dark';
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem(THEME_KEY, theme); } catch (e) { /* 忽略持久化失败 */ }
+  syncThemeCheckedAttrs();
+}
+
+// 启动与配置页（重）渲染后调用：确保根属性与持久化一致（name 冲突时以存储为准）。
+// 因 morphdom 增量更新会在同步代码之后再 patch 一次 DOM，导致 radio 的 checked
+// property 被重置，故同步后再用 requestAnimationFrame 兜底重同步一次属性/属性值。
+function initTheme() {
+  const t = getStoredTheme();
+  document.documentElement.dataset.theme = t;
+  syncThemeCheckedAttrs();
+  requestAnimationFrame(syncThemeCheckedAttrs);
+}
 
 // 导出到全局供内联 onclick 使用
 window.nav = nav;
