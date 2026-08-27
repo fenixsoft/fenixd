@@ -919,6 +919,9 @@ class PMEngine:
                         self.state_machine.transition(spec_name, "implemented")
                         self.state_machine.update_spec(spec_name, {
                             "implementer_run": result.run_id,
+                            # 记录真实实现分支（带时间戳后缀）：push 时按此分支推送，
+                            # 否则回退 fenix/<spec> 不存在导致 auto-push 全部失败。
+                            "branch": getattr(result, "branch", None) or None,
                             "error": None,
                             "_retry_count": 0,
                             "_merge_fp": None,
@@ -1528,14 +1531,33 @@ class PMEngine:
     def _resolve_push_branch(self, spec_name: str, spec: dict) -> str:
         """解析 SPEC 的推送分支名。
 
-        优先使用 STATE.md 中的 branch 字段，否则按
-        {worktree.implement_branch_prefix}/{spec_name} 构造（默认 fenix/<spec_name>）。
+        优先使用 STATE.md 中的 branch 字段；缺失时从本地 refs 解析最近的
+        实现分支（worktree 分支名为 {prefix}/{spec_name}-<时间戳后缀>，
+        fix-fix-add-dashboard-spec-doc-tabs 前的存量 done SPEC 分支名从未
+        写回 STATE，需按 refs 恢复）；仍无则按 {prefix}/{spec_name} 构造。
         """
         branch = spec.get("branch")
         if branch and isinstance(branch, str) and branch.strip():
             return branch.strip()
         prefix = self._get_config("worktree.implement_branch_prefix", "fenix")
-        return f"{prefix}/{spec_name}"
+        plain = f"{prefix}/{spec_name}"
+        try:
+            res = subprocess.run(
+                ["git", "for-each-ref", "--format=%(refname:short)",
+                 "--sort=-committerdate", f"refs/heads/{plain}-*"],
+                cwd=str(self.project_root),
+                capture_output=True, text=True, timeout=30,
+            )
+            if res.returncode == 0:
+                sep = plain + "-"
+                for cand in res.stdout.splitlines():
+                    cand = cand.strip()
+                    # 后缀必须是纯数字（epoch 时间戳），避免误匹配其他 spec 的分支
+                    if cand.startswith(sep) and cand[len(sep):].isdigit():
+                        return cand
+        except Exception:
+            pass
+        return plain
 
     def _git_push_branch(self, branch: str) -> tuple:
         """在 project_root 执行 git push origin <branch>。
@@ -1633,10 +1655,25 @@ class PMEngine:
             if status in ("done", "pushed"):
                 continue
 
-            # Transient state — verified should auto-transition to done;
+                        # Transient state — verified should auto-transition to done;
             # if stuck here, flag as blocker
             if status == "verified":
-                blockers.append(f"'{name}': 卡在 verified 状态（应为瞬态，需要推进到 done）")
+                # 必须与其余 blocker 构造点同为 dict：此前 append 字符串导致
+                # _write_blocker_report 按 b['spec'] 取值抛 TypeError，
+                # 全量扫描中断、auto-recovery 永不执行。
+                try:
+                    u = datetime.fromisoformat(
+                        (entry.get("updated") or "").replace("Z", "+00:00"))
+                    v_elapsed = int((now - u).total_seconds() / 60)
+                except (ValueError, TypeError):
+                    v_elapsed = 0
+                blockers.append({
+                    "spec": name,
+                    "status": status,
+                    "reason": f"卡在 verified 状态 {v_elapsed} 分钟（应为瞬态，需要推进到 done）",
+                    "error": entry.get("error") or "No error recorded",
+                    "elapsed_minutes": v_elapsed,
+                })
                 continue
 
             # Check if stuck in an active state
@@ -1717,7 +1754,7 @@ class PMEngine:
                         "error": f"Auto-recovered from stuck implementing ({b['elapsed_minutes']} min)",
                     })
                     self._enqueue(spec_name, "implementer")
-                else:  # testing
+                elif stuck_status == "testing":
                     # 验证卡住：实现已完成，回 implemented 重新派发 verifier
                     self.state_machine.update_spec(spec_name, {
                         "status": "implemented",
@@ -1725,6 +1762,9 @@ class PMEngine:
                         "error": f"Auto-recovered from stuck testing ({b['elapsed_minutes']} min)",
                     })
                     self._enqueue(spec_name, "verifier")
+                # verified：full_scan 已周期性重触发 spec_verified 走放行门禁
+                # 幂等重试；此处不得回滚到 implemented —— 否则每轮全量重跑
+                # verifier，形成验证烧钱循环。仅上报，等门禁条件满足。
 
         return {"blockers": blockers, "warnings": warnings, "checked_at": now.isoformat()}
 
