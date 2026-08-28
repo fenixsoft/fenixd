@@ -1807,21 +1807,25 @@ class TestPushResidualBackfill(unittest.TestCase):
         return PMEngine(self.sm, ar, config or {}, self.project_root, logger)
 
     def test_backfill_cleans_verified_residual(self):
-        """远端 main 存在 → pushed 残痕被清除。"""
+        """远端分支 SHA 存在 → pushed 残痕被清除。"""
         self.sm.add_spec("clean-spec", {
             "status": "pushed",
+            "branch": "fenix/clean-spec-123",
             "error": "git push failed (main): x [push_backoff next_retry_at=1]",
         })
         engine = self._make_engine({})
-        result = engine.backfill_push_residuals()
+        # 模拟该分支在远端存在
+        with patch.object(engine, '_remote_branch_sha', return_value="abc123" * 6):
+            result = engine.backfill_push_residuals()
         self.assertIn("clean-spec", result["cleaned"])
         # 回读 error 已被清空
         self.assertIsNone(self.sm.read_one("clean-spec").get("error"))
 
     def test_backfill_keeps_unverifiable_residual(self):
-        """远端 main 不可达 → 残痕保留并列入 kept 清单。"""
+        """远端分支与 main 均不可达 → 残痕保留并列入 kept 清单。"""
         self.sm.add_spec("kept-spec", {
             "status": "pushed",
+            "branch": "fenix/kept-spec-123",
             "error": "git push failed (main): offline",
         })
         engine = self._make_engine({})

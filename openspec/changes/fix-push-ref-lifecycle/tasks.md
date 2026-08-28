@@ -13,7 +13,7 @@
 ## 3. 残痕回填（design D4）
 
 - [x] 3.1 实现幂等回填清理函数（pushed + git push failed 前缀 → SHA 验证 → 清 error；不可验证保留+清单日志）；补单测（可验证清除 / 不可验证保留）
-- [ ] 3.2 对现存 2 条残痕（improve-scheduling-noise-governance、fix-fix-dispatch-orphan）执行回填并记录结果
+- [x] 3.2 对现存 2 条残痕（improve-scheduling-noise-governance、fix-fix-dispatch-orphan）执行回填并记录结果
 
 ## 4. 回归与核验
 

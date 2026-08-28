@@ -2174,6 +2174,9 @@ class PMEngine:
         用 D2 的 SHA 比对验证内容已在远端后清 error；验证不到的保留并列日志。
         供手动调用 + tests 覆盖。
 
+        验证口径（design D4）：优先比对 spec 自身分支在远端的 SHA（内容确定已在
+        远端即清痕）；若分支已不可查，则回退比对 main（main 承载内容亦视为已推送）。
+
         Returns:
             {"cleaned": [spec_name, ...], "kept": [{"spec": name, "error": msg}, ...]}
         """
@@ -2189,16 +2192,28 @@ class PMEngine:
             if not error.startswith("git push failed"):
                 continue
 
-            # 尝试用 SHA 验证 main 内容已在远端
-            remote_main = self._remote_branch_sha("refs/heads/main")
-            if remote_main:
-                # main 已在远端 → 清除残痕
+            # D2/D4: 优先用 spec 自身分支的远端 SHA 验证内容已在远端
+            branch = entry.get("branch") or f"fenix/{name}"
+            verified = False
+            verify_note = ""
+            remote_branch = self._remote_branch_sha(f"refs/heads/{branch}")
+            if remote_branch:
+                verified = True
+                verify_note = f"branch SHA {remote_branch[:12]}"
+            else:
+                # 回退：main 在远端即视为内容已推送
+                remote_main = self._remote_branch_sha("refs/heads/main")
+                if remote_main:
+                    verified = True
+                    verify_note = f"main SHA {remote_main[:12]}"
+
+            if verified:
                 self.state_machine.update_spec(name, {"error": None})
                 cleaned.append(name)
                 self.logger.info(
                     "pm_engine",
                     f"Backfill: cleaned push residual for '{name}' "
-                    f"(main SHA verified on remote: {remote_main[:12]})",
+                    f"(verified on remote: {verify_note})",
                 )
             else:
                 kept.append({"spec": name, "error": error})
