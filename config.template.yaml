@@ -49,6 +49,26 @@ agents:
   daily_run_limit: 300
   # Timeout in seconds for a single Agent run
   run_timeout_seconds: 3600
+  # 超时活性监督（improve-run-lifecycle-governance D3）。run 到达
+  # run_timeout_seconds 不再直接 kill，而是按下方矩阵判定是否续期：
+  #   1. 总墙钟 ≥ absolute_max_seconds → 无条件终止（封闭续期的成本风险）；
+  #   2. 已续期 max_extensions 次 → 终止；
+  #   3. judge_window 秒内零 run 事件 → 跳过 LLM、直接判停滞终止；
+  #   4. LLM 判定 advancing（单轮轻量判定）→ deadline += extension_seconds 续期，
+  #      并同步顺延 stuck 检测基准；判定 stagnant / judge 不可用 → 终止留证。
+  # enabled: false 退回纯墙钟超时（现状行为）。
+  # 注：canonical 位置在 agents.timeout_supervision；旧顶层 timeout_supervision
+  # 键（enabled: false）仅作回退开关，两处同时配置时以本段为准。
+  timeout_supervision:
+    enabled: true
+    # 单次续期秒数
+    extension_seconds: 1800
+    # 续期次数上限（0 = 到点即按活性判定终止，不续期）
+    max_extensions: 2
+    # 总墙钟上限（秒）；默认 7200 = 3600 运行 + 2×1800 续期
+    absolute_max_seconds: 7200
+    # 活性判定窗口（秒）：窗口内零事件直接判停滞；judge 的快照也取此窗口
+    judge_window: 600
   # 使用三步验证流水线（Planner → VerifyEngine → Judge），比旧版 verifier 快 5-10x
   use_new_verifier: true
 
@@ -116,6 +136,11 @@ gates:
 #   - 推送失败按指数退避延迟重试，退避期内 recovery 重放跳过
 #   - 连续失败达 max_retries 后停止自动重试，发 push_failed 困境信号升级人工
 pm:
+  # 派发锁冲突退避（improve-run-lifecycle-governance D5）：派发 implementer 遇
+  # 「worktree already active」时按此序列（秒）递增退避，期间不消耗 attempt 重试
+  # 配额、不写 retries exhausted；spec 保持 ready 且 error 字段记录
+  # 「backoff until <time>」。序列耗尽仍持锁 → dispatch_stalled 信号升级处置。
+  dispatch_backoff_schedule: [30, 120, 600]
   push:
     # 指数退避秒数（默认 [300, 900]：首次失败后 5 分钟、再次失败后 15 分钟重试）
     retry_backoff_seconds: [300, 900]

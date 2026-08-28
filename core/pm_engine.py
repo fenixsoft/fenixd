@@ -18,6 +18,27 @@ from typing import Optional
 
 from core.dashboard.data import find_impl_run_file, parse_run_task_done
 
+# ── 派发锁冲突退避（improve-run-lifecycle-governance D5）────────────────────
+# 派发 implementer 遇「worktree already active」时不再硬试三连发：按此序列指数
+# 退避安排下一次尝试，期间不消耗 _retry_count、不写 retries exhausted（attempt
+# 配额只属于任务失败，不属于基础设施冲突）。可配 pm.dispatch_backoff_schedule。
+DEFAULT_DISPATCH_BACKOFF_SCHEDULE = (30, 120, 600)
+# dispatch_stalled 信号的建议处置（与 admin_monitor.SIGNAL_RECOMMENDATION 同义；
+# pm_engine 不反向依赖 admin_monitor，这里单独常量避免循环导入）
+SIGNAL_RECOMMENDATION_DISPATCH_STALLED = (
+    "检查持锁进程是否为孤儿（ps/pgrep 确认后 kill），清理残留 worktree 锁后让 spec 重新派发"
+)
+
+# ── 恢复闭环复查 / 假就绪巡检（improve-run-lifecycle-governance D6）──────────
+# auto-recovery（含 defer）后登记观察项，followup_check_minutes 后复查该 spec
+# 是否真实恢复推进；条目镜像到 .fenix/recovery_watch.json 供 daemon 重启续查。
+RECOVERY_WATCH_FILE = "recovery_watch.json"
+DEFAULT_FOLLOWUP_CHECK_MINUTES = 15
+# 假就绪巡检：ready 滞留超过该阈值且期间无派发活动 → 阻塞项（design D6）
+DEFAULT_READY_STALL_THRESHOLD_MINUTES = 20
+# 同 spec 同指纹的巡检/滞留信号冷却（分钟）：指纹未变且冷却期内只记日志
+DEFAULT_SIGNAL_COOLDOWN_MINUTES = 30
+
 
 class PMEngine:
     """
@@ -59,6 +80,14 @@ class PMEngine:
         # Blocker detection state
         self._last_blocker_check = None
         self._last_blocker_report_time = None
+
+        # 恢复闭环复查（improve-run-lifecycle-governance D6）：
+        # {spec: {"fingerprint", "due", "registered_at", "reason"}}，镜像到
+        # .fenix/recovery_watch.json，daemon 重启后续查。
+        self._recovery_watch: dict = {}
+        self._load_recovery_watch()
+        # 巡检信号指纹去重（D6）：{spec: (fingerprint, raised_at_monotonic)}
+        self._signal_fingerprints: dict = {}
 
     # ── Event Handlers ─────────────────────────────────────────────
 
@@ -117,9 +146,18 @@ class PMEngine:
         # 背景（fix-fenix-token-waste）：启动扫描与 event_bus 都会触发 spec_ready，
         # 第二次派发因 worktree 锁失败会把 spec 打回 ready，形成空转反馈环。
         if self.agent_runner.worktree_manager.has_active_worktree(spec_name):
+            # 锁治理（improve-run-lifecycle-governance D5）：锁冲突进入退避计划，
+            # 不硬试、不消耗 attempt 配额（2026-08-27 add-spec-context-menu 事故：
+            # 孤儿 resume 持锁，派发 ~15s 内三连发耗尽 retries exhausted，spec 假死）。
+            self._handle_dispatch_lock_conflict(spec_name)
+            return
+        # 退避期内静默跳过（不写 STATE，避免「写 error → 触发 spec_ready 事件」
+        # 的自触发热循环）；退避到期后由排定的定时器 / 周期扫描重试。
+        spec = self.state_machine.read_one(spec_name) or {}
+        if self._dispatch_backoffed(spec):
             self.logger.debug(
                 "pm_engine",
-                f"Skipping '{spec_name}': worktree already active",
+                f"Skipping '{spec_name}': dispatch backoff active",
             )
             return
         if not self._dependencies_satisfied(spec_name):
@@ -129,6 +167,284 @@ class PMEngine:
             )
             return
         self._enqueue(spec_name, "implementer")
+
+    # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）──────────────────
+
+    def _dispatch_backoff_schedule(self) -> list:
+        """退避序列（秒）。可配 pm.dispatch_backoff_schedule，默认 [30, 120, 600]。
+
+        配置容错：标量视作单元素序列；空/非法序列回退默认值。
+        """
+        sched = self._get_config(
+            "pm.dispatch_backoff_schedule",
+            list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE),
+        )
+        if isinstance(sched, (int, float)):
+            sched = [sched]
+        if not isinstance(sched, (list, tuple)) or not sched:
+            return list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
+        out = []
+        for x in sched:
+            try:
+                out.append(max(0.0, float(x)))
+            except (TypeError, ValueError):
+                continue
+        return out or list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
+
+    def _handle_dispatch_lock_conflict(self, spec_name: str) -> None:
+        """派发遇 worktree 锁冲突：按退避序列安排下次尝试（design D5）。
+
+        - 不递增 ``_retry_count``、不写 retries exhausted：锁冲突是基础设施状态
+          而非任务失败，attempt 配额不被消耗；
+        - spec 保持 ready，error 字段记录「backoff until <time>」供 Dashboard 可读；
+        - 按 ``pm.dispatch_backoff_schedule`` 逐档递增安排下次尝试（定时器重入
+          ``_on_spec_ready``，daemon 重启后由周期扫描兜底）；
+        - 序列耗尽仍持锁 → 发 dispatch_stalled 信号（severity major）上报，spec
+          保持 ready 等待处置，不再自旋重试。
+        """
+        spec = self.state_machine.read_one(spec_name) or {}
+        try:
+            count = int(spec.get("_lock_conflict_count", 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        schedule = self._dispatch_backoff_schedule()
+
+        now = time.time()
+        exhausted = count >= len(schedule)
+        delay = schedule[-1] if exhausted else schedule[count]
+        until = int(now + delay)
+        from datetime import datetime as _dt, timezone as _tz
+        until_iso = _dt.fromtimestamp(until, _tz.utc).isoformat()
+
+        # 不翻转状态：spec 保持 ready，仅记录退避元数据
+        self.state_machine.update_spec(spec_name, {
+            "error": f"worktree already active (lock conflict); backoff until {until_iso}",
+            "_lock_conflict_count": count + 1,
+            "_dispatch_backoff_until": until,
+            "_last_lock_conflict_at": _dt.now(_tz.utc).isoformat(),
+        })
+
+        if exhausted:
+            evidence = (
+                f"lock conflicts={count + 1} (backoff schedule {list(schedule)}s exhausted), "
+                f"last conflict at {spec.get('_last_lock_conflict_at') or 'n/a'}, "
+                f"error={str(spec.get('error') or '')[:120]}"
+            )
+            self.logger.error(
+                "pm_engine",
+                f"Dispatch backoff exhausted for '{spec_name}' — lock still held, "
+                f"escalating dispatch_stalled",
+            )
+            self._signal_dispatch_stalled(spec_name, evidence)
+            # 序列耗尽后不再自旋重试（定时器停止），spec 保持 ready 等待处置
+            return
+
+        self.logger.info(
+            "pm_engine",
+            f"Dispatch lock conflict for '{spec_name}' — backoff {int(delay)}s "
+            f"(attempt {count + 1}/{len(schedule)}), not counted against retries",
+        )
+        self._schedule_backoff_retry(spec_name, delay)
+
+    def _schedule_backoff_retry(self, spec_name: str, delay: float) -> None:
+        """退避到期后重入 ``_on_spec_ready``（daemon 线程；关闭期间自然失效）。"""
+        timer = threading.Timer(
+            max(0.5, float(delay)),
+            self._on_spec_ready,
+            args=(spec_name,),
+        )
+        timer.daemon = True
+        with self._queue_lock:
+            self._backoff_timers = [
+                t for t in getattr(self, "_backoff_timers", []) if t.is_alive()
+            ]
+            self._backoff_timers.append(timer)
+        timer.start()
+
+    # ── 恢复闭环复查 / 假就绪巡检（improve-run-lifecycle-governance D6）───────
+
+    def _recovery_watch_path(self) -> Path:
+        return self.project_root / ".fenix" / RECOVERY_WATCH_FILE
+
+    def _load_recovery_watch(self) -> None:
+        """重启后从 .fenix/recovery_watch.json 续查观察项（损坏/缺失按空兜底）。"""
+        try:
+            data = json.loads(self._recovery_watch_path().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if isinstance(data, dict):
+            self._recovery_watch = {
+                k: v for k, v in data.items() if isinstance(v, dict)
+            }
+
+    def _save_recovery_watch(self) -> None:
+        try:
+            path = self._recovery_watch_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(self._recovery_watch, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            self.logger.warning(
+                "pm_engine", f"Failed to persist recovery watch: {e}",
+            )
+
+    def register_recovery_watch(self, spec_name: str, reason: str) -> None:
+        """登记恢复观察项：followup_check_minutes 后复查 spec 是否真实恢复推进。
+
+        auto-recovery 与 recovery deferred（存活子进程仍在）都会登记——后者防止
+        「defer → 下轮仍卡死 → 再 defer」无限循环（tasks 3.1）。
+        """
+        minutes = float(self._get_config(
+            "pm.recovery.followup_check_minutes", DEFAULT_FOLLOWUP_CHECK_MINUTES) or
+            DEFAULT_FOLLOWUP_CHECK_MINUTES)
+        entry = self.state_machine.read_one(spec_name) or {}
+        self._recovery_watch[spec_name] = {
+            "fingerprint": self._spec_fingerprint(entry),
+            "due": time.time() + max(0.5, minutes) * 60,
+            "registered_at": time.time(),
+            "reason": reason,
+            # 登记时的状态：复查通过条件 = 已离开该状态或已有活跃派发
+            # （auto-recovery 登记时是 ready/implemented；defer 登记时是
+            # implementing/testing 等卡死态——离开它才算恢复推进）。
+            "status_at_register": entry.get("status"),
+        }
+        self._save_recovery_watch()
+        self.logger.info(
+            "pm_engine",
+            f"Recovery watch registered for '{spec_name}' "
+            f"(recheck in {minutes:.0f}m): {reason}",
+        )
+
+    def check_recovery_watch(self) -> list:
+        """到期复查观察项（daemon 周期调用 + BLOCKER CHECK 内调用）。
+
+        通过条件（spec Scenario）：spec 已离开 ready 或已有活跃派发（worktree
+        在跑）→ 关闭观察项且不告警；否则触发 dispatch_stalled 信号唤起
+        Administrator，并关闭观察项（后续由巡检指纹冷却与处置接管）。
+
+        Returns: 本次发出的信号 spec 列表（审计/测试用）。
+        """
+        raised = []
+        now = time.time()
+        for spec_name, item in list(self._recovery_watch.items()):
+            if now < float(item.get("due") or 0):
+                continue
+            self._recovery_watch.pop(spec_name, None)
+            self._save_recovery_watch()
+            entry = self.state_machine.read_one(spec_name)
+            if not entry:
+                continue  # spec 已消失（被人工清理）：观察项静默关闭
+            status = entry.get("status")
+            active_dispatch = False
+            try:
+                active_dispatch = bool(
+                    self.agent_runner.worktree_manager.has_active_worktree(spec_name))
+            except Exception:
+                active_dispatch = False
+            if status != item.get("status_at_register") or active_dispatch:
+                self.logger.info(
+                    "pm_engine",
+                    f"Recovery watch passed for '{spec_name}' "
+                    f"(status={status}, active_dispatch={active_dispatch})",
+                )
+                continue
+            evidence = (
+                f"auto-recovery/defer at {item.get('registered_at')} "
+                f"({item.get('reason')}); spec still ready with no active dispatch "
+                f"after followup window, status={status}, "
+                f"error={str(entry.get('error') or '')[:120]}"
+            )
+            self.logger.error(
+                "pm_engine",
+                f"Recovery watch failed for '{spec_name}' — still stalled in ready, "
+                f"escalating dispatch_stalled",
+            )
+            self._signal_dispatch_stalled(spec_name, evidence)
+            raised.append(spec_name)
+        return raised
+
+    @staticmethod
+    def _spec_fingerprint(entry: dict) -> str:
+        """spec 状态指纹 = hash(status + error 摘要)（D6 信号去重依据）。"""
+        basis = f"{entry.get('status')}|{str(entry.get('error') or '')[:120]}"
+        return hashlib.sha1(basis.encode("utf-8", "replace")).hexdigest()[:12]
+
+    def _signal_dispatch_stalled(self, spec_name: str, evidence: str,
+                                 fingerprint: str | None = None) -> None:
+        """退避耗尽仍持锁 / 恢复复查未通过 / 假就绪滞留 → dispatch_stalled 信号（D5/D6）。
+
+        写入 admin store（kind=SIGNAL, severity major），由 AdminMonitor 摄取唤起
+        Administrator。双重去重避免反复拉起：
+          - 指纹去重（D6）：同 spec 同一状态指纹在
+            ``pm.recovery.signal_cooldown_minutes``（默认 30）内只记日志；
+            指纹变化或冷却结束方可再次写入。
+          - admin_alerts 去重：store 内冷却期内已有同类信号时同样抑制。
+        """
+        from .admin_store import AdminStore, SIGNAL
+        entry = self.state_machine.read_one(spec_name) or {}
+        fp = fingerprint or self._spec_fingerprint(entry)
+        cooldown = float(self._get_config(
+            "pm.recovery.signal_cooldown_minutes", DEFAULT_SIGNAL_COOLDOWN_MINUTES) or
+            DEFAULT_SIGNAL_COOLDOWN_MINUTES) * 60
+        prev = self._signal_fingerprints.get(spec_name)
+        now = time.time()
+        if prev and prev[0] == fp and (now - prev[1]) < cooldown:
+            self.logger.info(
+                "pm_engine",
+                f"dispatch_stalled for '{spec_name}' suppressed (same fingerprint "
+                f"{fp} within {int(cooldown / 60)}m cooldown) — logged only",
+            )
+            return
+        self._signal_fingerprints[spec_name] = (fp, now)
+
+        store_cooldown = float(
+            self._get_config("admin.escalation_cooldown_minutes", 15) or 15)
+        store = AdminStore(self.project_root, self.logger)
+        try:
+            if store.latest_signal(spec_name, "dispatch_stalled", store_cooldown) is not None:
+                self.logger.info(
+                    "pm_engine",
+                    f"dispatch_stalled for '{spec_name}' suppressed "
+                    f"(cooldown {store_cooldown:.0f}m)",
+                )
+                return
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"dispatch_stalled dedup check failed '{spec_name}' (proceeding): {e}",
+            )
+        try:
+            store.append({
+                "kind": SIGNAL,
+                "signal_type": "dispatch_stalled",
+                "spec": spec_name,
+                "severity": "major",
+                "description": (
+                    f"'{spec_name}' 派发长期被 worktree 锁冲突滞留，"
+                    f"退避计划耗尽仍未获得锁"
+                ),
+                "evidence": evidence,
+                "recommended_action": SIGNAL_RECOMMENDATION_DISPATCH_STALLED,
+            })
+            self.logger.warning(
+                "pm_engine",
+                f"dispatch_stalled signal recorded for '{spec_name}'",
+            )
+        except Exception as e:
+            self.logger.error(
+                "pm_engine",
+                f"Failed to record dispatch_stalled for '{spec_name}': {e}",
+            )
+
+    def _clear_dispatch_conflict(self, spec_name: str) -> dict:
+        """派发成功后清零锁冲突计数与退避窗口（返回 update 字段供合并写入）。"""
+        return {
+            "_lock_conflict_count": 0,
+            "_dispatch_backoff_until": None,
+            "_last_lock_conflict_at": None,
+        }
 
     def _on_spec_implemented(self, spec_name: str):
         """Schedule verifier for implemented SPEC."""
@@ -1515,6 +1831,8 @@ class PMEngine:
                             "_retry_count": 0,
                             "_merge_fp": None,
                             "_merge_streak": 0,
+                            # 派发成功即清零锁冲突计数（improve-run-lifecycle-governance D5）
+                            **self._clear_dispatch_conflict(spec_name),
                         })
                         # pop 冲突自愈后：被丢弃的 stash 改动文件清单写入 error 字段，
                         # 触发 admin 告警（stash 条目保留、可 git stash show 找回，
@@ -2983,6 +3301,86 @@ class PMEngine:
         from .config import ConfigLoader
         return ConfigLoader.get(self.config, key, default)
 
+    # ── 恢复一致性辅助（improve-run-lifecycle-governance D4/D6）──────────────
+
+    def _stuck_elapsed_minutes(self, spec_name: str, now: datetime,
+                               updated: datetime) -> float:
+        """卡死耗时（分钟）：优先读 agent_runner 的续期基准，回退 STATE updated。
+
+        超时监督续期（improve-run-lifecycle-governance 3.2 / D3）会通过
+        ``agent_runner.note_run_extension`` 登记新的 stuck 基准——否则刚被续期
+        的长任务因 updated 停留在派发时刻，下一轮 BLOCKER CHECK 就被误判 stuck
+        并触发 auto-recovery（绕过整个监督机制）。无注册表条目（未续期 / 接口
+        不可用 / run 已结束）时按 updated 计算，行为与现状一致。
+        """
+        getter = getattr(self.agent_runner, "get_extension_baseline", None)
+        if callable(getter):
+            try:
+                baseline_ts = getter(spec_name)
+            except Exception as e:
+                self.logger.debug(
+                    "pm_engine",
+                    f"Extension baseline probe failed for '{spec_name}': {e}",
+                )
+                baseline_ts = None
+            if isinstance(baseline_ts, (int, float)) and baseline_ts > 0:
+                try:
+                    return (now.timestamp() - float(baseline_ts)) / 60.0
+                except (TypeError, ValueError):
+                    pass
+        return (now - updated).total_seconds() / 60.0
+
+    def _attempt_still_alive(self, spec_name: str) -> bool:
+        """核验 spec 是否仍有存活的 attempt 子进程（auto-recovery 前置门禁）。
+
+        优先复用 ``agent_runner.has_live_attempt``（进程表 + 流新鲜度）；接口不可
+        用或返回非布尔（如测试替身）时保守按「无存活」处理，保持既有恢复行为。
+        """
+        checker = getattr(self.agent_runner, "has_live_attempt", None)
+        if not callable(checker):
+            return False
+        try:
+            result = checker(spec_name)
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"Live-attempt probe failed for '{spec_name}' "
+                f"(treating as no live child): {e}",
+            )
+            return False
+        return result is True
+
+    def _ready_stall_threshold_minutes(self) -> float:
+        """假就绪巡检阈值：pm.recovery.ready_stall_threshold_minutes（默认 20）。"""
+        try:
+            return max(0.0, float(self._get_config(
+                "pm.recovery.ready_stall_threshold_minutes",
+                DEFAULT_READY_STALL_THRESHOLD_MINUTES)))
+        except (TypeError, ValueError):
+            return float(DEFAULT_READY_STALL_THRESHOLD_MINUTES)
+
+    def _spec_has_recent_run_activity(self, spec_name: str, window_minutes: float) -> bool:
+        """窗口内该 spec 是否有任何 run 产物活动（impl/verify/planner/admin）。
+
+        「期间无成功派发」的代理判据：窗口内没有任何 run 流文件被写入即视为
+        无派发活动（失败的 run 也算活动——有活动说明调度仍在工作，不是假就绪）。
+        """
+        runs_dir = self.project_root / ".fenix" / "runs"
+        if not runs_dir.is_dir():
+            return False
+        cutoff = time.time() - max(0.0, window_minutes) * 60
+        try:
+            for prefix in ("impl", "verify", "planner-plan", "planner-judge", "admin"):
+                for p in runs_dir.glob(f"{prefix}-{spec_name}-*.jsonl"):
+                    try:
+                        if p.stat().st_mtime >= cutoff:
+                            return True
+                    except OSError:
+                        continue
+        except OSError:
+            return False
+        return False
+
     def _dependencies_satisfied(self, spec_name: str) -> bool:
         """Check if all dependencies of a SPEC are in a terminal complete state."""
         spec = self.state_machine.read_one(spec_name)
@@ -3029,6 +3427,13 @@ class PMEngine:
         stuck_threshold_minutes = ConfigLoader.effective_stuck_threshold_seconds(self.config) / 60.0
         now = datetime.now(timezone.utc)
 
+        # 恢复闭环复查（D6）：到期的观察项先复查——本轮 auto-recovery 是否真的
+        # 让 spec 恢复推进；未恢复则发 dispatch_stalled 信号。
+        try:
+            self.check_recovery_watch()
+        except Exception as e:
+            self.logger.error("pm_engine", f"Recovery watch check failed: {e}")
+
         blockers = []
         warnings = []
 
@@ -3066,7 +3471,8 @@ class PMEngine:
                     updated_str = entry.get("updated", "")
                     if updated_str:
                         updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
-                        elapsed = (now - updated).total_seconds() / 60
+                        elapsed = self._stuck_elapsed_minutes(
+                            name, now, updated)
                         if elapsed > stuck_threshold_minutes:
                             blockers.append({
                                 "spec": name,
@@ -3106,6 +3512,24 @@ class PMEngine:
                                 "reason": f"Waiting in ready queue for {int(elapsed)} minutes — possible queue starvation",
                                 "elapsed_minutes": int(elapsed),
                             })
+                        # 假就绪巡检（improve-run-lifecycle-governance D6）：ready 滞留
+                        # 超过 ready_stall_threshold_minutes 且期间无派发活动 → 阻塞项。
+                        # 退避期内的 spec（_dispatch_backoff_until 未到期）有意等待，不算滞留。
+                        stall_threshold = self._ready_stall_threshold_minutes()
+                        if (elapsed > stall_threshold
+                                and not self._dispatch_backoffed(entry)
+                                and not self._spec_has_recent_run_activity(
+                                    name, stall_threshold)):
+                            blockers.append({
+                                "spec": name,
+                                "status": status,
+                                "reason": (
+                                    f"假就绪滞留：ready 超过 {int(elapsed)} 分钟且期间无"
+                                    f"派发活动（阈值 {stall_threshold:.0f}m）"
+                                ),
+                                "error": entry.get("error") or "No error recorded",
+                                "elapsed_minutes": int(elapsed),
+                            })
                 except (ValueError, TypeError):
                     pass
 
@@ -3122,6 +3546,31 @@ class PMEngine:
             for b in blockers:
                 spec_name = b["spec"]
                 stuck_status = b["status"]
+                if stuck_status == "ready":
+                    # 假就绪滞留（D6）：不重置状态（本就 ready），上报信号唤醒处置。
+                    self._signal_dispatch_stalled(
+                        spec_name,
+                        f"ready stall {b['elapsed_minutes']}m without dispatch activity; "
+                        f"error={str(b.get('error') or '')[:120]}",
+                    )
+                    continue
+                # ── 恢复一致性（improve-run-lifecycle-governance D4）：重置前必须
+                # 核验该 spec 是否仍有存活的 attempt 子进程。存活则跳过本次恢复并
+                # 保留全部跟踪字段——2026-08-27 事故：BLOCKER CHECK 对仍有存活
+                # resume 子进程的 spec 执行 auto-recovery，把 spec 重置为 ready 并
+                # 清空跟踪，与真实运行态失配后卡死近 1 小时。
+                if self._attempt_still_alive(spec_name):
+                    self.logger.warning(
+                        "pm_engine",
+                        f"recovery deferred, live child present: '{spec_name}' "
+                        f"(was {stuck_status}, {b['elapsed_minutes']} min) — "
+                        f"tracking fields preserved",
+                    )
+                    # defer 也登记观察项：子进程意外长寿/僵死时由闭环复查接管，
+                    # 不进入「每轮 defer」死循环。
+                    self.register_recovery_watch(
+                        spec_name, "auto-recovery deferred (live child present)")
+                    continue
                 self.logger.info(
                     "pm_engine",
                     f"Auto-recovering stuck SPEC: {spec_name} (was {stuck_status})",
@@ -3138,6 +3587,8 @@ class PMEngine:
                         "error": f"Auto-recovered from stuck implementing ({b['elapsed_minutes']} min)",
                     })
                     self._enqueue(spec_name, "implementer")
+                    self.register_recovery_watch(
+                        spec_name, f"auto-recovered from stuck {stuck_status}")
                 elif stuck_status == "testing":
                     # 验证卡住：实现已完成，回 implemented 重新派发 verifier
                     self.state_machine.update_spec(spec_name, {
@@ -3146,6 +3597,8 @@ class PMEngine:
                         "error": f"Auto-recovered from stuck testing ({b['elapsed_minutes']} min)",
                     })
                     self._enqueue(spec_name, "verifier")
+                    self.register_recovery_watch(
+                        spec_name, f"auto-recovered from stuck {stuck_status}")
                 # verified：full_scan 已周期性重触发 spec_verified 走放行门禁
                 # 幂等重试；此处不得回滚到 implemented —— 否则每轮全量重跑
                 # verifier，形成验证烧钱循环。仅上报，等门禁条件满足。

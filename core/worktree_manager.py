@@ -12,6 +12,16 @@ import time
 from pathlib import Path
 from typing import Optional, Set, Dict
 
+# ── 锁治理（improve-run-lifecycle-governance D4）─────────────────────────────
+# 锁是内存集合 _spec_locks，daemon 重启即丢失；同时 attempt/resume 的孤儿子进程
+# 却可能在进程表中继续存活。两类场景都以「真实进程表」为唯一真相：
+#   - 在册锁扫描不到匹配进程、且对应 run 流文件停止增长超过该窗口 → 陈锁，回收
+#   - 无在册锁但进程表存在指向该 spec worktree 的存活进程 → 视为仍持锁
+STALE_LOCK_IDLE_SECONDS = 120
+# has_active_worktree 在派发热路径被高频调用，pgrep 每次数十毫秒；对同一 spec
+# 的进程表扫描做短缓存，避免派发风暴。缓存窗口内的进程消失/出现误差可接受。
+PROCESS_SCAN_CACHE_SECONDS = 5.0
+
 
 class WorktreeManager:
     """
@@ -22,13 +32,17 @@ class WorktreeManager:
       - Verifier:    .claude/worktrees/verify-<spec>-<timestamp>/ on branch fenix/verify-<spec>
     """
 
-    def __init__(self, base_dir: Path, project_root: Path, logger):
+    def __init__(self, base_dir: Path, project_root: Path, logger, process_scanner=None):
         self.base_dir = Path(base_dir)
         self.project_root = Path(project_root)
         self.logger = logger
         self._active_worktrees: Set[str] = set()
         self._wt_branches: Dict[str, str] = {}  # wt_path -> branch name
         self._spec_locks: Set[str] = set()  # SPECs currently being worked on
+        # 锁治理（D4）：进程表扫描函数，默认 pgrep 实现；测试可注入替身。
+        # 签名 (spec_name) -> bool，表示进程表中是否存在指向该 spec worktree 的进程。
+        self._process_scanner = process_scanner or self._pgrep_spec_process
+        self._proc_scan_cache: Dict[str, tuple] = {}  # spec -> (expires_at, alive)
 
     def create(self, spec_name: str, agent_type: str = "implementer") -> Optional[Path]:
         """
@@ -364,6 +378,9 @@ class WorktreeManager:
             ]
             for k in to_remove:
                 self._spec_locks.discard(k)
+            # 进程扫描缓存随之失效（下一次判定须重新扫描，防读到陈旧「存活」结果）
+            for k in to_remove:
+                self._proc_scan_cache.pop(self._lock_spec_name(k), None)
 
     def cleanup_orphans(self):
         """Clean up any remaining worktree directories on shutdown."""
@@ -394,10 +411,194 @@ class WorktreeManager:
 
         self._active_worktrees.clear()
         self._spec_locks.clear()
+        self._proc_scan_cache.clear()
 
     def has_active_worktree(self, spec_name: str) -> bool:
-        """Check if any worktree is active for the given SPEC."""
-        return any(spec_name in lock for lock in self._spec_locks)
+        """Check if any worktree is active for the given SPEC.
+
+        锁治理（improve-run-lifecycle-governance D4）：先以进程表校验在册锁——
+        锁在册但扫描不到进程、且 run 流文件停止增长超过 STALE_LOCK_IDLE_SECONDS
+        时判定为陈锁并回收（孤儿 attempt 已死，锁放行后续派发）；锁在册且进程
+        存活（或流仍新鲜）则照常视为持锁。
+
+        daemon 重启后内存锁丢失、但进程表仍存在指向该 spec worktree 的存活
+        agent 进程时，同样返回 True（重建登记），防止创建第二个并发 worktree。
+        """
+        registered = any(spec_name in lock for lock in self._spec_locks)
+        if not registered:
+            # 无在册锁：以进程为真相兜底（daemon 重启 / 孤儿 resume 场景），
+            # 命中时重建登记，使后续判定回到内存快路径。
+            if self._spec_process_alive(spec_name):
+                self._register_spec_locks(spec_name)
+                self.logger.info(
+                    "worktree_manager",
+                    f"Rebuilt lock from process table for '{spec_name}' "
+                    "(daemon restart with live child)",
+                )
+                return True
+            return False
+
+        # 在册锁：疑似陈锁时按「进程 + 流新鲜度」二次确认
+        if self._spec_process_alive(spec_name):
+            return True
+        mtime = self._latest_stream_mtime(spec_name)
+        if mtime is not None and (time.time() - mtime) <= STALE_LOCK_IDLE_SECONDS:
+            return True  # 进程扫描未命中但流仍在增长：保守视为持锁
+        released = self._release_spec_locks(spec_name, "stale lock (no live process)")
+        if released:
+            self.logger.warning(
+                "worktree_manager",
+                f"Released stale lock(s) {released} for '{spec_name}' — "
+                f"no live process and stream idle >{STALE_LOCK_IDLE_SECONDS}s",
+            )
+        return False
+
+    # ── 锁治理（improve-run-lifecycle-governance D4）──────────────────────────
+
+    def refresh_locks(self) -> list:
+        """以真实进程表重建/校验在册锁，回收陈锁（daemon 启动首扫 + 周期调用）。
+
+        对每个在册锁：
+          - 进程表存在指向该 spec worktree 的进程 → 保留（孤儿 resume 存活的情形）
+          - 无匹配进程且对应 run 流文件 mtime 距今超过 STALE_LOCK_IDLE_SECONDS
+            （或根本没有流文件）→ 陈锁，释放放行后续派发
+          - 无匹配进程但流仍在增长 → 保守保留（进程扫描可能受窗口/权限影响）
+
+        Returns: 被回收的锁 key 列表（审计/测试用）。
+        """
+        released: list = []
+        for lock_key in sorted(self._spec_locks):
+            spec = self._lock_spec_name(lock_key)
+            if self._spec_process_alive(spec):
+                continue
+            mtime = self._latest_stream_mtime(spec)
+            if mtime is not None and (time.time() - mtime) <= STALE_LOCK_IDLE_SECONDS:
+                continue
+            released.extend(self._release_spec_locks(
+                spec, f"stale lock: no live process, stream idle "
+                      f">{STALE_LOCK_IDLE_SECONDS}s"))
+        if released:
+            self.logger.warning(
+                "worktree_manager",
+                f"refresh_locks released stale lock(s): {released}",
+            )
+        return released
+
+    @staticmethod
+    def _lock_spec_name(lock_key: str) -> str:
+        """锁 key（``<spec>:<agent_type>``）→ spec 名。"""
+        return lock_key.split(":")[0]
+
+    def _register_spec_locks(self, spec_name: str) -> None:
+        """按 spec 名重建两把锁（impl + verify），与 create() 的 key 形态一致。
+
+        孤儿进程可能来自任一 agent 类型，进程表只能证明「该 spec 仍有活跃
+        worktree」而无法可靠区分前缀，因此两把一起登记，宁可多拦不漏放。
+        """
+        self._spec_locks.add(f"{spec_name}:implementer")
+        self._spec_locks.add(f"{spec_name}:verifier")
+
+    def _release_spec_locks(self, spec_name: str, reason: str) -> list:
+        """释放该 spec 的全部在册锁，返回被释放的 key（已不在册则返回空）。"""
+        to_remove = [k for k in self._spec_locks if self._lock_spec_name(k) == spec_name]
+        for k in to_remove:
+            self._spec_locks.discard(k)
+        return to_remove
+
+    def _spec_process_alive(self, spec_name: str) -> bool:
+        """进程表中是否存在指向该 spec worktree 的进程（带短缓存）。
+
+        进程消失/出现以缓存窗口（PROCESS_SCAN_CACHE_SECONDS）为粒度生效，
+        避免派发热路径上的 pgrep 风暴。
+        """
+        now = time.monotonic()
+        cached = self._proc_scan_cache.get(spec_name)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        try:
+            alive = bool(self._process_scanner(spec_name))
+        except Exception as e:  # 扫描异常视为不可用：保守按无进程处理并记日志
+            self.logger.warning(
+                "worktree_manager",
+                f"Process scan failed for '{spec_name}' (treated as absent): {e}",
+            )
+            alive = False
+        self._proc_scan_cache[spec_name] = (
+            now + PROCESS_SCAN_CACHE_SECONDS, alive)
+        return alive
+
+    def _pgrep_spec_process(self, spec_name: str) -> bool:
+        """pgrep 匹配 cmdline 含 ``worktrees/{impl,verify}-<spec>-`` 的进程。
+
+        匹配串锚定 worktree 目录字面量（<prefix>-<spec>-<ts>），不匹配裸 spec 名，
+        防止把无关进程当成持锁者。pgrep 不可用/超时时返回 False（调用方以
+        run 流新鲜度做二次确认）。
+        """
+        for prefix in ("impl", "verify"):
+            pattern = f"worktrees/{prefix}-{spec_name}-"
+            try:
+                res = subprocess.run(
+                    ["pgrep", "-f", pattern],
+                    capture_output=True, text=True, timeout=5,
+                )
+            except (subprocess.SubprocessError, OSError):
+                return False
+            if res.returncode == 0 and res.stdout.strip():
+                return True
+        return False
+
+    def _latest_stream_mtime(self, spec_name: str) -> Optional[float]:
+        """该 spec 全部 run 流文件（.fenix/runs/{impl,verify}-<spec>-*.jsonl）的最新 mtime。
+
+        无任何流文件返回 None。
+        """
+        runs_dir = self.project_root / ".fenix" / "runs"
+        if not runs_dir.is_dir():
+            return None
+        newest: Optional[float] = None
+        try:
+            for prefix in ("impl", "verify"):
+                for p in runs_dir.glob(f"{prefix}-{spec_name}-*.jsonl"):
+                    try:
+                        m = p.stat().st_mtime
+                    except OSError:
+                        continue
+                    if newest is None or m > newest:
+                        newest = m
+        except OSError:
+            return None
+        return newest
+
+    def _worktree_has_live_process(self, wt_name: str) -> bool:
+        """进程表中是否存在 cmdline 引用该 worktree 目录的进程（启动清理用）。
+
+        与 _pgrep_spec_process 不同：这里按完整 worktree 目录名匹配，不经过
+        缓存（启动时一次性调用，结果必须实时）。
+        """
+        pattern = f"worktrees/{wt_name}"
+        try:
+            res = subprocess.run(
+                ["pgrep", "-f", pattern],
+                capture_output=True, text=True, timeout=5,
+            )
+            return res.returncode == 0 and res.stdout.strip() != ""
+        except (subprocess.SubprocessError, OSError):
+            return False
+
+    @staticmethod
+    def _spec_from_worktree_name(wt_name: str) -> Optional[str]:
+        """worktree 目录名（``{impl,verify}-<spec>-<ts>``）→ spec 名。
+
+        spec 名自身可含连字符，因此取前缀之后、末段时间戳之前的部分；
+        段数不足（非本框架产物）返回 None。
+        """
+        for prefix in ("impl", "verify"):
+            if wt_name.startswith(f"{prefix}-"):
+                rest = wt_name[len(prefix) + 1:]
+                parts = rest.rsplit("-", 1)
+                if len(parts) == 2 and parts[0] and parts[1].isdigit():
+                    return parts[0]
+        return None
 
     # ── 主树健康检查（fix-fenix-token-waste） ──────────────────────
 
@@ -564,12 +765,27 @@ class WorktreeManager:
 
         与 shutdown 的 cleanup_orphans 互补：后者清活动集合内残留，本方法清
         上次异常退出遗留的孤儿。失败记 WARNING，不阻塞 daemon 启动。
+
+        锁治理（improve-run-lifecycle-governance D4）：daemon 重启后仍可能有
+        孤儿 attempt 进程在某个 worktree 里继续干活，删除其目录会让进程当场
+        失去工作区。凡进程表仍能扫到指向该目录的进程，跳过清理并把锁重建
+        回内存（保守：宁可不清理，不可误删在用的 worktree）。
         """
         if not self.base_dir.exists():
             return
         for wt_dir in self.base_dir.iterdir():
             if not wt_dir.is_dir() or str(wt_dir) in self._active_worktrees:
                 continue
+            if self._worktree_has_live_process(wt_dir.name):
+                spec = self._spec_from_worktree_name(wt_dir.name)
+                if spec:
+                    self._register_spec_locks(spec)
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Skip stale worktree cleanup for '{wt_dir.name}' — "
+                        f"live process present, lock rebuilt for '{spec}'",
+                    )
+                    continue
             self.logger.info("worktree_manager", f"Cleaning up stale worktree: {wt_dir}")
             try:
                 branch = None

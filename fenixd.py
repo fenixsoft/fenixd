@@ -148,7 +148,10 @@ class FenixDaemon:
         # Scan initial state
         self.logger.info("fenixd", "Performing initial STATE.md scan...")
 
-        # 启动清理孤儿 worktree（fix-fenix-token-waste）：上次异常退出的残留
+        # 启动清理孤儿 worktree（fix-fenix-token-waste）：上次异常退出的残留。
+        # 锁治理（improve-run-lifecycle-governance D4）：清理前先以进程表重建在册锁
+        # —— 孤儿 attempt 进程仍存活的 worktree 会被跳过并重建登记，不被误删。
+        self.worktree_manager.refresh_locks()
         self.worktree_manager.cleanup_stale_worktrees()
 
         # 恢复上次异常退出遗留的中断状态（implementing/testing → ready）。
@@ -174,6 +177,7 @@ class FenixDaemon:
         # Main loop — keep the process alive + 配置热更新轮询
         self.logger.info("fenixd", "Entering main loop")
         config_check_ts = time.time()
+        recovery_watch_ts = time.time()
         try:
             while self.running:
                 time.sleep(1)
@@ -191,6 +195,16 @@ class FenixDaemon:
                         self._maybe_reload_config()
                     except Exception as e:
                         self.logger.error("fenixd", f"Config hot-reload failed: {e}")
+                # 恢复闭环复查（improve-run-lifecycle-governance D6）：每分钟检查
+                # 到期的观察项——followup 窗口（默认 15m）短于全量扫描间隔，
+                # 不能只依赖 event_bus 的 full_scan 触发。
+                if time.time() - recovery_watch_ts >= 60:
+                    recovery_watch_ts = time.time()
+                    try:
+                        self.pm_engine.check_recovery_watch()
+                    except Exception as e:
+                        self.logger.error(
+                            "fenixd", f"Recovery watch check failed: {e}")
         except KeyboardInterrupt:
             self.logger.info("fenixd", "Received interrupt signal")
         finally:
