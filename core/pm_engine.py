@@ -1743,6 +1743,23 @@ class PMEngine:
             })
             self._on_spec_verified(spec_name)
 
+    def _verifier_error_is_infra(self, error_text: str) -> bool:
+        """verifier 失败是否属基础设施类（不得流转 bug-found）。
+
+        覆盖：provider 熔断抑制、failover 链耗尽（chain exhausted）、
+        classify_switch_error 可识别的切换类错误（unrecognized_model/5xx/网络）。
+        此类失败说明「验证没能发生」，不是「验证发现了缺陷」。
+        """
+        if not error_text:
+            return False
+        if "provider circuit open" in error_text or "chain exhausted" in error_text:
+            return True
+        try:
+            # 严格 is True：分类器返回非布尔（如测试桩）时按非基础设施处理
+            return self.agent_runner.classify_switch_error(error_text) is True
+        except Exception:
+            return False
+
     def _run_legacy_verification(self, spec_name: str):
         """降级方案：使用旧版单体 Verifier Agent。"""
         result = self.agent_runner.run_verifier(spec_name)
@@ -1752,14 +1769,18 @@ class PMEngine:
         # 不得 transition bug-found / 调用 _on_spec_bug_found（否则会派生伪 fix
         # 级联，与 implementer 路径的 fix-fix-stashpop-deadlock 同理）。保持 spec
         # 在 implemented（由 full_scan recovery 兜底重排），写入 error 供 dashboard 可见。
-        if result.error and "provider circuit open" in result.error:
+        if self._verifier_error_is_infra(result.error):
+            # 基础设施类失败（熔断/链耗尽/网关切换类错误）＝「验证没能发生」，
+            # 不是「验证发现了缺陷」：保持当前状态不流转 bug-found、不派生 fix
+            # （2026-08-28 chain_exhausted 误产空壳 fix 实证），由 full_scan
+            # recovery 兜底重排；冷却到期后下一次扫描即恢复验证。
             self.state_machine.update_spec(spec_name, {
                 "error": result.error,
             })
             self.logger.warning(
                 "pm_engine",
-                f"Provider circuit open — verifier suppressed for '{spec_name}', "
-                f"holding implemented: {result.error}",
+                f"Verifier infra failure — holding '{spec_name}' state, "
+                f"no bug-found: {result.error}",
             )
             return
 

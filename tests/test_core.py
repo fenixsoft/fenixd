@@ -2702,6 +2702,75 @@ class TestPMEngineBugFound(unittest.TestCase):
         self.assertEqual(self.sm.read_one("quick-links-folders")["status"], "bug-found")
 
 
+class TestVerifierInfraFailureHold(unittest.TestCase):
+    """verifier 基础设施类失败（链耗尽/熔断/网关）不得流转 bug-found。
+
+    2026-08-28 实证：chain_exhausted 导致 verifier 起不来，其失败被当作
+    「验证发现缺陷」→ fix spec 标 bug-found 并派生空壳子 fix。基础设施失败
+    应保持原状态（由 full_scan recovery 兜底重排），与既有 provider circuit
+    open 抑制路径同语义。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.state_path = Path(self.tmpdir) / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
+        )
+        self.engine._enqueue = MagicMock()
+        self.engine._on_spec_bug_found = MagicMock()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_impl_spec(self, name="quick-links-folders"):
+        self.sm.add_spec(name, {"priority": 5})
+        self.sm.transition(name, "ready")
+        self.sm.transition(name, "implementing")
+        self.sm.transition(name, "implemented")
+        self.sm.transition(name, "testing")
+
+    def _fail_verifier(self, error_text, classify):
+        from types import SimpleNamespace
+        self.engine.agent_runner.run_verifier.return_value = SimpleNamespace(
+            success=False, error=error_text, run_id="verify-x",
+        )
+        self.engine.agent_runner.classify_switch_error = MagicMock(
+            return_value=classify
+        )
+        self.engine._run_legacy_verification("quick-links-folders")
+
+    def test_chain_exhausted_holds_state_no_bug_found(self):
+        self._make_impl_spec("quick-links-folders")
+        self._fail_verifier(
+            "provider chain exhausted for implementer 'quick-links-folders'",
+            classify=False,
+        )
+        e = self.sm.read_one("quick-links-folders")
+        self.assertEqual(e["status"], "testing")  # 状态保持，不降级 bug-found
+        self.assertIn("chain exhausted", e["error"])
+        self.engine._on_spec_bug_found.assert_not_called()
+        self.assertIsNone(self.sm.read_one("fix-quick-links-folders"))
+
+    def test_circuit_open_still_holds(self):
+        self._make_impl_spec("quick-links-folders")
+        self._fail_verifier("provider circuit open: inferaiapi.com", classify=False)
+        e = self.sm.read_one("quick-links-folders")
+        self.assertEqual(e["status"], "testing")
+        self.engine._on_spec_bug_found.assert_not_called()
+
+    def test_real_verifier_failure_still_bug_found(self):
+        self._make_impl_spec("quick-links-folders")
+        self._fail_verifier("claude CLI failed: exit 1", classify=False)
+        e = self.sm.read_one("quick-links-folders")
+        self.assertEqual(e["status"], "bug-found")
+        self.assertIn("Verifier agent failed", e["error"])
+
+
 class TestPMEngineBugFoundIdempotent(unittest.TestCase):
     """2.1 spec_bug_found 重发幂等且非破坏（fix-dispatch-orphan D2）。
 
