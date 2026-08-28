@@ -701,14 +701,20 @@ class BrowserManager:
     async def _wait_stable(self, page):
         """等待页面布局稳定。
 
-        1. 等待网络空闲（networkidle）
-        2. 等待布局偏移分数（CLS）稳定
+        1. 等待布局偏移分数（CLS）稳定
+        （networkidle 等待已移除，见下）
+
+        admin 修 2026-08-29（fix-fix-stashpop 族谱爆炸根因之一）：dashboard
+        页面常驻 SSE 连接（/api/stream；mock 场景中被 _hold_sse 永久挂起，
+        真实场景中由 EventSource 保持长连），networkidle 在两种形态下都
+        永不满足 → 此前每次 _wait_stable 必然吃满 3s 超时。后果：
+        1) 全部场景每次稳定等待白耗 3s；
+        2) 点击类步骤后断言时点被拖后 3s+，越过 UI 瞬时反馈窗口
+           （如 clearSpecError 失败态 2s 自动复位）→ text_contains 伪失败
+           → bug-found → 派生 fix 子 SPEC 空转完整周期（族谱爆炸推手）。
+        稳定性判定改为完全依赖 CLS 稳定 + 场景显式 wait 步骤。
         """
-        # 网络空闲
-        try:
-            await page.wait_for_load_state("networkidle", timeout=3000)
-        except Exception:
-            pass  # 超时容忍
+        # CLS 稳定
 
         # CLS 稳定
         try:
