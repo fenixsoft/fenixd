@@ -3128,6 +3128,76 @@ class TestUniformVerifyFailure(unittest.TestCase):
         self.assertFalse(self.engine._detect_uniform_verify_failure("demo", rep))
 
 
+class TestImplementerZeroChangeGuard(unittest.TestCase):
+    """零变更成功哨：分支零提交且零编辑工具 → 不合并不推进，3 次后 blocked。"""
+
+    def setUp(self):
+        import subprocess as sp
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.logger = MagicMock()
+        self.sm = StateMachine(Path(self.tmpdir) / "STATE.md", self.logger)
+        self.engine = PMEngine(self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger)
+        # 真实 git 仓库：main 与同点分支（零新提交）
+        self.sp = sp
+        def git(*a):
+            r = sp.run(["git", *a], cwd=self.tmpdir, capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr
+            return r.stdout
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "t@t"); git("config", "user.name", "t")
+        (Path(self.tmpdir) / "f.txt").write_text("x")
+        git("add", "."); git("commit", "-qm", "init")
+        git("branch", "fenix/zero-change-test")
+        self.sm.add_spec("demo", {"priority": 5})
+        self.sm.transition("demo", "ready")
+        self.sm.transition("demo", "implementing")
+        run_dir = Path(self.tmpdir) / ".fenix" / "runs"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        self.run_file = run_dir / "impl-demo-1-a1.jsonl"
+        self.run_file.write_text("")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _result(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(success=True, error=None, branch="fenix/zero-change-test",
+                               run_id="impl-demo-1-a1")
+
+    def test_zero_change_detected(self):
+        from types import SimpleNamespace
+        self.assertTrue(self.engine._implementer_zero_change("demo", self._result()))
+
+    def test_with_edit_tool_not_flagged(self):
+        from types import SimpleNamespace
+        with self.run_file.open("a") as f:
+            f.write(json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Edit",
+                 "input": {"file_path": "a.py"}}]}}) + "\n")
+        self.assertFalse(self.engine._implementer_zero_change("demo", self._result()))
+
+    def test_with_branch_commits_not_flagged(self):
+        from types import SimpleNamespace
+        sp = self.sp
+        wt = Path(self.tmpdir) / "wt"
+        sp.run(["git", "worktree", "add", "-b", "fenix/zero2", str(wt), "main"],
+               cwd=self.tmpdir, capture_output=True)
+        (wt / "g.txt").write_text("g")
+        sp.run(["git", "add", "."], cwd=wt, capture_output=True)
+        sp.run(["git", "commit", "-qm", "work"], cwd=wt, capture_output=True)
+        r = SimpleNamespace(success=True, error=None, branch="fenix/zero2",
+                            run_id="impl-demo-1-a1")
+        self.assertFalse(self.engine._implementer_zero_change("demo", r))
+
+    def test_no_branch_not_flagged(self):
+        from types import SimpleNamespace
+        r = SimpleNamespace(success=True, error=None, branch=None,
+                            run_id="impl-demo-1-a1")
+        self.assertFalse(self.engine._implementer_zero_change("demo", r))
+
+
 class TestVerifierInfraFailureHold(unittest.TestCase):
     """verifier 基础设施类失败（链耗尽/熔断/网关）不得流转 bug-found。
 

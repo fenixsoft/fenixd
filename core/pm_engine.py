@@ -1197,6 +1197,40 @@ class PMEngine:
                 )
                 final_error = impl_error or result.error
 
+                # ── 零变更成功哨（2026-08-28）─────────────────────────
+                # 实现器宣称成功但分支零新提交且全程零 Edit/Write 工具调用
+                # ＝ 疑似输出截断/空转（CLI 把截断包装成 result/success + exit 0，
+                # is_error 三闸失明）。不合并、不推进状态，按失败重派；
+                # 连续 3 次零变更 → blocked 交人工。
+                if is_success and self._implementer_zero_change(spec_name, result):
+                    attempts = 0
+                    spec_entry = self.state_machine.read_one(spec_name) or {}
+                    try:
+                        attempts = int(spec_entry.get("_zero_change_attempts", 0) or 0) + 1
+                    except (TypeError, ValueError):
+                        attempts = 1
+                    err_note = ("实现器零变更报成功（疑似输出截断/空转）— "
+                                "不合并不推进，重派实现")
+                    updates: dict = {
+                        "status": "ready",
+                        "error": err_note + f"（第 {attempts} 次）",
+                        "_zero_change_attempts": attempts,
+                    }
+                    if attempts >= 3:
+                        updates["status"] = "blocked"
+                        updates["tester_run"] = None
+                        updates["error"] = ("实现器连续 3 次零变更报成功 — 已 blocked，"
+                                            "需人工检查任务书/上下文/网关稳定性")
+                    self.state_machine.update_spec(spec_name, updates)
+                    self.logger.error(
+                        "pm_engine",
+                        f"零变更成功哨触发 '{spec_name}'（第 {attempts} 次）— "
+                        f"run={result.run_id}",
+                    )
+                    if attempts < 3:
+                        self._enqueue_front(spec_name, "implementer")
+                    return
+
                 if is_success:
                     # Merge worktree branch back into main tree before advancing state.
                     # worktree 已被 agent_runner 清理，但分支仍保留（success 路径不删分支），
@@ -1979,6 +2013,47 @@ class PMEngine:
         except OSError:
             return True
         return False
+
+    def _implementer_zero_change(self, spec_name: str, result) -> bool:
+        """实现器零变更成功判定：分支零新提交 且 全程零 Edit/Write 工具调用。
+
+        分支缺失（result.branch 为空）不判定（保持既有行为，向后兼容）。
+        """
+        import subprocess as _sp
+        branch = getattr(result, "branch", None)
+        if not branch:
+            return False
+        try:
+            r = _sp.run(
+                ["git", "rev-list", "--count", f"main..{branch}"],
+                capture_output=True, text=True, timeout=15,
+                cwd=str(self.project_root),
+            )
+            if r.returncode != 0:
+                return False
+            if int(r.stdout.strip() or "0") > 0:
+                return False  # 有新提交 → 正常成功
+        except (OSError, ValueError, _sp.TimeoutExpired):
+            return False
+        # 分支零提交，再看运行产物中是否有编辑类工具调用
+        run_file = self.project_root / ".fenix" / "runs" / f"{result.run_id}.jsonl"
+        try:
+            with run_file.open(encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        d = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if d.get("type") != "assistant":
+                        continue
+                    for c in (d.get("message") or {}).get("content") or []:
+                        if (isinstance(c, dict) and c.get("type") == "tool_use"
+                                and c.get("name") in (
+                                    "Edit", "Write", "MultiEdit", "NotebookEdit")):
+                            return False
+        except OSError:
+            return False
+        return True
 
     @staticmethod
     def _normalize_fail_signature(text: str) -> str:
