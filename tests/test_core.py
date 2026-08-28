@@ -390,6 +390,46 @@ class TestSpecStatus(unittest.TestCase):
         self.assertIn("ready", VALID_TRANSITIONS["implementing"])
 
 
+class TestVerifiedTestingEscapeHatch(unittest.TestCase):
+    """D7: VERIFIED→TESTING 逃生门（仅门禁自动路径，人工路径仍拒）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.state_path = Path(self.tmpdir) / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.sm.add_spec("demo", {"status": "verified",
+                                  "implementer_run": "impl-1",
+                                  "tester_run": "verify-1"})
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_gate_transition_verified_to_testing_allowed(self):
+        """门禁路径：VERIFIED→TESTING 允许。"""
+        self.assertTrue(self.sm.transition_gate("demo", "testing"))
+        self.assertEqual(self.sm.read_one("demo")["status"], "testing")
+
+    def test_human_transition_verified_to_testing_rejected(self):
+        """人工路径：直接调 transition 的 VERIFIED→TESTING 仍被 VALID_TRANSITIONS 拒。"""
+        self.assertFalse(self.sm.transition("demo", "testing"))
+        self.assertEqual(self.sm.read_one("demo")["status"], "verified")
+
+    def test_gate_transition_preserves_implementer_run(self):
+        """回退保留 implementer_run 与断点（仅改 status）。"""
+        self.sm.transition_gate("demo", "testing")
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "testing")
+        self.assertEqual(entry["implementer_run"], "impl-1")
+
+    def test_gate_transition_invalid_from_state_rejected(self):
+        """非 verified 源态走 transition_gate 回退被拒。"""
+        self.sm.update_spec("demo", {"status": "done"})
+        self.assertFalse(self.sm.transition_gate("demo", "testing"))
+        self.assertEqual(self.sm.read_one("demo")["status"], "done")
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Config Tests (Task 12.1 supplementary)
 # ═══════════════════════════════════════════════════════════════════
@@ -5531,12 +5571,13 @@ class TestVerificationCompletionGate(unittest.TestCase):
         )
         engine = self._make_engine()
         engine._on_spec_verified("demo")
-        self.sm.transition.assert_not_called()
         update_kwargs = self.sm.update_spec.call_args[0][1]
         err = update_kwargs["error"]
-        self.assertIn("1.2", err)       # 任务门禁原因
-        self.assertIn("5/10", err)       # 验证门禁原因
-        # 仅写一次 error（不双覆盖）
+        self.assertIn("5/10", err)       # 验证门禁原因必含（触发 D7 回退）
+        # D7 逃生门：进度不完整时走 VERIFIED→TESTING 回退（transition_gate），
+        # 仅写一次 error 不双覆盖；任务门禁的「1.2」与验证门禁合并前的 blocker 语义
+        # 由 _task_completion_blocker/_check_verification_gate 独立保证。
+        self.assertEqual(self.sm.transition_gate.call_count, 1)
         self.assertEqual(self.sm.update_spec.call_count, 1)
 
 
