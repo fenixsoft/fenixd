@@ -5,7 +5,7 @@ browser.py — Playwright 浏览器管理器
   - 浏览器生命周期管理（启动/复用/关闭）
   - 用户操作执行（click/type/scroll/select/wait/navigate）
   - 数据采集（DOM快照、截图、console日志、网络错误）
-  - 布局稳定性等待（networkidle + CLS稳定）
+  - 布局稳定性等待（CLS 稳定；networkidle 因页面常驻 SSE 永不满足，已移除）
   - 扩展项目支持：自动启动本地 HTTP 服务器提供 dist/ 目录
 
 设计决策：
