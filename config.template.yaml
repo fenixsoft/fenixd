@@ -53,11 +53,40 @@ agents:
   use_new_verifier: true
 
   # 按 Agent 角色分配模型（可选）。未列出的角色使用默认模型。
-  # 角色可选: implementer | planner-plan | planner-judge | verifier
+  # 角色可选: implementer | planner-plan | planner-judge | verifier | administrator
+  #
+  # provider 支持三种形态（逐字节向后兼容）：
+  #   形态 1（字符串）：单值链，角色级 model 或 provider 条目 model 作为缺省。
+  #     implementer:
+  #       provider: "volc-engine"
+  #       model: "deepseek-v4-flash"
+  #
+  #   形态 2（字符串数组）：按序候选链，元素级 model 均回退角色级或 provider 条目。
+  #     implementer:
+  #       provider: ["volc-engine", "aliyun"]
+  #       model: "deepseek-v4-flash"
+  #
+  #   形态 3（对象数组）：每个元素可携带独立 model（跨供应商场景必需）。
+  #     实现者 roles:
+  #       provider:
+  #         - provider: "inferaiapi.com"
+  #           model: "deepseek-v4-flash"    # 该元素专用模型名
+  #         - provider: "bigmodel.cn"
+  #           model: "glm-5.3-flash"
+  #
+  # 混合形态（str|对象在同一数组中）也允许：
+  #   provider:
+  #     - provider: "inferaiapi.com"
+  #       model: "deepseek-v4-flash"
+  #     - "aliyun"                          # 回退角色级 model（若已提供）
+  #
+  # model 解析顺序（design D1）：元素自带 model > 角色级 model > providers 条目 model。
+  # 三者皆空的元素在运行期被跳过（ERROR 日志记录元素下标，不阻塞加载）。
+  # 角色级 model 不再要求非空（design D2），语义为全链缺省。
   # models:
   #   implementer:
-  #     provider: "volc-engine"       # 引用 llm.providers 中的 name
-  #     model: "deepseek-v4-flash"    # 该角色使用的真实模型名
+  #     provider: "volc-engine"
+  #     model: "deepseek-v4-flash"
   #   planner-plan:
   #     provider: "volc-engine"
   #     model: "deepseek-v4-pro"

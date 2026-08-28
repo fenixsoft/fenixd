@@ -1974,29 +1974,54 @@ function renderProviderCard(p, idx) {
 }
 
 function renderAgentAssignment(at, providers, models) {
+  // improve-failover-model-mapping-ui（D4）：可排序多 provider 链编辑器。
+  // models[at.key] 为规范化视图：{model: 角色级缺省, provider: [{provider, model}, ...]}。
+  // 无该角色定义时退化为 {model: null, provider: []}。
   const assigned = models[at.key] || null;
-  const providerName = assigned ? assigned.provider : '';
-  const modelVal = assigned ? assigned.model : '';
-  const providerOptions = providers.map((p) =>
-    `<option value="${esc(p.name)}" ${p.name === providerName ? 'selected' : ''}>${esc(p.name)}</option>`
-  ).join('');
+  const roleModel = (assigned && assigned.model) || '';
+  const rows = (assigned && Array.isArray(assigned.provider)) ? assigned.provider : [];
+  const enabled = rows.length > 0;
+  const providerOptions = (p) =>
+    providers.map((pp) =>
+      `<option value="${esc(pp.name)}" ${pp.name === p ? 'selected' : ''}>${esc(pp.name)}</option>`
+    ).join('');
+
+  const rowHtml = rows.map((r, i) => {
+    const pname = r.provider || '';
+    const mval = (r.model != null && r.model !== '') ? r.model : '';
+    const canUp = i > 0;
+    const canDown = i < rows.length - 1;
+    return `
+    <div class="chain-row" data-idx="${i}">
+      <div class="chain-row-controls">
+        <button type="button" class="btn btn-ghost btn-move" data-action="chain-up"
+          data-agent="${at.key}" data-idx="${i}" title="上移" ${canUp ? '' : 'disabled'}>↑</button>
+        <button type="button" class="btn btn-ghost btn-move" data-action="chain-down"
+          data-agent="${at.key}" data-idx="${i}" title="下移" ${canDown ? '' : 'disabled'}>↓</button>
+      </div>
+      <select class="assign-provider" data-agent="${at.key}" data-idx="${i}">
+        <option value="">-- 选择 Provider --</option>
+        ${providerOptions(pname)}
+      </select>
+      <input type="text" class="assign-model" placeholder="${roleModel ? esc('留空用角色级缺省 ' + roleModel) : '模型名（留空用角色级缺省）'}"
+        value="${esc(mval)}" data-agent="${at.key}" data-idx="${i}" />
+      <button type="button" class="btn btn-ghost btn-danger" data-action="chain-remove"
+        data-agent="${at.key}" data-idx="${i}" title="删除此行">✕</button>
+    </div>`;
+  }).join('');
+
   return `
   <div class="agent-assign-card" data-agent="${at.key}">
     <div class="agent-label">${esc(at.label)}</div>
-    <div class="agent-assign-controls">
-      <label class="assign-toggle">
-        <input type="checkbox" class="assign-enabled" ${assigned ? 'checked' : ''}
-          data-agent="${at.key}" />
-        <span>分配模型</span>
-      </label>
-      <div class="assign-fields ${assigned ? '' : 'disabled'}" data-agent="${at.key}">
-        <select class="assign-provider" data-agent="${at.key}">
-          <option value="">-- 选择 Provider --</option>
-          ${providerOptions}
-        </select>
-        <input type="text" class="assign-model" placeholder="模型名（如 deepseek-v4-flash）"
-          value="${esc(modelVal)}" data-agent="${at.key}" />
+    <div class="assign-fields ${enabled ? '' : 'disabled'}" data-agent="${at.key}">
+      <div class="role-model-row">
+        <label>角色级默认模型（留空表示无全链缺省，逐元素必须自带 model）</label>
+        <input type="text" class="assign-role-model" data-agent="${at.key}"
+          placeholder="模型名（如 deepseek-v4-flash），可选"
+          value="${esc(roleModel)}" />
       </div>
+      ${enabled ? rowHtml : ''}
+      <button type="button" class="btn btn-secondary btn-add-chain" data-agent="${at.key}">+ 添加 Provider 行</button>
     </div>
   </div>`;
 }
@@ -2060,6 +2085,40 @@ function hydrateConfigPage() {
     } else if (t.matches('[data-action="remove-env"]')) {
       const row = t.closest('.env-row');
       if (row) row.remove();
+    } else if (t.matches('[data-action="chain-add"]') || t.classList.contains('btn-add-chain')) {
+      // 新增一行 provider 链行（improve-failover-model-mapping-ui D4）
+      const agentKey = (t.dataset.agent) || t.getAttribute('data-agent');
+      const fields = main.querySelector(`.agent-assign-card[data-agent="${agentKey}"] .assign-fields`);
+      if (fields) fields.classList.remove('disabled');
+      const addBtn = fields?.querySelector('.btn-add-chain');
+      const div = document.createElement('div');
+      div.innerHTML = renderChainRow(agentKey, '', '', providers);
+      const rowEl = div.firstElementChild;
+      if (addBtn) fields.insertBefore(rowEl, addBtn);
+      reindexChainRows(main, agentKey);
+    } else if (t.matches('[data-action="chain-remove"]')) {
+      // 删除该行
+      const agentKey = t.dataset.agent;
+      const rowEl = t.closest('.chain-row');
+      if (rowEl) rowEl.remove();
+      const fields = main.querySelector(`.agent-assign-card[data-agent="${agentKey}"] .assign-fields`);
+      if (fields && fields.querySelectorAll('.chain-row').length === 0) fields.classList.add('disabled');
+      reindexChainRows(main, agentKey);
+    } else if (t.matches('[data-action="chain-up"]') || t.matches('[data-action="chain-down"]')) {
+      // 上移 / 下移：与相邻行交换 DOM 位置（链序即 DOM 顺序）
+      const agentKey = t.dataset.agent;
+      const idx = parseInt(t.dataset.idx, 10);
+      const rowEl = t.closest('.chain-row');
+      const fields = main.querySelector(`.agent-assign-card[data-agent="${agentKey}"] .assign-fields`);
+      if (!rowEl || !fields) return;
+      if (t.dataset.action === 'chain-up' && idx > 0) {
+        const prev = rowEl.previousElementSibling;
+        if (prev && prev.classList.contains('chain-row')) fields.insertBefore(rowEl, prev);
+      } else if (t.dataset.action === 'chain-down') {
+        const next = rowEl.nextElementSibling;
+        if (next && next !== fields.querySelector('.btn-add-chain')) fields.insertBefore(next, rowEl);
+      }
+      reindexChainRows(main, agentKey);
     } else {
       const btn = t.closest ? t.closest('.config-tabs .tab-btn') : null;
       if (!btn) return;
@@ -2077,16 +2136,9 @@ function hydrateConfigPage() {
     }
   });
 
-  // 分配开关切换
+  // 界面风格（主题）切换
   main.addEventListener('change', (e) => {
     const t = e.target;
-    if (t.classList.contains('assign-enabled')) {
-      const agentKey = t.dataset.agent;
-      const fields = main.querySelector(`.assign-fields[data-agent="${agentKey}"]`);
-      if (fields) fields.classList.toggle('disabled', !t.checked);
-      return;
-    }
-    // 界面风格（主题）切换：立即全站生效 + 持久化，不进入保存路径、不触发请求
     if (t.matches('input[name="ui_theme"]')) {
       setTheme(t);
       e.stopPropagation();
@@ -2101,6 +2153,46 @@ function reindexProviders() {
     card.dataset.idx = i;
     const removeBtn = card.querySelector('[data-action="remove-provider"]');
     if (removeBtn) removeBtn.dataset.idx = i;
+  });
+}
+
+/* improve-failover-model-mapping-ui：链行编辑器辅助函数（D4） */
+function renderChainRow(agentKey, provider, model, providers) {
+  const providerOpts = providers.map((p) =>
+    `<option value="${esc(p.name)}" ${p.name === provider ? 'selected' : ''}>${esc(p.name)}</option>`
+  ).join('');
+  return `
+  <div class="chain-row" data-agent="${agentKey}" data-idx="0">
+    <div class="chain-row-controls">
+      <button type="button" class="btn btn-ghost btn-move" data-action="chain-up"
+        data-agent="${agentKey}" data-idx="0" title="上移" disabled>↑</button>
+      <button type="button" class="btn btn-ghost btn-move" data-action="chain-down"
+        data-agent="${agentKey}" data-idx="0" title="下移" disabled>↓</button>
+    </div>
+    <select class="assign-provider" data-agent="${agentKey}" data-idx="0">
+      <option value="">-- 选择 Provider --</option>
+      ${providerOpts}
+    </select>
+    <input type="text" class="assign-model" placeholder="模型名（留空用角色级缺省）"
+      value="${esc(model)}" data-agent="${agentKey}" data-idx="0" />
+    <button type="button" class="btn btn-ghost btn-danger" data-action="chain-remove"
+      data-agent="${agentKey}" data-idx="0" title="删除此行">✕</button>
+  </div>`;
+}
+
+function reindexChainRows(main, agentKey) {
+  const rows = main.querySelectorAll(`.chain-row[data-agent="${agentKey}"]`);
+  rows.forEach((row, i) => {
+    row.dataset.idx = i;
+    // data-action 按钮：chain-up / chain-down / chain-remove
+    row.querySelectorAll('[data-action^="chain-"]').forEach((btn) => { btn.dataset.idx = i; });
+    // assign-provider / assign-model 的 data-idx
+    row.querySelectorAll('.assign-provider, .assign-model').forEach((inp) => { inp.dataset.idx = i; });
+    // 上移/下移 disabled 状态
+    const upBtn = row.querySelector('[data-action="chain-up"]');
+    const downBtn = row.querySelector('[data-action="chain-down"]');
+    if (upBtn) upBtn.disabled = (i === 0);
+    if (downBtn) downBtn.disabled = (i === rows.length - 1);
   });
 }
 
@@ -2132,22 +2224,29 @@ function collectConfigData() {
   // Providers
   const providers = readProviderCards();
 
-  // Agent models
+  // Agent models — improve-failover-model-mapping-ui（D4）：可排序多 provider 链编辑器。
+  // 每个角色输出规范化编辑器状态：{model: 角色级缺省, provider: [{provider, model}, ...]}。
   const models = {};
   KNOWN_AGENT_TYPES.forEach((at) => {
-    const toggle = main.querySelector(`.assign-enabled[data-agent="${at.key}"]`);
-    if (!toggle || !toggle.checked) return;
-    const providerSel = main.querySelector(`.assign-provider[data-agent="${at.key}"]`);
-    const modelInp = main.querySelector(`.assign-model[data-agent="${at.key}"]`);
-    const provider = providerSel ? providerSel.value : '';
-    let model = modelInp ? modelInp.value.trim() : '';
-    // 模型名留空 → 回退到该 Provider 的默认模型名
-    if (!model && provider) {
-      const prov = providers.find((p) => p.name === provider);
-      model = (prov && prov.model) || '';
-    }
-    if (provider && model) {
-      models[at.key] = { provider, model };
+    // 角色级缺省模型（独立输入框，与逐行 model 区分）
+    const roleModelInp = main.querySelector(`.assign-role-model[data-agent="${at.key}"]`);
+    const roleModel = roleModelInp ? roleModelInp.value.trim() : '';
+    // 收集该角色所有链行（按 DOM 顺序即链序）
+    const rows = [];
+    main.querySelectorAll(`.chain-row[data-agent="${at.key}"]`).forEach((row) => {
+      const providerSel = row.querySelector('.assign-provider');
+      const modelInp = row.querySelector('.assign-model');
+      const provider = providerSel ? providerSel.value.trim() : '';
+      const model = modelInp ? modelInp.value.trim() : '';
+      // 仅收集已选 provider 的行（空行视为未配置，丢弃）
+      if (provider) {
+        rows.push({ provider, model });
+      }
+    });
+    if (rows.length > 0 || roleModel) {
+      const entry = { provider: rows };
+      if (roleModel) entry.model = roleModel;
+      models[at.key] = entry;
     }
   });
 
@@ -2197,30 +2296,37 @@ function saveConfig() {
   const main = el('main');
   const payload = collectConfigData();
 
-  // 校验：已勾选「分配模型」的 Agent 不能静默丢弃。模型名留空时回退到 Provider 默认模型；
-  // 仅当未选 Provider，或 Provider 与默认模型都没有时才阻止保存。
+  // 校验：每行已选 Provider 的链不能静默丢弃。模型名留空时依赖角色级缺省或 Provider 默认模型；
+  // 仅当无任何模型可用时阻止保存（improve-failover-model-mapping-ui D4）。
   const providerDefaults = {};
   readProviderCards().forEach((p) => { if (p.name) providerDefaults[p.name] = p.model || ''; });
-  const missingProvider = [];
   const missingModel = [];
   KNOWN_AGENT_TYPES.forEach((at) => {
-    const toggle = main.querySelector(`.assign-enabled[data-agent="${at.key}"]`);
-    if (!toggle || !toggle.checked) return;
-    const providerSel = main.querySelector(`.assign-provider[data-agent="${at.key}"]`);
-    const modelInp = main.querySelector(`.assign-model[data-agent="${at.key}"]`);
-    const provider = providerSel ? providerSel.value.trim() : '';
-    const model = modelInp ? modelInp.value.trim() : '';
-    if (!provider) {
-      missingProvider.push(at.label);
-    } else if (!model && !providerDefaults[provider]) {
-      missingModel.push(at.label + '（Provider「' + provider + '」）');
+    const card = main.querySelector(`.agent-assign-card[data-agent="${at.key}"]`);
+    if (!card) return;
+    const roleModelInp = card.querySelector(`.assign-role-model[data-agent="${at.key}"]`);
+    const roleDefault = roleModelInp ? roleModelInp.value.trim() : '';
+    const rows = card.querySelectorAll('.chain-row');
+    if (rows.length === 0) return; // 无链行 → 跳过校验（未分配）
+    const hasAnyModel = roleDefault !== '';
+    let allRowsHaveModel = true;
+    rows.forEach((row) => {
+      const provSel = row.querySelector('.assign-provider');
+      const modelInp = row.querySelector('.assign-model');
+      const provider = provSel ? provSel.value.trim() : '';
+      const model = modelInp ? modelInp.value.trim() : '';
+      if (!provider) return; // 空 provider 行已由 collectConfigData 丢弃
+      const hasModel = !!(model || roleDefault || providerDefaults[provider]);
+      if (!hasModel) allRowsHaveModel = false;
+    });
+    if (!hasAnyModel && !allRowsHaveModel) {
+      missingModel.push(at.label);
     }
   });
 
-  if (missingProvider.length > 0 || missingModel.length > 0) {
+  if (missingModel.length > 0) {
     const parts = [];
-    if (missingProvider.length) parts.push(missingProvider.join('、') + ' 未选择 Provider');
-    if (missingModel.length) parts.push(missingModel.join('、') + ' 未配置默认模型，请填写模型名');
+    parts.push(missingModel.join('、') + ' 无可用模型（角色级缺省与逐行模型均为空，且 Provider 也无默认模型）');
     if (banner) {
       banner.className = 'config-banner error';
       banner.textContent = '❌ 保存失败：' + parts.join('；') + '。';

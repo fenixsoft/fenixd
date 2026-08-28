@@ -1200,6 +1200,51 @@ tr.orphan-fix > td { border-left: 2px solid rgba(144, 133, 233, 0.5); }
   pointer-events: none;
 }
 
+/* improve-failover-model-mapping-ui：链行编辑器（D4） */
+.chain-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chain-row-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.chain-row-controls .btn-move {
+  padding: 2px 4px;
+  font-size: 12px;
+  line-height: 1;
+}
+.chain-row .assign-provider {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+.chain-row .assign-model {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.chain-row .btn-danger {
+  flex-shrink: 0;
+}
+.role-model-row {
+  margin-bottom: 8px;
+}
+.role-model-row label {
+  display: block;
+  font-size: 12px;
+  color: var(--ink-muted);
+  margin-bottom: 3px;
+}
+.role-model-row input {
+  width: 100%;
+}
+.btn-add-chain {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
 /* 审批模式 */
 .approve-mode-row {
   display: flex;

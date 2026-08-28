@@ -1464,7 +1464,13 @@ def read_config(scope_root, scope: str = "project") -> dict:
     if isinstance(agents_raw, dict):
         agents_result = {}
         if isinstance(agents_raw.get("models"), dict):
-            agents_result["models"] = agents_raw["models"]
+            # improve-failover-model-mapping-ui（D4）：规范化 models 为 Dashboard
+            # 回显视图（str/list/对象统一为对象数组 + resolved model）
+            from core.config import ConfigLoader as _CL
+            llm_providers = raw.get("llm", {}).get("providers") or []
+            agents_result["models"] = _CL.normalize_agent_models(
+                agents_raw["models"], llm_providers
+            )
         if isinstance(agents_raw.get("max_concurrent"), int):
             agents_result["max_concurrent"] = agents_raw["max_concurrent"]
         if isinstance(agents_raw.get("run_timeout_seconds"), int):
@@ -1530,7 +1536,13 @@ def read_effective_config(project_root) -> dict:
     agents_eff = effective.get("agents")
     if isinstance(agents_eff, dict):
         if isinstance(agents_eff.get("models"), dict):
-            result["agents"]["models"] = agents_eff["models"]
+            # improve-failover-model-mapping-ui（D4）：规范化 models 为 Dashboard
+            # 回显视图（str/list/对象统一为对象数组 + resolved model）
+            from core.config import ConfigLoader as _CL
+            llm_eff = effective.get("llm") or {}
+            result["agents"]["models"] = _CL.normalize_agent_models(
+                agents_eff["models"], (llm_eff.get("providers") or [])
+            )
         if isinstance(agents_eff.get("max_concurrent"), int):
             result["agents"]["max_concurrent"] = agents_eff["max_concurrent"]
         if isinstance(agents_eff.get("run_timeout_seconds"), int):
@@ -1616,6 +1628,17 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         except (yaml.YAMLError, OSError) as e:
             return fail(f"读取现有配置失败: {e}")
 
+    # improve-failover-model-mapping-ui（D4/D5）：前端编辑器状态（规范化的行列表）
+    # 序列化为 _validate_agent_models 能消费的 canonical 形态（str / list[str|对象]）。
+    # 在合并前序列化，保证校验与写入都使用 canonical 形态；role-level model 空值
+    # 不写入，避免空串覆盖配置文件中已有的模型缺省。
+    if isinstance(config_patch.get("agents"), dict) and isinstance(config_patch["agents"].get("models"), dict):
+        config_patch = dict(config_patch)  # shallow copy, 不改入参
+        config_patch["agents"] = dict(config_patch["agents"])
+        config_patch["agents"]["models"] = ConfigLoader.serialize_models_patch(
+            config_patch["agents"]["models"]
+        )
+
     # 2. 合并受管键
     merged = _deep_merge_managed(raw, config_patch)
 
@@ -1628,6 +1651,34 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         agents = merged.get("agents") or {}
         if "models" in agents and agents["models"]:
             ConfigLoader._validate_agent_models(agents["models"], llm)
+            # improve-failover-model-mapping-ui D5：Dashboard 保存时额外要求每行引用的
+            # provider 名必须存在于 llm.providers（load-time 校验只打 ERROR 不阻塞，但
+            # UI 保存不允许"脏配置"落盘）。
+            model_patch = config_patch.get("agents", {}).get("models", {}) if config_patch.get("agents") else {}
+            if model_patch:
+                provider_names = set()
+                provs = (llm or {}).get("providers") or []
+                for p in provs:
+                    if isinstance(p, dict) and p.get("name"):
+                        provider_names.add(p["name"])
+                for role, entry in model_patch.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    provider_val = entry.get("provider")
+                    bad = []
+                    if isinstance(provider_val, str):
+                        if provider_val and provider_val not in provider_names:
+                            bad.append(provider_val)
+                    elif isinstance(provider_val, list):
+                        for el in provider_val:
+                            n = el.get("provider") if isinstance(el, dict) else el
+                            if isinstance(n, str) and n and n not in provider_names:
+                                bad.append(n)
+                    if bad:
+                        raise ValueError(
+                            f"agents.models.{role}.provider 引用了不存在的 provider: "
+                            + ", ".join(sorted(set(bad)))
+                        )
         if "max_concurrent" in agents:
             mc = agents["max_concurrent"]
             if not isinstance(mc, int) or mc <= 0:

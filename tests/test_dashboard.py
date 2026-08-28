@@ -1583,6 +1583,148 @@ class TestConfigAPI:
             srv.stop()
 
 
+# ── improve-failover-model-mapping-ui：Dashboard 链编辑器后端（D4/D5） ──
+
+class TestChainModelEditor:
+    """config GET 规范化链视图 + config_patch 序列化与防覆写。"""
+
+    STATIC_DIR = Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static"
+
+    def _serve(self, tmp_path, monkeypatch):
+        user_dir = tmp_path / "user-fenix"
+        user_config = user_dir / "config.yaml"
+        monkeypatch.setattr(dash_data, "USER_CONFIG_PATH", user_config)
+        monkeypatch.setattr("core.config.USER_CONFIG_DIR", user_dir)
+        proot = make_project(tmp_path, "proj-a")
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = _TestServer(reg, self.STATIC_DIR)
+        return user_config, proot, srv
+
+    def _write_proj(self, proot, models):
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix" / "config.yaml").write_text(yaml.safe_dump({
+            "project": {"name": "proj-a", "type": "web"},
+            "llm": {"providers": [
+                {"name": "inferaiapi.com", "baseurl": "https://a.com", "apikey": "k1"},
+                {"name": "aliyun", "baseurl": "https://b.com", "apikey": "k2",
+                 "model": "deepseek-v4-flash-0731"},
+            ]},
+            "agents": {"models": models},
+        }, allow_unicode=True), encoding="utf-8")
+
+    def _get_models(self, srv, project="proj-a"):
+        status, data = srv.get("/api/config?project=" + project)
+        assert status == 200
+        return data["agents"]["models"]
+
+    def test_get_normalizes_three_forms(self, tmp_path, monkeypatch):
+        """三形态读取一致：str / 字符串列表 / 对象列表 → 规范化对象数组 + resolved model。"""
+        user_config, proot, srv = self._serve(tmp_path, monkeypatch)
+        self._write_proj(proot, {
+            "implementer": {"provider": "inferaiapi.com", "model": "deepseek-v4-flash"},
+            "planner-plan": {"provider": ["inferaiapi.com", "aliyun"], "model": "deepseek-v4-flash"},
+            "verifier": {"provider": [{"provider": "inferaiapi.com", "model": "m1"}, "aliyun"]},
+        })
+        try:
+            models = self._get_models(srv)
+            # str 形态 → 单行对象数组，model 解析为角色级缺省 deepseek-v4-flash
+            assert models["implementer"]["provider"] == [
+                {"provider": "inferaiapi.com", "model": "deepseek-v4-flash"}]
+            # 字符串列表 + 角色级缺省
+            assert models["planner-plan"]["provider"] == [
+                {"provider": "inferaiapi.com", "model": "deepseek-v4-flash"},
+                {"provider": "aliyun", "model": "deepseek-v4-flash"}]
+            # 对象列表：第一行自带 model=m1，第二行无元素 model → 回退 aliyun 条目模型
+            assert models["verifier"]["provider"] == [
+                {"provider": "inferaiapi.com", "model": "m1"},
+                {"provider": "aliyun", "model": "deepseek-v4-flash-0731"}]
+        finally:
+            srv.stop()
+
+    def test_serialize_single_row_degrades_to_string(self, tmp_path, monkeypatch):
+        """单行无元素级 model → 序列化退化为字符串（向后兼容）。"""
+        user_config, proot, srv = self._serve(tmp_path, monkeypatch)
+        self._write_proj(proot, {
+            "implementer": {"provider": "inferaiapi.com", "model": "m0"},
+        })
+        try:
+            status, data = srv.post_json("/api/config?project=proj-a", {
+                "agents": {"models": {
+                    "implementer": {"model": "m0",
+                                    "provider": [{"provider": "inferaiapi.com", "model": ""}]}
+                }},
+            })
+            assert status == 200
+            raw = yaml.safe_load((proot / ".fenix" / "config.yaml").read_text(encoding="utf-8"))
+            assert raw["agents"]["models"]["implementer"]["provider"] == "inferaiapi.com"
+        finally:
+            srv.stop()
+
+    def test_serialize_multi_row_keeps_object_array(self, tmp_path, monkeypatch):
+        """多行（或带元素 model）保持对象/字符串数组。"""
+        user_config, proot, srv = self._serve(tmp_path, monkeypatch)
+        self._write_proj(proot, {"implementer": {"provider": "inferaiapi.com"}})
+        try:
+            status, data = srv.post_json("/api/config?project=proj-a", {
+                "agents": {"models": {
+                    "implementer": {"provider": [
+                        {"provider": "inferaiapi.com", "model": "m1"},
+                        {"provider": "aliyun", "model": ""},
+                    ]}
+                }},
+            })
+            assert status == 200
+            raw = yaml.safe_load((proot / ".fenix" / "config.yaml").read_text(encoding="utf-8"))
+            assert raw["agents"]["models"]["implementer"]["provider"] == [
+                {"provider": "inferaiapi.com", "model": "m1"}, "aliyun"]
+        finally:
+            srv.stop()
+
+    def test_invalid_provider_rejected_400_no_write(self, tmp_path, monkeypatch):
+        """引用不存在的 provider → 400 拒绝且不落盘（config.yaml 未被修改）。"""
+        user_config, proot, srv = self._serve(tmp_path, monkeypatch)
+        self._write_proj(proot, {"implementer": {"provider": "inferaiapi.com"}})
+        before = (proot / ".fenix" / "config.yaml").read_text(encoding="utf-8")
+        try:
+            status, data = srv.post_json("/api/config?project=proj-a", {
+                "agents": {"models": {
+                    "implementer": {"provider": [{"provider": "nonexistent", "model": "m1"}]}
+                }},
+            })
+            assert status == 400
+            assert "不存在的 provider" in (data.get("error") or "")
+            # config.yaml 未被修改（视为不落盘）
+            after = (proot / ".fenix" / "config.yaml").read_text(encoding="utf-8")
+            assert after == before
+        finally:
+            srv.stop()
+
+    def test_existing_chain_preserved_on_unrelated_save(self, tmp_path, monkeypatch):
+        """已有对象数组链：只保存无关字段时，该角色链保持数组形态与元素级 model 不变。"""
+        user_config, proot, srv = self._serve(tmp_path, monkeypatch)
+        self._write_proj(proot, {
+            "implementer": {"provider": [{"provider": "inferaiapi.com", "model": "m-object"}]},
+            "planner-plan": {"provider": "aliyun"},
+        })
+        try:
+            # 仅保存 max_concurrent（不触碰 models）→ 链式整体替换逻辑下 models 原样保留
+            status, data = srv.post_json("/api/config?project=proj-a", {
+                "agents": {"max_concurrent": 5},
+            })
+            assert status == 200
+            raw = yaml.safe_load((proot / ".fenix" / "config.yaml").read_text(encoding="utf-8"))
+            # 对象数组链未被单值覆写
+            assert raw["agents"]["models"]["implementer"]["provider"] == [
+                {"provider": "inferaiapi.com", "model": "m-object"}]
+            # 字符串链保持字符串
+            assert raw["agents"]["models"]["planner-plan"]["provider"] == "aliyun"
+        finally:
+            srv.stop()
+
+
 # ── parse_tasks worktree 路径对齐测试（fix-worktree-agent-cwd） ──
 
 class TestParseTasksWorktreeAlignment:
