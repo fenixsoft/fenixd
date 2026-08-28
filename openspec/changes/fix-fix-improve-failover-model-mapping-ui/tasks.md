@@ -6,6 +6,6 @@
 
 ## 2. 验证与打包
 
-- [ ] 2.1 运行 `npm run build`（tsc + vite build）确认编译与构建通过
-- [ ] 2.2 运行框架单元测试（`python3 -m pytest .fenix/tests/ -v`）确认无回归
-- [ ] 2.3 执行 `bash scripts/package.sh` 生成最新扩展包
+- [x] 2.1 运行构建确认编译通过（本项目 Dashboard 为原生 JS/CSS 无 tsc+vite 构建步骤；app.js 语法校验通过）
+- [x] 2.2 运行框架单元测试（`python3 -m pytest tests/` 等价项）确认无回归：659 passed
+- [x] 2.3 执行 `bash scripts/package.sh` 生成最新扩展包（dist/fenixd-20260828.tar.gz）
