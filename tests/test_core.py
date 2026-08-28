@@ -3004,7 +3004,13 @@ class TestPMEngineReplanLoop(unittest.TestCase):
 
 
 class TestRouteTableGuard(unittest.TestCase):
-    """真实路由表：提取、验收交叉校验（planner 禁止臆想路由）。"""
+    """真实路由表：验收交叉校验（planner 禁止臆想路由）。
+
+    注：pm_engine 的 _extract_dashboard_routes 路由表提取已在
+    77d822f「撤销 pm_engine 路由表提取」中回退（被测应用路由因项目而异、
+    fenixd 无法通用提取），改由 planner 读被测应用源码取证约束。相应的
+    路由提取单测已随功能回退移除，仅保留与路由表无关的失败签名归一化测试。
+    """
 
     def setUp(self):
         from core.pm_engine import PMEngine
@@ -3017,26 +3023,6 @@ class TestRouteTableGuard(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _write_server(self, text):
-        src = Path(self.tmpdir) / "core" / "dashboard"
-        src.mkdir(parents=True, exist_ok=True)
-        (src / "server.py").write_text(text)
-
-    def test_extract_routes(self):
-        self._write_server(
-            'if path == "/" or path == "/index.html":\n'
-            '        pass\n'
-            '    elif path == "/api/specs":\n'
-            '        pass\n'
-            '    elif path == "/api/specs":\n'
-            '        pass\n'
-        )
-        routes = self.engine._extract_dashboard_routes()
-        self.assertEqual(routes, ["/", "/api/specs", "/index.html"])
-
-    def test_missing_source_returns_none(self):
-        self.assertIsNone(self.engine._extract_dashboard_routes())
-
     def test_normalize_signature(self):
         n = self.engine._normalize_fail_signature(
             'Timeout 5000ms waiting for "[data-testid=\'run-btn\']" x2')
@@ -3045,31 +3031,12 @@ class TestRouteTableGuard(unittest.TestCase):
 
 
 class TestEngineRouteCrossCheck(unittest.TestCase):
-    """验收交叉校验：APP_ROUTES.md 存在时，表外 navigate 路径直接拒绝。"""
+    """验收交叉校验：APP_ROUTES.md 表内 navigate 路径放行。
 
-    def test_off_table_navigate_rejected(self):
-        import asyncio
-        from unittest.mock import AsyncMock, MagicMock
-        from core.verify_engine.engine import VerifyEngine
-        tmpdir = tempfile.mkdtemp()
-        vdir = Path(tmpdir) / ".fenix" / "verify-progress" / "s1"
-        vdir.mkdir(parents=True, exist_ok=True)
-        (vdir / "APP_ROUTES.md").write_text(
-            "- /\n- /api/specs\n", encoding="utf-8")
-        eng = VerifyEngine("s1", Path(tmpdir), MagicMock(), {})
-        eng.browser = MagicMock()
-        eng.browser.is_extension_project = False
-        eng.browser.start = AsyncMock()
-        eng.browser.stop = AsyncMock()
-        scens = [{"id": "a", "description": "", "steps": [
-            {"action": "navigate", "value": "http://127.0.0.1:8787/dashboard"}],
-            "assertions": []}]
-        rep = asyncio.run(eng.run(scens))
-        self.assertIn("env_error", rep)
-        self.assertIn("不在真实路由表中", rep["env_error"])
-        eng.browser.start.assert_not_called()
-        import shutil
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    注：APP_ROUTES.md 引擎侧表外路径拒绝交叉校验已在 77d822f 中随路由表
+    提取一并撤销（改由 planner 读源码约束），故 test_off_table_navigate_rejected
+    已移除；此处保留表内路径放行路径（_execute_parallel 打桩、不触发真浏览器）。
+    """
 
     def test_on_table_navigate_passes_acceptance(self):
         import asyncio
