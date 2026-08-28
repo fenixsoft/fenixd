@@ -1992,7 +1992,20 @@ function renderAgentAssignment(at, providers, models) {
   // 无该角色定义时退化为 {model: null, provider: []}。
   const assigned = models[at.key] || null;
   const roleModel = (assigned && assigned.model) || '';
-  const rows = (assigned && Array.isArray(assigned.provider)) ? assigned.provider : [];
+  // fix-fix-fix-improve-failover-model-mapping-ui：provider 形态归一化。
+  // 配置文件/API 允许 provider 为 str（"a"）、list[str]（["a","b"]）、
+  // list[{provider, model?}]（[{a,m1},...]）及混合形态（{provider, model?} 与 str 混排），
+  // 此处统一转换为编辑器行形态 {provider, model}，避免字符串形态加载后整行不渲染、
+  // 名字不为数组元素的 provider 列回显为空（验证报告 BUG-01 根因），并防止后续
+  // collectConfigData 因无行渲染而将该角色从保存数据中静默剔除。
+  const raw = (assigned && assigned.provider) || [];
+  const rows = (Array.isArray(raw) ? raw : [raw])
+    .map((r) =>
+      typeof r === 'string'
+        ? { provider: r, model: '' }
+        : { provider: (r && r.provider) || '', model: (r && r.model) || '' }
+    )
+    .filter((r) => r.provider !== '');
   const enabled = rows.length > 0;
   // 回显保真：若绑定 provider 名不在当前 providers 列表中（如载入的配置引用了
   // 列表未列出的 provider，或 providers 列表为空），仍把该值作为「选中」选项注入，
