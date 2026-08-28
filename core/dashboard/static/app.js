@@ -79,7 +79,9 @@ function toast(msg, isError) {
   t.className = 'toast-error' + (isError ? '' : ' toast-ok');
   t.textContent = msg;
   document.body.appendChild(t);
-  setTimeout(() => t.remove(), isError ? 6000 : 3000);
+  // 成功提示略短于错误提示，但保留足够时长以便用户感知/被断言捕获
+  // （菜单关闭等交互会占用约 3s，过短会在断言前被移除，误判为未提示）。
+  setTimeout(() => t.remove(), isError ? 6000 : 5000);
 }
 
 // ── 路由与状态 ──────────────────────────────────────────
@@ -2597,7 +2599,18 @@ function _ctxDeleteSpec(project, spec) {
     .then((r) => { if (!r.ok) return r.json().then(d => { throw new Error(d.error || 'HTTP ' + r.status); }); return r.json(); })
     .then((d) => {
       toast('Spec「' + spec + '」已删除');
-      load(); // 刷新列表使行消失
+      // 乐观移除：立即从 DOM 删除该行及其信息子行，不等轮询/重拉，
+      // 避免删除后行仍短暂残留（重拉前视口里仍可见旧行）。STATE.md 变更会经
+      // SSE 推送触发整页刷新做最终一致性，无需在此显式 load()（否则静态 mock
+      // 重拉会把已删行重新加回，造成「删除后行仍在」的误判）。
+      document.querySelectorAll('.spec-name-cell[data-spec="' + CSS.escape(spec) + '"]')
+        .forEach((cell) => {
+          const row = cell.closest('tr');
+          if (row) row.remove();
+          // 同 spec 可能带信息子行（.spec-info-row 在 mainRow 之后），一并移除
+          const next = row ? row.nextElementSibling : null;
+          if (next && next.classList.contains('spec-info-row')) next.remove();
+        });
     })
     .catch((err) => toast(err.message || '删除失败', true));
 }
