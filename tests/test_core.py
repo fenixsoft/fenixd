@@ -5540,6 +5540,94 @@ class TestVerificationCompletionGate(unittest.TestCase):
         self.assertEqual(self.sm.update_spec.call_count, 1)
 
 
+
+class TestVerificationProgressGateD6(unittest.TestCase):
+    """D6: testing→verified 前置进度核对：done>=total 才晋级，不完整走失败重试。
+
+    通过 legacy 路径测试（legacy 和 new 路径都包含 D6 检查，legacy 更易 mock）。
+    """
+
+    def setUp(self):
+        import shutil
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "test"],
+                       cwd=str(self.project_root), capture_output=True)
+        (self.project_root / ".gitignore").write_text(".fenix/\n", encoding="utf-8")
+        (self.project_root / "README.md").write_text("# test\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"],
+                       cwd=str(self.project_root), capture_output=True)
+        self.sm = MagicMock()
+        self.sm.read_one = MagicMock(return_value={"status": "testing"})
+        self.sm.transition = MagicMock()
+        self.sm.update_spec = MagicMock()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_engine(self):
+        from core.pm_engine import PMEngine
+        logger = MagicMock()
+        for m in ("info", "warning", "error", "debug"):
+            setattr(logger, m, MagicMock())
+        ar = MagicMock()
+        ar.worktree_manager.find_implementer_worktree.return_value = None
+        return PMEngine(self.sm, ar, {}, self.project_root, logger)
+
+    def _write_progress(self, spec_name, data):
+        vp_dir = self.project_root / ".fenix" / "verify-progress"
+        vp_dir.mkdir(parents=True, exist_ok=True)
+        (vp_dir / f"{spec_name}.json").write_text(
+            json.dumps(data), encoding="utf-8")
+
+    def _stub_legacy(self, engine, verifier_status="verified", run_id="v-1"):
+        """Stub legacy 验证路径。"""
+        engine.agent_runner.run_verifier.return_value = MagicMock(
+            success=True, run_id=run_id, error=None)
+        engine._read_verifier_result = MagicMock(return_value=verifier_status)
+        engine._handle_env_blocked_inconclusive = MagicMock(return_value=False)
+        engine._read_verify_report = MagicMock(return_value={
+            "summary": {"total": 0, "passed": 0, "warnings": 0, "failed": 0, "errors": 0},
+            "scenarios": [],
+        })
+        # 阻止 _on_spec_verified 调用 _on_spec_done 导致的递归
+        engine._on_spec_verified = MagicMock()
+
+    def test_incomplete_progress_blocks_verified_transition(self):
+        """半程死亡：done=5/17 → 不晋级 verified，写 error 摘要。"""
+        self._write_progress("demo", {"total": 17, "done": 5, "current": "场景5"})
+        engine = self._make_engine()
+        self._stub_legacy(engine, verifier_status="verified")
+        engine._run_legacy_verification("demo")
+        engine.state_machine.transition.assert_not_called()
+        update_kwargs = engine.state_machine.update_spec.call_args[0][1]
+        self.assertIn("5/17", update_kwargs["error"])
+        self.assertIn("验证未完成", update_kwargs["error"])
+
+    def test_complete_progress_allows_verified_transition(self):
+        """完整通过：done=total → 正常晋级 verified（继而 verified→done）。"""
+        self._write_progress("demo", {"total": 10, "done": 10})
+        engine = self._make_engine()
+        self._stub_legacy(engine, verifier_status="verified")
+        engine._run_legacy_verification("demo")
+        transition_calls = [c.args for c in engine.state_machine.transition.call_args_list]
+        self.assertIn(("demo", "verified"), transition_calls)
+
+    def test_no_progress_file_allows_verified_transition(self):
+        """无进度文件 → 放行（验证未启动，不影响存量 spec）。"""
+        engine = self._make_engine()
+        self._stub_legacy(engine, verifier_status="verified")
+        engine._run_legacy_verification("demo")
+        transition_calls = [c.args for c in engine.state_machine.transition.call_args_list]
+        self.assertIn(("demo", "verified"), transition_calls)
+
 class TestPMEngineInfraFailureRecovery(unittest.TestCase):
     """派发基础设施失败（日限额耗尽等）不得卡死 spec、不得误判 bug-found。
 
