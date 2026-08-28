@@ -26,9 +26,9 @@
 
 - [x] 5.1 pm_engine 新增观察项机制：auto-recovery 成功后登记 {spec, 指纹, 到期时间}，镜像持久化到 .fenix/recovery_watch.json（重启续查）；到期复查通过条件 = 已离开 ready 或存在活跃派发；未通过则触发 dispatch_stalled 信号；补单元测试
 - [x] 5.2 巡检扩展 ready 滞留规则：ready 超过 `pm.recovery.ready_stall_threshold_minutes`（默认 20）且期间无成功派发 → 报告为阻塞项；BLOCKER CHECK 无 in-progress spec 时 MUST 继续执行非运行态扫描不得提前返回；信号指纹去重冷却（默认 30 分钟）；补单元测试
-- [ ] 5.3 dashboard 日志无需改动前提下验证告警可在既有 admin activity view 可见（手动冒烟即可）
+- [x] 5.3 dashboard 日志无需改动前提下验证告警可在既有 admin activity view 可见（手动冒烟即可）
 
 ## 6. 全量回归
 
-- [ ] 6.1 全量 pytest 通过（重点 tests/test_core.py、tests/test_agent_runner.py 及新增用例），确认无既有用例回归
-- [ ] 6.2 对照三个 capability 的每个 Scenario 手动核对实现覆盖情况并记录结论
+- [x] 6.1 全量 pytest 通过（重点 tests/test_core.py、tests/test_agent_runner.py 及新增用例），确认无既有用例回归
+- [x] 6.2 对照三个 capability 的每个 Scenario 手动核对实现覆盖情况并记录结论
