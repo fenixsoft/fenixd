@@ -141,10 +141,14 @@ class AdminMonitor:
         family_signals = self._detect_family_explosion()
 
         if not self.has_in_progress_specs():
+            # 假就绪盲区修复（improve-run-lifecycle-governance D6）：无 in-progress
+            # spec 只说明没有运行态任务，MUST NOT 成为跳过整轮巡检的理由——
+            # ready 滞留（假就绪）、blocked_stuck、daemon_errors 等非运行态检查
+            # 仍然必须执行（2026-08-27 事故：假 ready 滞留近 1 小时无人发现）。
             self.logger.debug(
-                "admin_monitor", "No in-progress SPECs, draining family_explosion signals only",
+                "admin_monitor",
+                "No in-progress SPECs — continuing non-running-state scans",
             )
-            return family_signals
 
         specs = self.state_machine.read_all()
         now = time.time()

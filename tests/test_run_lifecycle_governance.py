@@ -186,6 +186,7 @@ from unittest.mock import MagicMock
 
 from core.pm_engine import PMEngine
 from core.state_machine import StateMachine
+from core.admin_store import AdminStore
 
 
 class LockConflictFixture(unittest.TestCase):
@@ -291,4 +292,234 @@ class TestDispatchLockBackoff(LockConflictFixture):
         entry = self.sm.read_one("s1")
         self.assertEqual(int(entry["_lock_conflict_count"]), 0)
         self.assertIn(entry["_dispatch_backoff_until"], (None, "", "null"))
+
+
+# ── 3.1 auto-recovery 一致性 + 5.1/5.2 闭环复查与假就绪巡检 ──────────────────
+
+from datetime import datetime, timedelta, timezone
+
+
+class RecoveryWatchFixture(LockConflictFixture):
+    def _stale(self, name="s1", hours=2):
+        specs = self.sm.read_all()
+        specs[name]["updated"] = (
+            datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        self.sm.write_all(specs)
+
+    def watch_due(self, name="s1"):
+        watch = dict(self.engine._recovery_watch)
+        watch[name]["due"] = time.time() - 1
+        self.engine._recovery_watch = watch
+        self.engine._save_recovery_watch()
+
+
+class TestAutoRecoveryLiveChildGuard(RecoveryWatchFixture):
+    """3.1 卡死自动恢复前必须核验无存活子进程。"""
+
+    def test_live_child_defers_recovery_and_keeps_tracking(self):
+        self.sm.add_spec("s1", {"priority": 5})
+        self.sm.transition("s1", "ready")
+        self.sm.transition("s1", "implementing")
+        self.sm.update_spec("s1", {"implementer_run": "impl-s1-1"})
+        self._stale()
+        self.runner.has_live_attempt.return_value = True
+        self.engine.check_blockers()
+        entry = self.sm.read_one("s1")
+        # 不重置状态、不清空跟踪字段
+        self.assertEqual(entry["status"], "implementing")
+        self.assertEqual(entry["implementer_run"], "impl-s1-1")
+        self.assertIsNone(entry.get("branch", None) if entry.get("branch") else None)
+        deferred = any(
+            "recovery deferred, live child present" in str(c.args)
+            for c in self.logger.warning.call_args_list
+        )
+        self.assertTrue(deferred)
+
+    def test_no_live_child_recovers_normally(self):
+        self.sm.add_spec("s1", {"priority": 5})
+        self.sm.transition("s1", "ready")
+        self.sm.transition("s1", "implementing")
+        self._stale()
+        self.runner.has_live_attempt.return_value = False
+        self.engine.check_blockers()
+        entry = self.sm.read_one("s1")
+        self.assertEqual(entry["status"], "ready")
+        self.assertIn("Auto-recovered from stuck implementing", entry["error"])
+        # 恢复成功 → 登记闭环复查观察项（5.1）
+        self.assertIn("s1", self.engine._recovery_watch)
+
+    def test_probe_non_bool_return_treated_as_absent(self):
+        """探针返回非布尔（如未配置的测试替身）→ 保守按无存活，恢复照常。"""
+        self.sm.add_spec("s1", {"priority": 5})
+        self.sm.transition("s1", "ready")
+        self.sm.transition("s1", "implementing")
+        self._stale()
+        self.runner.has_live_attempt.return_value = "yes"  # 非布尔
+        self.engine.check_blockers()
+        self.assertEqual(self.sm.read_one("s1")["status"], "ready")
+
+    def test_defer_registers_watch_no_deadloop(self):
+        """defer 也登记观察项：逾期后复查仍卡死 → 信号而非无限 defer。"""
+        self.sm.add_spec("s1", {"priority": 5})
+        self.sm.transition("s1", "ready")
+        self.sm.transition("s1", "implementing")
+        self._stale()
+        self.runner.has_live_attempt.return_value = True
+        self.engine.check_blockers()  # defer #1
+        self.engine.check_blockers()  # defer #2（无观察项到期，不重复信号）
+        self.assertEqual(
+            len([r for r in AdminStore(self.project_root, self.logger).read_all()
+                 if r.get("signal_type") == "dispatch_stalled"]), 0)
+        self.watch_due()
+        self.runner.has_live_attempt.return_value = True
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+        raised = self.engine.check_recovery_watch()
+        self.assertEqual(raised, ["s1"])  # 观察项到期接管 → 信号，不再 defer
+
+
+class TestRecoveryWatch(RecoveryWatchFixture):
+    """5.1 恢复动作后的闭环复查。"""
+
+    def test_watch_persisted_for_restart(self):
+        self.sm.add_spec("s1", {"priority": 5})
+        self.sm.transition("s1", "ready")
+        self.sm.transition("s1", "implementing")
+        self._stale()
+        self.runner.has_live_attempt.return_value = False
+        self.engine.check_blockers()
+        path = self.project_root / ".fenix" / "recovery_watch.json"
+        self.assertTrue(path.exists())
+        # 模拟 daemon 重启：新 engine 实例从磁盘续查
+        engine2 = PMEngine(self.sm, self.runner, self.config,
+                           self.project_root, self.logger)
+        self.assertIn("s1", engine2._recovery_watch)
+
+    def test_watch_passes_when_spec_left_ready(self):
+        self.engine.register_recovery_watch("s1", "test")
+        self.watch_due()
+        self.sm.update_spec("s1", {"status": "implemented"}) if self.sm.read_one("s1") \
+            else self.sm.add_spec("s1", {"status": "implemented", "priority": 5})
+        raised = self.engine.check_recovery_watch()
+        self.assertEqual(raised, [])
+        self.assertNotIn("s1", self.engine._recovery_watch)
+
+    def test_watch_passes_when_dispatch_active(self):
+        self.make_ready_spec("s1")
+        self.engine.register_recovery_watch("s1", "test")
+        self.watch_due()
+        self.runner.worktree_manager.has_active_worktree.return_value = True
+        raised = self.engine.check_recovery_watch()
+        self.assertEqual(raised, [])
+
+    def test_watch_fails_when_still_fake_ready(self):
+        self.make_ready_spec("s1")
+        self.engine.register_recovery_watch("s1", "test")
+        self.watch_due()
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+        raised = self.engine.check_recovery_watch()
+        self.assertEqual(raised, ["s1"])
+        recs = AdminStore(self.project_root, self.logger).read_all()
+        stalled = [r for r in recs if r.get("signal_type") == "dispatch_stalled"]
+        self.assertEqual(len(stalled), 1)
+        self.assertIn("recovery", stalled[0].get("evidence"))
+
+
+class TestReadyStallPatrol(RecoveryWatchFixture):
+    """5.2 假就绪巡检 + 信号指纹去重。"""
+
+    def test_ready_stall_beyond_threshold_reported(self):
+        self.make_ready_spec("s1")
+        self._stale(hours=1)  # ready 滞留 60 分钟 > 20 分钟阈值
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+        result = self.engine.check_blockers()
+        stalled = [b for b in result["blockers"] if b["spec"] == "s1"]
+        self.assertEqual(len(stalled), 1)
+        self.assertIn("假就绪滞留", stalled[0]["reason"])
+        recs = AdminStore(self.project_root, self.logger).read_all()
+        self.assertTrue(
+            any(r.get("signal_type") == "dispatch_stalled" for r in recs))
+
+    def test_fresh_ready_not_reported(self):
+        self.make_ready_spec("s1")
+        result = self.engine.check_blockers()
+        self.assertEqual([b for b in result["blockers"]], [])
+
+    def test_backoffed_ready_not_reported(self):
+        """退避期内的 spec 是有意等待，不算假就绪滞留。"""
+        self.make_ready_spec("s1")
+        self.sm.update_spec("s1", {
+            "_dispatch_backoff_until": int(time.time()) + 300})
+        self._stale(hours=1)
+        result = self.engine.check_blockers()
+        self.assertEqual([b for b in result["blockers"] if b["spec"] == "s1"], [])
+
+    def test_recent_run_activity_not_reported(self):
+        self.make_ready_spec("s1")
+        self._stale(hours=1)
+        touch_run_stream(self.project_root, "s1", "impl-s1-1", age=60)
+        result = self.engine.check_blockers()
+        self.assertEqual([b for b in result["blockers"] if b["spec"] == "s1"], [])
+
+    def test_same_fingerprint_not_re_signaled_within_cooldown(self):
+        """冷却期内反复检出同一滞留：只有首次拉起，后续仅日志。"""
+        self.make_ready_spec("s1")
+        self._stale(hours=1)
+        self.engine.check_blockers()
+        self.engine.check_blockers()
+        recs = AdminStore(self.project_root, self.logger).read_all()
+        self.assertEqual(
+            len([r for r in recs if r.get("signal_type") == "dispatch_stalled"]), 1)
+
+
+class TestAdminMonitorContinuesWithoutInProgress(unittest.TestCase):
+    """5.2 「无 in-progress SPEC」不得提前返回、跳过非运行态巡检。"""
+
+    def setUp(self):
+        from core.admin_monitor import AdminMonitor
+        self.tmpdir = Path(__import__("tempfile").mkdtemp())
+        (self.tmpdir / ".fenix").mkdir(exist_ok=True)
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.tmpdir / "STATE.md", self.logger)
+        self.monitor = AdminMonitor(
+            {"admin": {"enabled": True, "interval_minutes": 5,
+                       "escalation_cooldown_minutes": 15}},
+            self.sm, self.tmpdir, self.logger,
+        )
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_blocked_stuck_detected_without_in_progress(self):
+        # 只有 blocked spec，无任何 in-progress
+        self.sm.write_all({"b1": {
+            "status": "blocked", "priority": 5,
+            "updated": (datetime.now(timezone.utc)
+                        - timedelta(hours=3)).isoformat(),
+        }})
+        signals = self.monitor.run_once()
+        self.assertTrue(
+            any(s.get("signal_type") == "blocked_stuck" for s in signals),
+            "无 in-progress 时仍须执行非运行态巡检",
+        )
+
+    def test_stored_dispatch_stalled_signal_ingested(self):
+        """pm_engine 写入 store 的 dispatch_stalled 由监视器摄取唤起。"""
+        from core.admin_store import AdminStore, SIGNAL
+        store = AdminStore(self.tmpdir, self.logger)
+        rec = store.append({
+            "kind": SIGNAL, "signal_type": "dispatch_stalled",
+            "spec": "s1", "severity": "major",
+            "description": "stalled", "evidence": "ev",
+        })
+        self.sm.write_all({})
+        self.monitor._invoke_administrator = MagicMock()
+        signals = self.monitor.run_once()
+        self.assertTrue(
+            any(s.get("signal_type") == "dispatch_stalled" for s in signals))
+        self.monitor._invoke_administrator.assert_called_once()
+        # 已 escalated 的记录不重复唤起
+        self.monitor._invoke_administrator.reset_mock()
+        self.monitor.run_once()
+        self.monitor._invoke_administrator.assert_not_called()
 

@@ -177,6 +177,7 @@ class FenixDaemon:
         # Main loop — keep the process alive + 配置热更新轮询
         self.logger.info("fenixd", "Entering main loop")
         config_check_ts = time.time()
+        recovery_watch_ts = time.time()
         try:
             while self.running:
                 time.sleep(1)
@@ -194,6 +195,16 @@ class FenixDaemon:
                         self._maybe_reload_config()
                     except Exception as e:
                         self.logger.error("fenixd", f"Config hot-reload failed: {e}")
+                # 恢复闭环复查（improve-run-lifecycle-governance D6）：每分钟检查
+                # 到期的观察项——followup 窗口（默认 15m）短于全量扫描间隔，
+                # 不能只依赖 event_bus 的 full_scan 触发。
+                if time.time() - recovery_watch_ts >= 60:
+                    recovery_watch_ts = time.time()
+                    try:
+                        self.pm_engine.check_recovery_watch()
+                    except Exception as e:
+                        self.logger.error(
+                            "fenixd", f"Recovery watch check failed: {e}")
         except KeyboardInterrupt:
             self.logger.info("fenixd", "Received interrupt signal")
         finally:
