@@ -94,6 +94,10 @@ class BrowserManager:
         # 独立 HTML 入口点支持
         self._use_verify_html: bool = False
 
+        # 已注册 SSE 拦截的 page（id 集合）：mock 场景必须隔离活体推流，
+        # 否则 SSE 直推的真实数据会绕过 mock 路由污染断言（见 mock_api 分支）
+        self._sse_blocked_pages: set = set()
+
     # ── 扩展项目检测 ───────────────────────────────────────────
 
     def _detect_extension_project(self) -> bool:
@@ -468,6 +472,25 @@ class BrowserManager:
             # route 注册在 page 上，reload/导航后仍保留（同一 page 对象）。
             if action == "mock_api":
                 try:
+                    # mock 隔离（fix-fix-stashpop 族谱爆炸根因修正）：拦截同页 SSE
+                    # 推流。活体 dashboard 的 watcher 经 /api/stream 推送 'state'
+                    # 消息，前端 handleSSEEvent 直接用真实 specs 调 renderView，
+                    # 绕过已 mock 的 REST 路由，把 mock 场景的 DOM 污染成真实
+                    # STATE.md 内容（如 clean-path 场景 mock 1 条无 error 的 spec
+                    # 却渲染出 6 个真实信息子行）→ 断言必然失败 → 伪失败被记为
+                    # 产品 bug → bug-found → 派生 fix 子 SPEC 空转完整周期。
+                    # 在首个 mock_api 注册时一并拦截 SSE（route 持久于 page，
+                    # 导航后仍生效；空 body 使 EventSource 无数据可收）。
+                    if id(page) not in self._sse_blocked_pages:
+                        self._sse_blocked_pages.add(id(page))
+                        await page.route(
+                            "**/api/stream*",
+                            lambda route: route.fulfill(
+                                status=200,
+                                content_type="text/event-stream",
+                                body="",
+                            ),
+                        )
                     # Playwright URL glob：`*` 不匹配 `/`，结尾 `/*` 补成 `/**`
                     # （否则 https://host/* 无法匹配多段路径 /v1/forecast）
                     route_pattern = target[:-1] + "**" if target.endswith("/*") else target
