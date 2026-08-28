@@ -1644,6 +1644,16 @@ class AgentRunner:
             append_run_error(run_file, error_msg, returncode)
             raise RuntimeError(f"claude CLI failed: {error_msg}")
 
+        # D5: 终态语义校验前置 —— rc==0 但 last_result 标记为 error 时仍判失败
+        # （Claude CLI 可能把 API 错误包装成 result/success 终止事件且 exit 0）
+        if last_result:
+            result_is_error = last_result.get("is_error", False)
+            result_subtype = last_result.get("subtype", "success")
+            if result_is_error or result_subtype in ("error", "error_during_execution"):
+                err_text = last_result.get("result", "") or f"is_error={result_is_error}, subtype={result_subtype}"
+                append_run_error(run_file, f"API error disguised as success: {err_text}", returncode)
+                raise RuntimeError(f"claude CLI rc==0 but result indicates error: {err_text}")
+
         return output, turns, session_id
 
     @staticmethod

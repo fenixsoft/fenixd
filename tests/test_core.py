@@ -2214,6 +2214,65 @@ class TestRunClaudeStreaming(unittest.TestCase):
         # 文件整体仍可逐行 JSON 解析，且最后一行是 result
         self.assertEqual(lines[-1]["type"], "result")
 
+    def test_rc0_is_error_rejected_as_failure(self):
+        """D5: rc==0 但 result 事件 is_error=true 时按失败处理（假成功拒绝）。"""
+        run_id = "impl-fake-success-1700000010"
+        result_event = {
+            "type": "result", "subtype": "success", "is_error": True,
+            "result": "API Error: 503 Service Unavailable", "num_turns": 3,
+        }
+        stdout = [
+            json.dumps({"type": "assistant", "message": {"content": []}}),
+            json.dumps(result_event),
+        ]
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run(run_id, stdout_lines=stdout)
+        self.assertIn("result indicates error", str(ctx.exception))
+        artifact = self._artifact(run_id)
+        lines = [json.loads(l) for l in artifact.read_text().splitlines()]
+        # 末尾存在 error 终态行
+        self.assertEqual(lines[-1]["type"], "error")
+        self.assertIn("API Error: 503", lines[-1]["error"])
+
+    def test_rc0_error_subtype_rejected(self):
+        """D5: rc==0 但 subtype 为 error_during_execution 时按失败处理（503 文本样例）。"""
+        run_id = "impl-503-spec-1700000011"
+        result_event = {
+            "type": "result", "subtype": "error_during_execution",
+            "result": "API request failed: 503 (Service Unavailable) — gateway overloaded",
+            "num_turns": 1,
+        }
+        stdout = [
+            json.dumps({"type": "assistant", "message": {"content": []}}),
+            json.dumps(result_event),
+        ]
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run(run_id, stdout_lines=stdout)
+        self.assertIn("result indicates error", str(ctx.exception))
+        artifact = self._artifact(run_id)
+        lines = [json.loads(l) for l in artifact.read_text().splitlines()]
+        self.assertEqual(lines[-1]["type"], "error")
+
+    def test_rc0_normal_completion_unaffected(self):
+        """D5: 正常完成（无 is_error、subtype 非错误类）路径完全不变。"""
+        run_id = "impl-normal-spec-1700000012"
+        result_event = {
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "All tasks complete", "num_turns": 4, "session_id": "sess-ok",
+        }
+        stdout = [
+            json.dumps({"type": "assistant", "message": {"content": []}}),
+            json.dumps(result_event),
+        ]
+        output, turns, sid = self._run(run_id, stdout_lines=stdout)
+        self.assertEqual(output, "All tasks complete")
+        self.assertEqual(turns, 4)
+        self.assertEqual(sid, "sess-ok")
+        artifact = self._artifact(run_id)
+        lines = [json.loads(l) for l in artifact.read_text().splitlines()]
+        # 无 error 终态行（保持原成功语义）
+        self.assertNotEqual(lines[-1]["type"], "error")
+
     def test_running_artifact_grows_in_real_time(self):
         """运行期间产物文件实时增长：进程阻塞时文件已含已产生的事件。"""
         import threading as _t
