@@ -97,9 +97,18 @@ class AssertionRunner:
             }
 
     async def _assert_element_count(self, page, a: dict) -> dict:
-        """断言元素数量等于期望值。"""
+        """断言元素数量等于期望值。
+
+        字段口径（admin 修 2026-08-29：failover-model-mapping-ui 族谱爆炸根因）：
+        planner 生成的场景事实约定用 ``count`` 字段（全库 test_scenarios.json
+        133 处 vs ``expected`` 28 处），而引擎此前只读 ``expected``——所有
+        ``count: 2`` 的场景被静默按缺省值 1 断言，产品正确渲染 2 行时反而
+        伪失败（expected=1/actual=2），被 judge 记为产品 bug 或伪失败，
+        反复派生 fix 子 SPEC（fix-fix-improve-failover-model-mapping-ui 两轮
+        验证同因翻车）。``count`` 优先，``expected`` 兼容，缺省 1。
+        """
         selector = a["selector"]
-        expected = int(a.get("expected", 1))
+        expected = int(a.get("count", a.get("expected", 1)))
         actual = await page.locator(selector).count()
         return {
             "type": "element_count", "layer": 1,
