@@ -11,11 +11,17 @@
 - **full_scan 崩溃根因修复与条目隔离**：定位并修复 `string indices must be integers` 崩溃点；单条 spec 处理异常只跳过该条并记日志，不中止整轮扫描；每轮扫描产出 handled/failed 统计日志。
 - **孤儿 ready 恢复分支扩展**：full_scan recovery 对 ready spec 的跳过条件从「有 error 或有 implementer_run 即跳过」改为「存在存活 agent 子进程或有未超时的活跃派发才跳过」；带 error 的 ready 与有历史 run 记录但当前无活跃运行的 ready 均须触发重新派发。
 
+- **验证终态语义校验**：agent_runner 对 rc==0 的 result 终止事件解析 is_error/subtype，错误类判失败并 raise，杜绝"API 错误包装成成功"假阳性。
+- **verified 晋级完整性核对**：verifier 成功后、testing→verified 前核对进度 done>=total；不完整按失败重试处理。晋级路径 fail-closed。
+- **VERIFIED 回退逃生门**：状态机允许 VERIFIED→TESTING（仅门禁自动路径），断点保留，消除死锁态。
+- **run 产物生命周期保障**：attempt 结算前 runs jsonl 禁删、删除留痕（本日事故中关键证据文件消失）。
+
 ## Capabilities
 
 ### New Capabilities
 - `spec-event-delivery-integrity`: 状态机同状态语义更新的事件补发契约与 bug_found 重发的幂等无害化约束
 - `full-scan-resilience`: 全量扫描的单条隔离、崩溃根因防护与孤儿 ready 的恢复覆盖
+- `verifier-judgment-integrity`: 验证终态语义校验、晋级前进度核对与 VERIFIED 回退逃生门
 
 ### Modified Capabilities
 

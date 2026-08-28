@@ -27,7 +27,7 @@
 ## 6. 回归与核验
 
 - [x] 6.1 全量 pytest 通过（重点 tests/test_core.py 及新增用例），无既有用例回归
-- [x] 6.2 对照两个 capability spec 的全部 Scenario 逐条核对实现覆盖并记录结论
+- [x] 6.2 对照三个 capability spec 的全部 Scenario 逐条核对实现覆盖并记录结论
 
 ---
 
@@ -67,3 +67,13 @@
 - 兜底：pgrep 匹配 `.claude/worktrees/{impl,verify}-<spec>-*` 进程 + `implementer_run`
   指向最新 run 文件 mtime < 120s。
 - 不重复造锁机制（锁归姊妹变更），仅做轻量存活探测，语义一致即满足白名单需求。
+# tasks.md 追加块（第二轮实施内容）
+
+## 7. verifier 判定完整性（design D5–D8，specs/verifier-judgment-integrity）
+
+- [ ] 7.1 agent_runner `_run_claude` rc==0 路径增加 last_result.is_error/subtype 终态校验（字段缺失维持现行为）；补单元测试三例：rc0+is_error 假成功拒绝 / rc0+503 文本样例 fixture / 正常完成不受影响
+- [ ] 7.2 pm_engine verifier 成功分支前置进度核对：testing→verified 前 done>=total 才晋级，不完整走既有失败重试并写 error 摘要；done 门禁 fail-open 语义不变；补单元测试（半程假阳性不晋级 / 完整通过照常）
+- [ ] 7.3 VALID_TRANSITIONS 增加 VERIFIED→TESTING 回退通道（仅门禁自动路径暴露），回退保留 implementer_run 与断点；transition 表单测覆盖（允许/人工路径仍拒）
+- [ ] 7.4 排查 verify-fix-add-dashboard-spec-doc-tabs-and-info-clear-1787803666-a1.jsonl 证据消失事件：审计 runs 目录读写与清理路径定位丢失原因，落实产物生命周期保障（结算前禁删+删除留痕）并记录结论于 PR 描述
+- [ ] 7.5 全量 pytest 通过且对照四个 capability spec 的 Scenario 逐条核对覆盖情况
+

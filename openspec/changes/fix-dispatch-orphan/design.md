@@ -37,6 +37,21 @@ fenixd 调度管线存在三条互相放大的失效路径（2026-08-27 事故�
 - [D3 根因假设若不成立] → 设计要求先复现再修复，防伪根因；最小复现作为测试用例入库
 - [整体与本枚举之外的孤儿成因共存] → 恢复统计日志（handled/failed）暴露残余问题，不为未知情况增加兜底分支
 
+# 设计补充：D5–D8（verifier 判定完整性）
+
+## Decisions（追加）
+
+- **D5 终态语义校验前置。** `_run_claude` 在 rc==0 路径上解析 `last_result` 的 `is_error` 与 `subtype`（`error_during_execution` 等），非成功即 append_run_error 并 raise RuntimeError。理由：Claude CLI 可能把 API 错误包装成 result/success 终止事件且 exit 0（stashpop-a2 物证），rc!=0 三闸无法覆盖；该检查对 implementer/tester 同样受益。
+- **D6 晋级前完整性核对。** pm_engine 判定 verifier 成功后、执行 testing→verified 前，核对 `.fenix/verify-progress/<spec>.json` 的 `done >= total`；不完整则按 verifier 失败处理（走既有 attempt 重试），绝不晋级并把进度摘要写入 error 字段。理由：把唯一识破假 verified 的门禁从「推送关」提前到「晋级关」，缺失或损坏的 progress 文件视为失败（fail-closed，与既有 gate 的 fail-open 语义差异在 D8 说明）。
+- **D7 VERIFIED 回退逃生门。** VALID_TRANSITIONS 增加 VERIFIED→TESTING（仅限门禁拦截触发的自动回退路径使用，人工操作不得绕过）；回退时保留 implementer_run 与既有 progress 断点。理由：本次死锁证明 verified 无出口即无自愈，回退比整单重跑便宜一个数量级。
+- **D8 fail-closed 边界限定。** D6 的新核对仅在「判定成功→晋级」这一条路径上 fail-closed；既有的 verified→done 放行门禁保持原 fail-open 语义不变（遵循 fenixd-verify-report-snapshot-semantics 既有约定：report 快照不回流）。两处语义不同属设计而非疏漏：晋级处拥有最新现场可重试，推送处重试成本高故放行人工裁决。
+
+## Risks / Trade-offs（追加）
+
+- [CLI 未来版本改变 result 字段形态] → D5 只在字段存在时收紧、缺失时维持现行为，向后兼容；用真实 503 文本样例做回归 fixture
+- [D7 被滥用为随意回退] → 仅 pm_engine 门禁路径调用 transition，人工路径仍受 VALID_TRANSITIONS 限制拦截
+
+
 ## Migration Plan
 
 普通代码变更，随 daemon 重启生效。回滚 = revert 提交重启。无数据迁移。
