@@ -7,6 +7,7 @@ scenarios.py — 测试场景数据结构定义与校验
 
 from dataclasses import dataclass, field
 from typing import Optional
+import re
 
 
 # ── 常量 ──────────────────────────────────────────────────────────
@@ -199,6 +200,23 @@ class TestScenario:
             if a.type in ASSERTIONS_REQUIRING_SELECTOR and not a.selector:
                 errors.append(
                     f"场景'{self.id}'断言{i}: 类型 '{a.type}' 需要 selector"
+                )
+
+        # navigate URL 验收（2026-08-28：相对路径导致浏览器白屏、整轮断言全灭）
+        nav_steps = [s for s in self.steps if s.action == "navigate"]
+        if not nav_steps:
+            errors.append(
+                f"场景'{self.id}'缺少 navigate 步骤"
+                f"（web 场景必须以绝对 URL 打开被测页面）"
+            )
+        for i, step in enumerate(self.steps):
+            if step.action == "navigate" and not re.match(
+                r"^https?://\S+$", (step.value or "").strip()
+            ):
+                errors.append(
+                    f"场景'{self.id}'步骤{i}: navigate URL 必须为绝对地址"
+                    f"（http://或https://开头，含主机与端口），收到 '{step.value}'"
+                    f"——相对路径会被验收拒绝并退回 plan 阶段"
                 )
 
         return errors

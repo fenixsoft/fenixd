@@ -2832,6 +2832,177 @@ class TestVerifierStaleResultGuard(unittest.TestCase):
         self.assertIn(e["status"], ("verified", "done"))
 
 
+class TestScenarioNavigateAcceptance(unittest.TestCase):
+    """场景验收：navigate 必须绝对 URL + 场景必须含 navigate（2026-08-28 白屏事故）。"""
+
+    def _errs(self, steps, sid="s1"):
+        from core.verify_engine.scenarios import TestScenario
+        sc = TestScenario.from_dict({"id": sid, "description": "", "steps": steps,
+                                     "assertions": []})
+        return sc.validate()
+
+    def test_relative_navigate_rejected(self):
+        errs = self._errs([{"action": "navigate", "value": "/dashboard"}])
+        self.assertTrue(any("绝对" in e for e in errs), errs)
+
+    def test_missing_navigate_rejected(self):
+        errs = self._errs([{"action": "wait", "value": "1s"}])
+        self.assertTrue(any("缺少 navigate" in e for e in errs), errs)
+
+    def test_absolute_navigate_ok(self):
+        errs = self._errs([
+            {"action": "navigate", "value": "http://127.0.0.1:8787/dashboard"},
+            {"action": "wait", "value": "page loaded"},
+        ])
+        self.assertFalse([e for e in errs if "navigate" in e], errs)
+
+
+class TestBrowserNavigateBackstop(unittest.TestCase):
+    """引擎兜底缺席：web 项目相对 navigate 直接显式失败，禁止默认端口。"""
+
+    def test_relative_url_explicit_failure(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from core.verify_engine.browser import BrowserManager
+        bm = BrowserManager(project_root=Path(self.mkdtemp()), logger=MagicMock())
+        res = asyncio.run(bm.execute_action(
+            AsyncMock(), {"action": "navigate", "value": "/dashboard"}))
+        self.assertFalse(res["success"])
+        self.assertEqual(res.get("error_type"), "invalid_navigate_url")
+        self.assertIn("绝对", res["error"])
+
+    def test_absolute_url_passes_through(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from core.verify_engine.browser import BrowserManager
+        bm = BrowserManager(project_root=Path(self.mkdtemp()), logger=MagicMock())
+        page = AsyncMock()
+        res = asyncio.run(bm.execute_action(
+            page, {"action": "navigate", "value": "http://127.0.0.1:8787/dashboard"}))
+        self.assertTrue(res["success"])
+        page.goto.assert_awaited_once()
+
+    def mkdtemp(self):
+        import tempfile
+        return tempfile.mkdtemp()
+
+
+class TestPMEngineReplanLoop(unittest.TestCase):
+    """场景验收失败 → REPLAN_FEEDBACK 退回 plan（上限 2 次重排）→ 连续失败保持
+    implemented 等待人工，绝不流转 bug-found。"""
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.state_path = Path(self.tmpdir) / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
+        )
+        self.sm.add_spec("quick-links-folders", {"priority": 5})
+        self.sm.transition("quick-links-folders", "ready")
+        self.sm.transition("quick-links-folders", "implementing")
+        self.sm.transition("quick-links-folders", "implemented")
+        self.sm.transition("quick-links-folders", "testing")
+        self.engine._enqueue = MagicMock()
+        self.engine._on_spec_bug_found = MagicMock()
+        self.engine._task_completion_blocker = MagicMock(return_value=None)
+        self.engine._read_planner_result = MagicMock(return_value="plan-ready")
+        self.engine._ensure_app_reachable = MagicMock(return_value=(True, False, "ok"))
+        vdir = Path(self.tmpdir) / ".fenix" / "verify-progress" / "quick-links-folders"
+        vdir.mkdir(parents=True, exist_ok=True)
+        (vdir / "test_scenarios.json").write_text(json.dumps(
+            [{"id": "s1", "description": "", "steps": [
+                {"action": "navigate", "value": "/dashboard"}], "assertions": []}]
+        ))
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _env_error_report(self):
+        return {"spec": "quick-links-folders", "timestamp": "2026-08-28T00:00:00",
+                "summary": {"total": 1, "passed": 0, "warnings": 0,
+                            "failed": 0, "errors": 0},
+                "scenarios": [],
+                "env_error": "场景验收失败（navigate URL 必须为绝对地址）"}
+
+    def test_env_error_replans_twice_then_holds_implemented(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+        planner_calls = {"n": 0}
+        engine_calls = {"n": 0}
+        env_report = self._env_error_report()
+
+        def fake_run_planner(*a, **k):
+            planner_calls["n"] += 1
+            return SimpleNamespace(success=True, error=None)
+
+        class FakeEngine:
+            def __init__(self, *a, **k):
+                pass
+            async def run(self, scenarios):
+                engine_calls["n"] += 1
+                return env_report
+
+        import core.verify_engine as ve_pkg
+        with patch.object(ve_pkg, "VerifyEngine", FakeEngine), \
+             patch.object(self.engine.agent_runner, "run_planner", fake_run_planner):
+            self.engine._run_three_stage_verification("quick-links-folders")
+
+        # 场景文件非法（相对 URL）→ load_scenarios 抛 ValueError → 退回 plan，
+        # 引擎根本不应执行；planner 共 3 次（首轮 + 2 次重排）后保持 implemented。
+        self.assertEqual(planner_calls["n"], 3)
+        self.assertEqual(engine_calls["n"], 0)
+        e = self.sm.read_one("quick-links-folders")
+        self.assertEqual(e["status"], "implemented")
+        self.assertIn("场景文件验收失败", str(e.get("error")))
+        fb = Path(self.tmpdir) / ".fenix" / "verify-progress" / \
+            "quick-links-folders" / "REPLAN_FEEDBACK.md"
+        self.assertTrue(fb.exists())
+
+    def test_acceptance_pass_clears_feedback_and_proceeds(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+        self.engine.agent_runner.run_planner = MagicMock(side_effect=[
+            SimpleNamespace(success=True, error=None),
+            SimpleNamespace(success=True, error=None, run_id="planner-judge-x"),
+        ])
+        self.engine.agent_runner.classify_switch_error = MagicMock(return_value=False)
+        ok_report = {"spec": "quick-links-folders",
+                     "timestamp": "2026-08-28T00:00:00",
+                     "summary": {"total": 1, "passed": 1, "warnings": 0,
+                                 "failed": 0, "errors": 0, "blocked_env": 0},
+                     "scenarios": []}
+        calls = {"n": 0}
+        reports = [ok_report]
+
+        class FakeEngine:
+            def __init__(self, *a, **k):
+                pass
+            async def run(self, scenarios):
+                i = calls["n"]
+                calls["n"] += 1
+                return reports[min(i, len(reports) - 1)]
+
+        # 预置旧反馈文件，验收通过后应被清理；场景文件为绝对 URL（修正后的 plan）
+        fbdir = Path(self.tmpdir) / ".fenix" / "verify-progress" / "quick-links-folders"
+        (fbdir / "REPLAN_FEEDBACK.md").write_text("旧反馈")
+        (fbdir / "test_scenarios.json").write_text(json.dumps(
+            [{"id": "s1", "description": "", "steps": [
+                {"action": "navigate",
+                 "value": "http://127.0.0.1:8787/dashboard"}], "assertions": []}]
+        ))
+
+        with patch("core.verify_engine.VerifyEngine", FakeEngine):
+            self.engine._run_three_stage_verification("quick-links-folders")
+
+        self.assertFalse((fbdir / "REPLAN_FEEDBACK.md").exists())
+        e = self.sm.read_one("quick-links-folders")
+        self.assertIn(e["status"], ("verified", "done"))
+
+
 class TestVerifierInfraFailureHold(unittest.TestCase):
     """verifier 基础设施类失败（链耗尽/熔断/网关）不得流转 bug-found。
 

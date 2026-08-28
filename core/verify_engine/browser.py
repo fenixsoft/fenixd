@@ -19,6 +19,7 @@ browser.py — Playwright 浏览器管理器
 import asyncio
 import http.server
 import json
+import re
 import socket
 import socketserver
 import threading
@@ -379,6 +380,23 @@ class BrowserManager:
             if action == "navigate":
                 # 扩展项目：将 about:blank 重定向到验证 HTML
                 actual_url = value
+                # web 项目：相对/非法 navigate URL 直接显式失败（2026-08-28：
+                # 相对路径导致 about:blank 白屏、整轮断言全灭的假失败）。
+                # 不注入任何默认 base/端口——被测实例地址只有运行环境自己知道，
+                # 此类失败应退回 plan 阶段重新生成绝对 URL 场景。
+                if not self._is_extension_project and not re.match(
+                    r"^https?://", str(value).strip()
+                ):
+                    return {
+                        "success": False,
+                        "action": action,
+                        "error_type": "invalid_navigate_url",
+                        "error": (
+                            f"navigate URL 必须为绝对地址（http/https），"
+                            f"环境未提供 base_url 且禁止猜测默认端口: {value!r}"
+                        ),
+                        "detail": f"非法 navigate 目标 {value!r}",
+                    }
                 # chrome-extension:// URL 在当前验证浏览器（未加载扩展）中不可达
                 # （Planner 可能生成 chrome-extension://__MSG_@@extension_id__/ 之类目标），
                 # 统一回退到本地 HTTP 服务器（navigate_to_app 同款入口），避免场景判 fail。

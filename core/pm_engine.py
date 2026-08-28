@@ -1718,53 +1718,115 @@ class PMEngine:
         from .verify_engine import VerifyEngine
         from .verify_engine.scenarios import load_scenarios
 
-        # ── 阶段1: Planner 生成测试场景 ──
-        self.logger.info("pm_engine", f"[阶段1] Planner 生成场景: {spec_name}")
-        plan_result = self.agent_runner.run_planner(spec_name, "plan")
+        # ── 阶段1+2: Planner↔场景验收闭环（2026-08-28）──
+        # 场景验收（绝对 navigate URL/完整性）失败 → 写 REPLAN_FEEDBACK.md 退回
+        # plan 阶段重新生成，上限 2 次重排；连续失败保持 implemented + error
+        # 可见（验收失败属环境/任务书问题，绝非产品缺陷，绝不流转 bug-found）。
+        verify_dir = (
+            self.project_root / ".fenix" / "verify-progress" / spec_name
+        )
+        replan_left = 2
+        replan_feedback = None
+        report = None
+        app_reachable = True
+        reach_note = ""
+        while True:
+            if replan_feedback is not None:
+                fb = verify_dir / "REPLAN_FEEDBACK.md"
+                fb.parent.mkdir(parents=True, exist_ok=True)
+                fb.write_text(
+                    "# 场景验收反馈（上一轮未通过，必须逐条修正）\n\n"
+                    + replan_feedback
+                    + "\n\n重新输出全部场景；navigate 的 value 必须为绝对 URL。\n",
+                    encoding="utf-8",
+                )
+            self.logger.info("pm_engine", f"[阶段1] Planner 生成场景: {spec_name}")
+            plan_result = self.agent_runner.run_planner(spec_name, "plan")
 
-        if not plan_result.success:
-            # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
-            # 熔断期 planner 派发失败属「provider 故障」，不是验证逻辑失败：
-            # 不得 raise（会触发 legacy 降级 → bug-found → 伪 fix 级联），
-            # 保持 spec 在 implemented（由 full_scan recovery 兜底重排）。
-            if plan_result.error and "provider circuit open" in plan_result.error:
-                self.state_machine.update_spec(spec_name, {
-                    "error": plan_result.error,
-                })
+            if not plan_result.success:
+                # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
+                # 熔断期 planner 派发失败属「provider 故障」，不是验证逻辑失败：
+                # 不得 raise（会触发 legacy 降级 → bug-found → 伪 fix 级联），
+                # 保持 spec 在 implemented（由 full_scan recovery 兜底重排）。
+                if plan_result.error and "provider circuit open" in plan_result.error:
+                    self.state_machine.update_spec(spec_name, {
+                        "error": plan_result.error,
+                    })
+                    self.logger.warning(
+                        "pm_engine",
+                        f"Provider circuit open — planner suppressed for '{spec_name}', "
+                        f"holding implemented: {plan_result.error}",
+                    )
+                    return
+                raise RuntimeError(f"Planner plan 失败: {plan_result.error}")
+
+            # 验证 Planner 是否成功生成场景文件
+            plan_status = self._read_planner_result(spec_name)
+            if plan_status != "plan-ready":
+                raise RuntimeError(f"Planner 未生成有效场景，status={plan_status}")
+
+            # ── 阶段2: 验证引擎执行 ──
+            self.logger.info("pm_engine", f"[阶段2] 验证引擎执行: {spec_name}")
+            scenarios_path = (
+                self.project_root / ".fenix" / "verify-progress"
+                / spec_name / "test_scenarios.json"
+            )
+            # 场景文件验收失败（相对 URL/结构非法）＝ 明确的环境错误：
+            # 退回 plan 阶段重新生成，不走 raise 穿透、更不判 bug-found。
+            env_error = None
+            report = None
+            try:
+                scenarios = load_scenarios(scenarios_path)
+            except ValueError as e:
+                env_error = f"场景文件验收失败: {e}"
+
+            if env_error is None:
+                # ── 阶段2.5: 应用可达性自愈（最终用户验证必选）──
+                # 场景执行前确保应用可被浏览器访问；不可达时自动启动 commands.start、
+                # 端口冲突换端口重试。自愈失败由下方验证门禁兜底，不静默判定通过。
+                app_reachable, _user_blocked, reach_note = self._ensure_app_reachable(spec_name)
+                self.logger.info(
+                    "pm_engine",
+                    f"[阶段2] 应用可达性: {'OK' if app_reachable else '不可达'} — {reach_note or '无 navigate 依赖'}",
+                )
+
+                engine = VerifyEngine(
+                    spec_name, self.project_root, self.logger, self.config
+                )
+                report = asyncio.run(engine.run(scenarios))
+                env_error = report.get("env_error")
+
+            if env_error:
+                if replan_left <= 0:
+                    self.state_machine.update_spec(spec_name, {
+                        "status": "implemented",
+                        "tester_run": None,
+                        "error": (
+                            f"场景验收连续失败（退回 plan 2 次仍不通过）: "
+                            f"{env_error[:280]}"
+                        ),
+                    })
+                    self.logger.error(
+                        "pm_engine",
+                        f"场景验收连续失败 '{spec_name}' — 保持 implemented 等待人工: "
+                        f"{env_error}",
+                    )
+                    return
+                replan_feedback = env_error
+                replan_left -= 1
                 self.logger.warning(
                     "pm_engine",
-                    f"Provider circuit open — planner suppressed for '{spec_name}', "
-                    f"holding implemented: {plan_result.error}",
+                    f"场景验收未通过 '{spec_name}' — 退回 plan 阶段"
+                    f"（剩余重排 {replan_left} 次）: {env_error}",
                 )
-                return
-            raise RuntimeError(f"Planner plan 失败: {plan_result.error}")
+                continue
 
-        # 验证 Planner 是否成功生成场景文件
-        plan_status = self._read_planner_result(spec_name)
-        if plan_status != "plan-ready":
-            raise RuntimeError(f"Planner 未生成有效场景，status={plan_status}")
-
-        # ── 阶段2: 验证引擎执行 ──
-        self.logger.info("pm_engine", f"[阶段2] 验证引擎执行: {spec_name}")
-        scenarios_path = (
-            self.project_root / ".fenix" / "verify-progress"
-            / spec_name / "test_scenarios.json"
-        )
-        scenarios = load_scenarios(scenarios_path)
-
-        # ── 阶段2.5: 应用可达性自愈（最终用户验证必选）──
-        # 场景执行前确保应用可被浏览器访问；不可达时自动启动 commands.start、
-        # 端口冲突换端口重试。自愈失败由下方验证门禁兜底，不静默判定通过。
-        app_reachable, _user_blocked, reach_note = self._ensure_app_reachable(spec_name)
-        self.logger.info(
-            "pm_engine",
-            f"[阶段2] 应用可达性: {'OK' if app_reachable else '不可达'} — {reach_note or '无 navigate 依赖'}",
-        )
-
-        engine = VerifyEngine(
-            spec_name, self.project_root, self.logger, self.config
-        )
-        report = asyncio.run(engine.run(scenarios))
+            # 验收通过：清理反馈文件（下次全新验证不受旧反馈干扰）
+            try:
+                (verify_dir / "REPLAN_FEEDBACK.md").unlink()
+            except OSError:
+                pass
+            break
 
         fail_count = report["summary"]["failed"] + report["summary"]["errors"]
         self.logger.info(

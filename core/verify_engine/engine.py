@@ -91,6 +91,30 @@ class VerifyEngine:
                     f"跳过非场景对象: {type(s).__name__}",
                 )
 
+        # ── 场景验收门（2026-08-28：相对 navigate 导致白屏整轮假失败）──
+        # 验收失败不启动浏览器、不执行任何场景，返回带 env_error 的空报告，
+        # 由 pm_engine 退回 plan 阶段重新生成（上限与反馈机制在调用方）。
+        acceptance_errors: list[str] = []
+        for s in normalized:
+            acceptance_errors.extend(s.validate())
+        if not self.browser.is_extension_project:
+            for s in normalized:
+                if not any(st.action == "navigate" for st in s.steps):
+                    acceptance_errors.append(
+                        f"场景'{s.id}'缺少 navigate 步骤"
+                        f"（web 场景必须以绝对 URL 打开被测页面）"
+                    )
+        if acceptance_errors:
+            head = "; ".join(acceptance_errors[:5])
+            more = f" 等 {len(acceptance_errors)} 项" if len(acceptance_errors) > 5 else ""
+            msg = f"场景验收失败（{head}{more}）"
+            self.logger.error("verify_engine", msg)
+            self._write_progress(0, len(normalized), f"场景验收失败: {msg}")
+            report = self._build_report([])
+            report["env_error"] = msg
+            self._save_report(report)
+            return report
+
         self.logger.info(
             "verify_engine",
             f"🚀 开始验证 '{self.spec_name}': "
