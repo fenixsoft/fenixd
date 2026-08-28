@@ -8,8 +8,8 @@
 
 ## 2. Dashboard 后端（spec-dashboard-chain-editor，design D4/D5）
 
-- [ ] 2.1 config GET 接口对 agents.models.<role>.provider 输出规范化链 JSON（含解析后 model 供回显）；补往返单测（三形态读取一致）
-- [ ] 2.2 config_patch 保存路径：表单整体替换角色条目、序列化规则（单行无元素 model→str，否则数组）、应用前校验失败返回 400 不落盘；补单测（退化字符串 / 400 拒绝 / 已有链不被覆写）
+- [x] 2.1 config GET 接口对 agents.models.<role>.provider 输出规范化链 JSON（含解析后 model 供回显）；补往返单测（三形态读取一致）
+- [x] 2.2 config_patch 保存路径：表单整体替换角色条目、序列化规则（单行无元素 model→str，否则数组）、应用前校验失败返回 400 不落盘；补单测（退化字符串 / 400 拒绝 / 已有链不被覆写）
 
 ## 3. Dashboard 前端（app.js）
 

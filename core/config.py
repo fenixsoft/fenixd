@@ -432,6 +432,111 @@ class ConfigLoader:
         return result if result else None
 
     @classmethod
+    def normalize_agent_models(cls, models: Dict[str, Any],
+                               llm_providers: Any = None) -> Dict[str, Any]:
+        """把 raw `agents.models` 转换为 Dashboard 回显用的规范化视图（design D4）。
+
+        每个角色输出：
+        - `model`: 角色级 model（缺省为 None）
+        - `provider`: 规范化链数组，每个元素 `{provider, model}`，其中 `model` 为
+          该元素**解析后**的模型名（元素自带 > 角色级 > provider 条目），供前端回显。
+          无法解析模型的元素 `model` 置 None（前端占位显示角色级缺省）。
+
+        三种既有形态（str / str 列表 / 对象列表）统一规范化为对象数组，保证前端
+        只读一种结构即可渲染可排序行编辑器。
+        """
+        if not isinstance(models, dict):
+            return {}
+        out: Dict[str, Any] = {}
+        providers = llm_providers or []
+        by_name = {p.get("name"): p for p in providers if isinstance(p, dict)}
+
+        for agent_type, assignment in models.items():
+            if not isinstance(assignment, dict):
+                continue
+            raw_provider = assignment.get("provider")
+            role_model = assignment.get("model")
+            try:
+                chain = cls._normalize_provider_chain(raw_provider)
+            except ValueError:
+                chain = []
+            rows = []
+            for name, element_model in chain:
+                resolved = cls._resolve_element_model(
+                    element_model, role_model, by_name.get(name)
+                )
+                rows.append({"provider": name, "model": resolved})
+            out[agent_type] = {
+                "model": role_model if (isinstance(role_model, str) and role_model) else None,
+                "provider": rows,
+            }
+        return out
+
+    @classmethod
+    def serialize_models_patch(cls, models: Dict[str, Any]) -> Dict[str, Any]:
+        """把 Dashboard 编辑器状态（design D4/D5）序列化回写 config.yaml 的规范形态。
+
+        输入 `models[role]` 约定为编辑器状态：`model`（角色级缺省，可选） +
+        `provider`（行列表，每行 `{provider, model}`；`model` 为元素级模型，可空）。
+
+        序列化规则（design D4）：
+        - 单行（仅一行）且该行无元素级 model → 退化为字符串 `"providername"`（向后兼容）
+        - 否则 → 数组：每行按有无元素级 model 序列化为 `"providername"` 或
+          `{"provider": name, "model": model}`
+
+        角色级 `model` 仅当非空字符串时保留；空/None/缺省不写（避免脏缺省覆盖）。
+
+        返回规范化的 `agents.models` dict，可直接进入 _validate_agent_models 校验
+        与 _deep_merge_managed 应用。
+        """
+        if not isinstance(models, dict):
+            return models
+        out: Dict[str, Any] = {}
+        for agent_type, assignment in models.items():
+            if not isinstance(assignment, dict):
+                # 容错：非编辑器形态（如已规范化的遗留结构）原样保留
+                out[agent_type] = assignment
+                continue
+            role_model = assignment.get("model")
+            role_model = role_model if (isinstance(role_model, str) and role_model) else None
+            rows = assignment.get("provider")
+            # 兼容：provider 已是 str / list[str|对象]（旧形态或前端直传）时原样使用
+            if isinstance(rows, str):
+                provider_out = rows if rows else None
+            elif isinstance(rows, list):
+                norm_rows = []
+                for r in rows:
+                    if isinstance(r, str):
+                        norm_rows.append((r, None))
+                    elif isinstance(r, dict):
+                        n = r.get("provider")
+                        if not isinstance(n, str) or not n:
+                            continue
+                        m = r.get("model")
+                        norm_rows.append((n, m if (isinstance(m, str) and m) else None))
+                    else:
+                        continue
+                if len(norm_rows) == 1 and norm_rows[0][1] is None:
+                    # 单行且无元素级 model → 退化为字符串（design D4）
+                    provider_out = norm_rows[0][0]
+                else:
+                    provider_out = [
+                        (n if m is None else {"provider": n, "model": m})
+                        for (n, m) in norm_rows
+                    ] or None
+            else:
+                provider_out = None
+
+            entry: Dict[str, Any] = {}
+            if provider_out is not None:
+                entry["provider"] = provider_out
+            if role_model is not None:
+                entry["model"] = role_model
+            if entry:
+                out[agent_type] = entry
+        return out
+
+    @classmethod
     def get_approve_mode(cls, config: Dict[str, Any]) -> str:
         """Return the approve_mode, defaulting to 'manual'."""
         gates = config.get("gates") or {}
