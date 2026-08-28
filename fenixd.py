@@ -148,7 +148,10 @@ class FenixDaemon:
         # Scan initial state
         self.logger.info("fenixd", "Performing initial STATE.md scan...")
 
-        # 启动清理孤儿 worktree（fix-fenix-token-waste）：上次异常退出的残留
+        # 启动清理孤儿 worktree（fix-fenix-token-waste）：上次异常退出的残留。
+        # 锁治理（improve-run-lifecycle-governance D4）：清理前先以进程表重建在册锁
+        # —— 孤儿 attempt 进程仍存活的 worktree 会被跳过并重建登记，不被误删。
+        self.worktree_manager.refresh_locks()
         self.worktree_manager.cleanup_stale_worktrees()
 
         # 恢复上次异常退出遗留的中断状态（implementing/testing → ready）。

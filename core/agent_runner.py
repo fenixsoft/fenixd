@@ -71,6 +71,20 @@ SWITCH_ERROR_CONN_PATTERNS = (
 # 可配 pm.failover.daily_attempts_warn，默认 50。
 PROVIDER_DAILY_ATTEMPTS_WARN = 50
 
+# ── attempt 存活探测 / 超时活性监督（improve-run-lifecycle-governance）──────
+# 进程扫描不可用时，run 流文件 mtime 在该窗口内视为 attempt 仍在活动（D4 回退判据）。
+LIVE_ATTEMPT_STREAM_WINDOW_SECONDS = 120
+# 超时监督默认值（D3）。单次续期 extension_seconds、次数上限 max_extensions、
+# 总墙钟上限 absolute_max_seconds（命中即无条件终止，封闭续期的成本风险）、
+# 活性判定窗口 judge_window（秒）。
+SUPERVISION_DEFAULTS = {
+    "enabled": True,
+    "extension_seconds": 1800,
+    "max_extensions": 2,
+    "absolute_max_seconds": 7200,
+    "judge_window": 600,
+}
+
 
 class AgentRunResult:
     """Result of a single Agent run."""
@@ -1700,6 +1714,68 @@ class AgentRunner:
                         and e.get("session_id")):
                     return e["session_id"]
         return None
+
+    # ── attempt 存活探测（improve-run-lifecycle-governance D4）────────────────
+
+    def has_live_attempt(self, spec_name: str) -> bool:
+        """探测某 SPEC 是否仍有存活的 attempt 子进程（恢复一致性 D4 接口）。
+
+        判定顺序：
+          1. pgrep 进程表：cmdline 含该 spec 的 worktree 目录字面量
+             （``worktrees/{impl,verify}-<spec>-<ts>``）→ 存活；
+          2. 进程扫描不可用/未命中时，回退 run 流文件新鲜度：
+             该 spec 任一 run jsonl 的 mtime < LIVE_ATTEMPT_STREAM_WINDOW_SECONDS
+             视为仍在活动（resume 孤儿进程通常持续写流）。
+
+        供 pm_engine auto-recovery 与 event_bus 孤儿 ready 白名单调用——
+        有存活子进程时 MUST NOT 重置状态/清空跟踪字段。
+        """
+        try:
+            if self._pgrep_live_attempt(spec_name):
+                return True
+        except Exception as e:  # 扫描器异常一律走流新鲜度回退，不向上抛
+            self.logger.debug(
+                "agent_runner",
+                f"has_live_attempt process scan failed for '{spec_name}': {e}",
+            )
+        return self._stream_recent(spec_name, LIVE_ATTEMPT_STREAM_WINDOW_SECONDS)
+
+    def _pgrep_live_attempt(self, spec_name: str) -> bool:
+        """pgrep 匹配 cmdline 含该 spec worktree 目录字面量的进程。
+
+        pgrep 不可用（缺失/超时/OSError）时返回 False，由流新鲜度回退判定。
+        """
+        for prefix in ("impl", "verify"):
+            pattern = f"worktrees/{prefix}-{spec_name}-"
+            try:
+                res = subprocess.run(
+                    ["pgrep", "-f", pattern],
+                    capture_output=True, text=True, timeout=5,
+                )
+            except (subprocess.SubprocessError, OSError):
+                return False
+            if res.returncode == 0 and res.stdout.strip():
+                return True
+        return False
+
+    def _stream_recent(self, spec_name: str, seconds: int) -> bool:
+        """该 spec 最新 run 流文件的 mtime 是否在 seconds 内（不可用 → False）。"""
+        runs_dir = self.project_root / ".fenix" / "runs"
+        if not runs_dir.is_dir():
+            return False
+        cutoff = time.time() - seconds
+        for prefix in ("impl", "verify"):
+            try:
+                paths = list(runs_dir.glob(f"{prefix}-{spec_name}-*.jsonl"))
+            except OSError:
+                return False
+            for p in paths:
+                try:
+                    if p.stat().st_mtime >= cutoff:
+                        return True
+                except OSError:
+                    continue
+        return False
 
     def wait_for_running_agents(self, timeout: int = AGENT_TERMINATE_GRACE_SECONDS):
         """优雅退出时终止全部在跑 agent（terminate 流程），不再逐 agent 等待完成。
