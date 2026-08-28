@@ -10,6 +10,7 @@
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -318,6 +319,146 @@ class TestGuardThreeDispatchMutex(unittest.TestCase):
         self.sm.add_spec("fix-fix-x", {"status": "done"})
         carrier = self.engine._sibling_repair_active("fix-x")
         self.assertEqual(carrier, "")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 守卫三死锁修复：先到先得裁决 + 被抑制条目不阻塞后队
+# （2026-08-28 队列头死锁实证：双 ready 同根兄弟互相判对方 actionable，
+#   守卫三 pop→insert 回队首→return，队首之后全部条目无法派发）
+# ═══════════════════════════════════════════════════════════════════
+
+class TestSiblingRepairActiveFcfs(unittest.TestCase):
+    """守卫三先到先得裁决：批量入队现场由先入队者承载，后到者自我抑制。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        self.logger = MagicMock()
+        self.engine, self.sm = _mk_engine(self.project_root, self.logger)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _entry_ts(self, spec_name):
+        """取队列中该 spec 实现器条目的入队时刻。"""
+        entry = next(
+            e for e in self.engine._run_queue
+            if e[1] == spec_name and e[2] == "implementer"
+        )
+        return entry[3]
+
+    def test_older_sibling_entry_carries(self):
+        """兄弟条目先入队 → 兄弟承载，我方被抑制（先到先得）。"""
+        self.sm.add_spec("fix-x", {"status": "ready"})
+        self.sm.add_spec("fix-fix-x", {"status": "ready"})
+        self.engine._enqueue("fix-fix-x", "implementer")
+        time.sleep(0.01)
+        self.engine._enqueue("fix-x", "implementer")
+        carrier = self.engine._sibling_repair_active(
+            "fix-x", my_enqueued_at=self._entry_ts("fix-x")
+        )
+        self.assertEqual(carrier, "fix-fix-x")
+
+    def test_newer_sibling_entry_does_not_block_me(self):
+        """我方条目先入队 → 由我承载；兄弟仅凭更新条目不计 actionable。"""
+        self.sm.add_spec("fix-x", {"status": "ready"})
+        self.sm.add_spec("fix-fix-x", {"status": "ready"})
+        self.engine._enqueue("fix-x", "implementer")
+        time.sleep(0.01)
+        self.engine._enqueue("fix-fix-x", "implementer")
+        with patch.object(self.engine, "_sibling_has_live_agent", return_value=False):
+            carrier = self.engine._sibling_repair_active(
+                "fix-x", my_enqueued_at=self._entry_ts("fix-x")
+            )
+        self.assertEqual(carrier, "")
+
+    def test_none_keeps_legacy_judgment(self):
+        """非派发路径（my_enqueued_at=None）保持原判：兄弟 ready+条目即 actionable。"""
+        self.sm.add_spec("fix-x", {"status": "ready"})
+        self.sm.add_spec("fix-fix-x", {"status": "ready"})
+        self.engine._enqueue("fix-fix-x", "implementer")
+        time.sleep(0.01)
+        self.engine._enqueue("fix-x", "implementer")
+        carrier = self.engine._sibling_repair_active("fix-x")
+        self.assertEqual(carrier, "fix-fix-x")
+
+
+class TestGuardThreeNoQueueHeadBlocking(unittest.TestCase):
+    """守卫三被抑制条目不得阻塞其后条目（队列头死锁回归测试）。"""
+
+    def setUp(self):
+        import threading as _threading
+
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        self.logger = MagicMock()
+        self.sm = MagicMock()
+        self.agent_runner = MagicMock()
+        self.config = {"agents": {"max_concurrent": 2}}
+        self.engine = PMEngine(
+            self.sm, self.agent_runner, self.config,
+            self.project_root, self.logger,
+        )
+        self._threading = _threading
+        self.dispatched = []
+        self._orig_thread_start = _threading.Thread.start
+
+        def fake_start(thread_self):
+            if not thread_self.name.startswith("fenix-"):
+                self._orig_thread_start(thread_self)
+                return
+            self.dispatched.append(thread_self.name)
+
+        _threading.Thread.start = fake_start
+
+    def tearDown(self):
+        self._threading.Thread.start = self._orig_thread_start
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_suppressed_head_does_not_block_following_entry(self):
+        """队首 fix spec 被守卫三抑制时，其后的合法条目仍应派发。"""
+        specs = {
+            "fix-head": {"status": "ready", "priority": 6},
+            "spec-next": {"status": "ready", "priority": 6},
+        }
+        self.sm.read_one = MagicMock(side_effect=lambda n: specs.get(n))
+        self.sm.transition = MagicMock(return_value=True)
+        # fix-head 同根兄弟存在活跃修复 → 守卫三抑制
+        with patch.object(
+            self.engine, "_sibling_repair_active", return_value="fix-head-fix"
+        ):
+            self.engine._enqueue("fix-head", "implementer")
+            self.engine._enqueue("spec-next", "implementer")
+            self.engine._process_queue()
+
+        names = [n.split("-", 2)[2] for n in self.dispatched]
+        # fix-head 被抑制不派发，spec-next 不被队首拖死
+        self.assertNotIn("fix-head", names)
+        self.assertIn("spec-next", names)
+        # fix-head 保持 queued（后到抑制，不丢条目）
+        queued_specs = [e[1] for e in self.engine._run_queue]
+        self.assertIn("fix-head", queued_specs)
+
+    def test_fcfs_sibling_pair_resolves_by_enqueue_order(self):
+        """双 ready 同根兄弟批量入队：先入队者派发，后入队者被抑制且不阻塞后队。"""
+        specs = {
+            "fix-a": {"status": "ready", "priority": 6},
+            "fix-fix-a": {"status": "ready", "priority": 7},
+            "spec-b": {"status": "ready", "priority": 6},
+        }
+        self.sm.read_one = MagicMock(side_effect=lambda n: specs.get(n))
+        self.sm.transition = MagicMock(return_value=True)
+        # 不 mock _sibling_repair_active：真实判定路径（含先到先得裁决）
+        self.engine._enqueue("fix-a", "implementer")       # 先入队（P6 载体）
+        self.engine._enqueue("fix-fix-a", "implementer")   # 后入队
+        self.engine._enqueue("spec-b", "implementer")
+        self.engine._process_queue()
+
+        names = [n.split("-", 2)[2] for n in self.dispatched]
+        self.assertIn("fix-a", names)          # 先到者胜出
+        self.assertNotIn("fix-fix-a", names)   # 后到者抑制
+        self.assertIn("spec-b", names)         # 后队不被拖死
 
 
 # ═══════════════════════════════════════════════════════════════════

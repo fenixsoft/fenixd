@@ -379,12 +379,19 @@ class PMEngine:
             siblings.append(name)
         return siblings
 
-    def _sibling_repair_active(self, spec_name: str) -> str:
+    def _sibling_repair_active(self, spec_name: str, my_enqueued_at: float = None) -> str:
         """判定同根兄弟是否存在 actionable 修复活动，返回承载方 spec 名或空串（design D3）。
 
         actionable 定义（design D3）：兄弟 status ∈ {implementing, ready(其队列含实现器条目)}
         或存在活跃 impl/verify agent（worktree 进程存活探测复用孤儿白名单逻辑）。
         仅 ready 无队列条目不计为 actionable（防僵死 ready 永久阻塞）。
+
+        my_enqueued_at：派发方（守卫三调用点）自身条目的入队时刻，用于先到先得
+        裁决（design D2「先到先得，后到抑制」）。批量入队现场（full_scan 一次排入
+        同根双 ready）若不做此裁决，兄弟双方都会把对方判为 actionable 而互相抑制
+        ——双方永远无法派发（2026-08-28 实证队列死锁）。规则：仅当兄弟的实现器
+        条目入队不晚于我时，才由兄弟承载；兄弟更新则我来承载。
+        my_enqueued_at 为 None（非派发路径调用）保持原判，全部计 actionable。
         """
         for sib in self._same_root_siblings(spec_name):
             sib_spec = self.state_machine.read_one(sib) or {}
@@ -394,11 +401,16 @@ class PMEngine:
             if status == "ready":
                 # 仅当队列含该兄弟的实现器条目时才视为 actionable
                 with self._queue_lock:
-                    has_impl_entry = any(
-                        e[1] == sib and e[2] == "implementer" for e in self._run_queue
+                    sib_entry = next(
+                        (e for e in self._run_queue
+                         if e[1] == sib and e[2] == "implementer"),
+                        None,
                     )
-                if has_impl_entry:
-                    return sib
+                if sib_entry is not None:
+                    if my_enqueued_at is None or sib_entry[3] <= my_enqueued_at:
+                        return sib
+                    # 兄弟条目晚于我入队：先到先得，由我承载，不计 actionable
+                    continue
                 # ready 但无队列条目：进一步探测活跃 worktree/agent 进程
                 if self._sibling_has_live_agent(sib):
                     return sib
@@ -1230,6 +1242,12 @@ class PMEngine:
             return
         max_concurrent = self._get_config("agents.max_concurrent", 2)
 
+        # 本轮调用内已被守卫三抑制的条目（spec, agent_type）。
+        # 被抑制条目保持 queued（后到抑制），但绝不能阻塞其后的条目派发
+        # —— 否则队首一个被抑制条目就会让整条队列停摆（2026-08-28 实证：
+        # 双 ready 同根兄弟互相判对方 actionable，P6/P7 全线无法派发）。
+        suppressed = set()
+
         while True:
             entry_to_dispatch = None
 
@@ -1245,6 +1263,8 @@ class PMEngine:
                 best_valid_prio = None
                 for entry in self._run_queue:
                     prio, sname, atype, enqueued_at = entry
+                    if (sname, atype) in suppressed:
+                        continue
                     eff = self._effective_priority(prio, enqueued_at, now)
                     spec = self.state_machine.read_one(sname)
                     if not spec:
@@ -1278,6 +1298,8 @@ class PMEngine:
                 dispatch_idx = None
                 for i, entry in enumerate(self._run_queue):
                     prio, sname, atype, enqueued_at = entry
+                    if (sname, atype) in suppressed:
+                        continue
                     if self._effective_priority(prio, enqueued_at, now) != target_prio:
                         continue
                     spec = self.state_machine.read_one(sname)
@@ -1308,13 +1330,16 @@ class PMEngine:
                 self._active_priorities.add(base_prio)
                 active_count = self._active_runs
 
-            priority, spec_name, agent_type, _ = entry_to_dispatch
+            priority, spec_name, agent_type, my_enqueued_at = entry_to_dispatch
 
             # ── 守卫三：派发互斥（fix-repair-lane-dedup / design 守卫三）──
             # fix spec 实现器派发前检查同根兄弟是否存在活跃修复活动；
             # 存在则回滚 entry 到队列、跳过本轮派发（先到先得，后到抑制）。
+            # 被抑制条目记入 suppressed 后继续扫描后队：抑制自己 ≠ 阻塞他人。
             if agent_type == "implementer" and self._is_fix_spec(spec_name):
-                carrier = self._sibling_repair_active(spec_name)
+                carrier = self._sibling_repair_active(
+                    spec_name, my_enqueued_at=my_enqueued_at
+                )
                 if carrier:
                     # 回滚：把已 pop 的 entry 放回队列
                     with self._queue_lock:
@@ -1331,7 +1356,8 @@ class PMEngine:
                         f"守卫三：'{spec_name}' 同根兄弟 '{carrier}' 存在活跃修复"
                         f"——跳过本轮派发，保持 ready",
                     )
-                    return
+                    suppressed.add((spec_name, agent_type))
+                    continue
 
             # Update state to in-progress
             if agent_type == "implementer":
