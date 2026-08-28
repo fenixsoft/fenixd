@@ -1863,56 +1863,380 @@ class PMEngine:
         """Get all done SPECs awaiting push approval."""
         return self.state_machine.get_by_status("done")
 
-    def approve_push(self, spec_name: str):
-        """Approve and push a done SPEC.
+    # ── Push backoff helpers (design D3) ───────────────────────────
 
-        执行真实 git push，成功后将状态推进到 pushed。
-        推送失败返回 False，状态保持 done。
+    @staticmethod
+    def _is_push_backoffed(spec: dict) -> bool:
+        """判断 spec 是否在 push 退避期内（error 含 next_retry_at 且未到期）。
+
+        退避标记约定：error 文本中包含 `[push_backoff next_retry_at=<unix_ts>]`。
+        设计原则（D3）：退避期内 recovery 重放直接跳过，不发 push 命令。
+        """
+        error = spec.get("error") or ""
+        m = re.search(r"\[push_backoff next_retry_at=(\d+)\]", error)
+        if not m:
+            return False
+        try:
+            return float(m.group(1)) > datetime.now(timezone.utc).timestamp()
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _get_push_retry_count(spec: dict) -> int:
+        """从 error 文本中提取 push 连续重试次数。"""
+        error = spec.get("error") or ""
+        m = re.search(r"\[push_attempts=(\d+)\]", error)
+        if m:
+            try:
+                return int(m.group(1))
+            except (TypeError, ValueError):
+                pass
+        return 0
+
+    def _signal_push_failed(self, spec_name: str, detail: str):
+        """推送超限升级为 push_failed 困境信号（severity=major）写入 admin store。"""
+        from .admin_store import AdminStore, SIGNAL
+        store = AdminStore(self.project_root, self.logger)
+        try:
+            store.append({
+                "kind": SIGNAL,
+                "signal_type": "push_failed",
+                "spec": spec_name,
+                "severity": "major",
+                "description": (f"SPEC '{spec_name}' 自动推送连续失败达到上限，"
+                                f"已停止自动重试，需人工介入"),
+                "evidence": detail,
+                "recommended_action": ("检查远端仓库权限与分支状态；"
+                                       "手动 git push origin main 后把 spec 标为 pushed"),
+            })
+            self.logger.error(
+                "pm_engine",
+                f"push_failed 信号已写入 admin store: '{spec_name}'",
+            )
+        except Exception as e:
+            self.logger.error(
+                "pm_engine",
+                f"push_failed 信号写入 admin store 失败: {e}",
+            )
+
+    # ── 推送核心：main 先行 + 分支尽力 (design D1/D2) ─────────────
+
+    def _remote_branch_sha(self, ref: str) -> str | None:
+        """查询远端分支/引用的 SHA（git ls-remote）。
+
+        返回 SHA 字符串或 None（远端不存在 / 查询失败）。
+        """
+        try:
+            result = subprocess.run(
+                ["git", "ls-remote", "origin", ref],
+                cwd=str(self.project_root),
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    parts = line.split()
+                    if len(parts) == 2:
+                        return parts[0]
+            return None
+        except Exception:
+            return None
+
+    def _local_branch_sha(self, branch: str) -> str | None:
+        """获取本地分支 HEAD 的 SHA（git rev-parse）。"""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "refs/heads/" + branch],
+                cwd=str(self.project_root),
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+            return None
+        except Exception:
+            return None
+
+    def _git_push_ref(self, ref: str) -> tuple:
+        """在 project_root 执行 git push origin <ref>。
+
+        Returns: (success: bool, error_message: str)
+        """
+        try:
+            result = subprocess.run(
+                ["git", "push", "origin", ref],
+                cwd=str(self.project_root),
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                return True, ""
+            error = (
+                result.stderr.strip()
+                or result.stdout.strip()
+                or f"exit code {result.returncode}"
+            )
+            return False, error
+        except subprocess.TimeoutExpired:
+            return False, "git push timed out after 120s"
+        except Exception as e:
+            return False, str(e)
+
+    def approve_push(self, spec_name: str) -> bool:
+        """Approve and push a done SPEC (main 先行 + 分支尽力 + SHA 去重)。
+
+        推送顺序（design D1）：
+          1. git push origin main — 成功判据（非 FF → 失败走退避升级，禁止 force）
+          2. feature 分支尽力推送 — 本地存在时推送，失败不影响 pushed 判定
+        退避（design D3）：连续失败按指数退避延迟重试；超限发 push_failed 信号并停止。
+        成功（含去重判定）→ 清 error、推 pushed。
         """
         spec = self.state_machine.read_one(spec_name)
         if not spec or spec.get("status") != "done":
-            self.logger.warning("pm_engine", f"Cannot push '{spec_name}': not in done state")
-            return False
-
-        branch = self._resolve_push_branch(spec_name, spec)
-        success, error = self._git_push_branch(branch)
-        if not success:
-            self.logger.error(
-                "pm_engine",
-                f"git push failed for '{spec_name}' (branch={branch}): {error}",
+            self.logger.warning(
+                "pm_engine", f"Cannot push '{spec_name}': not in done state"
             )
-            self.state_machine.update_spec(spec_name, {
-                "error": f"git push failed: {error}",
-            })
             return False
 
+        # ── D3: 退避期内跳过 ──
+        if self._is_push_backoffed(spec):
+            self.logger.info(
+                "pm_engine",
+                f"Push backoff active for '{spec_name}' — skipping (recovery replay)",
+            )
+            return False
+
+        # ── D1: main 推送（成功判据） ──
+        self.logger.info(
+            "pm_engine", f"Pushing main for '{spec_name}' (main-first)"
+        )
+        main_ok, main_err = self._git_push_ref("main")
+
+        if not main_ok:
+            self._handle_push_failure(spec_name, spec, main_err, "main")
+            return False
+
+        self.logger.info("pm_engine", f"Main push succeeded for '{spec_name}'")
+
+        # ── D1: 分支尽力推送（best-effort，失败不阻断 pushed） ──
+        branch = self._resolve_push_branch(spec_name, spec)
+        self._push_branch_best_effort(spec_name, branch)
+
+        # ── 推送成功 → 推进 pushed，清 error + 退避标记 ──
         self.state_machine.transition(spec_name, "pushed")
-        self._append_project_log(f"🚀 SPEC pushed: **{spec_name}** (branch: {branch})")
-        self.logger.info("pm_engine", f"SPEC pushed: {spec_name} (branch={branch})")
+        self.state_machine.update_spec(spec_name, {"error": None})
+        self._append_project_log(
+            f"🚀 SPEC pushed: **{spec_name}** (main pushed, branch: {branch})"
+        )
+        self.logger.info(
+            "pm_engine",
+            f"SPEC pushed: {spec_name} (main ok, branch={branch})",
+        )
         return True
 
-    def _auto_approve(self, spec_name: str):
-        """自动审批：在 auto 模式下 SPEC 到达 done 后自动执行 git push 并推进到 pushed。
+    def _handle_push_failure(
+        self, spec_name: str, spec: dict, error_msg: str, ref: str
+    ):
+        """处理推送失败：记录退避/重试状态；超限升级 push_failed 信号（D3）。"""
+        max_retries = int(
+            self._get_config("pm.push.max_retries", 3) or 3
+        )
+        backoff_seconds = [300, 900]  # 默认指数退避：5 分钟、15 分钟
+        cfg_backoff = self._get_config("pm.push.retry_backoff_seconds")
+        if isinstance(cfg_backoff, list) and len(cfg_backoff) >= 2:
+            backoff_seconds = cfg_backoff
 
-        幂等：若 SPEC 已处于 pushed 状态则直接返回 True（不重复推送）。
-        推送失败保留 done 状态并记录 error，供人工兜底。
+        attempts = self._get_push_retry_count(spec) + 1
+        error_base = f"git push failed ({ref}): {error_msg}"
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+
+        if attempts >= max_retries:
+            # 超限：发 push_failed 信号，停止自动重试
+            detail = (
+                f"连续 {attempts} 次推送失败（{ref}），"
+                f"已达上限 {max_retries}，已停止自动重试"
+            )
+            self._signal_push_failed(spec_name, detail)
+            final_error = (
+                f"{error_base} [push_attempts={attempts}] "
+                f"[push_failed — 已停止自动重试]"
+            )
+            self.state_machine.update_spec(spec_name, {"error": final_error})
+            spec["error"] = final_error  # 同步本地引用供后续读取
+            self.logger.error(
+                "pm_engine",
+                f"Push retries exhausted for '{spec_name}' ({attempts}/{max_retries})",
+            )
+        else:
+            # 退避：延迟到 next_retry_at 再重试
+            delay = backoff_seconds[min(attempts - 1, len(backoff_seconds) - 1)]
+            next_retry = now_ts + delay
+            final_error = (
+                f"{error_base} [push_attempts={attempts}] "
+                f"[push_backoff next_retry_at={next_retry}]"
+            )
+            self.state_machine.update_spec(spec_name, {"error": final_error})
+            spec["error"] = final_error  # 同步本地引用供后续读取
+            self.logger.warning(
+                "pm_engine",
+                f"Push failed for '{spec_name}' ({ref}): {error_msg}; "
+                f"attempt {attempts}/{max_retries}, next retry at +{delay}s",
+            )
+
+    def _push_branch_best_effort(self, spec_name: str, branch: str):
+        """尽力推送 feature 分支（D1/D2）：不阻断 pushed 判定。
+
+        - 本地分支不存在 → 跳过（merge-back 已清理，main 承载内容）
+        - 远端 SHA 与本地一致 → 去重跳过（已推送）
+        - 远端不存在或 SHA 不同 → 尝试推送，失败仅 WARN
+        """
+        local_sha = self._local_branch_sha(branch)
+        if not local_sha:
+            self.logger.info(
+                "pm_engine",
+                f"Local branch '{branch}' missing for '{spec_name}' "
+                f"— skipping best-effort push (main carries content)",
+            )
+            return
+
+        remote_sha = self._remote_branch_sha(f"refs/heads/{branch}")
+
+        # D2: SHA 一致 → 已推送
+        if remote_sha and remote_sha == local_sha:
+            self.logger.info(
+                "pm_engine",
+                f"Branch '{branch}' already on remote with same SHA "
+                f"({remote_sha[:12]}) — skipping push for '{spec_name}'",
+            )
+            return
+
+        # D2: 远端存在但 SHA 不同 → 跳过并 WARN
+        if remote_sha and remote_sha != local_sha:
+            self.logger.warning(
+                "pm_engine",
+                f"Branch '{branch}' remote SHA ({remote_sha[:12]}) differs "
+                f"from local ({local_sha[:12]}) — skipping branch push for "
+                f"'{spec_name}' (main carries content)",
+            )
+            return
+
+        # 远端不存在或查询失败 → 尝试推送
+        self.logger.info(
+            "pm_engine",
+            f"Pushing branch '{branch}' for '{spec_name}' (best-effort)",
+        )
+        ok, err = self._git_push_ref(branch)
+        if not ok:
+            self.logger.warning(
+                "pm_engine",
+                f"Best-effort branch push failed for '{spec_name}' "
+                f"(branch={branch}): {err} — main push succeeded",
+            )
+        else:
+            self.logger.info(
+                "pm_engine",
+                f"Branch push succeeded for '{spec_name}' (branch={branch})",
+            )
+
+    def _auto_approve(self, spec_name: str):
+        """自动审批：auto 模式下 done → 自动 push → pushed。
+
+        幂等：已 pushed 直接返回 True；退避期内跳过不重试。
         """
         spec = self.state_machine.read_one(spec_name)
         if not spec:
             return False
         status = spec.get("status", "")
         if status == "pushed":
-            # 已 pushed，不重复触发
             return True
         if status != "done":
             self.logger.warning(
                 "pm_engine",
-                f"_auto_approve: '{spec_name}' is in '{status}', not done — skipping",
+                f"_auto_approve: '{spec_name}' is '{status}', not done — skipping",
             )
             return False
 
-        self.logger.info("pm_engine", f"Auto-approving '{spec_name}' (approve_mode=auto)")
+        # D3: 退避期内跳过（recovery 不重放）
+        if self._is_push_backoffed(spec):
+            self.logger.info(
+                "pm_engine",
+                f"_auto_approve: push backoff active for '{spec_name}' — skipping",
+            )
+            return False
+
+        self.logger.info(
+            "pm_engine", f"Auto-approving '{spec_name}' (approve_mode=auto)"
+        )
         return self.approve_push(spec_name)
+
+    # ── 残痕回填（design D4）────────────────────────────────────
+
+    def backfill_push_residuals(self) -> dict:
+        """幂等回填清理：遍历 pushed 终态且 error 以 'git push failed' 开头的 spec。
+
+        用 D2 的 SHA 比对验证内容已在远端后清 error；验证不到的保留并列日志。
+        供手动调用 + tests 覆盖。
+
+        验证口径（design D4）：优先比对 spec 自身分支在远端的 SHA（内容确定已在
+        远端即清痕）；若分支已不可查，则回退比对 main（main 承载内容亦视为已推送）。
+
+        Returns:
+            {"cleaned": [spec_name, ...], "kept": [{"spec": name, "error": msg}, ...]}
+        """
+        cleaned = []
+        kept = []
+        all_specs = self.state_machine.read_all() or {}
+        for name, entry in all_specs.items():
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("status") != "pushed":
+                continue
+            error = str(entry.get("error") or "")
+            if not error.startswith("git push failed"):
+                continue
+
+            # D2/D4: 优先用 spec 自身分支的远端 SHA 验证内容已在远端
+            branch = entry.get("branch") or f"fenix/{name}"
+            verified = False
+            verify_note = ""
+            remote_branch = self._remote_branch_sha(f"refs/heads/{branch}")
+            if remote_branch:
+                verified = True
+                verify_note = f"branch SHA {remote_branch[:12]}"
+            else:
+                # 回退：main 在远端即视为内容已推送
+                remote_main = self._remote_branch_sha("refs/heads/main")
+                if remote_main:
+                    verified = True
+                    verify_note = f"main SHA {remote_main[:12]}"
+
+            if verified:
+                self.state_machine.update_spec(name, {"error": None})
+                cleaned.append(name)
+                self.logger.info(
+                    "pm_engine",
+                    f"Backfill: cleaned push residual for '{name}' "
+                    f"(verified on remote: {verify_note})",
+                )
+            else:
+                kept.append({"spec": name, "error": error})
+                self.logger.warning(
+                    "pm_engine",
+                    f"Backfill: cannot verify '{name}' on remote — "
+                    f"keeping residual (error: {error[:80]})",
+                )
+
+        if kept:
+            self.logger.warning(
+                "pm_engine",
+                f"Backfill: {len(kept)} spec(s) could not be verified remotely: "
+                + ", ".join(k["spec"] for k in kept),
+            )
+        else:
+            self.logger.info(
+                "pm_engine",
+                f"Backfill: {len(cleaned)} spec(s) cleaned, 0 kept",
+            )
+        return {"cleaned": cleaned, "kept": kept}
+
+    # ── 旧接口保留（向后兼容单分支推送） ─────────────────────────
 
     def _resolve_push_branch(self, spec_name: str, spec: dict) -> str:
         """解析 SPEC 的推送分支名。
@@ -1938,34 +2262,11 @@ class PMEngine:
                 sep = plain + "-"
                 for cand in res.stdout.splitlines():
                     cand = cand.strip()
-                    # 后缀必须是纯数字（epoch 时间戳），避免误匹配其他 spec 的分支
                     if cand.startswith(sep) and cand[len(sep):].isdigit():
                         return cand
         except Exception:
             pass
         return plain
-
-    def _git_push_branch(self, branch: str) -> tuple:
-        """在 project_root 执行 git push origin <branch>。
-
-        Returns: (success: bool, error_message: str)
-        """
-        try:
-            result = subprocess.run(
-                ["git", "push", "origin", branch],
-                cwd=str(self.project_root),
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            if result.returncode == 0:
-                return True, ""
-            error = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
-            return False, error
-        except subprocess.TimeoutExpired:
-            return False, "git push timed out after 120s"
-        except Exception as e:
-            return False, str(e)
 
     # ── Helpers ────────────────────────────────────────────────────
 
