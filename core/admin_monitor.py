@@ -161,6 +161,16 @@ class AdminMonitor:
         for name, entry in specs.items():
             if entry.get("status") != "blocked":
                 continue
+            # 冻结豁免：Administrator 为去重/家族收敛而人为冻结的 spec（error 前缀
+            # 'frozen:'），其 blocked 是有意保持的等待态，updated 不会推进——按超时
+            # 唤起只会形成每轮重复误报。真实停滞仍由 stuck/repeated_failures/
+            # family_explosion 等规则覆盖。
+            if str(entry.get("error") or "").startswith("frozen:"):
+                self.logger.debug(
+                    "admin_monitor",
+                    f"Skipping blocked_stuck for frozen SPEC '{name}'",
+                )
+                continue
             updated_str = entry.get("updated") or entry.get("created") or ""
             try:
                 updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))

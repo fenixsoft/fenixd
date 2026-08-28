@@ -279,6 +279,23 @@ class TestAdminMonitorDetection:
         signals = mon.run_once()
         assert all(s["signal_type"] != "blocked_stuck" for s in signals)
 
+    def test_blocked_frozen_not_detected(self, tmp_path):
+        """人为冻结（error 前缀 'frozen:'）的 blocked spec 不触发 blocked_stuck。
+
+        冻结是等待家族收敛的有意状态，updated 不推进；真实停滞仍由
+        stuck/repeated_failures 等规则覆盖（admin-fix-improve-failover 误报循环）。
+        """
+        proot, mon = make_monitor(tmp_path, {
+            "spec-frozen": {
+                "status": "blocked",
+                "updated": iso_ago(125),
+                "error": "frozen: 与 fix#2（已实现待验证）重复；验证通过后解冻",
+            },
+            "spec-b": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        signals = mon.run_once()
+        assert all(s["signal_type"] != "blocked_stuck" for s in signals)
+
     def test_daemon_errors(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
