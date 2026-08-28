@@ -3003,6 +3003,164 @@ class TestPMEngineReplanLoop(unittest.TestCase):
         self.assertIn(e["status"], ("verified", "done"))
 
 
+class TestRouteTableGuard(unittest.TestCase):
+    """真实路由表：提取、验收交叉校验（planner 禁止臆想路由）。"""
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.logger = MagicMock()
+        self.sm = StateMachine(Path(self.tmpdir) / "STATE.md", self.logger)
+        self.engine = PMEngine(self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_server(self, text):
+        src = Path(self.tmpdir) / "core" / "dashboard"
+        src.mkdir(parents=True, exist_ok=True)
+        (src / "server.py").write_text(text)
+
+    def test_extract_routes(self):
+        self._write_server(
+            'if path == "/" or path == "/index.html":\n'
+            '        pass\n'
+            '    elif path == "/api/specs":\n'
+            '        pass\n'
+            '    elif path == "/api/specs":\n'
+            '        pass\n'
+        )
+        routes = self.engine._extract_dashboard_routes()
+        self.assertEqual(routes, ["/", "/api/specs", "/index.html"])
+
+    def test_missing_source_returns_none(self):
+        self.assertIsNone(self.engine._extract_dashboard_routes())
+
+    def test_normalize_signature(self):
+        n = self.engine._normalize_fail_signature(
+            'Timeout 5000ms waiting for "[data-testid=\'run-btn\']" x2')
+        self.assertNotIn("5000", n)
+        self.assertNotIn('"', n)
+
+
+class TestEngineRouteCrossCheck(unittest.TestCase):
+    """验收交叉校验：APP_ROUTES.md 存在时，表外 navigate 路径直接拒绝。"""
+
+    def test_off_table_navigate_rejected(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from core.verify_engine.engine import VerifyEngine
+        tmpdir = tempfile.mkdtemp()
+        vdir = Path(tmpdir) / ".fenix" / "verify-progress" / "s1"
+        vdir.mkdir(parents=True, exist_ok=True)
+        (vdir / "APP_ROUTES.md").write_text(
+            "- /\n- /api/specs\n", encoding="utf-8")
+        eng = VerifyEngine("s1", Path(tmpdir), MagicMock(), {})
+        eng.browser = MagicMock()
+        eng.browser.is_extension_project = False
+        eng.browser.start = AsyncMock()
+        eng.browser.stop = AsyncMock()
+        scens = [{"id": "a", "description": "", "steps": [
+            {"action": "navigate", "value": "http://127.0.0.1:8787/dashboard"}],
+            "assertions": []}]
+        rep = asyncio.run(eng.run(scens))
+        self.assertIn("env_error", rep)
+        self.assertIn("不在真实路由表中", rep["env_error"])
+        eng.browser.start.assert_not_called()
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_on_table_navigate_passes_acceptance(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+        from core.verify_engine.engine import VerifyEngine
+        tmpdir = tempfile.mkdtemp()
+        vdir = Path(tmpdir) / ".fenix" / "verify-progress" / "s1"
+        vdir.mkdir(parents=True, exist_ok=True)
+        (vdir / "APP_ROUTES.md").write_text("- /\n", encoding="utf-8")
+        eng = VerifyEngine("s1", Path(tmpdir), MagicMock(), {})
+        eng.browser = MagicMock()
+        eng.browser.is_extension_project = False
+        eng.browser.start = AsyncMock()
+        eng.browser.stop = AsyncMock()
+        # 令后续执行立刻出 0 场景结果以避免真浏览器：把 execute_parallel 打桩
+        eng._execute_parallel = AsyncMock(return_value=[])
+        scens = [{"id": "a", "description": "", "steps": [
+            {"action": "navigate", "value": "http://127.0.0.1:8787/"}],
+            "assertions": []}]
+        rep = asyncio.run(eng.run(scens))
+        self.assertNotIn("env_error", rep)
+        eng.browser.start.assert_awaited_once()
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class TestUniformVerifyFailure(unittest.TestCase):
+    """全场景同因失败哨：呼叫 admin，连续 3 轮 blocked，绝不 bug-found。"""
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.logger = MagicMock()
+        self.sm = StateMachine(Path(self.tmpdir) / "STATE.md", self.logger)
+        self.engine = PMEngine(self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger)
+        self.sm.add_spec("demo", {"priority": 5})
+        self.sm.transition("demo", "ready")
+        self.sm.transition("demo", "implementing")
+        self.sm.transition("demo", "implemented")
+        self.sm.transition("demo", "testing")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _uniform_report(self, sig_error='Locator.wait_for: Timeout 5000ms exceeded for "[data-testid=\'run-btn\']"'):
+        return {"spec": "demo", "timestamp": "t",
+                "summary": {"total": 3, "passed": 0, "warnings": 0,
+                            "failed": 3, "errors": 0},
+                "scenarios": [
+                    {"id": f"f{i}", "status": "fail",
+                     "assertion_results": [{"pass": False, "error": sig_error}]}
+                    for i in range(3)]}
+
+    def test_uniform_failure_signals_and_holds(self):
+        self.engine._detect_uniform_verify_failure("demo", self._uniform_report())
+        e = self.sm.read_one("demo")
+        self.assertEqual(e["status"], "testing")          # 保持，不降级
+        self.assertEqual(int(e.get("_uniform_fail_attempts", 0) or 0), 1)
+        self.assertIn("同因失败", str(e.get("error")))
+        alerts = json.load(open(Path(self.tmpdir) / ".fenix" / "admin_alerts.json"))
+        lst = alerts.get("alerts", alerts) if isinstance(alerts, dict) else alerts
+        self.assertTrue(any(a.get("signal_type") == "verify_uniform_failure"
+                            for a in lst))
+
+    def test_mixed_signatures_not_flagged(self):
+        rep = self._uniform_report()
+        rep["scenarios"][1]["assertion_results"][0]["error"] = "完全不同的另一种错误"
+        self.assertFalse(self.engine._detect_uniform_verify_failure("demo", rep))
+        self.assertEqual(int(self.sm.read_one("demo").get("_uniform_fail_attempts", 0) or 0), 0)
+
+    def test_fewer_than_three_failed_not_flagged(self):
+        rep = self._uniform_report()
+        rep["summary"] = {"total": 2, "passed": 0, "warnings": 0,
+                          "failed": 2, "errors": 0}
+        rep["scenarios"] = rep["scenarios"][:2]
+        self.assertFalse(self.engine._detect_uniform_verify_failure("demo", rep))
+
+    def test_three_rounds_then_blocked(self):
+        self.sm.update_spec("demo", {"_uniform_fail_attempts": 2})
+        self.engine._detect_uniform_verify_failure("demo", self._uniform_report())
+        e = self.sm.read_one("demo")
+        self.assertEqual(e["status"], "blocked")
+        self.assertIsNone(e.get("tester_run"))
+
+    def test_passed_nonzero_not_flagged(self):
+        rep = self._uniform_report()
+        rep["summary"]["passed"] = 1
+        self.assertFalse(self.engine._detect_uniform_verify_failure("demo", rep))
+
+
 class TestVerifierInfraFailureHold(unittest.TestCase):
     """verifier 基础设施类失败（链耗尽/熔断/网关）不得流转 bug-found。
 

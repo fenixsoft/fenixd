@@ -1731,6 +1731,19 @@ class PMEngine:
         app_reachable = True
         reach_note = ""
         while True:
+            # 真实路由表提取（planner 禁止臆想路径；提取失败/源缺失则跳过，
+            # 验收交叉校验在 APP_ROUTES.md 存在时才生效）
+            routes = self._extract_dashboard_routes()
+            if routes is not None:
+                try:
+                    (verify_dir / "APP_ROUTES.md").write_text(
+                        f"# 被测应用真实路由表（提取自 {self._routes_source_path().name}）\n\n"
+                        + "\n".join(f"- {r}" for r in routes)
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    pass
             if replan_feedback is not None:
                 fb = verify_dir / "REPLAN_FEEDBACK.md"
                 fb.parent.mkdir(parents=True, exist_ok=True)
@@ -1860,6 +1873,12 @@ class PMEngine:
         if self._handle_env_blocked_inconclusive(spec_name, report):
             return
 
+        # ── 阶段2.7 全场景同因失败哨（2026-08-28）──
+        # pass=0 且全部失败场景错误签名一致 → 疑环境/场景问题，呼叫 admin 介入
+        # 判断；不判 bug-found、不派生 fix；连续 3 轮同因自动 blocked。
+        if self._detect_uniform_verify_failure(spec_name, report):
+            return
+
         # ── 阶段3: Planner 判定结果 ──
         self.logger.info("pm_engine", f"[阶段3] Planner 判定: {spec_name}")
         judge_result = self.agent_runner.run_planner(spec_name, "judge")
@@ -1973,6 +1992,108 @@ class PMEngine:
         except OSError:
             return True
         return False
+
+    def _routes_source_path(self) -> Path:
+        """被测应用路由源文件路径（可配置）。"""
+        src = self._get_config("verify.routes_source", "core/dashboard/server.py")
+        return self.project_root / src
+
+    def _extract_dashboard_routes(self) -> list[str] | None:
+        """从路由源文件的 `path == "..."` 判定中提取真实路由表。
+
+        返回 None 表示源文件缺失（无法提取，交叉校验跳过）。
+        """
+        import re as _re
+        src = self._routes_source_path()
+        if not src.exists():
+            return None
+        try:
+            text = src.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        routes = sorted(set(_re.findall(r'path\s*==\s*"([^"]+)"', text)))
+        return routes or []
+
+    @staticmethod
+    def _normalize_fail_signature(text: str) -> str:
+        """归一化失败签名：数字→N、去引号、折叠空白，便于同因比较。"""
+        import re as _re
+        t = _re.sub(r"\d+", "N", text or "")
+        t = _re.sub(r"['\"`]", "", t)
+        return _re.sub(r"\s+", " ", t).strip()
+
+    def _detect_uniform_verify_failure(self, spec_name: str, report: dict) -> bool:
+        """全场景同因失败哨：pass=0 且全部失败场景错误签名一致 → 疑环境/场景问题。
+
+        呼叫 admin 介入判断（verify_uniform_failure 信号，major）；不判
+        bug-found、不派生 fix。连续 3 轮同因 → blocked 交人工。
+        Returns: True 表示本轮已按同因失败处理（调用方跳过后续判定）。
+        """
+        summary = report.get("summary") or {}
+        try:
+            passed = int(summary.get("passed", 0) or 0)
+            failed = int(summary.get("failed", 0) or 0)
+            total = int(summary.get("total", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        if passed != 0 or failed < 3:
+            return False
+        failed_scns = [s for s in (report.get("scenarios") or [])
+                       if s.get("status") == "fail"]
+        if len(failed_scns) < failed:
+            return False  # 报告口径不一致，不哨
+        sigs: set[str] = set()
+        for s in failed_scns:
+            sig = ""
+            for a in (s.get("assertion_results") or []):
+                if a.get("pass") is False:
+                    sig = str(a.get("error") or "")
+                    break
+            if not sig:
+                for st in (s.get("step_results") or []):
+                    if st.get("success") is False:
+                        sig = str(st.get("error") or st.get("detail") or "")
+                        break
+            sigs.add(self._normalize_fail_signature(sig)[:80])
+        if len(sigs) != 1:
+            return False
+        signature = next(iter(sigs))
+        spec = self.state_machine.read_one(spec_name) or {}
+        try:
+            attempts = int(spec.get("_uniform_fail_attempts", 0) or 0) + 1
+        except (TypeError, ValueError):
+            attempts = 1
+        note = (f"全场景同因失败（{failed}/{total}，签名一致: \"{signature[:60]}\"）"
+                f"——疑似环境或场景问题，已呼叫 admin 介入判断（第 {attempts} 次）")
+        from .admin_store import AdminStore, SIGNAL
+        store = AdminStore(self.project_root, self.logger)
+        try:
+            store.append({
+                "kind": SIGNAL,
+                "signal_type": "verify_uniform_failure",
+                "spec": spec_name,
+                "severity": "major",
+                "description": note,
+                "evidence": f"signature={signature[:120]}; failed={failed}",
+                "recommended_action": (
+                    "判断失败类别：环境问题（实例/端口/构建）→ 修复后把 spec 拨回 "
+                    "implemented 重验；场景/plan 问题 → 修正或重写场景；确认真实 "
+                    "缺陷 → 人工处置。连续 3 轮同因将自动 blocked。"),
+            })
+        except Exception as e:
+            self.logger.error("pm_engine",
+                              f"verify_uniform_failure 信号写入失败: {e}")
+        updates: dict = {
+            "error": note,
+            "_uniform_fail_attempts": attempts,
+        }
+        if attempts >= 3:
+            updates["status"] = "blocked"
+            updates["tester_run"] = None
+        self.state_machine.update_spec(spec_name, updates)
+        self.logger.warning("pm_engine",
+                            f"全场景同因失败哨触发 '{spec_name}': {note}")
+        return True
 
     def _run_legacy_verification(self, spec_name: str):
         """降级方案：使用旧版单体 Verifier Agent。"""

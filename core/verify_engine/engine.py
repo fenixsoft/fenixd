@@ -115,6 +115,43 @@ class VerifyEngine:
             self._save_report(report)
             return report
 
+        # ── 真实路由表交叉校验（2026-08-28：planner 臆想 /dashboard 路径 404）──
+        # APP_ROUTES.md 由 pm_engine 从被测应用路由源文件提取写入；
+        # navigate 路径不在表内 = 臆想路由，验收直接拒绝。
+        routes_md = (
+            self.project_root / ".fenix" / "verify-progress"
+            / self.spec_name / "APP_ROUTES.md"
+        )
+        if routes_md.exists():
+            import re as _re
+            from urllib.parse import urlsplit
+            allowed: set[str] = set()
+            for line in routes_md.read_text(encoding="utf-8").splitlines():
+                m = _re.match(r"^- (\S+)$", line.strip())
+                if m:
+                    allowed.add(m.group(1))
+            if allowed:
+                for s in normalized:
+                    for st in s.steps:
+                        if st.action != "navigate":
+                            continue
+                        path = urlsplit((st.value or "").strip()).path or "/"
+                        if path not in allowed and path not in ("/index.html",):
+                            acceptance_errors.append(
+                                f"场景'{s.id}': navigate 路径 {path!r} 不在真实路由表中"
+                                f"（见 APP_ROUTES.md）——禁止臆想路由"
+                            )
+            if acceptance_errors:
+                head = "; ".join(acceptance_errors[:5])
+                more = f" 等 {len(acceptance_errors)} 项" if len(acceptance_errors) > 5 else ""
+                msg = f"场景验收失败（{head}{more}）"
+                self.logger.error("verify_engine", msg)
+                self._write_progress(0, len(normalized), f"场景验收失败: {msg}")
+                report = self._build_report([])
+                report["env_error"] = msg
+                self._save_report(report)
+                return report
+
         self.logger.info(
             "verify_engine",
             f"🚀 开始验证 '{self.spec_name}': "
