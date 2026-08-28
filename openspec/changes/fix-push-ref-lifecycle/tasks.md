@@ -17,5 +17,5 @@
 
 ## 4. 回归与核验
 
-- [ ] 4.1 全量 pytest 通过（重点 tests/test_core.py pm_engine push 相关及新增用例），无既有用例回归
-- [ ] 4.2 对照 capability spec 全部 Scenario 逐条核对实现覆盖并记录结论
+- [x] 4.1 全量 pytest 通过（重点 tests/test_core.py pm_engine push 相关及新增用例），无既有用例回归
+- [x] 4.2 对照 capability spec 全部 Scenario 逐条核对实现覆盖并记录结论
