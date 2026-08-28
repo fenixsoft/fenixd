@@ -2,7 +2,7 @@
 
 ## 1. 修复真实产品缺陷
 
-- [ ] 1.1 阅读 `openspec/changes/fix-improve-failover-model-mapping-ui/verification-report.md`，定位「真实产品 Bug」的根因并修复
+- [x] 1.1 阅读 `openspec/changes/fix-improve-failover-model-mapping-ui/verification-report.md`，定位「真实产品 Bug」的根因并修复
 
 ## 2. 验证与打包
 
