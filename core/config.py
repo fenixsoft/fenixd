@@ -253,15 +253,78 @@ class ConfigLoader:
             seen_names.add(name)
 
     @classmethod
+    def _normalize_provider_chain(cls, raw_provider: Any) -> List[Tuple[str, Optional[str]]]:
+        """把 `agents.models.<role>.provider` 统一规范化为 `(provider_name, element_model|None)` 列表。
+
+        design D1：链元素支持 `str | {provider: str, model?: str}` 对象两种形态，
+        也允许 str / 对象在 list 中混合（如 `[{provider: a, model: m1}, b]`）。
+        解析矩阵：
+        - str：单元素链，element_model=None（回退角色级 / provider 条目 model）
+        - list[str]：按序候选链，每元素 element_model=None
+        - list[{provider, model?}]：对象元素，element_model=该对象 model（缺省 None）
+        - 混合：上述任意组合
+        非法形态（元素非 str 且非 dict、对象缺 provider 键、model 非字符串）抛 ValueError，
+        由 _validate_agent_models / get_agent_model_assignment 决定阻塞与否。
+        空串元素与空 list 被过滤（返回空链），调用方据"空链"语义处理。
+        """
+        if isinstance(raw_provider, str):
+            chain_raw = [raw_provider] if raw_provider else []
+        elif isinstance(raw_provider, list):
+            chain_raw = raw_provider
+        else:
+            raise ValueError("must be a string or list of strings/objects")
+
+        elements: List[Tuple[str, Optional[str]]] = []
+        for idx, el in enumerate(chain_raw):
+            if isinstance(el, str):
+                if el:
+                    elements.append((el, None))
+            elif isinstance(el, dict):
+                name = el.get("provider")
+                if not isinstance(name, str) or not name:
+                    raise ValueError(
+                        f"chain element [{idx}] missing non-empty 'provider' name"
+                    )
+                m = el.get("model")
+                if m is not None and not isinstance(m, str):
+                    raise ValueError(f"chain element [{idx}].model must be a string")
+                elements.append((name, m if (isinstance(m, str) and m) else None))
+            else:
+                raise ValueError(
+                    f"chain element [{idx}] must be a string or object"
+                )
+        return elements
+
+    @classmethod
+    def _resolve_element_model(cls, element_model: Optional[str],
+                               role_model: Optional[str],
+                               provider_entry: Optional[Dict[str, Any]]) -> Optional[str]:
+        """按 design D1 解析顺序确定元素最终使用的模型名：元素自带 > 角色级 > provider 条目。
+
+        三者皆空返回 None（该元素运行期被跳过并打 ERROR）。
+        """
+        if element_model and isinstance(element_model, str):
+            return element_model
+        if role_model and isinstance(role_model, str):
+            return role_model
+        if isinstance(provider_entry, dict):
+            pe = provider_entry.get("model")
+            if pe and isinstance(pe, str):
+                return pe
+        return None
+
+    @classmethod
     def _validate_agent_models(cls, models: Dict[str, Any], llm: Dict[str, Any]):
         if not isinstance(models, dict):
             raise ValueError(f"agents.models must be a dict, got: {type(models).__name__}")
 
         provider_names = set()
         providers = (llm or {}).get("providers") or []
+        by_name: Dict[str, Any] = {}
         for p in providers:
             if isinstance(p, dict) and p.get("name"):
                 provider_names.add(p["name"])
+                by_name[p["name"]] = p
 
         for agent_type, assignment in models.items():
             if agent_type not in cls.KNOWN_AGENT_TYPES:
@@ -271,35 +334,49 @@ class ConfigLoader:
                 )
             if not isinstance(assignment, dict):
                 raise ValueError(f"agents.models.{agent_type} must be a dict")
-            provider = assignment.get("provider")
-            model = assignment.get("model")
-            # add-provider-failover：provider 支持 str（单值链）或 list[str]（按序候选链）。
-            # 非 str/list 形态视为配置错误直接拒绝；list 内每个元素也必须是非空字符串。
-            if isinstance(provider, str):
-                provider_chain = [provider] if provider else []
-            elif isinstance(provider, list):
-                provider_chain = [p for p in provider if isinstance(p, str) and p]
-                if any(not isinstance(p, str) for p in provider):
-                    raise ValueError(
-                        f"agents.models.{agent_type}.provider list must contain only strings"
-                    )
-            else:
+            raw_provider = assignment.get("provider")
+            role_model = assignment.get("model")
+            # design D2：角色级 model 不再要求非空，语义降为「全链缺省」；
+            # 仅当显式提供且非字符串时报错（bool/数字等非法类型）。
+            if role_model is not None and not isinstance(role_model, str):
                 raise ValueError(
-                    f"agents.models.{agent_type}.provider must be a string or list of strings"
+                    f"agents.models.{agent_type}.model must be a string if provided"
                 )
-            if not provider_chain:
-                raise ValueError(f"agents.models.{agent_type}.provider must be a non-empty string or list")
+            # design D1：provider 支持 str | list[str|{{provider,model?}}]，规范化为
+            # (provider_name, element_model) 二元组列表；形态非法直接拒绝。
+            try:
+                chain = cls._normalize_provider_chain(raw_provider)
+            except ValueError as e:
+                raise ValueError(
+                    f"agents.models.{agent_type}.provider {e}"
+                )
+            if not chain:
+                raise ValueError(
+                    f"agents.models.{agent_type}.provider must be a non-empty string or list"
+                )
             # add-provider-failover：未知 provider 名只打 ERROR 不阻塞加载（design D3：
             # 沿用热更新哲学，运行期该链元素被跳过）。不再抛 ValueError，否则坏一个名字
             # 就整 daemon 起不来。
-            unknown = [n for n in provider_chain if n not in provider_names]
+            unknown = [n for (n, _m) in chain if n not in provider_names]
             if unknown:
                 _logger.error(
                     "agents.models.%s.provider 引用了不存在的 provider（已跳过，不阻塞加载）: %s",
                     agent_type, ", ".join(unknown),
                 )
-            if not model or not isinstance(model, str):
-                raise ValueError(f"agents.models.{agent_type}.model must be a non-empty string")
+            # design D1/D2：逐元素可解析性检查（替换原"角色级 model 必须非空"）。
+            # 元素自带 / 角色级 / provider 条目 model 三者皆空 → ERROR 指明元素下标（不阻塞）。
+            for idx, (name, element_model) in enumerate(chain):
+                if name not in by_name:
+                    continue  # 未知 provider 已打过 ERROR，跳过其模型解析
+                resolved = cls._resolve_element_model(
+                    element_model, role_model, by_name[name]
+                )
+                if not resolved:
+                    _logger.error(
+                        "agents.models.%s.provider[%d] 无法解析出模型名（元素/model、角色级 "
+                        "model、provider 条目 model 均为空），运行期将跳过该元素",
+                        agent_type, idx,
+                    )
 
     @classmethod
     def get_agent_model_assignment(
@@ -314,9 +391,10 @@ class ConfigLoader:
         链条目仅引用 provider 名；未知名字在 `_validate_agent_models` 已打 ERROR，此处
         直接跳过（运行期安全降级）。整条链都被跳过/不存在时返回 `None`。
 
-        model 解析（design D1 / spec provider-chain-config「模型名按 provider 独立解析」）：
-        优先用角色级 `model` 字段（与变更前一致，保证 resume 续跑时跨 provider 用同一逻辑
-        模型名不丢上下文）；角色级 `model` 缺失时回退到该 provider 项自身的 `model` 字段。
+        模型 解析（design D1 / spec chain-model-mapping「元素级模型」）：
+        每个元素独立解析模型名，解析顺序 元素自带 model > 角色级 model > 该 provider 项
+        自身的 model 字段（三者皆空则该元素被跳过）。角色级 `model` 不再强制非空，语义
+        为全链缺省。
         """
         agents = config.get("agents") or {}
         models = agents.get("models") or {}
@@ -326,14 +404,13 @@ class ConfigLoader:
 
         raw_provider = assignment.get("provider")
         role_model = assignment.get("model")
-        # 解析 provider 为链：str → 单元素；list → 顺序候选；其余 → 空链
-        if isinstance(raw_provider, str):
-            chain_names = [raw_provider] if raw_provider else []
-        elif isinstance(raw_provider, list):
-            chain_names = [n for n in raw_provider if isinstance(n, str) and n]
-        else:
-            chain_names = []
-        if not chain_names:
+        # design D1：规范化为 (provider_name, element_model) 二元组链。
+        # 形态非法（校验阶段已拦截，运行期兜底）返回 None 走默认网关。
+        try:
+            chain = cls._normalize_provider_chain(raw_provider)
+        except ValueError:
+            return None
+        if not chain:
             return None
 
         llm = config.get("llm") or {}
@@ -341,14 +418,15 @@ class ConfigLoader:
         by_name = {p.get("name"): p for p in providers if isinstance(p, dict)}
 
         result: List[Tuple[Dict[str, Any], str]] = []
-        for name in chain_names:
+        for name, element_model in chain:
             provider = by_name.get(name)
             if provider is None:
                 # 未知名字已在校验阶段打 ERROR，运行期跳过该元素
                 continue
-            # model：角色级优先，回退 provider 自带 model
-            model = role_model if (role_model and isinstance(role_model, str)) else provider.get("model")
+            # 元素级模型解析：元素自带 > 角色级 > provider 条目 model（design D1）
+            model = cls._resolve_element_model(element_model, role_model, provider)
             if not model:
+                # 三者皆空：校验阶段已打 ERROR 指明下标，运行期跳过该元素
                 continue
             result.append((provider, model))
         return result if result else None

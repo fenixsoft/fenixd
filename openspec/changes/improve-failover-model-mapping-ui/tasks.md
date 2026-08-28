@@ -2,9 +2,9 @@
 
 ## 1. 链模型映射（spec-chain-model-mapping，design D1/D2/D3）
 
-- [ ] 1.1 yaml 加载规范化：provider 元素 str|对象 → (provider, model|None) 内部二元组；元素模型解析顺序 元素>角色级>providers 条目；补解析矩阵单测（str/list/对象/混合/三级回退/全空）
-- [ ] 1.2 _validate_agent_models 规则替换：删角色级非空要求，改逐元素可解析检查（ERROR 含元素下标，不阻塞）；补单测（缺角色级通过 / 下标注明 / 空链通过）
-- [ ] 1.3 get_agent_model_assignment 输出逐元素 (provider, model)；agent_runner provider_marker 含 model；switch 日志 model_changed 留痕；补单测（跨模型切换两例 / 同模型无标记）
+- [x] 1.1 yaml 加载规范化：provider 元素 str|对象 → (provider, model|None) 内部二元组；元素模型解析顺序 元素>角色级>providers 条目；补解析矩阵单测（str/list/对象/混合/三级回退/全空）
+- [x] 1.2 _validate_agent_models 规则替换：删角色级非空要求，改逐元素可解析检查（ERROR 含元素下标，不阻塞）；补单测（缺角色级通过 / 下标注明 / 空链通过）
+- [x] 1.3 get_agent_model_assignment 输出逐元素 (provider, model)；agent_runner provider_marker 含 model；switch 日志 model_changed 留痕；补单测（跨模型切换两例 / 同模型无标记）
 
 ## 2. Dashboard 后端（spec-dashboard-chain-editor，design D4/D5）
 

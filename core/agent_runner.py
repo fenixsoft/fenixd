@@ -803,6 +803,7 @@ class AgentRunner:
         # 实例级链指针（design D1：cursor 按 agent_type 记忆）。-1 表示尚未选定。
         chain_cursor = -1
         last_provider_used = None  # 用于 "provider switched" 跨 attempt 打点
+        self._last_model_used = None  # 用于 model_changed 日志留痕（design D3）
 
         for attempt in range(1, max_retries + 1):
             attempt_run_id = f"{run_id}-a{attempt}"
@@ -887,15 +888,22 @@ class AgentRunner:
             reuse_worktree = (agent_type == "implementer" and wt_path is not None)
 
             # 跨 attempt 切换打点（design D5 / spec failover-dispatch「切换留痕」）：
-            # 本次实际使用的 provider 与上一次不同 → 输出 "provider switched" 日志。
+            # 本次实际使用的 provider 与上一次不同 → 输出 "provider switched" 日志；
+            # 当 model 也发生变更时附带 `model_changed: <old>→<new>`（design D3）。
             # 放在 reuse_worktree 判断之后、运行之前，确保本次 dispatch 的 provider 已确定。
             if last_provider_used is not None and provider_name is not None \
                     and provider_name != last_provider_used:
-                self.logger.info(
-                    "agent_runner",
+                switch_msg = (
                     f"provider switched {last_provider_used} → {provider_name} "
-                    f"for '{spec_name}'",
+                    f"for '{spec_name}'"
                 )
+                last_model = getattr(self, "_last_model_used", None)
+                if model and last_model and model != last_model:
+                    switch_msg += f" — model_changed: {last_model}→{model}"
+                self.logger.info("agent_runner", switch_msg)
+            # 记忆本次使用的模型名（供下次 attempt 切换时判定 model_changed，design D3）
+            if model:
+                self._last_model_used = model
             # 更新记忆：下次 attempt 据以判断切换并打点（design D5）。
             last_provider_used = provider_name
 

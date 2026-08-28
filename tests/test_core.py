@@ -655,6 +655,11 @@ class TestConfigLoader(unittest.TestCase):
         self.assertIn("known agent type", str(ctx.exception))
 
     def test_agent_models_empty_model_raises(self):
+        """improve-failover-model-mapping-ui（design D2）：角色级 model 不再要求非空。
+
+        角色级 model 为空字符串时加载应成功（旧行为会抛 ValueError）；该角色因元素
+        也无法解析出模型而 assignment 返回 None（运行期走默认网关），不阻塞加载。
+        """
         cfg = self._base_config()
         cfg["llm"] = {"providers": [
             {"name": "volc", "baseurl": "https://a.com", "apikey": "k1"},
@@ -663,8 +668,10 @@ class TestConfigLoader(unittest.TestCase):
             "implementer": {"provider": "volc", "model": ""},
         }
         self._write_config(cfg)
-        with self.assertRaises(ValueError):
-            ConfigLoader.load(self.config_path)
+        # 加载不再抛异常（design D2 删除「角色级 model 必须非空」）
+        config = ConfigLoader.load(self.config_path)
+        # 角色级与 provider 条目均无 model → 该元素解析失败，整链跳过 → None
+        self.assertIsNone(ConfigLoader.get_agent_model_assignment(config, "implementer"))
 
     def test_agent_models_absent_is_okay(self):
         """未配置 agents.models 时应正常加载（向后兼容）。"""
@@ -759,6 +766,109 @@ class TestConfigLoader(unittest.TestCase):
         self._write_config(self._base_config())
         config = ConfigLoader.load(self.config_path)
         self.assertIsNone(ConfigLoader.get_agent_model_assignment(config, "implementer"))
+
+
+# ── 新增：improve-failover-model-mapping-ui（design D1/D2/D3 解析矩阵） ──
+
+    def _provider_assign(self, provider, model=None):
+        """组装 agents.models.implementer 并加载，返回 config。"""
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [
+            {"name": "inferaiapi.com", "baseurl": "https://a.com", "apikey": "k1"},
+            {"name": "aliyun", "baseurl": "https://b.com", "apikey": "k2",
+             "model": "deepseek-v4-flash-0731"},
+            {"name": "bigmodel.cn", "baseurl": "https://c.com", "apikey": "k3"},
+        ]}
+        entry = {"provider": provider}
+        if model is not None:
+            entry["model"] = model
+        cfg["agents"]["models"] = {"implementer": entry}
+        self._write_config(cfg)
+        return ConfigLoader.load(self.config_path)
+
+    def test_object_element_uses_own_model(self):
+        """Scenario：对象元素按自身模型请求；切换用元素 mapping 的模型而非首项。"""
+        config = self._provider_assign(
+            [{"provider": "inferaiapi.com", "model": "deepseek-v4-flash"},
+             {"provider": "bigmodel.cn", "model": "glm-5.3-flash"}])
+        result = ConfigLoader.get_agent_model_assignment(config, "implementer")
+        self.assertEqual([(p["name"], m) for p, m in result],
+                         [("inferaiapi.com", "deepseek-v4-flash"),
+                          ("bigmodel.cn", "glm-5.3-flash")])
+
+    def test_role_model_as_default_fallback(self):
+        """Scenario：角色级 model 作为全链缺省（provider 条目 model 不覆盖角色级）。"""
+        config = self._provider_assign(
+            ["inferaiapi.com", "aliyun"], model="deepseek-v4-flash")
+        result = ConfigLoader.get_agent_model_assignment(config, "implementer")
+        self.assertEqual([m for _p, m in result],
+                         ["deepseek-v4-flash", "deepseek-v4-flash"])
+
+    def test_provider_entry_model_used_when_role_absent(self):
+        """三级回退：角色级缺省时，aliyun 回退到 providers 条目的 model。"""
+        config = self._provider_assign(["aliyun"])  # 无角色级 model
+        result = ConfigLoader.get_agent_model_assignment(config, "implementer")
+        self.assertEqual([(p["name"], m) for p, m in result],
+                         [("aliyun", "deepseek-v4-flash-0731")])
+
+    def test_mixed_str_and_object_chain(self):
+        """混合形态 [对象, str]：str 元素（无角色级）回退到 provider 条目 model。"""
+        config = self._provider_assign(
+            [{"provider": "inferaiapi.com", "model": "deepseek-v4-flash"}, "aliyun"])
+        result = ConfigLoader.get_agent_model_assignment(config, "implementer")
+        self.assertEqual([(p["name"], m) for p, m in result],
+                         [("inferaiapi.com", "deepseek-v4-flash"),
+                          ("aliyun", "deepseek-v4-flash-0731")])
+
+    def test_empty_chain_returns_none(self):
+        """Scenario：全空链回退默认网关。角色级无 model 且所有元素均无法解析模型。"""
+        config = self._provider_assign(["bigmodel.cn"])  # bigmodel.cn 条目无 model，无角色级
+        self.assertIsNone(ConfigLoader.get_agent_model_assignment(config, "implementer"))
+
+    def test_missing_role_model_passes_validation(self):
+        """Scenario：缺角色级 model 的合法配置通过校验（无 ERROR 抛异常）。"""
+        config = self._provider_assign([{"provider": "inferaiapi.com", "model": "m1"}])
+        self.assertIsNotNone(ConfigLoader.get_agent_model_assignment(config, "implementer"))
+
+    def test_unresolvable_element_logs_index(self):
+        """Scenario：不可解析元素报下标（ERROR 含 provider[1]）。"""
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [
+            {"name": "ok", "baseurl": "https://a.com", "apikey": "k1", "model": "m0"},
+            {"name": "bad", "baseurl": "https://b.com", "apikey": "k2"},  # 无 model
+        ]}
+        cfg["agents"]["models"] = {"implementer": {"provider": ["ok", "bad"]}}
+        self._write_config(cfg)
+        with self.assertLogs("fenixd.config", level="ERROR") as cm:
+            ConfigLoader.load(self.config_path)
+        self.assertTrue(any("provider[1]" in line for line in cm.output))
+
+    def test_empty_chain_validation_passes(self):
+        """校验规则替换：完全无可用元素的链校验通过（分配层返回 None）。"""
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [{"name": "p", "baseurl": "https://a.com", "apikey": "k1"}]}
+        cfg["agents"]["models"] = {"implementer": {"provider": "p"}}  # 无 model 任何层级
+        self._write_config(cfg)
+        config = ConfigLoader.load(self.config_path)
+        self.assertIsNone(ConfigLoader.get_agent_model_assignment(config, "implementer"))
+
+    def test_validate_rejects_non_string_model(self):
+        """角色级 model 显式为非字符串（bool/数字）应拒绝。"""
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [{"name": "p", "baseurl": "https://a.com", "apikey": "k1"}]}
+        cfg["agents"]["models"] = {"implementer": {"provider": "p", "model": 123}}
+        self._write_config(cfg)
+        with self.assertRaises(ValueError):
+            ConfigLoader.load(self.config_path)
+
+    def test_validate_rejects_object_missing_provider(self):
+        """对象元素缺 provider 键 → 拒绝。"""
+        cfg = self._base_config()
+        cfg["llm"] = {"providers": [{"name": "p", "baseurl": "https://a.com", "apikey": "k1"}]}
+        cfg["agents"]["models"] = {"implementer": {"provider": [{"model": "m1"}]}}
+        self._write_config(cfg)
+        with self.assertRaises(ValueError):
+            ConfigLoader.load(self.config_path)
 
 
 # ═══════════════════════════════════════════════════════════════════

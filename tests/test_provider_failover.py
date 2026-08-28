@@ -78,6 +78,21 @@ def chain_config(chain, model="deepseek-v4-flash"):
     }
 
 
+def object_chain_config(elements):
+    """构造 implementer 对象数组链 config（每个元素 {provider, model?}）。"""
+    providers = [
+        {"name": "inferaiapi.com", "baseurl": "https://a.com", "apikey": "k1"},
+        {"name": "aliyun", "baseurl": "https://b.com", "apikey": "k2"},
+        {"name": "bigmodel.cn", "baseurl": "https://c.com", "apikey": "k3"},
+    ]
+    return {
+        "llm": {"providers": providers},
+        "agents": {
+            "models": {"implementer": {"provider": elements}},
+        },
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 1.1 config 链解析
 # ═══════════════════════════════════════════════════════════════════════════
@@ -91,6 +106,29 @@ class TestChainConfigParsing:
         assert len(result) == 2
         assert result[0][0]["name"] == "inferaiapi.com"
         assert result[1][0]["name"] == "aliyun"
+
+    def test_object_elements_resolve_per_element_model(self):
+        """对象元素按各自 model 解析，不共享角色级 model（角色级缺省）。"""
+        config = object_chain_config([
+            {"provider": "inferaiapi.com", "model": "deepseek-v4-flash"},
+            {"provider": "bigmodel.cn",    "model": "glm-5.3-flash"},
+        ])
+        result = ConfigLoader.get_agent_model_assignment(config, "implementer")
+        assert result is not None
+        assert len(result) == 2
+        assert (result[0][0]["name"], result[0][1]) == ("inferaiapi.com", "deepseek-v4-flash")
+        assert (result[1][0]["name"], result[1][1]) == ("bigmodel.cn",    "glm-5.3-flash")
+
+    def test_mixed_str_object_chain(self):
+        """混合 [对象, str]：str 元素无角色级 model 时回退 provider 条目 model。"""
+        config = object_chain_config([
+            {"provider": "inferaiapi.com", "model": "deepseek-v4-flash"},
+            "aliyun",  # aliyun 在 providers 条目中无 model → 无可用模型被跳过
+        ])
+        result = ConfigLoader.get_agent_model_assignment(config, "implementer")
+        assert result is not None
+        assert len(result) == 1
+        assert result[0][0]["name"] == "inferaiapi.com"
 
     def test_single_value_compatible(self, monkeypatch):
         """单值 provider 解析为单元素链，逐字段与变更前一致。"""
@@ -337,6 +375,93 @@ class TestProviderObservability:
                 if e.get("type") == "provider_marker":
                     marker = e
         assert marker is not None
+        assert marker["provider"] == "inferaiapi.com"
+        assert marker["chain_index"] == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# improve-failover-model-mapping-ui：跨模型切换留痕 (design D3)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestModelChangedLog:
+    def test_cross_model_switch_appends_model_changed(self, tmp_path, monkeypatch):
+        """跨模型切换（deepseek-v4-flash → glm-5.3-flash）日志含 model_changed 标记。"""
+        config = object_chain_config([
+            {"provider": "inferaiapi.com", "model": "deepseek-v4-flash"},
+            {"provider": "bigmodel.cn",    "model": "glm-5.3-flash"},
+        ])
+        runner = make_runner(tmp_path, config)
+        now = 1000.0
+        monkeypatch.setattr(runner, "_now", lambda: now)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = tmp_path / "wt"
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None):
+            # 首候选失败 → 触发链前进到 bigmodel.cn
+            if "a.com" in env_overrides.get("ANTHROPIC_BASE_URL", ""):
+                raise RuntimeError("unrecognized_model")
+            return ("ok", 1, "sess")
+
+        runner._run_claude = fake_run_claude
+        runner._extract_session_id = MagicMock(return_value="sess")
+        runner.run_implementer("s")
+        # 日志含 model_changed 标记，指明旧→新模型名
+        assert runner.logger.has(
+            "model_changed: deepseek-v4-flash→glm-5.3-flash"
+        )
+        # 同时包含 provider switched
+        assert runner.logger.has("provider switched")
+
+    def test_same_model_no_model_changed(self, tmp_path, monkeypatch):
+        """同模型切换（provider 变但 model 不变）日志不含 model_changed。"""
+        config = object_chain_config([
+            {"provider": "inferaiapi.com", "model": "same-model"},
+            {"provider": "aliyun",         "model": "same-model"},
+        ])
+        runner = make_runner(tmp_path, config)
+        now = 1000.0
+        monkeypatch.setattr(runner, "_now", lambda: now)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = tmp_path / "wt"
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None):
+            if "a.com" in env_overrides.get("ANTHROPIC_BASE_URL", ""):
+                raise RuntimeError("unrecognized_model")
+            return ("ok", 1, "sess")
+
+        runner._run_claude = fake_run_claude
+        runner._extract_session_id = MagicMock(return_value="sess")
+        runner.run_implementer("s")
+        # 日志包含 provider switched
+        assert runner.logger.has("provider switched")
+        # 但不含 model_changed（模型名未变）
+        assert not runner.logger.has("model_changed")
+
+    def test_model_changed_marker_in_provider_marker(self, tmp_path, monkeypatch):
+        """provider_marker 行含 model 字段，指明元素级模型。"""
+        config = object_chain_config([
+            {"provider": "inferaiapi.com", "model": "deepseek-v4-flash"},
+            {"provider": "bigmodel.cn",    "model": "glm-5.3-flash"},
+        ])
+        runner = make_runner(tmp_path, config)
+        now = 1000.0
+        monkeypatch.setattr(runner, "_now", lambda: now)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = tmp_path / "wt"
+        runner._run_claude = MagicMock(return_value=("ok", 1, "sess"))
+        runner.run_implementer("s")
+        # run jsonl 的 provider_marker 含 model
+        runs = tmp_path / ".fenix" / "runs"
+        marker = None
+        for f in runs.glob("*.jsonl"):
+            for line in f.read_text(encoding="utf-8").splitlines():
+                e = json.loads(line)
+                if e.get("type") == "provider_marker":
+                    marker = e
+        assert marker is not None
+        assert marker["model"] == "deepseek-v4-flash"
         assert marker["provider"] == "inferaiapi.com"
         assert marker["chain_index"] == 0
 
