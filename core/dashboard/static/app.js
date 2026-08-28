@@ -97,12 +97,23 @@ function parseHash() {
   if (parts[0] === 'spec' && parts[1] && parts[2]) {
     return { view: 'spec', project: parts[1], spec: parts[2] };
   }
-  if (parts[0] === 'config') {
+  if (parts[0] === 'config' || h.startsWith('config=')) {
     // config/<project>、config=<project>（项目级配置，等号形式兼容直接导航）
     // 或 config（无项目则用户级）
     const proj = parts[1] || '';
     const eqMatch = h.match(/^config=(.+)$/);
-    return { view: 'config', project: proj || (eqMatch ? eqMatch[1] : '') };
+    // 可选 tab 深链：#config=fenixd&tab=agent-models / #config/fenixd?tab=agent-models
+    // （improve-failover-model-mapping-ui：直接进入 Agent 模型分配页，避免链编辑器
+    //  被默认隐藏的 tab 挡住；验证场景与直接分享链接均受益）。
+    let tab = '';
+    const amp = (eqMatch ? eqMatch[1] : proj).match(/&tab=([\w-]+)/);
+    if (amp) tab = amp[1];
+    const q = h.match(/[?&]tab=([\w-]+)/);
+    if (q) tab = q[1];
+    const projClean = proj
+      ? proj.replace(/[?&]tab=[\w-]+/, '')
+      : (eqMatch ? eqMatch[1].replace(/&tab=[\w-]+/, '') : '');
+    return { view: 'config', project: projClean, tab };
   }
   if (parts[0] === 'activities') {
     // activities/<project>（无项目 → 跨项目聚合）
@@ -2041,6 +2052,23 @@ function hydrateConfigPage() {
   // 主题选项从 localStorage 恢复（不读取传入配置快照）
   initTheme();
 
+  // improve-failover-model-mapping-ui：URL 深链带 tab 参数时直接进入对应配置页签，
+  // 避免 Agent 模型分配等被默认隐藏的 tab 挡住（验证场景与直接分享链接受益）。
+  const tab = currentState.tab;
+  if (tab) {
+    const btn = main.querySelector(`.config-tabs .tab-btn[data-tab="${tab}"]`);
+    if (btn) {
+      main.querySelectorAll('.config-tabs .tab-btn').forEach((b) =>
+        b.classList.toggle('active', b === btn));
+      main.querySelectorAll('.config-tabs .tab-pane').forEach((pane) => {
+        const active = pane.dataset.pane === tab;
+        pane.classList.toggle('active', active);
+        if (active) pane.removeAttribute('hidden');
+        else pane.setAttribute('hidden', '');
+      });
+    }
+  }
+
   // 新增 Provider（按钮节点随渲染重建/复用）
   const addBtn = el('btn-add-provider');
   if (addBtn && !addBtn._bound) {
@@ -2092,7 +2120,7 @@ function hydrateConfigPage() {
       if (fields) fields.classList.remove('disabled');
       const addBtn = fields?.querySelector('.btn-add-chain');
       const div = document.createElement('div');
-      div.innerHTML = renderChainRow(agentKey, '', '', providers);
+      div.innerHTML = renderChainRow(agentKey, '', '', readProviderCards());
       const rowEl = div.firstElementChild;
       if (addBtn) fields.insertBefore(rowEl, addBtn);
       reindexChainRows(main, agentKey);
