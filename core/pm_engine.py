@@ -1731,19 +1731,6 @@ class PMEngine:
         app_reachable = True
         reach_note = ""
         while True:
-            # 真实路由表提取（planner 禁止臆想路径；提取失败/源缺失则跳过，
-            # 验收交叉校验在 APP_ROUTES.md 存在时才生效）
-            routes = self._extract_dashboard_routes()
-            if routes is not None:
-                try:
-                    (verify_dir / "APP_ROUTES.md").write_text(
-                        f"# 被测应用真实路由表（提取自 {self._routes_source_path().name}）\n\n"
-                        + "\n".join(f"- {r}" for r in routes)
-                        + "\n",
-                        encoding="utf-8",
-                    )
-                except OSError:
-                    pass
             if replan_feedback is not None:
                 fb = verify_dir / "REPLAN_FEEDBACK.md"
                 fb.parent.mkdir(parents=True, exist_ok=True)
@@ -1992,27 +1979,6 @@ class PMEngine:
         except OSError:
             return True
         return False
-
-    def _routes_source_path(self) -> Path:
-        """被测应用路由源文件路径（可配置）。"""
-        src = self._get_config("verify.routes_source", "core/dashboard/server.py")
-        return self.project_root / src
-
-    def _extract_dashboard_routes(self) -> list[str] | None:
-        """从路由源文件的 `path == "..."` 判定中提取真实路由表。
-
-        返回 None 表示源文件缺失（无法提取，交叉校验跳过）。
-        """
-        import re as _re
-        src = self._routes_source_path()
-        if not src.exists():
-            return None
-        try:
-            text = src.read_text(encoding="utf-8")
-        except OSError:
-            return None
-        routes = sorted(set(_re.findall(r'path\s*==\s*"([^"]+)"', text)))
-        return routes or []
 
     @staticmethod
     def _normalize_fail_signature(text: str) -> str:
