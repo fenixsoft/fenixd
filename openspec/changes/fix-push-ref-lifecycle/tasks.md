@@ -2,7 +2,7 @@
 
 ## 1. 推送核心重构（design D1/D2）
 
-- [ ] 1.1 `_git_push_branch`/`_resolve_push_branch` 重构为 main 优先 + 分支尽力；实现 `_remote_branch_sha(branch)` 助手（ls-remote 查询）；补单测（正常 FF / 非 FF 拒绝 / 分支去重三分支 / 本地分支缺失跳过）
+- [x] 1.1 `_git_push_branch`/`_resolve_push_branch` 重构为 main 优先 + 分支尽力；实现 `_remote_branch_sha(branch)` 助手（ls-remote 查询）；补单测（正常 FF / 非 FF 拒绝 / 分支去重三分支 / 本地分支缺失跳过）
 - [ ] 1.2 approve_push 集成新判定：成功清 error 推进 pushed；失败写退避标记进 error 文本；补单测（成功清痕 / 失败留退避标记）
 
 ## 2. 退避收敛与重放去重（design D3/D5）

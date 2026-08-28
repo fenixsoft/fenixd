@@ -1406,27 +1406,34 @@ class TestAutoApprove(unittest.TestCase):
         self.assertFalse(result)
         self.sm.transition.assert_not_called()
 
-    def test_git_push_failure_returns_false(self):
+    def test_git_push_ref_failure_returns_false(self):
         """推送不存在的远端应返回失败。"""
         engine = self._make_engine({})
-        success, error = engine._git_push_branch("nonexistent-branch")
+        success, error = engine._git_push_ref("nonexistent-branch")
         self.assertFalse(success)
         self.assertTrue(len(error) > 0)
 
     def test_approve_push_success_transitions_to_pushed(self):
-        """mock 成功推送后 transition 到 pushed。"""
+        """main 先行推送成功（分支尽力跳过）→ transition 到 pushed。"""
         engine = self._make_engine({})
-        self.sm.read_one = MagicMock(return_value={"status": "done"})
-        with patch.object(engine, '_git_push_branch', return_value=(True, "")):
+        self.sm.read_one = MagicMock(
+            return_value={"status": "done", "branch": "fenix/test-spec"}
+        )
+        with patch.object(engine, '_git_push_ref', return_value=(True, "")):
             result = engine.approve_push("test-spec")
             self.assertTrue(result)
             self.sm.transition.assert_called_once_with("test-spec", "pushed")
+            # 成功时清 error
+            update_args = self.sm.update_spec.call_args[0]
+            self.assertIsNone(update_args[1]["error"])
 
-    def test_approve_push_failure_updates_error(self):
-        """推送失败时不推进状态，但记录 error。"""
+    def test_approve_push_main_failure_updates_error(self):
+        """main 推送失败时不推进状态，但记录 error（含退避标记）。"""
         engine = self._make_engine({})
-        self.sm.read_one = MagicMock(return_value={"status": "done"})
-        with patch.object(engine, '_git_push_branch', return_value=(False, "remote rejected")):
+        self.sm.read_one = MagicMock(
+            return_value={"status": "done", "branch": "fenix/test-spec"}
+        )
+        with patch.object(engine, '_git_push_ref', return_value=(False, "remote rejected")):
             result = engine.approve_push("test-spec")
             self.assertFalse(result)
             self.sm.transition.assert_not_called()
@@ -1434,6 +1441,9 @@ class TestAutoApprove(unittest.TestCase):
             update_args = self.sm.update_spec.call_args[0]
             self.assertIn("error", update_args[1])
             self.assertIn("remote rejected", update_args[1]["error"])
+            # 退避标记 + 尝试计数
+            self.assertIn("push_backoff", update_args[1]["error"])
+            self.assertIn("push_attempts=1", update_args[1]["error"])
 
     def test_on_spec_done_auto_mode_triggers_approve(self):
         """auto 模式下 _on_spec_done 应调用 _auto_approve。"""
@@ -1452,6 +1462,175 @@ class TestAutoApprove(unittest.TestCase):
         with patch.object(engine, '_auto_approve') as mock_approve:
             engine._on_spec_done("test-spec")
             mock_approve.assert_not_called()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Push Ref Hygiene Tests (fix-push-ref-lifecycle: task 1.1 / design D1/D2)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestPushRefHygiene(unittest.TestCase):
+    """测试 main 优先推送 + 远端 SHA 去重 + 分支尽力逻辑。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir()
+        # 初始化 git repo + 本地分支 + 远端（用 bare repo 模拟 origin）
+        subprocess.run(["git", "init", "-q", "-b", "main"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "test"],
+                       cwd=str(self.project_root), capture_output=True)
+        (self.project_root / "README.md").write_text("# test\n")
+        subprocess.run(["git", "add", "."], cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"],
+                       cwd=str(self.project_root), capture_output=True)
+        # 创建远端 bare repo 并配置 origin
+        self.remote_root = Path(self.tmpdir) / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main",
+                        str(self.remote_root)],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "remote", "add", "origin", str(self.remote_root)],
+                       cwd=str(self.project_root), capture_output=True)
+        # 把 init 推到远端，保证 main 可 FF
+        subprocess.run(["git", "push", "-q", "origin", "main"],
+                       cwd=str(self.project_root), capture_output=True)
+
+        self.sm = MagicMock()
+        self.sm.read_one = MagicMock(
+            return_value={"status": "done", "branch": "fenix/test-spec"}
+        )
+        self.sm.transition = MagicMock()
+        self.sm.update_spec = MagicMock()
+        self.sm.get_by_status = MagicMock(return_value={})
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_engine(self, config: dict = None):
+        from core.pm_engine import PMEngine
+        logger = MagicMock()
+        for m in ("info", "warning", "error", "debug"):
+            setattr(logger, m, MagicMock())
+        ar = MagicMock()
+        return PMEngine(self.sm, ar, config or {}, self.project_root, logger)
+
+    def test_main_first_push_success(self):
+        """main 可 FF 时推送成功并推进 pushed，error 清空。"""
+        engine = self._make_engine({})
+        result = engine.approve_push("test-spec")
+        self.assertTrue(result)
+        self.sm.transition.assert_called_once_with("test-spec", "pushed")
+        self.assertIsNone(self.sm.update_spec.call_args[0][1]["error"])
+
+    def test_main_diverged_failure(self):
+        """远端 main 分叉（非 FF）时推送失败，不推进 pushed。"""
+        # 在远端制造一个本地没有的提交，制造分叉
+        outside = Path(self.tmpdir) / "outside"
+        subprocess.run(["git", "clone", "-q", str(self.remote_root), str(outside)],
+                       cwd=str(self.project_root), capture_output=True)
+        (outside / "extra.txt").write_text("x")
+        subprocess.run(["git", "add", "."], cwd=str(outside), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "remote only"],
+                       cwd=str(outside), capture_output=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"],
+                       cwd=str(outside), capture_output=True)
+        shutil.rmtree(outside, ignore_errors=True)
+
+        engine = self._make_engine({})
+        result = engine.approve_push("test-spec")
+        self.assertFalse(result)
+        self.sm.transition.assert_not_called()
+        err = self.sm.update_spec.call_args[0][1]["error"]
+        self.assertIn("git push failed", err)
+
+    def test_branch_dedup_skip_when_remote_sha_matches(self):
+        """远端分支 SHA 与本地一致 → 不重复推送（去重短路）。"""
+        engine = self._make_engine({})
+        self.sm.read_one.return_value = {
+            "status": "done", "branch": "fenix/test-spec",
+        }
+        # 先在本地创建分支并推到远端（SHA 一致）
+        subprocess.run(["git", "branch", "fenix/test-spec"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "push", "-q", "origin", "fenix/test-spec"],
+                       cwd=str(self.project_root), capture_output=True)
+        with patch.object(engine, '_git_push_ref', return_value=(True, "")) as mock_push:
+            result = engine.approve_push("test-spec")
+            self.assertTrue(result)
+            # 分支去重短路：_git_push_ref 不会被传入分支名
+            branch_push_calls = [
+                c for c in mock_push.call_args_list if c[0][0] == "fenix/test-spec"
+            ]
+            self.assertEqual(len(branch_push_calls), 0)
+            # main push 仍是成功路径
+            main_calls = [c for c in mock_push.call_args_list if c[0][0] == "main"]
+            self.assertEqual(len(main_calls), 1)
+
+    def test_local_branch_missing_skips_push(self):
+        """本地分支已清理（merge-back 后）→ 无 refspec 错误，main 推送承载。"""
+        engine = self._make_engine({})
+        self.sm.read_one.return_value = {
+            "status": "done", "branch": "fenix/gone-branch",
+        }
+        # 本地没有 fenix/gone-branch 分支，远端也没有
+        # approve_push 应成功（main 推送成功），且不会因 gone-branch 报错
+        result = engine.approve_push("test-spec")
+        self.assertTrue(result)
+        self.sm.transition.assert_called_once_with("test-spec", "pushed")
+
+    def test_remote_branch_diff_sha_warns_and_skips(self):
+        """远端分支 SHA 不同 → 跳过分支推送并 WARN，main 成功仍推进。"""
+        engine = self._make_engine({})
+        self.sm.read_one.return_value = {
+            "status": "done", "branch": "fenix/test-spec",
+        }
+        # 本地分支
+        subprocess.run(["git", "branch", "fenix/test-spec"],
+                       cwd=str(self.project_root), capture_output=True)
+        # 远端分支放一个「不同 SHA」的对象：用另一个 clone push 不同内容
+        outside = Path(self.tmpdir) / "outside2"
+        subprocess.run(["git", "clone", "-q", str(self.remote_root), str(outside)],
+                       cwd=str(self.project_root), capture_output=True)
+        (outside / "diverged.txt").write_text("y")
+        subprocess.run(["git", "add", "."], cwd=str(outside), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "diverged branch",
+                        "-b", "fenix/test-spec"],
+                       cwd=str(outside), capture_output=True)
+        subprocess.run(["git", "branch", "-M", "fenix/test-spec"],
+                       cwd=str(outside), capture_output=True)
+        subprocess.run(["git", "push", "-q", "origin", "fenix/test-spec"],
+                       cwd=str(outside), capture_output=True)
+        shutil.rmtree(outside, ignore_errors=True)
+
+        with patch.object(engine, '_git_push_ref', return_value=(True, "")) as mock_push:
+            result = engine.approve_push("test-spec")
+            self.assertTrue(result)
+            branch_calls = [
+                c for c in mock_push.call_args_list
+                if c[0][0] == "fenix/test-spec"
+            ]
+            self.assertEqual(len(branch_calls), 0)
+
+    def test_remote_branch_missing_pushes_branch(self):
+        """远端分支不存在 → 正常推送 feature 分支（best-effort 成功）。"""
+        engine = self._make_engine({})
+        self.sm.read_one.return_value = {
+            "status": "done", "branch": "fenix/test-spec",
+        }
+        subprocess.run(["git", "branch", "fenix/test-spec"],
+                       cwd=str(self.project_root), capture_output=True)
+        with patch.object(engine, '_git_push_ref') as mock_push:
+            mock_push.return_value = (True, "")
+            result = engine.approve_push("test-spec")
+            self.assertTrue(result)
+            branch_calls = [
+                c for c in mock_push.call_args_list
+                if c[0][0] == "fenix/test-spec"
+            ]
+            self.assertEqual(len(branch_calls), 1)
 
 
 # ═══════════════════════════════════════════════════════════════════
