@@ -3303,6 +3303,33 @@ class PMEngine:
 
     # ── 恢复一致性辅助（improve-run-lifecycle-governance D4/D6）──────────────
 
+    def _stuck_elapsed_minutes(self, spec_name: str, now: datetime,
+                               updated: datetime) -> float:
+        """卡死耗时（分钟）：优先读 agent_runner 的续期基准，回退 STATE updated。
+
+        超时监督续期（improve-run-lifecycle-governance 3.2 / D3）会通过
+        ``agent_runner.note_run_extension`` 登记新的 stuck 基准——否则刚被续期
+        的长任务因 updated 停留在派发时刻，下一轮 BLOCKER CHECK 就被误判 stuck
+        并触发 auto-recovery（绕过整个监督机制）。无注册表条目（未续期 / 接口
+        不可用 / run 已结束）时按 updated 计算，行为与现状一致。
+        """
+        getter = getattr(self.agent_runner, "get_extension_baseline", None)
+        if callable(getter):
+            try:
+                baseline_ts = getter(spec_name)
+            except Exception as e:
+                self.logger.debug(
+                    "pm_engine",
+                    f"Extension baseline probe failed for '{spec_name}': {e}",
+                )
+                baseline_ts = None
+            if isinstance(baseline_ts, (int, float)) and baseline_ts > 0:
+                try:
+                    return (now.timestamp() - float(baseline_ts)) / 60.0
+                except (TypeError, ValueError):
+                    pass
+        return (now - updated).total_seconds() / 60.0
+
     def _attempt_still_alive(self, spec_name: str) -> bool:
         """核验 spec 是否仍有存活的 attempt 子进程（auto-recovery 前置门禁）。
 
@@ -3444,7 +3471,8 @@ class PMEngine:
                     updated_str = entry.get("updated", "")
                     if updated_str:
                         updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
-                        elapsed = (now - updated).total_seconds() / 60
+                        elapsed = self._stuck_elapsed_minutes(
+                            name, now, updated)
                         if elapsed > stuck_threshold_minutes:
                             blockers.append({
                                 "spec": name,

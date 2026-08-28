@@ -4,7 +4,9 @@
 陈锁回收、agent_runner.has_live_attempt 存活探测三例。
 """
 
+import json
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -522,4 +524,334 @@ class TestAdminMonitorContinuesWithoutInProgress(unittest.TestCase):
         self.monitor._invoke_administrator.reset_mock()
         self.monitor.run_once()
         self.monitor._invoke_administrator.assert_not_called()
+
+
+# ── 3.2 超时续期基准 + 4.1–4.3 超时活性监督 ──────────────────────────────────
+
+import core.agent_runner as agent_runner_module
+
+
+def bare_runner(tmp_path: Path) -> AgentRunner:
+    """构造带续期基准注册表的最小 AgentRunner（不跑真实 CLI）。"""
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.config = {}
+    runner.worktree_manager = None
+    runner.state_machine = None
+    runner.project_root = tmp_path
+    runner.logger = FakeLogger()
+    runner._running_agents = {}
+    runner._extension_baselines = {}
+    return runner
+
+
+def make_run_file(tmp_path: Path, run_id: str, lines: list) -> Path:
+    runs = tmp_path / ".fenix" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    p = runs / f"{run_id}.jsonl"
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+def iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat()
+
+
+class TestExtensionBaseline(unittest.TestCase):
+    """3.2 续期基准登记 / 读取 / run 结束自清理。"""
+
+    def setUp(self):
+        self.tmpdir = Path(__import__("tempfile").mkdtemp())
+        self.runner = bare_runner(self.tmpdir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_note_sets_baseline(self):
+        make_run_file(self.tmpdir, "impl-s1-1-a1", ['{"type":"system"}'])
+        before = time.time()
+        self.runner.note_run_extension("s1", "impl-s1-1-a1", 1, before + 1800)
+        baseline = self.runner.get_extension_baseline("s1")
+        self.assertIsNotNone(baseline)
+        self.assertGreaterEqual(baseline, before - 1)
+
+    def test_no_entry_returns_none(self):
+        self.assertIsNone(self.runner.get_extension_baseline("s1"))
+
+    def test_stale_run_stream_invalidates_entry(self):
+        """run 流停止增长（run 已结束）→ 基准失效并移除，回退 updated 起点。"""
+        p = make_run_file(self.tmpdir, "impl-s1-1-a1", ['{"type":"system"}'])
+        self.runner.note_run_extension("s1", "impl-s1-1-a1", 1, time.time() + 1800)
+        self.assertIsNotNone(self.runner.get_extension_baseline("s1"))
+        old = time.time() - agent_runner_module.LIVE_ATTEMPT_STREAM_WINDOW_SECONDS - 60
+        os.utime(p, (old, old))
+        self.assertIsNone(self.runner.get_extension_baseline("s1"))
+        self.assertNotIn("s1", self.runner._extension_baselines)
+
+    def test_missing_run_stream_invalidates_entry(self):
+        self.runner.note_run_extension("s1", "impl-s1-404-a1", 1, time.time())
+        self.assertIsNone(self.runner.get_extension_baseline("s1"))
+
+
+class TestPmEngineUsesExtensionBaseline(RecoveryWatchFixture):
+    """3.2 pm_engine stuck 计算读续期基准；无条目时行为与现状一致。"""
+
+    def make_stale_implementing(self):
+        self.sm.add_spec("s1", {"priority": 5})
+        self.sm.transition("s1", "ready")
+        self.sm.transition("s1", "implementing")
+        self._stale(hours=2)
+        self.runner.has_live_attempt.return_value = False
+
+    def test_fresh_baseline_suppresses_stuck_blocker(self):
+        self.make_stale_implementing()
+        # 刚续期 5 分钟：虽然 updated 已 2 小时前，也不得判 stuck
+        self.runner.get_extension_baseline = MagicMock(
+            return_value=time.time() - 300)
+        result = self.engine.check_blockers()
+        self.assertEqual(
+            [b for b in result["blockers"] if b["spec"] == "s1"], [])
+        self.assertEqual(self.sm.read_one("s1")["status"], "implementing")
+
+    def test_no_baseline_keeps_updated_based_detection(self):
+        self.make_stale_implementing()
+        self.runner.get_extension_baseline = MagicMock(return_value=None)
+        result = self.engine.check_blockers()
+        stuck = [b for b in result["blockers"] if b["spec"] == "s1"]
+        self.assertEqual(len(stuck), 1)
+        self.assertGreaterEqual(stuck[0]["elapsed_minutes"], 110)
+
+    def test_baseline_probe_exception_falls_back(self):
+        """基准探针异常/返回非数值 → 回退 updated 计算，不抛出。"""
+        self.make_stale_implementing()
+        self.runner.get_extension_baseline = MagicMock(
+            side_effect=RuntimeError("boom"))
+        result = self.engine.check_blockers()
+        self.assertEqual(len(
+            [b for b in result["blockers"] if b["spec"] == "s1"]), 1)
+
+
+class TestLivenessSnapshot(unittest.TestCase):
+    """4.1 run jsonl 活性快照：空窗口 / 高活动 / 循环重复 三类。"""
+
+    def setUp(self):
+        self.tmpdir = Path(__import__("tempfile").mkdtemp())
+        self.runner = bare_runner(self.tmpdir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_empty_window_zero_events(self):
+        p = make_run_file(self.tmpdir, "impl-s1-1-a1",
+                          [f'{{"type":"assistant","timestamp":"{iso(time.time()-3600)}"}}'])
+        snap = self.runner._liveness_snapshot(p, 600)
+        self.assertEqual(snap["events_in_window"], 0)
+        self.assertGreater(snap["last_event_age"], 600)
+        self.assertEqual(snap["tool_use"], 0)
+
+    def test_high_activity_counts_tools(self):
+        now = time.time()
+        lines = [
+            f'{{"type":"system","timestamp":"{iso(now-10)}"}}',
+            json.dumps({"type": "assistant", "timestamp": iso(now - 8),
+                        "message": {"content": [
+                            {"type": "tool_use", "name": "Edit"},
+                            {"type": "text", "text": "editing file"},
+                        ]}}),
+            json.dumps({"type": "assistant", "timestamp": iso(now - 5),
+                        "message": {"content": [
+                            {"type": "tool_use", "name": "Bash"},
+                        ]}}),
+        ]
+        p = make_run_file(self.tmpdir, "impl-s1-2-a1", lines)
+        snap = self.runner._liveness_snapshot(p, 600)
+        self.assertEqual(snap["events_in_window"], 3)
+        self.assertEqual(snap["tool_use"], 2)
+        self.assertEqual(snap["tool_counts"], {"Edit": 1, "Bash": 1})
+        self.assertLessEqual(snap["last_event_age"], 6)
+        self.assertEqual(snap["last_output"], "editing file")
+
+    def test_repeated_tool_calls_aggregated(self):
+        now = time.time()
+        lines = [
+            json.dumps({"type": "assistant", "timestamp": iso(now - i),
+                        "message": {"content": [
+                            {"type": "tool_use", "name": "Bash"}]}})
+            for i in range(5)
+        ]
+        p = make_run_file(self.tmpdir, "impl-s1-3-a1", lines)
+        snap = self.runner._liveness_snapshot(p, 600)
+        self.assertEqual(snap["tool_use"], 5)
+        self.assertEqual(snap["tool_counts"], {"Bash": 5})
+
+    def test_missing_timestamps_fall_back_to_mtime(self):
+        p = make_run_file(self.tmpdir, "impl-s1-4-a1", ['{"type":"stderr"}'])
+        snap = self.runner._liveness_snapshot(p, 600)
+        self.assertIsNotNone(snap["last_event_age"])
+        self.assertLess(snap["last_event_age"], 600)
+        self.assertEqual(snap["events_in_window"], 1)
+
+    def test_missing_stream_reports_unavailable(self):
+        snap = self.runner._liveness_snapshot(
+            self.tmpdir / "nope" / "missing.jsonl", 600)
+        self.assertFalse(snap["stream_available"])
+        self.assertEqual(snap["events_in_window"], 0)
+
+
+class TestJudgeLiveness(unittest.TestCase):
+    """4.2 轻量 LLM 判定：可解析 → verdict；解析失败/异常 → stagnant + 证据。"""
+
+    def setUp(self):
+        self.tmpdir = Path(__import__("tempfile").mkdtemp())
+        self.runner = bare_runner(self.tmpdir)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_parseable_output_returns_verdict(self):
+        class FakeCompleted:
+            returncode = 0
+            stdout = json.dumps({"result":
+                                 '{"verdict": "advancing", "evidence": "files edited"}'})
+            stderr = ""
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return FakeCompleted()
+
+        original = agent_runner_module.subprocess.run
+        agent_runner_module.subprocess.run = fake_run
+        try:
+            verdict = self.runner._judge_liveness({}, "s1", "impl-s1-1-a1")
+        finally:
+            agent_runner_module.subprocess.run = original
+        self.assertEqual(verdict["verdict"], "advancing")
+        self.assertEqual(verdict["evidence"], "files edited")
+        self.assertEqual(calls[0][0], "claude")
+        self.assertEqual(calls[0][1], "-p")
+
+    def test_unparseable_output_is_stagnant_with_marker(self):
+        class FakeCompleted:
+            returncode = 0
+            stdout = "完全无关的自然语言输出，没有 JSON"
+            stderr = ""
+
+        original = agent_runner_module.subprocess.run
+        agent_runner_module.subprocess.run = lambda cmd, **kw: FakeCompleted()
+        try:
+            verdict = self.runner._judge_liveness({}, "s1", "r1")
+        finally:
+            agent_runner_module.subprocess.run = original
+        self.assertEqual(verdict["verdict"], "stagnant")
+        self.assertIn("liveness judge unavailable", verdict["evidence"])
+
+    def test_exception_is_stagnant_with_marker(self):
+        def _boom(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, 120)
+
+        original = agent_runner_module.subprocess.run
+        agent_runner_module.subprocess.run = _boom
+        try:
+            verdict = self.runner._judge_liveness({}, "s1", "r1")
+        finally:
+            agent_runner_module.subprocess.run = original
+        self.assertEqual(verdict["verdict"], "stagnant")
+        self.assertIn("liveness judge unavailable", verdict["evidence"])
+
+
+class TestSupervisionDeadlineAction(unittest.TestCase):
+    """4.3 封顶决策矩阵：disabled / 绝对上限 / 次数上限 / 零事件 / 续期 / 停滞。"""
+
+    def setUp(self):
+        self.tmpdir = Path(__import__("tempfile").mkdtemp())
+        self.runner = bare_runner(self.tmpdir)
+        self.run_file = make_run_file(
+            self.tmpdir, "impl-s1-1-a1",
+            [json.dumps({"type": "assistant",
+                         "timestamp": iso(time.time() - 30),
+                         "message": {"content": [
+                             {"type": "tool_use", "name": "Edit"}]}})])
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def decision(self, extensions=0, started_ago=7200, judge=None):
+        return self.runner._supervision_deadline_action(
+            self.run_file, "s1", "impl-s1-1-a1",
+            time.time() - started_ago, extensions, judge=judge)
+
+    def test_disabled_is_pure_wall_clock_kill(self):
+        self.runner.config = {
+            "agents": {"timeout_supervision": {"enabled": False}}}
+        d = self.decision()
+        self.assertEqual(d["action"], "kill")
+        self.assertIn("supervision disabled", d["reason"])
+
+    def test_absolute_cap_terminates_unconditionally(self):
+        self.runner.config = {
+            "agents": {"timeout_supervision": {
+                "absolute_max_seconds": 7200, "max_extensions": 2}}}
+        d = self.decision(extensions=0, started_ago=8000)
+        self.assertEqual(d["action"], "kill")
+        self.assertIn("absolute_max_seconds", d["reason"])
+
+    def test_extension_budget_exhausted_terminates(self):
+        d = self.decision(extensions=2, started_ago=6000)
+        self.assertEqual(d["action"], "kill")
+        self.assertIn("extension budget exhausted", d["reason"])
+
+    def test_zero_events_in_window_kills_without_llm(self):
+        # 窗口内零事件：最后事件时间戳远早于 judge_window
+        make_run_file(
+            self.tmpdir, "impl-s1-1-a1",
+            [json.dumps({"type": "assistant",
+                         "timestamp": iso(time.time() - 3600)})])
+        judge = MagicMock(side_effect=AssertionError("judge must not be called"))
+        d = self.decision(extensions=0, started_ago=3700, judge=judge)
+        self.assertEqual(d["action"], "kill")
+        self.assertIn("zero run events", d["reason"])
+        judge.assert_not_called()
+
+    def test_advancing_verdict_extends(self):
+        judge = MagicMock(return_value={
+            "verdict": "advancing", "evidence": "still editing"})
+        d = self.decision(extensions=0, started_ago=3700, judge=judge)
+        self.assertEqual(d["action"], "extend")
+        self.assertEqual(d["extension_index"], 1)
+        self.assertEqual(d["extension_seconds"], 1800)
+        self.assertEqual(d["evidence"], "still editing")
+
+    def test_stagnant_verdict_terminates_with_evidence(self):
+        judge = MagicMock(return_value={
+            "verdict": "stagnant", "evidence": "same bash call looped"})
+        d = self.decision(extensions=0, started_ago=3700, judge=judge)
+        self.assertEqual(d["action"], "kill")
+        self.assertEqual(d["reason"], "judged stagnant")
+        self.assertEqual(d["evidence"], "same bash call looped")
+
+    def test_absolute_max_raised_to_cover_extension_budget(self):
+        """配置的 absolute_max 偏小时抬到 run_timeout + 续期总额（预算不被截断）。"""
+        self.runner.config = {
+            "agents": {"timeout_supervision": {
+                "absolute_max_seconds": 100, "max_extensions": 2}}}
+        # run_timeout 3600 + 2×1800 = 7200 > 100：刚启动 60s 不得触发绝对上限
+        d = self.decision(extensions=0, started_ago=60)
+        self.assertNotIn("absolute_max_seconds", d["reason"])
+
+    def test_defaults_enable_supervision(self):
+        sup = self.runner._supervision_settings()
+        self.assertTrue(sup["enabled"])
+        self.assertEqual(sup["max_extensions"], 2)
+        self.assertEqual(sup["extension_seconds"], 1800)
+        self.assertEqual(sup["judge_window"], 600)
+
+    def test_legacy_top_level_key_fallback(self):
+        self.runner.config = {"timeout_supervision": {"enabled": False}}
+        self.assertFalse(self.runner._supervision_settings()["enabled"])
+
 

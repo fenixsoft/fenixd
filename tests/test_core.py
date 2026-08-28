@@ -5381,7 +5381,7 @@ class TestExecuteAgentAttemptRunId(unittest.TestCase):
         resume_ids = []
 
         def fake_run_claude(prompt, cwd, run_id, model_override=None, env_overrides=None,
-                            resume_session_id=None, max_turns=None):
+                            resume_session_id=None, max_turns=None, spec_name=None):
             run_ids.append(run_id)
             resume_ids.append(resume_session_id)
             if len(run_ids) == 1:
@@ -5410,7 +5410,7 @@ class TestExecuteAgentAttemptRunId(unittest.TestCase):
         resume_ids = []
 
         def fake_run_claude(prompt, cwd, run_id, model_override=None, env_overrides=None,
-                            resume_session_id=None, max_turns=None):
+                            resume_session_id=None, max_turns=None, spec_name=None):
             run_ids.append(run_id)
             resume_ids.append(resume_session_id)
             if len(run_ids) == 1:

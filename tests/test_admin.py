@@ -405,7 +405,7 @@ class TestRunAdministrator:
         runner._get_agent_model_assignment = lambda agent_type: None
         runner._build_prompt = lambda *a, **k: "prompt"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
             return "output", 5, "sess"
 
         runner._run_claude = fake_run_claude
@@ -625,7 +625,7 @@ class TestRunAdministrator:
         runner._get_agent_model_assignment = lambda agent_type: None
         runner._build_prompt = lambda *a, **k: "prompt"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
             (proot / ".fenix" / "admin_disposition.json").write_text(json.dumps({
                 "spec": "spec-a",
                 "problem": "卡死",
@@ -657,7 +657,7 @@ class TestRunAdministrator:
         runner._build_prompt = lambda *a, **k: "prompt"
         summary = "根因是工作树状态陈旧；已清理并重新调度；无需人工介入。"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
             (proot / ".fenix" / "admin_disposition.json").write_text(json.dumps({
                 "spec": "spec-a",
                 "problem": "卡死",
@@ -685,7 +685,7 @@ class TestRunAdministrator:
         runner._get_agent_model_assignment = lambda agent_type: None
         runner._build_prompt = lambda *a, **k: "prompt"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
             (proot / ".fenix" / "admin_disposition.json").write_text(json.dumps({
                 "spec": "spec-a", "result": "resolved",
             }), encoding="utf-8")
@@ -761,7 +761,7 @@ class TestRunAdministrator:
         runner._build_prompt = lambda *a, **k: "prompt"
 
         captured = {}
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
             captured["model"] = model_override
             captured["env"] = env_overrides
             (proot / ".fenix" / "admin_disposition.json").write_text(
@@ -789,7 +789,7 @@ class TestRunAdministrator:
         runner._build_prompt = lambda *a, **k: "prompt"
 
         captured = {}
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
             captured["model"] = model_override
             captured["env"] = env_overrides
             (proot / ".fenix" / "admin_disposition.json").write_text(
