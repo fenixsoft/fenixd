@@ -1687,6 +1687,33 @@ class PMEngine:
             if all(_probe(u) for u in urls):
                 return True, False, "已自动启动应用服务"
 
+        # 场景 URL 端口 ≠ commands.start 端口（planner 臆测端口，如 3000 vs 8787）：
+        # 应用已在 base_port 可达时，错的是场景端口而非应用——改写场景端口为
+        # 实际端口后重探。原逻辑只改写 base_port 的出现处（base_port → 扫描到的
+        # 邻近端口），对「场景写了别的端口」完全无能为力，导致应用明明已启动
+        # 却被判不可达、spec 永久卡死在 testing（fix-fix-improve-verify-adjudication）。
+        if base_port and _probe(f"http://127.0.0.1:{base_port}/"):
+            foreign_ports = {
+                m.group(1)
+                for u in urls
+                for m in [re.search(r":(\d+)(?=[/\?#]|$)", u)]
+                if m and int(m.group(1)) != base_port
+            }
+            if foreign_ports:
+                for p in sorted(foreign_ports, key=int):
+                    self._rewrite_scenario_port(scenarios_path, int(p), base_port)
+                urls_new = []
+                for u in urls:
+                    v = u
+                    for p in foreign_ports:
+                        v = re.sub(r":%s(?=[/\?#]|$)" % p, f":{base_port}", v)
+                    urls_new.append(v)
+                if all(_probe(u) for u in urls_new):
+                    return True, False, (
+                        f"场景 URL 端口 {sorted(foreign_ports, key=int)} 与应用实际端口 "
+                        f"{base_port} 不符（planner 臆测），已改写场景端口并确认可达"
+                    )
+
         # 端口自动递增场景（如 --port 被占用时服务上探到邻近端口）：
         # 扫描 base_port 附近的端口，命中则改写场景 URL 并确认可达
         if base_port:
