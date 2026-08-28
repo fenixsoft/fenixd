@@ -1651,6 +1651,34 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         agents = merged.get("agents") or {}
         if "models" in agents and agents["models"]:
             ConfigLoader._validate_agent_models(agents["models"], llm)
+            # improve-failover-model-mapping-ui D5：Dashboard 保存时额外要求每行引用的
+            # provider 名必须存在于 llm.providers（load-time 校验只打 ERROR 不阻塞，但
+            # UI 保存不允许"脏配置"落盘）。
+            model_patch = config_patch.get("agents", {}).get("models", {}) if config_patch.get("agents") else {}
+            if model_patch:
+                provider_names = set()
+                provs = (llm or {}).get("providers") or []
+                for p in provs:
+                    if isinstance(p, dict) and p.get("name"):
+                        provider_names.add(p["name"])
+                for role, entry in model_patch.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    provider_val = entry.get("provider")
+                    bad = []
+                    if isinstance(provider_val, str):
+                        if provider_val and provider_val not in provider_names:
+                            bad.append(provider_val)
+                    elif isinstance(provider_val, list):
+                        for el in provider_val:
+                            n = el.get("provider") if isinstance(el, dict) else el
+                            if isinstance(n, str) and n and n not in provider_names:
+                                bad.append(n)
+                    if bad:
+                        raise ValueError(
+                            f"agents.models.{role}.provider 引用了不存在的 provider: "
+                            + ", ".join(sorted(set(bad)))
+                        )
         if "max_concurrent" in agents:
             mc = agents["max_concurrent"]
             if not isinstance(mc, int) or mc <= 0:
