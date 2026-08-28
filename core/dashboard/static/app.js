@@ -2005,7 +2005,7 @@ function renderAgentAssignment(at, providers, models) {
     const canUp = i > 0;
     const canDown = i < rows.length - 1;
     return `
-    <div class="chain-row" data-idx="${i}">
+    <div class="chain-row" data-agent="${at.key}" data-idx="${i}">
       <div class="chain-row-controls">
         <button type="button" class="btn btn-ghost btn-move" data-action="chain-up"
           data-agent="${at.key}" data-idx="${i}" title="上移" ${canUp ? '' : 'disabled'}>↑</button>
@@ -2023,19 +2023,23 @@ function renderAgentAssignment(at, providers, models) {
     </div>`;
   }).join('');
 
+  // improve-failover-model-mapping-ui（D4）：链行容器只放 .chain-row，使每个角色下
+  // 「第 N 行」可用 .chain-row:nth-child(N) 稳定寻址（避免 role-model-row 抢占 nth-child）。
+  // .btn-add-chain 置于 .assign-fields 之外，确保空状态（.assign-fields.disabled 带
+  // pointer-events:none 时）添加按钮仍可点击、不被遮挡。
   return `
   <div class="agent-assign-card" data-agent="${at.key}">
     <div class="agent-label">${esc(at.label)}</div>
-    <div class="assign-fields ${enabled ? '' : 'disabled'}" data-agent="${at.key}">
-      <div class="role-model-row">
-        <label>角色级默认模型（留空表示无全链缺省，逐元素必须自带 model）</label>
-        <input type="text" class="assign-role-model" data-agent="${at.key}"
-          placeholder="模型名（如 deepseek-v4-flash），可选"
-          value="${esc(roleModel)}" />
-      </div>
-      ${enabled ? rowHtml : ''}
-      <button type="button" class="btn btn-secondary btn-add-chain" data-agent="${at.key}">+ 添加 Provider 行</button>
+    <div class="role-model-row">
+      <label>角色级默认模型（留空表示无全链缺省，逐元素必须自带 model）</label>
+      <input type="text" class="assign-role-model" data-agent="${at.key}"
+        placeholder="模型名（如 deepseek-v4-flash），可选"
+        value="${esc(roleModel)}" />
     </div>
+    <div class="assign-fields ${enabled ? '' : 'disabled'}" data-agent="${at.key}">
+      ${enabled ? rowHtml : ''}
+    </div>
+    <button type="button" class="btn btn-secondary btn-add-chain" data-agent="${at.key}">+ 添加 Provider 行</button>
   </div>`;
 }
 
@@ -2118,13 +2122,17 @@ function hydrateConfigPage() {
     } else if (t.matches('[data-action="chain-add"]') || t.classList.contains('btn-add-chain')) {
       // 新增一行 provider 链行（improve-failover-model-mapping-ui D4）
       const agentKey = (t.dataset.agent) || t.getAttribute('data-agent');
-      const fields = main.querySelector(`.agent-assign-card[data-agent="${agentKey}"] .assign-fields`);
+      const card = main.querySelector(`.agent-assign-card[data-agent="${agentKey}"]`);
+      if (!card) return;
+      const fields = card.querySelector('.assign-fields');
       if (fields) fields.classList.remove('disabled');
-      const addBtn = fields?.querySelector('.btn-add-chain');
+      // 读取角色级缺省模型，用于新行 model 输入框占位（与初始行一致）
+      const roleModelInp = card.querySelector(`.assign-role-model[data-agent="${agentKey}"]`);
+      const roleDefault = roleModelInp ? roleModelInp.value.trim() : '';
       const div = document.createElement('div');
-      div.innerHTML = renderChainRow(agentKey, '', '', readProviderCards());
+      div.innerHTML = renderChainRow(agentKey, '', '', readProviderCards(), roleDefault);
       const rowEl = div.firstElementChild;
-      if (addBtn) fields.insertBefore(rowEl, addBtn);
+      if (fields) fields.appendChild(rowEl);
       reindexChainRows(main, agentKey);
     } else if (t.matches('[data-action="chain-remove"]')) {
       // 删除该行
@@ -2187,10 +2195,14 @@ function reindexProviders() {
 }
 
 /* improve-failover-model-mapping-ui：链行编辑器辅助函数（D4） */
-function renderChainRow(agentKey, provider, model, providers) {
+// roleModel：角色级缺省模型，用于新行 model 输入框占位提示（与初始行一致）。
+function renderChainRow(agentKey, provider, model, providers, roleModel) {
   const providerOpts = providers.map((p) =>
     `<option value="${esc(p.name)}" ${p.name === provider ? 'selected' : ''}>${esc(p.name)}</option>`
   ).join('');
+  const placeholder = roleModel
+    ? esc('留空用角色级缺省 ' + roleModel)
+    : '模型名（留空用角色级缺省）';
   return `
   <div class="chain-row" data-agent="${agentKey}" data-idx="0">
     <div class="chain-row-controls">
@@ -2203,7 +2215,7 @@ function renderChainRow(agentKey, provider, model, providers) {
       <option value="">-- 选择 Provider --</option>
       ${providerOpts}
     </select>
-    <input type="text" class="assign-model" placeholder="模型名（留空用角色级缺省）"
+    <input type="text" class="assign-model" placeholder="${placeholder}"
       value="${esc(model)}" data-agent="${agentKey}" data-idx="0" />
     <button type="button" class="btn btn-ghost btn-danger" data-action="chain-remove"
       data-agent="${agentKey}" data-idx="0" title="删除此行">✕</button>
