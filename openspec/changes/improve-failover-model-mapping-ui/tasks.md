@@ -18,6 +18,6 @@
 
 ## 4. 回归与核验
 
-- [ ] 4.1 全量 pytest 通过（重点 test_agent_runner、config、dashboard data 相关及新增用例），无既有用例回归
-- [ ] 4.2 对照两个 capability spec 的全部 Scenario 逐条核对实现覆盖并记录结论
-- [ ] 4.3 config.yaml 增补三种形态示例的文档注释（str / 字符串数组 / 对象数组）
+- [x] 4.1 全量 pytest 通过（重点 test_agent_runner、config、dashboard data 相关及新增用例），无既有用例回归
+- [x] 4.2 对照两个 capability spec 的全部 Scenario 逐条核对实现覆盖并记录结论
+- [x] 4.3 config.yaml 增补三种形态示例的文档注释（str / 字符串数组 / 对象数组）

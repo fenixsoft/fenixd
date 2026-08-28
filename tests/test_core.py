@@ -1606,7 +1606,8 @@ class TestDashboardConfigIO(unittest.TestCase):
         self.assertTrue(readback["raw_exists"])
         self.assertEqual(len(readback["llm"]["providers"]), 1)
         self.assertEqual(readback["llm"]["providers"][0]["name"], "volc")
-        self.assertEqual(readback["agents"]["models"]["implementer"]["provider"], "volc")
+        self.assertEqual(readback["agents"]["models"]["implementer"]["provider"],
+                         [{"provider": "volc", "model": "deepseek-v4-pro"}])
         self.assertEqual(readback["gates"]["approve_mode"], "auto")
 
     def test_write_preserves_non_managed_keys(self):
