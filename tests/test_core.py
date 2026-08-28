@@ -2901,6 +2901,83 @@ class TestVerifierInfraFailureHold(unittest.TestCase):
         self.assertIn("Verifier agent failed", e["error"])
 
 
+class TestJudgeEnvDeclaredGuard(unittest.TestCase):
+    """judge 自述环境问题却标 bug-found 不得派生 fix（admin 处置 2026-08-28）。
+
+    2026-08-28 实证：planner 重生成场景写入相对 URL "/dashboard"（无效 URL）
+    + 幻觉 testid，12 场景全部导航失败；judge 结果文件自述「这是一个环境
+    问题，而非产品 Bug」却返回 status=bug-found，pm_engine 据此 transition
+    bug-found 并派生伪 fix 级联（frozen blocked 死锁触发 blocked_stuck）。
+    所有 bug 根因均自述环境/基础设施问题时，应按 inconclusive 回 implemented
+    重验，不派生 fix。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.state_path = Path(self.tmpdir) / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
+        )
+        self.engine._enqueue = MagicMock()
+        self.engine._on_spec_bug_found = MagicMock()
+        self.spec = "quick-links-folders"
+        self.sm.add_spec(self.spec, {"priority": 5})
+        for st in ("ready", "implementing", "implemented", "testing"):
+            self.sm.transition(self.spec, st)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_judge_result(self, bugs):
+        d = Path(self.tmpdir) / ".fenix" / "verify-progress" / self.spec
+        d.mkdir(parents=True, exist_ok=True)
+        (d / ".fenix-run-result.json").write_text(
+            json.dumps({"status": "bug-found", "bugs": bugs},
+                       ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def test_env_declared_bugs_do_not_derive_fix(self):
+        self._write_judge_result([{
+            "severity": "critical",
+            "scenario_ids": ["s1", "s2"],
+            "description": "所有场景在导航到 /dashboard 时失败",
+            "root_cause": "测试环境 URL 配置错误。这是一个环境问题，而非产品 Bug。",
+        }])
+        self.assertTrue(self.engine._judge_bugs_declare_env(self.spec))
+        self.assertTrue(self.engine._handle_judge_env_declared(self.spec))
+        e = self.sm.read_one(self.spec)
+        self.assertEqual(e["status"], "implemented")  # 回 implemented 重验
+        self.assertEqual(int(e["_inconclusive_attempts"]), 1)
+        self.assertIn("环境/基础设施", e["error"])
+        self.engine._on_spec_bug_found.assert_not_called()
+        self.engine._enqueue.assert_called_once_with(self.spec, "verifier")
+        self.assertIsNone(self.sm.read_one(f"fix-{self.spec}"))
+
+    def test_real_bug_root_cause_still_bug_found(self):
+        self._write_judge_result([{
+            "severity": "major",
+            "scenario_ids": ["s1"],
+            "description": "保存链后序列化丢失角色字段",
+            "root_cause": "chain 序列化未保留 role 字段，属产品实现缺陷。",
+        }])
+        self.assertFalse(self.engine._judge_bugs_declare_env(self.spec))
+
+    def test_mixed_bugs_not_treated_as_env(self):
+        self._write_judge_result([
+            {"description": "导航失败", "root_cause": "环境问题，非产品 Bug"},
+            {"description": "保存失败", "root_cause": "产品实现缺陷"},
+        ])
+        self.assertFalse(self.engine._judge_bugs_declare_env(self.spec))
+
+    def test_no_result_file_returns_false(self):
+        self.assertFalse(self.engine._judge_bugs_declare_env(self.spec))
+
+
 class TestPMEngineBugFoundIdempotent(unittest.TestCase):
     """2.1 spec_bug_found 重发幂等且非破坏（fix-dispatch-orphan D2）。
 

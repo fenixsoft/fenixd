@@ -855,6 +855,90 @@ class PMEngine:
                 return None
         return self._read_verifier_result(fallback)
 
+    # ── judge 自述环境问题守卫（不派生 fix）────────────────────────
+
+    _ENV_INFRA_MARKERS = (
+        "环境问题", "环境配置", "环境故障", "测试环境",
+        "非产品", "不是产品", "而非产品",
+    )
+
+    def _judge_bugs_declare_env(self, spec_name: str) -> bool:
+        """judge 判 bug-found 但其自述根因全部为环境/基础设施问题时返回 True。
+
+        2026-08-28 实证：planner 重新生成的场景用相对 URL "/dashboard"（无效
+        URL）+ 幻觉 testid，12 个场景全部在导航步失败；judge 在结果文件中
+        自述「这是一个环境问题，而非产品 Bug」，却把 status 标为 bug-found，
+        pm_engine 据此派生伪 fix 级联。此处以 judge 自己的根因描述为准：
+        所有 bug 均自述环境/基础设施问题时，按「验证没能发生」处理。
+        """
+        primary = (
+            self.project_root / ".fenix" / "verify-progress"
+            / spec_name / ".fenix-run-result.json"
+        )
+        if not primary.exists():
+            return False
+        try:
+            data = json.loads(primary.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False
+        bugs = data.get("bugs") if isinstance(data, dict) else None
+        if not isinstance(bugs, list) or not bugs:
+            return False
+
+        def _declares_env(bug) -> bool:
+            if not isinstance(bug, dict):
+                return False
+            text = f"{bug.get('root_cause', '')} {bug.get('description', '')}"
+            return any(marker in text for marker in self._ENV_INFRA_MARKERS)
+
+        return all(_declares_env(bug) for bug in bugs)
+
+    def _handle_judge_env_declared(self, spec_name: str) -> bool:
+        """judge 自述环境问题时按 inconclusive 处理（不派生 fix）。
+
+        与 _handle_env_blocked_inconclusive 同语义：回 implemented 重派新
+        attempt，不 transition bug-found、不派生 fix spec；超限后暂停自动
+        重验并暴露错误等待人工（无界重验会烧 token）。
+        """
+        spec = self.state_machine.read_one(spec_name) or {}
+        try:
+            attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
+        except (TypeError, ValueError):
+            attempts = 1
+        max_attempts = int(
+            self._get_config("verify_engine.inconclusive_max_attempts", 3) or 3
+        )
+        note = (
+            f"judge 判定 bug-found 但所有 bug 根因均自述为环境/基础设施问题"
+            f"（伪失败，不派生 fix），第 {attempts}/{max_attempts} 次重验"
+        )
+        if attempts < max_attempts:
+            self.logger.warning("pm_engine", f"'{spec_name}' {note}")
+            self.state_machine.update_spec(spec_name, {
+                "status": "implemented",
+                "tester_run": None,
+                "error": note,
+                "_inconclusive_attempts": attempts,
+            })
+            self._enqueue(spec_name, "verifier")
+            return True
+
+        # 连续 ≥max_attempts 轮均自述环境问题：停止自动重验，暴露错误等待人工。
+        self.logger.error(
+            "pm_engine",
+            f"'{spec_name}' 连续 {attempts} 轮 judge 均自述环境问题（伪失败），"
+            f"暂停自动重验，请人工检查验证场景/环境",
+        )
+        self.state_machine.update_spec(spec_name, {
+            "status": "implemented",
+            "tester_run": None,
+            "error": (f"连续 {attempts} 轮验证均因环境/基础设施问题未完成"
+                      f"（judge 自述），请人工检查验证场景/环境；不派生 fix"),
+            "_inconclusive_attempts": attempts,
+            "_dispatch_backoff_until": int(datetime.now(timezone.utc).timestamp()) + 1800,
+        })
+        return True
+
     # ── Queue Management ───────────────────────────────────────────
 
     def _get_spec_priority(self, spec_name: str) -> int:
@@ -1737,6 +1821,11 @@ class PMEngine:
         # 读取判定结果
         verifier_status = self._read_planner_result(spec_name)
         if verifier_status == "bug-found":
+            # judge 自述环境问题守卫：judge 自己把根因描述为环境/基础设施问题时，
+            # 属「验证没能发生」而非「验证发现了缺陷」，不得流转 bug-found
+            # 派生伪 fix 级联（admin 处置 2026-08-28 failover 相对 URL 伪失败实证）。
+            if self._judge_bugs_declare_env(spec_name) and self._handle_judge_env_declared(spec_name):
+                return
             self.state_machine.transition(spec_name, "bug-found")
             self.state_machine.update_spec(spec_name, {
                 "tester_run": judge_result.run_id,
