@@ -116,6 +116,11 @@ gates:
 #   - 推送失败按指数退避延迟重试，退避期内 recovery 重放跳过
 #   - 连续失败达 max_retries 后停止自动重试，发 push_failed 困境信号升级人工
 pm:
+  # 派发锁冲突退避（improve-run-lifecycle-governance D5）：派发 implementer 遇
+  # 「worktree already active」时按此序列（秒）递增退避，期间不消耗 attempt 重试
+  # 配额、不写 retries exhausted；spec 保持 ready 且 error 字段记录
+  # 「backoff until <time>」。序列耗尽仍持锁 → dispatch_stalled 信号升级处置。
+  dispatch_backoff_schedule: [30, 120, 600]
   push:
     # 指数退避秒数（默认 [300, 900]：首次失败后 5 分钟、再次失败后 15 分钟重试）
     retry_backoff_seconds: [300, 900]

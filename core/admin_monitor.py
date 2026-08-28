@@ -60,6 +60,7 @@ SIGNAL_SEVERITY = {
     "blocked_stuck": "critical",
     "daemon_errors": "critical",
     "family_explosion": "major",
+    "dispatch_stalled": "major",
 }
 SIGNAL_RECOMMENDATION = {
     "repeated_failures": "检查重复失败的根因（如构建/测试命令错误），必要时重置 spec 状态或修复框架配置",
@@ -69,7 +70,13 @@ SIGNAL_RECOMMENDATION = {
     "blocked_stuck": "检查 blocked 是否误置（误判派生的假 spec）或确需人工决策；清理假 spec 或重置后重新调度，必要时升级",
     "daemon_errors": "检查 fenixd 连续 ERROR 的根因，必要时重启 daemon",
     "family_explosion": "检修根因环境（如验证报告互相咬合导致 fix 递归）；确认放行一次则对父 SPEC 设置 _family_waiver=true",
+    "dispatch_stalled": "检查持锁进程是否为孤儿（ps/pgrep 确认后 kill），清理残留 worktree 锁后让 spec 重新派发",
 }
+
+# pm_engine 直接写入 store、由本监视器摄取唤起的信号类型（写入即待唤起型）。
+# family_explosion 既有；dispatch_stalled 属 run 生命周期治理（锁冲突退避耗尽 /
+# 恢复闭环复查未通过）。
+STORED_SIGNAL_TYPES = ("family_explosion", "dispatch_stalled")
 
 # run_id 前缀 → 计入"失败 run"的 agent 类型
 _RUN_PREFIXES = ("impl-", "verify-", "planner-plan-", "planner-judge-", "admin-")
@@ -202,30 +209,37 @@ class AdminMonitor:
         return signals
 
     def _detect_family_explosion(self) -> list:
-        """摄取 pm_engine 直接写入 store 的 family_explosion 信号并唤起 Administrator。
+        """摄取 pm_engine 直接写入 store 的「写入即待唤起」信号并唤起 Administrator。
 
-        pm_engine 在族谱越界拦截时（design D4）向 admin store 写入
-        kind=SIGNAL/signal_type=family_explosion 记录，但常规检测规则只读
-        STATE/runs，不会发现它；且 pm_engine 没有 agent_runner，无法自唤起。
-        本规则在 run_once 中摄取这批记录：
-        - 每条未 escalated 的 family_explosion 记录 → 转为信号、标记 escalated、
-          直接唤起 Administrator（处置可对父 SPEC 放行一次 → _family_waiver）。
+        pm_engine 在族谱越界拦截时（design D4）与锁冲突退避耗尽 / 恢复闭环复查
+        未通过时（improve-run-lifecycle-governance D5/D6）向 admin store 写入
+        kind=SIGNAL 记录（family_explosion / dispatch_stalled），但常规检测规则
+        只读 STATE/runs，不会发现它们；且 pm_engine 没有 agent_runner，无法自唤起。
+        本规则在 run_once 中摄取这批记录（STORED_SIGNAL_TYPES）：
+        - 每条未 escalated 的记录 → 转为信号、标记 escalated、直接唤起 Administrator
+          （family_explosion 处置可对父 SPEC 放行一次 → _family_waiver）。
         - 已 escalated 的记录跳过（同记录不反复唤起）。
 
         返回本次摄取的信号列表（仅审计/测试用；唤起动作在内部完成）。
         """
         signals = []
         for rec in self.store.read_all():
-            if rec.get("kind") != SIGNAL or rec.get("signal_type") != "family_explosion":
+            if rec.get("kind") != SIGNAL:
+                continue
+            if rec.get("signal_type") not in STORED_SIGNAL_TYPES:
                 continue
             if rec.get("escalated"):
                 continue  # 已唤起过，跳过
             spec = rec.get("spec")
             if not spec:
                 continue
+            stype = rec.get("signal_type")
             signal = self._make_signal(
-                "family_explosion", spec,
-                rec.get("description") or "fix 族谱越界派生被拦截",
+                stype, spec,
+                rec.get("description") or (
+                    "fix 族谱越界派生被拦截" if stype == "family_explosion"
+                    else "派发长期被 worktree 锁冲突滞留"
+                ),
                 rec.get("evidence") or "拦截详情见 pm_engine 日志",
             )
             signals.append(signal)
@@ -233,7 +247,7 @@ class AdminMonitor:
             self.store.mark_escalated(rec.get("id"))
             self.logger.warning(
                 "admin_monitor",
-                f"family_explosion: invoking Administrator for '{spec}'",
+                f"{stype}: invoking Administrator for '{spec}'",
                 {"signal": signal},
             )
             self._invoke_administrator(signal, rec)

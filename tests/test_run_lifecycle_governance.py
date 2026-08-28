@@ -177,3 +177,118 @@ class TestHasLiveAttempt:
         finally:
             ar.subprocess.run = original
         assert seen == ["worktrees/impl-s1-", "worktrees/verify-s1-"]
+
+
+# ── 2.1/2.2 派发锁冲突退避 + dispatch_stalled 信号 ────────────────────────────
+
+import unittest
+from unittest.mock import MagicMock
+
+from core.pm_engine import PMEngine
+from core.state_machine import StateMachine
+
+
+class LockConflictFixture(unittest.TestCase):
+    """check_blockers / 派发退避共用 fixture（真实 StateMachine + mock runner）。"""
+
+    def setUp(self):
+        self.tmpdir = Path(__import__("tempfile").mkdtemp())
+        self.project_root = self.tmpdir
+        (self.project_root / ".fenix").mkdir(exist_ok=True)
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.project_root / "STATE.md", self.logger)
+        self.runner = MagicMock()
+        self.runner.worktree_manager = MagicMock()
+        self.config = {}
+        self.engine = PMEngine(self.sm, self.runner, self.config,
+                               self.project_root, self.logger)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def make_ready_spec(self, name="s1"):
+        self.sm.add_spec(name, {"priority": 5})
+        self.sm.transition(name, "ready")
+        return self.sm.read_one(name)
+
+
+class TestDispatchLockBackoff(LockConflictFixture):
+    def test_first_conflict_schedules_backoff_without_retry_cost(self, tmp_path=None):
+        self.make_ready_spec("s1")
+        self.runner.worktree_manager.has_active_worktree.return_value = True
+        self.engine._on_spec_ready("s1")
+        entry = self.sm.read_one("s1")
+        # spec 保持 ready：不消耗 attempt 配额、不写 retries exhausted
+        self.assertEqual(entry["status"], "ready")
+        self.assertEqual(int(entry.get("_retry_count", 0) or 0), 0)
+        self.assertNotIn("retries exhausted", str(entry.get("error")))
+        # error 字段注明下次尝试时间，退避窗口已设置
+        self.assertIn("backoff until", entry["error"])
+        self.assertGreater(int(entry["_dispatch_backoff_until"]), time.time() - 1)
+        self.assertEqual(int(entry["_lock_conflict_count"]), 1)
+
+    def test_conflict_escalates_through_schedule(self):
+        self.make_ready_spec("s1")
+        self.runner.worktree_manager.has_active_worktree.return_value = True
+        delays = []
+        self.engine._schedule_backoff_retry = lambda spec, delay: delays.append(delay)
+        for expected in (30.0, 120.0, 600.0):
+            self.engine._on_spec_ready("s1")
+        self.assertEqual(delays, [30.0, 120.0, 600.0])
+
+    def test_exhausted_schedule_emits_dispatch_stalled_once(self):
+        self.make_ready_spec("s1")
+        self.runner.worktree_manager.has_active_worktree.return_value = True
+        self.engine._schedule_backoff_retry = lambda spec, delay: None
+        for _ in range(3):  # 用完 [30, 120, 600]
+            self.engine._on_spec_ready("s1")
+        # 第 4 次：序列耗尽 → 信号
+        self.engine._on_spec_ready("s1")
+        from core.admin_store import AdminStore
+        recs = AdminStore(self.project_root, self.logger).read_all()
+        stalled = [r for r in recs if r.get("signal_type") == "dispatch_stalled"]
+        self.assertEqual(len(stalled), 1)
+        self.assertEqual(stalled[0].get("severity"), "major")
+        self.assertEqual(stalled[0].get("spec"), "s1")
+        self.assertIn("exhausted", stalled[0].get("evidence") or "")
+        # spec 保持 ready 等待处置，而非伪装成任务失败
+        self.assertEqual(self.sm.read_one("s1")["status"], "ready")
+
+    def test_signal_dedup_within_cooldown(self):
+        self.make_ready_spec("s1")
+        self.runner.worktree_manager.has_active_worktree.return_value = True
+        self.engine._schedule_backoff_retry = lambda spec, delay: None
+        for _ in range(6):  # 两次耗尽循环
+            self.engine._on_spec_ready("s1")
+        from core.admin_store import AdminStore
+        recs = AdminStore(self.project_root, self.logger).read_all()
+        self.assertEqual(
+            len([r for r in recs if r.get("signal_type") == "dispatch_stalled"]), 1,
+            "冷却期内重复冲突只写一条 dispatch_stalled",
+        )
+
+    def test_backoff_window_suppresses_respin(self):
+        """退避期内重复 spec_ready：静默跳过，不追加写 STATE（防自触发热循环）。"""
+        self.make_ready_spec("s1")
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+        spec = self.sm.read_one("s1")
+        spec["_dispatch_backoff_until"] = int(time.time()) + 300
+        self.sm.write_all({"s1": spec})
+        before = self.sm.read_one("s1")["updated"]
+        self.engine._on_spec_ready("s1")
+        after = self.sm.read_one("s1")["updated"]
+        self.assertEqual(before, after)
+
+    def test_success_resets_conflict_count(self):
+        self.make_ready_spec("s1")
+        spec = self.sm.read_one("s1")
+        spec["_lock_conflict_count"] = 2
+        spec["_dispatch_backoff_until"] = int(time.time()) + 60
+        self.sm.write_all({"s1": spec})
+        fields = self.engine._clear_dispatch_conflict("s1")
+        self.sm.update_spec("s1", fields)
+        entry = self.sm.read_one("s1")
+        self.assertEqual(int(entry["_lock_conflict_count"]), 0)
+        self.assertIn(entry["_dispatch_backoff_until"], (None, "", "null"))
+

@@ -18,6 +18,17 @@ from typing import Optional
 
 from core.dashboard.data import find_impl_run_file, parse_run_task_done
 
+# ── 派发锁冲突退避（improve-run-lifecycle-governance D5）────────────────────
+# 派发 implementer 遇「worktree already active」时不再硬试三连发：按此序列指数
+# 退避安排下一次尝试，期间不消耗 _retry_count、不写 retries exhausted（attempt
+# 配额只属于任务失败，不属于基础设施冲突）。可配 pm.dispatch_backoff_schedule。
+DEFAULT_DISPATCH_BACKOFF_SCHEDULE = (30, 120, 600)
+# dispatch_stalled 信号的建议处置（与 admin_monitor.SIGNAL_RECOMMENDATION 同义；
+# pm_engine 不反向依赖 admin_monitor，这里单独常量避免循环导入）
+SIGNAL_RECOMMENDATION_DISPATCH_STALLED = (
+    "检查持锁进程是否为孤儿（ps/pgrep 确认后 kill），清理残留 worktree 锁后让 spec 重新派发"
+)
+
 
 class PMEngine:
     """
@@ -117,9 +128,18 @@ class PMEngine:
         # 背景（fix-fenix-token-waste）：启动扫描与 event_bus 都会触发 spec_ready，
         # 第二次派发因 worktree 锁失败会把 spec 打回 ready，形成空转反馈环。
         if self.agent_runner.worktree_manager.has_active_worktree(spec_name):
+            # 锁治理（improve-run-lifecycle-governance D5）：锁冲突进入退避计划，
+            # 不硬试、不消耗 attempt 配额（2026-08-27 add-spec-context-menu 事故：
+            # 孤儿 resume 持锁，派发 ~15s 内三连发耗尽 retries exhausted，spec 假死）。
+            self._handle_dispatch_lock_conflict(spec_name)
+            return
+        # 退避期内静默跳过（不写 STATE，避免「写 error → 触发 spec_ready 事件」
+        # 的自触发热循环）；退避到期后由排定的定时器 / 周期扫描重试。
+        spec = self.state_machine.read_one(spec_name) or {}
+        if self._dispatch_backoffed(spec):
             self.logger.debug(
                 "pm_engine",
-                f"Skipping '{spec_name}': worktree already active",
+                f"Skipping '{spec_name}': dispatch backoff active",
             )
             return
         if not self._dependencies_satisfied(spec_name):
@@ -129,6 +149,153 @@ class PMEngine:
             )
             return
         self._enqueue(spec_name, "implementer")
+
+    # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）──────────────────
+
+    def _dispatch_backoff_schedule(self) -> list:
+        """退避序列（秒）。可配 pm.dispatch_backoff_schedule，默认 [30, 120, 600]。
+
+        配置容错：标量视作单元素序列；空/非法序列回退默认值。
+        """
+        sched = self._get_config(
+            "pm.dispatch_backoff_schedule",
+            list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE),
+        )
+        if isinstance(sched, (int, float)):
+            sched = [sched]
+        if not isinstance(sched, (list, tuple)) or not sched:
+            return list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
+        out = []
+        for x in sched:
+            try:
+                out.append(max(0.0, float(x)))
+            except (TypeError, ValueError):
+                continue
+        return out or list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
+
+    def _handle_dispatch_lock_conflict(self, spec_name: str) -> None:
+        """派发遇 worktree 锁冲突：按退避序列安排下次尝试（design D5）。
+
+        - 不递增 ``_retry_count``、不写 retries exhausted：锁冲突是基础设施状态
+          而非任务失败，attempt 配额不被消耗；
+        - spec 保持 ready，error 字段记录「backoff until <time>」供 Dashboard 可读；
+        - 按 ``pm.dispatch_backoff_schedule`` 逐档递增安排下次尝试（定时器重入
+          ``_on_spec_ready``，daemon 重启后由周期扫描兜底）；
+        - 序列耗尽仍持锁 → 发 dispatch_stalled 信号（severity major）上报，spec
+          保持 ready 等待处置，不再自旋重试。
+        """
+        spec = self.state_machine.read_one(spec_name) or {}
+        try:
+            count = int(spec.get("_lock_conflict_count", 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        schedule = self._dispatch_backoff_schedule()
+
+        now = time.time()
+        exhausted = count >= len(schedule)
+        delay = schedule[-1] if exhausted else schedule[count]
+        until = int(now + delay)
+        from datetime import datetime as _dt, timezone as _tz
+        until_iso = _dt.fromtimestamp(until, _tz.utc).isoformat()
+
+        # 不翻转状态：spec 保持 ready，仅记录退避元数据
+        self.state_machine.update_spec(spec_name, {
+            "error": f"worktree already active (lock conflict); backoff until {until_iso}",
+            "_lock_conflict_count": count + 1,
+            "_dispatch_backoff_until": until,
+            "_last_lock_conflict_at": _dt.now(_tz.utc).isoformat(),
+        })
+
+        if exhausted:
+            evidence = (
+                f"lock conflicts={count + 1} (backoff schedule {list(schedule)}s exhausted), "
+                f"last conflict at {spec.get('_last_lock_conflict_at') or 'n/a'}, "
+                f"error={str(spec.get('error') or '')[:120]}"
+            )
+            self.logger.error(
+                "pm_engine",
+                f"Dispatch backoff exhausted for '{spec_name}' — lock still held, "
+                f"escalating dispatch_stalled",
+            )
+            self._signal_dispatch_stalled(spec_name, evidence)
+            # 序列耗尽后不再自旋重试（定时器停止），spec 保持 ready 等待处置
+            return
+
+        self.logger.info(
+            "pm_engine",
+            f"Dispatch lock conflict for '{spec_name}' — backoff {int(delay)}s "
+            f"(attempt {count + 1}/{len(schedule)}), not counted against retries",
+        )
+        self._schedule_backoff_retry(spec_name, delay)
+
+    def _schedule_backoff_retry(self, spec_name: str, delay: float) -> None:
+        """退避到期后重入 ``_on_spec_ready``（daemon 线程；关闭期间自然失效）。"""
+        timer = threading.Timer(
+            max(0.5, float(delay)),
+            self._on_spec_ready,
+            args=(spec_name,),
+        )
+        timer.daemon = True
+        with self._queue_lock:
+            self._backoff_timers = [
+                t for t in getattr(self, "_backoff_timers", []) if t.is_alive()
+            ]
+            self._backoff_timers.append(timer)
+        timer.start()
+
+    def _signal_dispatch_stalled(self, spec_name: str, evidence: str) -> None:
+        """退避耗尽仍持锁 / 恢复复查未通过 → dispatch_stalled 信号（D5/D6）。
+
+        写入 admin store（kind=SIGNAL, severity major），由 AdminMonitor 摄取唤起
+        Administrator；同 spec 冷却期内已有同类信号时只追加记录不重复写入
+        （经 admin_alerts 去重，避免反复拉起）。
+        """
+        from .admin_store import AdminStore, SIGNAL
+        cooldown = float(self._get_config("admin.escalation_cooldown_minutes", 15) or 15)
+        store = AdminStore(self.project_root, self.logger)
+        try:
+            if store.latest_signal(spec_name, "dispatch_stalled", cooldown) is not None:
+                self.logger.info(
+                    "pm_engine",
+                    f"dispatch_stalled for '{spec_name}' suppressed "
+                    f"(cooldown {cooldown:.0f}m)",
+                )
+                return
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"dispatch_stalled dedup check failed '{spec_name}' (proceeding): {e}",
+            )
+        try:
+            store.append({
+                "kind": SIGNAL,
+                "signal_type": "dispatch_stalled",
+                "spec": spec_name,
+                "severity": "major",
+                "description": (
+                    f"'{spec_name}' 派发长期被 worktree 锁冲突滞留，"
+                    f"退避计划耗尽仍未获得锁"
+                ),
+                "evidence": evidence,
+                "recommended_action": SIGNAL_RECOMMENDATION_DISPATCH_STALLED,
+            })
+            self.logger.warning(
+                "pm_engine",
+                f"dispatch_stalled signal recorded for '{spec_name}'",
+            )
+        except Exception as e:
+            self.logger.error(
+                "pm_engine",
+                f"Failed to record dispatch_stalled for '{spec_name}': {e}",
+            )
+
+    def _clear_dispatch_conflict(self, spec_name: str) -> dict:
+        """派发成功后清零锁冲突计数与退避窗口（返回 update 字段供合并写入）。"""
+        return {
+            "_lock_conflict_count": 0,
+            "_dispatch_backoff_until": None,
+            "_last_lock_conflict_at": None,
+        }
 
     def _on_spec_implemented(self, spec_name: str):
         """Schedule verifier for implemented SPEC."""
@@ -1515,6 +1682,8 @@ class PMEngine:
                             "_retry_count": 0,
                             "_merge_fp": None,
                             "_merge_streak": 0,
+                            # 派发成功即清零锁冲突计数（improve-run-lifecycle-governance D5）
+                            **self._clear_dispatch_conflict(spec_name),
                         })
                         # pop 冲突自愈后：被丢弃的 stash 改动文件清单写入 error 字段，
                         # 触发 admin 告警（stash 条目保留、可 git stash show 找回，
