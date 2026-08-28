@@ -2618,10 +2618,12 @@ function _ctxDeleteSpec(project, spec) {
       document.querySelectorAll('.spec-name-cell[data-spec="' + CSS.escape(spec) + '"]')
         .forEach((cell) => {
           const row = cell.closest('tr');
-          if (row) row.remove();
-          // 同 spec 可能带信息子行（.spec-info-row 在 mainRow 之后），一并移除
-          const next = row ? row.nextElementSibling : null;
-          if (next && next.classList.contains('spec-info-row')) next.remove();
+          if (!row) return;
+          // 先获取信息子行引用，再移除主行（remove 后 nextElementSibling 为 null）
+          const next = row.nextElementSibling;
+          const isInfoRow = next && next.classList.contains('spec-info-row');
+          row.remove();
+          if (isInfoRow) next.remove();
         });
     })
     .catch((err) => toast(err.message || '删除失败', true));
