@@ -65,6 +65,12 @@ class TestStep:
     screenshot: bool = False
     description: str = ""
     dialog: str = ""
+    # admin 修 2026-08-29（族谱爆炸根因之一）：mock 响应状态码（409/500 分支
+    # 场景必需）与 prompt 对话框提交文本。此前 TestStep 序列化丢弃这两个键，
+    # 引擎侧 mock_api/click 拿不到，4xx/5xx 场景全部按 200 成功返回、prompt
+    # 场景拿到空串 → 断言系统性伪失败。
+    status: int = 0
+    prompt_text: str = ""
 
     def to_dict(self) -> dict:
         d: dict = {"action": self.action}
@@ -78,6 +84,10 @@ class TestStep:
             d["description"] = self.description
         if self.dialog:
             d["dialog"] = self.dialog
+        if self.status:
+            d["status"] = self.status
+        if self.prompt_text:
+            d["prompt_text"] = self.prompt_text
         return d
 
     @classmethod
@@ -89,6 +99,8 @@ class TestStep:
             screenshot=d.get("screenshot", False),
             description=d.get("description", ""),
             dialog=d.get("dialog", ""),
+            status=d.get("status", 0) or 0,
+            prompt_text=d.get("prompt_text", "") or "",
         )
 
 

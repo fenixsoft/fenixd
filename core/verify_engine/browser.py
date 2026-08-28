@@ -94,9 +94,9 @@ class BrowserManager:
         # 独立 HTML 入口点支持
         self._use_verify_html: bool = False
 
-        # 已注册 SSE 拦截的 page（id 集合）：mock 场景必须隔离活体推流，
-        # 否则 SSE 直推的真实数据会绕过 mock 路由污染断言（见 mock_api 分支）
-        self._sse_blocked_pages: set = set()
+        # （SSE 拦截标记现记录在 page 对象属性 _fenix_sse_blocked 上——
+        # mock 场景必须隔离活体推流，见 mock_api 分支；勿用 id(page) 集合，
+        # 页面对象 GC 后 id 复用会造成标记误命中。）
 
     # ── 扩展项目检测 ───────────────────────────────────────────
 
@@ -341,16 +341,24 @@ class BrowserManager:
 
     # ── 操作执行 ───────────────────────────────────────────────
 
-    def _register_dialog_handler(self, page, mode: str) -> None:
+    def _register_dialog_handler(self, page, mode: str, prompt_text: str = None) -> None:
         """注册一次性对话框处理器，处理下一个 window.confirm/alert/prompt。
 
         Playwright 对未处理的 dialog 默认自动 dismiss（相当于点击「取消」），
         导致切换/删除用户等正向场景被误判失败。此方法让场景显式声明
         accept（确认）或 dismiss（取消）行为。
+
+        prompt_text：prompt 对话框 accept 时提交的文本。Playwright 的
+        dialog.accept() 不带文本时返回空串而非页面预填默认值——依赖预填值
+        的正向场景（如「调整优先级」直接确认预填 P5）会走取消/校验失败分支，
+        场景必须显式携带 prompt_text（admin 修 2026-08-29：族谱爆炸根因之一）。
         """
-        def _handle(dialog, _mode=mode):
+        def _handle(dialog, _mode=mode, _text=prompt_text):
             try:
-                task = dialog.accept() if _mode == "accept" else dialog.dismiss()
+                if _mode == "accept":
+                    task = dialog.accept(prompt_text=_text) if _text is not None else dialog.accept()
+                else:
+                    task = dialog.dismiss()
                 asyncio.ensure_future(task)
             except Exception:
                 pass
@@ -444,7 +452,7 @@ class BrowserManager:
                         "success": False, "action": action,
                         "error": f"dialog 模式无效: {value}（应为 accept/dismiss）",
                     }
-                self._register_dialog_handler(page, mode)
+                self._register_dialog_handler(page, mode, prompt_text=step.get("prompt_text"))
                 return {
                     "success": True, "action": action,
                     "detail": f"注册对话框处理器: {mode}",
@@ -481,23 +489,38 @@ class BrowserManager:
                     # 产品 bug → bug-found → 派生 fix 子 SPEC 空转完整周期。
                     # 在首个 mock_api 注册时一并拦截 SSE（route 持久于 page，
                     # 导航后仍生效；空 body 使 EventSource 无数据可收）。
-                    if id(page) not in self._sse_blocked_pages:
-                        self._sse_blocked_pages.add(id(page))
-                        await page.route(
-                            "**/api/stream*",
-                            lambda route: route.fulfill(
-                                status=200,
-                                content_type="text/event-stream",
-                                body="",
-                            ),
-                        )
+                    if getattr(page, "_fenix_sse_blocked", False) is not True:
+                        # 以页面对象自身属性标记（admin 修 2026-08-29）：此前用
+                        # id(page) 去重，页面对象被 GC 后 id 复用会导致后续场景
+                        # 误判「已拦截」而跳过 SSE 隔离。
+                        page._fenix_sse_blocked = True
+
+                        async def _hold_sse(route):
+                            # 故意不 fulfill：让 /api/stream 请求永久挂起，
+                            # EventSource 停在 CONNECTING。此前的「空 body 200」
+                            # 方案会被浏览器立刻关闭流 → EventSource 原生自动
+                            # 重连 → app.js sse.onopen 在重连（非首次）时调用
+                            # load() 整页重拉 → 冻结 mock 数据把已删除/已变更的
+                            # 行重新加回 DOM（如删除场景「行仍在」的非确定性伪
+                            # 失败，正是重连重拉与断言时序竞争的结果）。
+                            return
+
+                        await page.route("**/api/stream*", _hold_sse)
+                    # mock 状态码（admin 修 2026-08-29：族谱爆炸根因之一）：
+                    # 场景可携带 "status"（如 409/500）模拟后端拒绝/异常分支。
+                    # 此前硬编码 200，导致 4xx/5xx 场景的 mock 全部按成功返回，
+                    # 错误 toast 断言必然失败 → 伪失败被记为产品 bug。
+                    try:
+                        mock_status = int(step.get("status") or 200)
+                    except (TypeError, ValueError):
+                        mock_status = 200
                     # Playwright URL glob：`*` 不匹配 `/`，结尾 `/*` 补成 `/**`
                     # （否则 https://host/* 无法匹配多段路径 /v1/forecast）
                     route_pattern = target[:-1] + "**" if target.endswith("/*") else target
                     await page.route(
                         route_pattern,
                         lambda route: route.fulfill(
-                            status=200,
+                            status=mock_status,
                             content_type="application/json",
                             body=value,
                         ),
@@ -510,6 +533,31 @@ class BrowserManager:
                     return {
                         "success": False, "action": action, "target": target,
                         "error": f"mock_api 失败: {e}",
+                    }
+
+            # 窗口级操作（admin 修 2026-08-29：族谱爆炸根因之一）：
+            # target=window/空 不是 DOM 元素，通用 locator.wait_for 必然超时；
+            # target=body 可定位但非表单元素，fill 同样必然报错——键盘按键类
+            # 步骤必须在任何 DOM 定位/填充之前分流处理。
+            if target in ("window", "", "body") and action in ("scroll", "type"):
+                if action == "scroll":
+                    # value 为 "dx,dy" 像素位移（默认 0,300），经鼠标滚轮触发真实 scroll 事件
+                    try:
+                        dx, dy = (float(x) for x in (value or "0,300").split(","))
+                    except ValueError:
+                        dx, dy = 0.0, 300.0
+                    await page.mouse.wheel(dx, dy)
+                    await self._wait_stable(page)
+                    return {
+                        "success": True, "action": action, "target": target,
+                        "detail": f"窗口滚动 ({dx},{dy})",
+                    }
+                # type：值为按键名（如 Escape/Enter）而非文本输入 → 键盘按键
+                if value and not any(ch in value for ch in ("'", '"', "#", ".", "[", " ")):
+                    await page.keyboard.press(value)
+                    return {
+                        "success": True, "action": action, "target": target,
+                        "value": value, "detail": f"键盘按键: {value}",
                     }
 
             # 等待目标元素可交互（.first 避免 strict mode violation）
@@ -527,7 +575,8 @@ class BrowserManager:
                             "success": False, "action": action, "target": target,
                             "error": f"dialog 模式无效: {dialog_mode}（应为 accept/dismiss）",
                         }
-                    self._register_dialog_handler(page, dialog_mode)
+                    self._register_dialog_handler(
+                        page, dialog_mode, prompt_text=step.get("prompt_text"))
                 await locator.click(timeout=5000)
                 await self._wait_stable(page)
                 return {"success": True, "action": action, "target": target}

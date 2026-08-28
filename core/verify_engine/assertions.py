@@ -109,9 +109,22 @@ class AssertionRunner:
         }
 
     async def _assert_element_not_exist(self, page, a: dict) -> dict:
-        """断言元素不存在（用于验证删除操作）。"""
+        """断言元素不存在（用于验证删除操作）。
+
+        带最长 3s 的收敛等待（admin 修 2026-08-29：族谱爆炸根因之一）：
+        乐观 DOM 移除（如删除 spec 行）发生在 POST 响应回调里，高并行度下
+        断言执行瞬间可能早于回调落地——瞬时 count 会把「稍后即消失」的元素
+        误判为失败。轮询等待元素消失，超时仍存在才判 fail（真残留依然失败）。
+        """
         selector = a["selector"]
-        count = await page.locator(selector).count()
+        locator = page.locator(selector)
+        count = await locator.count()
+        if count > 0:
+            for _ in range(10):
+                await page.wait_for_timeout(300)
+                count = await locator.count()
+                if count == 0:
+                    break
         return {
             "type": "element_not_exist", "layer": 1,
             "selector": selector, "actual_count": count,
