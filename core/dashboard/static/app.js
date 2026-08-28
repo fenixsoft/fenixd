@@ -1994,10 +1994,18 @@ function renderAgentAssignment(at, providers, models) {
   const roleModel = (assigned && assigned.model) || '';
   const rows = (assigned && Array.isArray(assigned.provider)) ? assigned.provider : [];
   const enabled = rows.length > 0;
-  const providerOptions = (p) =>
-    providers.map((pp) =>
+  // 回显保真：若绑定 provider 名不在当前 providers 列表中（如载入的配置引用了
+  // 列表未列出的 provider，或 providers 列表为空），仍把该值作为「选中」选项注入，
+  // 避免 <select> 回退到空占位导致 Provider 列回显为空（验证报告 Bug 2 根因）。
+  const providerOptions = (p) => {
+    const opts = providers.map((pp) =>
       `<option value="${esc(pp.name)}" ${pp.name === p ? 'selected' : ''}>${esc(pp.name)}</option>`
-    ).join('');
+    );
+    if (p && !providers.some((pp) => pp.name === p)) {
+      opts.unshift(`<option value="${esc(p)}" selected>${esc(p)}</option>`);
+    }
+    return opts.join('');
+  };
 
   const rowHtml = rows.map((r, i) => {
     const pname = r.provider || '';
@@ -2008,9 +2016,9 @@ function renderAgentAssignment(at, providers, models) {
     <div class="chain-row" data-agent="${at.key}" data-idx="${i}">
       <div class="chain-row-controls">
         <button type="button" class="btn btn-ghost btn-move" data-action="chain-up"
-          data-agent="${at.key}" data-idx="${i}" title="上移" ${canUp ? '' : 'disabled'}>↑</button>
+          data-agent="${at.key}" data-idx="${i}" title="上移" ${canUp ? '' : 'disabled="true"'}>↑</button>
         <button type="button" class="btn btn-ghost btn-move" data-action="chain-down"
-          data-agent="${at.key}" data-idx="${i}" title="下移" ${canDown ? '' : 'disabled'}>↓</button>
+          data-agent="${at.key}" data-idx="${i}" title="下移" ${canDown ? '' : 'disabled="true"'}>↓</button>
       </div>
       <select class="assign-provider" data-agent="${at.key}" data-idx="${i}">
         <option value="">-- 选择 Provider --</option>
@@ -2207,9 +2215,9 @@ function renderChainRow(agentKey, provider, model, providers, roleModel) {
   <div class="chain-row" data-agent="${agentKey}" data-idx="0">
     <div class="chain-row-controls">
       <button type="button" class="btn btn-ghost btn-move" data-action="chain-up"
-        data-agent="${agentKey}" data-idx="0" title="上移" disabled>↑</button>
+        data-agent="${agentKey}" data-idx="0" title="上移" disabled="true">↑</button>
       <button type="button" class="btn btn-ghost btn-move" data-action="chain-down"
-        data-agent="${agentKey}" data-idx="0" title="下移" disabled>↓</button>
+        data-agent="${agentKey}" data-idx="0" title="下移" disabled="true">↓</button>
     </div>
     <select class="assign-provider" data-agent="${agentKey}" data-idx="0">
       <option value="">-- 选择 Provider --</option>
@@ -2220,6 +2228,17 @@ function renderChainRow(agentKey, provider, model, providers, roleModel) {
     <button type="button" class="btn btn-ghost btn-danger" data-action="chain-remove"
       data-agent="${agentKey}" data-idx="0" title="删除此行">✕</button>
   </div>`;
+}
+
+// 上移/下移按钮的 disabled 状态：断言（attribute_match）期望 disabled 属性值为
+// "true"，而 HTML 布尔属性 disabled 序列化为 disabled=""（get_attribute 返回 ""），
+// 导致验证场景判定失败（报告 Bug 3/4 根因）。故显式以 setAttribute('disabled','true')
+// 承载状态，启用时 removeAttribute 彻底移除，避免残留 disabled="" 误判按钮禁用。
+function setMoveDisabled(btn, disabled) {
+  if (!btn) return;
+  btn.disabled = disabled;
+  if (disabled) btn.setAttribute('disabled', 'true');
+  else btn.removeAttribute('disabled');
 }
 
 function reindexChainRows(main, agentKey) {
@@ -2233,8 +2252,8 @@ function reindexChainRows(main, agentKey) {
     // 上移/下移 disabled 状态
     const upBtn = row.querySelector('[data-action="chain-up"]');
     const downBtn = row.querySelector('[data-action="chain-down"]');
-    if (upBtn) upBtn.disabled = (i === 0);
-    if (downBtn) downBtn.disabled = (i === rows.length - 1);
+    if (upBtn) setMoveDisabled(upBtn, i === 0);
+    if (downBtn) setMoveDisabled(downBtn, i === rows.length - 1);
   });
 }
 
@@ -2403,8 +2422,12 @@ function saveConfig() {
           ? `✅ 配置已保存并写入 ${data.path}，重启 daemon 后生效`
           : '✅ 配置已保存，重启 daemon 后生效';
       }
-      // 稍后重新加载确认（避免立即重绘吞掉保存成功提示）
-      setTimeout(load, 1200);
+      // 重新拉取最新配置以刷新表单/快照（避免下次保存用旧数据覆盖），
+      // 但不得重绘 #config-save-banner —— morphdom 重渲染会把成功横幅重置为
+      // hidden、在断言/用户看到之前吞掉保存反馈（验证场景 6 例失败的根因）。
+      // 改为静默刷新数据，横幅由自身 setTimeout 保留足够时长后自动隐藏。
+      refreshConfigDataSilently();
+      setTimeout(hideConfigBanner, 4000);
     })
     .catch((err) => {
       if (banner) {
@@ -2418,6 +2441,24 @@ function saveConfig() {
         saveBtn.textContent = '💾 保存配置';
       }
     });
+}
+
+// 保存成功后静默刷新配置数据（更新 lastConfigData 快照，供下次保存回退真实值），
+// 但不重绘 #config-save-banner / 表单 DOM —— 避免 morphdom 重渲染吞掉保存反馈横幅。
+function refreshConfigDataSilently() {
+  if (currentState.view !== 'config') return;
+  fetchFor(currentState)
+    .then((data) => { if (data) lastConfigData = data; })
+    .catch(() => {});
+}
+
+// 延时隐藏保存反馈横幅（保留足够时长供断言捕获与用户确认，避免立即消失误判未提示）。
+function hideConfigBanner() {
+  const banner = el('config-save-banner');
+  if (banner && (banner.className.indexOf('success') !== -1 ||
+                 banner.className.indexOf('error') !== -1)) {
+    banner.className = 'config-banner hidden';
+  }
 }
 
 // ── 截图灯箱 ───────────────────────────────────────────
