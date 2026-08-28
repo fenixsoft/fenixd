@@ -42,14 +42,29 @@ RESTART_REQUEST_TIMEOUT_MINUTES = 10  # restart_request 超时未清除 → 重�
 # 「明确不发放 _family_waiver」）误判为放行动作，给未放行的父 SPEC 错误写入
 # _family_waiver=true。改为：命中否定短语即不放行；否则须命中赋值型/明确动词型
 # 放行模式才写位。
-_WAIVER_NEGATION_PHRASES = ("未放行", "不放行", "拒绝放行", "不予放行", "不发放", "不启用豁免")
+# 2026-08-28 二次实证（fix-fix-fix-improve-failover-model-mapping-ui，admin run
+# 1787945929）：否定清单缺「未发放/未放行」等完成时否定，且赋值型模式命中了处置
+# 叙述里对【另一族谱】豁免位的提及（「全库唯一的 _family_waiver=true 在另一族谱」
+# ——与本困境无关），双重误判给已终态父 SPEC 错误写入 _family_waiver=true。
+# 修正：a) 否定清单补完成时/委婉否定；b) 赋值型/动词型模式须与「放行」动词在同句
+# 才算放行（单纯提及字段名/他族谱状态不构成放行）。
+_WAIVER_NEGATION_PHRASES = (
+    "未放行", "不放行", "拒绝放行", "不予放行", "不发放", "未发放",
+    "不启用豁免", "未启用豁免", "不予豁免", "无须放行", "无需放行", "不必放行",
+)
 _WAIVER_GRANT_PATTERNS = (
-    r"_family_waiver['\"]?\s*[=:：]\s*['\"]?true",  # 赋值型：_family_waiver=true
-    r"设置\s*_family_waiver\s*为?\s*true",  # 设置 _family_waiver 为 true
     r"同意放行",
     r"放行一次",
     r"经评估放行",
+    r"设置\s*_family_waiver\s*为?\s*true",  # 设置 _family_waiver 为 true
 )
+# 赋值型 _family_waiver=true 必须与放行动词同句（。！？\n 分句）才算显式放行，
+# 防止叙述中对字段名/其他族谱豁免状态的提及被误判为本次处置的放行动作。
+_WAIVER_ASSIGN_RE = re.compile(r"_family_waiver['\"]?\s*[=:：]\s*['\"]?true")
+
+# 「写入即待唤起」信号的终态守卫：spec 已达这些状态时不再唤起 Administrator
+# （done/pushed 之后族谱不可能再派生，困境实质已消失）。
+_TERMINAL_SPEC_STATUSES = ("done", "pushed")
 
 # 信号 → 严重度/建议处置
 SIGNAL_SEVERITY = {
@@ -238,6 +253,24 @@ class AdminMonitor:
             if not spec:
                 continue
             stype = rec.get("signal_type")
+            # 终态守卫（fix-family-explosion-loop 2026-08-28）：信号指向的 spec 若已
+            # 终态（done/pushed），困境实质已消失——族谱成员均已合并推送、无派生口子
+            # 可开，唤起 Administrator 只会得到「已收敛」的重复处置（实证：同一天
+            # fix-fix-fix-improve-failover 族谱因一条陈旧未 escalated 的 SIGNAL 记录
+            # 被连续唤起 4 次）。直接标记 escalated 跳过，下一 tick 不再重捞。
+            try:
+                spec_entry = self.state_machine.read_one(spec) or {}
+            except Exception:
+                spec_entry = {}
+            if (spec_entry.get("status") or "") in _TERMINAL_SPEC_STATUSES:
+                marked = self.store.mark_escalated(rec.get("id"))
+                self.logger.info(
+                    "admin_monitor",
+                    f"{stype}: spec '{spec}' 已终态"
+                    f"（status={spec_entry.get('status')}），跳过唤起"
+                    f"（mark_escalated={'ok' if marked else '未命中'}）",
+                )
+                continue
             signal = self._make_signal(
                 stype, spec,
                 rec.get("description") or (
@@ -248,7 +281,14 @@ class AdminMonitor:
             )
             signals.append(signal)
             # 先落 escalated 再唤起：即使唤起过程异常中止，下一 tick 也会跳过该记录
-            self.store.mark_escalated(rec.get("id"))
+            marked = self.store.mark_escalated(rec.get("id"))
+            if not marked:
+                # 留痕：mark 未命中意味着该记录下一 tick 会被重捞，可能形成重复唤起
+                self.logger.warning(
+                    "admin_monitor",
+                    f"{stype}: mark_escalated 未命中记录 id={rec.get('id')}"
+                    f"（spec={spec}），该记录可能被反复摄取",
+                )
             self.logger.warning(
                 "admin_monitor",
                 f"{stype}: invoking Administrator for '{spec}'",
@@ -727,16 +767,30 @@ class AdminMonitor:
         spec = signal.get("spec")
         if not spec:
             return
-        text = f"{(disp.actions_taken or '')} {(disp.recommended_action or '')}"
-        # 否定语义优先：显式「未放行/不放行/拒绝/否决/不发放」不属于放行动作。
-        # 结构字段 family_waiver=True 优先级最高（Administrator 结构化回填不受文本兜底影响）。
+        text = (
+            f"{(disp.actions_taken or '')}\n{(getattr(disp, 'summary', '') or '')}\n"
+            f"{(disp.recommended_action or '')}"
+        )
+        # 否定语义优先：任何位置出现否定短语即不放行（保守方向：宁可漏放行、
+        # 不可给未放行的父 SPEC 错开派生口子）。结构字段 family_waiver=True
+        # 优先级最高（Administrator 结构化回填不受文本兜底影响）。
         if bool(getattr(disp, "family_waiver", False)):
             waived = True
         else:
             negated = any(n in text for n in _WAIVER_NEGATION_PHRASES)
-            waived = (not negated) and any(
-                re.search(pattern, text) for pattern in _WAIVER_GRANT_PATTERNS
-            )
+            if negated:
+                waived = False
+            else:
+                waived = any(
+                    re.search(pattern, text) for pattern in _WAIVER_GRANT_PATTERNS
+                )
+                if not waived:
+                    # 赋值型兜底：_family_waiver=true 须与「放行」动词同句才算
+                    # 显式放行——叙述中对他族谱豁免状态的提及不构成放行。
+                    waived = any(
+                        _WAIVER_ASSIGN_RE.search(sent) and "放行" in sent
+                        for sent in re.split(r"[。！？\n]", text)
+                    )
         if not waived:
             return
         sm = self.state_machine

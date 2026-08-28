@@ -519,6 +519,51 @@ class TestFamilyExplosionAdminMonitor(unittest.TestCase):
         self.assertNotIn(("fix-fix-fix-x", {"_family_waiver": "true"}),
                          mon.state_machine.updates)
 
+    def test_waiver_negation_and_cross_family_mention_does_not_grant(self):
+        """完成时否定 + 他族谱豁免位提及不构成放行（2026-08-28 二次实证回归）。
+
+        实证（fix-fix-fix-improve-failover-model-mapping-ui，admin run 1787945929）：
+        处置文本「确认本族谱未发放 _family_waiver」中的完成时否定不在否定清单，
+        且叙述他族谱时提及「全库唯一的 _family_waiver=true 在另一族谱」命中赋值型
+        模式，双重误判给已终态父 SPEC 错误写入 _family_waiver=true。
+        """
+        specs = {"fix-fix-fix-x": {"status": "pushed"}}
+        mon = self._make_monitor(specs)
+
+        class _Disp:
+            family_waiver = False
+            actions_taken = (
+                "核对族谱终态：三个成员均为 pushed；"
+                "确认本族谱未发放 _family_waiver（上限拦截本身正确）；"
+                "全库唯一的 _family_waiver=true 在另一族谱，与本困境无关"
+            )
+            recommended_action = ""
+
+        mon._apply_family_waiver({"signal_type": "family_explosion",
+                                  "spec": "fix-fix-fix-x"}, _Disp())
+
+        self.assertNotIn(("fix-fix-fix-x", {"_family_waiver": "true"}),
+                         mon.state_machine.updates)
+
+    def test_terminal_spec_signal_not_reinvoked(self):
+        """信号指向的 spec 已终态（pushed）→ 不唤起 Administrator，仅标记 escalated。
+
+        实证（2026-08-28）：陈旧未 escalated 的 family_explosion SIGNAL 记录使
+        admin_monitor 在族谱成员全部 pushed 后仍被连续唤起 4 次（每次 admin run
+        结束后数十毫秒即唤起下一次）。终态守卫应在摄取阶段直接跳过。
+        """
+        runner = _FakeRunner()
+        mon = self._make_monitor(
+            {"fix-fix-fix-x": {"status": "pushed"}}, runner=runner)
+        self._seed_family_signal()
+
+        signals = mon.run_once()
+        self.assertEqual(len(runner.calls), 0, "终态 spec 不应唤起 Administrator")
+
+        # 记录已标记 escalated：下一 tick 也不重捞
+        mon.run_once()
+        self.assertEqual(len(runner.calls), 0)
+
     def test_other_signal_type_ignored(self):
         specs = {"a": {"status": "implementing"}}
         mon = self._make_monitor(specs)
