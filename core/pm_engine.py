@@ -340,6 +340,156 @@ class PMEngine:
         width = self._family_width(child_name)
         return width >= max_width
 
+    @staticmethod
+    def _is_fix_spec(name: str) -> bool:
+        """判定 name 是否为 fix SPEC（连续 `fix-` 前缀命名）。"""
+        return isinstance(name, str) and name.startswith("fix-")
+
+    @staticmethod
+    def _same_root(name_a: str, name_b: str) -> bool:
+        """同根判定：剥除全部连续 `fix-` 前缀后同名（design D1 去重依据）。
+
+        fix-fix-x 与 fix-x、fix-x 与 fix-x 同根；fix-x 与 fix-y、fix-x 与 y 不同根。
+        """
+        if not (PMEngine._is_fix_spec(name_a) and PMEngine._is_fix_spec(name_b)):
+            return False
+        return PMEngine._fix_strip_all(name_a) == PMEngine._fix_strip_all(name_b)
+
+    def _same_root_siblings(self, spec_name: str) -> list:
+        """返回 spec_name 的同根非终态兄弟列表（排除自身，design 守卫一/三）。
+
+        口径：同根（剥除全部 fix- 前缀后同名）+ 非终态（非 done/pushed）。
+        含自身处于进行中的兄弟亦计入——守卫关心的是「同根是否已有非终态修复活动」。
+        """
+        if not self._is_fix_spec(spec_name):
+            return []
+        root = self._fix_strip_all(spec_name)
+        specs = self.state_machine.read_all() or {}
+        siblings = []
+        for name, entry in specs.items():
+            if not isinstance(name, str) or not self._is_fix_spec(name):
+                continue
+            if self._fix_strip_all(name) != root:
+                continue
+            if name == spec_name:
+                continue
+            status = (entry or {}).get("status", "")
+            if status in ("done", "pushed"):
+                continue
+            siblings.append(name)
+        return siblings
+
+    def _sibling_repair_active(self, spec_name: str) -> str:
+        """判定同根兄弟是否存在 actionable 修复活动，返回承载方 spec 名或空串（design D3）。
+
+        actionable 定义（design D3）：兄弟 status ∈ {implementing, ready(其队列含实现器条目)}
+        或存在活跃 impl/verify agent（worktree 进程存活探测复用孤儿白名单逻辑）。
+        仅 ready 无队列条目不计为 actionable（防僵死 ready 永久阻塞）。
+        """
+        for sib in self._same_root_siblings(spec_name):
+            sib_spec = self.state_machine.read_one(sib) or {}
+            status = sib_spec.get("status", "")
+            if status == "implementing":
+                return sib
+            if status == "ready":
+                # 仅当队列含该兄弟的实现器条目时才视为 actionable
+                with self._queue_lock:
+                    has_impl_entry = any(
+                        e[1] == sib and e[2] == "implementer" for e in self._run_queue
+                    )
+                if has_impl_entry:
+                    return sib
+                # ready 但无队列条目：进一步探测活跃 worktree/agent 进程
+                if self._sibling_has_live_agent(sib):
+                    return sib
+        # 兜底：直接探测自身/兄弟是否仍有存活 agent 进程（覆盖非 ready 但卡死的边缘态）
+        for sib in self._same_root_siblings(spec_name):
+            if self._sibling_has_live_agent(sib):
+                return sib
+        return ""
+
+    def _sibling_has_live_agent(self, spec_name: str) -> bool:
+        """探测 spec 是否仍有存活的 agent 子进程（worktree 存活探测，复用孤儿白名单逻辑）。
+
+        - worktree_manager.has_active_worktree 优先（内存活动集合，最可靠）；
+        - 否则用 agent_runner.has_live_attempt（姊妹变更落地接口）兜底；
+        - 二者皆不可得时回退 pgrep 探测进程表（与 event_bus._ready_has_live_child 同口径）。
+        """
+        try:
+            wm = getattr(self.agent_runner, "worktree_manager", None)
+            if wm is not None and hasattr(wm, "has_active_worktree"):
+                if wm.has_active_worktree(spec_name):
+                    return True
+        except Exception:
+            pass
+        try:
+            ar = self.agent_runner
+            if hasattr(ar, "has_live_attempt"):
+                if ar.has_live_attempt(spec_name):
+                    return True
+        except Exception:
+            pass
+        # 回退：pgrep 探测 worktrees 目录下的 claude 进程（与 event_bus 同语义）
+        try:
+            import subprocess as _sp
+            wt_root = self.project_root / ".claude" / "worktrees"
+            if not wt_root.is_dir():
+                return False
+            pat = f"impl-{spec_name}-" if "verify" not in spec_name else f"verify-{spec_name}-"
+            for d in wt_root.iterdir():
+                if not d.is_dir():
+                    continue
+                if spec_name in d.name:
+                    r = _sp.run(
+                        ["pgrep", "-f", f"worktrees/{d.name}"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if r.returncode == 0 and r.stdout.strip():
+                        return True
+        except Exception:
+            return False
+        return False
+
+    def _has_non_terminal_child_fix(self, spec_name: str) -> str:
+        """判定 spec 是否已存在同根非终态子 fix（守卫一/二共用，design D4 子终态解封）。
+
+        返回承载修复的子 fix 名；无则空串。子 fix 指更深一层的 fix- 前缀 SPEC
+        （fix-{spec} 自身或 fix-fix-{spec} 等），非终态 = 非 done/pushed。
+        """
+        child = f"fix-{spec_name}"
+        specs = self.state_machine.read_all() or {}
+        # 逐层检查更深前缀的子 fix 是否存在且非终态
+        candidate = child
+        best = ""
+        while True:
+            entry = specs.get(candidate)
+            if entry is None:
+                # 该层不存在：若已有更深层终态子，仍可承载；否则停止
+                if best:
+                    break
+                # 递归尝试更深一层（fix-fix-{spec}）
+                deeper = f"fix-{candidate}"
+                if deeper in specs:
+                    candidate = deeper
+                    continue
+                break
+            status = (entry or {}).get("status", "")
+            if status in ("done", "pushed"):
+                # 该层终态：不承载，但允许检查更深一层是否仍在飞
+                deeper = f"fix-{candidate}"
+                if deeper in specs:
+                    candidate = deeper
+                    continue
+                break
+            # 非终态：作为承载方；但仍继续检查是否有更深在飞（取最深非终态）
+            best = candidate
+            deeper = f"fix-{candidate}"
+            if deeper in specs:
+                candidate = deeper
+                continue
+            break
+        return best
+
     def _signal_family_explosion(self, parent_name: str, child_name: str, detail: str):
         """越界派生请求转 family_explosion 困境信号（severity=major）写入 admin store。
 
@@ -373,6 +523,23 @@ class PMEngine:
 
     def _do_spec_bug_found(self, spec_name: str):
         """实际执行 bug-found 处理逻辑。"""
+        # ── 守卫一：reset 抑制（fix-repair-lane-dedup / design 守卫一）──
+        # spec_name 自身为 fix spec 且已存在同根非终态子 fix 时，保持 bug-found
+        # 不重置为 ready、不派发其实现器——由子 fix 承载修复。
+        # 无子或子均已终态（design D4 子终态解封）：守卫不生效，既有 reset 行为不变。
+        if self._is_fix_spec(spec_name):
+            carrier = self._has_non_terminal_child_fix(spec_name)
+            if carrier:
+                self.logger.info(
+                    "pm_engine",
+                    f"守卫一：'{spec_name}' 为 fix spec 且已有非终态子 fix "
+                    f"'{carrier}' 承载修复——抑制 reset，保持 bug-found",
+                )
+                self.state_machine.update_spec(spec_name, {
+                    "error": f"修复由子 fix '{carrier}' 承载，抑制重实现重置",
+                })
+                return
+
         parent_prio = (self.state_machine.read_one(spec_name) or {}).get("priority", 5)
 
         # 确定本轮 bug 应使用的 fix SPEC 名称
@@ -1142,6 +1309,29 @@ class PMEngine:
                 active_count = self._active_runs
 
             priority, spec_name, agent_type, _ = entry_to_dispatch
+
+            # ── 守卫三：派发互斥（fix-repair-lane-dedup / design 守卫三）──
+            # fix spec 实现器派发前检查同根兄弟是否存在活跃修复活动；
+            # 存在则回滚 entry 到队列、跳过本轮派发（先到先得，后到抑制）。
+            if agent_type == "implementer" and self._is_fix_spec(spec_name):
+                carrier = self._sibling_repair_active(spec_name)
+                if carrier:
+                    # 回滚：把已 pop 的 entry 放回队列
+                    with self._queue_lock:
+                        self._run_queue.insert(0, entry_to_dispatch)
+                        self._active_runs -= 1
+                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
+                        if cnt <= 0:
+                            self._active_priority_counts.pop(base_prio, None)
+                            self._active_priorities.discard(base_prio)
+                        else:
+                            self._active_priority_counts[base_prio] = cnt
+                    self.logger.info(
+                        "pm_engine",
+                        f"守卫三：'{spec_name}' 同根兄弟 '{carrier}' 存在活跃修复"
+                        f"——跳过本轮派发，保持 ready",
+                    )
+                    return
 
             # Update state to in-progress
             if agent_type == "implementer":
@@ -1966,6 +2156,21 @@ class PMEngine:
                 "pm_engine",
                 f"Verifier found bugs in '{spec_name}', transitioning to bug-found",
             )
+            # ── 守卫二：spawn 抑制（fix-repair-lane-dedup / design 守卫二）──
+            # 被验对象为 fix spec 且自身 ready/implementing（重实现已在飞）时，
+            # 跳过派生子 fix——由在飞重实现承载修复。
+            if self._is_fix_spec(spec_name):
+                cur = (self.state_machine.read_one(spec_name) or {}).get("status", "")
+                if cur in ("ready", "implementing"):
+                    self.logger.info(
+                        "pm_engine",
+                        f"守卫二：'{spec_name}' 为 fix spec 且自身 {cur}"
+                        f"（重实现在飞）——跳过派生子 fix",
+                    )
+                    self.state_machine.update_spec(spec_name, {
+                        "error": "修复由在飞重实现承载，跳过派生子 fix",
+                    })
+                    return
             self._on_spec_bug_found(spec_name)
         else:
             # D6: testing→verified 前置进度核对：done>=total 才晋级
@@ -2222,6 +2427,19 @@ class PMEngine:
                     "pm_engine",
                     f"Verifier (legacy) found bugs in '{spec_name}'",
                 )
+                # ── 守卫二：spawn 抑制（fix-repair-lane-dedup / design 守卫二）──
+                if self._is_fix_spec(spec_name):
+                    cur = (self.state_machine.read_one(spec_name) or {}).get("status", "")
+                    if cur in ("ready", "implementing"):
+                        self.logger.info(
+                            "pm_engine",
+                            f"守卫二：'{spec_name}' 为 fix spec 且自身 {cur}"
+                            f"（重实现在飞）——跳过派生子 fix（legacy 路径）",
+                        )
+                        self.state_machine.update_spec(spec_name, {
+                            "error": "修复由在飞重实现承载，跳过派生子 fix",
+                        })
+                        return
                 self._on_spec_bug_found(spec_name)
             else:
                 # D6: legacy 路径同样前置进度核对：done>=total 才晋级
