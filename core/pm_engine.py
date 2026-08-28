@@ -1788,6 +1788,41 @@ class PMEngine:
         except Exception:
             return False
 
+    def _verifier_result_is_stale(self, result, result_path: Path, spec_name: str) -> bool:
+        """verifier 结果文件是否不可信（陈旧重放 / 异 spec 残留 / 缺失）。
+
+        判据（任一命中即陈旧）：
+        - run_id 内嵌 epoch 早于文件 mtime 之前 5 秒以上 → 本轮验证器未曾写回；
+        - 文件缺失却宣称成功 → 判定来源不明；
+        - 文件 spec 戳与当前 spec 不符 → 其它 spec 的残留。
+        无法解析 run_id 时不判定（维持既有行为，向后兼容）。
+        """
+        import re
+        try:
+            m = re.search(r"-(\d{10,})-a\d+$", getattr(result, "run_id", "") or "")
+            if not m:
+                return False
+            run_start = int(m.group(1))
+        except (TypeError, ValueError):
+            return False
+        if not result_path.exists():
+            return True
+        try:
+            data = json.loads(result_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return True
+        if not isinstance(data, dict):
+            return True
+        stamped = data.get("spec")
+        if isinstance(stamped, str) and stamped and stamped != spec_name:
+            return True
+        try:
+            if result_path.stat().st_mtime < run_start - 5:
+                return True
+        except OSError:
+            return True
+        return False
+
     def _run_legacy_verification(self, spec_name: str):
         """降级方案：使用旧版单体 Verifier Agent。"""
         result = self.agent_runner.run_verifier(spec_name)
@@ -1821,6 +1856,21 @@ class PMEngine:
                 return
             run_result_path = self.project_root / ".fenix-run-result.json"
             verifier_status = self._read_verifier_result(run_result_path)
+            # 结果文件新鲜度/归属护栏：共享单文件会被任何 spec 的后续运行覆写，
+            # 陈旧或异 spec 的判定重放到当前轮次 = 假 bug-found / 假 verified
+            # （2026-08-28 improve-failover-model-mapping-ui 09:41 旧判定 12:21 重放实证）。
+            if self._verifier_result_is_stale(result, run_result_path, spec_name):
+                self.state_machine.update_spec(spec_name, {
+                    "status": "implemented",
+                    "tester_run": None,
+                    "error": "stale/foreign verifier result replayed — re-dispatching fresh verify",
+                })
+                self.logger.warning(
+                    "pm_engine",
+                    f"Stale/foreign verifier result for '{spec_name}' — "
+                    f"re-dispatching fresh verification",
+                )
+                return
             if verifier_status == "bug-found":
                 self.state_machine.transition(spec_name, "bug-found")
                 self.state_machine.update_spec(spec_name, {

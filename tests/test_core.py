@@ -2742,6 +2742,96 @@ class TestPMEngineBugFound(unittest.TestCase):
         self.assertEqual(self.sm.read_one("quick-links-folders")["status"], "bug-found")
 
 
+class TestVerifierStaleResultGuard(unittest.TestCase):
+    """.fenix-run-result.json 为全局共享单文件：verifier 判定消费前必须校验
+    新鲜度（mtime ≥ 本次 run 起点）与归属（spec 匹配），否则陈旧重放会把
+    旧结论（假 bug-found / 假 verified）套到当前轮次上。2026-08-28 实证：
+    improve-failover-model-mapping-ui 的 09:41 旧判定在 12:21 重放。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.state_path = Path(self.tmpdir) / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
+        )
+        self.engine._enqueue = MagicMock()
+        self.engine._on_spec_bug_found = MagicMock()
+        # verified 成功路径会经 _task_completion_blocker 读 implementer 结果，
+        # 与本守卫正交，隔离之（MagicMock runner 下该链路不 mock 不友好）。
+        self.engine._task_completion_blocker = MagicMock(return_value=None)
+        self.result_path = Path(self.tmpdir) / ".fenix-run-result.json"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_impl_spec(self, name="quick-links-folders"):
+        self.sm.add_spec(name, {"priority": 5})
+        self.sm.transition(name, "ready")
+        self.sm.transition(name, "implementing")
+        self.sm.transition(name, "implemented")
+        self.sm.transition(name, "testing")
+
+    def _run_verify(self, run_epoch):
+        from types import SimpleNamespace
+        run_id = f"verify-quick-links-folders-{run_epoch}-a1"
+        self.engine.agent_runner.run_verifier.return_value = SimpleNamespace(
+            success=True, error=None, run_id=run_id,
+        )
+        self.engine._run_legacy_verification("quick-links-folders")
+
+    def _write_result(self, spec, status, mtime_epoch=None):
+        self.result_path.write_text(json.dumps({"spec": spec, "status": status}))
+        if mtime_epoch:
+            import os
+            os.utime(self.result_path, (mtime_epoch, mtime_epoch))
+
+    def test_stale_same_spec_bugfound_not_replayed(self):
+        self._make_impl_spec()
+        now = int(time.time())
+        self._write_result("quick-links-folders", "bug-found", mtime_epoch=now - 600)
+        self._run_verify(now)  # 本次 run 晚于结果文件 → 陈旧
+        e = self.sm.read_one("quick-links-folders")
+        self.assertEqual(e["status"], "implemented")
+        self.assertIn("stale", str(e.get("error")))
+
+    def test_cross_spec_result_not_consumed(self):
+        self._make_impl_spec()
+        self._write_result("some-other-spec", "success")
+        self._run_verify(int(time.time()))
+        e = self.sm.read_one("quick-links-folders")
+        self.assertEqual(e["status"], "implemented")
+        self.assertIn("stale", str(e.get("error")))
+
+    def test_missing_result_not_treated_as_verified(self):
+        self._make_impl_spec()
+        self._run_verify(int(time.time()))
+        e = self.sm.read_one("quick-links-folders")
+        self.assertEqual(e["status"], "implemented")
+        self.assertIn("stale", str(e.get("error")))
+
+    def test_fresh_bugfound_still_counts(self):
+        self._make_impl_spec()
+        now = int(time.time())
+        self._write_result("quick-links-folders", "bug-found", mtime_epoch=now - 5)
+        self._run_verify(now)
+        e = self.sm.read_one("quick-links-folders")
+        self.assertEqual(e["status"], "bug-found")
+
+    def test_fresh_verified_still_counts(self):
+        self._make_impl_spec()
+        now = int(time.time())
+        self._write_result("quick-links-folders", "verified", mtime_epoch=now - 5)
+        self._run_verify(now)
+        e = self.sm.read_one("quick-links-folders")
+        # 门禁放行后会自动推进（verified → done），断言终态即可
+        self.assertIn(e["status"], ("verified", "done"))
+
+
 class TestVerifierInfraFailureHold(unittest.TestCase):
     """verifier 基础设施类失败（链耗尽/熔断/网关）不得流转 bug-found。
 
