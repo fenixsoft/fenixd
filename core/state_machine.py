@@ -52,6 +52,14 @@ VALID_TRANSITIONS: Dict[str, List[str]] = {
     SpecStatus.PUSHED:       [],  # terminal state
 }
 
+# 门禁自动路径额外允许的「逃生门」转换（verifier-judgment-integrity D7）：
+# VERIFIED→TESTING 仅允许由 _on_spec_verified 门禁拦截触发的自动回退调用，
+# 人工路径（直接调 transition）仍受 VALID_TRANSITIONS 约束被拒，不得绕过。
+# 回退保留 implementer_run 与既有 progress 断点。
+GATE_TRANSITIONS: Dict[str, List[str]] = {
+    SpecStatus.VERIFIED: [SpecStatus.TESTING],
+}
+
 # States that are considered "interrupted" on daemon restart (revert to ready)
 INTERRUPTED_STATES = {SpecStatus.IMPLEMENTING, SpecStatus.TESTING}
 
@@ -379,6 +387,33 @@ class StateMachine:
     def is_valid_transition(self, from_status: str, to_status: str) -> bool:
         """Check if a transition is legal."""
         return to_status in VALID_TRANSITIONS.get(from_status, [])
+
+    def transition_gate(self, spec_name: str, new_status: str) -> bool:
+        """门禁自动路径专用转换（verifier-judgment-integrity D7 逃生门）。
+
+        仅允许 GATE_TRANSITIONS 中声明的转换（当前：VERIFIED→TESTING），
+        用于 _on_spec_verified 门禁拦截后的自动回退。人工路径（直接调
+        transition）受 VALID_TRANSITIONS 约束，VERIFIED→TESTING 仍被拒，
+        不得绕过。返回 False 表示非门禁允许的转换或 spec 不存在。
+        """
+        spec = self.read_one(spec_name)
+        if not spec:
+            self.logger.warning("state_machine", f"Cannot gate-transition nonexistent SPEC: {spec_name}")
+            return False
+
+        old_status = spec.get("status", SpecStatus.DRAFTED)
+        if new_status not in GATE_TRANSITIONS.get(old_status, []):
+            self.logger.error(
+                "state_machine",
+                f"Invalid gate transition: {spec_name} {old_status} → {new_status}",
+            )
+            return False
+
+        self.logger.info(
+            "state_machine",
+            f"Gate transition: {spec_name} {old_status} → {new_status}",
+        )
+        return self.update_spec(spec_name, {"status": new_status})
 
     # ── Query ──────────────────────────────────────────────────────
 

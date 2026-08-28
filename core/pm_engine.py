@@ -155,6 +155,21 @@ class PMEngine:
             if vblocker:
                 blocker = (blocker + "; " if blocker else "") + vblocker
             if blocker:
+                # 验证完成度闸门（vblocker）触发时走 D7 逃生门：VERIFIED→TESTING
+                # 自动回退重新派发验证器，断点续跑（保留 implementer_run 与 progress），
+                # 消除「verified 无出口」死锁。仅进度不完整走此路径；任务缺口
+                # （blocker 但非 vblocker）保持 verified 供人工裁决，不自动回退。
+                if vblocker:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"验证进度不完整 '{spec_name}'，门禁逃生门回退 testing 重新验证: {vblocker}",
+                    )
+                    # 保留 implementer_run 与既有 progress 断点（D7），仅置 error 摘要
+                    self.state_machine.update_spec(spec_name, {
+                        "error": f"验证进度不完整，回退重新验证: {vblocker}",
+                    })
+                    self.state_machine.transition_gate(spec_name, "testing")
+                    return
                 self.logger.warning(
                     "pm_engine",
                     f"验证放行门禁拦截 '{spec_name}'（保持 verified）: {blocker}",
@@ -1735,6 +1750,19 @@ class PMEngine:
             )
             self._on_spec_bug_found(spec_name)
         else:
+            # D6: testing→verified 前置进度核对：done>=total 才晋级
+            vblocker = self._check_verification_gate(spec_name)
+            if vblocker:
+                # 不完整：按 verifier 失败处理，写 error 摘要，不晋级 verified
+                self.state_machine.update_spec(spec_name, {
+                    "tester_run": judge_result.run_id,
+                    "error": vblocker,
+                })
+                self.logger.warning(
+                    "pm_engine",
+                    f"验证未完成 '{spec_name}'，阻止晋级 verified: {vblocker}",
+                )
+                return
             self.state_machine.transition(spec_name, "verified")
             self.state_machine.update_spec(spec_name, {
                 "tester_run": judge_result.run_id,
@@ -1806,6 +1834,18 @@ class PMEngine:
                 )
                 self._on_spec_bug_found(spec_name)
             else:
+                # D6: legacy 路径同样前置进度核对：done>=total 才晋级
+                vblocker = self._check_verification_gate(spec_name)
+                if vblocker:
+                    self.state_machine.update_spec(spec_name, {
+                        "tester_run": result.run_id,
+                        "error": vblocker,
+                    })
+                    self.logger.warning(
+                        "pm_engine",
+                        f"验证未完成 (legacy) '{spec_name}'，阻止晋级 verified: {vblocker}",
+                    )
+                    return
                 self.state_machine.transition(spec_name, "verified")
                 self.state_machine.update_spec(spec_name, {
                     "tester_run": result.run_id,
