@@ -451,7 +451,7 @@ class TestFamilyExplosionAdminMonitor(unittest.TestCase):
         self.assertEqual(mon.state_machine.updates, [])
 
     def test_waiver_via_text_token(self):
-        """文本动作含放行令牌（_family_waiver/放行/waive）也视为放行。"""
+        """文本动作含显式放行动词（放行一次/经评估放行）也视为放行。"""
         specs = {"fix-fix-fix-x": {"status": "bug-found"}}
         mon = self._make_monitor(specs)
 
@@ -465,6 +465,59 @@ class TestFamilyExplosionAdminMonitor(unittest.TestCase):
 
         self.assertIn(("fix-fix-fix-x", {"_family_waiver": "true"}),
                       mon.state_machine.updates)
+
+    def test_waiver_via_assignment_text(self):
+        """文本动作含赋值型放行（_family_waiver=true）视为放行。"""
+        specs = {"fix-fix-fix-x": {"status": "bug-found"}}
+        mon = self._make_monitor(specs)
+
+        class _Disp:
+            family_waiver = False
+            actions_taken = "确认放行：对父 SPEC 设置 _family_waiver=true"
+            recommended_action = ""
+
+        mon._apply_family_waiver({"signal_type": "family_explosion",
+                                  "spec": "fix-fix-fix-x"}, _Disp())
+
+        self.assertIn(("fix-fix-fix-x", {"_family_waiver": "true"}),
+                      mon.state_machine.updates)
+
+    def test_waiver_mention_in_negative_sentence_does_not_grant(self):
+        """仅在否定句中提及豁免位字面令牌不构成放行（2026-08-28 实证回归）。
+
+        处置叙述「明确不发放 _family_waiver」曾被宽松令牌匹配误判为放行动作，
+        给未放行的父 SPEC 错误写入 _family_waiver=true。
+        """
+        specs = {"fix-fix-fix-x": {"status": "bug-found"}}
+        mon = self._make_monitor(specs)
+
+        class _Disp:
+            family_waiver = False
+            actions_taken = ("只读诊断并修复验证基础设施；明确不发放 _family_waiver："
+                             "不存在真实产品缺陷，派生第 4 层 fix 只会空转")
+            recommended_action = ""
+
+        mon._apply_family_waiver({"signal_type": "family_explosion",
+                                  "spec": "fix-fix-fix-x"}, _Disp())
+
+        self.assertNotIn(("fix-fix-fix-x", {"_family_waiver": "true"}),
+                         mon.state_machine.updates)
+
+    def test_waiver_mention_without_grant_semantics_does_not_grant(self):
+        """叙述性提及（如「将 _family_waiver 复位为 False」）不构成放行。"""
+        specs = {"fix-fix-fix-x": {"status": "bug-found"}}
+        mon = self._make_monitor(specs)
+
+        class _Disp:
+            family_waiver = False
+            actions_taken = "复位误置的 _family_waiver 为 False，父 SPEC 维持 ready 重验"
+            recommended_action = ""
+
+        mon._apply_family_waiver({"signal_type": "family_explosion",
+                                  "spec": "fix-fix-fix-x"}, _Disp())
+
+        self.assertNotIn(("fix-fix-fix-x", {"_family_waiver": "true"}),
+                         mon.state_machine.updates)
 
     def test_other_signal_type_ignored(self):
         specs = {"a": {"status": "implementing"}}

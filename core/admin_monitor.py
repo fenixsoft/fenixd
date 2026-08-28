@@ -36,6 +36,21 @@ DAEMON_ERROR_THRESHOLD = 3
 STUCK_GRACE_MINUTES = 10  # run 文件 mtime 距现在小于此值视为"有进度"，不算卡死
 RESTART_REQUEST_TIMEOUT_MINUTES = 10  # restart_request 超时未清除 → 重启失败 → 升级
 
+# family_explosion 放行文本兜底：仅当处置文本表达「显式放行」语义时才写豁免位。
+# 2026-08-28 实证（fix-fix-fix-add-spec-context-menu）：旧的「包含 _family_waiver/
+# 放行/waive 令牌即放行」宽松匹配，把处置叙述中否定句里的字面令牌（如
+# 「明确不发放 _family_waiver」）误判为放行动作，给未放行的父 SPEC 错误写入
+# _family_waiver=true。改为：命中否定短语即不放行；否则须命中赋值型/明确动词型
+# 放行模式才写位。
+_WAIVER_NEGATION_PHRASES = ("未放行", "不放行", "拒绝放行", "不予放行", "不发放", "不启用豁免")
+_WAIVER_GRANT_PATTERNS = (
+    r"_family_waiver['\"]?\s*[=:：]\s*['\"]?true",  # 赋值型：_family_waiver=true
+    r"设置\s*_family_waiver\s*为?\s*true",  # 设置 _family_waiver 为 true
+    r"同意放行",
+    r"放行一次",
+    r"经评估放行",
+)
+
 # 信号 → 严重度/建议处置
 SIGNAL_SEVERITY = {
     "repeated_failures": "major",
@@ -680,7 +695,9 @@ class AdminMonitor:
         """family_explosion 处置「放行一次」→ 设置父 SPEC 豁免位 _family_waiver=true。
 
         判定：结构字段 disp.family_waiver 为 True；或自由文本
-        actions_taken/recommended_action 含放行意图（_family_waiver / 放行 / waive）。
+        actions_taken/recommended_action 含显式放行语义（赋值型 _family_waiver=true、
+        「设置 _family_waiver 为 true」「放行一次」等），且不含否定短语
+        （未放行/不发放/不予放行…）。仅在叙述中提及豁免位字面令牌不构成放行。
         豁免位由 pm_engine 族谱门在下一轮实际创建工作开始时消费并复位（单次）。
 
         Args:
@@ -693,14 +710,14 @@ class AdminMonitor:
         if not spec:
             return
         text = f"{(disp.actions_taken or '')} {(disp.recommended_action or '')}"
-        # 否定语义优先：显式「未放行/不放行/拒绝/否决」不属于放行动作。
+        # 否定语义优先：显式「未放行/不放行/拒绝/否决/不发放」不属于放行动作。
         # 结构字段 family_waiver=True 优先级最高（Administrator 结构化回填不受文本兜底影响）。
         if bool(getattr(disp, "family_waiver", False)):
             waived = True
         else:
-            negated = any(n in text for n in ("未放行", "不放行", "拒绝放行", "不予放行"))
+            negated = any(n in text for n in _WAIVER_NEGATION_PHRASES)
             waived = (not negated) and any(
-                token in text for token in ("_family_waiver", "放行", "waive")
+                re.search(pattern, text) for pattern in _WAIVER_GRANT_PATTERNS
             )
         if not waived:
             return
