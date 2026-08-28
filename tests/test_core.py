@@ -1445,6 +1445,44 @@ class TestAutoApprove(unittest.TestCase):
             self.assertIn("push_backoff", update_args[1]["error"])
             self.assertIn("push_attempts=1", update_args[1]["error"])
 
+    def test_approve_push_success_clears_preexisting_error(self):
+        """推送成功时清除 spec 既有 error 字段（终态残痕清理）。"""
+        engine = self._make_engine({})
+        # 模拟上一次推送失败残留的 error（含退避标记）
+        self.sm.read_one = MagicMock(
+            return_value={
+                "status": "done", "branch": "fenix/test-spec",
+                "error": "git push failed (main): x [push_attempts=2] "
+                         "[push_backoff next_retry_at=999999]",
+            }
+        )
+        with patch.object(engine, '_git_push_ref', return_value=(True, "")):
+            result = engine.approve_push("test-spec")
+            self.assertTrue(result)
+            self.sm.transition.assert_called_once_with("test-spec", "pushed")
+            self.sm.update_spec.assert_called_once()
+            self.assertIsNone(self.sm.update_spec.call_args[0][1]["error"])
+
+    def test_approve_push_retry_count_accumulates(self):
+        """连续失败时 attempts 计数递增（第 1 次 → attempts=1，第 2 次 → attempts=2）。"""
+        # 配置 0 秒退避，使第二次尝试不会被前一次退避拦截
+        engine = self._make_engine({"pm": {"push": {"retry_backoff_seconds": [0, 0]}}})
+        # 第一次失败：spec 无 prior error
+        self.sm.read_one.return_value = {"status": "done", "branch": "fenix/test-spec"}
+        with patch.object(engine, '_git_push_ref', return_value=(False, "boom1")):
+            engine.approve_push("test-spec")
+        err1 = self.sm.update_spec.call_args[0][1]["error"]
+        self.assertIn("push_attempts=1", err1)
+
+        # 第二次失败：spec 带第一次的 error
+        self.sm.read_one.return_value = {
+            "status": "done", "branch": "fenix/test-spec", "error": err1,
+        }
+        with patch.object(engine, '_git_push_ref', return_value=(False, "boom2")):
+            engine.approve_push("test-spec")
+        err2 = self.sm.update_spec.call_args[0][1]["error"]
+        self.assertIn("push_attempts=2", err2)
+
     def test_on_spec_done_auto_mode_triggers_approve(self):
         """auto 模式下 _on_spec_done 应调用 _auto_approve。"""
         self.sm.read_one = MagicMock(return_value={"status": "done"})
@@ -1462,6 +1500,93 @@ class TestAutoApprove(unittest.TestCase):
         with patch.object(engine, '_auto_approve') as mock_approve:
             engine._on_spec_done("test-spec")
             mock_approve.assert_not_called()
+
+    # ── Task 2.1: 退避期内跳过 / 超限升级 push_failed 信号 ─────────
+
+    def test_push_backoff_period_skips_push(self):
+        """退避期内（next_retry_at 未到期）→ approve_push 不发出 push 命令。"""
+        from datetime import datetime, timezone
+        future_ts = int(datetime.now(timezone.utc).timestamp()) + 9999
+        engine = self._make_engine({})
+        self.sm.read_one.return_value = {
+            "status": "done", "branch": "fenix/test-spec",
+            "error": (
+                "git push failed (main): x [push_attempts=1] "
+                f"[push_backoff next_retry_at={future_ts}]"
+            ),
+        }
+        with patch.object(engine, '_git_push_ref') as mock_push:
+            result = engine.approve_push("test-spec")
+            self.assertFalse(result)
+            mock_push.assert_not_called()
+
+    def test_push_backoff_period_skips_auto_approve(self):
+        """退避期内 → _auto_approve 也不触发推送。"""
+        from datetime import datetime, timezone
+        future_ts = int(datetime.now(timezone.utc).timestamp()) + 9999
+        engine = self._make_engine({"gates": {"approve_mode": "auto"}})
+        self.sm.read_one.return_value = {
+            "status": "done", "branch": "fenix/test-spec",
+            "error": (
+                "git push failed (main): x [push_attempts=2] "
+                f"[push_backoff next_retry_at={future_ts}]"
+            ),
+        }
+        with patch.object(engine, '_git_push_ref') as mock_push:
+            result = engine._auto_approve("test-spec")
+            self.assertFalse(result)
+            mock_push.assert_not_called()
+
+    def test_push_max_retries_exhausted_sends_signal(self):
+        """连续 3 次失败 → 发 push_failed 信号，停止自动重试。"""
+        engine = self._make_engine({
+            "pm": {"push": {"retry_backoff_seconds": [0, 0, 0]}},
+        })
+        # 逐次模拟 spec 中 error 递增的 attempts
+        for i in range(1, 4):
+            prior_error = (
+                f"git push failed (main): boom [push_attempts={i - 1}] "
+                "[push_backoff next_retry_at=0]" if i > 1 else None
+            )
+            self.sm.read_one.return_value = {
+                "status": "done", "branch": "fenix/test-spec",
+                "error": prior_error,
+            }
+            with patch.object(engine, '_git_push_ref', return_value=(False, "boom")), \
+                 patch.object(engine, '_signal_push_failed') as mock_signal:
+                engine.approve_push("test-spec")
+            if i < 3:
+                # 未超限：不发信号
+                mock_signal.assert_not_called()
+            else:
+                # 超限：发 push_failed 信号
+                mock_signal.assert_called_once()
+                call_args = mock_signal.call_args[0]
+                self.assertEqual(call_args[0], "test-spec")
+            # 检查 error 含 `[push_failed]` 标记
+            err = self.sm.update_spec.call_args[0][1]["error"]
+            if i == 3:
+                self.assertIn("push_failed", err)
+                self.assertIn("已停止自动重试", err)
+
+    def test_push_backoff_expires_and_retries(self):
+        """退避过期（next_retry_at 已过）→ approve_push 重新尝试推送。"""
+        engine = self._make_engine({
+            "pm": {"push": {"retry_backoff_seconds": [0, 0]}},
+        })
+        self.sm.read_one.return_value = {
+            "status": "done", "branch": "fenix/test-spec",
+            "error": (
+                "git push failed (main): x [push_attempts=1] "
+                "[push_backoff next_retry_at=1]"
+            ),
+        }
+        with patch.object(engine, '_git_push_ref', return_value=(True, "")) as mock_push:
+            result = engine.approve_push("test-spec")
+            self.assertTrue(result)
+            # 退避过期，重新尝试了 main 推送
+            main_calls = [c for c in mock_push.call_args_list if c[0][0] == "main"]
+            self.assertEqual(len(main_calls), 1)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1631,6 +1756,102 @@ class TestPushRefHygiene(unittest.TestCase):
                 if c[0][0] == "fenix/test-spec"
             ]
             self.assertEqual(len(branch_calls), 1)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Push Residual Backfill Tests (fix-push-ref-lifecycle: task 3.1 / design D4)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestPushResidualBackfill(unittest.TestCase):
+    """测试幂等回填清理函数（pushed + git push failed → SHA 验证 → 清 error）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "test"],
+                       cwd=str(self.project_root), capture_output=True)
+        (self.project_root / "README.md").write_text("# test\n")
+        subprocess.run(["git", "add", "."], cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"],
+                       cwd=str(self.project_root), capture_output=True)
+        # 远端裸仓 + origin 并推送 main
+        self.remote_root = Path(self.tmpdir) / "remote.git"
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main",
+                        str(self.remote_root)],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "remote", "add", "origin", str(self.remote_root)],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "push", "-q", "origin", "main"],
+                       cwd=str(self.project_root), capture_output=True)
+
+        # 使用真实 StateMachine 以便 backfill 后能回读 error
+        from core.state_machine import StateMachine
+        self.state_path = self.project_root / "STATE.md"
+        self.sm = StateMachine(self.state_path, MagicMock())
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_engine(self, config: dict = None):
+        from core.pm_engine import PMEngine
+        logger = MagicMock()
+        for m in ("info", "warning", "error", "debug"):
+            setattr(logger, m, MagicMock())
+        ar = MagicMock()
+        return PMEngine(self.sm, ar, config or {}, self.project_root, logger)
+
+    def test_backfill_cleans_verified_residual(self):
+        """远端 main 存在 → pushed 残痕被清除。"""
+        self.sm.add_spec("clean-spec", {
+            "status": "pushed",
+            "error": "git push failed (main): x [push_backoff next_retry_at=1]",
+        })
+        engine = self._make_engine({})
+        result = engine.backfill_push_residuals()
+        self.assertIn("clean-spec", result["cleaned"])
+        # 回读 error 已被清空
+        self.assertIsNone(self.sm.read_one("clean-spec").get("error"))
+
+    def test_backfill_keeps_unverifiable_residual(self):
+        """远端 main 不可达 → 残痕保留并列入 kept 清单。"""
+        self.sm.add_spec("kept-spec", {
+            "status": "pushed",
+            "error": "git push failed (main): offline",
+        })
+        engine = self._make_engine({})
+        # 模拟 ls-remote 失败（无 origin 名对应真实可达远端）
+        with patch.object(engine, '_remote_branch_sha', return_value=None):
+            result = engine.backfill_push_residuals()
+        self.assertIn("kept-spec", [k["spec"] for k in result["kept"]])
+        # 残痕保留
+        self.assertIsNotNone(self.sm.read_one("kept-spec").get("error"))
+
+    def test_backfill_skips_non_push_failed(self):
+        """error 非 'git push failed' 前缀的 pushed spec 不被清理。"""
+        self.sm.add_spec("other-spec", {
+            "status": "pushed",
+            "error": "some other error",
+        })
+        engine = self._make_engine({})
+        result = engine.backfill_push_residuals()
+        self.assertNotIn("other-spec", result["cleaned"])
+        self.assertNotIn("other-spec", [k["spec"] for k in result["kept"]])
+
+    def test_backfill_skips_non_pushed(self):
+        """非 pushed 状态的 spec 不被清理（即便 error 以 git push failed 开头）。"""
+        self.sm.add_spec("done-spec", {
+            "status": "done",
+            "error": "git push failed (main): x",
+        })
+        engine = self._make_engine({})
+        result = engine.backfill_push_residuals()
+        self.assertNotIn("done-spec", result["cleaned"])
 
 
 # ═══════════════════════════════════════════════════════════════════

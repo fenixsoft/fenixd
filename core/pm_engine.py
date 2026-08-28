@@ -2054,12 +2054,12 @@ class PMEngine:
                 f"已达上限 {max_retries}，已停止自动重试"
             )
             self._signal_push_failed(spec_name, detail)
-            self.state_machine.update_spec(spec_name, {
-                "error": (
-                    f"{error_base} [push_attempts={attempts}] "
-                    f"[push_failed — 已停止自动重试]"
-                ),
-            })
+            final_error = (
+                f"{error_base} [push_attempts={attempts}] "
+                f"[push_failed — 已停止自动重试]"
+            )
+            self.state_machine.update_spec(spec_name, {"error": final_error})
+            spec["error"] = final_error  # 同步本地引用供后续读取
             self.logger.error(
                 "pm_engine",
                 f"Push retries exhausted for '{spec_name}' ({attempts}/{max_retries})",
@@ -2068,12 +2068,12 @@ class PMEngine:
             # 退避：延迟到 next_retry_at 再重试
             delay = backoff_seconds[min(attempts - 1, len(backoff_seconds) - 1)]
             next_retry = now_ts + delay
-            self.state_machine.update_spec(spec_name, {
-                "error": (
-                    f"{error_base} [push_attempts={attempts}] "
-                    f"[push_backoff next_retry_at={next_retry}]"
-                ),
-            })
+            final_error = (
+                f"{error_base} [push_attempts={attempts}] "
+                f"[push_backoff next_retry_at={next_retry}]"
+            )
+            self.state_machine.update_spec(spec_name, {"error": final_error})
+            spec["error"] = final_error  # 同步本地引用供后续读取
             self.logger.warning(
                 "pm_engine",
                 f"Push failed for '{spec_name}' ({ref}): {error_msg}; "
