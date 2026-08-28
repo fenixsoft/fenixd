@@ -1,103 +1,71 @@
 # 验证报告：fix-improve-run-lifecycle-governance
 
-## 验证结果
+- **验证时间**：2026-08-28T15:56:25Z
+- **引擎报告**：`/root/fenixd/.fenix/verify-progress/fix-improve-run-lifecycle-governance/report.json`
+- **判定结论**：✅ **verified（验证通过，无真实产品缺陷）**
+- **统计**：共 13 场景，通过 11，失败 2，警告 0，错误 0，环境阻塞 0
 
-- **状态**: bug-found
-- **总场景数**: 17
-- **通过**: 2
-- **失败**: 15
-- **通过率**: 11.8%
+---
 
-## 严重 Bug（Critical）
+## 一、结果总览
 
-### 系统性缺陷：Dashboard 未渲染治理 SPEC 行
+| 场景 ID | 描述 | 状态 | 关键断言 |
+|---|---|---|---|
+| smoke-dashboard-serves-8787 | 生命周期可观察面包烟（8787 新代码） | ✅ pass | 概览页标题 / 卡片网格 / 无 console 错误 |
+| recovery-deferred-live-child-detail | 功能正向：stuck 但有存活子进程 → recovery defer | ✅ pass | status-pill 就绪 / error-banner `recovery deferred, live child present` |
+| worktree-lock-orphan-holding-detail | 功能正向：孤儿持锁 → 进程表重建跳过派发 | ✅ pass | error-banner `worktree already active - deferred until lock released` |
+| timeout-supervision-active-run-detail | 功能正向：活跃运行被纳入可观察面 | ✅ pass | status 实现中 / 无 error-banner / 时间轴节点可见 |
+| real-spec-error-subrow-and-clear | 交互：在线清除治理规格 error（回归点） | ❌ fail | 见分析 1 |
+| post-recovery-patrol-dispatch-stalled-alert | 功能正向：dispatch_stalled 告警横幅 | ✅ pass | alert-banner / alert-item 含 `dispatch_stalled` |
+| post-recovery-patrol-activity-card | 功能正向：运维记录 activity-card | ✅ pass | activity-card 含 `governance-stuck-ready` / `dispatch_stalled` |
+| empty-activities-no-records | 空状态：无活动 → 空状态文案 | ✅ pass | `暂无运维记录` |
+| governance-config-timeout-supervision-tab | 配置可观察面：并行度页签切换 | ✅ pass | config-tabs / 保存按钮 / 并行度面板 |
+| regression-overview-no-console-error | 回归点：概览无控制台/网络错误 | ✅ pass | no_console_error / no_network_error |
+| recovery-no-live-child-clean-reset-detail | 功能反向：确认无存活子进程 → 正常重置 | ✅ pass | status 就绪 / 无 error-banner（无 defer 残留） |
+| governance-alert-mark-handled | 交互：标记告警已处理（闭环） | ❌ fail | 见分析 2 |
+| governance-alert-clear-all-dismiss | 对话框：取消清理所有事件 | ✅ pass | 横幅与告警项仍保留（未误清理） |
 
-**影响范围**: 12 个场景（占所有失败场景的 80%）
+---
 
-**症状**:
-所有包含 `governance-*` 测试数据的场景均失败，错误信息一致：
-```
-Locator.wait_for: Timeout 3000ms exceeded.
-Call log:
-  - waiting for locator("tr.spec-row:has-text(\"governance-*\")").first to be visible
-```
+## 二、失败场景归因（均非产品缺陷）
 
-**受影响场景**:
-1. recovery-deferred-live-child-stays-ready
-2. worktree-lock-rebuild-and-stale-release
-3. dispatch-lock-conflict-enters-backoff
-4. post-recovery-followup-finds-stuck-ready
-5. patrol-no-inprogress-but-fake-ready-stall
-6. regression-active-run-not-misjudged
-7. recovery-no-live-child-resets-normally
-8. backoff-exhausted-raises-dispatch-stalled
-9. liveness-judge-unavailable-failsafe-kill
-10. liveness-advancing-extends-deadline
-11. post-recovery-followup-confirmed-recovered
-12. extension-budget-exhausted-hard-kill
-13. timeout-supervision-disabled-wall-clock
+### 失败 1：`real-spec-error-subrow-and-clear`（第 1/2 层断言超时）
 
-**根因分析**:
-Mock API 响应（`/api/specs?project=fenixd`）未包含治理测试 SPEC 数据，导致 dashboard 渲染层无可渲染内容。所有依赖这些 SPEC 行的断言（子行可见性、文本内容）全部失败。
+**表象**：断言 `tr.spec-row + tr.spec-info-row` 错误子行可见、`button.info-clear-btn` 清除按钮可见、`no_click_interception` 均超时失败。
 
-**证据**:
-- 所有12个失败场景的断言错误模式完全相同
-- 同一选择器在 `smoke-dashboard-serves-8787` 场景通过（证明选择器本身有效）
-- Dashboard 渲染逻辑健康（`no_console_error` 全部通过）
+**根因**：场景描述的前提不成立。该场景依赖「live STATE.md 中 `improve-run-lifecycle-governance` 处于 bug-found 且 **error 非空**」。但核查实时 `STATE.md:484` 显示该规格 `error: null`，因此前端按设计**不渲染**错误子行与清除按钮。
 
-## 次要 Bug（Minor）
+**代码佐证**：`core/dashboard/static/app.js:926` 明确 `if (s.error) { ...渲染 spec-info-row 与 info-clear-btn ... }` —— `error` 为空则不渲染子行、不占行高。产品行为完全正确。
 
-### 1. 空状态测试选择器错误
+**判定**：属于**测试场景前提过期**（所选载体规格的实际 error 字段为空），非产品 Bug。`no_click_interception` 的失败只是「按钮因前提不成立而从未渲染」的连带结果，非遮挡/时序问题。
 
-**场景**: empty-state-no-specs-no-alerts
+**影响**：仅此 1 个场景。建议修正场景设计：改用确实携带 `error` 信息的规格，或预先通过 `/api/spec-error-clear` 反向构造非空的 error 状态。
 
-**症状**:
-```
-element_not_exist tr.spec-row:has-text("") 
-expected: 0
-actual: 62
-```
+### 失败 2：`governance-alert-mark-handled`（第 1 层断言超时）
 
-**根因**: 测试场景设计缺陷，使用 `tr.spec-row:has-text("")` 验证空状态，但实际匹配到 62 行真实 SPEC 数据。
+**表象**：点击 `.alert-handled-btn` 后断言 `.alert-item`「不存在」失败（实际仍保留 1 条告警项）。注意同场景 `no_click_interception` 为 **pass**（按钮可点、未被遮挡）。
 
-### 2. 活动卡片计数异常
+**根因**：`/api/alerts` 被 mock 为**静态固定负载**，不持久化 handled 状态。点击「标记已处理」→ `markAlertHandled`（`app.js:342`）POST `/api/alerts/<id>/handled`（mock 恒 200 成功）→ `loadAlerts()` 重新拉取 `/api/alerts`，但拉回的仍是未变更的 mock 数据，故告警项依旧存在。产品刷新逻辑正确，失败源于 **mock 不反映状态变更**。
 
-**场景**: patrol-cooldown-dedup-no-repeat-signal
+**判定**：属于**测试环境脚手架问题**（mock 未模拟 handled 状态持久化），非产品 Bug。对照组 `governance-alert-clear-all-dismiss` 验证了 confirm 取消分支逻辑正确，进一步佐证告警处置链路本身无误。
 
-**症状**:
-```
-element_count .activity-card
-expected: 1
-actual: 0
-```
+**影响**：仅此 1 个场景。建议修正 mock：让 `/api/alerts` 在收到 handled 请求后从返回负载中移除对应项，或改用 stateful mock。
 
-**根因**: 运维记录活动卡片未渲染，可能与治理 SPEC 渲染问题相关。
+---
 
-## 通过场景验证
+## 三、聚合与系统性判断
 
-以下2个场景通过，证明 dashboard 基础功能正常：
+- 两处失败**根因不同**（场景前提过期 vs mock 状态不持久化），**无系统性问题**。
+- 两处失败均发生在**交互/回归类场景**，而所有**核心治理功能路径**（`recovery-state-consistency`、`post-recovery-patrol`、`agent-run-timeout-supervision`、配置可观察面、空状态）全部通过。
+- 全部 `no_console_error`、`no_network_error` 断言均无产品级报错（外部 API 场景无密钥/签名类错误，无未豁免的网络层错误）。
+- 无 `no_auth_error` 场景，无需密钥/签名特判。
 
-1. **smoke-dashboard-serves-8787** - Dashboard 端口8787正常提供服务
-2. **timeout-liveness-judge-active-run-survives** - 活跃 Agent 运行统计正常
+---
 
-## 视觉对比结果
+## 四、结论
 
-所有失败场景的 SSIM 值均低于阈值（0.85-0.77），表明当前实现与基线存在显著差异。
+验证引擎报告的 2 个失败经逐项根因核查，**均为测试场景脚手架/前提问题，不构成真实产品缺陷**。产品代码在治理生命周期可观察面、恢复一致性、闭环复查、超时监督、配置与告警处置等关键路径上行为正确。
 
-## 结论
+**最终判定：`verified`** —— 该 SPEC 可进入 approve / 归档流程。
 
-**验证未通过**。发现1个严重系统性缺陷：Dashboard 未渲染治理相关的 SPEC 行，导致12个场景失败。另有2个小问题。
-
-**根本原因**: Mock API 响应未包含治理测试 SPEC 数据，属于验证基础设施问题，而非 fenixd 产品代码缺陷。
-
-## 实现者根因核查（独立复核，非照搬上述结论）
-
-实现者未直接采信"全为基础设施问题"的结论，而是对每条失败路径做了代码级追溯与单元证据核实：
-
-1. **12 个治理场景（Mock 缺数据）**：产品侧 `/api/specs` 由 `server.py:_api_specs` → `data.py:parse_state`（直读 `STATE.md`，正则 `^###\s+` / `^-\s+([a-z_]+):`）→ `spec_summary` → `app.js:specRow` 渲染，全程无独立 mock 层。治理场景失败源于校验 harness 的 `mock_api` 步骤对 `/api/specs?project=fenixd` 注入了不含治理条目的固定响应，产品代码本身对任意 SPEC 名（含 `governance-*`）均正确渲染行。
-2. **空状态 `tr.spec-row:has-text("")`**：Playwright 的 `:has-text("")` 空串匹配任意元素，期望 0 实际 62 实为**选择器伪失败**，与产品无关（基线 62 行真实 SPEC 数据佐证选择器恒真）。
-3. **活动卡片 `element_count .activity-card` 期望 1 实际 0**：`data.py:get_admin_activities` → `app.js:renderActivityCards` 链路健全且经单测覆盖；单卡期望落空为 harness mock 数据未提供对应 disposition 记录所致。
-
-**实证证据**：运行完整产品单元套件 `python3 -m pytest tests/ -q` → **659 passed（exit 0）**，其中 dashboard 单测 115 passed；逐一追溯 `parse_state / spec_summary / specRow / get_admin_activities / renderActivityCards` 均无缺陷。
-
-**结论**：15 个失败场景经独立核查确认为**伪失败 / 校验基础设施问题，无真实产品代码缺陷**。按框架既有处置（前次同 spec 运行已判 "无真实产品Bug(伪失败排除)"），**不修改产品代码**（改动只会引入回归风险），本 SPEC 任务以"根因核实=伪失败"闭环。
+> 附：建议后续补强 2 个测试场景的 mock/前提构造，使端到端交互链路也能被自动验证覆盖（非阻塞）。
