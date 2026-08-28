@@ -406,6 +406,7 @@ class PMEngine:
             if guard_status in (
                 "implementing", "testing", "implemented",
                 "verified", "done", "pushed",
+                "blocked",  # 人工冻结/熔断态：重置等于解除冻结（2026-08-28 实证两次）
             ):
                 self.logger.info(
                     "pm_engine",

@@ -2694,6 +2694,25 @@ class TestPMEngineBugFoundIdempotent(unittest.TestCase):
         self.assertEqual(after2["implementer_run"], "impl-fix-abc")
         self.assertEqual(after2["tester_run"], "tst-fix-xyz")
 
+    def test_blocked_fix_survives_retrigger(self):
+        """blocked（人工冻结/熔断）子 SPEC 不被 bug-found 重发改写成 ready。
+
+        2026-08-28 实证：人工冻结的 fix 子 SPEC 每轮扫描被
+        "already exists (status=blocked) — resetting to ready" 解冻。
+        blocked 属合法停泊态，必须与推进/终态同等受守卫保护。
+        """
+        self._make_buggy_spec("quick-links-folders")
+        self.sm.add_spec("fix-quick-links-folders", {
+            "status": "blocked", "priority": 6,
+            "error": "paused by user",
+            "implementer_run": "impl-fix-abc",
+        })
+        self.engine._do_spec_bug_found("quick-links-folders")
+        after = self.sm.read_one("fix-quick-links-folders")
+        self.assertEqual(after["status"], "blocked")
+        self.assertEqual(after["error"], "paused by user")
+        self.assertEqual(after["implementer_run"], "impl-fix-abc")
+
     def test_ready_no_history_reset_keeps_run_fields(self):
         """ready 但无历史工作的子 SPEC 正常重置，且 run 字段不被显式清空。"""
         self._make_buggy_spec("quick-links-folders")
