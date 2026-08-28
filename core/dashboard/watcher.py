@@ -11,6 +11,8 @@ daemon 侧 event_bus.py 的 checksum 轮询一致。
 - {type: "detail",  spec, data}                —— 单个 SPEC 自己的文件变化
 - {type: "run_meta", run_id, status}           —— run 状态转换（running→done/error）
 - {type: "run_events", run_id, status, events[, reset]} —— 被订阅 run 的增量事件
+- {type: "admin_activities", project}          —— .fenix/admin_alerts.json 变化
+  （add-admin-invoke-dialog：弹窗打开时前端据此重新拉取该 SPEC 的处置记录）
 """
 
 import threading
@@ -87,6 +89,7 @@ class FileWatcher:
         logs_changed = False
         spec_changed = set()
         run_changed = set()
+        admin_changed = False
 
         for kind, key, path in self._iter_project_files(proot):
             pkey = str(path)
@@ -106,6 +109,8 @@ class FileWatcher:
                     spec_changed.add(key)
                 elif kind == "run":
                     run_changed.add(key)
+                elif kind == "admin":
+                    admin_changed = True
         # 清理已删除文件
         for stale in [k for k in sigs if k not in seen]:
             del sigs[stale]
@@ -116,12 +121,14 @@ class FileWatcher:
             self._handle_spec_change(name, proot, spec)
         for run_id in run_changed:
             self._handle_run_change(name, proot, run_id)
+        if admin_changed:
+            self._handle_admin_change(name)
 
     # ── 数据源文件枚举 ───────────────────────────────────────
 
     @staticmethod
     def _iter_project_files(proot: Path):
-        """产出 (kind, key, Path)。kind: state/spec/run/logs。"""
+        """产出 (kind, key, Path)。kind: state/spec/run/logs/admin。"""
         state = proot / "STATE.md"
         if state.is_file():
             yield ("state", None, state)
@@ -172,6 +179,11 @@ class FileWatcher:
             for p in logs.glob("fenixd*.log"):
                 if p.is_file():
                     yield ("logs", None, p)
+
+        # add-admin-invoke-dialog：Admin 处置记录变更 → 广播 admin_activities 事件
+        admin_alerts = proot / ".fenix" / "admin_alerts.json"
+        if admin_alerts.is_file():
+            yield ("admin", None, admin_alerts)
 
     # ── 变化处理 ─────────────────────────────────────────────
 
@@ -261,6 +273,15 @@ class FileWatcher:
             self.hub.broadcast({
                 "project": name, "type": "run_meta", "run_id": run_id, "status": status,
             })
+
+    def _handle_admin_change(self, name: str):
+        """admin_alerts.json 变化（add-admin-invoke-dialog）：广播轻量通知。
+
+        不带数据——前端弹窗打开时据此重新拉取该 SPEC 的处置记录（与现有
+        refresh 事件同模式：watcher 仅通知、前端自行拉取），避免在 watcher 中
+        重复 get_admin_activities 的归并逻辑。
+        """
+        self.hub.broadcast({"project": name, "type": "admin_activities"})
 
     @staticmethod
     def _classify(run_file: Path) -> str:

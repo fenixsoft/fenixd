@@ -71,13 +71,17 @@ def alerts_summary(project_root) -> dict:
     }
 
 
-def get_admin_activities(project_root) -> list:
+def get_admin_activities(project_root, spec=None) -> list:
     """返回 Administrator 处置活动记录（运维记录时间线数据源）。
 
     从 admin_alerts.json 过滤 kind=disposition，按时间倒序；与未处理升级
     escalation 关联（同 admin_run_id）的记录置顶，并标记 handled=False +
     escalation_id（供前端 mark-handled）。旧记录无 summary 时原样返回，
     界面降级显示结构化字段（design D1，向后兼容）。
+
+    spec 非空时（add-admin-invoke-dialog）在归并/置顶逻辑完成后按
+    `rec.get("spec") == spec` 过滤，仅返回该 SPEC 相关记录（置顶语义先于
+    过滤生效，保证未处理升级置顶后仍被正确过滤）。
     """
     from core.admin_store import AdminStore, DISPOSITION, ESCALATION
     records = AdminStore(project_root).read_all()
@@ -125,6 +129,11 @@ def get_admin_activities(project_root) -> list:
         key=lambda a: (a["_pin"], a.get("created") or ""), reverse=True)
     for a in activities:
         a.pop("_pin", None)
+
+    # add-admin-invoke-dialog：可选 spec 过滤（置顶语义先行，过滤后生效）
+    if spec is not None:
+        activities = [a for a in activities if a.get("spec") == spec]
+
     return activities
 
 

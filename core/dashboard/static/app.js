@@ -214,6 +214,13 @@ function handleSSEEvent(msg) {
     loadAlerts();
     if (currentState.view === 'activities') refreshView();
   }
+  if (msg.type === 'admin_activities') {
+    // add-admin-invoke-dialog：Admin 处置记录变更 → 仅当弹窗打开且 project 匹配时
+    // 重拉该 SPEC 的处置记录并刷新，关闭后忽略（行为与 run 弹窗一致）。
+    if (modalAdminSpec && msg.project === modalAdminSpec.project) {
+      fetchAdminActivities(modalAdminSpec.project, modalAdminSpec.spec);
+    }
+  }
 }
 
 function connectSSE() {
@@ -225,6 +232,10 @@ function connectSSE() {
     if (sse._firstOpen) { sse._firstOpen = false; return; }
     load();
     if (modalRunId) pendingWatches.push(modalRunId);
+    // add-admin-invoke-dialog：SSE 断线重连后，若处置记录弹窗仍打开则补拉一次该 SPEC 记录
+    else if (modalAdminSpec) {
+      fetchAdminActivities(modalAdminSpec.project, modalAdminSpec.spec);
+    }
   };
   sse.onmessage = (ev) => {
     let msg;
@@ -1652,6 +1663,64 @@ function closeRunModal() {
 el('runmodal').addEventListener('click', (e) => { if (e.target === el('runmodal')) closeRunModal(); });
 el('runmodal-close').addEventListener('click', closeRunModal);
 
+// ── 呼叫 Admin 处置记录弹窗（add-admin-invoke-dialog） ────────────
+// 复用 runmodal 视觉（80% 屏宽/高）+ activityCard 渲染；SSE 实时刷新。
+// 设计决策：弹窗状态用模块级变量管理（与 modalRunId 同模式），不依赖路由。
+let modalAdminSpec = null;  // {project, spec, inProgress: bool} | null — null = 关闭
+
+function openAdminRecordModal(project, spec, inProgress) {
+  const box = el('adminrec');
+  const body = el('adminrec-body');
+  const title = el('adminrec-title');
+  const note = el('adminrec-note');
+  title.textContent = (spec || '') + ' 处置记录';
+  if (inProgress) {
+    note.textContent = 'ℹ 已有处置进行中';
+    note.classList.remove('hidden');
+  } else {
+    note.classList.add('hidden');
+  }
+  body.innerHTML = '<div class="empty-state">加载中…</div>';
+  box.classList.remove('hidden');
+  modalAdminSpec = { project, spec, inProgress: !!inProgress };
+  fetchAdminActivities(project, spec);
+}
+
+function fetchAdminActivities(project, spec) {
+  const body = el('adminrec-body');
+  const box = el('adminrec');
+  if (!body || !box || box.classList.contains('hidden') || !modalAdminSpec) return;
+  const params = '?project=' + encodeURIComponent(project)
+    + '&spec=' + encodeURIComponent(spec);
+  fetch('/api/admin-activities' + params)
+    .then((r) => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then((d) => {
+      if (!modalAdminSpec) return;  // 关闭期间响应，丢弃
+      const acts = d.activities || [];
+      if (!acts.length) {
+        body.innerHTML = '<div class="empty-state">该 SPEC 暂无处置记录</div>';
+        return;
+      }
+      body.innerHTML = '<div class="activity-timeline">' + acts.map(activityCard).join('') + '</div>';
+    })
+    .catch(() => {
+      if (!modalAdminSpec) return;
+      body.innerHTML = '<div class="empty-state">加载失败，请稍后重试</div>';
+    });
+}
+
+function closeAdminRecordModal() {
+  modalAdminSpec = null;
+  el('adminrec').classList.add('hidden');
+  el('adminrec-body').innerHTML = '';
+  el('adminrec-note').classList.add('hidden');
+}
+el('adminrec').addEventListener('click', (e) => { if (e.target === el('adminrec')) closeAdminRecordModal(); });
+el('adminrec-close').addEventListener('click', closeAdminRecordModal);
+
 // ── SPEC 文档弹窗（proposal.md / design.md / tasks.md，三页签） ──
 
 // 文档页签定义（顺序即页签顺序；默认激活第一个 proposal）
@@ -2611,11 +2680,19 @@ function _hideSpecContextMenu() {
 // ── 菜单项动作 ──────────────────────────────────────
 
 function _ctxAdminInvoke(project, spec) {
+  // add-admin-invoke-dialog：2xx 与 409 均打开处置记录弹窗（409 = 已在处置中），
+  // 其他错误仅 toast。409 时弹窗顶部显示「已有处置进行中」提示。
   fetch('/api/spec-admin-invoke?project=' + encodeURIComponent(project)
       + '&spec=' + encodeURIComponent(spec), { method: 'POST' })
-    .then((r) => { if (!r.ok) return r.json().then(d => { throw new Error(d.error || 'HTTP ' + r.status); }); return r.json(); })
-    .then(() => {
-      toast('已呼叫 Admin 介入检查');
+    .then((r) => {
+      if (r.ok) return { data: {}, inProgress: false };
+      return r.json().then((d) => {
+        if (r.status === 409) return { data: d, inProgress: true };
+        throw new Error(d.error || 'HTTP ' + r.status);
+      });
+    })
+    .then((result) => {
+      openAdminRecordModal(project, spec, result.inProgress);
       // 刷新运维活动区（若在运维记录视图）
       if (currentState.view === 'activities') load();
     })

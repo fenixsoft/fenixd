@@ -592,9 +592,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """读取 Administrator 活动记录（运维记录时间线）。
 
         ?project=<name> → 该项目全部处置活动（未处理升级关联置顶）；
-        缺省 → 跨项目聚合，按项目分组返回。
+        带 ?spec=<name> → 仅返回该 SPEC 相关记录（add-admin-invoke-dialog，
+        服务端过滤）；缺省 → 跨项目聚合，按项目分组返回。
         """
         project_name = query.get("project", [None])[0]
+        spec_name = query.get("spec", [None])[0]
         if project_name:
             project = self.server.project_by_name(project_name)
             if project is None or not project.get("exists"):
@@ -602,14 +604,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             proot = Path(project["path"])
             return {
                 "project": project["name"],
-                "activities": dashboard_data.get_admin_activities(proot),
+                "spec": spec_name or "",
+                "activities": dashboard_data.get_admin_activities(
+                    proot, spec=spec_name),
             }
 
         projects_out = []
         for p in self.server.projects():
             if not p.get("exists"):
                 continue
-            acts = dashboard_data.get_admin_activities(Path(p["path"]))
+            acts = dashboard_data.get_admin_activities(
+                Path(p["path"]), spec=spec_name)
             for a in acts:
                 a["project"] = p["name"]
             projects_out.append({"name": p["name"], "activities": acts})
