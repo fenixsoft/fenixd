@@ -65,6 +65,18 @@
       </div>
     </div>
 
+    <!-- 呼叫 Admin 处置记录弹窗（add-admin-invoke-dialog：复用 runmodal 视觉，按 SPEC 过滤 + SSE 实时刷新） -->
+    <div id="adminrec" class="runmodal hidden">
+      <div class="runmodal-box">
+        <div class="runmodal-head">
+          <span id="adminrec-title" class="runmodal-title"></span>
+          <button id="adminrec-close" class="modal-close" title="关闭">✕</button>
+        </div>
+        <div id="adminrec-note" class="adminrec-note hidden"></div>
+        <div class="runmodal-body" id="adminrec-body"></div>
+      </div>
+    </div>
+
     <script src="/vendor/fenix.bundle.js"></script>
     <script src="/app.js"></script>
   </body>
