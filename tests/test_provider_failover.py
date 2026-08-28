@@ -240,8 +240,14 @@ class TestSwitchCooldown:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestChainSelectExecute:
-    def test_first_dying_then_second_takes_over_with_resume(self, tmp_path, monkeypatch):
-        """首候选 unrecognized_model 失败后，次候选接管且 session_id 保持（resume）。"""
+    def test_first_dying_then_second_takes_over_without_cross_provider_resume(
+            self, tmp_path, monkeypatch):
+        """首候选 unrecognized_model 失败后，次候选接管但跨 provider 不 resume（fix）。
+
+        session 存在于首候选的 CLAUDE_CONFIG_DIR，切换后 --resume 必然
+        'No conversation found with session ID' 秒挂（2026-08-28 admin 处置
+        fix-fix-fix-add-spec-context-menu 根因），故 provider 变更后续跑必须放弃。
+        """
         runner = make_runner(tmp_path, chain_config(["inferaiapi.com", "aliyun"]))
         now = 1000.0
         monkeypatch.setattr(runner, "_now", lambda: now)
@@ -249,7 +255,7 @@ class TestChainSelectExecute:
         wt = tmp_path / "wt"
         runner.worktree_manager.create.return_value = wt
 
-        calls = {"n": 0, "resume_seen": False, "providers": []}
+        calls = {"n": 0, "resume_seen": False, "providers": [], "fresh_after_switch": False}
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None, spec_name=None):
@@ -262,6 +268,8 @@ class TestChainSelectExecute:
                 )
             if resume_session_id == "sess-keep":
                 calls["resume_seen"] = True
+            else:
+                calls["fresh_after_switch"] = True
             return ("ok", 1, "sess-keep")
 
         runner._run_claude = fake_run_claude
@@ -274,8 +282,42 @@ class TestChainSelectExecute:
         # 链推进：首 a.com → 次 b.com
         assert calls["providers"][0] == "https://a.com"
         assert calls["providers"][1] == "https://b.com"
-        # 切换后 attempt 携带 --resume 续跑原会话
-        assert calls["resume_seen"] is True
+        # fix：跨 provider 切换后从头执行，不带死 session_id 去 --resume
+        assert calls["resume_seen"] is False
+        assert calls["fresh_after_switch"] is True
+
+    def test_dead_session_cleared_on_resume_not_found(self, tmp_path, monkeypatch):
+        """resume 报会话不存在时清除 session_id，同 provider 重试从头执行。"""
+        runner = make_runner(tmp_path, chain_config(["inferaiapi.com", "aliyun"]))
+        now = 1000.0
+        monkeypatch.setattr(runner, "_now", lambda: now)
+        runner.worktree_manager = MagicMock()
+        wt = tmp_path / "wt"
+        runner.worktree_manager.create.return_value = wt
+
+        calls = {"n": 0, "resumes": []}
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None, spec_name=None):
+            calls["n"] += 1
+            calls["resumes"].append(resume_session_id)
+            if calls["n"] == 1:
+                # a1 瞬态失败（非切换类，链指针不动），但已建立 session
+                raise RuntimeError("mock transient failure")
+            if calls["n"] == 2:
+                # a2 resume 死 id → 会话不存在
+                raise RuntimeError(
+                    "claude CLI failed: No conversation found with session ID: sess-dead"
+                )
+            return ("ok", 1, "sess-new")
+
+        runner._run_claude = fake_run_claude
+        runner._extract_session_id = MagicMock(return_value="sess-dead")
+
+        result = runner.run_implementer("s")
+        # a2 携带死 id resume 失败 → 清除后 a3 从头执行，链推进后成功（不烧尽重试）
+        assert result.success is True
+        assert calls["resumes"] == [None, "sess-dead", None]
 
     def test_switch_not_advance_on_4xx(self, tmp_path, monkeypatch):
         """4xx 配额类失败不推进链指针（维持首候选）。"""

@@ -819,7 +819,9 @@ class AgentRunner:
         - 该 agent_type 的 provider 分配为**按序候选链**；每次 attempt 启动前用
           _select_chain_candidate 选首个未冷却候选（链指针按 agent_type 记忆于本实例）。
         - 切换类错误（classify_switch_error）失败 → 该 provider 进入 switch 短冷却，同 run
-          后续 attempt 自动前进到下一候选并 --resume 原会话；4xx 配额类维持既有熔断不前进。
+          后续 attempt 自动前进到下一候选；仅当 provider 未变时才 --resume 原会话
+          （fix 跨 provider resume：session 在旧 CLAUDE_CONFIG_DIR，切换后续跑必然
+          'No conversation found' 秒挂）；4xx 配额类维持既有熔断不前进。
         - 全链冷却 → 直接失败返回（chain_exhausted，不启动进程、不消耗 spec 重试）。
         - 切换后 CLAUDE_CONFIG_DIR 隔离目录随候选同步切换；run jsonl 写 provider_marker；
           AgentRunResult 带 provider_used/model_used；每 provider 当日计数超阈值告警。
@@ -828,6 +830,9 @@ class AgentRunner:
         start_time = time.time()
         wt_path = None
         session_id = None
+        # session_id 所属 provider（None=默认网关）：session 存在于其创建时的
+        # CLAUDE_CONFIG_DIR，跨 provider 续跑必然 'No conversation found'（fix）。
+        session_provider = None
         # 实例级链指针（design D1：cursor 按 agent_type 记忆）。-1 表示尚未选定。
         chain_cursor = -1
         last_provider_used = None  # 用于 "provider switched" 跨 attempt 打点
@@ -988,12 +993,15 @@ class AgentRunner:
                     model_override = DEFAULT_GATEWAY_MODEL
                 output, turns, run_session_id = self._run_claude(
                     prompt, wt_path, attempt_run_id, model_override, env_overrides,
-                    resume_session_id=session_id if reuse_worktree else None,
+                    resume_session_id=self._resumable_session_id(
+                        session_id, session_provider, provider_name, reuse_worktree,
+                    ),
                     max_turns=self._get_config("agents.max_turns", 300),
                     spec_name=spec_name,
                 )
                 if run_session_id:
                     session_id = run_session_id
+                    session_provider = provider_name
                 success = True
                 error = None
             except Exception as e:
@@ -1018,7 +1026,8 @@ class AgentRunner:
                         if was_half_open:
                             self._record_provider_probe(provider_name, success=False)
                     # add-provider-failover（design D2/D3）：切换类错误 → 该 provider 进入
-                    # switch 短冷却，同 run 后续 attempt 前进到下一候选并 resume 原会话。
+                    # switch 短冷却，同 run 后续 attempt 前进到下一候选（跨 provider 不 resume，
+                    # 见 _resumable_session_id）。
                     # 4xx 配额/鉴权类不触发（维持既有熔断语义、链指针不动）。
                     elif self.classify_switch_error(error):
                         self._record_switch_cooldown(provider_name)
@@ -1032,6 +1041,13 @@ class AgentRunner:
                     sid = self._extract_session_id(run_file)
                     if sid:
                         session_id = sid
+                        session_provider = provider_name
+                # fix 跨 provider resume：resume 报「会话不存在」说明该 session_id 已失效
+                # （典型：上一次 attempt 切换了 provider，session 在旧 CLAUDE_CONFIG_DIR 里），
+                # 若不清除，后续 attempt 会带着死 id 反复秒挂、烧尽全部重试。
+                if error and "No conversation found with session ID" in error:
+                    session_id = None
+                    session_provider = None
 
             # 记录分支名（在 cleanup 之前，cleanup 会从 _wt_branches 中移除）
             branch = self.worktree_manager.get_branch_name(wt_path) if success else None
@@ -1721,6 +1737,26 @@ class AgentRunner:
                 raise RuntimeError(f"claude CLI rc==0 but result indicates error: {err_text}")
 
         return output, turns, session_id
+
+    @staticmethod
+    def _resumable_session_id(
+        session_id: str | None,
+        session_provider: str | None,
+        current_provider: str | None,
+        reuse_worktree: bool,
+    ) -> str | None:
+        """决定本次 attempt 是否可 --resume（fix 跨 provider resume）。
+
+        session 存在于其创建时的 CLAUDE_CONFIG_DIR；add-provider-failover 切换候选后
+        baseurl/隔离目录均不同，携带旧 provider 的 session_id 去 --resume 必然
+        'No conversation found with session ID' 秒挂——一次瞬态 unrecognized_model
+        即烧尽全部 attempt。仅当 worktree 可复用且 provider 未变时才续跑。
+        """
+        if not reuse_worktree or not session_id:
+            return None
+        if session_provider != current_provider:
+            return None
+        return session_id
 
     @staticmethod
     def _extract_session_id(run_file: Path) -> str | None:
