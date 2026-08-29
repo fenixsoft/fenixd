@@ -6,12 +6,12 @@
 
 ## 1. 测试先行
 
-- [ ] 1.1 写 tests/v2/spec-detail.spec.js(验证卡可见 + 4 页签依次可点;真实 <project>/<spec> 落笔);跑确认 FAIL
+- [x] 1.1 写 tests/v2/spec-detail.spec.js(验证卡可见 + 4 页签依次可点;真实 <project>/<spec> 落笔);跑确认 FAIL
 
 ## 2. 页面实现
 
-- [ ] 2.1 实现 pages/spec-detail.json(计划 Task 7 Step 3):spec-detail service、验证卡/进度/清单、4 页签、sse:detail 比对 script、时间轴点击占位 Dialog
-- [ ] 2.2 spec-detail.spec.js PASS;若截图/时间轴数据为空环境,用 fixme 标注对应断言并记录于测试注释
+- [x] 2.1 实现 pages/spec-detail.json(计划 Task 7 Step 3):spec-detail service、验证卡/进度/清单、4 页签、sse:detail 比对 script、时间轴点击占位 Dialog
+- [x] 2.2 spec-detail.spec.js PASS;若截图/时间轴数据为空环境,用 fixme 标注对应断言并记录于测试注释
 
 ## 3. 提交
 
