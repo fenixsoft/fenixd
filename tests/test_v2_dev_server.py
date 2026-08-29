@@ -197,8 +197,67 @@ class TestHelpers:
         assert base_url(19555) == "http://127.0.0.1:19555"
 
     def test_cleanup_orphans_no_match_returns_zero(self):
-        # 无遗留进程：返回 0 且不报错
+        # 无孤儿 dev-server（存活归属被豁免）：返回 0 且不报错
         assert cleanup_orphans(logger=None) == 0
+
+    def test_orphan_pids_detected_by_dead_worktree(self, monkeypatch, tmp_path):
+        """worktree 已消失的 dev-server 判为孤儿。
+
+        事故背景（admin 处置 v2-alerts-activities）：孤儿 dev-server 残留
+        已删除 worktree 的路径，被 worktree_manager 的 pgrep 存活探测误判为
+        持锁 attempt → spec 锁永不释放 → 派发滞留。
+        """
+        import core.v2_dev_server as v2
+        dead = tmp_path / "worktrees" / "impl-some-spec-123" / "core" / "dashboard" / "static"
+        # dead 不创建（worktree 已清理）；alive 目录真实存在
+        alive = tmp_path / "worktrees" / "impl-live-spec-456" / "core" / "dashboard" / "static"
+        alive.mkdir(parents=True)
+
+        monkeypatch.setattr(v2, "_pgrep_dev_servers", lambda pattern: [111, 222])
+        monkeypatch.setattr(
+            v2.Path, "read_bytes",
+            lambda p: (
+                f"node\0dev-server.mjs\0{dead}\01955\0{V2_DEV_SERVER_MARKER}\0".encode()
+                if "111" in str(p) else
+                f"node\0dev-server.mjs\0{alive}\01956\0{V2_DEV_SERVER_MARKER}\0".encode()
+            ),
+        )
+        # 归属探测：222 的 worktree 有存活归属进程，111 的没有
+        monkeypatch.setattr(
+            v2, "_worktree_has_live_referencing_process",
+            lambda wt, pid: pid == 222,
+        )
+        assert v2._dev_server_orphan_pids() == [111]
+
+    def test_orphan_pids_skip_proc_read_errors(self, monkeypatch):
+        """/proc 读取失败（进程刚消失）不崩溃、不计入。"""
+        import core.v2_dev_server as v2
+        monkeypatch.setattr(v2, "_pgrep_dev_servers", lambda pattern: [333])
+        monkeypatch.setattr(
+            v2.Path, "read_bytes",
+            lambda p: (_ for _ in ()).throw(OSError("no such process")),
+        )
+        assert v2._dev_server_orphan_pids() == []
+
+    def test_orphan_pids_without_worktree_path(self, monkeypatch):
+        """argv 不含 worktree 路径且无存活引用进程 → 孤儿（异常形态兜底）。"""
+        import core.v2_dev_server as v2
+        monkeypatch.setattr(v2, "_pgrep_dev_servers", lambda pattern: [444])
+        monkeypatch.setattr(
+            v2.Path, "read_bytes",
+            lambda p: b"node\0dev-server.mjs\0/tmp/static\01957\0",
+        )
+        monkeypatch.setattr(
+            v2, "_worktree_has_live_referencing_process", lambda wt, pid: False,
+        )
+        assert v2._dev_server_orphan_pids() == [444]
+
+    def test_cleanup_orphans_kills_detected_orphans(self, monkeypatch):
+        """cleanup_orphans 对识别出的孤儿逐个 SIGTERM。"""
+        import core.v2_dev_server as v2
+        monkeypatch.setattr(v2, "_dev_server_orphan_pids", lambda: [555, 666])
+        monkeypatch.setattr(v2, "_kill_pids", lambda pids: len(pids))
+        assert cleanup_orphans(logger=None) == 2
 
 
 # ── 代理行为（spec 3.1）：静态命中 worktree 副本 ──────────────────────

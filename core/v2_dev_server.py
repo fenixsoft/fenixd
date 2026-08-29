@@ -217,31 +217,108 @@ def base_url(port: int) -> str:
     return f"http://127.0.0.1:{port}"
 
 
-def cleanup_orphans(logger=None) -> int:
-    """daemon 启动时清扫遗留 dev-server（D2）：pgrep 命令行含标记字面量的 node 进程。
-
-    Returns: 被终止的进程数。
-    """
-    killed = 0
+def _pgrep_dev_servers(pattern: str) -> list:
+    """pgrep -f 匹配 cmdline，返回 PID 列表（pgrep 不可用/超时返回空）。"""
     try:
         res = subprocess.run(
-            ["pgrep", "-f", V2_DEV_SERVER_MARKER],
+            ["pgrep", "-f", pattern],
             capture_output=True, text=True, timeout=5,
         )
     except (subprocess.SubprocessError, OSError):
-        return 0
+        return []
     if res.returncode != 0 or not res.stdout.strip():
-        return 0
-    for pid_s in res.stdout.split():
-        pid_s = pid_s.strip()
-        if not pid_s.isdigit():
-            continue
+        return []
+    return [int(s) for s in res.stdout.split() if s.strip().isdigit()]
+
+
+def _kill_pids(pids: list) -> int:
+    """对 PID 列表逐个 SIGTERM，返回成功发出的个数（忽略单个失败）。"""
+    killed = 0
+    for pid in pids:
         try:
-            pid = int(pid_s)
             subprocess.run(["kill", "-TERM", str(pid)], timeout=5)
             killed += 1
         except (subprocess.SubprocessError, OSError):
             continue
+    return killed
+
+
+def _dev_server_worktree_root(tokens: list) -> Optional[Path]:
+    """从 dev-server argv 解析其归属 worktree 根；不携带 worktree 路径返回 None。
+
+    argv 形如 ``[node, dev-server.mjs, <wt>/core/dashboard/static, <port>, ...]``。
+    """
+    for t in tokens:
+        if not t.startswith("/") or "/worktrees/" not in t:
+            continue
+        prefix, rest = t.split("/worktrees/", 1)
+        wt_name = rest.split("/", 1)[0]
+        if wt_name:
+            return Path(prefix) / "worktrees" / wt_name
+    return None
+
+
+def _worktree_has_live_referencing_process(wt_root: Path, exclude_pid: int) -> bool:
+    """进程表中是否存在（除 dev-server 自身外）引用该 worktree 的进程。
+
+    attempt 的 claude 进程经 --add-dir 引用 worktree 目录；dev-server 自身
+    cmdline 也含该路径，需排除，否则永远「存活」。
+    """
+    try:
+        res = subprocess.run(
+            ["pgrep", "-f", f"worktrees/{wt_root.name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    if res.returncode != 0 or not res.stdout.strip():
+        return False
+    return any(int(s) != exclude_pid for s in res.stdout.split() if s.strip().isdigit())
+
+
+def _dev_server_orphan_pids() -> list:
+    """识别孤儿 dev-server PID：worktree 已消失，或无任何存活进程归属。
+
+    背景（admin 处置 v2-alerts-activities）：孤儿 dev-server 的 argv 残留已删除
+    worktree 的路径，被 worktree_manager 的 pgrep 存活探测误判为持锁 attempt
+    → spec 锁永不释放 → 派发滞留（dispatch_stalled）。反向缺陷同样要防：
+    无差别按标记清理会误杀 daemon 重启时仍在服务的活跃 run dev-server。
+    故以「worktree 存在 且 有存活归属进程」为豁免条件，两条都检查。
+    """
+    out = []
+    for pid in _pgrep_dev_servers("dev-server.mjs"):
+        try:
+            argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+            tokens = [a.decode("utf-8", "replace") for a in argv if a]
+        except OSError:
+            continue
+        wt_root = _dev_server_worktree_root(tokens)
+        if wt_root is None:
+            # 不携带 worktree 路径（异常形态）：仅当无存活引用进程才清
+            if not _worktree_has_live_referencing_process(Path("nonexistent"), pid):
+                out.append(pid)
+            continue
+        if wt_root.is_dir() and _worktree_has_live_referencing_process(wt_root, pid):
+            continue  # 归属存活 attempt，保留
+        out.append(pid)
+    return out
+
+
+def cleanup_orphans(logger=None) -> int:
+    """daemon 启动时清扫遗留 dev-server（D2）：无存活归属的 dev-server 进程。
+
+    判定（admin 处置 v2-alerts-activities 加固，取代纯标记匹配）：
+    dev-server argv 携带 worktree 路径，据此判断其归属——worktree 已消失、
+    或进程表中无该 worktree 的存活归属进程（attempt 已死而 server 残留）→
+    孤儿，回收；归属存活 attempt → 保留（daemon 重启可能先于子进程结束）。
+    防止残留进程被 worktree_manager 的 pgrep 存活探测误判为持锁 attempt。
+
+    Returns: 被终止的进程数。
+    """
+    pids = sorted(set(_dev_server_orphan_pids()))
+    if not pids:
+        return 0
+    killed = _kill_pids(pids)
     if killed and logger:
         logger.warning("v2_dev_server", f"cleaned up {killed} orphan dev-server(s)")
     return killed
