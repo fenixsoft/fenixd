@@ -1121,13 +1121,17 @@ class _FakeDaemon:
     """最小化 FenixDaemon 替身：仅装配 _check_admin_invoke_requests 所需属性。
 
     _check_admin_invoke_requests 只读 PROJECT_ROOT（模块全局，会被 monkeypatch）、
-    agent_runner、admin_store、logger；直接构造裸对象设入这些属性即可测试，
-    无需启动完整 daemon（避免加载 config / event_bus / pm_engine）。
+    agent_runner、admin_monitor、admin_store、logger；直接构造裸对象设入这些属性
+    即可测试，无需启动完整 daemon（避免加载 config / event_bus / pm_engine）。
+    admin_monitor 默认 None 走 agent_runner 直调回退分支；走 AdminMonitor 路径的
+    用例显式注入 FakeMonitor。
     """
 
-    def __init__(self, project_root: Path, logger, runner, store):
+    def __init__(self, project_root: Path, logger, runner, store,
+                 admin_monitor=None):
         self.running = True
         self.agent_runner = runner
+        self.admin_monitor = admin_monitor
         self.admin_store = store
         self.logger = logger
         self._project_root = project_root
@@ -1172,6 +1176,47 @@ class TestAdminInvokePickup:
         assert sig["severity"] == "major"
         assert "检查 SPEC myspec 出现什么问题" in sig["description"]
         # 无失败 disposition 落盘
+        assert store.read_all() == []
+
+    def test_pickup_routes_through_admin_monitor(self, tmp_path):
+        """装配了 admin_monitor → 走 invoke_manual（复用 _invoke_administrator 落最终
+        disposition），不再直调 run_administrator（fix-manual-admin-disposition-finalize）。"""
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+
+        class _FakeMonitor:
+            def __init__(self):
+                self.signals = []
+
+            def invoke_manual(self, signal):
+                self.signals.append(signal)
+
+        monitor = _FakeMonitor()
+        runner = FakeRunner()
+        store = AdminStore(proot, FakeLogger())
+        daemon = _FakeDaemon(proot, FakeLogger(), runner, store,
+                             admin_monitor=monitor)
+
+        req_path = proot / ".fenix" / "admin_invoke_request.json"
+        req_path.write_text(
+            json.dumps({"spec": "myspec", "source": "manual",
+                        "created": utcnow_iso()}), encoding="utf-8")
+
+        saved = _fenixd_mod.PROJECT_ROOT
+        try:
+            _fenixd_mod.PROJECT_ROOT = proot
+            _fenixd_mod.FenixDaemon._check_admin_invoke_requests.__get__(daemon)()
+        finally:
+            _fenixd_mod.PROJECT_ROOT = saved
+
+        assert not req_path.exists()
+        # 走 AdminMonitor 入口，信号原样透传
+        assert len(monitor.signals) == 1
+        assert monitor.signals[0]["spec"] == "myspec"
+        assert monitor.signals[0]["signal_type"] == "manual-intervention"
+        # 不再直调 agent_runner
+        assert runner.calls == []
         assert store.read_all() == []
 
     def test_pickup_without_file_is_noop(self, tmp_path):

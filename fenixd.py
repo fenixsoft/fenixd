@@ -305,8 +305,15 @@ class FenixDaemon:
             "fenixd",
             f"手动唤起 Administrator 处置 SPEC {spec}（manual-intervention）",
         )
+        # fix-manual-admin-disposition-finalize：走 AdminMonitor 公共入口而非直接调
+        # run_administrator——后者开头落的 pending disposition 需要在返回后由
+        # _invoke_administrator 落最终记录终结。此前这里丢弃返回值，pending 永无
+        # 终态、处置叙述从不入告警时间线，dashboard 显示「处置中」致用户反复重呼。
         try:
-            self.agent_runner.run_administrator(signal)
+            if self.admin_monitor is not None:
+                self.admin_monitor.invoke_manual(signal)
+            else:
+                self.agent_runner.run_administrator(signal)
         except Exception as e:
             self.logger.error(
                 "fenixd",

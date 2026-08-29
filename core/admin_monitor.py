@@ -662,6 +662,19 @@ class AdminMonitor:
         })
         return ["restart_failed"]
 
+    def invoke_manual(self, signal: dict):
+        """手动唤起入口（fenixd 主循环拾取 .fenix/admin_invoke_request.json）。
+
+        与自动检测共用 _invoke_administrator 的唤起+落痕路径：run_administrator
+        返回后落最终 DISPOSITION（终结 run_administrator 开头落的 pending 记录），
+        escalate 时落升级告警。此前手动路径直接调 run_administrator 并丢弃返回值，
+        pending 永无终态、处置叙述从不入告警时间线，dashboard 上显示「处置中」
+        导致用户反复手动重呼（2026-08-29 v2-cutover-main-entry 三连呼实证）。
+
+        不检查 enabled：用户显式呼叫应始终响应（enabled 只约束自动巡检）。
+        """
+        self._invoke_administrator(signal, None)
+
     def _invoke_administrator(self, signal: dict, signal_rec: dict):
         """唤起 Administrator 处置；失败或升级时落升级告警。"""
         if self.agent_runner is None:
