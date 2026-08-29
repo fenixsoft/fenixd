@@ -1,0 +1,234 @@
+{
+  "type": "page",
+  "body": [
+    {
+      "type": "service",
+      "id": "ov-stats",
+      "name": "ov-stats",
+      "_note": "统计块:拉 /api/overview,经 adaptOverview 数字化;监听 sse:state + sse:refresh 重拉(全局契约)",
+      "api": {
+        "url": "/api/overview",
+        "adaptor": "return { status: 0, data: window.Adapters.adaptOverview(payload) }"
+      },
+      "onEvent": {
+        "sse:state": {
+          "actions": [
+            { "actionType": "reload", "componentId": "ov-stats" }
+          ]
+        },
+        "sse:refresh": {
+          "actions": [
+            { "actionType": "reload", "componentId": "ov-stats" }
+          ]
+        }
+      },
+      "body": [
+        {
+          "type": "grid",
+          "columns": [
+            {
+              "md": 2,
+              "body": {
+                "type": "card",
+                "className": "m-b-sm",
+                "body": [
+                  {
+                    "type": "tpl",
+                    "tpl": "<div class='v2-stat-num'>${spec_count}</div>",
+                    "className": "m-b-xs",
+                    "style": { "fontSize": "1.8rem", "fontWeight": 700 }
+                  },
+                  {
+                    "type": "tpl",
+                    "tpl": "<div class='v2-stat-label'>SPEC 总数</div>",
+                    "style": { "color": "var(--text-muted)", "fontSize": "0.85rem" }
+                  }
+                ]
+              }
+            },
+            {
+              "md": 2,
+              "body": {
+                "type": "card",
+                "className": "m-b-sm",
+                "body": [
+                  {
+                    "type": "tpl",
+                    "tpl": "<div class='v2-stat-num'>${task_done}</div>",
+                    "className": "m-b-xs",
+                    "style": { "fontSize": "1.8rem", "fontWeight": 700 }
+                  },
+                  {
+                    "type": "tpl",
+                    "tpl": "<div class='v2-stat-label'>任务完成</div>",
+                    "style": { "color": "var(--text-muted)", "fontSize": "0.85rem" }
+                  }
+                ]
+              }
+            },
+            {
+              "md": 2,
+              "body": {
+                "type": "card",
+                "className": "m-b-sm",
+                "body": [
+                  {
+                    "type": "tpl",
+                    "tpl": "<div class='v2-stat-num'>${task_total}</div>",
+                    "className": "m-b-xs",
+                    "style": { "fontSize": "1.8rem", "fontWeight": 700 }
+                  },
+                  {
+                    "type": "tpl",
+                    "tpl": "<div class='v2-stat-label'>任务总量</div>",
+                    "style": { "color": "var(--text-muted)", "fontSize": "0.85rem" }
+                  }
+                ]
+              }
+            },
+            {
+              "md": 2,
+              "body": {
+                "type": "card",
+                "className": "m-b-sm",
+                "body": [
+                  {
+                    "type": "tpl",
+                    "tpl": "<div class='v2-stat-num'>${problems}</div>",
+                    "className": "m-b-xs",
+                    "style": { "fontSize": "1.8rem", "fontWeight": 700, "color": "var(--danger)", "display": "${problems > 0 ? 'block' : 'none'}" }
+                  },
+                  {
+                    "type": "tpl",
+                    "tpl": "<div class='v2-stat-label'>问题数</div>",
+                    "style": { "color": "var(--text-muted)", "fontSize": "0.85rem" }
+                  }
+                ]
+              }
+            },
+            {
+              "md": 2,
+              "body": {
+                "type": "card",
+                "className": "m-b-sm",
+                "body": [
+                  {
+                    "type": "tpl",
+                    "tpl": "<div class='v2-stat-num'>${active_runs}</div>",
+                    "className": "m-b-xs",
+                    "style": { "fontSize": "1.8rem", "fontWeight": 700, "color": "var(--primary)" }
+                  },
+                  {
+                    "type": "tpl",
+                    "tpl": "<div class='v2-stat-label'>活跃运行</div>",
+                    "style": { "color": "var(--text-muted)", "fontSize": "0.85rem" }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "service",
+      "id": "ov-projects",
+      "name": "ov-projects",
+      "_note": "项目卡片:拉 /api/projects,经 adaptProjects 映射;监听 sse:state 重拉;启停删按钮走老版同款端点",
+      "api": {
+        "url": "/api/projects",
+        "adaptor": "return { status: 0, data: { items: window.Adapters.adaptProjects(payload.projects || []) } }"
+      },
+      "onEvent": {
+        "sse:state": {
+          "actions": [
+            { "actionType": "reload", "componentId": "ov-projects" }
+          ]
+        }
+      },
+      "body": [
+        {
+          "type": "cards",
+          "source": "${items}",
+          "cols": 3,
+          "card": {
+            "className": "m-b-sm",
+            "header": {
+              "title": "${name}",
+              "subTitle": "<% if (data && data.exists === false) { %><span class='label label-danger'>缺失</span><% } else { %><span class='label <%= data.daemon === 'running' ? 'label-success' : 'label-default' %>'><%= data.daemon %></span><% } %>"
+            },
+            "body": [
+              {
+                "type": "tpl",
+                "tpl": "<div class='m-b-xs'><span class='text-muted'>SPEC:</span> ${spec_count}　<span class='text-muted'>任务:</span> ${task_done}/${task_total}</div>"
+              },
+              {
+                "type": "tpl",
+                "tpl": "<div class='m-b-xs'><span class='text-muted'>问题:</span> ${problems}　<span class='text-muted'>运行:</span> ${active_runs}</div>"
+              },
+              {
+                "type": "tpl",
+                "tpl": "<div class='m-b-sm'><span class='text-muted'>路径:</span> ${path}</div>"
+              },
+              {
+                "type": "button-group",
+                "buttons": [
+                  {
+                    "type": "button",
+                    "label": "启动",
+                    "level": "primary",
+                    "size": "sm",
+                    "confirmText": "确认启动该项目?",
+                    "visibleOn": "${daemon !== 'running' && exists !== false}",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          { "actionType": "ajax", "args": { "api": { "method": "post", "url": "/api/projects/${name}/start" } } },
+                          { "actionType": "toast", "args": { "msgType": "success", "msg": "已发起启动" } },
+                          { "actionType": "reload", "componentId": "ov-projects" }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "label": "停止",
+                    "level": "default",
+                    "size": "sm",
+                    "confirmText": "确认停止该项目?",
+                    "visibleOn": "${daemon === 'running'}",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          { "actionType": "ajax", "args": { "api": { "method": "post", "url": "/api/projects/${name}/stop" } } },
+                          { "actionType": "toast", "args": { "msgType": "success", "msg": "已停止" } },
+                          { "actionType": "reload", "componentId": "ov-projects" }
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "button",
+                    "label": "删除",
+                    "level": "danger",
+                    "size": "sm",
+                    "confirmText": "删除后该项目将停止并忽略,确认?",
+                    "onEvent": {
+                      "click": {
+                        "actions": [
+                          { "actionType": "ajax", "args": { "api": { "method": "delete", "url": "/api/projects/${name}" } } },
+                          { "actionType": "toast", "args": { "msgType": "success", "msg": "已删除" } },
+                          { "actionType": "reload", "componentId": "ov-projects" }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

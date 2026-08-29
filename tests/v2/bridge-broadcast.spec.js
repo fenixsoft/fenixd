@@ -1,14 +1,14 @@
 import { test, expect } from '@playwright/test';
-test('广播事件能到达渲染树内的监听消费者(壳级探针)', async ({ page }) => {
+test('广播事件能到达渲染树内的监听消费者(页面级 service reload)', async ({ page }) => {
   await page.goto('/v2/index.html#/overview');
-  // 桥组件在壳级挂载,监听 sse:refresh 并通过 window.Bridge._broadcastProbe.received 标记
-  // (overview 页因 app 路由 404 预存问题无法渲染页级探针,改在壳级验证广播链路)
-  // watcher.py 1s 扫描会自然产生 refresh 帧(behavior.md §0),15s 内必到
+  // overview.json 的 ov-stats 监听 sse:state/sse:refresh 并 reload componentId=ov-stats
+  // bridge.js 对 state/refresh 事件自增 window.BridgeTest.reloadCount
+  // 验证广播链路:桥收到帧 → dispatch 到渲染树 → ov-stats reload → (reloadCount 增长即证明到达)
   await page.waitForFunction(
-    () => window.Bridge && window.Bridge._broadcastProbe && window.Bridge._broadcastProbe.received === true,
+    () => window.BridgeTest && (window.BridgeTest.reloadCount || 0) >= 1,
     null,
     { timeout: 15000 }
   );
-  const ok = await page.evaluate(() => window.Bridge._broadcastProbe.received);
-  expect(ok).toBeTruthy();
+  const count = await page.evaluate(() => window.BridgeTest.reloadCount);
+  expect(count).toBeGreaterThanOrEqual(1);
 });
