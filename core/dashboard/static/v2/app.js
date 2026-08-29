@@ -11,9 +11,6 @@
       !amisCore.resolveRenderer('sse-bridge')) {
     class SSEBridge extends React.Component {
       componentDidMount() {
-        // 将渲染器实例 + 当前 scoped 一并交给桥。scoped 来自 embed 实例(window.amisScoped),
-        // 广播走 amisCore.dispatchGlobalEventForRenderer(eventName, renderer, scoped, data, action),
-        // 该机制沿整棵渲染树触发所有匹配 onEvent 的组件(跨组件可达)。
         if (window.Bridge && typeof window.Bridge.attach === 'function') {
           window.Bridge.attach(this, window.amisScoped);
         }
@@ -62,52 +59,104 @@
   // 页面 JSON 合并加载:app.json 仅保留壳(导航/路由占位,body 为空 page),各页面内容
   // 下沉到 pages/<name>.json;SDK 无 $ref 也无服务端渲染,故在加载期把各 pages/*.json
   // 按 url 前缀匹配深合并进 app.json 对应页后再 embed(计划 Task 5 Step 1 定案)。
+  //
+  // 注意:AMIS 的 `app` 组件在 embed 模式下无法按 hash 路由渲染页面内容(其页面匹配依赖
+  // window.location.pathname,与 hash 路由不兼容,实测始终 404)。因此这里改为自建壳 + hash
+  // 路由:用 app.json 的导航结构渲染侧边栏,正文区由本脚本按当前路由 embed 对应的
+  // pages/<name>.json 到 #v2-content(AMIS 单页 embed,hash 路由完全可控)。
   const PAGE_NAMES = ['overview', 'project', 'spec-detail', 'config', 'activities'];
   const urlMap = {
     overview: '/overview', project: '/project/', 'spec-detail': '/spec/',
     config: '/config', activities: '/activities',
   };
 
-  Promise.all([
-    fetch('/v2/pages/app.json?t=' + Date.now()).then(r => r.json()),
-    ...PAGE_NAMES.map(n => fetch('/v2/pages/' + n + '.json?t=' + Date.now())
-      .then(r => r.json()).then(s => [n, s]).catch(() => [n, null])),
-  ]).then(([appSchema, ...pageEntries]) => {
-    // 展开导航树(页面嵌套在 children 分组下),收集所有带 url 的页面节点
-    const pages = [];
-    const walk = (arr) => { for (const n of (arr || [])) { if (n.url) pages.push(n); if (n.children) walk(n.children); } };
-    walk(appSchema.pages);
-    for (const [name, schema] of pageEntries) {
-      if (!schema) continue;
-      for (const p of pages) {
-        if (p.url && p.url.startsWith(urlMap[name])) p.schema = schema;
+  function buildShell(appSchema) {
+    // 从 app.json 收集导航项(顶层 redirect + children 分组)
+    const nav = [];
+    for (const p of appSchema.pages) {
+      if (p.url === '/' && p.redirect) {
+        nav.push({ label: p.label || '概览', url: p.redirect });
+      } else if (p.children) {
+        for (const c of p.children) {
+          if (c.url) nav.push({ label: c.label, url: c.url, icon: c.icon });
+        }
+      } else if (p.url) {
+        nav.push({ label: p.label, url: p.url, icon: p.icon });
       }
     }
-    // amis 6.13 的 app 组件要求页面用 children 分组才能渲染侧边栏(平铺 pages 不会
-    // 生成导航);embed 默认按 location.hash 解析路由。导航 <a> 的 href 由 amis 生成为
-    // 路径形式(/overview),这里在渲染后改写为 #/overview 风格,既与既有 #/xxx 链接
-    // 一致,也契合 hash 路由(点击仍走 amis 内部导航,hashchange 监听同步 embed)。
-    const amisScoped = amisLib.embed('#root', appSchema, {}, {
-      theme: 'dark',
-      location: parseHash(),
-      jumpTo: (to) => { location.hash = to.startsWith('#') ? to : '#' + to; },
-    });
-    window.amisScoped = amisScoped;
+    const items = nav.map((n, i) =>
+      `<li class="v2-nav-item" data-url="${n.url}"><a href="#${n.url}">${n.icon ? `<i class="${n.icon}"></i> ` : ''}${n.label}</a></li>`
+    ).join('');
+    return `
+      <div class="v2-shell">
+        <aside class="v2-aside">
+          <div class="v2-brand">Fenix</div>
+          <nav class="v2-nav"><ul>${items}</ul></nav>
+        </aside>
+        <main class="v2-main">
+          <div id="v2-content"></div>
+        </main>
+      </div>`;
+  }
 
-    const fixNavHrefs = () => {
-      const nav = document.querySelector('.dark-AsideNav');
-      if (!nav) return;
-      nav.querySelectorAll('a[href^="/"]').forEach((a) => {
-        const h = a.getAttribute('href');
-        if (h && h[0] === '/' && !h.startsWith('//')) a.setAttribute('href', '#' + h);
-      });
-    };
-    const mo = new MutationObserver(fixNavHrefs);
-    mo.observe(document.getElementById('root'), { childList: true, subtree: true });
-    fixNavHrefs();
-
-    window.addEventListener('hashchange', () => {
-      amisScoped.updateProps({ location: parseHash() });
+  function highlightNav() {
+    const route = window.V2.route();
+    document.querySelectorAll('.v2-nav-item').forEach((li) => {
+      const u = li.getAttribute('data-url');
+      const active = route.path === u || (u !== '/overview' && route.path.startsWith(u));
+      li.classList.toggle('v2-nav-active', active);
     });
+  }
+
+  let contentScoped = null;
+  function renderContent(pageName, pageSchema) {
+    const el = document.getElementById('v2-content');
+    if (!el) return;
+    el.innerHTML = '';
+    if (!pageSchema) {
+      el.innerHTML = '<div class="v2-empty">页面不存在</div>';
+      return;
+    }
+    // 注入路由参数到 AMIS 数据域,供页面 JSON 的 ${params[0]}/${params[1]} 使用
+    const route = window.V2.route();
+    const data = { params: route.params, query: route.query };
+    contentScoped = amisLib.embed(el, pageSchema, { data, theme: 'dark' }, {});
+    window.amisScoped = contentScoped;
+    highlightNav();
+  }
+
+  function loadAndRender() {
+    const route = window.V2.route();
+    const name = route.page;
+    const url = '/v2/pages/' + name + '.json?t=' + Date.now();
+    fetch(url).then((r) => { if (!r.ok) throw new Error('404'); return r.json(); })
+      .then((schema) => renderContent(name, schema))
+      .catch(() => renderContent(name, null));
+  }
+
+  Promise.all([
+    fetch('/v2/pages/app.json?t=' + Date.now()).then((r) => r.json()),
+  ]).then(([appSchema]) => {
+    const root = document.getElementById('root');
+    root.innerHTML = buildShell(appSchema);
+    // 注入壳样式(避免依赖额外 css 文件;深色主题适配)
+    if (!document.getElementById('v2-shell-style')) {
+      const st = document.createElement('style');
+      st.id = 'v2-shell-style';
+      st.textContent = `
+        .v2-shell{display:flex;min-height:100vh;background:var(--body-bg,#1a1a1a);color:var(--text-color,#e8e8e8)}
+        .v2-aside{width:200px;background:#232324;border-right:1px solid #383838;padding:12px 0}
+        .v2-brand{font-size:1.2rem;font-weight:700;padding:8px 16px 16px}
+        .v2-nav ul{list-style:none;margin:0;padding:0}
+        .v2-nav-item a{display:block;padding:8px 16px;color:#b8b8b8;text-decoration:none}
+        .v2-nav-item a:hover{background:#2e2e2f;color:#fff}
+        .v2-nav-active>a{background:#313131;color:#fff;font-weight:600}
+        .v2-main{flex:1;padding:20px;overflow:auto}
+        .v2-empty{color:#888;padding:40px;text-align:center}
+      `;
+      document.head.appendChild(st);
+    }
+    loadAndRender();
+    window.addEventListener('hashchange', loadAndRender);
   });
 })();
