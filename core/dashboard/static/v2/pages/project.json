@@ -1,0 +1,329 @@
+{
+  "type": "page",
+  "title": "${params[0]} · SPEC 列表",
+  "body": [
+    {
+      "type": "service",
+      "id": "spec-crud",
+      "name": "spec-crud",
+      "api": {
+        "url": "/api/specs?project=${params[0]}",
+        "adaptor": "var raw = (payload && payload.specs) ? payload.specs : (Array.isArray(payload) ? payload : []); var items = window.Adapters.adaptSpecs(raw); var proj = (payload && payload.project) || '${params[0]}'; items = items.map(function(it){ it.project = proj; it.specName = it.name; it.createdAt = it.created; return it; }); return { status: 0, data: { items: items, total: items.length } };"
+      },
+      "onEvent": {
+        "sse:state": {
+          "actions": [
+            { "actionType": "reload", "componentId": "spec-crud" }
+          ]
+        }
+      },
+      "body": [
+        {
+          "type": "crud",
+          "id": "spec-crud-table",
+          "name": "spec-crud-table",
+          "initFetch": false,
+          "loadOptionsOnOpen": false,
+          "pagination": false,
+          "perPage": 1000,
+          "source": "${items}",
+          "filter": {
+            "title": "",
+            "mode": "inline",
+            "submitOnChange": true,
+            "className": "m-b-sm",
+            "body": [
+              {
+                "type": "input-text",
+                "name": "kw",
+                "placeholder": "搜索 SPEC 名称",
+                "label": "关键词",
+                "clearable": true,
+                "style": { "width": "220px" }
+              },
+              {
+                "type": "select",
+                "name": "status",
+                "label": "状态",
+                "placeholder": "全部状态",
+                "options": [
+                  { "label": "全部状态", "value": "" },
+                  { "label": "规划中", "value": "drafted" },
+                  { "label": "就绪", "value": "ready" },
+                  { "label": "实现中", "value": "implementing" },
+                  { "label": "有Bug", "value": "bug-found" },
+                  { "label": "已实现", "value": "implemented" },
+                  { "label": "验证中", "value": "testing" },
+                  { "label": "已验证", "value": "verified" },
+                  { "label": "完成", "value": "done" },
+                  { "label": "已推送", "value": "pushed" },
+                  { "label": "阻塞", "value": "blocked" }
+                ]
+              },
+              {
+                "type": "select",
+                "name": "type",
+                "label": "类型",
+                "placeholder": "全部类型",
+                "options": [
+                  { "label": "全部类型", "value": "" },
+                  { "label": "需求", "value": "req" },
+                  { "label": "修复", "value": "issue" }
+                ]
+              }
+            ]
+          },
+          "columns": [
+            {
+              "name": "status",
+              "label": "状态",
+              "type": "mapping",
+              "map": {
+                "drafted": "<span class='label label-default'>草稿</span>",
+                "ready": "<span class='label label-info'>就绪</span>",
+                "implementing": "<span class='label label-primary'>实现中</span>",
+                "bug-found": "<span class='label label-danger'>有Bug</span>",
+                "implemented": "<span class='label label-primary'>已实现</span>",
+                "testing": "<span class='label label-warning'>验证中</span>",
+                "verified": "<span class='label label-success'>已验证</span>",
+                "done": "<span class='label label-success'>完成</span>",
+                "pushed": "<span class='label label-success'>已推送</span>",
+                "blocked": "<span class='label label-danger'>阻塞</span>",
+                "*": "<span class='label label-default'>${status}</span>"
+              }
+            },
+            {
+              "name": "specName",
+              "label": "名称",
+              "type": "tpl",
+              "tpl": "<span style='display:inline-block;padding-left:${depth*18}px'>${isFixChild ? '🔧 ' : ''}<a href='#/spec/${project}/${specName}'>${specName}</a></span>"
+            },
+            {
+              "name": "priority",
+              "label": "优先级",
+              "type": "tpl",
+              "tpl": "${priority == null || priority === '' ? 'P?' : ('P' + priority)}"
+            },
+            {
+              "name": "createdAt",
+              "label": "创建时间",
+              "type": "tpl",
+              "tpl": "${createdAt ? createdAt.substring(0, 10) : '—'}"
+            },
+            {
+              "name": "task",
+              "label": "任务进度",
+              "type": "tpl",
+              "tpl": "${task_done + '/' + task_total + (task_total > 0 ? (' · ' + (task_done * 100 / task_total | 0) + '%') : '')}"
+            },
+            {
+              "name": "verify",
+              "label": "验证",
+              "type": "tpl",
+              "tpl": "${verify_total > 0 ? (verify_done + '/' + verify_total) : '—'}"
+            },
+            {
+              "name": "total_duration",
+              "label": "耗时",
+              "type": "tpl",
+              "tpl": "${total_duration > 0 ? (total_duration < 60 ? (total_duration + '秒') : (total_duration < 3600 ? (Math.floor(total_duration / 60) + '分' + (total_duration % 60) + '秒') : (Math.floor(total_duration / 3600) + '时' + Math.floor((total_duration % 3600) / 60) + '分'))) : '—'}"
+            },
+            {
+              "label": "文档",
+              "type": "button",
+              "level": "link",
+              "label": "文档",
+              "onEvent": {
+                "click": {
+                  "actions": [
+                    {
+                      "actionType": "dialog",
+                      "args": {
+                        "dialog": {
+                          "title": "SPEC 文档 · ${specName}",
+                          "size": "lg",
+                          "body": {
+                            "type": "tpl",
+                            "tpl": "文档弹窗(需求背景/设计/任务清单三页签)将在 Task 9 接入;当前 SPEC: <strong>${specName}</strong>"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "dropdown-button",
+              "label": "操作",
+              "buttons": [
+                {
+                  "type": "button",
+                  "label": "呼叫 Admin",
+                  "onEvent": {
+                    "click": {
+                      "actions": [
+                        {
+                          "actionType": "ajax",
+                          "args": {
+                            "api": {
+                              "method": "post",
+                              "url": "/api/spec-admin-invoke?project=${project}&spec=${specName}",
+                              "data": {}
+                            }
+                          }
+                        },
+                        {
+                          "actionType": "toast",
+                          "args": {
+                            "msgType": "info",
+                            "msg": "已发起 Admin 处置(等待 Administrator 介入)"
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "button",
+                  "label": "调优先级",
+                  "onEvent": {
+                    "click": {
+                      "actions": [
+                        {
+                          "actionType": "dialog",
+                          "args": {
+                            "dialog": {
+                              "title": "调整优先级 · ${specName}",
+                              "body": {
+                                "type": "form",
+                                "api": {
+                                  "method": "post",
+                                  "url": "/api/spec-priority?project=${project}&spec=${specName}",
+                                  "data": { "priority": "${priority}" },
+                                  "adaptor": "return { status: 0, data: payload }"
+                                },
+                                "body": [
+                                  {
+                                    "type": "input-number",
+                                    "name": "priority",
+                                    "label": "优先级(1-9)",
+                                    "min": 1,
+                                    "max": 9,
+                                    "required": true,
+                                    "value": "${priority}"
+                                  }
+                                ],
+                                "onEvent": {
+                                  "submitSucc": {
+                                    "actions": [
+                                      { "actionType": "reload", "componentId": "spec-crud" }
+                                    ]
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "button",
+                  "label": "详情",
+                  "onEvent": {
+                    "click": {
+                      "actions": [
+                        {
+                          "actionType": "dialog",
+                          "args": {
+                            "dialog": {
+                              "title": "SPEC 详情 · ${specName}",
+                              "size": "lg",
+                              "body": [
+                                {
+                                  "type": "service",
+                                  "api": {
+                                    "url": "/api/specs/${specName}?project=${project}",
+                                    "adaptor": "return { status: 0, data: payload }"
+                                  },
+                                  "body": [
+                                    {
+                                      "type": "tpl",
+                                      "tpl": "<div class='m-b-sm'><strong>错误:</strong> <% if (data && data.error) { %>><pre style='white-space:pre-wrap;color:#ff9d9d'><%= data.error %></pre><% } else { %><span class='text-muted'>无</span><% } %></div>"
+                                    },
+                                    {
+                                      "type": "button",
+                                      "label": "清除错误",
+                                      "level": "danger",
+                                      "visibleOn": "${error}",
+                                      "onEvent": {
+                                        "click": {
+                                          "actions": [
+                                            {
+                                              "actionType": "ajax",
+                                              "args": {
+                                                "api": {
+                                                  "method": "post",
+                                                  "url": "/api/spec-error-clear?project=${project}&spec=${specName}"
+                                                }
+                                              }
+                                            },
+                                            { "actionType": "reload", "componentId": "spec-crud" }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "service",
+                                  "api": {
+                                    "url": "/api/spec-doc?project=${project}&spec=${specName}&doc=proposal",
+                                    "adaptor": "return { status: 0, data: payload }"
+                                  },
+                                  "body": [
+                                    {
+                                      "type": "tpl",
+                                      "tpl": "<div class='m-b-sm'><strong>Why(提案):</strong> <% if (data && data.found) { %><pre style='white-space:pre-wrap;max-height:200px;overflow:auto'><%= data.content %></pre><% } else { %><span class='text-muted'>无 Why 段(提案未找到或未含 ## Why)</span><% } %></div>"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "button",
+                  "label": "删除",
+                  "confirmText": "删除后该项目将停止并忽略,确认?",
+                  "onEvent": {
+                    "click": {
+                      "actions": [
+                        {
+                          "actionType": "ajax",
+                          "args": {
+                            "api": {
+                              "method": "post",
+                              "url": "/api/spec-delete?project=${project}&spec=${specName}"
+                            }
+                          }
+                        },
+                        { "actionType": "reload", "componentId": "spec-crud" }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
