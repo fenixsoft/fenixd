@@ -1,0 +1,842 @@
+{
+  "overview": {
+    "projects": [
+      {
+        "name": "fenixd",
+        "path": "/root/fenixd",
+        "daemon": "running",
+        "spec_count": 85,
+        "status_counts": {
+          "pushed": 72,
+          "blocked": 1,
+          "implementing": 2,
+          "ready": 9,
+          "implemented": 1
+        },
+        "task_done": 568,
+        "task_total": 705,
+        "problems": 2,
+        "active_runs": 3,
+        "scenario_count": 540,
+        "updated": 1787985556.1069775,
+        "discovered": false,
+        "exists": true
+      },
+      {
+        "name": "fenix-verify-fam-t7swszy1",
+        "path": "/tmp/fenix-verify-fam-t7swszy1",
+        "discovered": false,
+        "exists": false,
+        "daemon": "stopped",
+        "error": "项目路径不存在"
+      },
+      {
+        "name": "fenix-desktop",
+        "path": "/root/fenix-desktop",
+        "daemon": "stopped",
+        "spec_count": 43,
+        "status_counts": {
+          "pushed": 43
+        },
+        "task_done": 430,
+        "task_total": 440,
+        "problems": 0,
+        "active_runs": 0,
+        "scenario_count": 433,
+        "updated": 1787817553.6728249,
+        "discovered": true,
+        "exists": true
+      }
+    ],
+    "totals": {
+      "spec_count": 128,
+      "task_done": 998,
+      "task_total": 1145,
+      "problems": 2,
+      "active_runs": 3,
+      "status_counts": {
+        "pushed": 115,
+        "blocked": 1,
+        "implementing": 2,
+        "ready": 9,
+        "implemented": 1
+      }
+    }
+  },
+  "specs": {
+    "project": "fenixd",
+    "specs": [
+      {
+        "name": "fix-add-inplace-bug-repair",
+        "status": "pushed",
+        "priority": 2,
+        "created": "2026-08-29T05:56:25.008479+00:00",
+        "updated": "2026-08-29T06:17:40.398859+00:00",
+        "error": null,
+        "task_done": 4,
+        "task_total": 4,
+        "verify_done": 5,
+        "verify_total": 5,
+        "verify_error": null,
+        "scenario_count": 0,
+        "total_duration": 909,
+        "latest_run": "planner-judge-fix-add-inplace-bug-repair-1787984198-a1",
+        "latest_run_status": "done"
+      },
+      {
+        "name": "fix-fix-v2-shell-hash-router",
+        "status": "implemented",
+        "priority": 4,
+        "created": "2026-08-29T04:14:58.330771+00:00",
+        "updated": "2026-08-29T06:39:16.083497+00:00",
+        "error": null,
+        "task_done": 3,
+        "task_total": 3,
+        "verify_done": 0,
+        "verify_total": 0,
+        "verify_error": null,
+        "scenario_count": 2,
+        "total_duration": 1409,
+        "latest_run": "impl-fix-fix-v2-shell-hash-router-1787984588-a1",
+        "latest_run_status": "done"
+      },
+      {
+        "name": "fix-add-verify-report-gate",
+        "status": "pushed",
+        "priority": 3,
+        "created": "2026-08-29T04:02:57.270069+00:00",
+        "updated": "2026-08-29T04:41:50.067927+00:00",
+        "error": null,
+        "task_done": 4,
+        "task_total": 4,
+        "verify_done": 10,
+        "verify_total": 10,
+        "verify_error": null,
+        "scenario_count": 0,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "add-inplace-bug-repair",
+        "status": "blocked",
+        "priority": 1,
+        "created": "2026-08-29T03:27:30.020259+00:00",
+        "updated": "2026-08-29T06:23:08.528676+00:00",
+        "error": "验证连续失败 3 轮，已冻结等待人工裁决。详见 `openspec/changes/add-inplace-bug-repair/verification-report.md`",
+        "task_done": 9,
+        "task_total": 9,
+        "verify_done": 8,
+        "verify_total": 8,
+        "verify_error": null,
+        "scenario_count": 6,
+        "total_duration": 4243,
+        "latest_run": "planner-judge-add-inplace-bug-repair-1787984390-a1",
+        "latest_run_status": "done"
+      },
+      {
+        "name": "add-verify-report-gate",
+        "status": "pushed",
+        "priority": 2,
+        "created": "2026-08-29T03:13:50.877880+00:00",
+        "updated": "2026-08-29T04:51:13.412765+00:00",
+        "error": null,
+        "task_done": 7,
+        "task_total": 7,
+        "verify_done": 7,
+        "verify_total": 7,
+        "verify_error": null,
+        "scenario_count": 3,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "fix-v2-shell-hash-router",
+        "status": "pushed",
+        "priority": 3,
+        "created": "2026-08-29T02:39:50.434805+00:00",
+        "updated": "2026-08-29T05:19:09.700781+00:00",
+        "error": null,
+        "task_done": 4,
+        "task_total": 4,
+        "verify_done": 12,
+        "verify_total": 12,
+        "verify_error": null,
+        "scenario_count": 0,
+        "total_duration": 1604,
+        "latest_run": "impl-fix-fix-v2-shell-hash-router-1787984588-a1",
+        "latest_run_status": "done"
+      },
+      {
+        "name": "fix-merge-untracked-guard",
+        "status": "pushed",
+        "priority": 9,
+        "created": "2026-08-29T01:41:04.831802+00:00",
+        "updated": "2026-08-29T02:04:34.595944+00:00",
+        "error": null,
+        "task_done": 9,
+        "task_total": 9,
+        "verify_done": 8,
+        "verify_total": 8,
+        "verify_error": null,
+        "scenario_count": 6,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "v2-cutover-main-entry",
+        "status": "ready",
+        "priority": 8,
+        "created": "2026-08-29T01:21:27.678693+00:00",
+        "updated": "2026-08-29T06:32:16.996972+00:00",
+        "error": null,
+        "task_done": 0,
+        "task_total": 6,
+        "verify_done": 0,
+        "verify_total": 0,
+        "verify_error": null,
+        "scenario_count": 4,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "v2-acceptance-suite",
+        "status": "ready",
+        "priority": 7,
+        "created": "2026-08-29T01:21:27.668151+00:00",
+        "updated": "2026-08-29T06:32:16.860721+00:00",
+        "error": null,
+        "task_done": 0,
+        "task_total": 5,
+        "verify_done": 0,
+        "verify_total": 0,
+        "verify_error": null,
+        "scenario_count": 4,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "v2-admin-doc-modals",
+        "status": "ready",
+        "priority": 6,
+        "created": "2026-08-29T01:21:27.657521+00:00",
+        "updated": "2026-08-29T06:32:16.746292+00:00",
+        "error": null,
+        "task_done": 0,
+        "task_total": 4,
+        "verify_done": 0,
+        "verify_total": 0,
+        "verify_error": null,
+        "scenario_count": 3,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "v2-alerts-activities",
+        "status": "ready",
+        "priority": 5,
+        "created": "2026-08-29T01:21:27.646992+00:00",
+        "updated": "2026-08-29T06:32:16.629383+00:00",
+        "error": null,
+        "task_done": 0,
+        "task_total": 4,
+        "verify_done": 0,
+        "verify_total": 0,
+        "verify_error": null,
+        "scenario_count": 3,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "v2-run-stream-modal",
+        "status": "ready",
+        "priority": 5,
+        "created": "2026-08-29T01:21:27.636358+00:00",
+        "updated": "2026-08-29T06:32:16.512729+00:00",
+        "error": null,
+        "task_done": 0,
+        "task_total": 5,
+        "verify_done": 0,
+        "verify_total": 0,
+        "verify_error": null,
+        "scenario_count": 4,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "v2-config-page",
+        "status": "ready",
+        "priority": 4,
+        "created": "2026-08-29T01:21:27.625851+00:00",
+        "updated": "2026-08-29T06:32:16.371763+00:00",
+        "error": null,
+        "task_done": 0,
+        "task_total": 4,
+        "verify_done": 0,
+        "verify_total": 0,
+        "verify_error": null,
+        "scenario_count": 3,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "v2-spec-detail-page",
+        "status": "ready",
+        "priority": 4,
+        "created": "2026-08-29T01:21:27.615322+00:00",
+        "updated": "2026-08-29T06:32:16.244522+00:00",
+        "error": null,
+        "task_done": 0,
+        "task_total": 4,
+        "verify_done": 0,
+        "verify_total": 0,
+        "verify_error": null,
+        "scenario_count": 4,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "v2-project-list-page",
+        "status": "ready",
+        "priority": 4,
+        "created": "2026-08-29T01:21:27.604921+00:00",
+        "updated": "2026-08-29T06:32:16.128523+00:00",
+        "error": null,
+        "task_done": 0,
+        "task_total": 4,
+        "verify_done": 0,
+        "verify_total": 0,
+        "verify_error": null,
+        "scenario_count": 5,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "v2-overview-page",
+        "status": "ready",
+        "priority": 4,
+        "created": "2026-08-29T01:21:27.594431+00:00",
+        "updated": "2026-08-29T06:32:16.002805+00:00",
+        "error": null,
+        "task_done": 0,
+        "task_total": 5,
+        "verify_done": 0,
+        "verify_total": 0,
+        "verify_error": null,
+        "scenario_count": 3,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "v2-data-adapters",
+        "status": "implementing",
+        "priority": 3,
+        "created": "2026-08-29T01:21:27.583858+00:00",
+        "updated": "2026-08-29T06:39:16.109581+00:00",
+        "error": null,
+        "task_done": 0,
+        "task_total": 5,
+        "verify_done": 0,
+        "verify_total": 0,
+        "verify_error": null,
+        "scenario_count": 6,
+        "total_duration": 766,
+        "latest_run": "impl-v2-data-adapters-1787985556-a1",
+        "latest_run_status": "running"
+      },
+      {
+        "name": "v2-sse-bridge",
+        "status": "implementing",
+        "priority": 3,
+        "created": "2026-08-29T01:21:27.573201+00:00",
+        "updated": "2026-08-29T06:25:00.463767+00:00",
+        "error": "Recovered from interrupted state: implementing",
+        "task_done": 2,
+        "task_total": 6,
+        "verify_done": 0,
+        "verify_total": 0,
+        "verify_error": null,
+        "scenario_count": 4,
+        "total_duration": 2127,
+        "latest_run": "impl-v2-sse-bridge-1787984700-a1",
+        "latest_run_status": "running"
+      },
+      {
+        "name": "v2-shell-hash-router",
+        "status": "pushed",
+        "priority": 2,
+        "created": "2026-08-29T01:21:27.561470+00:00",
+        "updated": "2026-08-29T05:58:16.101146+00:00",
+        "error": null,
+        "task_done": 6,
+        "task_total": 6,
+        "verify_done": 10,
+        "verify_total": 10,
+        "verify_error": null,
+        "scenario_count": 5,
+        "total_duration": 2455,
+        "latest_run": "impl-fix-fix-v2-shell-hash-router-1787984588-a1",
+        "latest_run_status": "done"
+      },
+      {
+        "name": "v2-vendor-amis-sdk",
+        "status": "pushed",
+        "priority": 1,
+        "created": "2026-08-29T01:21:27.550232+00:00",
+        "updated": "2026-08-29T01:43:41.268843+00:00",
+        "error": null,
+        "task_done": 3,
+        "task_total": 3,
+        "verify_done": 7,
+        "verify_total": 7,
+        "verify_error": null,
+        "scenario_count": 3,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "add-admin-invoke-dialog",
+        "status": "pushed",
+        "priority": 5,
+        "created": "2026-08-28T23:13:50.991139+00:00",
+        "updated": "2026-08-29T01:35:57.615057+00:00",
+        "error": null,
+        "task_done": 9,
+        "task_total": 13,
+        "verify_done": 10,
+        "verify_total": 10,
+        "verify_error": null,
+        "scenario_count": 9,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "fix-fix-fix-improve-failover-model-mapping-ui",
+        "status": "pushed",
+        "priority": 7,
+        "created": "2026-08-28T16:29:49.528963+00:00",
+        "updated": "2026-08-28T19:59:03.728089+00:00",
+        "error": null,
+        "task_done": 4,
+        "task_total": 4,
+        "verify_done": 7,
+        "verify_total": 7,
+        "verify_error": null,
+        "scenario_count": 0,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "fix-repair-lane-dedup",
+        "status": "pushed",
+        "priority": 4,
+        "created": "2026-08-28T12:58:09.826516+00:00",
+        "updated": "2026-08-28T15:01:57.708907+00:00",
+        "error": null,
+        "task_done": 7,
+        "task_total": 7,
+        "verify_done": 7,
+        "verify_total": 7,
+        "verify_error": null,
+        "scenario_count": 7,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "fix-fix-stashpop-deadlock-and-provider-fuse",
+        "status": "pushed",
+        "priority": 7,
+        "created": "2026-08-28T11:03:01.190568+00:00",
+        "updated": "2026-08-28T18:49:33.095768+00:00",
+        "error": null,
+        "task_done": 0,
+        "task_total": 4,
+        "verify_done": 24,
+        "verify_total": 24,
+        "verify_error": null,
+        "scenario_count": 0,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "fix-fix-improve-failover-model-mapping-ui",
+        "status": "pushed",
+        "priority": 6,
+        "created": "2026-08-28T10:45:59.242809+00:00",
+        "updated": "2026-08-28T19:33:48.220519+00:00",
+        "error": null,
+        "task_done": 0,
+        "task_total": 4,
+        "verify_done": 16,
+        "verify_total": 16,
+        "verify_error": null,
+        "scenario_count": 0,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "fix-fix-fix-add-spec-context-menu",
+        "status": "pushed",
+        "priority": 7,
+        "created": "2026-08-28T10:05:59.905552+00:00",
+        "updated": "2026-08-28T19:25:28.232559+00:00",
+        "error": null,
+        "task_done": 4,
+        "task_total": 4,
+        "verify_done": 20,
+        "verify_total": 20,
+        "verify_error": null,
+        "scenario_count": 0,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "fix-fix-add-spec-context-menu",
+        "status": "pushed",
+        "priority": 6,
+        "created": "2026-08-28T05:21:33.156396+00:00",
+        "updated": "2026-08-28T16:12:15.842135+00:00",
+        "error": null,
+        "task_done": 0,
+        "task_total": 4,
+        "verify_done": 16,
+        "verify_total": 16,
+        "verify_error": null,
+        "scenario_count": 0,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "fix-push-ref-lifecycle",
+        "status": "pushed",
+        "priority": 4,
+        "created": "2026-08-28T00:36:27.393919+00:00",
+        "updated": "2026-08-28T01:47:18.057301+00:00",
+        "error": null,
+        "task_done": 8,
+        "task_total": 8,
+        "verify_done": 8,
+        "verify_total": 8,
+        "verify_error": null,
+        "scenario_count": 8,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "improve-failover-model-mapping-ui",
+        "status": "pushed",
+        "priority": 4,
+        "created": "2026-08-27T23:50:37.414258+00:00",
+        "updated": "2026-08-28T19:33:36.370333+00:00",
+        "error": null,
+        "task_done": 10,
+        "task_total": 10,
+        "verify_done": 6,
+        "verify_total": 6,
+        "verify_error": null,
+        "scenario_count": 11,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      },
+      {
+        "name": "fix-fix-improve-run-lifecycle-governance",
+        "status": "pushed",
+        "priority": 7,
+        "created": "2026-08-27T22:06:16.970633+00:00",
+        "updated": "2026-08-28T17:46:15.848288+00:00",
+        "error": null,
+        "task_done": 4,
+        "task_total": 4,
+        "verify_done": 10,
+        "verify_total": 10,
+        "verify_error": null,
+        "scenario_count": 0,
+        "total_duration": 0,
+        "latest_run": null,
+        "latest_run_status": null
+      }
+    ]
+  },
+  "alerts": {
+    "total_unhandled": 2,
+    "projects": [
+      {
+        "name": "fenixd",
+        "unhandled_count": 2,
+        "max_severity": "major",
+        "latest": {
+          "kind": "escalation",
+          "signal_type": "verify_fail_escalation",
+          "spec": "add-inplace-bug-repair",
+          "severity": "major",
+          "description": "验证连续失败 3 轮，已冻结等待人工裁决",
+          "evidence": "spec=add-inplace-bug-repair; fail_rounds=3; report=openspec/changes/add-inplace-bug-repair/verification-report.md",
+          "recommended_action": "检查验证报告定位根因，人工调整 SPEC 状态后重跑验证；人工重置计数器即重新获得自动修复机会",
+          "id": "e7964d2818a4",
+          "created": "2026-08-29T06:23:08.540416+00:00",
+          "handled": false,
+          "handled_at": null,
+          "action_taken": null,
+          "result": null
+        }
+      },
+      {
+        "name": "fenix-desktop",
+        "unhandled_count": 0,
+        "max_severity": null,
+        "latest": null
+      }
+    ],
+    "alerts": [
+      {
+        "kind": "escalation",
+        "signal_type": "verify_fail_escalation",
+        "spec": "add-inplace-bug-repair",
+        "severity": "major",
+        "description": "验证连续失败 3 轮，已冻结等待人工裁决",
+        "evidence": "spec=add-inplace-bug-repair; fail_rounds=3; report=openspec/changes/add-inplace-bug-repair/verification-report.md",
+        "recommended_action": "检查验证报告定位根因，人工调整 SPEC 状态后重跑验证；人工重置计数器即重新获得自动修复机会",
+        "id": "e7964d2818a4",
+        "created": "2026-08-29T06:23:08.540416+00:00",
+        "handled": false,
+        "handled_at": null,
+        "action_taken": null,
+        "result": null,
+        "project": "fenixd"
+      },
+      {
+        "kind": "escalation",
+        "signal_type": "verify_report_synthesized",
+        "spec": "fix-add-inplace-bug-repair",
+        "severity": "minor",
+        "description": "裁决 Agent 未写报告，已由框架合成：/root/fenixd/openspec/changes/fix-add-inplace-bug-repair/verification-report.md",
+        "evidence": "闸门在裁决放行前检测到 verification-report.md 缺失，已从 report.json / .fenix-run-result.json 确定性合成（未重跑验证）",
+        "recommended_action": "留意验证裁决 Agent 未遵守 prompt Step 5（写 verification-report.md）的劣化信号；合成报告内容以结构化 JSON 为准，无叙述性分析",
+        "id": "3e547be38a72",
+        "created": "2026-08-29T06:17:25.917952+00:00",
+        "handled": false,
+        "handled_at": null,
+        "action_taken": null,
+        "result": null,
+        "project": "fenixd"
+      }
+    ]
+  },
+  "admin_activities": {
+    "projects": [
+      {
+        "name": "fenixd",
+        "activities": [
+          {
+            "kind": "disposition",
+            "signal_type": "blocked_stuck",
+            "spec": "v2-data-adapters",
+            "severity": "critical",
+            "description": "blocked_stuck 告警：'v2-data-adapters' 处于 blocked 超过 18 分钟未处理（updated=2026-08-29T06:04:12Z，阈值 15 分钟）",
+            "action_taken": "只读诊断：读取 STATE.md 该 spec 条目（status=ready、error=null、depends_on=v2-shell-hash-router 已 pushed）、fenixd.log 06:00–06:33 全部相关日志、.fenix/runs/impl-v2-data-adapters-1787983087-a1.jsonl 转录、admin_monitor.py 与 pm_engine.py 调度代码、config.yaml、进程列表与 supervisor.log\n核对前序处置：.fenix/runs/admin-v2-sse-bridge-1787984536.jsonl（06:22 唤起的同源告警处置）已确认 06:04:12 的 blocked 为人工交互会话（session 44bbc94a）带外冻结所致，06:25:00 同会话已解冻回 ready\n核实当前调度健康度：实施队列在 06:02:14 已持有该 spec 的 implementer 条目（内存态，daemon 06:02:13 重启后重建，未经派发故仍在队列）；派发未发生仅因 max_concurrent=2 两槽被 fix-fix-v2-shell-hash-router(P2) 与 v2-sse-bridge(P3) 占用；pm.dispatch.aging 已启用（等待 10 分钟后每 10 分钟等效降 1 级，封顶 4 级），该条目至诊断时已等待约 29 分钟，有效优先级升至 P2，一旦有空槽且无更高优活动任务即会派发\n核实 06:02 的实现失败为 inferaiapi.com 对 deepseek-v4-flash 的间歇性 unrecognized_model 错误（config 中已配置三元素 failover 链应对），state_machine 启动恢复已正确复位 ready 并重新入队，无残留 worktree 孤儿\nDashboard 探活：/api/projects 返回含 projects 字段 JSON 且首页 200，服务正常，无需恢复\n零破坏性动作：未杀进程、未改 STATE.md、未动 git，状态由系统自愈路径（06:32:15 recovery watch 清 error 并 re-trigger implement）保持正确",
+            "result": "resolved",
+            "recommended_action": "",
+            "summary": "诊断结论：本告警是已处置情形的滞后重复误报，非框架卡死。根因链：(1) 06:02 daemon 例行重启打断了在跑实现器，启动恢复逻辑正确将 v2-data-adapters 复位 ready 并重新入队；(2) 06:04:12 一个人工交互会话（session 44bbc94a）带外将 v2-sse-bridge 与 v2-data-adapters 显式置为 blocked 主动冻结，daemon 无感知，人工编辑未推进 updated 字段；(3) 06:25:00 同一会话解冻回 ready，daemon 事件总线即时感知；(4) 06:30:42 admin_monitor 的 blocked_stuck 规则按滞后的 updated=06:04:12 计算超时并再次唤起 Administrator——与 06:22 已唤起并处置完毕的同源告警重复。处置时间线：先只读核验 STATE.md（status=ready、error=null、依赖 v2-shell-hash-router 已 pushed）、fenixd.log 全量相关日志、失败 run 转录、调度器代码与进程列表；再核对 06:22 前序 admin run 的处置记录确认冻结-解冻链；最后核实调度健康度（队列在 06:02:14 已持有该 spec 条目，仅因两槽被 P2/P3 任务占满而未派发；aging 已启用，等待约 29 分钟后有效优先级升至 P2，空槽释放即可派发）与 Dashboard 探活（正常）。最终结果：resolved，未执行任何破坏性动作，spec 处于 ready 正常排队、即将按调度规则派发，无升级必要。对人工的建议：无必须操作；若今后仍需带外冻结 SPEC，建议在 error 字段加 'frozen:' 前缀（admin_monitor 对该前缀的 blocked 有意豁免），可避免此类滞后误报。",
+            "admin_run_id": "admin-v2-data-adapters-1787985042",
+            "escalate": false,
+            "id": "319f1b0e84ca",
+            "created": "2026-08-29T06:37:54.466828+00:00",
+            "handled": true,
+            "handled_at": null,
+            "evidence": null,
+            "escalation_id": null,
+            "actions_taken": "只读诊断：读取 STATE.md 该 spec 条目（status=ready、error=null、depends_on=v2-shell-hash-router 已 pushed）、fenixd.log 06:00–06:33 全部相关日志、.fenix/runs/impl-v2-data-adapters-1787983087-a1.jsonl 转录、admin_monitor.py 与 pm_engine.py 调度代码、config.yaml、进程列表与 supervisor.log\n核对前序处置：.fenix/runs/admin-v2-sse-bridge-1787984536.jsonl（06:22 唤起的同源告警处置）已确认 06:04:12 的 blocked 为人工交互会话（session 44bbc94a）带外冻结所致，06:25:00 同会话已解冻回 ready\n核实当前调度健康度：实施队列在 06:02:14 已持有该 spec 的 implementer 条目（内存态，daemon 06:02:13 重启后重建，未经派发故仍在队列）；派发未发生仅因 max_concurrent=2 两槽被 fix-fix-v2-shell-hash-router(P2) 与 v2-sse-bridge(P3) 占用；pm.dispatch.aging 已启用（等待 10 分钟后每 10 分钟等效降 1 级，封顶 4 级），该条目至诊断时已等待约 29 分钟，有效优先级升至 P2，一旦有空槽且无更高优活动任务即会派发\n核实 06:02 的实现失败为 inferaiapi.com 对 deepseek-v4-flash 的间歇性 unrecognized_model 错误（config 中已配置三元素 failover 链应对），state_machine 启动恢复已正确复位 ready 并重新入队，无残留 worktree 孤儿\nDashboard 探活：/api/projects 返回含 projects 字段 JSON 且首页 200，服务正常，无需恢复\n零破坏性动作：未杀进程、未改 STATE.md、未动 git，状态由系统自愈路径（06:32:15 recovery watch 清 error 并 re-trigger implement）保持正确",
+            "project": "fenixd"
+          },
+          {
+            "kind": "disposition",
+            "signal_type": "blocked_stuck",
+            "spec": "v2-sse-bridge",
+            "severity": "critical",
+            "description": "blocked_stuck 告警：v2-sse-bridge 于 06:04:12 被置为 blocked 且超过 18 分钟无 daemon 侧处置动作，疑似误置或卡死",
+            "action_taken": "只读诊断：读取 STATE.md、fenixd.log、supervisor.log、run 转录（impl-v2-sse-bridge-1787982985-a1/a2）与 admin_alerts 历史，重建完整时间线\n定位 06:04:12 的 blocked 写入者：daemon 日志在该时刻无任何 state_machine 写入记录，判定为带外写入；比对运维方交互会话转录（~/.claude/projects/-root-fenixd/44bbc94a-*.jsonl），确认是 06:04:12.670 由该会话经 core.state_machine 显式执行 sm.update_spec('v2-sse-bridge'/'v2-data-adapters', {'status':'blocked'}) 主动冻结（\"frozen both\"，此前 06:03:12 有 AskUserQuestion，属人工决策）\n确认解冻：同一会话于 06:25:00.242 将两个 spec 重置回 ready，daemon 文件监视器随即触发 spec_ready 并重新调度\n健康复核：v2-sse-bridge 新实现 run impl-v2-sse-bridge-1787984700-a1（PID 4155082）存活且持续产出工具调用、无报错；v2-data-adapters 已回 ready 排队待并行槽位；Dashboard 8787 探活正常（/api/projects 返回 projects JSON）；未做任何破坏性动作，未杀进程、未改 STATE.md、未重启 daemon",
+            "result": "resolved",
+            "recommended_action": "",
+            "summary": "【诊断结论】这不是框架卡死，而是一次带外人工冻结与自愈解冻：06:02 daemon 例行重启（restart_request）打断了 v2-sse-bridge / v2-data-adapters 两个在跑实现器（attempt1 因 inferaiapi.com 返回 unrecognized_model 失败，attempt2 因 worktree 已被孤儿清理而失败），启动恢复逻辑已正确将二者复位为 ready 并重新排队。随后 06:04:12，运维方的人工交互 Claude 会话（session 44bbc94a，pts/13，经 AskUserQuestion 确认后）通过 core.state_machine 显式将两个 spec 置为 blocked 主动冻结——daemon 对此无感知，18 分钟后 admin_monitor 按 blocked_stuck 阈值触发本告警，属误报。06:25:00 同一会话又将其解冻回 ready，daemon 立即重新派发。【处置时间线】(1) 只读诊断日志/STATE.md/run 转录；(2) 因 06:04:12 无 daemon 写入痕迹，锁定带外写入者并比对交互会话转录，确认冻结与解冻均为运维方人工动作；(3) 复核新 run 与 Dashboard 健康。全程零破坏性动作。【最终结果】resolved：v2-sse-bridge 已 implementing（run impl-v2-sse-bridge-1787984700-a1 存活、正常产出），v2-data-adapters 已回 ready 排队等待并行槽位，依赖下游（overview/project-list/run-stream/alerts/acceptance 等）将随其完成自然解锁。【对人类的建议】无需介入。两点提示：(a) 人工经 StateMachine 直接改 STATE.md 会绕过 daemon 感知，易触发 blocked_stuck 误报，建议人工冻结走带备注的通道或在冻结时预期告警；(b) 同期 add-inplace-bug-repair 于 06:23:08 因验证连续失败 3 轮被升级闸门合法冻结为 blocked（等待人工裁决，见其 verification-report.md），运维会话正在跟进，属另一议题、未在本次处置范围内。",
+            "admin_run_id": "admin-v2-sse-bridge-1787984536",
+            "escalate": false,
+            "id": "f84d8fcaafd6",
+            "created": "2026-08-29T06:30:42.500098+00:00",
+            "handled": true,
+            "handled_at": null,
+            "evidence": null,
+            "escalation_id": null,
+            "actions_taken": "只读诊断：读取 STATE.md、fenixd.log、supervisor.log、run 转录（impl-v2-sse-bridge-1787982985-a1/a2）与 admin_alerts 历史，重建完整时间线\n定位 06:04:12 的 blocked 写入者：daemon 日志在该时刻无任何 state_machine 写入记录，判定为带外写入；比对运维方交互会话转录（~/.claude/projects/-root-fenixd/44bbc94a-*.jsonl），确认是 06:04:12.670 由该会话经 core.state_machine 显式执行 sm.update_spec('v2-sse-bridge'/'v2-data-adapters', {'status':'blocked'}) 主动冻结（\"frozen both\"，此前 06:03:12 有 AskUserQuestion，属人工决策）\n确认解冻：同一会话于 06:25:00.242 将两个 spec 重置回 ready，daemon 文件监视器随即触发 spec_ready 并重新调度\n健康复核：v2-sse-bridge 新实现 run impl-v2-sse-bridge-1787984700-a1（PID 4155082）存活且持续产出工具调用、无报错；v2-data-adapters 已回 ready 排队待并行槽位；Dashboard 8787 探活正常（/api/projects 返回 projects JSON）；未做任何破坏性动作，未杀进程、未改 STATE.md、未重启 daemon",
+            "project": "fenixd"
+          },
+          {
+            "kind": "disposition",
+            "signal_type": "blocked_stuck",
+            "spec": "fix-v2-shell-hash-router",
+            "severity": "critical",
+            "description": "blocked_stuck 告警（critical）：fix spec 卡在 blocked 超 18 分钟无人处理，但 git 历史显示其修复已实现并合并进主树（be8f251 / merge ace774f），实现工作本身并未失败",
+            "action_taken": "只读诊断：STATE.md、daemon 日志 fenixd.log、实现器转录 a1/a2/a3、pm_engine/state_machine/dashboard 源码比对\n确认合并产物真实存在：be8f251 含 core/dashboard/static/v2/app.js、pages/app.json、webfont 资源及 tests/v2/verify-fix.spec.js（10/10 场景通过、pytest 766 passed），已在主树\nps 确认无本 spec 在飞实现器进程（仅其他 spec 的 run 在跑）\n用项目自带 StateMachine.update_spec 将 fix spec 状态 blocked 重置为 implemented，保留 implementer_run=impl-...-a3 与 branch 历史字段，error 写入 admin 重置说明\n等待调度扫描确认自愈：04:09:05 pm_engine 自动 Dispatching verifier for 'fix-v2-shell-hash-router'，planner-plan-...-1787976545-a1 已启动，流水线恢复\ndashboard 双重探活：/api/projects 返回含 projects 的 JSON 且首页 200，服务正常无需恢复",
+            "result": "resolved",
+            "recommended_action": "",
+            "summary": "【诊断结论】本次告警是假性卡死：修复代码早已完成并合并，spec 却冻结在 blocked。时间线还原——(1) 02:39:50 父 SPEC v2-shell-hash-router 验证发现缺陷，自动创建 fix spec 并派发实现器；(2) 实现器 a1 实际干了约 53 分钟真活（修复 hash 路由断裂 + webfont 404），但在收尾时被供应商 unrecognized_model(deepseek-v4-flash) 错误打断（exit 143），a2 换 aliyun 后同样秒败；期间 02:39:50→03:36:03 之间该 spec 的 status 被状态机外部写入为 blocked——daemon 日志无任何 blocked 转移记录（transition/update_spec 均有日志，均无），实现器工具调用无 STATE.md 写操作，dashboard API 亦无写 status 端点，判定为误置写入，具体写入者无法从现有日志定位（框架可考虑为 STATE.md 加写入审计）；(3) 03:33:19 a3 以 bigmodel.cn/glm-5.3-flash resume 成功跑完，03:42:11 合并分支进主树，但状态机拒绝 blocked→implemented 转移（Invalid transition ERROR），spec 冻结在 blocked，verifier 虽入队却因派发门禁（status==implemented）永不执行，遂触发 blocked_stuck 告警。【处置时间线】先写初步处置记录，再确认合并产物与无在飞进程，然后仅改一处状态：blocked→implemented（保留 run/branch 历史与重置说明），04:09:05 调度器自动重派 verifier，planner 场景生成已启动，流水线恢复正常推进。【最终结果】resolved，无需人工干预即可走完验证→done 流程。【给维护者的建议】① 两个 provider（inferaiapi.com / aliyun）对 deepseek-v4-flash* 均报 unrecognized_model，模型名配置需人工核对，否则每个 spec 都要烧两次失败才切到可用 provider；② blocked 的来源写入绕过了状态机日志，建议给 STATE.md 写路径加审计或在 full_scan 中对「有成功 merge 记录却处于 blocked」的 spec 做一致性自检；③ 03:42:11 的 Invalid transition 场景（实现器成功但状态被外部改动）可考虑降级为回退重派而非死锁。",
+            "admin_run_id": "admin-fix-v2-shell-hash-router-1787976052",
+            "escalate": false,
+            "id": "117f042e16f1",
+            "created": "2026-08-29T04:10:56.101751+00:00",
+            "handled": true,
+            "handled_at": null,
+            "evidence": null,
+            "escalation_id": null,
+            "actions_taken": "只读诊断：STATE.md、daemon 日志 fenixd.log、实现器转录 a1/a2/a3、pm_engine/state_machine/dashboard 源码比对\n确认合并产物真实存在：be8f251 含 core/dashboard/static/v2/app.js、pages/app.json、webfont 资源及 tests/v2/verify-fix.spec.js（10/10 场景通过、pytest 766 passed），已在主树\nps 确认无本 spec 在飞实现器进程（仅其他 spec 的 run 在跑）\n用项目自带 StateMachine.update_spec 将 fix spec 状态 blocked 重置为 implemented，保留 implementer_run=impl-...-a3 与 branch 历史字段，error 写入 admin 重置说明\n等待调度扫描确认自愈：04:09:05 pm_engine 自动 Dispatching verifier for 'fix-v2-shell-hash-router'，planner-plan-...-1787976545-a1 已启动，流水线恢复\ndashboard 双重探活：/api/projects 返回含 projects 的 JSON 且首页 200，服务正常无需恢复",
+            "project": "fenixd"
+          },
+          {
+            "kind": "disposition",
+            "signal_type": "merge_streak",
+            "spec": "v2-vendor-amis-sdk",
+            "severity": "critical",
+            "description": "merge-back 连续失败 2 次触发熔断（_merge_streak=2, fp=752b442281cf），spec 滞留 blocked，报错 'untracked working tree files would be overwritten by merge: core/dashboard/static/v2/*'",
+            "action_taken": "只读诊断：git status/stash/worktree、fenixd.log、STATE.md、worktree_manager.py 与 pm_engine.py merge-back 路径，确认根因\n字节级比对：主树 5 个 untracked 文件（core/dashboard/static/v2/{dark,helper,iconfont}.css、sdk.css、sdk.js）与 implementer 分支 fenix/v2-vendor-amis-sdk-1787966729 提交版本完全一致（IDENTICAL×5）\n持久化初步处置记录到 .fenix/admin_disposition.json（先于任何破坏性动作）\n备份 5 个 untracked 文件到 .fenix/merge-backup/1787967265/ 后移除，解除 merge 阻塞\n以 daemon 同款命令 git merge --no-ff fenix/v2-vendor-amis-sdk-1787966729 完成 merge-back（commit 2facd56，6 files changed, 53482 insertions）\n排查全部 34 条累积 'pre-dispatch autostash'：仅 stash@{0} 含 v2 untracked 文件且无其它改动，校验其与 HEAD 一致后 git stash drop，阻断『stash 倒回 → merge 再被 untracked 挡住』死循环；其余 33 条含其它文件改动，未动\n重置 STATE.md 中 v2-vendor-amis-sdk 条目：blocked→ready，error/_merge_fp/_merge_streak/_retry_count 清零\n验证：git status 干净、merge commit 在 HEAD、daemon 已重新派发（status→implementing）、dashboard 双重探活通过（/api/projects 含 projects 字段 + 首页 200）",
+            "result": "resolved",
+            "recommended_action": "",
+            "summary": "诊断结论：本次 merge-back 熔断不是分支冲突，而是主树残留 5 个 untracked 的 AMIS SDK 静态文件（core/dashboard/static/v2/ 下 dark/helper/iconfont.css、sdk.css、sdk.js），与 implementer 分支中已提交的同名路径冲突，git 出于保护拒绝 merge。经字节级比对，这 5 个主树副本与分支提交版本完全一致，属冗余污染而非有价值改动。污染回路根源在 pre-dispatch autostash 生命周期：主树累积了 34 条 'fenix: pre-dispatch autostash'，其中 stash@{0} 的 untracked 部分恰含这 5 个文件，restore_after_merge pop 时把它们倒回主树，形成『stash 倒回 → merge 被 untracked 挡住 → 熔断』的死循环；ensure_clean_tree 的 autostash 排除清单只覆盖 openspec/changes，未排除 core/dashboard/static/v2，属于机制盲区。\n处置时间线：(1) 只读诊断确认根因后，先写入初步处置记录；(2) 将 5 个 untracked 文件备份至 .fenix/merge-backup/1787967265/ 后移除；(3) 用 daemon 同款 --no-ff 命令手动完成 merge-back（commit 2facd56，vendor 的 SDK 静态产物与 tasks.md 更新已进主树）；(4) 逐条排查 34 条 stash，确认仅 stash@{0} 携带 v2 污染文件且内容与 HEAD 一致后 drop 该条，其余 33 条因含其它文件改动一律未动；(5) 将 STATE.md 中该 spec 重置为 ready 并清空熔断字段；(6) 复验通过——主树干净、merge commit 在 HEAD、dashboard 双重探活正常。\n最终结果：resolved。daemon 已重新调度该 spec（状态已推进到 implementing），依赖链 v2-shell-hash-router 等下游 spec 恢复可推进。\n对人类的建议：① 若希望根治此类问题，可给 fenixd 提 spec：restore_after_merge 的 pop 冲突自愈目前只处理 UU 半合并，不识别『stash untracked 文件即将覆盖已跟踪路径』场景，建议 autostash 排除清单增加产物目录（如 core/dashboard/static/）或 pop 前预检；② 主树累积的 33 条历史 autostash（含 core/agent_runner.py、core/pm_engine.py、dashboard 静态文件等改动）可能是多次 pop 冲突自愈时被丢弃的旧实现残留，建议人工抽查 git stash list 后决定去留，本次处置未擅自清理以防数据丢失；③ .fenix/merge-backup/1787967265/ 保留了被移除文件的完整副本，确认无异常后可删除。",
+            "admin_run_id": "admin-v2-vendor-amis-sdk-1787967051",
+            "escalate": false,
+            "id": "961efddb5a0a",
+            "created": "2026-08-29T01:35:47.976577+00:00",
+            "handled": true,
+            "handled_at": null,
+            "evidence": null,
+            "escalation_id": null,
+            "actions_taken": "只读诊断：git status/stash/worktree、fenixd.log、STATE.md、worktree_manager.py 与 pm_engine.py merge-back 路径，确认根因\n字节级比对：主树 5 个 untracked 文件（core/dashboard/static/v2/{dark,helper,iconfont}.css、sdk.css、sdk.js）与 implementer 分支 fenix/v2-vendor-amis-sdk-1787966729 提交版本完全一致（IDENTICAL×5）\n持久化初步处置记录到 .fenix/admin_disposition.json（先于任何破坏性动作）\n备份 5 个 untracked 文件到 .fenix/merge-backup/1787967265/ 后移除，解除 merge 阻塞\n以 daemon 同款命令 git merge --no-ff fenix/v2-vendor-amis-sdk-1787966729 完成 merge-back（commit 2facd56，6 files changed, 53482 insertions）\n排查全部 34 条累积 'pre-dispatch autostash'：仅 stash@{0} 含 v2 untracked 文件且无其它改动，校验其与 HEAD 一致后 git stash drop，阻断『stash 倒回 → merge 再被 untracked 挡住』死循环；其余 33 条含其它文件改动，未动\n重置 STATE.md 中 v2-vendor-amis-sdk 条目：blocked→ready，error/_merge_fp/_merge_streak/_retry_count 清零\n验证：git status 干净、merge commit 在 HEAD、daemon 已重新派发（status→implementing）、dashboard 双重探活通过（/api/projects 含 projects 字段 + 首页 200）",
+            "project": "fenixd"
+          },
+          {
+            "kind": "disposition",
+            "status": "escalated",
+            "signal_type": "manual-intervention",
+            "spec": "add-admin-invoke-dialog",
+            "admin_run_id": "admin-add-admin-invoke-dialog-1787962977",
+            "result": "escalated",
+            "actions_taken": "AdminMonitor 孤儿检测：pending 超时升级人工并终结该 run",
+            "description": "Administrator 处置中断已升级人工（run admin-add-admin-invoke-dialog-1787962977），pending 终结",
+            "id": "c229b14e193b",
+            "created": "2026-08-29T00:40:50.127760+00:00",
+            "handled": true,
+            "handled_at": null,
+            "severity": "major",
+            "evidence": null,
+            "action_taken": null,
+            "recommended_action": null,
+            "escalation_id": null,
+            "project": "fenixd"
+          }
+        ]
+      }
+    ]
+  },
+  "config": {
+    "llm": {
+      "providers": [
+        {
+          "name": "inferaiapi.com",
+          "baseurl": "https://api.inferaiapi.com",
+          "apikey": "sk-1ef26a67c84f415479f93886da65ce13bd1722de2bec72205c5db9bfdeeb1389",
+          "model": "deepseek-v4-flash",
+          "env": {
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000"
+          }
+        }
+      ]
+    },
+    "agents": {
+      "models": {
+        "implementer": {
+          "model": "deepseek-v4-flash",
+          "provider": [
+            {
+              "provider": "inferaiapi.com",
+              "model": "deepseek-v4-flash"
+            }
+          ]
+        },
+        "planner-plan": {
+          "model": "deepseek-v4-flash",
+          "provider": [
+            {
+              "provider": "inferaiapi.com",
+              "model": "deepseek-v4-flash"
+            }
+          ]
+        },
+        "planner-judge": {
+          "model": "deepseek-v4-flash",
+          "provider": [
+            {
+              "provider": "inferaiapi.com",
+              "model": "deepseek-v4-flash"
+            }
+          ]
+        },
+        "verifier": {
+          "model": "deepseek-v4-flash",
+          "provider": [
+            {
+              "provider": "inferaiapi.com",
+              "model": "deepseek-v4-flash"
+            }
+          ]
+        },
+        "administrator": {
+          "model": "deepseek-v4-pro",
+          "provider": [
+            {
+              "provider": "inferaiapi.com",
+              "model": "deepseek-v4-pro"
+            }
+          ]
+        }
+      },
+      "max_concurrent": 2,
+      "run_timeout_seconds": 7200,
+      "max_turns": 250,
+      "daily_run_limit": 50
+    },
+    "gates": {
+      "approve_mode": "manual"
+    },
+    "scope": "user",
+    "raw_exists": true,
+    "sources": {
+      "llm": "user",
+      "agents.models": "user",
+      "agents.max_concurrent": "user",
+      "agents.run_timeout_seconds": "user",
+      "agents.max_turns": "user",
+      "agents.daily_run_limit": "user",
+      "gates.approve_mode": "user"
+    },
+    "error": null
+  }
+}
