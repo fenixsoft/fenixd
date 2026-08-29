@@ -42,6 +42,7 @@ from core.state_machine import StateMachine
 from core.event_bus import EventBus
 from core.worktree_manager import WorktreeManager
 from core.agent_runner import AgentRunner
+from core.v2_dev_server import cleanup_orphans as v2_cleanup_orphans
 from core.admin_store import AdminStore
 from core.admin_monitor import AdminMonitor
 from core.pm_engine import PMEngine
@@ -153,6 +154,10 @@ class FenixDaemon:
         # —— 孤儿 attempt 进程仍存活的 worktree 会被跳过并重建登记，不被误删。
         self.worktree_manager.refresh_locks()
         self.worktree_manager.cleanup_stale_worktrees()
+
+        # add-worktree-test-server（D2 启动清扫）：上次异常退出遗留的 dev-server 进程
+        # 在 daemon 重启时早已失活（worktree 已清），需按命令行标记回收端口。
+        v2_cleanup_orphans(self.logger)
 
         # 恢复上次异常退出遗留的中断状态（implementing/testing → ready）。
         # recover_interrupted 此前定义了但从未被调用，导致 daemon 重启后卡死的
@@ -342,6 +347,12 @@ class FenixDaemon:
             # （SIGTERM→interrupted 标记→≤10s 缓冲→SIGKILL），默认 grace 窗口即收口，
             # 不传 timeout 以沿用 AGENT_TERMINATE_GRACE_SECONDS，确保总关停 ≪ supervisor 60s
             self.agent_runner.wait_for_running_agents()
+            # add-worktree-test-server（D2 关闭回收）：agent 收尾后回收全部在册 dev-server，
+            # 释放端口，避免遗留进程占用。
+            try:
+                self.agent_runner._v2_stop_all()
+            except Exception as e:
+                self.logger.error("fenixd", f"V2 dev-server cleanup on shutdown failed: {e}")
         if self.worktree_manager:
             self.worktree_manager.cleanup_orphans()
 
