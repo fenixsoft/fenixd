@@ -6,13 +6,13 @@
 
 ## 1. 测试先行
 
-- [ ] 1.1 写 tests/v2/run-stream.spec.js(时间轴节点点击 → Dialog 可见且流内容非空;关闭 → DELETE watch 被发出);跑确认 FAIL(当前是占位 tpl)
+- [x] 1.1 写 tests/v2/run-stream.spec.js(时间轴节点点击 → Dialog 可见且流内容非空;关闭 → DELETE watch 被发出);跑确认 FAIL(当前是占位 tpl)
 
 ## 2. 组件实现
 
-- [ ] 2.1 实现 run-stream.js:mount(dom, props) 按 mode 分支;run 模式(tail 快照→render→POST watch→SSE 增量/reset→粘性滚动→thinking_tokens 合并→marked 转义);admin 模式状态机(invoke→409 toast→5s 轮询→admin_run_id→切流);dispose(DELETE watch + close ES);window.RunStream.active 挂载
-- [ ] 2.2 pages/spec-detail.json 时间轴点击 Dialog 替换为 RunStream 接入(计划 Task 8 Step 3 代码逐字)
-- [ ] 2.3 run-stream.spec.js PASS;粘性滚动行为人工抽查(Playwright 驱动:上翻不跳底、回底恢复)
+- [x] 2.1 实现 run-stream.js:mount(dom, props) 按 mode 分支;run 模式(tail 快照→render→POST watch→SSE 增量/reset→粘性滚动→thinking_tokens 合并→marked 转义);admin 模式状态机(invoke→409 toast→5s 轮询→admin_run_id→切流);dispose(DELETE watch + close ES);window.RunStream.active 挂载
+- [x] 2.2 pages/spec-detail.json 时间轴点击 Dialog 替换为 RunStream 接入(计划 Task 8 Step 3 代码逐字)
+- [x] 2.3 run-stream.spec.js PASS;粘性滚动行为人工抽查(Playwright 驱动:上翻不跳底、回底恢复)
 
 ## 3. 提交
 
