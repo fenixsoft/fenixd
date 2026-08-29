@@ -4,20 +4,7 @@
   "header": {
     "type": "sse-bridge"
   },
-  "asideBefore": [
-    {
-      "type": "service",
-      "id": "broadcast-probe",
-      "_note": "Task 5 移除:壳级临时探针,验证 SSE 桥广播链路(overview 页因 app 路由 404 预存问题无法渲染页级探针)",
-      "onEvent": {
-        "sse:refresh": {
-          "actions": [
-            { "actionType": "custom", "script": "window.Bridge._broadcastProbe = window.Bridge._broadcastProbe || {}; window.Bridge._broadcastProbe.received = true;" }
-          ]
-        }
-      }
-    }
-  ],
+  "asideBefore": [],
   "pages": [
     { "label": "概览", "icon": "fa fa-home", "url": "/", "redirect": "/overview" },
     { "label": "导航", "children": [

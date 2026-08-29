@@ -74,9 +74,8 @@
     // 从 app.json 收集导航项(顶层 redirect + children 分组)
     const nav = [];
     for (const p of appSchema.pages) {
-      if (p.url === '/' && p.redirect) {
-        nav.push({ label: p.label || '概览', url: p.redirect });
-      } else if (p.children) {
+      if (p.redirect) continue; // redirect-only 页面不渲染为导航项(避免重复链接)
+      if (p.children) {
         for (const c of p.children) {
           if (c.url) nav.push({ label: c.label, url: c.url, icon: c.icon });
         }
@@ -120,7 +119,12 @@
     // 注入路由参数到 AMIS 数据域,供页面 JSON 的 ${params[0]}/${params[1]} 使用
     const route = window.V2.route();
     const data = { params: route.params, query: route.query };
-    contentScoped = amisLib.embed(el, pageSchema, { data, theme: 'dark' }, {});
+    // 壳级 SSE 桥:必须与页面组件处于同一棵 embed 树,广播才能沿渲染树触达各页 onEvent
+    // 消费者(amisCore.dispatchGlobalEventForRenderer 依赖同一 scoped 实例)。sse-bridge 渲染
+    // 器 render 为 null,仅承担 attach;这里把它前置注入页面 body,避免单独 embed 导致跨树不可达。
+    const wrapped = Object.assign({}, pageSchema);
+    wrapped.body = [{ type: 'sse-bridge' }].concat(Array.isArray(pageSchema.body) ? pageSchema.body : []);
+    contentScoped = amisLib.embed(el, wrapped, { data, theme: 'dark' }, {});
     window.amisScoped = contentScoped;
     highlightNav();
   }
