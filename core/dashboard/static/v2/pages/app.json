@@ -1,0 +1,20 @@
+{
+  "type": "app",
+  "brandName": "Fenix",
+  "header": {
+    "type": "tpl",
+    "wrapperComponent": "div",
+    "className": "v2-bridge-slot"
+  },
+  "asideBefore": [],
+  "pages": [
+    { "label": "概览", "icon": "fa fa-home", "url": "/", "redirect": "/overview" },
+    { "label": "概览", "url": "/overview", "schema": { "type": "page", "body": [] } },
+    { "label": "项目", "url": "/project/:name", "schema": { "type": "page", "body": [] } },
+    { "label": "SPEC 详情", "url": "/spec/:project/:name", "schema": { "type": "page", "body": [] } },
+    { "label": "配置", "url": "/config", "schema": { "type": "page", "body": [] } },
+    { "label": "配置", "url": "/config/:project", "schema": { "type": "page", "body": [] } },
+    { "label": "运维记录", "url": "/activities", "schema": { "type": "page", "body": [] } },
+    { "label": "运维记录", "url": "/activities/:project", "schema": { "type": "page", "body": [] } }
+  ]
+}
