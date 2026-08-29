@@ -117,14 +117,17 @@
                     "click": {
                       "actions": [
                         {
+                          "actionType": "custom",
+                          "script": "var tl2=(event&&event.data&&event.data.timeline)||[]; var node=tl2[window.__rsClickIdx]; window.__rsRunId = node && node.run_id ? node.run_id : null;"
+                        },
+                        {
                           "actionType": "dialog",
                           "args": {
                             "dialog": {
-                              "title": "运行记录",
+                              "title": "运行记录 ${run_id}",
                               "size": "lg",
                               "body": {
-                                "type": "tpl",
-                                "tpl": "运行记录弹窗待 Task 8 接入 RunStream run 模式(节点 run_id 来自 timeline 数据)"
+                                "type": "run-stream"
                               }
                             }
                           }
