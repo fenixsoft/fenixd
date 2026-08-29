@@ -117,7 +117,7 @@
                       "actions": [
                         {
                           "actionType": "custom",
-                          "script": "var _sc=window.amisScoped;var _svc=_sc&&_sc.getComponentById('spec-detail');var _d=_svc&&_svc.getData&&_svc.getData();var _tl=_d&&_d.timeline||[];var _n=_tl[window.__rsClickIdx];window.__rsRunId=_n&&_n.run_id?_n.run_id:null;"
+                          "script": "var _sc=window.amisScoped;var _svc=_sc&&_sc.getComponentById&&_sc.getComponentById('spec-detail');var _d=_svc&&_svc.getData&&_svc.getData();var _tl=_d&&_d.timeline||[];var _rid=null;for(var _i=0;_i<_tl.length;_i++){if(_tl[_i]&&_tl[_i].run_id){_rid=_tl[_i].run_id;break;}}window.__rsRunId=_rid;"
                         },
                         {
                           "actionType": "dialog",
@@ -126,8 +126,8 @@
                               "title": "运行记录 ${run_id}",
                               "size": "lg",
                               "body": {
-                                "type": "custom",
-                                "onMount": "(dom, data, onChange, props) => { window.RunStream.active = window.RunStream.mount(dom, Object.assign({}, data, { mode: 'run', runId: window.__rsRunId || data.run_id || data.runId })); }",
+                                "type": "run-stream",
+                                "mode": "run",
                                 "onEvent": {
                                   "close": {
                                     "actions": [

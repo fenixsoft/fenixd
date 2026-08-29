@@ -276,8 +276,10 @@
                               "title": "Admin 处置 · ${specName}",
                               "size": "lg",
                               "body": {
-                                "type": "custom",
-                                "onMount": "(dom, data, onChange, props) => { window.RunStream.active = window.RunStream.mount(dom, Object.assign({}, data, { mode: 'admin', project: data.project, spec: data.specName })); }",
+                                "type": "run-stream",
+                                "mode": "admin",
+                                "project": "${project}",
+                                "spec": "${specName}",
                                 "onEvent": {
                                   "close": {
                                     "actions": [

@@ -2,7 +2,7 @@
 // 实施依据: openspec/changes/v2-admin-doc-modals、计划 Task 9、behavior.md §1(spec-doc 404 语义) / §4(等待态)
 import { test, expect } from '@playwright/test';
 
-const BASE = 'http://127.0.0.1:8787';
+const BASE = process.env.V2_BASE_URL || 'http://127.0.0.1:8787';
 
 // 真实环境可见的 project 与 SPEC(以 STATE.md 中 fenixd 的 SPEC 树为准)
 const PROJECT = 'fenixd';

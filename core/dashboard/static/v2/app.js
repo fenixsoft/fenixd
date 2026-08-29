@@ -23,6 +23,42 @@
     amisCore.registerRenderer({ type: 'sse-bridge', component: SSEBridge, autoVar: true });
   }
 
+  // ── run-stream 渲染器(替代 type:custom + 字符串 onMount)──────────────
+  // SDK embed 模式下,type:"custom" 的字符串 onMount 不执行(实测与 sse-bridge 同源限制),
+  // 故注册一个 React 渲染器 `run-stream`,由 componentDidMount 调 window.RunStream.mount(dom, props)。
+  // props 即 AMIS 数据域透传(含 crud 行级 project/specName),关闭时由 onEvent.close 的
+  // custom script 调 window.RunStream.active.dispose() 清理。注册一次即可。
+  // 注意:不可用 !resolveRenderer('run-stream') 作守卫:该函数对未知类型返回占位而非 falsy,会误跳过注册。
+  if (amisCore && React && React.Component && amisCore.registerRenderer) {
+    class RunStream extends React.Component {
+      componentDidMount() {
+        this._inst = null;
+        if (window.RunStream && typeof window.RunStream.mount === 'function' && this._dom) {
+          const data = this.props.data || {};
+          const base = Object.assign({}, data, this.props);
+          // spec-detail 时间轴点击设置 window.__rsRunId,作为 run 模式 runId 兜底源
+          // AMIS 数据域字段名是 run_id(下划线),mount 期望 runId(驼峰)
+          if (base.mode === 'run' && !base.runId) {
+            base.runId = window.__rsRunId || data.run_id || data.runId;
+          }
+          this._inst = window.RunStream.mount(this._dom, base);
+          window.RunStream.active = this._inst || window.RunStream.active;
+        }
+      }
+      componentWillUnmount() {
+        if (this._inst && typeof this._inst.dispose === 'function') this._inst.dispose();
+      }
+      render() {
+        const self = this;
+        return React.createElement('div', {
+          ref: function (n) { self._dom = n; },
+          className: 'run-stream-mount',
+        });
+      }
+    }
+    amisCore.registerRenderer({ type: 'run-stream', component: RunStream, autoVar: true });
+  }
+
   // ── hash 路由解析 ─────────────────────────────
   // 路由表(behavior.md §8):
   //   #/overview
