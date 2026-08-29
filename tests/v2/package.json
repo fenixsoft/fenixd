@@ -1,0 +1,2 @@
+{ "name": "fenix-v2-tests", "private": true, "type": "module",
+  "dependencies": { "@playwright/test": "^1.49.0" } }
