@@ -13,8 +13,9 @@
         "sse:detail": {
           "actions": [
             {
-              "actionType": "custom",
-              "script": "var d = event.data; if (d && d.spec === window.V2.route().params[1]) { this.reload(); }"
+              "actionType": "reload",
+              "componentId": "spec-detail",
+              "condition": "${event.data && event.data.spec === window.V2.route().params[1]}"
             }
           ]
         },
@@ -116,7 +117,7 @@
                       "actions": [
                         {
                           "actionType": "custom",
-                          "script": "var tl2=(event&&event.data&&event.data.timeline)||[]; var node=tl2[window.__rsClickIdx]; window.__rsRunId = node && node.run_id ? node.run_id : null;"
+                          "script": "var _sc=window.amisScoped;var _svc=_sc&&_sc.getComponentById('spec-detail');var _d=_svc&&_svc.getData&&_svc.getData();var _tl=_d&&_d.timeline||[];var _n=_tl[window.__rsClickIdx];window.__rsRunId=_n&&_n.run_id?_n.run_id:null;"
                         },
                         {
                           "actionType": "dialog",
