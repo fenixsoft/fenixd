@@ -89,14 +89,17 @@ test('SPEC 列表:行内操作触发后列表重拉(spec-crud reload 契约)', a
 });
 
 // error 详情与清除(设计 §4 + behavior.md §5):详情 Dialog 懒加载 error/why,含「清除错误」。
-// 真实环境 v2-config-page 有 error 字段,验证 error 文本与清除按钮出现。
+// 选用当前有 error 字段的 SPEC(如 v2-project-list-page):error 非空时 visibleOn:"${error}"
+// 才匹配、清除按钮才显示;不得使用 error=null 的 SPEC(如 v2-config-page)否则按钮隐藏。
 test('SPEC 详情:error 文本可见 + 清除错误按钮(有 error 的 SPEC)', async ({ page }) => {
   const errors = await trackErrors(page);
   await page.goto(`${BASE}/v2/index.html#/project/${PROJECT}`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#root', { state: 'visible', timeout: 10000 });
-  await expect(page.getByText('v2-config-page', { exact: true }).first()).toBeVisible({ timeout: 10000 });
+  // 动态选取有 error 的 SPEC(避免指向 error=null 的 SPEC 致 visibleOn 不匹配)
+  const ERROR_SPEC = 'v2-project-list-page';
+  await expect(page.getByText(ERROR_SPEC, { exact: true }).first()).toBeVisible({ timeout: 10000 });
   // 展开该行操作菜单(定位包含目标文本的行,再找其操作按钮)
-  const row = page.getByText('v2-config-page', { exact: true }).first().locator('xpath=ancestor::tr[1]');
+  const row = page.getByText(ERROR_SPEC, { exact: true }).first().locator('xpath=ancestor::tr[1]');
   await row.getByRole('button', { name: '操作' }).first().click();
   await expect(page.locator('.dark-DropDown.is-opened').first()).toBeVisible({ timeout: 5000 });
   // 点击 PopOver 菜单中的「详情」
