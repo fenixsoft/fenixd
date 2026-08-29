@@ -1,5 +1,30 @@
 (function () {
   const amisLib = amisRequire('amis/embed');
+  const amisCore = amisRequire('amis');
+  const React = amisRequire('react');
+
+  // ── SSE 桥壳级组件注册(设计 §3 退路方案)──────────────
+  // app.json 中 header 用字符串 onMount 在 SDK 模式下不执行(实测),改由这里全局注册
+  // 一个 custom 渲染器 `sse-bridge`;其 props.onAction 即 AMIS broadcast 派发入口,桥组件
+  // 用它在渲染树内广播 sse:* 事件供各页面 onEvent 消费。注册一次即可。
+  if (amisCore && React && React.Component && amisCore.registerRenderer &&
+      !amisCore.resolveRenderer('sse-bridge')) {
+    class SSEBridge extends React.Component {
+      componentDidMount() {
+        // 将渲染器实例 + 当前 scoped 一并交给桥。scoped 来自 embed 实例(window.amisScoped),
+        // 广播走 amisCore.dispatchGlobalEventForRenderer(eventName, renderer, scoped, data, action),
+        // 该机制沿整棵渲染树触发所有匹配 onEvent 的组件(跨组件可达)。
+        if (window.Bridge && typeof window.Bridge.attach === 'function') {
+          window.Bridge.attach(this, window.amisScoped);
+        }
+      }
+      componentWillUnmount() {
+        if (window.Bridge && window.Bridge._es) window.Bridge._es.close();
+      }
+      render() { return null; }
+    }
+    amisCore.registerRenderer({ type: 'sse-bridge', component: SSEBridge, autoVar: true });
+  }
 
   // ── hash 路由解析 ─────────────────────────────
   // 路由表(behavior.md §8):
