@@ -21,9 +21,7 @@
 - [x] 修复后重跑验证确认通过## 验证修复（第 2 轮失败）
 
 - [x] 阅读 `openspec/changes/v2-project-list-page/verification-report.md`，定位「真实产品 Bug」并修复
-- [x] 修复后重跑验证确认通过
+- [x] 修复后重跑验证确认通过## 验证修复（第 2 轮失败）
 
-## 验证修复（第 1 轮失败）
-
-- [x] 阅读 `openspec/changes/v2-project-list-page/verification-report.md`，定位「真实产品 Bug」并修复
-- [x] 修复后重跑验证确认通过
+- [ ] 阅读 `openspec/changes/v2-project-list-page/verification-report.md`，定位「真实产品 Bug」并修复
+- [ ] 修复后重跑验证确认通过
