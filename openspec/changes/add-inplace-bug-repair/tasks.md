@@ -25,4 +25,7 @@
 ## 4. 验证与打包
 
 - [x] 4.1 运行 `python3 -m pytest .fenix/tests/ -v` 确认无回归
-- [x] 4.2 执行 `bash scripts/package.sh` 生成最新扩展包
+- [x] 4.2 执行 `bash scripts/package.sh` 生成最新扩展包## 验证修复（第 2 轮失败）
+
+- [ ] 阅读 `openspec/changes/add-inplace-bug-repair/verification-report.md`，定位「真实产品 Bug」并修复
+- [ ] 修复后重跑验证确认通过

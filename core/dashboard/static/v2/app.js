@@ -59,7 +59,30 @@
   }
   window.V2 = { route: parseHash };
 
-  fetch('/v2/pages/app.json?t=' + Date.now()).then(r => r.json()).then(appSchema => {
+  // 页面 JSON 合并加载:app.json 仅保留壳(导航/路由占位,body 为空 page),各页面内容
+  // 下沉到 pages/<name>.json;SDK 无 $ref 也无服务端渲染,故在加载期把各 pages/*.json
+  // 按 url 前缀匹配深合并进 app.json 对应页后再 embed(计划 Task 5 Step 1 定案)。
+  const PAGE_NAMES = ['overview', 'project', 'spec-detail', 'config', 'activities'];
+  const urlMap = {
+    overview: '/overview', project: '/project/', 'spec-detail': '/spec/',
+    config: '/config', activities: '/activities',
+  };
+
+  Promise.all([
+    fetch('/v2/pages/app.json?t=' + Date.now()).then(r => r.json()),
+    ...PAGE_NAMES.map(n => fetch('/v2/pages/' + n + '.json?t=' + Date.now())
+      .then(r => r.json()).then(s => [n, s]).catch(() => [n, null])),
+  ]).then(([appSchema, ...pageEntries]) => {
+    // 展开导航树(页面嵌套在 children 分组下),收集所有带 url 的页面节点
+    const pages = [];
+    const walk = (arr) => { for (const n of (arr || [])) { if (n.url) pages.push(n); if (n.children) walk(n.children); } };
+    walk(appSchema.pages);
+    for (const [name, schema] of pageEntries) {
+      if (!schema) continue;
+      for (const p of pages) {
+        if (p.url && p.url.startsWith(urlMap[name])) p.schema = schema;
+      }
+    }
     // amis 6.13 的 app 组件要求页面用 children 分组才能渲染侧边栏(平铺 pages 不会
     // 生成导航);embed 默认按 location.hash 解析路由。导航 <a> 的 href 由 amis 生成为
     // 路径形式(/overview),这里在渲染后改写为 #/overview 风格,既与既有 #/xxx 链接
