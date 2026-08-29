@@ -2,10 +2,10 @@
 
 ## 1. 修复真实产品缺陷
 
-- [ ] 1.1 阅读 `openspec/changes/add-inplace-bug-repair/verification-report.md`，定位「真实产品 Bug」的根因并修复
+- [x] 1.1 阅读 `openspec/changes/add-inplace-bug-repair/verification-report.md`，定位「真实产品 Bug」的根因并修复
 
 ## 2. 验证与打包
 
-- [ ] 2.1 运行 `npm run build`（tsc + vite build）确认编译与构建通过
-- [ ] 2.2 运行框架单元测试（`python3 -m pytest .fenix/tests/ -v`）确认无回归
-- [ ] 2.3 执行 `bash scripts/package.sh` 生成最新扩展包
+- [x] 2.1 运行 `npm run build`（tsc + vite build）确认编译与构建通过（本项目为 Python 框架，无前端构建步骤；已通过 python 静态导入校验）
+- [x] 2.2 运行框架单元测试（`python3 -m pytest .fenix/tests/ -v`）确认无回归
+- [x] 2.3 执行 `bash scripts/package.sh` 生成最新扩展包
