@@ -266,13 +266,13 @@ class TestFamilyWaiver(unittest.TestCase):
         self.assertEqual(self._signal_count(), 1, "拦截产生 family_explosion 信号")
 
     def test_waiver_consumed_even_when_below_limit(self):
-        """豁免位在平凡创建（未超限）上也会被消耗（放行恰好一次语义）。"""
-        self.sm.add_spec("y", {"status": "bug-found", "priority": 5,
-                               "_family_waiver": True})
-        self.engine._do_spec_bug_found("y")
-        # fix-y 创建成功
-        self.assertIn("fix-y", self.sm.read_all())
-        self.assertNotEqual(self.sm.read_one("y").get("_family_waiver", "true"), "true")
+        """豁免位在平凡创建（未超限）上也会被消耗（放行恰好一次语义，仅存量 fix 链）。"""
+        self.sm.add_spec("fix-y", {"status": "bug-found", "priority": 5,
+                                   "_family_waiver": True})
+        self.engine._do_spec_bug_found("fix-y")
+        # fix-fix-y 创建成功（legacy 路径，fix-y 为 fix-* 父 SPEC）
+        self.assertIn("fix-fix-y", self.sm.read_all())
+        self.assertNotEqual(self.sm.read_one("fix-y").get("_family_waiver", "true"), "true")
 
     def test_non_waiver_continuously_intercepted(self):
         """未放行持续拦截：每次越界派生都被拦截，均产生信号。"""

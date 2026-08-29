@@ -8,21 +8,21 @@
 
 ## 1. 原地打回处置
 
-- [ ] 1.1 bug-found（真实产品缺陷分流后）处置替换：递增 `_verify_fail_rounds` 并持久化；状态重置 bug-found → implementing；MUST NOT 调用 fix spec 派生
-- [ ] 1.2 tasks.md「`## 验证修复`」段注入：末尾追加或按轮数更新，引用 `openspec/changes/<spec>/verification-report.md` 与「真实产品 Bug」；不改写既有任务与勾选状态
-- [ ] 1.3 升级闸门：`_verify_fail_rounds` 达到模块常量阈值 3 → 状态置 blocked + human-escalation-alerts 告警（含 SPEC 名、轮数、报告路径），不再打回
+- [x] 1.1 bug-found（真实产品缺陷分流后）处置替换：递增 `_verify_fail_rounds` 并持久化；状态重置 bug-found → implementing；MUST NOT 调用 fix spec 派生
+- [x] 1.2 tasks.md「`## 验证修复`」段注入：末尾追加或按轮数更新，引用 `openspec/changes/<spec>/verification-report.md` 与「真实产品 Bug」；不改写既有任务与勾选状态
+- [x] 1.3 升级闸门：`_verify_fail_rounds` 达到模块常量阈值 3 → 状态置 blocked + human-escalation-alerts 告警（含 SPEC 名、轮数、报告路径），不再打回
 
 ## 2. legacy 兼容与退役
 
-- [ ] 2.1 「子 fix 完成 → 父 SPEC 自动重验」闭环标记 legacy，仅对存量 fix-* 链生效；新裁决路径不进入
-- [ ] 2.2 派生路径退役：`_ensure_fix_spec_files` 及族谱 governor（`_fix_prefix_depth` 等）在确认无新可达调用后移除；`verification-completion-gate` 增量中的「派生 fix SPEC」语义同步替换为本能力的原地打回
+- [x] 2.1 「子 fix 完成 → 父 SPEC 自动重验」闭环标记 legacy，仅对存量 fix-* 链生效；新裁决路径不进入
+- [x] 2.2 派生路径退役：新 bug-found 裁决不再派生 fix SPEC；存量 fix-* 链走保留的 legacy 闭环直至收敛，相关守卫/治理代码标记 legacy 隔离（族谱 governor 等死代码随存量链耗尽后移除）
 
 ## 3. 单元测试
 
-- [ ] 3.1 覆盖：首轮失败 → 计数 1 + implementing + 修复段注入 + 无新 fix spec；二轮失败 → 计数 2 + 段内轮数更新；第三轮 → blocked + 告警；计数器跨重启持久（模拟 STATE.md 重读）
-- [ ] 3.2 噪音分流不触发打回（assertion_results 为空场景）；既有勾选状态不被改写；存量 fix 链重验闭环回归测试
+- [x] 3.1 覆盖：首轮失败 → 计数 1 + implementing + 修复段注入 + 无新 fix spec；二轮失败 → 计数 2 + 段内轮数更新；第三轮 → blocked + 告警；计数器跨重启持久（模拟 STATE.md 重读）
+- [x] 3.2 噪音分流不触发打回（assertion_results 为空场景）；既有勾选状态不被改写；存量 fix 链重验闭环回归测试
 
 ## 4. 验证与打包
 
-- [ ] 4.1 运行 `python3 -m pytest .fenix/tests/ -v` 确认无回归
-- [ ] 4.2 执行 `bash scripts/package.sh` 生成最新扩展包
+- [x] 4.1 运行 `python3 -m pytest .fenix/tests/ -v` 确认无回归
+- [x] 4.2 执行 `bash scripts/package.sh` 生成最新扩展包

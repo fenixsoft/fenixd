@@ -228,14 +228,17 @@ class TestGuardOneResetSuppression(unittest.TestCase):
         self.assertEqual(self.sm.read_one("fix-x")["status"], "bug-found")
 
     def test_no_suppression_when_not_fix_spec(self):
-        """非 fix spec 不触发守卫一。"""
+        """非 fix spec 不触发守卫一（add-inplace-bug-repair：走原地打回）。"""
         self.sm.add_spec("my-spec", {"status": "bug-found"})
-        # 没有 fix-my-spec 存在
+        # 没有 fix-my-spec 存在；非 fix 父 SPEC 走原地打回而非派生
         self.engine._do_spec_bug_found("my-spec")
-        # 应创建 fix-my-spec 并重置
+        # 不创建 fix-my-spec（原地打回语义）
         entry = self.sm.read_one("fix-my-spec")
-        self.assertIsNotNone(entry)
-        self.assertEqual(entry["status"], "ready")
+        self.assertIsNone(entry)
+        # 父 SPEC 重置为 implementing，计数 +1
+        parent = self.sm.read_one("my-spec")
+        self.assertEqual(parent["status"], "implementing")
+        self.assertEqual(int(parent.get("_verify_fail_rounds", 0)), 1)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -478,13 +481,16 @@ class TestZeroBehaviorDiffFallback(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_normal_spec_unaffected(self):
-        """Scenario: 正常单链路径零差异。"""
+        """Scenario: 非 fix 父 SPEC 走原地打回（add-inplace-bug-repair）。"""
         self.sm.add_spec("my-spec", {"status": "bug-found"})
-        # 正常 bug-found：创建 fix-my-spec
+        # 正常 bug-found（非 fix 父）：原地打回，不派生 fix-my-spec
         self.engine._do_spec_bug_found("my-spec")
         fix_entry = self.sm.read_one("fix-my-spec")
-        self.assertIsNotNone(fix_entry)
-        self.assertEqual(fix_entry["status"], "ready")
+        self.assertIsNone(fix_entry)
+        # 父 SPEC 重置为 implementing 并递增计数器
+        parent = self.sm.read_one("my-spec")
+        self.assertEqual(parent["status"], "implementing")
+        self.assertEqual(int(parent.get("_verify_fail_rounds", 0)), 1)
 
     def test_fix_spec_no_child_unaffected(self):
         """fix spec 无子时重置行为不变。"""

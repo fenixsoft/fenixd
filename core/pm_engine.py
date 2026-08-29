@@ -38,6 +38,10 @@ DEFAULT_FOLLOWUP_CHECK_MINUTES = 15
 DEFAULT_READY_STALL_THRESHOLD_MINUTES = 20
 # 同 spec 同指纹的巡检/滞留信号冷却（分钟）：指纹未变且冷却期内只记日志
 DEFAULT_SIGNAL_COOLDOWN_MINUTES = 30
+# ── 原地打回升级阈值（inplace-bug-repair D2）────────────────────
+# _verify_fail_rounds 达到此值时冻结为 blocked，停止自动修复，等待人工裁决。
+# 模块常量，不进 config（避免触发「配置项必须带 Dashboard 界面」约束）。
+MAX_VERIFY_FAIL_ROUNDS = 3
 
 
 class PMEngine:
@@ -850,12 +854,14 @@ class PMEngine:
             )
 
     def _do_spec_bug_found(self, spec_name: str):
-        """实际执行 bug-found 处理逻辑。"""
-        # ── 守卫一：reset 抑制（fix-repair-lane-dedup / design 守卫一）──
-        # spec_name 自身为 fix spec 且已存在同根非终态子 fix 时，保持 bug-found
-        # 不重置为 ready、不派发其实现器——由子 fix 承载修复。
-        # 无子或子均已终态（design D4 子终态解封）：守卫不生效，既有 reset 行为不变。
+        """实际执行 bug-found 处理逻辑。
+
+        新裁决路径（inplace-bug-repair）：父 SPEC 原地打回重修，不再派生 fix-* 子 SPEC。
+        存量 fix-* 链保留 legacy 闭环直至自然终态。
+        """
+        # ── legacy 兼容：存量 fix-* SPEC 保持原有闭环 ──
         if self._is_fix_spec(spec_name):
+            # 守卫一（fix-repair-lane-dedup）：fix spec 已有非终态子 fix 时抑制 reset
             carrier = self._has_non_terminal_child_fix(spec_name)
             if carrier:
                 self.logger.info(
@@ -867,24 +873,91 @@ class PMEngine:
                     "error": f"修复由子 fix '{carrier}' 承载，抑制重实现重置",
                 })
                 return
+            # fix-* SPEC 走 legacy 派生闭环（子 fix 完成 → 父 SPEC 自动重验）
+            self._do_legacy_fix_spec_bug_found(spec_name)
+            return
 
+        # ── 新裁决路径：原地打回（inplace-bug-repair D1-D3）──
+        entry = self.state_machine.read_one(spec_name) or {}
+        fail_rounds = 0
+        try:
+            fail_rounds = int(entry.get("_verify_fail_rounds", 0) or 0)
+        except (TypeError, ValueError):
+            fail_rounds = 0
+        fail_rounds += 1
+
+        if fail_rounds >= MAX_VERIFY_FAIL_ROUNDS:
+            # ── 升级闸门：冻结为 blocked + human-escalation-alerts 告警 ──
+            self.state_machine.update_spec(spec_name, {
+                "_verify_fail_rounds": fail_rounds,
+                "status": "blocked",
+                "error": (
+                    f"验证连续失败 {fail_rounds} 轮，已冻结等待人工裁决。"
+                    f"详见 `openspec/changes/{spec_name}/verification-report.md`"
+                ),
+            })
+            self.logger.error(
+                "pm_engine",
+                f"升级闸门：'{spec_name}' 验证失败 {fail_rounds} 轮，"
+                f"冻结为 blocked，等待人工裁决",
+            )
+            self._send_human_escalation_alert(
+                spec_name=spec_name,
+                signal_type="verify_fail_escalation",
+                severity="major",
+                description=(
+                    f"验证连续失败 {fail_rounds} 轮，已冻结等待人工裁决"
+                ),
+                evidence=(
+                    f"spec={spec_name}; fail_rounds={fail_rounds}; "
+                    f"report=openspec/changes/{spec_name}/verification-report.md"
+                ),
+                recommended_action=(
+                    "检查验证报告定位根因，人工调整 SPEC 状态后重跑验证；"
+                    "人工重置计数器即重新获得自动修复机会"
+                ),
+            )
+            return
+
+        # ── 正常打回：递增计数 + 重置 implementing + 注入修复任务 ──
+        self.state_machine.update_spec(spec_name, {
+            "_verify_fail_rounds": fail_rounds,
+            "status": "implementing",
+            "error": (
+                f"验证失败第 {fail_rounds} 轮，原地打回重修"
+            ),
+        })
+        self.logger.warning(
+            "pm_engine",
+            f"原地打回：'{spec_name}' 第 {fail_rounds} 轮失败，"
+            f"重置为 implementing 并注入修复任务",
+        )
+        # 注入 tasks.md「验证修复」段
+        self._inject_verify_fix_task(spec_name, fail_rounds)
+        self._append_project_log(
+            f"🐛 Bug found in **{spec_name}** → 原地打回（第 {fail_rounds} 轮）"
+        )
+        # 排队实现器
+        self._enqueue(spec_name, "implementer")
+
+    def _do_legacy_fix_spec_bug_found(self, spec_name: str):
+        """存量 fix-* SPEC 的 legacy 闭环（design D4：自然终态耗尽）。
+
+        保留原有派生逻辑，直至所有存量 fix 链收敛。
+        """
         parent_prio = (self.state_machine.read_one(spec_name) or {}).get("priority", 5)
 
         # 确定本轮 bug 应使用的 fix SPEC 名称
         fix_spec_name = self._resolve_fix_spec_name(spec_name)
         if fix_spec_name is None:
-            # 已有进行中的 fix SPEC，视为重复派发竞态，跳过
             self.logger.info(
                 "pm_engine",
-                f"Fix SPEC for '{spec_name}' already in progress — "
+                f"Legacy fix SPEC for '{spec_name}' already in progress — "
                 f"skipping duplicate bug-found handling",
             )
             return
 
-        # ── fix 族谱收敛治理（design D4）──
-        # 仅在「新建子 SPEC」路径拦截：复用/重置既有 fix SPEC 不新增家族成员。
-        # 拦截时不改父状态、无 spec_bug_found 处理副作用；Administrator 已放行
-        # （_family_waiver=true）则放行恰好一次并随即复位豁免位。
+        # ── fix 族谱收敛治理（design D4 legacy）──
         if self.state_machine.read_one(fix_spec_name) is None:
             if self._family_gate_blocked(spec_name, fix_spec_name):
                 if self._consume_family_waiver(spec_name):
@@ -897,39 +970,26 @@ class PMEngine:
                     detail = (f"深度={self._fix_prefix_depth(fix_spec_name)}, "
                               f"宽度={self._family_width(fix_spec_name)}")
                     self._signal_family_explosion(spec_name, fix_spec_name, detail)
-                    return  # 拦截：父保持 bug-found，不创建不派发
+                    return
             elif self._family_waiver_set(spec_name):
-                # 未触发拦截的平凡创建也消耗豁免位（放行恰好一次）
                 self._consume_family_waiver(spec_name)
 
-        # 确保 fix SPEC 在磁盘上有 proposal/tasks，否则 implementer 找不到 SPEC 文件
         self._ensure_fix_spec_files(fix_spec_name, spec_name)
 
         existing_fix = self.state_machine.read_one(fix_spec_name)
         if existing_fix:
-            # 复用可重置的 fix SPEC。先按幂等守卫判定（fix-dispatch-orphan D2）：
-            # 子 SPEC 处于推进态或终态（implementing/testing/implemented/verified/
-            # done/pushed）时，本次 re-trigger 绝不动其状态、绝不清空
-            # implementer_run/tester_run（保留历史 run id 供诊断与排队去重），
-            # 仅记日志跳过，避免把已 implemented 甚至进行中的子 SPEC 打回 ready。
             guard_status = existing_fix.get("status", "")
             if guard_status in (
                 "implementing", "testing", "implemented",
                 "verified", "done", "pushed",
-                "blocked",  # 人工冻结/熔断态：重置等于解除冻结（2026-08-28 实证两次）
+                "blocked",
             ):
                 self.logger.info(
                     "pm_engine",
                     f"Fix SPEC '{fix_spec_name}' 处于 '{guard_status}' "
                     f"— bug-found 重发幂等守卫：跳过重置，保留状态与 run 字段",
                 )
-                # 不可复用现有 _on_spec_ready 直调（design D1）：此时子 SPEC 不在
-                # ready 态，直调会被 _dependencies_satisfied/状态校验挡下，无副作用；
-                # 但若未来扩展此分支需重新派发，应在此显式接 D1 补发路径。
             else:
-                # 可重置态（drafted/ready/bug-found）：保留现有 reset 行为，但
-                # 不再清空 implementer_run/tester_run 历史值（D2：清空制造的孤儿
-                # 问题远大于收益，字段唯一用途是排队去重与诊断）。
                 self.logger.info(
                     "pm_engine",
                     f"Fix SPEC '{fix_spec_name}' already exists "
@@ -939,19 +999,13 @@ class PMEngine:
                     "status": "ready",
                     "error": f"Re-triggered from bug found in {spec_name}",
                 }
-                # 仅当 run 字段当前为空时才补 None；已有历史 run id 一律保留。
                 if existing_fix.get("implementer_run") is None:
                     reset_fields["implementer_run"] = None
                 if existing_fix.get("tester_run") is None:
                     reset_fields["tester_run"] = None
                 self.state_machine.update_spec(fix_spec_name, reset_fields)
-                # D1 同状态行动性重置补发：ready→ready（或 bug-found→ready）属
-                # 「状态未变但语义需要行动」的重置，必须触达 dispatch 路径。
-                # 直调 _on_spec_ready（复用 L106 启动路径先例，不走事件比较）：
-                # 若 fix spec 已在 ready，本次重置后重新排队实现器。
                 self._on_spec_ready(fix_spec_name)
         else:
-            # 新建 fix SPEC（跳过 drafted —— 自动生成，无需人工评审）
             self.state_machine.add_spec(fix_spec_name, {
                 "status": "ready",
                 "priority": min(parent_prio + 1, 10),
@@ -960,13 +1014,94 @@ class PMEngine:
             })
             self.logger.info("pm_engine", f"Created fix SPEC: {fix_spec_name}")
 
-        # 父 spec 保持在 bug-found，等 fix 完成后由 _on_spec_done 重新验证
-        # （bug-found → implemented）。不在此过渡到 implementing——那会让父 spec
-        # 呈现「无进程却在 implementing」的僵尸假象，且 fix 若卡死父 spec 会永久滞留。
-        self._append_project_log(f"🐛 Bug found in **{spec_name}** → scheduling **{fix_spec_name}**")
-
-        # Immediately schedule the fix
+        self._append_project_log(
+            f"🐛 Bug found in **{spec_name}** → scheduling legacy **{fix_spec_name}**"
+        )
         self._enqueue(fix_spec_name, "implementer")
+
+    # ── 原地打回辅助：任务注入与升级告警 ──────────────────────────────
+
+    _VERIFY_FIX_SECTION_RE = re.compile(r"^## 验证修复\b.*$", re.MULTILINE)
+
+    def _inject_verify_fix_task(self, spec_name: str, fail_rounds: int):
+        """在父 SPEC 的 tasks.md 末尾追加/更新「## 验证修复」任务段。
+
+        - 首次失败：追加新段
+        - 后续失败：更新段内轮数注记
+        MUST NOT 改写既有任务与勾选状态（design D3）。
+        """
+        tasks_path = self.project_root / "openspec" / "changes" / spec_name / "tasks.md"
+        if not tasks_path.exists():
+            self.logger.warning(
+                "pm_engine",
+                f"tasks.md 不存在，跳过验证修复段注入：{spec_name}",
+            )
+            return
+
+        try:
+            text = tasks_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return
+
+        report_path = f"openspec/changes/{spec_name}/verification-report.md"
+        section = (
+            f"\n\n## 验证修复（第 {fail_rounds} 轮失败）\n\n"
+            f"- [ ] 阅读 `{report_path}`，定位「真实产品 Bug」并修复\n"
+            f"- [ ] 修复后重跑验证确认通过\n"
+        )
+
+        m = self._VERIFY_FIX_SECTION_RE.search(text)
+        if m:
+            # 已有验证修复段：替换为新轮数版本
+            # 找到段的起始位置（含前一个 \n\n），到段尾
+            start = m.start()
+            # 向前找到段落分隔
+            while start > 0 and text[start - 1] == '\n':
+                start -= 1
+            # 向后找到下一个段落标题或文件末尾
+            after = text[m.end():]
+            next_heading = re.search(r"\n## [^验]", after)
+            if next_heading:
+                end = m.end() + next_heading.start() + 1  # 包含 \n
+            else:
+                end = len(text)
+            new_text = text[:start] + section.strip() + "\n" + text[end:]
+        else:
+            # 无现有段：追加到末尾
+            new_text = text.rstrip("\n") + section
+
+        tasks_path.write_text(new_text, encoding="utf-8")
+        self.logger.info(
+            "pm_engine",
+            f"验证修复段已{'更新' if m else '注入'}：{spec_name}（第 {fail_rounds} 轮）",
+        )
+
+    def _send_human_escalation_alert(
+        self, spec_name: str, signal_type: str, severity: str,
+        description: str, evidence: str, recommended_action: str,
+    ):
+        """发送 human-escalation-alerts 告警（escalation 种类）写入 admin store。"""
+        from .admin_store import AdminStore, ESCALATION
+        store = AdminStore(self.project_root, self.logger)
+        try:
+            store.append({
+                "kind": ESCALATION,
+                "signal_type": signal_type,
+                "spec": spec_name,
+                "severity": severity,
+                "description": description,
+                "evidence": evidence,
+                "recommended_action": recommended_action,
+            })
+            self.logger.warning(
+                "pm_engine",
+                f"human-escalation-alert: {signal_type} for '{spec_name}'",
+            )
+        except Exception as e:
+            self.logger.error(
+                "pm_engine",
+                f"Failed to send escalation alert for '{spec_name}': {e}",
+            )
 
     def _on_spec_done(self, spec_name: str):
         """SPEC is done — log, re-verify parent if this was a fix SPEC.
@@ -991,6 +1126,8 @@ class PMEngine:
         if approve_mode == "auto" and status == "done":
             self._auto_approve(spec_name)
 
+        # ── legacy：存量 fix-* SPEC 完成 → 父 SPEC 自动重验（D4 过渡期兼容）──
+        # 仅对 fix-* 链条生效；新裁决不再产生 fix-* 派生，待存量链收敛后自然耗尽。
         # If this is a fix SPEC, re-trigger verification of the original SPEC
         if spec_name.startswith("fix-"):
             # 剥离 fix- 前缀逐级生成的候选根名；取「最深且存在」的候选，避免
@@ -1671,7 +1808,8 @@ class PMEngine:
 
             priority, spec_name, agent_type, my_enqueued_at = entry_to_dispatch
 
-            # ── 守卫三：派发互斥（fix-repair-lane-dedup / design 守卫三）──
+            # ── 守卫三：派发互斥（fix-repair-lane-dedup / design 守卫三，legacy）──
+            # 仅存量 fix-* SPEC 可达（非 fix 父 SPEC 现已走原地打回，不进入此分支）。
             # fix spec 实现器派发前检查同根兄弟是否存在活跃修复活动；
             # 存在则回滚 entry 到队列、跳过本轮派发（先到先得，后到抑制）。
             # 被抑制条目记入 suppressed 后继续扫描后队：抑制自己 ≠ 阻塞他人。
