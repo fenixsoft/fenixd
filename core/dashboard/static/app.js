@@ -315,25 +315,10 @@ function renderAlertBanner(data) {
       <button id="alert-clear-all" class="alert-clear-all">清理所有事件</button>
     </div>
     <div id="alert-list" class="alert-list${expanded ? '' : ' hidden'}">${listHtml}</div>`;
-
-  el('alert-toggle').addEventListener('click', () => {
-    const list = el('alert-list');
-    const btn = el('alert-toggle');
-    list.classList.toggle('hidden');
-    btn.textContent = list.classList.contains('hidden') ? '展开列表' : '收起列表';
-  });
-  el('alert-clear-all').addEventListener('click', () => {
-    if (!confirm('确认将所有未处理事件标记为已处理？')) return;
-    api('/api/alerts/clear', { method: 'POST' })
-      .then(() => {
-        loadAlerts();
-        if (currentState.view === 'activities') load();
-      })
-      .catch(() => {});
-  });
-  document.querySelectorAll('.alert-handled-btn').forEach((b) => {
-    b.addEventListener('click', () => markAlertHandled(b.dataset.project, b.dataset.id));
-  });
+  // 注意：#alert-toggle / #alert-clear-all / .alert-handled-btn 的点击处理统一走
+  // #alert-banner 上的事件委托（initAlertBanner 绑定一次），此处不再逐个重绑——
+  // 防止重渲染后旧节点监听器丢失导致「展开失效」「标记已处理无反应」（见
+  // fix-add-verify-report-gate Bug 3 / Bug 4 根因）。
 }
 
 function alertItemHtml(a) {
@@ -358,13 +343,63 @@ function alertItemHtml(a) {
 
 function markAlertHandled(project, id) {
   if (!project || !id) return;
+  // 乐观更新：先在前端隐藏该告警项（横幅仍显示剩余未处理计数），待 API 回写后
+  // loadAlerts 重建横幅。修复 Bug 4——标记已处理依赖后端回写才能移除，而重渲染
+  // 时序下列表未及时收缩，表现为「标记后告警仍在 DOM 中」。乐观移除让反馈即时。
+  const banner = el('alert-banner');
+  const item = banner && banner.querySelector('.alert-handled-btn[data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
+  const row = item && item.closest('.alert-item');
+  if (row) row.remove();
   api('/api/alerts/' + encodeURIComponent(id) + '/handled?project=' + encodeURIComponent(project),
     { method: 'POST' })
     .then(() => {
       loadAlerts();
       if (currentState.view === 'activities') load();
     })
-    .catch(() => {});
+    .catch(() => {
+      // 失败：回滚乐观移除（重载横幅恢复该告警项）
+      loadAlerts();
+    });
+}
+
+// ── 告警横幅交互（事件委托，fix-add-verify-report-gate Bug 3/4） ──
+// #alert-banner 是 index.html 中的常驻稳定节点，innerHTML 仅替换其内部子结构；
+// 在此容器上做一次事件委托，避免每次 renderAlertBanner 重建后逐个重绑导致的
+// 监听器丢失：
+//   - #alert-toggle 点击 → toggle #alert-list 的 hidden（Bug 3 根因即旧逻辑重绑失败）
+//   - #alert-clear-all 点击 → 清理所有未处理
+//   - .alert-handled-btn 点击 → 标记单条已处理（Bug 4）
+let _alertBannerBound = false;
+function initAlertBanner() {
+  if (_alertBannerBound) return;
+  _alertBannerBound = true;
+  const banner = el('alert-banner');
+  if (!banner) return;
+  banner.addEventListener('click', (e) => {
+    const toggle = e.target.closest('#alert-toggle');
+    if (toggle) {
+      const list = el('alert-list');
+      if (list) {
+        list.classList.toggle('hidden');
+        toggle.textContent = list.classList.contains('hidden') ? '展开列表' : '收起列表';
+      }
+      return;
+    }
+    if (e.target.closest('#alert-clear-all')) {
+      if (!confirm('确认将所有未处理事件标记为已处理？')) return;
+      api('/api/alerts/clear', { method: 'POST' })
+        .then(() => {
+          loadAlerts();
+          if (currentState.view === 'activities') load();
+        })
+        .catch(() => {});
+      return;
+    }
+    const handled = e.target.closest('.alert-handled-btn');
+    if (handled) {
+      markAlertHandled(handled.dataset.project, handled.dataset.id);
+    }
+  });
 }
 
 // ── 运维记录（/api/admin-activities） ──────────────────
@@ -1096,10 +1131,15 @@ function renderVerdict(d) {
   const s = v.summary || {};
   const bugs = parseInt(s.product_bugs, 10) || 0;
   const env = parseInt(s.env_issues, 10) || 0;
-  const status = v.status || '';
+  let status = v.status || '';
   let tone = 'pass', icon = '✅';
   if (bugs > 0 || /未通过|Bug Found|失败/.test(status)) { tone = 'fail'; icon = '❌'; }
   else if (env > 0 || /环境|无法验证|不可达|unreachable/i.test(status)) { tone = 'env'; icon = '⚠️'; }
+  // fix-add-verify-report-gate Bug 1：结论标题状态表情符号重复渲染。parse_verdict
+  // 返回的状态串（如 "❌ 未通过（Bug Found）"）已含前缀 emoji，外层又拼接了一次
+  // 状态前缀 icon，导致 "❌ ❌ 未通过"。此处若状态串自身以 emoji/符号开头，则剥离
+  // 该前缀，统一由计算的 icon 承载，避免重复。
+  status = status.replace(/^[\s\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}\u{2705}\u{274C}\u{26A0}]+/u, '').trim();
   const bits = [];
   if (s.passed != null) bits.push(`通过 ${s.passed}`);
   if (s.failed != null) bits.push(`失败 ${s.failed}`);
@@ -2944,3 +2984,4 @@ route();
 connectSSE();
 initWhyHint();
 initSpecContextMenu();
+initAlertBanner();
