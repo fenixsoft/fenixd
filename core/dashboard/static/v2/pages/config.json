@@ -15,18 +15,16 @@
           "api": {
             "method": "post",
             "url": "/api/config",
-            "requestAdaptor": "var out = window.Adapters.buildConfigPayload(api.data, window.__configSnapshot, window.__configDefaults); api.data = out; return api;",
+            "requestAdaptor": "var out = window.Adapters.buildConfigPayload(api.data, window.__configSnapshot, window.__configDefaults); var chain = api.data && api.data.agents && api.data.agents.agent_chain; if (chain && chain.length > 0) { var provs = out.llm && out.llm.providers || []; var v = window.Adapters.validateChain(chain, provs); if (v !== true) { throw new Error(v); } } api.data = out; return api;",
             "adaptor": "return { status: 0 };"
           },
           "body": [
-            { "type": "tabs", "tabsMode": "line", "tabs": [
+            { "type": "tabs", "tabsMode": "line", "unmountOnExit": true, "tabs": [
               { "title": "LLM Provider", "body": [{ "type": "combo", "name": "llm.providers", "label": "LLM Provider 列表", "multiple": true, "addable": true, "removable": true, "strictMode": false, "items": [
                 { "type": "input-text", "name": "name", "label": "名称", "required": true },
                 { "type": "input-text", "name": "baseurl", "label": "Base URL" },
                 { "type": "input-password", "name": "apikey", "label": "API Key" },
-                { "type": "input-text", "name": "model", "label": "默认模型", "placeholder": "该 provider 的默认模型名" },
-                { "type": "combo", "name": "env", "label": "自定义环境变量", "multiple": true, "removable": true, "strictMode": false, "items": [
-                  { "type": "input-text", "name": "key", "label": "键", "placeholder": "ENV_KEY" }, { "type": "input-text", "name": "value", "label": "值", "placeholder": "值" } ] }
+                { "type": "input-text", "name": "model", "label": "默认模型", "placeholder": "该 provider 的默认模型名" }
               ] }] },
               { "title": "Agent 模型分配", "body": [{ "type": "input-array", "name": "agents.agent_chain", "label": "Agent 链(可排序)", "sortable": true, "items": { "type": "group", "mode": "inline", "gap": "sm", "body": [
                 { "type": "select", "name": "role", "label": "角色", "options": [
