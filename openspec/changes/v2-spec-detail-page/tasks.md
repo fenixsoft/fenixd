@@ -15,9 +15,9 @@
 
 ## 3. 提交
 
-- [ ] 3.1 `git add core/dashboard/static/v2/pages/spec-detail.json tests/v2/ && git commit`(信息:`v2-spec-detail: 详情页(验证卡+4 页签+SSE detail 刷新)`)
+- [x] 3.1 `git add core/dashboard/static/v2/pages/spec-detail.json tests/v2/ && git commit`(信息:`v2-spec-detail: 详情页(验证卡+4 页签+SSE detail 刷新)`)
 
 ## 验证修复（第 1 轮失败）
 
-- [ ] 阅读 `openspec/changes/v2-spec-detail-page/verification-report.md`，定位「真实产品 Bug」并修复
-- [ ] 修复后重跑验证确认通过
+- [x] 阅读 `openspec/changes/v2-spec-detail-page/verification-report.md`，定位「真实产品 Bug」并修复
+- [x] 修复后重跑验证确认通过
