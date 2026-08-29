@@ -61,11 +61,15 @@ test('json-merge-missing-page-tolerant', async ({ page }) => {
 
 test('legacy-dashboard-unaffected', async ({ page }) => {
   const errors = await trackErrors(page);
+  // 停留老版入口页：先显式等待老版文档就绪，再断言其元素可见，规避陈旧快照下整页未
+  // 渲染即超时的误判（见 fix-fix-v2-shell-hash-router 的残留场景 fix-legacy-dashboard-unaffected）。
   await page.goto(BASE + '/');
+  await page.waitForSelector('#main', { state: 'visible', timeout: 5000 });
   await expect(page.locator('#main')).toBeVisible();
   await expect(page.locator('#btn-overview')).toBeVisible();
+  // 再切到 v2 壳：老版与 v2 各自独立渲染，导航为 hash 形态不整页跳离。
   await page.goto(BASE + '/v2/index.html#/overview');
-  await page.waitForSelector('#root', { state: 'visible' });
+  await page.waitForSelector('#root', { state: 'visible', timeout: 5000 });
   await expect(page.locator('#root')).toBeVisible();
   expect(errors, JSON.stringify(errors)).toEqual([]);
 });
