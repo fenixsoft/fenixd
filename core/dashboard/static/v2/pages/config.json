@@ -1,0 +1,59 @@
+{
+  "type": "page",
+  "body": [
+    {
+      "type": "service",
+      "id": "config-loader",
+      "name": "config-loader",
+      "api": { "url": "/api/config", "adaptor": "window.__configSnapshot = payload; window.__configDefaults = { agents: { max_concurrent: 2, max_turns: 300, run_timeout_seconds: 3600, daily_run_limit: 50 } }; return { status: 0, data: window.Adapters.adaptConfig(payload) };" },
+      "body": [
+        {
+          "type": "form",
+          "id": "config-form",
+          "name": "config-form",
+          "title": "",
+          "api": {
+            "method": "post",
+            "url": "/api/config",
+            "requestAdaptor": "var out = window.Adapters.buildConfigPayload(api.data, window.__configSnapshot, window.__configDefaults); api.data = out; return api;",
+            "adaptor": "return { status: 0 };"
+          },
+          "body": [
+            { "type": "tabs", "tabsMode": "line", "tabs": [
+              { "title": "LLM Provider", "body": [{ "type": "combo", "name": "llm.providers", "label": "LLM Provider 列表", "multiple": true, "addable": true, "removable": true, "strictMode": false, "items": [
+                { "type": "input-text", "name": "name", "label": "名称", "required": true },
+                { "type": "input-text", "name": "baseurl", "label": "Base URL" },
+                { "type": "input-password", "name": "apikey", "label": "API Key" },
+                { "type": "input-text", "name": "model", "label": "默认模型", "placeholder": "该 provider 的默认模型名" },
+                { "type": "combo", "name": "env", "label": "自定义环境变量", "multiple": true, "removable": true, "strictMode": false, "items": [
+                  { "type": "input-text", "name": "key", "label": "键", "placeholder": "ENV_KEY" }, { "type": "input-text", "name": "value", "label": "值", "placeholder": "值" } ] }
+              ] }] },
+              { "title": "Agent 模型分配", "body": [{ "type": "input-array", "name": "agents.agent_chain", "label": "Agent 链(可排序)", "sortable": true, "items": { "type": "group", "mode": "inline", "gap": "sm", "body": [
+                { "type": "select", "name": "role", "label": "角色", "options": [
+                  { "label": "执行(Implementer)", "value": "implementer" },
+                  { "label": "生成场景(Planner Plan)", "value": "planner-plan" },
+                  { "label": "判定结果(Planner Judge)", "value": "planner-judge" },
+                  { "label": "验证(Verifier)", "value": "verifier" },
+                  { "label": "运维(Administrator)", "value": "administrator" } ] },
+                { "type": "input-text", "name": "model", "label": "模型", "placeholder": "留空用 provider 默认" }
+              ] } }] },
+              { "title": "并行度设置", "body": [
+                { "type": "input-number", "name": "agents.max_concurrent", "label": "并行度(max_concurrent)", "min": 1, "value": 2 },
+                { "type": "input-number", "name": "agents.max_turns", "label": "单次运行轮次上限(max_turns)", "min": 1, "value": 300 },
+                { "type": "input-number", "name": "agents.run_timeout_seconds", "label": "单次运行时长上限(秒)", "min": 60, "step": 60, "value": 3600 },
+                { "type": "input-number", "name": "agents.daily_run_limit", "label": "每日运行限额(0=不限)", "min": 0, "value": 50 }
+              ] },
+              { "title": "审批模式", "body": [{ "type": "radios", "name": "gates.approve_mode", "label": "审批模式", "value": "manual", "options": [
+                { "label": "手动审批(manual)", "value": "manual" }, { "label": "自动(auto)", "value": "auto" } ] }] },
+              { "title": "界面风格", "body": [{ "type": "tpl", "tpl": "v2 首版仅提供深色主题(dark),浅色主题将在替换老版后按需评估。主题偏好保存在浏览器 localStorage(fenix.theme),不进入保存路径。" }] }
+            ] },
+            { "type": "submit", "label": "保存配置" }
+          ],
+          "onEvent": {
+            "submitSucc": { "actions": [{ "actionType": "toast", "args": { "msgType": "success", "msg": "保存成功" } }] }
+          }
+        }
+      ]
+    }
+  ]
+}
