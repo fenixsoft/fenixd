@@ -88,6 +88,39 @@ test('SPEC 列表:行内操作触发后列表重拉(spec-crud reload 契约)', a
   expect(errors, JSON.stringify(errors)).toEqual([]);
 });
 
+// BUG-2 回归：状态/类型过滤不丢 hash 路由 + 不触发 React #185
+// 验证 syncLocation:false 生效：select onChange 后 location.hash 仍保持 #/project/<name>
+test('SPEC 列表:BUG-2 回归—过滤不丢 hash 路由', async ({ page }) => {
+  const errors = await trackErrors(page);
+  await page.goto(`${BASE}/v2/index.html#/project/${PROJECT}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#root', { state: 'visible', timeout: 10000 });
+  const hashBefore = await page.evaluate(() => location.hash);
+  expect(hashBefore).toContain('#/project/fenixd');
+
+  // 点击状态过滤 Select（AMIS dark 主题渲染为 .dark-SelectControl）
+  const selectControls = page.locator('.dark-SelectControl');
+  const count = await selectControls.count();
+  if (count > 0) {
+    await selectControls.first().click();
+    await page.waitForTimeout(500);
+    // 选择任意一个下拉选项（如"就绪"）
+    const option = page.locator('.dark-PopOver').getByText('就绪', { exact: true }).first();
+    if (await option.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await option.click();
+      await page.waitForTimeout(2000);
+    }
+  }
+
+  // 核心断言：hash 路由未丢失（syncLocation:false）
+  const hashAfter = await page.evaluate(() => location.hash);
+  expect(hashAfter).toContain('#/project/fenixd');
+  expect(hashAfter).not.toBe('');
+
+  // 不得出现 React #185（Maximum update depth exceeded）
+  const react185 = errors.filter(e => e.includes('React error #185'));
+  expect(react185).toEqual([]);
+});
+
 // error 详情与清除(设计 §4 + behavior.md §5):详情 Dialog 懒加载 error/why,含「清除错误」。
 // 选用当前有 error 字段的 SPEC(如 v2-project-list-page):error 非空时 visibleOn:"${error}"
 // 才匹配、清除按钮才显示;不得使用 error=null 的 SPEC(如 v2-config-page)否则按钮隐藏。
