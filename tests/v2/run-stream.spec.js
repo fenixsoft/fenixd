@@ -8,9 +8,9 @@ const BASE = process.env.V2_BASE_URL || 'http://127.0.0.1:8787';
 const PROJECT_DONE = 'fenixd';
 const SPEC_DONE   = 'add-worktree-test-server';
 
-// DELETE watch 断言用有 live (running) run 的 SPEC(v2-overview-page 当前 impl run 为 running)
+// DELETE watch 断言用有 live (running) run 的 SPEC(v2-config-page 当前 planner-plan run 为 running)
 const PROJECT_LIVE = 'fenixd';
-const SPEC_LIVE    = 'v2-overview-page';
+const SPEC_LIVE    = 'v2-config-page';
 
 async function trackErrors(page) {
   const errors = [];
@@ -28,8 +28,8 @@ async function openRunDialog(page, project, spec, nodeIdx) {
   await page.waitForSelector('.dark-Tabs-link', { state: 'visible', timeout: 10000 });
   await page.locator('.dark-Tabs-link', { hasText: '时间轴' }).first().click();
   await expect(page.locator('.dark-Tabs-pane.is-active').first()).toBeVisible({ timeout: 5000 });
-  // nodeIdx 可选;默认 1(多数 SPEC 第二个时间轴节点是 run 节点;部分有多个 run 时需指定)
-  const idx = typeof nodeIdx === 'number' ? nodeIdx : 1;
+  // nodeIdx: 时间轴中 kind==='run' 的节点才有 run_id;默认取第一个 run 节点(通常 index 2)
+  const idx = typeof nodeIdx === 'number' ? nodeIdx : 2;
   const runNode = page.locator('.dark-TimelineItem').nth(idx);
   await expect(runNode).toBeVisible({ timeout: 5000 });
   await runNode.click();
@@ -58,7 +58,7 @@ test('运行记录弹窗(live run): 关闭即退订 DELETE watch', async ({ page
   const deleteWatchPromise = page.waitForRequest((req) =>
     req.method() === 'DELETE' && /\/api\/runs\/[^/]+\/watch/.test(req.url()), { timeout: 15000 });
 
-  await openRunDialog(page, PROJECT_LIVE, SPEC_LIVE, 3);
+  await openRunDialog(page, PROJECT_LIVE, SPEC_LIVE, 4);
   await expect(page.locator('.amis-dialog-widget').first()).toBeVisible({ timeout: 10000 });
 
   // 关闭弹窗(X 按钮;AMIS 6.13.0 dialog closeOnEsc 可能不生效)
