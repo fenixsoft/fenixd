@@ -6,12 +6,12 @@
 
 ## 1. 测试先行
 
-- [ ] 1.1 写 tests/v2/activities-alerts.spec.js(时间线可见;有告警环境的横幅用例,无告警则 test.fixme 注明);跑确认 FAIL
+- [x] 1.1 写 tests/v2/activities-alerts.spec.js(时间线可见;有告警环境的横幅用例,无告警则 test.fixme 注明);跑确认 FAIL
 
 ## 2. 实现
 
-- [ ] 2.1 pages/app.json header 追加 alert-banner service(计划 Task 11 Step 3 JSON);实现 pages/activities.json(Tabs+Timeline)
-- [ ] 2.2 activities-alerts.spec.js PASS
+- [x] 2.1 pages/app.json header 追加 alert-banner service(计划 Task 11 Step 3 JSON);实现 pages/activities.json(Tabs+Timeline)
+- [x] 2.2 activities-alerts.spec.js PASS
 
 ## 3. 提交
 
