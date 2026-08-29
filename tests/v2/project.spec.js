@@ -2,7 +2,7 @@
 // 实施依据: openspec/changes/v2-project-list-page、计划 Task 6、behavior.md §2(列/过滤/树)/§5(Why/清除)
 import { test, expect } from '@playwright/test';
 
-const BASE = 'http://127.0.0.1:8787';
+const BASE = process.env.V2_BASE_URL || 'http://127.0.0.1:8787';
 
 // 真实环境可见的 project 与 SPEC(以 STATE.md 中 fenixd 的 SPEC 树为准)
 const PROJECT = 'fenixd';
