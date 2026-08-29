@@ -1,6 +1,8 @@
 # verify-report-gate 能力增量（add-verify-report-gate）
 
-> 保障 `openspec/changes/<spec>/verification-report.md` 在「验证裁决放行」与「fix SPEC 派生」两个入口必然存在于磁盘。裁决 Agent 主动写入的报告优先；框架合成仅为兜底，不覆盖既有文件。
+> 保障 `openspec/changes/<spec>/verification-report.md` 在验证裁决放行时必然存在于磁盘。裁决 Agent 主动写入的报告优先；框架合成仅为兜底，不覆盖既有文件。
+>
+> 注：原规划的「fix SPEC 派生输入校验」已撤销——闸门在裁决采纳时点先行兜底，派生发生在其后（正常流中恒为 no-op），且 add-inplace-bug-repair 将退役 fix 派生路径。
 
 ## ADDED Requirements
 
@@ -15,7 +17,7 @@
 #### Scenario: 裁决 Agent 漏写报告时框架兜底合成
 
 - **WHEN** 某 SPEC 验证裁决返回 `bug-found`，`openspec/changes/<spec>/verification-report.md` 不存在，但 `.fenix/verify-progress/<spec>/report.json` 与 `.fenix-run-result.json` 完整可解析
-- **THEN** 框架在状态推进前合成该报告（含「真实产品 Bug」章节及根因、证据），流程正常继续（派生 fix SPEC 等），且产生一条兜底合成告警
+- **THEN** 框架在状态推进前合成该报告（含「真实产品 Bug」章节及根因、证据），流程正常继续（原地打回/遗留派生等后续处置均可引用），且产生一条兜底合成告警
 
 #### Scenario: Agent 已写报告则原样保留
 
@@ -27,20 +29,3 @@
 - **WHEN** 报告文件缺失，且 `report.json` 与 `.fenix-run-result.json` 均缺失或不可解析
 - **THEN** 状态推进被阻止，error 字段记录「验证报告缺失且无法合成」，产生人工升级告警等待裁决
 
-### Requirement: fix SPEC 派生输入校验
-
-框架生成 fix SPEC 的 proposal.md / tasks.md 时，MUST 先校验父 SPEC 的 `openspec/changes/<parent>/verification-report.md` 存在，再写入引用该路径的文本：
-
-- 文件存在 → 按现行模板正常生成。
-- 文件缺失 → 框架 MUST 先通过同一合成器生成父报告，再生成 fix SPEC 文件；生成的 proposal/tasks 中对报告路径的引用 MUST 有效。
-- 与验证报告产物闸门共用同一个合成器实现，MUST NOT 存在第二套渲染逻辑。
-
-#### Scenario: 父报告缺失时先合成再派生
-
-- **WHEN** 验证引擎触发 bug-found 派生 fix SPEC，而父 SPEC 目录下无 `verification-report.md`
-- **THEN** 框架先合成父报告，随后生成的 fix SPEC proposal/tasks 中 `openspec/changes/<parent>/verification-report.md` 引用指向真实存在的文件
-
-#### Scenario: 父报告已存在时不重复合成
-
-- **WHEN** 派生 fix SPEC 时父报告已由裁决 Agent 写入
-- **THEN** 派生流程直接进行，父报告不被改写，fix SPEC 引用照常生成

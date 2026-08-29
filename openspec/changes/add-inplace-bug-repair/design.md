@@ -7,7 +7,7 @@
 ## Goals / Decisions
 
 ### D1: 原地打回替代派生，治理面整体消失
-父 SPEC 目录天然携带 design/proposal/tasks/verification-report.md 全量上下文，重置 implementing 后走既有派发循环，信息零丢失、机制零新增。族谱不再增长 → 族谱收敛 governor 失去作用对象；每 SPEC 只有自身一条修复 lane → 派发级互斥失去作用对象；add-verify-report-gate 的「fix 派生输入校验」退化为 legacy 防御。两项已 pushed SPEC 无需回滚代码，随派生路径退役而失效。
+父 SPEC 目录天然携带 design/proposal/tasks/verification-report.md 全量上下文，重置 implementing 后走既有派发循环，信息零丢失、机制零新增。族谱不再增长 → 族谱收敛 governor 失去作用对象；每 SPEC 只有自身一条修复 lane → 派发级互斥失去作用对象。两项已 pushed SPEC 无需回滚代码，随派生路径退役而失效；add-verify-report-gate 已同步收敛为单一裁决闸门（原规划的派生入口校验随本变更撤销）。
 
 ### D2: 升级闸门用轮数计数器，不进 config
 `_verify_fail_rounds` 为 `_` 前缀内部字段（state_machine 现有机制自动跨重启持久化，与 `_merge_fp` 等同构）。阈值 3 为模块常量——不新增配置键，即不触发「配置项必须带 Dashboard 界面」的约束；将来需要可调时再连同 UI 一起立项。
