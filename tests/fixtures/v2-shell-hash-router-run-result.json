@@ -1,0 +1,58 @@
+{
+  "status": "bug-found",
+  "bugs": [
+    {
+      "severity": "critical",
+      "scenario_ids": [
+        "hash-route-default-overview",
+        "hash-route-param-spec-detail",
+        "hash-route-param-project",
+        "hash-route-config-query-tab",
+        "hash-route-config-project",
+        "hash-route-activities-optional-project",
+        "hash-route-activities-no-project",
+        "json-merge-missing-page-tolerant",
+        "legacy-dashboard-unaffected",
+        "hashchange-navigation-switch"
+      ],
+      "assertion_type": "element_visible (layer 1) / click action",
+      "description": "v2 AMIS 壳未在 hash 路由模式下工作：app.json 中 pages[].url 以 history 路径形式（/overview、/project/:name 等）被渲染为 <a href=\"/\"> 等 history 跳转链接，点击会整页跳转到 /（离开 v2 应用）而非切换 hash。DOM 中根本不存在场景期望的 a[href='#/overview'] / a[href='#/project/myapp'] 等链接，导致 9 个 v2 场景的侧边导航可见性断言全部失败，且 hashchange-navigation-switch 因找不到 a[href='#/project/myapp'] 而点击超时。这破坏了 SPEC「hash 路由 + AMIS 壳 embed」的核心验收点（单页内通过 hash 切换路由）。",
+      "root_cause": "app.js 将 AMIS embed 的 location 设为 parseHash() 返回的 history 形态对象（pathname: 路由路径），导致 embed 以 history 路由模式匹配 app.json 的 url，把导航菜单渲染成 history 链接而非 hash 链接。壳未在 hash 模式下工作（应是 pathname 固定为 /v2/index.html、路由信息放在 hash 中，或 app.json 链接显式以 # 前缀拼接），使壳内部导航与 hash 路由机制断裂。",
+      "evidence": {
+        "playwright_observed_a_hrefs": ["/"],
+        "expected_selectors_missing": ["a[href='#/overview']", "a[href='#/project/myapp']"],
+        "nav_click_outcome": "点击后 URL 由 http://127.0.0.1:8787/v2/index.html#/overview 变为 http://127.0.0.1:8787/（整页跳转，丢失 hash 路由）",
+        "app_json_pages_url": ["/", "/overview", "/project/:name", "/spec/:project/:name", "/config", "/config/:project", "/activities", "/activities/:project"],
+        "hashchange_click_error": "Locator.wait_for: Timeout 5000ms exceeded (waiting for a[href='#/project/myapp'])"
+      }
+    },
+    {
+      "severity": "minor",
+      "scenario_ids": [
+        "hash-route-default-overview",
+        "hash-route-param-spec-detail",
+        "hash-route-param-project",
+        "hash-route-config-query-tab",
+        "hash-route-config-project",
+        "hash-route-activities-optional-project",
+        "hash-route-activities-no-project",
+        "json-merge-missing-page-tolerant",
+        "legacy-dashboard-unaffected",
+        "hashchange-navigation-switch"
+      ],
+      "assertion_type": "no_console_error (layer 3)",
+      "description": "v2 页面加载时 dark.css / sdk.css 引用 Font Awesome webfont（./thirds/@fortawesome/fontawesome-free/webfonts/fa-solid-900.woff2 与 .ttf），但 core/dashboard/static/v2/thirds/ 目录在部署中缺失，浏览器产生 2 条 404 console error，导致每个场景的 no_console_error 断言失败。该 404 为纯静态资源缺失，属打包/部署遗漏，不影响路由逻辑。",
+      "root_cause": "amis SDK 的 font-awesome webfont 未被拷贝到 v2/thirds/ 目录（dark.css / sdk.css 中的 @font-face 引用了该路径）。",
+      "evidence": {
+        "failed_requests": [
+          "404 http://127.0.0.1:8787/v2/thirds/@fortawesome/fontawesome-free/webfonts/fa-solid-900.woff2",
+          "404 http://127.0.0.1:8787/v2/thirds/@fortawesome/fontawesome-free/webfonts/fa-solid-900.ttf"
+        ],
+        "thirds_dir": "core/dashboard/static/v2/thirds 不存在",
+        "referenced_in": ["core/dashboard/static/v2/dark.css", "core/dashboard/static/v2/sdk.css"],
+        "note": "非外部 API 网络错误，无 filtered_network 豁免；但属资源部署遗漏、不破坏功能，severity=minor"
+      }
+    }
+  ],
+  "summary": "10 个场景全部失败，经 Playwright 实测定位为两个系统性问题：(1)【严重】v2 AMIS 壳未在 hash 路由模式下工作——app.json 的 url 以 history 路径被渲染为 <a href=\"/\"> 链接，点击整页跳转到 / 而非切换 hash，导致所有侧边导航断言（a[href='#/overview'] 等）及 hashchange 切换点击全部失败，核心 hash 路由验收点被破坏；(2)【轻微】v2 静态资源缺失 Font Awesome webfont（/v2/thirds/@fortawesome/... 未部署），每个场景产生 2 条 404 console error。另：legacy-dashboard-unaffected 的 #main / #btn-overview 失败经复核为测试步骤副作用（先导航至 v2 页再断言 legacy 页元素），单独访问 / 时两者均正常可见（1280×480 / 52×30，display:block），不记为产品 Bug。"
+}

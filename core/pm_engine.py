@@ -1250,6 +1250,29 @@ class PMEngine:
             return "未完成任务：" + "、".join(gap)
         return None
 
+    def _ensure_verification_report(self, spec_name: str) -> str | None:
+        """验证报告产物闸门（add-verify-report-gate）。
+
+        在验证裁决采纳处（verified / bug-found 即将推进）调用：校验
+        openspec/changes/<spec>/verification-report.md 存在；缺失时由框架从
+        结构化数据确定性合成（不重跑验证、不覆盖既有文件）并发人工升级告警；
+        结构化数据也不可用时 fail-closed。
+
+        返回 None 表示放行（报告已存在或合成成功）；返回非空字符串为阻断原因，
+        调用方须阻止状态推进并把原因写入 error 字段。
+        """
+        from core.verify_report import ensure_verification_report
+        try:
+            result = ensure_verification_report(
+                self.project_root, spec_name, logger=self.logger,
+            )
+        except Exception as e:
+            # 合成器自身异常等同数据不可用：fail-closed，不凭空放行
+            return f"验证报告缺失且无法合成：闸门异常 {e}"
+        if result.get("ok"):
+            return None
+        return result.get("error") or "验证报告缺失且无法合成"
+
     def _check_verification_gate(self, spec_name: str) -> str | None:
         """验证完成度放行闸门（verification-completion-gate）。
 
@@ -2489,6 +2512,18 @@ class PMEngine:
             # 派生伪 fix 级联（admin 处置 2026-08-28 failover 相对 URL 伪失败实证）。
             if self._judge_bugs_declare_env(spec_name) and self._handle_judge_env_declared(spec_name):
                 return
+            # 验证报告产物闸门（add-verify-report-gate）：裁决 Agent 漏写报告时
+            # 由框架合成兜底，合成失败则阻断推进（下游修复引用的路径必然可读）
+            report_blocker = self._ensure_verification_report(spec_name)
+            if report_blocker:
+                self.state_machine.update_spec(spec_name, {
+                    "error": report_blocker,
+                })
+                self.logger.error(
+                    "pm_engine",
+                    f"验证报告闸门: '{spec_name}' 阻止推进 bug-found — {report_blocker}",
+                )
+                return
             self.state_machine.transition(spec_name, "bug-found")
             self.state_machine.update_spec(spec_name, {
                 "tester_run": judge_result.run_id,
@@ -2528,6 +2563,18 @@ class PMEngine:
                 self.logger.warning(
                     "pm_engine",
                     f"验证未完成 '{spec_name}'，阻止晋级 verified: {vblocker}",
+                )
+                return
+            # 验证报告产物闸门（add-verify-report-gate）
+            report_blocker = self._ensure_verification_report(spec_name)
+            if report_blocker:
+                self.state_machine.update_spec(spec_name, {
+                    "tester_run": judge_result.run_id,
+                    "error": report_blocker,
+                })
+                self.logger.error(
+                    "pm_engine",
+                    f"验证报告闸门: '{spec_name}' 阻止晋级 verified — {report_blocker}",
                 )
                 return
             self.state_machine.transition(spec_name, "verified")
@@ -2761,6 +2808,17 @@ class PMEngine:
                 )
                 return
             if verifier_status == "bug-found":
+                # 验证报告产物闸门（add-verify-report-gate，legacy 路径同闸门）
+                report_blocker = self._ensure_verification_report(spec_name)
+                if report_blocker:
+                    self.state_machine.update_spec(spec_name, {
+                        "error": report_blocker,
+                    })
+                    self.logger.error(
+                        "pm_engine",
+                        f"验证报告闸门: '{spec_name}' 阻止推进 bug-found — {report_blocker}",
+                    )
+                    return
                 self.state_machine.transition(spec_name, "bug-found")
                 self.state_machine.update_spec(spec_name, {
                     "tester_run": result.run_id,
@@ -2796,6 +2854,18 @@ class PMEngine:
                     self.logger.warning(
                         "pm_engine",
                         f"验证未完成 (legacy) '{spec_name}'，阻止晋级 verified: {vblocker}",
+                    )
+                    return
+                # 验证报告产物闸门（add-verify-report-gate，legacy 路径同闸门）
+                report_blocker = self._ensure_verification_report(spec_name)
+                if report_blocker:
+                    self.state_machine.update_spec(spec_name, {
+                        "tester_run": result.run_id,
+                        "error": report_blocker,
+                    })
+                    self.logger.error(
+                        "pm_engine",
+                        f"验证报告闸门: '{spec_name}' 阻止晋级 verified — {report_blocker}",
                     )
                     return
                 self.state_machine.transition(spec_name, "verified")

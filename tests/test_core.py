@@ -6242,6 +6242,12 @@ class TestVerificationProgressGateD6(unittest.TestCase):
         })
         # 阻止 _on_spec_verified 调用 _on_spec_done 导致的递归
         engine._on_spec_verified = MagicMock()
+        # legacy verifier 按 prompt Step 5 会写 verification-report.md——
+        # 验证报告产物闸门（add-verify-report-gate）据此放行（本组测试只关注 D6 进度语义）
+        report_dir = self.project_root / "openspec" / "changes" / "demo"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "verification-report.md").write_text(
+            "# 验证报告：demo\n\n## 结论：✅ 通过（verified）\n", encoding="utf-8")
 
     def test_incomplete_progress_blocks_verified_transition(self):
         """半程死亡：done=5/17 → 不晋级 verified，写 error 摘要。"""
