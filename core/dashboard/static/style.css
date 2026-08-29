@@ -882,6 +882,9 @@ tr.orphan-fix > td { border-left: 2px solid rgba(144, 133, 233, 0.5); }
 .modal-close:hover { color: var(--ink); }
 .runmodal-body { flex: 1; overflow-y: auto; padding: 16px; }
 .runmodal-scroll { display: flex; flex-direction: column; gap: 10px; }
+/* 呼叫 Admin 处置过程弹窗：标题旁的状态行（处置中/已完成/已中断/等待中） */
+.adminrec-status { margin-left: auto; margin-right: 12px; }
+.adminrec-status .status-pill { font-size: 12px; }
 
 /* ── SPEC 文档按钮（列表行内紧凑按钮，不破坏表格布局） ──────── */
 .doc-actions { white-space: nowrap; }

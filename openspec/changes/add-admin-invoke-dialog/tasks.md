@@ -14,11 +14,11 @@
 
 ## 3. 前端弹窗重做（v2 核心）
 
-- [ ] 3.1 `app.js`：处置记录弹窗改造为处置过程弹窗——打开时记录 `modalAdminSpec`，立即重拉 `GET /api/admin-activities?project=&spec=` 解析该 SPEC 最新 disposition 的 `admin_run_id`（优先 pending、其次最终，按时间倒序）
-- [ ] 3.2 `app.js`：等待态——未解析到 `admin_run_id` 时显示「等待 Administrator 开始处置」；期间响应 `admin_activities` 广播事件重拉解析，另加 5s 兜底轮询（仅弹窗打开期间，解析成功即停）
-- [ ] 3.3 `app.js`：解析到 `admin_run_id` 后复用 run 弹窗链路——拉取 run 事件、`registerWatch(run_id)`、用现有时间轴渲染展示 Agent 消息；顶部状态行显示处置状态（处置中/已完成/已中断，随 `admin_activities` 广播刷新）；409 来源时顶部附「已有处置进行中」提示行
-- [ ] 3.4 `app.js`：`run_events` SSE 增量推送在弹窗打开且 run 匹配时更新时间轴（与 run 弹窗同处理）；run 拉取 404（文件被清理）时回退等待态并重解析
-- [ ] 3.5 `app.js`：关闭弹窗时 `unregisterWatch`、停止兜底轮询、清空 `modalAdminSpec`；关闭后后台处置不受影响
+- [x] 3.1 `app.js`：处置记录弹窗改造为处置过程弹窗——打开时记录 `modalAdminSpec`，立即重拉 `GET /api/admin-activities?project=&spec=` 解析该 SPEC 最新 disposition 的 `admin_run_id`（优先 pending、其次最终，按时间倒序）
+- [x] 3.2 `app.js`：等待态——未解析到 `admin_run_id` 时显示「等待 Administrator 开始处置」；期间响应 `admin_activities` 广播事件重拉解析，另加 5s 兜底轮询（仅弹窗打开期间，解析成功即停）
+- [x] 3.3 `app.js`：解析到 `admin_run_id` 后复用 run 弹窗链路——拉取 run 事件、`registerWatch(run_id)`、用现有时间轴渲染展示 Agent 消息；顶部状态行显示处置状态（处置中/已完成/已中断，随 `admin_activities` 广播刷新）；409 来源时顶部附「已有处置进行中」提示行
+- [x] 3.4 `app.js`：`run_events` SSE 增量推送在弹窗打开且 run 匹配时更新时间轴（与 run 弹窗同处理）；run 拉取 404（文件被清理）时回退等待态并重解析
+- [x] 3.5 `app.js`：关闭弹窗时 `unregisterWatch`、停止兜底轮询、清空 `modalAdminSpec`；关闭后后台处置不受影响
 
 ## 4. 验证
 
