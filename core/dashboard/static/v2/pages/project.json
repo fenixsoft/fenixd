@@ -276,19 +276,17 @@
                               "title": "Admin 处置 · ${specName}",
                               "size": "lg",
                               "body": {
-                                "type": "run-stream",
-                                "mode": "admin",
-                                "specName": "${specName}",
-                                "project": "${project}"
-                              },
-                              "onEvent": {
-                                "close": {
-                                  "actions": [
-                                    {
-                                      "actionType": "custom",
-                                      "script": "if (window.RunStream && window.RunStream.active && typeof window.RunStream.active.dispose === 'function') { window.RunStream.active.dispose(); window.RunStream.active = null; }"
-                                    }
-                                  ]
+                                "type": "custom",
+                                "onMount": "(dom, data, onChange, props) => { window.RunStream.active = window.RunStream.mount(dom, Object.assign({}, data, { mode: 'admin', project: data.project, spec: data.specName })); }",
+                                "onEvent": {
+                                  "close": {
+                                    "actions": [
+                                      {
+                                        "actionType": "custom",
+                                        "script": "if (window.RunStream && window.RunStream.active && typeof window.RunStream.active.dispose === 'function') { window.RunStream.active.dispose(); window.RunStream.active = null; }"
+                                      }
+                                    ]
+                                  }
                                 }
                               }
                             }

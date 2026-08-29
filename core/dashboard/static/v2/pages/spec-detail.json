@@ -126,7 +126,18 @@
                               "title": "运行记录 ${run_id}",
                               "size": "lg",
                               "body": {
-                                "type": "run-stream"
+                                "type": "custom",
+                                "onMount": "(dom, data, onChange, props) => { window.RunStream.active = window.RunStream.mount(dom, Object.assign({}, data, { mode: 'run', runId: window.__rsRunId || data.run_id || data.runId })); }",
+                                "onEvent": {
+                                  "close": {
+                                    "actions": [
+                                      {
+                                        "actionType": "custom",
+                                        "script": "if (window.RunStream && window.RunStream.active && typeof window.RunStream.active.dispose === 'function') { window.RunStream.active.dispose(); window.RunStream.active = null; }"
+                                      }
+                                    ]
+                                  }
+                                }
                               }
                             }
                           }

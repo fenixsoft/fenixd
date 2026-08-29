@@ -4,9 +4,9 @@ import { test, expect } from '@playwright/test';
 
 const BASE = process.env.V2_BASE_URL || 'http://127.0.0.1:8787';
 
-// 实时渲染测试用有 finished run 的 SPEC(add-worktree-test-server 有已完成的 impl run)
+// 实时渲染测试用有 finished run 的 SPEC(v2-config-page 的 impl/planner-judge run 为 done)
 const PROJECT_DONE = 'fenixd';
-const SPEC_DONE   = 'add-worktree-test-server';
+const SPEC_DONE   = 'v2-config-page';
 
 // DELETE watch 断言用有 live (running) run 的 SPEC(v2-config-page 当前 planner-plan run 为 running)
 const PROJECT_LIVE = 'fenixd';
@@ -39,7 +39,8 @@ async function openRunDialog(page, project, spec, nodeIdx) {
 // 事件流渲染: 时间轴 run 节点点击 → Dialog 可见且事件流内容非空
 test('运行记录弹窗: 打开即拉取尾部并渲染事件流', async ({ page }) => {
   const errors = await trackErrors(page);
-  await openRunDialog(page, PROJECT_DONE, SPEC_DONE);
+  // nodeIdx=3: v2-config-page timeline 中 planner-judge run(done)
+  await openRunDialog(page, PROJECT_DONE, SPEC_DONE, 3);
   const dlg = page.locator('.amis-dialog-widget').first();
   await expect(dlg).toBeVisible({ timeout: 10000 });
 
@@ -58,7 +59,7 @@ test('运行记录弹窗(live run): 关闭即退订 DELETE watch', async ({ page
   const deleteWatchPromise = page.waitForRequest((req) =>
     req.method() === 'DELETE' && /\/api\/runs\/[^/]+\/watch/.test(req.url()), { timeout: 15000 });
 
-  await openRunDialog(page, PROJECT_LIVE, SPEC_LIVE, 4);
+  await openRunDialog(page, PROJECT_LIVE, SPEC_LIVE, 7);
   await expect(page.locator('.amis-dialog-widget').first()).toBeVisible({ timeout: 10000 });
 
   // 关闭弹窗(X 按钮;AMIS 6.13.0 dialog closeOnEsc 可能不生效)
