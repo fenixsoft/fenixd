@@ -724,6 +724,46 @@ def parse_test_scenarios(project_root, spec_name) -> list:
         return []
 
 
+def parse_run_result_scenarios(project_root, spec_name) -> list:
+    """读取裁决 .fenix-run-result.json 中的场景明细（report.json 缺失/无场景时兜底）。
+
+    合成报告（verify_report.py 兜底）场景下 report.json 可能不存在，而逐场景明细
+    只存在于 .fenix-run-result.json（verify-progress 优先，项目根回退且需 spec 匹配）。
+    返回场景 dict 列表（已归一化截图字段），不可得返回 []。
+    """
+    candidates = [
+        Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json",
+        Path(project_root) / ".fenix-run-result.json",
+    ]
+    for idx, path in enumerate(candidates):
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        # 项目根为共享文件：携带的 spec 与当前 spec 不符时视为其它 spec 残留忽略
+        if idx == 1 and isinstance(data.get("spec"), str) and data["spec"] and data["spec"] != spec_name:
+            continue
+        scenarios = data.get("scenarios")
+        if not isinstance(scenarios, list) or not scenarios:
+            continue
+        out = []
+        for sc in scenarios:
+            if not isinstance(sc, dict):
+                continue
+            norm = dict(sc)
+            norm["screenshots"] = [
+                os.path.basename(s) for s in sc.get("screenshots", [])
+                if isinstance(s, str) and s.strip()
+            ]
+            out.append(norm)
+        return out
+    return []
+
+
 def list_screenshots(project_root, spec_name) -> list:
     """列出 .fenix/verify-progress/<spec>/screenshots/ 下的截图文件。"""
     ss_dir = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "screenshots"
@@ -1318,6 +1358,11 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         if isinstance(sc, dict) else sc
         for sc in scenarios
     ]
+    # 合成报告（report.json 缺失/无 scenarios）时，从 .fenix-run-result.json 兜底取
+    # 逐场景明细，使 Dashboard「场景结果」页签即便在无 report.json 的合成产物下也能
+    # 渲染逐场景节点（fix-add-verify-report-gate Bug 2 根因）。
+    if not scenarios:
+        scenarios = parse_run_result_scenarios(project_root, spec_name)
     screenshots = list_screenshots(project_root, spec_name)
     runs = get_runs(project_root, spec_name)
     verdict = parse_verdict(project_root, spec_name)
