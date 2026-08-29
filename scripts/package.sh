@@ -50,6 +50,11 @@ cp -r "${ROOT_DIR}/skills/"* "${PKG_DIR}/skills/" 2>/dev/null || true
 # 配置模板
 cp "${ROOT_DIR}/config.template.yaml" "${PKG_DIR}/" 2>/dev/null || true
 
+# V2 dev-server（add-worktree-test-server）
+mkdir -p "${PKG_DIR}/tests/v2"
+cp "${ROOT_DIR}/tests/v2/dev-server.mjs" "${PKG_DIR}/tests/v2/"
+cp "${ROOT_DIR}/tests/v2/playwright.config.js" "${PKG_DIR}/tests/v2/"
+
 # 安装脚本
 cp "${ROOT_DIR}/install.sh" "${PKG_DIR}/"
 
