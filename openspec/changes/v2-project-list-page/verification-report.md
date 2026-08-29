@@ -146,3 +146,39 @@
 - 无外部 API 网络错误豁免触发（filtered_network 均为空，无需特判）。
 - 24 个失败 = 3 类测试选择器/时序缺陷（已聚合），**不构成产品 Bug**，但按规则写入 `bug-found` 以标记「验证未全绿需跟踪」。
 - 建议：修复测试选择器（根因 B/C）与过滤重渲染时序（根因 A）后重跑，预期通过率显著提升。
+
+---
+
+## 八、Admin 复核（2026-08-30，解冻处置）
+
+> 本节由 Administrator Agent 在解冻 blocked 时补写。上一轮验证（2026-08-29T20:02 UTC，
+> 32 场景：2 pass / 19 warning / 11 fail）的 verifier 报告随临时 worktree 被清理，
+> 此处按 run 转录 + 真实页面探针复核结果归档，作为第 4 轮修复依据。
+
+### 确认为真实产品 Bug（需修复）
+
+**BUG-2（major）：状态/类型过滤触发 URL 同步跳转，丢失 hash 路由 + React #185 崩溃**
+- 复现（playwright 实测）：打开 `#/project/fenixd` → 点击状态过滤 `.dark-SelectControl` → 选择「就绪」
+  → 浏览器地址被 AMIS crud 的 location 同步改写为 `?page=1&status=ready`，**hash 被清空**
+  （`location.hash === ""`）→ SPA 路由回落到 overview 页，列表页离开视口；同时触发
+  `[mobx] Reaction[t.render()] Minified React error #185`（Maximum update depth exceeded）×N。
+- 影响：`spec-list-status-filter`、`spec-list-type-filter`（及组合过滤）。
+- 修复方向：project.json crud 关闭 URL 同步（`syncLocation: false`），过滤状态不写入
+  location；同时排查 select onChange → mobx reaction 的重复渲染链（#185）。
+- 注：React #185 console error 是真实运行时异常，非环境层；`no_console_error` 断言保留。
+
+### 判定为测试层误报（第 4 轮场景已修正，勿再修复产品代码）
+
+| 上一轮判定 | 复核结论 | 证据 |
+|---|---|---|
+| 「文档按钮缺失」 | 误报：按钮存在且可点开 Dialog | 实测 86 个「文档」按钮；`tbody tr >> nth=0 >> button:has-text('文档')` 点击成功，Dialog 正常打开（标题/标签页齐全）。原选择器 `.amis-Sheet-row` 在 DOM 中不存在（0 匹配），行实为 `tbody tr`（dark-Table-table-tr） |
+| 「侧边栏 Config/Activities 导航缺失」 | 误报：链接存在 | 实测导航 href 为 `#/config`、`#/activities`（壳路由表通用 url，不含项目名）；原选择器 `#/config/fenixd` 永不匹配 |
+| Dialog 标签页/关闭按钮类名 | 误报 | 实测类名：标签页 `[class*='Tabs-link']`、关闭按钮 `[class*='Modal-close']`；`.ant-tabs-tab`、`.amis-Dialog-close` 不存在 |
+
+- `test_scenarios.json` 已由 Admin 就地修正以上 6 个场景的选择器/断言（scenario description
+  带 `[admin-fix: ...]` 标注）；planner-plan 提示词的选择器规范已同步补充实测事实（agent_runner.py）。
+
+### 第 4 轮修复范围（原地打回）
+
+1. 修复 BUG-2（syncLocation 导致的路由跳转丢失 + React #185）。
+2. 不改动：文档按钮、侧边栏导航（均为误报，产品代码无缺陷）。
