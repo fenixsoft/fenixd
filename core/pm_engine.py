@@ -906,7 +906,7 @@ class PMEngine:
                 signal_type="verify_fail_escalation",
                 severity="major",
                 description=(
-                    f"验证连续失败 {fail_rounds} 轮，已冻结等待人工裁决"
+                    f"'{spec_name}' 验证连续失败 {fail_rounds} 轮，已冻结等待人工裁决"
                 ),
                 evidence=(
                     f"spec={spec_name}; fail_rounds={fail_rounds}; "
