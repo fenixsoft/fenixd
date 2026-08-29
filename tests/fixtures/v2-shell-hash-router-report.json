@@ -1,0 +1,537 @@
+{
+  "spec": "v2-shell-hash-router",
+  "timestamp": "2026-08-29T02:31:46.960409+00:00",
+  "summary": {
+    "total": 10,
+    "passed": 0,
+    "warnings": 0,
+    "failed": 10,
+    "errors": 0,
+    "blocked_env": 0
+  },
+  "scenarios": [
+    {
+      "scenario_id": "hash-route-default-overview",
+      "description": "缺省路由：访问 /v2/index.html（无 hash）解析为 overview 页，侧边导航含「概览」菜单项且 #root 渲染非空。出处：core/dashboard/static/v2/app.json:11-12（redirect /overview）、core/dashboard/static/v2/app.js:9-13（parseHash 缺省 /overview）、core/dashboard/server.py:12（GET / 入口）、tests/v2/smoke.spec.js:2（URL /v2/index.html）",
+      "status": "fail",
+      "step_results": [
+        {
+          "success": true,
+          "action": "navigate",
+          "detail": "已导航到 http://127.0.0.1:8787/v2/index.html"
+        },
+        {
+          "success": true,
+          "action": "wait",
+          "target": "#root"
+        }
+      ],
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": "#root",
+          "label": "根节点已渲染非空",
+          "pass": true
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": "a[href='#/overview']",
+          "label": "侧边导航含概览菜单项",
+          "pass": false,
+          "error": "Locator.wait_for: Timeout 3000ms exceeded.\nCall log:\n  - waiting for locator(\"a[href='#/overview']\").first to be visible\n"
+        },
+        {
+          "type": "text_contains",
+          "layer": 3,
+          "text": "概览",
+          "pass": false
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": false,
+          "errors": [
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)",
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)"
+          ],
+          "filtered_network": []
+        }
+      ],
+      "visual_results": [
+        {
+          "baseline": "hash-route-default-overview",
+          "status": "baseline_created",
+          "ssim": null,
+          "pass": true,
+          "note": "首次运行，已自动建立基线"
+        }
+      ],
+      "screenshots": [
+        "/root/fenixd/.fenix/verify-progress/v2-shell-hash-router/screenshots/hash-route-default-overview_assert_fail.png"
+      ]
+    },
+    {
+      "scenario_id": "hash-route-param-spec-detail",
+      "description": "参数路由解析：访问 #/spec/demo/add-login 应命中 spec-detail 模式（页面 body 暂空但壳渲染、无 pageerror）。出处：core/dashboard/static/v2/app.js:11（re /^/spec/([^/?]+)/([^/?]+)/ 对应 page='spec-detail'）、core/dashboard/static/v2/app.json:14（url /spec/:project/:name）、core/dashboard/server.py:12、tests/v2/smoke.spec.js:2",
+      "status": "fail",
+      "step_results": [
+        {
+          "success": true,
+          "action": "navigate",
+          "detail": "已导航到 http://127.0.0.1:8787/v2/index.html#/spec/demo/add-login"
+        },
+        {
+          "success": true,
+          "action": "wait",
+          "target": "#root"
+        }
+      ],
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": "#root",
+          "label": "spec 详情页壳已渲染",
+          "pass": true
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": "a[href='#/overview']",
+          "label": "侧边导航仍存在",
+          "pass": false,
+          "error": "Locator.wait_for: Timeout 3000ms exceeded.\nCall log:\n  - waiting for locator(\"a[href='#/overview']\").first to be visible\n"
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": false,
+          "errors": [
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)",
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)"
+          ],
+          "filtered_network": []
+        }
+      ],
+      "visual_results": [
+        {
+          "baseline": "hash-route-param-spec-detail",
+          "status": "baseline_created",
+          "ssim": null,
+          "pass": true,
+          "note": "首次运行，已自动建立基线"
+        }
+      ],
+      "screenshots": [
+        "/root/fenixd/.fenix/verify-progress/v2-shell-hash-router/screenshots/hash-route-param-spec-detail_assert_fail.png"
+      ]
+    },
+    {
+      "scenario_id": "hash-route-param-project",
+      "description": "参数路由解析：访问 #/project/myapp 应命中 project 模式并渲染壳、无 pageerror。出处：core/dashboard/static/v2/app.js:10（re /^/project/([^/?]+)/ 对应 page='project'）、core/dashboard/static/v2/app.json:13（url /project/:name）、core/dashboard/server.py:12、tests/v2/smoke.spec.js:2",
+      "status": "fail",
+      "step_results": [
+        {
+          "success": true,
+          "action": "navigate",
+          "detail": "已导航到 http://127.0.0.1:8787/v2/index.html#/project/myapp"
+        },
+        {
+          "success": true,
+          "action": "wait",
+          "target": "#root"
+        }
+      ],
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": "#root",
+          "label": "project 页壳已渲染",
+          "pass": true
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": false,
+          "errors": [
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)",
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)"
+          ],
+          "filtered_network": []
+        }
+      ],
+      "visual_results": [
+        {
+          "baseline": "hash-route-param-project",
+          "status": "baseline_created",
+          "ssim": null,
+          "pass": true,
+          "note": "首次运行，已自动建立基线"
+        }
+      ],
+      "screenshots": [
+        "/root/fenixd/.fenix/verify-progress/v2-shell-hash-router/screenshots/hash-route-param-project_assert_fail.png"
+      ]
+    },
+    {
+      "scenario_id": "hash-route-config-query-tab",
+      "description": "配置页带 query tab 深链：访问 #/config?tab=llm 应命中 config 模式（正则 /^/config(?:/([^/?]+))?/），壳渲染且无 pageerror，验证 query 深链解析不被破坏。出处：core/dashboard/static/v2/app.js:12（config re）、core/dashboard/static/v2/design.md:15（config 页签用 defaultKey: \"${query.tab}\"）、core/dashboard/server.py:12、tests/v2/smoke.spec.js:2",
+      "status": "fail",
+      "step_results": [
+        {
+          "success": true,
+          "action": "navigate",
+          "detail": "已导航到 http://127.0.0.1:8787/v2/index.html#/config?tab=llm"
+        },
+        {
+          "success": true,
+          "action": "wait",
+          "target": "#root"
+        }
+      ],
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": "#root",
+          "label": "config 页壳已渲染",
+          "pass": true
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": false,
+          "errors": [
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)",
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)"
+          ],
+          "filtered_network": []
+        }
+      ],
+      "visual_results": [
+        {
+          "baseline": "hash-route-config-query-tab",
+          "status": "baseline_created",
+          "ssim": null,
+          "pass": true,
+          "note": "首次运行，已自动建立基线"
+        }
+      ],
+      "screenshots": [
+        "/root/fenixd/.fenix/verify-progress/v2-shell-hash-router/screenshots/hash-route-config-query-tab_assert_fail.png"
+      ]
+    },
+    {
+      "scenario_id": "hash-route-config-project",
+      "description": "配置页可选 project 参数：访问 #/config/myproject 应命中 config 模式（正则允许可选 project 段），壳渲染且无 pageerror。出处：core/dashboard/static/v2/app.js:12（config re 可选段）、core/dashboard/static/v2/app.json:15-16（/config 与 /config/:project 两条目）、core/dashboard/server.py:12、tests/v2/smoke.spec.js:2",
+      "status": "fail",
+      "step_results": [
+        {
+          "success": true,
+          "action": "navigate",
+          "detail": "已导航到 http://127.0.0.1:8787/v2/index.html#/config/myproject"
+        },
+        {
+          "success": true,
+          "action": "wait",
+          "target": "#root"
+        }
+      ],
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": "#root",
+          "label": "config/project 页壳已渲染",
+          "pass": true
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": false,
+          "errors": [
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)",
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)"
+          ],
+          "filtered_network": []
+        }
+      ],
+      "visual_results": [
+        {
+          "baseline": "hash-route-config-project",
+          "status": "baseline_created",
+          "ssim": null,
+          "pass": true,
+          "note": "首次运行，已自动建立基线"
+        }
+      ],
+      "screenshots": [
+        "/root/fenixd/.fenix/verify-progress/v2-shell-hash-router/screenshots/hash-route-config-project_assert_fail.png"
+      ]
+    },
+    {
+      "scenario_id": "hash-route-activities-optional-project",
+      "description": "运维记录页可选 project 参数：访问 #/activities/myproject 应命中 activities 模式（正则 /^/activities(?:/([^/?]+))?/），壳渲染且无 pageerror。出处：core/dashboard/static/v2/app.js:13（activities re）、core/dashboard/static/v2/app.json:17-18（/activities 与 /activities/:project）、core/dashboard/server.py:12、tests/v2/smoke.spec.js:2",
+      "status": "fail",
+      "step_results": [
+        {
+          "success": true,
+          "action": "navigate",
+          "detail": "已导航到 http://127.0.0.1:8787/v2/index.html#/activities/myproject"
+        },
+        {
+          "success": true,
+          "action": "wait",
+          "target": "#root"
+        }
+      ],
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": "#root",
+          "label": "activities/project 页壳已渲染",
+          "pass": true
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": false,
+          "errors": [
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)",
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)"
+          ],
+          "filtered_network": []
+        }
+      ],
+      "visual_results": [
+        {
+          "baseline": "hash-route-activities-optional-project",
+          "status": "baseline_created",
+          "ssim": null,
+          "pass": true,
+          "note": "首次运行，已自动建立基线"
+        }
+      ],
+      "screenshots": [
+        "/root/fenixd/.fenix/verify-progress/v2-shell-hash-router/screenshots/hash-route-activities-optional-project_assert_fail.png"
+      ]
+    },
+    {
+      "scenario_id": "hash-route-activities-no-project",
+      "description": "运维记录页无参数：访问 #/activities（省略 project）应命中 activities 模式（正则允许省略 project 段），壳渲染且无 pageerror。出处：core/dashboard/static/v2/app.js:13（activities re 可选段）、core/dashboard/static/v2/app.json:17（url /activities）、core/dashboard/server.py:12、tests/v2/smoke.spec.js:2",
+      "status": "fail",
+      "step_results": [
+        {
+          "success": true,
+          "action": "navigate",
+          "detail": "已导航到 http://127.0.0.1:8787/v2/index.html#/activities"
+        },
+        {
+          "success": true,
+          "action": "wait",
+          "target": "#root"
+        }
+      ],
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": "#root",
+          "label": "activities 页壳已渲染",
+          "pass": true
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": false,
+          "errors": [
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)",
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)"
+          ],
+          "filtered_network": []
+        }
+      ],
+      "visual_results": [
+        {
+          "baseline": "hash-route-activities-no-project",
+          "status": "baseline_created",
+          "ssim": null,
+          "pass": true,
+          "note": "首次运行，已自动建立基线"
+        }
+      ],
+      "screenshots": [
+        "/root/fenixd/.fenix/verify-progress/v2-shell-hash-router/screenshots/hash-route-activities-no-project_assert_fail.png"
+      ]
+    },
+    {
+      "scenario_id": "json-merge-missing-page-tolerant",
+      "description": "页面 JSON 合并容错：当前 pages/ 仅含 app.json、各页面 body 暂空，访问任意路由应照常加载壳、无未捕获异常，对应路由渲染空 page 而非整页崩溃。出处：core/dashboard/static/v2/app.js:44-65（fetch /v2/pages/app.json 容错）、core/dashboard/static/v2/specs/v2-shell-router/spec.md:19-22（缺失页面容错）、core/dashboard/static/v2/pages/ 目录现状、core/dashboard/server.py:12、tests/v2/smoke.spec.js:2",
+      "status": "fail",
+      "step_results": [
+        {
+          "success": true,
+          "action": "navigate",
+          "detail": "已导航到 http://127.0.0.1:8787/v2/index.html#/overview"
+        },
+        {
+          "success": true,
+          "action": "wait",
+          "target": "#root"
+        }
+      ],
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": "#root",
+          "label": "容错加载下根节点可见",
+          "pass": true
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": "a[href='#/overview']",
+          "label": "导航在缺页面时仍渲染",
+          "pass": false,
+          "error": "Locator.wait_for: Timeout 3000ms exceeded.\nCall log:\n  - waiting for locator(\"a[href='#/overview']\").first to be visible\n"
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": false,
+          "errors": [
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)",
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)"
+          ],
+          "filtered_network": []
+        }
+      ],
+      "visual_results": [
+        {
+          "baseline": "json-merge-missing-page-tolerant",
+          "status": "baseline_created",
+          "ssim": null,
+          "pass": true,
+          "note": "首次运行，已自动建立基线"
+        }
+      ],
+      "screenshots": [
+        "/root/fenixd/.fenix/verify-progress/v2-shell-hash-router/screenshots/json-merge-missing-page-tolerant_assert_fail.png"
+      ]
+    },
+    {
+      "scenario_id": "legacy-dashboard-unaffected",
+      "description": "回归点：老版 dashboard 与 v2 并存不受影响，老版入口（/ 的 #main、#btn-overview 等）正常渲染，v2 各路由访问无 pageerror。出处：core/dashboard/static/index.html:35（id=main）、core/dashboard/static/index.html:25（id=btn-overview）、core/dashboard/server.py:12（GET / 回头index.html）、core/dashboard/server.py:225-231（静态资源含 /v2/*）、tests/v2/smoke.spec.js:2（baseURL 127.0.0.1:8787）",
+      "status": "fail",
+      "step_results": [
+        {
+          "success": true,
+          "action": "navigate",
+          "detail": "已导航到 http://127.0.0.1:8787/"
+        },
+        {
+          "success": true,
+          "action": "wait",
+          "target": "#main"
+        },
+        {
+          "success": true,
+          "action": "navigate",
+          "detail": "已导航到 http://127.0.0.1:8787/v2/index.html#/overview"
+        },
+        {
+          "success": true,
+          "action": "wait",
+          "target": "#root"
+        }
+      ],
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": "#main",
+          "label": "老版主区可见",
+          "pass": false,
+          "error": "Locator.wait_for: Timeout 3000ms exceeded.\nCall log:\n  - waiting for locator(\"#main\").first to be visible\n"
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": "#btn-overview",
+          "label": "老版概览按钮可见",
+          "pass": false,
+          "error": "Locator.wait_for: Timeout 3000ms exceeded.\nCall log:\n  - waiting for locator(\"#btn-overview\").first to be visible\n"
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": "#root",
+          "label": "v2 壳根节点可见",
+          "pass": true
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": false,
+          "errors": [
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)",
+            "[error] Failed to load resource: the server responded with a status of 404 (Not Found)"
+          ],
+          "filtered_network": []
+        }
+      ],
+      "visual_results": [
+        {
+          "baseline": "legacy-dashboard-unaffected",
+          "status": "baseline_created",
+          "ssim": null,
+          "pass": true,
+          "note": "首次运行，已自动建立基线"
+        }
+      ],
+      "screenshots": [
+        "/root/fenixd/.fenix/verify-progress/v2-shell-hash-router/screenshots/legacy-dashboard-unaffected_assert_fail.png"
+      ]
+    },
+    {
+      "scenario_id": "hashchange-navigation-switch",
+      "description": "交互流程：在已加载壳内通过 hashchange 在路由间切换，验证侧边导航可点击跳转且壳持续渲染无报错（中间状态：切换后 #root 仍可见）。出处：core/dashboard/static/v2/app.js:62-64（hashchange 监听 + updateProps）、core/dashboard/static/v2/app.json:11（概览菜单 href=#/overview）、core/dashboard/server.py:12、tests/v2/smoke.spec.js:2",
+      "status": "fail",
+      "step_results": [
+        {
+          "success": true,
+          "action": "navigate",
+          "detail": "已导航到 http://127.0.0.1:8787/v2/index.html#/overview"
+        },
+        {
+          "success": true,
+          "action": "wait",
+          "target": "#root"
+        },
+        {
+          "success": false,
+          "action": "click",
+          "target": "a[href='#/project/myapp']",
+          "error_type": "element_not_found_or_not_actionable",
+          "error": "Locator.wait_for: Timeout 5000ms exceeded.\nCall log:\n  - waiting for locator(\"a[href='#/project/myapp']\").first to be visible\n"
+        }
+      ],
+      "assertion_results": [],
+      "visual_results": [
+        {
+          "baseline": "hashchange-navigation-switch",
+          "status": "baseline_created",
+          "ssim": null,
+          "pass": true,
+          "note": "首次运行，已自动建立基线"
+        }
+      ],
+      "screenshots": []
+    }
+  ]
+}
