@@ -8,7 +8,7 @@
       "name": "spec-crud",
       "api": {
         "url": "/api/specs?project=${params[0]}",
-        "adaptor": "var raw = (payload && payload.specs) ? payload.specs : (Array.isArray(payload) ? payload : []); var items = window.Adapters.adaptSpecs(raw); var proj = (payload && payload.project) || '${params[0]}'; items = items.map(function(it){ it.project = proj; it.specName = it.name; it.createdDate = it.created; return it; }); return { status: 0, data: { items: items, total: items.length } };"
+        "adaptor": "var raw = (payload && payload.specs) ? payload.specs : (Array.isArray(payload) ? payload : []); var items = window.Adapters.adaptSpecs(raw); var proj = (payload && payload.project) || '${params[0]}'; items = items.map(function(it){ it.project = proj; it.specName = it.name; it.createdDate = it.created ? String(it.created).substring(0, 10) : ''; return it; }); return { status: 0, data: { items: items, total: items.length } };"
       },
       "onEvent": {
         "sse:state": {
@@ -108,7 +108,7 @@
               "name": "createdDate",
               "label": "创建时间",
               "type": "tpl",
-              "tpl": "${createdDate ? createdDate.substring(0, 10) : '—'}"
+              "tpl": "${createdDate ? createdDate : '—'}"
             },
             {
               "name": "task",
