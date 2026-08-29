@@ -2629,7 +2629,7 @@ class TestEventBusReadyWhitelistRecovery(unittest.TestCase):
 
 
 class TestPMEngineBugFound(unittest.TestCase):
-    """Test bug-found → fix SPEC creation logic (multi-round fix)."""
+    """Test bug-found → inplace repair (non-fix) / legacy fix derivation (fix-*)."""
 
     def setUp(self):
         from core.pm_engine import PMEngine
@@ -2681,65 +2681,91 @@ class TestPMEngineBugFound(unittest.TestCase):
         self.sm.add_spec("fix-quick-links-folders", {"status": "testing", "priority": 6})
         self.assertIsNone(self.engine._resolve_fix_spec_name("quick-links-folders"))
 
-    def test_bug_found_creates_second_fix_when_first_done(self):
-        # 核心回归：原 SPEC 重新验证仍失败，而第一轮 fix 已 done
+    # ── 原地打回测试（inplace-bug-repair）──
+
+    def test_inplace_repair_first_failure(self):
+        """非 fix SPEC 首次 bug-found → 计数 1 + implementing + 修复段注入 + 无新 fix spec"""
+        # 准备 tasks.md（注入依赖）
+        spec_dir = Path(self.tmpdir) / "openspec" / "changes" / "quick-links-folders"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "tasks.md").write_text("# Tasks\n\n## 1. 实现\n\n- [x] 1.1 done\n", encoding="utf-8")
+
         self._make_buggy_spec("quick-links-folders")
-        self.sm.add_spec("fix-quick-links-folders", {"status": "done", "priority": 6})
 
         self.engine._do_spec_bug_found("quick-links-folders")
 
-        # 应创建第二轮 fix SPEC
-        fix2 = self.sm.read_one("fix-fix-quick-links-folders")
-        self.assertIsNotNone(fix2)
-        self.assertEqual(fix2["status"], "ready")
-        # 原 SPEC 保持在 bug-found（等 fix 完成后重新验证），不再过渡到 implementing
-        self.assertEqual(self.sm.read_one("quick-links-folders")["status"], "bug-found")
-        # 第二轮 fix 应被排队（队列条目结构：(priority, spec_name, agent_type)）
+        # 状态重置为 implementing
+        entry = self.sm.read_one("quick-links-folders")
+        self.assertEqual(entry["status"], "implementing")
+        # 计数器递增到 1
+        self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 1)
+        # 无新 fix spec 被创建
+        self.assertIsNone(self.sm.read_one("fix-quick-links-folders"))
+        # 修复段已注入
+        tasks_text = (spec_dir / "tasks.md").read_text(encoding="utf-8")
+        self.assertIn("## 验证修复", tasks_text)
+        self.assertIn("第 1 轮", tasks_text)
+        # 既有任务与勾选状态不被改写
+        self.assertIn("- [x] 1.1 done", tasks_text)
+        # 排队实现器
         queued_specs = [(e[1], e[2]) for e in self.engine._run_queue]
-        self.assertIn(("fix-fix-quick-links-folders", "implementer"), queued_specs)
+        self.assertIn(("quick-links-folders", "implementer"), queued_specs)
 
-    def test_bug_found_writes_fix_spec_files(self):
-        # 回归：fix SPEC 必须同时在磁盘上生成 proposal.md / tasks.md，
-        # 否则 implementer Agent 找不到 SPEC 文件而卡在 implementing。
+    def test_inplace_repair_second_failure(self):
+        """第二次 bug-found → 计数 2 + 段内轮数更新"""
+        spec_dir = Path(self.tmpdir) / "openspec" / "changes" / "quick-links-folders"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "tasks.md").write_text("# Tasks\n", encoding="utf-8")
+
         self._make_buggy_spec("quick-links-folders")
-        self.sm.add_spec("fix-quick-links-folders", {"status": "done", "priority": 6})
+        # 模拟第一次失败后状态
+        self.sm.update_spec("quick-links-folders", {
+            "_verify_fail_rounds": 1,
+            "status": "bug-found",
+        })
 
         self.engine._do_spec_bug_found("quick-links-folders")
 
-        spec_dir = Path(self.tmpdir) / "openspec" / "changes" / "fix-fix-quick-links-folders"
-        proposal_path = spec_dir / "proposal.md"
-        tasks_path = spec_dir / "tasks.md"
-        self.assertTrue(proposal_path.exists(), "proposal.md 未生成")
-        self.assertTrue(tasks_path.exists(), "tasks.md 未生成")
-        self.assertIn("quick-links-folders", proposal_path.read_text(encoding="utf-8"))
-        self.assertIn("- [ ] 1.1", tasks_path.read_text(encoding="utf-8"))
+        entry = self.sm.read_one("quick-links-folders")
+        self.assertEqual(entry["status"], "implementing")
+        self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 2)
+        tasks_text = (spec_dir / "tasks.md").read_text(encoding="utf-8")
+        self.assertIn("第 2 轮", tasks_text)
 
-    def test_bug_found_resets_reusable_fix(self):
-        # fix SPEC 处于可重置状态（bug-found）→ 复用而非新建
+    def test_inplace_repair_third_failure_escalates(self):
+        """第三轮 bug-found → blocked + 升级告警"""
         self._make_buggy_spec("quick-links-folders")
-        self.sm.add_spec("fix-quick-links-folders", {"status": "bug-found", "priority": 6})
+        self.sm.update_spec("quick-links-folders", {
+            "_verify_fail_rounds": 2,
+            "status": "bug-found",
+        })
 
         self.engine._do_spec_bug_found("quick-links-folders")
 
-        # 不应创建 fix-fix
-        self.assertIsNone(self.sm.read_one("fix-fix-quick-links-folders"))
-        # fix-quick-links-folders 应重置为 ready
-        self.assertEqual(self.sm.read_one("fix-quick-links-folders")["status"], "ready")
+        entry = self.sm.read_one("quick-links-folders")
+        self.assertEqual(entry["status"], "blocked")
+        self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 3)
+        # 检查升级告警
+        from core.admin_store import AdminStore
+        store = AdminStore(Path(self.tmpdir), self.logger)
+        alerts = [a for a in store.read_all()
+                  if a.get("signal_type") == "verify_fail_escalation"
+                  and a.get("spec") == "quick-links-folders"]
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["kind"], "escalation")
+        self.assertIn("3 轮", alerts[0]["description"])
 
-    def test_bug_found_not_skipped_when_handle_event_guard_present(self):
-        # 回归：handle_event 在调用 handler 前会 add ("spec_bug_found", name) 到
-        # _handling_events。若 _on_spec_bug_found 复用同一 key，会被错误跳过。
-        # 修复后 _on_spec_bug_found 用独立 key，不应被跳过。
+    def test_verify_fail_rounds_persists_across_restart(self):
+        """计数器跨重启持久：重新读取 STATE.md 后仍保持"""
         self._make_buggy_spec("quick-links-folders")
-        self.engine._handling_events.add(("spec_bug_found", "quick-links-folders"))
-        try:
-            self.engine._on_spec_bug_found("quick-links-folders")
-        finally:
-            self.engine._handling_events.discard(("spec_bug_found", "quick-links-folders"))
+        self.engine._do_spec_bug_found("quick-links-folders")
 
-        # 不应被防重入跳过：应创建 fix SPEC；原 SPEC 保持在 bug-found
-        self.assertIsNotNone(self.sm.read_one("fix-quick-links-folders"))
-        self.assertEqual(self.sm.read_one("quick-links-folders")["status"], "bug-found")
+        # 模拟重启：重新构造 state machine（从磁盘读取）
+        from core.state_machine import StateMachine as SM
+        new_sm = SM(self.state_path, self.logger)
+        entry = new_sm.read_one("quick-links-folders")
+        self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 1)
+        self.assertEqual(entry["status"], "implementing")
 
 
 class TestVerifierStaleResultGuard(unittest.TestCase):
@@ -3345,11 +3371,15 @@ class TestJudgeEnvDeclaredGuard(unittest.TestCase):
 
 
 class TestPMEngineBugFoundIdempotent(unittest.TestCase):
-    """2.1 spec_bug_found 重发幂等且非破坏（fix-dispatch-orphan D2）。
+    """legacy fix 子 SPEC 重发幂等且非破坏（fix-dispatch-orphan D2，仅存量 fix 链）。
 
-    连续 full_scan 对持续 bug-found 的父 SPEC 每轮 re-trigger，其处理器
-    发现 fix 子 SPEC 已存在时 MUST：子 SPEC 处于推进/终态时不动状态、不清空
-    run 字段；任何路径不得向 implementer_run/tester_run 写空值。
+    add-inplace-bug-repair 改造后：非 fix 父 SPEC 走原地打回（不派生 fix）；
+    仅存量 fix-* 父 SPEC 仍走 legacy 派生闭环。本类针对 legacy 路径验证子 SPEC
+    处于推进/终态时不动状态、不清空 run 字段；任何路径不得向
+    implementer_run/tester_run 写空值。
+
+    测试结构：父 fix-x 有 done 的子 fix-fix-x（终态，不触发守卫一），
+    本轮派生 fix-fix-fix-x。验证 done 子保持原状、新子被创建。
     """
 
     def setUp(self):
@@ -3367,7 +3397,7 @@ class TestPMEngineBugFoundIdempotent(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _make_buggy_spec(self, name="quick-links-folders"):
+    def _make_buggy_fix_spec(self, name="fix-x"):
         self.sm.add_spec(name, {"priority": 5})
         self.sm.transition(name, "ready")
         self.sm.transition(name, "implementing")
@@ -3375,105 +3405,60 @@ class TestPMEngineBugFoundIdempotent(unittest.TestCase):
         self.sm.transition(name, "testing")
         self.sm.transition(name, "bug-found")
 
-    def test_implemented_fix_survives_two_scans(self):
-        """implemented 子 SPEC 连续两轮 full_scan 不被降级，run 字段保持原值。"""
-        self._make_buggy_spec("quick-links-folders")
-        self.sm.add_spec("fix-quick-links-folders", {
-            "status": "implemented", "priority": 6,
+    def test_implemented_child_preserved_new_round_created(self):
+        """done 子 SPEC 不被降级（守卫一只拦非终态，done 不触发），
+        本轮派生 fix-fix-fix-x。"""
+        self._make_buggy_fix_spec("fix-x")
+        self.sm.add_spec("fix-fix-x", {
+            "status": "done", "priority": 6,
             "implementer_run": "impl-fix-abc", "tester_run": "tst-fix-xyz",
         })
-        self.engine._do_spec_bug_found("quick-links-folders")
-        after1 = self.sm.read_one("fix-quick-links-folders")
-        self.assertEqual(after1["status"], "implemented")
+        self.engine._do_spec_bug_found("fix-x")
+        # done 子保持原状（不被重置、run 字段不清空）
+        after1 = self.sm.read_one("fix-fix-x")
+        self.assertEqual(after1["status"], "done")
         self.assertEqual(after1["implementer_run"], "impl-fix-abc")
         self.assertEqual(after1["tester_run"], "tst-fix-xyz")
+        # 新一轮 fix-fix-fix-x 被派生
+        self.assertIsNotNone(self.sm.read_one("fix-fix-fix-x"))
+        self.engine._enqueue.assert_called_with("fix-fix-fix-x", "implementer")
 
-        # 第二轮扫描仍命中同一个已 implemented 的 fix SPEC
-        self.engine._do_spec_bug_found("quick-links-folders")
-        after2 = self.sm.read_one("fix-quick-links-folders")
-        self.assertEqual(after2["status"], "implemented")
-        self.assertEqual(after2["implementer_run"], "impl-fix-abc")
-        self.assertEqual(after2["tester_run"], "tst-fix-xyz")
-
-    def test_blocked_fix_survives_retrigger(self):
+    def test_blocked_child_survives_retrigger(self):
         """blocked（人工冻结/熔断）子 SPEC 不被 bug-found 重发改写成 ready。
 
         2026-08-28 实证：人工冻结的 fix 子 SPEC 每轮扫描被
         "already exists (status=blocked) — resetting to ready" 解冻。
         blocked 属合法停泊态，必须与推进/终态同等受守卫保护。
         """
-        self._make_buggy_spec("quick-links-folders")
-        self.sm.add_spec("fix-quick-links-folders", {
+        self._make_buggy_fix_spec("fix-x")
+        self.sm.add_spec("fix-fix-x", {
             "status": "blocked", "priority": 6,
             "error": "paused by user",
             "implementer_run": "impl-fix-abc",
         })
-        self.engine._do_spec_bug_found("quick-links-folders")
-        after = self.sm.read_one("fix-quick-links-folders")
+        self.engine._do_spec_bug_found("fix-x")
+        after = self.sm.read_one("fix-fix-x")
         self.assertEqual(after["status"], "blocked")
         self.assertEqual(after["error"], "paused by user")
         self.assertEqual(after["implementer_run"], "impl-fix-abc")
 
-    def test_ready_no_history_reset_keeps_run_fields(self):
-        """ready 但无历史工作的子 SPEC 正常重置，且 run 字段不被显式清空。"""
-        self._make_buggy_spec("quick-links-folders")
-        self.sm.add_spec("fix-quick-links-folders", {
-            "status": "ready", "priority": 6,
-            "error": "some prior error", "implementer_run": None,
-            "tester_run": None, "branch": "fenix/fix-x",
-        })
-        self.engine._do_spec_bug_found("quick-links-folders")
-        after = self.sm.read_one("fix-quick-links-folders")
+    def test_ready_child_created_when_no_terminal_child(self):
+        """无子存在时，_resolve_fix_spec_name 返回 fix-fix-x，新建 ready 并联网排队。"""
+        self._make_buggy_fix_spec("fix-x")
+        self.engine._do_spec_bug_found("fix-x")
+        after = self.sm.read_one("fix-fix-x")
+        self.assertIsNotNone(after)
         self.assertEqual(after["status"], "ready")
-        # 历史 run 字段保持为空（原本就空，未被「重新显式置 None」覆盖为污染态），
-        # 关键：update_spec 不再写 implementer_run/tester_run=None 去清空历史。
-        # 此处本就为空，校验「未写入空值」——用 update_spec 不删除既有键来证明。
-        self.assertIn("status", after)
-
-    def test_ready_with_history_reset_preserves_run_fields(self):
-        """已有历史 run 的 ready 子 SPEC 重置为 ready 时，历史 run id 保留。"""
-        self._make_buggy_spec("quick-links-folders")
-        self.sm.add_spec("fix-quick-links-folders", {
-            "status": "ready", "priority": 6,
-            "error": "some prior error",
-            "implementer_run": "impl-fix-old", "tester_run": "tst-fix-old",
-            "branch": "fenix/fix-x",
-        })
-        self.engine._do_spec_bug_found("quick-links-folders")
-        after = self.sm.read_one("fix-quick-links-folders")
-        self.assertEqual(after["status"], "ready")
-        # D2：历史 implementer_run/tester_run 必须保留，不得被清空
-        self.assertEqual(after["implementer_run"], "impl-fix-old")
-        self.assertEqual(after["tester_run"], "tst-fix-old")
-        # 被 D1 补发路径重新排队
-        self.engine._enqueue.assert_called_with("fix-quick-links-folders", "implementer")
-
-    def test_done_fix_preserved_new_round_created(self):
-        """done 子 SPEC：本轮不重置（状态与 run 字段保持原值），
-        因上一轮修复已终态，_resolve_fix_spec_name 派生新一轮 fix-fix-* 重排，
-        原 done SPEC 不被降级、run 字段不被清空。"""
-        self._make_buggy_spec("quick-links-folders")
-        self.sm.add_spec("fix-quick-links-folders", {
-            "status": "done", "priority": 6,
-            "implementer_run": "impl-fix-done", "tester_run": "tst-fix-done",
-        })
-        self.engine._do_spec_bug_found("quick-links-folders")
-        # 原 done 子 SPEC 保持原状（D2：不被重置、run 字段不清空）
-        after = self.sm.read_one("fix-quick-links-folders")
-        self.assertEqual(after["status"], "done")
-        self.assertEqual(after["implementer_run"], "impl-fix-done")
-        self.assertEqual(after["tester_run"], "tst-fix-done")
-        # 新一轮 fix 被派生并排队（新 bug 需要新修复轮）
-        self.assertIsNotNone(self.sm.read_one("fix-fix-quick-links-folders"))
-        self.engine._enqueue.assert_called_with("fix-fix-quick-links-folders", "implementer")
+        # 已被 enqueue（._enqueue 是 mock）
+        self.engine._enqueue.assert_called_with("fix-fix-x", "implementer")
 
 
 class TestPMEngineSameStatusResetDispatch(unittest.TestCase):
-    """3.1 同状态行动性重置必须触达调度路径（fix-dispatch-orphan D1）。
+    """legacy fix 子 SPEC 同状态行动性重置必须触达调度路径（fix-dispatch-orphan D1）。
 
     spec_bug_found 处理器对 fix 子 SPEC 的同状态重置（ready→ready /
     bug-found→ready）写回后，必须直调 _on_spec_ready 触发派发；且被真实
-    spec_ready 事件再次触达时不双重排队（_enqueue 去重保证）。
+    spec_ready 事件再次触达时不双重排队（_enqueue 去重保证）。仅存量 fix 链生效。
     """
 
     def setUp(self):
@@ -3490,7 +3475,7 @@ class TestPMEngineSameStatusResetDispatch(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _make_buggy_spec(self, name="quick-links-folders"):
+    def _make_buggy_fix_spec(self, name="fix-x"):
         self.sm.add_spec(name, {"priority": 5})
         self.sm.transition(name, "ready")
         self.sm.transition(name, "implementing")
@@ -3499,15 +3484,18 @@ class TestPMEngineSameStatusResetDispatch(unittest.TestCase):
         self.sm.transition(name, "bug-found")
 
     def test_same_status_reset_triggers_dispatch(self):
-        """bug-found 重发命中 ready 子 SPEC（同状态重置），派发被触发。"""
-        self._make_buggy_spec("quick-links-folders")
-        self.sm.add_spec("fix-quick-links-folders", {
-            "status": "ready", "priority": 6,
-            "error": "prior", "implementer_run": "impl-old",
-        })
-        self.engine._do_spec_bug_found("quick-links-folders")
+        """bug-found 重发命中 ready 子 SPEC（同状态重置），派发被触发（legacy 路径）。
+
+        父 fix-x 仅有 done 子 fix-fix-x（终态，无 ready 子），本轮派生新 fix-fix-fix-x
+        并走同状态重置补发路径入队。
+        """
+        self._make_buggy_fix_spec("fix-x")
+        self.sm.add_spec("fix-fix-x", {"status": "done", "priority": 6})
+        self.engine._do_spec_bug_found("fix-x")
+        # 新派生的 fix-fix-fix-x 应被创建并排队
+        self.assertIsNotNone(self.sm.read_one("fix-fix-fix-x"))
         queued = [(e[1], e[2]) for e in self.engine._run_queue]
-        self.assertIn(("fix-quick-links-folders", "implementer"), queued)
+        self.assertIn(("fix-fix-fix-x", "implementer"), queued)
 
     def test_resend_not_double_queued(self):
         """同状态重置已排队后，真实 spec_ready 事件再次触达不双重排队。
@@ -3516,24 +3504,21 @@ class TestPMEngineSameStatusResetDispatch(unittest.TestCase):
         验证「补发 + 真实事件」最终仅一条排队条目生效。
         """
         self.engine._process_queue = MagicMock()
-        self._make_buggy_spec("quick-links-folders")
-        self.sm.add_spec("fix-quick-links-folders", {
-            "status": "ready", "priority": 6,
-            "error": "prior", "implementer_run": "impl-old",
-        })
-        # 1) spec_bug_found 重发 → 同状态重置 → 直调 _on_spec_ready 入队
-        self.engine._do_spec_bug_found("quick-links-folders")
+        self._make_buggy_fix_spec("fix-x")
+        self.sm.add_spec("fix-fix-x", {"status": "done", "priority": 6})
+        # 1) spec_bug_found 重发 → 派生 fix-fix-fix-x → 直调 _on_spec_ready 入队
+        self.engine._do_spec_bug_found("fix-x")
         after_reset = [(e[1], e[2]) for e in self.engine._run_queue]
         self.assertEqual(
-            after_reset.count(("fix-quick-links-folders", "implementer")), 1,
+            after_reset.count(("fix-fix-fix-x", "implementer")), 1,
             "重置后队列中该 spec 应仅出现一次",
         )
         # 2) 真实 spec_ready 事件再次触达（如人工修改 STATE.md 状态）
-        self.engine.handle_event("spec_ready", "fix-quick-links-folders",
-                                 self.sm.read_one("fix-quick-links-folders"))
+        self.engine.handle_event("spec_ready", "fix-fix-fix-x",
+                                 self.sm.read_one("fix-fix-fix-x"))
         after_event = [(e[1], e[2]) for e in self.engine._run_queue]
         self.assertEqual(
-            after_event.count(("fix-quick-links-folders", "implementer")), 1,
+            after_event.count(("fix-fix-fix-x", "implementer")), 1,
             "真实事件与补发不应双重排队",
         )
 
