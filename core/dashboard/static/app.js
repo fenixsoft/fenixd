@@ -209,14 +209,18 @@ function handleSSEEvent(msg) {
   if (msg.type === 'run_events' && modalRunId === msg.run_id) {
     appendModalEvents(msg);
   }
+  if (msg.type === 'run_events' && modalAdminSpec && modalAdminRunId === msg.run_id) {
+    appendAdminEvents(msg);
+  }
   if (msg.type === 'alerts') {
     // 告警标记已处理 / 新告警写入 → 刷新横幅；运维记录页同步刷新
     loadAlerts();
     if (currentState.view === 'activities') refreshView();
   }
   if (msg.type === 'admin_activities') {
-    // add-admin-invoke-dialog：Admin 处置记录变更 → 仅当弹窗打开且 project 匹配时
-    // 重拉该 SPEC 的处置记录并刷新，关闭后忽略（行为与 run 弹窗一致）。
+    // add-admin-invoke-dialog v2：Admin 处置记录（含 pending disposition）变更 →
+    // 仅当弹窗打开且 project 匹配时重拉该 SPEC 记录；fetchAdminActivities 内部负责
+    // 解析 admin_run_id / 刷新顶部状态行 / 等待态切实时输出，关闭后忽略（与 run 弹窗一致）。
     if (modalAdminSpec && msg.project === modalAdminSpec.project) {
       fetchAdminActivities(modalAdminSpec.project, modalAdminSpec.spec);
     }
@@ -232,8 +236,10 @@ function connectSSE() {
     if (sse._firstOpen) { sse._firstOpen = false; return; }
     load();
     if (modalRunId) pendingWatches.push(modalRunId);
-    // add-admin-invoke-dialog：SSE 断线重连后，若处置记录弹窗仍打开则补拉一次该 SPEC 记录
+    // add-admin-invoke-dialog v2：SSE 断线重连后，若处置过程弹窗仍打开则补拉该 SPEC
+    // 记录（run 已定位则重订阅增量；等待态则重拉解析，与首连同路径）。
     else if (modalAdminSpec) {
+      if (modalAdminRunId) pendingWatches.push(modalAdminRunId);
       fetchAdminActivities(modalAdminSpec.project, modalAdminSpec.spec);
     }
   };
@@ -1572,6 +1578,10 @@ let modalProject = '';
 let modalEvents = [];       // 事件缓冲：初始尾部 + 增量追加
 let modalTotal = 0;
 
+// 呼叫 Admin 处置过程弹窗的事件缓冲（与 modalEvents/modalTotal 同结构，独立管理）
+let modalAdminEvents = [];  // 当前 admin run 的事件缓冲
+let modalAdminTotal = 0;
+
 function isRunLive(status) {
   return status === 'running' || status === 'empty';
 }
@@ -1663,33 +1673,63 @@ function closeRunModal() {
 el('runmodal').addEventListener('click', (e) => { if (e.target === el('runmodal')) closeRunModal(); });
 el('runmodal-close').addEventListener('click', closeRunModal);
 
-// ── 呼叫 Admin 处置记录弹窗（add-admin-invoke-dialog） ────────────
-// 复用 runmodal 视觉（80% 屏宽/高）+ activityCard 渲染；SSE 实时刷新。
-// 设计决策：弹窗状态用模块级变量管理（与 modalRunId 同模式），不依赖路由。
+// ── 呼叫 Admin 处置过程弹窗（add-admin-invoke-dialog v2） ────────────
+// 复用 runmodal 视觉（80% 屏宽/高）。v2 改为展示 Administrator 处置过程的实时输出：
+// 解析该 SPEC 的 admin_run_id 后复用 run 弹窗的 run watch + run_events SSE 时间轴
+// 渲染 Agent 消息流；run 尚未启动（无 pending disposition）时显示等待态，run 启动后
+// 自动切换为实时输出。设计决策：弹窗状态用模块级变量管理（与 modalRunId 同模式），
+// 不依赖路由（design D5）。
 let modalAdminSpec = null;  // {project, spec, inProgress: bool} | null — null = 关闭
+let modalAdminRunId = null; // 当前已定位的 admin run（null = 等待态）
+let modalAdminPoll = null;  // 等待态兜底轮询定时器（5s，解析成功后清除）
 
-function openAdminRecordModal(project, spec, inProgress) {
+// 顶部状态行元数据（处置中 / 已完成 / 已中断 / 等待中）
+const ADMIN_DISP_META = {
+  pending: { cls: 'st-muted', icon: '⏳', label: '处置中' },
+  running: { cls: 'st-warning', icon: '🔨', label: '处置中' },
+  resolved: { cls: 'st-good', icon: '✅', label: '已完成' },
+  'partially-resolved': { cls: 'st-warning', icon: '⚠️', label: '部分解决' },
+  escalated: { cls: 'st-critical', icon: '🚨', label: '已升级' },
+  failed: { cls: 'st-critical', icon: '❌', label: '失败' },
+  interrupted: { cls: 'st-critical', icon: '⛔', label: '已中断' },
+  waiting: { cls: 'st-muted', icon: '⏳', label: '等待 Administrator 开始处置' },
+};
+function adminDispPill(status) {
+  const m = ADMIN_DISP_META[status] || { cls: 'st-muted', icon: '❓', label: status || '未知' };
+  return `<span class="status-pill ${m.cls}">${m.icon} ${esc(m.label)}</span>`;
+}
+
+function openAdminInvokeDialog(project, spec, inProgress) {
   const box = el('adminrec');
   const body = el('adminrec-body');
   const title = el('adminrec-title');
   const note = el('adminrec-note');
-  title.textContent = (spec || '') + ' 处置记录';
+  const statusPill = el('adminrec-status');
+  title.textContent = (spec || '') + ' 处置过程';
+  // 409 = 已在处置中（design D4）：顶部保留「已有处置进行中」提示行
   if (inProgress) {
     note.textContent = 'ℹ 已有处置进行中';
     note.classList.remove('hidden');
   } else {
     note.classList.add('hidden');
   }
-  body.innerHTML = '<div class="empty-state">加载中…</div>';
+  statusPill.innerHTML = adminDispPill('waiting');
+  body.innerHTML = '<div class="empty-state">等待 Administrator 开始处置…</div>';
   box.classList.remove('hidden');
   modalAdminSpec = { project, spec, inProgress: !!inProgress };
+  modalAdminRunId = null;
+  modalAdminEvents = [];
+  modalAdminTotal = 0;
+  // §3.1：打开即重拉解析端点定位该 SPEC 最新 disposition 的 admin_run_id
   fetchAdminActivities(project, spec);
+  // §3.2：等待态兜底轮询（5s），解析到 run 后立即停轮询
+  startAdminPoll();
 }
 
+// §3.1：解析该 SPEC 最新（优先 pending、其次最终，按时间倒序）disposition 的 admin_run_id
 function fetchAdminActivities(project, spec) {
-  const body = el('adminrec-body');
   const box = el('adminrec');
-  if (!body || !box || box.classList.contains('hidden') || !modalAdminSpec) return;
+  if (!box || box.classList.contains('hidden') || !modalAdminSpec) return;
   const params = '?project=' + encodeURIComponent(project)
     + '&spec=' + encodeURIComponent(spec);
   fetch('/api/admin-activities' + params)
@@ -1700,26 +1740,143 @@ function fetchAdminActivities(project, spec) {
     .then((d) => {
       if (!modalAdminSpec) return;  // 关闭期间响应，丢弃
       const acts = d.activities || [];
-      if (!acts.length) {
-        body.innerHTML = '<div class="empty-state">该 SPEC 暂无处置记录</div>';
-        return;
+      // 取最新一条记录（activities 已按置顶 + 时间倒序排列，首条即最新），取其
+      // admin_run_id 与处置状态（design D2）：prefer pending → 其次最新 final。
+      const latest = acts[0];
+      const status = latest ? (latest.status || latest.result) : null;
+      // 顶部状态行随广播刷新（design D5）
+      el('adminrec-status').innerHTML = latest
+        ? adminDispPill(status) : adminDispPill('waiting');
+      if (latest && latest.admin_run_id) {
+        resolveAdminRun(latest.admin_run_id, project, spec);
       }
-      body.innerHTML = '<div class="activity-timeline">' + acts.map(activityCard).join('') + '</div>';
+      // 未解析到 run 且弹窗仍开 → 保持等待态（轮询/广播会再次触发本解析）
     })
     .catch(() => {
       if (!modalAdminSpec) return;
-      body.innerHTML = '<div class="empty-state">加载失败，请稍后重试</div>';
+      // 解析端点失败：等待态不报错（design 风险 → 轮询兜底），仅在尚未定位 run 时提示
+      if (!modalAdminRunId) {
+        el('adminrec-status').innerHTML = adminDispPill('waiting');
+      }
     });
 }
 
-function closeAdminRecordModal() {
+// §3.3：解析到 admin_run_id → 复用 run 弹窗链路（拉取事件 + 注册 watch + 时间轴渲染）
+function resolveAdminRun(runId, project, spec) {
+  if (modalAdminRunId === runId) return;  // 已在该 run，避免重复拉取
+  // 切换 run：注销旧 watch（若有）
+  if (modalAdminRunId) unregisterWatch(modalAdminRunId);
+  modalAdminRunId = runId;
+  stopAdminPoll();  // §3.2：解析成功即停兜底轮询
+  const statusPill = el('adminrec-status');
+  statusPill.innerHTML = adminDispPill('running');
+  fetchAdminRunTail(runId, project);
+}
+
+function fetchAdminRunTail(runId, project) {
+  const box = el('adminrec');
+  const body = el('adminrec-body');
+  if (modalAdminSpec && modalAdminRunId !== runId) {
+    unregisterWatch(runId);
+    return;
+  }
+  api('/api/runs/' + encodeURIComponent(runId)
+    + '?project=' + encodeURIComponent(project) + '&tail=300')
+    .then((d) => {
+      if (modalAdminSpec && modalAdminRunId !== runId) {
+        unregisterWatch(runId);
+        return;
+      }
+      if (!modalAdminSpec) return;
+      modalAdminEvents = d.events || [];
+      modalAdminTotal = d.total_events != null ? d.total_events : modalAdminEvents.length;
+      renderAdminRunBody(runId, d.status);
+      // 顶部状态行：run 进行中显示处置中，结束显示最终状态
+      const live = isRunLive(d.status);
+      // 若已有最终 disposition（pending 之外）则优先显示最终状态，否则跟 run 状态
+      el('adminrec-status').innerHTML = adminDispPill(live ? 'running' : (d.status || 'resolved'));
+      if (live) registerWatch(runId);          // 运行中 → 订阅增量推送
+      else unregisterWatch(runId);             // 运行结束即停订阅
+    })
+    .catch((err) => {
+      if (!modalAdminSpec) return;
+      // §3.4：run 拉取 404（文件被清理）→ 回退等待态并重解析
+      if (err && /HTTP 404/.test(err.message)) {
+        modalAdminRunId = null;
+        el('adminrec-status').innerHTML = adminDispPill('waiting');
+        el('adminrec-body').innerHTML =
+          '<div class="empty-state">等待 Administrator 开始处置…</div>';
+        startAdminPoll();
+        fetchAdminActivities(modalAdminSpec.project, modalAdminSpec.spec);
+      }
+    });
+}
+
+function renderAdminRunBody(runId, status) {
+  const body = el('adminrec-body');
+  if (!body) return;
+  const d = {
+    run_id: runId, status: status, error: null,
+    events: modalAdminEvents, total_events: modalAdminTotal,
+  };
+  // 复用 run 弹窗的事件时间轴渲染（runEventMd / collapseThinkingTokens）
+  const raw = d.events || [];
+  const events = collapseThinkingTokens(raw);
+  const html = events.slice(-300).map(runEventMd).join('');
+  const total = d.total_events != null ? d.total_events : raw.length;
+  body.innerHTML =
+    `<div class="runmodal-scroll">${html}</div>`
+    + `<div class="kv-row"><span class="k">共 ${total} 条事件</span></div>`;
+  body.scrollTop = body.scrollHeight;
+}
+
+// §3.4：run_events SSE 增量推送在弹窗打开且 run 匹配时更新时间轴
+function appendAdminEvents(msg) {
+  const body = el('adminrec-body');
+  const box = el('adminrec');
+  if (!body || !box || box.classList.contains('hidden')
+      || !modalAdminSpec || modalAdminRunId !== msg.run_id) return;
+  if (msg.reset) {
+    unregisterWatch(msg.run_id);
+    fetchAdminRunTail(msg.run_id, modalAdminSpec.project);
+    return;
+  }
+  modalAdminEvents = modalAdminEvents.concat(msg.events || []);
+  modalAdminTotal = msg.total_events != null ? msg.total_events : modalAdminEvents.length;
+  const live = isRunLive(msg.status);
+  renderAdminRunBody(msg.run_id, live ? 'running' : (msg.status || 'resolved'));
+  el('adminrec-status').innerHTML = adminDispPill(live ? 'running' : (msg.status || 'resolved'));
+  if (!live) unregisterWatch(msg.run_id);   // 运行结束即停订阅
+}
+
+// §3.2：等待态兜底轮询（5s，仅弹窗打开且未定位 run 时进行）
+function startAdminPoll() {
+  stopAdminPoll();
+  if (!modalAdminSpec || modalAdminRunId) return;
+  modalAdminPoll = setInterval(() => {
+    if (!modalAdminSpec || modalAdminRunId) { stopAdminPoll(); return; }
+    fetchAdminActivities(modalAdminSpec.project, modalAdminSpec.spec);
+  }, 5000);
+}
+function stopAdminPoll() {
+  if (modalAdminPoll) { clearInterval(modalAdminPoll); modalAdminPoll = null; }
+}
+
+// §3.5：关闭弹窗 → unregisterWatch + 停轮询 + 清空状态；后台处置不受影响
+function closeAdminInvokeDialog() {
+  if (modalAdminRunId) unregisterWatch(modalAdminRunId);
+  stopAdminPoll();
   modalAdminSpec = null;
+  modalAdminRunId = null;
+  modalAdminEvents = [];
+  modalAdminTotal = 0;
   el('adminrec').classList.add('hidden');
   el('adminrec-body').innerHTML = '';
+  el('adminrec-status').innerHTML = '';
   el('adminrec-note').classList.add('hidden');
 }
-el('adminrec').addEventListener('click', (e) => { if (e.target === el('adminrec')) closeAdminRecordModal(); });
-el('adminrec-close').addEventListener('click', closeAdminRecordModal);
+el('adminrec').addEventListener('click', (e) => { if (e.target === el('adminrec')) closeAdminInvokeDialog(); });
+el('adminrec-close').addEventListener('click', closeAdminInvokeDialog);
 
 // ── SPEC 文档弹窗（proposal.md / design.md / tasks.md，三页签） ──
 
@@ -2692,7 +2849,7 @@ function _ctxAdminInvoke(project, spec) {
       });
     })
     .then((result) => {
-      openAdminRecordModal(project, spec, result.inProgress);
+      openAdminInvokeDialog(project, spec, result.inProgress);
       // 刷新运维活动区（若在运维记录视图）
       if (currentState.view === 'activities') load();
     })

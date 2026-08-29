@@ -65,11 +65,13 @@
       </div>
     </div>
 
-    <!-- 呼叫 Admin 处置记录弹窗（add-admin-invoke-dialog：复用 runmodal 视觉，按 SPEC 过滤 + SSE 实时刷新） -->
+    <!-- 呼叫 Admin 处置过程弹窗（add-admin-invoke-dialog v2：复用 runmodal 视觉，
+         解析 admin_run_id 后复用 run watch + run_events SSE 时间轴渲染处置过程输出） -->
     <div id="adminrec" class="runmodal hidden">
       <div class="runmodal-box">
         <div class="runmodal-head">
           <span id="adminrec-title" class="runmodal-title"></span>
+          <span id="adminrec-status" class="adminrec-status"></span>
           <button id="adminrec-close" class="modal-close" title="关闭">✕</button>
         </div>
         <div id="adminrec-note" class="adminrec-note hidden"></div>
