@@ -17,3 +17,8 @@
 ## 3. 提交
 
 - [x] 3.1 `git add core/dashboard/static/v2/run-stream.js core/dashboard/static/v2/pages/spec-detail.json tests/v2/ && git commit`(信息:`v2-run-stream: 运行记录弹窗 custom(watch+增量+粘性滚动+token 合并)`)
+
+## 验证修复（第 1 轮失败）
+
+- [ ] 阅读 `openspec/changes/v2-run-stream-modal/verification-report.md`，定位「真实产品 Bug」并修复
+- [ ] 修复后重跑验证确认通过
