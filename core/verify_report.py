@@ -24,10 +24,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # 告警 signal_type（human-escalation-alerts 能力，.fenix/admin_alerts.json）
-SIGNAL_SYNTHESIZED = "verify_report_synthesized"
 SIGNAL_MISSING = "verify_report_missing"
 
-# 兜底合成告警的写入节流（分钟）：同 spec 同类信号冷却期内不重复落库，
+# 升级告警写入节流（分钟）：同 spec 同类信号冷却期内不重复落库，
 # 防止多轮重验反复刷屏。与 admin.escalation_cooldown_minutes 同源。
 _ALERT_COOLDOWN_MINUTES = 15
 
@@ -356,13 +355,7 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
 
     result = synthesize_verification_report(project_root, spec_name)
     if result.get("ok"):
-        _append_alert(
-            project_root, spec_name, SIGNAL_SYNTHESIZED, "minor",
-            f"裁决 Agent 未写报告，已由框架合成：{result.get('path')}",
-            "闸门在裁决放行前检测到 verification-report.md 缺失，"
-            "已从 report.json / .fenix-run-result.json 确定性合成（未重跑验证）",
-            logger=logger,
-        )
+        # 2026-08-29 用户决策：合成兜底静默化——只记框架日志，不发人工升级告警
         if logger is not None:
             logger.warning(
                 "verify_report",

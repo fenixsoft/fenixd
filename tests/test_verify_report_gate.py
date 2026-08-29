@@ -87,7 +87,7 @@ class _GateTestBase(unittest.TestCase):
 class TestGateSynthesizesWhenMissing(_GateTestBase):
     """路径1：缺报告 + 数据完整 → 合成 + 告警。"""
 
-    def test_gate_synthesizes_report_and_alerts(self):
+    def test_gate_synthesizes_report_silently(self):
         self._seed_structured_data()
         self.assertFalse(self._report_path().exists())
 
@@ -105,23 +105,20 @@ class TestGateSynthesizesWhenMissing(_GateTestBase):
         self.assertIn("## 真实产品 Bug", content)
         self.assertIn("- 根因：", content)
         self.assertIn("- 证据：", content)
-        # 告警已落库（human-escalation-alerts）
+        # 2026-08-29 用户决策：合成兜底静默化，不产生人工升级告警
         alerts = [a for a in self._alerts()
                   if a.get("signal_type") == "verify_report_synthesized"]
-        self.assertEqual(len(alerts), 1)
-        self.assertEqual(alerts[0]["kind"], "escalation")
-        self.assertEqual(alerts[0]["spec"], SPEC)
-        self.assertIn("已由框架合成", alerts[0]["description"])
+        self.assertEqual(len(alerts), 0)
 
-    def test_gate_alert_throttled_within_cooldown(self):
+    def test_gate_idempotent_second_call_present(self):
         self._seed_structured_data()
         self.engine._ensure_verification_report(SPEC)
-        # 第二次放行（报告已在 → 不再合成也不再重复告警）
+        # 第二次放行（报告已在 → 不再合成、无任何告警）
         blocker = self.engine._ensure_verification_report(SPEC)
         self.assertIsNone(blocker)
         alerts = [a for a in self._alerts()
-                  if a.get("signal_type") == "verify_report_synthesized"]
-        self.assertEqual(len(alerts), 1)
+                  if a.get("signal_type", "").startswith("verify_report")]
+        self.assertEqual(len(alerts), 0)
 
 
 class TestGatePreservesAgentReport(_GateTestBase):
