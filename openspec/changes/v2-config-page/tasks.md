@@ -6,12 +6,12 @@
 
 ## 1. 测试先行
 
-- [ ] 1.1 写 tests/v2/config.spec.js(加载回显→修改并行度→保存→toast→重载回显);跑确认 FAIL
+- [x] 1.1 写 tests/v2/config.spec.js(加载回显→修改并行度→保存→toast→重载回显);跑确认 FAIL
 
 ## 2. 页面实现
 
-- [ ] 2.1 实现 pages/config.json:config-loader service(写 __configSnapshot)+ config-form 5 页签(LLM combo/env KV combo、链 input-array sortable+validateChain、并行度 4 input-number、审批 radios、主题只读 tpl);requestAdaptor 调 buildConfigPayload;不挂任何 sse 监听
-- [ ] 2.2 config.spec.js PASS;链校验与编辑豁免抽查
+- [x] 2.1 实现 pages/config.json:config-loader service(写 __configSnapshot)+ config-form 5 页签(LLM combo/env KV combo、链 input-array sortable+validateChain、并行度 4 input-number、审批 radios、主题只读 tpl);requestAdaptor 调 buildConfigPayload;不挂任何 sse 监听
+- [x] 2.2 config.spec.js PASS;链校验与编辑豁免抽查
 
 ## 3. 提交
 
@@ -19,5 +19,5 @@
 
 ## 验证修复（第 1 轮失败）
 
-- [ ] 阅读 `openspec/changes/v2-config-page/verification-report.md`，定位「真实产品 Bug」并修复
-- [ ] 修复后重跑验证确认通过
+- [x] 阅读 `openspec/changes/v2-config-page/verification-report.md`，定位「真实产品 Bug」并修复
+- [x] 修复后重跑验证确认通过
