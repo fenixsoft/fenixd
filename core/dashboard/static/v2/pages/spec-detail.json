@@ -1,0 +1,222 @@
+{
+  "type": "page",
+  "body": [
+    {
+      "type": "service",
+      "id": "spec-detail",
+      "name": "spec-detail",
+      "api": {
+        "url": "/api/specs/${params[1]}?project=${params[0]}",
+        "adaptor": "return { status: 0, data: window.Adapters.adaptSpecDetail(payload) }"
+      },
+      "onEvent": {
+        "sse:detail": {
+          "actions": [
+            {
+              "actionType": "custom",
+              "script": "var d = event.data; if (d && d.spec === window.V2.route().params[1]) { this.reload(); }"
+            }
+          ]
+        },
+        "sse:state": {
+          "actions": [
+            {
+              "actionType": "reload",
+              "componentId": "spec-detail"
+            }
+          ]
+        }
+      },
+      "body": [
+        {
+          "type": "card",
+          "_note": "验证结论卡: verdict 计数已数字化(adaptSpecDetail), 汇总显示验证状态与关键指标",
+          "className": "m-b-sm",
+          "body": {
+            "type": "grid",
+            "columns": [
+              {
+                "md": 12,
+                "body": [
+                  {
+                    "type": "tpl",
+                    "tpl": "<h3 style='margin:0'>验证结论</h3>",
+                    "className": "m-b-xs"
+                  },
+                  {
+                    "type": "tpl",
+                    "tpl": "<div>${verdict.status_detail || verdict.status || '无验证数据'}</div>",
+                    "className": "m-b-xs",
+                    "style": {
+                      "fontSize": "1.1rem"
+                    }
+                  },
+                  {
+                    "type": "tpl",
+                    "tpl": "<div style='color:var(--text-muted)'>${verdict.conclusion || ''}</div>",
+                    "style": {
+                      "fontSize": "0.85rem"
+                    }
+                  }
+                ]
+              },
+              {
+                "md": 12,
+                "body": [
+                  {
+                    "type": "tpl",
+                    "tpl": "<h3 style='margin:0'>验证进度</h3>",
+                    "className": "m-b-xs"
+                  },
+                  {
+                    "type": "tpl",
+                    "tpl": "<div>${verify_progress.done || 0} / ${verify_progress.total || 0} 场景已验证</div>"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "card",
+          "_note": "任务清单 checklist,按分组渲染(用 data. 前缀避免空数据期 ReferenceError)",
+          "className": "m-b-sm",
+          "body": [
+            {
+              "type": "tpl",
+              "tpl": "<h3 style='margin:0 0 8px 0'>任务清单</h3>"
+            },
+            {
+              "type": "tpl",
+              "tpl": "<% if (data && data.tasks && data.tasks.length) { data.tasks.forEach(function(g) { %><div style='margin-bottom:6px'><strong><%= g.title %></strong> (<%= g.done %>/<%= g.total %>)</div><% (g.tasks || []).forEach(function(t) { %><div style='padding-left:12px'><input type='checkbox' <%= t.done ? 'checked' : '' %> disabled /> <%= t.desc %></div><% }); %><% }); } else { %><span class='text-muted'>暂无任务</span><% } %>",
+              "className": "v2-task-checklist"
+            }
+          ]
+        },
+        {
+          "type": "tabs",
+          "tabsMode": "line",
+          "className": "m-t-sm",
+          "tabs": [
+            {
+              "title": "时间轴",
+              "body": [
+                {
+                  "type": "container",
+                  "body": [
+                    {
+                      "type": "timeline",
+                      "source": "${timeline}",
+                      "title": "<% if (data && data.kind === 'run') { %><span class='text-primary'>🤖 <%= data.agent_type %> — <%= data.status %> (<%= data.duration_seconds %>s) — <%= data.run_id %></span><% } else { %><span><%= data.from %> → <%= data.to %></span><% } %>",
+                      "detail": "<% if (data && data.kind === 'run') { %><span class='text-muted'>运行记录</span><% } else { %><span><%= data.reason || '' %></span><% } %>",
+                      "icon": "<% if (data && data.kind === 'run') { %>fa fa-play-circle text-primary<% } else { %>fa fa-exchange-alt text-muted<% } %>",
+                      "iconClassName": "<% if (data && (data.status === 'done' || data.to === 'done')) { %>text-success<% } else if (data && (data.status === 'error' || data.status === 'bug-found')) { %>text-danger<% } %>"
+                    }
+                  ],
+                  "onEvent": {
+                    "click": {
+                      "actions": [
+                        {
+                          "actionType": "dialog",
+                          "args": {
+                            "dialog": {
+                              "title": "运行记录",
+                              "size": "lg",
+                              "body": {
+                                "type": "tpl",
+                                "tpl": "运行记录弹窗待 Task 8 接入 RunStream run 模式(节点 run_id 来自 timeline 数据)"
+                              }
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "title": "场景",
+              "body": [
+                {
+                  "type": "table",
+                  "source": "${scenarios}",
+                  "columns": [
+                    {
+                      "name": "scenario_id",
+                      "label": "ID",
+                      "width": 60
+                    },
+                    {
+                      "name": "description",
+                      "label": "描述"
+                    },
+                    {
+                      "name": "status",
+                      "label": "状态",
+                      "width": 80,
+                      "tpl": "<% if (data && data.status === 'pass') { %><span class='label label-success'>PASS</span><% } else if (data && data.status === 'fail') { %><span class='label label-danger'>FAIL</span><% } else if (data && data.status === 'error') { %><span class='label label-warning'>ERROR</span><% } else { %><span class='label label-default'><%= data.status %></span><% } %>",
+                      "type": "tpl"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "title": "Bug",
+              "body": [
+                {
+                  "type": "table",
+                  "source": "${bugs}",
+                  "columns": [
+                    {
+                      "name": "severity",
+                      "label": "严重度",
+                      "width": 80
+                    },
+                    {
+                      "name": "description",
+                      "label": "描述"
+                    },
+                    {
+                      "name": "scenario_ids",
+                      "label": "关联场景",
+                      "width": 100
+                    },
+                    {
+                      "name": "source",
+                      "label": "来源",
+                      "width": 80
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "title": "截图",
+              "body": [
+                {
+                  "type": "cards",
+                  "source": "${screenshots}",
+                  "cols": 4,
+                  "card": {
+                    "body": [
+                      {
+                        "type": "image",
+                        "src": "/screenshots/${params[0]}/${params[1]}/${file}",
+                        "thumbMode": "cover",
+                        "height": 150,
+                        "className": "rounded",
+                        "enlargeable": true
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
