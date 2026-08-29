@@ -16,3 +16,8 @@
 ## 3. 提交
 
 - [ ] 3.1 `git add core/dashboard/static/v2/pages/config.json tests/v2/ && git commit`(信息:`v2-config: 配置页(5 页签+链编辑器+三级回退+编辑豁免)`)
+
+## 验证修复（第 1 轮失败）
+
+- [ ] 阅读 `openspec/changes/v2-config-page/verification-report.md`，定位「真实产品 Bug」并修复
+- [ ] 修复后重跑验证确认通过
