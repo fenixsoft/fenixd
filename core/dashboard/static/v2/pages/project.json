@@ -13,7 +13,10 @@
       "onEvent": {
         "sse:state": {
           "actions": [
-            { "actionType": "reload", "componentId": "spec-crud" }
+            {
+              "actionType": "reload",
+              "componentId": "spec-crud"
+            }
           ]
         }
       },
@@ -39,7 +42,9 @@
                 "placeholder": "搜索 SPEC 名称",
                 "label": "关键词",
                 "clearable": true,
-                "style": { "width": "220px" }
+                "style": {
+                  "width": "220px"
+                }
               },
               {
                 "type": "select",
@@ -47,17 +52,50 @@
                 "label": "状态",
                 "placeholder": "全部状态",
                 "options": [
-                  { "label": "全部状态", "value": "" },
-                  { "label": "规划中", "value": "drafted" },
-                  { "label": "就绪", "value": "ready" },
-                  { "label": "实现中", "value": "implementing" },
-                  { "label": "有Bug", "value": "bug-found" },
-                  { "label": "已实现", "value": "implemented" },
-                  { "label": "验证中", "value": "testing" },
-                  { "label": "已验证", "value": "verified" },
-                  { "label": "完成", "value": "done" },
-                  { "label": "已推送", "value": "pushed" },
-                  { "label": "阻塞", "value": "blocked" }
+                  {
+                    "label": "全部状态",
+                    "value": ""
+                  },
+                  {
+                    "label": "规划中",
+                    "value": "drafted"
+                  },
+                  {
+                    "label": "就绪",
+                    "value": "ready"
+                  },
+                  {
+                    "label": "实现中",
+                    "value": "implementing"
+                  },
+                  {
+                    "label": "有Bug",
+                    "value": "bug-found"
+                  },
+                  {
+                    "label": "已实现",
+                    "value": "implemented"
+                  },
+                  {
+                    "label": "验证中",
+                    "value": "testing"
+                  },
+                  {
+                    "label": "已验证",
+                    "value": "verified"
+                  },
+                  {
+                    "label": "完成",
+                    "value": "done"
+                  },
+                  {
+                    "label": "已推送",
+                    "value": "pushed"
+                  },
+                  {
+                    "label": "阻塞",
+                    "value": "blocked"
+                  }
                 ]
               },
               {
@@ -66,9 +104,18 @@
                 "label": "类型",
                 "placeholder": "全部类型",
                 "options": [
-                  { "label": "全部类型", "value": "" },
-                  { "label": "需求", "value": "req" },
-                  { "label": "修复", "value": "issue" }
+                  {
+                    "label": "全部类型",
+                    "value": ""
+                  },
+                  {
+                    "label": "需求",
+                    "value": "req"
+                  },
+                  {
+                    "label": "修复",
+                    "value": "issue"
+                  }
                 ]
               }
             ]
@@ -132,7 +179,6 @@
               "label": "文档",
               "type": "button",
               "level": "link",
-              "label": "文档",
               "onEvent": {
                 "click": {
                   "actions": [
@@ -143,8 +189,68 @@
                           "title": "SPEC 文档 · ${specName}",
                           "size": "lg",
                           "body": {
-                            "type": "tpl",
-                            "tpl": "文档弹窗(需求背景/设计/任务清单三页签)将在 Task 9 接入;当前 SPEC: <strong>${specName}</strong>"
+                            "type": "tabs",
+                            "tabsMode": "line",
+                            "className": "m-t-sm",
+                            "tabs": [
+                              {
+                                "title": "需求背景",
+                                "mountOnEnter": true,
+                                "unmountOnExit": false,
+                                "body": {
+                                  "type": "service",
+                                  "api": {
+                                    "url": "/api/spec-doc?project=${project}&spec=${specName}&doc=proposal",
+                                    "adaptor": "return payload;"
+                                  },
+                                  "body": [
+                                    {
+                                      "type": "tpl",
+                                      "className": "doc-body",
+                                      "tpl": "${found ? content : '未找到文档'}"
+                                    }
+                                  ]
+                                }
+                              },
+                              {
+                                "title": "设计",
+                                "mountOnEnter": true,
+                                "unmountOnExit": false,
+                                "body": {
+                                  "type": "service",
+                                  "api": {
+                                    "url": "/api/spec-doc?project=${project}&spec=${specName}&doc=design",
+                                    "adaptor": "return payload;"
+                                  },
+                                  "body": [
+                                    {
+                                      "type": "tpl",
+                                      "className": "doc-body",
+                                      "tpl": "${found ? content : '未找到文档'}"
+                                    }
+                                  ]
+                                }
+                              },
+                              {
+                                "title": "任务清单",
+                                "mountOnEnter": true,
+                                "unmountOnExit": false,
+                                "body": {
+                                  "type": "service",
+                                  "api": {
+                                    "url": "/api/spec-doc?project=${project}&spec=${specName}&doc=tasks",
+                                    "adaptor": "return payload;"
+                                  },
+                                  "body": [
+                                    {
+                                      "type": "tpl",
+                                      "className": "doc-body",
+                                      "tpl": "${found ? content : '未找到文档'}"
+                                    }
+                                  ]
+                                }
+                              }
+                            ]
                           }
                         }
                       }
@@ -164,20 +270,28 @@
                     "click": {
                       "actions": [
                         {
-                          "actionType": "ajax",
+                          "actionType": "dialog",
                           "args": {
-                            "api": {
-                              "method": "post",
-                              "url": "/api/spec-admin-invoke?project=${project}&spec=${specName}",
-                              "data": {}
+                            "dialog": {
+                              "title": "Admin 处置 · ${specName}",
+                              "size": "lg",
+                              "body": {
+                                "type": "run-stream",
+                                "mode": "admin",
+                                "specName": "${specName}",
+                                "project": "${project}"
+                              },
+                              "onEvent": {
+                                "close": {
+                                  "actions": [
+                                    {
+                                      "actionType": "custom",
+                                      "script": "if (window.RunStream && window.RunStream.active && typeof window.RunStream.active.dispose === 'function') { window.RunStream.active.dispose(); window.RunStream.active = null; }"
+                                    }
+                                  ]
+                                }
+                              }
                             }
-                          }
-                        },
-                        {
-                          "actionType": "toast",
-                          "args": {
-                            "msgType": "info",
-                            "msg": "已发起 Admin 处置(等待 Administrator 介入)"
                           }
                         }
                       ]
@@ -200,7 +314,9 @@
                                 "api": {
                                   "method": "post",
                                   "url": "/api/spec-priority?project=${project}&spec=${specName}",
-                                  "data": { "priority": "${priority}" },
+                                  "data": {
+                                    "priority": "${priority}"
+                                  },
                                   "adaptor": "return { status: 0, data: payload }"
                                 },
                                 "body": [
@@ -217,7 +333,10 @@
                                 "onEvent": {
                                   "submitSucc": {
                                     "actions": [
-                                      { "actionType": "reload", "componentId": "spec-crud" }
+                                      {
+                                        "actionType": "reload",
+                                        "componentId": "spec-crud"
+                                      }
                                     ]
                                   }
                                 }
@@ -270,7 +389,10 @@
                                                 }
                                               }
                                             },
-                                            { "actionType": "reload", "componentId": "spec-crud" }
+                                            {
+                                              "actionType": "reload",
+                                              "componentId": "spec-crud"
+                                            }
                                           ]
                                         }
                                       }
@@ -314,7 +436,10 @@
                             }
                           }
                         },
-                        { "actionType": "reload", "componentId": "spec-crud" }
+                        {
+                          "actionType": "reload",
+                          "componentId": "spec-crud"
+                        }
                       ]
                     }
                   }
