@@ -235,21 +235,51 @@ class WorktreeManager:
         except subprocess.TimeoutExpired:
             return False
 
-    def _backup_untracked_spec_files(self):
-        """merge 前把 openspec/changes/ 下 untracked 文件移到 .fenix/merge-backup/ 备份。
+    def _backup_untracked_spec_files(self, branch: str):
+        """merge 前把与 implementer 分支新增路径冲突的主树 untracked 文件移到 .fenix/merge-backup/ 备份。
 
-        返回备份目录路径（无 untracked 文件时返回 None）。merge 成功后调用
-        _drop_backup 删除备份；merge 失败调用 _restore_backup 移回（不丢数据）。
+        泛化原 openspec/changes 限定逻辑（fix-merge-untracked-guard）：
+
+        1. `git diff --name-only --diff-filter=A HEAD...<branch>` 取分支**新增**文件路径集合
+           —— untracked 冲突只会发生在新增路径上（修改既有 tracked 文件不与 untracked 冲突）。
+        2. 对每条新增路径，判断主树中该路径上的文件是否为 untracked：
+           `git ls-files --error-unmatch <path>` 失败（未被 index 跟踪）即视为 untracked。
+        3. 将命中的文件移入 `.fenix/merge-backup/<epoch秒>/`（保持仓库相对路径结构）。
+
+        检测范围不限于 openspec/changes/，覆盖任意产物路径（如 core/dashboard/static/v2/）。
+        集合为空、或交集为空时返回 None 且不创建备份目录（零开销跳过）。
+
+        返回备份目录路径（无冲突文件时返回 None）。merge 成功后调用 _drop_backup
+        决定备份去留；merge 失败调用 _restore_backup 移回（不丢数据）。
         """
         try:
-            ls = subprocess.run(
+            added = subprocess.run(
                 ["git", "-C", str(self.project_root),
-                 "ls-files", "--others", "--exclude-standard", "--", "openspec/changes"],
+                 "diff", "--name-only", "--diff-filter=A", f"HEAD...{branch}"],
                 capture_output=True, text=True, timeout=30,
             )
         except subprocess.TimeoutExpired:
             return None
-        rels = [ln.strip() for ln in ls.stdout.splitlines() if ln.strip()]
+        if added.returncode != 0:
+            return None
+        added_paths = [ln.strip() for ln in added.stdout.splitlines() if ln.strip()]
+        if not added_paths:
+            return None
+
+        # 逐路径判断：主树中存在该路径、且未被 index 跟踪（untracked）才纳入备份。
+        rels = []
+        for rel in added_paths:
+            src = self.project_root / rel
+            if not src.exists():
+                continue
+            ls = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "ls-files", "--error-unmatch", "--", rel],
+                capture_output=True, text=True, timeout=30,
+            )
+            if ls.returncode != 0:  # 0 = tracked；非 0 = untracked（含 ignored 以外）
+                rels.append(rel)
+
         if not rels:
             return None
 
@@ -267,9 +297,45 @@ class WorktreeManager:
         return backup
 
     def _drop_backup(self, backup) -> None:
-        """merge 成功后删除备份目录（含空父目录）。"""
+        """merge 成功后按字节一致性决定备份去留（fix-merge-untracked-guard D3）。
+
+        - 备份中每个文件与 merge 后 HEAD 中同路径文件字节级一致 → 删除备份目录（现状语义）
+        - 存在不一致文件 → 保留备份目录不删，写 logger.warning 列出不一致路径与备份位置，
+          防止主树上的有价值改动被分支版本静默覆盖后丢失
+
+        孤儿空父目录一并清理。
+        """
         if backup is None:
             return
+        if not backup.is_dir():
+            return
+
+        # 字节级比对：读文件 bytes 相等即可，无需 git 命令。
+        inconsistent = []
+        for p in list(backup.rglob("*")):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(backup)
+            head_file = self.project_root / rel
+            try:
+                if not head_file.exists():
+                    inconsistent.append(str(rel))
+                    continue
+                with open(p, "rb") as src_f, open(head_file, "rb") as head_f:
+                    if src_f.read() != head_f.read():
+                        inconsistent.append(str(rel))
+            except OSError:
+                # 读取失败：保守视为不一致，保留备份由人工裁决
+                inconsistent.append(str(rel))
+
+        if inconsistent:
+            self.logger.warning(
+                "worktree_manager",
+                f"merge-back 后主树副本与合入版本字节级不一致，保留备份不删除："
+                f"backup='{backup}'，不一致路径={inconsistent}",
+            )
+            return  # 保留备份目录，供人工决策
+
         try:
             shutil.rmtree(str(backup))
             parent = backup.parent
@@ -279,7 +345,7 @@ class WorktreeManager:
             pass
 
     def _restore_backup(self, backup) -> None:
-        """merge 失败后把备份文件移回原位。"""
+        """merge 失败后把备份文件移回原位，并移除空备份目录（不丢数据，供下一轮重试）。"""
         if backup is None or not backup.is_dir():
             return
         for p in backup.rglob("*"):
@@ -292,6 +358,14 @@ class WorktreeManager:
                 shutil.move(str(p), str(dst))
             except OSError:
                 continue
+        # 移回后清空并移除备份目录（含残留空父目录）
+        try:
+            shutil.rmtree(str(backup))
+            parent = backup.parent
+            if parent.exists():
+                parent.rmdir()  # 空父目录一并清理；非空时抛 OSError 忽略
+        except OSError:
+            pass
 
     def cleanup(self, wt_path: Path, success: bool = True):
         """
@@ -843,9 +917,10 @@ class WorktreeManager:
                 )
                 return True, "already merged"
 
-            # merge 前把 openspec/changes 下 untracked 文件移开（Layer 2 兜底）：
-            # 即使 spec 未被 ensure_spec_committed 提交，也不让 merge 因 untracked 冲突死锁。
-            backup = self._backup_untracked_spec_files()
+            # merge 前按 implementer 分支新增路径，把主树中冲突的 untracked 文件移开
+            # （Layer 2 兜底，fix-merge-untracked-guard 泛化）：即使 spec 未被
+            # ensure_spec_committed 提交、或产物路径有污染，也不让 merge 因 untracked 冲突死锁。
+            backup = self._backup_untracked_spec_files(branch)
 
             # Merge with --no-ff to preserve worktree history
             result = subprocess.run(
