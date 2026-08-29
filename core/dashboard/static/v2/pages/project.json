@@ -3,12 +3,21 @@
   "title": "${params[0]} · SPEC 列表",
   "body": [
     {
-      "type": "service",
+      "type": "crud",
       "id": "spec-crud",
       "name": "spec-crud",
+      "syncLocation": false,
+      "pagination": false,
+      "perPage": 1000,
       "api": {
+        "method": "get",
         "url": "/api/specs?project=${params[0]}",
-        "adaptor": "var raw = (payload && payload.specs) ? payload.specs : (Array.isArray(payload) ? payload : []); var items = window.Adapters.adaptSpecs(raw); var proj = (payload && payload.project) || '${params[0]}'; items = items.map(function(it){ it.project = proj; it.specName = it.name; it.createdDate = it.created ? String(it.created).substring(0, 10) : ''; return it; }); return { status: 0, data: { items: items, total: items.length } };"
+        "data": {
+          "kw": "${kw}",
+          "status": "${status}",
+          "type": "${type}"
+        },
+        "adaptor": "var raw = (payload && payload.specs) ? payload.specs : (Array.isArray(payload) ? payload : []); var items = window.Adapters.adaptSpecs(raw); var proj = (payload && payload.project) || '${params[0]}'; var q = (api && api.query) || {}; var kw = String(q.kw || '').toLowerCase(); var st = q.status || ''; var tp = q.type || ''; if (kw) { items = items.filter(function(it){ return String(it.name).toLowerCase().indexOf(kw) >= 0; }); } if (st) { items = items.filter(function(it){ return it.status === st; }); } if (tp === 'req') { items = items.filter(function(it){ return String(it.name).indexOf('fix-') !== 0; }); } else if (tp === 'issue') { items = items.filter(function(it){ return String(it.name).indexOf('fix-') === 0; }); } items = items.map(function(it){ it.project = proj; it.specName = it.name; it.createdDate = it.created ? String(it.created).substring(0, 10) : ''; return it; }); return { status: 0, data: { items: items, total: items.length } };"
       },
       "onEvent": {
         "sse:state": {
@@ -20,16 +29,6 @@
           ]
         }
       },
-      "body": [
-        {
-          "type": "crud",
-          "id": "spec-crud-table",
-          "name": "spec-crud-table",
-          "initFetch": false,
-          "loadOptionsOnOpen": false,
-          "pagination": false,
-          "perPage": 1000,
-          "source": "${items}",
           "filter": {
             "title": "",
             "mode": "inline",
@@ -448,7 +447,5 @@
             }
           ]
         }
-      ]
-    }
   ]
 }
