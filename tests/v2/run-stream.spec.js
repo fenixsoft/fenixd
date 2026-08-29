@@ -2,7 +2,7 @@
 // 实施依据: openspec/changes/v2-run-stream-modal、计划 Task 8、behavior.md §3(全协议)/§4(admin 状态机)
 import { test, expect } from '@playwright/test';
 
-const BASE = 'http://127.0.0.1:8787';
+const BASE = process.env.V2_BASE_URL || 'http://127.0.0.1:8787';
 
 // 实时渲染测试用有 finished run 的 SPEC(add-worktree-test-server 有已完成的 impl run)
 const PROJECT_DONE = 'fenixd';

@@ -1,0 +1,5 @@
+{
+  "status": "success",
+  "spec": "v2-alerts-activities",
+  "summary": "壳级告警横幅(app.js alert-banner service) + 运维记录页(activities.json: 跨项目 flat timeline + 单项目路由 ?project= 过滤)。activities-alerts.spec.js 2 passed / 1 skipped(无告警环境 fixme)。附带修复 verify-fix/run-stream 硬编码 baseURL 为 V2_BASE_URL。"
+}

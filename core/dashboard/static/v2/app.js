@@ -108,6 +108,88 @@
   }
 
   let contentScoped = null;
+
+  // ── 壳级告警横幅 service(跨所有路由可见) ──
+  // design §决策:横幅整块可点开 Dialog 列表,空告警时横幅不可见
+  // behavior.md §7:每条「标记已处理」POST /api/alerts/<id>/handled;全部清空 POST /api/alerts/clear
+  // SSE alerts 事件 → reload 横幅
+  function alertBannerSchema() {
+    return {
+      type: 'service',
+      id: 'alert-banner',
+      name: 'alert-banner',
+      api: {
+        url: '/api/alerts',
+        adaptor: "return { status: 0, data: { rows: window.Adapters.adaptAlerts(payload.alerts || []), total_unhandled: (payload && payload.total_unhandled) || 0 } }"
+      },
+      onEvent: {
+        "sse:alerts": {
+          actions: [{ actionType: 'reload', componentId: 'alert-banner' }]
+        }
+      },
+      body: {
+        type: 'tpl',
+        visibleOn: '${rows.length > 0}',
+        tpl: "<span id='alert-banner-strip' style='cursor:pointer;display:inline-block;padding:4px 12px;background:var(--danger);color:#fff;border-radius:4px;font-size:0.85rem'>⚠ ${rows.length} 条未处理告警</span>",
+        onEvent: {
+          click: {
+            actions: [{
+              actionType: 'dialog',
+              args: {
+                dialog: {
+                  title: '未处理告警 · ${rows.length} 条',
+                  size: 'lg',
+                  body: [
+                    {
+                      type: 'table',
+                      source: '${rows}',
+                      columns: [
+                        {
+                          name: 'severity', label: '严重度', width: 70, type: 'tpl',
+                          tpl: "<% if (data.severity === 'critical') { %><span class='label label-danger'>严重</span><% } else if (data.severity === 'major') { %><span class='label label-warning'>重要</span><% } else { %><span class='label label-default'>轻微</span><% } %>"
+                        },
+                        { name: 'project', label: '项目', width: 110, type: 'tpl', tpl: "${project || '—'}" },
+                        { name: 'spec', label: 'SPEC', width: 130, type: 'tpl', tpl: "${spec || '—'}" },
+                        {
+                          name: 'description', label: '描述', type: 'tpl',
+                          tpl: "<% if (data.handled) { %><s class='text-muted'><%= data.description %></s><% } else { %><%= data.description %><% } %>"
+                        },
+                        {
+                          name: 'op', label: '操作', width: 110, type: 'button', level: 'link',
+                          label: '标记已处理', disabledOn: '${handled}',
+                          onEvent: {
+                            click: {
+                              actions: [
+                                { actionType: 'ajax', args: { api: { method: 'post', url: "/api/alerts/${id}/handled?project=${project}" } } },
+                                { actionType: 'reload', componentId: 'alert-banner' }
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      type: 'button', label: '全部清空', level: 'danger', className: 'm-t-sm',
+                      confirmText: '确认清理所有告警事件?',
+                      onEvent: {
+                        click: {
+                          actions: [
+                            { actionType: 'ajax', args: { api: { method: 'post', url: '/api/alerts/clear' } } },
+                            { actionType: 'reload', componentId: 'alert-banner' }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }]
+          }
+        }
+      }
+    };
+  }
+
   function renderContent(pageName, pageSchema) {
     const el = document.getElementById('v2-content');
     if (!el) return;
@@ -123,7 +205,7 @@
     // 消费者(amisCore.dispatchGlobalEventForRenderer 依赖同一 scoped 实例)。sse-bridge 渲染
     // 器 render 为 null,仅承担 attach;这里把它前置注入页面 body,避免单独 embed 导致跨树不可达。
     const wrapped = Object.assign({}, pageSchema);
-    wrapped.body = [{ type: 'sse-bridge' }].concat(Array.isArray(pageSchema.body) ? pageSchema.body : []);
+    wrapped.body = [{ type: 'sse-bridge' }, alertBannerSchema()].concat(Array.isArray(pageSchema.body) ? pageSchema.body : []);
     contentScoped = amisLib.embed(el, wrapped, { data, theme: 'dark' }, {});
     window.amisScoped = contentScoped;
     highlightNav();
