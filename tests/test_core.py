@@ -3867,9 +3867,13 @@ class TestPriorityScheduler(unittest.TestCase):
         self.assertEqual(self.dispatched[1][2], "implementer")
 
     def test_invalid_status_entries_skipped(self):
-        """状态不合法的队列条目被跳过（implementer 非 ready / verifier 非 implemented）。"""
+        """状态不合法的队列条目被跳过（implementer 非 ready/implementing / verifier 非 implemented）。
+
+        2026-08-29 热修：implementing 允许 implementer 派发（原地打回修复重派），
+        本测试的不合法样例随之改为 testing。
+        """
         self._set_specs({
-            "spec-bad": {"status": "implementing", "priority": 1},  # implementer 不能从 implementing 启动
+            "spec-bad": {"status": "testing", "priority": 1},  # implementer 不能从 testing 启动
             "spec-good": {"status": "ready", "priority": 5},
         })
         self.sm.transition = MagicMock(return_value=True)

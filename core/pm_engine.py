@@ -1746,7 +1746,11 @@ class PMEngine:
                     if not spec:
                         continue
                     status = spec.get("status")
-                    if atype == "implementer" and status != "ready":
+                    if atype == "implementer" and status not in ("ready", "implementing"):
+                        # implementing 允许派发 = 原地打回的修复重派（热修 2026-08-29）：
+                        # 打回处置 _enqueue 时状态为 implementing，旧条件 status != "ready"
+                        # 导致修复条目被永久静默跳过、链路停摆。入队点均在 run 终止后
+                        # （打回处理器/零变更重试）且 _enqueue 按 (spec,type) 去重，无双派。
                         continue
                     if atype == "verifier" and status != "implemented":
                         continue
@@ -1782,7 +1786,11 @@ class PMEngine:
                     if not spec:
                         continue
                     status = spec.get("status")
-                    if atype == "implementer" and status != "ready":
+                    if atype == "implementer" and status not in ("ready", "implementing"):
+                        # implementing 允许派发 = 原地打回的修复重派（热修 2026-08-29）：
+                        # 打回处置 _enqueue 时状态为 implementing，旧条件 status != "ready"
+                        # 导致修复条目被永久静默跳过、链路停摆。入队点均在 run 终止后
+                        # （打回处理器/零变更重试）且 _enqueue 按 (spec,type) 去重，无双派。
                         continue
                     if atype == "verifier" and status != "implemented":
                         continue
@@ -1838,7 +1846,10 @@ class PMEngine:
 
             # Update state to in-progress
             if agent_type == "implementer":
-                self.state_machine.transition(spec_name, "implementing")
+                # 修复重派时状态已是 implementing（同态转换非法），跳过 transition
+                cur_status = (self.state_machine.read_one(spec_name) or {}).get("status")
+                if cur_status != "implementing":
+                    self.state_machine.transition(spec_name, "implementing")
             elif agent_type == "verifier":
                 self.state_machine.transition(spec_name, "testing")
 
