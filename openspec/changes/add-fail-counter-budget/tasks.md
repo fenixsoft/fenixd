@@ -32,5 +32,5 @@
 
 ## 验证修复（第 1 轮失败）
 
-- [ ] 阅读 `openspec/changes/add-fail-counter-budget/verification-report.md`，定位「真实产品 Bug」并修复
-- [ ] 修复后重跑验证确认通过
+- [x] 阅读 `openspec/changes/add-fail-counter-budget/verification-report.md`，定位「真实产品 Bug」并修复（BUG-01：v2 配置页补 agents.impl_run_budget 表单项 + adapters 透传）
+- [x] 修复后重跑验证确认通过（dev-server + VerifyEngine 本地重放 v2 两场景 2/2 通过；提交 02895e0）
