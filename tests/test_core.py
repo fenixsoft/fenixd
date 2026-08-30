@@ -1316,7 +1316,7 @@ class TestAgentRunnerModelRouting(unittest.TestCase):
         }
         runner = self._make_runner(config)
         runner._build_prompt = MagicMock(return_value="test prompt")
-        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1"))
+        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None}))
         result = runner.run_implementer("test-spec")
         self.assertTrue(result.success)
         # _run_claude(prompt, cwd, run_id, model_override, env_overrides) —— env_overrides 是第 5 个位置参数
@@ -1340,7 +1340,7 @@ class TestAgentRunnerModelRouting(unittest.TestCase):
         }
         runner = self._make_runner(config)
         runner._build_prompt = MagicMock(return_value="test prompt")
-        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1"))
+        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None}))
         result = runner.run_implementer("test-spec")
         self.assertTrue(result.success)
         # _run_claude(prompt, cwd, run_id, model_override, env_overrides) —— model_override 是第 4 个位置参数
@@ -1352,7 +1352,7 @@ class TestAgentRunnerModelRouting(unittest.TestCase):
         config = {"agents": {"max_concurrent": 2, "max_retries": 1, "max_turns": 50}}
         runner = self._make_runner(config)
         runner._build_prompt = MagicMock(return_value="test prompt")
-        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1"))
+        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None}))
         result = runner.run_verifier("test-spec")
         self.assertTrue(result.success)
         model_override = runner._run_claude.call_args.args[3]
@@ -1374,7 +1374,7 @@ class TestAgentRunnerModelRouting(unittest.TestCase):
         }
         runner = self._make_runner(config)
         runner._build_prompt = MagicMock(return_value="test prompt")
-        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1"))
+        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None}))
         result = runner.run_implementer("test-spec")
         self.assertTrue(result.success)
         env = runner._run_claude.call_args.args[4]
@@ -1394,7 +1394,7 @@ class TestAgentRunnerModelRouting(unittest.TestCase):
         }
         runner = self._make_runner(config)
         runner._build_prompt = MagicMock(return_value="test prompt")
-        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1"))
+        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None}))
         result = runner.run_verifier("test-spec")
         self.assertTrue(result.success)
         env = runner._run_claude.call_args.args[4]
@@ -2195,7 +2195,9 @@ class TestRunClaudeStreaming(unittest.TestCase):
     def _run(self, run_id, stdout_lines=(), stderr_lines=(), returncode=0, timeout=False):
         proc = _FakeProc(stdout_lines, stderr_lines, returncode, timeout)
         with patch("subprocess.Popen", return_value=proc):
-            return self.runner._run_claude("prompt", Path(self.tmpdir), run_id)
+            # _run_claude 现返回 4 元组 (output, turns, session_id, usage_info)；
+            # 既有流式测试只关注前三者，usage_info 省略。
+            return self.runner._run_claude("prompt", Path(self.tmpdir), run_id)[:3]
 
     def test_normal_completion_restores_output_and_turns(self):
         run_id = "impl-demo-spec-1700000000"
@@ -5312,7 +5314,7 @@ class TestCostControl(unittest.TestCase):
         ]
         proc = _FakeProc(stdout_lines=stdout)
         with patch("subprocess.Popen", return_value=proc):
-            out, turns, sid = self.runner._run_claude("p", Path(self.tmpdir), run_id)
+            out, turns, sid, _usage = self.runner._run_claude("p", Path(self.tmpdir), run_id)
         text = self._artifact(run_id).read_text()
         self.assertNotIn("thinking_tokens", text)
         self.assertIn("assistant", text)
@@ -5379,7 +5381,7 @@ class TestExecuteAgentAttemptRunId(unittest.TestCase):
                 rf.write_text(json.dumps({"type": "result", "result": "", "num_turns": 1,
                                           "session_id": "sess-a1"}) + "\n")
                 raise RuntimeError("attempt 1 failed")
-            return ("ok", 5, "sess-final")
+            return ("ok", 5, "sess-final", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
 
         self.runner._build_prompt = MagicMock(return_value="p")
         self.runner._run_claude = fake_run_claude
@@ -5404,7 +5406,7 @@ class TestExecuteAgentAttemptRunId(unittest.TestCase):
             resume_ids.append(resume_session_id)
             if len(run_ids) == 1:
                 raise RuntimeError("attempt 1 failed")
-            return ("ok", 1, "s")
+            return ("ok", 1, "s", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
 
         self.runner._build_prompt = MagicMock(return_value="p")
         self.runner._run_claude = fake_run_claude

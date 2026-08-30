@@ -1085,7 +1085,7 @@ class AgentRunner:
                     # 未分配 agent（含 Administrator）走默认网关（cc-switch），--model 用
                     # 官方模型名常量，由 cc-switch 网关自行映射到可用模型。
                     model_override = DEFAULT_GATEWAY_MODEL
-                output, turns, run_session_id = self._run_claude(
+                output, turns, run_session_id, usage_info = self._run_claude(
                     prompt, wt_path, attempt_run_id, model_override, env_overrides,
                     resume_session_id=self._resumable_session_id(
                         session_id, session_provider, provider_name, reuse_worktree,
@@ -1103,6 +1103,15 @@ class AgentRunner:
                 turns = 0
                 success = False
                 error = str(e)
+                # add-cost-observability（D1）：_run_claude 抛错（超时/kill/非 0 退出/
+                # rc==0 但 result 标记 error），stream-json 终态已被丢弃，按 0 计 usage，
+                # 仅 DEBUG 留痕（异常早夭的 run 消耗小，与 jsonl 考古一致偏差可接受）。
+                usage_info = self._extract_usage_info(None)
+                self.logger.debug(
+                    "agent_runner",
+                    f"{agent_type} for '{spec_name}' ended in error — tokens counted "
+                    f"as 0 (add-cost-observability): {error}",
+                )
                 # 4xx 熔断计数（fix-stashpop-deadlock：provider-fault-fuse）。
                 # 仅对「已分配 provider」且错误文本能解析出 HTTP 4xx 的情况计数（design D4）；
                 # 5xx/网络错误不计数（瞬态，走既有 retry）。解析不到 code 视为失败、不计数。
@@ -1178,6 +1187,10 @@ class AgentRunner:
                     {"run_id": attempt_run_id, "attempt": attempt, "turns": turns,
                      "provider": provider_name, "model": model},
                 )
+                # add-cost-observability（D1）：收工成功 → 累加 usage 到 STATE 内部字段
+                self._accumulate_token_usage(spec_name, usage_info)
+                # 验证链侧车：planner/judge run 的 usage 逐轮追加（D3）
+                self._record_verify_progress_tokens(spec_name, agent_type, usage_info)
                 return AgentRunResult(
                     attempt_run_id, spec_name, agent_type,
                     success=True, duration_seconds=duration,
@@ -1207,12 +1220,195 @@ class AgentRunner:
 
         # All retries exhausted
         duration = time.time() - start_time
+        # add-cost-observability（D1）：终态失败也累加（末次 attempt 的 usage，
+        # 异常早夭时为 0），保证预算告警在失败轮同样累计、不漏计。
+        self._accumulate_token_usage(spec_name, usage_info)
+        # 验证链侧车（D3）：终态失败的 planner run 同样逐轮追加
+        self._record_verify_progress_tokens(spec_name, agent_type, usage_info)
         return AgentRunResult(
             run_id, spec_name, agent_type,
             success=False, duration_seconds=duration,
             error=f"All {max_retries} attempts failed. Last error: {error}",
             provider_used=provider_name, model_used=model,
         )
+
+    # ── token 累计与预算告警（add-cost-observability D1 / D4）──────────────────
+
+    def _accumulate_token_usage(self, spec_name: str, usage_info: dict) -> None:
+        """收工处累加本次 run 的 usage 到 STATE 内部字段（add-cost-observability D1）。
+
+        ``_tokens_in`` = input + cache_creation + cache_read（保守计入缓存读，design D-风险）；
+        ``_tokens_out`` = output。成本仅网关回传 total_cost_usd 时累计到 ``_cost_usd``，
+        否则不写（不伪造，spec「金额展示不伪造」）。累加后触发预算阈值检查。
+
+        state_machine 缺失（测试/未初始化）时安全跳过；STATE 条目缺失不写（spec 必已注册）。
+        """
+        if self.state_machine is None:
+            return
+        if not isinstance(usage_info, dict):
+            usage_info = {}
+        tokens_in = (
+            int(usage_info.get("input_tokens", 0) or 0)
+            + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
+            + int(usage_info.get("cache_read_input_tokens", 0) or 0)
+        )
+        tokens_out = int(usage_info.get("output_tokens", 0) or 0)
+        cost = usage_info.get("cost_usd")
+
+        try:
+            entry = self.state_machine.read_one(spec_name) or {}
+        except Exception:
+            return
+        if not isinstance(entry, dict):
+            return
+        prev_in = int(entry.get("_tokens_in", 0) or 0)
+        prev_out = int(entry.get("_tokens_out", 0) or 0)
+        new_in = prev_in + tokens_in
+        new_out = prev_out + tokens_out
+        updates = {"_tokens_in": new_in, "_tokens_out": new_out}
+        # 成本：仅网关真实回传时累计；网关不回传则不写 _cost_usd（保持缺失语义）
+        if cost is not None:
+            try:
+                prev_cost = float(entry.get("_cost_usd", 0) or 0)
+                updates["_cost_usd"] = prev_cost + float(cost)
+            except (TypeError, ValueError):
+                pass
+        try:
+            self.state_machine.update_spec(spec_name, updates)
+        except Exception as e:
+            self.logger.warning(
+                "agent_runner",
+                f"token 累计写 STATE 失败 '{spec_name}': {e}",
+            )
+            return
+        # 预算阈值检查（D4）：80% 提醒 / 100% 升级，不自动冻结
+        self._check_token_budget(spec_name, new_in)
+
+    def _check_token_budget(self, spec_name: str, tokens_in: int) -> None:
+        """预算阈值告警（add-cost-observability D4）：80% 提醒 / 100% 升级，幂等不重复。
+
+        配置 ``agents.token_budget_millions``（缺省 50，0=关闭）。越过 80% 线发提醒级告警
+        并置位 ``_token_warn_80``；越过 100% 线发升级级告警并置位 ``_token_alert_100``。
+        告警 MUST NOT 修改 spec 状态（不自动冻结，design 决策有意为之）。
+        """
+        budget = self._get_config("agents.token_budget_millions", 50)
+        if not budget or budget <= 0:
+            return  # 0 = 关闭
+        budget_tokens = float(budget) * 1_000_000
+        if budget_tokens <= 0:
+            return
+        ratio = tokens_in / budget_tokens
+
+        try:
+            entry = self.state_machine.read_one(spec_name) or {}
+        except Exception:
+            entry = {}
+        if not isinstance(entry, dict):
+            entry = {}
+        warn_flag = bool(entry.get("_token_warn_80", False))
+        alert_flag = bool(entry.get("_token_alert_100", False))
+
+        if ratio >= 1.0 and not alert_flag:
+            self._send_token_alert(spec_name, tokens_in, budget, "critical",
+                                   "预算 100% 升级告警")
+            try:
+                self.state_machine.update_spec(spec_name, {"_token_alert_100": True})
+            except Exception:
+                pass
+        elif ratio >= 0.8 and not warn_flag:
+            self._send_token_alert(spec_name, tokens_in, budget, "warning",
+                                   "预算 80% 提醒告警")
+            try:
+                self.state_machine.update_spec(spec_name, {"_token_warn_80": True})
+            except Exception:
+                pass
+
+    def _send_token_alert(self, spec_name: str, tokens_in: int, budget: float,
+                          severity: str, title: str) -> None:
+        """写一条 token 预算 human-escalation-alert（复用 AdminStore，与 pm_engine 同管道）。
+
+        severity: warning=提醒级（80% 线），critical=升级级（100% 线）。不修改 spec 状态。
+        """
+        try:
+            from .admin_store import AdminStore, ESCALATION
+            store = AdminStore(self.project_root, self.logger)
+            pct = (tokens_in / (float(budget) * 1_000_000) * 100.0)
+            store.append({
+                "kind": ESCALATION,
+                "signal_type": "token_budget",
+                "spec": spec_name,
+                "severity": severity,
+                "description": (
+                    f"{title}：spec '{spec_name}' 累计 input token 已用 "
+                    f"{tokens_in / 1_000_000:.2f}M / 预算 {budget:.0f}M（{pct:.0f}%）"
+                ),
+                "evidence": (
+                    f"_tokens_in={tokens_in}; budget_millions={budget}; "
+                    f"ratio={pct:.1f}%"
+                ),
+                "recommended_action": (
+                    "检查是否失控烧钱；如需冻结请在 Dashboard / STATE.md 人工处置"
+                    "（本告警不自动冻结 spec）"
+                ),
+            })
+            self.logger.warning(
+                "agent_runner",
+                f"token budget alert ({severity}) for '{spec_name}': "
+                f"{tokens_in / 1_000_000:.2f}M / {budget:.0f}M",
+            )
+        except Exception as e:
+            self.logger.error(
+                "agent_runner",
+                f"Failed to send token budget alert for '{spec_name}': {e}",
+            )
+
+    def _record_verify_progress_tokens(self, spec_name: str, agent_type: str,
+                                         usage_info: dict) -> None:
+        """验证链侧车：把 planner/judge run 的 usage 逐轮追加到 tokens.json（D3）。
+
+        路径 ``.fenix/verify-progress/<spec>/tokens.json``，结构：
+            {"runs": [{"agent_type": "planner-plan", "timestamp": "...",
+                       "input_tokens": N, "output_tokens": M, "cost_usd": X|null}, ...]}
+        场景执行为 Python 无 LLM，不入。报告合成时按本侧车求和（task 2.2）。
+
+        仅 agent_type 以 ``planner`` 开头时记录；非 LLM run（verifier 场景执行）不计。
+        写入失败静默跳过（观测增强，不能阻断主流程）。
+        """
+        if not isinstance(agent_type, str) or not agent_type.startswith("planner"):
+            return
+        if not isinstance(usage_info, dict):
+            usage_info = {}
+        tokens_json = (
+            self.project_root / ".fenix" / "verify-progress"
+            / spec_name / "tokens.json"
+        )
+        try:
+            tokens_json.parent.mkdir(parents=True, exist_ok=True)
+            data = {}
+            if tokens_json.is_file():
+                try:
+                    loaded = json.loads(tokens_json.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    loaded = {}
+                if isinstance(loaded, dict):
+                    data = loaded
+            runs = data.get("runs")
+            if not isinstance(runs, list):
+                runs = []
+            runs.append({
+                "agent_type": agent_type,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
+                + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
+                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
+                "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
+                "cost_usd": usage_info.get("cost_usd"),
+            })
+            data["runs"] = runs
+            tokens_json.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (OSError, json.JSONDecodeError):
+            pass
 
     def _build_prompt(self, spec_name: str, agent_type: str, detail: dict | None = None) -> str:
         """Build the claude CLI prompt for the Agent.
@@ -1932,7 +2128,9 @@ class AgentRunner:
                 append_run_error(run_file, f"API error disguised as success: {err_text}", returncode)
                 raise RuntimeError(f"claude CLI rc==0 but result indicates error: {err_text}")
 
-        return output, turns, session_id
+        # add-cost-observability（D1）：从 stream-json 终态 result 事件提取 usage 与
+        # 成本字段；失败/异常路径上 _run_claude 已抛错，此处仅成功终态能拿到 usage。
+        return output, turns, session_id, self._extract_usage_info(last_result)
 
     @staticmethod
     def _resumable_session_id(
@@ -1987,6 +2185,66 @@ class AgentRunner:
                         and e.get("session_id")):
                     return e["session_id"]
         return None
+
+    @staticmethod
+    def _extract_usage_info(result_event: dict | None) -> dict:
+        """从 stream-json 终态 result 事件提取 usage 与成本（add-cost-observability D1）。
+
+        返回结构固定（缺失字段按 0 / None 兜底），供收工处累加与展示层消费：
+            {
+              "input_tokens": int,            # input（含 prompt 缓存写/读，分项见下）
+              "output_tokens": int,
+              "cache_creation_input_tokens": int,
+              "cache_read_input_tokens": int,
+              "cost_usd": float | None,       # 网关回传 total_cost_usd 才非 None；不伪造
+            }
+
+        Claude CLI stream-json 的 result 事件 usage 字段形如：
+            {"input_tokens": N, "output_tokens": M,
+             "cache_creation_input_tokens": C, "cache_read_input_tokens": R}
+        旧版可能落在 ``total_cost_usd`` 或 ``cost_usd``。任何解析异常 → 全 0 / None（保守）。
+        """
+        empty = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cost_usd": None,
+        }
+        if not isinstance(result_event, dict):
+            return empty
+        usage = result_event.get("usage") or {}
+        if not isinstance(usage, dict):
+            usage = {}
+        out = dict(empty)
+        try:
+            out["input_tokens"] = int(usage.get("input_tokens") or 0)
+        except (TypeError, ValueError):
+            out["input_tokens"] = 0
+        try:
+            out["output_tokens"] = int(usage.get("output_tokens") or 0)
+        except (TypeError, ValueError):
+            out["output_tokens"] = 0
+        try:
+            out["cache_creation_input_tokens"] = int(
+                usage.get("cache_creation_input_tokens") or 0)
+        except (TypeError, ValueError):
+            out["cache_creation_input_tokens"] = 0
+        try:
+            out["cache_read_input_tokens"] = int(
+                usage.get("cache_read_input_tokens") or 0)
+        except (TypeError, ValueError):
+            out["cache_read_input_tokens"] = 0
+        # 成本字段：仅网关真实回传时非空（design D5 / spec「金额展示不伪造」）
+        cost = result_event.get("total_cost_usd", result_event.get("cost_usd"))
+        if cost is None:
+            out["cost_usd"] = None
+        else:
+            try:
+                out["cost_usd"] = float(cost)
+            except (TypeError, ValueError):
+                out["cost_usd"] = None
+        return out
 
     # ── attempt 存活探测（improve-run-lifecycle-governance D4）────────────────
 
