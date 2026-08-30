@@ -317,6 +317,11 @@
       `;
       document.head.appendChild(st);
     }
+    // amis 弹层(Select 下拉等)以内联 absolute 坐标按 .amis-scope 为参照系定位,
+    // 但 SDK 未给 scope 根设 relative → 弹层落到 body 坐标系,横向偏移一个侧栏宽度。
+    const scopeStyle = document.createElement('style');
+    scopeStyle.textContent = '.v2-main .amis-scope{position:relative}';
+    document.head.appendChild(scopeStyle);
     loadAndRender();
     window.addEventListener('hashchange', loadAndRender);
     // 项目卡片整卡点击 → 项目页。amis cards 的 card 模板 onEvent/link/title-tpl 在
