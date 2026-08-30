@@ -41,6 +41,21 @@ def get_unhandled_alerts(project_root) -> list:
     return AdminStore(project_root).unhandled()
 
 
+def get_resolved_alerts(project_root, limit: int = 50) -> list:
+    """读取项目已处理的升级告警（最新在前，add-alert-auto-resolve D5）。
+
+    供管理员视图「已解决」折叠区展示：含 handled_by（区分自动解决/人工处理）、
+    resolve_note（解除/处置依据）与 handled_at。仍走 AdminStore.read_all 既有
+    读取路径（不绕锁、不改存储格式）。
+    """
+    from core.admin_store import AdminStore, ESCALATION
+    resolved = [
+        r for r in AdminStore(project_root).read_all()
+        if r.get("kind") == ESCALATION and r.get("handled")
+    ]
+    return resolved[:limit]
+
+
 def mark_alert_handled(project_root, alert_id: str) -> bool:
     """标记某条升级告警为已处理。返回是否找到并更新。"""
     from core.admin_store import AdminStore

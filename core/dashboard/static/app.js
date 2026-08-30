@@ -319,6 +319,16 @@ function renderAlertBanner(data) {
   const top = alerts.reduce((m, a) => (sevRank(a.severity) > sevRank(m.severity) ? a : m), alerts[0]);
   const latest = alerts[0];
   const listHtml = alerts.map(alertItemHtml).join('');
+  // add-alert-auto-resolve D5 视图分组：待处理（handled=False）置顶展开；
+  // 已解决（handled=True）折叠为「已解决 (N)」可展开区，默认不与待处理混排，
+  // 展开项显示自动解决/人工处理徽标 + resolve_note + handled_at。
+  const resolved = ((data && data.resolved) || [])
+    .filter((a) => !_optimisticallyHandled.has(a.id));
+  const resolvedSection = resolved.length ? `
+    <div class="alert-resolved-bar">
+      <button id="alert-resolved-toggle" class="alert-resolved-toggle" data-count="${resolved.length}">▸ 已解决 (${resolved.length})</button>
+    </div>
+    <div id="alert-resolved-list" class="alert-list hidden">${resolved.map(resolvedAlertItemHtml).join('')}</div>` : '';
 
   banner.classList.remove('hidden');
   banner.innerHTML = `
@@ -330,7 +340,7 @@ function renderAlertBanner(data) {
       <button id="alert-toggle" class="alert-toggle">${expanded ? '收起列表' : '展开列表'}</button>
       <button id="alert-clear-all" class="alert-clear-all">清理所有事件</button>
     </div>
-    <div id="alert-list" class="alert-list${expanded ? '' : ' hidden'}">${listHtml}</div>`;
+    <div id="alert-list" class="alert-list${expanded ? '' : ' hidden'}">${listHtml}</div>${resolvedSection}`;
   // 注意：#alert-toggle / #alert-clear-all / .alert-handled-btn 的点击处理统一走
   // #alert-banner 上的事件委托（initAlertBanner 绑定一次），此处不再逐个重绑——
   // 防止重渲染后旧节点监听器丢失导致「展开失效」「标记已处理无反应」（见
@@ -359,6 +369,31 @@ function alertItemHtml(a) {
     </div>
     <div class="alert-item-desc">${descSpec}${esc(a.description || '')}</div>
     ${evidence}${action}${reco}
+  </div>`;
+}
+
+// 已解决告警项（add-alert-auto-resolve D5）：只读展示，无「标记已处理」按钮；
+// 按 handled_by 区分「自动解决 / 人工处理」徽标，展开项显示 resolve_note 与
+// handled_at（spec.md：已解决区可展开查看，含解决依据与解除时刻）。
+function resolvedAlertItemHtml(a) {
+  const sev = a.severity || 'major';
+  const proj = a.project ? `<span class="alert-item-proj">${esc(a.project)}</span>` : '';
+  const spec = a.spec ? `<span class="alert-item-spec">${esc(a.spec)}</span>` : '';
+  const auto = a.handled_by === 'auto-resolve';
+  const badge = auto
+    ? '<span class="alert-resolved-badge auto">🤖 自动解决</span>'
+    : '<span class="alert-resolved-badge manual">👤 人工处理</span>';
+  const time = a.handled_at ? fmtDate(a.handled_at) : (a.created ? fmtDate(a.created) : '');
+  const descSpec = a.spec ? `<span class="alert-item-spec-inline">📌 ${esc(a.spec)}</span> ` : '';
+  const note = a.resolve_note
+    ? `<div class="alert-item-resolve-note">解决依据：${esc(a.resolve_note)}</div>` : '';
+  return `<div class="alert-item resolved sev-${esc(sev)}">
+    <div class="alert-item-head">
+      <span class="alert-sev-pill sev-${esc(sev)}">${sevLabel(sev)}</span>${badge}${proj}${spec}
+      <span class="alert-item-time">${esc(time)}</span>
+    </div>
+    <div class="alert-item-desc">${descSpec}${esc(a.description || '')}</div>
+    ${note}
   </div>`;
 }
 
@@ -401,6 +436,18 @@ function initAlertBanner() {
       if (list) {
         list.classList.toggle('hidden');
         toggle.textContent = list.classList.contains('hidden') ? '展开列表' : '收起列表';
+      }
+      return;
+    }
+    // add-alert-auto-resolve D5：「已解决 (N)」折叠区展开/收起
+    const resolvedToggle = e.target.closest('#alert-resolved-toggle');
+    if (resolvedToggle) {
+      const resolvedList = el('alert-resolved-list');
+      if (resolvedList) {
+        resolvedList.classList.toggle('hidden');
+        const n = resolvedToggle.dataset.count || 0;
+        resolvedToggle.textContent = resolvedList.classList.contains('hidden')
+          ? `▸ 已解决 (${n})` : `▾ 已解决 (${n})`;
       }
       return;
     }

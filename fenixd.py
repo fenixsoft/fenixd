@@ -246,16 +246,20 @@ class FenixDaemon:
         )
 
     def _admin_monitor_loop(self):
-        """周期运行健康检查（间隔 admin.interval_minutes）。"""
+        """周期运行健康检查（间隔 admin.interval_minutes）。
+
+        启动首轮立即执行（add-alert-auto-resolve D4）：首轮扫描对存量
+        handled=False 告警执行一次回填闭环判定，其后按间隔轮询。
+        """
         interval = max(float(self.admin_monitor.interval_minutes), 0.5)
         while self.running:
-            time.sleep(interval * 60)
-            if not self.running:
-                break
             try:
                 self.admin_monitor.run_once()
             except Exception as e:
                 self.logger.error("admin_monitor", f"Admin monitor check failed: {e}")
+            time.sleep(interval * 60)
+            if not self.running:
+                break
 
     def _check_admin_invoke_requests(self):
         """主循环每轮扫描手动唤起 Admin 的文件信号并立即唤起 Administrator。

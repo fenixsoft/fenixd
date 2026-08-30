@@ -261,6 +261,11 @@
       action_taken: a.action_taken || null,
       recommended_action: a.recommended_action || '',
       handled: !!a.handled,
+      // add-alert-auto-resolve D5：已解决区展示字段（自动解决/人工处理徽标、
+      // 解决依据、解除时刻）；未处理项为 null
+      handled_by: a.handled_by || null,
+      resolve_note: a.resolve_note || null,
+      handled_at: a.handled_at || null,
     }));
   }
 

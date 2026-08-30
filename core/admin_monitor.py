@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION
+from .alert_lifecycle import attach_trigger, find_resolvable
 
 # 默认阈值（design D2）
 REPEAT_FAILURE_WINDOW_MINUTES = 30
@@ -112,6 +113,8 @@ class AdminMonitor:
         # agent_runner 提供 run_administrator(signal)；None 时只检测、不唤起（测试/禁用态）
         self.agent_runner = agent_runner
         self._history_path = self.project_root / ".fenix" / "admin_state_history.json"
+        # add-alert-auto-resolve D4：启动首轮扫描执行存量回填（仅一次）
+        self._lifecycle_backfilled = False
 
     # ── 配置读取 ────────────────────────────────────────────────
 
@@ -175,7 +178,57 @@ class AdminMonitor:
         # fix-admin-self-heal：孤儿处置与重启失败的兜底升级（非 per-spec 信号）
         self._recover_orphaned_dispositions()
         self._detect_restart_failure(now)
+
+        # add-alert-auto-resolve D1：告警自动闭环扫描内联本巡检执行（不新增
+        # 线程/定时器），复用当轮已读取的 STATE.md 状态表（design D3）
+        try:
+            self._run_alert_lifecycle(specs)
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor", f"Alert lifecycle scan failed: {e}")
         return family_signals + regular
+
+    def _run_alert_lifecycle(self, specs: dict) -> int:
+        """告警自动闭环扫描（add-alert-auto-resolve design D1/D3/D4）。
+
+        判定为纯函数（alert_lifecycle.find_resolvable）：输入未闭环告警 +
+        当轮 STATE.md 状态表，输出可闭环条目；写回经 AdminStore.auto_resolve
+        在其排他锁内完成（不绕锁）。无未闭环告警时不做写回、无可闭环条目时
+        零写回（admin_alerts.json mtime 不变）。返回实际闭环数量。
+
+        daemon 启动首轮扫描（_lifecycle_backfilled=False）附带存量回填：
+        无 trigger 字段的 verify_fail_escalation / blocked_stuck 告警按
+        signal_type 推断 condition 走同一判定路径，resolve_note 注明
+        「存量回填」。
+        """
+        records = self.store.read_all()
+        pending = [
+            r for r in records
+            if r.get("kind") == ESCALATION and not r.get("handled")
+        ]
+        if not pending:
+            self._lifecycle_backfilled = True
+            return 0  # 无待闭环告警：零写回
+        backfill = not self._lifecycle_backfilled
+        self._lifecycle_backfilled = True
+        resolvable = find_resolvable(pending, specs, backfill=backfill)
+        if not resolvable:
+            return 0
+        resolved = self.store.auto_resolve(resolvable)
+        for item in resolvable:
+            self.logger.info(
+                "admin_monitor",
+                f"alert auto-resolved: id={item.get('id')} "
+                f"spec='{item.get('spec')}' — {item.get('resolve_note')}",
+            )
+        if resolved:
+            self.logger.warning(
+                "admin_monitor",
+                f"alert lifecycle: auto-resolved {resolved}/{len(resolvable)} "
+                f"stale alert(s)"
+                + ("（存量回填）" if backfill else ""),
+            )
+        return resolved
 
     # ── 检测规则 ────────────────────────────────────────────────
 
@@ -566,7 +619,7 @@ class AdminMonitor:
                 )
                 continue
 
-            self.store.append({
+            self.store.append(attach_trigger({
                 "kind": ESCALATION,
                 "signal_type": sig_type,
                 "spec": spec,
@@ -583,7 +636,7 @@ class AdminMonitor:
                     "人工检查 daemon/AdminMonitor 状态与 .fenix/logs/supervisor.log，"
                     "确认框架是否健康运行"
                 ),
-            })
+            }))
             # 升级即终结：补非 pending 记录，避免 escalation 被 handled 后 unhandled_for
             # 节流失效、同一孤儿在下轮巡检再次升级造成循环告警
             self.store.append({
@@ -686,7 +739,7 @@ class AdminMonitor:
                 "admin_monitor",
                 "No agent_runner available, cannot invoke Administrator; escalating to human",
             )
-            self.store.append({
+            self.store.append(attach_trigger({
                 "kind": ESCALATION,
                 "signal_type": signal.get("signal_type"),
                 "spec": signal.get("spec"),
@@ -695,7 +748,7 @@ class AdminMonitor:
                 "evidence": signal.get("evidence"),
                 "action_taken": "Administrator 不可用（未配置 agent_runner），未能自动处置",
                 "recommended_action": signal.get("recommended_action"),
-            })
+            }))
             return
 
         try:
@@ -706,7 +759,7 @@ class AdminMonitor:
                 f"Administrator invocation failed: {e}",
                 {"signal": signal},
             )
-            self.store.append({
+            self.store.append(attach_trigger({
                 "kind": ESCALATION,
                 "signal_type": signal.get("signal_type"),
                 "spec": signal.get("spec"),
@@ -715,7 +768,7 @@ class AdminMonitor:
                 "evidence": signal.get("evidence"),
                 "action_taken": f"Administrator 唤起失败: {e}",
                 "recommended_action": signal.get("recommended_action"),
-            })
+            }))
             return
 
         # 处置记录（任何情况下都留痕）；落盘失败不能丢 final 判定（否则该 run
@@ -747,7 +800,7 @@ class AdminMonitor:
 
         if disp.escalate:
             # Administrator 判定无法自主处置 → 升级人工
-            self.store.append({
+            self.store.append(attach_trigger({
                 "kind": ESCALATION,
                 "signal_type": signal.get("signal_type"),
                 "spec": signal.get("spec") or disp.spec,
@@ -757,7 +810,7 @@ class AdminMonitor:
                 "action_taken": disp.actions_taken,
                 "recommended_action": disp.recommended_action or signal.get("recommended_action"),
                 "admin_run_id": disp.run_id,
-            })
+            }))
             self.logger.warning(
                 "admin_monitor",
                 f"Administrator escalated to human: {signal.get('signal_type')} "
