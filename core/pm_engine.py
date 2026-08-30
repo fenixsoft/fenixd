@@ -2443,6 +2443,149 @@ class PMEngine:
         except Exception as e:
             self.logger.warning("pm_engine", f"重写验证场景端口失败: {e}")
 
+    # ── 场景集冻结（add-verify-scenario-freeze）────────────────────────
+
+    def _current_verify_round(self, spec_name: str) -> int:
+        """推导本轮验证轮次：``_verify_fail_rounds + 1``（首轮=1）。"""
+        entry = self.state_machine.read_one(spec_name) or {}
+        try:
+            fail_rounds = int(entry.get("_verify_fail_rounds", 0) or 0)
+        except (TypeError, ValueError):
+            fail_rounds = 0
+        return fail_rounds + 1
+
+    def _apply_scenario_freeze(self, spec_name: str) -> dict:
+        """应用场景集冻结：planner 产出 vs 持久化集 diff，写回 scenarios.json。
+
+        design D3：确定性、纯 Python，planner 无法通过输出文本绕过。
+        在场景执行前调用（_run_three_stage_verification 阶段1 之后）。
+
+        Returns:
+            dict：{'diff': <DiffResult>, 'path': <写入路径>}，便于报告渲染复用。
+        """
+        from core.verify_scenarios import (
+            load_scenario_set, diff_planner_output, save_scenario_set,
+        )
+        verify_dir = (
+            self.project_root / ".fenix" / "verify-progress" / spec_name
+        )
+        scenarios_path = verify_dir / "test_scenarios.json"
+        if not scenarios_path.exists():
+            return {}
+        try:
+            planner_scenarios = json.loads(scenarios_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+        if not isinstance(planner_scenarios, list):
+            return {}
+
+        entry = self.state_machine.read_one(spec_name) or {}
+        current_round = self._current_verify_round(spec_name)
+
+        diff = diff_planner_output(
+            self.project_root, spec_name, entry, planner_scenarios, current_round)
+
+        # 写回 scenarios.json（原子写；首轮写入 / 合并追加 / 补齐后稳定集）
+        path = save_scenario_set(self.project_root, diff.scenario_set)
+        # 全量场景定义备份（_scenarios_full.json）：供无理由缺场景时按持久化集
+        # 补齐 test_scenarios.json 的原始定义（design D2：不丢回归面）。
+        # 仅当本轮未删减既有场景时更新备份（保留最全的历史定义）。
+        if not diff.removed:
+            full_backup = verify_dir / "_scenarios_full.json"
+            try:
+                full_backup.write_text(
+                    json.dumps(planner_scenarios, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+        self.logger.info(
+            "pm_engine",
+            f"场景集冻结 '{spec_name}'（第 {current_round} 轮）：稳定集 "
+            f"{len(diff.scenario_set.scenarios)} 个，新增 {len(diff.added)}，"
+            f"有理由移除 {len(diff.removed)}，无理由缺失 {len(diff.unreasoned_missing)}",
+        )
+
+        # 无理由缺场景 → 以持久化集补齐 test_scenarios.json（不中断验证，design D2）：
+        # planner 实际执行的场景文件必须含全部既有场景，否则回归面丢失。优先从
+        # 上一轮全量备份 _scenarios_full.json 取回被丢弃场景的原始定义。
+        if not diff.ok and diff.unreasoned_missing:
+            missing_ids = {e.id for e in diff.unreasoned_missing}
+            reconciled = [s for s in planner_scenarios
+                          if isinstance(s, dict) and s.get("id")
+                          and s.get("id") not in missing_ids]
+            backup = verify_dir / "_scenarios_full.json"
+            backup_map = {}
+            if backup.exists():
+                try:
+                    for s in json.loads(backup.read_text(encoding="utf-8")):
+                        if isinstance(s, dict) and s.get("id"):
+                            backup_map[s["id"]] = s
+                except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                    backup_map = {}
+            for mid in missing_ids:
+                if mid in backup_map:
+                    reconciled.append(backup_map[mid])
+                else:
+                    # 备份缺失：退化为最小占位（仅 id+description），保证回归面不丢
+                    e = next((x for x in diff.unreasoned_missing
+                              if x.id == mid), None)
+                    rec = {"id": mid,
+                           "description": e.description if e else ""}
+                    reconciled.append(rec)
+            try:
+                scenarios_path.write_text(
+                    json.dumps(reconciled, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError as e:
+                self.logger.warning(
+                    "pm_engine", f"补齐场景写回失败 '{spec_name}': {e}")
+
+        self._last_scenario_diff = diff  # 供报告渲染（2.3）读取
+        return {"diff": diff, "path": str(path)}
+
+    def _render_scenario_change_section_to_report(self, spec_name: str) -> None:
+        """把本轮场景集变更小节追加到 verification-report.md（spec 需求 2.3）。
+
+        报告闸门（add-verify-report-gate）已保证文件存在；此处幂等追加，
+        重复调用会因已存在「本轮场景集变更」标题而跳过。diff 来源优先级：
+        ``_last_scenario_diff``（本轮冻结计算）> 重新读取 scenarios.json（首轮）。
+        """
+        diff = getattr(self, "_last_scenario_diff", None)
+        from core.verify_scenarios import (
+            render_change_section, load_scenario_set, render_first_write_section,
+        )
+        if diff is None:
+            persisted = load_scenario_set(self.project_root, spec_name)
+            if persisted is None:
+                return
+            section = render_first_write_section(persisted)
+        else:
+            section = render_change_section(diff)
+        if not section.strip():
+            return
+        report_path = (
+            Path(self.project_root) / "openspec" / "changes"
+            / spec_name / "verification-report.md"
+        )
+        if not report_path.exists():
+            return
+        try:
+            content = report_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return
+        if "## 本轮场景集变更" in content:  # 幂等：不重复追加
+            return
+        # add-verify-report-gate 要求不覆盖 mtime 语义仅针对「Agent 已写」文件；
+        # 此处为框架追加小节，直接写回（Agent 漏写场景变更时由框架补）。
+        try:
+            report_path.write_text(content.rstrip("\n") + "\n" + section + "\n",
+                                   encoding="utf-8")
+        except OSError as e:
+            self.logger.warning(
+                "pm_engine", f"场景集变更小节写回失败 '{spec_name}': {e}")
+
     def _run_three_stage_verification(self, spec_name: str):
         """三步验证流水线主逻辑。"""
         import asyncio
@@ -2531,6 +2674,18 @@ class PMEngine:
             plan_status = self._read_planner_result(spec_name)
             if plan_status != "plan-ready":
                 raise RuntimeError(f"Planner 未生成有效场景，status={plan_status}")
+
+            # ── 场景集冻结（add-verify-scenario-freeze）──
+            # 首轮写入 / 修复轮 diff 校验（design D3：确定性，planner 不可绕过）。
+            # 在场景执行前应用：以持久化集约束 planner 产出，缺场景补齐后继续验证。
+            try:
+                self._apply_scenario_freeze(spec_name)
+            except Exception as e:
+                # 冻结逻辑属辅助治理，绝不阻断验证主流程
+                self.logger.warning(
+                    "pm_engine",
+                    f"场景集冻结处理跳过 '{spec_name}'（异常不阻断验证）: {e}",
+                )
 
             # ── 阶段2: 验证引擎执行 ──
             self.logger.info("pm_engine", f"[阶段2] 验证引擎执行: {spec_name}")
@@ -2680,6 +2835,8 @@ class PMEngine:
                 # 明确非环境性失联：复位 inconclusive 计数（环境恢复后从零重算）
                 "_inconclusive_attempts": 0,
             })
+            # 本轮场景集变更小节追加到验证报告（spec 需求 2.3）
+            self._render_scenario_change_section_to_report(spec_name)
             self.logger.warning(
                 "pm_engine",
                 f"Verifier found bugs in '{spec_name}', transitioning to bug-found",
@@ -2732,6 +2889,8 @@ class PMEngine:
                 "error": None,
                 "_inconclusive_attempts": 0,
             })
+            # 本轮场景集变更小节追加到验证报告（spec 需求 2.3）
+            self._render_scenario_change_section_to_report(spec_name)
             self._on_spec_verified(spec_name)
 
     def _verifier_error_is_infra(self, error_text: str) -> bool:
