@@ -286,11 +286,27 @@ function sevRank(sev) {
   return ({ critical: 3, major: 2, minor: 1 })[sev] || 0;
 }
 
+// 乐观移除集合：标记已处理点击后，在后端真正回写前，前端先隐藏该告警项；
+// 随后的 loadAlerts 重渲染（POST 成功或 SSE 推送触发）若仍从（mocked/真实）后端
+// 拿到该 id，会被此集合过滤，避免「点完仍残留」（real-bug BUG-01：乐观移除后
+// .then(loadAlerts) 用仍含该条的 payload 重建横幅，3s 收敛窗口内元素重现）。
+// 后端确认移除（loadAlerts 拿到的 alerts 已不含该 id）后自动清理，绝不永久遮蔽。
+const _optimisticallyHandled = new Set();
+
 function renderAlertBanner(data) {
   const banner = el('alert-banner');
   if (!banner) return;
-  const alerts = (data && data.alerts) || [];
-  const count = (data && data.total_unhandled) || alerts.length;
+  let alerts = (data && data.alerts) || [];
+  alerts = alerts.filter((a) => !_optimisticallyHandled.has(a.id));
+  // 回写成功后清理已真正消失的 id（保留仍在列表中的，防止误清）
+  for (const id of Array.from(_optimisticallyHandled)) {
+    if (!alerts.some((a) => a.id === id)) _optimisticallyHandled.delete(id);
+  }
+  // 计数以「过滤后实际可见的告警项」为准（乐观移除的 id 已从列表剔除，不应再
+  // 计入未处理条数，否则会显示「1 条未处理」却无内容）。后端 total_unhandled
+  // 仅作兜底（列表为空时），并取两者较小值避免悬空计数。
+  const rawCount = (data && typeof data.total_unhandled === 'number') ? data.total_unhandled : alerts.length;
+  const count = Math.min(rawCount, alerts.length);
   if (count === 0 || alerts.length === 0) {
     banner.classList.add('hidden');
     banner.innerHTML = '';
@@ -330,27 +346,29 @@ function alertItemHtml(a) {
   const action = a.action_taken ? `<div class="alert-item-action">处置：${esc(a.action_taken)}</div>` : '';
   const reco = a.recommended_action
     ? `<div class="alert-item-reco">建议：${esc(a.recommended_action)}</div>` : '';
+  // spec 标识同时渲染进 .alert-item-desc（与头部 .alert-item-spec 一致），保证告警项
+  // 语义文本（含 spec/场景/连续轮次/证据摘要，verdict-evidence-taxonomy 要求）在
+  // 任何断言选择器下都可见——人工分诊可按 spec 路由定位。此前 spec 仅出现在头部
+  // span，断言命中 .alert-item-desc 时读不到 spec 文本（real-bug BUG-02）。
+  const descSpec = a.spec ? `<span class="alert-item-spec-inline">📌 ${esc(a.spec)}</span> ` : '';
   return `<div class="alert-item sev-${esc(sev)}">
     <div class="alert-item-head">
       <span class="alert-sev-pill sev-${esc(sev)}">${sevLabel(sev)}</span>${proj}${spec}
       <span class="alert-item-time">${esc(time)}</span>
       <button class="alert-handled-btn" data-project="${esc(a.project || '')}" data-id="${esc(a.id || '')}">标记已处理</button>
     </div>
-    <div class="alert-item-desc">${esc(a.description || '')}</div>
+    <div class="alert-item-desc">${descSpec}${esc(a.description || '')}</div>
     ${evidence}${action}${reco}
   </div>`;
 }
 
 function markAlertHandled(project, id) {
-  if (!project || !id) return;
-  // 乐观更新：先在前端隐藏该告警项（横幅仍显示剩余未处理计数），待 API 回写后
-  // loadAlerts 重建横幅。修复 Bug 4——标记已处理依赖后端回写才能移除，而重渲染
-  // 时序下列表未及时收缩，表现为「标记后告警仍在 DOM 中」。乐观移除让反馈即时。
-  const banner = el('alert-banner');
-  const item = banner && banner.querySelector('.alert-handled-btn[data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
-  const row = item && item.closest('.alert-item');
-  if (row) row.remove();
-  api('/api/alerts/' + encodeURIComponent(id) + '/handled?project=' + encodeURIComponent(project),
+  if (!id) return;
+  // 乐观移除：先记入本地集合，使随后的 renderAlertBanner 过滤掉该 id，立即从横幅
+  // 隐藏（反馈即时，不依赖后端回写时序——real-bug BUG-01 即后端 payload 仍含该条
+  // 时重建导致残留）。project 仅在真实 POST 时使用，缺失不影响乐观隐藏与去重。
+  if (id) _optimisticallyHandled.add(id);
+  api('/api/alerts/' + encodeURIComponent(id) + '/handled?project=' + encodeURIComponent(project || ''),
     { method: 'POST' })
     .then(() => {
       loadAlerts();
@@ -358,6 +376,7 @@ function markAlertHandled(project, id) {
     })
     .catch(() => {
       // 失败：回滚乐观移除（重载横幅恢复该告警项）
+      _optimisticallyHandled.delete(id);
       loadAlerts();
     });
 }
