@@ -90,7 +90,10 @@
     locationObj.key = hash;
     return Object.assign(locationObj, { page, params, query, path });
   }
-  window.V2 = { route: parseHash };
+  window.V2 = {
+    route: parseHash,
+    theme() { return localStorage.getItem('fenix.theme') || 'dark'; },
+  };
 
   // 页面 JSON 合并加载:app.json 仅保留壳(导航/路由占位,body 为空 page),各页面内容
   // 下沉到 pages/<name>.json;SDK 无 $ref 也无服务端渲染,故在加载期把各 pages/*.json
@@ -285,13 +288,20 @@
     }
     // 注入路由参数到 AMIS 数据域,供页面 JSON 的 ${params[0]}/${params[1]} 使用
     const route = window.V2.route();
-    const data = { params: route.params, query: route.query };
+    const data = { params: route.params, query: route.query, theme: window.V2.theme() };
+    // 主题:dark → dark.css + dark 主题;light → 禁用 dark.css + cxd 浅色主题
+    const theme = window.V2.theme();
+    const darkLink = document.querySelector('link[href$="dark.css"]');
+    if (darkLink) darkLink.disabled = theme !== 'dark';
+    document.documentElement.dataset.theme = theme;
+    const shellEl = document.querySelector('.v2-shell');
+    if (shellEl) shellEl.classList.toggle('v2-light', theme !== 'dark');
     // 壳级 SSE 桥:必须与页面组件处于同一棵 embed 树,广播才能沿渲染树触达各页 onEvent
     // 消费者(amisCore.dispatchGlobalEventForRenderer 依赖同一 scoped 实例)。sse-bridge 渲染
     // 器 render 为 null,仅承担 attach;这里把它前置注入页面 body,避免单独 embed 导致跨树不可达。
     const wrapped = Object.assign({}, pageSchema);
     wrapped.body = [{ type: 'sse-bridge' }, alertBannerSchema()].concat(Array.isArray(pageSchema.body) ? pageSchema.body : []);
-    contentScoped = amisLib.embed(el, wrapped, { data, theme: 'dark' }, {});
+    contentScoped = amisLib.embed(el, wrapped, { data, theme: theme === 'light' ? 'cxd' : 'dark' }, {});
     window.amisScoped = contentScoped;
     initScopeSelect();
     // 桥端无感推送依赖新页面的组件树挂载完成,挂载后推一次当前基线
@@ -338,7 +348,13 @@
     // amis 弹层(Select 下拉等)以内联 absolute 坐标按 .amis-scope 为参照系定位,
     // 但 SDK 未给 scope 根设 relative → 弹层落到 body 坐标系,横向偏移一个侧栏宽度。
     const scopeStyle = document.createElement('style');
-    scopeStyle.textContent = '.v2-main .amis-scope{position:relative}';
+    scopeStyle.textContent = '.v2-main .amis-scope{position:relative}' +
+      '.v2-shell.v2-light{background:#f2f2f2;color:#333}' +
+      '.v2-shell.v2-light .v2-aside{background:#fff;border-right:1px solid #e0e0e0}' +
+      '.v2-shell.v2-light .v2-brand{color:#111}' +
+      '.v2-shell.v2-light .v2-nav-item a{color:#555}' +
+      '.v2-shell.v2-light .v2-nav-active a,.v2-shell.v2-light .v2-nav-item a:hover{color:#111}' +
+      '.v2-shell.v2-light #v2-scope-select{background:#fff;color:#333;border-color:#ccc}';
     document.head.appendChild(scopeStyle);
     loadAndRender();
     window.addEventListener('hashchange', loadAndRender);

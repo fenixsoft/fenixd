@@ -306,6 +306,12 @@
       llm: { providers },
       agents: {
         models: agents.models || {},
+        agent_chain: (function () {
+          const m = agents.models && typeof agents.models === 'object' ? agents.models : {};
+          return Object.keys(m).map(function (role) {
+            return { role: role, model: (m[role] && m[role].model) || '' };
+          });
+        })(),
         max_concurrent: num(agents.max_concurrent, 2),
         max_turns: num(agents.max_turns, 300),
         run_timeout_seconds: num(agents.run_timeout_seconds, 3600),
@@ -367,7 +373,21 @@
     const payload = {
       llm: { providers: llmProviders },
       agents: {
-        models: form.models || (form.agents && form.agents.models) || {},
+        models: (function () {
+          let m = form.models || (form.agents && form.agents.models) || {};
+          const chain = formAgents && Array.isArray(formAgents.agent_chain) ? formAgents.agent_chain : null;
+          if (chain && chain.length > 0) {
+            const snapModels = snapshot && snapshot.agents && snapshot.agents.models ? snapshot.agents.models : {};
+            const folded = {};
+            chain.forEach(function (row) {
+              if (!row || !row.role) return;
+              const prev = (snapModels && snapModels[row.role]) || (m && m[row.role]) || {};
+              folded[row.role] = { model: row.model || '', provider: prev.provider || [] };
+            });
+            m = folded;
+          }
+          return m;
+        })(),
         max_concurrent: numOr(formAgents.max_concurrent || form.max_concurrent, loadedAgents.max_concurrent, defaults.max_concurrent || 2),
         max_turns: numOr(formAgents.max_turns || form.max_turns, loadedAgents.max_turns, defaults.max_turns || 300),
         run_timeout_seconds: numOr(formAgents.run_timeout_seconds || form.run_timeout_seconds, loadedAgents.run_timeout_seconds, defaults.run_timeout_seconds || 3600),

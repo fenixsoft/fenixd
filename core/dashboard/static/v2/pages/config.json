@@ -205,8 +205,36 @@
                   "title": "界面风格",
                   "body": [
                     {
+                      "type": "radios",
+                      "label": "界面主题",
+                      "name": "__theme",
+                      "value": "${theme}",
+                      "mode": "inline",
+                      "options": [
+                        {
+                          "label": "深色（默认）",
+                          "value": "dark"
+                        },
+                        {
+                          "label": "浅色",
+                          "value": "light"
+                        }
+                      ],
+                      "description": "切换后立即整页生效并持久化到浏览器（fenix.theme）。",
+                      "onEvent": {
+                        "change": {
+                          "actions": [
+                            {
+                              "actionType": "custom",
+                              "script": "localStorage.setItem('fenix.theme', event.data.value || 'dark'); window.location.reload();"
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    {
                       "type": "tpl",
-                      "tpl": "v2 首版仅提供深色主题(dark),浅色主题将在替换老版后按需评估。主题偏好保存在浏览器 localStorage(fenix.theme),不进入保存路径。"
+                      "tpl": "<div class='v2-muted'>主题偏好保存在浏览器 localStorage（fenix.theme），不进入保存路径。</div>"
                     }
                   ]
                 }
