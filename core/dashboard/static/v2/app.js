@@ -226,6 +226,7 @@
                         { type: 'divider' },
                         {
                           type: 'collapse-group',
+                          defaultActiveKey: [],
                           body: [
                             {
                               type: 'collapse',
