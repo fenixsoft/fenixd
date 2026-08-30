@@ -117,8 +117,9 @@ class StateParser:
                 current_entry = {}
                 continue
 
-            # Match - key: value
-            kv_match = re.match(r"^-\s+([a-z_]+):\s*(.*)$", line)
+            # Match - key: value（键名允许小写字母/下划线/数字，支持 _token_warn_80
+            # 等带数字的内部字段；原有键名均不含数字，放宽不影响既有解析）
+            kv_match = re.match(r"^-\s+([a-z_][a-z0-9_]*):\s*(.*)$", line)
             if kv_match and current_name:
                 key = kv_match.group(1)
                 value = kv_match.group(2).strip()

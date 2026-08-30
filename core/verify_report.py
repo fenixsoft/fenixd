@@ -54,6 +54,45 @@ def _load_report_json(project_root, spec_name):
     return data
 
 
+def _sum_verify_chain_tokens(project_root, spec_name):
+    """从验证链 token 侧车求和本链（planner/judge）增量 token（add-cost-observability 2.2）。
+
+    读取 ``.fenix/verify-progress/<spec>/tokens.json``，累加各 run 的 input/output。
+    input 已含 cache_creation/cache_read（侧车写入时已计入）。文件缺失/不可解析返回 None。
+    """
+    if not project_root or not spec_name:
+        return None
+    path = (
+        Path(project_root) / ".fenix" / "verify-progress"
+        / spec_name / "tokens.json"
+    )
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    runs = data.get("runs")
+    if not isinstance(runs, list) or not runs:
+        return None
+    total_in = 0
+    total_out = 0
+    for r in runs:
+        if not isinstance(r, dict):
+            continue
+        try:
+            total_in += int(r.get("input_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+        try:
+            total_out += int(r.get("output_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            pass
+    return {"input": total_in, "output": total_out}
+
+
 def _load_run_result(project_root, spec_name):
     """读取裁决 .fenix-run-result.json（verify-progress 优先，项目根回退）。
 
@@ -196,10 +235,12 @@ def _render_scenarios_table(report) -> list:
     return lines
 
 
-def render_verification_report(spec_name, run_result, report, now=None) -> str:
+def render_verification_report(spec_name, run_result, report, now=None,
+                              project_root=None) -> str:
     """把结构化数据渲染为人读报告 Markdown。
 
-    纯函数：不做 IO、不写文件，便于测试与下游复用。
+    纯函数：不做 IO、不写文件，便于测试与下游复用。project_root 用于读取验证链
+    token 侧车（add-cost-observability 2.2），缺失时跳过「本链增量 token」行。
     """
     status = _derive_status(run_result, report)
     passed, failed, errors, total = _summary_counts(report)
@@ -251,11 +292,15 @@ def render_verification_report(spec_name, run_result, report, now=None) -> str:
     # ── 汇总表格（parse_verdict 的 summary 来源）──
     lines.append("| 指标 | 数量 |")
     lines.append("| --- | --- |")
+    # add-cost-observability（2.2）：本链增量 token 行（从 verify-progress 侧车求和）
+    chain_tokens = _sum_verify_chain_tokens(project_root, spec_name)
     for label, val in (
         ("通过", passed if passed is not None else "N/A"),
         ("失败", failed if failed is not None else "N/A"),
         ("错误", errors if errors is not None else "N/A"),
         ("产品 Bug", len(bugs)),
+        ("本链增量 Token（输入）", f"{chain_tokens['input'] / 1_000_000:.2f}M" if chain_tokens else "N/A"),
+        ("本链增量 Token（输出）", f"{chain_tokens['output'] / 1_000_000:.2f}M" if chain_tokens else "N/A"),
     ):
         lines.append(f"| {label} | {val} |")
     lines.append("")
@@ -297,7 +342,7 @@ def synthesize_verification_report(project_root, spec_name, now=None) -> dict:
             ),
         }
 
-    content = render_verification_report(spec_name, run_result, report, now=now)
+    content = render_verification_report(spec_name, run_result, report, now=now, project_root=project_root)
     out_path = (
         Path(project_root) / "openspec" / "changes"
         / spec_name / "verification-report.md"

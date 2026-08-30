@@ -10,25 +10,25 @@
 
 ## 1. 采集与累计
 
-- [ ] 1.1 agent_runner 收工处统一提取 usage（input/cache_creation/cache_read/output），累加 `_tokens_in`/`_tokens_out` 写 STATE（异常 run 按 0 + DEBUG 日志）
-- [ ] 1.2 验证链侧车 `.fenix/verify-progress/<spec>/tokens.json`：planner/judge run 用量逐轮记录
+- [x] 1.1 agent_runner 收工处统一提取 usage（input/cache_creation/cache_read/output），累加 `_tokens_in`/`_tokens_out` 写 STATE（异常 run 按 0 + DEBUG 日志）
+- [x] 1.2 验证链侧车 `.fenix/verify-progress/<spec>/tokens.json`：planner/judge run 用量逐轮记录
 
 ## 2. 展示
 
-- [ ] 2.1 Dashboard SPEC 详情治理区展示「输入 42.0M / 输出 0.3M」（含 cache 分项 tooltip）；成本字段缺失时显示「成本不可用（网关未回传）」而非 $0.00
-- [ ] 2.2 验证报告汇总表新增「本链增量 token」行（合成器从 tokens.json 求和）
+- [x] 2.1 Dashboard SPEC 详情治理区展示「输入 42.0M / 输出 0.3M」（含 cache 分项 tooltip）；成本字段缺失时显示「成本不可用（网关未回传）」而非 $0.00
+- [x] 2.2 验证报告汇总表新增「本链增量 token」行（合成器从 tokens.json 求和）
 
 ## 3. 预算告警与配置界面
 
-- [ ] 3.1 配置 `agents.token_budget_millions`（缺省 50，0=关闭）；收工检查处 80% 提醒 / 100% 升级告警（`_token_warn_80`/`_token_alert_100` 幂等标记，不自动冻结）
-- [ ] 3.2 config 页新增「Token 预算（百万）」数值输入（0-1000 校验，0 提示关闭），保存走热更新链路，浏览器实测
+- [x] 3.1 配置 `agents.token_budget_millions`（缺省 50，0=关闭）；收工检查处 80% 提醒 / 100% 升级告警（`_token_warn_80`/`_token_alert_100` 幂等标记，不自动冻结）
+- [x] 3.2 config 页新增「Token 预算（百万）」数值输入（0-1000 校验，0 提示关闭），保存走热更新链路，浏览器实测
 
 ## 4. 单元测试
 
-- [ ] 4.1 覆盖：usage 提取累加（含 cache 分项）；异常 run 零计；80%/100% 一次性告警与标记持久；预算 0 关闭；「成本不可用」渲染
-- [ ] 4.2 用 v2-config-page 真实 jsonl 夹具回归提取数值（对照人工考古 42M）
+- [x] 4.1 覆盖：usage 提取累加（含 cache 分项）；异常 run 零计；80%/100% 一次性告警与标记持久；预算 0 关闭；「成本不可用」渲染
+- [x] 4.2 用 v2-config-page 真实 jsonl 夹具回归提取数值（对照人工考古 42M）
 
 ## 5. 验证与打包
 
-- [ ] 5.1 运行 `python3 -m pytest .fenix/tests/ -v` 确认无回归
-- [ ] 5.2 执行 `bash scripts/package.sh` 生成最新扩展包
+- [x] 5.1 运行 `python3 -m pytest .fenix/tests/ -v` 确认无回归
+- [x] 5.2 执行 `bash scripts/package.sh` 生成最新扩展包

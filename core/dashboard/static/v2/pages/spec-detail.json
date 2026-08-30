@@ -78,6 +78,22 @@
         },
         {
           "type": "card",
+          "_note": "Token 消耗治理区（add-cost-observability 2.1）：累计 input/output token，成本缺失显示「成本不可用」",
+          "className": "m-b-sm",
+          "body": [
+            {
+              "type": "tpl",
+              "tpl": "<h3 style='margin:0 0 8px 0'>Token 消耗（累计）</h3>"
+            },
+            {
+              "type": "tpl",
+              "tpl": "<% var tu = data && data.token_usage; var mIn = tu ? (tu.tokens_in/1000000) : 0; var mOut = tu ? (tu.tokens_out/1000000) : 0; var inStr = mIn >= 1000 ? (mIn/1000).toFixed(2)+'G' : mIn.toFixed(1)+'M'; var outStr = mOut >= 1000 ? (mOut/1000).toFixed(2)+'G' : mOut.toFixed(1)+'M'; %><div style='font-size:1.05rem'>输入 <strong><%= inStr %></strong> / 输出 <strong><%= outStr %></strong></div><div class='text-muted' style='margin-top:4px'>缓存分项已计入 input（cache_creation / cache_read）。%< if (tu && tu.cost_available) { %> 成本 $<%= tu.cost_usd.toFixed(2) %><% } else { %> 成本不可用（网关未回传）%< } %></div>",
+              "className": "m-b-xs"
+            }
+          ]
+        },
+        {
+          "type": "card",
           "_note": "任务清单 checklist,按分组渲染(用 data. 前缀避免空数据期 ReferenceError)",
           "className": "m-b-sm",
           "body": [

@@ -218,6 +218,16 @@
       });
     }
 
+    // token_usage 数字化（add-cost-observability 2.1）
+    if (d.token_usage && typeof d.token_usage === 'object') {
+      d.token_usage = Object.assign({}, d.token_usage, {
+        tokens_in: num(d.token_usage.tokens_in, 0),
+        tokens_out: num(d.token_usage.tokens_out, 0),
+        cost_usd: d.token_usage.cost_usd == null ? null : num(d.token_usage.cost_usd, 0),
+        cost_available: !!d.token_usage.cost_available,
+      });
+    }
+
     // tasks 数字化
     if (Array.isArray(d.tasks)) {
       d.tasks = d.tasks.map(t => ({
@@ -295,6 +305,7 @@
         max_turns: num(agents.max_turns, 300),
         run_timeout_seconds: num(agents.run_timeout_seconds, 3600),
         daily_run_limit: num(agents.daily_run_limit, 50),
+        token_budget_millions: num(agents.token_budget_millions, 50),
       },
       gates: {
         approve_mode: gates.approve_mode || 'manual',
@@ -351,6 +362,7 @@
         max_turns: numOr(formAgents.max_turns || form.max_turns, loadedAgents.max_turns, defaults.max_turns || 300),
         run_timeout_seconds: numOr(formAgents.run_timeout_seconds || form.run_timeout_seconds, loadedAgents.run_timeout_seconds, defaults.run_timeout_seconds || 3600),
         daily_run_limit: numOr(formAgents.daily_run_limit || form.daily_run_limit, loadedAgents.daily_run_limit, defaults.daily_run_limit || 50),
+        token_budget_millions: numOr(formAgents.token_budget_millions || form.token_budget_millions, loadedAgents.token_budget_millions, defaults.token_budget_millions || 50),
       },
       gates: {
         approve_mode: approveMode,

@@ -75,7 +75,7 @@ def patch_runner_for_exec(runner: AgentRunner, proot: Path, claude_side_effect=N
     if claude_side_effect is not None:
         runner._run_claude = MagicMock(side_effect=claude_side_effect)
     else:
-        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1"))
+        runner._run_claude = MagicMock(return_value=("ok", 1, "sess-1", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None}))
 
 
 class TestParseApiErrorStatus:

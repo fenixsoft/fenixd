@@ -1392,6 +1392,48 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "runs": runs,
         "verdict": verdict,
         "timeline": get_spec_timeline(project_root, spec_name),
+        # add-cost-observability（D2）：治理区展示的累计 token 与成本可用性标记。
+        # _cost_usd 仅在网关真实回传时存在（不伪造金额，spec「金额展示不伪造」）。
+        "token_usage": _token_usage_view(entry),
+    }
+
+
+def _token_usage_view(entry: dict) -> dict:
+    """把 STATE 内部 token 字段规整为治理区展示结构（add-cost-observability D2）。
+
+    返回固定结构：
+        {
+          "tokens_in": int, "tokens_out": int,
+          "cache_creation_input_tokens": int | None,  # STATE 仅存累计，分项未记录→None
+          "cache_read_input_tokens": int | None,
+          "cost_usd": float | None,    # None = 网关未回传，界面展示「成本不可用」
+          "cost_available": bool,       # 成本字段是否可展示
+        }
+    STATE 仅持久累计 _tokens_in/_tokens_out/_cost_usd（分项 cache 入 input），
+    故分项在详情 tooltip 中以「已计入 input」说明，值为 None 表示无可分项数据。
+    """
+    if not isinstance(entry, dict):
+        entry = {}
+    tokens_in = int(entry.get("_tokens_in", 0) or 0)
+    tokens_out = int(entry.get("_tokens_out", 0) or 0)
+    cost = entry.get("_cost_usd")
+    if cost is None:
+        cost_val = None
+        cost_available = False
+    else:
+        try:
+            cost_val = float(cost)
+            cost_available = True
+        except (TypeError, ValueError):
+            cost_val = None
+            cost_available = False
+    return {
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cache_creation_input_tokens": None,
+        "cache_read_input_tokens": None,
+        "cost_usd": cost_val,
+        "cost_available": cost_available,
     }
 
 
@@ -1428,7 +1470,7 @@ def overview(registry_projects: list) -> dict:
 # Dashboard 管理的配置键子集：写回时只更新这些键，其它键原样保留
 _MANAGED_KEYS = ["llm", "agents", "gates"]
 # 在 agents 下管理的子键白名单
-_AGENTS_MANAGED_SUBKEYS = ["models", "max_concurrent", "run_timeout_seconds", "max_turns", "daily_run_limit"]
+_AGENTS_MANAGED_SUBKEYS = ["models", "max_concurrent", "run_timeout_seconds", "max_turns", "daily_run_limit", "token_budget_millions"]
 
 # 用户级配置文件路径（与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定）
 USER_CONFIG_PATH = Path.home() / ".fenix" / "config.yaml"
@@ -1436,7 +1478,7 @@ USER_CONFIG_PATH = Path.home() / ".fenix" / "config.yaml"
 # 受管键的来源标注键（前端用于「继承自用户级」badge）
 _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "agents.run_timeout_seconds", "agents.max_turns", "agents.daily_run_limit",
-                "gates.approve_mode"]
+                "agents.token_budget_millions", "gates.approve_mode"]
 
 _CONFIG_HEADER_COMMENT = (
     "# Fenix 配置文件\n"
@@ -1466,6 +1508,8 @@ def _managed_key_sources(raw: dict) -> dict:
             sources["agents.max_turns"] = "project"
         if "daily_run_limit" in agents_raw:
             sources["agents.daily_run_limit"] = "project"
+        if "token_budget_millions" in agents_raw:
+            sources["agents.token_budget_millions"] = "project"
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         sources["gates.approve_mode"] = "project"
