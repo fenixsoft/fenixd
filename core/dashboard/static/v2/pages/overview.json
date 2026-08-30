@@ -13,12 +13,18 @@
       "onEvent": {
         "sse:state": {
           "actions": [
-            { "actionType": "reload", "componentId": "ov-stats" }
+            {
+              "actionType": "reload",
+              "componentId": "ov-stats"
+            }
           ]
         },
         "sse:refresh": {
           "actions": [
-            { "actionType": "reload", "componentId": "ov-stats" }
+            {
+              "actionType": "reload",
+              "componentId": "ov-stats"
+            }
           ]
         }
       },
@@ -36,12 +42,18 @@
                     "type": "tpl",
                     "tpl": "<div class='v2-stat-num'>${spec_count}</div>",
                     "className": "m-b-xs",
-                    "style": { "fontSize": "1.8rem", "fontWeight": 700 }
+                    "style": {
+                      "fontSize": "1.8rem",
+                      "fontWeight": 700
+                    }
                   },
                   {
                     "type": "tpl",
                     "tpl": "<div class='v2-stat-label'>SPEC 总数</div>",
-                    "style": { "color": "var(--text-muted)", "fontSize": "0.85rem" }
+                    "style": {
+                      "color": "var(--text-muted)",
+                      "fontSize": "0.85rem"
+                    }
                   }
                 ]
               }
@@ -56,12 +68,18 @@
                     "type": "tpl",
                     "tpl": "<div class='v2-stat-num'>${task_done}</div>",
                     "className": "m-b-xs",
-                    "style": { "fontSize": "1.8rem", "fontWeight": 700 }
+                    "style": {
+                      "fontSize": "1.8rem",
+                      "fontWeight": 700
+                    }
                   },
                   {
                     "type": "tpl",
                     "tpl": "<div class='v2-stat-label'>任务完成</div>",
-                    "style": { "color": "var(--text-muted)", "fontSize": "0.85rem" }
+                    "style": {
+                      "color": "var(--text-muted)",
+                      "fontSize": "0.85rem"
+                    }
                   }
                 ]
               }
@@ -76,12 +94,18 @@
                     "type": "tpl",
                     "tpl": "<div class='v2-stat-num'>${task_total}</div>",
                     "className": "m-b-xs",
-                    "style": { "fontSize": "1.8rem", "fontWeight": 700 }
+                    "style": {
+                      "fontSize": "1.8rem",
+                      "fontWeight": 700
+                    }
                   },
                   {
                     "type": "tpl",
                     "tpl": "<div class='v2-stat-label'>任务总量</div>",
-                    "style": { "color": "var(--text-muted)", "fontSize": "0.85rem" }
+                    "style": {
+                      "color": "var(--text-muted)",
+                      "fontSize": "0.85rem"
+                    }
                   }
                 ]
               }
@@ -96,12 +120,20 @@
                     "type": "tpl",
                     "tpl": "<div class='v2-stat-num'>${problems}</div>",
                     "className": "m-b-xs",
-                    "style": { "fontSize": "1.8rem", "fontWeight": 700, "color": "var(--danger)", "display": "${problems > 0 ? 'block' : 'none'}" }
+                    "style": {
+                      "fontSize": "1.8rem",
+                      "fontWeight": 700,
+                      "color": "var(--danger)",
+                      "display": "${problems > 0 ? 'block' : 'none'}"
+                    }
                   },
                   {
                     "type": "tpl",
                     "tpl": "<div class='v2-stat-label'>问题数</div>",
-                    "style": { "color": "var(--text-muted)", "fontSize": "0.85rem" }
+                    "style": {
+                      "color": "var(--text-muted)",
+                      "fontSize": "0.85rem"
+                    }
                   }
                 ]
               }
@@ -116,12 +148,19 @@
                     "type": "tpl",
                     "tpl": "<div class='v2-stat-num'>${active_runs}</div>",
                     "className": "m-b-xs",
-                    "style": { "fontSize": "1.8rem", "fontWeight": 700, "color": "var(--primary)" }
+                    "style": {
+                      "fontSize": "1.8rem",
+                      "fontWeight": 700,
+                      "color": "var(--primary)"
+                    }
                   },
                   {
                     "type": "tpl",
                     "tpl": "<div class='v2-stat-label'>活跃运行</div>",
-                    "style": { "color": "var(--text-muted)", "fontSize": "0.85rem" }
+                    "style": {
+                      "color": "var(--text-muted)",
+                      "fontSize": "0.85rem"
+                    }
                   }
                 ]
               }
@@ -142,7 +181,10 @@
       "onEvent": {
         "sse:state": {
           "actions": [
-            { "actionType": "reload", "componentId": "ov-projects" }
+            {
+              "actionType": "reload",
+              "componentId": "ov-projects"
+            }
           ]
         }
       },
@@ -183,9 +225,29 @@
                     "onEvent": {
                       "click": {
                         "actions": [
-                          { "actionType": "ajax", "args": { "api": { "method": "post", "url": "/api/projects/${name}/start" } } },
-                          { "actionType": "toast", "args": { "msgType": "success", "msg": "已发起启动" } },
-                          { "actionType": "reload", "componentId": "ov-projects" }
+                          {
+                            "actionType": "stopPropagation"
+                          },
+                          {
+                            "actionType": "ajax",
+                            "args": {
+                              "api": {
+                                "method": "post",
+                                "url": "/api/projects/${name}/start"
+                              }
+                            }
+                          },
+                          {
+                            "actionType": "toast",
+                            "args": {
+                              "msgType": "success",
+                              "msg": "已发起启动"
+                            }
+                          },
+                          {
+                            "actionType": "reload",
+                            "componentId": "ov-projects"
+                          }
                         ]
                       }
                     }
@@ -200,9 +262,29 @@
                     "onEvent": {
                       "click": {
                         "actions": [
-                          { "actionType": "ajax", "args": { "api": { "method": "post", "url": "/api/projects/${name}/stop" } } },
-                          { "actionType": "toast", "args": { "msgType": "success", "msg": "已停止" } },
-                          { "actionType": "reload", "componentId": "ov-projects" }
+                          {
+                            "actionType": "stopPropagation"
+                          },
+                          {
+                            "actionType": "ajax",
+                            "args": {
+                              "api": {
+                                "method": "post",
+                                "url": "/api/projects/${name}/stop"
+                              }
+                            }
+                          },
+                          {
+                            "actionType": "toast",
+                            "args": {
+                              "msgType": "success",
+                              "msg": "已停止"
+                            }
+                          },
+                          {
+                            "actionType": "reload",
+                            "componentId": "ov-projects"
+                          }
                         ]
                       }
                     }
@@ -216,9 +298,29 @@
                     "onEvent": {
                       "click": {
                         "actions": [
-                          { "actionType": "ajax", "args": { "api": { "method": "delete", "url": "/api/projects/${name}" } } },
-                          { "actionType": "toast", "args": { "msgType": "success", "msg": "已删除" } },
-                          { "actionType": "reload", "componentId": "ov-projects" }
+                          {
+                            "actionType": "stopPropagation"
+                          },
+                          {
+                            "actionType": "ajax",
+                            "args": {
+                              "api": {
+                                "method": "delete",
+                                "url": "/api/projects/${name}"
+                              }
+                            }
+                          },
+                          {
+                            "actionType": "toast",
+                            "args": {
+                              "msgType": "success",
+                              "msg": "已删除"
+                            }
+                          },
+                          {
+                            "actionType": "reload",
+                            "componentId": "ov-projects"
+                          }
                         ]
                       }
                     }

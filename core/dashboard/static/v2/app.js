@@ -319,5 +319,15 @@
     }
     loadAndRender();
     window.addEventListener('hashchange', loadAndRender);
+    // 项目卡片整卡点击 → 项目页。amis cards 的 card 模板 onEvent/link/title-tpl 在
+    // 6.13 SDK 下均不生效,故在壳层委托:标题文本即项目名,按钮区域排除。
+    document.getElementById('v2-content').addEventListener('click', (e) => {
+      if (e.target.closest('button, a, .dark-Button')) return;
+      const card = e.target.closest('.dark-Card--link');
+      if (!card || !card.textContent.includes('路径:')) return; // 仅项目卡,统计卡排除
+      const titleEl = card.querySelector('[class*="-Card-title"]');
+      const name = titleEl && titleEl.textContent.trim();
+      if (name) location.hash = '#/project/' + encodeURIComponent(name);
+    });
   });
 })();
