@@ -311,6 +311,7 @@
         run_timeout_seconds: num(agents.run_timeout_seconds, 3600),
         daily_run_limit: num(agents.daily_run_limit, 50),
         token_budget_millions: num(agents.token_budget_millions, 50),
+        impl_run_budget: num(agents.impl_run_budget, 4),
       },
       gates: {
         approve_mode: gates.approve_mode || 'manual',
@@ -368,6 +369,7 @@
         run_timeout_seconds: numOr(formAgents.run_timeout_seconds || form.run_timeout_seconds, loadedAgents.run_timeout_seconds, defaults.run_timeout_seconds || 3600),
         daily_run_limit: numOr(formAgents.daily_run_limit || form.daily_run_limit, loadedAgents.daily_run_limit, defaults.daily_run_limit || 50),
         token_budget_millions: numOr(formAgents.token_budget_millions || form.token_budget_millions, loadedAgents.token_budget_millions, defaults.token_budget_millions || 50),
+        impl_run_budget: numOr(formAgents.impl_run_budget || form.impl_run_budget, loadedAgents.impl_run_budget, defaults.impl_run_budget || 4),
       },
       gates: {
         approve_mode: approveMode,
