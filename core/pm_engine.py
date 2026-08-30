@@ -1935,6 +1935,48 @@ class PMEngine:
                         self._enqueue_front(spec_name, "implementer")
                     return
 
+                # ── 交付物存在性守卫（add-implementer-deliverable-gate，D1/D3）──
+                # 实现器宣称成功，但 SPEC 声明的核心交付物可能未真正落地
+                # （v2-config-page 事故：agent 报成功但 config.json 未创建，0/11 验证全败）。
+                # 在 merge 之前做纯文件系统存在性校验（校验基准为实现分支提交，
+                # worktree 已在 run_implementer 内清理，仅分支留存），缺件则不合并、
+                # 不推进状态，按失败重派并带精准缺件清单；连续 3 次封顶 → blocked 升级告警。
+                if is_success:
+                    missing = self._deliverable_gate_missing(spec_name, result)
+                    if missing:
+                        spec_entry = self.state_machine.read_one(spec_name) or {}
+                        prev_retries = 0
+                        try:
+                            prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
+                        except (TypeError, ValueError):
+                            prev_retries = 0
+                        retries = prev_retries + 1
+                        max_r = self._get_config("agents.max_retries", 3)
+                        missing_q = "、".join(missing)
+                        err_note = (f"交付物守卫：缺件 [{missing_q}] — 不合并不推进，"
+                                    f"重派实现补齐（第 {retries} 次）")
+                        updates: dict = {
+                            "status": "ready",
+                            "error": err_note,
+                            "_retry_count": retries,
+                        }
+                        if retries >= max_r:
+                            updates["status"] = "blocked"
+                            updates["tester_run"] = None
+                            updates["error"] = (
+                                f"交付物守卫连续 {max_r} 次缺件 [{missing_q}] — 已 blocked，"
+                                f"需人工检查任务书声明与实际落地差异"
+                            )
+                        self.state_machine.update_spec(spec_name, updates)
+                        self.logger.error(
+                            "pm_engine",
+                            f"交付物守卫触发 '{spec_name}'（缺件 {missing_q}）— "
+                            f"run={result.run_id}",
+                        )
+                        if updates["status"] != "blocked":
+                            self._enqueue_front(spec_name, "implementer")
+                        return
+
                 if is_success:
                     # Merge worktree branch back into main tree before advancing state.
                     # worktree 已被 agent_runner 清理，但分支仍保留（success 路径不删分支），
@@ -2826,6 +2868,35 @@ class PMEngine:
         except OSError:
             return False
         return True
+
+    def _deliverable_gate_missing(self, spec_name: str, result) -> list:
+        """交付物守卫：返回 SPEC 声明但实现分支中缺失的交付路径清单。
+
+        纯文件存在性检查（add-implementer-deliverable-gate D3）：从 SPEC 目录
+        提取声明路径，逐一在 ``result.branch`` 的 HEAD 提交中校验 blob 存在。
+        校验基准为实现分支（worktree 已清理，仅分支留存）。
+
+        Returns:
+            缺失路径列表（相对项目根）；空列表表示放行（含无路径 SPEC 跳过场景）。
+        """
+        from core.deliverables import extract_paths
+
+        spec_dir = self.project_root / "openspec" / "changes" / spec_name
+        if not spec_dir.is_dir():
+            return []
+        declared = extract_paths(spec_dir)
+        if not declared:
+            # 无路径 SPEC：跳过守卫，行为退化到守卫上线前（向后兼容）
+            return []
+        wm = self.agent_runner.worktree_manager
+        branch = getattr(result, "branch", None)
+        if not branch:
+            # 无分支无法校验存活交付物：保守放行（与既有零变更哨共用缺失判定），
+            # 交由零变更哨/merge 流程兜底
+            return []
+        missing = [p for p in declared
+                   if not wm.file_exists_on_branch(branch, p)]
+        return missing
 
     @staticmethod
     def _normalize_fail_signature(text: str) -> str:
