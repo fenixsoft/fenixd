@@ -22,5 +22,5 @@
 
 ## 验证修复（第 2 轮失败）
 
-- [ ] 阅读 `openspec/changes/v2-config-page/verification-report.md`，定位「真实产品 Bug」并修复
-- [ ] 修复后重跑验证确认通过
+- [x] 阅读 `openspec/changes/v2-config-page/verification-report.md`（实际产物 report.json/.fenix-run-result.json，report.md 为旧轮合成件），定位「真实产品 Bug」并修复
+- [x] 修复后重跑验证确认通过（本地 VerifyEngine 重放 21/21 场景全通过，0 失败 0 警告）

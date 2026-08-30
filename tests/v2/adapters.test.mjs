@@ -225,6 +225,23 @@ test('validateChain: 空链返回错误文案', () => {
   assert.ok(result.length > 0);
 });
 
+test('validateChain: v2 角色链行(role+model)完整时返回 true', () => {
+  const result = Adapters.validateChain(
+    [{ role: 'implementer', model: 'mock-model' }],
+    [{ name: 'p1', model: 'default-model' }],
+  );
+  assert.equal(result, true);
+});
+
+test('validateChain: v2 角色链行未选角色被拦截(文案含「未选择 Provider」)', () => {
+  const result = Adapters.validateChain(
+    [{ role: '', model: '' }],
+    [{ name: 'p1', model: 'default-model' }],
+  );
+  assert.equal(typeof result, 'string');
+  assert.ok(result.includes('未选择 Provider'), result);
+});
+
 test('validateChain: 链中 model 为空但 provider 有默认模型时通过', () => {
   const result = Adapters.validateChain(
     [{ provider: 'p1', model: '' }],
