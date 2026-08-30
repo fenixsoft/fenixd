@@ -1222,7 +1222,7 @@ class AgentRunner:
         spec_dir = f"openspec/changes/{spec_name}"
 
         if agent_type == "implementer":
-            return (
+            prompt = (
                 f"You are the Fenix Implementer Agent. Your job is to implement the SPEC "
                 f"located at {spec_dir}/.\n\n"
                 f"1. Read {spec_dir}/proposal.md, {spec_dir}/design.md, and {spec_dir}/specs/\\*.md "
@@ -1239,6 +1239,22 @@ class AgentRunner:
                 f'{{"status": "error", "spec": "{spec_name}", "error": "<description>"}}\n\n'
                 f"IMPORTANT: Do NOT modify STATE.md directly. The daemon handles that."
             )
+            # 上轮 error 上下文注入（add-implementer-deliverable-gate D4）：
+            # 重派 run 携带上次缺件清单，agent 无需重新考古即知补什么。
+            prev_error = ""
+            try:
+                entry = self.state_machine.read_one(spec_name) or {}
+                prev_error = (entry.get("error") or "") if isinstance(entry, dict) else ""
+            except Exception:
+                prev_error = ""
+            if prev_error:
+                prompt += (
+                    f"\n\n## Previous run error (context for this attempt)\n"
+                    f"The previous implementation attempt failed and was re-dispatched. "
+                    f"Use this to focus your work — do NOT repeat the same gap:\n"
+                    f"\n{prev_error}\n"
+                )
+            return prompt
         elif agent_type == "verifier":
             progress_path = self.project_root / ".fenix" / "verify-progress" / f"{spec_name}.json"
             # 结构化报告（与 verify_engine 产物同位置，Dashboard 场景/缺陷列表数据源）

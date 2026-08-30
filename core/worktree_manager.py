@@ -990,3 +990,41 @@ class WorktreeManager:
             return None
         candidates.sort(reverse=True)
         return candidates[0][1]
+
+    def file_exists_on_branch(self, branch: str, rel_path: str) -> bool:
+        """校验某相对路径在分支 HEAD 提交中是否存在（交付物守卫校验基准）。
+
+        实现 run 收工时 worktree 已被清理，唯一留存的交付物是分支提交。
+        用 ``git cat-file -e <branch>:<rel_path>`` 做 O(1) 存在性检查——
+        纯文件系统/对象库探测，不触发 LLM / 测试 / 网络。
+
+        Args:
+            branch: 实现分支名（AgentRunResult.branch）
+            rel_path: 相对项目根的交付路径（如 ``core/foo.py``）
+
+        Returns:
+            True 表示分支 HEAD 包含该路径（blob 或 tree 均可，blob 才算真正落地）。
+            分支为空 / 不存在 / 路径不存在时返回 False。
+        """
+        if not branch or not rel_path:
+            return False
+        try:
+            # -e 仅判断对象可达（blob/tree/symlink），不输出内容，零成本。
+            result = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "cat-file", "-e", f"{branch}:{rel_path}"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                return False
+            # 必须是 blob（文件），tree（目录）不算落地交付物。
+            kind = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "cat-file", "-t", f"{branch}:{rel_path}"],
+                capture_output=True, text=True, timeout=30,
+            )
+            return kind.returncode == 0 and kind.stdout.strip() == "blob"
+        except subprocess.TimeoutExpired:
+            return False
+        except Exception:
+            return False
