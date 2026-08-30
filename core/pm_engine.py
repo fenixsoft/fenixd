@@ -2309,6 +2309,18 @@ class PMEngine:
                                 "pm_engine",
                                 f"任务进度回写未成功 '{spec_name}'（非阻塞）: {e}",
                             )
+                        # 恢复重派遗产回收（add-recovery-legacy-check 1.3）：后继 run 成功
+                        # merge 后，该 spec 的遗产已被收编/不再需要，consume_legacy 触发回收。
+                        # worktree 物理回收在 run_implementer 的 cleanup（成功路径保留分支、
+                        # 由 merge 前已清理）完成后由既有路径处理；此处仅清内存态遗产登记，
+                        # 使清扫器不再对其豁免。
+                        try:
+                            wm.consume_legacy(spec_name)
+                        except Exception as e:
+                            self.logger.warning(
+                                "pm_engine",
+                                f"consume_legacy 失败 '{spec_name}'（非阻塞）: {e}",
+                            )
                         # Immediately queue verifier at FRONT so it runs next
                         self._enqueue_front(spec_name, "verifier")
                         self.logger.info("pm_engine", f"Implement done, verifier queued for '{spec_name}'")
