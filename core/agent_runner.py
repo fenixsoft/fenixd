@@ -1433,6 +1433,14 @@ class AgentRunner:
                 f"8. If you encounter an error you cannot fix after 3 attempts, write "
                 f".fenix-run-result.json with: "
                 f'{{"status": "error", "spec": "{spec_name}", "error": "<description>"}}\n\n'
+                f"## 交互契约（interaction-contract，强制，add-interaction-contract-and-per-assert-triage）\n"
+                f"- 凡你实现为**可交互形态**的元素（按钮/链接样式卡片/可点击行/表单控件），"
+                f"其行为 MUST 在对应 SPEC 中有定义，或在任务书中显式声明「纯展示、不可交互」。\n"
+                f"- 两者皆不满足时，MUST 在 .fenix-run-result.json 增设 `findings` 数组登记"
+                f"「待裁决交互」条目（元素、现状、建议行为），不得静默保留可交互外观：\n"
+                f'  "findings": [{{"type": "pending-interaction", "element": "<元素标识>", '
+                f'"current": "<现状>", "suggestion": "<建议行为>"}}]\n'
+                f"- 已声明纯展示的元素即合规，收工守卫不因此拦截。\n\n"
                 f"IMPORTANT: Do NOT modify STATE.md directly. The daemon handles that."
             )
             # 上轮 error 上下文注入（add-implementer-deliverable-gate D4）：
@@ -1690,6 +1698,7 @@ class AgentRunner:
                 f"注意 Playwright glob 中 `*` 不匹配 `/`，多段路径需用 `**`，引擎会自动把结尾 "
                 f"`/*` 补成 `/**`）。mock 注册在 page 上，reload/导航后仍保留；仅作用于当前场景。\n\n"
                 f"{self._scenario_freeze_section(spec_name)}"
+                f"{self._interaction_contract_section(spec_name)}"
                 f"{self._triage_recheck_section(spec_name)}"
                 f"IMPORTANT: 当前模型不支持图像输入——不要 Read 图片/截图文件（会被 hook 拦截），"
                 f"截图仅作为证据文件。\n"
@@ -1717,8 +1726,10 @@ class AgentRunner:
                 f"   补充 `classification` 字段（四选一，见下方定义）与 `evidence` 字段（结构化\n"
                 f"   证据，见下方格式），并把增强后的完整 report.json **覆盖写回** {report_path}\n"
                 f"   （保持其它字段不变，仅对 FIT 场景增量写入 classification/evidence）。\n"
-                f"   ⚠️ 本步 MUST 对全部非 PASS 场景补齐，缺一不可——缺分类或证据会导致框架\n"
-                f"   校验失败并重试裁决。\n"
+                f"   同时对每个非 PASS 场景补充 `assertion_triage` 数组——逐断言归因（强制，\n"
+                f"   add-interaction-contract-and-per-assert-triage，格式见下方）。\n"
+                f"   ⚠️ 本步 MUST 对全部非 PASS 场景补齐，缺一不可——缺分类、证据或逐断言\n"
+                f"   归因会导致框架校验失败并重试裁决。\n"
                 f"5. 将运行结果写入 {result_path}（绝对路径，与场景/报告文件同目录，"
                 f"不要写别处）\n"
                 f"6. 写入 {spec_dir}/verification-report.md（人类可读的验证报告）\n\n"
@@ -1780,6 +1791,23 @@ class AgentRunner:
                 f"- `screenshots`：证据截图路径列表（取自场景 screenshots）；\n"
                 f"- `first_failed_step`：首个失败步骤的中文描述。\n"
                 f"三者至少提供其一，且 `failed_assertions` 与 `screenshots` 优先从既有数据摘取。\n\n"
+                f"### assertion_triage 逐断言归因（强制，add-interaction-contract-and-per-assert-triage）\n"
+                f"```json\n"
+                f'  "assertion_triage": [\n'
+                f'    {{"assertion": "no_click_interception .dark-Card button 停止",\n'
+                f'     "classification": "test-defect",\n'
+                f'     "evidence": "选择器含臆测类名，元素从未存在（DOM snapshot 佐证）"}}\n'
+                f'  ]\n'
+                f"```\n"
+                f"- 每个非 PASS 场景 MUST 对其**每一条失败断言**单独给出一条归因：\n"
+                f"  `assertion`（断言内容：type + selector/expected）、`classification`\n"
+                f"  （四选一，与场景分类定义一致）、`evidence`（该断言的证据/理由，非空）。\n"
+                f"- 场景级豁免（不记产品 Bug）仅当该场景**全部失败断言**均被单独归类为非\n"
+                f"  product-bug 时成立；任一断言归类 product-bug → 场景 MUST `failed`，\n"
+                f"  不得整体豁免（v2-overview-page 事故：6 个失败场景被整体豁免放行，\n"
+                f"  掩盖了卡片跳转缺失的真实缺陷）。\n"
+                f"- 校验器会核对条目数与失败断言数、归类取值与证据非空——缺失或漏条目\n"
+                f"  会触发裁决重试。\n\n"
                 f"### .fenix-run-result.json 格式\n"
                 f'{{\n'
                 f'  "status": "verified" | "bug-found",\n'
@@ -1997,6 +2025,44 @@ class AgentRunner:
             "持久化集补齐（等效于忽略你的删减），验证报告标注。"
         )
         lines.append("")
+        return "\n".join(lines)
+
+    def _interaction_contract_section(self, spec_name: str) -> str:
+        """构建交互契约约束段（add-interaction-contract-and-per-assert-triage 1.2）。
+
+        从 SPEC 文档声明式提取可交互候选（design D1 首版模式）；检出候选时注入
+        覆盖要求与 ``covers`` / ``declared_display`` 元数据登记规范。未检出候选
+        返回空串（prompt 与现状逐字节一致，与 legacy-section 同型）。
+        """
+        try:
+            from core.interaction_contract import collect_spec_candidates
+            candidates = collect_spec_candidates(self.project_root, spec_name)
+        except Exception:
+            return ""
+        if not candidates:
+            return ""
+        lines = [
+            "",
+            "## 交互契约（interaction-contract，强制，add-interaction-contract-and-per-assert-triage）",
+            "",
+            "- 页面中渲染为**可交互形态**的元素（按钮/按钮组/链接样式卡片/可点击行/"
+            "表单控件）MUST 至少对应一个交互场景（点击/操作后的可观察结果断言），"
+            "或在元素定义处声明「纯展示、不可交互」。",
+            "- 本 SPEC 检出的可交互候选（声明式首版模式）：",
+        ]
+        for c in candidates:
+            note = "（SPEC 已标注纯展示）" if c.declared_display else ""
+            lines.append(f"  - `{c.raw}`（{c.source}:{c.line}）{note}")
+        lines += [
+            "- 产出场景时，在场景对象上用 ``covers`` 字段登记该场景覆盖的元素标识"
+            "（如 \"covers\": [\"dark-Card--link\"]）。",
+            "- 无法生成交互场景的元素（纯展示），在任一场景对象上用 "
+            "``declared_display`` 登记（如 \"declared_display\": [\"btn-x\"]）。",
+            "- 契约校验器会确定性 diff 候选集与场景集：既无覆盖又无声明的元素会"
+            "导致场景验收失败并退回重排（含链接样式卡片——v2-overview-page 事故的"
+            "复发点）。",
+            "",
+        ]
         return "\n".join(lines)
 
     def _triage_recheck_section(self, spec_name: str) -> str:
