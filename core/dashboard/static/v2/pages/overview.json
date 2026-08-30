@@ -10,24 +10,7 @@
         "url": "/api/overview",
         "adaptor": "return { status: 0, data: window.Adapters.adaptOverview(payload) }"
       },
-      "onEvent": {
-        "sse:state": {
-          "actions": [
-            {
-              "actionType": "reload",
-              "componentId": "ov-stats"
-            }
-          ]
-        },
-        "sse:refresh": {
-          "actions": [
-            {
-              "actionType": "reload",
-              "componentId": "ov-stats"
-            }
-          ]
-        }
-      },
+      "onEvent": {},
       "body": [
         {
           "type": "grid",
@@ -178,16 +161,7 @@
         "url": "/api/projects",
         "adaptor": "return { status: 0, data: { items: window.Adapters.adaptProjects(payload.projects || []) } }"
       },
-      "onEvent": {
-        "sse:state": {
-          "actions": [
-            {
-              "actionType": "reload",
-              "componentId": "ov-projects"
-            }
-          ]
-        }
-      },
+      "onEvent": {},
       "body": [
         {
           "type": "cards",

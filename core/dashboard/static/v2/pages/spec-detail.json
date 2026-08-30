@@ -9,25 +9,7 @@
         "url": "/api/specs/${params[1]}?project=${params[0]}",
         "adaptor": "return { status: 0, data: window.Adapters.adaptSpecDetail(payload) }"
       },
-      "onEvent": {
-        "sse:detail": {
-          "actions": [
-            {
-              "actionType": "reload",
-              "componentId": "spec-detail",
-              "condition": "${event.data && event.data.spec === window.V2.route().params[1]}"
-            }
-          ]
-        },
-        "sse:state": {
-          "actions": [
-            {
-              "actionType": "reload",
-              "componentId": "spec-detail"
-            }
-          ]
-        }
-      },
+      "onEvent": {},
       "body": [
         {
           "type": "card",
