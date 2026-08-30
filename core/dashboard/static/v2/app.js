@@ -106,7 +106,13 @@
     config: '/config', activities: '/activities',
   };
 
+    let initScopeSelect = null;
   function buildShell(appSchema) {
+    // 全局项目作用域:顶栏选择器统一管理(localStorage 持久化,全页面生效)
+    window.V2.scope = {
+      project() { return localStorage.getItem('fenix.v2.scopeProject') || ''; },
+      set(name) { localStorage.setItem('fenix.v2.scopeProject', name || ''); }
+    };
     // 从 app.json 收集导航项(顶层 redirect + children 分组)
     const nav = [];
     for (const p of appSchema.pages) {
@@ -129,6 +135,10 @@
           <nav class="v2-nav"><ul>${items}</ul></nav>
         </aside>
         <main class="v2-main">
+          <div class="v2-topbar">
+            <span class="v2-scope-label">项目作用域</span>
+            <select id="v2-scope-select" title="切换后概览/配置等页面按所选项目取数"></select>
+          </div>
           <div id="v2-content"></div>
         </main>
       </div>`;
@@ -283,6 +293,11 @@
     wrapped.body = [{ type: 'sse-bridge' }, alertBannerSchema()].concat(Array.isArray(pageSchema.body) ? pageSchema.body : []);
     contentScoped = amisLib.embed(el, wrapped, { data, theme: 'dark' }, {});
     window.amisScoped = contentScoped;
+    initScopeSelect();
+    // 桥端无感推送依赖新页面的组件树挂载完成,挂载后推一次当前基线
+    if (window.Bridge && typeof window.Bridge._push === 'function') {
+      setTimeout(() => window.Bridge._push(), 50);
+    }
     highlightNav();
   }
 
@@ -312,7 +327,10 @@
         .v2-nav-item a{display:block;padding:8px 16px;color:#b8b8b8;text-decoration:none}
         .v2-nav-item a:hover{background:#2e2e2f;color:#fff}
         .v2-nav-active>a{background:#313131;color:#fff;font-weight:600}
-        .v2-main{flex:1;padding:20px;overflow:auto}
+        .v2-topbar{display:flex;justify-content:flex-end;align-items:center;gap:8px;padding:8px 20px;border-bottom:1px solid rgba(255,255,255,.08)}
+        .v2-scope-label{font-size:.85rem;color:var(--text-muted,#999)}
+        #v2-scope-select{background:#222;color:#e8e8e8;border:1px solid #444;border-radius:4px;padding:4px 8px}
+        .v2-main{flex:1;padding:0 20px 20px;overflow:auto}
         .v2-empty{color:#888;padding:40px;text-align:center}
       `;
       document.head.appendChild(st);
@@ -324,6 +342,31 @@
     document.head.appendChild(scopeStyle);
     loadAndRender();
     window.addEventListener('hashchange', loadAndRender);
+    // 顶栏作用域选择器:用户级(空) + 项目列表;切换后按路由类型联动
+    initScopeSelect = function () {
+      const sel = document.getElementById('v2-scope-select');
+      if (!sel) return;
+      if (sel.dataset.bound) { sel.value = window.V2.scope.project(); return; }
+      sel.dataset.bound = '1';
+      sel.innerHTML = '<option value="">用户级（跨项目默认）</option>';
+      fetch('/api/projects').then((r) => r.json()).then((d) => {
+        (d.projects || []).forEach((p) => {
+          const o = document.createElement('option');
+          o.value = p.name; o.textContent = p.name;
+          sel.appendChild(o);
+        });
+        sel.value = window.V2.scope.project();
+      }).catch(() => {});
+      sel.addEventListener('change', () => {
+        window.V2.scope.set(sel.value);
+        const route = window.V2.route();
+        if (route.page === 'project' && sel.value) location.hash = '#/project/' + encodeURIComponent(sel.value);
+        else if (route.page === 'spec-detail' && sel.value && route.params[1]) location.hash = '#/spec/' + encodeURIComponent(sel.value) + '/' + route.params[1];
+        else if ((route.page === 'project' || route.page === 'spec-detail') && !sel.value) location.hash = '#/overview';
+        else loadAndRender();
+      });
+    };
+    initScopeSelect();
     // 项目卡片整卡点击 → 项目页。amis cards 的 card 模板 onEvent/link/title-tpl 在
     // 6.13 SDK 下均不生效,故在壳层委托:标题文本即项目名,按钮区域排除。
     document.getElementById('v2-content').addEventListener('click', (e) => {

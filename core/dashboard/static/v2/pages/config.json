@@ -2,40 +2,13 @@
   "type": "page",
   "body": [
     {
-      "type": "select",
-      "name": "__scope",
-      "label": "配置作用域",
-      "labelField": "label",
-      "valueField": "value",
-      "value": "${params[0] || ''}",
-      "source": {
-        "url": "/api/projects",
-        "method": "get",
-        "adaptor": "return {status: 0, data: [{label: '用户级（跨项目默认）', value: ''}].concat((payload.projects || []).map(function(p){ return {label: p.name, value: p.name}; }));}"
-      },
-      "className": "m-b-sm",
-      "onEvent": {
-        "change": {
-          "actions": [
-            {
-              "actionType": "url",
-              "args": {
-                "url": "#/config/${event.data.value}",
-                "blank": false
-              }
-            }
-          ]
-        }
-      }
-    },
-    {
       "type": "service",
       "id": "config-loader",
       "name": "config-loader",
       "api": {
         "url": "/api/config",
         "adaptor": "window.__configSnapshot = payload; window.__configDefaults = { agents: { max_concurrent: 2, max_turns: 300, run_timeout_seconds: 3600, daily_run_limit: 50, token_budget_millions: 50, impl_run_budget: 4 } }; return { status: 0, data: window.Adapters.adaptConfig(payload) };",
-        "requestAdaptor": "var __r = window.V2 && window.V2.route && window.V2.route(); var __pj = __r && __r.params && __r.params[0]; if (__pj) { api.url = '/api/config?project=' + encodeURIComponent(__pj); } return api;"
+        "requestAdaptor": "var __pj = (window.V2 && window.V2.scope && window.V2.scope.project()) || ''; if (__pj) { api.url += '?project=' + encodeURIComponent(__pj); } return api;"
       },
       "body": [
         {
@@ -46,7 +19,7 @@
           "api": {
             "method": "post",
             "url": "/api/config",
-            "requestAdaptor": "var __r = window.V2 && window.V2.route && window.V2.route(); var __pj = __r && __r.params && __r.params[0]; if (__pj) { api.url = '/api/config?project=' + encodeURIComponent(__pj); } var out = window.Adapters.buildConfigPayload(api.data, window.__configSnapshot, window.__configDefaults); var chain = api.data && api.data.agents && api.data.agents.agent_chain; if (chain && chain.length > 0) { var provs = out.llm && out.llm.providers || []; var v = window.Adapters.validateChain(chain, provs); if (v !== true) { throw new Error(v); } } window.__lastConfigOut = out; window.__lastFormData = api.data; api.data = out; return api;",
+            "requestAdaptor": "var __pj = (window.V2 && window.V2.scope && window.V2.scope.project()) || ''; if (__pj) { api.url += '?project=' + encodeURIComponent(__pj); } var __r = window.V2 && window.V2.route && window.V2.route(); var __pj = __r && __r.params && __r.params[0]; if (__pj) { api.url = '/api/config?project=' + encodeURIComponent(__pj); } var out = window.Adapters.buildConfigPayload(api.data, window.__configSnapshot, window.__configDefaults); var chain = api.data && api.data.agents && api.data.agents.agent_chain; if (chain && chain.length > 0) { var provs = out.llm && out.llm.providers || []; var v = window.Adapters.validateChain(chain, provs); if (v !== true) { throw new Error(v); } } window.__lastConfigOut = out; window.__lastFormData = api.data; api.data = out; return api;",
             "adaptor": "var out = window.__lastConfigOut || {}; var fd = window.__lastFormData || {}; var agents = Object.assign({}, fd.agents || {}, out.agents || {}); var data = Object.assign({}, fd, { agents: agents, gates: out.gates || fd.gates }); window.__configSnapshot = Object.assign({}, window.__configSnapshot, { agents: out.agents, gates: out.gates }); return { status: 0, data: data };"
           },
           "body": [
