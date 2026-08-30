@@ -27,5 +27,5 @@
 
 ## 5. 验证与打包
 
-- [ ] 5.1 运行 `python3 -m pytest .fenix/tests/ -v` 确认无回归
-- [ ] 5.2 执行 `bash scripts/package.sh` 生成最新扩展包
+- [x] 5.1 运行 `python3 -m pytest .fenix/tests/ -v` 确认无回归
+- [x] 5.2 执行 `bash scripts/package.sh` 生成最新扩展包
