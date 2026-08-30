@@ -1204,6 +1204,18 @@ class WorktreeManager:
                 "worktree_manager",
                 f"Merge failed for branch '{branch}': {error}",
             )
+            # merge 冲突自愈（fix-merge-modify-delete-ignored）：modify/delete 冲突
+            # 且全部冲突路径都是 .gitignore 忽略的运行时草稿时，采纳主树侧的删除。
+            # 场景：run-result 类草稿在移出版本控制前派生的旧分支上被改动，与主树的
+            # 删除相撞——被忽略的草稿不是交付物，不应让 merge-back 死锁。
+            if self._resolve_ignored_modify_delete_conflicts():
+                self._drop_backup(backup)
+                self.logger.info(
+                    "worktree_manager",
+                    f"Merge conflict self-healed (modify/delete on ignored files) "
+                    f"for branch '{branch}'",
+                )
+                return True, ""
             # Abort the merge so main tree is left clean for retry
             subprocess.run(
                 ["git", "-C", str(self.project_root), "merge", "--abort"],
@@ -1217,6 +1229,88 @@ class WorktreeManager:
             return False, "git merge timed out after 120s"
         except Exception as e:
             return False, str(e)
+
+    def _resolve_ignored_modify_delete_conflicts(self) -> bool:
+        """在 merge 冲突挂起状态下自愈 modify/delete 冲突（仅限被忽略的路径）。
+
+        场景：run-result 类运行时草稿在移出版本控制前派生的旧分支上被改动，
+        与主树侧的删除相撞（DU：主树删除、分支修改）。被忽略的草稿不是交付物，
+        不应让 merge-back 死锁。
+
+        步骤：存在 DU 冲突且**无其它类型冲突**时，先逐个 ``git rm -f --cached``
+        采纳删除（工作区副本保留，供运行时继续使用）——此刻路径已 untracked，
+        ``check-ignore`` 判定才可靠（unmerged 条目会被视为 tracked 而误报）；
+        再校验全部路径确被 .gitignore 忽略，任何一条不满足则 ``merge --abort``
+        回到调用方原有失败路径（分支内容仍可从分支提交找回，不丢数据）；
+        全部通过则 ``git commit --no-edit`` 完成 merge。
+
+        Returns: True 表示冲突已全部解决且 merge 已提交。
+        """
+        try:
+            status = subprocess.run(
+                ["git", "-C", str(self.project_root), "status", "--porcelain"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if status.returncode != 0:
+                return False
+            du_paths = []
+            # 精确的 unmerged 状态码集合：两位均非空格才是冲突
+            # （"A "/“M ”等已暂存条目不能误判，否则 merge 中正常并入的新文件会中断自愈）
+            unmerged_codes = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+            for line in status.stdout.splitlines():
+                xy = line[:2]
+                if xy in unmerged_codes:
+                    # 只处理 DU（主树删除、分支修改）
+                    if xy != "DU":
+                        return False
+                    du_paths.append(line[3:].strip())
+            if not du_paths:
+                return False
+            for path in du_paths:
+                rm = subprocess.run(
+                    ["git", "-C", str(self.project_root),
+                     "rm", "-f", "--cached", "--", path],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if rm.returncode != 0:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Self-heal: git rm --cached failed for '{path}': "
+                        f"{(rm.stderr or rm.stdout).strip()}",
+                    )
+                    return False
+            for path in du_paths:
+                chk = subprocess.run(
+                    ["git", "-C", str(self.project_root),
+                     "check-ignore", "-q", "--", path],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if chk.returncode != 0:
+                    # 未被忽略 → 疑似真实交付物冲突，不自愈，交回 abort 路径
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Self-heal aborted: conflicted path '{path}' is not "
+                        f"gitignored — not a runtime draft",
+                    )
+                    subprocess.run(
+                        ["git", "-C", str(self.project_root), "merge", "--abort"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    return False
+            commit = subprocess.run(
+                ["git", "-C", str(self.project_root), "commit", "--no-edit"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if commit.returncode != 0:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Self-heal: merge commit failed: "
+                    f"{(commit.stderr or commit.stdout).strip()}",
+                )
+                return False
+            return True
+        except (subprocess.TimeoutExpired, OSError):
+            return False
 
     def merge_back(self, wt_path: Path) -> tuple:
         """Merge the worktree's branch into the main tree (project_root HEAD).
