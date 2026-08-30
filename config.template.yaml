@@ -41,6 +41,11 @@ agents:
   max_concurrent: 2
   # Maximum retry attempts for a failed Agent run
   max_retries: 3
+  # 实现尝试总预算（add-fail-counter-budget D2/D3）：每 spec 跨修复周期的实现
+  # run 启动次数上限（含首次实现与每轮修复重派、含单次派发的重试 attempt）。
+  # 达到预算 → 状态 blocked + 人工裁决告警，不再自动重派，需人工处置。
+  # 合法范围 1-10；留空/注释即采用缺省值 4。修改后约 30s 配置热更新生效。
+  impl_run_budget: 4
   # Maximum turns per Agent invocation (claude -p --max-turns)
   # 默认 300：单次 Agent 运行轮次上限（覆盖旧默认值 50/150）。该值为「上限」而非目标，
   # 超时/强杀保护仍在；对 32 场景级别验证为合理预算。

@@ -45,6 +45,14 @@ DEFAULT_SIGNAL_COOLDOWN_MINUTES = 30
 # 模块常量，不进 config（避免触发「配置项必须带 Dashboard 界面」约束）。
 MAX_VERIFY_FAIL_ROUNDS = 3
 
+# ── 实现尝试总预算缺省值（add-fail-counter-budget D2/D3）──────────
+# 每 spec 跨修复周期的实现 run 启动次数上限（含首次实现与每轮修复重派、
+# 含单次派发的重试 attempt）；达到预算 → blocked + 人工裁决。
+# 该缺省经 config 键 ``agents.impl_run_budget`` 覆盖（该键带 Dashboard 界面）。
+DEFAULT_IMPL_RUN_BUDGET = 4
+# 持久化字段名：当前 spec 已累计启动的实现 run 次数。
+IMPL_RUN_BUDGET_USED_FIELD = "_impl_run_budget_used"
+
 
 class PMEngine:
     """
@@ -1105,6 +1113,105 @@ class PMEngine:
                 f"Failed to send escalation alert for '{spec_name}': {e}",
             )
 
+    # ── 实现尝试总预算（add-fail-counter-budget D2/D4）──────────────
+    def _impl_run_budget(self) -> int:
+        """读取实现尝试预算（agents.impl_run_budget），缺省 DEFAULT_IMPL_RUN_BUDGET。
+
+        范围约束 1-10（D3 界面校验同口径）；配置越界时夹紧到合法区间，避免
+        极端配置使闸门失效或永远触发。
+        """
+        try:
+            raw = self._get_config("agents.impl_run_budget", DEFAULT_IMPL_RUN_BUDGET)
+            val = int(raw) if raw is not None else DEFAULT_IMPL_RUN_BUDGET
+        except (TypeError, ValueError):
+            val = DEFAULT_IMPL_RUN_BUDGET
+        if val < 1:
+            val = 1
+        if val > 10:
+            val = 10
+        return val
+
+    def _increment_impl_run_budget_used(self, spec_name: str) -> int:
+        """实现 run 启动时递增并持久化 ``_impl_run_budget_used``。
+
+        返回递增后的使用次数。跨重启有效（直接写 STATE.md）。
+        """
+        entry = self.state_machine.read_one(spec_name) or {}
+        try:
+            used = int(entry.get(IMPL_RUN_BUDGET_USED_FIELD, 0) or 0) + 1
+        except (TypeError, ValueError):
+            used = 1
+        self.state_machine.update_spec(spec_name, {IMPL_RUN_BUDGET_USED_FIELD: used})
+        self.logger.info(
+            "pm_engine",
+            f"实现尝试预算计数 +1: '{spec_name}' used={used}/{self._impl_run_budget()}",
+        )
+        return used
+
+    def _impl_run_budget_used(self, spec_name: str) -> int:
+        entry = self.state_machine.read_one(spec_name) or {}
+        try:
+            return int(entry.get(IMPL_RUN_BUDGET_USED_FIELD, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _check_impl_budget_exhausted(self, spec_name: str) -> bool:
+        """派发新一轮实现器前校验预算。
+
+        已累计使用 ``_impl_run_budget_used >= agents.impl_run_budget`` 时触发闸门：
+        spec 置 blocked + human-escalation-alerts 告警（signal_type=impl_budget_exhausted，
+        含 spec、已耗次数、最近失败摘要），不再自动重派。返回 True 表示已冻结。
+
+        已启动的 run（计数已计入、正在跑）不受此影响，照常跑完 merge——
+        本方法只在「即将开启新一轮」时调用。幂等：已是 blocked 时直接返回 True
+        不再重复告警。
+        """
+        budget = self._impl_run_budget()
+        used = self._impl_run_budget_used(spec_name)
+        if used < budget:
+            return False
+
+        entry = self.state_machine.read_one(spec_name) or {}
+        if entry.get("status") == "blocked":
+            # 已冻结（可能由其它闸门触发）：不重复告警，但仍阻止重派
+            return True
+
+        # 最近失败摘要：优先取 error，回退 tester_run/implementer_run 上下文
+        recent_error = (entry.get("error") or "").strip()
+        if not recent_error:
+            recent_error = (
+                f"最近实现 run={entry.get('implementer_run') or '未知'}，"
+                f"验证 run={entry.get('tester_run') or '未知'}"
+            )
+        self.state_machine.update_spec(spec_name, {
+            "status": "blocked",
+            "error": (
+                f"实现尝试预算耗尽（{used}/{budget}）：已停止自动重派，"
+                f"需人工裁决。最近失败：{recent_error}"
+            ),
+        })
+        self.logger.error(
+            "pm_engine",
+            f"实现尝试预算耗尽：'{spec_name}' used={used}/{budget}，冻结为 blocked",
+        )
+        self._send_human_escalation_alert(
+            spec_name=spec_name,
+            signal_type="impl_budget_exhausted",
+            severity="major",
+            description=(
+                f"'{spec_name}' 实现尝试预算耗尽（{used}/{budget}），已冻结等待人工裁决"
+            ),
+            evidence=(
+                f"spec={spec_name}; used={used}; budget={budget}; "
+                f"recent_failure={recent_error}"
+            ),
+            recommended_action=(
+                "检查实现/验证报告定位根因；人工可调大 agents.impl_run_budget 后解冻，"
+                "或直接推进状态。人工重置计数器即重新获得自动修复机会"
+            ),
+        )
+        return True
+
     def _on_spec_done(self, spec_name: str):
         """SPEC is done — log, re-verify parent if this was a fix SPEC.
 
@@ -2092,6 +2199,21 @@ class PMEngine:
 
             # Update state to in-progress
             if agent_type == "implementer":
+                # add-fail-counter-budget D2：派发前预算闸门。
+                # 已启动（_run_agent_worker 内已自增计数）的 run 不受此处影响，
+                # 仍会跑完 merge；本闸门只在「即将开启新一轮」时校验，避免无限重派。
+                # 闸门触发 → 不派发、状态置 blocked + 人工裁决告警，并回滚队列占用。
+                if self._check_impl_budget_exhausted(spec_name):
+                    with self._queue_lock:
+                        self._run_queue.insert(0, entry_to_dispatch)
+                        self._active_runs -= 1
+                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
+                        if cnt <= 0:
+                            self._active_priority_counts.pop(base_prio, None)
+                        else:
+                            self._active_priority_counts[base_prio] = cnt
+                        self._active_priorities.discard(base_prio)
+                    continue
                 # 修复重派时状态已是 implementing（同态转换非法），跳过 transition
                 cur_status = (self.state_machine.read_one(spec_name) or {}).get("status")
                 if cur_status != "implementing":
@@ -2122,6 +2244,10 @@ class PMEngine:
         """
         try:
             if agent_type == "implementer":
+                # add-fail-counter-budget D2：实现 run 启动即递增预算计数并持久化
+                # （跨重启有效）。已启动的 run 即使随后触发预算闸门也会照常跑完 merge
+                # （沉没成本不浪费），闸门只阻止「新一轮」自动重派。
+                self._increment_impl_run_budget_used(spec_name)
                 wm = self.agent_runner.worktree_manager
                 # 派发前把 spec 目录提交进主树（fix-merge-back-deadlock 根因修复）：
                 # 消除「spec 在主树 untracked + 分支 commit 同名路径」导致的 merge-back 冲突。
@@ -3237,6 +3363,10 @@ class PMEngine:
                 "tester_run": judge_result.run_id,
                 "error": None,
                 "_inconclusive_attempts": 0,
+                # add-fail-counter-budget D1：验证 PASS 是 _verify_fail_rounds
+                # 的唯一归零点——跨修复周期累计的失败计数在此清零并持久化，
+                # 打回重派/修复收工等中间转换不再归零（见 _do_spec_bug_found）。
+                "_verify_fail_rounds": 0,
             })
             # 本轮场景集变更小节追加到验证报告（spec 需求 2.3）
             self._render_scenario_change_section_to_report(spec_name)
@@ -3559,6 +3689,8 @@ class PMEngine:
                     "tester_run": result.run_id,
                     "error": None,
                     "_inconclusive_attempts": 0,
+                    # add-fail-counter-budget D1：PASS 唯一归零点（legacy 路径同语义）。
+                    "_verify_fail_rounds": 0,
                 })
                 self._on_spec_verified(spec_name)
         else:
