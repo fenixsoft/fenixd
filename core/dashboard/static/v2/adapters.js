@@ -385,7 +385,8 @@
 
   // ── validateChain ─────────────────────────────────────────
   // behavior.md §6: 链完整性校验(必填角色齐全、模型名存在)
-  // chainValue: [{provider, model}, ...]  provider 信息列表
+  // chainValue: [{role, model}, ...]  v2 链编辑器行(config.json「Agent 模型分配」)
+  //             兼容旧 [{provider, model}, ...] 行(v1 provider 信息列表)
   // providers: [{name, model}, ...] LLM providers 列表
   // 返回 true 或错误文案
   function validateChain(chainValue, providers) {
@@ -398,14 +399,20 @@
 
     const missing = [];
     chainValue.forEach((row, i) => {
-      if (!row.provider) {
-        missing.push(`第 ${i + 1} 行未选择 Provider`);
+      if (!row || typeof row !== 'object') {
+        missing.push(`第 ${i + 1} 行未选择 Provider（角色）`);
         return;
       }
-      // model 为空时检查 provider 默认模型
+      // 行标识字段: v2 链行是 role(角色),v1 链行是 provider;均未选即不完整
+      const owner = row.role || row.provider;
+      if (!owner) {
+        missing.push(`第 ${i + 1} 行未选择 Provider（角色）`);
+        return;
+      }
+      // model 为空时检查 provider 默认模型(仅 v1 provider 行有该回退)
       const pDefault = providerMap[row.provider];
       if (!row.model && !(pDefault && pDefault.model)) {
-        missing.push(`第 ${i + 1} 行（${row.provider}）无可用模型`);
+        missing.push(`第 ${i + 1} 行（${owner}）无可用模型`);
       }
     });
     if (missing.length > 0) {
