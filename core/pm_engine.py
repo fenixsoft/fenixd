@@ -3505,6 +3505,12 @@ class PMEngine:
             return []
         missing = [p for p in declared
                    if not wm.file_exists_on_branch(branch, p)]
+        if missing:
+            # .fenix 自引用符号链接在分支树中是链接 blob 而非目录，`.fenix/x` 无法按树
+            # 查找；其语义等价于根路径 x（链接指向项目根），归一化后复检一次
+            missing = [p for p in missing
+                       if not p.startswith(".fenix/")
+                       or wm.file_exists_on_branch(branch, p[len(".fenix/"):])]
         return missing
 
     @staticmethod
