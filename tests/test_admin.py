@@ -296,6 +296,23 @@ class TestAdminMonitorDetection:
         signals = mon.run_once()
         assert all(s["signal_type"] != "blocked_stuck" for s in signals)
 
+    def test_blocked_user_pause_not_detected(self, tmp_path):
+        """用户指令暂停（error 含「用户指令暂停」，未必带 frozen: 前缀）不触发 blocked_stuck。
+
+        人工写入的暂停文案是有意等待态（2026-08-30 v2-acceptance-suite 误报），
+        updated 不推进；超时唤起只会形成重复误报。
+        """
+        proot, mon = make_monitor(tmp_path, {
+            "spec-paused": {
+                "status": "blocked",
+                "updated": iso_ago(125),
+                "error": "用户指令暂停：治理类修复 SPEC（1-6 改进项）优先完成后再解冻",
+            },
+            "spec-b": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        signals = mon.run_once()
+        assert all(s["signal_type"] != "blocked_stuck" for s in signals)
+
     def test_daemon_errors(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},

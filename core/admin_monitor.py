@@ -206,10 +206,14 @@ class AdminMonitor:
             # 'frozen:'），其 blocked 是有意保持的等待态，updated 不会推进——按超时
             # 唤起只会形成每轮重复误报。真实停滞仍由 stuck/repeated_failures/
             # family_explosion 等规则覆盖。
-            if str(entry.get("error") or "").startswith("frozen:"):
+            # 用户指令暂停（2026-08-30 v2-acceptance-suite 误报）：人工处置时直接
+            # 写入的「用户指令暂停：…」同样是有意等待态，等价于 frozen——人工历史
+            # 文案未必带 frozen: 前缀，故按子串识别，双保险。
+            err = str(entry.get("error") or "")
+            if err.startswith("frozen:") or "用户指令暂停" in err:
                 self.logger.debug(
                     "admin_monitor",
-                    f"Skipping blocked_stuck for frozen SPEC '{name}'",
+                    f"Skipping blocked_stuck for intentionally-paused SPEC '{name}'",
                 )
                 continue
             updated_str = entry.get("updated") or entry.get("created") or ""
