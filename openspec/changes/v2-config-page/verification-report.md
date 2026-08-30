@@ -47,3 +47,10 @@
 | config-theme-readonly | fail | - |
 | config-deeplink-tab-parallel | fail | 2/3 |
 | config-parallel-persist-reload | fail | - |
+
+## 本轮场景集变更
+
+当前稳定场景集共 21 个（第 2 轮）。
+
+- 首轮写入 21 个场景
+
