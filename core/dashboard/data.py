@@ -1546,7 +1546,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
     config_path = USER_CONFIG_PATH if scope == "user" else Path(scope_root) / ".fenix" / "config.yaml"
     result = {
         "llm": {},
-        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "impl_run_budget": 4},
+        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4},
         "gates": {"approve_mode": "manual"},
         "scope": scope,
         "raw_exists": False,
@@ -1593,6 +1593,9 @@ def read_config(scope_root, scope: str = "project") -> dict:
             agents_result["max_turns"] = agents_raw["max_turns"]
         if isinstance(agents_raw.get("daily_run_limit"), int):
             agents_result["daily_run_limit"] = agents_raw["daily_run_limit"]
+        if isinstance(agents_raw.get("token_budget_millions"), int):
+            # add-cost-observability（D5）：预算键回显（此前缺提取，配置值读不回来）
+            agents_result["token_budget_millions"] = agents_raw["token_budget_millions"]
         if isinstance(agents_raw.get("impl_run_budget"), int):
             agents_result["impl_run_budget"] = agents_raw["impl_run_budget"]
         if agents_result:
@@ -1620,7 +1623,7 @@ def read_effective_config(project_root) -> dict:
 
     result = {
         "llm": {},
-        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "impl_run_budget": 4},
+        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4},
         "gates": {"approve_mode": "manual"},
         "scope": "project",
         "raw_exists": proj_path.exists(),
@@ -1667,6 +1670,9 @@ def read_effective_config(project_root) -> dict:
             result["agents"]["max_turns"] = agents_eff["max_turns"]
         if isinstance(agents_eff.get("daily_run_limit"), int):
             result["agents"]["daily_run_limit"] = agents_eff["daily_run_limit"]
+        if isinstance(agents_eff.get("token_budget_millions"), int):
+            # add-cost-observability（D5）：有效合并视图回显预算键（此前缺提取）
+            result["agents"]["token_budget_millions"] = agents_eff["token_budget_millions"]
         if isinstance(agents_eff.get("impl_run_budget"), int):
             result["agents"]["impl_run_budget"] = agents_eff["impl_run_budget"]
     gates_eff = effective.get("gates")
@@ -1704,6 +1710,9 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["agents"]["max_turns"] = patch["agents"]["max_turns"]
         if "daily_run_limit" in patch["agents"]:
             merged["agents"]["daily_run_limit"] = patch["agents"]["daily_run_limit"]
+        if "token_budget_millions" in patch["agents"]:
+            # add-cost-observability（D5）：此前缺合并分支，保存后预算键被静默丢弃
+            merged["agents"]["token_budget_millions"] = patch["agents"]["token_budget_millions"]
         if "impl_run_budget" in patch["agents"]:
             merged["agents"]["impl_run_budget"] = patch["agents"]["impl_run_budget"]
 
