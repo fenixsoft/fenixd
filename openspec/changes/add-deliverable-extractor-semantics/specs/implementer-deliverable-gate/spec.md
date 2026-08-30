@@ -12,7 +12,7 @@
 - **AND** 不阻断 merge、不消耗重派计数
 
 #### Scenario: 交付语境仍阻断
-- **GIVEN** tasks 勾选行声明新建 `core/foo.py` 而分支中不存在
+- **GIVEN** tasks 勾选行声明新建某个 core 下源文件而分支中不存在
 - **WHEN** 守卫校验
 - **THEN** 缺件判定照常阻断（既有行为不变）
 
