@@ -1856,6 +1856,38 @@ class PMEngine:
 
     # ── 裁决证据分类校验 / 采纳（add-verdict-evidence-taxonomy D1-D5）──
 
+    def _verdict_violations_path(self, spec_name: str) -> Path:
+        return (
+            self.project_root / ".fenix" / "verify-progress"
+            / spec_name / "verdict_violations.json"
+        )
+
+    def _write_verdict_violations(self, spec_name: str, violations: list) -> None:
+        """落盘裁决驳回清单（verdict-rejection-retry：judge 重试幂等陷阱修复）。
+
+        fix-budget-counting-semantics 复盘：judge 首轮补齐 classification/evidence
+        但漏 assertion_triage，重试 judge 读到已增强的 report 后判定「无需改写」
+        再次跳过，校验必然复败 → blocked。将违规明细落盘，由 agent_runner 注入
+        重试 prompt（见 _verdict_rejection_section），告知重试 judge 缺口所在。
+        """
+        try:
+            path = self._verdict_violations_path(spec_name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(violations, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            self.logger.warning(
+                "pm_engine", f"裁决驳回清单写盘失败 '{spec_name}': {e}",
+            )
+
+    def _clear_verdict_violations(self, spec_name: str) -> None:
+        try:
+            self._verdict_violations_path(spec_name).unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def _verify_verdict_evidence(self, spec_name: str, retry_judge: bool = False) -> bool:
         """确定性校验裁决 report.json 的分类/证据合规，并按映射强制重写 status。
 
@@ -1881,7 +1913,8 @@ class PMEngine:
 
         result = validate_report(report)
         if result["ok"]:
-            # 合规：强制重写 status 映射（D3）后写回
+            # 合规：清掉历史驳回清单（若有）后强制重写 status 映射（D3）写回
+            self._clear_verdict_violations(spec_name)
             mapping = enforce_status_mapping(report)
             if mapping["corrected"]:
                 try:
@@ -1899,9 +1932,10 @@ class PMEngine:
                     )
             return True
 
-        # 一次不合规：judge 重试一次（design D2）
+        # 一次不合规：judge 重试一次（design D2）；违规明细落盘供重试 prompt 注入
         if retry_judge:
             violations_1 = result["violations"]
+            self._write_verdict_violations(spec_name, violations_1)
             self.logger.warning(
                 "pm_engine",
                 f"裁决证据分类校验未通过 '{spec_name}'（{len(violations_1)} 项），"
@@ -1925,6 +1959,7 @@ class PMEngine:
                 return False
             result2 = validate_report(report2)
             if result2["ok"]:
+                self._clear_verdict_violations(spec_name)
                 mapping2 = enforce_status_mapping(report2)
                 try:
                     save_report(self.project_root, spec_name, report2)

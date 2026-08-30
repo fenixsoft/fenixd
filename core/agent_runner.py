@@ -1730,6 +1730,9 @@ class AgentRunner:
                 f"   add-interaction-contract-and-per-assert-triage，格式见下方）。\n"
                 f"   ⚠️ 本步 MUST 对全部非 PASS 场景补齐，缺一不可——缺分类、证据或逐断言\n"
                 f"   归因会导致框架校验失败并重试裁决。\n"
+                f"   ⚠️ 若 report.json 中已存在 classification/evidence（上一轮裁决残留），\n"
+                f"   仍 MUST 逐场景核对 assertion_triage 是否齐全，缺则补齐后覆盖写回——\n"
+                f"   不得因部分字段已存在而判定「无需改写」。\n"
                 f"5. 将运行结果写入 {result_path}（绝对路径，与场景/报告文件同目录，"
                 f"不要写别处）\n"
                 f"6. 写入 {spec_dir}/verification-report.md（人类可读的验证报告）\n\n"
@@ -1825,6 +1828,7 @@ class AgentRunner:
                 f'}}\n\n'
                 f"{self._scenario_freeze_section(spec_name)}"
                 f"{self._triage_recheck_section(spec_name)}"
+                f"{self._verdict_rejection_section(spec_name)}"
                 f"IMPORTANT: Do NOT modify STATE.md."
             )
 
@@ -2095,6 +2099,44 @@ class AgentRunner:
             "classificatio=product-bug 并 failed）还是确属 flaky/env（可维持 warning）。\n"
             "- 切勿继续无限悬置为 warning；若确为产品缺陷，必须在本次裁决中如实分类并 failed。\n"
         )
+
+    def _verdict_rejection_section(self, spec_name: str) -> str:
+        """构建裁决驳回注入段（verdict-rejection-retry：重试幂等陷阱修复）。
+
+        读取 pm_engine 落盘的 ``.fenix/verify-progress/<spec>/verdict_violations.json``
+        （上一轮裁决被确定性校验驳回的违规明细），注入 judge prompt，告知重试
+        judge 具体缺口。文件缺失/为空 → 返回空串（首轮裁决不注入）。
+        """
+        rejection_path = (
+            self.project_root / ".fenix" / "verify-progress"
+            / spec_name / "verdict_violations.json"
+        )
+        if not rejection_path.exists():
+            return ""
+        try:
+            data = json.loads(rejection_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return ""
+        if not isinstance(data, list) or not data:
+            return ""
+        lines = [
+            "\n\n## ⚠️ 上一轮裁决已被校验驳回（强制修复，verdict-rejection-retry）\n"
+            "- 你现在看到的是重试裁决：上一轮写回的 report.json 未通过框架确定性校验，"
+            "违规明细如下：\n"
+        ]
+        for v in data:
+            if isinstance(v, dict):
+                lines.append(
+                    f"  - 场景 `{v.get('scenario_id')}`（status={v.get('status')}）："
+                    f"{v.get('reason')}\n"
+                )
+        lines.append(
+            "- ⚠️ report.json 中已存在的 classification/evidence（上一轮残留）"
+            "不代表裁决合规——缺失的 `assertion_triage` 逐断言归因同样是强制字段。\n"
+            "- 你 MUST 对全部非 PASS 场景补齐缺口（含逐断言 assertion_triage）后"
+            "覆盖写回 report.json，不得因部分字段已存在而判定「无需改写」。\n"
+        )
+        return "".join(lines)
 
     def _run_claude(self, prompt: str, cwd: Path, run_id: str,
                     model_override: str | None = None,
