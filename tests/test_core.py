@@ -6602,5 +6602,89 @@ class TestStuckThresholdUnify(unittest.TestCase):
         self.assertIsNone(eff)
 
 
+class TestScenarioFreezeIntegration(unittest.TestCase):
+    """add-verify-scenario-freeze：pm_engine._apply_scenario_freeze 端到端。
+
+    覆盖首轮写入、修复轮不扩容（17→11 收敛）、无理由缺场景补齐、报告变更小节。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.logger = MagicMock()
+        self.sm = StateMachine(Path(self.tmpdir) / "STATE.md", self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
+        )
+        self.spec = "v2-config-page"
+        self.sm.add_spec(self.spec, {"priority": 5})
+        self.vdir = Path(self.tmpdir) / ".fenix" / "verify-progress" / self.spec
+        self.vdir.mkdir(parents=True, exist_ok=True)
+        self.scenarios_path = self.vdir / "test_scenarios.json"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_planner(self, ids):
+        self.scenarios_path.write_text(
+            json.dumps([{"id": s, "description": f"d {s}"} for s in ids],
+                       ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def test_first_round_writes_scenarios_json(self):
+        self._write_planner([f"cfg-{i:02d}" for i in range(1, 12)])
+        res = self.engine._apply_scenario_freeze(self.spec)
+        self.assertIn("diff", res)
+        self.assertEqual(len(res["diff"].scenario_set.scenarios), 11)
+        data = json.loads((self.vdir / "scenarios.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(data["scenarios"]), 11)
+        self.assertEqual(data["round"], 1)
+
+    def test_repair_round_overissue_converges(self):
+        # 预置首轮 11 场景
+        self._write_planner([f"cfg-{i:02d}" for i in range(1, 12)])
+        self.engine._apply_scenario_freeze(self.spec)
+        # 修复轮：planner 膨胀到 17，STATE 标记 _verify_fail_rounds
+        self.sm.update_spec(self.spec, {"_verify_fail_rounds": 1})
+        self._write_planner([f"cfg-{i:02d}" for i in range(1, 18)])
+        res = self.engine._apply_scenario_freeze(self.spec)
+        self.assertEqual(len(res["diff"].scenario_set.scenarios), 11)
+        self.assertEqual(len(res["diff"].added), 0)
+        # 超发场景不进入持久化集（scenarios.json 收敛回 11），
+        # 但 test_scenarios.json 保留 planner 产出（仅 unreasoned 缺失才补齐）。
+        data = json.loads((self.vdir / "scenarios.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(data["scenarios"]), 11)
+
+    def test_unreasoned_missing_backfilled_into_test_scenarios(self):
+        self._write_planner([f"cfg-{i:02d}" for i in range(1, 12)])
+        self.engine._apply_scenario_freeze(self.spec)
+        self.sm.update_spec(self.spec, {"_verify_fail_rounds": 1})
+        # planner 只产出 11 个中的 9 个（缺 2 个，无理由）→ 补齐
+        self._write_planner([f"cfg-{i:02d}" for i in range(1, 10)])
+        res = self.engine._apply_scenario_freeze(self.spec)
+        self.assertFalse(res["diff"].ok)
+        kept = json.loads(self.scenarios_path.read_text(encoding="utf-8"))
+        # 补齐后 test_scenarios.json 仍含全部 11 个（不丢回归面）
+        self.assertEqual({s["id"] for s in kept},
+                         {f"cfg-{i:02d}" for i in range(1, 12)})
+
+    def test_report_change_section_appended(self):
+        from core.verify_scenarios import render_first_write_section
+        self._write_planner([f"cfg-{i:02d}" for i in range(1, 12)])
+        self.engine._apply_scenario_freeze(self.spec)
+        # 模拟报告文件存在（闸门保证）
+        report_path = (Path(self.tmpdir) / "openspec" / "changes"
+                       / self.spec / "verification-report.md")
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text("# 验证报告：v2-config-page\n\n## 结论：✅ 通过\n",
+                               encoding="utf-8")
+        self.engine._render_scenario_change_section_to_report(self.spec)
+        content = report_path.read_text(encoding="utf-8")
+        self.assertIn("## 本轮场景集变更", content)
+        self.assertIn("首轮写入 11 个场景", content)
+
+
 if __name__ == "__main__":
     unittest.main()

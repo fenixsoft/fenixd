@@ -1488,6 +1488,7 @@ class AgentRunner:
                 f"\"value\": \"{{\\\"current\\\": ...}}\"}}（target 为 URL 模式，value 为 JSON 响应体；"
                 f"注意 Playwright glob 中 `*` 不匹配 `/`，多段路径需用 `**`，引擎会自动把结尾 "
                 f"`/*` 补成 `/**`）。mock 注册在 page 上，reload/导航后仍保留；仅作用于当前场景。\n\n"
+                f"{self._scenario_freeze_section(spec_name)}"
                 f"IMPORTANT: 当前模型不支持图像输入——不要 Read 图片/截图文件（会被 hook 拦截），"
                 f"截图仅作为证据文件。\n"
                 f"IMPORTANT: Do NOT modify STATE.md."
@@ -1553,6 +1554,7 @@ class AgentRunner:
                 f'  ],\n'
                 f'  "summary": "验证总结"\n'
                 f'}}\n\n'
+                f"{self._scenario_freeze_section(spec_name)}"
                 f"IMPORTANT: Do NOT modify STATE.md."
             )
 
@@ -1625,6 +1627,61 @@ class AgentRunner:
                 f"然后结束，无需额外输出。不要直接编辑 .fenix/admin_alerts.json——"
                 f"daemon 会基于你的处置记录写入。\n"
             )
+
+    def _scenario_freeze_section(self, spec_name: str) -> str:
+        """构建场景集冻结约束段（add-verify-scenario-freeze / design D1-D2）。
+
+        修复轮（``_verify_fail_rounds > 0`` 或 tasks.md 含「## 验证修复」）时注入
+        持久化集与「仅新增范围可追加、删减须理由」约束；首轮验证返回空串（不约束）。
+
+        纯本地确定性读取（core.verify_scenarios），不触发 LLM。
+        """
+        try:
+            from core.verify_scenarios import (
+                load_scenario_set, is_repair_round,
+                read_verify_fix_section, declares_new_delivery,
+            )
+        except Exception:
+            return ""
+        entry = None
+        try:
+            entry = self.state_machine.read_one(spec_name)
+        except Exception:
+            entry = None
+        if not is_repair_round(self.project_root, spec_name, entry):
+            return ""
+        persisted = load_scenario_set(self.project_root, spec_name)
+        if persisted is None or not persisted.scenarios:
+            return ""
+        fix_section = read_verify_fix_section(self.project_root, spec_name)
+        extended = declares_new_delivery(fix_section)
+        ids = "、".join(s.id for s in persisted.scenarios)
+        lines = [
+            "",
+            "## 验证场景集冻结（修复轮约束，add-verify-scenario-freeze）",
+            "",
+            f"- 你处于**修复轮**：必须复用持久化场景集，不得重新膨胀场景面。",
+            f"- 持久化集共 {len(persisted.scenarios)} 个既有场景（第 "
+            f"{persisted.round} 轮稳定），MUST 全部覆盖：{ids}",
+        ]
+        if extended:
+            lines.append(
+                "- 修复段声明了**新增交付范围**：仅允许为该新增范围追加场景，"
+                "新增场景在 JSON 顶层用 ``added_in_round`` 标注本轮轮次；"
+                "非该范围的场景不得新增。"
+            )
+        else:
+            lines.append(
+                "- 修复段**未声明新增交付范围**：MUST NOT 新增任何场景"
+                "（修复轮不扩容，design D2）。"
+            )
+        lines.append(
+            "- 移除既有场景 MUST 在场景对象上用 ``remove_reason`` 字段给出理由"
+            "（如对应功能已按任务书移除）；无理由的缺场景将被确定性校验器以"
+            "持久化集补齐（等效于忽略你的删减），验证报告标注。"
+        )
+        lines.append("")
+        return "\n".join(lines)
 
     def _run_claude(self, prompt: str, cwd: Path, run_id: str,
                     model_override: str | None = None,
