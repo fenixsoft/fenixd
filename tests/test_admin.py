@@ -313,6 +313,24 @@ class TestAdminMonitorDetection:
         signals = mon.run_once()
         assert all(s["signal_type"] != "blocked_stuck" for s in signals)
 
+    def test_blocked_user_freeze_not_detected(self, tmp_path):
+        """用户指令冻结（「用户指令冻结：…」，无 frozen: 前缀）不触发 blocked_stuck。
+
+        人工冻结文案用词在暂停/冻结间漂移（2026-08-30 v2-acceptance-suite 二次
+        误报：error='用户指令冻结：等 v2-config-page 完成后人工验证再放行'），
+        豁免按「用户指令」子串识别，覆盖两种及未来变体。
+        """
+        proot, mon = make_monitor(tmp_path, {
+            "spec-frozen": {
+                "status": "blocked",
+                "updated": iso_ago(125),
+                "error": "用户指令冻结：等 v2-config-page 完成后人工验证再放行",
+            },
+            "spec-b": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        signals = mon.run_once()
+        assert all(s["signal_type"] != "blocked_stuck" for s in signals)
+
     def test_daemon_errors(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
