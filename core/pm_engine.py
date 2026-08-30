@@ -3750,16 +3750,25 @@ class PMEngine:
         提取声明路径，逐一在 ``result.branch`` 的 HEAD 提交中校验 blob 存在。
         校验基准为实现分支（worktree 已清理，仅分支留存）。
 
+        提取器语义升级（add-deliverable-extractor-semantics）：仅
+        ``deliverables``（新建交付物）参与缺件判定；``references``（既有文件
+        引用）走软校验——缺失仅记审计日志（D4），不阻断、不重派、不改状态。
+        参与校验的任一路径经 ``normalize_check_path`` 做 ``.fenix/`` 前缀
+        归一化复检（正式化热修 4461231：``.fenix`` 是指向项目根的自引用
+        符号链接，分支树中为链接 blob，语义等价根路径）。
+
         Returns:
             缺失路径列表（相对项目根）；空列表表示放行（含无路径 SPEC 跳过场景）。
         """
-        from core.deliverables import extract_paths
+        from core.deliverables import extract_paths_typed, normalize_check_path
 
         spec_dir = self.project_root / "openspec" / "changes" / spec_name
         if not spec_dir.is_dir():
             return []
-        declared = extract_paths(spec_dir)
-        if not declared:
+        typed = extract_paths_typed(spec_dir)
+        declared = typed["deliverables"]
+        references = typed["references"]
+        if not declared and not references:
             # 无路径 SPEC：跳过守卫，行为退化到守卫上线前（向后兼容）
             return []
         wm = self.agent_runner.worktree_manager
@@ -3768,14 +3777,29 @@ class PMEngine:
             # 无分支无法校验存活交付物：保守放行（与既有零变更哨共用缺失判定），
             # 交由零变更哨/merge 流程兜底
             return []
-        missing = [p for p in declared
-                   if not wm.file_exists_on_branch(branch, p)]
-        if missing:
-            # .fenix 自引用符号链接在分支树中是链接 blob 而非目录，`.fenix/x` 无法按树
-            # 查找；其语义等价于根路径 x（链接指向项目根），归一化后复检一次
-            missing = [p for p in missing
-                       if not p.startswith(".fenix/")
-                       or wm.file_exists_on_branch(branch, p[len(".fenix/"):])]
+
+        def _exists_on_branch(path: str) -> bool:
+            # 归一化逻辑单点化在 normalize_check_path（D3）：先按原样校验，
+            # 未命中且确有 .fenix/ 前缀时以根路径复检一次
+            if wm.file_exists_on_branch(branch, path):
+                return True
+            normalized = normalize_check_path(path)
+            return normalized != path and wm.file_exists_on_branch(branch,
+                                                                   normalized)
+
+        # 交付物（硬校验）：缺件 → 不合并不推进，重派实现补齐
+        missing = [p for p in declared if not _exists_on_branch(p)]
+
+        # 引用（软校验，D4）：缺失仅审计留痕——引用错误不该阻断实现
+        missing_refs = [p for p in references if not _exists_on_branch(p)]
+        if missing_refs:
+            self.logger.warning(
+                "deliverable-reference-missing",
+                f"引用类路径在实现分支中不存在（仅审计留痕，不阻断）："
+                f"{spec_name} -> {', '.join(missing_refs)}",
+                context={"spec": spec_name, "branch": branch,
+                         "missing_references": missing_refs},
+            )
         return missing
 
     @staticmethod

@@ -13,6 +13,27 @@
 - 输出去重、保序（首次出现顺序）的路径列表；无任何可提取路径返回空列表
   （守卫据此跳过，向后兼容）。
 
+语境分类（add-deliverable-extractor-semantics，D1）：
+``extract_paths_typed`` 把候选路径分为两类：
+
+- ``deliverables``：新建交付物，参与守卫缺件判定。tasks.md 勾选行
+  （``- [ ]``/``- [x]``）与含「新增/创建/添加」等动词的行；
+- ``references``：既有文件引用，不参与缺件判定（守卫仅审计留痕）。
+  tasks.md 头部说明段（第一个 ``## `` 标题之前，如「实现依据」段）、
+  含「实现依据/挂钩点/插入点/真实夹具/上游依赖」等关键词的行、
+  proposal.md 的叙述性段落、能力 spec 文档（specs/*.md，其 Scenario
+  中的路径是示例而非交付声明——本变更自身即曾因场景示例
+  ``.fenix/x``/``core/foo.py`` 被误判缺件）。
+
+无法判定时保守归 ``deliverables``（宁误拦不漏放——误拦有 3 次封顶 +
+引用软校验兜底，漏放则假成功）；proposal.md 例外：仅「交付/新增」
+语境归 deliverables，叙述性段落归 references（proposal 是叙事文档，
+新增动词才是交付声明的信号）。
+
+``normalize_check_path`` 做 ``.fenix/`` 前缀归一化（正式化热修 4461231）：
+``.fenix`` 是指向项目根的自引用符号链接，在分支树中是链接 blob 而非
+目录，``.fenix/x`` 无法按树查找；其语义等价根路径 ``x``。
+
 无外部依赖、无 LLM / 测试 / 网络调用，单测可直接 fixture 真实文档。
 """
 
@@ -40,6 +61,29 @@ _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _ABSOLUTE_RE = re.compile(r"^/")
 _WILDCARD_RE = re.compile(r"[*?]")
 _DIRECTORY_RE = re.compile(r"/$")
+
+# ── 语境分类规则表（add-deliverable-extractor-semantics，D1） ───────────────
+
+# 引用语境关键词：出现即视为「既有文件引用」语境（软校验，不参与缺件判定）。
+_REFERENCE_KEYWORDS = (
+    "实现依据", "挂钩点", "插入点", "真实夹具", "上游依赖",
+    "现状代码", "既有", "复用", "源自", "参考",
+)
+
+# 交付语境动词：出现即视为「新建交付物」语境（参与缺件判定）。
+_DELIVERABLE_VERBS = ("新增", "新建", "创建", "添加", "交付", "落地", "编写")
+
+# tasks 勾选行：任务清单是交付物声明的第一语义位。
+_CHECKBOX_RE = re.compile(r"^\s*[-*+]?\s*\[[ xX]\]")
+
+# tasks.md 头部说明段边界：第一个 `## ` 二级标题（D1）。
+_H2_RE = re.compile(r"^##\s")
+
+# 能力 spec 文档的 Scenario 小节：场景中的路径是示例而非交付声明。
+_SCENARIO_HEADING_RE = re.compile(r"^#{1,6}\s+.*Scenario", re.IGNORECASE)
+
+# ``.fenix/`` 自引用符号链接前缀（归一化语义见模块 docstring）。
+_FENIX_PREFIX = ".fenix/"
 
 
 def _is_deliverable_path(token: str) -> bool:
@@ -106,8 +150,128 @@ def _iter_spec_documents(spec_dir: Path) -> Iterable[Path]:
                 yield f
 
 
+def normalize_check_path(p: str) -> str:
+    """``.fenix/`` 前缀归一化（add-deliverable-extractor-semantics，D3）。
+
+    ``.fenix`` 是指向项目根的自引用符号链接，在分支树中是链接 blob 而非
+    目录，``.fenix/x`` 无法按树查找；其语义等价根路径 ``x``。非该前缀的
+    路径原样返回。正式化热修 4461231 的内联行为。
+
+    Returns:
+        归一化后的根相对路径；前缀去除后为空（如 ``.fenix/``）时原样返回。
+    """
+    tok = (p or "").strip()
+    if tok.startswith(_FENIX_PREFIX) and len(tok) > len(_FENIX_PREFIX):
+        return tok[len(_FENIX_PREFIX):]
+    return tok
+
+
+def _classify_line(line: str, doc_kind: str, in_tasks_header: bool,
+                   in_scenario: bool) -> str:
+    """对单行做语境分类，返回 ``"deliverables"`` 或 ``"references"``。
+
+    优先级（D1 规则表）：
+    1. 能力 spec 文档的 Scenario 小节 → 引用（场景路径是示例）
+    2. tasks 勾选行 → 交付物
+    3. 引用语境关键词行 → 引用
+    4. 交付语境动词行 → 交付物
+    5. tasks.md 头部说明段（第一个 ``## `` 之前）→ 引用
+    6. 无法判定 → 保守兜底：tasks 归交付物（宁误拦不漏放）；
+       proposal / 能力 spec 正文归引用（叙事文档，无交付动词即非声明）
+    """
+    if doc_kind == "specs" and in_scenario:
+        return "references"
+    if _CHECKBOX_RE.match(line):
+        return "deliverables"
+    if any(k in line for k in _REFERENCE_KEYWORDS):
+        return "references"
+    if any(k in line for k in _DELIVERABLE_VERBS):
+        return "deliverables"
+    if doc_kind == "tasks" and in_tasks_header:
+        return "references"
+    return "deliverables" if doc_kind == "tasks" else "references"
+
+
+def extract_paths_typed(spec_dir) -> dict:
+    """从 SPEC 目录提取路径，按语境分为交付物与引用两类（D1/D2）。
+
+    ``spec_dir`` 可为 ``str`` / ``Path``（指向 openspec/changes/<spec>/）。
+    仅读取 tasks.md / proposal.md / specs/*.md。
+
+    Returns:
+        ``{"deliverables": [...], "references": [...]}``——各自去重、保序；
+        两类均为空表示守卫应跳过。``deliverables`` 参与守卫缺件判定；
+        ``references`` 由守卫做软校验（缺失仅审计留痕，不阻断）。
+    """
+    root = Path(spec_dir)
+    typed: dict = {"deliverables": [], "references": []}
+    seen: set[str] = set()
+
+    for doc in _iter_spec_documents(root):
+        rel = doc.relative_to(root).as_posix() if doc.is_relative_to(root) \
+            else doc.name
+        if rel == "tasks.md":
+            doc_kind = "tasks"
+        elif rel == "proposal.md":
+            doc_kind = "proposal"
+        else:
+            doc_kind = "specs"
+
+        try:
+            text = doc.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+
+        in_fence = False
+        in_tasks_header = True   # 第一个 `## ` 标题之前为头部说明段
+        in_scenario = False      # 能力 spec 的 Scenario 小节
+        line_ctx = "references" if doc_kind != "tasks" else "deliverables"
+
+        for raw_line in text.splitlines():
+            if _H2_RE.match(raw_line):
+                in_tasks_header = False
+            if _SCENARIO_HEADING_RE.match(raw_line):
+                in_scenario = True
+            elif _H2_RE.match(raw_line) or raw_line.startswith("#"):
+                in_scenario = False
+
+            # 围栏代码块：整块内所有行均视为显式路径声明，沿用块前语境
+            if _FENCE_RE.match(raw_line):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                ctx = line_ctx
+            else:
+                ctx = _classify_line(raw_line, doc_kind, in_tasks_header,
+                                     in_scenario)
+                line_ctx = ctx
+
+            if in_fence:
+                # 代码块内逐 token（按空白/常见分隔符切分）
+                tokens = [
+                    _normalize_token(t)
+                    for t in re.split(r"\s+", raw_line.strip())
+                ]
+            else:
+                tokens = [_normalize_token(t)
+                          for t in _candidates_from_line(raw_line)]
+
+            for cand in tokens:
+                if not _is_deliverable_path(cand) or cand in seen:
+                    continue
+                seen.add(cand)
+                typed[ctx].append(cand)
+
+    return typed
+
+
 def extract_paths(spec_dir) -> List[str]:
     """从 SPEC 目录提取声明交付的文件路径清单（去重、保序）。
+
+    兼容包装（add-deliverable-extractor-semantics D2）：等价于
+    ``extract_paths_typed`` 的 deliverables 与 references 拼接去重——
+    平面列表不再区分语境，语境语义由 typed 版本与守卫调用点承接。
+    既有调用方与测试行为不变。
 
     ``spec_dir`` 可为 ``str`` / ``Path``（指向 openspec/changes/<spec>/）。
     仅读取 tasks.md / proposal.md / specs/*.md；无任何可提取路径时返回空列表。
@@ -115,36 +279,9 @@ def extract_paths(spec_dir) -> List[str]:
     Returns:
         相对项目根的去重路径列表；为空列表表示守卫应跳过。
     """
-    root = Path(spec_dir)
-    seen: set[str] = set()
+    typed = extract_paths_typed(spec_dir)
     ordered: List[str] = []
-
-    for doc in _iter_spec_documents(root):
-        try:
-            text = doc.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-
-        in_fence = False
-        for raw_line in text.splitlines():
-            # 围栏代码块：整块内所有行均视为显式路径声明
-            if _FENCE_RE.match(raw_line):
-                in_fence = not in_fence
-                continue
-            if in_fence:
-                # 代码块内逐 token（按空白/常见分隔符切分）
-                for tok in re.split(r"\s+", raw_line.strip()):
-                    cand = _normalize_token(tok)
-                    if _is_deliverable_path(cand) and cand not in seen:
-                        seen.add(cand)
-                        ordered.append(cand)
-                continue
-
-            # 行内（反引号 / 路径前缀行）
-            for tok in _candidates_from_line(raw_line):
-                cand = _normalize_token(tok)
-                if _is_deliverable_path(cand) and cand not in seen:
-                    seen.add(cand)
-                    ordered.append(cand)
-
+    for path in typed["deliverables"] + typed["references"]:
+        if path not in ordered:
+            ordered.append(path)
     return ordered
