@@ -9,6 +9,7 @@
 
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,11 +19,23 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.agent_runner import AgentRunner, AgentRunResult
-from core.deliverables import extract_paths
+from core.deliverables import extract_paths, extract_paths_typed, \
+    normalize_check_path
 from core.pm_engine import PMEngine
 from core.state_machine import StateMachine
+from core.worktree_manager import WorktreeManager
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# add-deliverable-extractor-semantics 回归夹具（真实分支 + 真实 SPEC 文档）
+INTERACTION_CONTRACT_SPEC = "add-interaction-contract-and-per-assert-triage"
+INTERACTION_CONTRACT_BRANCH = "fenix/add-interaction-contract-and-per-assert-triage-1788091910"
+INTERACTION_CONTRACT_REFERENCES = [
+    ".fenix/core/agent_runner.py",
+    ".fenix/core/verify_scenarios.py",
+    ".fenix/core/verdict_check.py",
+    ".fenix/core/verify_report.py",
+]
 
 
 class _FakeLogger:
@@ -113,6 +126,117 @@ class TestExtractPaths(unittest.TestCase):
             paths = extract_paths(d)
             self.assertIn("core/real.py", paths)
             self.assertNotIn("core/*.py", paths)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+# ── deliverables.extract_paths_typed 语境分类（add-deliverable-extractor-semantics） ──
+
+class TestExtractPathsTyped(unittest.TestCase):
+    def test_reference_context_not_deliverable_real_fixture(self):
+        """真实样本（interaction-contract tasks.md）：头部「实现依据」段 4 路径归 references。"""
+        spec_dir = REPO_ROOT / "openspec" / "changes" / INTERACTION_CONTRACT_SPEC
+        typed = extract_paths_typed(spec_dir)
+        for ref in INTERACTION_CONTRACT_REFERENCES:
+            self.assertIn(ref, typed["references"])
+            self.assertNotIn(ref, typed["deliverables"])
+        # 该 SPEC 全部勾选项均为既有文件扩展，无新建交付物声明
+        self.assertEqual(typed["deliverables"], [])
+
+    def test_deliverable_context_still_extracted(self):
+        """tasks 勾选行与「新增」动词行 → deliverables。"""
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "tasks.md").write_text(
+                "# T\n"
+                "- [ ] 1.1 新建 `core/foo.py`\n"
+                "## 2\n"
+                "创建 `tests/test_foo.py` 并补齐用例\n",
+                encoding="utf-8",
+            )
+            typed = extract_paths_typed(d)
+            self.assertEqual(typed["deliverables"],
+                             ["core/foo.py", "tests/test_foo.py"])
+            self.assertEqual(typed["references"], [])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_undecided_in_tasks_conservative_deliverable(self):
+        """无法判定（tasks 正文叙述行）→ 保守归 deliverables（宁误拦不漏放）。"""
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "tasks.md").write_text(
+                "# T\n## 1\n- 落点见 `core/bar.py`\n",
+                encoding="utf-8",
+            )
+            typed = extract_paths_typed(d)
+            self.assertIn("core/bar.py", typed["deliverables"])
+            self.assertNotIn("core/bar.py", typed["references"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_undecided_in_proposal_defaults_reference(self):
+        """proposal 叙述性段落（无交付动词）→ references；仅「交付/新增」语境归 deliverables。"""
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "proposal.md").write_text(
+                "叙述：`.fenix/x` 按 `x` 在分支校验。\n"
+                "- 新增 `core/deliv.py`：正式化行为\n",
+                encoding="utf-8",
+            )
+            typed = extract_paths_typed(d)
+            self.assertIn(".fenix/x", typed["references"])
+            self.assertEqual(typed["deliverables"], ["core/deliv.py"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_spec_scenario_examples_are_references(self):
+        """能力 spec 文档 Scenario 中的示例路径（含「新建」动词行）归 references。
+
+        回归：本变更能力 spec 的场景示例 `.fenix/x` / `core/foo.py` 曾被当作
+        交付物，导致守卫连续误判缺件（2026-08-30 第 2 次重派根因）。
+        """
+        d = Path(tempfile.mkdtemp())
+        (d / "specs").mkdir()
+        try:
+            (d / "specs" / "cap.md").write_text(
+                "# cap 增量规格\n\n"
+                "### Requirement: X\n"
+                "系统 MUST 处理 `.fenix/` 前缀路径。\n\n"
+                "#### Scenario: 交付语境仍阻断\n"
+                "- **GIVEN** tasks 勾选行声明新建 `core/foo.py` 而分支中不存在\n"
+                "- **WHEN** 守卫校验\n",
+                encoding="utf-8",
+            )
+            typed = extract_paths_typed(d)
+            self.assertIn("core/foo.py", typed["references"])
+            self.assertNotIn("core/foo.py", typed["deliverables"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_normalize_check_path(self):
+        """`.fenix/` 前缀归一化（正式化热修 4461231）。"""
+        self.assertEqual(normalize_check_path(".fenix/core/x.py"), "core/x.py")
+        self.assertEqual(normalize_check_path(".fenix/x"), "x")
+        # 无前缀 / 空串 / 目录形态原样返回
+        self.assertEqual(normalize_check_path("core/x.py"), "core/x.py")
+        self.assertEqual(normalize_check_path(""), "")
+        self.assertEqual(normalize_check_path(".fenix/"), ".fenix/")
+
+    def test_compat_wrapper_union_unchanged(self):
+        """旧 extract_paths = deliverables + references 拼接去重（既有调用方不破坏）。"""
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "tasks.md").write_text(
+                "# T\n"
+                "实现依据：`.fenix/core/base.py`（既有框架文件）\n"
+                "## 1\n"
+                "- [ ] 1.1 写 `core/foo.py`\n",
+                encoding="utf-8",
+            )
+            typed = extract_paths_typed(d)
+            self.assertEqual(extract_paths(d),
+                             typed["deliverables"] + typed["references"])
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -240,6 +364,127 @@ class TestDeliverableGate(_GateFixture):
         self.assertEqual(set(missing), {"core/foo.py", "tests/t.py"})
         # 恰好为每个声明路径调用一次存在性检查
         self.assertEqual(self.wm.file_exists_on_branch.call_count, 2)
+
+
+# ── PMEngine 收工守卫：typed 提取 + 归一化 + 引用软校验 ────────────────────
+
+class _CapturingLogger(_FakeLogger):
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, *args, **kwargs):
+        self.warnings.append((args, kwargs))
+
+
+_REFERENCE_ONLY_TASKS = (
+    "# Tasks: s1\n\n"
+    "实现依据（实施 agent 必读）：\n"
+    "- 现状代码：`.fenix/core/agent_runner.py` planner prompt\n"
+    "- 上游依赖：`.fenix/core/verify_scenarios.py`\n\n"
+    "## 1. 任务\n\n"
+    "- [ ] 1.1 扩展既有模块行为\n"
+)
+
+
+class TestDeliverableGateTyped(_GateFixture):
+    def test_reference_context_does_not_block(self):
+        """引用语境（4 路径头部说明段）不产生缺件：不阻断、不重派。"""
+        self.make_ready_spec("s1")
+        self.write_spec_dir("s1", _REFERENCE_ONLY_TASKS)
+        # 引用路径在分支中不存在也照常放行
+        self.wm.file_exists_on_branch.return_value = False
+        self.assertEqual(self.run_gate(), [])
+
+    def test_reference_missing_audits_only(self):
+        """引用缺失仅记审计日志（含 spec 与路径清单），不产生缺件/重派/状态变更。"""
+        self.make_ready_spec("s1")
+        self.write_spec_dir("s1", _REFERENCE_ONLY_TASKS)
+        self.wm.file_exists_on_branch.return_value = False
+        capturing = _CapturingLogger()
+        self.engine.logger = capturing
+
+        result = self.engine._deliverable_gate_missing("s1", self.make_result())
+
+        self.assertEqual(result, [])
+        self.assertEqual(len(capturing.warnings), 1)
+        args, kwargs = capturing.warnings[0]
+        self.assertEqual(args[0], "deliverable-reference-missing")
+        ctx = kwargs.get("context") or {}
+        self.assertEqual(ctx.get("spec"), "s1")
+        self.assertEqual(sorted(ctx.get("missing_references") or []),
+                         [".fenix/core/agent_runner.py",
+                          ".fenix/core/verify_scenarios.py"])
+        # 状态未被改动、未重派
+        entry = self.sm.read_one("s1")
+        self.assertEqual(entry["status"], "ready")
+        self.assertEqual(self.engine._run_queue, [])
+
+    def test_deliverable_missing_still_blocks_with_references(self):
+        """交付语境缺件仍阻断（既有行为不变），即便同 SPEC 还有引用类路径。"""
+        self.make_ready_spec("s1")
+        self.write_spec_dir(
+            "s1",
+            _REFERENCE_ONLY_TASKS + "- [ ] 1.2 写 `core/foo.py`\n")
+        self.wm.file_exists_on_branch.return_value = False
+        self.assertEqual(self.run_gate(), ["core/foo.py"])
+
+    def test_fenix_prefix_normalize_recheck(self):
+        """归一化复检：`.fenix/x` 缺失时以根路径 `x` 复检，命中即放行。"""
+        repo = Path(tempfile.mkdtemp())
+        try:
+            subprocess.run(["git", "init", "-q", repo], check=True)
+            subprocess.run(["git", "-C", str(repo), "config",
+                            "user.email", "t@t"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config",
+                            "user.name", "t"], check=True)
+            (repo / "core").mkdir()
+            (repo / "core" / "agent_runner.py").write_text("# frame\n",
+                                                          encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "init"],
+                           check=True)
+            branch = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, check=True).stdout.strip()
+
+            real_wm = WorktreeManager(repo, repo, _FakeLogger())
+            # 链接 blob 语义：`.fenix/...` 在分支树中无法按树查找
+            self.assertFalse(
+                real_wm.file_exists_on_branch(branch, ".fenix/core/agent_runner.py"))
+            self.assertTrue(
+                real_wm.file_exists_on_branch(branch, "core/agent_runner.py"))
+
+            self.make_ready_spec("s1")
+            self.write_spec_dir(
+                "s1", "- [ ] 1.1 扩展 `.fenix/core/agent_runner.py`\n")
+            self.runner.worktree_manager = real_wm
+            self.assertEqual(self.run_gate(branch=branch), [])
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+
+    def test_fenix_prefix_normalize_recheck_real_branch_fixture(self):
+        """真实分支夹具回归（复现热修 4461231 行为）：interaction-contract 分支。"""
+        probe = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "cat-file", "-e",
+             f"{INTERACTION_CONTRACT_BRANCH}:core/agent_runner.py"],
+            capture_output=True)
+        if probe.returncode != 0:
+            self.skipTest(f"回归夹具分支不存在：{INTERACTION_CONTRACT_BRANCH}")
+
+        real_wm = WorktreeManager(REPO_ROOT, REPO_ROOT, _FakeLogger())
+        self.assertFalse(
+            real_wm.file_exists_on_branch(INTERACTION_CONTRACT_BRANCH,
+                                          ".fenix/core/agent_runner.py"))
+        self.assertTrue(
+            real_wm.file_exists_on_branch(INTERACTION_CONTRACT_BRANCH,
+                                          "core/agent_runner.py"))
+
+        self.make_ready_spec("s1")
+        self.write_spec_dir(
+            "s1", "- [ ] 1.1 扩展 `.fenix/core/agent_runner.py`\n")
+        self.runner.worktree_manager = real_wm
+        self.assertEqual(
+            self.run_gate(branch=INTERACTION_CONTRACT_BRANCH), [])
 
 
 # ── agent_runner 重派 prompt 注入（D4） ────────────────────────────────────
