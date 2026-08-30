@@ -1450,6 +1450,11 @@ class AgentRunner:
                     f"Use this to focus your work — do NOT repeat the same gap:\n"
                     f"\n{prev_error}\n"
                 )
+            # 恢复重派遗产上下文注入（add-recovery-legacy-check 2.1/2.2）：
+            # 仅当该 spec 有在册遗产时追加，无遗产则不注入（prompt 与现状逐字节一致）。
+            legacy_section = self._build_legacy_section(spec_name)
+            if legacy_section:
+                prompt += legacy_section
             return prompt
         elif agent_type == "verifier":
             progress_path = self.project_root / ".fenix" / "verify-progress" / f"{spec_name}.json"
@@ -1864,6 +1869,80 @@ class AgentRunner:
                 f"然后结束，无需额外输出。不要直接编辑 .fenix/admin_alerts.json——"
                 f"daemon 会基于你的处置记录写入。\n"
             )
+
+    def _build_legacy_section(self, spec_name: str) -> str:
+        """构建 implementer prompt 的「遗产检查」段（add-recovery-legacy-check 2.1）。
+
+        无在册遗产返回空串（2.2：prompt 与现状逐字节一致）。有遗产时追加：
+        - 遗产 worktree 绝对路径、分支名
+        - 现场 ``git status --short`` 脏文件快照（截断 50 行）
+        - 只读约束（不得在遗产内工作，已物理隔离为新 worktree）
+        - 收编 / 弃用自主决策要求与响应格式（含 ``salvaged from <branch>`` 标注）
+
+        worktree_manager 缺失（测试/未初始化）时安全返回空串。脏文件快照采集失败
+        时降级为「（无法读取快照）」，不阻断注入。
+        """
+        wm = getattr(self, "worktree_manager", None)
+        if wm is None or not hasattr(wm, "get_legacy"):
+            return ""
+        legacy = wm.get_legacy(spec_name)
+        if not legacy:
+            return ""
+        path = legacy.get("path", "")
+        branch = legacy.get("branch", "")
+        dirty_snapshot = self._legacy_dirty_snapshot(path)
+        return (
+            f"\n\n## ⚠️ RECOVERY LEGACY (遗产检查 — 你是从死亡 run 的恢复重派)\n"
+            f"\n"
+            f"上一次实现 run 在死亡前留下了未提交的半成品 worktree，被保留为「遗产」"
+            f"供你参考与收编（框架不担保其内容正确性，决策权在你）。\n\n"
+            f"### 遗产位置\n"
+            f"- 路径（只读参考，绝对路径）: `{path}`\n"
+            f"- 分支名: `{branch}`\n\n"
+            f"### 脏文件快照（git status --short，继承自上轮未完成的工作）\n"
+            f"```\n{dirty_snapshot}\n```\n\n"
+            f"### 边界约束（务必遵守）\n"
+            f"- 遗产 worktree 为**只读参考**：你只能在其中 inspect（cat / git log / git diff），"
+            f"**不得**在其中执行任何写操作（不要 Edit/Write/commit）。\n"
+            f"- 你当前的工作目录是**全新的** worktree（与现状一致，物理隔离），所有新工作"
+            f"都必须在你自己的 worktree 内进行。\n"
+            f"- 不要把遗产 worktree 作为你的工作目录，也不要在其中继续开发。\n\n"
+            f"### 你的决策权（二选一，框架不强加）\n"
+            f"inspect 遗产后，自行决定：\n"
+            f"1. **收编 (salvage)**：若遗产中的半成品有价值，把对应文件内容复制进你自己的"
+            f" worktree、适配后提交，并在提交信息中注明来源分支，格式：\n"
+            f"   `[fenix] {spec_name}: <改动> (salvaged from {branch})`\n"
+            f"   ——便于事后溯源，且验证链会照常全量验收你的产出（收编不豁免测试）。\n"
+            f"2. **弃用 (discard)**：若遗产为破碎半成品、不值收编，从你自己的干净状态重做，"
+            f"并在最终产出说明中注明弃用理由（无强制格式，一句话即可）。\n\n"
+            f"### 响应格式要求\n"
+            f"在你的任务书响应中明确声明本次选择了哪条路径：\n"
+            f"- 收编：列出你从遗产移植的文件与其来源分支 `{branch}`；\n"
+            f"- 弃用：简述弃用理由。\n"
+            f"若未使用遗产（首次实现 / 遗产已被兜底回收），本段不会出现，正常实现即可。\n"
+        )
+
+    def _legacy_dirty_snapshot(self, wt_path: str) -> str:
+        """现场采集遗产 worktree 的 ``git status --short`` 脏文件清单，截断 50 行。
+
+        采集失败（worktree 已不存在等）返回降级提示串，不抛出异常。
+        """
+        import subprocess as _sp
+        try:
+            res = _sp.run(
+                ["git", "-C", str(wt_path), "status", "--short"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception:
+            return "（无法读取遗产快照）"
+        if res.returncode != 0:
+            return "（无法读取遗产快照）"
+        lines = res.stdout.splitlines()
+        if not lines:
+            return "（无脏文件，遗产已干净提交）"
+        if len(lines) > 50:
+            lines = lines[:50] + [f"... 其余 {len(lines) - 50} 个文件省略"]
+        return "\n".join(lines)
 
     def _scenario_freeze_section(self, spec_name: str) -> str:
         """构建场景集冻结约束段（add-verify-scenario-freeze / design D1-D2）。
