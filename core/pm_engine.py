@@ -1089,12 +1089,22 @@ class PMEngine:
     def _send_human_escalation_alert(
         self, spec_name: str, signal_type: str, severity: str,
         description: str, evidence: str, recommended_action: str,
+        trigger: Optional[dict] = None,
     ):
-        """发送 human-escalation-alerts 告警（escalation 种类）写入 admin store。"""
+        """发送 human-escalation-alerts 告警（escalation 种类）写入 admin store。
+
+        add-alert-auto-resolve D2：条目附带结构化触发条件（trigger 字段，含
+        type/spec/condition），供闭环判定直接消费、无需解析自然语言 description。
+        trigger 缺省时按 signal_type 从闭环枚举推导（接入点集中在此一处）；
+        未接入枚举的 signal_type 不写 trigger、永不自动闭环（保守默认）。
+        """
         from .admin_store import AdminStore, ESCALATION
+        from .alert_lifecycle import build_trigger
         store = AdminStore(self.project_root, self.logger)
+        if trigger is None:
+            trigger = build_trigger(signal_type, spec_name)
         try:
-            store.append({
+            entry = {
                 "kind": ESCALATION,
                 "signal_type": signal_type,
                 "spec": spec_name,
@@ -1102,7 +1112,10 @@ class PMEngine:
                 "description": description,
                 "evidence": evidence,
                 "recommended_action": recommended_action,
-            })
+            }
+            if trigger:
+                entry["trigger"] = trigger
+            store.append(entry)
             self.logger.warning(
                 "pm_engine",
                 f"human-escalation-alert: {signal_type} for '{spec_name}'",

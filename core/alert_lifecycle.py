@@ -37,8 +37,12 @@ AUTO_RESOLVE_BY = "auto-resolve"
 
 # signal_type → condition 映射（写入时埋点用）。后续新告警类型按需在此扩展，
 # 未列出的类型不写 trigger、永不自动闭环（保守默认）。
+# verify_fail_escalation / blocked_stuck 均属 spec_terminal_or_unblocked 类
+# （design D2）：前者由 pm_engine 升级闸门产生，后者经 admin_monitor 升级人工
+# 产生——两条写入管道都经 attach_trigger 统一埋点。
 _SIGNAL_CONDITIONS = {
     "verify_fail_escalation": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
+    "blocked_stuck": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
 }
 
 
@@ -56,6 +60,19 @@ def build_trigger(signal_type: str, spec_name) -> dict:
         "spec": spec_name,
         "condition": condition,
     }
+
+
+def attach_trigger(entry: dict) -> dict:
+    """按条目的 signal_type/spec 就地补全 trigger 字段（写入时埋点）。
+
+    signal_type 未接入闭环枚举（或条目已带 trigger）时原样返回，供
+    pm_engine / admin_monitor 各告警写入点统一复用。
+    """
+    if isinstance(entry, dict) and not entry.get("trigger"):
+        trigger = build_trigger(entry.get("signal_type"), entry.get("spec"))
+        if trigger:
+            entry["trigger"] = trigger
+    return entry
 
 
 def _recognized(condition) -> bool:

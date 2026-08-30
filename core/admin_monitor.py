@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION
+from .alert_lifecycle import attach_trigger
 
 # 默认阈值（design D2）
 REPEAT_FAILURE_WINDOW_MINUTES = 30
@@ -566,7 +567,7 @@ class AdminMonitor:
                 )
                 continue
 
-            self.store.append({
+            self.store.append(attach_trigger({
                 "kind": ESCALATION,
                 "signal_type": sig_type,
                 "spec": spec,
@@ -583,7 +584,7 @@ class AdminMonitor:
                     "人工检查 daemon/AdminMonitor 状态与 .fenix/logs/supervisor.log，"
                     "确认框架是否健康运行"
                 ),
-            })
+            }))
             # 升级即终结：补非 pending 记录，避免 escalation 被 handled 后 unhandled_for
             # 节流失效、同一孤儿在下轮巡检再次升级造成循环告警
             self.store.append({
@@ -686,7 +687,7 @@ class AdminMonitor:
                 "admin_monitor",
                 "No agent_runner available, cannot invoke Administrator; escalating to human",
             )
-            self.store.append({
+            self.store.append(attach_trigger({
                 "kind": ESCALATION,
                 "signal_type": signal.get("signal_type"),
                 "spec": signal.get("spec"),
@@ -695,7 +696,7 @@ class AdminMonitor:
                 "evidence": signal.get("evidence"),
                 "action_taken": "Administrator 不可用（未配置 agent_runner），未能自动处置",
                 "recommended_action": signal.get("recommended_action"),
-            })
+            }))
             return
 
         try:
@@ -706,7 +707,7 @@ class AdminMonitor:
                 f"Administrator invocation failed: {e}",
                 {"signal": signal},
             )
-            self.store.append({
+            self.store.append(attach_trigger({
                 "kind": ESCALATION,
                 "signal_type": signal.get("signal_type"),
                 "spec": signal.get("spec"),
@@ -715,7 +716,7 @@ class AdminMonitor:
                 "evidence": signal.get("evidence"),
                 "action_taken": f"Administrator 唤起失败: {e}",
                 "recommended_action": signal.get("recommended_action"),
-            })
+            }))
             return
 
         # 处置记录（任何情况下都留痕）；落盘失败不能丢 final 判定（否则该 run
@@ -747,7 +748,7 @@ class AdminMonitor:
 
         if disp.escalate:
             # Administrator 判定无法自主处置 → 升级人工
-            self.store.append({
+            self.store.append(attach_trigger({
                 "kind": ESCALATION,
                 "signal_type": signal.get("signal_type"),
                 "spec": signal.get("spec") or disp.spec,
@@ -757,7 +758,7 @@ class AdminMonitor:
                 "action_taken": disp.actions_taken,
                 "recommended_action": disp.recommended_action or signal.get("recommended_action"),
                 "admin_run_id": disp.run_id,
-            })
+            }))
             self.logger.warning(
                 "admin_monitor",
                 f"Administrator escalated to human: {signal.get('signal_type')} "
