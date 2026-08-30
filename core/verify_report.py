@@ -231,8 +231,52 @@ def _render_bugs_section(bugs, scenario_evidence=None) -> list:
     return lines
 
 
+def _render_assertion_exempt_section(report) -> list:
+    """「断言级豁免清单」小节（add-interaction-contract-and-per-assert-triage 2.3）。
+
+    从 report.json 的 assertion_triage 汇总：逐条列出被豁免的失败断言（场景、
+    断言内容、归类、证据、豁免理由），供人工快速复核豁免是否吞掉了真实缺陷。
+    历史报告无 assertion_triage 字段时小节缺省（design D4，向后兼容）。
+    """
+    from core.verdict_check import exempted_assertions, triage_entries
+    if not isinstance(report, dict):
+        return []
+    scenarios = report.get("scenarios")
+    if not isinstance(scenarios, list):
+        return []
+    # 旧报告：全部场景均无 assertion_triage → 小节缺省（不渲染空壳）
+    if not any(triage_entries(sc) for sc in scenarios
+               if isinstance(sc, dict)):
+        return []
+
+    rows = exempted_assertions(report)
+    lines = ["", "## 断言级豁免清单", ""]
+    lines.append(
+        "以下失败断言被归类为非产品缺陷（不记产品 Bug），逐条列出供人工复核"
+        "豁免是否掩盖真实缺陷（场景级一句话归因不足以复核）。"
+    )
+    lines.append("")
+    if not rows:
+        lines.append("无非 product-bug 的被豁免失败断言。")
+        lines.append("")
+        return lines
+    lines.append("| 场景 | 断言 | 归类 | 豁免理由 | 证据 |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for r in rows:
+        assertion = r["assertion"].replace("|", "\\|")
+        evidence = r["evidence"].replace("|", "\\|")
+        if len(evidence) > 160:
+            evidence = evidence[:157] + "..."
+        reason = r["reason"].replace("|", "\\|")
+        lines.append(
+            f"| {r['scenario_id']} | {assertion} | {r['classification']} "
+            f"| {reason} | {evidence} |"
+        )
+    lines.append("")
+    return lines
+
+
 def _render_scenarios_table(report) -> list:
-    """场景结果明细表（report.json 可解析时）。"""
     scenarios = (report or {}).get("scenarios")
     if not isinstance(scenarios, list) or not scenarios:
         return []
@@ -349,6 +393,9 @@ def render_verification_report(spec_name, run_result, report, now=None,
 
     # ── 场景明细 ──
     lines.extend(_render_scenarios_table(report))
+
+    # ── 断言级豁免清单（add-interaction-contract-and-per-assert-triage 2.3）──
+    lines.extend(_render_assertion_exempt_section(report))
     return "\n".join(lines).rstrip() + "\n"
 
 
