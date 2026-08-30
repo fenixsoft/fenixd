@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from .alert_lifecycle import AUTO_RESOLVE_BY
+
 # 记录种类
 SIGNAL = "signal"
 ESCALATION = "escalation"
@@ -94,11 +96,13 @@ class AdminStore:
                 except OSError:
                     pass
 
-    def _mutate(self, fn):
+    def _mutate(self, fn, skip_unchanged: bool = False):
         """在单次排他锁内完成读-改-写，返回 fn(records) 的结果。
 
         跨进程并发（监视线程 append 与 Dashboard mark_handled）若分别在两次
         锁获取中读改写会互相覆盖丢失记录，因此必须一次性持锁完成。
+        skip_unchanged=True 时（add-alert-auto-resolve D1）：fn 返回假值
+        （无任何变更）则跳过写回，文件 mtime 保持不变。
         """
         with self._thread_lock:
             with self._lock() as lf:
@@ -106,6 +110,8 @@ class AdminStore:
                 try:
                     records = self._read_unlocked(self.alerts_path)
                     result = fn(records)
+                    if skip_unchanged and not result:
+                        return result
                     self._write_unlocked(records)
                     return result
                 finally:
@@ -189,6 +195,41 @@ class AdminStore:
                     changed += 1
             return changed
         return self._mutate(mutate)
+
+    def auto_resolve(self, resolutions: list) -> int:
+        """批量自动闭环升级告警（add-alert-auto-resolve D3/D6）。
+
+        resolutions 为 alert_lifecycle.find_resolvable 的输出：
+        [{'id', 'spec', 'resolve_note'}]。仅改写 handled 族字段：
+          handled=True、handled_by="auto-resolve"、handled_at=解除时刻、
+          resolve_note=解除依据。不触碰其余字段，不伪造人工处理记录。
+
+        MUST 跳过 handled=True 条目（人工记录不可覆盖）；单次排他锁内完成
+        读-改-写（复用既有原子写与 .lock）；无可闭环条目时零写回（mtime 不变）。
+        返回实际闭环数量。
+        """
+        notes = {r.get("id"): r.get("resolve_note") or ""
+                 for r in resolutions or [] if r.get("id")}
+        if not notes:
+            return 0
+
+        def mutate(records):
+            changed = 0
+            resolved_at = _utcnow_iso()
+            for rec in records:
+                if rec.get("id") not in notes:
+                    continue
+                if rec.get("kind") != ESCALATION:
+                    continue
+                if rec.get("handled"):
+                    continue  # 人工/既有处理记录不可覆盖
+                rec["handled"] = True
+                rec["handled_by"] = AUTO_RESOLVE_BY
+                rec["handled_at"] = resolved_at
+                rec["resolve_note"] = notes[rec.get("id")]
+                changed += 1
+            return changed
+        return self._mutate(mutate, skip_unchanged=True)
 
     def latest_signal(self, spec: Optional[str], signal_type: str,
                       within_minutes: float) -> Optional[dict]:
