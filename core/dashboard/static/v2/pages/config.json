@@ -15,14 +15,14 @@
           "api": {
             "method": "post",
             "url": "/api/config",
-            "requestAdaptor": "var out = window.Adapters.buildConfigPayload(api.data, window.__configSnapshot, window.__configDefaults); var chain = api.data && api.data.agents && api.data.agents.agent_chain; if (chain && chain.length > 0) { var provs = out.llm && out.llm.providers || []; var v = window.Adapters.validateChain(chain, provs); if (v !== true) { throw new Error(v); } } api.data = out; return api;",
-            "adaptor": "return { status: 0 };"
+            "requestAdaptor": "var out = window.Adapters.buildConfigPayload(api.data, window.__configSnapshot, window.__configDefaults); var chain = api.data && api.data.agents && api.data.agents.agent_chain; if (chain && chain.length > 0) { var provs = out.llm && out.llm.providers || []; var v = window.Adapters.validateChain(chain, provs); if (v !== true) { throw new Error(v); } } window.__lastConfigOut = out; window.__lastFormData = api.data; api.data = out; return api;",
+            "adaptor": "var out = window.__lastConfigOut || {}; var fd = window.__lastFormData || {}; var agents = Object.assign({}, fd.agents || {}, out.agents || {}); var data = Object.assign({}, fd, { agents: agents, gates: out.gates || fd.gates }); window.__configSnapshot = Object.assign({}, window.__configSnapshot, { agents: out.agents, gates: out.gates }); return { status: 0, data: data };"
           },
           "body": [
             { "type": "tabs", "tabsMode": "line", "unmountOnExit": true, "tabs": [
               { "title": "LLM Provider", "body": [{ "type": "combo", "name": "llm.providers", "label": "LLM Provider 列表", "multiple": true, "addable": true, "removable": true, "strictMode": false, "items": [
-                { "type": "input-text", "name": "name", "label": "名称", "required": true },
-                { "type": "input-text", "name": "baseurl", "label": "Base URL" },
+                { "type": "input-text", "name": "name", "label": "名称", "required": true, "placeholder": "名称" },
+                { "type": "input-text", "name": "baseurl", "label": "Base URL", "placeholder": "Base URL" },
                 { "type": "input-password", "name": "apikey", "label": "API Key" },
                 { "type": "input-text", "name": "model", "label": "默认模型", "placeholder": "该 provider 的默认模型名" }
               ] }] },
