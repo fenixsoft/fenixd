@@ -7,8 +7,10 @@ concurrency control, daily reporting, and the single human gate (push approval).
 
 import hashlib
 import json
+import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.request
@@ -1594,6 +1596,250 @@ class PMEngine:
         })
         return True
 
+    # ── 裁决证据分类校验 / 采纳（add-verdict-evidence-taxonomy D1-D5）──
+
+    def _verify_verdict_evidence(self, spec_name: str, retry_judge: bool = False) -> bool:
+        """确定性校验裁决 report.json 的分类/证据合规，并按映射强制重写 status。
+
+        流程（design D1-D3）：
+          1. 读 report.json（judge 应在其中增强 classification/evidence）；
+          2. validate_report：每个非 PASS 场景 MUST 有合法 classification + 非空 evidence；
+          3. 不合规且 ``retry_judge`` 为真 → 走既有 judge 重试一次（同 run_planner 调用），
+             重试后再次校验；二次仍不合规 → 返回 False（调用方 blocked-env + 告警）；
+          4. 合规 → enforce_status_mapping（product-bug/test-defect → failed，D3），
+             原子写回 report.json，返回 True。
+
+        注意：judge 失败（process 级）已由调用方在 ``judge_result.success`` 处拦截，
+        本方法只负责「judge 已成功但产物不合规」的确定性校验与重试。
+        """
+        from core.verdict_check import (
+            validate_report, enforce_status_mapping, load_report, save_report,
+        )
+        report = load_report(self.project_root, spec_name)
+        if report is None:
+            # 无 report.json：验证产物门禁（verify-report-gate）会兜底，此处不阻断
+            # （不制造伪 violation），交由既有流程处理。
+            return True
+
+        result = validate_report(report)
+        if result["ok"]:
+            # 合规：强制重写 status 映射（D3）后写回
+            mapping = enforce_status_mapping(report)
+            if mapping["corrected"]:
+                try:
+                    save_report(self.project_root, spec_name, report)
+                except OSError as e:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"裁决映射重写写回失败 '{spec_name}': {e}",
+                    )
+                for c in mapping["corrected"]:
+                    self.logger.info(
+                        "pm_engine",
+                        f"裁决映射强制重写 '{spec_name}' 场景 {c['scenario_id']}: "
+                        f"{c['from_status']} → failed ({c['classification']})",
+                    )
+            return True
+
+        # 一次不合规：judge 重试一次（design D2）
+        if retry_judge:
+            violations_1 = result["violations"]
+            self.logger.warning(
+                "pm_engine",
+                f"裁决证据分类校验未通过 '{spec_name}'（{len(violations_1)} 项），"
+                f"重试 judge 一次：{[v['scenario_id'] for v in violations_1]}",
+            )
+            try:
+                re_judge = self.agent_runner.run_planner(spec_name, "judge")
+            except Exception as e:
+                self.logger.warning(
+                    "pm_engine", f"裁决重试 judge 异常 '{spec_name}': {e}",
+                )
+                re_judge = None
+            if re_judge is not None and not re_judge.success:
+                self.logger.warning(
+                    "pm_engine",
+                    f"裁决重试 judge 失败 '{spec_name}': {re_judge.error}",
+                )
+                return False
+            report2 = load_report(self.project_root, spec_name)
+            if report2 is None:
+                return False
+            result2 = validate_report(report2)
+            if result2["ok"]:
+                mapping2 = enforce_status_mapping(report2)
+                try:
+                    save_report(self.project_root, spec_name, report2)
+                except OSError as e:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"裁决映射重写写回失败 '{spec_name}': {e}",
+                    )
+                for c in mapping2["corrected"]:
+                    self.logger.info(
+                        "pm_engine",
+                        f"裁决重试后映射强制重写 '{spec_name}' 场景 "
+                        f"{c['scenario_id']}: {c['from_status']} → failed",
+                    )
+                return True
+            self.logger.error(
+                "pm_engine",
+                f"裁决重试后证据分类仍不合规 '{spec_name}'："
+                f"{[v['scenario_id'] for v in result2['violations']]}",
+            )
+            return False
+
+        return False
+
+    def _update_warning_streaks(self, spec_name: str) -> list:
+        """更新 warning 连续悬置计数侧车（design D4 / D5）。
+
+        采纳 report.json 后调用：扫描非 PASS 场景——
+          - status == warning 且 classification ∈ {flaky, env} 的场景：连续计数 +1；
+          - status 为 pass/failed（含被强制重写的 failed）或 classification 为
+            product-bug/test-defect 的场景：计数清零。
+
+        返回本轮回填后「连续计数 == 2」的场景 id 列表（即触发 triage 升级的候选），
+        调用方据此发告警。侧车文件：``.fenix/verify-progress/<spec>/warning_streaks.json``，
+        结构 {scenario_id: 连续轮数}。
+        """
+        from core.verdict_check import VERDICT_CLASSES, load_report, save_report
+        streaks_path = (
+            self.project_root / ".fenix" / "verify-progress"
+            / spec_name / "warning_streaks.json"
+        )
+        streaks = {}
+        if streaks_path.exists():
+            try:
+                loaded = json.loads(streaks_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    streaks = {k: int(v) for k, v in loaded.items()
+                               if isinstance(k, str)}
+            except (json.JSONDecodeError, OSError, TypeError, ValueError):
+                streaks = {}
+
+        report = load_report(self.project_root, spec_name)
+        if report is None:
+            return []
+        scenarios = report.get("scenarios")
+        if not isinstance(scenarios, list):
+            return []
+
+        triage_candidates = []
+        for sc in scenarios:
+            if not isinstance(sc, dict):
+                continue
+            sid = sc.get("scenario_id") or sc.get("id")
+            if not sid:
+                continue
+            status = sc.get("status")
+            classification = sc.get("classification")
+            # 仅 flaky/env 的 warning 计入连续悬置；product-bug/test-defect 已强制
+            # failed（D3），不悬置；pass/failed 清零（D4）。
+            if status == "warning" and classification in ("flaky", "env"):
+                streaks[sid] = streaks.get(sid, 0) + 1
+                if streaks[sid] == 2:
+                    triage_candidates.append(sid)
+            else:
+                streaks[sid] = 0
+
+        # 写回侧车
+        try:
+            streaks_path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(streaks_path.parent), prefix=".warning_streaks.",
+                suffix=".json.tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(streaks, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                os.replace(tmp_path, streaks_path)
+            except OSError:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        except OSError as e:
+            self.logger.warning(
+                "pm_engine", f"warning_streaks 写回失败 '{spec_name}': {e}",
+            )
+        return triage_candidates
+
+    def _warning_stale_triage_alert(self, spec_name: str, scenario_ids: list) -> None:
+        """连续 2 轮 warning 场景的 triage 升级告警（design D4 / D5）。
+
+        signal_type=warning_stale_triage，含 spec/场景/轮次/最近证据摘要；
+        同时把场景写入下一轮 planner prompt 的「优先复核」注入（与 scenario-freeze
+        的基准集注入同一接入点——复用 _scenario_freeze_section 机制：把 triage 场景
+        落盘到 verify-progress/<spec>/triage_recheck.json，planner prompt 读取后注入）。
+        """
+        from core.verdict_check import load_report
+        # 证据摘要：从该场景的 evidence.failed_assertions / first_failed_step 摘取
+        evidence_lines = []
+        report = load_report(self.project_root, spec_name)
+        latest_round = 2
+        if isinstance(report, dict):
+            for sc in report.get("scenarios", []) or []:
+                if not isinstance(sc, dict):
+                    continue
+                sid = sc.get("scenario_id") or sc.get("id")
+                if sid not in scenario_ids:
+                    continue
+                ev = sc.get("evidence") if isinstance(sc.get("evidence"), dict) else {}
+                ffs = ev.get("first_failed_step") or ""
+                fa = ev.get("failed_assertions") or []
+                fa_summary = "; ".join(
+                    f"{a.get('type','?')}({a.get('selector','')})"
+                    for a in fa if isinstance(a, dict)
+                ) if isinstance(fa, list) else ""
+                evidence_lines.append(
+                    f"场景 {sid}（classification={sc.get('classification')}, "
+                    f"连续 {latest_round} 轮 warning）：{ffs}"
+                    + (f"；失败断言：{fa_summary}" if fa_summary else "")
+                )
+        evidence = "\n".join(evidence_lines) or (
+            f"连续 2 轮 warning 场景：{', '.join(scenario_ids)}"
+        )
+
+        self._send_human_escalation_alert(
+            spec_name=spec_name,
+            signal_type="warning_stale_triage",
+            severity="major",
+            description=(
+                f"'{spec_name}' 以下场景连续 {latest_round} 轮均为 warning，"
+                f"需人工 triage 甄别是否真缺陷被悬置：{', '.join(scenario_ids)}"
+            ),
+            evidence=evidence,
+            recommended_action=(
+                f"人工复核 {', '.join(scenario_ids)} 的真实根因；下一轮验证已将其"
+                f"列入优先复核清单（triage_recheck.json）"
+            ),
+        )
+        # 下一轮 planner prompt 优先复核注入（design D5）：落盘 triage_recheck.json
+        recheck_path = (
+            self.project_root / ".fenix" / "verify-progress"
+            / spec_name / "triage_recheck.json"
+        )
+        try:
+            recheck_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = []
+            if recheck_path.exists():
+                try:
+                    data = json.loads(recheck_path.read_text(encoding="utf-8"))
+                    if isinstance(data, list):
+                        existing = data
+                except (json.JSONDecodeError, OSError):
+                    existing = []
+            merged = list(dict.fromkeys(existing + scenario_ids))
+            recheck_path.write_text(
+                json.dumps(merged, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            self.logger.warning(
+                "pm_engine", f"triage_recheck 写盘失败 '{spec_name}': {e}",
+            )
+
     # ── Queue Management ───────────────────────────────────────────
 
     def _get_spec_priority(self, spec_name: str) -> int:
@@ -2849,6 +3095,55 @@ class PMEngine:
                 )
                 return
             raise RuntimeError(f"Planner judge 失败: {judge_result.error}")
+
+        # ── 阶段3+ 裁决证据分类校验与重试（add-verdict-evidence-taxonomy D1-D5）──
+        # judge 已在 report.json 增强每个非 PASS 场景的 classification/evidence。
+        # 此处确定性校验：不合规 → 走既有 judge 重试一次（同 run_planner 调用）；
+        # 二次仍不合规 → blocked-env + 告警（与 verify-report-gate 阻断语义一致，
+        # 宁可不推进也不带病采纳）。合规后按分类-状态映射强制重写 status（D3）。
+        verdict_ok = self._verify_verdict_evidence(spec_name, retry_judge=True)
+        if not verdict_ok:
+            self.logger.error(
+                "pm_engine",
+                f"裁决证据分类二次校验仍失败 '{spec_name}' — 阻断推进为 blocked-env",
+            )
+            self.state_machine.update_spec(spec_name, {
+                "status": "blocked",
+                "error": (
+                    f"验证裁决证据分类校验连续失败：report.json 非 PASS 场景缺 "
+                    f"classification/evidence，重试一次仍不合规，已 blocked 等待人工裁决"
+                ),
+            })
+            self._send_human_escalation_alert(
+                spec_name=spec_name,
+                signal_type="verdict_evidence_invalid",
+                severity="major",
+                description=(
+                    f"'{spec_name}' 验证裁决证据分类校验连续失败，已 blocked 等待人工裁决"
+                ),
+                evidence=(
+                    f"spec={spec_name}; report="
+                    f"openspec/changes/{spec_name}/verification-report.md"
+                ),
+                recommended_action=(
+                    "检查 planner-judge 是否遵守 prompt 第4步（对全部非 PASS 场景补 "
+                    "classification/evidence）；人工重置后重跑验证"
+                ),
+            )
+            return
+
+        # ── 阶段3+ warning 连续悬置追踪与升级（design D4 / D5）──
+        # 裁决采纳处更新连续计数侧车；达 2 轮的 warning 场景发 triage 升级告警，
+        # 并写入下一轮 planner prompt 的优先复核清单（triage_recheck.json）。
+        try:
+            triage_hits = self._update_warning_streaks(spec_name)
+            if triage_hits:
+                self._warning_stale_triage_alert(spec_name, triage_hits)
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"warning_streaks 更新跳过（异常不阻断采纳）'{spec_name}': {e}",
+            )
 
         # 读取判定结果
         verifier_status = self._read_planner_result(spec_name)

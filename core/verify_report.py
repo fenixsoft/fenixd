@@ -149,8 +149,14 @@ def _render_evidence(evidence) -> list:
     return lines
 
 
-def _render_bugs_section(bugs) -> list:
-    """「真实产品 Bug」章节：description / root_cause / evidence 逐条渲染。"""
+def _render_bugs_section(bugs, scenario_evidence=None) -> list:
+    """「真实产品 Bug」章节：description / root_cause / evidence 逐条渲染。
+
+    scenario_evidence: {scenario_id: evidence_dict}（来自 report.json 增强后的
+    结构化证据，add-verdict-evidence-taxonomy）；命中时优先引用该证据，
+    不重复渲染 judge 运行结果的稀疏证据（spec Scenario: 「引用该证据而非重复渲染」）。
+    """
+    scenario_evidence = scenario_evidence or {}
     lines = ["", "## 真实产品 Bug", ""]
     for i, bug in enumerate(bugs, 1):
         if not isinstance(bug, dict):
@@ -168,10 +174,20 @@ def _render_bugs_section(bugs) -> list:
         root_cause = bug.get("root_cause")
         if root_cause:
             lines.append(f"- 根因：{root_cause}")
-        ev_lines = _render_evidence(bug.get("evidence"))
-        if ev_lines:
-            lines.append("- 证据：")
-            lines.extend(ev_lines)
+        # 优先引用 report.json 的场景结构化证据（引用而非重复渲染）
+        referenced = False
+        for sid in scenario_ids or []:
+            ev = scenario_evidence.get(sid)
+            if isinstance(ev, dict):
+                lines.append(f"- 证据（场景 {sid} 结构化证据，引用）：")
+                lines.extend(_render_evidence(ev))
+                referenced = True
+                break
+        if not referenced:
+            ev_lines = _render_evidence(bug.get("evidence"))
+            if ev_lines:
+                lines.append("- 证据：")
+                lines.extend(ev_lines)
         lines.append("")
     return lines
 
@@ -182,15 +198,19 @@ def _render_scenarios_table(report) -> list:
     if not isinstance(scenarios, list) or not scenarios:
         return []
     lines = ["", "## 场景结果", ""]
-    lines.append("| 场景 | 状态 | 失败断言 |")
-    lines.append("| --- | --- | --- |")
+    lines.append("| 场景 | 状态 | 失败断言 | 分类 |")
+    lines.append("| --- | --- | --- | --- |")
     for sc in scenarios:
         if not isinstance(sc, dict):
             continue
         sid = str(sc.get("scenario_id") or sc.get("id") or "-")
         status = str(sc.get("status") or "-")
+        # 采纳处强制重写的场景标注「已修正」(add-verdict-evidence-taxonomy D3)
+        if sc.get("status_corrected"):
+            status += "（已修正）"
+        classification = str(sc.get("classification") or "-")
         lines.append(
-            f"| {sid} | {status} | {_failed_assertion_count(sc)} |"
+            f"| {sid} | {status} | {_failed_assertion_count(sc)} | {classification} |"
         )
     lines.append("")
     return lines
@@ -263,7 +283,16 @@ def render_verification_report(spec_name, run_result, report, now=None) -> str:
     # ── 真实产品 Bug（bug-found 时必备章节）──
     if status == "bug-found":
         if bugs:
-            lines.extend(_render_bugs_section(bugs))
+            # 从 report.json 摘取每个场景的结构化证据，供 bug 章节引用（不重复渲染）
+            scenario_evidence = {}
+            for sc in (report or {}).get("scenarios", []) or []:
+                if not isinstance(sc, dict):
+                    continue
+                sid = str(sc.get("scenario_id") or sc.get("id") or "")
+                ev = sc.get("evidence")
+                if sid and isinstance(ev, dict):
+                    scenario_evidence[sid] = ev
+            lines.extend(_render_bugs_section(bugs, scenario_evidence))
         else:
             lines.append("## 真实产品 Bug")
             lines.append("")

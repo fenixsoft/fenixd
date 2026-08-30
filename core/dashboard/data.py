@@ -902,6 +902,16 @@ def parse_bugs(project_root, spec_name) -> list:
         # 截图路径归一化为文件名：report.json 存的是服务器本地绝对路径，
         # 前端需拼 /screenshots/<project>/<spec>/<file>，只取 basename
         screenshots = [os.path.basename(s) for s in sc.get("screenshots", []) if isinstance(s, str) and s.strip()]
+        # 裁决分类与证据（add-verdict-evidence-taxonomy 3.1）：从场景条目摘取；
+        # 旧格式 report.json 无 classification/evidence 字段时为空/缺省，向后兼容。
+        classification = sc.get("classification")
+        # 结构化证据优先取场景 evidence 字段（judge 增强产出）；
+        # 回退到首个失败断言的 message，保证旧数据仍有证据可见。
+        sc_evidence = sc.get("evidence")
+        if isinstance(sc_evidence, dict):
+            sc_evidence = json.dumps(sc_evidence, ensure_ascii=False)
+        elif not isinstance(sc_evidence, str):
+            sc_evidence = ""
         for a in failed_assertions or [{}]:
             bugs.append({
                 "source": "report",
@@ -909,7 +919,11 @@ def parse_bugs(project_root, spec_name) -> list:
                 "scenario_ids": [sc.get("scenario_id", "?")],
                 "assertion_type": a.get("type", "step"),
                 "description": sc.get("description", "未命名场景"),
-                "evidence": a.get("message") or a.get("detail") or a.get("actual") or "",
+                "evidence": (
+                    a.get("message") or a.get("detail") or a.get("actual") or ""
+                ) or sc_evidence,
+                "classification": classification,
+                "status_corrected": sc.get("status_corrected", False),
                 "screenshots": screenshots,
                 "scenario_status": status,
             })

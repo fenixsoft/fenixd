@@ -1489,6 +1489,7 @@ class AgentRunner:
                 f"注意 Playwright glob 中 `*` 不匹配 `/`，多段路径需用 `**`，引擎会自动把结尾 "
                 f"`/*` 补成 `/**`）。mock 注册在 page 上，reload/导航后仍保留；仅作用于当前场景。\n\n"
                 f"{self._scenario_freeze_section(spec_name)}"
+                f"{self._triage_recheck_section(spec_name)}"
                 f"IMPORTANT: 当前模型不支持图像输入——不要 Read 图片/截图文件（会被 hook 拦截），"
                 f"截图仅作为证据文件。\n"
                 f"IMPORTANT: Do NOT modify STATE.md."
@@ -1504,14 +1505,22 @@ class AgentRunner:
                 / spec_name / ".fenix-run-result.json"
             )
             return (
-                f"你是 Fenix Planner Agent。你的任务是分析验证引擎的测试报告，判定验证是否通过。\n\n"
+                f"你是 Fenix Planner Agent。你的任务是分析验证引擎的测试报告，判定验证是否通过，"
+                f"并对每个非 PASS 场景产出强制分类与结构化证据。\n\n"
                 f"## 步骤\n"
                 f"1. 读取 {report_path}\n"
                 f"2. 按照判定规则分析每个断言结果\n"
                 f"3. 聚合同类型失败，避免重复报告\n"
-                f"4. 将运行结果写入 {result_path}（绝对路径，与场景/报告文件同目录，"
+                f"4. **裁决证据分类（强制，add-verdict-evidence-taxonomy）**：对 {report_path} 中\n"
+                f"   每一个 `status` 为 `fail`/`failed`/`error`/`warning` 的场景条目，在原位\n"
+                f"   补充 `classification` 字段（四选一，见下方定义）与 `evidence` 字段（结构化\n"
+                f"   证据，见下方格式），并把增强后的完整 report.json **覆盖写回** {report_path}\n"
+                f"   （保持其它字段不变，仅对 FIT 场景增量写入 classification/evidence）。\n"
+                f"   ⚠️ 本步 MUST 对全部非 PASS 场景补齐，缺一不可——缺分类或证据会导致框架\n"
+                f"   校验失败并重试裁决。\n"
+                f"5. 将运行结果写入 {result_path}（绝对路径，与场景/报告文件同目录，"
                 f"不要写别处）\n"
-                f"5. 写入 {spec_dir}/verification-report.md（人类可读的验证报告）\n\n"
+                f"6. 写入 {spec_dir}/verification-report.md（人类可读的验证报告）\n\n"
                 f"## 判定规则\n\n"
                 f"### 第1-2层断言失败 → 一定是Bug\n"
                 f"元素不存在、不可见、点击被拦截、重叠等。直接记录，不需要额外判断。\n\n"
@@ -1529,7 +1538,7 @@ class AgentRunner:
                 f"### 断言时序特判（弹窗/对话框关闭后查询弹窗内元素）\n"
                 f"- 断言失败原因为「元素随弹窗/对话框关闭而从 DOM 移除」（如 Locator 超时、"
                 f"evaluate 找不到节点），且同场景其他功能性断言通过 → 判为断言时序问题"
-                f"（测试场景设计缺陷），不记为产品 Bug；报告中标注「断言时序问题：应在"
+                f"（测试场景设计缺陷，classification=test-defect），不记为产品 Bug；报告中标注「断言时序问题：应在"
                 f"交互前校验或改断言弹窗外持久 DOM」。\n"
                 f"- 典型模式：点击「保存」后弹窗立即关闭，后续仍断言弹窗内输入框的值。\n\n"
                 f"### 第4层断言失败 → 需结合上下文\n"
@@ -1539,6 +1548,37 @@ class AgentRunner:
                 f"- 同一场景同一类型的失败 → 合并为1个Bug\n"
                 f"- 同一元素在多个场景中同一类失败 → 标记为\"系统性问题\"\n"
                 f"- 3个以上场景出现相同root cause → 只报1个Bug，标注影响范围\n\n"
+                f"## 裁决分类与证据（强制，add-verdict-evidence-taxonomy）\n\n"
+                f"### 分类定义（classification 取值限四选一）\n"
+                f"- `product-bug`：根因是产品缺陷——断言/功能失败由被测产品代码导致。\n"
+                f"  ⚠️ 禁止映射为 `warning`（产品缺陷不得悬置）。\n"
+                f"- `test-defect`：根因是测试用例自身错误（选择器失效、断言时序、幻觉\n"
+                f"  testid、场景设计缺陷）。同样 MAY → failed（不悬置为 warning）。\n"
+                f"- `flaky`：不稳定、重试可过的场景（非根因性失败）。MAY → warning。\n"
+                f"- `env`：环境/基础设施问题（应用不可达、网关抖动、网络环境不可达、\n"
+                f"  测试环境配置缺失）。MAY → warning。\n\n"
+                f"### 分类-状态映射约束（design D3，框架采纳处会强制重写）\n"
+                f"- `product-bug` / `test-defect` MUST 映射为场景 `status=failed`；\n"
+                f"  若你给了 `warning` 但分类是 product-bug/test-defect，框架会强制改为\n"
+                f"  `failed` 并在报告标注「已修正」——请在裁决时直接给对。\n"
+                f"- `flaky` / `env` MAY 映射为 `warning`（不阻塞），但也可标记 failed。\n"
+                f"- 禁止 `product-bug` 映射为 `warning`。\n\n"
+                f"### evidence 结构（每个非 PASS 场景 MUST 提供，至少含一项）\n"
+                f"```json\n"
+                f'  "evidence": {{\n'
+                f'    "failed_assertions": [\n'
+                f'      {{"type": "element_visible", "selector": ".result-item",\n'
+                f'       "expected": "可见", "actual": "元素不存在"}}\n'
+                f'    ],\n'
+                f'    "screenshots": ["<截图相对或绝对路径>"],\n'
+                f'    "first_failed_step": "步骤3: 点击提交按钮后无响应"\n'
+                f'  }}\n'
+                f"```\n"
+                f"- `failed_assertions`：从场景 assertion_results 中摘取未通过断言\n"
+                f"  （type/selector/expected/actual）；\n"
+                f"- `screenshots`：证据截图路径列表（取自场景 screenshots）；\n"
+                f"- `first_failed_step`：首个失败步骤的中文描述。\n"
+                f"三者至少提供其一，且 `failed_assertions` 与 `screenshots` 优先从既有数据摘取。\n\n"
                 f"### .fenix-run-result.json 格式\n"
                 f'{{\n'
                 f'  "status": "verified" | "bug-found",\n'
@@ -1555,6 +1595,7 @@ class AgentRunner:
                 f'  "summary": "验证总结"\n'
                 f'}}\n\n'
                 f"{self._scenario_freeze_section(spec_name)}"
+                f"{self._triage_recheck_section(spec_name)}"
                 f"IMPORTANT: Do NOT modify STATE.md."
             )
 
@@ -1682,6 +1723,37 @@ class AgentRunner:
         )
         lines.append("")
         return "\n".join(lines)
+
+    def _triage_recheck_section(self, spec_name: str) -> str:
+        """构建优先复核注入段（add-verdict-evidence-taxonomy D5）。
+
+        读取 pm_engine 落盘的 ``.fenix/verify-progress/<spec>/triage_recheck.json``
+        （连续 2 轮 warning 的场景清单），注入 planner prompt 的「优先复核」清单，
+        与 scenario-freeze 的基准集注入同一接入点（纯本地确定性读取，不触发 LLM）。
+        文件缺失 / 为空 → 返回空串（不约束）。
+        """
+        recheck_path = (
+            self.project_root / ".fenix" / "verify-progress"
+            / spec_name / "triage_recheck.json"
+        )
+        if not recheck_path.exists():
+            return ""
+        try:
+            data = json.loads(recheck_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return ""
+        if not isinstance(data, list) or not data:
+            return ""
+        ids = "、".join(str(s) for s in data if s)
+        if not ids:
+            return ""
+        return (
+            "\n\n## 优先复核清单（warning 收敛升级，add-verdict-evidence-taxonomy）\n"
+            f"- 以下场景连续 2 轮验证均为 warning，被标记为「优先复核」：{ids}\n"
+            "- 你必须优先重新执行这些场景，甄别其根因究竟是真实产品缺陷（应改判 "
+            "classificatio=product-bug 并 failed）还是确属 flaky/env（可维持 warning）。\n"
+            "- 切勿继续无限悬置为 warning；若确为产品缺陷，必须在本次裁决中如实分类并 failed。\n"
+        )
 
     def _run_claude(self, prompt: str, cwd: Path, run_id: str,
                     model_override: str | None = None,
