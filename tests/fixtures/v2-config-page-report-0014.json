@@ -1,0 +1,150 @@
+{
+  "spec": "v2-config-page",
+  "timestamp": "2026-08-30T00:14:00Z",
+  "summary": {
+    "total": 17,
+    "passed": 3,
+    "warnings": 11,
+    "failed": 3,
+    "errors": 0
+  },
+  "scenarios": [
+    {
+      "scenario_id": "config-llm-provider-full-flow",
+      "description": "场景 1: config-llm-provider-full-flow",
+      "status": "fail",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "config-shell-hash-router",
+      "description": "场景 2: config-shell-hash-router",
+      "status": "fail",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "config-notes-persist",
+      "description": "场景 3: config-notes-persist",
+      "status": "fail",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "warning-scenario-1",
+      "description": "warning 场景 1: warning-scenario-1",
+      "status": "warning",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "warning-scenario-2",
+      "description": "warning 场景 2: warning-scenario-2",
+      "status": "warning",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "warning-scenario-3",
+      "description": "warning 场景 3: warning-scenario-3",
+      "status": "warning",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "warning-scenario-4",
+      "description": "warning 场景 4: warning-scenario-4",
+      "status": "warning",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "warning-scenario-5",
+      "description": "warning 场景 5: warning-scenario-5",
+      "status": "warning",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "warning-scenario-6",
+      "description": "warning 场景 6: warning-scenario-6",
+      "status": "warning",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "warning-scenario-7",
+      "description": "warning 场景 7: warning-scenario-7",
+      "status": "warning",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "warning-scenario-8",
+      "description": "warning 场景 8: warning-scenario-8",
+      "status": "warning",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "warning-scenario-9",
+      "description": "warning 场景 9: warning-scenario-9",
+      "status": "warning",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "warning-scenario-10",
+      "description": "warning 场景 10: warning-scenario-10",
+      "status": "warning",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "warning-scenario-11",
+      "description": "warning 场景 11: warning-scenario-11",
+      "status": "warning",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "pass-scenario-1",
+      "description": "pass 场景 1: pass-scenario-1",
+      "status": "pass",
+      "assertion_results": [
+        {
+          "type": "step",
+          "pass": true,
+          "message": ""
+        }
+      ],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "pass-scenario-2",
+      "description": "pass 场景 2: pass-scenario-2",
+      "status": "pass",
+      "assertion_results": [
+        {
+          "type": "step",
+          "pass": true,
+          "message": ""
+        }
+      ],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "pass-scenario-3",
+      "description": "pass 场景 3: pass-scenario-3",
+      "status": "pass",
+      "assertion_results": [
+        {
+          "type": "step",
+          "pass": true,
+          "message": ""
+        }
+      ],
+      "screenshots": []
+    }
+  ]
+}
