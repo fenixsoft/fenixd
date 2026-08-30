@@ -63,6 +63,15 @@ GATE_TRANSITIONS: Dict[str, List[str]] = {
 # States that are considered "interrupted" on daemon restart (revert to ready)
 INTERRUPTED_STATES = {SpecStatus.IMPLEMENTING, SpecStatus.TESTING}
 
+# ── 实现尝试预算计数（fix-budget-counting-semantics D2）──────────────
+# 字段名单点定义（pm_engine 与 state_machine 共用，避免两处漂移）：
+# - _impl_run_budget_used：当前 spec 已累计启动的实现 run 次数
+# - _budget_exempt_runs：死亡 run 豁免侧车计数（豁免不占预算，仅审计/告警）
+# - _exempt_alerted：豁免阈值告警幂等标记（一次性，防重复告警）
+IMPL_RUN_BUDGET_USED_FIELD = "_impl_run_budget_used"
+BUDGET_EXEMPT_RUNS_FIELD = "_budget_exempt_runs"
+BUDGET_EXEMPT_ALERTED_FIELD = "_exempt_alerted"
+
 
 # ── STATE.md Parser ─────────────────────────────────────────────────
 
@@ -267,6 +276,24 @@ class StateMachine:
         Thread-safe: each call uses a unique temp file (pid + tid + counter),
         and the final STATE.md write is serialized by flock on a lock file.
         """
+        # Serialize the final rename via flock on a dedicated lock file.
+        # 注意：调用方若已持有该锁（如 _bump_counter），必须走 _write_all_locked，
+        # 否则同进程二次 flock 会自阻塞死锁。
+        lock_path = self.state_path.parent / ".STATE.md.lock"
+        with open(lock_path, "w") as lock_f:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            try:
+                self._write_all_locked(specs)
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+    def _write_all_locked(self, specs: Dict[str, dict]):
+        """write_all 的锁内实现（temp 写盘 + rename），不加锁。
+
+        供已持有 .STATE.md.lock 的调用方（_bump_counter）复用；write_all 是
+        本方法 + flock 的组合。flock 按打开文件描述符生效，同进程对同一文件
+        的第二个 fd 再 flock 会阻塞，故锁内不得再走 write_all。
+        """
         import threading
 
         content = StateParser.serialize(specs)
@@ -285,21 +312,79 @@ class StateMachine:
                 f.write(content)
                 f.flush()
                 os.fsync(f.fileno())
-
-            # Serialize the final rename via flock on a dedicated lock file
-            lock_path = parent / ".STATE.md.lock"
-            with open(lock_path, "w") as lock_f:
-                fcntl.flock(lock_f, fcntl.LOCK_EX)
-                try:
-                    os.rename(str(tmp_path), str(self.state_path))
-                finally:
-                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+            os.rename(str(tmp_path), str(self.state_path))
         finally:
             if tmp_path.exists():
                 try:
                     tmp_path.unlink()
                 except OSError:
                     pass
+
+    # ── 预算计数原子原语（fix-budget-counting-semantics D2）──────────
+
+    def _bump_counter(self, spec_name: str, field: str, delta: int) -> int:
+        """文件锁内原子读改写计数器字段并回读校验。
+
+        消除「读 STATE → 改 → 写回」非原子序列在并发（恢复扫描 × 派发）下
+        丢失增量的竞态（interaction-contract 复盘：used=2/4 连续出现两次）。
+        锁内完成 读→改→写→回读校验；回读不匹配时重试一次并记审计日志。
+        结果下限 0（delta=-1 时不会把计数打成负数）。
+
+        Returns: 最终生效值；spec 不存在时记 warning 并返回 0。
+        """
+        lock_path = self.state_path.parent / ".STATE.md.lock"
+        verify = 0
+        for attempt in (1, 2):
+            with open(lock_path, "w") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    specs = self.read_all()
+                    if spec_name not in specs:
+                        self.logger.warning(
+                            "state_machine",
+                            f"bump {field} failed: SPEC not found: {spec_name}",
+                        )
+                        return 0
+                    try:
+                        current = int(specs[spec_name].get(field, 0) or 0)
+                    except (TypeError, ValueError):
+                        current = 0
+                    new_value = max(0, current + delta)
+                    specs[spec_name][field] = new_value
+                    specs[spec_name]["updated"] = datetime.now(timezone.utc).isoformat()
+                    self._write_all_locked(specs)
+                    # 回读校验：确认增量真正落盘（防并发写覆盖丢增量）
+                    verify = int(
+                        (self.read_all().get(spec_name) or {}).get(field, 0) or 0
+                    )
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+            if verify == new_value:
+                return new_value
+            self.logger.warning(
+                "state_machine",
+                f"bump {field} verify mismatch for '{spec_name}' "
+                f"(attempt {attempt}): wrote {new_value}, read back {verify} — "
+                f"并发写覆盖，已重试",
+            )
+        # 重试后仍不匹配：返回磁盘实际值（以落盘为准），由调用方审计
+        return verify
+
+    def bump_impl_budget(self, spec_name: str, delta: int) -> int:
+        """实现尝试预算计数原子增减（``_impl_run_budget_used``）。
+
+        启动计数（delta=+1）与死亡豁免（delta=-1，下限 0）统一走本函数。
+
+        Returns: 递增/回退后的使用次数（跨重启持久化）。
+        """
+        return self._bump_counter(spec_name, IMPL_RUN_BUDGET_USED_FIELD, delta)
+
+    def bump_budget_exempt_runs(self, spec_name: str) -> int:
+        """死亡豁免侧车计数原子递增（``_budget_exempt_runs``）。
+
+        Returns: 递增后的豁免次数。
+        """
+        return self._bump_counter(spec_name, BUDGET_EXEMPT_RUNS_FIELD, 1)
 
     def update_spec(self, spec_name: str, updates: dict) -> bool:
         """Update a single SPEC's fields atomically. Returns True if updated."""

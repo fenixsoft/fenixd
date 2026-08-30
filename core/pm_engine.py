@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Optional
 
 from core.dashboard.data import find_impl_run_file, parse_run_task_done
+from core.state_machine import (
+    BUDGET_EXEMPT_ALERTED_FIELD,
+    BUDGET_EXEMPT_RUNS_FIELD,
+)
 
 # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）────────────────────
 # 派发 implementer 遇「worktree already active」时不再硬试三连发：按此序列指数
@@ -52,6 +56,11 @@ MAX_VERIFY_FAIL_ROUNDS = 3
 DEFAULT_IMPL_RUN_BUDGET = 4
 # 持久化字段名：当前 spec 已累计启动的实现 run 次数。
 IMPL_RUN_BUDGET_USED_FIELD = "_impl_run_budget_used"
+# ── 死亡 run 豁免（fix-budget-counting-semantics D1）──────────────
+# _budget_exempt_runs 侧车达到该值时发一次性提醒级告警（不冻结）：
+# 豁免本身不占预算，但极端「死亡循环」仍烧 token——告警兜底人工介入。
+# 可经 pm.budget_exempt_alert_threshold 覆盖（模块常量缺省，不进 Dashboard）。
+BUDGET_EXEMPT_ALERT_THRESHOLD = 6
 
 
 class PMEngine:
@@ -1148,18 +1157,147 @@ class PMEngine:
         """实现 run 启动时递增并持久化 ``_impl_run_budget_used``。
 
         返回递增后的使用次数。跨重启有效（直接写 STATE.md）。
+        fix-budget-counting-semantics D2：读改写收敛到
+        state_machine.bump_impl_budget（文件锁内读改写 + 回读校验），
+        消除恢复扫描并发派发时的增量丢失（used=2/4 连现事故）。
         """
-        entry = self.state_machine.read_one(spec_name) or {}
-        try:
-            used = int(entry.get(IMPL_RUN_BUDGET_USED_FIELD, 0) or 0) + 1
-        except (TypeError, ValueError):
-            used = 1
-        self.state_machine.update_spec(spec_name, {IMPL_RUN_BUDGET_USED_FIELD: used})
+        used = self.state_machine.bump_impl_budget(spec_name, 1)
         self.logger.info(
             "pm_engine",
             f"实现尝试预算计数 +1: '{spec_name}' used={used}/{self._impl_run_budget()}",
         )
         return used
+
+    def _budget_exempt_alert_threshold(self) -> int:
+        """死亡豁免侧车告警阈值（pm.budget_exempt_alert_threshold，缺省 6）。"""
+        try:
+            val = int(
+                self._get_config(
+                    "pm.budget_exempt_alert_threshold", BUDGET_EXEMPT_ALERT_THRESHOLD
+                )
+                or BUDGET_EXEMPT_ALERT_THRESHOLD
+            )
+        except (TypeError, ValueError):
+            val = BUDGET_EXEMPT_ALERT_THRESHOLD
+        return max(1, val)
+
+    def _exempt_dead_run_budget(self, spec_name: str, reason: str) -> None:
+        """死亡 run 豁免：回退本次启动的计数增量 + 侧车递增 + 审计日志。
+
+        fix-budget-counting-semantics D1：run 异常死亡（进程消失/零输出/
+        网关链路耗尽，无收工结果产出）时在死亡判定点做补偿回退
+        （used -= 1，下限 0），避免故障密集日把预算烧在无效 run 上
+        （interaction-contract 复盘：4/4 中 2 次网关死亡 + 2 次守卫误伤，
+        真正有产出的 run 反被冻结）。正常失败收工（有收工结果产出）不豁免。
+        """
+        used = self.state_machine.bump_impl_budget(spec_name, -1)
+        exempt = self.state_machine.bump_budget_exempt_runs(spec_name)
+        self.logger.warning(
+            "pm_engine",
+            f"预算豁免（死亡 run）: '{spec_name}' used 回退至 "
+            f"{used}/{self._impl_run_budget()}，_budget_exempt_runs={exempt}，"
+            f"reason={reason}",
+        )
+        if exempt >= self._budget_exempt_alert_threshold():
+            self._alert_budget_exempt_loop(spec_name, exempt)
+
+    def _alert_budget_exempt_loop(self, spec_name: str, exempt: int) -> None:
+        """死亡豁免侧车达阈值 → 一次性提醒级告警（幂等标记 ``_exempt_alerted``）。
+
+        只提醒不冻结：豁免不消耗预算，spec 可继续重派；但连续死亡循环
+        仍在烧 token，告警唤起人工排查根因。幂等标记防重复告警。
+        """
+        entry = self.state_machine.read_one(spec_name) or {}
+        if entry.get(BUDGET_EXEMPT_ALERTED_FIELD):
+            return
+        self.state_machine.update_spec(
+            spec_name, {BUDGET_EXEMPT_ALERTED_FIELD: True}
+        )
+        threshold = self._budget_exempt_alert_threshold()
+        self._send_human_escalation_alert(
+            spec_name=spec_name,
+            signal_type="impl_budget_exempt_loop",
+            severity="minor",
+            description=(
+                f"'{spec_name}' 实现 run 已异常死亡 {exempt} 次并被预算豁免回退，"
+                f"疑似网关/环境故障循环（spec 未冻结，可继续重派）"
+            ),
+            evidence=(
+                f"spec={spec_name}; budget_exempt_runs={exempt}; "
+                f"threshold={threshold}; used={self._impl_run_budget_used(spec_name)}"
+            ),
+            recommended_action=(
+                "检查 provider 网关健康度与最近死亡 run 产物（.fenix/runs/ 中 "
+                "error 终态的 impl-*.jsonl）；排除基础设施故障后人工清理 "
+                "_budget_exempt_runs 侧车即可解除告警条件"
+            ),
+        )
+
+    # ── 预算计数对账（fix-budget-counting-semantics D3，日志级）──────
+
+    def _reconcile_impl_budget(self, spec_name: str) -> None:
+        """merge 成功/守卫放行后回读 used 与正常收工 run 数比对。
+
+        偏差记 WARNING 供人工发现；不自动改数（对账复杂化收益低）。
+        已知固有偏差源：runs 目录只保留最近产物（clean_old_runs）、
+        provider 链耗尽的 run 不落产物——偏差日志需结合这些因素人工判读。
+        """
+        used = self._impl_run_budget_used(spec_name)
+        completed = self._count_normal_completed_impl_runs(spec_name)
+        if used != completed:
+            self.logger.warning(
+                "pm_engine",
+                f"预算计数对账偏差: '{spec_name}' used={used} vs "
+                f"runs 目录正常收工 run 数={completed}"
+                f"（runs 产物有保留上限/链耗尽 run 不落产物，供人工核查，不自动改数）",
+            )
+
+    def _count_normal_completed_impl_runs(self, spec_name: str) -> int:
+        """从 .fenix/runs/ 侧车统计本 spec 正常收工的实现 run 数。
+
+        run_id 规则 ``impl-<spec>-<ts>[-a<n>]``（每 attempt 一个产物文件，
+        同一 run 的多 attempt 视为一个 run，取最新 attempt 产物）。
+        判据：产物末行（终态行）为 error ＝ 死亡 run，不计；
+        result 终态 ＝ 正常收工（成功或带收工结果的失败均计入）。
+        """
+        runs_dir = self.project_root / ".fenix" / "runs"
+        if not runs_dir.is_dir():
+            return 0
+        newest_attempt: dict = {}
+        for p in runs_dir.glob(f"impl-{spec_name}-*.jsonl"):
+            base = re.sub(r"-a\d+$", "", p.stem)
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            prev = newest_attempt.get(base)
+            if prev is None or mtime > prev[0]:
+                newest_attempt[base] = (mtime, p)
+        count = 0
+        for _mtime, path in newest_attempt.values():
+            if not self._run_file_died(path):
+                count += 1
+        return count
+
+    @staticmethod
+    def _run_file_died(path: Path) -> bool:
+        """实现 run 产物是否以 error 终态行收尾（死亡 run 判据，容错解析）。"""
+        last = None
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(entry, dict):
+                        last = entry
+        except OSError:
+            return True
+        return isinstance(last, dict) and last.get("type") == "error"
 
     def _impl_run_budget_used(self, spec_name: str) -> int:
         entry = self.state_machine.read_one(spec_name) or {}
@@ -2363,6 +2501,9 @@ class PMEngine:
                         return
 
                 if is_success:
+                    # 计数对账（fix-budget-counting-semantics D3）：守卫放行/merge
+                    # 收工后回读 used 与正常收工 run 数比对，偏差记 WARNING。
+                    self._reconcile_impl_budget(spec_name)
                     # Merge worktree branch back into main tree before advancing state.
                     # worktree 已被 agent_runner 清理，但分支仍保留（success 路径不删分支），
                     # 所以用分支名直接 merge。
@@ -2464,6 +2605,16 @@ class PMEngine:
                         self._enqueue_front(spec_name, "verifier")
                         self.logger.info("pm_engine", f"Implement done, verifier queued for '{spec_name}'")
                 else:
+                    # ── 死亡 run 豁免（fix-budget-counting-semantics D1）──────
+                    # 无收工结果产出（.fenix-run-result.json 缺失）＝ run 异常
+                    # 死亡（进程消失/零输出/网关链路耗尽）：回退本次启动的计数。
+                    # 有收工结果的正常失败（impl_status=error）不豁免——既有
+                    # 「正常失败仍计数」语义不变。
+                    if impl_status is None:
+                        self._exempt_dead_run_budget(
+                            spec_name,
+                            f"no run-result file (error={str(final_error)[:80]})",
+                        )
                     # ── provider 熔断拦截（fix-stashpop-deadlock：provider-fault-fuse） ──
                     # 熔断期派发失败（error 含 "provider circuit open"）属「provider 故障」，
                     # 不是 spec 自身问题：不计入 _retry_count / _merge_streak、不翻转状态机、
@@ -2580,6 +2731,12 @@ class PMEngine:
                 )
                 self._enqueue(spec_name, "verifier")
             elif agent_type == "implementer" and status == "implementing":
+                # 死亡 run 豁免（fix-budget-counting-semantics D1）：异常路径＝
+                # run 无收工结果产出（进程消失/零输出/网关链路耗尽），回退本次
+                # 启动的预算计数。计数在 worker 启动处先行递增，此处补偿回退。
+                self._exempt_dead_run_budget(
+                    spec_name, f"dispatch exception: {str(exc)[:80]}"
+                )
                 self.state_machine.update_spec(spec_name, {
                     "status": "ready",
                     "implementer_run": None,
@@ -4559,6 +4716,14 @@ class PMEngine:
                     # 实现卡住且可能从未运行（implementer_run=null）：不得伪标 implemented
                     # 直接推给 verifier——「无实现即验证」会产出伪 bug 并派生 fix 级联
                     # （本事故 5 代 fix 链的肇因）。回 ready 重新排队实现器。
+                    # 死亡 run 豁免（fix-budget-counting-semantics D1）：恢复链路在此
+                    # 确认 run 异常死亡（滞留 implementing 超阈值且无存活子进程＝无收工
+                    # 结果产出），回退本次启动的预算计数并递增豁免侧车。
+                    self._exempt_dead_run_budget(
+                        spec_name,
+                        f"auto-recovery: stuck implementing "
+                        f"{b['elapsed_minutes']}m, no live child (no run-result)",
+                    )
                     self.state_machine.update_spec(spec_name, {
                         "status": "ready",
                         "implementer_run": None,
