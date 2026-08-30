@@ -2029,7 +2029,7 @@ class TestDashboardConfigIO(unittest.TestCase):
         result = read_config(self.project_root)
         self.assertFalse(result["raw_exists"])
         self.assertEqual(result["llm"], {})
-        self.assertEqual(result["agents"], {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "impl_run_budget": 4})
+        self.assertEqual(result["agents"], {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4})
         self.assertEqual(result["gates"], {"approve_mode": "manual"})
 
     def test_write_and_read_roundtrip(self):
@@ -2053,6 +2053,15 @@ class TestDashboardConfigIO(unittest.TestCase):
         self.assertEqual(readback["agents"]["models"]["implementer"]["provider"],
                          [{"provider": "volc", "model": "deepseek-v4-pro"}])
         self.assertEqual(readback["gates"]["approve_mode"], "auto")
+
+    def test_token_budget_millions_write_read_roundtrip(self):
+        """add-cost-observability D5：预算键保存后必须落盘且回显（0=关闭 边界可存）。"""
+        from core.dashboard.data import write_config, read_config
+        for budget in (50, 0, 1000):
+            result = write_config(self.project_root, {"agents": {"token_budget_millions": budget}})
+            self.assertTrue(result["ok"], result.get("error"))
+            readback = read_config(self.project_root)
+            self.assertEqual(readback["agents"]["token_budget_millions"], budget)
 
     def test_write_preserves_non_managed_keys(self):
         """写入受管键时不应影响项目内的其他配置键。"""

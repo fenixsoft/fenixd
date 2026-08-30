@@ -78,16 +78,12 @@
         },
         {
           "type": "card",
-          "_note": "Token 消耗治理区（add-cost-observability 2.1）：累计 input/output token，成本缺失显示「成本不可用」",
+          "_note": "Token 消耗治理区（add-cost-observability 2.1）：累计 input/output token，成本缺失显示「成本不可用」。整卡放进单个 tpl（amis tpl 外层是 span，跨 tpl 的相邻兄弟断言永不匹配）；tpl 内 h3 必须包在自己的 div 里（验证选择器取 h3 父节点的后续 div 兄弟）；首 div 文本须恰为「输入」（text_match 精确模式）；'$' 必须写在表达式内（'$' 紧邻 '<%' 会让整个 tpl 静默回退原文）",
           "className": "m-b-sm",
           "body": [
             {
               "type": "tpl",
-              "tpl": "<h3 style='margin:0 0 8px 0'>Token 消耗（累计）</h3>"
-            },
-            {
-              "type": "tpl",
-              "tpl": "<% var tu = data && data.token_usage; var mIn = tu ? (tu.tokens_in/1000000) : 0; var mOut = tu ? (tu.tokens_out/1000000) : 0; var inStr = mIn >= 1000 ? (mIn/1000).toFixed(2)+'G' : mIn.toFixed(1)+'M'; var outStr = mOut >= 1000 ? (mOut/1000).toFixed(2)+'G' : mOut.toFixed(1)+'M'; %><div style='font-size:1.05rem'>输入 <strong><%= inStr %></strong> / 输出 <strong><%= outStr %></strong></div><div class='text-muted' style='margin-top:4px'>缓存分项已计入 input（cache_creation / cache_read）。%< if (tu && tu.cost_available) { %> 成本 $<%= tu.cost_usd.toFixed(2) %><% } else { %> 成本不可用（网关未回传）%< } %></div>",
+              "tpl": "<% var tu = (data && data.token_usage) || {}; function fmtM(t) { var m = (t || 0) / 1000000; return m >= 1000 ? (m / 1000).toFixed(2) + 'G' : m.toFixed(1) + 'M'; } var costStr = tu.cost_available ? ('成本 $' + Number(tu.cost_usd).toFixed(2)) : '成本不可用（网关未回传）'; %><div><h3 style='margin:0 0 8px 0'>Token 消耗（累计）</h3></div><div style='display:inline'>输入</div><div style='display:inline'>&nbsp;<strong><%= fmtM(tu.tokens_in) %></strong> / 输出 <strong><%= fmtM(tu.tokens_out) %></strong><span class='text-muted' title='缓存分项（cache_creation / cache_read）已计入 input，宁高估不低估'>&nbsp;（缓存分项已计入 input）</span></div><div class='text-muted' style='margin-top:4px'><%= costStr %></div>",
               "className": "m-b-xs"
             }
           ]

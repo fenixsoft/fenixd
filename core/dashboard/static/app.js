@@ -1157,6 +1157,7 @@ function renderSpec(d) {
     ${d.error ? `<div class="error-banner">⚠ ${esc(d.error)}</div>` : ''}
     ${renderVerdict(d)}
     ${renderVerify(d)}
+    ${renderTokenUsage(d)}
     ${renderTasks(d)}
     <div class="tab-bar">${tabBar}</div>
     <div class="spec-tab-body">${tabBody}</div>`;
@@ -1238,6 +1239,30 @@ function renderVerify(d) {
       ${progressBar(v.done, v.total)}
       <div class="kv-row"><span class="k">当前</span><span class="v">${esc(v.current || '—')}</span></div>
     </div>
+  </div>`;
+}
+
+// Token 消耗治理卡（add-cost-observability 2.1）。
+// DOM 契约受冻结验证场景约束：`h3:has-text('Token 消耗（累计）') >> xpath=../following-sibling::div`
+// 取的是 h3 父节点的后续 div 兄弟（Playwright 链式 XPath `..` 指向 h3 的父级），
+// 因此 h3 必须包在自己的 div 里，内容以相邻兄弟 div 呈现：
+//   - 首个兄弟 div 文本必须恰为「输入」（text_match 精确模式取 .first）；
+//   - 数值（0.0M 等）须落在后续兄弟 div 内（text_contains 依赖其 text_content）。
+function fmtMillions(tokens) {
+  const m = (tokens || 0) / 1e6;
+  return m >= 1000 ? (m / 1000).toFixed(2) + 'G' : m.toFixed(1) + 'M';
+}
+
+function renderTokenUsage(d) {
+  const tu = d.token_usage || {};
+  const costLine = tu.cost_available
+    ? `成本 $${Number(tu.cost_usd).toFixed(2)}`
+    : '成本不可用（网关未回传）';
+  return `
+  <div class="section">
+    <div class="section-title"><h3 style="margin:0 0 8px 0">Token 消耗（累计）</h3></div>
+    <div class="token-usage-label">输入</div><div class="token-usage-value">&nbsp;<strong>${fmtMillions(tu.tokens_in)}</strong> / 输出 <strong>${fmtMillions(tu.tokens_out)}</strong><span class="token-usage-cache" title="缓存分项（cache_creation / cache_read）已计入 input，宁高估不低估">&nbsp;（缓存分项已计入 input）</span></div>
+    <div class="token-usage-cost">${costLine}</div>
   </div>`;
 }
 
@@ -2216,6 +2241,25 @@ function renderConfig(data) {
       </div>
     </div>`;
 
+  // Token 预算（add-cost-observability 3.2）：常驻区（页签区外），不参与
+  // [data-testid='pane-parallel'] .form-row 的 element_count 冻结断言。
+  // DOM 契约受冻结验证场景约束：`label:has-text(...) >> xpath=../following-sibling::div//input`
+  // 取的是 label 父节点的后续 div 兄弟内的 input，故 label 与 input 各包一层相邻 div。
+  const budgetSection = `
+    <div class="config-section" data-testid="config-budget-section">
+      <h3>💰 Token 预算 ${fromUser('agents.token_budget_millions')}</h3>
+      <p class="section-hint">
+        单 SPEC 累计 input token 的预算上限（成本观测）。收工累计达到 80% 发提醒级告警、
+        达到 100% 发升级级告警，<strong>不自动冻结</strong>，由人工决定是否处置。
+      </p>
+      <div class="budget-row form-grid-row">
+        <div><label>Token 预算（百万，0=关闭）</label></div>
+        <div><input type="number" id="cfg-token-budget" min="0" max="1000" step="1"
+          value="${esc(agents.token_budget_millions ?? 50)}" /></div>
+        <small>默认 50（百万 input token）。保存后约 30 秒内热加载生效；设为 0 表示关闭预算检查。</small>
+      </div>
+    </div>`;
+
   // 界面风格（主题）页签：偏好存于浏览器 localStorage，不进入保存路径
   const currentTheme = getStoredTheme();
   const themeSection = `
@@ -2267,6 +2311,8 @@ function renderConfig(data) {
       <div class="tab-pane" data-testid="pane-approve" data-pane="approve" hidden>${approveSection}</div>
       <div class="tab-pane" data-testid="pane-theme" data-pane="theme" hidden>${themeSection}</div>
     </div>
+
+    ${budgetSection}
 
     <div class="config-actions">
       <button class="btn btn-primary" id="btn-save-config" data-testid="btn-save-config">💾 保存配置</button>
@@ -2696,12 +2742,16 @@ function collectConfigData() {
   const implRunBudgetInput = main.querySelector('#cfg-impl-run-budget');
   const implRunBudget = numOr(implRunBudgetInput, loadedAgents.impl_run_budget, 4);
 
+  // Token 预算（0-1000，0=关闭；add-cost-observability D5）
+  const tokenBudgetInput = main.querySelector('#cfg-token-budget');
+  const tokenBudget = numOr(tokenBudgetInput, loadedAgents.token_budget_millions, 50);
+
   // Approve mode
   const approveMode = (main.querySelector('input[name="approve_mode"]:checked') || {}).value || 'manual';
 
   return {
     llm: { providers },
-    agents: { models, max_concurrent: maxConcurrent, max_turns: maxTurns, run_timeout_seconds: runTimeout, daily_run_limit: dailyRunLimit, impl_run_budget: implRunBudget },
+    agents: { models, max_concurrent: maxConcurrent, max_turns: maxTurns, run_timeout_seconds: runTimeout, daily_run_limit: dailyRunLimit, token_budget_millions: tokenBudget, impl_run_budget: implRunBudget },
     gates: { approve_mode: approveMode },
   };
 }
@@ -2756,6 +2806,17 @@ function saveConfig() {
     if (banner) {
       banner.className = 'config-banner error';
       banner.textContent = '❌ 保存失败：实现尝试预算（agents.impl_run_budget）必须为 1-10 的整数。';
+    }
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 保存配置'; }
+    return;
+  }
+
+  // Token 预算范围校验（0-1000，0=关闭；add-cost-observability D5）：越界阻止保存
+  const tokenBudget = payload.agents && payload.agents.token_budget_millions;
+  if (!Number.isInteger(tokenBudget) || tokenBudget < 0 || tokenBudget > 1000) {
+    if (banner) {
+      banner.className = 'config-banner error';
+      banner.textContent = '❌ 保存失败：Token 预算（agents.token_budget_millions）必须为 0-1000 的整数（0=关闭）。';
     }
     if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 保存配置'; }
     return;
