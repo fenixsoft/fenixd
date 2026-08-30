@@ -1,0 +1,429 @@
+{
+  "spec": "v2-overview-page",
+  "timestamp": "2026-08-29T12:10:42.777965+00:00",
+  "summary": {
+    "total": 12,
+    "passed": 6,
+    "warnings": 0,
+    "failed": 6,
+    "errors": 0,
+    "blocked_env": 0
+  },
+  "scenarios": [
+    {
+      "scenario_id": "overview-stat-blocks-render",
+      "description": "正向路径·统计块渲染：访问概览页，5 个统计块（SPEC 总数、任务完成、任务总量、问题数、活跃运行）均显示真实数据数值。出处：core/dashboard/static/v2/pages/overview.json:25-131（5 个 grid card，tpl 引用 ${spec_count}/${task_done}/${task_total}/${problems}/${active_runs}）",
+      "status": "pass",
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".v2-stat-label:has-text('SPEC 总数')",
+          "label": "SPEC 总数标签可见",
+          "pass": true
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".v2-stat-label:has-text('任务完成')",
+          "label": "任务完成标签可见",
+          "pass": true
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".v2-stat-label:has-text('任务总量')",
+          "label": "任务总量标签可见",
+          "pass": true
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".v2-stat-label:has-text('问题数')",
+          "label": "问题数标签可见",
+          "pass": true
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".v2-stat-label:has-text('活跃运行')",
+          "label": "活跃运行标签可见",
+          "pass": true
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".v2-stat-num",
+          "label": "统计数值可见",
+          "pass": true
+        },
+        {
+          "type": "no_click_interception",
+          "layer": 2,
+          "selector": ".v2-stat-label:has-text('SPEC 总数')",
+          "label": "",
+          "pass": true
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": true,
+          "errors": [],
+          "filtered_network": []
+        }
+      ],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "overview-project-cards-render",
+      "description": "正向路径·项目卡片渲染：访问概览页，环境真实项目名出现在卡片中，每张卡片显示名称、状态徽章、SPEC 计数、任务进度、问题数、运行数、路径。出处：core/dashboard/static/v2/pages/overview.json:148-232（cards 组件，header.title=${name}，body 含 SPEC/任务/问题/运行/路径，button-group 含启停删按钮）",
+      "status": "fail",
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".dark-Card",
+          "label": "项目卡片可见",
+          "pass": true
+        },
+        {
+          "type": "text_contains",
+          "layer": 3,
+          "text": "fenixd",
+          "pass": true
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".dark-Card-body",
+          "label": "卡片主体区可见",
+          "pass": true
+        },
+        {
+          "type": "text_match",
+          "layer": 3,
+          "selector": ".dark-Card-body",
+          "expected": "SPEC",
+          "actual": "129SPEC 总数",
+          "mode": "exact",
+          "pass": false
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": true,
+          "errors": [],
+          "filtered_network": []
+        }
+      ],
+      "screenshots": [
+        "overview-project-cards-render_assert_fail.png"
+      ]
+    },
+    {
+      "scenario_id": "overview-start-button-flow",
+      "description": "功能·启动按钮：点击项目卡「启动」按钮，弹出确认对话框「确认启动该项目?」，确认后 POST /api/projects/<name>/start 发出，显示成功 toast「已发起启动」。出处：core/dashboard/static/v2/pages/overview.json:176-195（button label=启动，confirmText，ajax POST /start，toast msg=已发起启动）",
+      "status": "fail",
+      "assertion_results": [],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "overview-stop-button-flow",
+      "description": "功能·停止按钮：running 状态项目卡点击「停止」按钮，弹出确认对话框「确认停止该项目?」，确认后 POST /api/projects/<name>/stop 发出，显示成功 toast「已停止」。出处：core/dashboard/static/v2/pages/overview.json:196-215（button label=停止，confirmText，ajax POST /stop，toast msg=已停止）",
+      "status": "fail",
+      "assertion_results": [
+        {
+          "type": "no_click_interception",
+          "layer": 2,
+          "selector": ".dark-Card:has-text('test-run-proj') button:has-text('停止')",
+          "label": "",
+          "pass": false,
+          "error": "Locator.click: Timeout 3000ms exceeded.\nCall log:\n  - waiting for locator(\".dark-Card:has-text('test-run-proj') button:has-text('停止')\").first\n    - locator resolved to <button type=\"button\" class=\"dark-Button dark-Button--default dark-Button--size-sm\">…</button>\n  - attempting click action (trial run)\n    2 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div role=\"dialog\" class=\"amis-dialog-widget cxd-Modal cxd-Modal--1th\">…</div> intercepts pointer events\n    - retrying click action (trial run)\n    - waiting 20ms\n    2 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div role=\"dialog\" class=\"amis-dialog-widget cxd-Modal cxd-Modal--1th\">…</div> intercepts pointer events\n    - retrying click action (trial run)\n      - waiting 100ms\n    6 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div role=\"dialog\" class=\"amis-dialog-widget cxd-Modal cxd-Modal--1th\">…</div> intercepts pointer events\n    - retrying click action (trial run)\n      - waiting 500ms\n",
+          "intercept_detail": null
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".toast-success, .toast:has-text('已停止'), .Toast:has-text('已停止')",
+          "label": "停止成功 toast 可见",
+          "pass": false,
+          "error": "Locator.wait_for: Timeout 3000ms exceeded.\nCall log:\n  - waiting for locator(\".toast-success, .toast:has-text('已停止'), .Toast:has-text('已停止')\").first to be visible\n"
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": true,
+          "errors": [],
+          "filtered_network": []
+        }
+      ],
+      "screenshots": [
+        "overview-stop-button-flow_assert_fail.png"
+      ]
+    },
+    {
+      "scenario_id": "overview-delete-button-cancel",
+      "description": "功能·删除取消：点击项目卡「删除」按钮，弹出确认对话框「删除后该项目将停止并忽略,确认?」，点击取消后无任何操作，卡片仍存在。出处：core/dashboard/static/v2/pages/overview.json:216-231（button label=删除，confirmText，ajax DELETE，toast msg=已删除）",
+      "status": "fail",
+      "assertion_results": [
+        {
+          "type": "no_click_interception",
+          "layer": 2,
+          "selector": ".dark-Card:has-text('fenixd') button:has-text('删除')",
+          "label": "",
+          "pass": false,
+          "error": "Locator.click: Timeout 3000ms exceeded.\nCall log:\n  - waiting for locator(\".dark-Card:has-text('fenixd') button:has-text('删除')\").first\n    - locator resolved to <button type=\"button\" class=\"dark-Button dark-Button--danger dark-Button--size-sm\">…</button>\n  - attempting click action (trial run)\n    2 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div role=\"dialog\" class=\"amis-dialog-widget cxd-Modal cxd-Modal--1th\">…</div> intercepts pointer events\n    - retrying click action (trial run)\n    - waiting 20ms\n    2 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div role=\"dialog\" class=\"amis-dialog-widget cxd-Modal cxd-Modal--1th\">…</div> intercepts pointer events\n    - retrying click action (trial run)\n      - waiting 100ms\n    6 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div role=\"dialog\" class=\"amis-dialog-widget cxd-Modal cxd-Modal--1th\">…</div> intercepts pointer events\n    - retrying click action (trial run)\n      - waiting 500ms\n",
+          "intercept_detail": null
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".dark-Card:has-text('fenixd')",
+          "label": "项目卡片仍存在（未被删除）",
+          "pass": true
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": true,
+          "errors": [],
+          "filtered_network": []
+        }
+      ],
+      "screenshots": [
+        "overview-delete-button-cancel_assert_fail.png"
+      ]
+    },
+    {
+      "scenario_id": "overview-delete-button-confirm",
+      "description": "功能·删除确认：点击项目卡「删除」按钮，确认后 DELETE /api/projects/<name> 发出，显示成功 toast「已删除」，项目从列表消失。出处：core/dashboard/static/v2/pages/overview.json:216-231",
+      "status": "fail",
+      "assertion_results": [
+        {
+          "type": "no_click_interception",
+          "layer": 2,
+          "selector": ".dark-Card:has-text('fenixd') button:has-text('删除')",
+          "label": "",
+          "pass": false,
+          "error": "Locator.click: Timeout 3000ms exceeded.\nCall log:\n  - waiting for locator(\".dark-Card:has-text('fenixd') button:has-text('删除')\").first\n    - locator resolved to <button type=\"button\" class=\"dark-Button dark-Button--danger dark-Button--size-sm\">…</button>\n  - attempting click action (trial run)\n    2 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div role=\"dialog\" class=\"amis-dialog-widget cxd-Modal cxd-Modal--1th\">…</div> intercepts pointer events\n    - retrying click action (trial run)\n    - waiting 20ms\n    2 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div role=\"dialog\" class=\"amis-dialog-widget cxd-Modal cxd-Modal--1th\">…</div> intercepts pointer events\n    - retrying click action (trial run)\n      - waiting 100ms\n    6 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div role=\"dialog\" class=\"amis-dialog-widget cxd-Modal cxd-Modal--1th\">…</div> intercepts pointer events\n    - retrying click action (trial run)\n      - waiting 500ms\n",
+          "intercept_detail": null
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".toast-success, .toast:has-text('已删除'), .Toast:has-text('已删除')",
+          "label": "删除成功 toast 可见",
+          "pass": false,
+          "error": "Locator.wait_for: Timeout 3000ms exceeded.\nCall log:\n  - waiting for locator(\".toast-success, .toast:has-text('已删除'), .Toast:has-text('已删除')\").first to be visible\n"
+        },
+        {
+          "type": "element_not_exist",
+          "layer": 1,
+          "selector": ".dark-Card:has-text('fenixd')",
+          "actual_count": 1,
+          "pass": false
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": true,
+          "errors": [],
+          "filtered_network": []
+        }
+      ],
+      "screenshots": [
+        "overview-delete-button-confirm_assert_fail.png"
+      ]
+    },
+    {
+      "scenario_id": "overview-empty-state",
+      "description": "空状态·项目列表为空：mock_api 返回空项目列表，概览页项目卡片区为空，统计块仍渲染。出处：core/dashboard/static/v2/pages/overview.json:148-232（cards source=${items}，空 items 不渲染卡片）",
+      "status": "fail",
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".v2-stat-label:has-text('SPEC 总数')",
+          "label": "统计块仍可见",
+          "pass": true
+        },
+        {
+          "type": "element_not_exist",
+          "layer": 1,
+          "selector": ".dark-Card",
+          "actual_count": 5,
+          "pass": false
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": true,
+          "errors": [],
+          "filtered_network": []
+        }
+      ],
+      "screenshots": [
+        "overview-empty-state_assert_fail.png"
+      ]
+    },
+    {
+      "scenario_id": "overview-stopped-project-start-visible",
+      "description": "交互·按钮可见性：stopped 状态项目卡片显示「启动」按钮，不显示「停止」按钮。出处：core/dashboard/static/v2/pages/overview.json:182-199（启动 visibleOn: daemon !== 'running' && exists !== false；停止 visibleOn: daemon === 'running'）",
+      "status": "pass",
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".dark-Card:has-text('test-project') button:has-text('启动')",
+          "label": "启动按钮可见",
+          "pass": true
+        },
+        {
+          "type": "element_not_exist",
+          "layer": 1,
+          "selector": ".dark-Card:has-text('test-project') button:has-text('停止')",
+          "actual_count": 0,
+          "pass": true
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": true,
+          "errors": [],
+          "filtered_network": []
+        }
+      ],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "overview-running-project-stop-visible",
+      "description": "交互·按钮可见性：running 状态项目卡片显示「停止」按钮，不显示「启动」按钮。出处：core/dashboard/static/v2/pages/overview.json:196-215",
+      "status": "pass",
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".dark-Card:has-text('test-project') button:has-text('停止')",
+          "label": "停止按钮可见",
+          "pass": true
+        },
+        {
+          "type": "element_not_exist",
+          "layer": 1,
+          "selector": ".dark-Card:has-text('test-project') button:has-text('启动')",
+          "actual_count": 0,
+          "pass": true
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": true,
+          "errors": [],
+          "filtered_network": []
+        }
+      ],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "overview-missing-project-badge",
+      "description": "回归点·缺失项目标签：exists=false 的项目卡片显示「缺失」红色徽章，不显示启停按钮。出处：core/dashboard/static/v2/pages/overview.json:158（subTitle 模板：exists===false 时渲染 label-danger「缺失」，否则渲染 daemon 状态 label）",
+      "status": "pass",
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".dark-Card:has-text('deleted-proj') .label-danger",
+          "label": "缺失项目显示红色徽章",
+          "pass": true
+        },
+        {
+          "type": "text_match",
+          "layer": 3,
+          "selector": ".dark-Card:has-text('deleted-proj') .label-danger",
+          "expected": "缺失",
+          "actual": "缺失",
+          "mode": "exact",
+          "pass": true
+        },
+        {
+          "type": "element_not_exist",
+          "layer": 1,
+          "selector": ".dark-Card:has-text('deleted-proj') button:has-text('启动')",
+          "actual_count": 0,
+          "pass": true
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": true,
+          "errors": [],
+          "filtered_network": []
+        }
+      ],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "overview-sse-reload",
+      "description": "SSE 触发重拉：SSE state/refresh 帧到达后，ov-stats 与 ov-projects 的 onEvent 触发 componentId reload，页面在 8s 内完成重拉。验证 SSE 桥正常连接、hello 帧到达、state/refresh 帧被正确派发到渲染树内 onEvent 消费者（ov-stats 监听 sse:state + sse:refresh，ov-projects 监听 sse:state），页面无 JS 运行时错误且渲染出真实概览数据。出处：core/dashboard/static/v2/bridge.js:38-55（EventSource /api/stream，reloadCount 递增，shouldFire 500ms 前缘节流）、core/dashboard/static/v2/pages/overview.json:13-22,142-147（ov-stats onEvent sse:state + sse:refresh 触发 reload；ov-projects onEvent sse:state 触发 reload）",
+      "status": "pass",
+      "assertion_results": [
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".v2-stat-label:has-text('SPEC 总数')",
+          "label": "SSE 重拉后统计块仍可见（ov-stats reload 正常）",
+          "pass": true
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".dark-Card",
+          "label": "SSE 重拉后项目卡片仍可见（ov-projects reload 正常）",
+          "pass": true
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": true,
+          "errors": [],
+          "filtered_network": []
+        },
+        {
+          "type": "no_network_error",
+          "layer": 3,
+          "pass": true,
+          "errors": []
+        }
+      ],
+      "screenshots": []
+    },
+    {
+      "scenario_id": "overview-no-auth-error",
+      "description": "真实端到端·认证正确性：概览页加载后无签名/认证类错误（no_auth_error），验证 API 签名正确。出处：core/dashboard/static/v2/app.js:132-139（fetch /api/overview + /api/projects，无 auth 中间件）",
+      "status": "pass",
+      "assertion_results": [
+        {
+          "type": "no_auth_error",
+          "layer": 3,
+          "pass": true,
+          "matched": []
+        },
+        {
+          "type": "no_console_error",
+          "layer": 3,
+          "pass": true,
+          "errors": [],
+          "filtered_network": []
+        },
+        {
+          "type": "element_visible",
+          "layer": 1,
+          "selector": ".v2-stat-num",
+          "label": "统计数据加载成功",
+          "pass": true
+        }
+      ],
+      "screenshots": []
+    }
+  ]
+}

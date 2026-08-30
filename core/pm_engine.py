@@ -2984,6 +2984,59 @@ class PMEngine:
         self._last_scenario_diff = diff  # 供报告渲染（2.3）读取
         return {"diff": diff, "path": str(path)}
 
+    # ── 交互契约覆盖（add-interaction-contract-and-per-assert-triage 1.3）──
+
+    def _apply_interaction_contract(self, spec_name: str) -> dict:
+        """场景执行前校验交互契约覆盖（design D1/D2）。
+
+        页面类 SPEC 检出可交互候选时，校验场景集对每个候选的覆盖（``covers``
+        登记 / 场景文本命中）或纯展示声明（``declared_display`` / SPEC 标注）。
+        辅助治理：任何异常不阻断验证主流程。
+
+        Returns:
+            {"ok": True} 或 {"ok": False, "result": ContractResult,
+            "feedback": <退回 plan 的反馈文本>, "uncovered": [元素标识]}
+        """
+        from core.interaction_contract import (
+            validate_interaction_coverage, build_replan_feedback,
+            load_planner_scenarios,
+        )
+        from core.verify_scenarios import load_scenario_set
+        try:
+            scenarios_path = (
+                self.project_root / ".fenix" / "verify-progress"
+                / spec_name / "test_scenarios.json"
+            )
+            planner_scenarios = load_planner_scenarios(scenarios_path)
+            if planner_scenarios is None:
+                return {"ok": True, "skipped": True}
+            persisted = load_scenario_set(self.project_root, spec_name)
+            result = validate_interaction_coverage(
+                self.project_root, spec_name, planner_scenarios, persisted)
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine", f"交互契约校验跳过 '{spec_name}'（不阻断）: {e}")
+            return {"ok": True, "skipped": True}
+
+        self._last_interaction_contract = result
+        if result.ok:
+            self.logger.info(
+                "pm_engine",
+                f"交互契约覆盖校验通过 '{spec_name}'（候选 "
+                f"{len(result.candidates)} 个，纯展示声明 {len(result.declared)} 个）",
+            )
+            return {"ok": True, "result": result}
+
+        self.logger.warning(
+            "pm_engine",
+            f"交互契约覆盖不完整 '{spec_name}': {result.uncovered}",
+        )
+        return {
+            "ok": False, "result": result,
+            "feedback": build_replan_feedback(result),
+            "uncovered": list(result.uncovered),
+        }
+
     def _render_scenario_change_section_to_report(self, spec_name: str) -> None:
         """把本轮场景集变更小节追加到 verification-report.md（spec 需求 2.3）。
 
@@ -3124,6 +3177,26 @@ class PMEngine:
                 self.logger.warning(
                     "pm_engine",
                     f"场景集冻结处理跳过 '{spec_name}'（异常不阻断验证）: {e}",
+                )
+
+            # ── 交互契约覆盖校验（add-interaction-contract-and-per-assert-triage 1.3）──
+            # 可交互元素既无场景覆盖又无纯展示声明 → 写反馈退回 plan 补齐
+            # （复用场景验收退回路径）；重排预算耗尽后不阻断验证，违规留痕。
+            contract = self._apply_interaction_contract(spec_name)
+            if contract is not None and not contract.get("ok"):
+                if replan_left > 0:
+                    replan_feedback = contract.get("feedback") or ""
+                    replan_left -= 1
+                    self.logger.warning(
+                        "pm_engine",
+                        f"交互契约覆盖不完整 '{spec_name}' — 退回 plan 阶段"
+                        f"（剩余重排 {replan_left} 次）: {contract.get('uncovered')}",
+                    )
+                    continue
+                self.logger.error(
+                    "pm_engine",
+                    f"交互契约重排预算耗尽 '{spec_name}' — 违规留痕继续验证: "
+                    f"{contract.get('uncovered')}",
                 )
 
             # ── 阶段2: 验证引擎执行 ──

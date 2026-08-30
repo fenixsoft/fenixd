@@ -13,6 +13,9 @@ report.json，校验：
   - 取值合法性：classification ∈ {product-bug, test-defect, flaky, env}
   - 分类-状态映射：product-bug / test-defect MUST 映射为 failed；flaky / env MAY
     映射为 warning；禁止 product-bug 映射为 warning（D3）
+  - 逐断言归因（add-interaction-contract-and-per-assert-triage D3）：每个非 PASS
+    场景 MUST 含 assertion_triage 数组，对其每条失败断言单独归类（四分类）并附
+    证据；场景级豁免（不记产品 Bug）仅当全部失败断言均非 product-bug 时成立
 
 不合规由调用方（pm_engine 采纳处）走既有裁决重试一次；二次失败 → blocked-env +
 告警（与 verify-report-gate 的阻断语义一致）。
@@ -28,12 +31,19 @@ from typing import Dict, Any, List, Optional
 # 四分类取值（design D1）
 VERDICT_CLASSES = ("product-bug", "test-defect", "flaky", "env")
 
-# 非 PASS 状态（这些场景 MUST 带 classification + evidence）
+# 非 PASS 状态（这些场景 MUST 带 classification + evidence + assertion_triage）
 NON_PASS_STATUSES = ("fail", "failed", "error", "warning")
 
 # classification → 强制状态映射（design D3）
 # product-bug / test-defect MUST → failed；flaky / env 允许 warning（不强制）。
 FORCE_FAILED_CLASSES = ("product-bug", "test-defect")
+
+# 场景级豁免（warning / 不记产品 Bug）的豁免理由文案（报告豁免清单用）
+EXEMPTION_REASON = {
+    "test-defect": "测试用例自身缺陷（非产品缺陷）",
+    "flaky": "不稳定复现（非产品缺陷）",
+    "env": "环境因素（非产品缺陷）",
+}
 
 
 def _is_non_pass(status: Optional[str]) -> bool:
@@ -67,6 +77,91 @@ def _evidence_present(evidence: Any) -> bool:
     if isinstance(ffs, str) and ffs.strip():
         return True
     return False
+
+
+def _evidence_value_present(evidence: Any) -> bool:
+    """assertion_triage 条目的 evidence 是否非空（字符串非空白 / dict 非空）。"""
+    if isinstance(evidence, str):
+        return bool(evidence.strip())
+    if isinstance(evidence, dict):
+        return bool(evidence)
+    if isinstance(evidence, list):
+        return bool(evidence)
+    return False
+
+
+def triage_entries(scenario: dict) -> List[dict]:
+    """场景的 assertion_triage 数组（缺失/非法时返回空表）。"""
+    triage = scenario.get("assertion_triage") if isinstance(scenario, dict) else None
+    if not isinstance(triage, list):
+        return []
+    return [t for t in triage if isinstance(t, dict)]
+
+
+def triage_violation(scenario: dict) -> Optional[str]:
+    """逐断言归因合规性检查（add-interaction-contract-and-per-assert-triage D3）。
+
+    非 PASS 场景 MUST 含 assertion_triage，对每条失败断言单独归类（四分类）并附
+    非空证据。合规返回 None；不合规返回首个违规原因文案。
+
+    规则：
+      - assertion_triage 缺失/为空 → 违规（未逐条归因）
+      - 条目缺 assertion 内容 / classification 非法 / evidence 为空 → 违规
+      - 条目数少于失败断言数 → 违规（漏条目，整体豁免会吞掉漏归因的断言）
+    """
+    if not isinstance(scenario, dict):
+        return None
+    status = scenario.get("status")
+    if not _is_non_pass(status):
+        return None
+
+    triage = triage_entries(scenario)
+    if not triage:
+        return "assertion_triage 缺失或为空（failed 场景 MUST 逐条归类失败断言）"
+
+    for i, entry in enumerate(triage, 1):
+        assertion = entry.get("assertion")
+        if not (isinstance(assertion, str) and assertion.strip()):
+            return f"assertion_triage 第 {i} 条缺 assertion 内容"
+        if entry.get("classification") not in VERDICT_CLASSES:
+            return f"assertion_triage 第 {i} 条 classification 缺失或取值非法"
+        if not _evidence_value_present(entry.get("evidence")):
+            return f"assertion_triage 第 {i} 条 evidence 为空"
+
+    # 漏条目检测：失败断言数多于归因条数 → 有断言未被单独归类
+    failed_count = 0
+    ars = scenario.get("assertion_results")
+    if isinstance(ars, list):
+        failed_count = sum(
+            1 for a in ars
+            if isinstance(a, dict) and not a.get("pass", True)
+        )
+    if failed_count and len(triage) < failed_count:
+        return (
+            f"assertion_triage 仅 {len(triage)} 条，少于失败断言数 {failed_count}"
+            f"（MUST 逐条归类全部失败断言）"
+        )
+    return None
+
+
+def has_product_bug_assertion(scenario: dict) -> bool:
+    """场景的失败断言中是否存在归类 product-bug 的条目（D3：阻止场景级豁免）。"""
+    return any(
+        t.get("classification") == "product-bug" for t in triage_entries(scenario)
+    )
+
+
+def is_scenario_exemptible(scenario: dict) -> bool:
+    """场景级豁免（不记产品 Bug）是否成立（D3）。
+
+    仅当该场景全部失败断言均被单独归类为非 product-bug（且逐断言归因合规）时
+    成立；含任一 product-bug 断言 → 不得豁免。
+    """
+    if not _is_non_pass(scenario.get("status")):
+        return False
+    if triage_violation(scenario) is not None:
+        return False
+    return not has_product_bug_assertion(scenario)
 
 
 def validate_report(report: dict) -> dict:
@@ -117,6 +212,16 @@ def validate_report(report: dict) -> dict:
                 "reason": "evidence 为空",
             })
             continue
+        # 逐断言归因（add-interaction-contract-and-per-assert-triage D3）：
+        # 每个 scenario 至多一条 violation（保持「一场景一违规」语义，便于重试定位）
+        triage_reason = triage_violation(sc)
+        if triage_reason:
+            violations.append({
+                "scenario_id": sid,
+                "status": status,
+                "reason": triage_reason,
+            })
+            continue
         classified.append(sid)
 
     return {"ok": len(violations) == 0, "violations": violations,
@@ -130,6 +235,9 @@ def enforce_status_mapping(report: dict) -> dict:
       - classification ∈ {product-bug, test-defect} 但 status != failed
         → 强制 status=failed，并标记该条目为「已修正」（供报告标注，
         防止 LLM 输出漂移悬置产品缺陷）。
+      - 逐断言归因（add-interaction-contract-and-per-assert-triage D3）：
+        assertion_triage 中任一断言归类 ∈ {product-bug, test-defect} 但场景
+        status != failed → 强制 failed（单条 product-bug 断言阻止场景级豁免）。
       - 其余（flaky / env 允许 warning，或已是 failed）→ 不动。
 
     返回：
@@ -151,6 +259,25 @@ def enforce_status_mapping(report: dict) -> dict:
             continue
         classification = sc.get("classification")
         status = sc.get("status")
+        # 逐断言归因优先：失败断言级 product-bug/test-defect 强制 failed
+        offending = None
+        for t in triage_entries(sc):
+            t_cls = t.get("classification")
+            if t_cls in FORCE_FAILED_CLASSES:
+                offending = t_cls
+                break
+        if offending is not None and status != "failed":
+            from_status = status
+            sc["status"] = "failed"
+            sc["status_corrected"] = True
+            sc["exempt_blocked_by_assertion"] = True  # 豁免被单断言阻断的留痕
+            corrected.append({
+                "scenario_id": sc.get("scenario_id") or sc.get("id") or "?",
+                "from_status": from_status,
+                "to_status": "failed",
+                "classification": offending,
+            })
+            continue
         if classification in FORCE_FAILED_CLASSES and status != "failed":
             from_status = status
             sc["status"] = "failed"
@@ -162,6 +289,45 @@ def enforce_status_mapping(report: dict) -> dict:
                 "classification": classification,
             })
     return {"report": report, "corrected": corrected}
+
+
+def exempted_assertions(report: dict) -> List[dict]:
+    """收集被豁免的失败断言（add-interaction-contract-and-per-assert-triage D4）。
+
+    豁免 = 断言失败但不记产品 Bug：非 PASS 场景的 assertion_triage 中归类为
+    test-defect / flaky / env 的条目（product-bug 条目进「真实产品 Bug」，不豁免）。
+
+    Returns:
+        [{"scenario_id", "assertion", "classification", "evidence", "reason"}]，
+        供报告渲染「断言级豁免清单」。旧报告无 assertion_triage 时返回空表。
+    """
+    rows: List[dict] = []
+    if not isinstance(report, dict):
+        return rows
+    scenarios = report.get("scenarios")
+    if not isinstance(scenarios, list):
+        return rows
+    for sc in scenarios:
+        if not isinstance(sc, dict):
+            continue
+        sid = str(sc.get("scenario_id") or sc.get("id") or "-")
+        for t in triage_entries(sc):
+            cls = t.get("classification")
+            if cls == "product-bug":
+                continue  # 产品缺陷不被豁免
+            if cls not in VERDICT_CLASSES:
+                continue
+            evidence = t.get("evidence")
+            if isinstance(evidence, (dict, list)):
+                evidence = json.dumps(evidence, ensure_ascii=False)
+            rows.append({
+                "scenario_id": sid,
+                "assertion": str(t.get("assertion") or "-"),
+                "classification": cls,
+                "evidence": str(evidence or "-"),
+                "reason": str(t.get("reason") or EXEMPTION_REASON.get(cls, "-")),
+            })
+    return rows
 
 
 def load_report(project_root, spec_name) -> Optional[dict]:

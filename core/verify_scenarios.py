@@ -22,8 +22,10 @@ scenarios.json 结构（含来源轮次，便于增量审计）::
     {
       "spec": "<spec>",
       "round": <int>,                       # 当前场景集稳定时的验证轮次
+      "display_declarations": ["btn-x"],    # 交互契约纯展示声明（add-interaction-contract）
       "scenarios": [
-        {"id": "sc-1", "description": "...", "added_in_round": 1},
+        {"id": "sc-1", "description": "...", "added_in_round": 1,
+         "covers": ["dark-Card--link"]},    # 交互契约：场景覆盖的可交互元素
         ...
       ]
     }
@@ -55,58 +57,78 @@ def _now_iso() -> str:
 
 
 class ScenarioEntry:
-    """持久化集中的单个场景记录。"""
+    """持久化集中的单个场景记录。
 
-    __slots__ = ("id", "description", "added_in_round")
+    ``covers``：交互契约元数据（add-interaction-contract-and-per-assert-triage
+    D2）——本场景覆盖的可交互元素标识列表；旧集无此字段（缺省空表，不追溯）。
+    """
 
-    def __init__(self, id: str, description: str = "", added_in_round: int = 1):
+    __slots__ = ("id", "description", "added_in_round", "covers")
+
+    def __init__(self, id: str, description: str = "", added_in_round: int = 1,
+                 covers: Optional[list] = None):
         self.id = id
         self.description = description
         self.added_in_round = added_in_round
+        self.covers = [str(c) for c in (covers or [])]
 
     def to_dict(self) -> dict:
         d = {"id": self.id, "description": self.description,
              "added_in_round": self.added_in_round}
+        if self.covers:
+            d["covers"] = list(self.covers)
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "ScenarioEntry":
+        covers = d.get("covers")
         return cls(
             id=d.get("id", ""),
             description=d.get("description", ""),
             added_in_round=int(d.get("added_in_round", 1) or 1),
+            covers=covers if isinstance(covers, list) else None,
         )
 
 
 class ScenarioSet:
-    """验证场景集：spec + 稳定轮次 + 场景列表。"""
+    """验证场景集：spec + 稳定轮次 + 场景列表。
+
+    ``display_declarations``：交互契约纯展示声明登记（元素标识列表，D2 可审计）。
+    """
 
     def __init__(self, spec: str, round_: int = 1,
-                 scenarios: Optional[list] = None):
+                 scenarios: Optional[list] = None,
+                 display_declarations: Optional[list] = None):
         self.spec = spec
         self.round = round_
         self.scenarios: list[ScenarioEntry] = list(scenarios or [])
+        self.display_declarations = [str(d) for d in (display_declarations or [])]
 
     @property
     def ids(self) -> set:
         return {s.id for s in self.scenarios}
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "spec": self.spec,
             "round": self.round,
             "updated_at": _now_iso(),
             "scenarios": [s.to_dict() for s in self.scenarios],
         }
+        if self.display_declarations:
+            d["display_declarations"] = list(self.display_declarations)
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "ScenarioSet":
         if not isinstance(d, dict):
             return cls(spec="", round=1)
+        declared = d.get("display_declarations")
         return cls(
             spec=d.get("spec", ""),
             round_=int(d.get("round", 1) or 1),
             scenarios=[ScenarioEntry.from_dict(s) for s in d.get("scenarios", [])],
+            display_declarations=declared if isinstance(declared, list) else None,
         )
 
 
@@ -256,6 +278,20 @@ def _parse_reasons(planner_scenarios: list) -> dict:
     return reasons
 
 
+def _covers_of(scenario: dict) -> list:
+    """场景对象的交互契约 ``covers`` 元数据（非列表时缺省空表）。"""
+    covers = scenario.get("covers") if isinstance(scenario, dict) else None
+    if not isinstance(covers, list):
+        return []
+    return [str(c) for c in covers if c]
+
+
+def _display_declarations_of(planner_scenarios: list) -> list:
+    """planner 产出中登记的纯展示声明（D2：declared-display 登记进元数据）。"""
+    from core.interaction_contract import collect_display_declarations
+    return collect_display_declarations(planner_scenarios)
+
+
 def diff_planner_output(project_root, spec_name: str, state: Optional[dict],
                         planner_scenarios: list, current_round: int) -> DiffResult:
     """确定性 diff 校验：planner 产出 vs 持久化集。
@@ -281,11 +317,14 @@ def diff_planner_output(project_root, spec_name: str, state: Optional[dict],
     if persisted is None:
         entries = [
             ScenarioEntry(id=str(s["id"]), description=str(s.get("description", "")),
-                          added_in_round=current_round)
+                          added_in_round=current_round,
+                          covers=_covers_of(s))
             for s in planner_scenarios
             if isinstance(s, dict) and s.get("id")
         ]
-        result.scenario_set = ScenarioSet(spec_name, current_round, entries)
+        result.scenario_set = ScenarioSet(
+            spec_name, current_round, entries,
+            display_declarations=_display_declarations_of(planner_scenarios))
         result.added = list(entries)
         result.change_lines = [
             f"- 首轮写入 {len(entries)} 个场景",
@@ -307,6 +346,13 @@ def diff_planner_output(project_root, spec_name: str, state: Optional[dict],
         planner_ids.add(sid)
         planner_by_id[sid] = s
 
+    # 交互契约元数据（D2）：既有条目的 covers 以 planner 本轮产出为准刷新
+    # （场景重排后映射可能变化），新增条目直接携带。
+    for e in persisted.scenarios:
+        s = planner_by_id.get(e.id)
+        if s is not None:
+            e.covers = _covers_of(s)
+
     # ── 删减检测：持久化集有、planner 没有 ──
     missing = [e for e in persisted.scenarios if e.id not in planner_ids]
     unreasoned = [e for e in missing if not reasons.get(e.id)]
@@ -326,7 +372,7 @@ def diff_planner_output(project_root, spec_name: str, state: Optional[dict],
         s = planner_by_id[sid]
         new_entries.append(ScenarioEntry(
             id=sid, description=str(s.get("description", "")),
-            added_in_round=current_round))
+            added_in_round=current_round, covers=_covers_of(s)))
 
     # ── 受控增量约束（design D2）──
     # 修复轮且未声明新增交付：任何新增均属「超发」，必须拦截（spec：修复轮不扩容）。
@@ -343,7 +389,9 @@ def diff_planner_output(project_root, spec_name: str, state: Optional[dict],
             )
 
     final_entries = added + new_entries
-    result.scenario_set = ScenarioSet(spec_name, current_round, final_entries)
+    result.scenario_set = ScenarioSet(
+        spec_name, current_round, final_entries,
+        display_declarations=_display_declarations_of(planner_scenarios))
     result.added = new_entries
 
     # ── 无理由缺场景 → 校验失败，以持久化集补齐后继续（不中断验证）──

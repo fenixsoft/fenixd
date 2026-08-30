@@ -73,7 +73,11 @@ class TestVerdictCheck(unittest.TestCase):
              "classification": "product-bug",
              "evidence": {"failed_assertions": [
                  {"type": "element_visible", "selector": ".x",
-                  "expected": "可见", "actual": "不存在"}]}},
+                  "expected": "可见", "actual": "不存在"}]},
+             # add-interaction-contract-and-per-assert-triage：逐断言归因
+             "assertion_triage": [
+                 {"assertion": "element_visible .x",
+                  "classification": "product-bug", "evidence": "元素不存在"}]},
         ]}
         res = validate_report(report)
         self.assertTrue(res["ok"])
@@ -185,6 +189,13 @@ class TestVerdictAdoption(_PMEngineBase):
             if sc["status"] in ("fail", "warning"):
                 sc["classification"] = "test-defect"
                 sc["evidence"] = {"first_failed_step": "x"}
+                # 逐断言归因（add-interaction-contract-and-per-assert-triage）：
+                # 全部失败断言单独归类为非 product-bug，方可被豁免路径放行
+                sc["assertion_triage"] = [{
+                    "assertion": "step_failed",
+                    "classification": "test-defect",
+                    "evidence": "harness 缺陷",
+                }]
         # 注入一个 LLM 漂移：product-bug 误挂 warning
         for sc in report["scenarios"]:
             if sc["status"] == "warning":
@@ -361,6 +372,13 @@ class TestV2ConfigPageFixture(_PMEngineBase):
                 sc["assertion_results"] = [{"type": "step", "pass": False,
                                             "message": "断言失败"}]
                 sc["screenshots"] = ["/abs/err.png"]
+                # 逐断言归因（add-interaction-contract-and-per-assert-triage）：
+                # 每条失败断言单独归类
+                sc["assertion_triage"] = [{
+                    "assertion": "step_failed",
+                    "classification": "product-bug",
+                    "evidence": "产品缺陷",
+                }]
         res2 = validate_report(enriched)
         self.assertTrue(res2["ok"])
 
