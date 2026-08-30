@@ -1,49 +1,67 @@
 # 验证报告：add-fail-counter-budget
 
-> ⚠️ 本报告由框架于 2026-08-30T06:34:02Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+- **验证时间**：2026-08-30T07:24:50+00:00
+- **结论**：✅ **验证通过（verified）**
+- **结果汇总**：13 个场景 / 13 通过 / 0 失败 / 0 警告 / 0 环境阻塞
 
-## 结论：❌ 未通过（Bug Found）
+## 一、总体结论
 
-**状态：bug-found — 11/13 场景通过，2 失败，0 错误（1 个真实产品 Bug）**
+实现尝试预算（agents.impl_run_budget）功能在 v1/v2 双界面、预算耗尽冻结告警、SPEC 列表/详情呈现、前端校验异常路径以及计数语义回归点上全部通过验证。**未发现任何产品 Bug，无需要修复项。**
 
-13 个场景：11 通过、2 失败、0 告警。全部 v1 界面场景（配置输入可见/编辑保存/高低越界拦截/空输入回退/保存回读闭环）、告警横幅（预算耗尽、验证失败升级）、SPEC 列表与详情（计数不归零、阻塞徽标、错误横幅、在线清除）均通过。2 个失败为同一 root cause 的系统性问题：v2 配置页未定义 agents.impl_run_budget 表单项，导致 v2 两个场景在元素查找阶段失败。属真实产品 Bug（v2 界面功能缺失），需修复后重跑 v2 两个场景。
+## 二、场景明细
 
-| 指标 | 数量 |
-| --- | --- |
-| 通过 | 11 |
-| 失败 | 2 |
-| 错误 | 0 |
-| 产品 Bug | 1 |
+### 配置项可用性
 
+| 场景 | 覆盖内容 | 结果 | 关键证据 |
+|---|---|---|---|
+| v1-config-budget-input-visible | v1 配置页「⚡ 并行度设置」页签内出现预算输入框，默认回显 4，helper 文案与保存按钮均正常 | ✅ 通过 | `#cfg-impl-run-budget` 可见、text_match "4"、未被遮挡、无控制台错误 |
+| v2-config-budget-input-visible | v2 配置页并行度设置页签出现 `input[name='agents.impl_run_budget']` 表单项 | ✅ 通过 | 输入可见且可用；SSIM 0.960（≥0.95 阈值） |
 
-## 真实产品 Bug
+### 配置编辑 / 校验 / 持久化
 
-### BUG-01（severity=major）· element_not_found（第1层 element_visible / element_enabled / no_click_interception 全链失败 + 步骤级 element_not_found_or_not_actionable）
+| 场景 | 覆盖内容 | 结果 | 关键证据 |
+|---|---|---|---|
+| v1-config-budget-edit-save | 改为 6 并保存，POST /api/config 成功 | ✅ 通过 | 绿色横幅「✅ 配置已保存并写入 /root/.fenix/config.yaml，重启 daemon 后生效」 |
+| v1-config-budget-out-of-range-high | 输入 11（超出上限 10）保存 | ✅ 通过 | 前端 fetch 前拦截，红色横幅「❌ 保存失败：…必须为 1-10 的整数。」 |
+| v1-config-budget-out-of-range-low | 输入 0（低于下限 1）保存 | ✅ 通过 | 同上，异常路径拦截正常 |
+| v1-config-budget-empty-input-fallback | 清空输入后保存，numOr 空串回退已加载值 4 | ✅ 通过 | 保存成功，不落脏值；SSIM ≈ 1.0 |
+| v1-config-budget-save-roundtrip | 保存 6 → 重新进入配置页 → 回读新值 6 | ✅ 通过 | 保存→重新拉取→表单回显闭环成立 |
+| v2-config-budget-edit-save | v2 表单改为 6 并提交 | ✅ 通过 | 「保存成功」toast 可见，输入值保持 6；SSIM 0.955（≥0.95 阈值） |
 
-- 关联场景：v2-config-budget-input-visible、v2-config-budget-edit-save
-- 描述：v2 配置页「并行度设置」页签缺少 agents.impl_run_budget 数值编辑入口：input[name='agents.impl_run_budget'] 不存在，页面也无「实现尝试预算」文案。v1 界面同字段功能完整（可见/可改/可存/回读/越界校验均通过），v2 界面完全未落地该配置键，违反 proposal「What Changes」第 4 条「配置键必须带 Dashboard 界面」（且 v1/v2 双界面为项目既定要求）。
-- 根因：core/dashboard/static/v2/pages/config.json 的「并行度设置」页签未添加 agents.impl_run_budget 的 input-number 表单项。源码核实：该文件中 grep 'impl_run_budget' 零命中，而同页签兄弟字段 agents.token_budget_millions 在第 43 行存在且渲染正常（场景中页签点击成功、无 console 错误），排除渲染链路问题，确认是表单项定义缺失。
-- 证据：
-  - v2-config-budget-input-visible: {"failed_assertions": ["element_visible input[name='agents.impl_run_budget'] → Locator.wait_for: Timeout 3000ms exceeded", "text_contains '实现尝试预算' → 页面无该文案", "element_enabled input[name='agents.impl_run_budget'] → 元素不存在", "no_click_interception input[name='agents.impl_run_budget'] → Locator.click: Timeout 3000ms exceeded"], "passed_controls": "no_console_error 通过（errors=[], filtered_network=[]），排除 JS 报错与网络问题；页签点击步骤成功，排除路由/页签问题", "screenshot": "/root/fenixd/.fenix/verify-progress/add-fail-counter-budget/screenshots/v2-config-budget-input-visible_assert_fail.png"}
-  - v2-config-budget-edit-save: {"failed_step": "click input[name='agents.impl_run_budget'] → element_not_found_or_not_actionable（Timeout 5000ms），后续断言全部未执行", "passed_controls": "no_console_error 通过，页签点击成功"}
-  - source_check: grep -c impl_run_budget core/dashboard/static/v2/pages/config.json → 0；grep -n token_budget_millions → 第 8 行（adaptor 默认值）、第 43 行（input-number 表单项）
-  - v1_counterpart: v1 同字段 5 个场景（input-visible/edit-save/out-of-range-high/out-of-range-low/empty-input-fallback/save-roundtrip）全部通过
+### 冻结告警与 SPEC 呈现
 
+| 场景 | 覆盖内容 | 结果 | 关键证据 |
+|---|---|---|---|
+| alert-impl-budget-exhausted-banner | 预算耗尽（4/4）major 告警在全局横幅渲染 | ✅ 通过 | 描述含「实现尝试预算耗尽（4/4），已冻结等待人工裁决」、证据含 `used=4; budget=4` 与最近失败摘要、建议含「人工可调大 agents.impl_run_budget 后解冻」、meta「1 条未处理」 |
+| spec-list-blocked-budget-exhausted | 冻结后 SPEC 列表状态 | ✅ 通过 | 「🛑 阻塞」徽标、冻结错误全文、在线「清除」按钮均渲染 |
+| spec-detail-blocked-budget-error | 冻结 SPEC 详情页 | ✅ 通过 | 页标题带阻塞徽标，.error-banner 全宽展示冻结错误全文（含 4/4 与最近失败摘要） |
 
-## 场景结果
+### 既有闸门与计数语义回归
 
-| 场景 | 状态 | 失败断言 |
-| --- | --- | --- |
-| v1-config-budget-input-visible | pass | 0/6 |
-| v2-config-budget-input-visible | fail | 4/5 |
-| alert-impl-budget-exhausted-banner | pass | 0/7 |
-| alert-verify-fail-escalation-banner | pass | 0/6 |
-| spec-list-verify-fail-round-preserved | pass | 0/5 |
-| spec-list-blocked-budget-exhausted | pass | 0/5 |
-| spec-detail-blocked-budget-error | pass | 0/6 |
-| v1-config-budget-edit-save | pass | 0/6 |
-| v1-config-budget-out-of-range-high | pass | 0/6 |
-| v1-config-budget-out-of-range-low | pass | 0/6 |
-| v1-config-budget-empty-input-fallback | pass | 0/6 |
-| v2-config-budget-edit-save | fail | - |
-| v1-config-budget-save-roundtrip | pass | 0/4 |
+| 场景 | 覆盖内容 | 结果 | 关键证据 |
+|---|---|---|---|
+| alert-verify-fail-escalation-banner | 既有 verify_fail_escalation 闸门（3 轮冻结）回归 | ✅ 通过 | 「验证连续失败 3 轮，已冻结等待人工裁决」、`fail_rounds=3`、重置建议文案均在横幅渲染 |
+| spec-list-verify-fail-round-preserved | 计数语义回归：第 2 轮失败原地打回不归零 | ✅ 通过 | 列表子行显示「验证失败第 2 轮，原地打回重修」（若计数被错误归零会显示第 1 轮） |
+
+## 三、断言层分析
+
+- **第 1-2 层（元素可见 / 点击拦截）**：全部通过，无遮挡、无拦截。
+- **第 3 层（文本 / 属性 / DOM）**：全部通过；所有 `no_console_error` 断言 `errors=[]` 且无 `filtered_network` 豁免依赖，未涉及外部 API 网络因素。
+- **第 4 层（视觉基线 SSIM）**：全部 ≥ 0.95 通过。其中 v2 两个场景 SSIM 分别为 0.955 与 0.960，贴近阈值但达标（v2 页面动态渲染差异属正常波动，非缺陷）。
+- 无 no_auth_error 相关场景（本轮均为本地 mock 场景，不涉及真实云端端到端密钥链路）。
+- 无弹窗关闭后断言弹窗内元素的时序陷阱。
+
+## 四、Bug 列表
+
+无。本轮验证未发现任何产品 Bug。
+
+## 五、结论与建议
+
+`add-fail-counter-budget` 变更验证**通过**，13/13 场景全绿：
+
+1. **新增能力落地完整**：预算配置项在 v1（原生 DOM）与 v2（AMIS 表单）双界面均可用且可保存；上一轮 BUG-01（v2 配置页缺失 impl_run_budget 表单项）的修复已确认生效。
+2. **防御性校验完备**：越界（0/11）在 fetch 前被前端拦截，空输入回退不落脏值，保存后重进回读闭环正确。
+3. **冻结链路正确**：预算耗尽产生 major 级告警并驱动横幅、SPEC 列表、SPEC 详情三处一致呈现，人工解冻路径文案明确。
+4. **无回归**：既有 verify_fail_escalation 闸门行为不变；失败计数在第 2 轮打回重修时不归零的关键语义得到验证。
+
+可进入归档（archive）流程。

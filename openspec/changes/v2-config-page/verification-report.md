@@ -1,56 +1,85 @@
-# 验证报告：v2-config-page
+# v2-config-page 验证报告（修复轮）
 
-> ⚠️ 本报告由框架于 2026-08-29T10:04:50Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+- 规格变更：`openspec/changes/v2-config-page`
+- 报告时间：2026-08-30T10:01:25Z（引擎 report.json 时间戳）
+- 运行结果：`.fenix-run-result.json` → `status: verified`
+- 结论：**验证通过（verified）**，无遗留 Bug。
 
-## 结论：❌ 未通过（Bug Found）
+## 一、总体判定
 
-**状态：bug-found — 0/11 场景通过，11 失败，0 错误（1 个真实产品 Bug）**
-
-11/11 场景全部失败。根因为配置页实现缺失（pages/config.json 未落盘、页面未挂载），属系统性 Block 级 Bug：#/config 路由已注册但无对应页面 JSON，导致 5 个页签与表单均不渲染，所有依赖配置页的场景从首步即中断。no_console_error 断言通过，排除 JS 报错/网络环境问题，可判定为产品实现缺失 Bug（critical）。建议回归 proposal.md Task 2.1 实现并合入 core/dashboard/static/v2/pages/config.json 后重跑验证。
-
-| 指标 | 数量 |
+| 指标 | 数值 |
 | --- | --- |
-| 通过 | 0 |
-| 失败 | 11 |
-| 错误 | 0 |
-| 产品 Bug | 1 |
+| 场景总数 | 21 |
+| 通过 | 21 |
+| 失败（failed） | 0 |
+| 警告（warning） | 0 |
+| 错误（error） | 0 |
+| 环境阻塞（blocked_env） | 0 |
 
+21 个场景全部 PASS。无任何场景处于 fail/failed/error/warning 状态，因此**裁决证据分类（classification/evidence）增强步骤为空集**——按 add-verdict-evidence-taxonomy 仅对非 PASS 场景强制补齐，本次无可补条目，不存在缺分类或缺证据的情况。
 
-## 真实产品 Bug
+## 二、冻结场景集完整性（修复轮约束，add-verify-scenario-freeze）
 
-### BUG-01（severity=critical）· element_visible / element_not_found_or_not_actionable (系统性缺失)
+持久化冻结集 21 个场景（第 3 轮稳定）与本次报告逐一比对：
 
-- 关联场景：config-load-5-tabs、config-parallel-save-loop、config-empty-state-no-file、config-incomplete-chain-blocked、config-edit-exempt-sse、config-number-fallback-snapshot、config-delete-provider-row、config-approve-mode-switch、config-theme-readonly、config-deeplink-tab-parallel、config-parallel-persist-reload
-- 描述：v2 配置页未实现/未挂载：导航到 #/config 后页面不渲染任何选项卡与表单。10 个场景在第 1 层断言即失败（点击 LLM Provider/并行度/审批/主题 等页签时报 element_not_found_or_not_actionable，元素从未出现）；1 个场景(config-load-5-tabs)的 6 个 element_visible 断言（5 个页签 + form 表单）全部超时；config-deeplink-tab-parallel 深链直达后「并行度」页签与 input[type=number] 同样不可见。所有 11 个场景因此全部 fail。
-- 根因：配置页实现文件 core/dashboard/static/v2/pages/config.json 缺失（目录内仅有 app.json 与 spec-detail.json）。#/config 路由已在 app.js:37 的 ROUTES 注册，但 proposal.md / tasks.md Task 2.1 要求的 config-form（5 页签：LLM Provider 卡片、Agent 链编辑器、并行度、审批模式、主题只读说明）尚未实现并合入到 pages/ 目录，故路由匹配到 config 页后无任何页面 JSON 可加载，整页为空。
-- 证据：
-  - route_registered: core/dashboard/static/v2/app.js:37 ROUTES 含 { page: 'config', re: /^\/config(?:\/([^/?]+))?/ }
-  - config_json_missing: core/dashboard/static/v2/pages/ 仅含 app.json (1452B)、spec-detail.json (8177B)，无 config.json
-  - proposal_expects: proposal.md: 新增 core/dashboard/static/v2/pages/config.json (config-loader service + 5 页签 form)
-  - report_common_error: Locator.wait_for: Timeout 3000/5000ms exceeded —— waiting for locator("text=LLM Provider|并行度|审批|主题|Agent 模型|form|input[type=number]").first to be visible
-  - no_console_error: config-load-5-tabs 与 config-deeplink-tab-parallel 的 no_console_error 断言 pass=true（errors=[]），说明无 JS 报错，纯属 DOM 未渲染，排除环境问题
-  - screenshots: /root/fenixd/.fenix/verify-progress/v2-config-page/screenshots/config-load-5-tabs_assert_fail.png
+- **全部覆盖**：21/21 均在报告中执行且通过。
+- **无新增**：修复段未声明新增交付范围，报告亦未出现新场景 ID（符合 design D2 修复轮不扩容）。
+- **无删减**：所有场景均在，无需（也未出现）`remove_reason` 标注。
 
+场景清单与覆盖域：
+1. config-load-echo-5-tabs — 页签渲染 + mock 回显（正向）
+2. config-empty-config-defaults — 空配置兜底（并行度 2 / 审批 manual）
+3. config-parallel-save-toast — 保存回显闭环（toast + 值保持）
+4. config-empty-config-no-provider-card — 空状态无 provider 卡片
+5. config-parallel-persist-reload — 保存后往返重载回显
+6. config-number-fallback-snapshot — 空输入三级回退（快照 3）
+7. config-parallel-all-fields-save — 6 个数字字段多字段保存
+8. config-llm-provider-add-save — 新增 provider 全字段保存
+9. config-llm-provider-incomplete-row-kept — 不完整行过滤不落盘但留表单
+10. config-llm-provider-special-chars — 超长/特殊字符/emoji 原样保持
+11. config-llm-provider-delete-row — 删除行
+12. config-incomplete-chain-blocked — 不完整链被拦截（错误 toast、无 POST）
+13. config-chain-row-edit-and-save — 完整链可保存（修复固化点）
+14. config-chain-two-rows-editor — 多行编辑器渲染 2 组 select+输入
+15. config-approve-mode-switch-auto — 审批模式切 auto
+16. config-approve-mode-persist-reload — 审批模式持久化回读
+17. config-theme-readonly — 界面风格只读、无编辑控件
+18. config-edit-exempt-sse — 编辑豁免 SSE（真实 /api/stream 下无 reload、焦点保持）
+19. config-save-backend-error-toast — 后端 400 错误 toast 通路
+20. config-via-sidebar-nav — 侧边栏导航落地
+21. config-approve-default-manual-echo — 审批模式默认 manual 回显
 
-## 场景结果
+## 三、修复轮验证要点
 
-| 场景 | 状态 | 失败断言 |
-| --- | --- | --- |
-| config-load-5-tabs | fail | 6/7 |
-| config-parallel-save-loop | fail | - |
-| config-empty-state-no-file | fail | - |
-| config-incomplete-chain-blocked | fail | - |
-| config-edit-exempt-sse | fail | - |
-| config-number-fallback-snapshot | fail | - |
-| config-delete-provider-row | fail | - |
-| config-approve-mode-switch | fail | - |
-| config-theme-readonly | fail | - |
-| config-deeplink-tab-parallel | fail | 2/3 |
-| config-parallel-persist-reload | fail | - |
+上一轮（第 2 轮）唯一的确认 Bug——**Agent 链编辑器行数据不绑定、validateChain 误按 `row.provider` 校验导致完整链被永久拦截**——本轮验证如下：
+
+- **修复正向覆盖**（config-chain-row-edit-and-save，commit eba9ee2）：新增行 → 选角色「执行(Implementer)」→ 填模型名 mock-model → 保存，出现「保存成功」toast、无 error toast。✔ PASS
+- **拦截路径回归**（config-incomplete-chain-blocked）：角色未选的新行保存仍被拦截，错误文案为「模型缺失: 第 1 行未选择 Provider（角色）」（contains 断言命中「未选择 Provider」），不出现「保存成功」。✔ PASS——校验从按 `row.provider` 切换到按 `row.role`（兼容旧 provider 行）后，错误分支与放行分支均正确。
+- **多行编辑器**（config-chain-two-rows-editor）：combo multiple/addable/draggable 渲染 2 组角色 select + 2 个模型输入框。✔ PASS——上轮「行仅持单值」的数据绑定问题随 eba9ee2 的 group 结构（role + model 多字段行）一并消除。
+
+## 四、断言层统计
+
+- 第 1 层（元素存在/可见/点击可达）：全部通过，无元素缺失或点击拦截。
+- 第 2 层（no_click_interception）：全部通过，无遮挡。
+- 第 3 层（文本/值匹配、no_console_error）：全部精确匹配；所有场景 console errors 为空且 `filtered_network` 均为空数组（无外部 API 豁免被触发）。config-save-backend-error-toast 场景按设计不设 no_console_error 断言（AMIS fetch 失败打印应用级日志属预期）。
+- 第 4 层（视觉 SSIM，阈值 pass=0.95 / warn=0.85）：全部通过，最低 0.98376（config-chain-two-rows-editor，两行新增后与基线的合法差异），其余 ≥0.9993；无动态内容误判需要豁免。
+
+## 五、Bug 清单
+
+无。`bugs: []`。
+
+## 六、特殊特判说明
+
+- no_auth_error 特判：未涉及真实云端端到端场景，无密钥/签名错误，亦无网络不可达。
+- 外部 API 网络豁免：无场景触发（filtered_network 均为空）。
+- 断言时序特判：无此类失败。
+- 环境性已知问题（见项目记忆）：`test_v2_dev_server` 相关 3 例单元测试因 daemon 占用 1900x 端口恒失败，属引擎外既有环境特性，与本验证场景集无关，不计入本报告。
+
+## 七、结论
+
+修复轮验证通过。上一轮确认的 Agent 链编辑器 Bug 已修复且被固化场景回归覆盖，21 个冻结场景全部 PASS，无新增/删减场景，无遗留产品缺陷，可进入归档。
 
 ## 本轮场景集变更
 
-当前稳定场景集共 21 个（第 2 轮）。
-
-- 首轮写入 21 个场景
+场景集与持久化集一致，无变更。
 
