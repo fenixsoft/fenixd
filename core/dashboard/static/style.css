@@ -207,6 +207,29 @@ a:hover { text-decoration: underline; }
   word-break: break-word;
 }
 
+/* 已解决折叠区（add-alert-auto-resolve D5） */
+.alert-resolved-bar {
+  border-top: 1px solid var(--hairline);
+  padding: 6px 14px;
+}
+.alert-resolved-toggle {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--muted); font-size: 12px; padding: 0;
+}
+.alert-resolved-toggle:hover { color: var(--ink); }
+.alert-resolved-badge {
+  font-size: 11px; font-weight: 700; padding: 1px 8px;
+  border-radius: 999px; border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.alert-resolved-badge.auto { color: var(--good); }
+.alert-resolved-badge.manual { color: var(--blue); }
+.alert-item.resolved { opacity: 0.75; }
+.alert-item-resolve-note {
+  color: var(--muted); font-size: 12px; margin-top: 2px;
+  word-break: break-word;
+}
+
 /* ── 运维记录（/api/admin-activities） ────────────────── */
 .activity-timeline {
   display: flex; flex-direction: column; gap: 12px;

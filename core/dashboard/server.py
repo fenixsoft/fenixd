@@ -553,7 +553,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """读取 Administrator 告警。
 
         ?project=<name> → 该项目全部告警/处置记录 + 摘要；
-        缺省 → 跨项目聚合所有未处理升级告警（供顶部横幅）。
+        缺省 → 跨项目聚合所有未处理升级告警（供顶部横幅），并附已解决
+        告警（resolved，add-alert-auto-resolve D5 视图分组用）。
         """
         project_name = query.get("project", [None])[0]
         if project_name:
@@ -569,6 +570,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         projects_out = []
         all_unhandled = []
+        all_resolved = []
         total = 0
         for p in self.server.projects():
             if not p.get("exists"):
@@ -581,11 +583,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 item = dict(a)
                 item["project"] = p["name"]
                 all_unhandled.append(item)
+            # add-alert-auto-resolve D5：已解决告警随横幅 payload 下发，
+            # 前端折叠为「已解决 (N)」区（按 handled_by 区分自动解决/人工处理）
+            for a in dashboard_data.get_resolved_alerts(proot):
+                item = dict(a)
+                item["project"] = p["name"]
+                all_resolved.append(item)
         all_unhandled.sort(key=lambda a: a.get("created", ""), reverse=True)
+        all_resolved.sort(
+            key=lambda a: a.get("handled_at") or a.get("created") or "",
+            reverse=True)
         return {
             "total_unhandled": total,
             "projects": projects_out,
             "alerts": all_unhandled,
+            "resolved": all_resolved,
         }
 
     def _api_admin_activities(self, query) -> dict:

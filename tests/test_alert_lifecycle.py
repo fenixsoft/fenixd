@@ -321,3 +321,25 @@ class TestMonitorScanIntegration:
                 if r.get("kind") == ESCALATION]
         assert len(recs) == 1
         assert recs[0]["trigger"]["condition"] == CONDITION_SPEC_TERMINAL_OR_UNBLOCKED
+
+
+# ── 4.1 视图分组数据管道 ────────────────────────────────
+
+class TestResolvedPayload:
+    def test_resolved_alerts_in_payload(self, tmp_path):
+        """/api/alerts 聚合 payload 携带已解决告警（含 handled_by/resolve_note）。"""
+        from core.dashboard.data import get_resolved_alerts
+        store = AdminStore(tmp_path, FakeLogger())
+        pending = make_escalation(store, spec="v2-x", trigger=triggered("v2-x"))
+        auto = make_escalation(store, spec="v2-y", trigger=triggered("v2-y"))
+        store.auto_resolve([{"id": auto["id"], "resolve_note": "spec v2-y 已到达终态 pushed"}])
+        manual = make_escalation(store, spec="v2-z", handled=True)
+
+        resolved = get_resolved_alerts(tmp_path)
+        ids = {r["id"] for r in resolved}
+        assert auto["id"] in ids and manual["id"] in ids
+        assert pending["id"] not in ids
+        rec = next(r for r in resolved if r["id"] == auto["id"])
+        assert rec["handled_by"] == AUTO_RESOLVE_BY
+        assert rec["resolve_note"] == "spec v2-y 已到达终态 pushed"
+        assert rec["handled_at"]

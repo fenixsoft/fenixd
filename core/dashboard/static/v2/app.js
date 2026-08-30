@@ -156,7 +156,7 @@
       name: 'alert-banner',
       api: {
         url: '/api/alerts',
-        adaptor: "return { status: 0, data: { rows: window.Adapters.adaptAlerts(payload.alerts || []), total_unhandled: (payload && payload.total_unhandled) || 0 } }"
+        adaptor: "return { status: 0, data: { rows: window.Adapters.adaptAlerts(payload.alerts || []), resolvedRows: window.Adapters.adaptAlerts((payload && payload.resolved) || []), total_unhandled: (payload && payload.total_unhandled) || 0 } }"
       },
       onEvent: {
         "sse:alerts": {
@@ -215,6 +215,44 @@
                           ]
                         }
                       }
+                    },
+                    // add-alert-auto-resolve D5：已解决告警折叠为「已解决 (N)」可
+                    // 展开区（默认收起，不与待处理混排），展开项按 handled_by 区分
+                    // 「自动解决/人工处理」徽标，显示 resolve_note 与 handled_at
+                    {
+                      type: 'container',
+                      visibleOn: '${resolvedRows.length > 0}',
+                      body: [
+                        { type: 'divider' },
+                        {
+                          type: 'collapse-group',
+                          body: [
+                            {
+                              type: 'collapse',
+                              key: 'resolved',
+                              title: '已解决 (${resolvedRows.length})',
+                              body: {
+                                type: 'table',
+                                source: '${resolvedRows}',
+                                columns: [
+                                  {
+                                    name: 'severity', label: '严重度', width: 70, type: 'tpl',
+                                    tpl: "<% if (data.severity === 'critical') { %><span class='label label-danger'>严重</span><% } else if (data.severity === 'major') { %><span class='label label-warning'>重要</span><% } else { %><span class='label label-default'>轻微</span><% } %>"
+                                  },
+                                  { name: 'project', label: '项目', width: 110, type: 'tpl', tpl: "${project || '—'}" },
+                                  { name: 'spec', label: 'SPEC', width: 130, type: 'tpl', tpl: "${spec || '—'}" },
+                                  { name: 'description', label: '描述', type: 'tpl', tpl: "<%= data.description %>" },
+                                  {
+                                    name: 'resolve_note', label: '解决依据', type: 'tpl',
+                                    tpl: "<% if (data.handled_by === 'auto-resolve') { %><span class='label label-success'>自动解决</span><% } else { %><span class='label label-info'>人工处理</span><% } %> <%= (data.resolve_note || '') %>"
+                                  },
+                                  { name: 'handled_at', label: '解除时刻', width: 160, type: 'tpl', tpl: "${handled_at || '—'}" }
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      ]
                     }
                   ]
                 }
