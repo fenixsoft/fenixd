@@ -349,9 +349,13 @@
 
     // ── LLM providers ──
     // form.providers 为数组(form 顶层),或 form.llm.providers
+    // 仅收完整行:后端校验要求 name/baseurl/apikey 均非空字符串(core/config.py
+    // _validate_llm),不完整行入库必 400 且阻塞整份配置保存——对齐 v1
+    // collectConfigData「仅收键值都非空的行」先例,未填完的行留在表单不落盘
+    const isFilled = v => typeof v === 'string' && v.trim() !== '';
     const rawProviders = form.providers || (form.llm && form.llm.providers);
     const llmProviders = Array.isArray(rawProviders)
-      ? rawProviders.filter(p => p && p.name)
+      ? rawProviders.filter(p => p && isFilled(p.name) && isFilled(p.baseurl) && isFilled(p.apikey))
       : [];
 
     // ── approve_mode ──
