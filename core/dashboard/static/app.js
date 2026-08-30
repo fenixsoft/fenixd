@@ -2122,6 +2122,12 @@ function renderConfig(data) {
           value="${esc(agents.daily_run_limit ?? 50)}" />
         <small>默认 50。单个 UTC 自然日内所有 Agent 类型成功运行的累计上限（实现/验证/管理共用一个池），达到后当日停止派发，UTC 次日 0 点自动归零。设为 0 表示不限制。</small>
       </div>
+      <div class="form-row">
+        <label>实现尝试预算（agents.impl_run_budget，1-10）</label>
+        <input type="number" id="cfg-impl-run-budget" min="1" max="10" step="1"
+          value="${esc(agents.impl_run_budget ?? 4)}" />
+        <small>默认 4。每 SPEC 跨修复周期的实现 run 启动次数上限（含首次实现与每轮修复重派）。达到上限即冻结该 SPEC 并交人工裁决，需人工调大预算或推进状态。合法范围 1-10。</small>
+      </div>
     </div>`;
 
   const approveSection = `
@@ -2620,12 +2626,16 @@ function collectConfigData() {
   const dailyRunLimitInput = main.querySelector('#cfg-daily-run-limit');
   const dailyRunLimit = numOr(dailyRunLimitInput, loadedAgents.daily_run_limit, 50);
 
+  // 实现尝试预算（1-10，超出范围回退真实值，避免脏值落盘）
+  const implRunBudgetInput = main.querySelector('#cfg-impl-run-budget');
+  const implRunBudget = numOr(implRunBudgetInput, loadedAgents.impl_run_budget, 4);
+
   // Approve mode
   const approveMode = (main.querySelector('input[name="approve_mode"]:checked') || {}).value || 'manual';
 
   return {
     llm: { providers },
-    agents: { models, max_concurrent: maxConcurrent, max_turns: maxTurns, run_timeout_seconds: runTimeout, daily_run_limit: dailyRunLimit },
+    agents: { models, max_concurrent: maxConcurrent, max_turns: maxTurns, run_timeout_seconds: runTimeout, daily_run_limit: dailyRunLimit, impl_run_budget: implRunBudget },
     gates: { approve_mode: approveMode },
   };
 }
@@ -2671,6 +2681,17 @@ function saveConfig() {
       banner.className = 'config-banner error';
       banner.textContent = '❌ 保存失败：' + parts.join('；') + '。';
     }
+    return;
+  }
+
+  // 实现尝试预算范围校验（1-10）：越界阻止保存，避免脏值落盘
+  const implBudget = payload.agents && payload.agents.impl_run_budget;
+  if (!Number.isInteger(implBudget) || implBudget < 1 || implBudget > 10) {
+    if (banner) {
+      banner.className = 'config-banner error';
+      banner.textContent = '❌ 保存失败：实现尝试预算（agents.impl_run_budget）必须为 1-10 的整数。';
+    }
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 保存配置'; }
     return;
   }
 
