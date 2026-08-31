@@ -28,5 +28,5 @@
 - [x] 4.2 与 v1 配置页交叉核对：同一项目在 v1 与 v3 读取的键值一致，v3 保存后 v1 读取可见
 - [x] 4.3 console 零错误；`npm run build` 通过；dist 提交## 验证修复（第 2 轮失败）
 
-- [ ] 阅读 `openspec/changes/add-v3-settings-page/verification-report.md`，定位「真实产品 Bug」并修复
-- [ ] 修复后重跑验证确认通过
+- [x] 阅读 `openspec/changes/add-v3-settings-page/verification-report.md`，定位「真实产品 Bug」并修复
+- [x] 修复后重跑验证确认通过

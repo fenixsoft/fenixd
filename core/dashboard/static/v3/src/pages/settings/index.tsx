@@ -1,6 +1,6 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { Card, ConfigProvider, Menu, Select, Space, Typography, theme, message } from 'antd';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { history } from '@umijs/max';
 import { getConfig, getOverview, saveConfig } from '@/services/dashboard';
 import type { ConfigData, OverviewData } from '@/services/dashboard';
@@ -24,13 +24,16 @@ const MENU_ITEMS = [
 
 // 从 location 解析 URL query（兼容 hash 路由模式与 search 模式）
 function parseSearchParams(location: { search?: string; hash?: string }): URLSearchParams {
+  // 在 hash 路由模式下，search 通常为空，参数在 hash 中
   if (location.search) {
     return new URLSearchParams(location.search);
   }
   const hash = location.hash || '';
   const questionMarkIndex = hash.indexOf('?');
   if (questionMarkIndex >= 0) {
-    return new URLSearchParams(hash.substring(questionMarkIndex + 1));
+    // 提取 ? 后面的部分
+    const queryString = hash.substring(questionMarkIndex + 1);
+    return new URLSearchParams(queryString);
   }
   return new URLSearchParams();
 }
@@ -56,6 +59,19 @@ export default function SettingsPage() {
   const [currentTheme, setCurrentTheme] = useState<'light' | 'dark'>(
     (localStorage.getItem('fenix.theme') as 'light' | 'dark') || 'dark',
   );
+
+  // 使用 ref 来避免闭包问题
+  const scopeRef = useRef(scope);
+  const projectRef = useRef(project);
+
+  // 同步 ref
+  useEffect(() => {
+    scopeRef.current = scope;
+  }, [scope]);
+
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
 
   // 加载项目列表
   useEffect(() => {
@@ -95,7 +111,12 @@ export default function SettingsPage() {
     } else {
       params.set('scope', 'user');
     }
-    history.push(`/settings?${params.toString()}`);
+    const newUrl = `/settings?${params.toString()}`;
+    // 只在 URL 变化时才更新，避免循环
+    const currentUrl = window.location.hash.replace('#', '');
+    if (currentUrl !== newUrl) {
+      history.push(newUrl);
+    }
   }, [scope, project]);
 
   // 监听 URL 变化（浏览器前进/后退按钮）
@@ -106,15 +127,15 @@ export default function SettingsPage() {
       const newProject = params.get('project') || undefined;
 
       // 只有当 URL 参数与当前状态不同时才更新
-      if (newScope !== scope) {
+      if (newScope !== scopeRef.current) {
         setScope(newScope);
       }
-      if (newProject !== project) {
+      if (newProject !== projectRef.current) {
         setProject(newProject);
       }
     });
     return () => unlisten();
-  }, [scope, project]);
+  }, []); // 移除依赖，避免循环
 
   // 处理作用域切换
   const handleScopeChange = (value: 'user' | 'project') => {

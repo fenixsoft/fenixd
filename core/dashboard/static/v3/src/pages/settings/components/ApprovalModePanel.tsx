@@ -12,15 +12,12 @@ interface ApprovalModePanelProps {
 export default function ApprovalModePanel({ config, onSave }: ApprovalModePanelProps) {
   const [form] = Form.useForm();
 
-  // 初始化表单数据
-  const initialValues = {
-    approve_mode: config.gates.approve_mode || 'manual',
-  };
-
   // 监听 config 变化，更新表单值
   useEffect(() => {
+    // 确保 approve_mode 有值，默认为 'manual'
+    const approveMode = config.gates.approve_mode || 'manual';
     form.setFieldsValue({
-      approve_mode: config.gates.approve_mode || 'manual',
+      approve_mode: approveMode,
     });
   }, [config.gates.approve_mode, form]);
 
@@ -41,7 +38,11 @@ export default function ApprovalModePanel({ config, onSave }: ApprovalModePanelP
     <div>
       <h3>审批模式</h3>
       <Card>
-        <Form form={form} initialValues={initialValues} layout="vertical">
+        <Form
+          form={form}
+          initialValues={{ approve_mode: config.gates.approve_mode || 'manual' }}
+          layout="vertical"
+        >
           <Form.Item
             name="approve_mode"
             label="审批模式"
