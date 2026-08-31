@@ -1,8 +1,10 @@
+import { MoreOutlined } from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
 import {
   Alert,
   App,
   Badge,
+  Breadcrumb,
   Button,
   Card,
   Dropdown,
@@ -373,7 +375,7 @@ export default function SpecListPage() {
       title: '名称',
       dataIndex: 'name',
       key: 'name',
-      width: '35%',
+      width: '30%',
       sorter: (a: SpecSummary, b: SpecSummary) => a.name.localeCompare(b.name),
       render: (_: string, record: SpecSummary) => (
         <Space size={4}>
@@ -465,15 +467,11 @@ export default function SpecListPage() {
     {
       title: '操作',
       key: 'actions',
-      width: '8%',
+      width: '13%',
+      onCell: () => ({ style: { paddingInline: 0 } }),
       render: (_: unknown, record: SpecSummary) => (
-        <Space size={0}>
-          <Button
-            type="link"
-            size="small"
-            style={{ paddingInline: 4 }}
-            onClick={() => setDocView(record.name)}
-          >
+        <Space size={2}>
+          <Button type="link" size="small" onClick={() => setDocView(record.name)}>
             文档
           </Button>
           <Dropdown
@@ -481,9 +479,7 @@ export default function SpecListPage() {
             placement="bottomRight"
             trigger={['click']}
           >
-            <Button type="link" size="small" style={{ paddingInline: 4 }}>
-              更多
-            </Button>
+            <Button type="link" size="small" icon={<MoreOutlined />}>更多</Button>
           </Dropdown>
         </Space>
       ),
@@ -493,9 +489,7 @@ export default function SpecListPage() {
   return (
     <PageContainer
       header={{
-        breadcrumb: {
-          items: [{ title: '概览', href: '#/overview' }, { title: name }],
-        },
+        extra: <Breadcrumb items={[{ title: '概览', href: '#/overview' }, { title: name }]} />,
         title: (
           <Space size={8} align="baseline">
             <span>{name}</span>

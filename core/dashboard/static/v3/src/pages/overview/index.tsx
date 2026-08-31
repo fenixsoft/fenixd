@@ -1,5 +1,5 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, Card, Space, Spin } from 'antd';
+import { Alert, Breadcrumb, Card, Space, Spin } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getOverview } from '@/services/dashboard';
 import type { OverviewData } from '@/services/dashboard';
@@ -59,7 +59,7 @@ export default function OverviewPage() {
   return (
     <PageContainer
       header={{
-        breadcrumb: { items: [{ title: '概览' }] },
+        extra: <Breadcrumb items={[{ title: '概览' }]} />,
         title: '跨项目概览',
         subtitle: data ? `监控 ${data.projects.length} 个项目` : ' ',
       }}

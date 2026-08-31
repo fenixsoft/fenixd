@@ -6,7 +6,7 @@ import {
   SettingOutlined,
 } from '@ant-design/icons';
 import type { RunTimeLayoutConfig } from '@umijs/max';
-import { Link, useLocation } from '@umijs/max';
+import { Link } from '@umijs/max';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import type { ReactNode } from 'react';
@@ -42,11 +42,6 @@ export function rootContainer(container: ReactNode) {
 
 // ProLayout 支持的 api https://procomponents.ant.design/components/layout
 export const layout: RunTimeLayoutConfig = ({ initialState }) => {
-  // 路由派生 openKeys：「项目」组恒展开（默认展开语义），当前顶级菜单组同步保持展开。
-  // 不能用 menu.defaultOpenAll：BaseMenu 的 pathname effect 会覆盖初始展开状态。
-  const location = useLocation();
-  const top = '/' + (location.pathname.split('/')[1] || '');
-  const openKeys = Array.from(new Set(['/projects', top]));
   return {
     ...defaultSettings,
     title: 'Fenix Dashboard',
@@ -69,7 +64,11 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
       { path: '/settings', name: '设置', icon: <SettingOutlined /> },
       { path: '/activities', name: '运维记录', icon: <HistoryOutlined /> },
     ],
-    openKeys,
+    // 「项目」二级菜单默认展开：defaultOpenAll + ignoreFlatMenu 组合下 BaseMenu
+    // 会在路由变化时重设为全展开；openKeys:false 使 pathname effect 不覆盖该行为，
+    // 用户点击标题仍可临时收起。不能用受控 openKeys（会被 pathname effect 覆盖）。
+    openKeys: false,
+    menu: { defaultOpenAll: true, ignoreFlatMenu: true },
     // 顶栏右侧：v3 标识
     actionsRender: () => [
       <Tag key="v3" color="default" style={{ marginInlineEnd: 0 }}>
