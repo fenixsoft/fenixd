@@ -5,11 +5,13 @@ import {
   PauseCircleOutlined,
   PlayCircleOutlined,
 } from '@ant-design/icons';
-import { Alert, App, Avatar, Button, Card, Dropdown, List, Progress, Space, Tag, Typography } from 'antd';
+import { Alert, App, Avatar, Button, Card, Dropdown, List, Progress, Radio, Space, Tag, Typography } from 'antd';
 import { useState } from 'react';
 import { history } from '@umijs/max';
 import type { ProjectSummary } from '@/services/dashboard';
 import { deleteProject, startProject, statusMeta, stopProject } from '@/services/dashboard';
+
+type StatusFilter = 'all' | 'running' | 'stopped';
 
 const TRACK_LIGHT = '#e6f4ff';
 
@@ -64,6 +66,13 @@ export default function ProjectCards({
 }) {
   const { message, modal } = App.useApp();
   const [pendingName, setPendingName] = useState('');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+
+  const filtered = projects.filter((p) => {
+    if (statusFilter === 'all') return true;
+    if (statusFilter === 'running') return p.daemon === 'running';
+    return p.daemon !== 'running';
+  });
 
   const runAction = async (name: string, action: 'start' | 'stop' | 'delete') => {
     setPendingName(name);
@@ -138,10 +147,27 @@ export default function ProjectCards({
   }
 
   return (
-    <Card variant="borderless" styles={{ body: { paddingBlock: 0 } }}>
+    <Card
+      variant="borderless"
+      title="项目清单"
+      extra={
+        <Radio.Group
+          optionType="button"
+          size="small"
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+          options={[
+            { label: '全部', value: 'all' },
+            { label: '运行中', value: 'running' },
+            { label: '未运行', value: 'stopped' },
+          ]}
+        />
+      }
+      styles={{ body: { paddingBlock: 0 } }}
+    >
       <List
         itemLayout="horizontal"
-        dataSource={projects}
+        dataSource={filtered}
         renderItem={(project) => {
           const running = project.daemon === 'running';
           const progress = pct(project.task_done, project.task_total);
@@ -171,7 +197,7 @@ export default function ProjectCards({
                   placement="bottomRight"
                   trigger={['click']}
                 >
-                  <Button type="text" size="small" icon={<MoreOutlined />}>
+                  <Button type="link" size="small" icon={<MoreOutlined />}>
                     更多
                   </Button>
                 </Dropdown>,

@@ -3,6 +3,7 @@ import { Alert, Card, Space, Spin } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getOverview } from '@/services/dashboard';
 import type { OverviewData } from '@/services/dashboard';
+import AlertBanner from './components/AlertBanner';
 import IntroduceRow from './components/IntroduceRow';
 import ProjectCards from './components/ProjectCards';
 
@@ -12,6 +13,7 @@ export default function OverviewPage() {
   const [data, setData] = useState<OverviewData | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [alertsTick, setAlertsTick] = useState(0);
   const lastRefreshRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -42,6 +44,7 @@ export default function OverviewPage() {
         msg.type !== 'refresh' &&
         msg.type !== 'run_meta'
       ) {
+        if (msg.type === 'alerts') setAlertsTick((t) => t + 1);
         return;
       }
       const now = Date.now();
@@ -60,6 +63,7 @@ export default function OverviewPage() {
         subtitle: data ? `监控 ${data.projects.length} 个项目` : ' ',
       }}
     >
+      <AlertBanner refreshTick={alertsTick} />
       {error ? (
         <Alert
           type="error"

@@ -75,6 +75,44 @@ export function deleteProject(name: string) {
   return request(`/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }
 
+// ── 人工升级告警（/api/alerts，与 v1 横幅同源） ──
+
+export interface AlertItem {
+  id: string;
+  project?: string;
+  spec?: string;
+  severity?: string;
+  created?: string;
+  description?: string;
+  evidence?: string;
+  action_taken?: string;
+  recommended_action?: string;
+  handled?: boolean;
+  handled_by?: string;
+  handled_at?: string;
+  resolve_note?: string;
+}
+
+export interface AlertsData {
+  alerts: AlertItem[];
+  total_unhandled?: number;
+  resolved?: AlertItem[];
+  error?: string;
+}
+
+export async function getAlerts(): Promise<AlertsData> {
+  return request<AlertsData>('/api/alerts');
+}
+
+export function markAlertHandled(project: string | undefined, id: string) {
+  const q = project ? `?project=${encodeURIComponent(project)}` : '';
+  return request(`/api/alerts/${encodeURIComponent(id)}/handled${q}`, { method: 'POST' });
+}
+
+export function clearAllAlerts() {
+  return request('/api/alerts/clear', { method: 'POST' });
+}
+
 // ── SPEC 状态元数据（中文标签 + 语义色，与 v1 STATUS_META 对齐） ──
 
 export type StatusTone = 'muted' | 'info' | 'warning' | 'critical' | 'good' | 'aqua';
