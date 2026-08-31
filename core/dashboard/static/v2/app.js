@@ -330,17 +330,24 @@
       const st = document.createElement('style');
       st.id = 'v2-shell-style';
       st.textContent = `
-        .v2-shell{display:flex;min-height:100vh;background:var(--body-bg,#1a1a1a);color:var(--text-color,#e8e8e8)}
-        .v2-aside{width:200px;background:#232324;border-right:1px solid #383838;padding:12px 0}
+        body{margin:0}
+        /* height 固定为视口:若用 min-height,长内容会把 shell 连同整页撑出滚动,
+           content 的 flex 收缩随之失效(2026-08-31 双滚动条事故) */
+        .v2-shell{display:flex;height:100vh;background:var(--body-bg,#1a1a1a);color:var(--text-color,#e8e8e8)}
+        .v2-aside{width:200px;background:#232324;border-right:1px solid #383838;padding:12px 0;overflow-y:auto;flex-shrink:0}
         .v2-brand{font-size:1.2rem;font-weight:700;padding:8px 16px 16px}
         .v2-nav ul{list-style:none;margin:0;padding:0}
         .v2-nav-item a{display:block;padding:8px 16px;color:#b8b8b8;text-decoration:none}
         .v2-nav-item a:hover{background:#2e2e2f;color:#fff}
         .v2-nav-active>a{background:#313131;color:#fff;font-weight:600}
-        .v2-topbar{display:flex;justify-content:flex-end;align-items:center;gap:8px;padding:8px 20px;border-bottom:1px solid rgba(255,255,255,.08)}
+        .v2-topbar{display:flex;justify-content:flex-end;align-items:center;gap:8px;padding:8px 20px;border-bottom:1px solid rgba(255,255,255,.08);flex-shrink:0}
         .v2-scope-label{font-size:.85rem;color:var(--text-muted,#999)}
         #v2-scope-select{background:#222;color:#e8e8e8;border:1px solid #444;border-radius:4px;padding:4px 8px}
-        .v2-main{flex:1;padding:0 20px 20px;overflow:auto}
+        /* 列向 flex:#v2-content 弹性填满剩余高度。amis embed 会给挂载点加 .amis-scope 类,
+           命中 sdk.css 的 height:100%,若 content 高度不定会把 main 撑出内滚(2026-08-31 双滚动条事故);
+           长页面滚动收敛到 content 内部,topbar 固定。 */
+        .v2-main{flex:1;display:flex;flex-direction:column;padding:0 20px 20px;overflow:hidden}
+        #v2-content{flex:1 1 auto;min-height:0;overflow:auto}
         .v2-empty{color:#888;padding:40px;text-align:center}
       `;
       document.head.appendChild(st);
@@ -385,9 +392,11 @@
     initScopeSelect();
     // 项目卡片整卡点击 → 项目页。amis cards 的 card 模板 onEvent/link/title-tpl 在
     // 6.13 SDK 下均不生效,故在壳层委托:标题文本即项目名,按钮区域排除。
+    // 注意:类前缀随主题变化(dark-*/cxd-*,6b66ade 引入浅色),必须用主题无关匹配,
+    // 否则浅色主题下整卡点击失效(2026-08-31 回归事故)。
     document.getElementById('v2-content').addEventListener('click', (e) => {
-      if (e.target.closest('button, a, .dark-Button')) return;
-      const card = e.target.closest('.dark-Card--link');
+      if (e.target.closest('button, a, [class*="-Button"]')) return;
+      const card = e.target.closest('[class*="Card--link"]');
       if (!card || !card.textContent.includes('路径:')) return; // 仅项目卡,统计卡排除
       const titleEl = card.querySelector('[class*="-Card-title"]');
       const name = titleEl && titleEl.textContent.trim();
