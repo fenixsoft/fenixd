@@ -17,7 +17,7 @@
 ## 3. 实时与验证
 
 - [x] 3.1 SSE `alerts`/`refresh` 事件静默重拉（保持页签与滚动），卸载关闭连接
-- [ ] 3.2 浏览器走查全部 spec Scenario；对照 v1 运维记录页核对字段映射
+- [x] 3.2 浏览器走查全部 spec Scenario；对照 v1 运维记录页核对字段映射
 - [x] 3.3 console 零错误；`npm run build` 通过；dist 提交
 
 ## 验证修复（第 1 轮失败）
