@@ -27,9 +27,9 @@
 
 ## 5. 阶段 4：pm_engine → FamilyGovernor + ImplBudget
 
-- [ ] 5.1 提取 family.py（fix 家族治理/sibling repair/爆炸信号/waiver 状态同迁）
-- [ ] 5.2 提取 budget.py（run 预算/豁免/告警/对账）
-- [ ] 5.3 全量 pytest 全绿 + import 验证通过，独立 commit
+- [x] 5.1 提取 family.py（fix 家族治理/sibling repair/爆炸信号/waiver 状态同迁）
+- [x] 5.2 提取 budget.py（run 预算/豁免/告警/对账）
+- [x] 5.3 全量 pytest 全绿 + import 验证通过，独立 commit
 
 ## 6. 阶段 5：pm_engine → VerificationPipeline
 

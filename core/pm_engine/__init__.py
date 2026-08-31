@@ -1,0 +1,17 @@
+"""core/pm_engine — 项目管理引擎包（refactor-core-packages）。
+
+由单文件 pm_engine.py 重组为「门面 + 职责组件」结构（design D2）：
+
+- engine.py   PMEngine 门面：事件编排/派发/收尾/报告留此，组装组件，
+              为测试引用的私有方法保留一行委托（design D3 规则 4）
+- family.py   FamilyGovernor：fix 家族治理（阶段 4）
+- budget.py   ImplBudget：实现尝试总预算（阶段 4）
+- （后续阶段：verification / dispatch / recovery / reporting 渐次就位）
+
+对外 API 兼容保证（spec core-package-structure「外部 API 零变化」）：
+`fenixd.py` 的 `from core.pm_engine import PMEngine`、测试的模块属性补丁缝
+（core.pm_engine.subprocess 等）全部保持可用。
+"""
+
+from .engine import PMEngine  # noqa: F401
+from .engine import *  # noqa: F401,F403

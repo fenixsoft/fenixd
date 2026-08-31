@@ -1,5 +1,5 @@
 """
-pm_engine.py — Project Management Engine for fenixd.
+engine.py — PMEngine 门面（Project Management Engine for fenixd）.
 
 Handles SPEC auto-review, Agent scheduling, priority management,
 concurrency control, daily reporting, and the single human gate (push approval).
@@ -19,6 +19,16 @@ from pathlib import Path
 from typing import Optional
 
 from core.dashboard.data import find_impl_run_file, parse_run_task_done
+from core.pm_engine.family import FamilyGovernor
+from core.pm_engine.budget import ImplBudget
+from core.pm_engine.family import (
+    MAX_VERIFY_FAIL_ROUNDS,
+)
+from core.pm_engine.budget import (
+    DEFAULT_IMPL_RUN_BUDGET,
+    IMPL_RUN_BUDGET_USED_FIELD,
+    BUDGET_EXEMPT_ALERT_THRESHOLD,
+)
 from core.state_machine import (
     BUDGET_EXEMPT_ALERTED_FIELD,
     BUDGET_EXEMPT_RUNS_FIELD,
@@ -44,25 +54,6 @@ DEFAULT_FOLLOWUP_CHECK_MINUTES = 15
 DEFAULT_READY_STALL_THRESHOLD_MINUTES = 20
 # 同 spec 同指纹的巡检/滞留信号冷却（分钟）：指纹未变且冷却期内只记日志
 DEFAULT_SIGNAL_COOLDOWN_MINUTES = 30
-# ── 原地打回升级阈值（inplace-bug-repair D2）────────────────────
-# _verify_fail_rounds 达到此值时冻结为 blocked，停止自动修复，等待人工裁决。
-# 模块常量，不进 config（避免触发「配置项必须带 Dashboard 界面」约束）。
-MAX_VERIFY_FAIL_ROUNDS = 3
-
-# ── 实现尝试总预算缺省值（add-fail-counter-budget D2/D3）──────────
-# 每 spec 跨修复周期的实现 run 启动次数上限（含首次实现与每轮修复重派、
-# 含单次派发的重试 attempt）；达到预算 → blocked + 人工裁决。
-# 该缺省经 config 键 ``agents.impl_run_budget`` 覆盖（该键带 Dashboard 界面）。
-DEFAULT_IMPL_RUN_BUDGET = 4
-# 持久化字段名：当前 spec 已累计启动的实现 run 次数。
-IMPL_RUN_BUDGET_USED_FIELD = "_impl_run_budget_used"
-# ── 死亡 run 豁免（fix-budget-counting-semantics D1）──────────────
-# _budget_exempt_runs 侧车达到该值时发一次性提醒级告警（不冻结）：
-# 豁免本身不占预算，但极端「死亡循环」仍烧 token——告警兜底人工介入。
-# 可经 pm.budget_exempt_alert_threshold 覆盖（模块常量缺省，不进 Dashboard）。
-BUDGET_EXEMPT_ALERT_THRESHOLD = 6
-
-
 class PMEngine:
     """
     Project Management Engine — the brain of fenixd.
@@ -405,7 +396,7 @@ class PMEngine:
             指纹变化或冷却结束方可再次写入。
           - admin_alerts 去重：store 内冷却期内已有同类信号时同样抑制。
         """
-        from .admin_store import AdminStore, SIGNAL
+        from core.admin_store import AdminStore, SIGNAL
         entry = self.state_machine.read_one(spec_name) or {}
         fp = fingerprint or self._spec_fingerprint(entry)
         cooldown = float(self._get_config(
@@ -545,823 +536,42 @@ class PMEngine:
         finally:
             self._handling_events.discard(event_key)
 
-    def _resolve_fix_spec_name(self, spec_name: str):
-        """确定本轮 bug 应使用的 fix SPEC 名称。
 
-        规则：
-        - fix-{spec} 不存在，或处于可重置状态（drafted/ready/implemented/bug-found）
-          → 返回该名称（复用）
-        - fix-{spec} 已终态完成（done/verified/pushed）
-          → 递归加 fix- 前缀（fix-fix-{spec}、fix-fix-fix-{spec}...），生成新一轮修复
-        - fix-{spec} 处于进行中（testing/implementing）
-          → 返回 None（重复派发竞态，跳过）
-        """
-        candidate = f"fix-{spec_name}"
-        while True:
-            existing = self.state_machine.read_one(candidate)
-            if existing is None:
-                return candidate
-            status = existing.get("status", "")
-            if status in ("testing", "implementing"):
-                # 已有进行中的 fix SPEC，视为重复派发，跳过
-                return None
-            if status in ("done", "verified", "pushed"):
-                # 上一轮修复已终态完成，本轮是新 bug，递归加前缀
-                candidate = f"fix-{candidate}"
-                continue
-            # 可重置状态（drafted/ready/implemented/bug-found），复用
-            return candidate
-
-    def _ensure_fix_spec_files(self, fix_spec_name: str, parent_spec_name: str):
-        """为自动生成的 fix SPEC 写入 proposal.md 与 tasks.md。
-
-        fix SPEC 由验证引擎发现 bug 后自动创建，仅写入 STATE.md 是不够的——
-        implementer Agent 依赖磁盘上的 proposal.md/tasks.md 才能执行，
-        缺失会导致 SPEC 卡在 implementing 状态。此处生成最小可执行的 SPEC 文档。
-        """
-        spec_dir = self.project_root / "openspec" / "changes" / fix_spec_name
-        spec_dir.mkdir(parents=True, exist_ok=True)
-
-        proposal = (
-            f"# Proposal: 修复 {parent_spec_name} 验证发现的缺陷\n\n"
-            f"## Why\n\n"
-            f"`{parent_spec_name}` 的验证报告发现产品缺陷，导致验证未通过。"
-            f"详见 `openspec/changes/{parent_spec_name}/verification-report.md` 的「真实产品 Bug」部分。\n\n"
-            f"## What Changes\n\n"
-            f"修复验证报告中列出的真实产品缺陷。实现者应先阅读父 SPEC 的 "
-            f"`verification-report.md`，定位每个真实产品 Bug 的根因并修复；"
-            f"伪失败（测试框架/场景缺陷）不在本 SPEC 修复范围内。\n\n"
-            f"## Impact\n\n"
-            f"- **代码**：按验证报告修复真实产品缺陷\n"
-            f"- **行为**：修复后，父 SPEC 验证报告中失败的场景应转为通过\n"
-        )
-        tasks = (
-            f"# Tasks: 修复 {parent_spec_name} 验证发现的缺陷\n\n"
-            f"## 1. 修复真实产品缺陷\n\n"
-            f"- [ ] 1.1 阅读 `openspec/changes/{parent_spec_name}/verification-report.md`，"
-            f"定位「真实产品 Bug」的根因并修复\n\n"
-            f"## 2. 验证与打包\n\n"
-            f"- [ ] 2.1 运行 `npm run build`（tsc + vite build）确认编译与构建通过\n"
-            f"- [ ] 2.2 运行框架单元测试（`python3 -m pytest .fenix/tests/ -v`）确认无回归\n"
-            f"- [ ] 2.3 执行 `bash scripts/package.sh` 生成最新扩展包\n"
-        )
-
-        (spec_dir / "proposal.md").write_text(proposal, encoding="utf-8")
-        (spec_dir / "tasks.md").write_text(tasks, encoding="utf-8")
-        self.logger.info("pm_engine", f"Ensured fix SPEC files: {fix_spec_name}")
 
     # ── fix 族谱收敛治理（fix-family-convergence-governor / design D4）──
 
-    @staticmethod
-    def _fix_prefix_depth(name: str) -> int:
-        """深度：规范名中连续 `fix-` 前缀层数（name 为子 SPEC 名）。
 
-        fix-x → 1；fix-fix-fix-x → 3。非 fix 名 → 0。
-        """
-        depth = 0
-        s = name
-        while s.startswith("fix-"):
-            depth += 1
-            s = s[len("fix-"):]
-        return depth
 
-    @staticmethod
-    def _fix_strip_all(name: str) -> str:
-        """剥除全部连续 `fix-` 前缀，得到家族根名（fix-fix-x → x）。"""
-        return name[4 * PMEngine._fix_prefix_depth(name):] if name.startswith("fix-") else name
 
-    def _family_width(self, child_name: str) -> int:
-        """宽度：同根（剥除全部 fix- 前缀后同名）且未完成（非 done/pushed）的 fix 子代数量。
 
-        口径依据 STATE 全量 read_all（design D4：不受 ready 清空字段保留策略影响，
-        对历史存在的四层命名按现值评估，不追溯惩罚已 done/pushed 祖先）。
-        """
-        root = self._fix_strip_all(child_name)
-        specs = self.state_machine.read_all() or {}
-        count = 0
-        for name, entry in specs.items():
-            if not isinstance(name, str) or not name.startswith("fix-") or name == child_name:
-                continue
-            if self._fix_strip_all(name) != root:
-                continue
-            status = (entry or {}).get("status", "")
-            if status in ("done", "pushed"):
-                continue
-            count += 1
-        return count
 
-    def _family_waiver_set(self, spec_name: str) -> bool:
-        """父 SPEC 是否持有放行豁免位 `_family_waiver=true`（单次）。"""
-        spec = self.state_machine.read_one(spec_name) or {}
-        raw = str(spec.get("_family_waiver") or "").strip().lower()
-        return raw in ("true", "1", "yes")
 
-    def _consume_family_waiver(self, spec_name: str) -> bool:
-        """消费豁免位：若存在则复位为 False，返回原值。"""
-        had = self._family_waiver_set(spec_name)
-        if had:
-            self.state_machine.update_spec(spec_name, {"_family_waiver": False})
-        return had
 
-    def _family_gate_blocked(self, parent_name: str, child_name: str) -> bool:
-        """越界判定：候选子 SPEC 的深度/宽度是否超过 pm.family 上限。
 
-        深度 > max_depth（默认 3）或 宽度 >= max_width（默认 2，新成员将越界）
-        时返回 True。enabled 语义由 config 承载：未配置即采用默认值。
-        """
-        iw = self._get_config("pm.family.max_depth")
-        ns = self._get_config("pm.family.max_width")
-        max_depth = int(iw if iw is not None else 3)
-        max_width = int(ns if ns is not None else 2)
-        depth = self._fix_prefix_depth(child_name)
-        if depth > max_depth:
-            return True
-        width = self._family_width(child_name)
-        return width >= max_width
 
-    @staticmethod
-    def _is_fix_spec(name: str) -> bool:
-        """判定 name 是否为 fix SPEC（连续 `fix-` 前缀命名）。"""
-        return isinstance(name, str) and name.startswith("fix-")
 
-    @staticmethod
-    def _same_root(name_a: str, name_b: str) -> bool:
-        """同根判定：剥除全部连续 `fix-` 前缀后同名（design D1 去重依据）。
 
-        fix-fix-x 与 fix-x、fix-x 与 fix-x 同根；fix-x 与 fix-y、fix-x 与 y 不同根。
-        """
-        if not (PMEngine._is_fix_spec(name_a) and PMEngine._is_fix_spec(name_b)):
-            return False
-        return PMEngine._fix_strip_all(name_a) == PMEngine._fix_strip_all(name_b)
 
-    def _same_root_siblings(self, spec_name: str) -> list:
-        """返回 spec_name 的同根非终态兄弟列表（排除自身，design 守卫一/三）。
 
-        口径：同根（剥除全部 fix- 前缀后同名）+ 非终态（非 done/pushed）。
-        含自身处于进行中的兄弟亦计入——守卫关心的是「同根是否已有非终态修复活动」。
-        """
-        if not self._is_fix_spec(spec_name):
-            return []
-        root = self._fix_strip_all(spec_name)
-        specs = self.state_machine.read_all() or {}
-        siblings = []
-        for name, entry in specs.items():
-            if not isinstance(name, str) or not self._is_fix_spec(name):
-                continue
-            if self._fix_strip_all(name) != root:
-                continue
-            if name == spec_name:
-                continue
-            status = (entry or {}).get("status", "")
-            if status in ("done", "pushed"):
-                continue
-            siblings.append(name)
-        return siblings
 
-    def _sibling_repair_active(self, spec_name: str, my_enqueued_at: float = None) -> str:
-        """判定同根兄弟是否存在 actionable 修复活动，返回承载方 spec 名或空串（design D3）。
-
-        actionable 定义（design D3）：兄弟 status ∈ {implementing, ready(其队列含实现器条目)}
-        或存在活跃 impl/verify agent（worktree 进程存活探测复用孤儿白名单逻辑）。
-        仅 ready 无队列条目不计为 actionable（防僵死 ready 永久阻塞）。
-
-        my_enqueued_at：派发方（守卫三调用点）自身条目的入队时刻，用于先到先得
-        裁决（design D2「先到先得，后到抑制」）。批量入队现场（full_scan 一次排入
-        同根双 ready）若不做此裁决，兄弟双方都会把对方判为 actionable 而互相抑制
-        ——双方永远无法派发（2026-08-28 实证队列死锁）。规则：仅当兄弟的实现器
-        条目入队不晚于我时，才由兄弟承载；兄弟更新则我来承载。
-        my_enqueued_at 为 None（非派发路径调用）保持原判，全部计 actionable。
-        """
-        for sib in self._same_root_siblings(spec_name):
-            sib_spec = self.state_machine.read_one(sib) or {}
-            status = sib_spec.get("status", "")
-            if status == "implementing":
-                return sib
-            if status == "ready":
-                # 仅当队列含该兄弟的实现器条目时才视为 actionable
-                with self._queue_lock:
-                    sib_entry = next(
-                        (e for e in self._run_queue
-                         if e[1] == sib and e[2] == "implementer"),
-                        None,
-                    )
-                if sib_entry is not None:
-                    if my_enqueued_at is None or sib_entry[3] <= my_enqueued_at:
-                        return sib
-                    # 兄弟条目晚于我入队：先到先得，由我承载，不计 actionable
-                    continue
-                # ready 但无队列条目：进一步探测活跃 worktree/agent 进程
-                if self._sibling_has_live_agent(sib):
-                    return sib
-        # 兜底：直接探测自身/兄弟是否仍有存活 agent 进程（覆盖非 ready 但卡死的边缘态）
-        for sib in self._same_root_siblings(spec_name):
-            if self._sibling_has_live_agent(sib):
-                return sib
-        return ""
-
-    def _sibling_has_live_agent(self, spec_name: str) -> bool:
-        """探测 spec 是否仍有存活的 agent 子进程（worktree 存活探测，复用孤儿白名单逻辑）。
-
-        - worktree_manager.has_active_worktree 优先（内存活动集合，最可靠）；
-        - 否则用 agent_runner.has_live_attempt（姊妹变更落地接口）兜底；
-        - 二者皆不可得时回退 pgrep 探测进程表（与 event_bus._ready_has_live_child 同口径）。
-        """
-        try:
-            wm = getattr(self.agent_runner, "worktree_manager", None)
-            if wm is not None and hasattr(wm, "has_active_worktree"):
-                if wm.has_active_worktree(spec_name):
-                    return True
-        except Exception:
-            pass
-        try:
-            ar = self.agent_runner
-            if hasattr(ar, "has_live_attempt"):
-                if ar.has_live_attempt(spec_name):
-                    return True
-        except Exception:
-            pass
-        # 回退：pgrep 探测 worktrees 目录下的 claude 进程（与 event_bus 同语义）
-        try:
-            import subprocess as _sp
-            wt_root = self.project_root / ".claude" / "worktrees"
-            if not wt_root.is_dir():
-                return False
-            pat = f"impl-{spec_name}-" if "verify" not in spec_name else f"verify-{spec_name}-"
-            for d in wt_root.iterdir():
-                if not d.is_dir():
-                    continue
-                if spec_name in d.name:
-                    r = _sp.run(
-                        ["pgrep", "-f", f"worktrees/{d.name}"],
-                        capture_output=True, text=True, timeout=10,
-                    )
-                    if r.returncode == 0 and r.stdout.strip():
-                        return True
-        except Exception:
-            return False
-        return False
-
-    def _has_non_terminal_child_fix(self, spec_name: str) -> str:
-        """判定 spec 是否已存在同根非终态子 fix（守卫一/二共用，design D4 子终态解封）。
-
-        返回承载修复的子 fix 名；无则空串。子 fix 指更深一层的 fix- 前缀 SPEC
-        （fix-{spec} 自身或 fix-fix-{spec} 等），非终态 = 非 done/pushed。
-        """
-        child = f"fix-{spec_name}"
-        specs = self.state_machine.read_all() or {}
-        # 逐层检查更深前缀的子 fix 是否存在且非终态
-        candidate = child
-        best = ""
-        while True:
-            entry = specs.get(candidate)
-            if entry is None:
-                # 该层不存在：若已有更深层终态子，仍可承载；否则停止
-                if best:
-                    break
-                # 递归尝试更深一层（fix-fix-{spec}）
-                deeper = f"fix-{candidate}"
-                if deeper in specs:
-                    candidate = deeper
-                    continue
-                break
-            status = (entry or {}).get("status", "")
-            if status in ("done", "pushed"):
-                # 该层终态：不承载，但允许检查更深一层是否仍在飞
-                deeper = f"fix-{candidate}"
-                if deeper in specs:
-                    candidate = deeper
-                    continue
-                break
-            # 非终态：作为承载方；但仍继续检查是否有更深在飞（取最深非终态）
-            best = candidate
-            deeper = f"fix-{candidate}"
-            if deeper in specs:
-                candidate = deeper
-                continue
-            break
-        return best
-
-    def _signal_family_explosion(self, parent_name: str, child_name: str, detail: str):
-        """越界派生请求转 family_explosion 困境信号（severity=major）写入 admin store。
-
-        不改父 SPEC 状态、不产生 bug-found 处理副作用（design D4）。信号进入既有
-        admin_monitor 唤起链（Administrator 处置 → 可对父 SPEC 放行一次）。
-        """
-        from .admin_store import AdminStore, SIGNAL
-        store = AdminStore(self.project_root, self.logger)
-        try:
-            store.append({
-                "kind": SIGNAL,
-                "signal_type": "family_explosion",
-                "spec": parent_name,
-                "severity": "major",
-                "description": (f"fix 族谱爆炸：'{parent_name}' 派生 {child_name} 被"
-                                f"深度/宽度上限拦截（{detail}），自动创建已中止"),
-                "evidence": f"candidate={child_name}; {detail}",
-                "recommended_action": ("人工检修根因环境；若确认放行一次，对该父 SPEC "
-                                       "设置 _family_waiver=true（下轮允许再创建一个子 SPEC）"),
-            })
-            self.logger.error(
-                "pm_engine",
-                f"fix 族谱收敛拦截: '{parent_name}' → {child_name} 自动创建中止（{detail}）"
-                f"，已写入 family_explosion 信号",
-            )
-        except Exception as e:
-            self.logger.error(
-                "pm_engine",
-                f"family_explosion 信号写入 admin store 失败: {e}",
-            )
-
-    def _do_spec_bug_found(self, spec_name: str):
-        """实际执行 bug-found 处理逻辑。
-
-        新裁决路径（inplace-bug-repair）：父 SPEC 原地打回重修，不再派生 fix-* 子 SPEC。
-        存量 fix-* 链保留 legacy 闭环直至自然终态。
-        """
-        # ── legacy 兼容：存量 fix-* SPEC 保持原有闭环 ──
-        if self._is_fix_spec(spec_name):
-            # 守卫一（fix-repair-lane-dedup）：fix spec 已有非终态子 fix 时抑制 reset
-            carrier = self._has_non_terminal_child_fix(spec_name)
-            if carrier:
-                self.logger.info(
-                    "pm_engine",
-                    f"守卫一：'{spec_name}' 为 fix spec 且已有非终态子 fix "
-                    f"'{carrier}' 承载修复——抑制 reset，保持 bug-found",
-                )
-                self.state_machine.update_spec(spec_name, {
-                    "error": f"修复由子 fix '{carrier}' 承载，抑制重实现重置",
-                })
-                return
-            # fix-* SPEC 走 legacy 派生闭环（子 fix 完成 → 父 SPEC 自动重验）
-            self._do_legacy_fix_spec_bug_found(spec_name)
-            return
-
-        # ── 新裁决路径：原地打回（inplace-bug-repair D1-D3）──
-        entry = self.state_machine.read_one(spec_name) or {}
-        fail_rounds = 0
-        try:
-            fail_rounds = int(entry.get("_verify_fail_rounds", 0) or 0)
-        except (TypeError, ValueError):
-            fail_rounds = 0
-        fail_rounds += 1
-
-        if fail_rounds >= MAX_VERIFY_FAIL_ROUNDS:
-            # ── 升级闸门：冻结为 blocked + human-escalation-alerts 告警 ──
-            self.state_machine.update_spec(spec_name, {
-                "_verify_fail_rounds": fail_rounds,
-                "status": "blocked",
-                "error": (
-                    f"验证连续失败 {fail_rounds} 轮，已冻结等待人工裁决。"
-                    f"详见 `openspec/changes/{spec_name}/verification-report.md`"
-                ),
-            })
-            self.logger.error(
-                "pm_engine",
-                f"升级闸门：'{spec_name}' 验证失败 {fail_rounds} 轮，"
-                f"冻结为 blocked，等待人工裁决",
-            )
-            self._send_human_escalation_alert(
-                spec_name=spec_name,
-                signal_type="verify_fail_escalation",
-                severity="major",
-                description=(
-                    f"'{spec_name}' 验证连续失败 {fail_rounds} 轮，已冻结等待人工裁决"
-                ),
-                evidence=(
-                    f"spec={spec_name}; fail_rounds={fail_rounds}; "
-                    f"report=openspec/changes/{spec_name}/verification-report.md"
-                ),
-                recommended_action=(
-                    "检查验证报告定位根因，人工调整 SPEC 状态后重跑验证；"
-                    "人工重置计数器即重新获得自动修复机会"
-                ),
-            )
-            return
-
-        # ── 正常打回：递增计数 + 重置 implementing + 注入修复任务 ──
-        self.state_machine.update_spec(spec_name, {
-            "_verify_fail_rounds": fail_rounds,
-            "status": "implementing",
-            "error": (
-                f"验证失败第 {fail_rounds} 轮，原地打回重修"
-            ),
-        })
-        self.logger.warning(
-            "pm_engine",
-            f"原地打回：'{spec_name}' 第 {fail_rounds} 轮失败，"
-            f"重置为 implementing 并注入修复任务",
-        )
-        # 注入 tasks.md「验证修复」段
-        self._inject_verify_fix_task(spec_name, fail_rounds)
-        self._append_project_log(
-            f"🐛 Bug found in **{spec_name}** → 原地打回（第 {fail_rounds} 轮）"
-        )
-        # 排队实现器
-        self._enqueue(spec_name, "implementer")
-
-    def _do_legacy_fix_spec_bug_found(self, spec_name: str):
-        """存量 fix-* SPEC 的 legacy 闭环（design D4：自然终态耗尽）。
-
-        保留原有派生逻辑，直至所有存量 fix 链收敛。
-        """
-        parent_prio = (self.state_machine.read_one(spec_name) or {}).get("priority", 5)
-
-        # 确定本轮 bug 应使用的 fix SPEC 名称
-        fix_spec_name = self._resolve_fix_spec_name(spec_name)
-        if fix_spec_name is None:
-            self.logger.info(
-                "pm_engine",
-                f"Legacy fix SPEC for '{spec_name}' already in progress — "
-                f"skipping duplicate bug-found handling",
-            )
-            return
-
-        # ── fix 族谱收敛治理（design D4 legacy）──
-        if self.state_machine.read_one(fix_spec_name) is None:
-            if self._family_gate_blocked(spec_name, fix_spec_name):
-                if self._consume_family_waiver(spec_name):
-                    self.logger.warning(
-                        "pm_engine",
-                        f"family_explosion 人工放行：'{spec_name}' 本轮豁免一次，"
-                        f"继续创建 {fix_spec_name}",
-                    )
-                else:
-                    detail = (f"深度={self._fix_prefix_depth(fix_spec_name)}, "
-                              f"宽度={self._family_width(fix_spec_name)}")
-                    self._signal_family_explosion(spec_name, fix_spec_name, detail)
-                    return
-            elif self._family_waiver_set(spec_name):
-                self._consume_family_waiver(spec_name)
-
-        self._ensure_fix_spec_files(fix_spec_name, spec_name)
-
-        existing_fix = self.state_machine.read_one(fix_spec_name)
-        if existing_fix:
-            guard_status = existing_fix.get("status", "")
-            if guard_status in (
-                "implementing", "testing", "implemented",
-                "verified", "done", "pushed",
-                "blocked",
-            ):
-                self.logger.info(
-                    "pm_engine",
-                    f"Fix SPEC '{fix_spec_name}' 处于 '{guard_status}' "
-                    f"— bug-found 重发幂等守卫：跳过重置，保留状态与 run 字段",
-                )
-            else:
-                self.logger.info(
-                    "pm_engine",
-                    f"Fix SPEC '{fix_spec_name}' already exists "
-                    f"(status={guard_status}) — resetting to ready",
-                )
-                reset_fields = {
-                    "status": "ready",
-                    "error": f"Re-triggered from bug found in {spec_name}",
-                }
-                if existing_fix.get("implementer_run") is None:
-                    reset_fields["implementer_run"] = None
-                if existing_fix.get("tester_run") is None:
-                    reset_fields["tester_run"] = None
-                self.state_machine.update_spec(fix_spec_name, reset_fields)
-                self._on_spec_ready(fix_spec_name)
-        else:
-            self.state_machine.add_spec(fix_spec_name, {
-                "status": "ready",
-                "priority": min(parent_prio + 1, 10),
-                "branch": None,
-                "error": f"Auto-created from bug found in {spec_name}",
-            })
-            self.logger.info("pm_engine", f"Created fix SPEC: {fix_spec_name}")
-
-        self._append_project_log(
-            f"🐛 Bug found in **{spec_name}** → scheduling legacy **{fix_spec_name}**"
-        )
-        self._enqueue(fix_spec_name, "implementer")
 
     # ── 原地打回辅助：任务注入与升级告警 ──────────────────────────────
 
     _VERIFY_FIX_SECTION_RE = re.compile(r"^## 验证修复\b.*$", re.MULTILINE)
 
-    def _inject_verify_fix_task(self, spec_name: str, fail_rounds: int):
-        """在父 SPEC 的 tasks.md 末尾追加/更新「## 验证修复」任务段。
 
-        - 首次失败：追加新段
-        - 后续失败：更新段内轮数注记
-        MUST NOT 改写既有任务与勾选状态（design D3）。
-        """
-        tasks_path = self.project_root / "openspec" / "changes" / spec_name / "tasks.md"
-        if not tasks_path.exists():
-            self.logger.warning(
-                "pm_engine",
-                f"tasks.md 不存在，跳过验证修复段注入：{spec_name}",
-            )
-            return
 
-        try:
-            text = tasks_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return
 
-        report_path = f"openspec/changes/{spec_name}/verification-report.md"
-        section = (
-            f"\n\n## 验证修复（第 {fail_rounds} 轮失败）\n\n"
-            f"- [ ] 阅读 `{report_path}`，定位「真实产品 Bug」并修复\n"
-            f"- [ ] 修复后重跑验证确认通过\n"
-        )
 
-        m = self._VERIFY_FIX_SECTION_RE.search(text)
-        if m:
-            # 已有验证修复段：替换为新轮数版本
-            # 找到段的起始位置（含前一个 \n\n），到段尾
-            start = m.start()
-            # 向前找到段落分隔
-            while start > 0 and text[start - 1] == '\n':
-                start -= 1
-            # 向后找到下一个段落标题或文件末尾
-            after = text[m.end():]
-            next_heading = re.search(r"\n## [^验]", after)
-            if next_heading:
-                end = m.end() + next_heading.start() + 1  # 包含 \n
-            else:
-                end = len(text)
-            new_text = text[:start] + section.strip() + "\n" + text[end:]
-        else:
-            # 无现有段：追加到末尾
-            new_text = text.rstrip("\n") + section
 
-        tasks_path.write_text(new_text, encoding="utf-8")
-        self.logger.info(
-            "pm_engine",
-            f"验证修复段已{'更新' if m else '注入'}：{spec_name}（第 {fail_rounds} 轮）",
-        )
 
-    def _send_human_escalation_alert(
-        self, spec_name: str, signal_type: str, severity: str,
-        description: str, evidence: str, recommended_action: str,
-        trigger: Optional[dict] = None,
-    ):
-        """发送 human-escalation-alerts 告警（escalation 种类）写入 admin store。
-
-        add-alert-auto-resolve D2：条目附带结构化触发条件（trigger 字段，含
-        type/spec/condition），供闭环判定直接消费、无需解析自然语言 description。
-        trigger 缺省时按 signal_type 从闭环枚举推导（接入点集中在此一处）；
-        未接入枚举的 signal_type 不写 trigger、永不自动闭环（保守默认）。
-        """
-        from .admin_store import AdminStore, ESCALATION
-        from .alert_lifecycle import build_trigger
-        store = AdminStore(self.project_root, self.logger)
-        if trigger is None:
-            trigger = build_trigger(signal_type, spec_name)
-        try:
-            entry = {
-                "kind": ESCALATION,
-                "signal_type": signal_type,
-                "spec": spec_name,
-                "severity": severity,
-                "description": description,
-                "evidence": evidence,
-                "recommended_action": recommended_action,
-            }
-            if trigger:
-                entry["trigger"] = trigger
-            store.append(entry)
-            self.logger.warning(
-                "pm_engine",
-                f"human-escalation-alert: {signal_type} for '{spec_name}'",
-            )
-        except Exception as e:
-            self.logger.error(
-                "pm_engine",
-                f"Failed to send escalation alert for '{spec_name}': {e}",
-            )
-
-    # ── 实现尝试总预算（add-fail-counter-budget D2/D4）──────────────
-    def _impl_run_budget(self) -> int:
-        """读取实现尝试预算（agents.impl_run_budget），缺省 DEFAULT_IMPL_RUN_BUDGET。
-
-        范围约束 1-10（D3 界面校验同口径）；配置越界时夹紧到合法区间，避免
-        极端配置使闸门失效或永远触发。
-        """
-        try:
-            raw = self._get_config("agents.impl_run_budget", DEFAULT_IMPL_RUN_BUDGET)
-            val = int(raw) if raw is not None else DEFAULT_IMPL_RUN_BUDGET
-        except (TypeError, ValueError):
-            val = DEFAULT_IMPL_RUN_BUDGET
-        if val < 1:
-            val = 1
-        if val > 10:
-            val = 10
-        return val
-
-    def _increment_impl_run_budget_used(self, spec_name: str) -> int:
-        """实现 run 启动时递增并持久化 ``_impl_run_budget_used``。
-
-        返回递增后的使用次数。跨重启有效（直接写 STATE.md）。
-        fix-budget-counting-semantics D2：读改写收敛到
-        state_machine.bump_impl_budget（文件锁内读改写 + 回读校验），
-        消除恢复扫描并发派发时的增量丢失（used=2/4 连现事故）。
-        """
-        used = self.state_machine.bump_impl_budget(spec_name, 1)
-        self.logger.info(
-            "pm_engine",
-            f"实现尝试预算计数 +1: '{spec_name}' used={used}/{self._impl_run_budget()}",
-        )
-        return used
-
-    def _budget_exempt_alert_threshold(self) -> int:
-        """死亡豁免侧车告警阈值（pm.budget_exempt_alert_threshold，缺省 6）。"""
-        try:
-            val = int(
-                self._get_config(
-                    "pm.budget_exempt_alert_threshold", BUDGET_EXEMPT_ALERT_THRESHOLD
-                )
-                or BUDGET_EXEMPT_ALERT_THRESHOLD
-            )
-        except (TypeError, ValueError):
-            val = BUDGET_EXEMPT_ALERT_THRESHOLD
-        return max(1, val)
-
-    def _exempt_dead_run_budget(self, spec_name: str, reason: str) -> None:
-        """死亡 run 豁免：回退本次启动的计数增量 + 侧车递增 + 审计日志。
-
-        fix-budget-counting-semantics D1：run 异常死亡（进程消失/零输出/
-        网关链路耗尽，无收工结果产出）时在死亡判定点做补偿回退
-        （used -= 1，下限 0），避免故障密集日把预算烧在无效 run 上
-        （interaction-contract 复盘：4/4 中 2 次网关死亡 + 2 次守卫误伤，
-        真正有产出的 run 反被冻结）。正常失败收工（有收工结果产出）不豁免。
-        """
-        used = self.state_machine.bump_impl_budget(spec_name, -1)
-        exempt = self.state_machine.bump_budget_exempt_runs(spec_name)
-        self.logger.warning(
-            "pm_engine",
-            f"预算豁免（死亡 run）: '{spec_name}' used 回退至 "
-            f"{used}/{self._impl_run_budget()}，_budget_exempt_runs={exempt}，"
-            f"reason={reason}",
-        )
-        if exempt >= self._budget_exempt_alert_threshold():
-            self._alert_budget_exempt_loop(spec_name, exempt)
-
-    def _alert_budget_exempt_loop(self, spec_name: str, exempt: int) -> None:
-        """死亡豁免侧车达阈值 → 一次性提醒级告警（幂等标记 ``_exempt_alerted``）。
-
-        只提醒不冻结：豁免不消耗预算，spec 可继续重派；但连续死亡循环
-        仍在烧 token，告警唤起人工排查根因。幂等标记防重复告警。
-        """
-        entry = self.state_machine.read_one(spec_name) or {}
-        if entry.get(BUDGET_EXEMPT_ALERTED_FIELD):
-            return
-        self.state_machine.update_spec(
-            spec_name, {BUDGET_EXEMPT_ALERTED_FIELD: True}
-        )
-        threshold = self._budget_exempt_alert_threshold()
-        self._send_human_escalation_alert(
-            spec_name=spec_name,
-            signal_type="impl_budget_exempt_loop",
-            severity="minor",
-            description=(
-                f"'{spec_name}' 实现 run 已异常死亡 {exempt} 次并被预算豁免回退，"
-                f"疑似网关/环境故障循环（spec 未冻结，可继续重派）"
-            ),
-            evidence=(
-                f"spec={spec_name}; budget_exempt_runs={exempt}; "
-                f"threshold={threshold}; used={self._impl_run_budget_used(spec_name)}"
-            ),
-            recommended_action=(
-                "检查 provider 网关健康度与最近死亡 run 产物（.fenix/runs/ 中 "
-                "error 终态的 impl-*.jsonl）；排除基础设施故障后人工清理 "
-                "_budget_exempt_runs 侧车即可解除告警条件"
-            ),
-        )
 
     # ── 预算计数对账（fix-budget-counting-semantics D3，日志级）──────
 
-    def _reconcile_impl_budget(self, spec_name: str) -> None:
-        """merge 成功/守卫放行后回读 used 与正常收工 run 数比对。
 
-        偏差记 WARNING 供人工发现；不自动改数（对账复杂化收益低）。
-        已知固有偏差源：runs 目录只保留最近产物（clean_old_runs）、
-        provider 链耗尽的 run 不落产物——偏差日志需结合这些因素人工判读。
-        """
-        used = self._impl_run_budget_used(spec_name)
-        completed = self._count_normal_completed_impl_runs(spec_name)
-        if used != completed:
-            self.logger.warning(
-                "pm_engine",
-                f"预算计数对账偏差: '{spec_name}' used={used} vs "
-                f"runs 目录正常收工 run 数={completed}"
-                f"（runs 产物有保留上限/链耗尽 run 不落产物，供人工核查，不自动改数）",
-            )
 
-    def _count_normal_completed_impl_runs(self, spec_name: str) -> int:
-        """从 .fenix/runs/ 侧车统计本 spec 正常收工的实现 run 数。
 
-        run_id 规则 ``impl-<spec>-<ts>[-a<n>]``（每 attempt 一个产物文件，
-        同一 run 的多 attempt 视为一个 run，取最新 attempt 产物）。
-        判据：产物末行（终态行）为 error ＝ 死亡 run，不计；
-        result 终态 ＝ 正常收工（成功或带收工结果的失败均计入）。
-        """
-        runs_dir = self.project_root / ".fenix" / "runs"
-        if not runs_dir.is_dir():
-            return 0
-        newest_attempt: dict = {}
-        for p in runs_dir.glob(f"impl-{spec_name}-*.jsonl"):
-            base = re.sub(r"-a\d+$", "", p.stem)
-            try:
-                mtime = p.stat().st_mtime
-            except OSError:
-                continue
-            prev = newest_attempt.get(base)
-            if prev is None or mtime > prev[0]:
-                newest_attempt[base] = (mtime, p)
-        count = 0
-        for _mtime, path in newest_attempt.values():
-            if not self._run_file_died(path):
-                count += 1
-        return count
 
-    @staticmethod
-    def _run_file_died(path: Path) -> bool:
-        """实现 run 产物是否以 error 终态行收尾（死亡 run 判据，容错解析）。"""
-        last = None
-        try:
-            with path.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(entry, dict):
-                        last = entry
-        except OSError:
-            return True
-        return isinstance(last, dict) and last.get("type") == "error"
-
-    def _impl_run_budget_used(self, spec_name: str) -> int:
-        entry = self.state_machine.read_one(spec_name) or {}
-        try:
-            return int(entry.get(IMPL_RUN_BUDGET_USED_FIELD, 0) or 0)
-        except (TypeError, ValueError):
-            return 0
-
-    def _check_impl_budget_exhausted(self, spec_name: str) -> bool:
-        """派发新一轮实现器前校验预算。
-
-        已累计使用 ``_impl_run_budget_used >= agents.impl_run_budget`` 时触发闸门：
-        spec 置 blocked + human-escalation-alerts 告警（signal_type=impl_budget_exhausted，
-        含 spec、已耗次数、最近失败摘要），不再自动重派。返回 True 表示已冻结。
-
-        已启动的 run（计数已计入、正在跑）不受此影响，照常跑完 merge——
-        本方法只在「即将开启新一轮」时调用。幂等：已是 blocked 时直接返回 True
-        不再重复告警。
-        """
-        budget = self._impl_run_budget()
-        used = self._impl_run_budget_used(spec_name)
-        if used < budget:
-            return False
-
-        entry = self.state_machine.read_one(spec_name) or {}
-        if entry.get("status") == "blocked":
-            # 已冻结（可能由其它闸门触发）：不重复告警，但仍阻止重派
-            return True
-
-        # 最近失败摘要：优先取 error，回退 tester_run/implementer_run 上下文
-        recent_error = (entry.get("error") or "").strip()
-        if not recent_error:
-            recent_error = (
-                f"最近实现 run={entry.get('implementer_run') or '未知'}，"
-                f"验证 run={entry.get('tester_run') or '未知'}"
-            )
-        self.state_machine.update_spec(spec_name, {
-            "status": "blocked",
-            "error": (
-                f"实现尝试预算耗尽（{used}/{budget}）：已停止自动重派，"
-                f"需人工裁决。最近失败：{recent_error}"
-            ),
-        })
-        self.logger.error(
-            "pm_engine",
-            f"实现尝试预算耗尽：'{spec_name}' used={used}/{budget}，冻结为 blocked",
-        )
-        self._send_human_escalation_alert(
-            spec_name=spec_name,
-            signal_type="impl_budget_exhausted",
-            severity="major",
-            description=(
-                f"'{spec_name}' 实现尝试预算耗尽（{used}/{budget}），已冻结等待人工裁决"
-            ),
-            evidence=(
-                f"spec={spec_name}; used={used}; budget={budget}; "
-                f"recent_failure={recent_error}"
-            ),
-            recommended_action=(
-                "检查实现/验证报告定位根因；人工可调大 agents.impl_run_budget 后解冻，"
-                "或直接推进状态。人工重置计数器即重新获得自动修复机会"
-            ),
-        )
-        return True
 
     def _on_spec_done(self, spec_name: str):
         """SPEC is done — log, re-verify parent if this was a fix SPEC.
@@ -2209,7 +1419,7 @@ class PMEngine:
             floor_levels (默认 4) —— 单条目等效降级总量上限（P6 最低可比至 P2，
               仍天然低于新到的 P1，高优家族先占）。
         """
-        from .config import ConfigLoader
+        from core.config import ConfigLoader
         cfg = self.config or {}
         a = dict(ConfigLoader.get(cfg, "pm.dispatch.aging", {}) or {})
         enabled = a.get("enabled", False)
@@ -3309,8 +2519,8 @@ class PMEngine:
             except Exception:
                 pass
 
-        from .verify_engine import VerifyEngine
-        from .verify_engine.scenarios import load_scenarios
+        from core.verify_engine import VerifyEngine
+        from core.verify_engine.scenarios import load_scenarios
 
         # ── 阶段1+2: Planner↔场景验收闭环（2026-08-28）──
         # 场景验收（绝对 navigate URL/完整性）失败 → 写 REPLAN_FEEDBACK.md 退回
@@ -3853,7 +3063,7 @@ class PMEngine:
             attempts = 1
         note = (f"全场景同因失败（{failed}/{total}，签名一致: \"{signature[:60]}\"）"
                 f"——疑似环境或场景问题，已呼叫 admin 介入判断（第 {attempts} 次）")
-        from .admin_store import AdminStore, SIGNAL
+        from core.admin_store import AdminStore, SIGNAL
         store = AdminStore(self.project_root, self.logger)
         try:
             store.append({
@@ -4105,7 +3315,7 @@ class PMEngine:
 
     def _signal_push_failed(self, spec_name: str, detail: str):
         """推送超限升级为 push_failed 困境信号（severity=major）写入 admin store。"""
-        from .admin_store import AdminStore, SIGNAL
+        from core.admin_store import AdminStore, SIGNAL
         store = AdminStore(self.project_root, self.logger)
         try:
             store.append({
@@ -4489,12 +3699,12 @@ class PMEngine:
 
     def _get_approve_mode(self) -> str:
         """Return the approve_mode, defaulting to 'manual'."""
-        from .config import ConfigLoader
+        from core.config import ConfigLoader
         return ConfigLoader.get_approve_mode(self.config)
 
     def _get_config(self, key: str, default=None):
         """Get a nested config value."""
-        from .config import ConfigLoader
+        from core.config import ConfigLoader
         return ConfigLoader.get(self.config, key, default)
 
     # ── 恢复一致性辅助（improve-run-lifecycle-governance D4/D6）──────────────
@@ -4619,7 +3829,7 @@ class PMEngine:
         self._last_blocker_check = datetime.now(timezone.utc)
         all_specs = self.state_machine.read_all()
 
-        from .config import ConfigLoader
+        from core.config import ConfigLoader
         stuck_threshold_minutes = ConfigLoader.effective_stuck_threshold_seconds(self.config) / 60.0
         now = datetime.now(timezone.utc)
 
@@ -4877,3 +4087,130 @@ class PMEngine:
             parts.append(f"⚠️ {blocked} 阻塞")
 
         return " | ".join(parts)
+
+    # ── 组合组件（refactor-core-packages 阶段 4）────────────────────────
+
+    @property
+    def _family(self) -> FamilyGovernor:
+        """组合组件（refactor-core-packages 阶段 4）：FamilyGovernor。
+
+        惰性构造：测试以 ``PMEngine.__new__`` 绕过 ``__init__`` 的实例也安全。
+        """
+        inst = self.__dict__.get("_family_instance")
+        if inst is None:
+            inst = FamilyGovernor(self)
+            self.__dict__["_family_instance"] = inst
+        return inst
+
+    @property
+    def _budget(self) -> ImplBudget:
+        """组合组件（refactor-core-packages 阶段 4）：ImplBudget。
+
+        惰性构造：测试以 ``PMEngine.__new__`` 绕过 ``__init__`` 的实例也安全。
+        """
+        inst = self.__dict__.get("_budget_instance")
+        if inst is None:
+            inst = ImplBudget(self)
+            self.__dict__["_budget_instance"] = inst
+        return inst
+
+
+    # ── 组合组件委托（阶段 4：family/budget 已迁组件，门面保持调用路径）──
+
+    def _resolve_fix_spec_name(self, spec_name: str):
+        return self._family._resolve_fix_spec_name(spec_name)
+
+    def _ensure_fix_spec_files(self, fix_spec_name: str, parent_spec_name: str):
+        return self._family._ensure_fix_spec_files(fix_spec_name, parent_spec_name)
+
+    @staticmethod
+    def _fix_prefix_depth(name: str) -> int:
+        return FamilyGovernor._fix_prefix_depth(name)
+
+    @staticmethod
+    def _fix_strip_all(name: str) -> str:
+        return FamilyGovernor._fix_strip_all(name)
+
+    def _family_width(self, child_name: str) -> int:
+        return self._family._family_width(child_name)
+
+    def _family_waiver_set(self, spec_name: str) -> bool:
+        return self._family._family_waiver_set(spec_name)
+
+    def _consume_family_waiver(self, spec_name: str) -> bool:
+        return self._family._consume_family_waiver(spec_name)
+
+    def _family_gate_blocked(self, parent_name: str, child_name: str) -> bool:
+        return self._family._family_gate_blocked(parent_name, child_name)
+
+    @staticmethod
+    def _is_fix_spec(name: str) -> bool:
+        return FamilyGovernor._is_fix_spec(name)
+
+    @staticmethod
+    def _same_root(name_a: str, name_b: str) -> bool:
+        return FamilyGovernor._same_root(name_a, name_b)
+
+    def _same_root_siblings(self, spec_name: str) -> list:
+        return self._family._same_root_siblings(spec_name)
+
+    def _sibling_repair_active(self, spec_name: str, my_enqueued_at: float = None) -> str:
+        return self._family._sibling_repair_active(spec_name, my_enqueued_at)
+
+    def _sibling_has_live_agent(self, spec_name: str) -> bool:
+        return self._family._sibling_has_live_agent(spec_name)
+
+    def _has_non_terminal_child_fix(self, spec_name: str) -> str:
+        return self._family._has_non_terminal_child_fix(spec_name)
+
+    def _signal_family_explosion(self, parent_name: str, child_name: str, detail: str):
+        return self._family._signal_family_explosion(parent_name, child_name, detail)
+
+    def _do_spec_bug_found(self, spec_name: str):
+        return self._family._do_spec_bug_found(spec_name)
+
+    def _do_legacy_fix_spec_bug_found(self, spec_name: str):
+        return self._family._do_legacy_fix_spec_bug_found(spec_name)
+
+    def _inject_verify_fix_task(self, spec_name: str, fail_rounds: int):
+        return self._family._inject_verify_fix_task(spec_name, fail_rounds)
+
+    def _send_human_escalation_alert(
+        self, spec_name: str, signal_type: str, severity: str,
+        description: str, evidence: str, recommended_action: str,
+        trigger: Optional[dict] = None,
+    ):
+        return self._family._send_human_escalation_alert(spec_name, signal_type, severity, description, evidence, recommended_action, trigger)
+
+    # ── 实现尝试总预算（add-fail-counter-budget D2/D4）──────────────
+    def _impl_run_budget(self) -> int:
+        return self._budget._impl_run_budget()
+
+    def _increment_impl_run_budget_used(self, spec_name: str) -> int:
+        return self._budget._increment_impl_run_budget_used(spec_name)
+
+    def _budget_exempt_alert_threshold(self) -> int:
+        return self._budget._budget_exempt_alert_threshold()
+
+    def _exempt_dead_run_budget(self, spec_name: str, reason: str) -> None:
+        return self._budget._exempt_dead_run_budget(spec_name, reason)
+
+    def _alert_budget_exempt_loop(self, spec_name: str, exempt: int) -> None:
+        return self._budget._alert_budget_exempt_loop(spec_name, exempt)
+
+    def _reconcile_impl_budget(self, spec_name: str) -> None:
+        return self._budget._reconcile_impl_budget(spec_name)
+
+    def _count_normal_completed_impl_runs(self, spec_name: str) -> int:
+        return self._budget._count_normal_completed_impl_runs(spec_name)
+
+    @staticmethod
+    def _run_file_died(path: Path) -> bool:
+        return ImplBudget._run_file_died(path)
+
+    def _impl_run_budget_used(self, spec_name: str) -> int:
+        return self._budget._impl_run_budget_used(spec_name)
+
+    def _check_impl_budget_exhausted(self, spec_name: str) -> bool:
+        return self._budget._check_impl_budget_exhausted(spec_name)
+
