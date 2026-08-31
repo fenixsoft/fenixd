@@ -232,3 +232,64 @@ export const STATUS_META: Record<string, { label: string; tone: StatusTone }> = 
 export function statusMeta(status: string): { label: string; tone: StatusTone } {
   return STATUS_META[status] || { label: status || '未知', tone: 'muted' };
 }
+
+// ── 配置管理（/api/config，复用 v1 后端） ──
+
+export interface LlmProvider {
+  name: string;
+  baseurl: string;
+  apikey: string;
+  default_model?: string;
+}
+
+export interface LlmConfig {
+  providers?: LlmProvider[];
+}
+
+export interface AgentsModels {
+  [role: string]: { provider: string; model: string };
+}
+
+export interface AgentsConfig {
+  models?: AgentsModels;
+  max_concurrent?: number;
+  max_turns?: number;
+  run_timeout_seconds?: number;
+  daily_run_limit?: number;
+  token_budget_millions?: number;
+  impl_run_budget?: number;
+}
+
+export interface GatesConfig {
+  approve_mode?: 'manual' | 'auto';
+}
+
+export interface ConfigData {
+  llm: LlmConfig;
+  agents: AgentsConfig;
+  gates: GatesConfig;
+  scope: 'user' | 'project';
+  raw_exists: boolean;
+  sources: Record<string, string>;
+  error?: string;
+  project?: string;
+  saved?: boolean;
+  path?: string;
+}
+
+export async function getConfig(project?: string): Promise<ConfigData> {
+  const q = project ? `?project=${encodeURIComponent(project)}` : '';
+  return request<ConfigData>(`/api/config${q}`);
+}
+
+export async function saveConfig(
+  project: string | undefined,
+  payload: Partial<ConfigData>,
+): Promise<ConfigData> {
+  const q = project ? `?project=${encodeURIComponent(project)}` : '';
+  return request<ConfigData>(`/api/config${q}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
