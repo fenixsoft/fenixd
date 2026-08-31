@@ -2,15 +2,15 @@
 
 ## 1. 阶段 0：测试基线加固
 
-- [ ] 1.1 coverage 分析：识别将被搬移且无测试覆盖的 PMEngine/AgentRunner 方法清单
-- [ ] 1.2 为无覆盖的将搬移方法补 characterization tests（独立 commit，不改现有测试文件）
-- [ ] 1.3 建立疑点清单文件（自本阶段起持续维护，发现的 bug/死代码只记录不修）
+- [x] 1.1 coverage 分析：识别将被搬移且无测试覆盖的 PMEngine/AgentRunner 方法清单
+- [x] 1.2 为无覆盖的将搬移方法补 characterization tests（独立 commit，不改现有测试文件）
+- [x] 1.3 建立疑点清单文件（自本阶段起持续维护，发现的 bug/死代码只记录不修）
 
 ## 2. 阶段 1：agent_runner → PromptBuilder
 
-- [ ] 2.1 提取 prompt_builder.py（_build_prompt + 各 section，保持文件读取时机等价：不缓存、不提前读取）
-- [ ] 2.2 门面委托：runner 侧保留 `_build_prompt` 等测试引用方法的一行委托
-- [ ] 2.3 全量 pytest 全绿 + import 验证通过，独立 commit
+- [x] 2.1 提取 prompt_builder.py（_build_prompt + 各 section，保持文件读取时机等价：不缓存、不提前读取）
+- [x] 2.2 门面委托：runner 侧保留 `_build_prompt` 等测试引用方法的一行委托
+- [x] 2.3 全量 pytest 全绿 + import 验证通过，独立 commit
 
 ## 3. 阶段 2：agent_runner → 独立状态组件
 
