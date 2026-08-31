@@ -306,6 +306,49 @@ export async function getSpecDetail(project: string, spec: string): Promise<Spec
   );
 }
 
+// ── 运行流（/api/runs/<run_id> 系列端点，与 v1 run watch 同源） ──
+
+export interface RunEvent {
+  type: string;
+  run_id: string;
+  agent?: string;
+  status?: string;
+  content?: string;
+  timestamp?: string;
+  thinking?: boolean;
+  reset?: boolean;
+  events?: RunEvent[];
+  total_events?: number;
+}
+
+export interface RunDetail {
+  run_id: string;
+  status: string;
+  error?: string;
+  events: RunEvent[];
+  total_events: number;
+}
+
+export async function getRunTail(runId: string, project: string, tail: number = 300): Promise<RunDetail> {
+  return request<RunDetail>(
+    `/api/runs/${encodeURIComponent(runId)}?project=${encodeURIComponent(project)}&tail=${tail}`,
+  );
+}
+
+export async function registerRunWatch(runId: string, project: string, cid: string): Promise<void> {
+  await request(
+    `/api/runs/${encodeURIComponent(runId)}/watch?project=${encodeURIComponent(project)}&cid=${encodeURIComponent(cid)}`,
+    { method: 'POST' },
+  );
+}
+
+export async function unregisterRunWatch(runId: string, project: string, cid: string): Promise<void> {
+  await request(
+    `/api/runs/${encodeURIComponent(runId)}/watch?project=${encodeURIComponent(project)}&cid=${encodeURIComponent(cid)}`,
+    { method: 'DELETE' },
+  );
+}
+
 // ── SPEC 状态元数据（中文标签 + 语义色，与 v1 STATUS_META 对齐） ──
 
 export type StatusTone = 'muted' | 'info' | 'warning' | 'critical' | 'good' | 'aqua';
