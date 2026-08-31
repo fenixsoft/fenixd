@@ -1,8 +1,9 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, Card, Space, Spin, Typography } from 'antd';
+import { Alert, Card, Descriptions, Space, Spin, Tag, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { history, useParams } from '@umijs/max';
-import { getSpecDetail } from '@/services/dashboard';
+import dayjs from 'dayjs';
+import { getSpecDetail, statusMeta } from '@/services/dashboard';
 import type { SpecDetail } from '@/services/dashboard';
 
 export default function SpecDetailPage() {
@@ -58,6 +59,8 @@ export default function SpecDetailPage() {
     );
   }
 
+  const statusInfo = statusMeta(detail?.status || '');
+
   return (
     <PageContainer
       header={{
@@ -65,15 +68,44 @@ export default function SpecDetailPage() {
           <Space size={8} align="baseline">
             <span>{spec}</span>
             {detail?.status && (
-              <Typography.Text type="secondary" style={{ fontSize: 14, fontWeight: 400 }}>
-                {detail.status}
-              </Typography.Text>
+              <Tag color={statusInfo.tone === 'good' ? 'success' : statusInfo.tone === 'critical' ? 'error' : 'processing'}>
+                {statusInfo.label}
+              </Tag>
             )}
           </Space>
         ),
         onBack: () => history.push(`/projects/${name}`),
       }}
     >
+      {/* Error 横幅 */}
+      {detail?.error && (
+        <Alert
+          type="error"
+          showIcon
+          message="错误信息"
+          description={detail.error}
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
+      {/* 元信息区 */}
+      <Card style={{ marginBottom: 16 }}>
+        <Descriptions column={4} size="small">
+          <Descriptions.Item label="优先级">
+            <span>P{detail?.priority ?? '?'}</span>
+          </Descriptions.Item>
+          <Descriptions.Item label="创建时间">
+            {detail?.created ? dayjs(detail.created).format('YYYY-MM-DD HH:mm:ss') : '—'}
+          </Descriptions.Item>
+          <Descriptions.Item label="更新时间">
+            {detail?.updated ? dayjs(detail.updated).format('YYYY-MM-DD HH:mm:ss') : '—'}
+          </Descriptions.Item>
+          <Descriptions.Item label="依赖">
+            {detail?.status || '—'}
+          </Descriptions.Item>
+        </Descriptions>
+      </Card>
+
       {/* 常驻信息区骨架 */}
       <Card title="常驻信息区" style={{ marginBottom: 16 }}>
         <Typography.Paragraph>详情页骨架 - 待实现常驻信息区</Typography.Paragraph>
