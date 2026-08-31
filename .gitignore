@@ -31,3 +31,4 @@ STATE.md
 PROJECT_LOG.md
 .STATE.md.lock
 .fenix-run-result.json
+.coverage
