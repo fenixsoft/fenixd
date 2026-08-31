@@ -1,4 +1,5 @@
 import { Button, Card, Form, Input, Select, Space, Typography } from 'antd';
+import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 
 const { Text } = Typography;
@@ -29,6 +30,13 @@ export default function AgentModelPanel({ config, onSave }: AgentModelPanelProps
   const initialValues = {
     models: config.agents.models || {},
   };
+
+  // 监听 config 变化，更新表单值
+  useEffect(() => {
+    form.setFieldsValue({
+      models: config.agents.models || {},
+    });
+  }, [config.agents.models, form]);
 
   const handleSave = async () => {
     try {

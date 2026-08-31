@@ -1,4 +1,5 @@
 import { Button, Card, Form, InputNumber, Typography } from 'antd';
+import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 
 const { Text } = Typography;
@@ -17,6 +18,15 @@ export default function ParallelSettingsPanel({ config, onSave }: ParallelSettin
     max_turns: config.agents.max_turns || 300,
     run_timeout_seconds: config.agents.run_timeout_seconds || 3600,
   };
+
+  // 监听 config 变化，更新表单值
+  useEffect(() => {
+    form.setFieldsValue({
+      max_concurrent: config.agents.max_concurrent || 2,
+      max_turns: config.agents.max_turns || 300,
+      run_timeout_seconds: config.agents.run_timeout_seconds || 3600,
+    });
+  }, [config.agents.max_concurrent, config.agents.max_turns, config.agents.run_timeout_seconds, form]);
 
   const handleSave = async () => {
     try {

@@ -1,4 +1,5 @@
 import { Button, Card, Form, InputNumber, Typography } from 'antd';
+import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 
 const { Text } = Typography;
@@ -17,6 +18,15 @@ export default function TokenBudgetPanel({ config, onSave }: TokenBudgetPanelPro
     daily_run_limit: config.agents.daily_run_limit || 50,
     impl_run_budget: config.agents.impl_run_budget || 4,
   };
+
+  // 监听 config 变化，更新表单值
+  useEffect(() => {
+    form.setFieldsValue({
+      token_budget_millions: config.agents.token_budget_millions || 50,
+      daily_run_limit: config.agents.daily_run_limit || 50,
+      impl_run_budget: config.agents.impl_run_budget || 4,
+    });
+  }, [config.agents.token_budget_millions, config.agents.daily_run_limit, config.agents.impl_run_budget, form]);
 
   const handleSave = async () => {
     try {
