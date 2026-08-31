@@ -78,18 +78,20 @@ export function deleteProject(name: string) {
 // ── 运维记录（/api/admin-activities，与 v1 运维记录页同源） ──
 
 export interface ActivityItem {
-  id: string;
+  escalation_id?: string;
   project?: string;
   spec?: string;
-  action?: string;
+  severity?: string;
+  signal_type?: string;
+  summary?: string;
+  actions_taken?: string;
   result?: string;
+  recommended_action?: string;
   created?: string;
-  description?: string;
-  elevated?: boolean;
-  elevated_at?: string;
   handled?: boolean;
   handled_by?: string;
   handled_at?: string;
+  resolve_note?: string;
 }
 
 export interface ProjectActivities {

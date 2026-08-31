@@ -1,10 +1,108 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { App, Badge, Breadcrumb, Card, Empty, Spin, Tabs } from 'antd';
+import {
+  App,
+  Badge,
+  Breadcrumb,
+  Button,
+  Card,
+  Empty,
+  Space,
+  Spin,
+  Tabs,
+  Tag,
+  Timeline,
+  Typography,
+} from 'antd';
+import dayjs from 'dayjs';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getAdminActivities } from '@/services/dashboard';
-import type { AdminActivitiesData, ProjectActivities } from '@/services/dashboard';
+import type { AdminActivitiesData, ActivityItem, ProjectActivities } from '@/services/dashboard';
 
 const REFRESH_THROTTLE_MS = 500;
+
+function fmtDate(v?: string) {
+  if (!v) return '—';
+  const d = dayjs(v);
+  return d.isValid() ? d.format('YYYY-MM-DD HH:mm:ss') : v;
+}
+
+function resultPill(result?: string) {
+  if (!result) return null;
+  const lower = result.toLowerCase();
+  let color = 'default';
+  if (lower.includes('成功') || lower.includes('success')) color = 'green';
+  else if (lower.includes('失败') || lower.includes('fail') || lower.includes('error')) color = 'red';
+  else if (lower.includes('处理') || lower.includes('handled')) color = 'blue';
+  return <Tag color={color}>{result}</Tag>;
+}
+
+function ActivityCard({ a }: { a: ActivityItem }) {
+  const unhandled = a.handled === false;
+  const severity = a.severity || 'major';
+
+  const body = a.summary ? (
+    <div style={{ marginBottom: 8 }}>{a.summary}</div>
+  ) : (
+    <div style={{ marginBottom: 8, color: '#8c8c8c' }}>
+      （无叙述总结）处置：{a.actions_taken || '—'} · 结果：{a.result || '—'}
+    </div>
+  );
+
+  return (
+    <div
+      style={{
+        padding: 12,
+        borderRadius: 8,
+        border: unhandled ? '1px solid #ff4d4f' : '1px solid #f0f0f0',
+        background: unhandled ? '#fff2f0' : '#fafafa',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {fmtDate(a.created)}
+        </Typography.Text>
+        {a.project && <Tag>{a.project}</Tag>}
+        {a.spec && <Tag color="blue">{a.spec}</Tag>}
+        {a.signal_type && <Tag color="purple">{a.signal_type}</Tag>}
+        {resultPill(a.result)}
+        {unhandled && <Tag color="red">需人工决策</Tag>}
+      </div>
+      {body}
+      {a.actions_taken && (
+        <div style={{ marginBottom: 4 }}>
+          <Typography.Text type="secondary">处置：</Typography.Text> {a.actions_taken}
+        </div>
+      )}
+      {a.recommended_action && (
+        <div>
+          <Typography.Text type="secondary">建议：</Typography.Text> {a.recommended_action}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActivityTimeline({ activities }: { activities: ActivityItem[] }) {
+  if (!activities || activities.length === 0) {
+    return <Empty description="暂无运维记录" />;
+  }
+
+  // 未处理升级置顶
+  const sorted = [...activities].sort((a, b) => {
+    if (a.handled === false && b.handled !== false) return -1;
+    if (a.handled !== false && b.handled === false) return 1;
+    return 0;
+  });
+
+  return (
+    <Timeline
+      items={sorted.map((a) => ({
+        color: a.handled === false ? 'red' : 'gray',
+        children: <ActivityCard a={a} />,
+      }))}
+    />
+  );
+}
 
 export default function ActivitiesPage() {
   const { message } = App.useApp();
@@ -28,7 +126,7 @@ export default function ActivitiesPage() {
 
   useEffect(() => {
     void load();
-    // SSE 实时刷新（对齐 v1：alerts/refresh 事件触发重拉）
+    // SSE 实时刷新（对齐 v1：alerts/refresh 事件触发重拉，保持页签与滚动）
     const es = new EventSource('/api/stream');
     es.onmessage = (ev: MessageEvent) => {
       let msg: { type?: string } = {};
@@ -54,7 +152,7 @@ export default function ActivitiesPage() {
     [projects],
   );
 
-  // 项目消失时回退"全部"
+  // 项目消失时回退"全部"（跨刷新保持选中，除非项目已消失）
   useEffect(() => {
     if (activeKey === 'all') return;
     const exists = projects.some((p) => p.name === activeKey);
@@ -106,14 +204,15 @@ export default function ActivitiesPage() {
           {projects.map((p) => (
             <Card
               key={p.name}
-              title={`${p.name}（${p.activities?.length ?? 0} 条）`}
+              title={
+                <Space>
+                  <span>{p.name}</span>
+                  <Badge count={p.activities?.length ?? 0} showZero />
+                </Space>
+              }
               style={{ marginBottom: 16 }}
             >
-              {p.activities?.length === 0 ? (
-                <Empty description="暂无运维记录" />
-              ) : (
-                <div>记录列表占位</div>
-              )}
+              <ActivityTimeline activities={p.activities ?? []} />
             </Card>
           ))}
         </div>
@@ -125,7 +224,18 @@ export default function ActivitiesPage() {
     if (!project || project.activities?.length === 0) {
       return <Empty description="暂无运维记录" />;
     }
-    return <div>记录列表占位</div>;
+    return (
+      <Card
+        title={
+          <Space>
+            <span>{project.name}</span>
+            <Badge count={project.activities?.length ?? 0} showZero />
+          </Space>
+        }
+      >
+        <ActivityTimeline activities={project.activities ?? []} />
+      </Card>
+    );
   };
 
   return (
@@ -137,13 +247,11 @@ export default function ActivitiesPage() {
       }}
     >
       {error ? (
-        <App>
-          <div style={{ marginBottom: 16 }}>
-            <Card>
-              <div style={{ color: '#ff4d4f' }}>运维记录加载失败：{error}</div>
-            </Card>
-          </div>
-        </App>
+        <div style={{ marginBottom: 16 }}>
+          <Card>
+            <div style={{ color: '#ff4d4f' }}>运维记录加载失败：{error}</div>
+          </Card>
+        </div>
       ) : null}
       <Card variant="borderless">
         <Tabs activeKey={activeKey} onChange={setActiveKey} items={tabItems} />
