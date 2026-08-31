@@ -17,7 +17,7 @@
           "status": "${status}",
           "type": "${type}"
         },
-        "adaptor": "var raw = (payload && payload.specs) ? payload.specs : (Array.isArray(payload) ? payload : []); var items = window.Adapters.adaptSpecs(raw); var proj = (payload && payload.project) || '${params[0]}'; var q = (api && api.query) || {}; var kw = String(q.kw || '').toLowerCase(); var st = q.status || ''; var tp = q.type || ''; if (kw) { items = items.filter(function(it){ return String(it.name).toLowerCase().indexOf(kw) >= 0; }); } if (st) { items = items.filter(function(it){ return it.status === st; }); } if (tp === 'req') { items = items.filter(function(it){ return String(it.name).indexOf('fix-') !== 0; }); } else if (tp === 'issue') { items = items.filter(function(it){ return String(it.name).indexOf('fix-') === 0; }); } items = items.map(function(it){ it.project = proj; it.specName = it.name; it.createdDate = it.created ? String(it.created).substring(0, 10) : ''; return it; }); return { status: 0, data: { items: items, total: items.length } };"
+        "adaptor": "var raw = (payload && payload.specs) ? payload.specs : (Array.isArray(payload) ? payload : []); var items = window.Adapters.adaptSpecs(raw); var proj = (payload && payload.project) || '${params[0]}'; var q = (api && api.query) || {}; var kw = String(q.kw || '').toLowerCase(); var st = q.status || ''; var tp = q.type || ''; if (kw) { items = items.filter(function(it){ return String(it.name).toLowerCase().indexOf(kw) >= 0; }); } if (st) { items = items.filter(function(it){ return it.status === st; }); } if (tp === 'req') { items = items.filter(function(it){ return String(it.name).indexOf('fix-') !== 0; }); } else if (tp === 'issue') { items = items.filter(function(it){ return String(it.name).indexOf('fix-') === 0; }); } items = items.map(function(it){ it.project = proj; it.specName = it.name; it.createdDate = it.created ? String(it.created).substring(0, 10) : ''; it.pct = it.task_total > 0 ? Math.round(it.task_done * 100 / it.task_total) : 0; it.bar_cls = it.pct >= 100 ? 'v2-bar-good' : (it.pct >= 60 ? '' : (it.task_done > 0 ? 'v2-bar-warn' : 'v2-bar-serious')); return it; }); return { status: 0, data: { items: items, total: items.length } };"
       },
       "onEvent": {
         "sse:state": {
@@ -125,17 +125,17 @@
           "label": "状态",
           "type": "mapping",
           "map": {
-            "drafted": "<span class='label label-default'>草稿</span>",
-            "ready": "<span class='label label-info'>就绪</span>",
-            "implementing": "<span class='label label-primary'>实现中</span>",
-            "bug-found": "<span class='label label-danger'>有Bug</span>",
-            "implemented": "<span class='label label-primary'>已实现</span>",
-            "testing": "<span class='label label-warning'>验证中</span>",
-            "verified": "<span class='label label-success'>已验证</span>",
-            "done": "<span class='label label-success'>完成</span>",
-            "pushed": "<span class='label label-success'>已推送</span>",
-            "blocked": "<span class='label label-danger'>阻塞</span>",
-            "*": "<span class='label label-default'>${status}</span>"
+            "drafted": "<span class='v2-status-pill v2-st-muted'>草稿</span>",
+            "ready": "<span class='v2-status-pill v2-st-info'>就绪</span>",
+            "implementing": "<span class='v2-status-pill v2-st-warning'>实现中</span>",
+            "bug-found": "<span class='v2-status-pill v2-st-critical'>有Bug</span>",
+            "implemented": "<span class='v2-status-pill v2-st-aqua'>已实现</span>",
+            "testing": "<span class='v2-status-pill v2-st-info'>验证中</span>",
+            "verified": "<span class='v2-status-pill v2-st-good'>已验证</span>",
+            "done": "<span class='v2-status-pill v2-st-good'>完成</span>",
+            "pushed": "<span class='v2-status-pill v2-st-good'>已推送</span>",
+            "blocked": "<span class='v2-status-pill v2-st-critical'>阻塞</span>",
+            "*": "<span class='v2-status-pill v2-st-muted'>${status}</span>"
           }
         },
         {
@@ -160,7 +160,7 @@
           "name": "task",
           "label": "任务进度",
           "type": "tpl",
-          "tpl": "${task_done + '/' + task_total + (task_total > 0 ? (' · ' + (task_done * 100 / task_total | 0) + '%') : '')}"
+          "tpl": "${task_total > 0 ? \"<div class='v2-progress'><div class='v2-fill \" + bar_cls + \"' style='width:\" + pct + \"%'></div></div><div class='v2-progress-labels'><span>\" + task_done + \"/\" + task_total + \"</span><span>\" + pct + \"%</span></div>\" : '<span class=\"v2-muted-cell\">—</span>'}"
         },
         {
           "name": "verify",

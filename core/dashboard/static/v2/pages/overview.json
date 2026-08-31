@@ -38,7 +38,7 @@
             "type": "panel",
             "title": {
               "type": "tpl",
-              "tpl": "${name} ${exists === false ? \"<span class='v2-status-pill v2-st-critical'>⚠ 路径不存在</span>\" : daemon_html}"
+              "tpl": "<span class='v2-panel-name'>${name}</span> ${exists === false ? \"<span class='v2-status-pill v2-st-critical'>⚠ 路径不存在</span>\" : daemon_html}"
             },
             "body": [
               {

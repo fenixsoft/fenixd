@@ -166,6 +166,7 @@
       if (n.label === '项目') {
         return {
           label: n.label,
+          expanded: true,
           children: projects.map((p) => ({
             label: p.name,
             to: encode(p.name),
@@ -421,14 +422,23 @@
         /* height 固定为视口:若用 min-height,长内容会把 shell 连同整页撑出滚动,
            content 的 flex 收缩随之失效(2026-08-31 双滚动条事故) */
         .v2-shell{display:flex;height:100vh;background:var(--body-bg,#1a1a1a);color:var(--text-color,#e8e8e8);font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-        .v2-aside{position:relative;min-width:140px;max-width:400px;background:#232324;border-right:1px solid #383838;padding:12px 0;overflow-y:auto;flex-shrink:0}
+        .v2-aside{position:relative;min-width:140px;max-width:400px;background:#232324;border-right:1px solid #383838;padding:12px 0;flex-shrink:0}
+        /* aside 不可裁剪:amis 弹层挂 DOM 首个 scope(侧栏 nav),裁剪会让弹层消失;
+           nav 内容高度自适应且远小于视口,无需滚动兜底 */
+        .v2-aside{overflow:visible!important}
         .v2-resizer{position:absolute;top:0;right:0;width:7px;height:100%;cursor:col-resize;z-index:20}
         .v2-resizer:hover,.v2-resizer.v2-resizing{background:rgba(59,130,246,.35)}
         .v2-brand{font-size:16px;font-weight:700;letter-spacing:.3px;padding:8px 16px 16px}
         .v2-brand-sub{color:var(--text-muted,#999);font-weight:400;margin-left:6px}
-        /* 侧栏为 amis Nav 控件(stacked + 二级伸缩);挂载容器撑满侧栏 */
+        /* 侧栏为 amis Nav 控件(stacked + 二级伸缩);容器高度自适应内容,
+           不可让 .amis-scope height:100% 生效(会把 nav 撑满侧栏高度,产生多余滚动条) */
         #v2-nav-mount{padding:4px 0}
-        #v2-nav-mount .amis-scope{height:100%}
+        /* embed 会给挂载点自身加 .amis-scope(sdk.css height:100%),nav 需高度自适应内容 */
+        #v2-nav-mount{height:auto!important;min-height:0!important}
+        #v2-nav-mount .amis-scope{height:auto!important;min-height:0!important}
+        /* amis 弹层会挂到 DOM 首个 .amis-scope(即侧栏 nav),而 sdk.css 给 scope 设了
+           overflow-x:hidden 会把超出侧栏宽度的弹层裁没,必须放开 */
+        #v2-nav-mount.amis-scope{overflow:visible!important}
         .v2-topbar{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 20px;border-bottom:1px solid rgba(255,255,255,.08);flex-shrink:0}
         .v2-topbar-right{display:flex;align-items:center;gap:8px}
         .v2-breadcrumb{font-size:.9rem;display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;white-space:nowrap}
@@ -563,7 +573,7 @@
       if (!btn || !btn.textContent.trim().endsWith('进入')) return;
       const panel = btn.closest(PANEL_ROOT_SEL);
       if (!panel) return;
-      const titleEl = panel.querySelector('[class*="-Panel-title"]');
+      const titleEl = panel.querySelector('[class*="-Panel-title"] .v2-panel-name');
       const name = titleEl && titleEl.textContent.trim();
       if (name) location.hash = '#/project/' + encodeURIComponent(name);
     });

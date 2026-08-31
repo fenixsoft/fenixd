@@ -346,7 +346,25 @@
     return {
       llm: { providers },
       agents: {
-        models: agents.models || {},
+        // 归一化为编辑器行形态:models[role] = {model, provider:[{provider, model}]};
+        // 后端允许 provider 为 str / list[str] / list[{provider, model?}] / 混合,统一展开为行
+        models: (function () {
+          const m = agents.models && typeof agents.models === 'object' ? agents.models : {};
+          const out = {};
+          Object.keys(m).forEach(function (role) {
+            const v = m[role] || {};
+            const roleModel = (v && typeof v === 'object' && v.model) || (typeof v === 'string' ? '' : '') || '';
+            let rows = (v && typeof v === 'object' && Array.isArray(v.provider)) ? v.provider
+              : (v && typeof v === 'object' && v.provider) ? [v.provider]
+              : [];
+            rows = rows.map(function (r) {
+              return typeof r === 'string' ? { provider: r, model: '' }
+                : { provider: (r && r.provider) || '', model: (r && r.model) || '' };
+            }).filter(function (r) { return r.provider !== ''; });
+            out[role] = { model: roleModel, provider: rows };
+          });
+          return out;
+        })(),
         agent_chain: (function () {
           const m = agents.models && typeof agents.models === 'object' ? agents.models : {};
           return Object.keys(m).map(function (role) {
@@ -414,20 +432,20 @@
     const payload = {
       llm: { providers: llmProviders },
       agents: {
+        // agents.models 为编辑器原生形态(每角色 {model, provider:[{provider, model}]});
+        // 与 v1 collectConfigData 对齐:剔除未选择 Provider 的行,保留角色级默认与空链
         models: (function () {
-          let m = form.models || (form.agents && form.agents.models) || {};
-          const chain = formAgents && Array.isArray(formAgents.agent_chain) ? formAgents.agent_chain : null;
-          if (chain && chain.length > 0) {
-            const snapModels = snapshot && snapshot.agents && snapshot.agents.models ? snapshot.agents.models : {};
-            const folded = {};
-            chain.forEach(function (row) {
-              if (!row || !row.role) return;
-              const prev = (snapModels && snapModels[row.role]) || (m && m[row.role]) || {};
-              folded[row.role] = { model: row.model || '', provider: prev.provider || [] };
-            });
-            m = folded;
-          }
-          return m;
+          const m = (form.agents && form.agents.models) || form.models || {};
+          const out = {};
+          Object.keys(m).forEach(function (role) {
+            const v = m[role] || {};
+            const rows = Array.isArray(v.provider) ? v.provider : [];
+            out[role] = {
+              model: v.model || '',
+              provider: rows.filter(function (r) { return r && typeof r === 'object' && r.provider; }),
+            };
+          });
+          return out;
         })(),
         max_concurrent: numOr(formAgents.max_concurrent || form.max_concurrent, loadedAgents.max_concurrent, defaults.max_concurrent || 2),
         max_turns: numOr(formAgents.max_turns || form.max_turns, loadedAgents.max_turns, defaults.max_turns || 300),
