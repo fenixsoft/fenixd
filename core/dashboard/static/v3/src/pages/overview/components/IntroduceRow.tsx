@@ -283,8 +283,8 @@ export default function IntroduceRow({
     >
       <SpecCountTile totals={totals} />
       <TaskProgressTile totals={totals} />
-      <ActiveAgentTile totals={totals} />
       <TokenTile recent={tokenRecent} />
+      <ActiveAgentTile totals={totals} />
     </div>
   );
 }

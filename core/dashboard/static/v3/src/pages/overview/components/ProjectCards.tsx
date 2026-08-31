@@ -15,14 +15,26 @@ type StatusFilter = 'all' | 'running' | 'stopped';
 
 const TRACK_LIGHT = '#e6f4ff';
 
-const TONE_TO_TAG: Record<string, string> = {
-  muted: 'default',
-  info: 'blue',
-  warning: 'orange',
-  critical: 'red',
-  good: 'green',
-  aqua: 'cyan',
+// v1 风格状态徽标：透明底 + 彩色文字 + 45% 透明度同色描边
+const TONE_HEX: Record<string, string | null> = {
+  muted: null,
+  info: '#1677ff',
+  warning: '#faad14',
+  critical: '#ff4d4f',
+  good: '#52c41a',
+  aqua: '#13c2c2',
 };
+
+function OutlinedTag({ tone, children }: { tone: string; children: React.ReactNode }) {
+  const hex = TONE_HEX[tone];
+  return hex ? (
+    <Tag style={{ marginInlineEnd: 0, color: hex, borderColor: `${hex}73`, background: 'transparent' }}>
+      {children}
+    </Tag>
+  ) : (
+    <Tag style={{ marginInlineEnd: 0 }}>{children}</Tag>
+  );
+}
 
 function pct(done: number, total: number) {
   return total > 0 ? Math.round((done / total) * 100) : 0;
@@ -31,17 +43,13 @@ function pct(done: number, total: number) {
 function DaemonBadge({ daemon }: { daemon: string }) {
   if (daemon === 'running') {
     return (
-      <Tag color="success" title="fenixd daemon 运行中">
+      <OutlinedTag tone="good" >
         运行中
-      </Tag>
+      </OutlinedTag>
     );
   }
   if (daemon === 'stopped') {
-    return (
-      <Tag color="warning" title="fenixd daemon 未运行">
-        未运行
-      </Tag>
-    );
+    return <OutlinedTag tone="warning">未运行</OutlinedTag>;
   }
   return null;
 }
@@ -187,9 +195,9 @@ export default function ProjectCards({
           const statusTags = Object.entries(project.status_counts || {}).map(([st, n]) => {
             const m = statusMeta(st);
             return (
-              <Tag key={st} color={TONE_TO_TAG[m.tone]} style={{ marginInlineEnd: 0 }}>
+              <OutlinedTag key={st} tone={m.tone}>
                 {m.label} {n}
-              </Tag>
+              </OutlinedTag>
             );
           });
           return (
