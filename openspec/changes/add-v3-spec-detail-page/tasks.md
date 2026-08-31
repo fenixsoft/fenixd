@@ -21,9 +21,7 @@
 - [x] 3.1 浏览器对照 v1 同 spec（如 fenixd/refactor-core-packages）逐区块走查内容一致
 - [x] 3.2 运行对话流实测：展开运行节点按需加载、增量追加、无连接泄漏（卸载关闭 SSE）
 - [x] 3.3 空 spec（无运行/无场景/无 bug/无截图）页签空态走查
-- [x] 3.4 console 零错误；`npm run build` 通过；dist 提交
+- [x] 3.4 console 零错误；`npm run build` 通过；dist 提交## 验证修复（第 2 轮失败）
 
-## 验证修复（第 1 轮失败）
-
-- [x] 阅读 `openspec/changes/add-v3-spec-detail-page/verification-report.md`，定位「真实产品 Bug」并修复
-- [x] 修复后重跑验证确认通过
+- [ ] 阅读 `openspec/changes/add-v3-spec-detail-page/verification-report.md`，定位「真实产品 Bug」并修复
+- [ ] 修复后重跑验证确认通过
