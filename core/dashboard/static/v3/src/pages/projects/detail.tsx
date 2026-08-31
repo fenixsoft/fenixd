@@ -1,5 +1,5 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, Card, Checkbox, Col, Descriptions, Empty, Progress, Row, Space, Spin, Statistic, Tabs, Tag, Typography } from 'antd';
+import { Alert, Card, Checkbox, Col, Descriptions, Empty, Progress, Row, Space, Spin, Statistic, Tabs, Tag, Timeline, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { history, useParams } from '@umijs/max';
 import dayjs from 'dayjs';
@@ -73,6 +73,118 @@ export default function SpecDetailPage() {
   const completedTasks = allTasks.filter((t) => t.done).length;
   const totalTasks = allTasks.length;
 
+  // 格式化时长
+  const fmtDuration = (seconds: number) => {
+    if (seconds == null || Number.isNaN(seconds)) return '';
+    let s = Math.max(0, Math.round(seconds));
+    if (s < 60) return `${s}秒`;
+    const m = Math.floor(s / 60);
+    s %= 60;
+    if (m < 60) return s ? `${m}分${s}秒` : `${m}分`;
+    return `${Math.floor(m / 60)}时${m % 60}分${s ? `${s}秒` : ''}`;
+  };
+
+  // 渲染时间轴内容
+  const renderTimeline = () => {
+    const timeline = detail?.timeline || [];
+    if (!timeline.length) {
+      return <Empty description="暂无运行时间轴" />;
+    }
+
+    return (
+      <Timeline
+        items={timeline.map((item, index) => {
+          if (item.kind === 'state') {
+            // 状态节点
+            const isRollback = !!item.reason;
+            return {
+              color: isRollback ? '#ec835a' : '#3987e5',
+              dot: (
+                <span style={{ fontSize: 16 }}>
+                  {isRollback ? '↩' : '·'}
+                </span>
+              ),
+              children: (
+                <div>
+                  <Typography.Text strong>
+                    {item.state || '状态迁移'}
+                  </Typography.Text>
+                  {isRollback && (
+                    <div style={{ marginTop: 4 }}>
+                      <Typography.Text type="warning">
+                        ↩ {item.reason || '状态回退'}
+                      </Typography.Text>
+                    </div>
+                  )}
+                  <div style={{ marginTop: 4 }}>
+                    <Typography.Text type="secondary">
+                      {dayjs(item.time).format('YYYY-MM-DD HH:mm:ss')}
+                    </Typography.Text>
+                  </div>
+                </div>
+              ),
+            };
+          } else {
+            // 运行节点
+            const st = item.status || '';
+            const color = st === 'error' ? '#d03b3b' : (st === 'running' || st === 'empty') ? '#fab219' : '#199e70';
+            const iconChar = st === 'error' ? '✕' : (st === 'running' || st === 'empty') ? '…' : '✓';
+            const dur = item.duration_seconds != null ? fmtDuration(item.duration_seconds) : '';
+            const isFix = item.spec && String(item.spec).startsWith('fix-');
+
+            return {
+              color: color,
+              dot: (
+                <span style={{ fontSize: 16 }}>
+                  {iconChar}
+                </span>
+              ),
+              children: (
+                <div>
+                  <Space size={8} style={{ marginBottom: 4 }}>
+                    <Typography.Text strong>{item.agent || '未知类型'}</Typography.Text>
+                    <Tag color={color} style={{ margin: 0 }}>
+                      {st || '未知状态'}
+                    </Tag>
+                    {isFix && (
+                      <Tag color="orange" style={{ margin: 0 }}>
+                        🔧 {item.spec}
+                      </Tag>
+                    )}
+                  </Space>
+                  {dur && (
+                    <div style={{ marginTop: 4 }}>
+                      <Typography.Text type="secondary">
+                        耗时：{dur}
+                      </Typography.Text>
+                    </div>
+                  )}
+                  <div style={{ marginTop: 4 }}>
+                    <Typography.Text type="secondary">
+                      {dayjs(item.time).format('YYYY-MM-DD HH:mm:ss')}
+                    </Typography.Text>
+                  </div>
+                  {item.run_id && (
+                    <div style={{ marginTop: 8 }}>
+                      <Typography.Link
+                        onClick={() => {
+                          // TODO: 打开运行记录弹窗
+                          console.log('打开运行记录:', item.run_id);
+                        }}
+                      >
+                        查看运行记录
+                      </Typography.Link>
+                    </div>
+                  )}
+                </div>
+              ),
+            };
+          }
+        })}
+      />
+    );
+  };
+
   // 页签配置
   const tabItems = [
     {
@@ -80,7 +192,7 @@ export default function SpecDetailPage() {
       label: '运行时间轴',
       children: (
         <div style={{ padding: '20px 0' }}>
-          <Empty description="暂无运行时间轴" />
+          {renderTimeline()}
         </div>
       ),
     },
