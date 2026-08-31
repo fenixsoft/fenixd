@@ -212,6 +212,100 @@ export async function getSpecDoc(
   );
 }
 
+// ── SPEC 详情（/api/specs/<spec>?project=，聚合 verdict/verify/tasks/timeline/scenarios/bugs/screenshots/token_usage） ──
+
+export interface SpecDetail {
+  name: string;
+  project: string;
+  status: string | null;
+  priority: number | null;
+  created: string | null;
+  updated: string | null;
+  error: string | null;
+  // 验证结论
+  verdict?: {
+    passed: boolean;
+    summary?: string;
+    details?: string;
+  };
+  // 验证进度
+  verify?: {
+    done: number;
+    total: number;
+    error?: string;
+  };
+  // 任务清单
+  tasks?: {
+    groups: Array<{
+      name: string;
+      tasks: Array<{
+        description: string;
+        done: boolean;
+      }>;
+    }>;
+  };
+  // 时间轴
+  timeline?: Array<{
+    kind: 'state' | 'run';
+    time: string;
+    state?: string;
+    reason?: string;
+    run_id?: string;
+    agent?: string;
+    status?: string;
+  }>;
+  // 场景结果
+  scenarios?: {
+    report_status?: 'ok' | 'corrupted' | 'missing';
+    summary?: {
+      passed: number;
+      warning: number;
+      failed: number;
+      error: number;
+    };
+    items?: Array<{
+      scenario_id: string;
+      description?: string;
+      status: 'passed' | 'warning' | 'failed' | 'error';
+      assertions?: Array<{
+        passed: boolean;
+        message?: string;
+      }>;
+      steps?: Array<{
+        name: string;
+        status: 'passed' | 'failed';
+        error?: string;
+      }>;
+    }>;
+  };
+  // Bug 列表
+  bugs?: Array<{
+    id: string;
+    severity: 'critical' | 'major' | 'minor' | 'info';
+    source?: string;
+    description: string;
+    scenario?: string;
+    assertion?: string;
+    evidence?: string;
+    screenshot?: string;
+  }>;
+  // 失败截图
+  screenshots?: string[];
+  // Token 用量
+  token_usage?: {
+    tokens_in: number;
+    tokens_out: number;
+    cost?: number | null;
+    cost_available?: boolean;
+  };
+}
+
+export async function getSpecDetail(project: string, spec: string): Promise<SpecDetail> {
+  return request<SpecDetail>(
+    `/api/specs/${encodeURIComponent(spec)}?project=${encodeURIComponent(project)}`,
+  );
+}
+
 // ── SPEC 状态元数据（中文标签 + 语义色，与 v1 STATUS_META 对齐） ──
 
 export type StatusTone = 'muted' | 'info' | 'warning' | 'critical' | 'good' | 'aqua';

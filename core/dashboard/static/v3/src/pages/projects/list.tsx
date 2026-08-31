@@ -135,6 +135,10 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
     setOpen(false);
   };
 
+  const handleClick = () => {
+    history.push(`/projects/${project}/${record.name}`);
+  };
+
   return (
     <Popover
       open={open && !!why}
@@ -143,7 +147,12 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
         <div style={{ maxWidth: 420, whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.65 }}>{why}</div>
       }
     >
-      <span onMouseEnter={onEnter} onMouseLeave={onLeave} style={{ cursor: 'pointer', fontSize: 16, fontWeight: 600 }}>
+      <span
+        onMouseEnter={onEnter}
+        onMouseLeave={onLeave}
+        onClick={handleClick}
+        style={{ cursor: 'pointer', fontSize: 16, fontWeight: 600, color: '#1677ff' }}
+      >
         {record.name}
       </span>
     </Popover>
