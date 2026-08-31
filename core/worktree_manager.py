@@ -1183,6 +1183,10 @@ class WorktreeManager:
             # （Layer 2 兜底，fix-merge-untracked-guard 泛化）：即使 spec 未被
             # ensure_spec_committed 提交、或产物路径有污染，也不让 merge 因 untracked 冲突死锁。
             backup = self._backup_untracked_spec_files(branch)
+            head_before = subprocess.run(
+                ["git", "-C", str(self.project_root), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=30,
+            ).stdout.strip()
 
             # Merge with --no-ff to preserve worktree history
             result = subprocess.run(
@@ -1191,8 +1195,25 @@ class WorktreeManager:
                  "-m", f"[fenix] merge implementer branch {branch}"],
                 capture_output=True, text=True, timeout=120,
             )
+            if result.returncode != 0:
+                error = (result.stderr.strip() or result.stdout.strip()
+                         or f"exit code {result.returncode}")
+                # DRY 自愈（fix-merge-dirty-ignored-draft）：主树被 ignore 的 tracked
+                # 运行时草稿带未提交修改、而 merge 需写该路径时，git 直接拒绝且不进入
+                # 冲突态（_resolve_ignored_modify_delete_conflicts 覆盖不到）。移出后重试。
+                blockers = self._parse_merge_blockers(error)
+                if blockers and self._untrack_ignored_local_changes(blockers):
+                    result = subprocess.run(
+                        ["git", "-C", str(self.project_root),
+                         "merge", "--no-ff", branch,
+                         "-m", f"[fenix] merge implementer branch {branch}"],
+                        capture_output=True, text=True, timeout=120,
+                    )
             if result.returncode == 0:
                 self._drop_backup(backup)
+                # merge 成功后把随分支带回 tracked 的 ignored 草稿移出（防撞车循环重启）
+                if head_before:
+                    self._purge_ignored_brought_in(head_before)
                 self.logger.info(
                     "worktree_manager",
                     f"Merged branch '{branch}' into main tree",
@@ -1229,6 +1250,159 @@ class WorktreeManager:
             return False, "git merge timed out after 120s"
         except Exception as e:
             return False, str(e)
+
+    def _parse_merge_blockers(self, error: str) -> list:
+        """从 git 的 'local changes would be overwritten by merge' 错误中解析路径。
+
+        错误形如::
+
+            error: Your local changes to the following files would be overwritten by merge:
+            \t<path1>
+            \t<path2>
+            Please commit your changes or stash them before you merge.
+
+        无法解析或不含该错误时返回空列表。
+        """
+        marker = "would be overwritten by merge:"
+        idx = error.find(marker)
+        if idx == -1:
+            return []
+        paths = []
+        for line in error[idx + len(marker):].splitlines():
+            if not line.strip():
+                if paths:
+                    break  # 空行＝路径段结束
+                continue
+            text = line.strip().lstrip("\t").strip()
+            if not text or text.startswith(("Please commit", "Aborting", "error:", "Merge with")):
+                break
+            paths.append(text)
+        return paths
+
+    def _untrack_ignored_local_changes(self, paths: list) -> bool:
+        """把 merge 需写路径上「被 ignore 的 tracked 本地修改」移出索引并提交。
+
+        场景：implementer 从草稿尚被 tracked 的旧 base 派生分支，把
+        .fenix-run-result.json 等运行时草稿提交回来；此后主树 daemon 每轮更新草稿
+        留下未提交修改 → merge 需写该路径时被 DRY 检查拒绝
+        （add-v3-spec-detail-page 熔断 fp=8acc38c71d41）。被 ignore 的运行时草稿
+        不是交付物，不应让 merge-back 死锁。
+
+        用 ``check-ignore --no-index`` 校验：tracked 文件的普通 check-ignore 恒为
+        非忽略（误报），--no-index 只按 ignore 规则判定。
+        全部路径均被 ignore 才执行（任一未忽略 → 可能是真实交付物，返回 False
+        交回原有失败路径）；移出后作为独立提交落盘，随后可重试 merge。
+
+        Returns: True 表示已全部移出并提交，可重试 merge。
+        """
+        if not paths:
+            return False
+        try:
+            for path in paths:
+                chk = subprocess.run(
+                    ["git", "-C", str(self.project_root),
+                     "check-ignore", "--no-index", "-q", "--", path],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if chk.returncode != 0:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Self-heal (untrack) aborted: '{path}' is not gitignored "
+                        f"— not a runtime draft",
+                    )
+                    return False
+            for path in paths:
+                rm = subprocess.run(
+                    ["git", "-C", str(self.project_root),
+                     "rm", "-f", "--cached", "--", path],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if rm.returncode != 0:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Self-heal (untrack): git rm --cached failed for "
+                        f"'{path}': {(rm.stderr or rm.stdout).strip()}",
+                    )
+                    return False
+            commit = subprocess.run(
+                ["git", "-C", str(self.project_root), "commit",
+                 "-m", "[fenix] fix: merge 前移出被误提交的 ignored 运行时草稿"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if commit.returncode != 0:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Self-heal (untrack): commit failed: "
+                    f"{(commit.stderr or commit.stdout).strip()}",
+                )
+                return False
+            self.logger.info(
+                "worktree_manager",
+                f"Self-heal (untrack): moved ignored tracked drafts out of index: "
+                f"{', '.join(paths)}",
+            )
+            return True
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+
+    def _purge_ignored_brought_in(self, old_head: str) -> None:
+        """merge 成功后把被 ignore 却随分支带回 tracked 的路径移出索引。
+
+        与 _untrack_ignored_local_changes 同一根因的另一半：主树草稿干净时 merge
+        不会被 DRY 拒绝，但分支提交的草稿会随 merge 进入主树索引——主树重新变回
+        tracked，daemon 下一轮更新草稿又留下脏修改，撞车循环重启。merge 完成后
+        对本次 merge 新增（--diff-filter=A）且被 ignore 的路径补一次移出
+        （工作区副本保留），无此类路径时零开销跳过。
+        """
+        try:
+            diff = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "diff", "--name-only", "--diff-filter=A", f"{old_head}..HEAD"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if diff.returncode != 0 or not diff.stdout.strip():
+                return
+            victims = []
+            for rel in [ln.strip() for ln in diff.stdout.splitlines() if ln.strip()]:
+                ls = subprocess.run(
+                    ["git", "-C", str(self.project_root),
+                     "ls-files", "--error-unmatch", "--", rel],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if ls.returncode != 0:
+                    continue  # 已不在索引（或不存在）
+                chk = subprocess.run(
+                    ["git", "-C", str(self.project_root),
+                     "check-ignore", "--no-index", "-q", "--", rel],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if chk.returncode == 0:
+                    victims.append(rel)
+            if not victims:
+                return
+            for rel in victims:
+                subprocess.run(
+                    ["git", "-C", str(self.project_root),
+                     "rm", "-f", "--cached", "--", rel],
+                    capture_output=True, text=True, timeout=30,
+                )
+            commit = subprocess.run(
+                ["git", "-C", str(self.project_root), "commit",
+                 "-m", "[fenix] fix: merge 后移出随分支带回的 ignored 运行时草稿"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if commit.returncode == 0:
+                self.logger.info(
+                    "worktree_manager",
+                    f"Purged ignored drafts brought in by merge: {', '.join(victims)}",
+                )
+            else:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Purge commit failed: {(commit.stderr or commit.stdout).strip()}",
+                )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self.logger.warning("worktree_manager", f"Purge ignored brought-in failed: {e}")
 
     def _resolve_ignored_modify_delete_conflicts(self) -> bool:
         """在 merge 冲突挂起状态下自愈 modify/delete 冲突（仅限被忽略的路径）。
