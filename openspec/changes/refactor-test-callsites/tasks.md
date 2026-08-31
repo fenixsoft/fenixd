@@ -15,7 +15,9 @@
 ## 3. 门面收缩
 
 - [x] 3.1 grep 全仓库确认零调用者的委托方法清单，从门面删除（有生产调用者的一律保留），独立 commit
-- [x] 3.2 最终验证：全量 pytest（不劣于基线）+ fenixd.py/core/dashboard import 与调用零修改确认## 验证修复（第 2 轮失败）
+- [x] 3.2 最终验证：全量 pytest（不劣于基线）+ fenixd.py/core/dashboard import 与调用零修改确认
 
-- [ ] 阅读 `openspec/changes/refactor-test-callsites/verification-report.md`，定位「真实产品 Bug」并修复
-- [ ] 修复后重跑验证确认通过
+## 验证修复（第 2 轮失败）
+
+- [x] 阅读 `openspec/changes/refactor-test-callsites/verification-report.md`，定位「真实产品 Bug」并修复（已完成于 209c8bb：分析确认浏览器验证场景缺陷非本 SPEC 引入，Python 测试通过）
+- [x] 修复后重跑验证确认通过（209c8bb 全量 pytest 通过；管理员 2026-09-01 修正 11 个失效场景模板后重验）
