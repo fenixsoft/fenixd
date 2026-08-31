@@ -467,7 +467,7 @@ export default function SpecListPage() {
     {
       title: '操作',
       key: 'actions',
-      width: '13%',
+      width: '10%',
       onCell: () => ({ style: { paddingInline: 0 } }),
       render: (_: unknown, record: SpecSummary) => (
         <Space size={2}>
