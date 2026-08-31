@@ -26,6 +26,9 @@ Thumbs.db
 .playwright-cli/
 dist/
 
+# 例外：v3 dashboard 构建产物按决策入库（克隆即用，无需 Node 构建）
+!core/dashboard/static/v3/dist/
+
 # 自动生成的运行时状态
 STATE.md
 PROJECT_LOG.md

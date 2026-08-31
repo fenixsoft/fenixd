@@ -1,0 +1,34 @@
+// https://umijs.org/config/
+import { defineConfig } from '@umijs/max';
+import defaultSettings from './defaultSettings';
+import proxy from './proxy';
+import routes from './routes';
+
+export default defineConfig({
+  // 产物文件名带内容 hash，浏览器长缓存友好
+  hash: true,
+
+  // daemon 以 /v3/dist/ 子路径服务本应用，资源必须走相对路径
+  publicPath: './',
+
+  // hash 路由：服务端只需回退到 index.html（daemon 静态透传零改动即可用）
+  history: { type: 'hash' },
+
+  // 多 chunk 场景下 esbuild 压缩 helper 命名冲突防护（构建器校验项）
+  esbuildMinifyIIFE: true,
+
+  routes,
+
+  // 开发期代理到 fenixd daemon；build 后同源直连 /api，无需代理
+  proxy: proxy.dev,
+
+  layout: {
+    locale: false,
+    ...defaultSettings,
+  },
+
+  antd: {},
+
+  // 关闭内置 mock：开发期用 proxy 直连真实 daemon
+  mock: false,
+});
