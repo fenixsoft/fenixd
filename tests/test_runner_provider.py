@@ -18,6 +18,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.state_machine import StateMachine, StateParser, SpecStatus, VALID_TRANSITIONS
+from tests.helpers import _FakeProc
 
 
 class TestAgentRunnerModelRouting(unittest.TestCase):
@@ -62,18 +63,6 @@ class TestAgentRunResult(unittest.TestCase):
         self.assertEqual(self.run_result.spec_name, "test-spec")
         self.assertEqual(self.run_result.agent_type, "implementer")
         self.assertEqual(self.run_result.duration_seconds, 10.5)
-
-
-class _FakeProc:
-    """Fake process for testing."""
-
-    def __init__(self, returncode=0, stdout="", stderr=""):
-        self.returncode = returncode
-        self.stdout = io.StringIO(stdout)
-        self.stderr = io.StringIO(stderr)
-
-    def communicate(self):
-        return (self.stdout.read(), self.stderr.read())
 
 
 class TestRunClaudeStreaming(unittest.TestCase):
