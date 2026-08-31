@@ -1,0 +1,1 @@
+{"reason": "refactor-core-packages: core/agent_runner 与 core/pm_engine 已重组为包结构（组合提取+门面，外部 API 零变化），需重启 daemon 加载新模块布局", "origin": "openspec/changes/refactor-core-packages 阶段 8 交付物", "date": "2026-08-31"}

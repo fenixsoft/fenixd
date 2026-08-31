@@ -50,8 +50,8 @@
 
 ## 9. 阶段 8：收尾验证
 
-- [ ] 9.1 全量 pytest + 全部 import 路径验证 + 疑点清单最终汇报（向用户汇报，代码不动）
-- [ ] 9.2 经用户确认时机后 touch `.fenix/restart_request` 重启 daemon 并冒烟验证（重构期间此前不得重启）
+- [x] 9.1 全量 pytest + 全部 import 路径验证 + 疑点清单最终汇报（向用户汇报，代码不动）
+- [x] 9.2 经用户确认时机后 touch `.fenix/restart_request` 重启 daemon 并冒烟验证（重构期间此前不得重启）
 
 ## 10. 阶段 9（可选，第二轮）
 
