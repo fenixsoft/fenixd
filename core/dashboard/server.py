@@ -917,6 +917,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _serve_static(self, filename: str):
         target = (self.server.static_dir / filename).resolve()
         static_root = self.server.static_dir.resolve()
+        # 如果是目录，尝试 serve 目录下的 index.html
+        if target.is_dir():
+            target = target / "index.html"
         if not target.is_relative_to(static_root) or not target.is_file():
             self._error(404, "Not Found")
             return
