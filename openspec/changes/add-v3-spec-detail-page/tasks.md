@@ -5,7 +5,7 @@
 - [x] 1.1 `config/routes.ts` 增加 `/projects/:name/:spec` → `pages/projects/detail.tsx`；列表页名称列点击跳转
 - [x] 1.2 `src/services/dashboard.ts` 新增 `getSpecDetail(project, spec)`（`/api/specs/<spec>?project=`）与运行流封装
 - [x] 1.3 详情页骨架：头部（名称/状态/onBack）+ error 横幅 + 元信息（P/创建/更新/依赖）
-- [ ] 1.4 常驻区四区块：验证结论、验证进度、Token 用量（含"成本不可用"降级）、任务清单（分组 + 勾选状态）
+- [x] 1.4 常驻区四区块：验证结论、验证进度、Token 用量（含"成本不可用"降级）、任务清单（分组 + 勾选状态）
 
 ## 2. 四个页签
 
