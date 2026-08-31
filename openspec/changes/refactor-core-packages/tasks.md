@@ -14,10 +14,10 @@
 
 ## 3. 阶段 2：agent_runner → 独立状态组件
 
-- [ ] 3.1 提取 provider_circuit.py（provider_circuits 状态同迁；熔断/冷却/探针/4xx 记录；门面保留 `_record_provider_4xx` 等委托）
-- [ ] 3.2 提取 token_budget.py（用量累计/预算检查/告警）
-- [ ] 3.3 提取 v2_server.py（per-run 隔离测试服务器状态同迁）与 run_files.py（append_run_line/append_run_error/clean_old_runs 模块级函数，`__init__.py` 导出 clean_old_runs）
-- [ ] 3.4 全量 pytest 全绿 + import 验证通过，独立 commit
+- [x] 3.1 提取 provider_circuit.py（provider_circuits 状态同迁；熔断/冷却/探针/4xx 记录；门面保留 `_record_provider_4xx` 等委托）
+- [x] 3.2 提取 token_budget.py（用量累计/预算检查/告警）
+- [x] 3.3 提取 v2_server.py（per-run 隔离测试服务器状态同迁）与 run_files.py（append_run_line/append_run_error/clean_old_runs 模块级函数，`__init__.py` 导出 clean_old_runs）
+- [x] 3.4 全量 pytest 全绿 + import 验证通过，独立 commit
 
 ## 4. 阶段 3：agent_runner 包成型
 

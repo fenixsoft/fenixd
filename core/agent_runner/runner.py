@@ -17,6 +17,26 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from core.agent_runner.prompt_builder import PromptBuilder
+from core.agent_runner.provider_circuit import (
+    PROVIDER_CIRCUIT_4XX,
+    PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
+    PROVIDER_CIRCUIT_PROBE_SUCCESS_CODE,
+    PROVIDER_CIRCUIT_THRESHOLD,
+    PROVIDER_CIRCUIT_WINDOW_SECONDS,
+    PROVIDER_DAILY_ATTEMPTS_WARN,
+    PROVIDER_SWITCH_COOLDOWN_SECONDS,
+    SWITCH_ERROR_CONN_PATTERNS,
+    SWITCH_ERROR_TEXT_PATTERNS,
+    ProviderCircuit,
+)
+from core.agent_runner.run_files import (
+    RUNS_KEEP,
+    append_run_error,
+    append_run_line,
+    clean_old_runs,
+)
+from core.agent_runner.token_budget import TokenAccountant
+from core.agent_runner.v2_server import V2ServerManager
 from core.v2_dev_server import (
     V2DevServerError,
     start as v2_start_dev_server,
@@ -25,8 +45,6 @@ from core.v2_dev_server import (
     cleanup_orphans as v2_cleanup_orphans,
 )
 
-# .fenix/runs/ 保留的最近运行产物数量上限（默认 20，见 D1 / spec agent-run-artifacts）
-RUNS_KEEP = 20
 
 # 无 provider 分配的 agent（含 Administrator）走默认网关（cc-switch）时 --model 用的
 # 官方模型名。provider 已分配的 agent，其 --model 直接取该 agent 分配的网关模型名
@@ -46,46 +64,6 @@ V2_DEV_SERVER_MARKER = "fenix-v2-dev-server"
 # 用 SIGKILL 兜底。取 claude 收尾所需量级，模块级常量便于测试注入短值。
 # 见 spec agent-shutdown-interrupt：总关闭时长需压到 ≪ supervisor 60s SIGKILL 窗口。
 AGENT_TERMINATE_GRACE_SECONDS = 10
-
-# ── provider 熔断（fix-stashpop-deadlock：provider-fault-fuse） ──────────────
-# 同一 provider 在滚动窗口内累计 HTTP 4xx（400/401/404）达阈值 → circuit_open，
-# 冷却期内不再派发该 provider（直接失败、不启动 claude、不计入 spec 连续失败重试、
-# 不触发状态机回退）。冷却结束后首个派发作半开探针，200 闭合、仍 4xx 重新冷却。
-# 5xx/网络错误不计数（属瞬态，走既有 retry）。常量化便于调参，不落盘（见 design D3）。
-PROVIDER_CIRCUIT_WINDOW_SECONDS = 300      # 滚动窗口 5 分钟
-PROVIDER_CIRCUIT_THRESHOLD = 3             # 窗口内 4xx 达此次数 → 熔断
-PROVIDER_CIRCUIT_COOLDOWN_SECONDS = 1800   # 冷却 30 分钟
-# 计入熔断的 HTTP 4xx 状态码（401 与 400/404 一并计数：余额不足同样要防烧钱）
-PROVIDER_CIRCUIT_4XX = (400, 401, 404)
-# 半开探针成功判据：claude CLI 正常退出（视作网关 200）。解析不到 code 视为失败、不计数。
-PROVIDER_CIRCUIT_PROBE_SUCCESS_CODE = 0
-
-# ── provider 切换冷却（add-provider-failover：failover-dispatch） ──────────
-# 与 4xx 熔断（provider-fault-fuse）独立的字段：切换类错误（unrecognized_model / 5xx /
-# 网络错误）不计入 4xx 计数，而是把该 provider 推进到"switch 冷却"，链选择时跳过冷却中
-# 候选；冷却到期主链自动复位优先（design D3：只触发链前进+短冷却，不永久拉黑）。
-# 默认 300s，可配 pm.failover.switch_cooldown_seconds。
-PROVIDER_SWITCH_COOLDOWN_SECONDS = 300
-# 今日（2026-08-27）真实故障文本 fixture（inferaiapi / aliyun 各自拒绝 deepseek 变体）：
-# claude CLI 经 SDK 包装时把 unrecognized_model 打到 stderr，形如下列；用于 classify_switch_error
-# 文本匹配（design D2）。中央化便于日后新增网关报错形态。
-SWITCH_ERROR_TEXT_PATTERNS = (
-    r"unrecognized_model",
-    r"unrecognized model",
-    r"model.*not.*found",
-)
-# 连接类异常关键字（网络错误 / DNS / 超时 / 连接拒绝）——属瞬态，驱动链前进
-SWITCH_ERROR_CONN_PATTERNS = (
-    r"connection.*(refused|reset|error|timeout)",
-    r"connect.*(refused|reset|error|timeout)",
-    r"failed to connect",
-    r"name or service not known",   # DNS 解析失败
-    r"temporarily unavailable",
-    r"network is unreachable",
-)
-# per-provider 当日 attempt 计数告警上限（design D5：防备备份 provider 悄悄烧贵）；
-# 可配 pm.failover.daily_attempts_warn，默认 50。
-PROVIDER_DAILY_ATTEMPTS_WARN = 50
 
 # ── attempt 存活探测 / 超时活性监督（improve-run-lifecycle-governance）──────
 # 进程扫描不可用时，run 流文件 mtime 在该窗口内视为 attempt 仍在活动（D4 回退判据）。
@@ -255,25 +233,7 @@ class AgentRunner:
 
         self._running_agents: Dict[str, subprocess.Popen] = {}
         self._daily_run_count = 0
-        self._daily_reset_date = datetime.now(timezone.utc).date()
 
-        # add-provider-failover（design D5 / spec failover-dispatch 4.2）：per-provider
-        # 当日 attempt 计数与单次告警标记。进程内存、按 UTC 日期滚动重置；超过
-        # pm.failover.daily_attempts_warn（默认 50）时打 WARNING 且当日只告警一次。
-        self._daily_provider_attempts: Dict[str, int] = {}
-        self._daily_provider_warned: Dict[str, bool] = {}
-
-        # provider 熔断状态（fix-stashpop-deadlock：provider-fault-fuse）。
-        # 进程内存、不落盘（design D3）：{provider_name: {
-        #   "code": int,            # 触发熔断的 HTTP 4xx code
-        #   "events": [ts, ...],     # 滚动窗口内 4xx 时间戳（单调秒）
-        #   "count": int,           # 窗口内 4xx 次数
-        #   "open_since": float,     # 进入 open 的时间戳
-        #   "cooldown_until": float, # 冷却到期时间戳
-        #   "half_open": bool,       # 冷却到期后首个派发作为探针
-        #   "switch_cooldown_until": float,  # add-provider-failover 切换类错误冷却到期
-        # }}
-        self.provider_circuits: Dict[str, dict] = {}
 
         # 超时监督续期基准注册表（improve-run-lifecycle-governance 3.2 / D3）：
         # {spec_name: {"baseline": epoch, "run_id": str, "extension": int,
@@ -284,355 +244,31 @@ class AgentRunner:
         # 流停止增长即失效）。
         self._extension_baselines: Dict[str, dict] = {}
 
-        # add-worktree-test-server（design D2/D3）：per-run 隔离测试服务生命周期。
-        # _v2_servers: {wt_path(str): (port, proc)}，随 worktree 创建/清理启停；
-        # _v2_used_ports: 本 daemon 已分配且占用的端口集合，避免并发派发重复分配；
-        # _v2_run_seq: 单调递增运行序号，决定首选端口（确定性分散，design D3）。
-        self._v2_servers: Dict[str, Tuple[int, subprocess.Popen]] = {}
-        self._v2_used_ports: set = set()
-        self._v2_run_seq = 0
-
     # ── V2 per-run 隔离测试服务（add-worktree-test-server）─────────────────────
 
-    def _v2_ensure_state(self) -> None:
-        """惰性初始化 V2 状态（设计容错：部分测试以 ``AgentRunner.__new__`` 绕过
-        ``__init__`` 构造实例，此时实例属性未建立；访问前补齐默认值避免 AttributeError，
-        行为与 daemon 正常 __init__ 路径一致）。
-        """
-        if not hasattr(self, "_v2_servers") or self._v2_servers is None:
-            self._v2_servers: Dict[str, tuple] = {}
-        if not hasattr(self, "_v2_used_ports") or self._v2_used_ports is None:
-            self._v2_used_ports: set = set()
-        if not hasattr(self, "_v2_run_seq"):
-            self._v2_run_seq = 0
 
-    def _v2_launch_for_worktree(self, wt_path: Path) -> None:
-        """为某 worktree 启动专属 dev-server 并登记（D2 派发前启动）。
 
-        失败（端口耗尽/启动未就绪）记 WARNING 但**不阻断派发**：测试回退到
-        PLAYWRIGHT/默认 8787（config/baseURL 缺省值），仅失去 worktree 隔离——
-        比让整条 spec 失败更优。登记成功才写入 _v2_servers，供终态回收。
-        """
-        self._v2_ensure_state()
-        try:
-            self._v2_run_seq += 1
-            port, proc = v2_start_dev_server(
-                wt_path, self._v2_run_seq, self._v2_used_ports, self.logger)
-            self._v2_servers[str(wt_path)] = (port, proc)
-        except V2DevServerError as e:
-            self.logger.warning(
-                "agent_runner",
-                f"V2 dev-server launch failed for {wt_path} (tests fall back to "
-                f"8787): {e}",
-            )
 
-    def _v2_inject_env(self, wt_path: Path) -> Dict[str, str]:
-        """返回该 worktree 的 V2_BASE_URL 注入片段（D1 注入运行环境）。
 
-        未启动 dev-server 时返回空 dict，agent 沿用 config 缺省 8787。
-        """
-        self._v2_ensure_state()
-        entry = self._v2_servers.get(str(wt_path))
-        if not entry:
-            return {}
-        return {"V2_BASE_URL": v2_base_url(entry[0])}
-
-    def _v2_stop_for_worktree(self, wt_path: Path) -> None:
-        """回收某 worktree 的 dev-server（D2 终态回收）。"""
-        self._v2_ensure_state()
-        entry = self._v2_servers.pop(str(wt_path), None)
-        if entry is None:
-            return
-        port, proc = entry
-        try:
-            v2_stop_dev_server(proc, port, self._v2_used_ports, self.logger)
-        except Exception as e:  # 回收失败不阻断主流程
-            self.logger.warning(
-                "agent_runner", f"V2 dev-server stop failed for {wt_path}: {e}")
-
-    def _v2_stop_all(self) -> None:
-        """daemon 关闭 / 异常恢复时回收全部在册 dev-server（D2）。"""
-        self._v2_ensure_state()
-        for wt_str in list(self._v2_servers.keys()):
-            self._v2_stop_for_worktree(Path(wt_str))
 
     # ── provider 熔断（fix-stashpop-deadlock：provider-fault-fuse） ──────────────
 
-    @staticmethod
-    def parse_api_error_status(error_text: str) -> Optional[int]:
-        """从 claude CLI 错误输出解析网关返回的 HTTP 状态码（fix-stashpop-deadlock）。
 
-        claude CLI 在 provider 网关 4xx 时把错误打到 stderr，典型形如
-        ``HTTP 404`` / ``API error (404)`` / ``status code 401``；网关经 SDK 包装时
-        也可能出现 ``unrecognized_model``（对应 404）等字样。这里只认明确解析出的数字
-        状态码（design D4）；解析不到返回 None（视为非 4xx、不计数、探针失败也不计数——
-        R2 防护：避免把偶发解析不出 code 的响应误判闭合）。
-
-        返回 int 状态码；非 4xx（5xx/网络错误）返回 None。
-        """
-        if not error_text:
-            return None
-        # 顺序匹配：HTTP <code> / (404) / status code <code> / code <code>
-        for pat in (r"HTTP\s+(\d{3})", r"\((\d{3})\)", r"status\s*code\s*[:=]?\s*(\d{3})",
-                    r"\bcode\s*[:=]?\s*(\d{3})"):
-            m = re.search(pat, error_text, re.IGNORECASE)
-            if m:
-                try:
-                    code = int(m.group(1))
-                except (TypeError, ValueError):
-                    return None
-                return code
-        return None
-
-    @staticmethod
-    def classify_switch_error(error_text: str) -> bool:
-        """判断错误文本是否属于「切换类错误」（add-provider-failover：design D2）。
-
-        切换类错误驱动 failover 链前进：unrecognized_model 文本 / HTTP 5xx / 连接类异常。
-        以下情形**不**返回 True（维持既有 4xx 熔断语义、不纳入链前进）：
-        - HTTP 4xx（配额/鉴权，parsed code ∈ PROVIDER_CIRCUIT_4XX）——走 provider-fault-fuse
-        - 空文本 / 解析不到 code 且不匹配任何切换文本
-
-        返回 True 表示该 attempt 失败应以「链前进 + switch 短冷却」处理。
-
-        Args:
-            error_text: claude CLI 打到 stderr / 被 runner 转成 str 的错误文本。
-        """
-        if not error_text:
-            return False
-        text = error_text
-        # 1) HTTP 5xx（5xx 属瞬态网关故障，驱动切换；5xx 的 code 解析不出也算失败但会被
-        #    下方连接/文本兜底覆盖）。先排除明确 4xx（解析出的 4xx 不触发切换）。
-        code = AgentRunner.parse_api_error_status(text)
-        if code is not None:
-            if code in PROVIDER_CIRCUIT_4XX:
-                return False  # 4xx 配额/鉴权：交既有熔断，不切换
-            if 500 <= code <= 599:
-                return True  # 5xx：切换
-        # 2) unrecognized_model 文本（今日真实故障：inferaiapi/aliyun 各自拒绝 deepseek 变体）
-        for pat in SWITCH_ERROR_TEXT_PATTERNS:
-            if re.search(pat, text, re.IGNORECASE):
-                return True
-        # 3) 连接类异常（网络错误 / DNS / 超时 / 连接拒绝）——瞬态，切换
-        for pat in SWITCH_ERROR_CONN_PATTERNS:
-            if re.search(pat, text, re.IGNORECASE):
-                return True
-        return False
 
     def _now(self) -> float:
         """单调时间戳（测试可覆写）。用 time.monotonic 避免时钟回拨影响窗口。"""
         return time.monotonic()
 
-    def _circuit_state(self, provider_name: str) -> dict:
-        """返回（惰性创建）某 provider 的熔断状态 dict。
 
-        add-provider-failover：在既有 provider-fault-fuse 字段外新增 `switch_cooldown_until`
-        （切换类错误冷却到期时间戳），与 4xx 熔断 `cooldown_until` 键隔离（design D3），
-        避免两类计数互相污染。
-        """
-        st = self.provider_circuits.get(provider_name)
-        if st is None:
-            st = {
-                "code": None,
-                "events": [],
-                "count": 0,
-                "open_since": 0.0,
-                "cooldown_until": 0.0,
-                "half_open": False,
-                "switch_cooldown_until": 0.0,  # 切换类错误冷却到期时间戳（add-provider-failover）
-            }
-            self.provider_circuits[provider_name] = st
-        return st
-
-    def is_circuit_open(self, provider_name: str, now: float | None = None) -> bool:
-        """判断某 provider 当前是否处于熔断拦截态（open 且冷却未到期）。
-
-        半开态（冷却到期、首个探针未发）仍视为 open（拦截并由首个派发当探针）。
-        """
-        if not provider_name:
-            return False
-        st = self.provider_circuits.get(provider_name)
-        if st is None:
-            return False
-        now = self._now() if now is None else now
-        return st["cooldown_until"] > now
 
     # ── provider 切换冷却（add-provider-failover：failover-dispatch） ──────────
 
-    def is_switch_cooldown(self, provider_name: str, now: float | None = None) -> bool:
-        """判断某 provider 当前是否处于「切换类冷却」态（链路选择跳过）。
 
-        与 is_circuit_open 键隔离：仅由 classify_switch_error 触发的短冷却，不读 4xx 熔断
-        的 cooldown_until。冷却到期后该 provider 自动复位、链选择优先复用（design D3）。
-        """
-        if not provider_name:
-            return False
-        st = self.provider_circuits.get(provider_name)
-        if st is None:
-            return False
-        now = self._now() if now is None else now
-        return st.get("switch_cooldown_until", 0.0) > now
 
-    def _record_switch_cooldown(self, provider_name: str, now: float | None = None) -> None:
-        """记录一次切换类错误：把该 provider 推进到 switch 短冷却（design D2/D3）。
 
-        默认 300s（PROVIDER_SWITCH_COOLDOWN_SECONDS），可配 pm.failover.switch_cooldown_seconds。
-        与 4xx 熔断计数完全独立：仅设置 switch_cooldown_until，不动 4xx 的 events/count/
-        cooldown_until。冷却到期后链选择自动复位优先。
-        """
-        if not provider_name:
-            return
-        now = self._now() if now is None else now
-        st = self._circuit_state(provider_name)
-        cooldown = self._get_config("pm.failover.switch_cooldown_seconds",
-                                    PROVIDER_SWITCH_COOLDOWN_SECONDS)
-        st["switch_cooldown_until"] = now + cooldown
-        self.logger.info(
-            "agent_runner",
-            f"Provider switch-cooldown for '{provider_name}' "
-            f"(add-provider-failover) — {int(cooldown)}s, advance chain",
-        )
 
-    def _write_provider_marker(self, run_id: str, spec_name: str, agent_type: str,
-                               provider_name: str, model: str, chain_index: int,
-                               chain_len: int) -> None:
-        """向 run jsonl 写入 provider_marker 行（design D5 / spec failover-dispatch「产物可追溯」）。
 
-        在 attempt 启动、进程派发前写入，供 Dashboard / 事后审计确认本次 run 实际使用的
-        provider/model 与链内下标；三件套摘要（baseurl/apikey 不落盘，仅记 provider 名）。
-        """
-        if not provider_name:
-            return
-        runs_dir = self.project_root / ".fenix" / "runs"
-        runs_dir.mkdir(parents=True, exist_ok=True)
-        run_file = runs_dir / f"{run_id}.jsonl"
-        try:
-            append_run_line(run_file, {
-                "type": "provider_marker",
-                "spec": spec_name,
-                "agent_type": agent_type,
-                "provider": provider_name,
-                "model": model,
-                "chain_index": chain_index,
-                "chain_len": chain_len,
-            })
-        except OSError:
-            pass
 
-    def _record_daily_provider_attempt(self, provider_name: str) -> None:
-        """per-provider 当日 attempt 计数 + 单次 WARNING 告警（design D5 / spec 4.2）。
-
-        按 UTC 日期滚动：跨天自动重置计数与告警标记。当日计数超
-        pm.failover.daily_attempts_warn（默认 50）时打 WARNING，且当日只告警一次（防备
-        备份 provider 悄悄烧贵）。进程内存、不落盘。
-        """
-        if not provider_name:
-            return
-        today = datetime.now(timezone.utc).date()
-        if today != self._daily_reset_date:
-            self._daily_provider_attempts = {}
-            self._daily_provider_warned = {}
-            self._daily_reset_date = today
-        count = self._daily_provider_attempts.get(provider_name, 0) + 1
-        self._daily_provider_attempts[provider_name] = count
-        warn = self._get_config("pm.failover.daily_attempts_warn",
-                                PROVIDER_DAILY_ATTEMPTS_WARN)
-        if warn and count > warn and not self._daily_provider_warned.get(provider_name, False):
-            self._daily_provider_warned[provider_name] = True
-            self.logger.warning(
-                "agent_runner",
-                f"Provider '{provider_name}' daily attempts ({count}) exceeded "
-                f"pm.failover.daily_attempts_warn ({warn}) — check for silent cost",
-            )
-
-    def _circuit_open_error(self, provider_name: str, now: float | None = None) -> str:
-        """构造熔断拦截错误信息（design D5 / spec 故障可见性）。
-
-        含 provider 名、HTTP code、次数与冷却剩余/到期信息，经 error → STATE.md /
-        admin_monitor / dashboard 链路可见，便于区分「provider 故障」与「spec 自身问题」。
-        """
-        st = self.provider_circuits.get(provider_name) or {}
-        now = self._now() if now is None else now
-        code = st.get("code") or "?"
-        count = st.get("count") or 0
-        cooldown_until = st.get("cooldown_until") or 0.0
-        remaining = max(0, int(cooldown_until - now))
-        if remaining > 0:
-            cooldown_info = f"cooldown {remaining}s remaining"
-        else:
-            cooldown_info = "cooldown expired (probing)"
-        return (f"provider circuit open: {provider_name} "
-                f"(HTTP {code} x {count}) — {cooldown_info}")
-
-    def _record_provider_4xx(self, provider_name: str, code: int,
-                             now: float | None = None) -> None:
-        """记录一次 provider 网关 4xx，按滚动窗口计数，达阈值置 open。
-
-        5xx / 网络错误不调用本方法（design D4）。窗口外的旧事件先滑出。
-        """
-        if not provider_name:
-            return
-        now = self._now() if now is None else now
-        st = self._circuit_state(provider_name)
-        window = self._get_config("agents.provider_circuit_window_seconds",
-                                  PROVIDER_CIRCUIT_WINDOW_SECONDS)
-        threshold = self._get_config("agents.provider_circuit_threshold",
-                                     PROVIDER_CIRCUIT_THRESHOLD)
-        cooldown = self._get_config("agents.provider_circuit_cooldown_seconds",
-                                    PROVIDER_CIRCUIT_COOLDOWN_SECONDS)
-
-        # 滑出滚动窗口外的旧事件
-        st["events"] = [t for t in st["events"] if now - t <= window]
-        st["events"].append(now)
-        st["count"] = len(st["events"])
-        st["code"] = code
-
-        if st["count"] >= threshold:
-            # 进入熔断（或重新进入冷却）。半开探针仍 4xx → 重新冷却，记录 open_since。
-            st["open_since"] = now
-            st["cooldown_until"] = now + cooldown
-            st["half_open"] = False
-            self.logger.error(
-                "agent_runner",
-                f"Provider circuit OPEN for '{provider_name}' "
-                f"(HTTP {code} x{st['count']} within {int(window)}s), "
-                f"cooldown {int(cooldown)}s — suppress dispatch until probe recovers",
-            )
-
-    def _record_provider_probe(self, provider_name: str, success: bool,
-                               now: float | None = None) -> None:
-        """半开探针结果：成功闭合（closed）、失败重新冷却（design D4/D5）。
-
-        成功：清空计数、回到 closed。失败：重新进入冷却期（沿用上次 code），不进计数
-        （避免探针失败被反复计数导致无限冷却；R2 防护：解析不出 code 的失败也不计数）。
-        """
-        if not provider_name:
-            return
-        st = self.provider_circuits.get(provider_name)
-        if st is None:
-            return
-        now = self._now() if now is None else now
-        cooldown = self._get_config("agents.provider_circuit_cooldown_seconds",
-                                    PROVIDER_CIRCUIT_COOLDOWN_SECONDS)
-        if success:
-            self.logger.info(
-                "agent_runner",
-                f"Provider circuit CLOSED for '{provider_name}' — probe recovered",
-            )
-            # 回到 closed：清空窗口计数与冷却，但保留 code 信息供诊断
-            st["events"] = []
-            st["count"] = 0
-            st["cooldown_until"] = 0.0
-            st["open_since"] = 0.0
-            st["half_open"] = False
-        else:
-            st["cooldown_until"] = now + cooldown
-            st["half_open"] = False
-            self.logger.warning(
-                "agent_runner",
-                f"Provider circuit re-cooled for '{provider_name}' — probe still failing, "
-                f"cooldown {int(cooldown)}s",
-            )
 
     def run_implementer(self, spec_name: str) -> AgentRunResult:
         """
@@ -1235,181 +871,9 @@ class AgentRunner:
 
     # ── token 累计与预算告警（add-cost-observability D1 / D4）──────────────────
 
-    def _accumulate_token_usage(self, spec_name: str, usage_info: dict) -> None:
-        """收工处累加本次 run 的 usage 到 STATE 内部字段（add-cost-observability D1）。
 
-        ``_tokens_in`` = input + cache_creation + cache_read（保守计入缓存读，design D-风险）；
-        ``_tokens_out`` = output。成本仅网关回传 total_cost_usd 时累计到 ``_cost_usd``，
-        否则不写（不伪造，spec「金额展示不伪造」）。累加后触发预算阈值检查。
 
-        state_machine 缺失（测试/未初始化）时安全跳过；STATE 条目缺失不写（spec 必已注册）。
-        """
-        if self.state_machine is None:
-            return
-        if not isinstance(usage_info, dict):
-            usage_info = {}
-        tokens_in = (
-            int(usage_info.get("input_tokens", 0) or 0)
-            + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
-            + int(usage_info.get("cache_read_input_tokens", 0) or 0)
-        )
-        tokens_out = int(usage_info.get("output_tokens", 0) or 0)
-        cost = usage_info.get("cost_usd")
 
-        try:
-            entry = self.state_machine.read_one(spec_name) or {}
-        except Exception:
-            return
-        if not isinstance(entry, dict):
-            return
-        prev_in = int(entry.get("_tokens_in", 0) or 0)
-        prev_out = int(entry.get("_tokens_out", 0) or 0)
-        new_in = prev_in + tokens_in
-        new_out = prev_out + tokens_out
-        updates = {"_tokens_in": new_in, "_tokens_out": new_out}
-        # 成本：仅网关真实回传时累计；网关不回传则不写 _cost_usd（保持缺失语义）
-        if cost is not None:
-            try:
-                prev_cost = float(entry.get("_cost_usd", 0) or 0)
-                updates["_cost_usd"] = prev_cost + float(cost)
-            except (TypeError, ValueError):
-                pass
-        try:
-            self.state_machine.update_spec(spec_name, updates)
-        except Exception as e:
-            self.logger.warning(
-                "agent_runner",
-                f"token 累计写 STATE 失败 '{spec_name}': {e}",
-            )
-            return
-        # 预算阈值检查（D4）：80% 提醒 / 100% 升级，不自动冻结
-        self._check_token_budget(spec_name, new_in)
-
-    def _check_token_budget(self, spec_name: str, tokens_in: int) -> None:
-        """预算阈值告警（add-cost-observability D4）：80% 提醒 / 100% 升级，幂等不重复。
-
-        配置 ``agents.token_budget_millions``（缺省 50，0=关闭）。越过 80% 线发提醒级告警
-        并置位 ``_token_warn_80``；越过 100% 线发升级级告警并置位 ``_token_alert_100``。
-        告警 MUST NOT 修改 spec 状态（不自动冻结，design 决策有意为之）。
-        """
-        budget = self._get_config("agents.token_budget_millions", 50)
-        if not budget or budget <= 0:
-            return  # 0 = 关闭
-        budget_tokens = float(budget) * 1_000_000
-        if budget_tokens <= 0:
-            return
-        ratio = tokens_in / budget_tokens
-
-        try:
-            entry = self.state_machine.read_one(spec_name) or {}
-        except Exception:
-            entry = {}
-        if not isinstance(entry, dict):
-            entry = {}
-        warn_flag = bool(entry.get("_token_warn_80", False))
-        alert_flag = bool(entry.get("_token_alert_100", False))
-
-        if ratio >= 1.0 and not alert_flag:
-            self._send_token_alert(spec_name, tokens_in, budget, "critical",
-                                   "预算 100% 升级告警")
-            try:
-                self.state_machine.update_spec(spec_name, {"_token_alert_100": True})
-            except Exception:
-                pass
-        elif ratio >= 0.8 and not warn_flag:
-            self._send_token_alert(spec_name, tokens_in, budget, "warning",
-                                   "预算 80% 提醒告警")
-            try:
-                self.state_machine.update_spec(spec_name, {"_token_warn_80": True})
-            except Exception:
-                pass
-
-    def _send_token_alert(self, spec_name: str, tokens_in: int, budget: float,
-                          severity: str, title: str) -> None:
-        """写一条 token 预算 human-escalation-alert（复用 AdminStore，与 pm_engine 同管道）。
-
-        severity: warning=提醒级（80% 线），critical=升级级（100% 线）。不修改 spec 状态。
-        """
-        try:
-            from core.admin_store import AdminStore, ESCALATION
-            store = AdminStore(self.project_root, self.logger)
-            pct = (tokens_in / (float(budget) * 1_000_000) * 100.0)
-            store.append({
-                "kind": ESCALATION,
-                "signal_type": "token_budget",
-                "spec": spec_name,
-                "severity": severity,
-                "description": (
-                    f"{title}：spec '{spec_name}' 累计 input token 已用 "
-                    f"{tokens_in / 1_000_000:.2f}M / 预算 {budget:.0f}M（{pct:.0f}%）"
-                ),
-                "evidence": (
-                    f"_tokens_in={tokens_in}; budget_millions={budget}; "
-                    f"ratio={pct:.1f}%"
-                ),
-                "recommended_action": (
-                    "检查是否失控烧钱；如需冻结请在 Dashboard / STATE.md 人工处置"
-                    "（本告警不自动冻结 spec）"
-                ),
-            })
-            self.logger.warning(
-                "agent_runner",
-                f"token budget alert ({severity}) for '{spec_name}': "
-                f"{tokens_in / 1_000_000:.2f}M / {budget:.0f}M",
-            )
-        except Exception as e:
-            self.logger.error(
-                "agent_runner",
-                f"Failed to send token budget alert for '{spec_name}': {e}",
-            )
-
-    def _record_verify_progress_tokens(self, spec_name: str, agent_type: str,
-                                         usage_info: dict) -> None:
-        """验证链侧车：把 planner/judge run 的 usage 逐轮追加到 tokens.json（D3）。
-
-        路径 ``.fenix/verify-progress/<spec>/tokens.json``，结构：
-            {"runs": [{"agent_type": "planner-plan", "timestamp": "...",
-                       "input_tokens": N, "output_tokens": M, "cost_usd": X|null}, ...]}
-        场景执行为 Python 无 LLM，不入。报告合成时按本侧车求和（task 2.2）。
-
-        仅 agent_type 以 ``planner`` 开头时记录；非 LLM run（verifier 场景执行）不计。
-        写入失败静默跳过（观测增强，不能阻断主流程）。
-        """
-        if not isinstance(agent_type, str) or not agent_type.startswith("planner"):
-            return
-        if not isinstance(usage_info, dict):
-            usage_info = {}
-        tokens_json = (
-            self.project_root / ".fenix" / "verify-progress"
-            / spec_name / "tokens.json"
-        )
-        try:
-            tokens_json.parent.mkdir(parents=True, exist_ok=True)
-            data = {}
-            if tokens_json.is_file():
-                try:
-                    loaded = json.loads(tokens_json.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    loaded = {}
-                if isinstance(loaded, dict):
-                    data = loaded
-            runs = data.get("runs")
-            if not isinstance(runs, list):
-                runs = []
-            runs.append({
-                "agent_type": agent_type,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
-                + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
-                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
-                "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
-                "cost_usd": usage_info.get("cost_usd"),
-            })
-            data["runs"] = runs
-            tokens_json.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        except (OSError, json.JSONDecodeError):
-            pass
 
 
 
@@ -2382,3 +1846,197 @@ class AgentRunner:
 
     def _verdict_rejection_section(self, spec_name: str) -> str:
         return self._prompt_builder._verdict_rejection_section(spec_name)
+
+    # ── 组合组件（refactor-core-packages 阶段 2）────────────────────────
+
+    @property
+    def _provider_circuit(self) -> ProviderCircuit:
+        """组合组件（refactor-core-packages 阶段 2）：ProviderCircuit。
+
+        惰性构造：测试以 ``AgentRunner.__new__`` 绕过 ``__init__`` 的实例也安全。
+        """
+        inst = self.__dict__.get("_provider_circuit_instance")
+        if inst is None:
+            inst = ProviderCircuit(self)
+            self.__dict__["_provider_circuit_instance"] = inst
+        return inst
+
+    @property
+    def _token_accountant(self) -> TokenAccountant:
+        """组合组件（refactor-core-packages 阶段 2）：TokenAccountant。
+
+        惰性构造：测试以 ``AgentRunner.__new__`` 绕过 ``__init__`` 的实例也安全。
+        """
+        inst = self.__dict__.get("_token_accountant_instance")
+        if inst is None:
+            inst = TokenAccountant(self)
+            self.__dict__["_token_accountant_instance"] = inst
+        return inst
+
+    @property
+    def _v2_server(self) -> V2ServerManager:
+        """组合组件（refactor-core-packages 阶段 2）：V2ServerManager。
+
+        惰性构造：测试以 ``AgentRunner.__new__`` 绕过 ``__init__`` 的实例也安全。
+        """
+        inst = self.__dict__.get("_v2_server_instance")
+        if inst is None:
+            inst = V2ServerManager(self)
+            self.__dict__["_v2_server_instance"] = inst
+        return inst
+
+
+    # ── 组合组件委托（阶段 2：状态/方法已迁组件，门面保持调用路径）──────
+
+    @staticmethod
+    def parse_api_error_status(error_text: str) -> Optional[int]:
+        return ProviderCircuit.parse_api_error_status(error_text)
+
+    @staticmethod
+    def classify_switch_error(error_text: str) -> bool:
+        return ProviderCircuit.classify_switch_error(error_text)
+
+    def _circuit_state(self, provider_name: str) -> dict:
+        return self._provider_circuit._circuit_state(provider_name)
+
+    def is_circuit_open(self, provider_name: str, now: float | None = None) -> bool:
+        return self._provider_circuit.is_circuit_open(provider_name, now)
+
+    def is_switch_cooldown(self, provider_name: str, now: float | None = None) -> bool:
+        return self._provider_circuit.is_switch_cooldown(provider_name, now)
+
+    def _record_switch_cooldown(self, provider_name: str, now: float | None = None) -> None:
+        return self._provider_circuit._record_switch_cooldown(provider_name, now)
+
+    def _write_provider_marker(self, run_id: str, spec_name: str, agent_type: str,
+                               provider_name: str, model: str, chain_index: int,
+                               chain_len: int) -> None:
+        return self._provider_circuit._write_provider_marker(run_id, spec_name, agent_type, provider_name, model, chain_index, chain_len)
+
+    def _record_daily_provider_attempt(self, provider_name: str) -> None:
+        return self._provider_circuit._record_daily_provider_attempt(provider_name)
+
+    def _circuit_open_error(self, provider_name: str, now: float | None = None) -> str:
+        return self._provider_circuit._circuit_open_error(provider_name, now)
+
+    def _record_provider_4xx(self, provider_name: str, code: int,
+                             now: float | None = None) -> None:
+        return self._provider_circuit._record_provider_4xx(provider_name, code, now)
+
+    def _record_provider_probe(self, provider_name: str, success: bool,
+                               now: float | None = None) -> None:
+        return self._provider_circuit._record_provider_probe(provider_name, success, now)
+
+    def _accumulate_token_usage(self, spec_name: str, usage_info: dict) -> None:
+        return self._token_accountant._accumulate_token_usage(spec_name, usage_info)
+
+    def _check_token_budget(self, spec_name: str, tokens_in: int) -> None:
+        return self._token_accountant._check_token_budget(spec_name, tokens_in)
+
+    def _send_token_alert(self, spec_name: str, tokens_in: int, budget: float,
+                          severity: str, title: str) -> None:
+        return self._token_accountant._send_token_alert(spec_name, tokens_in, budget, severity, title)
+
+    def _record_verify_progress_tokens(self, spec_name: str, agent_type: str,
+                                         usage_info: dict) -> None:
+        return self._token_accountant._record_verify_progress_tokens(spec_name, agent_type, usage_info)
+
+    def _v2_ensure_state(self) -> None:
+        return self._v2_server._v2_ensure_state()
+
+    def _v2_launch_for_worktree(self, wt_path: Path) -> None:
+        return self._v2_server._v2_launch_for_worktree(wt_path)
+
+    def _v2_inject_env(self, wt_path: Path) -> Dict[str, str]:
+        return self._v2_server._v2_inject_env(wt_path)
+
+    def _v2_stop_for_worktree(self, wt_path: Path) -> None:
+        return self._v2_server._v2_stop_for_worktree(wt_path)
+
+    def _v2_stop_all(self) -> None:
+        return self._v2_server._v2_stop_all()
+
+    @property
+    def provider_circuits(self):
+        return self._provider_circuit.provider_circuits
+
+    @provider_circuits.setter
+    def provider_circuits(self, value):
+        self._provider_circuit.provider_circuits = value
+
+    @provider_circuits.deleter
+    def provider_circuits(self):
+        del self._provider_circuit.provider_circuits
+
+    @property
+    def _daily_provider_attempts(self):
+        return self._provider_circuit._daily_provider_attempts
+
+    @_daily_provider_attempts.setter
+    def _daily_provider_attempts(self, value):
+        self._provider_circuit._daily_provider_attempts = value
+
+    @_daily_provider_attempts.deleter
+    def _daily_provider_attempts(self):
+        del self._provider_circuit._daily_provider_attempts
+
+    @property
+    def _daily_provider_warned(self):
+        return self._provider_circuit._daily_provider_warned
+
+    @_daily_provider_warned.setter
+    def _daily_provider_warned(self, value):
+        self._provider_circuit._daily_provider_warned = value
+
+    @_daily_provider_warned.deleter
+    def _daily_provider_warned(self):
+        del self._provider_circuit._daily_provider_warned
+
+    @property
+    def _daily_reset_date(self):
+        return self._provider_circuit._daily_reset_date
+
+    @_daily_reset_date.setter
+    def _daily_reset_date(self, value):
+        self._provider_circuit._daily_reset_date = value
+
+    @_daily_reset_date.deleter
+    def _daily_reset_date(self):
+        del self._provider_circuit._daily_reset_date
+
+    @property
+    def _v2_servers(self):
+        return self._v2_server._v2_servers
+
+    @_v2_servers.setter
+    def _v2_servers(self, value):
+        self._v2_server._v2_servers = value
+
+    @_v2_servers.deleter
+    def _v2_servers(self):
+        del self._v2_server._v2_servers
+
+    @property
+    def _v2_used_ports(self):
+        return self._v2_server._v2_used_ports
+
+    @_v2_used_ports.setter
+    def _v2_used_ports(self, value):
+        self._v2_server._v2_used_ports = value
+
+    @_v2_used_ports.deleter
+    def _v2_used_ports(self):
+        del self._v2_server._v2_used_ports
+
+    @property
+    def _v2_run_seq(self):
+        return self._v2_server._v2_run_seq
+
+    @_v2_run_seq.setter
+    def _v2_run_seq(self, value):
+        self._v2_server._v2_run_seq = value
+
+    @_v2_run_seq.deleter
+    def _v2_run_seq(self):
+        del self._v2_server._v2_run_seq
+
