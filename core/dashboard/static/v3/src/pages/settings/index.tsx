@@ -1,7 +1,7 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { Card, ConfigProvider, Menu, Select, Space, Typography, theme, message } from 'antd';
 import { useEffect, useState } from 'react';
-import { useSearchParams } from '@umijs/max';
+import { history } from '@umijs/max';
 import { getConfig, getOverview, saveConfig } from '@/services/dashboard';
 import type { ConfigData, OverviewData } from '@/services/dashboard';
 import LlmProviderPanel from './components/LlmProviderPanel';
@@ -23,14 +23,20 @@ const MENU_ITEMS = [
 ];
 
 export default function SettingsPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
   const [activeKey, setActiveKey] = useState('llm');
-  const [scope, setScope] = useState<'user' | 'project'>(
-    (searchParams.get('scope') as 'user' | 'project') || 'user',
-  );
-  const [project, setProject] = useState<string | undefined>(
-    searchParams.get('project') || undefined,
-  );
+
+  // 从 URL query 解析初始状态
+  const getInitialScope = () => {
+    const params = new URLSearchParams(history.location.search);
+    return (params.get('scope') as 'user' | 'project') || 'user';
+  };
+  const getInitialProject = () => {
+    const params = new URLSearchParams(history.location.search);
+    return params.get('project') || undefined;
+  };
+
+  const [scope, setScope] = useState<'user' | 'project'>(getInitialScope());
+  const [project, setProject] = useState<string | undefined>(getInitialProject());
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [projects, setProjects] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
@@ -69,15 +75,15 @@ export default function SettingsPage() {
 
   // 更新 URL 参数
   useEffect(() => {
-    const params: Record<string, string> = {};
+    const params = new URLSearchParams();
     if (scope === 'project' && project) {
-      params.scope = 'project';
-      params.project = project;
+      params.set('scope', 'project');
+      params.set('project', project);
     } else {
-      params.scope = 'user';
+      params.set('scope', 'user');
     }
-    setSearchParams(params, { replace: true });
-  }, [scope, project, setSearchParams]);
+    history.push(`/settings?${params.toString()}`);
+  }, [scope, project]);
 
   // 处理作用域切换
   const handleScopeChange = (value: 'user' | 'project') => {
