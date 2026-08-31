@@ -468,3 +468,188 @@ class TestScenarioFreezeIntegration(unittest.TestCase):
         
         # 模拟场景冻结集成
         self.assertIsNotNone(self.sm.read_one("test-spec"))
+
+
+class TestScenarioReloadAfterReachabilityHeal(unittest.TestCase):
+    """可达性自愈改写场景端口后，引擎必须拿到改写后的场景。
+
+    2026-08-31 add-v3-spec-detail-page 实证：load_scenarios 先于
+    _ensure_app_reachable 执行，自愈把 test_scenarios.json 的 planner
+    臆测端口 8000 → 8787 只落了文件，传入引擎的内存场景仍是 8000 →
+    24 场景对失联端口 navigate 整轮伪失败（0.9 秒全灭 ERR_CONNECTION_REFUSED）。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        from types import SimpleNamespace
+        self.tmpdir = tempfile.mkdtemp()
+        self.state_path = Path(self.tmpdir) / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
+        )
+        self.verify_dir = Path(self.tmpdir) / ".fenix" / "verify-progress" / "demo-spec"
+        self.verify_dir.mkdir(parents=True)
+        self.scenarios_path = self.verify_dir / "test_scenarios.json"
+        self.scenarios_path.write_text(json.dumps([
+            {
+                "id": "scn-a",
+                "description": "场景A",
+                "steps": [
+                    {"action": "navigate", "value": "http://localhost:8000/#/projects/demo"},
+                    {"action": "wait", "target": ".x", "description": "等待"},
+                ],
+                "assertions": [{"type": "element_visible", "selector": ".x", "label": "可见"}],
+            },
+            {
+                "id": "scn-b",
+                "description": "场景B",
+                "steps": [
+                    {"action": "navigate", "value": "http://localhost:8000/#/projects/demo/s"},
+                ],
+                "assertions": [{"type": "element_visible", "selector": ".y", "label": "可见"}],
+            },
+        ], ensure_ascii=False), encoding="utf-8")
+
+        self.sm.add_spec("demo-spec", {"priority": 5})
+        self.sm.transition("demo-spec", "ready")
+        self.sm.transition("demo-spec", "implementing")
+        self.sm.transition("demo-spec", "implemented")
+        self.sm.transition("demo-spec", "testing")
+
+        self.engine._enqueue = MagicMock()
+        self.engine.agent_runner.run_planner = MagicMock(
+            return_value=SimpleNamespace(success=True, error=None, run_id="planner-plan-demo-spec-1-a1")
+        )
+        self.engine._read_planner_result = MagicMock(return_value="plan-ready")
+        self.engine._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._apply_interaction_contract = MagicMock(return_value=None)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _fake_reachable(self, spec_name):
+        """模拟生产自愈：改写场景文件端口 8000 → 8787（与 _rewrite_scenario_port 同语义）。"""
+        content = self.scenarios_path.read_text(encoding="utf-8")
+        self.scenarios_path.write_text(content.replace(":8000", ":8787"), encoding="utf-8")
+        return True, False, (
+            "场景 URL 端口 ['8000'] 与应用实际端口 8787 不符（planner 臆测），"
+            "已改写场景端口并确认可达"
+        )
+
+    def test_engine_receives_rewritten_scenarios(self):
+        """自愈改写端口后，传给验证引擎的场景必须是改写后的 URL。"""
+        captured = {}
+
+        class FakeEngine:
+            def __init__(self, spec_name, project_root, logger=None, config=None):
+                captured["spec"] = spec_name
+
+            async def run(self, scenarios):
+                captured["scenarios"] = scenarios
+                return {
+                    "spec": captured["spec"],
+                    "summary": {
+                        "total": 2, "passed": 0, "warnings": 0,
+                        "failed": 0, "errors": 0, "blocked_env": 2,
+                    },
+                    "scenarios": [],
+                }
+
+        self.engine._ensure_app_reachable = self._fake_reachable
+        # pipeline 开头 importlib.reload 验证引擎模块（常驻进程热更新），
+        # 会重建类对象并使模块属性 patch 失效 → 测试内冻结 reload。
+        with patch("importlib.reload", lambda m: m), \
+                patch("core.verify_engine.VerifyEngine", FakeEngine):
+            self.engine._run_three_stage_verification("demo-spec")
+
+        self.assertIn("scenarios", captured)
+        urls = [
+            st.value
+            for scn in captured["scenarios"]
+            for st in scn.steps
+            if st.action == "navigate"
+        ]
+        self.assertEqual(urls, [
+            "http://localhost:8787/#/projects/demo",
+            "http://localhost:8787/#/projects/demo/s",
+        ])
+
+    def test_inconclusive_path_after_heal(self):
+        """自愈 + 全 blocked-env 报告 → inconclusive 重验路径，不误判 bug-found。"""
+        captured = {}
+
+        class FakeEngine:
+            def __init__(self, spec_name, project_root, logger=None, config=None):
+                pass
+
+            async def run(self, scenarios):
+                captured["scenarios"] = scenarios
+                return {
+                    "spec": "demo-spec",
+                    "summary": {
+                        "total": 2, "passed": 0, "warnings": 0,
+                        "failed": 0, "errors": 0, "blocked_env": 2,
+                    },
+                    "scenarios": [],
+                }
+
+        self.engine._ensure_app_reachable = self._fake_reachable
+        with patch("importlib.reload", lambda m: m), \
+                patch("core.verify_engine.VerifyEngine", FakeEngine):
+            self.engine._run_three_stage_verification("demo-spec")
+
+        entry = self.sm.read_one("demo-spec")
+        self.assertEqual(entry["status"], "implemented")
+        self.assertIn("环境性失联", str(entry.get("error")))
+        self.engine._enqueue.assert_called_once_with("demo-spec", "verifier")
+
+
+class TestLocateAppBaseUrlFromError(unittest.TestCase):
+    """环境门 _locate_app_base_url 须能从 navigate 失败的 error 文本提取 URL。
+
+    2026-08-31 add-v3-spec-detail-page：24 场景 ERR_CONNECTION_REFUSED 时
+    URL 只出现在 step_results[].error（detail 为空）→ 探针找不到入口 →
+    保守判健康 → 整轮伪失败未降级 blocked-env。
+    """
+
+    def _make_engine(self, tmpdir):
+        from core.verify_engine import VerifyEngine
+        return VerifyEngine("demo-spec", Path(tmpdir), MagicMock(), {})
+
+    def test_url_extracted_from_error_text(self):
+        import shutil as _sh
+        tmpdir = tempfile.mkdtemp()
+        try:
+            eng = self._make_engine(tmpdir)
+            candidates = [{
+                "step_results": [{
+                    "action": "navigate",
+                    "detail": "",
+                    "error": (
+                        'Page.goto: net::ERR_CONNECTION_REFUSED at '
+                        'http://localhost:8000/#/projects/test-project\n'
+                        'Call log:\n  - navigating to "http://localhost:8000/#/projects/test-project"'
+                    ),
+                }],
+            }]
+            self.assertEqual(eng._locate_app_base_url(candidates), "http://localhost:8000")
+        finally:
+            _sh.rmtree(tmpdir, ignore_errors=True)
+
+    def test_detail_only_still_works(self):
+        import shutil as _sh
+        tmpdir = tempfile.mkdtemp()
+        try:
+            eng = self._make_engine(tmpdir)
+            candidates = [{
+                "step_results": [{
+                    "action": "navigate",
+                    "detail": "navigated to http://127.0.0.1:8787/#/projects/x",
+                    "error": "",
+                }],
+            }]
+            self.assertEqual(eng._locate_app_base_url(candidates), "http://127.0.0.1:8787")
+        finally:
+            _sh.rmtree(tmpdir, ignore_errors=True)

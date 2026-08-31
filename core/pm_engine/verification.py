@@ -579,6 +579,17 @@ class VerificationPipeline:
                     f"[阶段2] 应用可达性: {'OK' if app_reachable else '不可达'} — {reach_note or '无 navigate 依赖'}",
                 )
 
+                # 自愈可能改写场景文件端口（planner 臆测端口 → 应用实际端口）：
+                # 上方 load 先于自愈，内存场景仍持臆测端口，改写只落文件、对本次
+                # 执行无效 → 全场景对失联端口 navigate 整轮伪失败
+                # （add-v3-spec-detail-page：24 场景导航 localhost:8000 全灭）。
+                # 故自愈后必须重读场景文件再执行。
+                try:
+                    scenarios = load_scenarios(scenarios_path)
+                except ValueError as e:
+                    env_error = f"自愈改写后场景文件验收失败: {e}"
+
+            if env_error is None:
                 engine = VerifyEngine(
                     spec_name, self._pm.project_root, self._pm.logger, self._pm.config
                 )

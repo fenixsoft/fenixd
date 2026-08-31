@@ -528,7 +528,10 @@ class VerifyEngine:
             for step in r.get("step_results") or []:
                 if not isinstance(step, dict) or step.get("action") != "navigate":
                     continue
-                detail = str(step.get("detail") or "")
+                # navigate 失败（如 ERR_CONNECTION_REFUSED）时 URL 在 error 而非
+                # detail —— 只扫 detail 会漏掉失联场景，探针保守判健康，
+                # 整轮伪失败无法降级 blocked-env（add-v3-spec-detail-page 教训）。
+                detail = f"{step.get('detail') or ''} {step.get('error') or ''}"
                 m = re.search(r"(https?://[^\s'\");]+)", detail)
                 if m:
                     url = m.group(1).rstrip("/")
