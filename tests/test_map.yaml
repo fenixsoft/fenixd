@@ -1,0 +1,18 @@
+# tests/test_map.yaml — import 分析覆盖不到的间接耦合
+# 当 import 分析无法推导出测试关系时，在此文件中显式声明
+
+explicit:
+  # Dashboard 静态资源 → 测试 dashboard API
+  "core/dashboard/static/": "tests/test_dashboard_api.py"
+  
+  # STATE.md 格式变化 → 测试状态机
+  "STATE.md": "tests/test_state_machine.py"
+  
+  # 配置文件模板 → 测试配置加载
+  "config.template.yaml": "tests/test_config.py"
+  
+  # 文档变化 → 无需运行测试
+  "docs/": ""
+  
+  # 模板文件 → 无需运行测试
+  "templates/": ""
