@@ -428,6 +428,43 @@ class TestDataParse:
         assert ov["totals"]["spec_updated_today"] == 1
         assert ov["totals"]["spec_updated_week"] == 2
 
+    def test_overview_agent_types_and_token_usage(self, tmp_path):
+        """overview 的活跃 run 类型分布 + 最近 spec token 消耗收集。"""
+        from datetime import timedelta
+
+        proot = make_project(tmp_path)
+        # make_project 自带一条运行中的 verify- run（verifier）；再补一条运行中的 impl- run
+        (proot / ".fenix" / "runs" / "impl-myspec-1780002000.jsonl").write_text(
+            json.dumps({"type": "assistant", "message": {"content": []}}) + "\n",
+            encoding="utf-8",
+        )
+        now = datetime.now(timezone.utc)
+        (proot / "STATE.md").write_text(
+            "# Fenix Project State\n\n## Specs\n\n"
+            "### spec-a\n- status: testing\n"
+            f"- updated: {now.isoformat()}\n"
+            "- _tokens_in: 1500\n- _tokens_out: 500\n\n"
+            "### spec-b\n- status: done\n"
+            f"- updated: {(now - timedelta(hours=2)).isoformat()}\n"
+            "- _tokens_in: 100000\n- _tokens_out: 200000\n\n"
+            "### spec-c\n- status: drafted\n"
+            f"- updated: {(now - timedelta(days=30)).isoformat()}\n",
+            encoding="utf-8",
+        )
+        ov = dash_data.overview([
+            {"name": "proj-a", "path": str(proot), "discovered": False, "exists": True}
+        ])
+        by_type = ov["totals"]["active_runs_by_type"]
+        assert by_type.get("verifier") == 1
+        assert by_type.get("implementer") == 1
+
+        recent = ov["token_usage"]["recent"]
+        assert [r["spec"] for r in recent] == ["spec-a", "spec-b", "spec-c"]  # updated 倒序
+        assert recent[0]["tokens"] == 2000      # 1500 + 500
+        assert recent[1]["tokens"] == 300000    # 100000 + 200000
+        assert recent[2]["tokens"] == 0         # 无 token 字段 → 0
+        assert recent[0]["project"] == "proj-a"
+
 
 # ── 实时任务进度叠加（run 记录 TaskUpdate → tasks.md） ──────────────────
 

@@ -1199,6 +1199,10 @@ def project_summary(project_root, name: str, path: str) -> dict:
 
     runs = get_runs(proot)
     active = sum(1 for r in runs if r["status"] in ("running", "empty"))
+    active_by_type = {}
+    for r in runs:
+        if r["status"] in ("running", "empty"):
+            active_by_type[r["agent_type"]] = active_by_type.get(r["agent_type"], 0) + 1
 
     return {
         "name": name,
@@ -1210,6 +1214,7 @@ def project_summary(project_root, name: str, path: str) -> dict:
         "task_total": grand_total,
         "problems": problems,
         "active_runs": active,
+        "active_runs_by_type": active_by_type,
         "scenario_count": sum(count_scenarios(proot, s) for s in specs),
         "updated": (Path(path) / "STATE.md").stat().st_mtime if (Path(path) / "STATE.md").exists() else 0,
     }
@@ -1466,27 +1471,44 @@ def _token_usage_view(entry: dict) -> dict:
     }
 
 
-def _count_updated_specs(project_root, today_start: datetime, week_start: datetime) -> tuple:
-    """统计 STATE.md 中 updated 落在今日（本地自然日）/ 近7天（滚动窗口）的 spec 数。
+def _parse_spec_ts(raw) -> "datetime | None":
+    """解析 STATE 条目的 updated 时间戳；缺失/非法返回 None。naive 视为本地时间。"""
+    if not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(raw))
+    except (ValueError, TypeError):
+        return None
+    return ts.astimezone() if ts.tzinfo is None else ts
 
-    updated 缺失或无法解析的条目跳过，不影响其它条目计数。
-    """
+
+def _updated_spec_counts(entries: dict, today_start: datetime, week_start: datetime) -> tuple:
+    """统计 updated 落在今日（本地自然日）/ 近7天（滚动窗口）的 spec 数。"""
     today = week = 0
-    for entry in parse_state(project_root).values():
-        raw = entry.get("updated")
-        if not raw:
+    for entry in entries.values():
+        ts = _parse_spec_ts(entry.get("updated"))
+        if ts is None:
             continue
-        try:
-            ts = datetime.fromisoformat(str(raw))
-        except (ValueError, TypeError):
-            continue
-        if ts.tzinfo is None:
-            ts = ts.astimezone()
         if ts >= week_start:
             week += 1
         if ts >= today_start:
             today += 1
     return today, week
+
+
+def _token_recent_entries(entries: dict, project_name: str) -> list:
+    """收集各 spec 的累计 token 消耗（_tokens_in/_tokens_out 为 STATE 持久累计值）。"""
+    out = []
+    for name, entry in entries.items():
+        tokens = int(entry.get("_tokens_in", 0) or 0) + int(entry.get("_tokens_out", 0) or 0)
+        out.append({
+            "project": project_name,
+            "spec": name,
+            "tokens": tokens,
+            "updated": entry.get("updated") or "",
+            "_ts": _parse_spec_ts(entry.get("updated")),
+        })
+    return out
 
 
 def overview(registry_projects: list) -> dict:
@@ -1497,8 +1519,10 @@ def overview(registry_projects: list) -> dict:
     projects = []
     totals = {"spec_count": 0, "task_done": 0, "task_total": 0,
               "problems": 0, "active_runs": 0,
-              "spec_updated_today": 0, "spec_updated_week": 0}
+              "spec_updated_today": 0, "spec_updated_week": 0,
+              "active_runs_by_type": {}}
     status_counts = {}
+    token_entries = []
     for p in registry_projects:
         if not p.get("exists"):
             projects.append({
@@ -1515,13 +1539,21 @@ def overview(registry_projects: list) -> dict:
         totals["task_total"] += s["task_total"]
         totals["problems"] += s["problems"]
         totals["active_runs"] += s["active_runs"]
-        t_today, t_week = _count_updated_specs(p["path"], today_start, week_start)
+        for at, n in (s.get("active_runs_by_type") or {}).items():
+            totals["active_runs_by_type"][at] = totals["active_runs_by_type"].get(at, 0) + n
+        entries = parse_state(p["path"])
+        t_today, t_week = _updated_spec_counts(entries, today_start, week_start)
         totals["spec_updated_today"] += t_today
         totals["spec_updated_week"] += t_week
+        token_entries.extend(_token_recent_entries(entries, p["name"]))
         for st, n in s["status_counts"].items():
             status_counts[st] = status_counts.get(st, 0) + n
     totals["status_counts"] = status_counts
-    return {"projects": projects, "totals": totals}
+    token_entries.sort(key=lambda e: (e["_ts"].timestamp() if e["_ts"] else 0.0), reverse=True)
+    for e in token_entries:
+        e.pop("_ts", None)
+    return {"projects": projects, "totals": totals,
+            "token_usage": {"recent": token_entries[:20]}}
 
 
 # ── 配置读写（受管键：llm / agents.models / agents.max_concurrent / agents.run_timeout_seconds / gates.approve_mode） ──

@@ -27,12 +27,21 @@ export interface OverviewTotals {
   active_runs: number;
   spec_updated_today: number;
   spec_updated_week: number;
+  active_runs_by_type: Record<string, number>;
   status_counts: Record<string, number>;
+}
+
+export interface TokenUsageItem {
+  project: string;
+  spec: string;
+  tokens: number;
+  updated: string;
 }
 
 export interface OverviewData {
   projects: ProjectSummary[];
   totals: OverviewTotals;
+  token_usage: { recent: TokenUsageItem[] };
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

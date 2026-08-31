@@ -78,7 +78,7 @@ export default function OverviewPage() {
         </Card>
       ) : data ? (
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          <IntroduceRow totals={data.totals} />
+          <IntroduceRow totals={data.totals} tokenRecent={data.token_usage?.recent ?? []} />
           <ProjectCards projects={data.projects} onChanged={() => void load()} />
         </Space>
       ) : null}
