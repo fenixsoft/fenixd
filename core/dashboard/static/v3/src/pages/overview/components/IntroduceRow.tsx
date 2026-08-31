@@ -34,9 +34,7 @@ function Tile({ children }: { children: ReactNode }) {
 function TileHeader({ title, tooltip }: { title: string; tooltip?: string }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-      <Typography.Text type="secondary" strong>
-        {title}
-      </Typography.Text>
+      <div style={{ fontSize: 14, fontWeight: 600, color: 'rgba(0,0,0,0.88)' }}>{title}</div>
       {tooltip ? (
         <Tooltip title={tooltip}>
           <InfoCircleOutlined style={{ color: 'rgba(0,0,0,.45)' }} />
@@ -108,7 +106,7 @@ const AGENT_CATS: [keys: string[], label: string][] = [
 // 橙/绿对白底对比度 WARN 由柱顶直接数值标签缓解
 const AGENT_PALETTE = ['#1677ff', '#fa8c16', '#08979c', '#722ed1', '#52c41a', '#eb2f96'];
 
-/** 卡3：活跃 Agent — 大数字总数 + 柱状图（每类一色 + 图例 + 柱顶数值） */
+/** 卡3：活跃 Agent — 大数字 + 行内图例 + 柱状图（每类一色，数值白字居中柱内） */
 function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
   const byType = totals.active_runs_by_type || {};
   const total = totals.active_runs ?? 0;
@@ -124,24 +122,54 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
   return (
     <Card variant="borderless" styles={{ body: CARD_BODY }}>
       <TileHeader title="活跃 Agent 运行" tooltip="运行中/刚启动的 agent run 按类型分布" />
-      <div style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px', margin: '4px 0 6px' }}>
-        {total}
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, margin: '4px 0 6px', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px' }}>{total}</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {data.map((d, i) => (
+            <span
+              key={d.type}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                fontSize: 12,
+                color: 'rgba(0,0,0,0.65)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  background: AGENT_PALETTE[i % AGENT_PALETTE.length],
+                  borderRadius: 2,
+                  display: 'inline-block',
+                }}
+              />
+              {d.type}
+            </span>
+          ))}
+        </span>
       </div>
-      <div style={{ height: 170 }}>
+      <div style={{ height: 46 }}>
         {data.length ? (
           <Column
             data={data}
             xField="type"
             yField="value"
             colorField="type"
-            height={170}
+            height={46}
             autoFit
             axis={false}
+            padding={0}
             scale={{ color: { range: AGENT_PALETTE } }}
-            legend={{
-              color: { position: 'bottom', layout: { justifyContent: 'center' } },
-            }}
-            labels={[{ text: 'value', position: 'top', style: { fontSize: 11 } }]}
+            labels={[
+              {
+                text: 'value',
+                position: 'inside',
+                style: { fill: '#fff', fontSize: 11, fontWeight: 600, textAlign: 'center', textBaseline: 'middle' },
+              },
+            ]}
             style={{ insetLeft: 4, insetRight: 4 }}
           />
         ) : (
@@ -224,7 +252,6 @@ export default function IntroduceRow({
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
         gap: 16,
-        alignItems: 'start',
       }}
     >
       <SpecCountTile totals={totals} />
