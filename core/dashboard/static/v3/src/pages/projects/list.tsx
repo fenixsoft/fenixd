@@ -140,7 +140,7 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
         <div style={{ maxWidth: 420, whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.65 }}>{why}</div>
       }
     >
-      <span onMouseEnter={onEnter} onMouseLeave={onLeave} style={{ cursor: 'pointer' }}>
+      <span onMouseEnter={onEnter} onMouseLeave={onLeave} style={{ cursor: 'pointer', fontSize: 16, fontWeight: 600 }}>
         {record.name}
       </span>
     </Popover>
@@ -493,6 +493,9 @@ export default function SpecListPage() {
   return (
     <PageContainer
       header={{
+        breadcrumb: {
+          items: [{ title: '概览', href: '#/overview' }, { title: name }],
+        },
         title: (
           <Space size={8} align="baseline">
             <span>{name}</span>

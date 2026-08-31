@@ -6,7 +6,12 @@ import { PageContainer } from '@ant-design/pro-components';
  */
 export function PagePlaceholder({ title }: { title: string }) {
   return (
-    <PageContainer header={{ title }}>
+    <PageContainer
+      header={{
+        breadcrumb: { items: [{ title: '概览', href: '#/overview' }, { title }] },
+        title,
+      }}
+    >
       <Card>
         <Empty description="建设中 — 该页面将在后续阶段实现" />
       </Card>

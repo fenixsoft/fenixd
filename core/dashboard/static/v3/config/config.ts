@@ -29,6 +29,11 @@ export default defineConfig({
 
   antd: {},
 
+  // 全局初始数据流：getInitialState 拉取项目列表供侧边栏二级菜单使用
+  // （initialState 依赖 model 插件）
+  model: {},
+  initialState: {},
+
   // 关闭内置 mock：开发期用 proxy 直连真实 daemon
   mock: false,
 });

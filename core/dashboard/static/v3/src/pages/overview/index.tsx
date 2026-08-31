@@ -59,6 +59,7 @@ export default function OverviewPage() {
   return (
     <PageContainer
       header={{
+        breadcrumb: { items: [{ title: '概览' }] },
         title: '跨项目概览',
         subtitle: data ? `监控 ${data.projects.length} 个项目` : ' ',
       }}

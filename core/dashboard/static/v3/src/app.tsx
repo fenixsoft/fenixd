@@ -1,14 +1,33 @@
-import { HistoryOutlined } from '@ant-design/icons';
+import { App as AntdApp, Tag } from 'antd';
+import {
+  DashboardOutlined,
+  HistoryOutlined,
+  ProjectOutlined,
+  SettingOutlined,
+} from '@ant-design/icons';
 import type { RunTimeLayoutConfig } from '@umijs/max';
 import { Link } from '@umijs/max';
-import { ConfigProvider, App as AntdApp, Tag } from 'antd';
+import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import type { ReactNode } from 'react';
 import dayjs from 'dayjs';
 import 'dayjs/locale/zh-cn';
 import defaultSettings from '../config/defaultSettings';
+import { getOverview } from './services/dashboard';
 
 dayjs.locale('zh-cn');
+
+/**
+ * 全局初始数据：拉取项目列表供侧边栏「项目」二级菜单使用
+ */
+export async function getInitialState(): Promise<{ projects: string[] }> {
+  try {
+    const d = await getOverview();
+    return { projects: (d.projects || []).map((p) => p.name) };
+  } catch {
+    return { projects: [] };
+  }
+}
 
 /**
  * 全局 antd 中文 locale（未启用 umi i18n 插件，直接挂 ConfigProvider）
@@ -22,7 +41,7 @@ export function rootContainer(container: ReactNode) {
 }
 
 // ProLayout 支持的 api https://procomponents.ant.design/components/layout
-export const layout: RunTimeLayoutConfig = () => {
+export const layout: RunTimeLayoutConfig = ({ initialState }) => {
   return {
     ...defaultSettings,
     title: 'Fenix Dashboard',
@@ -30,15 +49,28 @@ export const layout: RunTimeLayoutConfig = () => {
     menuHeaderRender: undefined,
     menuItemRender: (item, dom) =>
       item.path ? <Link to={item.path}>{dom}</Link> : dom,
-    // 顶栏右侧：daemon 心跳指示（SSE 连接即 daemon 在线）
-    actionsRender: () => [<SseIndicator key="sse" />],
+    // 菜单数据：基础四项 + 「项目」下动态二级菜单（各项目名，defaultOpenAll 默认展开）
+    menuDataRender: () => [
+      { path: '/overview', name: '概览', icon: <DashboardOutlined /> },
+      {
+        path: '/projects',
+        name: '项目',
+        icon: <ProjectOutlined />,
+        children: (initialState?.projects || []).map((n) => ({
+          path: `/projects/${encodeURIComponent(n)}`,
+          name: n,
+        })),
+      },
+      { path: '/settings', name: '设置', icon: <SettingOutlined /> },
+      { path: '/activities', name: '运维记录', icon: <HistoryOutlined /> },
+    ],
+    // 「项目」二级菜单默认展开（ProLayout 读 menu.defaultOpenAll）
+    menu: { defaultOpenAll: true },
+    // 顶栏右侧：v3 标识
+    actionsRender: () => [
+      <Tag key="v3" color="default" style={{ marginInlineEnd: 0 }}>
+        v3
+      </Tag>,
+    ],
   };
 };
-
-function SseIndicator() {
-  return (
-    <Tag icon={<HistoryOutlined />} color="default" style={{ marginInlineEnd: 0 }}>
-      v3
-    </Tag>
-  );
-}

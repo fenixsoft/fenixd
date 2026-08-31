@@ -14,7 +14,7 @@ const TONE_HEX: Record<string, string | null> = {
 export function OutlinedTag({ tone, children }: { tone: string; children: ReactNode }) {
   const hex = TONE_HEX[tone];
   return hex ? (
-    <Tag style={{ marginInlineEnd: 0, color: hex, borderColor: `${hex}73`, background: 'transparent' }}>
+    <Tag style={{ marginInlineEnd: 0, color: hex, borderColor: `${hex}73`, background: 'transparent', borderRadius: 10, fontSize: 12 }}>
       {children}
     </Tag>
   ) : (
