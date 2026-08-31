@@ -216,7 +216,7 @@ export default function ProjectCards({
                       {project.name}
                     </Typography.Text>
                     <DaemonBadge daemon={project.daemon} />
-                    {project.discovered ? <Tag style={{ marginInlineEnd: 0 }}>自动发现</Tag> : null}
+                    {project.discovered ? <OutlinedTag tone="muted">自动发现</OutlinedTag> : null}
                     {pendingName === project.name ? (
                       <Tag color="processing" style={{ marginInlineEnd: 0 }}>
                         处理中…

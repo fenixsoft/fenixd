@@ -13,11 +13,16 @@ const TONE_HEX: Record<string, string | null> = {
 
 export function OutlinedTag({ tone, children }: { tone: string; children: ReactNode }) {
   const hex = TONE_HEX[tone];
+  const shared = {
+    marginInlineEnd: 0,
+    borderRadius: 10,
+    fontSize: 12,
+  } as const;
   return hex ? (
-    <Tag style={{ marginInlineEnd: 0, color: hex, borderColor: `${hex}73`, background: 'transparent', borderRadius: 10, fontSize: 12 }}>
+    <Tag style={{ ...shared, color: hex, borderColor: `${hex}73`, background: 'transparent' }}>
       {children}
     </Tag>
   ) : (
-    <Tag style={{ marginInlineEnd: 0 }}>{children}</Tag>
+    <Tag style={{ ...shared }}>{children}</Tag>
   );
 }
