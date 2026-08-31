@@ -19,5 +19,5 @@
 
 ## 验证修复（第 1 轮失败）
 
-- [ ] 阅读 `openspec/changes/refactor-test-callsites/verification-report.md`，定位「真实产品 Bug」并修复
-- [ ] 修复后重跑验证确认通过
+- [x] 阅读 `openspec/changes/refactor-test-callsites/verification-report.md`，定位「真实产品 Bug」并修复
+- [x] 修复后重跑验证确认通过
