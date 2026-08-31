@@ -46,7 +46,7 @@
 
 ## 8. 阶段 7：轻梳理
 
-- [ ] 8.1 审查 worktree_manager.py 与 admin_monitor.py，仅明显坏味道才做轻梳理（预期改动极小或为零），改动则独立 commit
+- [x] 8.1 审查 worktree_manager.py 与 admin_monitor.py，仅明显坏味道才做轻梳理（预期改动极小或为零），改动则独立 commit
 
 ## 9. 阶段 8：收尾验证
 
