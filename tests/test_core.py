@@ -2667,14 +2667,14 @@ class TestPMEngineBugFound(unittest.TestCase):
 
     def test_resolve_fix_name_none_exists(self):
         self.assertEqual(
-            self.engine._resolve_fix_spec_name("quick-links-folders"),
+            self.engine._family._resolve_fix_spec_name("quick-links-folders"),
             "fix-quick-links-folders",
         )
 
     def test_resolve_fix_name_fix_done(self):
         self.sm.add_spec("fix-quick-links-folders", {"status": "done", "priority": 6})
         self.assertEqual(
-            self.engine._resolve_fix_spec_name("quick-links-folders"),
+            self.engine._family._resolve_fix_spec_name("quick-links-folders"),
             "fix-fix-quick-links-folders",
         )
 
@@ -2683,14 +2683,14 @@ class TestPMEngineBugFound(unittest.TestCase):
         self.sm.add_spec("fix-quick-links-folders", {"status": "done", "priority": 6})
         self.sm.add_spec("fix-fix-quick-links-folders", {"status": "done", "priority": 7})
         self.assertEqual(
-            self.engine._resolve_fix_spec_name("quick-links-folders"),
+            self.engine._family._resolve_fix_spec_name("quick-links-folders"),
             "fix-fix-fix-quick-links-folders",
         )
 
     def test_resolve_fix_name_in_progress(self):
         # 进行中的 fix SPEC → 返回 None（重复派发，跳过）
         self.sm.add_spec("fix-quick-links-folders", {"status": "testing", "priority": 6})
-        self.assertIsNone(self.engine._resolve_fix_spec_name("quick-links-folders"))
+        self.assertIsNone(self.engine._family._resolve_fix_spec_name("quick-links-folders"))
 
     # ── 原地打回测试（inplace-bug-repair）──
 
@@ -2703,7 +2703,7 @@ class TestPMEngineBugFound(unittest.TestCase):
 
         self._make_buggy_spec("quick-links-folders")
 
-        self.engine._do_spec_bug_found("quick-links-folders")
+        self.engine._family._do_spec_bug_found("quick-links-folders")
 
         # 状态重置为 implementing
         entry = self.sm.read_one("quick-links-folders")
@@ -2719,7 +2719,7 @@ class TestPMEngineBugFound(unittest.TestCase):
         # 既有任务与勾选状态不被改写
         self.assertIn("- [x] 1.1 done", tasks_text)
         # 排队实现器
-        queued_specs = [(e[1], e[2]) for e in self.engine._run_queue]
+        queued_specs = [(e[1], e[2]) for e in self.engine._dispatcher._run_queue]
         self.assertIn(("quick-links-folders", "implementer"), queued_specs)
 
     def test_inplace_repair_second_failure(self):
@@ -2735,7 +2735,7 @@ class TestPMEngineBugFound(unittest.TestCase):
             "status": "bug-found",
         })
 
-        self.engine._do_spec_bug_found("quick-links-folders")
+        self.engine._family._do_spec_bug_found("quick-links-folders")
 
         entry = self.sm.read_one("quick-links-folders")
         self.assertEqual(entry["status"], "implementing")
@@ -2751,7 +2751,7 @@ class TestPMEngineBugFound(unittest.TestCase):
             "status": "bug-found",
         })
 
-        self.engine._do_spec_bug_found("quick-links-folders")
+        self.engine._family._do_spec_bug_found("quick-links-folders")
 
         entry = self.sm.read_one("quick-links-folders")
         self.assertEqual(entry["status"], "blocked")
@@ -2769,7 +2769,7 @@ class TestPMEngineBugFound(unittest.TestCase):
     def test_verify_fail_rounds_persists_across_restart(self):
         """计数器跨重启持久：重新读取 STATE.md 后仍保持"""
         self._make_buggy_spec("quick-links-folders")
-        self.engine._do_spec_bug_found("quick-links-folders")
+        self.engine._family._do_spec_bug_found("quick-links-folders")
 
         # 模拟重启：重新构造 state machine（从磁盘读取）
         from core.state_machine import StateMachine as SM
@@ -3505,7 +3505,7 @@ class TestPMEngineSameStatusResetDispatch(unittest.TestCase):
         self.engine._do_spec_bug_found("fix-x")
         # 新派生的 fix-fix-fix-x 应被创建并排队
         self.assertIsNotNone(self.sm.read_one("fix-fix-fix-x"))
-        queued = [(e[1], e[2]) for e in self.engine._run_queue]
+        queued = [(e[1], e[2]) for e in self.engine._dispatcher._run_queue]
         self.assertIn(("fix-fix-fix-x", "implementer"), queued)
 
     def test_resend_not_double_queued(self):
@@ -3519,7 +3519,7 @@ class TestPMEngineSameStatusResetDispatch(unittest.TestCase):
         self.sm.add_spec("fix-fix-x", {"status": "done", "priority": 6})
         # 1) spec_bug_found 重发 → 派生 fix-fix-fix-x → 直调 _on_spec_ready 入队
         self.engine._do_spec_bug_found("fix-x")
-        after_reset = [(e[1], e[2]) for e in self.engine._run_queue]
+        after_reset = [(e[1], e[2]) for e in self.engine._dispatcher._run_queue]
         self.assertEqual(
             after_reset.count(("fix-fix-fix-x", "implementer")), 1,
             "重置后队列中该 spec 应仅出现一次",
@@ -3527,7 +3527,7 @@ class TestPMEngineSameStatusResetDispatch(unittest.TestCase):
         # 2) 真实 spec_ready 事件再次触达（如人工修改 STATE.md 状态）
         self.engine.handle_event("spec_ready", "fix-fix-fix-x",
                                  self.sm.read_one("fix-fix-fix-x"))
-        after_event = [(e[1], e[2]) for e in self.engine._run_queue]
+        after_event = [(e[1], e[2]) for e in self.engine._dispatcher._run_queue]
         self.assertEqual(
             after_event.count(("fix-fix-fix-x", "implementer")), 1,
             "真实事件与补发不应双重排队",
@@ -3685,7 +3685,7 @@ class TestPriorityScheduler(unittest.TestCase):
         self.assertIn("spec-a", names)
         self.assertIn("spec-b", names)
         # spec-c 还在队列里
-        queued_specs = [e[1] for e in self.engine._run_queue]
+        queued_specs = [e[1] for e in self.engine._dispatcher._run_queue]
         self.assertIn("spec-c", queued_specs)
 
     def test_different_priority_no_parallel(self):
@@ -3761,7 +3761,7 @@ class TestPriorityScheduler(unittest.TestCase):
         self.assertEqual(self.engine._active_runs, 2)
         self.assertEqual(self.engine._active_priorities, {1, 5})
         # 同档 P5 的新任务被 P1 挡住（1 < 5），仍在队列等待
-        queued_specs = [e[1] for e in self.engine._run_queue]
+        queued_specs = [e[1] for e in self.engine._dispatcher._run_queue]
         self.assertIn("spec-low2", queued_specs)
         self.assertNotIn("spec-high", queued_specs)
 
@@ -3788,7 +3788,7 @@ class TestPriorityScheduler(unittest.TestCase):
         # P5 派发（5 <= 6 可并发），P7 被挡（7 > 6）
         self.assertEqual(self.dispatched, [(5, "s5", "implementer")])
         self.assertEqual(self.engine._active_priorities, {5, 6})
-        queued = [e[1] for e in self.engine._run_queue]
+        queued = [e[1] for e in self.engine._dispatcher._run_queue]
         self.assertIn("s7", queued)
         self.assertNotIn("s5", queued)
 
@@ -5465,7 +5465,7 @@ class TestShutdownStopsDispatch(unittest.TestCase):
         self.engine._enqueue("spec-a", "implementer")
         self.engine._process_queue()
         self.assertEqual(self.engine._active_runs, 0)
-        self.assertEqual(len(self.engine._run_queue), 1)  # 队列未被消费
+        self.assertEqual(len(self.engine._dispatcher._run_queue), 1)  # 队列未被消费
         # 未启动任何 worker 线程（intercept start 验证）
         started = []
         orig = threading.Thread.start
@@ -6321,7 +6321,7 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
         self.assertIsNone(entry["error"])
         self.assertIn("dispatch failed", entry["_last_dispatch_error"])
         self.assertGreater(int(entry["_dispatch_backoff_until"]), int(time.time()))
-        self.assertTrue(any((e[1], e[2]) == ("s1", "implementer") for e in self.engine._run_queue))
+        self.assertTrue(any((e[1], e[2]) == ("s1", "implementer") for e in self.engine._dispatcher._run_queue))
 
     def test_verifier_dispatch_failure_rolls_back_to_implemented(self):
         self.sm.add_spec("s1", {"priority": 5})
@@ -6335,7 +6335,7 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
         self.assertEqual(entry["status"], "implemented")
         self.assertIsNone(entry["tester_run"])
         self.assertIn("retryable", entry["error"])
-        self.assertTrue(any((e[1], e[2]) == ("s1", "verifier") for e in self.engine._run_queue))
+        self.assertTrue(any((e[1], e[2]) == ("s1", "verifier") for e in self.engine._dispatcher._run_queue))
 
     def test_rollback_ignores_status_mismatch(self):
         self.sm.add_spec("s1", {"priority": 5})  # drafted
@@ -6371,7 +6371,7 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
         entry = self.sm.read_one("s1")
         self.assertEqual(entry["status"], "ready")
         self.assertIn("Auto-recovered from stuck implementing", entry["error"])
-        self.assertTrue(any((e[1], e[2]) == ("s1", "implementer") for e in self.engine._run_queue))
+        self.assertTrue(any((e[1], e[2]) == ("s1", "implementer") for e in self.engine._dispatcher._run_queue))
 
     def test_check_blockers_testing_rolls_back_to_implemented(self):
         self.sm.add_spec("s1", {"priority": 5})
@@ -6383,7 +6383,7 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
         self.engine.check_blockers()
         entry = self.sm.read_one("s1")
         self.assertEqual(entry["status"], "implemented")
-        self.assertTrue(any((e[1], e[2]) == ("s1", "verifier") for e in self.engine._run_queue))
+        self.assertTrue(any((e[1], e[2]) == ("s1", "verifier") for e in self.engine._dispatcher._run_queue))
 
     def test_check_blockers_fresh_state_not_touched(self):
         """updated 为近期的 implementing 不触发 auto-recover。"""

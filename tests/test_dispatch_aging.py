@@ -129,8 +129,8 @@ class TestQueueAgingScheduler(unittest.TestCase):
     def _enqueue_at(self, spec_name, agent_type, priority, age_seconds):
         """手工构造带过去入队时间戳的队列条目（测试老化路径）。"""
         entry = (priority, spec_name, agent_type, time.time() - age_seconds)
-        with self.engine._queue_lock:
-            self.engine._run_queue.append(entry)
+        with self.engine._dispatcher._queue_lock:
+            self.engine._dispatcher._run_queue.append(entry)
 
     def test_starved_p6_gets_window_under_constant_p4(self):
         """P6 条目获得窗口：P4 持续运行，等待老化的 P6 在下一 tick 获得派发机会。
@@ -151,14 +151,14 @@ class TestQueueAgingScheduler(unittest.TestCase):
         self.engine.config = self.config
 
         # P4 正在运行
-        with self.engine._queue_lock:
-            self.engine._active_runs = 1
-            self.engine._active_priorities.add(4)
+        with self.engine._dispatcher._queue_lock:
+            self.engine._dispatcher._active_runs = 1
+            self.engine._dispatcher._active_priorities.add(4)
 
         # P6 已等待 3 分钟（未老化时会被 P4 永久压制）
         self._enqueue_at("spec-p6", "implementer", 6, age_seconds=180)
 
-        self.engine._process_queue()
+        self.engine._dispatcher._process_queue()
 
         self.assertEqual(len(self.dispatched), 1)
         self.assertEqual(self.dispatched[0][1], "spec-p6", "老化的 P6 应获得派发窗口")
@@ -168,13 +168,13 @@ class TestQueueAgingScheduler(unittest.TestCase):
         self._set_specs({
             "spec-p6": {"status": "ready", "priority": 6},
         })
-        with self.engine._queue_lock:
-            self.engine._active_runs = 1
-            self.engine._active_priorities.add(4)
+        with self.engine._dispatcher._queue_lock:
+            self.engine._dispatcher._active_runs = 1
+            self.engine._dispatcher._active_priorities.add(4)
 
         self._enqueue_at("spec-p6", "implementer", 6, age_seconds=180)
 
-        self.engine._process_queue()
+        self.engine._dispatcher._process_queue()
 
         self.assertEqual(self.dispatched, [], "未达阈值/未开启时行为必须完全不变")
 
@@ -198,25 +198,25 @@ class TestQueueAgingScheduler(unittest.TestCase):
 
         # P6 等待 3 分钟 → effective P3；P7 新入队
         self._enqueue_at("spec-p6", "implementer", 6, age_seconds=180)
-        with self.engine._queue_lock:
+        with self.engine._dispatcher._queue_lock:
             # P4 在跑，防止一次性并发派发两个
-            self.engine._active_runs = 1
-            self.engine._active_priorities.add(4)
+            self.engine._dispatcher._active_runs = 1
+            self.engine._dispatcher._active_priorities.add(4)
 
-        self.engine._process_queue()
+        self.engine._dispatcher._process_queue()
 
         self.assertEqual([d[1] for d in self.dispatched], ["spec-p6"])
         # 活动集合记 base 原值 P6（而非 effective P3）
-        with self.engine._queue_lock:
-            self.assertIn(6, self.engine._active_priorities)
-            self.assertNotIn(3, self.engine._active_priorities)
+        with self.engine._dispatcher._queue_lock:
+            self.assertIn(6, self.engine._dispatcher._active_priorities)
+            self.assertNotIn(3, self.engine._dispatcher._active_priorities)
 
         # P6 仍在运行：P7 即使新入队也因 min_active=4 <7 被挡（无第二并发）
         self._enqueue_at("spec-p7", "implementer", 7, age_seconds=1)
-        with self.engine._queue_lock:
-            self.engine._active_runs = 2  # 占满并行度
+        with self.engine._dispatcher._queue_lock:
+            self.engine._dispatcher._active_runs = 2  # 占满并行度
         before = len(self.dispatched)
-        self.engine._process_queue()
+        self.engine._dispatcher._process_queue()
         self.assertEqual(len(self.dispatched), before, "并行度已满，不派发")
 
     def test_same_effective_fcfs_order_stable(self):
@@ -239,7 +239,7 @@ class TestQueueAgingScheduler(unittest.TestCase):
         self._enqueue_at("spec-a", "implementer", 6, age_seconds=90)
         self._enqueue_at("spec-b", "implementer", 6, age_seconds=60)
 
-        self.engine._process_queue()
+        self.engine._dispatcher._process_queue()
 
         self.assertEqual([d[1] for d in self.dispatched], ["spec-a", "spec-b"],
                          "同级条目派发顺序必须遵循入队先后，不被老化扰动")
@@ -250,11 +250,11 @@ class TestQueueAgingScheduler(unittest.TestCase):
         此处断言 _enqueue 产生的条目携带接近当前时刻的 enqueued_at —— 若 daemon
         重启，新队列条目必然新近入队，等待计数归零（spec 要求「从零计时」）。
         """
-        with self.engine._queue_lock:
-            self.engine._run_queue.clear()
-        self.engine._enqueue("spec-x", "implementer")
-        with self.engine._queue_lock:
-            entry = self.engine._run_queue[0]
+        with self.engine._dispatcher._queue_lock:
+            self.engine._dispatcher._run_queue.clear()
+        self.engine._dispatcher._enqueue("spec-x", "implementer")
+        with self.engine._dispatcher._queue_lock:
+            entry = self.engine._dispatcher._run_queue[0]
         self.assertEqual(len(entry), 4)
         self.assertAlmostEqual(entry[3], time.time(), delta=5)
 

@@ -118,7 +118,7 @@ class TestAccumulateTokenUsage:
             "cache_read_input_tokens": 500_000,
             "cost_usd": None,
         }
-        runner._accumulate_token_usage("spec-a", usage)
+        runner._token_accountant._accumulate_token_usage("spec-a", usage)
         entry = sm.read_one("spec-a")
         # 26M + (10M + 4M + 0.5M) = 40.5M
         assert _int(entry, "_tokens_in") == 40_500_000
@@ -130,14 +130,14 @@ class TestAccumulateTokenUsage:
         sm = make_state(proot, "spec-b", tokens_in=0)
         runner = make_runner(proot)
         runner.state_machine = sm
-        runner._accumulate_token_usage("spec-b", {
+        runner._token_accountant._accumulate_token_usage("spec-b", {
             "input_tokens": 1, "output_tokens": 1,
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cost_usd": 1.5,
         })
         assert sm.read_one("spec-b")["_cost_usd"] == "1.5"
         # 一次无成本回传的 run 不应写入 _cost_usd（保持缺失语义）
-        runner._accumulate_token_usage("spec-b", {
+        runner._token_accountant._accumulate_token_usage("spec-b", {
             "input_tokens": 1, "output_tokens": 1,
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cost_usd": None,
@@ -150,7 +150,7 @@ class TestAccumulateTokenUsage:
         sm = make_state(proot, "spec-c", tokens_in=100)
         runner = make_runner(proot)
         runner.state_machine = sm
-        runner._accumulate_token_usage("spec-c", runner._extract_usage_info(None))
+        runner._token_accountant._accumulate_token_usage("spec-c", runner._extract_usage_info(None))
         # 异常 run：input 按 0 计，不污染既有累计
         assert _int(sm.read_one("spec-c"), "_tokens_in") == 100
 
@@ -163,7 +163,7 @@ class TestTokenBudgetAlert:
         sm = make_state(proot, "spec-d", tokens_in=40_000_000)
         runner = make_runner(proot)
         runner.state_machine = sm
-        runner._accumulate_token_usage("spec-d", {
+        runner._token_accountant._accumulate_token_usage("spec-d", {
             "input_tokens": 1_000_000, "output_tokens": 0,
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cost_usd": None,
@@ -175,7 +175,7 @@ class TestTokenBudgetAlert:
         assert entry["status"] == "implementing"
 
         # 再次越过 80% 线（已置位）不应重复发告警 —— 验证幂等：flag 保持
-        runner._accumulate_token_usage("spec-d", {
+        runner._token_accountant._accumulate_token_usage("spec-d", {
             "input_tokens": 1_000_000, "output_tokens": 0,
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cost_usd": None,
@@ -189,7 +189,7 @@ class TestTokenBudgetAlert:
         sm = make_state(proot, "spec-e", tokens_in=49_900_000)
         runner = make_runner(proot)
         runner.state_machine = sm
-        runner._accumulate_token_usage("spec-e", {
+        runner._token_accountant._accumulate_token_usage("spec-e", {
             "input_tokens": 200_000, "output_tokens": 0,
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cost_usd": None,
@@ -205,7 +205,7 @@ class TestTokenBudgetAlert:
         runner = make_runner(proot)
         runner.config = {"agents": {"token_budget_millions": 0}}
         runner.state_machine = sm
-        runner._accumulate_token_usage("spec-f", {
+        runner._token_accountant._accumulate_token_usage("spec-f", {
             "input_tokens": 100_000_000, "output_tokens": 0,
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cost_usd": None,
@@ -221,12 +221,12 @@ class TestVerifyProgressSidecar:
         proot = tmp_path / "proj"
         proot.mkdir()
         runner = make_runner(proot)
-        runner._record_verify_progress_tokens("spec-g", "planner-plan", {
+        runner._token_accountant._record_verify_progress_tokens("spec-g", "planner-plan", {
             "input_tokens": 1_000_000, "output_tokens": 20_000,
             "cache_creation_input_tokens": 100_000, "cache_read_input_tokens": 50_000,
             "cost_usd": None,
         })
-        runner._record_verify_progress_tokens("spec-g", "planner-judge", {
+        runner._token_accountant._record_verify_progress_tokens("spec-g", "planner-judge", {
             "input_tokens": 500_000, "output_tokens": 10_000,
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cost_usd": None,
@@ -243,7 +243,7 @@ class TestVerifyProgressSidecar:
         proot = tmp_path / "proj"
         proot.mkdir()
         runner = make_runner(proot)
-        runner._record_verify_progress_tokens("spec-h", "implementer", {
+        runner._token_accountant._record_verify_progress_tokens("spec-h", "implementer", {
             "input_tokens": 1, "output_tokens": 1,
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cost_usd": None,

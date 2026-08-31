@@ -108,12 +108,12 @@ class TestCircuitThresholdAndOpen:
         p = "volc"
         now = 1000.0
         monkeypatch.setattr(runner, "_now", lambda: now)
-        runner._record_provider_4xx(p, 404, now=now)
-        runner._record_provider_4xx(p, 404, now=now)
-        assert not runner.is_circuit_open(p, now=now)
-        runner._record_provider_4xx(p, 404, now=now)
-        assert runner.is_circuit_open(p, now=now)
-        st = runner.provider_circuits[p]
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        assert not runner._provider_circuit.is_circuit_open(p, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        assert runner._provider_circuit.is_circuit_open(p, now=now)
+        st = runner._provider_circuit.provider_circuits[p]
         assert st["code"] == 404
         assert st["count"] == 3
         assert st["cooldown_until"] > now
@@ -126,8 +126,8 @@ class TestCircuitThresholdAndOpen:
         monkeypatch.setattr(runner, "_now", lambda: now)
         for code in (500, 500, 500):
             if code in PROVIDER_CIRCUIT_4XX:
-                runner._record_provider_4xx(p, code, now=now)
-        assert not runner.is_circuit_open(p, now=now)
+                runner._provider_circuit._record_provider_4xx(p, code, now=now)
+        assert not runner._provider_circuit.is_circuit_open(p, now=now)
 
     def test_window_slides_old_events_out(self, tmp_path, monkeypatch):
         runner = make_runner(tmp_path)
@@ -159,10 +159,10 @@ class TestCircuitThresholdAndOpen:
         p = "volc"
         now = 2000.0
         monkeypatch.setattr(runner, "_now", lambda: now)
-        runner._record_provider_4xx(p, 401, now=now)
-        runner._record_provider_4xx(p, 401, now=now)
-        assert runner.is_circuit_open(p, now=now)
-        st = runner.provider_circuits[p]
+        runner._provider_circuit._record_provider_4xx(p, 401, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 401, now=now)
+        assert runner._provider_circuit.is_circuit_open(p, now=now)
+        st = runner._provider_circuit.provider_circuits[p]
         assert st["cooldown_until"] == now + 120
 
 
@@ -174,10 +174,10 @@ class TestCircuitOpenSuppressesDispatch:
         p = "volc"
         now = 1000.0
         monkeypatch.setattr(runner, "_now", lambda: now)
-        runner._record_provider_4xx(p, 404, now=now)
-        runner._record_provider_4xx(p, 404, now=now)
-        runner._record_provider_4xx(p, 404, now=now)
-        assert runner.is_circuit_open(p, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        assert runner._provider_circuit.is_circuit_open(p, now=now)
 
         result = runner.run_implementer("test-spec")
         assert result.success is False
@@ -191,9 +191,9 @@ class TestCircuitOpenSuppressesDispatch:
         p = "volc"
         now = 1000.0
         monkeypatch.setattr(runner, "_now", lambda: now)
-        runner._record_provider_4xx(p, 404, now=now)
-        runner._record_provider_4xx(p, 404, now=now)
-        runner._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
 
         called = {"claude": False}
 
@@ -210,10 +210,10 @@ class TestCircuitOpenSuppressesDispatch:
         p = "volc"
         now = 1000.0
         monkeypatch.setattr(runner, "_now", lambda: now)
-        runner._record_provider_4xx(p, 404, now=now)
-        runner._record_provider_4xx(p, 404, now=now)
-        runner._record_provider_4xx(p, 404, now=now)
-        err = runner._circuit_open_error(p, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        err = runner._provider_circuit._circuit_open_error(p, now=now)
         assert "provider circuit open: volc" in err
         assert "HTTP 404 x 3" in err
         assert "cooldown" in err
@@ -229,16 +229,16 @@ class TestCircuitHalfOpenRecovery:
         cooldown = PROVIDER_CIRCUIT_COOLDOWN_SECONDS
         now = 1000.0
         monkeypatch.setattr(runner, "_now", lambda: now)
-        runner._record_provider_4xx(p, 404, now=now)
-        runner._record_provider_4xx(p, 404, now=now)
-        runner._record_provider_4xx(p, 404, now=now)
-        assert runner.is_circuit_open(p, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        assert runner._provider_circuit.is_circuit_open(p, now=now)
         # 冷却到期 → 半开；首个派发作为探针，claude 成功（200）
         probe_time = now + cooldown + 5
         monkeypatch.setattr(runner, "_now", lambda: probe_time)
         patch_runner_for_exec(runner, tmp_path, claude_side_effect=None)
         runner.run_implementer("test-spec")
-        st = runner.provider_circuits.get(p, {})
+        st = runner._provider_circuit.provider_circuits.get(p, {})
         assert st.get("cooldown_until", 0) == 0, st
         assert st.get("count", 0) == 0
 
@@ -248,10 +248,10 @@ class TestCircuitHalfOpenRecovery:
         cooldown = PROVIDER_CIRCUIT_COOLDOWN_SECONDS
         now = 1000.0
         monkeypatch.setattr(runner, "_now", lambda: now)
-        runner._record_provider_4xx(p, 404, now=now)
-        runner._record_provider_4xx(p, 404, now=now)
-        runner._record_provider_4xx(p, 404, now=now)
-        assert runner.is_circuit_open(p, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        assert runner._provider_circuit.is_circuit_open(p, now=now)
         probe_time = now + cooldown + 5
         monkeypatch.setattr(runner, "_now", lambda: probe_time)
 
@@ -260,7 +260,7 @@ class TestCircuitHalfOpenRecovery:
 
         patch_runner_for_exec(runner, tmp_path, claude_side_effect=fake_run_claude)
         runner.run_implementer("test-spec")
-        st = runner.provider_circuits[p]
+        st = runner._provider_circuit.provider_circuits[p]
         assert st["cooldown_until"] >= probe_time
         assert runner.is_circuit_open(p, now=probe_time)
 
@@ -277,9 +277,9 @@ class TestCircuitDoesNotFlipStateMachine:
         p = "volc"
         now = 1000.0
         monkeypatch.setattr(runner, "_now", lambda: now)
-        runner._record_provider_4xx(p, 404, now=now)
-        runner._record_provider_4xx(p, 404, now=now)
-        runner._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 404, now=now)
         result = runner.run_implementer("test-spec")
         assert result.success is False
         assert "provider circuit open" in result.error
@@ -294,10 +294,10 @@ class TestCircuitVisibility:
         p = "deepseek"
         now = 5000.0
         monkeypatch.setattr(runner, "_now", lambda: now)
-        runner._record_provider_4xx(p, 401, now=now)
-        runner._record_provider_4xx(p, 401, now=now)
-        runner._record_provider_4xx(p, 401, now=now)
-        err = runner._circuit_open_error(p, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 401, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 401, now=now)
+        runner._provider_circuit._record_provider_4xx(p, 401, now=now)
+        err = runner._provider_circuit._circuit_open_error(p, now=now)
         assert err.startswith(f"provider circuit open: {p}")
         assert "HTTP 401 x 3" in err
 

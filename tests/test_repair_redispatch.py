@@ -40,33 +40,33 @@ class _Base(unittest.TestCase):
     def test_implementing_repair_entry_dispatches(self):
         """核心回归：implementing 状态的修复条目必须可派发。"""
         self._set_spec("implementing")
-        self.engine._run_queue = [(4, "spec-a", "implementer", time.time())]
-        self.engine._process_queue()
-        self.assertEqual(self.engine._run_queue, [])
+        self.engine._dispatcher._run_queue = [(4, "spec-a", "implementer", time.time())]
+        self.engine._dispatcher._process_queue()
+        self.assertEqual(self.engine._dispatcher._run_queue, [])
         self.engine._run_agent_worker.assert_called_once()
 
     def test_implementing_dispatch_skips_same_state_transition(self):
         """修复重派时状态已是 implementing，不得触发同态非法转换。"""
         self._set_spec("implementing")
-        self.engine._run_queue = [(4, "spec-a", "implementer", time.time())]
-        self.engine._process_queue()
+        self.engine._dispatcher._run_queue = [(4, "spec-a", "implementer", time.time())]
+        self.engine._dispatcher._process_queue()
         self.engine.state_machine.transition.assert_not_called()
 
     def test_ready_still_dispatches(self):
         """既有行为回归：ready 实现条目照常派发。"""
         self._set_spec("ready")
-        self.engine._run_queue = [(4, "spec-a", "implementer", time.time())]
-        self.engine._process_queue()
-        self.assertEqual(self.engine._run_queue, [])
+        self.engine._dispatcher._run_queue = [(4, "spec-a", "implementer", time.time())]
+        self.engine._dispatcher._process_queue()
+        self.assertEqual(self.engine._dispatcher._run_queue, [])
         self.engine._run_agent_worker.assert_called_once()
         self.engine.state_machine.transition.assert_called_once_with("spec-a", "implementing")
 
     def test_testing_entry_still_skipped(self):
         """其余状态（testing 等）不得被放行。"""
         self._set_spec("testing")
-        self.engine._run_queue = [(4, "spec-a", "implementer", time.time())]
-        self.engine._process_queue()
-        self.assertEqual(len(self.engine._run_queue), 1)
+        self.engine._dispatcher._run_queue = [(4, "spec-a", "implementer", time.time())]
+        self.engine._dispatcher._process_queue()
+        self.assertEqual(len(self.engine._dispatcher._run_queue), 1)
         self.engine._run_agent_worker.assert_not_called()
 
 

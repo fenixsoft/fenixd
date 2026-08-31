@@ -45,17 +45,17 @@ class TestSameRootCharacterization(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_same_root_pairs(self):
-        self.assertTrue(self.engine._same_root("fix-x", "fix-fix-x"))
-        self.assertTrue(self.engine._same_root("fix-fix-x", "fix-x"))
-        self.assertTrue(self.engine._same_root("fix-x", "fix-x"))
+        self.assertTrue(self.engine._family._same_root("fix-x", "fix-fix-x"))
+        self.assertTrue(self.engine._family._same_root("fix-fix-x", "fix-x"))
+        self.assertTrue(self.engine._family._same_root("fix-x", "fix-x"))
 
     def test_different_roots(self):
-        self.assertFalse(self.engine._same_root("fix-x", "fix-y"))
-        self.assertFalse(self.engine._same_root("fix-x", "y"))
+        self.assertFalse(self.engine._family._same_root("fix-x", "fix-y"))
+        self.assertFalse(self.engine._family._same_root("fix-x", "y"))
 
     def test_non_fix_names_are_never_same_root(self):
-        self.assertFalse(self.engine._same_root("x", "x"))
-        self.assertFalse(self.engine._same_root("x", "fix-x"))
+        self.assertFalse(self.engine._family._same_root("x", "x"))
+        self.assertFalse(self.engine._family._same_root("x", "fix-x"))
 
 
 class TestSiblingHasLiveAgentCharacterization(unittest.TestCase):
@@ -72,26 +72,26 @@ class TestSiblingHasLiveAgentCharacterization(unittest.TestCase):
     def test_worktree_manager_active_wins(self):
         wm = self.ar.worktree_manager
         wm.has_active_worktree = MagicMock(return_value=True)
-        self.assertTrue(self.engine._sibling_has_live_agent("s1"))
+        self.assertTrue(self.engine._family._sibling_has_live_agent("s1"))
         wm.has_active_worktree.assert_called_once_with("s1")
 
     def test_has_live_attempt_fallback(self):
         self.ar.worktree_manager.has_active_worktree = MagicMock(return_value=False)
         self.ar.has_live_attempt = MagicMock(return_value=True)
-        self.assertTrue(self.engine._sibling_has_live_agent("s1"))
+        self.assertTrue(self.engine._family._sibling_has_live_agent("s1"))
         self.ar.has_live_attempt.assert_called_once_with("s1")
 
     def test_no_live_agent_without_worktrees_dir(self):
         self.ar.worktree_manager.has_active_worktree = MagicMock(return_value=False)
         self.ar.has_live_attempt = MagicMock(return_value=False)
         # tmpdir 下无 .claude/worktrees → pgrep 回退直接 False
-        self.assertFalse(self.engine._sibling_has_live_agent("s1"))
+        self.assertFalse(self.engine._family._sibling_has_live_agent("s1"))
 
     def test_worktree_manager_missing_attribute_is_tolerated(self):
         # agent_runner 无 worktree_manager 属性 / 无 has_live_attempt 属性时不炸
         del self.ar.worktree_manager
         del self.ar.has_live_attempt
-        self.assertFalse(self.engine._sibling_has_live_agent("s1"))
+        self.assertFalse(self.engine._family._sibling_has_live_agent("s1"))
 
 
 class TestRewriteScenarioPortCharacterization(unittest.TestCase):
@@ -113,7 +113,7 @@ class TestRewriteScenarioPortCharacterization(unittest.TestCase):
             ' trailing colon port 8765 end',
             encoding="utf-8",
         )
-        self.engine._rewrite_scenario_port(p, 8765, 9999)
+        self.engine._verification._rewrite_scenario_port(p, 8765, 9999)
         content = p.read_text(encoding="utf-8")
         self.assertIn("http://127.0.0.1:9999/", content)
         self.assertIn("port 8765 end", content)   # 行尾前缀 :8765 亦被改写（lookahead $）
@@ -124,7 +124,7 @@ class TestRewriteScenarioPortCharacterization(unittest.TestCase):
 
     def test_missing_file_is_swallowed_with_warning(self):
         p = self.tmpdir / "missing.json"
-        self.engine._rewrite_scenario_port(p, 8765, 9999)
+        self.engine._verification._rewrite_scenario_port(p, 8765, 9999)
         self.logger.warning.assert_called_once()
         self.assertFalse(p.exists())
 

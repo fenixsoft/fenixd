@@ -280,7 +280,7 @@ class _GateFixture(unittest.TestCase):
     def run_gate(self, branch="fenix/s1"):
         """直接驱动守卫逻辑（等价于 _run_agent_worker 成功分支内的 guard 调用）。"""
         result = self.make_result(branch=branch)
-        return self.engine._deliverable_gate_missing("s1", result)
+        return self.engine._verification._deliverable_gate_missing("s1", result)
 
 
 class TestDeliverableGate(_GateFixture):
@@ -301,13 +301,13 @@ class TestDeliverableGate(_GateFixture):
             "status": "ready", "error": "交付物守卫：缺件 [core/foo.py]（第 1 次）",
             "_retry_count": retries,
         })
-        self.engine._enqueue_front("s1", "implementer")
+        self.engine._dispatcher._enqueue_front("s1", "implementer")
 
         entry = self.sm.read_one("s1")
         self.assertEqual(entry["status"], "ready")
         self.assertIn("交付物守卫", entry["error"])
         self.assertIn("core/foo.py", entry["error"])
-        self.assertEqual(self.engine._run_queue[-1][1:3], ("s1", "implementer"))
+        self.assertEqual(self.engine._dispatcher._run_queue[-1][1:3], ("s1", "implementer"))
 
     def test_all_present_passes(self):
         """全部存在：守卫放行（返回空缺件清单）。"""
@@ -345,7 +345,7 @@ class TestDeliverableGate(_GateFixture):
                                     f"— 已 blocked，需人工检查任务书声明与实际落地差异")
             self.sm.update_spec("s1", updates)
             if updates["status"] != "blocked":
-                self.engine._enqueue_front("s1", "implementer")
+                self.engine._dispatcher._enqueue_front("s1", "implementer")
 
         entry = self.sm.read_one("s1")
         self.assertEqual(entry["status"], "blocked")
@@ -417,7 +417,7 @@ class TestDeliverableGateTyped(_GateFixture):
         # 状态未被改动、未重派
         entry = self.sm.read_one("s1")
         self.assertEqual(entry["status"], "ready")
-        self.assertEqual(self.engine._run_queue, [])
+        self.assertEqual(self.engine._dispatcher._run_queue, [])
 
     def test_deliverable_missing_still_blocks_with_references(self):
         """交付语境缺件仍阻断（既有行为不变），即便同 SPEC 还有引用类路径。"""
@@ -508,7 +508,7 @@ class TestImplementerPromptErrorInjection(unittest.TestCase):
 
     def test_no_error_no_injection(self):
         self.sm.add_spec("s1", {"priority": 5})
-        prompt = self.runner._build_prompt("s1", "implementer")
+        prompt = self.runner._prompt_builder._build_prompt("s1", "implementer")
         self.assertNotIn("Previous run error", prompt)
 
     def test_deliverable_guard_error_injected(self):
@@ -516,7 +516,7 @@ class TestImplementerPromptErrorInjection(unittest.TestCase):
         self.sm.update_spec("s1", {
             "error": "交付物守卫：缺件 [core/foo.py] — 不合并不推进，重派实现补齐（第 1 次）",
         })
-        prompt = self.runner._build_prompt("s1", "implementer")
+        prompt = self.runner._prompt_builder._build_prompt("s1", "implementer")
         self.assertIn("Previous run error", prompt)
         self.assertIn("交付物守卫：缺件 [core/foo.py]", prompt)
 

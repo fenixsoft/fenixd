@@ -195,7 +195,7 @@ class TestVerifierCheckpointResume:
             encoding="utf-8",
         )
         runner = make_runner(proot)
-        prompt = runner._build_prompt("myspec", "verifier")
+        prompt = runner._prompt_builder._build_prompt("myspec", "verifier")
         assert "RESUME CHECKPOINT" in prompt
         assert "total=32" in prompt
         assert "done=5" in prompt
@@ -209,7 +209,7 @@ class TestVerifierCheckpointResume:
         """进度文件缺失时，verifier 提示词不含断点信息，全新开始。"""
         proot = tmp_path / "proj"
         runner = make_runner(proot)
-        prompt = runner._build_prompt("myspec", "verifier")
+        prompt = runner._prompt_builder._build_prompt("myspec", "verifier")
         assert "RESUME CHECKPOINT" not in prompt
 
     def test_prompt_fresh_start_when_done_zero(self, tmp_path):
@@ -222,7 +222,7 @@ class TestVerifierCheckpointResume:
             encoding="utf-8",
         )
         runner = make_runner(proot)
-        prompt = runner._build_prompt("myspec", "verifier")
+        prompt = runner._prompt_builder._build_prompt("myspec", "verifier")
         assert "RESUME CHECKPOINT" not in prompt
 
     def test_corrupt_progress_removed_and_fresh_start(self, tmp_path):
@@ -233,7 +233,7 @@ class TestVerifierCheckpointResume:
         bad = vprog / "myspec.json"
         bad.write_text("{not valid json,,,", encoding="utf-8")
         runner = make_runner(proot)
-        prompt = runner._build_prompt("myspec", "verifier")
+        prompt = runner._prompt_builder._build_prompt("myspec", "verifier")
         assert "RESUME CHECKPOINT" not in prompt
         # 损坏文件已被移除
         assert not bad.exists()
@@ -247,7 +247,7 @@ class TestVerifierCheckpointResume:
             json.dumps({"done": 5}), encoding="utf-8"
         )
         runner = make_runner(proot)
-        prompt = runner._build_prompt("myspec", "verifier")
+        prompt = runner._prompt_builder._build_prompt("myspec", "verifier")
         assert "RESUME CHECKPOINT" not in prompt
 
 
@@ -262,7 +262,7 @@ class TestVerifierReportJson:
     def test_prompt_requires_report_json(self, tmp_path):
         proot = tmp_path / "proj"
         runner = make_runner(proot)
-        prompt = runner._build_prompt("myspec", "verifier")
+        prompt = runner._prompt_builder._build_prompt("myspec", "verifier")
         # 报告写入主树 verify-progress/<spec>/report.json（dashboard 读取位置）
         assert str(proot / ".fenix" / "verify-progress" / "myspec" / "report.json") in prompt
         # 结构关键字（verify_engine 兼容：scenario_id/status/assertion_results/screenshots）
@@ -293,7 +293,7 @@ class TestManualInterventionPrompt:
             "severity": "major",
             "description": "人工呼叫：检查 SPEC stuck-spec 出现什么问题并尝试处置",
         }
-        prompt = runner._build_prompt("stuck-spec", "administrator", detail=signal)
+        prompt = runner._prompt_builder._build_prompt("stuck-spec", "administrator", detail=signal)
         # 困境信号块包含目标 spec 与固定检查指令描述
         assert "- spec: stuck-spec" in prompt
         assert "- 类型: manual-intervention" in prompt
@@ -307,5 +307,5 @@ class TestManualInterventionPrompt:
         proot = tmp_path / "proj"
         runner = make_runner(proot)
         signal = {"signal_type": "manual-intervention", "description": "人工呼叫"}
-        prompt = runner._build_prompt("fallback-spec", "administrator", detail=signal)
+        prompt = runner._prompt_builder._build_prompt("fallback-spec", "administrator", detail=signal)
         assert "- spec: fallback-spec" in prompt

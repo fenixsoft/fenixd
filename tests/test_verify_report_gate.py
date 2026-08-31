@@ -91,7 +91,7 @@ class TestGateSynthesizesWhenMissing(_GateTestBase):
         self._seed_structured_data()
         self.assertFalse(self._report_path().exists())
 
-        blocker = self.engine._ensure_verification_report(SPEC)
+        blocker = self.engine._verification._ensure_verification_report(SPEC)
 
         self.assertIsNone(blocker)
         path = self._report_path()
@@ -112,9 +112,9 @@ class TestGateSynthesizesWhenMissing(_GateTestBase):
 
     def test_gate_idempotent_second_call_present(self):
         self._seed_structured_data()
-        self.engine._ensure_verification_report(SPEC)
+        self.engine._verification._ensure_verification_report(SPEC)
         # 第二次放行（报告已在 → 不再合成、无任何告警）
-        blocker = self.engine._ensure_verification_report(SPEC)
+        blocker = self.engine._verification._ensure_verification_report(SPEC)
         self.assertIsNone(blocker)
         alerts = [a for a in self._alerts()
                   if a.get("signal_type", "").startswith("verify_report")]
@@ -133,7 +133,7 @@ class TestGatePreservesAgentReport(_GateTestBase):
         # 同步给结构化数据也齐备的场景——闸门仍须不动文件
         self._seed_structured_data()
 
-        blocker = self.engine._ensure_verification_report(SPEC)
+        blocker = self.engine._verification._ensure_verification_report(SPEC)
 
         self.assertIsNone(blocker)
         self.assertEqual(path.read_text(encoding="utf-8"), original)
@@ -150,7 +150,7 @@ class TestGateBlocksWhenDataUnavailable(_GateTestBase):
     """路径3：结构化数据缺失/不可解析 → 阻断 + 告警，不写空报告。"""
 
     def _assert_blocked(self):
-        blocker = self.engine._ensure_verification_report(SPEC)
+        blocker = self.engine._verification._ensure_verification_report(SPEC)
         self.assertIsNotNone(blocker)
         self.assertIn("验证报告缺失且无法合成", blocker)
         self.assertFalse(self._report_path().exists())

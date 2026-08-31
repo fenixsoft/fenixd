@@ -411,22 +411,22 @@ class TestEnvBlockedInconclusive(unittest.TestCase):
         }
 
     def _queued_verifier(self):
-        return any((e[1] == "s1" and e[2] == "verifier") for e in self.engine._run_queue)
+        return any((e[1] == "s1" and e[2] == "verifier") for e in self.engine._dispatcher._run_queue)
 
     def test_genuine_failure_not_inconclusive(self):
         # 既有真实失败（非环境性）存在时若 blocked_env>0 也不得拦截
         report = self._report(blocked_env=1, failed=2)
-        self.assertFalse(self.engine._handle_env_blocked_inconclusive("s1", report))
+        self.assertFalse(self.engine._verification._handle_env_blocked_inconclusive("s1", report))
         self.assertEqual(self.sm.read_one("s1")["status"], "implemented")
 
     def test_no_blocked_env_not_inconclusive(self):
         report = self._report(blocked_env=0, failed=1)
-        self.assertFalse(self.engine._handle_env_blocked_inconclusive("s1", report))
+        self.assertFalse(self.engine._verification._handle_env_blocked_inconclusive("s1", report))
 
     def test_all_blocked_inconclusive_reenqueues(self):
-        self.engine._run_queue.clear()
+        self.engine._dispatcher._run_queue.clear()
         report = self._report(blocked_env=3)
-        self.assertTrue(self.engine._handle_env_blocked_inconclusive("s1", report))
+        self.assertTrue(self.engine._verification._handle_env_blocked_inconclusive("s1", report))
         spec = self.sm.read_one("s1")
         # 保持 implemented（verifier 派发门禁要求），error 标注重验次数
         self.assertEqual(spec["status"], "implemented")
@@ -438,7 +438,7 @@ class TestEnvBlockedInconclusive(unittest.TestCase):
     def test_attempts_exhausted_holds_backoff(self):
         self.sm.update_spec("s1", {"_inconclusive_attempts": 2})
         report = self._report(blocked_env=3)
-        self.assertTrue(self.engine._handle_env_blocked_inconclusive("s1", report))
+        self.assertTrue(self.engine._verification._handle_env_blocked_inconclusive("s1", report))
         spec = self.sm.read_one("s1")
         self.assertEqual(int(spec["_inconclusive_attempts"]), 3)
         self.assertIn("连续 3 轮", spec["error"])
@@ -477,7 +477,7 @@ class TestEnvBlockedInconclusive(unittest.TestCase):
         # PMEngine 门禁 → inconclusive（跳过 bug-found / repeated_failures 信号）
         self.sm.add_spec("mock-api-dashboard-sample", {"priority": 5})
         self.sm.update_spec("mock-api-dashboard-sample", {"status": "implemented"})
-        self.engine._run_queue.clear()
+        self.engine._dispatcher._run_queue.clear()
         gate = self.engine._handle_env_blocked_inconclusive("mock-api-dashboard-sample", report)
         self.assertTrue(gate)
         spec = self.sm.read_one("mock-api-dashboard-sample")
@@ -485,7 +485,7 @@ class TestEnvBlockedInconclusive(unittest.TestCase):
         self.assertIn("第 1/3 次重验", spec["error"])
         queued = any(
             e[1] == "mock-api-dashboard-sample" and e[2] == "verifier"
-            for e in self.engine._run_queue
+            for e in self.engine._dispatcher._run_queue
         )
         self.assertTrue(queued, "inconclusive 后应重队 verifier 新 attempt")
 

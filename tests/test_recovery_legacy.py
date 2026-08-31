@@ -176,13 +176,13 @@ class TestImplementerPromptLegacy:
         """无遗产：prompt 与现状逐字节一致（不注入空段）。"""
         runner = self._runner(tmp_path)
         runner.worktree_manager = make_wm(tmp_path)  # 无任何遗产
-        prompt = runner._build_prompt("s1", "implementer")
+        prompt = runner._prompt_builder._build_prompt("s1", "implementer")
         assert "RECOVERY LEGACY" not in prompt
         assert "salvaged from" not in prompt
         # 与无 worktree_manager 时的 prompt 一致（退化安全）
         runner2 = self._runner(tmp_path)
         runner2.worktree_manager = None
-        assert runner._build_prompt("s1", "implementer") == runner2._build_prompt("s1", "implementer")
+        assert runner._prompt_builder._build_prompt("s1", "implementer") == runner2._build_prompt("s1", "implementer")
 
     def test_legacy_prompt_injected_with_section(self, tmp_path):
         """有遗产：注入路径/分支/只读约束/收编弃用/响应格式 + salvaged from。"""
@@ -192,7 +192,7 @@ class TestImplementerPromptLegacy:
         wm.register_legacy("s1", wt, "fenix/s1-100")
         runner = self._runner(tmp_path)
         runner.worktree_manager = wm
-        prompt = runner._build_prompt("s1", "implementer")
+        prompt = runner._prompt_builder._build_prompt("s1", "implementer")
         assert "RECOVERY LEGACY" in prompt
         assert str(wt) in prompt
         assert "fenix/s1-100" in prompt
@@ -214,10 +214,10 @@ class TestImplementerPromptLegacy:
         runner = self._runner(tmp_path)
         runner.worktree_manager = wm
         # 快照采集在 runner 上，非 git 仓库降级不抛
-        snap = runner._legacy_dirty_snapshot(str(wt))
+        snap = runner._prompt_builder._legacy_dirty_snapshot(str(wt))
         assert isinstance(snap, str) and snap  # 降级提示，非空
         # 注入段引用了快照占位
-        prompt = runner._build_prompt("s1", "implementer")
+        prompt = runner._prompt_builder._build_prompt("s1", "implementer")
         assert "git status --short" in prompt
 
     def test_salvage_commit_format_in_prompt(self, tmp_path):
@@ -228,7 +228,7 @@ class TestImplementerPromptLegacy:
         wm.register_legacy("s1", wt, "fenix/s1-100")
         runner = self._runner(tmp_path)
         runner.worktree_manager = wm
-        prompt = runner._build_prompt("s1", "implementer")
+        prompt = runner._prompt_builder._build_prompt("s1", "implementer")
         # 收编提交信息模板出现（salvaged from 标注）
         assert "salvaged from fenix/s1-100" in prompt
         # 明确禁止在遗产内工作
