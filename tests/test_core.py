@@ -36,6 +36,13 @@ from tests.test_config import (
     TestResolveConfig,
     TestConfigHotReload,
     TestLogger,
+    TestDaemonSingletonFlock,
+    TestShutdownStopsDispatch,
+    TestRegistryDefaultDiscovery,
+    TestRegistryRemoveProject,
+    TestDaemonHealth,
+    TestFenixSessionIsRunning,
+    TestOverviewDaemonField,
 )
 
 from tests.test_event_bus import (
@@ -50,6 +57,10 @@ from tests.test_pm_dispatch import (
     TestPMEngineSameStatusResetDispatch,
     TestRouteTableGuard,
     TestEngineRouteCrossCheck,
+    TestPushRefHygiene,
+    TestPushResidualBackfill,
+    TestTaskProgressSync,
+    TestTaskCompletionGate,
 )
 
 from tests.test_pm_verification import (
@@ -75,6 +86,7 @@ from tests.test_pm_recovery import (
     TestMainTreeHealthCheck,
     TestStashPopConflictSelfHeal,
     TestStuckThresholdUnify,
+    TestPMEngineInfraFailureRecovery,
 )
 
 from tests.test_pm_budget import (
