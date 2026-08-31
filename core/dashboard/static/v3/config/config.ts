@@ -9,7 +9,7 @@ export default defineConfig({
   hash: true,
 
   // daemon 以 /v3/dist/ 子路径服务本应用，资源必须走相对路径
-  publicPath: './',
+  publicPath: process.env.NODE_ENV === 'production' ? './' : '/',
 
   // hash 路由：服务端只需回退到 index.html（daemon 静态透传零改动即可用）
   history: { type: 'hash' },
