@@ -16,3 +16,8 @@
 
 - [x] 3.1 grep 全仓库确认零调用者的委托方法清单，从门面删除（有生产调用者的一律保留），独立 commit
 - [x] 3.2 最终验证：全量 pytest（不劣于基线）+ fenixd.py/core/dashboard import 与调用零修改确认
+
+## 验证修复（第 1 轮失败）
+
+- [ ] 阅读 `openspec/changes/refactor-test-callsites/verification-report.md`，定位「真实产品 Bug」并修复
+- [ ] 修复后重跑验证确认通过
