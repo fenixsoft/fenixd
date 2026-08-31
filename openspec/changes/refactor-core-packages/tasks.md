@@ -39,10 +39,10 @@
 
 ## 7. 阶段 6：pm_engine 包成型
 
-- [ ] 7.1 提取 dispatch.py（`_queue_lock` 与 `_run_queue`/`_active_runs`/`_active_priorities` 整体同迁，单锁验证）
-- [ ] 7.2 提取 recovery.py 与 reporting.py
-- [ ] 7.3 建立 core/pm_engine/ 包结构：engine.py 门面组装组件与事件回调编排，`__init__.py` 导出 PMEngine
-- [ ] 7.4 删除旧 core/pm_engine.py；逐一验证 import；跑 test_dispatch_aging/test_repair_redispatch/test_repair_lane_dedup/test_pm_engine_dispatch_fixes 及全量 pytest，独立 commit
+- [x] 7.1 提取 dispatch.py（`_queue_lock` 与 `_run_queue`/`_active_runs`/`_active_priorities` 整体同迁，单锁验证）
+- [x] 7.2 提取 recovery.py 与 reporting.py
+- [x] 7.3 建立 core/pm_engine/ 包结构：engine.py 门面组装组件与事件回调编排，`__init__.py` 导出 PMEngine
+- [x] 7.4 删除旧 core/pm_engine.py；逐一验证 import；跑 test_dispatch_aging/test_repair_redispatch/test_repair_lane_dedup/test_pm_engine_dispatch_fixes 及全量 pytest，独立 commit
 
 ## 8. 阶段 7：轻梳理
 

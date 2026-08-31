@@ -6,6 +6,10 @@
               为测试引用的私有方法保留一行委托（design D3 规则 4）
 - family.py   FamilyGovernor：fix 家族治理（阶段 4）
 - budget.py   ImplBudget：实现尝试总预算（阶段 4）
+- verification.py VerificationPipeline：三阶段+legacy 验证/冻结/合同（阶段 5）
+- dispatch.py  Dispatcher：队列/优先级/老化/退避/_process_queue（阶段 6）
+- recovery.py  RecoveryWatch：恢复观察注册/复查/持久化（阶段 6）
+- reporting.py ReportBuilder：项目报告/日报/pushable specs（阶段 6）
 - （后续阶段：verification / dispatch / recovery / reporting 渐次就位）
 
 对外 API 兼容保证（spec core-package-structure「外部 API 零变化」）：
