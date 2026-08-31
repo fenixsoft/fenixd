@@ -1,16 +1,53 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, Card, Input, Progress, Radio, Select, Space, Table, Tooltip, Typography } from 'antd';
+import {
+  Alert,
+  App,
+  Badge,
+  Button,
+  Card,
+  Dropdown,
+  Input,
+  InputNumber,
+  Modal,
+  Progress,
+  Radio,
+  Select,
+  Space,
+  Spin,
+  Table,
+  Tabs,
+  Tag,
+  Tooltip,
+  Typography,
+} from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { Key } from 'react';
 import { history, useParams } from '@umijs/max';
 import dayjs from 'dayjs';
 import { getSpecs } from '@/services/dashboard';
-import { statusMeta } from '@/services/dashboard';
+import {
+  clearSpecError,
+  deleteSpec,
+  getSpecDoc,
+  invokeSpecAdmin,
+  setSpecPriority,
+  statusMeta,
+} from '@/services/dashboard';
 import type { SpecSummary } from '@/services/dashboard';
-import { OutlinedTag } from '@/components/StatusTag';
 
 const REFRESH_THROTTLE_MS = 500;
 const TRACK_LIGHT = '#e6f4ff'; // antd blue-1，与 #1677ff 同 ramp
+
+// 状态圆点配色（table-list 风格：色点 + 文字，不用标签）
+const TONE_DOT: Record<string, string> = {
+  muted: '#bfbfbf',
+  info: '#1677ff',
+  warning: '#faad14',
+  critical: '#ff4d4f',
+  good: '#52c41a',
+  aqua: '#13c2c2',
+};
 
 function pct(done: number, total: number) {
   return total > 0 ? Math.round((done / total) * 100) : 0;
@@ -70,6 +107,7 @@ function buildTree(specs: SpecSummary[]): SpecSummary[] {
 
 export default function SpecListPage() {
   const { name = '' } = useParams<{ name: string }>();
+  const { message } = App.useApp();
   const [specs, setSpecs] = useState<SpecSummary[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -77,6 +115,16 @@ export default function SpecListPage() {
   const [status, setStatus] = useState('');
   const [type, setType] = useState<TypeFilter>('');
   const lastRefreshRef = useRef(0);
+
+  // 文档弹窗（对齐 v1 docmodal：背景/设计/任务清单 三页签）
+  const [docView, setDocView] = useState<string | null>(null);
+  const [docTab, setDocTab] = useState<'proposal' | 'design' | 'tasks'>('proposal');
+  const [docContent, setDocContent] = useState('');
+  const [docFound, setDocFound] = useState(true);
+  const [docLoading, setDocLoading] = useState(false);
+
+  // 调整优先级弹窗
+  const [priorityEdit, setPriorityEdit] = useState<{ spec: string; value: number } | null>(null);
 
   const load = useCallback(async () => {
     if (!name) return;
@@ -118,6 +166,28 @@ export default function SpecListPage() {
     return () => es.close();
   }, [load, name]);
 
+  // 文档内容按页签懒加载
+  useEffect(() => {
+    if (!docView) return;
+    let cancelled = false;
+    setDocLoading(true);
+    getSpecDoc(name, docView, docTab)
+      .then((d) => {
+        if (cancelled) return;
+        setDocContent(d.content || '');
+        setDocFound(d.found);
+      })
+      .catch(() => {
+        if (!cancelled) setDocContent('文档加载失败');
+      })
+      .finally(() => {
+        if (!cancelled) setDocLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [docView, docTab, name]);
+
   const filtered = useMemo(() => {
     const kw = q.trim().toLowerCase();
     return specs.filter((s) => {
@@ -131,23 +201,97 @@ export default function SpecListPage() {
 
   const tree = useMemo(() => buildTree(filtered), [filtered]);
 
+  // 受控展开：数据到达时默认全部展开（树形子级 + error 信息行可见），用户可手动收起
+  const [expandedKeys, setExpandedKeys] = useState<readonly Key[]>([]);
+  useEffect(() => {
+    setExpandedKeys(tree.map((r) => r.name));
+  }, [tree]);
+
+  const handleClearError = async (record: SpecSummary) => {
+    try {
+      await clearSpecError(name, record.name);
+      void load();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleDeleteSpec = (record: SpecSummary) => {
+    Modal.confirm({
+      title: '删除 Spec',
+      content: (
+        <div style={{ whiteSpace: 'pre-wrap' }}>
+          {`确认删除 Spec「${record.name}」？\n\n`}
+          软删除：STATE.md 移除该条目，openspec/changes/{record.name}/ 目录移入 archive 归档。
+          {'\n'}归档路径：openspec/changes/archive/{record.name}-&lt;时间戳&gt;/
+        </div>
+      ),
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        await deleteSpec(name, record.name);
+        void load();
+      },
+    });
+  };
+
+  const handlePriorityOk = async () => {
+    if (!priorityEdit) return;
+    try {
+      await setSpecPriority(name, priorityEdit.spec, priorityEdit.value);
+      setPriorityEdit(null);
+      void load();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleAdminInvoke = async (record: SpecSummary) => {
+    try {
+      await invokeSpecAdmin(name, record.name);
+      void message.success('已呼叫 Admin 介入');
+    } catch (err) {
+      void message.warning(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const specMenuItems = [
+    { key: 'admin', label: '呼叫 Admin 介入' },
+    { key: 'priority', label: '调整优先级' },
+    { type: 'divider' as const },
+    { key: 'delete', label: '删除 Spec', danger: true },
+  ];
+
+  const onSpecMenu = (record: SpecSummary, key: string) => {
+    if (key === 'admin') {
+      void handleAdminInvoke(record);
+    } else if (key === 'priority') {
+      setPriorityEdit({ spec: record.name, value: record.priority ?? 5 });
+    } else if (key === 'delete') {
+      handleDeleteSpec(record);
+    }
+  };
+
   const columns: ColumnsType<SpecSummary> = [
     {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 118,
+      width: '8%',
       sorter: (a: SpecSummary, b: SpecSummary) => (a.status || '').localeCompare(b.status || ''),
+      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
+      onCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
       render: (v: string | null) => {
         const m = statusMeta(v || '');
-        return <OutlinedTag tone={m.tone}>{m.label}</OutlinedTag>;
+        return <Badge color={TONE_DOT[m.tone]} text={m.label} />;
       },
     },
     {
       title: '名称',
       dataIndex: 'name',
       key: 'name',
-      width: 124,
+      width: '35%',
       sorter: (a: SpecSummary, b: SpecSummary) => a.name.localeCompare(b.name),
       render: (v: string, record: SpecSummary) => (
         <Space size={4}>
@@ -164,14 +308,14 @@ export default function SpecListPage() {
       title: '优先级',
       dataIndex: 'priority',
       key: 'priority',
-      width: 97,
+      width: '8%',
       sorter: (a: SpecSummary, b: SpecSummary) => (a.priority ?? 999) - (b.priority ?? 999),
     },
     {
       title: '创建时间',
       dataIndex: 'created',
       key: 'created',
-      width: 140,
+      width: '8%',
       sorter: (a: SpecSummary, b: SpecSummary) => (a.created || '').localeCompare(b.created || ''),
       render: (v: string | null) => {
         const d = v ? dayjs(v) : null;
@@ -181,23 +325,35 @@ export default function SpecListPage() {
     {
       title: '任务进度',
       key: 'task',
-      width: 204,
+      width: '17%',
       sorter: (a: SpecSummary, b: SpecSummary) =>
         pct(a.task_done, a.task_total) - pct(b.task_done, b.task_total),
-      render: (_: unknown, record: SpecSummary) => (
-        <Progress
-          percent={pct(record.task_done, record.task_total)}
-          size="small"
-          strokeColor="#1677ff"
-          trailColor={TRACK_LIGHT}
-          format={() => `${record.task_done}/${record.task_total} · ${pct(record.task_done, record.task_total)}%`}
-        />
-      ),
+      render: (_: unknown, record: SpecSummary) => {
+        const p = pct(record.task_done, record.task_total);
+        // 对齐 v1：条下方两侧分别显示 done/total 与 百分比
+        return (
+          <div style={{ minWidth: 0 }}>
+            <Progress
+              percent={p}
+              size="small"
+              showInfo={false}
+              strokeColor="#1677ff"
+              trailColor={TRACK_LIGHT}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: '18px' }}>
+              <Typography.Text type="secondary">
+                {record.task_done}/{record.task_total}
+              </Typography.Text>
+              <Typography.Text type="secondary">{p}%</Typography.Text>
+            </div>
+          </div>
+        );
+      },
     },
     {
       title: '验证',
       key: 'verify',
-      width: 97,
+      width: '8%',
       sorter: (a: SpecSummary, b: SpecSummary) =>
         pct(a.verify_done, a.verify_total) - pct(b.verify_done, b.verify_total),
       render: (_: unknown, record: SpecSummary) =>
@@ -215,17 +371,49 @@ export default function SpecListPage() {
       title: '耗时',
       dataIndex: 'total_duration',
       key: 'duration',
-      width: 118,
+      width: '8%',
       sorter: (a: SpecSummary, b: SpecSummary) => a.total_duration - b.total_duration,
       render: (v: number) => fmtDuration(v),
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: '8%',
+      render: (_: unknown, record: SpecSummary) => (
+        <Space size={0}>
+          <Button
+            type="link"
+            size="small"
+            style={{ paddingInline: 4 }}
+            onClick={() => setDocView(record.name)}
+          >
+            文档
+          </Button>
+          <Dropdown
+            menu={{ items: specMenuItems, onClick: ({ key }) => onSpecMenu(record, key) }}
+            placement="bottomRight"
+            trigger={['click']}
+          >
+            <Button type="link" size="small" style={{ paddingInline: 4 }}>
+              更多
+            </Button>
+          </Dropdown>
+        </Space>
+      ),
     },
   ];
 
   return (
     <PageContainer
       header={{
-        title: name,
-        subtitle: `${specs.length} 个 SPEC`,
+        title: (
+          <Space size={8} align="baseline">
+            <span>{name}</span>
+            <Typography.Text type="secondary" style={{ fontSize: 14, fontWeight: 400 }}>
+              共 {specs.length} 个 SPEC
+            </Typography.Text>
+          </Space>
+        ),
         onBack: () => history.push('/overview'),
       }}
     >
@@ -247,7 +435,10 @@ export default function SpecListPage() {
             style={{ width: 140 }}
             options={[
               { value: '', label: '全部状态' },
-              ...Object.entries(statusMetaKeys()).map(([k, label]) => ({ value: k, label })),
+              ...[
+                'drafted', 'ready', 'implementing', 'implemented', 'testing',
+                'verified', 'bug-found', 'blocked', 'done', 'pushed',
+              ].map((k) => ({ value: k, label: statusMeta(k).label })),
             ]}
           />
           <Radio.Group
@@ -264,25 +455,89 @@ export default function SpecListPage() {
         </Space>
         <Table
           rowKey="name"
+          tableLayout="fixed"
           columns={columns}
           dataSource={tree}
           loading={loading}
           pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
-          defaultExpandAllRows
+          expandable={{
+            columnWidth: 28,
+            expandedRowKeys: expandedKeys,
+            onExpandedRowsChange: (keys) => setExpandedKeys(keys),
+            // 额外信息（error）行内下方展开，含清除按钮（对齐 v1 spec-info-row）
+            expandedRowRender: (record: SpecSummary) =>
+              record.error ? (
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <Tag color="orange" style={{ marginInlineEnd: 0 }}>
+                    信息
+                  </Tag>
+                  <Typography.Text style={{ flex: 1 }}>{record.error}</Typography.Text>
+                  <Button size="small" onClick={() => void handleClearError(record)}>
+                    清除
+                  </Button>
+                </div>
+              ) : null,
+            rowExpandable: (record: SpecSummary) => !!record.error,
+          }}
         />
       </Card>
+
+      <Modal
+        title={`${docView || ''} 文档`}
+        open={!!docView}
+        onCancel={() => setDocView(null)}
+        footer={null}
+        width={760}
+      >
+        <Tabs
+          activeKey={docTab}
+          onChange={(k) => setDocTab(k as 'proposal' | 'design' | 'tasks')}
+          items={[
+            { key: 'proposal', label: '需求背景' },
+            { key: 'design', label: '详细设计' },
+            { key: 'tasks', label: '任务清单' },
+          ]}
+        />
+        {docLoading ? (
+          <div style={{ textAlign: 'center', padding: 32 }}>
+            <Spin />
+          </div>
+        ) : (
+          <pre
+            style={{
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              maxHeight: 480,
+              overflow: 'auto',
+              margin: 0,
+              fontSize: 13,
+            }}
+          >
+            {docContent || (docFound ? '' : '（无此文档）')}
+          </pre>
+        )}
+      </Modal>
+
+      <Modal
+        title="调整优先级"
+        open={!!priorityEdit}
+        onOk={() => void handlePriorityOk()}
+        onCancel={() => setPriorityEdit(null)}
+        okText="确定"
+        cancelText="取消"
+      >
+        <Space size={8}>
+          <span>优先级（P1 最高，P9 最低）：</span>
+          <InputNumber
+            min={1}
+            max={9}
+            value={priorityEdit?.value ?? 5}
+            onChange={(v) =>
+              setPriorityEdit((p) => (p ? { ...p, value: typeof v === 'number' ? v : p.value } : p))
+            }
+          />
+        </Space>
+      </Modal>
     </PageContainer>
   );
-}
-
-// STATUS_META 的 key 顺序稳定输出状态下拉选项（label 复用中文标签）
-function statusMetaKeys(): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const k of [
-    'drafted', 'ready', 'implementing', 'implemented', 'testing',
-    'verified', 'bug-found', 'blocked', 'done', 'pushed',
-  ]) {
-    out[k] = statusMeta(k).label;
-  }
-  return out;
 }

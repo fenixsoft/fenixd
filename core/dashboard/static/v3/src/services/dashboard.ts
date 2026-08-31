@@ -137,6 +137,46 @@ export async function getSpecs(project: string): Promise<{ project: string; spec
   return request(`/api/specs?project=${encodeURIComponent(project)}`);
 }
 
+// SPEC 行内操作（与 v1 右键菜单/文档弹窗同源端点）
+
+export function setSpecPriority(project: string, spec: string, priority: number) {
+  return request(
+    `/api/spec-priority?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ priority }) },
+  );
+}
+
+export function deleteSpec(project: string, spec: string) {
+  return request(
+    `/api/spec-delete?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    { method: 'POST' },
+  );
+}
+
+export function clearSpecError(project: string, spec: string) {
+  return request(
+    `/api/spec-error-clear?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    { method: 'POST' },
+  );
+}
+
+export function invokeSpecAdmin(project: string, spec: string) {
+  return request(
+    `/api/spec-admin-invoke?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    { method: 'POST' },
+  );
+}
+
+export async function getSpecDoc(
+  project: string,
+  spec: string,
+  doc: 'proposal' | 'design' | 'tasks',
+): Promise<{ found: boolean; content: string }> {
+  return request(
+    `/api/spec-doc?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}&doc=${doc}`,
+  );
+}
+
 // ── SPEC 状态元数据（中文标签 + 语义色，与 v1 STATUS_META 对齐） ──
 
 export type StatusTone = 'muted' | 'info' | 'warning' | 'critical' | 'good' | 'aqua';
