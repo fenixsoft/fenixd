@@ -136,7 +136,7 @@ export default function SpecListPage() {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 110,
+      width: 118,
       sorter: (a: SpecSummary, b: SpecSummary) => (a.status || '').localeCompare(b.status || ''),
       render: (v: string | null) => {
         const m = statusMeta(v || '');
@@ -147,6 +147,7 @@ export default function SpecListPage() {
       title: '名称',
       dataIndex: 'name',
       key: 'name',
+      width: 124,
       sorter: (a: SpecSummary, b: SpecSummary) => a.name.localeCompare(b.name),
       render: (v: string, record: SpecSummary) => (
         <Space size={4}>
@@ -163,14 +164,14 @@ export default function SpecListPage() {
       title: '优先级',
       dataIndex: 'priority',
       key: 'priority',
-      width: 90,
+      width: 97,
       sorter: (a: SpecSummary, b: SpecSummary) => (a.priority ?? 999) - (b.priority ?? 999),
     },
     {
       title: '创建时间',
       dataIndex: 'created',
       key: 'created',
-      width: 130,
+      width: 140,
       sorter: (a: SpecSummary, b: SpecSummary) => (a.created || '').localeCompare(b.created || ''),
       render: (v: string | null) => {
         const d = v ? dayjs(v) : null;
@@ -180,7 +181,7 @@ export default function SpecListPage() {
     {
       title: '任务进度',
       key: 'task',
-      width: 190,
+      width: 204,
       sorter: (a: SpecSummary, b: SpecSummary) =>
         pct(a.task_done, a.task_total) - pct(b.task_done, b.task_total),
       render: (_: unknown, record: SpecSummary) => (
@@ -196,7 +197,7 @@ export default function SpecListPage() {
     {
       title: '验证',
       key: 'verify',
-      width: 90,
+      width: 97,
       sorter: (a: SpecSummary, b: SpecSummary) =>
         pct(a.verify_done, a.verify_total) - pct(b.verify_done, b.verify_total),
       render: (_: unknown, record: SpecSummary) =>
@@ -214,7 +215,7 @@ export default function SpecListPage() {
       title: '耗时',
       dataIndex: 'total_duration',
       key: 'duration',
-      width: 110,
+      width: 118,
       sorter: (a: SpecSummary, b: SpecSummary) => a.total_duration - b.total_duration,
       render: (v: number) => fmtDuration(v),
     },
