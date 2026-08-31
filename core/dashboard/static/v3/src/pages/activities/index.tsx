@@ -192,13 +192,12 @@ export default function ActivitiesPage() {
       );
     }
 
-    if (!data) return null;
+    if (!data || !data.projects || data.projects.length === 0) {
+      return <Empty description="暂无运维记录" />;
+    }
 
     // 全部视图：按项目分段展示
     if (activeKey === 'all') {
-      if (projects.length === 0) {
-        return <Empty description="暂无运维记录" />;
-      }
       return (
         <div>
           {projects.map((p) => (
