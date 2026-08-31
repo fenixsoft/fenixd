@@ -33,9 +33,9 @@
 
 ## 6. 阶段 5：pm_engine → VerificationPipeline
 
-- [ ] 6.1 提取 verification.py（三阶段+legacy 验证/冻结/合同/verdict evidence/交付物门/env blocked 处理；回引规则改写跨域调用）
-- [ ] 6.2 门面委托：`_run_three_stage_verification`、`_run_legacy_verification`、`_apply_scenario_freeze`、`_handle_env_blocked_inconclusive` 等测试引用方法保持调用路径
-- [ ] 6.3 全量 pytest 全绿（重点 test_verify_report_gate/test_verify_scenarios/test_verdict_evidence_taxonomy/test_interaction_contract）+ import 验证，独立 commit
+- [x] 6.1 提取 verification.py（三阶段+legacy 验证/冻结/合同/verdict evidence/交付物门/env blocked 处理；回引规则改写跨域调用）
+- [x] 6.2 门面委托：`_run_three_stage_verification`、`_run_legacy_verification`、`_apply_scenario_freeze`、`_handle_env_blocked_inconclusive` 等测试引用方法保持调用路径
+- [x] 6.3 全量 pytest 全绿（重点 test_verify_report_gate/test_verify_scenarios/test_verdict_evidence_taxonomy/test_interaction_contract）+ import 验证，独立 commit
 
 ## 7. 阶段 6：pm_engine 包成型
 
