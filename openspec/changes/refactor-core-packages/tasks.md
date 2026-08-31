@@ -21,9 +21,9 @@
 
 ## 4. 阶段 3：agent_runner 包成型
 
-- [ ] 4.1 提取 liveness.py（存活检测/判活/超时监督/wait_for_running_agents）与 session.py（resumable session id 提取；体量过小可并入 runner.py）
-- [ ] 4.2 建立 core/agent_runner/ 包结构：runner.py 门面组装组件，`__init__.py` 导出 AgentRunner/AgentRunResult/AdminDisposition/clean_old_runs
-- [ ] 4.3 删除旧 core/agent_runner.py；`python -c` 逐一验证 import 路径与符号；全量 pytest 全绿，独立 commit
+- [x] 4.1 提取 liveness.py（存活检测/判活/超时监督/wait_for_running_agents）与 session.py（resumable session id 提取；体量过小可并入 runner.py）
+- [x] 4.2 建立 core/agent_runner/ 包结构：runner.py 门面组装组件，`__init__.py` 导出 AgentRunner/AgentRunResult/AdminDisposition/clean_old_runs
+- [x] 4.3 删除旧 core/agent_runner.py；`python -c` 逐一验证 import 路径与符号；全量 pytest 全绿，独立 commit
 
 ## 5. 阶段 4：pm_engine → FamilyGovernor + ImplBudget
 
