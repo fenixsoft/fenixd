@@ -2,7 +2,7 @@
 
 ## 1. 数据层与页面骨架
 
-- [ ] 1.1 `src/services/dashboard.ts` 新增 `getAdminActivities(project?: string)` 封装
+- [x] 1.1 `src/services/dashboard.ts` 新增 `getAdminActivities(project?: string)` 封装
 - [ ] 1.2 `/activities` 路由替换占位页为真实页面：标题"运维记录"+ 页签栏（全部 + 各项目，Badge 条数）
 - [ ] 1.3 页签选中状态 state 化（跨刷新保持）+ 项目消失回退"全部"逻辑
 
