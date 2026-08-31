@@ -231,8 +231,14 @@ function TokenTile({ recent }: { recent: TokenUsageItem[] }) {
       title="Token 消耗"
       tooltip="最近 20 个有消耗的 SPEC（_tokens_in + _tokens_out 累计），按最近活跃排序；悬浮查看单点数值"
     >
-      <div style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px', margin: '4px 0 6px' }}>
+      <div style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px', margin: '4px 0 6px', whiteSpace: 'nowrap' }}>
         {compactTokens(sum)}
+      </div>
+      <div style={{ textAlign: 'right', marginBottom: 6 }}>
+        <Typography.Text type="secondary">平均每 spec </Typography.Text>
+        <Typography.Text strong>
+          {compactTokens(recent.length ? Math.round(sum / recent.length) : 0)}
+        </Typography.Text>
       </div>
       <div style={{ height: 46 }}>
         {data.length ? (

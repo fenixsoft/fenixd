@@ -5,7 +5,7 @@ import {
   PauseCircleOutlined,
   PlayCircleOutlined,
 } from '@ant-design/icons';
-import { Alert, App, Avatar, Button, Card, Dropdown, List, Progress, Radio, Space, Tag, Typography } from 'antd';
+import { Alert, App, Avatar, Button, Card, Dropdown, Input, List, Progress, Radio, Space, Tag, Typography } from 'antd';
 import { useState } from 'react';
 import { history } from '@umijs/max';
 import type { ProjectSummary } from '@/services/dashboard';
@@ -67,11 +67,14 @@ export default function ProjectCards({
   const { message, modal } = App.useApp();
   const [pendingName, setPendingName] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [query, setQuery] = useState('');
 
+  const kw = query.trim().toLowerCase();
   const filtered = projects.filter((p) => {
-    if (statusFilter === 'all') return true;
-    if (statusFilter === 'running') return p.daemon === 'running';
-    return p.daemon !== 'running';
+    if (statusFilter === 'running' && p.daemon !== 'running') return false;
+    if (statusFilter === 'stopped' && p.daemon === 'running') return false;
+    if (kw && !p.name.toLowerCase().includes(kw)) return false;
+    return true;
   });
 
   const runAction = async (name: string, action: 'start' | 'stop' | 'delete') => {
@@ -151,17 +154,27 @@ export default function ProjectCards({
       variant="borderless"
       title="项目清单"
       extra={
-        <Radio.Group
-          optionType="button"
-          size="small"
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
-          options={[
-            { label: '全部', value: 'all' },
-            { label: '运行中', value: 'running' },
-            { label: '未运行', value: 'stopped' },
-          ]}
-        />
+        <Space wrap size={8}>
+          <Input.Search
+            placeholder="搜索项目"
+            size="small"
+            allowClear
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            style={{ width: 160 }}
+          />
+          <Radio.Group
+            optionType="button"
+            size="small"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+            options={[
+              { label: '全部', value: 'all' },
+              { label: '运行中', value: 'running' },
+              { label: '未运行', value: 'stopped' },
+            ]}
+          />
+        </Space>
       }
       styles={{ body: { paddingBlock: 0 } }}
     >
@@ -255,7 +268,7 @@ export default function ProjectCards({
                     value={project.active_runs}
                     color={project.active_runs > 0 ? '#faad14' : undefined}
                   />
-                  <div style={{ width: 150 }}>
+                  <div style={{ width: 300 }}>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                       任务进度
                     </Typography.Text>
