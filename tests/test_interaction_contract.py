@@ -513,7 +513,7 @@ class TestPromptClauses(_AgentRunnerBase):
         _write_spec_doc(
             self.proot, "demo", "specs/demo/spec.md",
             "项目卡片渲染为链接样式（dark-Card--link）。\n")
-        prompt = self.runner._build_prompt("demo", "planner-plan")
+        prompt = self.runner._prompt_builder._build_prompt("demo", "planner-plan")
         self.assertIn("交互契约", prompt)
         self.assertIn("dark-Card--link", prompt)
         self.assertIn("covers", prompt)
@@ -521,17 +521,17 @@ class TestPromptClauses(_AgentRunnerBase):
 
     def test_planner_plan_prompt_unchanged_without_candidates(self):
         _write_spec_doc(self.proot, "demo", "proposal.md", "纯算法模块，无 UI。\n")
-        prompt = self.runner._build_prompt("demo", "planner-plan")
+        prompt = self.runner._prompt_builder._build_prompt("demo", "planner-plan")
         self.assertNotIn("交互契约", prompt)
 
     def test_planner_judge_requires_assertion_triage(self):
-        prompt = self.runner._build_prompt("demo", "planner-judge")
+        prompt = self.runner._prompt_builder._build_prompt("demo", "planner-judge")
         self.assertIn("assertion_triage", prompt)
         self.assertIn("逐断言归因", prompt)
         self.assertIn("product-bug", prompt)
 
     def test_implementer_contract_clause(self):
-        prompt = self.runner._build_prompt("demo", "implementer")
+        prompt = self.runner._prompt_builder._build_prompt("demo", "implementer")
         self.assertIn("交互契约", prompt)
         self.assertIn("待裁决交互", prompt)
         self.assertIn("findings", prompt)

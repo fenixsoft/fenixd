@@ -438,7 +438,7 @@ class TestRunAdministrator:
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
         runner._get_agent_model_assignment = lambda agent_type: None
-        runner._build_prompt = lambda *a, **k: "prompt"
+        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
             return "output", 5, "sess"
@@ -658,7 +658,7 @@ class TestRunAdministrator:
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
         runner._get_agent_model_assignment = lambda agent_type: None
-        runner._build_prompt = lambda *a, **k: "prompt"
+        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
             (proot / ".fenix" / "admin_disposition.json").write_text(json.dumps({
@@ -689,7 +689,7 @@ class TestRunAdministrator:
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
         runner._get_agent_model_assignment = lambda agent_type: None
-        runner._build_prompt = lambda *a, **k: "prompt"
+        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
         summary = "根因是工作树状态陈旧；已清理并重新调度；无需人工介入。"
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
@@ -718,7 +718,7 @@ class TestRunAdministrator:
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
         runner._get_agent_model_assignment = lambda agent_type: None
-        runner._build_prompt = lambda *a, **k: "prompt"
+        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
             (proot / ".fenix" / "admin_disposition.json").write_text(json.dumps({
@@ -767,7 +767,7 @@ class TestRunAdministrator:
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
         runner._get_agent_model_assignment = lambda agent_type: None
-        runner._build_prompt = lambda *a, **k: "prompt"
+        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         def failing_run_claude(*a, **k):
             raise RuntimeError("claude 崩溃")
@@ -793,7 +793,7 @@ class TestRunAdministrator:
             ({"name": "volc", "baseurl": "https://v.com", "apikey": "sk-v"},
              "deepseek-v4-flash"),
         ] if agent_type == "administrator" else None
-        runner._build_prompt = lambda *a, **k: "prompt"
+        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         captured = {}
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
@@ -821,7 +821,7 @@ class TestRunAdministrator:
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-opus-4"
         runner._get_agent_model_assignment = lambda agent_type: None
-        runner._build_prompt = lambda *a, **k: "prompt"
+        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         captured = {}
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):

@@ -233,7 +233,7 @@ class TestTriggerTagging:
 
     def test_verify_fail_escalation_carries_trigger(self, tmp_path):
         engine = self._engine(tmp_path)
-        engine._send_human_escalation_alert(
+        engine._family._send_human_escalation_alert(
             spec_name="v2-x", signal_type="verify_fail_escalation",
             severity="major", description="d", evidence="e", recommended_action="r")
         rec = AdminStore(tmp_path, FakeLogger()).read_all()[0]
@@ -242,7 +242,7 @@ class TestTriggerTagging:
 
     def test_unmapped_signal_type_has_no_trigger(self, tmp_path):
         engine = self._engine(tmp_path)
-        engine._send_human_escalation_alert(
+        engine._family._send_human_escalation_alert(
             spec_name="v2-x", signal_type="warning_stale_triage",
             severity="major", description="d", evidence="e", recommended_action="r")
         rec = AdminStore(tmp_path, FakeLogger()).read_all()[0]
@@ -250,7 +250,7 @@ class TestTriggerTagging:
 
     def test_explicit_trigger_wins(self, tmp_path):
         engine = self._engine(tmp_path)
-        engine._send_human_escalation_alert(
+        engine._family._send_human_escalation_alert(
             spec_name="v2-x", signal_type="verify_fail_escalation",
             severity="major", description="d", evidence="e", recommended_action="r",
             trigger={"type": "verify_fail_escalation", "spec": "v2-x",

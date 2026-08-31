@@ -208,13 +208,13 @@ class TestSwitchCooldown:
             ConfigLoader.get_agent_model_assignment(runner.config, "implementer"),
             "s", "implementer", now=now,
         ) == 0
-        runner._record_switch_cooldown("inferaiapi.com", now=now)
+        runner._provider_circuit._record_switch_cooldown("inferaiapi.com", now=now)
         # 冷却中：_select_chain_candidate 跳过
-        assert runner.is_switch_cooldown("inferaiapi.com", now=now)
+        assert runner._provider_circuit.is_switch_cooldown("inferaiapi.com", now=now)
         # 冷却到期：自动复位、可再次选中
         later = now + PROVIDER_SWITCH_COOLDOWN_SECONDS + 1
         monkeypatch.setattr(runner, "_now", lambda: later)
-        assert not runner.is_switch_cooldown("inferaiapi.com", now=later)
+        assert not runner._provider_circuit.is_switch_cooldown("inferaiapi.com", now=later)
         assert runner._select_chain_candidate(
             ConfigLoader.get_agent_model_assignment(runner.config, "implementer"),
             "s", "implementer", now=later,
@@ -225,8 +225,8 @@ class TestSwitchCooldown:
         runner = make_runner(tmp_path, chain_config(["inferaiapi.com", "aliyun"]))
         now = 1000.0
         monkeypatch.setattr(runner, "_now", lambda: now)
-        runner._record_switch_cooldown("inferaiapi.com", now=now)
-        runner._record_switch_cooldown("aliyun", now=now)
+        runner._provider_circuit._record_switch_cooldown("inferaiapi.com", now=now)
+        runner._provider_circuit._record_switch_cooldown("aliyun", now=now)
         # 不创建 worktree / 不启动 claude
         runner.worktree_manager = MagicMock()
         result = runner.run_implementer("s")
@@ -519,7 +519,7 @@ class TestDailyAttemptWarn:
         runner = make_runner(tmp_path, config)
         # 跨天重置检查不触发（同日期）
         for _ in range(5):
-            runner._record_daily_provider_attempt("aliyun")
+            runner._provider_circuit._record_daily_provider_attempt("aliyun")
         warns = [m for lvl, m in runner.logger.records if lvl == "warning"
                  and "daily attempts" in m]
         assert len(warns) == 1
@@ -528,7 +528,7 @@ class TestDailyAttemptWarn:
     def test_no_warn_under_threshold(self, tmp_path):
         runner = make_runner(tmp_path, {})
         for _ in range(PROVIDER_DAILY_ATTEMPTS_WARN - 1):
-            runner._record_daily_provider_attempt("aliyun")
+            runner._provider_circuit._record_daily_provider_attempt("aliyun")
         warns = [m for lvl, m in runner.logger.records if lvl == "warning"
                  and "daily attempts" in m]
         assert warns == []

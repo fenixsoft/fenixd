@@ -47,13 +47,13 @@ class TestSameRootSiblings(unittest.TestCase):
 
     def test_non_fix_spec_returns_empty(self):
         """非 fix spec 无兄弟。"""
-        self.assertEqual(self.engine._same_root_siblings("my-spec"), [])
+        self.assertEqual(self.engine._family._same_root_siblings("my-spec"), [])
 
     def test_same_root_siblings_excludes_self(self):
         """返回列表不含自身。"""
         self.sm.add_spec("fix-x", {"status": "ready"})
         self.sm.add_spec("fix-fix-x", {"status": "ready"})
-        siblings = self.engine._same_root_siblings("fix-x")
+        siblings = self.engine._family._same_root_siblings("fix-x")
         self.assertIn("fix-fix-x", siblings)
         self.assertNotIn("fix-x", siblings)
 
@@ -61,7 +61,7 @@ class TestSameRootSiblings(unittest.TestCase):
         """终态兄弟不计入。"""
         self.sm.add_spec("fix-x", {"status": "ready"})
         self.sm.add_spec("fix-fix-x", {"status": "done"})
-        siblings = self.engine._same_root_siblings("fix-x")
+        siblings = self.engine._family._same_root_siblings("fix-x")
         self.assertEqual(siblings, [])
 
     def test_includes_non_terminal_siblings(self):
@@ -69,7 +69,7 @@ class TestSameRootSiblings(unittest.TestCase):
         self.sm.add_spec("fix-x", {"status": "ready"})
         self.sm.add_spec("fix-fix-x", {"status": "implementing"})
         self.sm.add_spec("fix-fix-fix-x", {"status": "testing"})
-        siblings = self.engine._same_root_siblings("fix-x")
+        siblings = self.engine._family._same_root_siblings("fix-x")
         self.assertIn("fix-fix-x", siblings)
         self.assertIn("fix-fix-fix-x", siblings)
 
@@ -77,7 +77,7 @@ class TestSameRootSiblings(unittest.TestCase):
         """不同根的 fix spec 不计入。"""
         self.sm.add_spec("fix-x", {"status": "ready"})
         self.sm.add_spec("fix-y", {"status": "ready"})
-        siblings = self.engine._same_root_siblings("fix-x")
+        siblings = self.engine._family._same_root_siblings("fix-x")
         self.assertNotIn("fix-y", siblings)
 
 
@@ -97,7 +97,7 @@ class TestSiblingRepairActive(unittest.TestCase):
         """implementing 状态的兄弟视为 actionable。"""
         self.sm.add_spec("fix-x", {"status": "ready"})
         self.sm.add_spec("fix-fix-x", {"status": "implementing"})
-        carrier = self.engine._sibling_repair_active("fix-x")
+        carrier = self.engine._family._sibling_repair_active("fix-x")
         self.assertEqual(carrier, "fix-fix-x")
 
     def test_ready_sibling_with_queue_entry_is_active(self):
@@ -105,8 +105,8 @@ class TestSiblingRepairActive(unittest.TestCase):
         self.sm.add_spec("fix-x", {"status": "ready"})
         self.sm.add_spec("fix-fix-x", {"status": "ready"})
         # 手动入队
-        self.engine._enqueue("fix-fix-x", "implementer")
-        carrier = self.engine._sibling_repair_active("fix-x")
+        self.engine._dispatcher._enqueue("fix-fix-x", "implementer")
+        carrier = self.engine._family._sibling_repair_active("fix-x")
         self.assertEqual(carrier, "fix-fix-x")
 
     def test_ready_sibling_without_queue_not_active(self):
@@ -115,13 +115,13 @@ class TestSiblingRepairActive(unittest.TestCase):
         self.sm.add_spec("fix-fix-x", {"status": "ready"})
         # 不入队，且存活探测显式关闭（MagicMock 默认 truthy 会误判活跃）
         with patch.object(self.engine, "_sibling_has_live_agent", return_value=False):
-            carrier = self.engine._sibling_repair_active("fix-x")
+            carrier = self.engine._family._sibling_repair_active("fix-x")
         self.assertEqual(carrier, "")
 
     def test_no_siblings_returns_empty(self):
         """无兄弟时返回空串。"""
         self.sm.add_spec("fix-x", {"status": "ready"})
-        carrier = self.engine._sibling_repair_active("fix-x")
+        carrier = self.engine._family._sibling_repair_active("fix-x")
         self.assertEqual(carrier, "")
 
 
@@ -160,26 +160,26 @@ class TestHasNonTerminalChildFix(unittest.TestCase):
     def test_no_child_fix_returns_empty(self):
         """无子 fix 时返回空串。"""
         self.sm.add_spec("fix-x", {"status": "ready"})
-        self.assertEqual(self.engine._has_non_terminal_child_fix("fix-x"), "")
+        self.assertEqual(self.engine._family._has_non_terminal_child_fix("fix-x"), "")
 
     def test_terminal_child_returns_empty(self):
         """子 fix 已终态时返回空串（解封）。"""
         self.sm.add_spec("fix-x", {"status": "bug-found"})
         self.sm.add_spec("fix-fix-x", {"status": "done"})
-        self.assertEqual(self.engine._has_non_terminal_child_fix("fix-x"), "")
+        self.assertEqual(self.engine._family._has_non_terminal_child_fix("fix-x"), "")
 
     def test_non_terminal_child_returns_name(self):
         """非终态子 fix 存在时返回其名称。"""
         self.sm.add_spec("fix-x", {"status": "bug-found"})
         self.sm.add_spec("fix-fix-x", {"status": "ready"})
-        self.assertEqual(self.engine._has_non_terminal_child_fix("fix-x"), "fix-fix-x")
+        self.assertEqual(self.engine._family._has_non_terminal_child_fix("fix-x"), "fix-fix-x")
 
     def test_deeper_non_terminal_child(self):
         """更深层非终态子 fix 优先返回。"""
         self.sm.add_spec("fix-x", {"status": "bug-found"})
         self.sm.add_spec("fix-fix-x", {"status": "done"})
         self.sm.add_spec("fix-fix-fix-x", {"status": "implementing"})
-        self.assertEqual(self.engine._has_non_terminal_child_fix("fix-x"), "fix-fix-fix-x")
+        self.assertEqual(self.engine._family._has_non_terminal_child_fix("fix-x"), "fix-fix-fix-x")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -204,7 +204,7 @@ class TestGuardOneResetSuppression(unittest.TestCase):
         self.sm.add_spec("fix-x", {"status": "bug-found"})
         self.sm.add_spec("fix-fix-x", {"status": "ready"})
         # 重触发 fix-x 的 bug-found → 应被抑制
-        self.engine._do_spec_bug_found("fix-x")
+        self.engine._family._do_spec_bug_found("fix-x")
         # fix-x 保持 bug-found，不被重置为 ready
         entry = self.sm.read_one("fix-x")
         self.assertEqual(entry["status"], "bug-found")
@@ -219,7 +219,7 @@ class TestGuardOneResetSuppression(unittest.TestCase):
         """
         self.sm.add_spec("fix-x", {"status": "bug-found"})
         self.sm.add_spec("fix-fix-x", {"status": "done"})
-        self.engine._do_spec_bug_found("fix-x")
+        self.engine._family._do_spec_bug_found("fix-x")
         # 守卫一不生效（子已终态）→ 派生新的更深层 fix 承载方
         new_child = self.sm.read_one("fix-fix-fix-x")
         self.assertIsNotNone(new_child)
@@ -231,7 +231,7 @@ class TestGuardOneResetSuppression(unittest.TestCase):
         """非 fix spec 不触发守卫一（add-inplace-bug-repair：走原地打回）。"""
         self.sm.add_spec("my-spec", {"status": "bug-found"})
         # 没有 fix-my-spec 存在；非 fix 父 SPEC 走原地打回而非派生
-        self.engine._do_spec_bug_found("my-spec")
+        self.engine._family._do_spec_bug_found("my-spec")
         # 不创建 fix-my-spec（原地打回语义）
         entry = self.sm.read_one("fix-my-spec")
         self.assertIsNone(entry)
@@ -273,12 +273,12 @@ class TestGuardTwoSpawnSuppression(unittest.TestCase):
         # 验证守卫逻辑
         cur = (self.sm.read_one("fix-x") or {}).get("status", "")
         self.assertEqual(cur, "implementing")
-        self.assertTrue(self.engine._is_fix_spec("fix-x"))
+        self.assertTrue(self.engine._family._is_fix_spec("fix-x"))
 
     def test_no_suppression_when_not_fix_spec(self):
         """非 fix spec 不触发守卫二。"""
         self.sm.add_spec("my-spec", {"status": "testing"})
-        self.assertFalse(self.engine._is_fix_spec("my-spec"))
+        self.assertFalse(self.engine._family._is_fix_spec("my-spec"))
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -302,9 +302,9 @@ class TestGuardThreeDispatchMutex(unittest.TestCase):
         self.sm.add_spec("fix-x", {"status": "ready"})
         self.sm.add_spec("fix-fix-x", {"status": "implementing"})
         # fix-x 队列中有实现器条目
-        self.engine._enqueue("fix-x", "implementer")
+        self.engine._dispatcher._enqueue("fix-x", "implementer")
         # _sibling_repair_active 应检测到 fix-fix-x implementing
-        carrier = self.engine._sibling_repair_active("fix-x")
+        carrier = self.engine._family._sibling_repair_active("fix-x")
         self.assertEqual(carrier, "fix-fix-x")
 
     def test_no_block_when_sibling_ready_no_queue(self):
@@ -313,14 +313,14 @@ class TestGuardThreeDispatchMutex(unittest.TestCase):
         self.sm.add_spec("fix-fix-x", {"status": "ready"})
         # fix-fix-x ready 但无队列条目、无存活 agent（MagicMock 默认 truthy 需关闭）
         with patch.object(self.engine, "_sibling_has_live_agent", return_value=False):
-            carrier = self.engine._sibling_repair_active("fix-x")
+            carrier = self.engine._family._sibling_repair_active("fix-x")
         self.assertEqual(carrier, "")
 
     def test_dispatch_only_when_no_active_sibling(self):
         """同根无活跃兄弟时正常派发。"""
         self.sm.add_spec("fix-x", {"status": "ready"})
         self.sm.add_spec("fix-fix-x", {"status": "done"})
-        carrier = self.engine._sibling_repair_active("fix-x")
+        carrier = self.engine._family._sibling_repair_active("fix-x")
         self.assertEqual(carrier, "")
 
 
@@ -345,7 +345,7 @@ class TestSiblingRepairActiveFcfs(unittest.TestCase):
     def _entry_ts(self, spec_name):
         """取队列中该 spec 实现器条目的入队时刻。"""
         entry = next(
-            e for e in self.engine._run_queue
+            e for e in self.engine._dispatcher._run_queue
             if e[1] == spec_name and e[2] == "implementer"
         )
         return entry[3]
@@ -354,9 +354,9 @@ class TestSiblingRepairActiveFcfs(unittest.TestCase):
         """兄弟条目先入队 → 兄弟承载，我方被抑制（先到先得）。"""
         self.sm.add_spec("fix-x", {"status": "ready"})
         self.sm.add_spec("fix-fix-x", {"status": "ready"})
-        self.engine._enqueue("fix-fix-x", "implementer")
+        self.engine._dispatcher._enqueue("fix-fix-x", "implementer")
         time.sleep(0.01)
-        self.engine._enqueue("fix-x", "implementer")
+        self.engine._dispatcher._enqueue("fix-x", "implementer")
         carrier = self.engine._sibling_repair_active(
             "fix-x", my_enqueued_at=self._entry_ts("fix-x")
         )
@@ -366,9 +366,9 @@ class TestSiblingRepairActiveFcfs(unittest.TestCase):
         """我方条目先入队 → 由我承载；兄弟仅凭更新条目不计 actionable。"""
         self.sm.add_spec("fix-x", {"status": "ready"})
         self.sm.add_spec("fix-fix-x", {"status": "ready"})
-        self.engine._enqueue("fix-x", "implementer")
+        self.engine._dispatcher._enqueue("fix-x", "implementer")
         time.sleep(0.01)
-        self.engine._enqueue("fix-fix-x", "implementer")
+        self.engine._dispatcher._enqueue("fix-fix-x", "implementer")
         with patch.object(self.engine, "_sibling_has_live_agent", return_value=False):
             carrier = self.engine._sibling_repair_active(
                 "fix-x", my_enqueued_at=self._entry_ts("fix-x")
@@ -379,10 +379,10 @@ class TestSiblingRepairActiveFcfs(unittest.TestCase):
         """非派发路径（my_enqueued_at=None）保持原判：兄弟 ready+条目即 actionable。"""
         self.sm.add_spec("fix-x", {"status": "ready"})
         self.sm.add_spec("fix-fix-x", {"status": "ready"})
-        self.engine._enqueue("fix-fix-x", "implementer")
+        self.engine._dispatcher._enqueue("fix-fix-x", "implementer")
         time.sleep(0.01)
-        self.engine._enqueue("fix-x", "implementer")
-        carrier = self.engine._sibling_repair_active("fix-x")
+        self.engine._dispatcher._enqueue("fix-x", "implementer")
+        carrier = self.engine._family._sibling_repair_active("fix-x")
         self.assertEqual(carrier, "fix-fix-x")
 
 
@@ -440,7 +440,7 @@ class TestGuardThreeNoQueueHeadBlocking(unittest.TestCase):
         self.assertNotIn("fix-head", names)
         self.assertIn("spec-next", names)
         # fix-head 保持 queued（后到抑制，不丢条目）
-        queued_specs = [e[1] for e in self.engine._run_queue]
+        queued_specs = [e[1] for e in self.engine._dispatcher._run_queue]
         self.assertIn("fix-head", queued_specs)
 
     def test_fcfs_sibling_pair_resolves_by_enqueue_order(self):
@@ -484,7 +484,7 @@ class TestZeroBehaviorDiffFallback(unittest.TestCase):
         """Scenario: 非 fix 父 SPEC 走原地打回（add-inplace-bug-repair）。"""
         self.sm.add_spec("my-spec", {"status": "bug-found"})
         # 正常 bug-found（非 fix 父）：原地打回，不派生 fix-my-spec
-        self.engine._do_spec_bug_found("my-spec")
+        self.engine._family._do_spec_bug_found("my-spec")
         fix_entry = self.sm.read_one("fix-my-spec")
         self.assertIsNone(fix_entry)
         # 父 SPEC 重置为 implementing 并递增计数器
@@ -495,7 +495,7 @@ class TestZeroBehaviorDiffFallback(unittest.TestCase):
     def test_fix_spec_no_child_unaffected(self):
         """fix spec 无子时重置行为不变。"""
         self.sm.add_spec("fix-x", {"status": "bug-found"})
-        self.engine._do_spec_bug_found("fix-x")
+        self.engine._family._do_spec_bug_found("fix-x")
         # 无子 → 守卫一不生效；_resolve_fix_spec_name 递归生成 fix-fix-x 作为新承载方
         new_child = self.sm.read_one("fix-fix-x")
         self.assertIsNotNone(new_child)
@@ -505,7 +505,7 @@ class TestZeroBehaviorDiffFallback(unittest.TestCase):
 
     def test_same_root_siblings_empty_for_non_fix(self):
         """非 fix spec 同根兄弟列表为空。"""
-        self.assertEqual(self.engine._same_root_siblings("my-spec"), [])
+        self.assertEqual(self.engine._family._same_root_siblings("my-spec"), [])
 
     def test_sibling_repair_active_empty_for_non_fix(self):
         """非 fix spec 同根兄弟无活跃修复。"""

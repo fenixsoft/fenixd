@@ -71,7 +71,7 @@ class TestInplaceFirstRound(_InplaceBase):
                           "# Tasks\n\n## 1. 实现\n\n- [x] 1.1 已完成\n")
         self._make_buggy_spec("quick-links-folders")
 
-        self.engine._do_spec_bug_found("quick-links-folders")
+        self.engine._family._do_spec_bug_found("quick-links-folders")
 
         entry = self.sm.read_one("quick-links-folders")
         self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 1)
@@ -100,13 +100,13 @@ class TestInplaceSecondRound(_InplaceBase):
             "_verify_fail_rounds": 1, "status": "bug-found",
         })
 
-        self.engine._do_spec_bug_found("quick-links-folders")
+        self.engine._family._do_spec_bug_found("quick-links-folders")
 
         entry = self.sm.read_one("quick-links-folders")
         self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 2)
         self.assertEqual(entry["status"], "implementing")
         # 族谱深度保持 0（无 fix 子）
-        self.assertEqual(self.engine._fix_prefix_depth("quick-links-folders"), 0)
+        self.assertEqual(self.engine._family._fix_prefix_depth("quick-links-folders"), 0)
         txt = self._tasks_text("quick-links-folders")
         self.assertIn("第 2 轮", txt)
         # 轮数注记更新而非新增段（仍只有一个「验证修复」标题）
@@ -122,7 +122,7 @@ class TestInplaceThirdRoundEscalate(_InplaceBase):
             "_verify_fail_rounds": 2, "status": "bug-found",
         })
 
-        self.engine._do_spec_bug_found("quick-links-folders")
+        self.engine._family._do_spec_bug_found("quick-links-folders")
 
         entry = self.sm.read_one("quick-links-folders")
         self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 3)
@@ -147,7 +147,7 @@ class TestFailRoundsPersistAcrossRestart(_InplaceBase):
     def test_counter_persists_after_restart(self):
         self._write_tasks("quick-links-folders", "# Tasks\n")
         self._make_buggy_spec("quick-links-folders")
-        self.engine._do_spec_bug_found("quick-links-folders")
+        self.engine._family._do_spec_bug_found("quick-links-folders")
 
         # 模拟 daemon 重启：从磁盘重新构造 state machine
         from core.state_machine import StateMachine as SM
@@ -175,7 +175,7 @@ class TestNoiseNotRepaired(_InplaceBase):
     def test_inplace_only_on_real_bug_signal(self):
         # 仅当裁决已置 bug-found 且 _is_fix_spec 为 False 时才走原地打回
         self._make_buggy_spec("quick-links-folders")
-        self.engine._do_spec_bug_found("quick-links-folders")
+        self.engine._family._do_spec_bug_found("quick-links-folders")
         entry = self.sm.read_one("quick-links-folders")
         # 真实 bug 信号 → 原地打回（计数+1，状态 implementing）
         self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 1)
@@ -197,7 +197,7 @@ class TestExistingCheckboxPreserved(_InplaceBase):
             "_verify_fail_rounds": 1, "status": "bug-found",
         })
 
-        self.engine._do_spec_bug_found("quick-links-folders")
+        self.engine._family._do_spec_bug_found("quick-links-folders")
 
         txt = self._tasks_text("quick-links-folders")
         # 既有勾选保持不变
@@ -222,7 +222,7 @@ class TestLegacyFixChainReverify(_InplaceBase):
             "implementer_run": "impl-old", "tester_run": "tst-old",
         })
 
-        self.engine._do_spec_bug_found("fix-quick-links-folders")
+        self.engine._family._do_spec_bug_found("fix-quick-links-folders")
 
         # done 子保持原状
         child = self.sm.read_one("fix-fix-quick-links-folders")

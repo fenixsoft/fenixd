@@ -63,7 +63,7 @@ class TestVerifyFailRoundsOnlyZeroOnPass(_Base):
         self.sm.update_spec("demo-spec", {"_verify_fail_rounds": 2, "status": "bug-found"})
 
         # 模拟「第 3 轮失败」：打回处理器递增且不得归零
-        self.engine._do_spec_bug_found("demo-spec")
+        self.engine._family._do_spec_bug_found("demo-spec")
 
         entry = self.sm.read_one("demo-spec")
         self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 3)
@@ -128,9 +128,9 @@ class TestImplRunBudgetUsed(_Base):
 
     def test_increment_persists_across_restart(self):
         self._make_buggy_spec("demo-spec")
-        used = self.engine._increment_impl_run_budget_used("demo-spec")
+        used = self.engine._budget._increment_impl_run_budget_used("demo-spec")
         self.assertEqual(used, 1)
-        used = self.engine._increment_impl_run_budget_used("demo-spec")
+        used = self.engine._budget._increment_impl_run_budget_used("demo-spec")
         self.assertEqual(used, 2)
 
         # 模拟 daemon 重启：从磁盘重建 state machine
@@ -145,11 +145,11 @@ class TestImplRunBudgetUsed(_Base):
 
     def test_impl_run_budget_reads_config_default(self):
         # 无配置 → 缺省 4
-        self.assertEqual(self.engine._impl_run_budget(), 4)
+        self.assertEqual(self.engine._budget._impl_run_budget(), 4)
         # 配置覆盖 → 读取
         engine, _ = _mk_engine(self.project_root, self.logger,
                                {"agents": {"impl_run_budget": 6}})
-        self.assertEqual(engine._impl_run_budget(), 6)
+        self.assertEqual(engine._budget._impl_run_budget(), 6)
         # 越界夹紧（界面校验 1-10，引擎兜底防脏配置）
         engine_bad, _ = _mk_engine(self.project_root, self.logger,
                                    {"agents": {"impl_run_budget": 99}})
@@ -166,9 +166,9 @@ class TestImplBudgetExhaustion(_Base):
         self._make_buggy_spec("demo-spec")
         # 累计 4 次实现 run（含首次 + 3 轮修复）
         for _ in range(4):
-            self.engine._increment_impl_run_budget_used("demo-spec")
+            self.engine._budget._increment_impl_run_budget_used("demo-spec")
 
-        self.assertTrue(self.engine._check_impl_budget_exhausted("demo-spec"))
+        self.assertTrue(self.engine._budget._check_impl_budget_exhausted("demo-spec"))
 
         entry = self.sm.read_one("demo-spec")
         self.assertEqual(entry["status"], "blocked")
@@ -184,20 +184,20 @@ class TestImplBudgetExhaustion(_Base):
     def test_budget_not_exhausted_at_3(self):
         self._make_buggy_spec("demo-spec")
         for _ in range(3):
-            self.engine._increment_impl_run_budget_used("demo-spec")
+            self.engine._budget._increment_impl_run_budget_used("demo-spec")
         # 第 4 次前不冻结（仍允许第 4 次）
-        self.assertFalse(self.engine._check_impl_budget_exhausted("demo-spec"))
+        self.assertFalse(self.engine._budget._check_impl_budget_exhausted("demo-spec"))
         self.assertEqual(self.sm.read_one("demo-spec")["status"], "bug-found")
 
     def test_exhaustion_idempotent_no_duplicate_alert(self):
         self._make_buggy_spec("demo-spec")
         for _ in range(4):
-            self.engine._increment_impl_run_budget_used("demo-spec")
-        self.engine._check_impl_budget_exhausted("demo-spec")
+            self.engine._budget._increment_impl_run_budget_used("demo-spec")
+        self.engine._budget._check_impl_budget_exhausted("demo-spec")
         alerts_before = [a for a in AdminStore(self.project_root, self.logger).read_all()
                          if a.get("signal_type") == "impl_budget_exhausted"]
         # 再次调用（已是 blocked）：幂等，不重复告警
-        self.assertTrue(self.engine._check_impl_budget_exhausted("demo-spec"))
+        self.assertTrue(self.engine._budget._check_impl_budget_exhausted("demo-spec"))
         alerts_after = [a for a in AdminStore(self.project_root, self.logger).read_all()
                         if a.get("signal_type") == "impl_budget_exhausted"]
         self.assertEqual(len(alerts_before), len(alerts_after))
@@ -208,19 +208,19 @@ class TestConfigHotReload(_Base):
 
     def test_hot_reload_changes_effective_budget(self):
         # 引擎初始按缺省 4
-        self.assertEqual(self.engine._impl_run_budget(), 4)
+        self.assertEqual(self.engine._budget._impl_run_budget(), 4)
         # 模拟 fenixd 热重载：原地替换 config dict
         self.engine.config = {"agents": {"impl_run_budget": 6}}
-        self.assertEqual(self.engine._impl_run_budget(), 6)
+        self.assertEqual(self.engine._budget._impl_run_budget(), 6)
 
     def test_dispatch_gate_uses_effective_budget(self):
         """派发闸门读取当前（热更新后的）预算值。"""
         self.engine.config = {"agents": {"impl_run_budget": 2}}
         self._make_buggy_spec("demo-spec")
-        self.engine._increment_impl_run_budget_used("demo-spec")  # used=1
-        self.assertFalse(self.engine._check_impl_budget_exhausted("demo-spec"))
-        self.engine._increment_impl_run_budget_used("demo-spec")  # used=2
-        self.assertTrue(self.engine._check_impl_budget_exhausted("demo-spec"))
+        self.engine._budget._increment_impl_run_budget_used("demo-spec")  # used=1
+        self.assertFalse(self.engine._budget._check_impl_budget_exhausted("demo-spec"))
+        self.engine._budget._increment_impl_run_budget_used("demo-spec")  # used=2
+        self.assertTrue(self.engine._budget._check_impl_budget_exhausted("demo-spec"))
 
 
 class TestDeadRunBudgetExemption(_Base):
@@ -229,10 +229,10 @@ class TestDeadRunBudgetExemption(_Base):
     def test_dead_run_exempts_used_and_increments_sidecar(self):
         """GIVEN used=2/4，下一 run 网关死亡（无收工结果）→ used 回退 1，侧车 +1。"""
         self._make_buggy_spec("demo-spec")
-        self.engine._increment_impl_run_budget_used("demo-spec")  # used=1
-        self.engine._increment_impl_run_budget_used("demo-spec")  # used=2
+        self.engine._budget._increment_impl_run_budget_used("demo-spec")  # used=1
+        self.engine._budget._increment_impl_run_budget_used("demo-spec")  # used=2
 
-        self.engine._exempt_dead_run_budget("demo-spec", "gateway death")
+        self.engine._budget._exempt_dead_run_budget("demo-spec", "gateway death")
 
         entry = self.sm.read_one("demo-spec")
         self.assertEqual(int(entry.get("_impl_run_budget_used", 0)), 1)
@@ -246,7 +246,7 @@ class TestDeadRunBudgetExemption(_Base):
     def test_exempt_floor_is_zero(self):
         """delta=-1 下限 0：used=0 时死亡豁免不得打成负数。"""
         self._make_buggy_spec("demo-spec")
-        self.engine._exempt_dead_run_budget("demo-spec", "no run to exempt")
+        self.engine._budget._exempt_dead_run_budget("demo-spec", "no run to exempt")
         entry = self.sm.read_one("demo-spec")
         self.assertEqual(int(entry.get("_impl_run_budget_used", 0)), 0)
         self.assertEqual(int(entry.get("_budget_exempt_runs", 0)), 1)
@@ -309,11 +309,11 @@ class TestDeadRunBudgetExemption(_Base):
         """GIVEN 恢复链路确认死亡（滞留 implementing 无存活子进程）→ 豁免回退。"""
         self._make_buggy_spec("demo-spec")
         self.sm.update_spec("demo-spec", {"status": "implementing"})
-        self.engine._increment_impl_run_budget_used("demo-spec")  # used=1
+        self.engine._budget._increment_impl_run_budget_used("demo-spec")  # used=1
         self.engine._attempt_still_alive = MagicMock(return_value=False)
 
         # 直接驱动 BLOCKER CHECK 的 implementing 恢复分支
-        self.engine._exempt_dead_run_budget(
+        self.engine._budget._exempt_dead_run_budget(
             "demo-spec", "auto-recovery: stuck implementing 31m")
         # 恢复分支的状态回写（与 pm_engine BLOCKER CHECK 内联逻辑一致）
         self.sm.update_spec("demo-spec", {
@@ -330,8 +330,8 @@ class TestDeadRunBudgetExemption(_Base):
         self._make_buggy_spec("demo-spec")
         self.sm.update_spec("demo-spec", {"status": "implementing"})
         for _ in range(6):
-            self.engine._increment_impl_run_budget_used("demo-spec")
-            self.engine._exempt_dead_run_budget("demo-spec", "gateway death")
+            self.engine._budget._increment_impl_run_budget_used("demo-spec")
+            self.engine._budget._exempt_dead_run_budget("demo-spec", "gateway death")
 
         alerts = [a for a in AdminStore(self.project_root, self.logger).read_all()
                   if a.get("signal_type") == "impl_budget_exempt_loop"]
@@ -342,8 +342,8 @@ class TestDeadRunBudgetExemption(_Base):
         self.assertTrue(self.sm.read_one("demo-spec").get("_exempt_alerted"))
 
         # 第 7 次死亡：仍只一条告警（幂等），spec 状态不受影响（不冻结）
-        self.engine._increment_impl_run_budget_used("demo-spec")
-        self.engine._exempt_dead_run_budget("demo-spec", "gateway death")
+        self.engine._budget._increment_impl_run_budget_used("demo-spec")
+        self.engine._budget._exempt_dead_run_budget("demo-spec", "gateway death")
         alerts = [a for a in AdminStore(self.project_root, self.logger).read_all()
                   if a.get("signal_type") == "impl_budget_exempt_loop"]
         self.assertEqual(len(alerts), 1)
@@ -409,8 +409,8 @@ class TestBudgetCounterAtomicity(_Base):
     def test_dispatch_uses_atomic_bump(self):
         """启动计数点走 state_machine.bump_impl_budget（移除非原子读改写）。"""
         self._make_buggy_spec("demo-spec")
-        self.engine._increment_impl_run_budget_used("demo-spec")
-        self.engine._increment_impl_run_budget_used("demo-spec")
+        self.engine._budget._increment_impl_run_budget_used("demo-spec")
+        self.engine._budget._increment_impl_run_budget_used("demo-spec")
         self.assertEqual(
             int(self.sm.read_one("demo-spec").get("_impl_run_budget_used", 0)), 2)
 
@@ -439,20 +439,20 @@ class TestBudgetReconciliation(_Base):
         self._write_run_file("impl-demo-spec-3000-a1", "result")  # 正常
         self._write_run_file("impl-otherspec-4000-a1", "result")  # 其它 spec
 
-        self.assertEqual(self.engine._count_normal_completed_impl_runs("demo-spec"), 2)
+        self.assertEqual(self.engine._budget._count_normal_completed_impl_runs("demo-spec"), 2)
 
     def test_reconcile_logs_warning_on_drift_only(self):
         self._make_buggy_spec("demo-spec")
         self._write_run_file("impl-demo-spec-1000-a1", "result")
-        self.engine._increment_impl_run_budget_used("demo-spec")  # used=1 = 收工数
-        self.engine._reconcile_impl_budget("demo-spec")
+        self.engine._budget._increment_impl_run_budget_used("demo-spec")  # used=1 = 收工数
+        self.engine._budget._reconcile_impl_budget("demo-spec")
         drift = [c for c in self.logger.warning.call_args_list
                  if "对账偏差" in str(c.args[1])]
         self.assertEqual(len(drift), 0)
 
         # 偏差（used=2 vs 收工 1）→ WARNING，且不自动改数
-        self.engine._increment_impl_run_budget_used("demo-spec")  # used=2
-        self.engine._reconcile_impl_budget("demo-spec")
+        self.engine._budget._increment_impl_run_budget_used("demo-spec")  # used=2
+        self.engine._budget._reconcile_impl_budget("demo-spec")
         drift = [c for c in self.logger.warning.call_args_list
                  if "对账偏差" in str(c.args[1])]
         self.assertEqual(len(drift), 1)
@@ -508,7 +508,7 @@ class TestInteractionContractBudgetFixture(_Base):
         self.assertEqual(int(entry.get("_impl_run_budget_used", 0)), 2)  # 非 4
         self.assertEqual(int(entry.get("_budget_exempt_runs", 0)), 2)
         # 预算闸门不再被无效 run 提前触发
-        self.assertFalse(self.engine._check_impl_budget_exhausted("demo-spec"))
+        self.assertFalse(self.engine._budget._check_impl_budget_exhausted("demo-spec"))
         self.assertNotEqual(entry["status"], "blocked")
 
 

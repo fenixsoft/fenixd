@@ -48,22 +48,22 @@ class TestFixPrefixDepth(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_depth_counts_consecutive_fix_layers(self):
-        self.assertEqual(self.engine._fix_prefix_depth("x"), 0)
-        self.assertEqual(self.engine._fix_prefix_depth("fix-x"), 1)
-        self.assertEqual(self.engine._fix_prefix_depth("fix-fix-x"), 2)
-        self.assertEqual(self.engine._fix_prefix_depth("fix-fix-fix-x"), 3)
-        self.assertEqual(self.engine._fix_prefix_depth("fix-fix-fix-fix-x"), 4)
+        self.assertEqual(self.engine._family._fix_prefix_depth("x"), 0)
+        self.assertEqual(self.engine._family._fix_prefix_depth("fix-x"), 1)
+        self.assertEqual(self.engine._family._fix_prefix_depth("fix-fix-x"), 2)
+        self.assertEqual(self.engine._family._fix_prefix_depth("fix-fix-fix-x"), 3)
+        self.assertEqual(self.engine._family._fix_prefix_depth("fix-fix-fix-fix-x"), 4)
 
     def test_depth_not_fooled_by_name_containing_fix(self):
         # "my-fix-x" 不以 fix- 开头 → 0；不是连续层
-        self.assertEqual(self.engine._fix_prefix_depth("my-fix-x"), 0)
+        self.assertEqual(self.engine._family._fix_prefix_depth("my-fix-x"), 0)
         # add-dashboard-spec-doc-tabs 系（历史真实命名）非 fix- 前缀 → 深度 0
-        self.assertEqual(self.engine._fix_prefix_depth("add-dashboard-spec-doc-tabs"), 0)
+        self.assertEqual(self.engine._family._fix_prefix_depth("add-dashboard-spec-doc-tabs"), 0)
 
     def test_strip_all_reveals_root(self):
-        self.assertEqual(self.engine._fix_strip_all("fix-fix-x"), "x")
-        self.assertEqual(self.engine._fix_strip_all("fix-x"), "x")
-        self.assertEqual(self.engine._fix_strip_all("x"), "x")
+        self.assertEqual(self.engine._family._fix_strip_all("fix-fix-x"), "x")
+        self.assertEqual(self.engine._family._fix_strip_all("fix-x"), "x")
+        self.assertEqual(self.engine._family._fix_strip_all("x"), "x")
 
 
 class TestFamilyWidth(unittest.TestCase):
@@ -81,25 +81,25 @@ class TestFamilyWidth(unittest.TestCase):
         self.sm.add_spec("x", {"status": "bug-found", "priority": 5})
         self.sm.add_spec("fix-x", {"status": "ready", "priority": 6})
         self.sm.add_spec("fix-fix-x", {"status": "bug-found", "priority": 7})
-        self.assertEqual(self.engine._family_width("fix-fix-fix-x"), 2)
+        self.assertEqual(self.engine._family._family_width("fix-fix-fix-x"), 2)
 
     def test_width_excludes_done_and_pushed(self):
         self.sm.add_spec("x", {"status": "bug-found", "priority": 5})
         self.sm.add_spec("fix-x", {"status": "done", "priority": 6})
         self.sm.add_spec("fix-fix-x", {"status": "pushed", "priority": 7})
         # 历史已完成的祖先不追溯计数
-        self.assertEqual(self.engine._family_width("fix-fix-fix-x"), 0)
+        self.assertEqual(self.engine._family._family_width("fix-fix-fix-x"), 0)
 
     def test_width_excludes_self(self):
         self.sm.add_spec("fix-x", {"status": "ready", "priority": 6})
-        self.assertEqual(self.engine._family_width("fix-x"), 0)
+        self.assertEqual(self.engine._family._family_width("fix-x"), 0)
 
     def test_historical_four_layer_names_evaluated_by_current_value(self):
         """历史已存在的四层命名首次扫描即按现值评估（不追溯惩罚 done 祖先）。"""
         self.sm.add_spec("add-dashboard-spec-doc-tabs", {"status": "done", "priority": 5})
         self.sm.add_spec("fix-add-dashboard-spec-doc-tabs", {"status": "ready", "priority": 6})
         # add-dashboard-spec-doc-tabs 不是 fix- 前缀 → 不在族谱宽度口径内，不追溯
-        self.assertEqual(self.engine._family_width("fix-add-dashboard-spec-doc-tabs"), 0)
+        self.assertEqual(self.engine._family._family_width("fix-add-dashboard-spec-doc-tabs"), 0)
 
 
 class FamilyGateFixture:
@@ -138,7 +138,7 @@ class TestFamilyGateInterception(unittest.TestCase):
         self.sm.add_spec("fix-fix-fix-x", {"status": "bug-found", "priority": 8})
         before = set(self.sm.read_all().keys())
 
-        self.engine._do_spec_bug_found("fix-fix-fix-x")
+        self.engine._family._do_spec_bug_found("fix-fix-fix-x")
 
         after = self.sm.read_all()
         # 不创建新 SPEC、无新分支、无 enqueue
@@ -160,7 +160,7 @@ class TestFamilyGateInterception(unittest.TestCase):
         self.sm.add_spec("fix-fix-x", {"status": "bug-found", "priority": 7})
         before = set(self.sm.read_all().keys())
 
-        self.engine._do_spec_bug_found("fix-fix-x")
+        self.engine._family._do_spec_bug_found("fix-fix-x")
 
         after = self.sm.read_all()
         self.assertEqual(set(after.keys()), before, "宽度第二成员必须被拦截")
@@ -172,7 +172,7 @@ class TestFamilyGateInterception(unittest.TestCase):
         self.sm.add_spec("x", {"status": "bug-found", "priority": 5})
         self.sm.add_spec("fix-x", {"status": "ready", "priority": 6})
 
-        self.engine._do_spec_bug_found("fix-x")
+        self.engine._family._do_spec_bug_found("fix-x")
 
         after = self.sm.read_all()
         self.assertIn("fix-fix-x", after, "宽度未达上限，应允许再创建一个子 SPEC")
@@ -186,7 +186,7 @@ class TestFamilyGateInterception(unittest.TestCase):
         self.sm.add_spec("fix-fix-x", {"status": "done", "priority": 7})
         self.sm.add_spec("fix-fix-fix-x", {"status": "bug-found", "priority": 8})
 
-        self.engine._do_spec_bug_found("fix-fix-fix-x")
+        self.engine._family._do_spec_bug_found("fix-fix-fix-x")
 
         recs = self._signal_records()
         self.assertEqual(len(recs), 1)
@@ -201,7 +201,7 @@ class TestFamilyGateInterception(unittest.TestCase):
         self.sm.add_spec("fix-x", {"status": "ready", "priority": 6})
         self.sm.add_spec("fix-fix-x", {"status": "bug-found", "priority": 7})
 
-        self.engine._do_spec_bug_found("fix-fix-x")
+        self.engine._family._do_spec_bug_found("fix-fix-x")
 
         recs = self._signal_records()
         self.assertEqual(len(recs), 1)
@@ -241,7 +241,7 @@ class TestFamilyWaiver(unittest.TestCase):
         """WHEN _family_waiver=true（放行一次）→ 下一轮允许创建恰好一个子 SPEC。"""
         self._build_four_layer_family(waiver=True)
 
-        self.engine._do_spec_bug_found("fix-fix-fix-x")
+        self.engine._family._do_spec_bug_found("fix-fix-fix-x")
 
         # 豁免位本次被消费：创建了第四层 fix 子 SPEC
         after = self.sm.read_all()
@@ -254,13 +254,13 @@ class TestFamilyWaiver(unittest.TestCase):
     def test_waiver_reset_after_usage_then_reblocked(self):
         """豁免位用后复位：第五层请求（豁免已无）被再次拦截并产生信号。"""
         self._build_four_layer_family(waiver=True)
-        self.engine._do_spec_bug_found("fix-fix-fix-x")
+        self.engine._family._do_spec_bug_found("fix-fix-fix-x")
         self.assertIn("fix-fix-fix-fix-x", self.sm.read_all())
 
         # 第四层已完成 → 再次派生请求第五层 → 无豁免 → 拦截 + 信号
         self.sm.update_spec("fix-fix-fix-fix-x", {"status": "done"})
         self.assertEqual(self._signal_count(), 0)
-        self.engine._do_spec_bug_found("fix-fix-fix-x")
+        self.engine._family._do_spec_bug_found("fix-fix-fix-x")
         self.assertNotIn("fix-fix-fix-fix-fix-x", self.sm.read_all(),
                          "豁免已消费，第五层必须被拦截")
         self.assertEqual(self._signal_count(), 1, "拦截产生 family_explosion 信号")
@@ -269,7 +269,7 @@ class TestFamilyWaiver(unittest.TestCase):
         """豁免位在平凡创建（未超限）上也会被消耗（放行恰好一次语义，仅存量 fix 链）。"""
         self.sm.add_spec("fix-y", {"status": "bug-found", "priority": 5,
                                    "_family_waiver": True})
-        self.engine._do_spec_bug_found("fix-y")
+        self.engine._family._do_spec_bug_found("fix-y")
         # fix-fix-y 创建成功（legacy 路径，fix-y 为 fix-* 父 SPEC）
         self.assertIn("fix-fix-y", self.sm.read_all())
         self.assertNotEqual(self.sm.read_one("fix-y").get("_family_waiver", "true"), "true")
@@ -278,22 +278,22 @@ class TestFamilyWaiver(unittest.TestCase):
         """未放行持续拦截：每次越界派生都被拦截，均产生信号。"""
         self._build_four_layer_family()
 
-        self.engine._do_spec_bug_found("fix-fix-fix-x")
+        self.engine._family._do_spec_bug_found("fix-fix-fix-x")
         self.assertEqual(self._signal_count(), 1)
         self.assertNotIn("fix-fix-fix-fix-x", self.sm.read_all())
 
         # 第二次（父仍 bug-found，重复触发）→ 仍拦截
-        self.engine._do_spec_bug_found("fix-fix-fix-x")
+        self.engine._family._do_spec_bug_found("fix-fix-fix-x")
         self.assertEqual(self._signal_count(), 2, "未放行持续拦截，累计信号")
         self.assertNotIn("fix-fix-fix-fix-x", self.sm.read_all())
 
     def test_family_waiver_consumed_once_only(self):
         """_consume_family_waiver 幂等：单次消费后返回 False。"""
         self._build_four_layer_family(waiver=True)
-        self.assertTrue(self.engine._family_waiver_set("fix-fix-fix-x"))
-        self.assertTrue(self.engine._consume_family_waiver("fix-fix-fix-x"))
-        self.assertFalse(self.engine._consume_family_waiver("fix-fix-fix-x"))
-        self.assertFalse(self.engine._family_waiver_set("fix-fix-fix-x"))
+        self.assertTrue(self.engine._family._family_waiver_set("fix-fix-fix-x"))
+        self.assertTrue(self.engine._family._consume_family_waiver("fix-fix-fix-x"))
+        self.assertFalse(self.engine._family._consume_family_waiver("fix-fix-fix-x"))
+        self.assertFalse(self.engine._family._family_waiver_set("fix-fix-fix-x"))
 
 
 # ── AdminMonitor 摄取 family_explosion 信号 ─────────────────

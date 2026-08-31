@@ -175,7 +175,7 @@ class TestVerdictAdoption(_PMEngineBase):
         self.engine.agent_runner.run_planner = MagicMock(
             return_value=type("R", (), {"success": True, "error": None,
                                         "run_id": "j"})())
-        ok = self.engine._verify_verdict_evidence("v2-config-page", retry_judge=True)
+        ok = self.engine._verification._verify_verdict_evidence("v2-config-page", retry_judge=True)
         self.assertFalse(ok)  # 校验器只判合规与否；blocked-env + 告警由调用方执行
         # 校验器确实重试了 judge 一次（首次不合规 + 一次重试）
         self.assertEqual(self.engine.agent_runner.run_planner.call_count, 1)
@@ -205,7 +205,7 @@ class TestVerdictAdoption(_PMEngineBase):
                 break
         assert mislabeled is not None
         self._seed_report(report)
-        ok = self.engine._verify_verdict_evidence("v2-config-page", retry_judge=True)
+        ok = self.engine._verification._verify_verdict_evidence("v2-config-page", retry_judge=True)
         self.assertTrue(ok)
         reloaded = json.loads(
             (self.project_root / ".fenix" / "verify-progress" / "v2-config-page"
@@ -227,7 +227,7 @@ class TestVerdictAdoption(_PMEngineBase):
              "assertion_results": [{"type": "step", "pass": True}]},
         ]}
         self._seed_report(r1)
-        triage1 = self.engine._update_warning_streaks("v2-config-page")
+        triage1 = self.engine._verification._update_warning_streaks("v2-config-page")
         self.assertEqual(triage1, [])  # 第 1 轮不触发
         self.assertEqual(json.loads(
             (self.project_root / ".fenix" / "verify-progress" / "v2-config-page"
@@ -240,10 +240,10 @@ class TestVerdictAdoption(_PMEngineBase):
              "evidence": {"first_failed_step": "s2"}},
         ]}
         self._seed_report(r2)
-        triage2 = self.engine._update_warning_streaks("v2-config-page")
+        triage2 = self.engine._verification._update_warning_streaks("v2-config-page")
         self.assertEqual(set(triage2), {"w1", "w2"})
         # 触发升级告警
-        self.engine._warning_stale_triage_alert("v2-config-page", triage2)
+        self.engine._verification._warning_stale_triage_alert("v2-config-page", triage2)
         alerts = [a for a in self._alerts()
                   if a.get("signal_type") == "warning_stale_triage"]
         self.assertEqual(len(alerts), 1)
@@ -261,13 +261,13 @@ class TestVerdictAdoption(_PMEngineBase):
              "evidence": {"first_failed_step": "s1"}},
         ]}
         self._seed_report(r1)
-        self.engine._update_warning_streaks("v2-config-page")  # 第1轮=1
+        self.engine._verification._update_warning_streaks("v2-config-page")  # 第1轮=1
         r2 = {"scenarios": [
             {"scenario_id": "w1", "status": "pass",
              "assertion_results": [{"type": "step", "pass": True}]},
         ]}
         self._seed_report(r2)
-        self.engine._update_warning_streaks("v2-config-page")  # 清零
+        self.engine._verification._update_warning_streaks("v2-config-page")  # 清零
         streaks = json.loads(
             (self.project_root / ".fenix" / "verify-progress" / "v2-config-page"
              / "warning_streaks.json").read_text())

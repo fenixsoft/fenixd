@@ -175,7 +175,7 @@ class TestHasLiveAttempt:
         original = ar.subprocess.run
         ar.subprocess.run = fake_run
         try:
-            assert runner._pgrep_live_attempt("s1") is False
+            assert runner._liveness._pgrep_live_attempt("s1") is False
         finally:
             ar.subprocess.run = original
         assert seen == ["worktrees/impl-s1-", "worktrees/verify-s1-"]
@@ -289,7 +289,7 @@ class TestDispatchLockBackoff(LockConflictFixture):
         spec["_lock_conflict_count"] = 2
         spec["_dispatch_backoff_until"] = int(time.time()) + 60
         self.sm.write_all({"s1": spec})
-        fields = self.engine._clear_dispatch_conflict("s1")
+        fields = self.engine._recovery._clear_dispatch_conflict("s1")
         self.sm.update_spec("s1", fields)
         entry = self.sm.read_one("s1")
         self.assertEqual(int(entry["_lock_conflict_count"]), 0)
@@ -309,10 +309,10 @@ class RecoveryWatchFixture(LockConflictFixture):
         self.sm.write_all(specs)
 
     def watch_due(self, name="s1"):
-        watch = dict(self.engine._recovery_watch)
+        watch = dict(self.engine._recovery._recovery_watch)
         watch[name]["due"] = time.time() - 1
-        self.engine._recovery_watch = watch
-        self.engine._save_recovery_watch()
+        self.engine._recovery._recovery_watch = watch
+        self.engine._recovery._save_recovery_watch()
 
 
 class TestAutoRecoveryLiveChildGuard(RecoveryWatchFixture):
@@ -348,7 +348,7 @@ class TestAutoRecoveryLiveChildGuard(RecoveryWatchFixture):
         self.assertEqual(entry["status"], "ready")
         self.assertIn("Auto-recovered from stuck implementing", entry["error"])
         # 恢复成功 → 登记闭环复查观察项（5.1）
-        self.assertIn("s1", self.engine._recovery_watch)
+        self.assertIn("s1", self.engine._recovery._recovery_watch)
 
     def test_probe_non_bool_return_treated_as_absent(self):
         """探针返回非布尔（如未配置的测试替身）→ 保守按无存活，恢复照常。"""
@@ -403,7 +403,7 @@ class TestRecoveryWatch(RecoveryWatchFixture):
             else self.sm.add_spec("s1", {"status": "implemented", "priority": 5})
         raised = self.engine.check_recovery_watch()
         self.assertEqual(raised, [])
-        self.assertNotIn("s1", self.engine._recovery_watch)
+        self.assertNotIn("s1", self.engine._recovery._recovery_watch)
 
     def test_watch_passes_when_dispatch_active(self):
         self.make_ready_spec("s1")
@@ -540,7 +540,7 @@ def bare_runner(tmp_path: Path) -> AgentRunner:
     runner.project_root = tmp_path
     runner.logger = FakeLogger()
     runner._running_agents = {}
-    runner._extension_baselines = {}
+    runner._liveness._extension_baselines = {}
     return runner
 
 
@@ -586,7 +586,7 @@ class TestExtensionBaseline(unittest.TestCase):
         old = time.time() - agent_runner_module.LIVE_ATTEMPT_STREAM_WINDOW_SECONDS - 60
         os.utime(p, (old, old))
         self.assertIsNone(self.runner.get_extension_baseline("s1"))
-        self.assertNotIn("s1", self.runner._extension_baselines)
+        self.assertNotIn("s1", self.runner._liveness._extension_baselines)
 
     def test_missing_run_stream_invalidates_entry(self):
         self.runner.note_run_extension("s1", "impl-s1-404-a1", 1, time.time())
@@ -645,7 +645,7 @@ class TestLivenessSnapshot(unittest.TestCase):
     def test_empty_window_zero_events(self):
         p = make_run_file(self.tmpdir, "impl-s1-1-a1",
                           [f'{{"type":"assistant","timestamp":"{iso(time.time()-3600)}"}}'])
-        snap = self.runner._liveness_snapshot(p, 600)
+        snap = self.runner._liveness._liveness_snapshot(p, 600)
         self.assertEqual(snap["events_in_window"], 0)
         self.assertGreater(snap["last_event_age"], 600)
         self.assertEqual(snap["tool_use"], 0)
@@ -665,7 +665,7 @@ class TestLivenessSnapshot(unittest.TestCase):
                         ]}}),
         ]
         p = make_run_file(self.tmpdir, "impl-s1-2-a1", lines)
-        snap = self.runner._liveness_snapshot(p, 600)
+        snap = self.runner._liveness._liveness_snapshot(p, 600)
         self.assertEqual(snap["events_in_window"], 3)
         self.assertEqual(snap["tool_use"], 2)
         self.assertEqual(snap["tool_counts"], {"Edit": 1, "Bash": 1})
@@ -681,19 +681,19 @@ class TestLivenessSnapshot(unittest.TestCase):
             for i in range(5)
         ]
         p = make_run_file(self.tmpdir, "impl-s1-3-a1", lines)
-        snap = self.runner._liveness_snapshot(p, 600)
+        snap = self.runner._liveness._liveness_snapshot(p, 600)
         self.assertEqual(snap["tool_use"], 5)
         self.assertEqual(snap["tool_counts"], {"Bash": 5})
 
     def test_missing_timestamps_fall_back_to_mtime(self):
         p = make_run_file(self.tmpdir, "impl-s1-4-a1", ['{"type":"stderr"}'])
-        snap = self.runner._liveness_snapshot(p, 600)
+        snap = self.runner._liveness._liveness_snapshot(p, 600)
         self.assertIsNotNone(snap["last_event_age"])
         self.assertLess(snap["last_event_age"], 600)
         self.assertEqual(snap["events_in_window"], 1)
 
     def test_missing_stream_reports_unavailable(self):
-        snap = self.runner._liveness_snapshot(
+        snap = self.runner._liveness._liveness_snapshot(
             self.tmpdir / "nope" / "missing.jsonl", 600)
         self.assertFalse(snap["stream_available"])
         self.assertEqual(snap["events_in_window"], 0)
@@ -726,7 +726,7 @@ class TestJudgeLiveness(unittest.TestCase):
         original = agent_runner_module.subprocess.run
         agent_runner_module.subprocess.run = fake_run
         try:
-            verdict = self.runner._judge_liveness({}, "s1", "impl-s1-1-a1")
+            verdict = self.runner._liveness._judge_liveness({}, "s1", "impl-s1-1-a1")
         finally:
             agent_runner_module.subprocess.run = original
         self.assertEqual(verdict["verdict"], "advancing")
