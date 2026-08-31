@@ -5,7 +5,7 @@
       "type": "service",
       "id": "ov-stats",
       "name": "ov-stats",
-      "_note": "统计块:拉 /api/overview,经 adaptOverview 数字化;监听 sse:state + sse:refresh 重拉(全局契约)",
+      "_note": "统计块:拉 /api/overview,经 adaptOverview 数字化;指标项样式与内容对齐 v1(任务进度合并、总体实现进度百分比)",
       "api": {
         "url": "/api/overview",
         "adaptor": "return { status: 0, data: window.Adapters.adaptOverview(payload) }"
@@ -13,142 +13,9 @@
       "onEvent": {},
       "body": [
         {
-          "type": "grid",
-          "columns": [
-            {
-              "md": 2,
-              "body": {
-                "type": "card",
-                "className": "m-b-sm",
-                "body": [
-                  {
-                    "type": "tpl",
-                    "tpl": "<div class='v2-stat-num'>${spec_count}</div>",
-                    "className": "m-b-xs",
-                    "style": {
-                      "fontSize": "1.8rem",
-                      "fontWeight": 700
-                    }
-                  },
-                  {
-                    "type": "tpl",
-                    "tpl": "<div class='v2-stat-label'>SPEC 总数</div>",
-                    "style": {
-                      "color": "var(--text-muted)",
-                      "fontSize": "0.85rem"
-                    }
-                  }
-                ]
-              }
-            },
-            {
-              "md": 2,
-              "body": {
-                "type": "card",
-                "className": "m-b-sm",
-                "body": [
-                  {
-                    "type": "tpl",
-                    "tpl": "<div class='v2-stat-num'>${task_done}</div>",
-                    "className": "m-b-xs",
-                    "style": {
-                      "fontSize": "1.8rem",
-                      "fontWeight": 700
-                    }
-                  },
-                  {
-                    "type": "tpl",
-                    "tpl": "<div class='v2-stat-label'>任务完成</div>",
-                    "style": {
-                      "color": "var(--text-muted)",
-                      "fontSize": "0.85rem"
-                    }
-                  }
-                ]
-              }
-            },
-            {
-              "md": 2,
-              "body": {
-                "type": "card",
-                "className": "m-b-sm",
-                "body": [
-                  {
-                    "type": "tpl",
-                    "tpl": "<div class='v2-stat-num'>${task_total}</div>",
-                    "className": "m-b-xs",
-                    "style": {
-                      "fontSize": "1.8rem",
-                      "fontWeight": 700
-                    }
-                  },
-                  {
-                    "type": "tpl",
-                    "tpl": "<div class='v2-stat-label'>任务总量</div>",
-                    "style": {
-                      "color": "var(--text-muted)",
-                      "fontSize": "0.85rem"
-                    }
-                  }
-                ]
-              }
-            },
-            {
-              "md": 2,
-              "body": {
-                "type": "card",
-                "className": "m-b-sm",
-                "body": [
-                  {
-                    "type": "tpl",
-                    "tpl": "<div class='v2-stat-num'>${problems}</div>",
-                    "className": "m-b-xs",
-                    "style": {
-                      "fontSize": "1.8rem",
-                      "fontWeight": 700,
-                      "color": "var(--danger)",
-                      "display": "${problems > 0 ? 'block' : 'none'}"
-                    }
-                  },
-                  {
-                    "type": "tpl",
-                    "tpl": "<div class='v2-stat-label'>问题数</div>",
-                    "style": {
-                      "color": "var(--text-muted)",
-                      "fontSize": "0.85rem"
-                    }
-                  }
-                ]
-              }
-            },
-            {
-              "md": 2,
-              "body": {
-                "type": "card",
-                "className": "m-b-sm",
-                "body": [
-                  {
-                    "type": "tpl",
-                    "tpl": "<div class='v2-stat-num'>${active_runs}</div>",
-                    "className": "m-b-xs",
-                    "style": {
-                      "fontSize": "1.8rem",
-                      "fontWeight": 700,
-                      "color": "var(--primary)"
-                    }
-                  },
-                  {
-                    "type": "tpl",
-                    "tpl": "<div class='v2-stat-label'>活跃运行</div>",
-                    "style": {
-                      "color": "var(--text-muted)",
-                      "fontSize": "0.85rem"
-                    }
-                  }
-                ]
-              }
-            }
-          ]
+          "type": "tpl",
+          "className": "v2-totals-wrap",
+          "tpl": "<div class='v2-totals'><div class='v2-stat-tile'><div class='num'>${spec_count}</div><div class='label'>SPEC 总数</div></div><div class='v2-stat-tile'><div class='num'>${task_done}/${task_total}</div><div class='label'>任务进度</div></div><div class='v2-stat-tile'><div class='num ${problems > 0 ? 'v2-critical' : ''}'>${problems}</div><div class='label'>问题/阻塞</div></div><div class='v2-stat-tile'><div class='num ${active_runs > 0 ? 'v2-warning' : ''}'>${active_runs}</div><div class='label'>活跃 Agent 运行</div></div><div class='v2-stat-tile'><div class='num'>${pct}%</div><div class='label'>总体实现进度</div></div></div>"
         }
       ]
     },
@@ -156,7 +23,7 @@
       "type": "service",
       "id": "ov-projects",
       "name": "ov-projects",
-      "_note": "项目卡片:拉 /api/projects,经 adaptProjects 映射;监听 sse:state 重拉;启停删按钮走老版同款端点",
+      "_note": "项目面板:拉 /api/projects,经 adaptProjects 映射(含 v1 对齐的 daemon 徽标/进度条/状态 pills);「进入」按钮由壳层委托跳转项目页",
       "api": {
         "url": "/api/projects",
         "adaptor": "return { status: 0, data: { items: window.Adapters.adaptProjects(payload.projects || []) } }"
@@ -164,142 +31,124 @@
       "onEvent": {},
       "body": [
         {
-          "type": "cards",
-          "source": "${items}",
-          "cols": 3,
-          "card": {
-            "className": "m-b-sm",
-            "header": {
-              "title": "${name}",
-              "subTitle": "<% if (data && data.exists === false) { %><span class='label label-danger'>缺失</span><% } else { %><span class='label <%= data.daemon === 'running' ? 'label-success' : 'label-default' %>'><%= data.daemon %></span><% } %>"
+          "type": "each",
+          "name": "items",
+          "className": "v2-proj-grid",
+          "items": {
+            "type": "panel",
+            "title": {
+              "type": "tpl",
+              "tpl": "${name} ${exists === false ? \"<span class='v2-status-pill v2-st-critical'>⚠ 路径不存在</span>\" : daemon_html}"
             },
             "body": [
               {
                 "type": "tpl",
-                "tpl": "<div class='m-b-xs'><span class='text-muted'>SPEC:</span> ${spec_count}　<span class='text-muted'>任务:</span> ${task_done}/${task_total}</div>"
+                "tpl": "<div class='v2-kv-row'><span class='v2-k'>路径</span><span class='v2-v'>${path}</span></div>"
               },
               {
                 "type": "tpl",
-                "tpl": "<div class='m-b-xs'><span class='text-muted'>问题:</span> ${problems}　<span class='text-muted'>运行:</span> ${active_runs}</div>"
+                "visibleOn": "${exists !== false}",
+                "tpl": "<div class='v2-kv-row'><span class='v2-k'>SPEC 数</span><span class='v2-v'>${spec_count}</span></div><div class='v2-kv-row'><span class='v2-k'>问题/阻塞</span><span class='v2-v ${problems > 0 ? 'v2-critical' : ''}'>${problems}</span></div><div class='v2-kv-row'><span class='v2-k'>活跃运行</span><span class='v2-v ${active_runs > 0 ? 'v2-warning' : ''}'>${active_runs}</span></div>"
               },
               {
                 "type": "tpl",
-                "tpl": "<div class='m-b-sm'><span class='text-muted'>路径:</span> ${path}</div>"
+                "visibleOn": "${exists !== false}",
+                "tpl": "<div class='v2-progress'><div class='v2-fill ${bar_cls}' style='width:${pct}%'></div></div><div class='v2-progress-labels'><span>${task_done}/${task_total}</span><span>${pct}%</span></div>"
               },
               {
-                "type": "button-group",
-                "buttons": [
-                  {
-                    "type": "button",
-                    "label": "启动",
-                    "level": "primary",
-                    "size": "sm",
-                    "confirmText": "确认启动该项目?",
-                    "visibleOn": "${daemon !== 'running' && exists !== false}",
-                    "onEvent": {
-                      "click": {
-                        "actions": [
-                          {
-                            "actionType": "stopPropagation"
-                          },
-                          {
-                            "actionType": "ajax",
-                            "args": {
-                              "api": {
-                                "method": "post",
-                                "url": "/api/projects/${name}/start"
-                              }
-                            }
-                          },
-                          {
-                            "actionType": "toast",
-                            "args": {
-                              "msgType": "success",
-                              "msg": "已发起启动"
-                            }
-                          },
-                          {
-                            "actionType": "reload",
-                            "componentId": "ov-projects"
-                          }
-                        ]
-                      }
-                    }
-                  },
-                  {
-                    "type": "button",
-                    "label": "停止",
-                    "level": "default",
-                    "size": "sm",
-                    "confirmText": "确认停止该项目?",
-                    "visibleOn": "${daemon === 'running'}",
-                    "onEvent": {
-                      "click": {
-                        "actions": [
-                          {
-                            "actionType": "stopPropagation"
-                          },
-                          {
-                            "actionType": "ajax",
-                            "args": {
-                              "api": {
-                                "method": "post",
-                                "url": "/api/projects/${name}/stop"
-                              }
-                            }
-                          },
-                          {
-                            "actionType": "toast",
-                            "args": {
-                              "msgType": "success",
-                              "msg": "已停止"
-                            }
-                          },
-                          {
-                            "actionType": "reload",
-                            "componentId": "ov-projects"
-                          }
-                        ]
-                      }
-                    }
-                  },
-                  {
-                    "type": "button",
-                    "label": "删除",
-                    "level": "danger",
-                    "size": "sm",
-                    "confirmText": "删除后该项目将停止并忽略,确认?",
-                    "onEvent": {
-                      "click": {
-                        "actions": [
-                          {
-                            "actionType": "stopPropagation"
-                          },
-                          {
-                            "actionType": "ajax",
-                            "args": {
-                              "api": {
-                                "method": "delete",
-                                "url": "/api/projects/${name}"
-                              }
-                            }
-                          },
-                          {
-                            "actionType": "toast",
-                            "args": {
-                              "msgType": "success",
-                              "msg": "已删除"
-                            }
-                          },
-                          {
-                            "actionType": "reload",
-                            "componentId": "ov-projects"
-                          }
-                        ]
-                      }
-                    }
+                "type": "each",
+                "name": "pills",
+                "visibleOn": "${exists !== false && pills && pills.length > 0}",
+                "className": "v2-pills",
+                "items": {
+                  "type": "tpl",
+                  "tpl": "<span class='v2-status-pill ${cls}'>${label} ${n}</span>"
+                }
+              }
+            ],
+            "actions": [
+              {
+                "type": "button",
+                "label": "→ 进入",
+                "level": "primary",
+                "size": "sm"
+              },
+              {
+                "type": "button",
+                "label": "▶ 启动",
+                "level": "default",
+                "size": "sm",
+                "confirmText": "确认启动该项目?",
+                "visibleOn": "${daemon !== 'running' && exists !== false}",
+                "onEvent": {
+                  "click": {
+                    "actions": [
+                      { "actionType": "stopPropagation" },
+                      {
+                        "actionType": "ajax",
+                        "args": {
+                          "api": { "method": "post", "url": "/api/projects/${name}/start" }
+                        }
+                      },
+                      {
+                        "actionType": "toast",
+                        "args": { "msgType": "success", "msg": "已发起启动" }
+                      },
+                      { "actionType": "reload", "componentId": "ov-projects" }
+                    ]
                   }
-                ]
+                }
+              },
+              {
+                "type": "button",
+                "label": "■ 停止",
+                "level": "default",
+                "size": "sm",
+                "confirmText": "确认停止该项目?",
+                "visibleOn": "${daemon === 'running'}",
+                "onEvent": {
+                  "click": {
+                    "actions": [
+                      { "actionType": "stopPropagation" },
+                      {
+                        "actionType": "ajax",
+                        "args": {
+                          "api": { "method": "post", "url": "/api/projects/${name}/stop" }
+                        }
+                      },
+                      {
+                        "actionType": "toast",
+                        "args": { "msgType": "success", "msg": "已停止" }
+                      },
+                      { "actionType": "reload", "componentId": "ov-projects" }
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "button",
+                "label": "🗑 删除",
+                "level": "danger",
+                "size": "sm",
+                "confirmText": "删除后该项目将停止并忽略,确认?",
+                "onEvent": {
+                  "click": {
+                    "actions": [
+                      { "actionType": "stopPropagation" },
+                      {
+                        "actionType": "ajax",
+                        "args": {
+                          "api": { "method": "delete", "url": "/api/projects/${name}" }
+                        }
+                      },
+                      {
+                        "actionType": "toast",
+                        "args": { "msgType": "success", "msg": "已删除" }
+                      },
+                      { "actionType": "reload", "componentId": "ov-projects" }
+                    ]
+                  }
+                }
               }
             ]
           }

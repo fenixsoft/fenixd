@@ -12,7 +12,10 @@ const CHILD = 'fix-add-inplace-bug-repair';
 
 async function trackErrors(page) {
   const errors = [];
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('console', (m) => {
+    // mock 斩断 SSE 时 bridge 会打印连接中断(预期生命周期),不算错误
+    if (m.type() === 'error' && !m.text().includes('[v2-bridge] SSE')) errors.push(m.text());
+  });
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
   page.on('requestfailed', (r) => errors.push('requestfailed: ' + r.url()));
   page.on('response', (r) => { if (r.status() >= 400) errors.push(`${r.status()} ${r.url()}`); });
@@ -23,11 +26,13 @@ async function trackErrors(page) {
 async function openFirstDropdown(page) {
   // crud 行内 dropdown-button 渲染为按钮"操作",点击展开菜单
   await page.getByRole('button', { name: '操作' }).first().click();
-  await expect(page.locator('.dark-DropDown.is-opened').first()).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('[class*="-DropDown"].is-opened').first()).toBeVisible({ timeout: 5000 });
 }
 
 test('SPEC 列表:8 列表头 + fix 树 + 跳转链接 + 行内操作按钮', async ({ page }) => {
   const errors = await trackErrors(page);
+  // 斩断 SSE:daemon 高频 state 帧会触发 spec-crud reload,关掉行内弹层使弹层交互不稳定
+  await page.route('**/api/stream', (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }));
   await page.goto(`${BASE}/v2/index.html#/project/${PROJECT}`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#root', { state: 'visible', timeout: 10000 });
 
@@ -52,6 +57,8 @@ test('SPEC 列表:8 列表头 + fix 树 + 跳转链接 + 行内操作按钮', as
 
 test('SPEC 列表:关键词过滤', async ({ page }) => {
   const errors = await trackErrors(page);
+  // 斩断 SSE:daemon 高频 state 帧会触发 spec-crud reload,关掉行内弹层使弹层交互不稳定
+  await page.route('**/api/stream', (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }));
   await page.goto(`${BASE}/v2/index.html#/project/${PROJECT}`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#root', { state: 'visible', timeout: 10000 });
 
@@ -70,13 +77,15 @@ test('SPEC 列表:关键词过滤', async ({ page }) => {
 // 调优先级后 spec-crud 重新加载(行数据可见且列表刷新完成,无 JS 错误)。
 test('SPEC 列表:行内操作触发后列表重拉(spec-crud reload 契约)', async ({ page }) => {
   const errors = await trackErrors(page);
+  // 斩断 SSE:daemon 高频 state 帧会触发 spec-crud reload,关掉行内弹层使弹层交互不稳定
+  await page.route('**/api/stream', (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }));
   await page.goto(`${BASE}/v2/index.html#/project/${PROJECT}`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#root', { state: 'visible', timeout: 10000 });
   await expect(page.getByText(PARENT, { exact: true }).first()).toBeVisible({ timeout: 10000 });
 
   // 展开首行操作菜单
   await page.getByRole('button', { name: '操作' }).first().click();
-  await expect(page.locator('.dark-DropDown.is-opened').first()).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('[class*="-DropDown"].is-opened').first()).toBeVisible({ timeout: 5000 });
   // 点击"调优先级"打开 Dialog
   await page.getByText('调优先级').first().click();
   await expect(page.locator('.amis-dialog-widget').first()).toBeVisible({ timeout: 5000 });
@@ -92,19 +101,21 @@ test('SPEC 列表:行内操作触发后列表重拉(spec-crud reload 契约)', a
 // 验证 syncLocation:false 生效：select onChange 后 location.hash 仍保持 #/project/<name>
 test('SPEC 列表:BUG-2 回归—过滤不丢 hash 路由', async ({ page }) => {
   const errors = await trackErrors(page);
+  // 斩断 SSE:daemon 高频 state 帧会触发 spec-crud reload,关掉行内弹层使弹层交互不稳定
+  await page.route('**/api/stream', (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }));
   await page.goto(`${BASE}/v2/index.html#/project/${PROJECT}`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#root', { state: 'visible', timeout: 10000 });
   const hashBefore = await page.evaluate(() => location.hash);
   expect(hashBefore).toContain('#/project/fenixd');
 
   // 点击状态过滤 Select（AMIS dark 主题渲染为 .dark-SelectControl）
-  const selectControls = page.locator('.dark-SelectControl');
+  const selectControls = page.locator('[class*="-SelectControl"]');
   const count = await selectControls.count();
   if (count > 0) {
     await selectControls.first().click();
     await page.waitForTimeout(500);
     // 选择任意一个下拉选项（如"就绪"）
-    const option = page.locator('.dark-PopOver').getByText('就绪', { exact: true }).first();
+    const option = page.locator('[class*="-PopOver"]').getByText('就绪', { exact: true }).first();
     if (await option.isVisible({ timeout: 3000 }).catch(() => false)) {
       await option.click();
       await page.waitForTimeout(2000);
@@ -126,6 +137,8 @@ test('SPEC 列表:BUG-2 回归—过滤不丢 hash 路由', async ({ page }) => 
 // 才匹配、清除按钮才显示;不得使用 error=null 的 SPEC(如 v2-config-page)否则按钮隐藏。
 test('SPEC 详情:error 文本可见 + 清除错误按钮(有 error 的 SPEC)', async ({ page }) => {
   const errors = await trackErrors(page);
+  // 斩断 SSE:daemon 高频 state 帧会触发 spec-crud reload,关掉行内弹层使弹层交互不稳定
+  await page.route('**/api/stream', (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }));
   await page.goto(`${BASE}/v2/index.html#/project/${PROJECT}`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#root', { state: 'visible', timeout: 10000 });
   // 动态选取有 error 的 SPEC(避免指向 error=null 的 SPEC 致 visibleOn 不匹配)
@@ -134,9 +147,9 @@ test('SPEC 详情:error 文本可见 + 清除错误按钮(有 error 的 SPEC)', 
   // 展开该行操作菜单(定位包含目标文本的行,再找其操作按钮)
   const row = page.getByText(ERROR_SPEC, { exact: true }).first().locator('xpath=ancestor::tr[1]');
   await row.getByRole('button', { name: '操作' }).first().click();
-  await expect(page.locator('.dark-DropDown.is-opened').first()).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('[class*="-DropDown"].is-opened').first()).toBeVisible({ timeout: 5000 });
   // 点击 PopOver 菜单中的「详情」
-  await page.locator('.dark-PopOver').getByText('详情', { exact: true }).first().click();
+  await page.locator('[class*="-PopOver"]').getByText('详情', { exact: true }).first().click();
   // 详情 Dialog 出现且 error 文本可见(懒加载 /api/specs/<spec>)
   const dlg = page.locator('.amis-dialog-widget').first();
   await expect(dlg).toBeVisible({ timeout: 10000 });

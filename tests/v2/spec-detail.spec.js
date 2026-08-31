@@ -19,10 +19,10 @@ async function trackErrors(page) {
   return errors;
 }
 
-// AMIS 渲染的页签为 .dark-Tabs-link(无 role=tab),点击其文本链接切换内容区
+// AMIS 渲染的页签为 [class*="-Tabs-link"]:not([class*="-Tabs-links"])(无 role=tab),点击其文本链接切换内容区
 async function clickTab(page, name) {
-  await page.locator('.dark-Tabs-link', { hasText: name }).first().click();
-  await expect(page.locator('.dark-Tabs-pane.is-active').first()).toBeVisible({ timeout: 5000 });
+  await page.locator('[class*="-Tabs-link"]:not([class*="-Tabs-links"])', { hasText: name }).first().click();
+  await expect(page.locator('[class*="-Tabs-pane"].is-active').first()).toBeVisible({ timeout: 5000 });
 }
 
 test('详情页:验证卡可见 + 4 页签依次可点', async ({ page }) => {
@@ -36,7 +36,7 @@ test('详情页:验证卡可见 + 4 页签依次可点', async ({ page }) => {
   // 依次点击 4 个页签,每个页签内容区渲染无 JS 错误
   for (const tab of TABS) {
     await clickTab(page, tab);
-    await expect(page.locator('.dark-Tabs-pane.is-active').first()).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[class*="-Tabs-pane"].is-active').first()).toBeVisible({ timeout: 5000 });
   }
 
   expect(errors, JSON.stringify(errors)).toEqual([]);
@@ -50,7 +50,7 @@ test('时间轴页签:节点渲染(真实环境有 timeline 数据)', async ({ p
 
   await clickTab(page, '时间轴');
   // 该环境下的 add-fenix-dashboard 详情含 4 条 timeline 节点(实测),断言节点数 ≥ 1
-  await expect(page.locator('.dark-TimelineItem').first()).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('[class*="-TimelineItem"]').first()).toBeVisible({ timeout: 5000 });
 
   expect(errors, JSON.stringify(errors)).toEqual([]);
 });
@@ -66,11 +66,11 @@ test('截图页签:渲染缩略图 + 点击放大预览(AMIS image preview)', as
 
   await clickTab(page, '截图');
   // 真实环境该 SPEC 有 35 张截图,断言缩略图渲染
-  await expect(page.locator('.dark-Tabs-pane.is-active img').first()).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('[class*="-Tabs-pane"].is-active img').first()).toBeVisible({ timeout: 5000 });
 
   // 点击首张缩略图触发 AMIS image 内建预览(出现 preview 遮罩);该交互为 AMIS 内建能力,
   // 本 SPEC 仅保证点击不抛 JS 错误(预览 DOM 形态随 AMIS 版本,不强制断言)。
-  const thumb = page.locator('.dark-Tabs-pane.is-active img').first();
+  const thumb = page.locator('[class*="-Tabs-pane"].is-active img').first();
   if (await thumb.count()) {
     await thumb.click({ timeout: 5000 }).catch(() => {});
     await page.keyboard.press('Escape').catch(() => {});
@@ -89,11 +89,11 @@ test('时间轴节点点击:弹出运行记录 Dialog(占位)', async ({ page })
   await expect(page.getByText('验证', { exact: false }).first()).toBeVisible({ timeout: 10000 });
 
   await clickTab(page, '时间轴');
-  await expect(page.locator('.dark-TimelineItem').first()).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('[class*="-TimelineItem"]').first()).toBeVisible({ timeout: 5000 });
 
   // 时间轴节点点击(占位 Dialog 契约骨架,设计.md 退路:节点 onEvent click 弹占位 Dialog)
   // 点击首个时间轴节点,断言弹出「运行记录」Dialog 且无 JS 错误。
-  await page.locator('.dark-TimelineItem').first().click();
+  await page.locator('[class*="-TimelineItem"]').first().click();
   await expect(page.locator('.amis-dialog-widget').first()).toBeVisible({ timeout: 5000 });
   await expect(page.locator('.amis-dialog-widget').getByText('运行记录').first()).toBeVisible({ timeout: 5000 });
   await page.keyboard.press('Escape').catch(() => {});

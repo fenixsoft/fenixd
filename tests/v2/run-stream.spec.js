@@ -25,12 +25,12 @@ async function openRunDialog(page, project, spec, nodeIdx) {
   await page.goto(`${BASE}/v2/index.html#/spec/${project}/${spec}`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#root', { state: 'visible', timeout: 10000 });
   // 等待 spec detail 渲染(Tabs 出现)——部分 SPEC 无 verdict 卡,用 Tabs 作为就绪信号
-  await page.waitForSelector('.dark-Tabs-link', { state: 'visible', timeout: 10000 });
-  await page.locator('.dark-Tabs-link', { hasText: '时间轴' }).first().click();
-  await expect(page.locator('.dark-Tabs-pane.is-active').first()).toBeVisible({ timeout: 5000 });
+  await page.waitForSelector('[class*="-Tabs-link"]:not([class*="-Tabs-links"])', { state: 'visible', timeout: 10000 });
+  await page.locator('[class*="-Tabs-link"]:not([class*="-Tabs-links"])', { hasText: '时间轴' }).first().click();
+  await expect(page.locator('[class*="-Tabs-pane"].is-active').first()).toBeVisible({ timeout: 5000 });
   // nodeIdx: 时间轴中 kind==='run' 的节点才有 run_id;默认取第一个 run 节点(通常 index 2)
   const idx = typeof nodeIdx === 'number' ? nodeIdx : 2;
-  const runNode = page.locator('.dark-TimelineItem').nth(idx);
+  const runNode = page.locator('[class*="-TimelineItem"]').nth(idx);
   await expect(runNode).toBeVisible({ timeout: 5000 });
   await runNode.click();
   await expect(page.locator('.amis-dialog-widget').first()).toBeVisible({ timeout: 5000 });
@@ -63,7 +63,7 @@ test('运行记录弹窗(live run): 关闭即退订 DELETE watch', async ({ page
   await expect(page.locator('.amis-dialog-widget').first()).toBeVisible({ timeout: 10000 });
 
   // 关闭弹窗(X 按钮;AMIS 6.13.0 dialog closeOnEsc 可能不生效)
-  await page.locator('.dark-Modal-close').first().click();
+  await page.locator('[class*="-Modal-close"]').first().click();
   await page.waitForTimeout(500);
   // 对话框关闭
   await expect(page.locator('.amis-dialog-widget').first()).toBeHidden({ timeout: 5000 });

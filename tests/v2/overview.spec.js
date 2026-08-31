@@ -12,7 +12,7 @@ test('概览页渲染统计块与项目卡片', async ({ page }) => {
 test('概览页:启动按钮走 POST 端点并重拉', async ({ page }) => {
   await page.goto('/v2/index.html#/overview');
   // 找一个处于 stopped 且存在路径的项目(fenix-desktop)断言其启动按钮可见
-  // 注:AMIS 6.13.0 dark 主题卡片 class 为 dark-Card;button-group 内 button 无 accessible-name,改用文本定位
-  const card = page.locator('#v2-content').locator('.dark-Card').filter({ hasText: 'fenix-desktop' });
-  await expect(card.getByText('启动', { exact: true }).first()).toBeVisible({ timeout: 10000 });
+  // 注:项目面板为 each+panel 渲染,类前缀随主题变化,用通配匹配;按钮无 accessible-name,改用文本定位
+  const card = page.locator('#v2-content').locator('[class*="-Panel"]').filter({ hasText: 'fenix-desktop' });
+  await expect(card.locator('button', { hasText: '启动' }).first()).toBeVisible({ timeout: 10000 });
 });

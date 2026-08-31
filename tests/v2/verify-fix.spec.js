@@ -7,7 +7,11 @@ async function trackErrors(page) {
   const errors = [];
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
-  page.on('requestfailed', (r) => errors.push('requestfailed: ' + r.url()));
+  page.on('requestfailed', (r) => {
+    // 切页时旧 SSE 连接被 EventSource.close() 正常关闭,Chrome 记为 requestfailed,属预期生命周期
+    if (r.url().includes('/api/stream')) return;
+    errors.push('requestfailed: ' + r.url());
+  });
   page.on('response', (r) => { if (r.status() >= 400) errors.push(`${r.status()} ${r.url()}`); });
   return errors;
 }
@@ -28,8 +32,8 @@ for (const [id, path] of scenarios) {
     await page.goto(BASE + path);
     await page.waitForSelector('#root', { state: 'visible', timeout: 5000 });
     await expect(page.locator('#root')).not.toBeEmpty();
-    await expect(page.locator("a[href='#/overview']")).toBeVisible();
-    await expect(page.locator("a[href='#/overview']")).toContainText('概览');
+    await expect(page.locator("#v2-nav-mount").getByText("概览", { exact: true }).first()).toBeVisible();
+    await expect(page.locator("#v2-nav-mount").getByText("概览", { exact: true }).first()).toContainText("概览");
     expect(errors, JSON.stringify(errors)).toEqual([]);
   });
 }
@@ -41,12 +45,12 @@ test('hashchange-navigation-switch', async ({ page }) => {
   // 先直接导航到 project 路由,再点击概览导航项返回
   await page.goto(BASE + '/v2/index.html#/project/myapp');
   await page.waitForSelector('#root', { state: 'visible' });
-  await expect(page.locator("a[href='#/overview']")).toBeVisible();
-  await page.click("a[href='#/overview']");
+  await expect(page.locator("#v2-nav-mount").getByText("概览", { exact: true }).first()).toBeVisible();
+  await page.click("#v2-nav-mount >> text=概览");
   await page.waitForTimeout(500);
   await expect(page.locator('#root')).toBeVisible();
-  await expect(page.locator("a[href='#/overview']")).toBeVisible();
-  await expect(page.locator("a[href='#/overview']")).toContainText('概览');
+  await expect(page.locator("#v2-nav-mount").getByText("概览", { exact: true }).first()).toBeVisible();
+  await expect(page.locator("#v2-nav-mount").getByText("概览", { exact: true }).first()).toContainText("概览");
   expect(errors, JSON.stringify(errors)).toEqual([]);
 });
 
@@ -55,7 +59,7 @@ test('json-merge-missing-page-tolerant', async ({ page }) => {
   await page.goto(BASE + '/v2/index.html#/overview');
   await page.waitForSelector('#root', { state: 'visible' });
   await expect(page.locator('#root')).not.toBeEmpty();
-  await expect(page.locator("a[href='#/overview']")).toBeVisible();
+  await expect(page.locator("#v2-nav-mount").getByText("概览", { exact: true }).first()).toBeVisible();
   expect(errors, JSON.stringify(errors)).toEqual([]);
 });
 

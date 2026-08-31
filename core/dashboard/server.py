@@ -675,11 +675,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     # ── 项目管理端点（启停 daemon / 软删除） ──────────────
 
-    def _resolve_project_or_400(self, path: str, prefix: str):
+    def _resolve_project_or_400(self, path: str, prefix: str, require_exists: bool = True):
         """从 /api/projects/<name>[/start|/stop] 或 /api/projects/<name> 解析项目名。
 
         路径可能带 /start、/stop 动作后缀，先剥离再按项目名匹配。
-        项目不存在（不在监控列表）或目录不存在返回 None，调用方发 400。
+        项目不存在（不在监控列表）返回 None；require_exists 时目录不存在也返回 None，
+        调用方发 400。删除接口传 require_exists=False 以支持移除缺失项目。
         """
         if not path.startswith(prefix):
             return None
@@ -692,7 +693,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not name:
             return None
         project = self.server.project_by_name(name)
-        if project is None or not project.get("exists"):
+        if project is None or (require_exists and not project.get("exists")):
             return None
         return project
 
@@ -726,19 +727,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         })
 
     def _api_project_delete(self, path: str, query: dict):
-        """DELETE /api/projects/<name> —— 软删除：停止 daemon + 写入忽略列表。"""
-        project = self._resolve_project_or_400(path, "/api/projects/")
+        """DELETE /api/projects/<name> —— 软删除：停止 daemon + 写入忽略列表。
+
+        缺失项目（目录已不存在，exists=false）也允许删除：跳过停止 daemon，
+        仅从监控列表移除并写入忽略列表。
+        """
+        project = self._resolve_project_or_400(path, "/api/projects/", require_exists=False)
         if project is None:
             self._error(400, "项目不存在或未监控")
             return
         errors = []
-        # 1) 停止 daemon（幂等，未运行不报错）
-        try:
-            stop_result = stop_daemon(project["path"])
-            if not stop_result.get("ok"):
-                errors.append(stop_result.get("error", "停止 daemon 失败"))
-        except Exception as e:
-            errors.append(f"停止 daemon 失败: {e}")
+        # 1) 停止 daemon（幂等，未运行不报错；缺失项目目录已不存在，跳过）
+        if project.get("exists"):
+            try:
+                stop_result = stop_daemon(project["path"])
+                if not stop_result.get("ok"):
+                    errors.append(stop_result.get("error", "停止 daemon 失败"))
+            except Exception as e:
+                errors.append(f"停止 daemon 失败: {e}")
         # 2) 停止显式注册项 + 写入忽略列表（忽略优先：即便再次显式注册也被忽略）
         try:
             self.server.registry.remove_project(project["path"])

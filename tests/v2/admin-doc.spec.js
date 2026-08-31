@@ -32,7 +32,7 @@ async function trackErrors(page) {
 async function openRowDropdown(page, specName) {
   const row = page.getByText(specName, { exact: true }).first().locator('xpath=ancestor::tr[1]');
   await row.getByRole('button', { name: '操作' }).first().click();
-  await expect(page.locator('.dark-DropDown.is-opened').first()).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('[class*="-DropDown"].is-opened').first()).toBeVisible({ timeout: 5000 });
 }
 
 test('文档弹窗:有文档 SPEC 渲染「需求背景」页签内容(非空)', async ({ page }) => {

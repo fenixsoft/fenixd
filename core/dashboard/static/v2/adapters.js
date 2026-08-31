@@ -159,39 +159,80 @@
   // 输入为 totals 对象,输出所有字段数字化
   function adaptOverview(raw) {
     if (!raw || typeof raw !== 'object') {
-      return { spec_count: 0, task_done: 0, task_total: 0, problems: 0, active_runs: 0 };
+      return { spec_count: 0, task_done: 0, task_total: 0, problems: 0, active_runs: 0, pct: 0 };
     }
     const t = raw.totals || raw; // 支持传整个 overview 或仅 totals
+    const done = num(t.task_done);
+    const total = num(t.task_total);
     return {
       spec_count: num(t.spec_count),
-      task_done: num(t.task_done),
-      task_total: num(t.task_total),
+      task_done: done,
+      task_total: total,
       problems: num(t.problems),
       active_runs: num(t.active_runs),
+      pct: total > 0 ? Math.round((done / total) * 100) : 0,
     };
   }
+
+  // ── 概览卡片 v1 对齐辅助 ──────────────────────────────────
+  // 状态标签元数据(去 emoji,样式类对齐 v1 status-pill 变体)
+  const STATUS_META = {
+    drafted: { cls: 'v2-st-muted', label: '草稿' },
+    ready: { cls: 'v2-st-info', label: '就绪' },
+    implementing: { cls: 'v2-st-warning', label: '实现中' },
+    implemented: { cls: 'v2-st-aqua', label: '已实现' },
+    testing: { cls: 'v2-st-info', label: '验证中' },
+    verified: { cls: 'v2-st-good', label: '已验证' },
+    'bug-found': { cls: 'v2-st-critical', label: '有Bug' },
+    blocked: { cls: 'v2-st-critical', label: '阻塞' },
+    done: { cls: 'v2-st-good', label: '完成' },
+    pushed: { cls: 'v2-st-good', label: '已推送' },
+  };
 
   // ── adaptProjects ─────────────────────────────────────────
   // behavior.md §1: GET /api/projects → {projects: [...]}
   // 输入为 projects 数组,输出每行字段数字化
   function adaptProjects(rawList) {
     if (!Array.isArray(rawList)) return [];
-    return rawList.map(p => ({
-      name: p.name,
-      path: p.path,
-      daemon: p.daemon || 'unknown',
-      spec_count: num(p.spec_count),
-      status_counts: p.status_counts || {},
-      task_done: num(p.task_done),
-      task_total: num(p.task_total),
-      problems: num(p.problems),
-      active_runs: num(p.active_runs),
-      scenario_count: num(p.scenario_count),
-      updated: p.updated || 0,
-      discovered: !!p.discovered,
-      exists: p.exists !== false,
-      error: p.error || null,
-    }));
+    return rawList.map(p => {
+      const done = num(p.task_done);
+      const total = num(p.task_total);
+      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+      // 进度条配色对齐 v1:100% 绿 / ≥60% 蓝 / >0 黄 / 0 红
+      const barCls = pct === 100 ? 'v2-bar-good' : pct >= 60 ? '' : pct > 0 ? 'v2-bar-warn' : 'v2-bar-serious';
+      const pills = Object.entries(p.status_counts || {}).map(([st, n]) => {
+        const m = STATUS_META[st] || { cls: 'v2-st-muted', label: st };
+        return { label: m.label, cls: m.cls, n: num(n) };
+      });
+      const daemon = p.daemon || 'unknown';
+      const daemonBadge = daemon === 'running'
+        ? '<span class="v2-status-pill v2-daemon-pill v2-st-good">运行中</span>'
+        : daemon === 'stopped'
+          ? '<span class="v2-status-pill v2-daemon-pill v2-st-warning">未运行</span>'
+          : '';
+      const discoveredBadge = p.discovered ? '<span class="v2-status-pill v2-st-muted">自动发现</span>' : '';
+      const daemonHtml = '<div class="v2-daemon-row">' + daemonBadge + discoveredBadge + '</div>';
+      return {
+        name: p.name,
+        path: p.path,
+        daemon: daemon,
+        spec_count: num(p.spec_count),
+        status_counts: p.status_counts || {},
+        task_done: done,
+        task_total: total,
+        problems: num(p.problems),
+        active_runs: num(p.active_runs),
+        scenario_count: num(p.scenario_count),
+        updated: p.updated || 0,
+        discovered: !!p.discovered,
+        exists: p.exists !== false,
+        error: p.error || null,
+        pct: pct,
+        bar_cls: barCls,
+        daemon_html: daemonHtml,
+        pills: pills,
+      };
+    });
   }
 
   // ── adaptSpecDetail ───────────────────────────────────────
