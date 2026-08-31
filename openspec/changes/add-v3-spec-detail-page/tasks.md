@@ -11,7 +11,7 @@
 
 - [x] 2.1 页签骨架：四页签恒可见，空态文案对齐 v1（场景结果区分 report 损坏 vs 无数据）
 - [x] 2.2 运行时间轴：Timeline 混排状态/运行节点（回退原因可见），antd Timeline 实现
-- [ ] 2.3 运行对话流：RunStream 子组件（watch 尾部拉取 + SSE run_events 增量 + thinking 折叠 + 卸载清理）
+- [x] 2.3 运行对话流：RunStream 子组件（watch 尾部拉取 + SSE run_events 增量 + thinking 折叠 + 卸载清理）
 - [ ] 2.4 场景结果：汇总 Tag 计数 + 场景卡片 + 失败断言/步骤明细
 - [ ] 2.5 Bug 列表：卡片（severity/source/描述/关联场景/证据/缩略图）
 - [ ] 2.6 失败截图：Image.PreviewGroup 缩略图 + lightbox（/screenshots/ 路径）

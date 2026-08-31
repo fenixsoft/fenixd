@@ -1,10 +1,11 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, Card, Checkbox, Col, Descriptions, Empty, Progress, Row, Space, Spin, Statistic, Tabs, Tag, Timeline, Typography } from 'antd';
+import { Alert, Card, Checkbox, Col, Collapse, Descriptions, Empty, Progress, Row, Space, Spin, Statistic, Tabs, Tag, Timeline, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { history, useParams } from '@umijs/max';
 import dayjs from 'dayjs';
 import { getSpecDetail, statusMeta } from '@/services/dashboard';
 import type { SpecDetail } from '@/services/dashboard';
+import RunStream from './components/RunStream';
 
 export default function SpecDetailPage() {
   const { name = '', spec = '' } = useParams<{ name: string; spec: string }>();
@@ -166,14 +167,17 @@ export default function SpecDetailPage() {
                   </div>
                   {item.run_id && (
                     <div style={{ marginTop: 8 }}>
-                      <Typography.Link
-                        onClick={() => {
-                          // TODO: 打开运行记录弹窗
-                          console.log('打开运行记录:', item.run_id);
-                        }}
-                      >
-                        查看运行记录
-                      </Typography.Link>
+                      <Collapse
+                        ghost
+                        size="small"
+                        items={[
+                          {
+                            key: 'run-stream',
+                            label: '查看运行记录',
+                            children: <RunStream runId={item.run_id!} project={name} />,
+                          },
+                        ]}
+                      />
                     </div>
                   )}
                 </div>
