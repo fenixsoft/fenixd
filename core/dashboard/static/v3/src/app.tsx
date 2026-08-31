@@ -65,7 +65,7 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
       { path: '/activities', name: '运维记录', icon: <HistoryOutlined /> },
     ],
     // 「项目」二级菜单默认展开（ProLayout 读 menu.defaultOpenAll）
-    menu: { defaultOpenAll: true },
+    menu: { defaultOpenAll: true, ignoreFlatMenu: true },
     // 顶栏右侧：v3 标识
     actionsRender: () => [
       <Tag key="v3" color="default" style={{ marginInlineEnd: 0 }}>
