@@ -205,7 +205,111 @@ export default function SpecDetailPage() {
       label: '场景结果',
       children: (
         <div style={{ padding: '20px 0' }}>
-          <Empty description={detail?.scenarios?.report_status === 'corrupted' ? 'report.json 损坏或不可读' : '暂无场景结果'} />
+          {detail?.scenarios?.report_status === 'corrupted' ? (
+            <Empty description="report.json 损坏或不可读" />
+          ) : detail?.scenarios?.items && detail.scenarios.items.length > 0 ? (
+            <div>
+              {/* 汇总计数 */}
+              {detail.scenarios.summary && (
+                <div style={{ marginBottom: 16 }}>
+                  <Space size={8}>
+                    <Tag color="success">通过 {detail.scenarios.summary.passed}</Tag>
+                    <Tag color="warning">警告 {detail.scenarios.summary.warning}</Tag>
+                    <Tag color="error">失败 {detail.scenarios.summary.failed}</Tag>
+                    <Tag color="error">错误 {detail.scenarios.summary.error}</Tag>
+                  </Space>
+                </div>
+              )}
+
+              {/* 场景卡片列表 */}
+              {detail.scenarios.items.map((scenario, idx) => (
+                <Card
+                  key={idx}
+                  size="small"
+                  style={{ marginBottom: 12 }}
+                  title={
+                    <Space size={8}>
+                      <Tag
+                        color={
+                          scenario.status === 'passed'
+                            ? 'success'
+                            : scenario.status === 'warning'
+                              ? 'warning'
+                              : 'error'
+                        }
+                      >
+                        {scenario.status === 'passed'
+                          ? '✅ 通过'
+                          : scenario.status === 'warning'
+                            ? '⚠️ 警告'
+                            : scenario.status === 'failed'
+                              ? '✗ 失败'
+                              : '✗ 错误'}
+                      </Tag>
+                      <Typography.Text strong>{scenario.scenario_id}</Typography.Text>
+                      {scenario.description && (
+                        <Typography.Text type="secondary">{scenario.description}</Typography.Text>
+                      )}
+                    </Space>
+                  }
+                >
+                  {/* 失败断言明细 */}
+                  {scenario.assertions && scenario.assertions.some((a) => !a.passed) && (
+                    <div style={{ marginBottom: 8 }}>
+                      <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>
+                        失败断言:
+                      </Typography.Text>
+                      {scenario.assertions
+                        .filter((a) => !a.passed)
+                        .map((assertion, aIdx) => (
+                          <div
+                            key={aIdx}
+                            style={{
+                              padding: '4px 8px',
+                              marginBottom: 4,
+                              background: '#fff2f0',
+                              border: '1px solid #ffccc7',
+                              borderRadius: 4,
+                            }}
+                          >
+                            <Typography.Text type="danger">✗ {assertion.message || '断言失败'}</Typography.Text>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+
+                  {/* 失败步骤明细 */}
+                  {scenario.steps && scenario.steps.some((s) => s.status === 'failed') && (
+                    <div>
+                      <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>
+                        失败步骤:
+                      </Typography.Text>
+                      {scenario.steps
+                        .filter((s) => s.status === 'failed')
+                        .map((step, sIdx) => (
+                          <div
+                            key={sIdx}
+                            style={{
+                              padding: '4px 8px',
+                              marginBottom: 4,
+                              background: '#fff2f0',
+                              border: '1px solid #ffccc7',
+                              borderRadius: 4,
+                            }}
+                          >
+                            <Typography.Text type="danger">
+                              ✗ {step.name}: {step.error || '步骤失败'}
+                            </Typography.Text>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </Card>
+              ))}
+            </div>
+          ) : (
+            <Empty description="暂无场景结果" />
+          )}
         </div>
       ),
     },
