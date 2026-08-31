@@ -113,6 +113,30 @@ export function clearAllAlerts() {
   return request('/api/alerts/clear', { method: 'POST' });
 }
 
+// ── 项目 SPEC 列表（/api/specs，与 v1 项目视图同源） ──
+
+export interface SpecSummary {
+  name: string;
+  status: string | null;
+  priority: number | null;
+  created: string | null;
+  updated: string | null;
+  error: string | null;
+  task_done: number;
+  task_total: number;
+  verify_done: number;
+  verify_total: number;
+  verify_error: string | null;
+  scenario_count: number;
+  total_duration: number;
+  latest_run: string | null;
+  latest_run_status: string | null;
+}
+
+export async function getSpecs(project: string): Promise<{ project: string; specs: SpecSummary[] }> {
+  return request(`/api/specs?project=${encodeURIComponent(project)}`);
+}
+
 // ── SPEC 状态元数据（中文标签 + 语义色，与 v1 STATUS_META 对齐） ──
 
 export type StatusTone = 'muted' | 'info' | 'warning' | 'critical' | 'good' | 'aqua';

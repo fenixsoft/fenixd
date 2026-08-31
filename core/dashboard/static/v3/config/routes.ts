@@ -20,6 +20,10 @@ export default [
     component: './projects',
   },
   {
+    path: '/projects/:name',
+    component: './projects/list',
+  },
+  {
     path: '/settings',
     name: '设置',
     icon: 'setting',
