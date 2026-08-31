@@ -25,6 +25,8 @@ export interface OverviewTotals {
   task_total: number;
   problems: number;
   active_runs: number;
+  spec_updated_today: number;
+  spec_updated_week: number;
   status_counts: Record<string, number>;
 }
 

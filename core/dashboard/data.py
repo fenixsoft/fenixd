@@ -1466,11 +1466,38 @@ def _token_usage_view(entry: dict) -> dict:
     }
 
 
+def _count_updated_specs(project_root, today_start: datetime, week_start: datetime) -> tuple:
+    """统计 STATE.md 中 updated 落在今日（本地自然日）/ 近7天（滚动窗口）的 spec 数。
+
+    updated 缺失或无法解析的条目跳过，不影响其它条目计数。
+    """
+    today = week = 0
+    for entry in parse_state(project_root).values():
+        raw = entry.get("updated")
+        if not raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(raw))
+        except (ValueError, TypeError):
+            continue
+        if ts.tzinfo is None:
+            ts = ts.astimezone()
+        if ts >= week_start:
+            week += 1
+        if ts >= today_start:
+            today += 1
+    return today, week
+
+
 def overview(registry_projects: list) -> dict:
     """跨项目概览（/api/overview）。registry_projects 为 registry.discover() 结果。"""
+    now = datetime.now().astimezone()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = now - timedelta(days=7)
     projects = []
     totals = {"spec_count": 0, "task_done": 0, "task_total": 0,
-              "problems": 0, "active_runs": 0}
+              "problems": 0, "active_runs": 0,
+              "spec_updated_today": 0, "spec_updated_week": 0}
     status_counts = {}
     for p in registry_projects:
         if not p.get("exists"):
@@ -1488,6 +1515,9 @@ def overview(registry_projects: list) -> dict:
         totals["task_total"] += s["task_total"]
         totals["problems"] += s["problems"]
         totals["active_runs"] += s["active_runs"]
+        t_today, t_week = _count_updated_specs(p["path"], today_start, week_start)
+        totals["spec_updated_today"] += t_today
+        totals["spec_updated_week"] += t_week
         for st, n in s["status_counts"].items():
             status_counts[st] = status_counts.get(st, 0) + n
     totals["status_counts"] = status_counts

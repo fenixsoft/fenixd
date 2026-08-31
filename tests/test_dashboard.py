@@ -399,6 +399,35 @@ class TestDataParse:
         assert overview["totals"]["active_runs"] == 1
         assert overview["projects"][0]["name"] == "proj-a"
 
+    def test_overview_updated_spec_counts(self, tmp_path):
+        """overview totals 的今日/近7天更新 spec 数（口径：STATE.md updated）。"""
+        from datetime import timedelta
+
+        proot = make_project(tmp_path)
+        now = datetime.now(timezone.utc)
+
+        def iso(dt):
+            return dt.isoformat()
+
+        (proot / "STATE.md").write_text(
+            "# Fenix Project State\n\n## Specs\n\n"
+            "### fresh\n- status: testing\n"
+            f"- updated: {iso(now)}\n\n"
+            "### mid\n- status: implementing\n"
+            f"- updated: {iso(now - timedelta(days=3))}\n\n"
+            "### old\n- status: done\n"
+            f"- updated: {iso(now - timedelta(days=10))}\n\n"
+            "### bad\n- status: drafted\n- updated: not-a-date\n\n"
+            "### missing\n- status: ready\n",
+            encoding="utf-8",
+        )
+        ov = dash_data.overview([
+            {"name": "proj-a", "path": str(proot), "discovered": False, "exists": True}
+        ])
+        # fresh → 今日+本周；mid → 仅本周；old/bad/missing → 均不计
+        assert ov["totals"]["spec_updated_today"] == 1
+        assert ov["totals"]["spec_updated_week"] == 2
+
 
 # ── 实时任务进度叠加（run 记录 TaskUpdate → tasks.md） ──────────────────
 
