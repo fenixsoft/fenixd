@@ -38,6 +38,7 @@ import {
   statusMeta,
 } from '@/services/dashboard';
 import type { SpecSummary } from '@/services/dashboard';
+import SpecDocModal from './components/SpecDocModal';
 
 const REFRESH_THROTTLE_MS = 500;
 const TRACK_LIGHT = '#e6f4ff'; // antd blue-1，与 #1677ff 同 ramp
@@ -202,10 +203,6 @@ export default function SpecListPage() {
 
   // 文档弹窗（对齐 v1 docmodal：背景/设计/任务清单 三页签）
   const [docView, setDocView] = useState<string | null>(null);
-  const [docTab, setDocTab] = useState<'proposal' | 'design' | 'tasks'>('proposal');
-  const [docContent, setDocContent] = useState('');
-  const [docFound, setDocFound] = useState(true);
-  const [docLoading, setDocLoading] = useState(false);
 
   // 调整优先级弹窗
   const [priorityEdit, setPriorityEdit] = useState<{ spec: string; value: number } | null>(null);
@@ -249,28 +246,6 @@ export default function SpecListPage() {
     };
     return () => es.close();
   }, [load, name]);
-
-  // 文档内容按页签懒加载
-  useEffect(() => {
-    if (!docView) return;
-    let cancelled = false;
-    setDocLoading(true);
-    getSpecDoc(name, docView, docTab)
-      .then((d) => {
-        if (cancelled) return;
-        setDocContent(d.content || '');
-        setDocFound(d.found);
-      })
-      .catch(() => {
-        if (!cancelled) setDocContent('文档加载失败');
-      })
-      .finally(() => {
-        if (!cancelled) setDocLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [docView, docTab, name]);
 
   const filtered = useMemo(() => {
     const kw = q.trim().toLowerCase();
@@ -566,41 +541,12 @@ export default function SpecListPage() {
         />
       </Card>
 
-      <Modal
-        title={`${docView || ''} 文档`}
+      <SpecDocModal
+        project={name}
+        spec={docView}
         open={!!docView}
-        onCancel={() => setDocView(null)}
-        footer={null}
-        width={760}
-      >
-        <Tabs
-          activeKey={docTab}
-          onChange={(k) => setDocTab(k as 'proposal' | 'design' | 'tasks')}
-          items={[
-            { key: 'proposal', label: '需求背景' },
-            { key: 'design', label: '详细设计' },
-            { key: 'tasks', label: '任务清单' },
-          ]}
-        />
-        {docLoading ? (
-          <div style={{ textAlign: 'center', padding: 32 }}>
-            <Spin />
-          </div>
-        ) : (
-          <pre
-            style={{
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              maxHeight: 480,
-              overflow: 'auto',
-              margin: 0,
-              fontSize: 13,
-            }}
-          >
-            {docContent || (docFound ? '' : '（无此文档）')}
-          </pre>
-        )}
-      </Modal>
+        onClose={() => setDocView(null)}
+      />
 
       <Modal
         title="调整优先级"
