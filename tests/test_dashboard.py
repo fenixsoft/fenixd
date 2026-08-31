@@ -459,10 +459,10 @@ class TestDataParse:
         assert by_type.get("implementer") == 1
 
         recent = ov["token_usage"]["recent"]
-        assert [r["spec"] for r in recent] == ["spec-a", "spec-b", "spec-c"]  # updated 倒序
+        # spec-c 无消耗数值（tokens==0）→ 被跳过，只统计有数值的 spec
+        assert [r["spec"] for r in recent] == ["spec-a", "spec-b"]
         assert recent[0]["tokens"] == 2000      # 1500 + 500
         assert recent[1]["tokens"] == 300000    # 100000 + 200000
-        assert recent[2]["tokens"] == 0         # 无 token 字段 → 0
         assert recent[0]["project"] == "proj-a"
 
 

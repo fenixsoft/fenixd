@@ -34,7 +34,9 @@ function Tile({ children }: { children: ReactNode }) {
 function TileHeader({ title, tooltip }: { title: string; tooltip?: string }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-      <Typography.Text type="secondary">{title}</Typography.Text>
+      <Typography.Text type="secondary" strong>
+        {title}
+      </Typography.Text>
       {tooltip ? (
         <Tooltip title={tooltip}>
           <InfoCircleOutlined style={{ color: 'rgba(0,0,0,.45)' }} />
@@ -69,28 +71,26 @@ function SpecCountTile({ totals }: { totals: OverviewTotals }) {
   );
 }
 
-/** 卡2：任务进度 — 复刻 analysis 运营活动效果卡（大数字百分比 + 渐变进度条 + 底部完成数） */
+/** 卡2：任务进度 — 复刻 analysis 运营活动效果卡（大数字百分比 + 已完成小字跟随 + 渐变进度条） */
 function TaskProgressTile({ totals }: { totals: OverviewTotals }) {
   const progress = pct(totals.task_done ?? 0, totals.task_total ?? 0);
   return (
     <Card variant="borderless" styles={{ body: CARD_BODY }}>
       <TileHeader title="任务进度" />
-      <div style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px', margin: '4px 0 10px' }}>
-        {progress}%
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, margin: '4px 0 10px', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px' }}>{progress}%</span>
+        <span>
+          <Typography.Text type="secondary">已完成 </Typography.Text>
+          <Typography.Text strong>
+            {totals.task_done ?? 0} / {totals.task_total ?? 0}
+          </Typography.Text>
+        </span>
       </div>
-      <div style={{ height: 46, display: 'flex', alignItems: 'center' }}>
-        <Progress
-          percent={progress}
-          strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
-          status="active"
-        />
-      </div>
-      <div style={{ marginTop: 8 }}>
-        <Typography.Text type="secondary">已完成 </Typography.Text>
-        <Typography.Text strong>
-          {totals.task_done ?? 0} / {totals.task_total ?? 0}
-        </Typography.Text>
-      </div>
+      <Progress
+        percent={progress}
+        strokeColor={{ '0%': '#108ee9', '100%': '#87d068' }}
+        status="active"
+      />
     </Card>
   );
 }
@@ -104,7 +104,11 @@ const AGENT_CATS: [keys: string[], label: string][] = [
   [['tester'], '测试'],
 ];
 
-/** 卡3：活跃 Agent — 复刻 analysis 支付笔数卡（大数字总数 + 迷你柱状图按类型分布） */
+// 分类调色板（按 AGENT_CATS 顺序 + 其它），已过 dataviz 六项校验（light 模式，含 CVD 相邻对）；
+// 橙/绿对白底对比度 WARN 由柱顶直接数值标签缓解
+const AGENT_PALETTE = ['#1677ff', '#fa8c16', '#08979c', '#722ed1', '#52c41a', '#eb2f96'];
+
+/** 卡3：活跃 Agent — 大数字总数 + 柱状图（每类一色 + 图例 + 柱顶数值） */
 function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
   const byType = totals.active_runs_by_type || {};
   const total = totals.active_runs ?? 0;
@@ -116,24 +120,33 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
       value: keys.reduce((s, k) => s + (byType[k] || 0), 0),
     })),
     { type: '其它', value: other },
-  ];
+  ].filter((d) => d.value > 0);
   return (
     <Card variant="borderless" styles={{ body: CARD_BODY }}>
-      <TileHeader title="活跃 Agent 运行" tooltip="运行中/刚启动的 agent run 按类型分布，悬浮柱体查看数值" />
+      <TileHeader title="活跃 Agent 运行" tooltip="运行中/刚启动的 agent run 按类型分布" />
       <div style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px', margin: '4px 0 6px' }}>
         {total}
       </div>
-      <div style={{ height: 46 }}>
-        <Column
-          data={data}
-          xField="type"
-          yField="value"
-          height={46}
-          axis={false}
-          padding={-20}
-          autoFit
-          style={{ insetLeft: 4, insetRight: 4 }}
-        />
+      <div style={{ height: 170 }}>
+        {data.length ? (
+          <Column
+            data={data}
+            xField="type"
+            yField="value"
+            colorField="type"
+            height={170}
+            autoFit
+            axis={false}
+            scale={{ color: { range: AGENT_PALETTE } }}
+            legend={{
+              color: { position: 'bottom', layout: { justifyContent: 'center' } },
+            }}
+            labels={[{ text: 'value', position: 'top', style: { fontSize: 11 } }]}
+            style={{ insetLeft: 4, insetRight: 4 }}
+          />
+        ) : (
+          <Typography.Text type="secondary">暂无活跃运行</Typography.Text>
+        )}
       </div>
     </Card>
   );
@@ -156,7 +169,7 @@ function TokenTile({ recent }: { recent: TokenUsageItem[] }) {
     <Card variant="borderless" styles={{ body: CARD_BODY }}>
       <TileHeader
         title="Token 消耗"
-        tooltip="最近 20 个 SPEC 的累计消耗（_tokens_in + _tokens_out），按最近活跃排序；悬浮查看单点数值"
+        tooltip="最近 20 个有消耗的 SPEC（_tokens_in + _tokens_out 累计），按最近活跃排序；悬浮查看单点数值"
       />
       <div style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px', margin: '4px 0 6px' }}>
         {compactTokens(sum)}
@@ -211,6 +224,7 @@ export default function IntroduceRow({
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
         gap: 16,
+        alignItems: 'start',
       }}
     >
       <SpecCountTile totals={totals} />

@@ -1497,10 +1497,15 @@ def _updated_spec_counts(entries: dict, today_start: datetime, week_start: datet
 
 
 def _token_recent_entries(entries: dict, project_name: str) -> list:
-    """收集各 spec 的累计 token 消耗（_tokens_in/_tokens_out 为 STATE 持久累计值）。"""
+    """收集各 spec 的累计 token 消耗（_tokens_in/_tokens_out 为 STATE 持久累计值）。
+
+    跳过无消耗数值（tokens==0）的 spec——消费方展示「最近 20 个有数值的 spec」。
+    """
     out = []
     for name, entry in entries.items():
         tokens = int(entry.get("_tokens_in", 0) or 0) + int(entry.get("_tokens_out", 0) or 0)
+        if tokens <= 0:
+            continue
         out.append({
             "project": project_name,
             "spec": name,
