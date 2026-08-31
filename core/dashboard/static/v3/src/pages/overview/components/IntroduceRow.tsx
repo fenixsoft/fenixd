@@ -6,9 +6,9 @@ import type { OverviewTotals, TokenUsageItem } from '@/services/dashboard';
 
 /**
  * 统计卡行（复刻 ant-design-pro analysis 页 IntroduceRow 各卡布局）。
- * 5 卡：SPEC总数(总销售额) / 任务进度(运营活动效果) / 活跃Agent(归一化单行堆叠条) /
- *       Token消耗(访问量·面积图) / 问题阻塞。
- * 标题走 antd Card 原生 head（ant-card-head-title 结构，同 analysis），浅灰 14px；
+ * 4 卡：SPEC总数(总销售额) / 任务进度(运营活动效果) / 活跃Agent(归一化单行堆叠条) /
+ *       Token消耗(访问量·面积图)。
+ * 头部 title 为 ant-card-head-title 默认黑粗样式；正文内保留浅灰自绘眉题；
  * 文字一律文本色，语义色只用于状态值。
  */
 const CARD_BODY = { padding: '16px 24px' } as const;
@@ -78,12 +78,12 @@ function SpecCountTile({ totals }: { totals: OverviewTotals }) {
   );
 }
 
-/** 卡2：任务进度 — 复刻 analysis 运营活动效果卡（大数字百分比 + 已完成小字跟随 + 渐变进度条） */
+/** 卡2：任务进度 — 复刻 analysis 运营活动效果卡（大数字左 + 已完成右 + 渐变进度条） */
 function TaskProgressTile({ totals }: { totals: OverviewTotals }) {
   const progress = pct(totals.task_done ?? 0, totals.task_total ?? 0);
   return (
     <Tile title="任务进度">
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, margin: '4px 0 10px', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '4px 0 10px', flexWrap: 'wrap' }}>
         <span style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px' }}>{progress}%</span>
         <span>
           <Typography.Text type="secondary">已完成 </Typography.Text>
@@ -168,6 +168,7 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
         style={{
           display: 'flex',
           alignItems: 'center',
+          justifyContent: 'space-between',
           gap: 6,
           margin: '4px 0 10px',
           whiteSpace: 'nowrap',
@@ -257,17 +258,7 @@ function TokenTile({ recent }: { recent: TokenUsageItem[] }) {
   );
 }
 
-/** 卡5：问题/阻塞 */
-function ProblemTile({ totals }: { totals: OverviewTotals }) {
-  const hasProblem = (totals.problems || 0) > 0;
-  return (
-    <Tile title="问题/阻塞">
-      <div style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px', margin: '4px 0 6px', color: hasProblem ? '#ff4d4f' : undefined }}>
-        {totals.problems ?? 0}
-      </div>
-    </Tile>
-  );
-}
+/** 卡5：问题/阻塞 已按需求删除（阻塞信息保留在项目列表行内） */
 
 export default function IntroduceRow({
   totals,
@@ -288,7 +279,6 @@ export default function IntroduceRow({
       <TaskProgressTile totals={totals} />
       <ActiveAgentTile totals={totals} />
       <TokenTile recent={tokenRecent} />
-      <ProblemTile totals={totals} />
     </div>
   );
 }
