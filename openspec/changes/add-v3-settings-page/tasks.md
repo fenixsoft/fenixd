@@ -26,9 +26,7 @@
 
 - [x] 4.1 浏览器走查全部 spec Scenario（布局/切换/六子项读写/继承标注/主题持久化/错误反馈）
 - [x] 4.2 与 v1 配置页交叉核对：同一项目在 v1 与 v3 读取的键值一致，v3 保存后 v1 读取可见
-- [x] 4.3 console 零错误；`npm run build` 通过；dist 提交
+- [x] 4.3 console 零错误；`npm run build` 通过；dist 提交## 验证修复（第 2 轮失败）
 
-## 验证修复（第 1 轮失败）
-
-- [x] 阅读 `openspec/changes/add-v3-settings-page/verification-report.md`，定位「真实产品 Bug」并修复
-- [x] 修复后重跑验证确认通过
+- [ ] 阅读 `openspec/changes/add-v3-settings-page/verification-report.md`，定位「真实产品 Bug」并修复
+- [ ] 修复后重跑验证确认通过
