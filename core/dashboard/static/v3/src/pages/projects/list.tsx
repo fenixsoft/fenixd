@@ -9,6 +9,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popover,
   Progress,
   Radio,
   Select,
@@ -64,6 +65,87 @@ function fmtDuration(sec?: number | null) {
 }
 
 type TypeFilter = '' | 'req' | 'issue';
+
+// ── 名称列 Why 悬浮提示（对齐 v1 why-hint：悬停 200ms 拉取 proposal 的 ## Why 段） ──
+
+function extractWhy(markdown: string): string | null {
+  if (!markdown) return null;
+  const lines = String(markdown).split('\n');
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^##\s+why\s*$/i.test(lines[i])) {
+      start = i + 1;
+      break;
+    }
+  }
+  if (start === -1) return null;
+  const collected: string[] = [];
+  for (let i = start; i < lines.length; i++) {
+    if (/^##\s/.test(lines[i])) break; // 下一个二级标题即段尾（### 子标题不影响）
+    collected.push(lines[i]);
+  }
+  const text = collected.join('\n').trim();
+  return text || null;
+}
+
+const whyCache = new Map<string, { status: 'loading' | 'done' | 'empty'; promise?: Promise<string | null>; text?: string }>();
+
+function fetchWhyText(project: string, spec: string): Promise<string | null> {
+  const key = `${project}│${spec}`;
+  const cached = whyCache.get(key);
+  if (cached) {
+    return cached.status === 'loading' && cached.promise
+      ? cached.promise
+      : Promise.resolve(cached.text || null);
+  }
+  const p = getSpecDoc(project, spec, 'proposal')
+    .then((d) => {
+      const why = d.found ? extractWhy(d.content) : null;
+      whyCache.set(key, { status: why ? 'done' : 'empty', text: why || undefined });
+      return why;
+    })
+    .catch(() => {
+      whyCache.delete(key); // 失败不缓存，下次 hover 自动重试
+      return null;
+    });
+  whyCache.set(key, { status: 'loading', promise: p });
+  return p;
+}
+
+function SpecNameCell({ project, record }: { project: string; record: SpecSummary }) {
+  const [open, setOpen] = useState(false);
+  const [why, setWhy] = useState<string | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const onEnter = () => {
+    timerRef.current = setTimeout(() => {
+      void fetchWhyText(project, record.name).then((text) => {
+        if (text) {
+          setWhy(text);
+          setOpen(true);
+        }
+      });
+    }, 200);
+  };
+  const onLeave = () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setOpen(false);
+  };
+
+  return (
+    <Popover
+      open={open && !!why}
+      placement="topLeft"
+      content={
+        <div style={{ maxWidth: 420, whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.65 }}>{why}</div>
+      }
+    >
+      <span onMouseEnter={onEnter} onMouseLeave={onLeave} style={{ cursor: 'pointer' }}>
+        {record.name}
+      </span>
+    </Popover>
+  );
+}
 
 /**
  * fix-* 规格归并成树（对齐 v1）：fix-fix-a 的父是 fix-a（若存在），再是 a；
@@ -293,9 +375,9 @@ export default function SpecListPage() {
       key: 'name',
       width: '35%',
       sorter: (a: SpecSummary, b: SpecSummary) => a.name.localeCompare(b.name),
-      render: (v: string, record: SpecSummary) => (
+      render: (_: string, record: SpecSummary) => (
         <Space size={4}>
-          <Typography.Text strong>{v}</Typography.Text>
+          <SpecNameCell project={name} record={record} />
           {record.error ? (
             <Tooltip title={record.error}>
               <Typography.Text type="danger">⚠</Typography.Text>
@@ -310,22 +392,27 @@ export default function SpecListPage() {
       key: 'priority',
       width: '8%',
       sorter: (a: SpecSummary, b: SpecSummary) => (a.priority ?? 999) - (b.priority ?? 999),
+      render: (v: number | null) => <span>P{v ?? '?'}</span>,
     },
     {
       title: '创建时间',
       dataIndex: 'created',
       key: 'created',
-      width: '8%',
+      width: '10%',
       sorter: (a: SpecSummary, b: SpecSummary) => (a.created || '').localeCompare(b.created || ''),
       render: (v: string | null) => {
         const d = v ? dayjs(v) : null;
-        return d && d.isValid() ? d.format('MM-DD HH:mm') : '';
+        return d && d.isValid() ? (
+          d.format('YYYY-MM-DD HH:mm:ss')
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        );
       },
     },
     {
       title: '任务进度',
       key: 'task',
-      width: '17%',
+      width: '15%',
       sorter: (a: SpecSummary, b: SpecSummary) =>
         pct(a.task_done, a.task_total) - pct(b.task_done, b.task_total),
       render: (_: unknown, record: SpecSummary) => {
