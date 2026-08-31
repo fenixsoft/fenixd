@@ -1,5 +1,5 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, Card, Checkbox, Col, Descriptions, Progress, Row, Space, Spin, Statistic, Tag, Typography } from 'antd';
+import { Alert, Card, Checkbox, Col, Descriptions, Empty, Progress, Row, Space, Spin, Statistic, Tabs, Tag, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { history, useParams } from '@umijs/max';
 import dayjs from 'dayjs';
@@ -72,6 +72,46 @@ export default function SpecDetailPage() {
   const allTasks = taskGroups.flatMap((g) => g.tasks || []);
   const completedTasks = allTasks.filter((t) => t.done).length;
   const totalTasks = allTasks.length;
+
+  // 页签配置
+  const tabItems = [
+    {
+      key: 'timeline',
+      label: '运行时间轴',
+      children: (
+        <div style={{ padding: '20px 0' }}>
+          <Empty description="暂无运行时间轴" />
+        </div>
+      ),
+    },
+    {
+      key: 'scenarios',
+      label: '场景结果',
+      children: (
+        <div style={{ padding: '20px 0' }}>
+          <Empty description={detail?.scenarios?.report_status === 'corrupted' ? 'report.json 损坏或不可读' : '暂无场景结果'} />
+        </div>
+      ),
+    },
+    {
+      key: 'bugs',
+      label: 'Bug 列表',
+      children: (
+        <div style={{ padding: '20px 0' }}>
+          <Empty description="暂无 Bug" />
+        </div>
+      ),
+    },
+    {
+      key: 'screenshots',
+      label: '失败截图',
+      children: (
+        <div style={{ padding: '20px 0' }}>
+          <Empty description="暂无失败截图" />
+        </div>
+      ),
+    },
+  ];
 
   return (
     <PageContainer
@@ -243,9 +283,9 @@ export default function SpecDetailPage() {
         </Col>
       </Row>
 
-      {/* 页签骨架 */}
-      <Card title="页签区">
-        <Typography.Paragraph>详情页骨架 - 待实现四个页签</Typography.Paragraph>
+      {/* 页签区 */}
+      <Card>
+        <Tabs items={tabItems} />
       </Card>
     </PageContainer>
   );
