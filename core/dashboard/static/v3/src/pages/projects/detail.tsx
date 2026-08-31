@@ -318,7 +318,97 @@ export default function SpecDetailPage() {
       label: 'Bug 列表',
       children: (
         <div style={{ padding: '20px 0' }}>
-          <Empty description="暂无 Bug" />
+          {detail?.bugs && detail.bugs.length > 0 ? (
+            <div>
+              {detail.bugs.map((bug, idx) => (
+                <Card
+                  key={idx}
+                  size="small"
+                  style={{ marginBottom: 12 }}
+                  title={
+                    <Space size={8}>
+                      <Tag
+                        color={
+                          bug.severity === 'critical'
+                            ? 'error'
+                            : bug.severity === 'major'
+                              ? 'orange'
+                              : bug.severity === 'minor'
+                                ? 'default'
+                                : 'blue'
+                        }
+                      >
+                        {bug.severity || 'major'}
+                      </Tag>
+                      <Typography.Text type="secondary">{bug.source || 'report'}</Typography.Text>
+                    </Space>
+                  }
+                >
+                  <Typography.Paragraph style={{ marginBottom: 8 }}>
+                    {bug.description}
+                  </Typography.Paragraph>
+
+                  {/* 关联场景 */}
+                  {bug.scenario && (
+                    <div style={{ marginBottom: 8 }}>
+                      <Typography.Text type="secondary">关联场景: </Typography.Text>
+                      <Typography.Text>{bug.scenario}</Typography.Text>
+                    </div>
+                  )}
+
+                  {/* 断言类型 */}
+                  {bug.assertion && (
+                    <div style={{ marginBottom: 8 }}>
+                      <Typography.Text type="secondary">断言类型: </Typography.Text>
+                      <Typography.Text>{bug.assertion}</Typography.Text>
+                    </div>
+                  )}
+
+                  {/* 证据 */}
+                  {bug.evidence && (
+                    <div
+                      style={{
+                        padding: '8px 12px',
+                        marginBottom: 8,
+                        background: '#f5f5f5',
+                        borderRadius: 4,
+                        fontFamily: 'monospace',
+                        fontSize: 13,
+                      }}
+                    >
+                      <Typography.Text>{bug.evidence}</Typography.Text>
+                    </div>
+                  )}
+
+                  {/* 截图缩略图 */}
+                  {bug.screenshot && (
+                    <div style={{ marginTop: 8 }}>
+                      <img
+                        src={`/screenshots/${encodeURIComponent(name)}/${encodeURIComponent(spec)}/${encodeURIComponent(bug.screenshot)}`}
+                        alt={`Bug ${idx + 1} 截图`}
+                        style={{
+                          maxWidth: 200,
+                          maxHeight: 150,
+                          border: '1px solid #d9d9d9',
+                          borderRadius: 4,
+                          cursor: 'pointer',
+                        }}
+                        onClick={() => {
+                          // 可以在这里实现图片预览
+                          window.open(
+                            `/screenshots/${encodeURIComponent(name)}/${encodeURIComponent(spec)}/${encodeURIComponent(bug.screenshot)}`,
+                            '_blank',
+                          );
+                        }}
+                      />
+                    </div>
+                  )}
+                </Card>
+              ))}
+            </div>
+          ) : (
+            <Empty description="暂无 Bug" />
+          )}
         </div>
       ),
     },
