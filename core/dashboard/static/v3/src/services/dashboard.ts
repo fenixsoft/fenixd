@@ -75,6 +75,41 @@ export function deleteProject(name: string) {
   return request(`/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }
 
+// ── 运维记录（/api/admin-activities，与 v1 运维记录页同源） ──
+
+export interface ActivityItem {
+  escalation_id?: string;
+  project?: string;
+  spec?: string;
+  severity?: string;
+  signal_type?: string;
+  summary?: string;
+  actions_taken?: string;
+  result?: string;
+  recommended_action?: string;
+  created?: string;
+  handled?: boolean;
+  handled_by?: string;
+  handled_at?: string;
+  resolve_note?: string;
+}
+
+export interface ProjectActivities {
+  name: string;
+  activities: ActivityItem[];
+}
+
+export interface AdminActivitiesData {
+  projects?: ProjectActivities[];
+  project?: string;
+  activities?: ActivityItem[];
+}
+
+export async function getAdminActivities(project?: string): Promise<AdminActivitiesData> {
+  const q = project ? `?project=${encodeURIComponent(project)}` : '';
+  return request<AdminActivitiesData>(`/api/admin-activities${q}`);
+}
+
 // ── 人工升级告警（/api/alerts，与 v1 横幅同源） ──
 
 export interface AlertItem {
