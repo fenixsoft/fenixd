@@ -1,5 +1,6 @@
 import { Button, Card, Form, Input, Popconfirm, Space, Typography } from 'antd';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
+import { useEffect } from 'react';
 import type { ConfigData, LlmProvider } from '@/services/dashboard';
 
 const { Text } = Typography;
@@ -16,6 +17,13 @@ export default function LlmProviderPanel({ config, onSave }: LlmProviderPanelPro
   const initialValues = {
     providers: config.llm.providers || [],
   };
+
+  // 监听 config 变化，更新表单值
+  useEffect(() => {
+    form.setFieldsValue({
+      providers: config.llm.providers || [],
+    });
+  }, [config.llm.providers, form]);
 
   const handleSave = async () => {
     try {

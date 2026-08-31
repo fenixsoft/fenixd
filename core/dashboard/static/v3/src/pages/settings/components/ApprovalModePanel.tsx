@@ -1,4 +1,5 @@
 import { Button, Card, Form, Radio, Typography } from 'antd';
+import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 
 const { Text } = Typography;
@@ -15,6 +16,13 @@ export default function ApprovalModePanel({ config, onSave }: ApprovalModePanelP
   const initialValues = {
     approve_mode: config.gates.approve_mode || 'manual',
   };
+
+  // 监听 config 变化，更新表单值
+  useEffect(() => {
+    form.setFieldsValue({
+      approve_mode: config.gates.approve_mode || 'manual',
+    });
+  }, [config.gates.approve_mode, form]);
 
   const handleSave = async () => {
     try {

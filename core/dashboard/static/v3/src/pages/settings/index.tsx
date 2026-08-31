@@ -22,16 +22,29 @@ const MENU_ITEMS = [
   { key: 'theme', label: '界面风格' },
 ];
 
+// 从 location 解析 URL query（兼容 hash 路由模式与 search 模式）
+function parseSearchParams(location: { search?: string; hash?: string }): URLSearchParams {
+  if (location.search) {
+    return new URLSearchParams(location.search);
+  }
+  const hash = location.hash || '';
+  const questionMarkIndex = hash.indexOf('?');
+  if (questionMarkIndex >= 0) {
+    return new URLSearchParams(hash.substring(questionMarkIndex + 1));
+  }
+  return new URLSearchParams();
+}
+
 export default function SettingsPage() {
   const [activeKey, setActiveKey] = useState('llm');
 
-  // 从 URL query 解析初始状态
+  // 从 URL query 解析初始状态（支持 hash 路由模式）
   const getInitialScope = () => {
-    const params = new URLSearchParams(history.location.search);
+    const params = parseSearchParams(history.location);
     return (params.get('scope') as 'user' | 'project') || 'user';
   };
   const getInitialProject = () => {
-    const params = new URLSearchParams(history.location.search);
+    const params = parseSearchParams(history.location);
     return params.get('project') || undefined;
   };
 
@@ -71,7 +84,7 @@ export default function SettingsPage() {
       }
     };
     loadConfig();
-  }, [project]);
+  }, [project, scope]); // 添加 scope 依赖，确保作用域切换时重新加载配置
 
   // 更新 URL 参数
   useEffect(() => {
@@ -83,6 +96,24 @@ export default function SettingsPage() {
       params.set('scope', 'user');
     }
     history.push(`/settings?${params.toString()}`);
+  }, [scope, project]);
+
+  // 监听 URL 变化（浏览器前进/后退按钮）
+  useEffect(() => {
+    const unlisten = history.listen((location) => {
+      const params = parseSearchParams(location);
+      const newScope = (params.get('scope') as 'user' | 'project') || 'user';
+      const newProject = params.get('project') || undefined;
+
+      // 只有当 URL 参数与当前状态不同时才更新
+      if (newScope !== scope) {
+        setScope(newScope);
+      }
+      if (newProject !== project) {
+        setProject(newProject);
+      }
+    });
+    return () => unlisten();
   }, [scope, project]);
 
   // 处理作用域切换
