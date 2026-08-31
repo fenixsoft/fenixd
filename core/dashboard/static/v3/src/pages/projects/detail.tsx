@@ -1,5 +1,5 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, Card, Checkbox, Col, Collapse, Descriptions, Empty, Progress, Row, Space, Spin, Statistic, Tabs, Tag, Timeline, Typography } from 'antd';
+import { Alert, Card, Checkbox, Col, Collapse, Descriptions, Empty, Image, Progress, Row, Space, Spin, Statistic, Tabs, Tag, Timeline, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { history, useParams } from '@umijs/max';
 import dayjs from 'dayjs';
@@ -417,7 +417,44 @@ export default function SpecDetailPage() {
       label: '失败截图',
       children: (
         <div style={{ padding: '20px 0' }}>
-          <Empty description="暂无失败截图" />
+          {detail?.screenshots && detail.screenshots.length > 0 ? (
+            <div>
+              <div style={{ marginBottom: 12 }}>
+                <Typography.Text type="secondary">
+                  共 {detail.screenshots.length} 张截图（点击放大）
+                </Typography.Text>
+              </div>
+              <Image.PreviewGroup
+                items={detail.screenshots.map((file) => ({
+                  src: `/screenshots/${encodeURIComponent(name)}/${encodeURIComponent(spec)}/${encodeURIComponent(file)}`,
+                  alt: file,
+                }))}
+              >
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {detail.screenshots.map((file, idx) => (
+                    <Image
+                      key={idx}
+                      src={`/screenshots/${encodeURIComponent(name)}/${encodeURIComponent(spec)}/${encodeURIComponent(file)}`}
+                      alt={file}
+                      width={150}
+                      height={100}
+                      style={{
+                        objectFit: 'cover',
+                        border: '1px solid #d9d9d9',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                      }}
+                      preview={{
+                        mask: '点击预览',
+                      }}
+                    />
+                  ))}
+                </div>
+              </Image.PreviewGroup>
+            </div>
+          ) : (
+            <Empty description="暂无失败截图" />
+          )}
         </div>
       ),
     },
