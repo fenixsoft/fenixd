@@ -37,7 +37,7 @@ function Tile({
   return (
     <Card
       variant="borderless"
-      title={<span style={{ fontSize: 14, color: TITLE_GRAY }}>{title}</span>}
+      title={title}
       extra={
         tooltip ? (
           <Tooltip title={tooltip}>
@@ -45,8 +45,10 @@ function Tile({
           </Tooltip>
         ) : undefined
       }
-      styles={{ body: CARD_BODY, header: { borderBottom: 'none' } }}
+      styles={{ body: CARD_BODY, header: { borderBottom: 'none', paddingInline: 16 } }}
     >
+      {/* 原有自绘标题行：浅灰小字（头部 title 为 ant-card-head-title 默认黑粗大字） */}
+      <div style={{ fontSize: 14, color: TITLE_GRAY, marginBottom: 4 }}>{title}</div>
       {children}
     </Card>
   );
@@ -162,34 +164,42 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
   ].filter((d) => d.value > 0);
   return (
     <Tile title="活跃 Agent 运行" tooltip="运行中/刚启动的 agent run 按类型占比">
-      <div style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px', margin: '4px 0 6px' }}>
-        {total}
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-        {data.map((d, i) => (
-          <span
-            key={d.type}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 4,
-              fontSize: 12,
-              color: 'rgba(0,0,0,0.65)',
-              whiteSpace: 'nowrap',
-            }}
-          >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          margin: '4px 0 10px',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+        }}
+      >
+        <span style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px' }}>{total}</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          {data.map((d, i) => (
             <span
+              key={d.type}
               style={{
-                width: 8,
-                height: 8,
-                background: AGENT_PALETTE[i % AGENT_PALETTE.length],
-                borderRadius: 2,
-                display: 'inline-block',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 2,
+                fontSize: 11,
+                color: 'rgba(0,0,0,0.65)',
               }}
-            />
-            {d.type}
-          </span>
-        ))}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  background: AGENT_PALETTE[i % AGENT_PALETTE.length],
+                  borderRadius: 2,
+                  display: 'inline-block',
+                }}
+              />
+              {d.type}
+            </span>
+          ))}
+        </span>
       </div>
       <div style={{ minHeight: 20 }}>
         {data.length ? (
