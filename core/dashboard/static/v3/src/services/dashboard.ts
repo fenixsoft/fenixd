@@ -253,6 +253,8 @@ export interface SpecDetail {
     run_id?: string;
     agent?: string;
     status?: string;
+    duration_seconds?: number;
+    spec?: string;
   }>;
   // 场景结果
   scenarios?: {

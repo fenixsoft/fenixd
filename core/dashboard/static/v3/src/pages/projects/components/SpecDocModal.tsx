@@ -1,4 +1,5 @@
-import { Modal, Tabs, Spin, Empty, Alert, Button } from 'antd';
+import { Modal, Tabs, Spin, Empty, Alert, Button, Space } from 'antd';
+import { FullscreenExitOutlined, FullscreenOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -54,6 +55,7 @@ const markdownComponents: Components = {
 
 export default function SpecDocModal({ project, spec, open, onClose }: SpecDocModalProps) {
   const [activeTab, setActiveTab] = useState<DocType>('proposal');
+  const [maximized, setMaximized] = useState(false);
   const cacheRef = useRef<Map<string, DocCacheEntry>>(new Map());
   const [cacheVersion, setCacheVersion] = useState(0);
 
@@ -150,7 +152,7 @@ export default function SpecDocModal({ project, spec, open, onClose }: SpecDocMo
         return (
           <div
             style={{
-              maxHeight: 480,
+              height: '100%',
               overflow: 'auto',
               fontSize: 13,
               lineHeight: 1.65,
@@ -164,13 +166,33 @@ export default function SpecDocModal({ project, spec, open, onClose }: SpecDocMo
     }
   };
 
+  // 默认尺寸 = 视口宽高的 80%；最大化 = 占满全屏
+  const modalWidth = maximized ? '100vw' : '80%';
+  const bodyHeight = maximized ? 'calc(100vh - 80px)' : 'calc(80vh - 80px)';
+
   return (
     <Modal
-      title={`${spec || ''} 文档`}
+      title={
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingRight: 4 }}>
+          <span>{`${spec || ''} 文档`}</span>
+          <Space size={0}>
+            <Button
+              type="text"
+              size="small"
+              title={maximized ? '还原' : '最大化'}
+              icon={maximized ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+              onClick={() => setMaximized((v) => !v)}
+            />
+          </Space>
+        </div>
+      }
       open={open}
       onCancel={onClose}
       footer={null}
-      width={760}
+      width={modalWidth}
+      centered={!maximized}
+      style={maximized ? { top: 0, maxWidth: '100vw', paddingBottom: 0 } : undefined}
+      styles={{ body: { height: bodyHeight, display: 'flex', flexDirection: 'column', overflow: 'hidden' } }}
     >
       <Tabs
         activeKey={activeTab}
@@ -181,7 +203,7 @@ export default function SpecDocModal({ project, spec, open, onClose }: SpecDocMo
           { key: 'tasks', label: '任务清单' },
         ]}
       />
-      {renderContent()}
+      <div style={{ flex: 1, minHeight: 0 }}>{renderContent()}</div>
     </Modal>
   );
 }

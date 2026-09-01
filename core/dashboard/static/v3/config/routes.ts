@@ -20,12 +20,12 @@ export default [
     component: './projects',
   },
   {
-    path: '/projects/:name',
-    component: './projects/list',
-  },
-  {
     path: '/projects/:name/:spec',
     component: './projects/detail',
+  },
+  {
+    path: '/projects/:name',
+    component: './projects/list',
   },
   {
     path: '/settings',
