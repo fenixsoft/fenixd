@@ -1,4 +1,4 @@
-import { AutoComplete, Button, Modal, Space, Spin, Tag, Typography, message } from 'antd';
+import { AutoComplete, Button, Modal, Space, Spin, Typography, message } from 'antd';
 import { useEffect, useRef, useState } from 'react';
 import { getAdminActivities, invokeSpecAdmin } from '@/services/dashboard';
 import { ClaudeOutputPane } from '@/components/claude-msg';
@@ -13,6 +13,9 @@ interface AdminInvokeModalProps {
 }
 
 const POLL_INTERVAL_MS = 3000;
+// 首事件到达后再等 10s 才揭示输出区：LLM prefill 阶段无可见输出，
+// 过早切换会先呈现一段空白面板，保持等待动画直到确有内容可看
+const REVEAL_DELAY_MS = 10000;
 
 export default function AdminInvokeModal({ project, spec, open, onClose }: AdminInvokeModalProps) {
   const [prompt, setPrompt] = useState('');
@@ -22,11 +25,22 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   const [eventCount, setEventCount] = useState(0);
   // Administrator 串行处理：发起时若上一次处置尚未完成，本次请求排队等候拾取
   const [queued, setQueued] = useState(false);
+  // 本次处置是否已到终态（done/error/missing）：终态后按钮与输入框恢复可用
+  const [runDone, setRunDone] = useState(false);
+  // 输出区是否已揭示（首事件后延迟 REVEAL_DELAY_MS）
+  const [revealed, setRevealed] = useState(false);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 本轮发起时刻（ms）：轮询只采用此后产生的 run，避免 daemon 尚未落 pending 时
   // 取到历史 run；409（已有处置进行中）时放宽为接受现有最新 run。
   const invokeTimeRef = useRef(0);
   const acceptAnyRunRef = useRef(false);
+  // 回车发送经 setTimeout 延后触发（等下拉选中项的 onChange 回写），
+  // 用 ref 读取最新输入值，避免闭包拿到旧值
+  const promptRef = useRef('');
+  promptRef.current = prompt;
+
+  const inProgress = invoked && !runDone;
 
   // 常用问题模板（spec 名替换 XX）
   const templates = [
@@ -34,7 +48,7 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     { value: `调查 ${spec} 出现了什么问题并给出解决方案` },
   ];
 
-  // 打开时重置；关闭时停轮询
+  // 打开时重置；关闭时停掉揭示定时器
   useEffect(() => {
     if (open) {
       setPrompt('');
@@ -43,10 +57,26 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
       setRunId(null);
       setEventCount(0);
       setQueued(false);
+      setRunDone(false);
+      setRevealed(false);
       invokeTimeRef.current = 0;
       acceptAnyRunRef.current = false;
+    } else if (revealTimerRef.current) {
+      clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = null;
     }
   }, [open]);
+
+  // 卸载兜底清理
+  useEffect(
+    () => () => {
+      if (revealTimerRef.current) {
+        clearTimeout(revealTimerRef.current);
+        revealTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   // 已发起：轮询定位本次处置的 admin run（daemon 异步启动，invoke 响应不含 run_id）
   useEffect(() => {
@@ -59,7 +89,10 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
         const rid = latest?.admin_run_id;
         const createdMs = latest?.created ? new Date(latest.created).getTime() : 0;
         if (rid && (acceptAnyRunRef.current || createdMs >= invokeTimeRef.current - 5000)) {
-          if (!stopped) setRunId(rid);
+          if (!stopped) {
+            setRunId(rid);
+            setQueued(false);
+          }
           return;
         }
         // 最新记录是发起前就在处理的 pending → 本请求排队中，更新提示文案
@@ -83,16 +116,40 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
     };
   }, [open, invoked, runId, project, spec]);
 
+  // 首事件到达后延迟揭示输出区（定时器只挂一次）
+  useEffect(() => {
+    if (eventCount > 0 && !revealed && !revealTimerRef.current) {
+      revealTimerRef.current = setTimeout(() => {
+        revealTimerRef.current = null;
+        setRevealed(true);
+      }, REVEAL_DELAY_MS);
+    }
+  }, [eventCount, revealed]);
+
+  const handleRunStatus = (status: string) => {
+    if (status === 'done' || status === 'error' || status === 'missing') {
+      setRunDone(true);
+    }
+  };
+
   const handleSend = async () => {
-    const text = prompt.trim();
+    const text = promptRef.current.trim();
     if (!text) {
       message.warning('请输入给 Admin 的提示词');
       return;
     }
+    // 处置进行中不允许重复发起（按钮已禁用，此处拦住回车路径）
+    if (invoked && !runDone) return;
     setSending(true);
     try {
       await invokeSpecAdmin(project, spec, text);
       invokeTimeRef.current = Date.now();
+      acceptAnyRunRef.current = false;
+      setRunId(null);
+      setEventCount(0);
+      setQueued(false);
+      setRunDone(false);
+      setRevealed(false);
       setInvoked(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -135,17 +192,43 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
         style={{
           flex: 1,
           minHeight: 0,
-          overflow: 'auto',
+          position: 'relative',
+          overflow: 'hidden',
           border: '1px solid #f0f0f0',
           borderRadius: 8,
-          padding: 12,
           background: '#fafafa',
         }}
       >
-        {runId ? (
-          <ClaudeOutputPane runId={runId} project={project} onEventsCount={setEventCount} />
-        ) : invoked ? (
-          <div style={{ textAlign: 'center', paddingTop: 80 }}>
+        {/* 输出面板：run 定位后立即挂载并开始收流；揭示前隐藏，避免 prefill 空白期露白 */}
+        {runId && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              padding: 12,
+              visibility: revealed ? 'visible' : 'hidden',
+            }}
+          >
+            <ClaudeOutputPane
+              key={runId}
+              runId={runId}
+              project={project}
+              onEventsCount={setEventCount}
+              onRunStatus={handleRunStatus}
+            />
+          </div>
+        )}
+        {/* 等待层：首事件后 10s 才移除 */}
+        {invoked && (!runId || !revealed) && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
             <Space direction="vertical" size={12}>
               <Spin />
               <Text type="secondary">
@@ -155,8 +238,18 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
               </Text>
             </Space>
           </div>
-        ) : (
-          <div style={{ textAlign: 'center', paddingTop: 80 }}>
+        )}
+        {!invoked && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 24,
+            }}
+          >
             <Text type="secondary">
               在下方输入给 Admin 的提示词（可从输入框下拉选择常用问题），发起后此处将实时展示
               Administrator 的处置输出。
@@ -170,16 +263,33 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
           value={prompt}
           onChange={setPrompt}
           options={templates}
-          placeholder="输入提示词，或点击下拉选择常用问题"
-          onPressEnter={() => void handleSend()}
-          disabled={invoked}
+          placeholder="输入提示词回车发起，或点击下拉选择常用问题"
+          disabled={inProgress}
+          defaultActiveFirstOption={false}
+          notFoundContent={null}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+              // antd6 AutoComplete 不支持 onPressEnter（属性被静默忽略）；
+              // 延后一拍发送，让下拉中回车选中模板时的 onChange 先回写最新值
+              window.setTimeout(() => {
+                void handleSend();
+              }, 0);
+            }
+          }}
           // Modal 内浮层默认挂 body 会被 Modal 容器遮挡，挂到触发器父级
           getPopupContainer={(trigger) => trigger.parentElement || document.body}
         />
-        {invoked ? (
-          <Tag style={{ lineHeight: '30px' }}>处置进行中</Tag>
+        {inProgress ? (
+          <Button disabled style={{ minWidth: 104 }}>
+            处置进行中
+          </Button>
         ) : (
-          <Button type="primary" loading={sending} onClick={() => void handleSend()}>
+          <Button
+            type="primary"
+            style={{ minWidth: 104 }}
+            loading={sending}
+            onClick={() => void handleSend()}
+          >
             发起处置
           </Button>
         )}

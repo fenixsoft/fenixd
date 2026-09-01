@@ -15,9 +15,17 @@ interface ClaudeOutputPaneProps {
   tail?: number;
   /** 事件数变化回调（供外层在标题处显示"共 N 条事件"） */
   onEventsCount?: (count: number) => void;
+  /** run 终态回调：done / error / missing（供外层恢复输入与按钮状态） */
+  onRunStatus?: (status: string) => void;
 }
 
-export default function ClaudeOutputPane({ runId, project, tail = 300, onEventsCount }: ClaudeOutputPaneProps) {
+export default function ClaudeOutputPane({
+  runId,
+  project,
+  tail = 300,
+  onEventsCount,
+  onRunStatus,
+}: ClaudeOutputPaneProps) {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -43,6 +51,7 @@ export default function ClaudeOutputPane({ runId, project, tail = 300, onEventsC
         if (isMountedRef.current) {
           setEvents(data.events || []);
           setError('');
+          onRunStatus?.(data.status || '');
         }
       } catch (e) {
         if (isMountedRef.current) {
@@ -87,6 +96,17 @@ export default function ClaudeOutputPane({ runId, project, tail = 300, onEventsC
           } catch (e) {
             console.error('Failed to register run watch:', e);
           }
+          // 注册后重拉一次尾部：兜底「run 在 watch 注册前已结束」或「SSE 断线
+          // 重连期间错过终态事件」的场景，否则外层永远收不到完成回调
+          try {
+            const data = await getRunTail(runId, project, tail);
+            if (isMountedRef.current) {
+              setEvents(data.events || []);
+              onRunStatus?.(data.status || '');
+            }
+          } catch (e) {
+            console.error('Failed to resync run tail:', e);
+          }
         })();
         return;
       }
@@ -99,6 +119,7 @@ export default function ClaudeOutputPane({ runId, project, tail = 300, onEventsC
               const data = await getRunTail(runId, project, tail);
               if (isMountedRef.current) {
                 setEvents(data.events || []);
+                onRunStatus?.(data.status || '');
               }
             } catch (e) {
               console.error('Failed to reload tail:', e);
@@ -106,6 +127,8 @@ export default function ClaudeOutputPane({ runId, project, tail = 300, onEventsC
           })();
         } else if (msg.events && msg.events.length > 0) {
           setEvents((prev) => [...prev, ...msg.events!]);
+          const terminal = msg.events.find((ev) => ev.type === 'result' || ev.type === 'error');
+          if (terminal) onRunStatus?.(terminal.type === 'result' ? 'done' : 'error');
         }
       }
     };
