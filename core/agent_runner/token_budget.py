@@ -61,15 +61,16 @@ class TokenAccountant:
                 f"token 累计写 STATE 失败 '{spec_name}': {e}",
             )
             return
-        # 预算阈值检查（D4）：80% 提醒 / 100% 升级，不自动冻结
+        # 预算阈值检查（D4）：80% / 100% 均为警告级，不自动冻结
         self._check_token_budget(spec_name, new_in)
 
 
     def _check_token_budget(self, spec_name: str, tokens_in: int) -> None:
-        """预算阈值告警（add-cost-observability D4）：80% 提醒 / 100% 升级，幂等不重复。
+        """预算阈值告警（add-cost-observability D4）：80% / 100% 均为警告级，幂等不重复。
 
-        配置 ``agents.token_budget_millions``（缺省 50，0=关闭）。越过 80% 线发提醒级告警
-        并置位 ``_token_warn_80``；越过 100% 线发升级级告警并置位 ``_token_alert_100``。
+        配置 ``agents.token_budget_millions``（缺省 50，0=关闭）。越过 80% 线发警告级告警
+        并置位 ``_token_warn_80``；越过 100% 线发警告级告警并置位 ``_token_alert_100``
+        （2026-09-01 用户决策：两档均降为警告，不发严重事件）。
         告警 MUST NOT 修改 spec 状态（不自动冻结，design 决策有意为之）。
         """
         budget = self._pm._get_config("agents.token_budget_millions", 50)
@@ -90,8 +91,8 @@ class TokenAccountant:
         alert_flag = bool(entry.get("_token_alert_100", False))
 
         if ratio >= 1.0 and not alert_flag:
-            self._send_token_alert(spec_name, tokens_in, budget, "critical",
-                                   "预算 100% 升级告警")
+            self._send_token_alert(spec_name, tokens_in, budget, "warning",
+                                   "预算 100% 警告")
             try:
                 self._pm.state_machine.update_spec(spec_name, {"_token_alert_100": True})
             except Exception:
@@ -109,13 +110,15 @@ class TokenAccountant:
                           severity: str, title: str) -> None:
         """写一条 token 预算 human-escalation-alert（复用 AdminStore，与 pm_engine 同管道）。
 
-        severity: warning=提醒级（80% 线），critical=升级级（100% 线）。不修改 spec 状态。
+        severity 统一为 warning（80%/100% 两档均为警告级，2026-09-01 用户降噪决策）。
+        警告级不进人工待处理队列：写入即标记 handled，仅留历史记录。
+        不修改 spec 状态。
         """
         try:
-            from core.admin_store import AdminStore, ESCALATION
+            from core.admin_store import AdminStore, ESCALATION, severity_needs_human
             store = AdminStore(self._pm.project_root, self._pm.logger)
             pct = (tokens_in / (float(budget) * 1_000_000) * 100.0)
-            store.append({
+            rec = store.append({
                 "kind": ESCALATION,
                 "signal_type": "token_budget",
                 "spec": spec_name,
@@ -133,6 +136,8 @@ class TokenAccountant:
                     "（本告警不自动冻结 spec）"
                 ),
             })
+            if not severity_needs_human(severity):
+                store.mark_handled(rec["id"])
             self._pm.logger.warning(
                 "agent_runner",
                 f"token budget alert ({severity}) for '{spec_name}': "

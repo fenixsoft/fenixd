@@ -192,6 +192,24 @@ class TestAdminStore:
         assert store.unhandled_for("s2", "stuck") is None
         assert store.unhandled_for("s1", "flapping") is None
 
+    def test_append_trims_to_max_records(self, tmp_path):
+        """任何写回自动裁剪：只保留最近 MAX_RECORDS 条，最旧的被删。"""
+        from core.admin_store import MAX_RECORDS
+        store = AdminStore(tmp_path, FakeLogger())
+        for i in range(MAX_RECORDS + 10):
+            store.append({"kind": SIGNAL, "description": f"#{i}"})
+        records = store.read_all()
+        assert len(records) == MAX_RECORDS
+        descs = {r["description"] for r in records}
+        assert "#0" not in descs and "#9" not in descs  # 最旧 10 条被裁
+        assert f"#{MAX_RECORDS + 9}" in descs           # 最新一条在
+
+    def test_no_trim_below_limit(self, tmp_path):
+        store = AdminStore(tmp_path, FakeLogger())
+        for i in range(20):
+            store.append({"kind": SIGNAL, "description": f"#{i}"})
+        assert len(store.read_all()) == 20
+
 
 # ── 4.1 admin_monitor 检测规则 ──────────────────────────
 

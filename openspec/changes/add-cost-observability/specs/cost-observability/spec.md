@@ -18,7 +18,9 @@ Dashboard SPEC 详情 MUST 展示该 spec 的累计 token（格式如「输入 4
 - **THEN** 治理字段区展示累计 token 数
 
 ### Requirement: 预算阈值告警
-配置 `agents.token_budget_millions`（缺省 50，0=关闭）。累计 input 达到预算 80% 时发提醒级 human-escalation-alerts 告警（一次性，不重复）；达到 100% 时发升级级告警。告警 MUST NOT 自动冻结 spec。
+配置 `agents.token_budget_millions`（缺省 50，0=关闭）。累计 input 达到预算 80% 或 100% 时均发警告级 human-escalation-alerts 告警（一次性，不重复，2026-09-01 用户降噪决策：100% 线不再发严重事件）。告警 MUST NOT 自动冻结 spec。
+
+降噪分级（2026-09-01）：预算告警中仅 critical/major（严重/较高）进人工待处理队列；warning/minor（警告/较低）写入即默认标记人工已处理——仍留历史记录，不弹 Dashboard 待处理横幅（`impl_budget_exempt_loop` minor 同此规则，`impl_budget_exhausted` major 保持人工）。
 
 #### Scenario: 阈值触发一次
 - **GIVEN** 预算 50M，已累计 40M

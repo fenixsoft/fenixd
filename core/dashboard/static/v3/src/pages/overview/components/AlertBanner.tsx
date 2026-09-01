@@ -24,8 +24,9 @@ function fmtDate(iso?: string) {
 }
 
 function AlertLines({ item }: { item: AlertItem }) {
+  // pre-wrap 保留字段内的 \n / \t 格式（JSON 存储层未丢失，HTML 默认会折叠成空格）
   return (
-    <div style={{ fontSize: 12 }}>
+    <div style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>
       <div>{item.spec ? `📌 ${item.spec} ` : ''}{item.description}</div>
       {item.evidence ? (
         <Typography.Text type="secondary">证据：{item.evidence}</Typography.Text>

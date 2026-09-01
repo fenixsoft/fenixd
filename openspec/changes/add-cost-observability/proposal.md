@@ -8,7 +8,7 @@
 
 - run 收工时从 stream-json 结果提取 usage（input/output/cache tokens），累计持久化到 STATE.md 内部字段 `_tokens_in` / `_tokens_out`（per-spec 生命周期累计）
 - 验证报告与 Dashboard SPEC 详情展示累计 token（与 _verify_fail_rounds 等治理字段同区）
-- 新增预算告警：配置 `agents.token_budget_millions`（单 spec 累计 input 百万 token 上限，缺省 50；0=关闭）——达到 80% 发提醒级告警，达到 100% 发升级级告警（spec 继续跑不自动冻结，由人工决定是否处置）
+- 新增预算告警：配置 `agents.token_budget_millions`（单 spec 累计 input 百万 token 上限，缺省 50；0=关闭）——达到 80% / 100% 均发警告级告警（2026-09-01 用户降噪决策，100% 不再发严重事件；spec 继续跑不自动冻结，由人工决定是否处置）
 - 金额展示：网关回传成本时展示金额，不回传时仅展示 token 数（不伪造金额）
 
 ## Capabilities

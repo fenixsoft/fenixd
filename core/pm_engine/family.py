@@ -595,8 +595,11 @@ class FamilyGovernor:
         type/spec/condition），供闭环判定直接消费、无需解析自然语言 description。
         trigger 缺省时按 signal_type 从闭环枚举推导（接入点集中在此一处）；
         未接入枚举的 signal_type 不写 trigger、永不自动闭环（保守默认）。
+
+        降噪分级（2026-09-01 用户决策）：仅 critical/major 进人工待处理队列；
+        warning/minor 写入即标记 handled，只留历史记录不弹横幅。
         """
-        from core.admin_store import AdminStore, ESCALATION
+        from core.admin_store import AdminStore, ESCALATION, severity_needs_human
         from core.alert_lifecycle import build_trigger
         store = AdminStore(self._pm.project_root, self._pm.logger)
         if trigger is None:
@@ -613,7 +616,9 @@ class FamilyGovernor:
             }
             if trigger:
                 entry["trigger"] = trigger
-            store.append(entry)
+            rec = store.append(entry)
+            if not severity_needs_human(severity):
+                store.mark_handled(rec["id"])
             self._pm.logger.warning(
                 "pm_engine",
                 f"human-escalation-alert: {signal_type} for '{spec_name}'",

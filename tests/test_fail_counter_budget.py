@@ -338,6 +338,8 @@ class TestDeadRunBudgetExemption(_Base):
         self.assertEqual(len(alerts), 1)
         self.assertEqual(alerts[0]["severity"], "minor")
         self.assertIn("6 次", alerts[0]["description"])
+        # 较低级预算告警默认标记人工已处理（2026-09-01 降噪决策）：不进待处理队列
+        self.assertTrue(alerts[0]["handled"])
         # 幂等标记落盘
         self.assertTrue(self.sm.read_one("demo-spec").get("_exempt_alerted"))
 

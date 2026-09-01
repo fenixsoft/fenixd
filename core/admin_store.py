@@ -28,6 +28,19 @@ SIGNAL = "signal"
 ESCALATION = "escalation"
 DISPOSITION = "disposition"
 
+# 记录数上限（2026-09-01 用户决策）：任何写回时自动裁剪，只保留最近 150 条。
+# 消费方（latest_signal 冷却去重、auto_resolve 按 id 闭环）均只依赖近期记录，
+# 裁掉最旧历史不影响语义。
+MAX_RECORDS = 150
+
+# 降噪分级（2026-09-01 用户决策）：只有 critical/major 默认进人工待处理
+# 队列；warning/minor 写入即自动标记已处理（仍留历史记录，不弹横幅）。
+HUMAN_SEVERITIES = ("critical", "major")
+
+
+def severity_needs_human(severity: str) -> bool:
+    return (severity or "").lower() in HUMAN_SEVERITIES
+
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -103,6 +116,8 @@ class AdminStore:
         锁获取中读改写会互相覆盖丢失记录，因此必须一次性持锁完成。
         skip_unchanged=True 时（add-alert-auto-resolve D1）：fn 返回假值
         （无任何变更）则跳过写回，文件 mtime 保持不变。
+
+        写回前自动裁剪到最近 MAX_RECORDS 条（新记录在数组末尾，删头部最旧的）。
         """
         with self._thread_lock:
             with self._lock() as lf:
@@ -112,6 +127,8 @@ class AdminStore:
                     result = fn(records)
                     if skip_unchanged and not result:
                         return result
+                    if len(records) > MAX_RECORDS:
+                        del records[:-MAX_RECORDS]
                     self._write_unlocked(records)
                     return result
                 finally:
