@@ -446,6 +446,11 @@ class PromptBuilder:
             evidence = sig.get("evidence") or ""
             recommendation = sig.get("recommended_action") or ""
             dash_script = f"{self._pm.project_root}/.fenix/bin/fenix_dashboard.py"
+            # fix-admin-run-blocks-mainloop D3：处置状态文件按 run 实例分离，
+            # 写入路径由 run_administrator 注入 signal；缺失时回退旧全局路径
+            # （仅影响绕过 run_administrator 的直接构建，正常链路必然注入）。
+            disp_path = (sig.get("disposition_path")
+                         or f"{self._pm.project_root}/.fenix/admin_disposition.json")
             return (
                 f"You are the Fenix Administrator Agent — 运维角色，"
                 f"负责处置 Agent 无法自行脱困的困境。\n\n"
@@ -485,12 +490,12 @@ class PromptBuilder:
                 f"1. 只处置困境，不开发功能、不实现 SPEC 需求。\n"
                 f"2. 先只读诊断（日志/STATE.md/进程/run 转录），确认根因再动手。\n"
                 f"3. 所有处置动作留痕（在处置记录中说明）。\n"
-                f"4. 持久化优先：完成诊断后【先】写一次 .fenix/admin_disposition.json"
+                f"4. 持久化优先：完成诊断后【先】写一次 {disp_path}"
                 f"（含初步结论与计划动作），再执行破坏性动作；任何时刻被杀都不丢处置记录。\n"
                 f"5. 若确实无法自主处置（需人类决策、连续失败、不可逆操作），"
                 f"将 escalate 置为 true 并给出 recommended_action。\n\n"
                 f"## 完成后\n"
-                f"把最终处置记录写入 .fenix/admin_disposition.json（当前目录即主树），"
+                f"把最终处置记录写入 {disp_path}（当前目录即主树），"
                 f"覆盖之前的初步记录。其中 summary 字段为必填：人类可读的 Markdown "
                 f"叙述（JSON 内换行转义为 \\n），【必须】按以下固定模板组织，"
                 f"四个二级标题缺一不可，顺序固定：\n"

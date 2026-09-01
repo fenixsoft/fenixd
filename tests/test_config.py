@@ -85,6 +85,57 @@ class TestConfigLoader(unittest.TestCase):
         with self.assertRaises(ValueError):
             ConfigLoader.load(self.config_path)
 
+    # ── admin.workers（fix-admin-run-blocks-mainloop D6：worker 池可配置） ──
+
+    def test_admin_workers_valid_values_accepted(self):
+        """非负整数（含 0=禁用后台池回退同步）合法。"""
+        for workers in (0, 1, 2, 8):
+            self._write_config({
+                "project": {"name": "test", "type": "web"},
+                "schedule": {"poll_interval_minutes": 30},
+                "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
+                "worktree": {"base_dir": ".", "implement_branch_prefix": "f", "verify_branch_prefix": "v"},
+                "gates": {"require_push_approval": True},
+                "commands": {"test": "", "build": "", "start": ""},
+                "logging": {"dir": ".", "level": "INFO"},
+                "admin": {"workers": workers},
+            })
+            config = ConfigLoader.load(self.config_path)
+            self.assertEqual(ConfigLoader.get(config, "admin.workers"), workers)
+
+    def test_admin_workers_negative_rejected(self):
+        self._write_config({
+            "project": {"name": "test", "type": "web"},
+            "schedule": {"poll_interval_minutes": 30},
+            "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
+            "worktree": {"base_dir": ".", "implement_branch_prefix": "f", "verify_branch_prefix": "v"},
+            "gates": {"require_push_approval": True},
+            "commands": {"test": "", "build": "", "start": ""},
+            "logging": {"dir": ".", "level": "INFO"},
+            "admin": {"workers": -1},
+        })
+        with self.assertRaises(ValueError):
+            ConfigLoader.load(self.config_path)
+
+    def test_admin_workers_non_integer_rejected(self):
+        self._write_config({
+            "project": {"name": "test", "type": "web"},
+            "schedule": {"poll_interval_minutes": 30},
+            "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
+            "worktree": {"base_dir": ".", "implement_branch_prefix": "f", "verify_branch_prefix": "v"},
+            "gates": {"require_push_approval": True},
+            "commands": {"test": "", "build": "", "start": ""},
+            "logging": {"dir": ".", "level": "INFO"},
+            "admin": {"workers": "two"},
+        })
+        with self.assertRaises(ValueError):
+            ConfigLoader.load(self.config_path)
+
+    def test_admin_workers_defaults_to_two(self):
+        """未配置 → 读取方默认 2（design D6；池在 fenixd 侧以 get(...,2) 兜底）。"""
+        self.assertIsNone(ConfigLoader.get({}, "admin.workers"))
+        self.assertEqual(ConfigLoader.get({}, "admin.workers", 2), 2)
+
 
 class TestDeepMerge(unittest.TestCase):
     """测试深度合并：deep_merge 必须正确合并嵌套字典。"""

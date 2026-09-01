@@ -27,6 +27,7 @@ import threading
 import time
 import json
 import fcntl
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # Ensure .fenix/ is on the Python path
@@ -42,10 +43,16 @@ from core.state_machine import StateMachine
 from core.event_bus import EventBus
 from core.worktree_manager import WorktreeManager
 from core.agent_runner import AgentRunner
+from core.agent_runner.runner import ADMIN_DISPOSITION_GLOB
 from core.v2_dev_server import cleanup_orphans as v2_cleanup_orphans
-from core.admin_store import AdminStore
+from core.admin_store import AdminStore, DISPOSITION
 from core.admin_monitor import AdminMonitor
 from core.pm_engine import PMEngine
+
+# Administrator 处置状态实例文件的残留清扫阈值（fix-admin-run-blocks-mainloop
+# tasks 1.3）：run 异常中断时实例文件可能残留，无功能影响（按 run_id 读取），
+# 拾取新请求时顺带清理超过该时长的残留。
+ADMIN_DISPOSITION_STALE_SECONDS = 24 * 3600
 
 
 class FenixDaemon:
@@ -62,6 +69,11 @@ class FenixDaemon:
         self.admin_store = None
         self.admin_monitor = None
         self._admin_thread = None
+        # Administrator 后台执行 worker 池（fix-admin-run-blocks-mainloop D1/D6）：
+        # 处置移出主循环，主循环只拾取与投递；admin.workers=0 回退同步行为。
+        self._admin_executor = None
+        self._admin_pool_lock = threading.Lock()
+        self._admin_pool_stats = {"submitted": 0, "completed": 0, "failed": 0}
         self.pm_engine = None
 
     def initialize(self):
@@ -115,6 +127,27 @@ class FenixDaemon:
             )
         else:
             self.logger.info("fenixd", "AdminMonitor disabled (admin.enabled: false)")
+
+        # 5.6. Administrator 后台 worker 池（fix-admin-run-blocks-mainloop D1/D6）：
+        # 处置在 worker 线程执行，主循环 1s 粒度调度不再被阻塞；多个 worker 可并行
+        # 执行多个 admin run（用户决策：不建 worktree、容忍主树写冲突风险）。
+        # admin.workers=0 → 不启用后台池，回退主循环内同步执行（逃生门）。
+        admin_workers = int(ConfigLoader.get(self.config, "admin.workers", 2) or 0)
+        if admin_workers > 0:
+            self._admin_executor = ThreadPoolExecutor(
+                max_workers=admin_workers,
+                thread_name_prefix="fenixd-admin-run",
+            )
+            self.logger.info(
+                "fenixd",
+                f"Admin run worker pool started (max_workers: {admin_workers})",
+            )
+        else:
+            self._admin_executor = None
+            self.logger.info(
+                "fenixd",
+                "Admin run worker pool disabled (admin.workers: 0) — synchronous fallback",
+            )
 
         # 6. Initialize PMEngine
         self.pm_engine = PMEngine(
@@ -239,6 +272,15 @@ class FenixDaemon:
         if self.admin_monitor is not None:
             from core.config import ConfigLoader as _CL
             self.admin_monitor.admin_cfg = _CL.get_admin_config(self.config)
+        # admin.workers 变更不热生效（worker 池在启动时定型）：提示重启后生效
+        if self._admin_executor is not None:
+            workers = int(ConfigLoader.get(self.config, "admin.workers", 2) or 0)
+            if workers != self._admin_executor._max_workers:  # noqa: SLF001 只读探测
+                self.logger.info(
+                    "fenixd",
+                    f"admin.workers 变为 {workers}，worker 池大小在 daemon 重启后生效"
+                    f"（当前 {self._admin_executor._max_workers}）",
+                )
         self._config_snapshot = current
         self.logger.info(
             "fenixd",
@@ -262,16 +304,17 @@ class FenixDaemon:
                 break
 
     def _check_admin_invoke_requests(self):
-        """主循环每轮扫描手动唤起 Admin 的文件信号并立即唤起 Administrator。
+        """主循环每轮扫描手动唤起 Admin 的文件信号并投递后台执行。
 
         dashboard 的 /api/spec-admin-invoke 会原子写入
         .fenix/admin_invoke_request.json（含 spec/source/created）；本方法在
         主循环（1s 粒度）中检测其存在：读取→删除→构造 manual-intervention 信号
-        调 agent_runner.run_administrator。与 admin_monitor 自动检测共存：二者
-        各自走 store 记录与节流锚点，互不吞并。
+        →投递 worker 池（fix-admin-run-blocks-mainloop：处置移出主循环，拾取后
+        本扫描周期内继续后续工作）。与 admin_monitor 自动检测共存：二者各自走
+        store 记录与节流锚点，互不吞并。
 
-        调用异常时不丢痕——写一条 failed disposition 到 admin_store 记录原因，
-        供前端时间线/告警可见，且请求文件已删避免反复重试。
+        投递被拒（executor 已关闭等）时不丢痕——写一条 failed disposition 到
+        admin_store 记录原因，供前端时间线/告警可见，且请求文件已删避免反复重试。
         """
         req_path = PROJECT_ROOT / ".fenix" / "admin_invoke_request.json"
         if not req_path.exists():
@@ -313,34 +356,135 @@ class FenixDaemon:
             "fenixd",
             f"手动唤起 Administrator 处置 SPEC {spec}（manual-intervention）",
         )
-        # fix-manual-admin-disposition-finalize：走 AdminMonitor 公共入口而非直接调
-        # run_administrator——后者开头落的 pending disposition 需要在返回后由
-        # _invoke_administrator 落最终记录终结。此前这里丢弃返回值，pending 永无
-        # 终态、处置叙述从不入告警时间线，dashboard 显示「处置中」致用户反复重呼。
+        # 顺带清扫残留的处置状态实例文件（tasks 1.3）：run 异常中断可能遗留
+        # admin_disposition-<run_id>.json，无功能影响但会累积。
+        self._sweep_stale_admin_dispositions()
+        self._submit_admin_run(signal)
+
+    def _submit_admin_run(self, signal: dict) -> bool:
+        """把一次 Administrator 处置投递到后台 worker 池（D1/D2）。
+
+        admin.workers=0（未启用后台池）时回退主循环内同步执行，保持既有行为
+        （逃生门）。投递被拒（executor 已关闭等 RuntimeError）落 failed
+        disposition 不丢痕。
+
+        Returns:
+            True = 已投递（或同步执行完成）；False = 投递被拒绝。
+        """
+        spec = signal.get("spec")
+        if self._admin_executor is None:
+            self._execute_admin_disposition(signal)
+            return True
+        try:
+            self._admin_executor.submit(self._admin_run_worker, signal)
+        except RuntimeError as e:
+            self.logger.error(
+                "fenixd",
+                f"Administrator 处置投递被拒绝（SPEC {spec}）：{e}",
+            )
+            self._record_failed_admin_disposition(spec, f"投递被拒绝：{e}")
+            return False
+        with self._admin_pool_lock:
+            stats = dict(self._admin_pool_stats)
+            stats["submitted"] += 1
+            self._admin_pool_stats = stats
+        queued = stats["submitted"] - stats["completed"] - stats["failed"]
+        self.logger.info(
+            "fenixd",
+            f"Administrator 处置已投递后台（SPEC {spec}，"
+            f"已提交 {stats['submitted']}，排队中 {queued}）",
+        )
+        return True
+
+    def _admin_run_worker(self, signal: dict):
+        """worker 线程体：执行一次处置并维护池计数（D4）。
+
+        catch-all：单次处置异常不得影响 worker 线程领取后续任务（spec「后台
+        处置失败不丢痕」）——异常在 _execute_admin_disposition 内落 failed
+        disposition 并返回 False，此处只兜底统计与日志。
+        """
+        spec = signal.get("spec")
+        try:
+            ok = self._execute_admin_disposition(signal)
+        except Exception as e:  # noqa: BLE001 — worker 兜底，防线程带病退出
+            self.logger.error(
+                "fenixd",
+                f"Administrator 后台处置异常（SPEC {spec}）：{e}",
+            )
+            self._record_failed_admin_disposition(spec, str(e))
+            with self._admin_pool_lock:
+                self._admin_pool_stats["failed"] += 1
+            return
+        with self._admin_pool_lock:
+            self._admin_pool_stats["completed" if ok else "failed"] += 1
+        if ok:
+            self.logger.info("fenixd", f"Administrator 处置完成（SPEC {spec}）")
+
+    def _execute_admin_disposition(self, signal: dict) -> bool:
+        """执行一次 Administrator 处置并保持既有落痕语义（主循环回退/worker 共用）。
+
+        fix-manual-admin-disposition-finalize：走 AdminMonitor 公共入口而非直接调
+        run_administrator——后者开头落的 pending disposition 需要在返回后由
+        _invoke_administrator 落最终记录终结。异常不外抛：落 failed disposition
+        （不丢痕）后返回 False。
+        """
+        spec = signal.get("spec")
         try:
             if self.admin_monitor is not None:
                 self.admin_monitor.invoke_manual(signal)
             else:
                 self.agent_runner.run_administrator(signal)
+            return True
         except Exception as e:
             self.logger.error(
                 "fenixd",
                 f"手动唤起 Administrator 失败（SPEC {spec}）：{e}",
             )
-            # 不丢痕：写 failed disposition 记录，供 admin 活动区/告警可见
+            self._record_failed_admin_disposition(spec, str(e))
+            return False
+
+    def _record_failed_admin_disposition(self, spec, reason: str):
+        """落一条 failed disposition（不丢痕，供 admin 活动区/告警可见）。"""
+        try:
+            self.admin_store.append({
+                "kind": DISPOSITION,
+                "status": "failed",
+                "signal_type": "manual-intervention",
+                "spec": spec,
+                "admin_run_id": None,
+                "description": f"手动唤起 Administrator 处理 SPEC {spec} 时出错：{reason}",
+                "result": "failed",
+            })
+        except Exception:  # noqa: BLE001 — 落痕失败不影响主流程
+            pass
+
+    def _sweep_stale_admin_dispositions(self):
+        """清理超时的残留处置状态实例文件（tasks 1.3）。
+
+        run 异常中断（daemon 被杀等）时 .fenix/admin_disposition-<run_id>.json
+        可能残留；无功能影响（每个实例按 run_id 读写），但会无限累积。旧全局
+        文件 admin_disposition.json 已不再读写，存在即视为残留一并清理。
+        """
+        fenix_dir = PROJECT_ROOT / ".fenix"
+        cutoff = time.time() - ADMIN_DISPOSITION_STALE_SECONDS
+        try:
+            candidates = list(fenix_dir.glob(ADMIN_DISPOSITION_GLOB))
+            legacy = fenix_dir / "admin_disposition.json"
+            if legacy.exists():
+                candidates.append(legacy)
+        except OSError:
+            return
+        for path in candidates:
             try:
-                from core.admin_store import DISPOSITION
-                self.admin_store.append({
-                    "kind": DISPOSITION,
-                    "status": "failed",
-                    "signal_type": "manual-intervention",
-                    "spec": spec,
-                    "admin_run_id": None,
-                    "description": f"手动唤起 Administrator 处理 SPEC {spec} 时出错：{e}",
-                    "result": "failed",
-                })
-            except Exception:
-                pass
+                if path.stat().st_mtime >= cutoff:
+                    continue
+                path.unlink()
+                self.logger.info(
+                    "fenixd",
+                    f"清理残留处置状态文件：{path.name}（超过 24h 未消费）",
+                )
+            except OSError:
+                continue
 
     def shutdown(self):
         """Graceful shutdown."""
@@ -355,6 +499,24 @@ class FenixDaemon:
 
         if self._admin_thread:
             self._admin_thread.join(timeout=5)
+        # Administrator worker 池优雅关闭（fix-admin-run-blocks-mainloop tasks 2.3）：
+        # 取消排队中任务、不等待在途处置——在途 run 由 pending disposition 标记
+        # 可追溯，其 claude 子进程随后被 wait_for_running_agents 终止（interrupted
+        # 标记 → 巡检按已知中断终结 pending，不升级人工）。
+        if self._admin_executor is not None:
+            try:
+                self._admin_executor.shutdown(wait=False, cancel_futures=True)
+            except Exception as e:
+                self.logger.error("fenixd", f"Admin worker pool shutdown failed: {e}")
+            with self._admin_pool_lock:
+                stats = dict(self._admin_pool_stats)
+            in_flight = max(0, stats["submitted"] - stats["completed"] - stats["failed"])
+            if in_flight:
+                self.logger.info(
+                    "fenixd",
+                    f"Admin worker pool shutdown: {in_flight} 处置在途，由 pending "
+                    f"disposition 标记可追溯",
+                )
         if self.event_bus:
             self.event_bus.stop()
         if self.agent_runner:
