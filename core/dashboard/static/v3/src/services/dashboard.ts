@@ -202,6 +202,20 @@ export function invokeSpecAdmin(project: string, spec: string) {
   );
 }
 
+export function freezeSpec(project: string, spec: string) {
+  return request(
+    `/api/spec-freeze?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    { method: 'POST' },
+  );
+}
+
+export function unfreezeSpec(project: string, spec: string) {
+  return request(
+    `/api/spec-unfreeze?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    { method: 'POST' },
+  );
+}
+
 export async function getSpecDoc(
   project: string,
   spec: string,

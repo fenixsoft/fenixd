@@ -206,6 +206,59 @@ def request_admin_invoke(project_root, spec: str) -> dict:
             "file": str(req_path), "created": created, "error": None}
 
 
+# ── SPEC 人工冻结/解冻（用户指令冻结；admin_monitor 认 blocked+前缀为有意等待态） ──
+
+FREEZE_ERROR_PREFIX = "用户指令冻结："
+
+
+def is_spec_frozen(entry: dict) -> bool:
+    """判定 SPEC 是否处于人工冻结态：status=blocked 且 error 以冻结前缀开头。"""
+    return entry.get("status") == "blocked" and (entry.get("error") or "").startswith(
+        FREEZE_ERROR_PREFIX
+    )
+
+
+def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
+    """人工冻结 SPEC：status→blocked，error 以「用户指令冻结：」开头并记录原状态。
+
+    - done/pushed 终态不可冻结（冻结终态破坏语义），返回 ok=True + frozen=False
+    - 写回经 StateMachine（带文件锁）；daemon 经 STATE.md watcher 感知后停止调度
+    """
+    specs = parse_state(project_root)
+    if spec_name not in specs:
+        return {"ok": False, "found": False, "frozen": False,
+                "error": f"spec not found: {spec_name}"}
+    entry = specs[spec_name]
+    if is_spec_frozen(entry):
+        return {"ok": True, "found": True, "frozen": True, "error": None}
+    if entry.get("status") in ("done", "pushed"):
+        return {"ok": True, "found": True, "frozen": False,
+                "error": f"终态 spec（{entry.get('status')}）不可冻结"}
+    orig = entry.get("status") or "ready"
+    note = f"{FREEZE_ERROR_PREFIX}原状态 {orig}" + (f" · {reason}" if reason else "")
+    from core.state_machine import StateMachine
+    sm = StateMachine(Path(project_root) / "STATE.md", None)
+    sm.update_spec(spec_name, {"status": "blocked", "error": note})
+    return {"ok": True, "found": True, "frozen": True, "error": None}
+
+
+def unfreeze_spec(project_root, spec_name: str) -> dict:
+    """解冻 SPEC：从冻结 error 中恢复原状态并清空 error；未冻结则为 no-op。"""
+    specs = parse_state(project_root)
+    if spec_name not in specs:
+        return {"ok": False, "found": False, "frozen": False,
+                "error": f"spec not found: {spec_name}"}
+    entry = specs[spec_name]
+    if not is_spec_frozen(entry):
+        return {"ok": True, "found": True, "frozen": False, "error": None}
+    m = re.search(r"原状态\s+(\S+)", entry.get("error") or "")
+    orig = m.group(1) if m else "ready"
+    from core.state_machine import StateMachine
+    sm = StateMachine(Path(project_root) / "STATE.md", None)
+    sm.update_spec(spec_name, {"status": orig, "error": None})
+    return {"ok": True, "found": True, "frozen": False, "error": None}
+
+
 # ── SPEC 文档读取（proposal.md / design.md，add-spec-doc-buttons） ──
 
 # kebab-case：小写字母/数字开头，仅含小写字母/数字/连字符（防御路径穿越）

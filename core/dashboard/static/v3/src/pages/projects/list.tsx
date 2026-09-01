@@ -32,10 +32,12 @@ import { getSpecs } from '@/services/dashboard';
 import {
   clearSpecError,
   deleteSpec,
+  freezeSpec,
   getSpecDoc,
   invokeSpecAdmin,
   setSpecPriority,
   statusMeta,
+  unfreezeSpec,
 } from '@/services/dashboard';
 import type { SpecSummary } from '@/services/dashboard';
 import SpecDocModal from './components/SpecDocModal';
@@ -324,9 +326,32 @@ export default function SpecListPage() {
     }
   };
 
-  const specMenuItems = [
+  const isFrozen = (record: SpecSummary) =>
+    record.status === 'blocked' &&
+    (record.error || '').startsWith('用户指令冻结：');
+
+  const handleFreezeToggle = async (record: SpecSummary) => {
+    try {
+      if (isFrozen(record)) {
+        await unfreezeSpec(name, record.name);
+        message.success(`Spec「${record.name}」已解冻`);
+      } else {
+        await freezeSpec(name, record.name);
+        message.success(`Spec「${record.name}」已冻结，daemon 停止调度`);
+      }
+      void load();
+    } catch (err) {
+      message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const specMenuItems = (record: SpecSummary) => [
     { key: 'admin', label: '呼叫 Admin 介入' },
     { key: 'priority', label: '调整优先级' },
+    {
+      key: isFrozen(record) ? 'unfreeze' : 'freeze',
+      label: isFrozen(record) ? '解冻 Spec' : '冻结 Spec',
+    },
     { type: 'divider' as const },
     { key: 'delete', label: '删除 Spec', danger: true },
   ];
@@ -336,6 +361,8 @@ export default function SpecListPage() {
       void handleAdminInvoke(record);
     } else if (key === 'priority') {
       setPriorityEdit({ spec: record.name, value: record.priority ?? 5 });
+    } else if (key === 'freeze' || key === 'unfreeze') {
+      void handleFreezeToggle(record);
     } else if (key === 'delete') {
       handleDeleteSpec(record);
     }
@@ -459,7 +486,7 @@ export default function SpecListPage() {
             文档
           </Button>
           <Dropdown
-            menu={{ items: specMenuItems, onClick: ({ key }) => onSpecMenu(record, key) }}
+            menu={{ items: specMenuItems(record), onClick: ({ key }) => onSpecMenu(record, key) }}
             placement="bottomRight"
             trigger={['click']}
           >

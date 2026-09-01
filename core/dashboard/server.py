@@ -425,6 +425,54 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._json({"ok": True, "project": project["name"], "spec": spec,
                     "priority": result["priority"]})
 
+    def _api_spec_freeze(self, query) -> dict:
+        """POST /api/spec-freeze?project=<name>&spec=<name>
+
+        人工冻结 SPEC：status→blocked，error 以「用户指令冻结：」开头
+        （admin_monitor 认此模式为有意等待态，免超时误报）。
+        - project 不存在 → 404；spec 不在项目 STATE.md → 404
+        - 终态（done/pushed）→ 200 + {ok: true, frozen: false, error: 原因}
+        - 成功 → 200 + {ok: true, frozen: true}
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        result = dashboard_data.freeze_spec(Path(project["path"]), spec)
+        if not result.get("found"):
+            self._error(404, result.get("error") or "spec not found")
+            return
+        self._json(result)
+
+    def _api_spec_unfreeze(self, query) -> dict:
+        """POST /api/spec-unfreeze?project=<name>&spec=<name>
+
+        解冻 SPEC：恢复冻结前状态并清空 error；未冻结为幂等 no-op。
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        result = dashboard_data.unfreeze_spec(Path(project["path"]), spec)
+        if not result.get("found"):
+            self._error(404, result.get("error") or "spec not found")
+            return
+        self._json(result)
+
     def _api_spec_delete(self, query):
         """POST /api/spec-delete?project=<name>&spec=<name>
 
@@ -779,6 +827,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_spec_delete(query)
         elif path == "/api/spec-admin-invoke":
             self._api_spec_admin_invoke(query)
+        elif path == "/api/spec-freeze":
+            self._api_spec_freeze(query)
+        elif path == "/api/spec-unfreeze":
+            self._api_spec_unfreeze(query)
         elif path == "/api/alerts/clear":
             self._api_alerts_clear()
         elif path.startswith("/api/alerts/") and path.endswith("/handled"):
