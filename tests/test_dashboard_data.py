@@ -76,3 +76,69 @@ class TestWorktreeMergeBack(unittest.TestCase):
     def test_worktree_merge_back(self):
         # 模拟 worktree merge-back
         self.assertIsNotNone(self.tmpdir)
+
+
+class TestSpecTimelineOrdering(unittest.TestCase):
+    """SPEC 时间轴排序：同秒内状态转移必须先于运行节点。
+
+    根因：日志时间戳为微秒+Z（2026-09-01T11:05:31.212625Z），运行 started 为
+    秒级+00:00（2026-09-01T11:05:31+00:00），字符串排序同秒时 '+' < '.'，
+    导致「转入 implementing」显示在 agent 开始工作之后。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        runs_dir = Path(self.tmpdir) / ".fenix" / "runs"
+        logs_dir.mkdir(parents=True)
+        runs_dir.mkdir(parents=True)
+
+        spec = "demo-spec"
+        log_entry = {
+            "timestamp": "2026-09-01T11:05:31.212625Z",
+            "level": "INFO",
+            "component": "state_machine",
+            "message": f"Transition: {spec} drafted → ready",
+        }
+        log_entry2 = {
+            "timestamp": "2026-09-01T11:05:31.321607Z",
+            "level": "INFO",
+            "component": "state_machine",
+            "message": f"Transition: {spec} ready → implementing",
+        }
+        (logs_dir / "fenixd.log").write_text(
+            json.dumps(log_entry) + "\n" + json.dumps(log_entry2) + "\n",
+            encoding="utf-8",
+        )
+        # run_id 秒级时间戳与 transition 同一秒（int(time.time()) 截断）
+        (runs_dir / f"impl-{spec}-1788260731-a1.jsonl").write_text(
+            '{"type": "provider_marker"}\n', encoding="utf-8"
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_state_transition_precedes_run_in_same_second(self):
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, "demo-spec")
+        kinds = [(e["kind"], e.get("from"), e.get("to"), e.get("agent_type")) for e in timeline]
+        # 状态节点（折叠后 drafted → implementing）必须排在运行节点之前
+        state_idx = next(i for i, e in enumerate(timeline) if e["kind"] == "state")
+        run_idx = next(i for i, e in enumerate(timeline) if e["kind"] == "run")
+        self.assertEqual(timeline[state_idx]["from"], "drafted")
+        self.assertEqual(timeline[state_idx]["to"], "implementing")
+        self.assertLess(state_idx, run_idx, f"state must precede run in same second, got {kinds}")
+
+    def test_run_after_transition_in_later_second(self):
+        from core.dashboard.data import get_spec_timeline
+        # 不同秒仍按真实时间排序：状态 11:05:31 → 运行 11:05:35
+        runs_dir = Path(self.tmpdir) / ".fenix" / "runs"
+        (runs_dir / "impl-demo-spec-1788260735-a1.jsonl").write_text(
+            '{"type": "provider_marker"}\n', encoding="utf-8"
+        )
+        timeline = get_spec_timeline(self.tmpdir, "demo-spec")
+        state_idx = next(i for i, e in enumerate(timeline) if e["kind"] == "state")
+        run_idx = [i for i, e in enumerate(timeline) if e["kind"] == "run"]
+        self.assertEqual(len(run_idx), 2)
+        # 两个 run 都在 state 之后
+        self.assertTrue(all(i > state_idx for i in run_idx))

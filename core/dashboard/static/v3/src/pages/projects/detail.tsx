@@ -1,7 +1,7 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { Alert, App, Badge, Breadcrumb, Card, Checkbox, Collapse, Descriptions, Empty, Image, Progress, Space, Spin, Tabs, Tag, Timeline, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, InfoCircleFilled } from '@ant-design/icons';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { history, useParams } from '@umijs/max';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
@@ -182,6 +182,48 @@ export default function SpecDetailPage() {
     };
 
     void load();
+
+    // SSE 热更新（与 list.tsx 同模式）：详情页此前只在挂载时拉取一次，
+    // 后台数据变化后界面永不刷新。watcher 的 detail/state 事件自带完整
+    // 详情可直接采用；run_meta/refresh 只带轻量通知，节流后重拉 REST。
+    const REFRESH_THROTTLE_MS = 500;
+    let lastRefresh = 0;
+    const throttledLoad = () => {
+      const now = Date.now();
+      if (now - lastRefresh < REFRESH_THROTTLE_MS) return;
+      lastRefresh = now;
+      void load();
+    };
+    const es = new EventSource('/api/stream');
+    es.onmessage = (ev: MessageEvent) => {
+      let msg: {
+        type?: string; project?: string; spec?: string;
+        data?: SpecDetail; details?: Record<string, SpecDetail>;
+      } = {};
+      try {
+        msg = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      if (msg.type === 'detail' && msg.project === name && msg.spec === spec && msg.data) {
+        setDetail(msg.data);
+        return;
+      }
+      if (msg.type === 'state' && msg.project === name) {
+        const d = msg.details?.[spec];
+        if (d) {
+          setDetail(d);
+          return;
+        }
+        // 本 SPEC 条目未变但项目有变化（如日志新增/其他 SPEC 变更）：
+        // 时间轴取自日志，节流重拉兜底（与 list.tsx 同策略）
+        throttledLoad();
+      }
+      if (msg.type === 'run_meta' || msg.type === 'refresh') {
+        throttledLoad();
+      }
+    };
+    return () => es.close();
   }, [name, spec]);
 
   const { message } = App.useApp();

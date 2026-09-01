@@ -1422,7 +1422,8 @@ def get_spec_timeline(project_root, spec_name: str) -> list:
                        "spec": r.get("spec"),
                        "duration_seconds": r.get("duration_seconds")})
 
-    events.sort(key=lambda e: e["time"])
+    # 排序：解析时间戳 + 同秒内 state 先于 run（_timeline_sort_key 内注释说明根因）
+    events.sort(key=_timeline_sort_key)
 
     # 连续的前向状态转换折叠为一次（回退/运行节点打断）
     events = _collapse_timeline(events)
@@ -1471,15 +1472,40 @@ def _collapse_timeline(events: list) -> list:
     return out
 
 
-def _ts_delta(a: str, b: str):
-    """两个 ISO 时间戳的秒级差值（解析失败返回 None）。"""
+def _parse_iso_ts(ts: str):
+    """解析 ISO 时间戳（兼容 Z 后缀与 +00:00），失败返回 None。"""
     try:
         from datetime import datetime as _dt
-        ta = _dt.fromisoformat(a.replace("Z", "+00:00"))
-        tb = _dt.fromisoformat(b.replace("Z", "+00:00"))
-        return abs((ta - tb).total_seconds())
+        return _dt.fromisoformat(str(ts).replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+def _timeline_sort_key(e: dict):
+    """时间轴排序键：(秒截断时间, kind 次序, 精确时间)。
+
+    不能直接对原始字符串排序：日志时间为微秒+Z（…31.212625Z），运行 started
+    为秒级+00:00（…31+00:00），同一秒内 '+' < '.' 会把运行节点排到状态转移前。
+    也不能只按解析后时间排序：run started 取自 run_id 的 int(time.time()) 秒
+    截断，真实启动在该秒内、且必然晚于同秒发生的状态转移（先 transition 后
+    spawn，见 pm_engine/dispatch.py），故同秒内 state 恒先于 run。
+    解析失败的事件按原字符串排在末尾，保持稳定。
+    """
+    dt = _parse_iso_ts(e.get("time", ""))
+    if dt is None:
+        from datetime import datetime as _dt, timezone as _tz
+        return (_dt.max.replace(tzinfo=_tz), 2, str(e.get("time", "")))
+    kind_rank = 0 if e.get("kind") == "state" else 1
+    return (dt.replace(microsecond=0), kind_rank, dt)
+
+
+def _ts_delta(a: str, b: str):
+    """两个 ISO 时间戳的秒级差值（解析失败返回 None）。"""
+    ta = _parse_iso_ts(a)
+    tb = _parse_iso_ts(b)
+    if ta is None or tb is None:
+        return None
+    return abs((ta - tb).total_seconds())
 
 
 def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
