@@ -1,5 +1,5 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Card, ConfigProvider, Menu, Select, Space, Typography, theme, message } from 'antd';
+import { Card, Menu, Select, Space, Typography, message } from 'antd';
 import { useEffect, useState, useRef } from 'react';
 import { history } from '@umijs/max';
 import { getConfig, getOverview, saveConfig } from '@/services/dashboard';
@@ -9,7 +9,6 @@ import AgentModelPanel from './components/AgentModelPanel';
 import ParallelSettingsPanel from './components/ParallelSettingsPanel';
 import ApprovalModePanel from './components/ApprovalModePanel';
 import TokenBudgetPanel from './components/TokenBudgetPanel';
-import ThemePanel from './components/ThemePanel';
 
 const { Text } = Typography;
 
@@ -19,7 +18,6 @@ const MENU_ITEMS = [
   { key: 'parallel', label: '并行度设置' },
   { key: 'approval', label: '审批模式' },
   { key: 'token', label: 'Token 预算' },
-  { key: 'theme', label: '界面风格' },
 ];
 
 // 从 location 解析 URL query（兼容 hash 路由模式与 search 模式）
@@ -56,9 +54,6 @@ export default function SettingsPage() {
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [projects, setProjects] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
-  const [currentTheme, setCurrentTheme] = useState<'light' | 'dark'>(
-    (localStorage.getItem('fenix.theme') as 'light' | 'dark') || 'dark',
-  );
 
   // 使用 ref 来避免闭包问题
   const scopeRef = useRef(scope);
@@ -167,113 +162,96 @@ export default function SettingsPage() {
     }
   };
 
-  // 处理主题切换
-  const handleThemeChange = (theme: 'light' | 'dark') => {
-    setCurrentTheme(theme);
-  };
-
   return (
-    <ConfigProvider
-      theme={{
-        algorithm: currentTheme === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm,
+    <PageContainer
+      header={{
+        title: '设置',
+        extra: (
+          <Space>
+            <Text>作用域：</Text>
+            <Select
+              value={scope}
+              onChange={handleScopeChange}
+              style={{ width: 120 }}
+              options={[
+                { value: 'user', label: '用户级' },
+                { value: 'project', label: '项目级' },
+              ]}
+            />
+            {scope === 'project' && (
+              <Select
+                value={project}
+                onChange={handleProjectChange}
+                placeholder="选择项目"
+                style={{ width: 200 }}
+                options={projects.map((p) => ({ value: p, label: p }))}
+              />
+            )}
+          </Space>
+        ),
       }}
     >
-      <PageContainer
-        header={{
-          title: '设置',
-          breadcrumb: {
-            items: [{ title: '设置' }],
-          },
-          extra: (
-            <Space>
-              <Text>作用域：</Text>
-              <Select
-                value={scope}
-                onChange={handleScopeChange}
-                style={{ width: 120 }}
-                options={[
-                  { value: 'user', label: '用户级' },
-                  { value: 'project', label: '项目级' },
-                ]}
-              />
-              {scope === 'project' && (
-                <Select
-                  value={project}
-                  onChange={handleProjectChange}
-                  placeholder="选择项目"
-                  style={{ width: 200 }}
-                  options={projects.map((p) => ({ value: p, label: p }))}
-                />
-              )}
-            </Space>
-          ),
-        }}
-      >
-        <Card bordered={false}>
-          <div style={{ display: 'flex', minHeight: 500 }}>
-            {/* 左侧菜单 */}
-            <div style={{ width: 224, borderRight: '1px solid #f0f0f0' }}>
-              <Menu
-                mode="inline"
-                selectedKeys={[activeKey]}
-                onClick={({ key }) => setActiveKey(key)}
-                items={MENU_ITEMS}
-                style={{ height: '100%', borderRight: 0 }}
-              />
-            </div>
-            {/* 右侧面板 */}
-            <div style={{ flex: 1, padding: 24 }}>
-              {loading && <div>加载中...</div>}
-              {!loading && config && (
-                <>
-                  {/* 配置状态提示 */}
-                  {!config.raw_exists && (
-                    <div style={{ marginBottom: 16, color: '#faad14' }}>
-                      项目尚无配置文件，表单为默认值
-                    </div>
-                  )}
-                  {config.error && (
-                    <div style={{ marginBottom: 16, color: '#ff4d4f' }}>
-                      配置加载错误：{config.error}
-                    </div>
-                  )}
-                  {activeKey === 'llm' && (
-                    <LlmProviderPanel config={config} onSave={handleSave} />
-                  )}
-                  {activeKey === 'agents' && (
-                    <AgentModelPanel config={config} onSave={handleSave} />
-                  )}
-                  {activeKey === 'parallel' && (
-                    <ParallelSettingsPanel config={config} onSave={handleSave} />
-                  )}
-                  {activeKey === 'approval' && (
-                    <ApprovalModePanel config={config} onSave={handleSave} />
-                  )}
-                  {activeKey === 'token' && (
-                    <TokenBudgetPanel config={config} onSave={handleSave} />
-                  )}
-                  {activeKey === 'theme' && (
-                    <ThemePanel onThemeChange={handleThemeChange} />
-                  )}
-                  {/* 继承标注 */}
-                  {config.sources && Object.keys(config.sources).length > 0 && (
-                    <div style={{ marginTop: 24 }}>
-                      <h4>配置来源</h4>
-                      <ul>
-                        {Object.entries(config.sources).map(([key, source]) => (
-                          <li key={key}>
-                            {key}: {source === 'user' ? '继承自用户级' : '项目级'}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
+      <Card bordered={false}>
+        <div style={{ display: 'flex', minHeight: 500 }}>
+          {/* 左侧菜单 */}
+          <div style={{ width: 224, borderRight: '1px solid #f0f0f0' }}>
+            <Menu
+              mode="inline"
+              selectedKeys={[activeKey]}
+              onClick={({ key }) => setActiveKey(key)}
+              items={MENU_ITEMS}
+              style={{ height: '100%', borderRight: 0 }}
+            />
           </div>
-        </Card>
-      </PageContainer>
-    </ConfigProvider>
+          {/* 右侧面板 */}
+          <div style={{ flex: 1, padding: 24 }}>
+            {loading && <div>加载中...</div>}
+            {!loading && config && (
+              <>
+                {/* 配置状态提示 */}
+                {!config.raw_exists && (
+                  <div style={{ marginBottom: 16, color: '#faad14' }}>
+                    项目尚无配置文件，表单为默认值
+                  </div>
+                )}
+                {config.error && (
+                  <div style={{ marginBottom: 16, color: '#ff4d4f' }}>
+                    配置加载错误：{config.error}
+                  </div>
+                )}
+                {activeKey === 'llm' && (
+                  <LlmProviderPanel config={config} onSave={handleSave} />
+                )}
+                {activeKey === 'agents' && (
+                  <AgentModelPanel config={config} onSave={handleSave} />
+                )}
+                {activeKey === 'parallel' && (
+                  <ParallelSettingsPanel config={config} onSave={handleSave} />
+                )}
+                {activeKey === 'approval' && (
+                  <ApprovalModePanel config={config} onSave={handleSave} />
+                )}
+                {activeKey === 'token' && (
+                  <TokenBudgetPanel config={config} onSave={handleSave} />
+                )}
+                {/* 继承标注 */}
+                {config.sources && Object.keys(config.sources).length > 0 && (
+                  <div style={{ marginTop: 24 }}>
+                    <h4>配置来源</h4>
+                    <ul>
+                      {Object.entries(config.sources).map(([key, source]) => (
+                        <li key={key}>
+                          {key}: {source === 'user' ? '继承自用户级' : '项目级'}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </Card>
+    </PageContainer>
   );
 }

@@ -458,7 +458,7 @@ export default function SpecListPage() {
       title: '名称',
       dataIndex: 'name',
       key: 'name',
-      width: '30%',
+      width: '28%',
       sorter: (a: SpecSummary, b: SpecSummary) => a.name.localeCompare(b.name),
       render: (_: string, record: SpecSummary) => (
         <SpecNameCell project={name} record={record} />
@@ -468,7 +468,7 @@ export default function SpecListPage() {
       title: '优先级',
       dataIndex: 'priority',
       key: 'priority',
-      width: '8%',
+      width: '7%',
       sorter: (a: SpecSummary, b: SpecSummary) => (a.priority ?? 999) - (b.priority ?? 999),
       render: (v: number | null) => <span>P{v ?? '?'}</span>,
     },
@@ -476,7 +476,7 @@ export default function SpecListPage() {
       title: '创建时间',
       dataIndex: 'created',
       key: 'created',
-      width: '10%',
+      width: '13%',
       sorter: (a: SpecSummary, b: SpecSummary) => (a.created || '').localeCompare(b.created || ''),
       render: (v: string | null) => {
         const d = v ? dayjs(v) : null;
