@@ -9,7 +9,7 @@
 - 路径必须匹配核心交付前缀之一：`` core/ ``、`` tests/ ``、`` .fenix/ ``、
   `` scripts/ ``；
 - 排除以 `` / `` 开头的绝对路径、含通配符（`` * `` `` ? ``）的条目、以 `` / ``
-  结尾的目录条目；
+  结尾的目录条目、含模板占位符（`` < `` `` > ``，如 ``<run_id>``）的条目；
 - 输出去重、保序（首次出现顺序）的路径列表；无任何可提取路径返回空列表
   （守卫据此跳过，向后兼容）。
 
@@ -90,6 +90,11 @@ def _is_deliverable_path(token: str) -> bool:
     """判断单个 token 是否为可校验的核心交付路径。"""
     tok = token.strip()
     if not tok:
+        return False
+    # 排除模板占位符（如 `.fenix/admin_disposition-<run_id>.json`）：<...> 是
+    # 模式描述而非字面路径，永远无法按名落地，误判会令守卫永远缺件
+    # （fix-admin-run-blocks-mainloop 事故 2026-09-01）。
+    if "<" in tok or ">" in tok:
         return False
     # 排除绝对路径
     if _ABSOLUTE_RE.match(tok):

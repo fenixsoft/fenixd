@@ -202,6 +202,9 @@ class LockConflictFixture(unittest.TestCase):
         self.sm = StateMachine(self.project_root / "STATE.md", self.logger)
         self.runner = MagicMock()
         self.runner.worktree_manager = MagicMock()
+        # 本夹具建模「孤儿/陈锁」场景：锁在册但无存活 attempt（活 run 持锁的
+        # 静默跳过语义见 TestDispatchLockLiveAttempt）。
+        self.runner.has_live_attempt.return_value = False
         self.config = {}
         self.engine = PMEngine(self.sm, self.runner, self.config,
                                self.project_root, self.logger)
@@ -270,6 +273,26 @@ class TestDispatchLockBackoff(LockConflictFixture):
             len([r for r in recs if r.get("signal_type") == "dispatch_stalled"]), 1,
             "冷却期内重复冲突只写一条 dispatch_stalled",
         )
+
+    def test_live_attempt_holding_lock_skips_conflict(self):
+        """活 run 持锁 ≠ 冲突：有存活 attempt 时静默跳过，不计退避、不发信号。
+
+        fix-admin-run-blocks-mainloop 事故（2026-09-01）：外部 drafted 写入触发
+        spec_ready 二次派发，与活 run 撞锁把退避链重计至耗尽，误报
+        dispatch_stalled 并循环呼叫 Administrator。
+        """
+        self.make_ready_spec("s1")
+        self.runner.worktree_manager.has_active_worktree.return_value = True
+        self.runner.has_live_attempt.return_value = True
+        before = self.sm.read_one("s1")["updated"]
+        self.engine._on_spec_ready("s1")
+        entry = self.sm.read_one("s1")
+        # 不写冲突元数据、不改状态、不触发任何退避计时
+        self.assertEqual(entry["status"], "ready")
+        self.assertNotIn("_lock_conflict_count", entry)
+        self.assertNotIn("_dispatch_backoff_until", entry)
+        self.assertEqual(entry["updated"], before)
+        self.assertEqual(self.engine._backoff_timers, [])
 
     def test_backoff_window_suppresses_respin(self):
         """退避期内重复 spec_ready：静默跳过，不追加写 STATE（防自触发热循环）。"""

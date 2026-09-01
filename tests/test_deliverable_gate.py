@@ -129,6 +129,31 @@ class TestExtractPaths(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    def test_template_placeholder_excluded(self):
+        """``<...>`` 占位符路径不计入（模式描述不是字面路径，守卫按名校验必缺件）。
+
+        fix-admin-run-blocks-mainloop 事故（2026-09-01）：tasks 勾选行上的
+        ``.fenix/admin_disposition-<run_id>.json`` 被判为交付物，run 成功仍被
+        缺件拦截并无限重派。
+        """
+        d = Path(tempfile.mkdtemp())
+        try:
+            (d / "tasks.md").write_text(
+                "- [ ] 1.1 `core/real.py` 参数化（路径 `.fenix/x-<run_id>.json`）\n"
+                "- [ ] 1.2 `core/other.py` 改为 `.fenix/y-<n>.json` 模板\n",
+                encoding="utf-8",
+            )
+            typed = extract_paths_typed(d)
+            self.assertEqual(
+                typed["deliverables"], ["core/real.py", "core/other.py"]
+            )
+            self.assertNotIn(".fenix/x-<run_id>.json", typed["deliverables"])
+            self.assertNotIn(".fenix/y-<n>.json", typed["deliverables"])
+            # 占位符既非交付物也非引用：整体不参与校验
+            self.assertNotIn(".fenix/x-<run_id>.json", typed["references"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
 
 # ── deliverables.extract_paths_typed 语境分类（add-deliverable-extractor-semantics） ──
 

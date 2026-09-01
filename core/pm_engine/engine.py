@@ -144,6 +144,22 @@ class PMEngine:
         # 背景（fix-fenix-token-waste）：启动扫描与 event_bus 都会触发 spec_ready，
         # 第二次派发因 worktree 锁失败会把 spec 打回 ready，形成空转反馈环。
         if self.agent_runner.worktree_manager.has_active_worktree(spec_name):
+            # 活 run 持锁 ≠ 冲突：有存活 attempt 子进程时静默跳过，不计冲突、
+            # 不进退避（与 full_scan recovery 的「live child present」白名单同语义，
+            # 复用其 D4 接口 has_live_attempt）。
+            # 背景（fix-admin-run-blocks-mainloop 事故 2026-09-01）：外部 drafted 写入
+            # 触发 spec_ready 二次派发，与活 run 撞锁把退避链重计至耗尽，误报
+            # dispatch_stalled 并循环呼叫 Administrator。
+            try:
+                live = self.agent_runner.has_live_attempt(spec_name)
+            except Exception:
+                live = False
+            if live:
+                self.logger.debug(
+                    "pm_engine",
+                    f"Skipping '{spec_name}': worktree lock held by live attempt",
+                )
+                return
             # 锁治理（improve-run-lifecycle-governance D5）：锁冲突进入退避计划，
             # 不硬试、不消耗 attempt 配额（2026-08-27 add-spec-context-menu 事故：
             # 孤儿 resume 持锁，派发 ~15s 内三连发耗尽 retries exhausted，spec 假死）。

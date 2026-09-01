@@ -2,8 +2,8 @@
 
 ## 1. 处置状态文件按实例分离
 
-- [ ] 1.1 `agent_runner/runner.py`：`_clear_admin_disposition` / `_read_admin_disposition` 按 run_id 参数化（路径 `.fenix/admin_disposition-<run_id>.json`），`run_administrator` 内部改用实例路径
-- [ ] 1.2 `agent_runner/prompt_builder.py`：administrator 提示词中的 disposition 写入路径按 run_id 注入（替换固定 `.fenix/admin_disposition.json` 字样，两处：中途持久化与最终写入）
+- [ ] 1.1 `core/agent_runner/runner.py`：`_clear_admin_disposition` / `_read_admin_disposition` 按 run_id 参数化（实例路径形如 .fenix/admin_disposition-<run_id>.json，不再用固定文件名），`run_administrator` 内部改用实例路径
+- [ ] 1.2 `core/agent_runner/prompt_builder.py`：administrator 提示词中的 disposition 写入路径按 run_id 注入（替换固定 .fenix/admin_disposition.json 字样，两处：中途持久化与最终写入）
 - [ ] 1.3 run 结束读取自身 disposition 落 final 记录后删除实例文件；拾取新请求时顺带清理超过 24h 的残留实例文件
 
 ## 2. worker 池基础设施
