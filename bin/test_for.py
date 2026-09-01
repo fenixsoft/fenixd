@@ -135,16 +135,17 @@ def load_test_map(tests_dir: str) -> Dict[str, str]:
 def apply_explicit_mappings(target_files: List[str], explicit_map: Dict[str, str]) -> Set[str]:
     """Apply explicit test mappings for files without import relationships."""
     affected = set()
-    
+
     for target_file in target_files:
         # Normalize path
         target_path = Path(target_file)
-        
+        target_str = str(target_path)
+
         for pattern, test_file in explicit_map.items():
             # Check if target matches pattern (prefix or exact match)
-            if str(target_path).startswith(pattern) or str(target_path) == pattern:
+            if target_str.startswith(pattern) or target_str == pattern:
                 affected.add(test_file)
-    
+
     return affected
 
 
@@ -219,8 +220,15 @@ def main():
     # Apply explicit mappings
     explicit_map = load_test_map(str(tests_dir))
     explicit_tests = apply_explicit_mappings(target_files, explicit_map)
-    affected_tests.update(explicit_tests)
-    
+    # Convert explicit test paths to module paths for consistency
+    for test_path in explicit_tests:
+        # Convert "tests/test_foo.py" to "tests.test_foo"
+        if test_path.startswith("tests/"):
+            module_path = "tests." + test_path[6:].replace("/", ".").replace(".py", "")
+            affected_tests.add(module_path)
+        elif test_path.startswith("tests."):
+            affected_tests.add(test_path)
+
     # Convert module paths to file paths
     test_files = []
     for test_module in affected_tests:
