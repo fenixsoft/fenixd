@@ -11,7 +11,7 @@ import type { AlertItem, SpecDetail } from '@/services/dashboard';
 import { markdownComponents } from './components/SpecDocModal';
 import SpecDocModal from './components/SpecDocModal';
 import type { DocType } from './components/SpecDocModal';
-import RunStream from './components/RunStream';
+import { ClaudeOutputPane } from '@/components/claude-msg';
 
 // 与 v2 static/app.js renderVerdict 保持同一判定逻辑：
 // parse_verdict 的 status 串自带 emoji 前缀（如 "❌ 未通过（Bug Found）"），先剥离再判定，
@@ -427,7 +427,12 @@ export default function SpecDetailPage() {
                       {
                         key: 'run-stream',
                         label: '查看运行记录',
-                        children: <RunStream runId={item.run_id!} project={name} />,
+                        // ClaudeOutputPane 依赖父容器高度约束，这里限高滚动避免时间轴被长运行拉穿
+                        children: (
+                          <div style={{ maxHeight: 480, overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 8, padding: 8, background: '#fafafa' }}>
+                            <ClaudeOutputPane runId={item.run_id!} project={name} />
+                          </div>
+                        ),
                       },
                     ]}
                   />
