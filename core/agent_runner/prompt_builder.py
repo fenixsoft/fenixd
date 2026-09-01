@@ -491,15 +491,29 @@ class PromptBuilder:
                 f"将 escalate 置为 true 并给出 recommended_action。\n\n"
                 f"## 完成后\n"
                 f"把最终处置记录写入 .fenix/admin_disposition.json（当前目录即主树），"
-                f"覆盖之前的初步记录。其中 summary 字段为必填：一段人类可读的叙述性总结，"
-                f"必须包含诊断结论（问题是什么、根因）、处置时间线（做了什么、顺序）、"
-                f"最终结果，以及如需人工介入时的具体建议：\n"
+                f"覆盖之前的初步记录。其中 summary 字段为必填：人类可读的 Markdown "
+                f"叙述（JSON 内换行转义为 \\n），【必须】按以下固定模板组织，"
+                f"四个二级标题缺一不可，顺序固定：\n"
+                f"```\n"
+                f"## 诊断结论\n"
+                f"**一句话定性（是/非产品缺陷、根因类别）。** 随后展开：问题是什么、"
+                f"为什么发生、关键证据是什么。\n\n"
+                f"## 处置时间线\n"
+                f"1. 动作一（含证据/留痕位置）；2. 动作二；……（按实际顺序编号，"
+                f"每步可核查，禁止遗漏破坏性动作）\n\n"
+                f"## 最终结果\n"
+                f"- spec 状态变化（如 blocked → pushed）\n"
+                f"- 验证/测试结果（N/N 通过）\n"
+                f"- 留痕位置（commit 号、备份目录等）\n\n"
+                f"## 对人类的建议\n"
+                f"无需介入时写明结论与系统性观察；需介入时给出具体可执行的操作。\n"
+                f"```\n"
                 f'{{\n'
                 f'  "spec": "{sig_spec}",\n'
                 f'  "problem": "处理的困境问题",\n'
                 f'  "actions_taken": ["动作1", "动作2"],\n'
                 f'  "result": "resolved | partially-resolved | escalated",\n'
-                f'  "summary": "人类可读叙述：诊断结论 + 处置时间线 + 最终结果 + 对人类的建议",\n'
+                f'  "summary": "按上述模板的 Markdown 叙述全文",\n'
                 f'  "escalate": true/false,\n'
                 f'  "recommended_action": "若升级，给出人类应做的操作"\n'
                 f'}}\n'
