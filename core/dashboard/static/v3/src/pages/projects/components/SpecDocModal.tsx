@@ -1,4 +1,4 @@
-import { Modal, Tabs, Spin, Empty, Alert, Button, Space } from 'antd';
+import { Modal, Tabs, Spin, Empty, Alert, Button } from 'antd';
 import { FullscreenExitOutlined, FullscreenOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
@@ -173,17 +173,17 @@ export default function SpecDocModal({ project, spec, open, onClose }: SpecDocMo
   return (
     <Modal
       title={
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingRight: 4 }}>
+        // 最大化按钮绝对定位到关闭按钮左侧（关闭按钮为绝对定位，占 modal 右缘 12~44px）
+        <div style={{ position: 'relative' }}>
           <span>{`${spec || ''} 文档`}</span>
-          <Space size={0}>
-            <Button
-              type="text"
-              size="small"
-              title={maximized ? '还原' : '最大化'}
-              icon={maximized ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
-              onClick={() => setMaximized((v) => !v)}
-            />
-          </Space>
+          <Button
+            type="text"
+            size="small"
+            title={maximized ? '还原' : '最大化'}
+            icon={maximized ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+            onClick={() => setMaximized((v) => !v)}
+            style={{ position: 'absolute', right: 24, top: '50%', transform: 'translateY(-50%)' }}
+          />
         </div>
       }
       open={open}
