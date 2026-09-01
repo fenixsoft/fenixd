@@ -561,6 +561,28 @@ class Dispatcher:
                             prev_streak = 0
                         streak = prev_streak + 1 if prev_fp == fp else 1
                         final_error = f"Merge-back failed (fp={fp}): {merge_error}"
+
+                        # 状态回写保护（fix-startup-double-dispatch）：
+                        # merge-back 失败回写 ready 前，检查 spec 当前状态——若已在
+                        # testing/implemented 且存在活跃 tester run，不降级 ready，
+                        # 只记录冲突并待验证结束后统一处置（避免覆写在飞验证态）。
+                        current_status = (spec_entry or {}).get("status", "")
+                        active_tester = (spec_entry or {}).get("tester_run")
+                        if current_status in ("testing", "implemented") and active_tester:
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"Merge-back failed for '{spec_name}' but spec is in "
+                                f"'{current_status}' with active tester run {active_tester} "
+                                f"— not downgrading to ready, conflict logged",
+                            )
+                            # 记录冲突但不降级状态，保持 testing/implemented
+                            self._pm.state_machine.update_spec(spec_name, {
+                                "error": final_error,
+                                "_merge_fp": fp,
+                                "_merge_streak": streak,
+                            })
+                            return
+
                         breaker_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
                         if streak >= breaker_threshold:
                             self._pm.state_machine.transition(spec_name, "blocked")

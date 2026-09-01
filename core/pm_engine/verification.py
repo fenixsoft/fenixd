@@ -1124,6 +1124,40 @@ class VerificationPipeline:
                         f"验证报告闸门: '{spec_name}' 阻止推进 bug-found — {report_blocker}",
                     )
                     return
+
+                # Verifier final state reconciliation (fix-startup-double-dispatch):
+                # If spec state is not "testing" due to race conditions, reconcile
+                current_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status", "")
+                if current_status != "testing":
+                    # State changed by race condition - reconcile
+                    if current_status == "implemented":
+                        # Verification passed and implementation merged - replay legal path
+                        self._pm.logger.info(
+                            "pm_engine",
+                            f"Reconciling '{spec_name}': verification found bugs, "
+                            f"but spec is in '{current_status}' - replaying to bug-found",
+                        )
+                        # Replay: implemented → testing → bug-found
+                        if self._pm.state_machine.is_valid_transition(current_status, "testing"):
+                            self._pm.state_machine.transition(spec_name, "testing")
+                            self._pm.state_machine.transition(spec_name, "bug-found")
+                        else:
+                            # Cannot transition - block with evidence
+                            self._pm.state_machine.update_spec(spec_name, {
+                                "status": "blocked",
+                                "error": f"Verification found bugs but cannot reconcile state "
+                                         f"from '{current_status}': {result.error}",
+                            })
+                            return
+                    else:
+                        # Other state - block with evidence
+                        self._pm.state_machine.update_spec(spec_name, {
+                            "status": "blocked",
+                            "error": f"Verification found bugs but spec is in unexpected state "
+                                     f"'{current_status}': {result.error}",
+                        })
+                        return
+
                 self._pm.state_machine.transition(spec_name, "bug-found")
                 self._pm.state_machine.update_spec(spec_name, {
                     "tester_run": result.run_id,
@@ -1173,6 +1207,40 @@ class VerificationPipeline:
                         f"验证报告闸门: '{spec_name}' 阻止晋级 verified — {report_blocker}",
                     )
                     return
+
+                # Verifier final state reconciliation (fix-startup-double-dispatch):
+                # If spec state is not "testing" due to race conditions, reconcile
+                current_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status", "")
+                if current_status != "testing":
+                    # State changed by race condition - reconcile
+                    if current_status == "implemented" and verifier_status != "bug-found":
+                        # Verification passed and implementation merged - replay legal path
+                        self._pm.logger.info(
+                            "pm_engine",
+                            f"Reconciling '{spec_name}': verification passed, "
+                            f"but spec is in '{current_status}' - replaying to verified",
+                        )
+                        # Replay: implemented → testing → verified
+                        if self._pm.state_machine.is_valid_transition(current_status, "testing"):
+                            self._pm.state_machine.transition(spec_name, "testing")
+                            self._pm.state_machine.transition(spec_name, "verified")
+                        else:
+                            # Cannot transition - block with evidence
+                            self._pm.state_machine.update_spec(spec_name, {
+                                "status": "blocked",
+                                "error": f"Verification passed but cannot reconcile state "
+                                         f"from '{current_status}'",
+                            })
+                            return
+                    else:
+                        # Other state or verification failed - block with evidence
+                        self._pm.state_machine.update_spec(spec_name, {
+                            "status": "blocked",
+                            "error": f"Verification result mismatch: spec is in '{current_status}' "
+                                     f"but verifier reported '{verifier_status}'",
+                        })
+                        return
+
                 self._pm.state_machine.transition(spec_name, "verified")
                 self._pm.state_machine.update_spec(spec_name, {
                     "tester_run": result.run_id,
