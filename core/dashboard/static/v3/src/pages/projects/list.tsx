@@ -28,7 +28,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Key } from 'react';
 import { history, useParams } from '@umijs/max';
 import dayjs from 'dayjs';
-import { getSpecs } from '@/services/dashboard';
+import { getSpecDetail, getSpecs } from '@/services/dashboard';
 import {
   clearSpecError,
   deleteSpec,
@@ -39,7 +39,7 @@ import {
   statusMeta,
   unfreezeSpec,
 } from '@/services/dashboard';
-import type { SpecSummary } from '@/services/dashboard';
+import type { SpecDetail, SpecSummary } from '@/services/dashboard';
 import SpecDocModal from './components/SpecDocModal';
 
 const REFRESH_THROTTLE_MS = 500;
@@ -156,6 +156,71 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
         style={{ cursor: 'pointer', fontSize: 16, fontWeight: 600, color: '#1677ff' }}
       >
         {record.name}
+      </span>
+    </Popover>
+  );
+}
+
+// ── 验证列悬浮提示（悬浮显示验证结论，形式同名称 Why 提示） ──
+
+const verdictCache = new Map<string, Promise<SpecDetail['verdict'] | null>>();
+
+function fetchVerdict(project: string, spec: string): Promise<SpecDetail['verdict'] | null> {
+  const key = `${project}│${spec}`;
+  const cached = verdictCache.get(key);
+  if (cached) return cached;
+  const p = getSpecDetail(project, spec)
+    .then((d) => d.verdict ?? null)
+    .catch(() => null);
+  verdictCache.set(key, p);
+  return p;
+}
+
+function VerifyCell({ project, record }: { project: string; record: SpecSummary }) {
+  const [open, setOpen] = useState(false);
+  const [verdict, setVerdict] = useState<SpecDetail['verdict'] | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const onEnter = () => {
+    timerRef.current = setTimeout(() => {
+      void fetchVerdict(project, record.name).then((v) => {
+        if (v && v.exists) {
+          setVerdict(v);
+          setOpen(true);
+        }
+      });
+    }, 200);
+  };
+  const onLeave = () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setOpen(false);
+  };
+
+  const sum = verdict?.summary;
+  return (
+    <Popover
+      open={open && !!verdict?.exists}
+      placement="topLeft"
+      content={
+        <div style={{ maxWidth: 420, fontSize: 13, lineHeight: 1.65 }}>
+          <div>
+            验证结论：<Typography.Text strong>{verdict?.status}</Typography.Text>
+            {verdict?.status_detail ? ` — ${verdict.status_detail}` : ''}
+          </div>
+          {verdict?.conclusion ? (
+            <div style={{ whiteSpace: 'pre-wrap' }}>{verdict.conclusion}</div>
+          ) : null}
+          {sum ? (
+            <Typography.Text type="secondary">
+              通过 {sum.passed ?? 0} · 失败 {sum.failed ?? 0} · 错误 {sum.errors ?? 0}
+              {sum.product_bugs ? ` · 产品 bug ${sum.product_bugs}` : ''}
+            </Typography.Text>
+          ) : null}
+        </div>
+      }
+    >
+      <span onMouseEnter={onEnter} onMouseLeave={onLeave} style={{ cursor: 'pointer' }}>
+        {record.verify_done}/{record.verify_total}
       </span>
     </Popover>
   );
@@ -389,14 +454,7 @@ export default function SpecListPage() {
       width: '30%',
       sorter: (a: SpecSummary, b: SpecSummary) => a.name.localeCompare(b.name),
       render: (_: string, record: SpecSummary) => (
-        <Space size={4}>
-          <SpecNameCell project={name} record={record} />
-          {record.error ? (
-            <Tooltip title={record.error}>
-              <Typography.Text type="danger">⚠</Typography.Text>
-            </Tooltip>
-          ) : null}
-        </Space>
+        <SpecNameCell project={name} record={record} />
       ),
     },
     {
@@ -462,9 +520,7 @@ export default function SpecListPage() {
             <Typography.Text type="danger">⚠ 验证异常</Typography.Text>
           </Tooltip>
         ) : (
-          <span>
-            {record.verify_done}/{record.verify_total}
-          </span>
+          <VerifyCell project={name} record={record} />
         ),
     },
     {
@@ -499,6 +555,7 @@ export default function SpecListPage() {
 
   return (
     <PageContainer
+      breadcrumbRender={false}
       header={{
         extra: <Breadcrumb items={[{ title: '概览', href: '#/overview' }, { title: name }]} />,
         title: (
