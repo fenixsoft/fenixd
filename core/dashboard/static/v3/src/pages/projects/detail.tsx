@@ -168,24 +168,35 @@ export default function SpecDetailPage() {
   useEffect(() => {
     if (!name || !spec) return;
 
-    const load = async () => {
+    // SSE 热更新：后台刷新必须静默原位进行——不能走 setLoading（整页被
+    // Spin 替换再重建，交互状态全丢、agent 运行期间页面持续闪烁）。
+    // applyDetail 以 JSON 内容判等，数据无变化时跳过 setState 避免无谓重渲染。
+    const lastDetailRef = { current: '' };
+    const applyDetail = (data: SpecDetail) => {
+      const serialized = JSON.stringify(data);
+      if (serialized === lastDetailRef.current) return;
+      lastDetailRef.current = serialized;
+      setDetail(data);
+    };
+
+    const load = async (initial = false) => {
       try {
-        setLoading(true);
+        if (initial) setLoading(true);
         const data = await getSpecDetail(name, spec);
-        setDetail(data);
-        setError('');
+        applyDetail(data);
+        if (initial) setError('');
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        // 后台刷新失败静默保留旧视图，只有首次加载才呈现错误页
+        if (initial) setError(e instanceof Error ? e.message : String(e));
       } finally {
-        setLoading(false);
+        if (initial) setLoading(false);
       }
     };
 
-    void load();
+    void load(true);
 
-    // SSE 热更新（与 list.tsx 同模式）：详情页此前只在挂载时拉取一次，
-    // 后台数据变化后界面永不刷新。watcher 的 detail/state 事件自带完整
-    // 详情可直接采用；run_meta/refresh 只带轻量通知，节流后重拉 REST。
+    // watcher 的 detail/state 事件自带完整详情可直接采用；
+    // run_meta/refresh 只带轻量通知，节流后重拉 REST（与 list.tsx 同策略）。
     const REFRESH_THROTTLE_MS = 500;
     let lastRefresh = 0;
     const throttledLoad = () => {
@@ -206,13 +217,13 @@ export default function SpecDetailPage() {
         return;
       }
       if (msg.type === 'detail' && msg.project === name && msg.spec === spec && msg.data) {
-        setDetail(msg.data);
+        applyDetail(msg.data);
         return;
       }
       if (msg.type === 'state' && msg.project === name) {
         const d = msg.details?.[spec];
         if (d) {
-          setDetail(d);
+          applyDetail(d);
           return;
         }
         // 本 SPEC 条目未变但项目有变化（如日志新增/其他 SPEC 变更）：
