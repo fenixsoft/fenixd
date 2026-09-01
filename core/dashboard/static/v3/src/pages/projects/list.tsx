@@ -204,9 +204,12 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
       content={
         <div style={{ maxWidth: 420, fontSize: 13, lineHeight: 1.65 }}>
           <div>
-            验证结论：<Typography.Text strong>{verdict?.status}</Typography.Text>
-            {verdict?.status_detail ? ` — ${verdict.status_detail}` : ''}
+            <Typography.Text strong>验证结论：</Typography.Text>
+            <Typography.Text strong>{verdict?.status}</Typography.Text>
           </div>
+          {verdict?.status_detail ? (
+            <div style={{ whiteSpace: 'pre-wrap' }}>{verdict.status_detail}</div>
+          ) : null}
           {verdict?.conclusion ? (
             <div style={{ whiteSpace: 'pre-wrap' }}>{verdict.conclusion}</div>
           ) : null}
@@ -219,7 +222,11 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
         </div>
       }
     >
-      <span onMouseEnter={onEnter} onMouseLeave={onLeave} style={{ cursor: 'pointer' }}>
+      <span
+        onMouseEnter={onEnter}
+        onMouseLeave={onLeave}
+        style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#1677ff' }}
+      >
         {record.verify_done}/{record.verify_total}
       </span>
     </Popover>

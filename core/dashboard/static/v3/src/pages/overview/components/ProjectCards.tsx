@@ -267,6 +267,7 @@ export default function ProjectCards({
                       任务进度
                     </Typography.Text>
                     <Progress
+                      className="task-progress-fixed"
                       percent={progress}
                       size="small"
                       strokeColor="#1677ff"
