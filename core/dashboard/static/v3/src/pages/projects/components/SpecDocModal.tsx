@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
 import { getSpecDoc } from '@/services/dashboard';
 
-type DocType = 'proposal' | 'design' | 'tasks';
+export type DocType = 'proposal' | 'design' | 'tasks' | 'verification' | 'scenarios';
 
 type DocStatus = 'loading' | 'done' | 'empty' | 'error';
 
@@ -20,6 +20,8 @@ interface SpecDocModalProps {
   spec: string | null;
   open: boolean;
   onClose: () => void;
+  // 打开时定位的页签（如时间轴「verification report」链接 → 验证报告）；不传则保持上次页签
+  initialDoc?: DocType;
 }
 
 // 允许的链接协议白名单
@@ -48,13 +50,18 @@ const SafeLink: Components['a'] = ({ href, children, ...props }) => {
   return <span>{children}</span>;
 };
 
-// 自定义 components 配置
-const markdownComponents: Components = {
+// 自定义 components 配置（验证结论等其它 markdown 场景复用）
+export const markdownComponents: Components = {
   a: SafeLink,
 };
 
-export default function SpecDocModal({ project, spec, open, onClose }: SpecDocModalProps) {
+export default function SpecDocModal({ project, spec, open, onClose, initialDoc }: SpecDocModalProps) {
   const [activeTab, setActiveTab] = useState<DocType>('proposal');
+
+  // 指定 initialDoc 时，每次打开定位到该页签（验证报告链接入口）
+  useEffect(() => {
+    if (open && initialDoc) setActiveTab(initialDoc);
+  }, [open, initialDoc]);
   const [maximized, setMaximized] = useState(false);
   const cacheRef = useRef<Map<string, DocCacheEntry>>(new Map());
   const [cacheVersion, setCacheVersion] = useState(0);
@@ -201,6 +208,8 @@ export default function SpecDocModal({ project, spec, open, onClose }: SpecDocMo
           { key: 'proposal', label: '需求背景' },
           { key: 'design', label: '详细设计' },
           { key: 'tasks', label: '任务清单' },
+          { key: 'verification', label: '验证报告' },
+          { key: 'scenarios', label: '测试场景清单' },
         ]}
       />
       <div style={{ flex: 1, minHeight: 0 }}>{renderContent()}</div>

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "max dev",
     "build": "max build",
-    "preview": "max preview"
+    "preview": "max preview",
+    "prebuild": "tailwindcss -i ./tailwind.css -o ./src/components/claude-msg/tailwind.gen.css --minify"
   },
   "browserslist": [
     "> 1%",
@@ -19,16 +20,24 @@
     "@ant-design/pro-components": "^3.1.14-2",
     "antd": "^6.6.0",
     "dayjs": "^1.11.21",
+    "katex": "^0.18.5",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "react-syntax-highlighter": "^16.1.1",
+    "rehype-katex": "^7.0.1",
+    "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
+    "@tailwindcss/typography": "^0.5.20",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@types/react-syntax-highlighter": "^15.5.13",
     "@umijs/max": "^4.7.3",
+    "tailwindcss": "^3.4.19",
     "typescript": "^7.0.2"
   }
 }

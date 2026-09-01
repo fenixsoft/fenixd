@@ -92,6 +92,8 @@ export interface ActivityItem {
   handled_by?: string;
   handled_at?: string;
   resolve_note?: string;
+  status?: string;
+  admin_run_id?: string;
 }
 
 export interface ProjectActivities {
@@ -105,9 +107,12 @@ export interface AdminActivitiesData {
   activities?: ActivityItem[];
 }
 
-export async function getAdminActivities(project?: string): Promise<AdminActivitiesData> {
-  const q = project ? `?project=${encodeURIComponent(project)}` : '';
-  return request<AdminActivitiesData>(`/api/admin-activities${q}`);
+export async function getAdminActivities(project?: string, spec?: string): Promise<AdminActivitiesData> {
+  const q = new URLSearchParams();
+  if (project) q.set('project', project);
+  if (spec) q.set('spec', spec);
+  const qs = q.toString();
+  return request<AdminActivitiesData>(`/api/admin-activities${qs ? `?${qs}` : ''}`);
 }
 
 // ── 人工升级告警（/api/alerts，与 v1 横幅同源） ──
@@ -195,10 +200,14 @@ export function clearSpecError(project: string, spec: string) {
   );
 }
 
-export function invokeSpecAdmin(project: string, spec: string) {
+export function invokeSpecAdmin(project: string, spec: string, prompt?: string) {
   return request(
     `/api/spec-admin-invoke?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
-    { method: 'POST' },
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(prompt ? { prompt } : {}),
+    },
   );
 }
 
@@ -219,7 +228,7 @@ export function unfreezeSpec(project: string, spec: string) {
 export async function getSpecDoc(
   project: string,
   spec: string,
-  doc: 'proposal' | 'design' | 'tasks',
+  doc: 'proposal' | 'design' | 'tasks' | 'verification' | 'scenarios',
 ): Promise<{ found: boolean; content: string }> {
   return request(
     `/api/spec-doc?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}&doc=${doc}`,
@@ -236,6 +245,8 @@ export interface SpecDetail {
   created: string | null;
   updated: string | null;
   error: string | null;
+  branch?: string | null;
+  depends_on?: string | null;
   // 验证结论 — 对应后端 data.py parse_verdict() 返回结构
   verdict?: {
     exists: boolean;
@@ -250,57 +261,74 @@ export interface SpecDetail {
       env_issues: string | null;
     };
   };
-  // 验证进度
-  verify?: {
+  // 验证进度 — 后端字段名 verify_progress（parse_verify_progress() 返回结构）
+  verify_progress?: {
+    exists: boolean;
     done: number;
     total: number;
-    error?: string;
+    current?: string;
+    step?: string | null;
+    error?: string | null;
   };
-  // 任务清单
-  tasks?: {
-    groups: Array<{
-      name: string;
-      tasks: Array<{
-        description: string;
-        done: boolean;
-      }>;
+  // 任务清单 — parse_tasks() 返回的分组数组（非 {groups} 包装）
+  tasks?: Array<{
+    title: string;
+    done: number;
+    total: number;
+    tasks: Array<{
+      id: string;
+      desc: string;
+      done: boolean;
     }>;
-  };
-  // 时间轴
+  }>;
+  // 时间轴 — 状态节点字段为 from/to，运行节点为 agent_type（get_spec_timeline 返回结构）
   timeline?: Array<{
     kind: 'state' | 'run';
     time: string;
-    state?: string;
+    from?: string;
+    to?: string;
     reason?: string;
     run_id?: string;
-    agent?: string;
+    agent_type?: string;
     status?: string;
     duration_seconds?: number;
     spec?: string;
   }>;
-  // 场景结果
-  scenarios?: {
-    report_status?: 'ok' | 'corrupted' | 'missing';
-    summary?: {
-      passed: number;
-      warning: number;
-      failed: number;
-      error: number;
-    };
-    items?: Array<{
-      scenario_id: string;
+  // 场景结果 — report.json 的 scenarios 平铺数组（parse_report）
+  scenarios?: Array<{
+    scenario_id: string;
+    description?: string;
+    status: 'pass' | 'warning' | 'fail' | 'error';
+    step_results?: Array<{
+      success: boolean;
+      action?: string;
       description?: string;
-      status: 'passed' | 'warning' | 'failed' | 'error';
-      assertions?: Array<{
-        passed: boolean;
-        message?: string;
-      }>;
-      steps?: Array<{
-        name: string;
-        status: 'passed' | 'failed';
-        error?: string;
-      }>;
+      detail?: string;
+      error?: string;
     }>;
+    assertion_results?: Array<{
+      pass?: boolean;
+      type?: string;
+      label?: string;
+      message?: string;
+      detail?: string;
+      actual?: string;
+    }>;
+    screenshots?: string[];
+  }>;
+  // report.json 元信息（损坏时 error 非空）
+  report?: {
+    exists?: boolean;
+    error?: string | null;
+    timestamp?: string | null;
+    summary?: {
+      total?: number;
+      passed?: number;
+      warnings?: number;
+      failed?: number;
+      errors?: number;
+      blocked_env?: number;
+    };
   };
   // Bug 列表
   bugs?: Array<{
@@ -311,15 +339,19 @@ export interface SpecDetail {
     scenario?: string;
     assertion?: string;
     evidence?: string;
-    screenshot?: string;
+    screenshots?: string[];
   }>;
-  // 失败截图
-  screenshots?: string[];
-  // Token 用量
+  // 失败截图 — list_screenshots() 返回 {file,size,mtime} 对象数组（非纯文件名）
+  screenshots?: Array<{
+    file: string;
+    size?: number;
+    mtime?: string;
+  }>;
+  // Token 用量 — cost_usd 仅网关真实回传时存在（金额展示不伪造）
   token_usage?: {
     tokens_in: number;
     tokens_out: number;
-    cost?: number | null;
+    cost_usd?: number | null;
     cost_available?: boolean;
   };
 }
@@ -400,15 +432,29 @@ export interface LlmProvider {
   name: string;
   baseurl: string;
   apikey: string;
-  default_model?: string;
+  // 与后端 YAML 字段一致：默认模型为 model，env 为运行时注入子进程的环境变量
+  model?: string;
+  env?: Record<string, string>;
 }
 
 export interface LlmConfig {
   providers?: LlmProvider[];
 }
 
+// 后端 normalize_agent_models 规范化视图：provider 链统一为对象数组，
+// model 为解析后值（元素自带 > 角色级 > provider 默认），无法解析时为 null
+export interface AgentModelChainElement {
+  provider: string;
+  model?: string | null;
+}
+
+export interface AgentModelAssignment {
+  model?: string | null;
+  provider: string | AgentModelChainElement | AgentModelChainElement[];
+}
+
 export interface AgentsModels {
-  [role: string]: { provider: string; model: string };
+  [role: string]: AgentModelAssignment;
 }
 
 export interface AgentsConfig {
@@ -449,7 +495,7 @@ export async function saveConfig(
 ): Promise<ConfigData> {
   const q = project ? `?project=${encodeURIComponent(project)}` : '';
   return request<ConfigData>(`/api/config${q}`, {
-    method: 'PUT',
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });

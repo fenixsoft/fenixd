@@ -19,6 +19,7 @@ import dayjs from 'dayjs';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import AdminRunModal from './components/AdminRunModal';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
 import { getAdminActivities, getAlerts, markAlertHandled } from '@/services/dashboard';
 import type {
@@ -86,7 +87,7 @@ function signalTag(signalType?: string) {
   return <Tag color="purple">{SIGNAL_LABEL[signalType] || signalType}</Tag>;
 }
 
-function ActivityCard({ a }: { a: ActivityItem }) {
+function ActivityCard({ a, onViewRun }: { a: ActivityItem; onViewRun?: (a: ActivityItem) => void }) {
   const unhandled = a.handled === false;
 
   const body = a.summary ? (
@@ -119,6 +120,11 @@ function ActivityCard({ a }: { a: ActivityItem }) {
         {signalTag(a.signal_type)}
         {resultPill(a.result)}
         {unhandled && <Tag color="red">需人工决策</Tag>}
+        {a.admin_run_id && a.project && onViewRun && (
+          <Button type="link" size="small" style={{ padding: 0, height: 'auto' }} onClick={() => onViewRun(a)}>
+            查看处置过程
+          </Button>
+        )}
       </div>
       {body}
       {a.actions_taken && (
@@ -135,7 +141,13 @@ function ActivityCard({ a }: { a: ActivityItem }) {
   );
 }
 
-function ActivityTimeline({ activities }: { activities: ActivityItem[] }) {
+function ActivityTimeline({
+  activities,
+  onViewRun,
+}: {
+  activities: ActivityItem[];
+  onViewRun?: (a: ActivityItem) => void;
+}) {
   if (!activities || activities.length === 0) {
     return <Empty description="暂无运维记录" />;
   }
@@ -151,7 +163,7 @@ function ActivityTimeline({ activities }: { activities: ActivityItem[] }) {
     <Timeline
       items={sorted.map((a) => ({
         color: a.handled === false ? 'red' : 'gray',
-        children: <ActivityCard a={a} />,
+        children: <ActivityCard a={a} onViewRun={onViewRun} />,
       }))}
     />
   );
@@ -210,6 +222,12 @@ function AlertLines({ item }: { item: AlertItem }) {
 }
 
 type ViewMode = 'auto' | 'alert';
+
+interface ViewingRun {
+  project: string;
+  spec?: string;
+  runId: string;
+}
 
 function AlertPanel({
   project,
@@ -283,6 +301,7 @@ export default function ActivitiesPage() {
   const [alertsData, setAlertsData] = useState<AlertsData | null>(null);
   const [optimistic, setOptimistic] = useState<string[]>([]);
   const [viewModes, setViewModes] = useState<Record<string, ViewMode>>({});
+  const [viewingRun, setViewingRun] = useState<ViewingRun | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [activeKey, setActiveKey] = useState<string>('all');
@@ -406,7 +425,12 @@ export default function ActivitiesPage() {
         />
       );
     }
-    return <ActivityTimeline activities={activities ?? []} />;
+    return (
+      <ActivityTimeline
+        activities={activities ?? []}
+        onViewRun={(a) => setViewingRun({ project: a.project || '', spec: a.spec, runId: a.admin_run_id || '' })}
+      />
+    );
   };
 
   const renderContent = () => {
@@ -485,6 +509,15 @@ export default function ActivitiesPage() {
         <Tabs activeKey={activeKey} onChange={setActiveKey} items={tabItems} />
         {renderContent()}
       </Card>
+      {viewingRun && (
+        <AdminRunModal
+          project={viewingRun.project}
+          spec={viewingRun.spec}
+          adminRunId={viewingRun.runId}
+          open={!!viewingRun}
+          onClose={() => setViewingRun(null)}
+        />
+      )}
     </PageContainer>
   );
 }

@@ -9,12 +9,12 @@ import {
   Card,
   Dropdown,
   Input,
-  InputNumber,
   Modal,
   Popover,
   Progress,
   Radio,
   Select,
+  Slider,
   Space,
   Spin,
   Table,
@@ -28,19 +28,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Key } from 'react';
 import { history, useParams } from '@umijs/max';
 import dayjs from 'dayjs';
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { markdownComponents } from './components/SpecDocModal';
 import { getSpecDetail, getSpecs } from '@/services/dashboard';
 import {
   clearSpecError,
   deleteSpec,
   freezeSpec,
   getSpecDoc,
-  invokeSpecAdmin,
   setSpecPriority,
   statusMeta,
   unfreezeSpec,
 } from '@/services/dashboard';
 import type { SpecDetail, SpecSummary } from '@/services/dashboard';
 import SpecDocModal from './components/SpecDocModal';
+import AdminInvokeModal from './components/AdminInvokeModal';
 
 const REFRESH_THROTTLE_MS = 500;
 const TRACK_LIGHT = '#e6f4ff'; // antd blue-1，与 #1677ff 同 ramp
@@ -211,7 +214,9 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
             <div style={{ whiteSpace: 'pre-wrap' }}>{verdict.status_detail}</div>
           ) : null}
           {verdict?.conclusion ? (
-            <div style={{ whiteSpace: 'pre-wrap' }}>{verdict.conclusion}</div>
+            <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {verdict.conclusion}
+            </Markdown>
           ) : null}
           {sum ? (
             <Typography.Text type="secondary">
@@ -289,6 +294,9 @@ export default function SpecListPage() {
 
   // 调整优先级弹窗
   const [priorityEdit, setPriorityEdit] = useState<{ spec: string; value: number } | null>(null);
+
+  // 呼叫 Admin 介入弹窗
+  const [adminInvoke, setAdminInvoke] = useState<{ spec: string } | null>(null);
 
   const load = useCallback(async () => {
     if (!name) return;
@@ -389,13 +397,8 @@ export default function SpecListPage() {
     }
   };
 
-  const handleAdminInvoke = async (record: SpecSummary) => {
-    try {
-      await invokeSpecAdmin(name, record.name);
-      void message.success('已呼叫 Admin 介入');
-    } catch (err) {
-      void message.warning(err instanceof Error ? err.message : String(err));
-    }
+  const handleAdminInvoke = (record: SpecSummary) => {
+    setAdminInvoke({ spec: record.name });
   };
 
   const isFrozen = (record: SpecSummary) =>
@@ -648,6 +651,13 @@ export default function SpecListPage() {
         onClose={() => setDocView(null)}
       />
 
+      <AdminInvokeModal
+        project={name}
+        spec={adminInvoke?.spec || ''}
+        open={!!adminInvoke}
+        onClose={() => setAdminInvoke(null)}
+      />
+
       <Modal
         title="调整优先级"
         open={!!priorityEdit}
@@ -656,12 +666,17 @@ export default function SpecListPage() {
         okText="确定"
         cancelText="取消"
       >
-        <Space size={8}>
-          <span>优先级（P1 最高，P9 最低）：</span>
-          <InputNumber
+        <Space direction="vertical" style={{ width: '100%' }} size={4}>
+          <span>
+            优先级（P1 最高，P9 最低）：当前 <strong>P{priorityEdit?.value ?? 5}</strong>
+          </span>
+          <Slider
             min={1}
             max={9}
+            step={1}
             value={priorityEdit?.value ?? 5}
+            tooltip={{ formatter: (v) => `P${v}` }}
+            marks={{ 1: 'P1', 3: 'P3', 5: 'P5', 7: 'P7', 9: 'P9' }}
             onChange={(v) =>
               setPriorityEdit((p) => (p ? { ...p, value: typeof v === 'number' ? v : p.value } : p))
             }

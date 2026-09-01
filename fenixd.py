@@ -303,7 +303,11 @@ class FenixDaemon:
             "severity": "major",
             "source": payload.get("source", "manual"),
             "created": payload.get("created"),
-            "description": f"人工呼叫：检查 SPEC {spec} 出现什么问题并尝试处置",
+            # 用户在 Dashboard 处置弹窗输入的提示词（prompt）优先；缺省用默认文案
+            "description": (
+                payload.get("prompt")
+                or f"人工呼叫：检查 SPEC {spec} 出现什么问题并尝试处置"
+            ),
         }
         self.logger.info(
             "fenixd",

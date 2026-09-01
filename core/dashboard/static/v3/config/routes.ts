@@ -35,7 +35,7 @@ export default [
   },
   {
     path: '/activities',
-    name: '运维记录',
+    name: '运维',
     icon: 'history',
     component: './activities',
   },

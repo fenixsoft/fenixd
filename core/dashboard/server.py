@@ -530,9 +530,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not spec:
             self._error(404, "spec required")
             return
+        # 用户提示词（可选，POST JSON body {prompt}）：v1 客户端不带 body 仍兼容
+        prompt = None
+        try:
+            content_length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            content_length = 0
+        if content_length > 0:
+            body = self._read_json_body()
+            if isinstance(body, dict):
+                prompt = (body.get("prompt") or "").strip() or None
         proot = Path(project["path"])
         try:
-            result = dashboard_data.request_admin_invoke(proot, spec)
+            result = dashboard_data.request_admin_invoke(proot, spec, prompt)
         except Exception as e:  # noqa: BLE001 兜底：写文件异常不崩溃进程
             self._error(500, f"admin invoke request failed: {e}")
             return

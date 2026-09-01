@@ -44,9 +44,18 @@ export function rootContainer(container: ReactNode) {
 export const layout: RunTimeLayoutConfig = ({ initialState }) => {
   return {
     ...defaultSettings,
-    title: 'Fenix Dashboard',
+    // 左上角标题对齐 v1 brand：Fenix 粗体，Dashboard 细体灰字（style.css .brand/.brand-sub）。
+    // mix 布局顶部品牌区用 headerTitleRender；不把节点放进 title——umi 插件会用
+    // title 拼 document.title，节点会变成 "[object Object]"。
+    headerTitleRender: () => (
+      <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.3 }}>
+        Fenix
+        <span style={{ fontWeight: 400, marginLeft: 6, color: 'rgba(0, 0, 0, 0.45)' }}>
+          Dashboard
+        </span>
+      </span>
+    ),
     logo: false,
-    menuHeaderRender: undefined,
     menuItemRender: (item, dom) =>
       item.path ? <Link to={item.path}>{dom}</Link> : dom,
     // 菜单数据：基础四项 + 「项目」下动态二级菜单（各项目名）
@@ -62,7 +71,7 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
         })),
       },
       { path: '/settings', name: '设置', icon: <SettingOutlined /> },
-      { path: '/activities', name: '运维记录', icon: <HistoryOutlined /> },
+      { path: '/activities', name: '运维', icon: <HistoryOutlined /> },
     ],
     // 「项目」二级菜单默认展开：defaultOpenAll + ignoreFlatMenu 组合下 BaseMenu
     // 会在路由变化时重设为全展开；openKeys:false 使 pathname effect 不覆盖该行为，

@@ -12,21 +12,15 @@ interface TokenBudgetPanelProps {
 export default function TokenBudgetPanel({ config, onSave }: TokenBudgetPanelProps) {
   const [form] = Form.useForm();
 
-  // 初始化表单数据
   const initialValues = {
-    token_budget_millions: config.agents.token_budget_millions || 50,
-    daily_run_limit: config.agents.daily_run_limit || 50,
-    impl_run_budget: config.agents.impl_run_budget || 4,
+    token_budget_millions: config.agents.token_budget_millions ?? 50,
   };
 
-  // 监听 config 变化，更新表单值
   useEffect(() => {
     form.setFieldsValue({
-      token_budget_millions: config.agents.token_budget_millions || 50,
-      daily_run_limit: config.agents.daily_run_limit || 50,
-      impl_run_budget: config.agents.impl_run_budget || 4,
+      token_budget_millions: config.agents.token_budget_millions ?? 50,
     });
-  }, [config.agents.token_budget_millions, config.agents.daily_run_limit, config.agents.impl_run_budget, form]);
+  }, [config.agents.token_budget_millions, form]);
 
   const handleSave = async () => {
     try {
@@ -34,8 +28,6 @@ export default function TokenBudgetPanel({ config, onSave }: TokenBudgetPanelPro
       await onSave({
         agents: {
           token_budget_millions: values.token_budget_millions,
-          daily_run_limit: values.daily_run_limit,
-          impl_run_budget: values.impl_run_budget,
         },
       });
     } catch (error) {
@@ -46,46 +38,32 @@ export default function TokenBudgetPanel({ config, onSave }: TokenBudgetPanelPro
   return (
     <div>
       <h3>Token 预算</h3>
-      <Card>
+      <Text type="secondary">
+        单 SPEC 累计 input token 的预算上限（成本观测）。收工累计达到 80% 发提醒级告警、达到 100% 发升级级告警，不自动冻结，由人工决定是否处置。
+      </Text>
+      <Card style={{ marginTop: 12 }}>
         <Form form={form} initialValues={initialValues} layout="vertical">
           <Form.Item
             name="token_budget_millions"
-            label="Token 预算（百万）"
+            label={
+              <>
+                Token 预算<span className="label-note">（百万，0=关闭）</span>
+              </>
+            }
             rules={[{ required: true, message: '请输入 Token 预算' }]}
           >
-            <InputNumber min={0} style={{ width: '100%' }} />
+            <InputNumber min={0} max={1000} step={1} style={{ width: '100%' }} />
           </Form.Item>
           <Text type="secondary">
-            0=关闭预算检查，默认 50 百万 Token。
+            默认 50（百万 input token）。保存后约 30 秒内热加载生效；设为 0 表示关闭预算检查。
           </Text>
-
-          <Form.Item
-            name="daily_run_limit"
-            label="每日 Agent 运行限额"
-            rules={[{ required: true, message: '请输入每日运行限额' }]}
-          >
-            <InputNumber min={0} style={{ width: '100%' }} />
-          </Form.Item>
-          <Text type="secondary">
-            0=不限制每日运行次数。
-          </Text>
-
-          <Form.Item
-            name="impl_run_budget"
-            label="实现尝试预算"
-            rules={[{ required: true, message: '请输入实现尝试预算' }]}
-          >
-            <InputNumber min={1} max={10} style={{ width: '100%' }} />
-          </Form.Item>
-          <Text type="secondary">
-            每个 SPEC 的实现尝试预算，范围 1-10。
-          </Text>
-
-          <Button type="primary" onClick={handleSave}>
-            保存
-          </Button>
         </Form>
       </Card>
+      <div style={{ textAlign: 'right', marginTop: 24 }}>
+        <Button type="primary" onClick={handleSave}>
+          保存
+        </Button>
+      </div>
     </div>
   );
 }

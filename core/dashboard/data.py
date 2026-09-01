@@ -158,12 +158,15 @@ def get_admin_activities(project_root, spec=None) -> list:
 ADMIN_INVOKE_REQUEST = ".fenix/admin_invoke_request.json"
 
 
-def request_admin_invoke(project_root, spec: str) -> dict:
+def request_admin_invoke(project_root, spec: str, prompt: str | None = None) -> dict:
     """写入手动唤起 Administrator 的文件信号（.fenix/admin_invoke_request.json）。
 
     校验 spec 须存在于项目 STATE.md，且当前不存在未消费的请求文件，否则返回
     对应拒绝状态（spec 不存在 → {found: False}；已有进行中 → {conflict: True}）。
     通过校验后原子写入 {spec, source: "manual", created: <ISO>} 返回 {ok: True}。
+
+    prompt：用户在 Dashboard 处置弹窗输入的提示词，非空时写入请求文件，
+    daemon 拾取后作为本次处置的任务描述（替代默认文案）传给 Administrator。
 
     文件信号模式与 restart_request 同构：server 进程不直接起 agent（绕过
     state_machine 与 token 预算），由 daemon 主循环下一轮扫描拾取并唤起。
@@ -187,6 +190,8 @@ def request_admin_invoke(project_root, spec: str) -> dict:
 
     created = datetime.now(timezone.utc).isoformat()
     payload = {"spec": spec, "source": "manual", "created": created}
+    if prompt and prompt.strip():
+        payload["prompt"] = prompt.strip()
     req_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
         dir=str(req_path.parent), prefix=".admin_invoke_request.", suffix=".tmp")
@@ -264,7 +269,7 @@ def unfreeze_spec(project_root, spec_name: str) -> dict:
 # kebab-case：小写字母/数字开头，仅含小写字母/数字/连字符（防御路径穿越）
 _SPEC_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # doc 白名单：仅允许读取这些核心设计文档（tasks.md 与 proposal.md 同目录）
-_SPEC_DOC_WHITELIST = ("proposal", "design", "tasks")
+_SPEC_DOC_WHITELIST = ("proposal", "design", "tasks", "verification", "scenarios")
 
 
 class InvalidSpecName(ValueError):
@@ -285,7 +290,7 @@ def get_spec_doc(project_root, spec: str, doc: str) -> dict:
     Args:
         project_root: 项目根目录
         spec: SPEC 名称（须 kebab-case）
-        doc: 文档类型，仅 "proposal" / "design" / "tasks"
+        doc: 文档类型，"proposal" / "design" / "tasks" / "verification"（验证报告）/ "scenarios"（测试场景清单汇总）
 
     Returns:
         {"found": bool, "content": str}
@@ -302,7 +307,14 @@ def get_spec_doc(project_root, spec: str, doc: str) -> dict:
         raise InvalidSpecDoc(doc)
 
     changes_root = Path(project_root) / "openspec" / "changes"
-    target = (changes_root / spec / f"{doc}.md").resolve()
+    if doc == "verification":
+        # 验证报告：verification-report.md（可能尚未生成 → found=False）
+        target = (changes_root / spec / "verification-report.md").resolve()
+    elif doc == "scenarios":
+        # 测试场景清单：specs/<capability>/spec.md 的汇总拼接
+        return _read_spec_scenarios(changes_root / spec / "specs")
+    else:
+        target = (changes_root / spec / f"{doc}.md").resolve()
     # 防御性校验：解析后必须仍位于 changes 目录内，杜绝任何 `..` 拼接越界
     if not target.is_relative_to(changes_root.resolve()):
         raise InvalidSpecName(spec)
@@ -313,6 +325,31 @@ def get_spec_doc(project_root, spec: str, doc: str) -> dict:
     except (OSError, UnicodeDecodeError):
         return {"found": False, "content": ""}
     return {"found": True, "content": content}
+
+
+def _read_spec_scenarios(specs_dir: Path) -> dict:
+    """汇总 change 的 specs/<capability>/spec.md 为测试场景清单（markdown 拼接）。
+
+    每个 capability 以 `# <capability-name>` 一级标题分隔，场景原文保持不变。
+    """
+    if not specs_dir.is_dir():
+        return {"found": False, "content": ""}
+    parts = []
+    try:
+        for cap_dir in sorted(specs_dir.iterdir()):
+            f = cap_dir / "spec.md"
+            if cap_dir.is_dir() and f.is_file():
+                try:
+                    content = f.read_text(encoding="utf-8").strip()
+                except (OSError, UnicodeDecodeError):
+                    continue
+                if content:
+                    parts.append(f"# {cap_dir.name}\n\n{content}")
+    except OSError:
+        pass
+    if not parts:
+        return {"found": False, "content": ""}
+    return {"found": True, "content": "\n\n---\n\n".join(parts)}
 
 
 def clear_spec_error(project_root, spec: str) -> dict:
@@ -912,8 +949,13 @@ def parse_verdict(project_root, spec_name) -> dict:
                 conclusion_mode = False
             elif s.startswith("**状态"):
                 status_detail = re.sub(r"^.*?状态\s*[：:]\s*|\*\*\s*$", "", s).strip()
-            elif s and not s.startswith(("|", "---", "-", "**", ">")):
-                conclusion += (" " if conclusion else "") + s
+            elif s.startswith(("|", "---", "-", "**", ">")):
+                pass
+            elif s:
+                # 行间用 \n 衔接、空行落为段落分隔（\n\n），保住 markdown 段落结构供前端渲染
+                conclusion += ("\n" if conclusion else "") + s
+            elif conclusion:
+                conclusion += "\n"
         # 备选状态：**验证结果**：❌ 未通过（Bug Found）
         m2 = re.match(r"^\*\*\s*验证结果\s*\*\*\s*[：:]\s*(.+)$", s)
         if m2 and not status:
@@ -942,7 +984,7 @@ def parse_verdict(project_root, spec_name) -> dict:
         "exists": True,
         "status": status,
         "status_detail": status_detail,
-        "conclusion": " ".join(conclusion.split())[:600],
+        "conclusion": conclusion.strip()[:600],
         "summary": summary,
     }
 

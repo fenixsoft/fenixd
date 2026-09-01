@@ -237,5 +237,32 @@ class TestSynthesizedReportParsable(_GateTestBase):
         self.assertEqual(verdict["summary"]["passed"], "10")
 
 
+class TestVerdictConclusionPreservesParagraphs(_GateTestBase):
+    """结论段落保留换行：parse_verdict 不得把多段结论压成一行（Dashboard markdown 渲染依赖段落结构）。"""
+
+    def _write_report(self, conclusion_body: str):
+        path = self._report_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "# 验证报告\n\n## 结论：✅ 通过（verified）\n\n" + conclusion_body + "\n\n| 通过 | 3 |\n",
+            encoding="utf-8",
+        )
+
+    def test_multi_paragraph_conclusion_keeps_blank_line(self):
+        from core.dashboard.data import parse_verdict
+        self._write_report("第一段结论，**含加粗标记**。\n\n第二段结论。")
+        verdict = parse_verdict(self.project_root, SPEC)
+        self.assertIn("第一段结论", verdict["conclusion"])
+        self.assertIn("第二段结论", verdict["conclusion"])
+        self.assertIn("\n\n", verdict["conclusion"])
+
+    def test_single_paragraph_conclusion_has_no_leading_break(self):
+        from core.dashboard.data import parse_verdict
+        self._write_report("只有一段结论。")
+        verdict = parse_verdict(self.project_root, SPEC)
+        self.assertTrue(verdict["conclusion"].startswith("只有一段"))
+        self.assertNotIn("\n", verdict["conclusion"])
+
+
 if __name__ == "__main__":
     unittest.main()

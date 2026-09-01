@@ -12,12 +12,10 @@ interface ApprovalModePanelProps {
 export default function ApprovalModePanel({ config, onSave }: ApprovalModePanelProps) {
   const [form] = Form.useForm();
 
-  // 监听 config 变化，更新表单值
   useEffect(() => {
     // 确保 approve_mode 有值，默认为 'manual'
-    const approveMode = config.gates.approve_mode || 'manual';
     form.setFieldsValue({
-      approve_mode: approveMode,
+      approve_mode: config.gates.approve_mode || 'manual',
     });
   }, [config.gates.approve_mode, form]);
 
@@ -37,7 +35,10 @@ export default function ApprovalModePanel({ config, onSave }: ApprovalModePanelP
   return (
     <div>
       <h3>审批模式</h3>
-      <Card>
+      <Text type="secondary">
+        SPEC 到达 done 后的行为。auto 模式将自动执行 git push 到远端，请谨慎使用。
+      </Text>
+      <Card style={{ marginTop: 12 }}>
         <Form
           form={form}
           initialValues={{ approve_mode: config.gates.approve_mode || 'manual' }}
@@ -45,23 +46,38 @@ export default function ApprovalModePanel({ config, onSave }: ApprovalModePanelP
         >
           <Form.Item
             name="approve_mode"
-            label="审批模式"
             rules={[{ required: true, message: '请选择审批模式' }]}
           >
             <Radio.Group>
-              <Radio value="manual">手动审批</Radio>
-              <Radio value="auto">自动推送</Radio>
+              <div style={{ display: 'block', marginBottom: 16 }}>
+                <Radio value="manual">
+                  <strong>manual</strong> — 人工审批（默认）
+                  <div>
+                    <Text type="secondary">
+                      SPEC 完成后停留在 done，等待 /fenix-approve 人工推送。
+                    </Text>
+                  </div>
+                </Radio>
+              </div>
+              <div style={{ display: 'block' }}>
+                <Radio value="auto">
+                  <strong>auto</strong> — 自动推送
+                  <div>
+                    <Text type="secondary">
+                      SPEC 完成后 daemon 自动执行 git push origin fenix/&lt;spec&gt;。
+                    </Text>
+                  </div>
+                </Radio>
+              </div>
             </Radio.Group>
           </Form.Item>
-          <Text type="secondary">
-            手动审批：SPEC 完成后停留 done，等待人工推送。自动推送：SPEC 完成后自动推送。
-          </Text>
-
-          <Button type="primary" onClick={handleSave}>
-            保存
-          </Button>
         </Form>
       </Card>
+      <div style={{ textAlign: 'right', marginTop: 24 }}>
+        <Button type="primary" onClick={handleSave}>
+          保存
+        </Button>
+      </div>
     </div>
   );
 }

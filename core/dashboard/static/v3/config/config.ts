@@ -29,6 +29,10 @@ export default defineConfig({
 
   antd: {},
 
+  // Tailwind 不走 umi 插件（其 webpack 预加载器在生产构建引发 React #310 崩溃），
+  // 改用 tailwindcss CLI 独立生成 src/components/claude-msg/tailwind.gen.css
+  // （package.json build 前自动再生成），入口 tailwind.css 不含 base 层不影响 antd。
+
   // 全局初始数据流：getInitialState 拉取项目列表供侧边栏二级菜单使用
   // （initialState 依赖 model 插件）
   model: {},

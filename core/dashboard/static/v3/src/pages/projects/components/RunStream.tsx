@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Spin, Typography } from 'antd';
-import { getRunTail, registerRunWatch, unregisterRunWatch } from '@/services/dashboard';
+import { getRunTail, registerRunWatch } from '@/services/dashboard';
 import type { RunEvent } from '@/services/dashboard';
 
 interface RunStreamProps {
@@ -81,32 +81,6 @@ export default function RunStream({ runId, project, tail = 300, onEventsUpdate }
     void loadTail();
   }, [runId, project, tail]);
 
-  // 注册 SSE watch（用于增量推送）
-  useEffect(() => {
-    if (!runId || !project) return;
-
-    const register = async () => {
-      try {
-        await registerRunWatch(runId, project, cidRef.current);
-      } catch (e) {
-        console.error('Failed to register run watch:', e);
-      }
-    };
-
-    void register();
-
-    return () => {
-      const unregister = async () => {
-        try {
-          await unregisterRunWatch(runId, project, cidRef.current);
-        } catch (e) {
-          console.error('Failed to unregister run watch:', e);
-        }
-      };
-      void unregister();
-    };
-  }, [runId, project]);
-
   // 监听 SSE 事件（run_events）
   useEffect(() => {
     if (!runId || !project) return;
@@ -118,10 +92,23 @@ export default function RunStream({ runId, project, tail = 300, onEventsUpdate }
     eventSource.onmessage = (ev: MessageEvent) => {
       if (!isMountedRef.current) return;
 
-      let msg: { type?: string; run_id?: string; events?: RunEvent[]; reset?: boolean } = {};
+      let msg: { type?: string; cid?: string; run_id?: string; events?: RunEvent[]; reset?: boolean } = {};
       try {
         msg = JSON.parse(ev.data);
       } catch {
+        return;
+      }
+
+      // 服务端在 hello 中分配连接 cid —— watch 注册必须用它，否则订阅静默失效
+      if (msg.type === 'hello' && msg.cid) {
+        cidRef.current = msg.cid;
+        void (async () => {
+          try {
+            await registerRunWatch(runId, project, msg.cid!);
+          } catch (e) {
+            console.error('Failed to register run watch:', e);
+          }
+        })();
         return;
       }
 

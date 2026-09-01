@@ -21,3 +21,49 @@ body {
   text-align: left;
 }
 
+// 设置页 Provider 等卡片：浅灰底色，卡片头再深一档
+#root .settings-page .ant-card.ant-card-bordered {
+  background-color: #f6f6f6;
+}
+#root .settings-page .ant-card.ant-card-bordered > .ant-card-head {
+  background-color: #efefef;
+}
+
+// 设置卡片 label 括号注解弱化显示（如（agents.max_concurrent）（选填，…））
+#root .settings-page .ant-form-item .label-note {
+  color: #8c8c8c;
+  font-size: 12px;
+}
+
+// claude-msg 输出面板（迁移自 claudecodeui）：shadcn 语义变量（HSL 三元组），
+// 由 Tailwind 配置里的 hsl(var(--*)) 引用；限定在面板容器内不污染 antd。
+.claude-msg-pane {
+  padding-right: 30px;
+  --background: 44 22% 96%;
+  --foreground: 36 25% 4%;
+  --card: 0 0% 100%;
+  --card-foreground: 36 25% 4%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 36 25% 4%;
+  --primary: 221.2 83.2% 53.3%;
+  --primary-foreground: 210 40% 98%;
+  --secondary: 44 15% 91%;
+  --secondary-foreground: 36 15% 18%;
+  --muted: 44 15% 91%;
+  --muted-foreground: 40 5% 44%;
+  --accent: 44 15% 91%;
+  --accent-foreground: 36 15% 18%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 44 14% 87%;
+  --input: 44 14% 87%;
+  --ring: 221.2 83.2% 53.3%;
+}
+
+// SPEC 详情告警：以收缩态边距为基准。告警 description 常驻（折叠仅 display:none），
+// antd 展开变体给 title 加的 margin-bottom:8px 会使收缩态凭空多 11px——收敛为 0，
+// 展开时的标题-内容间隔由内容 div 自身的 margin-top 提供（折叠时随 display:none 消失）。
+#root .spec-detail-alert .ant-alert-title {
+  margin-bottom: 0;
+}
+

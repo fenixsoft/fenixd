@@ -707,7 +707,7 @@ class VerificationPipeline:
             self._pm._send_human_escalation_alert(
                 spec_name=spec_name,
                 signal_type="verdict_evidence_invalid",
-                severity="major",
+                severity="critical",
                 description=(
                     f"'{spec_name}' 验证裁决证据分类校验连续失败，已 blocked 等待人工裁决"
                 ),
@@ -1401,7 +1401,7 @@ class VerificationPipeline:
         self._pm._send_human_escalation_alert(
             spec_name=spec_name,
             signal_type="warning_stale_triage",
-            severity="major",
+            severity="critical",
             description=(
                 f"'{spec_name}' 以下场景连续 {latest_round} 轮均为 warning，"
                 f"需人工 triage 甄别是否真缺陷被悬置：{', '.join(scenario_ids)}"
