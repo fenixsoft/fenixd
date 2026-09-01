@@ -7,6 +7,58 @@ import { getSpecDetail, statusMeta } from '@/services/dashboard';
 import type { SpecDetail } from '@/services/dashboard';
 import RunStream from './components/RunStream';
 
+// 与 v2 static/app.js renderVerdict 保持同一判定逻辑：
+// parse_verdict 的 status 串自带 emoji 前缀（如 "❌ 未通过（Bug Found）"），先剥离再判定，
+// 避免与 AntD Tag 的配色语义重复；产品Bug>0 → error，环境问题>0 → warning，其余 → success。
+const VERDICT_EMOJI_RE = /^[\s\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}\u{2705}\u{274C}\u{26A0}]+/u;
+
+function verdictTone(v: NonNullable<SpecDetail['verdict']>): { color: 'success' | 'warning' | 'error'; label: string } {
+  const s = v.summary || {};
+  const num = (x: string | null | undefined) => parseInt(x || '', 10) || 0;
+  const status = (v.status || '').replace(VERDICT_EMOJI_RE, '');
+  if (num(s.product_bugs) > 0 || /未通过|Bug Found|失败/.test(status)) {
+    return { color: 'error', label: '❌ 未通过' };
+  }
+  if (num(s.env_issues) > 0 || /环境|无法验证|不可达|unreachable/i.test(status)) {
+    return { color: 'warning', label: '⚠️ 有环境差异' };
+  }
+  return { color: 'success', label: '✅ 通过' };
+}
+
+const VERDICT_COUNTS: Array<[keyof NonNullable<SpecDetail['verdict']>['summary'] & string, string]> = [
+  ['passed', '通过'],
+  ['failed', '失败'],
+  ['errors', '错误'],
+  ['product_bugs', '产品Bug'],
+  ['env_issues', '环境问题'],
+];
+
+function VerdictPanel({ verdict }: { verdict: NonNullable<SpecDetail['verdict']> }) {
+  const tone = verdictTone(verdict);
+  const s = verdict.summary || {};
+  const counts = VERDICT_COUNTS.filter(([k]) => s[k] != null).map(([k, label]) => `${label} ${s[k]}`);
+  const status = (verdict.status || '').replace(VERDICT_EMOJI_RE, '');
+  return (
+    <div>
+      <Space size={8} style={{ marginBottom: 8 }} wrap>
+        <Tag color={tone.color}>{tone.label}</Tag>
+        {status && <Typography.Text strong>{status}</Typography.Text>}
+        {verdict.status_detail && <Typography.Text type="secondary">{verdict.status_detail}</Typography.Text>}
+      </Space>
+      {counts.length > 0 && (
+        <div style={{ marginBottom: 8 }}>
+          {counts.map((c) => (
+            <Tag key={c}>{c}</Tag>
+          ))}
+        </div>
+      )}
+      {verdict.conclusion && (
+        <Typography.Paragraph style={{ marginBottom: 0 }}>{verdict.conclusion}</Typography.Paragraph>
+      )}
+    </div>
+  );
+}
+
 export default function SpecDetailPage() {
   const { name = '', spec = '' } = useParams<{ name: string; spec: string }>();
   const [detail, setDetail] = useState<SpecDetail | null>(null);
@@ -511,23 +563,7 @@ export default function SpecDetailPage() {
         <Col span={12}>
           <Card title="验证结论" size="small">
             {detail?.verdict ? (
-              <div>
-                <Space size={8} style={{ marginBottom: 8 }}>
-                  <Tag color={detail.verdict.passed ? 'success' : 'error'}>
-                    {detail.verdict.passed ? '✅ 通过' : '❌ 未通过'}
-                  </Tag>
-                  {detail.verdict.summary && (
-                    <Typography.Text type="secondary">
-                      {detail.verdict.summary}
-                    </Typography.Text>
-                  )}
-                </Space>
-                {detail.verdict.details && (
-                  <Typography.Paragraph style={{ marginBottom: 0 }}>
-                    {detail.verdict.details}
-                  </Typography.Paragraph>
-                )}
-              </div>
+              <VerdictPanel verdict={detail.verdict} />
             ) : (
               <Typography.Text type="secondary">暂无验证结论</Typography.Text>
             )}

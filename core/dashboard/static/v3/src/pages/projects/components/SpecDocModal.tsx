@@ -182,7 +182,7 @@ export default function SpecDocModal({ project, spec, open, onClose }: SpecDocMo
             title={maximized ? '还原' : '最大化'}
             icon={maximized ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
             onClick={() => setMaximized((v) => !v)}
-            style={{ position: 'absolute', right: 24, top: '50%', transform: 'translateY(-50%)' }}
+            style={{ position: 'absolute', right: 24, top: 8 }}
           />
         </div>
       }

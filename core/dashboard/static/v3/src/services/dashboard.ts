@@ -222,11 +222,19 @@ export interface SpecDetail {
   created: string | null;
   updated: string | null;
   error: string | null;
-  // 验证结论
+  // 验证结论 — 对应后端 data.py parse_verdict() 返回结构
   verdict?: {
-    passed: boolean;
-    summary?: string;
-    details?: string;
+    exists: boolean;
+    status: string;
+    status_detail: string;
+    conclusion: string;
+    summary?: {
+      passed: string | null;
+      failed: string | null;
+      errors: string | null;
+      product_bugs: string | null;
+      env_issues: string | null;
+    };
   };
   // 验证进度
   verify?: {
