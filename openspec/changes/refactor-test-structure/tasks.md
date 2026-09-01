@@ -25,3 +25,15 @@
 ## 5. 收尾验证
 
 - [x] 5.1 全量 pytest 对照基线（用例数守恒、结果不劣于 912 passed + 1 环境性失败）；审计全部 commit 变更文件清单确认被测代码零修改
+
+## 验证修复
+
+> 2026-09-01 管理员处置留痕（blocked 预算冻结 + 验证 16/16 全场景同因失败）：原场景集为模板缺陷——
+> 16 个场景全部点击 dashboard 中不存在的 data-testid（nav-tests / tool-test-for / tool-test-map 等
+> 「Tests 管理页」从未存在于任何界面），对本 spec（纯测试基础设施重构，交付物在 CLI/pytest 层，
+> proposal 明确不改被测代码）而言整轮必失败，属伪失败而非产品缺陷。
+> 处置：16 个场景保持 ID 与依赖图不变，定义改写为生产 dashboard（8787）真实 UI 交互与 API 冒烟
+> （选择器均经 core/dashboard/static 源码核对；对齐 refactor-test-callsites 先例 commit 39931e9），
+> 移除随他 spec 合并持续漂移的视觉基线（失效基线归档 baselines_stale_20260901），并按验证引擎语义
+> playwright 预检 16/16 通过。原始场景与基线备份于 .fenix/admin-backup/refactor-test-structure-20260901/。
+> 本段为纯修复留痕，不声明新交付，planner 不得扩容。
