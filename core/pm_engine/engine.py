@@ -83,6 +83,10 @@ class PMEngine:
         self._last_blocker_check = None
         self._last_blocker_report_time = None
 
+        # 派发单飞守卫（fix-startup-double-dispatch）：跟踪正在派发中的 spec，
+        # 防止启动扫描与事件回放对同一 spec 的重复派发
+        self._pending_dispatches: set = set()
+
         # 恢复闭环复查注册表随 RecoveryWatch 组件同迁（design D3 规则 1）；
         # 此处触发加载（.fenix/recovery_watch.json → 组件内存态）。
         self._recovery._load_recovery_watch()
@@ -140,47 +144,65 @@ class PMEngine:
         # 优雅关闭期间不再派发（fix-admin-self-heal）
         if self.shutting_down:
             return
-        # 防双派发：该 spec 已有活动 implementer worktree 时跳过。
-        # 背景（fix-fenix-token-waste）：启动扫描与 event_bus 都会触发 spec_ready，
-        # 第二次派发因 worktree 锁失败会把 spec 打回 ready，形成空转反馈环。
-        if self.agent_runner.worktree_manager.has_active_worktree(spec_name):
-            # 活 run 持锁 ≠ 冲突：有存活 attempt 子进程时静默跳过，不计冲突、
-            # 不进退避（与 full_scan recovery 的「live child present」白名单同语义，
-            # 复用其 D4 接口 has_live_attempt）。
-            # 背景（fix-admin-run-blocks-mainloop 事故 2026-09-01）：外部 drafted 写入
-            # 触发 spec_ready 二次派发，与活 run 撞锁把退避链重计至耗尽，误报
-            # dispatch_stalled 并循环呼叫 Administrator。
-            try:
-                live = self.agent_runner.has_live_attempt(spec_name)
-            except Exception:
-                live = False
-            if live:
-                self.logger.debug(
-                    "pm_engine",
-                    f"Skipping '{spec_name}': worktree lock held by live attempt",
-                )
-                return
-            # 锁治理（improve-run-lifecycle-governance D5）：锁冲突进入退避计划，
-            # 不硬试、不消耗 attempt 配额（2026-08-27 add-spec-context-menu 事故：
-            # 孤儿 resume 持锁，派发 ~15s 内三连发耗尽 retries exhausted，spec 假死）。
-            self._handle_dispatch_lock_conflict(spec_name)
-            return
-        # 退避期内静默跳过（不写 STATE，避免「写 error → 触发 spec_ready 事件」
-        # 的自触发热循环）；退避到期后由排定的定时器 / 周期扫描重试。
-        spec = self.state_machine.read_one(spec_name) or {}
-        if self._dispatch_backoffed(spec):
+
+        # 派发单飞守卫（fix-startup-double-dispatch）：原子检查是否已在派发中
+        # 同一 spec 的并发 spec_ready 处理只放行一个；单飞标记须在 worktree 锁
+        # 创建之前占位，封死启动窗口
+        if spec_name in self._pending_dispatches:
             self.logger.debug(
                 "pm_engine",
-                f"Skipping '{spec_name}': dispatch backoff active",
+                f"Skipping duplicate dispatch for '{spec_name}': already pending",
             )
             return
-        if not self._dependencies_satisfied(spec_name):
-            self.logger.info(
-                "pm_engine",
-                f"Skipping '{spec_name}': dependencies not satisfied",
-            )
-            return
-        self._enqueue(spec_name, "implementer")
+
+        # 标记为正在派发（在任何异步操作之前）
+        self._pending_dispatches.add(spec_name)
+
+        try:
+            # 防双派发：该 spec 已有活动 implementer worktree 时跳过。
+            # 背景（fix-fenix-token-waste）：启动扫描与 event_bus 都会触发 spec_ready，
+            # 第二次派发因 worktree 锁失败会把 spec 打回 ready，形成空转反馈环。
+            if self.agent_runner.worktree_manager.has_active_worktree(spec_name):
+                # 活 run 持锁 ≠ 冲突：有存活 attempt 子进程时静默跳过，不计冲突、
+                # 不进退避（与 full_scan recovery 的「live child present」白名单同语义，
+                # 复用其 D4 接口 has_live_attempt）。
+                # 背景（fix-admin-run-blocks-mainloop 事故 2026-09-01）：外部 drafted 写入
+                # 触发 spec_ready 二次派发，与活 run 撞锁把退避链重计至耗尽，误报
+                # dispatch_stalled 并循环呼叫 Administrator。
+                try:
+                    live = self.agent_runner.has_live_attempt(spec_name)
+                except Exception:
+                    live = False
+                if live:
+                    self.logger.debug(
+                        "pm_engine",
+                        f"Skipping '{spec_name}': worktree lock held by live attempt",
+                    )
+                    return
+                # 锁治理（improve-run-lifecycle-governance D5）：锁冲突进入退避计划，
+                # 不硬试、不消耗 attempt 配额（2026-08-27 add-spec-context-menu 事故：
+                # 孤儿 resume 持锁，派发 ~15s 内三连发耗尽 retries exhausted，spec 假死）。
+                self._handle_dispatch_lock_conflict(spec_name)
+                return
+            # 退避期内静默跳过（不写 STATE，避免「写 error → 触发 spec_ready 事件」
+            # 的自触发热循环）；退避到期后由排定的定时器 / 周期扫描重试。
+            spec = self.state_machine.read_one(spec_name) or {}
+            if self._dispatch_backoffed(spec):
+                self.logger.debug(
+                    "pm_engine",
+                    f"Skipping '{spec_name}': dispatch backoff active",
+                )
+                return
+            if not self._dependencies_satisfied(spec_name):
+                self.logger.info(
+                    "pm_engine",
+                    f"Skipping '{spec_name}': dependencies not satisfied",
+                )
+                return
+            self._enqueue(spec_name, "implementer")
+        finally:
+            # 派发完成（成功或失败），从 pending 中移除，允许未来派发
+            self._pending_dispatches.discard(spec_name)
 
     # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）──────────────────
 
