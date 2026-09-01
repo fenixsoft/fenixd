@@ -5,9 +5,11 @@
 
 import json
 import os
+import re
 import threading
 import time
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +18,7 @@ import pytest
 from core.admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION
 from core.admin_monitor import AdminMonitor
 from core.agent_runner import AdminDisposition, AgentRunner
+from core.agent_runner.runner import admin_disposition_path
 from core.dashboard.registry import Registry
 from core.dashboard.server import DashboardHTTPServer, find_free_port
 
@@ -104,6 +107,23 @@ def make_monitor(tmp_path, specs: dict, config=None, runner=None):
     return proot, mon
 
 
+def disposition_path_from_prompt(prompt: str) -> Path:
+    """从 administrator 提示词中提取按 run 注入的处置实例文件路径。
+
+    fix-admin-run-blocks-mainloop：提示词 MUST 指向 .fenix/admin_disposition-<run_id>.json
+    （而非旧全局 .fenix/admin_disposition.json），Admin 按提示词写入后 runner
+    读到的才是自身结果。
+    """
+    m = re.search(r"(/[^\s()）]*/\.fenix/admin_disposition-[^)\s）]+\.json)", prompt)
+    assert m, f"提示词未注入实例处置路径：{prompt[:300]}"
+    return Path(m.group(1))
+
+
+def wait_for_event(evt: threading.Event, timeout: float = 5.0):
+    """等待 worker 线程完成（超时断言，避免测试静默挂起/假通过）。"""
+    assert evt.wait(timeout), "worker 未在超时内完成处置"
+
+
 # ── 4.2 admin_store 读写 + 标记已处理 ───────────────────
 
 
@@ -152,6 +172,58 @@ class TestAdminStore:
         store = AdminStore(tmp_path, FakeLogger())
         sig = store.append({"kind": SIGNAL, "signal_type": "stuck"})
         assert store.mark_handled(sig["id"]) is False
+
+    def test_concurrent_append_across_threads(self, tmp_path):
+        """AdminStore 跨线程使用：worker 池并行追加 + 主线程读取不丢不损
+        （fix-admin-run-blocks-mainloop tasks 4.3：文件锁与线程亲和无关）。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        workers_count, per_worker = 4, 10
+        errors = []
+
+        def append_many(idx):
+            try:
+                for i in range(per_worker):
+                    store.append({
+                        "kind": DISPOSITION,
+                        "status": "pending",
+                        "spec": f"spec-{idx}",
+                        "admin_run_id": f"admin-spec-{idx}-{i}",
+                        "description": f"worker {idx} run {i}",
+                    })
+            except Exception as e:  # noqa: BLE001 — 线程内失败收集后统一断言
+                errors.append(e)
+
+        threads = [threading.Thread(target=append_many, args=(i,))
+                   for i in range(workers_count)]
+        # 主线程并发读取（模拟 dashboard watcher / 巡检同时读）
+        stop = threading.Event()
+        read_snapshots = []
+
+        def read_while_writing():
+            while not stop.is_set():
+                try:
+                    read_snapshots.append(len(store.read_all()))
+                except Exception as e:  # noqa: BLE001
+                    errors.append(e)
+                    return
+                time.sleep(0.001)
+
+        reader = threading.Thread(target=read_while_writing)
+        for t in threads:
+            t.start()
+        reader.start()
+        for t in threads:
+            t.join(timeout=10)
+        stop.set()
+        reader.join(timeout=5)
+
+        assert errors == []
+        recs = store.read_all()
+        assert len(recs) == workers_count * per_worker
+        # 追加内容互不覆盖（每条 id 唯一）
+        assert len({r["id"] for r in recs}) == workers_count * per_worker
+        # 读取过程始终得到合法 JSON 记录列表（无半截写）
+        assert all(isinstance(n, int) for n in read_snapshots)
 
     def test_mark_all_handled(self, tmp_path):
         store = AdminStore(tmp_path, FakeLogger())
@@ -657,14 +729,15 @@ class TestRunAdministrator:
         assert mon._detect_restart_failure(time.time()) == []
 
     def test_clear_stale_disposition(self, tmp_path):
+        """清理指定实例的处置文件（按 run 路径参数化，不再用固定文件名）。"""
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        disp_path = proot / ".fenix" / "admin_disposition.json"
+        disp_path = proot / ".fenix" / "admin_disposition-admin-spec-a-1.json"
         disp_path.write_text(json.dumps({"spec": "old", "result": "stale"}), encoding="utf-8")
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
-        runner._clear_admin_disposition()
+        runner._clear_admin_disposition(disp_path)
         assert not disp_path.exists()
 
     def test_run_administrator_reads_disposition(self, tmp_path):
@@ -679,7 +752,8 @@ class TestRunAdministrator:
         runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
-            (proot / ".fenix" / "admin_disposition.json").write_text(json.dumps({
+            # Admin 按提示词注入的实例路径写入（而非旧全局文件）
+            admin_disposition_path(cwd, run_id).write_text(json.dumps({
                 "spec": "spec-a",
                 "problem": "卡死",
                 "actions_taken": ["kill", "reset"],
@@ -711,7 +785,7 @@ class TestRunAdministrator:
         summary = "根因是工作树状态陈旧；已清理并重新调度；无需人工介入。"
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
-            (proot / ".fenix" / "admin_disposition.json").write_text(json.dumps({
+            admin_disposition_path(cwd, run_id).write_text(json.dumps({
                 "spec": "spec-a",
                 "problem": "卡死",
                 "actions_taken": ["clean", "reset"],
@@ -739,7 +813,7 @@ class TestRunAdministrator:
         runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
-            (proot / ".fenix" / "admin_disposition.json").write_text(json.dumps({
+            admin_disposition_path(cwd, run_id).write_text(json.dumps({
                 "spec": "spec-a", "result": "resolved",
             }), encoding="utf-8")
             return "output", 5, "sess"
@@ -754,7 +828,7 @@ class TestRunAdministrator:
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        disp_path = proot / ".fenix" / "admin_disposition.json"
+        disp_path = proot / ".fenix" / "admin_disposition-admin-spec-a-1.json"
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
 
@@ -762,19 +836,19 @@ class TestRunAdministrator:
         disp_path.write_text(json.dumps({
             "summary": ["诊断：根因是构建缓存损坏", "处置：清理缓存", "结果：恢复"],
         }), encoding="utf-8")
-        assert runner._read_admin_disposition()["summary"] == "诊断：根因是构建缓存损坏\n处置：清理缓存\n结果：恢复"
+        assert runner._read_admin_disposition(disp_path)["summary"] == "诊断：根因是构建缓存损坏\n处置：清理缓存\n结果：恢复"
 
         # 缺失 → 空字符串
         disp_path.write_text(json.dumps({"actions_taken": "x"}), encoding="utf-8")
-        assert runner._read_admin_disposition()["summary"] == ""
+        assert runner._read_admin_disposition(disp_path)["summary"] == ""
 
         # 非字符串 → str 化
         disp_path.write_text(json.dumps({"summary": 123}), encoding="utf-8")
-        assert runner._read_admin_disposition()["summary"] == "123"
+        assert runner._read_admin_disposition(disp_path)["summary"] == "123"
 
         # 损坏文件 → 空 dict（调用方兜底）
         disp_path.write_text("not json{", encoding="utf-8")
-        assert runner._read_admin_disposition() == {}
+        assert runner._read_admin_disposition(disp_path) == {}
 
     def test_run_administrator_failure_falls_back(self, tmp_path):
         proot = tmp_path / "proj"
@@ -817,7 +891,7 @@ class TestRunAdministrator:
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
             captured["model"] = model_override
             captured["env"] = env_overrides
-            (proot / ".fenix" / "admin_disposition.json").write_text(
+            admin_disposition_path(cwd, run_id).write_text(
                 json.dumps({"spec": "spec-a", "result": "resolved"}), encoding="utf-8")
             return "output", 5, "sess"
 
@@ -845,7 +919,7 @@ class TestRunAdministrator:
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
             captured["model"] = model_override
             captured["env"] = env_overrides
-            (proot / ".fenix" / "admin_disposition.json").write_text(
+            admin_disposition_path(cwd, run_id).write_text(
                 json.dumps({"spec": "spec-a", "result": "resolved"}), encoding="utf-8")
             return "output", 5, "sess"
 
@@ -854,6 +928,117 @@ class TestRunAdministrator:
         assert captured["model"] == "claude-opus-4"
         assert "ANTHROPIC_BASE_URL" not in captured["env"]
         assert "ANTHROPIC_API_KEY" not in captured["env"]
+
+    def test_prompt_uses_instance_path_not_legacy(self, tmp_path):
+        """提示词写入路径为按 run 注入的实例文件，且 Admin 按提示词写入后 runner
+        读到的是自身结果（tasks 1.2 / 5.5）。走真实 prompt_builder。"""
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.project_root = proot
+        runner._get_config = lambda key, default=None: default
+        runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._get_agent_model_assignment = lambda agent_type: None
+        prompts = []
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
+            prompts.append(prompt)
+            # 模拟 Admin 按提示词注入的路径写入
+            disposition_path_from_prompt(prompt).write_text(json.dumps({
+                "spec": "spec-a", "problem": "注入链路", "result": "resolved",
+            }), encoding="utf-8")
+            return "output", 5, "sess"
+
+        runner._run_claude = fake_run_claude
+        disp = runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
+
+        assert len(prompts) == 1
+        prompt = prompts[0]
+        # 中途持久化 + 最终写入两处都指向实例路径；旧全局路径不再出现
+        assert prompt.count(".fenix/admin_disposition-") == 2
+        assert "admin_disposition.json" not in prompt
+        injected = admin_disposition_path(proot, disp.run_id).name
+        assert prompt.count(injected) == 2
+        # runner 读到的是写入自身实例文件的结果
+        assert disp.result == "resolved"
+        assert disp.problem == "注入链路"
+
+    def test_instance_file_deleted_after_run(self, tmp_path):
+        """run 结束读取自身 disposition 后清理实例文件（tasks 1.3）。"""
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.project_root = proot
+        runner._get_config = lambda key, default=None: default
+        runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._get_agent_model_assignment = lambda agent_type: None
+        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
+            disp_path = admin_disposition_path(cwd, run_id)
+            disp_path.write_text(json.dumps({"result": "resolved"}), encoding="utf-8")
+            assert disp_path.exists()
+            return "output", 5, "sess"
+
+        runner._run_claude = fake_run_claude
+        disp = runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
+        assert disp.result == "resolved"
+        assert not admin_disposition_path(proot, disp.run_id).exists()
+
+    def test_parallel_runs_use_isolated_disposition_files(self, tmp_path):
+        """并行多实例：各自实例文件独立读写，互不覆盖（tasks 5.3 / spec 隔离场景）。"""
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.project_root = proot
+        runner._get_config = lambda key, default=None: default
+        runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._get_agent_model_assignment = lambda agent_type: None
+        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
+
+        seen_paths = []
+        started = threading.Barrier(2)
+        release = threading.Event()
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
+            disp_path = admin_disposition_path(cwd, run_id)
+            seen_paths.append(disp_path)
+            started.wait(timeout=10)          # 两个 run 同时在场
+            release.wait(timeout=5)           # 同时保持文件存在，制造互踩窗口
+            idx = spec_name.split("-")[-1]
+            disp_path.write_text(json.dumps({
+                "spec": f"spec-{idx}",
+                "problem": f"问题-{idx}",
+                "result": "resolved",
+            }), encoding="utf-8")
+            return "output", 5, "sess"
+
+        runner._run_claude = fake_run_claude
+        results = {}
+
+        def run_once(idx):
+            results[idx] = runner.run_administrator(
+                {"spec": f"spec-{idx}", "signal_type": "stuck"})
+
+        threads = [threading.Thread(target=run_once, args=(i,)) for i in (1, 2)]
+        for t in threads:
+            t.start()
+        time.sleep(0.2)
+        release.set()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert len(seen_paths) == 2
+        # 实例文件互不相同（按 run_id 分离）
+        assert seen_paths[0] != seen_paths[1]
+        # 各实例读到的是自己的结果（spec 兜底用信号 spec，problem 用自身文件内容）
+        assert results[1].problem == "问题-1"
+        assert results[2].problem == "问题-2"
+        # 两个实例文件都已清理
+        assert all(not p.exists() for p in seen_paths)
 
 
 # ── 4.3 Dashboard alerts API ────────────────────────────
@@ -1165,59 +1350,59 @@ class TestDashboardAdminActivitiesAPI:
         assert "error" in data
 
 
-# ── 手动唤起 Admin：daemon 主循环拾取（add-spec-manual-admin-invoke 2.2） ──
+# ── 手动唤起 Admin：daemon 主循环拾取（add-spec-manual-admin-invoke 2.2；
+#    fix-admin-run-blocks-mainloop：拾取后投递后台 worker 池） ──────────────
 
 import fenixd as _fenixd_mod
 
 
-class _FakeDaemon:
-    """最小化 FenixDaemon 替身：仅装配 _check_admin_invoke_requests 所需属性。
+class _FakeDaemon(_fenixd_mod.FenixDaemon):
+    """FenixDaemon 子类替身：仅装配主循环拾取路径所需属性。
 
-    _check_admin_invoke_requests 只读 PROJECT_ROOT（模块全局，会被 monkeypatch）、
-    agent_runner、admin_monitor、admin_store、logger；直接构造裸对象设入这些属性
-    即可测试，无需启动完整 daemon（避免加载 config / event_bus / pm_engine）。
-    admin_monitor 默认 None 走 agent_runner 直调回退分支；走 AdminMonitor 路径的
-    用例显式注入 FakeMonitor。
+    复用真实 __init__（只置空属性，不加载 config / event_bus / pm_engine），
+    再注入 agent_runner、admin_monitor、admin_store、logger 与 worker 池字段。
+    _check_admin_invoke_requests 只读模块全局 PROJECT_ROOT（测试中 monkeypatch）、
+    上述实例属性；admin_monitor 默认 None 走 agent_runner 直调回退分支。
     """
 
     def __init__(self, project_root: Path, logger, runner, store,
-                 admin_monitor=None):
+                 admin_monitor=None, executor=None):
+        super().__init__()
         self.running = True
         self.agent_runner = runner
         self.admin_monitor = admin_monitor
         self.admin_store = store
         self.logger = logger
+        self._admin_executor = executor
         self._project_root = project_root
-
-    # 注入 PROJECT_ROOT 的本地视图，避免修改模块全局
-    @property
-    def PROJECT_ROOT(self):
-        return self._project_root
 
 
 class TestAdminInvokePickup:
-    def test_pickup_invokes_administrator_and_deletes_file(self, tmp_path):
-        """请求文件存在 → 唤起 manual-intervention 信号并删除文件。"""
+    @staticmethod
+    def _write_request(proot: Path, spec="myspec"):
+        req_path = proot / ".fenix" / "admin_invoke_request.json"
+        req_path.write_text(
+            json.dumps({"spec": spec, "source": "manual",
+                        "created": utcnow_iso()}), encoding="utf-8")
+        return req_path
+
+    @staticmethod
+    def _pickup(monkeypatch, proot: Path, daemon):
+        """monkeypatch 模块全局 PROJECT_ROOT 后执行一次主循环拾取。"""
+        monkeypatch.setattr(_fenixd_mod, "PROJECT_ROOT", proot)
+        daemon._check_admin_invoke_requests()
+
+    def test_pickup_invokes_administrator_and_deletes_file(self, tmp_path, monkeypatch):
+        """请求文件存在 → 唤起 manual-intervention 信号并删除文件（同步回退路径）。"""
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         runner = FakeRunner()
         store = AdminStore(proot, FakeLogger())
+        # executor=None → admin.workers:0 的同步回退行为
         daemon = _FakeDaemon(proot, FakeLogger(), runner, store)
-
-        req_path = proot / ".fenix" / "admin_invoke_request.json"
-        req_path.write_text(
-            json.dumps({"spec": "myspec", "source": "manual",
-                        "created": utcnow_iso()}), encoding="utf-8")
-
-        # 临时把模块全局 PROJECT_ROOT 指向临时项目根（方法用全局变量）
-        saved = _fenixd_mod.PROJECT_ROOT
-        try:
-            _fenixd_mod.PROJECT_ROOT = proot
-            # 把方法绑到替身上调用（方法只依赖全局 PROJECT_ROOT 与实例属性）
-            _fenixd_mod.FenixDaemon._check_admin_invoke_requests.__get__(daemon)()
-        finally:
-            _fenixd_mod.PROJECT_ROOT = saved
+        req_path = self._write_request(proot)
+        self._pickup(monkeypatch, proot, daemon)
 
         # 文件被消费删除
         assert not req_path.exists()
@@ -1231,7 +1416,7 @@ class TestAdminInvokePickup:
         # 无失败 disposition 落盘
         assert store.read_all() == []
 
-    def test_pickup_routes_through_admin_monitor(self, tmp_path):
+    def test_pickup_routes_through_admin_monitor(self, tmp_path, monkeypatch):
         """装配了 admin_monitor → 走 invoke_manual（复用 _invoke_administrator 落最终
         disposition），不再直调 run_administrator（fix-manual-admin-disposition-finalize）。"""
         proot = tmp_path / "proj"
@@ -1250,18 +1435,8 @@ class TestAdminInvokePickup:
         store = AdminStore(proot, FakeLogger())
         daemon = _FakeDaemon(proot, FakeLogger(), runner, store,
                              admin_monitor=monitor)
-
-        req_path = proot / ".fenix" / "admin_invoke_request.json"
-        req_path.write_text(
-            json.dumps({"spec": "myspec", "source": "manual",
-                        "created": utcnow_iso()}), encoding="utf-8")
-
-        saved = _fenixd_mod.PROJECT_ROOT
-        try:
-            _fenixd_mod.PROJECT_ROOT = proot
-            _fenixd_mod.FenixDaemon._check_admin_invoke_requests.__get__(daemon)()
-        finally:
-            _fenixd_mod.PROJECT_ROOT = saved
+        req_path = self._write_request(proot)
+        self._pickup(monkeypatch, proot, daemon)
 
         assert not req_path.exists()
         # 走 AdminMonitor 入口，信号原样透传
@@ -1272,7 +1447,7 @@ class TestAdminInvokePickup:
         assert runner.calls == []
         assert store.read_all() == []
 
-    def test_pickup_without_file_is_noop(self, tmp_path):
+    def test_pickup_without_file_is_noop(self, tmp_path, monkeypatch):
         """无请求文件 → 不唤起、不报错。"""
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
@@ -1280,18 +1455,11 @@ class TestAdminInvokePickup:
         runner = FakeRunner()
         store = AdminStore(proot, FakeLogger())
         daemon = _FakeDaemon(proot, FakeLogger(), runner, store)
-
-        saved = _fenixd_mod.PROJECT_ROOT
-        try:
-            _fenixd_mod.PROJECT_ROOT = proot
-            _fenixd_mod.FenixDaemon._check_admin_invoke_requests.__get__(daemon)()
-        finally:
-            _fenixd_mod.PROJECT_ROOT = saved
-
+        self._pickup(monkeypatch, proot, daemon)
         assert runner.calls == []
 
-    def test_pickup_exception_records_failed_disposition(self, tmp_path):
-        """唤起异常 → 不丢痕：写 failed disposition 且文件已删。"""
+    def test_pickup_exception_records_failed_disposition(self, tmp_path, monkeypatch):
+        """唤起异常 → 不丢痕：写 failed disposition 且文件已删（同步回退路径）。"""
 
         class _BoomRunner:
             def run_administrator(self, signal):
@@ -1303,18 +1471,8 @@ class TestAdminInvokePickup:
         runner = _BoomRunner()
         store = AdminStore(proot, FakeLogger())
         daemon = _FakeDaemon(proot, FakeLogger(), runner, store)
-
-        req_path = proot / ".fenix" / "admin_invoke_request.json"
-        req_path.write_text(
-            json.dumps({"spec": "myspec", "source": "manual",
-                        "created": utcnow_iso()}), encoding="utf-8")
-
-        saved = _fenixd_mod.PROJECT_ROOT
-        try:
-            _fenixd_mod.PROJECT_ROOT = proot
-            _fenixd_mod.FenixDaemon._check_admin_invoke_requests.__get__(daemon)()
-        finally:
-            _fenixd_mod.PROJECT_ROOT = saved
+        req_path = self._write_request(proot)
+        self._pickup(monkeypatch, proot, daemon)
 
         assert not req_path.exists()
         records = store.read_all()
@@ -1323,3 +1481,224 @@ class TestAdminInvokePickup:
         assert records[0]["status"] == "failed"
         assert records[0]["spec"] == "myspec"
         assert "claude 未授权" in records[0]["description"]
+
+
+class _EventRunner:
+    """记录唤起信号并在处置开始/结束时设置事件（worker 池异步行为验证）。
+
+    gate：置为 Event 时处置挂起等待放行——用于证明拾取在处置运行期间已返回
+    （主循环不被阻塞）。
+    """
+
+    def __init__(self, fail_specs=()):
+        self.calls = []
+        self.signals = []
+        self.fail_specs = set(fail_specs)
+        self.started = threading.Event()
+        self.done = threading.Event()
+        self.barrier = None  # 可选：多请求并行在场同步
+        self.gate = None     # 可选：处置挂起（模拟数分钟运行）
+
+    def run_administrator(self, signal):
+        self.calls.append(signal)
+        self.signals.append(signal)
+        self.started.set()
+        if self.barrier is not None:
+            self.barrier.wait(timeout=5)
+        if self.gate is not None:
+            self.gate.wait(timeout=5)
+        if signal.get("spec") in self.fail_specs:
+            raise RuntimeError(f"处置失败：{signal.get('spec')}")
+        self.done.set()
+        return AdminDisposition(run_id=f"admin-{signal.get('spec')}-1",
+                                spec=signal.get("spec"), success=True,
+                                result="resolved")
+
+
+class TestAdminRunWorkerPool:
+    """fix-admin-run-blocks-mainloop：拾取后投递 worker 池，主循环不再被处置阻塞。"""
+
+    def _make_daemon(self, proot, runner, workers=2, admin_monitor=None):
+        store = AdminStore(proot, FakeLogger())
+        executor = (ThreadPoolExecutor(max_workers=workers,
+                                       thread_name_prefix="fenixd-admin-run-test")
+                    if workers else None)
+        daemon = _FakeDaemon(proot, FakeLogger(), runner, store,
+                             admin_monitor=admin_monitor, executor=executor)
+        return daemon, store
+
+    def test_pickup_submits_to_pool_without_blocking(self, tmp_path, monkeypatch):
+        """拾取即投递：处置仍在后台运行时拾取已返回（tasks 3.1 / spec 不停摆场景）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = _EventRunner()
+        runner.gate = threading.Event()  # 处置保持「运行中」
+        daemon, store = self._make_daemon(proot, runner)
+        req_path = TestAdminInvokePickup._write_request(proot)
+
+        TestAdminInvokePickup._pickup(monkeypatch, proot, daemon)
+
+        # 拾取周期内：请求文件已消费、已计入提交
+        assert not req_path.exists()
+        assert daemon._admin_pool_stats["submitted"] == 1
+        wait_for_event(runner.started)
+        assert runner.calls[0]["spec"] == "myspec"
+        # 处置仍在后台运行 → 拾取未被其阻塞
+        assert not runner.done.is_set()
+
+        runner.gate.set()
+        wait_for_event(runner.done)
+        assert daemon._admin_pool_stats["completed"] == 1
+        daemon._admin_executor.shutdown(wait=True)
+
+    def test_pickup_timeliness_within_one_cycle(self, tmp_path, monkeypatch):
+        """拾取及时性：写入请求文件后一次拾取即完成投递（≤1 个扫描周期）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = _EventRunner()
+        daemon, _ = self._make_daemon(proot, runner)
+        TestAdminInvokePickup._write_request(proot)
+
+        t0 = time.monotonic()
+        TestAdminInvokePickup._pickup(monkeypatch, proot, daemon)
+        elapsed = time.monotonic() - t0
+
+        # 单次拾取（≈1 个扫描周期）内完成投递，远小于处置运行时长
+        assert elapsed < 1.0
+        assert daemon._admin_pool_stats["submitted"] == 1
+        daemon._admin_executor.shutdown(wait=True)
+
+    def test_parallel_requests_run_concurrently(self, tmp_path, monkeypatch):
+        """连续两次 invoke：两个 run 并行执行、互不覆盖（tasks 5.3）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = _EventRunner()
+        runner.barrier = threading.Barrier(2)  # 两个处置必须同时在场
+        daemon, store = self._make_daemon(proot, runner, workers=2)
+
+        TestAdminInvokePickup._write_request(proot, "spec-a")
+        TestAdminInvokePickup._pickup(monkeypatch, proot, daemon)
+        # 第二次呼叫（第一个处置仍在后台执行）
+        wait_for_event(runner.started)
+        TestAdminInvokePickup._write_request(proot, "spec-b")
+        TestAdminInvokePickup._pickup(monkeypatch, proot, daemon)
+
+        deadline = time.time() + 5
+        while len(runner.signals) < 2 and time.time() < deadline:
+            time.sleep(0.02)
+        assert {s["spec"] for s in runner.signals} == {"spec-a", "spec-b"}
+        assert daemon._admin_pool_stats["submitted"] == 2
+
+        deadline = time.time() + 5
+        while daemon._admin_pool_stats["completed"] < 2 and time.time() < deadline:
+            time.sleep(0.02)
+        assert daemon._admin_pool_stats["completed"] == 2
+        daemon._admin_executor.shutdown(wait=True)
+
+    def test_worker_survives_failure_and_processes_next(self, tmp_path, monkeypatch):
+        """处置异常 → failed disposition 不丢痕，worker 存活并处理后续请求
+        （tasks 4.2 / spec「后台处置失败不丢痕」）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = _EventRunner(fail_specs={"spec-a"})
+        daemon, store = self._make_daemon(proot, runner, workers=1)
+
+        TestAdminInvokePickup._write_request(proot, "spec-a")
+        TestAdminInvokePickup._pickup(monkeypatch, proot, daemon)
+        deadline = time.time() + 5
+        while daemon._admin_pool_stats["failed"] < 1 and time.time() < deadline:
+            time.sleep(0.02)
+
+        records = store.read_all()
+        assert len(records) == 1
+        assert records[0]["kind"] == DISPOSITION
+        assert records[0]["status"] == "failed"
+        assert records[0]["spec"] == "spec-a"
+        assert "处置失败" in records[0]["description"]
+
+        # 同一 worker 继续领取后续任务
+        TestAdminInvokePickup._write_request(proot, "spec-b")
+        TestAdminInvokePickup._pickup(monkeypatch, proot, daemon)
+        deadline = time.time() + 5
+        while daemon._admin_pool_stats["completed"] < 1 and time.time() < deadline:
+            time.sleep(0.02)
+        assert daemon._admin_pool_stats["completed"] == 1
+        assert [s["spec"] for s in runner.signals] == ["spec-a", "spec-b"]
+        daemon._admin_executor.shutdown(wait=True)
+
+    def test_submit_rejection_records_failed_disposition(self, tmp_path, monkeypatch):
+        """executor 已关闭（提交被拒）→ 落 failed disposition 不丢痕（tasks 2.2）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = _EventRunner()
+        daemon, store = self._make_daemon(proot, runner)
+
+        class _ClosedExecutor:
+            def submit(self, *a, **k):
+                raise RuntimeError("cannot schedule new futures after shutdown")
+
+        daemon._admin_executor = _ClosedExecutor()
+        ok = daemon._submit_admin_run({"spec": "spec-a", "signal_type": "manual-intervention"})
+
+        assert ok is False
+        records = store.read_all()
+        assert len(records) == 1
+        assert records[0]["status"] == "failed"
+        assert "拒绝" in records[0]["description"]
+        assert runner.calls == []
+
+    def test_shutdown_cancels_queued_without_waiting(self, tmp_path, monkeypatch):
+        """daemon shutdown → executor 优雅关闭（不等待在途处置，tasks 2.3）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = _EventRunner()
+        daemon, _ = self._make_daemon(proot, runner)
+        executor = daemon._admin_executor
+
+        TestAdminInvokePickup._write_request(proot, "spec-a")
+        TestAdminInvokePickup._pickup(monkeypatch, proot, daemon)
+        wait_for_event(runner.started)
+
+        # 其余组件未装配（None）→ shutdown 只关停 worker 池即退出
+        daemon.agent_runner = None
+        with pytest.raises(SystemExit):
+            daemon.shutdown()
+
+        assert daemon.running is False
+        # executor 已进入关闭状态：后续提交被拒
+        with pytest.raises(RuntimeError):
+            executor.submit(lambda: None)
+
+    def test_sweep_stale_disposition_files(self, tmp_path, monkeypatch):
+        """拾取新请求时清理超过 24h 的残留实例文件，新鲜文件与在途文件保留（tasks 1.3）。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = _EventRunner()
+        daemon, _ = self._make_daemon(proot, runner)
+        monkeypatch.setattr(_fenixd_mod, "PROJECT_ROOT", proot)
+
+        fenix_dir = proot / ".fenix"
+        stale = fenix_dir / "admin_disposition-admin-old-1.json"
+        fresh = fenix_dir / "admin_disposition-admin-new-1.json"
+        legacy = fenix_dir / "admin_disposition.json"   # 旧全局路径：存在即清理
+        stale.write_text("{}", encoding="utf-8")
+        fresh.write_text("{}", encoding="utf-8")
+        legacy.write_text("{}", encoding="utf-8")
+        old_ts = time.time() - 25 * 3600
+        os.utime(stale, (old_ts, old_ts))
+        os.utime(legacy, (old_ts, old_ts))
+
+        daemon._sweep_stale_admin_dispositions()
+
+        assert not stale.exists()
+        assert not legacy.exists()
+        assert fresh.exists()  # 未超时 → 保留
+
+    def test_sweep_noop_when_no_files(self, tmp_path, monkeypatch):
+        """无残留文件 → 清扫零操作不报错。"""
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        runner = _EventRunner()
+        daemon, _ = self._make_daemon(proot, runner)
+        monkeypatch.setattr(_fenixd_mod, "PROJECT_ROOT", proot)
+        daemon._sweep_stale_admin_dispositions()  # 不抛异常即通过

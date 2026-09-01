@@ -214,6 +214,14 @@ class ConfigLoader:
                 val = admin[field]
                 if not isinstance(val, (int, float)) or val <= 0:
                     raise ValueError(f"admin.{field} must be positive: {val}")
+        # fix-admin-run-blocks-mainloop D6：后台 worker 池大小；0 表示不启用后台池
+        # （回退主循环内同步执行）。负数与非法类型拒绝。
+        if "workers" in admin and admin["workers"] is not None:
+            workers = admin["workers"]
+            if not isinstance(workers, int) or isinstance(workers, bool) or workers < 0:
+                raise ValueError(
+                    f"admin.workers must be a non-negative integer: {workers}"
+                )
 
     @classmethod
     def _validate_llm(cls, llm: Dict[str, Any]):

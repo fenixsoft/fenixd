@@ -62,6 +62,19 @@ from core.v2_dev_server import (
 # 发给网关的模型名，ANTHROPIC_MODEL 被 --model 覆盖不生效。本常量只作 fallback。
 DEFAULT_GATEWAY_MODEL = "claude-sonnet-5"
 
+# ── Administrator 处置状态实例文件（fix-admin-run-blocks-mainloop D3）─────
+# 处置状态文件按 run 实例分离：每个 admin run 使用独立文件
+# .fenix/admin_disposition-<run_id>.json，并行实例互不覆盖。
+# 旧全局路径 .fenix/admin_disposition.json 不再读写（残留文件由拾取侧清扫）。
+ADMIN_DISPOSITION_PREFIX = "admin_disposition-"
+ADMIN_DISPOSITION_GLOB = "admin_disposition-*.json"
+
+
+def admin_disposition_path(project_root: Path, run_id: str) -> Path:
+    """某次 admin run 的处置状态实例文件路径。"""
+    return Path(project_root) / ".fenix" / f"{ADMIN_DISPOSITION_PREFIX}{run_id}.json"
+
+
 # ── V2 测试服务器（add-worktree-test-server）────────────────────────────
 # per-run 隔离测试服务的端口分配基数，范围 [V2_TEST_PORT_BASE, V2_TEST_PORT_BASE+19]
 # 主服务 8787 排除在外，并发运行（并行度 2，预留余量取 20 个高位端口段）不冲突。
@@ -166,6 +179,13 @@ class AgentRunner:
         self.project_root = project_root
         self.logger = logger
 
+        # 在跑 agent 登记表（run_id → Popen）。跨线程共享（fix-admin-run-blocks-
+        # mainloop tasks 4.4）：admin run 在 worker 池线程登记/摘除，主循环派发的
+        # implementer/verifier 在主线程登记；liveness 监督与 shutdown 关停均以
+        # list(...) 快照迭代、pop 带 default——全部单键原子操作，无读改写竞态，
+        # 不加锁（持锁跨 grace 等待窗口反而引入死锁面）。
+        # _daily_run_count 仅在 _execute_agent（implementer/verifier/planner）路径
+        # 自增，admin run 不经过该路径，无跨线程写。
         self._running_agents: Dict[str, subprocess.Popen] = {}
         self._daily_run_count = 0
 
@@ -234,7 +254,11 @@ class AgentRunner:
         与 implementer/verifier 不同：Administrator 是运维角色，直接在 main 树
         （project_root）操作框架，不创建 worktree（design D4）。产物写入
         .fenix/runs/admin-<spec>-<ts>.jsonl；处置结果从管理员按 prompt 写入的
-        .fenix/admin_disposition.json 读取，由 daemon 落盘到 admin_alerts.json。
+        实例文件 .fenix/admin_disposition-<run_id>.json 读取，由 daemon 落盘到
+        admin_alerts.json。
+
+        fix-admin-run-blocks-mainloop D3：处置状态文件按 run 实例分离——并行
+        多实例（worker 池）各自 clear/write/read 自己的文件，互不覆盖。
 
         Args:
             signal: admin_monitor 检测到的困境信号 dict
@@ -242,7 +266,11 @@ class AgentRunner:
         """
         spec = signal.get("spec") or "global"
         run_id = f"admin-{spec}-{int(time.time())}"
-        prompt = self._build_prompt(spec, "administrator", detail=signal)
+        # 实例路径注入提示词（prompt_builder 把写入指令指向该文件）
+        disp_path = admin_disposition_path(self.project_root, run_id)
+        prompt_detail = dict(signal)
+        prompt_detail["disposition_path"] = str(disp_path)
+        prompt = self._build_prompt(spec, "administrator", detail=prompt_detail)
 
         # improve-config-ui-tabs：Administrator 运行时解析链（design D4）
         #   1. agents.models.administrator assignment → 用分配 model 并注入 provider env（直连）
@@ -282,7 +310,7 @@ class AgentRunner:
         except Exception:
             pass
 
-        self._clear_admin_disposition()
+        self._clear_admin_disposition(disp_path)
         try:
             output, turns, _session_id = self._run_claude(
                 prompt, self.project_root, run_id, model_override, env_overrides,
@@ -296,7 +324,10 @@ class AgentRunner:
             success = False
             error = str(e)
 
-        disp = self._read_admin_disposition()
+        disp = self._read_admin_disposition(disp_path)
+        # 读取即清理自身实例文件：内容已捕获进 AdminDisposition 返回给调用方落
+        # final 记录，文件不再有读者；不清理会随并行实例累积成垃圾。
+        self._delete_admin_disposition(disp_path)
         return AdminDisposition(
             run_id=run_id,
             spec=disp.get("spec") or signal.get("spec"),
@@ -312,21 +343,30 @@ class AgentRunner:
             family_waiver=bool(disp.get("family_waiver", False)),
         )
 
-    def _clear_admin_disposition(self):
-        """清空上次的处置记录，避免运行失败时读到陈旧数据。"""
-        disp_path = self.project_root / ".fenix" / "admin_disposition.json"
+    def _clear_admin_disposition(self, disp_path: Path):
+        """清空本次 run 的处置状态文件（若残留），避免读到陈旧数据。
+
+        fix-admin-run-blocks-mainloop D3：路径按 run 实例传入，不再使用全局
+        固定文件名——并行实例只清理自己的文件。
+        """
         try:
             if disp_path.exists():
                 disp_path.unlink()
         except OSError:
             pass
 
-    def _read_admin_disposition(self) -> dict:
-        """读取管理员按 prompt 写入的处置记录 .fenix/admin_disposition.json。
+    def _delete_admin_disposition(self, disp_path: Path):
+        """run 结束后删除自己的处置状态实例文件（内容已在内存中/已落 final）。"""
+        try:
+            disp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _read_admin_disposition(self, disp_path: Path) -> dict:
+        """读取管理员按 prompt 写入的处置记录（实例文件，路径按 run 注入）。
 
         文件缺失/损坏返回空 dict（调用方用信号详情兜底）。
         """
-        disp_path = self.project_root / ".fenix" / "admin_disposition.json"
         try:
             data = json.loads(disp_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
