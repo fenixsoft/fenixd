@@ -799,11 +799,17 @@ def list_screenshots(project_root, spec_name) -> list:
 
 
 def _fold_summary(summary: dict, key: str, val: str) -> dict:
-    """把表格/行内的计数键值折进汇总字典；非计数键忽略。"""
+    """把表格/行内的计数键值折进汇总字典；非计数键忽略。
+
+    键名先剥离括号别名（如「通过 (PASS)」「产品缺陷 (BUG)」，v3 验证报告方言）
+    再匹配；全角/半角括号均支持。
+    """
     if val.lower() in ("n/a", "-", "--", "—"):
         return summary
-    k = key.lower().replace(" ", "").replace("数", "")
-    if k in ("产品bug", "产品", "bug"):
+    k = key.lower()
+    k = re.sub(r"[（(][^（）)]*[）)]", "", k)
+    k = k.replace(" ", "").replace("数", "")
+    if k in ("产品bug", "产品", "bug", "产品缺陷", "缺陷"):
         summary["product_bugs"] = val
     elif k in ("环境问题", "环境"):
         summary["env_issues"] = val
@@ -842,8 +848,8 @@ def parse_verdict(project_root, spec_name) -> dict:
 
     for raw in content.split("\n"):
         s = raw.strip()
-        # 结论标题：## 结论[: 内联] 或 ## 结论摘要
-        m = re.match(r"^#{2,4}\s*结论\s*(?:摘要)?\s*[：:]?\s*(.*)$", s)
+        # 结论标题：## 结论[: 内联] / ## 结论摘要 / ## 判定结论[: 内联]
+        m = re.match(r"^#{2,4}\s*(?:判定)?结论\s*(?:摘要)?\s*[：:]?\s*(.*)$", s)
         if m:
             status = m.group(1).strip() or status
             conclusion_mode = True
