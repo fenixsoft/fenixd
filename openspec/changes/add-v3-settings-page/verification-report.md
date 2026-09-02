@@ -1,163 +1,161 @@
 # 验证报告：add-v3-settings-page
 
-**验证时间**：2026-08-31 20:46 UTC  
-**验证引擎版本**：Fenix Planner Agent  
-**总体状态**：❌ 发现产品 Bug（bug-found）
+**验证时间**：2026-09-01  
+**验证轮次**：第4轮（修复轮）  
+**测试用例数**：26个场景  
+**验证结果**：❌ **发现产品缺陷**
 
 ---
 
-## 📊 验证摘要
+## 📊 总体概况
 
 | 指标 | 数值 |
 |------|------|
 | 总场景数 | 26 |
-| 通过场景 | 1 (3.8%) |
-| 失败场景 | 22 (84.6%) |
-| 警告场景 | 3 (11.5%) |
-
-### 分类统计
-
-| 分类 | 数量 | 说明 |
-|------|------|------|
-| **product-bug** | 3 | 产品缺陷，需修复代码 |
-| **test-defect** | 17 | 测试脚本选择器错误，需修复测试 |
-| **env** | 5 | 环境/视觉差异问题，警告 |
-| **flaky** | 0 | 不稳定场景 |
+| 通过 | 1 (3.8%) |
+| 失败 | 22 (84.6%) |
+| 警告 | 3 (11.5%) |
+| 错误 | 0 |
+| 环境阻塞 | 0 |
 
 ---
 
-## 🐛 产品 Bug 详情
+## 🔍 关键发现
 
-### 1. settings-scope-switch（作用域切换功能失败）
-- **严重程度**：🔴 Critical
-- **失败断言**：
-  - `element_visible text=项目级` - 元素不可见
-  - `element_visible .ant-select-selection-item:has-text('项目级')` - 元素不存在
-- **根因**：作用域切换后，配置数据未正确重新加载或URL参数未正确更新
-- **影响**：用户无法在用户级和项目级之间切换设置
+### 1. 严重问题 (Critical) - 3个场景
+**核心界面元素缺失，导致功能不可用**
 
-### 2. approval-mode-regression（审批模式回归测试失败）
-- **严重程度**：🟠 Major
-- **失败断言**：
-  - `attribute_match input[type='radio'][value='auto'] checked` - 属性不匹配
-  - 期望值：`true`，实际值：`''`（空）
-- **根因**：审批模式切换后，radio按钮的checked属性未正确设置
-- **影响**：审批模式切换后配置未持久化，刷新后状态丢失
+- **agent-model-no-provider**: 无Provider时未显示引导提示
+- **llm-provider-empty-state**: 无配置文件时未显示提示
+- **config-read-validation**: 并行度输入框不存在
 
-### 3. settings-scope-regression（作用域切换回归测试失败）
-- **严重程度**：🔴 Critical
-- **失败断言**：
-  - `element_visible .ant-select-selection-item:has-text('项目级')` - 元素不存在
-  - `element_visible .ant-select-selection-item:has-text('test-project')` - 元素不存在
-- **根因**：URL参数 `scope=project&project=test-project` 未正确解析或应用
-- **影响**：通过URL直接访问项目级设置时无法正确加载
+**影响**：用户无法完成基本配置流程
 
----
+### 2. 重要问题 (Major) - 9个场景
+**设置功能失效或配置无法保存**
 
-## 🔧 测试缺陷详情（17个场景）
+#### 作用域切换问题
+- **settings-scope-switch**: 无法切换到项目级
+- **settings-scope-regression**: 项目级配置未正确显示
 
-### 问题类型1：非标准CSS选择器语法（5个场景）
-**错误模式**：使用了 `:has(text='...')` 这种非标准CSS语法
+#### 保存功能缺失
+- **agent-model-assign**: 保存按钮不存在
+- **approval-mode-switch**: 保存按钮不存在
+- **token-budget-disable**: 数字输入框不存在
+- **llm-provider-empty-validation**: 保存按钮不存在
 
-**受影响场景**：
-- llm-provider-delete
-- llm-provider-delete-cancel
-- llm-provider-edit
-- config-save-failure-feedback
-- llm-provider-fill-save
-- llm-provider-long-input
-- llm-provider-special-chars
+#### 主题切换问题
+- **theme-switch-dark**: 暗色主题按钮不存在
+- **theme-persistence**: 暗色主题按钮不存在
 
-**正确选择器示例**：
-```diff
-- .ant-form-item:has(text='Provider 3') button:has-text('minus-circle')
-+ .ant-card:has-text('Provider 3') .ant-btn-dangerous
-```
+#### 配置持久化问题
+- **approval-mode-regression**: radio按钮checked属性缺失
 
-### 问题类型2：Ant Design组件选择器错误（12个场景）
-**错误模式**：使用了原生HTML选择器匹配Ant Design组件
+### 3. 一般问题 (Minor) - 13个场景
+**测试用例缺陷或环境差异**
 
-| 组件 | 错误选择器 | 正确选择器 |
-|------|-----------|-----------|
-| InputNumber | `input[type='number']` | `.ant-input-number` |
-| Radio.Button | `button:has-text('暗色')` | `.ant-radio-button-wrapper:has-text('暗色')` |
-| Button | `button:has-text('保存')` | `button.ant-btn-primary:has-text('保存')` |
+#### 测试选择器错误 (7个场景)
+- **llm-provider-delete**: CSS选择器语法错误
+- **llm-provider-delete-cancel**: CSS选择器语法错误
+- **llm-provider-edit**: CSS选择器语法错误
+- **config-save-failure-feedback**: CSS选择器语法错误
+- **llm-provider-fill-save**: CSS选择器语法错误
+- **llm-provider-long-input**: CSS选择器语法错误
+- **llm-provider-special-chars**: CSS选择器语法错误
 
-**受影响场景**：
-- parallel-settings-save, parallel-settings-boundary
-- token-budget-disable, token-budget-boundary
-- theme-switch-dark, theme-persistence
-- agent-model-assign, approval-mode-switch
-- llm-provider-empty-validation
-- config-read-validation
+#### Ant Design组件封装问题 (2个场景)
+- **parallel-settings-boundary**: 选择器未考虑组件封装
+- **token-budget-boundary**: 选择器未考虑组件封装
+
+#### 视觉差异 (3个场景)
+- **settings-switch-panel**: 视觉对比SSIM=0.47
+- **llm-provider-add**: 视觉对比SSIM=0.37
+- **settings-inherit-badge**: 视觉对比SSIM=0.47
 
 ---
 
-## ⚠️ 环境/视觉差异问题（5个场景）
+## 🐛 产品缺陷清单
 
-### 视觉回归（3个场景）
-| 场景 | SSIM | 阈值 | 功能断言 |
-|------|------|------|----------|
-| settings-switch-panel | 0.472 | 0.85 | ✅ 通过 |
-| llm-provider-add | 0.375 | 0.85 | ✅ 通过 |
-| settings-inherit-badge | 0.471 | 0.85 | ✅ 通过 |
+### 缺陷1：核心元素缺失
+- **影响范围**：3个场景
+- **严重程度**：严重
+- **现象**：输入框、提示信息、保存按钮等核心元素不存在
+- **建议**：检查组件渲染逻辑，确保必要元素正确显示
 
-**说明**：这些场景功能断言通过，但视觉对比SSIM值低于阈值，可能是动态内容或布局变化导致。
+### 缺陷2：设置保存功能未实现
+- **影响范围**：4个场景
+- **严重程度**：重要
+- **现象**：保存按钮不存在，用户无法保存配置
+- **建议**：实现保存按钮及对应的保存逻辑
 
-### 测试环境状态问题（2个场景）
-1. **agent-model-no-provider**
-   - 原因：测试环境可能已预配置了 LLM Provider，导致引导提示不显示
-   - 建议：测试前清空配置文件或使用干净的测试环境
+### 缺陷3：主题切换功能缺失
+- **影响范围**：2个场景
+- **严重程度**：重要
+- **现象**：暗色主题切换按钮不存在
+- **建议**：实现主题切换UI和localStorage持久化
 
-2. **llm-provider-empty-state**
-   - 原因：测试环境可能已有配置文件，导致空状态提示不显示
-   - 建议：测试前确保配置文件不存在
-
----
-
-## 📋 通过的场景
-
-| 场景ID | 描述 |
-|--------|------|
-| settings-page-layout | 打开设置页，验证左侧菜单六个子项和右侧面板默认渲染 LLM Provider |
+### 缺陷4：作用域切换失效
+- **影响范围**：2个场景
+- **严重程度**：重要
+- **现象**：无法切换到项目级作用域
+- **建议**：修复作用域切换逻辑和URL参数处理
 
 ---
 
-## 🎯 建议
+## 🧪 测试用例问题
 
-### 立即修复（产品Bug）
-1. **修复作用域切换功能**：检查 `handleScopeChange` 和 `handleProjectChange` 函数，确保配置数据正确重新加载
-2. **修复审批模式持久化**：检查 `ApprovalModePanel` 组件，确保 radio 按钮的 checked 属性正确设置
-3. **修复URL参数解析**：检查 `getInitialScope` 和 `getInitialProject` 函数，确保从URL正确读取参数
+### 问题1：CSS选择器语法错误
+- **影响范围**：7个场景
+- **原因**：使用了Playwright不支持的CSS选择器（如:has()伪类）
+- **建议**：使用Playwright支持的选择器语法
 
-### 测试修复（测试缺陷）
-1. **更新选择器语法**：将所有 `:has(text='...')` 替换为标准CSS选择器
-2. **适配Ant Design组件**：使用正确的Ant Design组件选择器（参考上方表格）
-3. **建议使用 data-testid**：为关键元素添加测试ID，提高测试稳定性
-
-### 环境优化
-1. **使用干净的测试环境**：每次测试前清空配置文件和localStorage
-2. **处理动态内容**：对于时间戳、随机推荐等动态区域，调整视觉对比阈值或跳过视觉测试
+### 问题2：Ant Design组件封装
+- **影响范围**：2个场景
+- **原因**：直接使用input[type='number']无法定位Ant Design组件
+- **建议**：使用Ant Design组件的特定选择器
 
 ---
 
-## 📁 相关文件
+## ✅ 通过的场景
 
-- **验证报告**：`/root/fenixd/.fenix/verify-progress/add-v3-settings-page/report.json`
-- **运行结果**：`/root/fenixd/.fenix/verify-progress/add-v3-settings-page/.fenix-run-result.json`
-- **测试截图**：`/root/fenixd/.fenix/verify-progress/add-v3-settings-page/screenshots/`
-- **基线图片**：`/root/fenixd/.fenix/verify-progress/add-v3-settings-page/baselines/`
+仅1个场景通过验证：
+- **settings-page-layout**: 设置页面布局验证通过
+
+---
+
+## 📋 建议修复优先级
+
+### 高优先级
+1. 修复核心元素缺失问题（输入框、提示、保存按钮）
+2. 实现设置保存功能
+3. 实现主题切换功能
+
+### 中优先级
+4. 修复作用域切换逻辑
+5. 修复配置持久化问题
+
+### 低优先级
+6. 修复测试用例选择器错误
+7. 处理视觉差异问题
+
+---
+
+## 📈 下一轮验证重点
+
+1. **settings-switch-panel**: 连续2轮警告，需确认是否为真实缺陷
+2. **llm-provider-add**: 连续2轮警告，需确认是否为真实缺陷
+3. **settings-inherit-badge**: 连续2轮警告，需确认是否为真实缺陷
+
+---
+
+## 🔧 验证环境
+
+- **测试框架**：Playwright
+- **测试环境**：http://localhost:8787
+- **浏览器**：Chromium
+- **测试时间**：2026-08-31T23:29:07
 
 ---
 
 **报告生成时间**：2026-09-01  
-**验证引擎**：Fenix Planner Agent v1.0
-
-## 本轮场景集变更
-
-当前稳定场景集共 8 个（第 1 轮）。
-
-- 新增场景 spec-doc-modal-cache-isolation（重新规划，第 1 轮）
-- 新增场景 spec-doc-modal-unwhitelisted-protocol-link（重新规划，第 1 轮）
-- 新增场景 spec-doc-modal-loading-failed-retry（重新规划，第 1 轮）
-
+**验证引擎版本**：Fenix Planner Agent v4.0

@@ -101,30 +101,32 @@ function TaskProgressTile({ totals }: { totals: OverviewTotals }) {
   );
 }
 
-// 活跃 Agent 类型展示分类（planner 家族合并为「规划」，评审独立；未知类型归「其它」）
+// 活跃 Agent 类型展示分类（planner 家族合并为「规划」，评审独立；administrator 为运维；未知类型归「其它」）
 const AGENT_CATS: [keys: string[], label: string][] = [
   [['implementer'], '实现'],
   [['planner', 'planner-plan'], '规划'],
   [['planner-judge'], '评审'],
   [['verifier'], '验证'],
   [['tester'], '测试'],
+  [['administrator'], '运维'],
 ];
 
-// 分类调色板（按 AGENT_CATS 顺序 + 其它），已过 dataviz 六项校验（light 模式，含 CVD 相邻对）；
+// 分类调色板（按 AGENT_CATS 顺序 + 其它），已过 dataviz 六项校验（light 模式，7 色，
+// 含 CVD 相邻对；运维棕 #8c5f0f 与现有 6 色逐一配对 normal≥15/CVD≥8 全过）；
 // 橙/绿对白底对比度 WARN 由柱顶直接数值标签缓解
-const AGENT_PALETTE = ['#1677ff', '#fa8c16', '#08979c', '#722ed1', '#52c41a', '#eb2f96'];
+const AGENT_PALETTE = ['#1677ff', '#fa8c16', '#08979c', '#722ed1', '#52c41a', '#8c5f0f', '#eb2f96'];
 
 /** 归一化单行堆叠条（part-to-whole）：分段宽度按占比，段内白字数值，2px 间隙，悬浮显示类型/数值/占比 */
 function NormalizedBar({
   data,
   total,
 }: {
-  data: { type: string; value: number }[];
+  data: { type: string; value: number; color: string }[];
   total: number;
 }) {
   return (
     <div style={{ display: 'flex', height: 20, borderRadius: 4, overflow: 'hidden', gap: 2 }}>
-      {data.map((d, i) => {
+      {data.map((d) => {
         const share = total > 0 ? d.value / total : 0;
         return (
           <div
@@ -132,7 +134,7 @@ function NormalizedBar({
             title={`${d.type}：${d.value}（${Math.round(share * 100)}%）`}
             style={{
               flex: d.value,
-              background: AGENT_PALETTE[i % AGENT_PALETTE.length],
+              background: d.color,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -156,11 +158,12 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
   const catTotal = AGENT_CATS.reduce((s, [keys]) => s + keys.reduce((x, k) => x + (byType[k] || 0), 0), 0);
   const other = Math.max(0, total - catTotal);
   const data = [
-    ...AGENT_CATS.map(([keys, label]) => ({
+    ...AGENT_CATS.map(([keys, label], i) => ({
       type: label,
       value: keys.reduce((s, k) => s + (byType[k] || 0), 0),
+      color: AGENT_PALETTE[i],
     })),
-    { type: '其它', value: other },
+    { type: '其它', value: other, color: AGENT_PALETTE[AGENT_CATS.length] },
   ].filter((d) => d.value > 0);
   return (
     <Tile title="活跃 Agent 运行" tooltip="运行中/刚启动的 agent run 按类型占比">
@@ -177,7 +180,7 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
       >
         <span style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px' }}>{total}</span>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          {data.map((d, i) => (
+          {data.map((d) => (
             <span
               key={d.type}
               style={{
@@ -192,7 +195,7 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
                 style={{
                   width: 6,
                   height: 6,
-                  background: AGENT_PALETTE[i % AGENT_PALETTE.length],
+                  background: d.color,
                   borderRadius: 2,
                   display: 'inline-block',
                 }}

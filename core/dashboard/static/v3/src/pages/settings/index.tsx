@@ -9,6 +9,7 @@ import AgentModelPanel from './components/AgentModelPanel';
 import ParallelSettingsPanel from './components/ParallelSettingsPanel';
 import ApprovalModePanel from './components/ApprovalModePanel';
 import TokenBudgetPanel from './components/TokenBudgetPanel';
+import MiscSettingsPanel from './components/MiscSettingsPanel';
 
 const { Text } = Typography;
 
@@ -18,6 +19,7 @@ const MENU_ITEMS = [
   { key: 'parallel', label: '并行度设置' },
   { key: 'approval', label: '审批模式' },
   { key: 'token', label: 'Token 预算' },
+  { key: 'misc', label: '其他' },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -175,6 +177,9 @@ export default function SettingsPage() {
                 )}
                 {activeKey === 'token' && (
                   <TokenBudgetPanel config={config} onSave={handleSave} />
+                )}
+                {activeKey === 'misc' && (
+                  <MiscSettingsPanel config={config} onSave={handleSave} />
                 )}
               </>
             )}

@@ -294,6 +294,13 @@ class AgentRunner:
             )
             for k, v in (provider.get("env") or {}).items():
                 env_overrides[k] = v
+            # 观测：run jsonl 写 provider_marker，与 dispatch attempt 路径同口径，
+            # 时间轴才能展示 Administrator 实际驱动的 model@provider；
+            # Administrator 不接 failover，链内下标恒 0/1
+            self._write_provider_marker(
+                run_id, spec, "administrator",
+                provider["name"], model_override, 0, 1,
+            )
         else:
             model_override = self._get_admin_model()
 

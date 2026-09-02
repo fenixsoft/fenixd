@@ -18,6 +18,7 @@ import {
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import AdminRunModal from './components/AdminRunModal';
 import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
@@ -128,13 +129,19 @@ function ActivityCard({ a, onViewRun }: { a: ActivityItem; onViewRun?: (a: Activ
       </div>
       {body}
       {a.actions_taken && (
-        <div style={{ ...PRE_WRAP, marginBottom: 4 }}>
-          <Typography.Text type="secondary">处置：</Typography.Text> {a.actions_taken}
+        <div style={{ marginBottom: 4, fontSize: 13, lineHeight: 1.65 }}>
+          <Typography.Text type="secondary">处置：</Typography.Text>
+          <Markdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
+            {a.actions_taken}
+          </Markdown>
         </div>
       )}
       {a.recommended_action && (
-        <div style={PRE_WRAP}>
-          <Typography.Text type="secondary">建议：</Typography.Text> {a.recommended_action}
+        <div style={{ fontSize: 13, lineHeight: 1.65 }}>
+          <Typography.Text type="secondary">建议：</Typography.Text>
+          <Markdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
+            {a.recommended_action}
+          </Markdown>
         </div>
       )}
     </div>
@@ -478,6 +485,7 @@ export default function ActivitiesPage() {
     }
     return (
       <Card
+        className="activities-project-card"
         title={
           <Space wrap size={8}>
             <span>{project.name}</span>

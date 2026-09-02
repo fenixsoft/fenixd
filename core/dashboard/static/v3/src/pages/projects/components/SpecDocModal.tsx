@@ -1,10 +1,10 @@
 import { Modal, Tabs, Spin, Empty, Alert, Button } from 'antd';
-import { FullscreenExitOutlined, FullscreenOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
 import { getSpecDoc } from '@/services/dashboard';
+import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
 
 export type DocType = 'proposal' | 'design' | 'tasks' | 'verification' | 'scenarios';
 
@@ -51,8 +51,18 @@ const SafeLink: Components['a'] = ({ href, children, ...props }) => {
 };
 
 // 自定义 components 配置（验证结论等其它 markdown 场景复用）
+// 标题/正文/列表显式定字号，覆盖容器继承（容器多为 13px）
 export const markdownComponents: Components = {
   a: SafeLink,
+  h1: ({ children }) => <h1 style={{ fontSize: 18, fontWeight: 600 }}>{children}</h1>,
+  h2: ({ children }) => <h2 style={{ fontSize: 16, fontWeight: 600 }}>{children}</h2>,
+  h3: ({ children }) => <h3 style={{ fontSize: 14, fontWeight: 400 }}>{children}</h3>,
+  h4: ({ children }) => <h4 style={{ fontSize: 14, fontWeight: 400 }}>{children}</h4>,
+  h5: ({ children }) => <h5 style={{ fontSize: 14, fontWeight: 400 }}>{children}</h5>,
+  h6: ({ children }) => <h6 style={{ fontSize: 14, fontWeight: 400 }}>{children}</h6>,
+  p: ({ children }) => <p style={{ fontSize: 14 }}>{children}</p>,
+  ul: ({ children }) => <ul style={{ fontSize: 14, lineHeight: 2 }}>{children}</ul>,
+  ol: ({ children }) => <ol style={{ fontSize: 14, lineHeight: 2 }}>{children}</ol>,
 };
 
 export default function SpecDocModal({ project, spec, open, onClose, initialDoc }: SpecDocModalProps) {
@@ -62,7 +72,12 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
   useEffect(() => {
     if (open && initialDoc) setActiveTab(initialDoc);
   }, [open, initialDoc]);
-  const [maximized, setMaximized] = useState(false);
+  const { modalProps, maximizeButton } = useMaximizeModal({
+    defaultWidth: '80%',
+    defaultBodyHeight: 'calc(80vh - 80px)',
+    extraBodyStyle: { display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+    centered: true,
+  });
   const cacheRef = useRef<Map<string, DocCacheEntry>>(new Map());
   const [cacheVersion, setCacheVersion] = useState(0);
 
@@ -173,33 +188,15 @@ export default function SpecDocModal({ project, spec, open, onClose, initialDoc 
     }
   };
 
-  // 默认尺寸 = 视口宽高的 80%；最大化 = 占满全屏
-  const modalWidth = maximized ? '100vw' : '80%';
-  const bodyHeight = maximized ? 'calc(100vh - 80px)' : 'calc(80vh - 80px)';
-
   return (
     <Modal
       title={
-        // 最大化按钮绝对定位到关闭按钮左侧（关闭按钮为绝对定位，占 modal 右缘 12~44px）
-        <div style={{ position: 'relative' }}>
-          <span>{`${spec || ''} 文档`}</span>
-          <Button
-            type="text"
-            size="small"
-            title={maximized ? '还原' : '最大化'}
-            icon={maximized ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
-            onClick={() => setMaximized((v) => !v)}
-            style={{ position: 'absolute', right: 24, top: -4 }}
-          />
-        </div>
+        <MaximizeTitle text={`${spec || ''} 文档`} button={maximizeButton} />
       }
       open={open}
       onCancel={onClose}
       footer={null}
-      width={modalWidth}
-      centered={!maximized}
-      style={maximized ? { top: 0, maxWidth: '100vw', paddingBottom: 0 } : undefined}
-      styles={{ body: { height: bodyHeight, display: 'flex', flexDirection: 'column', overflow: 'hidden' } }}
+      {...modalProps}
     >
       <Tabs
         activeKey={activeTab}

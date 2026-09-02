@@ -13,6 +13,7 @@ import SpecDocModal from './components/SpecDocModal';
 import type { DocType } from './components/SpecDocModal';
 import RunRecordModal from './components/RunRecordModal';
 import { ClaudeOutputPane } from '@/components/claude-msg';
+import { OutlinedTag } from '@/components/StatusTag';
 import { useIsMobile } from '@/hooks/useIsMobile';
 
 // 与 v2 static/app.js renderVerdict 保持同一判定逻辑：
@@ -394,9 +395,11 @@ export default function SpecDetailPage() {
                     <Tag>状态转移</Tag>
                     {isRollback && <Tag color="orange">↩ 状态回退</Tag>}
                   </div>
-                  <Typography.Text>
-                    {fromLabel} → {toLabel}
-                  </Typography.Text>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <OutlinedTag tone={statusMeta(item.from || '').tone}>{fromLabel}</OutlinedTag>
+                    <Typography.Text type="secondary">→</Typography.Text>
+                    <OutlinedTag tone={statusMeta(item.to || '').tone}>{toLabel}</OutlinedTag>
+                  </div>
                   {isRollback && (
                     <div style={{ whiteSpace: 'pre-wrap' }}>
                       <ReasonText reason={item.reason || '状态回退'} onOpenReport={() => openDocModal('verification')} />
@@ -424,6 +427,7 @@ export default function SpecDetailPage() {
                     {fmtTime(item.time)}
                   </Typography.Text>
                   <Typography.Text>{agentLabel(item)}</Typography.Text>
+                  {item.llm && <Tag color="blue" style={{ marginInlineEnd: 0 }}>{item.llm}</Tag>}
                   <Tag color={isErr ? 'red' : isRunning ? 'blue' : 'green'} style={{ marginInlineEnd: 0 }}>
                     {st || '未知状态'}
                   </Tag>
@@ -434,6 +438,23 @@ export default function SpecDetailPage() {
                     </Typography.Text>
                   )}
                 </div>
+                {/* ClaudeCode 最后一条总结（result 字段，markdown）：不展开运行记录即可掌握结论 */}
+                {item.summary && (
+                  <div
+                    style={{
+                      marginBottom: 8,
+                      padding: '8px 12px',
+                      border: '1px solid #f0f0f0',
+                      borderRadius: 8,
+                      background: '#fff',
+                      fontSize: 13,
+                    }}
+                  >
+                    <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                      {item.summary}
+                    </Markdown>
+                  </div>
+                )}
                 {item.run_id && (
                   <Collapse
                     ghost
@@ -893,32 +914,6 @@ export default function SpecDetailPage() {
         </div>
       )}
 
-      {/* 验证进度（overview 任务进度同款控件 + 当前步骤） */}
-      <Card title="验证进度" size="small" style={{ marginBottom: 16 }}>
-        {detail?.verify_progress?.exists ? (
-          <>
-            {detail.verify_progress.error && (
-              <Alert type="error" showIcon message="进度文件损坏" style={{ marginBottom: 8 }} />
-            )}
-            <ProgressBarTile done={detail.verify_progress.done} total={detail.verify_progress.total} />
-            {detail.verify_progress.current && (
-              <Typography.Text type="secondary">当前：{detail.verify_progress.current}</Typography.Text>
-            )}
-          </>
-        ) : (
-          <Typography.Text type="secondary">暂无验证进度</Typography.Text>
-        )}
-      </Card>
-
-      {/* 验证结论 */}
-      <Card title="验证结论" size="small" style={{ marginBottom: 16 }}>
-        {detail?.verdict?.exists ? (
-          <VerdictPanel verdict={detail.verdict} />
-        ) : (
-          <Typography.Text type="secondary">暂无验证结论</Typography.Text>
-        )}
-      </Card>
-
       {/* 任务清单（overview 任务进度同款控件 + 分组勾选） */}
       <Card title="任务清单" size="small" style={{ marginBottom: 16 }}>
         {taskGroups.length > 0 ? (
@@ -951,8 +946,34 @@ export default function SpecDetailPage() {
         )}
       </Card>
 
+      {/* 验证进度（overview 任务进度同款控件 + 当前步骤） */}
+      <Card title="验证进度" size="small" style={{ marginBottom: 16 }}>
+        {detail?.verify_progress?.exists ? (
+          <>
+            {detail.verify_progress.error && (
+              <Alert type="error" showIcon message="进度文件损坏" style={{ marginBottom: 8 }} />
+            )}
+            <ProgressBarTile done={detail.verify_progress.done} total={detail.verify_progress.total} />
+            {detail.verify_progress.current && (
+              <Typography.Text type="secondary">当前：{detail.verify_progress.current}</Typography.Text>
+            )}
+          </>
+        ) : (
+          <Typography.Text type="secondary">暂无验证进度</Typography.Text>
+        )}
+      </Card>
+
+      {/* 验证结论 */}
+      <Card title="验证结论" size="small" style={{ marginBottom: 16 }}>
+        {detail?.verdict?.exists ? (
+          <VerdictPanel verdict={detail.verdict} />
+        ) : (
+          <Typography.Text type="secondary">暂无验证结论</Typography.Text>
+        )}
+      </Card>
+
       {/* 页签区 */}
-      <Card>
+      <Card className="spec-detail-card">
         <Tabs items={tabItems} />
       </Card>
 

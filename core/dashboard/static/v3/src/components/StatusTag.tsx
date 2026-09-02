@@ -23,6 +23,7 @@ export function OutlinedTag({ tone, children }: { tone: string; children: ReactN
       {children}
     </Tag>
   ) : (
-    <Tag style={{ ...shared }}>{children}</Tag>
+    // muted 态灰底 tag 在灰色背景（#fafafa 卡片等）中会隐形，补深灰描边
+    <Tag style={{ ...shared, borderColor: '#595959' }}>{children}</Tag>
   );
 }

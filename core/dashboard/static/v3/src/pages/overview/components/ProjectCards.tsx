@@ -249,6 +249,9 @@ export default function ProjectCards({
                     gap: 24,
                     paddingInline: 24,
                     flexWrap: 'wrap',
+                    // List.Item 是 flex 容器，本 div 是其 flex item；min-width:auto
+                    // 会让内在 min-content（含下方定宽进度条）顶穿窄屏
+                    minWidth: 0,
                   }}
                 >
                   <MiniStat label="SPEC 数" value={project.spec_count} />
@@ -262,7 +265,9 @@ export default function ProjectCards({
                     value={project.active_runs}
                     color={project.active_runs > 0 ? '#faad14' : undefined}
                   />
-                  <div style={{ width: 300 }}>
+                  {/* minWidth:0 —— List.Item 是 flex 容器，此定宽 div 为其 flex item，
+                      min-width:auto 会让内在尺寸顶穿窄屏（max-width:100% 在内在计算中失效） */}
+                  <div style={{ width: 300, maxWidth: '100%', minWidth: 0 }}>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                       任务进度
                     </Typography.Text>

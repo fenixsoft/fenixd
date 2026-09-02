@@ -3,6 +3,7 @@
 ## Context
 
 - v3 文档弹窗已存在（`pages/projects/list.tsx` 内联 state + `<pre>` 纯文本），端点 `GET /api/spec-doc` 返回 `{found, content}`。
+- 运行时入口（验证场景导航用）：v3 前端为 `http://localhost:8787/v3/dist/index.html#/projects/<project>`；8787 根路径是 v1/v2 界面而非 v3，`/api/spec-doc` 端点在 8787 同源下。
 - v1 文档弹窗（`app.js` docmodal ~2031-2120 行）语义基线：三页签、docCache（loading/done/empty/error 四态）、mdRender（vendored marked，GFM + 链接协议白名单）。
 
 ## Goals / Non-Goals

@@ -67,3 +67,57 @@ body {
   margin-bottom: 0;
 }
 
+
+// ===== 移动端（<768px）适配 =====
+// 作用域挂在 ProLayout 根节点自动生成的 screen-xs 断点类下（screen-sm/md/lg 命中不了），
+// 桌面端样式零影响。
+
+// 全站页面留白收紧（默认 padding-inline 24 → 12）
+#root .screen-xs .ant-pro-page-container-children-container {
+  padding-inline: 12px;
+}
+
+// 运行记录消息面板：撤掉桌面版右侧 30px 留白，为窄屏让出宽度
+#root .screen-xs .claude-msg-pane {
+  padding-right: 0;
+}
+
+// SPEC 详情页：卡片与折叠区留白收紧，为运行记录消息流让出宽度
+#root .screen-xs .spec-detail-card .ant-card-body {
+  padding: 12px;
+}
+#root .screen-xs .spec-detail-timeline .ant-collapse-body {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+// 运维记录页项目卡片：窄屏下标题与 extra（自动运维/人工告警切换）放不下同一行，允许换行
+#root .screen-xs .activities-project-card .ant-card-head-wrapper {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+// 概览页人工告警横幅：窄屏下 section（标题+描述）与按钮区各占整行，
+// 省略文本转多行换行展示（内联 maxWidth:560 需 !important 压制）
+#root .screen-xs .ant-alert-banner {
+  flex-wrap: wrap;
+}
+#root .screen-xs .ant-alert-banner .ant-alert-section,
+#root .screen-xs .ant-alert-banner .ant-alert-actions {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+#root .screen-xs .ant-alert-banner .ant-alert-title .ant-space {
+  width: 100%;
+}
+#root .screen-xs .ant-alert-banner .ant-alert-title .ant-typography-ellipsis {
+  max-width: 100% !important;
+  white-space: normal;
+  word-break: break-all;
+}
+
+// 设置页：antd v6 label 为 inline-flex，裸文本节点会被当作 flex item 收缩到
+// min-content（一字一行）；窄屏改回 block 排版让文本正常换行
+#root .screen-xs .settings-page .ant-form-item-label label {
+  display: block;
+}

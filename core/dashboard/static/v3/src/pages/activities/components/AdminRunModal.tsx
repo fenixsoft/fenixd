@@ -1,6 +1,7 @@
 import { Modal } from 'antd';
 import { useState } from 'react';
 import { ClaudeOutputPane } from '@/components/claude-msg';
+import { MaximizeTitle, useMaximizeModal } from '@/components/useMaximizeModal';
 
 interface AdminRunModalProps {
   project: string;
@@ -12,25 +13,32 @@ interface AdminRunModalProps {
 
 export default function AdminRunModal({ project, spec, adminRunId, open, onClose }: AdminRunModalProps) {
   const [eventCount, setEventCount] = useState(0);
+  const { modalProps, maximizeButton } = useMaximizeModal({
+    defaultWidth: '80vw',
+    defaultBodyHeight: '72vh',
+    extraBodyStyle: { display: 'flex', flexDirection: 'column', paddingTop: 12 },
+  });
 
   return (
     <Modal
       title={
-        <span>
-          {spec ? `${spec} · ` : ''}Admin 处置过程
-          {eventCount > 0 && (
-            <span style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 400, marginLeft: 8 }}>
-              共 {eventCount} 条事件
-            </span>
-          )}
-        </span>
+        <MaximizeTitle
+          text={spec ? `${spec} · Admin 处置过程` : 'Admin 处置过程'}
+          extra={
+            eventCount > 0 && (
+              <span style={{ fontSize: 12, color: '#8c8c8c', fontWeight: 400, marginLeft: 8 }}>
+                共 {eventCount} 条事件
+              </span>
+            )
+          }
+          button={maximizeButton}
+        />
       }
       open={open}
       onCancel={onClose}
-      width="80vw"
       footer={null}
       destroyOnHidden
-      styles={{ body: { height: '72vh', display: 'flex', flexDirection: 'column', paddingTop: 12 } }}
+      {...modalProps}
     >
       <div
         style={{

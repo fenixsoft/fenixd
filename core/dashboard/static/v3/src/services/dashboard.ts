@@ -293,6 +293,10 @@ export interface SpecDetail {
     status?: string;
     duration_seconds?: number;
     spec?: string;
+    // 运行节点：ClaudeCode 最后一条总结（result 事件的 result 字段，兜底 assistant 文本）
+    summary?: string;
+    // 运行节点：实际驱动的 LLM（provider_marker 的 model@provider，failover 取最后一个）
+    llm?: string;
   }>;
   // 场景结果 — report.json 的 scenarios 平铺数组（parse_report）
   scenarios?: Array<{
@@ -475,6 +479,8 @@ export interface ConfigData {
   llm: LlmConfig;
   agents: AgentsConfig;
   gates: GatesConfig;
+  /** 其他分类：runs.keep = 运行产物保留数（超出移入 .fenix/runs/archive） */
+  runs?: { keep: number };
   scope: 'user' | 'project';
   raw_exists: boolean;
   sources: Record<string, string>;

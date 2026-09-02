@@ -24,7 +24,7 @@ from core.agent_runner import clean_old_runs
 from core.fenix_session import is_running as _is_running
 
 # 运行产物文件保留上限（与 agent_runner.RUNS_KEEP 一致）
-RUNS_KEEP = 20
+RUNS_KEEP = 50
 
 
 # ── Administrator 告警（.fenix/admin_alerts.json） ─────────────────
@@ -1063,10 +1063,22 @@ def classify_run(lines: list) -> str:
     return "running"
 
 
-def get_runs(project_root, spec_name: str | None = None) -> list:
+def _resolve_run_file(project_root, run_id: str) -> Path:
+    """定位 run 产物：优先活跃目录，缺失时回读 archive/（add-run-archive）。"""
+    proot = Path(project_root)
+    live = proot / ".fenix" / "runs" / f"{run_id}.jsonl"
+    if live.exists():
+        return live
+    return proot / ".fenix" / "runs" / "archive" / f"{run_id}.jsonl"
+
+
+def get_runs(project_root, spec_name: str | None = None,
+             include_archive: bool = False) -> list:
     """列出项目的运行记录（.fenix/runs/*.jsonl）。
 
     spec_name 省略时返回全部；否则仅返回 run_id 包含该 spec 的记录。
+    include_archive=True 时并入 runs/archive/ 的归档产物（同 run_id 以活跃
+    副本优先），供时间轴/运行历史/耗时统计回看已归档的旧 run。
     每条: {run_id, agent_type, spec, status, started, file_size, events}
     """
     runs_dir = Path(project_root) / ".fenix" / "runs"
@@ -1074,7 +1086,15 @@ def get_runs(project_root, spec_name: str | None = None) -> list:
         return []
     out = []
     try:
-        files = sorted(runs_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+        files = list(runs_dir.glob("*.jsonl"))
+        if include_archive:
+            archive_dir = runs_dir / "archive"
+            if archive_dir.is_dir():
+                seen = {p.stem for p in files}
+                for p in archive_dir.glob("*.jsonl"):
+                    if p.stem not in seen:
+                        files.append(p)
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:
         return []
     for p in files:
@@ -1085,10 +1105,11 @@ def get_runs(project_root, spec_name: str | None = None) -> list:
             stat = p.stat()
         except OSError:
             continue
-        # 从 run_id 推断 agent 类型与 spec：impl-/verify-/planner-plan-/planner-judge-
+        # 从 run_id 推断 agent 类型与 spec：admin-/impl-/verify-/planner-plan-/planner-judge-
         agent_type = "agent"
         spec_part = run_id
-        for prefix, at in (("planner-judge-", "planner-judge"),
+        for prefix, at in (("admin-", "administrator"),
+                           ("planner-judge-", "planner-judge"),
                            ("planner-plan-", "planner-plan"),
                            ("planner-", "planner"),
                            ("impl-", "implementer"),
@@ -1183,7 +1204,7 @@ def get_run_events(project_root, run_id: str, tail: int = 300) -> dict:
     events 为最后 tail 条逐行解析结果；status/error 仍由全文件判定
     （终态行 result/error 决定），total_events 为实际总事件数。
     """
-    run_file = Path(project_root) / ".fenix" / "runs" / f"{run_id}.jsonl"
+    run_file = _resolve_run_file(project_root, run_id)
     if not run_file.exists():
         return {"run_id": run_id, "exists": False, "status": "missing",
                 "events": [], "total_events": 0, "error": None}
@@ -1226,12 +1247,18 @@ def read_run_events_between(project_root, run_id: str, start_offset: int) -> lis
 
 
 def cleanup_runs(project_root) -> int:
-    """清理超出保留上限的旧运行产物（跳过活动产物），返回删除数。
+    """归档超出保留上限的旧运行产物（跳过活动产物），返回归档数。
 
     额外保护：STATE.md 中任一 spec 的 implementer_run / tester_run 引用的 run
-    文件永久保留——它们是历史 spec 时间轴的数据源，不能因 RUNS_KEEP 上限被
-    淘汰（否则 spec 详情页的时间轴、任务进度随即消失）。
+    文件永久保留——它们是历史 spec 时间轴的数据源，不能因保留上限被淘汰
+    （否则 spec 详情页的时间轴、任务进度随即消失）。
+
+    保留上限取 runs.keep（用户级/项目级合并有效值，默认 RUNS_KEEP=50），
+    可在 Dashboard 设置页「其他」分类调整；超限产物移入 runs/archive/ 而非
+    删除（add-run-archive：时间轴/运行记录回读归档）。
     """
+    from core.config import ConfigLoader
+
     runs_dir = Path(project_root) / ".fenix" / "runs"
     protected = set()
     for entry in parse_state(project_root).values():
@@ -1239,7 +1266,15 @@ def cleanup_runs(project_root) -> int:
             rid = entry.get(key)
             if rid:
                 protected.add(str(rid))
-    return clean_old_runs(runs_dir, keep=RUNS_KEEP, active_ids=protected)
+    keep = RUNS_KEEP
+    try:
+        effective = ConfigLoader.resolve_config(project_root)
+        configured = ConfigLoader.get(effective, "runs.keep", RUNS_KEEP)
+        if isinstance(configured, int) and configured >= 1:
+            keep = configured
+    except Exception:
+        pass
+    return clean_old_runs(runs_dir, keep=keep, active_ids=protected)
 
 
 # ── 聚合视图（供 Web API / 概览 / 详情） ──────────────────────────
@@ -1325,7 +1360,8 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
     """单个 SPEC 的摘要（/api/specs 列表项）。"""
     done, total = task_progress(project_root, spec_name, entry.get("status", ""))
     vp = parse_verify_progress(project_root, spec_name)
-    runs = get_runs(project_root, spec_name)
+    # 含归档：run 产物被清理后列表页耗时统计不缩水
+    runs = get_runs(project_root, spec_name, include_archive=True)
     # 耗时 = 该 spec 全部运行记录（implementer/verifier/planner/tester 等）的
     # duration_seconds 求和；无任何运行记录时为 0。
     total_duration = sum(int(r.get("duration_seconds") or 0) for r in runs)
@@ -1365,6 +1401,76 @@ def _backtrack_reason(frm: str, to: str) -> str:
     if frm == "ready" and to == "ready":
         return "实现失败，重试"
     return "状态回退"
+
+
+def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
+                       marker_scan_cap: int = 4 << 20) -> dict:
+    """读取 run 产物尾部：ClaudeCode 最后一条总结 + 实际驱动的 LLM。
+
+    summary 优先取 result 事件的 result 字段（run 最终总结，markdown 文本，
+    与 runner.py 提取产物口径一致）；无 result（运行中/中断）时回退最后一条
+    assistant 文本。llm 取最后一个 provider_marker 事件（attempt 启动时写入，
+    failover 切换产生多个，取最后 = 实际完成 run 的网关）。只读文件尾部
+    tail_bytes 字节避免时间轴加载全量扫描；seek 产生的截断首行直接丢弃。
+    marker 可能落在 attempt 大量输出之外（尾窗扫不到），此时按 256KB 块
+    向前回扫（上限 marker_scan_cap），仍无则留空。
+    """
+    try:
+        size = run_file.stat().st_size
+        with run_file.open("rb") as f:
+            if size > tail_bytes:
+                f.seek(-tail_bytes, 2)
+            data = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return {"summary": "", "llm": ""}
+
+    def parse_chunk(raw: str, skip_first: bool) -> tuple[str, str]:
+        lines = raw.split("\n")
+        if skip_first:
+            lines = lines[1:]
+        result_text = last_asst = llm = ""
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            t = e.get("type")
+            if t == "provider_marker":
+                m, p = e.get("model"), e.get("provider")
+                if m and p:
+                    llm = f"{m}@{p}"
+            elif t == "result":
+                rt = e.get("result")
+                if isinstance(rt, str) and rt.strip():
+                    result_text = rt.strip()
+            elif t == "assistant":
+                c = e.get("content")
+                if isinstance(c, str) and c.strip():
+                    last_asst = c.strip()
+                elif isinstance(c, list):
+                    texts = [b.get("text", "") for b in c
+                             if isinstance(b, dict) and b.get("type") == "text"]
+                    joined = "\n".join(t for t in texts if t.strip())
+                    if joined.strip():
+                        last_asst = joined.strip()
+        return result_text or last_asst, llm
+
+    summary, llm = parse_chunk(data, skip_first=size > tail_bytes)
+    if not llm and size > tail_bytes:
+        chunk = 262144
+        floor = max(0, size - tail_bytes - marker_scan_cap)
+        pos = size - tail_bytes
+        with run_file.open("rb") as f:
+            while pos > floor and not llm:
+                start = max(floor, pos - chunk)
+                f.seek(start)
+                raw = f.read(pos - start).decode("utf-8", errors="replace")
+                _, llm = parse_chunk(raw, skip_first=start > 0)
+                pos = start
+    return {"summary": summary, "llm": llm}
 
 
 def get_spec_timeline(project_root, spec_name: str) -> list:
@@ -1415,12 +1521,14 @@ def get_spec_timeline(project_root, spec_name: str) -> list:
                     if err:
                         errors_at.append((ts, str(err)))
 
-    # 运行节点
-    for r in get_runs(project_root, spec_name):
+    # 运行节点（含归档：旧 spec 的 run 产物被清理后时间轴仍可回看）
+    for r in get_runs(project_root, spec_name, include_archive=True):
+        insights = _run_tail_insights(_resolve_run_file(project_root, r["run_id"]))
         events.append({"time": r["started"], "kind": "run", "run_id": r["run_id"],
                        "agent_type": r["agent_type"], "status": r["status"],
                        "spec": r.get("spec"),
-                       "duration_seconds": r.get("duration_seconds")})
+                       "duration_seconds": r.get("duration_seconds"),
+                       "summary": insights["summary"], "llm": insights["llm"]})
 
     # 排序：解析时间戳 + 同秒内 state 先于 run（_timeline_sort_key 内注释说明根因）
     events.sort(key=_timeline_sort_key)
@@ -1525,7 +1633,8 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     if not scenarios:
         scenarios = parse_run_result_scenarios(project_root, spec_name)
     screenshots = list_screenshots(project_root, spec_name)
-    runs = get_runs(project_root, spec_name)
+    # 含归档：spec 详情「运行历史」可回看已归档的旧 run
+    runs = get_runs(project_root, spec_name, include_archive=True)
     verdict = parse_verdict(project_root, spec_name)
     spec_status = entry.get("status", "")
     return {
@@ -1691,7 +1800,7 @@ def overview(registry_projects: list) -> dict:
 # ── 配置读写（受管键：llm / agents.models / agents.max_concurrent / agents.run_timeout_seconds / gates.approve_mode） ──
 
 # Dashboard 管理的配置键子集：写回时只更新这些键，其它键原样保留
-_MANAGED_KEYS = ["llm", "agents", "gates"]
+_MANAGED_KEYS = ["llm", "agents", "gates", "runs"]
 # 在 agents 下管理的子键白名单
 _AGENTS_MANAGED_SUBKEYS = ["models", "max_concurrent", "run_timeout_seconds", "max_turns", "daily_run_limit", "token_budget_millions", "impl_run_budget"]
 
@@ -1701,7 +1810,8 @@ USER_CONFIG_PATH = Path.home() / ".fenix" / "config.yaml"
 # 受管键的来源标注键（前端用于「继承自用户级」badge）
 _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "agents.run_timeout_seconds", "agents.max_turns", "agents.daily_run_limit",
-                "agents.token_budget_millions", "agents.impl_run_budget", "gates.approve_mode"]
+                "agents.token_budget_millions", "agents.impl_run_budget", "gates.approve_mode",
+                "runs.keep"]
 
 _CONFIG_HEADER_COMMENT = (
     "# Fenix 配置文件\n"
@@ -1738,6 +1848,9 @@ def _managed_key_sources(raw: dict) -> dict:
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         sources["gates.approve_mode"] = "project"
+    runs_raw = raw.get("runs")
+    if isinstance(runs_raw, dict) and "keep" in runs_raw:
+        sources["runs.keep"] = "project"
     return sources
 
 
@@ -1757,6 +1870,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "llm": {},
         "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4},
         "gates": {"approve_mode": "manual"},
+        "runs": {"keep": 50},
         "scope": scope,
         "raw_exists": False,
         "sources": _managed_key_sources({}),
@@ -1814,6 +1928,9 @@ def read_config(scope_root, scope: str = "project") -> dict:
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         result["gates"] = {"approve_mode": gates_raw["approve_mode"]}
+    runs_raw = raw.get("runs")
+    if isinstance(runs_raw, dict) and isinstance(runs_raw.get("keep"), int) and runs_raw["keep"] >= 1:
+        result["runs"] = {"keep": runs_raw["keep"]}
     return result
 
 
@@ -1834,6 +1951,7 @@ def read_effective_config(project_root) -> dict:
         "llm": {},
         "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4},
         "gates": {"approve_mode": "manual"},
+        "runs": {"keep": 50},
         "scope": "project",
         "raw_exists": proj_path.exists(),
         "sources": _managed_key_sources({}),
@@ -1887,6 +2005,9 @@ def read_effective_config(project_root) -> dict:
     gates_eff = effective.get("gates")
     if isinstance(gates_eff, dict) and "approve_mode" in gates_eff:
         result["gates"] = {"approve_mode": gates_eff["approve_mode"]}
+    runs_eff = effective.get("runs")
+    if isinstance(runs_eff, dict) and isinstance(runs_eff.get("keep"), int) and runs_eff["keep"] >= 1:
+        result["runs"] = {"keep": runs_eff["keep"]}
 
     return result
 
@@ -1930,6 +2051,14 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             if not isinstance(merged.get("gates"), dict):
                 merged["gates"] = {}
             merged["gates"]["approve_mode"] = patch["gates"]["approve_mode"]
+
+    if "runs" in patch and isinstance(patch["runs"], dict):
+        keep = patch["runs"].get("keep")
+        # 仅接受正整数，非法值静默忽略（保留原配置）
+        if isinstance(keep, int) and keep >= 1:
+            if not isinstance(merged.get("runs"), dict):
+                merged["runs"] = {}
+            merged["runs"]["keep"] = keep
 
     return merged
 

@@ -152,7 +152,9 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
       open={open && !!why}
       placement="topLeft"
       content={
-        <div style={{ maxWidth: 420, whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.65 }}>{why}</div>
+        <div style={{ maxWidth: 420, fontSize: 13, lineHeight: 1.65 }}>
+          <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{why}</Markdown>
+        </div>
       }
     >
       <span
@@ -238,6 +240,36 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
         {record.verify_done}/{record.verify_total}
       </span>
     </Popover>
+  );
+}
+
+// done/pushed 为终态不再调整优先级；其余状态优先级可点击，样式与验证列一致
+const PRIORITY_TERMINAL = new Set(['done', 'pushed']);
+
+function PriorityCell({
+  record,
+  onEdit,
+  muted,
+}: {
+  record: SpecSummary;
+  onEdit: (record: SpecSummary) => void;
+  // 移动端卡片场景：不可编辑时保持灰色 secondary 字体
+  muted?: boolean;
+}) {
+  if (PRIORITY_TERMINAL.has(record.status || '')) {
+    return muted ? (
+      <Typography.Text type="secondary">P{record.priority ?? '?'}</Typography.Text>
+    ) : (
+      <span>P{record.priority ?? '?'}</span>
+    );
+  }
+  return (
+    <span
+      onClick={() => onEdit(record)}
+      style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#1677ff' }}
+    >
+      P{record.priority ?? '?'}
+    </span>
   );
 }
 
@@ -333,7 +365,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                 </Dropdown>
               </div>
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 4, fontSize: 12 }}>
-                <Typography.Text type="secondary">P{record.priority ?? '?'}</Typography.Text>
+                <PriorityCell record={record} onEdit={(r) => onMenu(r, 'priority')} muted />
                 <Typography.Text type="secondary">
                   {created && created.isValid() ? created.format('YYYY-MM-DD HH:mm') : '—'}
                 </Typography.Text>
@@ -386,7 +418,7 @@ export default function SpecListPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
-  const [status, setStatus] = useState('');
+  const [statusList, setStatusList] = useState<string[]>([]);
   const [type, setType] = useState<TypeFilter>('');
   const lastRefreshRef = useRef(0);
 
@@ -443,12 +475,12 @@ export default function SpecListPage() {
     const kw = q.trim().toLowerCase();
     return specs.filter((s) => {
       if (kw && !s.name.toLowerCase().includes(kw)) return false;
-      if (status && s.status !== status) return false;
+      if (statusList.length && !statusList.includes(s.status || '')) return false;
       if (type === 'req' && s.name.startsWith('fix-')) return false;
       if (type === 'issue' && !s.name.startsWith('fix-')) return false;
       return true;
     });
-  }, [specs, q, status, type]);
+  }, [specs, q, statusList, type]);
 
   const tree = useMemo(() => buildTree(filtered), [filtered]);
 
@@ -521,16 +553,20 @@ export default function SpecListPage() {
     }
   };
 
-  const specMenuItems = (record: SpecSummary) => [
-    { key: 'admin', label: '呼叫 Admin 介入' },
-    { key: 'priority', label: '调整优先级' },
-    {
-      key: isFrozen(record) ? 'unfreeze' : 'freeze',
-      label: isFrozen(record) ? '解冻 Spec' : '冻结 Spec',
-    },
-    { type: 'divider' as const },
-    { key: 'delete', label: '删除 Spec', danger: true },
-  ];
+  const specMenuItems = (record: SpecSummary) => {
+    const terminal = PRIORITY_TERMINAL.has(record.status || '');
+    return [
+      { key: 'admin', label: '呼叫 Admin 介入' },
+      { key: 'priority', label: '调整优先级', disabled: terminal },
+      {
+        key: isFrozen(record) ? 'unfreeze' : 'freeze',
+        label: isFrozen(record) ? '解冻 Spec' : '冻结 Spec',
+        disabled: terminal,
+      },
+      { type: 'divider' as const },
+      { key: 'delete', label: '删除 Spec', danger: true },
+    ];
+  };
 
   const onSpecMenu = (record: SpecSummary, key: string) => {
     if (key === 'admin') {
@@ -574,7 +610,12 @@ export default function SpecListPage() {
       key: 'priority',
       width: '7%',
       sorter: (a: SpecSummary, b: SpecSummary) => (a.priority ?? 999) - (b.priority ?? 999),
-      render: (v: number | null) => <span>P{v ?? '?'}</span>,
+      render: (_: number | null, record: SpecSummary) => (
+        <PriorityCell
+          record={record}
+          onEdit={(r) => setPriorityEdit({ spec: r.name, value: r.priority ?? 5 })}
+        />
+      ),
     },
     {
       title: '创建时间',
@@ -693,16 +734,17 @@ export default function SpecListPage() {
             style={{ width: 200 }}
           />
           <Select
-            value={status}
-            onChange={setStatus}
-            style={{ width: 140 }}
+            mode="multiple"
+            allowClear
+            placeholder="全部状态"
+            maxTagCount="responsive"
+            value={statusList}
+            onChange={setStatusList}
+            style={{ minWidth: 200, maxWidth: 300 }}
             options={[
-              { value: '', label: '全部状态' },
-              ...[
-                'drafted', 'ready', 'implementing', 'implemented', 'testing',
-                'verified', 'bug-found', 'blocked', 'done', 'pushed',
-              ].map((k) => ({ value: k, label: statusMeta(k).label })),
-            ]}
+              'drafted', 'ready', 'implementing', 'implemented', 'testing',
+              'verified', 'bug-found', 'blocked', 'done', 'pushed',
+            ].map((k) => ({ value: k, label: statusMeta(k).label }))}
           />
           <Radio.Group
             optionType="button"

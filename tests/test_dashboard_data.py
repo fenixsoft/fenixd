@@ -142,3 +142,44 @@ class TestSpecTimelineOrdering(unittest.TestCase):
         self.assertEqual(len(run_idx), 2)
         # 两个 run 都在 state 之后
         self.assertTrue(all(i > state_idx for i in run_idx))
+
+
+class TestGetRunsAgentType(unittest.TestCase):
+    """get_runs 从 run_id 前缀推断 agent 类型（admin- 必须归 administrator，其余前缀不受影响）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.runs_dir = Path(self.tmpdir) / ".fenix" / "runs"
+        self.runs_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_run(self, run_id: str):
+        (self.runs_dir / f"{run_id}.jsonl").write_text('{"type": "result"}\n', encoding="utf-8")
+
+    def test_admin_run_id_maps_to_administrator(self):
+        from core.dashboard.data import get_runs
+        ts = int(time.time())
+        self._write_run(f"admin-my-spec-{ts}")
+        runs = get_runs(self.tmpdir)
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0]["agent_type"], "administrator")
+        self.assertEqual(runs[0]["spec"], "my-spec")
+
+    def test_existing_prefixes_unchanged(self):
+        from core.dashboard.data import get_runs
+        ts = int(time.time())
+        expected = {
+            f"impl-s1-{ts}": "implementer",
+            f"verify-s2-{ts}": "verifier",
+            f"planner-judge-s3-{ts}": "planner-judge",
+            f"planner-plan-s4-{ts}": "planner-plan",
+            f"planner-s5-{ts}": "planner",
+            f"test-s6-{ts}": "tester",
+        }
+        for rid in expected:
+            self._write_run(rid)
+        runs = {r["run_id"]: r["agent_type"] for r in get_runs(self.tmpdir)}
+        for rid, at in expected.items():
+            self.assertEqual(runs[rid], at, f"{rid} should infer {at}")
