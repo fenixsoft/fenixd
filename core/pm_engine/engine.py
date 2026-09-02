@@ -1855,6 +1855,16 @@ class PMEngine:
     def check_recovery_watch(self) -> list:
         return self._recovery.check_recovery_watch()
 
+    def reclaim_stale_autostash_if_idle(self) -> bool:
+        """滞留 autostash 兜底回收（fix-autostash-orphans）。
+
+        仅当无活跃 run 时执行：有 worker 在跑时 pop 用户改动会让主树变脏，
+        干扰其 merge-back 基线（虽然 guard 会重新 stash，但没必要抢跑）。
+        """
+        if self._active_runs > 0:
+            return False
+        return self.agent_runner.worktree_manager.reclaim_stale_autostash()
+
     @staticmethod
     def _spec_fingerprint(entry: dict) -> str:
         return RecoveryWatch._spec_fingerprint(entry)

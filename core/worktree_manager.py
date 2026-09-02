@@ -8,6 +8,7 @@ Ensures parallel Agents don't conflict.
 import os
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Optional, Set, Dict
@@ -26,6 +27,9 @@ LEGACY_GRACE_SECONDS = STALE_LOCK_IDLE_SECONDS
 # has_active_worktree 在派发热路径被高频调用，pgrep 每次数十毫秒；对同一 spec
 # 的进程表扫描做短缓存，避免派发风暴。缓存窗口内的进程消失/出现误差可接受。
 PROCESS_SCAN_CACHE_SECONDS = 5.0
+# pre-dispatch autostash 条目的消息前缀（fix-autostash-orphans）：周期巡检按此
+# 识别「框架自己 stash 的条目」——人工手工 stash 的条目不带此前缀，永不自动回收。
+AUTOSTASH_MSG_PREFIX = "fenix: pre-dispatch autostash"
 
 
 class WorktreeManager:
@@ -55,6 +59,13 @@ class WorktreeManager:
         # 结构：{spec_name: {"path": str, "branch": str, "registered_at": float,
         #                     "dirty": bool, "worktree_name": str}}
         self._legacy: Dict[str, dict] = {}
+        # 主树 merge-clean guard 串行锁（fix-autostash-orphans）：stash→merge→pop
+        # 是必须原子完成的段——并发 worker 若各自独立 stash/pop，会与共享的 stash
+        # 栈发生 LIFO 错配（A 恢复出 B 刚 stash 的内容）。
+        self._main_tree_lock = threading.Lock()
+        # 最近一次 guard 段内 stash pop 冲突自愈丢弃的文件清单（dispatch 层读走
+        # 做 admin 告警后失效）；guard 进入时清空。
+        self.last_stash_pop_conflicts: list = []
 
     def create(self, spec_name: str, agent_type: str = "implementer") -> Optional[Path]:
         """
@@ -920,11 +931,17 @@ class WorktreeManager:
     # ── 主树健康检查（fix-fenix-token-waste） ──────────────────────
 
     def ensure_clean_tree(self) -> bool:
-        """dispatch 前确保主树干净，保证 merge-back 可成功。
+        """merge guard 段内确保主树 tracked 状态干净，保证 merge-back 可成功。
 
-        若主树存在未提交改动（含未跟踪文件），自动 `git stash push
-        --include-untracked`。返回 True 表示执行过 stash（merge 成功后需
-        restore_after_merge 恢复）；False 表示主树本来就干净。
+        仅 stash **tracked 修改**（`git stash push` 不带 -u）。返回 True 表示
+        执行过 stash（guard 的 finally 会 restore_after_merge 恢复）；False
+        表示主树 tracked 状态本来就干净。
+
+        **不卷 untracked 文件**（fix-autostash-orphans）：untracked 与分支新增
+        同路径的冲突由 merge 内部 `_backup_untracked_spec_files` 处理——不一致
+        副本保留备份 + warning，一致副本清理；若也用 stash 卷走，merge 后 pop
+        会用用户 untracked 副本覆盖刚合入的分支版本（或 pop 失败滞留）。
+        历史版本的 --include-untracked 是 7 次改动滞留事故的放大器之一。
 
         重要：stash 排除 `openspec/changes/`——该目录下未跟踪的 spec 文件
         （proposal/design/specs/tasks）是框架运行必需，一旦被卷进 stash，
@@ -935,11 +952,17 @@ class WorktreeManager:
             ["git", "-C", str(self.project_root), "status", "--porcelain"],
             capture_output=True, text=True, timeout=30,
         )
-        if result.returncode != 0 or not result.stdout.strip():
+        # 只关心 tracked 修改（XY 状态里 X/Y 非 ' '/'?'）；untracked（'? '）由
+        # merge 内部 backup 机制处理。openspec/changes 的脏文件被跟踪时也计入。
+        dirty_tracked = any(
+            not line.startswith("?? ") and line[2:3] != " "
+            for line in result.stdout.splitlines()
+        ) if result.returncode == 0 else False
+        if not dirty_tracked:
             return False
         stash = subprocess.run(
-            ["git", "-C", str(self.project_root), "stash", "push", "--include-untracked",
-             "-m", "fenix: pre-dispatch autostash",
+            ["git", "-C", str(self.project_root), "stash", "push",
+             "-m", AUTOSTASH_MSG_PREFIX,
              "--", ".", ":(exclude)openspec/changes"],
             capture_output=True, text=True, timeout=30,
         )
@@ -952,7 +975,7 @@ class WorktreeManager:
         if "No local changes" in (stash.stdout + stash.stderr):
             # 唯一脏内容就是被排除的 openspec/changes，实际未 stash
             return False
-        self.logger.info("worktree_manager", "Autostashed dirty main tree before dispatch")
+        self.logger.info("worktree_manager", "Autostashed tracked changes before merge")
         return True
 
     def restore_after_merge(self) -> tuple:
@@ -1018,6 +1041,64 @@ class WorktreeManager:
                 f"stash preserved: {output.strip()}",
             )
         return True, conflict_files
+
+    def reclaim_stale_autostash(self) -> bool:
+        """兜底回收滞留的 pre-dispatch autostash 条目（fix-autostash-orphans）。
+
+        历史版本在派发前 stash、仅 merge-back 成功路径 pop——任何失败/重派/
+        异常/daemon 重启出口都会把用户未提交改动永久滞留 stash 栈。guard 化
+        （方案 1）后新条目不再滞留，本方法负责回收存量与各类历史遗留。
+
+        仅在「主树干净」且「栈顶条目带 AUTOSTASH_MSG_PREFIX」时 pop 恢复：
+          - 主树脏说明用户正在工作，不抢；
+          - 人工手工 stash 的条目无此前缀，永不触碰。
+
+        pop 冲突时沿用 restore_after_merge 的自愈策略（丢弃 stash 版本保 HEAD、
+        清 UU 使主树可写），stash 条目由 git 保留（pop 冲突不删条目）。
+
+        Returns: True 表示成功恢复了一个条目。
+        """
+        status = subprocess.run(
+            ["git", "-C", str(self.project_root), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if status.returncode != 0 or status.stdout.strip():
+            return False
+        lst = subprocess.run(
+            ["git", "-C", str(self.project_root), "stash", "list", "-n", "1"],
+            capture_output=True, text=True, timeout=30,
+        )
+        # 格式：stash@{0}: On <branch>: fenix: pre-dispatch autostash
+        top = lst.stdout.strip() if lst.returncode == 0 else ""
+        if AUTOSTASH_MSG_PREFIX not in top:
+            return False
+        pop = subprocess.run(
+            ["git", "-C", str(self.project_root), "stash", "pop"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if pop.returncode == 0:
+            self.logger.warning(
+                "worktree_manager",
+                f"Stale autostash reclaimed onto clean main tree: {top}",
+            )
+            return True
+        output = (pop.stderr or "") + (pop.stdout or "")
+        if "CONFLICT" in output:
+            conflict_files = self._list_unmerged_files()
+            if conflict_files:
+                self._heal_unmerged_files(conflict_files)
+            self.logger.error(
+                "worktree_manager",
+                f"Stale autostash pop conflicted with merged implementation; "
+                f"healed UU files {conflict_files}, stash entry preserved "
+                f"(recover via git stash show)",
+            )
+            return False
+        self.logger.warning(
+            "worktree_manager",
+            f"Stale autostash pop failed (entry preserved): {output.strip()}",
+        )
+        return False
 
     def _list_unmerged_files(self) -> list:
         """枚举主树中全部 UU 未合并文件（merge 冲突 / stash pop 冲突残留）。
@@ -1160,11 +1241,30 @@ class WorktreeManager:
         与 merge_back(wt_path) 等价，但直接接受分支名。用于 worktree 已被清理、
         但分支仍保留的场景（implementer 成功路径）。
 
+        主树干净由 guard 原子保证（fix-autostash-orphans）：锁内 stash→merge→pop
+        同步段完成。不再依赖「派发前 stash + 成功路径才 pop」的长窗口配对——
+        那种配对在任何失败/重派/异常/daemon 重启路径下都会把用户未提交改动
+        滞留在 stash 栈（曾致 7 次改动"消失"事故）。段内 pop 弹到的必是刚 push
+        的条目（锁串行 + LIFO），历史滞留条目由周期巡检兜底回收。
+
         Returns: (success: bool, error_message: str)
         """
         if not branch:
             return False, "Empty branch name"
 
+        with self._main_tree_lock:
+            self.last_stash_pop_conflicts = []
+            stashed = self.ensure_clean_tree()
+            try:
+                return self._merge_back_from_branch_locked(branch)
+            finally:
+                if stashed:
+                    _ok, conflict_files = self.restore_after_merge()
+                    if conflict_files:
+                        self.last_stash_pop_conflicts = list(conflict_files)
+
+    def _merge_back_from_branch_locked(self, branch: str) -> tuple:
+        """merge_back_from_branch 的实现体，调用方必须已持有 _main_tree_lock。"""
         try:
             # Idempotency check: is branch already an ancestor of HEAD?
             ancestor = subprocess.run(

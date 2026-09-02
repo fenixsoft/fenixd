@@ -243,6 +243,13 @@ class FenixDaemon:
                     except Exception as e:
                         self.logger.error(
                             "fenixd", f"Recovery watch check failed: {e}")
+                    # 滞留 autostash 兜底回收（fix-autostash-orphans）：主树干净且
+                    # 无活跃 run 时，把历史上被派发前 stash 吞掉的用户改动 pop 回来。
+                    try:
+                        self.pm_engine.reclaim_stale_autostash_if_idle()
+                    except Exception as e:
+                        self.logger.error(
+                            "fenixd", f"Autostash reclaim check failed: {e}")
         except KeyboardInterrupt:
             self.logger.info("fenixd", "Received interrupt signal")
         finally:

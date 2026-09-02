@@ -438,9 +438,9 @@ class Dispatcher:
                 # 派发前把 spec 目录提交进主树（fix-merge-back-deadlock 根因修复）：
                 # 消除「spec 在主树 untracked + 分支 commit 同名路径」导致的 merge-back 冲突。
                 wm.ensure_spec_committed(spec_name)
-                # 主树健康检查（fix-fenix-token-waste）：dispatch 前自动 stash 主树脏改动，
-                # 保证 merge-back 有干净基线；成功后 restore_after_merge 恢复原改动。
-                stashed = wm.ensure_clean_tree()
+                # 主树 stash 已收拢进 merge_back_from_branch 的 guard 原子段
+                # （fix-autostash-orphans）：锁内 stash→merge→pop，不再依赖
+                # 派发前 stash + 成功路径 pop 的长窗口配对（曾致 7 次改动滞留 stash）。
                 result = self._pm.agent_runner.run_implementer(spec_name)
                 # Read .fenix-run-result.json (worktree first, project root fallback)
                 # to determine true status — file is more authoritative than
@@ -544,8 +544,11 @@ class Dispatcher:
                     # 所以用分支名直接 merge。
                     merge_ok = True
                     merge_error = ""
+                    conflict_files = []
                     if result.branch:
                         merge_ok, merge_error = wm.merge_back_from_branch(result.branch)
+                        # guard 段内 pop 冲突自愈丢弃的用户改动清单（admin 告警用）
+                        conflict_files = list(wm.last_stash_pop_conflicts)
 
                     if not merge_ok:
                         # merge 失败：指纹熔断（fix-fenix-token-waste）。
@@ -614,10 +617,8 @@ class Dispatcher:
                                 f"Retry {retries}/{max_r} for '{spec_name}' (merge-back failed)",
                             )
                     else:
-                        # 恢复 dispatch 前自动 stash 的主树改动（冲突时保留 stash，不阻塞）
-                        conflict_files = []
-                        if stashed:
-                            _ok, conflict_files = wm.restore_after_merge()
+                        # stash 恢复已在 merge_back_from_branch 的 guard 段内完成
+                        # （fix-autostash-orphans），此处只推进状态。
                         self._pm.state_machine.transition(spec_name, "implemented")
                         self._pm.state_machine.update_spec(spec_name, {
                             "implementer_run": result.run_id,
