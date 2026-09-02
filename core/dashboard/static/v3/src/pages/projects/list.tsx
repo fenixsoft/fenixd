@@ -9,6 +9,7 @@ import {
   Card,
   Dropdown,
   Input,
+  List,
   Modal,
   Popover,
   Progress,
@@ -24,9 +25,11 @@ import {
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import type { MenuProps } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Key } from 'react';
 import { history, useParams } from '@umijs/max';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -278,8 +281,106 @@ function buildTree(specs: SpecSummary[]): SpecSummary[] {
   return roots.map(attach);
 }
 
+interface SpecCardListProps {
+  data: SpecSummary[];
+  project: string;
+  loading: boolean;
+  onDocView: (spec: string) => void;
+  onMenu: (record: SpecSummary, key: string) => void;
+  menuItems: (record: SpecSummary) => MenuProps['items'];
+  onClearError: (record: SpecSummary) => void;
+}
+
+// 移动端（<768px）卡片形态：字段与桌面表格列一一对应，扁平化树并按层级缩进。
+// 仅在 md 断点以下渲染，桌面 Table 分支不受影响。
+function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, onClearError }: SpecCardListProps) {
+  type FlatNode = { record: SpecSummary; level: number };
+  const flat = useMemo<FlatNode[]>(() => {
+    const out: FlatNode[] = [];
+    const walk = (nodes: SpecSummary[], level: number) => {
+      nodes.forEach((n) => {
+        out.push({ record: n, level });
+        if (n.children) walk(n.children, level + 1);
+      });
+    };
+    walk(data, 0);
+    return out;
+  }, [data]);
+
+  return (
+    <List
+      loading={loading}
+      dataSource={flat}
+      pagination={{ pageSize: 20, showTotal: (t) => `共 ${t} 条` }}
+      renderItem={({ record, level }) => {
+        const m = statusMeta(record.status || '');
+        const created = record.created ? dayjs(record.created) : null;
+        const progress = pct(record.task_done, record.task_total);
+        return (
+          <List.Item style={{ paddingLeft: level > 0 ? 16 * level : undefined }}>
+            <div style={{ width: '100%', minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Badge color={TONE_DOT[m.tone]} text={m.label} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <SpecNameCell project={project} record={record} />
+                </div>
+                <Dropdown
+                  menu={{ items: menuItems(record), onClick: ({ key }) => onMenu(record, key) }}
+                  placement="bottomRight"
+                  trigger={['click']}
+                >
+                  <Button type="link" size="small" icon={<MoreOutlined />}>更多</Button>
+                </Dropdown>
+              </div>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 4, fontSize: 12 }}>
+                <Typography.Text type="secondary">P{record.priority ?? '?'}</Typography.Text>
+                <Typography.Text type="secondary">
+                  {created && created.isValid() ? created.format('YYYY-MM-DD HH:mm') : '—'}
+                </Typography.Text>
+                <Typography.Text type="secondary">耗时 {fmtDuration(record.total_duration)}</Typography.Text>
+              </div>
+              <div style={{ marginTop: 8 }}>
+                <Progress
+                  percent={progress}
+                  size="small"
+                  showInfo={false}
+                  strokeColor="#1677ff"
+                  trailColor={TRACK_LIGHT}
+                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: '18px' }}>
+                  <Typography.Text type="secondary">
+                    {record.task_done}/{record.task_total}
+                  </Typography.Text>
+                  <Typography.Text type="secondary">{progress}%</Typography.Text>
+                </div>
+              </div>
+              <div style={{ marginTop: 8 }}>
+                {record.verify_error ? (
+                  <Tooltip title={record.verify_error}>
+                    <Typography.Text type="danger">⚠ 验证异常</Typography.Text>
+                  </Tooltip>
+                ) : (
+                  <VerifyCell project={project} record={record} />
+                )}
+              </div>
+              {record.error ? (
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 8 }}>
+                  <Tag color="orange" style={{ marginInlineEnd: 0 }}>信息</Tag>
+                  <Typography.Text style={{ flex: 1, minWidth: 0 }}>{record.error}</Typography.Text>
+                  <Button size="small" onClick={() => onClearError(record)}>清除</Button>
+                </div>
+              ) : null}
+            </div>
+          </List.Item>
+        );
+      }}
+    />
+  );
+}
+
 export default function SpecListPage() {
   const { name = '' } = useParams<{ name: string }>();
+  const isMobile = useIsMobile();
   const { message } = App.useApp();
   const [specs, setSpecs] = useState<SpecSummary[]>([]);
   const [error, setError] = useState('');
@@ -615,9 +716,20 @@ export default function SpecListPage() {
             ]}
           />
         </Space>
-        <Table
-          rowKey="name"
-          tableLayout="fixed"
+        {isMobile ? (
+          <SpecCardList
+            data={tree}
+            project={name}
+            loading={loading}
+            onDocView={setDocView}
+            onMenu={onSpecMenu}
+            menuItems={specMenuItems}
+            onClearError={handleClearError}
+          />
+        ) : (
+          <Table
+            rowKey="name"
+            tableLayout="fixed"
           columns={columns}
           dataSource={tree}
           loading={loading}
@@ -642,6 +754,7 @@ export default function SpecListPage() {
             rowExpandable: (record: SpecSummary) => !!record.error,
           }}
         />
+        )}
       </Card>
 
       <SpecDocModal
