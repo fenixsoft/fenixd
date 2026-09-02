@@ -2,8 +2,8 @@
 
 ## 1. mode 元数据与读取
 
-- [ ] 1.1 定义 `.openspec.yaml` 的 `mode` 字段约定（`fast-track` / `full`，缺省 full），写入 design 或 config 文档
-- [ ] 1.2 dispatch 派发前读取 spec 目录 `.openspec.yaml` mode 字段的读取器（字段缺失/非法一律返回 full），含单测
+- [x] 1.1 定义 `.openspec.yaml` 的 `mode` 字段约定（`fast-track` / `full`，缺省 full），写入 design 或 config 文档
+- [x] 1.2 dispatch 派发前读取 spec 目录 `.openspec.yaml` mode 字段的读取器（字段缺失/非法一律返回 full），含单测
 
 ## 2. fast-track agent 与统一结果文件
 

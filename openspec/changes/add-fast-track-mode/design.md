@@ -40,6 +40,22 @@ mode 写入 `openspec/changes/<name>/.openspec.yaml`（与 `schema: spec-driven`
 - mode 语义属于 spec 定义（创建时确定、随目录提交、merge-back 安全），不应放运行时 STATE.md（gitignore、可被重置）
 - 避免双写漂移：dispatch 派发前直接读 `.openspec.yaml`，字段缺失/非法一律按 `full`，存量 spec 零迁移
 
+### D2.1: `.openspec.yaml` `mode` 字段约定（task 1.1）
+
+`.openspec.yaml` 与 `schema` / `created` 同级新增可选 `mode` 行：
+
+```yaml
+schema: spec-driven
+created: 2026-09-02
+mode: fast-track   # 可选；fast-track | full，缺省 full
+```
+
+- 取值域：`fast-track` / `full` 二选一；缺失、非法（非二值字符串）一律按 `full` 处理
+- 由 fenix-new 在用户确认后写入；用户未指定模式时按建议写入；存量 spec（无字段）零迁移
+- 读侧实现：`core/openspec_mode.read_spec_mode`（纯函数、fail-closed、缺省 full），
+  daemon 派发路径与 Dashboard data 层共用同一读取器，避免两处漂移
+- 升级路径：fast-track 超预算升级时该字段被改写为 `full`（D5），同步更新 `.openspec.yaml`
+
 ### D3: fast-track agent 模板 — `agents/fast-track.md`
 
 新增提示词模板，四段职责（实现 → 场景设计 → 场景验证 → 判定）+ 统一结果文件 schema + 护栏告知（零变更哨、交付物清单、fix 预算）。`prompt_builder` 增加 fast-track 段；场景设计要求沿用现有场景 schema（兼容 scenario freeze 语义——单 run 内 planner 与 verifier 是同一上下文，冻结约束天然满足，但仍要求场景集落盘以便升级完整模式后 verifier 复用）。
