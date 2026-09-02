@@ -1,13 +1,13 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, App, Badge, Breadcrumb, Button, Card, Checkbox, Collapse, Descriptions, Empty, Image, Progress, Space, Spin, Tabs, Tag, Timeline, Typography } from 'antd';
+import { Alert, App, Badge, Breadcrumb, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Progress, Space, Spin, Tabs, Tag, Timeline, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, FullscreenOutlined, InfoCircleFilled } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { history, useParams } from '@umijs/max';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { clearSpecError, getAlerts, getSpecDetail, markAlertHandled, statusMeta } from '@/services/dashboard';
-import type { AlertItem, SpecDetail } from '@/services/dashboard';
+import { clearSpecError, getAlerts, getSpecDetail, getSpecs, markAlertHandled, statusMeta } from '@/services/dashboard';
+import type { AlertItem, SpecDetail, SpecSummary } from '@/services/dashboard';
 import { markdownComponents } from './components/SpecDocModal';
 import SpecDocModal from './components/SpecDocModal';
 import type { DocType } from './components/SpecDocModal';
@@ -148,6 +148,8 @@ export default function SpecDetailPage() {
   const [detail, setDetail] = useState<SpecDetail | null>(null);
   const [specAlerts, setSpecAlerts] = useState<AlertItem[]>([]);
   const [docModalOpen, setDocModalOpen] = useState(false);
+  // SPEC 下拉快速切换：项目下所有 SPEC 列表（复用列表页 getSpecs，失败静默为空）
+  const [specList, setSpecList] = useState<SpecSummary[]>([]);
   const [recordRunId, setRecordRunId] = useState<string | null>(null);
   // 文档弹窗打开时定位的页签（时间轴报告链接 → 验证报告；项目信息「文档」→ 需求背景）
   const [docInitial, setDocInitial] = useState<DocType>('proposal');
@@ -257,7 +259,71 @@ export default function SpecDetailPage() {
     loadSpecAlerts();
   }, [loadSpecAlerts]);
 
+  // 下拉快速切换数据源：项目变化时拉一次 SPEC 列表（复用列表页 getSpecs）。
+  // 下拉是低频辅助信息，不为其建立 SSE 通道；失败时静默保持为空（箭头不展示），不影响详情页主体。
+  useEffect(() => {
+    let cancelled = false;
+    if (!name) return;
+    getSpecs(name)
+      .then((d) => {
+        if (!cancelled) setSpecList(d.specs || []);
+      })
+      .catch(() => {
+        if (!cancelled) setSpecList([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [name]);
+
   const statusInfo = statusMeta(detail?.status || '');
+
+  // 下拉快速切换项：项目下除当前 SPEC 外的其他 SPEC（只有当前一个时不展示箭头）
+  const otherSpecs = specList.filter((s) => s.name !== spec);
+
+  // 下拉快速切换面板（表格形式）：SPEC 名称（过长截断 + 悬停提示） + 状态标签（statusMeta 同列表页语义）。
+  // 面板宽度上限 300px 且移动端不超出视口（max-width: calc(100vw - 32px)），内容区限高滚动。
+  const renderSpecSwitch = () => (
+    <div
+      className="spec-quick-switch-panel"
+      style={{
+        width: 300,
+        maxWidth: 'calc(100vw - 32px)',
+        background: '#fff',
+        border: '1px solid #f0f0f0',
+        borderRadius: 8,
+        boxShadow: '0 6px 16px 0 rgba(0, 0, 0, 0.08), 0 3px 6px -4px rgba(0, 0, 0, 0.12)',
+        overflow: 'hidden',
+      }}
+    >
+      <div style={{ maxHeight: '60vh', overflow: 'auto', padding: 4 }}>
+        {otherSpecs.map((s) => {
+          const m = statusMeta(s.status || '');
+          return (
+            <div
+              key={s.name}
+              className="spec-quick-switch-row"
+              onClick={() => history.push(`/projects/${name}/${s.name}`)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: '8px 10px',
+                borderRadius: 6,
+                cursor: 'pointer',
+                color: 'inherit',
+              }}
+            >
+              <Typography.Text ellipsis={{ tooltip: s.name }} style={{ flex: 1, minWidth: 0, fontSize: 13 }}>
+                {s.name}
+              </Typography.Text>
+              <OutlinedTag tone={m.tone}>{m.label}</OutlinedTag>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 
   // 面包屑置于右上角（与 SPEC 列表页一致），关闭 PageContainer 默认左上面包屑
   const headerCfg = {
@@ -277,6 +343,18 @@ export default function SpecDetailPage() {
           <Tag color={statusInfo.tone === 'good' ? 'success' : statusInfo.tone === 'critical' ? 'error' : 'processing'}>
             {statusInfo.label}
           </Tag>
+        )}
+        {otherSpecs.length > 0 && (
+          <Dropdown trigger={['click']} placement="bottomLeft" popupRender={renderSpecSwitch}>
+            <Button
+              type="text"
+              size="small"
+              icon={<DownOutlined />}
+              title="切换 SPEC"
+              aria-label="切换 SPEC"
+              style={{ paddingInline: 4, minWidth: 24, minHeight: 24 }}
+            />
+          </Dropdown>
         )}
       </Space>
     ),
