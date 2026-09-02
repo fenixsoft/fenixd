@@ -1,4 +1,4 @@
-"""2026-09-02 add-fast-track-mode merge-back 死锁复盘的三处框架修复测试。
+"""2026-09-02 add-fast-track-mode merge-back 死锁复盘的四处框架修复测试。
 
 覆盖：
   1. _pgrep_spec_process 锚定 claude 进程：cmdline 含 worktree 路径的非 agent
@@ -7,10 +7,13 @@
   3. _discard_identical_local_changes：merge 需写路径上的 tracked 本地修改与
      分支内容字节级一致时丢弃并重试 merge；不一致（含混合）时保守放弃、
      不动任何文件
+  4. ensure_clean_tree 脏检测看 porcelain XY 状态位（[0]/[1]），未暂存修改
+     能触发 autostash——merge-back 不再被主树脏 tracked 文件死锁；pop 冲突
+     由 restore_after_merge 自愈（保留 merge 结果、stash 条目可找回）
 
-死锁链（复演目标）：主树遗留与分支字节级相同的 tracked 修改 → ensure_clean_tree
-未 stash → merge 被拒 → self-heal 只认 ignored 草稿 → 失败；重派又被 dev-server
-孤儿骗过存活检测永久 skip。
+死锁链（复演目标）：主树遗留与分支字节级相同的 tracked 修改 → 旧脏检测恒
+False 未 stash → merge 被拒 → self-heal 只认 ignored 草稿 → 失败；重派又被
+dev-server 孤儿骗过存活检测永久 skip。
 """
 
 import os
@@ -136,6 +139,9 @@ class TestKillStrays:
 
 
 class TestDiscardIdenticalLocalChanges:
+    """merge 级场景（脏检测修复后 autostash 生效，走 stash→merge→pop 主路径，
+    identical self-heal 退为 stash/merge 竞态窗口的纵深防御）+ 单元级直测。"""
+
     @pytest.fixture()
     def repo(self, tmp_path):
         root = tmp_path / "repo"
@@ -147,7 +153,7 @@ class TestDiscardIdenticalLocalChanges:
         return root
 
     def test_identical_copy_is_discarded_and_merged(self, repo):
-        """主树副本与分支字节级一致 → 丢弃、备份、merge 成功（复演 incident 主场景）。"""
+        """主树副本与分支字节级一致 → merge 成功、内容为分支版、路径干净、无冲突。"""
         make_tracked_file_branch(repo, "fenix/impl-identical", "skill.md",
                                  "OLD\n", "NEW\n")
         # 主树留一份与分支相同的未提交修改（implementer 副本污染形态）
@@ -155,25 +161,32 @@ class TestDiscardIdenticalLocalChanges:
 
         wm = make_wm(repo)
         success, err = wm.merge_back_from_branch("fenix/impl-identical")
-        assert success, f"merge 应经 self-heal 成功，实际失败: {err}"
+        assert success, f"merge 应经 autostash 成功，实际失败: {err}"
         assert (repo / "skill.md").read_text(encoding="utf-8") == "NEW\n"
         status = git(repo, "status", "--porcelain").stdout
         assert "skill.md" not in status, "merge 后该路径应干净"
+        assert wm.last_stash_pop_conflicts == [], "一致副本不应产生 pop 冲突"
 
-    def test_divergent_copy_blocks_merge_untouched(self, repo):
-        """主树副本与分支内容不同（疑似真实本地工作）→ 保守放弃、文件原样保留。"""
+    def test_divergent_copy_unblocks_via_stash_selfheal(self, repo):
+        """分歧本地修改 → autostash 生效后 merge 不再死锁：分支结果胜出，
+        pop 冲突自愈丢弃 stash 侧改动，stash 条目保留可找回。"""
         make_tracked_file_branch(repo, "fenix/impl-divergent", "skill.md",
                                  "OLD\n", "NEW\n")
         (repo / "skill.md").write_text("LOCAL\n", encoding="utf-8")
 
         wm = make_wm(repo)
         success, err = wm.merge_back_from_branch("fenix/impl-divergent")
-        assert not success
-        assert "would be overwritten" in err
-        assert (repo / "skill.md").read_text(encoding="utf-8") == "LOCAL\n"
+        assert success, f"merge 应在 autostash+pop 自愈下成功，实际失败: {err}"
+        assert (repo / "skill.md").read_text(encoding="utf-8") == "NEW\n"
+        assert wm.last_stash_pop_conflicts == ["skill.md"]
+        stash_list = git(repo, "stash", "list").stdout.strip()
+        assert stash_list, "被自愈丢弃的本地改动应保留在 stash 中可找回"
+        stash_show = git(repo, "stash", "show", "-p", "stash@{0}").stdout
+        assert "LOCAL\n" in stash_show, "stash 中应能找回分歧的本地内容"
 
-    def test_mixed_blockers_all_or_nothing(self, repo):
-        """多路径混合（一份一致、一份不一致）→ 任一不一致则全部不动。"""
+    def test_mixed_blockers_branch_wins_conflicted_file_recorded(self, repo):
+        """混合修改（一份与分支一致、一份分歧）→ merge 成功，分歧文件以分支
+        版本落地并记入 pop 冲突清单，一致文件干净合入。"""
         git(repo, "checkout", "-q", "-b", "fenix/impl-mixed")
         (repo / "a.md").write_text("NEW\n", encoding="utf-8")
         (repo / "b.md").write_text("BRANCH\n", encoding="utf-8")
@@ -181,12 +194,40 @@ class TestDiscardIdenticalLocalChanges:
         git(repo, "commit", "-q", "-m", "[fenix] branch modify a+b")
         base_sha = git(repo, "rev-parse", "HEAD~1").stdout.strip()
         git(repo, "checkout", "-q", base_sha)
-        # a.md 与分支一致；b.md 不一致（两者均为 tracked 未暂存修改）
+        # a.md 与分支一致；b.md 分歧（两者均为 tracked 未暂存修改）
         (repo / "a.md").write_text("NEW\n", encoding="utf-8")
         (repo / "b.md").write_text("LOCAL\n", encoding="utf-8")
 
         wm = make_wm(repo)
         success, err = wm.merge_back_from_branch("fenix/impl-mixed")
-        assert not success
+        assert success, f"merge 应在 autostash+pop 自愈下成功，实际失败: {err}"
         assert (repo / "a.md").read_text(encoding="utf-8") == "NEW\n"
-        assert (repo / "b.md").read_text(encoding="utf-8") == "LOCAL\n"
+        assert (repo / "b.md").read_text(encoding="utf-8") == "BRANCH\n"
+        assert wm.last_stash_pop_conflicts == ["b.md"]
+
+    # ── 单元级直测：identical self-heal（纵深防御路径） ──────────────────────
+
+    def test_heal_unit_discards_identical_and_backs_up(self, repo):
+        """字节级一致 → 恢复 HEAD 版 + 备份保留原内容，返回 True。"""
+        make_tracked_file_branch(repo, "fenix/impl-unit-ident", "skill.md",
+                                 "OLD\n", "NEW\n")
+        (repo / "skill.md").write_text("NEW\n", encoding="utf-8")
+
+        wm = make_wm(repo)
+        assert wm._discard_identical_local_changes(
+            ["skill.md"], "fenix/impl-unit-ident") is True
+        assert (repo / "skill.md").read_text(encoding="utf-8") == "OLD\n"
+        backups = list((repo / ".fenix" / "merge-backup").glob("identical-*"))
+        assert len(backups) == 1
+        assert (backups[0] / "skill.md").read_text(encoding="utf-8") == "NEW\n"
+
+    def test_heal_unit_refuses_divergent_untouched(self, repo):
+        """内容与分支不一致 → 返回 False、文件原样保留（疑似真实本地工作）。"""
+        make_tracked_file_branch(repo, "fenix/impl-unit-divergent", "skill.md",
+                                 "OLD\n", "NEW\n")
+        (repo / "skill.md").write_text("LOCAL\n", encoding="utf-8")
+
+        wm = make_wm(repo)
+        assert wm._discard_identical_local_changes(
+            ["skill.md"], "fenix/impl-unit-divergent") is False
+        assert (repo / "skill.md").read_text(encoding="utf-8") == "LOCAL\n"

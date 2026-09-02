@@ -1032,10 +1032,14 @@ class WorktreeManager:
             ["git", "-C", str(self.project_root), "status", "--porcelain"],
             capture_output=True, text=True, timeout=30,
         )
-        # 只关心 tracked 修改（XY 状态里 X/Y 非 ' '/'?'）；untracked（'? '）由
-        # merge 内部 backup 机制处理。openspec/changes 的脏文件被跟踪时也计入。
+        # 只关心 tracked 修改：porcelain v1 每行 "XY " 前缀，X=索引状态、Y=工作区
+        # 状态，第 3 个字符恒为分隔符空格——脏判定必须看 [0]/[1] 任一非空格
+        # （历史版本误查 [2] 致检测恒 False、autostash 从未触发，2026-09-02 修）。
+        # untracked（'??'）由 merge 内部 backup 机制处理，不计入。
         dirty_tracked = any(
-            not line.startswith("?? ") and line[2:3] != " "
+            len(line) >= 3
+            and not line.startswith("?? ")
+            and (line[0] != " " or line[1] != " ")
             for line in result.stdout.splitlines()
         ) if result.returncode == 0 else False
         if not dirty_tracked:
