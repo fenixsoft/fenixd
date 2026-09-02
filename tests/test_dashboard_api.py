@@ -185,16 +185,36 @@ def server_fx(tmp_path):
 
 class TestServerAPI:
     def test_index_served(self, server_fx):
-        # 根路由 302 重定向到 v3 dashboard（ea88dd5 移除 v1/v2 后的既定行为）
+        # 根路由直接服务 v3 dashboard 首页（/v3/dist/ 静态透传保留，兼容旧书签）
         import http.client
         _, srv = server_fx
         conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
         try:
             conn.request("GET", "/")
             resp = conn.getresponse()
-            resp.read()
-            assert resp.status == 302
-            assert resp.getheader("Location") == "/v3/dist/"
+            body = resp.read()
+            assert resp.status == 200
+            assert resp.getheader("Content-Type") == "text/html"
+            assert b"<!DOCTYPE html>" in body
+        finally:
+            conn.close()
+
+    def test_static_root_fallback_to_v3_dist(self, server_fx):
+        # v3 SPA 挂载在 / 时，相对资源（./umi.js）以根路径请求，
+        # 静态服务需回退到 v3/dist/ 命中（/v3/dist/ 原路径仍透传）
+        import http.client
+        _, srv = server_fx
+        dist = (Path(__file__).resolve().parents[1]
+                / "core" / "dashboard" / "static" / "v3" / "dist")
+        js_name = sorted(p.name for p in dist.glob("umi.*.js"))[0]
+        conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+        try:
+            conn.request("GET", f"/{js_name}")
+            resp = conn.getresponse()
+            body = resp.read()
+            assert resp.status == 200
+            assert "javascript" in (resp.getheader("Content-Type") or "")
+            assert len(body) > 0
         finally:
             conn.close()
 

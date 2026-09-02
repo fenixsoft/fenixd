@@ -9,7 +9,7 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
 - 所有 API 容错：数据源损坏以字段标记返回，不 500。
 
 端点：
-    GET /                          → 302 重定向到 v3 dashboard（/v3/dist/）
+    GET /                          → v3 dashboard 首页（/v3/dist/ 仍透传，兼容旧书签）
     GET /api/projects              → 监控项目列表 + 各自聚合摘要
     GET /api/overview              → 跨项目状态统计 / 任务进度 / 问题 / 活跃运行
     GET /api/specs?project=<name>  → 某项目全部 SPEC 摘要
@@ -223,7 +223,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/" or path == "/index.html":
-                self.redirect("/v3/dist/")
+                self._serve_static("v3/dist/index.html")
             elif path.startswith("/screenshots/"):
                 self._serve_screenshot(path)
             else:
@@ -1120,21 +1120,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     # ── 静态资源与截图 ────────────────────────────────────────
 
-    def redirect(self, location: str):
-        self.send_response(302)
-        self.send_header("Location", location)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-
     def _serve_static(self, filename: str):
-        target = (self.server.static_dir / filename).resolve()
         static_root = self.server.static_dir.resolve()
-        # 如果是目录，尝试 serve 目录下的 index.html
-        if target.is_dir():
-            target = target / "index.html"
-        if not target.is_relative_to(static_root) or not target.is_file():
+        target = (static_root / filename).resolve()
+        # 防路径穿越：解析后必须仍在 static 目录内
+        if not target.is_relative_to(static_root):
             self._error(404, "Not Found")
             return
+        if target.is_dir():
+            target = target / "index.html"
+        if not target.is_file():
+            # v3 SPA 直接挂载在 / 时，index.html 内相对资源（./umi.js）
+            # 会以根路径请求；回退映射到 v3/dist/（/v3/dist/ 原路径仍透传）
+            target = static_root / "v3" / "dist" / filename
+            if not target.is_relative_to(static_root) or not target.is_file():
+                self._error(404, "Not Found")
+                return
         ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
         self._send_file(target, ctype)
 
