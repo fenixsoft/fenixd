@@ -34,5 +34,5 @@
 
 ## 4. 收尾验证
 
-- [ ] 4.1 全量 pytest 通过（环境性 daemon 端口占用失败可豁免，与既有基线一致）
-- [ ] 4.2 手动构造/复用 fixture 验证：done spec 在 run 产物被移走后 /api/specs 仍返回 STATE.md 中的耗时值
+- [x] 4.1 全量 pytest 通过（环境性 daemon 端口占用失败可豁免，与既有基线一致）
+- [x] 4.2 手动构造/复用 fixture 验证：done spec 在 run 产物被移走后 /api/specs 仍返回 STATE.md 中的耗时值
