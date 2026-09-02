@@ -1016,17 +1016,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     except (OSError, UnicodeDecodeError):
                         continue
 
-        # 拼固定中文指令 prompt
-        prompt = f"""你是一个项目简介生成器。请根据以下项目信息生成一句约100字的中文项目简介。
+        # 拼固定中文指令 prompt（必须携带项目名与路径——README 主题重叠的
+        # 项目若无项目身份信息会生成彼此的简介）
+        prompt = f"""你是一个项目简介生成器。请为项目「{project["name"]}」（位于 {proot}）生成一句约100字的中文项目简介。
 
-项目信息：
+以下是该项目说明文件的内容：
 {content}
 
 要求：
-1. 生成的简介应该是纯文本，不要包含任何标记语言
-2. 简介应该概括项目的主要用途和特点
-3. 简介长度控制在100字左右
-4. 只输出简介文本，不要有其他内容"""
+1. 生成的简介必须围绕项目「{project["name"]}」本身，是纯文本，不要包含任何标记语言
+2. 说明文件内容可能与同生态其他项目相似甚至过时：若它无法体现本项目的独特功能，
+   请查看项目目录中的实际文件（如 package.json 的 name/description、pyproject.toml、
+   主要源码结构）来确认项目定位，简介以项目实际功能为准
+3. 简介应该概括该项目的主要用途和特点，注意区分于同生态下的其他项目
+4. 简介长度控制在100字左右
+5. 只输出简介文本，不要有其他内容"""
 
         # 调用 headless claude CLI
         import subprocess

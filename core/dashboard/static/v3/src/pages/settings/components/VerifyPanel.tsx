@@ -76,11 +76,13 @@ export default function VerifyPanel({ config, onSave }: VerifyPanelProps) {
               </div>
             </Radio.Group>
           </Form.Item>
-          <Button type="primary" onClick={handleSave}>
-            保存
-          </Button>
         </Form>
       </Card>
+      <div style={{ textAlign: 'right', marginTop: 24 }}>
+        <Button type="primary" onClick={handleSave}>
+          保存
+        </Button>
+      </div>
     </div>
   );
 }

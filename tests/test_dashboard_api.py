@@ -448,6 +448,38 @@ class TestProjectDescribeAPI:
         finally:
             srv.stop()
 
+    def test_describe_prompt_contains_project_identity(self, tmp_path, monkeypatch):
+        """prompt 必须携带项目名与路径，否则 README 主题重叠的项目（如 fenix-desktop
+        与 fenixd）会生成彼此的简介。"""
+        proot = make_project(tmp_path)
+        (proot / "README.md").write_text(
+            "# 同一个框架\n这是两个不同项目共用的说明文案。", encoding="utf-8"
+        )
+
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+
+        mock_result = type('MockResult', (), {'returncode': 0, 'stdout': '简介', 'stderr': ''})()
+        captured = {}
+
+        def fake_run(args, **kwargs):
+            captured['args'] = args
+            return mock_result
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        try:
+            status, body = srv.post("/api/project/describe?project=proj-a")
+            assert status == 200 and body["ok"] is True
+            prompt = captured['args'][2]  # ["claude", "-p", prompt]
+            assert "proj-a" in prompt, "prompt 未包含项目名"
+            assert str(proot) in prompt, "prompt 未包含项目路径"
+        finally:
+            srv.stop()
+
     def test_describe_success_with_readme(self, tmp_path, monkeypatch):
         proot = make_project(tmp_path)
         # 创建 README.md

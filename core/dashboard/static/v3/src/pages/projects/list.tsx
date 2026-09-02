@@ -648,7 +648,7 @@ export default function SpecListPage() {
       // 存量无 mode 字段的 spec 按缺省 full 展示「完整模式」等价标记
       render: (v: string | null | undefined) => (
         v === 'fast-track' ? (
-          <Tag color="cyan" style={{ marginInlineEnd: 0 }}>fast-track</Tag>
+          <Tag color="cyan" style={{ marginInlineEnd: 0 }}>快速模式</Tag>
         ) : (
           <Tag style={{ marginInlineEnd: 0 }}>完整模式</Tag>
         )
@@ -784,7 +784,16 @@ export default function SpecListPage() {
         <Alert type="error" showIcon style={{ marginBottom: 16 }} message="SPEC 列表加载失败" description={error} />
       ) : null}
       <Card variant="borderless">
-        <Space wrap style={{ marginBottom: 16 }}>
+        <div
+          style={{
+            marginBottom: 16,
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            gap: 8,
+          }}
+        >
+          <Space wrap size={8}>
           <Input.Search
             placeholder="搜索名称…"
             allowClear
@@ -816,8 +825,10 @@ export default function SpecListPage() {
               { label: '仅问题', value: 'issue' },
             ]}
           />
-          {/* add-spec-archive：归档状态切换（未归档默认 / 已归档），与类型过滤同层客户端过滤 */}
+          </Space>
+          {/* add-spec-archive：归档状态切换（未归档默认 / 已归档），与类型过滤同层客户端过滤；靠右显示 */}
           <Radio.Group
+            style={{ marginLeft: 'auto' }}
             optionType="button"
             size="middle"
             value={archivedOnly}
@@ -827,7 +838,7 @@ export default function SpecListPage() {
               { label: '已归档', value: true },
             ]}
           />
-        </Space>
+        </div>
         {isMobile ? (
           <SpecCardList
             data={tree}
