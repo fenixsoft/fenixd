@@ -1,6 +1,6 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, App, Badge, Breadcrumb, Card, Checkbox, Collapse, Descriptions, Empty, Image, Progress, Space, Spin, Tabs, Tag, Timeline, Typography } from 'antd';
-import { CloseOutlined, DownOutlined, ExclamationCircleFilled, InfoCircleFilled } from '@ant-design/icons';
+import { Alert, App, Badge, Breadcrumb, Button, Card, Checkbox, Collapse, Descriptions, Empty, Image, Progress, Space, Spin, Tabs, Tag, Timeline, Typography } from 'antd';
+import { CloseOutlined, DownOutlined, ExclamationCircleFilled, FullscreenOutlined, InfoCircleFilled } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { history, useParams } from '@umijs/max';
 import dayjs from 'dayjs';
@@ -11,7 +11,9 @@ import type { AlertItem, SpecDetail } from '@/services/dashboard';
 import { markdownComponents } from './components/SpecDocModal';
 import SpecDocModal from './components/SpecDocModal';
 import type { DocType } from './components/SpecDocModal';
+import RunRecordModal from './components/RunRecordModal';
 import { ClaudeOutputPane } from '@/components/claude-msg';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 // 与 v2 static/app.js renderVerdict 保持同一判定逻辑：
 // parse_verdict 的 status 串自带 emoji 前缀（如 "❌ 未通过（Bug Found）"），先剥离再判定，
@@ -141,9 +143,11 @@ function ReasonText({ reason, onOpenReport }: { reason: string; onOpenReport: ()
 
 export default function SpecDetailPage() {
   const { name = '', spec = '' } = useParams<{ name: string; spec: string }>();
+  const isMobile = useIsMobile();
   const [detail, setDetail] = useState<SpecDetail | null>(null);
   const [specAlerts, setSpecAlerts] = useState<AlertItem[]>([]);
   const [docModalOpen, setDocModalOpen] = useState(false);
+  const [recordRunId, setRecordRunId] = useState<string | null>(null);
   // 文档弹窗打开时定位的页签（时间轴报告链接 → 验证报告；项目信息「文档」→ 需求背景）
   const [docInitial, setDocInitial] = useState<DocType>('proposal');
   // 告警内容默认折叠（只显示标题），展开后的告警 id 集合
@@ -354,7 +358,7 @@ export default function SpecDetailPage() {
     }
 
     const cardBox = (urgent: boolean): React.CSSProperties => ({
-      padding: 12,
+      padding: isMobile ? 8 : 12,
       borderRadius: 8,
       border: urgent ? '1px solid #ff4d4f' : '1px solid #f0f0f0',
       background: urgent ? '#fff2f0' : '#fafafa',
@@ -437,10 +441,24 @@ export default function SpecDetailPage() {
                     items={[
                       {
                         key: 'run-stream',
-                        label: '查看运行记录',
+                        label: (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            查看运行记录
+                            <Button
+                              type="text"
+                              size="small"
+                              title="最大化查看"
+                              icon={<FullscreenOutlined />}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRecordRunId(item.run_id!);
+                              }}
+                            />
+                          </span>
+                        ),
                         // ClaudeOutputPane 依赖父容器高度约束，这里限高滚动避免时间轴被长运行拉穿
                         children: (
-                          <div style={{ maxHeight: 480, overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 8, padding: 8, background: '#fafafa' }}>
+                          <div style={{ maxHeight: 480, overflow: 'auto', border: '1px solid #f0f0f0', borderRadius: 8, padding: isMobile ? 4 : 8, background: '#fafafa' }}>
                             <ClaudeOutputPane runId={item.run_id!} project={name} />
                           </div>
                         ),
@@ -462,7 +480,7 @@ export default function SpecDetailPage() {
       key: 'timeline',
       label: '运行时间轴',
       children: (
-        <div style={{ padding: '20px 0' }}>
+        <div style={{ padding: '20px 0' }} className="spec-detail-timeline">
           {renderTimeline()}
         </div>
       ),
@@ -946,6 +964,9 @@ export default function SpecDetailPage() {
         onClose={() => setDocModalOpen(false)}
         initialDoc={docInitial}
       />
+
+      {/* 运行记录最大化弹窗（时间轴「查看运行记录」旁全屏入口） */}
+      <RunRecordModal runId={recordRunId} project={name} onClose={() => setRecordRunId(null)} />
     </PageContainer>
   );
 }
