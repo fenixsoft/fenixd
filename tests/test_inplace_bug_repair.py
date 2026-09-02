@@ -63,6 +63,61 @@ class _InplaceBase(unittest.TestCase):
             .read_text(encoding="utf-8")
 
 
+class TestRepairSectionCarriesPrevConclusions(_InplaceBase):
+    """修复段注入上轮 implementer 结论（消除 verify-repair 每轮重复考古）。"""
+
+    def _write_root_result(self, spec, summary, findings=None):
+        import json
+        (self.project_root / ".fenix-run-result.json").write_text(
+            json.dumps({"status": "success", "spec": spec,
+                        "summary": summary, "findings": findings or []},
+                       ensure_ascii=False),
+            encoding="utf-8")
+
+    def test_matching_spec_summary_injected_and_persisted(self):
+        self._write_tasks("quick-links-folders",
+                          "# Tasks\n\n## 1. 实现\n\n- [x] 1.1 已完成\n")
+        self._write_root_result(
+            "quick-links-folders",
+            "验证场景打的是 8787 主树 dist，非 worktree 新鲜构建；"
+            "失败场景 X 属场景断言缺陷",
+            findings=[{"type": "pending-interaction", "element": "btn-x",
+                       "suggestion": "纯展示"}])
+        self._make_buggy_spec("quick-links-folders")
+
+        self.engine._family._do_spec_bug_found("quick-links-folders")
+
+        txt = self._tasks_text("quick-links-folders")
+        self.assertIn("### 上轮实现结论", txt)
+        self.assertIn("8787 主树 dist", txt)
+        self.assertIn("pending-interaction: btn-x", txt)
+        snap = (self.project_root / ".fenix" / "verify-progress"
+                / "quick-links-folders" / "prev-impl-result.json")
+        self.assertTrue(snap.exists(), "应持久化 per-spec 副本")
+
+    def test_foreign_spec_result_not_injected(self):
+        self._write_tasks("quick-links-folders", "# Tasks\n")
+        self._write_root_result("some-other-spec", "别人家 spec 的结论")
+        self._make_buggy_spec("quick-links-folders")
+
+        self.engine._family._do_spec_bug_found("quick-links-folders")
+
+        txt = self._tasks_text("quick-links-folders")
+        self.assertIn("## 验证修复", txt)
+        self.assertNotIn("上轮实现结论", txt)
+        self.assertNotIn("别人家 spec 的结论", txt)
+
+    def test_no_root_result_still_injects_section(self):
+        self._write_tasks("quick-links-folders", "# Tasks\n")
+        self._make_buggy_spec("quick-links-folders")
+
+        self.engine._family._do_spec_bug_found("quick-links-folders")
+
+        txt = self._tasks_text("quick-links-folders")
+        self.assertIn("## 验证修复", txt)
+        self.assertNotIn("上轮实现结论", txt)
+
+
 class TestInplaceFirstRound(_InplaceBase):
     """Scenario: 首次验证失败原地打回。"""
 

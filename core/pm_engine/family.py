@@ -6,6 +6,7 @@ STATE.md（design D3 规则 3），本组件不持有实例状态。
 """
 
 from typing import Optional
+import json
 import re
 
 
@@ -537,6 +538,57 @@ class FamilyGovernor:
         self._pm._enqueue(fix_spec_name, "implementer")
 
 
+    def _read_prev_impl_conclusions(self, spec_name: str) -> str:
+        """读取上一轮 implementer 的收工结论，作为修复段的「上轮实现结论」小节。
+
+        背景（fast-track 复盘，2026-09-02）：verify-repair 每轮的 implementer
+        都要花 30+ 分钟从源码重新推导上轮已查明的结论（验证测的是哪个 dist、
+        失败是场景缺陷还是产品 bug 等）——根目录 result 的 summary 是唯一载体，
+        却从未传给下一轮。无记忆传递的重派是重复烧钱的固定根因
+        （fix-startup-double-dispatch 处置：38% 纯重复）。
+
+        项目根 .fenix-run-result.json 是跨 spec 共享文件：spec 字段不匹配
+        （并发派发的其它 spec 的结果）时不注入，防跨 spec 污染。命中时同时
+        持久化 per-spec 副本到 .fenix/verify-progress/<spec>/prev-impl-result.json
+        （根文件会被后续 run 覆盖，副本供人工与后续轮次回溯）。
+        """
+        result_path = self._pm.project_root / ".fenix-run-result.json"
+        try:
+            data = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        if not isinstance(data, dict) or data.get("spec") != spec_name:
+            return ""
+        try:
+            snap_dir = (self._pm.project_root / ".fenix" / "verify-progress"
+                        / spec_name)
+            snap_dir.mkdir(parents=True, exist_ok=True)
+            (snap_dir / "prev-impl-result.json").write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        summary = str(data.get("summary") or "").strip()[:800]
+        findings = data.get("findings") or []
+        if not summary and not findings:
+            return ""
+        lines = ["", "### 上轮实现结论（自动携带，来自上一轮 implementer 收工结论）", ""]
+        if summary:
+            lines += [summary, ""]
+        if findings:
+            lines.append("上轮登记的 findings：")
+            for f in findings[:5]:
+                if isinstance(f, dict):
+                    lines.append(
+                        f"- {f.get('type', '?')}: {f.get('element', '')}"
+                        f" — {f.get('suggestion') or f.get('current', '')}"
+                    )
+                else:
+                    lines.append(f"- {f}")
+            lines.append("")
+        return "\n".join(lines)
+
     def _inject_verify_fix_task(self, spec_name: str, fail_rounds: int):
         """在父 SPEC 的 tasks.md 末尾追加/更新「## 验证修复」任务段。
 
@@ -561,9 +613,11 @@ class FamilyGovernor:
         # fix-fake-failure-first：第一步强制复核失败场景有效性——验证场景自身
         # 的断言缺陷（英文状态字面量 vs 产品中文渲染、不存在选择器等）曾被当作
         # 产品 Bug 触发整条修复链（3 轮实现 5.24h 修一个不存在的 bug）。
+        prev = self._read_prev_impl_conclusions(spec_name)
         section = (
-            f"\n\n## 验证修复（第 {fail_rounds} 轮失败）\n\n"
-            f"- [ ] 先复核失败有效性：逐条核对 `{report_path}` 中失败场景的期望断言"
+            f"\n\n## 验证修复（第 {fail_rounds} 轮失败）\n"
+            f"{prev}"
+            f"\n- [ ] 先复核失败有效性：逐条核对 `{report_path}` 中失败场景的期望断言"
             f"（状态字面量/选择器/前置数据）与产品实际行为是否相符——"
             f"断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码\n"
             f"- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码\n"
