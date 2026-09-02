@@ -343,6 +343,11 @@ export default function SpecDetailPage() {
     title: (
       <Space size={8} align="baseline">
         <span>{spec}</span>
+        {/* add-fast-track-mode（task 7.2）：执行模式标记——fast-track 单 run 全包，
+            其余（含存量无 mode 字段的 spec）统一展示「完整模式」，可辨识两条路径 */}
+        <Tag color={detail?.mode === 'fast-track' ? 'cyan' : 'default'} style={{ marginInlineEnd: 0 }}>
+          {detail?.mode === 'fast-track' ? 'fast-track' : '完整模式'}
+        </Tag>
         {detail?.status && (
           <Tag color={statusInfo.tone === 'good' ? 'success' : statusInfo.tone === 'critical' ? 'error' : 'processing'}>
             {statusInfo.label}

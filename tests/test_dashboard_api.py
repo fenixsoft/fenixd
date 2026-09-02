@@ -185,10 +185,18 @@ def server_fx(tmp_path):
 
 class TestServerAPI:
     def test_index_served(self, server_fx):
+        # 根路由 302 重定向到 v3 dashboard（ea88dd5 移除 v1/v2 后的既定行为）
+        import http.client
         _, srv = server_fx
-        status, ctype, body = srv.get("/", raw=True)
-        assert status == 200
-        assert b"Fenix Dashboard" in body
+        conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
+        try:
+            conn.request("GET", "/")
+            resp = conn.getresponse()
+            resp.read()
+            assert resp.status == 302
+            assert resp.getheader("Location") == "/v3/dist/"
+        finally:
+            conn.close()
 
     def test_api_projects(self, server_fx):
         proot, srv = server_fx
