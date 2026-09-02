@@ -16,6 +16,15 @@ import tempfile
 import time
 import urllib.request
 
+from core.verify_contract import (
+    load_verify_contract,
+    probe_ready,
+    provision_worktree_node_modules,
+    rewrite_scenarios_origin,
+    run_prepare_steps,
+    StaticVerifyServer,
+)
+
 
 class VerificationPipeline:
     """验证流水线组件（门面 PMEngine 的组合组件）。"""
@@ -105,6 +114,89 @@ class VerificationPipeline:
         return True
 
 
+    def _serve_static_in_main(self, contract, scenarios_path) -> tuple:
+        """方案 1（默认）：主树构建 + 主树起服务。同 root 复用已启动实例。"""
+        root_dir = Path(self._pm.project_root) / contract.serve.root
+        if not root_dir.is_dir():
+            return False, False, f"验证契约 serve.root 不存在: {contract.serve.root}"
+        cache = self.__dict__.setdefault("_contract_static_servers", {})
+        srv = cache.get("main")
+        if srv is None or srv.root != root_dir.resolve():
+            if srv is not None:
+                srv.stop()
+            srv = StaticVerifyServer(root_dir)
+            cache["main"] = srv
+        return self._finalize_static(srv, contract, scenarios_path, "主树")
+
+    def _serve_static_in_worktree(self, spec_name, contract, scenarios_path) -> tuple:
+        """方案 2：专用 serving worktree 内构建 + 起服务（隔离主树运行实例）。
+
+        worktree 每次 HEAD 变化时重建（分离 HEAD、自管理生命周期，位于
+        .fenix/verify-serving/，gitignore 排除）；HEAD 未变时复用已启动实例
+        与产物（replan 循环不重复构建）。构建环境由 provision 自动链入主树
+        node_modules（worktree 不含 gitignore 依赖，手工 symlink 是既有摩擦源）。
+        """
+        serve_root = Path(self._pm.project_root) / ".fenix" / "verify-serving"
+        serve_root.mkdir(parents=True, exist_ok=True)
+        cache = self.__dict__.setdefault("_contract_static_servers", {})
+        head = subprocess.run(
+            ["git", "-C", str(self._pm.project_root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=15,
+        ).stdout.strip()
+        old = cache.get(spec_name)
+        if (old is not None and old.get("head") == head
+                and Path(old["wt_path"]).is_dir()):
+            return self._finalize_static(
+                old["server"], contract, scenarios_path, "验证 worktree（复用）")
+        if old is not None:
+            old["server"].stop()
+            self._remove_serving_worktree(old["wt_path"])
+        wt = serve_root / f"{spec_name}-{int(time.time())}"
+        r = subprocess.run(
+            ["git", "-C", str(self._pm.project_root),
+             "worktree", "add", "--detach", str(wt), "HEAD"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if r.returncode != 0:
+            return False, False, (
+                "验证 worktree 创建失败: "
+                f"{(r.stderr or r.stdout).strip()[-200:]}")
+        provision_worktree_node_modules(
+            wt, self._pm.project_root,
+            sorted({(s.cwd or ".") for s in contract.prepare}))
+        err = run_prepare_steps(contract, wt)
+        if err:
+            self._remove_serving_worktree(wt)
+            return False, False, f"验证契约 prepare 失败（worktree 内）: {err}"
+        root_dir = wt / contract.serve.root
+        if not root_dir.is_dir():
+            self._remove_serving_worktree(wt)
+            return False, False, f"验证契约 serve.root 不存在: {contract.serve.root}"
+        cache[spec_name] = {
+            "server": StaticVerifyServer(root_dir), "wt_path": str(wt), "head": head,
+        }
+        return self._finalize_static(
+            cache[spec_name]["server"], contract, scenarios_path, "验证 worktree")
+
+    def _finalize_static(self, srv, contract, scenarios_path, scope_label) -> tuple:
+        """BASE_URL 注入 + 就绪探针：static 两类 scope 的共同收尾。"""
+        n = rewrite_scenarios_origin(scenarios_path, srv.base_url)
+        ok, probe_note = probe_ready(srv.base_url, contract.ready)
+        note = (f"验证契约 static[{scope_label}]: 被测实例 {srv.base_url}"
+                f"（场景 origin 改写 {n} 处）— {probe_note}")
+        return (True, False, note) if ok else (False, False, note)
+
+    def _remove_serving_worktree(self, wt_path) -> None:
+        subprocess.run(
+            ["git", "-C", str(self._pm.project_root),
+             "worktree", "remove", "--force", str(wt_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        subprocess.run(
+            ["git", "-C", str(self._pm.project_root), "worktree", "prune"],
+            capture_output=True, timeout=15,
+        )
+
     def _ensure_app_reachable(self, spec_name: str) -> tuple:
         """验证前确保应用可达：自动启动 commands.start、处理端口冲突。
 
@@ -144,6 +236,31 @@ class VerificationPipeline:
         if not urls:
             return True, False, ""
 
+        # ── 声明式验证契约（.fenix/verify.yaml，字段语义见 verify_contract.py）──
+        # 场景必须打「被测实现 fresh 构建出的可运行形态」。契约存在时：prepare
+        # 重建产物 → static 无条件新鲜服务 + 场景 origin 全量改写（下方「已可达
+        # 即跳过」捷径对构建型应用＝陈旧产物陷阱，契约 static 模式禁用）→ ready
+        # 探针放行。契约缺失时维持 commands.start 旧行为（存量项目零迁移）。
+        contract = load_verify_contract(self._pm.project_root, self._pm.logger)
+        start_cmd_override = ""
+        serve_port_hint = None
+        if contract is not None:
+            if contract.prepare:
+                err = run_prepare_steps(contract, self._pm.project_root)
+                if err:
+                    return False, False, f"验证契约 prepare 失败: {err}"
+            serve = contract.serve
+            if serve and serve.kind == "static":
+                scope = str(self._pm._get_config("verify.static_scope", "main")
+                            or "main").strip().lower()
+                if scope == "worktree":
+                    return self._serve_static_in_worktree(
+                        spec_name, contract, scenarios_path)
+                return self._serve_static_in_main(contract, scenarios_path)
+            if serve and serve.kind == "command" and serve.cmd:
+                start_cmd_override = serve.cmd
+                serve_port_hint = serve.port
+
         def _probe(u: str, timeout: float = 2.0) -> bool:
             try:
                 req = urllib.request.Request(u, method="GET",
@@ -157,15 +274,17 @@ class VerificationPipeline:
         if all(_probe(u) for u in urls):
             return True, False, ""
 
-        # 2) 自愈：读取 commands.start 自动启动应用
-        start_cmd = str(self._pm._get_config("commands.start", "") or "").strip()
+        # 2) 自愈：验证契约 serve.cmd 优先，回退 commands.start（旧行为）
+        start_cmd = start_cmd_override or str(
+            self._pm._get_config("commands.start", "") or "").strip()
         if not start_cmd or start_cmd in ("echo 'No start command configured yet'",):
-            return False, False, "应用不可达且未配置 commands.start（无法自动启动验证目标应用）"
+            return False, False, "应用不可达且未配置验证契约 serve / commands.start（无法自动启动验证目标应用）"
 
-        base_port = None
-        pm = re.search(r"(?:--port|-p)\s+(\d+)", start_cmd)
-        if pm:
-            base_port = int(pm.group(1))
+        base_port = serve_port_hint
+        if base_port is None:
+            pm = re.search(r"(?:--port|-p)\s+(\d+)", start_cmd)
+            if pm:
+                base_port = int(pm.group(1))
 
         self._pm.logger.warning(
             "pm_engine",

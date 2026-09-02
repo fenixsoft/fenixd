@@ -140,6 +140,15 @@ gates:
   # auto 模式下 SPEC 到达 done 后 daemon 会自动 git push 并推进到 pushed 状态
   approve_mode: "manual"
 
+# ---- Verify Contract ----
+verify:
+  # static 验证契约（.fenix/verify.yaml）的服务范围：
+  #   main（默认，方案 1）— 在主树构建并起被测实例；实现合并后产物必然新鲜
+  #   worktree（方案 2）— 在专用 serving worktree 内构建并起服务，隔离主树
+  #     运行实例（每次 HEAD 变化自动重建 worktree 与产物，node_modules 自动
+  #     从主树链入；详见 core/verify_contract.py 模块文档）
+  static_scope: "main"
+
 # ---- Push Ref Hygiene (fix-push-ref-lifecycle) ----
 # done→pushed 的推送生命周期治理：
 #   - main 优先推送（git push origin main）为成功判据，feature 分支尽力推送（留痕）

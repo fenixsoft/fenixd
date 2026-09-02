@@ -478,12 +478,19 @@ export interface GatesConfig {
   approve_mode?: 'manual' | 'auto';
 }
 
+export interface VerifyConfig {
+  /** static 验证契约的服务范围：main=主树（方案 1，默认）| worktree=验证 worktree（方案 2） */
+  static_scope?: 'main' | 'worktree';
+}
+
 export interface ConfigData {
   llm: LlmConfig;
   agents: AgentsConfig;
   gates: GatesConfig;
   /** 其他分类：runs.keep = 运行产物保留数（超出移入 .fenix/runs/archive） */
   runs?: { keep: number };
+  /** 验证契约：详见 .fenix/verify.yaml 与 core/verify_contract.py */
+  verify?: VerifyConfig;
   scope: 'user' | 'project';
   raw_exists: boolean;
   sources: Record<string, string>;

@@ -35,3 +35,6 @@ PROJECT_LOG.md
 .STATE.md.lock
 .fenix-run-result.json
 .coverage
+
+# 验证契约 worktree 服务范围的临时 serving worktree（verify-contract 自管理）
+verify-serving/
