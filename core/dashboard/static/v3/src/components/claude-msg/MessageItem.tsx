@@ -54,7 +54,7 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
   return (
     <div
       className={`chat-message ${message.type} ${isGrouped ? 'grouped' : ''} ${
-        message.type === 'user' ? 'flex justify-end px-3 sm:px-0' : 'px-3 sm:px-0'
+        message.type === 'user' ? 'flex justify-end px-1 sm:px-0' : 'px-1 sm:px-0'
       }`}
     >
       {message.type === 'user' ? (
@@ -112,7 +112,7 @@ const MessageItem = memo(({ message, prevMessage, showThinking = false }: Messag
                   <ClaudeLogo className="h-full w-full" />
                 </div>
               )}
-              <div className="text-sm font-medium text-foreground">
+              <div className="whitespace-nowrap text-sm font-medium text-foreground">
                 {message.type === 'error'
                   ? '错误'
                   : message.type === 'tool'

@@ -1,6 +1,7 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { Card, Menu, Select, Space, Typography, message } from 'antd';
 import { useEffect, useState } from 'react';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { getConfig, getOverview, saveConfig } from '@/services/dashboard';
 import type { ConfigData, OverviewData } from '@/services/dashboard';
 import LlmProviderPanel from './components/LlmProviderPanel';
@@ -30,6 +31,7 @@ function decodeScopeValue(value: string): { scope: 'user' | 'project'; project?:
 }
 
 export default function SettingsPage() {
+  const isMobile = useIsMobile();
   const [activeKey, setActiveKey] = useState('llm');
   const [scope, setScope] = useState<'user' | 'project'>('user');
   const [project, setProject] = useState<string | undefined>(undefined);
@@ -109,19 +111,42 @@ export default function SettingsPage() {
       }}
     >
       <Card bordered={false} className="settings-page">
-        <div style={{ display: 'flex', minHeight: 500 }}>
+        {/* 移动端菜单置顶横排，面板全宽；桌面保持左竖菜单布局不变 */}
+        <div
+          style={
+            isMobile
+              ? { display: 'flex', flexDirection: 'column' }
+              : { display: 'flex', minHeight: 500 }
+          }
+        >
           {/* 左侧菜单 */}
-          <div style={{ width: 224, borderRight: '1px solid #f0f0f0' }}>
+          <div
+            style={
+              isMobile
+                ? { borderBottom: '1px solid #f0f0f0' }
+                : { width: 224, borderRight: '1px solid #f0f0f0' }
+            }
+          >
             <Menu
-              mode="inline"
+              mode={isMobile ? 'horizontal' : 'inline'}
               selectedKeys={[activeKey]}
               onClick={({ key }) => setActiveKey(key)}
               items={MENU_ITEMS}
-              style={{ height: '100%', borderRight: 0 }}
+              style={
+                isMobile
+                  ? { borderBottom: 0, overflowX: 'auto' }
+                  : { height: '100%', borderRight: 0 }
+              }
             />
           </div>
           {/* 右侧面板 */}
-          <div style={{ flex: 1, padding: 24, marginTop: -30 }}>
+          <div
+            style={
+              isMobile
+                ? { flex: 1, minWidth: 0, padding: '12px 16px 24px' }
+                : { flex: 1, padding: 24, marginTop: -30 }
+            }
+          >
             {loading && <div>加载中...</div>}
             {!loading && config && (
               <>

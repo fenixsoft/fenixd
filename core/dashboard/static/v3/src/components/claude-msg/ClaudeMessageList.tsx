@@ -75,7 +75,7 @@ function ClaudeMessageList({ messages, showThinking = false }: ClaudeMessageList
       onScroll={handleScroll}
       className="claude-msg-pane relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden pt-3 pb-3"
     >
-      <div className="w-full space-y-3 px-4 sm:space-y-4">
+      <div className="w-full space-y-3 px-2 sm:px-4 sm:space-y-4">
         {messages.length === 0 ? (
           <div className="mt-8 text-center text-gray-500">
             <p className="text-sm">暂无消息</p>
