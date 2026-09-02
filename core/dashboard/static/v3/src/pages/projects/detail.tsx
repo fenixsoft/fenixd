@@ -150,6 +150,7 @@ export default function SpecDetailPage() {
   const [docModalOpen, setDocModalOpen] = useState(false);
   // SPEC 下拉快速切换：项目下所有 SPEC 列表（复用列表页 getSpecs，失败静默为空）
   const [specList, setSpecList] = useState<SpecSummary[]>([]);
+  const [switchOpen, setSwitchOpen] = useState(false);
   const [recordRunId, setRecordRunId] = useState<string | null>(null);
   // 文档弹窗打开时定位的页签（时间轴报告链接 → 验证报告；项目信息「文档」→ 需求背景）
   const [docInitial, setDocInitial] = useState<DocType>('proposal');
@@ -303,7 +304,10 @@ export default function SpecDetailPage() {
             <div
               key={s.name}
               className="spec-quick-switch-row"
-              onClick={() => history.push(`/projects/${name}/${s.name}`)}
+              onClick={() => {
+                setSwitchOpen(false);
+                history.push(`/projects/${name}/${s.name}`);
+              }}
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -339,18 +343,13 @@ export default function SpecDetailPage() {
     title: (
       <Space size={8} align="baseline">
         <span>{spec}</span>
-        {/* add-fast-track-mode（task 7.2）：执行模式标记——fast-track 单 run 全包，
-            其余（含存量无 mode 字段的 spec）统一展示「完整模式」，可辨识两条路径 */}
-        <Tag color={detail?.mode === 'fast-track' ? 'cyan' : 'default'} style={{ marginInlineEnd: 0 }}>
-          {detail?.mode === 'fast-track' ? 'fast-track' : '完整模式'}
-        </Tag>
         {detail?.status && (
           <Tag color={statusInfo.tone === 'good' ? 'success' : statusInfo.tone === 'critical' ? 'error' : 'processing'}>
             {statusInfo.label}
           </Tag>
         )}
         {otherSpecs.length > 0 && (
-          <Dropdown trigger={['click']} placement="bottomLeft" popupRender={renderSpecSwitch}>
+          <Dropdown trigger={['click']} placement="bottomLeft" popupRender={renderSpecSwitch} open={switchOpen} onOpenChange={setSwitchOpen}>
             <Button
               type="text"
               size="small"
