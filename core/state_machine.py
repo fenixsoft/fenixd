@@ -139,7 +139,8 @@ class StateParser:
                         value = int(value)
                     except ValueError:
                         value = 999
-                elif key in ("implementer_run", "tester_run", "branch", "error"):
+                elif key in ("implementer_run", "tester_run", "branch", "error",
+                             "total_duration"):
                     if value.lower() in ("null", "none", ""):
                         value = None
 
@@ -178,7 +179,7 @@ class StateParser:
             lines.append(f"### {name}")
             for key in ["status", "priority", "created", "updated",
                          "implementer_run", "tester_run", "branch", "error",
-                         "depends_on"]:
+                         "depends_on", "total_duration"]:
                 val = entry.get(key, "null")
                 if val is None:
                     val = "null"

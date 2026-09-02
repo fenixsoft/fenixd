@@ -17,8 +17,8 @@
 
 ## 1. 序列化白名单与状态机侧
 
-- [ ] 1.1 `core/state_machine.py` `StateParser.serialize` 固定字段列表追加 `"total_duration"`（置于 `"depends_on"` 之后），确认含该字段的条目在 `write_all` 往返后字段不丢（design D3）
-- [ ] 1.2 `tests/test_core.py` 增加序列化往返测试：含 `total_duration: 150` 的条目经 `serialize`/`parse` 往返后字段值保持；不含该字段的条目序列化为 `- total_duration: null`
+- [x] 1.1 `core/state_machine.py` `StateParser.serialize` 固定字段列表追加 `"total_duration"`（置于 `"depends_on"` 之后），确认含该字段的条目在 `write_all` 往返后字段不丢（design D3）
+- [x] 1.2 `tests/test_core.py` 增加序列化往返测试：含 `total_duration: 150` 的条目经 `serialize`/`parse` 往返后字段值保持；不含该字段的条目序列化为 `- total_duration: null`
 
 ## 2. done 转换写入耗时
 

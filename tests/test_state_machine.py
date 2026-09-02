@@ -110,6 +110,47 @@ class TestStateParser(unittest.TestCase):
         self.assertEqual(parsed["test-spec"]["priority"], 3)
 
 
+class TestStateParserTotalDuration(unittest.TestCase):
+    """add-done-duration-persist 1.2：total_duration 序列化白名单往返。"""
+
+    def test_roundtrip_preserves_total_duration(self):
+        """含 total_duration 的条目经 serialize/parse 往返后字段值保持。"""
+        specs = {
+            "spec-with-duration": {
+                "status": "done",
+                "priority": 1,
+                "created": "2026-01-01T00:00:00Z",
+                "updated": "2026-01-01T00:00:00Z",
+                "implementer_run": None,
+                "tester_run": None,
+                "branch": None,
+                "error": None,
+                "depends_on": None,
+                "total_duration": 150,
+            }
+        }
+        serialized = StateParser.serialize(specs)
+        self.assertIn("- total_duration: 150", serialized)
+        parsed = StateParser._parse_content(serialized)
+        self.assertIn("spec-with-duration", parsed)
+        self.assertEqual(str(parsed["spec-with-duration"]["total_duration"]), "150")
+
+    def test_missing_field_serialized_as_null(self):
+        """不含该字段的存量条目序列化为 `- total_duration: null`，与可空字段一致。"""
+        specs = {
+            "legacy-spec": {
+                "status": "pushed",
+                "priority": 1,
+                "created": "2026-01-01T00:00:00Z",
+                "updated": "2026-01-01T00:00:00Z",
+            }
+        }
+        serialized = StateParser.serialize(specs)
+        self.assertIn("- total_duration: null", serialized)
+        parsed = StateParser._parse_content(serialized)
+        self.assertIsNone(parsed["legacy-spec"]["total_duration"])
+
+
 class TestStateParserHalfWriteDefense(unittest.TestCase):
     """1.1 半写 STATE.md 读取防御——证实非法条目击穿扫描的点位并锁定防御契约。"""
 
