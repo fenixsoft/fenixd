@@ -7,6 +7,7 @@ SPEC 状态经门面回引 self._pm.state_machine（design D3 规则 3）；
 """
 
 from datetime import datetime, timezone
+import json
 import threading
 import time
 
@@ -290,6 +291,10 @@ class Dispatcher:
                         # 导致修复条目被永久静默跳过、链路停摆。入队点均在 run 终止后
                         # （打回处理器/零变更重试）且 _enqueue 按 (spec,type) 去重，无双派。
                         continue
+                    if atype == "fast-track" and status not in ("ready", "implementing"):
+                        # fast-track：ready 正常派发；implementing 允许 = 失败打回后的修复重派
+                        #（入队点均在 run 终止后，与 implementer 同语义，无双派）。
+                        continue
                     if atype == "verifier" and status != "implemented":
                         continue
                     if self._pm._dispatch_backoffed(spec):
@@ -329,6 +334,10 @@ class Dispatcher:
                         # 打回处置 _enqueue 时状态为 implementing，旧条件 status != "ready"
                         # 导致修复条目被永久静默跳过、链路停摆。入队点均在 run 终止后
                         # （打回处理器/零变更重试）且 _enqueue 按 (spec,type) 去重，无双派。
+                        continue
+                    if atype == "fast-track" and status not in ("ready", "implementing"):
+                        # fast-track：ready 正常派发；implementing 允许 = 失败打回后的修复重派
+                        #（入队点均在 run 终止后，与 implementer 同语义，无双派）。
                         continue
                     if atype == "verifier" and status != "implemented":
                         continue
@@ -403,6 +412,23 @@ class Dispatcher:
                 cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
                 if cur_status != "implementing":
                     self._pm.state_machine.transition(spec_name, "implementing")
+            elif agent_type == "fast-track":
+                # fast-track：与 implementer 同语义，派发即进入 implementing；
+                # 失败打回重派时状态已是 implementing，跳过同态转换。
+                if self._pm._check_impl_budget_exhausted(spec_name):
+                    with self._queue_lock:
+                        self._run_queue.insert(0, entry_to_dispatch)
+                        self._active_runs -= 1
+                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
+                        if cnt <= 0:
+                            self._active_priority_counts.pop(base_prio, None)
+                        else:
+                            self._active_priority_counts[base_prio] = cnt
+                        self._active_priorities.discard(base_prio)
+                    continue
+                cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
+                if cur_status != "implementing":
+                    self._pm.state_machine.transition(spec_name, "implementing")
             elif agent_type == "verifier":
                 self._pm.state_machine.transition(spec_name, "testing")
 
@@ -429,7 +455,14 @@ class Dispatcher:
         priority 参数用于 finally 中从 _active_priorities 移除对应档位。
         """
         try:
-            if agent_type == "implementer":
+            if agent_type == "fast-track":
+                # ── fast-track 单 run 全包：实现 → 场景设计 → 验证 → 判定 ──
+                # 预算与 worktree 语义与 implementer 一致（impl- run_id/分支前缀），
+                # 结果处理走 _run_fast_track_worker（守卫 + 硬校验 + 状态推进）。
+                self._pm._increment_impl_run_budget_used(spec_name)
+                self._run_fast_track_worker(spec_name)
+
+            elif agent_type == "implementer":
                 # add-fail-counter-budget D2：实现 run 启动即递增预算计数并持久化
                 # （跨重启有效）。已启动的 run 即使随后触发预算闸门也会照常跑完 merge
                 # （沉没成本不浪费），闸门只阻止「新一轮」自动重派。
@@ -804,7 +837,7 @@ class Dispatcher:
                     f"Rolled back '{spec_name}' testing → implemented (verifier never started): {exc}",
                 )
                 self._pm._enqueue(spec_name, "verifier")
-            elif agent_type == "implementer" and status == "implementing":
+            elif agent_type in ("implementer", "fast-track") and status == "implementing":
                 # 死亡 run 豁免（fix-budget-counting-semantics D1）：异常路径＝
                 # run 无收工结果产出（进程消失/零输出/网关链路耗尽），回退本次
                 # 启动的预算计数。计数在 worker 启动处先行递增，此处补偿回退。
@@ -822,9 +855,10 @@ class Dispatcher:
                 })
                 self._pm.logger.warning(
                     "pm_engine",
-                    f"Rolled back '{spec_name}' implementing → ready (implementer never started): {exc}",
+                    f"Rolled back '{spec_name}' implementing → ready "
+                    f"({agent_type} never started): {exc}",
                 )
-                self._pm._enqueue(spec_name, "implementer")
+                self._pm._enqueue(spec_name, agent_type)
         except Exception as e2:
             self._pm.logger.error("pm_engine", f"State rollback failed for '{spec_name}': {e2}")
 
@@ -853,3 +887,346 @@ class Dispatcher:
             "pm_engine",
             f"'{spec_name}' {msg} —— stash 保留，可用 git stash show 找回被丢弃改动",
         )
+
+    # ── fast-track 单 run 全包 worker（add-fast-track-mode D1/D4/D5/D6）──
+
+    def _run_fast_track_worker(self, spec_name: str) -> None:
+        """处理 fast-track 单 run 结果：守卫 → 硬校验 → 状态推进。
+
+        在 _run_agent_worker 的 fast-track 分支被同步调用（同线程，预算已递增）。
+        完整路径：ensure_spec_committed → run_fast_track → guards → merge →
+        hard-check → state advance；任一步骤失败按失败重派（与 implementer 同语义）。
+        """
+        wm = self._pm.agent_runner.worktree_manager
+        try:
+            wm.ensure_spec_committed(spec_name)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track ensure_spec_committed 失败 '{spec_name}': {e}（非阻塞）",
+            )
+
+        try:
+            result = self._pm.agent_runner.run_fast_track(spec_name)
+        except Exception as e:
+            self._pm._rollback_failed_dispatch(spec_name, "fast-track", e)
+            return
+
+        # ── 读取结果文件（fast-track 结果文件是强制的，缺文件 = 失败） ──
+        ft_result = self._pm._read_implementer_result(spec_name)
+        if ft_result is None:
+            self._handle_fast_track_failure(
+                spec_name, result,
+                "fast-track 结果文件缺失（fail-closed，不推进）",
+            )
+            return
+        if not result.success or ft_result.get("status") != "success":
+            self._handle_fast_track_failure(
+                spec_name, result,
+                ft_result.get("error") or result.error or "fast-track run failed",
+            )
+            return
+
+        # ── 零变更成功哨 ──
+        if self._pm._implementer_zero_change(spec_name, result):
+            self._handle_fast_track_zero_change(spec_name, result)
+            return
+
+        # ── 交付物守卫 ──
+        missing = self._pm._deliverable_gate_missing(spec_name, result)
+        if missing:
+            self._handle_fast_track_deliverable_gate(spec_name, result, missing)
+            return
+
+        # ── 硬校验（merge 前执行，失败则不合并、按失败重派） ──
+        verification = self._hard_check_fast_track(spec_name, ft_result)
+        if verification is None:
+            return  # _hard_check 已设 error + enqueue
+
+        # ── 校验全通过：merge → 状态推进 ──
+        self._reconcile_and_merge(spec_name, result)
+
+        if verification.get("verdict") == "bug-found":
+            self._escalate_to_full_mode(spec_name, result, verification)
+            return
+
+        # ── verified → implemented → testing → verified → _on_spec_verified ──
+        self._fast_track_advance_to_verified(spec_name, result)
+
+    def _reconcile_and_merge(self, spec_name: str, result) -> None:
+        """预算对账 + merge（fast-track 与 implementer 成功路径同语义）。"""
+        self._pm._reconcile_impl_budget(spec_name)
+        wm = self._pm.agent_runner.worktree_manager
+        branch = result.branch
+        if branch:
+            merge_ok, merge_error = wm.merge_back_from_branch(branch)
+            if not merge_ok:
+                spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+                max_r = self._pm._get_config("agents.max_retries", 3)
+                fp = self._pm._merge_fingerprint(merge_error)
+                prev_fp = spec_entry.get("_merge_fp")
+                try:
+                    prev_streak = int(spec_entry.get("_merge_streak", 0) or 0)
+                except (TypeError, ValueError):
+                    prev_streak = 0
+                streak = prev_streak + 1 if prev_fp == fp else 1
+                breaker_threshold = self._pm._get_config(
+                    "agents.merge_breaker_threshold", 2)
+                final_error = f"Merge-back failed (fp={fp}): {merge_error}"
+                if streak >= breaker_threshold:
+                    self._pm.state_machine.transition(spec_name, "blocked")
+                    self._pm.state_machine.update_spec(spec_name, {
+                        "error": final_error,
+                        "_merge_fp": fp, "_merge_streak": streak, "_retry_count": 0,
+                    })
+                else:
+                    try:
+                        retries = int(spec_entry.get("_retry_count", 0) or 0) + 1
+                    except (TypeError, ValueError):
+                        retries = 1
+                    self._pm.state_machine.update_spec(spec_name, {
+                        "status": "ready", "error": final_error,
+                        "_merge_fp": fp, "_merge_streak": streak,
+                        "_retry_count": retries,
+                    })
+                    self._pm._enqueue_front(spec_name, "fast-track")
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"fast-track merge-back failed '{spec_name}': {final_error}",
+                )
+                return
+        # merge 成功
+        self._pm.state_machine.transition(spec_name, "implemented")
+        self._pm.state_machine.update_spec(spec_name, {
+            "implementer_run": result.run_id,
+            "branch": result.branch, "error": None,
+            "_retry_count": 0, "_merge_fp": None, "_merge_streak": 0,
+            **self._pm._clear_dispatch_conflict(spec_name),
+        })
+        # 任务进度回写（与 implementer 成功路径一致，非阻塞）
+        try:
+            self._pm._sync_task_progress(spec_name)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track 任务进度回写失败 '{spec_name}'（非阻塞）: {e}",
+            )
+        try:
+            wm.consume_legacy(spec_name)
+        except Exception:
+            pass
+
+    def _hard_check_fast_track(self, spec_name: str, ft_result: dict):
+        """对 fast-track 结果做框架侧硬校验；失败记原因并按失败重派。
+
+        Returns:
+            规整后的验证段 dict（含 verdict/bugs/scenarios），校验失败返回 None。
+        """
+        from core.fast_track_result import parse_fast_track_verification
+        from core.verdict_check import validate_fast_track_result
+
+        verification = parse_fast_track_verification(ft_result or {})
+        if verification is None:
+            err = "fast-track 结果文件非法（verification 段缺失或结构不完整）"
+            self._pm.state_machine.update_spec(spec_name, {"error": err})
+            self._pm._enqueue_front(spec_name, "fast-track")
+            self._pm.logger.error(
+                "pm_engine", f"fast-track 硬校验失败 '{spec_name}': {err}",
+            )
+            return None
+
+        # 加载设计场景 ID（Phase 2 写入的 test_scenarios.json）
+        scenarios_path = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / "test_scenarios.json"
+        )
+        designed_ids: list = []
+        if scenarios_path.exists():
+            try:
+                sc_data = json.loads(scenarios_path.read_text(encoding="utf-8"))
+                if isinstance(sc_data, list):
+                    designed_ids = [
+                        s.get("id")
+                        for s in sc_data
+                        if isinstance(s, dict) and s.get("id")
+                    ]
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        check = validate_fast_track_result(ft_result, designed_ids or None)
+        if not check["ok"]:
+            violations_str = "；".join(check["violations"])
+            err = f"fast-track 硬校验失败（fail-closed）：{violations_str}"
+            self._pm.state_machine.update_spec(spec_name, {"error": err})
+            self._pm._enqueue_front(spec_name, "fast-track")
+            self._pm.logger.error(
+                "pm_engine",
+                f"fast-track 硬校验不通过 '{spec_name}': {violations_str}",
+            )
+            return None
+
+        return verification
+
+    def _fast_track_advance_to_verified(self, spec_name: str, result) -> None:
+        """fast-track 硬校验通过 + verdict=verified：implemented → testing → verified。"""
+        self._pm.state_machine.transition(spec_name, "testing")
+        self._pm.state_machine.transition(spec_name, "verified")
+        self._pm.state_machine.update_spec(spec_name, {
+            "tester_run": result.run_id,
+            "error": None,
+            "_inconclusive_attempts": 0,
+            "_verify_fail_rounds": 0,
+        })
+        self._pm.logger.info(
+            "pm_engine",
+            f"fast-track verified: '{spec_name}' → 推进 verified",
+        )
+        self._pm._on_spec_verified(spec_name)
+
+    def _escalate_to_full_mode(
+        self, spec_name: str, result, verification: dict,
+    ) -> None:
+        """fast-track verdict=bug-found 时升级为完整模式（add-fast-track-mode D5）。
+
+        - mode 改写为 full（同步 .openspec.yaml）
+        - spec 保持 implemented，派发完整模式 verifier 流水线
+        - 升级原因写入 spec entry error 字段
+        - 保留已有实现成果，不丢回 ready 重跑 implementer
+        """
+        import yaml as _yaml
+        # 1. .openspec.yaml 写 mode: full
+        yaml_path = (
+            self._pm.project_root / "openspec" / "changes"
+            / spec_name / ".openspec.yaml"
+        )
+        try:
+            if yaml_path.is_file():
+                data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data.get("mode") == "fast-track":
+                    data["mode"] = "full"
+                    yaml_path.write_text(
+                        _yaml.safe_dump(data, default_flow_style=False,
+                                        sort_keys=False),
+                        encoding="utf-8",
+                    )
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"fast-track 升级: .openspec.yaml mode → full "
+                        f"for '{spec_name}'",
+                    )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track 升级 .openspec.yaml 失败（非阻塞） '{spec_name}': {e}",
+            )
+        # 2. 记录升级原因
+        bugs_summary = "; ".join(
+            b.get("description", "")[:80]
+            for b in (verification.get("bugs") or [])
+            if isinstance(b, dict)
+        ) or "fast-track 判定 bug-found"
+        self._pm.state_machine.update_spec(spec_name, {
+            "error": f"fast-track 升级完整模式：{bugs_summary[:200]}",
+        })
+        # 3. 派发完整模式 verifier 流水线
+        self._pm._enqueue(spec_name, "verifier")
+        self._pm.logger.warning(
+            "pm_engine",
+            f"fast-track 升级完整模式 '{spec_name}'：verdict=bug-found，"
+            f"实现保留，完整模式 verifier 流水线接管",
+        )
+
+    def _handle_fast_track_failure(
+        self, spec_name: str, result, final_error: str,
+    ) -> None:
+        """fast-track run 失败处理：与 implementer 同语义（重派/重试计数/blocked）。"""
+        # 死亡 run 豁免（无收工结果 = run 异常死亡）
+        impl_status = None
+        try:
+            ft_result = self._pm._read_implementer_result(spec_name)
+            impl_status = ft_result.get("status") if ft_result else None
+        except Exception:
+            pass
+        if impl_status is None:
+            self._pm._exempt_dead_run_budget(
+                spec_name,
+                f"fast-track no run-result (error={str(final_error)[:80]})",
+            )
+        # provider 熔断拦截
+        if final_error and "provider circuit open" in final_error:
+            self._pm.state_machine.update_spec(spec_name, {"error": final_error})
+            return
+        # 重试
+        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        try:
+            prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
+        except (TypeError, ValueError):
+            prev_retries = 0
+        retries = prev_retries + 1
+        max_r = self._pm._get_config("agents.max_retries", 3)
+        if retries >= max_r:
+            self._pm.state_machine.update_spec(spec_name, {
+                "status": "ready", "error": final_error, "_retry_count": 0,
+            })
+            self._pm.logger.error(
+                "pm_engine", f"fast-track all retries exhausted '{spec_name}'",
+            )
+            self._pm._enqueue(spec_name, "fast-track")
+        else:
+            self._pm.state_machine.update_spec(spec_name, {
+                "status": "ready", "error": final_error, "_retry_count": retries,
+            })
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track retry {retries}/{max_r} '{spec_name}'",
+            )
+
+    def _handle_fast_track_zero_change(self, spec_name: str, result) -> None:
+        """fast-track 零变更哨处理：与 implementer 同逻辑。"""
+        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        attempts = 0
+        try:
+            attempts = int(spec_entry.get("_zero_change_attempts", 0) or 0) + 1
+        except (TypeError, ValueError):
+            attempts = 1
+        dirty = list(getattr(result, "worktree_dirty", None) or [])
+        if dirty:
+            err_note = (f"fast-track 宣称成功但零提交，worktree 有 "
+                        f"{len(dirty)} 个未提交修改——重派时务必 commit 后再报完成")
+        else:
+            err_note = ("fast-track 零变更报成功（疑似空转）— "
+                        "不合并不推进，重派")
+        updates: dict = {
+            "status": "ready", "error": err_note + f"（第 {attempts} 次）",
+            "_zero_change_attempts": attempts,
+        }
+        if attempts >= 3:
+            updates["status"] = "blocked"
+            updates["error"] = ("fast-track 连续 3 次零变更报成功 — blocked，需人工检查")
+        self._pm.state_machine.update_spec(spec_name, updates)
+        if attempts < 3:
+            self._pm._enqueue_front(spec_name, "fast-track")
+
+    def _handle_fast_track_deliverable_gate(
+        self, spec_name: str, result, missing: list,
+    ) -> None:
+        """fast-track 交付物守卫触发：缺件重派，3 次封顶。"""
+        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        try:
+            retries = int(spec_entry.get("_retry_count", 0) or 0) + 1
+        except (TypeError, ValueError):
+            retries = 1
+        max_r = self._pm._get_config("agents.max_retries", 3)
+        missing_q = "、".join(missing)
+        err_note = f"fast-track 交付物守卫：缺件 [{missing_q}] — 重派补齐（第 {retries} 次）"
+        updates: dict = {
+            "status": "ready", "error": err_note, "_retry_count": retries,
+        }
+        if retries >= max_r:
+            updates["status"] = "blocked"
+            updates["error"] = (
+                f"fast-track 交付物守卫连续 {max_r} 次缺件 [{missing_q}] — blocked"
+            )
+        self._pm.state_machine.update_spec(spec_name, updates)
+        if updates["status"] != "blocked":
+            self._pm._enqueue_front(spec_name, "fast-track")

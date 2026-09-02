@@ -14,10 +14,10 @@
 
 ## 3. daemon 派发分支与护栏适配
 
-- [ ] 3.1 PMEngine/dispatch 增加 fast-track 分支：ready 后派单 run，不派 planner/verifier，状态沿现有转换图推进
-- [ ] 3.2 零变更哨与交付物守卫适配 fast-track run（run 内守卫语义，阻断行为与完整模式一致）
-- [ ] 3.3 fail 预算与 token 预算接线：run 内修复轮次计入预算
-- [ ] 3.4 结果文件驱动状态推进：硬校验通过 → `implemented → testing → verified`；缺失/非法/校验失败 → 重派并累计计数
+- [x] 3.1 PMEngine/dispatch 增加 fast-track 分支：ready 后派单 run，不派 planner/verifier，状态沿现有转换图推进
+- [x] 3.2 零变更哨与交付物守卫适配 fast-track run（run 内守卫语义，阻断行为与完整模式一致）
+- [x] 3.3 fail 预算与 token 预算接线：run 内修复轮次计入预算
+- [x] 3.4 结果文件驱动状态推进：硬校验通过 → `implemented → testing → verified`；缺失/非法/校验失败 → 重派并累计计数
 
 ## 4. 框架侧硬校验
 
@@ -26,9 +26,9 @@
 
 ## 5. bug run 内修复与超预算升级
 
-- [ ] 5.1 run 内修复重验流程：fast-track run 验证发现 bug 时同上下文修复重验，轮次计入 fix 预算
-- [ ] 5.2 超预算升级：mode 改写 full（同步 `.openspec.yaml`）、保留分支成果、spec 置 implemented、派发完整模式 verifier 流水线、升级原因写入 spec entry
-- [ ] 5.3 升级路径单测：预算耗尽 → 不回 ready 重跑 implementer、成果不丢失
+- [x] 5.1 run 内修复重验流程：fast-track run 验证发现 bug 时同上下文修复重验，轮次计入 fix 预算
+- [x] 5.2 超预算升级：mode 改写 full（同步 `.openspec.yaml`）、保留分支成果、spec 置 implemented、派发完整模式 verifier 流水线、升级原因写入 spec entry
+- [x] 5.3 升级路径单测：预算耗尽 → 不回 ready 重跑 implementer、成果不丢失
 
 ## 6. fenix-new 模式选择
 
