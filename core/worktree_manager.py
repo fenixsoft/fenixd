@@ -7,11 +7,28 @@ Ensures parallel Agents don't conflict.
 
 import os
 import shutil
+import signal
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Optional, Set, Dict
+
+
+def _is_claude_process(pid_str: str) -> bool:
+    """进程 argv[0] 是否为 claude agent 可执行文件（basename claude / claude.exe）。
+
+    存活判定与残留清扫都以「agent 进程」为锚：implementer 起的测试子进程
+    （v2 dev-server 等）cmdline 同样携带 worktree 路径，若按路径匹配会把
+    agent 退出后的永生孤儿误判为持锁者（add-fast-track-mode 派发死锁，
+    2026-09-02）。
+    """
+    try:
+        with open(f"/proc/{pid_str}/cmdline", "rb") as f:
+            argv0 = f.read().split(b"\0", 1)[0]
+        return os.path.basename(argv0.decode("utf-8", "replace")) in ("claude", "claude.exe")
+    except (OSError, IndexError):
+        return False
 
 # ── 锁治理（improve-run-lifecycle-governance D4）─────────────────────────────
 # 锁是内存集合 _spec_locks，daemon 重启即丢失；同时 attempt/resume 的孤儿子进程
@@ -30,6 +47,12 @@ PROCESS_SCAN_CACHE_SECONDS = 5.0
 # pre-dispatch autostash 条目的消息前缀（fix-autostash-orphans）：周期巡检按此
 # 识别「框架自己 stash 的条目」——人工手工 stash 的条目不带此前缀，永不自动回收。
 AUTOSTASH_MSG_PREFIX = "fenix: pre-dispatch autostash"
+
+# 构建产物目录（相对项目根）：merge-back 冲突自愈的作用域。实现分支各自重建
+# dist，内容哈希文件名跨分支必然 rename/delete 打架（非语义冲突）；全部冲突
+# 落在这些前缀下时整目录对齐实现分支版本并完成 merge（add-v3-spec-quick-switch
+# 4 次重试耗尽事故的根因之一）。
+BUILD_ARTIFACT_PREFIXES = ("core/dashboard/static/v3/dist/",)
 
 
 class WorktreeManager:
@@ -441,6 +464,10 @@ class WorktreeManager:
                 except Exception:
                     pass
 
+            # 收工清扫：agent 已退出，先杀掉其残留测试子进程（dev-server 孤儿），
+            # 否则目录删除后它们成为 cwd 失效的永生孤儿（曾致存活检测永久受骗）
+            self._kill_worktree_strays(wt_path.name)
+
             # Build command without empty strings
             cmd = [
                 "git", "-C", str(self.project_root),
@@ -847,11 +874,13 @@ class WorktreeManager:
         return alive
 
     def _pgrep_spec_process(self, spec_name: str) -> bool:
-        """pgrep 匹配 cmdline 含 ``worktrees/{impl,verify}-<spec>-`` 的进程。
+        """pgrep 匹配 cmdline 含 ``worktrees/{impl,verify}-<spec>-`` 的 agent 进程。
 
         匹配串锚定 worktree 目录字面量（<prefix>-<spec>-<ts>），不匹配裸 spec 名，
-        防止把无关进程当成持锁者。pgrep 不可用/超时时返回 False（调用方以
-        run 流新鲜度做二次确认）。
+        防止把无关进程当成持锁者；命中后还须经 ``_is_claude_process`` 确认程序为
+        claude——测试子进程（dev-server 等）的 cmdline 同样含路径，agent 退出后
+        成为永生孤儿，按路径匹配会把锁永久骗走。pgrep 不可用/超时时返回 False
+        （调用方以 run 流新鲜度做二次确认）。
         """
         for prefix in ("impl", "verify"):
             pattern = f"worktrees/{prefix}-{spec_name}-"
@@ -863,7 +892,8 @@ class WorktreeManager:
             except (subprocess.SubprocessError, OSError):
                 return False
             if res.returncode == 0 and res.stdout.strip():
-                return True
+                if any(_is_claude_process(p) for p in res.stdout.split()):
+                    return True
         return False
 
     def _latest_stream_mtime(self, spec_name: str) -> Optional[float]:
@@ -889,10 +919,11 @@ class WorktreeManager:
         return newest
 
     def _worktree_has_live_process(self, wt_name: str) -> bool:
-        """进程表中是否存在 cmdline 引用该 worktree 目录的进程（启动清理用）。
+        """进程表中是否存在引用该 worktree 目录的 agent 进程（启动清理用）。
 
         与 _pgrep_spec_process 不同：这里按完整 worktree 目录名匹配，不经过
-        缓存（启动时一次性调用，结果必须实时）。
+        缓存（启动时一次性调用，结果必须实时）；命中后同样以 claude 进程
+        为锚——仅剩 dev-server 孤儿的 worktree 应被判定为无主并进入清理。
         """
         pattern = f"worktrees/{wt_name}"
         try:
@@ -900,9 +931,49 @@ class WorktreeManager:
                 ["pgrep", "-f", pattern],
                 capture_output=True, text=True, timeout=5,
             )
-            return res.returncode == 0 and res.stdout.strip() != ""
         except (subprocess.SubprocessError, OSError):
             return False
+        return res.returncode == 0 and any(
+            _is_claude_process(p) for p in res.stdout.split()
+        )
+
+    def _kill_worktree_strays(self, wt_name: str) -> list:
+        """杀掉 cmdline 引用该 worktree 的非 agent 残留进程，返回被杀 PID。
+
+        agent 收工后其测试子进程（v2 dev-server 等）可能残留为 PPID=1 孤儿：
+        cmdline 仍含 worktree 路径且永不退出，既让 worktree 目录删不干净，
+        也曾借存活检测把派发锁永久骗走。claude agent 进程不在清扫范围
+        （防误杀在跑的 attempt）；pgrep 不可用时静默返回空。
+        """
+        killed = []
+        try:
+            res = subprocess.run(
+                ["pgrep", "-f", f"worktrees/{wt_name}"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return killed
+        if res.returncode != 0:
+            return killed
+        me = os.getpid()
+        for pid_str in res.stdout.split():
+            try:
+                pid = int(pid_str)
+            except ValueError:
+                continue
+            if pid == me or _is_claude_process(pid_str):
+                continue
+            try:
+                os.kill(pid, signal.SIGTERM)
+                killed.append(pid)
+            except OSError:
+                continue
+        if killed:
+            self.logger.warning(
+                "worktree_manager",
+                f"Killed stray worktree processes for '{wt_name}': {killed}",
+            )
+        return killed
 
     @staticmethod
     def _spec_from_worktree_name(wt_name: str) -> Optional[str]:
@@ -1213,6 +1284,9 @@ class WorktreeManager:
                     )
                     continue
             self.logger.info("worktree_manager", f"Cleaning up stale worktree: {wt_dir}")
+            # 无 agent 存活才走到这里：一并清掉残留测试子进程（dev-server 孤儿），
+            # 避免删目录后留下 cwd 失效的永生进程
+            self._kill_worktree_strays(wt_dir.name)
             try:
                 branch = None
                 br = subprocess.run(
@@ -1318,6 +1392,13 @@ class WorktreeManager:
                          "-m", f"[fenix] merge implementer branch {branch}"],
                         capture_output=True, text=True, timeout=120,
                     )
+                elif blockers and self._discard_identical_local_changes(blockers, branch):
+                    result = subprocess.run(
+                        ["git", "-C", str(self.project_root),
+                         "merge", "--no-ff", branch,
+                         "-m", f"[fenix] merge implementer branch {branch}"],
+                        capture_output=True, text=True, timeout=120,
+                    )
             if result.returncode == 0:
                 self._drop_backup(backup)
                 # merge 成功后把随分支带回 tracked 的 ignored 草稿移出（防撞车循环重启）
@@ -1346,6 +1427,19 @@ class WorktreeManager:
                     f"for branch '{branch}'",
                 )
                 return True, ""
+            # 构建产物冲突自愈（add-v3-spec-quick-switch / add-project-description
+            # 事故治理）：实现分支各自重建 dist，内容哈希文件名跨分支必然
+            # rename/delete 打架——这不是语义冲突。全部冲突路径位于构建产物目录时，
+            # dist 整目录对齐实现分支版本（含本 spec 功能构建）并完成 merge；
+            # dist 与合并后 src 的最终一致性由后续"merge 后从 src 重建"刷新。
+            if self._resolve_build_artifact_conflicts(branch):
+                self._drop_backup(backup)
+                self.logger.info(
+                    "worktree_manager",
+                    f"Merge conflict self-healed (build artifacts aligned to "
+                    f"branch) for branch '{branch}'",
+                )
+                return True, ""
             # Abort the merge so main tree is left clean for retry
             subprocess.run(
                 ["git", "-C", str(self.project_root), "merge", "--abort"],
@@ -1359,6 +1453,121 @@ class WorktreeManager:
             return False, "git merge timed out after 120s"
         except Exception as e:
             return False, str(e)
+
+    def _resolve_build_artifact_conflicts(self, branch: str) -> bool:
+        """merge 冲突自愈：全部冲突路径位于构建产物目录时，对齐分支版并完成 merge。
+
+        仅分支模式调用（merge 冲突态中）。判定与解决：
+        1. ``git status --porcelain`` 收集 unmerged 条目（UU/AA/DU/UD/AU/UA/DD，
+           rename 形如 ``old -> new`` 时两侧路径都计入）；
+        2. 存在任一非构建产物前缀的冲突路径 → 返回 False（语义冲突不自愈）；
+        3. 无冲突 → False（merge 失败另有原因，交回调用方处理）；
+        4. 全部为产物冲突 → ``git checkout <branch> -- <产物目录>`` 对齐分支版，
+           分支侧已删除的路径 ``git rm`` 对齐删除，``git commit --no-edit`` 完成
+           原 merge；任一步失败则 abort 返回 False。
+
+        Returns: True 表示自愈完成且 merge 已提交。
+        """
+        if not branch:
+            return False
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(self.project_root), "status", "--porcelain"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if res.returncode != 0:
+                return False
+            conflict_paths: list = []
+            for line in res.stdout.splitlines():
+                st = line[:2]
+                if not ("U" in st or st in ("AA", "DD", "AU", "UA", "DU", "UD")):
+                    continue
+                path = line[3:].strip()
+                if " -> " in path:
+                    conflict_paths.extend(
+                        p.strip() for p in path.split(" -> "))
+                else:
+                    conflict_paths.append(path)
+            conflict_paths = [p for p in conflict_paths if p]
+            if not conflict_paths:
+                return False
+            if not any(p.startswith(BUILD_ARTIFACT_PREFIXES)
+                       for p in conflict_paths):
+                return False
+            non_artifact = [p for p in conflict_paths
+                            if not p.startswith(BUILD_ARTIFACT_PREFIXES)]
+            if non_artifact:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Build-artifact self-heal skipped: non-artifact conflicts "
+                    f"{non_artifact[:5]}",
+                )
+                return False
+
+            # 分支侧文件集合：对齐覆盖 + 对齐删除的依据
+            ls = subprocess.run(
+                ["git", "-C", str(self.project_root), "ls-tree", "-r",
+                 "--name-only", branch, *BUILD_ARTIFACT_PREFIXES],
+                capture_output=True, text=True, timeout=30,
+            )
+            branch_files = set(ls.stdout.split()) if ls.returncode == 0 else set()
+
+            # 1) 整目录对齐分支版（覆盖/新增分支侧存在的文件）
+            for prefix in BUILD_ARTIFACT_PREFIXES:
+                subprocess.run(
+                    ["git", "-C", str(self.project_root), "checkout", branch,
+                     "--", prefix],
+                    capture_output=True, text=True, timeout=60,
+                )
+            # 2) 分支侧已删除的冲突路径对齐删除
+            for p in conflict_paths:
+                if p not in branch_files:
+                    subprocess.run(
+                        ["git", "-C", str(self.project_root), "rm", "-f",
+                         "--ignore-unmatch", "--", p],
+                        capture_output=True, text=True, timeout=30,
+                    )
+            # 3) 收口 add + 完成原 merge
+            for prefix in BUILD_ARTIFACT_PREFIXES:
+                subprocess.run(
+                    ["git", "-C", str(self.project_root), "add", "--", prefix],
+                    capture_output=True, text=True, timeout=60,
+                )
+            commit = subprocess.run(
+                ["git", "-C", str(self.project_root), "commit", "--no-edit"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if commit.returncode != 0:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Build-artifact self-heal commit failed: "
+                    f"{(commit.stderr or '').strip()[:200]}",
+                )
+                subprocess.run(
+                    ["git", "-C", str(self.project_root), "merge", "--abort"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                return False
+            self.logger.warning(
+                "worktree_manager",
+                f"Build-artifact conflicts aligned to branch '{branch}' "
+                f"({len(conflict_paths)} paths) — rebuild dist from src to "
+                f"restore cross-spec consistency",
+            )
+            return True
+        except (subprocess.SubprocessError, OSError) as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Build-artifact self-heal error: {e}",
+            )
+            try:
+                subprocess.run(
+                    ["git", "-C", str(self.project_root), "merge", "--abort"],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except Exception:
+                pass
+            return False
 
     def _parse_merge_blockers(self, error: str) -> list:
         """从 git 的 'local changes would be overwritten by merge' 错误中解析路径。
@@ -1453,6 +1662,87 @@ class WorktreeManager:
             return True
         except (subprocess.TimeoutExpired, OSError):
             return False
+
+    def _discard_identical_local_changes(self, paths: list, branch: str) -> bool:
+        """把「主树未提交修改与分支内容字节级相同」的 tracked 冲突路径恢复干净。
+
+        第四次 merge-back 死锁变体（add-fast-track-mode fp=e7111ce3fea4，
+        2026-09-02）：主树遗留一份与 implementer 分支完全相同的已跟踪文件未提交
+        修改（实现副本污染），merge 需写该路径被 git 直接拒绝；而
+        _untrack_ignored_local_changes 只覆盖 ignored 草稿，真实 tracked 文件
+        走不到。内容与分支一致时丢弃主树副本零损失——同一内容随后经 merge
+        从分支回到主树。
+
+        保守策略：任一路径缺失、无法读取或内容与分支不一致，则不动任何文件
+        返回 False（可能是真实本地工作，交回失败路径人工裁决）。全部一致时
+        先备份到 .fenix/merge-backup/identical-<ts>/（不自动恢复：内容可从
+        分支取回，备份仅供审计），再 git checkout HEAD -- 恢复。
+
+        Returns: True 表示已全部恢复干净，可重试 merge。
+        """
+        if not paths:
+            return False
+        identical = []
+        try:
+            for path in paths:
+                wt_file = self.project_root / path
+                if not wt_file.is_file():
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Self-heal (identical) aborted: '{path}' missing in "
+                        f"main tree",
+                    )
+                    return False
+                show = subprocess.run(
+                    ["git", "-C", str(self.project_root),
+                     "show", f"{branch}:{path}"],
+                    capture_output=True, timeout=30,
+                )
+                if show.returncode != 0:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Self-heal (identical) aborted: '{path}' not readable "
+                        f"on branch '{branch}'",
+                    )
+                    return False
+                if wt_file.read_bytes() != show.stdout:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"Self-heal (identical) aborted: '{path}' differs from "
+                        f"branch content — possible real local work",
+                    )
+                    return False
+                identical.append(path)
+            backup = (self.project_root / ".fenix" / "merge-backup"
+                      / f"identical-{int(time.time())}")
+            for path in identical:
+                dest = backup / path
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(self.project_root / path, dest)
+            co = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "checkout", "HEAD", "--", *identical],
+                capture_output=True, text=True, timeout=30,
+            )
+            if co.returncode != 0:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Self-heal (identical): git checkout failed: "
+                    f"{(co.stderr or co.stdout).strip()}",
+                )
+                return False
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Self-heal (identical) failed: {e}",
+            )
+            return False
+        self.logger.info(
+            "worktree_manager",
+            f"Self-heal (identical): discarded main-tree copies identical to "
+            f"branch '{branch}' (backed up to {backup}): {', '.join(identical)}",
+        )
+        return True
 
     def _purge_ignored_brought_in(self, old_head: str) -> None:
         """merge 成功后把被 ignore 却随分支带回 tracked 的路径移出索引。

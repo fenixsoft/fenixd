@@ -247,3 +247,77 @@ class TestMergeUntrackedGuard:
         joined = "\n".join(warns)
         assert added_path in joined, f"warning 应含不一致路径 {added_path}: {joined}"
         assert str(backup) in joined, f"warning 应含备份位置 {backup}: {joined}"
+
+
+class TestBuildArtifactConflictSelfHeal:
+    """构建产物冲突自愈（add-v3-spec-quick-switch 4 次重试耗尽事故治理）。
+
+    实现分支各自重建 dist → 内容哈希文件名跨分支 rename/delete 打架，不是语义
+    冲突：全部冲突位于 dist/ 前缀时整目录对齐分支版并完成 merge；混入语义冲突
+    时不自愈、保持原失败路径。
+    """
+
+    DIST = "core/dashboard/static/v3/dist"
+
+    def _seed_dist(self, root: Path):
+        d = root / self.DIST
+        d.mkdir(parents=True)
+        (d / "umi.aaa.js").write_text("V1\n", encoding="utf-8")
+        (d / "keep.js").write_text("K\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] seed dist")
+
+    def test_dist_rename_rename_conflict_self_heals(self, tmp_path):
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._seed_dist(root)
+        base = git(root, "rev-parse", "HEAD").stdout.strip()
+        d = root / self.DIST
+
+        # 分支：umi.aaa.js → umi.bbb.js（分支侧重建）
+        git(root, "checkout", "-q", "-b", "fenix/impl")
+        git(root, "mv", f"{self.DIST}/umi.aaa.js", f"{self.DIST}/umi.bbb.js")
+        git(root, "commit", "-q", "-m", "[fenix] branch dist rebuild")
+        git(root, "checkout", "-q", base)
+
+        # 主树：umi.aaa.js → umi.ccc.js（另一分支合入后的重建）
+        git(root, "mv", f"{self.DIST}/umi.aaa.js", f"{self.DIST}/umi.ccc.js")
+        git(root, "commit", "-q", "-m", "[fenix] main dist rebuild")
+
+        wm = make_wm(root)
+        success, err = wm.merge_back_from_branch("fenix/impl")
+        assert success, f"dist 冲突应自愈，实际失败: {err}"
+
+        # dist 对齐分支版：bbb 在、aaa/ccc 不在；非冲突文件 keep.js 保留
+        assert (d / "umi.bbb.js").exists()
+        assert not (d / "umi.aaa.js").exists()
+        assert not (d / "umi.ccc.js").exists()
+        assert (d / "keep.js").read_text(encoding="utf-8") == "K\n"
+        # 工作区干净（merge 已提交）
+        assert git(root, "status", "--porcelain").stdout.strip() == ""
+
+    def test_mixed_conflict_not_self_healed(self, tmp_path):
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._seed_dist(root)
+        base = git(root, "rev-parse", "HEAD").stdout.strip()
+
+        # 分支：dist rename + 改 shared.py
+        git(root, "checkout", "-q", "-b", "fenix/impl")
+        git(root, "mv", f"{self.DIST}/umi.aaa.js", f"{self.DIST}/umi.bbb.js")
+        (root / "shared.py").write_text("BRANCH\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] branch work")
+        git(root, "checkout", "-q", base)
+
+        # 主树：dist rename + 改 shared.py（不同内容 → 语义冲突）
+        git(root, "mv", f"{self.DIST}/umi.aaa.js", f"{self.DIST}/umi.ccc.js")
+        (root / "shared.py").write_text("MAIN\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] main work")
+
+        wm = make_wm(root)
+        success, err = wm.merge_back_from_branch("fenix/impl")
+        assert not success, "混入语义冲突时不应自愈"
+        # 主树回到干净状态（abort 生效，可重试）
+        assert git(root, "status", "--porcelain").stdout.strip() == ""

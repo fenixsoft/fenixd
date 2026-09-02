@@ -15,7 +15,9 @@ import re
 # 每 spec 跨修复周期的实现 run 启动次数上限（含首次实现与每轮修复重派、
 # 含单次派发的重试 attempt）；达到预算 → blocked + 人工裁决。
 # 该缺省经 config 键 ``agents.impl_run_budget`` 覆盖（该键带 Dashboard 界面）。
-DEFAULT_IMPL_RUN_BUDGET = 4
+# 4→6（add-v3-spec-quick-switch 2026-09-02）：4 次预算中 merge 冲突重试、恢复
+# 误派等机制摩擦可吞掉全部预算，真 bug 修复轮次为 0；上调留出摩擦余量。
+DEFAULT_IMPL_RUN_BUDGET = 6
 # 持久化字段名：当前 spec 已累计启动的实现 run 次数。
 IMPL_RUN_BUDGET_USED_FIELD = "_impl_run_budget_used"
 # ── 死亡 run 豁免（fix-budget-counting-semantics D1）──────────────

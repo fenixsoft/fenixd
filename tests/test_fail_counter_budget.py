@@ -144,12 +144,12 @@ class TestImplRunBudgetUsed(_Base):
         self.assertEqual(used2, 3)
 
     def test_impl_run_budget_reads_config_default(self):
-        # 无配置 → 缺省 4
-        self.assertEqual(self.engine._budget._impl_run_budget(), 4)
+        # 无配置 → 缺省 6
+        self.assertEqual(self.engine._budget._impl_run_budget(), 6)
         # 配置覆盖 → 读取
         engine, _ = _mk_engine(self.project_root, self.logger,
-                               {"agents": {"impl_run_budget": 6}})
-        self.assertEqual(engine._budget._impl_run_budget(), 6)
+                               {"agents": {"impl_run_budget": 7}})
+        self.assertEqual(engine._budget._impl_run_budget(), 7)
         # 越界夹紧（界面校验 1-10，引擎兜底防脏配置）
         engine_bad, _ = _mk_engine(self.project_root, self.logger,
                                    {"agents": {"impl_run_budget": 99}})
@@ -162,23 +162,23 @@ class TestImplRunBudgetUsed(_Base):
 class TestImplBudgetExhaustion(_Base):
     """D2/D4：预算 4/4 耗尽 → blocked + impl_budget_exhausted 告警。"""
 
-    def test_budget_4_4_exhausted_blocks_and_alerts(self):
+    def test_budget_6_6_exhausted_blocks_and_alerts(self):
         self._make_buggy_spec("demo-spec")
-        # 累计 4 次实现 run（含首次 + 3 轮修复）
-        for _ in range(4):
+        # 累计 6 次实现 run（含首次 + 修复与摩擦重派）
+        for _ in range(6):
             self.engine._budget._increment_impl_run_budget_used("demo-spec")
 
         self.assertTrue(self.engine._budget._check_impl_budget_exhausted("demo-spec"))
 
         entry = self.sm.read_one("demo-spec")
         self.assertEqual(entry["status"], "blocked")
-        self.assertIn("实现尝试预算耗尽（4/4）", entry["error"])
+        self.assertIn("实现尝试预算耗尽（6/6）", entry["error"])
         alerts = [a for a in AdminStore(self.project_root, self.logger).read_all()
                   if a.get("signal_type") == "impl_budget_exhausted"
                   and a.get("spec") == "demo-spec"]
         self.assertEqual(len(alerts), 1)
         self.assertEqual(alerts[0]["kind"], ESCALATION)
-        self.assertIn("4/4", alerts[0]["description"])
+        self.assertIn("6/6", alerts[0]["description"])
         self.assertIn("recent_failure", alerts[0]["evidence"])
 
     def test_budget_not_exhausted_at_3(self):
@@ -191,7 +191,7 @@ class TestImplBudgetExhaustion(_Base):
 
     def test_exhaustion_idempotent_no_duplicate_alert(self):
         self._make_buggy_spec("demo-spec")
-        for _ in range(4):
+        for _ in range(6):
             self.engine._budget._increment_impl_run_budget_used("demo-spec")
         self.engine._budget._check_impl_budget_exhausted("demo-spec")
         alerts_before = [a for a in AdminStore(self.project_root, self.logger).read_all()
@@ -207,11 +207,11 @@ class TestConfigHotReload(_Base):
     """D3：agents.impl_run_budget 配置热更新生效。"""
 
     def test_hot_reload_changes_effective_budget(self):
-        # 引擎初始按缺省 4
-        self.assertEqual(self.engine._budget._impl_run_budget(), 4)
-        # 模拟 fenixd 热重载：原地替换 config dict
-        self.engine.config = {"agents": {"impl_run_budget": 6}}
+        # 引擎初始按缺省 6
         self.assertEqual(self.engine._budget._impl_run_budget(), 6)
+        # 模拟 fenixd 热重载：原地替换 config dict
+        self.engine.config = {"agents": {"impl_run_budget": 7}}
+        self.assertEqual(self.engine._budget._impl_run_budget(), 7)
 
     def test_dispatch_gate_uses_effective_budget(self):
         """派发闸门读取当前（热更新后的）预算值。"""
