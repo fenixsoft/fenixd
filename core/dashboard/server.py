@@ -9,8 +9,7 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
 - 所有 API 容错：数据源损坏以字段标记返回，不 500。
 
 端点：
-    GET /                          → index.html
-    GET /app.js /style.css         → 前端静态资源
+    GET /                          → 302 重定向到 v3 dashboard（/v3/dist/）
     GET /api/projects              → 监控项目列表 + 各自聚合摘要
     GET /api/overview              → 跨项目状态统计 / 任务进度 / 问题 / 活跃运行
     GET /api/specs?project=<name>  → 某项目全部 SPEC 摘要
@@ -223,11 +222,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/" or path == "/index.html":
-                self._serve_static("index.html")
+                self.redirect("/v3/dist/")
             elif path.startswith("/screenshots/"):
                 self._serve_screenshot(path)
             else:
-                # 其它静态资源（/app.js /style.css /vendor/*）；_serve_static 内含防穿越校验
+                # 其它静态资源（/v3/dist/* 等）；_serve_static 内含防穿越校验
                 self._serve_static(path.lstrip("/"))
         except BrokenPipeError:
             pass
@@ -975,6 +974,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     # ── 静态资源与截图 ────────────────────────────────────────
+
+    def redirect(self, location: str):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _serve_static(self, filename: str):
         target = (self.server.static_dir / filename).resolve()
