@@ -471,8 +471,22 @@ class Dispatcher:
                         attempts = int(spec_entry.get("_zero_change_attempts", 0) or 0) + 1
                     except (TypeError, ValueError):
                         attempts = 1
-                    err_note = ("实现器零变更报成功（疑似输出截断/空转）— "
-                                "不合并不推进，重派实现")
+                    # fix-zero-change-blindspot：区分「真空转」与「有工作未提交」。
+                    # cleanup 前取证的 worktree_dirty 非空 = agent 确实动过文件
+                    # （如用 Bash 写文件而非 Edit/Write），只是没 commit——不是空转，
+                    # 重派文案须指导 commit，避免把真实工作当空转误报。
+                    dirty = list(getattr(result, "worktree_dirty", None) or [])
+                    if dirty:
+                        err_note = (f"实现器报成功但分支零提交，worktree 有 "
+                                    f"{len(dirty)} 个未提交修改（清单见日志）——不是空转；"
+                                    f"重派时务必用 git commit 提交改动后再报完成")
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"零变更哨·未提交工作 '{spec_name}': {dirty[:10]}",
+                        )
+                    else:
+                        err_note = ("实现器零变更报成功（疑似输出截断/空转）— "
+                                    "不合并不推进，重派实现")
                     updates: dict = {
                         "status": "ready",
                         "error": err_note + f"（第 {attempts} 次）",

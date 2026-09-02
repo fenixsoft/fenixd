@@ -65,22 +65,29 @@ class FamilyGovernor:
             f"`{parent_spec_name}` 的验证报告发现产品缺陷，导致验证未通过。"
             f"详见 `openspec/changes/{parent_spec_name}/verification-report.md` 的「真实产品 Bug」部分。\n\n"
             f"## What Changes\n\n"
-            f"修复验证报告中列出的真实产品缺陷。实现者应先阅读父 SPEC 的 "
-            f"`verification-report.md`，定位每个真实产品 Bug 的根因并修复；"
-            f"伪失败（测试框架/场景缺陷）不在本 SPEC 修复范围内。\n\n"
+            f"第一步必须复核失败场景的有效性（fix-fake-failure-first）："
+            f"验证场景自身可能存在断言缺陷（如英文状态字面量 vs 产品中文渲染、"
+            f"不存在的选择器、错误的前置数据），伪失败修复应改场景文件而非产品代码。"
+            f"复核确认为真实产品 Bug 后，先阅读父 SPEC 的 `verification-report.md`，"
+            f"定位每个真实产品 Bug 的根因并修复。\n\n"
             f"## Impact\n\n"
-            f"- **代码**：按验证报告修复真实产品缺陷\n"
+            f"- **代码**：按复核结论修复场景缺陷或真实产品缺陷\n"
             f"- **行为**：修复后，父 SPEC 验证报告中失败的场景应转为通过\n"
         )
         tasks = (
             f"# Tasks: 修复 {parent_spec_name} 验证发现的缺陷\n\n"
-            f"## 1. 修复真实产品缺陷\n\n"
-            f"- [ ] 1.1 阅读 `openspec/changes/{parent_spec_name}/verification-report.md`，"
-            f"定位「真实产品 Bug」的根因并修复\n\n"
-            f"## 2. 验证与打包\n\n"
-            f"- [ ] 2.1 运行 `npm run build`（tsc + vite build）确认编译与构建通过\n"
-            f"- [ ] 2.2 运行框架单元测试（`python3 -m pytest .fenix/tests/ -v`）确认无回归\n"
-            f"- [ ] 2.3 执行 `bash scripts/package.sh` 生成最新扩展包\n"
+            f"## 1. 复核失败场景有效性（先于一切修复）\n\n"
+            f"- [ ] 1.1 逐条核对 `openspec/changes/{parent_spec_name}/verification-report.md` "
+            f"中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为/DOM 是否相符；"
+            f"断言与产品不符属场景缺陷——修场景文件，不改产品代码；"
+            f"确属产品行为不符才进入第 2 步\n\n"
+            f"## 2. 修复真实产品缺陷（仅当复核确认为真 Bug）\n\n"
+            f"- [ ] 2.1 按 `verification-report.md` 的「真实产品 Bug」定位根因并修复；"
+            f"场景缺陷则直接修正场景文件\n\n"
+            f"## 3. 验证与打包\n\n"
+            f"- [ ] 3.1 运行 `npm run build`（tsc + vite build）确认编译与构建通过\n"
+            f"- [ ] 3.2 运行框架单元测试（`python3 -m pytest .fenix/tests/ -v`）确认无回归\n"
+            f"- [ ] 3.3 执行 `bash scripts/package.sh` 生成最新扩展包\n"
         )
 
         (spec_dir / "proposal.md").write_text(proposal, encoding="utf-8")
@@ -551,9 +558,15 @@ class FamilyGovernor:
             return
 
         report_path = f"openspec/changes/{spec_name}/verification-report.md"
+        # fix-fake-failure-first：第一步强制复核失败场景有效性——验证场景自身
+        # 的断言缺陷（英文状态字面量 vs 产品中文渲染、不存在选择器等）曾被当作
+        # 产品 Bug 触发整条修复链（3 轮实现 5.24h 修一个不存在的 bug）。
         section = (
             f"\n\n## 验证修复（第 {fail_rounds} 轮失败）\n\n"
-            f"- [ ] 阅读 `{report_path}`，定位「真实产品 Bug」并修复\n"
+            f"- [ ] 先复核失败有效性：逐条核对 `{report_path}` 中失败场景的期望断言"
+            f"（状态字面量/选择器/前置数据）与产品实际行为是否相符——"
+            f"断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码\n"
+            f"- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码\n"
             f"- [ ] 修复后重跑验证确认通过\n"
         )
 

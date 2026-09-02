@@ -90,7 +90,8 @@ class AgentRunResult:
                  turns_used: int = 0, error: str = None, output: str = "",
                  branch: str | None = None,
                  provider_used: str | None = None, model_used: str | None = None,
-                 chain_exhausted: bool = False):
+                 chain_exhausted: bool = False,
+                 worktree_dirty: list | None = None):
         self.run_id = run_id
         self.spec_name = spec_name
         self.agent_type = agent_type
@@ -107,6 +108,11 @@ class AgentRunResult:
         # chain_exhausted：链上全部候选均处于 switch 冷却期，attempt 直接失败返回
         # （不启动进程、不计入 spec 重试消耗；design D3 / spec failover-dispatch）。
         self.chain_exhausted = chain_exhausted
+        # fix-zero-change-blindspot：implementer 成功收工时、worktree cleanup **前**
+        # 取证的 `git status --porcelain` 非空行清单。零变更哨需要「agent 是否真的
+        # 动过文件」的证据；cleanup 后证据即销毁（曾致 Bash 写文件的真实工作被
+        # 误判为空转、2.11h/$10 全丢）。None/空 = 无脏文件或非 implementer。
+        self.worktree_dirty = worktree_dirty
 
     def to_dict(self) -> dict:
         return {
@@ -780,6 +786,16 @@ class AgentRunner:
                         self._record_provider_probe(provider_name, success=True)
                 # add-worktree-test-server（D2 终态回收）：worktree 清理前先回收其 dev-server。
                 self._v2_stop_for_worktree(wt_path)
+                # fix-zero-change-blindspot：cleanup 前取证 worktree dirty 状态
+                #（仅 implementer——零变更哨只作用于实现器）。
+                wt_dirty: list = []
+                if agent_type == "implementer":
+                    st = subprocess.run(
+                        ["git", "-C", str(wt_path), "status", "--porcelain"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    if st.returncode == 0:
+                        wt_dirty = [l for l in st.stdout.splitlines() if l.strip()]
                 # 成功：清理 worktree（保留分支供 merge-back），返回结果
                 self.worktree_manager.cleanup(wt_path, success=True)
                 duration = time.time() - start_time
@@ -799,6 +815,7 @@ class AgentRunner:
                     success=True, duration_seconds=duration,
                     turns_used=turns, output=output,
                     branch=branch, provider_used=provider_name, model_used=model,
+                    worktree_dirty=wt_dirty,
                 )
             else:
                 self.logger.warning(

@@ -175,8 +175,28 @@ class PromptBuilder:
                 self._pm.project_root / ".fenix" / "verify-progress"
                 / spec_name / ".fenix-run-result.json"
             )
+            # fix-replan-feedback-injection：验收退回时把上一轮错误清单直接内联进
+            # prompt——此前只写 REPLAN_FEEDBACK.md 靠 agent 自觉去读，实测 planner
+            # 会无视（退回重跑的错误与上轮一字不差，纯烧 0.27h/$）。内联后想不看都难。
+            replan_section = ""
+            replan_fb_path = (
+                self._pm.project_root / ".fenix" / "verify-progress"
+                / spec_name / "REPLAN_FEEDBACK.md"
+            )
+            if replan_fb_path.exists():
+                try:
+                    fb_text = replan_fb_path.read_text(encoding="utf-8")[:3000]
+                    replan_section = (
+                        f"\n## ⚠️ 上一轮场景验收未通过（MANDATORY：逐条修复后再输出）\n\n"
+                        f"{fb_text}\n\n"
+                        f"上述错误清单来自验收器，必须在本轮输出中全部修正；"
+                        f"若沿用上一轮场景文件原样重写，验收将再次拒绝并消耗重排预算。\n"
+                    )
+                except OSError:
+                    pass
             return (
                 f"你是 Fenix Planner Agent。你的任务是将 SPEC 文档转化为结构化的浏览器测试场景。\n\n"
+                f"{replan_section}"
                 f"## 步骤\n"
                 f"1. 读取 {spec_dir}/proposal.md, {spec_dir}/design.md, {spec_dir}/specs/*.md\n"
                 f"2. 分析所有功能点，为每个功能生成至少一个测试场景\n"

@@ -484,6 +484,9 @@ class VerificationPipeline:
         )
         replan_left = 2
         replan_feedback = None
+        # fix-replan-feedback-injection：上一轮验收错误原文——连续两轮一字不差说明
+        # planner 未消费反馈（重跑即纯烧钱），升级为 ERROR 提示人工关注。
+        prev_replan_error = None
         report = None
         app_reachable = True
         reach_note = ""
@@ -520,6 +523,22 @@ class VerificationPipeline:
             # 验证 Planner 是否成功生成场景文件
             plan_status = self._pm._read_planner_result(spec_name)
             if plan_status != "plan-ready":
+                # fix-planner-invalid-output-alert：planner run 成功收工却无有效产出
+                # ＝ 整轮 planner 时长/成本白烧，必须显式留痕（error 字段 + ERROR 级
+                # 日志），否则只在降级 WARNING 里一笔带过，浪费不可见。
+                self._pm.state_machine.update_spec(spec_name, {
+                    "error": (
+                        f"Planner 场景生成无效（status={plan_status}，run="
+                        f"{plan_result.run_id}，{plan_result.duration_seconds / 60:.1f}min）"
+                        f"— 降级旧版验证流程"
+                    ),
+                })
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"Planner 未生成有效场景 '{spec_name}'（status={plan_status}，"
+                    f"run={plan_result.run_id}，白烧 "
+                    f"{plan_result.duration_seconds / 60:.1f}min）— 降级旧版 verifier",
+                )
                 raise RuntimeError(f"Planner 未生成有效场景，status={plan_status}")
 
             # ── 场景集冻结（add-verify-scenario-freeze）──
@@ -597,6 +616,14 @@ class VerificationPipeline:
                 env_error = report.get("env_error")
 
             if env_error:
+                if env_error == prev_replan_error:
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"场景验收错误与上一轮一字不差 '{spec_name}' — planner 未消费"
+                        f"反馈，重跑属高风险重复（错误清单已内联进本轮 prompt）: "
+                        f"{env_error[:200]}",
+                    )
+                prev_replan_error = env_error
                 if replan_left <= 0:
                     self._pm.state_machine.update_spec(spec_name, {
                         "status": "implemented",
