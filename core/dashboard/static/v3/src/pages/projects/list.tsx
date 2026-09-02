@@ -35,6 +35,7 @@ import remarkGfm from 'remark-gfm';
 import { markdownComponents } from './components/SpecDocModal';
 import { getSpecDetail, getSpecs } from '@/services/dashboard';
 import {
+  archiveSpec,
   clearSpecError,
   deleteSpec,
   freezeSpec,
@@ -419,6 +420,8 @@ export default function SpecListPage() {
   const [q, setQ] = useState('');
   const [statusList, setStatusList] = useState<string[]>([]);
   const [type, setType] = useState<TypeFilter>('');
+  // add-spec-archive：归档状态过滤（false=未归档默认，true=已归档）
+  const [archivedOnly, setArchivedOnly] = useState(false);
   const lastRefreshRef = useRef(0);
 
   // 文档弹窗（对齐 v1 docmodal：背景/设计/任务清单 三页签）
@@ -477,9 +480,11 @@ export default function SpecListPage() {
       if (statusList.length && !statusList.includes(s.status || '')) return false;
       if (type === 'req' && s.name.startsWith('fix-')) return false;
       if (type === 'issue' && !s.name.startsWith('fix-')) return false;
+      // add-spec-archive：默认展示未归档（archivedOnly=false），切换后仅展示已归档
+      if (!!s.archived !== archivedOnly) return false;
       return true;
     });
-  }, [specs, q, statusList, type]);
+  }, [specs, q, statusList, type, archivedOnly]);
 
   const tree = useMemo(() => buildTree(filtered), [filtered]);
 
@@ -514,6 +519,32 @@ export default function SpecListPage() {
       onOk: async () => {
         await deleteSpec(name, record.name);
         void load();
+      },
+    });
+  };
+
+  // add-spec-archive：归档确认弹窗（对齐删除确认模式：确认 → 调 API → 成功提示+刷新）
+  const handleArchiveSpec = (record: SpecSummary) => {
+    Modal.confirm({
+      title: '归档 Spec',
+      content: (
+        <div style={{ whiteSpace: 'pre-wrap' }}>
+          {`确认归档 Spec「${record.name}」？\n\n`}
+          将 `openspec/changes/{record.name}/` 移入归档目录
+          （archive/YYYY-MM-DD-{record.name}/），STATE.md 条目保留。
+          {'\n'}归档后可随时在列表「已归档」视图查看。
+        </div>
+      ),
+      okText: '归档',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await archiveSpec(name, record.name);
+          message.success(`Spec「${record.name}」已归档`);
+          void load();
+        } catch (err) {
+          message.error(`归档失败：${err instanceof Error ? err.message : String(err)}`);
+        }
       },
     });
   };
@@ -554,6 +585,14 @@ export default function SpecListPage() {
 
   const specMenuItems = (record: SpecSummary) => {
     const terminal = PRIORITY_TERMINAL.has(record.status || '');
+    // add-spec-archive：已归档视图操作收敛——隐藏调度类操作（优先级/冻结/归档），
+    // 仅保留查看类（删除保留与否依实现；归档 SPEC 不可再调度，全部调度项移除）
+    if (archivedOnly) {
+      return [
+        { type: 'divider' as const },
+        { key: 'delete', label: '删除 Spec', danger: true },
+      ];
+    }
     return [
       { key: 'admin', label: '呼叫 Admin 介入' },
       { key: 'priority', label: '调整优先级', disabled: terminal },
@@ -562,6 +601,8 @@ export default function SpecListPage() {
         label: isFrozen(record) ? '解冻 Spec' : '冻结 Spec',
         disabled: terminal,
       },
+      // 归档 Spec：仅终态（done/pushed）可用，非终态置灰；位于「冻结/解冻」之后
+      { key: 'archive', label: '归档 Spec', disabled: !terminal },
       { type: 'divider' as const },
       { key: 'delete', label: '删除 Spec', danger: true },
     ];
@@ -574,6 +615,8 @@ export default function SpecListPage() {
       setPriorityEdit({ spec: record.name, value: record.priority ?? 5 });
     } else if (key === 'freeze' || key === 'unfreeze') {
       void handleFreezeToggle(record);
+    } else if (key === 'archive') {
+      handleArchiveSpec(record);
     } else if (key === 'delete') {
       handleDeleteSpec(record);
     }
@@ -771,6 +814,17 @@ export default function SpecListPage() {
               { label: '全部', value: '' },
               { label: '仅需求', value: 'req' },
               { label: '仅问题', value: 'issue' },
+            ]}
+          />
+          {/* add-spec-archive：归档状态切换（未归档默认 / 已归档），与类型过滤同层客户端过滤 */}
+          <Radio.Group
+            optionType="button"
+            size="middle"
+            value={archivedOnly}
+            onChange={(e) => setArchivedOnly(Boolean(e.target.value))}
+            options={[
+              { label: '未归档', value: false },
+              { label: '已归档', value: true },
             ]}
           />
         </Space>

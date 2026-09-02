@@ -223,6 +223,19 @@ class ConfigLoader:
                     f"admin.workers must be a non-negative integer: {workers}"
                 )
 
+        # add-spec-archive D5：archive.auto_threshold —— 自动归档阈值。
+        # 非负整数（0 = 禁用）；非法值记日志并按默认 50 兜底（宽松校验，
+        # 不因坏一个值阻断整个配置热更新/加载）。用户级与项目级均可设置，
+        # 项目级经深合并优先。
+        archive = config.get("archive") or {}
+        if "auto_threshold" in archive and archive["auto_threshold"] is not None:
+            at = archive["auto_threshold"]
+            if not isinstance(at, int) or isinstance(at, bool) or at < 0:
+                _logger.error(
+                    "archive.auto_threshold 非法（应为非负整数，0=禁用）：%r，"
+                    "回落默认 50", at,
+                )
+
     @classmethod
     def _validate_llm(cls, llm: Dict[str, Any]):
         providers = llm.get("providers")
@@ -673,6 +686,27 @@ class ConfigLoader:
         global _DEPRECATED_STUCK_WARNED, _SUPERVISION_BOUNDS_WARNED
         _DEPRECATED_STUCK_WARNED = False
         _SUPERVISION_BOUNDS_WARNED = False
+
+    @classmethod
+    def effective_auto_archive_threshold(cls, config: Dict[str, Any],
+                                         default: int = 50) -> int:
+        """archive.auto_threshold 的生效值（非负整数；0 = 禁用）。
+
+        D5：非法值（非整数 / 负数 / bool）记日志并回落默认 50，且不阻塞加载。
+        所有消费方（daemon 自动归档检查、dashboard 设置回显）MUST 调本助手读取
+        生效值，而非直读原始配置——保证非法值不会流入归档判定。
+        """
+        archive = config.get("archive") or {}
+        at = archive.get("auto_threshold")
+        if at is None:
+            return default
+        if isinstance(at, bool) or not isinstance(at, int) or at < 0:
+            _logger.error(
+                "archive.auto_threshold 非法（应为非负整数，0=禁用）：%r，回落默认 %s",
+                at, default,
+            )
+            return default
+        return at
 
     @classmethod
     def get(cls, config: Dict[str, Any], dotted_key: str, default=None):
