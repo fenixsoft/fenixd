@@ -22,9 +22,9 @@
 
 ## 2. done 转换写入耗时
 
-- [ ] 2.1 `core/pm_engine/engine.py` verified→done 转换处（`transition(spec_name, "done")` 之后），用 `get_runs(project_root, spec_name, include_archive=True)` 求和并以 `update_spec(spec_name, {"total_duration": <int>})` 写入（design D1/D2）
-- [ ] 2.2 无 run 产物时写入 0（同一路径自然覆盖，测试断言）
-- [ ] 2.3 确认求和口径与 `spec_summary` 现有实现一致（`duration_seconds` 求和、含归档），保证 done 时刻写入值等于当时列表页显示值
+- [x] 2.1 `core/pm_engine/engine.py` verified→done 转换处（`transition(spec_name, "done")` 之后），用 `get_runs(project_root, spec_name, include_archive=True)` 求和并以 `update_spec(spec_name, {"total_duration": <int>})` 写入（design D1/D2）
+- [x] 2.2 无 run 产物时写入 0（同一路径自然覆盖，测试断言）
+- [x] 2.3 确认求和口径与 `spec_summary` 现有实现一致（`duration_seconds` 求和、含归档），保证 done 时刻写入值等于当时列表页显示值
 
 ## 3. dashboard 读取优先级
 
