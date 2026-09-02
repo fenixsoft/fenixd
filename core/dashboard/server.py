@@ -20,6 +20,7 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     POST /api/spec-error-clear?project=<name>&spec=<name> → 在线清除 SPEC 的 error 字段（置空并原子写回 STATE.md）
     POST /api/spec-priority?project=<name>&spec=<name>  → 设置 SPEC 优先级（body: {"priority": 1-9}，400 校验 / 404 / 200）
     POST /api/spec-delete?project=<name>&spec=<name>  → 软删除 SPEC（STATE.md 剔除 + 目录移入 archive，运行中返回 409）
+    POST /api/spec-archive?project=<name>&spec=<name> → 归档终态 SPEC（目录移入 archive/YYYY-MM-DD-<name>，STATE.md 保留，仅 done/pushed）
     POST /api/spec-admin-invoke?project=<name>&spec=<name>  → 手动唤起 Admin（写 .fenix/admin_invoke_request.json，进行中返回 409）
     GET /api/config?project=<name> → 读取受管配置（llm / agents.models / gates.approve_mode）
     POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
@@ -472,6 +473,56 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._json(result)
 
+    def _api_spec_archive(self, query) -> dict:
+        """POST /api/spec-archive?project=<name>&spec=<name>
+
+        归档终态 SPEC：把 openspec/changes/<name>/ 移到 archive/YYYY-MM-DD-<name>/，
+        STATE.md 条目原样保留（与 fenix_archive.py / fenix-archive skill 同语义）。
+        - project 不存在 → 404
+        - spec 不在 STATE.md → 404
+        - 非终态（非 done/pushed）→ 403「仅终态可归档」
+        - 目标已存在 → 409（不覆盖）
+        - 已归档（活跃目录缺失）→ 409「已归档」
+        - 成功 → 200 + {ok: true, from, to} + 记录项目活动事件（from→to）
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        proot = Path(project["path"])
+        try:
+            result = dashboard_data.archive_spec(proot, spec)
+        except Exception as e:  # noqa: BLE001 兜底：移动异常不崩溃进程
+            self._error(500, f"archive spec failed: {e}")
+            return
+        if not result.get("found"):
+            self._error(404, result.get("error") or f"spec not found: {spec}")
+            return
+        if not result.get("ok"):
+            # 已归档或目标冲突 → 409，非终态拒绝也走这里（调用方可识别具体 error）
+            code = 409 if "已存在" in (result.get("error") or "") or "已归档" in (result.get("error") or "") else 403
+            self._error(code, result.get("error") or "归档失败")
+            return
+        # 归档成功 → 记录项目活动事件（归档动作 from→to，供活动页/概览展示）
+        try:
+            dashboard_data.record_project_event(
+                proot,
+                "dashboard",
+                f"Spec '{spec}' 已归档: {result['from']} → {result['to']}",
+                context={"spec": spec, "from": result["from"], "to": result["to"]},
+            )
+        except Exception:
+            pass  # 写日志失败不阻断归档响应
+        self._json({"ok": True, "project": project["name"], "spec": spec,
+                    "from": result["from"], "to": result["to"]})
+
     def _api_spec_delete(self, query):
         """POST /api/spec-delete?project=<name>&spec=<name>
 
@@ -840,6 +891,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_spec_freeze(query)
         elif path == "/api/spec-unfreeze":
             self._api_spec_unfreeze(query)
+        elif path == "/api/spec-archive":
+            self._api_spec_archive(query)
         elif path == "/api/alerts/clear":
             self._api_alerts_clear()
         elif path.startswith("/api/alerts/") and path.endswith("/handled"):

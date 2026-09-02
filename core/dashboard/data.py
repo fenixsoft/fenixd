@@ -479,6 +479,154 @@ def soft_delete_spec(project_root, spec: str) -> dict:
             "archive_path": archive_path, "error": None}
 
 
+def is_spec_archived(project_root, spec_name: str) -> bool:
+    """归档判定：STATE.md 有条目且活跃目录 `openspec/changes/<name>/` 不存在。
+
+    D1：归档的**唯一事实来源**是活跃目录存在性——不检测 archive/ 下具体路径
+    形态（删除路径命名 `<name>-<Unix秒>` 不同、手动移动命名不可控），也不写
+    STATE.md 标志。三条归档路径（界面 API / CLI skill / 手动 mv）产出相同可见性。
+    """
+    return not (Path(project_root) / "openspec" / "changes" / spec_name).is_dir()
+
+
+def archive_spec(project_root, spec_name: str) -> dict:
+    """归档 SPEC：把 `openspec/changes/<name>/` 移到 `archive/YYYY-MM-DD-<name>/`。
+
+    与 `bin/fenix_archive.py::archive_change` 相同的移动逻辑与命名规则
+    （D2：不 import 脚本，函数级复用核心逻辑）；STATE.md 条目**原样保留**。
+    终态校验在 API 层做（仅 done/pushed 可归档），本函数仍做防御性校验，
+    供 daemon 自动归档（D4）与手动 API 两条路径复用同一入口。
+
+    Returns:
+        {"ok": bool, "found": bool, "from": str|null, "to": str|null, "error": str|null}
+        - spec 不在 STATE.md → {"ok": False, "found": False, ...}
+        - 非终态 → {"ok": False, "found": True, "error": "仅终态..."}
+        - 活跃目录缺失（已归档）→ {"ok": False, "found": True, "error": "已归档"}
+        - 目标已存在 → {"ok": False, "found": True, "error": "目标已存在"（不覆盖）}
+        - 成功 → {"ok": True, "found": True, "from": 原路径, "to": 目标路径}
+    """
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec_name not in specs:
+        return {"ok": False, "found": False, "from": None, "to": None,
+                "error": f"spec not found: {spec_name}"}
+    status = specs[spec_name].get("status")
+    if status not in ("done", "pushed"):
+        return {"ok": False, "found": True, "from": None, "to": None,
+                "error": f"仅终态 spec（done/pushed）可归档，当前状态: {status}"}
+
+    change_dir = proot / "openspec" / "changes" / spec_name
+    if not change_dir.is_dir():
+        return {"ok": False, "found": True, "from": None, "to": None,
+                "error": f"Spec '{spec_name}' 活跃目录已不存在（可能已归档）"}
+
+    from datetime import date
+    target = (
+        proot / "openspec" / "changes" / "archive"
+        / f"{date.today().isoformat()}-{spec_name}"
+    )
+    if target.exists():
+        return {"ok": False, "found": True, "from": str(change_dir), "to": str(target),
+                "error": f"归档目标已存在: {target} — 请改名或改日再归档，原目录不会被覆盖"}
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        moved = Path(shutil.move(str(change_dir), str(target)))
+    except OSError as e:
+        return {"ok": False, "found": True, "from": str(change_dir), "to": str(target),
+                "error": f"归档移动失败: {e}"}
+    return {"ok": True, "found": True, "from": str(change_dir), "to": str(moved),
+            "error": None}
+
+
+def auto_archive_check(project_root, config: dict,
+                       logger=None) -> dict:
+    """daemon 周期自动归档检查（D4）：遍历终态未归档 SPEC，超阈值按 updated 升序归档。
+
+    设计 D4/D5：主循环每 300s 调用一次；threshold=0 或缺失时跳过。
+    统计完成（done/pushed）且**活跃目录仍存在**（未归档）的 SPEC 数量，
+    超过阈值时按 STATE.md `updated` 字段升序逐个归档（最久完成的先），
+    直到数量 ≤ 阈值。单条失败（目标已存在等）跳过并记日志，不中断循环。
+
+    Args:
+        project_root: 项目根目录
+        config: 有效配置 dict（由 ConfigLoader.resolve_config 解析）
+        logger: Logger 实例（可选，用于记录归档动作；缺省 print 到 stderr）
+
+    Returns:
+        {"archived": int, "skipped": int, "target_count": int,
+         "threshold": int, "total_terminal_unarchived": int}
+    """
+    from core.config import ConfigLoader
+    threshold = ConfigLoader.effective_auto_archive_threshold(config)
+    if threshold <= 0:
+        return {"archived": 0, "skipped": 0, "target_count": 0,
+                "threshold": threshold, "total_terminal_unarchived": 0}
+
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    TERMINAL = ("done", "pushed")
+
+    # 统计终态 + 未归档（活跃目录仍存在）
+    candidates = []
+    for name, entry in specs.items():
+        if entry.get("status") not in TERMINAL:
+            continue
+        if not (proot / "openspec" / "changes" / name).is_dir():
+            continue  # 已归档，不计入
+        candidates.append((name, entry))
+
+    total = len(candidates)
+    if total <= threshold:
+        return {"archived": 0, "skipped": 0, "target_count": 0,
+                "threshold": threshold, "total_terminal_unarchived": total}
+
+    # 按 updated 升序（最久完成的先归档）
+    def _sort_key(item):
+        updated = item[1].get("updated") or ""
+        try:
+            return updated  # ISO8601 字符串排序即时间排序
+        except Exception:
+            return ""
+    candidates.sort(key=_sort_key)
+
+    to_archive = total - threshold
+    archived_count = 0
+    skipped_count = 0
+    for name, _entry in candidates[:to_archive]:
+        result = archive_spec(proot, name)
+        if result.get("ok"):
+            archived_count += 1
+            msg = f"自动归档: {name} → {result['to']}"
+            if logger is not None:
+                try:
+                    logger.info("fenixd", msg)
+                except Exception:
+                    pass
+            else:
+                import sys
+                print(f"[fenixd] {msg}", file=sys.stderr)
+        else:
+            skipped_count += 1
+            msg = f"自动归档跳过 {name}: {result.get('error')}"
+            if logger is not None:
+                try:
+                    logger.warning("fenixd", msg)
+                except Exception:
+                    pass
+            else:
+                import sys
+                print(f"[fenixd] {msg}", file=sys.stderr)
+
+    return {
+        "archived": archived_count,
+        "skipped": skipped_count,
+        "target_count": threshold,
+        "threshold": threshold,
+        "total_terminal_unarchived": total,
+    }
+
+
 # ── 基础解析（源自 bin/fenix_dashboard.py，TUI / Web 共用） ────────────
 
 def parse_state(project_root) -> dict:
@@ -776,6 +924,40 @@ def get_recent_events(project_root, minutes=10, limit=30) -> list:
         except (OSError, UnicodeDecodeError):
             continue
     return events[-limit:]
+
+
+def record_project_event(project_root, component: str, message: str,
+                         level: str = "INFO", context: dict | None = None) -> None:
+    """向项目事件日志追加一条结构化 JSON 事件（dashboard 操作的活动记录）。
+
+    与 daemon 的 Logger（core/logger.py) 同构：JSON 行写入 `.fenix/logs/fenixd.log`，
+    供 `get_recent_events`（活动页）读取展示。服务器进程与 daemon 进程分开部署，
+    无法共享 Logger 实例，故按同一文件格式直接追加；daemon 与 dashboard 文件句柄
+    O_APPEND 追加互不覆盖（RotatingFileHandler 轮转时按文件名匹配新文件）。
+    写日志失败（目录不可写等）静默忽略——活动事件属可观测性增强，不阻断业务操作。
+
+    Args:
+        project_root: 项目根目录
+        component: 事件组件名（如 dashboard / fenixd）
+        message: 事件内容（含 from/to 等归档动作描述）
+        level: 日志级别（INFO 默认）
+        context: 附加结构化上下文（可选，落为 JSON context 字段）
+    """
+    logs_dir = Path(project_root) / ".fenix" / "logs"
+    try:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+            "level": level,
+            "component": component,
+            "message": message,
+        }
+        if context:
+            entry["context"] = context
+        with (logs_dir / "fenixd.log").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except (OSError, UnicodeDecodeError):
+        pass
 
 
 # ── 验证产物（容错解析） ──────────────────────────────────────────
@@ -1376,6 +1558,7 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
     return {
         "name": spec_name,
         "status": entry.get("status"),
+        "archived": is_spec_archived(project_root, spec_name),
         "mode": mode,
         "priority": entry.get("priority"),
         "created": entry.get("created"),
@@ -1965,6 +2148,8 @@ def read_effective_config(project_root) -> dict:
         "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4},
         "gates": {"approve_mode": "manual"},
         "runs": {"keep": 50},
+        # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
+        "archive": {"auto_threshold": 50},
         "scope": "project",
         "raw_exists": proj_path.exists(),
         "sources": _managed_key_sources({}),
@@ -2021,6 +2206,8 @@ def read_effective_config(project_root) -> dict:
     runs_eff = effective.get("runs")
     if isinstance(runs_eff, dict) and isinstance(runs_eff.get("keep"), int) and runs_eff["keep"] >= 1:
         result["runs"] = {"keep": runs_eff["keep"]}
+    # add-spec-archive D5：经生效助手取值（非法配置回落默认 50，设置页回显一致）
+    result["archive"] = {"auto_threshold": ConfigLoader.effective_auto_archive_threshold(effective)}
 
     # 提取 project.description → 顶层 description（非 str 或缺失 → ""）
     project_eff = effective.get("project")
@@ -2079,6 +2266,13 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             if not isinstance(merged.get("runs"), dict):
                 merged["runs"] = {}
             merged["runs"]["keep"] = keep
+    # add-spec-archive D5：archive.auto_threshold（非负整数，0=禁用，非法值静默忽略）
+    if "archive" in patch and isinstance(patch["archive"], dict):
+        at = patch["archive"].get("auto_threshold")
+        if isinstance(at, int) and at >= 0:
+            if not isinstance(merged.get("archive"), dict):
+                merged["archive"] = {}
+            merged["archive"]["auto_threshold"] = at
     # description 分支：patch 顶层 description（str）写入 merged["project"]["description"]
     if "description" in patch and isinstance(patch["description"], str):
         if not isinstance(merged.get("project"), dict):
@@ -2207,6 +2401,14 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             if mode not in ConfigLoader.VALID_APPROVE_MODES:
                 raise ValueError(
                     f"gates.approve_mode must be one of {ConfigLoader.VALID_APPROVE_MODES}: {mode}"
+                )
+        # add-spec-archive D5：archive.auto_threshold 必须为非负整数（0=禁用）
+        archive_m = merged.get("archive") or {}
+        if "auto_threshold" in archive_m and archive_m["auto_threshold"] is not None:
+            at = archive_m["auto_threshold"]
+            if not isinstance(at, int) or isinstance(at, bool) or at < 0:
+                raise ValueError(
+                    f"archive.auto_threshold must be a non-negative integer (0=disabled): {at}"
                 )
     except ValueError as e:
         return fail(str(e))

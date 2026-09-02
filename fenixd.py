@@ -216,6 +216,8 @@ class FenixDaemon:
         self.logger.info("fenixd", "Entering main loop")
         config_check_ts = time.time()
         recovery_watch_ts = time.time()
+        # add-spec-archive D4：自动归档独立计时（300s，对齐配置热更新/恢复复查模式）
+        archive_check_ts = time.time()
         try:
             while self.running:
                 time.sleep(1)
@@ -250,6 +252,18 @@ class FenixDaemon:
                     except Exception as e:
                         self.logger.error(
                             "fenixd", f"Autostash reclaim check failed: {e}")
+                # 自动归档周期检查（add-spec-archive D4）：每 300s 遍历项目内
+                # 终态未归档 SPEC，超阈值按 updated 升序归档直至达标；异常捕获
+                # 记日志不中断主循环。阈值热更新经 effective_auto_archive_threshold
+                # 每轮重读，改配置立即生效。
+                if time.time() - archive_check_ts >= 300:
+                    archive_check_ts = time.time()
+                    try:
+                        from core.dashboard.data import auto_archive_check
+                        auto_archive_check(PROJECT_ROOT, self.config, self.logger)
+                    except Exception as e:
+                        self.logger.error(
+                            "fenixd", f"Auto-archive check failed: {e}")
         except KeyboardInterrupt:
             self.logger.info("fenixd", "Received interrupt signal")
         finally:

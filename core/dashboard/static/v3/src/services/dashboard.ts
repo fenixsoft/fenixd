@@ -160,6 +160,8 @@ export interface SpecSummary {
   name: string;
   status: string | null;
   mode?: 'fast-track' | 'full' | null;
+  /** add-spec-archive：是否已归档（活跃目录 openspec/changes/<name>/ 不存在即 true） */
+  archived?: boolean;
   priority: number | null;
   created: string | null;
   updated: string | null;
@@ -223,6 +225,13 @@ export function freezeSpec(project: string, spec: string) {
 export function unfreezeSpec(project: string, spec: string) {
   return request(
     `/api/spec-unfreeze?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    { method: 'POST' },
+  );
+}
+
+export function archiveSpec(project: string, spec: string) {
+  return request<{ ok: boolean; from: string; to: string }>(
+    `/api/spec-archive?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
     { method: 'POST' },
   );
 }
@@ -484,6 +493,8 @@ export interface ConfigData {
   gates: GatesConfig;
   /** 其他分类：runs.keep = 运行产物保留数（超出移入 .fenix/runs/archive） */
   runs?: { keep: number };
+  /** add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50） */
+  archive?: { auto_threshold: number };
   scope: 'user' | 'project';
   raw_exists: boolean;
   sources: Record<string, string>;
