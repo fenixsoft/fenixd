@@ -1,6 +1,7 @@
 """add-fast-track-mode task 7.1：Dashboard data 层 mode 输出测试。"""
 
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -57,6 +58,56 @@ class TestDashboardMode(unittest.TestCase):
         entry = self._add("ft-spec", mode="fast-track")
         d = spec_detail(self.root, "ft-spec", entry)
         self.assertEqual(d["mode"], "fast-track")
+
+
+class TestSpecSummaryDurationPersistence(unittest.TestCase):
+    """add-done-duration-persist 3.3：spec_summary 对 STATE.md 固化 total_duration 的读取优先级。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        (self.root / "STATE.md").write_text("", encoding="utf-8")
+        _mk_spec(self.root, "demo")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_run(self, run_id, start_ts, duration):
+        """创建 run 产物并定 mtime，使 duration_seconds = duration。"""
+        runs_dir = self.root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        p = runs_dir / f"{run_id}.jsonl"
+        p.write_text("", encoding="utf-8")
+        os.utime(p, (start_ts + duration, start_ts + duration))
+
+    def test_done_uses_persisted_value_without_runs(self):
+        """① done spec 有字段时返回字段值（run 产物缺失也返回）。"""
+        s = spec_summary(self.root, "demo", {"status": "done", "total_duration": "150"})
+        self.assertEqual(s["total_duration"], 150)
+
+    def test_done_missing_field_falls_back_to_sum(self):
+        """② done spec 缺字段回退求和。"""
+        self._make_run("impl-demo-1789000000-a1", 1789000000, 42)
+        s = spec_summary(self.root, "demo", {"status": "done"})
+        self.assertEqual(s["total_duration"], 42)
+
+    def test_pushed_uses_persisted_value(self):
+        """③ pushed spec 有字段时同样直接返回。"""
+        s = spec_summary(self.root, "demo", {"status": "pushed", "total_duration": "150"})
+        self.assertEqual(s["total_duration"], 150)
+
+    def test_implementing_ignores_persisted_field(self):
+        """④ implementing spec 忽略字段，仍走实时求和。"""
+        self._make_run("impl-demo-1789000000-a1", 1789000000, 42)
+        s = spec_summary(self.root, "demo",
+                         {"status": "implementing", "total_duration": "150"})
+        self.assertEqual(s["total_duration"], 42)
+
+    def test_dirty_value_falls_back_to_sum(self):
+        """⑤ 字段为脏值（非数字）时回退求和不报错。"""
+        self._make_run("impl-demo-1789000000-a1", 1789000000, 42)
+        s = spec_summary(self.root, "demo", {"status": "done", "total_duration": "abc"})
+        self.assertEqual(s["total_duration"], 42)
 
 
 if __name__ == "__main__":

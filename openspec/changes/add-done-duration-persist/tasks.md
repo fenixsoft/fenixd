@@ -28,9 +28,9 @@
 
 ## 3. dashboard 读取优先级
 
-- [ ] 3.1 `core/dashboard/data.py` `spec_summary`：status ∈ {done, pushed} 且 `total_duration` 字段可 int 解析时直接返回该值；解析失败或字段缺失回退现有 run 求和（design D4）
-- [ ] 3.2 非完成状态忽略字段，仍走实时求和（design D5）
-- [ ] 3.3 `tests/test_dashboard_mode.py` 增加测试：① done spec 有字段时返回字段值（run 产物缺失也返回）；② done spec 缺字段回退求和；③ pushed spec 同 ①；④ implementing spec 忽略字段走求和；⑤ 字段为脏值（非数字）时回退求和不报错
+- [x] 3.1 `core/dashboard/data.py` `spec_summary`：status ∈ {done, pushed} 且 `total_duration` 字段可 int 解析时直接返回该值；解析失败或字段缺失回退现有 run 求和（design D4）
+- [x] 3.2 非完成状态忽略字段，仍走实时求和（design D5）
+- [x] 3.3 `tests/test_dashboard_mode.py` 增加测试：① done spec 有字段时返回字段值（run 产物缺失也返回）；② done spec 缺字段回退求和；③ pushed spec 同 ①；④ implementing spec 忽略字段走求和；⑤ 字段为脏值（非数字）时回退求和不报错
 
 ## 4. 收尾验证
 
