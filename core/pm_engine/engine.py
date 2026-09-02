@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from core.dashboard.data import find_impl_run_file, parse_run_task_done
+from core.dashboard.data import find_impl_run_file, get_runs, parse_run_task_done
 from core.pm_engine.family import FamilyGovernor
 from core.pm_engine.budget import ImplBudget
 from core.pm_engine.verification import VerificationPipeline
@@ -277,7 +277,19 @@ class PMEngine:
                 return
 
             self.logger.info("pm_engine", f"Verification passed: '{spec_name}' → done")
-            self.state_machine.transition(spec_name, "done")
+            if self.state_machine.transition(spec_name, "done"):
+                # add-done-duration-persist（D1/D2）：done 落定时刻把总耗时快照进
+                # STATE.md，使耗时不再依赖易失的 run 产物（RUNS_KEEP 清理后归零）。
+                # 求和口径与 spec_summary 一致（duration_seconds 求和、含归档），
+                # 保证写入值 = 当时列表页显示值。仅在转换成功后写入，重复事件回放
+                # （done→done 非法转换返回 False）不会重复覆盖。
+                total_duration = sum(
+                    int(r.get("duration_seconds") or 0)
+                    for r in get_runs(self.project_root, spec_name,
+                                      include_archive=True)
+                )
+                self.state_machine.update_spec(spec_name,
+                                               {"total_duration": total_duration})
             # 同步触发 spec_done 处理（fix done → 自动重新验证父 SPEC）。
             # 背景：daemon 启动时 full_scan 在 EventBus watcher 启动前同步调度，
             # 阻塞完成整个 fix 生命周期，使 verified→done 变化在快照初始化前发生，

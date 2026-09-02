@@ -849,3 +849,53 @@ class TestTaskCompletionGate(unittest.TestCase):
         self.assertIn("1.2", blocker)
         engine._on_spec_verified("fix-demo")
         self.sm.transition.assert_not_called()
+
+
+class TestDoneDurationPersist(unittest.TestCase):
+    """add-done-duration-persist 2.1/2.2：verified→done 时写入 total_duration。"""
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir()
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.project_root / "STATE.md", self.logger)
+        ar = MagicMock()
+        # worktree 查找返回 None，使 _read_implementer_result 走项目根回退路径
+        ar.worktree_manager.find_implementer_worktree.return_value = None
+        self.engine = PMEngine(
+            self.sm, ar, {}, self.project_root, self.logger,
+        )
+        self.sm.add_spec("demo", {"priority": 5})
+        for st in ("ready", "implementing", "implemented", "testing", "verified"):
+            self.sm.transition("demo", st)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_run(self, run_id, start_ts, duration):
+        """创建 run 产物并定 mtime，使 duration_seconds = duration。"""
+        runs_dir = self.project_root / ".fenix" / "runs"
+        runs_dir.mkdir(exist_ok=True)
+        p = runs_dir / f"{run_id}.jsonl"
+        p.write_text("", encoding="utf-8")
+        end_ts = start_ts + duration
+        os.utime(p, (end_ts, end_ts))
+
+    def test_done_writes_summed_duration(self):
+        """impl 100s + planner-judge 50s → STATE.md 写入 total_duration: 150。"""
+        self._make_run("impl-demo-1789000000-a1", 1789000000, 100)
+        self._make_run("planner-judge-demo-1789000050-a1", 1789000050, 50)
+        self.engine._on_spec_verified("demo")
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "done")
+        self.assertEqual(str(entry["total_duration"]), "150")
+
+    def test_done_writes_zero_without_runs(self):
+        """无任何 run 产物（含归档）→ 写入 total_duration: 0。"""
+        self.engine._on_spec_verified("demo")
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "done")
+        self.assertEqual(str(entry["total_duration"]), "0")

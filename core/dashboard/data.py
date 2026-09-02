@@ -1367,9 +1367,24 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
     vp = parse_verify_progress(project_root, spec_name)
     # 含归档：run 产物被清理后列表页耗时统计不缩水
     runs = get_runs(project_root, spec_name, include_archive=True)
-    # 耗时 = 该 spec 全部运行记录（implementer/verifier/planner/tester 等）的
-    # duration_seconds 求和；无任何运行记录时为 0。
-    total_duration = sum(int(r.get("duration_seconds") or 0) for r in runs)
+    # add-done-duration-persist（D4）：done/pushed 的 SPEC 优先读 STATE.md 固化的
+    # total_duration（done 时刻快照，不随 run 产物清理归零）；parse_state 返回
+    # 字符串，须 int 容错转换，脏值/缺失回退实时求和。非完成状态忽略字段，
+    # 运行中的 SPEC 耗时应持续增长，冻结值仅对终态有意义（D5）。
+    persisted = None
+    if entry.get("status") in ("done", "pushed"):
+        raw = entry.get("total_duration")
+        if raw is not None:
+            try:
+                persisted = int(raw)
+            except (TypeError, ValueError):
+                persisted = None
+    if persisted is None:
+        # 耗时 = 该 spec 全部运行记录（implementer/verifier/planner/tester 等）的
+        # duration_seconds 求和；无任何运行记录时为 0。
+        total_duration = sum(int(r.get("duration_seconds") or 0) for r in runs)
+    else:
+        total_duration = persisted
     # add-fast-track-mode（task 7.1）：执行模式（读 .openspec.yaml，缺省 full）
     from core.openspec_mode import read_spec_mode
     mode = read_spec_mode(project_root, spec_name)

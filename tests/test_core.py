@@ -24,6 +24,7 @@ Run with: python3 -m pytest tests/test_core.py -v
 from tests.test_state_machine import (
     TestStateParser,
     TestStateParserHalfWriteDefense,
+    TestStateParserTotalDuration,
     TestStateMachine,
     TestSpecStatus,
     TestVerifiedTestingEscapeHatch,
