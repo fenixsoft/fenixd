@@ -32,8 +32,8 @@
 
 ## 6. fenix-new 模式选择
 
-- [ ] 6.1 更新项目源 `skills/fenix-new/SKILL.md`：复杂度评估标准（影响面/模块数/UI 或迁移/场景数量）、明确建议话术、`--fast-track` / `--full` 参数、确认后写入 `.openspec.yaml` mode 行
-- [ ] 6.2 同步安装副本 `~/.claude/skills/fenix-new/`（两份内容一致）
+- [x] 6.1 更新项目源 `skills/fenix-new/SKILL.md`：复杂度评估标准（影响面/模块数/UI 或迁移/场景数量）、明确建议话术、`--fast-track` / `--full` 参数、确认后写入 `.openspec.yaml` mode 行
+- [x] 6.2 同步安装副本 `~/.claude/skills/fenix-new/`（两份内容一致）
 
 ## 7. Dashboard 模式标记
 
