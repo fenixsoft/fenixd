@@ -199,7 +199,15 @@ class PMEngine:
                     f"Skipping '{spec_name}': dependencies not satisfied",
                 )
                 return
-            self._enqueue(spec_name, "implementer")
+            # add-fast-track-mode（task 3.1）：按 .openspec.yaml mode 选择派发类型。
+            # fast-track spec 派发 fast-track agent（单 run 全包），其余派 implementer。
+            from core.openspec_mode import read_spec_mode
+            agent_type = (
+                "fast-track"
+                if read_spec_mode(self.project_root, spec_name) == "fast-track"
+                else "implementer"
+            )
+            self._enqueue(spec_name, agent_type)
         finally:
             # 派发完成（成功或失败），从 pending 中移除，允许未来派发
             self._pending_dispatches.discard(spec_name)
@@ -1419,7 +1427,14 @@ class PMEngine:
                         "branch": None,
                         "error": f"Auto-recovered from stuck implementing ({b['elapsed_minutes']} min)",
                     })
-                    self._enqueue(spec_name, "implementer")
+                    # add-fast-track-mode（task 3.1）：实现态恢复按 mode 派发对应 agent
+                    from core.openspec_mode import read_spec_mode
+                    _at = (
+                        "fast-track"
+                        if read_spec_mode(self.project_root, spec_name) == "fast-track"
+                        else "implementer"
+                    )
+                    self._enqueue(spec_name, _at)
                     self.register_recovery_watch(
                         spec_name, f"auto-recovered from stuck {stuck_status}")
                 elif stuck_status == "testing":
@@ -1839,6 +1854,10 @@ class PMEngine:
 
     def _report_stash_pop_conflict(self, spec_name: str, conflict_files: list) -> None:
         return self._dispatcher._report_stash_pop_conflict(spec_name, conflict_files)
+
+    def _run_fast_track_worker(self, spec_name: str) -> None:
+        """fast-track 单 run 全包 worker（add-fast-track-mode D1/D4/D5/D6）。"""
+        return self._dispatcher._run_fast_track_worker(spec_name)
 
     def _recovery_watch_path(self) -> Path:
         return self._recovery._recovery_watch_path()

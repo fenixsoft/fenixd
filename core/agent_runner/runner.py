@@ -254,6 +254,16 @@ class AgentRunner:
         run_id = f"planner-{mode}-{spec_name}-{int(time.time())}"
         return self._execute_agent(spec_name, f"planner-{mode}", run_id)
 
+    def run_fast_track(self, spec_name: str) -> AgentRunResult:
+        """Run the Fast-Track Agent for a SPEC (single run: implement + verify).
+
+        Fast-track run 同时完成实现与验证（实现+场景设计+验证+判定）。
+        生成的分支与成功路径 merge 语义与 implementer 一致；budget 沿用
+        impl_run_budget（走 impl- 前缀 run_id，复用既有计数/对账路径）。
+        """
+        run_id = f"impl-{spec_name}-{int(time.time())}"
+        return self._execute_agent(spec_name, "fast-track", run_id)
+
     def run_administrator(self, signal: dict) -> AdminDisposition:
         """唤起 Administrator Agent 处置困境信号（administrator-agent spec）。
 
@@ -621,7 +631,8 @@ class AgentRunner:
                 # 切换打点依赖 last_provider_used。
                 self._record_daily_provider_attempt(provider_name)
 
-            reuse_worktree = (agent_type == "implementer" and wt_path is not None)
+            # fast-track 与 implementer 同语义：跨 attempt 复用同一 worktree（失败续跑）
+            reuse_worktree = (agent_type in ("implementer", "fast-track") and wt_path is not None)
 
             # 跨 attempt 切换打点（design D5 / spec failover-dispatch「切换留痕」）：
             # 本次实际使用的 provider 与上一次不同 → 输出 "provider switched" 日志；
@@ -794,9 +805,9 @@ class AgentRunner:
                 # add-worktree-test-server（D2 终态回收）：worktree 清理前先回收其 dev-server。
                 self._v2_stop_for_worktree(wt_path)
                 # fix-zero-change-blindspot：cleanup 前取证 worktree dirty 状态
-                #（仅 implementer——零变更哨只作用于实现器）。
+                #（仅 implementer / fast-track——零变更哨对两者都生效）。
                 wt_dirty: list = []
-                if agent_type == "implementer":
+                if agent_type in ("implementer", "fast-track"):
                     st = subprocess.run(
                         ["git", "-C", str(wt_path), "status", "--porcelain"],
                         capture_output=True, text=True, timeout=30,

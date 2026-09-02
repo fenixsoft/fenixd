@@ -330,6 +330,113 @@ def exempted_assertions(report: dict) -> List[dict]:
     return rows
 
 
+# ── fast-track 统一结果文件硬校验（add-fast-track-mode / D6）────────────
+# 三要素：
+#   ① 报告结构完整（场景/结果/判定字段齐全）
+#   ② 场景全量执行（设计集与执行集一致，无静默遗漏；豁免走既有豁免规则）
+#   ③ 逐场景证据存在性（非 PASS 场景带分类与证据）
+# agent 文本宣称不作为通过依据——框架只信可校验的输出（与完整模式 verifier
+# 的判定信任模型一致，design D6）。
+
+
+def _scenario_evidence_ok(sc: dict) -> bool:
+    """逐场景证据存在性：非 PASS 场景 MUST 带 classification 与 evidence。
+
+    与 fast_track_result 的 SCENARIO_STATUSES 对齐：status ∈
+    {pass, fail, error, warning, exempt}；非 PASS 集合 {fail, error, warning}
+    复用本模块 NON_PASS_STATUSES 判定。exempt 场景单独走豁免合法性检查
+    （_exempt_classification_ok），不在此要求 evidence（豁免＝不必提交证据）。
+    """
+    if not isinstance(sc, dict):
+        return False
+    status = sc.get("status")
+    if status not in _FAST_TRACK_SCENARIO_STATUSES:
+        return False
+    if status in NON_PASS_STATUSES:
+        if sc.get("classification") not in VERDICT_CLASSES:
+            return False
+        return _evidence_present(sc.get("evidence"))
+    return True
+
+
+_FAST_TRACK_SCENARIO_STATUSES = ("pass", "fail", "error", "warning", "exempt")
+
+# 豁免合法性：exempt 场景的分类 MUST 为非 product-bug（豁免逃逸检查，D6）
+_EXEMPT_ALLOWED_CLASSES = ("test-defect", "flaky", "env")
+
+
+def _exempt_classification_ok(sc: dict) -> bool:
+    """豁免合法性：status=exempt 的场景分类必须非 product-bug。"""
+    if sc.get("status") != "exempt":
+        return True
+    return sc.get("classification") in _EXEMPT_ALLOWED_CLASSES
+
+
+def validate_fast_track_result(result: dict, designed_ids: Optional[list] = None) -> dict:
+    """确定性校验 fast-track 统一结果文件的三要素（add-fast-track-mode D6）。
+
+    Args:
+        result: 解析后的 .fenix-run-result.json dict（含 verification 段）。
+        designed_ids: 设计场景 ID 集合（来自 test_scenarios.json，或 fast-track
+            结果自带验证段的场景 ID）。None/空时跳过「全量执行」比对（无设计集
+            可比对时无法证明静默遗漏，仅做结构与证据校验）。
+
+    Returns:
+        {"ok": bool, "violations": [str, ...]}
+        - 结构非法（缺 verification / 缺 scenarios / verdict 非法）→ 单条 violation
+          （fail-closed，不静默通过）
+        - 场景全量执行：每个设计 ID 必须在执行集中出现；缺失 → violation 列出
+        - 逐场景证据：每个非 PASS 场景缺分类/证据 → violation 列出
+        - 豁免逃逸：status=exempt 且分类 product-bug → violation（视为 bug 未修复）
+    """
+    violations: list = []
+    if not isinstance(result, dict):
+        return {"ok": False, "violations": ["fast-track 结果文件非对象"]}
+    verification = result.get("verification")
+    if not isinstance(verification, dict):
+        return {"ok": False, "violations": ["fast-track 结果文件缺 verification 段"]}
+    scenarios = verification.get("scenarios")
+    if not isinstance(scenarios, list) or not scenarios:
+        return {"ok": False, "violations": ["fast-track 结果文件 scenarios 缺失或为空"]}
+    verdict = verification.get("verdict")
+    if verdict not in ("verified", "bug-found"):
+        return {"ok": False, "violations": [f"fast-track 结果文件 verdict 非法: {verdict!r}"]}
+
+    for idx, sc in enumerate(scenarios):
+        if not isinstance(sc, dict):
+            violations.append(f"场景 #{idx + 1} 非对象")
+            continue
+        sid = sc.get("scenario_id") or f"#{idx + 1}"
+        if not _scenario_evidence_ok(sc):
+            violations.append(
+                f"场景 {sid} 证据缺失：非 PASS 场景 MUST 带合法 classification 与 evidence"
+            )
+        if not _exempt_classification_ok(sc):
+            violations.append(
+                f"场景 {sid} 豁免逃逸：status=exempt 但分类为 product-bug"
+                "（豁免不得掩盖产品缺陷，视为 bug 未修复）"
+            )
+
+    # 场景全量执行：设计集与执行集一致，无静默遗漏
+    executed_ids = {
+        str(sc.get("scenario_id"))
+        for sc in scenarios
+        if isinstance(sc, dict) and sc.get("scenario_id")
+    }
+    if designed_ids:
+        missing = [
+            str(d) for d in designed_ids
+            if str(d) and str(d) not in executed_ids
+        ]
+        if missing:
+            violations.append(
+                "场景静默遗漏：" + "、".join(missing)
+                + "（设计集存在但执行集缺失，框架校验不通过）"
+            )
+
+    return {"ok": len(violations) == 0, "violations": violations}
+
+
 def load_report(project_root, spec_name) -> Optional[dict]:
     """读取 .fenix/verify-progress/<spec>/report.json；不可用返回 None。"""
     path = (

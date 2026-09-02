@@ -595,6 +595,24 @@ export default function SpecListPage() {
       },
     },
     {
+      title: '模式',
+      dataIndex: 'mode',
+      key: 'mode',
+      width: '9%',
+      sorter: (a: SpecSummary, b: SpecSummary) => (a.mode || '').localeCompare(b.mode || ''),
+      onHeaderCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
+      onCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
+      // add-fast-track-mode（task 7.2）：执行模式标记——fast-track 与 full 可辨识，
+      // 存量无 mode 字段的 spec 按缺省 full 展示「完整模式」等价标记
+      render: (v: string | null | undefined) => (
+        v === 'fast-track' ? (
+          <Tag color="cyan" style={{ marginInlineEnd: 0 }}>fast-track</Tag>
+        ) : (
+          <Tag style={{ marginInlineEnd: 0 }}>完整模式</Tag>
+        )
+      ),
+    },
+    {
       title: '名称',
       dataIndex: 'name',
       key: 'name',

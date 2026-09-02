@@ -134,8 +134,8 @@ class WorktreeManager:
             self._active_worktrees.add(str(wt_path))
             self._wt_branches[str(wt_path)] = branch
 
-            # Seed SPEC files for implementer worktrees
-            if agent_type == "implementer":
+            # Seed SPEC files for implementer and fast-track worktrees
+            if agent_type in ("implementer", "fast-track"):
                 self._seed_spec(spec_name, wt_path)
 
             self.logger.info("worktree_manager", f"Worktree created: {wt_path}")

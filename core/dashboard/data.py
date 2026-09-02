@@ -1370,9 +1370,13 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
     # 耗时 = 该 spec 全部运行记录（implementer/verifier/planner/tester 等）的
     # duration_seconds 求和；无任何运行记录时为 0。
     total_duration = sum(int(r.get("duration_seconds") or 0) for r in runs)
+    # add-fast-track-mode（task 7.1）：执行模式（读 .openspec.yaml，缺省 full）
+    from core.openspec_mode import read_spec_mode
+    mode = read_spec_mode(project_root, spec_name)
     return {
         "name": spec_name,
         "status": entry.get("status"),
+        "mode": mode,
         "priority": entry.get("priority"),
         "created": entry.get("created"),
         "updated": entry.get("updated"),
@@ -1642,9 +1646,13 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     runs = get_runs(project_root, spec_name, include_archive=True)
     verdict = parse_verdict(project_root, spec_name)
     spec_status = entry.get("status", "")
+    # add-fast-track-mode（task 7.1）：执行模式（读 .openspec.yaml，缺省 full）
+    from core.openspec_mode import read_spec_mode
+    mode = read_spec_mode(project_root, spec_name)
     return {
         "name": spec_name,
         "status": entry.get("status"),
+        "mode": mode,
         "priority": entry.get("priority"),
         "created": entry.get("created"),
         "updated": entry.get("updated"),
