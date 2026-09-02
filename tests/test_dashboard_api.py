@@ -389,3 +389,189 @@ class TestProjectLifecycleAPI:
             assert status == 200 and body["ok"] is False and "tmux gone" in body["error"]
         finally:
             srv.stop()
+
+
+class TestProjectDescribeAPI:
+    """测试 /api/project/describe 端点"""
+
+    def _make_server(self, tmp_path, registry):
+        return _TestServer(registry, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+
+    def test_describe_unknown_project_returns_400(self, tmp_path):
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [], "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post("/api/project/describe?project=ghost")
+            assert status == 400 and body["error"] == "unknown project"
+        finally:
+            srv.stop()
+
+    def test_describe_project_not_found_returns_404(self, tmp_path):
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(tmp_path / "nonexistent")}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post("/api/project/describe?project=proj-a")
+            assert status == 404 and body["error"] == "project not found"
+        finally:
+            srv.stop()
+
+    def test_describe_success_with_readme(self, tmp_path, monkeypatch):
+        proot = make_project(tmp_path)
+        # 创建 README.md
+        (proot / "README.md").write_text("# 测试项目\n这是一个测试项目，用于演示功能。", encoding="utf-8")
+
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+
+        # Mock subprocess.run
+        mock_result = type('MockResult', (), {
+            'returncode': 0,
+            'stdout': '这是一个由测试生成的项目简介，用于验证 describe 接口功能。',
+            'stderr': ''
+        })()
+        monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: mock_result)
+
+        try:
+            status, body = srv.post("/api/project/describe?project=proj-a")
+            assert status == 200
+            assert body["ok"] is True
+            assert "description" in body
+            assert body["description"] == "这是一个由测试生成的项目简介，用于验证 describe 接口功能。"
+
+            # 验证配置已写入
+            config_path = proot / ".fenix" / "config.yaml"
+            assert config_path.exists()
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+            assert config["project"]["description"] == "这是一个由测试生成的项目简介，用于验证 describe 接口功能。"
+        finally:
+            srv.stop()
+
+    def test_describe_success_without_readme(self, tmp_path, monkeypatch):
+        proot = make_project(tmp_path)
+        # 不创建 README.md，创建 package.json 作为 fallback
+        (proot / "package.json").write_text('{"name": "test-project", "version": "1.0.0"}', encoding="utf-8")
+
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+
+        # Mock subprocess.run
+        mock_result = type('MockResult', (), {
+            'returncode': 0,
+            'stdout': '这是一个基于 package.json 生成的项目简介。',
+            'stderr': ''
+        })()
+        monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: mock_result)
+
+        try:
+            status, body = srv.post("/api/project/describe?project=proj-a")
+            assert status == 200
+            assert body["ok"] is True
+            assert body["description"] == "这是一个基于 package.json 生成的项目简介。"
+        finally:
+            srv.stop()
+
+    def test_describe_timeout_returns_error(self, tmp_path, monkeypatch):
+        proot = make_project(tmp_path)
+        (proot / "README.md").write_text("# 测试项目", encoding="utf-8")
+
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+
+        # Mock subprocess.run to raise TimeoutExpired
+        import subprocess
+        def mock_run(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=args[0], timeout=120)
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        try:
+            status, body = srv.post("/api/project/describe?project=proj-a")
+            assert status == 200
+            assert "error" in body
+            assert "超时" in body["error"]
+
+            # 验证配置未被修改
+            config_path = proot / ".fenix" / "config.yaml"
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+            assert "description" not in config.get("project", {})
+        finally:
+            srv.stop()
+
+    def test_describe_nonzero_exit_returns_error(self, tmp_path, monkeypatch):
+        proot = make_project(tmp_path)
+        (proot / "README.md").write_text("# 测试项目", encoding="utf-8")
+
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+
+        # Mock subprocess.run with non-zero exit code
+        mock_result = type('MockResult', (), {
+            'returncode': 1,
+            'stdout': '',
+            'stderr': 'Error: Claude CLI failed'
+        })()
+        monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: mock_result)
+
+        try:
+            status, body = srv.post("/api/project/describe?project=proj-a")
+            assert status == 200
+            assert "error" in body
+            assert "非零退出码" in body["error"]
+
+            # 验证配置未被修改
+            config_path = proot / ".fenix" / "config.yaml"
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+            assert "description" not in config.get("project", {})
+        finally:
+            srv.stop()
+
+    def test_describe_empty_output_returns_error(self, tmp_path, monkeypatch):
+        proot = make_project(tmp_path)
+        (proot / "README.md").write_text("# 测试项目", encoding="utf-8")
+
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+
+        # Mock subprocess.run with empty output
+        mock_result = type('MockResult', (), {
+            'returncode': 0,
+            'stdout': '',
+            'stderr': ''
+        })()
+        monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: mock_result)
+
+        try:
+            status, body = srv.post("/api/project/describe?project=proj-a")
+            assert status == 200
+            assert "error" in body
+            assert "为空" in body["error"]
+
+            # 验证配置未被修改
+            config_path = proot / ".fenix" / "config.yaml"
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+            assert "description" not in config.get("project", {})
+        finally:
+            srv.stop()

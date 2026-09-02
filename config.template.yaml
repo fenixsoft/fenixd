@@ -11,6 +11,7 @@ project:
   name: "{{PROJECT_NAME}}"           # Project name (used in reports)
   type: "{{PROJECT_TYPE}}"           # web | cli | library | api
   root: "."                       # Project root relative to .fenix/
+  # description: ""              # 项目简介，由 fenix-setup 自动生成，可在 Dashboard 修改
 
 # ---- Scheduling ----
 schedule:

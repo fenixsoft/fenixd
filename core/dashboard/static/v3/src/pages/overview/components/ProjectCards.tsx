@@ -227,6 +227,20 @@ export default function ProjectCards({
                 description={
                   project.exists ? (
                     <div>
+                      {/* 项目简介：单行 ellipsis，空值占位 */}
+                      {project.description ? (
+                        <Typography.Paragraph
+                          ellipsis={{ rows: 1 }}
+                          style={{ marginBottom: 0, fontSize: 12 }}
+                          type="secondary"
+                        >
+                          {project.description}
+                        </Typography.Paragraph>
+                      ) : (
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          暂无简介
+                        </Typography.Text>
+                      )}
                       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                         {project.path}
                       </Typography.Text>

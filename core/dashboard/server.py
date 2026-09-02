@@ -848,6 +848,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/runs/") and path.endswith("/watch"):
             rest = urllib.parse.unquote(path[len("/api/runs/"):-len("/watch")])
             self._json(self._api_run_watch(rest, query, watch=True))
+        elif path == "/api/project/describe":
+            self._api_project_describe(query)
         elif path.endswith("/start"):
             # POST /api/projects/<name>/start —— 启动项目 daemon
             self._api_project_lifecycle("start", path, query)
@@ -920,6 +922,96 @@ class DashboardHandler(BaseHTTPRequestHandler):
         config["scope"] = result["scope"]
         config["path"] = result["path"]
         self._json(config)
+
+    def _api_project_describe(self, query):
+        """POST /api/project/describe?project=<name>
+
+        由后端调用 headless claude CLI 生成项目简介。
+        - 读项目根 README.md（≤8KB 截断，缺失时改读 package.json/pyproject.toml 前 4KB）
+        - 拼固定中文指令 prompt
+        - subprocess.run(["claude", "-p", prompt], cwd=项目根, timeout=120, shell=False)
+        - 成功经 write_config 落盘返回 {ok, description}
+        - 非零退出/超时/空输出返回 {error} 且不改 config
+        """
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(400, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+
+        proot = Path(project["path"])
+        # 读取项目文件内容
+        content = ""
+        readme_path = proot / "README.md"
+        if readme_path.exists():
+            try:
+                raw = readme_path.read_bytes()[:8192]  # ≤8KB 截断
+                content = raw.decode("utf-8", errors="replace")
+            except (OSError, UnicodeDecodeError):
+                content = ""
+        else:
+            # 缺失时改读 package.json/pyproject.toml 前 4KB
+            for fallback in ["package.json", "pyproject.toml"]:
+                fallback_path = proot / fallback
+                if fallback_path.exists():
+                    try:
+                        raw = fallback_path.read_bytes()[:4096]  # 前 4KB
+                        content = raw.decode("utf-8", errors="replace")
+                        break
+                    except (OSError, UnicodeDecodeError):
+                        continue
+
+        # 拼固定中文指令 prompt
+        prompt = f"""你是一个项目简介生成器。请根据以下项目信息生成一句约100字的中文项目简介。
+
+项目信息：
+{content}
+
+要求：
+1. 生成的简介应该是纯文本，不要包含任何标记语言
+2. 简介应该概括项目的主要用途和特点
+3. 简介长度控制在100字左右
+4. 只输出简介文本，不要有其他内容"""
+
+        # 调用 headless claude CLI
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["claude", "-p", prompt],
+                cwd=str(proot),
+                timeout=120,
+                shell=False,
+                capture_output=True,
+                text=True
+            )
+        except subprocess.TimeoutExpired:
+            self._json({"error": "生成超时"})
+            return
+        except Exception as e:
+            self._json({"error": f"调用 claude CLI 失败: {str(e)}"})
+            return
+
+        # 检查返回结果
+        if result.returncode != 0:
+            self._json({"error": f"claude CLI 返回非零退出码: {result.returncode}"})
+            return
+
+        description = result.stdout.strip()
+        if not description:
+            self._json({"error": "生成的简介为空"})
+            return
+
+        # 写入配置
+        write_result = dashboard_data.write_config(
+            proot, {"description": description}, scope="project"
+        )
+        if not write_result["ok"]:
+            self._json({"error": f"配置写入失败: {write_result.get('error', '未知错误')}"})
+            return
+
+        self._json({"ok": True, "description": description})
 
     def _project_from_query(self, query):
         name = query.get("project", [None])[0]

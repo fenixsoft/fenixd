@@ -152,9 +152,6 @@ class TestGetRunsAgentType(unittest.TestCase):
         self.runs_dir = Path(self.tmpdir) / ".fenix" / "runs"
         self.runs_dir.mkdir(parents=True)
 
-    def tearDown(self):
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
     def _write_run(self, run_id: str):
         (self.runs_dir / f"{run_id}.jsonl").write_text('{"type": "result"}\n', encoding="utf-8")
 
@@ -183,3 +180,154 @@ class TestGetRunsAgentType(unittest.TestCase):
         runs = {r["run_id"]: r["agent_type"] for r in get_runs(self.tmpdir)}
         for rid, at in expected.items():
             self.assertEqual(runs[rid], at, f"{rid} should infer {at}")
+
+
+class TestDashboardDescriptionConfig(unittest.TestCase):
+    """Dashboard description 配置：description 分支必须正确工作。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.config_dir = Path(self.tmpdir) / ".fenix"
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.config_path = self.config_dir / "config.yaml"
+
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+
+    def test_deep_merge_managed_description_writes_to_project_description(self):
+        """_deep_merge_managed 的 description 分支：patch 顶层 description 写入 merged["project"]["description"]"""
+        from core.dashboard.data import _deep_merge_managed
+
+        # 初始配置
+        raw_config = {
+            "project": {"name": "test", "type": "web"},
+            "llm": {"providers": []}
+        }
+        patch = {"description": "测试项目简介"}
+
+        result = _deep_merge_managed(raw_config, patch)
+
+        # 验证 description 被正确写入 project 节
+        self.assertIn("project", result)
+        self.assertEqual(result["project"]["description"], "测试项目简介")
+        # 验证 project 节其它键保留
+        self.assertEqual(result["project"]["name"], "test")
+        self.assertEqual(result["project"]["type"], "web")
+        # 验证 llm 键保留
+        self.assertEqual(result["llm"], {"providers": []})
+
+    def test_deep_merge_managed_description_non_string_ignored(self):
+        """_deep_merge_managed 的 description 分支：非字符串类型的 description 被忽略"""
+        from core.dashboard.data import _deep_merge_managed
+
+        raw_config = {"project": {"name": "test"}}
+        patch = {"description": 123}  # 非字符串
+
+        result = _deep_merge_managed(raw_config, patch)
+
+        # 验证 description 键未被写入（因为非字符串）
+        self.assertNotIn("description", result.get("project", {}))
+
+    def test_write_config_description_writes_to_project_description(self):
+        """write_config 的 description 分支：patch 顶层 description 写入 project.description"""
+        from core.dashboard.data import write_config
+
+        # 先写入基础配置
+        base_patch = {
+            "project": {"name": "test", "type": "web"}
+        }
+        write_config(self.config_dir.parent, base_patch)
+
+        # 写入 description
+        desc_patch = {"description": "测试项目简介"}
+        result = write_config(self.config_dir.parent, desc_patch)
+
+        self.assertTrue(result["ok"])
+
+        # 验证配置文件包含 description
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            import yaml
+            config = yaml.safe_load(f)
+
+        self.assertEqual(config["project"]["description"], "测试项目简介")
+
+    def test_read_effective_config_extracts_description(self):
+        """read_effective_config 提取 project.description 到顶层 description"""
+        from core.dashboard.data import read_effective_config
+
+        # 写入包含 description 的配置
+        config = {
+            "project": {"name": "test", "type": "web", "description": "测试项目简介"},
+            "schedule": {"poll_interval_minutes": 30, "daily_report_time": "09:00"},
+            "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50, "daily_run_limit": 50, "run_timeout_seconds": 1800},
+            "worktree": {"base_dir": ".claude/worktrees", "implement_branch_prefix": "fenix", "verify_branch_prefix": "fenix/verify"},
+            "gates": {"require_push_approval": True},
+            "commands": {"test": "echo OK", "build": "echo OK", "start": "echo OK"},
+            "logging": {"dir": ".fenix/logs", "level": "INFO", "max_size_mb": 10, "backup_count": 5, "retain_days": 30},
+        }
+
+        import yaml
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, allow_unicode=True)
+
+        result = read_effective_config(self.config_dir.parent)
+
+        # 验证 description 被提取到顶层
+        self.assertEqual(result["description"], "测试项目简介")
+
+    def test_read_effective_config_missing_description_returns_empty(self):
+        """read_effective_config 缺失 description 时返回空字符串"""
+        from core.dashboard.data import read_effective_config
+
+        # 写入不包含 description 的配置
+        config = {
+            "project": {"name": "test", "type": "web"},  # 无 description
+            "schedule": {"poll_interval_minutes": 30, "daily_report_time": "09:00"},
+            "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50, "daily_run_limit": 50, "run_timeout_seconds": 1800},
+            "worktree": {"base_dir": ".claude/worktrees", "implement_branch_prefix": "fenix", "verify_branch_prefix": "fenix/verify"},
+            "gates": {"require_push_approval": True},
+            "commands": {"test": "echo OK", "build": "echo OK", "start": "echo OK"},
+            "logging": {"dir": ".fenix/logs", "level": "INFO", "max_size_mb": 10, "backup_count": 5, "retain_days": 30},
+        }
+
+        import yaml
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, allow_unicode=True)
+
+        result = read_effective_config(self.config_dir.parent)
+
+        # 验证 description 为空字符串
+        self.assertEqual(result["description"], "")
+
+    def test_project_summary_includes_description(self):
+        """project_summary 包含 description 字段"""
+        from core.dashboard.data import project_summary
+        from core.state_machine import StateMachine
+
+        # 创建 STATE.md
+        state_path = Path(self.tmpdir) / "STATE.md"
+        with open(state_path, "w", encoding="utf-8") as f:
+            f.write("# Fenix Project State\n\n## Specs\n\n### test-spec\n- status: ready\n- priority: 1\n- created: 2026-01-01T00:00:00+00:00\n- updated: 2026-01-01T00:00:00+00:00\n- error: null\n- depends_on: null\n")
+
+        # 写入配置
+        config = {
+            "project": {"name": "test-project", "type": "web", "description": "测试项目简介"},
+            "schedule": {"poll_interval_minutes": 30, "daily_report_time": "09:00"},
+            "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50, "daily_run_limit": 50, "run_timeout_seconds": 1800},
+            "worktree": {"base_dir": ".claude/worktrees", "implement_branch_prefix": "fenix", "verify_branch_prefix": "fenix/verify"},
+            "gates": {"require_push_approval": True},
+            "commands": {"test": "echo OK", "build": "echo OK", "start": "echo OK"},
+            "logging": {"dir": ".fenix/logs", "level": "INFO", "max_size_mb": 10, "backup_count": 5, "retain_days": 30},
+        }
+
+        import yaml
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, allow_unicode=True)
+
+        result = project_summary(self.tmpdir, "test-project", self.tmpdir)
+
+        # 验证 description 字段存在且正确
+        self.assertIn("description", result)
+        self.assertEqual(result["description"], "测试项目简介")
