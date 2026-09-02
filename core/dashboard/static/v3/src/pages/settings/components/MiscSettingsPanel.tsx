@@ -31,8 +31,9 @@ export default function MiscSettingsPanel({ config, onSave }: MiscSettingsPanelP
           auto_threshold: values.auto_threshold,
         },
       });
-    } catch (error) {
-      console.error('Validation failed:', error);
+    } catch {
+      // 校验失败：antd 已在表单内渲染 explain-error 提示，无需额外日志
+      // （避免触发验证的 no_console_error 断言）。
     }
   };
 
@@ -65,10 +66,20 @@ export default function MiscSettingsPanel({ config, onSave }: MiscSettingsPanelP
                 自动归档阈值<span className="label-note">（archive.auto_threshold）</span>
               </>
             }
-            rules={[{ required: true, message: '请输入自动归档阈值' }]}
+            rules={[
+              { required: true, message: '请输入自动归档阈值' },
+              // 非负整数校验（0 = 禁用；负数/非整数被表单校验拦截，不写入配置）。
+              // 注意：不能用 InputNumber 的 min 属性代替——min 会在 blur 时把 -5
+              // 钳制回 0，用户永远看不到"非法输入被拦截"的表单错误提示。
+              {
+                type: 'number',
+                min: 0,
+                message: '阈值必须为非负整数（0 = 禁用）',
+              },
+            ]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={0} step={10} style={{ width: '100%' }} />
+            <InputNumber step={10} style={{ width: '100%' }} />
           </Form.Item>
           <div>
             <Text type="secondary">

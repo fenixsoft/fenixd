@@ -2067,6 +2067,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4},
         "gates": {"approve_mode": "manual"},
         "runs": {"keep": 50},
+        # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
+        "archive": {"auto_threshold": 50},
         "scope": scope,
         "raw_exists": False,
         "sources": _managed_key_sources({}),
@@ -2127,6 +2129,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
     runs_raw = raw.get("runs")
     if isinstance(runs_raw, dict) and isinstance(runs_raw.get("keep"), int) and runs_raw["keep"] >= 1:
         result["runs"] = {"keep": runs_raw["keep"]}
+    archive_raw = raw.get("archive")
+    if isinstance(archive_raw, dict):
+        from core.config import ConfigLoader as _CL
+        result["archive"] = {"auto_threshold": _CL.effective_auto_archive_threshold(raw)}
     return result
 
 
