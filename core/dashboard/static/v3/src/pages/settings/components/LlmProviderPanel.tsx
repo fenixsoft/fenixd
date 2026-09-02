@@ -86,7 +86,7 @@ export default function LlmProviderPanel({ config, onSave }: LlmProviderPanelPro
                   }
                 >
                   <Row gutter={16}>
-                    <Col span={12}>
+                    <Col xs={24} md={12}>
                       <Form.Item
                         name={[field.name, 'name']}
                         label="名称"
@@ -95,7 +95,7 @@ export default function LlmProviderPanel({ config, onSave }: LlmProviderPanelPro
                         <Input placeholder="例如：openai" />
                       </Form.Item>
                     </Col>
-                    <Col span={12}>
+                    <Col xs={24} md={12}>
                       <Form.Item
                         name={[field.name, 'baseurl']}
                         label="Base URL"
@@ -106,7 +106,7 @@ export default function LlmProviderPanel({ config, onSave }: LlmProviderPanelPro
                     </Col>
                   </Row>
                   <Row gutter={16}>
-                    <Col span={12}>
+                    <Col xs={24} md={12}>
                       <Form.Item
                         name={[field.name, 'apikey']}
                         label="API Key"
@@ -115,7 +115,7 @@ export default function LlmProviderPanel({ config, onSave }: LlmProviderPanelPro
                         <Input.Password placeholder="sk-..." />
                       </Form.Item>
                     </Col>
-                    <Col span={12}>
+                    <Col xs={24} md={12}>
                       <Form.Item
                         name={[field.name, 'model']}
                         label="默认模型名"
@@ -139,17 +139,17 @@ export default function LlmProviderPanel({ config, onSave }: LlmProviderPanelPro
                         <>
                           {envFields.map((envField) => (
                             <Row key={envField.key} gutter={8} align="middle" style={{ marginBottom: 8 }}>
-                              <Col span={12}>
+                              <Col xs={11} md={12}>
                                 <Form.Item name={[envField.name, 'key']} noStyle>
                                   <Input placeholder="参数名（如 CLAUDE_CODE_MAX_CONTEXT_TOKENS）" />
                                 </Form.Item>
                               </Col>
-                              <Col span={11}>
+                              <Col xs={10} md={11}>
                                 <Form.Item name={[envField.name, 'value']} noStyle>
                                   <Input placeholder="值（如 1000000）" />
                                 </Form.Item>
                               </Col>
-                              <Col span={1} style={{ textAlign: 'right' }}>
+                              <Col xs={3} md={1} style={{ textAlign: 'right' }}>
                                 <Button
                                   type="text"
                                   danger
