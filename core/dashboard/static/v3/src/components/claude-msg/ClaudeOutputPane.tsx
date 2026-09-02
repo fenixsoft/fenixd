@@ -13,6 +13,9 @@ interface ClaudeOutputPaneProps {
   runId: string;
   project: string;
   tail?: number;
+  /** 是否渲染 thinking 推理块（默认 true；deepseek 系模型常全程无 text 正文，
+   * 关掉后界面只剩工具卡片，看似"无 LLM 输出"） */
+  showThinking?: boolean;
   /** 事件数变化回调（供外层在标题处显示"共 N 条事件"） */
   onEventsCount?: (count: number) => void;
   /** run 终态回调：done / error / missing（供外层恢复输入与按钮状态） */
@@ -23,6 +26,7 @@ export default function ClaudeOutputPane({
   runId,
   project,
   tail = 300,
+  showThinking = true,
   onEventsCount,
   onRunStatus,
 }: ClaudeOutputPaneProps) {
@@ -182,7 +186,7 @@ export default function ClaudeOutputPane({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <ClaudeMessageList messages={runEventsToChatMessages(events)} />
+      <ClaudeMessageList messages={runEventsToChatMessages(events)} showThinking={showThinking} />
     </div>
   );
 }
