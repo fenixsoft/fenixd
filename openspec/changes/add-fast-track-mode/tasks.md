@@ -7,10 +7,10 @@
 
 ## 2. fast-track agent 与统一结果文件
 
-- [ ] 2.1 编写 `agents/fast-track.md` 提示词模板：实现 → 场景设计 → 场景验证 → 判定四段职责、统一结果文件 schema、护栏告知（零变更哨/交付物清单/fix 预算）
-- [ ] 2.2 扩展 `.fenix-run-result.json` schema：fast-track 验证段（设计场景、逐场景结果、最终判定、证据），定义解析器
-- [ ] 2.3 `runner.run_fast_track`：单 run 派发、同一 worktree 全生命周期、成功路径 merge 语义与完整模式一致（含 ensure_spec_committed）
-- [ ] 2.4 `prompt_builder` 增加 fast-track 段，场景集落盘兼容现有 scenario schema（供升级完整模式后 verifier 复用）
+- [x] 2.1 编写 `agents/fast-track.md` 提示词模板：实现 → 场景设计 → 场景验证 → 判定四段职责、统一结果文件 schema、护栏告知（零变更哨/交付物清单/fix 预算）
+- [x] 2.2 扩展 `.fenix-run-result.json` schema：fast-track 验证段（设计场景、逐场景结果、最终判定、证据），定义解析器
+- [x] 2.3 `runner.run_fast_track`：单 run 派发、同一 worktree 全生命周期、成功路径 merge 语义与完整模式一致（含 ensure_spec_committed）
+- [x] 2.4 `prompt_builder` 增加 fast-track 段，场景集落盘兼容现有 scenario schema（供升级完整模式后 verifier 复用）
 
 ## 3. daemon 派发分支与护栏适配
 
