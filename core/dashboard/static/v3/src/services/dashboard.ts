@@ -158,6 +158,7 @@ export function clearAllAlerts() {
 export interface SpecSummary {
   name: string;
   status: string | null;
+  mode?: 'fast-track' | 'full' | null;
   priority: number | null;
   created: string | null;
   updated: string | null;
@@ -241,6 +242,7 @@ export interface SpecDetail {
   name: string;
   project: string;
   status: string | null;
+  mode?: 'fast-track' | 'full' | null;
   priority: number | null;
   created: string | null;
   updated: string | null;

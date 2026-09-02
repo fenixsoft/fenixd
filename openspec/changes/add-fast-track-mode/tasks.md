@@ -37,8 +37,8 @@
 
 ## 7. Dashboard 模式标记
 
-- [ ] 7.1 后端 data 层输出 spec 执行模式（读 `.openspec.yaml`，缺省 full）
-- [ ] 7.2 spec 列表与详情页展示模式标记（fast-track 与 full 可辨识），存量 spec 显示 full 等价标记
+- [x] 7.1 后端 data 层输出 spec 执行模式（读 `.openspec.yaml`，缺省 full）
+- [x] 7.2 spec 列表与详情页展示模式标记（fast-track 与 full 可辨识），存量 spec 显示 full 等价标记
 
 ## 8. 验证与收尾
 
