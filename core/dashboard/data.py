@@ -1305,6 +1305,10 @@ def project_summary(project_root, name: str, path: str) -> dict:
         if r["status"] in ("running", "empty"):
             active_by_type[r["agent_type"]] = active_by_type.get(r["agent_type"], 0) + 1
 
+    # 获取项目描述
+    effective_config = read_effective_config(proot)
+    description = effective_config.get("description", "")
+
     return {
         "name": name,
         "path": str(path),
@@ -1318,6 +1322,7 @@ def project_summary(project_root, name: str, path: str) -> dict:
         "active_runs_by_type": active_by_type,
         "scenario_count": sum(count_scenarios(proot, s) for s in specs),
         "updated": (Path(path) / "STATE.md").stat().st_mtime if (Path(path) / "STATE.md").exists() else 0,
+        "description": description,
     }
 
 
@@ -1822,7 +1827,7 @@ def read_effective_config(project_root) -> dict:
 
     返回: {"llm": {...}, "agents": {"models": {...}, "max_concurrent": int},
             "gates": {"approve_mode": ...}, "scope": "project", "raw_exists": bool,
-            "sources": {...}, "error": str|null}
+            "sources": {...}, "error": str|null, "description": str}
     sources[key] = "project" 当该键在项目级文件显式定义，否则 "user"（继承用户级或默认）。
     """
     from core.config import ConfigLoader
@@ -1888,6 +1893,13 @@ def read_effective_config(project_root) -> dict:
     if isinstance(gates_eff, dict) and "approve_mode" in gates_eff:
         result["gates"] = {"approve_mode": gates_eff["approve_mode"]}
 
+    # 提取 project.description → 顶层 description（非 str 或缺失 → ""）
+    project_eff = effective.get("project")
+    if isinstance(project_eff, dict) and isinstance(project_eff.get("description"), str):
+        result["description"] = project_eff["description"]
+    else:
+        result["description"] = ""
+
     return result
 
 
@@ -1930,6 +1942,12 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             if not isinstance(merged.get("gates"), dict):
                 merged["gates"] = {}
             merged["gates"]["approve_mode"] = patch["gates"]["approve_mode"]
+
+    # description 分支：patch 顶层 description（str）写入 merged["project"]["description"]
+    if "description" in patch and isinstance(patch["description"], str):
+        if not isinstance(merged.get("project"), dict):
+            merged["project"] = {}
+        merged["project"]["description"] = patch["description"]
 
     return merged
 

@@ -9,10 +9,11 @@ import AgentModelPanel from './components/AgentModelPanel';
 import ParallelSettingsPanel from './components/ParallelSettingsPanel';
 import ApprovalModePanel from './components/ApprovalModePanel';
 import TokenBudgetPanel from './components/TokenBudgetPanel';
+import ProjectProfilePanel from './components/ProjectProfilePanel';
 
 const { Text } = Typography;
 
-const MENU_ITEMS = [
+const BASE_MENU_ITEMS = [
   { key: 'llm', label: 'LLM Provider' },
   { key: 'agents', label: 'Agent 模型分配' },
   { key: 'parallel', label: '并行度设置' },
@@ -90,6 +91,12 @@ export default function SettingsPage() {
     }
   };
 
+  // 运行时构造菜单：项目级作用域时追加项目简介页签
+  const menuItems = [...BASE_MENU_ITEMS];
+  if (scope === 'project' && project) {
+    menuItems.push({ key: 'project-profile', label: project });
+  }
+
   return (
     <PageContainer
       header={{
@@ -131,7 +138,7 @@ export default function SettingsPage() {
               mode={isMobile ? 'horizontal' : 'inline'}
               selectedKeys={[activeKey]}
               onClick={({ key }) => setActiveKey(key)}
-              items={MENU_ITEMS}
+              items={menuItems}
               style={
                 isMobile
                   ? { borderBottom: 0, overflowX: 'auto' }
@@ -175,6 +182,9 @@ export default function SettingsPage() {
                 )}
                 {activeKey === 'token' && (
                   <TokenBudgetPanel config={config} onSave={handleSave} />
+                )}
+                {activeKey === 'project-profile' && (
+                  <ProjectProfilePanel config={config} onSave={handleSave} project={project} />
                 )}
               </>
             )}

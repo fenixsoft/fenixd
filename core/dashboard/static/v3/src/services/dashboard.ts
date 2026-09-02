@@ -14,6 +14,7 @@ export interface ProjectSummary {
   active_runs: number;
   scenario_count: number;
   updated: number;
+  description?: string;
   exists?: boolean;
   discovered?: boolean;
   error?: string;
@@ -480,6 +481,7 @@ export interface ConfigData {
   sources: Record<string, string>;
   error?: string;
   project?: string;
+  description?: string;
   saved?: boolean;
   path?: string;
 }
@@ -499,4 +501,11 @@ export async function saveConfig(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+}
+
+export async function regenerateProjectDescription(project: string): Promise<{ ok: boolean; description?: string; error?: string }> {
+  return request<{ ok: boolean; description?: string; error?: string }>(
+    `/api/project/describe?project=${encodeURIComponent(project)}`,
+    { method: 'POST' },
+  );
 }

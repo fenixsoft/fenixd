@@ -44,11 +44,69 @@ if python3 .fenix/bin/fenix_session.py running "$(pwd)" 2>/dev/null | grep -q YE
 fi
 ```
 
-### 4. 初始化状态文件
+### 4. 生成项目简介
+
+读取项目根目录的 `README.md`（缺失或信息不足时查看 `package.json`、`pyproject.toml` 等清单文件与目录结构），生成一句约 100 字的中文项目简介，写入 `.fenix/config.yaml` 的 `project.description` 字段。
+
+> **兜底规则**：信息不足（空仓库、无可推断文件、无法判断项目性质）或写入出错时，写入默认文案「由 Fenix 框架管理的项目，暂无自动生成的简介。」；此步骤的任何失败 MUST NOT 阻塞后续步骤。
+
+```bash
+# 读取 README.md（优先），缺失时读 package.json/pyproject.toml，再缺失则读目录结构
+README_CONTENT=""
+if [ -f "README.md" ]; then
+    README_CONTENT=$(head -c 8192 README.md 2>/dev/null)
+elif [ -f "package.json" ]; then
+    README_CONTENT=$(head -c 4096 package.json 2>/dev/null)
+elif [ -f "pyproject.toml" ]; then
+    README_CONTENT=$(head -c 4096 pyproject.toml 2>/dev/null)
+else
+    README_CONTENT=$(ls -1 | head -20)
+fi
+
+# 使用 Claude CLI 生成简介（失败时写默认文案）
+PROMPT="你是一个项目简介生成器。请根据以下项目信息生成一句约100字的中文项目简介。
+
+项目信息：
+${README_CONTENT}
+
+要求：
+1. 生成的简介应该是纯文本，不要包含任何标记语言
+2. 简介应该概括项目的主要用途和特点
+3. 简介长度控制在100字左右
+4. 只输出简介文本，不要有其他内容"
+
+DESCRIPTION=$(claude -p "${PROMPT}" 2>/dev/null | head -c 500)
+if [ -z "${DESCRIPTION}" ]; then
+    DESCRIPTION="由 Fenix 框架管理的项目，暂无自动生成的简介。"
+fi
+
+# 写入配置文件（存在则合并，不存在则跳过——config 由 fenix-init 渲染，setup 通常在其后）
+if [ -f ".fenix/config.yaml" ]; then
+    python3 -c "
+import yaml, sys
+try:
+    with open('.fenix/config.yaml', 'r') as f:
+        config = yaml.safe_load(f) or {}
+    if not isinstance(config, dict):
+        config = {}
+    if 'project' not in config or not isinstance(config.get('project'), dict):
+        config.setdefault('project', {})
+    config['project']['description'] = '''${DESCRIPTION}'''
+    with open('.fenix/config.yaml', 'w') as f:
+        yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+except Exception:
+    # 写入失败不阻塞
+    pass
+" 2>/dev/null
+fi
+echo "项目简介已生成"
+```
+
+### 5. 初始化状态文件
 
 如果 STATE.md 和 PROJECT_LOG.md 不存在，创建它们。
 
-### 5. 启动 fenixd
+### 6. 启动 fenixd
 
 ```bash
 tmux new-session -d -s "${SESSION_NAME}" "cd $(pwd) && python3 .fenix/fenixd.py 2>&1 | tee .fenix/logs/stdout.log"
@@ -60,7 +118,7 @@ else
 fi
 ```
 
-### 6. 展示启动信息
+### 7. 展示启动信息
 
 ```
   Fenix is running!
