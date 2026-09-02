@@ -34,7 +34,7 @@ export default function ApprovalModePanel({ config, onSave }: ApprovalModePanelP
 
   return (
     <div>
-      <h3>审批模式</h3>
+      <h3>审批</h3>
       <Text type="secondary">
         SPEC 到达 done 后的行为。auto 模式将自动执行 git push 到远端，请谨慎使用。
       </Text>

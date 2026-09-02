@@ -1,4 +1,4 @@
-import { Breadcrumb, Card, Empty } from 'antd';
+import { Card, Empty } from 'antd';
 import { PageContainer } from '@ant-design/pro-components';
 
 /**
@@ -8,7 +8,6 @@ export function PagePlaceholder({ title }: { title: string }) {
   return (
     <PageContainer
       header={{
-        extra: <Breadcrumb items={[{ title: '概览', href: '#/overview' }, { title }]} />,
         title,
       }}
     >

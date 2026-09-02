@@ -1,4 +1,4 @@
-import { App as AntdApp, Tag } from 'antd';
+import { App as AntdApp, Breadcrumb, Space } from 'antd';
 import {
   DashboardOutlined,
   HistoryOutlined,
@@ -6,12 +6,13 @@ import {
   SettingOutlined,
 } from '@ant-design/icons';
 import type { RunTimeLayoutConfig } from '@umijs/max';
-import { Link } from '@umijs/max';
+import { Link, useLocation } from '@umijs/max';
 import { ConfigProvider } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import type { ReactNode } from 'react';
 import dayjs from 'dayjs';
 import 'dayjs/locale/zh-cn';
+import logoUrl from './assets/logo-64.png';
 import defaultSettings from '../config/defaultSettings';
 import { getOverview } from './services/dashboard';
 
@@ -40,22 +41,57 @@ export function rootContainer(container: ReactNode) {
   );
 }
 
+/**
+ * 顶栏右侧全局面包屑：根据 pathname 推导当前位置，
+ * 祖先节点可点击、当前节点纯文本（与原各页面 header.extra 面包屑行为一致）。
+ * 用独立组件持有 useLocation，避免闭包拿到过期 location。
+ */
+function crumbItems(pathname: string) {
+  const seg = pathname.split('/').filter(Boolean).map(decodeURIComponent);
+  const home = { title: '概览', href: '#/overview' };
+  if (seg[0] === 'projects') {
+    if (seg[2]) {
+      return [
+        home,
+        { title: seg[1], href: `#/projects/${encodeURIComponent(seg[1])}` },
+        { title: seg[2] },
+      ];
+    }
+    if (seg[1]) return [home, { title: seg[1] }];
+    return [home, { title: '项目' }];
+  }
+  const map: Record<string, string> = {
+    overview: '概览',
+    settings: '设置',
+    activities: '运维',
+  };
+  return [{ title: map[seg[0]] || '概览' }];
+}
+
+function HeaderCrumb() {
+  const { pathname } = useLocation();
+  return <Breadcrumb items={crumbItems(pathname)} style={{ marginInlineEnd: 0 }} />;
+}
+
 // ProLayout 支持的 api https://procomponents.ant.design/components/layout
 export const layout: RunTimeLayoutConfig = ({ initialState }) => {
   return {
     ...defaultSettings,
-    // 左上角标题对齐 v1 brand：Fenix 粗体，Dashboard 细体灰字（style.css .brand/.brand-sub）。
-    // mix 布局顶部品牌区用 headerTitleRender；不把节点放进 title——umi 插件会用
-    // title 拼 document.title，节点会变成 "[object Object]"。
+    // 左上角标题对齐 v1 brand：logo + Fenix 粗体 + Dashboard 细体灰字（style.css .brand/.brand-sub）。
+    // headerTitleRender 会整体覆盖 ProLayout 默认「logo+title」组合，故 logo 图需在此显式渲染。
+    // 不把节点放进 title——umi 插件会用 title 拼 document.title，节点会变成 "[object Object]"。
     headerTitleRender: () => (
-      <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.3 }}>
-        Fenix
-        <span style={{ fontWeight: 400, marginLeft: 6, color: 'rgba(0, 0, 0, 0.45)' }}>
-          Dashboard
+      <Space size={8} align="center">
+        <img src={logoUrl} alt="logo" style={{ width: 22, height: 22, display: 'block' }} />
+        <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.3 }}>
+          Fenix
+          <span style={{ fontWeight: 400, marginLeft: 6, color: 'rgba(0, 0, 0, 0.45)' }}>
+            Dashboard
+          </span>
         </span>
-      </span>
+      </Space>
     ),
-    logo: false,
+    logo: logoUrl,
     menuItemRender: (item, dom) =>
       item.path ? <Link to={item.path}>{dom}</Link> : dom,
     // 菜单数据：基础四项 + 「项目」下动态二级菜单（各项目名）
@@ -78,11 +114,7 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
     // 用户点击标题仍可临时收起。不能用受控 openKeys（会被 pathname effect 覆盖）。
     openKeys: false,
     menu: { defaultOpenAll: true, ignoreFlatMenu: true },
-    // 顶栏右侧：v3 标识
-    actionsRender: () => [
-      <Tag key="v3" color="default" style={{ marginInlineEnd: 0 }}>
-        v3
-      </Tag>,
-    ],
+    // 顶栏右侧：全局面包屑，统一指示当前位置
+    actionsRender: () => [<HeaderCrumb key="crumb" />],
   };
 };

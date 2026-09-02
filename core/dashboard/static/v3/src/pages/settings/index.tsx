@@ -10,17 +10,19 @@ import ParallelSettingsPanel from './components/ParallelSettingsPanel';
 import ApprovalModePanel from './components/ApprovalModePanel';
 import TokenBudgetPanel from './components/TokenBudgetPanel';
 import MiscSettingsPanel from './components/MiscSettingsPanel';
+import VerifyPanel from './components/VerifyPanel';
 import ProjectProfilePanel from './components/ProjectProfilePanel';
 
 const { Text } = Typography;
 
 const BASE_MENU_ITEMS = [
   { key: 'llm', label: 'LLM Provider' },
-  { key: 'agents', label: 'Agent 模型分配' },
-  { key: 'parallel', label: '并行度设置' },
-  { key: 'approval', label: '审批模式' },
-  { key: 'token', label: 'Token 预算' },
+  { key: 'agents', label: '模型分配' },
+  { key: 'parallel', label: '并发度' },
+  { key: 'approval', label: '审批' },
+  { key: 'token', label: '预算' },
   { key: 'misc', label: '其他' },
+  { key: 'verify', label: '验证' },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -187,6 +189,9 @@ export default function SettingsPage() {
                 )}
                 {activeKey === 'misc' && (
                   <MiscSettingsPanel config={config} onSave={handleSave} />
+                )}
+                {activeKey === 'verify' && (
+                  <VerifyPanel config={config} onSave={handleSave} />
                 )}
                 {activeKey === 'project-profile' && (
                   <ProjectProfilePanel config={config} onSave={handleSave} project={project} />

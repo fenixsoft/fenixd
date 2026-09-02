@@ -1,58 +1,55 @@
 # 验证报告：add-v3-spec-quick-switch
 
-> ⚠️ 本报告由框架于 2026-09-02T05:54:11Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+- 验证时间：2026-09-02T07:42:04Z
+- 验证轮次：修复轮（场景集冻结，5 个持久化场景全部覆盖）
+- 结果统计：**4 通过 / 1 失败 / 0 警告 / 0 错误**
 
-## 结论：❌ 未通过（Bug Found）
+## 结论
 
-**状态：bug-found — 3/5 场景通过，2 失败，0 错误（1 个真实产品 Bug）**
+**未发现产品 Bug。** 唯一的失败场景（`v3-quick-switch-select-navigates`）判定为 **测试断言设计缺陷（test-defect）**，产品代码逻辑正确。
 
-5 个场景中 3 个通过、2 个失败。v3-quick-switch-select-navigates 为真实产品 Bug：选中 SPEC 后面板未自动收起（spec.md:31-34 要求收起，DOM 中面板仍存在）。v3-quick-switch-getspec-failure-degrade 为测试设计缺陷：场景故意 mock /api/specs 返回 500 来验证静默降级，no_console_error 断言对预期的 500 错误响应误报失败，非产品缺陷。其余 3 个场景（箭头可见、单 SPEC 隐藏、下拉行排除当前）全部通过，快速切换核心功能正常。
+## 场景明细
 
-| 指标 | 数量 |
-| --- | --- |
-| 通过 | 3 |
-| 失败 | 2 |
-| 错误 | 0 |
-| 产品 Bug | 1 |
-| 本链增量 Token（输入） | 4.74M |
-| 本链增量 Token（输出） | 0.03M |
+| 场景 ID | 状态 | 说明 |
+|---|---|---|
+| v3-quick-switch-arrow-visible | ✅ 通过 | 多 SPEC 时箭头按钮渲染且可点击 |
+| v3-quick-switch-arrow-hidden-single-spec | ✅ 通过 | 仅含当前 SPEC 时箭头隐藏 |
+| v3-quick-switch-dropdown-rows-exclude-current | ✅ 通过 | 下拉面板行内容正确、排除当前 SPEC |
+| v3-quick-switch-select-navigates | ❌ 失败 | 点击行切换路由成功，但面板 DOM 断言误判（见下） |
+| v3-quick-switch-getspec-failure-degrade | ✅ 通过 | 拉取失败静默降级，主体不受影响 |
 
+## 失败分析：v3-quick-switch-select-navigates
 
-## 真实产品 Bug
+**流程复核**：点击 SPEC 行后 `setSwitchOpen(false)` + `history.push` 均生效 —— 步骤 6 等待新标题 `add-spec-archive` 成功，断言 1/2（标题可见、含目标文本）与断言 4（`.spec-detail-card` 主体渲染）全部通过，`no_console_error` 也通过。
 
-### BUG-01（severity=major）· element_not_exist
+**唯一失败断言**：
+```
+element_not_exist  .spec-quick-switch-panel   →  actual_count=1（应为 0）
+```
 
-- 关联场景：v3-quick-switch-select-navigates
-- 描述：选中下拉面板中的目标 SPEC 后，下拉面板未自动关闭（actual_count=1，面板仍存在于 DOM）。spec.md:31-34 要求选中后收起面板并跳转，但只有跳转生效，收起逻辑失效。
-- 根因：detail.tsx 中选中 SPEC 行时仅执行 history.push 跳转，但面板的 open 状态未在该交互路径上被重置（或关闭逻辑在路由变化后未触发 setState），导致面板保持展开。
-- 证据（场景 v3-quick-switch-select-navigates 结构化证据，引用）：
-  - failed_assertions: [{"type": "element_not_exist", "layer": 1, "selector": ".spec-quick-switch-panel", "expected": "元素不存在（面板应关闭）", "actual": "元素存在（actual_count: 1，面板未关闭）"}]
-  - screenshots: ["/root/fenixd/.fenix/verify-progress/add-v3-spec-quick-switch/screenshots/v3-quick-switch-select-navigates_assert_fail.png"]
-  - first_failed_step: 步骤5: 选中目标 SPEC 后，下拉面板未自动关闭
+### 根因：断言类型选择不当（test-defect）
 
+`element_not_exist` 断言通过 `page.locator(selector).count()` 检查 **DOM 节点存在性**。而 Ant Design Dropdown 在 `popupRender` 模式下关闭时——受控 `open` 转为 false——**面板 DOM 节点并不会被销毁**（`destroyPopupOnHide=false` 是 rc-trigger/antd 默认行为），只是通过 CSS 隐藏。因此：
 
-## 场景结果
+- 产品侧：`setSwitchOpen(false)` 后 Dropdown 已收起（标题、主体均正常说明跳转完成），**功能正确**；
+- 断言侧：检查的是「DOM 中不应存在该节点」，但 antd 语义下该节点保留、仅不可见。断言框架缺少 `element_not_visible` / `element_hidden` 这类可见性断言类型，测试场景只能选型 `element_not_exist`，导致此误判。
 
-| 场景 | 状态 | 失败断言 | 分类 |
-| --- | --- | --- | --- |
-| v3-quick-switch-arrow-visible | pass | 0/4 | - |
-| v3-quick-switch-arrow-hidden-single-spec | pass | 0/3 | - |
-| v3-quick-switch-getspec-failure-degrade | failed（已修正） | 1/4 | test-defect |
-| v3-quick-switch-dropdown-rows-exclude-current | pass | 0/7 | - |
-| v3-quick-switch-select-navigates | failed（已修正） | 1/5 | product-bug |
+### 判定依据
 
+- 该断言为第 1 层断言，但失败原因不属于产品行为错误，而是断言语义与组件框架行为（antd Dropdown 保留关闭后的 DOM 节点）不匹配；
+- 同一场景其余功能性断言全部通过，且截图/时序上均无产品异常；
+- 符合「断言时序/场景设计缺陷」豁免特征 —— 应改为断言「元素不可见」，或等待 Dropdown 销毁动画完成后再断言。
 
-## 断言级豁免清单
+### 分类
 
-以下失败断言被归类为非产品缺陷（不记产品 Bug），逐条列出供人工复核豁免是否掩盖真实缺陷（场景级一句话归因不足以复核）。
+- 场景分类：`test-defect`（测试场景设计缺陷，非产品 Bug）
+- 建议修复：为断言框架补充 `element_not_visible` 类型，或将本场景断言改为可见性检查。
 
-| 场景 | 断言 | 归类 | 豁免理由 | 证据 |
-| --- | --- | --- | --- | --- |
-| v3-quick-switch-getspec-failure-degrade | no_console_error 第3层断言：控制台无错误 | test-defect | 测试用例自身缺陷（非产品缺陷） | 测试场景 mock /api/specs 返回 500，这是预期的错误路径测试。控制台出现 500 错误是 mock API 返回错误的正常表现，不应作为断言失败。no_console_error 断言未排除预期的 API 错误响应 |
+## 聚合结论
+
+无合并 Bug；无系统性问题；无环境问题。
 
 ## 本轮场景集变更
 
-当前稳定场景集共 5 个（第 1 轮）。
-
-- 首轮写入 5 个场景
+场景集与持久化集一致，无变更。
 

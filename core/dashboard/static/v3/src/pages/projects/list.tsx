@@ -4,7 +4,6 @@ import {
   Alert,
   App,
   Badge,
-  Breadcrumb,
   Button,
   Card,
   Dropdown,
@@ -727,7 +726,6 @@ export default function SpecListPage() {
     <PageContainer
       breadcrumbRender={false}
       header={{
-        extra: <Breadcrumb items={[{ title: '概览', href: '#/overview' }, { title: name }]} />,
         title: (
           <Space size={8} align="baseline">
             <span>{name}</span>

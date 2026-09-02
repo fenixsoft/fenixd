@@ -1,5 +1,5 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, App, Badge, Breadcrumb, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Progress, Space, Spin, Tabs, Tag, Timeline, Typography } from 'antd';
+import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Progress, Space, Spin, Tabs, Tag, Timeline, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, FullscreenOutlined, InfoCircleFilled } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { history, useParams } from '@umijs/max';
@@ -329,17 +329,8 @@ export default function SpecDetailPage() {
     </div>
   );
 
-  // 面包屑置于右上角（与 SPEC 列表页一致），关闭 PageContainer 默认左上面包屑
+  // 位置由顶栏全局面包屑指示；这里关闭 PageContainer 默认左上面包屑
   const headerCfg = {
-    extra: (
-      <Breadcrumb
-        items={[
-          { title: '概览', href: '#/overview' },
-          { title: name, href: `#/projects/${name}` },
-          { title: spec },
-        ]}
-      />
-    ),
     title: (
       <Space size={8} align="baseline">
         <span>{spec}</span>

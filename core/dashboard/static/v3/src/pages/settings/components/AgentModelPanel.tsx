@@ -128,7 +128,7 @@ export default function AgentModelPanel({ config, onSave }: AgentModelPanelProps
 
   return (
     <div>
-      <h3>Agent 模型分配</h3>
+      <h3>模型分配</h3>
       <Text type="secondary">
         为每种 Agent 角色分配 Provider 与模型。模型名留空时使用所选 Provider 的默认模型。
       </Text>
