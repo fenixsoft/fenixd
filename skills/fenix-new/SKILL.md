@@ -18,6 +18,26 @@ description: Use when the user wants to create a new development requirement, as
 
 不要急于生成 SPEC。一份好的 SPEC 需要清晰的需求。
 
+### 1.5 评估复杂度并明确建议执行模式（add-fast-track-mode）
+
+澄清需求后，若用户**未显式指定**执行模式（`--fast-track` / `--full`），MUST 评估需求复杂度并给出**明确**的模式建议（附简要理由），供用户选择。禁止在无建议的情况下默认任一路径。
+
+**复杂度评估标准（对话内评估，不引入代码级打分器）：**
+
+| 维度 | 简单（建议 fast-track） | 复杂（建议 full） |
+|------|------------------------|-------------------|
+| 影响面 | 单点小改动、不触及核心链路 | 跨模块、影响既有流程 |
+| 模块数 | 1 个模块内 | 2+ 模块 / 跨服务 |
+| UI / 迁移 | 无 UI、无数据迁移 | 含 UI 交互、数据库/配置迁移 |
+| 预期场景数 | 少（≤3 个验证场景） | 多（涉及状态机/并发/回归） |
+
+**建议话术（二选一，MUST 明确并给理由）：**
+
+- 简单需求 → 明确建议「建议走简单模式（fast-track）：<理由>。该路径由单个 Agent 一次完成实现与验证，更快更省。你也可以选择完整模式（full）。」
+- 复杂需求 → 明确建议「建议走完整模式（full）：<理由>。该路径由多个 Agent 分段实现与独立验证，更适合复杂改动。你也可以选择简单模式（fast-track）。」
+
+用户确认后，把最终模式记入待创建 SPEC 的 `.openspec.yaml`（见 3.1）；用户显式指定（`--fast-track` / `--full`）时 **MUST 尊重用户指定**，不得以评估结果覆盖或追问。
+
 ### 2. 生成 kebab-case 名称
 
 从需求描述中提取简洁的 kebab-case 名称：
@@ -38,6 +58,28 @@ python3 .fenix/bin/fenix_spec.py new <name>
 输出 JSON `{ok, path, error}`。若 `ok` 为 false（如名称非法或同名 change 已存在），
 根据 `error` 调整名称或与用户确认后重试，不要强行覆盖已有 change。
 
+**3.1.1 写入执行模式（add-fast-track-mode）**
+
+把用户确认（或用户显式指定）的执行模式写入 `.openspec.yaml`，与 `schema` / `created`
+同级新增 `mode` 行：
+
+- 走快速路径：`mode: fast-track`（追加在 `created` 行后）
+- 走完整模式：`mode: full`（或省略 mode 行，读侧缺省 full；显式写 `mode: full` 更清晰）
+
+```bash
+# 示例：fast-track
+python3 -c "
+from pathlib import Path
+p = Path('openspec/changes/<name>/.openspec.yaml')
+text = p.read_text(encoding='utf-8')
+if 'mode:' not in text:
+    p.write_text(text.rstrip() + '\nmode: fast-track\n', encoding='utf-8')
+"
+```
+
+- 存量 spec（无 mode 行）daemon 一律按 `full` 处理，零迁移
+- 用户未指定模式时按 1.5 的建议写入；用户显式指定时按用户指定写入
+
 **3.2 按依赖顺序生成 artifact**
 
 ```bash
@@ -56,7 +98,26 @@ python3 .fenix/bin/fenix_spec.py status --change <name>
    - `proposal.md` → 明确 Why / What Changes / Capabilities / Impact
    - `specs/<capability>/spec.md` → 每个新能力一个 spec 文件，含 ADDED Requirements 与 Scenario
    - `design.md` → Context / Goals / Decisions / Risks
-   - `tasks.md` → `##` 分组 + `- [ ] x.y` 勾选任务
+   - `tasks.md` → `##` 分组 + `- [ ] x.y` 勾选任务；**必须**在第一个 `## ` 分组前包含
+     `## Deliverables` 显式声明段（fenced yaml，收工守卫对其机械对账，不再正则猜语境）：
+
+     ````markdown
+     ## Deliverables
+
+     ```yaml
+     - path: core/dashboard/data.py
+       kind: modify
+     - path: core/xxx/new_module.py
+       kind: new
+     - path: .fenix/config.yaml
+       kind: reference   # 运行时写入目标/既有引用，非本仓库交付物
+     ```
+     ````
+
+     kind 语义：`new`=本仓库新建文件；`modify`=修改既有文件；`reference`=运行时
+     写入目标/既有引用（如被管项目的 `.fenix/config.yaml`、第三方清单、纯示例路径——
+     **不是**本仓库交付物，缺失不拦截）。守卫对 new/modify 硬校验实现分支存在性，
+     reference 仅审计；无声明段的存量 spec 回退正则提取（保守易误拦，新 spec 一律写声明段）。
 2. 每完成一个 artifact 后重跑 `status`，继续处理下一个 `ready` artifact。
 3. 重复直到所有 artifact 为 `done`（`isComplete` 为 true，`applyRequires` 的 `tasks` 就绪）。
 
@@ -101,4 +162,9 @@ git commit -m "[fenix] spec: <spec-name>"
 - 先澄清再生成，不猜测用户需求
 - SPEC 要足够精确，让实现Agent 无需再提问
 - 每个 Requirement 至少有一个可测试的 Scenario
+- **执行模式（add-fast-track-mode）**：
+  - 用户未指定模式时 MUST 给出明确建议（fast-track / full，附理由），禁止默认任一路径
+  - 用户显式指定（`--fast-track` / `--full`）时 MUST 尊重用户指定，不得以评估结果覆盖
+  - 确认后 MUST 把 mode 写入 `.openspec.yaml`（见 3.1.1）；存量 spec 缺省 full
+  - `--modify <name>` 更新 spec 时，如需变更执行模式，同样同步更新 `.openspec.yaml` 的 mode 行
 - **确定能力全集时必须搜索归档目录**：`openspec/specs/` 仅存放当前活跃的 specs，历史的 specs 已归档到 `openspec/changes/archive/` 中。判断某个能力是新增还是修改时，必须同时搜索 `openspec/changes/archive/` 下的所有 `specs/` 子目录，确保不会将已存在的归档能力误判为新能力。

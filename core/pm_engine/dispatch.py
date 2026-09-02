@@ -516,6 +516,39 @@ class Dispatcher:
                 if is_success:
                     missing = self._pm._deliverable_gate_missing(spec_name, result)
                     if missing:
+                        # ── dispute 裁决通道（add-project-description 事故治理）──
+                        # 实现 run 对缺件提出 deliverable-dispute 异议时不自动重派
+                        # （误判场景重派必然同因失败，纯烧钱），blocked 交人工裁决。
+                        # 质疑不得自动放行（防 agent 绕守卫），必须第三方裁决。
+                        disputed = self._pm._disputed_deliverables(
+                            impl_result, missing)
+                        if disputed:
+                            disp_q = "、".join(disputed)
+                            updates: dict = {
+                                "status": "blocked",
+                                "tester_run": None,
+                                "error": (
+                                    f"交付物守卫缺件 [{disp_q}]，但实现 run 对其提出 "
+                                    f"deliverable-dispute 异议（依据见该 run 的 "
+                                    f".fenix-run-result.json findings 与旧分支成果）"
+                                    f"— 已 blocked 待人工裁决，不自动重派"
+                                ),
+                            }
+                            self._pm.state_machine.update_spec(spec_name, updates)
+                            self._pm.logger.error(
+                                "pm_engine",
+                                f"交付物守卫缺件异议 '{spec_name}'（{disp_q}）— "
+                                f"blocked 待裁决，不重派 run={result.run_id}",
+                            )
+                            return
+                        # ── 守卫拒绝路径注册分支遗产 ─────────────────────────
+                        # 成功收工的 worktree 已清理，但完整已提交成果仍在分支上。
+                        # 仅分支模式登记，让后继 run 的任务书携带「遗产检查」段，
+                        # 自主判断收编（cherry-pick）/弃用，而非从零重做无感知。
+                        _wm = self._pm.agent_runner.worktree_manager
+                        _branch = getattr(result, "branch", None)
+                        if _branch and hasattr(_wm, "register_legacy"):
+                            _wm.register_legacy(spec_name, None, _branch)
                         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
                         prev_retries = 0
                         try:

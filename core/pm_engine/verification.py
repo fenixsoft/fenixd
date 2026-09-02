@@ -965,12 +965,19 @@ class VerificationPipeline:
         Returns:
             缺失路径列表（相对项目根）；空列表表示放行（含无路径 SPEC 跳过场景）。
         """
-        from core.deliverables import extract_paths_typed, normalize_check_path
+        from core.deliverables import (extract_declared, extract_paths_typed,
+                                       normalize_check_path)
 
         spec_dir = self._pm.project_root / "openspec" / "changes" / spec_name
         if not spec_dir.is_dir():
             return []
-        typed = extract_paths_typed(spec_dir)
+        # 声明优先（planner 交付契约）：tasks.md 有 `## Deliverables` 段时做机械
+        # 对账，不做正则语境猜测；无声明段回退 extract_paths_typed（向后兼容）。
+        typed = extract_declared(spec_dir)
+        decl_source = "declared"
+        if typed is None:
+            typed = extract_paths_typed(spec_dir)
+            decl_source = "extracted"
         declared = typed["deliverables"]
         references = typed["references"]
         if not declared and not references:
@@ -1003,9 +1010,38 @@ class VerificationPipeline:
                 f"引用类路径在实现分支中不存在（仅审计留痕，不阻断）："
                 f"{spec_name} -> {', '.join(missing_refs)}",
                 context={"spec": spec_name, "branch": branch,
+                         "source": decl_source,
                          "missing_references": missing_refs},
             )
         return missing
+
+    def _disputed_deliverables(self, impl_result, missing) -> list:
+        """实现 run 对缺件提出的 deliverable-dispute 异议与缺件清单求交。
+
+        交互契约的 findings 通道（add-interaction-contract 泛化）：实现 run 认为
+        某缺件路径实为运行时写入目标/既有引用而非本仓库交付物时，在
+        ``.fenix-run-result.json`` findings 登记 ``deliverable-dispute`` 条目。
+        守卫拒绝前先对账：命中异议的缺件**不得**自动重派（负反馈死循环会烧钱），
+        由调用方转人工/裁决。
+
+        element 与缺件路径都经 ``normalize_check_path`` 归一化（.fenix/ 前缀）
+        后匹配。Returns: 命中异议的缺件路径子集（保序）。
+        """
+        if not impl_result or not missing:
+            return []
+        from core.deliverables import normalize_check_path
+
+        disputed: list = []
+        for f in (impl_result.get("findings") or []):
+            if not isinstance(f, dict) or f.get("type") != "deliverable-dispute":
+                continue
+            el = normalize_check_path(str(f.get("element") or "").strip())
+            if not el:
+                continue
+            for m in missing:
+                if m not in disputed and normalize_check_path(m) == el:
+                    disputed.append(m)
+        return disputed
 
 
     @staticmethod

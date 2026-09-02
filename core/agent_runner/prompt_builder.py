@@ -45,7 +45,13 @@ class PromptBuilder:
                 f"「待裁决交互」条目（元素、现状、建议行为），不得静默保留可交互外观：\n"
                 f'  "findings": [{{"type": "pending-interaction", "element": "<元素标识>", '
                 f'"current": "<现状>", "suggestion": "<建议行为>"}}]\n'
-                f"- 已声明纯展示的元素即合规，收工守卫不因此拦截。\n\n"
+                f"- 已声明纯展示的元素即合规，收工守卫不因此拦截。\n"
+                f"- 若你判断任务书语境中某交付路径实为**运行时写入目标或既有引用**"
+                f"（非本仓库新建交付物，如被管项目的 `.fenix/config.yaml`、第三方清单），"
+                f"MUST 在 .fenix-run-result.json findings 登记异议，守卫将转人工裁决"
+                f"而非盲目重派：\n"
+                f'  {{"type": "deliverable-dispute", "element": "<路径>", '
+                f'"current": "守卫判其为必需交付物", "suggestion": "<应归 reference 的依据>"}}\n'
                 f"IMPORTANT: Do NOT modify STATE.md directly. The daemon handles that."
             )
             # 上轮 error 上下文注入（add-implementer-deliverable-gate D4）：
@@ -551,13 +557,18 @@ class PromptBuilder:
         """构建 implementer prompt 的「遗产检查」段（add-recovery-legacy-check 2.1）。
 
         无在册遗产返回空串（2.2：prompt 与现状逐字节一致）。有遗产时追加：
-        - 遗产 worktree 绝对路径、分支名
-        - 现场 ``git status --short`` 脏文件快照（截断 50 行）
-        - 只读约束（不得在遗产内工作，已物理隔离为新 worktree）
-        - 收编 / 弃用自主决策要求与响应格式（含 ``salvaged from <branch>`` 标注）
+        - 遗产 worktree 绝对路径、分支名（worktree 模式），或仅分支名（仅分支模式）；
+        - 现场快照：worktree 模式为 ``git status --short`` 脏文件（截断 50 行）；
+          仅分支模式为 ``git log --oneline main..branch`` 提交快照；
+        - 只读约束（不得在遗产内工作，已物理隔离为新 worktree）；
+        - 收编 / 弃用自主决策要求与响应格式（含 ``salvaged from <branch>`` 标注）。
 
-        worktree_manager 缺失（测试/未初始化）时安全返回空串。脏文件快照采集失败
-        时降级为「（无法读取快照）」，不阻断注入。
+        仅分支模式（守卫拒绝重派接入）：守卫拒绝发生在成功收工清理之后，worktree
+        已物理删除、仅分支留存完整已提交成果——告知后继 run 让其自主判断收编
+        （cherry-pick / checkout 路径）或弃用，而非从零重做无感知。
+
+        worktree_manager 缺失（测试/未初始化）时安全返回空串。快照采集失败时
+        降级为「（无法读取快照）」，不阻断注入。
         """
         wm = getattr(self._pm, "worktree_manager", None)
         if wm is None or not hasattr(wm, "get_legacy"):
@@ -567,30 +578,52 @@ class PromptBuilder:
             return ""
         path = legacy.get("path", "")
         branch = legacy.get("branch", "")
-        dirty_snapshot = self._legacy_dirty_snapshot(path)
+        if path:
+            location = (
+                f"### 遗产位置\n"
+                f"- 路径（只读参考，绝对路径）: `{path}`\n"
+                f"- 分支名: `{branch}`\n\n"
+                f"### 脏文件快照（git status --short，继承自上轮未完成的工作）\n"
+                f"```\n{self._legacy_dirty_snapshot(path)}\n```\n\n"
+            )
+            context = (
+                f"上一次实现 run 在死亡前留下了未提交的半成品 worktree，被保留为「遗产」"
+                f"供你参考与收编（框架不担保其内容正确性，决策权在你）。\n\n"
+            )
+        else:
+            location = (
+                f"### 遗产位置\n"
+                f"- 分支名: `{branch}`（worktree 已按成功收工清理，仅分支留存完整"
+                f"已提交成果）\n\n"
+                f"### 分支提交快照（相对 main 的新增提交，git log --oneline）\n"
+                f"```\n{self._legacy_branch_snapshot(branch)}\n```\n\n"
+            )
+            context = (
+                f"上一次实现 run 自称完成但被收工守卫拒绝合并（缺件/异议见上文 "
+                f"Previous run error），worktree 已清理，**完整的已提交成果仍保留在"
+                f"分支上**，被登记为「遗产」供你参考与收编（框架不担保其内容满足"
+                f"守卫要求，决策权在你）。\n\n"
+            )
         return (
-            f"\n\n## ⚠️ RECOVERY LEGACY (遗产检查 — 你是从死亡 run 的恢复重派)\n"
+            f"\n\n## ⚠️ RECOVERY LEGACY (遗产检查 — 你是从守卫拒绝/死亡 run 的重派)\n"
             f"\n"
-            f"上一次实现 run 在死亡前留下了未提交的半成品 worktree，被保留为「遗产」"
-            f"供你参考与收编（框架不担保其内容正确性，决策权在你）。\n\n"
-            f"### 遗产位置\n"
-            f"- 路径（只读参考，绝对路径）: `{path}`\n"
-            f"- 分支名: `{branch}`\n\n"
-            f"### 脏文件快照（git status --short，继承自上轮未完成的工作）\n"
-            f"```\n{dirty_snapshot}\n```\n\n"
+            f"{context}"
+            f"{location}"
             f"### 边界约束（务必遵守）\n"
-            f"- 遗产 worktree 为**只读参考**：你只能在其中 inspect（cat / git log / git diff），"
-            f"**不得**在其中执行任何写操作（不要 Edit/Write/commit）。\n"
+            f"- 遗产为**只读参考**：你只能在其中 inspect（cat / git log / git diff），"
+            f"**不得**在其中执行任何写操作（不要 Edit/Write/commit；worktree 模式下"
+            f"不要把遗产 worktree 作为你的工作目录，也不要在其中继续开发）。\n"
             f"- 你当前的工作目录是**全新的** worktree（与现状一致，物理隔离），所有新工作"
-            f"都必须在你自己的 worktree 内进行。\n"
-            f"- 不要把遗产 worktree 作为你的工作目录，也不要在其中继续开发。\n\n"
+            f"都必须在你自己的 worktree 内进行。\n\n"
             f"### 你的决策权（二选一，框架不强加）\n"
             f"inspect 遗产后，自行决定：\n"
-            f"1. **收编 (salvage)**：若遗产中的半成品有价值，把对应文件内容复制进你自己的"
-            f" worktree、适配后提交，并在提交信息中注明来源分支，格式：\n"
+            f"1. **收编 (salvage)**：若遗产中的成果有价值，把对应内容引入你自己的"
+            f" worktree（worktree 模式：复制文件内容并适配后提交；仅分支模式："
+            f"`git cherry-pick <commit>` 或 `git checkout {branch} -- <path>`）、"
+            f"适配后提交，并在提交信息中注明来源分支，格式：\n"
             f"   `[fenix] {spec_name}: <改动> (salvaged from {branch})`\n"
             f"   ——便于事后溯源，且验证链会照常全量验收你的产出（收编不豁免测试）。\n"
-            f"2. **弃用 (discard)**：若遗产为破碎半成品、不值收编，从你自己的干净状态重做，"
+            f"2. **弃用 (discard)**：若遗产为破碎半成品或不值收编，从你自己的干净状态重做，"
             f"并在最终产出说明中注明弃用理由（无强制格式，一句话即可）。\n\n"
             f"### 响应格式要求\n"
             f"在你的任务书响应中明确声明本次选择了哪条路径：\n"
@@ -598,6 +631,27 @@ class PromptBuilder:
             f"- 弃用：简述弃用理由。\n"
             f"若未使用遗产（首次实现 / 遗产已被兜底回收），本段不会出现，正常实现即可。\n"
         )
+
+    def _legacy_branch_snapshot(self, branch: str) -> str:
+        """现场采集仅分支遗产的提交快照（git log --oneline main..branch）。
+
+        采集失败（分支不存在等）返回降级提示串，不抛出异常。
+        """
+        import subprocess as _sp
+        try:
+            res = _sp.run(
+                ["git", "-C", str(self._pm.project_root),
+                 "log", "--oneline", "-10", f"main..{branch}"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception as e:
+            return f"（快照采集失败: {e}）"
+        out = (res.stdout or "").strip()
+        if res.returncode != 0:
+            return f"（快照采集失败: {(res.stderr or '').strip()[:120]}）"
+        if not out:
+            return "（分支相对 main 无独立提交）"
+        return out[:2000]
 
 
     def _legacy_dirty_snapshot(self, wt_path: str) -> str:

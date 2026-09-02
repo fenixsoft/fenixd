@@ -85,6 +85,13 @@ _SCENARIO_HEADING_RE = re.compile(r"^#{1,6}\s+.*Scenario", re.IGNORECASE)
 # ``.fenix/`` 自引用符号链接前缀（归一化语义见模块 docstring）。
 _FENIX_PREFIX = ".fenix/"
 
+# `## Deliverables` 显式声明段标题（planner 交付契约，守卫机械对账优先于正则提取）。
+_DECLARED_HEADING_RE = re.compile(r"^##\s+Deliverables\s*$", re.IGNORECASE)
+
+# 声明段合法 kind：new=本仓库新建文件（硬校验）；modify=修改既有文件（硬校验）；
+# reference=运行时写入目标/既有引用（软校验，仅审计，不参与缺件判定）。
+_DECLARED_KINDS = ("new", "modify", "reference")
+
 
 def _is_deliverable_path(token: str) -> bool:
     """判断单个 token 是否为可校验的核心交付路径。"""
@@ -267,6 +274,88 @@ def extract_paths_typed(spec_dir) -> dict:
                 seen.add(cand)
                 typed[ctx].append(cand)
 
+    return typed
+
+
+def extract_declared(spec_dir) -> "dict | None":
+    """tasks.md 的 ``## Deliverables`` 显式声明段（planner 交付契约）。
+
+    语义：planner 在 tasks.md 中用 fenced yaml 显式声明交付清单与语境类别，守卫
+    做机械对账，不再做正则语境猜测（语境分类曾致三次误判事故：Scenario 示例、
+    ``<run_id>`` 占位符、勾选行内的运行时写入目标 ``.fenix/config.yaml``）。
+
+    格式（tasks.md 内）::
+
+        ## Deliverables
+
+        ```yaml
+        - path: core/dashboard/data.py
+          kind: modify
+        - path: .fenix/config.yaml
+          kind: reference   # 运行时写入目标，非本仓库交付物
+        ```
+
+    kind 语义见 ``_DECLARED_KINDS``：new/modify → deliverables（硬校验）；
+    reference → references（软校验）。声明段不受 ``_DELIVERABLE_PREFIXES``
+    限制（skills/ 等前缀同样可声明为交付物）。
+
+    Returns:
+        ``{"deliverables": [...], "references": [...]}``；无声明段、无有效围栏块、
+        yaml 解析失败或全部条目非法 → ``None``（守卫回退 ``extract_paths_typed``，
+        向后兼容存量 spec）。
+    """
+    import yaml as _yaml
+
+    tasks = Path(spec_dir) / "tasks.md"
+    try:
+        text = tasks.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    lines = text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if _DECLARED_HEADING_RE.match(line):
+            start = i + 1
+            break
+    if start is None:
+        return None
+
+    block: List[str] = []
+    in_fence = False
+    for line in lines[start:]:
+        if _H2_RE.match(line):
+            break
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            block.append(line)
+    if not block:
+        return None
+    try:
+        entries = _yaml.safe_load("\n".join(block))
+    except Exception:
+        return None
+    if not isinstance(entries, list):
+        return None
+
+    typed: dict = {"deliverables": [], "references": []}
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        path = str(e.get("path") or "").strip()
+        kind = str(e.get("kind") or "").strip().lower()
+        if not path or kind not in _DECLARED_KINDS:
+            continue
+        if (_ABSOLUTE_RE.match(path) or _WILDCARD_RE.search(path)
+                or _DIRECTORY_RE.search(path)):
+            continue
+        if path in typed["deliverables"] or path in typed["references"]:
+            continue
+        key = "deliverables" if kind in ("new", "modify") else "references"
+        typed[key].append(path)
+    if not typed["deliverables"] and not typed["references"]:
+        return None
     return typed
 
 

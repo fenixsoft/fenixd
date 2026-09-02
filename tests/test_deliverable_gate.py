@@ -19,8 +19,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.agent_runner import AgentRunner, AgentRunResult
-from core.deliverables import extract_paths, extract_paths_typed, \
-    normalize_check_path
+from core.deliverables import extract_declared, extract_paths, \
+    extract_paths_typed, normalize_check_path
 from core.pm_engine import PMEngine
 from core.state_machine import StateMachine
 from core.worktree_manager import WorktreeManager
@@ -544,6 +544,165 @@ class TestImplementerPromptErrorInjection(unittest.TestCase):
         prompt = self.runner._prompt_builder._build_prompt("s1", "implementer")
         self.assertIn("Previous run error", prompt)
         self.assertIn("交付物守卫：缺件 [core/foo.py]", prompt)
+
+
+class TestExtractDeclared(unittest.TestCase):
+    """`## Deliverables` 显式声明段解析（planner 交付契约，守卫机械对账）。"""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.spec_dir = self.tmpdir / "spec"
+        self.spec_dir.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def write_tasks(self, text):
+        (self.spec_dir / "tasks.md").write_text(text, encoding="utf-8")
+
+    def test_kind_mapping_and_prefix_freedom(self):
+        self.write_tasks(
+            "# Tasks\n\n## Deliverables\n\n```yaml\n"
+            "- path: core/dashboard/data.py\n  kind: modify\n"
+            "- path: skills/fenix-setup/SKILL.md\n  kind: new\n"
+            "- path: .fenix/config.yaml\n  kind: reference\n"
+            "```\n\n## 1. 分组\n\n- [ ] 1.1 写 `.fenix/config.yaml`\n"
+        )
+        typed = extract_declared(self.spec_dir)
+        self.assertEqual(typed["deliverables"],
+                         ["core/dashboard/data.py", "skills/fenix-setup/SKILL.md"])
+        self.assertEqual(typed["references"], [".fenix/config.yaml"])
+
+    def test_absent_section_returns_none(self):
+        self.write_tasks("# Tasks\n\n- [ ] 1.1 写 `core/foo.py`\n")
+        self.assertIsNone(extract_declared(self.spec_dir))
+
+    def test_invalid_yaml_returns_none(self):
+        self.write_tasks("## Deliverables\n\n```yaml\n- [broken: :::\n```\n")
+        self.assertIsNone(extract_declared(self.spec_dir))
+
+    def test_invalid_entries_skipped(self):
+        self.write_tasks(
+            "## Deliverables\n\n```yaml\n"
+            "- path: /abs/path.py\n  kind: new\n"      # 绝对路径跳过
+            "- path: core/wild*.py\n  kind: new\n"     # 通配符跳过
+            "- path: core/ok.py\n  kind: bogus\n"      # 非法 kind 跳过
+            "- path: core/good.py\n  kind: new\n"
+            "```\n"
+        )
+        typed = extract_declared(self.spec_dir)
+        self.assertEqual(typed["deliverables"], ["core/good.py"])
+        self.assertEqual(typed["references"], [])
+
+    def test_all_invalid_returns_none_falls_back(self):
+        self.write_tasks("## Deliverables\n\n```yaml\n- path: /x.py\n  kind: new\n```\n")
+        self.assertIsNone(extract_declared(self.spec_dir))
+
+
+class TestGateDeclaredOverride(_GateFixture):
+    """声明段优先于正则提取：勾选行里的运行时目标被声明段纠偏为 reference。"""
+
+    def test_declared_reference_overrides_checkbox_extraction(self):
+        """勾选行 `.fenix/config.yaml`（提取器判 deliverable）被声明段纠偏，不再误拦。"""
+        self.make_ready_spec("s1")
+        self.write_spec_dir("s1",
+            "# Tasks\n\n## Deliverables\n\n```yaml\n"
+            "- path: .fenix/config.yaml\n  kind: reference\n```\n"
+            "## 1. 分组\n\n- [ ] 1.1 写 `.fenix/config.yaml` 的 project.description\n")
+        self.wm.file_exists_on_branch.return_value = False
+        # 提取器本会把它当交付物；声明段纠偏后守卫放行
+        self.assertEqual(self.run_gate(), [])
+
+    def test_declared_new_missing_still_blocks(self):
+        self.make_ready_spec("s1")
+        self.write_spec_dir("s1",
+            "# Tasks\n\n## Deliverables\n\n```yaml\n"
+            "- path: core/new_mod.py\n  kind: new\n```\n"
+            "## 1. 分组\n\n- [ ] 1.1 新建 `core/new_mod.py`\n")
+        self.wm.file_exists_on_branch.return_value = False
+        self.assertEqual(self.run_gate(), ["core/new_mod.py"])
+
+
+class TestDisputedDeliverables(_GateFixture):
+    """dispute 裁决通道：实现 run 的 findings 异议与缺件清单求交。"""
+
+    def test_dispute_matched_with_fenix_normalize(self):
+        self.make_ready_spec("s1")
+        impl_result = {"findings": [
+            {"type": "deliverable-dispute", "element": ".fenix/config.yaml",
+             "current": "守卫判其为必需交付物",
+             "suggestion": "运行时写入目标，应归 reference"},
+            {"type": "pending-interaction", "element": "btn-x"},
+        ]}
+        missing = ["config.yaml", "core/real.py"]
+        # .fenix/ 前缀归一化后与缺件 config.yaml 匹配；core/real.py 无异议
+        self.assertEqual(
+            self.engine._verification._disputed_deliverables(impl_result, missing),
+            ["config.yaml"])
+
+    def test_no_findings_returns_empty(self):
+        self.assertEqual(
+            self.engine._verification._disputed_deliverables(None, ["a"]), [])
+        self.assertEqual(
+            self.engine._verification._disputed_deliverables({}, []), [])
+
+
+class TestBranchOnlyLegacy(unittest.TestCase):
+    """守卫拒绝路径的仅分支遗产：注册、快照渲染、过期回收。"""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        (self.tmpdir / ".fenix").mkdir(exist_ok=True)
+        self.logger = _FakeLogger()
+        self.wm = WorktreeManager(self.tmpdir / "wt", self.tmpdir, self.logger)
+        self.sm = StateMachine(self.tmpdir / "STATE.md", self.logger)
+        self.wm_mock = mock.MagicMock()
+        self.wm_mock.get_legacy.return_value = None
+        self.runner = AgentRunner.__new__(AgentRunner)
+        self.runner.logger = self.logger
+        self.runner.state_machine = self.sm
+        self.runner.project_root = self.tmpdir
+        self.runner.worktree_manager = self.wm_mock
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_register_branch_only(self):
+        self.wm.register_legacy("s1", None, "fenix/s1-123")
+        rec = self.wm.get_legacy("s1")
+        self.assertEqual(rec["path"], "")
+        self.assertEqual(rec["branch"], "fenix/s1-123")
+
+    def test_register_requires_branch(self):
+        self.wm.register_legacy("s1", None, "")
+        self.assertIsNone(self.wm.get_legacy("s1"))
+
+    def test_reclaim_expired_branch_only_no_worktree_crash(self):
+        self.wm.register_legacy("s1", None, "fenix/s1-123")
+        reclaimed = self.wm._reclaim_expired_legacy(
+            now=self.wm.get_legacy("s1")["registered_at"] + 10 ** 9)
+        self.assertEqual(reclaimed, ["s1"])
+        self.assertIsNone(self.wm.get_legacy("s1"))
+
+    def test_prompt_renders_branch_only_section(self):
+        self.wm_mock.get_legacy.return_value = {
+            "path": "", "branch": "fenix/s1-123"}
+        section = self.runner._prompt_builder._build_legacy_section("s1")
+        self.assertIn("RECOVERY LEGACY", section)
+        self.assertIn("fenix/s1-123", section)
+        self.assertIn("分支提交快照", section)
+        self.assertIn("cherry-pick", section)
+
+    def test_prompt_renders_worktree_mode_unchanged(self):
+        self.wm_mock.get_legacy.return_value = {
+            "path": "/tmp/wt-s1", "branch": "fenix/s1-123"}
+        with mock.patch.object(
+                self.runner._prompt_builder, "_legacy_dirty_snapshot",
+                return_value=" M core/foo.py"):
+            section = self.runner._prompt_builder._build_legacy_section("s1")
+        self.assertIn("/tmp/wt-s1", section)
+        self.assertIn("脏文件快照", section)
+        self.assertIn("salvaged from fenix/s1-123", section)
 
 
 if __name__ == "__main__":

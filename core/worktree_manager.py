@@ -617,14 +617,20 @@ class WorktreeManager:
         覆盖式更新（D5）：同一 spec 再次死亡时仅保留最新一份，旧遗产直接回收
         （避免遗产链膨胀）。daemon 重启后内存态丢失，遗产按孤儿清扫兜底回收。
 
+        支持两种模式（守卫拒绝重派接入，add-project-description 事故治理）：
+        - worktree 模式：worktree_path 非空 —— 死亡 run 的未提交半成品目录保留；
+        - 仅分支模式：worktree_path 为 None/空 —— 守卫拒绝发生在成功收工清理之后，
+          worktree 已物理删除，仅分支留存（完整已提交成果），path 记空串。
+
         Args:
             spec_name: 死亡 run 所属 SPEC。
-            worktree_path: 死亡 run 的 worktree 绝对路径（Path 或 str）。
-            branch: 死亡 run 的 worktree 分支名。
+            worktree_path: 死亡 run 的 worktree 绝对路径（Path 或 str）；
+                仅分支模式传 None。
+            branch: 死亡 run 的分支名（仅分支模式下为收编唯一线索，必填）。
         """
-        if not spec_name or not worktree_path:
+        if not spec_name or not branch:
             return
-        wt_str = str(worktree_path)
+        wt_str = str(worktree_path) if worktree_path else ""
         # 覆盖式更新前先把旧遗产回收（D5：仅留最新一份）
         if spec_name in self._legacy:
             old = self._legacy[spec_name]
@@ -636,13 +642,15 @@ class WorktreeManager:
         self._legacy[spec_name] = {
             "path": wt_str,
             "branch": branch or "",
-            "worktree_name": wt_str.rstrip("/").split("/")[-1],
+            "worktree_name": (wt_str.rstrip("/").split("/")[-1]
+                              if wt_str else f"branch-only:{branch}"),
             "registered_at": time.time(),
-            "dirty": True,  # 注入时现场重采 git status，先标记脏待刷新
+            "dirty": bool(wt_str),  # worktree 模式待刷新脏快照；仅分支模式无脏文件
         }
         self.logger.warning(
             "worktree_manager",
-            f"Registered legacy for '{spec_name}': worktree={wt_str} branch={branch}",
+            f"Registered legacy for '{spec_name}': "
+            f"{'worktree=' + wt_str if wt_str else 'branch-only'} branch={branch}",
         )
 
     def get_legacy(self, spec_name: str) -> Optional[dict]:
@@ -769,13 +777,14 @@ class WorktreeManager:
             try:
                 from pathlib import Path as _Path
                 wt = _Path(path)
-                res = subprocess.run(
-                    ["git", "-C", str(self.project_root), "worktree", "remove",
-                     str(wt), "--force"],
-                    capture_output=True, text=True, timeout=30,
-                )
-                if res.returncode != 0:
-                    shutil.rmtree(str(wt), ignore_errors=True)
+                if path:
+                    res = subprocess.run(
+                        ["git", "-C", str(self.project_root), "worktree", "remove",
+                         str(wt), "--force"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    if res.returncode != 0:
+                        shutil.rmtree(str(wt), ignore_errors=True)
                 if branch and branch != "HEAD":
                     subprocess.run(
                         ["git", "-C", str(self.project_root), "branch", "-D", branch],
