@@ -42,12 +42,12 @@
 
 ## 8. 验证与收尾
 
-- [ ] 8.1 mock runner 单测覆盖 fast-track 全链路：派发单 run → 守卫触发 → 硬校验 → 状态推进 → 超预算升级
-- [ ] 8.2 用 dashboard fixture 验证配方做端到端人工验证（假 spec + mode 字段 + 伪造结果文件，不烧 token）
-- [ ] 8.3 更新 PROJECT_LOG.md；确认无新增配置键（不加 config.template.yaml 条目）
+- [x] 8.1 mock runner 单测覆盖 fast-track 全链路：派发单 run → 守卫触发 → 硬校验 → 状态推进 → 超预算升级
+- [x] 8.2 用 dashboard fixture 验证配方做端到端人工验证（假 spec + mode 字段 + 伪造结果文件，不烧 token）
+- [x] 8.3 更新 PROJECT_LOG.md；确认无新增配置键（不加 config.template.yaml 条目）
 
 ## 验证修复（第 1 轮失败）
 
-- [ ] 先复核失败有效性：逐条核对 `openspec/changes/add-fast-track-mode/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `openspec/changes/add-fast-track-mode/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [x] 修复后重跑验证确认通过
