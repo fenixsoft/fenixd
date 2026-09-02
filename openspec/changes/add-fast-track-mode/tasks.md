@@ -44,17 +44,8 @@
 
 - [x] 8.1 mock runner 单测覆盖 fast-track 全链路：派发单 run → 守卫触发 → 硬校验 → 状态推进 → 超预算升级
 - [x] 8.2 用 dashboard fixture 验证配方做端到端人工验证（假 spec + mode 字段 + 伪造结果文件，不烧 token）
-- [x] 8.3 更新 PROJECT_LOG.md；确认无新增配置键（不加 config.template.yaml 条目）
+- [x] 8.3 更新 PROJECT_LOG.md；确认无新增配置键（不加 config.template.yaml 条目）## 验证修复（第 2 轮失败）
 
-## 验证修复（第 1 轮失败）
-
-- [x] 先复核失败有效性：逐条核对 `openspec/changes/add-fast-track-mode/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [x] 修复后重跑验证确认通过
-
-## 验证修复（第 2 轮：quick-switch 交叉回归）
-
-- [x] 复核：task 7 落地的详情页模式标记被 `add-v3-spec-quick-switch` 的 6fcf40c 提交在编辑 Dropdown 区域时误删（diff 可证：该提交恰好移除 detail.tsx 标题区 5 行模式 Tag），属产品代码回归而非场景缺陷
-- [x] 修复：恢复 `pages/projects/detail.tsx` 标题区模式 Tag（fast-track 青色 / 其余完整模式），与 task 7 原始实现一致
-- [x] 顺带修复：`tests/test_dashboard_api.py::test_index_served` 与根路由 302 跳 v3 既定行为未同步（main 已有 48c9a3c 同款修复，此处对齐）——消除跨 worktree 分支差异导致的 2 例假失败
-- [x] 验证：dist 重建后 `完整模式`/`fast-track` 均已进入详情/列表产物；全量单测 989 通过
+- [ ] 先复核失败有效性：逐条核对 `openspec/changes/add-fast-track-mode/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
