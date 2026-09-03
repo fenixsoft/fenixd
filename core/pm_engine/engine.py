@@ -1871,6 +1871,36 @@ class PMEngine:
         """fast-track 单 run 全包 worker（add-fast-track-mode D1/D4/D5/D6）。"""
         return self._dispatcher._run_fast_track_worker(spec_name)
 
+    def _should_enter_repair(self, spec_name: str, merge_info, streak: int,
+                             breaker_threshold: int) -> bool:
+        """merge-back 语义冲突失败是否进入 repair 通道（add-merge-back-repair-lane）。"""
+        return self._dispatcher._should_enter_repair(
+            spec_name, merge_info, streak, breaker_threshold)
+
+    def _dispatch_repair_lane(self, spec_name: str, merge_info, branch: str,
+                              fp: str | None = None, streak: int = 0) -> None:
+        """进入 repair 通道（载体三态解析 + 认领现场 + 派发 repair worker）。"""
+        return self._dispatcher._dispatch_repair_lane(
+            spec_name, merge_info, branch, fp=fp, streak=streak)
+
+    def _claim_repair_site(self, spec_name: str, wt_path, branch: str) -> None:
+        """认领 repair 现场（_legacy take 摘出 + _spec_locks 注册）。"""
+        return self._dispatcher._claim_repair_site(spec_name, wt_path, branch)
+
+    def _run_repair_worker(self, spec_name: str, wt_path, branch: str, merge_info) -> None:
+        """repair worker：派发 repair agent → re-merge-back → 状态推进。"""
+        return self._dispatcher._run_repair_worker(spec_name, wt_path, branch, merge_info)
+
+    def _handle_remerge_failure(self, spec_name: str, remerge_info, branch: str) -> None:
+        """repair 后 re-merge-back 失败处理（熔断连续累计 + 下一轮 repair/fallback）。"""
+        return self._dispatcher._handle_remerge_failure(spec_name, remerge_info, branch)
+
+    def _fallback_after_repair(self, spec_name: str, branch: str | None,
+                               repair_error: str, merge_error: str = "") -> None:
+        """repair 链失败回退：全新重派 implementer（prompt 注入 merge 失败上下文）。"""
+        return self._dispatcher._fallback_after_repair(
+            spec_name, branch, repair_error, merge_error=merge_error)
+
     def _recovery_watch_path(self) -> Path:
         return self._recovery._recovery_watch_path()
 
