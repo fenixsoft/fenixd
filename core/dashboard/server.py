@@ -24,6 +24,8 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     POST /api/spec-admin-invoke?project=<name>&spec=<name>  → 手动唤起 Admin（写 .fenix/admin_invoke_request.json，进行中返回 409）
     GET /api/config?project=<name> → 读取受管配置（llm / agents.models / gates.approve_mode）
     POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
+    GET /api/prompts?project=<name> → agent 提示词：通用层（只读）+ 项目级 .fenix/agents/ 附加（缺 project 仅通用层）
+    POST /api/prompts?project=<name> → 保存项目附加提示词（body: {"agent_type","content"}；白名单校验、自引用项目拒绝 403）
     GET /api/alerts?project=<name> → Administrator 告警/处置记录（缺省跨项目聚合未处理告警）
     POST /api/alerts/<id>/handled?project=<name> → 标记升级告警已处理
     POST /api/alerts/clear → 清理所有事件：全部项目未处理告警一次标记已处理
@@ -49,6 +51,11 @@ from pathlib import Path
 from . import data as dashboard_data
 from .registry import Registry
 from .watcher import FileWatcher
+from core.agent_runner.prompt_builder import (
+    AGENT_PROMPT_DIR,
+    AGENT_PROMPT_FILES,
+    is_self_referencing_project,
+)
 from core.fenix_session import start_daemon, stop_daemon
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -305,6 +312,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(self._api_admin_activities(query))
         elif path == "/api/config":
             self._json(self._api_config_get(query))
+        elif path == "/api/prompts":
+            self._json(self._api_prompts_get(query))
         elif path == "/api/spec-doc":
             self._json(self._api_spec_doc(query))
         else:
@@ -697,6 +706,92 @@ class DashboardHandler(BaseHTTPRequestHandler):
         config["project"] = project["name"]
         return config
 
+    # ── agent 提示词（add-agent-prompt-files 任务 3.1）────────────────
+
+    def _api_prompts_get(self, query) -> dict:
+        """GET /api/prompts[?project=<name>] — agent 提示词读取。
+
+        缺省 → 仅通用层六文件（用户级只读视图）；带 project → 追加项目级
+        .fenix/agents/ 附加内容与自引用标记。通用层一律只读，端点不提供
+        通用层写入。
+        """
+        agents = []
+        for atype, fname in AGENT_PROMPT_FILES.items():
+            path = AGENT_PROMPT_DIR / fname
+            try:
+                content = path.read_text(encoding="utf-8") if path.is_file() else ""
+            except OSError:
+                content = ""
+            agents.append({"type": atype, "file": fname, "content": content})
+        out: dict = {"agents": agents}
+        project = self._project_from_query(query)
+        if project is None:
+            return out
+        if not project.get("exists"):
+            return {"error": "project not found"}
+        proot = Path(project["path"])
+        self_referencing = is_self_referencing_project(proot)
+        out["project"] = {
+            "name": project["name"],
+            "path": project["path"],
+            "self_referencing": self_referencing,
+            # 自引用项目的项目级即通用层：不返回 extras（UI 禁用编辑并说明原因）
+            "extras": {} if self_referencing else {
+                atype: self._read_project_extra(proot, atype)
+                for atype in AGENT_PROMPT_FILES
+            },
+        }
+        return out
+
+    @staticmethod
+    def _read_project_extra(proot: Path, agent_type: str) -> str:
+        path = proot / ".fenix" / "agents" / AGENT_PROMPT_FILES[agent_type]
+        if not path.is_file():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+
+    def _api_prompts_post(self, query):
+        """POST /api/prompts?project=<name> — 保存项目附加提示词。
+
+        body: {"agent_type": <白名单键>, "content": <自由 Markdown>}。
+        写入 <项目根>/.fenix/agents/<agent-type>.md（该目录唯一写入口，
+        框架运行时代码不写项目级目录）；自引用项目拒绝（403，design D4）。
+        """
+        body = self._read_json_body()
+        if body is None:
+            return
+        name = query.get("project", [None])[0]
+        if not name:
+            self._error(400, "缺少 project 参数（项目附加提示词必须挂到具体项目）")
+            return
+        project = self.server.project_by_name(name)
+        if project is None or not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        agent_type = body.get("agent_type")
+        if not isinstance(agent_type, str) or agent_type not in AGENT_PROMPT_FILES:
+            self._error(400, f"非法 agent_type（白名单外）: {agent_type}")
+            return
+        proot = Path(project["path"])
+        if is_self_referencing_project(proot):
+            self._error(
+                403,
+                "自引用项目（.fenix 解析为框架根）的项目级提示词即通用层 agents/，"
+                "禁止经项目通道修改通用提示词",
+            )
+            return
+        content = body.get("content")
+        if not isinstance(content, str):
+            self._error(400, "content 必须为字符串（自由 Markdown，不做 schema 校验）")
+            return
+        target = proot / ".fenix" / "agents" / AGENT_PROMPT_FILES[agent_type]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        self._json({"ok": True, "agent_type": agent_type, "path": str(target)})
+
     def _api_alerts(self, query) -> dict:
         """读取 Administrator 告警。
 
@@ -919,6 +1014,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _handle_api_post(self, path: str, query: dict):
         if path == "/api/config":
             self._api_config_post(query)
+        elif path == "/api/prompts":
+            self._api_prompts_post(query)
         elif path == "/api/spec-error-clear":
             self._api_spec_error_clear(query)
         elif path == "/api/spec-priority":

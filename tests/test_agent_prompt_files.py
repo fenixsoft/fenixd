@@ -327,6 +327,119 @@ class TestSelfReferenceGuard:
         assert "自引用不应注入此行" in prompt
 
 
+# ── Dashboard「提示词」端点 ──────────────────────────────────────────
+
+
+@pytest.fixture()
+def prompts_server(tmp_path):
+    """DashboardHTTPServer 测试实例（复用 test_dashboard_api 的夹具）。"""
+    from test_dashboard_api import _TestServer, make_project
+    from core.dashboard.registry import Registry
+    proot = make_project(tmp_path)
+    cfg = tmp_path / "dashboard.yaml"
+    reg = Registry(config_path=cfg)
+    reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+              "scan_dirs": [str(tmp_path / "scan-empty")]})
+    srv = _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+    yield proot, srv
+    srv.stop()
+
+
+class TestPromptsAPI:
+    """Scenario: 端点读写与白名单校验（任务 3.1）。"""
+
+    def test_get_user_level_lists_six_agents(self, prompts_server):
+        proot, srv = prompts_server
+        status, data = srv.get("/api/prompts")
+        assert status == 200
+        assert [a["type"] for a in data["agents"]] == list(AGENT_PROMPT_FILES.keys())
+        for a in data["agents"]:
+            assert a["content"], f"{a['type']} 通用内容非空"
+        assert "project" not in data
+
+    def test_get_project_level_returns_extras_and_flag(self, prompts_server):
+        proot, srv = prompts_server
+        status, data = srv.get("/api/prompts?project=proj-a")
+        assert status == 200
+        assert data["project"]["name"] == "proj-a"
+        assert data["project"]["self_referencing"] is False
+        assert set(data["project"]["extras"].keys()) == set(AGENT_PROMPT_FILES.keys())
+        assert data["project"]["extras"]["verifier"] == ""
+
+    def test_get_project_extras_show_saved_content(self, prompts_server):
+        proot, srv = prompts_server
+        extra_dir = proot / ".fenix" / "agents"
+        extra_dir.mkdir(parents=True)
+        (extra_dir / "verifier.md").write_text("- 项目附加规则\n", encoding="utf-8")
+        status, data = srv.get("/api/prompts?project=proj-a")
+        assert status == 200
+        assert "项目附加规则" in data["project"]["extras"]["verifier"]
+
+    def test_post_saves_project_extra(self, prompts_server):
+        proot, srv = prompts_server
+        status, data = srv.post_json(
+            "/api/prompts?project=proj-a",
+            {"agent_type": "verifier", "content": "- 登录页路径 /login\n"})
+        assert status == 200 and data["ok"] is True
+        saved = proot / ".fenix" / "agents" / "verifier.md"
+        assert saved.is_file()
+        assert "/login" in saved.read_text(encoding="utf-8")
+
+    def test_post_rejects_non_whitelisted_agent_type(self, prompts_server):
+        proot, srv = prompts_server
+        for bad in ("../evil", "unknown-type", None, ["verifier"]):
+            status, data = srv.post_json(
+                "/api/prompts?project=proj-a", {"agent_type": bad, "content": "x"})
+            assert status == 400, f"agent_type={bad!r} 应被白名单拒绝"
+        assert not (proot / ".fenix" / "agents").exists()
+
+    def test_post_requires_project(self, prompts_server):
+        _, srv = prompts_server
+        status, data = srv.post_json(
+            "/api/prompts", {"agent_type": "verifier", "content": "x"})
+        assert status == 400
+
+    def test_post_unknown_project_404(self, prompts_server):
+        _, srv = prompts_server
+        status, data = srv.post_json(
+            "/api/prompts?project=nope", {"agent_type": "verifier", "content": "x"})
+        assert status == 404
+
+    def _register_selfref_project(self, tmp_path, srv, name: str):
+        """注册一个自引用项目（.fenix → 框架根）并击穿 projects TTL 缓存。"""
+        selfroot = tmp_path / name
+        selfroot.mkdir()
+        (selfroot / "STATE.md").write_text("# Fenix Project State\n", encoding="utf-8")
+        (selfroot / ".fenix").symlink_to(Path(__file__).resolve().parents[1])
+        from core.dashboard.registry import Registry
+        Registry(config_path=tmp_path / "dashboard.yaml").add_project(str(selfroot), name)
+        srv.httpd._projects_cache = []
+        srv.httpd._cache_ts = 0.0
+        return selfroot
+
+    def test_post_rejects_self_referencing_project(self, prompts_server, tmp_path):
+        """自引用项目（.fenix → 框架根）POST 403，通用文件不被改写。"""
+        proot, srv = prompts_server
+        selfroot = self._register_selfref_project(tmp_path, srv, "self-proj")
+        # 通用层基准内容（确保未被写入破坏）
+        generic = AGENT_PROMPT_DIR / AGENT_PROMPT_FILES["verifier"]
+        before = generic.read_text(encoding="utf-8")
+
+        status, data = srv.post_json(
+            "/api/prompts?project=self-proj",
+            {"agent_type": "verifier", "content": "- 覆盖通用层\n"})
+        assert status == 403
+        assert generic.read_text(encoding="utf-8") == before
+
+    def test_get_self_referencing_project_flags_and_blank_extras(self, prompts_server, tmp_path):
+        _, srv = prompts_server
+        self._register_selfref_project(tmp_path, srv, "self-proj-2")
+        status, data = srv.get("/api/prompts?project=self-proj-2")
+        assert status == 200
+        assert data["project"]["self_referencing"] is True
+        assert data["project"]["extras"] == {}
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

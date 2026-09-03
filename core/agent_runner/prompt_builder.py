@@ -29,6 +29,22 @@ AGENT_PROMPT_FILES = {
 }
 
 
+def is_self_referencing_project(proot) -> bool:
+    """项目根或其 .fenix 解析为框架根（自引用项目，add-agent-prompt-files D4）。
+
+    fenixd 自身项目的项目级 .fenix/agents/ 即通用层 agents/：项目级注入等于
+    通用层重复、项目级写入会覆盖不可修改的通用文件——读取跳过、编辑禁用。
+    模块级函数供 PromptBuilder 与 Dashboard 端点共用同一判定。
+    """
+    try:
+        rp = Path(proot).resolve()
+        if rp == FRAMEWORK_ROOT.resolve():
+            return True
+        return (rp / ".fenix").resolve() == FRAMEWORK_ROOT.resolve()
+    except OSError:
+        return False
+
+
 class PromptBuilder:
     """Agent 提示词构建器（门面 AgentRunner 的组合组件）。"""
 
@@ -160,22 +176,10 @@ class PromptBuilder:
         return f"\n\n## 项目附加提示词\n\n{content}\n"
 
     def _project_agents_dir(self):
-        """项目级 agents 目录；自引用项目返回 None（任务 2.3）。
-
-        两重检测（add-agent-prompt-files D4）：
-        - 项目根与框架根解析为同一路径（fenixd 自身项目）；
-        - 项目 .fenix 符号链接解析为框架根（自引用——项目级 .fenix/agents/
-          即通用层 agents/，读取注入等于自我重复，写入会覆盖不可改的通用文件）。
-        """
-        proot = Path(self._pm.project_root)
-        try:
-            if proot.resolve() == FRAMEWORK_ROOT.resolve():
-                return None
-            if (proot / ".fenix").resolve() == FRAMEWORK_ROOT.resolve():
-                return None
-        except OSError:
-            pass
-        return proot / ".fenix" / "agents"
+        """项目级 agents 目录；自引用项目返回 None（任务 2.3，D4）。"""
+        if is_self_referencing_project(self._pm.project_root):
+            return None
+        return Path(self._pm.project_root) / ".fenix" / "agents"
 
     def _verifier_breakpoint_section(self, spec_name: str) -> str:
         """断点续跑段（verifier-checkpoint-resume spec）。
