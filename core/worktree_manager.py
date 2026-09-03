@@ -48,11 +48,19 @@ PROCESS_SCAN_CACHE_SECONDS = 5.0
 # 识别「框架自己 stash 的条目」——人工手工 stash 的条目不带此前缀，永不自动回收。
 AUTOSTASH_MSG_PREFIX = "fenix: pre-dispatch autostash"
 
-# 构建产物目录（相对项目根）：merge-back 冲突自愈的作用域。实现分支各自重建
-# dist，内容哈希文件名跨分支必然 rename/delete 打架（非语义冲突）；全部冲突
-# 落在这些前缀下时整目录对齐实现分支版本并完成 merge（add-v3-spec-quick-switch
-# 4 次重试耗尽事故的根因之一）。
-BUILD_ARTIFACT_PREFIXES = ("core/dashboard/static/dist/",)
+# dashboard 静态根（相对项目根）：构建产物目录（dist/、v3/dist/ 等层级变体）
+# 都在其下。产物冲突判定按目录层次容错——写死单一路径前缀会在主树重命名产物
+# 目录（如 v3/dist→dist，add-dashboard-incremental-data 事故）后，把冲突
+# rename 双胞胎的旧路径误判为语义冲突，自愈静默跳过。
+DASHBOARD_STATIC_ROOT = "core/dashboard/static/"
+
+
+def _is_build_artifact_path(path: str) -> bool:
+    """构建产物路径判定：static 根下任一层级 dist 目录内的文件。"""
+    if not path.startswith(DASHBOARD_STATIC_ROOT):
+        return False
+    parts = path[len(DASHBOARD_STATIC_ROOT):].split("/")
+    return len(parts) >= 2 and "dist" in parts[:-1]
 
 
 class WorktreeManager:
@@ -1419,6 +1427,23 @@ class WorktreeManager:
                 "worktree_manager",
                 f"Merge failed for branch '{branch}': {error}",
             )
+            # 构建产物冲突自愈（add-v3-spec-quick-switch / add-project-description
+            # 事故治理）：实现分支各自重建 dist，内容哈希文件名跨分支必然
+            # rename/delete 打架——这不是语义冲突。全部冲突路径位于构建产物目录时，
+            # dist 整目录对齐实现分支版本（含本 spec 功能构建）并完成 merge；
+            # dist 与合并后 src 的最终一致性由后续"merge 后从 src 重建"刷新。
+            # 先于 ignored-DU 自愈跑：其判定为只读收集、解决精确（含产物 DU），
+            # 而 ignored 自愈会先 rm --cached 改变冲突态、校验失败时 abort 整个
+            # merge——若它先行，产物 DU 场景轮不到本自愈（add-dashboard-
+            # incremental-data 目录重命名事故根因之二）。
+            if self._resolve_build_artifact_conflicts(branch):
+                self._drop_backup(backup)
+                self.logger.info(
+                    "worktree_manager",
+                    f"Merge conflict self-healed (build artifacts aligned to "
+                    f"branch) for branch '{branch}'",
+                )
+                return True, ""
             # merge 冲突自愈（fix-merge-modify-delete-ignored）：modify/delete 冲突
             # 且全部冲突路径都是 .gitignore 忽略的运行时草稿时，采纳主树侧的删除。
             # 场景：run-result 类草稿在移出版本控制前派生的旧分支上被改动，与主树的
@@ -1431,12 +1456,6 @@ class WorktreeManager:
                     f"for branch '{branch}'",
                 )
                 return True, ""
-            # 构建产物冲突自愈（add-v3-spec-quick-switch / add-project-description
-            # 事故治理）：实现分支各自重建 dist，内容哈希文件名跨分支必然
-            # rename/delete 打架——这不是语义冲突。全部冲突路径位于构建产物目录时，
-            # dist 整目录对齐实现分支版本（含本 spec 功能构建）并完成 merge；
-            # dist 与合并后 src 的最终一致性由后续"merge 后从 src 重建"刷新。
-            if self._resolve_build_artifact_conflicts(branch):
                 self._drop_backup(backup)
                 self.logger.info(
                     "worktree_manager",
@@ -1459,16 +1478,21 @@ class WorktreeManager:
             return False, str(e)
 
     def _resolve_build_artifact_conflicts(self, branch: str) -> bool:
-        """merge 冲突自愈：全部冲突路径位于构建产物目录时，对齐分支版并完成 merge。
+        """merge 冲突自愈：全部冲突路径位于构建产物目录时，完成 merge。
 
         仅分支模式调用（merge 冲突态中）。判定与解决：
         1. ``git status --porcelain`` 收集 unmerged 条目（UU/AA/DU/UD/AU/UA/DD，
            rename 形如 ``old -> new`` 时两侧路径都计入）；
-        2. 存在任一非构建产物前缀的冲突路径 → 返回 False（语义冲突不自愈）；
+        2. 存在任一非构建产物的冲突路径 → 返回 False（语义冲突不自愈）；
         3. 无冲突 → False（merge 失败另有原因，交回调用方处理）；
-        4. 全部为产物冲突 → ``git checkout <branch> -- <产物目录>`` 对齐分支版，
-           分支侧已删除的路径 ``git rm`` 对齐删除，``git commit --no-edit`` 完成
-           原 merge；任一步失败则 abort 返回 False。
+        4. 全部为产物冲突 → 按产物目录布局是否被主树移动分两种解法：
+           - 布局一致（分支与 HEAD 产物同路径，跨分支重建打架）→ 逐路径对齐
+             分支版（含本 spec 功能构建）；
+           - 布局被主树移动（如 v3/dist→dist，add-dashboard-incremental-data
+             事故：分支 fork 于重命名前，产物全在旧路径）→ 逐路径对齐 HEAD 版，
+             否则采纳分支版会复活主树已删除的旧目录、丢掉新布局的 index.html；
+             dist 与合并后 src 的最终一致性由后续"merge 后从 src 重建"刷新。
+           任一步失败则 abort 返回 False。
 
         Returns: True 表示自愈完成且 merge 已提交。
         """
@@ -1495,11 +1519,10 @@ class WorktreeManager:
             conflict_paths = [p for p in conflict_paths if p]
             if not conflict_paths:
                 return False
-            if not any(p.startswith(BUILD_ARTIFACT_PREFIXES)
-                       for p in conflict_paths):
+            if not any(_is_build_artifact_path(p) for p in conflict_paths):
                 return False
             non_artifact = [p for p in conflict_paths
-                            if not p.startswith(BUILD_ARTIFACT_PREFIXES)]
+                            if not _is_build_artifact_path(p)]
             if non_artifact:
                 self.logger.warning(
                     "worktree_manager",
@@ -1508,35 +1531,55 @@ class WorktreeManager:
                 )
                 return False
 
-            # 分支侧文件集合：对齐覆盖 + 对齐删除的依据
-            ls = subprocess.run(
-                ["git", "-C", str(self.project_root), "ls-tree", "-r",
-                 "--name-only", branch, *BUILD_ARTIFACT_PREFIXES],
-                capture_output=True, text=True, timeout=30,
-            )
-            branch_files = set(ls.stdout.split()) if ls.returncode == 0 else set()
+            # 布局判定：分支产物目录是否仍存在于 HEAD。主树重命名/上移过产物
+            # 目录时分支产物全在旧路径，采纳会复活旧目录——改对齐 HEAD 版。
+            head_artifacts = self._artifact_paths("HEAD")
+            branch_artifacts = self._artifact_paths(branch)
+            head_dirs = {p.rsplit("/", 1)[0] for p in head_artifacts}
+            branch_dirs = {p.rsplit("/", 1)[0] for p in branch_artifacts}
+            moved = not branch_dirs.issubset(head_dirs)
+            winner, winner_files = (
+                ("HEAD", head_artifacts) if moved
+                else (branch, branch_artifacts))
 
-            # 1) 整目录对齐分支版（覆盖/新增分支侧存在的文件）
-            for prefix in BUILD_ARTIFACT_PREFIXES:
-                subprocess.run(
-                    ["git", "-C", str(self.project_root), "checkout", branch,
-                     "--", prefix],
-                    capture_output=True, text=True, timeout=60,
-                )
-            # 2) 分支侧已删除的冲突路径对齐删除
+            # 逐路径解决：冲突路径在 winner 侧存在 → 取 winner 版本（同时清除
+            # 冲突态）；winner 侧已不存在（如旧路径双胞胎、对方重命名）→ 对齐删除
             for p in conflict_paths:
-                if p not in branch_files:
+                if p in winner_files:
+                    subprocess.run(
+                        ["git", "-C", str(self.project_root), "checkout",
+                         winner, "--", p],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                else:
                     subprocess.run(
                         ["git", "-C", str(self.project_root), "rm", "-f",
                          "--ignore-unmatch", "--", p],
                         capture_output=True, text=True, timeout=30,
                     )
-            # 3) 收口 add + 完成原 merge
-            for prefix in BUILD_ARTIFACT_PREFIXES:
-                subprocess.run(
-                    ["git", "-C", str(self.project_root), "add", "--", prefix],
-                    capture_output=True, text=True, timeout=60,
+            if moved:
+                # 收口：目录重命名检测未挪动的分支侧旧路径产物会以干净 add 进入
+                # index（非冲突、上述循环覆盖不到），提交后复活已删除的旧目录——
+                # HEAD 产物集合即期望终态，清掉其中没有的已暂存产物新增。
+                staged = subprocess.run(
+                    ["git", "-C", str(self.project_root), "diff", "--cached",
+                     "--name-only", "--diff-filter=A", "--",
+                     DASHBOARD_STATIC_ROOT],
+                    capture_output=True, text=True, timeout=30,
                 )
+                if staged.returncode == 0:
+                    strays = [
+                        line for line in staged.stdout.splitlines()
+                        if _is_build_artifact_path(line)
+                        and line not in head_artifacts
+                    ]
+                    for p in strays:
+                        subprocess.run(
+                            ["git", "-C", str(self.project_root), "rm", "-q",
+                             "-f", "--", p],
+                            capture_output=True, text=True, timeout=30,
+                        )
+            # 完成原 merge
             commit = subprocess.run(
                 ["git", "-C", str(self.project_root), "commit", "--no-edit"],
                 capture_output=True, text=True, timeout=60,
@@ -1554,7 +1597,8 @@ class WorktreeManager:
                 return False
             self.logger.warning(
                 "worktree_manager",
-                f"Build-artifact conflicts aligned to branch '{branch}' "
+                f"Build-artifact conflicts aligned to {winner} "
+                f"({'main tree moved dist layout' if moved else 'branch rebuild'}) "
                 f"({len(conflict_paths)} paths) — rebuild dist from src to "
                 f"restore cross-spec consistency",
             )
@@ -1572,6 +1616,18 @@ class WorktreeManager:
             except Exception:
                 pass
             return False
+
+    def _artifact_paths(self, rev: str) -> set:
+        """列出 <rev> 中 static 根下全部构建产物路径（按目录层次容错判定）。"""
+        ls = subprocess.run(
+            ["git", "-C", str(self.project_root), "ls-tree", "-r",
+             "--name-only", rev, DASHBOARD_STATIC_ROOT],
+            capture_output=True, text=True, timeout=30,
+        )
+        if ls.returncode != 0:
+            return set()
+        return {line for line in ls.stdout.splitlines()
+                if _is_build_artifact_path(line)}
 
     def _parse_merge_blockers(self, error: str) -> list:
         """从 git 的 'local changes would be overwritten by merge' 错误中解析路径。

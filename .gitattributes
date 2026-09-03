@@ -1,0 +1,5 @@
+# 构建产物不做语义合并：内容哈希文件名跨分支必然打架，内容级冲突一律
+# 以我方为准（冲突态仍保留，由 worktree_manager 产物冲突自愈统一收口）。
+# 注意：merge 驱动不影响 rename/rename、rename/delete 冲突——那类冲突由
+# 自愈按目录层次容错处理（add-dashboard-incremental-data 事故治理）。
+core/dashboard/static/dist/** merge=binary

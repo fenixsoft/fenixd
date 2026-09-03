@@ -321,3 +321,69 @@ class TestBuildArtifactConflictSelfHeal:
         assert not success, "混入语义冲突时不应自愈"
         # 主树回到干净状态（abort 生效，可重试）
         assert git(root, "status", "--porcelain").stdout.strip() == ""
+
+    # ─────────────────── 目录重命名场景（add-dashboard-incremental-data 事故） ───────────────────
+
+    OLD_DIST = "core/dashboard/static/v3/dist"
+    SRC_PAGE = "core/dashboard/static/src/pages/list.tsx"
+
+    def _seed_old_dist(self, root: Path):
+        d = root / self.OLD_DIST
+        d.mkdir(parents=True)
+        (d / "umi.aaa.js").write_text("UMI-BUNDLE-V1;COMMON-PAYLOAD\n", encoding="utf-8")
+        (d / "p__overview.aaa.async.js").write_text("P-OVERVIEW-V1;COMMON\n", encoding="utf-8")
+        (d / "index.html").write_text("INDEX-V1\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] seed v3 dist")
+
+    def test_directory_rename_artifact_conflicts_self_heal(self, tmp_path):
+        """主树重命名 dist 目录（v3/dist→dist）+ 分支在旧路径重建产物 → 自愈且保留主树布局。
+
+        复演 add-dashboard-incremental-data：分支 fork 于重命名前，产物全部落在旧路径，
+        merge-back 时 rename/rename + rename/delete + content 冲突爆发。自愈应识别
+        全部冲突路径均为产物（按目录层次容错），且布局被主树移动后对齐主树版——
+        不复活已删除的旧目录，分支的非产物改动（src）照常合入。
+        """
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._seed_old_dist(root)
+        base = git(root, "rev-parse", "HEAD").stdout.strip()
+
+        # 分支：在旧路径重建产物（hash 变名）+ 改 index.html + 新增 src 页面
+        git(root, "checkout", "-q", "-b", "fenix/impl")
+        git(root, "rm", "-q", f"{self.OLD_DIST}/umi.aaa.js",
+            f"{self.OLD_DIST}/p__overview.aaa.async.js")
+        d = root / self.OLD_DIST
+        (d / "umi.bbb.js").write_text("UMI-BUNDLE-V2;COMMON-PAYLOAD\n", encoding="utf-8")
+        (d / "p__overview.bbb.async.js").write_text("P-OVERVIEW-V2;COMMON\n", encoding="utf-8")
+        (d / "index.html").write_text("INDEX-V2-BRANCH\n", encoding="utf-8")
+        src = root / self.SRC_PAGE
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("BRANCH-SRC\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] branch rebuild at old path")
+        git(root, "checkout", "-q", base)
+
+        # 主树：目录重命名 v3/dist → dist，并在新路径重建
+        git(root, "mv", self.OLD_DIST, self.DIST)
+        d = root / self.DIST
+        git(root, "rm", "-q", "-f", f"{self.DIST}/umi.aaa.js",
+            f"{self.DIST}/p__overview.aaa.async.js")
+        (d / "umi.ccc.js").write_text("UMI-BUNDLE-V1R;COMMON-PAYLOAD\n", encoding="utf-8")
+        (d / "p__overview.ccc.async.js").write_text("P-OVERVIEW-V1R;COMMON\n", encoding="utf-8")
+        (d / "index.html").write_text("INDEX-V2-MAIN\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] main: flatten v3 dist layout")
+
+        wm = make_wm(root)
+        success, err = wm.merge_back_from_branch("fenix/impl")
+        assert success, f"产物冲突应自愈，实际失败: {err}"
+
+        # 主树布局保留：新路径产物在（主树版），旧目录不复活
+        assert (d / "umi.ccc.js").exists()
+        assert (d / "index.html").read_text(encoding="utf-8") == "INDEX-V2-MAIN\n"
+        assert not (root / self.OLD_DIST).exists(), "旧目录不应被分支侧产物复活"
+        # 分支的非产物改动照常合入
+        assert (root / self.SRC_PAGE).read_text(encoding="utf-8") == "BRANCH-SRC\n"
+        # 工作区干净（merge 已提交）
+        assert git(root, "status", "--porcelain").stdout.strip() == ""
