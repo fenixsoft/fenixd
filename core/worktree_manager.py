@@ -145,6 +145,11 @@ class WorktreeManager:
         # 是必须原子完成的段——并发 worker 若各自独立 stash/pop，会与共享的 stash
         # 栈发生 LIFO 错配（A 恢复出 B 刚 stash 的内容）。
         self._main_tree_lock = threading.Lock()
+        # spec 锁原子化（fix-restart-dual-dispatch S2）：create 的 check-then-add
+        # 必须原子完成——2026-09-03 事故中两个并发 create 都通过了入口检查，同秒
+        # 同名分支 fatal 后失败路径 discard 掉了胜出者刚 add 的同一把锁，第二梯队
+        # 换名重试成功 → 两个 claude 并行跑同一 spec。
+        self._spec_lock_th = threading.Lock()
         # 最近一次 guard 段内 stash pop 冲突自愈丢弃的文件清单（dispatch 层读走
         # 做 admin 告警后失效）；guard 进入时清空。
         self.last_stash_pop_conflicts: list = []
@@ -160,15 +165,16 @@ class WorktreeManager:
         Returns: Path to the worktree, or None on failure.
         """
         # Prevent duplicate worktrees for the same SPEC+agent_type
+        #（fix-restart-dual-dispatch S2：check-then-add 原子化，见 __init__ 注释）
         lock_key = f"{spec_name}:{agent_type}"
-        if lock_key in self._spec_locks:
-            self.logger.warning(
-                "worktree_manager",
-                f"Worktree already active for {lock_key}",
-            )
-            return None
-
-        self._spec_locks.add(lock_key)
+        with self._spec_lock_th:
+            if lock_key in self._spec_locks:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Worktree already active for {lock_key}",
+                )
+                return None
+            self._spec_locks.add(lock_key)
 
         # worktree 继承（fast-track 打回重派）：优先认领上一轮保留的复用遗产，
         # 在同一目录同一分支上继续（继承已提交成果与未提交现场），不再从零新建。
@@ -227,7 +233,8 @@ class WorktreeManager:
                     "worktree_manager",
                     f"Failed to create worktree: {result.stderr}",
                 )
-                self._spec_locks.discard(lock_key)
+                with self._spec_lock_th:
+                    self._spec_locks.discard(lock_key)
                 return None
 
             self._active_worktrees.add(str(wt_path))
@@ -242,12 +249,23 @@ class WorktreeManager:
 
         except subprocess.TimeoutExpired:
             self.logger.error("worktree_manager", "Worktree creation timed out")
-            self._spec_locks.discard(lock_key)
+            with self._spec_lock_th:
+                self._spec_locks.discard(lock_key)
             return None
         except Exception as e:
             self.logger.error("worktree_manager", f"Worktree creation error: {e}")
-            self._spec_locks.discard(lock_key)
+            with self._spec_lock_th:
+                self._spec_locks.discard(lock_key)
             return None
+
+    def has_active_lock(self, spec_name: str, agent_type: str = "implementer") -> bool:
+        """查询该 spec+agent_type 是否有活跃的 worktree 锁（fix-restart-dual-dispatch）。
+
+        供 dispatch 派发前与 agent_runner attempt 重试前判定「是否已有另一 run
+        在跑」——锁活跃即并行风险，调用方应放弃派发/重试，而不是换名再造一个
+        worktree 形成并行 run（2026-09-03 双派发事故的第二梯队成因）。
+        """
+        return f"{spec_name}:{agent_type}" in self._spec_locks
 
     def _seed_spec(self, spec_name: str, wt_path: Path):
         """Seed SPEC source files into a new worktree.

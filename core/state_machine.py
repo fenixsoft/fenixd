@@ -38,6 +38,16 @@ class SpecStatus:
     ]
 
 
+# 人工冻结标记（fix-restart-dual-dispatch S4）：结构化字段替代 error 文本契约。
+# 此前 admin 巡检豁免靠 error 文本匹配（frozen: 前缀/「用户指令」子串），文案
+# 漂移即失效（「人工冻结（…）」实测绕过豁免 → admin 每 15 分钟空探一次烧 token）。
+# 冻结 = update_spec 写 {"frozen": True, "status": BLOCKED, "error": 前缀+原因}；
+# 冻结期间所有自动链路对 status 的改写在 update_spec 内被剥离（82 个调用点
+# 一次性收口），诊断字段（error/_retry_count 等）照写不丢上下文。
+FROZEN_FIELD = "frozen"
+FREEZE_ERROR_PREFIX = "用户指令冻结："
+
+
 # Valid state transitions: from → [to, ...]
 VALID_TRANSITIONS: Dict[str, List[str]] = {
     SpecStatus.DRAFTED:      [SpecStatus.READY],
@@ -139,6 +149,10 @@ class StateParser:
                         value = int(value)
                     except ValueError:
                         value = 999
+                elif key == FROZEN_FIELD:
+                    # 布尔字段显式转换：字符串 "False" 也是 truthy，不转会把
+                    # 解冻后的 spec 永久误判为冻结（fix-restart-dual-dispatch S4）
+                    value = value.lower() in ("true", "1", "yes")
                 elif key in ("implementer_run", "tester_run", "branch", "error",
                              "total_duration"):
                     if value.lower() in ("null", "none", ""):
@@ -179,7 +193,7 @@ class StateParser:
             lines.append(f"### {name}")
             for key in ["status", "priority", "created", "updated",
                          "implementer_run", "tester_run", "branch", "error",
-                         "depends_on", "total_duration"]:
+                         "depends_on", "total_duration", FROZEN_FIELD]:
                 val = entry.get(key, "null")
                 if val is None:
                     val = "null"
@@ -394,6 +408,21 @@ class StateMachine:
             self.logger.warning("state_machine", f"SPEC not found: {spec_name}")
             return False
 
+        # 人工冻结保护（fix-restart-dual-dispatch S4）：frozen spec 的自动 status
+        # 改写一律剥离——dispatch Retry/恢复路径实测会把人工冻结覆盖回 ready。
+        # 更新自带 frozen 键视为冻结/解冻操作本身，原样放行。
+        entry = specs[spec_name]
+        updates = dict(updates)
+        if entry.get(FROZEN_FIELD) and FROZEN_FIELD not in updates \
+                and "status" in updates:
+            stripped = updates.pop("status")
+            self.logger.warning(
+                "state_machine",
+                f"Frozen SPEC '{spec_name}': status update '{stripped}' "
+                f"stripped — manual freeze intact, unfreeze via "
+                f"unfreeze_spec() to resume",
+            )
+
         # Apply updates
         specs[spec_name].update(updates)
         specs[spec_name]["updated"] = datetime.now(timezone.utc).isoformat()
@@ -404,6 +433,27 @@ class StateMachine:
             {"updates": {k: v for k, v in updates.items() if k != "updated"}},
         )
         return True
+
+    def freeze_spec(self, spec_name: str, reason: str = "") -> bool:
+        """人工冻结 spec（fix-restart-dual-dispatch S4 的统一入口）。
+
+        写入 blocked + 结构化 frozen 标记 + 规范前缀 error。error 保留「用户指令」
+        子串，与既有文本契约豁免（admin_monitor）双保险兼容。冻结期间自动链路
+        （重派/恢复/Retry/admin 唤起）全部失效，唯一出路是 unfreeze_spec。
+        """
+        error = f"{FREEZE_ERROR_PREFIX}{reason}" if reason else FREEZE_ERROR_PREFIX.rstrip("：:")
+        return self.update_spec(spec_name, {
+            "status": SpecStatus.BLOCKED,
+            FROZEN_FIELD: True,
+            "error": error,
+        })
+
+    def unfreeze_spec(self, spec_name: str, status: str = None) -> bool:
+        """解除人工冻结。status 给定时同时恢复到该状态（绕过冻结保护）。"""
+        updates: dict = {FROZEN_FIELD: False}
+        if status is not None:
+            updates["status"] = status
+        return self.update_spec(spec_name, updates)
 
     def add_spec(self, spec_name: str, entry: dict) -> bool:
         """Add a new SPEC entry. Returns False if already exists."""

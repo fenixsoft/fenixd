@@ -255,6 +255,9 @@ class AdminMonitor:
         for name, entry in specs.items():
             if entry.get("status") != "blocked":
                 continue
+            # 人工冻结豁免（fix-restart-dual-dispatch S4）：结构化 frozen 字段是
+            # 首要判定——freeze_spec() 统一入口写入，不依赖文案。文本匹配保留为
+            # 存量 spec 的兼容回退（历史 error 未迁移）。
             # 冻结豁免：Administrator 为去重/家族收敛而人为冻结的 spec（error 前缀
             # 'frozen:'），其 blocked 是有意保持的等待态，updated 不会推进——按超时
             # 唤起只会形成每轮重复误报。真实停滞仍由 stuck/repeated_failures/
@@ -264,7 +267,7 @@ class AdminMonitor:
             # 于 frozen——人工历史文案未必带 frozen: 前缀，且用词在暂停/冻结间
             # 漂移，故按「用户指令」子串识别，双保险。
             err = str(entry.get("error") or "")
-            if err.startswith("frozen:") or "用户指令" in err:
+            if entry.get("frozen") or err.startswith("frozen:") or "用户指令" in err:
                 self.logger.debug(
                     "admin_monitor",
                     f"Skipping blocked_stuck for intentionally-paused SPEC '{name}'",
@@ -528,6 +531,24 @@ class AdminMonitor:
                 "escalated": False,
             })
             return
+
+        # 人工冻结复查（fix-restart-dual-dispatch S4）：frozen spec 不产生自动
+        # 唤起、不落冷却锚点记录——自动巡检对人工决策的每一次探查都是纯 token
+        # 浪费，冻结本身即是「等待人工」的显式表达。手动呼叫（invoke_manual）
+        # 不经此处，始终响应。
+        if spec:
+            try:
+                _entry = self.state_machine.read_one(spec) or {}
+            except Exception:
+                _entry = {}
+            if _entry.get("frozen"):
+                self.logger.info(
+                    "admin_monitor",
+                    f"Skipping auto-invocation for manually-frozen SPEC "
+                    f"'{spec}' (frozen field set) — signal '{signal_type}' "
+                    f"dropped, not anchored",
+                )
+                return
 
         # 节流通过：先记录 signal（作为本次唤起的冷却锚点），再唤起
         signal_rec = self.store.append({

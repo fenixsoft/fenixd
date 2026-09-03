@@ -709,6 +709,16 @@ class AgentRunner:
                     self.logger.error("agent_runner", error_msg)
                     if attempt < max_retries:
                         time.sleep(5)
+                        # fix-restart-dual-dispatch S3/S4：重试前判定——锁活跃
+                        #（另一 run 在跑）或人工冻结时放弃，不再换名再造并行 run
+                        if self._should_give_up_before_retry(spec_name, agent_type):
+                            return AgentRunResult(
+                                attempt_run_id, spec_name, agent_type,
+                                success=False,
+                                duration_seconds=time.time() - start_time,
+                                error=f"{error_msg} (gave up: parallel run or manual freeze)",
+                                provider_used=provider_name, model_used=model,
+                            )
                         continue
                     return AgentRunResult(
                         attempt_run_id, spec_name, agent_type,
@@ -1286,6 +1296,38 @@ class AgentRunner:
         """Get a nested config value."""
         from core.config import ConfigLoader
         return ConfigLoader.get(self.config, key, default)
+
+    def _should_give_up_before_retry(self, spec_name: str, agent_type: str) -> bool:
+        """attempt 重试前的放弃判定（fix-restart-dual-dispatch S3/S4）。
+
+        2026-09-03 事故：双派发场景下 create 撞同名分支 fatal，attempt 循环
+        sleep(5) 后换新时间戳重试成功 → 与第一梯队形成并行 run。重试前检查：
+        - 锁活跃：另一个 run 已持 spec 锁，继续重试只会造出第二个并行 run；
+        - 人工冻结：spec 被人为冻结（结构化 frozen 字段），自动重试必须让位。
+
+        检查自身异常时 fail-open（返回 False）——判定故障不放大为 run 故障，
+        既有重试语义保持可用。
+        """
+        try:
+            if self.worktree_manager.has_active_lock(spec_name, agent_type):
+                self.logger.warning(
+                    "agent_runner",
+                    f"Giving up retry for '{spec_name}' ({agent_type}): "
+                    f"spec lock held by another live run — retrying would "
+                    f"create a parallel run (dual-dispatch guard)",
+                )
+                return True
+            entry = self.state_machine.read_one(spec_name) or {}
+            if entry.get("frozen"):
+                self.logger.warning(
+                    "agent_runner",
+                    f"Giving up retry for '{spec_name}': manually frozen "
+                    f"(frozen field set) — auto-retry yields to human decision",
+                )
+                return True
+        except Exception:
+            return False
+        return False
 
     def _read_verify_progress(self, spec_name: str) -> dict | None:
         """读取 verifier 断点进度文件（verifier-checkpoint-resume spec）。
