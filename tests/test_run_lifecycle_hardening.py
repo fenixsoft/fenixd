@@ -267,6 +267,8 @@ def make_runner_with_config(proot, config, sm=None, logger=None):
     runner.logger = logger or make_logger()
     runner._running_agents = {}
     runner._instant_fail = {}
+    runner._daily_run_count = 0
+    runner._daily_reset_date = None
     return runner
 
 
@@ -642,6 +644,167 @@ class TestTimeoutOverrideSupervision(unittest.TestCase):
             )
             runner._judge_liveness(snap, "spec", "run-1")
         self.assertEqual(sr.call_args.kwargs.get("timeout"), 120)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 4. lifecycle-hygiene（frozen 终止重试链 / 预算对账自动校正）
+# ══════════════════════════════════════════════════════════════════════
+
+def write_impl_run_file(proot: Path, run_id: str, terminal: str = "result"):
+    """写一条 impl run 产物；终态 result（正常收工）或 error（死亡 run）。"""
+    p = proot / ".fenix" / "runs" / f"{run_id}.jsonl"
+    with p.open("w", encoding="utf-8") as f:
+        f.write('{"type":"init","timestamp":"2026-01-01T00:00:00+00:00"}\n')
+        if terminal == "error":
+            f.write('{"type":"error","error":"boom"}\n')
+        else:
+            f.write('{"type":"result","result":"ok"}\n')
+    return p
+
+
+class TestFrozenStopsRetryChain(unittest.TestCase):
+    """frozen 终止 attempt 重试链（lifecycle-hygiene 4.1）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        self.logger = make_logger()
+        self.sm = StateMachine(self.root / "STATE.md", self.logger)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_runner(self, frozen=False):
+        self.sm.add_spec("spec-x", {"status": "ready", "priority": 5})
+        if frozen:
+            self.sm.update_spec("spec-x", {"frozen": True})
+        runner = make_runner_with_config(
+            self.root, {"agents": {"max_retries": 3}},
+            sm=self.sm, logger=self.logger)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = self.root / "wt"
+        # v2 绑定 no-op，避免成功路径触达真实 dev-server
+        runner._v2_launch_for_worktree = MagicMock()
+        runner._v2_inject_env = MagicMock(return_value={})
+        runner._v2_stop_for_worktree = MagicMock()
+        return runner
+
+    def test_frozen_terminates_before_any_attempt(self):
+        """frozen spec：attempt 1 启动前即终止，不派发任何 claude。"""
+        runner = self._make_runner(frozen=True)
+        with patch.object(runner, "_run_claude") as rc:
+            result = runner.run_implementer("spec-x")
+        rc.assert_not_called()  # 不派发 attempt
+        self.assertFalse(result.success)
+        self.assertIn("frozen", result.error)
+
+    def test_unfrozen_chain_unchanged(self):
+        """未冻结链路行为不变：attempt 正常执行。"""
+        runner = self._make_runner(frozen=False)
+        runs_dir = self.root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        with patch.object(
+            runner, "_run_claude",
+            return_value=("ok", 1, "sess-1",
+                          {"input_tokens": 0, "output_tokens": 0,
+                           "cache_creation_input_tokens": 0,
+                           "cache_read_input_tokens": 0, "cost_usd": None}),
+        ) as rc:
+            result = runner.run_implementer("spec-x")
+        rc.assert_called_once()
+        self.assertTrue(result.success)
+
+    def test_frozen_mid_chain_terminates(self):
+        """attempt 1 进行中被冻结、attempt 2 启动前 → 重试链终止。"""
+        runner = self._make_runner(frozen=False)
+        runs_dir = self.root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        attempt = {"n": 0}
+
+        def fake_claude(prompt, cwd, run_id, model_override, env_overrides,
+                        resume_session_id=None, max_turns=None, spec_name=None,
+                        agent_type=None):
+            attempt["n"] += 1
+            if attempt["n"] == 1:
+                # a1 失败，且运行中该 spec 被人为冻结（模拟运行期冻结）
+                self.sm.update_spec("spec-x", {"frozen": True})
+                raise RuntimeError("transient failure")
+            return ("ok", 1, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                      "cache_creation_input_tokens": 0,
+                                      "cache_read_input_tokens": 0,
+                                      "cost_usd": None})
+
+        runner._run_claude = fake_claude
+        with patch.object(runner, "_record_instant_fail",
+                          return_value=None) as rif:
+            result = runner.run_implementer("spec-x")
+        # a1 已执行；a2 启动前被冻结 → 不再第二次调用 _run_claude
+        self.assertEqual(attempt["n"], 1)
+        self.assertFalse(result.success)
+        self.assertIn("frozen", result.error)
+        rif.assert_called_once()  # 秒挂计数仍走既有路径
+
+
+class TestBudgetReconcileCorrect(unittest.TestCase):
+    """预算对账自动校正（lifecycle-hygiene 4.3）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        (self.root / ".fenix" / "runs").mkdir(parents=True)
+        self.engine, self.sm, self.logger = build_engine(self.root)
+        self.sm.add_spec("spec-a", {"status": "ready", "priority": 5})
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _two_normal_runs(self):
+        write_impl_run_file(self.root, "impl-spec-a-1788400001-a1", "result")
+        write_impl_run_file(self.root, "impl-spec-a-1788400002-a1", "result")
+
+    def test_pure_drift_corrects_4_to_2(self):
+        self._two_normal_runs()
+        self.sm.update_spec("spec-a", {"_impl_run_budget_used": 4})
+        self.engine._reconcile_impl_budget("spec-a")
+        entry = self.sm.read_one("spec-a")
+        self.assertEqual(int(entry["_impl_run_budget_used"]), 2)
+        infos = [str(c) for c in self.logger.info.call_args_list]
+        self.assertTrue(any("校正" in m and "4 → 2" in m for m in infos),
+                        "应留 INFO 校正日志含前后值")
+
+    def test_death_exemption_no_correction(self):
+        self._two_normal_runs()
+        # 死亡豁免发生过 → 不改数
+        self.sm.update_spec("spec-a", {"_impl_run_budget_used": 4,
+                                       "_budget_exempt_runs": 1})
+        self.engine._reconcile_impl_budget("spec-a")
+        entry = self.sm.read_one("spec-a")
+        self.assertEqual(int(entry["_impl_run_budget_used"]), 4)
+        warnings = [str(c) for c in self.logger.warning.call_args_list]
+        self.assertTrue(any("豁免" in m for m in warnings))
+
+    def test_archived_runs_no_correction(self):
+        """runs 产物被归档（保留上限）→ 不改数。"""
+        self._two_normal_runs()
+        # 另造一条已归档的 impl 产物（archive/ 下）
+        arch = self.root / ".fenix" / "runs" / "archive"
+        arch.mkdir(parents=True)
+        write_impl_run_file(self.root, "impl-spec-a-1788300001-a1", "result")
+        (self.root / ".fenix" / "runs" / "impl-spec-a-1788300001-a1.jsonl").rename(
+            arch / "impl-spec-a-1788300001-a1.jsonl")
+        self.sm.update_spec("spec-a", {"_impl_run_budget_used": 4})
+        self.engine._reconcile_impl_budget("spec-a")
+        entry = self.sm.read_one("spec-a")
+        self.assertEqual(int(entry["_impl_run_budget_used"]), 4)
+        warnings = [str(c) for c in self.logger.warning.call_args_list]
+        self.assertTrue(any("豁免" in m for m in warnings))
+
+    def test_no_deviation_no_op(self):
+        self._two_normal_runs()
+        self.sm.update_spec("spec-a", {"_impl_run_budget_used": 2})
+        self.engine._reconcile_impl_budget("spec-a")
+        entry = self.sm.read_one("spec-a")
+        self.assertEqual(int(entry["_impl_run_budget_used"]), 2)
 
 
 if __name__ == "__main__":

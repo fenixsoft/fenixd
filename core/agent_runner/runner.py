@@ -620,10 +620,29 @@ class AgentRunner:
         chain_cursor = -1
         last_provider_used = None  # 用于 "provider switched" 跨 attempt 打点
         kept_wt_path = None  # worktree-reuse：fast-track 终态失败保留的复用遗产路径
+        provider_name = None  # 本轮候选 provider（链选择前为 None，供 frozen 提前返回使用）
+        model = None
         self._last_model_used = None  # 用于 model_changed 日志留痕（design D3）
 
         for attempt in range(1, max_retries + 1):
             attempt_run_id = f"{run_id}-a{attempt}"
+            # lifecycle-hygiene 4.1：每轮 attempt 启动前统一检查 spec 结构化 frozen
+            # 字段——frozen 为真立即终止重试链（不派发 attempt、不创建 worktree），
+            # run 以失败收场保留错误记录。覆盖 judge failover 换网关重试等全部重试
+            # 路径，不止 worktree 失败路径；未冻结行为零变化。
+            if self._spec_is_frozen(spec_name):
+                self.logger.warning(
+                    "agent_runner",
+                    f"spec '{spec_name}' frozen — 终止 {agent_type} 自动重试链"
+                    f"（attempt {attempt}/{max_retries}），不派发 attempt",
+                )
+                return AgentRunResult(
+                    run_id, spec_name, agent_type,
+                    success=False, duration_seconds=time.time() - start_time,
+                    error=(f"spec frozen — auto-retry terminated "
+                           f"(attempt {attempt}/{max_retries})"),
+                    provider_used=provider_name, model_used=model,
+                )
             # cli-retry-backoff：秒挂按 attempt 实际存活时长判定（进程时长近似，
             # 包含 worktree 创建到失败，60s 级判定不敏感于准备开销）。
             attempt_started_at = time.time()
@@ -1353,6 +1372,20 @@ class AgentRunner:
         """
         from core.config import ConfigLoader
         return ConfigLoader.effective_run_timeout_seconds(self.config, agent_type)
+
+    def _spec_is_frozen(self, spec_name: str) -> bool:
+        """spec 是否处于人工冻结态（结构化 frozen 字段，lifecycle-hygiene 4.1）。
+
+        state_machine 缺失/读取异常时 fail-open（返回 False）——判定故障不放大为
+        run 故障，未冻结行为零变化。
+        """
+        try:
+            if self.state_machine is None:
+                return False
+            entry = self.state_machine.read_one(spec_name) or {}
+            return bool(entry.get("frozen"))
+        except Exception:
+            return False
 
     def _should_give_up_before_retry(self, spec_name: str, agent_type: str) -> bool:
         """attempt 重试前的放弃判定（fix-restart-dual-dispatch S3/S4）。
