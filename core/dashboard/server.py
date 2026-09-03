@@ -31,10 +31,12 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     GET /screenshots/<project>/<spec>/<file> → 截图（防路径穿越，仅限注册项目）
 """
 
+import gzip
 import json
 import mimetypes
 import os
 import queue
+import re
 import sys
 import signal
 import socket
@@ -1141,7 +1143,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._error(404, "Not Found")
                 return
         ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
-        self._send_file(target, ctype)
+        # 构建产物文件名带内容 hash，可安全长缓存；index.html 不缓存
+        cache = "no-cache"
+        if target.name != "index.html" and self._HASHED_STATIC_RE.search(target.name):
+            cache = "max-age=31536000, immutable"
+        self._send_file(target, ctype, cache=cache)
 
     def _serve_screenshot(self, path: str):
         # /screenshots/<project>/<spec>/<file>
@@ -1174,7 +1180,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
         ctype = mimetypes.guess_type(str(target))[0] or "image/png"
         self._send_file(target, ctype)
 
-    def _send_file(self, path: Path, ctype: str):
+    _HASHED_STATIC_RE = re.compile(r"\.[0-9a-f]{8,}(?:\.async)?\.(?:js|css)$")
+    # 文本类才值得 gzip（图片/字体本身已二进制压缩）；svg mimetypes 给
+    # image/*，故按后缀白名单而非 ctype 判断
+    _GZIP_EXT = {".js", ".css", ".html", ".htm", ".svg", ".json", ".md", ".txt", ".map"}
+    _GZIP_MIN = 860  # 小于阈值的响应不值得压缩
+
+    def _wants_gzip(self) -> bool:
+        return "gzip" in self.headers.get("Accept-Encoding", "").lower()
+
+    def _maybe_gzip(self, body: bytes) -> bytes:
+        if len(body) >= self._GZIP_MIN and self._wants_gzip():
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+            return gzip.compress(body, 5)
+        return body
+
+    def _send_file(self, path: Path, ctype: str, cache: str = "no-cache"):
         try:
             body = path.read_bytes()
         except OSError:
@@ -1182,18 +1204,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self.send_response(200)
         self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", cache)
+        if path.suffix.lower() in self._GZIP_EXT:
+            body = self._maybe_gzip(body)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
 
     def _json(self, payload):
-        body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-cache")
+        body = self._maybe_gzip(body)
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
