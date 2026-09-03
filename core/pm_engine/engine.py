@@ -973,6 +973,18 @@ class PMEngine:
         branch = self._resolve_push_branch(spec_name, spec)
         self._push_branch_best_effort(spec_name, branch)
 
+        # ── 归档收口（archive-auto-commit）：代码 push 之后追加归档提交 ──
+        # main 与分支推送成功后在流程尾部一次性收口当天全部 openspec 归档移动
+        # 残留（独立 commit + push）。失败仅 WARNING 不阻塞 spec 终态，残留留给
+        # 下次 push 重试。零残留零动作。
+        try:
+            self._archive_auto_commit()
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"归档收口执行异常（残留留给下次 push 重试，不阻塞 pushed）: {e}",
+            )
+
         # ── 推送成功 → 推进 pushed，清 error + 退避标记 ──
         self.state_machine.transition(spec_name, "pushed")
         self.state_machine.update_spec(spec_name, {"error": None})
@@ -984,6 +996,118 @@ class PMEngine:
             f"SPEC pushed: {spec_name} (main ok, branch={branch})",
         )
         return True
+
+    # ── 归档自动提交（archive-auto-commit）──────────────────────────
+
+    def _archive_move_residue(self) -> tuple:
+        """检测 ``openspec/changes/`` 下的归档移动残留（archive-auto-commit）。
+
+        归档移动（soft_delete_spec 用 shutil.move 把 spec 目录移入 archive）在 git
+        视角表现为两类残留：
+        - 被归档 spec 目录的**删除**：`openspec/changes/<spec>/...` 的 D 状态行；
+        - **archive 下新增/修改**：`openspec/changes/archive/<spec>-<ts>/...` 的
+          未跟踪（??）/A/M 状态行（rename 检测 R 的行任一侧命中同样计入）。
+
+        返回 ``(has_residue: bool, spec_names: list[str])``。判定失败时按
+        「无残留」处理（fail-open：不因检测异常阻塞 push 主流程）。
+        """
+        try:
+            result = subprocess.run(
+                # -uall：未跟踪目录不折叠，逐文件列出，归档新增 spec 名才能解析
+                ["git", "status", "--porcelain", "-uall"],
+                cwd=str(self.project_root),
+                capture_output=True, text=True, timeout=30,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"归档残留检测失败（按无残留处理，不阻塞 push）: {e}",
+            )
+            return False, []
+        if result.returncode != 0:
+            self.logger.warning(
+                "pm_engine",
+                f"git status 失败，按无归档残留处理: "
+                f"{(result.stderr or result.stdout).strip()[:200]}",
+            )
+            return False, []
+
+        names: list[str] = []
+        found = False
+        for line in result.stdout.splitlines():
+            if len(line) < 4:
+                continue
+            xy = line[:2]
+            rest = line[3:].strip()
+            # rename 行形态：`R  old -> new`，两侧都要参与归档判定
+            candidates = [rest]
+            if " -> " in rest:
+                candidates = [p.strip() for p in rest.split(" -> ")]
+            for path in candidates:
+                if not path.startswith("openspec/changes/"):
+                    continue
+                deleted = "D" in xy
+                is_archive = path.startswith("openspec/changes/archive/")
+                added = xy.startswith("??") or ("A" in xy or "M" in xy)
+                if deleted or (is_archive and added):
+                    found = True
+                    names.append(self._archive_residue_spec(path))
+        return found, list(dict.fromkeys(n for n in names if n))
+
+    @staticmethod
+    def _archive_residue_spec(rel_path: str) -> str:
+        """从 openspec/changes/ 相对路径提取涉及 spec 名。
+
+        - 删除侧：`openspec/changes/<spec>/...` → `<spec>`
+        - 归档新增侧：`openspec/changes/archive/<spec>-<ts>/...` → `<spec>`
+          （去 `-<Unix秒>` 时间戳后缀；后缀带毫秒/序号兜底时一并剥离）
+        """
+        if rel_path.startswith("openspec/changes/archive/"):
+            seg = rel_path[len("openspec/changes/archive/"):].split("/", 1)[0]
+            # 归档目录命名：<spec>-<Unix秒>[-(ms|-n)]；剥离尾部纯数字段
+            m = re.match(r"^(.*?)(?:-\d{10,13}(?:-\d{1,6})*)$", seg)
+            return m.group(1) if m else seg
+        if rel_path.startswith("openspec/changes/"):
+            return rel_path[len("openspec/changes/"):].split("/", 1)[0]
+        return ""
+
+    def _archive_auto_commit(self) -> None:
+        """归档收口：push 流程尾部一次性提交 openspec/changes/ 的归档移动残留。
+
+        archive-auto-commit spec：
+        - 有残留 → ``git add -- openspec/changes/``（限定路径，绝不 add -A）+
+          单 commit（``[fenix] archive: <spec 名列表> 归档入库``）+ push main；
+        - 无残留 → 零动作（无空提交、无多余 push）；
+        - commit/push 失败 → WARNING（含 stderr 摘要）并继续，spec 终态不受影响，
+          残留留给下次 push 重试；提交内容不含 openspec/changes 之外的任何路径。
+        """
+        has_residue, spec_names = self._archive_move_residue()
+        if not has_residue:
+            return
+        label = "、".join(spec_names) if spec_names else "spec"
+        commit_msg = f"[fenix] archive: {label} 归档入库"
+        ok, err = self._git_commit(["openspec/changes"], commit_msg)
+        if not ok:
+            self.logger.warning(
+                "pm_engine",
+                f"归档收口 commit 失败（残留留给下次 push 重试，不阻塞 spec 终态）: {err}",
+            )
+            return
+        self.logger.info(
+            "pm_engine",
+            f"归档收口 commit 成功: {commit_msg}",
+        )
+        push_ok, push_err = self._git_push_ref("main")
+        if not push_ok:
+            self.logger.warning(
+                "pm_engine",
+                f"归档收口 push 失败（残留已本地 commit，下次 push 携带）: {push_err}",
+            )
+        else:
+            self.logger.info(
+                "pm_engine",
+                "归档收口 push 成功（openspec/changes 归档产物已入库）",
+            )
 
     def _handle_push_failure(
         self, spec_name: str, spec: dict, error_msg: str, ref: str
