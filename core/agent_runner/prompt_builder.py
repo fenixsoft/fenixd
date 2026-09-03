@@ -32,13 +32,20 @@ class PromptBuilder:
                 f"3. Implement that task. Write actual production code, not stubs.\n"
                 f"4. Run the project's tests after implementation. Fix any failures.\n"
                 f"5. Commit your changes with message: [fenix] {spec_name}: <task description>\n"
-                f"6. Mark the task as complete in tasks.md (- [x])\n"
+                f"6. Mark the task as complete in tasks.md (- [x]); at wrap-up, check off "
+                f"every completed task one by one, matching all TaskUpdate records exactly\n"
                 f"7. If all tasks are done, write a file .fenix-run-result.json with: "
                 f'{{"status": "success", "spec": "{spec_name}", "summary": "<brief summary>"}}\n'
                 f"8. If you encounter an error you cannot fix after 3 attempts, write "
                 f".fenix-run-result.json with: "
                 f'{{"status": "error", "spec": "{spec_name}", "error": "<description>"}}\n\n'
-                f"## 交互契约（interaction-contract，强制，add-interaction-contract-and-per-assert-triage）\n"
+            )
+            # 任务进度契约段（fix-implementer-task-progress D1）：full/fast-track
+            # 两个 implementer 分支共用同一文本，保证 harness TaskCreate/TaskUpdate
+            # 行为与 tasks.md 编号对齐（进度可见性断链的根治点）。
+            prompt += self._task_progress_contract_section()
+            prompt += (
+                f"\n## 交互契约（interaction-contract，强制，add-interaction-contract-and-per-assert-triage）\n"
                 f"- 凡你实现为**可交互形态**的元素（按钮/链接样式卡片/可点击行/表单控件），"
                 f"其行为 MUST 在对应 SPEC 中有定义，或在任务书中显式声明「纯展示、不可交互」。\n"
                 f"- 两者皆不满足时，MUST 在 .fenix-run-result.json 增设 `findings` 数组登记"
@@ -475,9 +482,12 @@ class PromptBuilder:
                 f"2. Find the next unchecked task (`- [ ]`) and implement it — production code, not stubs.\n"
                 f"3. Run the project's tests; fix failures (max 3 fix rounds per task).\n"
                 f"4. Commit each task: `[fenix] {spec_name}: <task description>`.\n"
-                f"5. Mark the task complete in tasks.md (`- [ ]` → `- [x]`).\n"
-                f"6. Repeat until ALL tasks are done — do NOT stop after one task.\n\n"
-                f"## PHASE 2 — Design verification scenarios\n"
+                f"5. Mark the task complete in tasks.md (`- [ ]` → `- [x]`); at wrap-up, "
+                f"check off every completed task one by one, matching all TaskUpdate "
+                f"records exactly.\n"
+                f"6. Repeat until ALL tasks are done — do NOT stop after one task.\n"
+                f"{self._task_progress_contract_section()}"
+                f"\n## PHASE 2 — Design verification scenarios\n"
                 f"1. Write the scenario set to {scenarios_path} using the Planner scenario JSON schema "
                 f"(array of {{id, description, steps, assertions, ...}}; see schema below).\n"
                 f"2. Write {progress_path}: {{\"total\": N, \"done\": 0, \"current\": \"scenario-design\"}}.\n\n"
@@ -687,6 +697,26 @@ class PromptBuilder:
             f"The previous implementation attempt failed and was re-dispatched. "
             f"Use this to focus your work — do NOT repeat the same gap:\n"
             f"\n{prev_error}\n"
+        )
+
+    def _task_progress_contract_section(self) -> str:
+        """任务进度契约段（fix-implementer-task-progress D1）。
+
+        full 与 fast-track 两个 implementer 分支共用同一文本：TaskCreate subject
+        带 tasks.md 编号、一任务一 TaskCreate、完成即 TaskUpdate、收尾逐项勾选，
+        使侧写叠加 / 写侧回写 / run 层展示三端全部对齐。
+        """
+        return (
+            f"\n## 任务进度契约（task-progress-contract，强制，fix-implementer-task-progress）\n"
+            f"- 每一条 tasks.md 任务（如 \"1.3 配置解析签名缓存\"）只能由一个 TaskCreate 对应，"
+            f"TaskCreate 的 subject MUST 以 \"Task <id>: <标题>\" 开头，id 直取 tasks.md 的"
+            f"\"分组号.任务号\"（如 \"Task 1.3: 配置解析签名缓存\"），禁止把多条任务归并为一条"
+            f"TaskCreate，也禁止把分组（## 标题）当任务创建。\n"
+            f"- 开始实现某任务时创建其 TaskCreate；该任务完成的瞬间立刻对同一 taskId 发"
+            f"TaskUpdate status=completed，不得攒批到收尾。TaskUpdate 的 taskId 取"
+            f"TaskCreate 结果返回的任务编号（1 基创建序，形如 \"Task #1 created\"）。\n"
+            f"- 收尾时逐项 Edit tasks.md，把每条已完成任务 `- [ ]` 改为 `- [x]`，"
+            f"与全部 TaskCreate/TaskUpdate 记录一一对应，不留半勾。\n"
         )
 
     def _designed_ids_line(self, scenarios_path) -> str:

@@ -2,6 +2,9 @@
 
 ## Deliverables
 
+（修订：v3 前端实际位于 core/dashboard/static/{src,dist}，原 v3/ 目录声明与仓库布局不符，
+且目录型声明触发交付物守卫 blob 校验死锁——按 remove-auto-run-cleanup 先例改文件路径）
+
 ```yaml
 - path: core/agent_runner/prompt_builder.py
   kind: modify
@@ -9,9 +12,13 @@
   kind: modify
 - path: core/dashboard/data.py
   kind: modify
-- path: core/dashboard/static/v3/src/
+- path: core/dashboard/static/src/services/dashboard.ts
   kind: modify
-- path: core/dashboard/static/v3/dist/
+- path: core/dashboard/static/src/pages/projects/list.tsx
+  kind: modify
+- path: core/dashboard/static/src/pages/projects/detail.tsx
+  kind: modify
+- path: core/dashboard/static/dist/index.html
   kind: modify
 - path: tests/test_task_progress_protocol.py
   kind: new
@@ -19,9 +26,9 @@
 
 ## 1. implementer 任务编号契约（implementer-task-protocol）
 
-- [ ] 1.1 prompt_builder.py implementer 分支（agent_type == "implementer"）注入「任务进度契约」强制段：TaskCreate subject 前缀 `Task <分组号.任务号>: <标题>`；一任务一 TaskCreate 禁止归并；完成瞬间 TaskUpdate completed 不得攒批；收尾逐项勾选 tasks.md 与 TaskUpdate 一一对应
-- [ ] 1.2 fast-track implementer 分支（第 480 行附近）注入同一契约段（文本复用，独立构建路径各自断言）
-- [ ] 1.3 测试 tests/test_task_progress_protocol.py：双分支 prompt 均含契约段；契约文本断言 subject 示例格式
+- [x] 1.1 prompt_builder.py implementer 分支（agent_type == "implementer"）注入「任务进度契约」强制段：TaskCreate subject 前缀 `Task <分组号.任务号>: <标题>`；一任务一 TaskCreate 禁止归并；完成瞬间 TaskUpdate completed 不得攒批；收尾逐项勾选 tasks.md 与 TaskUpdate 一一对应
+- [x] 1.2 fast-track implementer 分支（第 480 行附近）注入同一契约段（文本复用，独立构建路径各自断言）
+- [x] 1.3 测试 tests/test_task_progress_protocol.py：双分支 prompt 均含契约段；契约文本断言 subject 示例格式
 
 ## 2. 写侧回写兜底（task-progress-writeback）
 
