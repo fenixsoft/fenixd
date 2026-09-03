@@ -43,5 +43,5 @@
 
 ## 4. 测试与回归
 
-- [ ] 4.1 tests/test_agent_prompt_files.py：覆盖 spec 全部 Scenario（占位符替换、动态段语义、缺失 fail-fast、项目级附加/缺席零注入、自引用防护、死关键词断言、端点读写与白名单校验）
-- [ ] 4.2 既有测试全量回归（prompt 相关与派发链路）
+- [x] 4.1 tests/test_agent_prompt_files.py：覆盖 spec 全部 Scenario（占位符替换、动态段语义、缺失 fail-fast、项目级附加/缺席零注入、自引用防护、死关键词断言、端点读写与白名单校验）
+- [x] 4.2 既有测试全量回归（prompt 相关与派发链路）

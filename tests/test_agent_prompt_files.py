@@ -273,6 +273,31 @@ class TestDomainKnowledgeMigrated:
         assert "fenix:sync:persisted-key" in prompt
 
 
+class TestDeadKeywords:
+    """Scenario: 死关键词断言——通用提示词不含 AMIS/dark-/面板清单死知识。"""
+
+    DEAD_KEYWORDS = ("dark-SelectControl", "amis-dialog-widget",
+                     "dark-Card", "sh600036")
+
+    @pytest.mark.parametrize("agent_type", AGENT_TYPES)
+    def test_no_dead_keywords_in_framework_prompts(self, agent_type):
+        template = (AGENT_PROMPT_DIR / AGENT_PROMPT_FILES[agent_type]).read_text(
+            encoding="utf-8")
+        for kw in self.DEAD_KEYWORDS:
+            assert kw not in template, f"{agent_type} 含死关键词: {kw}"
+
+    def test_dead_keyword_example_replaced_by_testid_style(self):
+        """选择器示例段（原 .dark-Card/dark-Card--link 大全）改为 data-testid 风格通用示例。"""
+        planner_plan = (AGENT_PROMPT_DIR / AGENT_PROMPT_FILES["planner-plan"]).read_text(
+            encoding="utf-8")
+        assert "data-testid" in planner_plan
+        verifier = (AGENT_PROMPT_DIR / AGENT_PROMPT_FILES["verifier"]).read_text(
+            encoding="utf-8")
+        # Step 3 面板清单改通用表述，但保留「交互必须有可见结果否则 BLOCKING BUG」
+        assert "BLOCKING BUG" in verifier
+        assert "点击遍历被测应用的每个主要界面" in verifier
+
+
 # ── 自引用防护 ───────────────────────────────────────────────────────
 
 
@@ -384,6 +409,18 @@ class TestPromptsAPI:
         saved = proot / ".fenix" / "agents" / "verifier.md"
         assert saved.is_file()
         assert "/login" in saved.read_text(encoding="utf-8")
+
+    def test_post_save_then_next_dispatch_appends(self, prompts_server):
+        """Scenario「项目级编辑保存生效」完整链路：保存落盘 → 下次派发 prompt 附加该内容。"""
+        proot, srv = prompts_server
+        _mk_spec_dir(proot, "demo")
+        srv.post_json(
+            "/api/prompts?project=proj-a",
+            {"agent_type": "verifier", "content": "- 登录页路径 /login\n"})
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "verifier")
+        assert "## 项目附加提示词" in prompt
+        assert "/login" in prompt
 
     def test_post_rejects_non_whitelisted_agent_type(self, prompts_server):
         proot, srv = prompts_server
