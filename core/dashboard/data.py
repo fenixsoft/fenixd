@@ -9,11 +9,13 @@ data.py — 共享数据聚合层（TUI 与 Web Dashboard 共用）。
 `"error": "corrupt"` 标记的对象返回，缺失则返回空结构，保证聚合请求不 500。
 """
 
+import copy
 import json
 import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -900,8 +902,177 @@ def count_scenarios(project_root, spec_name) -> int:
     return count
 
 
+# ── fenixd 日志块偏移索引（dashboard-log-offset-index D5） ─────
+
+# 每 64KB 一块；查询窗口只读尾部 ≤1MB（16 块），不再全量扫描日志文件。
+LOG_INDEX_BLOCK = 64 * 1024
+LOG_INDEX_TAIL_WINDOW = 1 * 1024 * 1024
+# 进程内重建计数（测试断言用：追加热更新 0 次重建、损坏容错恰好 1 次）。
+_LOG_INDEX_REBUILDS = {"count": 0}
+
+
+def _log_index_path(proot: Path) -> Path:
+    """日志块偏移索引路径：.fenix/logs/.idx/fenixd.log.offsets.json。"""
+    return proot / ".fenix" / "logs" / ".idx" / "fenixd.log.offsets.json"
+
+
+def _build_log_block_index(log_path: Path, size: int) -> dict:
+    """全量扫描日志一次，构建 {size, offsets}。
+
+    offsets[i] = 第 i 个 64KB 块内首行字节偏移；读取窗口定位到块 i 后从该偏移
+    起读即可获得完整行（落在块边界中间的行被包含进下一块起点）。
+    """
+    offsets = [0]
+    try:
+        with log_path.open("rb") as f:
+            nblocks = size // LOG_INDEX_BLOCK
+            for i in range(1, nblocks + 1):
+                boundary = i * LOG_INDEX_BLOCK
+                if boundary >= size:
+                    break
+                f.seek(boundary)
+                chunk = f.read(LOG_INDEX_BLOCK)
+                nl = chunk.find(b"\n")
+                if nl == -1:
+                    offsets.append(boundary)
+                else:
+                    offsets.append(boundary + nl + 1)
+    except OSError:
+        return {"size": size, "offsets": [0]}
+    # 保证末尾（不足一块的尾部 / 恰好整块）也有条目指向尾部起始行
+    if offsets and offsets[-1] >= size:
+        offsets[-1] = max(0, size - 1)
+    return {"size": size, "offsets": offsets}
+
+
+def _write_log_index(proot: Path, idx: dict):
+    """索引落盘（.idx/ + 原子 rename），失败静默（查询不阻断）。"""
+    idx_path = _log_index_path(proot)
+    try:
+        idx_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = idx_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(idx, ensure_ascii=False), encoding="utf-8")
+        os.replace(str(tmp), str(idx_path))
+    except OSError:
+        pass
+
+
+def _update_log_block_index(log_path: Path, size: int, idx: dict) -> dict:
+    """追加热更新：仅补扫 size 增长的新块，不重建旧块。返回新索引。
+
+    日志只增（O_APPEND / RotatingFileHandler 追加），旧块偏移保持不变；
+    size 缩小（轮转/截断）时整体重建。
+    """
+    old_size = idx.get("size", 0)
+    if size < old_size:
+        fresh = _build_log_block_index(log_path, size)
+        _LOG_INDEX_REBUILDS["count"] += 1
+        return fresh
+    if size <= old_size:
+        return idx
+    offsets = list(idx.get("offsets", [0]))
+    old_blocks = old_size // LOG_INDEX_BLOCK
+    try:
+        with log_path.open("rb") as f:
+            nblocks = size // LOG_INDEX_BLOCK
+            for i in range(old_blocks, nblocks + 1):
+                boundary = i * LOG_INDEX_BLOCK
+                if boundary >= size:
+                    break
+                if boundary < old_size:
+                    continue  # 旧块已覆盖
+                # 新增首块起点恰为旧 size（JSONL 行边界）：直接指到 boundary，
+                # 避免 seek-forward 把新增首行整行跳过。
+                if boundary == old_size:
+                    offsets.append(boundary)
+                    continue
+                f.seek(boundary)
+                chunk = f.read(LOG_INDEX_BLOCK)
+                nl = chunk.find(b"\n")
+                if nl == -1:
+                    offsets.append(boundary)
+                else:
+                    offsets.append(boundary + nl + 1)
+    except OSError:
+        return idx
+    return {"size": size, "offsets": offsets}
+
+
+def _load_log_index(proot: Path, log_path: Path) -> dict:
+    """读取/重建日志块偏移索引，返回 {"size", "offsets"}。
+
+    缺失或日志文件 size 不匹配（轮转/截断）→ 重建一次（≤1 次全量扫描）并继续；
+    匹配则热更新（追加场景 0 次重建）。
+    """
+    try:
+        size = log_path.stat().st_size
+    except OSError:
+        return {"size": 0, "offsets": [0]}
+    idx_path = _log_index_path(proot)
+    idx = None
+    try:
+        if idx_path.exists():
+            data = json.loads(idx_path.read_text(encoding="utf-8"))
+            if (isinstance(data, dict) and isinstance(data.get("offsets"), list)
+                    and isinstance(data.get("size"), int)):
+                idx = data
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        idx = None
+    if idx is None or idx.get("size", 0) > size:
+        # 索引缺失 / 损坏 / 日志被截断（size 缩小）→ 重建一次
+        _LOG_INDEX_REBUILDS["count"] += 1
+        idx = _build_log_block_index(log_path, size)
+        _write_log_index(proot, idx)
+        return idx
+    # size 相等 → 直接返回；size 增长（append-only）→ 热更新补扫，不重建
+    fresh = _update_log_block_index(log_path, size, idx)
+    if fresh.get("size") != idx.get("size") or fresh is not idx:
+        _write_log_index(proot, fresh)
+    return fresh
+
+
+def _read_log_tail_window(proot: Path, log_path: Path, max_bytes=LOG_INDEX_TAIL_WINDOW) -> bytes:
+    """读日志尾部窗口（≤ max_bytes，对齐到块边界保证完整行）。"""
+    idx = _load_log_index(proot, log_path)
+    size = idx.get("size", 0)
+    if size == 0:
+        return b""
+    offsets = idx.get("offsets", [0]) or [0]
+    target = max(0, size - max_bytes)
+    bi = min(target // LOG_INDEX_BLOCK, len(offsets) - 1)
+    start = offsets[bi] if bi >= 0 else 0
+    start = max(0, min(start, size))
+    try:
+        with log_path.open("rb") as f:
+            f.seek(start)
+            return f.read(size - start)
+    except OSError:
+        return b""
+
+
+def _iter_tail_log_entries(proot: Path, lf: Path, cutoff: str = "") -> list:
+    """从日志尾部窗口逐行解析 JSON 条目（跳过非 JSON/空行）。"""
+    raw = _read_log_tail_window(proot, lf)
+    out = []
+    for line in raw.decode("utf-8", errors="replace").split("\n"):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if cutoff and entry.get("timestamp", "") < cutoff:
+            continue
+        out.append(entry)
+    return out
+
+
 def get_recent_events(project_root, minutes=10, limit=30) -> list:
-    """读取最近 N 分钟的 fenixd 结构化日志事件。"""
+    """读取最近 N 分钟的 fenixd 结构化日志事件。
+
+    dashboard-log-offset-index D5：只读日志尾部 ≤1MB 窗口（块偏移索引定位），
+    不再全量扫描日志文件；窗口外（早于尾部 1MB）的事件按截断语义不追溯。
+    """
     logs_dir = Path(project_root) / ".fenix" / "logs"
     if not logs_dir.is_dir():
         return []
@@ -910,17 +1081,7 @@ def get_recent_events(project_root, minutes=10, limit=30) -> list:
     events = []
     for lf in log_files[:2]:
         try:
-            for line in lf.read_text(encoding="utf-8").split("\n"):
-                if not line.strip():
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                ts = entry.get("timestamp", "")
-                if ts < cutoff:
-                    continue
-                events.append(entry)
+            events.extend(_iter_tail_log_entries(proot=Path(project_root), lf=lf, cutoff=cutoff))
         except (OSError, UnicodeDecodeError):
             continue
     return events[-limit:]
@@ -1428,6 +1589,12 @@ def read_run_events_between(project_root, run_id: str, start_offset: int) -> lis
     return _parse_run_lines(text.splitlines())
 
 
+# cleanup_runs 项目级节流（dashboard-spec-summary-index 1.5）：同一项目
+# 60 秒内只实际执行一次清理；节流期内直接返回 0（幂等，不遍历不删除）。
+_CLEANUP_RUNS_INTERVAL = 60.0
+_CLEANUP_RUNS_LAST: dict = {}
+
+
 def cleanup_runs(project_root) -> int:
     """归档超出保留上限的旧运行产物（跳过活动产物），返回归档数。
 
@@ -1438,8 +1605,18 @@ def cleanup_runs(project_root) -> int:
     保留上限取 runs.keep（用户级/项目级合并有效值，默认 RUNS_KEEP=50），
     可在 Dashboard 设置页「其他」分类调整；超限产物移入 runs/archive/ 而非
     删除（add-run-archive：时间轴/运行记录回读归档）。
+
+    节流（dashboard-spec-summary-index D4）：同项目 60s 内只实际执行一次，
+    节流期直接返回 0。project_summary 每请求调用一次，聚合视图频率高，
+    若每次都扫 runs 目录归档，是 62% 配置解析之外的另一块可杀开销。
     """
     from core.config import ConfigLoader
+
+    proot_key = str(Path(project_root).resolve())
+    _now = time.monotonic()
+    _last = _CLEANUP_RUNS_LAST.get(proot_key)
+    if _last is not None and _now - _last < _CLEANUP_RUNS_INTERVAL:
+        return 0  # 节流：幂等直接返回，不产生任何文件删除/目录遍历
 
     runs_dir = Path(project_root) / ".fenix" / "runs"
     protected = set()
@@ -1456,6 +1633,7 @@ def cleanup_runs(project_root) -> int:
             keep = configured
     except Exception:
         pass
+    _CLEANUP_RUNS_LAST[proot_key] = time.monotonic()
     return clean_old_runs(runs_dir, keep=keep, active_ids=protected)
 
 
@@ -1591,6 +1769,177 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
     }
 
 
+# ── spec 摘要索引（dashboard-spec-summary-index D1） ─────────────
+
+def _stat_sig(path: Path):
+    """文件签名 (mtime_ns, size)；缺失/不可 stat 返回 None。"""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _run_spec_part(run_id: str) -> str:
+    """从 run_id 推断 spec 名（与 get_runs 的推断逻辑对齐，供索引分组使用）。
+
+    依次剥离 agent 类型前缀、attempt 段（-a<n>）与时间戳段（-<unix秒>）。
+    """
+    spec_part = run_id
+    for prefix in ("admin-", "planner-judge-", "planner-plan-",
+                   "planner-", "impl-", "verify-", "test-"):
+        if run_id.startswith(prefix):
+            spec_part = run_id[len(prefix):]
+            break
+    spec_part = re.sub(r"-a\d+$", "", spec_part)
+    m = re.match(r"^(.*)-\d{9,10}$", spec_part)
+    if m:
+        spec_part = m.group(1)
+    return spec_part
+
+
+def _runs_by_spec_sigs(proot: Path) -> dict:
+    """扫描 .fenix/runs（含 archive）一次，按 spec 分组各 run 文件签名。
+
+    返回 {spec_name: {run_path_str: (mtime_ns, size)}}。全目录只 glob 一次，
+    避免每 spec 各自 glob 的 O(N²) 放大（add-dashboard-incremental-data D1）。
+    """
+    runs_dir = proot / ".fenix" / "runs"
+    if not runs_dir.is_dir():
+        return {}
+    out: dict = {}
+    try:
+        paths = list(runs_dir.glob("*.jsonl"))
+        arc = runs_dir / "archive"
+        if arc.is_dir():
+            paths.extend(arc.glob("*.jsonl"))
+    except OSError:
+        return out
+    for p in paths:
+        sig = _stat_sig(p)
+        if sig is None:
+            continue
+        spec_part = _run_spec_part(p.stem)
+        if not spec_part:
+            continue
+        out.setdefault(spec_part, {})[str(p)] = sig
+    return out
+
+
+def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict,
+                   runs_sigs: dict) -> dict:
+    """单个 spec 摘要的依赖文件签名集合（对齐 spec_summary 实际读路径）。
+
+    覆盖 tasks.md（implementing 时含实现 worktree 副本）/ specs/ 目录整体 /
+    .openspec.yaml / verification-report.md / verify-progress 相关文件 /
+    该 spec 的 run 产物（由调用方预扫描 runs_sigs 传入）。宁多勿漏：把
+    specs/ 目录整体入签名，依赖文件集合单向全覆盖。
+    """
+    sigs: dict = {}
+    changes = proot / "openspec" / "changes" / spec_name
+
+    def add(p: Path):
+        sig = _stat_sig(p)
+        if sig is not None:
+            sigs[str(p)] = sig
+
+    add(changes / "tasks.md")
+    if entry and entry.get("status") == "implementing":
+        wt = find_implementer_worktree(proot, spec_name)
+        if wt is not None:
+            add(wt / "openspec" / "changes" / spec_name / "tasks.md")
+    add(changes / ".openspec.yaml")
+    add(changes / "verification-report.md")
+    specs_dir = changes / "specs"
+    if specs_dir.is_dir():
+        try:
+            for sf in specs_dir.rglob("*.md"):
+                add(sf)
+        except OSError:
+            pass
+    add(proot / ".fenix" / "verify-progress" / f"{spec_name}.json")
+    vp_dir = proot / ".fenix" / "verify-progress" / spec_name
+    add(vp_dir / "report.json")
+    add(vp_dir / "test_scenarios.json")
+    for p, sig in (runs_sigs.get(spec_name) or {}).items():
+        sigs[p] = sig
+    return sigs
+
+
+class SummaryIndex:
+    """每项目 spec 摘要内存索引（dashboard-spec-summary-index D1）。
+
+    结构：{proot_key: {spec_name: {"summary": dict, "sigs": {path: (mtime_ns, size)}}}}
+
+    - 惰性构建：首次 get() 触发；watcher 与 server 共享同一实例（单写者 watcher
+      线程，读者 HTTP 线程，经 RLock 保护——读多写少场景足够）。
+    - 失效策略：每 spec 先比对依赖文件签名，未变直返缓存；变化只重算该 spec。
+    - STATE.md 签名变化 → 该项目全量重建（新增/删除 spec 只有 parse_state 全量
+      才能发现，触发频率低）。
+    - 有界性：摘要 dict 常驻内存（10000 spec ≈ 数十 MB，可接受）；签名只对存在
+      路径记录，删除的 spec 目录从索引剔除。
+    """
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._idx: dict = {}
+        self._state_sigs: dict = {}
+        self._state_snapshot: dict = {}
+
+    def get(self, proot, specs: dict | None = None, state_sig=None) -> list:
+        """返回该项目的全部 spec_summary 列表（顺序与 specs dict 一致）。
+
+        Args:
+            proot: 项目根路径
+            specs: parse_state 快照 {spec_name: entry}；省略时复用索引内缓存快照
+                （STATE.md 签名未变则直接复用，避免每请求全量解析 STATE.md）。
+            state_sig: STATE.md 的 (mtime_ns, size) 签名；变化时触发全量重建
+                并重新解析 STATE.md 快照。
+        """
+        key = str(Path(proot).resolve())
+        with self._lock:
+            if state_sig is None:
+                state_sig = _stat_sig(proot / "STATE.md")
+
+            # STATE.md 签名变化 → 全量重建索引 + 重新解析快照（新增/删除 spec
+            # 只有 parse_state 全量才能发现；触发频率低，仅 STATE.md 变更时）。
+            state_changed = state_sig is not None and self._state_sigs.get(key) != state_sig
+            if specs is None:
+                if not state_changed:
+                    specs = self._state_snapshot.get(key)
+                if specs is None:
+                    specs = parse_state(proot)
+                    self._state_snapshot[key] = specs
+
+            idx = self._idx.get(key)
+            if idx is None or state_changed:
+                idx = {}
+
+            runs_sigs = _runs_by_spec_sigs(proot)
+            out = []
+            for spec_name, entry in specs.items():
+                entry = entry or {}
+                cached = idx.get(spec_name)
+                sigs = _spec_dep_sigs(proot, spec_name, entry, runs_sigs)
+                if cached is not None and cached.get("sigs") == sigs:
+                    out.append(cached["summary"])
+                    continue
+                summary = spec_summary(proot, spec_name, entry)
+                idx[spec_name] = {"summary": summary, "sigs": sigs}
+                out.append(summary)
+
+            # 清理已删除 spec 的签名条目
+            for stale in [s for s in idx if s not in specs]:
+                del idx[stale]
+
+            self._idx[key] = idx
+            if state_sig is not None:
+                self._state_sigs[key] = state_sig
+                if specs is not None:
+                    self._state_snapshot[key] = specs
+            return out
+
+
 # ── SPEC 生命周期时间轴 ──────────────────────────────────────────
 
 _LIFECYCLE_ORDER = {"drafted": 0, "ready": 1, "implementing": 2, "bug-found": 2.5,
@@ -1702,7 +2051,10 @@ def get_spec_timeline(project_root, spec_name: str) -> list:
             log_files = []
         for lf in log_files[:2]:
             try:
-                content = lf.read_text(encoding="utf-8", errors="replace")
+                # dashboard-log-offset-index D5：只读尾部窗口（≤1MB），不整文件扫描
+                content = _read_log_tail_window(Path(project_root), lf).decode(
+                    "utf-8", errors="replace"
+                )
             except OSError:
                 continue
             pat = re.compile(r"Transition: " + re.escape(spec_name) + r"\s+([\w-]+)\s*→\s*([\w-]+)")
@@ -2151,6 +2503,25 @@ def read_config(scope_root, scope: str = "project") -> dict:
     return result
 
 
+# 配置解析签名缓存（dashboard-spec-summary-index D4）：
+# read_effective_config 按 (用户级 config.yaml 签名, 项目级 config.yaml 签名) 缓存，
+# mtime/size 未变不重读文件与 YAML 解析；写路径不维护显式失效（写后 mtime 已变，
+# 签名键自然失效，与 _RUN_TASK_CACHE 同模式）。
+# 缓存有界：键 ∈ {用户级 config.yaml，项目 config.yaml} × mtime 版本，超出整体清空
+# （防配置频繁写入时旧键残留无界增长）。
+_EFFECTIVE_CONFIG_CACHE: dict = {}
+_EFFECTIVE_CONFIG_CACHE_MAX = 512
+
+
+def _config_file_sig(path: Path):
+    """配置文件签名 (mtime_ns, size)；缺失返回 None。"""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 def read_effective_config(project_root) -> dict:
     """项目模式有效配置视图：受管键取 resolve_config 有效合并值 + sources 标注。
 
@@ -2158,11 +2529,19 @@ def read_effective_config(project_root) -> dict:
             "gates": {"approve_mode": ...}, "scope": "project", "raw_exists": bool,
             "sources": {...}, "error": str|null, "description": str}
     sources[key] = "project" 当该键在项目级文件显式定义，否则 "user"（继承用户级或默认）。
+
+    配置解析缓存（D4）：以 (用户级 config.yaml, 项目级 config.yaml) 的
+    (mtime_ns, size) 为键缓存解析结果；命中直接返回深拷贝，不重读文件。
     """
     from core.config import ConfigLoader
 
     proot = Path(project_root)
     proj_path = proot / ".fenix" / "config.yaml"
+
+    cache_key = (_config_file_sig(USER_CONFIG_PATH), _config_file_sig(proj_path))
+    cached = _EFFECTIVE_CONFIG_CACHE.get(cache_key)
+    if cached is not None:
+        return copy.deepcopy(cached)
 
     result = {
         "llm": {},
@@ -2193,6 +2572,9 @@ def read_effective_config(project_root) -> dict:
         effective = ConfigLoader.resolve_config(proot)
     except Exception as e:
         result["error"] = f"有效配置解析失败: {e}"
+        if len(_EFFECTIVE_CONFIG_CACHE) > _EFFECTIVE_CONFIG_CACHE_MAX:
+            _EFFECTIVE_CONFIG_CACHE.clear()
+        _EFFECTIVE_CONFIG_CACHE[cache_key] = copy.deepcopy(result)
         return result
 
     # 提取受管键（有效合并值）
@@ -2237,6 +2619,9 @@ def read_effective_config(project_root) -> dict:
     else:
         result["description"] = ""
 
+    if len(_EFFECTIVE_CONFIG_CACHE) > _EFFECTIVE_CONFIG_CACHE_MAX:
+        _EFFECTIVE_CONFIG_CACHE.clear()
+    _EFFECTIVE_CONFIG_CACHE[cache_key] = copy.deepcopy(result)
     return result
 
 

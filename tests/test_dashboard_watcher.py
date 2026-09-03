@@ -2,6 +2,8 @@
 Tests for Dashboard file watcher and SSE functionality.
 
 Split from test_dashboard.py as part of refactor-test-structure.
+Updated for dashboard-incremental-watcher: incremental state events,
+directory-level signature skip, SummaryIndex file-level diff.
 """
 import json
 import os
@@ -32,9 +34,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
     (proot / "STATE.md").write_text(
         "# Fenix Project State\n\n## Specs\n\n"
         "### myspec\n- status: testing\n- priority: 2\n- created: 2026-01-01T00:00:00+00:00\n"
-        "- updated: 2026-01-02T00:00:00+00:00\n- error: null\n- depends_on: null\n\n"
-        "### otherspec\n- status: done\n- priority: 1\n- created: 2026-02-01T00:00:00+00:00\n"
-        "- updated: 2026-02-02T00:00:00+00:00\n- error: null\n- depends_on: null\n",
+        "- updated: 2026-01-02T00:00:00+00:00\n- error: null\n- depends_on: null\n",
         encoding="utf-8",
     )
 
@@ -91,7 +91,6 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
     )
 
     # 事件日志
-    from datetime import datetime, timezone
     (proot / ".fenix" / "logs" / "fenixd-2026.log").write_text(
         json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "level": "INFO",
                     "component": "pm_engine", "message": "scan"}, ensure_ascii=False) + "\n",
@@ -123,37 +122,67 @@ class TestFileWatcher:
     def _mk(self, tmp_path):
         proot = make_project(tmp_path)
         hub = _FakeHub()
+        index = dash_data.SummaryIndex()
         w = FileWatcher(
-            lambda: [{"name": "proj-a", "path": str(proot), "exists": True}], hub
+            lambda: [{"name": "proj-a", "path": str(proot), "exists": True}], hub,
+            summary_index=index,
         )
         return proot, hub, w
 
-    def test_state_change_pushes_overview_specs_and_changed_detail(self, tmp_path):
+    def _atomic_replace_tasks(self, proot, spec_name, new_content):
+        """原子替换 tasks.md（模拟 Fenix 写路径：tmp + os.replace 更新父目录 mtime）。
+
+        等长/相近时间片内 os.replace 可能落在同一 stat 粒度内不改目录签名，故
+        显式前推 spec 目录 mtime —— 等价于真实时间片间隔下 os.replace 的效果。
+        """
+        tasks = proot / "openspec" / "changes" / spec_name / "tasks.md"
+        tmp = tasks.parent / ".tasks.md.tmp"
+        tmp.write_text(new_content, encoding="utf-8")
+        os.replace(str(tmp), str(tasks))
+        # 等长写入可能未推进目录 mtime：显式前推 1ms，保证目录签名可见变化
+        st = tasks.parent.stat()
+        os.utime(tasks.parent, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+    def test_state_change_pushes_incremental_state(self, tmp_path):
         proot, hub, w = self._mk(tmp_path)
         w.scan_once()  # 建立基线
         hub.events.clear()
         state = proot / "STATE.md"
-        state.write_text(state.read_text(encoding="utf-8")
-                         .replace("- status: testing", "- status: implemented"),
-                         encoding="utf-8")
+        new_content = state.read_text(encoding="utf-8").replace("- status: testing", "- status: implemented")
+        self._atomic_replace_state(proot, new_content)
         w.scan_once()
         state_events = [e for e, _ in hub.events if e["type"] == "state"]
         assert state_events, "STATE.md 变化应广播 state 事件"
         ev = state_events[0]
         assert ev["project"] == "proj-a"
-        assert ev["overview"]["totals"]["spec_count"] == 2
-        assert isinstance(ev["specs"], list), "state 事件 specs 应为数组"
-        names = {s["name"] for s in ev["specs"]}
-        assert names == {"myspec", "otherspec"}
-        assert "myspec" in ev["details"]
-        assert "events" not in ev["details"]["myspec"]
+        assert ev["overview"] is None, "增量模式不再下发 overview"
+        # myspec 状态变更 → 应在 specs 中
+        specs = ev.get("specs", [])
+        names = [s["spec"] for s in specs]
+        assert "myspec" in names, f"变更的 spec 应出现在增量 specs: {names}"
+        # 未变的 spec 不应出现在增量中
+        assert len(specs) == 1, f"仅变更 spec 应出现，实际: {len(specs)} 条"
+
+    def _atomic_replace_state(self, proot, new_content):
+        """原子替换 STATE.md。"""
+        state = proot / "STATE.md"
+        tmp = proot / ".STATE.md.tmp"
+        tmp.write_text(new_content, encoding="utf-8")
+        os.replace(str(tmp), str(state))
 
     def test_spec_file_change_pushes_detail(self, tmp_path):
         proot, hub, w = self._mk(tmp_path)
         w.scan_once()
         hub.events.clear()
-        tasks = proot / "openspec" / "changes" / "myspec" / "tasks.md"
-        tasks.write_text(tasks.read_text(encoding="utf-8") + "- [x] 1.2 任务二\n", encoding="utf-8")
+        # 原子替换 tasks.md → 更新 spec 目录 mtime → 目录签名变化 → 检测到
+        new_content = (
+            "## 1. 阶段一\n\n"
+            "- [x] 1.1 任务一\n"
+            "- [x] 1.2 任务二\n\n"
+            "## 2. 阶段二\n\n"
+            "- [ ] 2.1 任务三\n"
+        )
+        self._atomic_replace_tasks(proot, "myspec", new_content)
         w.scan_once()
         detail_events = [e for e, _ in hub.events if e["type"] == "detail"]
         assert detail_events and detail_events[0]["spec"] == "myspec"

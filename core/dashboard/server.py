@@ -54,6 +54,13 @@ from core.fenix_session import start_daemon, stop_daemon
 STATIC_DIR = Path(__file__).parent / "static"
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
+# 连接上限（dashboard-connection-limit D6，模块常量供测试 monkeypatch）
+MAX_SSE_CONNECTIONS = 32    # SSE 活跃连接上限，超出拒绝新连接（客户端退化为轮询）
+MAX_SERVER_THREADS = 64     # ThreadingHTTPServer 并发处理线程上限，超限 503
+# SSE 客户端断开探测轮询间隔（秒）：队列空时每次等待该时长后探测 FIN。
+# 心跳仍按 25s 发送；该间隔仅决定「释放连接槽位」的响应速度。
+SSE_CLIENT_POLL_INTERVAL = 1.0
+
 
 class SSEConnection:
     """一条浏览器 SSE 长连接：自带事件队列 + 该连接订阅的 run。
@@ -86,8 +93,15 @@ class SSEHub:
         self._conns = {}   # cid -> SSEConnection
         self._seq = 0
 
-    def register(self) -> SSEConnection:
+    def register(self) -> SSEConnection | None:
+        """注册新 SSE 连接；活跃连接数 ≥ MAX_SSE_CONNECTIONS 时拒绝（返回 None）。
+
+        拒绝语义（dashboard-connection-limit D6）：已建立连接不受影响；被拒客户端
+        由前端退化为轮询（心跳兜底）。计数经锁保护，断开时 unregister 回落。
+        """
         with self._lock:
+            if len(self._conns) >= MAX_SSE_CONNECTIONS:
+                return None
             self._seq += 1
             conn = SSEConnection(f"c{self._seq}")
             self._conns[conn.id] = conn
@@ -146,10 +160,26 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         self.registry = registry
         self.static_dir = Path(static_dir)
         self.sse_hub = SSEHub()
+        self.summary_index = dashboard_data.SummaryIndex()  # 摘要索引（thread-safe）
         self.watcher = None  # serve() 中创建并启动
         self._projects_cache = []
         self._cache_ts = 0.0
         self._cache_ttl = 10.0
+        # 并发请求槽位计数（dashboard-connection-limit D6）：entry 获取、finally 释放
+        self._request_slots = 0
+        self._slots_lock = threading.Lock()
+
+    def _try_acquire_request_slot(self) -> bool:
+        """尝试获取一个处理槽位；并发数 ≥ MAX_SERVER_THREADS 时拒绝。"""
+        with self._slots_lock:
+            if self._request_slots >= MAX_SERVER_THREADS:
+                return False
+            self._request_slots += 1
+            return True
+
+    def _release_request_slot(self):
+        with self._slots_lock:
+            self._request_slots = max(0, self._request_slots - 1)
 
     def projects(self) -> list:
         """带 TTL 的发现结果缓存（扫描开销低但避免每次请求都扫盘）。"""
@@ -200,6 +230,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         pass
 
     def _handle(self, method: str = "GET"):
+        # 线程上限（dashboard-connection-limit D6）：并发处理请求数超限时直接 503，
+        # 不排队不堆积（防标签页风暴耗尽资源）。SSE 长连接本身占用线程，计数
+        # 覆盖所有请求（含 /api/stream），上限需容纳常规 API + SSE 混合负载。
+        if not self.server._try_acquire_request_slot():
+            self._error(503, "server busy")
+            return
+        try:
+            self._handle_inner(method)
+        finally:
+            self.server._release_request_slot()
+
+    def _handle_inner(self, method: str = "GET"):
         try:
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
@@ -296,11 +338,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not project.get("exists"):
             return {"error": "project not found", "specs": []}
         proot = Path(project["path"])
-        specs = dashboard_data.parse_state(proot)
-        items = [
-            dashboard_data.spec_summary(proot, name, entry)
-            for name, entry in specs.items()
-        ]
+        items = self.server.summary_index.get(proot)
         items.sort(key=lambda s: s.get("created") or "", reverse=True)
         return {"project": project["name"], "specs": items}
 
@@ -1085,8 +1123,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         首次事件为 hello（携带 cid，供前端注册 run 增量订阅）；此后持续阻塞
         读取连接事件队列，25s 无事件发心跳注释帧保活。客户端断开即清理。
+        活跃连接数 ≥ MAX_SSE_CONNECTIONS 时拒绝（503 + JSON 错误体），
+        客户端收到后应退化为轮询（dashboard-connection-limit D6）。
+        为及时释放连接槽位（释放后恢复可测），除写心跳外每个队列超时
+        （≤1s）做一次客户端 socket 可读探测：客户端 FIN → 立即 unregister。
         """
         conn = self.server.sse_hub.register()
+        if conn is None:
+            self._error(503, "too many SSE connections")
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -1095,11 +1140,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self._sse_send({"type": "hello", "cid": conn.id})
+            last_heartbeat = time.monotonic()
             while True:
                 try:
-                    event = conn.queue.get(timeout=25)
+                    event = conn.queue.get(timeout=SSE_CLIENT_POLL_INTERVAL)
                 except queue.Empty:
-                    self._sse_send(None)  # 心跳注释帧
+                    # 客户端断开探测：可读且 recv 返回 b""（EOF/FIN）即已断开
+                    if self._sse_client_gone():
+                        break
+                    # 25s 心跳保活
+                    if time.monotonic() - last_heartbeat >= 25:
+                        self._sse_send(None)
+                        last_heartbeat = time.monotonic()
                     continue
                 if event is None:  # 关闭信号
                     break
@@ -1108,6 +1160,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
             pass
         finally:
             self.server.sse_hub.unregister(conn)
+
+    def _sse_client_gone(self) -> bool:
+        """探测 SSE 客户端 socket 是否已关闭（FIN）。
+
+        用 select 探测可读性 + recv(MSG_PEEK) 判 EOF，不消费任何真实数据，
+        避免误读浏览器可能发送的其它字节。
+        """
+        import select
+        try:
+            r, _, _ = select.select([self.connection], [], [], 0)
+        except (OSError, ValueError):
+            return True
+        if not r:
+            return False
+        try:
+            data = self.connection.recv(1, socket.MSG_PEEK)
+        except (BlockingIOError, OSError, ValueError):
+            return True
+        return data == b""
 
     def _sse_send(self, event: dict | None):
         """以 HTTP/1.1 chunked 帧写入一条 SSE 消息；event=None 写心跳注释。
@@ -1349,7 +1420,8 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
                 f"请释放该端口后重试，或使用其它 --port。\n")
             sys.exit(1)
 
-    watcher = FileWatcher(lambda: httpd.projects(), httpd.sse_hub)
+    watcher = FileWatcher(lambda: httpd.projects(), httpd.sse_hub,
+                         summary_index=httpd.summary_index)
     httpd.watcher = watcher
     watcher.start()
     url = f"http://localhost:{actual}"

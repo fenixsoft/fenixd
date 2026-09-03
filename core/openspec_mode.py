@@ -20,6 +20,12 @@ VALID_SPEC_MODES = ("fast-track", "full")
 # 缺省模式
 DEFAULT_SPEC_MODE = "full"
 
+# 签名缓存（dashboard-spec-summary-index D4）：按 (真实路径, mtime_ns, size) 缓存，
+# 命中不重读文件与 YAML 解析；写路径不维护显式失效（写后 mtime 已变，自然失效，
+# 与 data._RUN_TASK_CACHE 同模式）。有界：超出上限整体清空（防写频繁时旧键残留无界增长）。
+_SPEC_MODE_CACHE: dict = {}
+_SPEC_MODE_CACHE_MAX = 2048
+
 
 def read_spec_mode(project_root, spec_name: str) -> str:
     """读取 spec 的执行模式，缺省/非法一律返回 ``"full"``。
@@ -35,17 +41,25 @@ def read_spec_mode(project_root, spec_name: str) -> str:
     yaml_path = (
         Path(project_root) / "openspec" / "changes" / spec_name / ".openspec.yaml"
     )
-    if not yaml_path.is_file():
-        return DEFAULT_SPEC_MODE
     try:
-        data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError):
-        return DEFAULT_SPEC_MODE
-    if not isinstance(data, dict):
-        return DEFAULT_SPEC_MODE
-    mode = data.get("mode")
-    if mode not in VALID_SPEC_MODES:
-        return DEFAULT_SPEC_MODE
+        st = yaml_path.stat()
+        key = (str(yaml_path.resolve()), st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = (str(yaml_path.resolve()), None)
+    cached = _SPEC_MODE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    mode = DEFAULT_SPEC_MODE
+    if yaml_path.is_file():
+        try:
+            data = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            data = None
+        if isinstance(data, dict) and data.get("mode") in VALID_SPEC_MODES:
+            mode = data["mode"]
+    if len(_SPEC_MODE_CACHE) > _SPEC_MODE_CACHE_MAX:
+        _SPEC_MODE_CACHE.clear()
+    _SPEC_MODE_CACHE[key] = mode
     return mode
 
 
