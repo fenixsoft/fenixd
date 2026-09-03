@@ -187,6 +187,59 @@ class TestDynamicSectionsPreserved:
         assert "RESUME CHECKPOINT" not in prompt
 
 
+# ── 项目级附加提示词 ─────────────────────────────────────────────────
+
+
+class TestProjectExtraPrompt:
+    """Scenario: 项目级附加生效 / 缺席零注入（任务 2.1）。"""
+
+    def test_project_extra_appended(self, tmp_path):
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        extra_dir = proot / ".fenix" / "agents"
+        extra_dir.mkdir(parents=True)
+        (extra_dir / "verifier.md").write_text(
+            "- 本项目登录页用 /login 路径，先 seed 用户再验证。\n", encoding="utf-8")
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "verifier")
+        assert "## 项目附加提示词" in prompt
+        assert "/login 路径" in prompt
+        # 附加在末尾（位于主体与动态段之后）
+        assert prompt.rstrip().endswith("/login 路径，先 seed 用户再验证。")
+
+    def test_absent_agents_dir_zero_injection(self, tmp_path):
+        """无 .fenix/agents/ 目录 → prompt 与仅通用层时逐字节一致。"""
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "verifier")
+        assert "项目附加提示词" not in prompt
+        baseline = runner._prompt_builder._fill_placeholders(
+            (AGENT_PROMPT_DIR / AGENT_PROMPT_FILES["verifier"]).read_text(
+                encoding="utf-8"),
+            "verifier", "demo", None,
+        ) + runner._prompt_builder._verifier_breakpoint_section("demo")
+        assert prompt == baseline
+
+    def test_empty_extra_file_zero_injection(self, tmp_path):
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        extra_dir = proot / ".fenix" / "agents"
+        extra_dir.mkdir(parents=True)
+        (extra_dir / "verifier.md").write_text("   \n", encoding="utf-8")
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "verifier")
+        assert "项目附加提示词" not in prompt
+
+    def test_framework_code_never_writes_project_agents_dir(self, tmp_path):
+        """框架代码不写入项目 .fenix/agents/（仅 Dashboard API 用户保存写入）。"""
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        runner._prompt_builder._build_prompt("demo", "verifier")
+        assert not (proot / ".fenix" / "agents").exists()
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

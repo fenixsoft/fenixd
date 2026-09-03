@@ -132,7 +132,29 @@ class PromptBuilder:
             prompt += self._prev_error_section(spec_name)
             prompt += self._fast_track_reuse_note(spec_name)
         # administrator 无条件动态段：困境信号经占位符注入
+
+        # 项目级附加提示词（D2）：附加在完整 prompt（通用主体 + 动态段）之后
+        prompt += self._project_extra_section(agent_type)
         return prompt
+
+    def _project_extra_section(self, agent_type: str) -> str:
+        """项目级附加提示词段（add-agent-prompt-files D2 / 任务 2.1）。
+
+        <项目根>/.fenix/agents/<agent-type>.md 存在则读入，以
+        「## 项目附加提示词」标题附加在 prompt 完整内容（通用主体 + 动态段）
+        之后；缺席零注入（prompt 与仅通用层时逐字节一致）。
+        """
+        agents_dir = self._pm.project_root / ".fenix" / "agents"
+        path = agents_dir / AGENT_PROMPT_FILES[agent_type]
+        if not path.is_file():
+            return ""
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+        if not content:
+            return ""
+        return f"\n\n## 项目附加提示词\n\n{content}\n"
 
     def _verifier_breakpoint_section(self, spec_name: str) -> str:
         """断点续跑段（verifier-checkpoint-resume spec）。
