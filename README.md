@@ -171,7 +171,6 @@ fenixd/
 ├── fenix-init              # 项目初始化命令
 ├── fenixd.py               # 守护进程主入口
 ├── config.template.yaml    # 项目配置模板（fenix-init 渲染用）
-├── launch-extension.cjs    # 扩展手动测试启动器
 ├── core/                   # 核心模块
 │   ├── state_machine.py    # 状态机
 │   ├── event_bus.py        # 事件总线
