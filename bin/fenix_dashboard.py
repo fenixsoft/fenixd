@@ -309,6 +309,17 @@ def render_active_specs(specs):
     return "\n".join(lines)
 
 
+def _local_ts(iso_str, fmt="%H:%M:%S"):
+    """UTC ISO 时间戳 → 本地时区格式化;解析失败回退裸切片 [:19]。
+
+    日志层统一写 UTC（core/logger.py），展示层负责转本地时区显示。
+    """
+    try:
+        return datetime.fromisoformat(str(iso_str).replace("Z", "+00:00")).astimezone().strftime(fmt)
+    except Exception:
+        return str(iso_str)[:19]
+
+
 def render_event_feed(specs):
     """渲染最近事件流"""
     events = dash_data.get_recent_events(PROJECT_ROOT, minutes=10)
@@ -324,7 +335,8 @@ def render_event_feed(specs):
     }
 
     for ev in events[-12:]:
-        ts = ev.get("timestamp", "")[:19].replace("T", " ")
+        # 成功路径已带空格分隔;失败回退路径的 "T" 由 replace 归一
+        ts = _local_ts(ev.get("timestamp", ""), fmt="%Y-%m-%d %H:%M:%S").replace("T", " ")
         comp = ev.get("component", "")[:15]
         icon = component_icons.get(comp, "  ")
         msg = ev.get("message", "")

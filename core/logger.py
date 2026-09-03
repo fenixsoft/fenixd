@@ -11,7 +11,7 @@ import os
 import time
 import threading
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 
 
@@ -20,7 +20,8 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            # 保持 Z 后缀格式不变（utcnow 的非弃用等价写法），展示层与既有 grep 依赖该格式
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "level": record.levelname,
             "component": getattr(record, "component", "unknown"),
             "message": record.getMessage(),

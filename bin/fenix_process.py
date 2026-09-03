@@ -92,6 +92,17 @@ def parse_tasks(spec_name):
 
 # ── 日志解析 ────────────────────────────────────────────────────────
 
+def _local_ts(iso_str, fmt="%H:%M:%S"):
+    """UTC ISO 时间戳 → 本地时区格式化;解析失败回退裸切片 [:19]。
+
+    日志层统一写 UTC（core/logger.py），展示层负责转本地时区显示。
+    """
+    try:
+        return datetime.fromisoformat(str(iso_str).replace("Z", "+00:00")).astimezone().strftime(fmt)
+    except Exception:
+        return str(iso_str)[:19]
+
+
 def parse_logs(spec_name):
     """从 fenixd 日志中提取指定 SPEC 的事件时间线"""
     log_files = sorted(LOGS_DIR.glob("fenixd*.log"), reverse=True)
@@ -304,11 +315,7 @@ def show_progress(spec_name):
     if events:
         print(f"\n{BOLD}📋 fenixd 时间线{RESET}\n")
         for ev in events[:20]:
-            try:
-                t = datetime.fromisoformat(ev["time"].replace("Z", "+00:00"))
-                ts = t.strftime("%H:%M:%S")
-            except Exception:
-                ts = ev["time"][:19] if len(ev["time"]) >= 19 else ev["time"]
+            ts = _local_ts(ev["time"])
             comp_short = {"state_machine": "📦", "pm_engine": "🧠",
                           "agent_runner": "🤖", "event_bus": "📡",
                           "worktree_manager": "🌲"}.get(ev["component"], ev["component"][:4])
