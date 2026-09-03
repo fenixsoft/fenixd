@@ -240,6 +240,39 @@ class TestProjectExtraPrompt:
         assert not (proot / ".fenix" / "agents").exists()
 
 
+class TestDomainKnowledgeMigrated:
+    """Scenario: 领域知识不丢失——被管产品领域规范不得回流框架通用文件。
+
+    COS e2e / 壳路由 / seed 键格式三段已迁移为被管项目（fenix-desktop）
+    .fenix/agents/ 的项目附加提示词（一次性迁移，设计 D3/任务 2.2）；
+    通用层文件不得再含这些领域片段。
+    """
+
+    MANAGED_DOMAIN_MARKERS = ("腾讯云", "fenix:sync:persisted-key", "#/config")
+
+    @pytest.mark.parametrize("agent_type", AGENT_TYPES)
+    def test_no_managed_product_domain_knowledge_in_framework(self, tmp_path, agent_type):
+        template = (AGENT_PROMPT_DIR / AGENT_PROMPT_FILES[agent_type]).read_text(
+            encoding="utf-8")
+        for marker in self.MANAGED_DOMAIN_MARKERS:
+            assert marker not in template, f"{agent_type} 含被管产品领域知识: {marker}"
+
+    def test_project_extra_delivers_domain_knowledge(self, tmp_path):
+        """被管项目 .fenix/agents/ 条目经项目附加机制注入（迁移知识不丢失）。"""
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        extra_dir = proot / ".fenix" / "agents"
+        extra_dir.mkdir(parents=True)
+        (extra_dir / "verifier.md").write_text(
+            "## 真实云端端到端场景\n- 触发真实云端请求（腾讯云 COS）\n"
+            "## seed 数据规范\n- base64 键（如 fenix:sync:persisted-key）必须使用合法 base64\n",
+            encoding="utf-8")
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "verifier")
+        assert "腾讯云 COS" in prompt
+        assert "fenix:sync:persisted-key" in prompt
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()
