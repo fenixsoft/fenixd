@@ -12,6 +12,7 @@ import TokenBudgetPanel from './components/TokenBudgetPanel';
 import MiscSettingsPanel from './components/MiscSettingsPanel';
 import VerifyPanel from './components/VerifyPanel';
 import ProjectProfilePanel from './components/ProjectProfilePanel';
+import PromptsPanel from './components/PromptsPanel';
 
 const { Text } = Typography;
 
@@ -23,6 +24,7 @@ const BASE_MENU_ITEMS = [
   { key: 'token', label: '预算' },
   { key: 'misc', label: '归档' },
   { key: 'verify', label: '验证' },
+  { key: 'prompts', label: '提示词' },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -159,6 +161,10 @@ export default function SettingsPage() {
             }
           >
             {loading && <div>加载中...</div>}
+            {/* 提示词页签不依赖 config（读取 agents/*.md 与 .fenix/agents/），独立于配置守卫渲染 */}
+            {!loading && activeKey === 'prompts' && (
+              <PromptsPanel project={scope === 'project' ? project : undefined} />
+            )}
             {!loading && config && (
               <>
                 {/* 配置状态提示 */}
