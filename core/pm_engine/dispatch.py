@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import json
 import threading
 import time
+from pathlib import Path
 
 
 # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）────────────────────
@@ -17,6 +18,11 @@ import time
 # 退避安排下一次尝试，期间不消耗 _retry_count、不写 retries exhausted（attempt
 # 配额只属于任务失败，不属于基础设施冲突）。可配 pm.dispatch_backoff_schedule。
 DEFAULT_DISPATCH_BACKOFF_SCHEDULE = (30, 120, 600)
+
+# ── repair 通道轮次上限（add-merge-back-repair-lane D5）────────────────────
+# 同一 merge 失败事件链内 repair 最多 2 轮，超限回退 fallback 全新重派。
+# 模块常量、**不新增配置键**（规避 dashboard UI 联动义务，design D5）。
+MAX_REPAIR_ROUNDS_PER_FAILURE = 2
 
 
 class Dispatcher:
@@ -624,9 +630,11 @@ class Dispatcher:
                     # 所以用分支名直接 merge。
                     merge_ok = True
                     merge_error = ""
+                    merge_info = None
                     conflict_files = []
                     if result.branch:
-                        merge_ok, merge_error = wm.merge_back_from_branch(result.branch)
+                        merge_info = wm.merge_back_from_branch(result.branch)
+                        merge_ok, merge_error = merge_info  # 兼容 (bool, str) 解包
                         # guard 段内 pop 冲突自愈丢弃的用户改动清单（admin 告警用）
                         conflict_files = list(wm.last_stash_pop_conflicts)
 
@@ -668,6 +676,8 @@ class Dispatcher:
 
                         breaker_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
                         if streak >= breaker_threshold:
+                            # 熔断触发：blocked 后 repair 通道一并停止
+                            # （spec-merge-circuit-breaker：repair 不绕过熔断）。
                             self._pm.state_machine.transition(spec_name, "blocked")
                             self._pm.state_machine.update_spec(spec_name, {
                                 "error": final_error,
@@ -678,6 +688,15 @@ class Dispatcher:
                             self._pm.logger.error(
                                 "pm_engine",
                                 f"Circuit breaker tripped for '{spec_name}' (fp={fp}) — spec blocked",
+                            )
+                        elif self._pm._should_enter_repair(
+                                spec_name, merge_info, streak, breaker_threshold):
+                            # ── repair 通道（add-merge-back-repair-lane）──
+                            # 语义冲突失败且熔断未触发：派 repair agent 原地修复
+                            #（把 main 合入分支解决冲突），而非 abort 后全新重派。
+                            self._pm._dispatch_repair_lane(
+                                spec_name, merge_info, result.branch,
+                                fp=fp, streak=streak,
                             )
                         else:
                             try:
@@ -1096,6 +1115,383 @@ class Dispatcher:
         except Exception:
             pass
         return True
+
+    # ── repair 通道（add-merge-back-repair-lane D1/D2/D4/D5/D6）──────────────
+    # merge-back 语义冲突失败后的原地修复通道。分层边界（design D1）：git 层
+    # （worktree_manager）只做冲突分类与载体解析，**是否进入 repair、派发与轮次
+    # 计数**在本层决策。修复方向反转（D2）：repair agent 在实现分支一侧把 main
+    # 合入分支并解决冲突，主树在派发前已 abort 保持干净。
+
+    def _should_enter_repair(self, spec_name: str, merge_info, streak: int,
+                             breaker_threshold: int) -> bool:
+        """merge-back 失败后是否进入 repair 通道（语义冲突 + 熔断未触发 + 未超轮次）。
+
+        判定依据（spec-mergeback-inplace-repair）：
+        - merge_info 携带结构化冲突分类（D1）；
+        - 全部冲突路径均为构建产物且自愈成功时（success=True）不会走到这里——
+          调用方仅在 ``not merge_ok`` 分支内调用；
+        - 冲突含语义文件（has_semantic_conflict）→ 产物/ignored-DU 自愈均不适用；
+        - 熔断未触发（streak < threshold）：blocked spec 不再派发 repair；
+        - 同一失败链内 repair 未超轮次（_repair_round < MAX_REPAIR_ROUNDS_PER_FAILURE）。
+        """
+        # 兼容 (bool, str) 元组调用（merge_info 可能非 MergeConflictInfo）
+        info_has_semantic = bool(getattr(merge_info, "has_semantic_conflict", False))
+        if not info_has_semantic:
+            return False
+        try:
+            spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        except Exception:
+            spec_entry = {}
+        if spec_entry.get("status") == "blocked":
+            return False
+        if streak >= breaker_threshold:
+            return False
+        try:
+            repair_round = int(spec_entry.get("_repair_round", 0) or 0)
+        except (TypeError, ValueError):
+            repair_round = 0
+        return repair_round < MAX_REPAIR_ROUNDS_PER_FAILURE
+
+    def _dispatch_repair_lane(self, spec_name: str, merge_info, branch: str,
+                              fp: str | None = None, streak: int = 0) -> None:
+        """进入 repair 通道：三态解析载体 → 认领现场 → 派发 repair worker。
+
+        载体三态（design D3，以 git 事实为判定基准）：
+        (a) 原 worktree 存在 → 原地进入（保留 node_modules/构建缓存）；
+        (b) worktree 已清但分支存在 → 换壳：在分支上新建 worktree；
+        (c) 分支不存在 → 回退 fallback 全新重派（prompt 注入 merge 失败上下文）。
+
+        轮次控制（D5/D6）：``_repair_round`` 在派发前递增并持久化，
+        超限不派发（_should_enter_repair 已拦截，此处兜底回退）。
+        """
+        wm = self._pm.agent_runner.worktree_manager
+        try:
+            repair_round = int(
+                (self._pm.state_machine.read_one(spec_name) or {}).get("_repair_round", 0) or 0
+            )
+        except (TypeError, ValueError):
+            repair_round = 0
+        # 分支消亡 → fallback（三态 (c)）
+        if not branch or not wm.branch_exists(branch):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair 载体分支 '{branch}' 不存在 — 回退 fallback 全新重派",
+            )
+            self._pm._fallback_after_repair(
+                spec_name, None, getattr(merge_info, "error", "") or "",
+            )
+            return
+        # 三态解析：原地 / 换壳
+        wt_path, resolved_branch = wm.resolve_repair_site(spec_name, branch)
+        if wt_path is None:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair 载体解析失败（分支 '{branch}' 不可用）— 回退 fallback",
+            )
+            self._pm._fallback_after_repair(
+                spec_name, branch, getattr(merge_info, "error", "") or "",
+            )
+            return
+        # 认领现场（D4）：_legacy take 摘出 + _spec_locks 注册，防 sweeper 宽限期回收
+        self._pm._claim_repair_site(spec_name, wt_path, resolved_branch)
+        # 轮次递增（D5/D6）：repair 轮计入该 spec 的实现预算（token 记名下）；
+        # 连续计数 _merge_fp/_merge_streak 不被 repair 轮清零（熔断协同）。
+        round_no = repair_round + 1
+        try:
+            self._pm.state_machine.update_spec(spec_name, {
+                "_repair_round": round_no,
+                "_repair_merge_error": getattr(merge_info, "error", "") or "",
+                "_repair_merge_fp": fp,
+            })
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair 轮次计数回写失败 '{spec_name}'（非阻塞）: {e}",
+            )
+        self._pm.logger.warning(
+            "pm_engine",
+            f"进入 repair 通道 '{spec_name}'（第 {round_no}/{MAX_REPAIR_ROUNDS_PER_FAILURE} 轮）"
+            f"worktree={wt_path} branch={resolved_branch}",
+        )
+        t = threading.Thread(
+            target=self._pm._run_repair_worker,
+            args=(spec_name, wt_path, resolved_branch, merge_info),
+            daemon=True,
+            name=f"fenix-repair-{spec_name}",
+        )
+        t.start()
+
+    def _claim_repair_site(self, spec_name: str, wt_path, branch: str) -> None:
+        """认领 repair 现场（add-merge-back-repair-lane D4）。
+
+        与 fast-track 复用同款 take 动作：认领时从 ``_legacy`` 摘出（防 sweeper
+        宽限期按孤儿回收正在使用的现场）；在 ``_spec_locks`` 注册 repair 锁
+        （防 repair 进行中重复派发）。worktree 已在三态解析时登记进活动集
+        （``_active_worktrees``/``_wt_branches``），sweeper 不再豁免该目录。
+        """
+        wm = self._pm.agent_runner.worktree_manager
+        # 认领即摘出登记表（与 fast-track `_take_reusable_worktree` 同款 take）
+        if hasattr(wm, "claim_legacy_for_repair"):
+            wm.claim_legacy_for_repair(spec_name)
+        elif spec_name in getattr(wm, "_legacy", {}):  # 兜底：直接摘出
+            wm._legacy.pop(spec_name, None)
+        if hasattr(wm, "_spec_locks"):
+            wm._spec_locks.add(f"{spec_name}:repair")
+        if branch:
+            wm._wt_branches[str(wt_path)] = branch
+
+    def _run_repair_worker(self, spec_name: str, wt_path, branch: str,
+                           merge_info) -> None:
+        """repair worker：派发 repair agent → re-merge-back → 状态推进。
+
+        在守护线程内同步执行（与 implementer worker 同线程语义）。repair agent
+        在实现分支一侧把 main 合入分支并解决冲突、commit；成功后框架对该分支
+        重新执行 merge-back（分支已含 main 历史应快速前进）。
+
+        熔断协同（D6）：re-merge-back 再失败时 ``_merge_fp``/``_merge_streak``
+        连续累计（repair 轮不清零）；blocked 后不再派发 repair。
+        """
+        wm = self._pm.agent_runner.worktree_manager
+        try:
+            repair_ok = False
+            repair_error = ""
+            r = None
+            try:
+                r = self._pm.agent_runner.run_repair(
+                    spec_name, wt_path,
+                    conflict_summary=self._repair_conflict_summary(spec_name, merge_info),
+                )
+                # 读取 repair 结果文件（repair agent 在 worktree 写 .fenix-run-result.json）
+                wt_result = Path(wt_path) / ".fenix-run-result.json"
+                repair_ok = bool(r.success)
+                if wt_result.exists():
+                    try:
+                        data = json.loads(wt_result.read_text(encoding="utf-8"))
+                        if isinstance(data, dict):
+                            stamped = data.get("spec")
+                            if stamped and stamped != spec_name:
+                                repair_ok = False
+                                repair_error = f"结果文件 spec 戳 '{stamped}' 与 '{spec_name}' 不符"
+                            elif data.get("status") == "error":
+                                repair_ok = False
+                                repair_error = data.get("error") or "repair agent 显式报告失败"
+                    except (json.JSONDecodeError, OSError) as e:
+                        repair_ok = False
+                        repair_error = f"repair 结果文件解析失败: {e}"
+            except Exception as e:
+                repair_ok = False
+                repair_error = str(e)
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"repair agent 派发异常 '{spec_name}': {e}",
+                )
+
+            if not repair_ok:
+                # repair 失败/超时/显式失败 → 回退 fallback 全新重派（原分支按既有
+                # 清扫策略处理：登记遗产供后继 run 参考）
+                self._pm._fallback_after_repair(
+                    spec_name, branch, repair_error,
+                    merge_error=getattr(merge_info, "error", "") or "",
+                )
+                return
+
+            # repair 成功：对分支重新执行 merge-back（分支已含 main 历史）
+            self._pm._reconcile_impl_budget(spec_name)
+            remerge_info = wm.merge_back_from_branch(branch)
+            remerge_ok, remerge_error = remerge_info
+
+            if remerge_ok:
+                # 链成功：回收 repair worktree，推进 implemented
+                try:
+                    self._pm.agent_runner._v2_stop_for_worktree(wt_path)
+                except Exception:
+                    pass
+                try:
+                    wm.cleanup(wt_path, success=True)
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"repair worktree 清理失败 '{spec_name}'（非阻塞）: {e}",
+                    )
+                self._pm.state_machine.transition(spec_name, "implemented")
+                self._pm.state_machine.update_spec(spec_name, {
+                    "implementer_run": getattr(r, "run_id", None) or None,
+                    "branch": branch,
+                    "error": None,
+                    "_retry_count": 0,
+                    "_merge_fp": None,
+                    "_merge_streak": 0,
+                    "_repair_round": 0,
+                    "_repair_merge_error": None,
+                    **self._pm._clear_dispatch_conflict(spec_name),
+                })
+                try:
+                    self._pm._sync_task_progress(spec_name)
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"repair 任务进度回写失败 '{spec_name}'（非阻塞）: {e}",
+                    )
+                try:
+                    wm.consume_legacy(spec_name)
+                except Exception:
+                    pass
+                self._pm._enqueue_front(spec_name, "verifier")
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"repair 链成功：'{spec_name}' re-merge-back 完成 → implemented",
+                )
+                return
+
+            # re-merge-back 再失败：与首次 merge 失败同路径处理（熔断计数连续累计），
+            # repair 轮不清零 _merge_fp/_merge_streak（spec-merge-circuit-breaker）。
+            self._pm._handle_remerge_failure(spec_name, remerge_info, branch)
+
+        except Exception as e:
+            self._pm.logger.error(
+                "pm_engine",
+                f"repair worker 异常 '{spec_name}': {e}",
+            )
+            self._pm._fallback_after_repair(
+                spec_name, branch, str(e),
+                merge_error=getattr(merge_info, "error", "") or "",
+            )
+        finally:
+            # 释放 repair 锁（_spec_locks 中 {spec}:repair 条目）
+            try:
+                wm._spec_locks.discard(f"{spec_name}:repair")
+            except Exception:
+                pass
+            self._pm._process_queue()
+
+    def _handle_remerge_failure(self, spec_name: str, remerge_info, branch: str) -> None:
+        """repair 后的 re-merge-back 失败：熔断 → repair 下一轮 → fallback。
+
+        与首次 merge-back 失败同判定基准（fp/streak 连续累计，repair 不重置），
+        轮次超过上限回退 fallback。不重复 testing/implemented 保护检查——
+        repair 链内 spec 保持 implementing，无在飞 tester。
+        """
+        merge_error = getattr(remerge_info, "error", "") or str(remerge_info)
+        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        fp = self._pm._merge_fingerprint(merge_error)
+        prev_fp = spec_entry.get("_merge_fp")
+        try:
+            prev_streak = int(spec_entry.get("_merge_streak", 0) or 0)
+        except (TypeError, ValueError):
+            prev_streak = 0
+        streak = prev_streak + 1 if prev_fp == fp else 1
+        final_error = f"Merge-back failed (fp={fp}): {merge_error}"
+        breaker_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
+        if streak >= breaker_threshold:
+            self._pm.state_machine.transition(spec_name, "blocked")
+            self._pm.state_machine.update_spec(spec_name, {
+                "error": final_error,
+                "_merge_fp": fp, "_merge_streak": streak, "_retry_count": 0,
+            })
+            self._pm.logger.error(
+                "pm_engine",
+                f"Circuit breaker tripped after repair for '{spec_name}' (fp={fp}) "
+                f"— spec blocked (repair 不绕过熔断)",
+            )
+            return
+        if self._pm._should_enter_repair(spec_name, remerge_info, streak, breaker_threshold):
+            self._pm._dispatch_repair_lane(
+                spec_name, remerge_info, branch, fp=fp, streak=streak,
+            )
+            return
+        # 未触发熔断且不可 repair → fallback 全新重派
+        self._pm._fallback_after_repair(spec_name, branch, merge_error)
+
+    def _fallback_after_repair(self, spec_name: str, branch: str | None,
+                               repair_error: str, merge_error: str = "") -> None:
+        """repair 链失败回退：全新重派 implementer，prompt 注入 merge 失败上下文。
+
+        - 清理 repair worktree（保留分支：按既有清扫策略登记遗产，供后继 run 参考）；
+        - ``_repair_round`` 归零：fallback 后新 implementer 的 merge 失败开启新链
+          （design D6）；
+        - 状态置 ready + error（既有 _prev_error_section 会把它注入新 implementer
+          prompt，即「prompt 注入当次 merge 失败上下文」）；
+        - ``_merge_fp``/``_merge_streak`` **不清零**：repair 失败后 fallback 重派
+          引发的 merge-back 失败与前序失败连续累计（熔断协同）。
+        """
+        wm = self._pm.agent_runner.worktree_manager
+        # 清理 repair worktree（若有现场）：分支按既有清扫策略登记遗产
+        try:
+            if branch and wm.branch_exists(branch):
+                wt_path = wm.find_worktree_path(branch)
+                if wt_path is not None and wt_path.exists():
+                    try:
+                        self._pm.agent_runner._v2_stop_for_worktree(wt_path)
+                    except Exception:
+                        pass
+                    wm.cleanup(wt_path, success=True)
+                # 成功收工清理后仅分支留存（已解决的冲突成果随分支保留），
+                # 登记为仅分支遗产供后继 run 参考收编（不丢失修复工作）
+                wm.register_legacy(spec_name, None, branch)
+            elif branch:
+                wm.register_legacy(spec_name, None, branch)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fallback 清理 repair worktree 失败 '{spec_name}'（非阻塞）: {e}",
+            )
+        # 失败链收尾：归零轮次，回退 fallback
+        try:
+            prev_retries = int(
+                (self._pm.state_machine.read_one(spec_name) or {}).get("_retry_count", 0) or 0
+            )
+        except (TypeError, ValueError):
+            prev_retries = 0
+        retries = prev_retries + 1
+        base_error = merge_error or "merge-back failed"
+        if repair_error:
+            full_error = (
+                f"repair 失败（{repair_error[:300]}）→ 回退全新重派。"
+                f"原 merge 失败上下文：{base_error[:600]}"
+            )
+        else:
+            full_error = base_error
+        max_r = self._pm._get_config("agents.max_retries", 3)
+        updates: dict = {
+            "status": "ready",
+            "error": full_error,
+            "_repair_round": 0,
+            "_repair_merge_error": None,
+            "_retry_count": retries,
+        }
+        if retries >= max_r:
+            updates["status"] = "blocked"
+            updates["error"] = (
+                f"实现尝试连续 {max_r} 次失败（含 repair 通道）— 已 blocked，"
+                f"需人工检查。最近失败：{full_error[:400]}"
+            )
+        self._pm.state_machine.update_spec(spec_name, updates)
+        self._pm.logger.error(
+            "pm_engine",
+            f"repair 链回退 fallback '{spec_name}'：{full_error[:200]}",
+        )
+        if updates["status"] == "ready":
+            self._pm._enqueue_front(spec_name, "implementer")
+
+    def _repair_conflict_summary(self, spec_name: str, merge_info) -> dict:
+        """构造 repair prompt 的冲突摘要（D5：spec 身份 + 冲突清单 + 方向说明）。
+
+        不含原 worktree 地址类间接情报（agent 即在现场，冲突状态自查）。
+        """
+        try:
+            repair_round = int(
+                (self._pm.state_machine.read_one(spec_name) or {}).get("_repair_round", 0) or 0
+            )
+        except (TypeError, ValueError):
+            repair_round = 0
+        return {
+            "spec": spec_name,
+            "merge_error": getattr(merge_info, "error", "") or "",
+            "conflict_paths": list(getattr(merge_info, "conflict_paths", []) or []),
+            "has_semantic_conflict": bool(
+                getattr(merge_info, "has_semantic_conflict", False)),
+            "repair_round": repair_round,
+        }
 
     def _hard_check_fast_track(self, spec_name: str, ft_result: dict):
         """对 fast-track 结果做框架侧硬校验；失败记原因并按失败重派。

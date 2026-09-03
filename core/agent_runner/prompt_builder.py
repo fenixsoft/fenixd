@@ -18,9 +18,14 @@ class PromptBuilder:
     def _build_prompt(self, spec_name: str, agent_type: str, detail: dict | None = None) -> str:
         """Build the claude CLI prompt for the Agent.
 
-        detail: 可选。administrator 分支接收困境信号 dict。
+        detail: 可选。administrator 分支接收困境信号 dict；
+            repair 分支接收冲突分类信息（conflict_summary 结构，见
+            _build_repair_prompt）。
         """
         spec_dir = f"openspec/changes/{spec_name}"
+
+        if agent_type == "repair":
+            return self._build_repair_prompt(spec_name, detail or {})
 
         if agent_type == "implementer":
             prompt = (
@@ -709,6 +714,74 @@ class PromptBuilder:
             f"以本轮 Phase 2 重写后的设计集为准）:\n"
             f"  {', '.join(designed_ids)}\n"
         )
+
+    def _build_repair_prompt(self, spec_name: str, conflict_summary: dict) -> str:
+        """构建 repair agent 提示词（add-merge-back-repair-lane D5）。
+
+        prompt 形态（spec 要求）：
+        - spec 身份与实现目标简述
+        - 冲突文件清单摘要（来自 merge 失败输出）
+        - 修复方向说明：把 main 合入分支、解决语义冲突、运行测试、commit
+        - 显式失败出口
+        - **不含**原 worktree 地址类间接情报（agent 即在现场，冲突状态自查）
+
+        Args:
+            spec_name: SPEC 名称
+            conflict_summary: 调度层传入的冲突分类摘要 dict，字段：
+                - merge_error: merge 原始错误文本
+                - conflict_paths: 冲突路径列表
+                - has_semantic_conflict: 是否含语义冲突
+                - repair_round: 当前是第几轮 repair
+        """
+        spec_dir = f"openspec/changes/{spec_name}"
+        merge_error = conflict_summary.get("merge_error", "（未提供原始错误）")
+        conflict_paths = conflict_summary.get("conflict_paths", [])
+        repair_round = conflict_summary.get("repair_round", 1)
+
+        conflict_section = ""
+        if conflict_paths:
+            path_list = "\n".join(f"  - {p}" for p in conflict_paths)
+            conflict_section = (
+                f"\n## 冲突文件清单\n"
+                f"以下文件在 merge main → 当前分支 时发生冲突：\n{path_list}\n"
+            )
+        else:
+            conflict_section = (
+                f"\n## 冲突文件清单\n"
+                f"请自行通过 `git status --porcelain` 检查当前冲突文件。\n"
+            )
+
+        prompt = (
+            f"You are the Fenix Repair Agent. You are in repair round {repair_round} "
+            f"for the SPEC at {spec_dir}/.\n\n"
+            f"## 身份与目标\n"
+            f"你正在修复 SPEC `{spec_name}` 的 merge-back 冲突。上一次 merge main 分支到实现"
+            f"分支时失败。你的任务是在当前实现分支一侧，把 main 合进分支并解决所有语义冲突，"
+            f"确保测试通过后提交。\n\n"
+            f"## 原始 merge 错误\n"
+            f"```\n{merge_error[:2000]}\n```\n"
+            f"{conflict_section}"
+            f"## 修复方向（MUST 按顺序执行）\n"
+            f"1. 检查当前状态：`git status --porcelain` 和 `git log --oneline -3`\n"
+            f"2. 把 main 合进当前分支：`git merge main`（此时会遇到冲突）\n"
+            f"3. 解决冲突：对每个冲突文件，读取两边版本，保留正确的实现内容\n"
+            f"4. 运行项目测试，确认改动不破坏现有功能\n"
+            f"5. commit 冲突解决：`git commit -m \"[fenix] {spec_name}: resolve merge conflicts\"`\n\n"
+            f"## 完成后\n"
+            f"成功：写 .fenix-run-result.json:\n"
+            f'{{"status": "success", "spec": "{spec_name}", '
+            f'"summary": "<简述解决的冲突>"}}\n\n'
+            f"失败：如果无法解决冲突，写 .fenix-run-result.json:\n"
+            f'{{"status": "error", "spec": "{spec_name}", '
+            f'"error": "<说明为何无法解决>"}}\n\n'
+            f"重要限制：\n"
+            f"- 不要修改任务书（tasks.md）中的勾选状态\n"
+            f"- 不要重新实现功能，只解决 merge 冲突\n"
+            f"- 无法解决时必须显式报告失败（写 .fenix-run-result.json error status），"
+            f"框架会据此回退到 fallback 重派\n"
+            f"IMPORTANT: Do NOT modify STATE.md."
+        )
+        return prompt
 
     def _fast_track_reuse_note(self, spec_name: str) -> str:
         """worktree 继承说明：本轮在上一轮打回保留的 worktree 中继续（仅复用时注入）。"""
