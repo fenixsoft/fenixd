@@ -1367,6 +1367,41 @@ def _is_dashboard_serve_cmd(cmdline: str) -> bool:
     return "fenix_dashboard.py" in cmdline and "--serve" in cmdline
 
 
+def _bind_parent_lifecycle() -> None:
+    """父子生命周期绑定（孤儿实例防护，2026-09-03 runs 删空事故 V1 防线）。
+
+    调试/验证脚本直接 `import serve()` 起实例后，脚本退出会把实例孤儿化
+    （PPID→1 被 systemd 收养），孤儿实例以启动时代码长期服务端口——事故中
+    4 个孤儿实例以 8 月底旧码（RUNS_KEEP=20 直接删除）持续清理真实项目 runs。
+    两道防线：
+
+    1. PR_SET_PDEATHSIG：父进程死亡时内核自动向本进程发 SIGTERM（泄漏即死）；
+    2. 启动时已是孤儿（PPID==1）→ 拒绝启动（兜住 nohup/已孤儿化的直接调用）。
+
+    人的显式入口 fenix_dashboard.py --serve 设 FENIX_DASHBOARD_DETACH=1 豁免
+    （长驻服务不随启动 shell 退出而终止）。先设 PDEATHSIG 再查 PPID，覆盖
+    「检查间隙父进程死亡」的竞态窗口。
+    """
+    if os.environ.get("FENIX_DASHBOARD_DETACH") == "1":
+        return
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        # PR_SET_PDEATHSIG = 1（linux/sched.h）；SIGTERM = 15
+        if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:
+            raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG) failed")
+    except Exception as e:  # 非 Linux / libc 不可用：仅告警不阻断启动
+        sys.stderr.write(
+            f"dashboard serve 无法设置 PDEATHSIG（{e}）；"
+            "父进程退出后本实例不会自动终止，请注意。\n")
+    if os.getppid() == 1:
+        sys.stderr.write(
+            "dashboard serve 检测到父进程已退出（PPID=1，孤儿启动）——拒绝启动。\n"
+            "长驻/后台运行请使用 fenix_dashboard.py --serve 入口，"
+            "或显式设置 FENIX_DASHBOARD_DETACH=1。\n")
+        sys.exit(1)
+
+
 def serve(registry: Registry, port: int = 8787, static_dir=None):
     """启动 Dashboard 服务（阻塞）。
 
@@ -1376,7 +1411,11 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
     - 占用者为其它进程（非 dashboard 实例）→ 打印占用信息后非 0 退出；
     - 任何启动失败 MUST 在 5 秒内退出，不留僵尸实例。
     仅对最终确定的单一端口做上述占用检测（不再自动上探）。
+
+    父子生命周期绑定（孤儿实例防护）：非豁免调用（FENIX_DASHBOARD_DETACH
+    未设 1）启动即挂 PR_SET_PDEATHSIG 并拒绝孤儿启动，见 _bind_parent_lifecycle。
     """
+    _bind_parent_lifecycle()
     actual = port
     try:
         httpd = DashboardHTTPServer(

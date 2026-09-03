@@ -440,7 +440,14 @@ def run_tui(interval=3):
 # ── Web 模式 ────────────────────────────────────────────────────
 
 def run_serve(port_override=None):
-    """启动 Web Dashboard（跨项目）。端口优先级：--port > 用户配置(registry) > 项目 dashboard.port > 8787。"""
+    """启动 Web Dashboard（跨项目）。端口优先级：--port > 用户配置(registry) > 项目 dashboard.port > 8787。
+
+    CLI 是人的显式长驻入口：设 FENIX_DASHBOARD_DETACH=1 豁免 serve() 的
+    父子生命周期绑定（PDEATHSIG/孤儿拒启）——本实例不随启动 shell 退出而终止；
+    直接 import serve() 的脚本/交互会话无此豁免，脚本退出即被内核回收
+    （孤儿实例防护，2026-09-03 runs 删空事故 V1 防线）。
+    """
+    os.environ["FENIX_DASHBOARD_DETACH"] = "1"
     reg = Registry()
     cfg = reg.load()
     port = port_override or cfg.get("port")
