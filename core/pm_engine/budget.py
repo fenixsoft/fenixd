@@ -140,8 +140,8 @@ class ImplBudget:
         """merge 成功/守卫放行后回读 used 与正常收工 run 数比对。
 
         偏差记 WARNING 供人工发现；不自动改数（对账复杂化收益低）。
-        已知固有偏差源：runs 目录只保留最近产物（clean_old_runs）、
-        provider 链耗尽的 run 不落产物——偏差日志需结合这些因素人工判读。
+        已知固有偏差源：provider 链耗尽的 run 不落产物——偏差日志需结合
+        这些因素人工判读。
         """
         used = self._impl_run_budget_used(spec_name)
         completed = self._count_normal_completed_impl_runs(spec_name)

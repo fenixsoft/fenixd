@@ -496,8 +496,6 @@ export interface ConfigData {
   llm: LlmConfig;
   agents: AgentsConfig;
   gates: GatesConfig;
-  /** 其他分类：runs.keep = 运行产物保留数（超出移入 .fenix/runs/archive） */
-  runs?: { keep: number };
   /** 验证契约：详见 .fenix/verify.yaml 与 core/verify_contract.py */
   verify?: VerifyConfig;
   /** add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50） */

@@ -14,18 +14,14 @@ export default function MiscSettingsPanel({ config, onSave }: MiscSettingsPanelP
 
   useEffect(() => {
     form.setFieldsValue({
-      keep: config.runs?.keep ?? 50,
       auto_threshold: config.archive?.auto_threshold ?? 50,
     });
-  }, [config.runs, config.archive, form]);
+  }, [config.archive, form]);
 
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
       await onSave({
-        runs: {
-          keep: values.keep,
-        },
         // add-spec-archive：自动归档阈值（0 = 禁用）
         archive: {
           auto_threshold: values.auto_threshold,
@@ -72,23 +68,6 @@ export default function MiscSettingsPanel({ config, onSave }: MiscSettingsPanelP
               0 = 禁用。超过阈值时自动归档完成最久的 SPEC。保存后立即生效，无需重启 daemon。
             </Text>
           </div>
-
-          <Form.Item
-            name="keep"
-            label={
-              <>
-                运行产物保留数量<span className="label-note">（runs.keep）</span>
-              </>
-            }
-            rules={[{ required: true, message: '请输入保留数量' }]}
-            style={{ marginTop: 24 }}
-          >
-            <InputNumber min={1} step={10} style={{ width: '100%' }} />
-          </Form.Item>
-          <Text type="secondary">
-            默认 50。每个项目保留的最近运行产物文件数；超出的产物自动移入{' '}
-            <code>.fenix/runs/archive/</code> 归档（不删除），运行时间轴、运行历史与耗时统计仍可回看归档记录。保存后立即生效。
-          </Text>
         </Form>
       </Card>
       <div style={{ textAlign: 'right', marginTop: 24 }}>

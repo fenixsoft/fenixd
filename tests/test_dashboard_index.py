@@ -223,28 +223,3 @@ class TestConfigCache:
         before = dict(_SPEC_MODE_CACHE)
         assert read_spec_mode(proot, "myspec") == "full"
         assert _SPEC_MODE_CACHE == before, "第二次读取应命中缓存（键不变）"
-
-
-class TestCleanupThrottle:
-    def test_throttle_within_interval_returns_zero(self, tmp_path, monkeypatch):
-        proot = make_project(tmp_path)
-        calls = {"n": 0}
-        monkeypatch.setattr(dash_data, "clean_old_runs", lambda *a, **kw: calls.__setitem__("n", calls["n"] + 1) or 0)
-        # 首次调用 → 实际执行
-        assert dash_data.cleanup_runs(proot) == 0
-        assert calls["n"] == 1
-        # 二次调用（同一秒内）→ 节流直接返回，不执行
-        assert dash_data.cleanup_runs(proot) == 0
-        assert calls["n"] == 1, "节流期内不应产生任何文件操作"
-
-    def test_throttle_expires_after_interval(self, tmp_path, monkeypatch):
-        proot = make_project(tmp_path)
-        proot_key = str(proot.resolve())
-        calls = {"n": 0}
-        monkeypatch.setattr(dash_data, "clean_old_runs", lambda *a, **kw: calls.__setitem__("n", calls["n"] + 1) or 0)
-        dash_data.cleanup_runs(proot)
-        assert calls["n"] == 1
-        # 模拟 60s 后：直接改时间戳
-        dash_data._CLEANUP_RUNS_LAST[proot_key] = time.monotonic() - 61
-        dash_data.cleanup_runs(proot)
-        assert calls["n"] == 2
