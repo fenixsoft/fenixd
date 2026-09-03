@@ -49,6 +49,12 @@ import SpecDocModal from './components/SpecDocModal';
 import AdminInvokeModal from './components/AdminInvokeModal';
 
 const REFRESH_THROTTLE_MS = 500;
+// dashboard-sse-refresh：增量 patch 去重窗口（同 spec 1s 内多事件只应用最新）
+const PATCH_COALESCE_MS = 1000;
+// 兜底心跳间隔（30s）：SSE 断线 / 事件丢帧时仍能校准
+const HEARTBEAT_MS = 30000;
+// 搜索/筛选输入防抖
+const SEARCH_DEBOUNCE_MS = 300;
 const TRACK_LIGHT = '#e6f4ff'; // antd blue-1，与 #1677ff 同 ramp
 
 // 状态圆点配色（table-list 风格：色点 + 文字，不用标签）
@@ -371,15 +377,25 @@ export default function SpecListPage() {
   const { name = '' } = useParams<{ name: string }>();
   const isMobile = useIsMobile();
   const { message } = App.useApp();
-  const [specs, setSpecs] = useState<SpecSummary[]>([]);
+  // dashboard-sse-refresh D3：本地 spec 摘要表（Map<spec_name, summary>），
+  // 首屏 /api/specs 全量建立，此后 SSE 增量事件 patch 单行（含新增/删除）。
+  const [specMap, setSpecMap] = useState<Record<string, SpecSummary>>({});
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
+  // 搜索/筛选输入防抖 ≥300ms（3.4），本地表过滤；本地空才回退后端
+  const [debouncedQ, setDebouncedQ] = useState('');
   const [statusList, setStatusList] = useState<string[]>([]);
   const [type, setType] = useState<TypeFilter>('');
   // add-spec-archive：归档状态过滤（false=未归档默认，true=已归档）
   const [archivedOnly, setArchivedOnly] = useState(false);
   const lastRefreshRef = useRef(0);
+
+  // 增量 patch 队列：同 spec 1s 内多事件只应用最新（3.1 去重合并）。
+  const pendingPatchesRef = useRef<Record<string, SpecSummary | null>>({});
+  const patchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const specMapRef = useRef(specMap);
+  specMapRef.current = specMap;
 
   // 文档弹窗（对齐 v1 docmodal：背景/设计/任务清单 三页签）
   const [docView, setDocView] = useState<string | null>(null);
@@ -397,7 +413,9 @@ export default function SpecListPage() {
       if (d.error) {
         setError(d.error);
       } else {
-        setSpecs(d.specs || []);
+        const next: Record<string, SpecSummary> = {};
+        for (const s of d.specs || []) next[s.name] = s;
+        setSpecMap(next);
         setError('');
       }
     } catch (e) {
@@ -407,41 +425,119 @@ export default function SpecListPage() {
     }
   }, [name]);
 
+  // 刷新挂起的增量 patch（1s 去重窗口到期后统一应用）
+  const flushPatches = useCallback(() => {
+    patchTimerRef.current = null;
+    const patches = pendingPatchesRef.current;
+    pendingPatchesRef.current = {};
+    setSpecMap((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const [spec, summary] of Object.entries(patches)) {
+        if (summary === null) {
+          // 删除标记：summary:null → 从本地表移除该行
+          if (spec in next) {
+            delete next[spec];
+            changed = true;
+          }
+        } else if (next[spec] !== summary) {
+          next[spec] = summary;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, []);
+
+  // 入队一条增量 patch；同 spec 在 1s 窗口内只保留最新值
+  const enqueuePatch = useCallback((spec: string, summary: SpecSummary | null) => {
+    pendingPatchesRef.current[spec] = summary;
+    if (patchTimerRef.current == null) {
+      patchTimerRef.current = setTimeout(flushPatches, PATCH_COALESCE_MS);
+    }
+  }, [flushPatches]);
+
+  // SSE 增量驱动：state 事件入 patch 队列；run_meta/refresh 仅做节流兜底重拉
   useEffect(() => {
     void load();
     const es = new EventSource('/api/stream');
     es.onmessage = (ev: MessageEvent) => {
-      let msg: { type?: string; project?: string } = {};
+      let msg: {
+        type?: string;
+        project?: string;
+        specs?: Array<{ spec?: string; summary?: SpecSummary | null }>;
+      } = {};
       try {
         msg = JSON.parse(ev.data);
       } catch {
         return;
       }
-      const relevant =
-        (msg.type === 'state' && (!msg.project || msg.project === name)) ||
-        msg.type === 'run_meta' ||
-        msg.type === 'refresh';
-      if (!relevant) return;
-      const now = Date.now();
-      if (now - lastRefreshRef.current < REFRESH_THROTTLE_MS) return;
-      lastRefreshRef.current = now;
-      void load();
+      if (msg.type === 'state' && (!msg.project || msg.project === name)) {
+        // 增量形态：specs 为 [{spec, summary|null}]，逐条入 patch 队列
+        const items = msg.specs || [];
+        for (const item of items) {
+          if (item && typeof item.spec === 'string') {
+            enqueuePatch(item.spec, item.summary ?? null);
+          }
+        }
+        return;
+      }
+      if (msg.type === 'run_meta') {
+        // run_meta（低频：仅状态转换）不携带摘要增量，节流兜底重拉校准
+        // （实时任务进度/耗时字段随之刷新；refresh 为 watcher 2s 心跳，不触发
+        // 全量重拉——降为 30s 兜底心跳，见下）。
+        const now = Date.now();
+        if (now - lastRefreshRef.current < REFRESH_THROTTLE_MS) return;
+        lastRefreshRef.current = now;
+        void load();
+      }
     };
-    return () => es.close();
-  }, [load, name]);
+    return () => {
+      es.close();
+      if (patchTimerRef.current) clearTimeout(patchTimerRef.current);
+    };
+  }, [load, name, enqueuePatch]);
+
+  // 30s 兜底心跳 + visibilitychange 立即校准（3.3）：SSE 断线 / 丢帧时列表仍刷新
+  useEffect(() => {
+    const hb = setInterval(() => void load(), HEARTBEAT_MS);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(hb);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [load]);
+
+  // 搜索/筛选输入防抖：≥300ms 后在本地表内过滤；本地表为空时才回退后端请求
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedQ(q);
+      // 本地表空（首屏未载入/失败）→ 回退请求 /api/specs
+      if (q.trim() && Object.keys(specMapRef.current).length === 0) {
+        void load();
+      }
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [q, load]);
 
   const filtered = useMemo(() => {
-    const kw = q.trim().toLowerCase();
-    return specs.filter((s) => {
-      if (kw && !s.name.toLowerCase().includes(kw)) return false;
-      if (statusList.length && !statusList.includes(s.status || '')) return false;
-      if (type === 'req' && s.name.startsWith('fix-')) return false;
-      if (type === 'issue' && !s.name.startsWith('fix-')) return false;
-      // add-spec-archive：默认展示未归档（archivedOnly=false），切换后仅展示已归档
-      if (!!s.archived !== archivedOnly) return false;
-      return true;
-    });
-  }, [specs, q, statusList, type, archivedOnly]);
+    const kw = debouncedQ.trim().toLowerCase();
+    // 本地表渲染：与 /api/specs 全量口径一致按 created 倒序（新增 spec 插序）
+    return Object.values(specMap)
+      .filter((s) => {
+        if (kw && !s.name.toLowerCase().includes(kw)) return false;
+        if (statusList.length && !statusList.includes(s.status || '')) return false;
+        if (type === 'req' && s.name.startsWith('fix-')) return false;
+        if (type === 'issue' && !s.name.startsWith('fix-')) return false;
+        // add-spec-archive：默认展示未归档（archivedOnly=false），切换后仅展示已归档
+        if (!!s.archived !== archivedOnly) return false;
+        return true;
+      })
+      .sort((a, b) => (b.created || '').localeCompare(a.created || ''));
+  }, [specMap, debouncedQ, statusList, type, archivedOnly]);
 
   const tree = useMemo(() => buildTree(filtered), [filtered]);
 
@@ -730,7 +826,7 @@ export default function SpecListPage() {
           <Space size={8} align="baseline">
             <span>{name}</span>
             <Typography.Text type="secondary" style={{ fontSize: 14, fontWeight: 400 }}>
-              共 {specs.length} 个 SPEC
+              共 {Object.keys(specMap).length} 个 SPEC
             </Typography.Text>
           </Space>
         ),
