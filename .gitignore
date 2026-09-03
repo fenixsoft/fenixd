@@ -13,6 +13,9 @@ venv/
 .DS_Store
 Thumbs.db
 
+# 本地历史（VS Code）/测试截图与临时文件统一存放
+.history/
+
 # ── Fenix Loop Engineering Framework ──
 
 # Worktrees (managed by fenixd)

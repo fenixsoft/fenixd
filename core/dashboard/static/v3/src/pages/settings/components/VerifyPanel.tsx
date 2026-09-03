@@ -36,8 +36,7 @@ export default function VerifyPanel({ config, onSave }: VerifyPanelProps) {
       <h3>验证契约</h3>
       <Text type="secondary">
         静态验证契约（.fenix/verify.yaml）的被测实例服务范围。两种范围都会在
-        每轮验证前执行契约的 prepare 构建步骤，并把验证场景 URL 全量改写到
-        本次启动的实例（BASE_URL 注入，场景永远打新鲜实现）。
+        每轮验证前执行契约的 prepare 构建步骤，并把验证场景 URL 全量改写到本次启动的实例。
       </Text>
       <Card style={{ marginTop: 12 }}>
         <Form form={form} layout="vertical">
@@ -53,7 +52,7 @@ export default function VerifyPanel({ config, onSave }: VerifyPanelProps) {
             <Radio.Group>
               <div style={{ display: 'block', marginBottom: 16 }}>
                 <Radio value="main">
-                  <strong>main</strong> — 主树起服务（方案 1，默认）
+                  <strong>main</strong> — 在 main 起服务进行验证
                   <div>
                     <Text type="secondary">
                       在主树构建并启动被测实例。实现合并进主树后产物必然新鲜，
@@ -64,7 +63,7 @@ export default function VerifyPanel({ config, onSave }: VerifyPanelProps) {
               </div>
               <div style={{ display: 'block' }}>
                 <Radio value="worktree">
-                  <strong>worktree</strong> — worktree 起服务（方案 2）
+                  <strong>worktree</strong> — 在 worktree 起服务进行验证
                   <div>
                     <Text type="secondary">
                       在专用 serving worktree 内构建并启动服务，与主树运行实例

@@ -39,8 +39,8 @@ export default function MiscSettingsPanel({ config, onSave }: MiscSettingsPanelP
 
   return (
     <div>
-      <h3>其他</h3>
-      <Text type="secondary">不属于其它分类的杂项设置。</Text>
+      <h3>归档</h3>
+      <Text type="secondary">SPEC 归档相关设置。</Text>
       <Card style={{ marginTop: 12 }}>
         <Form form={form} layout="vertical">
           {/* add-spec-archive：自动归档阈值置于面板首字段——验证场景以

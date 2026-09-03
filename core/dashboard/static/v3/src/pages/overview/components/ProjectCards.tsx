@@ -23,13 +23,13 @@ function pct(done: number, total: number) {
 function DaemonBadge({ daemon }: { daemon: string }) {
   if (daemon === 'running') {
     return (
-      <OutlinedTag tone="good" >
+      <OutlinedTag tone="good" filled>
         运行中
       </OutlinedTag>
     );
   }
   if (daemon === 'stopped') {
-    return <OutlinedTag tone="warning">未运行</OutlinedTag>;
+    return <OutlinedTag tone="warning" filled>未运行</OutlinedTag>;
   }
   return null;
 }
@@ -207,7 +207,7 @@ export default function ProjectCards({
               <List.Item.Meta
                 avatar={<Avatar shape="square" icon={<FolderOutlined />} />}
                 title={
-                  <Space wrap size={4}>
+                  <Space wrap size={10}>
                     <Typography.Text
                       strong
                       style={{ cursor: 'pointer' }}
@@ -216,7 +216,7 @@ export default function ProjectCards({
                       {project.name}
                     </Typography.Text>
                     <DaemonBadge daemon={project.daemon} />
-                    {project.discovered ? <OutlinedTag tone="muted">自动发现</OutlinedTag> : null}
+                    {project.discovered ? <OutlinedTag tone="muted" filled>自动发现</OutlinedTag> : null}
                     {pendingName === project.name ? (
                       <Tag color="processing" style={{ marginInlineEnd: 0 }}>
                         处理中…
@@ -227,11 +227,14 @@ export default function ProjectCards({
                 description={
                   project.exists ? (
                     <div>
-                      {/* 项目简介：单行 ellipsis，空值占位 */}
+                      {/* 项目路径显示在简介上方 */}
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {project.path}
+                      </Typography.Text>
+                      {/* 简介：pre-wrap 保留原文换行，空值占位 */}
                       {project.description ? (
                         <Typography.Paragraph
-                          ellipsis={{ rows: 1 }}
-                          style={{ marginBottom: 0, fontSize: 12 }}
+                          style={{ marginBottom: 0, fontSize: 12, whiteSpace: 'pre-wrap' }}
                           type="secondary"
                         >
                           {project.description}
@@ -241,9 +244,6 @@ export default function ProjectCards({
                           暂无简介
                         </Typography.Text>
                       )}
-                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                        {project.path}
-                      </Typography.Text>
                       {statusTags.length > 0 ? (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
                           {statusTags}

@@ -21,7 +21,7 @@ const BASE_MENU_ITEMS = [
   { key: 'parallel', label: '并发度' },
   { key: 'approval', label: '审批' },
   { key: 'token', label: '预算' },
-  { key: 'misc', label: '其他' },
+  { key: 'misc', label: '归档' },
   { key: 'verify', label: '验证' },
 ];
 

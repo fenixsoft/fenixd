@@ -39,12 +39,12 @@ import {
   clearSpecError,
   deleteSpec,
   freezeSpec,
-  getSpecDoc,
   setSpecPriority,
   statusMeta,
   unfreezeSpec,
 } from '@/services/dashboard';
 import type { SpecDetail, SpecSummary } from '@/services/dashboard';
+import { fetchProposalWhy } from '@/utils/proposalWhy';
 import SpecDocModal from './components/SpecDocModal';
 import AdminInvokeModal from './components/AdminInvokeModal';
 
@@ -78,50 +78,7 @@ function fmtDuration(sec?: number | null) {
 type TypeFilter = '' | 'req' | 'issue';
 
 // ── 名称列 Why 悬浮提示（对齐 v1 why-hint：悬停 200ms 拉取 proposal 的 ## Why 段） ──
-
-function extractWhy(markdown: string): string | null {
-  if (!markdown) return null;
-  const lines = String(markdown).split('\n');
-  let start = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (/^##\s+why\s*$/i.test(lines[i])) {
-      start = i + 1;
-      break;
-    }
-  }
-  if (start === -1) return null;
-  const collected: string[] = [];
-  for (let i = start; i < lines.length; i++) {
-    if (/^##\s/.test(lines[i])) break; // 下一个二级标题即段尾（### 子标题不影响）
-    collected.push(lines[i]);
-  }
-  const text = collected.join('\n').trim();
-  return text || null;
-}
-
-const whyCache = new Map<string, { status: 'loading' | 'done' | 'empty'; promise?: Promise<string | null>; text?: string }>();
-
-function fetchWhyText(project: string, spec: string): Promise<string | null> {
-  const key = `${project}│${spec}`;
-  const cached = whyCache.get(key);
-  if (cached) {
-    return cached.status === 'loading' && cached.promise
-      ? cached.promise
-      : Promise.resolve(cached.text || null);
-  }
-  const p = getSpecDoc(project, spec, 'proposal')
-    .then((d) => {
-      const why = d.found ? extractWhy(d.content) : null;
-      whyCache.set(key, { status: why ? 'done' : 'empty', text: why || undefined });
-      return why;
-    })
-    .catch(() => {
-      whyCache.delete(key); // 失败不缓存，下次 hover 自动重试
-      return null;
-    });
-  whyCache.set(key, { status: 'loading', promise: p });
-  return p;
-}
+// 提取与缓存逻辑在 src/utils/proposalWhy.ts（任务详情页「任务背景描述」共用）
 
 function SpecNameCell({ project, record }: { project: string; record: SpecSummary }) {
   const [open, setOpen] = useState(false);
@@ -130,7 +87,7 @@ function SpecNameCell({ project, record }: { project: string; record: SpecSummar
 
   const onEnter = () => {
     timerRef.current = setTimeout(() => {
-      void fetchWhyText(project, record.name).then((text) => {
+      void fetchProposalWhy(project, record.name).then((text) => {
         if (text) {
           setWhy(text);
           setOpen(true);

@@ -15,6 +15,7 @@ import RunRecordModal from './components/RunRecordModal';
 import { ClaudeOutputPane } from '@/components/claude-msg';
 import { OutlinedTag } from '@/components/StatusTag';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { fetchProposalWhy } from '@/utils/proposalWhy';
 
 // 与 v2 static/app.js renderVerdict 保持同一判定逻辑：
 // parse_verdict 的 status 串自带 emoji 前缀（如 "❌ 未通过（Bug Found）"），先剥离再判定，
@@ -158,6 +159,8 @@ export default function SpecDetailPage() {
   const [expandedAlerts, setExpandedAlerts] = useState<Set<string>>(new Set());
   // 场景结果状态过滤（'' = 全部）
   const [scenarioFilter, setScenarioFilter] = useState<'pass' | 'warning' | 'fail' | 'error' | ''>('');
+  // 任务背景描述 = proposal 文档 ## Why 段（spec 列表悬停同名内容），懒加载
+  const [proposalWhy, setProposalWhy] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -259,6 +262,18 @@ export default function SpecDetailPage() {
   useEffect(() => {
     loadSpecAlerts();
   }, [loadSpecAlerts]);
+
+  // 任务背景描述懒加载（proposal ## Why），spec 切换时重取
+  useEffect(() => {
+    let cancelled = false;
+    if (!name || !spec) return;
+    fetchProposalWhy(name, spec).then((text) => {
+      if (!cancelled) setProposalWhy(text);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [name, spec]);
 
   // 下拉快速切换数据源：项目变化时拉一次 SPEC 列表（复用列表页 getSpecs）。
   // 下拉是低频辅助信息，不为其建立 SSE 通道；失败时静默保持为空（箭头不展示），不影响详情页主体。
@@ -997,13 +1012,27 @@ export default function SpecDetailPage() {
         {taskGroups.length > 0 ? (
           <>
             <ProgressBarTile done={completedTasks} total={totalTasks} />
+            {proposalWhy ? (
+              <div
+                style={{
+                  fontSize: 13,
+                  lineHeight: 1.65,
+                  color: 'rgba(0, 0, 0, 0.65)',
+                  marginBottom: 10,
+                }}
+              >
+                <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                  {proposalWhy}
+                </Markdown>
+              </div>
+            ) : null}
             {taskGroups.map((group, idx) => (
               <div key={idx} style={{ marginBottom: idx === taskGroups.length - 1 ? 0 : 12 }}>
-                <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>
+                <Typography.Text strong style={{ display: 'block', marginBottom: 10 }}>
                   {group.title} ({group.done}/{group.total})
                 </Typography.Text>
                 {group.tasks.map((task, taskIdx) => (
-                  <div key={taskIdx} style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 4 }}>
+                  <div key={taskIdx} style={{ display: 'flex', alignItems: 'flex-start', marginBottom: 10 }}>
                     <Checkbox checked={task.done} disabled style={{ marginRight: 8 }} />
                     <Typography.Text
                       style={{
