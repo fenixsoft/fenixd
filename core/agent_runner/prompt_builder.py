@@ -56,19 +56,9 @@ class PromptBuilder:
             )
             # 上轮 error 上下文注入（add-implementer-deliverable-gate D4）：
             # 重派 run 携带上次缺件清单，agent 无需重新考古即知补什么。
-            prev_error = ""
-            try:
-                entry = self._pm.state_machine.read_one(spec_name) or {}
-                prev_error = (entry.get("error") or "") if isinstance(entry, dict) else ""
-            except Exception:
-                prev_error = ""
+            prev_error = self._prev_error_section(spec_name)
             if prev_error:
-                prompt += (
-                    f"\n\n## Previous run error (context for this attempt)\n"
-                    f"The previous implementation attempt failed and was re-dispatched. "
-                    f"Use this to focus your work — do NOT repeat the same gap:\n"
-                    f"\n{prev_error}\n"
-                )
+                prompt += prev_error
             # 恢复重派遗产上下文注入（add-recovery-legacy-check 2.1/2.2）：
             # 仅当该 spec 有在册遗产时追加，无遗产则不注入（prompt 与现状逐字节一致）。
             legacy_section = self._build_legacy_section(spec_name)
@@ -476,7 +466,7 @@ class PromptBuilder:
                 self._pm.project_root / ".fenix" / "verify-progress"
                 / spec_name / ".fenix-run-result.json"
             )
-            return (
+            prompt = (
                 f"You are the Fenix Fast-Track Agent. You implement AND verify the SPEC at "
                 f"{spec_dir}/ in a single run, in the SAME context and worktree.\n\n"
                 f"## PHASE 1 — Implement\n"
@@ -539,6 +529,15 @@ class PromptBuilder:
                 f"- Fix budget: in-run fix rounds count against `agents.impl_run_budget`; budget "
                 f"exhausted with remaining bugs → automatic upgrade to full mode.\n"
                 f"- Do NOT modify STATE.md — the daemon owns it.\n\n"
+                f"## 场景 ID 契约（scenario-id-contract，强制，框架硬校验 fail-closed）\n"
+                f"- Phase 4 最终结果文件的 verification.scenarios 中，scenario_id 必须覆盖"
+                f"设计集 {scenarios_path} 的全部 id（逐字一致）；执行集允许是设计集的"
+                f"超集（可附加单元测试类场景条目）。\n"
+                f"- 若裁决时确属应合并/改名场景，必须同步重写 {scenarios_path}，使设计集"
+                f"与执行集一致。禁止只改结果文件或只改设计集一边。\n"
+                f"{self._designed_ids_line(scenarios_path)}"
+                f"- 框架在 merge 前做确定性比对：设计集存在但执行集缺失的任一 id 都会"
+                f"导致打回重派（不合并、成果废弃）。\n\n"
                 f"## 交互契约（interaction-contract，强制，add-interaction-contract-and-per-assert-triage）\n"
                 f"- 凡你实现为**可交互形态**的元素（按钮/链接样式卡片/可点击行/表单控件），"
                 f"其行为 MUST 在对应 SPEC 中有定义，或在任务书中显式声明「纯展示、不可交互」。\n"
@@ -572,6 +571,12 @@ class PromptBuilder:
                 f"{self._interaction_contract_section(spec_name)}"
                 f"IMPORTANT: Do NOT read image files. Do NOT modify STATE.md."
             )
+            # 上轮 error 上下文 + worktree 继承说明（fast-track 打回重派对齐）：
+            # 之前只有 implementer 分支注入 prev_error，fast-track 打回后新 run
+            # 完全不知道上次为何失败（fix-implementer-task-progress 三连打回）。
+            prompt += self._prev_error_section(spec_name)
+            prompt += self._fast_track_reuse_note(spec_name)
+            return prompt
 
         elif agent_type == "administrator":
             sig = detail or {}
@@ -662,6 +667,63 @@ class PromptBuilder:
                 f"daemon 会基于你的处置记录写入。\n"
             )
 
+
+    def _prev_error_section(self, spec_name: str) -> str:
+        """上轮 error 上下文注入段（add-implementer-deliverable-gate D4）。
+
+        implementer 与 fast-track 共用：打回重派 run 携带上次失败原因，agent
+        无需重新考古即知补什么。无 error 时返回空串（prompt 与现状逐字节一致）。
+        """
+        prev_error = ""
+        try:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+            prev_error = (entry.get("error") or "") if isinstance(entry, dict) else ""
+        except Exception:
+            prev_error = ""
+        if not prev_error:
+            return ""
+        return (
+            f"\n\n## Previous run error (context for this attempt)\n"
+            f"The previous implementation attempt failed and was re-dispatched. "
+            f"Use this to focus your work — do NOT repeat the same gap:\n"
+            f"\n{prev_error}\n"
+        )
+
+    def _designed_ids_line(self, scenarios_path) -> str:
+        """当前设计集场景 ID 清单行（硬校验比对基准的 prompt 侧可见性）。"""
+        designed_ids: list = []
+        try:
+            if scenarios_path.exists():
+                data = json.loads(scenarios_path.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    designed_ids = [
+                        str(s.get("id")) for s in data
+                        if isinstance(s, dict) and s.get("id")
+                    ]
+        except Exception:
+            designed_ids = []
+        if not designed_ids:
+            return ""
+        return (
+            f"- 当前设计集（上一轮遗留；若与本轮 Phase 2 规划不一致，"
+            f"以本轮 Phase 2 重写后的设计集为准）:\n"
+            f"  {', '.join(designed_ids)}\n"
+        )
+
+    def _fast_track_reuse_note(self, spec_name: str) -> str:
+        """worktree 继承说明：本轮在上一轮打回保留的 worktree 中继续（仅复用时注入）。"""
+        wm = getattr(self._pm, "worktree_manager", None)
+        if wm is None or not hasattr(wm, "get_reuse_record"):
+            return ""
+        rec = wm.get_reuse_record(spec_name)
+        if not rec:
+            return ""
+        return (
+            f"\n## Worktree 继承（worktree-reuse）\n"
+            f"本轮 worktree 复用自上一轮未通过框架校验的同 spec run：上一轮已实现的"
+            f"代码提交在当前分支上，tasks.md 可能已有勾选。从 tasks.md 第一个未勾选"
+            f"项继续，不要重做已完成的工作，不要重置或回滚已有改动。\n"
+        )
 
     def _build_legacy_section(self, spec_name: str) -> str:
         """构建 implementer prompt 的「遗产检查」段（add-recovery-legacy-check 2.1）。

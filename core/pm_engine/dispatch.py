@@ -948,12 +948,14 @@ class Dispatcher:
         # ── 读取结果文件（fast-track 结果文件是强制的，缺文件 = 失败） ──
         ft_result = self._pm._read_implementer_result(spec_name)
         if ft_result is None:
+            self._keep_fast_track_worktree(spec_name, result)
             self._handle_fast_track_failure(
                 spec_name, result,
                 "fast-track 结果文件缺失（fail-closed，不推进）",
             )
             return
         if not result.success or ft_result.get("status") != "success":
+            self._keep_fast_track_worktree(spec_name, result)
             self._handle_fast_track_failure(
                 spec_name, result,
                 ft_result.get("error") or result.error or "fast-track run failed",
@@ -962,22 +964,30 @@ class Dispatcher:
 
         # ── 零变更成功哨 ──
         if self._pm._implementer_zero_change(spec_name, result):
+            self._keep_fast_track_worktree(spec_name, result)
             self._handle_fast_track_zero_change(spec_name, result)
             return
 
         # ── 交付物守卫 ──
         missing = self._pm._deliverable_gate_missing(spec_name, result)
         if missing:
+            self._keep_fast_track_worktree(spec_name, result)
             self._handle_fast_track_deliverable_gate(spec_name, result, missing)
             return
 
         # ── 硬校验（merge 前执行，失败则不合并、按失败重派） ──
         verification = self._hard_check_fast_track(spec_name, ft_result)
         if verification is None:
+            # worktree-reuse：打回保留 worktree，重派在同一目录继承上一轮成果
+            self._keep_fast_track_worktree(spec_name, result)
             return  # _hard_check 已设 error + enqueue
 
         # ── 校验全通过：merge → 状态推进 ──
-        self._reconcile_and_merge(spec_name, result)
+        # merge 失败时 _reconcile_and_merge 内部已处置（保留 worktree + 重派/熔断），
+        # 必须早退——否则会继续走 advance_to_verified 把 error 踩成 None（伪 verified）。
+        merged = self._reconcile_and_merge(spec_name, result)
+        if not merged:
+            return
 
         if verification.get("verdict") == "bug-found":
             self._escalate_to_full_mode(spec_name, result, verification)
@@ -986,14 +996,50 @@ class Dispatcher:
         # ── verified → implemented → testing → verified → _on_spec_verified ──
         self._fast_track_advance_to_verified(spec_name, result)
 
-    def _reconcile_and_merge(self, spec_name: str, result) -> None:
-        """预算对账 + merge（fast-track 与 implementer 成功路径同语义）。"""
+    def _keep_fast_track_worktree(self, spec_name: str, result) -> None:
+        """fast-track 打回/失败：保留 worktree 供重派继承（worktree-reuse）。
+
+        runner 对 fast-track 成功路径延迟清理（worktree_kept=False 时由本层处置）；
+        终态失败路径 runner 已保留（worktree_kept=True，此处幂等跳过）。
+        """
+        wt = getattr(result, "worktree_path", None)
+        if wt is None or getattr(result, "worktree_kept", False):
+            return
+        try:
+            self._pm.agent_runner._v2_stop_for_worktree(wt)
+            self._pm.agent_runner.worktree_manager.keep_for_reuse(spec_name, wt)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track worktree 保留失败 '{spec_name}'（非阻塞）: {e}",
+            )
+
+    def _release_fast_track_worktree(self, spec_name: str, result) -> None:
+        """fast-track 校验通过且 merge 完成：回收 runner 延迟保留的 worktree。"""
+        wt = getattr(result, "worktree_path", None)
+        if wt is None:
+            return
+        try:
+            self._pm.agent_runner._v2_stop_for_worktree(wt)
+            self._pm.agent_runner.worktree_manager.cleanup(wt, success=True)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track worktree 延迟清理失败 '{spec_name}'（非阻塞）: {e}",
+            )
+
+    def _reconcile_and_merge(self, spec_name: str, result) -> bool:
+        """预算对账 + merge（fast-track 与 implementer 成功路径同语义）。
+
+        Returns: merge 是否成功（失败时调用方必须早退，不得继续状态推进）。"""
         self._pm._reconcile_impl_budget(spec_name)
         wm = self._pm.agent_runner.worktree_manager
         branch = result.branch
         if branch:
             merge_ok, merge_error = wm.merge_back_from_branch(branch)
             if not merge_ok:
+                # worktree-reuse：merge 失败同样保留 worktree，重派继承后重试 merge
+                self._keep_fast_track_worktree(spec_name, result)
                 spec_entry = self._pm.state_machine.read_one(spec_name) or {}
                 max_r = self._pm._get_config("agents.max_retries", 3)
                 fp = self._pm._merge_fingerprint(merge_error)
@@ -1027,8 +1073,9 @@ class Dispatcher:
                     "pm_engine",
                     f"fast-track merge-back failed '{spec_name}': {final_error}",
                 )
-                return
-        # merge 成功
+                return False
+        # merge 成功：回收 runner 延迟保留的 fast-track worktree（worktree-reuse）
+        self._release_fast_track_worktree(spec_name, result)
         self._pm.state_machine.transition(spec_name, "implemented")
         self._pm.state_machine.update_spec(spec_name, {
             "implementer_run": result.run_id,
@@ -1048,6 +1095,7 @@ class Dispatcher:
             wm.consume_legacy(spec_name)
         except Exception:
             pass
+        return True
 
     def _hard_check_fast_track(self, spec_name: str, ft_result: dict):
         """对 fast-track 结果做框架侧硬校验；失败记原因并按失败重派。

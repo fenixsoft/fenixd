@@ -91,7 +91,8 @@ class AgentRunResult:
                  branch: str | None = None,
                  provider_used: str | None = None, model_used: str | None = None,
                  chain_exhausted: bool = False,
-                 worktree_dirty: list | None = None):
+                 worktree_dirty: list | None = None,
+                 worktree_path=None, worktree_kept: bool = False):
         self.run_id = run_id
         self.spec_name = spec_name
         self.agent_type = agent_type
@@ -113,6 +114,11 @@ class AgentRunResult:
         # 动过文件」的证据；cleanup 后证据即销毁（曾致 Bash 写文件的真实工作被
         # 误判为空转、2.11h/$10 全丢）。None/空 = 无脏文件或非 implementer。
         self.worktree_dirty = worktree_dirty
+        # worktree 继承（fast-track 打回重派复用）：worktree_path = 本轮使用的
+        # worktree（fast-track 成功路径延迟清理、由 dispatch 层判定后处置）；
+        # worktree_kept = runner 终态失败时已保留为复用遗产（dispatch 无需重复保留）。
+        self.worktree_path = worktree_path
+        self.worktree_kept = worktree_kept
 
     def to_dict(self) -> dict:
         return {
@@ -549,6 +555,7 @@ class AgentRunner:
         # 实例级链指针（design D1：cursor 按 agent_type 记忆）。-1 表示尚未选定。
         chain_cursor = -1
         last_provider_used = None  # 用于 "provider switched" 跨 attempt 打点
+        kept_wt_path = None  # worktree-reuse：fast-track 终态失败保留的复用遗产路径
         self._last_model_used = None  # 用于 model_changed 日志留痕（design D3）
 
         for attempt in range(1, max_retries + 1):
@@ -676,6 +683,12 @@ class AgentRunner:
                     "agent_runner",
                     f"Reusing worktree {wt_path} for '{spec_name}' (attempt {attempt}, resume)",
                 )
+                if agent_type == "fast-track":
+                    # 跨 attempt 复用同一 worktree：补记继承痕迹（prompt 注入用）
+                    self.worktree_manager.mark_reused(
+                        spec_name, wt_path,
+                        self.worktree_manager.get_branch_name(wt_path) or "",
+                    )
 
             # ── 观测：run jsonl 写 provider_marker（design D5 / spec failover-dispatch） ──
             # attempt 启动时写入，指明所用 provider/model 与链内下标，事后可追溯实际网关。
@@ -803,19 +816,25 @@ class AgentRunner:
                     if st and st.get("cooldown_until", 0) > 0 and st["cooldown_until"] <= self._now():
                         self._record_provider_probe(provider_name, success=True)
                 # add-worktree-test-server（D2 终态回收）：worktree 清理前先回收其 dev-server。
-                self._v2_stop_for_worktree(wt_path)
-                # fix-zero-change-blindspot：cleanup 前取证 worktree dirty 状态
-                #（仅 implementer / fast-track——零变更哨对两者都生效）。
+                # fast-track 例外：成功不清理——硬校验/守卫在 dispatch 层判定，失败时
+                # 保留 worktree 供重派继承（worktree-reuse）；通过则由 dispatch 在
+                # merge 后统一清理。dev-server 随 dispatch 层处置一并回收。
                 wt_dirty: list = []
                 if agent_type in ("implementer", "fast-track"):
+                    # fix-zero-change-blindspot：cleanup 前取证 worktree dirty 状态
+                    #（仅 implementer / fast-track——零变更哨对两者都生效）。
                     st = subprocess.run(
                         ["git", "-C", str(wt_path), "status", "--porcelain"],
                         capture_output=True, text=True, timeout=30,
                     )
                     if st.returncode == 0:
                         wt_dirty = [l for l in st.stdout.splitlines() if l.strip()]
-                # 成功：清理 worktree（保留分支供 merge-back），返回结果
-                self.worktree_manager.cleanup(wt_path, success=True)
+                if agent_type == "fast-track":
+                    pass  # 延迟清理：worktree 与 dev-server 均交由 dispatch 层处置
+                else:
+                    self._v2_stop_for_worktree(wt_path)
+                    # 成功：清理 worktree（保留分支供 merge-back），返回结果
+                    self.worktree_manager.cleanup(wt_path, success=True)
                 duration = time.time() - start_time
                 self._daily_run_count += 1
                 self.logger.info(
@@ -834,6 +853,7 @@ class AgentRunner:
                     turns_used=turns, output=output,
                     branch=branch, provider_used=provider_name, model_used=model,
                     worktree_dirty=wt_dirty,
+                    worktree_path=(wt_path if agent_type == "fast-track" else None),
                 )
             else:
                 self.logger.warning(
@@ -841,19 +861,26 @@ class AgentRunner:
                     f"{agent_type} failed for '{spec_name}' (attempt {attempt})",
                     {"run_id": attempt_run_id, "error": error, "provider": provider_name},
                 )
-                # 失败后的 worktree 处理：
-                # - implementer 且还有重试：保留 worktree（连同其 dev-server），下次 attempt 用
-                #   --resume 续跑；dev-server 随之复用，不重复启停。
+                # 失败后的 worktree 处理（worktree-reuse：fast-track 与 implementer
+                # 同语义，跨 attempt 复用同一 worktree 续跑）：
+                # - implementer / fast-track 且还有重试：保留 worktree（连同其
+                #   dev-server），下次 attempt 续跑；dev-server 随之复用，不重复启停。
+                # - fast-track 终态失败：保留目录与分支登记为复用遗产，下轮重派在同一
+                #   worktree 继承上一轮成果（不再从零重做）。
                 # - 其他 / 终态失败：清理 worktree 并回收其 dev-server，下次 attempt 全新创建。
                 if attempt < max_retries:
                     time.sleep(10)  # Wait before retry
-                    if agent_type != "implementer":
+                    if agent_type not in ("implementer", "fast-track"):
                         self._v2_stop_for_worktree(wt_path)
                         self.worktree_manager.cleanup(wt_path, success=False)
                         wt_path = None
                 else:
                     self._v2_stop_for_worktree(wt_path)
-                    self.worktree_manager.cleanup(wt_path, success=False)
+                    if agent_type == "fast-track":
+                        self.worktree_manager.keep_for_reuse(spec_name, wt_path)
+                        kept_wt_path = wt_path
+                    else:
+                        self.worktree_manager.cleanup(wt_path, success=False)
                     wt_path = None
 
         # All retries exhausted
@@ -868,6 +895,8 @@ class AgentRunner:
             success=False, duration_seconds=duration,
             error=f"All {max_retries} attempts failed. Last error: {error}",
             provider_used=provider_name, model_used=model,
+            worktree_path=kept_wt_path,
+            worktree_kept=kept_wt_path is not None,
         )
 
     # ── token 累计与预算告警（add-cost-observability D1 / D4）──────────────────

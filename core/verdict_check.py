@@ -431,7 +431,13 @@ def validate_fast_track_result(result: dict, designed_ids: Optional[list] = None
         if missing:
             violations.append(
                 "场景静默遗漏：" + "、".join(missing)
-                + "（设计集存在但执行集缺失，框架校验不通过）"
+                + "（设计集存在但执行集缺失，框架校验不通过）。"
+                "修复处方（二选一，禁止只改一边）："
+                "① 在 .fenix-run-result.json 的 verification.scenarios 中补齐上述"
+                "缺失场景条目，scenario_id 必须与 test_scenarios.json 的 id 逐字一致"
+                "（执行集允许是设计集超集，可附加单元测试类场景）；"
+                "② 若裁决时确属应合并/改名场景，同步重写 test_scenarios.json 使"
+                "设计集与执行集一致"
             )
 
     return {"ok": len(violations) == 0, "violations": violations}

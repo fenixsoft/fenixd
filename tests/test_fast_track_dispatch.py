@@ -186,5 +186,90 @@ class TestFastTrackBugFoundEscalates(_Base):
         self.engine._enqueue.assert_called_with("demo", "verifier")
 
 
+class TestFastTrackWorktreeReuse(_Base):
+    """worktree 继承：打回保留、成功回收（runner 成功路径延迟清理由 dispatch 处置）。"""
+
+    def _prepare(self, worktree_path=None, worktree_kept=False):
+        self._mk()
+        self.engine.agent_runner.run_fast_track.return_value = AgentRunResult(
+            "impl-demo-1", "demo", "fast-track", True, 10.0,
+            branch="fenix/demo-1",
+            worktree_path=worktree_path, worktree_kept=worktree_kept,
+        )
+        self.engine._implementer_zero_change = MagicMock(return_value=False)
+        self.engine._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._reconcile_impl_budget = MagicMock()
+        self.engine._clear_dispatch_conflict = MagicMock(return_value={})
+        self.engine._sync_task_progress = MagicMock()
+        self.sm.transition("demo", "implementing")
+
+    def _write_designed(self, ids):
+        sp = self.pr / ".fenix" / "verify-progress" / "demo" / "test_scenarios.json"
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        sp.write_text(
+            json.dumps([{"id": i, "description": "d", "steps": [], "assertions": []}
+                        for i in ids]),
+            encoding="utf-8",
+        )
+
+    def test_hard_check_fail_keeps_worktree_with_prescription(self):
+        self._prepare(worktree_path=Path("/tmp/wt-demo"))
+        self._write_designed(["s1"])
+        # 执行集缺 s1（scenario_id 改名）→ 场景静默遗漏
+        ft = _fast_result("verified")
+        ft["verification"]["scenarios"][0]["scenario_id"] = "s2"
+        self.engine._read_implementer_result = MagicMock(return_value=ft)
+
+        self.engine._run_fast_track_worker("demo")
+
+        wm = self.engine.agent_runner.worktree_manager
+        wm.keep_for_reuse.assert_called_once()
+        self.assertEqual(wm.keep_for_reuse.call_args[0][0], "demo")
+        entry = self.sm.read_one("demo")
+        self.assertIn("场景静默遗漏", entry["error"])
+        self.assertIn("修复处方", entry["error"])
+
+    def test_terminal_failure_kept_by_runner_skips_double_keep(self):
+        # 终态失败：runner 已保留（worktree_kept=True），dispatch 不重复保留
+        self._prepare(worktree_path=Path("/tmp/wt-demo"), worktree_kept=True)
+        self.engine._read_implementer_result = MagicMock(return_value=None)
+
+        self.engine._run_fast_track_worker("demo")
+
+        wm = self.engine.agent_runner.worktree_manager
+        wm.keep_for_reuse.assert_not_called()
+
+    def test_merge_success_releases_deferred_worktree(self):
+        self._prepare(worktree_path=Path("/tmp/wt-demo"))
+        self._write_designed(["s1"])
+        self.engine._read_implementer_result = MagicMock(
+            return_value=_fast_result("verified"))
+        self.engine._on_spec_verified = MagicMock()
+
+        self.engine._run_fast_track_worker("demo")
+
+        wm = self.engine.agent_runner.worktree_manager
+        wm.cleanup.assert_called_once_with(Path("/tmp/wt-demo"), success=True)
+        wm.keep_for_reuse.assert_not_called()
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "verified")
+
+    def test_merge_fail_keeps_worktree_for_retry(self):
+        self._prepare(worktree_path=Path("/tmp/wt-demo"))
+        self._write_designed(["s1"])
+        self.engine._read_implementer_result = MagicMock(
+            return_value=_fast_result("verified"))
+        self.engine._on_spec_verified = MagicMock()
+        self.engine.agent_runner.worktree_manager.merge_back_from_branch \
+            .return_value = (False, "conflict")
+
+        self.engine._run_fast_track_worker("demo")
+
+        wm = self.engine.agent_runner.worktree_manager
+        wm.keep_for_reuse.assert_called_once()
+        entry = self.sm.read_one("demo")
+        self.assertIn("Merge-back failed", entry["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

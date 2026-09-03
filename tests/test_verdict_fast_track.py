@@ -89,6 +89,16 @@ class TestValidateFastTrackResult(unittest.TestCase):
         self.assertFalse(out["ok"])
         self.assertTrue(any("静默遗漏" in v and "s2" in v for v in out["violations"]))
 
+    def test_silent_omission_violation_carries_prescription(self):
+        """静默遗漏 violation 必须携带修复处方（error 直达下轮 run，agent 照方抓药）。"""
+        r = _result([_pass_scenario("s1")])
+        out = validate_fast_track_result(r, designed_ids=["s1", "s2"])
+        v = next(v for v in out["violations"] if "静默遗漏" in v)
+        self.assertIn("修复处方", v)
+        self.assertIn("verification.scenarios", v)
+        self.assertIn("test_scenarios.json", v)
+        self.assertIn("同步重写", v)
+
     def test_exempt_escape(self):
         sc = _pass_scenario("s1", status="exempt", classification="product-bug")
         out = validate_fast_track_result(_result([sc]))
