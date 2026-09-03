@@ -1372,7 +1372,7 @@ def _bind_parent_lifecycle() -> None:
 
     调试/验证脚本直接 `import serve()` 起实例后，脚本退出会把实例孤儿化
     （PPID→1 被 systemd 收养），孤儿实例以启动时代码长期服务端口——事故中
-    4 个孤儿实例以 8 月底旧码（RUNS_KEEP=20 直接删除）持续清理真实项目 runs。
+    4 个孤儿实例以 8 月底旧码（自动清理直接删除）持续清理真实项目 runs。
     两道防线：
 
     1. PR_SET_PDEATHSIG：父进程死亡时内核自动向本进程发 SIGTERM（泄漏即死）；

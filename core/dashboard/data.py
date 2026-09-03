@@ -22,11 +22,8 @@ from pathlib import Path
 
 import yaml
 
-from core.agent_runner import clean_old_runs
+from core.agent_runner.run_files import run_spec_part
 from core.fenix_session import is_running as _is_running
-
-# 运行产物文件保留上限（与 agent_runner.RUNS_KEEP 一致）
-RUNS_KEEP = 50
 
 
 # ── Administrator 告警（.fenix/admin_alerts.json） ─────────────────
@@ -1589,54 +1586,6 @@ def read_run_events_between(project_root, run_id: str, start_offset: int) -> lis
     return _parse_run_lines(text.splitlines())
 
 
-# cleanup_runs 项目级节流（dashboard-spec-summary-index 1.5）：同一项目
-# 60 秒内只实际执行一次清理；节流期内直接返回 0（幂等，不遍历不删除）。
-_CLEANUP_RUNS_INTERVAL = 60.0
-_CLEANUP_RUNS_LAST: dict = {}
-
-
-def cleanup_runs(project_root) -> int:
-    """归档超出保留上限的旧运行产物（跳过活动产物），返回归档数。
-
-    额外保护：STATE.md 中任一 spec 的 implementer_run / tester_run 引用的 run
-    文件永久保留——它们是历史 spec 时间轴的数据源，不能因保留上限被淘汰
-    （否则 spec 详情页的时间轴、任务进度随即消失）。
-
-    保留上限取 runs.keep（用户级/项目级合并有效值，默认 RUNS_KEEP=50），
-    可在 Dashboard 设置页「其他」分类调整；超限产物移入 runs/archive/ 而非
-    删除（add-run-archive：时间轴/运行记录回读归档）。
-
-    节流（dashboard-spec-summary-index D4）：同项目 60s 内只实际执行一次，
-    节流期直接返回 0。project_summary 每请求调用一次，聚合视图频率高，
-    若每次都扫 runs 目录归档，是 62% 配置解析之外的另一块可杀开销。
-    """
-    from core.config import ConfigLoader
-
-    proot_key = str(Path(project_root).resolve())
-    _now = time.monotonic()
-    _last = _CLEANUP_RUNS_LAST.get(proot_key)
-    if _last is not None and _now - _last < _CLEANUP_RUNS_INTERVAL:
-        return 0  # 节流：幂等直接返回，不产生任何文件删除/目录遍历
-
-    runs_dir = Path(project_root) / ".fenix" / "runs"
-    protected = set()
-    for entry in parse_state(project_root).values():
-        for key in ("implementer_run", "tester_run"):
-            rid = entry.get(key)
-            if rid:
-                protected.add(str(rid))
-    keep = RUNS_KEEP
-    try:
-        effective = ConfigLoader.resolve_config(project_root)
-        configured = ConfigLoader.get(effective, "runs.keep", RUNS_KEEP)
-        if isinstance(configured, int) and configured >= 1:
-            keep = configured
-    except Exception:
-        pass
-    _CLEANUP_RUNS_LAST[proot_key] = time.monotonic()
-    return clean_old_runs(runs_dir, keep=keep, active_ids=protected)
-
-
 # ── 聚合视图（供 Web API / 概览 / 详情） ──────────────────────────
 
 def active_run_count(project_root) -> int:
@@ -1676,7 +1625,6 @@ def daemon_health(project_root) -> str:
 def project_summary(project_root, name: str, path: str) -> dict:
     """单个项目的聚合摘要（/api/projects、/api/overview 共用）。"""
     proot = Path(path)
-    cleanup_runs(proot)
     specs = parse_state(proot)
     status_counts = {}
     for e in specs.values():
@@ -1780,24 +1728,6 @@ def _stat_sig(path: Path):
     return (st.st_mtime_ns, st.st_size)
 
 
-def _run_spec_part(run_id: str) -> str:
-    """从 run_id 推断 spec 名（与 get_runs 的推断逻辑对齐，供索引分组使用）。
-
-    依次剥离 agent 类型前缀、attempt 段（-a<n>）与时间戳段（-<unix秒>）。
-    """
-    spec_part = run_id
-    for prefix in ("admin-", "planner-judge-", "planner-plan-",
-                   "planner-", "impl-", "verify-", "test-"):
-        if run_id.startswith(prefix):
-            spec_part = run_id[len(prefix):]
-            break
-    spec_part = re.sub(r"-a\d+$", "", spec_part)
-    m = re.match(r"^(.*)-\d{9,10}$", spec_part)
-    if m:
-        spec_part = m.group(1)
-    return spec_part
-
-
 def _runs_by_spec_sigs(proot: Path) -> dict:
     """扫描 .fenix/runs（含 archive）一次，按 spec 分组各 run 文件签名。
 
@@ -1819,7 +1749,7 @@ def _runs_by_spec_sigs(proot: Path) -> dict:
         sig = _stat_sig(p)
         if sig is None:
             continue
-        spec_part = _run_spec_part(p.stem)
+        spec_part = run_spec_part(p.stem)
         if not spec_part:
             continue
         out.setdefault(spec_part, {})[str(p)] = sig
@@ -2373,8 +2303,7 @@ USER_CONFIG_PATH = Path.home() / ".fenix" / "config.yaml"
 # 受管键的来源标注键（前端用于「继承自用户级」badge）
 _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "agents.run_timeout_seconds", "agents.max_turns", "agents.daily_run_limit",
-                "agents.token_budget_millions", "agents.impl_run_budget", "gates.approve_mode",
-                "runs.keep"]
+                "agents.token_budget_millions", "agents.impl_run_budget", "gates.approve_mode"]
 
 _CONFIG_HEADER_COMMENT = (
     "# Fenix 配置文件\n"
@@ -2411,9 +2340,6 @@ def _managed_key_sources(raw: dict) -> dict:
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         sources["gates.approve_mode"] = "project"
-    runs_raw = raw.get("runs")
-    if isinstance(runs_raw, dict) and "keep" in runs_raw:
-        sources["runs.keep"] = "project"
     return sources
 
 

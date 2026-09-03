@@ -279,7 +279,8 @@ class PMEngine:
             self.logger.info("pm_engine", f"Verification passed: '{spec_name}' → done")
             if self.state_machine.transition(spec_name, "done"):
                 # add-done-duration-persist（D1/D2）：done 落定时刻把总耗时快照进
-                # STATE.md，使耗时不再依赖易失的 run 产物（RUNS_KEEP 清理后归零）。
+                # STATE.md，使耗时不再依赖易失的 run 产物（run 产物只增不减，
+                # 但快照保证耗时独立于产物回读路径）。
                 # 求和口径与 spec_summary 一致（duration_seconds 求和、含归档），
                 # 保证写入值 = 当时列表页显示值。仅在转换成功后写入，重复事件回放
                 # （done→done 非法转换返回 False）不会重复覆盖。
