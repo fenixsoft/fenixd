@@ -444,6 +444,12 @@ class TestBudgetReconciliation(_Base):
         self.assertEqual(self.engine._budget._count_normal_completed_impl_runs("demo-spec"), 2)
 
     def test_reconcile_logs_warning_on_drift_only(self):
+        """无豁免因素偏差 → 自动校正（lifecycle-hygiene 4.3）；豁免场景沿用 WARN。
+
+        原语义（WARN 不改数）已被 run-lifecycle-hardening 4.3 升级为：纯漂移
+        （无保留上限/死亡豁免因素）时以 runs 实际收工数为准改写 used 并留
+        INFO 校正日志；有豁免因素才沿用既有 WARN 不改数。
+        """
         self._make_buggy_spec("demo-spec")
         self._write_run_file("impl-demo-spec-1000-a1", "result")
         self.engine._budget._increment_impl_run_budget_used("demo-spec")  # used=1 = 收工数
@@ -452,14 +458,17 @@ class TestBudgetReconciliation(_Base):
                  if "对账偏差" in str(c.args[1])]
         self.assertEqual(len(drift), 0)
 
-        # 偏差（used=2 vs 收工 1）→ WARNING，且不自动改数
+        # 偏差（used=2 vs 收工 1，无豁免因素）→ 自动校正 used=2 → 1，不再 WARN
         self.engine._budget._increment_impl_run_budget_used("demo-spec")  # used=2
         self.engine._budget._reconcile_impl_budget("demo-spec")
         drift = [c for c in self.logger.warning.call_args_list
                  if "对账偏差" in str(c.args[1])]
-        self.assertEqual(len(drift), 1)
+        self.assertEqual(len(drift), 0, "无豁免因素偏差应自动校正而非 WARN")
+        corrections = [c for c in self.logger.info.call_args_list
+                       if "校正" in str(c.args[1])]
+        self.assertTrue(any("2 → 1" in str(c) for c in corrections))
         self.assertEqual(
-            int(self.sm.read_one("demo-spec").get("_impl_run_budget_used", 0)), 2)
+            int(self.sm.read_one("demo-spec").get("_impl_run_budget_used", 0)), 1)
 
 
 class TestInteractionContractBudgetFixture(_Base):

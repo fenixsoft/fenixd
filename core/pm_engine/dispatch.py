@@ -43,6 +43,9 @@ class Dispatcher:
         self._active_priority_counts: Dict[int, int] = {}  # priority → 活动 run 数
         # 派发锁冲突退避定时器（_schedule_backoff_retry 维护，死定时器惰性清理）。
         self._backoff_timers: list = []
+        # 秒挂冷却恢复定时器（cli-retry-backoff 2.2）：{spec_name}，幂等排程防重复。
+        # 冷却到期由定时器重入 _on_spec_ready，不依赖 30 分钟全量扫描兜底。
+        self._instant_fail_timers: set = set()
 
     def _dispatch_backoff_schedule(self) -> list:
         """退避序列（秒）。可配 pm.dispatch_backoff_schedule，默认 [30, 120, 600]。
@@ -137,6 +140,51 @@ class Dispatcher:
             self._backoff_timers.append(timer)
         timer.start()
 
+
+    def _schedule_instant_fail_recovery(self, spec_name: str,
+                                        lock_held: bool = False) -> None:
+        """冷却到期后重入 ``_on_spec_ready``（cli-retry-backoff 2.2）。
+
+        幂等：已为该 spec 排程恢复定时器则不再重复（``_instant_fail_timers`` 集合
+        判重）。cooldown_until 以 ``time.monotonic`` 记（runner._now），差值为
+        剩余秒；到期回调重新触发派发并顺带 process_queue。
+
+        ``lock_held``：调用方已持 ``_queue_lock`` 时为 True（_process_queue 场景），
+        跳过内部再取锁——threading.Lock 非重入，双重获取会死锁。
+        """
+        if lock_held:
+            self._schedule_instant_fail_recovery_locked(spec_name)
+            return
+        with self._queue_lock:
+            self._schedule_instant_fail_recovery_locked(spec_name)
+
+    def _schedule_instant_fail_recovery_locked(self, spec_name: str) -> None:
+        """锁内实现（调用方已持 _queue_lock）排程冷却恢复定时器。"""
+        if spec_name in self._instant_fail_timers:
+            return
+        until = self._pm._instant_fail_cooldown_until(spec_name)
+        if until <= 0:
+            return
+        delay = max(0.5, float(until) - time.monotonic())
+        timer = threading.Timer(
+            delay, self._on_instant_fail_recovery, args=(spec_name,),
+        )
+        timer.daemon = True
+        self._instant_fail_timers.add(spec_name)
+        timer.start()
+
+    def _on_instant_fail_recovery(self, spec_name: str) -> None:
+        """秒挂冷却到期回调：重新唤起派发（幂等，多定时器并发安全）。"""
+        with self._queue_lock:
+            self._instant_fail_timers.discard(spec_name)
+        self._pm.logger.info(
+            "pm_engine",
+            f"秒挂冷却到期，恢复调度 '{spec_name}'（cli-retry-backoff 自动恢复）",
+        )
+        try:
+            self._pm._on_spec_ready(spec_name)
+        finally:
+            self._pm._process_queue()
 
     def _get_spec_priority(self, spec_name: str) -> int:
         """读取 SPEC 的 priority，缺省为 5。"""
@@ -305,6 +353,16 @@ class Dispatcher:
                         continue
                     if self._pm._dispatch_backoffed(spec):
                         continue
+                    # cli-retry-backoff 2.2：秒挂冷却期内跳过 implementer/fast-track/
+                    # repair 派发（不耗预算、不起进程），并排程到期自动恢复。
+                    if atype in ("implementer", "fast-track", "repair") \
+                            and self._pm._instant_fail_cooled(sname):
+                        self._pm.logger.debug(
+                            "pm_engine",
+                            f"秒挂冷却中，跳过 {atype} 派发 '{sname}'",
+                        )
+                        self._schedule_instant_fail_recovery(sname, lock_held=True)
+                        continue
                     if best_valid_prio is None or eff < best_valid_prio:
                         best_valid_prio = eff
                 if best_valid_prio is None:
@@ -348,6 +406,12 @@ class Dispatcher:
                     if atype == "verifier" and status != "implemented":
                         continue
                     if self._pm._dispatch_backoffed(spec):
+                        continue
+                    # cli-retry-backoff 2.2：秒挂冷却期内跳过派发（与 best_valid_prio
+                    # 扫描同判定，保证队列继续扫描后续条目不被冷却 spec 阻塞）。
+                    if atype in ("implementer", "fast-track", "repair") \
+                            and self._pm._instant_fail_cooled(sname):
+                        self._schedule_instant_fail_recovery(sname, lock_held=True)
                         continue
                     dispatch_idx = i
                     break
@@ -1177,6 +1241,15 @@ class Dispatcher:
         超限不派发（_should_enter_repair 已拦截，此处兜底回退）。
         """
         wm = self._pm.agent_runner.worktree_manager
+        # cli-retry-backoff 2.2：秒挂冷却期内不派发 repair（repair agent 同样会秒挂）。
+        # spec 保持原状，冷却到期由恢复定时器 / full_scan 重新唤起实现派发。
+        if self._pm._instant_fail_cooled(spec_name):
+            self._pm.logger.debug(
+                "pm_engine",
+                f"秒挂冷却中，跳过 repair 派发 '{spec_name}'（冷却期后恢复调度）",
+            )
+            self._schedule_instant_fail_recovery(spec_name)
+            return
         try:
             repair_round = int(
                 (self._pm.state_machine.read_one(spec_name) or {}).get("_repair_round", 0) or 0

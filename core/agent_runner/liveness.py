@@ -270,7 +270,12 @@ class LivenessSupervisor:
         .fenix/runs 正式 run 文件——判定结论写回被监督 run 的 jsonl 与 daemon 日志。
         任何解析失败 / 异常都按 ``stagnant`` 处理，evidence 以
         ``liveness judge unavailable`` 开头（tasks 4.2 要求的可辨识证据）。
+
+        per-agent-timeout-override 3.3：judge 子进程超时经
+        ``agents.timeout_overrides.supervision-judge`` 配置（缺省回退 120s 常量），
+        该值不参与 absolute_max 派生。
         """
+        timeout = self._supervision_judge_timeout()
         prompt = (
             "你是长时运行 agent 的活性监督判定器。根据以下 run 流统计快照，判断该"
             " agent 是在真实推进任务，还是已陷入停滞（空转、卡死、重复循环、无输出）。\n\n"
@@ -288,7 +293,7 @@ class LivenessSupervisor:
                 cmd += ["--model", model]
             res = subprocess.run(
                 cmd, capture_output=True, text=True,
-                timeout=JUDGE_TIMEOUT_SECONDS, cwd=str(self._pm.project_root),
+                timeout=timeout, cwd=str(self._pm.project_root),
             )
             text = res.stdout or ""
             try:
@@ -339,6 +344,15 @@ class LivenessSupervisor:
         return None
 
 
+    def _supervision_judge_timeout(self) -> float:
+        """活性判定 judge 子进程超时（per-agent-timeout-override 3.3）。
+
+        读取 ``agents.timeout_overrides.supervision-judge``（缺省回退 120 秒常量），
+        该值不参与 absolute_max 派生。
+        """
+        from core.config import ConfigLoader
+        return ConfigLoader.judge_timeout_seconds(self._pm.config)
+
     def _supervision_settings(self) -> dict:
         """超时监督配置（D3）：canonical ``agents.timeout_supervision``，回退旧顶层键。
 
@@ -372,7 +386,8 @@ class LivenessSupervisor:
     def _supervision_deadline_action(self, run_file: Path, spec_name: str | None,
                                      run_id: str, started_at: float,
                                      extensions_used: int,
-                                     judge=None) -> dict:
+                                     judge=None,
+                                     agent_type: str | None = None) -> dict:
         """deadline 到点后的监督决策（D3）：续期 or 终止，封闭矩阵。
 
         判定顺序（先硬上限后活性）：
@@ -396,15 +411,27 @@ class LivenessSupervisor:
                 "evidence": evidence,
                 "settings": sup,
             }
-        run_timeout = float(self._pm._get_config("agents.run_timeout_seconds", 3600) or 3600)
+        # per-agent-timeout-override 3.2：supervision 的 extension 总额与 absolute_max
+        # 护栏按该 agent type 的生效超时派生（覆盖值参与），stuck 阈值派生保持全局默认
+        # 值语义（见 effective_stuck_threshold_seconds，不随覆盖变化）。
+        run_timeout = float(self._pm._effective_run_timeout(agent_type))
         max_extensions = max(0, int(sup["max_extensions"]))
         extension_seconds = max(1.0, float(sup["extension_seconds"]))
         # absolute_max 是总墙钟上限；配置偏小时抬到 run_timeout + 续期总额，
         # 否则续期预算会被总上限截断（语义矛盾）。
-        absolute_max = max(
-            float(sup["absolute_max_seconds"]),
-            run_timeout + max_extensions * extension_seconds,
-        )
+        floor_absolute_max = run_timeout + max_extensions * extension_seconds
+        configured_abs_max = float(sup["absolute_max_seconds"])
+        absolute_max = max(configured_abs_max, floor_absolute_max)
+        if configured_abs_max < floor_absolute_max:
+            # per-agent-timeout-override 3.2：生效超时（覆盖后）抬高 absolute_max 兜底时
+            # ERROR 留痕（守护配置告警），每次 deadline 判定至多几次（续期轮次有界）。
+            self._pm.logger.error(
+                "agent_runner",
+                f"supervision absolute_max_seconds({int(configured_abs_max)}s) 低于 "
+                f"生效超时 {int(run_timeout)}s + 续期总额 {int(max_extensions)}×"
+                f"{int(extension_seconds)}s = {int(floor_absolute_max)}s，"
+                f"按 {int(floor_absolute_max)}s 兜底生效（agent_type={agent_type or 'default'}）",
+            )
         now = time.time()
         if now - started_at >= absolute_max:
             return {

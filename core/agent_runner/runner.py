@@ -223,6 +223,13 @@ class AgentRunner:
         self._running_agents: Dict[str, subprocess.Popen] = {}
         self._daily_run_count = 0
 
+        # 秒挂退避熔断（cli-retry-backoff）：spec 维度连续秒挂计数与冷却态。
+        # 进程内存、不落盘：{spec_name: {"count": int, "cooldown_until": float}}
+        # count = 连续秒挂次数（未重置），cooldown_until = 冷却到期单调秒。
+        # daemon 重启重建即清零（冷却不跨重启，重启即视为恢复）。惰性清理：
+        # 冷却到期由 is_instant_fail_cooldown 恢复并清除；无条目即无冷却。
+        self._instant_fail: Dict[str, dict] = {}
+
 
     # ── V2 per-run 隔离测试服务（add-worktree-test-server）─────────────────────
 
@@ -238,6 +245,27 @@ class AgentRunner:
     def _now(self) -> float:
         """单调时间戳（测试可覆写）。用 time.monotonic 避免时钟回拨影响窗口。"""
         return time.monotonic()
+
+    # ── 秒挂退避熔断状态表（cli-retry-backoff）───────────────────────
+    # 惰性 property：测试普遍以 ``AgentRunner.__new__`` 绕过 ``__init__`` 构造，
+    # 直接访问 self._instant_fail 会 AttributeError。沿用组合组件惰性初始化模式，
+    # 首次访问即时建表（__init__ 内的赋值经 setter 落地同一 backstore）。
+
+    @property
+    def _instant_fail(self) -> Dict[str, dict]:
+        inst = self.__dict__.get("_instant_fail_state")
+        if inst is None:
+            inst = {}
+            self.__dict__["_instant_fail_state"] = inst
+        return inst
+
+    @_instant_fail.setter
+    def _instant_fail(self, value):
+        self.__dict__["_instant_fail_state"] = value
+
+    @_instant_fail.deleter
+    def _instant_fail(self):
+        self.__dict__.pop("_instant_fail_state", None)
 
 
 
@@ -395,6 +423,7 @@ class AgentRunner:
                 prompt, self.project_root, run_id, model_override, env_overrides,
                 max_turns=self._get_config("agents.max_turns", 300),
                 spec_name=spec,
+                agent_type="administrator",
             )
             success = True
             error = ""
@@ -777,10 +806,32 @@ class AgentRunner:
         chain_cursor = -1
         last_provider_used = None  # 用于 "provider switched" 跨 attempt 打点
         kept_wt_path = None  # worktree-reuse：fast-track 终态失败保留的复用遗产路径
+        provider_name = None  # 本轮候选 provider（链选择前为 None，供 frozen 提前返回使用）
+        model = None
         self._last_model_used = None  # 用于 model_changed 日志留痕（design D3）
 
         for attempt in range(1, max_retries + 1):
             attempt_run_id = f"{run_id}-a{attempt}"
+            # lifecycle-hygiene 4.1：每轮 attempt 启动前统一检查 spec 结构化 frozen
+            # 字段——frozen 为真立即终止重试链（不派发 attempt、不创建 worktree），
+            # run 以失败收场保留错误记录。覆盖 judge failover 换网关重试等全部重试
+            # 路径，不止 worktree 失败路径；未冻结行为零变化。
+            if self._spec_is_frozen(spec_name):
+                self.logger.warning(
+                    "agent_runner",
+                    f"spec '{spec_name}' frozen — 终止 {agent_type} 自动重试链"
+                    f"（attempt {attempt}/{max_retries}），不派发 attempt",
+                )
+                return AgentRunResult(
+                    run_id, spec_name, agent_type,
+                    success=False, duration_seconds=time.time() - start_time,
+                    error=(f"spec frozen — auto-retry terminated "
+                           f"(attempt {attempt}/{max_retries})"),
+                    provider_used=provider_name, model_used=model,
+                )
+            # cli-retry-backoff：秒挂按 attempt 实际存活时长判定（进程时长近似，
+            # 包含 worktree 创建到失败，60s 级判定不敏感于准备开销）。
+            attempt_started_at = time.time()
             self.logger.info(
                 "agent_runner",
                 f"Running {agent_type} for '{spec_name}' (attempt {attempt}/{max_retries})",
@@ -974,6 +1025,7 @@ class AgentRunner:
                     ),
                     max_turns=self._get_config("agents.max_turns", 300),
                     spec_name=spec_name,
+                    agent_type=agent_type,
                 )
                 if run_session_id:
                     session_id = run_session_id
@@ -985,6 +1037,15 @@ class AgentRunner:
                 turns = 0
                 success = False
                 error = str(e)
+                # cli-retry-backoff（2.1）：attempt 失败按存活时长判定秒挂并累计。
+                # 仅「进程确实启动过」的失败才判定（worktree 创建失败等进程未起的
+                # 分支走上方 return/continue，不进入本法）；框架主动 SIGTERM 由
+                # _run_was_interrupted 识别不计入。
+                self._record_instant_fail(
+                    spec_name,
+                    time.time() - attempt_started_at,
+                    self.project_root / ".fenix" / "runs" / f"{attempt_run_id}.jsonl",
+                )
                 # add-cost-observability（D1）：_run_claude 抛错（超时/kill/非 0 退出/
                 # rc==0 但 result 标记 error），stream-json 终态已被丢弃，按 0 计 usage，
                 # 仅 DEBUG 留痕（异常早夭的 run 消耗小，与 jsonl 考古一致偏差可接受）。
@@ -1091,6 +1152,8 @@ class AgentRunner:
                     self.worktree_manager.cleanup(wt_path, success=True)
                 duration = time.time() - start_time
                 self._daily_run_count += 1
+                # cli-retry-backoff（2.1/2.2）：成功收工重置秒挂连续计数（非连续不累积）
+                self._reset_instant_fail(spec_name)
                 self.logger.info(
                     "agent_runner",
                     f"{agent_type} succeeded for '{spec_name}'",
@@ -1176,7 +1239,8 @@ class AgentRunner:
                     env_overrides: Dict[str, str] | None = None,
                     resume_session_id: str | None = None,
                     max_turns: int | None = None,
-                    spec_name: str | None = None) -> tuple:
+                    spec_name: str | None = None,
+                    agent_type: str | None = None) -> tuple:
         from core.config import ConfigLoader
         """
         Execute claude CLI with the given prompt, streaming events to disk.
@@ -1214,7 +1278,9 @@ class AgentRunner:
 
         Returns: (output, turns_used, session_id)
         """
-        timeout = self._get_config("agents.run_timeout_seconds", 3600)
+        # per-agent-timeout-override 3.2：run 生效超时按 agent_type 覆盖值查询
+        #（override → 全局 run_timeout_seconds → 3600 回退）。
+        timeout = self._effective_run_timeout(agent_type)
         # fix-stuck-threshold-unify D5：supervision 激活路径读取 absolute_max 兜底值，
         # 不直接读原始配置（防止与 run 超时脱钩）。返回 None 表示未启用 supervision。
         sup_abs_max = ConfigLoader.effective_supervision_absolute_max_seconds(self.config)
@@ -1345,7 +1411,8 @@ class AgentRunner:
                     # 超时活性监督（improve-run-lifecycle-governance D3）：到点不
                     # 立即杀——按封闭决策矩阵判定（硬上限 → 次数上限 → 活性）。
                     action = self._supervision_deadline_action(
-                        run_file, spec_name, run_id, started_at, extensions_used)
+                        run_file, spec_name, run_id, started_at, extensions_used,
+                        agent_type=agent_type)
                     if action["action"] == "extend":
                         extensions_used = int(action["extension_index"])
                         deadline += float(action["extension_seconds"])
@@ -1483,6 +1550,29 @@ class AgentRunner:
         from core.config import ConfigLoader
         return ConfigLoader.get(self.config, key, default)
 
+    def _effective_run_timeout(self, agent_type: str | None = None) -> float:
+        """agent run 生效超时（per-agent-timeout-override 3.2）。
+
+        ``agents.timeout_overrides.<agent_type>`` 存在且合法时取覆盖值，否则回退
+        ``agents.run_timeout_seconds`` 全局默认；全局缺失回退 3600。
+        """
+        from core.config import ConfigLoader
+        return ConfigLoader.effective_run_timeout_seconds(self.config, agent_type)
+
+    def _spec_is_frozen(self, spec_name: str) -> bool:
+        """spec 是否处于人工冻结态（结构化 frozen 字段，lifecycle-hygiene 4.1）。
+
+        state_machine 缺失/读取异常时 fail-open（返回 False）——判定故障不放大为
+        run 故障，未冻结行为零变化。
+        """
+        try:
+            if self.state_machine is None:
+                return False
+            entry = self.state_machine.read_one(spec_name) or {}
+            return bool(entry.get("frozen"))
+        except Exception:
+            return False
+
     def _should_give_up_before_retry(self, spec_name: str, agent_type: str) -> bool:
         """attempt 重试前的放弃判定（fix-restart-dual-dispatch S3/S4）。
 
@@ -1514,6 +1604,174 @@ class AgentRunner:
         except Exception:
             return False
         return False
+
+    # ── 秒挂退避熔断（cli-retry-backoff）─────────────────────────────
+    # 同一 spec 的连接 CLI run 在「进程存活时长」低于阈值即死亡（如 Exit 143 秒挂）
+    # 连续达阈值 → 该 spec 进入冷却，期间 implementer/fast-track/repair 派发被
+    # 跳过（不耗预算、不起进程）；冷却到期自动恢复且计数清零。
+
+    def _instant_fail_threshold(self) -> int:
+        """秒挂判定阈值（agents.instant_fail_threshold_seconds，缺省 60）。"""
+        try:
+            v = int(self._get_config("agents.instant_fail_threshold_seconds", 60) or 60)
+        except (TypeError, ValueError):
+            v = 60
+        return max(1, v)
+
+    def _instant_fail_cooldown_after(self) -> int:
+        """连续秒挂触发冷却的次数（agents.instant_fail_cooldown_after，缺省 3）。"""
+        try:
+            v = int(self._get_config("agents.instant_fail_cooldown_after", 3) or 3)
+        except (TypeError, ValueError):
+            v = 3
+        return max(1, v)
+
+    def _instant_fail_cooldown_seconds(self) -> int:
+        """冷却时长（agents.instant_fail_cooldown_seconds，缺省 300）。"""
+        try:
+            v = int(self._get_config("agents.instant_fail_cooldown_seconds", 300) or 300)
+        except (TypeError, ValueError):
+            v = 300
+        return max(1, v)
+
+    @staticmethod
+    def _run_was_interrupted(run_file) -> bool:
+        """run 产物是否含 interrupted 标记（框架主动 SIGTERM，liveness/shutdown
+        路径写入）。秒挂退避不计入被框架主动终止的 run（design D2）。"""
+        if run_file is None:
+            return False
+        try:
+            with Path(run_file).open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(entry, dict) and entry.get("type") == "interrupted":
+                        return True
+        except OSError:
+            return False
+        return False
+
+    def _record_instant_fail(self, spec_name: str, duration_seconds: float,
+                             run_file=None) -> None:
+        """attempt 失败时按进程存活时长判定秒挂并累计 spec 维度连续计数。
+
+        - 框架主动 SIGTERM 的 run（产物含 interrupted 标记）不计入；
+        - 存活 ≥ 阈值（或无法判定时长异常）的失败视为非秒挂 → 重置计数；
+        - 秒挂连续达 cooldown_after → 进入冷却并触发首次 major 告警
+          （同 spec 同信号 15 分钟内 throttle 去重）。
+        """
+        if not spec_name:
+            return
+        if self._run_was_interrupted(run_file):
+            self.logger.debug(
+                "agent_runner",
+                f"'{spec_name}' run 被框架终止，不计入秒挂退避计数",
+            )
+            return
+        threshold = self._instant_fail_threshold()
+        if duration_seconds >= threshold:
+            # 存活超阈值失败 = 正常失败，不是秒挂：重置连续计数（design D2）
+            self._reset_instant_fail(spec_name)
+            return
+
+        st = self._instant_fail.setdefault(
+            spec_name, {"count": 0, "cooldown_until": 0.0})
+        st["count"] = st.get("count", 0) + 1
+        cooldown_after = self._instant_fail_cooldown_after()
+        if st["count"] < cooldown_after:
+            self.logger.warning(
+                "agent_runner",
+                f"'{spec_name}' 秒挂 {st['count']}/{cooldown_after} "
+                f"（存活 {duration_seconds:.0f}s < {threshold}s 阈值）",
+            )
+            return
+
+        # 达阈值：进入冷却
+        cooldown_seconds = self._instant_fail_cooldown_seconds()
+        now = self._now() if hasattr(self, "_now") else time.monotonic()
+        st["cooldown_until"] = now + cooldown_seconds
+        self.logger.error(
+            "agent_runner",
+            f"'{spec_name}' 连续 {st['count']} 次秒挂（阈值 {cooldown_after}）— "
+            f"进入 {cooldown_seconds}s 冷却，期间 implementer/fast-track/repair "
+            f"派发被跳过；到期自动恢复",
+        )
+        self._alert_instant_fail_storm(spec_name, st["count"], cooldown_seconds)
+
+    def _alert_instant_fail_storm(self, spec_name: str, count: int,
+                                  cooldown_seconds: int) -> None:
+        """首次冷却触发发 major 告警（signal_type=instant_fail_storm）。
+
+        重复冷却由既有 15 分钟 throttle 抑制：AdminStore.latest_signal 按
+        (spec, signal_type) 在窗口内查重，窗口内已有同信号则不发第二条。
+        """
+        try:
+            from core.admin_store import AdminStore, ESCALATION
+            store = AdminStore(self.project_root, self.logger)
+            if store.latest_signal(spec_name, "instant_fail_storm", 15) is not None:
+                self.logger.debug(
+                    "agent_runner",
+                    f"instant_fail_storm 告警已 throttle（15 分钟内已有）: '{spec_name}'",
+                )
+                return
+            store.append({
+                "kind": ESCALATION,
+                "signal_type": "instant_fail_storm",
+                "spec": spec_name,
+                "severity": "major",
+                "description": (
+                    f"spec '{spec_name}' 连续 {count} 次秒挂（进程存活低于阈值即死亡）"
+                    f"— 已进入 {cooldown_seconds}s 冷却，期间 implementer/fast-track/"
+                    f"repair 派发被跳过；冷却到期自动恢复"
+                ),
+                "evidence": (
+                    f"spec={spec_name}; instant_fail_count={count}; "
+                    f"cooldown_seconds={cooldown_seconds}"
+                ),
+                "recommended_action": (
+                    "检查 CLI/网关瞬时死亡根因（模型不兼容、token/额度不足、会话丢失等）；"
+                    "冷却自动到期后恢复，无需人工干预"
+                ),
+            })
+        except Exception as e:
+            self.logger.error(
+                "agent_runner",
+                f"instant_fail_storm 告警写入失败 '{spec_name}': {e}",
+            )
+
+    def _reset_instant_fail(self, spec_name: str) -> None:
+        """成功 / 存活超阈值失败：清除该 spec 的秒挂连续计数与冷却态。"""
+        self._instant_fail.pop(spec_name, None)
+
+    def _instant_fail_counts(self, spec_name: str) -> int:
+        """当前连续秒挂次数（测试/观测辅助）。"""
+        st = self._instant_fail.get(spec_name)
+        return int(st.get("count", 0)) if st else 0
+
+    def is_instant_fail_cooldown(self, spec_name: str, now: float | None = None) -> bool:
+        """判断 spec 是否处于秒挂冷却期（dispatch 派发前闸门调用）。
+
+        冷却到期自动恢复并清零计数（design D2：到期后从 0 重新累计）；
+        无条目 / 未进入冷却返回 False（行为与现状一致）。
+        """
+        if not spec_name:
+            return False
+        st = self._instant_fail.get(spec_name)
+        if not st:
+            return False
+        until = st.get("cooldown_until") or 0.0
+        if until <= 0:
+            return False
+        now = self._now() if now is None else now
+        if now >= until:
+            self._reset_instant_fail(spec_name)
+            return False
+        return True
 
     def _read_verify_progress(self, spec_name: str) -> dict | None:
         """读取 verifier 断点进度文件（verifier-checkpoint-resume spec）。
@@ -1842,11 +2100,15 @@ class AgentRunner:
     def _supervision_settings(self) -> dict:
         return self._liveness._supervision_settings()
 
+    def _supervision_judge_timeout(self) -> float:
+        return self._liveness._supervision_judge_timeout()
+
     def _supervision_deadline_action(self, run_file: Path, spec_name: str | None,
                                      run_id: str, started_at: float,
                                      extensions_used: int,
-                                     judge=None) -> dict:
-        return self._liveness._supervision_deadline_action(run_file, spec_name, run_id, started_at, extensions_used, judge)
+                                     judge=None, agent_type: str | None = None) -> dict:
+        return self._liveness._supervision_deadline_action(
+            run_file, spec_name, run_id, started_at, extensions_used, judge, agent_type)
 
     def wait_for_running_agents(self, timeout: int = AGENT_TERMINATE_GRACE_SECONDS):
         return self._liveness.wait_for_running_agents(timeout)

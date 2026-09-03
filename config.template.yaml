@@ -59,6 +59,16 @@ agents:
   daily_run_limit: 300
   # Timeout in seconds for a single Agent run
   run_timeout_seconds: 3600
+  # run_timeout 按 agent_type 覆盖（per-agent-timeout-override）：键 ∈ 全部七类
+  # agent run（implementer/verifier/planner-plan/planner-judge/fast-track/repair/
+  # administrator）+ supervision-judge；agent run 值须为 ≥300 整数，supervision-judge
+  # 为 ≥1 整数。非法键值整条忽略（回退全局 run_timeout_seconds）并打 ERROR，其余合法键
+  # 正常生效；supervision 的 extension 总额与 absolute_max 护栏按覆盖后生效值派生，
+  # stuck 阈值派生保持全局默认值语义。缺省（不配置）时零行为变化。
+  timeout_overrides:
+    # planner-plan: 2700
+    # supervision-judge: 120
+
   # 超时活性监督（improve-run-lifecycle-governance D3）。run 到达
   # run_timeout_seconds 不再直接 kill，而是按下方矩阵判定是否续期：
   #   1. 总墙钟 ≥ absolute_max_seconds → 无条件终止（封闭续期的成本风险）；

@@ -139,19 +139,66 @@ class ImplBudget:
     def _reconcile_impl_budget(self, spec_name: str) -> None:
         """merge 成功/守卫放行后回读 used 与正常收工 run 数比对。
 
-        偏差记 WARNING 供人工发现；不自动改数（对账复杂化收益低）。
-        已知固有偏差源：provider 链耗尽的 run 不落产物——偏差日志需结合
-        这些因素人工判读。
+        lifecycle-hygiene 4.3：无豁免因素（保留上限/死亡豁免均不适用）的偏差
+        = 纯漂移，以 runs 实际计数为准**自动改写 used** 并留 INFO 校正日志
+        （含前后值），MUST NOT 保留静默漂移的旧值。
+        有豁免因素（runs 产物被归档/保留上限、死亡 run 豁免发生过）时沿用既有
+        WARN 不改数——自动改数会破坏豁免语义。
         """
         used = self._impl_run_budget_used(spec_name)
         completed = self._count_normal_completed_impl_runs(spec_name)
-        if used != completed:
+        if used == completed:
+            return
+        if self._budget_reconcile_has_exemption(spec_name):
             self._pm.logger.warning(
                 "pm_engine",
                 f"预算计数对账偏差: '{spec_name}' used={used} vs "
                 f"runs 目录正常收工 run 数={completed}"
-                f"（runs 产物有保留上限/链耗尽 run 不落产物，供人工核查，不自动改数）",
+                f"（存在豁免因素：runs 产物保留上限/归档 或 死亡 run 豁免，"
+                f"不自动改数，供人工核查）",
             )
+            return
+        # 纯漂移（无豁免因素）：以 runs 实际计数为准改写 used（design D5）
+        try:
+            self._pm.state_machine.update_spec(
+                spec_name, {IMPL_RUN_BUDGET_USED_FIELD: completed})
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预算对账校正写回失败 '{spec_name}': {e}",
+            )
+            return
+        self._pm.logger.info(
+            "pm_engine",
+            f"预算对账自动校正: '{spec_name}' used={used} → {completed}"
+            f"（runs 正常收工 run 数，无豁免因素；后续预算闸门按校正值生效）",
+        )
+
+    def _budget_reconcile_has_exemption(self, spec_name: str) -> bool:
+        """对账校正的豁免因素判定（lifecycle-hygiene 4.3 / design D5）。
+
+        任一命中即有豁免因素，不自动改数：
+        - 死亡 run 豁免发生过（_budget_exempt_runs > 0）：used 已回退，改数破坏豁免；
+        - runs 产物被归档/保留上限（.fenix/runs/archive/ 下存在该 spec 的 impl 产物）：
+          顶层计数不完整，改数会把 used 错误压到已归档前的值。
+        """
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        try:
+            exempt = int(entry.get(BUDGET_EXEMPT_RUNS_FIELD, 0) or 0)
+        except (TypeError, ValueError):
+            exempt = 0
+        if exempt > 0:
+            return True
+        runs_dir = self._pm.project_root / ".fenix" / "runs"
+        if runs_dir.is_dir():
+            archive_dir = runs_dir / "archive"
+            try:
+                if archive_dir.is_dir() and list(
+                        archive_dir.glob(f"impl-{spec_name}-*.jsonl")):
+                    return True
+            except OSError:
+                pass
+        return False
 
 
     def _count_normal_completed_impl_runs(self, spec_name: str) -> int:
