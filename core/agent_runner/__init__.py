@@ -23,6 +23,7 @@ from .runner import (  # noqa: F401
     AdminDisposition,
     AgentRunResult,
     AgentRunner,
+    SelfReviewResult,
     archive_spec_runs,
     run_spec_part,
 )

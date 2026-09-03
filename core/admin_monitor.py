@@ -186,7 +186,34 @@ class AdminMonitor:
         except Exception as e:
             self.logger.error(
                 "admin_monitor", f"Alert lifecycle scan failed: {e}")
+
+        # add-daily-self-review：每日自省调度检查点（design D1，挂在既有巡检
+        # 循环，不新增线程/定时器）。enabled && 本地时间 ≥ run_at && 今日未执行
+        # → 触发；enabled=false 全链路零动作。任何异常只记日志不阻断巡检。
+        try:
+            self._run_self_review_checkpoint()
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor", f"Self-review checkpoint failed: {e}")
         return family_signals + regular
+
+    def _run_self_review_checkpoint(self) -> dict:
+        """每日自省调度检查点（add-daily-self-review）。
+
+        延迟构造 SelfReviewScheduler（避免启动时导入链副作用），把 config/
+        state_machine/agent_runner 透传进去，由 scheduler.check_and_run 完成
+        判定与执行。返回调度结果 dict（供测试断言；巡检本身不消费返回值）。
+        """
+        from .self_review import SelfReviewScheduler
+        scheduler = SelfReviewScheduler(
+            config=self.config,
+            project_root=self.project_root,
+            logger=self.logger,
+            state_machine=self.state_machine,
+            agent_runner=self.agent_runner,
+            store=self.store,
+        )
+        return scheduler.check_and_run()
 
     def _run_alert_lifecycle(self, specs: dict) -> int:
         """告警自动闭环扫描（add-alert-auto-resolve design D1/D3/D4）。

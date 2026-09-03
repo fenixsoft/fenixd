@@ -175,6 +175,28 @@ class AdminDisposition:
         }
 
 
+class SelfReviewResult:
+    """每日自省 run 的结果（run_self_review 返回，add-daily-self-review）。
+
+    waste/mistakes/improvements 为三个小节条目列表（每条含证据与建议，
+    由 Agent 在回顾 JSON 中产出）；success=False 时 error 携带失败原因。
+    """
+
+    def __init__(self, run_id: str, date: str = "", success: bool = True,
+                 waste: list | None = None, mistakes: list | None = None,
+                 improvements: list | None = None, summary: str = "",
+                 error: str = "", output: str = ""):
+        self.run_id = run_id
+        self.date = date
+        self.success = success
+        self.waste = list(waste or [])
+        self.mistakes = list(mistakes or [])
+        self.improvements = list(improvements or [])
+        self.summary = summary
+        self.error = error
+        self.output = output
+
+
 
 class AgentRunner:
     """
@@ -447,6 +469,170 @@ class AgentRunner:
         elif not isinstance(sm, str):
             data["summary"] = str(sm)
         return data
+
+    # ── 每日自省 run（add-daily-self-review spec，design D2） ──────────
+
+    def run_self_review(self, date_str: str, daily_summary: str,
+                        todo_md: str | None = None) -> SelfReviewResult:
+        """唤起每日自省 run（Administrator 通道，design D2 复用语义）。
+
+        与 implementer/verifier 不同：自省是运维角色，直接在 main 树
+        （project_root）操作，不创建 worktree。特性：
+        - run_id 前缀 ``review-<date>``：独立前缀，不占 spec 维度预算、
+          不计入每日 agent run 计数（不走 _execute_agent）；
+        - token 归账到 cost-observability 独立类目
+          （.fenix/cost/self_review_tokens.json，design D2 二选一），不写
+          STATE（自省链路禁止注册 STATE 条目）；
+        - 超时走 agents.run_timeout_seconds 全局默认（_run_claude 内生效，
+          不设 override）。
+        - 模型与 Administrator 同解析链：agents.models.administrator 分配
+          优先，否则 admin.agent_model → 默认网关。
+
+        Agent 按 prompt 把回顾写入实例文件
+        ``.fenix/self_review_out-<run_id>.json``（JSON：
+        date/waste/mistakes/improvements/summary），run 结束读取并清理。
+        失败（异常/超时/rc!=0）返回 success=False（调度器记告警、当日
+        不重试）。
+
+        Args:
+            date_str: 自省归属自然日 YYYY-MM-DD（即 run_id 内嵌日期）。
+            daily_summary: 框架聚合的当日数据摘要（四源），注入 prompt。
+            todo_md: read_todo=true 时的既有 todo.md 全文；None 不注入。
+        """
+        run_id = f"review-{date_str}"
+        out_path = self.project_root / ".fenix" / f"self_review_out-{run_id}.json"
+        prompt = self._build_prompt(date_str, "self-review", detail={
+            "review_date": date_str,
+            "daily_summary": daily_summary or "",
+            "todo_md": todo_md or "",
+            "out_path": str(out_path),
+        })
+
+        # 模型解析链：与 Administrator 一致（自省由 Administrator Agent 执行）
+        env_overrides: Dict[str, str] = {}
+        assignment = self._get_agent_model_assignment("administrator")
+        if assignment:
+            provider, model_override = assignment[0]
+            env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
+            env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
+            env_overrides["ANTHROPIC_MODEL"] = model_override
+            env_overrides["CLAUDE_CONFIG_DIR"] = str(
+                self._ensure_agent_config_dir(provider["name"])
+            )
+            for k, v in (provider.get("env") or {}).items():
+                env_overrides[k] = v
+        else:
+            model_override = self._get_admin_model()
+
+        self._clear_self_review_out(out_path)
+        try:
+            output, turns, _session_id, usage_info = self._run_claude(
+                prompt, self.project_root, run_id, model_override, env_overrides,
+                max_turns=self._get_config("agents.max_turns", 300),
+                spec_name="self-review",
+            )
+            success = True
+            error = ""
+        except Exception as e:
+            output = ""
+            success = False
+            error = str(e)
+            usage_info = self._extract_usage_info(None)
+
+        # token 归账到独立类目（不写 STATE，硬约束）
+        self._accumulate_self_review_tokens(date_str, usage_info)
+
+        data = self._read_self_review_out(out_path)
+        self._delete_self_review_out(out_path)
+        return SelfReviewResult(
+            run_id=run_id,
+            date=date_str,
+            success=success,
+            waste=data.get("waste") or [],
+            mistakes=data.get("mistakes") or [],
+            improvements=data.get("improvements") or [],
+            summary=data.get("summary") or "",
+            error=error,
+            output=output,
+        )
+
+    def _clear_self_review_out(self, out_path: Path):
+        """清空本次自省 run 的输出文件（若残留），避免读到陈旧数据。"""
+        try:
+            if out_path.exists():
+                out_path.unlink()
+        except OSError:
+            pass
+
+    def _delete_self_review_out(self, out_path: Path):
+        """run 结束后删除自己的 self_review 输出实例文件。"""
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _read_self_review_out(self, out_path: Path) -> dict:
+        """读取自省 run 的回顾 JSON；缺失/损坏返回空 dict（调用方兜底）。"""
+        try:
+            data = json.loads(out_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        for field in ("waste", "mistakes", "improvements"):
+            val = data.get(field)
+            if not isinstance(val, list):
+                data[field] = []
+            else:
+                data[field] = [str(x) for x in val if x]
+        sm = data.get("summary")
+        if sm is None:
+            data["summary"] = ""
+        elif not isinstance(sm, str):
+            data["summary"] = str(sm)
+        return data
+
+    def _accumulate_self_review_tokens(self, date_str: str, usage_info: dict) -> None:
+        """add-daily-self-review：自省 token 归账到 cost-observability 独立类目。
+
+        design D2 二选一（独立 self-review 类目）：追加到
+        ``.fenix/cost/self_review_tokens.json`` 的 runs 数组（与
+        verify-progress tokens.json 同结构），供成本对账口径一致；不写
+        STATE（禁止注册 STATE 条目硬约束）。写失败静默降级（观测增强，
+        不阻断自省主流程）。
+        """
+        if not isinstance(usage_info, dict):
+            usage_info = {}
+        cost_dir = self.project_root / ".fenix" / "cost"
+        tokens_json = cost_dir / "self_review_tokens.json"
+        try:
+            tokens_json.parent.mkdir(parents=True, exist_ok=True)
+            data = {}
+            if tokens_json.is_file():
+                try:
+                    loaded = json.loads(tokens_json.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    loaded = {}
+                if isinstance(loaded, dict):
+                    data = loaded
+            runs = data.get("runs")
+            if not isinstance(runs, list):
+                runs = []
+            runs.append({
+                "agent_type": "self-review",
+                "date": date_str,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
+                + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
+                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
+                "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
+                "cost_usd": usage_info.get("cost_usd"),
+            })
+            data["runs"] = runs
+            tokens_json.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (OSError, json.JSONDecodeError):
+            pass
 
     def _get_admin_model(self) -> str:
         """Administrator 模型名：admin.agent_model > 默认网关 fallback 常量。"""
