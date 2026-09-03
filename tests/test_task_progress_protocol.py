@@ -274,5 +274,83 @@ class TestTaskProgressSyncFallback(unittest.TestCase):
         self.assertIn("- [x] 1.1 task 1", self._tasks_text())
 
 
+class TestRunProgressObservability(unittest.TestCase):
+    """run-progress-observability：run_task_progress / spec_summary.run_progress。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir)
+        (self.proot / ".fenix").mkdir()
+        _mk_spec_dir(self.proot, "demo")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_run(self, subjects, completed_task_ids):
+        runs_dir = self.proot / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for s in subjects:
+            lines.append(json.dumps({
+                "type": "assistant",
+                "message": {"content": [{
+                    "type": "tool_use", "name": "TaskCreate",
+                    "input": {"subject": s},
+                }]},
+            }))
+        for tid in completed_task_ids:
+            lines.append(json.dumps({
+                "type": "assistant",
+                "message": {"content": [{
+                    "type": "tool_use", "name": "TaskUpdate",
+                    "input": {"taskId": tid, "status": "completed"},
+                }]},
+            }))
+        (runs_dir / "impl-demo-1789001000.jsonl").write_text(
+            "\n".join(lines), encoding="utf-8")
+
+    def test_no_numbered_run_yields_progress(self):
+        """spec 场景：6 个 TaskCreate、1 个 completed（subject 无编号）→
+        run_progress = {"done": 1, "total": 6}，而非全 0。"""
+        from core.dashboard.data import run_task_progress
+        self._write_run([f"grouped task {i}" for i in range(6)], [1])
+        rp = run_task_progress(self.proot, "demo")
+        self.assertEqual(rp, {"done": 1, "total": 6})
+
+    def test_no_run_defaults_zero(self):
+        """spec 场景：无 impl run 记录 → {"done": 0, "total": 0}，不报错。"""
+        from core.dashboard.data import run_task_progress
+        self.assertEqual(run_task_progress(self.proot, "demo"),
+                         {"done": 0, "total": 0})
+
+    def test_spec_summary_has_run_progress(self):
+        """spec_summary 含 run_progress 字段（/api/specs 列表项数据源）。"""
+        from core.dashboard.data import spec_summary
+        self._write_run([f"grouped task {i}" for i in range(6)], [1, 2])
+        summary = spec_summary(self.proot, "demo", {"status": "implementing"})
+        self.assertEqual(summary["run_progress"], {"done": 2, "total": 6})
+
+    def test_spec_summary_run_progress_default_without_run(self):
+        from core.dashboard.data import spec_summary
+        summary = spec_summary(self.proot, "demo", {"status": "drafted"})
+        self.assertEqual(summary["run_progress"], {"done": 0, "total": 0})
+
+    def test_spec_detail_has_run_progress(self):
+        """spec_detail 含 run_progress 字段（详情页统计卡片数据源）。"""
+        from core.dashboard.data import spec_detail
+        self._write_run([f"grouped task {i}" for i in range(6)], [1])
+        detail = spec_detail(self.proot, "demo", {"status": "implementing"})
+        self.assertEqual(detail["run_progress"], {"done": 1, "total": 6})
+
+    def test_run_progress_numbered_subjects_counted(self):
+        """subject 带编号的合规 run：done 按 TaskUpdate 去重数（非 done_ids 数）。"""
+        from core.dashboard.data import run_task_progress
+        self._write_run(
+            [f"Task 1.{i}: t{i}" for i in range(1, 4)], [1, 2, 3])
+        rp = run_task_progress(self.proot, "demo")
+        self.assertEqual(rp, {"done": 3, "total": 3})
+
+
 if __name__ == "__main__":
     unittest.main()

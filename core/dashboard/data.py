@@ -886,6 +886,24 @@ def task_progress(project_root, spec_name, spec_status: str = ""):
     return done, total
 
 
+def run_task_progress(project_root, spec_name) -> dict:
+    """最新 impl run 的 harness 任务完成度（run-progress-observability D3）。
+
+    从最新 impl run 产物用 parse_run_task_done 解析：done = TaskUpdate completed
+    的 taskId 去重数（flat_done），total = created_count。**不依赖 TaskCreate
+    subject 是否内嵌 tasks.md 编号**——这正是它作为 tasks.md 快照失效时兜底
+    展示的资本。无 run / 解析失败为 {"done": 0, "total": 0}。
+    """
+    run_file = find_impl_run_file(project_root, spec_name)
+    if run_file is None:
+        return {"done": 0, "total": 0}
+    rd = parse_run_task_done(run_file)
+    return {
+        "done": len(rd.get("flat_done") or set()),
+        "total": int(rd.get("created_count") or 0),
+    }
+
+
 def count_scenarios(project_root, spec_name) -> int:
     """统计 SPEC 各 spec.md 中 Scenario 数量。"""
     specs_dir = Path(project_root) / "openspec" / "changes" / spec_name / "specs"
@@ -1759,6 +1777,9 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         "error": entry.get("error"),
         "task_done": done,
         "task_total": total,
+        # run 层实时进度（fix-implementer-task-progress D3）：tasks.md 快照失效
+        # （subject 无编号 / agent 不勾 tasks.md）时仍能看到 run 推进。
+        "run_progress": run_task_progress(project_root, spec_name),
         "verify_done": vp.get("done", 0),
         "verify_total": vp.get("total", 0),
         "verify_error": vp.get("error"),
@@ -2212,6 +2233,7 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "tester_run": entry.get("tester_run"),
         "depends_on": entry.get("depends_on"),
         "tasks": parse_tasks(project_root, spec_name, spec_status),
+        "run_progress": run_task_progress(project_root, spec_name),
         "verify_progress": parse_verify_progress(project_root, spec_name),
         "report": {
             "exists": report.get("exists", False),

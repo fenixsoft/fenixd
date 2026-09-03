@@ -38,11 +38,11 @@
 
 ## 3. run 层进度可见性（run-progress-observability）
 
-- [ ] 3.1 data.py 新增 `run_task_progress(proot, spec_name)`：复用 parse_run_task_done 输出返回 {done,total}，无 run/解析失败时 {0,0}
-- [ ] 3.2 `spec_summary` 增加 `run_progress` 字段（含 /api/specs 传播）
-- [ ] 3.3 前端任务进度展示：tasks.md 快照主刻度 + run_progress.done > 快照 done 时叠加 run 完成线索（表格列 + 详情统计卡片）
-- [ ] 3.4 重建 dist 并提交（core/dashboard/static/v3/dist/）
-- [ ] 3.5 测试：run_progress 字段存在性与计数断言；无 run 缺省 {0,0}
+- [x] 3.1 data.py 新增 `run_task_progress(proot, spec_name)`：复用 parse_run_task_done 输出返回 {done,total}，无 run/解析失败时 {0,0}
+- [x] 3.2 `spec_summary` 增加 `run_progress` 字段（含 /api/specs 传播）
+- [x] 3.3 前端任务进度展示：tasks.md 快照主刻度 + run_progress.done > 快照 done 时叠加 run 完成线索（表格列 + 详情统计卡片）
+- [x] 3.4 重建 dist 并提交（core/dashboard/static/v3/dist/）
+- [x] 3.5 测试：run_progress 字段存在性与计数断言；无 run 缺省 {0,0}
 
 ## 4. 端到端验证
 

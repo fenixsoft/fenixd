@@ -1012,6 +1012,17 @@ export default function SpecDetailPage() {
         {taskGroups.length > 0 ? (
           <>
             <ProgressBarTile done={completedTasks} total={totalTasks} />
+            {/* run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照
+                落后于 run 实际推进时叠加显示，不再静止 0/N */}
+            {detail?.run_progress && detail.run_progress.done > completedTasks ? (
+              <Typography.Text
+                type="warning"
+                data-testid="run-progress-hint"
+                style={{ display: 'block', marginTop: 6, fontSize: 12 }}
+              >
+                run {detail.run_progress.done}/{detail.run_progress.total} 已汇报
+              </Typography.Text>
+            ) : null}
             {proposalWhy ? (
               <div
                 style={{
