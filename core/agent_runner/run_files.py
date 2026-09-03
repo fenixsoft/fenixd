@@ -1,16 +1,20 @@
-"""run_files.py — .fenix/runs/ 运行产物写入与清理（refactor-core-packages 阶段 2）。
+"""run_files.py — .fenix/runs/ 运行产物写入与生命周期（refactor-core-packages 阶段 2）。
 
-模块级函数组件：append_run_line / append_run_error / clean_old_runs。
-门面 runner.py 转导这些名字，`from core.agent_runner import clean_old_runs`
-等外部 import 路径保持不变（spec core-package-structure「外部 API 零变化」）。
+模块级函数组件：append_run_line / append_run_error / run_spec_part /
+archive_spec_runs。门面 runner.py 转导这些名字，`from core.agent_runner
+import run_spec_part` 等外部 import 路径保持可用。
+
+产物保留语义（remove-auto-run-cleanup）：顶层产物只增不减，不设任何
+按数量/时间的自动清理；文件从顶层移入 archive/ 的唯一入口是所属 SPEC
+被归档（archive_spec_runs，由 bin/fenix_archive.py 调用）。
 """
 
 from pathlib import Path
 import json
+import logging
+import re
 
-# .fenix/runs/ 保留的最近运行产物数量上限（默认 50，见 D1 / spec agent-run-artifacts；
-# 超出部分归档至 runs/archive/ 而非删除，见 add-run-archive）
-RUNS_KEEP = 50
+_logger = logging.getLogger("fenixd.agent_runner.run_files")
 
 
 def append_run_line(run_file: Path, entry: dict) -> None:
@@ -29,38 +33,49 @@ def append_run_error(run_file: Path, error: str, exit_code: int) -> None:
     append_run_line(run_file, {"type": "error", "error": error, "exit_code": exit_code})
 
 
-def clean_old_runs(runs_dir: Path, keep: int = RUNS_KEEP, active_ids=None) -> int:
-    """归档 .fenix/runs/ 中超出保留上限的最旧产物，跳过受保护的产物。
+def run_spec_part(run_id: str) -> str:
+    """从 run_id 推断 spec 名（与 get_runs 的推断逻辑对齐，供索引分组使用）。
 
-    超限产物移入 runs_dir/archive/（add-run-archive：保留历史供 Dashboard
-    时间轴/运行记录回看），不再直接删除。同 run_id 的归档副本已存在时仅
-    删除活跃副本（内容同源，以归档为准）。
+    依次剥离 agent 类型前缀、attempt 段（-a<n>）与时间戳段（-<unix秒>）。
+    """
+    spec_part = run_id
+    for prefix in ("admin-", "planner-judge-", "planner-plan-",
+                   "planner-", "impl-", "verify-", "test-"):
+        if run_id.startswith(prefix):
+            spec_part = run_id[len(prefix):]
+            break
+    spec_part = re.sub(r"-a\d+$", "", spec_part)
+    m = re.match(r"^(.*)-\d{9,10}$", spec_part)
+    if m:
+        spec_part = m.group(1)
+    return spec_part
 
-    Args:
-        runs_dir: .fenix/runs/ 目录。
-        keep: 保留的最近产物数量（可配置，见 data.cleanup_runs 的 runs.keep）。
-        active_ids: 不归档的 run_id 集合——既含仍在增长的活动产物，也含
-            STATE.md 引用的历史产物（implementer_run/tester_run，清理时由
-            data.cleanup_runs 传入），被引用的 run 是 spec 时间轴数据源。
 
-    Returns: 归档（含去重删除）的文件数。
+def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
+    """把 runs_dir 顶层中属于 spec_name 的运行产物移入 runs_dir/archive/。
+
+    产物归档的唯一入口（remove-auto-run-cleanup）：SPEC 归档时由
+    bin/fenix_archive.py 调用，将数据生命周期绑定到 SPEC 生命周期。
+
+    仅扫描顶层 `*.jsonl`（不递归 archive/）；run_spec_part 与 spec_name
+    精确匹配的文件移入 archive/。同 run_id 的归档副本已存在时仅删除顶层
+    副本（内容同源，以归档为准）。单文件 OSError 记 warning 继续处理
+    其余文件。不删除任何其他文件，不修改文件内容。
+
+    Returns: 成功归档（含去重删除）的文件数；runs_dir 不存在返回 0。
     """
     if not runs_dir.is_dir():
         return 0
-    active_ids = set(active_ids or ())
     try:
         candidates = [
             p for p in runs_dir.glob("*.jsonl")
-            if p.stem not in active_ids
+            if run_spec_part(p.stem) == spec_name
         ]
     except OSError:
         return 0
-    # 按最近修改时间排序，旧的在前
-    candidates.sort(key=lambda p: p.stat().st_mtime)
-    removed = 0
+    moved = 0
     archive_dir = runs_dir / "archive"
-    while len(candidates) > keep:
-        victim = candidates.pop(0)
+    for victim in candidates:
         try:
             archive_dir.mkdir(parents=True, exist_ok=True)
             dest = archive_dir / victim.name
@@ -68,7 +83,8 @@ def clean_old_runs(runs_dir: Path, keep: int = RUNS_KEEP, active_ids=None) -> in
                 victim.unlink()
             else:
                 victim.replace(dest)
-            removed += 1
-        except OSError:
+            moved += 1
+        except OSError as e:
+            _logger.warning("archive_spec_runs: 无法归档 %s: %s", victim, e)
             continue
-    return removed
+    return moved

@@ -134,10 +134,38 @@ class PMEngine:
 
     def _on_spec_drafted(self, spec_name: str):
         """Auto-promote drafted → ready, then immediately schedule implementer."""
+        # 晋升 lint（deliverables 声明形态机械校验）：不可满足/失效声明在撰写
+        # 当下拦截，不再等到收工守卫才暴露（判定发生在一次完整 run 之后，
+        # 形态错误代价 = 一轮 run + 打回循环）。违规保持 drafted 并写 error，
+        # 修正 tasks.md 后重新晋升触发。lint 自身故障 fail-open 放行。
+        violations = self._lint_deliverable_declarations(spec_name)
+        if violations:
+            err = "Deliverables 声明 lint 未通过：" + "；".join(violations)
+            self.logger.error(
+                "pm_engine", f"Promotion lint failed '{spec_name}': {err}",
+            )
+            self.state_machine.update_spec(spec_name, {"error": err})
+            return
         self.logger.info("pm_engine", f"Auto-promoting '{spec_name}': drafted → ready")
         self.state_machine.transition(spec_name, "ready")
         # 直接调用 _on_spec_ready 排队实现，不依赖事件循环
         self._on_spec_ready(spec_name)
+
+    def _lint_deliverable_declarations(self, spec_name: str) -> list:
+        """Deliverables 声明形态 lint（晋升前拦截，fail-open）。"""
+        from core.deliverables import lint_declared
+
+        spec_dir = self.project_root / "openspec" / "changes" / spec_name
+        if not spec_dir.is_dir():
+            return []
+        try:
+            return lint_declared(spec_dir, self.project_root)
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"Deliverables lint 异常 '{spec_name}'（非阻塞放行）: {e}",
+            )
+            return []
 
     def _on_spec_ready(self, spec_name: str):
         """Schedule implementer for ready SPEC (if dependencies are satisfied)."""
@@ -279,7 +307,8 @@ class PMEngine:
             self.logger.info("pm_engine", f"Verification passed: '{spec_name}' → done")
             if self.state_machine.transition(spec_name, "done"):
                 # add-done-duration-persist（D1/D2）：done 落定时刻把总耗时快照进
-                # STATE.md，使耗时不再依赖易失的 run 产物（RUNS_KEEP 清理后归零）。
+                # STATE.md，使耗时不再依赖易失的 run 产物（run 产物只增不减，
+                # 但快照保证耗时独立于产物回读路径）。
                 # 求和口径与 spec_summary 一致（duration_seconds 求和、含归档），
                 # 保证写入值 = 当时列表页显示值。仅在转换成功后写入，重复事件回放
                 # （done→done 非法转换返回 False）不会重复覆盖。
@@ -475,6 +504,14 @@ class PMEngine:
                         f"spec='{stamped}' != '{spec_name}'",
                     )
                     return None
+                # 顶层 status 与 verification.verdict 混淆归一化（add-agent-prompt-files
+                # 事故 2026-09-03）：agent 把 verdict 值写到顶层 status（如
+                # status="verified" 且 verification.verdict=verified），语义上完全成功
+                # 的 run 被判失败整轮作废重派。verdict 语义本就由内层承载，顶层合同
+                # 唯一合法值是 "success"——status ∈ verdict 值域时确定性映射，不吞
+                # 真失败（其他非法值仍走失败分支并带处方）。
+                if data.get("status") in ("verified", "bug-found"):
+                    data["status"] = "success"
                 return data
         except (json.JSONDecodeError, OSError):
             pass
@@ -1928,6 +1965,36 @@ class PMEngine:
     def _run_fast_track_worker(self, spec_name: str) -> None:
         """fast-track 单 run 全包 worker（add-fast-track-mode D1/D4/D5/D6）。"""
         return self._dispatcher._run_fast_track_worker(spec_name)
+
+    def _should_enter_repair(self, spec_name: str, merge_info, streak: int,
+                             breaker_threshold: int) -> bool:
+        """merge-back 语义冲突失败是否进入 repair 通道（add-merge-back-repair-lane）。"""
+        return self._dispatcher._should_enter_repair(
+            spec_name, merge_info, streak, breaker_threshold)
+
+    def _dispatch_repair_lane(self, spec_name: str, merge_info, branch: str,
+                              fp: str | None = None, streak: int = 0) -> None:
+        """进入 repair 通道（载体三态解析 + 认领现场 + 派发 repair worker）。"""
+        return self._dispatcher._dispatch_repair_lane(
+            spec_name, merge_info, branch, fp=fp, streak=streak)
+
+    def _claim_repair_site(self, spec_name: str, wt_path, branch: str) -> None:
+        """认领 repair 现场（_legacy take 摘出 + _spec_locks 注册）。"""
+        return self._dispatcher._claim_repair_site(spec_name, wt_path, branch)
+
+    def _run_repair_worker(self, spec_name: str, wt_path, branch: str, merge_info) -> None:
+        """repair worker：派发 repair agent → re-merge-back → 状态推进。"""
+        return self._dispatcher._run_repair_worker(spec_name, wt_path, branch, merge_info)
+
+    def _handle_remerge_failure(self, spec_name: str, remerge_info, branch: str) -> None:
+        """repair 后 re-merge-back 失败处理（熔断连续累计 + 下一轮 repair/fallback）。"""
+        return self._dispatcher._handle_remerge_failure(spec_name, remerge_info, branch)
+
+    def _fallback_after_repair(self, spec_name: str, branch: str | None,
+                               repair_error: str, merge_error: str = "") -> None:
+        """repair 链失败回退：全新重派 implementer（prompt 注入 merge 失败上下文）。"""
+        return self._dispatcher._fallback_after_repair(
+            spec_name, branch, repair_error, merge_error=merge_error)
 
     def _recovery_watch_path(self) -> Path:
         return self._recovery._recovery_watch_path()

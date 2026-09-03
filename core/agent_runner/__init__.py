@@ -14,7 +14,7 @@
 
 对外 API 兼容保证（spec core-package-structure「外部 API 零变化」）：
 `fenixd.py` 的 `from core.agent_runner import AgentRunner`、
-`core/dashboard/data.py` 的 `from core.agent_runner import clean_old_runs`、
+`core/dashboard/data.py` 的 `from core.agent_runner.run_files import run_spec_part`、
 测试的常量导入与 `agent_runner_module.subprocess` 这类模块属性补丁缝隙
 全部保持可用。核心导出显式列出，其余经 `from .runner import *` 转导。
 """
@@ -23,6 +23,7 @@ from .runner import (  # noqa: F401
     AdminDisposition,
     AgentRunResult,
     AgentRunner,
-    clean_old_runs,
+    archive_spec_runs,
+    run_spec_part,
 )
 from .runner import *  # noqa: F401,F403

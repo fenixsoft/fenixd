@@ -15,6 +15,8 @@ from pathlib import Path
 
 # 项目根（经 .fenix/bin/ 软链接调用时 = 项目目录）
 PROJECT_ROOT = Path(__file__).absolute().parent.parent.parent
+# 框架根（.resolve() 跟随 .fenix 软链接，定位真实安装位置）：core/ 所在目录
+FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
 
 
 def archive_change(project_root: Path, name: str) -> dict:
@@ -41,7 +43,24 @@ def archive_change(project_root: Path, name: str) -> dict:
 
     target.parent.mkdir(parents=True, exist_ok=True)
     moved = Path(shutil.move(str(change_dir), str(target)))
-    return {"from": str(change_dir), "to": str(moved)}
+    result = {"from": str(change_dir), "to": str(moved)}
+
+    # remove-auto-run-cleanup：run 产物归档的唯一入口 = SPEC 归档。
+    # change 目录移动成功后，把 .fenix/runs/ 顶层属于该 spec 的产物移入
+    # archive/（不删除任何文件）。fail-open（design D4）：runs 归档失败
+    # 仅在返回 dict 追加告警字段，不阻断 change 归档主流程。
+    # core 从框架根导入（对齐 fenix_spec.py FRAMEWORK_ROOT 先例）：自举仓库
+    # 下即 project_root，第三方项目下跟随 .fenix 软链接定位安装位置。
+    if str(FRAMEWORK_ROOT) not in sys.path:
+        sys.path.insert(0, str(FRAMEWORK_ROOT))
+    try:
+        from core.agent_runner.run_files import archive_spec_runs
+        result["runs_archived"] = archive_spec_runs(
+            project_root / ".fenix" / "runs", name
+        )
+    except (OSError, ImportError) as e:
+        result["runs_archive_warning"] = str(e)
+    return result
 
 
 def main():
@@ -59,6 +78,9 @@ def main():
     try:
         result = archive_change(project_root, args.name)
         payload = {"ok": True, "from": result["from"], "to": result["to"], "error": None}
+        for key in ("runs_archived", "runs_archive_warning"):
+            if key in result:
+                payload[key] = result[key]
     except ValueError as e:
         payload = {"ok": False, "from": None, "to": None, "error": str(e)}
 

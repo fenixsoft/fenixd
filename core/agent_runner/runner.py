@@ -40,10 +40,10 @@ from core.agent_runner.provider_circuit import (
     ProviderCircuit,
 )
 from core.agent_runner.run_files import (
-    RUNS_KEEP,
+    archive_spec_runs,
     append_run_error,
     append_run_line,
-    clean_old_runs,
+    run_spec_part,
 )
 from core.agent_runner.token_budget import TokenAccountant
 from core.agent_runner.v2_server import V2ServerManager
@@ -269,6 +269,34 @@ class AgentRunner:
         """
         run_id = f"impl-{spec_name}-{int(time.time())}"
         return self._execute_agent(spec_name, "fast-track", run_id)
+
+    def run_repair(self, spec_name: str, wt_path: Path,
+                   conflict_summary: dict | None = None) -> AgentRunResult:
+        """Run the Repair Agent for a SPEC in an existing worktree.
+
+        add-merge-back-repair-lane D5：merge-back 语义冲突失败后，在实现分支
+        一侧原地修复（把 main 合进分支、解决冲突、跑测试、commit）。与普通
+        implementer 的差异：
+        - run_id 前缀 ``repair-<spec>-<ts>``（Dashboard/runs 可辨识，不计入
+          fix 族谱；repair<->fix 异名不触发同根互斥）；
+        - **不创建新 worktree**：使用调度层解析好的 repair 载体（原地或换壳）；
+        - token 记所属 spec 名下（走既有 ``_accumulate_token_usage`` ——
+          repair agent 的消耗计入实现预算，design「repair 轮计入该 spec 的
+          实现预算」）；
+        - worktree 生命周期交由调用层（dispatch）管理：成功与失败都不清理
+          worktree（worktree_kept=True），保证多轮 repair 可原地复用或终态回收。
+
+        Args:
+            spec_name: SPEC 名称。
+            wt_path: repair 载体 worktree 路径（调度层经三态解析）。
+            conflict_summary: 冲突分类摘要 dict（prompt 注入，缺省 {}）。
+        """
+        run_id = f"repair-{spec_name}-{int(time.time())}"
+        return self._execute_agent(
+            spec_name, "repair", run_id,
+            pre_wt_path=wt_path,
+            conflict_summary=conflict_summary or {},
+        )
 
     def run_administrator(self, signal: dict) -> AdminDisposition:
         """唤起 Administrator Agent 处置困境信号（administrator-agent spec）。
@@ -525,7 +553,9 @@ class AgentRunner:
             return idx
         return -1
 
-    def _execute_agent(self, spec_name: str, agent_type: str, run_id: str) -> AgentRunResult:
+    def _execute_agent(self, spec_name: str, agent_type: str, run_id: str,
+                       pre_wt_path: Path | None = None,
+                       conflict_summary: dict | None = None) -> AgentRunResult:
         """Core agent execution logic with retry support.
 
         fix-fenix-token-waste：
@@ -544,10 +574,15 @@ class AgentRunner:
         - 全链冷却 → 直接失败返回（chain_exhausted，不启动进程、不消耗 spec 重试）。
         - 切换后 CLAUDE_CONFIG_DIR 隔离目录随候选同步切换；run jsonl 写 provider_marker；
           AgentRunResult 带 provider_used/model_used；每 provider 当日计数超阈值告警。
+
+        add-merge-back-repair-lane（D5）：repair run 传入 ``pre_wt_path``
+        （调度层解析好的实现分支载体 worktree）与 ``conflict_summary``
+        （prompt 注入）。pre_wt_path 非 None 时**不创建新 worktree**，
+        直接在该 worktree 内工作——repair 原地修复语义。
         """
         max_retries = self._get_config("agents.max_retries", 3)
         start_time = time.time()
-        wt_path = None
+        wt_path = pre_wt_path
         session_id = None
         # session_id 所属 provider（None=默认网关）：session 存在于其创建时的
         # CLAUDE_CONFIG_DIR，跨 provider 续跑必然 'No conversation found'（fix）。
@@ -638,8 +673,13 @@ class AgentRunner:
                 # 切换打点依赖 last_provider_used。
                 self._record_daily_provider_attempt(provider_name)
 
-            # fast-track 与 implementer 同语义：跨 attempt 复用同一 worktree（失败续跑）
-            reuse_worktree = (agent_type in ("implementer", "fast-track") and wt_path is not None)
+            # fast-track 与 implementer 同语义：跨 attempt 复用同一 worktree（失败续跑）。
+            # repair 沿用同一语义：repair run 的 attempt 复用同一个 repair worktree
+            #（add-merge-back-repair-lane——worktree 由调度层解析，内部 attempt 不重造）。
+            reuse_worktree = (
+                agent_type in ("implementer", "fast-track", "repair")
+                and wt_path is not None
+            )
 
             # 跨 attempt 切换打点（design D5 / spec failover-dispatch「切换留痕」）：
             # 本次实际使用的 provider 与上一次不同 → 输出 "provider switched" 日志；
@@ -700,7 +740,13 @@ class AgentRunner:
 
             # Build and execute the prompt
             try:
-                prompt = self._build_prompt(spec_name, agent_type)
+                if agent_type == "repair":
+                    # repair prompt 注入冲突摘要（add-merge-back-repair-lane D5）
+                    prompt = self._build_prompt(
+                        spec_name, agent_type, detail=conflict_summary or {},
+                    )
+                else:
+                    prompt = self._build_prompt(spec_name, agent_type)
                 env_overrides: Dict[str, str] = {}
                 # add-worktree-test-server（D1 注入）：把该 worktree 专属 dev-server 地址
                 # 注入 agent 运行环境，使 Playwright baseURL 指向 worktree 副本而非主 8787。
@@ -829,8 +875,20 @@ class AgentRunner:
                     )
                     if st.returncode == 0:
                         wt_dirty = [l for l in st.stdout.splitlines() if l.strip()]
-                if agent_type == "fast-track":
-                    pass  # 延迟清理：worktree 与 dev-server 均交由 dispatch 层处置
+                elif agent_type == "repair":
+                    # repair 现场取证：冲突解决是否已 commit（dispatch 层据此
+                    # 判断 re-merge-back 前的现场状态，add-merge-back-repair-lane）。
+                    st = subprocess.run(
+                        ["git", "-C", str(wt_path), "status", "--porcelain"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    if st.returncode == 0:
+                        wt_dirty = [l for l in st.stdout.splitlines() if l.strip()]
+                # add-merge-back-repair-lane：repair 与 fast-track 同语义，
+                # 成功不清理 worktree——冲突解决成果仍在分支上，交给 dispatch
+                # 层的 re-merge-back 决定终态；多轮 repair 需原地复用现场。
+                if agent_type in ("fast-track", "repair"):
+                    pass  # 延迟清理：worktree 与 dev-server 均由 dispatch 层处置
                 else:
                     self._v2_stop_for_worktree(wt_path)
                     # 成功：清理 worktree（保留分支供 merge-back），返回结果
@@ -853,7 +911,7 @@ class AgentRunner:
                     turns_used=turns, output=output,
                     branch=branch, provider_used=provider_name, model_used=model,
                     worktree_dirty=wt_dirty,
-                    worktree_path=(wt_path if agent_type == "fast-track" else None),
+                    worktree_path=(wt_path if agent_type in ("fast-track", "repair") else None),
                 )
             else:
                 self.logger.warning(
@@ -863,14 +921,16 @@ class AgentRunner:
                 )
                 # 失败后的 worktree 处理（worktree-reuse：fast-track 与 implementer
                 # 同语义，跨 attempt 复用同一 worktree 续跑）：
-                # - implementer / fast-track 且还有重试：保留 worktree（连同其
+                # - implementer / fast-track / repair 且还有重试：保留 worktree（连同其
                 #   dev-server），下次 attempt 续跑；dev-server 随之复用，不重复启停。
                 # - fast-track 终态失败：保留目录与分支登记为复用遗产，下轮重派在同一
                 #   worktree 继承上一轮成果（不再从零重做）。
+                # - repair 终态失败：保留 worktree（add-merge-back-repair-lane：
+                #   worktree 生命周期交由 dispatch 层——fallback 或下一轮复用）。
                 # - 其他 / 终态失败：清理 worktree 并回收其 dev-server，下次 attempt 全新创建。
                 if attempt < max_retries:
                     time.sleep(10)  # Wait before retry
-                    if agent_type not in ("implementer", "fast-track"):
+                    if agent_type not in ("implementer", "fast-track", "repair"):
                         self._v2_stop_for_worktree(wt_path)
                         self.worktree_manager.cleanup(wt_path, success=False)
                         wt_path = None
@@ -878,6 +938,9 @@ class AgentRunner:
                     self._v2_stop_for_worktree(wt_path)
                     if agent_type == "fast-track":
                         self.worktree_manager.keep_for_reuse(spec_name, wt_path)
+                        kept_wt_path = wt_path
+                    elif agent_type == "repair":
+                        # 终态失败保留现场：dispatch 层负责回收（fallback 清理）
                         kept_wt_path = wt_path
                     else:
                         self.worktree_manager.cleanup(wt_path, success=False)

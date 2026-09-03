@@ -63,6 +63,53 @@ def _is_build_artifact_path(path: str) -> bool:
     return len(parts) >= 2 and "dist" in parts[:-1]
 
 
+class MergeConflictInfo:
+    """merge-back 返回值：兼容 ``(bool, str)`` 元组解包的结构化冲突分类。
+
+    add-merge-back-repair-lane D1「git 层判定、调度层决策」：worktree_manager
+    保持纯 git 操作层，merge-back 失败时在返回值里附带结构化冲突分类（冲突
+    路径清单 + 是否仍有语义冲突），**是否进入 repair 通道由调度层决策**。
+
+    既有调用方 ``success, err = merge_back_from_branch(...)`` 照常解包
+    （``__iter__`` 按 ``(success, error)`` 顺序产出）；调度层可读取结构化
+    字段（``conflict_paths`` / ``has_semantic_conflict``）判断是否派发
+    repair agent。
+    """
+
+    __slots__ = (
+        "success", "error", "conflict_paths",
+        "self_heal_applicable", "self_heal_succeeded", "has_semantic_conflict",
+    )
+
+    def __init__(self, success: bool, error: str,
+                 conflict_paths: list | None = None,
+                 self_heal_applicable: bool = False,
+                 self_heal_succeeded: bool = False,
+                 has_semantic_conflict: bool = False):
+        self.success = bool(success)
+        self.error = error
+        self.conflict_paths = list(conflict_paths or [])
+        self.self_heal_applicable = self_heal_applicable
+        self.self_heal_succeeded = self_heal_succeeded
+        self.has_semantic_conflict = has_semantic_conflict
+
+    def __iter__(self):
+        """兼容 (bool, str) 解包：既有调用方 ``success, err = ...`` 照常工作。"""
+        yield self.success
+        yield self.error
+
+    def __bool__(self) -> bool:
+        return self.success
+
+    def __repr__(self) -> str:
+        return (
+            f"MergeConflictInfo(success={self.success}, error={self.error!r}, "
+            f"conflict_paths={self.conflict_paths}, "
+            f"self_heal={self.self_heal_applicable}/{self.self_heal_succeeded}, "
+            f"semantic={self.has_semantic_conflict})"
+        )
+
+
 class WorktreeManager:
     """
     Manage git worktree lifecycle for Agent isolation.
@@ -1334,6 +1381,35 @@ class WorktreeManager:
                 paths.add(tab[1].strip())
         return sorted(paths)
 
+    def _collect_conflict_paths(self) -> list:
+        """枚举主树 merge 冲突挂起态的冲突路径（自愈判定与 repair 分类共用）。
+
+        add-merge-back-repair-lane D1：与 ``_resolve_build_artifact_conflicts``
+        同一采集口径（``git status --porcelain`` 中 unmerged 状态码的路径，
+        rename ``old -> new`` 双胞胎两侧都计入），确保「产物自愈已尝试仍失败」的
+        冲突分类与实际自愈判定一致。非冲突态/命令失败返回空列表。
+        """
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(self.project_root), "status", "--porcelain"],
+                capture_output=True, text=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            return []
+        if res.returncode != 0:
+            return []
+        conflict_paths: list = []
+        for line in res.stdout.splitlines():
+            st = line[:2]
+            if not ("U" in st or st in ("AA", "DD", "AU", "UA", "DU", "UD")):
+                continue
+            path = line[3:].strip()
+            if " -> " in path:
+                conflict_paths.extend(p.strip() for p in path.split(" -> "))
+            else:
+                conflict_paths.append(path)
+        return [p for p in conflict_paths if p]
+
     def _heal_unmerged_files(self, conflict_files: list) -> None:
         """对 UU 文件执行自愈：丢弃 stash 版本、保留 merge 结果、清空 index。
 
@@ -1446,7 +1522,7 @@ class WorktreeManager:
         """Return the branch name for an active worktree, or None if unknown."""
         return self._wt_branches.get(str(wt_path))
 
-    def merge_back_from_branch(self, branch: str) -> tuple:
+    def merge_back_from_branch(self, branch: str) -> MergeConflictInfo:
         """Merge a worktree branch into the main tree (project_root HEAD).
 
         与 merge_back(wt_path) 等价，但直接接受分支名。用于 worktree 已被清理、
@@ -1458,10 +1534,13 @@ class WorktreeManager:
         滞留在 stash 栈（曾致 7 次改动"消失"事故）。段内 pop 弹到的必是刚 push
         的条目（锁串行 + LIFO），历史滞留条目由周期巡检兜底回收。
 
-        Returns: (success: bool, error_message: str)
+        Returns: ``MergeConflictInfo``——兼容 ``(bool, str)`` 解包
+        （``success, err = merge_back_from_branch(...)``），额外携带冲突路径
+        清单与语义冲突分类（add-merge-back-repair-lane D1，供调度层决定是否
+        进入 repair 通道）。
         """
         if not branch:
-            return False, "Empty branch name"
+            return MergeConflictInfo(False, "Empty branch name")
 
         with self._main_tree_lock:
             self.last_stash_pop_conflicts = []
@@ -1474,8 +1553,13 @@ class WorktreeManager:
                     if conflict_files:
                         self.last_stash_pop_conflicts = list(conflict_files)
 
-    def _merge_back_from_branch_locked(self, branch: str) -> tuple:
-        """merge_back_from_branch 的实现体，调用方必须已持有 _main_tree_lock。"""
+    def _merge_back_from_branch_locked(self, branch: str) -> MergeConflictInfo:
+        """merge_back_from_branch 的实现体，调用方必须已持有 _main_tree_lock。
+
+        Returns: ``MergeConflictInfo``——兼容 ``(bool, str)`` 解包，额外携带
+        冲突路径清单与语义冲突分类（add-merge-back-repair-lane D1，供调度层
+        决定是否进入 repair 通道）。
+        """
         try:
             # Idempotency check: is branch already an ancestor of HEAD?
             ancestor = subprocess.run(
@@ -1488,7 +1572,7 @@ class WorktreeManager:
                     "worktree_manager",
                     f"Branch '{branch}' already merged — skipping merge-back",
                 )
-                return True, "already merged"
+                return MergeConflictInfo(True, "already merged")
 
             # merge 前按 implementer 分支新增路径，把主树中冲突的 untracked 文件移开
             # （Layer 2 兜底，fix-merge-untracked-guard 泛化）：即使 spec 未被
@@ -1536,7 +1620,7 @@ class WorktreeManager:
                     "worktree_manager",
                     f"Merged branch '{branch}' into main tree",
                 )
-                return True, ""
+                return MergeConflictInfo(True, "")
 
             error = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
             self.logger.error(
@@ -1559,7 +1643,9 @@ class WorktreeManager:
                     f"Merge conflict self-healed (build artifacts aligned to "
                     f"branch) for branch '{branch}'",
                 )
-                return True, ""
+                return MergeConflictInfo(
+                    True, "", self_heal_applicable=True, self_heal_succeeded=True,
+                )
             # merge 冲突自愈（fix-merge-modify-delete-ignored）：modify/delete 冲突
             # 且全部冲突路径都是 .gitignore 忽略的运行时草稿时，采纳主树侧的删除。
             # 场景：run-result 类草稿在移出版本控制前派生的旧分支上被改动，与主树的
@@ -1571,14 +1657,28 @@ class WorktreeManager:
                     f"Merge conflict self-healed (modify/delete on ignored files) "
                     f"for branch '{branch}'",
                 )
-                return True, ""
-                self._drop_backup(backup)
-                self.logger.info(
-                    "worktree_manager",
-                    f"Merge conflict self-healed (build artifacts aligned to "
-                    f"branch) for branch '{branch}'",
+                return MergeConflictInfo(
+                    True, "", self_heal_applicable=True, self_heal_succeeded=True,
                 )
-                return True, ""
+            # ── 语义冲突分类收集（add-merge-back-repair-lane D1）────────────
+            # 两级自愈均不适用（冲突含非产物语义文件）时，在 abort **之前**采集
+            # unmerged 冲突路径清单，并判定是否仍含语义冲突。返回的
+            # MergeConflictInfo 携带结构化分类，供调度层决定是否进入 repair 通道；
+            # 主树 abort 后保持干净（merge --abort 本身幂等，重复 abort 无害）。
+            conflict_paths = self._collect_conflict_paths()
+            self_heal_applicable = bool(conflict_paths) and all(
+                _is_build_artifact_path(p) for p in conflict_paths
+            )
+            has_semantic_conflict = any(
+                not _is_build_artifact_path(p) for p in conflict_paths
+            )
+            if conflict_paths:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Merge conflict not self-healable for branch '{branch}': "
+                    f"{len(conflict_paths)} path(s), "
+                    f"semantic={has_semantic_conflict} — collecting for repair decision",
+                )
             # Abort the merge so main tree is left clean for retry
             subprocess.run(
                 ["git", "-C", str(self.project_root), "merge", "--abort"],
@@ -1586,12 +1686,17 @@ class WorktreeManager:
             )
             # 恢复被移开的 untracked 文件（不丢数据，供下一轮重试）
             self._restore_backup(backup)
-            return False, error
+            return MergeConflictInfo(
+                False, error,
+                conflict_paths=conflict_paths,
+                self_heal_applicable=self_heal_applicable,
+                has_semantic_conflict=has_semantic_conflict,
+            )
 
         except subprocess.TimeoutExpired:
-            return False, "git merge timed out after 120s"
+            return MergeConflictInfo(False, "git merge timed out after 120s")
         except Exception as e:
-            return False, str(e)
+            return MergeConflictInfo(False, str(e))
 
     def _resolve_build_artifact_conflicts(self, branch: str) -> bool:
         """merge 冲突自愈：全部冲突路径位于构建产物目录时，完成 merge。
@@ -2061,18 +2166,19 @@ class WorktreeManager:
         except (subprocess.TimeoutExpired, OSError):
             return False
 
-    def merge_back(self, wt_path: Path) -> tuple:
+    def merge_back(self, wt_path: Path) -> MergeConflictInfo:
         """Merge the worktree's branch into the main tree (project_root HEAD).
 
         Uses `git merge --no-ff` to preserve history. Idempotent: if the branch
         is already an ancestor of HEAD, skips and reports success.
 
-        Returns: (success: bool, error_message: str)
+        Returns: ``MergeConflictInfo``（兼容 ``(bool, str)`` 解包）。
         """
         wt_str = str(wt_path)
         branch = self._wt_branches.get(wt_str)
         if not branch:
-            return False, f"Unknown worktree (no branch recorded): {wt_path}"
+            return MergeConflictInfo(
+                False, f"Unknown worktree (no branch recorded): {wt_path}")
         return self.merge_back_from_branch(branch)
 
     def find_implementer_worktree(self, spec_name: str) -> Optional[Path]:
@@ -2108,7 +2214,7 @@ class WorktreeManager:
             rel_path: 相对项目根的交付路径（如 ``core/foo.py``）
 
         Returns:
-            True 表示分支 HEAD 包含该路径（blob 或 tree 均可，blob 才算真正落地）。
+            True 表示分支 HEAD 包含该路径（blob 文件，或非空 tree 目录）。
             分支为空 / 不存在 / 路径不存在时返回 False。
         """
         if not branch or not rel_path:
@@ -2122,14 +2228,173 @@ class WorktreeManager:
             )
             if result.returncode != 0:
                 return False
-            # 必须是 blob（文件），tree（目录）不算落地交付物。
             kind = subprocess.run(
                 ["git", "-C", str(self.project_root),
                  "cat-file", "-t", f"{branch}:{rel_path}"],
                 capture_output=True, text=True, timeout=30,
             )
-            return kind.returncode == 0 and kind.stdout.strip() == "blob"
+            if kind.returncode != 0:
+                return False
+            # blob（文件）= 落地交付物；tree（目录）同样算落地——git 不追踪空目录，
+            # path 为 tree 必然内含文件（如构建产物 dist/ 整目录声明）。
+            # 曾为 blob-only：目录声明成为不可满足契约 → 收工守卫确定性缺件 →
+            # 打回循环烧预算至 blocked（remove-auto-run-cleanup 死锁事故 2026-09-03）。
+            # symlink 等其余类型不算。
+            return kind.stdout.strip() in ("blob", "tree")
         except subprocess.TimeoutExpired:
             return False
         except Exception:
             return False
+
+    # ── repair 通道：分支载体解析（add-merge-back-repair-lane D3）────────────
+    # repair 以「git 事实」为判定基准（git worktree list + 分支解析），不信任
+    # 内存表（daemon 重启即失）。三态：
+    #   (a) 原 worktree 在 → 原地进入（保留 node_modules/构建缓存）
+    #   (b) worktree 清但分支在 → 在分支上新建 worktree（checkout 既有分支）
+    #   (c) 分支不在 → 回退 fallback（调度层决议，本层返回 None）
+
+    def create_worktree_on_branch(self, spec_name: str, branch: str) -> Optional[Path]:
+        """在既有分支上创建 worktree（checkout 而非 ``-b`` 新建），供 repair 换壳。
+
+        worktree 目录名 ``repair-<spec>-<ts>``（区别于 impl-/verify- 前缀，
+        Dashboard/runs 检索据此辨识）。仅登记活动集与分支映射，不 seed spec
+        文件（分支已含实现历史，spec 文档已在其中）。
+
+        Returns: worktree 路径，失败（分支不存在/该分支已有 worktree/git
+        错误/异常）返回 None。
+        """
+        if not branch:
+            return None
+        timestamp = int(time.time())
+        wt_name = f"repair-{spec_name}-{timestamp}"
+        wt_path = self.base_dir / wt_name
+        try:
+            # 分支必须存在（rev-parse --verify 精确校验，防 typo 分支名）
+            verify = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "rev-parse", "--verify", branch],
+                capture_output=True, text=True, timeout=10,
+            )
+            if verify.returncode != 0:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"create_worktree_on_branch: branch '{branch}' not found — "
+                    f"cannot re-shell repair site for '{spec_name}'",
+                )
+                return None
+            result = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "worktree", "add", str(wt_path), branch],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                self.logger.error(
+                    "worktree_manager",
+                    f"Failed to create worktree on branch '{branch}': {result.stderr}",
+                )
+                return None
+            self._active_worktrees.add(str(wt_path))
+            self._wt_branches[str(wt_path)] = branch
+            self.logger.info(
+                "worktree_manager",
+                f"Worktree re-shelled on existing branch '{branch}': {wt_path}",
+            )
+            return wt_path
+        except subprocess.TimeoutExpired:
+            self.logger.error("worktree_manager", "Worktree-on-branch creation timed out")
+            return None
+        except Exception as e:
+            self.logger.error("worktree_manager", f"Worktree-on-branch creation error: {e}")
+            return None
+
+    def find_worktree_path(self, branch: str) -> Optional[Path]:
+        """按分支解析 worktree 路径（``git worktree list --porcelain`` 为准）。
+
+        add-merge-back-repair-lane D3：以 git 事实为判定基准，不信任内存
+        ``_active_worktrees``（daemon 重启即失）。同一分支 git 只允许一个
+        worktree（``worktree add <path> <branch>`` 对已 checkout 分支会拒绝），
+        故首个匹配即唯一。
+
+        Returns: worktree 绝对路径，无匹配/命令失败返回 None。
+        """
+        if not branch:
+            return None
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "worktree", "list", "--porcelain"],
+                capture_output=True, text=True, timeout=15,
+            )
+        except subprocess.TimeoutExpired:
+            return None
+        if res.returncode != 0:
+            return None
+        current_path: Optional[str] = None
+        for line in res.stdout.splitlines():
+            if line.startswith("worktree "):
+                current_path = line[len("worktree "):].strip()
+            elif line.startswith("branch "):
+                listed_branch = line[len("branch "):].strip()
+                # porcelain 格式：branch refs/heads/<name>；HEAD <sha> 行只是
+                # 头部提交指针，不是 detached 判定——detached worktree 缺失
+                # branch 行（该 section 不会匹配具名分支，下个 worktree 行覆盖）
+                if listed_branch == f"refs/heads/{branch}" and current_path:
+                    return Path(current_path)
+        return None
+
+    def branch_exists(self, branch: str) -> bool:
+        """分支是否存在（``git rev-parse --verify``）。repair 三态判定基准。"""
+        if not branch:
+            return False
+        try:
+            verify = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "rev-parse", "--verify", branch],
+                capture_output=True, text=True, timeout=10,
+            )
+            return verify.returncode == 0
+        except subprocess.TimeoutExpired:
+            return False
+
+    def resolve_repair_site(self, spec_name: str, branch: str):
+        """解析 repair 分支载体三态（add-merge-back-repair-lane D3）。
+
+        Returns:
+            - ``(wt_path, branch)``：载体可用——wt_path 为原 worktree（原地）
+              或换壳新建的 worktree；branch 为实现分支名。
+            - ``(None, None)``：分支不存在（已并入主树或已清扫），回退
+              fallback（调度层全新重派）。
+            产物自愈可静态判断本方法不涉 — 是否进入 repair 由调度层决定。
+        """
+        if not branch or not self.branch_exists(branch):
+            return None, None
+        existing = self.find_worktree_path(branch)
+        if existing is not None and existing.exists():
+            # 原地进入：登记活动集与分支映射（repair worker 收尾 cleanup / sweeper
+            # 豁免都依赖该登记；三态 (a) 原有 worktree 若非本次创建则无登记）。
+            self._active_worktrees.add(str(existing))
+            self._wt_branches[str(existing)] = branch
+            return existing, branch
+        wt = self.create_worktree_on_branch(spec_name, branch)
+        if wt is None:
+            return None, None
+        return wt, branch
+
+    def claim_legacy_for_repair(self, spec_name: str) -> Optional[dict]:
+        """repair 认领时摘出 _legacy 登记（add-merge-back-repair-lane D4）。
+
+        与 fast-track ``_take_reusable_worktree`` 同款 take 动作：认领即从
+        ``_legacy`` 登记表摘出，sweeper 宽限期超时后不再回收该现场（遗产豁免
+        只在登记期内生效）。物理回收（目录/分支）由 repair 链收尾决定——
+        成功路径 consume_legacy，fallback 由调度层按既有清扫策略处理。
+
+        Returns: 被摘出的遗产记录 dict（结构同 register_legacy），无则 None。
+        """
+        rec = self._legacy.pop(spec_name, None)
+        if rec:
+            self.logger.info(
+                "worktree_manager",
+                f"Repair claimed legacy for '{spec_name}': "
+                f"worktree={rec.get('path')} branch={rec.get('branch')}",
+            )
+        return rec

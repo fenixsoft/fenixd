@@ -5,7 +5,7 @@
 """
 
 from pathlib import Path
-from core.agent_runner.run_files import RUNS_KEEP, append_run_error, append_run_line, clean_old_runs
+from core.agent_runner.run_files import append_run_error, append_run_line
 from datetime import datetime, timezone
 import json
 import subprocess

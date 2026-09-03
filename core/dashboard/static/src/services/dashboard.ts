@@ -500,8 +500,6 @@ export interface ConfigData {
   llm: LlmConfig;
   agents: AgentsConfig;
   gates: GatesConfig;
-  /** 其他分类：runs.keep = 运行产物保留数（超出移入 .fenix/runs/archive） */
-  runs?: { keep: number };
   /** 验证契约：详见 .fenix/verify.yaml 与 core/verify_contract.py */
   verify?: VerifyConfig;
   /** add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50） */
@@ -538,4 +536,43 @@ export async function regenerateProjectDescription(project: string): Promise<{ o
     `/api/project/describe?project=${encodeURIComponent(project)}`,
     { method: 'POST' },
   );
+}
+
+// ── agent 提示词（add-agent-prompt-files 任务 3.2）─────────────────────
+
+export interface AgentPrompt {
+  type: string;
+  file: string;
+  content: string;
+}
+
+export interface ProjectPromptsMeta {
+  name: string;
+  path: string;
+  /** 自引用项目（.fenix 解析为框架根）：项目级即通用层，编辑禁用 */
+  self_referencing: boolean;
+  extras: Record<string, string>;
+}
+
+export interface PromptsData {
+  agents: AgentPrompt[];
+  project?: ProjectPromptsMeta;
+}
+
+export async function getPrompts(project?: string): Promise<PromptsData> {
+  const q = project ? `?project=${encodeURIComponent(project)}` : '';
+  return request<PromptsData>(`/api/prompts${q}`);
+}
+
+export async function saveProjectPrompt(
+  project: string,
+  agentType: string,
+  content: string,
+): Promise<{ ok: boolean; agent_type: string; path: string }> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request(`/api/prompts${q}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent_type: agentType, content }),
+  });
 }

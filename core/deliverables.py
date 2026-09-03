@@ -379,3 +379,94 @@ def extract_paths(spec_dir) -> List[str]:
         if path not in ordered:
             ordered.append(path)
     return ordered
+
+
+def lint_declared(spec_dir, project_root) -> List[str]:
+    """晋升 lint（drafted → ready）：Deliverables 声明形态机械校验。
+
+    不可满足/失效的声明在撰写当下拦截（spec 停留 drafted + error 提示），
+    不再等到收工守卫才暴露——守卫判定发生在一次完整实现 run 之后，声明
+    形态错误的代价是一轮 run + 打回循环（remove-auto-run-cleanup 目录声明
+    死锁事故 2026-09-03）。
+
+    规则（零误拦取向，只拦确定性无效形态）：
+    1. 路径含 ``<``/``>`` 模板占位符——守卫的 ``_is_deliverable_path`` 会静默
+       跳过该条目，声明形同虚设（fix-admin-run-blocks-mainloop 同族坑）；
+    2. ``kind: modify`` 的路径在主树是目录——目录声明与守卫判定形态不匹配
+       （守卫按 blob/tree 校验对象，精确到文件的声明才可对账），处方：改为
+       目录下确定性锚点文件（如 ``dist/index.html``）。
+
+    lint 自身故障一律 fail-open（返回空清单放行晋升），不因 lint 阻塞流水线。
+
+    Args:
+        spec_dir: SPEC 目录（openspec/changes/<spec>/）。
+        project_root: 项目根（主树路径存在性判定基准）。
+
+    Returns:
+        违规描述清单；空列表 = 通过。
+    """
+    import yaml as _yaml
+
+    spec_dir = Path(spec_dir)
+    project_root = Path(project_root)
+    tasks = spec_dir / "tasks.md"
+    try:
+        text = tasks.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    lines = text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if _DECLARED_HEADING_RE.match(line):
+            start = i + 1
+            break
+    if start is None:
+        return []  # 无声明段（存量 spec）不在 lint 职责内
+
+    block: List[str] = []
+    in_fence = False
+    for line in lines[start:]:
+        if _H2_RE.match(line):
+            break
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            block.append(line)
+    if not block:
+        return []
+    try:
+        entries = _yaml.safe_load("\n".join(block))
+    except Exception:
+        return []  # yaml 解析失败由守卫的回退语义处理，lint 不重复报
+    if not isinstance(entries, list):
+        return []
+
+    violations: List[str] = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        path = str(e.get("path") or "").strip()
+        kind = str(e.get("kind") or "").strip().lower()
+        if not path or kind not in _DECLARED_KINDS:
+            continue
+        if "<" in path or ">" in path:
+            violations.append(
+                f"[{path}] 含 <...> 模板占位符——守卫会静默跳过该条目，"
+                f"声明形同虚设，请改为具体字面路径"
+            )
+            continue
+        if kind != "modify":
+            continue
+        # .fenix 是指向项目根的自引用符号链接：raw 与归一化路径双重判定
+        candidates = [path]
+        normalized = normalize_check_path(path)
+        if normalized != path:
+            candidates.append(normalized)
+        is_dir = any((project_root / c).is_dir() for c in candidates)
+        if is_dir:
+            violations.append(
+                f"[{path}] 是目录——目录声明无法精确对账（tree ≠ 具体交付物），"
+                f"请改为目录下确定性锚点文件（如 dist/index.html）"
+            )
+    return violations
