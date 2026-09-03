@@ -252,5 +252,196 @@ class TestArchiveAutoCommit(unittest.TestCase):
             (self.sm.read_one("done-spec") or {}).get("status"), "pushed")
 
 
+# ══════════════════════════════════════════════════════════════════════
+# 2. cli-retry-backoff（秒挂判定、冷却闸门、告警、正交性）
+# ══════════════════════════════════════════════════════════════════════
+
+def make_runner_with_config(proot, config, sm=None, logger=None):
+    """构造最小 AgentRunner（__new__ 绕过 __init__），配置注入 + 秒挂表。"""
+    from core.agent_runner import AgentRunner
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.config = config or {}
+    runner.worktree_manager = MagicMock()
+    runner.state_machine = sm
+    runner.project_root = proot
+    runner.logger = logger or make_logger()
+    runner._running_agents = {}
+    runner._instant_fail = {}
+    return runner
+
+
+class TestInstantFailBackoffCore(unittest.TestCase):
+    """runner 侧秒挂分类：计数、冷却、重置、告警。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        (self.root / ".fenix" / "runs").mkdir(parents=True)
+        self.logger = make_logger()
+        self.runner = make_runner_with_config(self.root, {
+            "agents": {"instant_fail_threshold_seconds": 60,
+                       "instant_fail_cooldown_after": 3,
+                       "instant_fail_cooldown_seconds": 300},
+        }, logger=self.logger)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_seconds_under_threshold_counted(self):
+        self.runner._record_instant_fail("spec-x", duration_seconds=5)
+        self.assertEqual(self.runner._instant_fail_counts("spec-x"), 1)
+        self.assertFalse(self.runner.is_instant_fail_cooldown("spec-x"))
+
+    def test_cooldown_triggered_after_threshold(self):
+        for _ in range(3):
+            self.runner._record_instant_fail("spec-x", duration_seconds=5)
+        self.assertTrue(self.runner.is_instant_fail_cooldown("spec-x"))
+        self.assertEqual(self.runner._instant_fail_counts("spec-x"), 3)
+
+    def test_success_resets_counter_and_cooldown(self):
+        for _ in range(3):
+            self.runner._record_instant_fail("spec-x", duration_seconds=5)
+        self.assertTrue(self.runner.is_instant_fail_cooldown("spec-x"))
+        self.runner._reset_instant_fail("spec-x")
+        self.assertEqual(self.runner._instant_fail_counts("spec-x"), 0)
+        self.assertFalse(self.runner.is_instant_fail_cooldown("spec-x"))
+
+    def test_survived_failure_resets_counter(self):
+        """存活超阈值失败 = 非秒挂：重置连续计数（design D2）。"""
+        self.runner._record_instant_fail("spec-x", duration_seconds=5)
+        self.runner._record_instant_fail("spec-x", duration_seconds=700)
+        self.assertEqual(self.runner._instant_fail_counts("spec-x"), 0)
+        self.assertFalse(self.runner.is_instant_fail_cooldown("spec-x"))
+
+    def test_interrupted_run_not_counted(self):
+        """框架主动 SIGTERM（产物含 interrupted 标记）不计入秒挂。"""
+        run_file = self.root / ".fenix" / "runs" / "impl-spec-x-1-a1.jsonl"
+        run_file.write_text(
+            '{"type":"interrupted","reason":"daemon shutdown"}\n',
+            encoding="utf-8",
+        )
+        self.runner._record_instant_fail(
+            "spec-x", duration_seconds=3, run_file=run_file)
+        self.assertEqual(self.runner._instant_fail_counts("spec-x"), 0)
+
+    def test_non_consecutive_resets(self):
+        """秒挂 → 成功 → 再秒挂：计数不跨成功累积。"""
+        self.runner._record_instant_fail("spec-x", duration_seconds=5)
+        self.runner._record_instant_fail("spec-x", duration_seconds=5)
+        self.runner._reset_instant_fail("spec-x")
+        self.runner._record_instant_fail("spec-x", duration_seconds=5)
+        self.assertEqual(self.runner._instant_fail_counts("spec-x"), 1)
+
+    def test_cooldown_expires_auto_recovers(self):
+        for _ in range(3):
+            self.runner._record_instant_fail("spec-x", duration_seconds=5)
+        self.assertTrue(self.runner.is_instant_fail_cooldown("spec-x"))
+        # 把 cooldown_until 拨回到过去 → 到期自动恢复并清零
+        self.runner._instant_fail["spec-x"]["cooldown_until"] = (
+            self.runner._now() - 1)
+        self.assertFalse(self.runner.is_instant_fail_cooldown("spec-x"))
+        self.assertEqual(self.runner._instant_fail_counts("spec-x"), 0)
+
+    def test_first_cooldown_alerts_once(self):
+        for _ in range(3):
+            self.runner._record_instant_fail("spec-x", duration_seconds=5)
+        # 清空计数再触发第二次冷却 → 15 分钟窗口内有记录 → 不再告警
+        self.runner._reset_instant_fail("spec-x")
+        for _ in range(3):
+            self.runner._record_instant_fail("spec-x", duration_seconds=5)
+        store_path = self.root / ".fenix" / "admin_alerts.json"
+        self.assertTrue(store_path.exists())
+        records = json.loads(store_path.read_text(encoding="utf-8"))
+        storms = [r for r in records
+                  if r.get("signal_type") == "instant_fail_storm"]
+        self.assertEqual(len(storms), 1, "同 spec 15 分钟内只告警一次")
+        self.assertEqual(storms[0]["severity"], "major")
+
+
+class TestInstantFailDispatchGate(unittest.TestCase):
+    """派发前冷却闸门：冷却期派发被跳过、不耗预算；到期恢复。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        (self.root / ".fenix").mkdir(parents=True)
+        self.logger = make_logger()
+        self.sm = StateMachine(self.root / "STATE.md", self.logger)
+        self.config = {"agents": {
+            "instant_fail_threshold_seconds": 60,
+            "instant_fail_cooldown_after": 3,
+            "instant_fail_cooldown_seconds": 300,
+            "max_concurrent": 2,
+        }}
+        # 真实 agent_runner（仅秒挂表 + cooldown 判定），其余路径不触达
+        self.runner = make_runner_with_config(
+            self.root, self.config, sm=self.sm, logger=self.logger)
+
+        from core.pm_engine import PMEngine
+        self.engine = PMEngine(
+            self.sm, self.runner, self.config, self.root, self.logger)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _cool_spec(self, spec, count=3):
+        """让 spec 进入冷却（直接走 runner 秒挂表）。"""
+        for _ in range(count):
+            self.runner._record_instant_fail(spec, duration_seconds=5)
+
+    def test_cooled_spec_dispatch_skipped(self):
+        self._cool_spec("spec-a", 4)
+        self.assertTrue(self.engine._instant_fail_cooled("spec-a"))
+
+        self.sm.add_spec("spec-a", {"status": "ready", "priority": 1})
+        self.engine._enqueue("spec-a", "implementer")
+        # _process_queue 直接调用（不启真实线程）：冷却应跳过 → 队列清空但无派发
+        with patch.object(self.runner, "run_implementer") as ri:
+            self.engine._process_queue()
+            ri.assert_not_called()
+
+        # 条目保持 queued（冷却期跳过不消费），不进入 _run_agent_worker
+        self.assertEqual(len(self.engine._run_queue), 1)
+
+    def test_cooled_not_consuming_budget(self):
+        self._cool_spec("spec-a")
+        self.sm.add_spec("spec-a", {"status": "ready", "priority": 1})
+        self.engine._enqueue("spec-a", "implementer")
+        with patch.object(self.runner, "run_implementer"):
+            self.engine._process_queue()
+        entry = self.sm.read_one("spec-a") or {}
+        self.assertEqual(int(entry.get("_impl_run_budget_used", 0) or 0), 0)
+
+    def test_recovery_resumes_dispatch(self):
+        self._cool_spec("spec-a")
+        self.sm.add_spec("spec-a", {"status": "ready", "priority": 1})
+        self.engine._enqueue("spec-a", "implementer")
+        with patch.object(self.runner, "run_implementer"):
+            self.engine._process_queue()
+        self.assertEqual(len(self.engine._run_queue), 1)
+
+        # 到期（把 cooldown_until 拨回过去）→ 恢复调度
+        self.runner._instant_fail["spec-a"]["cooldown_until"] = (
+            self.runner._now() - 1)
+        self.assertFalse(self.engine._instant_fail_cooled("spec-a"))
+        # 冷却到期后条目在队列中由下一次 _process_queue 正常派发：
+        # 条目被 pop（_process_queue 在启线程前即出队），不依赖 daemon 线程完成。
+        with patch.object(
+            self.engine, "_run_agent_worker", return_value=None):
+            self.engine._process_queue()
+        self.assertEqual(self.engine._run_queue, [])
+
+    def test_independent_from_provider_circuit(self):
+        """秒挂冷却与 provider 熔断互不干扰。"""
+        # provider 熔断状态（模拟另一 spec）
+        self.runner.provider_circuits = {"p1": {"cooldown_until": 999999999999.0}}
+        self.assertFalse(self.engine._instant_fail_cooled("spec-b"))
+        # 冷却清空不影响 provider 熔断
+        self._cool_spec("spec-b")
+        self.assertTrue(self.engine._instant_fail_cooled("spec-b"))
+        st = self.runner.provider_circuits["p1"]
+        self.assertGreater(st["cooldown_until"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

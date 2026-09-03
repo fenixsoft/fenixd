@@ -2080,6 +2080,33 @@ class PMEngine:
     def _dispatch_backoffed(spec: dict) -> bool:
         return Dispatcher._dispatch_backoffed(spec)
 
+    def _instant_fail_cooled(self, spec_name: str) -> bool:
+        """秒挂冷却判定（cli-retry-backoff 2.2）：冷却期内跳过派发。
+
+        委托到 agent_runner.is_instant_fail_cooldown；runner 不可用或判定异常时
+        fail-open（返回 False，不阻塞派发），保证冷却机制故障不放大为调度故障。
+        """
+        runner = getattr(self, "agent_runner", None)
+        checker = getattr(runner, "is_instant_fail_cooldown", None)
+        if not callable(checker):
+            return False
+        try:
+            return checker(spec_name) is True
+        except Exception:
+            return False
+
+    def _instant_fail_cooldown_until(self, spec_name: str) -> float:
+        """返回 spec 的秒挂冷却到期单调秒（未冷却/无条目返回 0）。"""
+        runner = getattr(self, "agent_runner", None)
+        table = getattr(runner, "_instant_fail", None)
+        if not isinstance(table, dict):
+            return 0.0
+        st = table.get(spec_name) or {}
+        try:
+            return float(st.get("cooldown_until") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
     def _rollback_failed_dispatch(self, spec_name: str, agent_type: str, exc: Exception):
         return self._dispatcher._rollback_failed_dispatch(spec_name, agent_type, exc)
 
