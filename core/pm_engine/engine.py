@@ -504,6 +504,14 @@ class PMEngine:
                         f"spec='{stamped}' != '{spec_name}'",
                     )
                     return None
+                # 顶层 status 与 verification.verdict 混淆归一化（add-agent-prompt-files
+                # 事故 2026-09-03）：agent 把 verdict 值写到顶层 status（如
+                # status="verified" 且 verification.verdict=verified），语义上完全成功
+                # 的 run 被判失败整轮作废重派。verdict 语义本就由内层承载，顶层合同
+                # 唯一合法值是 "success"——status ∈ verdict 值域时确定性映射，不吞
+                # 真失败（其他非法值仍走失败分支并带处方）。
+                if data.get("status") in ("verified", "bug-found"):
+                    data["status"] = "success"
                 return data
         except (json.JSONDecodeError, OSError):
             pass

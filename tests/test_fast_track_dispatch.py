@@ -271,5 +271,61 @@ class TestFastTrackWorktreeReuse(_Base):
         self.assertIn("Merge-back failed", entry["error"])
 
 
+class TestResultStatusNormalization(_Base):
+    """status/verdict 混淆归一化 + 非法 status 处方（add-agent-prompt-files 事故）。
+
+    agent 曾把 verification.verdict 的值写到顶层 status（status='verified' 且
+    6 场景全 pass），语义成功的 run 被判失败整轮作废重派。
+    """
+
+    def _write_wt_result(self, status):
+        wt = self.pr / "wt"
+        wt.mkdir(parents=True, exist_ok=True)
+        (wt / ".fenix-run-result.json").write_text(json.dumps(
+            {"status": status, "spec": "demo", "mode": "fast-track",
+             "verification": {"verdict": "verified", "scenarios": [], "bugs": []}}),
+            encoding="utf-8")
+        return wt
+
+    def test_verified_status_normalized_to_success(self):
+        self._mk()
+        wt = self._write_wt_result("verified")
+        self.engine._find_implementer_worktree = MagicMock(return_value=wt)
+        ft = self.engine._read_implementer_result("demo")
+        self.assertIsNotNone(ft)
+        self.assertEqual(ft["status"], "success")
+
+    def test_bug_found_status_normalized_to_success(self):
+        self._mk()
+        wt = self._write_wt_result("bug-found")
+        self.engine._find_implementer_worktree = MagicMock(return_value=wt)
+        ft = self.engine._read_implementer_result("demo")
+        self.assertEqual(ft["status"], "success")
+
+    def test_other_invalid_status_not_normalized(self):
+        # 非 verdict 值域的非法 status 不归一化（仍走失败分支 + 处方）
+        self._mk()
+        wt = self._write_wt_result("completed")
+        self.engine._find_implementer_worktree = MagicMock(return_value=wt)
+        ft = self.engine._read_implementer_result("demo")
+        self.assertEqual(ft["status"], "completed")
+
+    def test_invalid_status_error_carries_prescription(self):
+        self._mk()
+        self.engine.agent_runner.run_fast_track.return_value = AgentRunResult(
+            "impl-demo-1", "demo", "fast-track", True, 10.0, branch="fenix/demo-1",
+        )
+        self.engine._read_implementer_result = MagicMock(return_value={
+            "status": "completed", "spec": "demo"})
+        self.sm.transition("demo", "implementing")
+
+        self.engine._run_fast_track_worker("demo")
+
+        entry = self.sm.read_one("demo")
+        self.assertIn("status='completed'", entry["error"])
+        self.assertIn("'success'", entry["error"])
+        self.assertIn("重写", entry["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

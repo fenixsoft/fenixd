@@ -975,10 +975,22 @@ class Dispatcher:
             return
         if not result.success or ft_result.get("status") != "success":
             self._keep_fast_track_worktree(spec_name, result)
-            self._handle_fast_track_failure(
-                spec_name, result,
-                ft_result.get("error") or result.error or "fast-track run failed",
-            )
+            if result.success:
+                # run 正常收工但结果文件顶层 status 非法：error 写明实际值与修法
+                # 处方——不用无信息量兜底文案（add-agent-prompt-files 事故：
+                # status 被写成 'verified'，兜底文案 'fast-track run failed' 让
+                # 重派 run 不知错在哪，可能原样再犯）。
+                status_val = ft_result.get("status")
+                final_error = (
+                    f"结果文件 status={status_val!r} 非法——顶层合同唯一合法值为 "
+                    f"'success'（verified/bug-found 属于 verification.verdict）。"
+                    f"修复：重写 .fenix-run-result.json 顶层 status 为 'success'"
+                )
+            else:
+                final_error = (
+                    ft_result.get("error") or result.error or "fast-track run failed"
+                )
+            self._handle_fast_track_failure(spec_name, result, final_error)
             return
 
         # ── 零变更成功哨 ──
