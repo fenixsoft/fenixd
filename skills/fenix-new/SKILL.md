@@ -118,6 +118,12 @@ python3 .fenix/bin/fenix_spec.py status --change <name>
      写入目标/既有引用（如被管项目的 `.fenix/config.yaml`、第三方清单、纯示例路径——
      **不是**本仓库交付物，缺失不拦截）。守卫对 new/modify 硬校验实现分支存在性，
      reference 仅审计；无声明段的存量 spec 回退正则提取（保守易误拦，新 spec 一律写声明段）。
+
+     **path 必须是具体文件，禁止写目录**（强制，drafted→ready 晋升 lint 会拒绝）：
+     构建产物目录写其确定性锚点文件——如前端产物写 `core/dashboard/static/dist/index.html`
+     而非 `core/dashboard/static/dist`；`<...>` 模板占位符同样禁止（守卫会静默跳过，
+     声明形同虚设）。目录/占位符声明曾致收工守卫确定性缺件 → 打回循环烧预算至
+     blocked（remove-auto-run-cleanup 事故 2026-09-03）。
 2. 每完成一个 artifact 后重跑 `status`，继续处理下一个 `ready` artifact。
 3. 重复直到所有 artifact 为 `done`（`isComplete` 为 true，`applyRequires` 的 `tasks` 就绪）。
 

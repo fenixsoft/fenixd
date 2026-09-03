@@ -2214,7 +2214,7 @@ class WorktreeManager:
             rel_path: 相对项目根的交付路径（如 ``core/foo.py``）
 
         Returns:
-            True 表示分支 HEAD 包含该路径（blob 或 tree 均可，blob 才算真正落地）。
+            True 表示分支 HEAD 包含该路径（blob 文件，或非空 tree 目录）。
             分支为空 / 不存在 / 路径不存在时返回 False。
         """
         if not branch or not rel_path:
@@ -2228,13 +2228,19 @@ class WorktreeManager:
             )
             if result.returncode != 0:
                 return False
-            # 必须是 blob（文件），tree（目录）不算落地交付物。
             kind = subprocess.run(
                 ["git", "-C", str(self.project_root),
                  "cat-file", "-t", f"{branch}:{rel_path}"],
                 capture_output=True, text=True, timeout=30,
             )
-            return kind.returncode == 0 and kind.stdout.strip() == "blob"
+            if kind.returncode != 0:
+                return False
+            # blob（文件）= 落地交付物；tree（目录）同样算落地——git 不追踪空目录，
+            # path 为 tree 必然内含文件（如构建产物 dist/ 整目录声明）。
+            # 曾为 blob-only：目录声明成为不可满足契约 → 收工守卫确定性缺件 →
+            # 打回循环烧预算至 blocked（remove-auto-run-cleanup 死锁事故 2026-09-03）。
+            # symlink 等其余类型不算。
+            return kind.stdout.strip() in ("blob", "tree")
         except subprocess.TimeoutExpired:
             return False
         except Exception:

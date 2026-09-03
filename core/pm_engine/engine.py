@@ -134,10 +134,38 @@ class PMEngine:
 
     def _on_spec_drafted(self, spec_name: str):
         """Auto-promote drafted → ready, then immediately schedule implementer."""
+        # 晋升 lint（deliverables 声明形态机械校验）：不可满足/失效声明在撰写
+        # 当下拦截，不再等到收工守卫才暴露（判定发生在一次完整 run 之后，
+        # 形态错误代价 = 一轮 run + 打回循环）。违规保持 drafted 并写 error，
+        # 修正 tasks.md 后重新晋升触发。lint 自身故障 fail-open 放行。
+        violations = self._lint_deliverable_declarations(spec_name)
+        if violations:
+            err = "Deliverables 声明 lint 未通过：" + "；".join(violations)
+            self.logger.error(
+                "pm_engine", f"Promotion lint failed '{spec_name}': {err}",
+            )
+            self.state_machine.update_spec(spec_name, {"error": err})
+            return
         self.logger.info("pm_engine", f"Auto-promoting '{spec_name}': drafted → ready")
         self.state_machine.transition(spec_name, "ready")
         # 直接调用 _on_spec_ready 排队实现，不依赖事件循环
         self._on_spec_ready(spec_name)
+
+    def _lint_deliverable_declarations(self, spec_name: str) -> list:
+        """Deliverables 声明形态 lint（晋升前拦截，fail-open）。"""
+        from core.deliverables import lint_declared
+
+        spec_dir = self.project_root / "openspec" / "changes" / spec_name
+        if not spec_dir.is_dir():
+            return []
+        try:
+            return lint_declared(spec_dir, self.project_root)
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"Deliverables lint 异常 '{spec_name}'（非阻塞放行）: {e}",
+            )
+            return []
 
     def _on_spec_ready(self, spec_name: str):
         """Schedule implementer for ready SPEC (if dependencies are satisfied)."""
