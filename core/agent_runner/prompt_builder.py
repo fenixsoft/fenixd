@@ -143,8 +143,11 @@ class PromptBuilder:
         <项目根>/.fenix/agents/<agent-type>.md 存在则读入，以
         「## 项目附加提示词」标题附加在 prompt 完整内容（通用主体 + 动态段）
         之后；缺席零注入（prompt 与仅通用层时逐字节一致）。
+        自引用项目跳过（D4/任务 2.3）——其项目级即通用层。
         """
-        agents_dir = self._pm.project_root / ".fenix" / "agents"
+        agents_dir = self._project_agents_dir()
+        if agents_dir is None:
+            return ""
         path = agents_dir / AGENT_PROMPT_FILES[agent_type]
         if not path.is_file():
             return ""
@@ -155,6 +158,24 @@ class PromptBuilder:
         if not content:
             return ""
         return f"\n\n## 项目附加提示词\n\n{content}\n"
+
+    def _project_agents_dir(self):
+        """项目级 agents 目录；自引用项目返回 None（任务 2.3）。
+
+        两重检测（add-agent-prompt-files D4）：
+        - 项目根与框架根解析为同一路径（fenixd 自身项目）；
+        - 项目 .fenix 符号链接解析为框架根（自引用——项目级 .fenix/agents/
+          即通用层 agents/，读取注入等于自我重复，写入会覆盖不可改的通用文件）。
+        """
+        proot = Path(self._pm.project_root)
+        try:
+            if proot.resolve() == FRAMEWORK_ROOT.resolve():
+                return None
+            if (proot / ".fenix").resolve() == FRAMEWORK_ROOT.resolve():
+                return None
+        except OSError:
+            pass
+        return proot / ".fenix" / "agents"
 
     def _verifier_breakpoint_section(self, spec_name: str) -> str:
         """断点续跑段（verifier-checkpoint-resume spec）。

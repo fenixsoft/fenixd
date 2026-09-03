@@ -273,6 +273,60 @@ class TestDomainKnowledgeMigrated:
         assert "fenix:sync:persisted-key" in prompt
 
 
+# ── 自引用防护 ───────────────────────────────────────────────────────
+
+
+class TestSelfReferenceGuard:
+    """Scenario: 自引用项目禁用项目级附加（任务 2.3 / design D4）。"""
+
+    def _extra_setup(self, proot: Path) -> None:
+        extra = proot / ".fenix" / "agents"
+        extra.mkdir(parents=True, exist_ok=True)
+        (extra / "verifier.md").write_text("- 自引用不应注入此行\n", encoding="utf-8")
+
+    def test_project_root_equals_framework_root_skipped(self, tmp_path, monkeypatch):
+        """项目根解析与框架根相同（fenixd 自身项目）→ 项目级读取跳过。"""
+        proot = tmp_path / "selfproj"
+        _mk_spec_dir(proot, "demo")
+        self._extra_setup(proot)
+        monkeypatch.setattr(pb_module, "FRAMEWORK_ROOT", proot)
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "verifier")
+        assert "项目附加提示词" not in prompt
+        assert "自引用不应注入此行" not in prompt
+
+    def test_fenix_symlink_to_framework_root_skipped(self, tmp_path, monkeypatch):
+        """.fenix 符号链接解析为框架根（自引用）→ 项目级读取跳过。
+
+        自引用场景下项目级 .fenix/agents/ 即框架 agents/（写入会覆盖通用
+        文件），附加文件位于框架 agents/ 内以模拟该重合。
+        """
+        framework = tmp_path / "framework"
+        (framework / "agents").mkdir(parents=True)
+        (framework / "agents" / "verifier.md").write_text(
+            "- 自引用不应注入此行\n", encoding="utf-8")
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        (proot / ".fenix").symlink_to(framework)
+        monkeypatch.setattr(pb_module, "FRAMEWORK_ROOT", framework)
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "verifier")
+        assert "项目附加提示词" not in prompt
+        assert "自引用不应注入此行" not in prompt
+
+    def test_normal_project_unaffected(self, tmp_path, monkeypatch):
+        """普通项目（.fenix 为真实目录且≠框架根）附加照常生效。"""
+        framework = tmp_path / "framework"
+        framework.mkdir()
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        self._extra_setup(proot)
+        monkeypatch.setattr(pb_module, "FRAMEWORK_ROOT", framework)
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "verifier")
+        assert "自引用不应注入此行" in prompt
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()
