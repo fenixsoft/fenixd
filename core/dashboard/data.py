@@ -2325,7 +2325,13 @@ USER_CONFIG_PATH = Path.home() / ".fenix" / "config.yaml"
 # 受管键的来源标注键（前端用于「继承自用户级」badge）
 _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "agents.run_timeout_seconds", "agents.max_turns", "agents.daily_run_limit",
-                "agents.token_budget_millions", "agents.impl_run_budget", "gates.approve_mode"]
+                "agents.token_budget_millions", "agents.impl_run_budget", "gates.approve_mode",
+                # add-daily-self-review：admin.self_review 三键
+                "admin.self_review"]
+
+# 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
+# 保持一致：enabled/read_todo 缺省 false，run_at 缺省 22:00）
+_DEFAULT_SELF_REVIEW = {"enabled": False, "run_at": "22:00", "read_todo": False}
 
 _CONFIG_HEADER_COMMENT = (
     "# Fenix 配置文件\n"
@@ -2362,6 +2368,10 @@ def _managed_key_sources(raw: dict) -> dict:
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         sources["gates.approve_mode"] = "project"
+    # add-daily-self-review：admin.self_review 段显式定义 → project
+    admin_raw = raw.get("admin")
+    if isinstance(admin_raw, dict) and isinstance(admin_raw.get("self_review"), dict):
+        sources["admin.self_review"] = "project"
     return sources
 
 
@@ -2384,6 +2394,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "runs": {"keep": 50},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
+        # add-daily-self-review：admin.self_review 三键（缺省 false/false/22:00）
+        "self_review": dict(_DEFAULT_SELF_REVIEW),
         "scope": scope,
         "raw_exists": False,
         "sources": _managed_key_sources({}),
@@ -2448,6 +2460,11 @@ def read_config(scope_root, scope: str = "project") -> dict:
     if isinstance(archive_raw, dict):
         from core.config import ConfigLoader as _CL
         result["archive"] = {"auto_threshold": _CL.effective_auto_archive_threshold(raw)}
+    # add-daily-self-review：admin.self_review 三键（经 ConfigLoader 生效值回显）
+    admin_raw = raw.get("admin")
+    if isinstance(admin_raw, dict):
+        from core.config import ConfigLoader as _CL
+        result["self_review"] = _CL.get_self_review_config(raw)
     return result
 
 
@@ -2498,6 +2515,8 @@ def read_effective_config(project_root) -> dict:
         "runs": {"keep": 50},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
+        # add-daily-self-review：admin.self_review 三键（缺省 false/false/22:00）
+        "self_review": dict(_DEFAULT_SELF_REVIEW),
         "scope": "project",
         "raw_exists": proj_path.exists(),
         "sources": _managed_key_sources({}),
@@ -2559,6 +2578,8 @@ def read_effective_config(project_root) -> dict:
         result["runs"] = {"keep": runs_eff["keep"]}
     # add-spec-archive D5：经生效助手取值（非法配置回落默认 50，设置页回显一致）
     result["archive"] = {"auto_threshold": ConfigLoader.effective_auto_archive_threshold(effective)}
+    # add-daily-self-review：经生效助手取值（run_at 非法值回退 22:00，回显一致）
+    result["self_review"] = ConfigLoader.get_self_review_config(effective)
 
     # 提取 project.description → 顶层 description（非 str 或缺失 → ""）
     project_eff = effective.get("project")
@@ -2627,6 +2648,23 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             if not isinstance(merged.get("archive"), dict):
                 merged["archive"] = {}
             merged["archive"]["auto_threshold"] = at
+    # add-daily-self-review：admin.self_review 三键（enabled/read_todo 布尔、
+    # run_at 合法 HH:MM；非法 run_at 由 write_config 前置校验拒绝，此处只应用合法值）
+    if "self_review" in patch and isinstance(patch["self_review"], dict):
+        if not isinstance(merged.get("admin"), dict):
+            merged["admin"] = {}
+        existing_sr = merged["admin"].get("self_review")
+        if not isinstance(existing_sr, dict):
+            existing_sr = {}
+        sr = dict(existing_sr)
+        for field in ("enabled", "read_todo"):
+            if field in patch["self_review"] and isinstance(patch["self_review"][field], bool):
+                sr[field] = patch["self_review"][field]
+        run_at = patch["self_review"].get("run_at")
+        from core.config import ConfigLoader as _CL
+        if _CL.is_valid_hhmm(run_at):
+            sr["run_at"] = run_at
+        merged["admin"]["self_review"] = sr
     # description 分支：patch 顶层 description（str）写入 merged["project"]["description"]
     if "description" in patch and isinstance(patch["description"], str):
         if not isinstance(merged.get("project"), dict):
@@ -2678,6 +2716,22 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         config_patch["agents"]["models"] = ConfigLoader.serialize_models_patch(
             config_patch["agents"]["models"]
         )
+
+    # add-daily-self-review：前端提交的 self_review patch 后端校验（非法直接拒绝，
+    # 不静默忽略——spec「非法输入（如 25:00）被前端与后端双重校验拒绝」）。
+    if isinstance(config_patch.get("self_review"), dict):
+        sr_patch = config_patch["self_review"]
+        for field in ("enabled", "read_todo"):
+            if field in sr_patch and sr_patch[field] is not None \
+                    and not isinstance(sr_patch[field], bool):
+                return fail(
+                    f"admin.self_review.{field} must be a boolean: {sr_patch[field]}"
+                )
+        if "run_at" in sr_patch and sr_patch["run_at"] is not None:
+            if not ConfigLoader.is_valid_hhmm(sr_patch["run_at"]):
+                return fail(
+                    f"admin.self_review.run_at must be HH:MM (00:00-23:59): {sr_patch['run_at']}"
+                )
 
     # 2. 合并受管键
     merged = _deep_merge_managed(raw, config_patch)
@@ -2764,6 +2818,21 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 raise ValueError(
                     f"archive.auto_threshold must be a non-negative integer (0=disabled): {at}"
                 )
+        # add-daily-self-review：admin.self_review 三键（后端校验，非法输入拒绝 400）
+        admin_m = merged.get("admin") or {}
+        if isinstance(admin_m, dict) and isinstance(admin_m.get("self_review"), dict):
+            sr = admin_m["self_review"]
+            for field in ("enabled", "read_todo"):
+                if field in sr and sr[field] is not None and not isinstance(sr[field], bool):
+                    raise ValueError(
+                        f"admin.self_review.{field} must be a boolean: {sr[field]}"
+                    )
+            if "run_at" in sr and sr["run_at"] is not None:
+                from core.config import ConfigLoader as _CL
+                if not _CL.is_valid_hhmm(sr["run_at"]):
+                    raise ValueError(
+                        f"admin.self_review.run_at must be HH:MM (00:00-23:59): {sr['run_at']}"
+                    )
     except ValueError as e:
         return fail(str(e))
 

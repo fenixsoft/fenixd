@@ -1,0 +1,668 @@
+"""每日自省（add-daily-self-review）测试：调度 / 产物 / 失败处理 / 数据摘要。
+
+对应 tasks：
+- 1.4 单测：定时触发 / 同日防重复 / 23:30 启动补跑 / enabled=false 全链路零动作
+- 2.4 失败处理：run 失败记 warning 告警、当日不重试、次日自然重试
+- 2.5 单测：首次创建 / 追加不覆盖 / read_todo 开关注入与不注入 / 自省后
+  openspec 与 STATE 零新增 / commit 仅含 todo.md
+- 3.4 端点读写（见 test_dashboard_data.py 或本文件后段）
+"""
+
+import json
+import os
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+
+from core.admin_store import AdminStore, ESCALATION
+from core.self_review import (
+    SelfReviewScheduler,
+    collect_log_errors,
+    collect_runs_stats,
+)
+
+
+class FakeSM:
+    def __init__(self, specs=None):
+        self._specs = specs or {}
+
+    def read_all(self):
+        return self._specs
+
+
+class FakeReviewResult:
+    def __init__(self, success=True, waste=(), mistakes=(), improvements=(),
+                 summary="s", error="", run_id="review-test-1"):
+        self.success = success
+        self.waste = list(waste)
+        self.mistakes = list(mistakes)
+        self.improvements = list(improvements)
+        self.summary = summary
+        self.error = error
+        self.run_id = run_id
+
+
+class FakeReviewRunner:
+    def __init__(self, result=None, fail=False):
+        self.calls = []
+        self._result = result or FakeReviewResult()
+        self._fail = fail
+
+    def run_self_review(self, date_str, daily_summary, todo_md):
+        self.calls.append((date_str, daily_summary, todo_md))
+        if self._fail:
+            raise RuntimeError("claude 崩溃")
+        return self._result
+
+
+class FakeLogger:
+    def debug(self, *a, **k): pass
+    def info(self, *a, **k): pass
+    def warning(self, *a, **k): pass
+    def error(self, *a, **k): pass
+
+
+@pytest.fixture()
+def proot(tmp_path):
+    root = tmp_path / "proj"
+    (root / ".fenix").mkdir(parents=True)
+    (root / "openspec" / "changes").mkdir(parents=True)
+    (root / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+    return root
+
+
+def make_scheduler(proot, enabled=True, run_at="22:00", read_todo=False,
+                   runner=None, specs=None, store=None):
+    config = {"admin": {
+        "enabled": True,
+        "self_review": {
+            "enabled": enabled,
+            "run_at": run_at,
+            "read_todo": read_todo,
+        },
+    }}
+    return SelfReviewScheduler(
+        config, proot, FakeLogger(), FakeSM(specs),
+        agent_runner=runner,
+        store=store or AdminStore(proot, FakeLogger()),
+    )
+
+
+def _freeze_time(monkeypatch, fixed: datetime):
+    """Patch self_review module's datetime so `.now()` returns a fixed time.
+
+    The subclass approach avoids Python's TypeError when patching the builtin
+    datetime class directly (immutable C type).
+    """
+    from datetime import datetime as _real_datetime
+
+    class _FakeDatetime(_real_datetime):
+        @staticmethod
+        def now(tz=None):
+            return fixed
+
+    import core.self_review as sr_mod
+    monkeypatch.setattr(sr_mod, "datetime", _FakeDatetime)
+
+
+def make_run(proot, run_id, terminal, ts=None):
+    """写入 run 产物文件；terminal in (done/error/running/empty/timeout/instant)。"""
+    lines = []
+    if terminal == "done":
+        lines = [{"type": "result", "result": "ok", "num_turns": 2}]
+    elif terminal == "error":
+        lines = [{"type": "error", "error": "boom", "exit_code": 1}]
+    elif terminal == "timeout":
+        lines = [{"type": "error", "error": "Timeout after 120s — x", "exit_code": -9}]
+    elif terminal == "instant":
+        lines = [{"type": "error", "error": "No conversation found with session ID x", "exit_code": 1}]
+    elif terminal == "running":
+        lines = [{"type": "assistant", "message": {"content": [{"type": "text", "text": "..."}]}}]
+    elif terminal == "empty":
+        lines = []
+    p = proot / ".fenix" / "runs" / f"{run_id}.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("".join(json.dumps(l) + "\n" for l in lines), encoding="utf-8")
+    if ts is not None:
+        os.utime(p, (ts, ts))
+    return p
+
+
+# ── 1.4 调度判定 ───────────────────────────────────────────
+
+class TestSelfReviewScheduling:
+    def test_trigger_after_run_at(self, proot, monkeypatch):
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        runner = FakeReviewRunner()
+        sched = make_scheduler(proot, run_at="22:00", runner=runner)
+        res = sched.check_and_run()
+        assert res["triggered"] is True and res["ok"] is True
+        assert res["date"] == "2026-09-04"
+        # 状态文件记录今日
+        state = json.loads((proot / ".fenix" / "self_review_state.json").read_text())
+        assert state["last_run_date"] == "2026-09-04"
+        assert len(runner.calls) == 1
+        # todo.md 已创建
+        todo = proot / "todo.md"
+        assert todo.exists()
+        content = todo.read_text(encoding="utf-8")
+        assert "## 2026-09-04" in content
+        assert "### 浪费" in content and "### 失误" in content and "### 可改进" in content
+
+    def test_before_run_at_no_trigger(self, proot, monkeypatch):
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 21, 0))
+        runner = FakeReviewRunner()
+        sched = make_scheduler(proot, run_at="22:00", runner=runner)
+        res = sched.check_and_run()
+        assert res == {"triggered": False, "reason": "before_run_at"}
+        assert runner.calls == []
+        assert not (proot / ".fenix" / "self_review_state.json").exists()
+        assert not (proot / "todo.md").exists()
+
+    def test_same_day_no_duplicate(self, proot, monkeypatch, tmp_path):
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        runner = FakeReviewRunner()
+        sched = make_scheduler(proot, run_at="22:00", runner=runner)
+        sched._save_state("2026-09-04")  # 今日已执行
+        res = sched.check_and_run()
+        assert res == {"triggered": False, "reason": "already_run"}
+        assert runner.calls == []
+
+    def test_catch_up_on_late_start(self, proot, monkeypatch):
+        """23:30 启动且今日未执行 → 启动后首轮巡检补跑（spec 错过后补跑场景）。"""
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 23, 30))
+        runner = FakeReviewRunner()
+        sched = make_scheduler(proot, run_at="22:00", runner=runner)
+        res = sched.check_and_run()
+        assert res["triggered"] is True and res["ok"] is True
+        assert res["date"] == "2026-09-04"
+        state = json.loads((proot / ".fenix" / "self_review_state.json").read_text())
+        assert state["last_run_date"] == "2026-09-04"
+
+    def test_disabled_zero_action(self, proot, monkeypatch):
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 23, 30))
+        runner = FakeReviewRunner()
+        sched = make_scheduler(proot, enabled=False, runner=runner)
+        res = sched.check_and_run()
+        assert res == {"triggered": False, "reason": "disabled"}
+        assert runner.calls == []
+        assert not (proot / ".fenix" / "self_review_state.json").exists()
+        assert not (proot / "todo.md").exists()
+        # admin store 也无告警
+        assert AdminStore(proot, FakeLogger()).read_all() == []
+
+    def test_hot_reload_config_change_takes_effect(self, proot, monkeypatch):
+        """设置页三键修改热更新生效：巡检每轮重读配置，无需重启 daemon。
+
+        模拟 daemon 热更新路径：原地 mutate 共享 config dict（fenixd
+        _maybe_reload_config 的 resolve_config_into 语义），下一轮巡检立即
+        读到新 run_at。
+        """
+        from core.config import ConfigLoader
+        from core.dashboard.data import write_config
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 23, 0))
+        runner = FakeReviewRunner()
+        # 设置页先保存一次完整三键（写盘）→ 热更新原地替换共享 config
+        res = write_config(proot, {"self_review": {
+            "enabled": True, "run_at": "22:00", "read_todo": False,
+        }}, scope="project")
+        assert res["ok"] is True
+        config: dict = {}
+        ConfigLoader.resolve_config_into(config, proot)
+        sched = SelfReviewScheduler(config, proot, FakeLogger(), FakeSM(),
+                                    agent_runner=runner,
+                                    store=AdminStore(proot, FakeLogger()))
+        assert sched.check_and_run()["triggered"] is True
+
+        # 设置页把 run_at 改为 23:59（含三键整体保存）→ 热更新
+        res = write_config(proot, {"self_review": {
+            "enabled": True, "run_at": "23:59", "read_todo": False,
+        }}, scope="project")
+        assert res["ok"] is True
+        ConfigLoader.resolve_config_into(config, proot)
+
+        # 次日 23:00（< 23:59）→ 不触发（新 run_at 立即生效）
+        _freeze_time(monkeypatch, datetime(2026, 9, 5, 23, 0))
+        sched2 = SelfReviewScheduler(config, proot, FakeLogger(), FakeSM(),
+                                     agent_runner=runner,
+                                     store=AdminStore(proot, FakeLogger()))
+        assert sched2.check_and_run() == {"triggered": False, "reason": "before_run_at"}
+        # 再热更新：run_at 改回 22:00 → 23:00 又满足（无需重启 daemon）
+        write_config(proot, {"self_review": {
+            "enabled": True, "run_at": "22:00", "read_todo": False,
+        }}, scope="project")
+        ConfigLoader.resolve_config_into(config, proot)
+        _freeze_time(monkeypatch, datetime(2026, 9, 6, 23, 0))
+        sched3 = SelfReviewScheduler(config, proot, FakeLogger(), FakeSM(),
+                                     agent_runner=runner,
+                                     store=AdminStore(proot, FakeLogger()))
+        assert sched3.check_and_run()["triggered"] is True
+
+
+# ── 2.4 失败处理 ───────────────────────────────────────────
+
+class TestSelfReviewFailure:
+    def test_failure_records_warning_and_marks_today(self, proot, monkeypatch):
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        runner = FakeReviewRunner(fail=True)
+        sched = make_scheduler(proot, run_at="22:00", runner=runner)
+        res = sched.check_and_run()
+        assert res["triggered"] is True and res["ok"] is False
+        # 状态文件已标记今日 → 当日不重试
+        state = json.loads((proot / ".fenix" / "self_review_state.json").read_text())
+        assert state["last_run_date"] == "2026-09-04"
+        assert sched.check_and_run()["reason"] == "already_run"
+        # warning 告警（已标记 handled，不进人工队列）
+        recs = AdminStore(proot, FakeLogger()).read_all()
+        assert any(r.get("signal_type") == "self_review_failed"
+                   and r.get("severity") == "warning" and r.get("handled")
+                   for r in recs)
+        # 未写 todo.md
+        assert not (proot / "todo.md").exists()
+
+    def test_next_day_natural_retry(self, proot, monkeypatch):
+        # 9/4 失败
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        runner = FakeReviewRunner(fail=True)
+        sched = make_scheduler(proot, run_at="22:00", runner=runner)
+        sched.check_and_run()
+        # 9/5 到点 → 自然重试
+        _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 30))
+        runner2 = FakeReviewRunner()
+        sched2 = make_scheduler(proot, run_at="22:00", runner=runner2)
+        res = sched2.check_and_run()
+        assert res["triggered"] is True and res["ok"] is True
+        assert res["date"] == "2026-09-05"
+        assert (proot / "todo.md").exists()
+        assert "## 2026-09-05" in (proot / "todo.md").read_text(encoding="utf-8")
+
+
+# ── 2.5 产物写入 ───────────────────────────────────────────
+
+class TestTodoAppend:
+    def test_first_create(self, proot):
+        sched = make_scheduler(proot)
+        result = FakeReviewResult(
+            waste=["证据：3 次秒挂；建议：冷却"],
+            mistakes=["证据：merge 遗漏；建议：双检"],
+            improvements=["证据：planner 丢弃；建议：改进调度"],
+        )
+        sched._append_todo("2026-09-04", result)
+        todo = proot / "todo.md"
+        assert todo.exists()
+        content = todo.read_text(encoding="utf-8")
+        assert content.startswith("## 2026-09-04\n")
+        assert "### 浪费\n- 证据：3 次秒挂" in content
+        assert "### 失误\n- 证据：merge 遗漏" in content
+        assert "### 可改进\n- 证据：planner 丢弃" in content
+
+    def test_append_not_overwrite(self, proot):
+        sched = make_scheduler(proot)
+        (proot / "todo.md").write_text(
+            "## 2026-09-03\n\n### 浪费\n- 旧条目\n", encoding="utf-8")
+        result = FakeReviewResult(waste=["新浪费"], mistakes=["新失误"], improvements=["新改进"])
+        sched._append_todo("2026-09-04", result)
+        content = (proot / "todo.md").read_text(encoding="utf-8")
+        assert "## 2026-09-03" in content and "- 旧条目" in content  # 历史保留
+        assert "## 2026-09-04" in content and "- 新浪费" in content   # 追加在尾部
+        # 新分节在文件尾部（历史之后）
+        assert content.index("## 2026-09-03") < content.index("## 2026-09-04")
+
+    def test_empty_sections_keep_structure(self, proot):
+        sched = make_scheduler(proot)
+        result = FakeReviewResult(waste=[], mistakes=[], improvements=[])
+        sched._append_todo("2026-09-04", result)
+        content = (proot / "todo.md").read_text(encoding="utf-8")
+        assert "### 浪费" in content and "### 失误" in content and "### 可改进" in content
+        assert content.count("（当日无）") == 3
+
+    def test_read_todo_switches(self, proot, monkeypatch):
+        """read_todo=true 注入 todo.md 全文；false 不注入（None）。"""
+        (proot / "todo.md").write_text("## 2026-09-03\n\n### 浪费\n- 历史\n", encoding="utf-8")
+        # read_todo=true → 注入全文
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        runner_on = FakeReviewRunner()
+        sched_on = make_scheduler(proot, read_todo=True, runner=runner_on)
+        sched_on.check_and_run()
+        assert runner_on.calls[0][2] is not None
+        assert "## 2026-09-03" in runner_on.calls[0][2]
+        # read_todo=false → 不注入
+        _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 30))
+        runner_off = FakeReviewRunner()
+        sched_off = make_scheduler(proot, read_todo=False, runner=runner_off)
+        sched_off.check_and_run()
+        assert runner_off.calls[0][2] is None
+
+    def test_run_summary_injects_daily_summary(self, proot, monkeypatch):
+        """数据摘要四源注入：STATE 终态 / runs / admin / ERROR。"""
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        specs = {"spec-a": {"status": "done"}, "spec-b": {"status": "implementing"}}
+        make_run(proot, f"impl-spec-a-{_ts(datetime(2026, 9, 4, 10))}", "done")
+        make_run(proot, f"impl-spec-b-{_ts(datetime(2026, 9, 4, 11))}", "timeout")
+        # 日志 ERROR
+        (proot / ".fenix" / "logs").mkdir(parents=True)
+        (proot / ".fenix" / "logs" / "fenixd.log").write_text(
+            json.dumps({"level": "ERROR", "component": "x", "message": "e1",
+                        "timestamp": "2026-09-04T02:00:00Z"}) + "\n",
+            encoding="utf-8",
+        )
+        runner = FakeReviewRunner()
+        sched = make_scheduler(proot, runner=runner, specs=specs)
+        sched.check_and_run()
+        summary = runner.calls[0][1]
+        assert "STATE 终态分布" in summary
+        assert "done: 1" in summary and "implementing: 1" in summary
+        assert "超时: 1" in summary
+        assert "admin 告警与处置" in summary
+        assert "日志 ERROR" in summary and "ERROR 总数: 1" in summary
+
+
+# ── 2.5 禁止自动创建 SPEC / STATE 零新增 / commit 仅含 todo.md ──
+
+class TestNoAutoCreation:
+    def test_no_state_or_openspec_new_entries(self, proot, monkeypatch):
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        state_before = (proot / "STATE.md").read_text(encoding="utf-8")
+        changes_before = sorted(
+            p.name for p in (proot / "openspec" / "changes").iterdir() if p.is_dir()
+        )
+        runner = FakeReviewRunner()
+        sched = make_scheduler(proot, runner=runner, specs={"spec-a": {"status": "done"}})
+        sched.check_and_run()
+        # STATE.md 内容逐字节不变；openspec/changes 无新增目录；无 agent 派发诉求
+        assert (proot / "STATE.md").read_text(encoding="utf-8") == state_before
+        changes_after = sorted(
+            p.name for p in (proot / "openspec" / "changes").iterdir() if p.is_dir()
+        )
+        assert changes_after == changes_before
+        # 只产生 todo.md 与状态文件
+        assert (proot / "todo.md").exists()
+        assert (proot / ".fenix" / "self_review_state.json").exists()
+
+    def test_commit_contains_only_todo(self, tmp_path, monkeypatch):
+        """写入后 git commit 仅含 todo.md（D4 单文件提交语义）。"""
+        proot = tmp_path / "repo"
+        proot.mkdir(parents=True)
+        (proot / ".fenix").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(proot)], check=True)
+        subprocess.run(["git", "-C", str(proot), "config", "user.email", "t@t.co"], check=True)
+        subprocess.run(["git", "-C", str(proot), "config", "user.name", "test"], check=True)
+        (proot / "README.md").write_text("# r", encoding="utf-8")
+        subprocess.run(["git", "-C", str(proot), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(proot), "commit", "-qm", "init"], check=True)
+        # 已有的未跟踪无关文件：不应被带入 commit
+        (proot / "untracked.txt").write_text("x", encoding="utf-8")
+
+        sched = make_scheduler(proot)
+        result = FakeReviewResult(waste=["W"], mistakes=["M"], improvements=["I"])
+        sched._append_todo("2026-09-04", result)
+        assert sched._commit_todo("2026-09-04") is True
+        # last commit 仅含 todo.md
+        shown = subprocess.run(
+            ["git", "-C", str(proot), "show", "--name-only", "--format=", "HEAD"],
+            capture_output=True, text=True, check=True).stdout.split()
+        assert [p for p in shown if p.strip()] == ["todo.md"]
+        # untracked.txt 未被提交
+        assert "untracked.txt" not in shown
+
+
+# ── 3.1/3.4 Dashboard 设置页读写 ─────────────────────────
+
+class TestDashboardSelfReview:
+    def test_read_write_roundtrip(self, tmp_path):
+        """Data 层：write_config 写入 self_review → read_effective_config 读回。"""
+        from core.dashboard.data import read_effective_config, write_config
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        # 缺省
+        assert read_effective_config(proot)["self_review"] == {
+            "enabled": False, "run_at": "22:00", "read_todo": False,
+        }
+        res = write_config(proot, {"self_review": {
+            "enabled": True, "run_at": "23:30", "read_todo": True,
+        }}, scope="project")
+        assert res["ok"] is True
+        cfg = read_effective_config(proot)
+        assert cfg["self_review"] == {
+            "enabled": True, "run_at": "23:30", "read_todo": True,
+        }
+        # sources 标注（项目级显式定义）
+        assert cfg["sources"].get("admin.self_review") == "project"
+
+    def test_invalid_run_at_rejected(self, tmp_path):
+        from core.dashboard.data import read_effective_config, write_config
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        write_config(proot, {"self_review": {"enabled": True, "run_at": "23:30"}},
+                     scope="project")
+        for bad in ("25:00", "abc", "9:0", "22:60"):
+            res = write_config(proot, {"self_review": {"run_at": bad}}, scope="project")
+            assert res["ok"] is False, f"{bad} 应被拒绝"
+            assert "HH:MM" in res["error"]
+        # 原值未被坏提交污染
+        assert read_effective_config(proot)["self_review"]["run_at"] == "23:30"
+
+    def test_invalid_types_rejected(self, tmp_path):
+        from core.dashboard.data import write_config
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        assert write_config(proot, {"self_review": {"enabled": "yes"}},
+                            scope="project")["ok"] is False
+        assert write_config(proot, {"self_review": {"read_todo": 1}},
+                            scope="project")["ok"] is False
+
+    def test_http_api_endpoint_roundtrip(self, tmp_path):
+        """HTTP 端点：GET 读回缺省 → POST 写入 → GET 确认 → POST 非法 400。"""
+        import http.client
+        import threading
+        from core.dashboard.registry import Registry
+        from core.dashboard.server import DashboardHTTPServer, find_free_port
+
+        proot = tmp_path / "proj-api"
+        (proot / ".fenix").mkdir(parents=True)
+        (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787,
+                  "projects": [{"name": "proj-api", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        static_dir = Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static"
+        port = find_free_port(30000)
+        srv = DashboardHTTPServer(("127.0.0.1", port), reg, static_dir)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            def request(method, path, body=None):
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                try:
+                    headers = {"Content-Type": "application/json"} if body else {}
+                    conn.request(method, path, body=json.dumps(body) if body is not None else None,
+                                 headers=headers)
+                    resp = conn.getresponse()
+                    return resp.status, json.loads(resp.read() or b"{}")
+                finally:
+                    conn.close()
+
+            # 缺省回显
+            status, data = request("GET", "/api/config?project=proj-api")
+            assert status == 200
+            assert data["self_review"]["run_at"] == "22:00"
+            assert data["self_review"]["enabled"] is False
+            # 写入
+            status, data = request("POST", "/api/config?project=proj-api",
+                                   {"self_review": {"enabled": True, "run_at": "23:30",
+                                                    "read_todo": True}})
+            assert status == 200
+            assert data["self_review"]["enabled"] is True
+            # 读回确认
+            status, data = request("GET", "/api/config?project=proj-api")
+            assert status == 200
+            assert data["self_review"] == {"enabled": True, "run_at": "23:30",
+                                           "read_todo": True}
+            # 非法 run_at → 400（后端双重校验）
+            status, data = request("POST", "/api/config?project=proj-api",
+                                   {"self_review": {"run_at": "25:00"}})
+            assert status == 400
+            assert "HH:MM" in (data.get("error") or "")
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+
+# ── admin_monitor 巡检挂接（1.3） ─────────────────────────
+
+class TestAdminMonitorHook:
+    def test_run_once_triggers_self_review(self, tmp_path, monkeypatch):
+        """巡检 run_once 内触发自省（挂在既有循环，无新线程）。"""
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        from core.admin_monitor import AdminMonitor
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+        runner = FakeReviewRunner()
+        mon = AdminMonitor(
+            {"admin": {"enabled": True,
+                       "self_review": {"enabled": True, "run_at": "22:00"}}},
+            FakeSM({}), proot, FakeLogger(),
+            store=AdminStore(proot, FakeLogger()),
+            agent_runner=runner,
+        )
+        mon.run_once()
+        assert len(runner.calls) == 1
+        assert (proot / "todo.md").exists()
+
+    def test_run_once_with_admin_disabled_no_trigger(self, tmp_path, monkeypatch):
+        """admin.enabled=false → 巡检不执行自省（依赖既有 monitor enabled 门控）。"""
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        from core.admin_monitor import AdminMonitor
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+        runner = FakeReviewRunner()
+        mon = AdminMonitor(
+            {"admin": {"enabled": False,
+                       "self_review": {"enabled": True, "run_at": "22:00"}}},
+            FakeSM({}), proot, FakeLogger(),
+            store=AdminStore(proot, FakeLogger()),
+            agent_runner=runner,
+        )
+        mon.run_once()
+        assert runner.calls == []
+        assert not (proot / "todo.md").exists()
+        assert not (proot / ".fenix" / "self_review_state.json").exists()
+
+
+# ── runner.run_self_review 单元（2.1）──────────────────────
+
+class TestRunSelfReviewRunner:
+    def _runner(self, proot):
+        from core.agent_runner import AgentRunner
+
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.project_root = proot
+        runner.config = {}
+        runner._get_config = lambda key, default=None: default
+        runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._get_agent_model_assignment = lambda agent_type: None
+        from core.agent_runner.prompt_builder import PromptBuilder
+        from types import SimpleNamespace
+        runner._prompt_builder_instance = PromptBuilder(SimpleNamespace(project_root=proot))
+        return runner
+
+    def test_run_self_review_reads_out_and_accounts_tokens(self, tmp_path):
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        runner = self._runner(proot)
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            max_turns, spec_name=None):
+            (proot / ".fenix" / f"self_review_out-{run_id}.json").write_text(
+                json.dumps({"date": run_id.split("-")[1],
+                            "waste": ["W"], "mistakes": ["M"], "improvements": ["I"]}),
+                encoding="utf-8")
+            return "out", 5, "sess", {"input_tokens": 100, "output_tokens": 20,
+                                      "cost_usd": 0.02}
+
+        runner._run_claude = fake_run_claude
+        result = runner.run_self_review("2026-09-04", "摘要", None)
+        assert result.success is True
+        assert result.waste == ["W"] and result.mistakes == ["M"]
+        assert result.improvements == ["I"]
+        assert result.run_id == "review-2026-09-04"
+        # 实例文件清理
+        assert not (proot / ".fenix" / "self_review_out-review-2026-09-04.json").exists()
+        # token 归账独立类目（不写 STATE）
+        ledger = json.loads(
+            (proot / ".fenix" / "cost" / "self_review_tokens.json").read_text())
+        assert ledger["runs"][0]["input_tokens"] == 100
+        assert ledger["runs"][0]["date"] == "2026-09-04"
+
+    def test_run_self_review_failure_returns_success_false(self, tmp_path):
+        proot = tmp_path / "proj"
+        (proot / ".fenix").mkdir(parents=True)
+        runner = self._runner(proot)
+
+        def failing(prompt, cwd, run_id, model_override, env_overrides,
+                    max_turns, spec_name=None):
+            raise RuntimeError("Timeout after 120s")
+
+        runner._run_claude = failing
+        result = runner.run_self_review("2026-09-04", "摘要", None)
+        assert result.success is False
+        assert "Timeout" in result.error
+        # 失败也记账（input=0），实例文件不残留
+        assert json.loads(
+            (proot / ".fenix" / "cost" / "self_review_tokens.json").read_text()
+        )["runs"][0]["input_tokens"] == 0
+
+
+# ── 数据摘要辅助 ───────────────────────────────────────────
+
+def _ts(dt: datetime) -> int:
+    """run_id 内嵌时间戳：与 collect_runs_stats 的 fromtimestamp 本地时区往返一致。"""
+    return int(dt.timestamp())
+
+
+class TestSummaryHelpers:
+    def test_runs_stats_classify(self, proot):
+        base = datetime(2026, 9, 4, 10)
+        make_run(proot, f"impl-a-{_ts(base)}", "done", ts=base.timestamp())
+        make_run(proot, f"impl-b-{_ts(base)}", "timeout", ts=base.timestamp())
+        make_run(proot, f"impl-c-{_ts(base)}", "instant", ts=base.timestamp())
+        make_run(proot, f"impl-d-{_ts(base)}", "error", ts=base.timestamp())
+        make_run(proot, f"impl-e-{_ts(base)}", "empty", ts=base.timestamp())
+        make_run(proot, "review-2026-09-04", "done", ts=base.timestamp())  # 自省 run 排除
+        stats = collect_runs_stats(proot, "2026-09-04")
+        assert stats["succeeded"] == 1
+        assert stats["timeout"] == 1
+        assert stats["instant_hang"] == 1
+        assert stats["failed"] == 1
+        assert stats["dropped"] == 1
+        assert stats["total"] == 5  # review- 不计入
+
+    def test_runs_stats_other_day_excluded(self, proot):
+        make_run(proot, f"impl-a-{_ts(datetime(2026, 9, 4, 10))}", "done")
+        make_run(proot, f"impl-b-{_ts(datetime(2026, 9, 3, 10))}", "done")
+        stats = collect_runs_stats(proot, "2026-09-04")
+        assert stats["total"] == 1
+
+    def test_log_errors_aggregate(self, proot):
+        log = proot / ".fenix" / "logs" / "fenixd.log"
+        log.parent.mkdir(parents=True)
+        lines = []
+        for i in range(3):
+            lines.append(json.dumps({"level": "ERROR", "component": "c",
+                                     "message": f"err{i}",
+                                     "timestamp": "2026-09-04T0%s:00:00Z" % (2 + i)}))
+        lines.append(json.dumps({"level": "INFO", "message": "ok",
+                                 "timestamp": "2026-09-04T05:00:00Z"}))
+        # 前一天 ERROR 不计入
+        lines.append(json.dumps({"level": "ERROR", "message": "yesterday",
+                                 "timestamp": "2026-09-03T05:00:00Z"}))
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        agg = collect_log_errors(proot, "2026-09-04")
+        assert agg["error_count"] == 3
+        assert len(agg["samples"]) == 3
+        assert all("err" in s for s in agg["samples"])

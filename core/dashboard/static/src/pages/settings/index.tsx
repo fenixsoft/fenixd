@@ -13,6 +13,7 @@ import MiscSettingsPanel from './components/MiscSettingsPanel';
 import VerifyPanel from './components/VerifyPanel';
 import ProjectProfilePanel from './components/ProjectProfilePanel';
 import PromptsPanel from './components/PromptsPanel';
+import SelfReviewPanel from './components/SelfReviewPanel';
 
 const { Text } = Typography;
 
@@ -24,6 +25,7 @@ const BASE_MENU_ITEMS = [
   { key: 'token', label: '预算' },
   { key: 'misc', label: '归档' },
   { key: 'verify', label: '验证' },
+  { key: 'self-review', label: '每日自省' },
   { key: 'prompts', label: '提示词' },
 ];
 
@@ -198,6 +200,9 @@ export default function SettingsPage() {
                 )}
                 {activeKey === 'verify' && (
                   <VerifyPanel config={config} onSave={handleSave} />
+                )}
+                {activeKey === 'self-review' && (
+                  <SelfReviewPanel config={config} onSave={handleSave} />
                 )}
                 {activeKey === 'project-profile' && (
                   <ProjectProfilePanel config={config} onSave={handleSave} project={project} />

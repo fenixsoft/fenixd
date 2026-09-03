@@ -18,7 +18,8 @@ from pathlib import Path
 FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
 AGENT_PROMPT_DIR = FRAMEWORK_ROOT / "agents"
 
-# 六类 agent → 提示词文件名（agent-type 白名单的单一来源，Dashboard 端点复用）
+# 七类 agent → 提示词文件名（agent-type 白名单的单一来源，Dashboard 端点复用）
+# add-daily-self-review：新增 self-review（每日自省）类型。
 AGENT_PROMPT_FILES = {
     "implementer": "implementer.md",
     "verifier": "verifier.md",
@@ -26,6 +27,7 @@ AGENT_PROMPT_FILES = {
     "planner-judge": "planner-judge.md",
     "fast-track": "fast-track.md",
     "administrator": "administrator.md",
+    "self-review": "self-review.md",
 }
 
 
@@ -123,6 +125,11 @@ class PromptBuilder:
         # （add-agent-prompt-files 重构引入的顺序问题，repair-lane 测试暴露）。
         if agent_type == "repair":
             return self._build_repair_prompt(spec_name, detail or {})
+
+        # add-daily-self-review：自省 prompt 独立构建（无 spec 维度占位符，
+        # 注入当日数据摘要与可选 todo.md 全文）。
+        if agent_type == "self-review":
+            return self._build_self_review_prompt(spec_name, detail or {})
 
         template = self._load_agent_template(agent_type)
         prompt = self._fill_placeholders(template, agent_type, spec_name, detail)
@@ -377,6 +384,32 @@ class PromptBuilder:
             f"框架会据此回退到 fallback 重派\n"
             f"IMPORTANT: Do NOT modify STATE.md."
         )
+        return prompt
+
+    def _build_self_review_prompt(self, date_str: str, detail: dict) -> str:
+        """构建每日自省 prompt（add-daily-self-review design D2/D3）。
+
+        加载 agents/self-review.md（文件化体系，缺失 fail-fast），以
+        str.replace 填充占位符（不用 str.format——正文含大量 {} JSON 示例）：
+        - {review_date}: 自省归属自然日
+        - {daily_summary}: 框架聚合的当日数据摘要（四源：STATE 终态 /
+          runs 统计 / admin 告警与处置 / 日志 ERROR）
+        - {todo_md_content}: read_todo=true 时的既有 todo.md 全文；
+          关闭或不存在时为占位提示（Agent 无需区分）
+        - {out_path}: 回顾 JSON 写入路径（.fenix/self_review_out-<run_id>.json）
+        """
+        template = self._load_agent_template("self-review")
+        prompt = template
+        prompt = prompt.replace("{review_date}", date_str)
+        prompt = prompt.replace(
+            "{daily_summary}", (detail.get("daily_summary") or "（无数据）"))
+        prompt = prompt.replace(
+            "{todo_md_content}",
+            (detail.get("todo_md") or "（read_todo 关闭或 todo.md 不存在，不注入）"))
+        prompt = prompt.replace(
+            "{out_path}",
+            str(detail.get("out_path") or (self._pm.project_root / ".fenix"
+                                           / "self_review_out.json")))
         return prompt
 
     def _fast_track_reuse_note(self, spec_name: str) -> str:

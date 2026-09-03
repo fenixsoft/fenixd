@@ -6,8 +6,9 @@ Reads and validates config.yaml, providing typed access to all settings.
 
 import copy
 import logging
-import yaml
 import os
+import re
+import yaml
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -26,6 +27,13 @@ STUCK_FALLBACK_SECONDS = RUN_TIMEOUT_FALLBACK_SECONDS + STUCK_GRACE_SECONDS
 # D5：absolute_max 联动兜底续期上限（秒）。absolute_max 低于
 # run_timeout_seconds + 该值时按 run_timeout_seconds + 该值兜底生效。
 SUPERVISION_EXTENSION_SECONDS = 7200
+
+# ── add-daily-self-review：admin.self_review 段 ──────────────────────
+# run_at 缺省 22:00（每晚时间点），enabled/read_todo 缺省 false（纯增量，
+# 零行为变化）。run_at 非法值打 ERROR 并回退本缺省（design「Migration
+# Plan」：enabled 缺省 false，开启后次日生效）。
+SELF_REVIEW_DEFAULT_RUN_AT = "22:00"
+_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 # D3：旧键弃用告警 / D5：absolute_max 兜底 ERROR 的生命周期去重标记，
 # 避免 30 分钟扫描热更新时反复刷屏。
@@ -222,6 +230,23 @@ class ConfigLoader:
                 raise ValueError(
                     f"admin.workers must be a non-negative integer: {workers}"
                 )
+
+        # add-daily-self-review：admin.self_review 段护栏。
+        # enabled/read_todo 须为布尔（非布尔直接拒绝）；run_at 须合法 HH:MM、
+        # 非法值打 ERROR 并回退缺省（不阻塞加载，硬语义由 get_self_review_config
+        # 的生效值兜底）。enabled 缺省 false（纯增量零行为变化）。
+        sr = admin.get("self_review") if isinstance(admin, dict) else None
+        if sr is not None:
+            if not isinstance(sr, dict):
+                raise ValueError("admin.self_review must be an object")
+            for field in ("enabled", "read_todo"):
+                if field in sr and sr[field] is not None \
+                        and not isinstance(sr[field], bool):
+                    raise ValueError(
+                        f"admin.self_review.{field} must be a boolean: {sr[field]}"
+                    )
+            if "run_at" in sr and sr["run_at"] is not None:
+                cls._validated_run_at(sr["run_at"])  # 非法值仅 ERROR+回退，不抛错
 
         # add-spec-archive D5：archive.auto_threshold —— 自动归档阈值。
         # 非负整数（0 = 禁用）；非法值记日志并按默认 50 兜底（宽松校验，
@@ -595,7 +620,59 @@ class ConfigLoader:
             ),
             "stuck_threshold_minutes": stuck_seconds / 60.0,
             "merge_breaker_threshold": int(breaker),
+            # add-daily-self-review：自省配置段（enabled 缺省 false）
+            "self_review": cls.get_self_review_config(config),
         }
+
+    @classmethod
+    def get_self_review_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the ``admin.self_review.*`` 段，缺失项填默认值。
+
+        默认值（add-daily-self-review design D1 / Migration Plan）：
+        - enabled: False（纯增量，用户显式开启后才调度）
+        - run_at: "22:00"（每晚时间点，HH:MM）
+        - read_todo: False（不注入既有 todo.md 上下文）
+
+        run_at 经 ``_validated_run_at`` 兜底：非法值（类型错误/格式错误/越界
+        时分）打 ERROR 并按 "22:00" 回退生效，保证调度判定永远拿到合法 HH:MM。
+        """
+        admin = config.get("admin") or {}
+        sr = admin.get("self_review") if isinstance(admin, dict) else None
+        if not isinstance(sr, dict):
+            sr = {}
+        return {
+            "enabled": bool(sr.get("enabled", False)),
+            "run_at": cls._validated_run_at(sr.get("run_at")),
+            "read_todo": bool(sr.get("read_todo", False)),
+        }
+
+    @staticmethod
+    def is_valid_hhmm(value) -> bool:
+        """静态校验 HH:MM 字符串（00:00–23:59），不含回退逻辑。
+
+        供后端设置写入校验与前端校验共用同一格式语义（add-daily-self-review
+        「前端与后端双重校验拒绝非法输入」）。
+        """
+        return isinstance(value, str) and bool(_HHMM_RE.match(value))
+
+    @classmethod
+    def _validated_run_at(cls, raw) -> str:
+        """校验 ``run_at`` 的 HH:MM 合法性；非法值打 ERROR 并回退缺省 22:00。
+
+        合法格式：``^([01]\\d|2[0-3]):[0-5]\\d$``（00:00–23:59）。None/缺省
+        直接回退缺省（不视为错误，读取方默认值语义）；显式提供的非法值记
+        ERROR 后回退。所有消费方（self_review 调度、Dashboard 回显）MUST
+        经本助手读取生效值，非法配置不会流入调度判定。
+        """
+        if raw is None:
+            return SELF_REVIEW_DEFAULT_RUN_AT
+        if isinstance(raw, str) and _HHMM_RE.match(raw):
+            return raw
+        _logger.error(
+            "admin.self_review.run_at 非法（应为 HH:MM，如 22:00）：%r，"
+            "回退缺省 %s", raw, SELF_REVIEW_DEFAULT_RUN_AT,
+        )
+        return SELF_REVIEW_DEFAULT_RUN_AT
 
     @classmethod
     def effective_stuck_threshold_seconds(cls, config: Dict[str, Any]) -> float:

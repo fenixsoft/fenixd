@@ -496,6 +496,15 @@ export interface VerifyConfig {
   static_scope?: 'main' | 'worktree';
 }
 
+export interface SelfReviewConfig {
+  /** 每日自省总开关（add-daily-self-review，缺省 false） */
+  enabled?: boolean;
+  /** 每晚执行时间 HH:MM（缺省 22:00） */
+  run_at?: string;
+  /** 是否把既有 todo.md 全文注入自省 prompt（缺省 false） */
+  read_todo?: boolean;
+}
+
 export interface ConfigData {
   llm: LlmConfig;
   agents: AgentsConfig;
@@ -504,6 +513,8 @@ export interface ConfigData {
   verify?: VerifyConfig;
   /** add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50） */
   archive?: { auto_threshold: number };
+  /** add-daily-self-review：每日自省（admin.self_review 三键） */
+  self_review?: SelfReviewConfig;
   scope: 'user' | 'project';
   raw_exists: boolean;
   sources: Record<string, string>;
