@@ -25,7 +25,7 @@
 
 ## 1. 通用提示词文件化
 
-- [ ] 1.1 六类 agent prompt 主体按 prompt_builder 现行为迁移到 agents/<agent-type>.md（implementer/verifier/fast-track 重写对齐现行 prompt，planner-plan/planner-judge/administrator 新建；路径变量改占位符 `{spec_name}`/`{spec_dir}`/`{scenarios_path}`/`{result_path}`/`{report_path}`/`{progress_path}`）
+- [x] 1.1 六类 agent prompt 主体按 prompt_builder 现行为迁移到 agents/<agent-type>.md（implementer/verifier/fast-track 重写对齐现行 prompt，planner-plan/planner-judge/administrator 新建；路径变量改占位符 `{spec_name}`/`{spec_dir}`/`{scenarios_path}`/`{result_path}`/`{report_path}`/`{progress_path}`）
 - [ ] 1.2 死知识清理：AMIS 选择器大全段删除；`.dark-Card`/`dark-Card--link` 示例改 data-testid 通用示例；verifier Step 3 面板清单（Stock/Notes/Calculator/Email/Quick Links）改通用表述（保留「交互必须有可见结果否则 BLOCKING BUG」）
 - [ ] 1.3 prompt_builder 改为文件加载 + str.replace 占位符填充 + 动态段按状态追加；文件缺失显式报错（移除内置副本）；接入六类 agent 分支
 
