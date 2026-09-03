@@ -7,12 +7,30 @@ watcher.py — Dashboard 数据源文件变更监听（VuePress 式推送的前�
 daemon 侧 event_bus.py 的 checksum 轮询一致。
 
 事件类型（SSE Hub 广播的 payload 统一带 project 字段）：
-- {type: "state",   overview, specs, details}  —— STATE.md / 日志变化
-- {type: "detail",  spec, data}                —— 单个 SPEC 自己的文件变化
+- {type: "state",   project, specs, details, overview: null}  —— 增量形态
+  （dashboard-incremental-watcher D2）：specs 仅列变更 spec 的摘要
+  （新增/变更带 summary，删除以 summary:null 标记），details 仅含变更 spec 的详情，
+  overview 恒为 null（D3：前端本地归并统计，30s 心跳校准）
+- {type: "detail",  spec, data}    —— 单个 SPEC 自己的文件变化（保留，兼容详情弹窗）
 - {type: "run_meta", run_id, status}           —— run 状态转换（running→done/error）
 - {type: "run_events", run_id, status, events[, reset]} —— 被订阅 run 的增量事件
 - {type: "admin_activities", project}          —— .fenix/admin_alerts.json 变化
   （add-admin-invoke-dialog：弹窗打开时前端据此重新拉取该 SPEC 的处置记录）
+
+监视模型（dashboard-incremental-watcher D7，两级签名跳层 + 索引兜底）：
+- **一级（顶层源）**：每项目 stat 固定集合（STATE.md、openspec/changes、
+  .fenix/verify-progress、.fenix/admin_alerts.json），签名变化进入子树枚举。
+- **二级（spec 目录）**：每轮对 changes/ 下全部 spec 目录做目录级 stat
+  （O(N) 目录 stat，10000 spec ≈ 10ms 页缓存）；目录签名未变则跳过该 spec。
+  目录签名含 ctime，能捕获 spec 目录新增/删除/原子替换（os.replace 会更新
+  父目录 mtime）。
+- **索引兜底（文件级）**：一旦任何粗粒度信号触发，`_handle_state_change` 经
+  `SummaryIndex.get()` 做文件级签名比对——未变 spec 直返缓存、变化 spec 只重算，
+  再与上次广播基线 diff，specs 只列新增/变更/删除。这覆盖目录级签名对
+  write_text 纯净内容改写不敏感的场景（Linux 上 write_text 不更新父目录 mtime，
+  但 pm_engine/verify 报告写入与 STATE.md 原子替换会更新目录签名）。
+- run/logs 属小集合（runs 保留 ≤50、日志数只 1~3 个），逐文件 stat 成本恒定；
+  spec 树才是 10000 规模下 stat 的大头。
 """
 
 import threading
@@ -25,20 +43,44 @@ SCAN_INTERVAL = 1.0       # 数据源文件轮询周期（秒）
 REFRESH_HEARTBEAT = 2.0   # 周期性刷新心跳（秒）：daemon 状态/新项目发现不产生文件变更，需周期推送
 
 
+def _dir_sig(p: Path):
+    """目录签名 (mtime_ns, size, ctime_ns)；缺失返回 None。"""
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ctime_ns)
+
+
+def _file_sig(p: Path):
+    """文件签名 (mtime_ns, size)；缺失返回 None。"""
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 class FileWatcher:
     def __init__(self, projects_fn, hub, interval: float = SCAN_INTERVAL,
-                 heartbeat: float | None = None):
-        """projects_fn: 无参可调用，返回 [{"name", "path", "exists", ...}]。"""
+                 heartbeat: float | None = None, summary_index=None):
+        """projects_fn: 无参可调用，返回 [{"name", "path", "exists", ...}]。
+        summary_index: 可选，共享的 SummaryIndex（与 server 同实例）；缺省自建。
+        """
         self.projects_fn = projects_fn
         self.hub = hub
         self.interval = interval
         self.heartbeat = heartbeat if heartbeat is not None else REFRESH_HEARTBEAT
+        self.summary_index = summary_index or dashboard_data.SummaryIndex()
 
         self._running = False
         self._thread = None
-        self._sigs = {}        # project -> {str(path): (mtime_ns, size)}
-        self._states = {}      # project -> parse_state() 快照（用于 STATE.md diff）
-        self._run_base = {}    # (project, run_id) -> {"size": int, "status": str}
+        self._top_sigs = {}        # project -> {kind: sig}（state/vp/admin）
+        self._spec_dirs = {}       # project -> {spec_name: 目录签名}
+        self._states = {}          # project -> parse_state() 快照（用于 STATE.md diff）
+        self._last_summaries = {}  # project -> {spec_name: summary dict}（增量 diff 基线）
+        self._run_base = {}        # (project, run_id) -> {"size": int, "status": str}
+        self._log_sigs = {}        # project -> {log_path: (mtime_ns, size)}
 
     # ── 生命周期 ─────────────────────────────────────────────
 
@@ -61,7 +103,7 @@ class FileWatcher:
             except Exception:
                 pass  # 监听绝不崩溃：单轮失败下轮重试
             # 周期性心跳：daemon 健康状态 / 新项目发现等变化不产生数据源文件变更，
-            # scan_once 感知不到，需周期广播 refresh 让前端在 2s 自动刷新周期内反映
+            # scan_once 感知不到，需周期广播 refresh 让前端在心跳周期内反映
             tick += 1
             if tick * self.interval >= self.heartbeat:
                 tick = 0
@@ -83,143 +125,205 @@ class FileWatcher:
                 continue
 
     def _scan_project(self, name: str, proot: Path):
-        sigs = self._sigs.setdefault(name, {})
-        seen = set()
-        state_changed = False
-        logs_changed = False
-        spec_changed = set()
-        run_changed = set()
+        top_sigs = self._top_sigs.setdefault(name, {})
         admin_changed = False
 
-        for kind, key, path in self._iter_project_files(proot):
-            pkey = str(path)
-            seen.add(pkey)
-            try:
-                st = path.stat()
-                sig = (st.st_mtime_ns, st.st_size)
-            except OSError:
-                continue
-            if sigs.get(pkey) != sig:
-                sigs[pkey] = sig
-                if kind == "state":
-                    state_changed = True
-                elif kind == "logs":
-                    logs_changed = True
-                elif kind == "spec":
-                    spec_changed.add(key)
-                elif kind == "run":
-                    run_changed.add(key)
-                elif kind == "admin":
-                    admin_changed = True
-        # 清理已删除文件
-        for stale in [k for k in sigs if k not in seen]:
-            del sigs[stale]
+        # ── 第一级：顶层数据源签名（O(少数) stat） ──
+        state_path = proot / "STATE.md"
+        sig = _file_sig(state_path)
+        state_changed = sig != top_sigs.get("state")
+        top_sigs["state"] = sig
 
-        if state_changed or logs_changed:
-            self._handle_state_change(name, proot)
-        for spec in spec_changed:
+        vp_changed = False
+        vp_path = proot / ".fenix" / "verify-progress"
+        vsig = _dir_sig(vp_path)
+        if vsig != top_sigs.get("vp"):
+            vp_changed = True
+            top_sigs["vp"] = vsig
+
+        admin_path = proot / ".fenix" / "admin_alerts.json"
+        asig = _file_sig(admin_path)
+        if asig != top_sigs.get("admin"):
+            admin_changed = True
+            top_sigs["admin"] = asig
+
+        # 日志追加：fenixd.log append-only，目录签名不变但文件签名变，逐文件比对
+        logs_changed = self._scan_logs(proot)
+
+        # run 产物：小集合逐文件 size 比对（增量推送基线）
+        run_changed = self._scan_runs(proot)
+
+        # ── 第二级：spec 目录级签名（每轮 O(N) 目录 stat，不做文件级） ──
+        spec_dir_changed, spec_removed = self._scan_spec_dirs(proot)
+
+        # 汇总分发
+        #   spec 内容/存在相关信号 → SummaryIndex 文件级 diff（新增/变更/删除）
+        if state_changed or vp_changed or spec_dir_changed or spec_removed:
+            self._handle_state_change(name, proot, removed=spec_removed)
+        #   仅日志变化 → 轻量空增量（前端不刷新列表；跑马灯等靠心跳校准）
+        elif logs_changed:
+            self.hub.broadcast({
+                "project": name, "type": "state",
+                "specs": [], "details": {}, "overview": None,
+            })
+        # spec 目录变化额外推详情（列表摘要归 state 事件；详情供详情弹窗刷新）
+        for spec in spec_dir_changed:
             self._handle_spec_change(name, proot, spec)
         for run_id in run_changed:
             self._handle_run_change(name, proot, run_id)
         if admin_changed:
             self._handle_admin_change(name)
 
-    # ── 数据源文件枚举 ───────────────────────────────────────
+    # ── 第二级：spec 目录签名跳层 ────────────────────────────
 
-    @staticmethod
-    def _iter_project_files(proot: Path):
-        """产出 (kind, key, Path)。kind: state/spec/run/logs/admin。"""
-        state = proot / "STATE.md"
-        if state.is_file():
-            yield ("state", None, state)
+    def _scan_spec_dirs(self, proot: Path) -> tuple:
+        """枚举 changes/ 下全部 spec 目录，目录级签名跳层。
 
+        返回 (changed: set[str], removed: set[str])。目录签名未变 → 跳过该 spec
+        的文件级 stat（跳层核心）。文件级最终判定交给 _handle_state_change 经
+        SummaryIndex 完成（文件级签名 + 只重算变化 spec）。
+        """
         changes = proot / "openspec" / "changes"
-        if changes.is_dir():
-            for spec_dir in changes.iterdir():
-                if not spec_dir.is_dir():
-                    continue
-                sname = spec_dir.name
-                for fname in ("tasks.md", "verification-report.md"):
-                    p = spec_dir / fname
-                    if p.is_file():
-                        yield ("spec", sname, p)
-                specs_dir = spec_dir / "specs"
-                if specs_dir.is_dir():
-                    for p in specs_dir.rglob("*.md"):
-                        if p.is_file():
-                            yield ("spec", sname, p)
+        spec_dirs = self._spec_dirs.setdefault(proot.as_posix(), {})
+        changed = set()
+        removed = set()
 
-        vp = proot / ".fenix" / "verify-progress"
-        if vp.is_dir():
-            for p in vp.glob("*.json"):
-                if p.is_file():
-                    yield ("spec", p.stem, p)
-            for d in vp.iterdir():
+        seen = set()
+        if changes.is_dir():
+            try:
+                entries = list(changes.iterdir())
+            except OSError:
+                entries = []
+            for d in entries:
                 if not d.is_dir():
                     continue
                 sname = d.name
-                for fname in ("report.json", "test_scenarios.json"):
-                    p = d / fname
-                    if p.is_file():
-                        yield ("spec", sname, p)
-                ss = d / "screenshots"
-                if ss.is_dir():
-                    for p in ss.iterdir():
-                        if p.is_file():
-                            yield ("spec", sname, p)
+                seen.add(sname)
+                dsig = _dir_sig(d)
+                if dsig is None:
+                    continue
+                prev_dsig = spec_dirs.get(sname)
+                spec_dirs[sname] = dsig
+                if prev_dsig is None or prev_dsig != dsig:
+                    changed.add(sname)
+        for stale in [k for k in spec_dirs if k not in seen]:
+            del spec_dirs[stale]
+            removed.add(stale)
+        return changed, removed
 
-        runs = proot / ".fenix" / "runs"
-        if runs.is_dir():
-            for p in runs.glob("*.jsonl"):
-                if p.is_file():
-                    yield ("run", p.stem, p)
+    # ── runs / logs / admin（小集合逐文件比对） ──────────────
 
-        logs = proot / ".fenix" / "logs"
-        if logs.is_dir():
-            for p in logs.glob("fenixd*.log"):
-                if p.is_file():
-                    yield ("logs", None, p)
+    def _scan_runs(self, proot: Path) -> set:
+        """run 产物：沿用既有 size 基线机制，返回应触发 _handle_run_change 的 run_id。
 
-        # add-admin-invoke-dialog：Admin 处置记录变更 → 广播 admin_activities 事件
-        admin_alerts = proot / ".fenix" / "admin_alerts.json"
-        if admin_alerts.is_file():
-            yield ("admin", None, admin_alerts)
+        run 文件按保留上限有界（≤50），逐文件 stat 成本恒定。
+        """
+        runs_dir = proot / ".fenix" / "runs"
+        if not runs_dir.is_dir():
+            return set()
+        run_changed = set()
+        try:
+            run_files = list(runs_dir.glob("*.jsonl"))
+        except OSError:
+            return set()
+        active = set()
+        for p in run_files:
+            run_id = p.stem
+            active.add(run_id)
+            try:
+                size = p.stat().st_size
+            except OSError:
+                continue
+            key = (proot.as_posix(), run_id)
+            prev = self._run_base.get(key)
+            if prev is None or size != prev["size"]:
+                run_changed.add(run_id)
+        for k in [k for k in self._run_base if k[0] == proot.as_posix() and k[1] not in active]:
+            del self._run_base[k]
+        return run_changed
+
+    def _scan_logs(self, proot: Path) -> bool:
+        """fenixd*.log 文件签名比对；任一变化（追加/轮转）返回 True。"""
+        logs_dir = proot / ".fenix" / "logs"
+        if not logs_dir.is_dir():
+            return False
+        cache = self._log_sigs.setdefault(proot.as_posix(), {})
+        changed = False
+        try:
+            log_files = list(logs_dir.glob("fenixd*.log"))
+        except OSError:
+            return False
+        seen = set()
+        for p in log_files:
+            pkey = str(p)
+            seen.add(pkey)
+            sig = _file_sig(p)
+            if sig is None:
+                continue
+            if cache.get(pkey) != sig:
+                cache[pkey] = sig
+                changed = True
+        for stale in [k for k in cache if k not in seen]:
+            del cache[stale]
+            changed = True
+        return changed
 
     # ── 变化处理 ─────────────────────────────────────────────
 
-    def _handle_state_change(self, name: str, proot: Path):
-        """STATE.md / 日志变化：重组概览 + SPEC 列表 + 变更 SPEC 的详情。"""
-        overview = dashboard_data.overview(self.projects_fn())
+    def _handle_state_change(self, name: str, proot: Path, removed: set = None):
+        """增量 state 事件（dashboard-incremental-watcher D2/D3）。
+
+        变化发生后经 SummaryIndex.get() 做文件级签名比对（未变直返缓存、变化只
+        重算），再把新摘要与上次广播基线 diff——specs 只列新增/变更/删除。
+        overview 不再由 watcher 计算下发（D3：前端本地归并统计，30s 心跳校准）。
+        """
+        removed = removed or set()
         cur = dashboard_data.parse_state(proot)
-        prev = self._states.get(name, {})
+        self._states[name] = cur
+
+        state_sig = _file_sig(proot / "STATE.md")
+        try:
+            summaries = self.summary_index.get(proot, cur, state_sig=state_sig)
+        except Exception:
+            summaries = [dashboard_data.spec_summary(proot, s, e)
+                         for s, e in cur.items()]
+        new_map = {s.get("name"): s for s in summaries}
+        prev_map = self._last_summaries.get(name, {})
+
+        specs_out = []
         details = {}
-        for spec, entry in cur.items():
-            if prev.get(spec) != entry:
+        # 变更/新增：specs 只列与上次基线不同的 spec（携带实时摘要），
+        # details 仅含变更 spec 的详情（D2：只带变更 spec）
+        for spec in sorted(new_map):
+            if prev_map.get(spec) == new_map[spec]:
+                continue  # 未变：不推
+            specs_out.append({"spec": spec, "summary": new_map[spec]})
+            entry = cur.get(spec)
+            if entry is not None:
                 try:
                     d = dashboard_data.spec_detail(proot, spec, entry)
                     d["project"] = name
                     details[spec] = d
                 except Exception:
                     pass
-        self._states[name] = cur
+        # 删除：STATE.md 移除或 spec 目录删除 → summary:null 标记。
+        # 目录删除但 STATE.md 仍保留条目时，索引仍返回 archived 摘要——按目录级
+        # 信号优先，推 null 让前端本地表删除该行。
+        deleted = (set(prev_map) - set(new_map)) | removed
+        for spec in sorted(deleted):
+            specs_out.append({"spec": spec, "summary": None})
 
-        specs = sorted(
-            (dashboard_data.spec_summary(proot, n, e) for n, e in cur.items()),
-            key=lambda s: s.get("created") or "", reverse=True,
-        )
-        # specs 必须与 GET /api/specs 同形（数组）：app.js 把 msg.specs 直接
-        # 喂给 renderProject 的 data.specs，嵌套对象会令 specs.filter 抛 TypeError、
-        # 视图停在旧 DOM（清障按钮等写操作因此看似"无效"）
+        self._last_summaries[name] = new_map
         self.hub.broadcast({
             "project": name,
             "type": "state",
-            "overview": overview,
-            "specs": specs,
+            "specs": specs_out,
             "details": details,
+            "overview": None,
         })
 
     def _handle_spec_change(self, name: str, proot: Path, spec: str):
-        """单个 SPEC 自己的文件（tasks/验证产物/截图）变化：推送该 SPEC 详情。"""
+        """单个 SPEC 自己的文件变化：推送该 SPEC 详情（detail 事件）。"""
         entry = dashboard_data.parse_state(proot).get(spec)
         if entry is None:
             return
@@ -237,17 +341,18 @@ class FileWatcher:
             size = run_file.stat().st_size
         except OSError:
             return
-        key = (name, run_id)
+        key = (proot.as_posix(), run_id)
         prev = self._run_base.get(key)
 
-        if prev is None:
+        if prev is None or prev["size"] is None:
             # 首次见到：仅建立基线（含状态），不推送（弹窗初始已通过 REST 拉到尾部）
             self._run_base[key] = {"size": size, "status": self._classify(run_file)}
             return
 
-        if size == prev["size"]:
+        prev_size = prev["size"]
+        if size == prev_size:
             return
-        if size < prev["size"]:
+        if size < prev_size:
             # 文件被截断/轮转：重置基线；订阅方收到 reset 后应重新拉取尾部
             status = self._classify(run_file)
             self._run_base[key] = {"size": size, "status": status}
@@ -259,7 +364,7 @@ class FileWatcher:
             return
 
         # 正常增长：读取新增字节
-        new_events = dashboard_data.read_run_events_between(proot, run_id, prev["size"])
+        new_events = dashboard_data.read_run_events_between(proot, run_id, prev_size)
         status = self._classify(run_file)
         self._run_base[key] = {"size": size, "status": status}
 
@@ -275,12 +380,7 @@ class FileWatcher:
             })
 
     def _handle_admin_change(self, name: str):
-        """admin_alerts.json 变化（add-admin-invoke-dialog）：广播轻量通知。
-
-        不带数据——前端弹窗打开时据此重新拉取该 SPEC 的处置记录（与现有
-        refresh 事件同模式：watcher 仅通知、前端自行拉取），避免在 watcher 中
-        重复 get_admin_activities 的归并逻辑。
-        """
+        """admin_alerts.json 变化（add-admin-invoke-dialog）：广播轻量通知。"""
         self.hub.broadcast({"project": name, "type": "admin_activities"})
 
     @staticmethod

@@ -1,20 +1,20 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { Alert, Card, Space, Spin } from 'antd';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { getOverview } from '@/services/dashboard';
 import type { OverviewData } from '@/services/dashboard';
 import AlertBanner from './components/AlertBanner';
 import IntroduceRow from './components/IntroduceRow';
 import ProjectCards from './components/ProjectCards';
 
-const REFRESH_THROTTLE_MS = 500;
+// dashboard-sse-refresh 3.3：overview 轮询 2s → 30s 心跳校准 + visibilitychange 补刷
+const HEARTBEAT_MS = 30000;
 
 export default function OverviewPage() {
   const [data, setData] = useState<OverviewData | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [alertsTick, setAlertsTick] = useState(0);
-  const lastRefreshRef = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -30,7 +30,13 @@ export default function OverviewPage() {
 
   useEffect(() => {
     void load();
-    // SSE 实时刷新（对齐 v1：state/refresh/run_meta 事件触发概览重拉，500ms 前缘节流）
+    // 30s 心跳校准：overview 仍作为本地统计的校准源（SSE 断线时心跳兜底）。
+    // SSE 增量事件（state/refresh/run_meta）不再逐事件重拉 overview（2s→30s）。
+    const hb = setInterval(() => void load(), HEARTBEAT_MS);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
     const es = new EventSource('/api/stream');
     es.onmessage = (ev: MessageEvent) => {
       let msg: { type?: string } = {};
@@ -39,21 +45,16 @@ export default function OverviewPage() {
       } catch {
         return;
       }
-      if (
-        msg.type !== 'state' &&
-        msg.type !== 'refresh' &&
-        msg.type !== 'run_meta'
-      ) {
-        if (msg.type === 'alerts') setAlertsTick((t) => t + 1);
-        return;
-      }
-      const now = Date.now();
-      if (now - lastRefreshRef.current < REFRESH_THROTTLE_MS) return;
-      lastRefreshRef.current = now;
-      void load();
+      // 仅 alerts 事件驱动横幅刷新（跨项目告警聚合，与 30s 心跳解耦）
+      if (msg.type === 'alerts') setAlertsTick((t) => t + 1);
+      // state/refresh/run_meta 不触发 overview 重拉：由 30s 心跳统一校准
     };
     // 卸载必须关闭，防 EventSource 连接泄漏
-    return () => es.close();
+    return () => {
+      es.close();
+      clearInterval(hb);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [load]);
 
   return (
