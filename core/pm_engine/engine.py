@@ -2095,6 +2095,21 @@ class PMEngine:
         except Exception:
             return False
 
+    def _effective_run_timeout(self, agent_type: str | None = None) -> float:
+        """agent run 生效超时（per-agent-timeout-override 3.2）：override → 全局回退。
+
+        （liveness 组件经门面回引调用；runner 不可用时以全局配置兜底。）
+        """
+        runner = getattr(self, "agent_runner", None)
+        m = getattr(runner, "_effective_run_timeout", None)
+        if callable(m):
+            try:
+                return m(agent_type)
+            except Exception:
+                pass
+        from core.config import ConfigLoader
+        return ConfigLoader.effective_run_timeout_seconds(self.config, agent_type)
+
     def _instant_fail_cooldown_until(self, spec_name: str) -> float:
         """返回 spec 的秒挂冷却到期单调秒（未冷却/无条目返回 0）。"""
         runner = getattr(self, "agent_runner", None)

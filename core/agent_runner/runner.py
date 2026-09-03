@@ -401,6 +401,7 @@ class AgentRunner:
                 prompt, self.project_root, run_id, model_override, env_overrides,
                 max_turns=self._get_config("agents.max_turns", 300),
                 spec_name=spec,
+                agent_type="administrator",
             )
             success = True
             error = ""
@@ -819,6 +820,7 @@ class AgentRunner:
                     ),
                     max_turns=self._get_config("agents.max_turns", 300),
                     spec_name=spec_name,
+                    agent_type=agent_type,
                 )
                 if run_session_id:
                     session_id = run_session_id
@@ -1032,7 +1034,8 @@ class AgentRunner:
                     env_overrides: Dict[str, str] | None = None,
                     resume_session_id: str | None = None,
                     max_turns: int | None = None,
-                    spec_name: str | None = None) -> tuple:
+                    spec_name: str | None = None,
+                    agent_type: str | None = None) -> tuple:
         from core.config import ConfigLoader
         """
         Execute claude CLI with the given prompt, streaming events to disk.
@@ -1070,7 +1073,9 @@ class AgentRunner:
 
         Returns: (output, turns_used, session_id)
         """
-        timeout = self._get_config("agents.run_timeout_seconds", 3600)
+        # per-agent-timeout-override 3.2：run 生效超时按 agent_type 覆盖值查询
+        #（override → 全局 run_timeout_seconds → 3600 回退）。
+        timeout = self._effective_run_timeout(agent_type)
         # fix-stuck-threshold-unify D5：supervision 激活路径读取 absolute_max 兜底值，
         # 不直接读原始配置（防止与 run 超时脱钩）。返回 None 表示未启用 supervision。
         sup_abs_max = ConfigLoader.effective_supervision_absolute_max_seconds(self.config)
@@ -1201,7 +1206,8 @@ class AgentRunner:
                     # 超时活性监督（improve-run-lifecycle-governance D3）：到点不
                     # 立即杀——按封闭决策矩阵判定（硬上限 → 次数上限 → 活性）。
                     action = self._supervision_deadline_action(
-                        run_file, spec_name, run_id, started_at, extensions_used)
+                        run_file, spec_name, run_id, started_at, extensions_used,
+                        agent_type=agent_type)
                     if action["action"] == "extend":
                         extensions_used = int(action["extension_index"])
                         deadline += float(action["extension_seconds"])
@@ -1338,6 +1344,15 @@ class AgentRunner:
         """Get a nested config value."""
         from core.config import ConfigLoader
         return ConfigLoader.get(self.config, key, default)
+
+    def _effective_run_timeout(self, agent_type: str | None = None) -> float:
+        """agent run 生效超时（per-agent-timeout-override 3.2）。
+
+        ``agents.timeout_overrides.<agent_type>`` 存在且合法时取覆盖值，否则回退
+        ``agents.run_timeout_seconds`` 全局默认；全局缺失回退 3600。
+        """
+        from core.config import ConfigLoader
+        return ConfigLoader.effective_run_timeout_seconds(self.config, agent_type)
 
     def _should_give_up_before_retry(self, spec_name: str, agent_type: str) -> bool:
         """attempt 重试前的放弃判定（fix-restart-dual-dispatch S3/S4）。
@@ -1866,11 +1881,15 @@ class AgentRunner:
     def _supervision_settings(self) -> dict:
         return self._liveness._supervision_settings()
 
+    def _supervision_judge_timeout(self) -> float:
+        return self._liveness._supervision_judge_timeout()
+
     def _supervision_deadline_action(self, run_file: Path, spec_name: str | None,
                                      run_id: str, started_at: float,
                                      extensions_used: int,
-                                     judge=None) -> dict:
-        return self._liveness._supervision_deadline_action(run_file, spec_name, run_id, started_at, extensions_used, judge)
+                                     judge=None, agent_type: str | None = None) -> dict:
+        return self._liveness._supervision_deadline_action(
+            run_file, spec_name, run_id, started_at, extensions_used, judge, agent_type)
 
     def wait_for_running_agents(self, timeout: int = AGENT_TERMINATE_GRACE_SECONDS):
         return self._liveness.wait_for_running_agents(timeout)

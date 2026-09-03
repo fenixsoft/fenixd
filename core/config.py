@@ -60,6 +60,17 @@ class ConfigLoader:
     # Known agent types for model assignment
     KNOWN_AGENT_TYPES = ["implementer", "planner-plan", "planner-judge", "verifier", "administrator"]
 
+    # ── run_timeout 按 agent_type 覆盖（per-agent-timeout-override）──────
+    # agents.timeout_overrides.<agent_type> 覆盖全局 run_timeout_seconds。
+    # 白名单键 = 全部七类 agent run（含 fast-track/repair，design D3 的
+    # KNOWN_AGENT_TYPES 仅指 agents.models 角色集）+ supervision-judge。
+    TIMEOUT_OVERRIDE_AGENT_TYPES = frozenset(KNOWN_AGENT_TYPES) | {"fast-track", "repair"}
+    # supervision-judge 是内部轻量判定子进程（非长 run），不参与 absolute_max 派生，
+    # 允许低于 agent run 的 300s 下限（spec per-agent-timeout-override 3.3 场景 240s 生效）。
+    TIMEOUT_OVERRIDE_KEYS = TIMEOUT_OVERRIDE_AGENT_TYPES | {"supervision-judge"}
+    # agent run 覆盖值下限（秒）：低于此值会截断正常长 run，整条忽略 + ERROR。
+    TIMEOUT_OVERRIDE_MIN_SECONDS = 300
+
     # Valid approve modes
     VALID_APPROVE_MODES = ["manual", "auto"]
 
@@ -676,6 +687,95 @@ class ConfigLoader:
                 _SUPERVISION_BOUNDS_WARNED = True
             return required
         return float(configured)
+
+    @classmethod
+    def normalize_timeout_overrides(cls, config: Dict[str, Any]) -> Dict[str, int]:
+        """校验并规范化 ``agents.timeout_overrides``（逐键：非法键值忽略 + ERROR）。
+
+        per-agent-timeout-override（design D3 / spec 3.1）：
+        - 键 ∈ TIMEOUT_OVERRIDE_KEYS（全部七类 agent run + supervision-judge）；
+        - agent run 键值须为 ≥300 整数（低于下限会截断正常长 run）；
+          supervision-judge 键值须为 ≥1 整数（内部轻量判定，不受 300 下限约束）；
+        - 非法键值**整条忽略**（该键回退全局默认）并打 ERROR，其余合法键正常生效；
+          进程不得崩溃（调用方容错）。
+
+        Returns: 规范化后的覆盖表 {agent_type: seconds}。缺省/非 dict/空 → {}。
+        """
+        agents = config.get("agents") or {}
+        raw = agents.get("timeout_overrides")
+        if not isinstance(raw, dict) or not raw:
+            return {}
+        out: Dict[str, int] = {}
+        for key, val in raw.items():
+            if key not in cls.TIMEOUT_OVERRIDE_KEYS:
+                _logger.error(
+                    "agents.timeout_overrides 键 %r 非法（应为 %s 之一），"
+                    "该键被忽略并回退全局默认",
+                    key, sorted(cls.TIMEOUT_OVERRIDE_KEYS),
+                )
+                continue
+            if isinstance(val, bool) or not isinstance(val, int):
+                _logger.error(
+                    "agents.timeout_overrides.%s=%r 非法（应为整数秒），"
+                    "该键被忽略并回退全局默认",
+                    key, val,
+                )
+                continue
+            min_allowed = (
+                1 if key == "supervision-judge"
+                else cls.TIMEOUT_OVERRIDE_MIN_SECONDS
+            )
+            if val < min_allowed:
+                _logger.error(
+                    "agents.timeout_overrides.%s=%s 低于下限 %ss，"
+                    "该键被忽略并回退全局默认",
+                    key, val, min_allowed,
+                )
+                continue
+            out[key] = val
+        return out
+
+    @classmethod
+    def effective_run_timeout_seconds(cls, config: Dict[str, Any],
+                                      agent_type: str | None = None) -> float:
+        """agent run 的生效超时（per-agent-timeout-override spec 3.1/3.2）。
+
+        解析顺序 MUST：``agents.timeout_overrides.<agent_type>`` 存在且合法时取覆盖值，
+        否则回退 ``agents.run_timeout_seconds`` 全局默认；全局缺失/非正数回退
+        RUN_TIMEOUT_FALLBACK_SECONDS（3600）。
+
+        覆盖 MUST 适用于全部七类 agent run：implementer、verifier、planner-plan、
+        planner-judge、fast-track、repair、administrator（后两者经 _execute_agent
+        与 _run_claude 统一路径生效）。
+
+        注意：supervision-judge 键不在此处生效（那是 liveness judge 子进程超时，
+        经 ``judge_timeout_seconds`` 读取，不参与 absolute_max 派生）。
+        """
+        overrides = cls.normalize_timeout_overrides(config)
+        if agent_type and agent_type in overrides:
+            return float(overrides[agent_type])
+        agents = config.get("agents") or {}
+        rt = agents.get("run_timeout_seconds")
+        if isinstance(rt, (int, float)) and not isinstance(rt, bool) and rt > 0:
+            return float(rt)
+        return float(RUN_TIMEOUT_FALLBACK_SECONDS)
+
+    @classmethod
+    def judge_timeout_seconds(cls, config: Dict[str, Any],
+                              default: float = 120) -> float:
+        """liveness 活性判定 judge 子进程超时（spec per-agent-timeout-override 3.3）。
+
+        读取 ``agents.timeout_overrides.supervision-judge``（缺省回退 120 秒常量）。
+        该值不参与 absolute_max 派生。非法/缺失时回退 default。
+        """
+        overrides = cls.normalize_timeout_overrides(config)
+        val = overrides.get("supervision-judge")
+        if val is not None:
+            return float(val)
+        try:
+            return float(default)
+        except (TypeError, ValueError):
+            return 120.0
 
     @classmethod
     def reset_stuck_threshold_state(cls) -> None:
