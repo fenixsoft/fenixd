@@ -15,6 +15,8 @@ from pathlib import Path
 
 # 项目根（经 .fenix/bin/ 软链接调用时 = 项目目录）
 PROJECT_ROOT = Path(__file__).absolute().parent.parent.parent
+# 框架根（.resolve() 跟随 .fenix 软链接，定位真实安装位置）：core/ 所在目录
+FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
 
 
 def archive_change(project_root: Path, name: str) -> dict:
@@ -47,8 +49,10 @@ def archive_change(project_root: Path, name: str) -> dict:
     # change 目录移动成功后，把 .fenix/runs/ 顶层属于该 spec 的产物移入
     # archive/（不删除任何文件）。fail-open（design D4）：runs 归档失败
     # 仅在返回 dict 追加告警字段，不阻断 change 归档主流程。
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
+    # core 从框架根导入（对齐 fenix_spec.py FRAMEWORK_ROOT 先例）：自举仓库
+    # 下即 project_root，第三方项目下跟随 .fenix 软链接定位安装位置。
+    if str(FRAMEWORK_ROOT) not in sys.path:
+        sys.path.insert(0, str(FRAMEWORK_ROOT))
     try:
         from core.agent_runner.run_files import archive_spec_runs
         result["runs_archived"] = archive_spec_runs(
