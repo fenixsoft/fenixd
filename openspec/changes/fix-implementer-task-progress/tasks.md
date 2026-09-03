@@ -46,7 +46,7 @@
 
 ## 4. 端到端验证
 
-- [ ] 4.1 全量测试回归（tests/ dashboard + pm_engine 相关，既有用例零回归）
-- [ ] 4.2 实测：派发一轮新 implementer run（可用现成 in-flight 之后的新 spec 或一次性测试 spec），断言 TaskCreate subject 前缀合规、TaskUpdate 细粒度、收尾 tasks.md 勾选与 run 完成一致
-- [ ] 4.3 Dashboard 实测：浏览器确认任务进度列在 run 进行中能显示推进（run 线索），不再静止 0/N
-- [ ] 4.4 验证 add-dashboard-incremental-data（in-flight）结束时补勾行为符合 D2.2 弱校验预期
+- [x] 4.1 全量测试回归（tests/ dashboard + pm_engine 相关，既有用例零回归）
+- [x] 4.2 实测：派发一轮新 implementer run（可用现成 in-flight 之后的新 spec 或一次性测试 spec），断言 TaskCreate subject 前缀合规、TaskUpdate 细粒度、收尾 tasks.md 勾选与 run 完成一致
+- [x] 4.3 Dashboard 实测：浏览器确认任务进度列在 run 进行中能显示推进（run 线索），不再静止 0/N
+- [x] 4.4 验证 add-dashboard-incremental-data（in-flight）结束时补勾行为符合 D2.2 弱校验预期
