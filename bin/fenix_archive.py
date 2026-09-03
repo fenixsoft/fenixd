@@ -41,7 +41,22 @@ def archive_change(project_root: Path, name: str) -> dict:
 
     target.parent.mkdir(parents=True, exist_ok=True)
     moved = Path(shutil.move(str(change_dir), str(target)))
-    return {"from": str(change_dir), "to": str(moved)}
+    result = {"from": str(change_dir), "to": str(moved)}
+
+    # remove-auto-run-cleanup：run 产物归档的唯一入口 = SPEC 归档。
+    # change 目录移动成功后，把 .fenix/runs/ 顶层属于该 spec 的产物移入
+    # archive/（不删除任何文件）。fail-open（design D4）：runs 归档失败
+    # 仅在返回 dict 追加告警字段，不阻断 change 归档主流程。
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    try:
+        from core.agent_runner.run_files import archive_spec_runs
+        result["runs_archived"] = archive_spec_runs(
+            project_root / ".fenix" / "runs", name
+        )
+    except (OSError, ImportError) as e:
+        result["runs_archive_warning"] = str(e)
+    return result
 
 
 def main():
@@ -59,6 +74,9 @@ def main():
     try:
         result = archive_change(project_root, args.name)
         payload = {"ok": True, "from": result["from"], "to": result["to"], "error": None}
+        for key in ("runs_archived", "runs_archive_warning"):
+            if key in result:
+                payload[key] = result[key]
     except ValueError as e:
         payload = {"ok": False, "from": None, "to": None, "error": str(e)}
 
