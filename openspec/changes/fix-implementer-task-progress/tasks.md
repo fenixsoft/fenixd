@@ -32,9 +32,9 @@
 
 ## 2. 写侧回写兜底（task-progress-writeback）
 
-- [ ] 2.1 engine.py `_sync_task_progress` 改造为三级回退：done_ids 优先；空则 flat_done + 弱一致性校验（created_count ≥ tasks.md 未完成项数一半）按创建序勾前 max(flat_done)+1 个；皆空跳过
-- [ ] 2.2 flat 回退的 tasks.md 修改走既有原子写路径（临时文件 + replace），异常仍非阻塞
-- [ ] 2.3 测试：无编号 run 兜底勾选、弱校验不符跳过、done_ids 精确路径零回归（构造 run 产物 fixture）
+- [x] 2.1 engine.py `_sync_task_progress` 改造为三级回退：done_ids 优先；空则 flat_done + 弱一致性校验（created_count ≥ tasks.md 未完成项数一半）按创建序勾前 max(flat_done)+1 个；皆空跳过
+- [x] 2.2 flat 回退的 tasks.md 修改走既有原子写路径（临时文件 + replace），异常仍非阻塞
+- [x] 2.3 测试：无编号 run 兜底勾选、弱校验不符跳过、done_ids 精确路径零回归（构造 run 产物 fixture）
 
 ## 3. run 层进度可见性（run-progress-observability）
 

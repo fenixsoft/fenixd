@@ -490,7 +490,15 @@ class PMEngine:
     def _sync_task_progress(self, spec_name: str):
         """把已成功完成的任务勾选确定性回写进主树 tasks.md 并 commit。
 
-        幂等：已勾选的条目跳过；无 run 产物 / 解析为空 / 工作树不干净时
+        三级回退（fix-implementer-task-progress D2）：
+        1. done_ids 非空 → 按 tasks.md 编号精确对齐（既有行为不变）；
+        2. done_ids 空但 flat_done 非空（subject 无编号 run）→ 弱一致性校验通过时
+           按创建序勾选 tasks.md 扁平任务序列前 max(flat_done)+1 个未完成项；
+           弱校验：归并比至多 1:5（未完成项数 ≤ created_count*5），拦截创建数与
+           任务清单明显不匹配的场景（run 只建了零星任务时 flat 序映射不可信）；
+        3. 两者皆空 → 跳过（不误写）。
+
+        幂等：已勾选的条目跳过（只增不减）；无 run 产物 / 工作树不干净时
         直接返回（不报错、不产生空 commit）。任何异常由调用方捕获，不阻塞主流程。
         """
         tasks_path = self.project_root / "openspec" / "changes" / spec_name / "tasks.md"
@@ -505,8 +513,11 @@ class PMEngine:
 
         rd = parse_run_task_done(run_file)
         done_ids = rd.get("done_ids") or set()
-        if not done_ids:
-            self.logger.debug("pm_engine", f"任务回写跳过（done_ids 为空）：{spec_name}")
+        flat_done = rd.get("flat_done") or set()
+        created_count = int(rd.get("created_count") or 0)
+        if not done_ids and not flat_done:
+            self.logger.debug(
+                "pm_engine", f"任务回写跳过（done_ids/flat_done 皆空）：{spec_name}")
             return
 
         # 工作树不干净时跳过（如 merge-back 冲突恢复期），留待下个调度周期重试
@@ -519,29 +530,76 @@ class PMEngine:
         except (OSError, UnicodeDecodeError):
             return
         lines = text.split("\n")
+        task_lines = [
+            (i, self._TASK_LINE_RE.match(ln))
+            for i, ln in enumerate(lines)
+        ]
         changed = False
-        new_lines = []
-        for line in lines:
-            m = self._TASK_LINE_RE.match(line)
-            if m and m.group(4) in done_ids and m.group(2) != "x":
-                # `- [ ]` → `- [x]`，仅当该 id 在 done_ids 且当前未勾选
-                new_lines.append(f"{m.group(1)}[x]{m.group(3)}{m.group(4)}{m.group(5)}")
+
+        if done_ids:
+            # 第 1 级：done_ids 精确对齐（既有行为不变）
+            for i, m in task_lines:
+                if m and m.group(4) in done_ids and m.group(2) != "x":
+                    # `- [ ]` → `- [x]`，仅当该 id 在 done_ids 且当前未勾选
+                    lines[i] = f"{m.group(1)}[x]{m.group(3)}{m.group(4)}{m.group(5)}"
+                    changed = True
+        else:
+            # 第 2 级：flat 回退（subject 无编号 run），弱一致性校验 + 按创建序勾选
+            unchecked = [(i, m) for i, m in task_lines if m and m.group(2) != "x"]
+            if not unchecked:
+                self.logger.debug(
+                    "pm_engine", f"任务回写跳过（无未完成项）：{spec_name}")
+                return
+            if len(unchecked) > created_count * 5:
+                self.logger.debug(
+                    "pm_engine",
+                    f"任务回写跳过（flat 弱校验不符：created={created_count} "
+                    f"未完成={len(unchecked)}）：{spec_name}",
+                )
+                return
+            # 前 max(flat_done)+1 个未完成项勾选（max 保证已汇报完成的任务全覆盖；
+            # 宁多勾不勾错——flat 回退仅增不减既有勾选）
+            bound = min(max(flat_done) + 1, len(unchecked))
+            for i, m in unchecked[:bound]:
+                lines[i] = f"{m.group(1)}[x]{m.group(3)}{m.group(4)}{m.group(5)}"
                 changed = True
-            else:
-                new_lines.append(line)
+
         if not changed:
             self.logger.debug("pm_engine", f"任务回写跳过（无新勾选）：{spec_name}")
             return
 
-        tasks_path.write_text("\n".join(new_lines), encoding="utf-8")
+        # 原子写（临时文件 + replace），异常由调用方捕获不阻塞主流程
+        try:
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".tasks.{spec_name}.", suffix=".tmp",
+                dir=str(tasks_path.parent),
+            )
+            tmp_path = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write("\n".join(lines))
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(str(tmp_path), str(tasks_path))
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
+        except OSError as e:
+            self.logger.warning("pm_engine", f"任务回写写入失败 '{spec_name}': {e}")
+            return
         commit_msg = f"[fenix] {spec_name}: sync task progress from run record"
         ok, err = self._git_commit([str(tasks_path)], commit_msg)
         if not ok:
             self.logger.warning("pm_engine", f"任务回写 commit 失败 '{spec_name}': {err}")
             return
+        level = len(done_ids) if done_ids else min(max(flat_done) + 1, created_count)
         self.logger.info(
             "pm_engine",
-            f"任务进度回写成功 '{spec_name}'：勾选 {len(done_ids)} 个任务",
+            f"任务进度回写成功 '{spec_name}'：勾选 {level} 个任务"
+            f"（{'done_ids 精确' if done_ids else 'flat 兜底'}）",
         )
 
     def _worktree_is_dirty(self) -> bool:

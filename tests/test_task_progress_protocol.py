@@ -90,5 +90,189 @@ class TestTaskProgressContractPrompt(unittest.TestCase):
         assert "matching all TaskUpdate records exactly" in prompt
 
 
+class TestTaskProgressSyncFallback(unittest.TestCase):
+    """task-progress-writeback：_sync_task_progress 三级回退。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "test"],
+                       cwd=str(self.project_root), capture_output=True)
+        (self.project_root / ".gitignore").write_text(".fenix/\n", encoding="utf-8")
+        (self.project_root / "README.md").write_text("# test\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"],
+                       cwd=str(self.project_root), capture_output=True)
+        self.sm = MagicMock()
+        self.sm.read_one = MagicMock(return_value={"status": "done"})
+        self.sm.transition = MagicMock()
+        self.sm.update_spec = MagicMock()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_engine(self, config=None):
+        from core.pm_engine import PMEngine
+        logger = MagicMock()
+        for m in ("info", "warning", "error", "debug"):
+            setattr(logger, m, MagicMock())
+        ar = MagicMock()
+        return PMEngine(self.sm, ar, config or {}, self.project_root, logger)
+
+    def _write_spec_tasks(self, spec_name: str, n_tasks: int, checked: int = 0) -> Path:
+        spec_dir = self.project_root / "openspec" / "changes" / spec_name
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        lines = [f"# Tasks: {spec_name}", "", "## 1. 实现", ""]
+        for i in range(1, n_tasks + 1):
+            mark = "x" if i <= checked else " "
+            lines.append(f"- [{mark}] 1.{i} task {i}")
+        p = spec_dir / "tasks.md"
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return p
+
+    def _commit_spec(self, spec_name: str):
+        subprocess.run(["git", "add", "--", "openspec"],
+                       cwd=str(self.project_root), capture_output=True)
+        subprocess.run(["git", "commit", "-q", "-m", f"spec {spec_name}"],
+                       cwd=str(self.project_root), capture_output=True)
+
+    def _head(self):
+        return subprocess.run(["git", "rev-parse", "HEAD"],
+                              cwd=str(self.project_root), capture_output=True, text=True).stdout.strip()
+
+    def _tasks_text(self, spec_name="demo"):
+        return (self.project_root / "openspec" / "changes" / spec_name / "tasks.md").read_text()
+
+    def test_flat_fallback_checks_first_n(self):
+        """spec 场景：无编号 run（created=6, flat={0,1,2,3}），27 项未完成 →
+        弱校验通过（27 ≤ 6*5），前 4 项未完成勾选。"""
+        self._write_spec_tasks("demo", 27)
+        self._commit_spec("demo")
+        _write_impl_run_for_spec(
+            self.project_root, "demo", 1789000100,
+            [f"Implement grouping {i}" for i in range(6)],  # subject 无编号
+            [(1, "completed"), (2, "completed"),
+             (3, "completed"), (4, "completed")],
+        )
+        engine = self._make_engine()
+        engine._sync_task_progress("demo")
+        text = self._tasks_text()
+        for i in range(1, 5):
+            self.assertIn(f"- [x] 1.{i} task {i}", text)
+        self.assertIn("- [ ] 1.5 task 5", text)  # 前 4 之外不勾
+        self.assertIn("- [ ] 1.27 task 27", text)
+        res = subprocess.run(["git", "log", "--oneline"],
+                             cwd=str(self.project_root), capture_output=True, text=True)
+        self.assertIn("sync task progress from run record", res.stdout)
+
+    def test_flat_fallback_weak_check_skips(self):
+        """spec 场景：created=2 / 未完成 27 → 归并比超 1:5，弱校验不符 → 不回写。"""
+        self._write_spec_tasks("demo", 27)
+        self._commit_spec("demo")
+        _write_impl_run_for_spec(
+            self.project_root, "demo", 1789000200,
+            ["do setup", "do rest"], [(1, "completed"), (2, "completed")],
+        )
+        engine = self._make_engine()
+        head = self._head()
+        engine._sync_task_progress("demo")
+        self.assertIn("- [ ] 1.1 task 1", self._tasks_text())
+        self.assertEqual(head, self._head())  # 无 commit
+
+    def test_precise_path_ignores_flat(self):
+        """done_ids 非空 → 精确路径，flat_done 不参与（既有行为零回归）。"""
+        self._write_spec_tasks("demo", 3)
+        self._commit_spec("demo")
+        _write_impl_run_for_spec(
+            self.project_root, "demo", 1789000300,
+            ["Task 1.1: build", "Task 1.2: test", "Task 1.3: doc"],
+            [(1, "completed")],  # 仅任务 1 完成
+        )
+        engine = self._make_engine()
+        engine._sync_task_progress("demo")
+        text = self._tasks_text()
+        self.assertIn("- [x] 1.1 task 1", text)
+        self.assertIn("- [ ] 1.2 task 2", text)  # flat={0} 不外溢
+        self.assertIn("- [ ] 1.3 task 3", text)
+
+    def _write_run_file(self, spec_name: str, ts: int, subjects: list,
+                         completed_task_ids: list):
+        """写 run 产物 fixture：TaskCreate 按 subjects 序，TaskUpdate 按 taskId 显式指定。"""
+        runs_dir = self.project_root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for s in subjects:
+            lines.append(json.dumps({
+                "type": "assistant",
+                "message": {"content": [{
+                    "type": "tool_use", "name": "TaskCreate",
+                    "input": {"subject": s},
+                }]},
+            }))
+        for tid in completed_task_ids:
+            lines.append(json.dumps({
+                "type": "assistant",
+                "message": {"content": [{
+                    "type": "tool_use", "name": "TaskUpdate",
+                    "input": {"taskId": tid, "status": "completed"},
+                }]},
+            }))
+        (runs_dir / f"impl-{spec_name}-{ts}.jsonl").write_text(
+            "\n".join(lines), encoding="utf-8")
+
+    def test_flat_fallback_gap_marks_max_plus_one(self):
+        """flat_done 有空洞（{0,2}）→ 按 max+1=3 勾前 3 个未完成项。"""
+        self._write_spec_tasks("demo", 6)
+        self._commit_spec("demo")
+        self._write_run_file(
+            "demo", 1789000400,
+            [f"do {i}" for i in range(4)],
+            [1, 3],  # taskId 1,3 → idx {0,2}
+        )
+        engine = self._make_engine()
+        engine._sync_task_progress("demo")
+        text = self._tasks_text()
+        self.assertIn("- [x] 1.1 task 1", text)
+        self.assertIn("- [x] 1.2 task 2", text)
+        self.assertIn("- [x] 1.3 task 3", text)
+        self.assertIn("- [ ] 1.4 task 4", text)
+
+    def test_all_empty_skips(self):
+        """done_ids/flat_done 皆空（只创建未完成）→ 第 3 级跳过，不误写。"""
+        self._write_spec_tasks("demo", 3)
+        self._commit_spec("demo")
+        _write_impl_run_for_spec(
+            self.project_root, "demo", 1789000500,
+            ["do a", "do b"], [],  # 无任何 TaskUpdate completed
+        )
+        engine = self._make_engine()
+        head = self._head()
+        engine._sync_task_progress("demo")
+        self.assertIn("- [ ] 1.1 task 1", self._tasks_text())
+        self.assertEqual(head, self._head())
+
+    def test_atomic_write_no_temp_leftover(self):
+        """回写走临时文件 + replace：成功后 spec 目录无 .tmp 残留。"""
+        self._write_spec_tasks("demo", 27)
+        self._commit_spec("demo")
+        _write_impl_run_for_spec(
+            self.project_root, "demo", 1789000600,
+            [f"Implement grouping {i}" for i in range(6)],
+            [(1, "completed"), (2, "completed")],
+        )
+        engine = self._make_engine()
+        engine._sync_task_progress("demo")
+        spec_dir = self.project_root / "openspec" / "changes" / "demo"
+        leftovers = [p.name for p in spec_dir.iterdir() if p.name.endswith(".tmp")]
+        self.assertEqual(leftovers, [])
+        self.assertIn("- [x] 1.1 task 1", self._tasks_text())
+
+
 if __name__ == "__main__":
     unittest.main()
