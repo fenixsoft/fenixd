@@ -86,7 +86,7 @@
 ### assertion_triage 逐断言归因（强制，add-interaction-contract-and-per-assert-triage）
 ```json
   "assertion_triage": [
-    {"assertion": "no_click_interception .dark-Card button 停止",
+    {"assertion": "no_click_interception [data-testid='card-link'] 点击跳转",
      "classification": "test-defect",
      "evidence": "选择器含臆测类名，元素从未存在（DOM snapshot 佐证）"}
   ]

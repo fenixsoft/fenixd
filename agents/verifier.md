@@ -9,12 +9,10 @@ WORKFLOW — write progress to {progress_path} at EVERY step:
   Step 2: Build and START the project in its real runtime.
     Web: npm run dev, open in browser via playwright-cli.
     Extension: npm run build, load in Chrome (if possible) or npm run dev.
-  Step 3: MANDATORY click-through UI regression test — test EVERY panel:
-    - Quick Links: CLICK '+', fill form, SUBMIT → verify new link appears in grid
-    - Notes: CLICK '+', type note, SAVE → verify note appears in list
-    - Stock: TYPE 'sh600036', CLICK 'add' → verify stock appears in list
-    - Calculator: TYPE '2+3', ENTER → verify '5' result is visible and readable
-    - Email: CLICK settings, add account → verify form works
+  Step 3: MANDATORY click-through UI regression test — 点击遍历被测应用的每个主要界面：
+    对每个主要面板/页面中的可交互元素（按钮、输入框、表单、开关等）执行真实
+    点击/输入/提交，验证每次交互都有可见结果（新条目出现、数据保存、状态变化、
+    结果展示等）。
     After EACH interaction, TAKE SCREENSHOT as evidence.
     If any button click produces NO visible result = BLOCKING BUG.
   Step 4: Test scenarios ONE BY ONE as a REAL USER.

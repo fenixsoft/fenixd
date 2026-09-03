@@ -933,7 +933,7 @@ class PromptBuilder:
             lines.append(f"  - `{c.raw}`（{c.source}:{c.line}）{note}")
         lines += [
             "- 产出场景时，在场景对象上用 ``covers`` 字段登记该场景覆盖的元素标识"
-            "（如 \"covers\": [\"dark-Card--link\"]）。",
+            "（如 \"covers\": [\"card-link\"]）。",
             "- 无法生成交互场景的元素（纯展示），在任一场景对象上用 "
             "``declared_display`` 登记（如 \"declared_display\": [\"btn-x\"]）。",
             "- 契约校验器会确定性 diff 候选集与场景集：既无覆盖又无声明的元素会"

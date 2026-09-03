@@ -25,14 +25,6 @@
 - 优先使用 data-testid 属性
 - 其次使用语义选择器：button[name="提交"], input[placeholder="搜索"]
 - 避免使用：第n个子元素、绝对路径
-- 若被测页面使用 AMIS 组件库（如 fenixd Dashboard，dark 主题）：
-  AMIS 实际渲染类名带主题前缀 dark-，**不存在** .amis-Form-* 这类类名，臆测组件库类名会导致选择器全部超时。已实测验证的选择器：
-  - Select 下拉控件：.dark-SelectControl（页面内有多个时用 >> nth=N，顺序与 filter 配置的 body 数组一致）
-  - Select 下拉选项：.dark-Select-option:has-text('<选项文本>')
-  - dropdown-button 的二级菜单项渲染在 portal 弹层 .dark-PopOver.dark-DropDown-popover 中，**不在** .dark-DropDown.is-opened 容器内——定位菜单项用 .dark-DropDown-popover >> text=<菜单项文本>，不要嵌套在 .dark-DropDown.is-opened 内查找（元素不存在必超时）
-  - crud 表格行：**不存在** .amis-Sheet-row / .amis-Table-row，行是普通 <tr>（主题类 dark-Table-table-tr）——定位行用 tbody tr（或 tbody tr >> nth=N），行内按钮用 tbody tr >> nth=0 >> button:has-text('<文本>')
-  - Dialog：根节点 .amis-dialog-widget 存在；关闭按钮是 .amis-dialog-widget [class*='Modal-close']（**不存在** .amis-Dialog-close）；标签页项是 .amis-dialog-widget [class*='Tabs-link']:has-text('<页签名>')（**不存在** .ant-tabs-tab）
-  - Select 选项点击后下拉立即关闭并可能触发 URL 参数同步（页面跳转），选择后的断言应指向列表行/结果区，**不得**再断言选项本身可见
 - 自建壳应用的侧边栏导航 href 来自壳的路由表（如 app.json 的通用 url：#/config、#/activities），**不含**项目名等路径参数——不得臆测 #/config/<project> 形式的链接
 - 组件库类名属于 CSS 类选择器豁免：使用前必须先查阅被测页面源码确认真实渲染结构，不得臆测
 
