@@ -19,7 +19,7 @@
   kind: modify
 - path: core/dashboard/static/src/services/dashboard.ts
   kind: modify
-- path: core/dashboard/static/dist
+- path: core/dashboard/static/dist/index.html
   kind: modify
 - path: tests/test_dashboard_index.py
   kind: modify
