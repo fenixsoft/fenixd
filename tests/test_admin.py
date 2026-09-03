@@ -530,7 +530,7 @@ class TestRunAdministrator:
         runner._get_agent_model_assignment = lambda agent_type: None
         runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             return "output", 5, "sess"
 
         runner._run_claude = fake_run_claude
@@ -751,7 +751,7 @@ class TestRunAdministrator:
         runner._get_agent_model_assignment = lambda agent_type: None
         runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             # Admin 按提示词注入的实例路径写入（而非旧全局文件）
             admin_disposition_path(cwd, run_id).write_text(json.dumps({
                 "spec": "spec-a",
@@ -784,7 +784,7 @@ class TestRunAdministrator:
         runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
         summary = "根因是工作树状态陈旧；已清理并重新调度；无需人工介入。"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             admin_disposition_path(cwd, run_id).write_text(json.dumps({
                 "spec": "spec-a",
                 "problem": "卡死",
@@ -812,7 +812,7 @@ class TestRunAdministrator:
         runner._get_agent_model_assignment = lambda agent_type: None
         runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             admin_disposition_path(cwd, run_id).write_text(json.dumps({
                 "spec": "spec-a", "result": "resolved",
             }), encoding="utf-8")
@@ -888,7 +888,7 @@ class TestRunAdministrator:
         runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         captured = {}
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             captured["model"] = model_override
             captured["env"] = env_overrides
             admin_disposition_path(cwd, run_id).write_text(
@@ -916,7 +916,7 @@ class TestRunAdministrator:
         runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         captured = {}
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             captured["model"] = model_override
             captured["env"] = env_overrides
             admin_disposition_path(cwd, run_id).write_text(
@@ -942,7 +942,7 @@ class TestRunAdministrator:
         runner._get_agent_model_assignment = lambda agent_type: None
         prompts = []
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             prompts.append(prompt)
             # 模拟 Admin 按提示词注入的路径写入
             disposition_path_from_prompt(prompt).write_text(json.dumps({
@@ -976,7 +976,7 @@ class TestRunAdministrator:
         runner._get_agent_model_assignment = lambda agent_type: None
         runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             disp_path = admin_disposition_path(cwd, run_id)
             disp_path.write_text(json.dumps({"result": "resolved"}), encoding="utf-8")
             assert disp_path.exists()
@@ -1003,7 +1003,7 @@ class TestRunAdministrator:
         started = threading.Barrier(2)
         release = threading.Event()
 
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None):
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             disp_path = admin_disposition_path(cwd, run_id)
             seen_paths.append(disp_path)
             started.wait(timeout=10)          # 两个 run 同时在场
