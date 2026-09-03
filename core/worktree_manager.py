@@ -52,7 +52,7 @@ AUTOSTASH_MSG_PREFIX = "fenix: pre-dispatch autostash"
 # dist，内容哈希文件名跨分支必然 rename/delete 打架（非语义冲突）；全部冲突
 # 落在这些前缀下时整目录对齐实现分支版本并完成 merge（add-v3-spec-quick-switch
 # 4 次重试耗尽事故的根因之一）。
-BUILD_ARTIFACT_PREFIXES = ("core/dashboard/static/v3/dist/",)
+BUILD_ARTIFACT_PREFIXES = ("core/dashboard/static/dist/",)
 
 
 class WorktreeManager:

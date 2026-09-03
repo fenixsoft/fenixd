@@ -115,13 +115,13 @@ class TestRewriteOrigin(unittest.TestCase):
         scenarios = tmp / "test_scenarios.json"
         scenarios.write_text(json.dumps([
             {"steps": [{"action": "navigate",
-                        "value": "http://localhost:8787/v3/dist/#/overview"}]},
+                        "value": "http://localhost:8787/#/overview"}]},
         ]), encoding="utf-8")
         n = rewrite_scenarios_origin(scenarios, "http://127.0.0.1:19099")
         self.assertEqual(n, 1)
         data = json.loads(scenarios.read_text(encoding="utf-8"))
         self.assertEqual(data[0]["steps"][0]["value"],
-                         "http://127.0.0.1:19099/v3/dist/#/overview")
+                         "http://127.0.0.1:19099/#/overview")
 
     def test_missing_file_zero(self):
         self.assertEqual(rewrite_scenarios_origin(Path("/nonexistent.json"), "x"), 0)

@@ -257,7 +257,7 @@ class TestBuildArtifactConflictSelfHeal:
     时不自愈、保持原失败路径。
     """
 
-    DIST = "core/dashboard/static/v3/dist"
+    DIST = "core/dashboard/static/dist"
 
     def _seed_dist(self, root: Path):
         d = root / self.DIST

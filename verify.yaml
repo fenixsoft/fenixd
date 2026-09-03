@@ -22,8 +22,8 @@
 #   kind    static=框架内置静态服务器（服务 root 目录，自动分配端口）
 #           command=启动长驻服务命令（形态同 commands.start，项目根为 cwd）
 #   root    kind=static 必填。URL 空间的根目录（相对项目根）——注意取的
-#           是"路径前缀成立"的目录：本应用以 /v3/dist/ 访问，故 root 取
-#           其父目录 core/dashboard/static 而非 dist 本身
+#           是"路径前缀成立"的目录：本应用以 / 访问，故 root 取
+#           core/dashboard/static（dist 的父目录）而非 dist 本身
 #   cmd     kind=command 必填。服务启动命令
 #   port    kind=command 可选。端口提示（供场景端口改写扫描）；
 #           缺省时框架从 cmd 的 --port/-p 参数提取
@@ -39,13 +39,13 @@
 
 prepare:
   - run: npm run build
-    cwd: core/dashboard/static/v3
+    cwd: core/dashboard/static
 
 serve:
   kind: static
   root: core/dashboard/static
 
 ready:
-  url: /v3/dist/
+  url: /
   expect: 200
   timeout: 120

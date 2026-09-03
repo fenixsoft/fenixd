@@ -185,7 +185,7 @@ def server_fx(tmp_path):
 
 class TestServerAPI:
     def test_index_served(self, server_fx):
-        # 根路由直接服务 v3 dashboard 首页（/v3/dist/ 静态透传保留，兼容旧书签）
+        # 根路由直接服务 dashboard 首页（v3 SPA，自 static/ 上移后 dist/ 不再有 v3 层级）
         import http.client
         _, srv = server_fx
         conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
@@ -199,13 +199,13 @@ class TestServerAPI:
         finally:
             conn.close()
 
-    def test_static_root_fallback_to_v3_dist(self, server_fx):
+    def test_static_root_fallback_to_dist(self, server_fx):
         # v3 SPA 挂载在 / 时，相对资源（./umi.js）以根路径请求，
-        # 静态服务需回退到 v3/dist/ 命中（/v3/dist/ 原路径仍透传）
+        # 静态服务需回退到 dist/ 命中
         import http.client
         _, srv = server_fx
         dist = (Path(__file__).resolve().parents[1]
-                / "core" / "dashboard" / "static" / "v3" / "dist")
+                / "core" / "dashboard" / "static" / "dist")
         js_name = sorted(p.name for p in dist.glob("umi.*.js"))[0]
         conn = http.client.HTTPConnection("127.0.0.1", srv.port, timeout=10)
         try:

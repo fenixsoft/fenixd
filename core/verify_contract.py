@@ -38,21 +38,21 @@ Fenix 是通用开发框架，被管项目形态各异：前端应用有构建�
     # 产物包含最新合并的实现。无构建步骤的应用（纯源码运行型）整段省略。
     prepare:
       - run: npm run build            # 必填。字符串=经 shell 执行；列表=argv 直接执行
-        cwd: core/dashboard/static/v3 # 可选。相对项目根的工作目录，缺省=项目根
+        cwd: core/dashboard/static    # 可选。相对项目根的工作目录，缺省=项目根
     # ── 可选。被测实例的启动方式。缺省回退 config commands.start（旧行为）。
     serve:
       kind: static                   # static=框架内置静态服务器（服务 root 目录）
                                      # command=启动长驻服务命令（同 commands.start 形态）
       root: core/dashboard/static    # kind=static 必填。**URL 空间的根目录**（相对
                                      # 项目根）：选目录时保证场景路径在其下成立——
-                                     # 例如应用以 /v3/dist/ 路径访问时，root 应取其
-                                     # 父目录而非 dist 本身
+                                     # 例如应用以 /dist/ 路径访问时，root 应取其
+                                     # 父目录（static）而非 dist 本身
       # cmd: python3 -m http.server 8787   # kind=command 必填。shell 命令，项目根为 cwd
       # port: 8787                         # kind=command 可选。端口提示（供端口改写
                                      # 扫描）；缺省时从 cmd 的 --port/-p 参数提取
     # ── 可选。就绪探针；缺省探被测实例根路径、期望 200、等待 60 秒。
     ready:
-      url: /v3/dist/                 # 探针路径（相对被测实例），缺省 /
+      url: /#/overview               # 探针路径（相对被测实例），缺省 /
       expect: 200                    # 期望 HTTP 状态码，缺省 200
       timeout: 60                    # 就绪等待上限（秒），缺省 60
 
