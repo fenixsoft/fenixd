@@ -753,6 +753,11 @@ export default function SpecListPage() {
         pct(a.task_done, a.task_total) - pct(b.task_done, b.task_total),
       render: (_: unknown, record: SpecSummary) => {
         const p = pct(record.task_done, record.task_total);
+        // run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照落后于
+        // run 实际推进（subject 无编号 / agent 未勾 tasks.md）时叠加 run 完成度，
+        // 任一数据源失效都不再呈现静止的 0/N；快照已覆盖时不重复打扰。
+        const rp = record.run_progress;
+        const runAhead = !!rp && rp.done > record.task_done;
         // 对齐 v1：条下方两侧分别显示 done/total 与 百分比
         return (
           <div style={{ minWidth: 0 }}>
@@ -764,8 +769,13 @@ export default function SpecListPage() {
               trailColor={TRACK_LIGHT}
             />
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: '18px' }}>
-              <Typography.Text type="secondary">
+              <Typography.Text type="secondary" data-testid="task-progress-cell">
                 {record.task_done}/{record.task_total}
+                {runAhead && rp ? (
+                  <Typography.Text type="warning" style={{ marginLeft: 4 }}>
+                    run {rp.done}/{rp.total} 已汇报
+                  </Typography.Text>
+                ) : null}
               </Typography.Text>
               <Typography.Text type="secondary">{p}%</Typography.Text>
             </div>
