@@ -1173,7 +1173,8 @@ class Dispatcher:
         wm = self._pm.agent_runner.worktree_manager
         branch = result.branch
         if branch:
-            merge_ok, merge_error = wm.merge_back_from_branch(branch)
+            merge_info = wm.merge_back_from_branch(branch)
+            merge_ok, merge_error = merge_info
             if not merge_ok:
                 # worktree-reuse：merge 失败同样保留 worktree，重派继承后重试 merge
                 self._keep_fast_track_worktree(spec_name, result)
@@ -1195,6 +1196,17 @@ class Dispatcher:
                         "error": final_error,
                         "_merge_fp": fp, "_merge_streak": streak, "_retry_count": 0,
                     })
+                elif self._pm._should_enter_repair(
+                        spec_name, merge_info, streak, breaker_threshold):
+                    # ── repair 通道（add-merge-back-repair-lane；fast-track 接入）──
+                    # 语义冲突失败且熔断未触发：派 repair agent 在实现分支上把
+                    # main 合入原地修复，而非 ready+重派废弃整轮成果
+                    #（2026-09-04 task-track 事故：112 turns 因混合冲突整单废弃）。
+                    # 与 implementer 路径同序：熔断优先，repair 次之，普通重试兜底。
+                    self._pm._dispatch_repair_lane(
+                        spec_name, merge_info, branch,
+                        fp=fp, streak=streak,
+                    )
                 else:
                     try:
                         retries = int(spec_entry.get("_retry_count", 0) or 0) + 1
@@ -1616,7 +1628,18 @@ class Dispatcher:
             f"repair 链回退 fallback '{spec_name}'：{full_error[:200]}",
         )
         if updates["status"] == "ready":
-            self._pm._enqueue_front(spec_name, "implementer")
+            # 回退通道按 spec 实现模式选择（fast-track 接入 repair lane 配套）：
+            # fast-track spec 的 repair 失败回 fast-track 重派，不硬派 implementer
+            try:
+                from core.openspec_mode import read_spec_mode
+                channel = (
+                    "fast-track"
+                    if read_spec_mode(self._pm.project_root, spec_name) == "fast-track"
+                    else "implementer"
+                )
+            except Exception:
+                channel = "implementer"
+            self._pm._enqueue_front(spec_name, channel)
 
     def _repair_conflict_summary(self, spec_name: str, merge_info) -> dict:
         """构造 repair prompt 的冲突摘要（D5：spec 身份 + 冲突清单 + 方向说明）。

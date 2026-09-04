@@ -623,3 +623,97 @@ class TestRepairRunBudget(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestFastTrackRepairLane(unittest.TestCase):
+    """fast-track 通道接入 repair lane（2026-09-04 task-track 事故治理）。
+
+    task-track（fast-track）语义冲突 merge-back 失败直接「ready + 重派」，
+    112 turns 成果废弃——implementer 路径早已进 repair，fast-track 分叉点
+    `_reconcile_and_merge` 缺 `_should_enter_repair` 判定。本组锁定：
+    1. fast-track merge 失败（语义冲突、未熔断）→ 进入 repair 通道；
+    2. repair 链失败 fallback 时按 spec mode 回原通道（fast-track spec
+       不应被 fallback 硬派 implementer）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.pr = Path(self.tmpdir)
+        self.root = self.pr / "repo"
+        self.spec = "ft-demo"
+        init_repo(self.root)
+        self.spec_dir = self.root / "openspec" / "changes" / self.spec
+        self.spec_dir.mkdir(parents=True, exist_ok=True)
+        (self.spec_dir / "tasks.md").write_text(
+            "# Tasks\n\n## 1. 实现\n\n- [ ] 1.1 do it\n", encoding="utf-8")
+        self.logger = CapturingLogger()
+        from core.state_machine import StateMachine
+        self.sm = StateMachine(self.root / "STATE.md", self.logger)
+        self.engine = PMEngine(self.sm, MagicMock(), {}, self.root, self.logger)
+        self.wm = make_wm(self.root)
+        self.engine.agent_runner.worktree_manager = self.wm
+        self.engine._process_queue = MagicMock()
+        self.sm.add_spec(self.spec, {"priority": 5})
+        self.sm.transition(self.spec, "ready")
+        self.sm.transition(self.spec, "implementing")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_conflict_branch(self) -> str:
+        branch = f"fenix/{self.spec}-123"
+        make_conflict_branch(self.root, branch, "BRANCH-IMPL\n")
+        (self.root / "shared.py").write_text("MAIN-IMPL\n", encoding="utf-8")
+        git(self.root, "add", "-A", "--", "shared.py")
+        git(self.root, "commit", "-q", "-m", "[fenix] main shared.py change")
+        return branch
+
+    def _make_ft_result(self, branch: str):
+        from core.agent_runner import AgentRunResult
+        return AgentRunResult(
+            run_id=f"impl-{self.spec}-1", spec_name=self.spec,
+            agent_type="fast-track", success=True, duration_seconds=1.0,
+            branch=branch,
+        )
+
+    def test_fast_track_semantic_conflict_triggers_repair(self):
+        """fast-track merge 失败（语义冲突、未熔断）→ 进入 repair 通道。
+
+        修复前：直接 ready + fast-track 重派（成果废弃）——本测试锁定新语义。
+        """
+        branch = self._make_conflict_branch()
+        self.engine._dispatch_repair_lane = MagicMock()
+        merged = self.engine._dispatcher._reconcile_and_merge(
+            self.spec, self._make_ft_result(branch))
+        assert merged is False, "merge 失败必须早退"
+        self.engine._dispatch_repair_lane.assert_called_once()
+        # 状态保持 implementing（repair 期间不降级 ready）
+        entry = self.sm.read_one(self.spec)
+        self.assertEqual(entry["status"], "implementing")
+        # repair 调用携带实现分支（repair agent 在分支上 merge main 原地修复）
+        call_args = self.engine._dispatch_repair_lane.call_args
+        self.assertEqual(call_args.args[2], branch)
+
+    def test_fast_track_fallback_enqueues_fast_track(self):
+        """fast-track spec 的 repair fallback → 回 fast-track 通道（非 implementer）。"""
+        (self.spec_dir / ".openspec.yaml").write_text(
+            "mode: fast-track\n", encoding="utf-8")
+        self.engine._enqueue_front = MagicMock()
+        self.engine._fallback_after_repair(self.spec, None, "repair agent failed")
+        self.engine._enqueue_front.assert_called_once_with(self.spec, "fast-track")
+
+    def test_full_spec_fallback_enqueues_implementer(self):
+        """回归保护：full 模式 spec 的 fallback 仍回 implementer 通道。"""
+        self.engine._enqueue_front = MagicMock()
+        self.engine._fallback_after_repair(self.spec, None, "repair agent failed")
+        self.engine._enqueue_front.assert_called_once_with(self.spec, "implementer")
+
+    def test_fast_track_fallback_retries_exhausted_blocks(self):
+        """fallback 重试耗尽 → blocked（与 implementer 路径同语义）。"""
+        (self.spec_dir / ".openspec.yaml").write_text(
+            "mode: fast-track\n", encoding="utf-8")
+        self.engine._enqueue_front = MagicMock()
+        self.sm.update_spec(self.spec, {"_retry_count": 2})  # max_retries 缺省 3
+        self.engine._fallback_after_repair(self.spec, None, "repair agent failed")
+        entry = self.sm.read_one(self.spec)
+        self.assertEqual(entry["status"], "blocked")
+        self.engine._enqueue_front.assert_not_called()
