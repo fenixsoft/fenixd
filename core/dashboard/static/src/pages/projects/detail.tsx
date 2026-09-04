@@ -17,6 +17,7 @@ import { ClaudeOutputPane } from '@/components/claude-msg';
 import { OutlinedTag } from '@/components/StatusTag';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
+import { fmtInputTokens, fmtMillions } from '@/utils/tokens';
 
 // 与 v2 static/app.js renderVerdict 保持同一判定逻辑：
 // parse_verdict 的 status 串自带 emoji 前缀（如 "❌ 未通过（Bug Found）"），先剥离再判定，
@@ -480,22 +481,7 @@ export default function SpecDetailPage() {
     );
   }
 
-  // 格式化 token 数量
-  const fmtMillions = (tokens: number) => {
-    const m = (tokens || 0) / 1e6;
-    return m >= 1000 ? (m / 1000).toFixed(2) + 'G' : m.toFixed(1) + 'M';
-  };
-
-  // 输入 Token 展示：有缓存命中分项（cache_read_input_tokens 非 null）时附加括号，
-  // 命中率 = 缓存命中 / 输入 Token（输入已含缓存写入+命中，口径与 STATE 累计一致）；
-  // 分项为 null（历史 spec 未记录）时不显示括号，避免伪 0%
-  const fmtInputTokens = (usage: NonNullable<SpecDetail['token_usage']>) => {
-    const base = fmtMillions(usage.tokens_in);
-    const cacheRead = usage.cache_read_input_tokens;
-    if (cacheRead == null || !usage.tokens_in) return base;
-    const pct = ((cacheRead / usage.tokens_in) * 100).toFixed(1);
-    return `${base}（缓存命中 ${fmtMillions(cacheRead)}，命中率 ${pct}%）`;
-  };
+  // 格式化函数见 @/utils/tokens（fmtMillions / fmtInputTokens）
 
   // 告警标记人工已处理（同 overview 横幅）；成功后刷新本 SPEC 告警
   const handleMarkAlertHandled = async (a: AlertItem) => {
