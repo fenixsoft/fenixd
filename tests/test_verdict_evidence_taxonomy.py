@@ -346,6 +346,72 @@ class TestConsumerCompat(_PMEngineBase):
         self.assertIsNone(bugs[0]["classification"])
 
 
+class TestParseBugsStatusEnumAndClassification(_PMEngineBase):
+    """parse_bugs 状态枚举对齐 + 分类过滤（裁决后失败场景不再从 Bug 列表消失）。
+
+    背景（2026-09-04 排查 add-daily-self-review）：引擎写 status="fail"，
+    裁决链 enforce_status_mapping / 裁决 Agent 自写报告产 status="failed"，
+    parse_bugs 只认 ("fail", "error") → 裁决后失败场景（含 product-bug）整条
+    从 Bug 列表消失，而失败截图 tab（直列目录）照常显示。
+    """
+
+    def test_failed_status_product_bug_is_listed(self):
+        """status="failed"（裁决链写法）+ product-bug → 记 Bug，severity=major。"""
+        from core.dashboard.data import parse_bugs
+        report = {"scenarios": [
+            {"scenario_id": "s1", "status": "failed",
+             "classification": "product-bug", "status_corrected": True,
+             "assertion_results": [{"type": "element_visible", "pass": False,
+                                    "message": "元素未渲染"}],
+             "screenshots": ["/abs/s1_assert_fail.png"]},
+        ]}
+        self._seed_report(report)
+        bugs = parse_bugs(self.project_root, "v2-config-page")
+        self.assertEqual(len(bugs), 1)
+        self.assertEqual(bugs[0]["severity"], "major")
+        self.assertEqual(bugs[0]["classification"], "product-bug")
+        self.assertTrue(bugs[0]["status_corrected"])
+        self.assertEqual(bugs[0]["screenshots"], ["s1_assert_fail.png"])
+
+    def test_failed_status_without_classification_still_listed(self):
+        """status="failed" 且无 classification（裁决 Agent 旧式直写）→ 仍记 Bug。"""
+        from core.dashboard.data import parse_bugs
+        report = {"scenarios": [
+            {"scenario_id": "s1", "status": "failed",
+             "assertion_results": [{"type": "step", "pass": False}],
+             "screenshots": []},
+        ]}
+        self._seed_report(report)
+        bugs = parse_bugs(self.project_root, "v2-config-page")
+        self.assertEqual(len(bugs), 1)
+        self.assertIsNone(bugs[0]["classification"])
+
+    def test_non_product_classification_excluded(self):
+        """test-defect / flaky / env 归类的失败场景不进 Bug 列表（语义=产品 Bug）。"""
+        from core.dashboard.data import parse_bugs
+        report = {"scenarios": [
+            # add-daily-self-review 真实形态：test-defect + 逐断言归因全非产品缺陷
+            {"scenario_id": "s1", "status": "failed",
+             "classification": "test-defect", "status_corrected": True,
+             "assertion_results": [{"type": "element_visible", "pass": False}],
+             "assertion_triage": [
+                 {"assertion": "element_visible .x", "classification": "test-defect",
+                  "evidence": "选择器不存在于 antd v6"}],
+             "screenshots": ["/abs/s1_assert_fail.png"]},
+            {"scenario_id": "s2", "status": "fail", "classification": "flaky",
+             "assertion_results": [{"type": "step", "pass": False}],
+             "screenshots": []},
+            {"scenario_id": "s3", "status": "failed", "classification": "env",
+             "assertion_results": [], "screenshots": []},
+            {"scenario_id": "s4", "status": "failed", "classification": "product-bug",
+             "assertion_results": [{"type": "text_contains", "pass": False}],
+             "screenshots": []},
+        ]}
+        self._seed_report(report)
+        bugs = parse_bugs(self.project_root, "v2-config-page")
+        self.assertEqual([b["scenario_ids"][0] for b in bugs], ["s4"])
+
+
 # ─────────────────── 真实夹具：v2-config-page 00:14（任务 4.2） ───────────────────
 
 

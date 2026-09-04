@@ -1377,7 +1377,17 @@ def parse_bugs(project_root, spec_name) -> list:
     「bug/缺陷/失败」关键词会把「环境失败」「被修复缺陷的背景描述」「通过型报告」
     误判为产品缺陷（add-parallelism、fix-worktree-agent-cwd、fix-add-parallelism 等
     均因此产生过大量虚假 bug）。
+
+    状态枚举对齐写入侧（裁决后失败场景不再消失）：引擎写 "fail"（engine.py
+    _determine_scenario_status），裁决链 enforce_status_mapping（verdict_check.py）
+    与裁决 Agent 自写报告产 "failed"——两族取值都算失败场景；warning 保持不记
+    Bug（合规报告禁止 product-bug 挂 warning，会被强制 failed）。
+    分类过滤（add-verdict-evidence-taxonomy）：test-defect/flaky/env 归类 =
+    非产品缺陷，不进 Bug 列表（与报告「产品 Bug」计数同语义）；product-bug、
+    旧格式无分类（向后兼容）及未知取值（fail-open）照常收录。
     """
+    from core.verdict_check import VERDICT_CLASSES
+    non_product_classes = tuple(c for c in VERDICT_CLASSES if c != "product-bug")
     bugs = []
     report = parse_report(project_root, spec_name)
     if not report.get("exists") or report.get("error"):
@@ -1386,7 +1396,10 @@ def parse_bugs(project_root, spec_name) -> list:
         if not isinstance(sc, dict):
             continue
         status = sc.get("status")
-        if status not in ("fail", "error"):
+        if status not in ("fail", "failed", "error"):
+            continue
+        classification = sc.get("classification")
+        if classification in non_product_classes:
             continue
         failed_assertions = [
             a for a in sc.get("assertion_results", [])
@@ -1397,7 +1410,6 @@ def parse_bugs(project_root, spec_name) -> list:
         screenshots = [os.path.basename(s) for s in sc.get("screenshots", []) if isinstance(s, str) and s.strip()]
         # 裁决分类与证据（add-verdict-evidence-taxonomy 3.1）：从场景条目摘取；
         # 旧格式 report.json 无 classification/evidence 字段时为空/缺省，向后兼容。
-        classification = sc.get("classification")
         # 结构化证据优先取场景 evidence 字段（judge 增强产出）；
         # 回退到首个失败断言的 message，保证旧数据仍有证据可见。
         sc_evidence = sc.get("evidence")
@@ -1408,7 +1420,7 @@ def parse_bugs(project_root, spec_name) -> list:
         for a in failed_assertions or [{}]:
             bugs.append({
                 "source": "report",
-                "severity": "major" if status == "fail" else "critical",
+                "severity": "major" if status in ("fail", "failed") else "critical",
                 "scenario_ids": [sc.get("scenario_id", "?")],
                 "assertion_type": a.get("type", "step"),
                 "description": sc.get("description", "未命名场景"),
@@ -2397,8 +2409,8 @@ _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "admin.self_review"]
 
 # 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
-# 保持一致：enabled/read_todo 缺省 false，run_at 缺省 22:00）
-_DEFAULT_SELF_REVIEW = {"enabled": False, "run_at": "22:00", "read_todo": False}
+# 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
+_DEFAULT_SELF_REVIEW = {"enabled": False, "run_at": "02:00", "read_todo": False}
 
 _CONFIG_HEADER_COMMENT = (
     "# Fenix 配置文件\n"
@@ -2461,7 +2473,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "runs": {"keep": 50},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
-        # add-daily-self-review：admin.self_review 三键（缺省 false/false/22:00）
+        # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
         "self_review": dict(_DEFAULT_SELF_REVIEW),
         "scope": scope,
         "raw_exists": False,
@@ -2582,7 +2594,7 @@ def read_effective_config(project_root) -> dict:
         "runs": {"keep": 50},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
-        # add-daily-self-review：admin.self_review 三键（缺省 false/false/22:00）
+        # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
         "self_review": dict(_DEFAULT_SELF_REVIEW),
         "scope": "project",
         "raw_exists": proj_path.exists(),
@@ -2645,7 +2657,7 @@ def read_effective_config(project_root) -> dict:
         result["runs"] = {"keep": runs_eff["keep"]}
     # add-spec-archive D5：经生效助手取值（非法配置回落默认 50，设置页回显一致）
     result["archive"] = {"auto_threshold": ConfigLoader.effective_auto_archive_threshold(effective)}
-    # add-daily-self-review：经生效助手取值（run_at 非法值回退 22:00，回显一致）
+    # add-daily-self-review：经生效助手取值（run_at 非法值回退 02:00，回显一致）
     result["self_review"] = ConfigLoader.get_self_review_config(effective)
 
     # 提取 project.description → 顶层 description（非 str 或缺失 → ""）

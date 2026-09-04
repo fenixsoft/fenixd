@@ -44,7 +44,7 @@ export default function VerifyPanel({ config, onSave }: VerifyPanelProps) {
             name="static_scope"
             label={
               <>
-                static 服务范围<span className="label-note">（verify.static_scope）</span>
+                验证实例范围<span className="label-note">（verify.static_scope）</span>
               </>
             }
             rules={[{ required: true, message: '请选择服务范围' }]}

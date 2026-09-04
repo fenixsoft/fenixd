@@ -1,12 +1,12 @@
-import { Button, Card, Form, Input, Switch, Typography } from 'antd';
+import { Button, Card, Form, Switch, TimePicker, Typography } from 'antd';
+import dayjs from 'dayjs';
 import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 
 const { Text } = Typography;
 
-// 前端 HH:MM 校验（00:00–23:59），与后端 ConfigLoader.is_valid_hhmm 同格式语义
-// （add-daily-self-review「非法输入双端拒绝」）。
-const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+// run_at 缺省与后端 ConfigLoader.SELF_REVIEW_DEFAULT_RUN_AT 一致（凌晨两点）
+const DEFAULT_RUN_AT = '02:00';
 
 interface SelfReviewPanelProps {
   config: ConfigData;
@@ -18,7 +18,8 @@ export default function SelfReviewPanel({ config, onSave }: SelfReviewPanelProps
 
   const initial = {
     enabled: config.self_review?.enabled ?? false,
-    run_at: config.self_review?.run_at ?? '22:00',
+    // TimePicker 值为 dayjs 对象（结构性保证 HH:mm 合法），保存时转回字符串
+    run_at: dayjs(config.self_review?.run_at ?? DEFAULT_RUN_AT, 'HH:mm'),
     read_todo: config.self_review?.read_todo ?? false,
   };
 
@@ -33,7 +34,7 @@ export default function SelfReviewPanel({ config, onSave }: SelfReviewPanelProps
       await onSave({
         self_review: {
           enabled: values.enabled,
-          run_at: values.run_at,
+          run_at: values.run_at.format('HH:mm'),
           read_todo: values.read_todo,
         },
       });
@@ -44,9 +45,9 @@ export default function SelfReviewPanel({ config, onSave }: SelfReviewPanelProps
 
   return (
     <div>
-      <h3>每日自省</h3>
+      <h3>自省</h3>
       <Text type="secondary">
-        daemon 每晚在指定时间由 Administrator Agent 自动执行当日工作回顾（浪费 /
+        Fenix Daemon 每晚在指定时间由 Administrator Agent 自动执行当日工作回顾（浪费 /
         失误 / 可改进），结果追加写入项目根 todo.md 并自动提交。enabled=false
         时全链路零动作。
       </Text>
@@ -73,17 +74,11 @@ export default function SelfReviewPanel({ config, onSave }: SelfReviewPanelProps
               </>
             }
             style={{ marginTop: 24 }}
-            rules={[
-              { required: true, message: '请输入执行时间' },
-              {
-                pattern: HHMM_RE,
-                message: '时间格式必须为 HH:MM（00:00–23:59），如 22:00',
-              },
-            ]}
+            rules={[{ required: true, message: '请选择执行时间' }]}
           >
-            <Input placeholder="22:00" maxLength={5} style={{ width: 160 }} />
+            <TimePicker format="HH:mm" allowClear={false} style={{ width: 160 }} />
           </Form.Item>
-          <Text type="secondary">缺省 22:00。实际触发时刻为 run_at 后的第一个巡检周期。</Text>
+          <Text type="secondary">缺省 02:00。实际触发时刻为 run_at 后的第一个巡检周期。</Text>
 
           <Form.Item
             name="read_todo"

@@ -522,7 +522,7 @@ export interface VerifyConfig {
 export interface SelfReviewConfig {
   /** 每日自省总开关（add-daily-self-review，缺省 false） */
   enabled?: boolean;
-  /** 每晚执行时间 HH:MM（缺省 22:00） */
+  /** 每晚执行时间 HH:MM（缺省 02:00） */
   run_at?: string;
   /** 是否把既有 todo.md 全文注入自省 prompt（缺省 false） */
   read_todo?: boolean;

@@ -10,7 +10,7 @@
 
 ## PHASE 2 — 设计验证场景
 1. 按 Planner 场景 JSON schema 将场景集写入 {scenarios_path}（数组，元素含 {id, description, steps, assertions, ...}；schema 见下文）。
-2. 写 {progress_path}: {"total": N, "done": 0, "current": "场景设计"}。
+2. 写 {progress_path}: `{"total": N, "done": 0, "current": "场景设计"}`。
 
 ## PHASE 3 — 执行场景（真实环境）
 1. 在 worktree 内启动应用（npm run dev 等）。使用 playwright-cli——仅靠代码分析 = 失败。
@@ -21,28 +21,30 @@
 1. 对每个未通过场景分类：product-bug | test-defect | flaky | env，并附结构化证据（failed_assertions / screenshots / first_failed_step）。
 2. 裁决：无遗留 product-bug → verified；否则 bug-found。
 3. 将统一结果文件写至 worktree 根目录 `.fenix-run-result.json`：
-{
-  "status": "success",
-  "spec": "{spec_name}",
-  "mode": "fast-track",
-  "summary": "<简要总结>",
-  "implementation": {"deliverables": ["core/foo.py"]},
-  "verification": {
-    "scenarios": [
-      {
-        "scenario_id": "s1",
-        "description": "场景描述",
-        "status": "pass|fail|error|warning|exempt",
-        "assertion_results": [{"type": "step", "pass": true, "message": ""}],
-        "screenshots": ["/绝对路径/证据截图.png"],
-        "evidence": {"failed_assertions": [...]},
-        "classification": "product-bug|test-defect|flaky|env"
-      }
-    ],
-    "verdict": "verified|bug-found",
-    "bugs": [{"severity": "critical|major|minor", "scenario_ids": [...], "description": "...", "root_cause": "..."}]
+  ``` json
+  {
+    "status": "success",
+    "spec": "{spec_name}",
+    "mode": "fast-track",
+    "summary": "<简要总结>",
+    "implementation": {"deliverables": ["core/foo.py"]},
+    "verification": {
+      "scenarios": [
+        {
+          "scenario_id": "s1",
+          "description": "场景描述",
+          "status": "pass|fail|error|warning|exempt",
+          "assertion_results": [{"type": "step", "pass": true, "message": ""}],
+          "screenshots": ["/绝对路径/证据截图.png"],
+          "evidence": {"failed_assertions": [...]},
+          "classification": "product-bug|test-defect|flaky|env"
+        }
+      ],
+      "verdict": "verified|bug-found",
+      "bugs": [{"severity": "critical|major|minor", "scenario_ids": [...], "description": "...", "root_cause": "..."}]
+    }
   }
-}
+  ```
 4. 若裁决为 bug-found 且修复预算未用尽：在同一上下文中修复，重跑受影响场景，重新裁决，并覆盖结果文件。
 5. 若修复预算已用尽而缺陷仍在：仍须写出结果文件并置 verification.verdict="bug-found"——daemon 会升级到 full 模式。
 6. 同时把 {scenarios_path} 与 {result_path} 写入 verify-progress 目录（场景集必须持久化，供后续 full 模式 verifier 复用）。
@@ -51,7 +53,6 @@
 - 零变更守卫（Zero-change guard）：宣称成功但既无新提交也无 Edit/Write 工具调用 = 判为失败并重派。
 - 交付物守卫（Deliverable gate）：你提交中写入的每个交付物路径都必须存在于分支上；缺件将阻塞收工。
 - 修复预算（Fix budget）：run 内修复轮次计入 `agents.impl_run_budget`；预算用尽仍有缺陷 → 自动升级 full 模式。
-- 禁止修改 STATE.md——它归 daemon 管。
 
 ## 场景 ID 契约（scenario-id-contract，强制，框架硬校验 fail-closed）
 - Phase 4 最终结果文件的 verification.scenarios 中，scenario_id 必须覆盖设计集 {scenarios_path} 的全部 id（逐字一致）；执行集允许是设计集的超集（可附加单元测试类场景条目）。
@@ -60,10 +61,10 @@
 
 ## 交互契约（interaction-contract，强制，add-interaction-contract-and-per-assert-triage）
 - 凡你实现为**可交互形态**的元素（按钮/链接样式卡片/可点击行/表单控件），其行为 MUST 在对应 SPEC 中有定义，或在任务书中显式声明「纯展示、不可交互」。
-- 两者皆不满足时，MUST 在 .fenix-run-result.json 增设 `findings` 数组登记「待裁决交互」条目（元素、现状、建议行为），不得静默保留可交互外观：
-  "findings": [{"type": "pending-interaction", "element": "<元素标识>", "current": "<现状>", "suggestion": "<建议行为>"}]
+- 两者皆不满足时，MUST 在 .fenix-run-result.json 增设 `findings` 数组登记「待裁决交互」条目（元素、现状、建议行为），不得静默保留可交互外观：`"findings": [{"type": "pending-interaction", "element": "<元素标识>", "current": "<现状>", "suggestion": "<建议行为>"}]`
 - 已声明纯展示的元素即合规，收工守卫不因此拦截。
 ## 场景 JSON schema（Phase 2 输出）
+``` json
 [
   {
     "id": "kebab-case-unique-id",
@@ -78,6 +79,7 @@
     ]
   }
 ]
+```
 
 支持的断言类型: element_visible, element_count, element_not_exist, element_focused, element_enabled, no_click_interception, no_overlap, in_viewport, z_index_order, text_match, text_contains, attribute_match, no_console_error, no_network_error, no_auth_error, dom_structure, no_overflow, alignment
 支持的操作类型: navigate, click, type, clear, select, scroll, wait, dialog, seed, mock_api

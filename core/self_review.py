@@ -1,6 +1,6 @@
 """self_review.py — 每日定时自省（add-daily-self-review spec）。
 
-每晚本地时间 ``admin.self_review.run_at``（缺省 22:00）后，由 Administrator
+每晚本地时间 ``admin.self_review.run_at``（缺省 02:00）后，由 Administrator
 通道执行一次当日工作回顾：聚合当日数据摘要（STATE 终态 / runs 统计 /
 admin 告警与处置 / 日志 ERROR 四源）→ 发起 ``self-review`` run → 追加写入
 项目根 ``todo.md`` → 单文件 commit + push。
@@ -22,6 +22,8 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from core.config import SELF_REVIEW_DEFAULT_RUN_AT
 
 # 状态文件（.fenix/self_review_state.json，与 admin_alerts.json 同目录同风格）
 STATE_FILE = "self_review_state.json"
@@ -57,12 +59,14 @@ def _iso_to_local_date(iso_str: Optional[str]) -> Optional[str]:
 
 
 def _parse_run_at(run_at: str, today) -> datetime:
-    """把 'HH:MM' 解析为 today（date 对象）当日的本地 datetime；非法回退 22:00。"""
+    """把 'HH:MM' 解析为 today（date 对象）当日的本地 datetime；非法回退缺省
+    （单源自 core.config.SELF_REVIEW_DEFAULT_RUN_AT）。"""
     try:
         hh, mm = str(run_at).split(":")
         return datetime(today.year, today.month, today.day, int(hh), int(mm), 0)
     except (ValueError, AttributeError):
-        return datetime(today.year, today.month, today.day, 22, 0, 0)
+        hh, mm = SELF_REVIEW_DEFAULT_RUN_AT.split(":")
+        return datetime(today.year, today.month, today.day, int(hh), int(mm), 0)
 
 
 def _run_start_ts(run_id: str) -> Optional[int]:

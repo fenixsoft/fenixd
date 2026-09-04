@@ -48,14 +48,16 @@
 
 ## 对人类的建议
 无需介入时写明结论与系统性观察；需介入时给出具体可执行的操作。
+
+  {
+    "spec": "{sig_spec}",
+    "problem": "处理的困境问题",
+    "actions_taken": ["动作1", "动作2"],
+    "result": "resolved | partially-resolved | escalated",
+    "summary": "按上述模板的 Markdown 叙述全文",
+    "escalate": true/false,
+    "recommended_action": "若升级，给出人类应做的操作"
+  }
 ```
-{
-  "spec": "{sig_spec}",
-  "problem": "处理的困境问题",
-  "actions_taken": ["动作1", "动作2"],
-  "result": "resolved | partially-resolved | escalated",
-  "summary": "按上述模板的 Markdown 叙述全文",
-  "escalate": true/false,
-  "recommended_action": "若升级，给出人类应做的操作"
-}
+
 然后结束，无需额外输出。不要直接编辑 .fenix/admin_alerts.json——daemon 会基于你的处置记录写入。

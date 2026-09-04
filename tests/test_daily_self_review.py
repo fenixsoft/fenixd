@@ -416,9 +416,9 @@ class TestDashboardSelfReview:
         from core.dashboard.data import read_effective_config, write_config
         proot = tmp_path / "proj"
         (proot / ".fenix").mkdir(parents=True)
-        # 缺省
+        # 缺省（run_at 缺省 02:00）
         assert read_effective_config(proot)["self_review"] == {
-            "enabled": False, "run_at": "22:00", "read_todo": False,
+            "enabled": False, "run_at": "02:00", "read_todo": False,
         }
         res = write_config(proot, {"self_review": {
             "enabled": True, "run_at": "23:30", "read_todo": True,
@@ -485,10 +485,10 @@ class TestDashboardSelfReview:
                 finally:
                     conn.close()
 
-            # 缺省回显
+            # 缺省回显（run_at 缺省 02:00）
             status, data = request("GET", "/api/config?project=proj-api")
             assert status == 200
-            assert data["self_review"]["run_at"] == "22:00"
+            assert data["self_review"]["run_at"] == "02:00"
             assert data["self_review"]["enabled"] is False
             # 写入
             status, data = request("POST", "/api/config?project=proj-api",

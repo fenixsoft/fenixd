@@ -29,10 +29,10 @@ STUCK_FALLBACK_SECONDS = RUN_TIMEOUT_FALLBACK_SECONDS + STUCK_GRACE_SECONDS
 SUPERVISION_EXTENSION_SECONDS = 7200
 
 # ── add-daily-self-review：admin.self_review 段 ──────────────────────
-# run_at 缺省 22:00（每晚时间点），enabled/read_todo 缺省 false（纯增量，
+# run_at 缺省 02:00（每晚时间点），enabled/read_todo 缺省 false（纯增量，
 # 零行为变化）。run_at 非法值打 ERROR 并回退本缺省（design「Migration
 # Plan」：enabled 缺省 false，开启后次日生效）。
-SELF_REVIEW_DEFAULT_RUN_AT = "22:00"
+SELF_REVIEW_DEFAULT_RUN_AT = "02:00"
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 # D3：旧键弃用告警 / D5：absolute_max 兜底 ERROR 的生命周期去重标记，
@@ -643,11 +643,11 @@ class ConfigLoader:
 
         默认值（add-daily-self-review design D1 / Migration Plan）：
         - enabled: False（纯增量，用户显式开启后才调度）
-        - run_at: "22:00"（每晚时间点，HH:MM）
+        - run_at: "02:00"（每晚时间点，HH:MM）
         - read_todo: False（不注入既有 todo.md 上下文）
 
         run_at 经 ``_validated_run_at`` 兜底：非法值（类型错误/格式错误/越界
-        时分）打 ERROR 并按 "22:00" 回退生效，保证调度判定永远拿到合法 HH:MM。
+        时分）打 ERROR 并按 "02:00" 回退生效，保证调度判定永远拿到合法 HH:MM。
         """
         admin = config.get("admin") or {}
         sr = admin.get("self_review") if isinstance(admin, dict) else None
@@ -670,7 +670,7 @@ class ConfigLoader:
 
     @classmethod
     def _validated_run_at(cls, raw) -> str:
-        """校验 ``run_at`` 的 HH:MM 合法性；非法值打 ERROR 并回退缺省 22:00。
+        """校验 ``run_at`` 的 HH:MM 合法性；非法值打 ERROR 并回退缺省 02:00。
 
         合法格式：``^([01]\\d|2[0-3]):[0-5]\\d$``（00:00–23:59）。None/缺省
         直接回退缺省（不视为错误，读取方默认值语义）；显式提供的非法值记
