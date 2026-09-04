@@ -1,7 +1,6 @@
 import { PageContainer } from '@ant-design/pro-components';
 import {
   App,
-  Badge,
   Button,
   Card,
   Collapse,
@@ -10,7 +9,6 @@ import {
   Radio,
   Space,
   Spin,
-  Tabs,
   Tag,
   Timeline,
   Typography,
@@ -321,7 +319,6 @@ export default function ActivitiesPage() {
   const [viewingRun, setViewingRun] = useState<ViewingRun | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [activeKey, setActiveKey] = useState<string>('all');
   const lastRefreshRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -382,18 +379,6 @@ export default function ActivitiesPage() {
 
   const projects: ProjectActivities[] = useMemo(() => data?.projects ?? [], [data]);
 
-  const totalCount = useMemo(
-    () => projects.reduce((sum, p) => sum + (p.activities?.length ?? 0), 0),
-    [projects],
-  );
-
-  // 项目消失时回退"全部"（跨刷新保持选中，除非项目已消失）
-  useEffect(() => {
-    if (activeKey === 'all') return;
-    const exists = projects.some((p) => p.name === activeKey);
-    if (!exists) setActiveKey('all');
-  }, [activeKey, projects]);
-
   const viewModeOf = (name: string): ViewMode => viewModes[name] || 'auto';
 
   const modeSwitch = (name: string) => (
@@ -408,28 +393,6 @@ export default function ActivitiesPage() {
       ]}
     />
   );
-
-  const tabItems = useMemo(() => {
-    const items = [
-      {
-        key: 'all',
-        label: (
-          <span>
-            全部 <Badge count={totalCount} style={{ marginLeft: 4, marginTop: -5 }} />
-          </span>
-        ),
-      },
-      ...projects.map((p) => ({
-        key: p.name,
-        label: (
-          <span>
-            {p.name} <Badge count={p.activities?.length ?? 0} style={{ marginLeft: 4, marginTop: -5 }} />
-          </span>
-        ),
-      })),
-    ];
-    return items;
-  }, [projects, totalCount]);
 
   const renderProjectBody = (name: string, activities: ActivityItem[] | undefined) => {
     if (viewModeOf(name) === 'alert') {
@@ -465,47 +428,24 @@ export default function ActivitiesPage() {
       return <Empty description="暂无运维记录" />;
     }
 
-    // 全部视图：按项目分段展示
-    if (activeKey === 'all') {
-      return (
-        <div>
-          {projects.map((p) => (
-            <Card
-              key={p.name}
-              title={
-                <Space wrap size={8}>
-                  <span>{p.name}</span>
-                  <Badge count={p.activities?.length ?? 0} style={{ marginTop: -5 }} />
-                </Space>
-              }
-              extra={modeSwitch(p.name)}
-              style={{ marginBottom: 16 }}
-            >
-              {renderProjectBody(p.name, p.activities)}
-            </Card>
-          ))}
-        </div>
-      );
-    }
-
-    // 单项目视图
-    const project = projects.find((p) => p.name === activeKey);
-    if (!project) {
-      return <Empty description="暂无运维记录" />;
-    }
+    // 单一内容区：按项目分段展示（页签已取消）
     return (
-      <Card
-        className="activities-project-card"
-        title={
-          <Space wrap size={8}>
-            <span>{project.name}</span>
-            <Badge count={project.activities?.length ?? 0} style={{ marginTop: -5 }} />
-          </Space>
-        }
-        extra={modeSwitch(project.name)}
-      >
-        {renderProjectBody(project.name, project.activities)}
-      </Card>
+      <div>
+        {projects.map((p) => (
+          <Card
+            key={p.name}
+            title={
+              <Space wrap size={8}>
+                <span>{p.name}</span>
+              </Space>
+            }
+            extra={modeSwitch(p.name)}
+            style={{ marginBottom: 16 }}
+          >
+            {renderProjectBody(p.name, p.activities)}
+          </Card>
+        ))}
+      </div>
     );
   };
 
@@ -524,7 +464,6 @@ export default function ActivitiesPage() {
         </div>
       ) : null}
       <Card variant="borderless">
-        <Tabs activeKey={activeKey} onChange={setActiveKey} items={tabItems} />
         {renderContent()}
       </Card>
       {viewingRun && (
