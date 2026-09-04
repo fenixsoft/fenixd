@@ -47,3 +47,6 @@ dist/
 
 # 验证契约 worktree 服务范围的临时 serving worktree（verify-contract 自管理）
 verify-serving/
+
+# gh CLI 本机设备标识等本地运行时状态
+.local/
