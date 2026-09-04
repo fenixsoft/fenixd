@@ -1,4 +1,4 @@
-import { Button, Card, Form, Radio, Typography } from 'antd';
+import { Alert, Button, Card, Form, Radio, Typography } from 'antd';
 import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 
@@ -40,6 +40,13 @@ export default function VerifyPanel({ config, onSave }: VerifyPanelProps) {
         静态验证契约（.fenix/verify.yaml）的被测实例服务范围。两种范围都会在
         每轮验证前执行契约的 prepare 构建步骤，并把验证场景 URL 全量改写到本次启动的实例。
       </Text>
+      <Alert
+        style={{ marginTop: 12 }}
+        type="info"
+        showIcon
+        message="本页设置存储于项目 config.yaml（.fenix/config.yaml，机器本地运行时开关，不入库）"
+        description="构建步骤 / 被测服务 / 就绪探针等项目契约在 .fenix/verify.yaml（随仓库提交，手工编辑，Dashboard 不改写该文件）。deps_mode 亦可在 verify.yaml 顶层按项目声明，优先于本页设置。"
+      />
       <Card style={{ marginTop: 12 }}>
         <Form form={form} layout="vertical">
           <Form.Item

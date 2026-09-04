@@ -70,7 +70,17 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 
 | 键 | 默认值 | 范围 | 生效方式 |
 |----|--------|------|---------|
-| static_scope | `main` | main/worktree | 重启 |
+| static_scope | `main` | main/worktree | 热更新（下一轮验证生效） |
+| deps_mode | `prefer-offline` | prefer-offline/hardlink | 热更新（下一个 worktree 创建生效） |
+
+> **`verify.*` 与 `.fenix/verify.yaml` 的分工**：`verify.*` 是 **config.yaml**
+> 的命名空间——机器本地的运行时开关（不入库，随 config.yaml 热更新）；而
+> `.fenix/verify.yaml` 是**项目验证契约**（prepare/serve/ready，随仓库提交、
+> 手工编辑，Dashboard 不改写该文件）。deps_mode 也可在 verify.yaml 顶层按
+> 项目声明 `deps_mode:`，优先于 config。deps_mode 仅对 nodejs 项目生效（供给
+> 入口是 package.json/node_modules，其他项目自动跳过零副作用）；C/C++/Java
+> 等其他语言的依赖安装与构建经 verify.yaml 的 prepare 声明（语言无关，如
+> `mvn package`、`cmake --build`，依赖缓存多为用户级天然共享）。
 
 ### pm.push
 
@@ -133,7 +143,7 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 |-----------|-----------|
 | 配置管理 | llm.providers / agents.models / gates.approve_mode |
 | Token 预算面板 | agents.token_budget_millions |
-| 验证契约 | verify.static_scope + `.fenix/verify.yaml` |
+| 验证 | verify.static_scope / verify.deps_mode（存于 config.yaml；`.fenix/verify.yaml` 契约手工编辑，不经设置页改写） |
 | 提示词管理 | agents/ 通用层 + .fenix/agents/ 项目级 |
 
 ## 相关文档
