@@ -285,13 +285,15 @@ class TestBuildArtifactConflictSelfHeal:
         git(root, "commit", "-q", "-m", "[fenix] main dist rebuild")
 
         wm = make_wm(root)
-        success, err = wm.merge_back_from_branch("fenix/impl")
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, err = info
         assert success, f"dist 冲突应自愈，实际失败: {err}"
 
-        # dist 对齐分支版：bbb 在、aaa/ccc 不在；非冲突文件 keep.js 保留
-        assert (d / "umi.bbb.js").exists()
+        # dist 冲突根治 A：对齐 HEAD 版（merge 时 dist 永远以主树为准，
+        # 分支重建的最终一致性由 merge 后从 src 重建刷新）——ccc 在、aaa/bbb 不在
+        assert (d / "umi.ccc.js").exists()
         assert not (d / "umi.aaa.js").exists()
-        assert not (d / "umi.ccc.js").exists()
+        assert not (d / "umi.bbb.js").exists()
         assert (d / "keep.js").read_text(encoding="utf-8") == "K\n"
         # 工作区干净（merge 已提交）
         assert git(root, "status", "--porcelain").stdout.strip() == ""
@@ -317,8 +319,13 @@ class TestBuildArtifactConflictSelfHeal:
         git(root, "commit", "-q", "-m", "[fenix] main work")
 
         wm = make_wm(root)
-        success, err = wm.merge_back_from_branch("fenix/impl")
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, err = info
         assert not success, "混入语义冲突时不应自愈"
+        # dist 冲突根治 A：分类清单只含语义文件——dist 路径不再污染冲突分类
+        # 与失败指纹（task-track 09:19 事故：1 条语义 + 9 条产物 → 整单连坐）
+        assert info.conflict_paths == ["shared.py"]
+        assert info.has_semantic_conflict is True
         # 主树回到干净状态（abort 生效，可重试）
         assert git(root, "status", "--porcelain").stdout.strip() == ""
 
@@ -387,3 +394,195 @@ class TestBuildArtifactConflictSelfHeal:
         assert (root / self.SRC_PAGE).read_text(encoding="utf-8") == "BRANCH-SRC\n"
         # 工作区干净（merge 已提交）
         assert git(root, "status", "--porcelain").stdout.strip() == ""
+
+
+class TestDistConflictRootCure:
+    """dist 冲突根治（2026-09-04 task-track / help-center 连环事故治理）。
+
+    A. 产物冲突无条件对齐 HEAD：不再要求「全部冲突都是产物」——混合冲突
+       （1 条语义 + N 条产物）不再连坐整单废弃；语义分类只看非产物路径，
+       失败指纹不再被 dist hash 噪声污染。
+    B. merge-back 成功路径从合并后 src 确定性重建 dist：自愈对齐的 dist 是
+       分支时点 src 的构建物，与合并后 src 必然漂移——重建是唯一收口。
+    """
+
+    DIST = "core/dashboard/static/dist"
+    SRC_PAGE = "core/dashboard/static/src/pages/list.tsx"
+
+    def _seed(self, root: Path):
+        d = root / self.DIST
+        d.mkdir(parents=True)
+        (d / "umi.aaa.js").write_text("V1\n", encoding="utf-8")
+        (d / "keep.js").write_text("K\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] seed dist")
+
+    def _branch_rebuild(self, root: Path, base: str, chunk: str = "umi.bbb.js",
+                        with_src: bool = False):
+        """分支侧重建 dist（rename + 新增 chunk），可选带 src 变更。"""
+        git(root, "checkout", "-q", "-b", "fenix/impl")
+        git(root, "mv", f"{self.DIST}/umi.aaa.js", f"{self.DIST}/{chunk}")
+        d = root / self.DIST
+        (d / "p__page.bbb.async.js").write_text("P-BRANCH\n", encoding="utf-8")
+        (d / "index.html").write_text("INDEX-BRANCH\n", encoding="utf-8")
+        if with_src:
+            src = root / self.SRC_PAGE
+            src.parent.mkdir(parents=True, exist_ok=True)
+            src.write_text("BRANCH-SRC\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] branch rebuild")
+        git(root, "checkout", "-q", base)
+
+    # ── A：混合冲突不再连坐 ──────────────────────────────────────
+
+    def test_branch_only_dist_adds_dropped(self, tmp_path):
+        """分支干净 add 的新产物（非冲突）不复活——merge 后 staged dist == HEAD 集合。
+
+        旧实现只对「主树移动过布局」场景收口 stray；新范式下 dist 一律以 HEAD
+        为准、由重建刷新，clean-add 的旧 hash chunk 同样不进入 merge 提交。
+        """
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._seed(root)
+        base = git(root, "rev-parse", "HEAD").stdout.strip()
+
+        # 分支：rename aaa→bbb（与主树 rename 打架）+ 干净 add 新 chunk
+        self._branch_rebuild(root, base)
+        # 主树：rename aaa→ccc
+        git(root, "mv", f"{self.DIST}/umi.aaa.js", f"{self.DIST}/umi.ccc.js")
+        git(root, "commit", "-q", "-m", "[fenix] main rebuild")
+
+        wm = make_wm(root)
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, _ = info
+        assert success, "纯产物冲突应自愈"
+        d = root / self.DIST
+        assert (d / "umi.ccc.js").exists(), "HEAD 版保留"
+        assert not (d / "umi.bbb.js").exists(), "分支版不复活"
+        assert not (d / "p__page.bbb.async.js").exists(), "分支干净 add 的新产物同样不复活"
+        assert (d / "keep.js").read_text(encoding="utf-8") == "K\n"
+        assert git(root, "status", "--porcelain").stdout.strip() == ""
+
+    # ── B：merge 后从 src 确定性重建 ─────────────────────────────
+
+    def _fake_build(self, monkeypatch, wm, write_dist=None, fail=False):
+        """patch _run_dist_build：记录调用、可选模拟构建产物 / 失败。"""
+        calls = {"n": 0}
+
+        def fake():
+            calls["n"] += 1
+            if fail:
+                return False
+            if write_dist:
+                for rel, content in write_dist.items():
+                    p = Path(wm.project_root) / rel
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_text(content, encoding="utf-8")
+            return True
+
+        monkeypatch.setattr(wm, "_run_dist_build", fake, raising=False)
+        return calls
+
+    def test_merge_touching_static_src_rebuilds_and_amends(self, tmp_path, monkeypatch):
+        """merge 触碰 static src → 重建被调用，重建产物 amend 进 merge 提交。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._seed(root)
+        base = git(root, "rev-parse", "HEAD").stdout.strip()
+        self._branch_rebuild(root, base, with_src=True)
+        # 主树不动 dist（分支 src/dist 无冲突，纯干净 merge 但触碰 src）
+
+        wm = make_wm(root)
+        calls = self._fake_build(
+            monkeypatch, wm,
+            write_dist={f"{self.DIST}/index.html": "INDEX-REBUILT\n",
+                        f"{self.DIST}/umi.aaa.js": "V1-REBUILT\n",
+                        f"{self.DIST}/umi.bbb.js": "BRANCH-CHUNK-REBUILT\n"},
+        )
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, err = info
+        assert success, f"干净 merge 应成功: {err}"
+        assert calls["n"] == 1, "触碰 static src 的 merge 应触发一次重建"
+        # 重建产物 amend 进 merge commit：HEAD 树里是重建版
+        head_index = git(root, "show", f"HEAD:{self.DIST}/index.html").stdout
+        assert head_index == "INDEX-REBUILT\n"
+        # 分支侧 chunk 在重建产物中复活（重建以合并后 src 为准，与 HEAD 对齐无关）
+        head_chunk = git(root, "show", f"HEAD:{self.DIST}/umi.bbb.js").stdout
+        assert head_chunk == "BRANCH-CHUNK-REBUILT\n"
+        # 工作区干净（amend 收口，无 staged/unstaged 残留）
+        assert git(root, "status", "--porcelain").stdout.strip() == ""
+
+    def test_merge_without_static_src_skips_rebuild(self, tmp_path, monkeypatch):
+        """merge 未触碰 static src（纯后端 spec）→ 不触发重建。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        base = git(root, "rev-parse", "HEAD").stdout.strip()
+        git(root, "checkout", "-q", "-b", "fenix/impl")
+        (root / "shared.py").write_text("BRANCH\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] backend only")
+        git(root, "checkout", "-q", base)
+
+        wm = make_wm(root)
+        calls = self._fake_build(monkeypatch, wm)
+        success, err = wm.merge_back_from_branch("fenix/impl")
+        assert success, err
+        assert calls["n"] == 0, "未触碰 static src 不应重建"
+
+    def test_rebuild_failure_keeps_merge_and_clean_tree(self, tmp_path, monkeypatch):
+        """重建失败：merge 提交保留、dist 回到提交版、主树干净、不抛异常。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._seed(root)
+        base = git(root, "rev-parse", "HEAD").stdout.strip()
+        self._branch_rebuild(root, base, with_src=True)
+
+        wm = make_wm(root)
+        calls = self._fake_build(monkeypatch, wm, fail=True)
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, _ = info
+        assert success, "重建失败不应否定 merge 本身"
+        assert calls["n"] == 1
+        # HEAD 保留 merge commit；dist 为提交时状态，主树干净可重试
+        assert git(root, "status", "--porcelain").stdout.strip() == ""
+
+    def test_self_heal_path_triggers_rebuild(self, tmp_path, monkeypatch):
+        """自愈完成 merge 的路径同样触发重建（对齐 HEAD 只是过场，重建才是终态）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._seed(root)
+        base = git(root, "rev-parse", "HEAD").stdout.strip()
+        self._branch_rebuild(root, base, with_src=True)
+        # 主树：rename aaa→ccc（制造产物冲突；分支 src 照常干净合入）
+        git(root, "mv", f"{self.DIST}/umi.aaa.js", f"{self.DIST}/umi.ccc.js")
+        git(root, "commit", "-q", "-m", "[fenix] main rebuild")
+
+        wm = make_wm(root)
+        calls = self._fake_build(
+            monkeypatch, wm,
+            write_dist={f"{self.DIST}/index.html": "INDEX-REBUILT\n"},
+        )
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, err = info
+        assert success, f"产物冲突应自愈: {err}"
+        assert calls["n"] == 1, "自愈 merge 触碰 src 时应触发重建"
+        head_index = git(root, "show", f"HEAD:{self.DIST}/index.html").stdout
+        assert head_index == "INDEX-REBUILT\n"
+        assert git(root, "status", "--porcelain").stdout.strip() == ""
+
+    def test_already_merged_skips_rebuild(self, tmp_path, monkeypatch):
+        """already merged 早退路径不触发重建（HEAD^1 diff 是旧 merge，不可误判）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._seed(root)
+        base = git(root, "rev-parse", "HEAD").stdout.strip()
+        self._branch_rebuild(root, base)
+        git(root, "merge", "-q", "--no-ff", "fenix/impl",
+            "-m", "[fenix] merge implementer branch fenix/impl")
+
+        wm = make_wm(root)
+        calls = self._fake_build(monkeypatch, wm)
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, _ = info
+        assert success
+        assert calls["n"] == 0, "already merged 早退不应重建"
