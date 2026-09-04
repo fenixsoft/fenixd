@@ -169,7 +169,7 @@ export interface SpecSummary {
   task_done: number;
   task_total: number;
   /** run 层实时进度（fix-implementer-task-progress D3）：不依赖 tasks.md 编号 */
-  run_progress?: { done: number; total: number } | null;
+  run_progress?: { done: number; total: number; current?: string[] } | null;
   verify_done: number;
   verify_total: number;
   verify_error: string | null;
@@ -285,7 +285,7 @@ export interface SpecDetail {
     error?: string | null;
   };
   // run 层实时进度 — run_task_progress() 返回结构（不依赖 tasks.md 编号）
-  run_progress?: { done: number; total: number } | null;
+  run_progress?: { done: number; total: number; current?: string[] } | null;
   // 任务清单 — parse_tasks() 返回的分组数组（非 {groups} 包装）
   tasks?: Array<{
     title: string;

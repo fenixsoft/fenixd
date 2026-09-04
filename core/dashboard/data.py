@@ -731,19 +731,24 @@ def parse_run_task_done(run_file: Path) -> dict:
     Returns:
         {"done_ids": set[str],   # 已完成且已创建的 tasks.md id（如 {"1.1","2.3"}）
          "created_count": int,    # TaskCreate 次数（flat 回退对齐上限）
-         "flat_done": set[int]}   # 已完成任务的创建序下标（0-based，flat 回退用）
+         "flat_done": set[int],   # 已完成任务的创建序下标（0-based，flat 回退用）
+         "in_progress_ids": list[str]}  # 进行中任务 id（run-progress-current：
+                    # 最近一次 TaskUpdate 仍为 in_progress 且未 completed；
+                    # subject 无编号时回退 "#创建序"）
     """
     try:
         st = run_file.stat()
         key = (str(run_file), st.st_mtime_ns, st.st_size)
     except OSError:
-        return {"done_ids": set(), "created_count": 0, "flat_done": set()}
+        return {"done_ids": set(), "created_count": 0, "flat_done": set(),
+                "in_progress_ids": []}
     cached = _RUN_TASK_CACHE.get(key)
     if cached is not None:
         return cached
 
     created_ordered: list = []  # 按创建序的 subject 提取 tasks.md id（无 id 记 None）
     completed_idx: set = set()  # TaskUpdate completed 的 taskId - 1
+    last_update_status: dict = {}  # taskId-1 → 最近一次 TaskUpdate status
     try:
         with run_file.open("r", encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -768,10 +773,14 @@ def parse_run_task_done(run_file: Path) -> dict:
                             n = int(str(inp.get("taskId")))  # 兼容 str/int
                         except (TypeError, ValueError):
                             continue
-                        if inp.get("status") == "completed":
+                        status = inp.get("status")
+                        if status:
+                            last_update_status[n - 1] = str(status)
+                        if status == "completed":
                             completed_idx.add(n - 1)
     except OSError:
-        return {"done_ids": set(), "created_count": 0, "flat_done": set()}
+        return {"done_ids": set(), "created_count": 0, "flat_done": set(),
+                "in_progress_ids": []}
 
     created_count = len(created_ordered)
     done_ids = set()
@@ -780,7 +789,19 @@ def parse_run_task_done(run_file: Path) -> dict:
             done_ids.add(created_ordered[idx])
     flat_done = {i for i in completed_idx if 0 <= i < created_count}
 
-    result = {"done_ids": done_ids, "created_count": created_count, "flat_done": flat_done}
+    # 进行中任务（run-progress-current）：最近一次 TaskUpdate 仍为 in_progress
+    # 且未 completed 的创建序下标 → 展示用 id（subject 无编号时回退 "#创建序"）
+    in_progress_idx = {
+        idx for idx, s in last_update_status.items()
+        if s == "in_progress" and 0 <= idx < created_count
+    } - completed_idx
+    in_progress_ids = [
+        created_ordered[idx] if created_ordered[idx] else f"#{idx + 1}"
+        for idx in sorted(in_progress_idx)
+    ]
+
+    result = {"done_ids": done_ids, "created_count": created_count, "flat_done": flat_done,
+              "in_progress_ids": in_progress_ids}
     if len(_RUN_TASK_CACHE) > 64:
         _RUN_TASK_CACHE.clear()
     _RUN_TASK_CACHE[key] = result
@@ -906,17 +927,19 @@ def run_task_progress(project_root, spec_name) -> dict:
     """最新 impl run 的 harness 任务完成度（run-progress-observability D3）。
 
     从最新 impl run 产物用 parse_run_task_done 解析：done = TaskUpdate completed
-    的 taskId 去重数（flat_done），total = created_count。**不依赖 TaskCreate
+    的 taskId 去重数（flat_done），total = created_count，current = 进行中任务
+    id 列表（in_progress 且未 completed，run-progress-current）。**不依赖 TaskCreate
     subject 是否内嵌 tasks.md 编号**——这正是它作为 tasks.md 快照失效时兜底
-    展示的资本。无 run / 解析失败为 {"done": 0, "total": 0}。
+    展示的资本。无 run / 解析失败为 {"done": 0, "total": 0, "current": []}。
     """
     run_file = find_impl_run_file(project_root, spec_name)
     if run_file is None:
-        return {"done": 0, "total": 0}
+        return {"done": 0, "total": 0, "current": []}
     rd = parse_run_task_done(run_file)
     return {
         "done": len(rd.get("flat_done") or set()),
         "total": int(rd.get("created_count") or 0),
+        "current": list(rd.get("in_progress_ids") or []),
     }
 
 

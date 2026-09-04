@@ -1121,6 +1121,15 @@ export default function SpecDetailPage() {
                 run {detail.run_progress.done}/{detail.run_progress.total} 已汇报
               </Typography.Text>
             ) : null}
+            {detail?.run_progress?.current?.length ? (
+              <Typography.Text
+                type="warning"
+                data-testid="run-progress-current"
+                style={{ display: 'block', marginTop: 6, fontSize: 12 }}
+              >
+                run 进行中 {detail.run_progress.current.join('、')}
+              </Typography.Text>
+            ) : null}
             {proposalWhy ? (
               <div
                 style={{

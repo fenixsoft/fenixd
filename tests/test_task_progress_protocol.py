@@ -289,7 +289,7 @@ class TestRunProgressObservability(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _write_run(self, subjects, completed_task_ids):
+    def _write_run(self, subjects, completed_task_ids, in_progress_task_ids=()):
         runs_dir = self.proot / ".fenix" / "runs"
         runs_dir.mkdir(parents=True, exist_ok=True)
         lines = []
@@ -299,6 +299,14 @@ class TestRunProgressObservability(unittest.TestCase):
                 "message": {"content": [{
                     "type": "tool_use", "name": "TaskCreate",
                     "input": {"subject": s},
+                }]},
+            }))
+        for tid in in_progress_task_ids:
+            lines.append(json.dumps({
+                "type": "assistant",
+                "message": {"content": [{
+                    "type": "tool_use", "name": "TaskUpdate",
+                    "input": {"taskId": tid, "status": "in_progress"},
                 }]},
             }))
         for tid in completed_task_ids:
@@ -314,36 +322,36 @@ class TestRunProgressObservability(unittest.TestCase):
 
     def test_no_numbered_run_yields_progress(self):
         """spec 场景：6 个 TaskCreate、1 个 completed（subject 无编号）→
-        run_progress = {"done": 1, "total": 6}，而非全 0。"""
+        run_progress = {"done": 1, "total": 6, "current": []}，而非全 0。"""
         from core.dashboard.data import run_task_progress
         self._write_run([f"grouped task {i}" for i in range(6)], [1])
         rp = run_task_progress(self.proot, "demo")
-        self.assertEqual(rp, {"done": 1, "total": 6})
+        self.assertEqual(rp, {"done": 1, "total": 6, "current": []})
 
     def test_no_run_defaults_zero(self):
-        """spec 场景：无 impl run 记录 → {"done": 0, "total": 0}，不报错。"""
+        """spec 场景：无 impl run 记录 → {"done": 0, "total": 0, "current": []}，不报错。"""
         from core.dashboard.data import run_task_progress
         self.assertEqual(run_task_progress(self.proot, "demo"),
-                         {"done": 0, "total": 0})
+                         {"done": 0, "total": 0, "current": []})
 
     def test_spec_summary_has_run_progress(self):
         """spec_summary 含 run_progress 字段（/api/specs 列表项数据源）。"""
         from core.dashboard.data import spec_summary
         self._write_run([f"grouped task {i}" for i in range(6)], [1, 2])
         summary = spec_summary(self.proot, "demo", {"status": "implementing"})
-        self.assertEqual(summary["run_progress"], {"done": 2, "total": 6})
+        self.assertEqual(summary["run_progress"], {"done": 2, "total": 6, "current": []})
 
     def test_spec_summary_run_progress_default_without_run(self):
         from core.dashboard.data import spec_summary
         summary = spec_summary(self.proot, "demo", {"status": "drafted"})
-        self.assertEqual(summary["run_progress"], {"done": 0, "total": 0})
+        self.assertEqual(summary["run_progress"], {"done": 0, "total": 0, "current": []})
 
     def test_spec_detail_has_run_progress(self):
         """spec_detail 含 run_progress 字段（详情页统计卡片数据源）。"""
         from core.dashboard.data import spec_detail
         self._write_run([f"grouped task {i}" for i in range(6)], [1])
         detail = spec_detail(self.proot, "demo", {"status": "implementing"})
-        self.assertEqual(detail["run_progress"], {"done": 1, "total": 6})
+        self.assertEqual(detail["run_progress"], {"done": 1, "total": 6, "current": []})
 
     def test_run_progress_numbered_subjects_counted(self):
         """subject 带编号的合规 run：done 按 TaskUpdate 去重数（非 done_ids 数）。"""
@@ -351,7 +359,36 @@ class TestRunProgressObservability(unittest.TestCase):
         self._write_run(
             [f"Task 1.{i}: t{i}" for i in range(1, 4)], [1, 2, 3])
         rp = run_task_progress(self.proot, "demo")
-        self.assertEqual(rp, {"done": 3, "total": 3})
+        self.assertEqual(rp, {"done": 3, "total": 3, "current": []})
+
+    def test_in_progress_ids_extracted(self):
+        """run-progress-current：TaskUpdate in_progress 且未 completed →
+        current 带出 tasks.md id（subject 编号），done 仍为 0。"""
+        from core.dashboard.data import run_task_progress
+        self._write_run(
+            [f"Task 1.{i}: t{i}" for i in range(1, 3)],
+            [], in_progress_task_ids=[1])
+        rp = run_task_progress(self.proot, "demo")
+        self.assertEqual(rp, {"done": 0, "total": 2, "current": ["1.1"]})
+
+    def test_in_progress_then_completed_not_current(self):
+        """run-progress-current：同一 taskId 先 in_progress 后 completed →
+        最新状态胜出，不再计入 current。"""
+        from core.dashboard.data import run_task_progress
+        self._write_run(
+            [f"Task 1.{i}: t{i}" for i in range(1, 3)],
+            [1], in_progress_task_ids=[1])
+        rp = run_task_progress(self.proot, "demo")
+        self.assertEqual(rp, {"done": 1, "total": 2, "current": []})
+
+    def test_in_progress_unnumbered_subject_fallback_id(self):
+        """subject 无编号的进行中任务 → current 回退 "#创建序" 表示。"""
+        from core.dashboard.data import run_task_progress
+        self._write_run(
+            [f"grouped task {i}" for i in range(3)],
+            [], in_progress_task_ids=[2])
+        rp = run_task_progress(self.proot, "demo")
+        self.assertEqual(rp, {"done": 0, "total": 3, "current": ["#2"]})
 
 
 if __name__ == "__main__":

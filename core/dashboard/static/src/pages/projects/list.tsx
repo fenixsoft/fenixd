@@ -758,6 +758,8 @@ export default function SpecListPage() {
         // 任一数据源失效都不再呈现静止的 0/N；快照已覆盖时不重复打扰。
         const rp = record.run_progress;
         const runAhead = !!rp && rp.done > record.task_done;
+        // run-progress-current：done=0 阶段也有进行中任务的观感
+        const runCurrent = rp?.current && rp.current.length > 0 ? rp.current : null;
         // 对齐 v1：条下方两侧分别显示 done/total 与 百分比
         return (
           <div style={{ minWidth: 0 }}>
@@ -774,6 +776,11 @@ export default function SpecListPage() {
                 {runAhead && rp ? (
                   <Typography.Text type="warning" style={{ marginLeft: 4 }}>
                     run {rp.done}/{rp.total} 已汇报
+                  </Typography.Text>
+                ) : null}
+                {runCurrent ? (
+                  <Typography.Text type="warning" style={{ marginLeft: 4 }}>
+                    进行中 {runCurrent.join('、')}
                   </Typography.Text>
                 ) : null}
               </Typography.Text>
