@@ -216,6 +216,7 @@ function AlertTitle({ item, resolved }: { item: AlertItem; resolved?: boolean })
           {item.handled_by === 'auto-resolve' ? '🤖 自动解决' : '👤 人工处理'}
         </Tag>
       ) : null}
+      {item.project ? <Tag>{item.project}</Tag> : null}
       {item.spec ? <Tag color="blue">{item.spec}</Tag> : null}
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
         {fmtDate(resolved ? item.handled_at || item.created : item.created)}
@@ -263,17 +264,16 @@ interface ViewingRun {
 }
 
 function AlertPanel({
-  project,
   alertsData,
   optimistic,
   onMarkHandled,
 }: {
-  project: string;
   alertsData: AlertsData | null;
   optimistic: string[];
   onMarkHandled: (a: AlertItem) => void;
 }) {
-  const visible = (a: AlertItem) => a.project === project && !optimistic.includes(a.id);
+  // 全局视图：不按项目过滤，仅剔除乐观移除的条目
+  const visible = (a: AlertItem) => !optimistic.includes(a.id);
   const unhandled = (alertsData?.alerts || []).filter(visible);
   const resolved = (alertsData?.resolved || []).filter(visible);
 
@@ -302,6 +302,7 @@ function AlertPanel({
       {resolved.length ? (
         <Collapse
           ghost
+          defaultActiveKey={['resolved']}
           items={[
             {
               key: 'resolved',
@@ -442,31 +443,13 @@ export default function ActivitiesPage() {
     }
 
     if (viewMode === 'alert') {
-      // 人工告警视图（暂保留按项目分段，3.1 全局化）
-      if (!data || !data.projects || data.projects.length === 0) {
-        return <Empty description="暂无人工告警" />;
-      }
+      // 人工告警视图：全部项目合并展示（不按项目过滤）
       return (
-        <div>
-          {projects.map((p) => (
-            <Card
-              key={p.name}
-              title={
-                <Space wrap size={8}>
-                  <span>{p.name}</span>
-                </Space>
-              }
-              style={{ marginBottom: 16 }}
-            >
-              <AlertPanel
-                project={p.name}
-                alertsData={alertsData}
-                optimistic={optimistic}
-                onMarkHandled={(a) => void handleMarkHandled(a)}
-              />
-            </Card>
-          ))}
-        </div>
+        <AlertPanel
+          alertsData={alertsData}
+          optimistic={optimistic}
+          onMarkHandled={(a) => void handleMarkHandled(a)}
+        />
       );
     }
 
