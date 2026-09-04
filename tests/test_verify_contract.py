@@ -318,6 +318,38 @@ class TestEnsureAppReachableScopes(unittest.TestCase):
                            / "test_scenarios.json").read_text(encoding="utf-8"))
         self.assertNotIn("localhost:59999", data[0]["steps"][0]["value"])
 
+    def test_command_worktree_scope_launches_full_stack(self):
+        """command + worktree：serving worktree 内 prepare、以 worktree 为 cwd
+        启动真实服务进程，场景 origin 改写指向该实例，探针通过、可停止。"""
+        from core.verify_contract import _find_free_port
+        self._init_repo_with_site()
+        port = _find_free_port()
+        _write(self.tmp, ".fenix/verify.yaml",
+               "prepare:\n  - run: echo built > site/built.txt\n"
+               "serve:\n"
+               "  kind: command\n"
+               f"  cmd: python3 -m http.server {port} --bind 127.0.0.1\n"
+               f"  port: {port}\n"
+               "ready:\n  url: /\n  expect: 200\n  timeout: 20\n")
+        self._scenarios()
+        engine = self._mk_engine(config={"verify": {"static_scope": "worktree"}})
+        try:
+            reachable, blocked, note = engine._verification._ensure_app_reachable("spec-a")
+            self.assertTrue(reachable, note)
+            self.assertIn("命令 worktree", note)
+            serving = list((self.tmp / ".fenix" / "verify-serving").glob("spec-a-*"))
+            self.assertEqual(len(serving), 1)
+            self.assertTrue((serving[0] / "site" / "built.txt").exists(),
+                            "prepare 应在 worktree 内执行")
+            data = json.loads((self.tmp / ".fenix" / "verify-progress" / "spec-a"
+                               / "test_scenarios.json").read_text(encoding="utf-8"))
+            self.assertNotIn("localhost:59999", data[0]["steps"][0]["value"])
+        finally:
+            entry = engine._verification.__dict__.get(
+                "_contract_static_servers", {}).get("spec-a")
+            if entry:
+                entry["server"].stop()
+
     def test_no_contract_falls_back_to_commands_start(self):
         """无契约：维持旧行为（无 commands.start → 不可达 + 说明）。"""
         self._scenarios()

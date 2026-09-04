@@ -42,10 +42,18 @@ prepare:
     cwd: core/dashboard/static
   - run: npm run build
     cwd: core/dashboard/static
+  # serving worktree 内缺 .fenix（gitignore 不随 git）——链入主树运行态，
+  # 使命令型实例与常驻 dashboard 同等保真（worktree 作用域下 cwd 在三层
+  # 子目录，恰好指回项目根）；主树执行时 .fenix 已存在，此步自然跳过
+  - run: test -e .fenix || ln -s ../../../.fenix .fenix
 
 serve:
-  kind: static
-  root: core/dashboard/static
+  # command + static_scope=worktree：serving worktree 内起真实全栈实例
+  # （Python API + 本次构建的前端产物）——static 模式无 API，交付物端点
+  # 会被迫 mock（假阴性放大器，help-center 实证）
+  kind: command
+  cmd: python3 bin/fenix_dashboard.py --serve --port 8787
+  port: 8787
 
 ready:
   url: /

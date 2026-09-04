@@ -17,6 +17,7 @@ import time
 import urllib.request
 
 from core.verify_contract import (
+    CommandVerifyServer,
     load_verify_contract,
     probe_ready,
     provision_worktree_node_modules,
@@ -129,13 +130,15 @@ class VerificationPipeline:
             cache["main"] = srv
         return self._finalize_static(srv, contract, scenarios_path, "主树")
 
-    def _serve_static_in_worktree(self, spec_name, contract, scenarios_path) -> tuple:
-        """方案 2：专用 serving worktree 内构建 + 起服务（隔离主树运行实例）。
+    def _ensure_serving_worktree(self, spec_name: str, contract, mode: str):
+        """serving worktree 供给（static/command 两型共享）。
 
-        worktree 每次 HEAD 变化时重建（分离 HEAD、自管理生命周期，位于
-        .fenix/verify-serving/，gitignore 排除）；HEAD 未变时复用已启动实例
-        与产物（replan 循环不重复构建）。构建环境由 provision 自动链入主树
-        node_modules（worktree 不含 gitignore 依赖，手工 symlink 是既有摩擦源）。
+        HEAD 未变且目录存活时复用；否则停掉旧实例、重建 worktree、provision
+        依赖（deps_mode）并执行契约 prepare（构建产物）。
+
+        Returns:
+            (wt_path, head, err)：wt_path=None 时 err 为人类可读原因。
+            server 生命周期（启动/复用/停止）由调用方按 mode 管理。
         """
         serve_root = Path(self._pm.project_root) / ".fenix" / "verify-serving"
         serve_root.mkdir(parents=True, exist_ok=True)
@@ -146,11 +149,14 @@ class VerificationPipeline:
         ).stdout.strip()
         old = cache.get(spec_name)
         if (old is not None and old.get("head") == head
+                and old.get("mode") == mode
                 and Path(old["wt_path"]).is_dir()):
-            return self._finalize_static(
-                old["server"], contract, scenarios_path, "验证 worktree（复用）")
+            return old["wt_path"], head, None
         if old is not None:
-            old["server"].stop()
+            try:
+                old["server"].stop()
+            except Exception:
+                pass
             self._remove_serving_worktree(old["wt_path"])
         wt = serve_root / f"{spec_name}-{int(time.time())}"
         r = subprocess.run(
@@ -159,7 +165,7 @@ class VerificationPipeline:
             capture_output=True, text=True, timeout=60,
         )
         if r.returncode != 0:
-            return False, False, (
+            return None, None, (
                 "验证 worktree 创建失败: "
                 f"{(r.stderr or r.stdout).strip()[-200:]}")
         provision_worktree_node_modules(
@@ -172,16 +178,96 @@ class VerificationPipeline:
         err = run_prepare_steps(contract, wt)
         if err:
             self._remove_serving_worktree(wt)
-            return False, False, f"验证契约 prepare 失败（worktree 内）: {err}"
-        root_dir = wt / contract.serve.root
+            return None, None, f"验证契约 prepare 失败（worktree 内）: {err}"
+        return str(wt), head, None
+
+    def _serve_static_in_worktree(self, spec_name, contract, scenarios_path) -> tuple:
+        """方案 2：专用 serving worktree 内构建 + 起静态服务（隔离主树运行实例）。
+
+        worktree 每次 HEAD 变化时重建（分离 HEAD、自管理生命周期，位于
+        .fenix/verify-serving/，gitignore 排除）；HEAD 未变时复用已启动实例
+        与产物（replan 循环不重复构建）。
+        """
+        wt, head, err = self._ensure_serving_worktree(
+            spec_name, contract, mode="static")
+        if wt is None:
+            return False, False, err
+        cache = self.__dict__.setdefault("_contract_static_servers", {})
+        old = cache.get(spec_name)
+        if (old is not None and old.get("mode") == "static"
+                and old.get("head") == head
+                and isinstance(old.get("server"), StaticVerifyServer)):
+            return self._finalize_static(
+                old["server"], contract, scenarios_path, "验证 worktree（复用）")
+        root_dir = Path(wt) / contract.serve.root
         if not root_dir.is_dir():
             self._remove_serving_worktree(wt)
             return False, False, f"验证契约 serve.root 不存在: {contract.serve.root}"
         cache[spec_name] = {
-            "server": StaticVerifyServer(root_dir), "wt_path": str(wt), "head": head,
+            "server": StaticVerifyServer(root_dir), "wt_path": wt, "head": head,
+            "mode": "static",
         }
         return self._finalize_static(
             cache[spec_name]["server"], contract, scenarios_path, "验证 worktree")
+
+    @staticmethod
+    def _port_responds(port: int) -> bool:
+        import urllib.request
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(
+                        f"http://127.0.0.1:{port}/",
+                        headers={"User-Agent": "fenix-verify-probe"}),
+                    timeout=1.0):
+                return True
+        except Exception:
+            return False
+
+    def _serve_command_in_worktree(self, spec_name, contract, scenarios_path) -> tuple:
+        """命令型被测实例的 worktree 隔离（serve.kind=command + static_scope=worktree）。
+
+        full-stack 验证的解法：serving worktree 内 prepare 构建产物，再以
+        worktree 为 cwd 启动 serve.cmd——后端 API 与前端产物同为本次 HEAD 的
+        真实形态（static 模式无 API，交付物端点被迫 mock＝假阴性放大器）。
+        实例端口以 serve.port 为基准上探，跳过启动前已在监听的端口（主树
+        常驻实例让位）。HEAD 未变时复用已启动实例。
+        """
+        wt, head, err = self._ensure_serving_worktree(
+            spec_name, contract, mode="command")
+        if wt is None:
+            return False, False, err
+        cache = self.__dict__.setdefault("_contract_static_servers", {})
+        old = cache.get(spec_name)
+        if (old is not None and old.get("mode") == "command"
+                and old.get("head") == head
+                and isinstance(old.get("server"), CommandVerifyServer)
+                and old["server"].ok):
+            return self._finalize_static(
+                old["server"], contract, scenarios_path, "命令 worktree（复用）")
+        import re as _re
+        m = _re.search(r"(?:--port|-p)\s+(\d+)", contract.serve.cmd or "")
+        hint = contract.serve.port or (int(m.group(1)) if m else 8787)
+        # 启动前监听快照：这些端口属于既有实例，不认作本次实例
+        pre = {p for p in range(hint, hint + 51) if self._port_responds(p)}
+        try:
+            proc = subprocess.Popen(
+                contract.serve.cmd, shell=True, cwd=str(wt),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception as e:
+            return False, False, f"验证命令实例启动失败: {e}"
+        srv = CommandVerifyServer(proc, hint, pre,
+                                  timeout=contract.ready.timeout or 60)
+        if not srv.ok:
+            srv.stop()
+            return False, False, (
+                f"验证命令实例未就绪（端口 {hint}+ 上探超时或进程退出）")
+        cache[spec_name] = {
+            "server": srv, "wt_path": wt, "head": head, "mode": "command",
+        }
+        return self._finalize_static(
+            srv, contract, scenarios_path, "命令 worktree")
 
     def _finalize_static(self, srv, contract, scenarios_path, scope_label) -> tuple:
         """BASE_URL 注入 + 就绪探针：static 两类 scope 的共同收尾。"""
@@ -250,19 +336,25 @@ class VerificationPipeline:
         start_cmd_override = ""
         serve_port_hint = None
         if contract is not None:
-            if contract.prepare:
+            serve = contract.serve
+            scope = str(self._pm._get_config("verify.static_scope", "main")
+                        or "main").strip().lower()
+            wt_scope = scope == "worktree"
+            # 主树 prepare 仅在实例落于主树时需要——worktree 作用域在
+            # serving worktree 内构建（共享助手），主树构建纯属双倍等待
+            if contract.prepare and not wt_scope:
                 err = run_prepare_steps(contract, self._pm.project_root)
                 if err:
                     return False, False, f"验证契约 prepare 失败: {err}"
-            serve = contract.serve
             if serve and serve.kind == "static":
-                scope = str(self._pm._get_config("verify.static_scope", "main")
-                            or "main").strip().lower()
-                if scope == "worktree":
+                if wt_scope:
                     return self._serve_static_in_worktree(
                         spec_name, contract, scenarios_path)
                 return self._serve_static_in_main(contract, scenarios_path)
             if serve and serve.kind == "command" and serve.cmd:
+                if wt_scope:
+                    return self._serve_command_in_worktree(
+                        spec_name, contract, scenarios_path)
                 start_cmd_override = serve.cmd
                 serve_port_hint = serve.port
 

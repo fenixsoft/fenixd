@@ -597,6 +597,12 @@ class StateMachine:
         On daemon restart, revert any SPECs stuck in interrupted states.
         Uses update_spec directly (bypasses transition validation for recovery).
         Returns list of recovered SPEC names.
+
+        恢复目标按中断态区分（2026-09-04 help-center 误派实证）：
+        - implementing（实现中断）→ ready 重派 implementer（原语义，branch 清空）；
+        - testing（验证中断）→ implemented 重派 verifier——实现已合并/落分支，
+          重置 ready 会误派 implementer 从头实现已合并代码并劫持 branch 字段
+          （pushed 记录被写成 rogue 分支）；配合场景冻结复用，重验代价极小。
         """
         recovered = []
         for status in INTERRUPTED_STATES:
@@ -606,6 +612,19 @@ class StateMachine:
                     "state_machine",
                     f"Recovering interrupted SPEC: {name} (was {status})",
                 )
+                if status == SpecStatus.TESTING:
+                    # 清 tester_run 让验证流水线全新重入；branch/implementer_run
+                    # 保留（实现的身份事实，验证不重做实现）
+                    self.update_spec(name, {
+                        "status": SpecStatus.IMPLEMENTED,
+                        "error": f"Recovered from interrupted state: {status}",
+                        "tester_run": None,
+                        "_retry_count": 0,
+                        "_merge_fp": None,
+                        "_merge_streak": 0,
+                    })
+                    recovered.append(name)
+                    continue
                 # 清空陈旧的 run 字段，否则 full_scan 的恢复派发会因
                 # implementer_run 非空而跳过重新调度（fix-fenix-token-waste）
                 self.update_spec(name, {

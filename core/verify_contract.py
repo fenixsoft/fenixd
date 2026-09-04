@@ -70,6 +70,7 @@ Fenix 是通用开发框架，被管项目形态各异：前端应用有构建�
 import os
 import re
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -279,6 +280,70 @@ class StaticVerifyServer:
             self._httpd.server_close()
         except OSError:
             pass
+
+
+class CommandVerifyServer:
+    """命令型被测实例（serve.kind=command 的 worktree 隔离）。
+
+    full-stack 场景的解法：以 serving worktree 为 cwd 启动真实服务命令——
+    Python 后端 API 与前端静态产物同为本次实现的真实形态。static 模式只有
+    静态文件，交付物 API 会被迫 mock（假阴性放大器）。本类持进程组句柄、
+    可探活、可停止（进程组 SIGTERM→SIGKILL）。
+
+    端口发现：serve.port 提示端口若被占（如主树常驻实例），服务自身上探
+    邻近端口——扫描 hint..hint+50 中「启动后才出现监听」的端口即本次实例。
+    """
+
+    def __init__(self, proc: subprocess.Popen, hint_port: int,
+                 pre_listening: set, timeout: int = 60):
+        self._proc = proc
+        self._port = self._discover_port(hint_port, pre_listening, timeout)
+        self.pre_listening = pre_listening
+
+    @staticmethod
+    def _probe(url: str, timeout: float = 1.0) -> bool:
+        try:
+            with urlopen(Request(url, headers={"User-Agent": "fenix-verify-probe"}),
+                         timeout=timeout):
+                return True
+        except Exception:
+            return False
+
+    def _discover_port(self, hint: int, pre_listening: set, timeout: int) -> Optional[int]:
+        deadline = time.monotonic() + max(timeout, 5)
+        while time.monotonic() < deadline:
+            for p in range(hint, hint + 51):
+                if p in pre_listening:
+                    continue
+                if self._probe(f"http://127.0.0.1:{p}/"):
+                    return p
+            if self._proc.poll() is not None:
+                return None  # 进程已退出（启动失败），不再等待
+            time.sleep(1)
+        return None
+
+    @property
+    def base_url(self) -> str:
+        if self._port is None:
+            return f"http://127.0.0.1:{0}"
+        return f"http://127.0.0.1:{self._port}"
+
+    @property
+    def ok(self) -> bool:
+        return self._port is not None and self._proc.poll() is None
+
+    def stop(self):
+        try:
+            os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            self._proc.wait(timeout=5)
+        except Exception:
+            try:
+                os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
 
 
 def provision_worktree_node_modules(worktree_root: Path, project_root: Path,

@@ -76,6 +76,7 @@
 ## 外部 API 场景规范（真实网络请求 / mock）
 - 涉及外部 API 真实请求的场景（如 open-meteo 天气、时间服务器），在场景 JSON 顶层声明 `"external_net_errors_ok": true`，表示允许 no_console_error 过滤 net::ERR_ 等网络层错误（测试环境不可达属环境因素，非产品缺陷）；签名/认证类错误仍严格失败。
 - 若需离线完整验证外部 API 请求→解析→渲染链路，可在场景 steps 中加入 mock_api 步骤：`{"action": "mock_api", "target": "https://api.open-meteo.com/**", "value": "{\"current\": ...}"}`（target 为 URL 模式，value 为 JSON 响应体；注意 Playwright glob 中 `*` 不匹配 `/`，多段路径需用 `**`，引擎会自动把结尾 `/*` 补成 `/**`）。mock 注册在 page 上，reload/导航后仍保留；仅作用于当前场景。
+- **铁律：禁止 mock 本 SPEC 交付物包含的 API 端点。** mock_api 仅允许用于与交付物无关的辅助/壳层接口（如页面骨架依赖的 /api/overview）。本 SPEC 实现/修改的端点必须打真实实例——mock 掉被测对象等于只测了前端对夹具数据的渲染，后端契约零覆盖（假阴性放大器：场景"通过"而功能未验证，help-center 事故实证）。若被测实例形态无法支撑真实端点，在场景中如实失败，由框架按环境问题升级处置，不得以 mock 掩盖。
 
 IMPORTANT: 不要修改 .fenix/STATE.md。
 IMPORTANT: 当前模型不支持图像输入——不要 Read 图片/截图文件（会被 hook 拦截），截图仅作为证据文件。

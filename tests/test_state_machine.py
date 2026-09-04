@@ -309,8 +309,16 @@ class TestStateMachine(unittest.TestCase):
         self.assertIsNone(self.sm.get_next_ready())
 
     def test_recover_interrupted(self):
-        self.sm.add_spec("stuck-impl", {"status": "implementing"})
-        self.sm.add_spec("stuck-test", {"status": "testing"})
+        """恢复目标按中断态区分：implementing→ready 重实现；testing→implemented 重验证。
+
+        testing 重置 ready 会误派 implementer 从头实现已合并代码并劫持
+        branch（2026-09-04 help-center 误派实证：pushed 记录被写成 rogue 分支）。
+        """
+        self.sm.add_spec("stuck-impl", {"status": "implementing",
+                                        "branch": "fenix/impl-branch"})
+        self.sm.add_spec("stuck-test", {"status": "testing",
+                                        "branch": "fenix/impl-branch",
+                                        "tester_run": "planner-plan-x-a1"})
         self.sm.add_spec("normal", {"status": "done"})
 
         recovered = self.sm.recover_interrupted()
@@ -318,9 +326,16 @@ class TestStateMachine(unittest.TestCase):
         self.assertIn("stuck-impl", recovered)
         self.assertIn("stuck-test", recovered)
 
-        # Both should be back to ready
-        self.assertEqual(self.sm.read_one("stuck-impl")["status"], "ready")
-        self.assertEqual(self.sm.read_one("stuck-test")["status"], "ready")
+        # 实现中断 → ready 重派 implementer（branch 清空，原语义）
+        impl = self.sm.read_one("stuck-impl")
+        self.assertEqual(impl["status"], "ready")
+        self.assertIsNone(impl["branch"])
+        # 验证中断 → implemented 重派 verifier（branch 保留，清 tester_run）
+        test = self.sm.read_one("stuck-test")
+        self.assertEqual(test["status"], "implemented")
+        self.assertEqual(test["branch"], "fenix/impl-branch",
+                         "验证中断不得劫持 branch 字段")
+        self.assertIsNone(test["tester_run"])
         # Normal spec unchanged
         self.assertEqual(self.sm.read_one("normal")["status"], "done")
 

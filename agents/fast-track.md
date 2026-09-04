@@ -83,5 +83,6 @@
 
 支持的断言类型: `element_visible, element_count, element_not_exist, element_focused, element_enabled, no_click_interception, no_overlap, in_viewport, z_index_order, text_match, text_contains, attribute_match, no_console_error, no_network_error, no_auth_error, dom_structure, no_overflow, alignment`
 支持的操作类型: `navigate, click, type, clear, select, scroll, wait, dialog, seed, mock_api`
+**铁律：禁止 mock 本 SPEC 交付物包含的 API 端点**（mock_api 仅限辅助/壳层接口，如 /api/overview）——被测端点必须打真实实例，mock 掉被测对象＝后端契约零覆盖（假阴性放大器）。
 
 IMPORTANT: 禁止读取图片文件。禁止修改 .fenix/STATE.md。
