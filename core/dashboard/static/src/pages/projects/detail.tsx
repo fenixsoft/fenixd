@@ -1,5 +1,5 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Progress, Space, Spin, Tabs, Tag, Timeline, Typography } from 'antd';
+import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Progress, Space, Spin, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, FullscreenOutlined, InfoCircleFilled } from '@ant-design/icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { history, useParams } from '@umijs/max';
@@ -42,6 +42,36 @@ const VERDICT_COUNTS: Array<[keyof NonNullable<SpecDetail['verdict']>['summary']
   ['product_bugs', '产品Bug'],
   ['env_issues', '环境问题'],
 ];
+
+// 断言类型中文标签（对齐 core/verify_engine/scenarios.py 的 18 种 type；未收录值原样显示）
+const ASSERTION_LABELS: Record<string, string> = {
+  element_visible: '元素可见',
+  element_count: '元素数量',
+  element_not_exist: '元素不存在',
+  element_focused: '元素聚焦',
+  element_enabled: '元素可用',
+  no_click_interception: '点击不被拦截',
+  no_overlap: '无元素重叠',
+  in_viewport: '在视口内',
+  z_index_order: '层叠顺序正确',
+  text_match: '文本匹配',
+  text_contains: '包含文本',
+  attribute_match: '属性匹配',
+  no_console_error: '无控制台报错',
+  no_network_error: '无网络错误',
+  no_auth_error: '无认证错误',
+  dom_structure: 'DOM 结构正确',
+  no_overflow: '无溢出',
+  alignment: '对齐正常',
+};
+
+// 断言类型值 → 中文标签；bug.assertion 可能是「type + 附加说明」自由文本，命中前缀时仅替换前缀
+function assertionLabel(type?: string): string {
+  if (!type) return '?';
+  if (ASSERTION_LABELS[type]) return ASSERTION_LABELS[type];
+  const hit = Object.keys(ASSERTION_LABELS).find((k) => type.startsWith(k));
+  return hit ? `${ASSERTION_LABELS[hit]} ${type.slice(hit.length)}` : type;
+}
 
 // overview「任务进度」同款进度条控件：大百分比 + 已完成 x/y + 渐变进度条（验证进度/任务清单共用）
 function ProgressBarTile({ done, total }: { done: number; total: number }) {
@@ -735,7 +765,11 @@ export default function SpecDetailPage() {
                               }}
                             >
                               <Typography.Text type={ok ? undefined : 'danger'}>
-                                {ok ? '✓' : '✗'} {a.type || '?'}: {a.label || a.message || ''}{' '}
+                                {ok ? '✓' : '✗'}{' '}
+                                <Tooltip title={`断言类型: ${a.type || '?'}`}>
+                                  {assertionLabel(a.type)}
+                                </Tooltip>
+                                : {a.label || a.message || ''}{' '}
                                 {ok ? '' : `— ${a.message || a.detail || a.actual || ''}`}
                               </Typography.Text>
                             </div>
@@ -807,7 +841,9 @@ export default function SpecDetailPage() {
                   {bug.assertion && (
                     <div style={{ marginBottom: 8 }}>
                       <Typography.Text type="secondary">断言类型: </Typography.Text>
-                      <Typography.Text>{bug.assertion}</Typography.Text>
+                      <Tooltip title={assertionLabel(bug.assertion) !== bug.assertion ? bug.assertion : ''}>
+                        <Typography.Text>{assertionLabel(bug.assertion)}</Typography.Text>
+                      </Tooltip>
                     </div>
                   )}
 
