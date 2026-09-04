@@ -6,6 +6,7 @@ import {
   Collapse,
   Empty,
   List,
+  Pagination,
   Radio,
   Space,
   Spin,
@@ -30,6 +31,9 @@ import type {
 } from '@/services/dashboard';
 
 const REFRESH_THROTTLE_MS = 500;
+
+// 前端分页：每页 15 条，翻页时再渲染其余记录（design D2）
+const PAGE_SIZE = 15;
 
 // 标签原始值 → 显示值（对齐 v1 RESULT_META / sevLabel；未收录值原样显示）
 const RESULT_META: Record<string, { label: string; color: string }> = {
@@ -158,29 +162,43 @@ function ActivityCard({ a, onViewRun }: { a: ActivityItem; onViewRun?: (a: Activ
 
 function ActivityTimeline({
   activities,
+  current,
+  onPageChange,
   onViewRun,
 }: {
   activities: ActivityItem[];
+  current: number;
+  onPageChange: (page: number) => void;
   onViewRun?: (a: ActivityItem) => void;
 }) {
   if (!activities || activities.length === 0) {
     return <Empty description="暂无运维记录" />;
   }
 
-  // 未处理升级置顶
-  const sorted = [...activities].sort((a, b) => {
-    if (a.handled === false && b.handled !== false) return -1;
-    if (a.handled !== false && b.handled === false) return 1;
-    return 0;
-  });
+  // 前端分页：仅渲染当前页对应的记录（未翻到的页不渲染）
+  const start = (current - 1) * PAGE_SIZE;
+  const pageItems = activities.slice(start, start + PAGE_SIZE);
 
   return (
-    <Timeline
-      items={sorted.map((a) => ({
-        color: a.handled === false ? 'red' : 'gray',
-        children: <ActivityCard a={a} onViewRun={onViewRun} />,
-      }))}
-    />
+    <div>
+      <Timeline
+        items={pageItems.map((a) => ({
+          color: a.handled === false ? 'red' : 'gray',
+          children: <ActivityCard a={a} onViewRun={onViewRun} />,
+        }))}
+      />
+      {activities.length > PAGE_SIZE ? (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+          <Pagination
+            current={current}
+            pageSize={PAGE_SIZE}
+            total={activities.length}
+            onChange={onPageChange}
+            showSizeChanger={false}
+          />
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -316,6 +334,7 @@ export default function ActivitiesPage() {
   const [alertsData, setAlertsData] = useState<AlertsData | null>(null);
   const [optimistic, setOptimistic] = useState<string[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>('auto');
+  const [current, setCurrent] = useState(1);
   const [viewingRun, setViewingRun] = useState<ViewingRun | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -396,6 +415,16 @@ export default function ActivitiesPage() {
     });
   }, [projects]);
 
+  const totalPages = Math.max(1, Math.ceil(allActivities.length / PAGE_SIZE));
+
+  // SSE 刷新重拉后保持当前页码；总页数小于当前页时回退第 1 页（design D5）
+  useEffect(() => {
+    setCurrent((prev) => {
+      if (prev > totalPages) return 1;
+      return prev;
+    });
+  }, [totalPages]);
+
   const handleViewRun = useCallback(
     (a: ActivityItem) => setViewingRun({ project: a.project || '', spec: a.spec, runId: a.admin_run_id || '' }),
     [],
@@ -442,7 +471,14 @@ export default function ActivitiesPage() {
     }
 
     // 自动运维视图：跨项目合并全局时间线
-    return <ActivityTimeline activities={allActivities} onViewRun={handleViewRun} />;
+    return (
+      <ActivityTimeline
+        activities={allActivities}
+        current={current}
+        onPageChange={setCurrent}
+        onViewRun={handleViewRun}
+      />
+    );
   };
 
   return (
