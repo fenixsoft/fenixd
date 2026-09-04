@@ -95,6 +95,8 @@ export interface ActivityItem {
   resolve_note?: string;
   status?: string;
   admin_run_id?: string;
+  // fix-admin-disposition-empty-shell：失败处置自解释——error 携带 CLI 失败原因
+  error?: string;
 }
 
 export interface ProjectActivities {

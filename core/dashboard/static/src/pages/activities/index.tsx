@@ -90,6 +90,9 @@ function signalTag(signalType?: string) {
 
 function ActivityCard({ a, onViewRun }: { a: ActivityItem; onViewRun?: (a: ActivityItem) => void }) {
   const unhandled = a.handled === false;
+  // fix-admin-disposition-empty-shell：失败处置自解释——error 携带 CLI 失败原因，
+  // 空 summary 兜底文案同步附带 error，空壳卡片（仅时间+spec）不再出现。
+  const errText = a.error || '';
 
   const body = a.summary ? (
     <div style={{ marginBottom: 8, fontSize: 13, lineHeight: 1.65 }}>
@@ -99,7 +102,9 @@ function ActivityCard({ a, onViewRun }: { a: ActivityItem; onViewRun?: (a: Activ
     </div>
   ) : (
     <div style={{ ...PRE_WRAP, marginBottom: 8, color: '#8c8c8c' }}>
-      （无叙述总结）处置：{a.actions_taken || '—'} · 结果：{a.result || '—'}
+      {errText
+        ? `（无叙述总结）失败原因：${errText} · 结果：${a.result || '—'}`
+        : `（无叙述总结）处置：${a.actions_taken || '—'} · 结果：${a.result || '—'}`}
     </div>
   );
 
@@ -127,6 +132,11 @@ function ActivityCard({ a, onViewRun }: { a: ActivityItem; onViewRun?: (a: Activ
           </Button>
         )}
       </div>
+      {errText ? (
+        <div style={{ ...PRE_WRAP, marginBottom: 8, fontSize: 13, lineHeight: 1.65 }}>
+          <Typography.Text type="danger">失败原因：{errText}</Typography.Text>
+        </div>
+      ) : null}
       {body}
       {a.actions_taken && (
         <div style={{ marginBottom: 4, fontSize: 13, lineHeight: 1.65 }}>
