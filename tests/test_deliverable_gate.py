@@ -240,9 +240,14 @@ class TestExtractPathsTyped(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
     def test_normalize_check_path(self):
-        """`.fenix/` 前缀归一化（正式化热修 4461231）。"""
-        self.assertEqual(normalize_check_path(".fenix/core/x.py"), "core/x.py")
-        self.assertEqual(normalize_check_path(".fenix/x"), "x")
+        """归一化已退役为恒等映射（932a078 后 .fenix 为实体目录，字面校验）。
+
+        退役动机：若保留 ``.fenix/x → x`` 前缀改写，根路径存在同名文件时
+        会把 ``.fenix/x`` 缺件误判为存在（假放行）。
+        """
+        self.assertEqual(normalize_check_path(".fenix/core/x.py"),
+                         ".fenix/core/x.py")
+        self.assertEqual(normalize_check_path(".fenix/x"), ".fenix/x")
         # 无前缀 / 空串 / 目录形态原样返回
         self.assertEqual(normalize_check_path("core/x.py"), "core/x.py")
         self.assertEqual(normalize_check_path(""), "")
@@ -454,7 +459,7 @@ class TestDeliverableGateTyped(_GateFixture):
         self.assertEqual(self.run_gate(), ["core/foo.py"])
 
     def test_fenix_prefix_normalize_recheck(self):
-        """归一化复检：`.fenix/x` 缺失时以根路径 `x` 复检，命中即放行。"""
+        """.fenix 路径字面校验（归一化已退役）：`.fenix/x` 缺失不得被根路径 `x` 假放行。"""
         repo = Path(tempfile.mkdtemp())
         try:
             subprocess.run(["git", "init", "-q", repo], check=True)
@@ -473,7 +478,7 @@ class TestDeliverableGateTyped(_GateFixture):
                 capture_output=True, text=True, check=True).stdout.strip()
 
             real_wm = WorktreeManager(repo, repo, _FakeLogger())
-            # 链接 blob 语义：`.fenix/...` 在分支树中无法按树查找
+            # 932a078 后 .fenix 为实体目录：`.fenix/...` 按字面查找
             self.assertFalse(
                 real_wm.file_exists_on_branch(branch, ".fenix/core/agent_runner.py"))
             self.assertTrue(
@@ -483,12 +488,14 @@ class TestDeliverableGateTyped(_GateFixture):
             self.write_spec_dir(
                 "s1", "- [ ] 1.1 扩展 `.fenix/core/agent_runner.py`\n")
             self.runner.worktree_manager = real_wm
-            self.assertEqual(self.run_gate(branch=branch), [])
+            # 声明 .fenix/x 而分支只有根路径 x：缺件（历史归一化会假放行）
+            self.assertEqual(self.run_gate(branch=branch),
+                             [".fenix/core/agent_runner.py"])
         finally:
             shutil.rmtree(repo, ignore_errors=True)
 
     def test_fenix_prefix_normalize_recheck_real_branch_fixture(self):
-        """真实分支夹具回归（复现热修 4461231 行为）：interaction-contract 分支。"""
+        """真实分支夹具回归：归一化不得复活——根路径孪生不得放行 `.fenix/` 缺件。"""
         probe = subprocess.run(
             ["git", "-C", str(REPO_ROOT), "cat-file", "-e",
              f"{INTERACTION_CONTRACT_BRANCH}:core/agent_runner.py"],
@@ -508,8 +515,10 @@ class TestDeliverableGateTyped(_GateFixture):
         self.write_spec_dir(
             "s1", "- [ ] 1.1 扩展 `.fenix/core/agent_runner.py`\n")
         self.runner.worktree_manager = real_wm
+        # 历史归一化会经根路径孪生放行；字面校验下必须报缺件
         self.assertEqual(
-            self.run_gate(branch=INTERACTION_CONTRACT_BRANCH), [])
+            self.run_gate(branch=INTERACTION_CONTRACT_BRANCH),
+            [".fenix/core/agent_runner.py"])
 
 
 # ── agent_runner 重派 prompt 注入（D4） ────────────────────────────────────
@@ -627,6 +636,7 @@ class TestDisputedDeliverables(_GateFixture):
     """dispute 裁决通道：实现 run 的 findings 异议与缺件清单求交。"""
 
     def test_dispute_matched_with_fenix_normalize(self):
+        """dispute 按字面匹配（.fenix 归一化已退役）：element 与缺件路径逐字相等才命中。"""
         self.make_ready_spec("s1")
         impl_result = {"findings": [
             {"type": "deliverable-dispute", "element": ".fenix/config.yaml",
@@ -634,11 +644,16 @@ class TestDisputedDeliverables(_GateFixture):
              "suggestion": "运行时写入目标，应归 reference"},
             {"type": "pending-interaction", "element": "btn-x"},
         ]}
-        missing = ["config.yaml", "core/real.py"]
-        # .fenix/ 前缀归一化后与缺件 config.yaml 匹配；core/real.py 无异议
+        # 字面相等命中；core/real.py 无异议
         self.assertEqual(
-            self.engine._verification._disputed_deliverables(impl_result, missing),
-            ["config.yaml"])
+            self.engine._verification._disputed_deliverables(
+                impl_result, [".fenix/config.yaml", "core/real.py"]),
+            [".fenix/config.yaml"])
+        # 根路径孪生不再经归一化误配（历史行为会命中 config.yaml）
+        self.assertEqual(
+            self.engine._verification._disputed_deliverables(
+                impl_result, ["config.yaml"]),
+            [])
 
     def test_no_findings_returns_empty(self):
         self.assertEqual(

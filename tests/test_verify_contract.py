@@ -53,6 +53,24 @@ class TestLoadContract(unittest.TestCase):
     def test_missing_file_returns_none(self):
         self.assertIsNone(load_verify_contract(self.tmp))
 
+    def test_legacy_layout_root_yaml_warns_and_returns_none(self):
+        """旧布局守卫：.fenix 实体目录 + verify.yaml 留在项目根（洗白事故根因形态）——告警并按无契约回退。"""
+        _write(self.tmp, "verify.yaml", FULL_CONTRACT)
+        (self.tmp / ".fenix").mkdir(parents=True, exist_ok=True)
+        logger = MagicMock()
+        self.assertIsNone(load_verify_contract(self.tmp, logger=logger))
+        self.assertTrue(logger.warning.called)
+        self.assertIn("旧布局", str(logger.warning.call_args))
+
+    def test_legacy_layout_symlink_still_loads_root_file(self):
+        """.fenix 为自引用符号链接的历史布局：.fenix/verify.yaml 经链接解析到根文件，正常加载不告警。"""
+        (self.tmp / "verify.yaml").write_text(FULL_CONTRACT, encoding="utf-8")
+        (self.tmp / ".fenix").symlink_to(self.tmp, target_is_directory=True)
+        logger = MagicMock()
+        c = load_verify_contract(self.tmp, logger=logger)
+        self.assertIsNotNone(c)
+        self.assertFalse(logger.warning.called)
+
     def test_invalid_yaml_returns_none(self):
         _write(self.tmp, ".fenix/verify.yaml", "prepare: [unclosed")
         self.assertIsNone(load_verify_contract(self.tmp))

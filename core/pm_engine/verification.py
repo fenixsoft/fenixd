@@ -1110,15 +1110,14 @@ class VerificationPipeline:
         提取器语义升级（add-deliverable-extractor-semantics）：仅
         ``deliverables``（新建交付物）参与缺件判定；``references``（既有文件
         引用）走软校验——缺失仅记审计日志（D4），不阻断、不重派、不改状态。
-        参与校验的任一路径经 ``normalize_check_path`` 做 ``.fenix/`` 前缀
-        归一化复检（正式化热修 4461231：``.fenix`` 是指向项目根的自引用
-        符号链接，分支树中为链接 blob，语义等价根路径）。
+        路径按字面校验（``normalize_check_path`` 已退役为恒等映射：
+        ``.fenix`` 自引用符号链接设计废弃后为实体目录，历史的前缀归一化
+        会在根路径同名文件存在时把 ``.fenix/x`` 缺件假放行）。
 
         Returns:
             缺失路径列表（相对项目根）；空列表表示放行（含无路径 SPEC 跳过场景）。
         """
-        from core.deliverables import (extract_declared, extract_paths_typed,
-                                       normalize_check_path)
+        from core.deliverables import extract_declared, extract_paths_typed
 
         spec_dir = self._pm.project_root / "openspec" / "changes" / spec_name
         if not spec_dir.is_dir():
@@ -1143,13 +1142,8 @@ class VerificationPipeline:
             return []
 
         def _exists_on_branch(path: str) -> bool:
-            # 归一化逻辑单点化在 normalize_check_path（D3）：先按原样校验，
-            # 未命中且确有 .fenix/ 前缀时以根路径复检一次
-            if wm.file_exists_on_branch(branch, path):
-                return True
-            normalized = normalize_check_path(path)
-            return normalized != path and wm.file_exists_on_branch(branch,
-                                                                   normalized)
+            # 字面路径校验（.fenix 前缀归一化已退役，见本方法 docstring）
+            return wm.file_exists_on_branch(branch, path)
 
         # 交付物（硬校验）：缺件 → 不合并不推进，重派实现补齐
         missing = [p for p in declared if not _exists_on_branch(p)]
@@ -1176,22 +1170,21 @@ class VerificationPipeline:
         守卫拒绝前先对账：命中异议的缺件**不得**自动重派（负反馈死循环会烧钱），
         由调用方转人工/裁决。
 
-        element 与缺件路径都经 ``normalize_check_path`` 归一化（.fenix/ 前缀）
-        后匹配。Returns: 命中异议的缺件路径子集（保序）。
+        element 与缺件路径按字面匹配（``normalize_check_path`` 已退役为
+        恒等映射）。Returns: 命中异议的缺件路径子集（保序）。
         """
         if not impl_result or not missing:
             return []
-        from core.deliverables import normalize_check_path
 
         disputed: list = []
         for f in (impl_result.get("findings") or []):
             if not isinstance(f, dict) or f.get("type") != "deliverable-dispute":
                 continue
-            el = normalize_check_path(str(f.get("element") or "").strip())
+            el = str(f.get("element") or "").strip()
             if not el:
                 continue
             for m in missing:
-                if m not in disputed and normalize_check_path(m) == el:
+                if m not in disputed and m == el:
                     disputed.append(m)
         return disputed
 

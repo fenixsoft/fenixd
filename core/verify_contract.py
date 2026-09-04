@@ -129,6 +129,18 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
     """
     path = Path(project_root) / ".fenix" / CONTRACT_FILENAME
     if not path.is_file():
+        # 旧布局守卫：.fenix 为实体目录而契约文件仍在项目根 = 契约静默失效
+        # （help-center 洗白事故的根因形态）。大声告警而非吞掉，仍按无契约回退。
+        if logger:
+            root_yaml = Path(project_root) / CONTRACT_FILENAME
+            if (root_yaml.is_file()
+                    and not (Path(project_root) / ".fenix").is_symlink()):
+                logger.warning(
+                    "verify_contract",
+                    f"检测到旧布局：{CONTRACT_FILENAME} 位于项目根而 .fenix 为"
+                    "实体目录，验证契约不会被加载。请迁移到 .fenix/"
+                    f"{CONTRACT_FILENAME}（状态文件已统一迁入 .fenix/，见 932a078）",
+                )
         return None
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))

@@ -30,9 +30,11 @@
 语境归 deliverables，叙述性段落归 references（proposal 是叙事文档，
 新增动词才是交付声明的信号）。
 
-``normalize_check_path`` 做 ``.fenix/`` 前缀归一化（正式化热修 4461231）：
-``.fenix`` 是指向项目根的自引用符号链接，在分支树中是链接 blob 而非
-目录，``.fenix/x`` 无法按树查找；其语义等价根路径 ``x``。
+``normalize_check_path`` 曾做 ``.fenix/`` 前缀归一化（正式化热修 4461231，
+前提是 ``.fenix`` 为自引用符号链接）。该设计已废弃（状态文件迁入 .fenix/，
+提交 932a078）：``.fenix`` 现为实体目录、``.fenix/x`` 可按树查找，声明路径
+一律按字面校验，本函数保留签名退化为恒等映射（迁移后历史声明的
+``.fenix/x`` 恰指字面文件；若保留改写，根路径同名文件会把缺件误判为存在）。
 
 无外部依赖、无 LLM / 测试 / 网络调用，单测可直接 fixture 真实文档。
 """
@@ -81,9 +83,6 @@ _H2_RE = re.compile(r"^##\s")
 
 # 能力 spec 文档的 Scenario 小节：场景中的路径是示例而非交付声明。
 _SCENARIO_HEADING_RE = re.compile(r"^#{1,6}\s+.*Scenario", re.IGNORECASE)
-
-# ``.fenix/`` 自引用符号链接前缀（归一化语义见模块 docstring）。
-_FENIX_PREFIX = ".fenix/"
 
 # `## Deliverables` 显式声明段标题（planner 交付契约，守卫机械对账优先于正则提取）。
 _DECLARED_HEADING_RE = re.compile(r"^##\s+Deliverables\s*$", re.IGNORECASE)
@@ -163,19 +162,18 @@ def _iter_spec_documents(spec_dir: Path) -> Iterable[Path]:
 
 
 def normalize_check_path(p: str) -> str:
-    """``.fenix/`` 前缀归一化（add-deliverable-extractor-semantics，D3）。
+    """路径归一化（已退役为恒等映射，签名保留兼容既有调用方）。
 
-    ``.fenix`` 是指向项目根的自引用符号链接，在分支树中是链接 blob 而非
-    目录，``.fenix/x`` 无法按树查找；其语义等价根路径 ``x``。非该前缀的
-    路径原样返回。正式化热修 4461231 的内联行为。
+    历史语义（正式化热修 4461231）：``.fenix`` 曾是指向项目根的自引用
+    符号链接，``.fenix/x`` 语义等价根路径 ``x``，故做前缀归一化。该设计
+    已废弃（状态文件迁入 .fenix/，提交 932a078）：``.fenix`` 现为实体
+    目录，``.fenix/x`` 即字面路径、可按树查找——归一化若保留，根路径
+    存在同名文件时会把 ``.fenix/x`` 缺件误判为存在（假放行）。
 
     Returns:
-        归一化后的根相对路径；前缀去除后为空（如 ``.fenix/``）时原样返回。
+        原样返回（仅做首尾空白裁剪）。
     """
-    tok = (p or "").strip()
-    if tok.startswith(_FENIX_PREFIX) and len(tok) > len(_FENIX_PREFIX):
-        return tok[len(_FENIX_PREFIX):]
-    return tok
+    return (p or "").strip()
 
 
 def _classify_line(line: str, doc_kind: str, in_tasks_header: bool,
@@ -458,7 +456,7 @@ def lint_declared(spec_dir, project_root) -> List[str]:
             continue
         if kind != "modify":
             continue
-        # .fenix 是指向项目根的自引用符号链接：raw 与归一化路径双重判定
+        # 目录声明按字面路径判定（.fenix 归一化已退役，恒等映射自然退化）
         candidates = [path]
         normalized = normalize_check_path(path)
         if normalized != path:
