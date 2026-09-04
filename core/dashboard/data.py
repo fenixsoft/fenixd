@@ -2506,10 +2506,10 @@ def overview(registry_projects: list) -> dict:
             "token_usage": {"recent": token_entries[:20]}}
 
 
-# ── 配置读写（受管键：llm / agents.models / agents.max_concurrent / agents.run_timeout_seconds / gates.approve_mode） ──
+# ── 配置读写（受管键：llm / agents.* / gates.approve_mode / runs / verify.*） ──
 
 # Dashboard 管理的配置键子集：写回时只更新这些键，其它键原样保留
-_MANAGED_KEYS = ["llm", "agents", "gates", "runs"]
+_MANAGED_KEYS = ["llm", "agents", "gates", "runs", "verify"]
 # 在 agents 下管理的子键白名单
 _AGENTS_MANAGED_SUBKEYS = ["models", "max_concurrent", "run_timeout_seconds", "max_turns", "daily_run_limit", "token_budget_millions", "impl_run_budget"]
 
@@ -2521,7 +2521,9 @@ _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "agents.run_timeout_seconds", "agents.max_turns", "agents.daily_run_limit",
                 "agents.token_budget_millions", "agents.impl_run_budget", "gates.approve_mode",
                 # add-daily-self-review：admin.self_review 三键
-                "admin.self_review"]
+                "admin.self_review",
+                # 验证契约键（verify.*：静态服务范围 / worktree 依赖供给模式）
+                "verify.static_scope", "verify.deps_mode"]
 
 # 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
 # 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
@@ -2562,6 +2564,12 @@ def _managed_key_sources(raw: dict) -> dict:
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         sources["gates.approve_mode"] = "project"
+    verify_src = raw.get("verify")
+    if isinstance(verify_src, dict):
+        if "static_scope" in verify_src:
+            sources["verify.static_scope"] = "project"
+        if "deps_mode" in verify_src:
+            sources["verify.deps_mode"] = "project"
     # add-daily-self-review：admin.self_review 段显式定义 → project
     admin_raw = raw.get("admin")
     if isinstance(admin_raw, dict) and isinstance(admin_raw.get("self_review"), dict):
@@ -2586,6 +2594,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4},
         "gates": {"approve_mode": "manual"},
         "runs": {"keep": 50},
+        # 验证契约键（static_scope 服务范围 / deps_mode worktree 依赖供给模式）
+        "verify": {"static_scope": "main", "deps_mode": "prefer-offline"},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
@@ -2647,6 +2657,12 @@ def read_config(scope_root, scope: str = "project") -> dict:
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         result["gates"] = {"approve_mode": gates_raw["approve_mode"]}
+    verify_raw = raw.get("verify")
+    if isinstance(verify_raw, dict):
+        if verify_raw.get("static_scope") in ("main", "worktree"):
+            result["verify"]["static_scope"] = verify_raw["static_scope"]
+        if verify_raw.get("deps_mode") in ("prefer-offline", "hardlink"):
+            result["verify"]["deps_mode"] = verify_raw["deps_mode"]
     runs_raw = raw.get("runs")
     if isinstance(runs_raw, dict) and isinstance(runs_raw.get("keep"), int) and runs_raw["keep"] >= 1:
         result["runs"] = {"keep": runs_raw["keep"]}
@@ -2707,6 +2723,8 @@ def read_effective_config(project_root) -> dict:
         "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4},
         "gates": {"approve_mode": "manual"},
         "runs": {"keep": 50},
+        # 验证契约键（static_scope 服务范围 / deps_mode worktree 依赖供给模式）
+        "verify": {"static_scope": "main", "deps_mode": "prefer-offline"},
         # add-spec-archive D5：自动归档阈值（0 = 禁用，默认 50）
         "archive": {"auto_threshold": 50},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
@@ -2767,6 +2785,12 @@ def read_effective_config(project_root) -> dict:
     gates_eff = effective.get("gates")
     if isinstance(gates_eff, dict) and "approve_mode" in gates_eff:
         result["gates"] = {"approve_mode": gates_eff["approve_mode"]}
+    verify_eff = effective.get("verify")
+    if isinstance(verify_eff, dict):
+        if verify_eff.get("static_scope") in ("main", "worktree"):
+            result["verify"]["static_scope"] = verify_eff["static_scope"]
+        if verify_eff.get("deps_mode") in ("prefer-offline", "hardlink"):
+            result["verify"]["deps_mode"] = verify_eff["deps_mode"]
     runs_eff = effective.get("runs")
     if isinstance(runs_eff, dict) and isinstance(runs_eff.get("keep"), int) and runs_eff["keep"] >= 1:
         result["runs"] = {"keep": runs_eff["keep"]}
@@ -2835,6 +2859,15 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             if not isinstance(merged.get("runs"), dict):
                 merged["runs"] = {}
             merged["runs"]["keep"] = keep
+    # verify.*：static_scope 服务范围 / deps_mode 依赖供给模式
+    # （非法值由 write_config 前置校验拒绝，此处只应用合法值）
+    if "verify" in patch and isinstance(patch["verify"], dict):
+        if not isinstance(merged.get("verify"), dict):
+            merged["verify"] = {}
+        for vk in ("static_scope", "deps_mode"):
+            if patch["verify"].get(vk) in ("main", "worktree") if vk == "static_scope" \
+                    else patch["verify"].get(vk) in ("prefer-offline", "hardlink"):
+                merged["verify"][vk] = patch["verify"][vk]
     # add-spec-archive D5：archive.auto_threshold（非负整数，0=禁用，非法值静默忽略）
     if "archive" in patch and isinstance(patch["archive"], dict):
         at = patch["archive"].get("auto_threshold")
@@ -2927,6 +2960,23 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                     f"admin.self_review.run_at must be HH:MM (00:00-23:59): {sr_patch['run_at']}"
                 )
 
+    # verify.* patch 前置校验：非法值直接拒绝，不静默忽略（同 self_review 模式；
+    # 只在 merge 层过滤会让 write "成功" 但用户输入被吞）
+    if isinstance(config_patch.get("verify"), dict):
+        v_patch = config_patch["verify"]
+        if "static_scope" in v_patch and v_patch["static_scope"] is not None \
+                and v_patch["static_scope"] not in ("main", "worktree"):
+            return fail(
+                f"verify.static_scope must be one of ['main', 'worktree']: "
+                f"{v_patch['static_scope']}"
+            )
+        if "deps_mode" in v_patch and v_patch["deps_mode"] is not None \
+                and v_patch["deps_mode"] not in ("prefer-offline", "hardlink"):
+            return fail(
+                f"verify.deps_mode must be one of ['prefer-offline', 'hardlink']: "
+                f"{v_patch['deps_mode']}"
+            )
+
     # 2. 合并受管键
     merged = _deep_merge_managed(raw, config_patch)
 
@@ -3003,6 +3053,19 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             if mode not in ConfigLoader.VALID_APPROVE_MODES:
                 raise ValueError(
                     f"gates.approve_mode must be one of {ConfigLoader.VALID_APPROVE_MODES}: {mode}"
+                )
+        verify_m = merged.get("verify") or {}
+        if "static_scope" in verify_m and verify_m["static_scope"] is not None:
+            if verify_m["static_scope"] not in ("main", "worktree"):
+                raise ValueError(
+                    f"verify.static_scope must be one of ['main', 'worktree']: "
+                    f"{verify_m['static_scope']}"
+                )
+        if "deps_mode" in verify_m and verify_m["deps_mode"] is not None:
+            if verify_m["deps_mode"] not in ("prefer-offline", "hardlink"):
+                raise ValueError(
+                    f"verify.deps_mode must be one of ['prefer-offline', 'hardlink']: "
+                    f"{verify_m['deps_mode']}"
                 )
         # add-spec-archive D5：archive.auto_threshold 必须为非负整数（0=禁用）
         archive_m = merged.get("archive") or {}

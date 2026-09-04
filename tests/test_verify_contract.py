@@ -8,15 +8,17 @@ import tempfile
 import unittest
 import urllib.request
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.verify_contract import (
+    DEFAULT_DEPS_MODE,
     StaticVerifyServer,
     load_verify_contract,
     probe_ready,
     provision_worktree_node_modules,
+    resolve_deps_mode,
     rewrite_scenarios_origin,
     run_prepare_steps,
 )
@@ -74,6 +76,16 @@ class TestLoadContract(unittest.TestCase):
     def test_invalid_yaml_returns_none(self):
         _write(self.tmp, ".fenix/verify.yaml", "prepare: [unclosed")
         self.assertIsNone(load_verify_contract(self.tmp))
+
+    def test_deps_mode_parsed_and_invalid_ignored(self):
+        """verify.yaml deps_mode：合法值入契约；非法值告警并忽略（落 config/默认）。"""
+        _write(self.tmp, ".fenix/verify.yaml", FULL_CONTRACT + "deps_mode: hardlink\n")
+        self.assertEqual(load_verify_contract(self.tmp).deps_mode, "hardlink")
+        logger = MagicMock()
+        _write(self.tmp, ".fenix/verify.yaml", FULL_CONTRACT + "deps_mode: bogus\n")
+        c2 = load_verify_contract(self.tmp, logger=logger)
+        self.assertEqual(c2.deps_mode, "")
+        self.assertTrue(logger.warning.called)
 
     def test_full_contract_parsed_with_defaults(self):
         _write(self.tmp, ".fenix/verify.yaml", FULL_CONTRACT)
@@ -150,14 +162,57 @@ class TestProvisionNodeModules(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
-    def test_links_missing_node_modules(self):
+    def test_hardlink_mode_shares_inode(self):
+        """hardlink 模式：os.link 副本与主树共享 inode（不占双倍空间）。"""
         _write(self.tmp, "main-tree/v3/package.json", "{}")
-        (self.tmp / "main-tree" / "v3" / "node_modules").mkdir(parents=True)
+        src = (self.tmp / "main-tree" / "v3" / "node_modules" / "pkg")
+        src.mkdir(parents=True)
+        (src / "index.js").write_text("x", encoding="utf-8")
         _write(self.tmp, "wt/v3/package.json", "{}")
         linked = provision_worktree_node_modules(
-            self.tmp / "wt", self.tmp / "main-tree", ["v3"])
+            self.tmp / "wt", self.tmp / "main-tree", ["v3"], mode="hardlink")
         self.assertEqual(linked, ["v3"])
-        self.assertTrue((self.tmp / "wt" / "v3" / "node_modules").is_symlink())
+        wt_file = self.tmp / "wt" / "v3" / "node_modules" / "pkg" / "index.js"
+        self.assertTrue(wt_file.exists())
+        self.assertEqual(wt_file.stat().st_ino, (src / "index.js").stat().st_ino)
+
+    def test_hardlink_falls_back_to_npm_without_main_tree(self):
+        """hardlink 模式主树无 node_modules → 自动降级 prefer-offline（npm ci）。"""
+        _write(self.tmp, "wt/v3/package.json", "{}")
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+
+            class R:
+                returncode = 0
+            return R()
+
+        with patch("core.verify_contract.subprocess.run",
+                        side_effect=fake_run):
+            linked = provision_worktree_node_modules(
+                self.tmp / "wt", self.tmp / "main-tree", ["v3"], mode="hardlink")
+        self.assertEqual(linked, ["v3"])
+        self.assertEqual(calls[0][:2], ["npm", "ci"])
+
+    def test_prefer_offline_runs_npm_ci(self):
+        _write(self.tmp, "wt/v3/package.json", "{}")
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+
+            class R:
+                returncode = 0
+            return R()
+
+        with patch("core.verify_contract.subprocess.run",
+                        side_effect=fake_run):
+            linked = provision_worktree_node_modules(
+                self.tmp / "wt", self.tmp / "main-tree", ["v3"],
+                mode="prefer-offline")
+        self.assertEqual(linked, ["v3"])
+        self.assertIn("--prefer-offline", calls[0])
 
     def test_skips_existing_and_missing(self):
         _write(self.tmp, "main-tree/v3/package.json", "{}")
@@ -166,8 +221,19 @@ class TestProvisionNodeModules(unittest.TestCase):
         (self.tmp / "wt" / "v3" / "node_modules").mkdir()
         _write(self.tmp, "wt/no-pkg/index.html", "x")
         linked = provision_worktree_node_modules(
-            self.tmp / "wt", self.tmp / "main-tree", ["v3", "no-pkg"])
+            self.tmp / "wt", self.tmp / "main-tree", ["v3", "no-pkg"],
+            mode="hardlink")
         self.assertEqual(linked, [])
+
+    def test_resolve_deps_mode_precedence(self):
+        """deps_mode 解析优先级：verify.yaml > config > 默认。"""
+        self.assertEqual(resolve_deps_mode(None, None), DEFAULT_DEPS_MODE)
+        self.assertEqual(resolve_deps_mode(None, "hardlink"), "hardlink")
+        contract = _mk_contract([])  # deps_mode 未指定
+        self.assertEqual(resolve_deps_mode(contract, "hardlink"), "hardlink")
+        contract.deps_mode = "prefer-offline"
+        self.assertEqual(resolve_deps_mode(contract, "hardlink"),
+                         "prefer-offline")
 
 
 def _mk_contract(prepare):

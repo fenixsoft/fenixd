@@ -534,6 +534,8 @@ export interface GatesConfig {
 export interface VerifyConfig {
   /** static 验证契约的服务范围：main=主树（方案 1，默认）| worktree=验证 worktree（方案 2） */
   static_scope?: 'main' | 'worktree';
+  /** worktree node_modules 供给模式：prefer-offline=npm 缓存安装（默认）| hardlink=主树硬链接副本 */
+  deps_mode?: 'prefer-offline' | 'hardlink';
 }
 
 export interface SelfReviewConfig {

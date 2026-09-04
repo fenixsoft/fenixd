@@ -47,6 +47,33 @@ class TestDashboardConfigIO(unittest.TestCase):
         # 验证返回结构正确
         self.assertEqual(result["scope"], "project")
 
+    def test_verify_config_roundtrip_and_validation(self):
+        """verify.* 受管键：读写回环 + 非法值拒绝（static_scope 曾是前端死信）。"""
+        from core.dashboard.data import read_config, write_config
+        config_path = Path(self.tmpdir) / ".fenix" / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 缺省回显（此前 verify 段根本不在 read_config 里，前端恒显示默认值）
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["verify"],
+                         {"static_scope": "main", "deps_mode": "prefer-offline"})
+
+        result = write_config(self.tmpdir, {
+            "verify": {"static_scope": "worktree", "deps_mode": "hardlink"},
+        })
+        self.assertTrue(result["ok"], result.get("error"))
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["verify"],
+                         {"static_scope": "worktree", "deps_mode": "hardlink"})
+        self.assertEqual(echoed["sources"]["verify.deps_mode"], "project")
+
+        # 非法值拒绝（不落盘）
+        bad = write_config(self.tmpdir, {"verify": {"deps_mode": "symlink"}})
+        self.assertFalse(bad["ok"])
+        self.assertIn("deps_mode", bad["error"])
+        self.assertEqual(read_config(self.tmpdir)["verify"]["deps_mode"],
+                         "hardlink")
+
 
 class TestDashboardParallelismConfig(unittest.TestCase):
     """Dashboard 并行配置：并行配置必须正确工作。"""

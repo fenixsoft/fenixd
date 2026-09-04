@@ -244,6 +244,26 @@ class WorktreeManager:
             if agent_type in ("implementer", "fast-track"):
                 self._seed_spec(spec_name, wt_path)
 
+            # worktree 构建环境供给（deps_mode 双模式，best-effort 不阻塞派发）：
+            # git 不携带 node_modules，实现者每轮手工安装是既有摩擦源（fast-track 复盘）
+            try:
+                from core.verify_contract import (
+                    load_verify_contract, provision_worktree_node_modules,
+                    read_config_deps_mode, resolve_deps_mode)
+                contract = load_verify_contract(self.project_root)
+                sub_dirs = sorted({(s.cwd or ".") for s in contract.prepare}) \
+                    if contract else []
+                if sub_dirs:
+                    provision_worktree_node_modules(
+                        wt_path, self.project_root, sub_dirs,
+                        mode=resolve_deps_mode(
+                            contract, read_config_deps_mode(self.project_root)),
+                        logger=self.logger,
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    "worktree_manager", f"worktree node_modules 供给跳过: {e}")
+
             self.logger.info("worktree_manager", f"Worktree created: {wt_path}")
             return wt_path
 

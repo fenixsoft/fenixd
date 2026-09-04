@@ -20,6 +20,7 @@ from core.verify_contract import (
     load_verify_contract,
     probe_ready,
     provision_worktree_node_modules,
+    resolve_deps_mode,
     rewrite_scenarios_origin,
     run_prepare_steps,
     StaticVerifyServer,
@@ -163,7 +164,11 @@ class VerificationPipeline:
                 f"{(r.stderr or r.stdout).strip()[-200:]}")
         provision_worktree_node_modules(
             wt, self._pm.project_root,
-            sorted({(s.cwd or ".") for s in contract.prepare}))
+            sorted({(s.cwd or ".") for s in contract.prepare}),
+            mode=resolve_deps_mode(
+                contract, self._pm._get_config("verify.deps_mode", "")),
+            logger=self._pm.logger,
+        )
         err = run_prepare_steps(contract, wt)
         if err:
             self._remove_serving_worktree(wt)

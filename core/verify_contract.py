@@ -67,7 +67,9 @@ Fenix 是通用开发框架，被管项目形态各异：前端应用有构建�
   不会判 verified/bug-found——构建失败不是产品缺陷。
 """
 
+import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -83,6 +85,10 @@ import yaml
 CONTRACT_FILENAME = "verify.yaml"
 PREPARE_STEP_TIMEOUT = 600  # 单条构建步骤上限（秒）：构建慢是常态，600s 内完不成应修构建
 DEFAULT_READY_TIMEOUT = 60
+
+# worktree node_modules 供给模式（verify.yaml deps_mode > config verify.deps_mode > 默认）
+DEPS_MODES = ("prefer-offline", "hardlink")
+DEFAULT_DEPS_MODE = "prefer-offline"
 
 
 @dataclass
@@ -119,6 +125,7 @@ class VerifyContract:
     prepare: list = field(default_factory=list)  # list[PrepareStep]
     serve: Optional[ServeSpec] = None
     ready: ReadyProbe = field(default_factory=ReadyProbe)
+    deps_mode: str = ""  # worktree node_modules 供给模式；空=未指定（走 config/默认）
 
 
 def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyContract]:
@@ -173,7 +180,44 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
         expect=int(ready_data.get("expect") or 200),
         timeout=int(ready_data.get("timeout") or DEFAULT_READY_TIMEOUT),
     )
-    return VerifyContract(prepare=prepare, serve=serve, ready=ready)
+    deps_mode = ""
+    if data.get("deps_mode") is not None:
+        if data["deps_mode"] in DEPS_MODES:
+            deps_mode = data["deps_mode"]
+        elif logger:
+            logger.warning(
+                "verify_contract",
+                f"verify.yaml deps_mode 非法（忽略，可用值 {list(DEPS_MODES)}）: "
+                f"{data['deps_mode']}")
+    return VerifyContract(prepare=prepare, serve=serve, ready=ready,
+                          deps_mode=deps_mode)
+
+
+def resolve_deps_mode(contract=None, config_value=None) -> str:
+    """deps_mode 解析优先级：verify.yaml deps_mode > config verify.deps_mode > 默认。"""
+    if contract is not None and getattr(contract, "deps_mode", "") in DEPS_MODES:
+        return contract.deps_mode
+    if config_value in DEPS_MODES:
+        return config_value
+    return DEFAULT_DEPS_MODE
+
+
+def read_config_deps_mode(project_root) -> str:
+    """从项目 .fenix/config.yaml 读 verify.deps_mode（轻量直读，容错返回空串）。
+
+    供无 pm 配置通道的调用方（worktree_manager）使用；非法值/缺失返回空串
+    （由 resolve_deps_mode 落到默认）。
+    """
+    try:
+        path = Path(project_root) / ".fenix" / "config.yaml"
+        if not path.is_file():
+            return ""
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        verify_raw = raw.get("verify")
+        val = verify_raw.get("deps_mode") if isinstance(verify_raw, dict) else None
+        return val if val in DEPS_MODES else ""
+    except Exception:
+        return ""
 
 
 def run_prepare_steps(contract: VerifyContract, project_root: Path) -> Optional[str]:
@@ -238,17 +282,30 @@ class StaticVerifyServer:
 
 
 def provision_worktree_node_modules(worktree_root: Path, project_root: Path,
-                                    sub_dirs: list) -> list:
-    """worktree 服务范围（方案 2）的构建环境供给：把主树 node_modules 链入 worktree。
+                                    sub_dirs: list, mode: str = DEFAULT_DEPS_MODE,
+                                    logger=None) -> list:
+    """worktree 构建环境供给：按 deps_mode 两种方式把依赖装进 worktree。
 
     git worktree 不含 gitignore 的 node_modules，worktree 内 ``npm run build``
-    必失败——这是实现者每轮手工 symlink 的摩擦来源（fast-track 复盘）。
-    对 ``sub_dirs`` 中每个含 package.json 且缺 node_modules 的目录，自动建立
-    指向主树对应 node_modules 的符号链接（构建只读依赖，共享安全）。
+    必失败——这是实现者每轮手工安装的摩擦来源（fast-track 复盘）。供给方式
+    由 deps_mode 决定（解析见 ``resolve_deps_mode``）：
 
-    Returns: 已建立链接的目录列表（相对 worktree 根），供日志说明。
+    - ``hardlink``：主树 node_modules 的 ``os.link`` 硬链接副本（秒级、共享
+      inode 不占双倍空间）。npm 更新包 = unlink + 重新解包（新 inode），主树
+      原件不受影响；但任何 in-place 写入（构建缓存、postinstall 改文件）会
+      穿透共享 inode——避免主树与 worktree 并发构建。主树无 node_modules 时
+      自动降级 prefer-offline。
+    - ``prefer-offline``：worktree 内 ``npm ci --prefer-offline``（锁文件严格
+      安装，走用户级 npm 缓存），失败回退 ``npm install --prefer-offline``。
+
+    对 ``sub_dirs`` 中每个含 package.json 且缺 node_modules 的目录供给；
+    单目录失败记日志并继续（不阻塞 worktree 创建/验证准备）。
+
+    Returns: 已供给的目录列表（相对 worktree 根），供日志说明。
     """
-    linked = []
+    if mode not in DEPS_MODES:
+        mode = DEFAULT_DEPS_MODE
+    done = []
     for sub in sub_dirs:
         wt_dir = Path(worktree_root) / sub
         main_dir = Path(project_root) / sub
@@ -256,15 +313,48 @@ def provision_worktree_node_modules(worktree_root: Path, project_root: Path,
             continue
         if (wt_dir / "node_modules").exists():
             continue
-        main_nm = main_dir / "node_modules"
-        if not main_nm.is_dir():
-            continue
-        try:
-            (wt_dir / "node_modules").symlink_to(main_nm, target_is_directory=True)
-            linked.append(str(sub))
-        except OSError:
-            continue
-    return linked
+        provisioned = False
+        if mode == "hardlink":
+            main_nm = main_dir / "node_modules"
+            if main_nm.is_dir():
+                try:
+                    shutil.copytree(
+                        main_nm, wt_dir / "node_modules",
+                        copy_function=os.link, symlinks=True,
+                        ignore_dangling_symlinks=True,
+                    )
+                    done.append(str(sub))
+                    provisioned = True
+                except OSError as e:
+                    if logger:
+                        logger.warning(
+                            "verify_contract",
+                            f"hardlink 供给失败（{sub}），降级 prefer-offline: {e}")
+        if not provisioned:
+            try:
+                r = subprocess.run(
+                    ["npm", "ci", "--prefer-offline", "--no-audit", "--no-fund"],
+                    cwd=str(wt_dir), capture_output=True, text=True, timeout=900,
+                )
+                if r.returncode != 0:
+                    r = subprocess.run(
+                        ["npm", "install", "--prefer-offline", "--no-audit",
+                         "--no-fund"],
+                        cwd=str(wt_dir), capture_output=True, text=True,
+                        timeout=900,
+                    )
+                if r.returncode == 0:
+                    done.append(str(sub))
+                elif logger:
+                    logger.warning(
+                        "verify_contract",
+                        f"node_modules 供给失败（{sub}）: "
+                        f"{(r.stderr or r.stdout or '').strip()[-200:]}")
+            except (subprocess.SubprocessError, OSError) as e:
+                if logger:
+                    logger.warning(
+                        "verify_contract", f"node_modules 供给异常（{sub}）: {e}")
+    return done
 
 
 def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
