@@ -1,5 +1,9 @@
 import { Alert, Button, Input, Select, Typography, message } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
+import Markdown from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
+import remarkGfm from 'remark-gfm';
+import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
 import { getPrompts, saveProjectPrompt } from '@/services/dashboard';
 import type { PromptsData } from '@/services/dashboard';
 
@@ -99,18 +103,40 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
         />
       </div>
 
-      {/* 通用提示词（只读，两种作用域均展示） */}
+      {/* 通用提示词（只读，两种作用域均展示）—— Markdown 渲染，圆角灰底容器 */}
       <Title level={5}>通用提示词（只读）</Title>
-      <pre
+      <div
         data-testid="prompts-generic-content"
         style={{
-          maxHeight: 360, overflow: 'auto', fontSize: 12, lineHeight: 1.5,
-          background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 6,
-          padding: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          maxHeight: 360, overflow: 'auto', background: '#fafafa',
+          border: '1px solid #f0f0f0', borderRadius: 6, padding: 12,
         }}
       >
-        {loading ? '加载中...' : activeContent}
-      </pre>
+        {loading ? (
+          '加载中...'
+        ) : (
+          <Markdown
+            remarkPlugins={[remarkGfm, remarkBreaks]}
+            components={{
+              ...markdownComponents,
+              // 提示词正文以 JSON 示例块为主：等宽 pre-wrap 代码块，深一档灰底与容器区分
+              pre: ({ children }) => (
+                <pre
+                  style={{
+                    margin: '8px 0', padding: 8, fontSize: 12, lineHeight: 1.6,
+                    background: '#f0f0f0', borderRadius: 4,
+                    whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowX: 'auto',
+                  }}
+                >
+                  {children}
+                </pre>
+              ),
+            }}
+          >
+            {activeContent}
+          </Markdown>
+        )}
+      </div>
 
       {/* 项目级附加提示词（仅项目作用域） */}
       {isProjectScope && (

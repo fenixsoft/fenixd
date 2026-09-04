@@ -20,13 +20,13 @@ const { Text } = Typography;
 const BASE_MENU_ITEMS = [
   { key: 'llm', label: 'LLM Provider' },
   { key: 'agents', label: '模型分配' },
+  { key: 'prompts', label: '提示词' },
   { key: 'parallel', label: '并发度' },
   { key: 'approval', label: '审批' },
   { key: 'token', label: '预算' },
   { key: 'misc', label: '归档' },
   { key: 'verify', label: '验证' },
   { key: 'self-review', label: '每日自省' },
-  { key: 'prompts', label: '提示词' },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'

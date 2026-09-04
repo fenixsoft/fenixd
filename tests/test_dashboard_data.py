@@ -144,6 +144,81 @@ class TestSpecTimelineOrdering(unittest.TestCase):
         self.assertTrue(all(i > state_idx for i in run_idx))
 
 
+class TestSpecTimelineRollbackWithoutTransition(unittest.TestCase):
+    """打回节点重建：update_spec 直写 status（不走 transition()）必须在时间轴可见。
+
+    根因：全部打回路径（fast-track 失败/守卫、merge 失败重派等 12 处）统一
+    `update_spec({"status": "ready", "error": 原因})` 直写，日志无 Transition 行，
+    时间轴上打回完全不可见（add-agent-prompt-files 事故）。读侧从 Updated SPEC
+    行的 updates.status 重建打回节点，reason 取同行 error。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        logs_dir.mkdir(parents=True)
+
+        def line(ts, msg, **ctx):
+            e = {"timestamp": ts, "level": "INFO",
+                 "component": "state_machine", "message": msg}
+            if ctx:
+                e["context"] = ctx
+            return json.dumps(e, ensure_ascii=False)
+
+        lines = [
+            # 正常推进：transition() 成对写（Transition 行 + Updated SPEC 行）
+            line("2026-09-01T11:05:31.212625Z", "Transition: demo-spec ready → implementing"),
+            line("2026-09-01T11:05:31.220000Z", "Updated SPEC 'demo-spec'",
+                 updates={"status": "implementing"}),
+            # 打回：update_spec 直写，无 Transition 行
+            line("2026-09-01T11:08:33.100000Z", "Updated SPEC 'demo-spec'",
+                 updates={"status": "ready",
+                          "error": "结果文件 status='verified' 非法——顶层合同唯一合法值为 'success'"}),
+            # 重派
+            line("2026-09-01T11:17:15.100000Z", "Transition: demo-spec ready → implementing"),
+        ]
+        (logs_dir / "fenixd.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_rollback_creates_backtrack_node_with_error_reason(self):
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, "demo-spec")
+        rollbacks = [e for e in timeline
+                     if e["kind"] == "state" and e["to"] == "ready" and e["from"] == "implementing"]
+        self.assertEqual(len(rollbacks), 1, f"打回节点缺失: {timeline}")
+        self.assertIn("结果文件 status='verified' 非法", rollbacks[0]["reason"])
+
+    def test_transition_paired_updated_spec_not_duplicated(self):
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, "demo-spec")
+        forwards = [e for e in timeline
+                    if e["kind"] == "state" and e["to"] == "implementing"]
+        # 夹具有两次 ready → implementing（11:05 推进 + 11:17 重派），各一节点；
+        # 成对的 Updated SPEC 行若未去重会多出第三条
+        self.assertEqual(len(forwards), 2, f"成对行重复建节点: {timeline}")
+        times = sorted(e["time"] for e in forwards)
+        self.assertEqual(times[0][:19], "2026-09-01T11:05:31")
+        self.assertEqual(times[1][:19], "2026-09-01T11:17:15")
+
+    def test_rollback_from_unknown_when_window_truncated(self):
+        from core.dashboard.data import get_spec_timeline
+        # 日志窗口从打回行开始（推不出 from）→ from 为 "?" 占位，节点仍在
+        logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        (logs_dir / "fenixd.log").write_text(
+            json.dumps({"timestamp": "2026-09-01T11:08:33.100000Z", "level": "INFO",
+                        "component": "state_machine", "message": "Updated SPEC 'demo-spec'",
+                        "context": {"updates": {"status": "ready", "error": "fast-track run failed"}}},
+                       ensure_ascii=False) + "\n",
+            encoding="utf-8")
+        timeline = get_spec_timeline(self.tmpdir, "demo-spec")
+        rollbacks = [e for e in timeline if e["kind"] == "state" and e["to"] == "ready"]
+        self.assertEqual(len(rollbacks), 1, f"截断窗口打回节点缺失: {timeline}")
+        self.assertEqual(rollbacks[0]["from"], "?")
+        self.assertEqual(rollbacks[0]["reason"], "fast-track run failed")
+
+
 class TestGetRunsAgentType(unittest.TestCase):
     """get_runs 从 run_id 前缀推断 agent 类型（admin- 必须归 administrator，其余前缀不受影响）。"""
 

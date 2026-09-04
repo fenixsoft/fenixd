@@ -2013,6 +2013,9 @@ def get_spec_timeline(project_root, spec_name: str) -> list:
     logs_dir = Path(project_root) / ".fenix" / "logs"
     events: list[dict] = []
     errors_at: list[tuple] = []   # (timestamp, error) —— Agent 记录的 error，作为回退原因
+    # (timestamp, new_status, err) —— update_spec 直写的 status 变更（打回路径，
+    # 无 Transition 行；add-agent-prompt-files 事故：时间轴上看不到打回与原因）
+    status_updates: list[tuple] = []
 
     if logs_dir.is_dir():
         try:
@@ -2049,6 +2052,10 @@ def get_spec_timeline(project_root, spec_name: str) -> list:
                     err = updates.get("error")
                     if err:
                         errors_at.append((ts, str(err)))
+                    new_status = updates.get("status")
+                    if new_status:
+                        status_updates.append(
+                            (ts, str(new_status), str(err) if err else ""))
 
     # 运行节点（含归档：旧 spec 的 run 产物被清理后时间轴仍可回看）
     for r in get_runs(project_root, spec_name, include_archive=True):
@@ -2059,16 +2066,48 @@ def get_spec_timeline(project_root, spec_name: str) -> list:
                        "duration_seconds": r.get("duration_seconds"),
                        "summary": insights["summary"], "llm": insights["llm"]})
 
+    # ── 打回节点重建：update_spec 直写 status 的变更（无 Transition 行）补建状态节点 ──
+    # transition() 成对写的 Updated SPEC 行（与 Transition 节点 Δt<2s 且目标相同）去重跳过；
+    # 未匹配的按时间与 Transition 节点合流推演 current status 得 from（窗口截断推不出 → "?"），
+    # reason 取同行 error（精确）；无 error 时回退 _backtrack_reason 兜底（允许 errors_at 就近覆盖）。
+    trans_states = [e for e in events if e.get("kind") == "state"]
+    unmatched: list[tuple] = []
+    for ts, new_status, err in status_updates:
+        paired = any(
+            (d := _ts_delta(t2["time"], ts)) is not None and d < 2
+            and t2["to"] == new_status
+            for t2 in trans_states
+        )
+        if not paired:
+            unmatched.append((ts, new_status, err))
+    if unmatched:
+        merged = sorted(
+            [(e["time"], 0, "t", e["to"], "") for e in trans_states]
+            + [(ts, 1, "u", ns, err) for ts, ns, err in unmatched],
+            key=lambda x: (str(x[0]), x[1]),
+        )
+        current: "str | None" = None
+        for ts, _, tag, to, err in merged:
+            if tag == "t":
+                current = to
+                continue
+            frm = current if current is not None else "?"
+            reason = err[:120] if err else _backtrack_reason(frm, to)
+            events.append({"time": ts, "kind": "state", "from": frm, "to": to,
+                           "reason": reason, "_precise_reason": bool(err)})
+            current = to
+
     # 排序：解析时间戳 + 同秒内 state 先于 run（_timeline_sort_key 内注释说明根因）
     events.sort(key=_timeline_sort_key)
 
     # 连续的前向状态转换折叠为一次（回退/运行节点打断）
     events = _collapse_timeline(events)
 
-    # 回退节点补充 Agent 记录的 error 作为原因（取时间最近的一条，10 分钟内）
+    # 回退节点补充 Agent 记录的 error 作为原因（取时间最近的一条，10 分钟内）；
+    # 打回重建节点（_precise_reason）reason 已是同行精确 error，不覆盖
     if errors_at:
         for e in events:
-            if e.get("kind") != "state" or not e.get("reason"):
+            if e.get("kind") != "state" or not e.get("reason") or e.get("_precise_reason"):
                 continue
             deltas = [(d, err) for (ts, err) in errors_at
                       if (d := _ts_delta(ts, e["time"])) is not None]
@@ -2076,6 +2115,8 @@ def get_spec_timeline(project_root, spec_name: str) -> list:
                 d, err = min(deltas, key=lambda x: x[0])
                 if d < 600:   # 10 分钟内匹配到 Agent 记录的 error
                     e["reason"] = err[:120]
+    for e in events:
+        e.pop("_precise_reason", None)   # 内部标记不外泄
     return events
 
 
@@ -2209,18 +2250,24 @@ def _token_usage_view(entry: dict) -> dict:
     返回固定结构：
         {
           "tokens_in": int, "tokens_out": int,
-          "cache_creation_input_tokens": int | None,  # STATE 仅存累计，分项未记录→None
+          "cache_creation_input_tokens": int | None,  # 分项自 add-cache-hit-display 起累计；历史 spec 无字段→None
           "cache_read_input_tokens": int | None,
           "cost_usd": float | None,    # None = 网关未回传，界面展示「成本不可用」
           "cost_available": bool,       # 成本字段是否可展示
         }
-    STATE 仅持久累计 _tokens_in/_tokens_out/_cost_usd（分项 cache 入 input），
-    故分项在详情 tooltip 中以「已计入 input」说明，值为 None 表示无可分项数据。
+    STATE 持久累计 _tokens_in/_tokens_out/_cost_usd 及缓存分项 _cache_read_tokens/
+    _cache_creation_tokens（分项 cache 入 input）；分项为 None 表示该 spec 未记录过
+    分项数据（历史条目），前端不显示缓存括号。
     """
     if not isinstance(entry, dict):
         entry = {}
     tokens_in = int(entry.get("_tokens_in", 0) or 0)
     tokens_out = int(entry.get("_tokens_out", 0) or 0)
+    # 分项字段：缺失（历史 spec）保持 None，存在则规整为 int（STATE 读出为字符串）
+    cache_read = entry.get("_cache_read_tokens")
+    cache_creation = entry.get("_cache_creation_tokens")
+    cache_read_val = int(cache_read) if cache_read is not None else None
+    cache_creation_val = int(cache_creation) if cache_creation is not None else None
     cost = entry.get("_cost_usd")
     if cost is None:
         cost_val = None
@@ -2235,8 +2282,8 @@ def _token_usage_view(entry: dict) -> dict:
     return {
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
-        "cache_creation_input_tokens": None,
-        "cache_read_input_tokens": None,
+        "cache_creation_input_tokens": cache_creation_val,
+        "cache_read_input_tokens": cache_read_val,
         "cost_usd": cost_val,
         "cost_available": cost_available,
     }
