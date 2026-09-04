@@ -779,7 +779,10 @@ export default function SpecListPage() {
                   </Typography.Text>
                 ) : null}
                 {runCurrent ? (
-                  <Typography.Text type="warning" style={{ marginLeft: 4 }}>
+                  <Typography.Text
+                    type="warning"
+                    style={{ marginLeft: 4, fontSize: 12, verticalAlign: 'text-bottom' }}
+                  >
                     进行中 {runCurrent.join('、')}
                   </Typography.Text>
                 ) : null}
