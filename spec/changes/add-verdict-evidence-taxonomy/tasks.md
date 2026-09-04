@@ -34,5 +34,5 @@
 
 ## 验证修复（第 1 轮失败）
 
-- [x] 阅读 `openspec/changes/add-verdict-evidence-taxonomy/verification-report.md`，定位「真实产品 Bug」并修复
+- [x] 阅读 `spec/changes/add-verdict-evidence-taxonomy/verification-report.md`，定位「真实产品 Bug」并修复
 - [ ] 修复后重跑验证确认通过

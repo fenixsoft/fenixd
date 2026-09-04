@@ -1,4 +1,4 @@
-// 复现 openspec/changes/v2-shell-hash-router 验证报告的 10 个场景断言
+// 复现 spec/changes/v2-shell-hash-router 验证报告的 10 个场景断言
 import { test, expect } from '@playwright/test';
 
 const BASE = process.env.V2_BASE_URL || 'http://127.0.0.1:8787';

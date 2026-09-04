@@ -1,6 +1,6 @@
 ## Context
 
-Fenixd 已有一个**单项目终端 TUI**（`bin/fenix_dashboard.py`），通过轮询 `STATE.md`、`openspec/changes/<spec>/tasks.md`、`.fenix/verify-progress/*.json`、`.fenix/logs/fenixd*.log` 展示 SPEC 状态、任务进度与最近事件。痛点：
+Fenixd 已有一个**单项目终端 TUI**（`bin/fenix_dashboard.py`），通过轮询 `STATE.md`、`spec/changes/<spec>/tasks.md`、`.fenix/verify-progress/*.json`、`.fenix/logs/fenixd*.log` 展示 SPEC 状态、任务进度与最近事件。痛点：
 
 1. **过程不可见**：`core/agent_runner.py` 的 `_run_claude` 用 `subprocess.run(capture_output=True)` **阻塞**等待 Agent 结束，运行期间没有任何输出落盘，只有结束后的 stdout（且仅把末 500 字摘要写进日志）。一个跑了很久的测试，用户只能看到「正在 running」事件，看不到内部在干什么。
 2. **细节分散**：bug 内容（`verification-report.md`）、失败截图（`.fenix/verify-progress/<spec>/screenshots/*.png`）、逐场景断言（`.fenix/verify-progress/<spec>/report.json`）散落多处，无统一视图。

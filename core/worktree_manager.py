@@ -290,7 +290,7 @@ class WorktreeManager:
     def _seed_spec(self, spec_name: str, wt_path: Path):
         """Seed SPEC source files into a new worktree.
 
-        If openspec/changes/<spec>/ exists in the main worktree but not in the
+        If spec/changes/<spec>/ exists in the main worktree but not in the
         new worktree (the branch HEAD doesn't contain it), copy the directory
         into the worktree and commit it to the isolated branch.
 
@@ -298,8 +298,8 @@ class WorktreeManager:
         the main repository path.
         """
         try:
-            main_spec_dir = self.project_root / "openspec" / "changes" / spec_name
-            wt_spec_dir = wt_path / "openspec" / "changes" / spec_name
+            main_spec_dir = self.project_root / "spec" / "changes" / spec_name
+            wt_spec_dir = wt_path / "spec" / "changes" / spec_name
 
             if not main_spec_dir.is_dir():
                 return
@@ -317,7 +317,7 @@ class WorktreeManager:
 
             # Git add + commit in the worktree
             result = subprocess.run(
-                ["git", "-C", str(wt_path), "add", "openspec/changes/"],
+                ["git", "-C", str(wt_path), "add", "spec/changes/"],
                 capture_output=True, text=True, timeout=30,
             )
             if result.returncode != 0:
@@ -354,14 +354,14 @@ class WorktreeManager:
     def ensure_spec_committed(self, spec_name: str) -> bool:
         """派发 implementer 前把 spec 目录提交进主树（fix-merge-back-deadlock 根因修复）。
 
-        spec 目录（openspec/changes/<spec>/）若在主树 untracked，而 worktree 分支里
+        spec 目录（spec/changes/<spec>/）若在主树 untracked，而 worktree 分支里
         _seed_spec 已 commit 一份同名路径，merge-back 时 git 会拒绝「untracked working
         tree files would be overwritten by merge」。在派发前把 spec 提交进主树使其被跟踪，
         分支从新 HEAD 建即可直接包含 spec（_seed_spec 跳过），merge 变为干净三方合并。
 
         Returns: True 表示已提交或本已无改动（干净）；False 表示提交失败。
         """
-        rel = f"openspec/changes/{spec_name}"
+        rel = f"spec/changes/{spec_name}"
         try:
             status = subprocess.run(
                 ["git", "-C", str(self.project_root), "status", "--porcelain", "--", rel],
@@ -398,7 +398,7 @@ class WorktreeManager:
     def _backup_untracked_spec_files(self, branch: str):
         """merge 前把与 implementer 分支新增路径冲突的主树 untracked 文件移到 .fenix/merge-backup/ 备份。
 
-        泛化原 openspec/changes 限定逻辑（fix-merge-untracked-guard）：
+        泛化原 spec/changes 限定逻辑（fix-merge-untracked-guard）：
 
         1. `git diff --name-only --diff-filter=A HEAD...<branch>` 取分支**新增**文件路径集合
            —— untracked 冲突只会发生在新增路径上（修改既有 tracked 文件不与 untracked 冲突）。
@@ -406,7 +406,7 @@ class WorktreeManager:
            `git ls-files --error-unmatch <path>` 失败（未被 index 跟踪）即视为 untracked。
         3. 将命中的文件移入 `.fenix/merge-backup/<epoch秒>/`（保持仓库相对路径结构）。
 
-        检测范围不限于 openspec/changes/，覆盖任意产物路径（如 core/dashboard/static/v2/）。
+        检测范围不限于 spec/changes/，覆盖任意产物路径（如 core/dashboard/static/v2/）。
         集合为空、或交集为空时返回 None 且不创建备份目录（零开销跳过）。
 
         返回备份目录路径（无冲突文件时返回 None）。merge 成功后调用 _drop_backup
@@ -1232,7 +1232,7 @@ class WorktreeManager:
         会用用户 untracked 副本覆盖刚合入的分支版本（或 pop 失败滞留）。
         历史版本的 --include-untracked 是 7 次改动滞留事故的放大器之一。
 
-        重要：stash 排除 `openspec/changes/`——该目录下未跟踪的 spec 文件
+        重要：stash 排除 `spec/changes/`——该目录下未跟踪的 spec 文件
         （proposal/design/specs/tasks）是框架运行必需，一旦被卷进 stash，
         implementer 就找不到 SPEC 文件而空转（fix：曾因此烧掉 ~450 轮）。
         spec 文件应在创建时提交；此处排除作为兜底。
@@ -1256,7 +1256,7 @@ class WorktreeManager:
         stash = subprocess.run(
             ["git", "-C", str(self.project_root), "stash", "push",
              "-m", AUTOSTASH_MSG_PREFIX,
-             "--", ".", ":(exclude)openspec/changes"],
+             "--", ".", ":(exclude)spec/changes"],
             capture_output=True, text=True, timeout=30,
         )
         if stash.returncode != 0:
@@ -1266,7 +1266,7 @@ class WorktreeManager:
             )
             return False
         if "No local changes" in (stash.stdout + stash.stderr):
-            # 唯一脏内容就是被排除的 openspec/changes，实际未 stash
+            # 唯一脏内容就是被排除的 spec/changes，实际未 stash
             return False
         self.logger.info("worktree_manager", "Autostashed tracked changes before merge")
         return True

@@ -2,7 +2,7 @@
 
 ## Why
 
-验证裁决 Agent 被要求在结论之外写入人类可读的 `openspec/changes/<spec>/verification-report.md`（prompt Step 5），但该步骤无任何结构化闸门校验。实际事故（v2-shell-hash-router，2026-08-29）：裁决 Agent 返回 `bug-found` 且 `.fenix-run-result.json` 中根因分析完整，却未写报告文件；`pm_engine._ensure_fix_spec_files` 随后生成的 fix SPEC 盲目引用了不存在的路径，implementer 只能从第一性原理重新诊断（worktree 中留下 6 个探针页面、24+ 分钟的重复 token 消耗），fix SPEC 的输入契约实际断裂。
+验证裁决 Agent 被要求在结论之外写入人类可读的 `spec/changes/<spec>/verification-report.md`（prompt Step 5），但该步骤无任何结构化闸门校验。实际事故（v2-shell-hash-router，2026-08-29）：裁决 Agent 返回 `bug-found` 且 `.fenix-run-result.json` 中根因分析完整，却未写报告文件；`pm_engine._ensure_fix_spec_files` 随后生成的 fix SPEC 盲目引用了不存在的路径，implementer 只能从第一性原理重新诊断（worktree 中留下 6 个探针页面、24+ 分钟的重复 token 消耗），fix SPEC 的输入契约实际断裂。
 
 ## What Changes
 

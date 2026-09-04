@@ -7,7 +7,7 @@ fenix 依赖外部 openspec 工具链生成 SPEC：
 - `~/.claude/skills/openspec-propose` 等外部 skills 驱动生成流程，末尾输出「Run `/opsx:apply` or ask me to implement」——与 fenix 自动实现流程不符。
 
 已确认事实：
-- fenix 仅在 SPEC 提案阶段调用 openspec CLI；核心（StateMachine / PMEngine / Dashboard / watcher）只把 `openspec/changes/<name>/` 当目录路径直接读写 `proposal.md` / `tasks.md` / `specs/**/spec.md` / `verification-report.md`。
+- fenix 仅在 SPEC 提案阶段调用 openspec CLI；核心（StateMachine / PMEngine / Dashboard / watcher）只把 `spec/changes/<name>/` 当目录路径直接读写 `proposal.md` / `tasks.md` / `specs/**/spec.md` / `verification-report.md`。
 - spec-driven schema 自包含且很小：4 个 artifact，线性依赖 `proposal → specs / design → tasks`，`apply.requires = [tasks]`；模板与指令位于 openspec 包 `schemas/spec-driven/`（MIT）。
 - 唯一引用外部 openspec 的位置：`skills/fenix-new/SKILL.md` 步骤 3「调用 openspec-propose skill」。
 - fenix 自动实现流程：fenix-new 生成 SPEC + 注册 STATE.md（drafted）→ fenixd 拾取 → 状态机 `drafted→ready→implementing→implemented→testing→verified→done→pushed`（bug-found→implementing），implementer 读 tasks.md 执行。
@@ -22,12 +22,12 @@ fenix 依赖外部 openspec 工具链生成 SPEC：
 - fenix 自包含生成 SPEC：`core/spec_gen.py` + `bin/fenix_spec.py` 提供与 openspec 等价能力，仅需 Python。
 - fenix-new skill 不依赖任何外部 openspec skill/CLI，输出对齐 fenix 自动实现流程（不再提 `/opsx:apply`）。
 - 提供原生归档能力（`bin/fenix_archive.py` + fenix-archive skill）。
-- 保持 `openspec/changes/<name>/` 布局与 artifact 文件名完全不变（fenix 核心硬依赖）。
+- 保持 `spec/changes/<name>/` 布局与 artifact 文件名完全不变（fenix 核心硬依赖）。
 - 无新增 Python 依赖（沿用标准库 + pyyaml）。
 
 **Non-Goals:**
 - 不移植 openspec 的全部功能（仅 `new change` / `status` / `instructions` 三个被 fenix 用到的操作）。
-- 不做 delta-spec 同步到主 specs（fenix 无 `openspec/specs` 主 spec 机制）。
+- 不做 delta-spec 同步到主 specs（fenix 无 `spec/specs` 主 spec 机制）。
 - 不维护 openspec 上游 schema 版本兼容（vendored 固定一份，升级属后续维护）。
 - 不自动卸载用户机器上已有的 openspec CLI / openspec-* skills（它们归 openspec 自身管理；fenix 只是不再依赖）。
 
@@ -44,7 +44,7 @@ fenix 依赖外部 openspec 工具链生成 SPEC：
 ### D2: `core/spec_gen.py` 模块设计
 
 - `SCHEMA_DIR` / `load_schema()`：读取 vendored `schema.yaml`（artifacts 定义 + `apply` 段）。
-- `new_change(project_root, name) -> Path`：校验名称 kebab-case；目标已存在则返回错误；创建 `openspec/changes/<name>/` 并写 `.openspec.yaml`（`schema: spec-driven` / `created: YYYY-MM-DD`）。幂等语义：已存在时报「已存在」，由调用方决定继续或改名的询问。
+- `new_change(project_root, name) -> Path`：校验名称 kebab-case；目标已存在则返回错误；创建 `spec/changes/<name>/` 并写 `.spec.yaml`（`schema: spec-driven` / `created: YYYY-MM-DD`）。幂等语义：已存在时报「已存在」，由调用方决定继续或改名的询问。
 - `status(project_root, name) -> dict`：对每个 artifact 计算：
   - `done` = 其 `generates` glob 有匹配文件（`specs/**/*.md` 用 `specs/` 下任意 `.md` 存在判定）；
   - `ready` = `requires` 全部 done；
@@ -78,17 +78,17 @@ fenix 依赖外部 openspec 工具链生成 SPEC：
 
 ### D5: 原生归档（`bin/fenix_archive.py` + fenix-archive skill）
 
-- `bin/fenix_archive.py <name>`：校验 change 存在于 `openspec/changes/<name>/`；计算目标 `openspec/changes/archive/YYYY-MM-DD-<name>`（日期取当天）；目标已存在 → 报错并提示改名或换日期；否则 `shutil.move`。打印 JSON `{ok, from, to, error}`。
+- `bin/fenix_archive.py <name>`：校验 change 存在于 `spec/changes/<name>/`；计算目标 `spec/archive/YYYY-MM-DD-<name>`（日期取当天）；目标已存在 → 报错并提示改名或换日期；否则 `shutil.move`。打印 JSON `{ok, from, to, error}`。
 - `skills/fenix-archive/SKILL.md`：列出可选 changes（非归档），由用户选择（`AskUserQuestion`），确认后调用 `bin/fenix_archive.py`；不校验 tasks 完成度（不阻塞归档，仅提示）。
 - 不做 delta-spec 同步（fenix 无主 spec 机制）。STATE.md 中的历史记录保持不变（已完成 spec 的状态字段本就是终态）。
 
 ### D6: fenix-init 目录
 
-`fenix-init` 步骤 3（当前创建 `openspec/{changes,specs}/`）增加 `archive`：创建 `openspec/changes/archive/`。
+`fenix-init` 步骤 3（当前创建 `openspec/{changes,specs}/`）增加 `archive`：创建 `spec/archive/`。
 
 ### D7: 兼容性与引用清理
 
-- `openspec/changes/<name>/` 布局与 artifact 文件名、`.openspec.yaml` 均保持不变。
+- `spec/changes/<name>/` 布局与 artifact 文件名、`.spec.yaml` 均保持不变。
 - 清理 fenix 仓库内对 `openspec-propose` / `openspec-apply-change` / `/opsx:apply` / `openspec` CLI 的引用（当前仅 `skills/fenix-new/SKILL.md`；实施时全局 grep 复核）。
 - `install.sh` 无需改动（本就不安装 openspec）；README 可补充说明「不再需要独立安装 openspec」。
 
@@ -96,7 +96,7 @@ fenix 依赖外部 openspec 工具链生成 SPEC：
 
 - [与上游 schema 漂移] vendored 的 spec-driven 数据与未来 openspec 版本不一致 → 模板/指令以 vendored 副本为准，fenix 生成结果稳定；升级即替换 `schemas/spec-driven/` 目录。
 - [生成器行为差异] 原生 `status`/`instructions` 与 openspec CLI 存在细微行为差异（如 spec 文件判定方式）→ 以「生成的 artifacts 可被 fenix 核心消费」为正确性标准，行为对齐 openspec 输出 JSON 结构。
-- [归档目录影响 dashboard/watcher] archive 移动会触发 `openspec/changes` watcher 事件 → 已确认 watcher 对归档目录仅做读取，无副作用。
+- [归档目录影响 dashboard/watcher] archive 移动会触发 `spec/changes` watcher 事件 → 已确认 watcher 对归档目录仅做读取，无副作用。
 - [fenix-new 流程依赖 JSON 输出解析] agent 需解析 CLI JSON → CLI 输出保持稳定、字段命名与 openspec 一致，降低 agent 理解成本。
 
 ## Migration Plan

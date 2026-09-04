@@ -14,11 +14,11 @@
 - THEN 响应 400 含原因，STATE.md 不变
 
 ### Requirement: 软删除实现
-`POST /api/spec-delete?project=<name>&spec=<name>` 执行：① state_machine 移除该 spec 条目（新增 remove_spec 方法，读全部→剔除→原子写回）；② 将 `openspec/changes/<name>/` 整目录移动到 `openspec/changes/archive/<name>-<Unix秒>/`（archive 目录不存在则创建）。任一步失败回滚 STATE.md 写入或返回 5xx 并保持数据一致。
+`POST /api/spec-delete?project=<name>&spec=<name>` 执行：① state_machine 移除该 spec 条目（新增 remove_spec 方法，读全部→剔除→原子写回）；② 将 `spec/changes/<name>/` 整目录移动到 `spec/archive/<name>-<Unix秒>/`（archive 目录不存在则创建）。任一步失败回滚 STATE.md 写入或返回 5xx 并保持数据一致。
 
 #### Scenario: 删除后两处数据一致
 - WHEN 对存在的 spec 调用删除 API
-- THEN STATE.md 不含该条目且 openspec/changes/archive/<name>-<ts>/ 存在原目录全部文件
+- THEN STATE.md 不含该条目且 spec/archive/<name>-<ts>/ 存在原目录全部文件
 
 #### Scenario: spec 目录缺失时仅清状态
 - GIVEN 该 spec 的 openspec 目录已不存在

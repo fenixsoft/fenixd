@@ -2,7 +2,7 @@
 
 ## Why
 
-`fix-startup-double-dispatch` 的验证报告发现产品缺陷，导致验证未通过。详见 `openspec/changes/fix-startup-double-dispatch/verification-report.md` 的「真实产品 Bug」部分。
+`fix-startup-double-dispatch` 的验证报告发现产品缺陷，导致验证未通过。详见 `spec/changes/fix-startup-double-dispatch/verification-report.md` 的「真实产品 Bug」部分。
 
 ## What Changes
 

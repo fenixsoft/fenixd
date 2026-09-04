@@ -49,7 +49,7 @@
 
 ## 5. 测试
 
-- [x] 5.1 `tests/test_dashboard_index.py`：删除 `cleanup_runs` 相关 4 处用例（~234-249 行附近）；全库 grep（排除 `.claude/worktrees/`、`openspec/changes/archive/`、`node_modules/`、`dist/`、`__pycache__/`）确认 `clean_old_runs`/`RUNS_KEEP`/`cleanup_runs` 在 core/、bin/、tests/ 零残留
+- [x] 5.1 `tests/test_dashboard_index.py`：删除 `cleanup_runs` 相关 4 处用例（~234-249 行附近）；全库 grep（排除 `.claude/worktrees/`、`spec/archive/`、`node_modules/`、`dist/`、`__pycache__/`）确认 `clean_old_runs`/`RUNS_KEEP`/`cleanup_runs` 在 core/、bin/、tests/ 零残留
 - [x] 5.2 新增 `tests/test_run_artifact_retention.py`：① `run_spec_part` 对 `impl-<spec>-<ts>-a1`/`planner-plan-<spec>-<ts>`/`admin-<spec>-<ts>` 等格式还原 spec 名（与原 data.py 测试期望一致）；② `archive_spec_runs` 只移匹配文件、不匹配的留顶层、返回移动数、runs_dir 不存在返回 0；③ `archive_change` 集成：归档带 3 个该 spec runs 的假项目后 runs 进 archive、change 目录进 archive/YYYY-MM-DD-<name>、返回 dict 含 `runs_archived`
 - [x] 5.3 全量 `python3 -m pytest tests/ -x -q` 通过（daemon 端口占用的环境性失败可跳过并注明）
 

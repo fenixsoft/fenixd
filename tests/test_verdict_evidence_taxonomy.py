@@ -451,7 +451,7 @@ class TestConsumerCompat(_PMEngineBase):
             json.dumps(run_result, ensure_ascii=False), encoding="utf-8")
         result = synthesize_verification_report(self.project_root, "v2-config-page")
         self.assertTrue(result["ok"])
-        content = (self.project_root / "openspec" / "changes" / "v2-config-page"
+        content = (self.project_root / "spec" / "changes" / "v2-config-page"
                    / "verification-report.md").read_text(encoding="utf-8")
         # 引用 report.json 的结构化证据（selector/expected/actual），非 judge 稀疏证据
         self.assertIn("## 真实产品 Bug", content)

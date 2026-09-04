@@ -4,7 +4,7 @@
 
 Fenix 框架的核心设计原则之一是「Implementer Agent 在独立 git worktree 中隔离工作」（`fenixd.py` 注释明确：*Implementer Agent (automatic, Ralph-mode, worktree-isolated)*；`worktree_manager.py` 为每次运行创建 `impl-<spec>-<ts>` worktree）。然而经排查发现该隔离机制**实际从未生效**：
 
-1. **根因（代码级确认）**：`core/agent_runner.py::_run_claude` 接收 `cwd=worktree 路径`，但 `subprocess.Popen(cmd, ..., env=env)` **从未传 `cwd=` 参数** —— worktree 路径仅通过 `--add-dir <worktree>` 作为「附加目录」加入会话。因此 claude 子进程实际工作目录是 daemon 的 cwd（项目主树），prompt 中的相对路径（`openspec/changes/<spec>/...`）全部解析到主树。
+1. **根因（代码级确认）**：`core/agent_runner.py::_run_claude` 接收 `cwd=worktree 路径`，但 `subprocess.Popen(cmd, ..., env=env)` **从未传 `cwd=` 参数** —— worktree 路径仅通过 `--add-dir <worktree>` 作为「附加目录」加入会话。因此 claude 子进程实际工作目录是 daemon 的 cwd（项目主树），prompt 中的相对路径（`spec/changes/<spec>/...`）全部解析到主树。
    - 已核验：本机旧 run `impl-add-dashboard-spec-table-1787577911` 与 `impl-add-flowtoken-run-view-1787617630` 的 init 事件 `cwd` 均为主树 `/root/fenixd`；worktree `impl-add-flowtoken-run-view-1787617630` 的 `git status` 干净（实现者从未在其中编辑）。
    - `fenixd.py` 中不存在任何「把 worktree 分支合并回主树」的逻辑 —— 主树中的实现提交全部来自 implementer 直接在主树工作这一「意外」行为。
 

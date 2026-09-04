@@ -21,7 +21,7 @@
 
 ## 1. spec 摘要索引与配置缓存（dashboard-spec-summary-index）
 
-- [x] 1.1 data.py 新增 `SummaryIndex` 类：持每项目 `{spec_name: {"summary": dict, "sigs": {path: (mtime_ns, size)}}}`；依赖文件集合枚举函数 `_spec_dep_files(proot, spec_name)` 必须对齐 spec_summary 实际读路径（tasks.md / specs/ 目录整体 / .openspec.yaml / .fenix/runs/ 目录 / verify-progress 相关文件），单向全覆盖（宁多勿漏，将 specs/ 目录整体入签名）
+- [x] 1.1 data.py 新增 `SummaryIndex` 类：持每项目 `{spec_name: {"summary": dict, "sigs": {path: (mtime_ns, size)}}}`；依赖文件集合枚举函数 `_spec_dep_files(proot, spec_name)` 必须对齐 spec_summary 实际读路径（tasks.md / specs/ 目录整体 / .spec.yaml / .fenix/runs/ 目录 / verify-progress 相关文件），单向全覆盖（宁多勿漏，将 specs/ 目录整体入签名）
 - [x] 1.2 `SummaryIndex.get(proot, specs) -> list[spec_summary]`：签名未变直返缓存；变化只重算该 spec；STATE.md 签名变化触发该项目全量重建（调用方传入 STATE.md 签名）
 - [x] 1.3 server.py 在 DashboardHTTPServer 上挂 `self.summary_index`（线程安全：Lock 保护，读多写少）；`_api_specs` 改走 `summary_index.get`
 - [x] 1.4 data.py `read_effective_config` / `read_spec_mode` 加签名缓存：`key=(真实路径, mtime_ns, size)`，命中直接返回；写路径不维护显式失效（mtime 自然失效，与 _RUN_TASK_CACHE 同模式）
@@ -30,7 +30,7 @@
 
 ## 2. watcher 增量广播与目录签名跳层（dashboard-incremental-watcher）
 
-- [x] 2.1 watcher.py 两级签名枚举：重写 `_iter_project_files` 为 `_iter_project_sigs(proot)`——顶层数据源集合（STATE.md、openspec/changes、.fenix/logs、.fenix/runs、.fenix/verify-progress、.fenix/admin_alerts.json）目录签名 `(mtime_ns, size, ctime_ns)`；签名未变跳过整棵子树
+- [x] 2.1 watcher.py 两级签名枚举：重写 `_iter_project_files` 为 `_iter_project_sigs(proot)`——顶层数据源集合（STATE.md、spec/changes、.fenix/logs、.fenix/runs、.fenix/verify-progress、.fenix/admin_alerts.json）目录签名 `(mtime_ns, size, ctime_ns)`；签名未变跳过整棵子树
 - [x] 2.2 spec 目录级跳层：仅对签名变化的 spec 目录做文件级签名比对（用 1.1 的依赖文件集合）；清理已删除 spec 的签名条目
 - [x] 2.3 `_handle_state_change` 改增量广播：`{type:"state", project, specs:[{spec, summary|null}...], details:{变化 spec 详情}}`，不下发 overview；spec_summary 读取改走 SummaryIndex（1.2）
 - [x] 2.4 新 spec 创建（changes/ 目录级签名变化）→ 广播该 spec `{spec, summary:null}` 前的正常摘要条目 + 详情（详情以 spec_detail 计算）

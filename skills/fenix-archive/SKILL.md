@@ -1,11 +1,11 @@
 ---
 name: fenix-archive
-description: Use when the user wants to archive a completed SPEC/change into openspec/changes/archive/. Invoked via /fenix-archive.
+description: Use when the user wants to archive a completed SPEC/change into spec/archive/. Invoked via /fenix-archive.
 ---
 
 # Fenix: 归档
 
-将 `openspec/changes/` 下已完成的 change 归档到 `openspec/changes/archive/YYYY-MM-DD-<name>`。
+将 `spec/changes/` 下已完成的 change 归档到 `spec/archive/YYYY-MM-DD-<name>`。
 归档只移动目录，不修改 STATE.md 中的历史记录（已完成 SPEC 的状态字段本就是终态）。
 
 ## 流程
@@ -13,13 +13,13 @@ description: Use when the user wants to archive a completed SPEC/change into ope
 ### 1. 列出未归档的 changes
 
 ```bash
-ls -d openspec/changes/*/ | grep -v '/archive/$'
+ls -d spec/changes/*/
 ```
 
 对每个未归档 change，读取其 `tasks.md` 统计未完成任务数（`- [ ]` 计数，含 `- [x]` 对比）：
 
 ```bash
-for d in $(ls -d openspec/changes/*/ | grep -v '/archive/$'); do
+for d in $(ls -d spec/changes/*/); do
   name=$(basename "$d")
   total=$(grep -c '^- \[ \]' "$d/tasks.md" 2>/dev/null || echo 0)
   echo "$name: ${total} 个未完成任务"

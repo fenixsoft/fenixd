@@ -36,7 +36,7 @@ description: Use when the user wants to create a new development requirement, as
 - 简单需求 → 明确建议「建议走简单模式（fast-track）：<理由>。该路径由单个 Agent 一次完成实现与验证，更快更省。你也可以选择完整模式（full）。」
 - 复杂需求 → 明确建议「建议走完整模式（full）：<理由>。该路径由多个 Agent 分段实现与独立验证，更适合复杂改动。你也可以选择简单模式（fast-track）。」
 
-用户确认后，把最终模式记入待创建 SPEC 的 `.openspec.yaml`（见 3.1）；用户显式指定（`--fast-track` / `--full`）时 **MUST 尊重用户指定**，不得以评估结果覆盖或追问。
+用户确认后，把最终模式记入待创建 SPEC 的 `.spec.yaml`（见 3.1）；用户显式指定（`--fast-track` / `--full`）时 **MUST 尊重用户指定**，不得以评估结果覆盖或追问。
 
 ### 2. 生成 kebab-case 名称
 
@@ -60,7 +60,7 @@ python3 .fenix/bin/fenix_spec.py new <name>
 
 **3.1.1 写入执行模式（add-fast-track-mode）**
 
-把用户确认（或用户显式指定）的执行模式写入 `.openspec.yaml`，与 `schema` / `created`
+把用户确认（或用户显式指定）的执行模式写入 `.spec.yaml`，与 `schema` / `created`
 同级新增 `mode` 行：
 
 - 走快速路径：`mode: fast-track`（追加在 `created` 行后）
@@ -70,7 +70,7 @@ python3 .fenix/bin/fenix_spec.py new <name>
 # 示例：fast-track
 python3 -c "
 from pathlib import Path
-p = Path('openspec/changes/<name>/.openspec.yaml')
+p = Path('spec/changes/<name>/.spec.yaml')
 text = p.read_text(encoding='utf-8')
 if 'mode:' not in text:
     p.write_text(text.rstrip() + '\nmode: fast-track\n', encoding='utf-8')
@@ -149,13 +149,13 @@ print(f'SPEC <spec-name> registered')
 **必须在告知用户前完成提交。** 未提交的新 spec 目录会在 agent 派发时被 autostash 吞掉、且首个 merge-back 必熔断（已复现 2 次）。流程：
 
 ```bash
-git add openspec/changes/<spec-name>/
+git add spec/changes/<spec-name>/
 git commit -m "[fenix] spec: <spec-name>"
 ```
 
 - 只 add 该 spec 目录，**禁止 `git add .` / `-A`**（避免带入无关改动）
 - STATE.md 位于 `.fenix/` 下，已被 `.gitignore` 忽略，属运行时文件，**无需提交**
-- 提交前检查脚手架产物完整：`.openspec.yaml` 缺失时补写（内容为 `schema: spec-driven` + `created: <年-月-日>` 两行，与其它 change 一致）
+- 提交前检查脚手架产物完整：`.spec.yaml` 缺失时补写（内容为 `schema: spec-driven` + `created: <年-月-日>` 两行，与其它 change 一致）
 - 提交失败（pre-commit hook 报错等）时修复后重新提交，不要跳过 hook
 - `--modify <name>` 更新完 artifacts 后同样执行本节提交
 
@@ -171,6 +171,6 @@ git commit -m "[fenix] spec: <spec-name>"
 - **执行模式（add-fast-track-mode）**：
   - 用户未指定模式时 MUST 给出明确建议（fast-track / full，附理由），禁止默认任一路径
   - 用户显式指定（`--fast-track` / `--full`）时 MUST 尊重用户指定，不得以评估结果覆盖
-  - 确认后 MUST 把 mode 写入 `.openspec.yaml`（见 3.1.1）；存量 spec 缺省 full
-  - `--modify <name>` 更新 spec 时，如需变更执行模式，同样同步更新 `.openspec.yaml` 的 mode 行
-- **确定能力全集时必须搜索归档目录**：`openspec/specs/` 仅存放当前活跃的 specs，历史的 specs 已归档到 `openspec/changes/archive/` 中。判断某个能力是新增还是修改时，必须同时搜索 `openspec/changes/archive/` 下的所有 `specs/` 子目录，确保不会将已存在的归档能力误判为新能力。
+  - 确认后 MUST 把 mode 写入 `.spec.yaml`（见 3.1.1）；存量 spec 缺省 full
+  - `--modify <name>` 更新 spec 时，如需变更执行模式，同样同步更新 `.spec.yaml` 的 mode 行
+- **确定能力全集时必须搜索归档目录**：`spec/specs/` 仅存放当前活跃的 specs，历史的 specs 已归档到 `spec/archive/` 中。判断某个能力是新增还是修改时，必须同时搜索 `spec/archive/` 下的所有 `specs/` 子目录，确保不会将已存在的归档能力误判为新能力。

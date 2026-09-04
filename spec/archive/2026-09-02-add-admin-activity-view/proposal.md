@@ -17,7 +17,7 @@ Administrator 自愈闭环已上线（检测困境 → 唤起 admin → 处置�
 
 ### Modified Capabilities
 
-（无。openspec/specs/ 为空，全部为新增能力。）
+（无。spec/specs/ 为空，全部为新增能力。）
 
 ## Impact
 

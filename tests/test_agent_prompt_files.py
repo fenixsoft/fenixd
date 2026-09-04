@@ -30,7 +30,7 @@ AGENT_TYPES = list(AGENT_PROMPT_FILES.keys())
 
 
 def _mk_spec_dir(proot: Path, name: str) -> None:
-    d = proot / "openspec" / "changes" / name
+    d = proot / "spec" / "changes" / name
     d.mkdir(parents=True, exist_ok=True)
     (d / "tasks.md").write_text("# Tasks\n\n- [ ] 1.1 do it\n", encoding="utf-8")
 
@@ -70,7 +70,7 @@ class TestFileLoadAndPlaceholders:
         # 该文件引用的占位符替换为该项目实际路径
         vp = proot / ".fenix" / "verify-progress" / "demo"
         if "{spec_dir}" in template:
-            assert "openspec/changes/demo" in prompt
+            assert "spec/changes/demo" in prompt
         if "{scenarios_path}" in template:
             assert str(vp / "test_scenarios.json") in prompt
         if "{result_path}" in template:

@@ -628,7 +628,7 @@ class VerificationPipeline:
         if not section.strip():
             return
         report_path = (
-            Path(self._pm.project_root) / "openspec" / "changes"
+            Path(self._pm.project_root) / "spec" / "changes"
             / spec_name / "verification-report.md"
         )
         if not report_path.exists():
@@ -1048,7 +1048,7 @@ class VerificationPipeline:
                 ),
                 evidence=(
                     f"spec={spec_name}; report="
-                    f"openspec/changes/{spec_name}/verification-report.md"
+                    f"spec/changes/{spec_name}/verification-report.md"
                 ),
                 recommended_action=(
                     "检查 planner-judge 是否遵守 prompt 第4步（对全部非 PASS 场景补 "
@@ -1280,7 +1280,7 @@ class VerificationPipeline:
         """
         from core.deliverables import extract_declared, extract_paths_typed
 
-        spec_dir = self._pm.project_root / "openspec" / "changes" / spec_name
+        spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
         if not spec_dir.is_dir():
             return []
         # 声明优先（planner 交付契约）：tasks.md 有 `## Deliverables` 段时做机械
@@ -1776,7 +1776,7 @@ class VerificationPipeline:
                     description=error_msg[:300],
                     evidence=(
                         f"spec={spec_name}; "
-                        f"report=openspec/changes/{spec_name}/verification-report.md"
+                        f"report=spec/changes/{spec_name}/verification-report.md"
                     ),
                     recommended_action=(
                         "等待 Administrator 自动处置并重验；若已冻结请人工检查"
@@ -2043,7 +2043,7 @@ class VerificationPipeline:
         """验证报告产物闸门（add-verify-report-gate）。
 
         在验证裁决采纳处（verified / bug-found 即将推进）调用：校验
-        openspec/changes/<spec>/verification-report.md 存在；缺失时由框架从
+        spec/changes/<spec>/verification-report.md 存在；缺失时由框架从
         结构化数据确定性合成（不重跑验证、不覆盖既有文件）并发人工升级告警；
         结构化数据也不可用时 fail-closed。
 

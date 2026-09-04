@@ -42,7 +42,7 @@
 
 #### Scenario: 删除保留项目文件
 - **WHEN** 用户删除某项目
-- **THEN** 该项目目录、`STATE.md`、`openspec/`、`.fenix/` 等数据全部保留在磁盘，未被删除或改动
+- **THEN** 该项目目录、`STATE.md`、`spec/`、`.fenix/` 等数据全部保留在磁盘，未被删除或改动
 
 #### Scenario: 移除 ignored 条目后项目恢复
 - **WHEN** 用户从 `dashboard.yaml` 的 `ignored` 中删除某项目路径

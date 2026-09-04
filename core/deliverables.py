@@ -205,7 +205,7 @@ def _classify_line(line: str, doc_kind: str, in_tasks_header: bool,
 def extract_paths_typed(spec_dir) -> dict:
     """从 SPEC 目录提取路径，按语境分为交付物与引用两类（D1/D2）。
 
-    ``spec_dir`` 可为 ``str`` / ``Path``（指向 openspec/changes/<spec>/）。
+    ``spec_dir`` 可为 ``str`` / ``Path``（指向 spec/changes/<spec>/）。
     仅读取 tasks.md / proposal.md / specs/*.md。
 
     Returns:
@@ -365,7 +365,7 @@ def extract_paths(spec_dir) -> List[str]:
     平面列表不再区分语境，语境语义由 typed 版本与守卫调用点承接。
     既有调用方与测试行为不变。
 
-    ``spec_dir`` 可为 ``str`` / ``Path``（指向 openspec/changes/<spec>/）。
+    ``spec_dir`` 可为 ``str`` / ``Path``（指向 spec/changes/<spec>/）。
     仅读取 tasks.md / proposal.md / specs/*.md；无任何可提取路径时返回空列表。
 
     Returns:
@@ -397,7 +397,7 @@ def lint_declared(spec_dir, project_root) -> List[str]:
     lint 自身故障一律 fail-open（返回空清单放行晋升），不因 lint 阻塞流水线。
 
     Args:
-        spec_dir: SPEC 目录（openspec/changes/<spec>/）。
+        spec_dir: SPEC 目录（spec/changes/<spec>/）。
         project_root: 项目根（主树路径存在性判定基准）。
 
     Returns:

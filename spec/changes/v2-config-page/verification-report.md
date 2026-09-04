@@ -1,6 +1,6 @@
 # v2-config-page 验证报告（修复轮）
 
-- 规格变更：`openspec/changes/v2-config-page`
+- 规格变更：`spec/changes/v2-config-page`
 - 报告时间：2026-08-30T10:01:25Z（引擎 report.json 时间戳）
 - 运行结果：`.fenix-run-result.json` → `status: verified`
 - 结论：**验证通过（verified）**，无遗留 Bug。

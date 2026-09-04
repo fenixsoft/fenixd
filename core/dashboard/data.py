@@ -366,7 +366,7 @@ def get_spec_doc(project_root, spec: str, doc: str) -> dict:
     if doc not in _SPEC_DOC_WHITELIST:
         raise InvalidSpecDoc(doc)
 
-    changes_root = Path(project_root) / "openspec" / "changes"
+    changes_root = Path(project_root) / "spec" / "changes"
     if doc == "verification":
         # 验证报告：verification-report.md（可能尚未生成 → found=False）
         target = (changes_root / spec / "verification-report.md").resolve()
@@ -470,14 +470,14 @@ def set_spec_priority(project_root, spec: str, priority) -> dict:
 
 
 def soft_delete_spec(project_root, spec: str) -> dict:
-    """软删除 SPEC：STATE.md 移除条目 + openspec/changes/<name>/ 移入 archive。
+    """软删除 SPEC：STATE.md 移除条目 + spec/changes/<name>/ 移入 archive。
 
     两步任一失败则尽量回滚以保持两端数据一致，由调用方依据返回码处理：
     - STATE.md 不含该 spec → {found: False}（幂等，不发任何文件操作）
     - 运行中检测：runs 目录该 spec 有 mtime 在最近 120 秒内的运行产物 →
       {running: True, error: "spec 有进行中的运行"}（409 拒绝，不改数据）
     - 正常：remove_spec 原子剔除条目；目录若存在则 shutil.move 到
-      openspec/changes/archive/<name>-<Unix秒>/；目录缺失仅清状态（幂等）。
+      spec/archive/<name>-<Unix秒>/；目录缺失仅清状态（幂等）。
     - 归档同名冲突（极小概率）：在名字追加毫秒后缀重试，直至成功。
 
     Returns:
@@ -509,9 +509,10 @@ def soft_delete_spec(project_root, spec: str) -> dict:
     sm = StateMachine(proot / ".fenix" / "STATE.md")
 
     # 1. 先移动目录（若失败，STATE.md 尚未改动，天然一致）
-    changes_root = proot / "openspec" / "changes"
+    changes_root = proot / "spec" / "changes"
     spec_dir = changes_root / spec
-    archive_root = changes_root / "archive"
+    # archive 与 changes 平级（spec/archive/），不嵌套在 changes/ 下
+    archive_root = proot / "spec" / "archive"
     archived = False
     archive_path = None
     if spec_dir.is_dir():
@@ -540,17 +541,17 @@ def soft_delete_spec(project_root, spec: str) -> dict:
 
 
 def is_spec_archived(project_root, spec_name: str) -> bool:
-    """归档判定：STATE.md 有条目且活跃目录 `openspec/changes/<name>/` 不存在。
+    """归档判定：STATE.md 有条目且活跃目录 `spec/changes/<name>/` 不存在。
 
     D1：归档的**唯一事实来源**是活跃目录存在性——不检测 archive/ 下具体路径
     形态（删除路径命名 `<name>-<Unix秒>` 不同、手动移动命名不可控），也不写
     STATE.md 标志。三条归档路径（界面 API / CLI skill / 手动 mv）产出相同可见性。
     """
-    return not (Path(project_root) / "openspec" / "changes" / spec_name).is_dir()
+    return not (Path(project_root) / "spec" / "changes" / spec_name).is_dir()
 
 
 def archive_spec(project_root, spec_name: str) -> dict:
-    """归档 SPEC：把 `openspec/changes/<name>/` 移到 `archive/YYYY-MM-DD-<name>/`。
+    """归档 SPEC：把 `spec/changes/<name>/` 移到 `spec/archive/YYYY-MM-DD-<name>/`。
 
     与 `bin/fenix_archive.py::archive_change` 相同的移动逻辑与命名规则
     （D2：不 import 脚本，函数级复用核心逻辑）；STATE.md 条目**原样保留**。
@@ -575,14 +576,14 @@ def archive_spec(project_root, spec_name: str) -> dict:
         return {"ok": False, "found": True, "from": None, "to": None,
                 "error": f"仅终态 spec（done/pushed）可归档，当前状态: {status}"}
 
-    change_dir = proot / "openspec" / "changes" / spec_name
+    change_dir = proot / "spec" / "changes" / spec_name
     if not change_dir.is_dir():
         return {"ok": False, "found": True, "from": None, "to": None,
                 "error": f"Spec '{spec_name}' 活跃目录已不存在（可能已归档）"}
 
     from datetime import date
     target = (
-        proot / "openspec" / "changes" / "archive"
+        proot / "spec" / "archive"
         / f"{date.today().isoformat()}-{spec_name}"
     )
     if target.exists():
@@ -632,7 +633,7 @@ def auto_archive_check(project_root, config: dict,
     for name, entry in specs.items():
         if entry.get("status") not in TERMINAL:
             continue
-        if not (proot / "openspec" / "changes" / name).is_dir():
+        if not (proot / "spec" / "changes" / name).is_dir():
             continue  # 已归档，不计入
         candidates.append((name, entry))
 
@@ -893,11 +894,11 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
     For implementing SPECs, reads from the active implementer worktree first.
     live=True 时按 _should_overlay 叠加最新 impl run 的实时完成状态（并集）。
     """
-    tasks_path = Path(project_root) / "openspec" / "changes" / spec_name / "tasks.md"
+    tasks_path = Path(project_root) / "spec" / "changes" / spec_name / "tasks.md"
     if spec_status == "implementing":
         wt = find_implementer_worktree(project_root, spec_name)
         if wt:
-            wt_tasks = wt / "openspec" / "changes" / spec_name / "tasks.md"
+            wt_tasks = wt / "spec" / "changes" / spec_name / "tasks.md"
             if wt_tasks.exists():
                 tasks_path = wt_tasks
     if not tasks_path.exists():
@@ -976,7 +977,7 @@ def tasks_note(project_root, spec_name, spec_status: str = ""):
     空态可区分）；否则返回 ``None``。与 ``tasks`` 字段共用同一次解析语义
     （implementing 状态同样优先读 worktree 内的 tasks.md）。
     """
-    tasks_path = Path(project_root) / "openspec" / "changes" / spec_name / "tasks.md"
+    tasks_path = Path(project_root) / "spec" / "changes" / spec_name / "tasks.md"
     if not tasks_path.exists():
         return None
     if parse_tasks(project_root, spec_name, spec_status):
@@ -1006,7 +1007,7 @@ def run_task_progress(project_root, spec_name) -> dict:
 
 def count_scenarios(project_root, spec_name) -> int:
     """统计 SPEC 各 spec.md 中 Scenario 数量。"""
-    specs_dir = Path(project_root) / "openspec" / "changes" / spec_name / "specs"
+    specs_dir = Path(project_root) / "spec" / "changes" / spec_name / "specs"
     if not specs_dir.is_dir():
         return 0
     count = 0
@@ -1382,7 +1383,7 @@ def parse_verdict(project_root, spec_name) -> dict:
     - conclusion: 结论段落（人类可读，避免用户只看 "0通过, 31失败"）
     - summary: {"passed","failed","errors","product_bugs","env_issues"} 尽力解析
     """
-    path = Path(project_root) / "openspec" / "changes" / spec_name / "verification-report.md"
+    path = Path(project_root) / "spec" / "changes" / spec_name / "verification-report.md"
     if not path.exists():
         return {"exists": False, "status": "", "status_detail": "", "conclusion": "", "summary": {}}
     try:
@@ -1826,8 +1827,8 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         total_duration = sum(int(r.get("duration_seconds") or 0) for r in runs)
     else:
         total_duration = persisted
-    # add-fast-track-mode（task 7.1）：执行模式（读 .openspec.yaml，缺省 full）
-    from core.openspec_mode import read_spec_mode
+    # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
+    from core.spec_mode import read_spec_mode
     mode = read_spec_mode(project_root, spec_name)
     return {
         "name": spec_name,
@@ -1897,12 +1898,12 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict,
     """单个 spec 摘要的依赖文件签名集合（对齐 spec_summary 实际读路径）。
 
     覆盖 tasks.md（implementing 时含实现 worktree 副本）/ specs/ 目录整体 /
-    .openspec.yaml / verification-report.md / verify-progress 相关文件 /
+    .spec.yaml / verification-report.md / verify-progress 相关文件 /
     该 spec 的 run 产物（由调用方预扫描 runs_sigs 传入）。宁多勿漏：把
     specs/ 目录整体入签名，依赖文件集合单向全覆盖。
     """
     sigs: dict = {}
-    changes = proot / "openspec" / "changes" / spec_name
+    changes = proot / "spec" / "changes" / spec_name
 
     def add(p: Path):
         sig = _stat_sig(p)
@@ -1913,8 +1914,8 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict,
     if entry and entry.get("status") == "implementing":
         wt = find_implementer_worktree(proot, spec_name)
         if wt is not None:
-            add(wt / "openspec" / "changes" / spec_name / "tasks.md")
-    add(changes / ".openspec.yaml")
+            add(wt / "spec" / "changes" / spec_name / "tasks.md")
+    add(changes / ".spec.yaml")
     add(changes / "verification-report.md")
     specs_dir = changes / "specs"
     if specs_dir.is_dir():
@@ -2333,8 +2334,8 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     runs = get_runs(project_root, spec_name, include_archive=True)
     verdict = parse_verdict(project_root, spec_name)
     spec_status = entry.get("status", "")
-    # add-fast-track-mode（task 7.1）：执行模式（读 .openspec.yaml，缺省 full）
-    from core.openspec_mode import read_spec_mode
+    # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
+    from core.spec_mode import read_spec_mode
     mode = read_spec_mode(project_root, spec_name)
     return {
         "name": spec_name,

@@ -31,7 +31,7 @@ def _load_fixture(name):
 
 
 def _write_spec_doc(proot: Path, spec: str, rel: str, text: str) -> Path:
-    p = proot / "openspec" / "changes" / spec / rel
+    p = proot / "spec" / "changes" / spec / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
     return p

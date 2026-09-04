@@ -1,8 +1,8 @@
 ## Context
 
-`worktree_manager.create()` 用 `git worktree add -b <branch> <path> HEAD` 从分支 HEAD 创建隔离工作区。SPEC 源文件（`openspec/changes/<spec>/`）由 `/fenix-new` 写入主工作树且未提交，因此 worktree 中不存在。实测（`add-fenix-dashboard`）实现 Agent 找不到 SPEC 后回落到主仓库直接编辑并 `git commit` 到 `main`（`49c87de`），绕过隔离与审批门禁。
+`worktree_manager.create()` 用 `git worktree add -b <branch> <path> HEAD` 从分支 HEAD 创建隔离工作区。SPEC 源文件（`spec/changes/<spec>/`）由 `/fenix-new` 写入主工作树且未提交，因此 worktree 中不存在。实测（`add-fenix-dashboard`）实现 Agent 找不到 SPEC 后回落到主仓库直接编辑并 `git commit` 到 `main`（`49c87de`），绕过隔离与审批门禁。
 
-另外 daemon 读取实现结果的位置固定为主仓库根：`pm_engine.py` 的 `.fenix-run-result.json` 读取路径为 `self.project_root / ".fenix-run-result.json"`。任务进度（`tasks.md`）同样由各消费方从主仓库 `openspec/changes/<spec>/tasks.md` 读取。
+另外 daemon 读取实现结果的位置固定为主仓库根：`pm_engine.py` 的 `.fenix-run-result.json` 读取路径为 `self.project_root / ".fenix-run-result.json"`。任务进度（`tasks.md`）同样由各消费方从主仓库 `spec/changes/<spec>/tasks.md` 读取。
 
 ## Goals / Non-Goals
 
@@ -20,7 +20,7 @@
 
 ### D1. 播种方式：复制 SPEC 目录进 worktree 并提交到隔离分支
 
-**决策**：在 `worktree_manager.create` 完成 `git worktree add` 后，检查 `openspec/changes/<spec>/` 是否在主工作树存在且 worktree 内缺失；若是，则把该目录复制进 worktree，`git add` + `git commit`（提交信息 `[fenix] spec: <spec-name>`）到新分支。实现 Agent 随后在 worktree 内读写 SPEC、标记 tasks、写 `.fenix-run-result.json`，全部变更随分支走。
+**决策**：在 `worktree_manager.create` 完成 `git worktree add` 后，检查 `spec/changes/<spec>/` 是否在主工作树存在且 worktree 内缺失；若是，则把该目录复制进 worktree，`git add` + `git commit`（提交信息 `[fenix] spec: <spec-name>`）到新分支。实现 Agent 随后在 worktree 内读写 SPEC、标记 tasks、写 `.fenix-run-result.json`，全部变更随分支走。
 
 **理由**：使隔离分支自包含（SPEC + 实现同分支），实现 Agent 无需任何额外 add-dir 也能在 cwd（worktree）内完成全部工作；分支内容与 `/fenix-approve` 推送内容一致。
 **备选**：
@@ -36,7 +36,7 @@
 
 ### D3. 进度展示：tasks.md 对 implementing 的 SPEC 从 worktree 读取
 
-**决策**：`bin/statusline.py` 与 `core/dashboard/data.py` 的任务进度解析，对状态为 `implementing` 的 SPEC 优先从活跃 implementer worktree 的 `openspec/changes/<spec>/tasks.md` 读取（worktree 缺失回退主仓库）；非 implementing 状态一律读主仓库。`/fenix-status` skill 的 tasks 解析同理。
+**决策**：`bin/statusline.py` 与 `core/dashboard/data.py` 的任务进度解析，对状态为 `implementing` 的 SPEC 优先从活跃 implementer worktree 的 `spec/changes/<spec>/tasks.md` 读取（worktree 缺失回退主仓库）；非 implementing 状态一律读主仓库。`/fenix-status` skill 的 tasks 解析同理。
 
 **理由**：播种后实现 Agent 标记 tasks.md 发生在 worktree；若进度展示仍读主仓库，会一直显示「无进度」。回退保证 testing/verified/done 阶段（worktree 已清理）仍读主仓库分支的最新进度。
 

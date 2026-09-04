@@ -23,8 +23,8 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
     (proot / ".fenix" / "logs").mkdir(parents=True, exist_ok=True)
     (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
     (proot / ".fenix" / "verify-progress" / "myspec" / "screenshots").mkdir(parents=True, exist_ok=True)
-    (proot / "openspec" / "changes" / "myspec" / "specs").mkdir(parents=True, exist_ok=True)
-    (proot / "openspec" / "changes" / "otherspec" / "specs").mkdir(parents=True, exist_ok=True)
+    (proot / "spec" / "changes" / "myspec" / "specs").mkdir(parents=True, exist_ok=True)
+    (proot / "spec" / "changes" / "otherspec" / "specs").mkdir(parents=True, exist_ok=True)
 
     (proot / ".fenix" / "STATE.md").write_text(
         "# Fenix Project State\n\n## Specs\n\n"
@@ -36,13 +36,13 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
     )
     (proot / ".fenix" / "config.yaml").write_text("project:\n  name: fake\n", encoding="utf-8")
 
-    (proot / "openspec" / "changes" / "myspec" / "tasks.md").write_text(
+    (proot / "spec" / "changes" / "myspec" / "tasks.md").write_text(
         "## 1. 阶段一\n\n"
         "- [x] 1.1 任务一\n"
         "- [ ] 1.2 任务二\n",
         encoding="utf-8",
     )
-    (proot / "openspec" / "changes" / "otherspec" / "tasks.md").write_text(
+    (proot / "spec" / "changes" / "otherspec" / "tasks.md").write_text(
         "## 1. 完成\n\n- [x] 1.1 任务一\n", encoding="utf-8",
     )
     return proot
@@ -128,7 +128,7 @@ class TestIncrementalWatcher:
         proot, hub, w = self._mk(tmp_path)
         w.scan_once()
         hub.events.clear()
-        tasks = proot / "openspec" / "changes" / "myspec" / "tasks.md"
+        tasks = proot / "spec" / "changes" / "myspec" / "tasks.md"
         self._atomic_write(tasks, tasks.read_text(encoding="utf-8").replace(
             "- [ ] 1.2", "- [x] 1.2"))
         w.scan_once()
@@ -145,10 +145,10 @@ class TestIncrementalWatcher:
         w.scan_once()
         hub.events.clear()
         # otherspec 目录删除 → changes/ 目录签名变化 → _scan_spec_dirs 返回 removed
-        otherspec = proot / "openspec" / "changes" / "otherspec"
+        otherspec = proot / "spec" / "changes" / "otherspec"
         import shutil
         shutil.rmtree(str(otherspec))
-        self._bump_dir_mtime(proot / "openspec" / "changes")
+        self._bump_dir_mtime(proot / "spec" / "changes")
         w.scan_once()
         state_events = [e for e, _ in hub.events if e["type"] == "state"]
         assert state_events
@@ -198,7 +198,7 @@ class TestIncrementalWatcher:
         proot = make_project(tmp_path, "big")
         # 追加 1000 个假 spec 目录
         for i in range(1000):
-            d = proot / "openspec" / "changes" / f"fakespec{i:04d}"
+            d = proot / "spec" / "changes" / f"fakespec{i:04d}"
             (d / "specs").mkdir(parents=True, exist_ok=True)
             (d / "tasks.md").write_text("## 1. X\n\n- [ ] 1.1 a\n", encoding="utf-8")
         hub = _FakeHub()

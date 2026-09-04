@@ -1,8 +1,8 @@
 """
 spec_gen.py — fenix 原生 SPEC 生成器。
 
-提供与外部 openspec CLI（@fission-ai/openspec v1.3.1）等价的 spec-driven 工作流能力：
-- new_change()：创建 change 脚手架（kebab-case 校验、同名拒绝、写 .openspec.yaml）
+提供 spec-driven 工作流能力（行为对标原 vendored 的上游 npm 工具链实现）：
+- new_change()：创建 change 脚手架（kebab-case 校验、同名拒绝、写 .spec.yaml）
 - status()：按依赖顺序计算 artifact 完成状态（done/ready/blocked + missingDeps）
 - instructions()：返回指定 artifact 的生成指引（outputPath/instruction/template/dependencies）
 
@@ -77,7 +77,7 @@ def _validate_name(name: str) -> Optional[str]:
 # ── change 脚手架 ──────────────────────────────────────────────────
 
 def new_change(project_root: Path, name: str) -> Path:
-    """创建 change 脚手架：建立目录并写入 `.openspec.yaml`。
+    """创建 change 脚手架：建立目录并写入 `.spec.yaml`。
 
     Raises:
         ValueError: 名称非 kebab-case，或同名 change 已存在（不覆盖）。
@@ -86,13 +86,13 @@ def new_change(project_root: Path, name: str) -> Path:
     if error:
         raise ValueError(error)
 
-    change_dir = project_root / "openspec" / "changes" / name
+    change_dir = project_root / "spec" / "changes" / name
     if change_dir.exists():
         raise ValueError(f"Change '{name}' already exists at {change_dir}")
 
     change_dir.mkdir(parents=True, exist_ok=True)
     metadata = f"schema: {DEFAULT_SCHEMA}\ncreated: {date.today().isoformat()}\n"
-    (change_dir / ".openspec.yaml").write_text(metadata, encoding="utf-8")
+    (change_dir / ".spec.yaml").write_text(metadata, encoding="utf-8")
     return change_dir
 
 
@@ -148,7 +148,7 @@ def _get_blocked(schema: Dict[str, Any], completed: Set[str]) -> Dict[str, List[
 
 
 def _get_build_order(schema: Dict[str, Any]) -> List[str]:
-    """Kahn 拓扑排序，与 openspec 的 getBuildOrder 输出一致（确定性）。"""
+    """Kahn 拓扑排序，拓扑排序输出确定性（与上游 vendored schema 的 getBuildOrder 一致）。"""
     in_degree = {a["id"]: len(a.get("requires", [])) for a in schema["artifacts"]}
     dependents: Dict[str, List[str]] = {a["id"]: [] for a in schema["artifacts"]}
     for artifact in schema["artifacts"]:
@@ -170,12 +170,12 @@ def _get_build_order(schema: Dict[str, Any]) -> List[str]:
 
 
 def status(project_root: Path, name: str) -> Dict[str, Any]:
-    """计算 change 的 artifact 完成状态，输出与 openspec `status --json` 同构。
+    """计算 change 的 artifact 完成状态，输出状态 JSON（与上游 vendored schema 的 `status --json` 同构）。
 
     Raises:
         ValueError: change 不存在。
     """
-    change_dir = project_root / "openspec" / "changes" / name
+    change_dir = project_root / "spec" / "changes" / name
     if not change_dir.is_dir():
         raise ValueError(f"Change '{name}' not found at {change_dir}")
 
@@ -234,7 +234,7 @@ def instructions(project_root: Path, artifact_id: str, name: str) -> Dict[str, A
     Raises:
         ValueError: change 不存在或 artifact 不在 schema 中。
     """
-    change_dir = project_root / "openspec" / "changes" / name
+    change_dir = project_root / "spec" / "changes" / name
     if not change_dir.is_dir():
         raise ValueError(f"Change '{name}' not found at {change_dir}")
 

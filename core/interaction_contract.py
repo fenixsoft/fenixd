@@ -235,7 +235,7 @@ def collect_spec_candidates(project_root, spec_name: str) -> List[InteractiveCan
 
     读取失败/文档缺失时返回空列表（不抛出）。
     """
-    base = Path(project_root) / "openspec" / "changes" / spec_name
+    base = Path(project_root) / "spec" / "changes" / spec_name
     paths: List[Path] = []
     for name in ("proposal.md", "design.md", "tasks.md"):
         p = base / name

@@ -3,7 +3,7 @@
 实现依据（实施 agent 必读）：
 - 能力定义 `specs/implementer-deliverable-gate/spec.md`（MODIFIED）；设计决策 design.md D1-D4
 - 现状代码：`.fenix/core/deliverables.py`（extract_paths）、`.fenix/core/pm_engine.py` `_deliverable_gate_missing`（约 3491-3511 行，含热修 4461231 的内联归一化——本次下沉）
-- 真实夹具：`openspec/changes/add-interaction-contract-and-per-assert-triage/tasks.md`（引用语境样本）与分支 `fenix/add-interaction-contract-and-per-assert-triage-1788091910`
+- 真实夹具：`spec/changes/add-interaction-contract-and-per-assert-triage/tasks.md`（引用语境样本）与分支 `fenix/add-interaction-contract-and-per-assert-triage-1788091910`
 
 ## 1. 提取器升级
 

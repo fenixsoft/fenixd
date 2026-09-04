@@ -14,7 +14,7 @@
 - **THEN** 其中包含指向全部 10 篇正文的相对链接，并给出「新用户入门」与「运维排查」两条阅读路径建议
 
 ### Requirement: 覆盖范围完整
-文档集 SHALL 覆盖以下主题，且主题归属与提纲一致：完整开发流程（安装→初始化→启动→提需求→自动循环→审批推送）落入快速上手与核心概念；状态机 10 状态与全部合法转移落入生命周期篇；7 个 fenix-* skill 与 bin/ 辅助脚本落入 CLI 篇；fast-track 与 full 执行模式的选择标准落入 CLI 篇；三步验证流水线、verify.yaml 契约、场景冻结、verdict 分类与修复循环落入验证篇；优先级/并发/三类预算/重试退避/超时监督/自动恢复/merge 熔断/fix 族谱收敛/告警分级/重启协议落入治理篇；Dashboard 四页与帮助页自身的用法落入 Dashboard 篇；分级配置合并、热更新、全部配置键落入配置篇；STATE.md、openspec artifacts、Deliverables 声明段、runs/verify-progress/admin_alerts/todo.md/PROJECT_LOG.md 落入数据地图篇；常见故障现象→根因→处置落入 FAQ 篇。
+文档集 SHALL 覆盖以下主题，且主题归属与提纲一致：完整开发流程（安装→初始化→启动→提需求→自动循环→审批推送）落入快速上手与核心概念；状态机 10 状态与全部合法转移落入生命周期篇；7 个 fenix-* skill 与 bin/ 辅助脚本落入 CLI 篇；fast-track 与 full 执行模式的选择标准落入 CLI 篇；三步验证流水线、verify.yaml 契约、场景冻结、verdict 分类与修复循环落入验证篇；优先级/并发/三类预算/重试退避/超时监督/自动恢复/merge 熔断/fix 族谱收敛/告警分级/重启协议落入治理篇；Dashboard 四页与帮助页自身的用法落入 Dashboard 篇；分级配置合并、热更新、全部配置键落入配置篇；STATE.md、SPEC artifacts、Deliverables 声明段、runs/verify-progress/admin_alerts/todo.md/PROJECT_LOG.md 落入数据地图篇；常见故障现象→根因→处置落入 FAQ 篇。
 
 #### Scenario: 状态机文档与代码一致
 - **WHEN** 对照 `core/state_machine.py` 的 `SpecStatus` 与 `VALID_TRANSITIONS` 审阅生命周期篇

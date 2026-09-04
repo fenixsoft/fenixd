@@ -22,15 +22,15 @@ from core.dashboard.data import (
 
 
 def _make_project(root: Path, specs: dict) -> Path:
-    """构造最小可用项目：.fenix/STATE.md + openspec/changes/<name>/ 目录。
+    """构造最小可用项目：.fenix/STATE.md + spec/changes/<name>/ 目录。
 
     specs: {name: {"status": ..., "updated": ...}}
     """
-    (root / "openspec" / "changes").mkdir(parents=True, exist_ok=True)
+    (root / "spec" / "changes").mkdir(parents=True, exist_ok=True)
     (root / ".fenix").mkdir(parents=True, exist_ok=True)
     lines = ["# Fenix Project State", "", "## Specs", ""]
     for name, entry in specs.items():
-        (root / "openspec" / "changes" / name).mkdir(exist_ok=True)
+        (root / "spec" / "changes" / name).mkdir(exist_ok=True)
         lines.append(f"### {name}")
         lines.append(f"- status: {entry['status']}")
         lines.append(f"- updated: {entry.get('updated', '2026-01-01T00:00:00+00:00')}")
@@ -52,7 +52,7 @@ class TestArchiveSpec(unittest.TestCase):
 
     def test_archive_terminal_success(self):
         _make_project(self.root, {"spec-a": {"status": "done"}})
-        (self.root / "openspec" / "changes" / "spec-a" / "tasks.md").write_text(
+        (self.root / "spec" / "changes" / "spec-a" / "tasks.md").write_text(
             "# T", encoding="utf-8")
         result = archive_spec(self.root, "spec-a")
         self.assertTrue(result["ok"])
@@ -60,8 +60,8 @@ class TestArchiveSpec(unittest.TestCase):
         self.assertTrue(result["to"].endswith("spec-a"))
         self.assertIn("archive", result["to"])
         # 目录已移动
-        self.assertFalse((self.root / "openspec" / "changes" / "spec-a").is_dir())
-        archive_dir = self.root / "openspec" / "changes" / "archive"
+        self.assertFalse((self.root / "spec" / "changes" / "spec-a").is_dir())
+        archive_dir = self.root / "spec" / "archive"
         archived = next(archive_dir.iterdir())
         self.assertTrue(archived.is_dir())
         self.assertTrue((archived / "tasks.md").exists())
@@ -81,19 +81,19 @@ class TestArchiveSpec(unittest.TestCase):
         self.assertTrue(result["found"])
         self.assertIn("仅终态", result["error"])
         # 目录与 STATE.md 均不变
-        self.assertTrue((self.root / "openspec" / "changes" / "spec-x").is_dir())
+        self.assertTrue((self.root / "spec" / "changes" / "spec-x").is_dir())
         self.assertIn("spec-x", parse_state(self.root))
 
     def test_archive_target_exists_no_overwrite(self):
         _make_project(self.root, {"spec-c": {"status": "pushed"}})
-        tgt = (self.root / "openspec" / "changes" / "archive"
+        tgt = (self.root / "spec" / "archive"
                / f"{date.today().isoformat()}-spec-c")
         tgt.mkdir(parents=True)
         (tgt / "keep.txt").write_text("keep", encoding="utf-8")
         result = archive_spec(self.root, "spec-c")
         self.assertFalse(result["ok"])
         self.assertIn("已存在", result["error"])
-        self.assertTrue((self.root / "openspec" / "changes" / "spec-c").is_dir())
+        self.assertTrue((self.root / "spec" / "changes" / "spec-c").is_dir())
         self.assertEqual((tgt / "keep.txt").read_text(encoding="utf-8"), "keep")
 
     def test_archive_nonexistent_spec(self):
@@ -106,7 +106,7 @@ class TestArchiveSpec(unittest.TestCase):
         _make_project(self.root, {"spec-d": {"status": "done"}})
         # 目录缺失即视为已归档（与 CLI skill 手动归档同态）
         import shutil
-        shutil.rmtree(self.root / "openspec" / "changes" / "spec-d")
+        shutil.rmtree(self.root / "spec" / "changes" / "spec-d")
         result = archive_spec(self.root, "spec-d")
         self.assertFalse(result["ok"])
         self.assertTrue(result["found"])
@@ -134,7 +134,7 @@ class TestArchivedFlag(unittest.TestCase):
 
     def test_missing_dir_archived(self):
         import shutil
-        shutil.rmtree(self.root / "openspec" / "changes" / "arch-spec")
+        shutil.rmtree(self.root / "spec" / "changes" / "arch-spec")
         specs = parse_state(self.root)
         self.assertTrue(spec_summary(self.root, "arch-spec", specs["arch-spec"])["archived"])
 
@@ -240,7 +240,7 @@ class TestAutoArchiveCheck(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.root = Path(self.tmpdir)
         (self.root / ".fenix").mkdir(parents=True)
-        (self.root / "openspec" / "changes").mkdir(parents=True)
+        (self.root / "spec" / "changes").mkdir(parents=True)
 
     def tearDown(self):
         import shutil
@@ -249,7 +249,7 @@ class TestAutoArchiveCheck(unittest.TestCase):
     def _write_project(self, specs: dict):
         """specs: {name: {"status": ..., "updated": ...}}"""
         for name, entry in specs.items():
-            (self.root / "openspec" / "changes" / name).mkdir(exist_ok=True)
+            (self.root / "spec" / "changes" / name).mkdir(exist_ok=True)
         lines = ["# Fenix Project State", "", "## Specs", ""]
         for name, entry in specs.items():
             lines += [f"### {name}", f"- status: {entry['status']}",
@@ -273,10 +273,10 @@ class TestAutoArchiveCheck(unittest.TestCase):
         from core.dashboard.data import auto_archive_check
         r = auto_archive_check(self.root, ConfigLoader.resolve_config(self.root))
         self.assertEqual(r["archived"], 2)
-        self.assertFalse((self.root / "openspec" / "changes" / "a").is_dir())
-        self.assertFalse((self.root / "openspec" / "changes" / "b").is_dir())
-        self.assertTrue((self.root / "openspec" / "changes" / "c").is_dir())
-        self.assertTrue((self.root / "openspec" / "changes" / "d").is_dir())
+        self.assertFalse((self.root / "spec" / "changes" / "a").is_dir())
+        self.assertFalse((self.root / "spec" / "changes" / "b").is_dir())
+        self.assertTrue((self.root / "spec" / "changes" / "c").is_dir())
+        self.assertTrue((self.root / "spec" / "changes" / "d").is_dir())
         self.assertIn("a", parse_state(self.root))  # STATE.md preserved
 
     def test_no_action_under_threshold(self):
@@ -288,7 +288,7 @@ class TestAutoArchiveCheck(unittest.TestCase):
         from core.dashboard.data import auto_archive_check
         r = auto_archive_check(self.root, ConfigLoader.resolve_config(self.root))
         self.assertEqual(r["archived"], 0)
-        self.assertTrue((self.root / "openspec" / "changes" / "x").is_dir())
+        self.assertTrue((self.root / "spec" / "changes" / "x").is_dir())
 
     def test_threshold_zero_disabled(self):
         self._write_project({"y": {"status": "done", "updated": "2026-01-01T00:00:00+00:00"}})
@@ -308,7 +308,7 @@ class TestAutoArchiveCheck(unittest.TestCase):
             "f3": {"status": "pushed", "updated": "2026-01-03T00:00:00+00:00"},
         })
         # 预置 f1 的归档目标（模拟同日已归档）
-        conflict = self.root / "openspec" / "changes" / "archive" / f"{date.today().isoformat()}-f1"
+        conflict = self.root / "spec" / "archive" / f"{date.today().isoformat()}-f1"
         conflict.mkdir(parents=True)
         (conflict / "sentinel.txt").write_text("keep", encoding="utf-8")
         self._set_threshold(1)
@@ -318,8 +318,8 @@ class TestAutoArchiveCheck(unittest.TestCase):
         self.assertEqual(r["archived"], 1)
         self.assertEqual(r["skipped"], 1)
         # f1 不动（冲突），f2 归档
-        self.assertTrue((self.root / "openspec" / "changes" / "f1").is_dir())
-        self.assertFalse((self.root / "openspec" / "changes" / "f2").is_dir())
+        self.assertTrue((self.root / "spec" / "changes" / "f1").is_dir())
+        self.assertFalse((self.root / "spec" / "changes" / "f2").is_dir())
 
     def test_non_terminal_and_archived_not_counted(self):
         """implementing 与已归档（目录缺失）的 SPEC 不计入终态数量。"""
@@ -331,7 +331,7 @@ class TestAutoArchiveCheck(unittest.TestCase):
         })
         # n1 已归档（目录缺失）
         import shutil
-        shutil.rmtree(self.root / "openspec" / "changes" / "n1")
+        shutil.rmtree(self.root / "spec" / "changes" / "n1")
         self._set_threshold(3)
         from core.config import ConfigLoader
         from core.dashboard.data import auto_archive_check
@@ -351,8 +351,8 @@ from core.dashboard.server import DashboardHTTPServer, find_free_port
 def _make_archive_project(tmp_path, name="proj-a"):
     proot = tmp_path / name
     (proot / ".fenix" / "logs").mkdir(parents=True)
-    (proot / "openspec" / "changes" / "done-spec").mkdir(parents=True)
-    (proot / "openspec" / "changes" / "doing-spec").mkdir(parents=True)
+    (proot / "spec" / "changes" / "done-spec").mkdir(parents=True)
+    (proot / "spec" / "changes" / "doing-spec").mkdir(parents=True)
     (proot / ".fenix" / "STATE.md").write_text(
         "# Fenix Project State\n\n## Specs\n\n"
         "### done-spec\n- status: pushed\n- priority: 1\n- created: 2026-01-01T00:00:00+00:00\n"
@@ -416,7 +416,7 @@ class TestSpecArchiveAPI:
         assert body["to"].endswith("done-spec")
         assert "archive" in body["to"]
         # 目录移动 + STATE.md 保留
-        assert not (proot / "openspec" / "changes" / "done-spec").is_dir()
+        assert not (proot / "spec" / "changes" / "done-spec").is_dir()
         assert "done-spec" in parse_state(proot)
         # 活动事件已写日志
         events = dash_data.get_recent_events(proot, minutes=10)
@@ -429,7 +429,7 @@ class TestSpecArchiveAPI:
         assert status == 403
         assert "仅终态" in body["error"]
         # 目录与 STATE.md 不变
-        assert (proot / "openspec" / "changes" / "doing-spec").is_dir()
+        assert (proot / "spec" / "changes" / "doing-spec").is_dir()
         assert "doing-spec" in parse_state(proot)
 
     def test_archive_unknown_spec_404(self, archive_server):
@@ -444,7 +444,7 @@ class TestSpecArchiveAPI:
 
     def test_archive_conflict_target_exists_409(self, archive_server):
         proot, srv = archive_server
-        tgt = proot / "openspec" / "changes" / "archive" / f"{date.today().isoformat()}-done-spec"
+        tgt = proot / "spec" / "archive" / f"{date.today().isoformat()}-done-spec"
         tgt.mkdir(parents=True)
         status, body = srv.post("/api/spec-archive?project=proj-a&spec=done-spec")
         assert status == 409

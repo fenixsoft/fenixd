@@ -28,7 +28,7 @@ dashboard server 进程与 daemon 分离，禁止 server 直接起 agent（会�
 run_administrator 已接受 detail signal 构造 prompt。manual-intervention 信号的 description 固定为「人工呼叫：检查 SPEC <name> 出现什么问题并尝试处置」。不新增 prompt 分支，现有 administrator prompt 完全适用（其铁律已覆盖先诊断后动手、留痕、可升级）。
 
 ### D4 删除 = remove_spec + 目录移动到 archive
-state_machine 新增 `remove_spec(name)`（read_all → pop → write_all，原子写与现有锁语义一致）。目录用 `shutil.move` 到 `openspec/changes/archive/<name>-<Unix秒>/`。archive 根目录与项目扫描的隔离：event_bus/pm_engine 只扫 openspec/changes/<name> 直接子目录且过滤 archive 目录名，实现时需确认扫描逻辑对 archive 前缀天然免疫（若否则加显式排除）。
+state_machine 新增 `remove_spec(name)`（read_all → pop → write_all，原子写与现有锁语义一致）。目录用 `shutil.move` 到 `spec/archive/<name>-<Unix秒>/`。archive 根目录与项目扫描的隔离：event_bus/pm_engine 只扫 spec/changes/<name> 直接子目录且过滤 archive 目录名，实现时需确认扫描逻辑对 archive 前缀天然免疫（若否则加显式排除）。
 运行中保护：检查 runs 目录该 spec 是否有 mtime 在最近 120 秒内更新的 run 文件，有则 409。
 
 ### D5 优先级弹窗复用系统 `prompt()`
@@ -38,7 +38,7 @@ P1-P9 输入框无需自定义组件，浏览器 prompt 预填当前值，取消
 
 - 手动唤起被频繁点击 → 每次一个完整 LLM run 有成本；靠 409（请求文件存在）+ 进行中提示缓解，暂不加频次限制（本机工具）
 - 软删除后 spec 目录带时间戳后缀，恢复时需手工去掉后缀移回——已接受的恢复方式
-- 与并行 git 操作冲突风险低：STATE.md 被 .gitignore 忽略，openspec 归档移动产生的删除由用户后续正常提交
+- 与并行 git 操作冲突风险低：STATE.md 被 .gitignore 忽略，spec 归档移动产生的删除由用户后续正常提交
 
 ## Open Questions
 

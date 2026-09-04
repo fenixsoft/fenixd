@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fenix_archive.py — 将已完成的 change 归档到 openspec/changes/archive/YYYY-MM-DD-<name>。
+fenix_archive.py — 将已完成的 change 归档到 spec/archive/YYYY-MM-DD-<name>。
 
 用法（项目根目录下经 .fenix 软链接调用）:
     python3 .fenix/bin/fenix_archive.py <name>
@@ -20,7 +20,7 @@ FRAMEWORK_ROOT = Path(__file__).resolve().parent.parent
 
 
 def archive_change(project_root: Path, name: str) -> dict:
-    """将 `openspec/changes/<name>/` 移动到 `openspec/changes/archive/YYYY-MM-DD-<name>`。
+    """将 `spec/changes/<name>/` 移动到 `spec/archive/YYYY-MM-DD-<name>`。
 
     Returns:
         dict: {"from": 原路径, "to": 目标路径}
@@ -28,12 +28,12 @@ def archive_change(project_root: Path, name: str) -> dict:
     Raises:
         ValueError: change 不存在，或目标归档路径已存在（不覆盖）。
     """
-    change_dir = project_root / "openspec" / "changes" / name
+    change_dir = project_root / "spec" / "changes" / name
     if not change_dir.is_dir():
         raise ValueError(f"Change '{name}' not found at {change_dir}")
 
     target = (
-        project_root / "openspec" / "changes" / "archive"
+        project_root / "spec" / "archive"
         / f"{date.today().isoformat()}-{name}"
     )
     if target.exists():
@@ -64,7 +64,7 @@ def archive_change(project_root: Path, name: str) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="归档 change 到 openspec/changes/archive/")
+    parser = argparse.ArgumentParser(description="归档 change 到 spec/archive/")
     parser.add_argument("name", help="要归档的 change 名称")
     parser.add_argument(
         "--project",

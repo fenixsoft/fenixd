@@ -9,7 +9,7 @@
 ## 1. 原地打回处置
 
 - [x] 1.1 bug-found（真实产品缺陷分流后）处置替换：递增 `_verify_fail_rounds` 并持久化；状态重置 bug-found → implementing；MUST NOT 调用 fix spec 派生
-- [x] 1.2 tasks.md「`## 验证修复`」段注入：末尾追加或按轮数更新，引用 `openspec/changes/<spec>/verification-report.md` 与「真实产品 Bug」；不改写既有任务与勾选状态
+- [x] 1.2 tasks.md「`## 验证修复`」段注入：末尾追加或按轮数更新，引用 `spec/changes/<spec>/verification-report.md` 与「真实产品 Bug」；不改写既有任务与勾选状态
 - [x] 1.3 升级闸门：`_verify_fail_rounds` 达到模块常量阈值 3 → 状态置 blocked + human-escalation-alerts 告警（含 SPEC 名、轮数、报告路径），不再打回
 
 ## 2. legacy 兼容与退役
@@ -27,5 +27,5 @@
 - [x] 4.1 运行 `python3 -m pytest .fenix/tests/ -v` 确认无回归
 - [x] 4.2 执行 `bash scripts/package.sh` 生成最新扩展包## 验证修复（第 2 轮失败）
 
-- [ ] 阅读 `openspec/changes/add-inplace-bug-repair/verification-report.md`，定位「真实产品 Bug」并修复
+- [ ] 阅读 `spec/changes/add-inplace-bug-repair/verification-report.md`，定位「真实产品 Bug」并修复
 - [ ] 修复后重跑验证确认通过

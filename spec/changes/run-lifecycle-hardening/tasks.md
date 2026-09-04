@@ -21,9 +21,9 @@
 
 ## 1 归档自动提交（archive-auto-commit）
 
-- [x] 1.1 push 流程（main-first 尾部）新增归档收口步骤：检测 `openspec/changes/` 下归档移动残留（`git status --porcelain` 过滤该路径前缀的删除与 archive 未跟踪/修改项），存在则 `git add` 限定该路径 + 单 commit（信息 `[fenix] archive: <涉及 spec 名列表> 归档入库`）+ push；无残留零动作
-- [x] 1.2 失败降级：归档 commit/push 失败记 WARNING（含 stderr 摘要）并继续流程，spec 终态不受影响，残留留给下次 push 重试；提交内容不含 openspec/changes 之外的任何路径
-- [x] 1.3 单测：残留存在→单 commit 收口且 openspec 路径干净；无残留→零 commit 零 push；夹带源码修改时不被卷入；commit 失败→WARNING + 流程继续
+- [x] 1.1 push 流程（main-first 尾部）新增归档收口步骤：检测 `spec/changes/` 下归档移动残留（`git status --porcelain` 过滤该路径前缀的删除与 archive 未跟踪/修改项），存在则 `git add` 限定该路径 + 单 commit（信息 `[fenix] archive: <涉及 spec 名列表> 归档入库`）+ push；无残留零动作
+- [x] 1.2 失败降级：归档 commit/push 失败记 WARNING（含 stderr 摘要）并继续流程，spec 终态不受影响，残留留给下次 push 重试；提交内容不含 spec/changes 之外的任何路径
+- [x] 1.3 单测：残留存在→单 commit 收口且 spec/ 路径干净；无残留→零 commit 零 push；夹带源码修改时不被卷入；commit 失败→WARNING + 流程继续
 
 ## 2 CLI 秒挂退避熔断（cli-retry-backoff）
 
@@ -49,4 +49,4 @@
 ## 5 回归与验收
 
 - [x] 5.1 全量回归：tests/ 既有套件全绿（重点关注 test_state_machine、test_agent_runner、test_mergeback_repair_lane、admin 相关）
-- [x] 5.2 真实环境验收：归档残留场景实测（构造一个归档移动 → 触发 push 流程 → 确认自动 commit + push 且主树 openspec 路径干净）；config 追加 timeout_overrides 热加载后生效值打点确认
+- [x] 5.2 真实环境验收：归档残留场景实测（构造一个归档移动 → 触发 push 流程 → 确认自动 commit + push 且主树 spec/ 路径干净）；config 追加 timeout_overrides 热加载后生效值打点确认

@@ -2,7 +2,7 @@
 
 ## 1. 复核根因，确认无真实产品缺陷
 
-- [x] 1.1 阅读 `openspec/changes/fix-improve-run-lifecycle-governance/verification-report.md`，复核「真实产品 Bug」根因
+- [x] 1.1 阅读 `spec/changes/fix-improve-run-lifecycle-governance/verification-report.md`，复核「真实产品 Bug」根因
   - 结论：父 SPEC 验证报告 17 场景 2 通过 / 15 失败，**15 例失败全部为验证脚手架 mock 层未注入场景专用治理固件所致（伪失败），非 fenixd 产品缺陷**。
     - 后端 `/api/specs?project=fenixd` 过滤正确（56 条真实 spec 来自项目 59 个 SPEC）；dashboard 渲染层健康（`.spec-info-row` 仅当 `error` 非空才渲染、`.alert-item` 无 CSS 隐藏缺陷）；全部 17 场景 `no_console_error` 通过。
     - 治理数据（`governance-*` 行与 `recovery deferred` / `backoff until` / `dispatch_stalled` / `liveness judge unavailable` 文本）缺失，需由验证 `mock_api` 按场景注入固件——属验证基础设施缺陷，依 proposal.md 界定不在本 fix SPEC 范围。

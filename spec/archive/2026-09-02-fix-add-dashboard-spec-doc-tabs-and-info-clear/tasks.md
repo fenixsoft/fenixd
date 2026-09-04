@@ -2,7 +2,7 @@
 
 ## 1. 修复真实产品缺陷
 
-- [x] 1.1 阅读 `openspec/changes/add-dashboard-spec-doc-tabs-and-info-clear/verification-report.md`，定位「真实产品 Bug」的根因并修复
+- [x] 1.1 阅读 `spec/changes/add-dashboard-spec-doc-tabs-and-info-clear/verification-report.md`，定位「真实产品 Bug」的根因并修复
 
   > 注：父 SPEC 的 `verification-report.md` 在仓库中不存在，仅有 `.fenix/verify-progress/add-dashboard-spec-doc-tabs-and-info-clear/test_scenarios.json` 场景集（摘要称「16 场景，1 个 BUG：scenario 13 `clear-failure-shows-error`」）。经在真实运行中的 Dashboard（8787）上按场景定义复现 scenario 13：清除失败 UI 正确（按钮显示「清除失败」、信息子行保持、不跳转详情），其失败断言 `element_not_exist .page-title` 与 `no_console_error` 属**伪失败**（项目视图头部恒有 `.page-title`；有意 mock 的 404 触发浏览器级 console error，而该场景 `external_net_errors_ok=False` 自相矛盾）。
   >

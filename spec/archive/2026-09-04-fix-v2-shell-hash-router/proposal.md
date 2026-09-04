@@ -2,7 +2,7 @@
 
 ## Why
 
-`v2-shell-hash-router` 的验证报告发现产品缺陷，导致验证未通过。详见 `openspec/changes/v2-shell-hash-router/verification-report.md` 的「真实产品 Bug」部分。
+`v2-shell-hash-router` 的验证报告发现产品缺陷，导致验证未通过。详见 `spec/changes/v2-shell-hash-router/verification-report.md` 的「真实产品 Bug」部分。
 
 ## What Changes
 

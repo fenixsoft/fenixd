@@ -63,6 +63,25 @@ export const markdownComponents: Components = {
   p: ({ children }) => <p style={{ fontSize: 14 }}>{children}</p>,
   ul: ({ children }) => <ul style={{ fontSize: 14, lineHeight: 2 }}>{children}</ul>,
   ol: ({ children }) => <ol style={{ fontSize: 14, lineHeight: 2 }}>{children}</ol>,
+  // antd reset 去掉了表格默认边框，这里补齐：通宽 + 灰色细线网格
+  table: ({ children, ...props }) => (
+    <table style={{ width: '100%', borderCollapse: 'collapse', margin: '12px 0' }} {...props}>
+      {children}
+    </table>
+  ),
+  th: ({ children, ...props }) => (
+    <th
+      style={{ border: '1px solid #e8e8e8', padding: '8px 12px', textAlign: 'left', background: '#fafafa', fontSize: 14 }}
+      {...props}
+    >
+      {children}
+    </th>
+  ),
+  td: ({ children, ...props }) => (
+    <td style={{ border: '1px solid #e8e8e8', padding: '8px 12px', fontSize: 14 }} {...props}>
+      {children}
+    </td>
+  ),
 };
 
 export default function SpecDocModal({ project, spec, open, onClose, initialDoc }: SpecDocModalProps) {

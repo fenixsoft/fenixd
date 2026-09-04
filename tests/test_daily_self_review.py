@@ -4,7 +4,7 @@
 - 1.4 单测：定时触发 / 同日防重复 / 23:30 启动补跑 / enabled=false 全链路零动作
 - 2.4 失败处理：run 失败记 warning 告警、当日不重试、次日自然重试
 - 2.5 单测：首次创建 / 追加不覆盖 / read_todo 开关注入与不注入 / 自省后
-  openspec 与 STATE 零新增 / commit 仅含 .fenix/todo.md
+  spec 目录与 STATE 零新增 / commit 仅含 .fenix/todo.md
 - 3.4 端点读写（见 test_dashboard_data.py 或本文件后段）
 """
 
@@ -68,7 +68,7 @@ class FakeLogger:
 def proot(tmp_path):
     root = tmp_path / "proj"
     (root / ".fenix").mkdir(parents=True)
-    (root / "openspec" / "changes").mkdir(parents=True)
+    (root / "spec" / "changes").mkdir(parents=True)
     (root / ".fenix" / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
     return root
 
@@ -362,19 +362,19 @@ class TestTodoAppend:
 # ── 2.5 禁止自动创建 SPEC / STATE 零新增 / commit 仅含 .fenix/todo.md ──
 
 class TestNoAutoCreation:
-    def test_no_state_or_openspec_new_entries(self, proot, monkeypatch):
+    def test_no_state_or_spec_new_entries(self, proot, monkeypatch):
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
         state_before = (proot / ".fenix" / "STATE.md").read_text(encoding="utf-8")
         changes_before = sorted(
-            p.name for p in (proot / "openspec" / "changes").iterdir() if p.is_dir()
+            p.name for p in (proot / "spec" / "changes").iterdir() if p.is_dir()
         )
         runner = FakeReviewRunner()
         sched = make_scheduler(proot, runner=runner, specs={"spec-a": {"status": "done"}})
         sched.check_and_run()
-        # STATE.md 内容逐字节不变；openspec/changes 无新增目录；无 agent 派发诉求
+        # STATE.md 内容逐字节不变；spec/changes 无新增目录；无 agent 派发诉求
         assert (proot / ".fenix" / "STATE.md").read_text(encoding="utf-8") == state_before
         changes_after = sorted(
-            p.name for p in (proot / "openspec" / "changes").iterdir() if p.is_dir()
+            p.name for p in (proot / "spec" / "changes").iterdir() if p.is_dir()
         )
         assert changes_after == changes_before
         # 只产生 .fenix/todo.md 与状态文件

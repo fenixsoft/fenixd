@@ -3,7 +3,7 @@
 ## 1. 后端：优先级与软删除 API
 
 - [x] 1.1 state_machine.py 新增 `remove_spec(name)`：read_all → pop → write_all 原子写回，不存在返回 False；补单元测试（tests/test_state_machine.py 或就近文件）
-- [x] 1.2 data.py 新增 `set_spec_priority(project_root, spec, priority)`（校验 1-9、update_spec 写回）与 `soft_delete_spec(project_root, spec)`（remove_spec + shutil.move 到 openspec/changes/archive/<name>-<Unix秒>，目录缺失幂等，archive 同名冲突追加毫秒后缀重试；运行中检测=runs 目录该 spec run 文件 mtime<120s 返回保护错误）
+- [x] 1.2 data.py 新增 `set_spec_priority(project_root, spec, priority)`（校验 1-9、update_spec 写回）与 `soft_delete_spec(project_root, spec)`（remove_spec + shutil.move 到 spec/archive/<name>-<Unix秒>，目录缺失幂等，archive 同名冲突追加毫秒后缀重试；运行中检测=runs 目录该 spec run 文件 mtime<120s 返回保护错误）
 - [x] 1.3 server.py 新增 POST `/api/spec-priority` 与 `/api/spec-delete` handler（仿 spec-error-clear 模式：project/spec 参数解析、400/404/409 语义），补 tests/test_dashboard.py 用例覆盖合法/非法/404/运行中拒绝四类
 
 ## 2. 后端：手动唤起 Admin 通路

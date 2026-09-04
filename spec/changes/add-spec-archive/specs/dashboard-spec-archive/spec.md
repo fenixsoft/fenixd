@@ -16,12 +16,12 @@ spec 列表（桌面表格与移动端卡片共用）每行的「更多」菜单
 
 ### Requirement: 归档操作后端语义
 
-系统 SHALL 提供 `POST /api/spec-archive?project=<name>&spec=<name>`：将该 SPEC 的 `openspec/changes/<name>/` 目录移动到 `openspec/changes/archive/YYYY-MM-DD-<name>/`（与 `bin/fenix_archive.py` 同一命名规则），且不修改 STATE.md 条目。非终态 SPEC SHALL 拒绝归档；目标归档路径已存在时 SHALL 返回错误且不覆盖；不存在的 spec SHALL 返回 404 语义错误。归档成功后 SHALL 发出项目活动事件（供活动页/概览展示）。
+系统 SHALL 提供 `POST /api/spec-archive?project=<name>&spec=<name>`：将该 SPEC 的 `spec/changes/<name>/` 目录移动到 `spec/archive/YYYY-MM-DD-<name>/`（与 `bin/fenix_archive.py` 同一命名规则），且不修改 STATE.md 条目。非终态 SPEC SHALL 拒绝归档；目标归档路径已存在时 SHALL 返回错误且不覆盖；不存在的 spec SHALL 返回 404 语义错误。归档成功后 SHALL 发出项目活动事件（供活动页/概览展示）。
 
 #### Scenario: 归档终态 SPEC 成功
 
 - **WHEN** 对 status=pushed 的 SPEC 调用归档 API
-- **THEN** `openspec/changes/<name>/` 移动为 `openspec/changes/archive/YYYY-MM-DD-<name>/`，STATE.md 中该条目原样保留，响应含 ok 与归档路径
+- **THEN** `spec/changes/<name>/` 移动为 `spec/archive/YYYY-MM-DD-<name>/`，STATE.md 中该条目原样保留，响应含 ok 与归档路径
 
 #### Scenario: 非终态 SPEC 被拒绝
 
@@ -30,7 +30,7 @@ spec 列表（桌面表格与移动端卡片共用）每行的「更多」菜单
 
 #### Scenario: 目标已存在不覆盖
 
-- **WHEN** `openspec/changes/archive/YYYY-MM-DD-<name>/` 已存在时再次归档同名 SPEC
+- **WHEN** `spec/archive/YYYY-MM-DD-<name>/` 已存在时再次归档同名 SPEC
 - **THEN** 返回错误提示，原目录不被覆盖
 
 ### Requirement: 前端归档确认与结果反馈
@@ -50,7 +50,7 @@ spec 列表（桌面表格与移动端卡片共用）每行的「更多」菜单
 
 ### Requirement: 列表归档判定以目录存在性为准
 
-spec 列表 API（`GET /api/specs`）SHALL 为每个 SPEC 返回 `archived` 布尔字段：STATE.md 有条目且 `openspec/changes/<name>/` 活跃目录不存在即判定为已归档（无论归档由界面、CLI skill 还是手动移动产生）。已删除 SPEC（STATE.md 无条目）不返回。
+spec 列表 API（`GET /api/specs`）SHALL 为每个 SPEC 返回 `archived` 布尔字段：STATE.md 有条目且 `spec/changes/<name>/` 活跃目录不存在即判定为已归档（无论归档由界面、CLI skill 还是手动移动产生）。已删除 SPEC（STATE.md 无条目）不返回。
 
 #### Scenario: 界面归档后判定为已归档
 

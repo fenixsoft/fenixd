@@ -31,7 +31,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
     (proot / ".fenix" / "logs").mkdir(parents=True, exist_ok=True)
     (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
     (proot / ".fenix" / "verify-progress" / "myspec" / "screenshots").mkdir(parents=True, exist_ok=True)
-    (proot / "openspec" / "changes" / "myspec" / "specs").mkdir(parents=True, exist_ok=True)
+    (proot / "spec" / "changes" / "myspec" / "specs").mkdir(parents=True, exist_ok=True)
 
     (proot / ".fenix" / "STATE.md").write_text(
         "# Fenix Project State\n\n## Specs\n\n"
@@ -44,7 +44,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
 
     (proot / ".fenix" / "config.yaml").write_text("project:\n  name: fake\n", encoding="utf-8")
 
-    (proot / "openspec" / "changes" / "myspec" / "tasks.md").write_text(
+    (proot / "spec" / "changes" / "myspec" / "tasks.md").write_text(
         "## 1. 阶段一\n\n"
         "- [x] 1.1 任务一\n"
         "- [ ] 1.2 任务二\n\n"
@@ -53,7 +53,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
         encoding="utf-8",
     )
 
-    (proot / "openspec" / "changes" / "myspec" / "specs" / "spec.md").write_text(
+    (proot / "spec" / "changes" / "myspec" / "specs" / "spec.md").write_text(
         "## ADDED Requirements\n\n### Requirement: 功能\n\n"
         "#### Scenario: 场景一\n- **WHEN** x\n- **THEN** y\n\n"
         "#### Scenario: 场景二\n- **WHEN** a\n- **THEN** b\n",
@@ -102,7 +102,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
         encoding="utf-8",
     )
 
-    (proot / "openspec" / "changes" / "myspec" / "verification-report.md").write_text(
+    (proot / "spec" / "changes" / "myspec" / "verification-report.md").write_text(
         "# 验证报告\n\n## Bug 汇总\n- 严重缺陷：点击保存按钮无反应\n  根因：事件未绑定\n",
         encoding="utf-8",
     )
@@ -260,7 +260,7 @@ class TestServerAPI:
 
     def test_api_spec_doc(self, server_fx):
         proot, srv = server_fx
-        (proot / "openspec" / "changes" / "myspec" / "proposal.md").write_text(
+        (proot / "spec" / "changes" / "myspec" / "proposal.md").write_text(
             "# 背景\n\n- 列表项\n", encoding="utf-8"
         )
         status, data = srv.get("/api/spec-doc?project=proj-a&spec=myspec&doc=proposal")

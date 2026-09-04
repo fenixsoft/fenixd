@@ -6,7 +6,7 @@
 
 - 在 SPEC 列表页（`#project/<name>` 视图）的每一行 SPEC 内增加「背景」「设计」两个操作按钮，分别对应 `proposal.md` 与 `design.md`。
 - 点击按钮在当前页弹出 Modal，以 Markdown 渲染对应文档内容（复用现有 vendored marked 渲染器）；按钮始终可见，文档缺失时展示空态提示。
-- 新增后端 API 端点，按项目 + SPEC 名称读取 `openspec/changes/<spec>/` 下的 `proposal.md` / `design.md` 原文返回给前端。
+- 新增后端 API 端点，按项目 + SPEC 名称读取 `spec/changes/<spec>/` 下的 `proposal.md` / `design.md` 原文返回给前端。
 - 行点击进入详情页的既有交互保持不变；按钮点击需阻止冒泡，避免误触发行跳转。
 
 ## Capabilities
@@ -15,7 +15,7 @@
 - `spec-doc-view`：向仪表盘提供 SPEC 文档（proposal.md / design.md）内容读取的 API 端点，并定义缺失文件的响应语义。
 
 ### Modified Capabilities
-- `dashboard-spec-table`（`openspec/changes/add-dashboard-spec-table/specs/dashboard-spec-table/spec.md`）：SPEC 表格每行新增「背景」「设计」按钮及 Markdown 文档展示 Modal；按钮点击不触发行跳转。
+- `dashboard-spec-table`（`spec/changes/add-dashboard-spec-table/specs/dashboard-spec-table/spec.md`）：SPEC 表格每行新增「背景」「设计」按钮及 Markdown 文档展示 Modal；按钮点击不触发行跳转。
 
 ## Impact
 

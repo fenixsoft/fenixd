@@ -1,4 +1,4 @@
-"""provider-fault-fuse 熔断单测（对应 openspec spec provider-fault-fuse）。
+"""provider-fault-fuse 熔断单测（对应 spec provider-fault-fuse）。
 
 覆盖 tasks 2.1-2.6：
 - 滚动窗口内 4xx 达阈值触发熔断

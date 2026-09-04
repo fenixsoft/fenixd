@@ -2,7 +2,7 @@
 
 ## Why
 
-`fix-dispatch-orphan` 的验证报告发现产品缺陷，导致验证未通过。详见 `openspec/changes/fix-dispatch-orphan/verification-report.md` 的「真实产品 Bug」部分。
+`fix-dispatch-orphan` 的验证报告发现产品缺陷，导致验证未通过。详见 `spec/changes/fix-dispatch-orphan/verification-report.md` 的「真实产品 Bug」部分。
 
 ## What Changes
 

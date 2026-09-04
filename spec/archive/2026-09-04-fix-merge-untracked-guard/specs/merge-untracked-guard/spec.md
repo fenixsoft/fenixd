@@ -4,7 +4,7 @@
 
 ### Requirement: merge 前检测并移开分支路径上的 untracked 冲突文件
 
-`WorktreeManager.merge_back_from_branch(branch)` 在执行 `git merge --no-ff` 前，SHALL 计算该分支相对 HEAD 新增的文件路径集合（`git diff --name-only --diff-filter=A HEAD...<branch>`），并检测主树中位于这些路径上的 untracked 文件（`git ls-files --others --exclude-standard` 与前述集合的交集），将交集内的全部文件移入 `.fenix/merge-backup/<epoch秒>/` 目录（保持仓库相对路径结构）。检测范围 SHALL NOT 限于 `openspec/changes/`——任意产物路径（如 `core/dashboard/static/v2/`）均须覆盖。
+`WorktreeManager.merge_back_from_branch(branch)` 在执行 `git merge --no-ff` 前，SHALL 计算该分支相对 HEAD 新增的文件路径集合（`git diff --name-only --diff-filter=A HEAD...<branch>`），并检测主树中位于这些路径上的 untracked 文件（`git ls-files --others --exclude-standard` 与前述集合的交集），将交集内的全部文件移入 `.fenix/merge-backup/<epoch秒>/` 目录（保持仓库相对路径结构）。检测范围 SHALL NOT 限于 `spec/changes/`——任意产物路径（如 `core/dashboard/static/v2/`）均须覆盖。
 
 #### Scenario: 主树 untracked 文件与分支新增路径重合时被移开
 

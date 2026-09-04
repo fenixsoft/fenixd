@@ -2,7 +2,7 @@
 
 ## 1. 修复真实产品缺陷
 
-- [x] 1.1 阅读 `openspec/changes/improve-agent-config-and-verify-resume/verification-report.md`，定位「真实产品 Bug」的根因并修复
+- [x] 1.1 阅读 `spec/changes/improve-agent-config-and-verify-resume/verification-report.md`，定位「真实产品 Bug」的根因并修复
 
 ## 2. 验证与打包
 

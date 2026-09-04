@@ -3,7 +3,7 @@
 R1 写入端格式契约：schema tasks instruction 的 MUST 约定（编号 + 点号）
 R2 晋升 lint：lint_tasks_parseable 单元行为 + engine 并列调用语义
 R3 解析端显式提示：CLI 警告行 + dashboard tasks_note 字段
-附带：存量 spec tasks.md 零误拔回归（openspec/changes/ 含 archive 全量枚举）。
+附带：存量 spec tasks.md 零误拔回归（spec/changes/ 含 archive 全量枚举）。
 """
 
 import shutil
@@ -24,7 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 def _mk_change(root: Path, name: str) -> Path:
     new_change(root, name)
-    return root / "openspec" / "changes" / name
+    return root / "spec" / "changes" / name
 
 
 def _write_tasks(spec_dir: Path, text: str) -> None:
@@ -90,7 +90,7 @@ class TestLintTasksParseable(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.pr = Path(self.tmpdir)
-        self.spec_dir = self.pr / "openspec" / "changes" / "demo"
+        self.spec_dir = self.pr / "spec" / "changes" / "demo"
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -152,7 +152,7 @@ class TestPromotionLintTasks(unittest.TestCase):
         self.sm = StateMachine(self.pr / ".fenix" / "STATE.md", self.logger)
         self.engine = PMEngine(self.sm, MagicMock(), {}, self.pr, self.logger)
         self.engine._on_spec_ready = MagicMock()
-        self.spec_dir = self.pr / "openspec" / "changes" / "demo"
+        self.spec_dir = self.pr / "spec" / "changes" / "demo"
         self.sm.add_spec("demo", {"priority": 5})
 
     def tearDown(self):
@@ -176,7 +176,7 @@ class TestPromotionLintTasks(unittest.TestCase):
         for name, heading in (("demo-dotted", "## 1. 标题"),
                               ("demo-undotted", "## 1 标题")):
             self.sm.add_spec(name, {"priority": 5})
-            _write_tasks(self.pr / "openspec" / "changes" / name,
+            _write_tasks(self.pr / "spec" / "changes" / name,
                          f"{heading}\n\n- [ ] 1.1 a\n")
             self.engine._on_spec_drafted(name)
             self.assertEqual(self.sm.read_one(name)["status"], "ready", name)
@@ -209,7 +209,7 @@ class TestExistingSpecsZeroMisfire(unittest.TestCase):
     """存量 spec tasks.md 全量回归：lint 零误拦（task-track 2.4）。"""
 
     def test_all_existing_tasks_md_pass_lint(self):
-        changes_dir = PROJECT_ROOT / "openspec" / "changes"
+        changes_dir = PROJECT_ROOT / "spec" / "changes"
         tasks_files = sorted(changes_dir.rglob("tasks.md"))
         self.assertTrue(tasks_files, "仓库应存在存量 tasks.md")
         misfired = []
@@ -244,7 +244,7 @@ class TestCliWarning(unittest.TestCase):
             "### cli-c\n\n- status: drafted\n- priority: 5\n",
             encoding="utf-8",
         )
-        changes = self.pr / "openspec" / "changes"
+        changes = self.pr / "spec" / "changes"
         _write_tasks(changes / "cli-a",
                      "## 1. 分组\n\n- [ ] 1.1 任务项\n")
         _write_tasks(changes / "cli-b",
@@ -281,7 +281,7 @@ class TestCliWarning(unittest.TestCase):
 
     def test_undotted_format_still_parses(self):
         # 点号可选兼容：无点号分组正常展示任务区块（不触发警告）
-        _write_tasks(self.pr / "openspec" / "changes" / "cli-a",
+        _write_tasks(self.pr / "spec" / "changes" / "cli-a",
                      "## 1 分组\n\n- [ ] 1.1 任务项\n")
         out = self._run("cli-a")
         self.assertIn("tasks.md 进展", out)
@@ -295,7 +295,7 @@ class TestDashboardTasksNote(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.pr = Path(self.tmpdir)
         (self.pr / ".fenix").mkdir(parents=True, exist_ok=True)
-        changes = self.pr / "openspec" / "changes"
+        changes = self.pr / "spec" / "changes"
         _write_tasks(changes / "a",
                      "## 1. 分组\n\n- [ ] 1.1 任务项\n")
         _write_tasks(changes / "b",

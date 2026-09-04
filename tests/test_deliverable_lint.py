@@ -46,7 +46,7 @@ class TestLintDeclared(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.pr = Path(self.tmpdir)
-        self.spec_dir = self.pr / "openspec" / "changes" / "demo"
+        self.spec_dir = self.pr / "spec" / "changes" / "demo"
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -87,7 +87,7 @@ class TestLintDeclared(unittest.TestCase):
 
     def test_missing_tasks_md_passes(self):
         self.assertEqual(
-            lint_declared(self.pr / "openspec/changes/ghost", self.pr), [])
+            lint_declared(self.pr / "spec/changes/ghost", self.pr), [])
 
 
 class TestPromotionLintGate(unittest.TestCase):
@@ -102,7 +102,7 @@ class TestPromotionLintGate(unittest.TestCase):
         self.sm = StateMachine(self.pr / ".fenix" / "STATE.md", self.logger)
         self.engine = PMEngine(self.sm, MagicMock(), {}, self.pr, self.logger)
         self.engine._on_spec_ready = MagicMock()
-        self.spec_dir = self.pr / "openspec" / "changes" / "demo"
+        self.spec_dir = self.pr / "spec" / "changes" / "demo"
         self.sm.add_spec("demo", {"priority": 5})
 
     def tearDown(self):

@@ -16,7 +16,7 @@ fenixd agent 的 LLM 路由被 `~/.claude/settings.json` 的 `env` 块劫持：c
 
 ### Modified Capabilities
 
-无（当前 `openspec/specs/` 无活跃 spec，本变更引入新能力）。
+无（当前 `spec/specs/` 无活跃 spec，本变更引入新能力）。
 
 ## Impact
 

@@ -108,8 +108,8 @@ class TestArchiveSpecRuns:
 
 class TestArchiveChangeIntegration:
     def _make_project(self, root: Path, spec: str = "myspec") -> Path:
-        (root / "openspec" / "changes" / spec / "specs").mkdir(parents=True)
-        (root / "openspec" / "changes" / spec / "proposal.md").write_text("# p", encoding="utf-8")
+        (root / "spec" / "changes" / spec / "specs").mkdir(parents=True)
+        (root / "spec" / "changes" / spec / "proposal.md").write_text("# p", encoding="utf-8")
         runs_dir = root / ".fenix" / "runs"
         runs_dir.mkdir(parents=True)
         for name in (
@@ -125,7 +125,7 @@ class TestArchiveChangeIntegration:
         root = self._make_project(tmp_path / "proj")
         result = archive_change(root, "myspec")
         archived_change = (
-            root / "openspec" / "changes" / "archive"
+            root / "spec" / "archive"
             / f"{date.today().isoformat()}-myspec"
         )
         assert archived_change.is_dir()
@@ -147,7 +147,7 @@ class TestArchiveChangeIntegration:
         result = archive_change(root, "myspec")
         # change 目录归档主流程不受影响
         archived_change = (
-            root / "openspec" / "changes" / "archive"
+            root / "spec" / "archive"
             / f"{date.today().isoformat()}-myspec"
         )
         assert (archived_change / "proposal.md").is_file()
@@ -169,7 +169,7 @@ class TestArchiveChangeIntegration:
         result = archive_change(root, "myspec")
         assert "no core here" in result["runs_archive_warning"]
         archived_change = (
-            root / "openspec" / "changes" / "archive"
+            root / "spec" / "archive"
             / f"{date.today().isoformat()}-myspec"
         )
         assert (archived_change / "proposal.md").is_file()

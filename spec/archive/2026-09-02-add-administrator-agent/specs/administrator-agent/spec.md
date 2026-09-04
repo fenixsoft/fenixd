@@ -18,7 +18,7 @@ Administrator Agent SHALL 拥有以下高级权限，自主处置 Agent 无法�
 - 杀死/重启进行中的 Agent 子进程与 fenixd 本身
 - 发起 git 清理（`worktree prune`、stash、reset）与 commit
 - 修改 Fenixd 自身代码并提交（直接在主树操作）
-- 发起新的 SPEC（创建 `openspec/changes/<name>/` 并注册 STATE.md）
+- 发起新的 SPEC（创建 `spec/changes/<name>/` 并注册 STATE.md）
 - 重置/修复 spec 状态（`update_spec` 到 `ready`/`blocked` 等）
 
 #### Scenario: 杀死卡死 Agent

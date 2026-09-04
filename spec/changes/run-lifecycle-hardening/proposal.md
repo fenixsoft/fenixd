@@ -4,7 +4,7 @@
 
 ## What Changes
 
-- **归档自动提交**：spec_done 的 push 流程（main-first 尾部）将 `openspec/changes/` 的归档移动（删除 + archive/ 新增）一并 commit 并 push，归档产物闭环入库。
+- **归档自动提交**：spec_done 的 push 流程（main-first 尾部）将 `spec/changes/` 的归档移动（删除 + archive/ 新增）一并 commit 并 push，归档产物闭环入库。
 - **CLI 秒挂退避熔断**：同一 spec 连续秒级失败（进程存活 < 阈值秒数或 Exit 143 类瞬时死亡）≥3 次 → 该 spec 冷却 5 分钟不派发 + 发 major 告警；冷却结束自动恢复，无需人工。
 - **run_timeout_seconds 按 agent_type 覆盖**：保留 `agents.run_timeout_seconds` 全局单源默认，新增 `agents.timeout_overrides.<agent_type>` 覆盖映射（如 planner-plan: 2700）；supervision 的 extension 总额与 absolute_max 派生、stuck 阈值派生均按覆盖后生效值联动；`liveness.py` 的 `JUDGE_TIMEOUT_SECONDS=120` 硬编码配置化（`agents.timeout_overrides.supervision-judge`，缺省回退 120）。
 - **生命周期卫生**：verifier 阶段内部 failover 重试链尊重 frozen 冻结（attempt 重试前查 frozen 即停）；删除 `.fenix/STATE.md` 历史遗留空文件（真 STATE 在项目根，路径二义性陷阱）；预算对账偏差（used vs runs 正常收工数）从仅 WARN 升级为自动校正（以 runs 实际收工数为准重写 used，校正留痕）。
@@ -13,14 +13,14 @@
 
 ### New Capabilities
 
-- `archive-auto-commit`: spec_done push 流程尾部将归档移动自动 commit + push，保证 openspec 归档产物随代码同仓同步。
+- `archive-auto-commit`: spec_done push 流程尾部将归档移动自动 commit + push，保证归档产物随代码同仓同步。
 - `cli-retry-backoff`: 同 spec 连续秒级失败触发的退避冷却与告警机制，阻断重试风暴。
 - `per-agent-timeout-override`: run_timeout_seconds 的 agent_type 级覆盖映射，supervision 派生值联动；监督器内部 judge 超时配置化。
 - `lifecycle-hygiene`: frozen 对 verifier 内部链生效、STATE 路径唯一化、预算对账自动校正三项卫生修复。
 
 ### Modified Capabilities
 
-<!-- 无：openspec/specs/ 当前无活跃能力；归档中 fix-push-ref-lifecycle 的 push 语义不变，本变更仅在其尾部追加归档提交动作。 -->
+<!-- 无：spec/specs/ 当前无活跃能力；归档中 fix-push-ref-lifecycle 的 push 语义不变，本变更仅在其尾部追加归档提交动作。 -->
 
 ## Impact
 

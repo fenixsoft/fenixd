@@ -17,4 +17,4 @@
 （无——扩展既有能力）
 
 ### Modified Capabilities
-- `implementer-deliverable-gate`：提取器结构化输出与分类规则、`.fenix/` 归一化正式化、引用类软校验（源自 add-implementer-deliverable-gate 变更，能力 spec 见 openspec/changes/add-implementer-deliverable-gate/specs/）
+- `implementer-deliverable-gate`：提取器结构化输出与分类规则、`.fenix/` 归一化正式化、引用类软校验（源自 add-implementer-deliverable-gate 变更，能力 spec 见 spec/changes/add-implementer-deliverable-gate/specs/）

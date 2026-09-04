@@ -562,8 +562,8 @@ export default function SpecListPage() {
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
           {`确认删除 Spec「${record.name}」？\n\n`}
-          软删除：STATE.md 移除该条目，openspec/changes/{record.name}/ 目录移入 archive 归档。
-          {'\n'}归档路径：openspec/changes/archive/{record.name}-&lt;时间戳&gt;/
+          软删除：STATE.md 移除该条目，spec/changes/{record.name}/ 目录移入 archive 归档。
+          {'\n'}归档路径：spec/archive/{record.name}-&lt;时间戳&gt;/
         </div>
       ),
       okText: '删除',
@@ -583,7 +583,7 @@ export default function SpecListPage() {
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
           {`确认归档 Spec「${record.name}」？\n\n`}
-          将 `openspec/changes/{record.name}/` 移入归档目录
+          将 `spec/changes/{record.name}/` 移入归档目录
           （archive/YYYY-MM-DD-{record.name}/），STATE.md 条目保留。
           {'\n'}归档后可随时在列表「已归档」视图查看。
         </div>

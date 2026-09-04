@@ -24,7 +24,7 @@ Dashboard 项目视图（`renderProject`）当前用 `.spec-row` div 平铺渲�
 
 ### Modified Capabilities
 
-<!-- 现有 openspec/specs/ 与归档目录均无已定义能力，本次全部为新增。 -->
+<!-- 现有 spec/specs/ 与归档目录均无已定义能力，本次全部为新增。 -->
 
 ## Impact
 

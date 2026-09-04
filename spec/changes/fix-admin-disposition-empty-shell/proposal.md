@@ -21,7 +21,7 @@ Administrator 处置 run 异常死亡（CLI 秒挂/网关故障/SIGTERM）时，
 
 ### Modified Capabilities
 
-（无——既有 admin 相关能力均已在 `openspec/changes/archive/` 归档，活跃 specs 目录为空；本修复以新 capability 承载，不改既有 requirement 语义。）
+（无——既有 admin 相关能力均已在 `spec/archive/` 归档，活跃 specs 目录为空；本修复以新 capability 承载，不改既有 requirement 语义。）
 
 ## Impact
 

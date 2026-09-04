@@ -7,14 +7,14 @@ merge-back 死锁已复现 3 次（add-agent-llm-isolation、add-admin-activity-
 现有防线（core/worktree_manager.py）：
 
 - `ensure_spec_committed`（~L197）：派发前把 untracked 的 spec 目录提交进主树 —— 只护 spec 目录
-- `_backup_untracked_spec_files`（L238-267）：merge 前把 `openspec/changes` 下 untracked 移入 `.fenix/merge-backup/<ts>/` —— **路径限定死 `openspec/changes`，产物路径盲区**（第三次复现的 `core/dashboard/static/v2/` 恰在盲区外）
+- `_backup_untracked_spec_files`（L238-267）：merge 前把 `spec/changes` 下 untracked 移入 `.fenix/merge-backup/<ts>/` —— **路径限定死 `spec/changes`，产物路径盲区**（第三次复现的 `core/dashboard/static/v2/` 恰在盲区外）
 - `merge_back_from_branch`（L821-882）：唯一真实 merge 入口（`merge_back(wt_path)` L884 委托至此）。成功 `_drop_backup`（L858）、失败 `merge --abort` + `_restore_backup`（L871-876）
 
 Administrator 对 v2-vendor-amis-sdk 的处置已验证字节级比对的价值：5 个 untracked 副本与分支版本 IDENTICAL（冗余污染），据此安全移除。
 
 ## Goals / Non-Goals
 
-- **Goal**：merge 前自动移开所有与分支新增路径冲突的 untracked 文件（不限 openspec/changes/），复用现有备份/恢复/清理语义，消灭此类熔断
+- **Goal**：merge 前自动移开所有与分支新增路径冲突的 untracked 文件（不限 spec/changes/），复用现有备份/恢复/清理语义，消灭此类熔断
 - **Goal**：保留有价值主树改动——副本与合入版本不一致时不静默丢弃
 - **Non-Goal**：不处理 stash pop 冲突变体（另案，见 memory fenix-stashpop-unmerged-deadlock）
 - **Non-Goal**：不新增配置项、不加 Dashboard UI（行为内建无开关）
@@ -31,7 +31,7 @@ merge 前先 `git diff --name-only --diff-filter=A HEAD...<branch>` 取分支**�
 
 ### D2: 泛化 `_backup_untracked_spec_files(branch)`，保留原函数名或就近改名
 
-签名从无参改为接受 `branch`，内部逻辑替换为 D1 的交集检测。原「openspec/changes 全量移开」行为被交集行为**取代**：非冲突的 untracked spec 文件留在原地（merge 不受非冲突 untracked 影响，副作用更小且符合 spec 的「无交集不移动」场景）。调用点 L848 无需变化（传参即可）。
+签名从无参改为接受 `branch`，内部逻辑替换为 D1 的交集检测。原「spec/changes 全量移开」行为被交集行为**取代**：非冲突的 untracked spec 文件留在原地（merge 不受非冲突 untracked 影响，副作用更小且符合 spec 的「无交集不移动」场景）。调用点 L848 无需变化（传参即可）。
 
 ### D3: 一致性保护放在 `_drop_backup` 内
 

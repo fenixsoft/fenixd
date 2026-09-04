@@ -1,6 +1,6 @@
 # verify-report-gate 能力增量（add-verify-report-gate）
 
-> 保障 `openspec/changes/<spec>/verification-report.md` 在验证裁决放行时必然存在于磁盘。裁决 Agent 主动写入的报告优先；框架合成仅为兜底，不覆盖既有文件。
+> 保障 `spec/changes/<spec>/verification-report.md` 在验证裁决放行时必然存在于磁盘。裁决 Agent 主动写入的报告优先；框架合成仅为兜底，不覆盖既有文件。
 >
 > 注：原规划的「fix SPEC 派生输入校验」已撤销——闸门在裁决采纳时点先行兜底，派生发生在其后（正常流中恒为 no-op），且 add-inplace-bug-repair 将退役 fix 派生路径。
 
@@ -8,7 +8,7 @@
 
 ### Requirement: 验证报告产物闸门
 
-验证裁决产生终局结论（`.fenix-run-result.json` 的 status 为 `verified` 或 `bug-found` 且被框架采纳、状态即将推进）时，框架 MUST 校验 `openspec/changes/<spec>/verification-report.md` 存在：
+验证裁决产生终局结论（`.fenix-run-result.json` 的 status 为 `verified` 或 `bug-found` 且被框架采纳、状态即将推进）时，框架 MUST 校验 `spec/changes/<spec>/verification-report.md` 存在：
 
 - 文件存在 → 放行，框架 MUST NOT 覆盖或改写该文件。
 - 文件缺失 → 框架 MUST 调用合成器从结构化数据生成该文件后放行，并产生一条告警（复用 human-escalation-alerts 能力）说明「裁决 Agent 未写报告，已由框架合成」。
@@ -16,7 +16,7 @@
 
 #### Scenario: 裁决 Agent 漏写报告时框架兜底合成
 
-- **WHEN** 某 SPEC 验证裁决返回 `bug-found`，`openspec/changes/<spec>/verification-report.md` 不存在，但 `.fenix/verify-progress/<spec>/report.json` 与 `.fenix-run-result.json` 完整可解析
+- **WHEN** 某 SPEC 验证裁决返回 `bug-found`，`spec/changes/<spec>/verification-report.md` 不存在，但 `.fenix/verify-progress/<spec>/report.json` 与 `.fenix-run-result.json` 完整可解析
 - **THEN** 框架在状态推进前合成该报告（含「真实产品 Bug」章节及根因、证据），流程正常继续（原地打回/遗留派生等后续处置均可引用），且产生一条兜底合成告警
 
 #### Scenario: Agent 已写报告则原样保留

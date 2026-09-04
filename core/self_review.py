@@ -11,7 +11,7 @@ admin 告警与处置 / 日志 ERROR 四源）→ 发起 ``self-review`` run →
 失败当日不重试（也写 last_run_date=今天，防风暴），次日自然重试。
 
 硬约束（spec「禁止自动创建 SPEC」）：本模块及自省链路 MUST NOT 创建
-openspec/changes 条目、注册 STATE.md 条目或派发任何 agent——产出仅供用户
+spec/changes 条目、注册 STATE.md 条目或派发任何 agent——产出仅供用户
 阅读判定。token 归账到 cost-observability 独立类目（.fenix/cost/），
 不写 STATE（避免混入 spec 状态表）。
 """

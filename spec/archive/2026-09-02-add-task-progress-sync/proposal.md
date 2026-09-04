@@ -6,7 +6,7 @@
 
 ## What Changes
 
-- **daemon 写侧回写**：implementer run 终态为 success 时，PM Engine 解析该 run 产物的 TaskCreate/TaskUpdate 完成集合（复用 `data._parse_run_task_done` 的解析语义），把主树 `openspec/changes/<spec>/tasks.md` 中对应 id 的 `- [ ]` 确定性改为 `- [x]`，并 commit。幂等：已勾选跳过；agent 已自己勾选的不重复操作。
+- **daemon 写侧回写**：implementer run 终态为 success 时，PM Engine 解析该 run 产物的 TaskCreate/TaskUpdate 完成集合（复用 `data._parse_run_task_done` 的解析语义），把主树 `spec/changes/<spec>/tasks.md` 中对应 id 的 `- [ ]` 确定性改为 `- [x]`，并 commit。幂等：已勾选跳过；agent 已自己勾选的不重复操作。
 - **verified→done 一致性门禁**：SPEC 进入 verified→done 转换时校验 tasks.md 完成度与 run 记录声明一致——`.fenix-run-result.json` 声明 success 但存在「未勾选且不在 done_ids」的任务时，阻断自动推送并在 error 字段暴露缺口（人工裁决），不再静默放行。
 - **读侧叠加保留为兜底**：`_should_overlay` 实时叠加逻辑不变，作为 implementing 期间的实时视图；写侧回写落地后 done/pushed 状态不再依赖它。
 

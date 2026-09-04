@@ -1,6 +1,6 @@
 """admin_store / admin_monitor / run_administrator / Dashboard alerts API 测试。
 
-对应 openspec/changes/add-administrator-agent 的 tasks 4.1-4.3。
+对应 spec/changes/add-administrator-agent 的 tasks 4.1-4.3。
 """
 
 import json

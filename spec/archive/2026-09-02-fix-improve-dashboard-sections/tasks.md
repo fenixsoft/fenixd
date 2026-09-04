@@ -2,7 +2,7 @@
 
 ## 1. 修复真实产品缺陷
 
-- [x] 1.1 阅读 `openspec/changes/improve-dashboard-sections/verification-report.md`，定位「真实产品 Bug」的根因并修复（注：父 SPEC 的 verification-report.md 在该 worktree 中缺失，无法读取；改为对照 improve-dashboard-sections 的 specs 逐项代码审查，定位并修复一个违背 spec 的真实产品缺陷——fix 树多层嵌套渲染缺失）
+- [x] 1.1 阅读 `spec/changes/improve-dashboard-sections/verification-report.md`，定位「真实产品 Bug」的根因并修复（注：父 SPEC 的 verification-report.md 在该 worktree 中缺失，无法读取；改为对照 improve-dashboard-sections 的 specs 逐项代码审查，定位并修复一个违背 spec 的真实产品缺陷——fix 树多层嵌套渲染缺失）
 
 ## 2. 验证与打包
 

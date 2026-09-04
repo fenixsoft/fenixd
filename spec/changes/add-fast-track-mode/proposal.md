@@ -23,7 +23,7 @@
 
 ### Modified Capabilities
 
-（无——`openspec/specs/` 下无活跃 spec，本变更全部为新增能力。）
+（无——`spec/specs/` 下无活跃 spec，本变更全部为新增能力。）
 
 ## Impact
 

@@ -31,7 +31,7 @@
 - [x] 2.1 `core/deliverables.py` 新增 `lint_tasks_parseable(spec_dir, project_root) -> list`：tasks.md 不存在返回 `[]`；存在但按下游同源正则（分组 `^##\s+\d+\.?\s+` + 任务项 `^- \[(x| )\]`）解析出 0 分组 → 返回含「tasks.md」字样的违规消息；正则字面量两处注释互指（`data.py:parse_tasks` ↔ 本函数）
 - [x] 2.2 `core/pm_engine/engine.py:_on_spec_drafted` 在既有 `_lint_deliverable_declarations` 后并列调用新 lint，违规合并写 error（保持 drafted），异常 fail-open（WARNING + 放行），沿用既有日志风格
 - [x] 2.3 单测：无编号分组（`## 事项`）→ 晋升被拒、STATE error 含「tasks.md」、状态保持 drafted、不派发；`## 1. 标题` 与 `## 1 标题` 双格式 → 不拦；lint 抛异常 → 放行；修正后重新晋升成功
-- [x] 2.4 存量零误拔回归：脚本枚举 `openspec/changes/`（含 archive）全部 tasks.md 跑 `lint_tasks_parseable`，断言 0 违规；结果留验证记录
+- [x] 2.4 存量零误拔回归：脚本枚举 `spec/changes/`（含 archive）全部 tasks.md 跑 `lint_tasks_parseable`，断言 0 违规；结果留验证记录
 
 ## 3. 解析端显式提示（tasks-md-tracking R3）
 

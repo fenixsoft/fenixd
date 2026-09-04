@@ -98,9 +98,9 @@ class TestArchiveMoveResidue(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.root = Path(self.tmpdir)
         init_git_repo(self.root, {
-            "openspec/changes/spec-a/tasks.md": "# T\n",
-            "openspec/changes/spec-a/spec.md": "# S\n",
-            "openspec/changes/spec-b/spec.md": "# B\n",
+            "spec/changes/spec-a/tasks.md": "# T\n",
+            "spec/changes/spec-a/spec.md": "# S\n",
+            "spec/changes/spec-b/spec.md": "# B\n",
             "core/keep.py": "KEEP = 1\n",
         })
         self.engine, self.sm, self.logger = build_engine(self.root)
@@ -110,15 +110,15 @@ class TestArchiveMoveResidue(unittest.TestCase):
 
     def test_detects_archive_move_residue(self):
         # 模拟归档移动：删除 spec-a 目录 + archive 新增
-        arch = self.root / "openspec" / "changes" / "archive" / "spec-a-1788451452"
-        shutil.move(self.root / "openspec" / "changes" / "spec-a", arch)
+        arch = self.root / "spec" / "archive" / "spec-a-1788451452"
+        shutil.move(self.root / "spec" / "changes" / "spec-a", arch)
         has, names = self.engine._archive_move_residue()
         self.assertTrue(has)
         self.assertIn("spec-a", names)
 
     def test_detects_archive_added_only(self):
         # 仅 archive 新增（未跟踪）→ 也算残留
-        arch = self.root / "openspec" / "changes" / "archive" / "new-spec-1788451452"
+        arch = self.root / "spec" / "archive" / "new-spec-1788451452"
         arch.mkdir(parents=True)
         (arch / "spec.md").write_text("# N", encoding="utf-8")
         has, names = self.engine._archive_move_residue()
@@ -145,8 +145,8 @@ class TestArchiveAutoCommit(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.root = Path(self.tmpdir)
         init_git_repo(self.root, {
-            "openspec/changes/spec-a/tasks.md": "# T\n",
-            "openspec/changes/spec-a/spec.md": "# S\n",
+            "spec/changes/spec-a/tasks.md": "# T\n",
+            "spec/changes/spec-a/spec.md": "# S\n",
             "core/keep.py": "KEEP = 1\n",
         })
         self.engine, self.sm, self.logger = build_engine(self.root)
@@ -155,8 +155,8 @@ class TestArchiveAutoCommit(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_commit_and_push_on_residue(self):
-        arch = self.root / "openspec" / "changes" / "archive" / "spec-a-1788451452"
-        shutil.move(self.root / "openspec" / "changes" / "spec-a", arch)
+        arch = self.root / "spec" / "archive" / "spec-a-1788451452"
+        shutil.move(self.root / "spec" / "changes" / "spec-a", arch)
         # push 用 MagicMock 拦截（不连真实远端）
         self.engine._git_push_ref = MagicMock(return_value=(True, ""))
 
@@ -164,13 +164,13 @@ class TestArchiveAutoCommit(unittest.TestCase):
 
         # 产生了一次 push
         self.engine._git_push_ref.assert_called_once_with("main")
-        # openspec/ 路径干净（删除已提交、archive 已入库）
+        # spec/ 路径干净（删除已提交、archive 已入库）
         status = git(self.root, "status", "--porcelain").stdout.strip()
-        openspec_lines = [
+        spec_lines = [
             ln for ln in status.splitlines()
-            if "openspec/" in ln
+            if "spec/" in ln
         ]
-        self.assertEqual(openspec_lines, [])
+        self.assertEqual(spec_lines, [])
         # 源码修改未被卷入
         self.assertNotIn("core/keep.py", status)
         # commit message 正确
@@ -189,28 +189,28 @@ class TestArchiveAutoCommit(unittest.TestCase):
 
     def test_source_changes_not_included(self):
         # 归档残留 + 源码修改同时存在
-        arch = self.root / "openspec" / "changes" / "archive" / "spec-a-1788451452"
-        shutil.move(self.root / "openspec" / "changes" / "spec-a", arch)
+        arch = self.root / "spec" / "archive" / "spec-a-1788451452"
+        shutil.move(self.root / "spec" / "changes" / "spec-a", arch)
         (self.root / "core" / "keep.py").write_text("KEEP = 99\n", encoding="utf-8")
         self.engine._git_push_ref = MagicMock(return_value=(True, ""))
 
         self.engine._archive_auto_commit()
 
-        # commit 只含 openspec/changes 路径
+        # commit 只含 spec/ 路径（删除侧 spec/changes/ + 新增侧 spec/archive/）
         files = git(self.root, "show", "--name-only", "--pretty=format:",
                     "HEAD").stdout.splitlines()
         files = [f for f in files if f.strip()]
         self.assertNotEqual(files, [])
         for f in files:
-            self.assertTrue(f.startswith("openspec/changes/"), f)
+            self.assertTrue(f.startswith("spec/"), f)
         # 源码改动仍留在工作区
         self.assertIn("core/keep.py",
                       git(self.root, "status", "--porcelain").stdout)
 
     def test_commit_failure_warns_and_continues(self):
         """commit 失败 → WARNING + 不抛异常（spec 终态不受影响）。"""
-        arch = self.root / "openspec" / "changes" / "archive" / "spec-a-1788451452"
-        shutil.move(self.root / "openspec" / "changes" / "spec-a", arch)
+        arch = self.root / "spec" / "archive" / "spec-a-1788451452"
+        shutil.move(self.root / "spec" / "changes" / "spec-a", arch)
         with patch.object(
             self.engine, "_git_commit", return_value=(False, "hook refused")
         ) as gc, patch.object(
@@ -226,8 +226,8 @@ class TestArchiveAutoCommit(unittest.TestCase):
 
     def test_push_failure_warns(self):
         """commit 成功但 push 失败 → WARNING（残留已本地入库）。"""
-        arch = self.root / "openspec" / "changes" / "archive" / "spec-a-1788451452"
-        shutil.move(self.root / "openspec" / "changes" / "spec-a", arch)
+        arch = self.root / "spec" / "archive" / "spec-a-1788451452"
+        shutil.move(self.root / "spec" / "changes" / "spec-a", arch)
         self.engine._git_push_ref = MagicMock(
             return_value=(False, "remote rejected"))
         self.engine._archive_auto_commit()

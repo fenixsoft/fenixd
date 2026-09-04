@@ -23,7 +23,7 @@ from test_pm_dispatch import _write_impl_run_for_spec
 
 
 def _mk_spec_dir(proot: Path, name: str) -> None:
-    d = proot / "openspec" / "changes" / name
+    d = proot / "spec" / "changes" / name
     d.mkdir(parents=True, exist_ok=True)
     (d / "tasks.md").write_text("# Tasks\n\n## 1. 实现\n\n- [ ] 1.1 a\n", encoding="utf-8")
 
@@ -128,7 +128,7 @@ class TestTaskProgressSyncFallback(unittest.TestCase):
         return PMEngine(self.sm, ar, config or {}, self.project_root, logger)
 
     def _write_spec_tasks(self, spec_name: str, n_tasks: int, checked: int = 0) -> Path:
-        spec_dir = self.project_root / "openspec" / "changes" / spec_name
+        spec_dir = self.project_root / "spec" / "changes" / spec_name
         spec_dir.mkdir(parents=True, exist_ok=True)
         lines = [f"# Tasks: {spec_name}", "", "## 1. 实现", ""]
         for i in range(1, n_tasks + 1):
@@ -139,7 +139,7 @@ class TestTaskProgressSyncFallback(unittest.TestCase):
         return p
 
     def _commit_spec(self, spec_name: str):
-        subprocess.run(["git", "add", "--", "openspec"],
+        subprocess.run(["git", "add", "--", "spec"],
                        cwd=str(self.project_root), capture_output=True)
         subprocess.run(["git", "commit", "-q", "-m", f"spec {spec_name}"],
                        cwd=str(self.project_root), capture_output=True)
@@ -149,7 +149,7 @@ class TestTaskProgressSyncFallback(unittest.TestCase):
                               cwd=str(self.project_root), capture_output=True, text=True).stdout.strip()
 
     def _tasks_text(self, spec_name="demo"):
-        return (self.project_root / "openspec" / "changes" / spec_name / "tasks.md").read_text()
+        return (self.project_root / "spec" / "changes" / spec_name / "tasks.md").read_text()
 
     def test_flat_fallback_checks_first_n(self):
         """spec 场景：无编号 run（created=6, flat={0,1,2,3}），27 项未完成 →
@@ -270,7 +270,7 @@ class TestTaskProgressSyncFallback(unittest.TestCase):
         )
         engine = self._make_engine()
         engine._sync_task_progress("demo")
-        spec_dir = self.project_root / "openspec" / "changes" / "demo"
+        spec_dir = self.project_root / "spec" / "changes" / "demo"
         leftovers = [p.name for p in spec_dir.iterdir() if p.name.endswith(".tmp")]
         self.assertEqual(leftovers, [])
         self.assertIn("- [x] 1.1 task 1", self._tasks_text())

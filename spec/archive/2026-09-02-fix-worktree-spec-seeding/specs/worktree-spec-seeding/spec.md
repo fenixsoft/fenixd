@@ -1,14 +1,14 @@
 ## ADDED Requirements
 
 ### Requirement: 实现 worktree 播种 SPEC 源文件
-`core/worktree_manager.py::create` 在完成 `git worktree add` 后，MUST 检查目标 SPEC 的 `openspec/changes/<spec>/` 目录：若该目录在主工作树（项目根）存在，而在新建 worktree 内不存在（即分支 HEAD 未包含该 SPEC），则 MUST 将 SPEC 目录（proposal.md / design.md / specs/ / tasks.md 等）复制进 worktree，并将这些文件提交到该隔离分支（提交信息格式 `[fenix] spec: <spec-name>`）。若 SPEC 目录在主工作树不存在，或 worktree 内已存在（分支已含），则 MUST 不执行播种。播种过程失败 MUST 不阻塞 worktree 创建流程（记录日志并继续，实现 Agent 仍可用主仓库兜底路径）。
+`core/worktree_manager.py::create` 在完成 `git worktree add` 后，MUST 检查目标 SPEC 的 `spec/changes/<spec>/` 目录：若该目录在主工作树（项目根）存在，而在新建 worktree 内不存在（即分支 HEAD 未包含该 SPEC），则 MUST 将 SPEC 目录（proposal.md / design.md / specs/ / tasks.md 等）复制进 worktree，并将这些文件提交到该隔离分支（提交信息格式 `[fenix] spec: <spec-name>`）。若 SPEC 目录在主工作树不存在，或 worktree 内已存在（分支已含），则 MUST 不执行播种。播种过程失败 MUST 不阻塞 worktree 创建流程（记录日志并继续，实现 Agent 仍可用主仓库兜底路径）。
 
 #### Scenario: 未提交的 SPEC 被播种进 worktree
-- **WHEN** 某 SPEC 的 `openspec/changes/<spec>/` 只存在于主工作树（未提交），且为其创建实现 worktree
-- **THEN** worktree 内出现完整的 `openspec/changes/<spec>/`，且该隔离分支多出一个 `[fenix] spec: <spec-name>` 提交，分支由此自包含
+- **WHEN** 某 SPEC 的 `spec/changes/<spec>/` 只存在于主工作树（未提交），且为其创建实现 worktree
+- **THEN** worktree 内出现完整的 `spec/changes/<spec>/`，且该隔离分支多出一个 `[fenix] spec: <spec-name>` 提交，分支由此自包含
 
 #### Scenario: 分支已含 SPEC 时不重复播种
-- **WHEN** worktree 所在分支已包含 `openspec/changes/<spec>/`
+- **WHEN** worktree 所在分支已包含 `spec/changes/<spec>/`
 - **THEN** 不产生额外的 SPEC 提交，不复制文件
 
 #### Scenario: 播种失败不阻塞创建

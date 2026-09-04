@@ -2,8 +2,8 @@
 
 ## 1. mode 元数据与读取
 
-- [x] 1.1 定义 `.openspec.yaml` 的 `mode` 字段约定（`fast-track` / `full`，缺省 full），写入 design 或 config 文档
-- [x] 1.2 dispatch 派发前读取 spec 目录 `.openspec.yaml` mode 字段的读取器（字段缺失/非法一律返回 full），含单测
+- [x] 1.1 定义 `.spec.yaml` 的 `mode` 字段约定（`fast-track` / `full`，缺省 full），写入 design 或 config 文档
+- [x] 1.2 dispatch 派发前读取 spec 目录 `.spec.yaml` mode 字段的读取器（字段缺失/非法一律返回 full），含单测
 
 ## 2. fast-track agent 与统一结果文件
 
@@ -27,17 +27,17 @@
 ## 5. bug run 内修复与超预算升级
 
 - [x] 5.1 run 内修复重验流程：fast-track run 验证发现 bug 时同上下文修复重验，轮次计入 fix 预算
-- [x] 5.2 超预算升级：mode 改写 full（同步 `.openspec.yaml`）、保留分支成果、spec 置 implemented、派发完整模式 verifier 流水线、升级原因写入 spec entry
+- [x] 5.2 超预算升级：mode 改写 full（同步 `.spec.yaml`）、保留分支成果、spec 置 implemented、派发完整模式 verifier 流水线、升级原因写入 spec entry
 - [x] 5.3 升级路径单测：预算耗尽 → 不回 ready 重跑 implementer、成果不丢失
 
 ## 6. fenix-new 模式选择
 
-- [x] 6.1 更新项目源 `skills/fenix-new/SKILL.md`：复杂度评估标准（影响面/模块数/UI 或迁移/场景数量）、明确建议话术、`--fast-track` / `--full` 参数、确认后写入 `.openspec.yaml` mode 行
+- [x] 6.1 更新项目源 `skills/fenix-new/SKILL.md`：复杂度评估标准（影响面/模块数/UI 或迁移/场景数量）、明确建议话术、`--fast-track` / `--full` 参数、确认后写入 `.spec.yaml` mode 行
 - [x] 6.2 同步安装副本 `~/.claude/skills/fenix-new/`（两份内容一致）
 
 ## 7. Dashboard 模式标记
 
-- [x] 7.1 后端 data 层输出 spec 执行模式（读 `.openspec.yaml`，缺省 full）
+- [x] 7.1 后端 data 层输出 spec 执行模式（读 `.spec.yaml`，缺省 full）
 - [x] 7.2 spec 列表与详情页展示模式标记（fast-track 与 full 可辨识），存量 spec 显示 full 等价标记
 
 ## 8. 验证与收尾
@@ -46,6 +46,6 @@
 - [x] 8.2 用 dashboard fixture 验证配方做端到端人工验证（假 spec + mode 字段 + 伪造结果文件，不烧 token）
 - [x] 8.3 更新 PROJECT_LOG.md；确认无新增配置键（不加 config.template.yaml 条目）## 验证修复（第 2 轮失败）
 
-- [x] 先复核失败有效性：逐条核对 `openspec/changes/add-fast-track-mode/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-fast-track-mode/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
 - [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
 - [x] 修复后重跑验证确认通过

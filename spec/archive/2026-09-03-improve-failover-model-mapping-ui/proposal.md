@@ -19,7 +19,7 @@ add-provider-failover 落地后暴露两个缺口：1) 角色级 `model` 对整�
 ### Modified Capabilities
 
 <!-- modify add-provider-failover 已交付的 provider-chain-config 模型解析行为，
-     因 openspec/specs/ 为空，以 ADDED 声明新能力并在 spec 中注明取代关系 -->
+     因 spec/specs/ 为空，以 ADDED 声明新能力并在 spec 中注明取代关系 -->
 
 ## Impact
 

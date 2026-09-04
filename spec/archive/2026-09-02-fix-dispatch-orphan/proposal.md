@@ -25,7 +25,7 @@
 
 ### Modified Capabilities
 
-<!-- openspec/specs/ 当前为空，无既有活跃能力可修改 -->
+<!-- spec/specs/ 当前为空，无既有活跃能力可修改 -->
 
 ## Impact
 

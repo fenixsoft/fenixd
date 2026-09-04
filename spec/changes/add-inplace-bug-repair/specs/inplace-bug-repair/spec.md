@@ -10,7 +10,7 @@
 
 1. 内部字段 `_verify_fail_rounds` 递增 1 并持久化。
 2. 状态重置为 `implementing`（保留 branch/error 等既有字段语义）。
-3. 在父 SPEC 的 `tasks.md` 末尾追加或更新「`## 验证修复`」任务段，MUST 引用 `openspec/changes/<spec>/verification-report.md` 并指明修复对象为报告中的「真实产品 Bug」；段内 MUST 标注当前失败轮数。
+3. 在父 SPEC 的 `tasks.md` 末尾追加或更新「`## 验证修复`」任务段，MUST 引用 `spec/changes/<spec>/verification-report.md` 并指明修复对象为报告中的「真实产品 Bug」；段内 MUST 标注当前失败轮数。
 4. 后续实现与重验由既有派发循环与验证链路接管，MUST NOT 创建 fix-* 子 SPEC。
 
 追加任务段时 MUST NOT 改写父 SPEC 既有任务与勾选状态。

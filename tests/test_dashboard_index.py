@@ -23,8 +23,8 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
     (proot / ".fenix" / "logs").mkdir(parents=True, exist_ok=True)
     (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
     (proot / ".fenix" / "verify-progress" / "myspec" / "screenshots").mkdir(parents=True, exist_ok=True)
-    (proot / "openspec" / "changes" / "myspec" / "specs").mkdir(parents=True, exist_ok=True)
-    (proot / "openspec" / "changes" / "otherspec" / "specs").mkdir(parents=True, exist_ok=True)
+    (proot / "spec" / "changes" / "myspec" / "specs").mkdir(parents=True, exist_ok=True)
+    (proot / "spec" / "changes" / "otherspec" / "specs").mkdir(parents=True, exist_ok=True)
 
     (proot / ".fenix" / "STATE.md").write_text(
         "# Fenix Project State\n\n## Specs\n\n"
@@ -36,7 +36,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
     )
     (proot / ".fenix" / "config.yaml").write_text("project:\n  name: fake\n", encoding="utf-8")
 
-    (proot / "openspec" / "changes" / "myspec" / "tasks.md").write_text(
+    (proot / "spec" / "changes" / "myspec" / "tasks.md").write_text(
         "## 1. 阶段一\n\n"
         "- [x] 1.1 任务一\n"
         "- [ ] 1.2 任务二\n\n"
@@ -44,16 +44,16 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
         "- [ ] 2.1 任务三\n",
         encoding="utf-8",
     )
-    (proot / "openspec" / "changes" / "myspec" / "specs" / "spec.md").write_text(
+    (proot / "spec" / "changes" / "myspec" / "specs" / "spec.md").write_text(
         "## ADDED Requirements\n\n### Requirement: 功能\n\n"
         "#### Scenario: 场景一\n- **WHEN** x\n- **THEN** y\n",
         encoding="utf-8",
     )
-    (proot / "openspec" / "changes" / "otherspec" / "tasks.md").write_text(
+    (proot / "spec" / "changes" / "otherspec" / "tasks.md").write_text(
         "## 1. 完成\n\n- [x] 1.1 任务一\n",
         encoding="utf-8",
     )
-    (proot / "openspec" / "changes" / "otherspec" / "specs" / "spec.md").write_text(
+    (proot / "spec" / "changes" / "otherspec" / "specs" / "spec.md").write_text(
         "## ADDED Requirements\n\n#### Scenario: 场景二\n- **WHEN** a\n- **THEN** b\n",
         encoding="utf-8",
     )
@@ -103,7 +103,7 @@ class TestSummaryIndex:
             calls.append(spec_name_)
             return orig(proot_, spec_name_, entry_)
 
-        tasks = proot / "openspec" / "changes" / "myspec" / "tasks.md"
+        tasks = proot / "spec" / "changes" / "myspec" / "tasks.md"
         # 等长改写：强制推进 mtime，避免同长度写入落在同一 mtime_ns 粒度内
         time.sleep(0.01)
         os.utime(tasks, ns=(tasks.stat().st_atime_ns, tasks.stat().st_mtime_ns + 1_000_000))
@@ -217,8 +217,8 @@ class TestConfigCache:
     def test_read_spec_mode_cache_hit(self, tmp_path):
         proot = make_project(tmp_path)
         assert dash_data.spec_summary(proot, "myspec", {"status": "testing"})["mode"] == "full"
-        # 未挂 .openspec.yaml → 默认 full；再次读取经缓存
-        from core.openspec_mode import read_spec_mode, _SPEC_MODE_CACHE
+        # 未挂 .spec.yaml → 默认 full；再次读取经缓存
+        from core.spec_mode import read_spec_mode, _SPEC_MODE_CACHE
         assert read_spec_mode(proot, "myspec") == "full"
         before = dict(_SPEC_MODE_CACHE)
         assert read_spec_mode(proot, "myspec") == "full"

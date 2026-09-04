@@ -1,5 +1,5 @@
 // v2-admin-doc-modals: Admin 处置弹窗接线 + SPEC 文档弹窗验证
-// 实施依据: openspec/changes/v2-admin-doc-modals、计划 Task 9、behavior.md §1(spec-doc 404 语义) / §4(等待态)
+// 实施依据: spec/changes/v2-admin-doc-modals、计划 Task 9、behavior.md §1(spec-doc 404 语义) / §4(等待态)
 import { test, expect } from '@playwright/test';
 
 const BASE = process.env.V2_BASE_URL || 'http://127.0.0.1:8787';

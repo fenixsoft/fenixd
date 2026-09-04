@@ -29,7 +29,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
     (proot / ".fenix" / "logs").mkdir(parents=True, exist_ok=True)
     (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
     (proot / ".fenix" / "verify-progress" / "myspec" / "screenshots").mkdir(parents=True, exist_ok=True)
-    (proot / "openspec" / "changes" / "myspec" / "specs").mkdir(parents=True, exist_ok=True)
+    (proot / "spec" / "changes" / "myspec" / "specs").mkdir(parents=True, exist_ok=True)
 
     (proot / ".fenix" / "STATE.md").write_text(
         "# Fenix Project State\n\n## Specs\n\n"
@@ -40,7 +40,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
 
     (proot / ".fenix" / "config.yaml").write_text("project:\n  name: fake\n", encoding="utf-8")
 
-    (proot / "openspec" / "changes" / "myspec" / "tasks.md").write_text(
+    (proot / "spec" / "changes" / "myspec" / "tasks.md").write_text(
         "## 1. 阶段一\n\n"
         "- [x] 1.1 任务一\n"
         "- [ ] 1.2 任务二\n\n"
@@ -49,7 +49,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
         encoding="utf-8",
     )
 
-    (proot / "openspec" / "changes" / "myspec" / "specs" / "spec.md").write_text(
+    (proot / "spec" / "changes" / "myspec" / "specs" / "spec.md").write_text(
         "## ADDED Requirements\n\n### Requirement: 功能\n\n"
         "#### Scenario: 场景一\n- **WHEN** x\n- **THEN** y\n\n"
         "#### Scenario: 场景二\n- **WHEN** a\n- **THEN** b\n",
@@ -97,7 +97,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
         encoding="utf-8",
     )
 
-    (proot / "openspec" / "changes" / "myspec" / "verification-report.md").write_text(
+    (proot / "spec" / "changes" / "myspec" / "verification-report.md").write_text(
         "# 验证报告\n\n## Bug 汇总\n- 严重缺陷：点击保存按钮无反应\n  根因：事件未绑定\n",
         encoding="utf-8",
     )
@@ -135,7 +135,7 @@ class TestFileWatcher:
         等长/相近时间片内 os.replace 可能落在同一 stat 粒度内不改目录签名，故
         显式前推 spec 目录 mtime —— 等价于真实时间片间隔下 os.replace 的效果。
         """
-        tasks = proot / "openspec" / "changes" / spec_name / "tasks.md"
+        tasks = proot / "spec" / "changes" / spec_name / "tasks.md"
         tmp = tasks.parent / ".tasks.md.tmp"
         tmp.write_text(new_content, encoding="utf-8")
         os.replace(str(tmp), str(tasks))

@@ -38,7 +38,7 @@ def _seed_persisted(proot: Path, spec: str, ids):
 
 
 def _write_tasks_fix_section(proot: Path, spec: str, body: str):
-    p = proot / "openspec" / "changes" / spec / "tasks.md"
+    p = proot / "spec" / "changes" / spec / "tasks.md"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("# tasks\n\n" + body, encoding="utf-8")
 

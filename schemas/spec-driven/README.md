@@ -1,7 +1,7 @@
 # spec-driven schema（vendored）
 
 本目录为 fenix 原生 SPEC 生成器（`core/spec_gen.py`）所需的 spec-driven schema 数据，
-从 OpenSpec 包 vendored 而来，供 fenix 在**不安装 npm openspec CLI** 的情况下
+从 OpenSpec 包 vendored 而来，供 fenix 在**不安装 npm 依赖** 的情况下
 生成 proposal / design / specs / tasks 四种 artifact。
 
 ## 来源与版本
@@ -27,9 +27,9 @@
 
 ```bash
 # 示例（上游路径可能变化）：
-# cp -r <openspec>/schemas/spec-driven/* schemas/spec-driven/
+# cp -r <上游包>/schemas/spec-driven/* schemas/spec-driven/
 ```
 
 `core/spec_gen.py` 通过 `Path(__file__).resolve().parent.parent / "schemas" / "spec-driven"`
 定位本目录，替换后重启 fenix 相关命令即生效。生成的 artifact 布局
-（`openspec/changes/<name>/proposal.md` 等）与 fenix 核心的硬依赖保持一致。
+（`spec/changes/<name>/proposal.md` 等）与 fenix 核心的硬依赖保持一致。

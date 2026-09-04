@@ -2,7 +2,7 @@
 
 ## 1. 修复真实产品缺陷
 
-- [x] 1.1 阅读 `openspec/changes/v2-shell-hash-router/verification-report.md`，定位「真实产品 Bug」的根因并修复
+- [x] 1.1 阅读 `spec/changes/v2-shell-hash-router/verification-report.md`，定位「真实产品 Bug」的根因并修复
 
   > 真实产品 Bug 已在父 SPEC 实现提交 `be8f251` 修复且为本分支祖先：(1)【严重】hash 路由断裂——app.json 改为 children 分组渲染侧边导航、app.js 渲染后将导航 history 链接改写为 `#/overview` 风格并统一 jumpTo 写 hash、监听 hashchange 同步 embed；(2)【轻微】webfont 404——补齐 `v2/thirds/@fortawesome` webfont。本任务工作目录代码已含该修复，并以浏览器端到端实渲染验证：访问 `#/overview` 侧边导航含 `a[href='#/overview']`、各参数路由壳渲染正常、无 404 console error、legacy `/` 页 `#main` 正常。验证报告 `report.json` 为修复落地前的陈旧快照（10/10 失败），非当前代码状态。
 

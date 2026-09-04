@@ -2,7 +2,7 @@
 
 ## 1. 修复真实产品缺陷
 
-- [x] 1.1 阅读 `openspec/changes/fix-add-multi-project-monitoring/verification-report.md`，定位「真实产品 Bug」的根因并修复
+- [x] 1.1 阅读 `spec/changes/fix-add-multi-project-monitoring/verification-report.md`，定位「真实产品 Bug」的根因并修复
 
 > **调查结论（无真实产品 Bug 可修）**：父 SPEC `fix-add-multi-project-monitoring` 目录下不存在
 > `verification-report.md`（该 SPEC 仅含 proposal.md 与 tasks.md），其验证失败记录于

@@ -187,7 +187,7 @@ def save_scenario_set(project_root, scenario_set: ScenarioSet) -> Path:
 def read_verify_fix_section(project_root, spec_name: str) -> Optional[str]:
     """读取 tasks.md 的「## 验证修复」段全文；不存在返回 None。"""
     tasks_path = (
-        Path(project_root) / "openspec" / "changes" / spec_name / "tasks.md"
+        Path(project_root) / "spec" / "changes" / spec_name / "tasks.md"
     )
     if not tasks_path.exists():
         return None

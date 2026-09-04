@@ -68,7 +68,7 @@
 - [x] 3.7 `06-governance.md` 调度与治理规则：优先级与并发、三类预算（impl_run_budget/token/daily_run_limit）与停靠、重试/退避/秒挂冷却、超时活性监督、自动恢复、merge 修复通道与熔断、fix 族谱收敛、告警分级流向（mermaid 图）、重启协议；每条规则附「对用户意味着什么」。
 - [x] 3.8 `07-dashboard.md` Dashboard 使用指南：概览/项目列表/SPEC 详情/设置/运维记录五页逐面板讲解、SPEC 行操作（优先级/冻结/归档/删除/呼叫 Admin）、告警处置、帮助页自身用法、安全边界（仅 127.0.0.1）。
 - [x] 3.9 `08-config.md` 配置参考：分级合并与 30s 热更新 vs 需重启、config.yaml 全键分组表（默认值/范围/生效方式）、「模板值与代码缺省不一致」澄清小节、Dashboard 设置页与配置键映射表。
-- [x] 3.10 `09-artifacts.md` 文件与数据地图：STATE.md 字段逐一解释、openspec artifacts 与 Deliverables 声明段、runs/verify-progress/admin_alerts/todo.md/PROJECT_LOG.md 逐文件说明、「出问题去哪查」对照表。
+- [x] 3.10 `09-artifacts.md` 文件与数据地图：STATE.md 字段逐一解释、SPEC artifacts 与 Deliverables 声明段、runs/verify-progress/admin_alerts/todo.md/PROJECT_LOG.md 逐文件说明、「出问题去哪查」对照表。
 - [x] 3.11 `10-faq.md` FAQ 与故障排查：SPEC 卡住/烧钱快/merge 冲突/验证反复失败/告警频响/daemon 拉起/安全人工接管等条目，每条「现象→根因→处置」，与各篇交叉链接。
 
 ## 4. 构建与收尾

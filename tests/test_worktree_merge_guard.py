@@ -180,8 +180,8 @@ class TestMergeUntrackedGuard:
         # 主树有若干 untracked 文件
         (root / "notes").mkdir(parents=True, exist_ok=True)
         (root / "notes" / "scratch.txt").write_text("scratch\n", encoding="utf-8")
-        (root / "openspec" / "changes" / "x").mkdir(parents=True, exist_ok=True)
-        (root / "openspec" / "changes" / "x" / "spec.md").write_text("spec\n", encoding="utf-8")
+        (root / "spec" / "changes" / "x").mkdir(parents=True, exist_ok=True)
+        (root / "spec" / "changes" / "x" / "spec.md").write_text("spec\n", encoding="utf-8")
 
         wm = make_wm(root)
         success, err = wm.merge_back_from_branch("fenix/impl")
@@ -191,7 +191,7 @@ class TestMergeUntrackedGuard:
         assert not (root / ".fenix" / "merge-backup").exists()
         # untracked 文件仍在原地
         assert (root / "notes" / "scratch.txt").exists()
-        assert (root / "openspec" / "changes" / "x" / "spec.md").exists()
+        assert (root / "spec" / "changes" / "x" / "spec.md").exists()
 
     # ───────────────────────── scenario 5: 一致副本清理备份 ─────────────────────────
 

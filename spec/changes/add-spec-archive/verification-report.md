@@ -6,7 +6,7 @@
 
 **状态：bug-found — 0/15 场景通过，15 失败，0 错误（4 个真实产品 Bug）**
 
-验证未通过（15/15 失败，0 通过）。根因：add-spec-archive 功能完全未实现——代码与 SPEC 文档脱节，仅创建了 openspec/changes/add-spec-archive/ 规格，未提交任何实现代码。具体表现为三大系统性产品缺陷：(1) specMenuItems 无「归档 Spec」菜单项（6 场景）；(2) 列表无归档状态过滤控件且未按 archived 过滤行（6 场景）；(3) MiscSettingsPanel 无自动归档阈值字段（3 场景）。另发现 1 个测试场景缺陷（antd 两字按钮空格插入致「保存」按钮选择器失配，minor，不阻塞）。所有失败均为确定性失败（同一 mock 数据下稳定复现），非 flaky 或环境问题。建议：implementer 需补齐「归档 Spec」菜单项 + /api/spec-archive 后端端点 + archivedOnly 过滤 + 自动归档阈值设置，再重建 v3 dist 后重跑验证。
+验证未通过（15/15 失败，0 通过）。根因：add-spec-archive 功能完全未实现——代码与 SPEC 文档脱节，仅创建了 spec/changes/add-spec-archive/ 规格，未提交任何实现代码。具体表现为三大系统性产品缺陷：(1) specMenuItems 无「归档 Spec」菜单项（6 场景）；(2) 列表无归档状态过滤控件且未按 archived 过滤行（6 场景）；(3) MiscSettingsPanel 无自动归档阈值字段（3 场景）。另发现 1 个测试场景缺陷（antd 两字按钮空格插入致「保存」按钮选择器失配，minor，不阻塞）。所有失败均为确定性失败（同一 mock 数据下稳定复现），非 flaky 或环境问题。建议：implementer 需补齐「归档 Spec」菜单项 + /api/spec-archive 后端端点 + archivedOnly 过滤 + 自动归档阈值设置，再重建 v3 dist 后重跑验证。
 
 | 指标 | 数量 |
 | --- | --- |

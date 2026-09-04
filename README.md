@@ -136,7 +136,7 @@ pip3 install pyyaml
 
 > SPEC 生成已原生集成进 fenix：`/fenix-new` 使用内置生成器
 > （`core/spec_gen.py` + `bin/fenix_spec.py`，数据 vendored 于 `schemas/spec-driven/`），
-> 不再需要独立安装 openspec CLI 或 openspec skills。
+> SPEC 生成与归档为内置能力，无需独立安装外部工具。
 
 ## 安装
 
@@ -163,7 +163,7 @@ bash install.sh
 fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]
 ```
 
-生成工程骨架：`.fenix/`（配置 + 状态文件 + 框架软链接 + 运行时目录）、`openspec/`、`.claude/agents/`、`.claude/worktrees/`，并追加 `.gitignore` 条目。
+生成工程骨架：`.fenix/`（配置 + 状态文件 + 框架软链接 + 运行时目录）、`spec/`、`.claude/agents/`、`.claude/worktrees/`，并追加 `.gitignore` 条目。
 
 ### 2. 启动框架
 
@@ -205,7 +205,7 @@ fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]
 /fenix-archive
 ```
 
-把已完成 change 归档到 `openspec/changes/archive/`（也可在 Dashboard 对终态 SPEC 直接归档；超过阈值自动归档）。
+把已完成 change 归档到 `spec/archive/`（也可在 Dashboard 对终态 SPEC 直接归档；超过阈值自动归档）。
 
 ### 常用命令速查
 

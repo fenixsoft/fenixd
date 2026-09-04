@@ -27,18 +27,18 @@ class TestNewChange(unittest.TestCase):
             root = Path(tmp)
             result = new_change(root, "add-user-login")
             self.assertTrue(result.is_dir())
-            metadata = (root / "openspec" / "changes" / "add-user-login" / ".openspec.yaml").read_text(
+            metadata = (root / "spec" / "changes" / "add-user-login" / ".spec.yaml").read_text(
                 encoding="utf-8"
             )
             self.assertIn("schema: spec-driven", metadata)
             self.assertIn("created:", metadata)
-            self.assertEqual(result, root / "openspec" / "changes" / "add-user-login")
+            self.assertEqual(result, root / "spec" / "changes" / "add-user-login")
 
     def test_duplicate_change_rejected_without_overwrite(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             new_change(root, "add-user-login")
-            existing = root / "openspec" / "changes" / "add-user-login" / "proposal.md"
+            existing = root / "spec" / "changes" / "add-user-login" / "proposal.md"
             existing.write_text("sentinel", encoding="utf-8")
             with self.assertRaises(ValueError):
                 new_change(root, "add-user-login")
@@ -50,7 +50,7 @@ class TestNewChange(unittest.TestCase):
             root = Path(tmp)
             with self.assertRaises(ValueError):
                 new_change(root, "Add User Login")
-            self.assertFalse((root / "openspec" / "changes" / "Add User Login").exists())
+            self.assertFalse((root / "spec" / "changes" / "Add User Login").exists())
 
     def test_uppercase_name_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -69,7 +69,7 @@ class TestNewChange(unittest.TestCase):
 
 
 class TestStatus(unittest.TestCase):
-    """status：初始态 / 全完成 / 与 openspec --json 同构。"""
+    """status：初始态 / 全完成 / 与 spec status --json 同构。"""
 
     def _make_change(self, root, name="add-user-login"):
         return new_change(root, name)
@@ -144,7 +144,7 @@ class TestInstructions(unittest.TestCase):
     """instructions：proposal / tasks 内容与依赖。"""
 
     def _complete_deps(self, root, name):
-        change_dir = root / "openspec" / "changes" / name
+        change_dir = root / "spec" / "changes" / name
         (change_dir / "proposal.md").write_text("# P", encoding="utf-8")
         (change_dir / "design.md").write_text("# D", encoding="utf-8")
         (change_dir / "specs" / "cap").mkdir(parents=True)
@@ -216,13 +216,13 @@ class TestArchive(unittest.TestCase):
 
             result = archive_change(root, name)
 
-            self.assertTrue(result["from"].endswith(f"openspec/changes/{name}"))
-            expected_to = root / "openspec" / "changes" / "archive" / f"{date.today().isoformat()}-{name}"
+            self.assertTrue(result["from"].endswith(f"spec/changes/{name}"))
+            expected_to = root / "spec" / "archive" / f"{date.today().isoformat()}-{name}"
             self.assertEqual(result["to"], str(expected_to))
             self.assertTrue(expected_to.is_dir())
             self.assertFalse(change_dir.exists())
             self.assertTrue((expected_to / "tasks.md").exists())
-            self.assertTrue((expected_to / ".openspec.yaml").exists())
+            self.assertTrue((expected_to / ".spec.yaml").exists())
 
     def test_archive_date_conflict_does_not_overwrite(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -233,7 +233,7 @@ class TestArchive(unittest.TestCase):
             sentinel.write_text("keep", encoding="utf-8")
 
             # 预置同名目标（模拟同一天重复归档）
-            target = root / "openspec" / "changes" / "archive" / f"{date.today().isoformat()}-{name}"
+            target = root / "spec" / "archive" / f"{date.today().isoformat()}-{name}"
             target.mkdir(parents=True)
             (target / "existing.txt").write_text("old", encoding="utf-8")
 

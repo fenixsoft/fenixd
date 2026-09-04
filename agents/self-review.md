@@ -24,7 +24,7 @@
 - **可改进（improvements）**：系统性改进点，足以支撑后续 SPEC 立项。
 
 ## 铁律（MUST NOT）
-1. 只产出回顾，**禁止**创建任何 SPEC（不写 openspec/changes/、不注册 .fenix/STATE.md 条目）。
+1. 只产出回顾，**禁止**创建任何 SPEC（不写 spec/changes/、不注册 .fenix/STATE.md 条目）。
 2. **禁止**派发任何 implementer/verifier/planner agent，不修改框架代码。
 3. 不要修改 .fenix/STATE.md、tasks.md 或任何源码文件——你的唯一产物是下面的回顾 JSON。
 4. read_todo=true 时，若某历史条目今日仍存在或已闭环，在对应条目中标注「（新增）/（恶化）/（已闭环）」。

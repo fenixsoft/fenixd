@@ -20,13 +20,13 @@ watcher 的 `state` 事件改为增量形态：`{type:"state", project, specs:[{
 
 ### Requirement: watcher 目录级签名跳层
 
-文件监视改为两级签名：每项目每轮先 stat 顶层数据源集合（STATE.md、openspec/changes、.fenix/logs、.fenix/runs、
+文件监视改为两级签名：每项目每轮先 stat 顶层数据源集合（STATE.md、spec/changes、.fenix/logs、.fenix/runs、
 .fenix/verify-progress、.fenix/admin_alerts.json），目录签名（mtime_ns, size, ctime_ns）未变则跳过整棵子树；
 仅对签名变化的目录进入子级枚举（spec 目录级同样签名跳层）。
 
 #### Scenario: 目录未变零文件遍历
 - **WHEN** 项目文件全部无变化，watcher 执行一轮 scan_once
-- **THEN** 该轮除顶层目录 stat 外不发生任何 openspec/changes 内文件级 stat（对 spec 目录级别断言统计）
+- **THEN** 该轮除顶层目录 stat 外不发生任何 spec/changes 内文件级 stat（对 spec 目录级别断言统计）
 
 #### Scenario: 变更检测不丢
 - **WHEN** 修改某 spec 的 tasks.md（父目录 mtime 随之更新）

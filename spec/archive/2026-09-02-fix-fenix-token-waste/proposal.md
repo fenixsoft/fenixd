@@ -25,7 +25,7 @@ Fenixd 在 `add-multi-project-monitoring` 一个 spec 上因 merge-back 反复�
 
 ### Modified Capabilities
 
-（无。openspec/specs/ 为空，全部为新增能力。）
+（无。spec/specs/ 为空，全部为新增能力。）
 
 ## Impact
 

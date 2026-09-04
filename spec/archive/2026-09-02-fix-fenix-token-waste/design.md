@@ -23,7 +23,7 @@ Fenixd 的 agent 编排（implementer/verifier/planner）通过 `claude -p` 子�
 **Non-Goals**
 - 不改 claude CLI 调用以外的外部接口
 - 不引入新依赖（全用标准库/现有工具）
-- 不改变 spec 内容规范（openspec 文档契约不变）
+- 不改变 spec 内容规范（spec 文档契约不变）
 - 不为历史 run 产物做数据迁移（旧 jsonl 含遥测事件可继续被 Dashboard 兼容读取）
 
 ## Decisions

@@ -19,7 +19,7 @@
 - `dashboard-overview`: 概览视图统一展示多项目开发状态与 daemon 健康徽标
 
 ### Modified Capabilities
-<!-- openspec/specs/ 为空，既有 add-fenix-dashboard 的能力仍在其 change 内；
+<!-- spec/specs/ 为空，既有 add-fenix-dashboard 的能力仍在其 change 内；
      本变更以新增能力的形式承载对 dashboard-server / dashboard-ui 的增量要求。 -->
 
 ## Impact

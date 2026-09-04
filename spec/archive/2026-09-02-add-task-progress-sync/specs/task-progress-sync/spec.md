@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: implementer run 成功后 daemon 确定性回写 tasks.md
-implementer run 终态为 success 时，系统 SHALL 解析该 run 产物（`.fenix/runs/impl-<spec>-*.jsonl`）中的 TaskCreate subject 内嵌任务 id 与 TaskUpdate completed 集合，将主树 `openspec/changes/<spec>/tasks.md` 中对应 id 的 `- [ ]` 确定性改为 `- [x]`，并以固定格式 message（`[fenix] <spec>: sync task progress from run record`）commit。回写 SHALL 幂等：已勾选的任务跳过；run 产物缺失或解析为空时不做任何修改。agent 已自行勾选的内容 MUST NOT 被撤销。
+implementer run 终态为 success 时，系统 SHALL 解析该 run 产物（`.fenix/runs/impl-<spec>-*.jsonl`）中的 TaskCreate subject 内嵌任务 id 与 TaskUpdate completed 集合，将主树 `spec/changes/<spec>/tasks.md` 中对应 id 的 `- [ ]` 确定性改为 `- [x]`，并以固定格式 message（`[fenix] <spec>: sync task progress from run record`）commit。回写 SHALL 幂等：已勾选的任务跳过；run 产物缺失或解析为空时不做任何修改。agent 已自行勾选的内容 MUST NOT 被撤销。
 
 #### Scenario: run 声明完成但 tasks.md 未勾时回写
 - **WHEN** implementer run 终态 success 且其 run 产物含 TaskUpdate completed 对应任务 id「2.1」「2.2」，而主树 tasks.md 中这两项仍为 `- [ ]`

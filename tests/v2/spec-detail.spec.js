@@ -1,5 +1,5 @@
 // v2-spec-detail-page: 详情页(验证卡 + 4 页签)渲染与交互验证
-// 实施依据: openspec/changes/v2-spec-detail-page、计划 Task 7、behavior.md §1(详情字段)/§0(detail 帧)
+// 实施依据: spec/changes/v2-spec-detail-page、计划 Task 7、behavior.md §1(详情字段)/§0(detail 帧)
 import { test, expect } from '@playwright/test';
 
 const BASE = 'http://127.0.0.1:8787';

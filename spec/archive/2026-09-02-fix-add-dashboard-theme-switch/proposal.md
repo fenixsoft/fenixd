@@ -2,7 +2,7 @@
 
 ## Why
 
-`add-dashboard-theme-switch` 的验证报告发现产品缺陷，导致验证未通过。详见 `openspec/changes/add-dashboard-theme-switch/verification-report.md` 的「真实产品 Bug」部分。
+`add-dashboard-theme-switch` 的验证报告发现产品缺陷，导致验证未通过。详见 `spec/changes/add-dashboard-theme-switch/verification-report.md` 的「真实产品 Bug」部分。
 
 ## What Changes
 

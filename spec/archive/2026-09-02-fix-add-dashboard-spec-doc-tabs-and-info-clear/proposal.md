@@ -2,7 +2,7 @@
 
 ## Why
 
-`add-dashboard-spec-doc-tabs-and-info-clear` 的验证报告发现产品缺陷，导致验证未通过。详见 `openspec/changes/add-dashboard-spec-doc-tabs-and-info-clear/verification-report.md` 的「真实产品 Bug」部分。
+`add-dashboard-spec-doc-tabs-and-info-clear` 的验证报告发现产品缺陷，导致验证未通过。详见 `spec/changes/add-dashboard-spec-doc-tabs-and-info-clear/verification-report.md` 的「真实产品 Bug」部分。
 
 ## What Changes
 

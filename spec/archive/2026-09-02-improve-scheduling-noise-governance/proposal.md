@@ -19,7 +19,7 @@
 
 ### Modified Capabilities
 
-<!-- openspec/specs/ 为空；与 fix-dispatch-orphan 已合入的事件投递/隔离修补正交，
+<!-- spec/specs/ 为空；与 fix-dispatch-orphan 已合入的事件投递/隔离修补正交，
      与 improve-run-lifecycle-governance 的活性监督/巡检互补不重叠 -->
 
 ## Impact

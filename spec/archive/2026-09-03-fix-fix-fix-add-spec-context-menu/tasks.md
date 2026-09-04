@@ -2,7 +2,7 @@
 
 ## 1. 修复真实产品缺陷
 
-- [x] 1.1 阅读 `openspec/changes/add-spec-context-menu/verification-report.md`，定位「真实产品 Bug」的根因并修复（根因结论见 proposal.md「根因结论」：两个 Bug 均为伪失败，产品代码无缺陷，20/20 场景实测通过）
+- [x] 1.1 阅读 `spec/changes/add-spec-context-menu/verification-report.md`，定位「真实产品 Bug」的根因并修复（根因结论见 proposal.md「根因结论」：两个 Bug 均为伪失败，产品代码无缺陷，20/20 场景实测通过）
 
 ## 2. 验证与打包
 

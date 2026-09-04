@@ -2,8 +2,8 @@
 
 ## 1. 后端归档能力
 
-- [x] 1.1 `data.py` 新增 `archive_spec(project_root, spec_name)`：终态校验（done/pushed，否则返回错误）、`shutil.move` 到 `openspec/changes/archive/YYYY-MM-DD-<name>/`（目标存在报错不覆盖，与 fenix_archive.py 命名规则一致）、返回 `{ok, from, to, error}`；目录缺失返回 found=false
-- [x] 1.2 `data.py::spec_summary` 增加 `archived` 字段：STATE.md 有条目且 `openspec/changes/<name>/` 不存在 → true；同步检查读文档/任务进度的路径对目录缺失容错（返回空进度不抛异常）
+- [x] 1.1 `data.py` 新增 `archive_spec(project_root, spec_name)`：终态校验（done/pushed，否则返回错误）、`shutil.move` 到 `spec/archive/YYYY-MM-DD-<name>/`（目标存在报错不覆盖，与 fenix_archive.py 命名规则一致）、返回 `{ok, from, to, error}`；目录缺失返回 found=false
+- [x] 1.2 `data.py::spec_summary` 增加 `archived` 字段：STATE.md 有条目且 `spec/changes/<name>/` 不存在 → true；同步检查读文档/任务进度的路径对目录缺失容错（返回空进度不抛异常）
 - [x] 1.3 `server.py` 新增 `POST /api/spec-archive` 端点（对齐 spec-freeze 的参数与错误处理），归档成功发项目活动事件（归档动作 from→to）
 - [x] 1.4 单测：归档终态成功/非终态拒绝/目标已存在不覆盖/不存在 spec 报错/archived 判定（目录存在、目录缺失、CLI 归档后条目保留）
 
@@ -30,6 +30,6 @@
 
 ## 验证修复（第 1 轮失败）
 
-- [x] 先复核失败有效性：逐条核对 `openspec/changes/add-spec-archive/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [x] 先复核失败有效性：逐条核对 `spec/changes/add-spec-archive/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
 - [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
 - [x] 修复后重跑验证确认通过

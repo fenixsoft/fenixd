@@ -1,6 +1,6 @@
 """agent_runner 关闭语义（SIGTERM terminate 流程）测试。
 
-对应 openspec/changes/fix-graceful-shutdown-agents 的 tasks 1.1-1.3、3.1，
+对应 spec/changes/fix-graceful-shutdown-agents 的 tasks 1.1-1.3、3.1，
 覆盖 spec agent-shutdown-interrupt：关机时不逐 agent 等待、写 interrupted 标记、
 缓冲窗口 SIGKILL 兜底、多 agent 并行终止。
 """

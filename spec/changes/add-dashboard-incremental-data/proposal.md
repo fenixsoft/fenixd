@@ -19,7 +19,7 @@
 3. **前端双通道去重**：v3 SPA 改为 SSE 事件驱动刷新；2s 固定轮询降为 30~60s 兜底心跳 + `visibilitychange` 时补刷；spec 表格接收增量事件 patch 单行（含新增/删除/排序）。轮询与 SSE 不再叠加。
 4. **配置解析缓存**：`read_effective_config` / `read_spec_mode` 按 `(path, mtime, size)` 缓存（实测可杀掉 project_summary 62% 时间）；`cleanup_runs` 节流到 ≥60s 一次。
 5. **日志尾部索引**：为 `.fenix/logs/fenixd*.log` 维护行偏移索引（`.fenix/logs/.idx/`），`get_spec_timeline` / `get_recent_events` 只读尾部 1MB 窗口内的偏移段，替代全量 7.5MB（10000 spec 时 700MB）扫描。
-6. **watcher 目录级签名跳层**：保 D2 零新增依赖（不引入 watchdog）。改为两级签名：顶层数据源目录（STATE.md/openspec/changes/.fenix/...）mtime 未变则跳过整棵子树；spec 目录 mtime 未变则跳过该 spec 的 7 个文件 stat。10000 spec 时每轮 stat 从 7 万次降至 O(目录数)（约 1 万次目录级 stat，页缓存内 ≈10ms）。
+6. **watcher 目录级签名跳层**：保 D2 零新增依赖（不引入 watchdog）。改为两级签名：顶层数据源目录（STATE.md/spec/changes/.fenix/...）mtime 未变则跳过整棵子树；spec 目录 mtime 未变则跳过该 spec 的 7 个文件 stat。10000 spec 时每轮 stat 从 7 万次降至 O(目录数)（约 1 万次目录级 stat，页缓存内 ≈10ms）。
 7. **连接上限**：SSE 连接数上限 32（超限拒绝新连接，客户端退化为轮询）；`ThreadingHTTPServer` 线程数上限 64（超限 503，防标签页风暴耗尽资源）。
 
 ## Capabilities
@@ -32,7 +32,7 @@
 - `dashboard-connection-limit`: SSE 与 HTTP 线程连接上限
 
 ### Modified Capabilities
-<!-- 无既有 openspec/specs/ 能力要求变更（前端轮询语义属实现层，不改变对外 API 契约） -->
+<!-- 无既有 spec/specs/ 能力要求变更（前端轮询语义属实现层，不改变对外 API 契约） -->
 
 ## Impact
 

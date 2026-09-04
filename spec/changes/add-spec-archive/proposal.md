@@ -2,11 +2,11 @@
 
 ## Why
 
-`openspec/changes/` 下已完成 SPEC 不断累积（当前 108 个 change 目录，archive 为空），列表越来越长，活跃 SPEC 与历史 SPEC 混杂，影响浏览与检索效率。CLI 侧已有 `/fenix-archive` skill 与 `bin/fenix_archive.py` 归档命令（见 integrate-openspec-native spec-archive 能力），但 Dashboard 无归档入口、无归档查询、更无自动归档，归档能力对日常使用不可达。
+`spec/changes/` 下已完成 SPEC 不断累积（当前 108 个 change 目录，archive 为空），列表越来越长，活跃 SPEC 与历史 SPEC 混杂，影响浏览与检索效率。CLI 侧已有 `/fenix-archive` skill 与 `bin/fenix_archive.py` 归档命令（见 integrate-openspec-native spec-archive 能力），但 Dashboard 无归档入口、无归档查询、更无自动归档，归档能力对日常使用不可达。
 
 ## What Changes
 
-- **界面手动归档**：spec 列表行「更多」菜单在「冻结 Spec」之后新增「归档 Spec」菜单项，仅对终态（done/pushed）SPEC 可用；调用后端归档端点，效果等同 `fenix_archive.py`：将 `openspec/changes/<name>/` 移动到 `openspec/changes/archive/YYYY-MM-DD-<name>/`，STATE.md 条目原样保留。
+- **界面手动归档**：spec 列表行「更多」菜单在「冻结 Spec」之后新增「归档 Spec」菜单项，仅对终态（done/pushed）SPEC 可用；调用后端归档端点，效果等同 `fenix_archive.py`：将 `spec/changes/<name>/` 移动到 `spec/archive/YYYY-MM-DD-<name>/`，STATE.md 条目原样保留。
 - **归档查询切换**：spec 列表过滤区（「全部/仅需求/仅问题」Radio.Group 右侧）新增归档状态切换控件，默认展示未归档 SPEC，可切换查看已归档 SPEC；归档判定以目录存在性为准（活跃目录 `changes/<name>/` 不存在即视为已归档），CLI skill 与界面两条归档路径天然一致。
 - **自动归档**：设置页「其他」新增「自动归档阈值」配置（`archive.auto_threshold`，默认 50，0 = 禁用）；daemon 主循环周期检查各项目已完成（done/pushed）SPEC 数量，超过阈值时按完成时间（STATE.md `updated` 字段）从最久开始自动归档，直到数量降至阈值以内。
 

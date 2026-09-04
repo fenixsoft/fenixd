@@ -76,7 +76,7 @@ class _GateTestBase(unittest.TestCase):
 
     def _report_path(self, spec=SPEC):
         return (
-            self.project_root / "openspec" / "changes" / spec
+            self.project_root / "spec" / "changes" / spec
             / "verification-report.md"
         )
 

@@ -1,6 +1,6 @@
-"""openspec_mode.py — SPEC 执行模式读取器（add-fast-track-mode / D2）。
+"""spec_mode.py — SPEC 执行模式读取器（add-fast-track-mode / D2）。
 
-读取 ``openspec/changes/<spec>/.openspec.yaml`` 的 ``mode`` 字段：
+读取 ``spec/changes/<spec>/.spec.yaml`` 的 ``mode`` 字段：
 
   - ``fast-track``：快速路径——单个 agent run 全包（实现 → 场景设计 → 验证 → 判定）
   - ``full``（缺省）：完整模式——现有多 Agent 分段流水线
@@ -32,14 +32,14 @@ def read_spec_mode(project_root, spec_name: str) -> str:
 
     Args:
         project_root: 项目根路径（str 或 Path）。
-        spec_name: SPEC 名称（kebab-case，openspec/changes/<spec>/ 目录名）。
+        spec_name: SPEC 名称（kebab-case，spec/changes/<spec>/ 目录名）。
 
     Returns:
         ``"fast-track"`` 或 ``"full"``。文件缺失 / 无 mode 字段 / 值非法 /
         解析失败均返回 ``"full"``（读侧容错，不抛异常）。
     """
     yaml_path = (
-        Path(project_root) / "openspec" / "changes" / spec_name / ".openspec.yaml"
+        Path(project_root) / "spec" / "changes" / spec_name / ".spec.yaml"
     )
     try:
         st = yaml_path.stat()

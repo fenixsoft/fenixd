@@ -17,10 +17,10 @@
 
 - [x] 3.1 `git add core/dashboard/static/v2/pages/config.json tests/v2/ && git commit`(信息:`v2-config: 配置页(5 页签+链编辑器+三级回退+编辑豁免)`)## 验证修复（第 1 轮失败）
 
-- [x] 阅读 `openspec/changes/v2-config-page/verification-report.md`，定位「真实产品 Bug」并修复
+- [x] 阅读 `spec/changes/v2-config-page/verification-report.md`，定位「真实产品 Bug」并修复
 - [x] 修复后重跑验证确认通过（本地 VerifyEngine 重放 17/17 场景全通过，0 失败 0 警告）
 
 ## 验证修复（第 2 轮失败）
 
-- [x] 阅读 `openspec/changes/v2-config-page/verification-report.md`（实际产物 report.json/.fenix-run-result.json，report.md 为旧轮合成件），定位「真实产品 Bug」并修复
+- [x] 阅读 `spec/changes/v2-config-page/verification-report.md`（实际产物 report.json/.fenix-run-result.json，report.md 为旧轮合成件），定位「真实产品 Bug」并修复
 - [x] 修复后重跑验证确认通过（本地 VerifyEngine 重放 21/21 场景全通过，0 失败 0 警告）

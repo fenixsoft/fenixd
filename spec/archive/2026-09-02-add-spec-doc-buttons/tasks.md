@@ -1,6 +1,6 @@
 ## 1. 后端 API
 
-- [x] 1.1 在 `core/dashboard/data.py` 新增 `get_spec_doc(project_root, spec, doc) -> dict`：校验 spec 为 kebab-case、doc 属于 `{proposal, design}` 白名单；读取 `openspec/changes/<spec>/<doc>.md`，文件不存在返回 `{"found": False, "content": ""}`；解析后路径必须仍在 `openspec/changes/` 下，越界抛错
+- [x] 1.1 在 `core/dashboard/data.py` 新增 `get_spec_doc(project_root, spec, doc) -> dict`：校验 spec 为 kebab-case、doc 属于 `{proposal, design}` 白名单；读取 `spec/changes/<spec>/<doc>.md`，文件不存在返回 `{"found": False, "content": ""}`；解析后路径必须仍在 `spec/changes/` 下，越界抛错
 - [x] 1.2 在 `core/dashboard/server.py` 新增 `/api/spec-doc` 路由（置于 `/api/specs/` 分支之前或独立判断）：解析 query 参数，spec 非法/不在项目 STATE.md 返回 404，doc 非法返回 400，正常返回 `{found, content}` JSON
 - [x] 1.3 更新 `server.py` API 文档注释（文件头路由清单）加入 `/api/spec-doc` 说明
 

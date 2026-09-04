@@ -616,7 +616,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _api_spec_archive(self, query) -> dict:
         """POST /api/spec-archive?project=<name>&spec=<name>
 
-        归档终态 SPEC：把 openspec/changes/<name>/ 移到 archive/YYYY-MM-DD-<name>/，
+        归档终态 SPEC：把 spec/changes/<name>/ 移到 archive/YYYY-MM-DD-<name>/，
         STATE.md 条目原样保留（与 fenix_archive.py / fenix-archive skill 同语义）。
         - project 不存在 → 404
         - spec 不在 STATE.md → 404
@@ -666,7 +666,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _api_spec_delete(self, query):
         """POST /api/spec-delete?project=<name>&spec=<name>
 
-        软删除 SPEC：STATE.md 移除条目 + openspec 目录移入 archive。
+        软删除 SPEC：STATE.md 移除条目 + SPEC 目录移入 spec/archive。
         - project 不存在 → 404
         - spec 不在项目 STATE.md → 404（幂等，不发文件操作）
         - spec 有进行中的运行（runs 目录 mtime<120s）→ 409「spec 有进行中的运行」

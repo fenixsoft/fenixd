@@ -1,4 +1,4 @@
-"""add-run-cancel 能力测试（对应 openspec/changes/add-run-cancel tasks 5.1-5.3）。
+"""add-run-cancel 能力测试（对应 spec/changes/add-run-cancel tasks 5.1-5.3）。
 
 覆盖：
 - runner 取消原语：cancel_run 返回值/归一化/旗标登记/not_running、_run_claude

@@ -4,9 +4,9 @@
 
 Fenixd 的 merge-back 死锁已复现 **3 次**（2026-08-26 add-agent-llm-isolation、2026-08-26 add-admin-activity-view、2026-08-29 v2-vendor-amis-sdk），每次都以 merge_streak 熔断告终，需要 Administrator agent 人工按固定处置模式救回。根因是主树的 untracked 文件与 implementer 分支提交的同路径文件冲突，`git merge` 拒绝「untracked working tree files would be overwritten by merge」。
 
-框架现有的 Layer 2 兜底 `WorktreeManager._backup_untracked_spec_files()`（core/worktree_manager.py:238）只扫描 `openspec/changes/` 路径下的 untracked 文件，**不覆盖任意产物路径**。第三次复现（v2-vendor-amis-sdk）的冲突源正是产物目录 `core/dashboard/static/v2/` 的 5 个 SDK 文件，落在现有兜底盲区内。任何主树 untracked 文件只要与未来 spec 的产物路径重合就会再次触发熔断。
+框架现有的 Layer 2 兜底 `WorktreeManager._backup_untracked_spec_files()`（core/worktree_manager.py:238）只扫描 `spec/changes/` 路径下的 untracked 文件，**不覆盖任意产物路径**。第三次复现（v2-vendor-amis-sdk）的冲突源正是产物目录 `core/dashboard/static/v2/` 的 5 个 SDK 文件，落在现有兜底盲区内。任何主树 untracked 文件只要与未来 spec 的产物路径重合就会再次触发熔断。
 
-本 SPEC 将现有兜底泛化：merge 前按 implementer 分支实际引入的文件路径，检测并移开所有冲突的 untracked 文件（不限于 openspec/changes/），自动化 Administrator 已执行 3 次的处置模式。
+本 SPEC 将现有兜底泛化：merge 前按 implementer 分支实际引入的文件路径，检测并移开所有冲突的 untracked 文件（不限于 spec/changes/），自动化 Administrator 已执行 3 次的处置模式。
 
 ## What Changes
 

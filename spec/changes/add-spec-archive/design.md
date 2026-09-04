@@ -2,7 +2,7 @@
 
 ## Context
 
-- CLI 归档已存在：`.fenix/bin/fenix_archive.py <name>` 将 `openspec/changes/<name>/` 移到 `openspec/changes/archive/YYYY-MM-DD-<name>/`（不覆盖、返回 JSON），`/fenix-archive` skill 仅移目录、不写 STATE.md。当前项目 108 个 change 目录，archive 为空，历史 SPEC 混在活跃列表中。
+- CLI 归档已存在：`.fenix/bin/fenix_archive.py <name>` 将 `spec/changes/<name>/` 移到 `spec/archive/YYYY-MM-DD-<name>/`（不覆盖、返回 JSON），`/fenix-archive` skill 仅移目录、不写 STATE.md。当前项目 108 个 change 目录，archive 为空，历史 SPEC 混在活跃列表中。
 - Dashboard spec 列表链路：`server.py::_api_specs` → `data.py::parse_state(STATE.md)` → `spec_summary()`；行内「更多」菜单在 `list.tsx::specMenuItems`（呼叫 Admin / 调整优先级 / 冻结-解冻 / 删除）；过滤区有「全部/仅需求/仅问题」Radio.Group；「删除 Spec」已有「确认弹窗 + POST + 刷新」交互模式可对齐。
 - 删除（`soft_delete_spec`）语义 = STATE.md 移条目 + 目录移 `archive/<name>-<Unix秒>/`，条目从所有视图消失；归档语义不同：条目保留、仅目录移走，需可切换查看。
 - 配置体系：`ConfigLoader` 用户级/项目级深合并 + 30s mtime 热更新；`runs.keep` 是「其他」面板既有键（`ConfigLoader.get(effective, "runs.keep", 默认值)` 模式）。
@@ -28,7 +28,7 @@
 
 ### D1: 归档判定 = 活跃目录存在性（唯一事实来源）
 
-`spec_summary()` 增加 `archived` 字段：STATE.md 有条目且 `openspec/changes/<name>/` 目录不存在 → `archived: true`。不检测 archive 下具体路径形态、不写 STATE.md 标志。
+`spec_summary()` 增加 `archived` 字段：STATE.md 有条目且 `spec/changes/<name>/` 目录不存在 → `archived: true`。不检测 archive 下具体路径形态、不写 STATE.md 标志。
 
 - 为什么不用 STATE.md 标志：CLI skill 归档不写 STATE.md，标志会漏标，需要目录检测兜底，两套逻辑并存必然漂移；目录存在性对三条归档路径（界面 API / CLI skill / 手动 mv）天然一致。
 - 为什么不匹配 `archive/YYYY-MM-DD-<name>` 具体路径：删除路径命名（`<name>-<Unix秒>`）不同、手动移动命名不可控，活跃目录缺失已足够表达「不在活跃区」。

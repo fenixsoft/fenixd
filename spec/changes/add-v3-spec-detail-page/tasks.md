@@ -23,5 +23,5 @@
 - [x] 3.3 空 spec（无运行/无场景/无 bug/无截图）页签空态走查
 - [x] 3.4 console 零错误；`npm run build` 通过；dist 提交## 验证修复（第 2 轮失败）
 
-- [ ] 阅读 `openspec/changes/add-v3-spec-detail-page/verification-report.md`，定位「真实产品 Bug」并修复
+- [ ] 阅读 `spec/changes/add-v3-spec-detail-page/verification-report.md`，定位「真实产品 Bug」并修复
 - [ ] 修复后重跑验证确认通过

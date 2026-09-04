@@ -34,15 +34,15 @@ fast-track spec 进入 ready 后派发一个 `run_fast_track`，单上下文完�
 - *旁路状态机轻量 lane*：拒绝——失去防伪成功护栏，有 mock 假阴性放大器前科。
 - *两 run（实现+验证各一）*：拒绝——省不掉 planner 与状态衔接开销，收益不足。
 
-### D2: mode 元数据存放 — spec 目录 `.openspec.yaml`，读侧缺省 full
+### D2: mode 元数据存放 — spec 目录 `.spec.yaml`，读侧缺省 full
 
-mode 写入 `openspec/changes/<name>/.openspec.yaml`（与 `schema: spec-driven`、`created` 同级新增 `mode` 行）。理由：
+mode 写入 `spec/changes/<name>/.spec.yaml`（与 `schema: spec-driven`、`created` 同级新增 `mode` 行）。理由：
 - mode 语义属于 spec 定义（创建时确定、随目录提交、merge-back 安全），不应放运行时 STATE.md（gitignore、可被重置）
-- 避免双写漂移：dispatch 派发前直接读 `.openspec.yaml`，字段缺失/非法一律按 `full`，存量 spec 零迁移
+- 避免双写漂移：dispatch 派发前直接读 `.spec.yaml`，字段缺失/非法一律按 `full`，存量 spec 零迁移
 
-### D2.1: `.openspec.yaml` `mode` 字段约定（task 1.1）
+### D2.1: `.spec.yaml` `mode` 字段约定（task 1.1）
 
-`.openspec.yaml` 与 `schema` / `created` 同级新增可选 `mode` 行：
+`.spec.yaml` 与 `schema` / `created` 同级新增可选 `mode` 行：
 
 ```yaml
 schema: spec-driven
@@ -52,9 +52,9 @@ mode: fast-track   # 可选；fast-track | full，缺省 full
 
 - 取值域：`fast-track` / `full` 二选一；缺失、非法（非二值字符串）一律按 `full` 处理
 - 由 fenix-new 在用户确认后写入；用户未指定模式时按建议写入；存量 spec（无字段）零迁移
-- 读侧实现：`core/openspec_mode.read_spec_mode`（纯函数、fail-closed、缺省 full），
+- 读侧实现：`core/spec_mode.read_spec_mode`（纯函数、fail-closed、缺省 full），
   daemon 派发路径与 Dashboard data 层共用同一读取器，避免两处漂移
-- 升级路径：fast-track 超预算升级时该字段被改写为 `full`（D5），同步更新 `.openspec.yaml`
+- 升级路径：fast-track 超预算升级时该字段被改写为 `full`（D5），同步更新 `.spec.yaml`
 
 ### D3: fast-track agent 模板 — `agents/fast-track.md`
 
@@ -66,7 +66,7 @@ mode: fast-track   # 可选；fast-track | full，缺省 full
 
 ### D5: 超预算升级的衔接点 — 保留分支、置 implemented、verifier 流水线接管
 
-fix 预算耗尽时：`mode` 改写为 `full`（`.openspec.yaml` 同步更新）、实现成果以分支形式保留（等价于完整模式 implementer 成功后的状态）、spec 置 `implemented`、派发完整模式 verifier 流水线（planner + verifier 从头探索，此时 spec 已存在，信息传递成本可接受）。升级原因写入 spec entry `error` 字段供人工追溯。**绝不**把已有实现成果丢回 ready 重跑 implementer。
+fix 预算耗尽时：`mode` 改写为 `full`（`.spec.yaml` 同步更新）、实现成果以分支形式保留（等价于完整模式 implementer 成功后的状态）、spec 置 `implemented`、派发完整模式 verifier 流水线（planner + verifier 从头探索，此时 spec 已存在，信息传递成本可接受）。升级原因写入 spec entry `error` 字段供人工追溯。**绝不**把已有实现成果丢回 ready 重跑 implementer。
 
 ### D6: 判定独立性缓解 — 硬校验三要素
 
@@ -74,7 +74,7 @@ verdict_check 扩展对统一结果文件校验：① 报告结构完整（场�
 
 ### D7: fenix-new skill 更新 — 项目源与安装副本同步
 
-`skills/fenix-new/SKILL.md`（项目源）与 `~/.claude/skills/fenix-new/`（安装副本）同步更新：澄清阶段增加复杂度评估（影响面/模块数/是否含 UI 或迁移/预期场景数量）与明确建议话术；新增 `--fast-track` / `--full` 显式参数；确认后写入 `.openspec.yaml` 的 `mode` 行。评估在对话内完成，不引入代码级打分器（用户确认的决策 2）。
+`skills/fenix-new/SKILL.md`（项目源）与 `~/.claude/skills/fenix-new/`（安装副本）同步更新：澄清阶段增加复杂度评估（影响面/模块数/是否含 UI 或迁移/预期场景数量）与明确建议话术；新增 `--fast-track` / `--full` 显式参数；确认后写入 `.spec.yaml` 的 `mode` 行。评估在对话内完成，不引入代码级打分器（用户确认的决策 2）。
 
 ## Risks / Trade-offs
 

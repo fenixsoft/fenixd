@@ -558,20 +558,20 @@ function buildSummary(anomalies, uiTests = []) {
 
 /**
  * 检测 SPEC 是否需要 Tier 2 验证
- * @param {string} specDir - SPEC 目录路径 (如 openspec/changes/stock-panel/)
+ * @param {string} specDir - SPEC 目录路径 (如 spec/changes/stock-panel/)
  * @param {string} projectRoot - 项目根目录
  * @returns {{ triggered: boolean, reasons: string[] }}
  */
 export function detectTier2Trigger(specDir, projectRoot) {
   const reasons = [];
 
-  // 1. 检查 .openspec.yaml 中的 requiresTier2 标记
-  const openspecYamlPath = path.join(specDir, '.openspec.yaml');
-  if (fs.existsSync(openspecYamlPath)) {
+  // 1. 检查 .spec.yaml 中的 requiresTier2 标记
+  const specYamlPath = path.join(specDir, '.spec.yaml');
+  if (fs.existsSync(specYamlPath)) {
     try {
-      const content = fs.readFileSync(openspecYamlPath, 'utf-8');
+      const content = fs.readFileSync(specYamlPath, 'utf-8');
       if (/requiresTier2:\s*true/.test(content)) {
-        reasons.push('manual: .openspec.yaml requiresTier2=true');
+        reasons.push('manual: .spec.yaml requiresTier2=true');
       }
     } catch (_) { /* ignore */ }
   }

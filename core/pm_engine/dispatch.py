@@ -1631,7 +1631,7 @@ class Dispatcher:
             # 回退通道按 spec 实现模式选择（fast-track 接入 repair lane 配套）：
             # fast-track spec 的 repair 失败回 fast-track 重派，不硬派 implementer
             try:
-                from core.openspec_mode import read_spec_mode
+                from core.spec_mode import read_spec_mode
                 channel = (
                     "fast-track"
                     if read_spec_mode(self._pm.project_root, spec_name) == "fast-track"
@@ -1738,16 +1738,16 @@ class Dispatcher:
     ) -> None:
         """fast-track verdict=bug-found 时升级为完整模式（add-fast-track-mode D5）。
 
-        - mode 改写为 full（同步 .openspec.yaml）
+        - mode 改写为 full（同步 .spec.yaml）
         - spec 保持 implemented，派发完整模式 verifier 流水线
         - 升级原因写入 spec entry error 字段
         - 保留已有实现成果，不丢回 ready 重跑 implementer
         """
         import yaml as _yaml
-        # 1. .openspec.yaml 写 mode: full
+        # 1. .spec.yaml 写 mode: full
         yaml_path = (
-            self._pm.project_root / "openspec" / "changes"
-            / spec_name / ".openspec.yaml"
+            self._pm.project_root / "spec" / "changes"
+            / spec_name / ".spec.yaml"
         )
         try:
             if yaml_path.is_file():
@@ -1761,13 +1761,13 @@ class Dispatcher:
                     )
                     self._pm.logger.info(
                         "pm_engine",
-                        f"fast-track 升级: .openspec.yaml mode → full "
+                        f"fast-track 升级: .spec.yaml mode → full "
                         f"for '{spec_name}'",
                     )
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
-                f"fast-track 升级 .openspec.yaml 失败（非阻塞） '{spec_name}': {e}",
+                f"fast-track 升级 .spec.yaml 失败（非阻塞） '{spec_name}': {e}",
             )
         # 2. 记录升级原因
         bugs_summary = "; ".join(

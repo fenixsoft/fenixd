@@ -19,5 +19,5 @@
 
 ## 验证修复（第 2 轮失败）
 
-- [x] 阅读 `openspec/changes/refactor-test-callsites/verification-report.md`，定位「真实产品 Bug」并修复（已完成于 209c8bb：分析确认浏览器验证场景缺陷非本 SPEC 引入，Python 测试通过）
+- [x] 阅读 `spec/changes/refactor-test-callsites/verification-report.md`，定位「真实产品 Bug」并修复（已完成于 209c8bb：分析确认浏览器验证场景缺陷非本 SPEC 引入，Python 测试通过）
 - [x] 修复后重跑验证确认通过（209c8bb 全量 pytest 通过；管理员 2026-09-01 修正 11 个失效场景模板后重验）

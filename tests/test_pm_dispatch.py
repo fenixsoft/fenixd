@@ -78,7 +78,7 @@ class TestPMEngineBugFound(unittest.TestCase):
     def test_inplace_repair_first_failure(self):
         """非 fix SPEC 首次 bug-found → 计数 1 + implementing + 修复段注入 + 无新 fix spec"""
         # 准备 tasks.md（注入依赖）
-        spec_dir = Path(self.tmpdir) / "openspec" / "changes" / "quick-links-folders"
+        spec_dir = Path(self.tmpdir) / "spec" / "changes" / "quick-links-folders"
         spec_dir.mkdir(parents=True, exist_ok=True)
         (spec_dir / "tasks.md").write_text("# Tasks\n\n## 1. 实现\n\n- [x] 1.1 done\n", encoding="utf-8")
 
@@ -105,7 +105,7 @@ class TestPMEngineBugFound(unittest.TestCase):
 
     def test_inplace_repair_second_failure(self):
         """第二次 bug-found → 计数 2 + 段内轮数更新"""
-        spec_dir = Path(self.tmpdir) / "openspec" / "changes" / "quick-links-folders"
+        spec_dir = Path(self.tmpdir) / "spec" / "changes" / "quick-links-folders"
         spec_dir.mkdir(parents=True, exist_ok=True)
         (spec_dir / "tasks.md").write_text("# Tasks\n", encoding="utf-8")
 
@@ -179,7 +179,7 @@ class TestPMEngineBugFoundIdempotent(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_double_bug_found_no_duplicate_injection(self):
-        spec_dir = Path(self.tmpdir) / "openspec" / "changes" / "my-spec"
+        spec_dir = Path(self.tmpdir) / "spec" / "changes" / "my-spec"
         spec_dir.mkdir(parents=True, exist_ok=True)
         (spec_dir / "tasks.md").write_text("# Tasks\n", encoding="utf-8")
 
@@ -639,7 +639,7 @@ class TestTaskProgressSync(unittest.TestCase):
         return PMEngine(self.sm, ar, config or {}, self.project_root, logger)
 
     def _write_spec_tasks(self, spec_name: str, content: str) -> Path:
-        spec_dir = self.project_root / "openspec" / "changes" / spec_name
+        spec_dir = self.project_root / "spec" / "changes" / spec_name
         spec_dir.mkdir(parents=True, exist_ok=True)
         p = spec_dir / "tasks.md"
         p.write_text(content, encoding="utf-8")
@@ -647,7 +647,7 @@ class TestTaskProgressSync(unittest.TestCase):
 
     def _commit_spec(self, spec_name: str):
         """把 spec 目录提交进主树，模拟 ensure_spec_committed 后的干净基线。"""
-        subprocess.run(["git", "add", "--", "openspec"],
+        subprocess.run(["git", "add", "--", "spec"],
                        cwd=str(self.project_root), capture_output=True)
         subprocess.run(["git", "commit", "-q", "-m", f"spec {spec_name}"],
                        cwd=str(self.project_root), capture_output=True)
@@ -671,7 +671,7 @@ class TestTaskProgressSync(unittest.TestCase):
         engine = self._make_engine()
         engine._sync_task_progress("demo")
 
-        text = (self.project_root / "openspec" / "changes" / "demo" / "tasks.md").read_text()
+        text = (self.project_root / "spec" / "changes" / "demo" / "tasks.md").read_text()
         self.assertIn("- [x] 2.1 build", text)
         self.assertIn("- [x] 2.2 test", text)
         self.assertIn("- [ ] 2.3 doc", text)  # 未出现在 done_ids 的不勾
@@ -710,7 +710,7 @@ class TestTaskProgressSync(unittest.TestCase):
                                  [(1, "completed")])
         engine = self._make_engine()
         engine._sync_task_progress("demo")
-        text = (self.project_root / "openspec" / "changes" / "demo" / "tasks.md").read_text()
+        text = (self.project_root / "spec" / "changes" / "demo" / "tasks.md").read_text()
         self.assertIn("- [x] 1.1 already done by agent", text)
         self.assertIn("- [ ] 1.2 not in run", text)
         # 无新勾选 → 不 commit（HEAD 不变）
@@ -778,7 +778,7 @@ class TestTaskCompletionGate(unittest.TestCase):
         return PMEngine(self.sm, ar, config or {}, self.project_root, logger)
 
     def _write_spec_tasks(self, spec_name, content):
-        spec_dir = self.project_root / "openspec" / "changes" / spec_name
+        spec_dir = self.project_root / "spec" / "changes" / spec_name
         spec_dir.mkdir(parents=True, exist_ok=True)
         (spec_dir / "tasks.md").write_text(content, encoding="utf-8")
 

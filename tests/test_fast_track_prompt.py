@@ -19,7 +19,7 @@ from test_agent_runner import FakeLogger, make_runner
 
 
 def _mk_spec_dir(proot: Path, name: str) -> None:
-    d = proot / "openspec" / "changes" / name
+    d = proot / "spec" / "changes" / name
     d.mkdir(parents=True, exist_ok=True)
     (d / "tasks.md").write_text("# Tasks\n\n- [ ] 1.1 do it\n", encoding="utf-8")
 

@@ -215,7 +215,7 @@ class StateParser:
 class _NullLogger:
     """静默日志器：logger 为 None 时兜底，避免各方法无条件调用 self.logger 崩溃。
 
-    适用于脚本直接构造 StateMachine（如 openspec 流程）且不需要日志的场景。
+    适用于脚本直接构造 StateMachine（如 spec 流程）且不需要日志的场景。
     """
 
     def debug(self, *args, **kwargs):
@@ -486,7 +486,7 @@ class StateMachine:
         Mutates only the in-memory dict then atomically writes back, so a
         concurrent writer cannot resurrect the entry. Used by soft-delete
         (add-spec-priority-and-delete-api): the caller is responsible for
-        moving the spec's openspec directory into archive beforehand/afterward
+        moving the spec.s directory into spec/archive beforehand/afterward
         and keeping the two operations consistent.
         """
         specs = self.read_all()

@@ -1,5 +1,5 @@
 // v2-run-stream-modal: 运行记录实时流弹窗(run 模式)接入验证
-// 实施依据: openspec/changes/v2-run-stream-modal、计划 Task 8、behavior.md §3(全协议)/§4(admin 状态机)
+// 实施依据: spec/changes/v2-run-stream-modal、计划 Task 8、behavior.md §3(全协议)/§4(admin 状态机)
 import { test, expect } from '@playwright/test';
 
 const BASE = process.env.V2_BASE_URL || 'http://127.0.0.1:8787';

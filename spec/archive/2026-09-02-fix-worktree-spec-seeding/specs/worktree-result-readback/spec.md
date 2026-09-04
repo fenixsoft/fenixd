@@ -16,7 +16,7 @@
 - **THEN** daemon 仍从项目根读取其结果，不受 worktree 优先逻辑影响
 
 ### Requirement: 任务进度展示从 worktree 读取（implementing 阶段）
-`bin/statusline.py`、`core/dashboard/data.py` 与 `/fenix-status` skill 的任务进度解析，对状态为 `implementing` 的 SPEC MUST 优先从该 SPEC 的活跃 implementer worktree 的 `openspec/changes/<spec>/tasks.md` 读取勾选进度；worktree 不存在或文件缺失时回退主仓库 `openspec/changes/<spec>/tasks.md`。非 implementing 状态（testing / verified / done / bug-found 等）MUST 一律从主仓库读取。
+`bin/statusline.py`、`core/dashboard/data.py` 与 `/fenix-status` skill 的任务进度解析，对状态为 `implementing` 的 SPEC MUST 优先从该 SPEC 的活跃 implementer worktree 的 `spec/changes/<spec>/tasks.md` 读取勾选进度；worktree 不存在或文件缺失时回退主仓库 `spec/changes/<spec>/tasks.md`。非 implementing 状态（testing / verified / done / bug-found 等）MUST 一律从主仓库读取。
 
 #### Scenario: implementing 进度显示 worktree 勾选状态
 - **WHEN** 某 SPEC 处于 implementing 且其 worktree 的 tasks.md 有 `- [x]` 勾选

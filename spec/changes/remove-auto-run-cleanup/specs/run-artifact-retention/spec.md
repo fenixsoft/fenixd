@@ -23,11 +23,11 @@ SPEC 归档动作（`bin/fenix_archive.py` 的 `archive_change()`）在 change �
 
 #### Scenario: 归档 spec 联动归档其 run 产物
 
-- **GIVEN** `openspec/changes/<spec>` 存在，且 `.fenix/runs/` 顶层存在 `impl-<spec>-<ts>-a1.jsonl`、`planner-plan-<spec>-<ts>-a1.jsonl`、`admin-<spec>-<ts>.jsonl` 与一个不属于该 spec 的 `impl-<other>-<ts>-a1.jsonl`
+- **GIVEN** `spec/changes/<spec>` 存在，且 `.fenix/runs/` 顶层存在 `impl-<spec>-<ts>-a1.jsonl`、`planner-plan-<spec>-<ts>-a1.jsonl`、`admin-<spec>-<ts>.jsonl` 与一个不属于该 spec 的 `impl-<other>-<ts>-a1.jsonl`
 - **WHEN** 执行 `python3 .fenix/bin/fenix_archive.py <spec>`
 - **THEN** 三个属于 `<spec>` 的产物出现在 `.fenix/runs/archive/`，顶层不再有这三个文件
 - **THEN** `impl-<other>-*.jsonl` 仍在顶层，未被移动
-- **THEN** change 目录被移至 `openspec/changes/archive/YYYY-MM-DD-<spec>`（原行为不变）
+- **THEN** change 目录被移至 `spec/archive/YYYY-MM-DD-<spec>`（原行为不变）
 
 #### Scenario: run 归档失败不阻断 change 归档
 
@@ -52,7 +52,7 @@ SPEC 归档动作（`bin/fenix_archive.py` 的 `archive_change()`）在 change �
 
 #### Scenario: 全库无自动清理引用残留
 
-- **WHEN** 全库搜索 `clean_old_runs`、`RUNS_KEEP`、`cleanup_runs`（排除 `.claude/worktrees/`、`openspec/changes/archive/` 历史文档、`node_modules/`、`dist/`、`__pycache__/`）
+- **WHEN** 全库搜索 `clean_old_runs`、`RUNS_KEEP`、`cleanup_runs`（排除 `.claude/worktrees/`、`spec/archive/` 历史文档、`node_modules/`、`dist/`、`__pycache__/`）
 - **THEN** 生产代码（core/、bin/、fenixd.py）与测试代码零命中
 
 #### Scenario: 设置页不再出现保留数量输入项

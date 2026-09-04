@@ -2,16 +2,16 @@
 
 ### Requirement: 原生 change 脚手架
 
-系统 SHALL 通过 `core/spec_gen.new_change` 创建 change：在 `openspec/changes/<name>/` 下建立目录并写入 `.openspec.yaml`（含 `schema: spec-driven` 与创建日期）。名称 SHALL 为 kebab-case；同名 change 已存在时 SHALL 返回错误而不覆盖。
+系统 SHALL 通过 `core/spec_gen.new_change` 创建 change：在 `spec/changes/<name>/` 下建立目录并写入 `.spec.yaml`（含 `schema: spec-driven` 与创建日期）。名称 SHALL 为 kebab-case；同名 change 已存在时 SHALL 返回错误而不覆盖。
 
 #### Scenario: 创建新 change
 
 - **WHEN** 调用 `new_change(project_root, "add-user-login")`
-- **THEN** 生成 `openspec/changes/add-user-login/.openspec.yaml`，内容含 `schema: spec-driven`，返回路径
+- **THEN** 生成 `spec/changes/add-user-login/.spec.yaml`，内容含 `schema: spec-driven`，返回路径
 
 #### Scenario: 同名 change 已存在
 
-- **WHEN** `openspec/changes/add-user-login/` 已存在时再次调用 `new_change(project_root, "add-user-login")`
+- **WHEN** `spec/changes/add-user-login/` 已存在时再次调用 `new_change(project_root, "add-user-login")`
 - **THEN** 返回错误，且不覆盖已有目录内容
 
 #### Scenario: 非 kebab-case 名称被拒绝
@@ -25,7 +25,7 @@
 
 #### Scenario: 空 change 的初始状态
 
-- **WHEN** 对仅含 `.openspec.yaml` 的新 change 调用 `status`
+- **WHEN** 对仅含 `.spec.yaml` 的新 change 调用 `status`
 - **THEN** `proposal` 为 `ready`，`specs`/`design` 为 `blocked`（missingDeps=[proposal]），`tasks` 为 `blocked`（missingDeps=[specs, design]），`isComplete` 为 false
 
 #### Scenario: 全部 artifact 完成后 apply 就绪

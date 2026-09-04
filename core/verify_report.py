@@ -1,6 +1,6 @@
 """verify_report.py — 验证报告产物闸门与共享合成器（add-verify-report-gate）。
 
-保障 ``openspec/changes/<spec>/verification-report.md`` 在验证裁决放行时
+保障 ``spec/changes/<spec>/verification-report.md`` 在验证裁决放行时
 必然存在于磁盘：
 
   - 裁决 Agent 主动写入的报告优先——文件已存在时闸门直接放行，
@@ -420,7 +420,7 @@ def synthesize_verification_report(project_root, spec_name, now=None) -> dict:
 
     content = render_verification_report(spec_name, run_result, report, now=now, project_root=project_root)
     out_path = (
-        Path(project_root) / "openspec" / "changes"
+        Path(project_root) / "spec" / "changes"
         / spec_name / "verification-report.md"
     )
     try:
@@ -467,7 +467,7 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
     返回 {"ok": False, "error": <文案>} 表示 MUST 阻止状态推进（fail-closed）。
     """
     out_path = (
-        Path(project_root) / "openspec" / "changes"
+        Path(project_root) / "spec" / "changes"
         / spec_name / "verification-report.md"
     )
     if out_path.exists():

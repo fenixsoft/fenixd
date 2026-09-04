@@ -1,4 +1,4 @@
-"""add-fast-track-mode task 1.2：.openspec.yaml mode 读取器单测。
+"""add-fast-track-mode task 1.2：.spec.yaml mode 读取器单测。
 
 覆盖：
 1. 显式 fast-track / full 读取
@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from core.openspec_mode import (
+from core.spec_mode import (
     DEFAULT_SPEC_MODE,
     read_spec_mode,
     is_fast_track,
@@ -19,9 +19,9 @@ from core.openspec_mode import (
 
 
 def _make_spec(root: Path, name: str, yaml_text: str) -> Path:
-    d = root / "openspec" / "changes" / name
+    d = root / "spec" / "changes" / name
     d.mkdir(parents=True, exist_ok=True)
-    (d / ".openspec.yaml").write_text(yaml_text, encoding="utf-8")
+    (d / ".spec.yaml").write_text(yaml_text, encoding="utf-8")
     return d
 
 
@@ -59,9 +59,9 @@ class TestReadSpecMode(unittest.TestCase):
             self.assertEqual(read_spec_mode(self.root, "d"), DEFAULT_SPEC_MODE)
 
     def test_corrupt_yaml_default_full(self):
-        d = self.root / "openspec" / "changes" / "e"
+        d = self.root / "spec" / "changes" / "e"
         d.mkdir(parents=True, exist_ok=True)
-        (d / ".openspec.yaml").write_text("schema: [unclosed", encoding="utf-8")
+        (d / ".spec.yaml").write_text("schema: [unclosed", encoding="utf-8")
         self.assertEqual(read_spec_mode(self.root, "e"), DEFAULT_SPEC_MODE)
 
     def test_non_object_top_level_default_full(self):

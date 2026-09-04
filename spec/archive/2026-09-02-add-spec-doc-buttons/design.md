@@ -4,7 +4,7 @@ Web 仪表盘（`core/dashboard/`）的 SPEC 列表页（`#project/<name>`）以
 
 技术底座：
 - 后端为 `http.server` 纯标准库实现（`server.py`），数据层为以 `project_root` 为参数的纯函数（`data.py`）。
-- SPEC 的文档文件位于 `{project_root}/openspec/changes/<spec_name>/{proposal.md|design.md}`（与 `parse_tasks`/`count_scenarios` 相同的定位模式）。
+- SPEC 的文档文件位于 `{project_root}/spec/changes/<spec_name>/{proposal.md|design.md}`（与 `parse_tasks`/`count_scenarios` 相同的定位模式）。
 - 前端已 vendored `marked`（`app.js` 1111-1130 行），`md(text)` 包装负责 GFM 渲染、链接白名单与转义；已有 `runmodal` 弹窗组件与样式可参考。
 
 需求（用户确认）：按钮放在每行 SPEC 行内；点击在当前页 Modal 展示；按钮常显，文档缺失显示空态提示。
@@ -37,7 +37,7 @@ Web 仪表盘（`core/dashboard/`）的 SPEC 列表页（`#project/<name>`）以
 
 **D3: 文档读取以解析后路径严格限制在 changes 目录内**
 
-`spec` 参数按 `^[a-z0-9][a-z0-9-]*$` 校验，读取路径 `Path(project_root)/openspec/changes/<spec>/<doc>.md` 解析后必须仍在 `openspec/changes/` 之下（防御 `..` 拼接），防止任意文件读取。
+`spec` 参数按 `^[a-z0-9][a-z0-9-]*$` 校验，读取路径 `Path(project_root)/spec/changes/<spec>/<doc>.md` 解析后必须仍在 `spec/changes/` 之下（防御 `..` 拼接），防止任意文件读取。
 
 **D4: 按钮 `stopPropagation` 阻止行跳转**
 
@@ -49,7 +49,7 @@ runmodal 已具备遮罩、头部、关闭按钮、滚动 body 的结构。新�
 
 **D6: 正文用现有 `md()` 渲染，不做二次清洗**
 
-`md()` 已带链接白名单与渲染器约束，与详情页共用同一渲染管线。文档来源是本机 `openspec/changes` 受控目录，风险面与详情页一致。
+`md()` 已带链接白名单与渲染器约束，与详情页共用同一渲染管线。文档来源是本机 `spec/changes` 受控目录，风险面与详情页一致。
 
 ## Risks / Trade-offs
 

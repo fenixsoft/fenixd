@@ -16,4 +16,4 @@
 （无——扩展既有能力）
 
 ### Modified Capabilities
-- `fail-counter-budget`：预算计数的豁免语义、原子化与对账（源自 add-fail-counter-budget 变更，能力 spec 见 openspec/changes/add-fail-counter-budget/specs/）
+- `fail-counter-budget`：预算计数的豁免语义、原子化与对账（源自 add-fail-counter-budget 变更，能力 spec 见 spec/changes/add-fail-counter-budget/specs/）

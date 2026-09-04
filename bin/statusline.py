@@ -24,7 +24,7 @@ def _find_project_root() -> Path:
 
 PROJECT_ROOT = _find_project_root()
 STATE_PATH = PROJECT_ROOT / ".fenix" / "STATE.md"
-CHANGES_DIR = PROJECT_ROOT / "openspec" / "changes"
+CHANGES_DIR = PROJECT_ROOT / "spec" / "changes"
 
 # ── Daemon check ──────────────────────────────────────────────────
 
@@ -114,7 +114,7 @@ def parse_tasks(spec_name: str, status: str = "") -> dict:
     if status == "implementing":
         wt = find_implementer_worktree(spec_name)
         if wt:
-            wt_tasks = wt / "openspec" / "changes" / spec_name / "tasks.md"
+            wt_tasks = wt / "spec" / "changes" / spec_name / "tasks.md"
             if wt_tasks.exists():
                 tasks_path = wt_tasks
     if not tasks_path.exists():

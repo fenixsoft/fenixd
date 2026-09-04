@@ -2,9 +2,9 @@
 """
 fenix_spec.py — fenix 原生 SPEC 生成 CLI。
 
-等价于外部 openspec CLI 的 `new change` / `status --change --json` /
+提供 `new change` / `status --change --json` /
 `instructions <artifact> --change --json` 三个命令，全部输出 JSON，
-供 fenix-new skill 调用。无需安装 npm openspec。
+供 fenix-new skill 调用。无需安装 npm 依赖。
 
 用法（项目根目录下经 .fenix 软链接调用）:
     python3 .fenix/bin/fenix_spec.py new <name>

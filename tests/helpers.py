@@ -50,7 +50,7 @@ def create_temp_project(tmpdir=None):
     project_root = Path(tmpdir)
     
     # Create basic directory structure
-    (project_root / "openspec" / "changes").mkdir(parents=True, exist_ok=True)
+    (project_root / "spec" / "changes").mkdir(parents=True, exist_ok=True)
     (project_root / "core").mkdir(parents=True, exist_ok=True)
     (project_root / ".fenix").mkdir(parents=True, exist_ok=True)
     

@@ -48,12 +48,12 @@ spec 列表每一行（任意状态）支持右键点击；右键时拦截浏览
 - THEN 弹窗内联提示「请输入 1-9 的整数」，不发请求；取消则无任何变更
 
 ### Requirement: 删除 Spec 软删除流程
-点击「删除 Spec」后弹出确认对话框（明确说明软删除与归档路径）；确认后 POST `/api/spec-delete`：STATE.md 移除该条目且 `openspec/changes/<name>/` 移入 `openspec/changes/archive/<name>-<Unix秒>/`。删除后行从列表消失。
+点击「删除 Spec」后弹出确认对话框（明确说明软删除与归档路径）；确认后 POST `/api/spec-delete`：STATE.md 移除该条目且 `spec/changes/<name>/` 移入 `spec/archive/<name>-<Unix秒>/`。删除后行从列表消失。
 
 #### Scenario: 确认后软删除完成
 - GIVEN 某 spec 处于 drafting/testing 等任意状态
 - WHEN 用户右键 → 删除 Spec → 在确认弹窗点「删除」
-- THEN STATE.md 无该条目、行从列表移除、原目录出现在 openspec/changes/archive/<name>-<ts>/
+- THEN STATE.md 无该条目、行从列表移除、原目录出现在 spec/archive/<name>-<ts>/
 
 #### Scenario: 取消删除无副作用
 - WHEN 用户在确认弹窗点「取消」或按 Esc

@@ -2,7 +2,7 @@
 
 ## 1. 修复真实产品缺陷
 
-- [x] 1.1 阅读 `openspec/changes/fix-startup-double-dispatch/verification-report.md`，定位「真实产品 Bug」的根因并修复（裁决：父验证报告 10 个失败场景全部为伪失败——场景断言的状态文本/选择器与产品实际 DOM 不符；父 SPEC 产品代码（单飞守卫、状态回写保护、verifier 终态对账）已正确实现且单测全过，无需改动产品代码。详见本 SPEC 的 `verification-report.md`）
+- [x] 1.1 阅读 `spec/changes/fix-startup-double-dispatch/verification-report.md`，定位「真实产品 Bug」的根因并修复（裁决：父验证报告 10 个失败场景全部为伪失败——场景断言的状态文本/选择器与产品实际 DOM 不符；父 SPEC 产品代码（单飞守卫、状态回写保护、verifier 终态对账）已正确实现且单测全过，无需改动产品代码。详见本 SPEC 的 `verification-report.md`）
 
 ## 2. 验证与打包
 

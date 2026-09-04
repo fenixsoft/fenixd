@@ -163,7 +163,7 @@ class PMEngine:
         """Deliverables 声明形态 lint（晋升前拦截，fail-open）。"""
         from core.deliverables import lint_declared
 
-        spec_dir = self.project_root / "openspec" / "changes" / spec_name
+        spec_dir = self.project_root / "spec" / "changes" / spec_name
         if not spec_dir.is_dir():
             return []
         try:
@@ -179,7 +179,7 @@ class PMEngine:
         """tasks.md 可解析性 lint（晋升前拦截，fail-open，task-track D2）。"""
         from core.deliverables import lint_tasks_parseable
 
-        spec_dir = self.project_root / "openspec" / "changes" / spec_name
+        spec_dir = self.project_root / "spec" / "changes" / spec_name
         if not spec_dir.is_dir():
             return []
         try:
@@ -251,9 +251,9 @@ class PMEngine:
                     f"Skipping '{spec_name}': dependencies not satisfied",
                 )
                 return
-            # add-fast-track-mode（task 3.1）：按 .openspec.yaml mode 选择派发类型。
+            # add-fast-track-mode（task 3.1）：按 .spec.yaml mode 选择派发类型。
             # fast-track spec 派发 fast-track agent（单 run 全包），其余派 implementer。
-            from core.openspec_mode import read_spec_mode
+            from core.spec_mode import read_spec_mode
             agent_type = (
                 "fast-track"
                 if read_spec_mode(self.project_root, spec_name) == "fast-track"
@@ -562,7 +562,7 @@ class PMEngine:
         幂等：已勾选的条目跳过（只增不减）；无 run 产物 / 工作树不干净时
         直接返回（不报错、不产生空 commit）。任何异常由调用方捕获，不阻塞主流程。
         """
-        tasks_path = self.project_root / "openspec" / "changes" / spec_name / "tasks.md"
+        tasks_path = self.project_root / "spec" / "changes" / spec_name / "tasks.md"
         if not tasks_path.exists():
             self.logger.debug("pm_engine", f"任务回写跳过（无 tasks.md）：{spec_name}")
             return
@@ -725,7 +725,7 @@ class PMEngine:
         if impl_status != "success":
             return None
 
-        tasks_path = self.project_root / "openspec" / "changes" / spec_name / "tasks.md"
+        tasks_path = self.project_root / "spec" / "changes" / spec_name / "tasks.md"
         if not tasks_path.exists():
             return None
 
@@ -998,7 +998,7 @@ class PMEngine:
         self._push_branch_best_effort(spec_name, branch)
 
         # ── 归档收口（archive-auto-commit）：代码 push 之后追加归档提交 ──
-        # main 与分支推送成功后在流程尾部一次性收口当天全部 openspec 归档移动
+        # main 与分支推送成功后在流程尾部一次性收口当天全部归档移动
         # 残留（独立 commit + push）。失败仅 WARNING 不阻塞 spec 终态，残留留给
         # 下次 push 重试。零残留零动作。
         try:
@@ -1024,12 +1024,12 @@ class PMEngine:
     # ── 归档自动提交（archive-auto-commit）──────────────────────────
 
     def _archive_move_residue(self) -> tuple:
-        """检测 ``openspec/changes/`` 下的归档移动残留（archive-auto-commit）。
+        """检测 ``spec/changes/`` 下的归档移动残留（archive-auto-commit）。
 
         归档移动（soft_delete_spec 用 shutil.move 把 spec 目录移入 archive）在 git
         视角表现为两类残留：
-        - 被归档 spec 目录的**删除**：`openspec/changes/<spec>/...` 的 D 状态行；
-        - **archive 下新增/修改**：`openspec/changes/archive/<spec>-<ts>/...` 的
+        - 被归档 spec 目录的**删除**：`spec/changes/<spec>/...` 的 D 状态行；
+        - **archive 下新增/修改**：`spec/archive/<spec>-<ts>/...` 的
           未跟踪（??）/A/M 状态行（rename 检测 R 的行任一侧命中同样计入）。
 
         返回 ``(has_residue: bool, spec_names: list[str])``。判定失败时按
@@ -1068,49 +1068,58 @@ class PMEngine:
             if " -> " in rest:
                 candidates = [p.strip() for p in rest.split(" -> ")]
             for path in candidates:
-                if not path.startswith("openspec/changes/"):
+                # 归档产物横跨两处：删除侧 spec/changes/<spec>/、新增侧 spec/archive/...
+                # （archive 已平级化到 spec/ 下，不再嵌套于 changes/）
+                in_changes = path.startswith("spec/changes/")
+                in_archive = path.startswith("spec/archive/")
+                if not (in_changes or in_archive):
                     continue
                 deleted = "D" in xy
-                is_archive = path.startswith("openspec/changes/archive/")
                 added = xy.startswith("??") or ("A" in xy or "M" in xy)
-                if deleted or (is_archive and added):
+                if deleted or (in_archive and added):
                     found = True
                     names.append(self._archive_residue_spec(path))
         return found, list(dict.fromkeys(n for n in names if n))
 
     @staticmethod
     def _archive_residue_spec(rel_path: str) -> str:
-        """从 openspec/changes/ 相对路径提取涉及 spec 名。
+        """从 spec/changes/ 相对路径提取涉及 spec 名。
 
-        - 删除侧：`openspec/changes/<spec>/...` → `<spec>`
-        - 归档新增侧：`openspec/changes/archive/<spec>-<ts>/...` → `<spec>`
-          （去 `-<Unix秒>` 时间戳后缀；后缀带毫秒/序号兜底时一并剥离）
+        - 删除侧：`spec/changes/<spec>/...` → `<spec>`
+        - 归档新增侧：`spec/archive/.../...` → `<spec>`。归档目录命名两种：
+          软删除 `<spec>-<Unix秒>[-(ms|-n)]`（剥离尾部纯数字段）、
+          归档 `YYYY-MM-DD-<spec>`（剥离日期前缀）
         """
-        if rel_path.startswith("openspec/changes/archive/"):
-            seg = rel_path[len("openspec/changes/archive/"):].split("/", 1)[0]
-            # 归档目录命名：<spec>-<Unix秒>[-(ms|-n)]；剥离尾部纯数字段
+        if rel_path.startswith("spec/archive/"):
+            seg = rel_path[len("spec/archive/"):].split("/", 1)[0]
+            # 软删除命名：<spec>-<Unix秒>[-(ms|-n)]；剥离尾部纯数字段
             m = re.match(r"^(.*?)(?:-\d{10,13}(?:-\d{1,6})*)$", seg)
+            if m:
+                return m.group(1)
+            # 归档命名：YYYY-MM-DD-<spec>；剥离日期前缀
+            m = re.match(r"^\d{4}-\d{2}-\d{2}-(.+)$", seg)
             return m.group(1) if m else seg
-        if rel_path.startswith("openspec/changes/"):
-            return rel_path[len("openspec/changes/"):].split("/", 1)[0]
+        if rel_path.startswith("spec/changes/"):
+            return rel_path[len("spec/changes/"):].split("/", 1)[0]
         return ""
 
     def _archive_auto_commit(self) -> None:
-        """归档收口：push 流程尾部一次性提交 openspec/changes/ 的归档移动残留。
+        """归档收口：push 流程尾部一次性提交 spec/changes/ 的归档移动残留。
 
         archive-auto-commit spec：
-        - 有残留 → ``git add -- openspec/changes/``（限定路径，绝不 add -A）+
+        - 有残留 → ``git add -- spec``（限定 spec/ 目录，绝不 add -A；归档
+          产物横跨 spec/changes 删除侧与 spec/archive 新增侧）+
           单 commit（``[fenix] archive: <spec 名列表> 归档入库``）+ push main；
         - 无残留 → 零动作（无空提交、无多余 push）；
         - commit/push 失败 → WARNING（含 stderr 摘要）并继续，spec 终态不受影响，
-          残留留给下次 push 重试；提交内容不含 openspec/changes 之外的任何路径。
+          残留留给下次 push 重试；提交内容不含 spec/ 之外的任何路径。
         """
         has_residue, spec_names = self._archive_move_residue()
         if not has_residue:
             return
         label = "、".join(spec_names) if spec_names else "spec"
         commit_msg = f"[fenix] archive: {label} 归档入库"
-        ok, err = self._git_commit(["openspec/changes"], commit_msg)
+        ok, err = self._git_commit(["spec"], commit_msg)
         if not ok:
             self.logger.warning(
                 "pm_engine",
@@ -1130,7 +1139,7 @@ class PMEngine:
         else:
             self.logger.info(
                 "pm_engine",
-                "归档收口 push 成功（openspec/changes 归档产物已入库）",
+                "归档收口 push 成功（spec/changes 归档产物已入库）",
             )
 
     def _handle_push_failure(
@@ -1683,7 +1692,7 @@ class PMEngine:
                         "error": f"Auto-recovered from stuck implementing ({b['elapsed_minutes']} min)",
                     })
                     # add-fast-track-mode（task 3.1）：实现态恢复按 mode 派发对应 agent
-                    from core.openspec_mode import read_spec_mode
+                    from core.spec_mode import read_spec_mode
                     _at = (
                         "fast-track"
                         if read_spec_mode(self.project_root, spec_name) == "fast-track"

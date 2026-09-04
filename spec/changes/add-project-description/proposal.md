@@ -20,7 +20,7 @@ Dashboard 的项目列表/项目卡片目前只能显示项目名称，用户面
 
 ### Modified Capabilities
 
-（无——openspec/specs/ 当前无活跃 spec，本能力涉及的设置页/项目列表均为实现层复用，不改变既有 spec 级需求。）
+（无——spec/specs/ 当前无活跃 spec，本能力涉及的设置页/项目列表均为实现层复用，不改变既有 spec 级需求。）
 
 ## Impact
 

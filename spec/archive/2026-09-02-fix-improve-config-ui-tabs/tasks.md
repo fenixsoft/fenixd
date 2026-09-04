@@ -2,7 +2,7 @@
 
 ## 1. 修复真实产品缺陷
 
-- [x] 1.1 阅读 `openspec/changes/improve-config-ui-tabs/verification-report.md`，定位「真实产品 Bug」的根因并修复（报告缺失；根因经核查为 improve-config-ui-tabs 特性（页签化 + Administrator 分配）从未合入代码）
+- [x] 1.1 阅读 `spec/changes/improve-config-ui-tabs/verification-report.md`，定位「真实产品 Bug」的根因并修复（报告缺失；根因经核查为 improve-config-ui-tabs 特性（页签化 + Administrator 分配）从未合入代码）
 
 ## 2. 验证与打包
 

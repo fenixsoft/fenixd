@@ -55,12 +55,12 @@ class _InplaceBase(unittest.TestCase):
         self.sm.transition(name, "bug-found")
 
     def _write_tasks(self, name, content):
-        spec_dir = self.project_root / "openspec" / "changes" / name
+        spec_dir = self.project_root / "spec" / "changes" / name
         spec_dir.mkdir(parents=True, exist_ok=True)
         (spec_dir / "tasks.md").write_text(content, encoding="utf-8")
 
     def _tasks_text(self, name):
-        return (self.project_root / "openspec" / "changes" / name / "tasks.md") \
+        return (self.project_root / "spec" / "changes" / name / "tasks.md") \
             .read_text(encoding="utf-8")
 
 
@@ -184,7 +184,7 @@ class TestInplaceThirdRoundEscalate(_InplaceBase):
         self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 3)
         self.assertEqual(entry["status"], "blocked")
         # 不再重置 implementing，也不追加任务段
-        txt_path = self.project_root / "openspec" / "changes" / "quick-links-folders" / "tasks.md"
+        txt_path = self.project_root / "spec" / "changes" / "quick-links-folders" / "tasks.md"
         if txt_path.exists():
             self.assertNotIn("## 验证修复", txt_path.read_text(encoding="utf-8"))
         # 产生 human-escalation-alerts 告警

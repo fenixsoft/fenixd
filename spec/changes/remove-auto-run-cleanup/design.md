@@ -2,7 +2,7 @@
 
 ## Context
 
-runs 产物当前有两条生命周期路径并存：(1) dashboard `project_summary` 每次请求触发的 `cleanup_runs`——按 `runs.keep`（默认 50）数量裁剪、超出移入 archive，且 `active_ids` 只保护 STATE.md 引用的 run；(2) spec 归档（`fenix_archive.py`）目前只移动 `openspec/changes/<name>/` 目录，不触碰 runs。事故证明 (1) 在「多实例 + 旧码 + STATE.md 空文件」组合下等价于无保护破坏：任意持有旧码的实例都能绕过归档机制直接删除。
+runs 产物当前有两条生命周期路径并存：(1) dashboard `project_summary` 每次请求触发的 `cleanup_runs`——按 `runs.keep`（默认 50）数量裁剪、超出移入 archive，且 `active_ids` 只保护 STATE.md 引用的 run；(2) spec 归档（`fenix_archive.py`）目前只移动 `spec/changes/<name>/` 目录，不触碰 runs。事故证明 (1) 在「多实例 + 旧码 + STATE.md 空文件」组合下等价于无保护破坏：任意持有旧码的实例都能绕过归档机制直接删除。
 
 ## Goals / Non-Goals
 

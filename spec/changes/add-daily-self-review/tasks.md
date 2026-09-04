@@ -40,7 +40,7 @@
 - [x] 2.2 prompt_builder.py + agents/self-review.md：自省 prompt 模板（文件化体系，缺失 fail-fast）——注入当日数据摘要（STATE 终态分布/runs 成败与秒挂超时丢弃计数/admin 告警与处置/日志 ERROR 聚合四源）+ read_todo=true 时注入 todo.md 全文；模板明确「仅产出回顾、禁止创建 SPEC 或派发」与条目质量标准（证据+建议、新 agent 可直接起草 SPEC）
 - [x] 2.3 self_review.py 产物写入：markdown 追加项目根 todo.md（`## YYYY-MM-DD` 分节 + 浪费/失误/可改进三小节），文件不存在则创建；写入后 `git add` 限定 todo.md 单文件 commit + push，失败降级 WARNING
 - [x] 2.4 失败处理：自省 run 失败/超时记 admin WARNING 告警（含原因），当日不重试，次日自然重试
-- [x] 2.5 单测：首次创建/追加不覆盖/read_todo 开关注入与不注入/自省后 openspec 与 STATE 零新增（禁止自动建 spec）/commit 仅含 todo.md
+- [x] 2.5 单测：首次创建/追加不覆盖/read_todo 开关注入与不注入/自省后 spec 目录与 STATE 零新增（禁止自动建 spec）/commit 仅含 todo.md
 
 ## 3 Dashboard 设置页
 

@@ -26,7 +26,7 @@
 
 ### Modified Capabilities
 
-（无——活跃 `openspec/specs/` 为空；归档能力 `native-spec-generation` 仅约束模板存在性，未固化模板文本内容，不受影响。）
+（无——活跃 `spec/specs/` 为空；归档能力 `native-spec-generation` 仅约束模板存在性，未固化模板文本内容，不受影响。）
 
 ## Impact
 

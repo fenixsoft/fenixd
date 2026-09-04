@@ -17,11 +17,11 @@
 
 - [x] 3.1 `git add core/dashboard/static/v2/pages/project.json tests/v2/ && git commit`(信息:`v2-project: SPEC 列表页(8 列+过滤+fix 树+行内操作)`)## 验证修复（第 2 轮失败）
 
-- [x] 阅读 `openspec/changes/v2-project-list-page/verification-report.md`，定位「真实产品 Bug」并修复
+- [x] 阅读 `spec/changes/v2-project-list-page/verification-report.md`，定位「真实产品 Bug」并修复
 - [x] 修复后重跑验证确认通过## 验证修复（第 2 轮失败）
 
-- [x] 阅读 `openspec/changes/v2-project-list-page/verification-report.md`，定位「真实产品 Bug」并修复
+- [x] 阅读 `spec/changes/v2-project-list-page/verification-report.md`，定位「真实产品 Bug」并修复
 - [x] 修复后重跑验证确认通过## 验证修复（第 2 轮失败）
 
-- [x] 阅读 `openspec/changes/v2-project-list-page/verification-report.md`，定位「真实产品 Bug」并修复
+- [x] 阅读 `spec/changes/v2-project-list-page/verification-report.md`，定位「真实产品 Bug」并修复
 - [x] 修复后重跑验证确认通过

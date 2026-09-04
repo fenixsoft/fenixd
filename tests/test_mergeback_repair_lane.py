@@ -74,7 +74,7 @@ def init_repo(root: Path):
 def make_conflict_branch(root: Path, branch: str, shared_content: str = "BRANCH\n"):
     """从 main 派生分支：改 shared.py（制造语义冲突），提交后 checkout 回 main。
 
-    只 stage shared.py——避免把 untracked 的 .fenix/STATE.md、openspec/ 卷进
+    只 stage shared.py——避免把 untracked 的 .fenix/STATE.md、spec/ 卷进
     分支提交，checkout 回 base 时不会删除它们（StateMachine 持久化依赖
     .fenix/STATE.md 存活）。
     """
@@ -217,7 +217,7 @@ class TestRepairPrompt(unittest.TestCase):
         prompt = self.pb._build_prompt("demo", "repair", detail=conflict_summary)
         # spec 身份
         self.assertIn("demo", prompt)
-        self.assertIn("openspec/changes/demo", prompt)
+        self.assertIn("spec/changes/demo", prompt)
         # 冲突清单
         self.assertIn("shared.py", prompt)
         self.assertIn("core/impl.py", prompt)
@@ -246,7 +246,7 @@ class TestRepairDispatch(unittest.TestCase):
         self.spec = "demo"
         # 真实 git 仓库 + 真实 worktree_manager
         init_repo(self.root)
-        self.spec_dir = self.root / "openspec" / "changes" / self.spec
+        self.spec_dir = self.root / "spec" / "changes" / self.spec
         self.spec_dir.mkdir(parents=True, exist_ok=True)
         (self.spec_dir / "tasks.md").write_text(
             "# Tasks\n\n## 1. 实现\n\n- [ ] 1.1 do it\n", encoding="utf-8")
@@ -455,7 +455,7 @@ class TestRepairWorker(unittest.TestCase):
         self.root = Path(self.tmpdir) / "repo"
         self.spec = "demo"
         init_repo(self.root)
-        spec_dir = self.root / "openspec" / "changes" / self.spec
+        spec_dir = self.root / "spec" / "changes" / self.spec
         spec_dir.mkdir(parents=True, exist_ok=True)
         (spec_dir / "tasks.md").write_text(
             "# Tasks\n\n## 1. 实现\n\n- [ ] 1.1 do it\n", encoding="utf-8")
@@ -644,7 +644,7 @@ class TestFastTrackRepairLane(unittest.TestCase):
         self.root = self.pr / "repo"
         self.spec = "ft-demo"
         init_repo(self.root)
-        self.spec_dir = self.root / "openspec" / "changes" / self.spec
+        self.spec_dir = self.root / "spec" / "changes" / self.spec
         self.spec_dir.mkdir(parents=True, exist_ok=True)
         (self.spec_dir / "tasks.md").write_text(
             "# Tasks\n\n## 1. 实现\n\n- [ ] 1.1 do it\n", encoding="utf-8")
@@ -699,7 +699,7 @@ class TestFastTrackRepairLane(unittest.TestCase):
 
     def test_fast_track_fallback_enqueues_fast_track(self):
         """fast-track spec 的 repair fallback → 回 fast-track 通道（非 implementer）。"""
-        (self.spec_dir / ".openspec.yaml").write_text(
+        (self.spec_dir / ".spec.yaml").write_text(
             "mode: fast-track\n", encoding="utf-8")
         self.engine._enqueue_front = MagicMock()
         self.engine._fallback_after_repair(self.spec, None, "repair agent failed")
@@ -713,7 +713,7 @@ class TestFastTrackRepairLane(unittest.TestCase):
 
     def test_fast_track_fallback_retries_exhausted_blocks(self):
         """fallback 重试耗尽 → blocked（与 implementer 路径同语义）。"""
-        (self.spec_dir / ".openspec.yaml").write_text(
+        (self.spec_dir / ".spec.yaml").write_text(
             "mode: fast-track\n", encoding="utf-8")
         self.engine._enqueue_front = MagicMock()
         self.sm.update_spec(self.spec, {"_retry_count": 2})  # max_retries 缺省 3

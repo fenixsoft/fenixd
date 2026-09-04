@@ -1,5 +1,5 @@
 // v2-project-list-page: SPEC 列表页(8 列/过滤/fix 树/行内操作/error 详情)渲染与交互验证
-// 实施依据: openspec/changes/v2-project-list-page、计划 Task 6、behavior.md §2(列/过滤/树)/§5(Why/清除)
+// 实施依据: spec/changes/v2-project-list-page、计划 Task 6、behavior.md §2(列/过滤/树)/§5(Why/清除)
 import { test, expect } from '@playwright/test';
 
 const BASE = process.env.V2_BASE_URL || 'http://127.0.0.1:8787';

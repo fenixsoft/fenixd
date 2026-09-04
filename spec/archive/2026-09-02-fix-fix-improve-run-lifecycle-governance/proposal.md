@@ -2,7 +2,7 @@
 
 ## Why
 
-`fix-improve-run-lifecycle-governance` 的验证报告（见 `openspec/changes/fix-improve-run-lifecycle-governance/verification-report.md`）结论为「无真实产品 Bug」：17 场景中 2 通过 / 15 失败，15 例失败全部为验证脚手架 mock 层未注入场景专用治理固件所致（伪失败），非 fenixd 产品缺陷。父 SPEC 已据此在 `a6f44ea` / `be482f0` 完成根因分析并闭环。
+`fix-improve-run-lifecycle-governance` 的验证报告（见 `spec/changes/fix-improve-run-lifecycle-governance/verification-report.md`）结论为「无真实产品 Bug」：17 场景中 2 通过 / 15 失败，15 例失败全部为验证脚手架 mock 层未注入场景专用治理固件所致（伪失败），非 fenixd 产品缺陷。父 SPEC 已据此在 `a6f44ea` / `be482f0` 完成根因分析并闭环。
 
 ## What Changes
 

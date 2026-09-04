@@ -18,7 +18,7 @@
 
 ### Requirement: tasks.md 可解析性晋升拦截
 
-drafted→ready 晋升校验 SHALL 新增 tasks.md 可解析性 lint：`openspec/changes/<spec>/tasks.md` 文件存在、但以与下游解析同源的正则规则解析出 0 个任务分组时，判定为 lint 违规——SPEC 保持 `drafted` 状态并在 STATE.md 写入 error，错误消息 SHALL 含「tasks.md」字样；解析出 ≥1 个分组（含点号可选双格式）时不拦截。lint 自身异常时 SHALL fail-open 放行晋升（与既有 Deliverables 声明 lint 同语义）。
+drafted→ready 晋升校验 SHALL 新增 tasks.md 可解析性 lint：`spec/changes/<spec>/tasks.md` 文件存在、但以与下游解析同源的正则规则解析出 0 个任务分组时，判定为 lint 违规——SPEC 保持 `drafted` 状态并在 STATE.md 写入 error，错误消息 SHALL 含「tasks.md」字样；解析出 ≥1 个分组（含点号可选双格式）时不拦截。lint 自身异常时 SHALL fail-open 放行晋升（与既有 Deliverables 声明 lint 同语义）。
 
 #### Scenario: 不可解析的 tasks.md 被拒绝晋升
 

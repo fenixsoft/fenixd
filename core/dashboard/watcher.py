@@ -18,7 +18,7 @@ daemon 侧 event_bus.py 的 checksum 轮询一致。
   （add-admin-invoke-dialog：弹窗打开时前端据此重新拉取该 SPEC 的处置记录）
 
 监视模型（dashboard-incremental-watcher D7，两级签名跳层 + 索引兜底）：
-- **一级（顶层源）**：每项目 stat 固定集合（STATE.md、openspec/changes、
+- **一级（顶层源）**：每项目 stat 固定集合（STATE.md、spec/changes、
   .fenix/verify-progress、.fenix/admin_alerts.json），签名变化进入子树枚举。
 - **二级（spec 目录）**：每轮对 changes/ 下全部 spec 目录做目录级 stat
   （O(N) 目录 stat，10000 spec ≈ 10ms 页缓存）；目录签名未变则跳过该 spec。
@@ -183,7 +183,7 @@ class FileWatcher:
         的文件级 stat（跳层核心）。文件级最终判定交给 _handle_state_change 经
         SummaryIndex 完成（文件级签名 + 只重算变化 spec）。
         """
-        changes = proot / "openspec" / "changes"
+        changes = proot / "spec" / "changes"
         spec_dirs = self._spec_dirs.setdefault(proot.as_posix(), {})
         changed = set()
         removed = set()

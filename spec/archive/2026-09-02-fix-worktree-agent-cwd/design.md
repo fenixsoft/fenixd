@@ -7,7 +7,7 @@
 - `_execute_agent` 先调用 `worktree_manager.create(spec_name, "implementer")` 创建 worktree（分支 `fenix/<spec>-<ts>`，目录 `.claude/worktrees/impl-<spec>-<ts>/`），并把 `spec_name` 的 SPEC 目录 seed 进 worktree。
 - 然后 `_run_claude(prompt, wt_path, run_id, ...)` —— `wt_path` 即 worktree 路径。
 - `_run_claude` 构造命令时把 `wt_path` 经 `--add-dir` 加入会话，但 **`subprocess.Popen(...)` 未传 `cwd=`**，子进程继承 daemon 的 cwd（项目主树）。
-- 因此 prompt 的相对路径（`openspec/changes/<spec>/...`、`.fenix-run-result.json`）全部解析到主树；实现者的编辑、git commit 直接落在 main；worktree 始终 clean。
+- 因此 prompt 的相对路径（`spec/changes/<spec>/...`、`.fenix-run-result.json`）全部解析到主树；实现者的编辑、git commit 直接落在 main；worktree 始终 clean。
 - 运行结束后 `worktree_manager.cleanup(wt_path, success=...)` 仅移除 worktree（`git worktree remove`），**无任何合并回主树的步骤**。
 
 次级影响：

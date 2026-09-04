@@ -1,6 +1,6 @@
 ## 1. worktree-spec-seeding（核心播种）
 
-- [x] 1.1 `core/worktree_manager.py::create` 在 `git worktree add` 成功后，实现 SPEC 播种：当 `openspec/changes/<spec>/` 在主工作树存在而 worktree 内缺失时，复制进 worktree 并 `git add` + `git commit`（`[fenix] spec: <spec-name>`）到隔离分支；主工作树无该目录或 worktree 已含则跳过
+- [x] 1.1 `core/worktree_manager.py::create` 在 `git worktree add` 成功后，实现 SPEC 播种：当 `spec/changes/<spec>/` 在主工作树存在而 worktree 内缺失时，复制进 worktree 并 `git add` + `git commit`（`[fenix] spec: <spec-name>`）到隔离分支；主工作树无该目录或 worktree 已含则跳过
 - [x] 1.2 播种异常容错：复制/提交失败仅记录日志、不阻塞 worktree 创建流程（worktree 仍返回，实现 Agent 走主仓库兜底路径）
 - [x] 1.3 手工验证：对未提交 SPEC 创建实现 worktree，确认 worktree 内含完整 SPEC 目录、分支含 `[fenix] spec:` 提交、`main` 工作树不被污染
 - [x] 1.4 既有测试回归：`python3 -m pytest tests/ -v` 全绿

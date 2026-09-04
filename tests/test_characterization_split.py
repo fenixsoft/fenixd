@@ -8,7 +8,7 @@
   （→ core/pm_engine/reporting.py）
 
 覆盖口径：core/ 双巨文件 per-method 行覆盖分析（2026-08-31 基线，见
-openspec/changes/refactor-core-packages/findings.md）。本文件只新增，
+spec/changes/refactor-core-packages/findings.md）。本文件只新增，
 不修改任何现有测试文件。
 """
 

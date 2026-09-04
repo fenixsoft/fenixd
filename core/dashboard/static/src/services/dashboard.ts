@@ -162,7 +162,7 @@ export interface SpecSummary {
   name: string;
   status: string | null;
   mode?: 'fast-track' | 'full' | null;
-  /** add-spec-archive：是否已归档（活跃目录 openspec/changes/<name>/ 不存在即 true） */
+  /** add-spec-archive：是否已归档（活跃目录 spec/changes/<name>/ 不存在即 true） */
   archived?: boolean;
   priority: number | null;
   created: string | null;

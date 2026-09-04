@@ -15,12 +15,12 @@ from core.state_machine import StateMachine
 
 
 def _mk_spec(root, name, mode=None):
-    d = root / "openspec" / "changes" / name
+    d = root / "spec" / "changes" / name
     d.mkdir(parents=True, exist_ok=True)
     lines = ["schema: spec-driven", "created: 2026-09-02"]
     if mode:
         lines.append(f"mode: {mode}")
-    (d / ".openspec.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (d / ".spec.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (d / "tasks.md").write_text("# Tasks\n\n## 1. x\n\n- [ ] 1.1 do\n", encoding="utf-8")
 
 

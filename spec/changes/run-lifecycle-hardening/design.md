@@ -6,7 +6,7 @@
 
 **Goals**
 
-- 归档产物随 push 闭环入库，主树不再留 openspec 残留
+- 归档产物随 push 闭环入库，主树不再留归档残留
 - 秒挂风暴从 61 连发降为「3 次 → 冷却 5 分钟 → 自动恢复」
 - run 超时按 agent_type 粒度可覆盖，planner 类显著短于 implementer，全局单源默认保持
 - 三项卫生修复（verifier 链尊重 frozen、STATE 路径唯一、对账自动校正）
@@ -34,7 +34,7 @@
 
 ## Risks / Trade-offs
 
-- 归档提交与用户手工操作主树并发 → 用 `git add` 限定 openspec/changes 路径（不 `add -A`）；提交失败降级 WARNING 不阻塞
+- 归档提交与用户手工操作主树并发 → 用 `git add` 限定 spec/changes 路径（不 `add -A`）；提交失败降级 WARNING 不阻塞
 - timeout_overrides 配置过短会截断正常长 run → 护栏下限 300s + ERROR 告警；默认无 overrides 时零行为变化
 - 秒挂冷却可能延迟正常重试 5 分钟 → 冷却仅在「连续 3 次秒挂」后触发，正常单次瞬时失败不受影响
 

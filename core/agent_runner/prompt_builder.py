@@ -87,7 +87,7 @@ class PromptBuilder:
         sig = detail or {}
         values = {
             "{spec_name}": spec_name,
-            "{spec_dir}": f"openspec/changes/{spec_name}",
+            "{spec_dir}": f"spec/changes/{spec_name}",
             "{scenarios_path}": str(vp_dir / "test_scenarios.json"),
             "{result_path}": str(vp_dir / ".fenix-run-result.json"),
             "{report_path}": str(vp_dir / "report.json"),
@@ -336,7 +336,7 @@ class PromptBuilder:
                 - has_semantic_conflict: 是否含语义冲突
                 - repair_round: 当前是第几轮 repair
         """
-        spec_dir = f"openspec/changes/{spec_name}"
+        spec_dir = f"spec/changes/{spec_name}"
         merge_error = conflict_summary.get("merge_error", "（未提供原始错误）")
         conflict_paths = conflict_summary.get("conflict_paths", [])
         repair_round = conflict_summary.get("repair_round", 1)

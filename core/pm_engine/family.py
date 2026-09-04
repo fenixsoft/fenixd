@@ -57,14 +57,14 @@ class FamilyGovernor:
         implementer Agent 依赖磁盘上的 proposal.md/tasks.md 才能执行，
         缺失会导致 SPEC 卡在 implementing 状态。此处生成最小可执行的 SPEC 文档。
         """
-        spec_dir = self._pm.project_root / "openspec" / "changes" / fix_spec_name
+        spec_dir = self._pm.project_root / "spec" / "changes" / fix_spec_name
         spec_dir.mkdir(parents=True, exist_ok=True)
 
         proposal = (
             f"# Proposal: 修复 {parent_spec_name} 验证发现的缺陷\n\n"
             f"## Why\n\n"
             f"`{parent_spec_name}` 的验证报告发现产品缺陷，导致验证未通过。"
-            f"详见 `openspec/changes/{parent_spec_name}/verification-report.md` 的「真实产品 Bug」部分。\n\n"
+            f"详见 `spec/changes/{parent_spec_name}/verification-report.md` 的「真实产品 Bug」部分。\n\n"
             f"## What Changes\n\n"
             f"第一步必须复核失败场景的有效性（fix-fake-failure-first）："
             f"验证场景自身可能存在断言缺陷（如英文状态字面量 vs 产品中文渲染、"
@@ -78,7 +78,7 @@ class FamilyGovernor:
         tasks = (
             f"# Tasks: 修复 {parent_spec_name} 验证发现的缺陷\n\n"
             f"## 1. 复核失败场景有效性（先于一切修复）\n\n"
-            f"- [ ] 1.1 逐条核对 `openspec/changes/{parent_spec_name}/verification-report.md` "
+            f"- [ ] 1.1 逐条核对 `spec/changes/{parent_spec_name}/verification-report.md` "
             f"中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为/DOM 是否相符；"
             f"断言与产品不符属场景缺陷——修场景文件，不改产品代码；"
             f"确属产品行为不符才进入第 2 步\n\n"
@@ -410,7 +410,7 @@ class FamilyGovernor:
                 "status": "blocked",
                 "error": (
                     f"验证连续失败 {fail_rounds} 轮，已冻结等待人工裁决。"
-                    f"详见 `openspec/changes/{spec_name}/verification-report.md`"
+                    f"详见 `spec/changes/{spec_name}/verification-report.md`"
                 ),
             })
             self._pm.logger.error(
@@ -427,7 +427,7 @@ class FamilyGovernor:
                 ),
                 evidence=(
                     f"spec={spec_name}; fail_rounds={fail_rounds}; "
-                    f"report=openspec/changes/{spec_name}/verification-report.md"
+                    f"report=spec/changes/{spec_name}/verification-report.md"
                 ),
                 recommended_action=(
                     "检查验证报告定位根因，人工调整 SPEC 状态后重跑验证；"
@@ -596,7 +596,7 @@ class FamilyGovernor:
         - 后续失败：更新段内轮数注记
         MUST NOT 改写既有任务与勾选状态（design D3）。
         """
-        tasks_path = self._pm.project_root / "openspec" / "changes" / spec_name / "tasks.md"
+        tasks_path = self._pm.project_root / "spec" / "changes" / spec_name / "tasks.md"
         if not tasks_path.exists():
             self._pm.logger.warning(
                 "pm_engine",
@@ -609,7 +609,7 @@ class FamilyGovernor:
         except (OSError, UnicodeDecodeError):
             return
 
-        report_path = f"openspec/changes/{spec_name}/verification-report.md"
+        report_path = f"spec/changes/{spec_name}/verification-report.md"
         # fix-fake-failure-first：第一步强制复核失败场景有效性——验证场景自身
         # 的断言缺陷（英文状态字面量 vs 产品中文渲染、不存在选择器等）曾被当作
         # 产品 Bug 触发整条修复链（3 轮实现 5.24h 修一个不存在的 bug）。

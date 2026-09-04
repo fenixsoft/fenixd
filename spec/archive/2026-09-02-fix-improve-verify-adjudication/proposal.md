@@ -2,7 +2,7 @@
 
 ## Why
 
-`improve-verify-adjudication` 的验证报告发现产品缺陷，导致验证未通过。详见 `openspec/changes/improve-verify-adjudication/verification-report.md` 的「真实产品 Bug」部分。
+`improve-verify-adjudication` 的验证报告发现产品缺陷，导致验证未通过。详见 `spec/changes/improve-verify-adjudication/verification-report.md` 的「真实产品 Bug」部分。
 
 ## What Changes
 

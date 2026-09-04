@@ -7,13 +7,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.agent_runner import AgentRunResult
 from core.state_machine import StateMachine
-from core.openspec_mode import read_spec_mode
+from core.spec_mode import read_spec_mode
 
 
 def _mk_spec_dir(root, name, mode="fast-track"):
-    d = root / "openspec" / "changes" / name
+    d = root / "spec" / "changes" / name
     d.mkdir(parents=True, exist_ok=True)
-    (d / ".openspec.yaml").write_text(
+    (d / ".spec.yaml").write_text(
         f"schema: spec-driven\ncreated: 2026-09-02\nmode: {mode}\n",
         encoding="utf-8",
     )

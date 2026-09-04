@@ -8,7 +8,7 @@
 
 ## 1. 共享合成器
 
-- [x] 1.1 在 `.fenix/core/` 新增合成 helper（单一实现）：输入 spec 名，读取 `.fenix/verify-progress/<spec>/report.json` 与 `.fenix-run-result.json`，渲染并写入 `openspec/changes/<spec>/verification-report.md`；结构化数据缺失/不可解析时返回失败而非写空报告
+- [x] 1.1 在 `.fenix/core/` 新增合成 helper（单一实现）：输入 spec 名，读取 `.fenix/verify-progress/<spec>/report.json` 与 `.fenix-run-result.json`，渲染并写入 `spec/changes/<spec>/verification-report.md`；结构化数据缺失/不可解析时返回失败而非写空报告
 - [x] 1.2 合成输出兼容 `parse_verdict`：含 `## 结论：`标题行（内联 ❌/✅ 状态）、`**状态:**` 详情行、`| 通过 | N |` 形式的汇总表格、以及「真实产品 Bug」章节（bug-found 时含 description/root_cause/evidence）
 
 ## 2. 裁决放行入口接入闸门

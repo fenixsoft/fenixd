@@ -9,7 +9,7 @@ Fenix Web Dashboard 的 spec 列表目前只有「文档」链接与「信息清
 - spec 列表的每个 spec 行支持浏览器右键弹出上下文菜单（自绘 DOM 菜单，拦截原生菜单），含三项：
   1. **呼叫 Admin 介入**：POST 触发 daemon 立即拉起 Administrator Agent，发送固定检查指令（检查该 SPEC 出现什么问题）；已存在进行中的 admin run 时拒绝并提示
   2. **调整优先级**：弹窗输入 1-9 数字（P1 最高），写入 STATE.md priority 字段
-  3. **删除 Spec**：软删除——STATE.md 移除该条目 + `openspec/changes/<name>/` 目录移入 `openspec/changes/archive/<name>-<时间戳>/`；带确认弹窗；归档目录不参与扫描可恢复
+  3. **删除 Spec**：软删除——STATE.md 移除该条目 + `spec/changes/<name>/` 目录移入 `spec/archive/<name>-<时间戳>/`；带确认弹窗；归档目录不参与扫描可恢复
 - Dashboard server 新增三个 POST API（仿 spec-error-clear 先例）：
   - `POST /api/spec-admin-invoke?project=<name>&spec=<name>`
   - `POST /api/spec-priority?project=<name>&spec=<name>`（body: priority）

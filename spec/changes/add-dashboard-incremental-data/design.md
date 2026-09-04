@@ -4,8 +4,8 @@
 
 Dashboard 数据管线现状（150 spec 实测）：
 
-- **数据源**：STATE.md（56KB 文本，10000 spec 时 ~5MB）、`openspec/changes/<spec>/`（tasks.md + specs/*.md + verification-report.md）、`.fenix/`（runs/*.jsonl 累计 11MB、verify-progress/、logs/fenixd.log 7.5MB 且 daemon 活跃时持续追加）。
-- **读侧**：`/api/specs` 每请求对全部 spec 跑 `spec_summary()`——6 次独立磁盘 IO（get_runs glob、count_scenarios rglob、parse_tasks 读 tasks.md、read_spec_mode 开 `.openspec.yaml` 走 YAML 解析、is_spec_archived、parse_verify_progress）。cProfile：109 spec 冷启动 44ms，其中 42 次 YAML safe_load、29ms 花在 get_runs。
+- **数据源**：STATE.md（56KB 文本，10000 spec 时 ~5MB）、`spec/changes/<spec>/`（tasks.md + specs/*.md + verification-report.md）、`.fenix/`（runs/*.jsonl 累计 11MB、verify-progress/、logs/fenixd.log 7.5MB 且 daemon 活跃时持续追加）。
+- **读侧**：`/api/specs` 每请求对全部 spec 跑 `spec_summary()`——6 次独立磁盘 IO（get_runs glob、count_scenarios rglob、parse_tasks 读 tasks.md、read_spec_mode 开 `.spec.yaml` 走 YAML 解析、is_spec_archived、parse_verify_progress）。cProfile：109 spec 冷启动 44ms，其中 42 次 YAML safe_load、29ms 花在 get_runs。
 - **广播侧**：watcher 每 1s 全量枚举项目文件（`_iter_project_files` 对每 spec yield 5~8 个路径并 stat），随后日志一变化就 `_handle_state_change` 全量重组 overview+specs+details 广播。
 - **订阅侧**：前端 2s 固定轮询三端点 + SSE 双通道叠加。
 - 现有缓存先例：`_RUN_TASK_CACHE`（run 文件 mtime+size 键，上限 64 清空）已验证「签名键 + 有界缓存」模式可行。
@@ -31,7 +31,7 @@ Dashboard 数据管线现状（150 spec 实测）：
 
 - 索引持有在 `DashboardHTTPServer` 实例上（`self.summary_index`），watcher 与 `_handle_api` 共享同一实例 —— 单一写者（watcher 线程）、读者（HTTP 线程）经 `threading.Lock`（读写锁语义，读多写少用 `RLock` 即可；简单场景用 Lock 包整段替换也接受）。
 - 结构：`{project_name: {spec_name: summary_dict}}`；每项目一个 `summary_index[proj]` 派生自 `parse_state(proot)` 的快照 + 每 spec 的摘要缓存失效键 `{path → (mtime_ns, size)}`。
-- **失效策略**：每 spec 记录其依赖文件签名集合（tasks.md / specs 目录 / .openspec.yaml / runs 目录 + verify-progress 相关文件）。任何请求路径下先比对签名，变化则只重算该 spec 的 `spec_summary`；`STATE.md` 自身签名变化 → 全量重建该项目的索引（新增/删除 spec 只有 parse_state 全量才能发现——增量解析只识别变更，不识别增删，故全量重建的触发仅限 STATE.md，频率低）。
+- **失效策略**：每 spec 记录其依赖文件签名集合（tasks.md / specs 目录 / .spec.yaml / runs 目录 + verify-progress 相关文件）。任何请求路径下先比对签名，变化则只重算该 spec 的 `spec_summary`；`STATE.md` 自身签名变化 → 全量重建该项目的索引（新增/删除 spec 只有 parse_state 全量才能发现——增量解析只识别变更，不识别增删，故全量重建的触发仅限 STATE.md，频率低）。
 - **构建时机**：首次 `/api/projects` 或 watcher 首轮扫描时惰性构建；构建并发安全（单例 + lock）。
 - **有界性**：索引常驻内存（10000 spec 的摘要 dict ≈ 数十 MB，可接受）；签名缓存不入内存上限约束——签名只对存在路径记录。
 
@@ -51,8 +51,8 @@ Dashboard 数据管线现状（150 spec 实测）：
 
 ### D4 配置解析缓存（无失效风险面）
 
-- `read_effective_config` / `read_spec_mode` 增加 `functools.lru_cache`-风格签名缓存：`key=(resolved_path, mtime_ns, size)`；缓存无上限风险（键 ∈ {用户级 config.yaml，项目 config.yaml，每 spec .openspec.yaml}，规模与 spec 数线性，10000 时 ~10001 条目，可接受）。
-- 写路径（`write_config` / 变更 `.openspec.yaml` 的流程）必须显式 `cache_clear` 该路径键 —— 写后 mtime 已变，签名键自然失效，无需显式失效。**决策：依赖签名键自然失效，不维护写侧钩子**（与 `_RUN_TASK_CACHE` 一致，规避钩子遗漏 bug）。
+- `read_effective_config` / `read_spec_mode` 增加 `functools.lru_cache`-风格签名缓存：`key=(resolved_path, mtime_ns, size)`；缓存无上限风险（键 ∈ {用户级 config.yaml，项目 config.yaml，每 spec .spec.yaml}，规模与 spec 数线性，10000 时 ~10001 条目，可接受）。
+- 写路径（`write_config` / 变更 `.spec.yaml` 的流程）必须显式 `cache_clear` 该路径键 —— 写后 mtime 已变，签名键自然失效，无需显式失效。**决策：依赖签名键自然失效，不维护写侧钩子**（与 `_RUN_TASK_CACHE` 一致，规避钩子遗漏 bug）。
 - `cleanup_runs`：增加项目级节流 `(last_ts)` —— ≥60s 才实际执行；返回永远幂等。
 
 ### D5 日志偏移索引
@@ -71,14 +71,14 @@ Dashboard 数据管线现状（150 spec 实测）：
 ### D7 watcher 目录级签名跳层（替代 inotify）
 
 - `_iter_project_files` 改为两级：
-  1. **顶层数据源签名**：每项目 stat 固定集合（STATE.md、openspec/changes、.fenix/logs、.fenix/runs、.fenix/verify-progress、.fenix/admin_alerts.json）——8 次 stat。
+  1. **顶层数据源签名**：每项目 stat 固定集合（STATE.md、spec/changes、.fenix/logs、.fenix/runs、.fenix/verify-progress、.fenix/admin_alerts.json）——8 次 stat。
   2. 仅当目录签名变化时进入 **spec 目录枚举**：stat `changes/` 下全部 spec 目录（10000 个 → 10000 次 stat，页缓存 ≈10ms，可接受），再对签名变化的 spec 目录做文件级签名比对（原 7 文件集合）。
 - 目录签名 =（mtime_ns, size, ctime_ns）；文件内容修改会更新文件与父目录 mtime；`touch` 保时间场景在本工作流不存在（全部写入走正常 open/write）。
 - 清理语义保持：删除的目录从签名表剔除。
 
 ## Risks / Trade-offs
 
-- **索引与真实文件漂移**：摘要签名的 6 个依赖文件覆盖不全（如 `read_spec_mode` 读的 `.openspec.yaml` 未在签名集合）→ 摘要过期。缓解：签名集合与 `spec_summary` 的实际读路径逐一对齐（实现任务必须列全依赖文件），并对「保守失效」倾斜——把 specs/ 目录整体纳入签名。
+- **索引与真实文件漂移**：摘要签名的 6 个依赖文件覆盖不全（如 `read_spec_mode` 读的 `.spec.yaml` 未在签名集合）→ 摘要过期。缓解：签名集合与 `spec_summary` 的实际读路径逐一对齐（实现任务必须列全依赖文件），并对「保守失效」倾斜——把 specs/ 目录整体纳入签名。
 - **增量广播丢帧**：SSE 队列满丢弃旧事件（256 上限现状）+ 增量语义下中间态丢失 → 前端心跳兜底（30s overview 校准 / 1s 队列上抛时本地表以 overview 修正）。
 - **全量重建风暴**：parse_state 每轮全量解析单点仍存在（10000 spec 5MB/次），但已从「每请求」降到「STATE.md 每变更一次 + 每次首建」。
 - **格式迁移**：`state` 事件增量形态与旧字段冲突 —— 已决策无旧客户端，风险封闭。

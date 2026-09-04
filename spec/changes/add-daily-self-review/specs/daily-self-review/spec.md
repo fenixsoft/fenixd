@@ -70,7 +70,7 @@
 #### Scenario: 自省后无新 SPEC
 
 - **WHEN** 自省产出 N 条可改进建议并写入 todo.md
-- **THEN** openspec/changes/ 与 STATE.md 均无任何新增条目，无 agent 派发
+- **THEN** spec/changes/ 与 STATE.md 均无任何新增条目，无 agent 派发
 
 ### Requirement: 配置界面
 

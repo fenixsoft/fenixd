@@ -4,7 +4,7 @@
 
 Dashboard 服务端维护每项目 `{spec_name → spec_summary}` 摘要索引，供 `/api/specs` 与 SSE 广播读取。
 索引以惰性构建（首次 `/api/projects` 或 watcher 首轮扫描触发）；每 spec 记录其依赖文件签名
-（tasks.md / specs 目录 / .openspec.yaml / runs 目录 / verify-progress 文件，mtime_ns+size 键），
+（tasks.md / specs 目录 / .spec.yaml / runs 目录 / verify-progress 文件，mtime_ns+size 键），
 任一路径先比对签名，未变则直接返回缓存摘要，变化只重算该 spec 一条。
 
 #### Scenario: 未变化返回缓存
