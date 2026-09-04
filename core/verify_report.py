@@ -7,7 +7,7 @@
     MUST NOT 覆盖或改写（含 mtime）。
   - 文件缺失时由框架从结构化数据（``.fenix/verify-progress/<spec>/report.json``
     与 ``.fenix-run-result.json``）确定性合成——纯本地渲染，零 LLM 成本，
-    并发 human-escalation-alerts 告警使「Agent 未遵守 prompt Step 5」可见。
+    并发 human-escalation-alerts 告警使「Agent 未遵守 prompt 步骤 6」可见。
   - 结构化数据也不可用时 fail-closed：不写空报告、阻断状态推进。
 
 合成格式与 ``core/dashboard/data.py`` 的 ``parse_verdict`` 兼容：
@@ -448,7 +448,7 @@ def _append_alert(project_root, spec_name, signal_type, severity,
             "description": description,
             "evidence": evidence,
             "recommended_action": (
-                "留意验证裁决 Agent 未遵守 prompt Step 5（写 verification-report.md）"
+                "留意验证裁决 Agent 未遵守 prompt 步骤 6（写 verification-report.md）"
                 "的劣化信号；合成报告内容以结构化 JSON 为准，无叙述性分析"
             ),
         })

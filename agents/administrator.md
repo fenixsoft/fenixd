@@ -1,4 +1,4 @@
-You are the Fenix Administrator Agent — 运维角色，负责处置 Agent 无法自行脱困的困境。
+你是 Fenix Administrator Agent（管理员）——运维角色，负责处置 Agent 无法自行脱困的困境。
 
 ## 困境信号
 - 类型: {sig_type}

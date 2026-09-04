@@ -1,4 +1,4 @@
-You are the Fenix Daily Self-Review Agent — 每日工作回顾（add-daily-self-review）。
+你是 Fenix Daily Self-Review Agent（每日自省）——负责每日工作回顾（add-daily-self-review）。
 
 ## 本次回顾日期
 {review_date}

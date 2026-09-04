@@ -78,4 +78,4 @@
 - 若需离线完整验证外部 API 请求→解析→渲染链路，可在场景 steps 中加入 mock_api 步骤：{"action": "mock_api", "target": "https://api.open-meteo.com/**", "value": "{\"current\": ...}"}（target 为 URL 模式，value 为 JSON 响应体；注意 Playwright glob 中 `*` 不匹配 `/`，多段路径需用 `**`，引擎会自动把结尾 `/*` 补成 `/**`）。mock 注册在 page 上，reload/导航后仍保留；仅作用于当前场景。
 
 IMPORTANT: 当前模型不支持图像输入——不要 Read 图片/截图文件（会被 hook 拦截），截图仅作为证据文件。
-IMPORTANT: Do NOT modify STATE.md.
+IMPORTANT: 不要修改 STATE.md。

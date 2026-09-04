@@ -271,7 +271,7 @@ class TestVerifierReportJson:
         assert '"screenshots"' in prompt
         # status 判定规则（parse_bugs 依赖 fail/error 场景产出缺陷）
         assert "fail=断言/步骤失败(产品缺陷)" in prompt
-        # Step 8 清理保留清单包含 report.json（防止 agent 自我清理误删）
+        # 步骤 9 清理保留清单包含 report.json（防止 agent 自我清理误删）
         keep_line = [l for l in prompt.split("\n") if "保留：verification-report.md、" in l]
         assert keep_line
         assert "report.json" in keep_line[0]
