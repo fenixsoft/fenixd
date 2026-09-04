@@ -1,14 +1,12 @@
 # 配置参考
 
-Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重启生效。本章给出全键参考、合并规则与已知模板漂移点。
+Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重启 daemon 生效。本章给出全键参考、合并规则与已知的模板漂移点。
 
 ## 分级合并与热更新
 
-- **用户级**：`~/.fenix/config.yaml`（所有项目共享的基础配置）
-- **项目级**：`<项目根>/.fenix/config.yaml`（`fenix-init` 生成，覆盖用户级同名键）
-- 合并顺序：**项目级覆盖用户级**（deep merge，键级合并而非整块替换）
+配置分两级：用户级 `~/.fenix/config.yaml` 是所有项目共享的基础配置；项目级 `<项目根>/.fenix/config.yaml`（由 `fenix-init` 生成）覆盖用户级的同名键。合并是键级的 deep merge——项目级只覆盖自己声明的键，而不是整块替换用户级配置。
 
-**热更新**：大部分调度/预算键约 30 秒后自动生效（daemon 热加载配置）。**需重启生效**的键会在下表中标注。
+热更新方面，大部分调度/预算键约 30 秒后自动生效（daemon 热加载配置）；需重启生效的键在下表中逐键标注。
 
 ## config.yaml 全键分组表
 
@@ -73,14 +71,9 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 | static_scope | `main` | main/worktree | 热更新（下一轮验证生效） |
 | deps_mode | `prefer-offline` | prefer-offline/hardlink | 热更新（下一个 worktree 创建生效） |
 
-> **`verify.*` 与 `.fenix/verify.yaml` 的分工**：`verify.*` 是 **config.yaml**
-> 的命名空间——机器本地的运行时开关（不入库，随 config.yaml 热更新）；而
-> `.fenix/verify.yaml` 是**项目验证契约**（prepare/serve/ready，随仓库提交、
-> 手工编辑，Dashboard 不改写该文件）。deps_mode 也可在 verify.yaml 顶层按
-> 项目声明 `deps_mode:`，优先于 config。deps_mode 仅对 nodejs 项目生效（供给
-> 入口是 package.json/node_modules，其他项目自动跳过零副作用）；C/C++/Java
-> 等其他语言的依赖安装与构建经 verify.yaml 的 prepare 声明（语言无关，如
-> `mvn package`、`cmake --build`，依赖缓存多为用户级天然共享）。
+`verify.*` 与 `.fenix/verify.yaml` 的分工需要特别说明。`verify.*` 是 config.yaml 的命名空间，存放机器本地的运行时开关——不入库，随 config.yaml 热更新；而 `.fenix/verify.yaml` 是项目验证契约（prepare/serve/ready），随仓库提交、手工编辑，Dashboard 不会改写这个文件。deps_mode 也可以在 verify.yaml 顶层按项目声明 `deps_mode:`，优先于 config。
+
+deps_mode 仅对 nodejs 项目生效——供给入口是 package.json/node_modules，其他项目自动跳过、零副作用。C/C++/Java 等其他语言的依赖安装与构建经 verify.yaml 的 prepare 声明（语言无关，如 `mvn package`、`cmake --build`），依赖缓存多为用户级天然共享。
 
 ### pm.push
 
@@ -135,7 +128,7 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 | agents.token_budget_millions | 50 | **50** | 一致 |
 | 顶层 timeout_supervision | enabled: false | 以 `agents.timeout_supervision` 为准 | 顶层键仅是回退开关，`agents.timeout_supervision` 是 canonical 位置 |
 
-**结论**：不要凭模板注释理解缺省值。判断某键实际生效值的方法是查看项目 `.fenix/config.yaml` 是否配置该键；未配置则按代码缺省。
+**结论**：不要凭模板注释理解缺省值。判断某个键的实际生效值，应查看项目 `.fenix/config.yaml` 是否配置了该键——配置了以配置值为准，未配置则按代码缺省。
 
 ## Dashboard 设置页与配置键映射
 

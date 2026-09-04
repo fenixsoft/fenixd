@@ -4,9 +4,9 @@
 
 ## 闭环自动化
 
-Fenix 是一个**闭环**开发框架：需求输入后，从设计、实现、验证到发布全程自动化，仅在最终推送时需要人工审批。核心思路是：
+Fenix 是一个**闭环**开发框架：需求输入后，从设计、实现、验证到发布全程自动化，仅在最终推送时需要人工审批。支撑这个闭环的是四个核心设计：
 
-1. **SPEC 驱动**：一切工作围绕 SPEC（软件需求规格说明书）展开，每个 SPEC 对应一个 `openspec/changes/<name>/` 目录
+1. **SPEC 驱动**：一切工作围绕 SPEC（软件需求规格说明书）展开，每个 SPEC 对应一个 `spec/changes/<name>/` 目录
 2. **状态机管控**：SPEC 生命周期由有限状态机（10 个状态、明确转移规则）驱动，杜绝模糊中间态
 3. **闭环验证**：实现后自动启动被测实例、执行场景、判定通过/失败，失败自动打回修复
 4. **唯一人工门禁**：`/fenix-approve` 推送审批是全流程中唯一需要人工参与的环节
@@ -45,6 +45,8 @@ graph TB
     FW -.-> PM
 ```
 
+从图上可以看出分工：PM Engine 是调度中枢，做派发决策并唤起 Agent Pool 中的各类 Agent；State Machine 维护 SPEC 的状态转移；Admin Monitor 监视困境信号，必要时唤起 Administrator 自愈；File Watcher 监听文件变化反馈给 PM Engine。对外则由 REST API 把状态暴露给 Web UI 展示。
+
 ## 七类 Agent 角色
 
 | Agent 类型 | 职责 | 触发时机 |
@@ -59,7 +61,7 @@ graph TB
 
 ## full 模式 vs fast-track 模式
 
-Fenix 有两种实现-验证路径：
+Fenix 有两种实现-验证路径，daemon 会按 SPEC 的特征自动选择。
 
 ### full 模式（标准闭环）
 
@@ -83,30 +85,21 @@ sequenceDiagram
 
 ### fast-track 模式（轻量合并）
 
-单次 Agent 调用同时完成实现与验证，减少 worktree 创建开销与 token 消耗。适用于：
-- 影响面小（单文件改动）
-- 模块数少（≤1 个模块）
-- 无 UI 变动
-- 场景数少（≤3 个验证场景）
-
-> fast-track 失败后自动回退为 full 模式重试。
+fast-track 把实现与验证合并为单次 Agent 调用，省去独立的 verifier 调用与部分 worktree 开销，token 消耗更低。适用条件是影响面小且验证简单：单文件改动、模块数不超过 1、无 UI 变动、验证场景不超过 3 个。不满足任一条件时自动走 full 模式；fast-track 失败后也会回退为 full 模式重试。
 
 ## Worktree 隔离
 
-每个 implementer/verifier run 都在独立的 git worktree 中工作：
-- 互不干扰：并行的多个 SPEC 实现不会交叉污染
-- 自动清理：run 结束后 worktree 自动移除
-- merge-back：完成后代码合并回主分支
+每个 implementer/verifier run 都在独立的 git worktree 中工作。隔离带来三层保障：并行的多个 SPEC 实现互不交叉污染；run 结束后 worktree 自动移除，不留垃圾目录；代码完成后经 merge-back 合并回主分支。
 
 ## 多项目机制
 
-Dashboard 支持同时监控多个 Fenixd 项目。每个项目通过 `.fenix/config.yaml` 独立配置，daemon 独立运行。Dashboard 统一聚合概览、跨项目状态一目了然。
+Dashboard 支持同时监控多个 Fenixd 项目。每个项目拥有自己的 `.fenix/config.yaml` 与独立运行的 daemon，互不干扰；Dashboard 把它们聚合到同一个界面里，跨项目的状态、告警与进度一目了然。
 
 ## 术语表
 
 | 术语 | 含义 |
 |------|------|
-| **SPEC** | 软件需求规格说明书，对应 `openspec/changes/<name>/` 目录 |
+| **SPEC** | 软件需求规格说明书，对应 `spec/changes/<name>/` 目录 |
 | **STATE.md** | `.fenix/` 目录下的状态文件，记录所有 SPEC 的当前状态与元数据 |
 | **worktree** | Git 工作树，提供隔离的代码工作区 |
 | **verify.yaml** | 项目级验证契约，声明构建、启动、就绪探针 |

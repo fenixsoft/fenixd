@@ -1,6 +1,6 @@
 # 文件与数据地图
 
-排查问题时，先知道各种状态、记录、日志存在哪里。本章给出 Fenix 项目的完整文件地图。
+排查问题时，第一步是知道各种状态、记录、日志分别存在哪里。本章给出 Fenix 项目的完整文件地图，以及一张「出问题去哪查」的对照表。
 
 ## 项目根目录
 
@@ -28,7 +28,7 @@
     admin_invoke_request.json   # Admin 唤起请求信号（daemon 拾取后清除）
     todo.md            # 当日待办/自省列表
     PROJECT_LOG.md     # 项目日志（事件时间线）
-  openspec/            # openspec 标准目录
+  spec/                # SPEC 工作区
     changes/           # 活跃 change
       <spec>/          # 一个 SPEC
         proposal.md    # 需求背景
@@ -41,7 +41,7 @@
 
 ## STATE.md 字段逐一解释
 
-每个 SPEC 条目格式：
+每个 SPEC 在 STATE.md 中占一个条目，格式如下：
 
 ```markdown
 ### <spec-name>
@@ -65,19 +65,13 @@
 
 > 状态取值与转移规则见 [SPEC 生命周期与状态机](03-lifecycle.md)。
 
-## openspec artifacts 与 Deliverables 声明段
+## SPEC artifacts 与 Deliverables 声明段
 
-- **proposal.md / design.md / tasks.md / specs/** 是 openspec 标准的 change artifacts
-- tasks.md 的 **Deliverables** YAML 段声明「本 change 交付/修改哪些文件」，是收工守卫（deliverable gate）的判据——遗漏的新交付文件会被守卫拦截
-- tasks.md 中 `- [x]` 勾选状态即任务进度，`/fenix-process` 与 Dashboard 均读取它
+proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change artifacts。其中 tasks.md 的 **Deliverables** YAML 段声明「本 change 交付/修改哪些文件」，是收工守卫（deliverable gate）的判据——遗漏的新交付文件会被守卫拦截。tasks.md 中 `- [x]` 勾选状态即任务进度，`/fenix-process` 与 Dashboard 读取的都是它。
 
 ## .fenix/runs/ 运行记录
 
-每条 run 一个 `<agent>-<spec>-<timestamp>.jsonl`：
-
-- `impl-` 前缀：实现者（含 fast-track），记录每次 tool_use、消息、结果
-- `verify-` 前缀：验证者
-- 故障排查时查「最近一次 run 在做什么」：按文件 mtime 排序找最新 jsonl，看最后几条事件
+每条 run 对应一个 `<agent>-<spec>-<timestamp>.jsonl` 文件：`impl-` 前缀是实现者（含 fast-track），记录每次 tool_use、消息与结果；`verify-` 前缀是验证者。排查「最近一次 run 在做什么」时，按文件 mtime 排序找到最新的 jsonl，看最后几条事件即可。
 
 ## 出问题去哪查对照表
 
@@ -93,7 +87,7 @@
 | daemon 日志 | `.fenix/logs/fenixd-<year>.log` |
 | 项目事件时间线 | `.fenix/PROJECT_LOG.md` |
 | 当日待办/自省 | `.fenix/todo.md` |
-| 任务进度 | `openspec/changes/<spec>/tasks.md` 勾选状态 |
+| 任务进度 | `spec/changes/<spec>/tasks.md` 勾选状态 |
 
 ## 相关文档
 

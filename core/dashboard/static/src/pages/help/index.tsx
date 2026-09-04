@@ -56,8 +56,15 @@ async function renderMermaid(code: string, container: HTMLDivElement) {
   try {
     const mermaid = await getMermaid();
     const id = `mermaid-${++mermaidIdCounter}`;
-    // 初始化（幂等，重复调用无害）
-    mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+    // 初始化（幂等，重复调用无害）；neutral 主题配色低饱和，适合文档场景；
+    // 字号统一压到 13px（sequence 族字号独立于 themeVariables，须单独设）
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'neutral',
+      securityLevel: 'loose',
+      themeVariables: { fontSize: '13px' },
+      sequence: { actorFontSize: 13, messageFontSize: 13, noteFontSize: 13 },
+    });
     const { svg } = await mermaid.render(id, code);
     container.innerHTML = svg;
   } catch (err) {
@@ -75,7 +82,7 @@ function MermaidBlock({ code }: { code: string }) {
       void renderMermaid(code, ref.current);
     }
   }, [code]);
-  return <div ref={ref} style={{ margin: '12px 0', minHeight: 40 }} />;
+  return <div ref={ref} style={{ margin: '12px 0', minHeight: 40, display: 'flex', justifyContent: 'center' }} />;
 }
 
 // ── MarkdownComponents：扩展 markdownComponents，拦截 mermaid + 帮助文档链接 ──
@@ -208,72 +215,22 @@ export default function HelpPage() {
   })), [docs]);
 
   const renderContent = () => {
-    if (loading) {
-      return (
-        <Card style={{ padding: 24 }}>
-          <Skeleton active paragraph={{ rows: 6 }} />
-        </Card>
-      );
-    }
-
-    if (!docs.length) {
-      return (
-        <Card>
-          <Empty description="暂无帮助文档" />
-        </Card>
-      );
-    }
-
-    if (docLoading) {
-      return (
-        <Card style={{ padding: 24 }}>
-          <Skeleton active paragraph={{ rows: 8 }} />
-        </Card>
-      );
-    }
-
-    if (error) {
-      return (
-        <Card>
-          <Alert type="error" message="文档加载失败" description={error} />
-        </Card>
-      );
-    }
-
-    if (!docData) {
-      return (
-        <Card>
-          <Empty description="文档内容为空" />
-        </Card>
-      );
-    }
-
+    if (loading) return <Skeleton active paragraph={{ rows: 6 }} />;
+    if (!docs.length) return <Empty description="暂无帮助文档" />;
+    if (docLoading) return <Skeleton active paragraph={{ rows: 8 }} />;
+    if (error) return <Alert type="error" message="文档加载失败" description={error} />;
+    if (!docData) return <Empty description="文档内容为空" />;
     return (
-      <div
-        style={{
-          height: '100%',
-          overflow: 'auto',
-          padding: isMobile ? '12px 16px' : '24px 32px',
-          fontSize: 14,
-          lineHeight: 1.65,
-        }}
-      >
-        <Markdown remarkPlugins={[remarkGfm]} components={helpComponents}>
-          {docData.content || ''}
-        </Markdown>
-      </div>
+      <Markdown remarkPlugins={[remarkGfm]} components={helpComponents}>
+        {docData.content || ''}
+      </Markdown>
     );
   };
 
   // 移动端布局：正文 + 顶部目录切换 Drawer
   if (isMobile) {
     return (
-      <PageContainer
-        header={{
-          title: '帮助',
-          breadcrumb: { items: [{ title: '概览', href: '#/overview' }, { title: '帮助' }] },
-        }}
-      >
+      <PageContainer breadcrumbRender={false} header={{ title: '帮助' }}>
         <Button
           icon={<MenuOutlined />}
           onClick={() => setDrawerOpen(true)}
@@ -297,48 +254,44 @@ export default function HelpPage() {
             style={{ borderRight: 'none' }}
           />
         </Drawer>
-        <div style={{ height: 'calc(100vh - 160px)', minHeight: 400 }}>
+        <Card style={{ fontSize: 14, lineHeight: 1.65 }} styles={{ body: { padding: '12px 16px' } }}>
           {renderContent()}
-        </div>
+        </Card>
       </PageContainer>
     );
   }
 
-  // 桌面端布局：左目录 + 右正文
+  // 桌面端布局：目录与正文同处一张圆角白底卡片
   return (
-    <PageContainer
-      header={{
-        title: '帮助',
-        breadcrumb: { items: [{ title: '概览', href: '#/overview' }, { title: '帮助' }] },
-      }}
-    >
-      <div style={{ display: 'flex', height: 'calc(100vh - 160px)', minHeight: 500 }}>
-        {/* 左侧目录 */}
-        <div
-          style={{
-            width: 240,
-            flexShrink: 0,
-            borderRight: '1px solid #f0f0f0',
-            padding: '16px 0',
-            overflow: 'auto',
-          }}
-        >
-          <div style={{ fontWeight: 600, fontSize: 14, padding: '0 16px 12px', color: '#595959' }}>
-            文档目录
+    <PageContainer breadcrumbRender={false} header={{ title: '帮助' }}>
+      <Card styles={{ body: { padding: 0 } }}>
+        <div style={{ display: 'flex' }}>
+          {/* 左侧目录 */}
+          <div
+            style={{
+              width: 240,
+              flexShrink: 0,
+              borderRight: '1px solid #f0f0f0',
+              padding: '16px 0',
+            }}
+          >
+            <div style={{ fontWeight: 600, fontSize: 14, padding: '0 16px 12px', color: '#595959' }}>
+              文档目录
+            </div>
+            <Menu
+              mode="inline"
+              selectedKeys={[currentDoc]}
+              items={menuItems}
+              onClick={({ key }) => handleDocChange(key)}
+              style={{ borderRight: 'none' }}
+            />
           </div>
-          <Menu
-            mode="inline"
-            selectedKeys={[currentDoc]}
-            items={menuItems}
-            onClick={({ key }) => handleDocChange(key)}
-            style={{ borderRight: 'none' }}
-          />
+          {/* 右侧正文 */}
+          <div style={{ flex: 1, minWidth: 0, padding: '24px 32px', fontSize: 14, lineHeight: 1.65 }}>
+            {renderContent()}
+          </div>
         </div>
-        {/* 右侧正文 */}
-        <div style={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
-          {renderContent()}
-        </div>
-      </div>
+      </Card>
     </PageContainer>
   );
 }

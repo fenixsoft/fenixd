@@ -1,11 +1,12 @@
 # SPEC 生命周期与状态机
 
-Fenix 将 SPEC 的从提出到发布的完整生命周期建模为**10 个状态**的有限状态机。本章覆盖全部状态、合法转移、打回与修复循环、冻结机制与门禁逃生门。
+Fenix 将 SPEC 从提出到发布的完整生命周期建模为**10 个状态**的有限状态机。本章覆盖全部状态、合法转移、打回与修复循环、冻结机制与门禁逃生门。
 
 ## 状态全景
 
 ```mermaid
 stateDiagram-v2
+    state "bug-found" as bugfound
     [*] --> drafted: /fenix-new 创建 SPEC
     drafted --> ready: 设计+任务书完成
     ready --> implementing: 调度派发 implementer
@@ -14,9 +15,9 @@ stateDiagram-v2
     implementing --> blocked: 熔断/冻结
     implemented --> testing: 验证流水线启动
     testing --> verified: 门禁判定通过
-    testing --> bug-found: 验证发现缺陷
-    bug-found --> implementing: 修复重派
-    bug-found --> implemented: fix 完成重新验证
+    testing --> bugfound: 验证发现缺陷
+    bugfound --> implementing: 修复重派
+    bugfound --> implemented: fix 完成重新验证
     verified --> done: 自动推进（等待审批）
     done --> pushed: /fenix-approve 推送
     blocked --> ready: 人工恢复/解冻
@@ -27,75 +28,45 @@ stateDiagram-v2
 
 ### drafted（草稿）
 
-- **进入条件**：`/fenix-new` 创建 SPEC
-- **离开条件**：设计文档与任务书完成 → `ready`
-- **含义**：SPEC 刚创建，还在设计阶段
+`/fenix-new` 创建 SPEC 后即进入 `drafted`。此时 SPEC 还停留在设计阶段，proposal、design 与 tasks.md 正在生成或等待确认；一旦设计文档与任务书完成，SPEC 便转入 `ready`。
 
 ### ready（就绪）
 
-- **进入条件**：设计完成；或被熔断后人工恢复
-- **离开条件**：被 PM 调度派发 → `implementing`
-- **含义**：等待调度引擎按优先级派发
+设计完成后 SPEC 进入 `ready`，被熔断后经人工恢复也会回到这里。此状态的含义是「等待调度」：PM 引擎按优先级把它派发出去，SPEC 随之进入 `implementing`。
 
 ### implementing（实现中）
 
-- **进入条件**：PM 派出 implementer
-- **离开条件**：
-  - `implemented`：实现完成
-  - `ready`：实现重试（工作流打回）
-  - `blocked`：达到 impl_run_budget 触发熔断、或人工冻结
-- **含义**：实现者正在 worktree 中编写代码
+PM 派出 implementer 后 SPEC 进入 `implementing`，实现者此时正在 worktree 中编写代码。它有三种离开方式：实现完成转入 `implemented`；实现被工作流打回则回到 `ready` 重试；若达到 `impl_run_budget` 触发熔断、或被人工冻结，则进入 `blocked`。
 
 ### implemented（已实现）
 
-- **进入条件**：实现完成
-- **离开条件**：验证流水线启动 → `testing`
-- **含义**：代码已合并，等待验证
+实现完成后 SPEC 进入 `implemented`，此时代码已合并，等待验证流水线启动。流水线一旦启动，SPEC 即转入 `testing`。
 
 ### testing（验证中）
 
-- **进入条件**：验证流水线启动
-- **离开条件**：
-  - `verified`：门禁判定通过
-  - `bug-found`：验证发现缺陷
-- **含义**：验证者正在构建、启动实例并执行场景
+验证流水线启动后 SPEC 进入 `testing`，验证者正在构建、启动被测实例并执行场景。门禁判定通过则转入 `verified`，发现缺陷则转入 `bug-found`。
 
 ### verified（已验证）
 
-- **进入条件**：planner-judge 门禁判定通过
-- **离开条件**：`done`（自动推进，无需人工操作）
-- **含义**：验证通过，等待推进到 done
+planner-judge 门禁判定通过后 SPEC 进入 `verified`，随即自动推进到 `done`，无需任何人工操作。
 
 > **门禁逃生门**：`verified → testing` 仅允许由门禁拦截触发的自动回退调用（`_on_spec_verified` 门禁发现应用不可达或证据不足时自动回退），人工路径无法直接执行该转移，无法绕过验证门禁。
 
 ### bug-found（发现缺陷）
 
-- **进入条件**：验证发现缺陷，验证报告闸门放行
-- **离开条件**：
-  - `implementing`：修复重派（fix 分支）
-  - `implemented`：fix 完成后直接重新验证
-- **含义**：进入修复循环。
+验证发现缺陷且验证报告闸门放行后，SPEC 进入 `bug-found`，开始修复循环：修复重派时回到 `implementing`（走 fix 分支）；fix 完成后则直接回到 `implemented` 重新验证。
 
 ### blocked（阻塞）
 
-- **进入条件**：
-  - 达到 `impl_run_budget` 实现尝试预算上限（熔断）
-  - 连续合并失败达到阈值
-  - 人工冻结
-- **离开条件**：`ready`（人工恢复/解冻后）
-- **含义**：自动链已停止，等待人工决策。
+三种情形会把 SPEC 送入 `blocked`：达到 `impl_run_budget` 实现尝试预算上限（熔断）、连续合并失败达到阈值、或人工冻结。进入此状态后自动链已停止，唯一出路是人工恢复/解冻，SPEC 回到 `ready` 重新排队。
 
 ### done（完成）
 
-- **进入条件**：`verified` 自动推进
-- **离开条件**：`pushed`（`/fenix-approve` 审批推送；`approve_mode: auto` 时自动推送）
-- **含义**：验证通过，等待唯一人工门禁审批。
+`verified` 自动推进后 SPEC 进入 `done`，验证已通过，只差最后一道审批。`/fenix-approve` 审批推送（`approve_mode: auto` 时则自动推送）把它送入 `pushed`。
 
 ### pushed（已推送）
 
-- **进入条件**：审批通过并推送远程仓库
-- **离开条件**：无（终态）
-- **含义**：交付物已发布，SPEC 生命周期结束。
+审批通过并推送远程仓库后 SPEC 进入 `pushed`。这是终态：交付物已发布，SPEC 生命周期到此结束。
 
 ## 完整合法转移表
 
@@ -114,7 +85,7 @@ stateDiagram-v2
 
 ## 打回与修复循环
 
-验证失败 → `bug-found` → 修复循环：
+验证失败后 SPEC 进入 `bug-found`，开始修复循环：
 
 1. 验证报告说明缺陷根因
 2. 派发 fix 分支（`fix-<name>` 后缀）给 implementer 修复
@@ -125,17 +96,15 @@ stateDiagram-v2
 
 ## 冻结与解冻
 
-**冻结**（`/fenix-freeze` 或 Dashboard 冻结操作）：写入 blocked + 结构化 `frozen: true` 标记 + 规范前缀 error。冻结期间所有自动链路对状态的改写被剥离，唯一出路是解冻。
-
-**解冻**（`/fenix-unfreeze`）：恢复冻结前状态并清空 error；未冻结时是幂等 no-op。
+冻结通过 `/fenix-freeze` 或 Dashboard 冻结操作触发：状态写入 blocked，附带结构化 `frozen: true` 标记与规范前缀 error。冻结期间所有自动链路对状态的改写都会被剥离，唯一出路是解冻。解冻（`/fenix-unfreeze`）恢复冻结前的状态并清空 error；对未冻结的 SPEC 执行解冻是幂等 no-op，可以放心调用。
 
 ## Daemon 重启中断恢复
 
-SPEC 处于 `implementing`/`testing` 这类中断状态时，daemon 重启自动回退到 `ready`，清空陈旧 run 字段并重置重试计数，重新进入调度池。
+SPEC 处于 `implementing`/`testing` 这类中断状态时，daemon 重启会自动把它回退到 `ready`，同时清空陈旧 run 字段并重置重试计数，重新进入调度池。这是设计行为而非数据丢失。
 
 ## 门禁系统：两步判定
 
-验证流水线结束后，门禁法官（planner-judge）进行判定：
+验证流水线结束后，门禁法官（planner-judge）进行两步判定：
 
 1. **应用可达性门禁**：被测实例不可达且场景全失败时不判定 verified（防止测到陈旧产物）
 2. **验证报告门禁**：报告缺失或缺失场景结果时阻止推进 bug-found（防止伪失败级联）
@@ -144,8 +113,7 @@ SPEC 处于 `implementing`/`testing` 这类中断状态时，daemon 重启自动
 
 ## STATE.md 与时间轴
 
-- **STATE.md**：项目的 `.fenix/STATE.md` 记录每个 SPEC 的状态字段、优先级、创建/更新时间、run 引用、error 等。格式详见 [文件与数据地图](09-artifacts.md)。
-- **时间轴**：Dashboard「运维记录」页展示 Administrator 活动时间线；`/fenix-process <name>` 展示单个 SPEC 时间线。
+每个 SPEC 的状态字段、优先级、创建/更新时间、run 引用、error 等都记录在项目的 `.fenix/STATE.md` 中，格式详见 [文件与数据地图](09-artifacts.md)。时间轴有两个观察入口：Dashboard「运维记录」页展示 Administrator 活动时间线，`/fenix-process <name>` 展示单个 SPEC 的时间线。
 
 ## 相关文档
 
