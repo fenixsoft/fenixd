@@ -44,4 +44,4 @@
 
 - [x] 4.1 全量单测通过（`tests/test_task_track.py` + 既有 test_deliverables/test_pm_engine/test_dashboard_data 相关用例零回归）
 - [x] 4.2 真实环境验证：worktree 验证实例（非主树 :8787）执行 planner 验证场景——CLI 三态（正常/空解析/无文件）、dashboard 详情页三分支（A 正常/B warning/C 暂无）、run-lifecycle-hardening 17/17 回归
-- [ ] 4.3 提交与收工：按任务粒度逐项 commit（`[fenix] task-track: <任务描述>`），tasks.md 逐项勾选，收工守卫 Deliverables 对账通过
+- [x] 4.3 提交与收工：按任务粒度逐项 commit（`[fenix] task-track: <任务描述>`），tasks.md 逐项勾选，收工守卫 Deliverables 对账通过
