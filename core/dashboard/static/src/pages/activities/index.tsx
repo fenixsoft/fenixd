@@ -379,24 +379,27 @@ export default function ActivitiesPage() {
 
   const projects: ProjectActivities[] = useMemo(() => data?.projects ?? [], [data]);
 
-  const renderProjectBody = (name: string, activities: ActivityItem[] | undefined) => {
-    if (viewMode === 'alert') {
-      return (
-        <AlertPanel
-          project={name}
-          alertsData={alertsData}
-          optimistic={optimistic}
-          onMarkHandled={(a) => void handleMarkHandled(a)}
-        />
-      );
+  // 跨项目合并为全局单数组：handled===false 置顶优先，组内按 created 倒序（design D2）
+  const allActivities = useMemo(() => {
+    const flattened: ActivityItem[] = [];
+    for (const p of projects) {
+      for (const a of p.activities ?? []) {
+        flattened.push({ ...a, project: a.project || p.name });
+      }
     }
-    return (
-      <ActivityTimeline
-        activities={activities ?? []}
-        onViewRun={(a) => setViewingRun({ project: a.project || '', spec: a.spec, runId: a.admin_run_id || '' })}
-      />
-    );
-  };
+    return flattened.sort((x, y) => {
+      if (x.handled === false && y.handled !== false) return -1;
+      if (x.handled !== false && y.handled === false) return 1;
+      const xt = x.created ? dayjs(x.created).valueOf() : 0;
+      const yt = y.created ? dayjs(y.created).valueOf() : 0;
+      return yt - xt;
+    });
+  }, [projects]);
+
+  const handleViewRun = useCallback(
+    (a: ActivityItem) => setViewingRun({ project: a.project || '', spec: a.spec, runId: a.admin_run_id || '' }),
+    [],
+  );
 
   const renderContent = () => {
     if (loading && !data) {
@@ -409,28 +412,37 @@ export default function ActivitiesPage() {
       );
     }
 
-    if (!data || !data.projects || data.projects.length === 0) {
-      return <Empty description="暂无运维记录" />;
+    if (viewMode === 'alert') {
+      // 人工告警视图（暂保留按项目分段，3.1 全局化）
+      if (!data || !data.projects || data.projects.length === 0) {
+        return <Empty description="暂无人工告警" />;
+      }
+      return (
+        <div>
+          {projects.map((p) => (
+            <Card
+              key={p.name}
+              title={
+                <Space wrap size={8}>
+                  <span>{p.name}</span>
+                </Space>
+              }
+              style={{ marginBottom: 16 }}
+            >
+              <AlertPanel
+                project={p.name}
+                alertsData={alertsData}
+                optimistic={optimistic}
+                onMarkHandled={(a) => void handleMarkHandled(a)}
+              />
+            </Card>
+          ))}
+        </div>
+      );
     }
 
-    // 单一内容区：按项目分段展示（页签已取消）
-    return (
-      <div>
-        {projects.map((p) => (
-          <Card
-            key={p.name}
-            title={
-              <Space wrap size={8}>
-                <span>{p.name}</span>
-              </Space>
-            }
-            style={{ marginBottom: 16 }}
-          >
-            {renderProjectBody(p.name, p.activities)}
-          </Card>
-        ))}
-      </div>
-    );
+    // 自动运维视图：跨项目合并全局时间线
+    return <ActivityTimeline activities={allActivities} onViewRun={handleViewRun} />;
   };
 
   return (
