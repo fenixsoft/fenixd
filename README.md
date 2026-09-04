@@ -2,7 +2,9 @@
 
 > 基于 Claude Code 的自动化软件开发循环框架。将自然语言需求自动转化为「已实现、已验证、可推送」的代码，全程无需人工介入，仅保留一个推送审批门禁。
 
-fenixd 自身的演进也由 fenixd 驱动：本仓库已全自动推进 100+ 个 SPEC（实现 → 验证 → 打回修复 → 推送），是这套框架最直接的实战验证。
+fenixd 建立在两个核心理念之上。其一是 **SDD（Spec-Driven Development，规格驱动开发）**：在让 AI 动手写代码之前，先把模糊的需求意图沉淀为一份结构化的 **SPEC**（规格说明，含提案、设计、需求规格与任务清单）——它是整个框架的通用语言，需求的澄清、实现的范围、验证的验收标准全部锚定在这份规格上，人与 AI 之间不再是「口头转述 + 事后返工」。其二是**循环工程（Loop Engineering）**：承认 LLM 单次生成并不可靠，把「实现 → 独立验证 → 打回修复」组织成一个受控闭环，用真实浏览器级测试代替主观自评，并用预算与熔断规则约束循环次数——质量由循环收敛保证，而不是押注某一次生成的运气。
+
+fenixd 正是这两种理念的工程化落地。fenixd 自身的演进也由 fenixd 驱动：本仓库已全自动推进 100+ 个 SPEC（实现 → 验证 → 打回修复 → 推送），是这套框架最直接的实战验证。
 
 ## 使用文档
 
@@ -61,6 +63,8 @@ flowchart TD
 
 ### SPEC 生命周期
 
+每个需求在 fenixd 中以一个 SPEC 的形式存在，其从创建到推送的全过程由一台显式状态机管理：状态写在项目根的 `STATE.md` 里（唯一状态真源），每一次转移都必须符合预定义的合法转移表，非法转移直接被拒绝。这样做的意义在于：任何时刻打开 Dashboard 或 `STATE.md`，都能精确回答「这个需求现在走到哪一步、为什么卡住、下一步谁来做什么」；多 Agent 之间也凭这同一个状态真源协作，而不是各自记忆。更重要的是，所有「不顺利」的情形——验证不过、预算耗尽、merge 冲突、运行中断——都被建模为图中的正常路径（打回、停靠、恢复），而不是异常：框架不会半路丢弃一个 SPEC，要么把它推进到终点，要么让它明确停靠在 `blocked` 等人来裁决。
+
 ```mermaid
 stateDiagram-v2
     [*] --> drafted: /fenix-new 创建
@@ -86,6 +90,8 @@ stateDiagram-v2
 - daemon 重启时 `implementing/testing` 视为中断态自动恢复，人工冻结（`frozen`）的 SPEC 全链路跳过。
 
 ### 验证流水线（三步）
+
+实现 Agent 声称「做完了」不等于真的做对了——LLM 的自我汇报天然存在过度自信倾向，这是自动编码循环里最不可信的一环。fenixd 的对策是把验证做成一条独立流水线：先由规划 Agent 把 SPEC 的验收标准翻译成结构化测试场景（存档冻结，防止修复轮偷偷降低标准），再由一个**零 LLM** 的确定性引擎驱动真实浏览器逐断言执行，最后由裁决 Agent 基于执行报告给出带证据链的结论（每个失败都必须归因分类：产品缺陷、测试缺陷、环境抖动或环境不可用）。三层各司其职——理解与判断交给规划与裁决这两个 LLM 角色，客观事实的采集交给确定性引擎——「绝不信任实现 Agent」由此成为结构保证，而非一句口号。
 
 ```mermaid
 sequenceDiagram
@@ -165,7 +171,7 @@ fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]
 /fenix-setup
 ```
 
-它会在 tmux 会话中启动守护进程（session 名由项目根路径派生，同机多项目互不干扰），并由 supervisor 看门狗守护——异常退出或收到 `restart_request` 时自动拉起。
+它会在 tmux 会话中启动守护进程（session 名由项目根路径派生，同机多项目互不干扰），并由 supervisor 看门狗守护。异常退出或收到 `restart_request` 时自动拉起。
 
 ### 3. 创建需求
 
@@ -204,11 +210,11 @@ fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]
 | 命令 | 作用 |
 |------|------|
 | `/fenix-setup` | 初始化 / 重启 fenixd |
-| `/fenix-new "需求"` | 创建新需求（含 fast-track/full 模式建议） |
+| `/fenix-new "需求详情"` | 创建新需求（含 fast-track/full 模式建议） |
 | `/fenix-status` | 查看框架状态 |
-| `/fenix-process <name>` | 查看指定 SPEC 进展 |
-| `/fenix-approve` | 审批并推送完成的工作（唯一人工门禁） |
-| `/fenix-archive` | 归档已完成的 change |
+| `/fenix-process <spec_name>` | 查看指定 SPEC 进展 |
+| `/fenix-approve <spec_name>` | 审批并推送完成的工作（唯一人工门禁） |
+| `/fenix-archive <spec_name>` | 归档已完成的 change |
 | `/fenix-dashboard` | 启动 / 打开 Web Dashboard |
 
 ## 项目结构
