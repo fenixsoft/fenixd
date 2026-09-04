@@ -238,6 +238,18 @@ export function archiveSpec(project: string, spec: string) {
   );
 }
 
+/** add-run-cancel：发起 run 取消请求（POST /api/run-cancel） */
+export function cancelRun(project: string, runId: string, reason?: string) {
+  return request<{ requested: boolean; project: string; run_id: string; created?: string }>(
+    `/api/run-cancel?project=${encodeURIComponent(project)}&run_id=${encodeURIComponent(runId)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: reason || '' }),
+    },
+  );
+}
+
 export async function getSpecDoc(
   project: string,
   spec: string,
