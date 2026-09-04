@@ -410,8 +410,28 @@ class TestNoAutoCreation:
 
 # ── 3.1/3.4 Dashboard 设置页读写 ─────────────────────────
 
+@pytest.fixture()
+def isolated_user_config(tmp_path, monkeypatch):
+    """把用户级配置隔离到 tmp，使用例不依赖宿主机 ~/.fenix/config.yaml 的内容。
+
+    read_effective_config / write_config 按设计会合并用户级配置；本机该文件
+    可能含真实 self_review 等非缺省键（2026-09-04 起本机自省已启用），断言
+    「缺省值」的用例不隔离就会环境敏感假失败。两处常量分属两个模块，须同时
+    patch：
+    - core.config.USER_CONFIG_DIR：resolve_config 实际读取的用户级目录
+    - core.dashboard.data.USER_CONFIG_PATH：read_effective_config 缓存键 /
+      write_config(scope="user") 落点（缓存键须与实际读取路径一致）
+    patch 后用户级文件不存在 → 用户层按空 dict 兜底 → 仅缺省值参与合并。
+    """
+    user_dir = tmp_path / "user-fenix"
+    monkeypatch.setattr("core.config.USER_CONFIG_DIR", user_dir)
+    monkeypatch.setattr("core.dashboard.data.USER_CONFIG_PATH",
+                        user_dir / "config.yaml")
+    return user_dir
+
+
 class TestDashboardSelfReview:
-    def test_read_write_roundtrip(self, tmp_path):
+    def test_read_write_roundtrip(self, tmp_path, isolated_user_config):
         """Data 层：write_config 写入 self_review → read_effective_config 读回。"""
         from core.dashboard.data import read_effective_config, write_config
         proot = tmp_path / "proj"
@@ -453,7 +473,7 @@ class TestDashboardSelfReview:
         assert write_config(proot, {"self_review": {"read_todo": 1}},
                             scope="project")["ok"] is False
 
-    def test_http_api_endpoint_roundtrip(self, tmp_path):
+    def test_http_api_endpoint_roundtrip(self, tmp_path, isolated_user_config):
         """HTTP 端点：GET 读回缺省 → POST 写入 → GET 确认 → POST 非法 400。"""
         import http.client
         import threading
