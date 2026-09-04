@@ -856,6 +856,7 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
+        runner.logger = FakeLogger()
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
         runner._get_agent_model_assignment = lambda agent_type: None
