@@ -1602,6 +1602,61 @@ def _is_dashboard_serve_cmd(cmdline: str) -> bool:
     return "fenix_dashboard.py" in cmdline and "--serve" in cmdline
 
 
+def _proc_starttime(pid: int) -> int | None:
+    """读 /proc/<pid>/stat 的 starttime（第 22 字段）；进程不存在 → None。
+
+    starttime 比对用于防 PID 复用：目标死后 PID 被新进程复用时值必然不同。
+    """
+    try:
+        data = Path(f"/proc/{pid}/stat").read_text()
+        # comm 字段可能含空格：从最后一个 ')' 之后取字段（其后首字段=state=第 3 字段）
+        fields = data[data.rindex(")") + 2:].split()
+        return int(fields[19])  # 22 - 3 = 19
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _claude_watchdog_loop(pid: int, starttime: int, on_death, interval: float = 5.0) -> None:
+    """轮询目标进程（默认每 5s）； starttime 变化或消失 → on_death() 一次后返回。"""
+    while True:
+        time.sleep(interval)
+        if _proc_starttime(pid) != starttime:
+            on_death()
+            return
+
+
+def _start_claude_watchdog(env=None) -> bool:
+    """CLAUDE_PID 生命周期绑定（agent 豁免通道的防泄漏阀，2026-09-04 8790 泄漏）。
+
+    agent 经 CLI --serve 自测时用 nohup 后台拉起实例（父 shell 秒退，PDEATHSIG
+    不适用——服务须跨 Bash 调用存活），run 结束 claude 进程退出后实例被 init
+    收养成孤儿。检测到 agent 环境（CLAUDE_PID 指向存活进程）→ 起 daemon 线程
+    轮询该进程（starttime 比对防 PID 复用），目标消失 → 自杀 SIGTERM。
+
+    纯人 CLI（无 CLAUDE_PID 或目标已死）→ False，长驻豁免行为不变。
+    """
+    env = os.environ if env is None else env
+    try:
+        pid = int(env.get("CLAUDE_PID", ""))
+    except ValueError:
+        return False
+    starttime = _proc_starttime(pid)
+    if starttime is None:
+        return False
+
+    def _terminate():
+        sys.stderr.write(
+            "dashboard serve 检测到拉起它的 claude 进程已退出（CLAUDE_PID="
+            f"{pid}）——agent run 已结束，本实例自杀以避免孤儿泄漏。\n")
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(
+        target=_claude_watchdog_loop, args=(pid, starttime),
+        kwargs={"on_death": _terminate}, daemon=True, name="claude-watchdog",
+    ).start()
+    return True
+
+
 def _bind_parent_lifecycle() -> None:
     """父子生命周期绑定（孤儿实例防护，2026-09-03 runs 删空事故 V1 防线）。
 
@@ -1616,8 +1671,13 @@ def _bind_parent_lifecycle() -> None:
     人的显式入口 fenix_dashboard.py --serve 设 FENIX_DASHBOARD_DETACH=1 豁免
     （长驻服务不随启动 shell 退出而终止）。先设 PDEATHSIG 再查 PPID，覆盖
     「检查间隙父进程死亡」的竞态窗口。
+
+    豁免非无条件裸奔（2026-09-04 8790 泄漏）：agent 经 CLI 自测拉起时环境带
+    CLAUDE_PID，此时豁免 PDEATHSIG 但装配 claude-watchdog（绑定 claude 进程
+    生命周期，run 结束实例自杀）；纯人 CLI（无 CLAUDE_PID）豁免不变。
     """
     if os.environ.get("FENIX_DASHBOARD_DETACH") == "1":
+        _start_claude_watchdog()
         return
     try:
         import ctypes
