@@ -82,12 +82,14 @@ class TestTaskProgressContractPrompt(unittest.TestCase):
         self.assertEqual(extract(full), extract(fast))
 
     def test_full_implementer_wrapup_step_strengthened(self):
+        # implementer.md 已随 7958e50 中文化，断言跟随中文表述
         prompt = self._prompt("implementer")
-        assert "matching all TaskUpdate records exactly" in prompt
+        assert "与全部 TaskUpdate 记录一一对应" in prompt
 
     def test_fast_track_wrapup_step_strengthened(self):
+        # fast-track.md 已随 7958e50 中文化，断言跟随中文表述
         prompt = self._prompt("fast-track")
-        assert "matching all TaskUpdate records exactly" in prompt
+        assert "与全部 TaskUpdate 记录一一对应" in prompt
 
 
 class TestTaskProgressSyncFallback(unittest.TestCase):

@@ -297,6 +297,8 @@ export interface SpecDetail {
       done: boolean;
     }>;
   }>;
+  // tasks.md 空解析显式提示（task-track R3）— 存在但未解析出任务分组时非空
+  tasks_note?: string | null;
   // 时间轴 — 状态节点字段为 from/to，运行节点为 agent_type（get_spec_timeline 返回结构）
   timeline?: Array<{
     kind: 'state' | 'run';

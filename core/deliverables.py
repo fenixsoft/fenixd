@@ -470,3 +470,48 @@ def lint_declared(spec_dir, project_root) -> List[str]:
                 f"请改为目录下确定性锚点文件（如 dist/index.html）"
             )
     return violations
+
+
+# tasks.md 分组标题正则（task-track D2「同源规则」）：与
+# core/dashboard/data.py:parse_tasks 及 bin/fenix_process.py:parse_tasks 的
+# 分组正则字面量互指，三处必须保持一致（点号可选双历史格式兼容：
+# `## 1. 标题` 与 `## 1 标题`）。漂移由 tests/test_task_track.py 双格式
+# Scenario 兜底。
+_TASKS_GROUP_RE = re.compile(r"^##\s+\d+\.?\s+(.+)$")
+
+# 任务项正则：与 data.py:parse_tasks / fenix_process.py:parse_tasks 同源。
+_TASKS_ITEM_RE = re.compile(r"^- \[(x| )\]")
+
+
+def lint_tasks_parseable(spec_dir, project_root) -> List[str]:
+    """晋升 lint（drafted → ready）：tasks.md 可解析性校验（task-track R2）。
+
+    tasks.md 不存在 → 返回 ``[]``（不拦：fast-track 前置 spec 允许后补）。
+    存在 → 以与下游解析器同源的分组正则（见 ``_TASKS_GROUP_RE`` 注释）解析，
+    0 个任务分组（含文件为空/无任务行的情形——无可跟踪任务属撰写缺陷，拦截
+    早于 run 烧钱）→ 返回含「tasks.md」字样的违规消息；≥1 分组（含点号可选
+    双历史格式）→ 不拦。本函数不读 ``project_root``，仅保持与
+    ``lint_declared`` 同构签名（统一调用点形态）。
+
+    Returns:
+        违规描述清单；空列表 = 通过。读取类异常直接上抛，由调用方
+        （engine）的 fail-open 语义兜底。
+    """
+    spec_dir = Path(spec_dir)
+    tasks = spec_dir / "tasks.md"
+    if not tasks.exists():
+        return []
+    text = tasks.read_text(encoding="utf-8")
+
+    group_count = 0
+    for line in text.split("\n"):
+        if _TASKS_GROUP_RE.match(line):
+            group_count += 1
+
+    if group_count > 0:
+        return []
+    return [
+        "tasks.md 存在但未解析出任务分组——分组标题必须为 `## <编号>. <标题>`"
+        "（阿拉伯数字编号，点号可选），如 `## 1. Setup`；"
+        "当前格式无法被下游解析器跟踪，请修正后重新晋升"
+    ]

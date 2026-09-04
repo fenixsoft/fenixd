@@ -72,8 +72,10 @@ def parse_tasks(spec_name):
     current_group = None
 
     for line in tasks_path.read_text(encoding="utf-8").split("\n"):
-        # 分组标题
-        m = re.match(r"^##\s+\d+\.\s+(.+)$", line)
+        # 分组标题（点号可选双历史格式：`## 1. 标题` / `## 1 标题`）。
+        # 与 core/dashboard/data.py:parse_tasks、core/deliverables.py:
+        # lint_tasks_parseable 同源正则（task-track D1），三处必须一致。
+        m = re.match(r"^##\s+\d+\.?\s+(.+)$", line)
         if m:
             current_group = {"title": m.group(1), "tasks": []}
             groups.append(current_group)
@@ -309,6 +311,9 @@ def show_progress(spec_name):
                 if task["done"]:
                     desc = f"{GRAY}{desc}{RESET}"
                 print(f"     {mark} {task['id']} {desc}")
+    elif (CHANGES_DIR / spec_name / "tasks.md").exists():
+        # tasks.md 存在但未解析出任务分组：显式提示，不再静默跳过（task-track R3）
+        print(f"\n{YELLOW}⚠ tasks.md 存在但未解析出任务（分组格式不匹配？）{RESET}")
 
     # 3. fenixd 日志时间线
     events = parse_logs(spec_name)

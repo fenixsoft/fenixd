@@ -139,8 +139,16 @@ class PMEngine:
         # 形态错误代价 = 一轮 run + 打回循环）。违规保持 drafted 并写 error，
         # 修正 tasks.md 后重新晋升触发。lint 自身故障 fail-open 放行。
         violations = self._lint_deliverable_declarations(spec_name)
-        if violations:
-            err = "Deliverables 声明 lint 未通过：" + "；".join(violations)
+        # tasks.md 可解析性 lint（task-track D2）：与声明 lint 并列，违规合并进
+        # 同一 error 写入路径（保持 drafted + STATE error），异常 fail-open。
+        tasks_violations = self._lint_tasks_parseable(spec_name)
+        if violations or tasks_violations:
+            msgs = []
+            if violations:
+                msgs.append("Deliverables 声明 lint 未通过：" + "；".join(violations))
+            if tasks_violations:
+                msgs.append("tasks.md 可解析性 lint 未通过：" + "；".join(tasks_violations))
+            err = "；".join(msgs)
             self.logger.error(
                 "pm_engine", f"Promotion lint failed '{spec_name}': {err}",
             )
@@ -164,6 +172,22 @@ class PMEngine:
             self.logger.warning(
                 "pm_engine",
                 f"Deliverables lint 异常 '{spec_name}'（非阻塞放行）: {e}",
+            )
+            return []
+
+    def _lint_tasks_parseable(self, spec_name: str) -> list:
+        """tasks.md 可解析性 lint（晋升前拦截，fail-open，task-track D2）。"""
+        from core.deliverables import lint_tasks_parseable
+
+        spec_dir = self.project_root / "openspec" / "changes" / spec_name
+        if not spec_dir.is_dir():
+            return []
+        try:
+            return lint_tasks_parseable(spec_dir, self.project_root)
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"tasks.md 可解析性 lint 异常 '{spec_name}'（非阻塞放行）: {e}",
             )
             return []
 
