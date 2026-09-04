@@ -334,7 +334,25 @@ export interface SpecDetail {
       label?: string;
       message?: string;
       detail?: string;
-      actual?: string;
+      error?: string;
+      actual?: string | number;
+      // 引擎按类型输出的字段（core/verify_engine/assertions.py 口径），见 detail.tsx assertionDetail
+      selector?: string;
+      expected?: string | number;
+      text?: string;
+      attribute?: string;
+      mode?: string;
+      errors?: string[];
+      filtered_network?: string[];
+      matched?: string[];
+      parent?: string;
+      child?: string;
+      relation?: string;
+      actual_count?: number;
+      compare_selector?: string;
+      z_index_self?: number;
+      z_index_compare?: number;
+      operator?: string;
     }>;
     screenshots?: string[];
   }>;
