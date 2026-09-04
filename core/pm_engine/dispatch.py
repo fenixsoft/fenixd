@@ -826,6 +826,22 @@ class Dispatcher:
                         self._pm._enqueue_front(spec_name, "verifier")
                         self._pm.logger.info("pm_engine", f"Implement done, verifier queued for '{spec_name}'")
                 else:
+                    # ── 人工取消 hold-state（add-run-cancel D4）──────
+                    # 被取消的 run（cancelled=True）：只更新 error 字段（含
+                    # 「run 被人工取消」与 reason），不翻转 status、不动
+                    # _retry_count/_merge_fp/_merge_streak、不入队重派。
+                    # 后续重排完全交给既有机制（stuck 检测/恢复扫描）或
+                    # 管理员人工操作（freeze 等）。
+                    if getattr(result, "cancelled", False):
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"run 被人工取消 '{spec_name}' — hold-state，"
+                            f"不重试/不重派: {final_error}",
+                        )
+                        self._pm.state_machine.update_spec(spec_name, {
+                            "error": final_error,
+                        })
+                        return
                     # ── 死亡 run 豁免（fix-budget-counting-semantics D1）──────
                     # 无收工结果产出（.fenix-run-result.json 缺失）＝ run 异常
                     # 死亡（进程消失/零输出/网关链路耗尽）：回退本次启动的计数。
@@ -1026,6 +1042,21 @@ class Dispatcher:
             result = self._pm.agent_runner.run_fast_track(spec_name)
         except Exception as e:
             self._pm._rollback_failed_dispatch(spec_name, "fast-track", e)
+            return
+
+        # ── 人工取消 hold-state（add-run-cancel D4，fast-track 同语义）──
+        # 被取消的 fast-track run 结果 cancelled=True：只写 error、不翻 status、
+        # 不动 _retry_count/_merge_fp/_merge_streak、不入队重派；worktree
+        # 保留语义不变（_keep_fast_track_worktree 幂等，runner 已在取消路径保留）。
+        if getattr(result, "cancelled", False):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track run 被人工取消 '{spec_name}' — hold-state，"
+                f"不重试/不重派: {getattr(result, 'error', '')}",
+            )
+            self._pm.state_machine.update_spec(spec_name, {
+                "error": getattr(result, "error", None) or "run 被人工取消",
+            })
             return
 
         # ── 读取结果文件（fast-track 结果文件是强制的，缺文件 = 失败） ──
@@ -1370,6 +1401,20 @@ class Dispatcher:
                     "pm_engine",
                     f"repair agent 派发异常 '{spec_name}': {e}",
                 )
+
+            # ── 人工取消 hold-state（add-run-cancel D4，repair worker）──
+            # repair run 被取消：spec 保持原状（implementing），只写 error，
+            # 不动 _retry_count/_merge_fp/_merge_streak、不入队重派。
+            if getattr(r, "cancelled", False):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"repair run 被人工取消 — hold-state '{spec_name}'"
+                    f"（保持原状）: {repair_error or r.error}",
+                )
+                self._pm.state_machine.update_spec(spec_name, {
+                    "error": getattr(r, "error", None) or "run 被人工取消",
+                })
+                return
 
             if not repair_ok:
                 # repair 失败/超时/显式失败 → 回退 fallback 全新重派（原分支按既有
