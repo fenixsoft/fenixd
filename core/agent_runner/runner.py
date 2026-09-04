@@ -82,6 +82,22 @@ V2_TEST_PORT_BASE = 19000
 V2_TEST_PORT_RANGE = 20
 V2_DEV_SERVER_MARKER = "fenix-v2-dev-server"
 
+class RunCancelledError(Exception):
+    """run 被 cancel_run 原语人工取消时抛出。
+
+    不走通用 Exception 处理路径——不重试、不计秒挂、不触发 provider 切换。
+    携带 reason（取消原因）与 by（操作人）。
+    """
+
+    def __init__(self, reason: str = "", by: str = "admin"):
+        self.reason = reason
+        self.by = by
+        msg = f"run cancelled by {by}"
+        if reason:
+            msg += f": {reason}"
+        super().__init__(msg)
+
+
 class AgentRunResult:
     """Result of a single Agent run."""
 
@@ -92,7 +108,8 @@ class AgentRunResult:
                  provider_used: str | None = None, model_used: str | None = None,
                  chain_exhausted: bool = False,
                  worktree_dirty: list | None = None,
-                 worktree_path=None, worktree_kept: bool = False):
+                 worktree_path=None, worktree_kept: bool = False,
+                 cancelled: bool = False):
         self.run_id = run_id
         self.spec_name = spec_name
         self.agent_type = agent_type
@@ -119,6 +136,8 @@ class AgentRunResult:
         # worktree_kept = runner 终态失败时已保留为复用遗产（dispatch 无需重复保留）。
         self.worktree_path = worktree_path
         self.worktree_kept = worktree_kept
+        # run 是否被人工取消（cancel_run 旗标命中导致 RunCancelledError）。
+        self.cancelled = cancelled
 
     def to_dict(self) -> dict:
         return {
@@ -133,6 +152,7 @@ class AgentRunResult:
             "provider_used": self.provider_used,
             "model_used": self.model_used,
             "chain_exhausted": self.chain_exhausted,
+            "cancelled": self.cancelled,
             "output_summary": self.output[-500:] if self.output else "",
         }
 
@@ -222,6 +242,158 @@ class AgentRunner:
         # 自增，admin run 不经过该路径，无跨线程写。
         self._running_agents: Dict[str, subprocess.Popen] = {}
         self._daily_run_count = 0
+        # 人工取消旗标集合（add-run-cancel D1）：键为基础 run_id（已剥 -a<n>
+        # attempt 后缀）。由 cancel_run 登记、_run_claude 轮询环/attempt 循环
+        # 顶部消费、run 收尾清理。跨线程共享（dashboard/daemon 线程写、worker
+        # 线程读），以独立锁保护。惰性 property（测试 __new__ 绕过 __init__）。
+        self._cancel_requested = set()
+        self._cancel_meta = {}
+        self._cancel_requested_lock = threading.Lock()
+
+    # ── 取消旗标惰性 property（add-run-cancel）────────────────────
+    # 测试普遍以 ``AgentRunner.__new__`` 绕过 ``__init__`` 构造，沿用
+    # _instant_fail 的惰性初始化模式：首次访问即时建态。
+
+    @property
+    def _cancel_requested(self) -> set:
+        inst = self.__dict__.get("_cancel_requested_state")
+        if inst is None:
+            inst = set()
+            self.__dict__["_cancel_requested_state"] = inst
+        return inst
+
+    @_cancel_requested.setter
+    def _cancel_requested(self, value):
+        self.__dict__["_cancel_requested_state"] = value
+
+    @property
+    def _cancel_meta(self) -> dict:
+        inst = self.__dict__.get("_cancel_meta_state")
+        if inst is None:
+            inst = {}
+            self.__dict__["_cancel_meta_state"] = inst
+        return inst
+
+    @_cancel_meta.setter
+    def _cancel_meta(self, value):
+        self.__dict__["_cancel_meta_state"] = value
+
+    @property
+    def _cancel_requested_lock(self) -> threading.Lock:
+        inst = self.__dict__.get("_cancel_requested_lock_state")
+        if inst is None:
+            inst = threading.Lock()
+            self.__dict__["_cancel_requested_lock_state"] = inst
+        return inst
+
+    @_cancel_requested_lock.setter
+    def _cancel_requested_lock(self, value):
+        self.__dict__["_cancel_requested_lock_state"] = value
+
+    # ── run_id 归一化助手（add-run-cancel D1/D3）──────────────────
+
+    @staticmethod
+    def _normalize_run_id(run_id: str) -> str:
+        """剥掉 -a<n> attempt 后缀，返回基础 run_id。
+
+        ``cancel_run`` 按基础 run_id 登记旗标，轮询环/attempt 循环按
+        基础 run_id 检查——两者使用同一归一化函数，保证匹配一致。
+        无 attempt 后缀时原样返回（幂等）。
+        """
+        return re.sub(r"-a\d+$", "", run_id)
+
+    def _cancel_is_requested(self, base_run_id: str) -> bool:
+        """base_run_id 是否命中取消旗标（锁内判定，幂等读）。"""
+        with self._cancel_requested_lock:
+            return base_run_id in self._cancel_requested
+
+    def _cancel_clear(self, base_run_id: str) -> None:
+        """run 收尾清理取消旗标（幂等，防泄漏）。"""
+        with self._cancel_requested_lock:
+            self._cancel_requested.discard(base_run_id)
+            self._cancel_meta.pop(base_run_id, None)
+
+    # ── 人工取消原语（add-run-cancel D1）─────────────────────────
+
+    def cancel_run(self, run_id: str, reason: str = "", by: str = "admin") -> dict:
+        """外部专用 run 粒度终止原语——登记取消旗标，由属主线程执行终止。
+
+        **仅供外部管理动作调用**（dashboard API / 文件信号消费方）；状态机及
+        一切自动链路（transition、recovery、stuck auto-recovery、gate、freeze）
+        MUST NOT 调用本方法。
+
+        本方法自身 MUST NOT 执行任何状态转换、MUST NOT 写任何 spec 的 status
+        字段；终止动作由持有该 run 的 worker 线程在 _run_claude 轮询环内完成
+        （调用线程不做跨线程 kill）。
+
+        Returns:
+            {"status": "cancel_requested", "attempts": [...], "base_run_id": str}
+            — 命中活跃 attempt；
+            {"status": "not_running", "base_run_id": str}
+            — 未命中。
+        """
+        base_id = self._normalize_run_id(run_id)
+
+        # 按基础 run_id 前缀匹配所有活跃 attempt
+        matched_attempts = [
+            aid for aid in list(self._running_agents.keys())
+            if aid.startswith(base_id)
+        ]
+
+        if not matched_attempts:
+            self.logger.info(
+                "agent_runner",
+                f"cancel_run: run '{base_id}' 无活跃 attempt，返回 not_running",
+            )
+            return {"status": "not_running", "base_run_id": base_id}
+
+        # 登记旗标（幂等——同一 base_id 多次调用不重复计数）
+        with self._cancel_requested_lock:
+            self._cancel_requested.add(base_id)
+            self._cancel_meta[base_id] = {"reason": reason, "by": by}
+
+        self.logger.info(
+            "agent_runner",
+            f"cancel_run: 已登记取消旗标 '{base_id}'，命中活跃 attempt "
+            f"{matched_attempts}（reason={reason!r}, by={by}）",
+        )
+
+        # minor 级审计（add-run-cancel D1 / spec「取消动作审计留痕」）
+        try:
+            from core.admin_store import AdminStore, SIGNAL
+            store = AdminStore(self.project_root, self.logger)
+            # 从 run_id 推断 spec（与 run_spec_part 同逻辑）；解析失败留空不强解
+            from core.agent_runner.run_files import run_spec_part
+            spec_name = run_spec_part(base_id)
+            store.append({
+                "kind": SIGNAL,
+                "signal_type": "run_cancelled",
+                "spec": spec_name if spec_name != base_id else None,
+                "severity": "minor",
+                "description": (
+                    f"人工取消 run '{base_id}'（活跃 attempt: {matched_attempts}）"
+                    f"—— reason={reason!r}, by={by}"
+                ),
+                "evidence": (
+                    f"base_run_id={base_id}; attempts={len(matched_attempts)}; "
+                    f"reason={reason}; by={by}"
+                ),
+                "recommended_action": (
+                    "run 已登记取消旗标，由持有线程完成 terminate/kill 与 cancelled "
+                    "终态落盘；spec 保持原状态，由 stuck 检测/恢复扫描按既有节奏接管"
+                ),
+            })
+        except Exception as e:
+            self.logger.debug(
+                "agent_runner",
+                f"cancel_run 审计记录写入失败（非阻塞）: {e}",
+            )
+
+        return {
+            "status": "cancel_requested",
+            "attempts": matched_attempts,
+            "base_run_id": base_id,
+        }
 
         # 秒挂退避熔断（cli-retry-backoff）：spec 维度连续秒挂计数与冷却态。
         # 进程内存、不落盘：{spec_name: {"count": int, "cooldown_until": float}}
@@ -809,6 +981,10 @@ class AgentRunner:
         provider_name = None  # 本轮候选 provider（链选择前为 None，供 frozen 提前返回使用）
         model = None
         self._last_model_used = None  # 用于 model_changed 日志留痕（design D3）
+        # add-run-cancel D3/D5：本轮 run 是否被人工取消（RunCancelledError 捕获
+        # 或 attempt 顶部旗标命中）。cancelled_flag 为 True 时不再进入下一 attempt。
+        cancelled_flag = False
+        cancel_reason = ""
 
         for attempt in range(1, max_retries + 1):
             attempt_run_id = f"{run_id}-a{attempt}"
@@ -828,6 +1004,39 @@ class AgentRunner:
                     error=(f"spec frozen — auto-retry terminated "
                            f"(attempt {attempt}/{max_retries})"),
                     provider_used=provider_name, model_used=model,
+                )
+            # add-run-cancel D3：attempt 循环顶部检查取消旗标（与 frozen 检查同
+            # 位置，覆盖 attempt 间隙/准备阶段）——命中立即返回，不派发后续
+            # attempt、不创建本 attempt 的 worktree；残留 worktree 按终态失败
+            # 同语义清理。
+            if self._cancel_is_requested(run_id):
+                meta = self._cancel_meta.get(run_id, {})
+                cancel_reason = meta.get("reason", "")
+                self.logger.warning(
+                    "agent_runner",
+                    f"run '{run_id}' 取消旗标命中，终止 {agent_type} 重试链"
+                    f"（attempt {attempt}/{max_retries}），不派发 attempt",
+                )
+                if wt_path is not None:
+                    self._v2_stop_for_worktree(wt_path)
+                    if agent_type == "fast-track":
+                        self.worktree_manager.keep_for_reuse(spec_name, wt_path)
+                        kept_wt_path = wt_path
+                    elif agent_type == "repair":
+                        # 终态失败保留现场：dispatch 层负责回收（fallback 清理）
+                        kept_wt_path = wt_path
+                    else:
+                        self.worktree_manager.cleanup(wt_path, success=False)
+                self._cancel_clear(run_id)
+                return AgentRunResult(
+                    run_id, spec_name, agent_type,
+                    success=False, duration_seconds=time.time() - start_time,
+                    error=("cancelled by admin"
+                           + (f": {cancel_reason}" if cancel_reason else "")),
+                    cancelled=True,
+                    provider_used=provider_name, model_used=model,
+                    worktree_path=kept_wt_path,
+                    worktree_kept=kept_wt_path is not None,
                 )
             # cli-retry-backoff：秒挂按 attempt 实际存活时长判定（进程时长近似，
             # 包含 worktree 创建到失败，60s 级判定不敏感于准备开销）。
@@ -1032,6 +1241,23 @@ class AgentRunner:
                     session_provider = provider_name
                 success = True
                 error = None
+            except RunCancelledError as e:
+                # add-run-cancel D5：RunCancelledError 专用捕获——不重试、不计秒挂、
+                # 不触发 provider 链切换，直接返回 cancelled=True 失败结果。
+                # 取消旗标已在 _run_claude 轮询环内确认并清理 _running_agents，
+                # 此处只负责结果收口。
+                output = ""
+                turns = 0
+                success = False
+                cancelled_flag = True
+                cancel_reason = e.reason
+                error = "cancelled by admin" + (f": {e.reason}" if e.reason else "")
+                self.logger.info(
+                    "agent_runner",
+                    f"{agent_type} for '{spec_name}' run 被人工取消"
+                    f"（attempt {attempt}）：{error}",
+                )
+                usage_info = self._extract_usage_info(None)
             except Exception as e:
                 output = ""
                 turns = 0
@@ -1164,6 +1390,8 @@ class AgentRunner:
                 self._accumulate_token_usage(spec_name, usage_info)
                 # 验证链侧车：planner/judge run 的 usage 逐轮追加（D3）
                 self._record_verify_progress_tokens(spec_name, agent_type, usage_info)
+                # run 收尾清理取消旗标（add-run-cancel D5：正常完成也清，防泄漏）
+                self._cancel_clear(run_id)
                 return AgentRunResult(
                     attempt_run_id, spec_name, agent_type,
                     success=True, duration_seconds=duration,
@@ -1187,7 +1415,9 @@ class AgentRunner:
                 # - repair 终态失败：保留 worktree（add-merge-back-repair-lane：
                 #   worktree 生命周期交由 dispatch 层——fallback 或下一轮复用）。
                 # - 其他 / 终态失败：清理 worktree 并回收其 dev-server，下次 attempt 全新创建。
-                if attempt < max_retries:
+                # add-run-cancel D5：取消（cancelled_flag）时不再进入下一 attempt——
+                # 走终态清理路径后 break，由循环后的 cancelled 收口返回 cancelled=True。
+                if attempt < max_retries and not cancelled_flag:
                     time.sleep(10)  # Wait before retry
                     if agent_type not in ("implementer", "fast-track", "repair"):
                         self._v2_stop_for_worktree(wt_path)
@@ -1204,9 +1434,25 @@ class AgentRunner:
                     else:
                         self.worktree_manager.cleanup(wt_path, success=False)
                     wt_path = None
+                    if cancelled_flag:
+                        break
 
         # All retries exhausted
         duration = time.time() - start_time
+        # run 收尾（add-run-cancel D5）：清理取消旗标，防泄漏。
+        # cancelled_flag 为 True 时（RunCancelledError 已 break 到此处）
+        # 返回 cancelled=True 结果；否则走既有终态失败返回。
+        self._cancel_clear(run_id)
+        if cancelled_flag:
+            return AgentRunResult(
+                run_id, spec_name, agent_type,
+                success=False, duration_seconds=duration,
+                error=error,
+                cancelled=True,
+                provider_used=provider_name, model_used=model,
+                worktree_path=kept_wt_path,
+                worktree_kept=kept_wt_path is not None,
+            )
         # add-cost-observability（D1）：终态失败也累加（末次 attempt 的 usage，
         # 异常早夭时为 0），保证预算告警在失败轮同样累计、不漏计。
         self._accumulate_token_usage(spec_name, usage_info)
@@ -1404,8 +1650,41 @@ class AgentRunner:
         started_at = time.time()
         deadline = started_at + timeout
         extensions_used = 0  # 本 run 已续期次数（D3 封闭矩阵）
+        # add-run-cancel D1/D3：轮询环每轮检查取消旗标，命中则
+        # terminate→grace→kill→写 cancelled 终态行→抛 RunCancelledError
+        base_run_id = self._normalize_run_id(run_id)
+        cancel_error: RunCancelledError | None = None
         try:
             while True:
+                # ── 取消旗标检查（add-run-cancel D1/D3）──
+                # 放在超时检查之前：人工取消优先级高于自动超时，管理员
+                # 想终止就不必等超时到点。
+                if self._cancel_is_requested(base_run_id):
+                    meta = self._cancel_meta.get(base_run_id, {})
+                    reason = meta.get("reason", "")
+                    by = meta.get("by", "admin")
+                    self.logger.info(
+                        "agent_runner",
+                        f"run '{base_run_id}' 取消旗标命中，"
+                        f"terminate 子进程（attempt {run_id}）",
+                    )
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=AGENT_TERMINATE_GRACE_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        self.logger.warning(
+                            "agent_runner",
+                            f"run '{base_run_id}' grace 窗口内未退出，SIGKILL",
+                        )
+                        proc.kill()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            pass
+                    returncode = -15  # SIGTERM 对应语义
+                    cancel_error = RunCancelledError(reason=reason, by=by)
+                    break
+
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     # 超时活性监督（improve-run-lifecycle-governance D3）：到点不
@@ -1458,7 +1737,19 @@ class AgentRunner:
             # result 终态事件最后落盘（读线程里跳过内联写），保证是文件最后一行
             if last_result:
                 append_run_line(run_file, dict(last_result))
+            # add-run-cancel D2：cancelled 终态行在 join 之后落盘（result 行后），
+            # 保证 cancelled 行是文件最后一行（终态后置既有次序）。
+            if cancel_error is not None:
+                append_run_line(run_file, {
+                    "type": "cancelled",
+                    "reason": cancel_error.reason,
+                    "by": cancel_error.by,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
             # 产物文件可能因崩溃等遗留为"活动但不再增长"，清理时按时间淘汰即可
+
+        if cancel_error is not None:
+            raise cancel_error
 
         if timeout_error is not None:
             append_run_error(run_file, timeout_error, returncode)
