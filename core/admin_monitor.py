@@ -833,7 +833,9 @@ class AdminMonitor:
                 "description": disp.problem or signal.get("description"),
                 "action_taken": disp.actions_taken,
                 "result": disp.result,
-                "recommended_action": disp.recommended_action,
+                "recommended_action": (
+                    disp.recommended_action or signal.get("recommended_action") or ""
+                ) if disp.result == "failed" else disp.recommended_action,
                 "summary": disp.summary,
                 "admin_run_id": disp.run_id,
                 "escalate": bool(disp.escalate),
