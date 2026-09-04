@@ -65,8 +65,10 @@ class ConfigLoader:
     # Valid project types
     VALID_PROJECT_TYPES = ["web", "cli", "library", "api"]
 
-    # Known agent types for model assignment
-    KNOWN_AGENT_TYPES = ["implementer", "planner-plan", "planner-judge", "verifier", "administrator"]
+    # Known agent types for model assignment（fast-track 与 implementer 同为派发角色，
+    # 未纳入时 agents.models 配置它会被 _validate_agent_models 拒绝，fast-track 派发
+    # 恒走默认网关——任务进度契约在其会话中成为死信的根因之一）
+    KNOWN_AGENT_TYPES = ["implementer", "fast-track", "planner-plan", "planner-judge", "verifier", "administrator"]
 
     # ── run_timeout 按 agent_type 覆盖（per-agent-timeout-override）──────
     # agents.timeout_overrides.<agent_type> 覆盖全局 run_timeout_seconds。
