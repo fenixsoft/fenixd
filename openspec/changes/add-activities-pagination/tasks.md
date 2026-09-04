@@ -3,8 +3,6 @@
 ```yaml
 - path: core/dashboard/static/src/pages/activities/index.tsx
   kind: modify
-- path: core/dashboard/static/dist/index.html
-  kind: modify
 ```
 
 ## 1. 视图重组：取消项目页签，全局 Radio 切换
@@ -27,6 +25,6 @@
 
 ## 4. 构建产物与验证
 
-- [ ] 4.1 重建 v3 前端产物（npm build）并将 `core/dashboard/static/dist/` 提交入库（design D6）
+- [x] 4.1 重建 v3 前端产物（npm build）——产物不入库（54c4792 后 dist 由仓库 gitignore + merge 重建主树产物，验证时由 verify.yaml prepare 在本 worktree 构建）
 - [ ] 4.2 按声明式验证契约跑 dashboard UI 验证（verify.yaml prepare/serve/ready + BASE_URL；勿打主树 :8787 常驻实例），覆盖 spec 全部 Scenario：默认 15 条/翻页/置顶/空态/已解决默认展开/告警合并/标记已处理
 - [ ] 4.3 回归确认不受影响：overview 横幅告警、SpecDocModal 内 admin-invoke-dialog（getAdminActivities 带 project+spec 过滤）、AdminRunModal「查看处置过程」
