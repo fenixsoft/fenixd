@@ -32,7 +32,10 @@ sequenceDiagram
 
 ```yaml
 # 可选：构建步骤，保证被服务产物包含最新合并实现
+# （先装依赖再构建：package.json 新增依赖时主树 node_modules 会落后一拍）
 prepare:
+  - run: npm install --no-audit --no-fund
+    cwd: core/dashboard/static
   - run: npm run build
     cwd: core/dashboard/static
 

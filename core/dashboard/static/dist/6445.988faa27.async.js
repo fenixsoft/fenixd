@@ -1,1 +1,0 @@
-"use strict";(self.webpackChunkfenix_dashboard_v3=self.webpackChunkfenix_dashboard_v3||[]).push([[6445],{6445:function(e,n,_){_.d(n,{createInfoServices:function(){return s.v}});var s=_(54614),u=_(4954)}}]);

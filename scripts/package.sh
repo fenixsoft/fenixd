@@ -5,14 +5,14 @@
 # 将 fenixd 框架打包为可分发的 tar.gz 包。
 # 包含完整的 Python 框架、Dashboard（静态资源）、skills、安装脚本。
 #
-# 用法: bash scripts/package.sh
+# 用法: bash scripts/package.sh [version]（缺省日期版本；GitHub workflow 传 tag 名）
 # 输出: dist/fenixd-<version>.tar.gz
 # =============================================================================
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
-VERSION="$(date +%Y%m%d)"
+VERSION="${1:-$(date +%Y%m%d)}"
 PKG_NAME="fenixd-${VERSION}"
 PKG_DIR="${DIST_DIR}/${PKG_NAME}"
 

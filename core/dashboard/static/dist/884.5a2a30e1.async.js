@@ -1,1 +1,0 @@
-"use strict";(self.webpackChunkfenix_dashboard_v3=self.webpackChunkfenix_dashboard_v3||[]).push([[884],{90884:function(s,e,_){_.d(e,{createTreemapServices:function(){return n.d}});var n=_(16527),a=_(4954)}}]);

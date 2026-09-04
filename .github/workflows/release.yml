@@ -1,0 +1,40 @@
+# fenixd 发布流水线：打 tag（v*）→ 构建 dashboard 产物 → 打包 → GitHub Release。
+# 用户经 install.sh 部署预构建产物，无需本地 Node 环境
+# （dist 已不入 git：任何环境的交付件从本环境 src 构建——release 环境的
+# "本环境"即本 workflow；源码使用者按 .fenix/verify.yaml prepare 自行构建）。
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: core/dashboard/static/package-lock.json
+
+      - name: Build dashboard（预构建 dist，包内免 Node）
+        working-directory: core/dashboard/static
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Package（tag 名作版本号）
+        run: bash scripts/package.sh "${GITHUB_REF_NAME}"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/fenixd-*.tar.gz
+          generate_release_notes: true

@@ -34,8 +34,11 @@ dist/
 !.fenix/verify.yaml
 !.fenix/config.template.yaml
 
-# 例外：v3 dashboard 构建产物按决策入库（克隆即用，无需 Node 构建）
-!core/dashboard/static/dist/
+# v3 dashboard 构建产物不入库（2026-09-04 决策）：任何环境的交付件从本环境
+# src 构建——merge 后框架自动重建主树产物供常驻 dashboard 服务；发布 tarball
+# 内置预构建 dist（GitHub workflow）；源码使用者自行 npm install && npm run
+# build。入库曾被证明是事故源：merge 产物冲突打回旧 bundle → 验证全量空转
+# （help-center 洗白事故）
 
 # 自动生成的运行时状态（STATE.md / PROJECT_LOG.md / .STATE.md.lock 均已迁入 .fenix/，
 # 被 .fenix/* 覆盖；裸 .fenix-run-result.json 条目继续兜住归档 spec 目录里的结果快照）

@@ -107,4 +107,10 @@ echo "  🐉 新能力 — Web Dashboard："
 echo "     在任意 Fenixd 项目内运行 /fenix-dashboard，即可在浏览器查看"
 echo "     跨项目 SPEC 状态 / 任务进度 / 验证报告 / 失败截图 / 运行中 Agent 对话。"
 echo "     （skill 已自动软链至 ~/.claude/skills/fenix-dashboard）"
+if [ ! -f "${FENIXD_HOME}/core/dashboard/static/dist/index.html" ]; then
+  echo ""
+  echo "  ⚠️  未检出 dashboard 构建产物（dist 不入 git，release 包内置预构建版）："
+  echo "     源码使用者请先执行："
+  echo "       cd ${FENIXD_HOME}/core/dashboard/static && npm install --no-audit --no-fund && npm run build"
+fi
 echo "================================================================"

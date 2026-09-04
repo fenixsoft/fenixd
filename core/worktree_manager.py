@@ -1902,13 +1902,17 @@ class WorktreeManager:
             return False
 
     def _rebuild_dist_after_merge(self) -> None:
-        """merge 后从合并后 src 确定性重建 dist（dist 冲突根治 B）。
+        """merge 后从合并后 src 确定性重建主树产物（dist 冲突根治 B）。
 
-        正常 merge 与产物自愈落地的 dist 都是某一分支时点 src 的构建物，与
-        合并后 src 必然漂移（task-track / help-center 连环事故的 gap B）。
-        仅当 merge 提交（HEAD^1..HEAD）触碰 static 根下非产物路径时重建；
-        重建产物 amend 进 merge 提交。失败时保留提交版 dist 并告警——不回滚
-        merge、不抛异常（merge 本身的成功语义不被重建失败否定）。
+        dist 已不入库（2026-09-04 决策）：本方法只负责刷新主树工作区产物，
+        供常驻 dashboard（实时读盘）立即呈现合并后 UI。git 侧语义：dist 被
+        ignore，重建产物不再 amend 进提交（git add 无可暂存）；历史分支仍
+        携带跟踪版 dist 时，产物冲突无条件对齐 HEAD（=删除），merge 后重建
+        即恢复工作区版。构建内容从 .fenix/verify.yaml prepare 读取（契约
+        驱动，见 _run_dist_build）。
+        仅当 merge 提交（HEAD^1..HEAD）触碰 static 根下非产物路径时重建。
+        失败时保留现有工作区产物并告警——不回滚 merge、不抛异常（merge
+        本身的成功语义不被重建失败否定）。
         """
         try:
             diff = subprocess.run(
@@ -1970,7 +1974,7 @@ class WorktreeManager:
                 return
             self.logger.info(
                 "worktree_manager",
-                "dist rebuilt from merged src and amended into merge commit",
+                "dist rebuilt from merged src（不入库；常驻 dashboard 读盘即最新）",
             )
         except (subprocess.SubprocessError, OSError) as e:
             self.logger.error(
