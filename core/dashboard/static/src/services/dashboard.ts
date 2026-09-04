@@ -613,3 +613,23 @@ export async function saveProjectPrompt(
     body: JSON.stringify({ agent_type: agentType, content }),
   });
 }
+
+// ── 帮助中心（/api/help/*，读取框架仓库 docs/help/）──
+
+export interface HelpDocMeta {
+  name: string;
+  title: string;
+}
+
+export interface HelpDocItem extends HelpDocMeta {
+  content: string;
+}
+
+export async function getHelpDocs(): Promise<{ docs: HelpDocMeta[] }> {
+  return request<{ docs: HelpDocMeta[] }>('/api/help/docs');
+}
+
+export async function getHelpDoc(name: string): Promise<HelpDocItem> {
+  const q = `?name=${encodeURIComponent(name)}`;
+  return request<HelpDocItem>(`/api/help/doc${q}`);
+}

@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunkfenix_dashboard_v3=self.webpackChunkfenix_dashboard_v3||[]).push([[7636],{57636:function(s,n,_){_.d(n,{createCynefinServices:function(){return e.t}});var e=_(93279),u=_(4954)}}]);
