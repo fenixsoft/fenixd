@@ -112,6 +112,7 @@ function ActivityCard({ a, onViewRun }: { a: ActivityItem; onViewRun?: (a: Activ
 
   return (
     <div
+      data-testid="activity-card"
       style={{
         padding: 12,
         borderRadius: 8,
@@ -481,6 +482,7 @@ export default function ActivitiesPage() {
       <Card variant="borderless">
         <div style={{ marginBottom: 16 }}>
           <Radio.Group
+            data-testid="view-mode-switch"
             optionType="button"
             size="middle"
             value={viewMode}
