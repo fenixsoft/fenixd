@@ -210,6 +210,67 @@ def request_admin_invoke(project_root, spec: str, prompt: str | None = None) -> 
             "file": str(req_path), "created": created, "error": None}
 
 
+# ── run 人工取消（add-run-cancel D5 / spec「文件信号跨进程入口」） ─────────
+
+CANCEL_RUN_REQUEST = ".fenix/cancel_run_request.json"
+
+
+def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
+    """写入 run 取消的文件信号（.fenix/cancel_run_request.json）。
+
+    原子写（tmp+rename），与 request_admin_invoke 同构：
+    - 已存在未消费的请求文件 → 返回冲突（409），不覆盖；
+    - run_id 为空 → 返回 {ok: False, missing_run_id: True}；
+    - 成功写入 → 返回 {ok: True, created}。
+
+    文件信号模式（D5）：daemon 主循环下一轮（≤2s）扫描拾取并调用
+    agent_runner.cancel_run。server 进程不直接调用 cancel_run。
+
+    Returns:
+        {"ok": bool, "conflict": bool, "missing_run_id": bool,
+         "file": str|null, "created": str|null, "error": str|null}
+    """
+    if not run_id or not run_id.strip():
+        return {"ok": False, "conflict": False, "missing_run_id": True,
+                "file": None, "created": None,
+                "error": "run_id is required"}
+
+    proot = Path(project_root)
+    req_path = proot / CANCEL_RUN_REQUEST
+
+    # 已有未消费请求 → 冲突（409）
+    if req_path.exists():
+        try:
+            existing = json.loads(req_path.read_text(encoding="utf-8"))
+            existing_created = existing.get("created") if isinstance(existing, dict) else None
+        except (OSError, json.JSONDecodeError):
+            existing_created = None
+        return {"ok": False, "conflict": True, "missing_run_id": False,
+                "file": str(req_path), "created": existing_created,
+                "error": "已有进行中的取消请求"}
+
+    created = datetime.now(timezone.utc).isoformat()
+    payload = {"run_id": run_id.strip(), "reason": reason or "",
+               "source": "dashboard", "created": created}
+    req_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(req_path.parent), prefix=".cancel_run_request.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, req_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    return {"ok": True, "conflict": False, "missing_run_id": False,
+            "file": str(req_path), "created": created, "error": None}
+
+
 # ── SPEC 人工冻结/解冻（用户指令冻结；admin_monitor 认 blocked+前缀为有意等待态） ──
 
 FREEZE_ERROR_PREFIX = "用户指令冻结："

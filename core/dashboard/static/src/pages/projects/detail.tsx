@@ -12,6 +12,7 @@ import { markdownComponents } from './components/SpecDocModal';
 import SpecDocModal from './components/SpecDocModal';
 import type { DocType } from './components/SpecDocModal';
 import RunRecordModal from './components/RunRecordModal';
+import RunCancelModal from './components/RunCancelModal';
 import { ClaudeOutputPane } from '@/components/claude-msg';
 import { OutlinedTag } from '@/components/StatusTag';
 import { useIsMobile } from '@/hooks/useIsMobile';
@@ -227,6 +228,10 @@ export default function SpecDetailPage() {
   const [specList, setSpecList] = useState<SpecSummary[]>([]);
   const [switchOpen, setSwitchOpen] = useState(false);
   const [recordRunId, setRecordRunId] = useState<string | null>(null);
+  // add-run-cancel（4.2）：终止运行确认弹窗的目标 run_id + 受理后行内反馈
+  const [cancelRunId, setCancelRunId] = useState<string | null>(null);
+  // 已受理取消的行内反馈（run_id → 文案）；弹窗关闭后仍保留直至再次刷新
+  const [cancelNotices, setCancelNotices] = useState<Record<string, string>>({});
   // 文档弹窗打开时定位的页签（时间轴报告链接 → 验证报告；项目信息「文档」→ 需求背景）
   const [docInitial, setDocInitial] = useState<DocType>('proposal');
   // 告警内容默认折叠（只显示标题），展开后的告警 id 集合
@@ -625,6 +630,22 @@ export default function SpecDetailPage() {
                   {dur && (
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                       耗时 {dur}
+                    </Typography.Text>
+                  )}
+                  {/* add-run-cancel（4.2）：活跃 run 提供「终止」操作，确认弹窗确认后才发起 */}
+                  {isRunning && item.run_id && (
+                    <Button
+                      size="small"
+                      danger
+                      type="text"
+                      onClick={() => setCancelRunId(item.run_id!)}
+                    >
+                      终止
+                    </Button>
+                  )}
+                  {cancelNotices[item.run_id!] && (
+                    <Typography.Text type="success" style={{ fontSize: 12 }}>
+                      {cancelNotices[item.run_id!]}
                     </Typography.Text>
                   )}
                 </div>
@@ -1226,6 +1247,16 @@ export default function SpecDetailPage() {
 
       {/* 运行记录最大化弹窗（时间轴「查看运行记录」旁全屏入口） */}
       <RunRecordModal runId={recordRunId} project={name} onClose={() => setRecordRunId(null)} />
+
+      {/* add-run-cancel（4.2）：终止运行确认弹窗，受理后行内反馈 */}
+      <RunCancelModal
+        project={name}
+        runId={cancelRunId}
+        onClose={() => setCancelRunId(null)}
+        onAccepted={(rid) =>
+          setCancelNotices((prev) => ({ ...prev, [rid]: '取消请求已受理' }))
+        }
+      />
     </PageContainer>
   );
 }

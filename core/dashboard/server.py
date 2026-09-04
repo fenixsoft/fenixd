@@ -745,6 +745,51 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._json({"ok": True, "project": project["name"], "spec": spec,
                     "created": result.get("created")})
 
+    def _api_run_cancel(self, query):
+        """POST /api/run-cancel?project=<name>&run_id=<id>（可选 reason）
+
+        run 人工取消：写入 .fenix/cancel_run_request.json 文件信号，由 daemon
+        主循环下一轮拾取并调 agent_runner.cancel_run。
+        - project 不存在 → 404
+        - run_id 缺失 → 400
+        - 已有未消费请求 → 409
+        - 受理 → 200 + {"requested": true}
+        """
+        project = self._project_from_query(query)
+        if project is None or not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        run_id = query.get("run_id", [None])[0]
+        if not run_id or not run_id.strip():
+            self._error(400, "run_id required")
+            return
+        # 可选 reason（POST JSON body {reason} 或 query 参数）
+        reason = query.get("reason", [None])[0]
+        try:
+            content_length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            content_length = 0
+        if content_length > 0 and (reason is None or not reason):
+            body = self._read_json_body()
+            if isinstance(body, dict):
+                reason = (body.get("reason") or "").strip() or None
+        reason = (reason or "").strip() or "" if reason is not None else ""
+
+        proot = Path(project["path"])
+        try:
+            result = dashboard_data.request_run_cancel(proot, run_id, reason)
+        except Exception as e:  # noqa: BLE001 兜底：写文件异常不崩溃进程
+            self._error(500, f"run cancel request failed: {e}")
+            return
+        if result.get("missing_run_id"):
+            self._error(400, "run_id required")
+            return
+        if result.get("conflict"):
+            self._error(409, result.get("error") or "已有进行中的取消请求")
+            return
+        self._json({"requested": True, "project": project["name"],
+                    "run_id": run_id, "created": result.get("created")})
+
     def _api_run(self, run_id: str, query) -> dict:
         project = self._project_from_query(query)
         if project is None:
@@ -1115,6 +1160,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_spec_delete(query)
         elif path == "/api/spec-admin-invoke":
             self._api_spec_admin_invoke(query)
+        elif path == "/api/run-cancel":
+            self._api_run_cancel(query)
         elif path == "/api/spec-freeze":
             self._api_spec_freeze(query)
         elif path == "/api/spec-unfreeze":

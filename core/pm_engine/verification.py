@@ -623,6 +623,23 @@ class VerificationPipeline:
             plan_result = self._pm.agent_runner.run_planner(spec_name, "plan")
 
             if not plan_result.success:
+                # ── 人工取消 hold-state（add-run-cancel D4）──
+                # planner run 被取消：spec 保持 testing 原状，只写 error，
+                # 不流转 bug-found、不降级 legacy、不入队。
+                if getattr(plan_result, "cancelled", False):
+                    p_err = plan_result.error or ""
+                    cancelled_err = (
+                        f"run 被人工取消：{p_err}" if p_err else "run 被人工取消"
+                    )
+                    self._pm.state_machine.update_spec(spec_name, {
+                        "error": cancelled_err,
+                    })
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"Planner plan run 被人工取消 — hold-state '{spec_name}' "
+                        f"(保持 testing): {cancelled_err}",
+                    )
+                    return
                 # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
                 # 熔断期 planner 派发失败属「provider 故障」，不是验证逻辑失败：
                 # 不得 raise（会触发 legacy 降级 → bug-found → 伪 fix 级联），
@@ -817,6 +834,22 @@ class VerificationPipeline:
         judge_result = self._pm.agent_runner.run_planner(spec_name, "judge")
 
         if not judge_result.success:
+            # ── 人工取消 hold-state（add-run-cancel D4，judge 同语义）──
+            # judge run 被取消：spec 保持 testing 原状，只写 error。
+            if getattr(judge_result, "cancelled", False):
+                j_err = judge_result.error or ""
+                cancelled_err = (
+                    f"run 被人工取消：{j_err}" if j_err else "run 被人工取消"
+                )
+                self._pm.state_machine.update_spec(spec_name, {
+                    "error": cancelled_err,
+                })
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"Planner judge run 被人工取消 — hold-state '{spec_name}' "
+                    f"(保持 testing): {cancelled_err}",
+                )
+                return
             # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
             # 同阶段1：熔断期 planner judge 失败属「provider 故障」，
             # 不得 raise → legacy 降级 → bug-found → 伪 fix 级联。
@@ -1255,6 +1288,23 @@ class VerificationPipeline:
         # 不得 transition bug-found / 调用 _on_spec_bug_found（否则会派生伪 fix
         # 级联，与 implementer 路径的 fix-fix-stashpop-deadlock 同理）。保持 spec
         # 在 implemented（由 full_scan recovery 兜底重排），写入 error 供 dashboard 可见。
+        if getattr(result, "cancelled", False):
+            # ── 人工取消 hold-state（add-run-cancel D4，legacy verifier）──
+            # verifier run 被取消：spec 保持 testing 原状，只写 error，
+            # 不流转 bug-found、不入队重派。
+            v_err = result.error or ""
+            cancelled_err = (
+                f"run 被人工取消：{v_err}" if v_err else "run 被人工取消"
+            )
+            self._pm.state_machine.update_spec(spec_name, {
+                "error": cancelled_err,
+            })
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Verifier run 被人工取消 — hold-state '{spec_name}' "
+                f"(保持 testing): {cancelled_err}",
+            )
+            return
         if self._pm._verifier_error_is_infra(result.error):
             # 基础设施类失败（熔断/链耗尽/网关切换类错误）＝「验证没能发生」，
             # 不是「验证发现了缺陷」：保持当前状态不流转 bug-found、不派生 fix

@@ -228,6 +228,13 @@ class FenixDaemon:
                     self._check_admin_invoke_requests()
                 except Exception as e:
                     self.logger.error("fenixd", f"admin_invoke pickup failed: {e}")
+                # run 人工取消文件信号拾取（add-run-cancel D5）：
+                # dashboard 写入 .fenix/cancel_run_request.json，主循环下一轮
+                # 消费并调 agent_runner.cancel_run（只设旗标，微秒级，不投 worker 池）。
+                try:
+                    self._check_cancel_requests()
+                except Exception as e:
+                    self.logger.error("fenixd", f"cancel_run pickup failed: {e}")
                 # 配置热更新：每 30s 检查配置文件 mtime，变更则原地重载
                 if time.time() - config_check_ts >= 30:
                     config_check_ts = time.time()
@@ -381,6 +388,59 @@ class FenixDaemon:
         # admin_disposition-<run_id>.json，无功能影响但会累积。
         self._sweep_stale_admin_dispositions()
         self._submit_admin_run(signal)
+
+    # ── run 人工取消信号消费（add-run-cancel D5）────────────────────
+
+    def _check_cancel_requests(self):
+        """主循环每轮扫描 run 取消的文件信号并消费（不投 worker 池）。
+
+        dashboard 写入 .fenix/cancel_run_request.json（含 run_id/reason/source/
+        created）；本方法在主循环（1s 粒度）中检测其存在：读取→删除→校验
+        run_id 非空→调 agent_runner.cancel_run(run_id, reason, by=source)。
+        与 _check_admin_invoke_requests 同构：损坏 JSON 删除防卡死；删除失败
+        下轮再试。
+        """
+        req_path = PROJECT_ROOT / ".fenix" / "cancel_run_request.json"
+        if not req_path.exists():
+            return
+        try:
+            with req_path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            # 损坏的信号文件：删除避免每轮报错卡死
+            try:
+                req_path.unlink()
+            except OSError:
+                pass
+            return
+        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
+        try:
+            req_path.unlink()
+        except OSError:
+            return
+
+        run_id = payload.get("run_id")
+        if not run_id:
+            self.logger.warning("fenixd", "cancel_run 请求缺少 run_id，忽略")
+            return
+
+        reason = payload.get("reason", "")
+        source = payload.get("source", "dashboard")
+        self.logger.info(
+            "fenixd",
+            f"消费 run 取消信号：run_id={run_id}, reason={reason!r}, source={source}",
+        )
+        try:
+            result = self.agent_runner.cancel_run(run_id, reason=reason, by=source)
+            self.logger.info(
+                "fenixd",
+                f"cancel_run 结果：{result}",
+            )
+        except Exception as e:
+            self.logger.error(
+                "fenixd",
+                f"cancel_run 调用失败 run_id={run_id}: {e}",
+            )
 
     def _submit_admin_run(self, signal: dict) -> bool:
         """把一次 Administrator 处置投递到后台 worker 池（D1/D2）。
