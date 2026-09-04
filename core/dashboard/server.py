@@ -26,6 +26,8 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
     GET /api/prompts?project=<name> → agent 提示词：通用层（只读）+ 项目级 .fenix/agents/ 附加（缺 project 仅通用层）
     POST /api/prompts?project=<name> → 保存项目附加提示词（body: {"agent_type","content"}；白名单校验、自引用项目拒绝 403）
+    GET /api/help/docs → 帮助文档清单 [{name, title}]（docs/help/ 动态读盘，README 置顶）
+    GET /api/help/doc?name=<file> → 单篇帮助文档 Markdown 原文（白名单 + 防穿越）
     GET /api/alerts?project=<name> → Administrator 告警/处置记录（缺省跨项目聚合未处理告警）
     POST /api/alerts/<id>/handled?project=<name> → 标记升级告警已处理
     POST /api/alerts/clear → 清理所有事件：全部项目未处理告警一次标记已处理
@@ -60,6 +62,13 @@ from core.fenix_session import start_daemon, stop_daemon
 
 STATIC_DIR = Path(__file__).parent / "static"
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+# 帮助文档目录：core/dashboard/ 上两级 = 框架根（add-dashboard-help-center D2）
+FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
+HELP_DOCS_DIR = FRAMEWORK_ROOT / "docs" / "help"
+# 文档名白名单（add-dashboard-help-center D2）：限定字母/数字/._- + .md，
+# 从根上拒绝路径穿越片段；配合 real path 归属校验双保险
+HELP_DOC_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+\.md$")
 
 # 连接上限（dashboard-connection-limit D6，模块常量供测试 monkeypatch）
 MAX_SSE_CONNECTIONS = 32    # SSE 活跃连接上限，超出拒绝新连接（客户端退化为轮询）
@@ -316,6 +325,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(self._api_prompts_get(query))
         elif path == "/api/spec-doc":
             self._json(self._api_spec_doc(query))
+        elif path == "/api/help/docs":
+            self._json(self._api_help_docs())
+        elif path == "/api/help/doc":
+            self._api_help_doc(query)
         else:
             self._error(404, "Not Found")
 
@@ -401,6 +414,84 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._error(404, f"invalid spec: {spec}")
             return
         self._json({**result, "project": project["name"], "spec": spec, "doc": doc})
+
+    # ── 帮助文档（add-dashboard-help-center D1/D2）─────────────────────
+
+    @staticmethod
+    def _help_doc_title(content: str) -> str:
+        """从 Markdown 原文解析首个一级标题（# 行）作为文档标题。
+
+        无一级标题时回退为去后缀文件名，保证清单端点始终有可展示标题。
+        """
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("# ") and not stripped.startswith("## "):
+                return stripped[2:].strip() or ""
+        return ""
+
+    def _api_help_docs(self) -> dict:
+        """GET /api/help/docs
+
+        列出框架仓库 docs/help/ 下全部合法 .md 文档，返回 [{name, title}]。
+        - README.md 置顶（默认文档），其余按文件名字典序（NN- 编号天然有序）
+        - 目录缺失 / 为空 → 空列表（前端空态）
+        - 非 .md 文件跳过不计入清单
+        """
+        help_dir = HELP_DOCS_DIR.resolve()
+        if not help_dir.is_dir():
+            return {"docs": []}
+        try:
+            files = sorted(p for p in help_dir.iterdir()
+                           if p.is_file() and HELP_DOC_NAME_RE.match(p.name))
+        except OSError:
+            return {"docs": []}
+        docs = []
+        try:
+            for f in files:
+                title = ""
+                try:
+                    title = self._help_doc_title(
+                        f.read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    title = ""
+                docs.append({"name": f.name, "title": title or f.name[:-3]})
+        except OSError:
+            return {"docs": []}
+        # README 置顶（设计 D5：文件名即路由参数，README 为默认文档）
+        docs.sort(key=lambda d: (d["name"] != "README.md", d["name"]))
+        return {"docs": docs}
+
+    def _api_help_doc(self, query):
+        """GET /api/help/doc?name=<file>
+
+        返回单篇帮助文档 Markdown 原文 {name, content, title}。
+        - 名字不匹配白名单（[A-Za-z0-9._-]+\.md）→ 400（防穿越，不泄露信息）
+        - 解析后 real path 不在 docs/help/ 内 → 400
+        - 目录缺失 / 文件不存在 → 404
+        """
+        name = query.get("name", [None])[0] or ""
+        if not name or not HELP_DOC_NAME_RE.match(name):
+            self._error(400, "invalid help doc name")
+            return
+        help_dir = HELP_DOCS_DIR.resolve()
+        target = (help_dir / name).resolve()
+        # 防穿越：解析后必须仍位于 docs/help/ 内（dirs 缺省，不会跑到 docs 其它处）
+        if not target.is_relative_to(help_dir):
+            self._error(400, "invalid help doc name")
+            return
+        if not target.is_file():
+            self._error(404, "help doc not found")
+            return
+        try:
+            content = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            self._error(404, "help doc not found")
+            return
+        self._json({
+            "name": name,
+            "title": self._help_doc_title(content) or name[:-3],
+            "content": content,
+        })
 
     def _api_spec_error_clear(self, query) -> dict:
         """POST /api/spec-error-clear?project=<name>&spec=<name>
