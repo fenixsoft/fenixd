@@ -547,12 +547,12 @@ class FamilyGovernor:
         却从未传给下一轮。无记忆传递的重派是重复烧钱的固定根因
         （fix-startup-double-dispatch 处置：38% 纯重复）。
 
-        项目根 .fenix-run-result.json 是跨 spec 共享文件：spec 字段不匹配
+        主树 .fenix/.fenix-run-result.json 是跨 spec 共享文件：spec 字段不匹配
         （并发派发的其它 spec 的结果）时不注入，防跨 spec 污染。命中时同时
         持久化 per-spec 副本到 .fenix/verify-progress/<spec>/prev-impl-result.json
         （根文件会被后续 run 覆盖，副本供人工与后续轮次回溯）。
         """
-        result_path = self._pm.project_root / ".fenix-run-result.json"
+        result_path = self._pm.project_root / ".fenix" / ".fenix-run-result.json"
         try:
             data = json.loads(result_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

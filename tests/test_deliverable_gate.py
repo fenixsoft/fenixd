@@ -276,7 +276,7 @@ class _GateFixture(unittest.TestCase):
         self.project_root = self.tmpdir
         (self.project_root / ".fenix").mkdir(exist_ok=True)
         self.logger = _FakeLogger()
-        self.sm = StateMachine(self.project_root / "STATE.md", self.logger)
+        self.sm = StateMachine(self.project_root / ".fenix" / "STATE.md", self.logger)
         self.runner = mock.MagicMock()
         self.runner.worktree_manager = mock.MagicMock()
         self.config = {}
@@ -520,7 +520,7 @@ class TestImplementerPromptErrorInjection(unittest.TestCase):
         self.project_root = self.tmpdir
         (self.project_root / ".fenix").mkdir(exist_ok=True)
         self.logger = _FakeLogger()
-        self.sm = StateMachine(self.project_root / "STATE.md", self.logger)
+        self.sm = StateMachine(self.project_root / ".fenix" / "STATE.md", self.logger)
         self.wm = mock.MagicMock()
         self.runner = AgentRunner.__new__(AgentRunner)
         self.runner.logger = self.logger
@@ -655,7 +655,7 @@ class TestBranchOnlyLegacy(unittest.TestCase):
         (self.tmpdir / ".fenix").mkdir(exist_ok=True)
         self.logger = _FakeLogger()
         self.wm = WorktreeManager(self.tmpdir / "wt", self.tmpdir, self.logger)
-        self.sm = StateMachine(self.tmpdir / "STATE.md", self.logger)
+        self.sm = StateMachine(self.tmpdir / ".fenix" / "STATE.md", self.logger)
         self.wm_mock = mock.MagicMock()
         self.wm_mock.get_legacy.return_value = None
         self.runner = AgentRunner.__new__(AgentRunner)

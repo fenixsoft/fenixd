@@ -23,7 +23,8 @@ from core.state_machine import StateMachine
 def _mk_engine(project_root, logger, config=None):
     """复用 test_family_governor 的引擎构建模式。"""
     from core.pm_engine import PMEngine
-    sm = StateMachine(project_root / "STATE.md", logger)
+    (project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+    sm = StateMachine(project_root / ".fenix" / "STATE.md", logger)
     engine = PMEngine(sm, MagicMock(), config or {}, project_root, logger)
     engine.handle_event = MagicMock()
     return engine, sm

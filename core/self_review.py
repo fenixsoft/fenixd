@@ -3,7 +3,7 @@
 每晚本地时间 ``admin.self_review.run_at``（缺省 02:00）后，由 Administrator
 通道执行一次当日工作回顾：聚合当日数据摘要（STATE 终态 / runs 统计 /
 admin 告警与处置 / 日志 ERROR 四源）→ 发起 ``self-review`` run → 追加写入
-项目根 ``todo.md`` → 单文件 commit + push。
+项目 ``.fenix/todo.md`` → 单文件 commit + push。
 
 调度判定挂在 admin_monitor 巡检循环（design D1，不新增线程/定时器）：
 每轮巡检检查「enabled && 本地时间 ≥ run_at && 状态文件 last_run_date <
@@ -367,8 +367,8 @@ class SelfReviewScheduler:
         return lines
 
     def _read_todo(self) -> Optional[str]:
-        """读取项目根 todo.md 全文（read_todo=true 时注入 prompt 用）。"""
-        todo = self.project_root / "todo.md"
+        """读取 .fenix/todo.md 全文（read_todo=true 时注入 prompt 用）。"""
+        todo = self.project_root / ".fenix" / "todo.md"
         if not todo.is_file():
             return None
         try:
@@ -379,13 +379,13 @@ class SelfReviewScheduler:
     # ── todo.md 结构化追加（spec「todo.md 结构化追加」） ────────
 
     def _append_todo(self, date_str: str, result) -> Path:
-        """把自省结果按固定结构追加到项目根 todo.md（首次写入创建文件）。
+        """把自省结果按固定结构追加到 .fenix/todo.md（首次写入创建文件）。
 
         结构：``## YYYY-MM-DD`` 分节 + 「浪费」「失误」「可改进」三个小节，
         每条含证据与建议（Agent 已在条目文本中嵌入）。历史分节不变（追加
         在尾部）。返回 todo.md 路径。
         """
-        todo = self.project_root / "todo.md"
+        todo = self.project_root / ".fenix" / "todo.md"
         sections: List[str] = []
         for title, items in (
             ("浪费", result.waste or []),
@@ -426,7 +426,7 @@ class SelfReviewScheduler:
         git = ["git", "-C", str(self.project_root)]
         try:
             add = subprocess.run(
-                git + ["add", "--", "todo.md"],
+                git + ["add", "--", ".fenix/todo.md"],
                 capture_output=True, text=True, timeout=30,
             )
         except (OSError, subprocess.TimeoutExpired) as e:

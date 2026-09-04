@@ -116,9 +116,9 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 
 ## 模板值与代码缺省不一致
 
-`config.template.yaml` 与代码缺省存在若干差异，**实际生效值以项目 config.yaml 为准**（未配置该键时以代码缺省为准）。易混淆点集中列出：
+`.fenix/config.template.yaml`（随仓库入库的配置模板）与代码缺省存在若干差异，**实际生效值以项目 config.yaml 为准**（未配置该键时以代码缺省为准）。易混淆点集中列出：
 
-| 键 | config.template.yaml 值 | 代码缺省 | 差异说明 |
+| 键 | .fenix/config.template.yaml 值 | 代码缺省 | 差异说明 |
 |----|------------------------|---------|---------|
 | agents.impl_run_budget | 4 | **6** | 模板注释也称「缺省 4」，实际代码缺省 6（`DEFAULT_IMPL_RUN_BUDGET = 6`） |
 | agents.daily_run_limit | 300 | **50** | 模板默认 300，代码缺省 50（`agents.daily_run_limit` 未配置时） |

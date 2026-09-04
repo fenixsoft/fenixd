@@ -50,7 +50,7 @@ import sys; sys.path.insert(0, '.fenix')
 from pathlib import Path
 from datetime import datetime, timezone
 from core.state_machine import StateMachine
-sm = StateMachine(Path('STATE.md'), None)
+sm = StateMachine(Path('.fenix/STATE.md'), None)
 specs = sm.read_all()
 total = len(specs)
 done_cnt = sum(1 for e in specs.values() if e.get('status') in ('done','pushed'))
@@ -116,7 +116,7 @@ python3 << 'PYEOF'
 import sys, subprocess; sys.path.insert(0, '.fenix')
 from pathlib import Path
 from core.state_machine import StateMachine
-sm = StateMachine(Path('STATE.md'), None)
+sm = StateMachine(Path('.fenix/STATE.md'), None)
 specs = sm.read_all()
 icons = {'drafted':'📝','ready':'📌','implementing':'🔨','implemented':'🧪','testing':'🔍','verified':'✅','bug-found':'🐛','done':'🎯','pushed':'🚀'}
 counts = {}; done_count = 0; active_count = 0
@@ -204,7 +204,7 @@ import sys; sys.path.insert(0, '.fenix')
 from pathlib import Path
 from datetime import datetime, timezone
 from core.state_machine import StateMachine
-sm = StateMachine(Path('STATE.md'), None)
+sm = StateMachine(Path('.fenix/STATE.md'), None)
 now = datetime.now(timezone.utc)
 specs = sm.read_all()
 # 识别「等待 fix SPEC 完成」的父 SPEC：存在活跃 fix-<name> 时，父 SPEC 不算卡住

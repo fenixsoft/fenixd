@@ -104,7 +104,7 @@ echo "项目简介已生成"
 
 ### 5. 初始化状态文件
 
-如果 STATE.md 和 PROJECT_LOG.md 不存在，创建它们。
+如果 .fenix/STATE.md 和 .fenix/PROJECT_LOG.md 不存在，创建它们。
 
 ### 6. 启动 fenixd
 

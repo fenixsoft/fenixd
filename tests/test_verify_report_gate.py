@@ -37,7 +37,8 @@ class _GateTestBase(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.project_root = Path(self.tmpdir)
         self.logger = MagicMock()
-        self.sm_path = self.project_root / "STATE.md"
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.sm_path = self.project_root / ".fenix" / "STATE.md"
         from core.state_machine import StateMachine
         self.sm = StateMachine(self.sm_path, self.logger)
         config = {"schedule": {"stuck_threshold_minutes": 60}}
@@ -177,7 +178,7 @@ class TestGateBlocksWhenDataUnavailable(_GateTestBase):
         progress = self.project_root / ".fenix" / "verify-progress" / SPEC
         progress.mkdir(parents=True, exist_ok=True)
         (progress / "report.json").write_text("{not json", encoding="utf-8")
-        (self.project_root / ".fenix-run-result.json").write_text(
+        (self.project_root / ".fenix" / ".fenix-run-result.json").write_text(
             json.dumps({"status": "bug-found", "spec": "other-spec", "bugs": []}),
             encoding="utf-8",
         )

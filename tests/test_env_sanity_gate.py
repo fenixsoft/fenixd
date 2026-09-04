@@ -388,7 +388,8 @@ class TestEnvBlockedInconclusive(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.project_root = Path(self.tmpdir)
         self.logger = _FakeLogger()
-        self.state_path = self.project_root / "STATE.md"
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
         self.sm = StateMachine(self.state_path, self.logger)
         config = {"verify_engine": {"inconclusive_max_attempts": 3}}
         self.engine = PMEngine(self.sm, mock.MagicMock(), config, self.project_root, self.logger)

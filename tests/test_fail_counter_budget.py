@@ -27,7 +27,7 @@ from core.state_machine import StateMachine
 
 def _mk_engine(project_root, logger, config=None):
     from core.pm_engine import PMEngine
-    sm = StateMachine(project_root / "STATE.md", logger)
+    sm = StateMachine(project_root / ".fenix" / "STATE.md", logger)
     engine = PMEngine(sm, MagicMock(), config or {}, project_root, logger)
     engine.handle_event = MagicMock()
     return engine, sm
@@ -135,7 +135,7 @@ class TestImplRunBudgetUsed(_Base):
 
         # 模拟 daemon 重启：从磁盘重建 state machine
         from core.state_machine import StateMachine as SM
-        new_sm = SM(self.project_root / "STATE.md", self.logger)
+        new_sm = SM(self.project_root / ".fenix" / "STATE.md", self.logger)
         self.assertEqual(int(new_sm.read_one("demo-spec").get("_impl_run_budget_used", 0)), 2)
 
         # 重启后继续递增
@@ -252,7 +252,7 @@ class TestDeadRunBudgetExemption(_Base):
         self.assertEqual(int(entry.get("_budget_exempt_runs", 0)), 1)
 
     def test_normal_failure_not_exempt(self):
-        """GIVEN run 正常收工但验证打回（有收工结果 .fenix-run-result.json）→ 计数不回退。"""
+        """GIVEN run 正常收工但验证打回（有收工结果 .fenix/.fenix-run-result.json）→ 计数不回退。"""
         from types import SimpleNamespace
         self._make_buggy_spec("demo-spec")
         self.sm.update_spec("demo-spec", {"status": "implementing"})

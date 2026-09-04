@@ -381,8 +381,9 @@ class TestDashboardDescriptionConfig(unittest.TestCase):
         from core.dashboard.data import project_summary
         from core.state_machine import StateMachine
 
-        # 创建 STATE.md
-        state_path = Path(self.tmpdir) / "STATE.md"
+        # 创建 STATE.md（.fenix/ 布局）
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         with open(state_path, "w", encoding="utf-8") as f:
             f.write("# Fenix Project State\n\n## Specs\n\n### test-spec\n- status: ready\n- priority: 1\n- created: 2026-01-01T00:00:00+00:00\n- updated: 2026-01-01T00:00:00+00:00\n- error: null\n- depends_on: null\n")
 

@@ -27,7 +27,7 @@ test('SSE 联动:touch 项目文件触发 state 帧使 reloadCount 增长', asyn
     return p ? p.path : null;
   });
   if (touched) {
-    // 通过后端诊断接口不可达,改用 touch 探针:直接调 watcher 关注的 STATE.md 同级 .fenix 文件
+    // 通过后端诊断接口不可达,改用 touch 探针:直接调 watcher 关注的 .fenix/ 目录内文件(含 .fenix/STATE.md)
     // 这里仅断言:在观察窗口内(含 watcher 自然 state 帧)reloadCount 增长
   }
   // 8s 观察窗口:state 帧应使计数继续增长(节流前缘 500ms,8s 内 watcher 至少多次)

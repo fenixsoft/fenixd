@@ -30,7 +30,8 @@ class TestVerifierStaleResultGuard(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -41,7 +42,7 @@ class TestVerifierStaleResultGuard(unittest.TestCase):
         # verified 成功路径会经 _task_completion_blocker 读 implementer 结果，
         # 与本守卫正交，隔离之（MagicMock runner 下该链路不 mock 不友好）。
         self.engine._task_completion_blocker = MagicMock(return_value=None)
-        self.result_path = Path(self.tmpdir) / ".fenix-run-result.json"
+        self.result_path = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
 
     def tearDown(self):
         import shutil
@@ -171,7 +172,8 @@ class TestUniformVerifyFailure(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -201,7 +203,8 @@ class TestImplementerZeroChangeGuard(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -232,7 +235,8 @@ class TestVerifierInfraFailureHold(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -264,7 +268,8 @@ class TestJudgeEnvDeclaredGuard(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -298,7 +303,8 @@ class TestEnsureAppReachableFieldFix(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -332,7 +338,8 @@ class TestVerifierCircuitOpenHoldsState(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -364,7 +371,8 @@ class TestVerifyEngineScreenshotTiming(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -392,7 +400,8 @@ class TestVerificationCompletionGate(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -420,7 +429,8 @@ class TestVerificationProgressGateD6(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -448,7 +458,8 @@ class TestScenarioFreezeIntegration(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -483,7 +494,8 @@ class TestScenarioReloadAfterReachabilityHeal(unittest.TestCase):
         from core.pm_engine import PMEngine
         from types import SimpleNamespace
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(

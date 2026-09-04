@@ -38,12 +38,12 @@ Fenixd 是一个**后台守护进程（daemon）**，它把「写软件」这个
 
 ### 架构
 
-Fenixd 的架构刻意做得「薄」：一个单进程 daemon 负责编排，没有数据库、没有常驻服务集群，全部状态都落在仓库里的普通文件上。`STATE.md` 是唯一状态真源，`.fenix/` 下存放配置、日志与每次 Agent 运行的实时流转录。daemon 内部是一条事件驱动的流水线，EventBus 每 2 秒感知 `STATE.md` 的变化，PM Engine 据此做出调度决策（按优先级与预算选择下一个动作），AgentRunner 把对应角色的 Agent 以 `claude` 子进程方式拉起，在隔离的 Git Worktree 中工作，收工后 Merge-Back 回主干并驱动状态机前进。外围还有 Supervisor 看门狗负责崩溃自动重启、Fenix Dashboard 负责把这一切实时可视化。这种「文件即状态」的设计换来两个性质：各环节之间零耦合（读懂文件就读懂了系统），以及天然可恢复，Daemon 无论崩溃还是重启，读一遍文件就能重建全部现场，从上次中断处继续。
+Fenixd 的架构刻意做得「薄」：一个单进程 daemon 负责编排，没有数据库、没有常驻服务集群，全部状态都落在仓库里的普通文件上。`.fenix/STATE.md` 是唯一状态真源，`.fenix/` 下还存放配置、日志与每次 Agent 运行的实时流转录。daemon 内部是一条事件驱动的流水线，EventBus 每 2 秒感知 `STATE.md` 的变化，PM Engine 据此做出调度决策（按优先级与预算选择下一个动作），AgentRunner 把对应角色的 Agent 以 `claude` 子进程方式拉起，在隔离的 Git Worktree 中工作，收工后 Merge-Back 回主干并驱动状态机前进。外围还有 Supervisor 看门狗负责崩溃自动重启、Fenix Dashboard 负责把这一切实时可视化。这种「文件即状态」的设计换来两个性质：各环节之间零耦合（读懂文件就读懂了系统），以及天然可恢复，Daemon 无论崩溃还是重启，读一遍文件就能重建全部现场，从上次中断处继续。
 
 ```mermaid
 flowchart TD
     CFG["config.yaml<br/>（用户级 + 项目级深合并）"] --> DAEMON["Fenixd daemon"]
-    STATE["STATE.md<br/>SPEC 状态机（唯一状态真源）"] -->|"每 2s 感知变化"| BUS["EventBus"]
+    STATE[".fenix/STATE.md<br/>SPEC 状态机（唯一状态真源）"] -->|"每 2s 感知变化"| BUS["EventBus"]
     BUS --> PM["PM Engine<br/>优先级 / 预算 / 重试 / 恢复"]
     DAEMON --> PM
     PM --> AR["AgentRunner"]
@@ -55,8 +55,8 @@ flowchart TD
     AG --> LOG[".fenix/logs/ 结构化日志<br/>.fenix/runs/ 实时流转录"]
 ```
 
-- **StateMachine**：解析/维护 `STATE.md`，管理每个 SPEC 的状态与合法转换，文件锁 + 原子写。
-- **EventBus**：轮询感知 `STATE.md` 变化（周期全量扫描兜底），把状态事件分发给 PM Engine。
+- **StateMachine**：解析/维护 `.fenix/STATE.md`，管理每个 SPEC 的状态与合法转换，文件锁 + 原子写。
+- **EventBus**：轮询感知 `.fenix/STATE.md` 变化（周期全量扫描兜底），把状态事件分发给 PM Engine。
 - **PM Engine**（`core/pm_engine/`）：优先级调度、依赖检查、预算闸门、失败重试、自动恢复、fix 循环与日报。
 - **AgentRunner**（`core/agent_runner/`）：以子进程方式调用 `claude -p`，按角色分配模型/Provider 候选链，超时活性监督。
 - **WorktreeManager**：为每次实现创建隔离 worktree 与分支，收工 merge-back 回主干（冲突自愈 / 修复通道 / 熔断）。
@@ -65,7 +65,7 @@ flowchart TD
 
 ### SPEC 生命周期
 
-每个需求在 Fenixd 中以一个 SPEC 的形式存在，其从创建到推送的全过程由一台显式状态机管理：状态写在项目根的 `STATE.md` 里（唯一状态真源），每一次转移都必须符合预定义的合法转移表，非法转移直接被拒绝。这样做的意义在于：任何时刻打开 Dashboard 或 `STATE.md`，都能精确回答「这个需求现在走到哪一步、为什么卡住、下一步谁来做什么」；多 Agent 之间也凭这同一个状态真源协作，而不是各自记忆。更重要的是，所有「不顺利」的情形，如验证不过、预算耗尽、merge 冲突、运行中断，等等。都被建模为图中的正常路径（打回、停靠、恢复），而不是显性异常，框架不会半路丢弃一个 SPEC，要么它能够被 AI 所完成，框架把它推进到终点；要么给出明确证据，说明超越了 AI 的能力（譬如模型的额度用完了、又譬如与基本的实时逻辑相互冲突，是不可能实现的需求），让明确停靠在 `blocked` 等人来裁决。
+每个需求在 Fenixd 中以一个 SPEC 的形式存在，其从创建到推送的全过程由一台显式状态机管理：状态写在项目的 `.fenix/STATE.md` 里（唯一状态真源），每一次转移都必须符合预定义的合法转移表，非法转移直接被拒绝。这样做的意义在于：任何时刻打开 Dashboard 或 `.fenix/STATE.md`，都能精确回答「这个需求现在走到哪一步、为什么卡住、下一步谁来做什么」；多 Agent 之间也凭这同一个状态真源协作，而不是各自记忆。更重要的是，所有「不顺利」的情形，如验证不过、预算耗尽、merge 冲突、运行中断，等等。都被建模为图中的正常路径（打回、停靠、恢复），而不是显性异常，框架不会半路丢弃一个 SPEC，要么它能够被 AI 所完成，框架把它推进到终点；要么给出明确证据，说明超越了 AI 的能力（譬如模型的额度用完了、又譬如与基本的实时逻辑相互冲突，是不可能实现的需求），让明确停靠在 `blocked` 等人来裁决。
 
 ```mermaid
 stateDiagram-v2
@@ -163,7 +163,7 @@ bash install.sh
 fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]
 ```
 
-生成工程骨架：`.fenix/`（配置 + 框架软链接 + 运行时目录）、`STATE.md`、`PROJECT_LOG.md`、`openspec/`、`.claude/agents/`、`.claude/worktrees/`，并追加 `.gitignore` 条目。
+生成工程骨架：`.fenix/`（配置 + 状态文件 + 框架软链接 + 运行时目录）、`openspec/`、`.claude/agents/`、`.claude/worktrees/`，并追加 `.gitignore` 条目。
 
 ### 2. 启动框架
 
@@ -181,7 +181,7 @@ fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]
 /fenix-new "添加用户登录功能"
 ```
 
-需求 Agent 会澄清需求、评估复杂度并建议执行模式（fast-track / full），生成完整 SPEC 注册到 `STATE.md`。fenixd 随后**全自动**完成实现与验证。
+需求 Agent 会澄清需求、评估复杂度并建议执行模式（fast-track / full），生成完整 SPEC 注册到 `.fenix/STATE.md`。fenixd 随后**全自动**完成实现与验证。
 
 ### 4. 监控进度
 
@@ -228,7 +228,7 @@ Fenixd/
 ├── install.sh              # 安装程序
 ├── fenix-init              # 项目初始化命令
 ├── Fenixd.py               # 守护进程主入口
-├── config.template.yaml    # 项目配置模板（fenix-init 渲染用）
+├── .fenix/                 # 运行时目录：config.yaml、STATE.md / todo.md 等状态文件（config.template.yaml 模板同在此，git 跟踪）
 ├── core/                   # 核心模块
 │   ├── state_machine.py    # 状态机（STATE.md 读写与合法转移）
 │   ├── event_bus.py        # 事件总线

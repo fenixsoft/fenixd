@@ -443,13 +443,24 @@ class TestPromptsAPI:
         assert status == 404
 
     def _register_selfref_project(self, tmp_path, srv, name: str):
-        """注册一个自引用项目（.fenix → 框架根）并击穿 projects TTL 缓存。"""
+        """注册一个自引用项目（.fenix → 框架根）并击穿 projects TTL 缓存。
+
+        迁移后 add_project 校验 .fenix/STATE.md——经符号链接解析到真实框架根，
+        存在性依赖开发环境（干净检出会挂）。自引用夹具的意图是 403 防护而非
+        注册校验，故直写 registry 配置绕过校验；显式注册本就不做项目标记检查。
+        """
         selfroot = tmp_path / name
         selfroot.mkdir()
         (selfroot / "STATE.md").write_text("# Fenix Project State\n", encoding="utf-8")
         (selfroot / ".fenix").symlink_to(Path(__file__).resolve().parents[1])
         from core.dashboard.registry import Registry
-        Registry(config_path=tmp_path / "dashboard.yaml").add_project(str(selfroot), name)
+        reg = Registry(config_path=tmp_path / "dashboard.yaml")
+        reg.save({
+            "port": 8787,
+            "projects": [{"name": name, "path": str(selfroot)}],
+            "scan_dirs": [],
+            "ignored": [],
+        })
         srv.httpd._projects_cache = []
         srv.httpd._cache_ts = 0.0
         return selfroot

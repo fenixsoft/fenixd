@@ -243,6 +243,9 @@ class StateMachine:
         # 方法内无条件 self.logger.* 调用不崩溃
         self.logger = logger if logger is not None else _NullLogger()
         self._lockfile = Path(str(state_path) + ".lock")
+        # 状态文件与 .STATE.md.lock 均在 state_path.parent 下打开；状态文件迁入
+        # .fenix/ 后父目录不再恒存在（项目根），构造时确保之（新项目首写路径）
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
 
     # ── Read / Write ───────────────────────────────────────────────
 

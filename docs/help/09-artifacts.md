@@ -37,7 +37,6 @@
         specs/         # 能力规格（help-docs/spec.md 等）
         verification-report.md  # 验证报告 Markdown
       archive/         # 归档（YYYY-MM-DD-<name>/）
-  STATE.md             # 见 .fenix/STATE.md 说明（部分项目双放）
 ```
 
 ## STATE.md 字段逐一解释

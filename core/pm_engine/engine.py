@@ -504,7 +504,7 @@ class PMEngine:
                 )
         # Fallback to project root
         if result_path is None:
-            root_result = self.project_root / ".fenix-run-result.json"
+            root_result = self.project_root / ".fenix" / ".fenix-run-result.json"
             if root_result.exists():
                 result_path = root_result
                 self.logger.debug(
@@ -517,7 +517,7 @@ class PMEngine:
             data = json.loads(result_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 # 共享结果文件护栏：文件携带的 spec 与当前 spec 不符时，
-                # 视作其它 spec 的残留（主树 .fenix-run-result.json 是共享文件，
+                # 视作其它 spec 的残留（主树 .fenix/.fenix-run-result.json 是共享文件，
                 # 任何 spec 成功都会覆盖写它），避免「CLI 成功退出却被残留文件
                 # 误判为失败 → 无谓重试」（admin 处置 add-spec-context-menu 根因）。
                 stamped = data.get("spec")
@@ -710,7 +710,7 @@ class PMEngine:
         此时应阻断 auto approve / verified→done，把缺口写入 error 字段供人工裁决。
 
         判定规则：
-        - 无 run 记录可查（.fenix-run-result.json 缺失/无效）→ 放行（无法证伪即放行）。
+        - 无 run 记录可查（.fenix/.fenix-run-result.json 缺失/无效）→ 放行（无法证伪即放行）。
         - run 声明 success，但存在「tasks.md 未勾选 且 不在 run done_ids」的任务
           → 阻断，返回缺口清单（任务 id 列表）。
         - 全部任务可确认完成（勾选 ∪ done_ids 覆盖全部）→ 放行。
@@ -1373,8 +1373,8 @@ class PMEngine:
     # ── Helpers ────────────────────────────────────────────────────
 
     def _append_project_log(self, message: str):
-        """Append a timestamped message to PROJECT_LOG.md."""
-        log_path = self.project_root / "PROJECT_LOG.md"
+        """Append a timestamped message to PROJECT_LOG.md（.fenix/ 下）."""
+        log_path = self.project_root / ".fenix" / "PROJECT_LOG.md"
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"\n- [{timestamp}] {message}")
@@ -1749,7 +1749,7 @@ class PMEngine:
         lines.append("")
 
         # Append to project log
-        log_path = self.project_root / "PROJECT_LOG.md"
+        log_path = self.project_root / ".fenix" / "PROJECT_LOG.md"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write("\n".join(lines))
 

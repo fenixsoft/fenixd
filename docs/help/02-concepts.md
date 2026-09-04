@@ -107,7 +107,7 @@ Dashboard 支持同时监控多个 Fenixd 项目。每个项目通过 `.fenix/co
 | 术语 | 含义 |
 |------|------|
 | **SPEC** | 软件需求规格说明书，对应 `openspec/changes/<name>/` 目录 |
-| **STATE.md** | 项目根目录下的状态文件，记录所有 SPEC 的当前状态与元数据 |
+| **STATE.md** | `.fenix/` 目录下的状态文件，记录所有 SPEC 的当前状态与元数据 |
 | **worktree** | Git 工作树，提供隔离的代码工作区 |
 | **verify.yaml** | 项目级验证契约，声明构建、启动、就绪探针 |
 | **门禁** | 验证后由 planner-judge 判定通过/失败的环节 |

@@ -31,7 +31,8 @@ DEFAULT_MAX_WIDTH = 2
 
 def _mk_engine(project_root, logger, config=None):
     from core.pm_engine import PMEngine
-    sm = StateMachine(project_root / "STATE.md", logger)
+    (Path(project_root) / ".fenix").mkdir(parents=True, exist_ok=True)
+    sm = StateMachine(project_root / ".fenix" / "STATE.md", logger)
     engine = PMEngine(sm, MagicMock(), config or {}, project_root, logger)
     # 屏蔽 handle_event 的连环副作用（bug_found 由测试直接调用 _do_spec_bug_found）
     engine.handle_event = MagicMock()

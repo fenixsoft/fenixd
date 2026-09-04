@@ -129,7 +129,7 @@ class FileWatcher:
         admin_changed = False
 
         # ── 第一级：顶层数据源签名（O(少数) stat） ──
-        state_path = proot / "STATE.md"
+        state_path = proot / ".fenix" / "STATE.md"
         sig = _file_sig(state_path)
         state_changed = sig != top_sigs.get("state")
         top_sigs["state"] = sig
@@ -281,7 +281,7 @@ class FileWatcher:
         cur = dashboard_data.parse_state(proot)
         self._states[name] = cur
 
-        state_sig = _file_sig(proot / "STATE.md")
+        state_sig = _file_sig(proot / ".fenix" / "STATE.md")
         try:
             summaries = self.summary_index.get(proot, cur, state_sig=state_sig)
         except Exception:

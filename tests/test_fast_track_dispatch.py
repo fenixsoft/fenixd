@@ -56,7 +56,7 @@ class _Base(unittest.TestCase):
         (self.pr / ".fenix" / "verify-progress").mkdir(parents=True, exist_ok=True)
         self.logger = MagicMock()
         from core.pm_engine import PMEngine
-        self.sm = StateMachine(self.pr / "STATE.md", self.logger)
+        self.sm = StateMachine(self.pr / ".fenix" / "STATE.md", self.logger)
         self.engine = PMEngine(self.sm, MagicMock(), {}, self.pr, self.logger)
         self.engine.handle_event = MagicMock()
         # mock worktree manager
@@ -100,7 +100,7 @@ class TestFastTrackVerified(_Base):
             branch="fenix/demo-1",
         )
         # stub result file
-        result_path = self.pr / ".fenix-run-result.json"
+        result_path = self.pr / ".fenix" / ".fenix-run-result.json"
         result_path.write_text(json.dumps(_fast_result("verified")), encoding="utf-8")
         # write designed scenarios
         sp = self.pr / ".fenix" / "verify-progress" / "demo" / "test_scenarios.json"

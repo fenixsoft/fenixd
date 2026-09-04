@@ -26,7 +26,8 @@ class TestPMEngineReplanLoop(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -67,7 +68,8 @@ class TestPMEngineMergeBackIntegration(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -98,7 +100,8 @@ class TestMergeCircuitBreakerFingerprint(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -131,7 +134,8 @@ class TestMainTreeHealthCheck(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -153,7 +157,8 @@ class TestStashPopConflictSelfHeal(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -175,7 +180,8 @@ class TestStuckThresholdUnify(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -207,7 +213,7 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
         (self.project_root / ".fenix").mkdir()
         self.logger = MagicMock()
         from core.state_machine import StateMachine
-        self.state_path = self.project_root / "STATE.md"
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
         self.sm = StateMachine(self.state_path, self.logger)
         config = {"schedule": {"stuck_threshold_minutes": 60}}
         self.engine = PMEngine(self.sm, MagicMock(), config, self.project_root, self.logger)

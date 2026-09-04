@@ -17,13 +17,13 @@ def _find_project_root() -> Path:
     """
     cwd = Path.cwd()
     for p in [cwd, *cwd.parents]:
-        if (p / "STATE.md").exists() or (p / ".fenix").exists():
+        if (p / ".fenix" / "STATE.md").exists() or (p / ".fenix").exists():
             return p
     return cwd
 
 
 PROJECT_ROOT = _find_project_root()
-STATE_PATH = PROJECT_ROOT / "STATE.md"
+STATE_PATH = PROJECT_ROOT / ".fenix" / "STATE.md"
 CHANGES_DIR = PROJECT_ROOT / "openspec" / "changes"
 
 # ── Daemon check ──────────────────────────────────────────────────

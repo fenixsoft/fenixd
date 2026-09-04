@@ -30,7 +30,8 @@ class TestVerifiedStuckBlocker(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.project_root = Path(self.tmpdir)
         self.logger = MagicMock()
-        self.state_path = self.project_root / "STATE.md"
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
         self.sm = StateMachine(self.state_path, self.logger)
         config = {"schedule": {"stuck_threshold_minutes": 60}}
         self.engine = PMEngine(self.sm, MagicMock(), config, self.project_root, self.logger)
@@ -82,7 +83,8 @@ class TestPushBranchResolution(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.repo = Path(self.tmpdir)
         self.logger = MagicMock()
-        self.state_path = self.repo / "STATE.md"
+        (self.repo / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.repo / ".fenix" / "STATE.md"
         self.sm = StateMachine(self.state_path, self.logger)
         config = {}
         self.engine = PMEngine(self.sm, MagicMock(), config, self.repo, self.logger)

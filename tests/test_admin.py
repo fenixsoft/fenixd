@@ -1082,7 +1082,7 @@ class _AlertTestServer:
 def alerts_fx(tmp_path):
     proot = tmp_path / "proj-alerts"
     (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-    (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+    (proot / ".fenix" / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
     store = AdminStore(proot, FakeLogger())
     store.append({"kind": ESCALATION, "signal_type": "stuck", "spec": "spec-a",
                   "severity": "critical", "description": "卡死"})
@@ -1106,7 +1106,7 @@ def activities_fx(tmp_path):
     """运维记录 API 测试数据：排序/置顶/缺 summary 降级。"""
     proot = tmp_path / "proj-act"
     (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-    (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+    (proot / ".fenix" / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
     store = AdminStore(proot, FakeLogger())
     # 旧记录：无 summary（降级测试），时间最早
     store.append({"kind": DISPOSITION, "signal_type": "stuck", "spec": "spec-old",
@@ -1187,7 +1187,7 @@ class TestDashboardAlertsAPI:
         proot2 = tmp_path / "proj-clear-2"
         for p in (proot1, proot2):
             (p / ".fenix").mkdir(parents=True, exist_ok=True)
-            (p / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+            (p / ".fenix" / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
         AdminStore(proot1, FakeLogger()).append(
             {"kind": ESCALATION, "signal_type": "stuck", "spec": "spec-a",
              "severity": "critical"})
@@ -1244,7 +1244,7 @@ class TestDashboardAdminActivitiesAPI:
         """无升级干扰时按时间倒序。"""
         proot = tmp_path / "proj-sort"
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+        (proot / ".fenix" / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
         store = AdminStore(proot, FakeLogger())
         store.append({"kind": DISPOSITION, "signal_type": "stuck", "spec": "oldest",
                       "created": iso_ago(60)})
@@ -1281,7 +1281,7 @@ class TestDashboardAdminActivitiesAPI:
         """同 admin_run_id 的 pending + 最终记录归并：只显示最终，不出现"永久处置中"。"""
         proot = tmp_path / "proj-dedup"
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+        (proot / ".fenix" / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
         store = AdminStore(proot, FakeLogger())
         # run A：pending + 最终 → 只显示最终
         store.append({"kind": DISPOSITION, "status": "pending", "result": "pending",
@@ -1319,7 +1319,7 @@ class TestDashboardAdminActivitiesAPI:
         """无任何记录 → 空列表且不报错。"""
         proot = tmp_path / "proj-empty"
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+        (proot / ".fenix" / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
         cfg = tmp_path / "dashboard.yaml"
         reg = Registry(config_path=cfg)
         reg.save({"port": 8787,

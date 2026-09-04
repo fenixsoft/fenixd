@@ -26,7 +26,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
     (proot / "openspec" / "changes" / "myspec" / "specs").mkdir(parents=True, exist_ok=True)
     (proot / "openspec" / "changes" / "otherspec" / "specs").mkdir(parents=True, exist_ok=True)
 
-    (proot / "STATE.md").write_text(
+    (proot / ".fenix" / "STATE.md").write_text(
         "# Fenix Project State\n\n## Specs\n\n"
         "### myspec\n- status: testing\n- priority: 2\n- created: 2026-01-01T00:00:00+00:00\n"
         "- updated: 2026-01-02T00:00:00+00:00\n- error: null\n- depends_on: null\n\n"
@@ -65,7 +65,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
 
 
 def _state_sig(proot: Path):
-    return dash_data._stat_sig(proot / "STATE.md")
+    return dash_data._stat_sig(proot / ".fenix" / "STATE.md")
 
 
 class TestSummaryIndex:
@@ -127,7 +127,7 @@ class TestSummaryIndex:
         idx.get(proot)
 
         # STATE.md 新增一个 spec 条目 → 全量重建
-        state_path = proot / "STATE.md"
+        state_path = proot / ".fenix" / "STATE.md"
         state_path.write_text(
             state_path.read_text(encoding="utf-8").replace(
                 "### otherspec",
@@ -145,7 +145,7 @@ class TestSummaryIndex:
         proot = make_project(tmp_path)
         idx = SummaryIndex()
         idx.get(proot)
-        state_path = proot / "STATE.md"
+        state_path = proot / ".fenix" / "STATE.md"
         state_path.write_text(
             state_path.read_text(encoding="utf-8").replace(
                 "### otherspec\n- status: done\n- priority: 1\n- created: 2026-02-01T00:00:00+00:00\n"

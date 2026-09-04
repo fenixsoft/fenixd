@@ -136,7 +136,8 @@ class _PMEngineBase(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.project_root = Path(self.tmpdir)
         self.logger = MagicMock()
-        self.sm = StateMachine(self.project_root / "STATE.md", self.logger)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.sm = StateMachine(self.project_root / ".fenix" / "STATE.md", self.logger)
         self.engine = PMEngine(
             self.sm, MagicMock(), {}, self.project_root, self.logger)
         # 默认摆一个 testing 中的 spec

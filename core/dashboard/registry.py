@@ -10,7 +10,7 @@ registry.py — 多项目发现与注册（dashboard-server D3）。
       - <父目录>
 
 `discover()` 合并显式 projects 与 scan_dirs 扫描结果；扫描仅当目录存在
-`STATE.md` 即识别为 Fenixd 项目（无需 `.fenix/config.yaml`）。显式注册的
+`.fenix/STATE.md` 即识别为 Fenixd 项目（无需 `.fenix/config.yaml`）。显式注册的
 项目始终出现在监控列表（即使目录不存在，标记 exists=False）。
 
 默认扫描：`scan_dirs` 未配置（或为空）时，自动以用户主目录 `~` 为唯一扫描根
@@ -130,7 +130,7 @@ class Registry:
             for child in children:
                 if not child.is_dir():
                     continue
-                if not (child / "STATE.md").is_file():
+                if not (child / ".fenix" / "STATE.md").is_file():
                     continue
                 rp = child.resolve()
                 key = str(rp)
@@ -172,7 +172,7 @@ class Registry:
             if existing == key:
                 return False, f"项目已在监控列表: {key}"
 
-        if not (rp / "STATE.md").is_file():
+        if not (rp / ".fenix" / "STATE.md").is_file():
             return False, f"目录不是 Fenixd 项目（缺少 STATE.md）: {key}"
 
         data.setdefault("projects", []).append({

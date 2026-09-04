@@ -15,10 +15,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def make_frozen_fixture_project(tmp_path: Path, name: str = "proj-a") -> Path:
-    """最小可解析项目：仅 STATE.md（冻结测试只依赖 STATE 读写）。"""
+    """最小可解析项目：仅 .fenix/STATE.md（冻结测试只依赖 STATE 读写）。"""
     proot = tmp_path / name
     proot.mkdir(parents=True, exist_ok=True)
-    (proot / "STATE.md").write_text(
+    (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+    (proot / ".fenix" / "STATE.md").write_text(
         "# Fenix Project State\n\n## Specs\n\n"
         "### myspec\n- status: testing\n- priority: 2\n"
         "- created: 2026-01-01T00:00:00+00:00\n- updated: 2026-01-02T00:00:00+00:00\n"

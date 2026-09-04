@@ -27,7 +27,7 @@ import sys; sys.path.insert(0, '.fenix')
 from pathlib import Path
 from core.state_machine import StateMachine
 
-sm = StateMachine(Path('STATE.md'), None)
+sm = StateMachine(Path('.fenix/STATE.md'), None)
 done_specs = sm.get_by_status('done')
 
 if not done_specs:
@@ -66,7 +66,7 @@ python3 -c "
 import sys; sys.path.insert(0, '.fenix')
 from pathlib import Path
 from core.state_machine import StateMachine
-sm = StateMachine(Path('STATE.md'), None)
+sm = StateMachine(Path('.fenix/STATE.md'), None)
 sm.transition('<spec-name>', 'pushed')
 "
 ```

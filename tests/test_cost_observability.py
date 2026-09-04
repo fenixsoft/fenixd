@@ -45,7 +45,8 @@ def make_runner(proot: Path) -> AgentRunner:
 
 
 def make_state(proot: Path, spec: str, tokens_in: int = 0) -> StateMachine:
-    sm = StateMachine(proot / "STATE.md", FakeLogger())
+    (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", FakeLogger())
     sm.add_spec(spec, {
         "priority": 5,
         "status": "implementing",

@@ -15,7 +15,7 @@ from pathlib import Path
 
 # 使用 .absolute()（不跟随软链接）：脚本经项目内 .fenix/bin/ 软链接调用
 PROJECT_ROOT = Path(__file__).absolute().parent.parent.parent
-STATE_PATH = PROJECT_ROOT / "STATE.md"
+STATE_PATH = PROJECT_ROOT / ".fenix" / "STATE.md"
 CHANGES_DIR = PROJECT_ROOT / "openspec" / "changes"
 LOGS_DIR = PROJECT_ROOT / ".fenix" / "logs"
 WORKTREES_DIR = PROJECT_ROOT / ".claude" / "worktrees"

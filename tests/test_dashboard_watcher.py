@@ -31,7 +31,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
     (proot / ".fenix" / "verify-progress" / "myspec" / "screenshots").mkdir(parents=True, exist_ok=True)
     (proot / "openspec" / "changes" / "myspec" / "specs").mkdir(parents=True, exist_ok=True)
 
-    (proot / "STATE.md").write_text(
+    (proot / ".fenix" / "STATE.md").write_text(
         "# Fenix Project State\n\n## Specs\n\n"
         "### myspec\n- status: testing\n- priority: 2\n- created: 2026-01-01T00:00:00+00:00\n"
         "- updated: 2026-01-02T00:00:00+00:00\n- error: null\n- depends_on: null\n",
@@ -147,7 +147,7 @@ class TestFileWatcher:
         proot, hub, w = self._mk(tmp_path)
         w.scan_once()  # 建立基线
         hub.events.clear()
-        state = proot / "STATE.md"
+        state = proot / ".fenix" / "STATE.md"
         new_content = state.read_text(encoding="utf-8").replace("- status: testing", "- status: implemented")
         self._atomic_replace_state(proot, new_content)
         w.scan_once()
@@ -165,8 +165,8 @@ class TestFileWatcher:
 
     def _atomic_replace_state(self, proot, new_content):
         """原子替换 STATE.md。"""
-        state = proot / "STATE.md"
-        tmp = proot / ".STATE.md.tmp"
+        state = proot / ".fenix" / "STATE.md"
+        tmp = proot / ".fenix" / ".STATE.md.tmp"
         tmp.write_text(new_content, encoding="utf-8")
         os.replace(str(tmp), str(state))
 

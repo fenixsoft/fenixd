@@ -33,7 +33,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
     (proot / ".fenix" / "verify-progress" / "myspec" / "screenshots").mkdir(parents=True, exist_ok=True)
     (proot / "openspec" / "changes" / "myspec" / "specs").mkdir(parents=True, exist_ok=True)
 
-    (proot / "STATE.md").write_text(
+    (proot / ".fenix" / "STATE.md").write_text(
         "# Fenix Project State\n\n## Specs\n\n"
         "### myspec\n- status: testing\n- priority: 2\n- created: 2026-01-01T00:00:00+00:00\n"
         "- updated: 2026-01-02T00:00:00+00:00\n- error: null\n- depends_on: null\n\n"

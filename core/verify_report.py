@@ -94,7 +94,7 @@ def _sum_verify_chain_tokens(project_root, spec_name):
 
 
 def _load_run_result(project_root, spec_name):
-    """读取裁决 .fenix-run-result.json（verify-progress 优先，项目根回退）。
+    """读取裁决 .fenix-run-result.json（verify-progress 优先，主树 .fenix/ 回退）。
 
     项目根为共享文件：携带的 spec 与当前 spec 不符时视为其它 spec 的残留忽略
     （与 pm_engine._read_planner_result 同语义）。
@@ -103,7 +103,7 @@ def _load_run_result(project_root, spec_name):
         Path(project_root) / ".fenix" / "verify-progress"
         / spec_name / ".fenix-run-result.json"
     )
-    fallback = Path(project_root) / ".fenix-run-result.json"
+    fallback = Path(project_root) / ".fenix" / ".fenix-run-result.json"
     for path, stamped_expected in ((primary, False), (fallback, True)):
         if not path.exists():
             continue

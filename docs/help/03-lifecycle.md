@@ -144,7 +144,7 @@ SPEC 处于 `implementing`/`testing` 这类中断状态时，daemon 重启自动
 
 ## STATE.md 与时间轴
 
-- **STATE.md**：项目根的 `STATE.md` 记录每个 SPEC 的状态字段、优先级、创建/更新时间、run 引用、error 等。格式详见 [文件与数据地图](09-artifacts.md)。
+- **STATE.md**：项目的 `.fenix/STATE.md` 记录每个 SPEC 的状态字段、优先级、创建/更新时间、run 引用、error 等。格式详见 [文件与数据地图](09-artifacts.md)。
 - **时间轴**：Dashboard「运维记录」页展示 Administrator 活动时间线；`/fenix-process <name>` 展示单个 SPEC 时间线。
 
 ## 相关文档

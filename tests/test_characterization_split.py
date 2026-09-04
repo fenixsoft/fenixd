@@ -164,8 +164,9 @@ class TestReportingCharacterization(unittest.TestCase):
 
     def test_generate_daily_report_appends_project_log(self):
         self.sm.read_all.return_value = {}
+        (self.tmpdir / ".fenix").mkdir(parents=True, exist_ok=True)
         self.engine.generate_daily_report()
-        log = (self.tmpdir / "PROJECT_LOG.md").read_text(encoding="utf-8")
+        log = (self.tmpdir / ".fenix" / "PROJECT_LOG.md").read_text(encoding="utf-8")
         self.assertIn("📋 No SPECs yet", log)
         self.assertIn("---", log)
 

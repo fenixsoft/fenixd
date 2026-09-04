@@ -65,10 +65,10 @@ class ReportBuilder:
 
 
     def generate_daily_report(self):
-        """Generate daily report and append to PROJECT_LOG.md."""
+        """Generate daily report and append to PROJECT_LOG.md（.fenix/ 下）."""
         report = self._pm.generate_report()
 
-        log_path = self._pm.project_root / "PROJECT_LOG.md"
+        log_path = self._pm.project_root / ".fenix" / "PROJECT_LOG.md"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"\n\n---\n\n{report}\n")
 

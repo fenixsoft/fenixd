@@ -80,8 +80,9 @@ def run_file_lines(proot: Path, run_id: str) -> list:
 def build_engine(proot: Path, config: dict = None):
     """构造最小 PMEngine（真实 state_machine + MagicMock agent_runner）。"""
     from core.pm_engine import PMEngine
+    (proot / ".fenix").mkdir(parents=True, exist_ok=True)
     logger = make_logger()
-    sm = StateMachine(proot / "STATE.md", logger)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", logger)
     engine = PMEngine(sm, MagicMock(), config or {}, proot, logger)
     return engine, sm, logger
 
@@ -368,7 +369,7 @@ class TestInstantFailDispatchGate(unittest.TestCase):
         self.root = Path(self.tmpdir)
         (self.root / ".fenix").mkdir(parents=True)
         self.logger = make_logger()
-        self.sm = StateMachine(self.root / "STATE.md", self.logger)
+        self.sm = StateMachine(self.root / ".fenix" / "STATE.md", self.logger)
         self.config = {"agents": {
             "instant_fail_threshold_seconds": 60,
             "instant_fail_cooldown_after": 3,
@@ -668,8 +669,9 @@ class TestFrozenStopsRetryChain(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.root = Path(self.tmpdir)
+        (self.root / ".fenix").mkdir(parents=True, exist_ok=True)
         self.logger = make_logger()
-        self.sm = StateMachine(self.root / "STATE.md", self.logger)
+        self.sm = StateMachine(self.root / ".fenix" / "STATE.md", self.logger)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)

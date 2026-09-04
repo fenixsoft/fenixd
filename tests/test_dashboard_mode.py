@@ -28,8 +28,9 @@ class TestDashboardMode(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.root = Path(self.tmpdir)
-        (self.root / "STATE.md").write_text("", encoding="utf-8")
-        self.sm = StateMachine(self.root / "STATE.md", None)
+        (self.root / ".fenix").mkdir(parents=True, exist_ok=True)
+        (self.root / ".fenix" / "STATE.md").write_text("", encoding="utf-8")
+        self.sm = StateMachine(self.root / ".fenix" / "STATE.md", None)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -66,7 +67,8 @@ class TestSpecSummaryDurationPersistence(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.root = Path(self.tmpdir)
-        (self.root / "STATE.md").write_text("", encoding="utf-8")
+        (self.root / ".fenix").mkdir(parents=True, exist_ok=True)
+        (self.root / ".fenix" / "STATE.md").write_text("", encoding="utf-8")
         _mk_spec(self.root, "demo")
 
     def tearDown(self):

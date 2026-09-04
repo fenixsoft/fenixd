@@ -12,10 +12,10 @@ __pycache__/
 # Worktrees (managed by fenixd)
 .claude/worktrees/
 
-# Runtime state
+# Runtime state（STATE.md / PROJECT_LOG.md / todo.md 等状态文件均在 .fenix/ 下，是否入库由项目自行决定）
 .fenix/state.json
 .fenix/queue.json
-.fenix-run-result.json
+.fenix/.fenix-run-result.json
 
 # Verification artifacts (screenshots, progress files)
 .fenix/verify-progress/

@@ -199,7 +199,7 @@ class TestStateParserHalfWriteDefense(unittest.TestCase):
 
     def test_read_all_normalizes_string_entry(self):
         """1.2 防御契约：read_all 返回值中不得出现非 dict 条目。"""
-        sm = StateMachine(Path(tempfile.mkdtemp()) / "STATE.md", MagicMock())
+        sm = StateMachine(Path(tempfile.mkdtemp()) / ".fenix" / "STATE.md", MagicMock())
         # 模拟解析层被回归破坏、混入字符串条目的情形
         sm._raw_override = {
             "good": {"status": "ready", "error": None, "implementer_run": None},
@@ -231,7 +231,8 @@ class TestStateMachine(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
 
@@ -354,9 +355,9 @@ class TestStateMachine(unittest.TestCase):
         self.assertEqual(self.sm.read_one("present")["priority"], 1)
         # With no STATE.md at all, the call is still a safe no-op returning False.
         empty_dir = tempfile.mkdtemp()
-        fresh_sm = StateMachine(Path(empty_dir) / "STATE.md", MagicMock())
+        fresh_sm = StateMachine(Path(empty_dir) / ".fenix" / "STATE.md", MagicMock())
         self.assertFalse(fresh_sm.remove_spec("absent"))
-        self.assertFalse((Path(empty_dir) / "STATE.md").exists())
+        self.assertFalse((Path(empty_dir) / ".fenix" / "STATE.md").exists())
         shutil.rmtree(empty_dir, ignore_errors=True)
 
     def test_priority_sorting_same_priority(self):
@@ -403,7 +404,8 @@ class TestVerifiedTestingEscapeHatch(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.sm.add_spec("demo", {"status": "verified",
@@ -443,7 +445,8 @@ class TestBlockedState(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
 

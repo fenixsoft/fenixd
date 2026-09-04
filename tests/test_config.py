@@ -240,11 +240,11 @@ class TestShutdownStopsDispatch(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════
 
 def _mk_fenix_project(base: Path, name: str) -> Path:
-    """在 base/name 下构造一个可被识别的 Fenixd 项目（STATE.md + .fenix/config.yaml）。"""
+    """在 base/name 下构造一个可被识别的 Fenixd 项目（.fenix/STATE.md + .fenix/config.yaml）。"""
     proot = base / name
     (proot / ".fenix" / "logs").mkdir(parents=True, exist_ok=True)
     (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
-    (proot / "STATE.md").write_text(
+    (proot / ".fenix" / "STATE.md").write_text(
         "# Fenix Project State\n\n## Specs\n\n"
         "### myspec\n- status: testing\n- priority: 2\n"
         "- created: 2026-01-01T00:00:00+00:00\n- updated: 2026-01-02T00:00:00+00:00\n"
@@ -266,10 +266,11 @@ class TestRegistryDefaultDiscovery(unittest.TestCase):
         self.home.mkdir()
         self.proj_a = _mk_fenix_project(self.home, "projectA")
         self.proj_b = _mk_fenix_project(self.home, "projectB")
-        # 轻量 Fenixd 目录：仅 STATE.md 即被发现（无需 .fenix/config.yaml）
+        # 轻量 Fenixd 目录：仅 .fenix/STATE.md 即被发现（无需 .fenix/config.yaml）
         fake = self.home / "lite-project"
         fake.mkdir()
-        (fake / "STATE.md").write_text("# not a project", encoding="utf-8")
+        (fake / ".fenix").mkdir()
+        (fake / ".fenix" / "STATE.md").write_text("# not a project", encoding="utf-8")
         self.cfg = self.tmpdir / "dashboard.yaml"
 
     def tearDown(self):
@@ -286,7 +287,7 @@ class TestRegistryDefaultDiscovery(unittest.TestCase):
         self.assertIn("projectA", by_name)
         self.assertIn("projectB", by_name)
         self.assertTrue(by_name["projectA"]["discovered"])
-        # 仅 STATE.md 的目录也被扫描命中
+        # 仅 .fenix/STATE.md 的目录也被扫描命中
         self.assertIn("lite-project", by_name)
         self.assertTrue(by_name["lite-project"]["discovered"])
 

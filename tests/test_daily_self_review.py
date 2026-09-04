@@ -4,7 +4,7 @@
 - 1.4 单测：定时触发 / 同日防重复 / 23:30 启动补跑 / enabled=false 全链路零动作
 - 2.4 失败处理：run 失败记 warning 告警、当日不重试、次日自然重试
 - 2.5 单测：首次创建 / 追加不覆盖 / read_todo 开关注入与不注入 / 自省后
-  openspec 与 STATE 零新增 / commit 仅含 todo.md
+  openspec 与 STATE 零新增 / commit 仅含 .fenix/todo.md
 - 3.4 端点读写（见 test_dashboard_data.py 或本文件后段）
 """
 
@@ -69,7 +69,7 @@ def proot(tmp_path):
     root = tmp_path / "proj"
     (root / ".fenix").mkdir(parents=True)
     (root / "openspec" / "changes").mkdir(parents=True)
-    (root / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+    (root / ".fenix" / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
     return root
 
 
@@ -145,7 +145,7 @@ class TestSelfReviewScheduling:
         assert state["last_run_date"] == "2026-09-04"
         assert len(runner.calls) == 1
         # todo.md 已创建
-        todo = proot / "todo.md"
+        todo = proot / ".fenix" / "todo.md"
         assert todo.exists()
         content = todo.read_text(encoding="utf-8")
         assert "## 2026-09-04" in content
@@ -159,7 +159,7 @@ class TestSelfReviewScheduling:
         assert res == {"triggered": False, "reason": "before_run_at"}
         assert runner.calls == []
         assert not (proot / ".fenix" / "self_review_state.json").exists()
-        assert not (proot / "todo.md").exists()
+        assert not (proot / ".fenix" / "todo.md").exists()
 
     def test_same_day_no_duplicate(self, proot, monkeypatch, tmp_path):
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
@@ -189,7 +189,7 @@ class TestSelfReviewScheduling:
         assert res == {"triggered": False, "reason": "disabled"}
         assert runner.calls == []
         assert not (proot / ".fenix" / "self_review_state.json").exists()
-        assert not (proot / "todo.md").exists()
+        assert not (proot / ".fenix" / "todo.md").exists()
         # admin store 也无告警
         assert AdminStore(proot, FakeLogger()).read_all() == []
 
@@ -260,7 +260,7 @@ class TestSelfReviewFailure:
                    and r.get("severity") == "warning" and r.get("handled")
                    for r in recs)
         # 未写 todo.md
-        assert not (proot / "todo.md").exists()
+        assert not (proot / ".fenix" / "todo.md").exists()
 
     def test_next_day_natural_retry(self, proot, monkeypatch):
         # 9/4 失败
@@ -275,8 +275,8 @@ class TestSelfReviewFailure:
         res = sched2.check_and_run()
         assert res["triggered"] is True and res["ok"] is True
         assert res["date"] == "2026-09-05"
-        assert (proot / "todo.md").exists()
-        assert "## 2026-09-05" in (proot / "todo.md").read_text(encoding="utf-8")
+        assert (proot / ".fenix" / "todo.md").exists()
+        assert "## 2026-09-05" in (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
 
 
 # ── 2.5 产物写入 ───────────────────────────────────────────
@@ -290,7 +290,7 @@ class TestTodoAppend:
             improvements=["证据：planner 丢弃；建议：改进调度"],
         )
         sched._append_todo("2026-09-04", result)
-        todo = proot / "todo.md"
+        todo = proot / ".fenix" / "todo.md"
         assert todo.exists()
         content = todo.read_text(encoding="utf-8")
         assert content.startswith("## 2026-09-04\n")
@@ -300,11 +300,11 @@ class TestTodoAppend:
 
     def test_append_not_overwrite(self, proot):
         sched = make_scheduler(proot)
-        (proot / "todo.md").write_text(
+        (proot / ".fenix" / "todo.md").write_text(
             "## 2026-09-03\n\n### 浪费\n- 旧条目\n", encoding="utf-8")
         result = FakeReviewResult(waste=["新浪费"], mistakes=["新失误"], improvements=["新改进"])
         sched._append_todo("2026-09-04", result)
-        content = (proot / "todo.md").read_text(encoding="utf-8")
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
         assert "## 2026-09-03" in content and "- 旧条目" in content  # 历史保留
         assert "## 2026-09-04" in content and "- 新浪费" in content   # 追加在尾部
         # 新分节在文件尾部（历史之后）
@@ -314,13 +314,13 @@ class TestTodoAppend:
         sched = make_scheduler(proot)
         result = FakeReviewResult(waste=[], mistakes=[], improvements=[])
         sched._append_todo("2026-09-04", result)
-        content = (proot / "todo.md").read_text(encoding="utf-8")
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
         assert "### 浪费" in content and "### 失误" in content and "### 可改进" in content
         assert content.count("（当日无）") == 3
 
     def test_read_todo_switches(self, proot, monkeypatch):
         """read_todo=true 注入 todo.md 全文；false 不注入（None）。"""
-        (proot / "todo.md").write_text("## 2026-09-03\n\n### 浪费\n- 历史\n", encoding="utf-8")
+        (proot / ".fenix" / "todo.md").write_text("## 2026-09-03\n\n### 浪费\n- 历史\n", encoding="utf-8")
         # read_todo=true → 注入全文
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
         runner_on = FakeReviewRunner()
@@ -359,12 +359,12 @@ class TestTodoAppend:
         assert "日志 ERROR" in summary and "ERROR 总数: 1" in summary
 
 
-# ── 2.5 禁止自动创建 SPEC / STATE 零新增 / commit 仅含 todo.md ──
+# ── 2.5 禁止自动创建 SPEC / STATE 零新增 / commit 仅含 .fenix/todo.md ──
 
 class TestNoAutoCreation:
     def test_no_state_or_openspec_new_entries(self, proot, monkeypatch):
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
-        state_before = (proot / "STATE.md").read_text(encoding="utf-8")
+        state_before = (proot / ".fenix" / "STATE.md").read_text(encoding="utf-8")
         changes_before = sorted(
             p.name for p in (proot / "openspec" / "changes").iterdir() if p.is_dir()
         )
@@ -372,17 +372,17 @@ class TestNoAutoCreation:
         sched = make_scheduler(proot, runner=runner, specs={"spec-a": {"status": "done"}})
         sched.check_and_run()
         # STATE.md 内容逐字节不变；openspec/changes 无新增目录；无 agent 派发诉求
-        assert (proot / "STATE.md").read_text(encoding="utf-8") == state_before
+        assert (proot / ".fenix" / "STATE.md").read_text(encoding="utf-8") == state_before
         changes_after = sorted(
             p.name for p in (proot / "openspec" / "changes").iterdir() if p.is_dir()
         )
         assert changes_after == changes_before
-        # 只产生 todo.md 与状态文件
-        assert (proot / "todo.md").exists()
+        # 只产生 .fenix/todo.md 与状态文件
+        assert (proot / ".fenix" / "todo.md").exists()
         assert (proot / ".fenix" / "self_review_state.json").exists()
 
     def test_commit_contains_only_todo(self, tmp_path, monkeypatch):
-        """写入后 git commit 仅含 todo.md（D4 单文件提交语义）。"""
+        """写入后 git commit 仅含 .fenix/todo.md（D4 单文件提交语义）。"""
         proot = tmp_path / "repo"
         proot.mkdir(parents=True)
         (proot / ".fenix").mkdir(parents=True)
@@ -399,11 +399,11 @@ class TestNoAutoCreation:
         result = FakeReviewResult(waste=["W"], mistakes=["M"], improvements=["I"])
         sched._append_todo("2026-09-04", result)
         assert sched._commit_todo("2026-09-04") is True
-        # last commit 仅含 todo.md
+        # last commit 仅含 .fenix/todo.md
         shown = subprocess.run(
             ["git", "-C", str(proot), "show", "--name-only", "--format=", "HEAD"],
             capture_output=True, text=True, check=True).stdout.split()
-        assert [p for p in shown if p.strip()] == ["todo.md"]
+        assert [p for p in shown if p.strip()] == [".fenix/todo.md"]
         # untracked.txt 未被提交
         assert "untracked.txt" not in shown
 
@@ -482,7 +482,7 @@ class TestDashboardSelfReview:
 
         proot = tmp_path / "proj-api"
         (proot / ".fenix").mkdir(parents=True)
-        (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+        (proot / ".fenix" / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
         cfg = tmp_path / "dashboard.yaml"
         reg = Registry(config_path=cfg)
         reg.save({"port": 8787,
@@ -540,7 +540,7 @@ class TestAdminMonitorHook:
         from core.admin_monitor import AdminMonitor
         proot = tmp_path / "proj"
         (proot / ".fenix").mkdir(parents=True)
-        (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+        (proot / ".fenix" / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
         runner = FakeReviewRunner()
         mon = AdminMonitor(
             {"admin": {"enabled": True,
@@ -551,7 +551,7 @@ class TestAdminMonitorHook:
         )
         mon.run_once()
         assert len(runner.calls) == 1
-        assert (proot / "todo.md").exists()
+        assert (proot / ".fenix" / "todo.md").exists()
 
     def test_run_once_with_admin_disabled_no_trigger(self, tmp_path, monkeypatch):
         """admin.enabled=false → 巡检不执行自省（依赖既有 monitor enabled 门控）。"""
@@ -559,7 +559,7 @@ class TestAdminMonitorHook:
         from core.admin_monitor import AdminMonitor
         proot = tmp_path / "proj"
         (proot / ".fenix").mkdir(parents=True)
-        (proot / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+        (proot / ".fenix" / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
         runner = FakeReviewRunner()
         mon = AdminMonitor(
             {"admin": {"enabled": False,
@@ -570,7 +570,7 @@ class TestAdminMonitorHook:
         )
         mon.run_once()
         assert runner.calls == []
-        assert not (proot / "todo.md").exists()
+        assert not (proot / ".fenix" / "todo.md").exists()
         assert not (proot / ".fenix" / "self_review_state.json").exists()
 
 

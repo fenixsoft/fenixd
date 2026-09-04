@@ -15,4 +15,4 @@
 - 已声明纯展示的元素即合规，收工守卫不因此拦截。
 - 若你判断任务书语境中某交付路径实为**运行时写入目标或既有引用**（非本仓库新建交付物，如被管项目的 `.fenix/config.yaml`、第三方清单），MUST 在 .fenix-run-result.json findings 登记异议，守卫将转人工裁决而非盲目重派：`{"type": "deliverable-dispute", "element": "<路径>", "current": "守卫判其为必需交付物", "suggestion": "<应归 reference 的依据>"}`
 
-IMPORTANT: 不要直接修改 STATE.md，修改统一由 daemon 负责。
+IMPORTANT: 不要直接修改 .fenix/STATE.md，修改统一由 daemon 负责。

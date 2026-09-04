@@ -136,7 +136,7 @@ python3 -c "
 import sys; sys.path.insert(0, '.fenix')
 from pathlib import Path
 from core.state_machine import StateMachine
-sm = StateMachine(Path('STATE.md'), None)
+sm = StateMachine(Path('.fenix/STATE.md'), None)
 sm.add_spec('<spec-name>', {'status': 'drafted', 'priority': 5})
 print(f'SPEC <spec-name> registered')
 "
@@ -154,7 +154,7 @@ git commit -m "[fenix] spec: <spec-name>"
 ```
 
 - 只 add 该 spec 目录，**禁止 `git add .` / `-A`**（避免带入无关改动）
-- STATE.md 已被 `.gitignore` 忽略，属运行时文件，**无需提交**
+- STATE.md 位于 `.fenix/` 下，已被 `.gitignore` 忽略，属运行时文件，**无需提交**
 - 提交前检查脚手架产物完整：`.openspec.yaml` 缺失时补写（内容为 `schema: spec-driven` + `created: <年-月-日>` 两行，与其它 change 一致）
 - 提交失败（pre-commit hook 报错等）时修复后重新提交，不要跳过 hook
 - `--modify <name>` 更新完 artifacts 后同样执行本节提交

@@ -25,7 +25,8 @@ from core.state_machine import StateMachine
 
 def _mk_engine(project_root, logger, config=None):
     from core.pm_engine import PMEngine
-    sm = StateMachine(project_root / "STATE.md", logger)
+    (project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+    sm = StateMachine(project_root / ".fenix" / "STATE.md", logger)
     engine = PMEngine(sm, MagicMock(), config or {}, project_root, logger)
     engine.handle_event = MagicMock()
     return engine, sm
@@ -68,7 +69,7 @@ class TestRepairSectionCarriesPrevConclusions(_InplaceBase):
 
     def _write_root_result(self, spec, summary, findings=None):
         import json
-        (self.project_root / ".fenix-run-result.json").write_text(
+        (self.project_root / ".fenix" / ".fenix-run-result.json").write_text(
             json.dumps({"status": "success", "spec": spec,
                         "summary": summary, "findings": findings or []},
                        ensure_ascii=False),
@@ -206,7 +207,7 @@ class TestFailRoundsPersistAcrossRestart(_InplaceBase):
 
         # 模拟 daemon 重启：从磁盘重新构造 state machine
         from core.state_machine import StateMachine as SM
-        new_sm = SM(self.project_root / "STATE.md", self.logger)
+        new_sm = SM(self.project_root / ".fenix" / "STATE.md", self.logger)
         entry = new_sm.read_one("quick-links-folders")
         self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 1)
         self.assertEqual(entry["status"], "implementing")

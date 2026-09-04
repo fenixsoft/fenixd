@@ -74,8 +74,9 @@ def init_repo(root: Path):
 def make_conflict_branch(root: Path, branch: str, shared_content: str = "BRANCH\n"):
     """从 main 派生分支：改 shared.py（制造语义冲突），提交后 checkout 回 main。
 
-    只 stage shared.py——避免把 untracked 的 STATE.md/openspec 卷进分支提交，
-    checkout 回 base 时不会删除它们（StateMachine 持久化依赖 STATE.md 存活）。
+    只 stage shared.py——避免把 untracked 的 .fenix/STATE.md、openspec/ 卷进
+    分支提交，checkout 回 base 时不会删除它们（StateMachine 持久化依赖
+    .fenix/STATE.md 存活）。
     """
     base = git(root, "rev-parse", "HEAD").stdout.strip()
     git(root, "checkout", "-q", "-b", branch)
@@ -251,7 +252,8 @@ class TestRepairDispatch(unittest.TestCase):
             "# Tasks\n\n## 1. 实现\n\n- [ ] 1.1 do it\n", encoding="utf-8")
         self.logger = CapturingLogger()
         from core.state_machine import StateMachine
-        self.sm = StateMachine(self.root / "STATE.md", self.logger)
+        (self.root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.sm = StateMachine(self.root / ".fenix" / "STATE.md", self.logger)
         self.engine = PMEngine(self.sm, MagicMock(), {}, self.root, self.logger)
         self.wm = make_wm(self.root)
         self.engine.agent_runner.worktree_manager = self.wm
@@ -296,7 +298,7 @@ class TestRepairDispatch(unittest.TestCase):
             success=True, duration_seconds=1.0, branch=branch,
         )
         self.engine.agent_runner.run_implementer = MagicMock(return_value=result)
-        (self.root / ".fenix-run-result.json").write_text(
+        (self.root / ".fenix" / ".fenix-run-result.json").write_text(
             json.dumps({"status": "success", "spec": self.spec}), encoding="utf-8")
 
     # ── Scenario: 语义冲突触发 repair ─────────────────────────
@@ -325,7 +327,7 @@ class TestRepairDispatch(unittest.TestCase):
         )
         self.engine.agent_runner.run_implementer = MagicMock(return_value=result)
         self.engine._dispatch_repair_lane = MagicMock()
-        (self.root / ".fenix-run-result.json").write_text(
+        (self.root / ".fenix" / ".fenix-run-result.json").write_text(
             json.dumps({"status": "success", "spec": self.spec}), encoding="utf-8")
         self.sm.transition(self.spec, "implementing")
         self.engine._run_agent_worker(self.spec, "implementer", 5)
@@ -459,7 +461,8 @@ class TestRepairWorker(unittest.TestCase):
             "# Tasks\n\n## 1. 实现\n\n- [ ] 1.1 do it\n", encoding="utf-8")
         self.logger = CapturingLogger()
         from core.state_machine import StateMachine
-        self.sm = StateMachine(self.root / "STATE.md", self.logger)
+        (self.root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.sm = StateMachine(self.root / ".fenix" / "STATE.md", self.logger)
         self.engine = PMEngine(self.sm, MagicMock(), {}, self.root, self.logger)
         self.wm = make_wm(self.root)
         self.engine.agent_runner.worktree_manager = self.wm
@@ -647,7 +650,8 @@ class TestFastTrackRepairLane(unittest.TestCase):
             "# Tasks\n\n## 1. 实现\n\n- [ ] 1.1 do it\n", encoding="utf-8")
         self.logger = CapturingLogger()
         from core.state_machine import StateMachine
-        self.sm = StateMachine(self.root / "STATE.md", self.logger)
+        (self.root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.sm = StateMachine(self.root / ".fenix" / "STATE.md", self.logger)
         self.engine = PMEngine(self.sm, MagicMock(), {}, self.root, self.logger)
         self.wm = make_wm(self.root)
         self.engine.agent_runner.worktree_manager = self.wm

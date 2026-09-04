@@ -148,7 +148,8 @@ class TestPromotionLintTasks(unittest.TestCase):
         from core.pm_engine import PMEngine
         from core.state_machine import StateMachine
         self.logger = MagicMock()
-        self.sm = StateMachine(self.pr / "STATE.md", self.logger)
+        (self.pr / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.sm = StateMachine(self.pr / ".fenix" / "STATE.md", self.logger)
         self.engine = PMEngine(self.sm, MagicMock(), {}, self.pr, self.logger)
         self.engine._on_spec_ready = MagicMock()
         self.spec_dir = self.pr / "openspec" / "changes" / "demo"
@@ -236,7 +237,7 @@ class TestCliWarning(unittest.TestCase):
         (self.pr / ".fenix" / "bin").mkdir(parents=True)
         shutil.copy(PROJECT_ROOT / "bin" / "fenix_process.py",
                     self.pr / ".fenix" / "bin" / "fenix_process.py")
-        (self.pr / "STATE.md").write_text(
+        (self.pr / ".fenix" / "STATE.md").write_text(
             "# Fenixd State\n\n## Specs\n\n"
             "### cli-a\n\n- status: drafted\n- priority: 5\n\n"
             "### cli-b\n\n- status: drafted\n- priority: 5\n\n"
@@ -293,6 +294,7 @@ class TestDashboardTasksNote(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.pr = Path(self.tmpdir)
+        (self.pr / ".fenix").mkdir(parents=True, exist_ok=True)
         changes = self.pr / "openspec" / "changes"
         _write_tasks(changes / "a",
                      "## 1. 分组\n\n- [ ] 1.1 任务项\n")
@@ -326,7 +328,7 @@ class TestDashboardTasksNote(unittest.TestCase):
     def test_spec_detail_includes_tasks_note(self):
         from core.dashboard.data import spec_detail
         from core.state_machine import StateMachine
-        sm = StateMachine(self.pr / "STATE.md", MagicMock())
+        sm = StateMachine(self.pr / ".fenix" / "STATE.md", MagicMock())
         sm.add_spec("b", {"priority": 5})
         entry = sm.read_one("b")
         detail = spec_detail(self.pr, "b", entry)

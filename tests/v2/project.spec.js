@@ -4,7 +4,7 @@ import { test, expect } from '@playwright/test';
 
 const BASE = process.env.V2_BASE_URL || 'http://127.0.0.1:8787';
 
-// 真实环境可见的 project 与 SPEC(以 STATE.md 中 fenixd 的 SPEC 树为准)
+// 真实环境可见的 project 与 SPEC(以 .fenix/STATE.md 中 fenixd 的 SPEC 树为准)
 const PROJECT = 'fenixd';
 // 父行(需求类)与 fix 子行(修复类)构成 fix 树
 const PARENT = 'add-inplace-bug-repair';

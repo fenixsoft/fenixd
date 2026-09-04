@@ -302,7 +302,7 @@ def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
     orig = entry.get("status") or "ready"
     note = f"{FREEZE_ERROR_PREFIX}原状态 {orig}" + (f" · {reason}" if reason else "")
     from core.state_machine import StateMachine
-    sm = StateMachine(Path(project_root) / "STATE.md", None)
+    sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
     sm.update_spec(spec_name, {"status": "blocked", "error": note})
     return {"ok": True, "found": True, "frozen": True, "error": None}
 
@@ -319,7 +319,7 @@ def unfreeze_spec(project_root, spec_name: str) -> dict:
     m = re.search(r"原状态\s+(\S+)", entry.get("error") or "")
     orig = m.group(1) if m else "ready"
     from core.state_machine import StateMachine
-    sm = StateMachine(Path(project_root) / "STATE.md", None)
+    sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
     sm.update_spec(spec_name, {"status": orig, "error": None})
     return {"ok": True, "found": True, "frozen": False, "error": None}
 
@@ -432,7 +432,7 @@ def clear_spec_error(project_root, spec: str) -> dict:
     if spec not in specs:
         return {"found": False}
     from core.state_machine import StateMachine
-    sm = StateMachine(proot / "STATE.md")
+    sm = StateMachine(proot / ".fenix" / "STATE.md")
     sm.update_spec(spec, {"error": None})
     return {"found": True}
 
@@ -464,7 +464,7 @@ def set_spec_priority(project_root, spec: str, priority) -> dict:
         return {"found": False}
 
     from core.state_machine import StateMachine
-    sm = StateMachine(proot / "STATE.md")
+    sm = StateMachine(proot / ".fenix" / "STATE.md")
     sm.update_spec(spec, {"priority": p})
     return {"found": True, "priority": p}
 
@@ -506,7 +506,7 @@ def soft_delete_spec(project_root, spec: str) -> dict:
             pass
 
     from core.state_machine import StateMachine
-    sm = StateMachine(proot / "STATE.md")
+    sm = StateMachine(proot / ".fenix" / "STATE.md")
 
     # 1. 先移动目录（若失败，STATE.md 尚未改动，天然一致）
     changes_root = proot / "openspec" / "changes"
@@ -691,7 +691,7 @@ def auto_archive_check(project_root, config: dict,
 
 def parse_state(project_root) -> dict:
     """解析项目 STATE.md，返回 {spec_name: {key: value}}。"""
-    state_path = Path(project_root) / "STATE.md"
+    state_path = Path(project_root) / ".fenix" / "STATE.md"
     if not state_path.exists():
         return {}
     specs = {}
@@ -1299,7 +1299,7 @@ def parse_run_result_scenarios(project_root, spec_name) -> list:
     """
     candidates = [
         Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json",
-        Path(project_root) / ".fenix-run-result.json",
+        Path(project_root) / ".fenix" / ".fenix-run-result.json",
     ]
     for idx, path in enumerate(candidates):
         if not path.exists():
@@ -1797,7 +1797,7 @@ def project_summary(project_root, name: str, path: str) -> dict:
         "active_runs": active,
         "active_runs_by_type": active_by_type,
         "scenario_count": sum(count_scenarios(proot, s) for s in specs),
-        "updated": (Path(path) / "STATE.md").stat().st_mtime if (Path(path) / "STATE.md").exists() else 0,
+        "updated": (Path(path) / ".fenix" / "STATE.md").stat().st_mtime if (Path(path) / ".fenix" / "STATE.md").exists() else 0,
         "description": description,
     }
 
@@ -1965,7 +1965,7 @@ class SummaryIndex:
         key = str(Path(proot).resolve())
         with self._lock:
             if state_sig is None:
-                state_sig = _stat_sig(proot / "STATE.md")
+                state_sig = _stat_sig(proot / ".fenix" / "STATE.md")
 
             # STATE.md 签名变化 → 全量重建索引 + 重新解析快照（新增/删除 spec
             # 只有 parse_state 全量才能发现；触发频率低，仅 STATE.md 变更时）。

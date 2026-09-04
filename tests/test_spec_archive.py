@@ -22,11 +22,12 @@ from core.dashboard.data import (
 
 
 def _make_project(root: Path, specs: dict) -> Path:
-    """构造最小可用项目：STATE.md + openspec/changes/<name>/ 目录。
+    """构造最小可用项目：.fenix/STATE.md + openspec/changes/<name>/ 目录。
 
     specs: {name: {"status": ..., "updated": ...}}
     """
     (root / "openspec" / "changes").mkdir(parents=True, exist_ok=True)
+    (root / ".fenix").mkdir(parents=True, exist_ok=True)
     lines = ["# Fenix Project State", "", "## Specs", ""]
     for name, entry in specs.items():
         (root / "openspec" / "changes" / name).mkdir(exist_ok=True)
@@ -34,7 +35,7 @@ def _make_project(root: Path, specs: dict) -> Path:
         lines.append(f"- status: {entry['status']}")
         lines.append(f"- updated: {entry.get('updated', '2026-01-01T00:00:00+00:00')}")
         lines.append("")
-    (root / "STATE.md").write_text("\n".join(lines), encoding="utf-8")
+    (root / ".fenix" / "STATE.md").write_text("\n".join(lines), encoding="utf-8")
     return root
 
 
@@ -253,7 +254,7 @@ class TestAutoArchiveCheck(unittest.TestCase):
         for name, entry in specs.items():
             lines += [f"### {name}", f"- status: {entry['status']}",
                       f"- updated: {entry['updated']}", ""]
-        (self.root / "STATE.md").write_text("\n".join(lines), encoding="utf-8")
+        (self.root / ".fenix" / "STATE.md").write_text("\n".join(lines), encoding="utf-8")
 
     def _set_threshold(self, threshold: int):
         (self.root / ".fenix" / "config.yaml").write_text(
@@ -352,7 +353,7 @@ def _make_archive_project(tmp_path, name="proj-a"):
     (proot / ".fenix" / "logs").mkdir(parents=True)
     (proot / "openspec" / "changes" / "done-spec").mkdir(parents=True)
     (proot / "openspec" / "changes" / "doing-spec").mkdir(parents=True)
-    (proot / "STATE.md").write_text(
+    (proot / ".fenix" / "STATE.md").write_text(
         "# Fenix Project State\n\n## Specs\n\n"
         "### done-spec\n- status: pushed\n- priority: 1\n- created: 2026-01-01T00:00:00+00:00\n"
         "- updated: 2026-02-02T00:00:00+00:00\n- error: null\n- depends_on: null\n\n"

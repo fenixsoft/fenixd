@@ -25,7 +25,8 @@ class TestPlannerResultReadback(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -47,7 +48,8 @@ class TestPriorityScheduler(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -81,7 +83,8 @@ class TestSpecSummaryCreatedUpdated(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
 
@@ -111,7 +114,8 @@ class TestApiSpecsSortOrder(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
 

@@ -22,20 +22,23 @@ Thumbs.db
 .claude/worktrees/
 
 # 运行时/敏感目录（.fenix/config.yaml 含 API Key，绝不提交）
-.fenix/
-.fenix/admin_alerts.json
+# 用 /* 而非 .fenix/：目录整体排除后无法用 ! 放行其下入库文件
+.fenix/*
 .claude/scheduled_tasks.json
 .claude/scheduled_tasks.lock
 .playwright-cli/
 dist/
 
+# 例外：状态文件随仓库入库（todo.md 自省条目 / verify.yaml 验证契约 / config 模板）
+!.fenix/todo.md
+!.fenix/verify.yaml
+!.fenix/config.template.yaml
+
 # 例外：v3 dashboard 构建产物按决策入库（克隆即用，无需 Node 构建）
 !core/dashboard/static/dist/
 
-# 自动生成的运行时状态
-STATE.md
-PROJECT_LOG.md
-.STATE.md.lock
+# 自动生成的运行时状态（STATE.md / PROJECT_LOG.md / .STATE.md.lock 均已迁入 .fenix/，
+# 被 .fenix/* 覆盖；裸 .fenix-run-result.json 条目继续兜住归档 spec 目录里的结果快照）
 .fenix-run-result.json
 .coverage
 

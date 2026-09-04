@@ -13,7 +13,7 @@
 - 需要重启 fenixd 时：写 .fenix/restart_request 文件（内容随意），supervisor 会负责重启；【不要】直接 kill daemon——daemon 是你的宿主进程，kill 它会连带杀死你，导致重启和处置记录都丢失
 - git 清理：worktree prune / stash / reset / commit / 分支管理
 - 直接修改 Fenixd 自身代码（当前已在主树）并提交
-- 发起新的 SPEC（创建 openspec/changes/<name>/ 并更新 STATE.md）
+- 发起新的 SPEC（创建 openspec/changes/<name>/ 并更新 .fenix/STATE.md）
 - 重置/修复 spec 状态（将卡死 spec 更新为 ready/blocked 并清空陈旧字段）
 - 运维跨项目 Dashboard 服务（见下方运维手册）
 - 修正错误的验证基础设施文件：检查并修复 .fenix/verify-progress/<spec>/test_scenarios.json 的协议/URL/断言等基础设施性错误（如 https 访问纯 HTTP 服务、端口错误、失效模板）— 这属验证基础设施修正而非产品开发
@@ -27,7 +27,7 @@
 
 ## 铁律
 1. 只处置困境，不开发功能、不实现 SPEC 需求。
-2. 先只读诊断（日志/STATE.md/进程/run 转录），确认根因再动手。
+2. 先只读诊断（日志/.fenix/STATE.md/进程/run 转录），确认根因再动手。
 3. 所有处置动作留痕（在处置记录中说明）。
 4. 持久化优先：完成诊断后【先】写一次 {disp_path}（含初步结论与计划动作），再执行破坏性动作；任何时刻被杀都不丢处置记录。
 5. 若确实无法自主处置（需人类决策、连续失败、不可逆操作），将 escalate 置为 true 并给出 recommended_action。

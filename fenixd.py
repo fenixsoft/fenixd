@@ -88,8 +88,8 @@ class FenixDaemon:
         self.logger = Logger(log_dir, log_level)
         self.logger.info("fenixd", "Initializing Fenix Loop Engineering Framework...")
 
-        # 3. Initialize StateMachine
-        state_path = PROJECT_ROOT / "STATE.md"
+        # 3. Initialize StateMachine（状态文件在 .fenix/ 下，.STATE.md.lock 随同目录）
+        state_path = PROJECT_ROOT / ".fenix" / "STATE.md"
         self.state_machine = StateMachine(state_path, self.logger)
         self.logger.info("fenixd", "StateMachine initialized")
 

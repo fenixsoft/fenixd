@@ -90,4 +90,4 @@
   }
   ```
 
-IMPORTANT: 不要修改 STATE.md。
+IMPORTANT: 不要修改 .fenix/STATE.md。

@@ -98,7 +98,8 @@ class TestPromotionLintGate(unittest.TestCase):
         self.pr = Path(self.tmpdir)
         from core.pm_engine import PMEngine
         self.logger = MagicMock()
-        self.sm = StateMachine(self.pr / "STATE.md", self.logger)
+        (self.pr / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.sm = StateMachine(self.pr / ".fenix" / "STATE.md", self.logger)
         self.engine = PMEngine(self.sm, MagicMock(), {}, self.pr, self.logger)
         self.engine._on_spec_ready = MagicMock()
         self.spec_dir = self.pr / "openspec" / "changes" / "demo"

@@ -1334,7 +1334,7 @@ class AgentRunner:
             # 成功时，把 worktree 中的 .fenix-run-result.json 复制到主树。
             if success:
                 wt_result = wt_path / ".fenix-run-result.json"
-                root_result = self.project_root / ".fenix-run-result.json"
+                root_result = self.project_root / ".fenix" / ".fenix-run-result.json"
                 if wt_result.exists():
                     try:
                         root_result.write_text(

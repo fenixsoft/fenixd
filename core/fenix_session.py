@@ -133,7 +133,7 @@ def start_daemon(root: str | None = None) -> dict:
     session = session_name(proot)
     if not (proot / ".fenix").exists():
         return {"ok": False, "error": f"项目根缺少 .fenix 框架软链接: {proot}", "session": session, "already": False}
-    if not (proot / "STATE.md").is_file():
+    if not (proot / ".fenix" / "STATE.md").is_file():
         return {"ok": False, "error": f"项目根缺少 STATE.md: {proot}", "session": session, "already": False}
     if is_running(proot):
         return {"ok": True, "error": None, "session": session, "already": True}

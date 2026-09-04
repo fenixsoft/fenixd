@@ -25,7 +25,8 @@ class TestPMEngineBugFound(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -165,7 +166,8 @@ class TestPMEngineBugFoundIdempotent(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -210,7 +212,8 @@ class TestPMEngineSameStatusResetDispatch(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -246,7 +249,8 @@ class TestRouteTableGuard(unittest.TestCase):
     def setUp(self):
         from core.pm_engine import PMEngine
         self.tmpdir = tempfile.mkdtemp()
-        self.state_path = Path(self.tmpdir) / "STATE.md"
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
         self.logger = MagicMock()
         self.sm = StateMachine(self.state_path, self.logger)
         self.engine = PMEngine(
@@ -275,7 +279,8 @@ class TestEngineRouteCrossCheck(unittest.TestCase):
         from core.pm_engine import PMEngine
         tmpdir = tempfile.mkdtemp()
         try:
-            sm = StateMachine(Path(tmpdir) / "STATE.md", MagicMock())
+            (Path(tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+            sm = StateMachine(Path(tmpdir) / ".fenix" / "STATE.md", MagicMock())
             engine = PMEngine(sm, MagicMock(), {}, Path(tmpdir), MagicMock())
             # 所有合法 agent_type 都应有路由（通过 _enqueue 验证）
             for agent_type in ["implementer", "verifier"]:
@@ -487,7 +492,7 @@ class TestPushResidualBackfill(unittest.TestCase):
 
         # 使用真实 StateMachine 以便 backfill 后能回读 error
         from core.state_machine import StateMachine
-        self.state_path = self.project_root / "STATE.md"
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
         self.sm = StateMachine(self.state_path, MagicMock())
 
     def tearDown(self):
@@ -768,7 +773,7 @@ class TestTaskCompletionGate(unittest.TestCase):
             setattr(logger, m, MagicMock())
         ar = MagicMock()
         # worktree_manager.find_implementer_worktree 返回 None，
-        # 使 _read_implementer_result 走项目根 .fenix-run-result.json 回退路径。
+        # 使 _read_implementer_result 走主树 .fenix/.fenix-run-result.json 回退路径。
         ar.worktree_manager.find_implementer_worktree.return_value = None
         return PMEngine(self.sm, ar, config or {}, self.project_root, logger)
 
@@ -778,8 +783,8 @@ class TestTaskCompletionGate(unittest.TestCase):
         (spec_dir / "tasks.md").write_text(content, encoding="utf-8")
 
     def _write_impl_result(self, spec_name, status):
-        """写 .fenix-run-result.json 到项目根（_read_implementer_result 回退路径）。"""
-        (self.project_root / ".fenix-run-result.json").write_text(
+        """写 .fenix-run-result.json 到主树 .fenix/（_read_implementer_result 回退路径）。"""
+        (self.project_root / ".fenix" / ".fenix-run-result.json").write_text(
             json.dumps({"status": status, "spec": spec_name}), encoding="utf-8")
 
     def _write_run_done(self, spec_name, done_ids):
@@ -860,7 +865,7 @@ class TestDoneDurationPersist(unittest.TestCase):
         self.project_root = Path(self.tmpdir)
         (self.project_root / ".fenix").mkdir()
         self.logger = MagicMock()
-        self.sm = StateMachine(self.project_root / "STATE.md", self.logger)
+        self.sm = StateMachine(self.project_root / ".fenix" / "STATE.md", self.logger)
         ar = MagicMock()
         # worktree 查找返回 None，使 _read_implementer_result 走项目根回退路径
         ar.worktree_manager.find_implementer_worktree.return_value = None

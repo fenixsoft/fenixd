@@ -4,18 +4,18 @@ import { test, expect } from '@playwright/test';
 
 const BASE = process.env.V2_BASE_URL || 'http://127.0.0.1:8787';
 
-// 真实环境可见的 project 与 SPEC(以 STATE.md 中 fenixd 的 SPEC 树为准)
+// 真实环境可见的 project 与 SPEC(以 .fenix/STATE.md 中 fenixd 的 SPEC 树为准)
 const PROJECT = 'fenixd';
 // 有文档的 SPEC(proposal 存在,behavior.md §1:200 + found:true)
 const DOC_SPEC = 'v2-config-page';
-// 不在 STATE.md 的 spec(behavior.md §1:404 而非 found:false)→ 走「未找到文档」分支
+// 不在 .fenix/STATE.md 的 spec(behavior.md §1:404 而非 found:false)→ 走「未找到文档」分支
 const NO_DOC_SPEC = 'definitely-not-a-real-spec-xyz';
 
 async function trackErrors(page) {
   const errors = [];
   page.on('console', (m) => {
     if (m.type() !== 'error') return;
-    // spec-doc 404 分支预期报错(行为 §1 不在 STATE.md 返回 404)→ 不计入错误
+    // spec-doc 404 分支预期报错(行为 §1 不在 .fenix/STATE.md 返回 404)→ 不计入错误
     if (m.text().includes('spec-doc') || m.text().includes('spec not found')) return;
     if (m.text().startsWith('Failed to load resource') && m.text().includes('spec-doc')) return;
     errors.push(m.text());
@@ -61,7 +61,7 @@ test('文档弹窗:有文档 SPEC 渲染「需求背景」页签内容(非空)',
 
 test('文档弹窗:不存在的 spec 走 404 分支显示「未找到文档」', async ({ page }) => {
   const errors = await trackErrors(page);
-  // 模拟 behavior.md §1:spec-doc 对不在 STATE.md 的 spec 返回 404(非 found:false)。
+  // 模拟 behavior.md §1:spec-doc 对不在 .fenix/STATE.md 的 spec 返回 404(非 found:false)。
   // 将所有 spec-doc 请求改写为 404,验证 404 分支渲染「未找到文档」。
   await page.route('**/api/spec-doc**', (route) =>
     route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"spec not found"}' }));
@@ -78,7 +78,7 @@ test('文档弹窗:不存在的 spec 走 404 分支显示「未找到文档」',
   // 404 分支:显示「未找到文档」而非报错白板
   await expect(dlg.getByText('未找到文档', { exact: true }).first()).toBeVisible({ timeout: 10000 });
 
-  // 404 由 spec-doc 端点返回是预期行为(behavior.md §1:不在 STATE.md → 404)
+  // 404 由 spec-doc 端点返回是预期行为(behavior.md §1:不在 .fenix/STATE.md → 404)
   // SDK 会触发 console error「接口报错:...」,浏览器也会报「Failed to load resource: 404」
   // 这些都是 404 分支的正常错误,不计入测试失败
   const filtered = errors.filter(e =>

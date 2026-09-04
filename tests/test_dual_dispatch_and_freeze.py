@@ -196,7 +196,8 @@ class TestFreezeSemantics(unittest.TestCase):
         import tempfile
         self.tmp = Path(tempfile.mkdtemp(prefix="fenix-freeze-test-"))
         self.logger = CapturingLogger()
-        self.sm = StateMachine(self.tmp / "STATE.md", self.logger)
+        (self.tmp / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.sm = StateMachine(self.tmp / ".fenix" / "STATE.md", self.logger)
         self.sm.add_spec("spec-f", {"priority": 5})
         self.sm.add_spec("spec-n", {"priority": 5})  # 未冻结对照
 

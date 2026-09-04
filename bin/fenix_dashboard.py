@@ -44,7 +44,7 @@ from core.dashboard import data as dash_data           # noqa: E402
 from core.dashboard.registry import Registry, DEFAULT_PORT  # noqa: E402
 from core.dashboard.server import serve, STATIC_DIR   # noqa: E402
 
-STATE_PATH = PROJECT_ROOT / "STATE.md"
+STATE_PATH = PROJECT_ROOT / ".fenix" / "STATE.md"
 LOGS_DIR = PROJECT_ROOT / ".fenix" / "logs"
 PROGRESS_DIR = PROJECT_ROOT / ".fenix" / "verify-progress"
 

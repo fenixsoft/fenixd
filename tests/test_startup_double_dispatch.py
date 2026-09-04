@@ -23,7 +23,8 @@ class TestSingleFlightGuard(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.project_root = Path(self.tmpdir)
         self.logger = MagicMock()
-        self.state_path = self.project_root / "STATE.md"
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
         self.sm = StateMachine(self.state_path, self.logger)
         self.config = {"schedule": {"stuck_threshold_minutes": 60}}
         self.engine = PMEngine(self.sm, MagicMock(), self.config, self.project_root, self.logger)
@@ -143,7 +144,8 @@ class TestStateWritebackProtection(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.project_root = Path(self.tmpdir)
         self.logger = MagicMock()
-        self.state_path = self.project_root / "STATE.md"
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
         self.sm = StateMachine(self.state_path, self.logger)
         self.config = {"schedule": {"stuck_threshold_minutes": 60}}
         self.engine = PMEngine(self.sm, MagicMock(), self.config, self.project_root, self.logger)
@@ -203,7 +205,8 @@ class TestVerifierReconciliation(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.project_root = Path(self.tmpdir)
         self.logger = MagicMock()
-        self.state_path = self.project_root / "STATE.md"
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
         self.sm = StateMachine(self.state_path, self.logger)
         self.config = {"schedule": {"stuck_threshold_minutes": 60}}
         self.engine = PMEngine(self.sm, MagicMock(), self.config, self.project_root, self.logger)
@@ -237,7 +240,8 @@ class TestStartupDuplicateDispatch(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.project_root = Path(self.tmpdir)
         self.logger = MagicMock()
-        self.state_path = self.project_root / "STATE.md"
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
         self.sm = StateMachine(self.state_path, self.logger)
         self.config = {"schedule": {"stuck_threshold_minutes": 60}}
         self.engine = PMEngine(self.sm, MagicMock(), self.config, self.project_root, self.logger)
@@ -305,7 +309,8 @@ class TestMergeBackFailureDuringActiveTesting(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.project_root = Path(self.tmpdir)
         self.logger = MagicMock()
-        self.state_path = self.project_root / "STATE.md"
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
         self.sm = StateMachine(self.state_path, self.logger)
         self.config = {"schedule": {"stuck_threshold_minutes": 60}}
         self.engine = PMEngine(self.sm, MagicMock(), self.config, self.project_root, self.logger)
@@ -340,7 +345,8 @@ class TestVerifierCompletionWithStateChanges(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.project_root = Path(self.tmpdir)
         self.logger = MagicMock()
-        self.state_path = self.project_root / "STATE.md"
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
         self.sm = StateMachine(self.state_path, self.logger)
         self.config = {"schedule": {"stuck_threshold_minutes": 60}}
         self.engine = PMEngine(self.sm, MagicMock(), self.config, self.project_root, self.logger)

@@ -1327,7 +1327,7 @@ class VerificationPipeline:
             report = self._pm._read_verify_report(spec_name)
             if self._pm._handle_env_blocked_inconclusive(spec_name, report):
                 return
-            run_result_path = self._pm.project_root / ".fenix-run-result.json"
+            run_result_path = self._pm.project_root / ".fenix" / ".fenix-run-result.json"
             verifier_status = self._pm._read_verifier_result(run_result_path)
             # 结果文件新鲜度/归属护栏：共享单文件会被任何 spec 的后续运行覆写，
             # 陈旧或异 spec 的判定重放到当前轮次 = 假 bug-found / 假 verified
@@ -1830,12 +1830,12 @@ class VerificationPipeline:
         """读取 Planner 写入的结果文件，返回 status 字段。
 
         优先读 verify-progress/<spec>/.fenix-run-result.json（Planner prompt 中
-        指定的确定性产物路径），回退项目根 .fenix-run-result.json（兼容旧行为：
+        指定的确定性产物路径），回退主树 .fenix/.fenix-run-result.json（兼容旧行为：
         planner 把结果写到 worktree 根、由 _execute_agent 复制到主树的情况）。
 
-        背景：项目根 .fenix-run-result.json 是共享文件，implementer 成功时也会
+        背景：主树 .fenix/.fenix-run-result.json 是共享文件，implementer 成功时也会
         写入（status=success/error）。planner 若把 plan-ready/verified 写到别处，
-        pm_engine 误读项目根会看到 implementer 残留状态（不在
+        pm_engine 误读主树共享文件会看到 implementer 残留状态（不在
         verified/bug-found/plan-ready 白名单），误判「Planner 未生成有效场景」，
         进而降级旧版 verifier 导致验证反复失败（admin 处置根因）。
         """
@@ -1845,8 +1845,8 @@ class VerificationPipeline:
         )
         if primary.exists():
             return self._pm._read_verifier_result(primary)
-        fallback = self._pm.project_root / ".fenix-run-result.json"
-        # 共享结果文件护栏：项目根文件携带的 spec 与当前 spec 不符时视为残留忽略
+        fallback = self._pm.project_root / ".fenix" / ".fenix-run-result.json"
+        # 共享结果文件护栏：主树共享文件携带的 spec 与当前 spec 不符时视为残留忽略
         # （与 _read_implementer_result 相同语义），避免误读其它 spec 的
         # implementer 残留状态。
         if fallback.exists():

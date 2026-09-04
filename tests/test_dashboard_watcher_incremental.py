@@ -26,7 +26,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
     (proot / "openspec" / "changes" / "myspec" / "specs").mkdir(parents=True, exist_ok=True)
     (proot / "openspec" / "changes" / "otherspec" / "specs").mkdir(parents=True, exist_ok=True)
 
-    (proot / "STATE.md").write_text(
+    (proot / ".fenix" / "STATE.md").write_text(
         "# Fenix Project State\n\n## Specs\n\n"
         "### myspec\n- status: testing\n- priority: 2\n- created: 2026-01-01T00:00:00+00:00\n"
         "- updated: 2026-01-02T00:00:00+00:00\n- error: null\n- depends_on: null\n\n"
@@ -183,7 +183,7 @@ class TestIncrementalWatcher:
         proot, hub, w = self._mk(tmp_path)
         w.scan_once()
         hub.events.clear()
-        state = proot / "STATE.md"
+        state = proot / ".fenix" / "STATE.md"
         self._atomic_write(state, state.read_text(encoding="utf-8").replace(
             "- status: testing", "- status: implemented"))
         w.scan_once()

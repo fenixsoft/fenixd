@@ -171,7 +171,7 @@ class TestEnsureAppReachableScopes(unittest.TestCase):
     def _mk_engine(self, config=None):
         from test_inplace_bug_repair import _mk_engine
         from core.state_machine import StateMachine
-        sm = StateMachine(self.tmp / "STATE.md", self.logger)
+        sm = StateMachine(self.tmp / ".fenix" / "STATE.md", self.logger)
         engine, _ = _mk_engine(self.tmp, self.logger, config)
         return engine
 

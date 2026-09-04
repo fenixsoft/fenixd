@@ -47,8 +47,8 @@ cp "${ROOT_DIR}/bin/statusline.py" "${PKG_DIR}/bin/"
 mkdir -p "${PKG_DIR}/skills"
 cp -r "${ROOT_DIR}/skills/"* "${PKG_DIR}/skills/" 2>/dev/null || true
 
-# 配置模板
-cp "${ROOT_DIR}/config.template.yaml" "${PKG_DIR}/" 2>/dev/null || true
+# 配置模板（已迁入 .fenix/，打包保留根层等价路径以兼容旧安装脚本）
+cp "${ROOT_DIR}/.fenix/config.template.yaml" "${PKG_DIR}/" 2>/dev/null || true
 
 # V2 dev-server（add-worktree-test-server）
 mkdir -p "${PKG_DIR}/tests/v2"

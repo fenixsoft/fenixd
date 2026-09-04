@@ -369,7 +369,7 @@ class TestDispatchHoldState:
         proot = tmp_path / "proj"
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         logger = MagicMock()
-        sm = StateMachine(proot / "STATE.md", logger)
+        sm = StateMachine(proot / ".fenix" / "STATE.md", logger)
         sm.add_spec("demo", {"priority": 5})
         sm.transition("demo", "ready")
         sm.transition("demo", "implementing")
@@ -400,7 +400,7 @@ class TestDispatchHoldState:
         proot = tmp_path / "proj"
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         logger = MagicMock()
-        sm = StateMachine(proot / "STATE.md", logger)
+        sm = StateMachine(proot / ".fenix" / "STATE.md", logger)
         sm.add_spec("demo", {"priority": 5})
         for st in ("ready", "implementing", "implemented", "testing"):
             sm.transition("demo", st)
@@ -565,7 +565,7 @@ def run_cancel_server(tmp_path):
     from core.dashboard.registry import Registry
     proot = tmp_path / "proj"
     (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-    (proot / "STATE.md").write_text(
+    (proot / ".fenix" / "STATE.md").write_text(
         "# Fenix Project State\n\n## Specs\n\n"
         "### myspec\n- status: ready\n- priority: 5\n"
         "- created: 2026-01-01T00:00:00+00:00\n"

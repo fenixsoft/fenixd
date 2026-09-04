@@ -3,8 +3,7 @@
 fenix-init — Fenix Loop Engineering Framework 项目初始化命令。
 
 在目标目录生成使用 fenixd 所需的工程骨架：
-  - .fenix/（项目配置 config.yaml + 运行时目录 + 指向框架的软链接）
-  - STATE.md / PROJECT_LOG.md
+  - .fenix/（项目配置 config.yaml + 状态文件 STATE.md / PROJECT_LOG.md + 运行时目录 + 指向框架的软链接）
   - openspec/{changes,specs}/ 与 openspec/changes/archive/
   - .claude/agents/（软链接）与 .claude/worktrees/
   - 追加 fenix 相关 .gitignore 条目
@@ -24,7 +23,8 @@ FENIXD_HOME = Path(__file__).resolve().parent
 VALID_TYPES = ("web", "cli", "library", "api")
 
 # 需要软链到项目 .fenix/ 的框架文件
-FENIX_LINKS = ["core", "bin", "tests", "fenixd.py", "launch-extension.cjs", "__init__.py"]
+# 注：launch-extension.cjs 已随框架移除，不再创建（存量项目里的悬空链接可手工清理）
+FENIX_LINKS = ["core", "bin", "tests", "fenixd.py", "__init__.py"]
 
 # 需要软链到项目 .claude/agents/ 的 agent 定义
 AGENT_LINKS = ["implementer.md", "verifier.md"]
@@ -48,7 +48,7 @@ def symlink(target: Path, link: Path):
 
 
 def render_config(project_name: str, project_type: str) -> str:
-    template = FENIXD_HOME / "config.template.yaml"
+    template = FENIXD_HOME / ".fenix" / "config.template.yaml"
     if not template.exists():
         sys.exit(f"错误：找不到配置模板 {template}")
     content = template.read_text(encoding="utf-8")
@@ -114,15 +114,15 @@ def main():
     for name in FENIX_LINKS:
         symlink(FENIXD_HOME / name, fenix_dir / name)
 
-    # 2. 根目录状态文件
+    # 2. .fenix/ 状态文件（STATE.md / PROJECT_LOG.md 与运行时同目录）
     for fname in ("STATE.md", "PROJECT_LOG.md"):
-        target = project_root / fname
+        target = fenix_dir / fname
         if target.exists():
-            log(f"  ⏭  {fname} 已存在，跳过")
+            log(f"  ⏭  .fenix/{fname} 已存在，跳过")
         else:
             template = FENIXD_HOME / "templates" / fname
             target.write_text(template.read_text(encoding="utf-8") if template.exists() else "", encoding="utf-8")
-            log(f"  ✅ {fname}")
+            log(f"  ✅ .fenix/{fname}")
 
     # 3. openspec 目录
     for sub in ("changes", "specs"):

@@ -54,8 +54,8 @@ def create_temp_project(tmpdir=None):
     (project_root / "core").mkdir(parents=True, exist_ok=True)
     (project_root / ".fenix").mkdir(parents=True, exist_ok=True)
     
-    # Create STATE.md
-    state_path = project_root / "STATE.md"
+    # Create STATE.md (in .fenix/ subdirectory)
+    state_path = project_root / ".fenix" / "STATE.md"
     state_path.write_text("# Fenix Project State\n## Specs\n", encoding="utf-8")
     
     return project_root
@@ -65,7 +65,7 @@ def create_test_spec(project_root, spec_name, status="ready", priority=1):
     """Create a test spec in the project."""
     from core.state_machine import StateMachine
     
-    state_path = project_root / "STATE.md"
+    state_path = project_root / ".fenix" / "STATE.md"
     logger = MagicMock()
     sm = StateMachine(state_path, logger)
     

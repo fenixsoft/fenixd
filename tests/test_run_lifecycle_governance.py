@@ -199,7 +199,7 @@ class LockConflictFixture(unittest.TestCase):
         self.project_root = self.tmpdir
         (self.project_root / ".fenix").mkdir(exist_ok=True)
         self.logger = MagicMock()
-        self.sm = StateMachine(self.project_root / "STATE.md", self.logger)
+        self.sm = StateMachine(self.project_root / ".fenix" / "STATE.md", self.logger)
         self.runner = MagicMock()
         self.runner.worktree_manager = MagicMock()
         # 本夹具建模「孤儿/陈锁」场景：锁在册但无存活 attempt（活 run 持锁的
@@ -504,7 +504,7 @@ class TestAdminMonitorContinuesWithoutInProgress(unittest.TestCase):
         self.tmpdir = Path(__import__("tempfile").mkdtemp())
         (self.tmpdir / ".fenix").mkdir(exist_ok=True)
         self.logger = MagicMock()
-        self.sm = StateMachine(self.tmpdir / "STATE.md", self.logger)
+        self.sm = StateMachine(self.tmpdir / ".fenix" / "STATE.md", self.logger)
         self.monitor = AdminMonitor(
             {"admin": {"enabled": True, "interval_minutes": 5,
                        "escalation_cooldown_minutes": 15}},

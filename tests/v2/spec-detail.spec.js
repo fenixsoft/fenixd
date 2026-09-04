@@ -4,7 +4,7 @@ import { test, expect } from '@playwright/test';
 
 const BASE = 'http://127.0.0.1:8787';
 
-// 真实环境可见的 project/spec(以 STATE.md 中 fenixd 的已推送 SPEC 为准)
+// 真实环境可见的 project/spec(以 .fenix/STATE.md 中 fenixd 的已推送 SPEC 为准)
 const PROJECT = 'fenixd';
 const SPEC = 'add-fenix-dashboard';
 
