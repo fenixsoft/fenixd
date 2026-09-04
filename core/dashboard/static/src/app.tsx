@@ -3,6 +3,7 @@ import {
   DashboardOutlined,
   HistoryOutlined,
   ProjectOutlined,
+  QuestionCircleOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
 import type { RunTimeLayoutConfig } from '@umijs/max';
@@ -64,6 +65,7 @@ function crumbItems(pathname: string) {
     overview: '概览',
     settings: '设置',
     activities: '运维',
+    help: '帮助',
   };
   return [{ title: map[seg[0]] || '概览' }];
 }
@@ -108,6 +110,7 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
       },
       { path: '/settings', name: '设置', icon: <SettingOutlined /> },
       { path: '/activities', name: '运维', icon: <HistoryOutlined /> },
+      { path: '/help', name: '帮助', icon: <QuestionCircleOutlined /> },
     ],
     // 「项目」二级菜单默认展开：defaultOpenAll + ignoreFlatMenu 组合下 BaseMenu
     // 会在路由变化时重设为全展开；openKeys:false 使 pathname effect 不覆盖该行为，

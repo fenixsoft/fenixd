@@ -40,6 +40,12 @@ export default [
     component: './activities',
   },
   {
+    path: '/help',
+    name: '帮助',
+    icon: 'QuestionCircleOutlined',
+    component: './help',
+  },
+  {
     path: '*',
     redirect: '/overview',
   },
