@@ -1,16 +1,15 @@
 import { PageContainer } from '@ant-design/pro-components';
 import {
   App,
-  Badge,
   Button,
   Card,
   Collapse,
   Empty,
   List,
+  Pagination,
   Radio,
   Space,
   Spin,
-  Tabs,
   Tag,
   Timeline,
   Typography,
@@ -32,6 +31,9 @@ import type {
 } from '@/services/dashboard';
 
 const REFRESH_THROTTLE_MS = 500;
+
+// 前端分页：每页 15 条，翻页时再渲染其余记录（design D2）
+const PAGE_SIZE = 15;
 
 // 标签原始值 → 显示值（对齐 v1 RESULT_META / sevLabel；未收录值原样显示）
 const RESULT_META: Record<string, { label: string; color: string }> = {
@@ -110,6 +112,7 @@ function ActivityCard({ a, onViewRun }: { a: ActivityItem; onViewRun?: (a: Activ
 
   return (
     <div
+      data-testid="activity-card"
       style={{
         padding: 12,
         borderRadius: 8,
@@ -160,29 +163,43 @@ function ActivityCard({ a, onViewRun }: { a: ActivityItem; onViewRun?: (a: Activ
 
 function ActivityTimeline({
   activities,
+  current,
+  onPageChange,
   onViewRun,
 }: {
   activities: ActivityItem[];
+  current: number;
+  onPageChange: (page: number) => void;
   onViewRun?: (a: ActivityItem) => void;
 }) {
   if (!activities || activities.length === 0) {
     return <Empty description="暂无运维记录" />;
   }
 
-  // 未处理升级置顶
-  const sorted = [...activities].sort((a, b) => {
-    if (a.handled === false && b.handled !== false) return -1;
-    if (a.handled !== false && b.handled === false) return 1;
-    return 0;
-  });
+  // 前端分页：仅渲染当前页对应的记录（未翻到的页不渲染）
+  const start = (current - 1) * PAGE_SIZE;
+  const pageItems = activities.slice(start, start + PAGE_SIZE);
 
   return (
-    <Timeline
-      items={sorted.map((a) => ({
-        color: a.handled === false ? 'red' : 'gray',
-        children: <ActivityCard a={a} onViewRun={onViewRun} />,
-      }))}
-    />
+    <div>
+      <Timeline
+        items={pageItems.map((a) => ({
+          color: a.handled === false ? 'red' : 'gray',
+          children: <ActivityCard a={a} onViewRun={onViewRun} />,
+        }))}
+      />
+      {activities.length > PAGE_SIZE ? (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+          <Pagination
+            current={current}
+            pageSize={PAGE_SIZE}
+            total={activities.length}
+            onChange={onPageChange}
+            showSizeChanger={false}
+          />
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -200,6 +217,7 @@ function AlertTitle({ item, resolved }: { item: AlertItem; resolved?: boolean })
           {item.handled_by === 'auto-resolve' ? '🤖 自动解决' : '👤 人工处理'}
         </Tag>
       ) : null}
+      {item.project ? <Tag>{item.project}</Tag> : null}
       {item.spec ? <Tag color="blue">{item.spec}</Tag> : null}
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
         {fmtDate(resolved ? item.handled_at || item.created : item.created)}
@@ -247,17 +265,16 @@ interface ViewingRun {
 }
 
 function AlertPanel({
-  project,
   alertsData,
   optimistic,
   onMarkHandled,
 }: {
-  project: string;
   alertsData: AlertsData | null;
   optimistic: string[];
   onMarkHandled: (a: AlertItem) => void;
 }) {
-  const visible = (a: AlertItem) => a.project === project && !optimistic.includes(a.id);
+  // 全局视图：不按项目过滤，仅剔除乐观移除的条目
+  const visible = (a: AlertItem) => !optimistic.includes(a.id);
   const unhandled = (alertsData?.alerts || []).filter(visible);
   const resolved = (alertsData?.resolved || []).filter(visible);
 
@@ -286,6 +303,7 @@ function AlertPanel({
       {resolved.length ? (
         <Collapse
           ghost
+          defaultActiveKey={['resolved']}
           items={[
             {
               key: 'resolved',
@@ -317,11 +335,11 @@ export default function ActivitiesPage() {
   const [data, setData] = useState<AdminActivitiesData | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsData | null>(null);
   const [optimistic, setOptimistic] = useState<string[]>([]);
-  const [viewModes, setViewModes] = useState<Record<string, ViewMode>>({});
+  const [viewMode, setViewMode] = useState<ViewMode>('auto');
+  const [current, setCurrent] = useState(1);
   const [viewingRun, setViewingRun] = useState<ViewingRun | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [activeKey, setActiveKey] = useState<string>('all');
   const lastRefreshRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -382,73 +400,37 @@ export default function ActivitiesPage() {
 
   const projects: ProjectActivities[] = useMemo(() => data?.projects ?? [], [data]);
 
-  const totalCount = useMemo(
-    () => projects.reduce((sum, p) => sum + (p.activities?.length ?? 0), 0),
-    [projects],
-  );
-
-  // 项目消失时回退"全部"（跨刷新保持选中，除非项目已消失）
-  useEffect(() => {
-    if (activeKey === 'all') return;
-    const exists = projects.some((p) => p.name === activeKey);
-    if (!exists) setActiveKey('all');
-  }, [activeKey, projects]);
-
-  const viewModeOf = (name: string): ViewMode => viewModes[name] || 'auto';
-
-  const modeSwitch = (name: string) => (
-    <Radio.Group
-      optionType="button"
-      size="middle"
-      value={viewModeOf(name)}
-      onChange={(e) => setViewModes((prev) => ({ ...prev, [name]: e.target.value as ViewMode }))}
-      options={[
-        { label: '自动运维', value: 'auto' },
-        { label: '人工告警', value: 'alert' },
-      ]}
-    />
-  );
-
-  const tabItems = useMemo(() => {
-    const items = [
-      {
-        key: 'all',
-        label: (
-          <span>
-            全部 <Badge count={totalCount} style={{ marginLeft: 4, marginTop: -5 }} />
-          </span>
-        ),
-      },
-      ...projects.map((p) => ({
-        key: p.name,
-        label: (
-          <span>
-            {p.name} <Badge count={p.activities?.length ?? 0} style={{ marginLeft: 4, marginTop: -5 }} />
-          </span>
-        ),
-      })),
-    ];
-    return items;
-  }, [projects, totalCount]);
-
-  const renderProjectBody = (name: string, activities: ActivityItem[] | undefined) => {
-    if (viewModeOf(name) === 'alert') {
-      return (
-        <AlertPanel
-          project={name}
-          alertsData={alertsData}
-          optimistic={optimistic}
-          onMarkHandled={(a) => void handleMarkHandled(a)}
-        />
-      );
+  // 跨项目合并为全局单数组：handled===false 置顶优先，组内按 created 倒序（design D2）
+  const allActivities = useMemo(() => {
+    const flattened: ActivityItem[] = [];
+    for (const p of projects) {
+      for (const a of p.activities ?? []) {
+        flattened.push({ ...a, project: a.project || p.name });
+      }
     }
-    return (
-      <ActivityTimeline
-        activities={activities ?? []}
-        onViewRun={(a) => setViewingRun({ project: a.project || '', spec: a.spec, runId: a.admin_run_id || '' })}
-      />
-    );
-  };
+    return flattened.sort((x, y) => {
+      if (x.handled === false && y.handled !== false) return -1;
+      if (x.handled !== false && y.handled === false) return 1;
+      const xt = x.created ? dayjs(x.created).valueOf() : 0;
+      const yt = y.created ? dayjs(y.created).valueOf() : 0;
+      return yt - xt;
+    });
+  }, [projects]);
+
+  const totalPages = Math.max(1, Math.ceil(allActivities.length / PAGE_SIZE));
+
+  // SSE 刷新重拉后保持当前页码；总页数小于当前页时回退第 1 页（design D5）
+  useEffect(() => {
+    setCurrent((prev) => {
+      if (prev > totalPages) return 1;
+      return prev;
+    });
+  }, [totalPages]);
+
+  const handleViewRun = useCallback(
+    (a: ActivityItem) => setViewingRun({ project: a.project || '', spec: a.spec, runId: a.admin_run_id || '' }),
+    [],
+  );
 
   const renderContent = () => {
     if (loading && !data) {
@@ -461,51 +443,25 @@ export default function ActivitiesPage() {
       );
     }
 
-    if (!data || !data.projects || data.projects.length === 0) {
-      return <Empty description="暂无运维记录" />;
-    }
-
-    // 全部视图：按项目分段展示
-    if (activeKey === 'all') {
+    if (viewMode === 'alert') {
+      // 人工告警视图：全部项目合并展示（不按项目过滤）
       return (
-        <div>
-          {projects.map((p) => (
-            <Card
-              key={p.name}
-              title={
-                <Space wrap size={8}>
-                  <span>{p.name}</span>
-                  <Badge count={p.activities?.length ?? 0} style={{ marginTop: -5 }} />
-                </Space>
-              }
-              extra={modeSwitch(p.name)}
-              style={{ marginBottom: 16 }}
-            >
-              {renderProjectBody(p.name, p.activities)}
-            </Card>
-          ))}
-        </div>
+        <AlertPanel
+          alertsData={alertsData}
+          optimistic={optimistic}
+          onMarkHandled={(a) => void handleMarkHandled(a)}
+        />
       );
     }
 
-    // 单项目视图
-    const project = projects.find((p) => p.name === activeKey);
-    if (!project) {
-      return <Empty description="暂无运维记录" />;
-    }
+    // 自动运维视图：跨项目合并全局时间线
     return (
-      <Card
-        className="activities-project-card"
-        title={
-          <Space wrap size={8}>
-            <span>{project.name}</span>
-            <Badge count={project.activities?.length ?? 0} style={{ marginTop: -5 }} />
-          </Space>
-        }
-        extra={modeSwitch(project.name)}
-      >
-        {renderProjectBody(project.name, project.activities)}
-      </Card>
+      <ActivityTimeline
+        activities={allActivities}
+        current={current}
+        onPageChange={setCurrent}
+        onViewRun={handleViewRun}
+      />
     );
   };
 
@@ -524,7 +480,19 @@ export default function ActivitiesPage() {
         </div>
       ) : null}
       <Card variant="borderless">
-        <Tabs activeKey={activeKey} onChange={setActiveKey} items={tabItems} />
+        <div style={{ marginBottom: 16 }}>
+          <Radio.Group
+            data-testid="view-mode-switch"
+            optionType="button"
+            size="middle"
+            value={viewMode}
+            onChange={(e) => setViewMode(e.target.value as ViewMode)}
+            options={[
+              { label: '自动运维', value: 'auto' },
+              { label: '人工告警', value: 'alert' },
+            ]}
+          />
+        </div>
         {renderContent()}
       </Card>
       {viewingRun && (
