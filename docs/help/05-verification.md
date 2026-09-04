@@ -1,6 +1,6 @@
 # 验证体系
 
-Fenix 的验证不是「跑一遍测试」，而是一套三步流水线加门禁判定。理解这套体系，才能读懂验证报告、定位伪失败、避免修复循环空转。
+Fenix 的验证不是「跑一遍测试」，而是一套三步流水线加门禁判定。理解这套体系，你才能读懂验证报告、定位伪失败、避免修复循环空转。
 
 ## 三步流水线
 
@@ -25,6 +25,8 @@ sequenceDiagram
     JUDGE->>JUDGE: 应用可达性 + 报告完整性
     JUDGE->>PM: verified / bug-found
 ```
+
+整条流水线由 PM Engine 串起三个阶段。阶段 1 由 planner-plan 读取 verify.yaml 契约，生成 test_scenarios.json 场景清单；阶段 2 由 VerifyEngine 依次执行 prepare（构建）、serve（启动被测实例）、注入 BASE_URL，再逐场景执行并截图，产出验证报告；阶段 3 由 planner-judge 做门禁判定——先核应用可达性与报告完整性，再给出 verified 或 bug-found 的结论。
 
 ## verify.yaml 契约
 
@@ -53,16 +55,20 @@ ready:
 
 **BASE_URL 铁律**：验证场景的 URL 由框架**全量改写**到本次被测实例地址。无论 planner 生成什么地址，场景一律打「新鲜构建的实例」，从根上杜绝「测到陈旧产物」。
 
-- `static_scope: main`（默认）：在主树构建并起被测实例
-- `static_scope: worktree`：在专用 serving worktree 内构建服务，隔离主树
+被测实例在哪里构建由 `static_scope` 决定：默认值 `main` 在主树构建并起被测实例；改为 `worktree` 则在专用 serving worktree 内构建服务，与主树完全隔离。
 
-## 场景冻结
+## 场景冻结与跨轮复用
 
-验证场景（`test_scenarios.json`）在 `implemented → testing` 切换时生成并冻结。场景清单写入 `.fenix/verify-progress/<spec>/test_scenarios.json`，之后每轮修复重验复用同一批场景，保证「同一把尺子量到底」。
+验证场景（`test_scenarios.json`）由 planner **只设计一次**，验收通过即冻结，写入 `.fenix/verify-progress/<spec>/test_scenarios.json`。**此后无论重入验证多少次（打回重验、修复轮、重试），都直接复用冻结场景，绝不重新出题**——planner 单轮设计成本在小时级/千万 token 级，只应支付一次；更重要的是「同一把尺子量到底」：修复是否有效，衡量的始终是同一组标准。
+
+冻结集的变更只有两条通道：
+
+1. **admin 裁决**：冻结文件损坏、或修复新增了可交互元素导致覆盖缺口时，框架不自动重排，而是升级「场景计划争议」呼叫 admin 处置（扩展场景 / 声明纯展示）；
+2. **人工重置**：删除冻结文件即批准重新出题（下一轮验证走完整 planner 设计流程）。
 
 ## verdict 四分类与证据链
 
-门禁判定 `verified` 前的证据：
+门禁判定 `verified` 前的证据分四类：
 
 | 类别 | 含义 | 流向 |
 |------|------|------|
@@ -75,14 +81,13 @@ ready:
 
 ## 验证报告与修复循环
 
-`verify-progress/<spec>/report.json` 记录：
-- `summary`：总场景数 / 通过 / 失败 / 警告 / 错误数
-- `scenarios`：每个场景的判定、失败信息、截图
-- `verification-report.md`：Markdown 形式的缺陷根因汇总
+验证产物集中在 `.fenix/verify-progress/<spec>/` 下。report.json 记录总体情况（summary：总场景数/通过/失败/警告/错误数）与逐场景明细（scenarios：每个场景的判定、失败信息、截图）；verification-report.md 则以 Markdown 形式汇总缺陷根因。
 
-验证失败 → `bug-found` → 派生 fix 分支修复 → 重新验证。修复循环有三轮熔断：同一缺陷连续 3 轮验证失败自动 blocked 转人工。
+验证失败后 SPEC 进入 `bug-found`，派生 fix 分支修复再重新验证。修复循环有三轮熔断：同一缺陷连续 3 轮验证失败即自动 blocked 转人工，防止在修不好的缺陷上无限烧钱。
 
 ## 伪失败防线
+
+伪失败是验证链最大的 token 浪费源，Fenix 为此设了五道防线：
 
 | 防线 | 说明 |
 |------|------|
@@ -101,6 +106,6 @@ ready:
 ## 相关文档
 
 - [SPEC 生命周期与状态机](03-lifecycle.md) — verified/bug-found 转移与逃生门
-- [调度与治理规则](06-governance.md) — 修复循环三轮流断
+- [调度与治理规则](06-governance.md) — 修复循环三轮熔断
 - [文件与数据地图](09-artifacts.md) — verify-progress 目录结构
 - [FAQ 与故障排查](10-faq.md) — 验证反复失败怎么办

@@ -614,105 +614,150 @@ class VerificationPipeline:
         report = None
         app_reachable = True
         reach_note = ""
+        # ── 场景冻结复用（scenario-reuse-on-reenter，2026-09-04）──
+        # 冻结集一经生成即跨轮一致的量尺：重入验证（打回/修复轮/重试）直接
+        # 复用，绝不重新出题——planner 单轮 2h/30M token 级成本只支付一次。
+        # 冻集变更的唯一通道：admin 裁决（扩展/豁免）或人工删除冻结文件批准
+        # 重新出题。首次进入（无冻结文件）走下方 planner 设计闭环。
+        frozen = self._load_frozen_scenarios(verify_dir)
+        if frozen == "corrupt":
+            self._pm.logger.error(
+                "pm_engine",
+                f"冻结场景文件验收失败 '{spec_name}' — 场景一经冻结跨轮一致，"
+                f"变更须 admin 裁决，不自动重新出题",
+            )
+            self._escalate_env_blocked(
+                spec_name,
+                ["冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → "
+                 f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
+                 "批准重新出题；② 文件可修复 → 修复后保持冻结。"],
+                title="场景计划争议",
+            )
+            return
         while True:
-            if replan_feedback is not None:
-                fb = verify_dir / "REPLAN_FEEDBACK.md"
-                fb.parent.mkdir(parents=True, exist_ok=True)
-                fb.write_text(
-                    "# 场景验收反馈（上一轮未通过，必须逐条修正）\n\n"
-                    + replan_feedback
-                    + "\n\n重新输出全部场景；navigate 的 value 必须为绝对 URL。\n",
-                    encoding="utf-8",
+            if frozen is not None:
+                # ── 冻结复用：跳过整段出题，覆盖缺口按计划争议升级 ──
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"[阶段1] 场景冻结复用（{len(frozen)} 个场景），跳过重新出题: "
+                    f"{spec_name}",
                 )
-            self._pm.logger.info("pm_engine", f"[阶段1] Planner 生成场景: {spec_name}")
-            plan_result = self._pm.agent_runner.run_planner(spec_name, "plan")
-
-            if not plan_result.success:
-                # ── 人工取消 hold-state（add-run-cancel D4）──
-                # planner run 被取消：spec 保持 testing 原状，只写 error，
-                # 不流转 bug-found、不降级 legacy、不入队。
-                if getattr(plan_result, "cancelled", False):
-                    p_err = plan_result.error or ""
-                    cancelled_err = (
-                        f"run 被人工取消：{p_err}" if p_err else "run 被人工取消"
-                    )
-                    self._pm.state_machine.update_spec(spec_name, {
-                        "error": cancelled_err,
-                    })
-                    self._pm.logger.warning(
+                cov = self._pm._apply_interaction_contract(spec_name)
+                if cov is not None and not cov.get("ok"):
+                    self._pm.logger.error(
                         "pm_engine",
-                        f"Planner plan run 被人工取消 — hold-state '{spec_name}' "
-                        f"(保持 testing): {cancelled_err}",
+                        f"冻结场景覆盖缺口 '{spec_name}'（修复新增可交互元素？）"
+                        f"— 场景变更须 admin 裁决，不自动重排: {cov.get('uncovered')}",
+                    )
+                    self._escalate_env_blocked(
+                        spec_name,
+                        [f"冻结场景未覆盖可交互元素: {cov.get('uncovered')}。"
+                         "处置选项：① 扩展冻结场景集；② 声明纯展示；"
+                         "③ 删除冻结文件批准重新出题。"],
+                        title="场景计划争议",
                     )
                     return
-                # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
-                # 熔断期 planner 派发失败属「provider 故障」，不是验证逻辑失败：
-                # 不得 raise（会触发 legacy 降级 → bug-found → 伪 fix 级联），
-                # 保持 spec 在 implemented（由 full_scan recovery 兜底重排）。
-                if plan_result.error and "provider circuit open" in plan_result.error:
+                # 覆盖完整 → 落入下方阶段2（共享执行段）
+            else:
+                if replan_feedback is not None:
+                    fb = verify_dir / "REPLAN_FEEDBACK.md"
+                    fb.parent.mkdir(parents=True, exist_ok=True)
+                    fb.write_text(
+                        "# 场景验收反馈（上一轮未通过，必须逐条修正）\n\n"
+                        + replan_feedback
+                        + "\n\n重新输出全部场景；navigate 的 value 必须为绝对 URL。\n",
+                        encoding="utf-8",
+                    )
+                self._pm.logger.info("pm_engine", f"[阶段1] Planner 生成场景: {spec_name}")
+                plan_result = self._pm.agent_runner.run_planner(spec_name, "plan")
+
+                if not plan_result.success:
+                    # ── 人工取消 hold-state（add-run-cancel D4）──
+                    # planner run 被取消：spec 保持 testing 原状，只写 error，
+                    # 不流转 bug-found、不降级 legacy、不入队。
+                    if getattr(plan_result, "cancelled", False):
+                        p_err = plan_result.error or ""
+                        cancelled_err = (
+                            f"run 被人工取消：{p_err}" if p_err else "run 被人工取消"
+                        )
+                        self._pm.state_machine.update_spec(spec_name, {
+                            "error": cancelled_err,
+                        })
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"Planner plan run 被人工取消 — hold-state '{spec_name}' "
+                            f"(保持 testing): {cancelled_err}",
+                        )
+                        return
+                    # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
+                    # 熔断期 planner 派发失败属「provider 故障」，不是验证逻辑失败：
+                    # 不得 raise（会触发 legacy 降级 → bug-found → 伪 fix 级联），
+                    # 保持 spec 在 implemented（由 full_scan recovery 兜底重排）。
+                    if plan_result.error and "provider circuit open" in plan_result.error:
+                        self._pm.state_machine.update_spec(spec_name, {
+                            "error": plan_result.error,
+                        })
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"Provider circuit open — planner suppressed for '{spec_name}', "
+                            f"holding implemented: {plan_result.error}",
+                        )
+                        return
+                    raise RuntimeError(f"Planner plan 失败: {plan_result.error}")
+
+                # 验证 Planner 是否成功生成场景文件
+                plan_status = self._pm._read_planner_result(spec_name)
+                if plan_status != "plan-ready":
+                    # fix-planner-invalid-output-alert：planner run 成功收工却无有效产出
+                    # ＝ 整轮 planner 时长/成本白烧，必须显式留痕（error 字段 + ERROR 级
+                    # 日志），否则只在降级 WARNING 里一笔带过，浪费不可见。
                     self._pm.state_machine.update_spec(spec_name, {
-                        "error": plan_result.error,
+                        "error": (
+                            f"Planner 场景生成无效（status={plan_status}，run="
+                            f"{plan_result.run_id}，{plan_result.duration_seconds / 60:.1f}min）"
+                            f"— 降级旧版验证流程"
+                        ),
                     })
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"Planner 未生成有效场景 '{spec_name}'（status={plan_status}，"
+                        f"run={plan_result.run_id}，白烧 "
+                        f"{plan_result.duration_seconds / 60:.1f}min）— 降级旧版 verifier",
+                    )
+                    raise RuntimeError(f"Planner 未生成有效场景，status={plan_status}")
+
+                # ── 场景集冻结（add-verify-scenario-freeze）──
+                # 首轮写入 / 修复轮 diff 校验（design D3：确定性，planner 不可绕过）。
+                # 在场景执行前应用：以持久化集约束 planner 产出，缺场景补齐后继续验证。
+                # （冻结复用路径不经过此处——冻结集即原班场景，无需再约束产出。）
+                try:
+                    self._pm._apply_scenario_freeze(spec_name)
+                except Exception as e:
+                    # 冻结逻辑属辅助治理，绝不阻断验证主流程
                     self._pm.logger.warning(
                         "pm_engine",
-                        f"Provider circuit open — planner suppressed for '{spec_name}', "
-                        f"holding implemented: {plan_result.error}",
+                        f"场景集冻结处理跳过 '{spec_name}'（异常不阻断验证）: {e}",
                     )
-                    return
-                raise RuntimeError(f"Planner plan 失败: {plan_result.error}")
 
-            # 验证 Planner 是否成功生成场景文件
-            plan_status = self._pm._read_planner_result(spec_name)
-            if plan_status != "plan-ready":
-                # fix-planner-invalid-output-alert：planner run 成功收工却无有效产出
-                # ＝ 整轮 planner 时长/成本白烧，必须显式留痕（error 字段 + ERROR 级
-                # 日志），否则只在降级 WARNING 里一笔带过，浪费不可见。
-                self._pm.state_machine.update_spec(spec_name, {
-                    "error": (
-                        f"Planner 场景生成无效（status={plan_status}，run="
-                        f"{plan_result.run_id}，{plan_result.duration_seconds / 60:.1f}min）"
-                        f"— 降级旧版验证流程"
-                    ),
-                })
-                self._pm.logger.error(
-                    "pm_engine",
-                    f"Planner 未生成有效场景 '{spec_name}'（status={plan_status}，"
-                    f"run={plan_result.run_id}，白烧 "
-                    f"{plan_result.duration_seconds / 60:.1f}min）— 降级旧版 verifier",
-                )
-                raise RuntimeError(f"Planner 未生成有效场景，status={plan_status}")
-
-            # ── 场景集冻结（add-verify-scenario-freeze）──
-            # 首轮写入 / 修复轮 diff 校验（design D3：确定性，planner 不可绕过）。
-            # 在场景执行前应用：以持久化集约束 planner 产出，缺场景补齐后继续验证。
-            try:
-                self._pm._apply_scenario_freeze(spec_name)
-            except Exception as e:
-                # 冻结逻辑属辅助治理，绝不阻断验证主流程
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"场景集冻结处理跳过 '{spec_name}'（异常不阻断验证）: {e}",
-                )
-
-            # ── 交互契约覆盖校验（add-interaction-contract-and-per-assert-triage 1.3）──
-            # 可交互元素既无场景覆盖又无纯展示声明 → 写反馈退回 plan 补齐
-            # （复用场景验收退回路径）；重排预算耗尽后不阻断验证，违规留痕。
-            contract = self._pm._apply_interaction_contract(spec_name)
-            if contract is not None and not contract.get("ok"):
-                if replan_left > 0:
-                    replan_feedback = contract.get("feedback") or ""
-                    replan_left -= 1
-                    self._pm.logger.warning(
+                # ── 交互契约覆盖校验（add-interaction-contract-and-per-assert-triage 1.3）──
+                # 可交互元素既无场景覆盖又无纯展示声明 → 写反馈退回 plan 补齐
+                # （复用场景验收退回路径）；重排预算耗尽后不阻断验证，违规留痕。
+                contract = self._pm._apply_interaction_contract(spec_name)
+                if contract is not None and not contract.get("ok"):
+                    if replan_left > 0:
+                        replan_feedback = contract.get("feedback") or ""
+                        replan_left -= 1
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"交互契约覆盖不完整 '{spec_name}' — 退回 plan 阶段"
+                            f"（剩余重排 {replan_left} 次）: {contract.get('uncovered')}",
+                        )
+                        continue
+                    self._pm.logger.error(
                         "pm_engine",
-                        f"交互契约覆盖不完整 '{spec_name}' — 退回 plan 阶段"
-                        f"（剩余重排 {replan_left} 次）: {contract.get('uncovered')}",
+                        f"交互契约重排预算耗尽 '{spec_name}' — 违规留痕继续验证: "
+                        f"{contract.get('uncovered')}",
                     )
-                    continue
-                self._pm.logger.error(
-                    "pm_engine",
-                    f"交互契约重排预算耗尽 '{spec_name}' — 违规留痕继续验证: "
-                    f"{contract.get('uncovered')}",
-                )
 
             # ── 阶段2: 验证引擎执行 ──
             self._pm.logger.info("pm_engine", f"[阶段2] 验证引擎执行: {spec_name}")
@@ -778,6 +823,20 @@ class VerificationPipeline:
                         "pm_engine",
                         f"场景验收连续失败 '{spec_name}' — 保持 implemented 等待人工: "
                         f"{env_error}",
+                    )
+                    return
+                if frozen is not None:
+                    # 冻结复用路径：执行期场景异常不重新出题（量尺一致原则），
+                    # 升级 admin 裁决
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"冻结场景执行异常 '{spec_name}' — 不重新出题，升级 admin "
+                        f"裁决: {env_error}",
+                    )
+                    self._escalate_env_blocked(
+                        spec_name,
+                        [f"冻结场景执行环境异常: {str(env_error)[:200]}"],
+                        title="场景计划争议",
                     )
                     return
                 replan_feedback = env_error
@@ -1502,6 +1561,26 @@ class VerificationPipeline:
             })
 
 
+    @staticmethod
+    def _load_frozen_scenarios(verify_dir: Path):
+        """读取冻结场景集（scenario-reuse-on-reenter）。
+
+        Returns:
+            list[TestScenario]：冻结集有效（验收通过的原班场景）；
+            None：无冻结文件（首次出题，走 planner 设计流程）；
+            "corrupt"：文件存在但验收失败（损坏/结构非法/为空）——场景一经
+            冻结跨轮一致，变更须 admin 裁决，绝不静默重新出题。
+        """
+        from core.verify_engine.scenarios import load_scenarios
+        path = verify_dir / "test_scenarios.json"
+        if not path.is_file():
+            return None
+        try:
+            scenarios = load_scenarios(path)
+        except Exception:
+            return "corrupt"
+        return scenarios if scenarios else "corrupt"
+
     def _env_whitewash_gate(self, spec_name: str) -> bool:
         """verified 推进前的洗白不变量门禁（help-center 0/15 verified 事故防线）。
 
@@ -1537,24 +1616,25 @@ class VerificationPipeline:
         self._escalate_env_blocked(spec_name, violations)
         return False
 
-    def _escalate_env_blocked(self, spec_name: str, violations: list) -> None:
-        """env 洗白拦截升级：阻塞 spec → 自动呼叫 Administrator → 达阈值冻结转人工。
+    def _escalate_env_blocked(self, spec_name: str, violations: list,
+                              title: str = "验证环境阻塞") -> None:
+        """阻塞升级通道：阻塞 spec → 自动呼叫 Administrator → 达阈值冻结转人工。
 
         help-center 事故语义（0/15 verified 被全量 env 豁免后推成 pushed）：
         env 失败绝不放行。首轮阻塞并自动呼叫 Administrator（依赖安装/服务
-        重启/端口清理在其权限内），处置完成走既有重验证；连续
-        ENV_BLOCK_FREEZE_THRESHOLD 轮仍 env → frozen 结构化冻结 + 人工升级
-        告警——admin 权限也无法处理时唯一出口是人工介入。
+        重启/端口清理在其权限内），处置完成走既有重验证；连续 2 轮仍阻塞 →
+        frozen 结构化冻结 + 人工升级告警——admin 权限也无法处理时唯一出口是
+        人工介入。title 区分升级类别（验证环境阻塞 / 场景计划争议）。
         """
         try:
             spec = self._pm.state_machine.read_one(spec_name) or {}
             rounds = int(spec.get("_env_block_rounds") or 0) + 1
-            frozen = rounds >= 2  # 阈值：env 连续 2 轮阻塞 → 冻结转人工
+            frozen = rounds >= 2  # 阈值：连续 2 轮阻塞 → 冻结转人工
             error_msg = (
-                f"用户指令冻结（env 连续 {rounds} 轮阻塞，admin 处置未奏效，"
+                f"用户指令冻结（{title}连续 {rounds} 轮，admin 处置未奏效，"
                 f"转人工）：{'；'.join(violations[:3])}"
                 if frozen else
-                f"验证环境阻塞（第 {rounds} 轮）：{'；'.join(violations[:3])}"
+                f"{title}（第 {rounds} 轮）：{'；'.join(violations[:3])}"
             )
             entry = {
                 "status": "blocked",
@@ -1567,23 +1647,24 @@ class VerificationPipeline:
             if frozen:
                 self._pm.logger.error(
                     "pm_engine",
-                    f"'{spec_name}' env 阻塞连续 {rounds} 轮，已冻结转人工",
+                    f"'{spec_name}' {title}连续 {rounds} 轮，已冻结转人工",
                 )
             else:
                 self._pm.logger.warning(
                     "pm_engine",
-                    f"'{spec_name}' env 阻塞第 {rounds} 轮，自动呼叫 Administrator 处置",
+                    f"'{spec_name}' {title}第 {rounds} 轮，自动呼叫 Administrator 处置",
                 )
             # 自动呼叫 Administrator：与 Dashboard 手动 invoke 同一信号通道
             # （.fenix/admin_invoke_request.json，daemon 主循环拾取派发）
             try:
                 from core.dashboard.data import request_admin_invoke
                 inv = request_admin_invoke(self._pm.project_root, spec_name, (
-                    f"验证环境阻塞自动升级（verified 洗白门禁）：{error_msg[:300]}。"
-                    "请诊断并修复验证环境——典型动作：主树依赖安装（npm install）、"
-                    "被测服务/dashboard 重启、端口占用清理、验证产物重建。"
-                    "环境问题不是产品缺陷：不要打回实现分支、不要修改产品代码。"
-                    "修复完成后触发该 spec 重新验证。"
+                    f"{title}自动升级（verified 洗白门禁/场景冻结复用）：{error_msg[:300]}。"
+                    "请诊断并处置——典型动作：主树/worktree 依赖安装、被测服务"
+                    "/dashboard 重启、端口占用清理、验证产物重建、裁决场景集"
+                    "变更（修复/删除冻结文件）。环境与计划问题不是产品缺陷："
+                    "不要打回实现分支、不要修改产品代码。处置完成后触发该 spec"
+                    "重新验证。"
                 ))
                 if isinstance(inv, dict) and inv.get("conflict"):
                     self._pm.logger.info(
