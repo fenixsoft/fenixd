@@ -73,6 +73,50 @@ function assertionLabel(type?: string): string {
   return hit ? `${ASSERTION_LABELS[hit]} ${type.slice(hit.length)}` : type;
 }
 
+type AssertionResultItem = NonNullable<
+  NonNullable<SpecDetail['scenarios']>[number]['assertion_results']
+>[number];
+
+// 断言行明细摘要：优先设计 label / 结果 message；通过断言常缺省这两者，
+// 按引擎输出字段（core/verify_engine/assertions.py 口径）分类型组装可读文本
+function assertionDetail(a: AssertionResultItem): string {
+  if (a.label) return a.label;
+  if (a.message) return a.message;
+  switch (a.type) {
+    case 'element_count':
+      return `期望 ${a.expected ?? 1} 个，实际 ${a.actual ?? '?'} 个`;
+    case 'element_not_exist':
+      return a.actual_count != null ? `页面残留 ${a.actual_count} 个` : '';
+    case 'text_match': {
+      const modeWord = a.mode === 'regex' ? '匹配正则' : a.mode === 'contains' ? '包含' : '等于';
+      const actual = a.actual != null && a.actual !== '' ? `，实际「${a.actual}」` : '';
+      return `${modeWord}「${a.expected ?? ''}」${actual}`;
+    }
+    case 'text_contains':
+      return a.text ? `包含「${a.text}」` : '';
+    case 'attribute_match': {
+      const actual = a.actual != null ? `，实际「${a.actual}」` : '';
+      return `${a.attribute || '属性'} ${a.expected != null ? `期望「${a.expected}」` : ''}${actual}`;
+    }
+    case 'no_console_error': {
+      const filtered = (a.filtered_network || []).length;
+      return `错误 ${(a.errors || []).length} 条${filtered ? `（已过滤网络类 ${filtered} 条）` : ''}`;
+    }
+    case 'no_network_error':
+      return `错误请求 ${(a.errors || []).length} 条`;
+    case 'no_auth_error': {
+      const m = a.matched || [];
+      return m.length ? `命中关键词: ${m.join('、')}` : '关键词 0 命中';
+    }
+    case 'dom_structure':
+      return `${a.parent || '?'} ${a.relation === 'direct-child' ? '直接包含' : '包含'} ${a.child || '?'}`;
+    case 'z_index_order':
+      return `${a.selector || '?'} 的 z-index ${a.z_index_self ?? '?'} ${a.operator || '>'} ${a.z_index_compare ?? '?'}（对比 ${a.compare_selector || '?'}）`;
+    default:
+      return a.selector || '';
+  }
+}
+
 // overview「任务进度」同款进度条控件：大百分比 + 已完成 x/y + 渐变进度条（验证进度/任务清单共用）
 function ProgressBarTile({ done, total }: { done: number; total: number }) {
   const p = total > 0 ? Math.round((done / total) * 100) : 0;
@@ -769,8 +813,8 @@ export default function SpecDetailPage() {
                                 <Tooltip title={`断言类型: ${a.type || '?'}`}>
                                   {assertionLabel(a.type)}
                                 </Tooltip>
-                                : {a.label || a.message || ''}{' '}
-                                {ok ? '' : `— ${a.message || a.detail || a.actual || ''}`}
+                                : {assertionDetail(a)}{' '}
+                                {ok ? '' : `— ${a.message || a.detail || a.error || ''}`}
                               </Typography.Text>
                             </div>
                           );
