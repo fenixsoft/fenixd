@@ -627,13 +627,17 @@ class VerificationPipeline:
                 # planner run 被取消：spec 保持 testing 原状，只写 error，
                 # 不流转 bug-found、不降级 legacy、不入队。
                 if getattr(plan_result, "cancelled", False):
+                    p_err = plan_result.error or ""
+                    cancelled_err = (
+                        f"run 被人工取消：{p_err}" if p_err else "run 被人工取消"
+                    )
                     self._pm.state_machine.update_spec(spec_name, {
-                        "error": plan_result.error or "run 被人工取消",
+                        "error": cancelled_err,
                     })
                     self._pm.logger.warning(
                         "pm_engine",
                         f"Planner plan run 被人工取消 — hold-state '{spec_name}' "
-                        f"(保持 testing): {plan_result.error}",
+                        f"(保持 testing): {cancelled_err}",
                     )
                     return
                 # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
@@ -833,13 +837,17 @@ class VerificationPipeline:
             # ── 人工取消 hold-state（add-run-cancel D4，judge 同语义）──
             # judge run 被取消：spec 保持 testing 原状，只写 error。
             if getattr(judge_result, "cancelled", False):
+                j_err = judge_result.error or ""
+                cancelled_err = (
+                    f"run 被人工取消：{j_err}" if j_err else "run 被人工取消"
+                )
                 self._pm.state_machine.update_spec(spec_name, {
-                    "error": judge_result.error or "run 被人工取消",
+                    "error": cancelled_err,
                 })
                 self._pm.logger.warning(
                     "pm_engine",
                     f"Planner judge run 被人工取消 — hold-state '{spec_name}' "
-                    f"(保持 testing): {judge_result.error}",
+                    f"(保持 testing): {cancelled_err}",
                 )
                 return
             # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
@@ -1284,13 +1292,17 @@ class VerificationPipeline:
             # ── 人工取消 hold-state（add-run-cancel D4，legacy verifier）──
             # verifier run 被取消：spec 保持 testing 原状，只写 error，
             # 不流转 bug-found、不入队重派。
+            v_err = result.error or ""
+            cancelled_err = (
+                f"run 被人工取消：{v_err}" if v_err else "run 被人工取消"
+            )
             self._pm.state_machine.update_spec(spec_name, {
-                "error": result.error or "run 被人工取消",
+                "error": cancelled_err,
             })
             self._pm.logger.warning(
                 "pm_engine",
                 f"Verifier run 被人工取消 — hold-state '{spec_name}' "
-                f"(保持 testing): {result.error}",
+                f"(保持 testing): {cancelled_err}",
             )
             return
         if self._pm._verifier_error_is_infra(result.error):

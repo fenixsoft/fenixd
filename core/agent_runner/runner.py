@@ -1746,6 +1746,9 @@ class AgentRunner:
                     "by": cancel_error.by,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
+                # 取消已在轮询环内消费：run 收尾清理旗标防泄漏（幂等；
+                # _execute_agent 层的 _cancel_clear 亦会兜底）。
+                self._cancel_clear(base_run_id)
             # 产物文件可能因崩溃等遗留为"活动但不再增长"，清理时按时间淘汰即可
 
         if cancel_error is not None:

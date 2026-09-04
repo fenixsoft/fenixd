@@ -833,13 +833,17 @@ class Dispatcher:
                     # 后续重排完全交给既有机制（stuck 检测/恢复扫描）或
                     # 管理员人工操作（freeze 等）。
                     if getattr(result, "cancelled", False):
+                        cancelled_err = (
+                            f"run 被人工取消：{final_error}"
+                            if final_error else "run 被人工取消"
+                        )
                         self._pm.logger.warning(
                             "pm_engine",
                             f"run 被人工取消 '{spec_name}' — hold-state，"
-                            f"不重试/不重派: {final_error}",
+                            f"不重试/不重派: {cancelled_err}",
                         )
                         self._pm.state_machine.update_spec(spec_name, {
-                            "error": final_error,
+                            "error": cancelled_err,
                         })
                         return
                     # ── 死亡 run 豁免（fix-budget-counting-semantics D1）──────
@@ -1049,13 +1053,17 @@ class Dispatcher:
         # 不动 _retry_count/_merge_fp/_merge_streak、不入队重派；worktree
         # 保留语义不变（_keep_fast_track_worktree 幂等，runner 已在取消路径保留）。
         if getattr(result, "cancelled", False):
+            ft_err = getattr(result, "error", None) or ""
+            cancelled_err = (
+                f"run 被人工取消：{ft_err}" if ft_err else "run 被人工取消"
+            )
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track run 被人工取消 '{spec_name}' — hold-state，"
-                f"不重试/不重派: {getattr(result, 'error', '')}",
+                f"不重试/不重派: {cancelled_err}",
             )
             self._pm.state_machine.update_spec(spec_name, {
-                "error": getattr(result, "error", None) or "run 被人工取消",
+                "error": cancelled_err,
             })
             return
 
@@ -1406,13 +1414,17 @@ class Dispatcher:
             # repair run 被取消：spec 保持原状（implementing），只写 error，
             # 不动 _retry_count/_merge_fp/_merge_streak、不入队重派。
             if getattr(r, "cancelled", False):
+                r_err = getattr(r, "error", None) or repair_error or ""
+                cancelled_err = (
+                    f"run 被人工取消：{r_err}" if r_err else "run 被人工取消"
+                )
                 self._pm.logger.warning(
                     "pm_engine",
                     f"repair run 被人工取消 — hold-state '{spec_name}'"
-                    f"（保持原状）: {repair_error or r.error}",
+                    f"（保持原状）: {cancelled_err}",
                 )
                 self._pm.state_machine.update_spec(spec_name, {
-                    "error": getattr(r, "error", None) or "run 被人工取消",
+                    "error": cancelled_err,
                 })
                 return
 
