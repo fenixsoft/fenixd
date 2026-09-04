@@ -45,7 +45,17 @@ class TokenAccountant:
         prev_out = int(entry.get("_tokens_out", 0) or 0)
         new_in = prev_in + tokens_in
         new_out = prev_out + tokens_out
-        updates = {"_tokens_in": new_in, "_tokens_out": new_out}
+        # 缓存分项累计（spec 详情「缓存命中/命中率」展示）：字段缺失（历史 spec）从 0 起步
+        prev_cache_read = int(entry.get("_cache_read_tokens", 0) or 0)
+        prev_cache_creation = int(entry.get("_cache_creation_tokens", 0) or 0)
+        updates = {
+            "_tokens_in": new_in,
+            "_tokens_out": new_out,
+            "_cache_read_tokens": prev_cache_read
+            + int(usage_info.get("cache_read_input_tokens", 0) or 0),
+            "_cache_creation_tokens": prev_cache_creation
+            + int(usage_info.get("cache_creation_input_tokens", 0) or 0),
+        }
         # 成本：仅网关真实回传时累计；网关不回传则不写 _cost_usd（保持缺失语义）
         if cost is not None:
             try:

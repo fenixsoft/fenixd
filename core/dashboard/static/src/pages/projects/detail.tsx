@@ -400,6 +400,17 @@ export default function SpecDetailPage() {
     return m >= 1000 ? (m / 1000).toFixed(2) + 'G' : m.toFixed(1) + 'M';
   };
 
+  // 输入 Token 展示：有缓存命中分项（cache_read_input_tokens 非 null）时附加括号，
+  // 命中率 = 缓存命中 / 输入 Token（输入已含缓存写入+命中，口径与 STATE 累计一致）；
+  // 分项为 null（历史 spec 未记录）时不显示括号，避免伪 0%
+  const fmtInputTokens = (usage: NonNullable<SpecDetail['token_usage']>) => {
+    const base = fmtMillions(usage.tokens_in);
+    const cacheRead = usage.cache_read_input_tokens;
+    if (cacheRead == null || !usage.tokens_in) return base;
+    const pct = ((cacheRead / usage.tokens_in) * 100).toFixed(1);
+    return `${base}（缓存命中 ${fmtMillions(cacheRead)}，命中率 ${pct}%）`;
+  };
+
   // 告警标记人工已处理（同 overview 横幅）；成功后刷新本 SPEC 告警
   const handleMarkAlertHandled = async (a: AlertItem) => {
     try {
@@ -925,7 +936,7 @@ export default function SpecDetailPage() {
             {detail?.depends_on || '—'}
           </Descriptions.Item>
           <Descriptions.Item label="输入 Token">
-            {detail?.token_usage ? fmtMillions(detail.token_usage.tokens_in) : '—'}
+            {detail?.token_usage ? fmtInputTokens(detail.token_usage) : '—'}
           </Descriptions.Item>
           <Descriptions.Item label="输出 Token">
             {detail?.token_usage ? fmtMillions(detail.token_usage.tokens_out) : '—'}

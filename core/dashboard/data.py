@@ -824,7 +824,8 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
     current_group = None
     try:
         for line in tasks_path.read_text(encoding="utf-8").split("\n"):
-            m = re.match(r"^##\s+\d+\.\s+(.+)$", line)
+            # 编号后点号可选：旧格式 "## 1. 标题" / 新格式 "## 1 标题"
+            m = re.match(r"^##\s+\d+\.?\s+(.+)$", line)
             if m:
                 current_group = {"title": m.group(1), "tasks": [], "done": 0, "total": 0}
                 groups.append(current_group)
@@ -2189,18 +2190,24 @@ def _token_usage_view(entry: dict) -> dict:
     返回固定结构：
         {
           "tokens_in": int, "tokens_out": int,
-          "cache_creation_input_tokens": int | None,  # STATE 仅存累计，分项未记录→None
+          "cache_creation_input_tokens": int | None,  # 分项自 add-cache-hit-display 起累计；历史 spec 无字段→None
           "cache_read_input_tokens": int | None,
           "cost_usd": float | None,    # None = 网关未回传，界面展示「成本不可用」
           "cost_available": bool,       # 成本字段是否可展示
         }
-    STATE 仅持久累计 _tokens_in/_tokens_out/_cost_usd（分项 cache 入 input），
-    故分项在详情 tooltip 中以「已计入 input」说明，值为 None 表示无可分项数据。
+    STATE 持久累计 _tokens_in/_tokens_out/_cost_usd 及缓存分项 _cache_read_tokens/
+    _cache_creation_tokens（分项 cache 入 input）；分项为 None 表示该 spec 未记录过
+    分项数据（历史条目），前端不显示缓存括号。
     """
     if not isinstance(entry, dict):
         entry = {}
     tokens_in = int(entry.get("_tokens_in", 0) or 0)
     tokens_out = int(entry.get("_tokens_out", 0) or 0)
+    # 分项字段：缺失（历史 spec）保持 None，存在则规整为 int（STATE 读出为字符串）
+    cache_read = entry.get("_cache_read_tokens")
+    cache_creation = entry.get("_cache_creation_tokens")
+    cache_read_val = int(cache_read) if cache_read is not None else None
+    cache_creation_val = int(cache_creation) if cache_creation is not None else None
     cost = entry.get("_cost_usd")
     if cost is None:
         cost_val = None
@@ -2215,8 +2222,8 @@ def _token_usage_view(entry: dict) -> dict:
     return {
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
-        "cache_creation_input_tokens": None,
-        "cache_read_input_tokens": None,
+        "cache_creation_input_tokens": cache_creation_val,
+        "cache_read_input_tokens": cache_read_val,
         "cost_usd": cost_val,
         "cost_available": cost_available,
     }

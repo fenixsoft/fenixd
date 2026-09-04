@@ -124,6 +124,26 @@ class TestAccumulateTokenUsage:
         assert _int(entry, "_tokens_in") == 40_500_000
         assert _int(entry, "_tokens_out") == 300_000
 
+    def test_accumulate_cache_subtotals_persisted(self, tmp_path):
+        """缓存分项累计持久化：_cache_read_tokens / _cache_creation_tokens 跨 run 累加。"""
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        sm = make_state(proot, "spec-cache")
+        runner = make_runner(proot)
+        runner.state_machine = sm
+        usage = {
+            "input_tokens": 10_000_000,
+            "output_tokens": 300_000,
+            "cache_creation_input_tokens": 4_000_000,
+            "cache_read_input_tokens": 500_000,
+            "cost_usd": None,
+        }
+        runner._token_accountant._accumulate_token_usage("spec-cache", usage)
+        runner._token_accountant._accumulate_token_usage("spec-cache", usage)
+        entry = sm.read_one("spec-cache")
+        assert _int(entry, "_cache_read_tokens") == 1_000_000
+        assert _int(entry, "_cache_creation_tokens") == 8_000_000
+
     def test_cost_accumulates_only_when_gateway_reports(self, tmp_path):
         proot = tmp_path / "proj"
         proot.mkdir()
@@ -297,6 +317,24 @@ class TestCostUnavailableRender:
         view = dashboard_data._token_usage_view(entry)
         assert view["cost_available"] is True
         assert view["cost_usd"] == 1.23
+
+    def test_token_usage_view_cache_fields_absent(self):
+        """历史 spec 无缓存分项字段 → None（前端不显示括号，不显示伪 0%）。"""
+        entry = {"_tokens_in": 42_000_000, "_tokens_out": 300_000}
+        view = dashboard_data._token_usage_view(entry)
+        assert view["cache_read_input_tokens"] is None
+        assert view["cache_creation_input_tokens"] is None
+
+    def test_token_usage_view_cache_fields_present(self):
+        """新 spec 有缓存分项字段（STATE 读出为字符串）→ 透传 int 值。"""
+        entry = {
+            "_tokens_in": 73_600_000, "_tokens_out": 10_000,
+            "_cache_read_tokens": "71100000",
+            "_cache_creation_tokens": "2500000",
+        }
+        view = dashboard_data._token_usage_view(entry)
+        assert view["cache_read_input_tokens"] == 71_100_000
+        assert view["cache_creation_input_tokens"] == 2_500_000
 
     def test_render_report_includes_chain_tokens_row(self, tmp_path):
         proot = tmp_path / "proj"

@@ -367,10 +367,13 @@ export interface SpecDetail {
     size?: number;
     mtime?: string;
   }>;
-  // Token 用量 — cost_usd 仅网关真实回传时存在（金额展示不伪造）
+  // Token 用量 — cost_usd 仅网关真实回传时存在（金额展示不伪造）；
+  // cache 分项为 null 表示该 spec 未记录过分项数据（历史条目），前端不显示缓存括号
   token_usage?: {
     tokens_in: number;
     tokens_out: number;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
     cost_usd?: number | null;
     cost_available?: boolean;
   };
