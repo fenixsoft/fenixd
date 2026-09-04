@@ -122,6 +122,12 @@ artifacts:
 
       Guidelines:
       - Group related tasks under ## numbered headings
+      - MUST: every group heading MUST be exactly `## <编号>. <标题>` — an Arabic
+        numeral followed by a dot (编号后必须带点号), e.g. `## 1. Setup`. The
+        downstream parsers (CLI progress script, dashboard) and the promotion
+        lint all depend on this format; headings without a number/dot (如 `##
+        事项`) will fail parsing and make the whole task list untrackable
+        (任务清单不可跟踪).
       - Each task MUST be a checkbox: `- [ ] X.Y Task description`
       - Tasks should be small enough to complete in one session
       - Order tasks by dependency (what must be done first?)
