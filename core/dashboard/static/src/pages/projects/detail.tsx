@@ -1059,6 +1059,14 @@ export default function SpecDetailPage() {
               </div>
             ))}
           </>
+        ) : detail?.tasks_note ? (
+          // tasks.md 存在但未解析出任务分组（task-track R3）：warning 空态，
+          // 与无 tasks.md 文件的 secondary 空态可区分
+          <Typography.Text type="warning" data-testid="tasks-note-warning">
+            {detail.tasks_note}
+            <br />
+            可检查 SPEC 的 tasks.md 分组标题格式
+          </Typography.Text>
         ) : (
           <Typography.Text type="secondary">暂无任务清单</Typography.Text>
         )}
