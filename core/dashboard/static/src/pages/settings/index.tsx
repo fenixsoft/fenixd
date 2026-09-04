@@ -26,7 +26,7 @@ const BASE_MENU_ITEMS = [
   { key: 'token', label: '预算' },
   { key: 'misc', label: '归档' },
   { key: 'verify', label: '验证' },
-  { key: 'self-review', label: '每日自省' },
+  { key: 'self-review', label: '自省' },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'
