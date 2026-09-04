@@ -108,7 +108,7 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
       <div
         data-testid="prompts-generic-content"
         style={{
-          maxHeight: 360, overflow: 'auto', background: '#fafafa',
+          maxHeight: 600, overflow: 'auto', background: '#fafafa',
           border: '1px solid #f0f0f0', borderRadius: 6, padding: 12,
         }}
       >
