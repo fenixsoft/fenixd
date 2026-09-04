@@ -1714,6 +1714,10 @@ class Dispatcher:
 
     def _fast_track_advance_to_verified(self, spec_name: str, result) -> None:
         """fast-track 硬校验通过 + verdict=verified：implemented → testing → verified。"""
+        # verified 洗白门禁（help-center 0/15 verified 事故防线）：fast-track
+        # 结果文件 0 通过或 env 失败不得放行，升级 admin 处置
+        if not self._pm._env_whitewash_gate(spec_name):
+            return
         self._pm.state_machine.transition(spec_name, "testing")
         self._pm.state_machine.transition(spec_name, "verified")
         self._pm.state_machine.update_spec(spec_name, {
@@ -1721,6 +1725,7 @@ class Dispatcher:
             "error": None,
             "_inconclusive_attempts": 0,
             "_verify_fail_rounds": 0,
+            "_env_block_rounds": 0,
         })
         self._pm.logger.info(
             "pm_engine",

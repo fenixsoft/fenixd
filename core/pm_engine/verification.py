@@ -994,6 +994,10 @@ class VerificationPipeline:
                     f"验证报告闸门: '{spec_name}' 阻止晋级 verified — {report_blocker}",
                 )
                 return
+            # verified 洗白门禁（help-center 0/15 verified 事故防线）：
+            # 0 通过或 env 失败不得放行，升级 admin 处置
+            if not self._pm._env_whitewash_gate(spec_name):
+                return
             self._pm.state_machine.transition(spec_name, "verified")
             self._pm.state_machine.update_spec(spec_name, {
                 "tester_run": judge_result.run_id,
@@ -1003,6 +1007,7 @@ class VerificationPipeline:
                 # 的唯一归零点——跨修复周期累计的失败计数在此清零并持久化，
                 # 打回重派/修复收工等中间转换不再归零（见 _do_spec_bug_found）。
                 "_verify_fail_rounds": 0,
+                "_env_block_rounds": 0,
             })
             # 本轮场景集变更小节追加到验证报告（spec 需求 2.3）
             self._pm._render_scenario_change_section_to_report(spec_name)
@@ -1355,6 +1360,10 @@ class VerificationPipeline:
                     )
                     return
 
+                # verified 洗白门禁（help-center 0/15 verified 事故防线）：
+                # 0 通过或 env 失败不得放行，升级 admin 处置
+                if not self._pm._env_whitewash_gate(spec_name):
+                    return
                 # Verifier final state reconciliation (fix-startup-double-dispatch):
                 # If spec state is not "testing" due to race conditions, reconcile
                 current_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status", "")
@@ -1438,6 +1447,10 @@ class VerificationPipeline:
                     )
                     return
 
+                # verified 洗白门禁（help-center 0/15 verified 事故防线）：
+                # 0 通过或 env 失败不得放行，升级 admin 处置
+                if not self._pm._env_whitewash_gate(spec_name):
+                    return
                 # Verifier final state reconciliation (fix-startup-double-dispatch):
                 # If spec state is not "testing" due to race conditions, reconcile
                 current_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status", "")
@@ -1478,6 +1491,7 @@ class VerificationPipeline:
                     "_inconclusive_attempts": 0,
                     # add-fail-counter-budget D1：PASS 唯一归零点（legacy 路径同语义）。
                     "_verify_fail_rounds": 0,
+                    "_env_block_rounds": 0,
                 })
                 self._pm._on_spec_verified(spec_name)
         else:
@@ -1487,6 +1501,122 @@ class VerificationPipeline:
                 "error": f"Verifier agent failed: {result.error}",
             })
 
+
+    def _env_whitewash_gate(self, spec_name: str) -> bool:
+        """verified 推进前的洗白不变量门禁（help-center 0/15 verified 事故防线）。
+
+        verdict=verified 但 0 通过或存在 env 分类失败 → 阻断推进并升级：
+        阻塞 spec → 自动呼叫 Administrator 处置环境 → 连续
+        ENV_BLOCK_FREEZE_THRESHOLD 轮仍 env → 结构化冻结转人工。
+        Returns: True=放行推进 verified；False=已升级处置（调用方直接 return）。
+        """
+        from core.verdict_check import load_report, whitewash_violations
+        scenarios = []
+        report = load_report(self._pm.project_root, spec_name)
+        if report:
+            scenarios = report.get("scenarios") or []
+        if not scenarios:
+            # report.json 缺位时回退结果文件场景（fast-track 等价路径）；
+            # 读取异常一律视为无数据（门禁不制造新的失败模式）
+            try:
+                ft = self._pm._read_implementer_result(spec_name) or {}
+                verification = ft.get("verification")
+                if isinstance(verification, dict):
+                    scenarios = verification.get("scenarios") or []
+            except Exception:
+                scenarios = []
+        if not scenarios:
+            return True  # 无场景数据不拦（保守放行，交既有闸门兜底）
+        violations = whitewash_violations(scenarios, "verified")
+        if not violations:
+            return True
+        self._pm.logger.warning(
+            "pm_engine",
+            f"verified 洗白门禁拦截 '{spec_name}': {'；'.join(violations)}",
+        )
+        self._escalate_env_blocked(spec_name, violations)
+        return False
+
+    def _escalate_env_blocked(self, spec_name: str, violations: list) -> None:
+        """env 洗白拦截升级：阻塞 spec → 自动呼叫 Administrator → 达阈值冻结转人工。
+
+        help-center 事故语义（0/15 verified 被全量 env 豁免后推成 pushed）：
+        env 失败绝不放行。首轮阻塞并自动呼叫 Administrator（依赖安装/服务
+        重启/端口清理在其权限内），处置完成走既有重验证；连续
+        ENV_BLOCK_FREEZE_THRESHOLD 轮仍 env → frozen 结构化冻结 + 人工升级
+        告警——admin 权限也无法处理时唯一出口是人工介入。
+        """
+        try:
+            spec = self._pm.state_machine.read_one(spec_name) or {}
+            rounds = int(spec.get("_env_block_rounds") or 0) + 1
+            frozen = rounds >= 2  # 阈值：env 连续 2 轮阻塞 → 冻结转人工
+            error_msg = (
+                f"用户指令冻结（env 连续 {rounds} 轮阻塞，admin 处置未奏效，"
+                f"转人工）：{'；'.join(violations[:3])}"
+                if frozen else
+                f"验证环境阻塞（第 {rounds} 轮）：{'；'.join(violations[:3])}"
+            )
+            entry = {
+                "status": "blocked",
+                "error": error_msg,
+                "_env_block_rounds": rounds,
+            }
+            if frozen:
+                entry["frozen"] = True
+            self._pm.state_machine.update_spec(spec_name, entry)
+            if frozen:
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"'{spec_name}' env 阻塞连续 {rounds} 轮，已冻结转人工",
+                )
+            else:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"'{spec_name}' env 阻塞第 {rounds} 轮，自动呼叫 Administrator 处置",
+                )
+            # 自动呼叫 Administrator：与 Dashboard 手动 invoke 同一信号通道
+            # （.fenix/admin_invoke_request.json，daemon 主循环拾取派发）
+            try:
+                from core.dashboard.data import request_admin_invoke
+                inv = request_admin_invoke(self._pm.project_root, spec_name, (
+                    f"验证环境阻塞自动升级（verified 洗白门禁）：{error_msg[:300]}。"
+                    "请诊断并修复验证环境——典型动作：主树依赖安装（npm install）、"
+                    "被测服务/dashboard 重启、端口占用清理、验证产物重建。"
+                    "环境问题不是产品缺陷：不要打回实现分支、不要修改产品代码。"
+                    "修复完成后触发该 spec 重新验证。"
+                ))
+                if isinstance(inv, dict) and inv.get("conflict"):
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"'{spec_name}' 已有进行中的 Admin 处置，跳过重复呼叫",
+                    )
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"'{spec_name}' admin 自动呼叫失败（不阻塞升级）: {e}",
+                )
+            try:
+                self._pm._send_human_escalation_alert(
+                    spec_name=spec_name,
+                    signal_type="verify_env_blocked",
+                    severity="critical" if frozen else "warning",
+                    description=error_msg[:300],
+                    evidence=(
+                        f"spec={spec_name}; "
+                        f"report=openspec/changes/{spec_name}/verification-report.md"
+                    ),
+                    recommended_action=(
+                        "等待 Administrator 自动处置并重验；若已冻结请人工检查"
+                        "环境（依赖/服务/端口）后解冻重跑验证"
+                    ),
+                )
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine", f"env 阻塞人工告警失败: {e}")
+        except Exception as e:
+            # 升级通道自身失败不得抛穿裁决流程
+            self._pm.logger.warning(
+                "pm_engine", f"env 升级通道异常 '{spec_name}': {e}")
 
     def _verify_verdict_evidence(self, spec_name: str, retry_judge: bool = False) -> bool:
         """确定性校验裁决 report.json 的分类/证据合规，并按映射强制重写 status。

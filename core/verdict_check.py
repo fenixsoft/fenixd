@@ -164,6 +164,43 @@ def is_scenario_exemptible(scenario: dict) -> bool:
     return not has_product_bug_assertion(scenario)
 
 
+def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
+    """verified 洗白不变量（help-center 0/15 verified 事故的防线）。
+
+    - 0 通过 + 有失败 → 不得 verified（无论失败分类为何——合成报告
+      「0/15 通过（全部场景通过）」式的自相矛盾再也不能合法存在）；
+    - 任一失败分类为 env → 不得 verified（env 问题须升级 admin 处置，
+      不得当作豁免理由放行——「遇到 env 就不测试了」被本检查封死）。
+
+    仅约束 verdict=verified；bug-found 不受限。Returns: 违规说明列表（空=放行）。
+    """
+    if verdict != "verified" or not isinstance(scenarios, list) or not scenarios:
+        return []
+    total = len(scenarios)
+    passed = 0
+    env_failed: List[str] = []
+    has_failed = False
+    for sc in scenarios:
+        if not isinstance(sc, dict):
+            continue
+        sid = str(sc.get("scenario_id") or "?")
+        if sc.get("status") == "pass":
+            passed += 1
+        else:
+            has_failed = True
+            if sc.get("classification") == "env":
+                env_failed.append(sid)
+    violations: List[str] = []
+    if has_failed and passed == 0:
+        violations.append(f"0/{total} 场景通过（全部失败）不得判 verified")
+    if env_failed:
+        violations.append(
+            "env 失败场景不得判 verified（须升级 admin 处置）: "
+            + "、".join(env_failed[:8])
+        )
+    return violations
+
+
 def validate_report(report: dict) -> dict:
     """校验增强后的 report.json 分类与证据合规。
 

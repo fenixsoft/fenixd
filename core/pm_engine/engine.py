@@ -1972,6 +1972,12 @@ class PMEngine:
     def _verify_verdict_evidence(self, spec_name: str, retry_judge: bool = False) -> bool:
         return self._verification._verify_verdict_evidence(spec_name, retry_judge)
 
+    def _env_whitewash_gate(self, spec_name: str) -> bool:
+        return self._verification._env_whitewash_gate(spec_name)
+
+    def _escalate_env_blocked(self, spec_name: str, violations: list) -> None:
+        return self._verification._escalate_env_blocked(spec_name, violations)
+
     def _update_warning_streaks(self, spec_name: str) -> list:
         return self._verification._update_warning_streaks(spec_name)
 

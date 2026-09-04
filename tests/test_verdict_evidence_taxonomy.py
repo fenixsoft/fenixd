@@ -36,6 +36,136 @@ def _load_fixture(name):
 class TestVerdictCheck(unittest.TestCase):
     """verdict_check.py 核心校验逻辑（不依赖 pm_engine / 文件 IO 为主）。"""
 
+    def test_whitewash_zero_pass_not_verified(self):
+        """洗白不变量：0/15 全失败判 verified = 违规（help-center 事故形态）。"""
+        from core.verdict_check import whitewash_violations
+        scenarios = [
+            {"scenario_id": f"s{i}", "status": "fail", "classification": "env"}
+            for i in range(15)
+        ]
+        v = whitewash_violations(scenarios, "verified")
+        self.assertEqual(len(v), 2, "0 通过与 env 失败两条都应命中")
+        self.assertIn("0/15", v[0])
+
+    def test_whitewash_env_fail_blocks_even_with_passes(self):
+        """洗白不变量：有通过但存在 env 失败 → 仍不得 verified。"""
+        from core.verdict_check import whitewash_violations
+        scenarios = [
+            {"scenario_id": "s1", "status": "pass"},
+            {"scenario_id": "s2", "status": "fail", "classification": "env"},
+        ]
+        v = whitewash_violations(scenarios, "verified")
+        self.assertEqual(len(v), 1)
+        self.assertIn("s2", v[0])
+
+    def test_whitewash_legit_mix_passes(self):
+        """全 PASS 或 bug-found 不受限。"""
+        from core.verdict_check import whitewash_violations
+        self.assertEqual(
+            whitewash_violations(
+                [{"scenario_id": "s1", "status": "pass"}], "verified"), [])
+        self.assertEqual(
+            whitewash_violations(
+                [{"scenario_id": "s1", "status": "fail",
+                  "classification": "env"}], "bug-found"), [])
+        # 非 env 非零通过（如 test-defect 单点失败 + 其余通过）不属洗白，
+        # 交既有修复链处理
+        self.assertEqual(
+            whitewash_violations(
+                [{"scenario_id": "s1", "status": "pass"},
+                 {"scenario_id": "s2", "status": "fail",
+                  "classification": "test-defect"}], "verified"), [])
+
+    def test_env_whitewash_gate_blocks_and_escalates(self):
+        """_env_whitewash_gate：0 通过 + verified → 阻塞 + 冻结计数 + admin 呼叫 + 人工告警。"""
+        import tempfile
+        from pathlib import Path as _Path
+        from unittest.mock import MagicMock
+        from core.pm_engine.verification import VerificationPipeline
+
+        tmp = _Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        spec_dir = tmp / ".fenix" / "verify-progress" / "s1"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "report.json").write_text(json.dumps({
+            "summary": {"total": 2, "done": 2},
+            "scenarios": [
+                {"scenario_id": "s1", "status": "fail", "classification": "env",
+                 "evidence": {"failed_assertions": ["x"]}},
+                {"scenario_id": "s2", "status": "fail", "classification": "env",
+                 "evidence": {"failed_assertions": ["y"]}},
+            ],
+        }), encoding="utf-8")
+
+        pm = MagicMock()
+        pm.project_root = tmp
+        pm.state_machine.read_one.return_value = {"status": "testing"}
+        pipeline = VerificationPipeline.__new__(VerificationPipeline)
+        pipeline._pm = pm
+
+        allowed = pipeline._env_whitewash_gate("s1")
+        self.assertFalse(allowed, "0 通过 + verified 必须被拦截")
+        # 阻塞 + 轮次计数
+        entry = pm.state_machine.update_spec.call_args[0]
+        self.assertEqual(entry[0], "s1")
+        self.assertEqual(entry[1]["status"], "blocked")
+        self.assertEqual(entry[1]["_env_block_rounds"], 1)
+        # admin 呼叫 + 人工告警
+        pm._send_human_escalation_alert.assert_called_once()
+
+    def test_env_whitewash_gate_freezes_at_threshold(self):
+        """连续第 2 轮 env 阻塞 → frozen 结构化冻结转人工。"""
+        import tempfile
+        from pathlib import Path as _Path
+        from unittest.mock import MagicMock
+        from core.pm_engine.verification import VerificationPipeline
+
+        tmp = _Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        spec_dir = tmp / ".fenix" / "verify-progress" / "s1"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "report.json").write_text(json.dumps({
+            "scenarios": [
+                {"scenario_id": "s1", "status": "fail", "classification": "env",
+                 "evidence": {"failed_assertions": ["x"]}},
+            ],
+        }), encoding="utf-8")
+
+        pm = MagicMock()
+        pm.project_root = tmp
+        pm.state_machine.read_one.return_value = {"status": "blocked",
+                                                  "_env_block_rounds": 1}
+        pipeline = VerificationPipeline.__new__(VerificationPipeline)
+        pipeline._pm = pm
+
+        self.assertFalse(pipeline._env_whitewash_gate("s1"))
+        entry = pm.state_machine.update_spec.call_args[0][1]
+        self.assertTrue(entry["frozen"])
+        self.assertEqual(entry["status"], "blocked")
+        self.assertIn("用户指令冻结", entry["error"])
+
+    def test_env_whitewash_gate_passes_clean_report(self):
+        """全 PASS 报告放行。"""
+        import tempfile
+        from pathlib import Path as _Path
+        from unittest.mock import MagicMock
+        from core.pm_engine.verification import VerificationPipeline
+
+        tmp = _Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        spec_dir = tmp / ".fenix" / "verify-progress" / "s1"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "report.json").write_text(json.dumps({
+            "scenarios": [{"scenario_id": "s1", "status": "pass"}],
+        }), encoding="utf-8")
+
+        pm = MagicMock()
+        pm.project_root = tmp
+        pipeline = VerificationPipeline.__new__(VerificationPipeline)
+        pipeline._pm = pm
+        self.assertTrue(pipeline._env_whitewash_gate("s1"))
+        pm.state_machine.update_spec.assert_not_called()
+
     def test_classification_missing_is_violation(self):
         from core.verdict_check import validate_report
         report = {"scenarios": [
