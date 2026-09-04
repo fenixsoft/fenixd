@@ -822,6 +822,8 @@ class AdminMonitor:
 
         # 处置记录（任何情况下都留痕）；落盘失败不能丢 final 判定（否则该 run
         # 的 pending 会变孤儿触发人工升级），记日志后继续
+        # fix-admin-disposition-empty-shell：失败记录自解释——error 携带 CLI 失败
+        # 原因；failed 时 recommended_action 回退到信号侧（disp 空串不再覆盖信号值）。
         try:
             self.store.append({
                 "kind": DISPOSITION,
@@ -835,6 +837,7 @@ class AdminMonitor:
                 "summary": disp.summary,
                 "admin_run_id": disp.run_id,
                 "escalate": bool(disp.escalate),
+                "error": disp.error or "",
             })
         except Exception as e:
             self.logger.error(
