@@ -1860,10 +1860,27 @@ class WorktreeManager:
             return False
 
     def _run_dist_build(self) -> bool:
-        """在主树 static 目录执行 dist 构建（npm run build）。返回是否成功。
+        """执行主树构建（.fenix/verify.yaml prepare 驱动，回退 npm run build）。
 
+        构建什么从 verify.yaml 的 prepare 段读取——不预设目标为 nodejs 项目，
+        步骤自带 cwd、每步受 PREPARE_STEP_TIMEOUT 约束；契约缺失时回退历史
+        行为（DASHBOARD_STATIC_ROOT 下 npm run build）；契约存在但未声明
+        prepare 视为「无构建步骤」，直接成功。
         供 merge 后确定性重建使用；测试通过 patch 本方法模拟构建产物/失败。
         """
+        from core.verify_contract import load_verify_contract, run_prepare_steps
+        contract = load_verify_contract(self.project_root, self.logger)
+        if contract is not None:
+            if not contract.prepare:
+                return True
+            err = run_prepare_steps(contract, self.project_root)
+            if err:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"dist rebuild prepare 失败: {err}",
+                )
+                return False
+            return True
         static_dir = self.project_root / DASHBOARD_STATIC_ROOT
         if not (static_dir / "package.json").exists():
             self.logger.warning(

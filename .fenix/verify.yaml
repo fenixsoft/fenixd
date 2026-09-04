@@ -38,6 +38,8 @@
 # =============================================================================
 
 prepare:
+  - run: npm install --no-audit --no-fund
+    cwd: core/dashboard/static
   - run: npm run build
     cwd: core/dashboard/static
 

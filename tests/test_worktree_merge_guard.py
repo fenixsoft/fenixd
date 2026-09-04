@@ -586,3 +586,60 @@ class TestDistConflictRootCure:
         success, _ = info
         assert success
         assert calls["n"] == 0, "already merged 早退不应重建"
+
+
+class TestDistBuildContractDriven:
+    """_run_dist_build 契约驱动（不预设 nodejs 项目）：构建内容从 verify.yaml prepare 读取。"""
+
+    def test_contract_prepare_steps_run(self, tmp_path):
+        init_repo(tmp_path)
+        (tmp_path / ".fenix").mkdir(exist_ok=True)
+        (tmp_path / ".fenix" / "verify.yaml").write_text(
+            "prepare:\n  - run: touch built.txt\n", encoding="utf-8")
+        wm = make_wm(tmp_path)
+        assert wm._run_dist_build() is True
+        assert (tmp_path / "built.txt").exists(), "prepare 步骤应真实执行"
+
+    def test_contract_empty_prepare_is_noop_success(self, tmp_path):
+        """契约存在但未声明 prepare =「无构建步骤」，直接成功。"""
+        init_repo(tmp_path)
+        (tmp_path / ".fenix").mkdir(exist_ok=True)
+        (tmp_path / ".fenix" / "verify.yaml").write_text(
+            "serve:\n  kind: static\n  root: site\n", encoding="utf-8")
+        wm = make_wm(tmp_path)
+        assert wm._run_dist_build() is True
+
+    def test_contract_prepare_failure_returns_false(self, tmp_path):
+        init_repo(tmp_path)
+        (tmp_path / ".fenix").mkdir(exist_ok=True)
+        (tmp_path / ".fenix" / "verify.yaml").write_text(
+            "prepare:\n  - run: exit 3\n", encoding="utf-8")
+        wm = make_wm(tmp_path)
+        assert wm._run_dist_build() is False
+
+    def test_no_contract_falls_back_to_legacy_npm(self, tmp_path, monkeypatch):
+        """契约缺失回退历史行为：DASHBOARD_STATIC_ROOT 下 npm run build。"""
+        init_repo(tmp_path)
+        wm = make_wm(tmp_path)
+        static_dir = tmp_path / "core" / "dashboard" / "static"
+        static_dir.mkdir(parents=True)
+        (static_dir / "package.json").write_text("{}", encoding="utf-8")
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            seen["cwd"] = kw.get("cwd")
+
+            class R:
+                returncode = 0
+            return R()
+
+        monkeypatch.setattr("core.worktree_manager.subprocess.run", fake_run)
+        assert wm._run_dist_build() is True
+        assert seen["cmd"] == ["npm", "run", "build"]
+        assert Path(seen["cwd"]) == static_dir
+
+    def test_no_contract_no_package_json_skips(self, tmp_path):
+        init_repo(tmp_path)
+        wm = make_wm(tmp_path)
+        assert wm._run_dist_build() is False
