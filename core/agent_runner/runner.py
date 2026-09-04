@@ -431,6 +431,13 @@ class AgentRunner:
             output = ""
             success = False
             error = str(e)
+            # fix-admin-disposition-empty-shell：失败不再静默——WARNING 携带 run_id
+            # 与异常文本，保证 `grep "Administrator run"` 可一次检索全部失败。
+            self.logger.warning(
+                "agent_runner",
+                f"Administrator run {run_id} failed: {error}",
+                {"run_id": run_id, "error": error},
+            )
 
         disp = self._read_admin_disposition(disp_path)
         # 读取即清理自身实例文件：内容已捕获进 AdminDisposition 返回给调用方落
