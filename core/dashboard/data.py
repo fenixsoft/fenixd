@@ -824,7 +824,10 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
     current_group = None
     try:
         for line in tasks_path.read_text(encoding="utf-8").split("\n"):
-            m = re.match(r"^##\s+\d+\.\s+(.+)$", line)
+            # 分组标题（点号可选双历史格式：`## 1. 标题` / `## 1 标题`）。
+            # 与 bin/fenix_process.py:parse_tasks、core/deliverables.py:
+            # lint_tasks_parseable 同源正则（task-track D1），三处必须一致。
+            m = re.match(r"^##\s+\d+\.?\s+(.+)$", line)
             if m:
                 current_group = {"title": m.group(1), "tasks": [], "done": 0, "total": 0}
                 groups.append(current_group)
@@ -881,6 +884,22 @@ def task_progress(project_root, spec_name, spec_status: str = ""):
     done = sum(g["done"] for g in groups)
     total = sum(g["total"] for g in groups)
     return done, total
+
+
+def tasks_note(project_root, spec_name, spec_status: str = ""):
+    """tasks.md 空解析显式提示（task-track R3）。
+
+    tasks.md 存在但 ``parse_tasks`` 返回空列表 → 返回提示文本（前端据此在
+    任务清单 Card 显示 warning 空态，与「无 tasks.md 文件」的 secondary
+    空态可区分）；否则返回 ``None``。与 ``tasks`` 字段共用同一次解析语义
+    （implementing 状态同样优先读 worktree 内的 tasks.md）。
+    """
+    tasks_path = Path(project_root) / "openspec" / "changes" / spec_name / "tasks.md"
+    if not tasks_path.exists():
+        return None
+    if parse_tasks(project_root, spec_name, spec_status):
+        return None
+    return "tasks.md 存在但未解析出任务分组（分组格式不匹配或文件为空）"
 
 
 def run_task_progress(project_root, spec_name) -> dict:
@@ -2163,6 +2182,7 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "tester_run": entry.get("tester_run"),
         "depends_on": entry.get("depends_on"),
         "tasks": parse_tasks(project_root, spec_name, spec_status),
+        "tasks_note": tasks_note(project_root, spec_name, spec_status),
         "run_progress": run_task_progress(project_root, spec_name),
         "verify_progress": parse_verify_progress(project_root, spec_name),
         "report": {
