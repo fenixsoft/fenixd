@@ -315,7 +315,7 @@ export default function ActivitiesPage() {
   const [data, setData] = useState<AdminActivitiesData | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsData | null>(null);
   const [optimistic, setOptimistic] = useState<string[]>([]);
-  const [viewModes, setViewModes] = useState<Record<string, ViewMode>>({});
+  const [viewMode, setViewMode] = useState<ViewMode>('auto');
   const [viewingRun, setViewingRun] = useState<ViewingRun | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -379,23 +379,8 @@ export default function ActivitiesPage() {
 
   const projects: ProjectActivities[] = useMemo(() => data?.projects ?? [], [data]);
 
-  const viewModeOf = (name: string): ViewMode => viewModes[name] || 'auto';
-
-  const modeSwitch = (name: string) => (
-    <Radio.Group
-      optionType="button"
-      size="middle"
-      value={viewModeOf(name)}
-      onChange={(e) => setViewModes((prev) => ({ ...prev, [name]: e.target.value as ViewMode }))}
-      options={[
-        { label: '自动运维', value: 'auto' },
-        { label: '人工告警', value: 'alert' },
-      ]}
-    />
-  );
-
   const renderProjectBody = (name: string, activities: ActivityItem[] | undefined) => {
-    if (viewModeOf(name) === 'alert') {
+    if (viewMode === 'alert') {
       return (
         <AlertPanel
           project={name}
@@ -439,7 +424,6 @@ export default function ActivitiesPage() {
                 <span>{p.name}</span>
               </Space>
             }
-            extra={modeSwitch(p.name)}
             style={{ marginBottom: 16 }}
           >
             {renderProjectBody(p.name, p.activities)}
@@ -464,6 +448,18 @@ export default function ActivitiesPage() {
         </div>
       ) : null}
       <Card variant="borderless">
+        <div style={{ marginBottom: 16 }}>
+          <Radio.Group
+            optionType="button"
+            size="middle"
+            value={viewMode}
+            onChange={(e) => setViewMode(e.target.value as ViewMode)}
+            options={[
+              { label: '自动运维', value: 'auto' },
+              { label: '人工告警', value: 'alert' },
+            ]}
+          />
+        </div>
         {renderContent()}
       </Card>
       {viewingRun && (
