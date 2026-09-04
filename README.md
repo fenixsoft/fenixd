@@ -1,10 +1,10 @@
-# fenixd — Fenix Loop Engineering Framework
+# Fenixd — Fenix Loop Engineering Framework
 
-> 基于 Claude Code 的自动化软件开发循环框架。将自然语言需求自动转化为「已实现、已验证、可推送」的代码，全程无需人工介入，仅保留一个推送审批门禁。
+> 基于 Claude Code 的自动化软件开发循环框架。将自然语言需求自动转化为「已实现、已验证、可推送」的代码，全程无需人工介入。
 
-fenixd 建立在两个核心理念之上。其一是 **SDD（Spec-Driven Development，规格驱动开发）**：在让 AI 动手写代码之前，先把模糊的需求意图沉淀为一份结构化的 **SPEC**（规格说明，含提案、设计、需求规格与任务清单）——它是整个框架的通用语言，需求的澄清、实现的范围、验证的验收标准全部锚定在这份规格上，人与 AI 之间不再是「口头转述 + 事后返工」。其二是**循环工程（Loop Engineering）**：承认 LLM 单次生成并不可靠，把「实现 → 独立验证 → 打回修复」组织成一个受控闭环，用真实浏览器级测试代替主观自评，并用预算与熔断规则约束循环次数——质量由循环收敛保证，而不是押注某一次生成的运气。
+Fenixd 建立在两个核心理念之上。其一是 **SDD（Spec-Driven Development，规格驱动开发）**：在让 AI 动手写代码之前，先把模糊的需求意图沉淀为一份结构化的 **SPEC**（规格说明，含提案、设计、需求规格与任务清单）——它是整个框架的通用语言，需求的澄清、实现的范围、验证的验收标准全部锚定在这份规格上，人与 AI 之间不再是「口头转述 + 事后返工」。其二是**循环工程（Loop Engineering）**：承认 LLM 单次生成并不可靠，把「实现 → 独立验证 → 打回修复」组织成一个受控闭环，用真实浏览器级测试代替主观自评，并用预算与熔断规则约束循环次数——质量由循环收敛保证，而不是押注某一次生成的运气。
 
-fenixd 正是这两种理念的工程化落地。fenixd 自身的演进也由 fenixd 驱动：本仓库已全自动推进 100+ 个 SPEC（实现 → 验证 → 打回修复 → 推送），是这套框架最直接的实战验证。
+Fenixd 正是这两种理念的工程化落地。Fenixd 自身的演进也由 Fenixd 驱动，本仓库已全自动推进上百个 SPEC（实现 → 验证 → 打回修复 → 推送），是这套框架最直接的实战验证。
 
 ## 使用文档
 
@@ -25,7 +25,7 @@ fenixd 正是这两种理念的工程化落地。fenixd 自身的演进也由 fe
 
 ## 作用
 
-fenixd 是一个**后台守护进程（daemon）**，它把「写软件」这个高度依赖人工的过程，编排成一个可自动推进的闭环：
+Fenixd 是一个**后台守护进程（daemon）**，它把「写软件」这个高度依赖人工的过程，编排成一个可自动推进的闭环：
 
 1. **需求（`/fenix-new`）**：用户用一句话描述想法，需求 Agent 澄清并生成完整 SPEC（proposal + design + specs + tasks），并按复杂度建议执行模式——简单需求走 **fast-track**（单 Agent 一次完成实现与验证），复杂需求走 **full**（多 Agent 分段实现 + 独立验证）。
 2. **实现（Implementer / fast-track）**：实现 Agent 在隔离的 git worktree 中按 tasks.md 逐条实现并自测，收工受交付物守卫对账。
@@ -38,9 +38,11 @@ fenixd 是一个**后台守护进程（daemon）**，它把「写软件」这个
 
 ### 架构
 
+Fenixd 的架构刻意做得「薄」：一个单进程 daemon 负责编排，没有数据库、没有常驻服务集群，全部状态都落在仓库里的普通文件上——`STATE.md` 是唯一状态真源，`.fenix/` 下存放配置、日志与每次 Agent 运行的实时流转录。daemon 内部是一条事件驱动的流水线：EventBus 每 2 秒感知 `STATE.md` 的变化，PM Engine 据此做出调度决策（按优先级与预算选择下一个动作），AgentRunner 把对应角色的 Agent 以 `claude` 子进程方式拉起，在隔离的 git worktree 中工作，收工后 merge-back 回主干并驱动状态机前进。外围还有两件套：supervisor 看门狗负责崩溃自动重启，Web Dashboard 负责把这一切实时可视化。这种「文件即状态」的设计换来两个性质：各环节之间零耦合（读懂文件就读懂了系统），以及天然可恢复——daemon 无论崩溃还是重启，读一遍文件就能重建全部现场，从上次中断处继续。
+
 ```mermaid
 flowchart TD
-    CFG["config.yaml<br/>（用户级 + 项目级深合并）"] --> DAEMON["fenixd daemon"]
+    CFG["config.yaml<br/>（用户级 + 项目级深合并）"] --> DAEMON["Fenixd daemon"]
     STATE["STATE.md<br/>SPEC 状态机（唯一状态真源）"] -->|"每 2s 感知变化"| BUS["EventBus"]
     BUS --> PM["PM Engine<br/>优先级 / 预算 / 重试 / 恢复"]
     DAEMON --> PM
@@ -63,7 +65,7 @@ flowchart TD
 
 ### SPEC 生命周期
 
-每个需求在 fenixd 中以一个 SPEC 的形式存在，其从创建到推送的全过程由一台显式状态机管理：状态写在项目根的 `STATE.md` 里（唯一状态真源），每一次转移都必须符合预定义的合法转移表，非法转移直接被拒绝。这样做的意义在于：任何时刻打开 Dashboard 或 `STATE.md`，都能精确回答「这个需求现在走到哪一步、为什么卡住、下一步谁来做什么」；多 Agent 之间也凭这同一个状态真源协作，而不是各自记忆。更重要的是，所有「不顺利」的情形——验证不过、预算耗尽、merge 冲突、运行中断——都被建模为图中的正常路径（打回、停靠、恢复），而不是异常：框架不会半路丢弃一个 SPEC，要么把它推进到终点，要么让它明确停靠在 `blocked` 等人来裁决。
+每个需求在 Fenixd 中以一个 SPEC 的形式存在，其从创建到推送的全过程由一台显式状态机管理：状态写在项目根的 `STATE.md` 里（唯一状态真源），每一次转移都必须符合预定义的合法转移表，非法转移直接被拒绝。这样做的意义在于：任何时刻打开 Dashboard 或 `STATE.md`，都能精确回答「这个需求现在走到哪一步、为什么卡住、下一步谁来做什么」；多 Agent 之间也凭这同一个状态真源协作，而不是各自记忆。更重要的是，所有「不顺利」的情形，如验证不过、预算耗尽、merge 冲突、运行中断，等等。都被建模为图中的正常路径（打回、停靠、恢复），而不是显性异常，框架不会半路丢弃一个 SPEC，要么它能够被 AI 所完成，框架把它推进到终点；要么给出明确证据，说明超越了 AI 的能力（譬如模型的额度用完了、又譬如与基本的实时逻辑相互冲突，是不可能实现的需求），让明确停靠在 `blocked` 等人来裁决。
 
 ```mermaid
 stateDiagram-v2
@@ -116,7 +118,7 @@ sequenceDiagram
 
 | 依赖 | 版本要求 | 用途 | 必需 |
 |------|---------|------|------|
-| Python | 3.10+ | 运行 fenixd 守护进程与全部核心模块 | ✅ |
+| Python | 3.10+ | 运行 Fenixd 守护进程与全部核心模块 | ✅ |
 | PyYAML | 任意 | 解析 `config.yaml` | ✅ |
 | git | 任意 | worktree 隔离与分支管理 | ✅ |
 | tmux | 任意 | 守护会话托管（配合 supervisor 看门狗自动重启） | ✅ |
@@ -139,7 +141,7 @@ pip3 install pyyaml
 ## 安装
 
 ```bash
-cd /path/to/fenixd
+cd /path/to/Fenixd
 bash install.sh
 ```
 
@@ -209,7 +211,7 @@ fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]
 
 | 命令 | 作用 |
 |------|------|
-| `/fenix-setup` | 初始化 / 重启 fenixd |
+| `/fenix-setup` | 初始化 / 重启 Fenixd |
 | `/fenix-new "需求详情"` | 创建新需求（含 fast-track/full 模式建议） |
 | `/fenix-status` | 查看框架状态 |
 | `/fenix-process <spec_name>` | 查看指定 SPEC 进展 |
@@ -220,12 +222,12 @@ fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]
 ## 项目结构
 
 ```
-fenixd/
+Fenixd/
 ├── README.md               # 本文档
 ├── docs/help/              # 用户帮助文档（11 篇，Dashboard「帮助」菜单同源）
 ├── install.sh              # 安装程序
 ├── fenix-init              # 项目初始化命令
-├── fenixd.py               # 守护进程主入口
+├── Fenixd.py               # 守护进程主入口
 ├── config.template.yaml    # 项目配置模板（fenix-init 渲染用）
 ├── core/                   # 核心模块
 │   ├── state_machine.py    # 状态机（STATE.md 读写与合法转移）
