@@ -1032,9 +1032,12 @@ class Dispatcher:
         ft_result = self._pm._read_implementer_result(spec_name)
         if ft_result is None:
             self._keep_fast_track_worktree(spec_name, result)
+            # 文案面向人：说明发生了什么 + 系统将自动重试（轮次由
+            # _handle_fast_track_failure 按实际计数追加）。"fail-closed 不推进"
+            # 类状态机术语曾让用户误读为 spec 被阻塞（2026-09-04 反馈）。
             self._handle_fast_track_failure(
                 spec_name, result,
-                "fast-track 结果文件缺失（fail-closed，不推进）",
+                "本轮实现中断：fast-track 结果文件未产出（run 异常结束），将自动重试",
             )
             return
         if not result.success or ft_result.get("status") != "success":
@@ -1728,7 +1731,8 @@ class Dispatcher:
         max_r = self._pm._get_config("agents.max_retries", 3)
         if retries >= max_r:
             self._pm.state_machine.update_spec(spec_name, {
-                "status": "ready", "error": final_error, "_retry_count": 0,
+                "status": "ready", "error": f"{final_error}｜重试 {max_r}/{max_r} 已耗尽，重新排队",
+                "_retry_count": 0,
             })
             self._pm.logger.error(
                 "pm_engine", f"fast-track all retries exhausted '{spec_name}'",
@@ -1736,7 +1740,9 @@ class Dispatcher:
             self._pm._enqueue(spec_name, "fast-track")
         else:
             self._pm.state_machine.update_spec(spec_name, {
-                "status": "ready", "error": final_error, "_retry_count": retries,
+                "status": "ready",
+                "error": f"{final_error}｜自动重试 {retries}/{max_r}",
+                "_retry_count": retries,
             })
             self._pm.logger.warning(
                 "pm_engine",

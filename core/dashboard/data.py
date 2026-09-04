@@ -2221,6 +2221,36 @@ def _ts_delta(a: str, b: str):
     return abs((ta - tb).total_seconds())
 
 
+def _timeline_with_retry(timeline: list, project_root, entry: dict) -> list:
+    """把 spec 当前实现重试轮次附到时间轴最后一个运行节点（retry-display）。
+
+    重派计数是 spec 级状态（STATE.md `_retry_count`），run 产物无逐节点历史
+    快照——只在最新 run 节点呈现当前值（>0 时），历史节点不伪造。分母取
+    项目 config `agents.max_retries`（缺失/异常回退 3，与 dispatch 取值默认
+    一致；read_effective_config 是受管键白名单视图，不含 max_retries）。
+    """
+    try:
+        count = int(entry.get("_retry_count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count <= 0 or not timeline:
+        return timeline
+    max_r = 3
+    try:
+        with (Path(project_root) / ".fenix" / "config.yaml").open(
+                "r", encoding="utf-8") as f:
+            max_r = int(((yaml.safe_load(f) or {}).get("agents") or {})
+                        .get("max_retries") or 3)
+    except (OSError, yaml.YAMLError, TypeError, ValueError):
+        pass
+    for e in reversed(timeline):
+        if e.get("kind") == "run":
+            e["retry_count"] = count
+            e["retry_max"] = max_r
+            break
+    return timeline
+
+
 def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     """单个 SPEC 的完整详情（/api/specs/<spec>）。"""
     report = parse_report(project_root, spec_name)
@@ -2272,7 +2302,8 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "screenshots": screenshots,
         "runs": runs,
         "verdict": verdict,
-        "timeline": get_spec_timeline(project_root, spec_name),
+        "timeline": _timeline_with_retry(
+            get_spec_timeline(project_root, spec_name), project_root, entry),
         # add-cost-observability（D2）：治理区展示的累计 token 与成本可用性标记。
         # _cost_usd 仅在网关真实回传时存在（不伪造金额，spec「金额展示不伪造」）。
         "token_usage": _token_usage_view(entry),

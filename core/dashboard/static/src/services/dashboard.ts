@@ -315,6 +315,9 @@ export interface SpecDetail {
     summary?: string;
     // 运行节点：实际驱动的 LLM（provider_marker 的 model@provider，failover 取最后一个）
     llm?: string;
+    // 运行节点：spec 当前实现重试轮次（仅最新 run 节点携带，>0 时出现；_timeline_with_retry）
+    retry_count?: number;
+    retry_max?: number;
   }>;
   // 场景结果 — report.json 的 scenarios 平铺数组（parse_report）
   scenarios?: Array<{

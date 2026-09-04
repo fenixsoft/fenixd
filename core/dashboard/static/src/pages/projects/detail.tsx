@@ -613,6 +613,11 @@ export default function SpecDetailPage() {
                   </Typography.Text>
                   <Typography.Text>{agentLabel(item)}</Typography.Text>
                   {item.llm && <Tag color="blue" style={{ marginInlineEnd: 0 }}>{item.llm}</Tag>}
+                  {!!item.retry_count && item.retry_count > 0 && (
+                    <Tag color="orange" style={{ marginInlineEnd: 0 }}>
+                      重试 {item.retry_count}{item.retry_max ? `/${item.retry_max}` : ''}
+                    </Tag>
+                  )}
                   <Tag color={isErr ? 'red' : isRunning ? 'blue' : 'green'} style={{ marginInlineEnd: 0 }}>
                     {st || '未知状态'}
                   </Tag>
