@@ -410,6 +410,13 @@ export default function SpecDetailPage() {
               <Typography.Text ellipsis={{ tooltip: s.name }} style={{ flex: 1, minWidth: 0, fontSize: 13 }}>
                 {s.name}
               </Typography.Text>
+              {/* 执行模式列：与标题旁模式标记同语义（fast-track 单 run 全包，存量无 mode 字段按完整模式） */}
+              <Tag
+                color={s.mode === 'fast-track' ? 'cyan' : 'default'}
+                style={{ marginInlineEnd: 0, fontSize: 11, lineHeight: '18px', paddingInline: 5, paddingBlock: 0 }}
+              >
+                {s.mode === 'fast-track' ? '快速模式' : '完整模式'}
+              </Tag>
               <OutlinedTag tone={m.tone}>{m.label}</OutlinedTag>
             </div>
           );
