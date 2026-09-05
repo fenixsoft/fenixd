@@ -74,6 +74,26 @@ class TestDashboardConfigIO(unittest.TestCase):
         self.assertEqual(read_config(self.tmpdir)["verify"]["deps_mode"],
                          "hardlink")
 
+    def test_verify_planner_max_concurrent_readback(self):
+        """verify.planner_max_concurrent 读回（BUG-01）：写盘后 GET /api/config 须能读回。"""
+        from core.dashboard.data import read_config, write_config
+
+        # 缺省：verify 回显默认值，无 planner_max_concurrent 键
+        echoed = read_config(self.tmpdir)
+        self.assertNotIn("planner_max_concurrent", echoed.get("verify", {}))
+
+        # 写 2 → 读回 2
+        result = write_config(self.tmpdir, {"verify": {"planner_max_concurrent": 2}})
+        self.assertTrue(result["ok"], result.get("error"))
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["verify"]["planner_max_concurrent"], 2)
+
+        # 写 0（关闭）→ 读回 0（开关应始终回显为关）
+        result = write_config(self.tmpdir, {"verify": {"planner_max_concurrent": 0}})
+        self.assertTrue(result["ok"], result.get("error"))
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["verify"]["planner_max_concurrent"], 0)
+
 
 class TestDashboardParallelismConfig(unittest.TestCase):
     """Dashboard 并行配置：并行配置必须正确工作。"""
@@ -402,6 +422,35 @@ class TestDashboardDescriptionConfig(unittest.TestCase):
 
         # 验证 description 为空字符串
         self.assertEqual(result["description"], "")
+
+    def test_read_effective_config_planner_max_concurrent_echo(self):
+        """read_effective_config 有效视图回显 verify.planner_max_concurrent（与写路径对称）"""
+        from core.dashboard.data import read_effective_config
+
+        # 缺省：verify 回显默认值，不含 planner_max_concurrent
+        result = read_effective_config(self.config_dir.parent)
+        self.assertNotIn("planner_max_concurrent", result.get("verify", {}))
+        self.assertEqual(result["sources"].get("verify.planner_max_concurrent"), "user")
+
+        # 写入 verify.planner_max_concurrent: 3
+        import yaml
+        config = {
+            "project": {"name": "test", "type": "web"},
+            "verify": {"planner_max_concurrent": 3},
+        }
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, allow_unicode=True)
+
+        result = read_effective_config(self.config_dir.parent)
+        self.assertEqual(result["verify"]["planner_max_concurrent"], 3)
+        self.assertEqual(result["sources"]["verify.planner_max_concurrent"], "project")
+
+        # 非法值（负数/布尔）不进入有效视图
+        config["verify"] = {"planner_max_concurrent": -1}
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, allow_unicode=True)
+        result = read_effective_config(self.config_dir.parent)
+        self.assertNotIn("planner_max_concurrent", result.get("verify", {}))
 
     def test_project_summary_includes_description(self):
         """project_summary 包含 description 字段"""

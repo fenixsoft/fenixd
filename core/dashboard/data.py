@@ -2777,7 +2777,9 @@ _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 # add-daily-self-review：admin.self_review 三键
                 "admin.self_review",
                 # 验证契约键（verify.*：静态服务范围 / worktree 依赖供给模式）
-                "verify.static_scope", "verify.deps_mode"]
+                "verify.static_scope", "verify.deps_mode",
+                # add-planner-efficiency：planner 生成节流上限
+                "verify.planner_max_concurrent"]
 
 # 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
 # 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
@@ -2824,6 +2826,8 @@ def _managed_key_sources(raw: dict) -> dict:
             sources["verify.static_scope"] = "project"
         if "deps_mode" in verify_src:
             sources["verify.deps_mode"] = "project"
+        if "planner_max_concurrent" in verify_src:
+            sources["verify.planner_max_concurrent"] = "project"
     # add-daily-self-review：admin.self_review 段显式定义 → project
     admin_raw = raw.get("admin")
     if isinstance(admin_raw, dict) and isinstance(admin_raw.get("self_review"), dict):
@@ -2917,6 +2921,11 @@ def read_config(scope_root, scope: str = "project") -> dict:
             result["verify"]["static_scope"] = verify_raw["static_scope"]
         if verify_raw.get("deps_mode") in ("prefer-offline", "hardlink"):
             result["verify"]["deps_mode"] = verify_raw["deps_mode"]
+        # add-planner-efficiency（planner-generation-throttle 2.3）：节流上限读回。
+        # 与写路径（write_config merge_verify）白名单对称——写了能读回来（BUG-01 修复）。
+        pmc = verify_raw.get("planner_max_concurrent")
+        if isinstance(pmc, int) and not isinstance(pmc, bool) and pmc >= 0:
+            result["verify"]["planner_max_concurrent"] = pmc
     runs_raw = raw.get("runs")
     if isinstance(runs_raw, dict) and isinstance(runs_raw.get("keep"), int) and runs_raw["keep"] >= 1:
         result["runs"] = {"keep": runs_raw["keep"]}
@@ -3045,6 +3054,10 @@ def read_effective_config(project_root) -> dict:
             result["verify"]["static_scope"] = verify_eff["static_scope"]
         if verify_eff.get("deps_mode") in ("prefer-offline", "hardlink"):
             result["verify"]["deps_mode"] = verify_eff["deps_mode"]
+        # add-planner-efficiency：节流上限有效值回显（与 write_config 白名单对称）
+        pmc = verify_eff.get("planner_max_concurrent")
+        if isinstance(pmc, int) and not isinstance(pmc, bool) and pmc >= 0:
+            result["verify"]["planner_max_concurrent"] = pmc
     runs_eff = effective.get("runs")
     if isinstance(runs_eff, dict) and isinstance(runs_eff.get("keep"), int) and runs_eff["keep"] >= 1:
         result["runs"] = {"keep": runs_eff["keep"]}
