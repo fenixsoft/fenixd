@@ -238,6 +238,88 @@ class TestSynthesizedReportParsable(_GateTestBase):
         self.assertEqual(verdict["summary"]["passed"], "10")
 
 
+class TestFastTrackScenarioSourcing(_GateTestBase):
+    """任务 1.1/1.2：合成报告场景表的数据源回退（fix-verify-report-fasttrack-scenarios）。
+
+    1. fast-track 结果文件（无 report.json，verification.scenarios 非空）→ 场景表逐行渲染；
+    2. report.json 顶层 scenarios 与结果文件并存 → 完全取 report.json（优先级回归）；
+    3. 两路皆缺 → 场景表留空、其余章节照常、合成不报错。
+    """
+
+    def _fast_track_seed(self, spec=SPEC):
+        """只摆放 .fenix-run-result.json（fast-track 无 report.json），返回内容文本。"""
+        progress = self.project_root / ".fenix" / "verify-progress" / spec
+        progress.mkdir(parents=True, exist_ok=True)
+        rr = _load_fixture("fast-track-run-result.json")
+        (progress / ".fenix-run-result.json").write_text(
+            json.dumps(rr, ensure_ascii=False), encoding="utf-8")
+        return rr
+
+    def test_fast_track_scenarios_render_into_table(self):
+        from core.verify_report import synthesize_verification_report
+        self._fast_track_seed()
+        result = synthesize_verification_report(self.project_root, SPEC)
+        self.assertTrue(result["ok"], result)
+        content = self._report_path().read_text(encoding="utf-8")
+        self.assertIn("## 场景结果", content)
+        # 每个 fast-track 场景逐行含 scenario_id/description/status（exempt 非标准值原样渲染）
+        self.assertIn("| hash-route-default-overview | 默认 hash 路由跳转到概览页 | pass | 0/1 | - |", content)
+        self.assertIn("| hash-route-unknown-fallback | 未知 hash 路由回退到概览页 | exempt | 0/1 | - |", content)
+        self.assertNotIn("hash-route-unknown-fallback（已修正）", content)
+
+    def test_report_top_level_scenarios_priority(self):
+        from core.verify_report import synthesize_verification_report
+        self._fast_track_seed()
+        # report.json 顶层 scenarios 与结果文件并存 → 完全取 report.json
+        report = {
+            "summary": {"total": 1, "passed": 1, "failed": 0, "errors": 0},
+            "scenarios": [
+                {"scenario_id": "report-only-scenario", "status": "pass",
+                 "classification": "product-bug"}
+            ],
+        }
+        progress = self.project_root / ".fenix" / "verify-progress" / SPEC
+        (progress / "report.json").write_text(
+            json.dumps(report, ensure_ascii=False), encoding="utf-8")
+        result = synthesize_verification_report(self.project_root, SPEC)
+        self.assertTrue(result["ok"], result)
+        content = self._report_path().read_text(encoding="utf-8")
+        self.assertIn("| report-only-scenario | - | pass | - | product-bug |", content)
+        # fast-track 场景不得混入（优先级：report.json 顶层覆盖）
+        self.assertNotIn("hash-route-default-overview", content)
+
+    def test_both_missing_leaves_table_empty_but_report_ok(self):
+        from core.verify_report import synthesize_verification_report
+        # 只放 run_result 且 verification.scenarios 为空（等价于两路皆缺场景数据）
+        progress = self.project_root / ".fenix" / "verify-progress" / SPEC
+        progress.mkdir(parents=True, exist_ok=True)
+        rr = {"status": "verified", "spec": SPEC, "bugs": [],
+              "verification": {"scenarios": [], "verdict": "verified", "bugs": []}}
+        (progress / ".fenix-run-result.json").write_text(
+            json.dumps(rr, ensure_ascii=False), encoding="utf-8")
+        result = synthesize_verification_report(self.project_root, SPEC)
+        self.assertTrue(result["ok"], result)
+        content = self._report_path().read_text(encoding="utf-8")
+        # 场景表留空（无表头行），其余章节照常
+        self.assertNotIn("## 场景结果", content)
+        self.assertIn("## 结论：✅ 通过（verified）", content)
+        self.assertIn("| 通过 | 0 |", content)
+
+    def test_synthesize_ok_even_when_both_data_sources_missing(self):
+        from core.verify_report import synthesize_verification_report
+        # report.json 缺失、结果文件存在但无 scenarios 键（非法/缺键）→ 合成仍 ok、表留空
+        progress = self.project_root / ".fenix" / "verify-progress" / SPEC
+        progress.mkdir(parents=True, exist_ok=True)
+        rr = {"status": "verified", "spec": SPEC, "bugs": []}
+        (progress / ".fenix-run-result.json").write_text(
+            json.dumps(rr, ensure_ascii=False), encoding="utf-8")
+        result = synthesize_verification_report(self.project_root, SPEC)
+        self.assertTrue(result["ok"], result)
+        content = self._report_path().read_text(encoding="utf-8")
+        self.assertNotIn("## 场景结果", content)
+        self.assertIn("## 结论：✅ 通过（verified）", content)
+
+
 class TestVerdictConclusionPreservesParagraphs(_GateTestBase):
     """结论段落保留换行：parse_verdict 不得把多段结论压成一行（Dashboard markdown 渲染依赖段落结构）。"""
 

@@ -1,0 +1,33 @@
+{
+  "status": "success",
+  "spec": "v2-shell-hash-router",
+  "mode": "fast-track",
+  "summary": "fast-track 验证报告场景数据源回退测试夹具。",
+  "implementation": {
+    "deliverables": ["core/example.py"]
+  },
+  "verification": {
+    "scenarios": [
+      {
+        "scenario_id": "hash-route-default-overview",
+        "description": "默认 hash 路由跳转到概览页",
+        "status": "pass",
+        "assertion_results": [
+          {"type": "step", "pass": true, "message": "快照包含概览标题"}
+        ],
+        "evidence": {"failed_assertions": []}
+      },
+      {
+        "scenario_id": "hash-route-unknown-fallback",
+        "description": "未知 hash 路由回退到概览页",
+        "status": "exempt",
+        "assertion_results": [
+          {"type": "step", "pass": true, "message": "回退行为符合预期"}
+        ],
+        "evidence": {"failed_assertions": []}
+      }
+    ],
+    "verdict": "verified",
+    "bugs": []
+  }
+}
