@@ -518,11 +518,13 @@ export interface LlmProvider {
   // 与后端 YAML 字段一致：默认模型为 model，env 为运行时注入子进程的环境变量
   model?: string;
   env?: Record<string, string>;
+  // improve-provider-billing-config（task 3.1）：计费配置内嵌 Provider 对象
+  billing?: ProviderBilling;
 }
 
-// add-model-billing-cost-display（task 4.1）：按 provider+model 的计费价格行
-export interface LlmBillingPrice {
-  provider: string;
+// improve-provider-billing-config（task 3.1）：内嵌 billing 的价格行——归属于
+// 所属 Provider 卡片（不再含 provider 字段），行内模型名 + 4 项单价
+export interface ProviderBillingPrice {
   model: string;
   /** 每百万输入 token 费用（$/1M tokens） */
   input_per_million: number;
@@ -534,15 +536,14 @@ export interface LlmBillingPrice {
   cache_creation_per_million: number;
 }
 
-export interface LlmBillingConfig {
-  /** 计费信息总开关（缺省 false；关闭时价格区隐藏、下游一律不展示成本） */
+export interface ProviderBilling {
+  /** 卡片级计费开关（缺省 false；关闭时价格区隐藏、该卡片不参与成本计算） */
   enabled?: boolean;
-  prices?: LlmBillingPrice[];
+  prices?: ProviderBillingPrice[];
 }
 
 export interface LlmConfig {
   providers?: LlmProvider[];
-  billing?: LlmBillingConfig;
 }
 
 // 后端 normalize_agent_models 规范化视图：provider 链统一为对象数组，
