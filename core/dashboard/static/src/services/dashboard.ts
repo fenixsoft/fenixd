@@ -168,6 +168,10 @@ export interface SpecSummary {
   created: string | null;
   updated: string | null;
   error: string | null;
+  /** add-task-progress-verify-phase：任务进度列阶段——"verify" 仅当 status==testing，其余 "impl"（判定单点在后端） */
+  progress_phase?: 'verify' | 'impl';
+  /** add-task-progress-verify-phase：verify 阶段当前步骤文案（验证引擎 current，非空才渲染） */
+  verify_current?: string;
   task_done: number;
   task_total: number;
   /** run 层实时进度（fix-implementer-task-progress D3）：不依赖 tasks.md 编号 */

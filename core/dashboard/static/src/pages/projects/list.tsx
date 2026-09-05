@@ -71,6 +71,14 @@ function pct(done: number, total: number) {
   return total > 0 ? Math.round((done / total) * 100) : 0;
 }
 
+// add-task-progress-verify-phase：按阶段取排序/渲染用完成度——verify 阶段用
+// 验证完成度，impl 阶段用任务完成度（「显示什么按什么排」）。
+function phasePct(record: SpecSummary) {
+  return record.progress_phase === 'verify'
+    ? pct(record.verify_done, record.verify_total)
+    : pct(record.task_done, record.task_total);
+}
+
 function fmtDuration(sec?: number | null) {
   if (sec == null || Number.isNaN(sec)) return '';
   let s = Math.max(0, Math.round(sec));
@@ -755,13 +763,18 @@ export default function SpecListPage() {
       title: '任务进度',
       key: 'task',
       width: '15%',
-      sorter: (a: SpecSummary, b: SpecSummary) =>
-        pct(a.task_done, a.task_total) - pct(b.task_done, b.task_total),
+      // add-task-progress-verify-phase：排序键跟随显示值——verify 阶段按验证完成度，
+      // impl 阶段按任务完成度，消除「显示 A 排序按 B」错位。
+      sorter: (a: SpecSummary, b: SpecSummary) => phasePct(a) - phasePct(b),
       render: (_: unknown, record: SpecSummary) => {
-        const p = pct(record.task_done, record.task_total);
+        // 阶段感知（add-task-progress-verify-phase）：仅 testing（progress_phase
+        // = "verify"）切绿色验证进度，其余状态维持 impl 蓝色路径零回归。
+        const isVerify = record.progress_phase === 'verify';
+        const p = isVerify ? pct(record.verify_done, record.verify_total) : pct(record.task_done, record.task_total);
         // run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照落后于
         // run 实际推进（subject 无编号 / agent 未勾 tasks.md）时叠加 run 完成度，
         // 任一数据源失效都不再呈现静止的 0/N；快照已覆盖时不重复打扰。
+        // 仅 impl 分支参与渲染——verify 阶段 impl run 已结束，线索无意义。
         const rp = record.run_progress;
         const runAhead = !!rp && rp.done > record.task_done;
         // run-progress-current：done=0 阶段也有进行中任务的观感
@@ -773,28 +786,39 @@ export default function SpecListPage() {
               percent={p}
               size="small"
               showInfo={false}
-              strokeColor="#1677ff"
+              strokeColor={isVerify ? '#52c41a' : '#1677ff'}
               trailColor={TRACK_LIGHT}
             />
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: '18px' }}>
-              <Typography.Text type="secondary" data-testid="task-progress-cell">
-                {record.task_done}/{record.task_total}
-                {runAhead && rp ? (
-                  <Typography.Text type="warning" style={{ marginLeft: 4 }}>
-                    run {rp.done}/{rp.total} 已汇报
-                  </Typography.Text>
-                ) : null}
-                {runCurrent ? (
-                  <Typography.Text
-                    type="warning"
-                    style={{ marginLeft: 4, fontSize: 12, verticalAlign: 'text-bottom' }}
-                  >
-                    进行中 {runCurrent.join('、')}
-                  </Typography.Text>
-                ) : null}
-              </Typography.Text>
+              {isVerify ? (
+                <Typography.Text type="secondary" data-testid="task-progress-cell">
+                  {record.verify_done}/{record.verify_total}
+                </Typography.Text>
+              ) : (
+                <Typography.Text type="secondary" data-testid="task-progress-cell">
+                  {record.task_done}/{record.task_total}
+                  {runAhead && rp ? (
+                    <Typography.Text type="warning" style={{ marginLeft: 4 }}>
+                      run {rp.done}/{rp.total} 已汇报
+                    </Typography.Text>
+                  ) : null}
+                  {runCurrent ? (
+                    <Typography.Text
+                      type="warning"
+                      style={{ marginLeft: 4, fontSize: 12, verticalAlign: 'text-bottom' }}
+                    >
+                      进行中 {runCurrent.join('、')}
+                    </Typography.Text>
+                  ) : null}
+                </Typography.Text>
+              )}
               <Typography.Text type="secondary">{p}%</Typography.Text>
             </div>
+            {isVerify && record.verify_current ? (
+              <div style={{ fontSize: 12, lineHeight: '18px', color: '#52c41a' }}>
+                {record.verify_current}
+              </div>
+            ) : null}
           </div>
         );
       },

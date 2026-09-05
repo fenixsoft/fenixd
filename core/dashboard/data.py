@@ -1930,6 +1930,12 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         "created": entry.get("created"),
         "updated": entry.get("updated"),
         "error": entry.get("error"),
+        # add-task-progress-verify-phase：阶段判定单点在后端——仅 testing 切
+        # verify（验证引擎运行中），其余一切状态按 impl；fast-track 经
+        # _fast_track_advance_to_verified 瞬时连转 testing→verified 不停留，
+        # 天然恒 impl，无需 mode 特判。前端只消费该字段，不重复判定。
+        "progress_phase": "verify" if entry.get("status") == "testing" else "impl",
+        "verify_current": vp.get("current", ""),
         "task_done": done,
         "task_total": total,
         # run 层实时进度（fix-implementer-task-progress D3）：tasks.md 快照失效

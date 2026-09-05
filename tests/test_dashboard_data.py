@@ -601,3 +601,79 @@ class TestVerifyProgressFastTrackFallback(unittest.TestCase):
     def test_empty_everywhere_returns_empty(self):
         from core.dashboard.data import parse_run_result_scenarios
         self.assertEqual(parse_run_result_scenarios(self.tmpdir, self.spec), [])
+
+
+class TestSpecSummaryProgressPhase(unittest.TestCase):
+    """add-task-progress-verify-phase 1.x：spec_summary 阶段判定与字段透传。
+
+    阶段判定单点在后端 summary 层：status == "testing" → "verify"，其余一切
+    状态 → "impl"；verify_current 透传 parse_verify_progress 的 current。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        (self.root / ".fenix").mkdir(parents=True, exist_ok=True)
+        (self.root / ".fenix" / "STATE.md").write_text("", encoding="utf-8")
+        d = self.root / "spec" / "changes" / "demo"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / ".spec.yaml").write_text(
+            "schema: spec-driven\ncreated: 2026-09-05\n", encoding="utf-8")
+        (d / "tasks.md").write_text(
+            "# Tasks\n\n## 1. x\n\n- [ ] 1.1 do\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _vp(self, total=11, done=5, current=""):
+        vp = self.root / ".fenix" / "verify-progress"
+        vp.mkdir(parents=True, exist_ok=True)
+        (vp / "demo.json").write_text(
+            json.dumps({"total": total, "done": done, "current": current}),
+            encoding="utf-8")
+
+    def test_testing_status_maps_to_verify_phase(self):
+        """① status=testing → progress_phase "verify"，verify_current 透传进度文件文案。"""
+        from core.dashboard.data import spec_summary
+        self._vp(total=11, done=5, current="正在验证场景 S-06")
+        s = spec_summary(self.root, "demo", {"status": "testing"})
+        self.assertEqual(s["progress_phase"], "verify")
+        self.assertEqual(s["verify_current"], "正在验证场景 S-06")
+        self.assertEqual(s["verify_done"], 5)
+        self.assertEqual(s["verify_total"], 11)
+
+    def test_non_testing_statuses_map_to_impl(self):
+        """② 完成侧/fix 循环/推进中任一非 testing 状态恒为 impl。"""
+        from core.dashboard.data import spec_summary
+        self._vp(total=11, done=5, current="正在验证场景 S-06")
+        for status in ("verified", "done", "pushed", "bug-found", "blocked",
+                       "implementing", "implemented", "ready", "drafted"):
+            s = spec_summary(self.root, "demo", {"status": status})
+            self.assertEqual(s["progress_phase"], "impl",
+                             f"status {status} 必须为 impl")
+
+    def test_testing_corrupt_progress_file_fault_tolerant(self):
+        """③ testing 但进度文件损坏：仍 verify、verify_current 空串、不抛异常。"""
+        from core.dashboard.data import spec_summary
+        vp = self.root / ".fenix" / "verify-progress"
+        vp.mkdir(parents=True, exist_ok=True)
+        (vp / "demo.json").write_text("{not-json", encoding="utf-8")
+        s = spec_summary(self.root, "demo", {"status": "testing"})
+        self.assertEqual(s["progress_phase"], "verify")
+        self.assertEqual(s["verify_current"], "")
+        self.assertEqual(s["verify_total"], 0)
+        self.assertEqual(s["verify_done"], 0)
+
+    def test_fast_track_spec_always_impl(self):
+        """④ fast-track spec 任意生命期状态恒 impl（_fast_track_advance_to_verified
+        瞬时连转 testing→verified，不停留 testing，无需 mode 特判）。"""
+        from core.dashboard.data import spec_summary
+        d = self.root / "spec" / "changes" / "demo"
+        (d / ".spec.yaml").write_text(
+            "schema: spec-driven\ncreated: 2026-09-05\nmode: fast-track\n",
+            encoding="utf-8")
+        self._vp(total=11, done=5, current="正在验证场景 S-06")
+        for status in ("drafted", "implementing", "verified"):
+            s = spec_summary(self.root, "demo", {"status": status})
+            self.assertEqual(s["progress_phase"], "impl",
+                             f"fast-track {status} 恒 impl")
