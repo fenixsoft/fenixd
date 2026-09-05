@@ -53,7 +53,7 @@ export default function ParallelSettingsPanel({ config, onSave }: ParallelSettin
             name="max_concurrent"
             label={
               <>
-                并行度<span className="label-note">（agents.max_concurrent）</span>
+                并发度<span className="label-note">（agents.max_concurrent）</span>
               </>
             }
             rules={[{ required: true, message: '请输入并行度' }]}

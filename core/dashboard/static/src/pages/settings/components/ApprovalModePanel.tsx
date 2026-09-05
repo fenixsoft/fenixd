@@ -51,7 +51,7 @@ export default function ApprovalModePanel({ config, onSave }: ApprovalModePanelP
             <Radio.Group>
               <div style={{ display: 'block', marginBottom: 16 }}>
                 <Radio value="manual">
-                  <strong>manual</strong> — 人工审批（默认）
+                  <strong>manual</strong> — 人工审批（推荐）
                   <div>
                     <Text type="secondary">
                       SPEC 完成后停留在 done，等待 /fenix-approve 人工推送。
