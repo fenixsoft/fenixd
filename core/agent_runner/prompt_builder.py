@@ -141,6 +141,9 @@ class PromptBuilder:
             # 恢复重派遗产上下文（add-recovery-legacy-check 2.1/2.2）。
             prompt += self._prev_error_section(spec_name)
             prompt += self._build_legacy_section(spec_name)
+            # 中断恢复保留续做注记（interrupt-recovery-preserve 2.3）：本轮 dispatch
+            # 在保留分支的 worktree 内 resume 续做时注入继承说明。
+            prompt += self._recovery_resume_note(spec_name)
             # 任务进度契约段（fix-implementer-task-progress D1）：full/fast-track
             # 两个 implementer 分支共用同一文本，保证 harness TaskCreate/TaskUpdate
             # 行为与 tasks.md 编号对齐（进度可见性断链的根治点）。
@@ -432,6 +435,30 @@ class PromptBuilder:
             f"本轮 worktree 复用自上一轮未通过框架校验的同 spec run：上一轮已实现的"
             f"代码提交在当前分支上，tasks.md 可能已有勾选。从 tasks.md 第一个未勾选"
             f"项继续，不要重做已完成的工作，不要重置或回滚已有改动。\n"
+        )
+
+    def _recovery_resume_note(self, spec_name: str) -> str:
+        """恢复续做说明：中断恢复保留分支的 resume 派发时注入（interrupt-recovery-preserve）。
+
+        dispatch 层在保留分支的 worktree 内续做（``mark_reused`` 登记继承痕迹，
+        prompt 构建据此注入）。语义与 worktree-reuse 继承一致：延续已有成果、
+        从 tasks.md 第一个未勾选项继续，不重做、不回滚。未登记复用痕迹时返回空串
+        （prompt 与现状逐字节一致）。
+        """
+        wm = getattr(self._pm, "worktree_manager", None)
+        if wm is None or not hasattr(wm, "get_reuse_record"):
+            return ""
+        rec = wm.get_reuse_record(spec_name)
+        if not rec:
+            return ""
+        branch = rec.get("branch") or ""
+        return (
+            f"\n## 中断恢复续做（recovery resume）\n"
+            f"本 spec 的实现 run 曾因 daemon 重启/停机被中断，框架保留了你在分支"
+            f"上的已提交成果，本轮在原 worktree 内继续实现（当前分支："
+            f"`{branch}`）。检查当前分支上已有的提交与 tasks.md 勾选进度，从第一个"
+            f"未勾选项继续，不要重做已完成的工作，不要重置或回滚已有改动；中断前"
+            f"未提交的现场（如有）同样在你的工作目录中，可审阅后继续使用。\n"
         )
 
     def _build_legacy_section(self, spec_name: str) -> str:

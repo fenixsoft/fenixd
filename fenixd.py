@@ -23,12 +23,15 @@ Architecture:
 import os
 import sys
 import signal
+import subprocess
 import threading
 import time
 import json
 import fcntl
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 # Ensure .fenix/ is on the Python path
 # 使用 .absolute()（不跟随软链接）：框架文件经项目内 .fenix/ 软链接调用，
@@ -53,6 +56,47 @@ from core.pm_engine import PMEngine
 # tasks 1.3）：run 异常中断时实例文件可能残留，无功能影响（按 run_id 读取），
 # 拾取新请求时顺带清理超过该时长的残留。
 ADMIN_DISPOSITION_STALE_SECONDS = 24 * 3600
+
+# ── 中断恢复保全 sidecar（interrupt-recovery-preserve D3）────────────────────
+# 排水窗口到期仍需 terminate 在跑 run 时，先把受影响 spec 的 branch/worktree
+# 引用落盘供 boot recovery 读取续做；正常终态无需保全（sidecar 保持为空）。
+PRESERVE_SIDECAR = PROJECT_ROOT / ".fenix" / "interrupted_runs.json"
+# supervisor SIGKILL 等待相对排水窗口的固定余量（D2）：保证排水期不被截断。
+SUPERVISOR_KILL_MARGIN_SECONDS = 120
+
+
+def _read_preserve_sidecar() -> list:
+    """读取中断保全 sidecar（.fenix/interrupted_runs.json）。
+
+    文件缺失/损坏（非 JSON/非列表）返回空列表且不抛错——保全信息非停机
+    关键路径，读取失败按「无保全」处理。
+    """
+    try:
+        data = json.loads(PRESERVE_SIDECAR.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _write_preserve_sidecar(entries: list) -> bool:
+    """写中断保全 sidecar。返回 True 表示落盘成功；失败仅记调用方日志。"""
+    try:
+        PRESERVE_SIDECAR.parent.mkdir(parents=True, exist_ok=True)
+        PRESERVE_SIDECAR.write_text(
+            json.dumps(entries, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return True
+    except OSError:
+        return False
+
+
+def _clear_preserve_sidecar() -> None:
+    """清空中断保全 sidecar（boot recovery 消费后调用，幂等）。"""
+    try:
+        PRESERVE_SIDECAR.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 class FenixDaemon:
@@ -186,6 +230,15 @@ class FenixDaemon:
         # 锁治理（improve-run-lifecycle-governance D4）：清理前先以进程表重建在册锁
         # —— 孤儿 attempt 进程仍存活的 worktree 会被跳过并重建登记，不被误删。
         self.worktree_manager.refresh_locks()
+
+        # ── 恢复保留判定先于孤儿清理（interrupt-recovery-preserve D6）──
+        # recover_interrupted 的保留续做会把保全在册的 worktree（在场或重建）
+        # 登记进活动集；先于 cleanup_stale_worktrees 完成，使孤儿清理自然跳过
+        # 被保全引用的 worktree——清理与保全永不互删。
+        self.state_machine.recover_interrupted(PROJECT_ROOT, self.worktree_manager)
+        # 消费后的保全 sidecar 清除（幂等；中断全部由 recovery 接管）
+        _clear_preserve_sidecar()
+
         self.worktree_manager.cleanup_stale_worktrees()
 
         # add-worktree-test-server（D2 启动清扫）：上次异常退出遗留的 dev-server 进程
@@ -194,9 +247,8 @@ class FenixDaemon:
 
         # 恢复上次异常退出遗留的中断状态（implementing/testing → ready）。
         # recover_interrupted 此前定义了但从未被调用，导致 daemon 重启后卡死的
-        # spec 永远不被重新调度（fix-fenix-token-waste）。
-        self.state_machine.recover_interrupted()
-
+        # spec 永远不被重新调度（fix-fenix-token-waste）；保留判定已在上面与
+        # 孤儿清理协同完成。
         self.event_bus.full_scan()
 
         # Start event bus monitoring
@@ -567,6 +619,127 @@ class FenixDaemon:
             except OSError:
                 continue
 
+    def _shutdown_drain_seconds(self) -> int:
+        """规划性重启排水窗口（admin.shutdown_drain_seconds，缺省 1800，0=现行快速停机）。
+
+        interrupt-recovery-preserve D1：非法值（负/非数字）回退缺省；0 显式回退
+        现行快速停机（不排水、不保全）。
+        """
+        raw = ConfigLoader.get(self.config, "admin.shutdown_drain_seconds", 1800)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            self.logger.error(
+                "fenixd",
+                f"admin.shutdown_drain_seconds 非法（应为非负整数）: {raw!r}，回退 1800",
+            )
+            return 1800
+        return max(0, value)
+
+    def _drain_log_waiting(self) -> list:
+        """排水开始日志 + 等待的 run 清单（interrupt-recovery-preserve 4.3）。"""
+        if not self.agent_runner:
+            return []
+        running = self.agent_runner.running_run_ids()
+        if running:
+            self.logger.info(
+                "fenixd",
+                f"Drain: waiting for running agents to finish: {running}",
+            )
+        else:
+            self.logger.info("fenixd", "Drain: no running agents to wait for")
+        return running
+
+    def _preserve_interrupted_runs(self, run_ids: list, reason: str) -> list:
+        """排水超时 terminate 前保全在跑 run 的 spec 上下文到 sidecar（D3）。
+
+        对每个仍存活的 in-flight run，解析其 spec 名并从 STATE 取 branch，
+        组装保全条目（spec/run_id/branch/worktree/ahead_commits/reason/timestamp）
+        写入 ``.fenix/interrupted_runs.json``。写入失败降级 WARNING 不阻塞停机。
+        ``ahead_commits`` 以 ``git rev-list --count main..<branch>`` 为据（recovery
+        保留判定同口径）；worktree 以 git worktree 注册为据。
+
+        Returns: 已登记保全的 worktree 路径列表（供 cleanup_orphans 保护集）。
+        """
+        entries = list(_read_preserve_sidecar())
+        seen_wt = {e.get("worktree") for e in entries if e.get("worktree")}
+        for run_id in run_ids:
+            spec = self._spec_from_run_id(run_id)
+            if not spec:
+                self.logger.warning(
+                    "fenixd",
+                    f"Preserve: cannot parse spec from run_id '{run_id}' — skip",
+                )
+                continue
+            entry = self.state_machine.read_one(spec) or {}
+            branch = entry.get("branch")
+            worktree = ""
+            if branch and self.worktree_manager:
+                wt = self.worktree_manager.find_worktree_path(branch)
+                worktree = str(wt) if wt else ""
+                if wt:
+                    seen_wt.add(str(wt))
+            ahead = 0
+            if branch:
+                try:
+                    res = subprocess.run(
+                        ["git", "-C", str(PROJECT_ROOT), "rev-list", "--count",
+                         f"main..{branch}"],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if res.returncode == 0:
+                        try:
+                            ahead = int(res.stdout.strip() or "0")
+                        except ValueError:
+                            ahead = 0
+                except (subprocess.TimeoutExpired, OSError):
+                    ahead = 0
+            entries.append({
+                "spec": spec,
+                "run_id": run_id,
+                "branch": branch or "",
+                "worktree": worktree,
+                "ahead_commits": ahead,
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            self.logger.warning(
+                "fenixd",
+                f"Preserving interrupted run '{run_id}' (spec '{spec}', "
+                f"branch '{branch or 'none'}', worktree '{worktree or 'none'}', "
+                f"ahead={ahead})",
+            )
+        if not _write_preserve_sidecar(entries):
+            self.logger.warning(
+                "fenixd",
+                f"Preserve sidecar write failed (non-blocking) — "
+                f"{len(entries)} entry/ies not persisted",
+            )
+        return sorted(seen_wt)
+
+    @staticmethod
+    def _spec_from_run_id(run_id: str) -> Optional[str]:
+        """run_id（``<prefix>-<spec>-<ts>-a<attempt>`` 或无 attempt 后缀）→ spec 名。
+
+        与 worktree_manager._spec_from_worktree_name 对称：spec 名可含连字符，
+        取前缀之后、末段时间戳之前的部分。run_id 附 ``-a<attempt>`` 时先剥掉。
+        """
+        if not run_id:
+            return None
+        rid = run_id
+        for prefix in ("impl", "verify", "repair"):
+            if rid.startswith(f"{prefix}-"):
+                rest = rid[len(prefix) + 1:]
+                break
+        else:
+            return None
+        if "-a" in rest:
+            rest = rest.rsplit("-a", 1)[0]
+        parts = rest.rsplit("-", 1)
+        if len(parts) == 2 and parts[0] and parts[1].isdigit():
+            return parts[0]
+        return None
+
     def shutdown(self):
         """Graceful shutdown."""
         self.logger.info("fenixd", "Shutting down...")
@@ -600,10 +773,48 @@ class FenixDaemon:
                 )
         if self.event_bus:
             self.event_bus.stop()
+
+        # ── 规划性重启排水（interrupt-recovery-preserve D1/D4）──
+        # restart_request 在册 = 规划性重启（supervisor 协议唯一信号源）→ 排水
+        # 模式：禁新派发（shutting_down + admin 池/event_bus 已停）+ 等待在跑 run
+        # 自然终态（上限 shutdown_drain_seconds，缺省 1800）；到期仍有在跑 run →
+        # 先写 sidecar 保全，再走现行 terminate 收口。非计划 SIGTERM
+        #（restart_request 不在册）或 drain=0 时行为逐字节不变（快速 terminate，
+        # 无保全）。
+        planned_restart = (PROJECT_ROOT / ".fenix" / "restart_request").exists()
+        drain_seconds = self._shutdown_drain_seconds()
+        preserved_wts: list = []
+        if planned_restart and drain_seconds > 0 and self.agent_runner:
+            wait_list = self._drain_log_waiting()
+            self.logger.info(
+                "fenixd",
+                f"Drain: planned restart, drain window {drain_seconds}s, "
+                f"waiting runs: {wait_list}",
+            )
+            start_ts = time.time()
+            remaining = self.agent_runner.drain_wait(timeout=drain_seconds)
+            self.logger.info(
+                "fenixd",
+                f"Drain finished after {time.time() - start_ts:.0f}s, "
+                f"remaining runs: {remaining}",
+            )
+            if remaining:
+                # 排水超时：先保全再 terminate（sidecar 先于 terminate）
+                preserved_wts = self._preserve_interrupted_runs(
+                    remaining, "drain timeout")
+        else:
+            self.logger.debug(
+                "fenixd",
+                f"Shutdown mode: planned={planned_restart}, "
+                f"drain={drain_seconds}s → "
+                f"{'drain' if planned_restart and drain_seconds > 0 else 'fast'}",
+            )
+
         if self.agent_runner:
             # fix-graceful-shutdown-agents：wait_for_running_agents 已改为 terminate 流程
             # （SIGTERM→interrupted 标记→≤10s 缓冲→SIGKILL），默认 grace 窗口即收口，
-            # 不传 timeout 以沿用 AGENT_TERMINATE_GRACE_SECONDS，确保总关停 ≪ supervisor 60s
+            # 不传 timeout 以沿用 AGENT_TERMINATE_GRACE_SECONDS，确保总关停 ≪ supervisor 60s。
+            # 排水到期残留 run 在此收口（sidecar 保全已先行落盘）。
             self.agent_runner.wait_for_running_agents()
             # add-worktree-test-server（D2 关闭回收）：agent 收尾后回收全部在册 dev-server，
             # 释放端口，避免遗留进程占用。
@@ -612,7 +823,8 @@ class FenixDaemon:
             except Exception as e:
                 self.logger.error("fenixd", f"V2 dev-server cleanup on shutdown failed: {e}")
         if self.worktree_manager:
-            self.worktree_manager.cleanup_orphans()
+            # 清理协调（D6）：保全在册 worktree 传入保护集，禁止清理与保全互删
+            self.worktree_manager.cleanup_orphans(protected=set(preserved_wts))
 
         self.logger.info("fenixd", "fenixd stopped")
         sys.exit(0)

@@ -29,9 +29,56 @@ STOP_FLAG = FENIX_DIR / "stop"
 DAEMON_STARTED = FENIX_DIR / "daemon_started"
 LOG_FILE = FENIX_DIR / "logs" / "supervisor.log"
 
+# SIGKILL 等待缺省（旧硬编码 60s，interrupt-recovery-preserve D2 起为可配）：
+# 排水模式下必须 ≥ daemon 排水窗口 + 固定余量，否则排水期被 SIGKILL 截断。
+DEFAULT_SIGKILL_WAIT_SECONDS = 60
+# 相对 admin.shutdown_drain_seconds 的固定余量（与 fenixd.py 的
+# SUPERVISOR_KILL_MARGIN_SECONDS 同值，保证 daemon 排水期不被 supervisor 截断）。
+DRAIN_MARGIN_SECONDS = 120
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _load_shutdown_drain_seconds() -> int:
+    """读取项目级 .fenix/config.yaml 的 admin.shutdown_drain_seconds（D2）。
+
+    解析失败（文件缺失/非 YAML/字段缺失/非法值）回退 0 —— 调用方按
+    ``0 = 现行快速停机`` 语义回退 DEFAULT_SIGKILL_WAIT_SECONDS，保持向后兼容。
+    """
+    import yaml
+
+    cfg_path = FENIX_DIR / "config.yaml"
+    try:
+        if not cfg_path.exists():
+            return 0
+        data = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return 0
+        admin = data.get("admin")
+        if not isinstance(admin, dict):
+            return 0
+        raw = admin.get("shutdown_drain_seconds")
+        if raw is None:
+            return 0
+        value = int(raw)
+        return value if value >= 0 else 0
+    except Exception:
+        return 0
+
+
+def _sigkill_wait_seconds() -> int:
+    """SIGKILL 等待窗口 = admin.shutdown_drain_seconds + 120s 余量；0 时回退 60s。
+
+    interrupt-recovery-preserve D2：禁止只改 daemon 不改 supervisor——排水窗口
+    启用后 supervisor 的 SIGKILL 等待必须不小于 daemon 排水上限，否则排水形同
+    虚设。配置缺失/解析失败时回退旧硬编码 60s，行为与旧版逐字节一致。
+    """
+    drain = _load_shutdown_drain_seconds()
+    if drain <= 0:
+        return DEFAULT_SIGKILL_WAIT_SECONDS
+    return drain + DRAIN_MARGIN_SECONDS
 
 
 def log(msg: str):
@@ -73,14 +120,18 @@ def main():
             if RESTART_REQUEST.exists():
                 log("restart_request detected — SIGTERM daemon for restart")
                 restart = True
+                sigkill_wait = _sigkill_wait_seconds()
                 try:
                     proc.send_signal(signal.SIGTERM)
                 except ProcessLookupError:
                     pass
                 try:
-                    proc.wait(timeout=60)
+                    proc.wait(timeout=sigkill_wait)
                 except subprocess.TimeoutExpired:
-                    log("daemon did not exit within 60s after SIGTERM — SIGKILL")
+                    log(
+                        f"daemon did not exit within {sigkill_wait}s after "
+                        f"SIGTERM — SIGKILL"
+                    )
                     try:
                         proc.kill()
                     except ProcessLookupError:

@@ -454,7 +454,8 @@ class AgentRunner:
 
 
 
-    def run_implementer(self, spec_name: str) -> AgentRunResult:
+    def run_implementer(self, spec_name: str,
+                        pre_wt_path: Path | None = None) -> AgentRunResult:
         """
         Run the implementer Agent for a SPEC.
 
@@ -465,9 +466,15 @@ class AgentRunner:
         4. Parse result
         5. Clean up worktree
         6. Return result
+
+        interrupt-recovery-preserve（D4）：``pre_wt_path`` 非 None 时**不创建新
+        worktree**，直接在指定 worktree 内续做（恢复保留分支的 resume 续做）。
+        worktree 生命周期由调用层（dispatch）解析与登记，成功/失败清理语义与
+        既有 repair 路径一致。
         """
         run_id = f"impl-{spec_name}-{int(time.time())}"
-        return self._execute_agent(spec_name, "implementer", run_id)
+        return self._execute_agent(spec_name, "implementer", run_id,
+                                   pre_wt_path=pre_wt_path)
 
     def run_verifier(self, spec_name: str) -> AgentRunResult:
         """Run the verifier Agent for a SPEC."""
@@ -2431,6 +2438,42 @@ class AgentRunner:
 
     def wait_for_running_agents(self, timeout: int = AGENT_TERMINATE_GRACE_SECONDS):
         return self._liveness.wait_for_running_agents(timeout)
+
+    def running_run_ids(self) -> list:
+        """当前在册在跑 run 的 run_id 列表（存活判定：进程仍在或快照内未收割）。
+
+        供 shutdown 排水模式枚举等待对象；以进程表为真相（poll() 为 None = 存活），
+        完成终态后自然移出。
+        """
+        return [
+            rid for rid, proc in list(self._running_agents.items())
+            if proc.poll() is None
+        ]
+
+    def drain_wait(self, timeout: float) -> list:
+        """规划性重启排水：等在跑 run 自然终态，不再对其发 terminate。
+
+        interrupt-recovery-preserve D1/D4：daemon 收到 SIGTERM 且 restart_request
+        在册时进入排水模式——禁新派发已由 shutting_down 保证，此处只等在册 run
+        收工（run 自身 timeout 兜底），到期仍残留的 run_id 列表原样返回，由
+        shutdown 流程据侧车保全后走现行 terminate 收口。
+
+        Args:
+            timeout: 排水窗口秒数（admin.shutdown_drain_seconds，缺省 1800）。
+
+        Returns: 窗口到期仍未终态的在跑 run_id 列表（空 = 全部自然收工）。
+        """
+        waited = 0.0
+        deadline = time.time() + max(0.0, timeout)
+        remaining = self.running_run_ids()
+        if not remaining:
+            return []
+        while time.time() < deadline:
+            remaining = self.running_run_ids()
+            if not remaining:
+                return []
+            time.sleep(0.5)
+        return self.running_run_ids()
 
     @staticmethod
     def _resumable_session_id(

@@ -541,10 +541,51 @@ class Dispatcher:
                 # 派发前把 spec 目录提交进主树（fix-merge-back-deadlock 根因修复）：
                 # 消除「spec 在主树 untracked + 分支 commit 同名路径」导致的 merge-back 冲突。
                 wm.ensure_spec_committed(spec_name)
+                # ── 中断恢复保留续做（interrupt-recovery-preserve D4/D5）──
+                # recovery 保留的 spec（_recovery_resume 标记 + 保留分支）：在既有
+                # 分支的 worktree 内 resume 续做（claude --resume 断点续跑），
+                # 而非从零新建分支。载体三态经 wm.resolve_resume_site
+                #（is_available 单源）解析：在场原地 / 缺失重建 / 不可用降级
+                # 为普通全新派发。标记一次性消费：派发后清空，防后续 full_scan
+                # 反复尝试续做。
+                resume_wt = None
+                dispatch_entry = self._pm.state_machine.read_one(spec_name) or {}
+                resume_branch = (
+                    dispatch_entry.get("branch")
+                    if dispatch_entry.get("_recovery_resume") else None
+                )
+                if resume_branch:
+                    site = wm.resolve_resume_site(spec_name, resume_branch)
+                    if site[0] is not None:
+                        resume_wt = site[0]
+                    else:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"Resume site unavailable for '{spec_name}' "
+                            f"(branch '{resume_branch}') — degrade to fresh dispatch",
+                        )
+                if dispatch_entry.get("_recovery_resume"):
+                    self._pm.state_machine.update_spec(
+                        spec_name, {"_recovery_resume": None})
+                if resume_wt is not None:
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"Resume dispatch for '{spec_name}' on preserved branch "
+                        f"'{resume_branch}' (worktree {resume_wt})",
+                    )
+                    # 继承痕迹登记（prompt 注入恢复续做说明，interrupt-recovery-preserve 2.3）
+                    try:
+                        wm.mark_reused(spec_name, resume_wt, resume_branch or "")
+                    except Exception as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"mark_reused for resume '{spec_name}' failed（非阻塞）: {e}",
+                        )
                 # 主树 stash 已收拢进 merge_back_from_branch 的 guard 原子段
                 # （fix-autostash-orphans）：锁内 stash→merge→pop，不再依赖
                 # 派发前 stash + 成功路径 pop 的长窗口配对（曾致 7 次改动滞留 stash）。
-                result = self._pm.agent_runner.run_implementer(spec_name)
+                result = self._pm.agent_runner.run_implementer(
+                    spec_name, pre_wt_path=resume_wt)
                 # Read .fenix-run-result.json (worktree first, project root fallback)
                 # to determine true status — file is more authoritative than
                 # process exit code for semantic success/error.
