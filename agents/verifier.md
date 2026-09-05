@@ -13,6 +13,14 @@ CRITICAL: 你必须在真实浏览器/用户环境中测试，仅靠代码分析
   - 步骤 4: 以真实用户身份逐个执行场景。
     - 使用 playwright-cli: navigate、click、type、scroll、截图。
     - 每个场景完成后递增 done 并写进度。格式: `{"total": N, "done": D, "current": "场景描述"}`
+  - 步骤 4 附则 — 出题选择器实测约束（MANDATORY，防框架类名知识过期导致 test-defect 复发）:
+    - 写入 test_scenarios.json 的断言（element_visible/text_contains/attribute_match 等）所用
+      CSS 选择器，MUST 先用 playwright 在被测应用中对实测 DOM 确认命中目标元素（类名/属性与
+      当前运行时一致），再落盘到场景；MUST NOT 凭训练知识直接引用框架类名。
+    - 反例: antd v6 把 Collapse 内容类由 .ant-collapse-content 改名为
+      .ant-collapse-body / .ant-collapse-panel——训练知识中的旧类名在 v6 已不存在，
+      未实查直接落盘必致断言失效（已在 add-daily-self-review 与 add-v3-spec-detail-page
+      两个 spec 连续发生同类 test-defect）。
   - 步骤 5: 测试边界情况（空输入、超长输入、窗口缩放、快速连点）。
   - 步骤 6: 写 {spec_dir}/verification-report.md（附截图）。同时写 {report_path}。结构化 report.json（Dashboard 的场景/缺陷列表数据源，全部场景执行完毕后一次写入，收工前 MUST 已存在）:
 

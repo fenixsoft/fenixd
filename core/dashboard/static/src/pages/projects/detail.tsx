@@ -226,6 +226,126 @@ function formatUsd(v: number): string {
   return `$${v.toFixed(2)}`;
 }
 
+// fix-verify-verdict-visibility：被分类过滤（非 product-bug）失败场景的分类中文标签
+// （对齐 verdict-evidence-taxonomy 分类：test-defect/flaky/env）
+const FILTERED_FAILURE_LABELS: Record<string, string> = {
+  'test-defect': '测试缺陷',
+  flaky: '偶发',
+  env: '环境问题',
+};
+const FILTERED_FAILURE_COLORS: Record<string, string> = {
+  'test-defect': 'orange',
+  flaky: 'purple',
+  env: 'blue',
+};
+
+// 被裁决过滤的失败/错误场景摘要区块：消除「运行时间轴有失败 + 失败截图有图 +
+// Bug 列表为空」的三页签矛盾——展示裁决结论（分类、理由、证据）。纯展示区块，
+// 无交互（截图缩略图复用 Image 预览放大，与 Bug 卡片同款）。
+function FilteredFailuresBlock({
+  filtered,
+  name,
+  spec,
+  collapsed,
+}: {
+  filtered: NonNullable<SpecDetail['filtered_failures']>;
+  name: string;
+  spec: string;
+  collapsed: boolean;
+}) {
+  const body = (
+    <div>
+      {filtered.map((f, idx) => (
+        <div
+          key={idx}
+          data-testid="filtered-failure-item"
+          style={{
+            padding: '8px 12px',
+            marginBottom: 8,
+            background: '#fafafa',
+            border: '1px solid #f0f0f0',
+            borderRadius: 6,
+          }}
+        >
+          <Space size={8} wrap style={{ marginBottom: 4 }}>
+            <Typography.Text strong>{f.scenario_id}</Typography.Text>
+            <Tag color={FILTERED_FAILURE_COLORS[f.classification || ''] || 'default'} style={{ marginInlineEnd: 0 }}>
+              {FILTERED_FAILURE_LABELS[f.classification || ''] || f.classification || '未分类'}
+            </Tag>
+            <Tag color={f.status === 'error' ? 'red' : 'default'} style={{ marginInlineEnd: 0 }}>
+              {f.status === 'error' ? '错误' : '失败'}
+            </Tag>
+            {f.status_corrected && (
+              <Tag color="green" style={{ marginInlineEnd: 0 }}>
+                状态已修正
+              </Tag>
+            )}
+          </Space>
+          {f.evidence_summary ? (
+            <Typography.Text type="secondary" style={{ display: 'block', fontSize: 13 }}>
+              {f.evidence_summary}
+            </Typography.Text>
+          ) : null}
+          {f.screenshots && f.screenshots.length > 0 && (
+            <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {f.screenshots.map((file, sIdx) => (
+                <Image
+                  key={sIdx}
+                  src={`/screenshots/${encodeURIComponent(name)}/${encodeURIComponent(spec)}/${encodeURIComponent(file)}`}
+                  alt={`被过滤场景 ${f.scenario_id} 截图 ${sIdx + 1}`}
+                  width={150}
+                  height={100}
+                  style={{
+                    objectFit: 'cover',
+                    border: '1px solid #d9d9d9',
+                    borderRadius: 4,
+                  }}
+                  preview={{ mask: '点击查看' }}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  if (collapsed) {
+    // bugs 非空时摘要折叠为次级区块，避免双列表混淆
+    return (
+      <Collapse
+        ghost
+        size="small"
+        data-testid="filtered-failures-collapse"
+        style={{ marginTop: 16 }}
+        items={[
+          {
+            key: 'filtered-failures',
+            label: (
+              <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                被裁决过滤的失败场景（{filtered.length}）
+              </Typography.Text>
+            ),
+            children: body,
+          },
+        ]}
+      />
+    );
+  }
+
+  return (
+    <div data-testid="filtered-failures-block" style={{ marginTop: 16 }}>
+      <Typography.Text strong style={{ display: 'block', marginBottom: 4 }}>
+        被裁决过滤的失败场景（{filtered.length}）
+      </Typography.Text>
+      <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8, fontSize: 12 }}>
+        以下失败/错误场景被裁决分类为测试缺陷/环境问题/偶发（非产品 Bug），故未进入 Bug 列表
+      </Typography.Text>
+      {body}
+    </div>
+  );
+}
+
 export default function SpecDetailPage() {
   const { name = '', spec = '' } = useParams<{ name: string; spec: string }>();
   const isMobile = useIsMobile();
@@ -960,9 +1080,29 @@ export default function SpecDetailPage() {
                   )}
                 </Card>
               ))}
+              {/* fix-verify-verdict-visibility：bugs 非空时被过滤场景摘要折叠为次级区块 */}
+              {detail?.filtered_failures && detail.filtered_failures.length > 0 && (
+                <FilteredFailuresBlock
+                  filtered={detail.filtered_failures}
+                  name={name}
+                  spec={spec}
+                  collapsed
+                />
+              )}
             </div>
           ) : (
-            <Empty description="无遗留 Bug" />
+            <div>
+              {/* filtered_failures 为空时行为与现状完全一致：仅「无遗留 Bug」空态 */}
+              <Empty description="无遗留 Bug" />
+              {detail?.filtered_failures && detail.filtered_failures.length > 0 && (
+                <FilteredFailuresBlock
+                  filtered={detail.filtered_failures}
+                  name={name}
+                  spec={spec}
+                  collapsed={false}
+                />
+              )}
+            </div>
           )}
         </div>
       ),

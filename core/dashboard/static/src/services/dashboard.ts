@@ -400,6 +400,16 @@ export interface SpecDetail {
     evidence?: string;
     screenshots?: string[];
   }>;
+  // 被分类过滤（非 product-bug）的失败/错误场景摘要 — 后端
+  // parse_filtered_failures() 返回结构（fix-verify-verdict-visibility）
+  filtered_failures?: Array<{
+    scenario_id: string;
+    classification?: 'test-defect' | 'flaky' | 'env' | string;
+    evidence_summary?: string;
+    screenshots?: string[];
+    status_corrected?: boolean;
+    status?: 'fail' | 'failed' | 'error' | string;
+  }>;
   // 失败截图 — list_screenshots() 返回 {file,size,mtime} 对象数组（非纯文件名）
   screenshots?: Array<{
     file: string;
