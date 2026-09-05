@@ -79,19 +79,22 @@ class MergeConflictInfo:
     __slots__ = (
         "success", "error", "conflict_paths",
         "self_heal_applicable", "self_heal_succeeded", "has_semantic_conflict",
+        "rehearsed",
     )
 
     def __init__(self, success: bool, error: str,
                  conflict_paths: list | None = None,
                  self_heal_applicable: bool = False,
                  self_heal_succeeded: bool = False,
-                 has_semantic_conflict: bool = False):
+                 has_semantic_conflict: bool = False,
+                 rehearsed: bool = False):
         self.success = bool(success)
         self.error = error
         self.conflict_paths = list(conflict_paths or [])
         self.self_heal_applicable = self_heal_applicable
         self.self_heal_succeeded = self_heal_succeeded
         self.has_semantic_conflict = has_semantic_conflict
+        self.rehearsed = bool(rehearsed)
 
     def __iter__(self):
         """兼容 (bool, str) 解包：既有调用方 ``success, err = ...`` 照常工作。"""
@@ -106,7 +109,7 @@ class MergeConflictInfo:
             f"MergeConflictInfo(success={self.success}, error={self.error!r}, "
             f"conflict_paths={self.conflict_paths}, "
             f"self_heal={self.self_heal_applicable}/{self.self_heal_succeeded}, "
-            f"semantic={self.has_semantic_conflict})"
+            f"semantic={self.has_semantic_conflict}, rehearsed={self.rehearsed})"
         )
 
 
@@ -118,6 +121,11 @@ class WorktreeManager:
       - Implementer: .claude/worktrees/<spec>-<timestamp>/ on branch fenix/<spec>
       - Verifier:    .claude/worktrees/verify-<spec>-<timestamp>/ on branch fenix/verify-<spec>
     """
+
+    # merge-tree 预演闸（add-merge-tree-rehearsal D4）：`git merge-tree --write-tree`
+    # 需 git ≥ 2.38，进程内一次性探测（类级缓存，多实例共享，不重复探测/不刷屏）。
+    _rehearsal_probe_done = False
+    _rehearsal_supported = False
 
     def __init__(self, base_dir: Path, project_root: Path, logger, process_scanner=None):
         self.base_dir = Path(base_dir)
@@ -1572,6 +1580,12 @@ class WorktreeManager:
         滞留在 stash 栈（曾致 7 次改动"消失"事故）。段内 pop 弹到的必是刚 push
         的条目（锁串行 + LIFO），历史滞留条目由周期巡检兜底回收。
 
+        预演闸（add-merge-tree-rehearsal D1）：真合并（stash/merge/abort 序列）
+        之前先以 ``git merge-tree --write-tree`` 只读预演。语义冲突在主树零污染
+        点被拦截——不 stash、不 merge、不 abort，直接返回带 ``rehearsed=True``
+        标记的结构化冲突分类，调度层据此直通 repair 通道（spec 保持 in-flight、
+        不经 fp 记账）；零冲突与纯产物/ignored-DU 冲突放行现行流程逐字节不变。
+
         Returns: ``MergeConflictInfo``——兼容 ``(bool, str)`` 解包
         （``success, err = merge_back_from_branch(...)``），额外携带冲突路径
         清单与语义冲突分类（add-merge-back-repair-lane D1，供调度层决定是否
@@ -1581,6 +1595,13 @@ class WorktreeManager:
             return MergeConflictInfo(False, "Empty branch name")
 
         with self._main_tree_lock:
+            # 预演闸（add-merge-tree-rehearsal D1/D2）：guard 锁内、stash 之前只读
+            # 预演。语义冲突 → 直接返回 rehearsed 标记（主树零污染，调度层直通
+            # repair）；None = 放行（零冲突或产物/ignored-DU 冲突）→ 走现行流程。
+            rehearsed_info = self._rehearse_merge_from_branch(branch)
+            if rehearsed_info is not None:
+                return rehearsed_info
+
             self.last_stash_pop_conflicts = []
             stashed = self.ensure_clean_tree()
             try:
@@ -1590,6 +1611,133 @@ class WorktreeManager:
                     _ok, conflict_files = self.restore_after_merge()
                     if conflict_files:
                         self.last_stash_pop_conflicts = list(conflict_files)
+
+    # ── merge-tree 预演闸（add-merge-tree-rehearsal D1/D4）───────────────────
+    # 真合并前以 `git merge-tree --write-tree` 只读预演（不触碰主树索引与工作区），
+    # 语义冲突在主树零污染点被拦截并直通 repair；零冲突/产物/ignored-DU 放行现行
+    # 流程。git ≥ 2.38 可用性一次性探测（类级缓存），不支持整体回退现行行为。
+
+    def _merge_tree_supported(self) -> bool:
+        """``git merge-tree --write-tree`` 可用性一次性探测（进程内缓存）。
+
+        以空参试探：git ≥ 2.38 支持该选项（输出 usage）；旧版把未知选项报为
+        ``unknown option``。探测结果类级缓存（多实例共享、进程一生只探一次），
+        不支持时记一次性 WARNING（不刷屏），预演闸永久跳过。
+        """
+        if not WorktreeManager._rehearsal_probe_done:
+            try:
+                res = subprocess.run(
+                    ["git", "-C", str(self.project_root),
+                     "merge-tree", "--write-tree"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                WorktreeManager._rehearsal_supported = (
+                    "unknown option" not in res.stderr
+                )
+            except (subprocess.SubprocessError, OSError):
+                WorktreeManager._rehearsal_supported = False
+            WorktreeManager._rehearsal_probe_done = True
+            if not WorktreeManager._rehearsal_supported:
+                self.logger.warning(
+                    "worktree_manager",
+                    "git merge-tree --write-tree 不可用（需 git ≥ 2.38）— "
+                    "merge 预演闸跳过，行为回退现行",
+                )
+        return WorktreeManager._rehearsal_supported
+
+    def _rehearse_merge_from_branch(self, branch: str) -> Optional[MergeConflictInfo]:
+        """真合并前只读预演（add-merge-tree-rehearsal D1/D2/D4）。
+
+        在 ``_main_tree_lock`` 内、stash 之前调用。以 ``git merge-tree --write-tree
+        --name-only HEAD <branch>`` 预演分支并入主树的结果：
+
+        - 返回 ``None``：放行——零冲突，或预演检出冲突全部为构建产物/被 .gitignore
+          忽略的 DU 运行时草稿（这两类在现行真合并里由既有产物/ignored 自愈收口，
+          行为不变）；
+        - 返回 ``MergeConflictInfo``（``rehearsed=True``）：预演检出语义冲突，主树
+          未被 stash/merge/abort 触碰，调度层据此直通 repair 通道。
+
+        git 不支持 merge-tree、或预演命令失败/超时时同样返回 ``None``（保守：
+        宁可行现行行为，不因预演故障误拦合并）。预演自身不修改主树与分支的任何
+        状态（merge-tree 只读、不触索引与工作区）。
+        """
+        if not self._merge_tree_supported():
+            return None
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "merge-tree", "--write-tree", "--name-only",
+                 "HEAD", branch],
+                capture_output=True, text=True, timeout=60,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if res.returncode == 0:
+            # 零冲突：放行现行真合并流程（逐字节不变）
+            return None
+        conflict_paths = self._parse_merge_tree_conflict_paths(res.stdout)
+        if not conflict_paths:
+            return None
+        # 分类复用既有产物前缀判定（与 abort 后分类口径一致）：非产物路径
+        # 全部为被忽略的 DU 运行时草稿时才放行，其余视为语义冲突直通 repair。
+        non_artifact = [p for p in conflict_paths if not _is_build_artifact_path(p)]
+        if not non_artifact:
+            return None
+        if all(self._rehearsed_path_is_ignored_du(p) for p in non_artifact):
+            return None
+        # 语义冲突：主树零污染直通 repair。冲突清单只保留语义路径（与 abort 后
+        # 分类一致——产物路径由框架自愈负责，不污染 repair agent 的冲突上下文）。
+        self.logger.info(
+            "worktree_manager",
+            f"Merge rehearsal detected semantic conflicts for branch '{branch}': "
+            f"{len(non_artifact)} path(s) {non_artifact} (total {len(conflict_paths)})"
+            f" — direct to repair lane, main tree untouched",
+        )
+        return MergeConflictInfo(
+            False,
+            f"Semantic merge conflicts detected by pre-merge rehearsal "
+            f"({len(non_artifact)} path(s))",
+            conflict_paths=non_artifact,
+            self_heal_applicable=False,
+            has_semantic_conflict=True,
+            rehearsed=True,
+        )
+
+    def _parse_merge_tree_conflict_paths(self, stdout: str) -> list:
+        """解析 ``merge-tree --write-tree --name-only`` 输出中的冲突路径清单。
+
+        冲突时输出结构：首行为结果 tree oid，其后冲突路径每行一个，空行后为
+        信息行（Auto-merging / CONFLICT ...）。rename 双胞胎的 base 旧路径与
+        两侧新路径都会列出——与 ``_collect_conflict_paths``（git status --porcelain
+        的 rename ``old -> new`` 双胞胎两侧都计入）口径一致。
+        """
+        paths: list = []
+        for line in stdout.splitlines()[1:]:
+            if not line.strip():
+                break
+            if line.startswith("CONFLICT"):
+                break
+            paths.append(line.strip())
+        return [p for p in paths if p]
+
+    def _rehearsed_path_is_ignored_du(self, path: str) -> bool:
+        """预演分类：非产物冲突路径是否为「被 .gitignore 忽略的运行时草稿」。
+
+        与 abort 后 ``_resolve_ignored_modify_delete_conflicts``（仅处理 DU——
+        主树删除、分支修改）口径一致：主树已删除该路径时它在 HEAD 索引中不
+        存在，``git check-ignore`` 判定可靠；反向（分支删除、主树修改）路径仍
+        tracked → check-ignore 返回非零 → 判为语义冲突直通，真合并中该自愈
+        （仅接受 DU 状态码）同样不适用。命令失败保守返回 False。
+        """
+        try:
+            chk = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "check-ignore", "-q", "--", path],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        return chk.returncode == 0
 
     def _merge_back_from_branch_locked(self, branch: str) -> MergeConflictInfo:
         """merge_back_from_branch 的实现体，调用方必须已持有 _main_tree_lock。
