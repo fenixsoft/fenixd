@@ -26,10 +26,10 @@
 ## 2. 前端 Bug 列表摘要渲染
 
 - [ ] 2.1 detail.tsx Bug 列表页签：bugs 为空且 filtered_failures 非空时，
-  在「暂无 Bug」空态下方渲染被过滤失败场景摘要列表（场景 id、分类标签
+  在「无遗留 Bug」空态下方渲染被过滤失败场景摘要列表（场景 id、分类标签
   「测试缺陷/环境问题/偶发」、evidence_summary 文本、截图缩略图复用
   /screenshots/ 路由点击放大）；bugs 非空时摘要折叠为次级区块
-- [ ] 2.2 filtered_failures 为空时渲染行为与现状完全一致（「暂无 Bug」，
+- [ ] 2.2 filtered_failures 为空时渲染行为与现状完全一致（「无遗留 Bug」，
   无新区块）
 
 ## 3. verifier 出题选择器实测规则

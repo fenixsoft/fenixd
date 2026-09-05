@@ -17,7 +17,7 @@ add-v3-spec-detail-page 两个 spec 连续发生同类 test-defect。
 ## What Changes
 
 - Bug 列表页签新增「被裁决过滤的失败场景」摘要展示：当存在失败/错误场景被
-  分类过滤（test-defect/flaky/env）时，空态不再只显示「暂无 Bug」，
+  分类过滤（test-defect/flaky/env）时，空态不再只显示「无遗留 Bug」，
   而是列出这些场景的 id、分类、裁决理由/证据摘要与关联截图。
 - 后端 `spec_detail` 响应新增 `filtered_failures` 结构（从 report.json scenarios
   提取 status ∈ fail/failed/error 且 classification ∈ 非 product-bug 分类的场景）。

@@ -8,13 +8,13 @@ Dashboard SPEC 详情页「Bug 列表」页签 MUST 展示被分类过滤（clas
 test-defect/flaky/env，即非 product-bug）的失败/错误场景摘要，使用户在
 「有失败+有失败截图+无产品 Bug」时能看到裁决结论与理由。摘要 MUST 包含：
 场景 id、分类标签、裁决理由/证据摘要（evidence 或 status_corrected 标注）、
-关联截图缩略图（有则显示）。无任何失败场景时保持现状（「暂无 Bug」空态）。
+关联截图缩略图（有则显示）。无任何失败场景时空态文案为「无遗留 Bug」。
 
 #### Scenario: 有被过滤失败时展示裁决摘要
 - **WHEN** report.json 存在 status 为 failed 的场景且其 classification 为
   test-defect，而 Bug 列表（parse_bugs）因此为空
 - **THEN** Bug 列表页签显示被过滤场景的摘要条目（含场景 id、分类标签
-  「测试缺陷」、裁决证据），而非仅显示「暂无 Bug」
+  「测试缺陷」、裁决证据），而非仅显示「无遗留 Bug」
 
 #### Scenario: 摘要含失败截图
 - **WHEN** 被过滤失败场景的 screenshots 字段非空
@@ -23,7 +23,7 @@ test-defect/flaky/env，即非 product-bug）的失败/错误场景摘要，使�
 
 #### Scenario: 无失败场景时保持原空态
 - **WHEN** report.json 全部场景通过或不存在失败场景
-- **THEN** Bug 列表页签显示「暂无 Bug」空态，不渲染摘要区块
+- **THEN** Bug 列表页签显示「无遗留 Bug」空态，不渲染摘要区块
 
 ### Requirement: 后端 filtered_failures 结构
 

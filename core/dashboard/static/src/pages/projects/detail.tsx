@@ -950,7 +950,7 @@ export default function SpecDetailPage() {
               ))}
             </div>
           ) : (
-            <Empty description="暂无 Bug" />
+            <Empty description="无遗留 Bug" />
           )}
         </div>
       ),
