@@ -199,12 +199,15 @@ class SelfReviewResult:
     """每日自省 run 的结果（run_self_review 返回，add-daily-self-review）。
 
     waste/mistakes/improvements 为三个小节条目列表（每条含证据与建议，
-    由 Agent 在回顾 JSON 中产出）；success=False 时 error 携带失败原因。
+    由 Agent 在回顾 JSON 中产出）；resolved 为闭环判定清单（``[{id,
+    reason}]``，畸形条目在解析时过滤），调度器据此从 todo.md 移除已闭环
+    条目；success=False 时 error 携带失败原因。
     """
 
     def __init__(self, run_id: str, date: str = "", success: bool = True,
                  waste: list | None = None, mistakes: list | None = None,
                  improvements: list | None = None, summary: str = "",
+                 resolved: list | None = None,
                  error: str = "", output: str = ""):
         self.run_id = run_id
         self.date = date
@@ -213,6 +216,7 @@ class SelfReviewResult:
         self.mistakes = list(mistakes or [])
         self.improvements = list(improvements or [])
         self.summary = summary
+        self.resolved = list(resolved or [])
         self.error = error
         self.output = output
 
@@ -681,7 +685,8 @@ class AgentRunner:
     # ── 每日自省 run（add-daily-self-review spec，design D2） ──────────
 
     def run_self_review(self, date_str: str, daily_summary: str,
-                        todo_md: str | None = None) -> SelfReviewResult:
+                        todo_md: str | None = None,
+                        todo_entries: str | None = None) -> SelfReviewResult:
         """唤起每日自省 run（Administrator 通道，design D2 复用语义）。
 
         与 implementer/verifier 不同：自省是运维角色，直接在 main 树
@@ -698,14 +703,16 @@ class AgentRunner:
 
         Agent 按 prompt 把回顾写入实例文件
         ``.fenix/self_review_out-<run_id>.json``（JSON：
-        date/waste/mistakes/improvements/summary），run 结束读取并清理。
-        失败（异常/超时/rc!=0）返回 success=False（调度器记告警、当日
-        不重试）。
+        date/waste/mistakes/improvements/resolved/summary），run 结束读取
+        并清理。失败（异常/超时/rc!=0）返回 success=False（调度器记告警、
+        当日不重试）。
 
         Args:
             date_str: 自省归属自然日 YYYY-MM-DD（即 run_id 内嵌日期）。
-            daily_summary: 框架聚合的当日数据摘要（四源），注入 prompt。
+            daily_summary: 框架聚合的当日数据摘要（五源），注入 prompt。
             todo_md: read_todo=true 时的既有 todo.md 全文；None 不注入。
+            todo_entries: read_todo=true 时 ID 标注的近 3 日条目清单
+                （闭环判定对象）；None 注入占位提示。
         """
         run_id = f"review-{date_str}"
         out_path = self.project_root / ".fenix" / f"self_review_out-{run_id}.json"
@@ -713,6 +720,7 @@ class AgentRunner:
             "review_date": date_str,
             "daily_summary": daily_summary or "",
             "todo_md": todo_md or "",
+            "todo_entries": todo_entries or "",
             "out_path": str(out_path),
         })
 
@@ -752,6 +760,15 @@ class AgentRunner:
 
         data = self._read_self_review_out(out_path)
         self._delete_self_review_out(out_path)
+        # resolved 闭环判定清单归一化：非 dict / 缺 id / 空 id / 非 str id 过滤
+        resolved = []
+        for item in (data.get("resolved") or []):
+            if (isinstance(item, dict) and isinstance(item.get("id"), str)
+                    and item["id"]):
+                resolved.append({
+                    "id": item["id"],
+                    "reason": str(item.get("reason") or ""),
+                })
         return SelfReviewResult(
             run_id=run_id,
             date=date_str,
@@ -760,6 +777,7 @@ class AgentRunner:
             mistakes=data.get("mistakes") or [],
             improvements=data.get("improvements") or [],
             summary=data.get("summary") or "",
+            resolved=resolved,
             error=error,
             output=output,
         )

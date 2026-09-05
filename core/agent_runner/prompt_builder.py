@@ -34,8 +34,10 @@ AGENT_PROMPT_FILES = {
 def is_self_referencing_project(proot) -> bool:
     """项目根或其 .fenix 解析为框架根（自引用项目，add-agent-prompt-files D4）。
 
-    fenixd 自身项目的项目级 .fenix/agents/ 即通用层 agents/：项目级注入等于
-    通用层重复、项目级写入会覆盖不可修改的通用文件——读取跳过、编辑禁用。
+    fenixd 自身项目无独立项目级附加层：运行时跳过项目级读取（写入即死
+    文件），框架自身提示词的演进走 SPEC 流程——读取跳过、编辑禁用。
+    （"项目级 .fenix/agents/ 即通用层 agents/" 是已废弃 .fenix 自引用
+    符号链接设计的旧前提：2026-09-04 状态文件迁入后 .fenix 为真实目录。）
     模块级函数供 PromptBuilder 与 Dashboard 端点共用同一判定。
     """
     try:
@@ -392,10 +394,12 @@ class PromptBuilder:
         加载 agents/self-review.md（文件化体系，缺失 fail-fast），以
         str.replace 填充占位符（不用 str.format——正文含大量 {} JSON 示例）：
         - {review_date}: 自省归属自然日
-        - {daily_summary}: 框架聚合的当日数据摘要（四源：STATE 终态 /
-          runs 统计 / admin 告警与处置 / 日志 ERROR）
+        - {daily_summary}: 框架聚合的当日数据摘要（五源：STATE 终态 /
+          runs 统计 / admin 告警与处置 / 日志 ERROR / 近 3 日 git 提交）
         - {todo_md_content}: read_todo=true 时的既有 todo.md 全文；
           关闭或不存在时为占位提示（Agent 无需区分）
+        - {todo_entries}: read_todo=true 时 ID 标注的近 3 日条目清单
+          （闭环判定对象）；关闭或无条目时为占位提示
         - {out_path}: 回顾 JSON 写入路径（.fenix/self_review_out-<run_id>.json）
         """
         template = self._load_agent_template("self-review")
@@ -406,6 +410,9 @@ class PromptBuilder:
         prompt = prompt.replace(
             "{todo_md_content}",
             (detail.get("todo_md") or "（read_todo 关闭或 todo.md 不存在，不注入）"))
+        prompt = prompt.replace(
+            "{todo_entries}",
+            (detail.get("todo_entries") or "（近3日窗口内无既有条目）"))
         prompt = prompt.replace(
             "{out_path}",
             str(detail.get("out_path") or (self._pm.project_root / ".fenix"

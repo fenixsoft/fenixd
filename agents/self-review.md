@@ -9,6 +9,9 @@
 ## 既有 todo.md 上下文（read_todo=true 时注入 .fenix/todo.md 全文，供识别历史条目/避免重复）
 {todo_md_content}
 
+## 近 3 日既有条目（闭环判定对象，ID 标注）
+{todo_entries}
+
 ## 你的任务
 基于上述当日数据，识别当天工作中的 **浪费 / 失误 / 可改进** 三类条目。
 
@@ -23,11 +26,14 @@
 - **失误（mistakes）**：执行层面的错误（配置失误、状态误置、合并/提交遗漏、超时），需指出根因。
 - **可改进（improvements）**：系统性改进点，足以支撑后续 SPEC 立项。
 
+### 闭环判定（存在「近 3 日既有条目」时）
+对上方既有条目逐条判断：该问题**是否已经被修正**（如对应 fix 已提交、SPEC 已落地、告警/错误不再复现）。判定依据 MUST 可核实（commit hash、spec 名、告警 id 等），必要时只读查看 git log 与源码核实；拿不准的保守起见**不判定**。已修正条目写入回顾 JSON 的 `resolved` 数组（id + reason），daemon 会将其从 todo.md 移除。
+
 ## 铁律（MUST NOT）
 1. 只产出回顾，**禁止**创建任何 SPEC（不写 spec/changes/、不注册 .fenix/STATE.md 条目）。
 2. **禁止**派发任何 implementer/verifier/planner agent，不修改框架代码。
 3. 不要修改 .fenix/STATE.md、tasks.md 或任何源码文件——你的唯一产物是下面的回顾 JSON。
-4. read_todo=true 时，若某历史条目今日仍存在或已闭环，在对应条目中标注「（新增）/（恶化）/（已闭环）」。
+4. read_todo=true 时：判定已闭环的历史条目**不再重述进新节**，改写入 `resolved`（闭环判定）；仍存在的历史条目在重述时标注「（新增）/（恶化）」。
 
 ## 完成后
 把回顾写入 {out_path}（JSON，UTF-8），结构如下：
@@ -36,6 +42,7 @@
   "waste": ["证据：...；建议：..."],
   "mistakes": ["证据：...；建议：..."],
   "improvements": ["证据：...；建议：..."],
+  "resolved": [{"id": "日期#小节#序号", "reason": "判定依据（可核实证据）"}],
   "summary": "一句话总结当日整体表现"
 }
-然后结束，无需额外输出。不要直接编辑 todo.md——daemon 会把你的回顾结构化追加进 .fenix/todo.md 并自动提交。
+然后结束，无需额外输出。不要直接编辑 todo.md——daemon 会把你的回顾结构化追加进 .fenix/todo.md、按 resolved 移除已闭环条目并自动提交。

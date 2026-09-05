@@ -20,9 +20,6 @@
 ### 浪费
 - 证据：（新增）当日管线零活动（121/121 pushed、0 run、0 ERROR、0 告警），本次回顾 run review-2026-09-05 于 local 09-05 02:04（UTC 09-04T18:04:32Z）启动，聚合窗口仅覆盖当天前 2 小时、产出近乎空报告；而 09-04 唯一一次回顾在 11:19:39+08:00 执行（.fenix/self_review_state.json），其证据止于 local 11:13——09-04 11:19 之后的 5 个 run（impl-add-activities-pagination×3 于 16:08/18:11/20:12 结束、add-dashboard-help-center planner-plan/impl/planner-judge 21:25–22:07）与 4 个 merge 提交（ade86ea 20:12、52e0a9d 21:33、2523281/901e8c3 23:27）从未进入任何回顾。建议：把自省调度移到「当日末」或让凌晨执行时聚合上一日全天，详见可改进第 1 条；在此之前今日回顾对昨日午后的覆盖缺口需人工补看。
 
-### 失误
-- 证据：（新增）main 工作区滞留 5 个文件 229 行未提交改动（core/dashboard/data.py、core/dashboard/server.py、SelfReviewPanel.tsx、settings/index.tsx、services/dashboard.ts）加未跟踪 tests/test_dashboard_todo_api.py，mtime 09-04 23:37–23:42，晚于当日最后 run（22:07）与最后提交（b3d75c9 23:35），且无任何 branch/run/STATE 条目对应（当日 0 run、121 条 SPEC 全部 pushed）——实现成果游离于分支、merge-back 与验证链路之外；这已是第二次：距上次手工同步提交 1f4ff86（09-04 11:04「同步主树未提交工作区」）仅约 12 小时再度积累。根因：改动未走 spec 分支流程，框架对 main 工作区残留无检测与告警。建议：先核对这批改动的归属——属某 spec 范畴则走 fast-track 补提交入管线并补验证，非 spec 范畴立即提交并注明来源；系统性上立项「main 工作区漂移检测」（见可改进第 2 条）。
-
 ### 可改进
 - 证据：（新增）自省默认 02:00 执行（1f4ff86「自省默认时间 02:00」）且按执行日命名：09-05 回顾 02:04 跑、窗口仅 2 小时（run=0）；09-04 回顾 11:19 跑、只覆盖上午，午后 5 个 run 与 4 个 merge 提交成盲区。建议：立项 SPEC——自省调度移至每日 23:30–23:59，或次日凌晨执行但按「聚合窗口 D-1 全天」过滤 runs/日志/告警，并在 self_review_state.json 落窗口起止时间与覆盖 run 数，窗口错位时自动补扫。
 - 证据：（新增）main 工作区再次出现无归属的未提交实现（见失误条目），且无任何机制发现——框架只盯 SPEC 状态，工作区脏度不进 admin 信号。建议：立项 SPEC——daemon 周期检测 main 工作区未提交/未跟踪文件并按「来源未知改动」产生 admin 告警，提示提交、入 fast-track 或清理，防成果无声丢失。

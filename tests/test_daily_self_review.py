@@ -34,7 +34,7 @@ class FakeSM:
 
 class FakeReviewResult:
     def __init__(self, success=True, waste=(), mistakes=(), improvements=(),
-                 summary="s", error="", run_id="review-test-1"):
+                 summary="s", error="", run_id="review-test-1", resolved=None):
         self.success = success
         self.waste = list(waste)
         self.mistakes = list(mistakes)
@@ -42,6 +42,7 @@ class FakeReviewResult:
         self.summary = summary
         self.error = error
         self.run_id = run_id
+        self.resolved = list(resolved or [])
 
 
 class FakeReviewRunner:
@@ -50,8 +51,8 @@ class FakeReviewRunner:
         self._result = result or FakeReviewResult()
         self._fail = fail
 
-    def run_self_review(self, date_str, daily_summary, todo_md):
-        self.calls.append((date_str, daily_summary, todo_md))
+    def run_self_review(self, date_str, daily_summary, todo_md, todo_entries=None):
+        self.calls.append((date_str, daily_summary, todo_md, todo_entries))
         if self._fail:
             raise RuntimeError("claude 崩溃")
         return self._result
@@ -637,6 +638,52 @@ class TestRunSelfReviewRunner:
             (proot / ".fenix" / "cost" / "self_review_tokens.json").read_text()
         )["runs"][0]["input_tokens"] == 0
 
+    def test_run_self_review_parses_resolved(self, tmp_path):
+        """out JSON 的 resolved 归一化：畸形条目（非 dict/缺 id/空 id）过滤。"""
+        proot = tmp_path / "proj-r"
+        (proot / ".fenix").mkdir(parents=True)
+        runner = self._runner(proot)
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            max_turns, spec_name=None):
+            (proot / ".fenix" / f"self_review_out-{run_id}.json").write_text(
+                json.dumps({
+                    "date": "2026-09-04", "waste": [], "mistakes": [],
+                    "improvements": [],
+                    "resolved": [
+                        {"id": "2026-09-04#浪费#1", "reason": "fix commit abc"},
+                        "not-a-dict",
+                        {"reason": "缺 id"},
+                        {"id": "", "reason": "空 id"},
+                        {"id": 42, "reason": "非字符串 id"},
+                    ],
+                }),
+                encoding="utf-8")
+            return "out", 5, "sess", {"input_tokens": 10, "output_tokens": 5,
+                                      "cost_usd": 0.01}
+
+        runner._run_claude = fake_run_claude
+        result = runner.run_self_review("2026-09-04", "摘要", None)
+        assert result.resolved == [{"id": "2026-09-04#浪费#1", "reason": "fix commit abc"}]
+
+    def test_run_self_review_resolved_missing_defaults_empty(self, tmp_path):
+        proot = tmp_path / "proj-r2"
+        (proot / ".fenix").mkdir(parents=True)
+        runner = self._runner(proot)
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            max_turns, spec_name=None):
+            (proot / ".fenix" / f"self_review_out-{run_id}.json").write_text(
+                json.dumps({"date": "2026-09-04", "waste": ["W"],
+                            "mistakes": [], "improvements": []}),
+                encoding="utf-8")
+            return "out", 5, "sess", {"input_tokens": 10, "output_tokens": 5,
+                                      "cost_usd": 0.01}
+
+        runner._run_claude = fake_run_claude
+        result = runner.run_self_review("2026-09-04", "摘要", None)
+        assert result.resolved == []
+
 
 # ── 数据摘要辅助 ───────────────────────────────────────────
 
@@ -686,3 +733,250 @@ class TestSummaryHelpers:
         assert agg["error_count"] == 3
         assert len(agg["samples"]) == 3
         assert all("err" in s for s in agg["samples"])
+
+
+# ── todo.md 闭环移除（自省启动时处理前 3 天记录） ─────────────
+
+# 多日 todo.md：09-03 在窗口外（today=2026-09-07 → 窗口 09-04..09-06）
+TODO_MULTI_DAY = """## 2026-09-03
+
+### 浪费
+- 证据：窗外条目；建议：x
+
+## 2026-09-04
+
+### 浪费
+- 证据：A1；建议：r1
+- 证据：A2；建议：r2
+
+### 失误
+- （当日无）
+
+### 可改进
+- 证据：A3；建议：r3
+
+## 2026-09-05
+
+### 浪费
+- 证据：B1；建议：r4
+"""
+
+
+def write_todo(proot, text: str) -> Path:
+    todo = proot / ".fenix" / "todo.md"
+    todo.write_text(text, encoding="utf-8")
+    return todo
+
+
+class TestTodoEntriesCollect:
+    """近 3 日条目收集与 ID 标注渲染。"""
+
+    def test_collect_recent_entries_window_and_ids(self, proot):
+        write_todo(proot, TODO_MULTI_DAY)
+        sched = make_scheduler(proot)
+        entries = sched._collect_recent_entries("2026-09-07")
+        by_id = {e["id"]: e for e in entries}
+        # 窗口外（09-03）排除；（当日无）排除
+        assert len(entries) == 4
+        assert by_id["2026-09-04#浪费#1"]["text"] == "证据：A1；建议：r1"
+        assert by_id["2026-09-04#浪费#2"]["text"] == "证据：A2；建议：r2"
+        assert by_id["2026-09-04#可改进#1"]["text"] == "证据：A3；建议：r3"
+        assert by_id["2026-09-05#浪费#1"]["text"] == "证据：B1；建议：r4"
+        assert all(e["date"] in {"2026-09-04", "2026-09-05", "2026-09-06"}
+                   for e in entries)
+
+    def test_collect_recent_entries_missing_file(self, proot):
+        assert make_scheduler(proot)._collect_recent_entries("2026-09-07") == []
+
+    def test_render_todo_entries(self, proot):
+        from core.self_review import render_todo_entries
+        entries = [
+            {"id": "2026-09-04#浪费#1", "date": "2026-09-04", "section": "浪费",
+             "text": "证据：A1"},
+            {"id": "2026-09-04#失误#1", "date": "2026-09-04", "section": "失误",
+             "text": "证据：A2"},
+            {"id": "2026-09-05#浪费#1", "date": "2026-09-05", "section": "浪费",
+             "text": "证据：B1"},
+        ]
+        rendered = render_todo_entries(entries)
+        assert "## 2026-09-04" in rendered and "### 浪费" in rendered
+        assert "- [2026-09-04#浪费#1] 证据：A1" in rendered
+        assert rendered.index("## 2026-09-05") > rendered.index("### 失误")
+
+    def test_render_todo_entries_empty(self, proot):
+        from core.self_review import render_todo_entries
+        assert render_todo_entries([]) == "（近3日窗口内无既有条目）"
+
+
+class TestTodoCleanup:
+    """按 resolved 清单从 todo.md 移除已闭环条目。"""
+
+    def test_remove_resolved_and_cleanup_empty_blocks(self, proot):
+        write_todo(proot, TODO_MULTI_DAY)
+        sched = make_scheduler(proot)
+        entries = sched._collect_recent_entries("2026-09-07")
+        removed = sched._remove_resolved(entries, [
+            {"id": "2026-09-04#浪费#2", "reason": "fix commit abc1234"},
+            {"id": "2026-09-05#浪费#1", "reason": "SPEC 已落地"},
+        ])
+        assert [r["id"] for r in removed] == [
+            "2026-09-04#浪费#2", "2026-09-05#浪费#1"]
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        # A2/B1 已移除
+        assert "证据：A2" not in content and "证据：B1" not in content
+        # 09-05 小节全空 → 日期节整体清理
+        assert "## 2026-09-05" not in content
+        # 其余内容保留
+        assert "证据：A1" in content and "证据：A3" in content
+        assert "### 失误" in content and "（当日无）" in content
+        # 窗口外日期节逐字保留
+        assert "## 2026-09-03" in content and "证据：窗外条目" in content
+
+    def test_remove_resolved_snapshot_mismatch_skips(self, proot):
+        write_todo(proot, TODO_MULTI_DAY)
+        sched = make_scheduler(proot)
+        entries = sched._collect_recent_entries("2026-09-07")
+        # 注入后用户经 dashboard 编辑器改写了 A1 原文 → 快照不匹配须跳过
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        content = content.replace("证据：A1；建议：r1", "证据：A1被人改过；建议：r1")
+        write_todo(proot, content)
+        removed = sched._remove_resolved(entries, [
+            {"id": "2026-09-04#浪费#1", "reason": "误判也会被快照拦下"},
+            {"id": "2026-09-04#浪费#99", "reason": "窗口内不存在的 id"},
+            {"id": "2026-09-01#浪费#1", "reason": "窗口外 id 不在注入清单"},
+            "not-a-dict",
+            {"reason": "缺 id"},
+            42,
+        ])
+        assert removed == []
+        after = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "证据：A1被人改过" in after  # 未被误删
+
+    def test_remove_resolved_preserves_preamble_notes(self, proot):
+        """日期节标题下、首个小节前的游离内容（如人工备注）不得因移除丢失。"""
+        write_todo(proot, """## 2026-09-04
+
+（人工备注：本日条目较少，仅一条）
+
+### 浪费
+- 证据：A1；建议：r1
+""")
+        sched = make_scheduler(proot)
+        entries = sched._collect_recent_entries("2026-09-05")
+        removed = sched._remove_resolved(entries, [
+            {"id": "2026-09-04#浪费#1", "reason": "fix commit abc"}])
+        assert [r["id"] for r in removed] == ["2026-09-04#浪费#1"]
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "### 浪费" not in content  # 小节清空被剔除
+        assert "## 2026-09-04" in content  # 日期节因游离内容保留
+        assert "（人工备注：本日条目较少，仅一条）" in content  # 备注逐字保留
+
+    def test_apply_todo_update_remove_then_append(self, proot):
+        write_todo(proot, TODO_MULTI_DAY)
+        sched = make_scheduler(proot)
+        entries = sched._collect_recent_entries("2026-09-07")
+        result = FakeReviewResult(
+            waste=["新W"], mistakes=["新M"], improvements=["新I"],
+            resolved=[{"id": "2026-09-04#浪费#1", "reason": "fix commit abc"}],
+        )
+        sched._apply_todo_update("2026-09-07", result, entries)
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "证据：A1" not in content  # 先移除
+        assert "## 2026-09-07" in content and "- 新W" in content  # 后追加
+        assert content.index("## 2026-09-05") < content.index("## 2026-09-07")
+
+    def test_apply_todo_update_no_resolved_keeps_history(self, proot):
+        """resolved 为空（含旧式 result 无 resolved 属性）→ 只追加不改动。"""
+        write_todo(proot, TODO_MULTI_DAY)
+        sched = make_scheduler(proot)
+        entries = sched._collect_recent_entries("2026-09-07")
+
+        class LegacyResult:  # 模拟无 resolved 属性的旧结果
+            waste, mistakes, improvements, summary = ["W"], ["M"], ["I"], "s"
+            success, error, run_id = True, "", "review-x"
+
+        sched._apply_todo_update("2026-09-07", LegacyResult(), entries)
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "证据：A1" in content and "证据：B1" in content
+        assert "## 2026-09-07" in content
+
+    def test_check_and_run_end_to_end(self, proot, monkeypatch):
+        """read_todo=true 全链路：注入 ID 条目 → resolved 生效移除 → 追加当日节。"""
+        write_todo(proot, TODO_MULTI_DAY)
+        _freeze_time(monkeypatch, datetime(2026, 9, 7, 22, 30))
+        result = FakeReviewResult(
+            waste=["新W"], mistakes=["新M"], improvements=["新I"],
+            resolved=[{"id": "2026-09-05#浪费#1", "reason": "SPEC 已落地"}],
+        )
+        runner = FakeReviewRunner(result=result)
+        sched = make_scheduler(proot, run_at="22:00", read_todo=True, runner=runner)
+        res = sched.check_and_run()
+        assert res["triggered"] is True and res["ok"] is True
+        # 注入的 ID 标注条目（第 4 参）
+        assert "[2026-09-04#浪费#1]" in runner.calls[0][3]
+        # resolved 移除生效 + 当日节追加
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "证据：B1" not in content
+        assert "## 2026-09-07" in content
+
+    def test_read_todo_off_no_removal(self, proot, monkeypatch):
+        """read_todo=false：不注入条目、resolved 不生效（行为与既往一致）。"""
+        write_todo(proot, TODO_MULTI_DAY)
+        _freeze_time(monkeypatch, datetime(2026, 9, 7, 22, 30))
+        result = FakeReviewResult(
+            waste=["W"], mistakes=["M"], improvements=["I"],
+            resolved=[{"id": "2026-09-04#浪费#1", "reason": "不应生效"}],
+        )
+        runner = FakeReviewRunner(result=result)
+        sched = make_scheduler(proot, run_at="22:00", read_todo=False, runner=runner)
+        sched.check_and_run()
+        assert runner.calls[0][3] is None
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "证据：A1" in content  # 未被移除
+
+
+class TestSelfReviewPromptEntries:
+    def _builder(self, proot):
+        from types import SimpleNamespace
+        from core.agent_runner.prompt_builder import PromptBuilder
+        return PromptBuilder(SimpleNamespace(project_root=proot))
+
+    def test_todo_entries_placeholder_rendered(self, proot):
+        prompt = self._builder(proot)._build_self_review_prompt(
+            "2026-09-04", {"daily_summary": "s", "out_path": "/tmp/o.json",
+                           "todo_entries": "MARKER-ENTRIES-XYZ"})
+        assert "MARKER-ENTRIES-XYZ" in prompt
+        assert "{todo_entries}" not in prompt
+        # 模板已宣告 resolved 输出契约（闭环判定任务）
+        assert "resolved" in prompt
+
+    def test_todo_entries_default_when_absent(self, proot):
+        prompt = self._builder(proot)._build_self_review_prompt(
+            "2026-09-04", {"daily_summary": "s", "out_path": "/tmp/o.json"})
+        assert "（近3日窗口内无既有条目）" in prompt
+
+
+class TestSummaryGitCommits:
+    """数据摘要第 5 源：近 3 日 git 提交（闭环判定证据）。"""
+
+    def test_daily_summary_includes_recent_commits(self, tmp_path):
+        proot = tmp_path / "repo"
+        (proot / ".fenix").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(proot)], check=True)
+        subprocess.run(["git", "-C", str(proot), "config", "user.email", "t@t.co"],
+                       check=True)
+        subprocess.run(["git", "-C", str(proot), "config", "user.name", "test"],
+                       check=True)
+        (proot / "f.txt").write_text("x", encoding="utf-8")
+        subprocess.run(["git", "-C", str(proot), "add", "f.txt"], check=True)
+        subprocess.run(["git", "-C", str(proot), "commit", "-qm", "fix: 闭环修复提交"],
+                       check=True)
+        summary = make_scheduler(proot).collect_daily_summary("2026-09-04")
+        assert "## 5. 近 3 日 git 提交" in summary
+        assert "fix: 闭环修复提交" in summary
+
+    def test_daily_summary_git_unavailable_degrades(self, proot):
+        # 非 git 目录 → 降级提示，不阻断摘要
+        summary = make_scheduler(proot).collect_daily_summary("2026-09-04")
+        assert "## 5. 近 3 日 git 提交" in summary
+        assert "（git log 读取失败）" in summary

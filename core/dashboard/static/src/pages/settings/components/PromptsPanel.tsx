@@ -147,8 +147,8 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
               type="warning"
               showIcon
               data-testid="prompts-selfref-alert"
-              message="本项目为 fenixd 自身：.fenix 与框架根重合，项目级提示词即通用层 agents/"
-              description="为防止经项目通道修改不可修改的通用提示词，项目级编辑已禁用。通用提示词的演进请走 SPEC 流程。"
+              message="本项目为 fenixd 自身（项目根即框架根）：agent 提示词即通用层本体，无项目级附加层"
+              description="项目级附加提示词对本项目无效（运行时跳过读取，写入即死文件），且框架自身提示词的演进走 SPEC 流程。项目级编辑已禁用。"
             />
           ) : (
             <>

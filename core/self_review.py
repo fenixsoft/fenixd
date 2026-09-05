@@ -2,8 +2,9 @@
 
 每晚本地时间 ``admin.self_review.run_at``（缺省 02:00）后，由 Administrator
 通道执行一次当日工作回顾：聚合当日数据摘要（STATE 终态 / runs 统计 /
-admin 告警与处置 / 日志 ERROR 四源）→ 发起 ``self-review`` run → 追加写入
-项目 ``.fenix/todo.md`` → 单文件 commit + push。
+admin 告警与处置 / 日志 ERROR / 近 3 日 git 提交五源）→ 发起 ``self-review``
+run → 按 resolved 移除已闭环历史条目 + 追加写入项目 ``.fenix/todo.md``
+→ 单文件 commit + push。
 
 调度判定挂在 admin_monitor 巡检循环（design D1，不新增线程/定时器）：
 每轮巡检检查「enabled && 本地时间 ≥ run_at && 状态文件 last_run_date <
@@ -19,9 +20,9 @@ spec/changes 条目、注册 STATE.md 条目或派发任何 agent——产出仅
 import json
 import re
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.config import SELF_REVIEW_DEFAULT_RUN_AT
 
@@ -31,6 +32,17 @@ STATE_FILE = "self_review_state.json"
 # review 输出实例文件前缀：每 run 独立 .fenix/self_review_out-<run_id>.json，
 # 与 admin_disposition-<run_id>.json 同模式（并行实例互不覆盖）。
 REVIEW_OUT_PREFIX = "self_review_out-"
+
+# 闭环移除窗口（自省启动时处理「前面 3 天」的记录）：只收集/移除运行日
+# D-1..D-3 的条目，更早的历史日期节保留不动。模块常量而非配置键。
+CLEANUP_WINDOW_DAYS = 3
+
+# todo.md 结构标题正则：## YYYY-MM-DD 日期节 / ### 小节。
+_TODO_DATE_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2})\s*$")
+_TODO_SECTION_RE = re.compile(r"^### (.+?)\s*$")
+
+# 空小节占位（_append_todo 写入）；收集闭环判定条目时排除。
+_EMPTY_MARKER = "（当日无）"
 
 # 秒挂（instant-hang）签名：错误文本命中即归类为秒挂（claude 启动即死）。
 _INSTANT_FAIL_PATTERNS = (
@@ -183,6 +195,50 @@ def collect_log_errors(project_root, date_str: str, limit: int = 20) -> Dict[str
     return {"error_count": len(errors), "samples": samples}
 
 
+def parse_todo_blocks(text: str) -> Tuple[List[str], List[Tuple[str, List[str]]]]:
+    """todo.md 全文 → (前置行, [(日期, 节体行), ...])。
+
+    日期节以 ``## YYYY-MM-DD`` 起，节体不含该标题行；非日期的 ``##`` 行
+    原样并入所在块（或首个日期节之前的前置区），保证重组时逐字保留。
+    条目收集与闭环移除共用同一解析口径。
+    """
+    preamble: List[str] = []
+    blocks: List[Tuple[str, List[str]]] = []
+    cur_date: Optional[str] = None
+    cur_lines: List[str] = []
+    for line in text.splitlines():
+        m = _TODO_DATE_RE.match(line)
+        if m:
+            if cur_date is not None:
+                blocks.append((cur_date, cur_lines))
+            cur_date, cur_lines = m.group(1), []
+        elif cur_date is None:
+            preamble.append(line)
+        else:
+            cur_lines.append(line)
+    if cur_date is not None:
+        blocks.append((cur_date, cur_lines))
+    return preamble, blocks
+
+
+def render_todo_entries(entries: List[Dict[str, str]]) -> str:
+    """把闭环判定条目渲染为 ID 标注清单（注入 self-review prompt 用）。"""
+    if not entries:
+        return "（近3日窗口内无既有条目）"
+    lines: List[str] = []
+    last_date: Optional[str] = None
+    last_section: Optional[str] = None
+    for e in entries:
+        if e["date"] != last_date:
+            lines.append(f"## {e['date']}")
+            last_date, last_section = e["date"], None
+        if e["section"] != last_section:
+            lines.append(f"### {e['section']}")
+            last_section = e["section"]
+        lines.append(f"- [{e['id']}] {e['text']}")
+    return "\n".join(lines)
+
+
 class SelfReviewScheduler:
     """每日自省调度器：调度判定 + 数据聚合 + todo.md 产物 + 自动提交。
 
@@ -239,10 +295,18 @@ class SelfReviewScheduler:
             return {"triggered": True, "ok": False, "reason": "no_runner", "date": today}
 
         daily_summary = self.collect_daily_summary(today)
-        todo_md = self._read_todo() if sr.get("read_todo") else None
+        # 闭环判定条目（read_todo=true 时收集窗口内既有条目并 ID 标注注入）
+        cleanup_entries: List[Dict[str, str]] = []
+        todo_md = None
+        todo_entries = None
+        if sr.get("read_todo"):
+            todo_md = self._read_todo()
+            cleanup_entries = self._collect_recent_entries(today)
+            todo_entries = render_todo_entries(cleanup_entries)
 
         try:
-            result = self.agent_runner.run_self_review(today, daily_summary, todo_md)
+            result = self.agent_runner.run_self_review(
+                today, daily_summary, todo_md, todo_entries)
         except Exception as e:
             self._record_failure_alert(f"{today}: run_self_review 异常: {e}")
             self._save_state(today)
@@ -257,7 +321,7 @@ class SelfReviewScheduler:
                     "date": today, "run_id": result.run_id}
 
         try:
-            written = self._append_todo(today, result)
+            written = self._apply_todo_update(today, result, cleanup_entries)
         except Exception as e:
             self._record_failure_alert(f"{today}: todo.md 追加失败: {e}")
             self._save_state(today)
@@ -277,7 +341,8 @@ class SelfReviewScheduler:
     # ── 四源数据摘要（spec 场景锁定数据源清单） ───────────────
 
     def collect_daily_summary(self, date_str: str) -> str:
-        """聚合当日数据摘要：STATE 终态 / runs 统计 / admin 告警与处置 / 日志 ERROR。
+        """聚合当日数据摘要：STATE 终态 / runs 统计 / admin 告警与处置 / 日志
+        ERROR / 近 3 日 git 提交五源。
 
         输出 markdown 文本块，作为自省 prompt 的「当日数据摘要」注入（与人工
         复盘同源）。任一源读取失败降级为空段（不阻断自省）。
@@ -323,6 +388,11 @@ class SelfReviewScheduler:
             lines.append("- （当日无 ERROR）")
         lines.append("")
 
+        # 5. 近 3 日 git 提交（闭环判定硬证据：问题是否已有对应修复落地）
+        lines.append("## 5. 近 3 日 git 提交")
+        lines.extend(self._collect_recent_commits())
+        lines.append("")
+
         return "\n".join(lines)
 
     def _collect_state_distribution(self) -> Dict[str, int]:
@@ -366,6 +436,29 @@ class SelfReviewScheduler:
             return ["- （当日无 admin 记录）"]
         return lines
 
+    def _collect_recent_commits(self, days: int = CLEANUP_WINDOW_DAYS,
+                                limit: int = 100) -> List[str]:
+        """近 N 日 git 提交清单（hash + 本地时间 + 标题），闭环判定的硬证据源。
+
+        非 git 目录 / 无提交 / 命令失败均降级为占位行，不阻断自省。
+        """
+        since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d 00:00:00")
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(self.project_root), "log",
+                 f"--since={since}", "-n", str(limit),
+                 "--pretty=%h %ad %s", "--date=format-local:%m-%d %H:%M"],
+                capture_output=True, text=True, timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return [f"- （git log 读取失败）"]
+        if proc.returncode != 0:
+            return [f"- （git log 读取失败）"]
+        commits = [l.strip() for l in proc.stdout.splitlines() if l.strip()]
+        if not commits:
+            return [f"- （近 {days} 日无提交）"]
+        return [f"- {c}" for c in commits]
+
     def _read_todo(self) -> Optional[str]:
         """读取 .fenix/todo.md 全文（read_todo=true 时注入 prompt 用）。"""
         todo = self.project_root / ".fenix" / "todo.md"
@@ -375,6 +468,154 @@ class SelfReviewScheduler:
             return todo.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return None
+
+    # ── 闭环移除（自省启动时处理前 CLEANUP_WINDOW_DAYS 天记录） ──
+
+    def _collect_recent_entries(self, today: str) -> List[Dict[str, str]]:
+        """收集运行日前 CLEANUP_WINDOW_DAYS 天窗口内的既有条目（闭环判定对象）。
+
+        返回 ``[{id, date, section, text}]``：id 形如 ``2026-09-04#失误#2``
+        （日期#小节#节内序号），text 为条目原文快照（去除 ``- `` 前缀后
+        strip）——移除时按 (日期, 小节, 原文) 三元组匹配，防运行期间文件被
+        并发编辑（如 dashboard /api/todo）后按序号错删。「（当日无）」占位
+        与窗口外日期节不收集。
+        """
+        todo = self.project_root / ".fenix" / "todo.md"
+        if not todo.is_file():
+            return []
+        try:
+            text = todo.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        base = datetime.strptime(today, "%Y-%m-%d").date()
+        window = {
+            (base - timedelta(days=k)).isoformat()
+            for k in range(1, CLEANUP_WINDOW_DAYS + 1)
+        }
+        _preamble, blocks = parse_todo_blocks(text)
+        entries: List[Dict[str, str]] = []
+        for date, body in blocks:
+            if date not in window:
+                continue
+            section: Optional[str] = None
+            counters: Dict[str, int] = {}
+            for line in body:
+                m = _TODO_SECTION_RE.match(line)
+                if m:
+                    section = m.group(1)
+                    continue
+                if section is None or not line.startswith("- "):
+                    continue
+                item = line[2:].strip()
+                if not item or item == _EMPTY_MARKER:
+                    continue
+                counters[section] = counters.get(section, 0) + 1
+                entries.append({
+                    "id": f"{date}#{section}#{counters[section]}",
+                    "date": date, "section": section, "text": item,
+                })
+        return entries
+
+    def _remove_resolved(self, entries: List[Dict[str, str]],
+                         resolved: list) -> List[Dict[str, str]]:
+        """按 resolved 清单从 todo.md 移除已闭环条目；返回实际移除清单。
+
+        只处理注入清单（entries）内的 id；命中条件为 (日期, 小节, 原文快照)
+        逐字一致——不一致（运行期间文件被并发编辑）跳过该条并记 WARNING，
+        绝不按序号盲删。条目移除后空小节剔除，小节全空的日期节整体剔除；
+        未涉及的日期节逐字保留（涉及块按机器格式规范化重渲染）。
+        """
+        todo = self.project_root / ".fenix" / "todo.md"
+        if not todo.is_file() or not resolved or not entries:
+            return []
+        by_id = {e["id"]: e for e in entries}
+        targets: Dict[str, str] = {}  # id -> reason（畸形/未知 id 忽略）
+        for item in resolved:
+            if (isinstance(item, dict) and isinstance(item.get("id"), str)
+                    and item["id"] in by_id):
+                targets[item["id"]] = str(item.get("reason") or "")
+        if not targets:
+            return []
+        try:
+            text = todo.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            self.logger.warning("self_review", f"闭环移除读取 todo.md 失败: {e}")
+            return []
+        match_key = {
+            (e["date"], e["section"], e["text"]): eid
+            for eid, e in by_id.items() if eid in targets
+        }
+        target_dates = {by_id[eid]["date"] for eid in targets}
+        preamble, blocks = parse_todo_blocks(text)
+        matched_ids: set = set()
+        new_blocks: List[Tuple[str, List[str]]] = []
+        for date, body in blocks:
+            if date not in target_dates:
+                new_blocks.append((date, body))  # 未涉及 → 逐字保留
+                continue
+            sections: List[Dict[str, Any]] = []
+            cur: Optional[Dict[str, Any]] = None
+            head: List[str] = []
+            tail: List[str] = []
+            for line in body:
+                m = _TODO_SECTION_RE.match(line)
+                if m:
+                    cur = {"title": m.group(1), "bullets": []}
+                    sections.append(cur)
+                    continue
+                if cur is None:
+                    head.append(line)  # 日期节标题下的游离内容（备注等）保留
+                    continue
+                if line.startswith("- "):
+                    item = line[2:].strip()
+                    eid = match_key.get((date, cur["title"], item))
+                    if eid and eid not in matched_ids:
+                        matched_ids.add(eid)
+                        continue  # 命中快照 → 删除该行
+                    cur["bullets"].append(item)
+                    continue
+                tail.append(line)
+            kept = [s for s in sections if s["bullets"]]
+            if not kept and not any(l.strip() for l in head + tail):
+                continue  # 小节全空且无游离内容 → 日期节整体剔除
+            out: List[str] = []
+            out.extend(head)
+            for s in kept:
+                out.append(f"### {s['title']}")
+                out.extend(f"- {b}" for b in s["bullets"])
+                out.append("")
+            out.extend(tail)
+            new_blocks.append((date, out))
+        skipped = [eid for eid in sorted(targets) if eid not in matched_ids]
+        if skipped:
+            self.logger.warning(
+                "self_review",
+                f"闭环移除跳过 {len(skipped)} 条（快照不匹配或日期节已不存在）: "
+                + ", ".join(skipped))
+        if not matched_ids:
+            return []  # 无实际移除 → 文件不动
+        parts: List[str] = []
+        if any(l.strip() for l in preamble):
+            parts.append("\n".join(preamble).strip("\n"))
+        for date, body in new_blocks:
+            parts.append(f"## {date}\n\n" + "\n".join(body).strip("\n"))
+        try:
+            todo.write_text("\n\n".join(parts) + "\n", encoding="utf-8")
+        except OSError as e:
+            self.logger.warning("self_review", f"闭环移除写回 todo.md 失败: {e}")
+            return []
+        return [{"id": eid, "reason": targets[eid]} for eid in sorted(matched_ids)]
+
+    def _apply_todo_update(self, today: str, result,
+                           entries: List[Dict[str, str]]) -> Path:
+        """闭环移除 + 结构化追加（同一次执行，同一 commit 内留痕）。"""
+        resolved = getattr(result, "resolved", None) or []
+        removed = self._remove_resolved(entries, resolved)
+        if removed:
+            detail = "；".join(f"{r['id']}（{r['reason'][:60]}）" for r in removed)
+            self.logger.info(
+                "self_review", f"闭环移除 {len(removed)} 条: {detail}")
+        return self._append_todo(today, result)
 
     # ── todo.md 结构化追加（spec「todo.md 结构化追加」） ────────
 
