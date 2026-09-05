@@ -10,16 +10,24 @@ v2_dev_server.py — per-run 隔离测试服务生命周期管理（add-worktree
 遗留进程清扫（daemon 启动时）。dev-server.mjs 自身实现见 tests/v2/dev-server.mjs。
 """
 
+import os
+import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
+
+from core.proc_utils import find_free_port, is_claude_process
 
 # ── 端口分配（design D3）──────────────────────────────────────────────
 # 确定性端口段：V2_TEST_PORT_BASE 起、连续 V2_TEST_PORT_RANGE 个高位端口。
 # 主服务 8787 与常见服务不在该段内；并发运行（并行度 2，预留余量取 20）不冲突。
 V2_TEST_PORT_BASE = 19000
 V2_TEST_PORT_RANGE = 20
+
+# dev-server 孤儿自灭轮询间隔（秒）：与 tests/v2/dev-server.mjs 的 ppid 绑定
+# 轮询间隔对齐（design D3），供测试/日志引用同一语义值。
+PPID_POLL_INTERVAL = 2
 
 # 子进程命令行标记（D2 清扫依据）：daemon 重启时扫 pgrep 该字面量识别遗留 dev-server。
 V2_DEV_SERVER_MARKER = "fenix-v2-dev-server"
@@ -48,11 +56,17 @@ def _node_bin() -> str:
 
 
 def _port_in_use(port: int, host: str = "127.0.0.1") -> bool:
-    """TCP 探测端口是否可监听（被占用则 listen 失败）。"""
+    """TCP 探测端口是否可监听（被占用则 listen 失败）。
+
+    design D5：bind 前设置 SO_REUSEADDR，消除 TIME_WAIT 状态（对端关闭后
+    残留等待复用的半开连接）造成的假性占用——否则短轮换的后端会把刚关的
+    端口误判为被占、确定性端口段在事故后持续空转。
+    """
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(0.3)
     try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((host, port))
         return False
     except OSError:
@@ -63,17 +77,22 @@ def _port_in_use(port: int, host: str = "127.0.0.1") -> bool:
 
 def allocate_port(run_seq: int,
                   used_ports: Optional[set] = None,
-                  max_retries: int = V2_TEST_PORT_RANGE) -> int:
+                  max_retries: int = V2_TEST_PORT_RANGE,
+                  logger=None) -> int:
     """按确定性策略分配一个空闲端口（design D3）。
 
     Args:
         run_seq: 运行序号（单调递增），决定首选端口；并发运行传入不同序号自然分散。
         used_ports: 本进程已分配、尚在使用的端口集合（避免同 daemon 内重复分配）。
         max_retries: 冲突时向后尝试的最大端口数（默认覆盖整个端口段）。
+        logger: 可选日志器（含 info/warning/error）。
 
     Returns: 空闲端口号。
 
-    Raises: V2DevServerError: 整段端口均被占用。
+    design D5：端口段（19000-19019）全部被真实 listener 占满时**不再抛
+    V2DevServerError 终止验证**，改为回退系统临时端口（find_free_port）并
+    WARNING 留痕。宁用随机端口也绝不静默回退 8787 主树常驻实例——那是
+    09-05 已实证的「旧码污染验证」形态。
     """
     used_ports = used_ports or set()
     for offset in range(max_retries):
@@ -83,10 +102,16 @@ def allocate_port(run_seq: int,
         if _port_in_use(port):
             continue
         return port
-    raise V2DevServerError(
-        f"V2 test port exhausted: base={V2_TEST_PORT_BASE} "
-        f"range={V2_TEST_PORT_RANGE}, used={sorted(used_ports)}"
-    )
+    fallback = find_free_port()
+    if logger:
+        logger.warning(
+            "v2_dev_server",
+            f"V2 test port segment exhausted: base={V2_TEST_PORT_BASE} "
+            f"range={V2_TEST_PORT_RANGE}, used={sorted(used_ports)} — "
+            f"falling back to ephemeral port {fallback}. "
+            f"既有拦截性回退已封死（绝不回退主树 8787）",
+        )
+    return fallback
 
 
 def start(wt_path: Path, run_seq: int,
@@ -114,7 +139,9 @@ def start(wt_path: Path, run_seq: int,
             )
 
     try:
-        port = allocate_port(run_seq, used_ports)
+        # design D5：allocate_port 不再抛 V2DevServerError（耗尽回退临时端口）；
+        # 保留防御性捕获，覆盖未来新增异常形态。
+        port = allocate_port(run_seq, used_ports, logger=logger)
     except V2DevServerError as e:
         if logger:
             logger.error("v2_dev_server", f"port allocation failed: {e}")
@@ -141,11 +168,14 @@ def start(wt_path: Path, run_seq: int,
             getattr(logger, level)("v2_dev_server", msg)
 
     try:
+        # design D2（进程组杀树）：start_new_session=True 使 dev-server 独立进程组
+        # （setsid），停止时 killpg 杀整棵进程树，杜绝「只杀 shell 不杀孙进程」。
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,
+            start_new_session=True,
             # 标记写入 argv[0] 不可靠；用 cwd + marker 文件不便，改由 pgrep 匹配
             # 完整 cmdline（含 "fenix-v2-dev-server" 字面量）。见 cleanup_orphans。
         )
@@ -186,17 +216,57 @@ def _wait_ready(port: int, timeout: float = 5.0, logger=None) -> bool:
 
 
 def _kill(proc: subprocess.Popen) -> None:
-    """终止 dev-server 子进程（SIGTERM→短暂等待→SIGKILL 兜底）。"""
+    """终止 dev-server 子进程（进程组 SIGTERM→等待→SIGKILL→单进程兜底）。
+
+    design D2（进程组杀树）：dev-server spawn 于独立进程组（start_new_session），
+    停止按 killpg 终止整棵进程树——shell/npm 包装形态下孙进程一并终止，杜绝
+    「只杀 shell 不杀孙进程」。全程 try/except 包裹：进程恰好死亡引发
+    ProcessLookupError 时按已终止处理（竞态安全）。
+    """
     if proc.poll() is not None:
         return
-    proc.terminate()
+    pid = proc.pid
     try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+        pgid = os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        pgid = None
+    # 1) 进程组 SIGTERM → 等待退出
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
         try:
             proc.wait(timeout=5)
+            return
         except subprocess.TimeoutExpired:
+            pass
+        except OSError:
+            return
+    # 2) 进程组 SIGKILL → 等待退出（宽限期后仍无响应的残留强制终止）
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            proc.wait(timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        except OSError:
+            return
+    # 3) 单进程兜底（进程组判定失败或极端未退净）
+    if proc.poll() is None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        except OSError:
             pass
 
 
@@ -247,9 +317,14 @@ def _dev_server_worktree_root(tokens: list) -> Optional[Path]:
     """从 dev-server argv 解析其归属 worktree 根；不携带 worktree 路径返回 None。
 
     argv 形如 ``[node, dev-server.mjs, <wt>/core/dashboard/static, <port>, ...]``。
+    以静态根 token（含 ``/core/dashboard/static`` 尾缀）为**权威归属**：脚本自身
+    路径在框架运行于 worktree 内时（本仓库以 worktree 为开发态时）同样含
+    ``/worktrees/``，若按首个命中会误把脚本路径解析为归属 worktree。
     """
     for t in tokens:
-        if not t.startswith("/") or "/worktrees/" not in t:
+        if not t.startswith("/") or "/core/dashboard/static" not in t:
+            continue
+        if "/worktrees/" not in t:
             continue
         prefix, rest = t.split("/worktrees/", 1)
         wt_name = rest.split("/", 1)[0]
@@ -259,10 +334,14 @@ def _dev_server_worktree_root(tokens: list) -> Optional[Path]:
 
 
 def _worktree_has_live_referencing_process(wt_root: Path, exclude_pid: int) -> bool:
-    """进程表中是否存在（除 dev-server 自身外）引用该 worktree 的进程。
+    """进程表中是否存在（除 dev-server 自身外）引用该 worktree 的**存活 claude 进程**。
 
     attempt 的 claude 进程经 --add-dir 引用 worktree 目录；dev-server 自身
     cmdline 也含该路径，需排除，否则永远「存活」。
+
+    design D4（豁免过滤修复）：有效豁免**必须**以 claude 进程为锚——否则同一
+    worktree 的两个孤儿 dev-server 互为"存活引用"互相豁免、永不清扫（09-04/05
+    事故根因之一）。与 worktree_manager._worktree_has_live_process 同判定。
     """
     try:
         res = subprocess.run(
@@ -273,7 +352,11 @@ def _worktree_has_live_referencing_process(wt_root: Path, exclude_pid: int) -> b
         return False
     if res.returncode != 0 or not res.stdout.strip():
         return False
-    return any(int(s) != exclude_pid for s in res.stdout.split() if s.strip().isdigit())
+    return any(
+        int(s) != exclude_pid and is_claude_process(s)
+        for s in res.stdout.split()
+        if s.strip().isdigit()
+    )
 
 
 def _dev_server_orphan_pids() -> list:

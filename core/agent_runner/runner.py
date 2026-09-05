@@ -998,7 +998,44 @@ class AgentRunner:
         （调度层解析好的实现分支载体 worktree）与 ``conflict_summary``
         （prompt 注入）。pre_wt_path 非 None 时**不创建新 worktree**，
         直接在该 worktree 内工作——repair 原地修复语义。
+
+        verify-process-lifecycle（D1/D2 终态收割）：运行作用域维护 used_wts
+        （本 run 创建/复用的 wt_path）与 handed_off（deliberate keep 集合——
+        fast-track/repair 延迟分支、keep_for_reuse、取消 keep）。任意终态
+        （成功/失败/取消/frozen 早退/chain_exhausted/熔断拦截/日限 raise/未预期
+        异常）由本方法 finally 对 ``used_wts - handed_off`` 且仍在注册表的条目
+        执行收割（_v2_stop_for_worktree + _kill_worktree_strays，幂等，双调无害）。
         """
+        used_wts: set = set()
+        handed_off: set = set()
+        try:
+            return self._execute_agent_inner(
+                spec_name, agent_type, run_id,
+                pre_wt_path=pre_wt_path, conflict_summary=conflict_summary,
+                used_wts=used_wts, handed_off=handed_off,
+            )
+        finally:
+            try:
+                self._v2_harvest_used_worktrees(used_wts, handed_off)
+            except Exception as e:
+                self.logger.warning(
+                    "agent_runner", f"终态收割异常（不阻断结果返回）: {e}")
+
+    def _execute_agent_inner(self, spec_name: str, agent_type: str, run_id: str,
+                             pre_wt_path: Path | None = None,
+                             conflict_summary: dict | None = None,
+                             used_wts: set = None,
+                             handed_off: set = None) -> AgentRunResult:
+        """派发循环主体（verify-process-lifecycle）：维护收割集合并返回结果。
+
+        收割义务由外层 _execute_agent 的 try/finally 承担；本层仅登记
+        used_wts（本 run 创建/复用的 wt_path）与 handed_off（有意交接集合），
+        不自行清理——任意终态漏网（异常/早退）都回到外层 finally 收口。
+        """
+        if used_wts is None:
+            used_wts = set()
+        if handed_off is None:
+            handed_off = set()
         max_retries = self._get_config("agents.max_retries", 3)
         start_time = time.time()
         wt_path = pre_wt_path
@@ -1054,9 +1091,12 @@ class AgentRunner:
                     if agent_type == "fast-track":
                         self.worktree_manager.keep_for_reuse(spec_name, wt_path)
                         kept_wt_path = wt_path
+                        # 取消 keep：目录+分支有意保留供下轮复用，不参与终态收割
+                        handed_off.add(wt_path)
                     elif agent_type == "repair":
                         # 终态失败保留现场：dispatch 层负责回收（fallback 清理）
                         kept_wt_path = wt_path
+                        handed_off.add(wt_path)
                     else:
                         self.worktree_manager.cleanup(wt_path, success=False)
                 self._cancel_clear(run_id)
@@ -1203,6 +1243,9 @@ class AgentRunner:
                         success=False, duration_seconds=time.time() - start_time,
                         error=error_msg, provider_used=provider_name, model_used=model,
                     )
+                # verify-process-lifecycle（D1）：登记本 run 使用的 worktree，
+                # 供外层 finally 对未交接集合执行终态收割。
+                used_wts.add(wt_path)
                 # add-worktree-test-server（D2 派发前启动）：worktree 创建成功后立即
                 # 为其启动专属 dev-server，供本次 attempt 的测试请求命中 worktree 副本。
                 self._v2_launch_for_worktree(wt_path)
@@ -1211,6 +1254,7 @@ class AgentRunner:
                     "agent_runner",
                     f"Reusing worktree {wt_path} for '{spec_name}' (attempt {attempt}, resume)",
                 )
+                used_wts.add(wt_path)
                 if agent_type == "fast-track":
                     # 跨 attempt 复用同一 worktree：补记继承痕迹（prompt 注入用）
                     self.worktree_manager.mark_reused(
@@ -1403,7 +1447,9 @@ class AgentRunner:
                 # 成功不清理 worktree——冲突解决成果仍在分支上，交给 dispatch
                 # 层的 re-merge-back 决定终态；多轮 repair 需原地复用现场。
                 if agent_type in ("fast-track", "repair"):
-                    pass  # 延迟清理：worktree 与 dev-server 均由 dispatch 层处置
+                    # 延迟清理：worktree 与 dev-server 均由 dispatch 层处置；
+                    # 有意交接 → 不参与本 run 终态收割
+                    handed_off.add(wt_path)
                 else:
                     self._v2_stop_for_worktree(wt_path)
                     # 成功：清理 worktree（保留分支供 merge-back），返回结果
@@ -1460,9 +1506,13 @@ class AgentRunner:
                     if agent_type == "fast-track":
                         self.worktree_manager.keep_for_reuse(spec_name, wt_path)
                         kept_wt_path = wt_path
+                        # 终态失败保留复用遗产：下轮在同一 worktree 继承成果，
+                        # 目录+分支有意保留 → 不参与终态收割（dev-server 已停）
+                        handed_off.add(wt_path)
                     elif agent_type == "repair":
                         # 终态失败保留现场：dispatch 层负责回收（fallback 清理）
                         kept_wt_path = wt_path
+                        handed_off.add(wt_path)
                     else:
                         self.worktree_manager.cleanup(wt_path, success=False)
                     wt_path = None
@@ -2274,6 +2324,30 @@ class AgentRunner:
 
     def _v2_stop_for_worktree(self, wt_path: Path) -> None:
         return self._v2_server._v2_stop_for_worktree(wt_path)
+
+    def _v2_harvest_used_worktrees(self, used_wts: set, handed_off: set) -> None:
+        """终态收割（verify-process-lifecycle D1/D2）：对未交接 worktree 回收。
+
+        对 ``used_wts - handed_off`` 的每个 worktree：停止其 dev-server 注册
+        条目（幂等——条目已不存在/进程已死时安全空转）并扫杀 worktree 游离
+        进程（claude 豁免，不误伤在跑 attempt）。一处 closing 覆盖 frozen 早退、
+        chain_exhausted、熔断拦截、日限 raise、取消、任意异常的漏网终态；
+        与 dispatch 层 worker 兜底双调无害。
+        """
+        targets = sorted(set(used_wts) - set(handed_off))
+        for wt in targets:
+            if not wt:
+                continue
+            try:
+                self._v2_stop_for_worktree(Path(wt))
+            except Exception as e:
+                self.logger.warning(
+                    "agent_runner", f"终态收割 V2 stop 失败 {wt}: {e}")
+            try:
+                self.worktree_manager._kill_worktree_strays(Path(wt).name)
+            except Exception as e:
+                self.logger.warning(
+                    "agent_runner", f"终态收割 strays 清扫失败 {wt}: {e}")
 
     def _v2_stop_all(self) -> None:
         return self._v2_server._v2_stop_all()

@@ -39,11 +39,23 @@ class V2ServerManager:
     def _v2_launch_for_worktree(self, wt_path: Path) -> None:
         """为某 worktree 启动专属 dev-server 并登记（D2 派发前启动）。
 
+        verify-process-lifecycle（D7 幂等 ensure）：worktree 已有**存活**注册
+        条目时不重复启动（幂等）；条目缺失或进程已死时一律补启——修复 repair
+        复用载体轮（runner 仅 create 分支启动 dev-server）无注册条目、
+        `_v2_inject_env` 返回空、测试静默打主树 8787 的伴生缺陷。
+
         失败（端口耗尽/启动未就绪）记 WARNING 但**不阻断派发**：测试回退到
         PLAYWRIGHT/默认 8787（config/baseURL 缺省值），仅失去 worktree 隔离——
         比让整条 spec 失败更优。登记成功才写入 _v2_servers，供终态回收。
         """
         self._v2_ensure_state()
+        entry = self._v2_servers.get(str(wt_path))
+        if entry is not None and entry[1].poll() is None:
+            # 存活实例在册：幂等 ensure，不重复启动（同 worktree 双实例互斥）
+            return
+        if entry is not None:
+            # 条目陈旧（进程已死）：释放其端口记账，避免 used_ports 假性占用
+            self._v2_used_ports.discard(entry[0])
         try:
             self._v2_run_seq += 1
             port, proc = v2_start_dev_server(

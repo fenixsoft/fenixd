@@ -14,21 +14,11 @@ import time
 from pathlib import Path
 from typing import Optional, Set, Dict
 
+from core.proc_utils import is_claude_process
 
-def _is_claude_process(pid_str: str) -> bool:
-    """进程 argv[0] 是否为 claude agent 可执行文件（basename claude / claude.exe）。
-
-    存活判定与残留清扫都以「agent 进程」为锚：implementer 起的测试子进程
-    （v2 dev-server 等）cmdline 同样携带 worktree 路径，若按路径匹配会把
-    agent 退出后的永生孤儿误判为持锁者（add-fast-track-mode 派发死锁，
-    2026-09-02）。
-    """
-    try:
-        with open(f"/proc/{pid_str}/cmdline", "rb") as f:
-            argv0 = f.read().split(b"\0", 1)[0]
-        return os.path.basename(argv0.decode("utf-8", "replace")) in ("claude", "claude.exe")
-    except (OSError, IndexError):
-        return False
+# 历史导入路径兼容（verify-process-lifecycle D4：判定上移至 core.proc_utils，
+# 避免 v2_dev_server 等模块 import 本模块造成循环依赖）。
+_is_claude_process = is_claude_process
 
 # ── 锁治理（improve-run-lifecycle-governance D4）─────────────────────────────
 # 锁是内存集合 _spec_locks，daemon 重启即丢失；同时 attempt/resume 的孤儿子进程
@@ -1173,42 +1163,82 @@ class WorktreeManager:
         )
 
     def _kill_worktree_strays(self, wt_name: str) -> list:
-        """杀掉 cmdline 引用该 worktree 的非 agent 残留进程，返回被杀 PID。
+        """杀掉 cmdline 或 cwd 引用该 worktree 的非 agent 残留进程，返回被杀 PID。
 
         agent 收工后其测试子进程（v2 dev-server 等）可能残留为 PPID=1 孤儿：
         cmdline 仍含 worktree 路径且永不退出，既让 worktree 目录删不干净，
         也曾借存活检测把派发锁永久骗走。claude agent 进程不在清扫范围
-        （防误杀在跑的 attempt）；pgrep 不可用时静默返回空。
+        （防误杀在跑的 attempt）。
+
+        verify-process-lifecycle（D8 能力升级）：
+        - cmdline 匹配外增加 ``/proc/<pid>/cwd`` readlink 归属匹配——覆盖 argv
+          不含 worktree 路径的进程（如 agent 经 Bash 起的 ``npm run dev``，
+          argv 是 shell 而 cwd 在 worktree 内）；
+        - SIGTERM 后短等待（宽限期），无响应进程补 SIGKILL 兜底，不残留。
         """
-        killed = []
-        try:
-            res = subprocess.run(
-                ["pgrep", "-f", f"worktrees/{wt_name}"],
-                capture_output=True, text=True, timeout=5,
-            )
-        except (subprocess.SubprocessError, OSError):
-            return killed
-        if res.returncode != 0:
-            return killed
         me = os.getpid()
-        for pid_str in res.stdout.split():
-            try:
+        token = f"worktrees/{wt_name}"
+        candidates: list = []
+        try:
+            for pid_str in os.listdir("/proc"):
+                if not pid_str.isdigit():
+                    continue
                 pid = int(pid_str)
-            except ValueError:
-                continue
-            if pid == me or _is_claude_process(pid_str):
-                continue
+                if pid == me or _is_claude_process(pid_str):
+                    continue
+                proc_dir = Path("/proc") / pid_str
+                # cmdline 匹配（既有判定）
+                try:
+                    argv = (proc_dir / "cmdline").read_bytes().split(b"\0")
+                    argv_text = " ".join(
+                        a.decode("utf-8", "replace") for a in argv if a)
+                except OSError:
+                    argv_text = ""
+                # cwd readlink 归属匹配（覆盖 argv 无路径的 Bash 包装进程）
+                try:
+                    cwd = os.readlink(f"/proc/{pid_str}/cwd")
+                except OSError:
+                    cwd = ""
+                if token in argv_text or token in cwd:
+                    candidates.append(pid)
+        except OSError:
+            return []
+        killed = []
+        for pid in candidates:
             try:
                 os.kill(pid, signal.SIGTERM)
                 killed.append(pid)
             except OSError:
                 continue
         if killed:
+            # SIGTERM 宽限期（~2s）：仍存活者 SIGKILL 兜底（D8）
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                alive = [p for p in killed if self._pid_alive(p)]
+                if not alive:
+                    break
+                time.sleep(0.2)
+            for pid in killed:
+                if self._pid_alive(pid):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except OSError:
+                        continue
+        if killed:
             self.logger.warning(
                 "worktree_manager",
                 f"Killed stray worktree processes for '{wt_name}': {killed}",
             )
         return killed
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        """/proc 存活探针（kill 0）：进程存在即存活（僵尸差异可接受）。"""
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
 
     @staticmethod
     def _spec_from_worktree_name(wt_name: str) -> Optional[str]:

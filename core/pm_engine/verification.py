@@ -16,6 +16,7 @@ import tempfile
 import time
 import urllib.request
 
+from core.serving_registry import ServingRegistry
 from core.verify_contract import (
     CommandVerifyServer,
     load_verify_contract,
@@ -153,8 +154,12 @@ class VerificationPipeline:
                 and Path(old["wt_path"]).is_dir()):
             return old["wt_path"], head, None
         if old is not None:
+            # verify-process-lifecycle D6：command 型旧实例 HEAD 变更前先移除登记
+            old_server = old.get("server")
+            if isinstance(old_server, CommandVerifyServer):
+                self._unregister_serving_instance(spec_name, old_server)
             try:
-                old["server"].stop()
+                old_server.stop()
             except Exception:
                 pass
             self._remove_serving_worktree(old["wt_path"])
@@ -266,6 +271,9 @@ class VerificationPipeline:
         cache[spec_name] = {
             "server": srv, "wt_path": wt, "head": head, "mode": "command",
         }
+        # verify-process-lifecycle D6：command 型实例创建时登记
+        # （pid/port/spec/worktree），终局/周期清扫按 liveness 收割。
+        self._register_serving_instance(spec_name, srv, wt_path=wt)
         return self._finalize_static(
             srv, contract, scenarios_path, "命令 worktree")
 
@@ -287,6 +295,56 @@ class VerificationPipeline:
             ["git", "-C", str(self._pm.project_root), "worktree", "prune"],
             capture_output=True, timeout=15,
         )
+
+    # ── 被测实例登记制（verify-process-lifecycle D6）─────────────────
+    # serve.kind=command 与 _ensure_app_reachable 兜底 spawn 的实例创建时
+    # 向 .fenix/verify-serving/servers.json 登记（pid/port/spec/worktree），
+    # 停止时移除；spec 终局与 daemon 周期清扫按 /proc liveness 收割。
+
+    def _register_serving_instance(self, spec_name: str, server,
+                                   wt_path=None, hint_port=None) -> None:
+        """command 型实例创建时登记。幂等：同 (pid,spec) 已登记则跳过。"""
+        try:
+            port = getattr(server, "port", None) or hint_port or 0
+            ServingRegistry(self._pm.project_root, self._pm.logger).register(
+                server.pid, port, spec_name, wt_path or "")
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine", f"serving 实例登记失败 '{spec_name}'（非阻塞）: {e}")
+
+    def _unregister_serving_instance(self, spec_name: str, server) -> None:
+        """command 型实例停止时移除登记。幂等：无匹配条目安全空转。"""
+        try:
+            ServingRegistry(self._pm.project_root, self._pm.logger).remove(
+                server.pid, spec_name)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine", f"serving 实例登记移除失败 '{spec_name}'（非阻塞）: {e}")
+
+    def _evict_spec_serving(self, spec_name: str) -> None:
+        """spec 终局（done/verified）后回收其被测实例并驱逐缓存。
+
+        command 型：stop 进程 + 移除 servers.json 登记 + 移除 serving worktree；
+        static 型：stop 实例。幂等：无缓存条目/无登记时安全空转。
+        主树 static 共享实例（缓存键 "main"）不在此列（多 spec 共享，保留）。
+        """
+        cache = self.__dict__.get("_contract_static_servers", {})
+        old = cache.pop(spec_name, None)
+        if old is None:
+            return
+        server = old.get("server")
+        try:
+            if server is not None and hasattr(server, "pid"):
+                # 登记过的实例（CommandVerifyServer 或兜底 spawn Popen）同步移除
+                self._unregister_serving_instance(spec_name, server)
+            if server is not None and getattr(server, "ok", True):
+                server.stop()
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine", f"spec 终局实例回收失败 '{spec_name}'（非阻塞）: {e}")
+        wt = old.get("wt_path")
+        if wt:
+            self._remove_serving_worktree(wt)
 
     def _ensure_app_reachable(self, spec_name: str) -> tuple:
         """验证前确保应用可达：自动启动 commands.start、处理端口冲突。
@@ -390,11 +448,16 @@ class VerificationPipeline:
 
         # 启动一次（后台、脱离会话、输出丢弃）；随后等待可达或扫描邻近端口
         try:
-            subprocess.Popen(start_cmd, shell=True, cwd=str(self._pm.project_root),
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             start_new_session=True)
+            proc = subprocess.Popen(
+                start_cmd, shell=True, cwd=str(self._pm.project_root),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
         except Exception as e:
             return False, False, f"启动验证目标应用失败: {e}"
+        # verify-process-lifecycle D6：兜底 spawn 同登记纳入管理
+        # （pid/spec/worktree 空、端口先按 hint，实际可达端口由探测修正）
+        self._register_serving_instance(spec_name, proc, hint_port=base_port)
 
         for _ in range(30):
             time.sleep(1)

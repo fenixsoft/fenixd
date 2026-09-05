@@ -137,6 +137,55 @@ class TestKillStrays:
                 proc.kill()
                 proc.wait()
 
+    def test_kills_process_with_cwd_in_worktree(self, tmp_path):
+        """cwd 在 worktree 内、argv 不含路径的进程（Bash 起的 npm run dev 形态）
+        经 /proc/<pid>/cwd readlink 归属匹配被识别清扫（verify-process-lifecycle
+        D8：cwd 盲区覆盖）。"""
+        name = f"impl-cwdstray-{os.getpid()}"
+        wt_dir = tmp_path / ".claude" / "worktrees" / name
+        wt_dir.mkdir(parents=True)
+        proc = subprocess.Popen(
+            [sys.executable, "-c", FAKE_SLEEP],
+            cwd=str(wt_dir),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            wm = make_wm(tmp_path)
+            killed = wm._kill_worktree_strays(name)
+            assert proc.pid in killed, "cwd 归属进程应被识别清扫"
+            assert proc.wait(timeout=10) is not None
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_sigkills_sigterm_ignoring_stray(self, tmp_path):
+        """SIGTERM 无视者：宽限期后 SIGKILL 兜底强制终止（verify-process-lifecycle
+        D8：不残留）。"""
+        name = f"impl-stubborn-{os.getpid()}"
+        token = f"worktrees/{name}"
+        proc = subprocess.Popen(
+            [sys.executable, "-c",
+             "import signal, time\n"
+             "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+             "time.sleep(30)", token],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            assert wait_token_in_pgrep(token)
+            wm = make_wm(tmp_path)
+            t0 = time.time()
+            killed = wm._kill_worktree_strays(name)
+            elapsed = time.time() - t0
+            assert proc.pid in killed
+            assert proc.wait(timeout=10) is not None, "SIGKILL 兜底应强制终止"
+            # 宽限期 + SIGKILL 后进程退出，耗时 ≲ 宽限期（2s）+ 常数
+            assert elapsed < 8
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
 
 class TestDiscardIdenticalLocalChanges:
     """merge 级场景（脏检测修复后 autostash 生效，走 stash→merge→pop 主路径，

@@ -298,6 +298,10 @@ class FenixDaemon:
         # 在 daemon 重启时早已失活（worktree 已清），需按命令行标记回收端口。
         v2_cleanup_orphans(self.logger)
 
+        # verify-process-lifecycle（D6 启动收割）：上轮 daemon 崩退时登记者全部
+        # 视为非在飞——servers.json 中进程仍存活的登记实例按 /proc liveness 收割。
+        self._sweep_verify_serving_registry(use_in_flight=False)
+
         # 恢复上次异常退出遗留的中断状态（implementing/testing → ready）。
         # recover_interrupted 此前定义了但从未被调用，导致 daemon 重启后卡死的
         # spec 永远不被重新调度（fix-fenix-token-waste）；保留判定已在上面与
@@ -323,6 +327,9 @@ class FenixDaemon:
         recovery_watch_ts = time.time()
         # add-spec-archive D4：自动归档独立计时（300s，对齐配置热更新/恢复复查模式）
         archive_check_ts = time.time()
+        # verify-process-lifecycle（D4/D6 周期清扫）：dev-server 孤儿 + 登记制
+        # command 实例回收的独立计时（600s ≤ 规格 10 分钟上限）
+        orphan_clean_ts = time.time()
         try:
             while self.running:
                 time.sleep(1)
@@ -376,10 +383,50 @@ class FenixDaemon:
                     except Exception as e:
                         self.logger.error(
                             "fenixd", f"Auto-archive check failed: {e}")
+                # verify-process-lifecycle（D4 周期清扫）：孤儿泄漏可见窗口
+                # ≤ 一个周期（600s）。覆盖 dev-server 与 servers.json 登记实例；
+                # 首轮启动清扫已处理存量，此后周期性兜底。
+                if time.time() - orphan_clean_ts >= 600:
+                    orphan_clean_ts = time.time()
+                    try:
+                        v2_cleanup_orphans(self.logger)
+                    except Exception as e:
+                        self.logger.error(
+                            "fenixd", f"Periodic V2 orphan cleanup failed: {e}")
+                    try:
+                        self._sweep_verify_serving_registry()
+                    except Exception as e:
+                        self.logger.error(
+                            "fenixd", f"Periodic serving registry sweep failed: {e}")
         except KeyboardInterrupt:
             self.logger.info("fenixd", "Received interrupt signal")
         finally:
             self.shutdown()
+
+    def _is_spec_in_flight(self, spec_name: str) -> bool:
+        """spec 是否在飞（验证活跃）：状态为 testing 视作在飞。
+
+        serving 实例（command 型）在验证期由 `_ensure_app_reachable` 启动，
+        spec 全程处于 testing；终局（done/verified/bug-found）后状态离开
+        testing → 该实例成为收割候选。
+        """
+        try:
+            entry = self.state_machine.read_one(spec_name) or {}
+            return entry.get("status") == "testing"
+        except Exception:
+            return False
+
+    def _sweep_verify_serving_registry(self, use_in_flight: bool = True) -> None:
+        """servers.json 登记制收割：无在飞 spec 但进程仍存活的登记项。
+
+        启动清扫（use_in_flight=False：前一轮 daemon 已死，登记者全部视为
+        非在飞，一律按 liveness 收割）与周期清扫（use_in_flight=True：按
+        spec 状态判定在飞，testing 中的保留）共用同一执行器。
+        """
+        from core.serving_registry import sweep as serving_sweep
+        kw = ({"is_spec_in_flight": self._is_spec_in_flight}
+              if use_in_flight else {})
+        serving_sweep(PROJECT_ROOT, self.logger, **kw)
 
     def _config_mtimes(self):
         """两个配置文件的当前 mtime（不存在计为 None）。"""

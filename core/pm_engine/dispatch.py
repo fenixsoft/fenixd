@@ -1099,6 +1099,22 @@ class Dispatcher:
             self._pm._rollback_failed_dispatch(spec_name, "fast-track", e)
             return
 
+        # verify-process-lifecycle（D3 dispatch 兜底）：runner success 返回后的
+        # hand-off 边界内抛异常时，runner 的 finally 因 fast-track 属 handed_off
+        # 而跳过收割——此处兜底收割 result.worktree_path 的 dev-server 注册条目，
+        # 避免 keep/release 判定未执行而 dev-server 永久滞留。
+        try:
+            self._run_fast_track_flow(spec_name, result)
+        except Exception:
+            self._harvest_fast_track_worktree(spec_name, result)
+            raise
+
+    def _run_fast_track_flow(self, spec_name: str, result) -> None:
+        """fast-track run 结果处理主体（守卫/校验/推进）。
+
+        与 _run_fast_track_worker 分离，使 worker 可对其包 try/except 兜底收割
+        （verify-process-lifecycle D3）。任一步骤失败按失败重派同语义返回。
+        """
         # ── 人工取消 hold-state（add-run-cancel D4，fast-track 同语义）──
         # 被取消的 fast-track run 结果 cancelled=True：只写 error、不翻 status、
         # 不动 _retry_count/_merge_fp/_merge_streak、不入队重派；worktree
@@ -1183,6 +1199,29 @@ class Dispatcher:
 
         # ── verified → implemented → testing → verified → _on_spec_verified ──
         self._fast_track_advance_to_verified(spec_name, result)
+
+    def _harvest_fast_track_worktree(self, spec_name: str, result) -> None:
+        """fast-track 异常兜底（verify-process-lifecycle D3）：回收 dev-server。
+
+        runner 的终态收割因 fast-track 属 handed_off（有意交接 dispatch 层）
+        而跳过；本方法在 hand-off 边界内抛异常时兜底：停止
+        result.worktree_path 的 dev-server 注册条目并扫杀游离进程。
+        幂等：条目已不存在/进程已死时安全空转。
+        """
+        wt = getattr(result, "worktree_path", None)
+        if not wt:
+            return
+        try:
+            self._pm.agent_runner._v2_stop_for_worktree(Path(wt))
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine", f"fast-track 兜底收割 V2 stop 失败 '{spec_name}': {e}")
+        try:
+            self._pm.agent_runner.worktree_manager._kill_worktree_strays(
+                Path(wt).name)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine", f"fast-track 兜底收割 strays 失败 '{spec_name}': {e}")
 
     def _keep_fast_track_worktree(self, spec_name: str, result) -> None:
         """fast-track 打回/失败：保留 worktree 供重派继承（worktree-reuse）。
@@ -1601,6 +1640,13 @@ class Dispatcher:
                 "pm_engine",
                 f"repair worker 异常 '{spec_name}': {e}",
             )
+            # verify-process-lifecycle（D3 dispatch 兜底）：hand-off 边界内异常
+            # 时收割 repair 载体 worktree 的 dev-server 注册条目（run_repair 的
+            # runner 收割因 repair 属 handed_off 而跳过）。幂等，双调无害。
+            try:
+                self._pm.agent_runner._v2_stop_for_worktree(Path(wt_path))
+            except Exception:
+                pass
             self._pm._fallback_after_repair(
                 spec_name, branch, str(e),
                 merge_error=getattr(merge_info, "error", "") or "",

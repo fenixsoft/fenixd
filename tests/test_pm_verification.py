@@ -665,3 +665,170 @@ class TestLocateAppBaseUrlFromError(unittest.TestCase):
             self.assertEqual(eng._locate_app_base_url(candidates), "http://127.0.0.1:8787")
         finally:
             _sh.rmtree(tmpdir, ignore_errors=True)
+
+
+class TestServingRegistry(unittest.TestCase):
+    """verify-process-lifecycle D6：servers.json 登记制 + spec 终局驱逐 + 收割。"""
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix" / "verify-serving").mkdir(
+            parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
+        )
+        self.engine._task_completion_blocker = MagicMock(return_value=None)
+        self.engine._check_verification_gate = MagicMock(return_value=None)
+        from core.serving_registry import ServingRegistry
+        self.reg = ServingRegistry(Path(self.tmpdir), self.logger)
+
+    def tearDown(self):
+        import shutil as _sh
+        _sh.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _spawn_sleep(self, seconds: float = 30):
+        import subprocess as _sp
+        return _sp.Popen(
+            ["python3", "-c", f"import time; time.sleep({seconds})"],
+            stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+            start_new_session=True,
+        )
+
+    class FakeCommandServer:
+        """CommandVerifyServer 的最小替身（pid/port/stop 契约同构）。"""
+
+        def __init__(self, proc, stopped=None):
+            self._proc = proc
+            self._port = 18881
+            self.ok = True
+            self.stopped = stopped if stopped is not None else []
+
+        @property
+        def port(self):
+            return self._port
+
+        @property
+        def pid(self):
+            return self._proc.pid
+
+        def stop(self):
+            self.stopped.append(self._proc.pid)
+            self.ok = False
+
+    def test_register_remove_roundtrip(self):
+        proc = self._spawn_sleep(30)
+        try:
+            from core.serving_registry import servers_path
+            assert servers_path(self.tmpdir).name == "servers.json"
+            self.reg.register(proc.pid, 18881, "spec-a", "")
+            entries = self.reg.entries()
+            assert any(e["pid"] == proc.pid and e["spec"] == "spec-a"
+                       for e in entries)
+            # 幂等：同 (pid,spec) 不重复登记
+            self.reg.register(proc.pid, 18881, "spec-a", "")
+            assert len(self.reg.entries()) == 1
+            # 移除
+            assert self.reg.remove(proc.pid, "spec-a") is True
+            assert self.reg.entries() == []
+            assert self.reg.remove(proc.pid, "spec-a") is False  # 无匹配幂等
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_register_serving_instance_helper(self):
+        """_ensure_app_reachable 兜底 spawn 的登记路径（Popen 直接登记）。"""
+        proc = self._spawn_sleep(30)
+        try:
+            self.engine._verification._register_serving_instance(
+                "spec-y", proc, hint_port=8888)
+            entries = self.reg.entries()
+            assert any(e["pid"] == proc.pid and e["spec"] == "spec-y"
+                       and e["port"] == 8888 for e in entries)
+            self.engine._verification._unregister_serving_instance(
+                "spec-y", proc)
+            assert self.reg.entries() == []
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_sweep_harvests_orphan_without_inflight_spec(self):
+        """周期清扫：进程仍存活但属主 spec 不在飞 → 收割并移除登记。"""
+        proc = self._spawn_sleep(30)
+        self.reg.register(proc.pid, 18882, "spec-orphan", "")
+        try:
+            from core.serving_registry import sweep
+            n = sweep(Path(self.tmpdir), is_spec_in_flight=lambda s: False)
+            assert n >= 1
+            assert self.reg.entries() == []
+            assert proc.wait(timeout=10) is not None, "收割应终止进程"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    def test_sweep_keeps_inflight_spec(self):
+        """在飞 spec（testing）的登记实例不被收割。"""
+        proc = self._spawn_sleep(30)
+        self.reg.register(proc.pid, 18883, "spec-live", "")
+        try:
+            from core.serving_registry import sweep
+            n = sweep(Path(self.tmpdir),
+                      is_spec_in_flight=lambda s: s == "spec-live")
+            assert n == 0
+            assert any(e["pid"] == proc.pid for e in self.reg.entries())
+            assert proc.poll() is None
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_evict_spec_serving_stops_and_evicts(self):
+        """spec 终局驱逐：stop 登记服务、移除 servers.json、驱逐缓存、移除 worktree。"""
+        proc = self._spawn_sleep(30)
+        try:
+            fake = self.FakeCommandServer(proc)
+            cache = self.engine._verification.__dict__.setdefault(
+                "_contract_static_servers", {})
+            cache["spec-evict"] = {
+                "server": fake, "wt_path": "/w/verify-spec-evict",
+                "head": "h", "mode": "command",
+            }
+            self.reg.register(proc.pid, 18884, "spec-evict",
+                              "/w/verify-spec-evict")
+            self.engine._verification._remove_serving_worktree = MagicMock()
+            self.engine._verification._evict_spec_serving("spec-evict")
+            assert fake.stopped == [proc.pid], "登记服务应被 stop"
+            assert self.reg.entries() == [], "servers.json 条目应移除"
+            assert "spec-evict" not in cache, "缓存条目应驱逐"
+            self.engine._verification._remove_serving_worktree.assert_called_once_with(
+                "/w/verify-spec-evict")
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_on_spec_verified_wires_eviction(self):
+        """_on_spec_verified（done 落定）同步驱逐登记服务（D6 3.3 挂钩）。"""
+        proc = self._spawn_sleep(30)
+        try:
+            fake = self.FakeCommandServer(proc)
+            cache = self.engine._verification.__dict__.setdefault(
+                "_contract_static_servers", {})
+            cache["spec-verified-evict"] = {
+                "server": fake, "wt_path": "/w/verify-spec-verified-evict",
+                "head": "h", "mode": "command",
+            }
+            self.reg.register(proc.pid, 18885, "spec-verified-evict", "/w/x")
+            self.engine._verification._remove_serving_worktree = MagicMock()
+            self.engine._on_spec_done = MagicMock()
+            with patch.object(self.engine.state_machine, "transition",
+                              return_value=True):
+                self.engine._on_spec_verified("spec-verified-evict")
+            assert fake.stopped == [proc.pid]
+            assert self.reg.entries() == []
+            assert "spec-verified-evict" not in cache
+        finally:
+            proc.kill()
+            proc.wait()
