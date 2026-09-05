@@ -40,19 +40,19 @@
 - **THEN** 云端 e2e、壳路由、seed 格式知识以项目附加提示词形式存在
 
 ### Requirement: 设置页「提示词」页签
-设置界面 MUST 统一新增「提示词」页签：用户级视图仅展示六类通用提示词（只读，按 agent 切换查看）；项目级视图展示通用提示词（只读）与项目附加提示词（可编辑，保存写入该项目 `.fenix/agents/<agent-type>.md`）。fenixd 自身项目（`.fenix` 自引用指向框架根）MUST 禁用项目级编辑并说明原因（项目级与通用层同目录，防止经项目通道修改不可修改的通用文件）。
+设置界面 MUST 统一新增「提示词」页签：用户级视图仅展示七类通用提示词（只读，按 agent 切换查看）；项目级视图展示通用提示词（只读）与项目附加提示词（可编辑，保存写入该项目 `.fenix/agents/<agent-type>.md`）。所有项目一视同仁（含 fenixd 自身，2026-09-05 决策取消特殊处理：其项目级即真实目录 `<root>/.fenix/agents/`，与通用层 `agents/` 互不相干）；仅当项目 `.fenix/agents` 经符号链接解析为通用层 `agents/` 目录（废弃自引用软链布局）时 MUST 拒绝写入并对读取返回空（项目通道永不触碰通用层）。
 
 #### Scenario: 用户级只读
 - **WHEN** 用户在提示词页签查看用户级通用提示词
-- **THEN** 六类 prompt 内容可见但无编辑入口
+- **THEN** 七类 prompt 内容可见但无编辑入口
 
 #### Scenario: 项目级编辑保存生效
 - **WHEN** 用户在某项目的提示词页签编辑项目附加提示词并保存
 - **THEN** `.fenix/agents/<agent-type>.md` 落盘，该项目下次派发对应 agent 的 prompt 附加该内容
 
-#### Scenario: 自引用项目禁用编辑
-- **WHEN** 当前项目为 fenixd 自身（.fenix 自引用）
-- **THEN** 项目级编辑禁用并显示原因说明
+#### Scenario: 通用层重合布局拒绝写入
+- **WHEN** 项目的 `.fenix/agents` 经符号链接解析为框架通用层 `agents/`（废弃自引用软链布局）
+- **THEN** 项目级写入被拒绝（403），通用文件不被改写，读取附加内容返回空
 
 ### Requirement: dist 产物一致性
 Dashboard 前端改动后 v3 dist MUST 重建并提交（dist 为入库产物），避免 UI 验证假阴性。
