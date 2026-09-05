@@ -703,6 +703,16 @@ class Dispatcher:
                         conflict_files = list(wm.last_stash_pop_conflicts)
 
                     if not merge_ok:
+                        # ── 预演语义冲突直通 repair（add-merge-tree-rehearsal D2）──
+                        # merge-tree 预演在主树零污染点检出语义冲突（rehearsed=True）：
+                        # 未发生真合并，熔断语义上「merge 失败」并不成立——不经
+                        # _merge_fp/_merge_streak 记账、不做 ready 降级，spec 保持
+                        # in-flight 直接派 repair agent 在实现分支内把 main 合入解决。
+                        # 轮次上限（_repair_round）超限时回退现行 fallback 重派兜底。
+                        if getattr(merge_info, "rehearsed", False):
+                            self._direct_rehearsed_to_repair(
+                                spec_name, merge_info, result.branch, merge_error)
+                            return
                         # merge 失败：指纹熔断（fix-fenix-token-waste）。
                         # 同一错误指纹连续失败 ≥ 阈值 → spec 进入 blocked 停止自动重试，
                         # 避免「根因不消除 → 全量重跑 → 再败」的无限烧钱循环。
@@ -1178,6 +1188,14 @@ class Dispatcher:
             if not merge_ok:
                 # worktree-reuse：merge 失败同样保留 worktree，重派继承后重试 merge
                 self._keep_fast_track_worktree(spec_name, result)
+                # ── 预演语义冲突直通 repair（add-merge-tree-rehearsal D2）──
+                # 与 implementer 路径同语义：主树零污染检出语义冲突 → 不经 fp
+                # 记账与 ready 降级，spec 保持 in-flight 直通 repair（轮次兜底在
+                # _direct_rehearsed_to_repair 内）。
+                if getattr(merge_info, "rehearsed", False):
+                    self._direct_rehearsed_to_repair(
+                        spec_name, merge_info, branch, merge_error)
+                    return False
                 spec_entry = self._pm.state_machine.read_one(spec_name) or {}
                 max_r = self._pm._get_config("agents.max_retries", 3)
                 fp = self._pm._merge_fingerprint(merge_error)
@@ -1251,6 +1269,39 @@ class Dispatcher:
     # （worktree_manager）只做冲突分类与载体解析，**是否进入 repair、派发与轮次
     # 计数**在本层决策。修复方向反转（D2）：repair agent 在实现分支一侧把 main
     # 合入分支并解决冲突，主树在派发前已 abort 保持干净。
+
+    def _direct_rehearsed_to_repair(self, spec_name: str, merge_info, branch: str,
+                                    merge_error: str) -> None:
+        """预演语义冲突直通 repair（add-merge-tree-rehearsal D2/D5）。
+
+        implementer 与 fast-track 失败分支共用：merge-tree 预演已在主树零污染点
+        检出语义冲突（``rehearsed=True``）——真合并从未发生，``_merge_fp``/
+        ``_merge_streak`` 记账与 ready 降级在此路径均无意义（fp 熔断的职责——
+        阻断「根因不消除→整轮重跑→再败」循环——由 repair 轮次上限承接）。
+        spec 保持 in-flight，repair agent 在实现分支内把 main 合入解决冲突。
+
+        轮次兜底（D5）：``_should_enter_repair`` 拒绝（已 blocked / ``_repair_round``
+        超限）时回退现行 fallback 重派路径（prompt 注入冲突上下文），不产生无限
+        repair 循环；repair 后 re-merge 失败链仍走既有 fp 熔断（本方法不动熔断语义）。
+        """
+        breaker_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
+        if self._pm._should_enter_repair(spec_name, merge_info, 0, breaker_threshold):
+            self._pm.logger.info(
+                "pm_engine",
+                f"预演检出语义冲突直通 repair '{spec_name}'："
+                f"{len(merge_info.conflict_paths)} path(s) "
+                f"{getattr(merge_info, 'conflict_paths', [])} — 主树零污染，"
+                f"不经 fp 记账（rehearsed）",
+            )
+            self._pm._dispatch_repair_lane(spec_name, merge_info, branch)
+        else:
+            self._pm.logger.info(
+                "pm_engine",
+                f"预演检出语义冲突但 repair 不可用 '{spec_name}'"
+                f"（轮次超限/已 blocked）— 回退 fallback 重派（rehearsed，"
+                f"prompt 注入冲突上下文）",
+            )
+            self._pm._fallback_after_repair(spec_name, branch, merge_error)
 
     def _should_enter_repair(self, spec_name: str, merge_info, streak: int,
                              breaker_threshold: int) -> bool:

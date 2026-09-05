@@ -539,10 +539,12 @@ class TestRepairWorker(unittest.TestCase):
         self.engine._run_repair_worker(self.spec, wt, resolved_branch, info)
         entry = self.sm.read_one(self.spec)
         self.assertEqual(entry["status"], "ready")
-        # 错误上下文包含 repair 失败与原始 merge 失败
+        # 错误上下文包含 repair 失败与原始 merge 失败（预演闸生效后，原始
+        # merge 失败上下文为预演冲突摘要——语义冲突在主树零污染点被拦截，
+        # 不再有真合并的 git 冲突输出）
         self.assertIn("无法解决冲突", entry["error"])
         self.assertIn("原 merge 失败上下文", entry["error"])
-        self.assertIn("Auto-merging", entry["error"])
+        self.assertIn("pre-merge rehearsal", entry["error"])
         # 轮次归零（fallback 后新链开启）
         self.assertEqual(int(entry["_repair_round"] or 0), 0)
         # 重派实现器已排队
