@@ -6,6 +6,8 @@ record_project_event 与 server.py::POST /api/spec-archive 端点，以及
 daemon 自动归档（auto_archive_check）与配置校验（archive.auto_threshold）。
 """
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -459,6 +461,139 @@ class TestSpecArchiveAPI:
         by_name = {s["name"]: s for s in data["specs"]}
         assert by_name["done-spec"]["archived"] is True
         assert by_name["doing-spec"]["archived"] is False
+
+
+# ── 归档自动提交（commit_archive_move：移动后立即提交，pathspec 限定） ──
+
+class TestArchiveAutoCommit(unittest.TestCase):
+    """归档移动后自动提交：git 仓库内产生 [fenix] archive 提交；
+    非 git 仓库 fail-open 不阻断归档；pathspec 限定不吞无关修改。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        # 隔离全局/系统 git 配置（identity、hooks），仓库级 config 在 fixture 内显式设置
+        self.git_env = {**os.environ,
+                        "GIT_CONFIG_GLOBAL": "/dev/null",
+                        "GIT_CONFIG_SYSTEM": "/dev/null"}
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _git(self, *args) -> str:
+        r = subprocess.run(["git", "-C", str(self.root), *args],
+                           env=self.git_env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, f"git {args} failed: {r.stderr}")
+        return r.stdout
+
+    def _make_git_project(self, name="spec-a"):
+        """构造已入库的最小 git 项目：spec/changes/<name>/ 已跟踪提交。"""
+        _make_project(self.root, {name: {"status": "pushed"}})
+        (self.root / "spec" / "changes" / name / "tasks.md").write_text("# T", encoding="utf-8")
+        self._git("init", "-q")
+        self._git("config", "user.name", "test")
+        self._git("config", "user.email", "test@example.com")
+        self._git("add", "--", "spec")
+        self._git("commit", "-q", "-m", "init")
+        return name
+
+    def _move_to_archive(self, name) -> Path:
+        src = self.root / "spec" / "changes" / name
+        target = self.root / "spec" / "archive" / f"{date.today().isoformat()}-{name}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        import shutil
+        return Path(shutil.move(str(src), str(target)))
+
+    def test_commit_after_move_message_and_pathspec(self):
+        from core.archive_commit import commit_archive_move
+        name = self._make_git_project()
+        target = self._move_to_archive(name)
+        r = commit_archive_move(self.root, name, target)
+        self.assertTrue(r["committed"])
+        self.assertTrue(r["commit"])
+        self.assertIsNone(r["warning"])
+        self.assertEqual(self._git("log", "-1", "--format=%s").strip(),
+                         f"[fenix] archive: {name} 归档入库")
+        # 提交内容 = 恰好两条归档路径（changes 删除侧 + archive 新增侧）
+        stat = self._git("show", "--name-only", "--no-renames", "--format=")
+        touched = {ln.strip() for ln in stat.splitlines() if ln.strip()}
+        self.assertEqual(touched, {
+            f"spec/changes/{name}/tasks.md",
+            f"spec/archive/{target.name}/tasks.md",
+        })
+        self.assertEqual(self._git("ls-files", f"spec/archive/{target.name}").strip(),
+                         f"spec/archive/{target.name}/tasks.md")
+
+    def test_commit_does_not_sweep_unrelated_changes(self):
+        from core.archive_commit import commit_archive_move
+        name = self._make_git_project()
+        # 无关 spec 的已跟踪未提交修改 + 未跟踪文件，均不得被卷入归档提交
+        other = self.root / "spec" / "changes" / "other"
+        other.mkdir()
+        (other / "notes.md").write_text("v1", encoding="utf-8")
+        self._git("add", "--", "spec/changes/other/notes.md")
+        self._git("commit", "-q", "-m", "other")
+        (other / "notes.md").write_text("v2", encoding="utf-8")
+        (self.root / "spec" / "changes" / "loose.md").write_text("u", encoding="utf-8")
+        target = self._move_to_archive(name)
+        r = commit_archive_move(self.root, name, target)
+        self.assertTrue(r["committed"])
+        status = self._git("status", "--porcelain")
+        self.assertIn("other/notes.md", status)
+        self.assertIn("loose.md", status)
+
+    def test_commit_with_untracked_changes_side(self):
+        """spec 目录从未入库（changes 侧无跟踪删除）→ 仍提交 archive 新增侧。"""
+        from core.archive_commit import commit_archive_move
+        _make_project(self.root, {"spec-u": {"status": "done"}})
+        (self.root / "spec" / "changes" / "spec-u" / "tasks.md").write_text("# T", encoding="utf-8")
+        self._git("init", "-q")
+        self._git("config", "user.name", "test")
+        self._git("config", "user.email", "test@example.com")
+        self._git("commit", "-q", "--allow-empty", "-m", "init")
+        target = self._move_to_archive("spec-u")
+        r = commit_archive_move(self.root, "spec-u", target)
+        self.assertTrue(r["committed"])
+        self.assertEqual(self._git("ls-files", f"spec/archive/{target.name}").strip(),
+                         f"spec/archive/{target.name}/tasks.md")
+
+    def test_non_git_project_fail_open(self):
+        from core.archive_commit import commit_archive_move
+        _make_project(self.root, {"spec-a": {"status": "done"}})
+        (self.root / "spec" / "changes" / "spec-a" / "tasks.md").write_text("# T", encoding="utf-8")
+        target = self._move_to_archive("spec-a")
+        r = commit_archive_move(self.root, "spec-a", target)
+        self.assertFalse(r["committed"])
+        self.assertIsNone(r["commit"])
+        self.assertTrue(r["warning"])
+
+    def test_archive_spec_commits_in_git_project(self):
+        name = self._make_git_project(name="spec-g")
+        result = archive_spec(self.root, name)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result.get("committed"))
+        self.assertIsNone(result.get("commit_warning"))
+        self.assertIn(f"{name} 归档入库", self._git("log", "-1", "--format=%s"))
+
+    def test_archive_spec_non_git_still_ok_with_warning(self):
+        _make_project(self.root, {"spec-h": {"status": "pushed"}})
+        (self.root / "spec" / "changes" / "spec-h" / "tasks.md").write_text("# T", encoding="utf-8")
+        result = archive_spec(self.root, "spec-h")
+        self.assertTrue(result["ok"])
+        self.assertFalse(result.get("committed"))
+        self.assertTrue(result.get("commit_warning"))
+
+    def test_fenix_archive_script_commits_in_git_project(self):
+        import importlib.util
+        script = Path(__file__).resolve().parent.parent / "bin" / "fenix_archive.py"
+        s = importlib.util.spec_from_file_location("fenix_archive_mod", script)
+        mod = importlib.util.module_from_spec(s)
+        s.loader.exec_module(mod)
+        name = self._make_git_project(name="spec-s")
+        result = mod.archive_change(self.root, name)
+        self.assertTrue(result.get("committed"))
+        self.assertIn(f"{name} 归档入库", self._git("log", "-1", "--format=%s"))
 
 
 if __name__ == "__main__":

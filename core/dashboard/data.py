@@ -24,6 +24,7 @@ from pathlib import Path
 import yaml
 
 from core.agent_runner.run_files import run_spec_part
+from core.archive_commit import commit_archive_move
 from core.fenix_session import is_running as _is_running
 
 
@@ -537,8 +538,15 @@ def soft_delete_spec(project_root, spec: str) -> dict:
 
     # 2. 再原子剔除 STATE.md 条目
     sm.remove_spec(spec)
-    return {"found": True, "running": False, "archived": archived,
-            "archive_path": archive_path, "error": None}
+    result = {"found": True, "running": False, "archived": archived,
+              "archive_path": archive_path, "error": None}
+    # 归档自动提交：目录确实移动成功才提交（fail-open，见 core/archive_commit.py）
+    if archived:
+        cr = commit_archive_move(proot, spec, archive_path)
+        result["committed"] = cr["committed"]
+        if cr["warning"]:
+            result["commit_warning"] = cr["warning"]
+    return result
 
 
 def is_spec_archived(project_root, spec_name: str) -> bool:
@@ -597,8 +605,14 @@ def archive_spec(project_root, spec_name: str) -> dict:
     except OSError as e:
         return {"ok": False, "found": True, "from": str(change_dir), "to": str(target),
                 "error": f"归档移动失败: {e}"}
-    return {"ok": True, "found": True, "from": str(change_dir), "to": str(moved),
-            "error": None}
+    result = {"ok": True, "found": True, "from": str(change_dir), "to": str(moved),
+              "error": None}
+    # 归档自动提交：移动成功立即入库（fail-open，见 core/archive_commit.py）
+    cr = commit_archive_move(proot, spec_name, moved)
+    result["committed"] = cr["committed"]
+    if cr["warning"]:
+        result["commit_warning"] = cr["warning"]
+    return result
 
 
 def auto_archive_check(project_root, config: dict,

@@ -48,4 +48,5 @@ python3 .fenix/bin/fenix_archive.py <name>
 ### 5. 展示结果
 
 - 归档成功：列出 `from` → `to`，说明该 change 已进入归档目录，历史实现记录不受影响。
+- 归档移动后脚本会**自动提交**归档产物（changes 删除侧 + archive 新增侧，commit 形如 `[fenix] archive: <name> 归档入库`）：输出 JSON 的 `committed` 为 true 即已入库；若出现 `commit_warning` 说明提交未成功但归档本身已生效（如非 git 仓库），如实告知用户即可。
 - 若用户归档后需要创建同名新 SPEC，可正常使用 `/fenix-new`（归档目录中的旧 change 不会与新 change 冲突）。

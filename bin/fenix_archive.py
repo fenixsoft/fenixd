@@ -60,6 +60,17 @@ def archive_change(project_root: Path, name: str) -> dict:
         )
     except (OSError, ImportError) as e:
         result["runs_archive_warning"] = str(e)
+
+    # 归档自动提交：移动成功立即入库（fail-open，见 core/archive_commit.py）
+    try:
+        from core.archive_commit import commit_archive_move
+        cr = commit_archive_move(project_root, name, moved)
+        result["committed"] = cr["committed"]
+        if cr.get("warning"):
+            result["commit_warning"] = cr["warning"]
+    except (OSError, ImportError) as e:
+        result["committed"] = False
+        result["commit_warning"] = str(e)
     return result
 
 
@@ -78,7 +89,8 @@ def main():
     try:
         result = archive_change(project_root, args.name)
         payload = {"ok": True, "from": result["from"], "to": result["to"], "error": None}
-        for key in ("runs_archived", "runs_archive_warning"):
+        for key in ("runs_archived", "runs_archive_warning",
+                    "committed", "commit_warning"):
             if key in result:
                 payload[key] = result[key]
     except ValueError as e:

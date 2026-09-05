@@ -671,8 +671,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
         except Exception:
             pass  # 写日志失败不阻断归档响应
-        self._json({"ok": True, "project": project["name"], "spec": spec,
-                    "from": result["from"], "to": result["to"]})
+        resp = {"ok": True, "project": project["name"], "spec": spec,
+                "from": result["from"], "to": result["to"],
+                "committed": result.get("committed", False)}
+        if result.get("commit_warning"):
+            resp["commit_warning"] = result["commit_warning"]
+        self._json(resp)
 
     def _api_spec_delete(self, query):
         """POST /api/spec-delete?project=<name>&spec=<name>
