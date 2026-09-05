@@ -1622,11 +1622,18 @@ class PMEngine:
                         # 假就绪巡检（improve-run-lifecycle-governance D6）：ready 滞留
                         # 超过 ready_stall_threshold_minutes 且期间无派发活动 → 阻塞项。
                         # 退避期内的 spec（_dispatch_backoff_until 未到期）有意等待，不算滞留。
+                        # 存活 attempt 亦不算（与 D4 auto-recovery 的 live-child 豁免同语义）：
+                        # daemon 重启后 recovery 把 implementing 恢复为 ready，而旧 run 的
+                        # 流写侧已随旧进程死亡——「流 mtime = 派发活动」代理判据失真，
+                        # 不豁免会把「活 run 被重建锁保护、恢复检查正确 skip」的 spec
+                        # 误报为 dispatch_stalled 循环呼叫 Administrator（2026-09-06
+                        # add-verify-multi-kind-runner 事故）。
                         stall_threshold = self._ready_stall_threshold_minutes()
                         if (elapsed > stall_threshold
                                 and not self._dispatch_backoffed(entry)
                                 and not self._spec_has_recent_run_activity(
-                                    name, stall_threshold)):
+                                    name, stall_threshold)
+                                and not self._attempt_still_alive(name)):
                             blockers.append({
                                 "spec": name,
                                 "status": status,

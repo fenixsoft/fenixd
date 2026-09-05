@@ -485,6 +485,22 @@ class TestReadyStallPatrol(RecoveryWatchFixture):
         result = self.engine.check_blockers()
         self.assertEqual([b for b in result["blockers"] if b["spec"] == "s1"], [])
 
+    def test_live_child_ready_not_reported(self):
+        """有存活 attempt 的 ready spec 不算假就绪（2026-09-06 事故回归）。
+
+        daemon 重启把 implementing 恢复为 ready 后，旧 run 流写侧已随旧进程
+        死亡（流 mtime 陈旧），但子进程仍持锁干活——流活动代理失真时，
+        存活探测必须兜住，否则活 run 被误报 dispatch_stalled 循环呼叫 admin。
+        """
+        self.make_ready_spec("s1")
+        self._stale(hours=1)
+        self.runner.has_live_attempt.return_value = True
+        result = self.engine.check_blockers()
+        self.assertEqual([b for b in result["blockers"] if b["spec"] == "s1"], [])
+        recs = AdminStore(self.project_root, self.logger).read_all()
+        self.assertEqual(
+            [r for r in recs if r.get("signal_type") == "dispatch_stalled"], [])
+
     def test_same_fingerprint_not_re_signaled_within_cooldown(self):
         """冷却期内反复检出同一滞留：只有首次拉起，后续仅日志。"""
         self.make_ready_spec("s1")
