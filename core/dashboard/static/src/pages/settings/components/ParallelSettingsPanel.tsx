@@ -146,7 +146,7 @@ export default function ParallelSettingsPanel({ config, onSave }: ParallelSettin
         </Form>
       </Card>
       <div style={{ textAlign: 'right', marginTop: 24 }}>
-        <Button type="primary" onClick={handleSave}>
+        <Button type="primary" onClick={handleSave} data-testid="settings-save">
           保存
         </Button>
       </div>
