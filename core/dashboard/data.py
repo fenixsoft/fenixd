@@ -2123,19 +2123,40 @@ def _backtrack_reason(frm: str, to: str) -> str:
     return "状态回退"
 
 
-def _load_billing_config(project_root) -> tuple:
-    """读取 llm.billing 有效配置；(enabled, billing) — 未启用/解析失败 → (False, None)。
+def _load_billing_config(project_root) -> dict:
+    """从 llm.providers[i].billing 收集 per-provider 计价表（improve-provider-billing-config）。
 
-    计费开关是成本展示的唯一闸门：关闭时 timeline/detail 一律不下发成本字段
-    （design D4），前端不渲染也不用二次判断。
+    返回 {provider_name: {"enabled": bool, "prices": [...]}}——仅登记声明了 billing
+    子对象且卡片开关开启的 provider（enabled 关闭的卡片不收集：表非空即等价于
+    design D2 的「有任一开启卡片才进入计价分支」闸门，未开启卡片由匹配函数
+    直接无表项 → None，计费关闭不下发 cost 字段）。读失败/旧形态（顶层
+    llm.billing）/异常一律容错返回空表（fail-open 不计价不崩溃）。
     """
     try:
-        _billing = (read_effective_config(project_root).get("llm") or {}).get("billing")
+        _llm = read_effective_config(project_root).get("llm") or {}
+        providers = _llm.get("providers") or []
     except Exception:
-        return False, None
-    if isinstance(_billing, dict) and _billing.get("enabled"):
-        return True, _billing
-    return False, None
+        return {}
+    table: dict = {}
+    for p in providers:
+        if not isinstance(p, dict):
+            continue
+        name = p.get("name")
+        billing = p.get("billing")
+        if not isinstance(name, str) or not name or not isinstance(billing, dict):
+            continue
+        # 形态异常（enabled 非布尔等）容错：跳过该卡片，不计价不崩溃
+        if "enabled" in billing and billing["enabled"] is not None \
+                and not isinstance(billing["enabled"], bool):
+            continue
+        if not billing.get("enabled"):
+            continue
+        prices = billing.get("prices")
+        table[name] = {
+            "enabled": True,
+            "prices": prices if isinstance(prices, list) else [],
+        }
+    return table
 
 
 def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
@@ -2215,13 +2236,14 @@ def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
 
 
 def compute_run_cost(usage: "dict | None", model_used: str,
-                     provider_used: str, billing: "dict | None") -> "float | None":
-    """按 provider+model 精确匹配 llm.billing.prices 计算单 run 成本（design D3）。
+                     provider_used: str,
+                     billing_table: "dict | None") -> "float | None":
+    """按「provider 卡片开关 + 行 model 匹配」计算单 run 成本（design D2）。
 
     成本 = input/1M×输入价 + output/1M×输出价 + cache_read/1M×缓存读价
          + cache_creation/1M×缓存写价。
-    usage 缺失、计费开关关闭、该 model@provider 未配置价格（或价格行字段残缺）
-    → 返回 None（unpriced，展示「成本不可用」，绝不回退网关回传金额）。
+    usage 缺失、provider 卡片计费未开启、该卡片无匹配 model 价格行（或价格行
+    字段残缺）→ 返回 None（unpriced，展示「成本不可用」，绝不回退网关回传金额）。
     匹配键以 run 产物 provider_marker 的实际网关与模型为准（failover 切换后
     成本归属仍精确）。
 
@@ -2229,13 +2251,15 @@ def compute_run_cost(usage: "dict | None", model_used: str,
         usage: run 产物 result 事件 usage 字段（dict 或 None）
         model_used: 实际驱动模型名（provider_marker 的 model）
         provider_used: 实际驱动网关名（provider_marker 的 provider）
-        billing: `llm.billing` 配置段（{enabled, prices: [...]}）或 None
+        billing_table: per-provider 计价表 {provider_name: {enabled, prices}}
+            （_load_billing_config 产物）或 None
     """
     if not isinstance(usage, dict):
         return None
-    if not isinstance(billing, dict) or not billing.get("enabled"):
+    if not isinstance(billing_table, dict) or not model_used or not provider_used:
         return None
-    if not model_used or not provider_used:
+    card = billing_table.get(provider_used)
+    if not isinstance(card, dict) or not card.get("enabled"):
         return None
     price_keys = {
         "input": ("input_tokens", "input_per_million"),
@@ -2243,10 +2267,10 @@ def compute_run_cost(usage: "dict | None", model_used: str,
         "cache_read": ("cache_read_input_tokens", "cache_read_per_million"),
         "cache_creation": ("cache_creation_input_tokens", "cache_creation_per_million"),
     }
-    for row in billing.get("prices") or []:
+    for row in card.get("prices") or []:
         if not isinstance(row, dict):
             continue
-        if row.get("provider") != provider_used or row.get("model") != model_used:
+        if row.get("model") != model_used:
             continue
         try:
             total = 0.0
@@ -2334,9 +2358,10 @@ def get_spec_timeline(project_root, spec_name: str) -> list:
                             (ts, str(new_status), str(err) if err else ""))
 
     # 运行节点（含归档：旧 spec 的 run 产物被清理后时间轴仍可回看）。
-    # add-model-billing-cost-display（D4）：计费开关开启时按 usage×配置单价现算，
-    # 附 cost_usd（None 不下发）；开关关闭时整条时间轴无成本字段（前端不渲染）。
-    billing_enabled, billing = _load_billing_config(project_root)
+    # improve-provider-billing-config（D2）：计价表非空（有任一声明 billing 的
+    # 卡片）时进入计价分支，逐 run 按「实际网关卡片开关 + 行 model 匹配」现算
+    # cost_usd（None 不下发）；表空时整条时间轴无成本字段（前端不渲染）。
+    billing_table = _load_billing_config(project_root)
     for r in get_runs(project_root, spec_name, include_archive=True):
         insights = _run_tail_insights(_resolve_run_file(project_root, r["run_id"]))
         node = {"time": r["started"], "kind": "run", "run_id": r["run_id"],
@@ -2344,9 +2369,9 @@ def get_spec_timeline(project_root, spec_name: str) -> list:
                 "spec": r.get("spec"),
                 "duration_seconds": r.get("duration_seconds"),
                 "summary": insights["summary"], "llm": insights["llm"]}
-        if billing_enabled:
+        if billing_table:
             model, provider = _split_llm_marker(insights["llm"])
-            cost = compute_run_cost(insights["usage"], model, provider, billing)
+            cost = compute_run_cost(insights["usage"], model, provider, billing_table)
             if cost is not None:
                 node["cost_usd"] = cost
         events.append(node)
@@ -2554,11 +2579,12 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     # 时间轴（含运行节点 cost_usd；计费开关关闭时 get_spec_timeline 不下发）
     timeline = _timeline_with_retry(
         get_spec_timeline(project_root, spec_name), project_root, entry)
-    # add-model-billing-cost-display（D4）：SPEC 级成本合计——可计价 run 求和 +
-    # 未计价 run 数量附注；计费开关关闭时不下发成本字段（前端不渲染）。
+    # improve-provider-billing-config（D2）：SPEC 级成本合计——计价表非空
+    # （有任一声明 billing 的卡片）时进入计价分支；单 run 计价由匹配函数自行
+    # 判定未开启卡片 → None（未开启卡片 run 不计入 priced_runs）。
     cost_summary = None
-    billing_on, _b = _load_billing_config(project_root)
-    if billing_on:
+    billing_table = _load_billing_config(project_root)
+    if billing_table:
         cost_summary = _cost_summary_from_timeline(timeline)
     return {
         "name": spec_name,
@@ -3208,61 +3234,28 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
     # 2. 合并受管键
     merged = _deep_merge_managed(raw, config_patch)
 
+    # improve-provider-billing-config（D1）：顶层 llm.billing 段移除——即使旧客户端
+    # 仍提交旧形态也剥离，保证落盘文件永不含顶层 llm.billing（下次保存自然清除
+    # 手工残留的旧键）。
+    if isinstance(merged.get("llm"), dict) and "billing" in merged["llm"]:
+        merged["llm"].pop("billing", None)
+
     # 3. 校验受管字段（llm / agents.models / agents.max_concurrent / gates.approve_mode）
     #    不做完整 ConfigLoader 校验，避免缺少 project/schedule 等必填键时无法写入。
     try:
         llm = merged.get("llm") or {}
         if llm:
             ConfigLoader._validate_llm(llm)
-        # add-model-billing-cost-display（task 1.1）：llm.billing 校验——enabled 布尔、
-        # 每行 provider 引用必须存在于 llm.providers、model 非空、四项单价非负数值、
-        # provider+model 不重复；任一非法拒绝写入（不静默忽略），错误列出违规行。
-        billing = llm.get("billing") if isinstance(llm, dict) else None
-        if billing is not None:
-            if not isinstance(billing, dict):
-                raise ValueError(
-                    f"llm.billing must be an object, got: {type(billing).__name__}"
-                )
-            if "enabled" in billing and billing["enabled"] is not None \
-                    and not isinstance(billing["enabled"], bool):
-                raise ValueError(
-                    f"llm.billing.enabled must be a boolean: {billing['enabled']!r}"
-                )
-            prices = billing.get("prices")
-            if prices is not None:
-                if not isinstance(prices, list):
-                    raise ValueError("llm.billing.prices must be a list")
-                provider_names = set()
-                for p in (llm.get("providers") or []):
-                    if isinstance(p, dict) and p.get("name"):
-                        provider_names.add(p["name"])
-                price_fields = ("input_per_million", "output_per_million",
-                                "cache_read_per_million", "cache_creation_per_million")
-                seen: set = set()
-                for idx, row in enumerate(prices):
-                    if not isinstance(row, dict):
-                        raise ValueError(f"llm.billing.prices[{idx}] must be an object")
-                    errs = []
-                    provider = row.get("provider")
-                    model = row.get("model")
-                    if not isinstance(provider, str) or not provider:
-                        errs.append(f"prices[{idx}].provider 缺失")
-                    elif provider not in provider_names:
-                        errs.append(
-                            f"prices[{idx}].provider 引用了不存在的 provider: {provider}"
-                        )
-                    if not isinstance(model, str) or not model.strip():
-                        errs.append(f"prices[{idx}].model 必须为非空字符串")
-                    for f in price_fields:
-                        v = row.get(f)
-                        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
-                            errs.append(f"prices[{idx}].{f} 必须为非负数值: {v!r}")
-                    key = (provider, model)
-                    if key in seen:
-                        errs.append(f"prices[{idx}] provider+model 重复: {provider}@{model}")
-                    seen.add(key)
-                    if errs:
-                        raise ValueError("llm.billing 校验失败: " + "; ".join(errs))
+        # improve-provider-billing-config（task 2.1）：per-provider billing 校验——
+        # 遍历 llm.providers[i].billing（enabled 布尔、prices 行 model 非空、4 项
+        # 单价非负数值排除 bool、同一卡片内行 model 不重复）；任一非法拒绝写入并
+        # 列出违规项。与 _validate_llm 内 load-time 校验共用 _validate_provider_billing。
+        if isinstance(llm, dict):
+            _providers = llm.get("providers")
+            if _providers is not None:
+                if not isinstance(_providers, list):
+                    raise ValueError("llm.providers must be a list")
+                ConfigLoader._validate_provider_billing(_providers)
         agents = merged.get("agents") or {}
         if "models" in agents and agents["models"]:
             ConfigLoader._validate_agent_models(agents["models"], llm)

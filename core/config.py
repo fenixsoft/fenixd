@@ -291,6 +291,65 @@ class ConfigLoader:
                 )
 
     @classmethod
+    def _validate_provider_billing(cls, providers) -> None:
+        """校验 llm.providers[i].billing 子对象（improve-provider-billing-config）。
+
+        Dashboard 保存校验与 load-time 防呆共用同一实现（规则一致，风格与既有
+        env 校验并列——非法直接 raise ValueError，不静默忽略）。规则：
+        - billing 提供时必须为对象；
+        - enabled 提供时为布尔（None 缺省视为关闭，不报错）；
+        - prices 提供时必须为列表；每行 model 非空字符串、4 项单价为非负数值
+          （bool 除外）、行 model 在同一卡片内不重复；
+        错误信息含违规行路径（providers[i].billing.prices[j].字段）。
+        """
+        _price_fields = ("input_per_million", "output_per_million",
+                         "cache_read_per_million", "cache_creation_per_million")
+        for p_idx, provider in enumerate(providers):
+            if not isinstance(provider, dict):
+                continue
+            billing = provider.get("billing")
+            if billing is None:
+                continue
+            if not isinstance(billing, dict):
+                raise ValueError(
+                    f"llm.providers[{p_idx}].billing must be an object, "
+                    f"got: {type(billing).__name__}"
+                )
+            if "enabled" in billing and billing["enabled"] is not None \
+                    and not isinstance(billing["enabled"], bool):
+                raise ValueError(
+                    f"llm.providers[{p_idx}].billing.enabled must be a boolean: "
+                    f"{billing['enabled']!r}"
+                )
+            prices = billing.get("prices")
+            if prices is not None and not isinstance(prices, list):
+                raise ValueError(
+                    f"llm.providers[{p_idx}].billing.prices must be a list"
+                )
+            seen: set = set()
+            for r_idx, row in enumerate(prices or []):
+                if not isinstance(row, dict):
+                    raise ValueError(
+                        f"llm.providers[{p_idx}].billing.prices[{r_idx}] must be an object"
+                    )
+                _prefix = f"llm.providers[{p_idx}].billing.prices[{r_idx}]"
+                errs = []
+                model = row.get("model")
+                if not isinstance(model, str) or not model.strip():
+                    errs.append(f"{_prefix}.model 必须为非空字符串")
+                if model is not None and isinstance(model, str) and model.strip():
+                    _key = model.strip()
+                    if _key in seen:
+                        errs.append(f"{_prefix} 卡片内 model 重复: {model}")
+                    seen.add(_key)
+                for _f in _price_fields:
+                    v = row.get(_f)
+                    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+                        errs.append(f"{_prefix}.{_f} 必须为非负数值: {v!r}")
+                if errs:
+                    raise ValueError("billing 校验失败: " + "; ".join(errs))
+
+    @classmethod
     def _validate_llm(cls, llm: Dict[str, Any]):
         providers = llm.get("providers")
         if providers is None:
@@ -326,6 +385,10 @@ class ConfigLoader:
             if name in seen_names:
                 raise ValueError(f"llm.providers[{idx}].name must be unique: duplicate '{name}'")
             seen_names.add(name)
+
+        # improve-provider-billing-config（task 2.2）：billing 子对象校验（手工编辑
+        # config.yaml 防呆，与 env 校验并列——非法直接拒绝加载，不回退老配置）。
+        cls._validate_provider_billing(providers)
 
     @classmethod
     def _normalize_provider_chain(cls, raw_provider: Any) -> List[Tuple[str, Optional[str]]]:
