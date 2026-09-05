@@ -332,6 +332,8 @@ export interface SpecDetail {
     // 运行节点：spec 当前实现重试轮次（仅最新 run 节点携带，>0 时出现；_timeline_with_retry）
     retry_count?: number;
     retry_max?: number;
+    // add-model-billing-cost-display：可计价 run 的本地计算成本（$；不可计价不渲染）
+    cost_usd?: number;
   }>;
   // 场景结果 — report.json 的 scenarios 平铺数组（parse_report）
   scenarios?: Array<{
@@ -413,6 +415,13 @@ export interface SpecDetail {
     cache_read_input_tokens?: number | null;
     cost_usd?: number | null;
     cost_available?: boolean;
+  };
+  // add-model-billing-cost-display：SPEC 级成本合计（本地计算口径）。
+  // 计费开关关闭时后端不下发该字段；computed_usd 为 null = 全部 run 不可计价
+  cost_summary?: {
+    computed_usd: number | null;
+    priced_runs: number;
+    unpriced_runs: number;
   };
 }
 
@@ -497,8 +506,29 @@ export interface LlmProvider {
   env?: Record<string, string>;
 }
 
+// add-model-billing-cost-display（task 4.1）：按 provider+model 的计费价格行
+export interface LlmBillingPrice {
+  provider: string;
+  model: string;
+  /** 每百万输入 token 费用（$/1M tokens） */
+  input_per_million: number;
+  /** 每百万输出 token 费用（$/1M tokens） */
+  output_per_million: number;
+  /** 每百万缓存命中 token 费用（$/1M tokens） */
+  cache_read_per_million: number;
+  /** 每百万缓存写入 token 费用（$/1M tokens） */
+  cache_creation_per_million: number;
+}
+
+export interface LlmBillingConfig {
+  /** 计费信息总开关（缺省 false；关闭时价格区隐藏、下游一律不展示成本） */
+  enabled?: boolean;
+  prices?: LlmBillingPrice[];
+}
+
 export interface LlmConfig {
   providers?: LlmProvider[];
+  billing?: LlmBillingConfig;
 }
 
 // 后端 normalize_agent_models 规范化视图：provider 链统一为对象数组，
