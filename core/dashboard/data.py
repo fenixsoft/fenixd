@@ -2079,14 +2079,31 @@ def _backtrack_reason(frm: str, to: str) -> str:
     return "状态回退"
 
 
+def _load_billing_config(project_root) -> tuple:
+    """读取 llm.billing 有效配置；(enabled, billing) — 未启用/解析失败 → (False, None)。
+
+    计费开关是成本展示的唯一闸门：关闭时 timeline/detail 一律不下发成本字段
+    （design D4），前端不渲染也不用二次判断。
+    """
+    try:
+        _billing = (read_effective_config(project_root).get("llm") or {}).get("billing")
+    except Exception:
+        return False, None
+    if isinstance(_billing, dict) and _billing.get("enabled"):
+        return True, _billing
+    return False, None
+
+
 def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
                        marker_scan_cap: int = 4 << 20) -> dict:
-    """读取 run 产物尾部：ClaudeCode 最后一条总结 + 实际驱动的 LLM。
+    """读取 run 产物尾部：ClaudeCode 最后一条总结 + 实际驱动的 LLM + usage 四分项。
 
     summary 优先取 result 事件的 result 字段（run 最终总结，markdown 文本，
     与 runner.py 提取产物口径一致）；无 result（运行中/中断）时回退最后一条
     assistant 文本。llm 取最后一个 provider_marker 事件（attempt 启动时写入，
-    failover 切换产生多个，取最后 = 实际完成 run 的网关）。只读文件尾部
+    failover 切换产生多个，取最后 = 实际完成 run 的网关）。usage 取 result 事件
+    的 usage 字段（add-model-billing-cost-display D2，成本本地计算数据源；
+    result 是流终态必在尾窗内，无 result → None）。只读文件尾部
     tail_bytes 字节避免时间轴加载全量扫描；seek 产生的截断首行直接丢弃。
     marker 可能落在 attempt 大量输出之外（尾窗扫不到），此时按 256KB 块
     向前回扫（上限 marker_scan_cap），仍无则留空。
@@ -2098,13 +2115,14 @@ def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
                 f.seek(-tail_bytes, 2)
             data = f.read().decode("utf-8", errors="replace")
     except OSError:
-        return {"summary": "", "llm": ""}
+        return {"summary": "", "llm": "", "usage": None}
 
-    def parse_chunk(raw: str, skip_first: bool) -> tuple[str, str]:
+    def parse_chunk(raw: str, skip_first: bool) -> tuple:
         lines = raw.split("\n")
         if skip_first:
             lines = lines[1:]
         result_text = last_asst = llm = ""
+        usage = None
         for line in lines:
             line = line.strip()
             if not line:
@@ -2122,6 +2140,9 @@ def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
                 rt = e.get("result")
                 if isinstance(rt, str) and rt.strip():
                     result_text = rt.strip()
+                u = e.get("usage")
+                if isinstance(u, dict) and u:
+                    usage = u
             elif t == "assistant":
                 c = e.get("content")
                 if isinstance(c, str) and c.strip():
@@ -2132,9 +2153,9 @@ def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
                     joined = "\n".join(t for t in texts if t.strip())
                     if joined.strip():
                         last_asst = joined.strip()
-        return result_text or last_asst, llm
+        return result_text or last_asst, llm, usage
 
-    summary, llm = parse_chunk(data, skip_first=size > tail_bytes)
+    summary, llm, usage = parse_chunk(data, skip_first=size > tail_bytes)
     if not llm and size > tail_bytes:
         chunk = 262144
         floor = max(0, size - tail_bytes - marker_scan_cap)
@@ -2144,9 +2165,70 @@ def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
                 start = max(floor, pos - chunk)
                 f.seek(start)
                 raw = f.read(pos - start).decode("utf-8", errors="replace")
-                _, llm = parse_chunk(raw, skip_first=start > 0)
+                _, llm, _ = parse_chunk(raw, skip_first=start > 0)
                 pos = start
-    return {"summary": summary, "llm": llm}
+    return {"summary": summary, "llm": llm, "usage": usage}
+
+
+def compute_run_cost(usage: "dict | None", model_used: str,
+                     provider_used: str, billing: "dict | None") -> "float | None":
+    """按 provider+model 精确匹配 llm.billing.prices 计算单 run 成本（design D3）。
+
+    成本 = input/1M×输入价 + output/1M×输出价 + cache_read/1M×缓存读价
+         + cache_creation/1M×缓存写价。
+    usage 缺失、计费开关关闭、该 model@provider 未配置价格（或价格行字段残缺）
+    → 返回 None（unpriced，展示「成本不可用」，绝不回退网关回传金额）。
+    匹配键以 run 产物 provider_marker 的实际网关与模型为准（failover 切换后
+    成本归属仍精确）。
+
+    Args:
+        usage: run 产物 result 事件 usage 字段（dict 或 None）
+        model_used: 实际驱动模型名（provider_marker 的 model）
+        provider_used: 实际驱动网关名（provider_marker 的 provider）
+        billing: `llm.billing` 配置段（{enabled, prices: [...]}）或 None
+    """
+    if not isinstance(usage, dict):
+        return None
+    if not isinstance(billing, dict) or not billing.get("enabled"):
+        return None
+    if not model_used or not provider_used:
+        return None
+    price_keys = {
+        "input": ("input_tokens", "input_per_million"),
+        "output": ("output_tokens", "output_per_million"),
+        "cache_read": ("cache_read_input_tokens", "cache_read_per_million"),
+        "cache_creation": ("cache_creation_input_tokens", "cache_creation_per_million"),
+    }
+    for row in billing.get("prices") or []:
+        if not isinstance(row, dict):
+            continue
+        if row.get("provider") != provider_used or row.get("model") != model_used:
+            continue
+        try:
+            total = 0.0
+            for _part, (usage_key, price_key) in price_keys.items():
+                price = row.get(price_key)
+                if price is None:
+                    return None
+                tokens = int(usage.get(usage_key) or 0)
+                total += tokens / 1_000_000.0 * float(price)
+            return total
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _split_llm_marker(llm: str) -> tuple:
+    """把 provider_marker 的 `model@provider` 串拆回 (model, provider)。
+
+    无 @ 的残留串视为只有模型名（provider 置空 → 无法匹配价格，判不可计价）。
+    """
+    if not llm:
+        return "", ""
+    if "@" in llm:
+        model, provider = llm.rsplit("@", 1)
+        return model, provider
+    return llm, ""
 
 
 def get_spec_timeline(project_root, spec_name: str) -> list:
@@ -2207,14 +2289,23 @@ def get_spec_timeline(project_root, spec_name: str) -> list:
                         status_updates.append(
                             (ts, str(new_status), str(err) if err else ""))
 
-    # 运行节点（含归档：旧 spec 的 run 产物被清理后时间轴仍可回看）
+    # 运行节点（含归档：旧 spec 的 run 产物被清理后时间轴仍可回看）。
+    # add-model-billing-cost-display（D4）：计费开关开启时按 usage×配置单价现算，
+    # 附 cost_usd（None 不下发）；开关关闭时整条时间轴无成本字段（前端不渲染）。
+    billing_enabled, billing = _load_billing_config(project_root)
     for r in get_runs(project_root, spec_name, include_archive=True):
         insights = _run_tail_insights(_resolve_run_file(project_root, r["run_id"]))
-        events.append({"time": r["started"], "kind": "run", "run_id": r["run_id"],
-                       "agent_type": r["agent_type"], "status": r["status"],
-                       "spec": r.get("spec"),
-                       "duration_seconds": r.get("duration_seconds"),
-                       "summary": insights["summary"], "llm": insights["llm"]})
+        node = {"time": r["started"], "kind": "run", "run_id": r["run_id"],
+                "agent_type": r["agent_type"], "status": r["status"],
+                "spec": r.get("spec"),
+                "duration_seconds": r.get("duration_seconds"),
+                "summary": insights["summary"], "llm": insights["llm"]}
+        if billing_enabled:
+            model, provider = _split_llm_marker(insights["llm"])
+            cost = compute_run_cost(insights["usage"], model, provider, billing)
+            if cost is not None:
+                node["cost_usd"] = cost
+        events.append(node)
 
     # ── 打回节点重建：update_spec 直写 status 的变更（无 Transition 行）补建状态节点 ──
     # transition() 成对写的 Updated SPEC 行（与 Transition 节点 Δt<2s 且目标相同）去重跳过；
@@ -2366,6 +2457,32 @@ def _timeline_with_retry(timeline: list, project_root, entry: dict) -> list:
     return timeline
 
 
+def _cost_summary_from_timeline(timeline: list) -> dict:
+    """汇总时间轴内可计价 run 的成本（add-model-billing-cost-display D4）。
+
+    Returns: {"computed_usd": float|None, "priced_runs": int, "unpriced_runs": int}
+    可计价 run 的成本求和；至少一个可计价 run 时 computed_usd 非 None（否则为
+    None = 全部不可计价，界面展示「成本不可用」）。
+    """
+    total = 0.0
+    priced = 0
+    unpriced = 0
+    for e in timeline:
+        if e.get("kind") != "run":
+            continue
+        cost = e.get("cost_usd")
+        if cost is None:
+            unpriced += 1
+        else:
+            priced += 1
+            total += cost
+    return {
+        "computed_usd": total if priced else None,
+        "priced_runs": priced,
+        "unpriced_runs": unpriced,
+    }
+
+
 def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     """单个 SPEC 的完整详情（/api/specs/<spec>）。"""
     report = parse_report(project_root, spec_name)
@@ -2390,6 +2507,15 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
     from core.spec_mode import read_spec_mode
     mode = read_spec_mode(project_root, spec_name)
+    # 时间轴（含运行节点 cost_usd；计费开关关闭时 get_spec_timeline 不下发）
+    timeline = _timeline_with_retry(
+        get_spec_timeline(project_root, spec_name), project_root, entry)
+    # add-model-billing-cost-display（D4）：SPEC 级成本合计——可计价 run 求和 +
+    # 未计价 run 数量附注；计费开关关闭时不下发成本字段（前端不渲染）。
+    cost_summary = None
+    billing_on, _b = _load_billing_config(project_root)
+    if billing_on:
+        cost_summary = _cost_summary_from_timeline(timeline)
     return {
         "name": spec_name,
         "status": entry.get("status"),
@@ -2420,8 +2546,9 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "screenshots": screenshots,
         "runs": runs,
         "verdict": verdict,
-        "timeline": _timeline_with_retry(
-            get_spec_timeline(project_root, spec_name), project_root, entry),
+        "timeline": timeline,
+        # add-model-billing-cost-display：SPEC 级成本合计（计费关闭时缺省 None）
+        "cost_summary": cost_summary,
         # add-cost-observability（D2）：治理区展示的累计 token 与成本可用性标记。
         # _cost_usd 仅在网关真实回传时存在（不伪造金额，spec「金额展示不伪造」）。
         "token_usage": _token_usage_view(entry),
@@ -3043,6 +3170,55 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         llm = merged.get("llm") or {}
         if llm:
             ConfigLoader._validate_llm(llm)
+        # add-model-billing-cost-display（task 1.1）：llm.billing 校验——enabled 布尔、
+        # 每行 provider 引用必须存在于 llm.providers、model 非空、四项单价非负数值、
+        # provider+model 不重复；任一非法拒绝写入（不静默忽略），错误列出违规行。
+        billing = llm.get("billing") if isinstance(llm, dict) else None
+        if billing is not None:
+            if not isinstance(billing, dict):
+                raise ValueError(
+                    f"llm.billing must be an object, got: {type(billing).__name__}"
+                )
+            if "enabled" in billing and billing["enabled"] is not None \
+                    and not isinstance(billing["enabled"], bool):
+                raise ValueError(
+                    f"llm.billing.enabled must be a boolean: {billing['enabled']!r}"
+                )
+            prices = billing.get("prices")
+            if prices is not None:
+                if not isinstance(prices, list):
+                    raise ValueError("llm.billing.prices must be a list")
+                provider_names = set()
+                for p in (llm.get("providers") or []):
+                    if isinstance(p, dict) and p.get("name"):
+                        provider_names.add(p["name"])
+                price_fields = ("input_per_million", "output_per_million",
+                                "cache_read_per_million", "cache_creation_per_million")
+                seen: set = set()
+                for idx, row in enumerate(prices):
+                    if not isinstance(row, dict):
+                        raise ValueError(f"llm.billing.prices[{idx}] must be an object")
+                    errs = []
+                    provider = row.get("provider")
+                    model = row.get("model")
+                    if not isinstance(provider, str) or not provider:
+                        errs.append(f"prices[{idx}].provider 缺失")
+                    elif provider not in provider_names:
+                        errs.append(
+                            f"prices[{idx}].provider 引用了不存在的 provider: {provider}"
+                        )
+                    if not isinstance(model, str) or not model.strip():
+                        errs.append(f"prices[{idx}].model 必须为非空字符串")
+                    for f in price_fields:
+                        v = row.get(f)
+                        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+                            errs.append(f"prices[{idx}].{f} 必须为非负数值: {v!r}")
+                    key = (provider, model)
+                    if key in seen:
+                        errs.append(f"prices[{idx}] provider+model 重复: {provider}@{model}")
+                    seen.add(key)
+                    if errs:
+                        raise ValueError("llm.billing 校验失败: " + "; ".join(errs))
         agents = merged.get("agents") or {}
         if "models" in agents and agents["models"]:
             ConfigLoader._validate_agent_models(agents["models"], llm)

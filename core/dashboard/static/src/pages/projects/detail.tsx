@@ -219,6 +219,13 @@ function ReasonText({ reason, onOpenReport }: { reason: string; onOpenReport: ()
   );
 }
 
+// add-model-billing-cost-display（design D5）：金额格式化——统一 $x.xx；
+// < $0.01 显示三位小数（$0.001），避免小额全零。仅展示口径，不做入账四舍五入。
+function formatUsd(v: number): string {
+  if (v > 0 && v < 0.01) return `$${v.toFixed(3)}`;
+  return `$${v.toFixed(2)}`;
+}
+
 // fix-verify-verdict-visibility：被分类过滤（非 product-bug）失败场景的分类中文标签
 // （对齐 verdict-evidence-taxonomy 分类：test-defect/flaky/env）
 const FILTERED_FAILURE_LABELS: Record<string, string> = {
@@ -724,6 +731,11 @@ export default function SpecDetailPage() {
                   </Typography.Text>
                   <Typography.Text>{agentLabel(item)}</Typography.Text>
                   {item.llm && <Tag color="blue" style={{ marginInlineEnd: 0 }}>{item.llm}</Tag>}
+                  {/* add-model-billing-cost-display：可计价 run 成本标注（样式同 llm Tag；
+                      不可计价节点不下发 cost_usd，不渲染，避免历史节点噪音） */}
+                  {item.cost_usd != null && (
+                    <Tag color="green" style={{ marginInlineEnd: 0 }}>{formatUsd(item.cost_usd)}</Tag>
+                  )}
                   {!!item.retry_count && item.retry_count > 0 && (
                     <Tag color="orange" style={{ marginInlineEnd: 0 }}>
                       重试 {item.retry_count}{item.retry_max ? `/${item.retry_max}` : ''}
@@ -1180,6 +1192,25 @@ export default function SpecDetailPage() {
           <Descriptions.Item label="输出 Token">
             {detail?.token_usage ? fmtMillions(detail.token_usage.tokens_out) : '—'}
           </Descriptions.Item>
+          {/* add-model-billing-cost-display：SPEC 级成本合计（本地计算口径）。
+              计费开关关闭时后端不下发 cost_summary → 整行不渲染；
+              computed_usd 为 null（全部未计价）→ 「成本不可用」，绝不显示 $0.00 */}
+          {detail?.cost_summary && (
+            <Descriptions.Item label="成本">
+              {detail.cost_summary.computed_usd != null ? (
+                <>
+                  <Typography.Text strong>{formatUsd(detail.cost_summary.computed_usd)}</Typography.Text>
+                  {detail.cost_summary.unpriced_runs > 0 && (
+                    <Typography.Text type="secondary" style={{ marginLeft: 4 }}>
+                      （含 {detail.cost_summary.unpriced_runs} 个未计价 run）
+                    </Typography.Text>
+                  )}
+                </>
+              ) : (
+                <Typography.Text type="secondary">成本不可用</Typography.Text>
+              )}
+            </Descriptions.Item>
+          )}
         </Descriptions>
       </Card>
 
