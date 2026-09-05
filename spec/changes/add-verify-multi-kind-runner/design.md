@@ -83,3 +83,5 @@ PR1 抽接口+WebRunner 归位（现有测试全绿+Dashboard fixture 配方回�
 
 - `sse_connect` 的断言证据形态（窗口内事件截断上限、事件匹配的 actual 呈现）在 PR2 实现时定，原则同 64KB 截断纪律
 - ApiRunner 的 client 级连接池参数（并发上限/keepalive）v1 用 httpx 默认值，观察到瓶颈再暴露配置
+- `.fenix` 链接隔离边界（add-planner-efficiency 出题 planner 2026-09-05 实证发现）：worktree 作用域下验证实例的 `.fenix` 链接主树运行态，CLI 场景的 `file_content`/`json_output` 若断言 `.fenix/` 下路径（日志/config），读写实际落在主树——读断言无害，涉及写路径的 CLI 场景需在 planner 指导中标注此边界；根治需「验证实例独立 .fenix」的契约扩展，不在本 spec 范围
+- 「serve 起完整 daemon」形态：backend 生命周期型交付物（如 agent_runner 的 run 结束摘要写入）需要验证环境内含 daemon 进程才能端到端验证；当前 serve 仅 dashboard-only 实例。CLI/API 词表可覆盖「确定性触发通道 + 文件断言」部分，生命周期部分留给后续契约扩展
