@@ -40,6 +40,11 @@ _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _DEPRECATED_STUCK_WARNED = False
 _SUPERVISION_BOUNDS_WARNED = False
 
+# ── improve-hot-reload-robustness D3：未知 agent 类型键降级告警去重 ──
+# 同一未知键每进程生命周期只报一次（30s 热重载重试风暴下，不去重则告警与
+# ERROR 同步刷屏）。keys 以键名字符串为准，不随进程内白名单变化失效。
+_UNKNOWN_AGENT_MODEL_KEYS_WARNED = set()
+
 
 def deep_merge(base: dict, override: dict) -> dict:
     """深度合并两个配置 dict，返回新 dict（不修改入参）。
@@ -131,7 +136,8 @@ class ConfigLoader:
         解析或校验失败时抛异常且不触碰 config（保留旧值，运行中配置不被坏文件清空）。
         """
         fresh = cls.resolve_config(project_root)
-        cls._validate(fresh, require_project=False)
+        # 注意：resolve_config 内部（config.py:123）已对 fresh 完成同一份 _validate，
+        # 此处不重复校验（improve-hot-reload-robustness D9 死代码清理）。
         config.clear()
         config.update(fresh)
 
@@ -208,9 +214,11 @@ class ConfigLoader:
         if llm:
             cls._validate_llm(llm)
 
-        # Validate agents.models (optional — absence means no assignments)
+        # Validate agents.models (optional — absence means no assignments)。
+        # models 显式提供（非 None）即进校验：非 dict 段由 _validate_agent_models
+        # 内部按"忽略该段 + 告警"降级（improve-hot-reload-robustness D2）。
         agents = config.get("agents") or {}
-        if "models" in agents and agents["models"]:
+        if "models" in agents and agents["models"] is not None:
             cls._validate_agent_models(agents["models"], llm)
 
         # Validate gates.approve_mode (optional — defaults to manual)
@@ -381,9 +389,45 @@ class ConfigLoader:
         return None
 
     @classmethod
+    def _warn_unknown_agent_model_key(cls, agent_type: str) -> bool:
+        """未知 agent 类型键逐键降级告警（每进程生命周期对同一键只报一次）。
+
+        improve-hot-reload-robustness D1/D3：未知键不整段拒绝——跳过该校键校验、
+        键保留在有效配置中（跳过校验 ≠ 剔除数据）。告警文案内嵌重启处方
+        （touch .fenix/restart_request）。热重载失败快照不更新的 30s 重试风暴下，
+        同一键只报一次，后续轮次静默跳过。
+
+        Returns: True 表示本次为首次告警；False 表示此前已告警过、本轮静默。
+        """
+        if agent_type in _UNKNOWN_AGENT_MODEL_KEYS_WARNED:
+            return False
+        _UNKNOWN_AGENT_MODEL_KEYS_WARNED.add(agent_type)
+        _logger.error(
+            "agents.models 含未知 agent 类型键 %r（本进程已知类型: %s）——已跳过"
+            "该键校验、键保留在有效配置中。若该角色是新增派发角色，请重启 daemon "
+            "使新白名单生效（touch .fenix/restart_request）",
+            agent_type, sorted(cls.KNOWN_AGENT_TYPES),
+        )
+        return True
+
+    @classmethod
     def _validate_agent_models(cls, models: Dict[str, Any], llm: Dict[str, Any]):
+        """校验 agents.models 段。分类线（improve-hot-reload-robustness D2）：
+
+        - 键集不匹配（代码演进产物，如新角色未被本进程白名单收录）→ 逐键降级：
+          跳过该校键校验 + ERROR 告警（含重启处方），键保留在有效配置中；
+        - 值/类型非法（配置真坏，如已知键的 provider 链形态错误）→ 维持 raise
+          整段拒绝，旧配置原子保留；
+        - 本段整段非 dict → 忽略该段 + ERROR 告警（无法逐键时按段跳，对齐
+          _load_optional_yaml 哲学），其余段照常校验应用。
+        """
         if not isinstance(models, dict):
-            raise ValueError(f"agents.models must be a dict, got: {type(models).__name__}")
+            _logger.error(
+                "agents.models 整段非 dict（%s），该段已忽略、不参与校验；其余配置"
+                "照常应用（如需生效请修正后重启：touch .fenix/restart_request）",
+                type(models).__name__,
+            )
+            return
 
         provider_names = set()
         providers = (llm or {}).get("providers") or []
@@ -395,10 +439,8 @@ class ConfigLoader:
 
         for agent_type, assignment in models.items():
             if agent_type not in cls.KNOWN_AGENT_TYPES:
-                raise ValueError(
-                    f"agents.models key '{agent_type}' is not a known agent type. "
-                    f"Known types: {cls.KNOWN_AGENT_TYPES}"
-                )
+                cls._warn_unknown_agent_model_key(agent_type)
+                continue
             if not isinstance(assignment, dict):
                 raise ValueError(f"agents.models.{agent_type} must be a dict")
             raw_provider = assignment.get("provider")
@@ -870,13 +912,14 @@ class ConfigLoader:
 
     @classmethod
     def reset_stuck_threshold_state(cls) -> None:
-        """重置弃用/兜底告警的生命周期去重标记（供测试与 daemon 重启隔离）。
+        """重置弃用/兜底/未知键告警的生命周期去重标记（供测试与 daemon 重启隔离）。
 
         正常 daemon 生命周期内只打一次；单测需多次验证「首次告警 / 二次静默」时显式重置。
         """
         global _DEPRECATED_STUCK_WARNED, _SUPERVISION_BOUNDS_WARNED
         _DEPRECATED_STUCK_WARNED = False
         _SUPERVISION_BOUNDS_WARNED = False
+        _UNKNOWN_AGENT_MODEL_KEYS_WARNED.clear()
 
     @classmethod
     def effective_auto_archive_threshold(cls, config: Dict[str, Any],

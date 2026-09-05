@@ -10,7 +10,7 @@ daemon 内独立线程周期性读取本地数据（STATE.md、.fenix/runs/ 转�
   - flapping           窗口内同 spec ready↔implementing 状态切换 ≥ 阈值（默认 10 分钟 ≥3 次）
   - stuck              implementing/testing 超 stuck_threshold_minutes 且无 run 进度
   - merge_streak       _merge_streak 已达熔断阈值仍滞留（merge-back 反复失败）
-  - daemon_errors      fenixd.log 尾部连续 ERROR ≥ 阈值
+  - daemon_errors    10 分钟窗口内同指纹 ERROR 复现 ≥2 次且最近两次间隔 ≤5 分钟
 
 节流（D2）：同 spec 同类信号在 admin.escalation_cooldown_minutes 内只唤起一次，
 依据 .fenix/admin_alerts.json 中的 signal 记录与未处理升级告警。
@@ -18,6 +18,7 @@ daemon 内独立线程周期性读取本地数据（STATE.md、.fenix/runs/ 转�
 纯本地数据、零 LLM：本模块任何路径都不调用 claude / LLM API。
 """
 
+import hashlib
 import json
 import re
 import tempfile
@@ -33,7 +34,13 @@ REPEAT_FAILURE_WINDOW_MINUTES = 30
 REPEAT_FAILURE_THRESHOLD = 3
 FLAPPING_WINDOW_MINUTES = 10
 FLAPPING_THRESHOLD = 3
-DAEMON_ERROR_THRESHOLD = 3
+# ── daemon-error-escalation D5/D7：daemon_errors 升级口径常量 ──────
+# DAEMON_ERROR_THRESHOLD 语义从「尾部物理连续条数」改为「10 分钟窗口内同指纹
+# 最少复现次数」；升级还需最近两次同指纹条目间隔 ≤ MAX_GAP。全部保持模块常量
+# 不进 config（规避"新增配置项必须带 Dashboard UI"约束）。
+DAEMON_ERROR_THRESHOLD = 2
+DAEMON_ERROR_WINDOW_MINUTES = 10
+DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES = 5
 STUCK_GRACE_MINUTES = 10  # run 文件 mtime 距现在小于此值视为"有进度"，不算卡死
 RESTART_REQUEST_TIMEOUT_MINUTES = 10  # restart_request 超时未清除 → 重启失败 → 升级
 
@@ -84,7 +91,7 @@ SIGNAL_RECOMMENDATION = {
     "stuck": "检查卡死 Agent 子进程（kill 并按需重启），或重置 spec 状态重新调度",
     "merge_streak": "检查 merge-back 冲突根因（stash/分支冲突），清理 git 状态后重新 merge",
     "blocked_stuck": "检查 blocked 是否误置（误判派生的假 spec）或确需人工决策；清理假 spec 或重置后重新调度，必要时升级",
-    "daemon_errors": "检查 fenixd 连续 ERROR 的根因，必要时重启 daemon",
+    "daemon_errors": "检查 fenixd 重复 ERROR 的根因（同错误 10 分钟窗口内复现 ≥2 次），必要时重启 daemon",
     "family_explosion": "检修根因环境（如验证报告互相咬合导致 fix 递归）；确认放行一次则对父 SPEC 设置 _family_waiver=true",
     "dispatch_stalled": "检查持锁进程是否为孤儿（ps/pgrep 确认后 kill），清理残留 worktree 锁后让 spec 重新派发",
 }
@@ -96,6 +103,47 @@ STORED_SIGNAL_TYPES = ("family_explosion", "dispatch_stalled")
 
 # run_id 前缀 → 计入"失败 run"的 agent 类型
 _RUN_PREFIXES = ("impl-", "verify-", "planner-plan-", "planner-judge-", "admin-")
+
+# ── daemon-error-escalation D6：错误指纹归一化（保守集）────────────
+# 只归一化四类：ISO-8601 时间戳→@、UUID→~、≥16 位 hex→~、纯数字序列→#。
+# 不动路径与文字骨架——过度归一化会把不同错误误聚合，而"≥2 次才升级"已提供缓冲。
+_ISO_TS_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
+)
+_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+_HEX16_RE = re.compile(r"[0-9a-fA-F]{16,}")
+# 独立数字 token（不被字母/下划线包围）——run_id、attempt 计数、epoch、超时秒数等
+_STANDALONE_NUMBER_RE = re.compile(r"(?<![0-9a-zA-Z_])\d+(?![0-9a-zA-Z_])")
+
+
+def _normalize_error_message(message: str) -> str:
+    """err message 归一化（improve-hot-reload-robustness D6 保守集）。
+
+    顺序：先按 ISO 时间戳（含日期骨架）、UUID、hex 三类带字母形态替换，最后替换
+    独立数字序列——防止 hex 中的数字被先行拆散。
+    """
+    msg = str(message)
+    msg = _ISO_TS_RE.sub("@", msg)
+    msg = _UUID_RE.sub("~", msg)
+    msg = _HEX16_RE.sub("~", msg)
+    msg = _STANDALONE_NUMBER_RE.sub("#", msg)
+    return msg
+
+
+def _error_fingerprint(component: str, message: str) -> str:
+    """错误指纹 = sha1(component + "\\x00" + normalize(message))（D6）。
+
+    同一 source 同一错误骨架（仅内嵌时间戳/UUID/数字不同）→ 同指纹复现成立；
+    不同错误 message 骨架不同 → 指纹不同、不聚合升级。
+    """
+    raw = f"{component or ''}\x00{_normalize_error_message(message)}"
+    return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()
+
+
+# 尾部读上限：日志增长后每轮巡检只 seek 最近 256KB（3.5），避免全量 read_text
+_TAIL_ERROR_READ_BYTES = 256 * 1024
 
 
 class AdminMonitor:
@@ -508,29 +556,103 @@ class AdminMonitor:
         return signals
 
     def _detect_daemon_errors(self, now: float) -> list:
-        """fenixd.log 尾部连续 ERROR ≥ 阈值。"""
+        """fenixd.log：10 分钟窗口内同指纹 ERROR 复现 ≥2 次且最近两次间隔 ≤5 分钟
+        → daemon_errors critical signal（daemon-error-escalation D5）。
+
+        无状态每轮巡检重算（读尾部即得，不持久化计数器、daemon 重启安全）；恢复
+        靠窗口滑动自然过期（重载成功不写 ERROR，10 分钟后自动归零）。中间被
+        INFO/WARNING/其他错误打断不影响同指纹复现计数；单条瞬时错误不升级；
+        两条不同错误各 1 次不聚合（指纹不同）。
+        """
         log_file = self.project_root / ".fenix" / "logs" / "fenixd.log"
         if not log_file.exists():
             return []
+        window = DAEMON_ERROR_WINDOW_MINUTES * 60
+        max_gap = DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES * 60
+
+        by_fp: dict = {}
+        for ts, component, message in self._read_tail_error_entries(log_file):
+            by_fp.setdefault(_error_fingerprint(component, message), []).append(ts)
+
+        signals = []
+        for fp, stamps in by_fp.items():
+            in_window = [t for t in stamps if t is None or (now - window <= t <= now)]
+            if len(in_window) < DAEMON_ERROR_THRESHOLD:
+                continue
+            ts_ok = sorted(t for t in in_window if t is not None)
+            if len(ts_ok) >= 2 and (ts_ok[-1] - ts_ok[-2]) > max_gap:
+                continue
+            count = len(in_window)
+            last_ts = ts_ok[-1] if ts_ok else None
+            last_str = (
+                datetime.fromtimestamp(last_ts, tz=timezone.utc).isoformat()
+                if last_ts else "无可用时间戳"
+            )
+            missing_ts = sum(1 for t in in_window if t is None)
+            signals.append(self._make_signal(
+                "daemon_errors", None,
+                f"fenixd 日志同错误（指纹 {fp[:8]}）在 {DAEMON_ERROR_WINDOW_MINUTES} 分钟"
+                f"窗口内复现 {count} 次，建议检查根因并重启 daemon",
+                f"同指纹 ERROR 复现 {count} 次（最近一次 {last_str}"
+                + (f"；{missing_ts} 条缺时间戳按窗口内计入" if missing_ts else "")
+                + f"）；升级条件：同指纹 ≥{DAEMON_ERROR_THRESHOLD} 次且最近两次间隔"
+                f" ≤{DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES} 分钟",
+            ))
+        return signals
+
+    @staticmethod
+    def _parse_error_line(line: str):
+        """解析单行日志为 (ts_epoch|None, component, message)；非 ERROR JSON 行返回 None。
+
+        逐行 JSON 解析（logger 保证单行 JSON、\\n 已转义，多行 traceback 安全）；
+        非 JSON 行（旧格式/fixture/traceback 原文）回退 raw 归一化且 timestamp 置
+        None——fail-closed 仍计入指纹桶（D6：宁可多告警不漏告警）。timestamp
+        缺失/解析失败同样置 None。
+        """
         try:
-            lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            return None, "raw", line
+        if not isinstance(entry, dict) or entry.get("level") != "ERROR":
+            return None
+        ts_epoch = None
+        ts = entry.get("timestamp")
+        if ts:
+            try:
+                ts_epoch = datetime.fromisoformat(
+                    str(ts).replace("Z", "+00:00")
+                ).timestamp()
+            except (ValueError, TypeError):
+                ts_epoch = None
+        component = entry.get("component") or "unknown"
+        message = entry.get("message") or line
+        return ts_epoch, component, message
+
+    def _read_tail_error_entries(self, log_file: Path) -> list:
+        """seek 尾部回退读 ≤256KB（tasks 3.5），逐行解析 ERROR 条目。
+
+        返回 [(ts_epoch|None, component, message)]（日志时序序）。seek 截断的首行
+        丢弃；读取/解码失败返回空列表（检测静默跳过）。
+        """
+        try:
+            size = log_file.stat().st_size
+            with log_file.open("rb") as f:
+                if size > _TAIL_ERROR_READ_BYTES:
+                    f.seek(size - _TAIL_ERROR_READ_BYTES)
+                    f.readline()  # 丢弃 seek 可能截断的首行
+                data = f.read().decode("utf-8", "replace")
         except OSError:
             return []
-        # 取尾部，跳过空行，统计结尾连续 ERROR 数量
-        tail = [l for l in lines[-200:] if l.strip()]
-        streak = 0
-        for line in reversed(tail):
-            if '"level": "ERROR"' in line:
-                streak += 1
-            elif '"level"' in line:  # 遇到其他级别即中断连续段
-                break
-        if streak < DAEMON_ERROR_THRESHOLD:
-            return []
-        return [self._make_signal(
-            "daemon_errors", None,
-            f"fenixd 日志尾部连续 {streak} 条 ERROR",
-            f"最近连续 ERROR ≥{DAEMON_ERROR_THRESHOLD} 条（fenixd.log 尾部）",
-        )]
+        entries = []
+        for line in data.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parsed = self._parse_error_line(line)
+            if parsed is None:
+                continue
+            entries.append(parsed)
+        return entries
 
     # ── 信号处理：记录 + 节流 + 唤起 ────────────────────────────
 
