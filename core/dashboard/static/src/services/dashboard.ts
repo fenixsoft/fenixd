@@ -657,6 +657,38 @@ export async function saveTodo(
   });
 }
 
+// ── 项目 verify.yaml（/api/verify-yaml，设置页「项目简介」面板查看与编辑）──
+
+export interface VerifyYamlData {
+  project: string;
+  path: string;
+  /** 文件尚不存在时为 false，content 为空串 */
+  exists: boolean;
+  content: string;
+}
+
+export async function getVerifyYaml(project: string): Promise<VerifyYamlData> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request<VerifyYamlData>(`/api/verify-yaml${q}`);
+}
+
+export async function saveVerifyYaml(
+  project: string,
+  content: string,
+): Promise<{ ok: boolean; project: string; path: string }> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request(`/api/verify-yaml${q}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+}
+
+/** 契约模板（core/verify_contract_template.yaml，全注释 = 惰性 YAML） */
+export async function getVerifyYamlTemplate(): Promise<{ path: string; template: string }> {
+  return request(`/api/verify-yaml-template`);
+}
+
 // ── 帮助中心（/api/help/*，读取框架仓库 docs/help/）──
 
 export interface HelpDocMeta {

@@ -24,6 +24,9 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     POST /api/spec-admin-invoke?project=<name>&spec=<name>  → 手动唤起 Admin（写 .fenix/admin_invoke_request.json，进行中返回 409）
     GET /api/config?project=<name> → 读取受管配置（llm / agents.models / gates.approve_mode）
     POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
+    GET /api/verify-yaml?project=<name> → 验证契约文件 .fenix/verify.yaml 原文（设置页「项目简介」面板）
+    POST /api/verify-yaml?project=<name> → 保存验证契约（整文件覆写；YAML 语法 + 顶层映射校验，失败 400）
+    GET /api/verify-yaml-template → 契约模板原文（core/verify_contract_template.yaml，设置页「插入模板」用）
     GET /api/prompts?project=<name> → agent 提示词：通用层（只读）+ 项目级 .fenix/agents/ 附加（缺 project 仅通用层）
     POST /api/prompts?project=<name> → 保存项目附加提示词（body: {"agent_type","content"}；白名单校验、自引用项目拒绝 403）
     GET /api/help/docs → 帮助文档清单 [{name, title}]（docs/help/ 动态读盘，README 置顶）
@@ -49,6 +52,8 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+import yaml
 
 from . import data as dashboard_data
 from .registry import Registry
@@ -325,6 +330,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(self._api_prompts_get(query))
         elif path == "/api/todo":
             self._api_todo_get(query)
+        elif path == "/api/verify-yaml":
+            self._api_verify_yaml_get(query)
+        elif path == "/api/verify-yaml-template":
+            self._api_verify_yaml_template()
         elif path == "/api/spec-doc":
             self._json(self._api_spec_doc(query))
         elif path == "/api/help/docs":
@@ -917,8 +926,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if is_self_referencing_project(proot):
             self._error(
                 403,
-                "自引用项目（.fenix 解析为框架根）的项目级提示词即通用层 agents/，"
-                "禁止经项目通道修改通用提示词",
+                "自引用项目（项目根或 .fenix 解析为框架根）无项目级附加层："
+                "运行时跳过读取，框架自身提示词演进走 SPEC 流程",
             )
             return
         content = body.get("content")
@@ -930,14 +939,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         target.write_text(content, encoding="utf-8")
         self._json({"ok": True, "agent_type": agent_type, "path": str(target)})
 
-    def _todo_project_or_error(self, query):
-        """todo.md 端点共用校验：缺 project 400、项目未知/不存在 404。
+    def _project_query_or_error(self, query, what: str):
+        """文件级项目端点共用校验：缺 project 400、项目未知/不存在 404。
 
         通过返回项目 dict；失败已发送错误响应并返回 None。
         """
         name = query.get("project", [None])[0]
         if not name:
-            self._error(400, "缺少 project 参数（todo.md 为项目级文件）")
+            self._error(400, f"缺少 project 参数（{what}为项目级文件）")
             return None
         project = self.server.project_by_name(name)
         if project is None or not project.get("exists"):
@@ -951,7 +960,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         路径固定为 <项目根>/.fenix/todo.md，不接受任意路径参数。
         文件尚不存在（自省未运行过）返回空串 + exists=false。
         """
-        project = self._todo_project_or_error(query)
+        project = self._project_query_or_error(query, "todo.md")
         if project is None:
             return
         proot = Path(project["path"])
@@ -976,7 +985,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = self._read_json_body()
         if body is None:
             return
-        project = self._todo_project_or_error(query)
+        project = self._project_query_or_error(query, "todo.md")
         if project is None:
             return
         content = body.get("content")
@@ -992,6 +1001,82 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._error(500, f"todo.md 保存失败: {e}")
             return
         self._json({"ok": True, "project": project["name"], "path": str(target)})
+
+    def _api_verify_yaml_get(self, query) -> None:
+        """GET /api/verify-yaml?project=<name> — 验证契约文件读取（设置页「项目简介」面板）。
+
+        路径固定为 <项目根>/.fenix/verify.yaml，不接受任意路径参数。
+        文件尚不存在返回空串 + exists=false（前端提示可从模板创建）。
+        """
+        project = self._project_query_or_error(query, "verify.yaml")
+        if project is None:
+            return
+        proot = Path(project["path"])
+        target = proot / ".fenix" / "verify.yaml"
+        exists = target.is_file()
+        content = ""
+        try:
+            if exists:
+                content = target.read_text(encoding="utf-8")
+        except OSError as e:
+            self._error(500, f"verify.yaml 读取失败: {e}")
+            return
+        self._json({"project": project["name"], "path": str(target),
+                    "exists": exists, "content": content})
+
+    def _api_verify_yaml_post(self, query):
+        """POST /api/verify-yaml?project=<name> — 保存验证契约（整文件覆写）。
+
+        body: {"content": <自由 YAML>}。与 todo.md 的关键差异：保存前做校验——
+        1. YAML 语法必须可解析（坏 YAML 会被 load_verify_contract 按「无契约」
+           静默回退，用户以为契约生效了实则没有，编辑器必须当场拦截）；
+        2. 顶层必须为字段映射或空（列表/标量同样静默失效）。
+        不做字段级 schema 校验：加载器对未知字段宽容，字段语义在模板注释里。
+        """
+        body = self._read_json_body()
+        if body is None:
+            return
+        project = self._project_query_or_error(query, "verify.yaml")
+        if project is None:
+            return
+        content = body.get("content")
+        if not isinstance(content, str):
+            self._error(400, "content 必须为字符串（自由 YAML，不做字段级 schema 校验）")
+            return
+        try:
+            data = yaml.safe_load(content)
+        except yaml.YAMLError as e:
+            self._error(400, f"YAML 语法错误，拒绝保存（坏契约会被框架按「无契约」"
+                             f"静默回退）: {e}")
+            return
+        if data is not None and not isinstance(data, dict):
+            self._error(400, f"verify.yaml 顶层必须是字段映射（prepare/serve/ready），"
+                             f"当前为 {type(data).__name__}——非映射契约会被框架静默失效")
+            return
+        proot = Path(project["path"])
+        target = proot / ".fenix" / "verify.yaml"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        except OSError as e:
+            self._error(500, f"verify.yaml 保存失败: {e}")
+            return
+        self._json({"ok": True, "project": project["name"], "path": str(target)})
+
+    def _api_verify_yaml_template(self) -> None:
+        """GET /api/verify-yaml-template — 契约模板原文（设置页「插入模板」按钮）。
+
+        模板单一来源 = core/verify_contract_template.yaml（fenix-init 生成、
+        setup skill 复制均引用同一文件）；全部配置行注释 = 惰性 YAML。
+        """
+        template = (Path(__file__).resolve().parent.parent
+                    / "verify_contract_template.yaml")
+        try:
+            content = template.read_text(encoding="utf-8")
+        except OSError as e:
+            self._error(500, f"契约模板读取失败: {e}")
+            return
+        self._json({"path": str(template), "template": content})
 
     def _api_alerts(self, query) -> dict:
         """读取 Administrator 告警。
@@ -1219,6 +1304,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_prompts_post(query)
         elif path == "/api/todo":
             self._api_todo_post(query)
+        elif path == "/api/verify-yaml":
+            self._api_verify_yaml_post(query)
         elif path == "/api/spec-error-clear":
             self._api_spec_error_clear(query)
         elif path == "/api/spec-priority":

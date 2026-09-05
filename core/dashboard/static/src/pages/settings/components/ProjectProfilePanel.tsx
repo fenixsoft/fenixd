@@ -1,7 +1,12 @@
-import { Button, Card, Input, Typography, message } from 'antd';
+import { Alert, Button, Card, Input, Popconfirm, Typography, message } from 'antd';
 import { useState, useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
-import { regenerateProjectDescription } from '@/services/dashboard';
+import {
+  getVerifyYaml,
+  getVerifyYamlTemplate,
+  regenerateProjectDescription,
+  saveVerifyYaml,
+} from '@/services/dashboard';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -57,19 +62,76 @@ export default function ProjectProfilePanel({ config, onSave, project }: Project
     }
   };
 
+  // ── verify.yaml 查看与编辑（项目级文件）──
+  const [yamlDraft, setYamlDraft] = useState<string>('');
+  const [yamlExists, setYamlExists] = useState<boolean>(false);
+  const [yamlLoading, setYamlLoading] = useState(false);
+  const [yamlSaving, setYamlSaving] = useState(false);
+
+  const loadVerifyYaml = async (silent = false) => {
+    if (!project) return;
+    if (!silent) setYamlLoading(true);
+    try {
+      const d = await getVerifyYaml(project);
+      setYamlDraft(d.content);
+      setYamlExists(d.exists);
+    } catch (e) {
+      console.error('Failed to load verify.yaml:', e);
+      message.error(`加载 verify.yaml 失败：${e instanceof Error ? e.message : e}`);
+    } finally {
+      if (!silent) setYamlLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadVerifyYaml();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project]);
+
+  const handleYamlSave = async () => {
+    if (!project) return;
+    setYamlSaving(true);
+    try {
+      await saveVerifyYaml(project, yamlDraft);
+      message.success('verify.yaml 已保存');
+      setYamlExists(true);
+      await loadVerifyYaml(true);
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      message.error(`保存失败：${errorMessage}`);
+      console.error('Failed to save verify.yaml:', e);
+    } finally {
+      setYamlSaving(false);
+    }
+  };
+
+  const handleInsertTemplate = async () => {
+    try {
+      const d = await getVerifyYamlTemplate();
+      setYamlDraft(d.template);
+      message.info('已插入契约模板：按项目实际取消注释并修改，保存后下一轮验证生效');
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      message.error(`模板加载失败：${errorMessage}`);
+      console.error('Failed to load verify.yaml template:', e);
+    }
+  };
+
   return (
     <div>
-      <h3>项目简介</h3>
-      <Text type="secondary">
-        项目简介将展示在概览页项目卡片和项目列表页，帮助快速了解项目用途。
-      </Text>
+      <h3>项目：{project}</h3>
+      <Text type="secondary">项目级的具体设置信息。</Text>
       <Card style={{ marginTop: 12 }}>
+        <h3 style={{ marginTop: 0 }}>项目简介</h3>
+        <Text type="secondary">
+          项目简介将展示在概览页项目卡片和项目列表页，帮助快速了解项目用途。
+        </Text>
         <TextArea
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="暂无简介"
           autoSize={{ minRows: 4, maxRows: 8 }}
-          style={{ marginBottom: 16 }}
+          style={{ marginTop: 12, marginBottom: 16 }}
         />
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <Button onClick={handleRegenerate} loading={loading}>
@@ -80,6 +142,77 @@ export default function ProjectProfilePanel({ config, onSave, project }: Project
           </Button>
         </div>
       </Card>
+
+      {/* verify.yaml 为项目级文件：验证契约查看与编辑 */}
+      {project ? (
+        <Card style={{ marginTop: 16 }} data-testid="verify-yaml-section">
+          <h3 style={{ marginTop: 0 }}>验证契约（verify.yaml）</h3>
+          <Text type="secondary">
+            项目 <code>.fenix/verify.yaml</code> 声明应用如何构建（prepare）、如何被服务
+            （serve）、何时算就绪（ready）。保存时做 YAML 语法校验；生效于下一轮验证。
+            本文件随仓库提交，保存后建议尽快 commit（daemon 派发 agent 前会 stash
+            未提交修改）。
+          </Text>
+          {!yamlExists && !yamlLoading && (
+            <Alert
+              style={{ marginTop: 8 }}
+              type="info"
+              showIcon
+              message="尚无 verify.yaml（无契约时框架回退旧行为），可插入模板后按项目修改保存。"
+              data-testid="verify-yaml-missing-alert"
+            />
+          )}
+          <TextArea
+            data-testid="verify-yaml-textarea"
+            value={yamlDraft}
+            onChange={(e) => setYamlDraft(e.target.value)}
+            disabled={yamlLoading}
+            placeholder={'# 全注释 = 无契约。可点击「插入模板」开始配置。'}
+            autoSize={{ minRows: 12, maxRows: 28 }}
+            style={{ marginTop: 12, fontFamily: 'monospace' }}
+          />
+          <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between' }}>
+            <div>
+              {yamlDraft.trim() ? (
+                <Popconfirm
+                  title="当前编辑内容将被模板覆盖"
+                  description="未保存的修改会丢失，确定继续？"
+                  okText="覆盖"
+                  cancelText="取消"
+                  onConfirm={handleInsertTemplate}
+                >
+                  <Button data-testid="verify-yaml-template">插入模板</Button>
+                </Popconfirm>
+              ) : (
+                <Button onClick={handleInsertTemplate} data-testid="verify-yaml-template">
+                  插入模板
+                </Button>
+              )}
+              <Button
+                style={{ marginLeft: 8 }}
+                onClick={() => loadVerifyYaml()}
+                data-testid="verify-yaml-reload"
+              >
+                重新加载
+              </Button>
+            </div>
+            <Button
+              type="primary"
+              loading={yamlSaving}
+              onClick={handleYamlSave}
+              data-testid="verify-yaml-save"
+            >
+              保存 verify.yaml
+            </Button>
+          </div>
+        </Card>
+      ) : (
+        <Card style={{ marginTop: 16 }}>
+          <Text type="secondary">
+            验证契约为项目级文件（<code>.fenix/verify.yaml</code>）。查看与编辑请切换到项目级作用域。
+          </Text>
+        </Card>
+      )}
     </div>
   );
 }

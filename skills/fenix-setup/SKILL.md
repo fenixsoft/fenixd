@@ -102,9 +102,26 @@ fi
 echo "项目简介已生成"
 ```
 
-### 5. 初始化状态文件
+### 5. 初始化状态文件与验证契约模板
 
 如果 .fenix/STATE.md 和 .fenix/PROJECT_LOG.md 不存在，创建它们。
+
+如果 .fenix/verify.yaml 不存在，从框架模板生成（模板全部配置行注释 =
+无契约，框架安全回退旧行为；用户后续在 Dashboard 设置页或直接编辑取消
+注释启用）。已存在则绝不覆盖：
+
+```bash
+if [ ! -f ".fenix/verify.yaml" ]; then
+    if [ -f ".fenix/core/verify_contract_template.yaml" ]; then
+        cp ".fenix/core/verify_contract_template.yaml" ".fenix/verify.yaml"
+        echo "已生成 .fenix/verify.yaml（契约模板，按项目实际取消注释启用）"
+    else
+        echo "跳过：找不到契约模板 .fenix/core/verify_contract_template.yaml"
+    fi
+else
+    echo ".fenix/verify.yaml 已存在，跳过"
+fi
+```
 
 ### 6. 启动 fenixd
 

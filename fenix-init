@@ -124,6 +124,18 @@ def main():
             target.write_text(template.read_text(encoding="utf-8") if template.exists() else "", encoding="utf-8")
             log(f"  ✅ .fenix/{fname}")
 
+    # 2b. .fenix/verify.yaml（验证契约模板；全部配置行注释 = 无契约，框架安全回退）
+    verify_path = fenix_dir / "verify.yaml"
+    if verify_path.exists():
+        log("  ⏭  .fenix/verify.yaml 已存在，跳过")
+    else:
+        template = FENIXD_HOME / "core" / "verify_contract_template.yaml"
+        if template.exists():
+            verify_path.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+            log("  ✅ .fenix/verify.yaml（契约模板，按项目实际取消注释启用）")
+        else:
+            log("  ⚠  找不到契约模板 core/verify_contract_template.yaml，跳过（不影响框架运行）")
+
     # 3. spec 目录
     for sub in ("changes", "specs"):
         ensure_dir(project_root / "spec" / sub)
