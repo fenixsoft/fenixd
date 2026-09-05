@@ -330,6 +330,16 @@ class PMEngine:
 
             self.logger.info("pm_engine", f"Verification passed: '{spec_name}' → done")
             if self.state_machine.transition(spec_name, "done"):
+                # verify-process-lifecycle D6（spec 终局驱逐）：done 落定后同步
+                # 回收该 spec 的被测实例——stop 登记服务 + 驱逐缓存 + 移除 serving
+                # worktree（幂等；主树 static 共享实例保留）。
+                try:
+                    self._verification._evict_spec_serving(spec_name)
+                except Exception as e:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"spec 终局 serving 驱逐失败 '{spec_name}'（非阻塞）: {e}",
+                    )
                 # add-done-duration-persist（D1/D2）：done 落定时刻把总耗时快照进
                 # STATE.md，使耗时不再依赖易失的 run 产物（run 产物只增不减，
                 # 但快照保证耗时独立于产物回读路径）。

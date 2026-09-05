@@ -1,0 +1,229 @@
+"""serving_registry.py — .fenix/verify-serving/servers.json 登记制（verify-process-lifecycle D6）。
+
+command 型被测实例（verify.yaml serve.kind=command 与 _ensure_app_reachable 兜底
+spawn）创建时登记（pid/port/spec/worktree）、stop 时移除；daemon 启动与周期清扫
+按 /proc liveness 收割「无在飞 spec 但进程仍存活」的登记项并移除登记。
+
+文件属运行时状态（`kind: reference`，非仓库交付物，gitignore 排除）；读写走
+`.fenix/` 既有 lock 模式（fcntl 文件锁 + 原子写 rename，见 admin_store 同款）。
+
+登记制是兜底增强而非唯一防线：v2 dev-server 仍有 marker pgrep 扫描路径
+（core/v2_dev_server.cleanup_orphans）；json 写入失败/崩溃丢条目仅损失
+收割效率，不制造新失败。
+"""
+
+import fcntl
+import json
+import os
+import signal
+import subprocess
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+SERVERS_FILENAME = "servers.json"
+
+
+def servers_path(project_root) -> Path:
+    """登记文件绝对路径：<project_root>/.fenix/verify-serving/servers.json。"""
+    return Path(project_root) / ".fenix" / "verify-serving" / SERVERS_FILENAME
+
+
+class ServingRegistry:
+    """servers.json 登记表：进程内互斥 + 跨进程 fcntl 文件锁。"""
+
+    def __init__(self, project_root, logger=None):
+        self.project_root = Path(project_root)
+        self.path = servers_path(self.project_root)
+        self._lockfile = Path(str(self.path) + ".lock")
+        self._thread_lock = threading.Lock()
+        self.logger = logger
+
+    # ── 内部：加锁读/写（admin_store 同款模式）──────────────────────
+
+    def _lock(self):
+        self._lockfile.parent.mkdir(parents=True, exist_ok=True)
+        return open(self._lockfile, "w")
+
+    @staticmethod
+    def _read_unlocked(path: Path) -> list:
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        return [e for e in data if isinstance(e, dict)]
+
+    def _write_unlocked(self, records: list):
+        """原子写（临时文件 + replace），调用方须已持有文件排他锁。"""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path_str = tempfile.mkstemp(
+            prefix=".servers.", suffix=".tmp", dir=str(self.path.parent))
+        tmp_path = Path(tmp_path_str)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(records, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(str(tmp_path), str(self.path))
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+
+    def _mutate(self, fn):
+        """在单次排他锁内完成读-改-写，返回 fn(records) 的结果。
+
+        跨进程并发（daemon 周期清扫与验证线程 register/remove）若分别在两次
+        锁获取中读改写会互相覆盖丢失记录，必须一次性持锁完成。
+        fn 返回 False 表示无变更，跳过写回（文件 mtime 保持不变）。
+        """
+        with self._thread_lock:
+            with self._lock() as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                try:
+                    records = self._read_unlocked(self.path)
+                    result = fn(records)
+                    if result is not False:
+                        self._write_unlocked(records)
+                    return result
+                finally:
+                    fcntl.flock(lf, fcntl.LOCK_UN)
+
+    # ── 公开 API ───────────────────────────────────────────────────
+
+    def register(self, pid: int, port, spec: str, worktree) -> bool:
+        """登记一条实例（创建时）。同 (pid, spec) 已登记时幂等跳过。
+
+        Returns: 是否发生写入（False = 已存在，幂等跳过）。
+        """
+        def _fn(records):
+            for r in records:
+                if r.get("pid") == pid and r.get("spec") == spec:
+                    return False
+            records.append({
+                "pid": pid,
+                "port": port,
+                "spec": spec,
+                "worktree": str(worktree) if worktree else "",
+                "registered_at": int(time.time()),
+            })
+            return True
+        try:
+            return bool(self._mutate(_fn))
+        except OSError:
+            if self.logger:
+                self.logger.warning(
+                    "serving_registry", f"登记写盘失败（非阻塞）: {self.path}")
+            return False
+
+    def remove(self, pid: int, spec: str = "") -> bool:
+        """移除登记（stop 时）。按 pid（+spec 可选）匹配。
+
+        Returns: 是否实际移除（False = 无匹配条目）。
+        """
+        def _fn(records):
+            before = len(records)
+            if spec:
+                records[:] = [r for r in records
+                              if not (r.get("pid") == pid and r.get("spec") == spec)]
+            else:
+                records[:] = [r for r in records if r.get("pid") != pid]
+            return len(records) != before
+        try:
+            return bool(self._mutate(_fn))
+        except OSError:
+            return False
+
+    def entries(self) -> list:
+        """当前全部登记项（只读快照）。"""
+        with self._thread_lock:
+            with self._lock() as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                try:
+                    return self._read_unlocked(self.path)
+                finally:
+                    fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+# ── 进程存活与收割助手（/proc liveness）──────────────────────────────
+
+def pid_alive(pid: int) -> bool:
+    """/proc 探针：kill(pid, 0) 成功即存活（忽略僵尸判定差异，够用）。"""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def kill_process_group(pid: int) -> bool:
+    """进程组 SIGTERM → 短等待 → SIGKILL 兜底（同 CommandVerifyServer.stop 语义）。
+
+    Returns: 是否向进程组发出过信号。
+    """
+    sent = False
+    try:
+        pgid = os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        pgid = None
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+            sent = True
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if not pid_alive(pid):
+            return sent
+        time.sleep(0.2)
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    return sent
+
+
+def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
+    """收割无在飞 spec 的登记项并移除登记（daemon 启动与周期清扫共用）。
+
+    Args:
+        project_root: 项目根。
+        logger: 可选日志器。
+        is_spec_in_flight: callable(spec_name) -> bool，判定 spec 当前是否在飞
+            （验证活跃）。缺省 None = 全部视为非在飞（daemon 启动场景）。
+
+    Returns: 收割的进程数。
+    """
+    reg = ServingRegistry(project_root, logger)
+    harvested = 0
+    for entry in reg.entries():
+        pid = entry.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        spec = str(entry.get("spec") or "")
+        alive = pid_alive(pid)
+        in_flight = bool(is_spec_in_flight(spec)) if is_spec_in_flight else False
+        if alive and in_flight:
+            continue  # 属主 spec 在飞，保留
+        if alive:
+            # 进程仍存活但属主 spec 不在飞：收割进程组再移除登记
+            kill_process_group(pid)
+            harvested += 1
+        reg.remove(pid, spec)
+    if harvested and logger:
+        logger.warning(
+            "serving_registry",
+            f"harvested {harvested} registered serving instance(s) "
+            f"without in-flight spec",
+        )
+    return harvested

@@ -141,3 +141,19 @@ process.on('SIGINT', () => {
   console.log('Received SIGINT, shutting down...');
   server.close(() => process.exit(0));
 });
+
+// ── 父子绑定自杀（verify-process-lifecycle D3）────────────────────────
+// daemon 从 per-dispatch 线程 spawn 本服务；daemon 被 kill -9 时 SIGTERM
+// handler 不会执行，本进程被 init 收养成 PPID=1 的孤儿。这里周期轮询
+// process.ppid === 1（孤儿判据）即自行退出，不依赖外部清扫。
+// 明确不用 PDEATHSIG：daemon 的 per-dispatch **线程**死亡即触发该信号，
+// run 结束线程退出会把仍在服务的实例提前误杀。
+const PARENT_POLL_INTERVAL_MS = 2000;
+setInterval(() => {
+  if (process.ppid === 1) {
+    console.error('Parent process gone (PPID=1), self-terminating orphan dev-server');
+    server.close(() => process.exit(0));
+    // 兜底：close 挂起（有长连接）时 2s 后强退，保证孤儿自灭不卡死
+    setTimeout(() => process.exit(0), 2000).unref();
+  }
+}, PARENT_POLL_INTERVAL_MS).unref();

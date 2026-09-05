@@ -83,6 +83,8 @@ from urllib.request import Request, urlopen
 
 import yaml
 
+from core.proc_utils import find_free_port
+
 CONTRACT_FILENAME = "verify.yaml"
 PREPARE_STEP_TIMEOUT = 600  # 单条构建步骤上限（秒）：构建慢是常态，600s 内完不成应修构建
 DEFAULT_READY_TIMEOUT = 60
@@ -247,9 +249,9 @@ def run_prepare_steps(contract: VerifyContract, project_root: Path) -> Optional[
 
 
 def _find_free_port() -> int:
-    with socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    # 兼容引用（verify-process-lifecycle D5）：实为共用助手 core.proc_utils.find_free_port
+    #（v2_dev_server 端口分配路径与静态/命令实例同源）。
+    return find_free_port()
 
 
 class StaticVerifyServer:
@@ -327,6 +329,16 @@ class CommandVerifyServer:
         if self._port is None:
             return f"http://127.0.0.1:{0}"
         return f"http://127.0.0.1:{self._port}"
+
+    @property
+    def port(self) -> Optional[int]:
+        """发现后的实际监听端口（未发现/启动失败为 None）。"""
+        return self._port
+
+    @property
+    def pid(self) -> int:
+        """被测实例进程 PID（servers.json 登记按此 liveness 收割）。"""
+        return self._proc.pid
 
     @property
     def ok(self) -> bool:

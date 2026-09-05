@@ -9,6 +9,8 @@ import json
 import subprocess
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -64,6 +66,108 @@ def read_run_file(proot: Path, run_id: str) -> list:
         if line:
             out.append(json.loads(line))
     return out
+
+
+class TestTerminalHarvest:
+    """verify-process-lifecycle 终态收割（_execute_agent try/finally）测试。
+
+    覆盖 spec 场景：frozen 早退/异常路径/日限 raise 等任意终态后无注册条目
+    残留；fast-track keep 不误收割；重复收割幂等。
+    """
+
+    def _runner_with_harvest(self, proot: Path):
+        runner = make_runner(proot)
+        # _v2_server 为只读 property（惰性 _v2_server_instance），注入 mock 用 __dict__
+        runner.__dict__["_v2_server_instance"] = MagicMock()
+        runner.worktree_manager = MagicMock()
+        return runner
+
+    def test_exception_path_harvests_registry(self, tmp_path):
+        """_execute_agent 内部抛未预期异常 → finally 收割仍执行，注册条目清空。"""
+        runner = self._runner_with_harvest(tmp_path / "proj")
+        wt = Path("/w/impl-exc-1")
+
+        def fake_inner(spec_name, agent_type, run_id, pre_wt_path=None,
+                       conflict_summary=None, used_wts=None, handed_off=None):
+            used_wts.add(wt)
+            raise RuntimeError("unexpected boom")
+
+        runner._execute_agent_inner = fake_inner
+        with pytest.raises(RuntimeError):
+            runner._execute_agent("spec", "implementer", "impl-exc-1")
+        runner._v2_server._v2_stop_for_worktree.assert_called_once_with(wt)
+        runner.worktree_manager._kill_worktree_strays.assert_called_once_with(
+            wt.name)
+
+    def test_normal_terminal_harvests_used(self, tmp_path):
+        """常规终态（非 keep 分支）：收割对 used_wts 生效。"""
+        runner = self._runner_with_harvest(tmp_path / "proj")
+        wt = Path("/w/impl-norm-1")
+
+        def fake_inner(spec_name, agent_type, run_id, pre_wt_path=None,
+                       conflict_summary=None, used_wts=None, handed_off=None):
+            used_wts.add(wt)
+            return SimpleNamespace(success=True)
+
+        runner._execute_agent_inner = fake_inner
+        runner._execute_agent("spec", "implementer", "impl-norm-1")
+        runner._v2_server._v2_stop_for_worktree.assert_called_once_with(wt)
+
+    def test_fast_track_keep_not_harvested(self, tmp_path):
+        """fast-track keep 分支（hand-off）：终态收割不停止其 dev-server。"""
+        runner = self._runner_with_harvest(tmp_path / "proj")
+        wt = Path("/w/impl-ft-1")
+
+        def fake_inner(spec_name, agent_type, run_id, pre_wt_path=None,
+                       conflict_summary=None, used_wts=None, handed_off=None):
+            used_wts.add(wt)
+            handed_off.add(wt)  # 成功延迟清理 → 交接 dispatch 层
+            return SimpleNamespace(success=True, worktree_path=wt)
+
+        runner._execute_agent_inner = fake_inner
+        runner._execute_agent("spec", "fast-track", "impl-ft-1")
+        runner._v2_server._v2_stop_for_worktree.assert_not_called()
+        runner.worktree_manager._kill_worktree_strays.assert_not_called()
+
+    def test_repair_keep_not_harvested(self, tmp_path):
+        """repair 载体（hand-off）：终态收割不回收（dispatch 层负责）。"""
+        runner = self._runner_with_harvest(tmp_path / "proj")
+        wt = Path("/w/impl-repair-1")
+
+        def fake_inner(spec_name, agent_type, run_id, pre_wt_path=None,
+                       conflict_summary=None, used_wts=None, handed_off=None):
+            used_wts.add(wt)
+            handed_off.add(wt)
+            return SimpleNamespace(success=True, worktree_path=wt,
+                                   worktree_kept=True)
+
+        runner._execute_agent_inner = fake_inner
+        runner._execute_agent("spec", "repair", "repair-1",
+                              pre_wt_path=wt, conflict_summary={})
+        runner._v2_server._v2_stop_for_worktree.assert_not_called()
+
+    def test_repeated_harvest_idempotent(self, tmp_path):
+        """同一 worktree 收割两次（runner 层 + dispatch 层）→ 第二次无害。"""
+        runner = self._runner_with_harvest(tmp_path / "proj")
+        wt = Path("/w/impl-dup-1")
+        runner._v2_harvest_used_worktrees({wt}, set())
+        # 双调无害：不抛异常，注册表幂等弹出
+        runner._v2_harvest_used_worktrees({wt}, set())
+        assert runner._v2_server._v2_stop_for_worktree.call_count == 2
+
+    def test_frozen_early_exit_still_harvests(self, tmp_path):
+        """frozen 早退（派发被终止）→ 已登记的 used_wts 仍被收割。"""
+        runner = self._runner_with_harvest(tmp_path / "proj")
+        wt = Path("/w/impl-frozen-1")
+
+        def fake_inner(spec_name, agent_type, run_id, pre_wt_path=None,
+                       conflict_summary=None, used_wts=None, handed_off=None):
+            used_wts.add(wt)
+            return SimpleNamespace(success=False, error="spec frozen")
+
+        runner._execute_agent_inner = fake_inner
+        runner._execute_agent("spec", "verifier", "verify-frozen-1")
+        runner._v2_server._v2_stop_for_worktree.assert_called_once_with(wt)
 
 
 class TestWaitForRunningAgents:
