@@ -243,6 +243,14 @@ class ConfigLoader:
                 raise ValueError(
                     f"admin.workers must be a non-negative integer: {workers}"
                 )
+        # interrupt-recovery-preserve D1：规划性重启排水窗口；0 = 不排水、保持现行
+        # 快速停机。负数/非法类型拒绝（读取方 _validated_drain 另有回退兜底）。
+        if "shutdown_drain_seconds" in admin and admin["shutdown_drain_seconds"] is not None:
+            drain = admin["shutdown_drain_seconds"]
+            if not isinstance(drain, (int, float)) or isinstance(drain, bool) or drain < 0:
+                raise ValueError(
+                    f"admin.shutdown_drain_seconds must be a non-negative number: {drain}"
+                )
 
         # add-daily-self-review：admin.self_review 段护栏。
         # enabled/read_todo 须为布尔（非布尔直接拒绝）；run_at 须合法 HH:MM、
@@ -633,6 +641,10 @@ class ConfigLoader:
             ),
             "stuck_threshold_minutes": stuck_seconds / 60.0,
             "merge_breaker_threshold": int(breaker),
+            # interrupt-recovery-preserve D1：规划性重启排水窗口（秒）；0 = 现行
+            # 快速停机。缺省 1800（半小时量级，用户已确认方向）。
+            "shutdown_drain_seconds": max(
+                0, int(admin.get("shutdown_drain_seconds", 1800) or 1800)),
             # add-daily-self-review：自省配置段（enabled 缺省 false）
             "self_review": cls.get_self_review_config(config),
         }

@@ -54,6 +54,14 @@ AUTOSTASH_MSG_PREFIX = "fenix: pre-dispatch autostash"
 # rename 双胞胎的旧路径误判为语义冲突，自愈静默跳过。
 DASHBOARD_STATIC_ROOT = "core/dashboard/static/"
 
+# ── worktree 可用性三态（interrupt-recovery-preserve D5）────────────────────
+# is_available 的返回值：以 git 为真相（git worktree list + rev-parse --verify），
+# 不信任内存表（daemon 重启即失）。recovery 保留判定、resume 派发、复用认领
+# 三条链路共用同一查询，禁止各链路自行拼装目录/分支判断。
+WT_AVAILABLE = "available"      # 分支可解析 + 目录在场 + git worktree 注册有效 → 原地可用
+WT_REBUILDABLE = "rebuildable"  # 分支可解析但目录缺失/未注册 → 可在既有分支上重建
+WT_UNAVAILABLE = "unavailable"  # 分支不可解析（已并入/已清扫/typo）→ 不可用，调用方降级
+
 
 def _is_build_artifact_path(path: str) -> bool:
     """构建产物路径判定：static 根下任一层级 dist 目录内的文件。"""
@@ -641,13 +649,29 @@ class WorktreeManager:
                 # worktree 继承：认领痕迹随之清除（防止后续 prompt 误注入继承说明）
                 self._active_reuse.pop(self._lock_spec_name(k), None)
 
-    def cleanup_orphans(self):
-        """Clean up any remaining worktree directories on shutdown."""
+    def cleanup_orphans(self, protected: set | None = None):
+        """Clean up any remaining worktree directories on shutdown.
+
+        Args:
+            protected: 保护集（路径字符串集合）——被保全引用覆盖的 worktree
+                （interrupt-recovery-preserve D6：`.fenix/interrupted_runs.json`
+                在册项与保留分支对应的 worktree）在 shutdown 清理时跳过，
+                防止「保全」与「清理」两条链路对同一 worktree 处置不一致。
+                缺省空集，行为与旧版完全一致。
+        """
+        protected = {str(p) for p in (protected or set())}
         if not self.base_dir.exists():
             return
 
         for wt_dir in self.base_dir.iterdir():
             if wt_dir.is_dir() and str(wt_dir) in self._active_worktrees:
+                if str(wt_dir) in protected:
+                    self.logger.info(
+                        "worktree_manager",
+                        f"Skip orphan cleanup for {wt_dir} — protected by "
+                        f"interrupted-runs preserve entry",
+                    )
+                    continue
                 self.logger.info("worktree_manager", f"Cleaning up orphan: {wt_dir}")
                 try:
                     subprocess.run(
@@ -920,19 +944,13 @@ class WorktreeManager:
         path = rec.get("path") or ""
         branch = rec.get("branch") or ""
         wt = Path(path) if path else None
+        # 有效性判定收敛到 is_available 单源（interrupt-recovery-preserve D5）：
+        # 目录存在 + git worktree 注册有效 + 分支可解析。判定口径与 repair
+        # 换壳（resolve_repair_site）、recovery 保留一致，任何链路不自行拼装。
         valid = False
-        if wt is not None and wt.exists() and branch:
+        if wt is not None:
             try:
-                inside = subprocess.run(
-                    ["git", "-C", str(wt), "rev-parse", "--is-inside-work-tree"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                br = subprocess.run(
-                    ["git", "-C", str(self.project_root), "rev-parse",
-                     "--verify", branch],
-                    capture_output=True, text=True, timeout=10,
-                )
-                valid = inside.returncode == 0 and br.returncode == 0
+                valid = self.is_available(wt, branch) == WT_AVAILABLE
             except Exception:
                 valid = False
         if not valid:
@@ -2410,6 +2428,58 @@ class WorktreeManager:
         except Exception:
             return False
 
+    # ── worktree 可用性单源（interrupt-recovery-preserve D5）────────────────
+    # recovery 保留判定、resume 派发、复用认领（fast-track 继承、repair 换壳）
+    # 三条链路共用 is_available，禁止各链路自行拼装目录/分支判断。以 git 为
+    # 真相（git worktree list + rev-parse --verify），不信任内存表
+    # （_active_worktrees/_wt_branches，daemon 重启即失）。
+
+    def is_available(self, wt_path=None, branch=None) -> str:
+        """worktree 可用性三态单源查询（interrupt-recovery-preserve D5）。
+
+        三态：
+          - ``WT_AVAILABLE``（available）：分支可解析 + worktree 目录在场 +
+            ``git worktree list`` 注册有效 → 原地可用，resume/reuse 直接进入；
+          - ``WT_REBUILDABLE``（rebuildable）：分支可解析但无有效 worktree
+            目录/注册（目录被外部删除、或从未在该分支建过 worktree）→ 可在
+            既有分支上重建（checkout 而非 ``-b`` 新建）；
+          - ``WT_UNAVAILABLE``（unavailable）：分支不可解析（已并入主树/已
+            清扫/typo 分支名）→ 不可用，调用方降级到清空重建。
+
+        Args:
+            wt_path: 候选 worktree 路径（Path/str，可选）。提供时与 git 注册
+                结果核对：与注册不符的残留目录不视为可用（以 git 为准）。
+            branch: 分支名（可选）。缺省时尝试从 wt_path 的 HEAD 解析分支。
+
+        Returns: 三态字符串之一（WT_* 常量）。
+        """
+        if not branch:
+            if wt_path is not None:
+                branch = self._guess_branch_from_worktree(wt_path)
+            if not branch:
+                branch = self._wt_branches.get(str(wt_path)) if wt_path is not None else None
+            if not branch:
+                return WT_UNAVAILABLE
+        if not self.branch_exists(branch):
+            return WT_UNAVAILABLE
+        registered = self.find_worktree_path(branch)
+        if wt_path is not None:
+            # 显式候选路径：以其自身目录存在性为「原地可用」判据——防止对
+            # 已删目录盲派发（fix-resume-stale-worktree 同源缺口）。目录残留
+            # 但非本分支 git 注册 worktree 时同样不可原地使用（以 git 为准）。
+            candidate = Path(wt_path)
+            if not candidate.is_dir():
+                return WT_REBUILDABLE  # 分支在 → 可从分支重建
+            if registered is not None and str(Path(registered)) == str(candidate):
+                return WT_AVAILABLE
+            return WT_REBUILDABLE
+        # 未给候选路径：以 git 注册为真相
+        if registered is None or not Path(registered).is_dir():
+            # 分支可解析但 git 无有效注册 worktree：目录即使残留也不可用，
+            # 应从分支重建载体。
+            return WT_REBUILDABLE
+        return WT_AVAILABLE
+
     # ── repair 通道：分支载体解析（add-merge-back-repair-lane D3）────────────
     # repair 以「git 事实」为判定基准（git worktree list + 分支解析），不信任
     # 内存表（daemon 重启即失）。三态：
@@ -2446,6 +2516,16 @@ class WorktreeManager:
                     f"cannot re-shell repair site for '{spec_name}'",
                 )
                 return None
+            # 清理陈注册（interrupt-recovery-preserve D5）：目录被外部删除但
+            # worktree 注册仍在时，git 会拒绝「该分支已 checkout」。prune 只
+            # 移除目录已消失的注册，安全幂等；失败不阻塞（create 自会报错）。
+            try:
+                subprocess.run(
+                    ["git", "-C", str(self.project_root), "worktree", "prune"],
+                    capture_output=True, text=True, timeout=10,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                pass
             result = subprocess.run(
                 ["git", "-C", str(self.project_root),
                  "worktree", "add", str(wt_path), branch],
@@ -2521,28 +2601,49 @@ class WorktreeManager:
             return False
 
     def resolve_repair_site(self, spec_name: str, branch: str):
-        """解析 repair 分支载体三态（add-merge-back-repair-lane D3）。
+        """解析 repair/恢复续做 分支载体三态（共用 is_available 单源查询，D5）。
+
+        与 resolve_resume_site 同源（repair 换壳 / recovery 保留 续做）：
+        - WT_AVAILABLE → 原地（git 注册的 worktree，登记活动集供 cleanup/sweeper 豁免）
+        - WT_REBUILDABLE → 在既有分支上重建 worktree（checkout，create_worktree_on_branch）
+        - WT_UNAVAILABLE → (None, None)，调用方降级清空重建
 
         Returns:
             - ``(wt_path, branch)``：载体可用——wt_path 为原 worktree（原地）
               或换壳新建的 worktree；branch 为实现分支名。
-            - ``(None, None)``：分支不存在（已并入主树或已清扫），回退
-              fallback（调度层全新重派）。
+            - ``(None, None)``：载体不可用，调度层全新重派。
             产物自愈可静态判断本方法不涉 — 是否进入 repair 由调度层决定。
         """
-        if not branch or not self.branch_exists(branch):
+        if not branch:
             return None, None
-        existing = self.find_worktree_path(branch)
-        if existing is not None and existing.exists():
-            # 原地进入：登记活动集与分支映射（repair worker 收尾 cleanup / sweeper
-            # 豁免都依赖该登记；三态 (a) 原有 worktree 若非本次创建则无登记）。
-            self._active_worktrees.add(str(existing))
-            self._wt_branches[str(existing)] = branch
-            return existing, branch
+        avail = self.is_available(branch=branch)
+        if avail == WT_UNAVAILABLE:
+            return None, None
+        if avail == WT_AVAILABLE:
+            existing = self.find_worktree_path(branch)
+            if existing is not None:
+                self._active_worktrees.add(str(existing))
+                self._wt_branches[str(existing)] = branch
+                return existing, branch
+        # WT_REBUILDABLE（或 WT_AVAILABLE 但 find_worktree_path 意外返回 None）
         wt = self.create_worktree_on_branch(spec_name, branch)
         if wt is None:
             return None, None
         return wt, branch
+
+    def resolve_resume_site(self, spec_name: str, branch: str):
+        """恢复续做载体三态解析（interrupt-recovery-preserve D4/D5）。
+
+        与 resolve_repair_site 同源（共用 is_available 单源查询），语义相同：
+        - WT_AVAILABLE → 原地续做（保留 node_modules/构建缓存/--resume 会话）
+        - WT_REBUILDABLE → 在既有分支上重建 worktree（checkout，不从零新建分支）
+        - WT_UNAVAILABLE → (None, None)，调用方降级清空重建并 WARNING
+
+        与 resolve_repair_site 的区分：命名恢复专用（可独立演进语义），当前
+        行为等价。resume 续做在 dispatch 层通过 pre_wt_path 进入 _execute_agent，
+        复用 implementer 的 prompt 构建与 claude --resume 断点续跑。
+        """
+        return self.resolve_repair_site(spec_name, branch)
 
     def claim_legacy_for_repair(self, spec_name: str) -> Optional[dict]:
         """repair 认领时摘出 _legacy 登记（add-merge-back-repair-lane D4）。

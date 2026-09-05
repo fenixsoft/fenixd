@@ -197,6 +197,10 @@ admin:
   # 单源派生（run_timeout + 600s 宽限），此处不再保留该配置行。
   # merge 熔断阈值（复用 agents.merge_breaker_threshold 默认 2）
   # merge_breaker_threshold: 2
+  # 规划性重启（supervisor 检测到 .fenix/restart_request）时的排水窗口（秒）：
+  # daemon 收到 SIGTERM 后等待在跑 run 自然终态，到期才走 terminate 收口；
+  # 0 = 不排水、保持现行快速停机。supervisor 的 SIGKILL 等待 = 本值 + 120s 余量。
+  shutdown_drain_seconds: 1800
 
 # ---- Agent Run 超时护栏（可选）----
 # timeout_supervision 监控单次 Agent 运行的墙钟上限，防止超时参数再次与 run 超时脱钩。

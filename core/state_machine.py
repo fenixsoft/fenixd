@@ -11,6 +11,7 @@ Handles atomic reads/writes of STATE.md with file locking.
 import fcntl
 import os
 import re
+import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -149,9 +150,10 @@ class StateParser:
                         value = int(value)
                     except ValueError:
                         value = 999
-                elif key == FROZEN_FIELD:
+                elif key in (FROZEN_FIELD, "_recovery_resume"):
                     # 布尔字段显式转换：字符串 "False" 也是 truthy，不转会把
-                    # 解冻后的 spec 永久误判为冻结（fix-restart-dual-dispatch S4）
+                    # 解冻后的 spec 永久误判为冻结（fix-restart-dual-dispatch S4）；
+                    # _recovery_resume（interrupt-recovery-preserve）同型处理。
                     value = value.lower() in ("true", "1", "yes")
                 elif key in ("implementer_run", "tester_run", "branch", "error",
                              "total_duration"):
@@ -592,14 +594,19 @@ class StateMachine:
 
     # ── Recovery ───────────────────────────────────────────────────
 
-    def recover_interrupted(self) -> List[str]:
+    def recover_interrupted(self, project_root=None, worktree_manager=None) -> List[str]:
         """
         On daemon restart, revert any SPECs stuck in interrupted states.
         Uses update_spec directly (bypasses transition validation for recovery).
         Returns list of recovered SPEC names.
 
         恢复目标按中断态区分（2026-09-04 help-center 误派实证）：
-        - implementing（实现中断）→ ready 重派 implementer（原语义，branch 清空）；
+        - implementing（实现中断）→ ready 重派 implementer。interrupt-recovery-
+          preserve（D4）改判定：分支存在且相对 main 有未合并提交 → 保留
+          branch/implementer_run + ``_recovery_resume`` 标记，按 resume 续做
+          （dispatch 层在保留分支上续做而非从零重派）；仅零提交/分支缺失才走
+          现行清空路径（逐字节兼容）。project_root/worktree_manager 缺省时行为
+          与旧版完全一致（脚本/测试场景零变化）。
         - testing（验证中断）→ implemented 重派 verifier——实现已合并/落分支，
           重置 ready 会误派 implementer 从头实现已合并代码并劫持 branch 字段
           （pushed 记录被写成 rogue 分支）；配合场景冻结复用，重验代价极小。
@@ -625,6 +632,15 @@ class StateMachine:
                     })
                     recovered.append(name)
                     continue
+                # ── 中断恢复保留续做（interrupt-recovery-preserve D4）──
+                # 有提交分支 → 保留 branch/implementer_run 并按 resume 续做；
+                # 三态载体处置（在场/重建/降级）经 worktree_manager 单源查询
+                #（is_available）。零提交/分支缺失/载体不可用 → 现行清空路径。
+                preserved = self._recovery_preserve_spec(
+                    name, entry, project_root, worktree_manager)
+                if preserved:
+                    recovered.append(name)
+                    continue
                 # 清空陈旧的 run 字段，否则 full_scan 的恢复派发会因
                 # implementer_run 非空而跳过重新调度（fix-fenix-token-waste）
                 self.update_spec(name, {
@@ -639,3 +655,68 @@ class StateMachine:
                 })
                 recovered.append(name)
         return recovered
+
+    def _recovery_preserve_spec(self, name: str, entry: dict,
+                                project_root=None, worktree_manager=None) -> bool:
+        """实现中断的恢复保留判定与三态载体处置（interrupt-recovery-preserve D4/D5）。
+
+        判定：branch 在册、分支可解析、且 ``git rev-parse main..branch`` 非空
+        （相对 main 有未合并提交）→ 保留。载体处置经 worktree_manager 三态
+        单源查询（is_available）：在场原地登记（受清理豁免）；缺失在既有分支
+        上重建 worktree；不可用降级清空重建并 WARNING。
+
+        Returns: True 表示已保留并写入恢复续做标记（调用方计入 recovered）。
+        """
+        if project_root is None or worktree_manager is None:
+            return False
+        branch = entry.get("branch")
+        if not branch:
+            return False
+        try:
+            # 分支可解析 + 相对 main 有未合并提交（rev-list --count > 0）。
+            # 分支不存在时 rev-list 非零退出 → 走现行清空路径。
+            ahead = subprocess.run(
+                ["git", "-C", str(project_root), "rev-list", "--count",
+                 f"main..{branch}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if ahead.returncode != 0:
+                return False
+            try:
+                ahead_commits = int(ahead.stdout.strip() or "0")
+            except ValueError:
+                return False
+            if ahead_commits <= 0:
+                return False
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        # 三态载体处置：在场原地 / 缺失重建 / 不可用降级
+        wt, resolved_branch = worktree_manager.resolve_resume_site(name, branch)
+        if wt is None:
+            self.logger.warning(
+                "state_machine",
+                f"Recovery preserve unavailable for '{name}': branch '{branch}' "
+                f"无可用载体（三态判定失败）——降级清空重建",
+            )
+            return False
+        self.logger.warning(
+            "state_machine",
+            f"Recovering interrupted SPEC '{name}' with preserved branch "
+            f"'{resolved_branch}' (ahead of main) — resume continuation, "
+            f"worktree={wt}",
+        )
+        self.update_spec(name, {
+            "status": SpecStatus.READY,
+            "error": f"Recovered from interrupted state: implementing "
+                     f"(resume preserved branch)",
+            "implementer_run": entry.get("implementer_run"),
+            "tester_run": None,
+            "branch": resolved_branch,
+            # dispatch 层据此识别「恢复续做」路径：在保留分支的 worktree 内
+            # resume（claude --resume + 继承注记），而非从零新建分支。
+            "_recovery_resume": True,
+            "_retry_count": 0,
+            "_merge_fp": None,
+            "_merge_streak": 0,
+        })
+        return True
