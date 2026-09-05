@@ -1,4 +1,4 @@
-import { Button, Card, Col, Divider, Form, Input, InputNumber, Popconfirm, Row, Switch, Typography, message } from 'antd';
+import { Button, Card, Col, Form, Input, InputNumber, Popconfirm, Row, Switch, Typography, message } from 'antd';
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { useEffect } from 'react';
 import type { ConfigData, LlmProvider, ProviderBillingPrice } from '@/services/dashboard';
@@ -225,28 +225,77 @@ export default function LlmProviderPanel({ config, onSave }: LlmProviderPanelPro
                       </Form.Item>
                     </Col>
                   </Row>
-                  {/* improve-provider-billing-config（task 3.2）：卡片级「启用计费」开关，
-                      价格编辑区仅该卡片开关开启时出现 */}
                   <Form.Item
-                    name={[field.name, 'billingEnabled']}
-                    valuePropName="checked"
                     label={
                       <>
-                        启用计费
+                        自定义环境变量
                         <span className="label-note">
-                          （开启后按实际 model@provider 与配置单价本地计算每 run 成本，价格单位 $/1M tokens）
+                          （选填，运行时注入子进程，如 CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000）
                         </span>
                       </>
                     }
-                    style={{ marginBottom: 16 }}
                   >
-                    <Switch data-testid={`billing-switch-${index}`} />
+                    <Form.List name={[field.name, 'envEntries']}>
+                      {(envFields, { add: addEnv, remove: removeEnv }) => (
+                        <>
+                          {envFields.map((envField) => (
+                            <Row key={envField.key} gutter={8} align="middle" style={{ marginBottom: 8 }}>
+                              <Col xs={11} md={12}>
+                                <Form.Item name={[envField.name, 'key']} noStyle>
+                                  <Input placeholder="参数名（如 CLAUDE_CODE_MAX_CONTEXT_TOKENS）" />
+                                </Form.Item>
+                              </Col>
+                              <Col xs={10} md={11}>
+                                <Form.Item name={[envField.name, 'value']} noStyle>
+                                  <Input placeholder="值（如 1000000）" />
+                                </Form.Item>
+                              </Col>
+                              <Col xs={3} md={1} style={{ textAlign: 'right' }}>
+                                <Button
+                                  type="text"
+                                  danger
+                                  icon={<MinusCircleOutlined />}
+                                  onClick={() => removeEnv(envField.name)}
+                                />
+                              </Col>
+                            </Row>
+                          ))}
+                          <Button type="dashed" onClick={() => addEnv()} block icon={<PlusOutlined />}>
+                            添加参数
+                          </Button>
+                        </>
+                      )}
+                    </Form.List>
+                  </Form.Item>
+                  {/* improve-provider-billing-config（task 3.2）：卡片级「启用计费」开关，
+                      价格编辑区仅该卡片开关开启时出现；文字紧随开关同行 */}
+                  <Form.Item style={{ marginBottom: 16 }}>
+                    <Form.Item
+                      name={[field.name, 'billingEnabled']}
+                      valuePropName="checked"
+                      noStyle
+                    >
+                      <Switch
+                        data-testid={`billing-switch-${index}`}
+                        onChange={(checked) => {
+                          // 开启计费时若无价格行则自动补一行（预填卡片默认模型名），免手工点击
+                          if (!checked) return;
+                          const prices = form.getFieldValue(['providers', field.name, 'prices']);
+                          if (Array.isArray(prices) && prices.length > 0) return;
+                          const cardModel = form.getFieldValue(['providers', field.name, 'model']) || '';
+                          form.setFieldValue(['providers', field.name, 'prices'], [{ model: cardModel }]);
+                        }}
+                      />
+                    </Form.Item>
+                    <span style={{ marginLeft: 8 }}>
+                      启用计费
+                      <span className="label-note">
+                        （开启后按实际 model@provider 与配置单价本地计算每 run 成本，价格单位 $/1M tokens）
+                      </span>
+                    </span>
                   </Form.Item>
                   {!!(providersWatch?.[field.name]?.billingEnabled) && (
                     <>
-                      <Divider style={{ margin: '12px 0' }} orientation="left">
-                        <span className="label-note">计费价格（$/1M tokens，四项单价必填）</span>
-                      </Divider>
                       <Form.List name={[field.name, 'prices']}>
                         {(priceFields, { add: addPrice, remove: removePrice }) => (
                           <>
@@ -261,8 +310,8 @@ export default function LlmProviderPanel({ config, onSave }: LlmProviderPanelPro
                                   marginBottom: 12,
                                 }}
                               >
-                                <Row gutter={16}>
-                                  <Col xs={24} md={12}>
+                                <Row gutter={16} align="middle">
+                                  <Col xs={23} md={23}>
                                     <Form.Item
                                       name={[priceField.name, 'model']}
                                       label="模型名"
@@ -271,7 +320,10 @@ export default function LlmProviderPanel({ config, onSave }: LlmProviderPanelPro
                                       <Input placeholder="模型名（如 deepseek-v4-flash）" />
                                     </Form.Item>
                                   </Col>
-                                  <Col xs={24} md={12} style={{ textAlign: 'right' }}>
+                                  {/* 删除符号占 1 格，其余宽度给模型名；行高 86（Form.Item 62
+                                      + 底 margin 24）居中下 marginTop 6 使按钮与「模型名」
+                                      输入框垂直居中对齐（按钮中心 = (86-32-6)/2+6+16 = 46） */}
+                                  <Col xs={1} md={1} style={{ textAlign: 'right', marginTop: 6 }}>
                                     <Button
                                       type="text"
                                       danger
