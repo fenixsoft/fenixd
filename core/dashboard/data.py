@@ -3059,6 +3059,11 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             if patch["verify"].get(vk) in ("main", "worktree") if vk == "static_scope" \
                     else patch["verify"].get(vk) in ("prefer-offline", "hardlink"):
                 merged["verify"][vk] = patch["verify"][vk]
+        # add-planner-efficiency（planner-generation-throttle 2.3）：
+        # planner 生成节流上限——非负整数（0=不节流），非法值静默忽略。
+        pmc = patch["verify"].get("planner_max_concurrent")
+        if isinstance(pmc, int) and not isinstance(pmc, bool) and pmc >= 0:
+            merged["verify"]["planner_max_concurrent"] = pmc
     # add-spec-archive D5：archive.auto_threshold（非负整数，0=禁用，非法值静默忽略）
     if "archive" in patch and isinstance(patch["archive"], dict):
         at = patch["archive"].get("auto_threshold")

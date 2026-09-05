@@ -47,6 +47,6 @@
 
 ## 4. 回归与收尾
 
-- [ ] 4.1 全量测试回归（tests/ 全绿，含 prompt/verify/throttle 相关既有套件）
-- [ ] 4.2 dashboard 设置页 UI 手动验证（并发度页签开关持久化、注解可见）+ dist 重建不入库
-- [ ] 4.3 自举验证：fenixd 主树生成器对本项目产出地图，planner prompt 含 route-map 段
+- [x] 4.1 全量测试回归（tests/ 全绿，含 prompt/verify/throttle 相关既有套件）
+- [x] 4.2 dashboard 设置页 UI 手动验证（并发度页签开关持久化、注解可见）+ dist 重建不入库
+- [x] 4.3 自举验证：fenixd 主树生成器对本项目产出地图，planner prompt 含 route-map 段
