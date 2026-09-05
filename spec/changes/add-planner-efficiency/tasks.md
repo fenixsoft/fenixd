@@ -25,11 +25,11 @@
 
 ## 1. 路由地图生成协议（planner-route-map）
 
-- [ ] 1.1 `verification.py` 阶段1 进入处（run_planner 前）接入地图生成：发现 `bin/gen-route-map.py` → 以 impl worktree 为根执行（超时 60s）→ 写 `<worktree>/.fenix/route-map.md`；复用键=worktree HEAD（未变跳过）；失败/缺生成器 fail-open 记 warning
-- [ ] 1.2 静态地图兼容：无生成器地图时回退主树 `.fenix/route-map.md`；两者皆无则不注入
-- [ ] 1.3 `prompt_builder.py` `_project_extra_section` 新增 route-map 段：注入地图全文 + 钉死措辞「已知入口索引、非穷尽清单；spec 涉及但地图未覆盖的入口仍须自行源码取证」
-- [ ] 1.4 `bin/gen-route-map.py` dashboard 参考实现：扫 server.py 路由表 + SPA hash 路由 + 关键 data-testid，条目含 `文件:行号` 出处；内置自检（宽 grep 启发式计数 vs 解析条目数，差 ≥30% 输出 warning）
-- [ ] 1.5 `tests/test_planner_route_map.py`：生成触发/HEAD 复用/HEAD 变更重生成/注入措辞/无生成器回退/生成器失败不阻塞/静态地图注入/自检告警
+- [x] 1.1 `verification.py` 阶段1 进入处（run_planner 前）接入地图生成：发现 `bin/gen-route-map.py` → 以 impl worktree 为根执行（超时 60s）→ 写 `<worktree>/.fenix/route-map.md`；复用键=worktree HEAD（未变跳过）；失败/缺生成器 fail-open 记 warning
+- [x] 1.2 静态地图兼容：无生成器地图时回退主树 `.fenix/route-map.md`；两者皆无则不注入
+- [x] 1.3 `prompt_builder.py` `_project_extra_section` 新增 route-map 段：注入地图全文 + 钉死措辞「已知入口索引、非穷尽清单；spec 涉及但地图未覆盖的入口仍须自行源码取证」
+- [x] 1.4 `bin/gen-route-map.py` dashboard 参考实现：扫 server.py 路由表 + SPA hash 路由 + 关键 data-testid，条目含 `文件:行号` 出处；内置自检（宽 grep 启发式计数 vs 解析条目数，差 ≥30% 输出 warning）
+- [x] 1.5 `tests/test_planner_route_map.py`：生成触发/HEAD 复用/HEAD 变更重生成/注入措辞/无生成器回退/生成器失败不阻塞/静态地图注入/自检告警
 
 ## 2. planner 生成节流（planner-generation-throttle）
 

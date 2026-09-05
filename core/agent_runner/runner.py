@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -61,6 +62,110 @@ from core.v2_dev_server import (
 # （model 字段，如 deepseek-v4-flash）——见 fenixd-sdk-model-routing：--model 即实际
 # 发给网关的模型名，ANTHROPIC_MODEL 被 --model 覆盖不生效。本常量只作 fallback。
 DEFAULT_GATEWAY_MODEL = "claude-sonnet-5"
+
+# ── 路由地图生成（add-planner-efficiency：planner-route-map）─────────────
+# 项目声明生成器协议（design D1）：
+# - 生成器位于项目根 `bin/gen-route-map.py`（worktree 内，随 impl 分支入库）；
+# - 框架以 worktree 为 cwd、单参（worktree 根）调用，stdout 为人类可读
+#   Markdown（条目含 `文件:行号` 出处），超时默认 60s；
+# - 非零退出/超时/缺生成器 = 失败 fail-open：不阻塞验证管线，记 warning
+#   （planner 回退逐轮 grep 现状）。
+# - 产物 `<worktree>/.fenix/route-map.md` 以 worktree HEAD 为复用键：
+#   HEAD 未变（replan 循环/重验）跳过生成器；HEAD 变更重新生成。
+ROUTE_MAP_TIMEOUT_SECONDS = 60
+ROUTE_MAP_REL = ".fenix/route-map.md"
+ROUTE_MAP_HEAD_MARKER_REL = ".fenix/.route-map-head"
+ROUTE_MAP_GENERATOR_REL = "bin/gen-route-map.py"
+
+
+def _route_map_head(wt_path: Path, logger) -> str:
+    """读取 worktree 当前 HEAD（git rev-parse），失败返回空串（不阻断生成）。"""
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(wt_path), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if res.returncode == 0:
+            return res.stdout.strip()
+    except subprocess.SubprocessError:
+        pass
+    return ""
+
+
+def ensure_route_map(wt_path: Path, project_root: Path, logger,
+                     timeout: float | None = None) -> Path | None:
+    """生成/复用 `<wt_path>/.fenix/route-map.md`（HEAD 键控、fail-open）。
+
+    add-planner-efficiency（planner-route-map D1）。以 impl worktree（非主树）
+    为源执行项目声明生成器 `bin/gen-route-map.py`（worktree 为 cwd、单参
+    worktree 根），产物供 planner prompt 注入（已知入口索引、非穷尽清单）。
+
+    - 无生成器 → None（fail-open，planner 逐轮 grep 现状）；
+    - worktree HEAD 未变且地图已在（.route-map-head 标记一致）→ 复用，
+      不重复执行生成器；
+    - 生成器非零退出/超时/异常 → warning + None（不阻塞验证管线）。
+
+    Args:
+        wt_path: impl worktree 根（生成器发现与执行上下文）。
+        project_root: 主项目根（预留；可被生成器用于感知主树）。
+        logger: 日志器（component=agent_runner）。
+        timeout: 生成器单次执行超时（缺省 ROUTE_MAP_TIMEOUT_SECONDS=60s）。
+
+    Returns:
+        地图文件路径（存在/生成成功）或 None（fail-open 无地图）。
+    """
+    timeout = timeout or ROUTE_MAP_TIMEOUT_SECONDS
+    generator = Path(wt_path) / ROUTE_MAP_GENERATOR_REL
+    if not generator.is_file():
+        logger.debug(
+            "agent_runner",
+            f"route-map: 项目未声明生成器 {ROUTE_MAP_GENERATOR_REL} — fail-open",
+        )
+        return None
+    out = Path(wt_path) / ROUTE_MAP_REL
+    marker = Path(wt_path) / ROUTE_MAP_HEAD_MARKER_REL
+    head = _route_map_head(wt_path, logger)
+    # HEAD 键控复用：地图与 HEAD 标记同时存在且标记 == 当前 HEAD → 跳过生成器
+    if head and out.is_file() and marker.is_file():
+        try:
+            if marker.read_text(encoding="utf-8").strip() == head:
+                logger.debug("agent_runner", f"route-map: HEAD 未变复用 {out}")
+                return out
+        except OSError:
+            pass
+    try:
+        result = subprocess.run(
+            [sys.executable, str(generator), str(wt_path)],
+            capture_output=True, text=True, timeout=timeout,
+            cwd=str(wt_path),
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "agent_runner",
+            f"route-map 生成器超时（>{int(timeout)}s）— fail-open: {generator}",
+        )
+        return None
+    if result.returncode != 0:
+        logger.warning(
+            "agent_runner",
+            f"route-map 生成器失败（exit={result.returncode}）— fail-open: "
+            f"{generator}\n{(result.stderr or '').strip()[:300]}",
+        )
+        return None
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(result.stdout, encoding="utf-8")
+        if head:
+            marker.write_text(head, encoding="utf-8")
+    except OSError as e:
+        logger.warning("agent_runner", f"route-map 写入失败（fail-open）: {e}")
+        return None
+    logger.info(
+        "agent_runner",
+        f"route-map 生成完成: {out}（{len(result.stdout)} 字节, "
+        f"HEAD={head[:12] or 'unknown'}）",
+    )
+    return out
 
 # ── Administrator 处置状态实例文件（fix-admin-run-blocks-mainloop D3）─────
 # 处置状态文件按 run 实例分离：每个 admin run 使用独立文件
@@ -492,6 +597,34 @@ class AgentRunner:
             raise ValueError(f"mode 必须是 'plan' 或 'judge'，实际: {mode}")
         run_id = f"planner-{mode}-{spec_name}-{int(time.time())}"
         return self._execute_agent(spec_name, f"planner-{mode}", run_id)
+
+    def ensure_planner_route_map(self, spec_name: str) -> Path | None:
+        """阶段1 前置接入：对 spec 当前使用的 impl worktree 生成/复用路由地图。
+
+        add-planner-efficiency（planner-route-map 1.1）。verification.py 阶段1
+        进入处调用；复用键=worktree HEAD（未变跳过）。worktree 尚未创建
+        （首轮 planner 派发前没有 planner worktree）时无操作返回 None——
+        真正的生成兜底在 ``_execute_agent_inner`` planner 分支（worktree 创建
+        后、prompt 组装前，HEAD 键控）。两者共用 ``ensure_route_map``，幂等。
+
+        Returns: 地图文件路径或 None（fail-open / 无可用 worktree）。
+        """
+        if not spec_name:
+            return None
+        try:
+            wt = self.worktree_manager.find_implementer_worktree(spec_name)
+        except Exception:
+            return None
+        if wt is None:
+            return None
+        try:
+            return ensure_route_map(Path(wt), self.project_root, self.logger)
+        except Exception as e:
+            self.logger.warning(
+                "agent_runner",
+                f"route-map 生成异常（fail-open）'{spec_name}': {e}",
+            )
+            return None
 
     def run_fast_track(self, spec_name: str) -> AgentRunResult:
         """Run the Fast-Track Agent for a SPEC (single run: implement + verify).
@@ -1312,15 +1445,32 @@ class AgentRunner:
                     provider_name, model, chain_cursor, len(chain),
                 )
 
+            # ── 路由地图生成（add-planner-efficiency：planner-route-map 1.1） ──
+            # planner 阶段以 impl worktree 为源执行项目声明生成器（HEAD 键控复用、
+            # fail-open）。在 prompt 组装前调用——地图是 planner 出题时的入口索引，
+            # 必须在提示词注入前就绪（design D1 生成点=阶段1 进入处）。生成器缺失/
+            # 失败/超时不阻塞派发（planner 回退逐轮 grep 现状）。judge 不生成地图
+            # （判定不出题，无需入口索引）。
+            if agent_type == "planner-plan" and wt_path is not None:
+                try:
+                    ensure_route_map(wt_path, self.project_root, self.logger)
+                except Exception as e:
+                    self.logger.warning(
+                        "agent_runner",
+                        f"route-map 生成异常（fail-open，不阻断 planner 派发）: {e}",
+                    )
+
             # Build and execute the prompt
             try:
                 if agent_type == "repair":
                     # repair prompt 注入冲突摘要（add-merge-back-repair-lane D5）
                     prompt = self._build_prompt(
                         spec_name, agent_type, detail=conflict_summary or {},
+                        wt_path=wt_path,
                     )
                 else:
-                    prompt = self._build_prompt(spec_name, agent_type)
+                    prompt = self._build_prompt(
+                        spec_name, agent_type, wt_path=wt_path)
                 env_overrides: Dict[str, str] = {}
                 # add-worktree-test-server（D1 注入）：把该 worktree 专属 dev-server 地址
                 # 注入 agent 运行环境，使 Playwright baseURL 指向 worktree 副本而非主 8787。
@@ -2240,8 +2390,10 @@ class AgentRunner:
     # ── 组合组件委托（refactor-core-packages 阶段 1：PromptBuilder）──────
     # 测试引用方法（runner._build_prompt 等）保持调用路径可用（design D3 规则 4）。
 
-    def _build_prompt(self, spec_name: str, agent_type: str, detail: dict | None = None) -> str:
-        return self._prompt_builder._build_prompt(spec_name, agent_type, detail)
+    def _build_prompt(self, spec_name: str, agent_type: str, detail: dict | None = None,
+                      wt_path: Path | None = None) -> str:
+        return self._prompt_builder._build_prompt(
+            spec_name, agent_type, detail, wt_path=wt_path)
 
     def _build_legacy_section(self, spec_name: str) -> str:
         return self._prompt_builder._build_legacy_section(spec_name)
