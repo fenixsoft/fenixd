@@ -345,6 +345,112 @@ class SelfReviewResult:
         self.output = output
 
 
+# ── run 级 API 延迟统计（add-planner-efficiency：run-latency-observability）──
+# 在线（_run_claude 流式循环旁路）与事后（bin/analyze_run_latency.py）共用
+# 同一套口径函数：对事件序列 `tool_result → 下一个 assistant` 间隔采样为
+# API 往返样本，再计算直方图摘要（轮数/中位/p90/max/长尾>60s 计数与占比）。
+# 纯读侧，不改变流式事件处理时序。timestamp 解析复用 AgentRunner 的
+# _parse_event_timestamp（以惰性解析避免类定义前的默认参数引用）。
+
+LATENCY_STALL_SECONDS = 60.0
+
+
+def iter_events(entries):
+    """逐条 yield（兼容既有调用方传 list 或生成器）。"""
+    yield from entries
+
+
+def _default_ts_parser(entry: dict):
+    """默认 timestamp 解析器：委托 AgentRunner._parse_event_timestamp。"""
+    return AgentRunner._parse_event_timestamp(entry)
+
+
+def latency_samples_from_events(entries, parser=None) -> list:
+    """从事件序列提取 API 往返样本（tool_result → 下一个 assistant 间隔）。
+
+    口径（design D3，与 2026-09-05 事故分析一致）：记录最近一个
+    ``tool_result`` 事件的 timestamp，遇到下一个 ``assistant`` 事件时两者
+    之差 = 一次 API 往返样本；随后清空待配对的 tool_result（一个样本只
+    配对一次）。timestamp 缺失的事件不参与（跳过），样本列表可空。
+
+    Args:
+        entries: 事件 dict 序列（list / 生成器）。
+        parser: timestamp 解析函数（缺省 = AgentRunner._parse_event_timestamp）。
+
+    Returns: float 秒样本列表（含 >60s 长尾；顺序为事件到达序）。
+    """
+    if parser is None:
+        parser = _default_ts_parser
+    samples: list = []
+    last_tool_result_ts: float | None = None
+    for e in iter_events(entries):
+        if not isinstance(e, dict):
+            continue
+        etype = e.get("type")
+        if etype == "tool_result":
+            ts = parser(e)
+            if ts is not None:
+                last_tool_result_ts = ts
+        elif etype == "assistant":
+            ts = parser(e)
+            if ts is not None and last_tool_result_ts is not None:
+                samples.append(ts - last_tool_result_ts)
+                last_tool_result_ts = None
+    return samples
+
+
+def latency_stats(samples) -> dict:
+    """把 API 往返样本压缩为直方图摘要（空样本安全返回全 0 键）。
+
+    Returns: {"rounds": int, "median": float|None, "p90": float|None,
+              "max": float|None, "stalls": int, "stall_ratio": float}
+        rounds 为样本数（=有 timestamps 的 API 往返轮数）；stalls 为
+        >60s 长尾样本数；stall_ratio = stalls/rounds（0 样本为 0）。
+    """
+    n = len(samples)
+    base = {"rounds": n, "median": None, "p90": None, "max": None,
+            "stalls": 0, "stall_ratio": 0.0}
+    if n == 0:
+        return base
+    ordered = sorted(samples)
+    base["median"] = _percentile(ordered, 0.5)
+    base["p90"] = _percentile(ordered, 0.9)
+    base["max"] = ordered[-1]
+    base["stalls"] = sum(1 for s in samples if s > LATENCY_STALL_SECONDS)
+    base["stall_ratio"] = base["stalls"] / n
+    return base
+
+
+def _percentile(ordered: list, q: float) -> float:
+    """已排序列表的线性插值分位数（q∈[0,1]）。"""
+    if not ordered:
+        return 0.0
+    pos = (len(ordered) - 1) * q
+    lo = int(pos)
+    hi = min(lo + 1, len(ordered) - 1)
+    frac = pos - lo
+    return ordered[lo] + (ordered[hi] - ordered[lo]) * frac
+
+
+def format_latency_summary(run_id: str, stats: dict) -> str:
+    """把摘要渲染为日志行（设计示例同款口径）。
+
+    ``run planner-plan-xxx-a1: 58 rounds, median 3.2s, p90 78s, max 185s,
+    stalls>60s=15 (26%)``。无样本时标注样本数（时间戳缺失的旧转录）。
+    """
+    if stats.get("rounds", 0) <= 0:
+        return f"run {run_id}: 0 rounds（无 timestamp 样本，旧转录跳过）"
+    med = stats.get("median") or 0
+    p90 = stats.get("p90") or 0
+    mx = stats.get("max") or 0
+    stalls = stats.get("stalls") or 0
+    ratio = (stats.get("stall_ratio") or 0) * 100
+    return (
+        f"run {run_id}: {stats['rounds']} rounds, "
+        f"median {med:.1f}s, p90 {p90:.1f}s, max {mx:.1f}s, "
+        f"stalls>60s={stalls} ({ratio:.0f}%)"
+    )
+
 
 class AgentRunner:
     """
@@ -1998,6 +2104,12 @@ class AgentRunner:
         stdout_lines: list = []
         stderr_lines: list = []
 
+        # ── run 级 API 延迟统计（add-planner-efficiency：run-latency-observability）──
+        # 纯读侧采集：`tool_result → 下一个 assistant` 间隔样本（API 往返等待）。
+        # sample_state 被 _read_stream 子线程 append，主线程在 join 后读取，
+        # 同线程追加+join 后读取无竞态（类 turn_count 同模式）。
+        latency_state: dict = {"last_tool_result_ts": None, "samples": []}
+
         def _read_stream(stream, is_stderr: bool) -> None:
             try:
                 for line in iter(stream.readline, ""):
@@ -2028,6 +2140,18 @@ class AgentRunner:
                             last_result.clear()
                             last_result.update(entry)
                             continue
+                        # 延迟样本采集：tool_result → assistant = 一次 API 往返
+                        etype = entry.get("type")
+                        e_ts = AgentRunner._parse_event_timestamp(entry)
+                        if etype == "tool_result":
+                            if e_ts is not None:
+                                latency_state["last_tool_result_ts"] = e_ts
+                        elif etype == "assistant":
+                            if (e_ts is not None
+                                    and latency_state["last_tool_result_ts"] is not None):
+                                latency_state["samples"].append(
+                                    e_ts - latency_state["last_tool_result_ts"])
+                                latency_state["last_tool_result_ts"] = None
                     append_run_line(run_file, entry)
             except Exception:
                 # 读取线程异常不应导致主流程崩溃；半成品产物仍可被 Dashboard 读取
@@ -2049,6 +2173,10 @@ class AgentRunner:
         # terminate→grace→kill→写 cancelled 终态行→抛 RunCancelledError
         base_run_id = self._normalize_run_id(run_id)
         cancel_error: RunCancelledError | None = None
+        # add-planner-efficiency（run-latency-observability）：run 末延迟摘要文本。
+        # 在 finally（读线程 join 后）计算并打日志；失败/取消路径把摘要拼入
+        # error 上下文（卡死 vs 慢可判）。
+        latency_summary_text = ""
         try:
             while True:
                 # ── 取消旗标检查（add-run-cancel D1/D3）──
@@ -2129,6 +2257,25 @@ class AgentRunner:
             t_out.join(timeout=5)
             t_err.join(timeout=5)
             self._running_agents.pop(run_id, None)
+            # add-planner-efficiency（run-latency-observability）：run 末延迟摘要
+            # 日志——统一覆盖成功/失败/取消全部退出路径（component=agent_runner，
+            # 含 run_id）。纯读侧统计，不改变事件处理时序。
+            try:
+                stats = latency_stats(latency_state["samples"])
+                latency_summary_text = format_latency_summary(run_id, stats)
+                self.logger.info(
+                    "agent_runner",
+                    latency_summary_text,
+                    {"run_id": run_id, "latency_rounds": stats["rounds"],
+                     "latency_stalls": stats["stalls"],
+                     "latency_p90": stats.get("p90"),
+                     "latency_max": stats.get("max")},
+                )
+            except Exception as e:
+                self.logger.debug(
+                    "agent_runner",
+                    f"延迟摘要计算失败（不阻断 run 终态）: {e}",
+                )
             # result 终态事件最后落盘（读线程里跳过内联写），保证是文件最后一行
             if last_result:
                 append_run_line(run_file, dict(last_result))
@@ -2151,11 +2298,15 @@ class AgentRunner:
 
         if timeout_error is not None:
             append_run_error(run_file, timeout_error, returncode)
-            raise RuntimeError(f"claude CLI {timeout_error}")
+            raise RuntimeError(
+                f"claude CLI {timeout_error}"
+                + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
 
         if turn_limit_error is not None:
             append_run_error(run_file, turn_limit_error, returncode)
-            raise RuntimeError(f"claude CLI {turn_limit_error}")
+            raise RuntimeError(
+                f"claude CLI {turn_limit_error}"
+                + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
 
         output = last_result.get("result", "") if last_result else ""
         turns = last_result.get("num_turns", 0)
@@ -2164,7 +2315,9 @@ class AgentRunner:
         if returncode != 0:
             error_msg = "\n".join(stderr_lines[-5:])[:500] if stderr_lines else f"Exit code: {returncode}"
             append_run_error(run_file, error_msg, returncode)
-            raise RuntimeError(f"claude CLI failed: {error_msg}")
+            raise RuntimeError(
+                f"claude CLI failed: {error_msg}"
+                + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
 
         # D5: 终态语义校验前置 —— rc==0 但 last_result 标记为 error 时仍判失败
         # （Claude CLI 可能把 API 错误包装成 result/success 终止事件且 exit 0）
@@ -2174,7 +2327,9 @@ class AgentRunner:
             if result_is_error or result_subtype in ("error", "error_during_execution"):
                 err_text = last_result.get("result", "") or f"is_error={result_is_error}, subtype={result_subtype}"
                 append_run_error(run_file, f"API error disguised as success: {err_text}", returncode)
-                raise RuntimeError(f"claude CLI rc==0 but result indicates error: {err_text}")
+                raise RuntimeError(
+                    f"claude CLI rc==0 but result indicates error: {err_text}"
+                    + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
 
         # add-cost-observability（D1）：从 stream-json 终态 result 事件提取 usage 与
         # 成本字段；失败/异常路径上 _run_claude 已抛错，此处仅成功终态能拿到 usage。
@@ -2207,6 +2362,8 @@ class AgentRunner:
             return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
         except (ValueError, TypeError):
             return None
+
+
 
 
 

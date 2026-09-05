@@ -40,10 +40,10 @@
 
 ## 3. run 级 API 延迟直方图（run-latency-observability）
 
-- [ ] 3.1 `runner.py` `_run_claude` 流式循环旁路延迟统计：`_parse_event_timestamp` 读侧记录「tool_result → assistant」间隔样本；成功/失败/取消统一 run 末摘要日志（轮数/中位/p90/max/长尾>60s 计数与占比，含 run_id）
-- [ ] 3.2 失败 run 错误上下文附延迟摘要（卡死 vs 慢可判）
-- [ ] 3.3 `bin/analyze_run_latency.py`：历史转录批量扫描（与在线同口径，复用公共解析函数），按 p90 排序，损坏/空文件跳过并报告
-- [ ] 3.4 `tests/test_run_latency_stats.py`：摘要行口径/失败附证/脚本批量与容错/统计不改流式行为
+- [x] 3.1 `runner.py` `_run_claude` 流式循环旁路延迟统计：`_parse_event_timestamp` 读侧记录「tool_result → assistant」间隔样本；成功/失败/取消统一 run 末摘要日志（轮数/中位/p90/max/长尾>60s 计数与占比，含 run_id）
+- [x] 3.2 失败 run 错误上下文附延迟摘要（卡死 vs 慢可判）
+- [x] 3.3 `bin/analyze_run_latency.py`：历史转录批量扫描（与在线同口径，复用公共解析函数），按 p90 排序，损坏/空文件跳过并报告
+- [x] 3.4 `tests/test_run_latency_stats.py`：摘要行口径/失败附证/脚本批量与容错/统计不改流式行为
 
 ## 4. 回归与收尾
 
