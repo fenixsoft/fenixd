@@ -152,6 +152,12 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
   const [verdict, setVerdict] = useState<SpecDetail['verdict'] | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // fix-verify-progress-fasttrack：无任何验证数据（verify_total 为 0）时渲染纯文本
+  // 占位符 —，避免「尚无验证数据」被误读为 0/0 计数；无结论可读，不包 Popover。
+  if (!record.verify_total) {
+    return <span style={{ fontSize: 13, color: 'rgba(0, 0, 0, 0.45)' }}>—</span>;
+  }
+
   const onEnter = () => {
     timerRef.current = setTimeout(() => {
       void fetchVerdict(project, record.name).then((v) => {
