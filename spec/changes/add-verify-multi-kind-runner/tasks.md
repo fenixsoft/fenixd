@@ -21,7 +21,7 @@
   kind: modify
 - path: core/verify_contract_template.yaml
   kind: modify
-- path: core/verification.py
+- path: core/pm_engine/verification.py
   kind: modify
 - path: core/verify_scenarios.py
   kind: modify
@@ -68,7 +68,7 @@
 - [ ] 2.1 API 词表常量 + 新建 `core/verify_engine/api_assertions.py`：status_code / json_path / response_header / body_contains / json_schema / latency_under（第4层）/ sse_event_matches / sse_event_count；jsonschema 缺失时 json_schema 断言验收期报错打回
 - [ ] 2.2 新建 `core/verify_engine/api_runner.py`：`http_request`（method/url/headers `{env:VAR}` 插值/body/body_type/timeout/as）与 `sse_connect`（url/duration/as，实现复杂度高时允许降为 fast-follow 并在本任务登记）步骤；httpx 每场景独立 client；响应命名捕获与 `response` 字段引用；证据 64KB 截断；连接失败类=环境候选
 - [ ] 2.3 `core/verify_contract.py`：base_url 统一供给（取代 `_locate_app_base_url` navigate 文本正则考古）；`http_request`/`sse_connect` URL origin 全量改写（路径保留）；模块注释（权威字段文档）与 `core/verify_contract_template.yaml` 同步扩展三种形态说明
-- [ ] 2.4 `core/verification.py`：serve/ready 按场景集 kind 组成反推——纯 cli 跳过 serve/ready 且不回退 commands.start（`_ensure_app_reachable` 短路）；含 web/api 必须（缺失=明确错误打回 plan）；混合照常起
+- [ ] 2.4 `core/pm_engine/verification.py`：serve/ready 按场景集 kind 组成反推——纯 cli 跳过 serve/ready 且不回退 commands.start（`_ensure_app_reachable` 短路）；含 web/api 必须（缺失=明确错误打回 plan）；混合照常起
 - [ ] 2.5 新建 `tests/test_verify_api_runner.py`（本地测试 HTTP 服务夹具）：词表校验/命名捕获/origin 改写/serve 反推/blocked-env 探针；`tests/test_verify_contract.py` 补形态反推用例
 - [ ] 2.6 httpx 依赖接入（deps_mode 通道声明与安装验证）
 

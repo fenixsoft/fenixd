@@ -30,7 +30,7 @@
 
 ## Impact
 
-- **核心代码**：`core/verify_engine/`（scenarios.py / engine.py / 新增 runner 与断言模块）、`core/verify_contract.py`、`core/verification.py`（serve 需求反推）、`core/verify_scenarios.py`（ScenarioEntry.kind）
+- **核心代码**：`core/verify_engine/`（scenarios.py / engine.py / 新增 runner 与断言模块）、`core/verify_contract.py`、`core/pm_engine/verification.py`（serve 需求反推）、`core/verify_scenarios.py`（ScenarioEntry.kind）
 - **回归确认（预期零改动）**：`core/verdict_check.py`、`core/fast_track_result.py`、验证进度/gate/洗白门禁
 - **前端**：dashboard spec detail 场景页签（kind 徽章、断言详情渲染、截图占位）
 - **提示词**：`agents/planner-plan.md`、`agents/verifier.md`、`agents/planner-judge.md`、`agents/fast-track.md`（注意 prompt 双落点约定：改前 merge main + merge-tree 自证）

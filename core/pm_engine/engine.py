@@ -1978,6 +1978,9 @@ class PMEngine:
     def _deliverable_gate_missing(self, spec_name: str, result) -> list:
         return self._verification._deliverable_gate_missing(spec_name, result)
 
+    def _disputed_deliverables(self, impl_result, missing) -> list:
+        return self._verification._disputed_deliverables(impl_result, missing)
+
     @staticmethod
     def _normalize_fail_signature(text: str) -> str:
         return VerificationPipeline._normalize_fail_signature(text)
