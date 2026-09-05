@@ -50,3 +50,9 @@
 - [x] 4.1 全量测试回归（tests/ 全绿，含 prompt/verify/throttle 相关既有套件）
 - [x] 4.2 dashboard 设置页 UI 手动验证（并发度页签开关持久化、注解可见）+ dist 重建不入库
 - [x] 4.3 自举验证：fenixd 主树生成器对本项目产出地图，planner prompt 含 route-map 段
+
+## 验证修复（第 1 轮失败）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-planner-efficiency/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
