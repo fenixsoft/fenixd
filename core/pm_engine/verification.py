@@ -844,6 +844,11 @@ class VerificationPipeline:
                         encoding="utf-8",
                     )
                 self._pm.logger.info("pm_engine", f"[阶段1] Planner 生成场景: {spec_name}")
+                # 路由地图前置生成（add-planner-efficiency：planner-route-map 1.1）：
+                # 阶段1 进入处接入，对 impl worktree 生成/复用路由地图（HEAD 键控、
+                # fail-open——生成器缺失/失败不阻塞）。planner 出题 prompt 组装前
+                # 的最终保障在 runner 的 worktree 创建点，此处为前置早生成。
+                self._pm.agent_runner.ensure_planner_route_map(spec_name)
                 plan_result = self._pm.agent_runner.run_planner(spec_name, "plan")
 
                 if not plan_result.success:

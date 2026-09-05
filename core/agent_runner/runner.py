@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -61,6 +62,129 @@ from core.v2_dev_server import (
 # （model 字段，如 deepseek-v4-flash）——见 fenixd-sdk-model-routing：--model 即实际
 # 发给网关的模型名，ANTHROPIC_MODEL 被 --model 覆盖不生效。本常量只作 fallback。
 DEFAULT_GATEWAY_MODEL = "claude-sonnet-5"
+
+# ── 路由地图生成（add-planner-efficiency：planner-route-map）─────────────
+# 项目声明生成器协议（design D1）：
+# - 生成器位于项目根 `bin/gen-route-map.py`（worktree 内，随 impl 分支入库）；
+# - 框架以 worktree 为 cwd、单参（worktree 根）调用，stdout 为人类可读
+#   Markdown（条目含 `文件:行号` 出处），超时默认 60s；
+# - 非零退出/超时/缺生成器 = 失败 fail-open：不阻塞验证管线，记 warning
+#   （planner 回退逐轮 grep 现状）。
+# - 产物 `<worktree>/.fenix/route-map.md` 以 worktree HEAD 为复用键：
+#   HEAD 未变（replan 循环/重验）跳过生成器；HEAD 变更重新生成。
+ROUTE_MAP_TIMEOUT_SECONDS = 60
+ROUTE_MAP_REL = ".fenix/route-map.md"
+ROUTE_MAP_HEAD_MARKER_REL = ".fenix/.route-map-head"
+ROUTE_MAP_GENERATOR_REL = "bin/gen-route-map.py"
+
+# ── planner 生成节流（add-planner-efficiency：planner-generation-throttle）──
+# 配置键 `verify.planner_max_concurrent`：0/缺省=不节流（现状）；正整数=跨
+# verify 管线的 planner 阶段级并发上限。信号量在 `run_planner` 入口（design
+# D2：全部 planner 路径——完整管线+fast-track+重排——的单一咽喉），一处包裹
+# 全覆盖；取消/异常经 try/finally 释放不泄漏。按配置惰性重建（热更新生效）。
+#
+# 模块级状态（进程内全局）：
+# - 多 run 并发（worker 池）共享同一信号量，节流语义是「全框架同时在出题的
+#   planner 数」，与派发层 agents.max_concurrent 语义正交（本限制是管线内
+#   新增的第二道门，不动 parallelism-config/priority-parallel-scheduler）。
+# - 配置读取走 AgentRunner._get_config（每次现读），重建只在上限值变化时发生；
+#   值为 0/缺省时信号量为 None（不节流路径零开销）。
+_PLANNER_SEMAPHORE: threading.BoundedSemaphore | None = None
+_PLANNER_SEMAPHORE_LIMIT: int = 0
+_PLANNER_SEMAPHORE_LOCK = threading.Lock()
+# 排队等待保活事件节流：每秒至多写一次 throttled-wait（run 流保持新鲜，
+# 防 recovery watch 把「已派发、在持槽等待」误判为 stuck/dispatch_stalled）。
+THROTTLED_WAIT_HEARTBEAT_SECONDS = 60.0
+
+
+def _route_map_head(wt_path: Path, logger) -> str:
+    """读取 worktree 当前 HEAD（git rev-parse），失败返回空串（不阻断生成）。"""
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(wt_path), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if res.returncode == 0:
+            return res.stdout.strip()
+    except subprocess.SubprocessError:
+        pass
+    return ""
+
+
+def ensure_route_map(wt_path: Path, project_root: Path, logger,
+                     timeout: float | None = None) -> Path | None:
+    """生成/复用 `<wt_path>/.fenix/route-map.md`（HEAD 键控、fail-open）。
+
+    add-planner-efficiency（planner-route-map D1）。以 impl worktree（非主树）
+    为源执行项目声明生成器 `bin/gen-route-map.py`（worktree 为 cwd、单参
+    worktree 根），产物供 planner prompt 注入（已知入口索引、非穷尽清单）。
+
+    - 无生成器 → None（fail-open，planner 逐轮 grep 现状）；
+    - worktree HEAD 未变且地图已在（.route-map-head 标记一致）→ 复用，
+      不重复执行生成器；
+    - 生成器非零退出/超时/异常 → warning + None（不阻塞验证管线）。
+
+    Args:
+        wt_path: impl worktree 根（生成器发现与执行上下文）。
+        project_root: 主项目根（预留；可被生成器用于感知主树）。
+        logger: 日志器（component=agent_runner）。
+        timeout: 生成器单次执行超时（缺省 ROUTE_MAP_TIMEOUT_SECONDS=60s）。
+
+    Returns:
+        地图文件路径（存在/生成成功）或 None（fail-open 无地图）。
+    """
+    timeout = timeout or ROUTE_MAP_TIMEOUT_SECONDS
+    generator = Path(wt_path) / ROUTE_MAP_GENERATOR_REL
+    if not generator.is_file():
+        logger.debug(
+            "agent_runner",
+            f"route-map: 项目未声明生成器 {ROUTE_MAP_GENERATOR_REL} — fail-open",
+        )
+        return None
+    out = Path(wt_path) / ROUTE_MAP_REL
+    marker = Path(wt_path) / ROUTE_MAP_HEAD_MARKER_REL
+    head = _route_map_head(wt_path, logger)
+    # HEAD 键控复用：地图与 HEAD 标记同时存在且标记 == 当前 HEAD → 跳过生成器
+    if head and out.is_file() and marker.is_file():
+        try:
+            if marker.read_text(encoding="utf-8").strip() == head:
+                logger.debug("agent_runner", f"route-map: HEAD 未变复用 {out}")
+                return out
+        except OSError:
+            pass
+    try:
+        result = subprocess.run(
+            [sys.executable, str(generator), str(wt_path)],
+            capture_output=True, text=True, timeout=timeout,
+            cwd=str(wt_path),
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "agent_runner",
+            f"route-map 生成器超时（>{int(timeout)}s）— fail-open: {generator}",
+        )
+        return None
+    if result.returncode != 0:
+        logger.warning(
+            "agent_runner",
+            f"route-map 生成器失败（exit={result.returncode}）— fail-open: "
+            f"{generator}\n{(result.stderr or '').strip()[:300]}",
+        )
+        return None
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(result.stdout, encoding="utf-8")
+        if head:
+            marker.write_text(head, encoding="utf-8")
+    except OSError as e:
+        logger.warning("agent_runner", f"route-map 写入失败（fail-open）: {e}")
+        return None
+    logger.info(
+        "agent_runner",
+        f"route-map 生成完成: {out}（{len(result.stdout)} 字节, "
+        f"HEAD={head[:12] or 'unknown'}）",
+    )
+    return out
 
 # ── Administrator 处置状态实例文件（fix-admin-run-blocks-mainloop D3）─────
 # 处置状态文件按 run 实例分离：每个 admin run 使用独立文件
@@ -220,6 +344,112 @@ class SelfReviewResult:
         self.error = error
         self.output = output
 
+
+# ── run 级 API 延迟统计（add-planner-efficiency：run-latency-observability）──
+# 在线（_run_claude 流式循环旁路）与事后（bin/analyze_run_latency.py）共用
+# 同一套口径函数：对事件序列 `tool_result → 下一个 assistant` 间隔采样为
+# API 往返样本，再计算直方图摘要（轮数/中位/p90/max/长尾>60s 计数与占比）。
+# 纯读侧，不改变流式事件处理时序。timestamp 解析复用 AgentRunner 的
+# _parse_event_timestamp（以惰性解析避免类定义前的默认参数引用）。
+
+LATENCY_STALL_SECONDS = 60.0
+
+
+def iter_events(entries):
+    """逐条 yield（兼容既有调用方传 list 或生成器）。"""
+    yield from entries
+
+
+def _default_ts_parser(entry: dict):
+    """默认 timestamp 解析器：委托 AgentRunner._parse_event_timestamp。"""
+    return AgentRunner._parse_event_timestamp(entry)
+
+
+def latency_samples_from_events(entries, parser=None) -> list:
+    """从事件序列提取 API 往返样本（tool_result → 下一个 assistant 间隔）。
+
+    口径（design D3，与 2026-09-05 事故分析一致）：记录最近一个
+    ``tool_result`` 事件的 timestamp，遇到下一个 ``assistant`` 事件时两者
+    之差 = 一次 API 往返样本；随后清空待配对的 tool_result（一个样本只
+    配对一次）。timestamp 缺失的事件不参与（跳过），样本列表可空。
+
+    Args:
+        entries: 事件 dict 序列（list / 生成器）。
+        parser: timestamp 解析函数（缺省 = AgentRunner._parse_event_timestamp）。
+
+    Returns: float 秒样本列表（含 >60s 长尾；顺序为事件到达序）。
+    """
+    if parser is None:
+        parser = _default_ts_parser
+    samples: list = []
+    last_tool_result_ts: float | None = None
+    for e in iter_events(entries):
+        if not isinstance(e, dict):
+            continue
+        etype = e.get("type")
+        if etype == "tool_result":
+            ts = parser(e)
+            if ts is not None:
+                last_tool_result_ts = ts
+        elif etype == "assistant":
+            ts = parser(e)
+            if ts is not None and last_tool_result_ts is not None:
+                samples.append(ts - last_tool_result_ts)
+                last_tool_result_ts = None
+    return samples
+
+
+def latency_stats(samples) -> dict:
+    """把 API 往返样本压缩为直方图摘要（空样本安全返回全 0 键）。
+
+    Returns: {"rounds": int, "median": float|None, "p90": float|None,
+              "max": float|None, "stalls": int, "stall_ratio": float}
+        rounds 为样本数（=有 timestamps 的 API 往返轮数）；stalls 为
+        >60s 长尾样本数；stall_ratio = stalls/rounds（0 样本为 0）。
+    """
+    n = len(samples)
+    base = {"rounds": n, "median": None, "p90": None, "max": None,
+            "stalls": 0, "stall_ratio": 0.0}
+    if n == 0:
+        return base
+    ordered = sorted(samples)
+    base["median"] = _percentile(ordered, 0.5)
+    base["p90"] = _percentile(ordered, 0.9)
+    base["max"] = ordered[-1]
+    base["stalls"] = sum(1 for s in samples if s > LATENCY_STALL_SECONDS)
+    base["stall_ratio"] = base["stalls"] / n
+    return base
+
+
+def _percentile(ordered: list, q: float) -> float:
+    """已排序列表的线性插值分位数（q∈[0,1]）。"""
+    if not ordered:
+        return 0.0
+    pos = (len(ordered) - 1) * q
+    lo = int(pos)
+    hi = min(lo + 1, len(ordered) - 1)
+    frac = pos - lo
+    return ordered[lo] + (ordered[hi] - ordered[lo]) * frac
+
+
+def format_latency_summary(run_id: str, stats: dict) -> str:
+    """把摘要渲染为日志行（设计示例同款口径）。
+
+    ``run planner-plan-xxx-a1: 58 rounds, median 3.2s, p90 78s, max 185s,
+    stalls>60s=15 (26%)``。无样本时标注样本数（时间戳缺失的旧转录）。
+    """
+    if stats.get("rounds", 0) <= 0:
+        return f"run {run_id}: 0 rounds（无 timestamp 样本，旧转录跳过）"
+    med = stats.get("median") or 0
+    p90 = stats.get("p90") or 0
+    mx = stats.get("max") or 0
+    stalls = stats.get("stalls") or 0
+    ratio = (stats.get("stall_ratio") or 0) * 100
+    return (
+        f"run {run_id}: {stats['rounds']} rounds, "
+        f"median {med:.1f}s, p90 {p90:.1f}s, max {mx:.1f}s, "
+        f"stalls>60s={stalls} ({ratio:.0f}%)"
+    )
 
 
 class AgentRunner:
@@ -491,7 +721,137 @@ class AgentRunner:
         if mode not in ("plan", "judge"):
             raise ValueError(f"mode 必须是 'plan' 或 'judge'，实际: {mode}")
         run_id = f"planner-{mode}-{spec_name}-{int(time.time())}"
-        return self._execute_agent(spec_name, f"planner-{mode}", run_id)
+        sem = self._planner_throttle_semaphore()
+        if sem is None:
+            # 未开启节流：直接派发（现状行为）
+            return self._execute_agent(spec_name, f"planner-{mode}", run_id)
+        # ── 节流持槽等待（add-planner-efficiency：planner-generation-throttle）──
+        # 持槽等待期间不派发 attempt——run 尚未创建，先写保活事件到预生成
+        # run 文件（防 recovery watch 在长等待中把「已派发但未启动」误判为
+        # 无进度/stuck；design D2 备选方案，见 _planner_throttle_acquire）。
+        acquired = self._planner_throttle_acquire(spec_name, run_id)
+        if not acquired:
+            return AgentRunResult(
+                run_id, spec_name, f"planner-{mode}",
+                success=False, duration_seconds=0,
+                error="planner throttle 获取信号量失败",
+            )
+        try:
+            return self._execute_agent(spec_name, f"planner-{mode}", run_id)
+        finally:
+            # 取消/异常均释放信号量（不泄漏占位导致后续 spec 永久排队）
+            sem.release()
+
+    def _planner_throttle_semaphore(self) -> Optional[threading.BoundedSemaphore]:
+        """按配置惰性重建 planner 节流信号量（0/缺省=不节流）。
+
+        add-planner-efficiency（planner-generation-throttle 2.1）：配置键
+        ``verify.planner_max_concurrent``。热更新生效——每次 run_planner
+        重新读配置，上限变化即重建 BoundedSemaphore（既有占位按新上限重计）。
+        返回 None 表示未开启节流（调用方不获取、直接派发）。
+        """
+        global _PLANNER_SEMAPHORE, _PLANNER_SEMAPHORE_LIMIT
+        limit = self._get_config("verify.planner_max_concurrent", 0) or 0
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 0
+        if limit <= 0:
+            return None
+        with _PLANNER_SEMAPHORE_LOCK:
+            if _PLANNER_SEMAPHORE is None or _PLANNER_SEMAPHORE_LIMIT != limit:
+                _PLANNER_SEMAPHORE = threading.BoundedSemaphore(limit)
+                _PLANNER_SEMAPHORE_LIMIT = limit
+                self.logger.info(
+                    "agent_runner",
+                    f"planner 生成节流启用：跨管线并发上限 {limit} "
+                    f"（verify.planner_max_concurrent）",
+                )
+            return _PLANNER_SEMAPHORE
+
+    def _planner_throttle_acquire(self, spec_name: str, run_id: str) -> bool:
+        """持槽等待信号量（可观测 + 等待期保活，design D2 备选方案）。
+
+        - 排队可观测：等待开始时打 INFO 日志（spec 名 + 当前占用者数量），
+          时间轴可审计；
+        - 等待期保活：run 尚未启动（_execute_agent 内才创建 attempt run），
+          以带超时的 acquire 轮询获取，等待期间按心跳周期向预生成 run 文件
+          追加 ``throttled-wait`` 事件行——保持 run 流新鲜，避免等待超过
+          stuck 阈值（160min）且无写入时被 recovery watch 误判为
+          stuck/dispatch_stalled（spec「排队不被误判」Scenario）。
+        - 取消（RunCancelledError）在等待期不可达（无子进程可终止），因此
+          仅释放义务由调用方 finally 承担。
+        """
+        sem = _PLANNER_SEMAPHORE
+        if sem is None:
+            return True
+        self.logger.info(
+            "agent_runner",
+            f"planner 节流排队中: spec={spec_name} run={run_id} "
+            f"当前占用 {sem._value}/{_PLANNER_SEMAPHORE_LIMIT}（持槽等待）",
+        )
+        # 预生成 run 文件：等待期保活事件写入目标（避免无文件可写）
+        runs_dir = self.project_root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        run_file = runs_dir / f"{run_id}.jsonl"
+        try:
+            run_file.touch(exist_ok=True)
+        except OSError:
+            pass
+        deadline = time.monotonic() + THROTTLED_WAIT_HEARTBEAT_SECONDS
+        while True:
+            if sem.acquire(timeout=THROTTLED_WAIT_HEARTBEAT_SECONDS):
+                # 获取成功，补一次保活事件标记正式开始
+                try:
+                    append_run_line(run_file, {
+                        "type": "throttled-wait",
+                        "event": "acquired",
+                        "spec": spec_name,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                except OSError:
+                    pass
+                return True
+            # 等待仍在继续：保活心跳（约每 60s 一次），run 流保持新鲜
+            if time.monotonic() >= deadline:
+                deadline = time.monotonic() + THROTTLED_WAIT_HEARTBEAT_SECONDS
+                try:
+                    append_run_line(run_file, {
+                        "type": "throttled-wait",
+                        "event": "heartbeat",
+                        "spec": spec_name,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                except OSError:
+                    pass
+
+    def ensure_planner_route_map(self, spec_name: str) -> Path | None:
+        """阶段1 前置接入：对 spec 当前使用的 impl worktree 生成/复用路由地图。
+
+        add-planner-efficiency（planner-route-map 1.1）。verification.py 阶段1
+        进入处调用；复用键=worktree HEAD（未变跳过）。worktree 尚未创建
+        （首轮 planner 派发前没有 planner worktree）时无操作返回 None——
+        真正的生成兜底在 ``_execute_agent_inner`` planner 分支（worktree 创建
+        后、prompt 组装前，HEAD 键控）。两者共用 ``ensure_route_map``，幂等。
+
+        Returns: 地图文件路径或 None（fail-open / 无可用 worktree）。
+        """
+        if not spec_name:
+            return None
+        try:
+            wt = self.worktree_manager.find_implementer_worktree(spec_name)
+        except Exception:
+            return None
+        if wt is None:
+            return None
+        try:
+            return ensure_route_map(Path(wt), self.project_root, self.logger)
+        except Exception as e:
+            self.logger.warning(
+                "agent_runner",
+                f"route-map 生成异常（fail-open）'{spec_name}': {e}",
+            )
+            return None
 
     def run_fast_track(self, spec_name: str) -> AgentRunResult:
         """Run the Fast-Track Agent for a SPEC (single run: implement + verify).
@@ -1312,15 +1672,32 @@ class AgentRunner:
                     provider_name, model, chain_cursor, len(chain),
                 )
 
+            # ── 路由地图生成（add-planner-efficiency：planner-route-map 1.1） ──
+            # planner 阶段以 impl worktree 为源执行项目声明生成器（HEAD 键控复用、
+            # fail-open）。在 prompt 组装前调用——地图是 planner 出题时的入口索引，
+            # 必须在提示词注入前就绪（design D1 生成点=阶段1 进入处）。生成器缺失/
+            # 失败/超时不阻塞派发（planner 回退逐轮 grep 现状）。judge 不生成地图
+            # （判定不出题，无需入口索引）。
+            if agent_type == "planner-plan" and wt_path is not None:
+                try:
+                    ensure_route_map(wt_path, self.project_root, self.logger)
+                except Exception as e:
+                    self.logger.warning(
+                        "agent_runner",
+                        f"route-map 生成异常（fail-open，不阻断 planner 派发）: {e}",
+                    )
+
             # Build and execute the prompt
             try:
                 if agent_type == "repair":
                     # repair prompt 注入冲突摘要（add-merge-back-repair-lane D5）
                     prompt = self._build_prompt(
                         spec_name, agent_type, detail=conflict_summary or {},
+                        wt_path=wt_path,
                     )
                 else:
-                    prompt = self._build_prompt(spec_name, agent_type)
+                    prompt = self._build_prompt(
+                        spec_name, agent_type, wt_path=wt_path)
                 env_overrides: Dict[str, str] = {}
                 # add-worktree-test-server（D1 注入）：把该 worktree 专属 dev-server 地址
                 # 注入 agent 运行环境，使 Playwright baseURL 指向 worktree 副本而非主 8787。
@@ -1727,6 +2104,12 @@ class AgentRunner:
         stdout_lines: list = []
         stderr_lines: list = []
 
+        # ── run 级 API 延迟统计（add-planner-efficiency：run-latency-observability）──
+        # 纯读侧采集：`tool_result → 下一个 assistant` 间隔样本（API 往返等待）。
+        # sample_state 被 _read_stream 子线程 append，主线程在 join 后读取，
+        # 同线程追加+join 后读取无竞态（类 turn_count 同模式）。
+        latency_state: dict = {"last_tool_result_ts": None, "samples": []}
+
         def _read_stream(stream, is_stderr: bool) -> None:
             try:
                 for line in iter(stream.readline, ""):
@@ -1757,6 +2140,18 @@ class AgentRunner:
                             last_result.clear()
                             last_result.update(entry)
                             continue
+                        # 延迟样本采集：tool_result → assistant = 一次 API 往返
+                        etype = entry.get("type")
+                        e_ts = AgentRunner._parse_event_timestamp(entry)
+                        if etype == "tool_result":
+                            if e_ts is not None:
+                                latency_state["last_tool_result_ts"] = e_ts
+                        elif etype == "assistant":
+                            if (e_ts is not None
+                                    and latency_state["last_tool_result_ts"] is not None):
+                                latency_state["samples"].append(
+                                    e_ts - latency_state["last_tool_result_ts"])
+                                latency_state["last_tool_result_ts"] = None
                     append_run_line(run_file, entry)
             except Exception:
                 # 读取线程异常不应导致主流程崩溃；半成品产物仍可被 Dashboard 读取
@@ -1778,6 +2173,10 @@ class AgentRunner:
         # terminate→grace→kill→写 cancelled 终态行→抛 RunCancelledError
         base_run_id = self._normalize_run_id(run_id)
         cancel_error: RunCancelledError | None = None
+        # add-planner-efficiency（run-latency-observability）：run 末延迟摘要文本。
+        # 在 finally（读线程 join 后）计算并打日志；失败/取消路径把摘要拼入
+        # error 上下文（卡死 vs 慢可判）。
+        latency_summary_text = ""
         try:
             while True:
                 # ── 取消旗标检查（add-run-cancel D1/D3）──
@@ -1858,6 +2257,25 @@ class AgentRunner:
             t_out.join(timeout=5)
             t_err.join(timeout=5)
             self._running_agents.pop(run_id, None)
+            # add-planner-efficiency（run-latency-observability）：run 末延迟摘要
+            # 日志——统一覆盖成功/失败/取消全部退出路径（component=agent_runner，
+            # 含 run_id）。纯读侧统计，不改变事件处理时序。
+            try:
+                stats = latency_stats(latency_state["samples"])
+                latency_summary_text = format_latency_summary(run_id, stats)
+                self.logger.info(
+                    "agent_runner",
+                    latency_summary_text,
+                    {"run_id": run_id, "latency_rounds": stats["rounds"],
+                     "latency_stalls": stats["stalls"],
+                     "latency_p90": stats.get("p90"),
+                     "latency_max": stats.get("max")},
+                )
+            except Exception as e:
+                self.logger.debug(
+                    "agent_runner",
+                    f"延迟摘要计算失败（不阻断 run 终态）: {e}",
+                )
             # result 终态事件最后落盘（读线程里跳过内联写），保证是文件最后一行
             if last_result:
                 append_run_line(run_file, dict(last_result))
@@ -1880,11 +2298,15 @@ class AgentRunner:
 
         if timeout_error is not None:
             append_run_error(run_file, timeout_error, returncode)
-            raise RuntimeError(f"claude CLI {timeout_error}")
+            raise RuntimeError(
+                f"claude CLI {timeout_error}"
+                + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
 
         if turn_limit_error is not None:
             append_run_error(run_file, turn_limit_error, returncode)
-            raise RuntimeError(f"claude CLI {turn_limit_error}")
+            raise RuntimeError(
+                f"claude CLI {turn_limit_error}"
+                + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
 
         output = last_result.get("result", "") if last_result else ""
         turns = last_result.get("num_turns", 0)
@@ -1893,7 +2315,9 @@ class AgentRunner:
         if returncode != 0:
             error_msg = "\n".join(stderr_lines[-5:])[:500] if stderr_lines else f"Exit code: {returncode}"
             append_run_error(run_file, error_msg, returncode)
-            raise RuntimeError(f"claude CLI failed: {error_msg}")
+            raise RuntimeError(
+                f"claude CLI failed: {error_msg}"
+                + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
 
         # D5: 终态语义校验前置 —— rc==0 但 last_result 标记为 error 时仍判失败
         # （Claude CLI 可能把 API 错误包装成 result/success 终止事件且 exit 0）
@@ -1903,7 +2327,9 @@ class AgentRunner:
             if result_is_error or result_subtype in ("error", "error_during_execution"):
                 err_text = last_result.get("result", "") or f"is_error={result_is_error}, subtype={result_subtype}"
                 append_run_error(run_file, f"API error disguised as success: {err_text}", returncode)
-                raise RuntimeError(f"claude CLI rc==0 but result indicates error: {err_text}")
+                raise RuntimeError(
+                    f"claude CLI rc==0 but result indicates error: {err_text}"
+                    + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
 
         # add-cost-observability（D1）：从 stream-json 终态 result 事件提取 usage 与
         # 成本字段；失败/异常路径上 _run_claude 已抛错，此处仅成功终态能拿到 usage。
@@ -1936,6 +2362,8 @@ class AgentRunner:
             return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
         except (ValueError, TypeError):
             return None
+
+
 
 
 
@@ -2240,8 +2668,10 @@ class AgentRunner:
     # ── 组合组件委托（refactor-core-packages 阶段 1：PromptBuilder）──────
     # 测试引用方法（runner._build_prompt 等）保持调用路径可用（design D3 规则 4）。
 
-    def _build_prompt(self, spec_name: str, agent_type: str, detail: dict | None = None) -> str:
-        return self._prompt_builder._build_prompt(spec_name, agent_type, detail)
+    def _build_prompt(self, spec_name: str, agent_type: str, detail: dict | None = None,
+                      wt_path: Path | None = None) -> str:
+        return self._prompt_builder._build_prompt(
+            spec_name, agent_type, detail, wt_path=wt_path)
 
     def _build_legacy_section(self, spec_name: str) -> str:
         return self._prompt_builder._build_legacy_section(spec_name)

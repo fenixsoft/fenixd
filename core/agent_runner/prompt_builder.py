@@ -116,12 +116,16 @@ class PromptBuilder:
             out = out.replace(key, val)
         return out
 
-    def _build_prompt(self, spec_name: str, agent_type: str, detail: dict | None = None) -> str:
+    def _build_prompt(self, spec_name: str, agent_type: str, detail: dict | None = None,
+                      wt_path: Path | None = None) -> str:
         """构建 claude CLI prompt：文件主体 + 占位符填充 + 动态段按状态追加。
 
         detail: 可选。administrator 分支接收困境信号 dict；
             repair 分支接收冲突分类信息（conflict_summary 结构，见
             _build_repair_prompt）。
+        wt_path: 可选。本次 run 的 impl worktree 路径（add-planner-efficiency：
+            路由地图注入用；planner 阶段在 prompt 组装前已把地图生成到
+            <wt_path>/.fenix/route-map.md，此处按 生成>静态>无 的优先级注入）。
         """
         # repair prompt 完全独立构建（不走 agents/ 模板）：须先于模板加载判断，
         # 否则 _load_agent_template("repair") 因类型不在白名单而 fail-fast
@@ -177,30 +181,79 @@ class PromptBuilder:
         # administrator 无条件动态段：困境信号经占位符注入
 
         # 项目级附加提示词（D2）：附加在完整 prompt（通用主体 + 动态段）之后
-        prompt += self._project_extra_section(agent_type)
+        prompt += self._project_extra_section(agent_type, spec_name, wt_path)
         return prompt
 
-    def _project_extra_section(self, agent_type: str) -> str:
+    def _project_extra_section(self, agent_type: str, spec_name: str = "",
+                               wt_path: Path | None = None) -> str:
         """项目级附加提示词段（add-agent-prompt-files D2 / 任务 2.1）。
 
         <项目根>/.fenix/agents/<agent-type>.md 存在则读入，以
         「## 项目附加提示词」标题附加在 prompt 完整内容（通用主体 + 动态段）
         之后；缺席零注入（prompt 与仅通用层时逐字节一致）。
         通用层重合布局跳过（project_agents_dir 返回 None，见其 docstring）。
+
+        路由地图段（add-planner-efficiency：planner-route-map 1.3）：
+        planner 阶段附加已知入口索引（生成地图 > 主树静态 > 无），
+        措辞固定为「已知入口索引、非穷尽清单；spec 涉及但地图未覆盖的
+        入口仍须自行源码取证」——防线在措辞（生成器覆盖不全时 planner
+        不放弃取证）。
         """
+        base = ""
         agents_dir = self._project_agents_dir()
-        if agents_dir is None:
-            return ""
-        path = agents_dir / AGENT_PROMPT_FILES[agent_type]
-        if not path.is_file():
+        if agents_dir is not None:
+            path = agents_dir / AGENT_PROMPT_FILES[agent_type]
+            if path.is_file():
+                try:
+                    content = path.read_text(encoding="utf-8").strip()
+                except OSError:
+                    content = ""
+                if content:
+                    base = f"\n\n## 项目附加提示词\n\n{content}\n"
+        # ── 路由地图段（planner-plan 专属，planner-judge 不出题无需注入）──
+        if agent_type == "planner-plan" and spec_name:
+            rm = self._route_map_section(spec_name, wt_path)
+            if rm:
+                base += rm
+        return base
+
+    def _route_map_section(self, spec_name: str, wt_path: Path | None = None) -> str:
+        """路由地图注入段（add-planner-efficiency：planner-route-map 1.3）。
+
+        优先级：worktree 生成地图 > 主树静态 `.fenix/route-map.md` > 无。
+        措辞固定为「已知入口索引、非穷尽清单」+ 取证义务提醒。
+
+        Returns:
+            prompt 段字符串（含导航信息时）或空串（fail-open / 无地图）。
+        """
+        from core.agent_runner.runner import ROUTE_MAP_REL
+        project_root = self._pm.project_root
+        map_path: Path | None = None
+        # 1. worktree 生成地图（planner 阶段在 prompt 组装前已生成）
+        if wt_path is not None:
+            candidate = Path(wt_path) / ROUTE_MAP_REL
+            if candidate.is_file():
+                map_path = candidate
+        # 2. 主树静态地图（人工提交 / 无生成器项目）
+        if map_path is None:
+            candidate = Path(project_root) / ROUTE_MAP_REL
+            if candidate.is_file():
+                map_path = candidate
+        if map_path is None:
             return ""
         try:
-            content = path.read_text(encoding="utf-8").strip()
-        except OSError:
+            content = map_path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
             return ""
         if not content:
             return ""
-        return f"\n\n## 项目附加提示词\n\n{content}\n"
+        return (
+            f"\n\n## 路由地图（已知入口索引、非穷尽清单）\n\n"
+            f"{content}\n\n"
+            f"> **注意**：以上为项目已知入口索引，**非穷尽清单**。spec 涉及但"
+            f"地图未覆盖的入口，你仍须自行源码取证（grep/阅读源码，导航出处须"
+            f"包含 `文件:行号`）。不可仅凭此地图断言无新入口。\n"
+        )
 
     def _project_agents_dir(self):
         """项目级 agents 目录；解析为通用层时返回 None（见 project_agents_dir）。"""

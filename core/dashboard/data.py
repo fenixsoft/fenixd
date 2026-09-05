@@ -3096,6 +3096,11 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             if patch["verify"].get(vk) in ("main", "worktree") if vk == "static_scope" \
                     else patch["verify"].get(vk) in ("prefer-offline", "hardlink"):
                 merged["verify"][vk] = patch["verify"][vk]
+        # add-planner-efficiency（planner-generation-throttle 2.3）：
+        # planner 生成节流上限——非负整数（0=不节流），非法值静默忽略。
+        pmc = patch["verify"].get("planner_max_concurrent")
+        if isinstance(pmc, int) and not isinstance(pmc, bool) and pmc >= 0:
+            merged["verify"]["planner_max_concurrent"] = pmc
     # add-spec-archive D5：archive.auto_threshold（非负整数，0=禁用，非法值静默忽略）
     if "archive" in patch and isinstance(patch["archive"], dict):
         at = patch["archive"].get("auto_threshold")
@@ -3204,6 +3209,15 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 f"verify.deps_mode must be one of ['prefer-offline', 'hardlink']: "
                 f"{v_patch['deps_mode']}"
             )
+        # add-planner-efficiency：planner 生成节流上限——非负整数（0=不节流）。
+        if "planner_max_concurrent" in v_patch \
+                and v_patch["planner_max_concurrent"] is not None:
+            pmc = v_patch["planner_max_concurrent"]
+            if not isinstance(pmc, int) or isinstance(pmc, bool) or pmc < 0:
+                return fail(
+                    f"verify.planner_max_concurrent must be a non-negative integer "
+                    f"(0=不节流): {pmc!r}"
+                )
 
     # 2. 合并受管键
     merged = _deep_merge_managed(raw, config_patch)
