@@ -133,22 +133,29 @@ export default function LlmProviderPanel({ config, onSave }: LlmProviderPanelPro
       if (pruned) {
         form.validateFields().catch(() => {});
       }
-      const values: FormValues = await form.validateFields();
-      const providers = toProviders(values);
-      // 同卡片重复 model 前端拦截（后端同样校验，双保险）
-      for (const p of providers) {
-        const cardPrices = p.billing?.prices || [];
+      // 同卡片重复 model 前端拦截（先于必填校验执行：spec「重复时保存被拦截并提示」，
+      // 即使新增重复行尚未填价也给出明确提示；后端同样校验，双保险）
+      const dupCheck = form.getFieldsValue(true);
+      const dupRows = dupCheck?.providers || [];
+      for (let i = 0; i < dupRows.length; i++) {
+        const p = dupRows[i] as ProviderRowValues;
+        const cardPrices = (Array.isArray(p?.prices) ? p.prices : [])
+          .filter((r) => !isBlankPriceRow(r));
         const seen = new Set<string>();
         for (const row of cardPrices) {
-          const model = (row.model || '').trim();
+          const model = (row?.model || '').trim();
           if (!model) continue;
           if (seen.has(model)) {
-            message.error(`价格行重复：Provider「${p.name}」内存在重复模型名 ${model}，请修改后重试`);
+            message.error(
+              `价格行重复：Provider「${p?.name || i + 1}」内存在重复模型名 ${model}，请修改后重试`
+            );
             return;
           }
           seen.add(model);
         }
       }
+      const values: FormValues = await form.validateFields();
+      const providers = toProviders(values);
       await onSave({ llm: { providers } });
     } catch (error) {
       console.error('Validation failed:', error);
