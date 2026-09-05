@@ -48,9 +48,13 @@ Fenix 是通用开发框架，被管项目形态各异：前端应用有构建�
                                      # 项目根）：选目录时保证场景路径在其下成立——
                                      # 例如应用以 /dist/ 路径访问时，root 应取其
                                      # 父目录（static）而非 dist 本身
-      # cmd: python3 -m http.server 8787   # kind=command 必填。shell 命令，项目根为 cwd
-      # port: 8787                         # kind=command 可选。端口提示（供端口改写
-                                     # 扫描）；缺省时从 cmd 的 --port/-p 参数提取
+      # cmd: python3 -m http.server {port}  # kind=command 必填。shell 命令，项目根
+                                     # 为 cwd。端口写 {port} 占位符：框架启动前
+                                     # 分配空闲端口替换，并同值导出
+                                     # FENIX_VERIFY_PORT 环境变量（二选一引用）
+      # port: 8787                         # kind=command 可选。legacy 端口提示（仅
+                                     # 未迁移契约的邻近扫描兜底用；引用 {port}
+                                     # 后无需再填）
     # ── 可选。就绪探针；缺省探被测实例根路径、期望 200、等待 60 秒。
     ready:
       url: /#/overview               # 探针路径（相对被测实例），缺省 /
@@ -61,8 +65,10 @@ Fenix 是通用开发框架，被管项目形态各异：前端应用有构建�
 
 - **static 模式无条件新鲜服务**：不做「已可达即跳过」——场景 origin 全量改写
   到本次实例。这是对陈旧产物陷阱的结构性修复，不是可选项。
-- **command 模式**沿用既有自愈语义（探活 → 启动 → 端口改写），仅把启动命令
-  的来源从 ``commands.start`` 换为 ``serve.cmd``（优先）。
+- **command 模式端口注入**：框架分配空闲端口，经 ``{port}`` 占位符与
+  ``FENIX_VERIFY_PORT`` 环境变量注入 serve.cmd——实例永不与既有实例争抢
+  端口（与 static 模式「框架分配、实例消费」同范式）。未消费注入的存量
+  契约由进程归属/邻近扫描兜底发现并记迁移告警。
 - ``prepare`` 失败＝验证环境错误（返回不可达 + 说明），验证门禁会拦截、
   不会判 verified/bug-found——构建失败不是产品缺陷。
 """
@@ -108,8 +114,10 @@ class ServeSpec:
 
     kind: str  # "static" | "command"
     root: str = ""  # kind=static：URL 空间根目录（相对项目根）
-    cmd: str = ""  # kind=command：shell 命令
-    port: Optional[int] = None  # kind=command：端口提示（供端口改写扫描）
+    cmd: str = ""  # kind=command：shell 命令；端口写作 {port} 占位符（框架
+    # 分配空闲端口替换，并同值导出 FENIX_VERIFY_PORT 环境变量）
+    port: Optional[int] = None  # kind=command：legacy 端口提示（仅未迁移
+    # 契约的邻近扫描兜底用；引用 {port} 后无需再填）
 
 
 @dataclass
@@ -183,6 +191,18 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
         expect=int(ready_data.get("expect") or 200),
         timeout=int(ready_data.get("timeout") or DEFAULT_READY_TIMEOUT),
     )
+    # 端口注入迁移告警（不阻断）：cmd 未引用注入端口时实例会与既有实例
+    # 争抢固定端口（dashboard 端口独占语义下 = 杀掉占用者接管，2026-09-05
+    # 验证实例顺带杀主树 dashboard 事故的根源），由未消费注入的兜底发现
+    # 链路续命。存量为零迁移原则只告警、不拒绝。
+    if (serve is not None and serve.kind == "command" and serve.cmd
+            and "{port}" not in serve.cmd
+            and "$FENIX_VERIFY_PORT" not in serve.cmd and logger):
+        logger.warning(
+            "verify_contract",
+            "serve.cmd 未引用端口注入（{port} 占位符或 $FENIX_VERIFY_PORT "
+            "环境变量），验证实例将与既有实例争抢固定端口；建议迁移：cmd 中"
+            "的端口写作 {port}，框架自动分配空闲端口注入")
     deps_mode = ""
     if data.get("deps_mode") is not None:
         if data["deps_mode"] in DEPS_MODES:
@@ -292,15 +312,27 @@ class CommandVerifyServer:
     静态文件，交付物 API 会被迫 mock（假阴性放大器）。本类持进程组句柄、
     可探活、可停止（进程组 SIGTERM→SIGKILL）。
 
-    端口发现：serve.port 提示端口若被占（如主树常驻实例），服务自身上探
-    邻近端口——扫描 hint..hint+50 中「启动后才出现监听」的端口即本次实例。
+    端口发现三段式（每轮按序尝试，任一命中即返回）：
+    1. 注入端口精确探（主路径）：框架启动前分配空闲端口，经 ``{port}``
+       占位符替换与 ``FENIX_VERIFY_PORT`` 环境变量双通道注入——实例消费
+       注入端口即命中，永不与既有实例（主树常驻实例等）争抢端口。
+    2. 进程归属发现：实例无视注入端口自绑端口时，经 ``ss -tlnp`` 找
+       「属主进程组 = 本次实例进程组」的监听端口（不依赖端口数字约定，
+       服务绑任何端口都能找到）。
+    3. 邻近扫描（legacy 兜底）：serve.port 提示基准 hint..hint+50 中
+       「启动后才出现监听」的端口——要求服务自身上探邻近端口，仅供
+       未迁移契约平滑过渡。
+
+    失败时 ``failure_note`` 记人类可读原因（区分启动即退出/未消费注入）。
     """
 
-    def __init__(self, proc: subprocess.Popen, hint_port: int,
-                 pre_listening: set, timeout: int = 60):
+    def __init__(self, proc: subprocess.Popen, injected_port: Optional[int],
+                 timeout: int = 60, legacy_hint: Optional[int] = None,
+                 legacy_pre: Optional[set] = None):
         self._proc = proc
-        self._port = self._discover_port(hint_port, pre_listening, timeout)
-        self.pre_listening = pre_listening
+        self.failure_note = ""
+        self._port = self._discover_port(
+            injected_port, timeout, legacy_hint, legacy_pre or set())
 
     @staticmethod
     def _probe(url: str, timeout: float = 1.0) -> bool:
@@ -311,17 +343,72 @@ class CommandVerifyServer:
         except Exception:
             return False
 
-    def _discover_port(self, hint: int, pre_listening: set, timeout: int) -> Optional[int]:
-        deadline = time.monotonic() + max(timeout, 5)
-        while time.monotonic() < deadline:
-            for p in range(hint, hint + 51):
-                if p in pre_listening:
+    @staticmethod
+    def _owned_listening_ports(pgid: Optional[int]) -> list:
+        """本进程组（start_new_session 进程森林）持有的 TCP 监听端口。
+
+        经 ``ss -tlnp`` 属主 pid → pgid 匹配。ss 不可用/无匹配返回空列表
+        （回退邻近扫描）；守护化脱离进程组的服务在此失明——那属病态部署，
+        交由邻近扫描兜底。
+        """
+        if pgid is None:
+            return []
+        try:
+            r = subprocess.run(["ss", "-tlnp"], capture_output=True,
+                               text=True, timeout=5)
+        except Exception:
+            return []
+        ports = []
+        for line in (r.stdout or "").splitlines():
+            parts = line.split()
+            if len(parts) < 4 or parts[0] != "LISTEN":
+                continue
+            try:
+                port = int(parts[3].rsplit(":", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            for m in re.findall(r"pid=(\d+)", line):
+                try:
+                    if os.getpgid(int(m)) == pgid:
+                        ports.append(port)
+                        break
+                except OSError:
                     continue
-                if self._probe(f"http://127.0.0.1:{p}/"):
+        return ports
+
+    def _discover_port(self, injected: Optional[int], timeout: int,
+                       legacy_hint: Optional[int], legacy_pre: set) -> Optional[int]:
+        deadline = time.monotonic() + max(timeout, 5)
+        try:
+            pgid = os.getpgid(self._proc.pid)
+        except OSError:
+            pgid = None
+        while time.monotonic() < deadline:
+            # 1) 注入端口精确探
+            if injected and self._probe(f"http://127.0.0.1:{injected}/"):
+                return injected
+            # 2) 进程归属发现（实例无视注入端口自绑端口的兜底）
+            for p in self._owned_listening_ports(pgid):
+                if p != injected and self._probe(f"http://127.0.0.1:{p}/"):
                     return p
+            # 3) 邻近扫描（legacy：服务自身上探邻近端口的存量契约）
+            if legacy_hint:
+                for p in range(legacy_hint, legacy_hint + 51):
+                    if p in legacy_pre or p == injected:
+                        continue
+                    if self._probe(f"http://127.0.0.1:{p}/"):
+                        return p
             if self._proc.poll() is not None:
-                return None  # 进程已退出（启动失败），不再等待
+                self.failure_note = (
+                    f"验证命令实例启动即退出（exit={self._proc.returncode}）"
+                    "——检查 serve.cmd 可执行性及端口注入引用"
+                    "（{port} 占位符 / $FENIX_VERIFY_PORT 环境变量）")
+                return None
             time.sleep(1)
+        self.failure_note = (
+            f"验证命令实例未就绪：注入端口 {injected} 未被消费，进程归属与"
+            "邻近扫描亦未发现 HTTP 监听——检查 serve.cmd 是否引用 {port} "
+            "占位符或 $FENIX_VERIFY_PORT 环境变量")
         return None
 
     @property

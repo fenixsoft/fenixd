@@ -17,6 +17,7 @@ import time
 import urllib.request
 
 from core.serving_registry import ServingRegistry
+from core.proc_utils import find_free_port
 from core.verify_contract import (
     CommandVerifyServer,
     load_verify_contract,
@@ -234,8 +235,11 @@ class VerificationPipeline:
         full-stack 验证的解法：serving worktree 内 prepare 构建产物，再以
         worktree 为 cwd 启动 serve.cmd——后端 API 与前端产物同为本次 HEAD 的
         真实形态（static 模式无 API，交付物端点被迫 mock＝假阴性放大器）。
-        实例端口以 serve.port 为基准上探，跳过启动前已在监听的端口（主树
-        常驻实例让位）。HEAD 未变时复用已启动实例。
+        端口注入（与 static 模式「框架分配、实例消费」同范式）：启动前分配
+        空闲端口，经 {port} 占位符替换 + FENIX_VERIFY_PORT 环境变量双通道
+        注入——实例永不与既有实例（主树常驻实例等）争抢端口；未消费注入的
+        存量契约由 CommandVerifyServer 进程归属/邻近扫描兜底发现。HEAD 未变
+        时复用已启动实例。
         """
         wt, head, err = self._ensure_serving_worktree(
             spec_name, contract, mode="command")
@@ -249,25 +253,31 @@ class VerificationPipeline:
                 and old["server"].ok):
             return self._finalize_static(
                 old["server"], contract, scenarios_path, "命令 worktree（复用）")
+        port = find_free_port()
+        # legacy 兜底参数：邻近扫描基准（serve.port 或 cmd 内端口数字）与
+        # 启动前监听快照（跳过既有实例端口）；cmd 引用 {port} 后两者皆不需要
         import re as _re
         m = _re.search(r"(?:--port|-p)\s+(\d+)", contract.serve.cmd or "")
-        hint = contract.serve.port or (int(m.group(1)) if m else 8787)
-        # 启动前监听快照：这些端口属于既有实例，不认作本次实例
-        pre = {p for p in range(hint, hint + 51) if self._port_responds(p)}
+        legacy_hint = contract.serve.port or (int(m.group(1)) if m else None)
+        pre = ({p for p in range(legacy_hint, legacy_hint + 51)
+                if self._port_responds(p)} if legacy_hint else set())
+        cmd_str = (contract.serve.cmd or "").replace("{port}", str(port))
+        env = {**os.environ, "FENIX_VERIFY_PORT": str(port)}
         try:
             proc = subprocess.Popen(
-                contract.serve.cmd, shell=True, cwd=str(wt),
+                cmd_str, shell=True, cwd=str(wt),
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True,
+                start_new_session=True, env=env,
             )
         except Exception as e:
             return False, False, f"验证命令实例启动失败: {e}"
-        srv = CommandVerifyServer(proc, hint, pre,
-                                  timeout=contract.ready.timeout or 60)
+        srv = CommandVerifyServer(
+            proc, port, timeout=contract.ready.timeout or 60,
+            legacy_hint=legacy_hint, legacy_pre=pre)
         if not srv.ok:
             srv.stop()
             return False, False, (
-                f"验证命令实例未就绪（端口 {hint}+ 上探超时或进程退出）")
+                srv.failure_note or "验证命令实例未就绪（注入端口未被消费）")
         cache[spec_name] = {
             "server": srv, "wt_path": wt, "head": head, "mode": "command",
         }
@@ -435,8 +445,15 @@ class VerificationPipeline:
         if not start_cmd or start_cmd in ("echo 'No start command configured yet'",):
             return False, False, "应用不可达且未配置验证契约 serve / commands.start（无法自动启动验证目标应用）"
 
+        # 端口注入（与 worktree 路径同机制）：cmd 引用 {port} 时分配空闲
+        # 端口替换并导出 FENIX_VERIFY_PORT——主树兜底自启同样不撞既有实例
         base_port = serve_port_hint
-        if base_port is None:
+        injected_port = None
+        if "{port}" in start_cmd:
+            injected_port = find_free_port()
+            start_cmd = start_cmd.replace("{port}", str(injected_port))
+            base_port = injected_port
+        elif base_port is None:
             pm = re.search(r"(?:--port|-p)\s+(\d+)", start_cmd)
             if pm:
                 base_port = int(pm.group(1))
@@ -447,11 +464,14 @@ class VerificationPipeline:
         )
 
         # 启动一次（后台、脱离会话、输出丢弃）；随后等待可达或扫描邻近端口
+        env = {**os.environ}
+        if injected_port:
+            env["FENIX_VERIFY_PORT"] = str(injected_port)
         try:
             proc = subprocess.Popen(
                 start_cmd, shell=True, cwd=str(self._pm.project_root),
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True,
+                start_new_session=True, env=env,
             )
         except Exception as e:
             return False, False, f"启动验证目标应用失败: {e}"

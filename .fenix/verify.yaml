@@ -24,9 +24,11 @@
 #   root    kind=static 必填。URL 空间的根目录（相对项目根）——注意取的
 #           是"路径前缀成立"的目录：本应用以 / 访问，故 root 取
 #           core/dashboard/static（dist 的父目录）而非 dist 本身
-#   cmd     kind=command 必填。服务启动命令
-#   port    kind=command 可选。端口提示（供场景端口改写扫描）；
-#           缺省时框架从 cmd 的 --port/-p 参数提取
+#   cmd     kind=command 必填。服务启动命令；端口写 {port} 占位符——框架
+#           启动前分配空闲端口替换，并同值导出 FENIX_VERIFY_PORT 环境变量
+#           （实例永不与既有实例争抢端口，主树常驻 8787 不受影响）
+#   port    kind=command 可选。legacy 端口提示（仅未迁移契约的邻近扫描
+#           兜底用；cmd 引用 {port} 后无需再填）
 #
 # ready     可选。就绪探针；缺省探实例根路径、期望 200、等待 60 秒
 #   url     探针路径（相对被测实例）
@@ -51,9 +53,10 @@ serve:
   # command + static_scope=worktree：serving worktree 内起真实全栈实例
   # （Python API + 本次构建的前端产物）——static 模式无 API，交付物端点
   # 会被迫 mock（假阴性放大器，help-center 实证）
+  # 端口写 {port} 占位符：框架启动前分配空闲端口替换（并同值导出
+  # FENIX_VERIFY_PORT 环境变量）——实例永不与主树常驻实例争抢 8787
   kind: command
-  cmd: python3 bin/fenix_dashboard.py --serve --port 8787
-  port: 8787
+  cmd: python3 bin/fenix_dashboard.py --serve --port {port}
 
 ready:
   url: /
