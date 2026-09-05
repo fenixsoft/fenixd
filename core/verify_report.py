@@ -281,19 +281,20 @@ def _render_scenarios_table(report) -> list:
     if not isinstance(scenarios, list) or not scenarios:
         return []
     lines = ["", "## 场景结果", ""]
-    lines.append("| 场景 | 状态 | 失败断言 | 分类 |")
-    lines.append("| --- | --- | --- | --- |")
+    lines.append("| 场景 | 描述 | 状态 | 失败断言 | 分类 |")
+    lines.append("| --- | --- | --- | --- | --- |")
     for sc in scenarios:
         if not isinstance(sc, dict):
             continue
         sid = str(sc.get("scenario_id") or sc.get("id") or "-")
+        desc = str(sc.get("description") or "-").replace("|", "\\|")
         status = str(sc.get("status") or "-")
         # 采纳处强制重写的场景标注「已修正」(add-verdict-evidence-taxonomy D3)
         if sc.get("status_corrected"):
             status += "（已修正）"
         classification = str(sc.get("classification") or "-")
         lines.append(
-            f"| {sid} | {status} | {_failed_assertion_count(sc)} | {classification} |"
+            f"| {sid} | {desc} | {status} | {_failed_assertion_count(sc)} | {classification} |"
         )
     lines.append("")
     return lines
@@ -401,6 +402,29 @@ def render_verification_report(spec_name, run_result, report, now=None,
 
 # ── 合成与闸门 ────────────────────────────────────────────────────
 
+def _resolve_scenarios(report, run_result):
+    """解析场景明细数据源（fix-verify-report-fasttrack-scenarios）。
+
+    优先级：
+      1. report.json 顶层 `scenarios` 非空列表 → 使用之（full 模式 tester 路径不变）
+      2. 顶层缺失/为空/非法 → 回退 `.fenix-run-result.json` 的
+         `verification.scenarios`（fast-track schema，`core/fast_track_result.py`）
+      3. 两者皆不可得 → 返回 None（场景表留空，不阻断合成）
+
+    数据读取在入口合成层完成、归一为场景列表返回；渲染层仍收纯参数（`.get` 链
+    已按缺省容错，scene 无 classification/assertion_results 等字段时原样显示）。
+    """
+    report_scenarios = (report or {}).get("scenarios")
+    if isinstance(report_scenarios, list) and report_scenarios:
+        return report_scenarios
+    verification = run_result.get("verification") if isinstance(run_result, dict) else None
+    if isinstance(verification, dict):
+        fast_scenarios = verification.get("scenarios")
+        if isinstance(fast_scenarios, list) and fast_scenarios:
+            return fast_scenarios
+    return None
+
+
 def synthesize_verification_report(project_root, spec_name, now=None) -> dict:
     """从结构化数据合成 verification-report.md 并写入磁盘。
 
@@ -417,6 +441,14 @@ def synthesize_verification_report(project_root, spec_name, now=None) -> dict:
                 f".fenix-run-result.json 均缺失或不可解析"
             ),
         }
+
+    # fast-track 场景数据源回退：report.json 顶层 scenarios 缺失/为空/非法时，
+    # 归一 .fenix-run-result.json 的 verification.scenarios 注入 report 后传入
+    # 渲染层（渲染函数保持纯函数无 IO、签名不变）。
+    resolved_scenarios = _resolve_scenarios(report, run_result)
+    if resolved_scenarios is not None:
+        report = dict(report or {})
+        report["scenarios"] = resolved_scenarios
 
     content = render_verification_report(spec_name, run_result, report, now=now, project_root=project_root)
     out_path = (
