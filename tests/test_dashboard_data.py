@@ -499,6 +499,105 @@ class TestRunResultScenariosFastTrack(unittest.TestCase):
         root.write_text(json.dumps(data), encoding="utf-8")
         self.assertEqual(parse_run_result_scenarios(self.tmpdir, self.spec), [])
 
+
+class TestVerifyProgressFastTrackFallback(unittest.TestCase):
+    """parse_verify_progress 对 fast-track 裁决结果文件的回退合成。
+
+    fast-track 单 agent 全包不经过 verify_engine，`.fenix/verify-progress/<spec>.json`
+    进度文件全程无人写入，导致 Dashboard「验证」列与「验证进度」卡片恒空态
+    （0/0、暂无验证进度）。修复：进度文件缺失时回退 .fenix-run-result.json 的
+    verification.scenarios 合成 total/done/current，并标记 source: "run-result"。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.spec = "fix-demo-fast-track"
+        self.vp = Path(self.tmpdir) / ".fenix" / "verify-progress" / self.spec
+        self.vp.mkdir(parents=True)
+        self.vp_result = self.vp / ".fenix-run-result.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _fast_track_payload(self, scenarios):
+        return {
+            "status": "success", "spec": self.spec, "mode": "fast-track",
+            "summary": "done",
+            "verification": {"scenarios": scenarios, "verdict": "verified",
+                             "bugs": []},
+        }
+
+    def _pass_scenario(self, i):
+        return {"scenario_id": f"s{i}", "description": f"场景{i}",
+                "status": "pass", "assertion_results": []}
+
+    def test_dedicated_copy_synthesizes_progress(self):
+        from core.dashboard.data import parse_verify_progress
+        self.vp_result.write_text(
+            json.dumps(self._fast_track_payload(
+                [self._pass_scenario(i) for i in range(1, 9)])),
+            encoding="utf-8")
+        out = parse_verify_progress(self.tmpdir, self.spec)
+        self.assertTrue(out["exists"])
+        self.assertEqual(out["total"], 8)
+        self.assertEqual(out["done"], 8)
+        self.assertEqual(out["current"], "验证完成: 8通过, 0失败, 0错误")
+        self.assertEqual(out["source"], "run-result")
+
+    def test_mixed_status_buckets(self):
+        from core.dashboard.data import parse_verify_progress
+        scenarios = [
+            self._pass_scenario(1), self._pass_scenario(2),   # 2 pass
+            {"scenario_id": "f1", "status": "fail"},          # fail 与 failed 同计失败
+            {"scenario_id": "f2", "status": "failed"},
+            {"scenario_id": "e1", "status": "error"},
+            {"scenario_id": "w1", "status": "warning"},       # 豁免类不入三桶但计 total
+            {"scenario_id": "x1", "status": "exempt"},
+            {"scenario_id": "no-status"},                     # 无 status 不计 done
+        ]
+        self.vp_result.write_text(
+            json.dumps(self._fast_track_payload(scenarios)), encoding="utf-8")
+        out = parse_verify_progress(self.tmpdir, self.spec)
+        self.assertTrue(out["exists"])
+        self.assertEqual(out["total"], 8)
+        self.assertEqual(out["done"], 7)
+        self.assertEqual(out["current"], "验证完成: 2通过, 2失败, 1错误")
+        self.assertEqual(out["source"], "run-result")
+
+    def test_progress_file_preferred_no_fallback(self):
+        from core.dashboard.data import parse_verify_progress
+        # 结果文件在场但进度文件优先（full 模式 verify_engine 逐场景推进路径）
+        self.vp_result.write_text(
+            json.dumps(self._fast_track_payload(
+                [self._pass_scenario(i) for i in range(1, 9)])),
+            encoding="utf-8")
+        pf = Path(self.tmpdir) / ".fenix" / "verify-progress" / f"{self.spec}.json"
+        pf.write_text(json.dumps({"total": 11, "done": 5, "current": "进行中"}),
+                      encoding="utf-8")
+        out = parse_verify_progress(self.tmpdir, self.spec)
+        self.assertTrue(out["exists"])
+        self.assertEqual(out["total"], 11)
+        self.assertEqual(out["done"], 5)
+        self.assertEqual(out["current"], "进行中")
+        self.assertEqual(out["source"], "file")
+
+    def test_both_missing_keeps_empty_state(self):
+        from core.dashboard.data import parse_verify_progress
+        out = parse_verify_progress(self.tmpdir, self.spec)
+        self.assertFalse(out["exists"])
+        self.assertEqual(out["total"], 0)
+        self.assertEqual(out["done"], 0)
+
+    def test_main_tree_other_spec_ignored(self):
+        from core.dashboard.data import parse_verify_progress
+        data = self._fast_track_payload([self._pass_scenario(1)])
+        data["spec"] = "another-spec"
+        root = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
+        root.write_text(json.dumps(data), encoding="utf-8")
+        out = parse_verify_progress(self.tmpdir, self.spec)
+        self.assertFalse(out["exists"])
+        self.assertEqual(out["total"], 0)
+
     def test_empty_everywhere_returns_empty(self):
         from core.dashboard.data import parse_run_result_scenarios
         self.assertEqual(parse_run_result_scenarios(self.tmpdir, self.spec), [])
