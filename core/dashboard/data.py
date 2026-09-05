@@ -1521,6 +1521,65 @@ def parse_bugs(project_root, spec_name) -> list:
     return bugs
 
 
+def parse_filtered_failures(project_root, spec_name) -> list:
+    """提取被分类过滤（非 product-bug）的失败/错误场景摘要（fix-verify-verdict-visibility）。
+
+    返回: [{"scenario_id", "classification", "evidence_summary", "screenshots",
+            "status_corrected", "status"}]
+
+    与 parse_bugs 互为互补面（同一过滤语义的互补侧）：bugs 收录 product-bug 与
+    旧格式无分类（fail-open）；filtered_failures 仅收录 test-defect/flaky/env 分类
+    的失败/错误场景——二者过滤条件互斥，不双计。旧格式 report.json 无
+    classification 字段 → 不产生条目（fail-open 语义，向后兼容）。
+
+    evidence_summary 回退链（对齐设计 Decision 3）：evidence.first_failed_step
+    （裁决 Agent 产出的人类可读理由）→ evidence.failed_assertions 首项 actual →
+    空串；缺字段不抛错。
+    """
+    from core.verdict_check import VERDICT_CLASSES
+    non_product_classes = tuple(c for c in VERDICT_CLASSES if c != "product-bug")
+    out = []
+    report = parse_report(project_root, spec_name)
+    if not report.get("exists") or report.get("error"):
+        return out
+    for sc in report.get("scenarios", []):
+        if not isinstance(sc, dict):
+            continue
+        status = sc.get("status")
+        if status not in ("fail", "failed", "error"):
+            continue
+        classification = sc.get("classification")
+        if classification not in non_product_classes:
+            continue
+        # evidence 摘要：first_failed_step → failed_assertions 首项 actual → 空串
+        evidence_summary = ""
+        sc_evidence = sc.get("evidence")
+        if isinstance(sc_evidence, dict):
+            ffs = sc_evidence.get("first_failed_step")
+            if isinstance(ffs, str) and ffs.strip():
+                evidence_summary = ffs
+            else:
+                failed_assertions = sc_evidence.get("failed_assertions")
+                if isinstance(failed_assertions, list) and failed_assertions:
+                    first = failed_assertions[0]
+                    if isinstance(first, dict):
+                        actual = first.get("actual")
+                        if isinstance(actual, str) and actual.strip():
+                            evidence_summary = actual
+        # 截图路径归一化为文件名（与 parse_bugs 同一口径，前端拼 /screenshots/ 路由）
+        screenshots = [os.path.basename(s) for s in sc.get("screenshots", [])
+                       if isinstance(s, str) and s.strip()]
+        out.append({
+            "scenario_id": sc.get("scenario_id", "?"),
+            "classification": classification,
+            "evidence_summary": evidence_summary,
+            "screenshots": screenshots,
+            "status_corrected": sc.get("status_corrected", False),
+            "status": status,
+        })
+    return out
+
+
 # ── 运行记录（.fenix/runs/） ─────────────────────────────────────
 
 def classify_run(lines: list) -> str:
@@ -2355,6 +2414,9 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         },
         "scenarios": scenarios,
         "bugs": bugs,
+        # fix-verify-verdict-visibility：被分类过滤（非 product-bug）的失败/错误场景摘要，
+        # 与 bugs 互补互斥；旧格式 report.json（无 classification）不产生条目
+        "filtered_failures": parse_filtered_failures(project_root, spec_name),
         "screenshots": screenshots,
         "runs": runs,
         "verdict": verdict,
