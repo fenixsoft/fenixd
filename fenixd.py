@@ -99,6 +99,53 @@ def _clear_preserve_sidecar() -> None:
         pass
 
 
+# ── 代码陈旧检测（improve-hot-reload-robustness D4）────────────────────
+# daemon 启动后代码更新（rsync/patch/checkout/未提交修改）时，进程内校验规则
+# 可能是旧版；以 mtime 指纹判定并在热重载检测点提示重启。mtime 覆盖 git
+# rev-parse 覆盖不了的未提交修改，worktree 友好；误报面仅"touch 无内容变化"。
+_CODE_STALE_WARNED = False  # 每进程生命周期只提示一次（模块级旗标）
+
+
+def code_tracked_files(project_root) -> list:
+    """启动一次性 glob 受跟踪代码文件：fenixd.py + core/**/*.py（D4 缓存列表）。
+
+    core 目录缺失（异常安装）时仍返回 fenixd.py 单项；缺失文件的 stat 由
+    code_files_changed_since 忽略。
+    """
+    root = Path(project_root)
+    files = [root / "fenixd.py"]
+    core = root / "core"
+    if core.is_dir():
+        files.extend(sorted(core.rglob("*.py")))
+    return files
+
+
+def max_code_mtime_ns(files) -> int:
+    """文件列表最大 st_mtime_ns（缺失忽略）；空表/全缺失返回 0。"""
+    latest = 0
+    for path in files:
+        try:
+            latest = max(latest, path.stat().st_mtime_ns)
+        except OSError:
+            continue
+    return latest
+
+
+def code_files_changed_since(baseline_ns: int, files) -> bool:
+    """纯函数：任一现存文件 mtime > baseline 即 True；文件缺失忽略。
+
+    improve-hot-reload-robustness tasks 2.2：供 _maybe_reload_config 每轮做
+    ~60 次 stat，代价可忽略；也便于单测隔离文件系统行为。
+    """
+    for path in files:
+        try:
+            if path.stat().st_mtime_ns > baseline_ns:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 class FenixDaemon:
     """Main daemon process for the Fenix Loop Engineering Framework."""
 
@@ -217,6 +264,12 @@ class FenixDaemon:
 
         # 记录启动时配置文件 mtime，供主循环热更新检测基线
         self._config_snapshot = self._config_mtimes()
+
+        # 代码陈旧检测 baseline（improve-hot-reload-robustness D4）：一次性 glob
+        # fenixd.py + core/**/*.py 缓存文件列表并取 max st_mtime_ns。热重载检测点
+        # （_maybe_reload_config）据此判定磁盘代码较启动时更新 → 每进程一次 WARNING。
+        self._code_files = code_tracked_files(FENIX_DIR)
+        self._code_baseline_ns = max_code_mtime_ns(self._code_files)
 
     def start(self):
         """Start the daemon main loop."""
@@ -342,8 +395,11 @@ class FenixDaemon:
     def _maybe_reload_config(self):
         """配置文件 mtime 变化时热加载：原地更新共享 config dict，组件自动看到新值。
 
-        校验失败保留旧值并告警；成功则刷新 admin_cfg 快照。
+        校验失败保留旧值并告警；成功则刷新 admin_cfg 快照。每次调用顺带执行
+        代码陈旧检测（improve-hot-reload-robustness tasks 2.3）：磁盘代码 mtime
+        超启动 baseline → 每进程一次 WARNING 提示重启。
         """
+        self._warn_stale_code_once()
         current = self._config_mtimes()
         if current == getattr(self, "_config_snapshot", None):
             return
@@ -365,6 +421,34 @@ class FenixDaemon:
         self.logger.info(
             "fenixd",
             "Configuration hot-reloaded (user/project config.yaml changed)",
+        )
+
+    def _warn_stale_code_once(self):
+        """磁盘代码较启动 baseline 更新 → 提示重启（每进程生命周期一次）。
+
+        improve-hot-reload-robustness tasks 2.3 / D4：进程内校验规则可能为旧版，
+        未知键白名单等演进不会自动生效，需重启 daemon。mtime 指纹误报面仅
+        "touch 无内容变化"，且每进程只提示一次，噪音可控。
+        """
+        global _CODE_STALE_WARNED
+        if _CODE_STALE_WARNED:
+            return
+        baseline = getattr(self, "_code_baseline_ns", None)
+        files = getattr(self, "_code_files", None)
+        if baseline is None or not files:
+            return
+        try:
+            changed = code_files_changed_since(baseline, files)
+        except Exception:  # noqa: BLE001 — 陈旧检测非关键路径，失败静默跳过
+            return
+        if not changed:
+            return
+        _CODE_STALE_WARNED = True
+        self.logger.warning(
+            "fenixd",
+            "检测到磁盘代码较进程启动时已更新（fenixd.py/core/**/*.py mtime 超 "
+            "baseline），进程内校验规则可能为旧版，建议重启 daemon 生效"
+            "（touch .fenix/restart_request）",
         )
 
     def _admin_monitor_loop(self):

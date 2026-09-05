@@ -3,6 +3,7 @@ Tests for ConfigLoader functionality.
 
 Split from test_core.py as part of refactor-test-structure.
 """
+import copy
 import json
 import os
 import shutil
@@ -534,3 +535,199 @@ class TestOverviewDaemonField(unittest.TestCase):
                               "discovered": False, "exists": True}])
         self.assertEqual(data["projects"][0]["daemon"], "stopped")
         self.assertIn("totals", data)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# improve-hot-reload-robustness：agents.models 未知键逐键降级
+# ═══════════════════════════════════════════════════════════════════
+
+def _base_cfg(models=None, llm=None) -> dict:
+    """构造带完整顶层键的配置（load 严格路径 / resolve_config 宽松路径共用）。"""
+    cfg = {
+        "project": {"name": "test", "type": "web"},
+        "schedule": {"poll_interval_minutes": 30},
+        "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
+        "worktree": {"base_dir": ".claude/worktrees", "implement_branch_prefix": "fenix", "verify_branch_prefix": "fenix/verify"},
+        "gates": {"require_push_approval": True},
+        "commands": {"test": "", "build": "", "start": ""},
+        "logging": {"dir": ".fenix/logs", "level": "INFO"},
+    }
+    if models is not None:
+        cfg["agents"]["models"] = models
+    if llm is not None:
+        # 每条 provider 带 model，保证 _resolve_element_model 能解析出模型名
+        # （否则三者皆空时元素被跳过、链为空 → get_agent_model_assignment 返回 None）
+        cfg["llm"] = {"providers": llm}
+    return cfg
+
+
+def _volc_provider() -> dict:
+    return {"name": "volc", "baseurl": "https://v.com", "apikey": "k",
+            "model": "claude-sonnet-5"}
+
+
+class TestAgentModelsUnknownKeyTolerance(unittest.TestCase):
+    """improve-hot-reload-robustness：未知 agent 类型键逐键降级与分类线锁定。
+
+    D1：未知键跳过校验、保留在有效配置中、逐键 ERROR 告警（含重启处方），
+    其余键/段照常生效；D2：值类错误仍整段拒绝、旧配置原子保留。
+    """
+
+    def setUp(self):
+        ConfigLoader.reset_stuck_threshold_state()
+        self.tmpdir = tempfile.mkdtemp()
+        self.config_path = Path(self.tmpdir) / "config.yaml"
+        self.proot = Path(self.tmpdir) / "proj"
+        (self.proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        # 隔离用户级配置目录，避免宿主机 ~/.fenix/config.yaml 混入
+        self.user_cfg_dir = Path(self.tmpdir) / "user-fenix"
+        self.user_cfg_dir.mkdir()
+        self._user_patch = patch("core.config.USER_CONFIG_DIR", self.user_cfg_dir)
+        self._user_patch.start()
+
+    def tearDown(self):
+        self._user_patch.stop()
+        ConfigLoader.reset_stuck_threshold_state()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_proj_cfg(self, yaml_text: str):
+        (self.proot / ".fenix" / "config.yaml").write_text(yaml_text, encoding="utf-8")
+
+    def _write_config(self, config_dict):
+        import yaml
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config_dict, f)
+
+    def test_unknown_key_tolerated_with_prescription_and_known_key_kept(self):
+        """未知键不抛 + 告警含处方 + implementer 分配完整保留。"""
+        cfg = _base_cfg(
+            models={
+                "implementer": {"provider": "volc"},
+                "turbo-draft": {"provider": "volc"},  # 未知键
+            },
+            llm=[_volc_provider()],
+        )
+        self._write_config(cfg)
+        with self.assertLogs("fenixd.config", level="ERROR") as cm:
+            config = ConfigLoader.load(self.config_path)  # 启动严格路径
+        joined = "\n".join(r.getMessage() for r in cm.records)
+        self.assertIn("turbo-draft", joined)
+        self.assertIn("touch .fenix/restart_request", joined)
+        self.assertIn("implementer", joined)  # 已知类型列表在文案中
+        # 未知键保留在有效配置中、已知键分配完整保留
+        self.assertIn("turbo-draft", config["agents"]["models"])
+        assign = ConfigLoader.get_agent_model_assignment(config, "implementer")
+        self.assertEqual(len(assign), 1)
+        self.assertEqual(assign[0][0]["name"], "volc")
+
+    def test_unknown_key_deduped_across_reload_retries(self):
+        """同一未知键 30s 重试风暴下只告警一次（D3 生命周期去重）。"""
+        self._write_proj_cfg(
+            "project:\n  name: proj\n"
+            "agents:\n  models:\n"
+            "    implementer: {provider: volc}\n"
+            "    turbo-draft: {provider: volc}\n"
+            "llm:\n  providers:\n"
+            "    - {name: volc, baseurl: https://v, apikey: k, model: claude-sonnet-5}\n"
+        )
+        with self.assertLogs("fenixd.config", level="ERROR") as cm:
+            ConfigLoader.resolve_config(self.proot)
+            ConfigLoader.resolve_config(self.proot)  # 第二次命中同键 → 静默跳过
+            ConfigLoader.resolve_config(self.proot)
+        hits = [r for r in cm.records if "未知 agent 类型键" in r.getMessage()]
+        self.assertEqual(len(hits), 1)
+
+    def test_unknown_key_with_bad_known_key_still_rejected(self):
+        """未知键 + 已知键值类错误共存 → 仍整段拒绝（值坏不是键新）。"""
+        cfg = _base_cfg(
+            models={
+                "implementer": {"provider": 123},  # 已知键形态非法 → 仍 raise
+                "turbo-draft": {"provider": "volc"},
+            },
+            llm=[_volc_provider()],
+        )
+        self._write_config(cfg)
+        with self.assertRaises(ValueError):
+            ConfigLoader.load(self.config_path)
+
+    def test_unknown_key_then_valid_known_key_known_key_effective(self):
+        """未知键后跟合法已知键 → 已知键照常生效（跳过 ≠ 截断整段）。"""
+        cfg = _base_cfg(
+            models={
+                "turbo-draft": {"provider": "volc"},  # 未知键排在前
+                "implementer": {"provider": "volc"},
+                "verifier": {"provider": "volc"},
+            },
+            llm=[_volc_provider()],
+        )
+        self._write_config(cfg)
+        config = ConfigLoader.load(self.config_path)
+        for role in ("implementer", "verifier"):
+            assign = ConfigLoader.get_agent_model_assignment(config, role)
+            self.assertEqual(len(assign), 1)
+            self.assertEqual(assign[0][0]["name"], "volc")
+
+    def test_models_section_non_dict_ignored_rest_applied(self):
+        """agents.models 整段非 dict → 忽略该段 + 告警，其余段照常校验应用。"""
+        self._write_proj_cfg(
+            "project:\n  name: proj\n"
+            "agents:\n  models:\n    - a\n    - b\n"
+            "schedule:\n  poll_interval_minutes: 30\n"
+        )
+        with self.assertLogs("fenixd.config", level="ERROR") as cm:
+            config = ConfigLoader.resolve_config(self.proot)
+        self.assertEqual(config["project"]["name"], "proj")  # 其余段照常
+        self.assertTrue(any("整段非 dict" in r.getMessage() for r in cm.records))
+
+    def test_startup_tolerant_unknown_key_not_fatal(self):
+        """启动路径（load 严格校验）容忍未知键不 FATAL，值类错误仍 FATAL。"""
+        cfg = _base_cfg(models={"turbo-draft": {"provider": "volc"}})
+        self._write_config(cfg)
+        with self.assertLogs("fenixd.config", level="ERROR"):
+            ConfigLoader.load(self.config_path)  # 不抛 → 启动继续
+
+        bad = _base_cfg(llm="not-a-list")  # 值类错误
+        self._write_config(bad)
+        with self.assertRaises(ValueError):
+            ConfigLoader.load(self.config_path)
+
+    def test_value_error_atomic_preserve_regression_lock(self):
+        """热重载遇值类非法 → 抛异常、热重载失败、当前生效配置逐键不变。"""
+        self._write_proj_cfg(
+            "project:\n  name: proj\n"
+            "agents:\n  max_concurrent: 3\n"
+            "schedule:\n  poll_interval_minutes: 30\n"
+        )
+        config = ConfigLoader.resolve_config(self.proot)
+        original = copy.deepcopy(config)
+
+        # 写入坏配置：llm.providers 非 list → 整段拒绝
+        self._write_proj_cfg(
+            "project:\n  name: proj\n"
+            "llm:\n  providers: not-a-list\n"
+        )
+        with self.assertRaises(ValueError):
+            ConfigLoader.resolve_config_into(config, self.proot)
+        # 原子保留：原 config 逐键不变
+        self.assertEqual(config, original)
+        self.assertEqual(config["agents"]["max_concurrent"], 3)
+        self.assertEqual(config["project"]["name"], "proj")
+
+    def test_runtime_assignment_has_no_whitelist_gate(self):
+        """get_agent_model_assignment 无白名单拦截：保留的未知键正常解析、链缺失走默认网关。"""
+        self._write_proj_cfg(
+            "project:\n  name: proj\n"
+            "agents:\n  models:\n"
+            "    turbo-draft: {provider: volc}\n"  # 白名单外键（校验层跳过）
+            "llm:\n  providers:\n"
+            "    - {name: volc, baseurl: https://v, apikey: k, model: claude-sonnet-5}\n"
+        )
+        with self.assertLogs("fenixd.config", level="ERROR"):
+            config = ConfigLoader.resolve_config(self.proot)
+        # 未知键仍可被运行时正常解析（键保留在有效配置中）
+        assign = ConfigLoader.get_agent_model_assignment(config, "turbo-draft")
+        self.assertEqual(len(assign), 1)
+        self.assertEqual(assign[0][0]["name"], "volc")
+        # 链缺失/未配置角色 → None 走默认网关（现行为不变）
+        self.assertIsNone(ConfigLoader.get_agent_model_assignment(config, "verifier"))
+

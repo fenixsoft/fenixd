@@ -422,18 +422,204 @@ class TestAdminMonitorDetection:
         assert all(s["signal_type"] != "blocked_stuck" for s in signals)
 
     def test_daemon_errors(self, tmp_path):
+        """新口径事故回归：两条同 message ERROR 相隔 30s、中间夹 INFO → 触发。
+
+        优化前（improve-hot-reload-robustness）：旧"尾部物理连续 ≥3"口径遇 INFO 即断，
+        活跃期永不触发；新口径与错误复现率挂钩，中间被打断不影响同指纹计数。
+        """
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
         })
         log_dir = proot / ".fenix" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / "fenixd.log").write_text(
-            json.dumps({"level": "INFO", "message": "ok"}) + "\n"
-            + "".join(json.dumps({"level": "ERROR", "message": f"e{i}"}) + "\n" for i in range(4)),
+            json.dumps({"timestamp": iso_ago(0.5), "level": "INFO", "message": "ok"}) + "\n"
+            + json.dumps({"timestamp": iso_ago(0.4), "level": "ERROR",
+                          "component": "fenixd", "message": "boom"}) + "\n"
+            + json.dumps({"timestamp": iso_ago(0.2), "level": "INFO", "message": "mid"}) + "\n"
+            + json.dumps({"timestamp": iso_ago(0.1), "level": "ERROR",
+                          "component": "fenixd", "message": "boom"}) + "\n",
             encoding="utf-8",
         )
         signals = mon.run_once()
         assert any(s["signal_type"] == "daemon_errors" for s in signals)
+
+    # ── daemon-error-escalation：指纹复现升级新口径 ─────────────────
+
+    def test_daemon_errors_single_error_not_triggered(self, tmp_path):
+        """单条错误不触发升级（防抖：单次瞬时不足复现）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        log_dir = proot / ".fenix" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "fenixd.log").write_text(
+            json.dumps({"timestamp": iso_ago(0.1), "level": "ERROR",
+                        "component": "fenixd", "message": "boom"}) + "\n",
+            encoding="utf-8",
+        )
+        signals = mon.run_once()
+        assert all(s["signal_type"] != "daemon_errors" for s in signals)
+
+    def test_daemon_errors_distinct_errors_not_aggregated(self, tmp_path):
+        """两条不同错误各 1 次（message 骨架不同）→ 指纹不同、不聚合升级。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        log_dir = proot / ".fenix" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "fenixd.log").write_text(
+            json.dumps({"timestamp": iso_ago(0.4), "level": "ERROR",
+                        "component": "fenixd", "message": "provider timeout"}) + "\n"
+            + json.dumps({"timestamp": iso_ago(0.1), "level": "ERROR",
+                          "component": "fenixd", "message": "merge conflict"}) + "\n",
+            encoding="utf-8",
+        )
+        signals = mon.run_once()
+        assert all(s["signal_type"] != "daemon_errors" for s in signals)
+
+    def test_daemon_errors_8min_gap_not_triggered(self, tmp_path):
+        """同指纹相隔 8 分钟（>5min 上限）→ 孤立抖动不触发。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        log_dir = proot / ".fenix" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "fenixd.log").write_text(
+            json.dumps({"timestamp": iso_ago(8.2), "level": "ERROR",
+                        "component": "fenixd", "message": "boom"}) + "\n"
+            + json.dumps({"timestamp": iso_ago(0.2), "level": "ERROR",
+                          "component": "fenixd", "message": "boom"}) + "\n",
+            encoding="utf-8",
+        )
+        signals = mon.run_once()
+        assert all(s["signal_type"] != "daemon_errors" for s in signals)
+
+    def test_daemon_errors_first_outside_window_not_triggered(self, tmp_path):
+        """同指纹第 1 次出现在 11 分钟前（超出 10 分钟窗口）、第 2 次当前 → 不触发
+        （窗口滑动自然过期，恢复无需显式清零）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        log_dir = proot / ".fenix" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "fenixd.log").write_text(
+            json.dumps({"timestamp": iso_ago(11.0), "level": "ERROR",
+                        "component": "fenixd", "message": "boom"}) + "\n"
+            + json.dumps({"timestamp": iso_ago(0.1), "level": "ERROR",
+                          "component": "fenixd", "message": "boom"}) + "\n",
+            encoding="utf-8",
+        )
+        signals = mon.run_once()
+        assert all(s["signal_type"] != "daemon_errors" for s in signals)
+
+    def test_daemon_errors_embedded_variables_normalized(self, tmp_path):
+        """message 内嵌变量（run_id/时间戳）不同但归一化后指纹相同 → 复现成立。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        log_dir = proot / ".fenix" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "fenixd.log").write_text(
+            json.dumps({"timestamp": iso_ago(0.4), "level": "ERROR",
+                        "component": "fenixd",
+                        "message": "run 1780000001 failed at 2026-09-05T02:00:00Z"}) + "\n"
+            + json.dumps({"timestamp": iso_ago(0.1), "level": "ERROR",
+                          "component": "fenixd",
+                          "message": "run 1780000002 failed at 2026-09-05T02:00:30Z"}) + "\n",
+            encoding="utf-8",
+        )
+        signals = mon.run_once()
+        assert any(s["signal_type"] == "daemon_errors" for s in signals)
+
+    def test_daemon_errors_non_json_line_fallback(self, tmp_path):
+        """日志含 traceback 原文等非 JSON 行：不崩溃，该行按 raw 归一化回退参与指纹统计。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        log_dir = proot / ".fenix" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "fenixd.log").write_text(
+            "Traceback (most recent call last):\n"
+            '  File "/app/runner.py", line 42, in run\n'
+            + json.dumps({"timestamp": iso_ago(0.4), "level": "ERROR",
+                          "component": "fenixd", "message": "boom"}) + "\n"
+            + json.dumps({"timestamp": iso_ago(0.1), "level": "ERROR",
+                          "component": "fenixd", "message": "boom"}) + "\n",
+            encoding="utf-8",
+        )
+        signals = mon.run_once()  # 不崩溃
+        assert any(s["signal_type"] == "daemon_errors" for s in signals)
+
+    def test_daemon_errors_non_json_raw_repetition_triggers(self, tmp_path):
+        """两条一模一样的非 JSON raw 行 → raw 指纹同指纹复现 2 次 → 触发（容错方向）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        log_dir = proot / ".fenix" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        raw = '  File "/app/runner.py", line 42, in run'
+        (log_dir / "fenixd.log").write_text(
+            raw + "\n" + raw + "\n", encoding="utf-8",
+        )
+        signals = mon.run_once()
+        assert any(s["signal_type"] == "daemon_errors" for s in signals)
+
+    def test_daemon_errors_missing_timestamp_fail_closed(self, tmp_path):
+        """缺 timestamp 的重复 ERROR → 计同指纹复现 2 次触发（fail-closed 不丢告警）。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        log_dir = proot / ".fenix" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "fenixd.log").write_text(
+            json.dumps({"level": "ERROR", "component": "fenixd", "message": "boom"}) + "\n"
+            + json.dumps({"level": "ERROR", "component": "fenixd", "message": "boom"}) + "\n",
+            encoding="utf-8",
+        )
+        signals = mon.run_once()
+        assert any(s["signal_type"] == "daemon_errors" for s in signals)
+
+    def test_daemon_errors_signal_wording_new_semantics(self, tmp_path):
+        """signal 文案用新口径：含"复现 N 次"，不再用"连续 N 条 ERROR"。"""
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        log_dir = proot / ".fenix" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "fenixd.log").write_text(
+            json.dumps({"level": "ERROR", "component": "fenixd", "message": "boom"}) + "\n"
+            + json.dumps({"level": "ERROR", "component": "fenixd", "message": "boom"}) + "\n",
+            encoding="utf-8",
+        )
+        signals = mon.run_once()
+        sig = next(s for s in signals if s["signal_type"] == "daemon_errors")
+        assert "复现 2 次" in sig["description"]
+        assert "连续" not in sig["description"]
+
+    def test_daemon_errors_cooldown_no_reinvoke(self, tmp_path):
+        """升级触发后冷却期内同 signal_type 再次满足升级条件 → 仅记录不重复唤起。"""
+        runner = FakeRunner()
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        }, runner=runner)
+        log_dir = proot / ".fenix" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "fenixd.log"
+
+        def write_recurring():
+            log_path.write_text(
+                json.dumps({"level": "ERROR", "component": "fenixd", "message": "boom"}) + "\n"
+                + json.dumps({"level": "ERROR", "component": "fenixd", "message": "boom"}) + "\n",
+                encoding="utf-8",
+            )
+
+        write_recurring()
+        mon.run_once()
+        assert len(runner.calls) == 1
+        # 冷却窗口（15 分钟）内再次巡检：满足升级但节流，仅记录不重复唤起
+        mon.run_once()
+        assert len(runner.calls) == 1
 
     def test_healthy_no_signal(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
@@ -1703,3 +1889,200 @@ class TestAdminRunWorkerPool:
         daemon, _ = self._make_daemon(proot, runner)
         monkeypatch.setattr(_fenixd_mod, "PROJECT_ROOT", proot)
         daemon._sweep_stale_admin_dispositions()  # 不抛异常即通过
+
+
+# ── improve-hot-reload-robustness：代码陈旧检测（tasks 2.2 / D4） ──
+
+class _RecordingLogger:
+    """记录告警条目的最小 logger（陈旧检测 WARNING 断言用）。"""
+
+    def __init__(self):
+        self.warnings = []
+        self.errors = []
+        self.infos = []
+
+    def debug(self, *a, **k):
+        pass
+
+    def info(self, *a, **k):
+        self.infos.append(a)
+
+    def warning(self, *a, **k):
+        self.warnings.append(a)
+
+    def error(self, *a, **k):
+        self.errors.append(a)
+
+
+def _mk_code_proj(tmp_path) -> tuple:
+    """构造含 fenixd.py + core/**/*.py 的临时项目，返回 (proot, files, baseline)。"""
+    proot = tmp_path / "proj"
+    (proot / "core").mkdir(parents=True)
+    (proot / "fenixd.py").write_text("# fenixd\n", encoding="utf-8")
+    (proot / "core" / "a.py").write_text("# a\n", encoding="utf-8")
+    (proot / "core" / "b.py").write_text("# b\n", encoding="utf-8")
+    files = _fenixd_mod.code_tracked_files(proot)
+    baseline = _fenixd_mod.max_code_mtime_ns(files)
+    return proot, files, baseline
+
+
+class TestCodeStalenessDetection:
+    def test_no_change_false(self, tmp_path):
+        """所有受跟踪文件 mtime 均未超 baseline → False（无陈旧告警）。"""
+        proot, files, baseline = _mk_code_proj(tmp_path)
+        assert baseline > 0
+        assert len(files) == 3  # fenixd.py + core/a.py + core/b.py
+        assert _fenixd_mod.code_files_changed_since(baseline, files) is False
+
+    def test_core_update_true(self, tmp_path):
+        """core/ 下代码文件更新 → True。"""
+        proot, files, baseline = _mk_code_proj(tmp_path)
+        os.utime(proot / "core" / "a.py", ns=(baseline + 5 * 10 ** 9, baseline + 5 * 10 ** 9))
+        assert _fenixd_mod.code_files_changed_since(baseline, files) is True
+
+    def test_fenixd_update_true(self, tmp_path):
+        """fenixd.py 更新也算。"""
+        proot, files, baseline = _mk_code_proj(tmp_path)
+        os.utime(proot / "fenixd.py", ns=(baseline + 5 * 10 ** 9, baseline + 5 * 10 ** 9))
+        assert _fenixd_mod.code_files_changed_since(baseline, files) is True
+
+    def test_missing_file_ignored(self, tmp_path):
+        """文件缺失忽略：baseline 后新增/删除文件不误报。"""
+        proot, files, baseline = _mk_code_proj(tmp_path)
+        missing = list(files) + [proot / "core" / "never-existed.py"]
+        assert _fenixd_mod.code_files_changed_since(baseline, missing) is False
+        # 删除一个受跟踪文件后再检测
+        (proot / "core" / "b.py").unlink()
+        assert _fenixd_mod.code_files_changed_since(baseline, files) is False
+
+    def test_warn_stale_once_emits_and_dedups(self, tmp_path):
+        """_warn_stale_code_once：更新后提示一次，同进程内不重复。"""
+        _fenixd_mod._CODE_STALE_WARNED = False
+        try:
+            proot, files, baseline = _mk_code_proj(tmp_path)
+            daemon = _fenixd_mod.FenixDaemon.__new__(_fenixd_mod.FenixDaemon)
+            daemon._code_files = files
+            daemon._code_baseline_ns = baseline
+            daemon.logger = _RecordingLogger()
+            # 无变更 → 不提示
+            daemon._warn_stale_code_once()
+            assert daemon.logger.warnings == []
+            # core 文件更新 → 提示一次
+            os.utime(proot / "core" / "a.py", ns=(baseline + 5 * 10 ** 9, baseline + 5 * 10 ** 9))
+            daemon._warn_stale_code_once()
+            assert len(daemon.logger.warnings) == 1
+            assert "建议重启" in daemon.logger.warnings[0][1]
+            # 再次调用 → 去重静默
+            daemon._warn_stale_code_once()
+            assert len(daemon.logger.warnings) == 1
+        finally:
+            _fenixd_mod._CODE_STALE_WARNED = False
+
+
+# ── improve-hot-reload-robustness：任务 5 验证（事故场景模拟 + 升级时序） ──
+
+class TestAccidentScenarioSimulation:
+    """任务 5.2：旧白名单进程语义 + 含新键配置 → 热重载成功、单次降级告警、
+    无 30s 告警刷屏、陈旧检测 WARNING 出现。"""
+
+    def test_old_whitelist_hot_reload_unknown_key(self, tmp_path, monkeypatch):
+        from core.config import ConfigLoader as _CL
+        import logging as _logging
+        proot = tmp_path / "proj"
+        (proot / ".fenix" / "logs").mkdir(parents=True)
+        (proot / "core").mkdir(parents=True)
+        (proot / "fenixd.py").write_text("# fenixd\n", encoding="utf-8")
+        (proot / "core" / "config.py").write_text("# cfg\n", encoding="utf-8")
+        # 配置含未知键 turbo-draft（旧白名单进程）+ 合法 implementer 分配
+        (proot / ".fenix" / "config.yaml").write_text(
+            "project:\n  name: proj\n"
+            "agents:\n  models:\n"
+            "    implementer: {provider: volc}\n"
+            "    turbo-draft: {provider: volc}\n"
+            "llm:\n  providers:\n"
+            "    - {name: volc, baseurl: https://v, apikey: k, model: claude-sonnet-5}\n",
+            encoding="utf-8",
+        )
+        user_cfg_dir = tmp_path / "user-fenix"
+        user_cfg_dir.mkdir()
+        monkeypatch.setattr(_fenixd_mod, "PROJECT_ROOT", proot)
+        monkeypatch.setattr("core.config.USER_CONFIG_DIR", user_cfg_dir)
+
+        daemon = _fenixd_mod.FenixDaemon.__new__(_fenixd_mod.FenixDaemon)
+        daemon.config = {}
+        daemon.logger = _RecordingLogger()
+        daemon.admin_monitor = None
+        daemon._admin_executor = None
+        daemon._config_snapshot = ()  # 空快照 → 首次调用触发重载
+        # 代码陈旧检测 baseline：先缓存当前文件 mtime，随后 touch 模拟代码更新
+        files = _fenixd_mod.code_tracked_files(proot)
+        baseline = _fenixd_mod.max_code_mtime_ns(files)
+        daemon._code_files = files
+        daemon._code_baseline_ns = baseline
+        _fenixd_mod._CODE_STALE_WARNED = False
+        _CL.reset_stuck_threshold_state()  # 清未知键去重集合，确保首告警可见
+
+        # 配置校验降级告警走 Python logging（fenixd.config logger），挂 handler 捕获
+        cfg_logger = _logging.getLogger("fenixd.config")
+        cfg_logger.setLevel(_logging.ERROR)
+        cfg_records = []
+        _handler = _logging.Handler()
+        _handler.emit = lambda record: cfg_records.append(record.getMessage())
+        cfg_logger.addHandler(_handler)
+        try:
+            # 第 1 次热重载：未知键不整段拒绝，热重载成功
+            daemon._maybe_reload_config()
+            assert "turbo-draft" in daemon.config["agents"]["models"]  # 键保留
+            assign = _CL.get_agent_model_assignment(daemon.config, "implementer")
+            assert len(assign) == 1  # implementer 分配完整生效
+            deg = [m for m in cfg_records if "未知 agent 类型键" in m]
+            assert len(deg) == 1  # 单次降级告警
+            assert daemon.logger.warnings == []  # 代码未更新 → 无陈旧告警
+
+            # 模拟 30s 重试风暴：配置 mtime 变化 + 代码文件更新（对应事故场景
+            # dashboard 写盘 → daemon 旧代码热重载）
+            os.utime(proot / "core" / "config.py",
+                     ns=(baseline + 5 * 10 ** 9, baseline + 5 * 10 ** 9))
+            daemon._config_snapshot = ()  # 强制再次触发重载路径
+            for _ in range(3):
+                daemon._maybe_reload_config()
+
+            # 同一未知键不重复刷屏（去重生效）
+            deg2 = [m for m in cfg_records if "未知 agent 类型键" in m]
+            assert len(deg2) == 1
+            # 陈旧检测 WARNING 出现且每进程一次
+            stale = [w for w in daemon.logger.warnings if "建议重启" in w[1]]
+            assert len(stale) == 1
+            daemon._maybe_reload_config()
+            assert len(stale) == 1  # 不重复
+        finally:
+            cfg_logger.removeHandler(_handler)
+            _CL.reset_stuck_threshold_state()
+
+
+class TestDaemonErrorEscalationTiming:
+    """任务 5.3：同指纹 ERROR 每 30s 两条 → 下一轮巡检即产生 critical signal
+    （模拟巡检周期，不再依赖日志安静度）。"""
+
+    def test_next_inspection_produces_critical_signal(self, tmp_path):
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        })
+        log_dir = proot / ".fenix" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        # 两条同指纹 ERROR 相隔 30s（活跃期被 INFO 打断）→ 升级口径与新错误复现率挂钩
+        (log_dir / "fenixd.log").write_text(
+            json.dumps({"timestamp": iso_ago(0.5), "level": "ERROR",
+                        "component": "fenixd", "message": "boom"}) + "\n"
+            + json.dumps({"timestamp": iso_ago(0.4), "level": "INFO",
+                          "component": "fenixd", "message": "mid"}) + "\n"
+            + json.dumps({"timestamp": iso_ago(0.1), "level": "ERROR",
+                          "component": "fenixd", "message": "boom"}) + "\n",
+            encoding="utf-8",
+        )
+        # 下一轮巡检即命中（无需等日志安静）
+        signals = mon.run_once()
+        sig = next(s for s in signals if s["signal_type"] == "daemon_errors")
+        assert sig["severity"] == "critical"
+        assert "复现 2 次" in sig["description"]
+        assert "连续" not in sig["description"]
