@@ -1,9 +1,11 @@
-import { Button, Card, Form, Switch, TimePicker, Typography } from 'antd';
+import { Alert, Button, Card, Form, Input, Switch, TimePicker, Typography, message } from 'antd';
 import dayjs from 'dayjs';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { getTodo, saveTodo } from '@/services/dashboard';
 import type { ConfigData } from '@/services/dashboard';
 
 const { Text } = Typography;
+const { TextArea } = Input;
 
 // run_at 缺省与后端 ConfigLoader.SELF_REVIEW_DEFAULT_RUN_AT 一致（凌晨两点）
 const DEFAULT_RUN_AT = '02:00';
@@ -11,9 +13,11 @@ const DEFAULT_RUN_AT = '02:00';
 interface SelfReviewPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
+  /** 项目名；undefined = 用户级作用域（todo.md 为项目级文件，不显示编辑区） */
+  project?: string;
 }
 
-export default function SelfReviewPanel({ config, onSave }: SelfReviewPanelProps) {
+export default function SelfReviewPanel({ config, onSave, project }: SelfReviewPanelProps) {
   const [form] = Form.useForm();
 
   const initial = {
@@ -40,6 +44,53 @@ export default function SelfReviewPanel({ config, onSave }: SelfReviewPanelProps
       });
     } catch {
       // 校验失败：antd 已在表单内渲染 explain-error 提示，无需额外日志
+    }
+  };
+
+  // ── todo.md 查看与编辑（项目级作用域）──
+  const [todoDraft, setTodoDraft] = useState<string>('');
+  const [todoExists, setTodoExists] = useState<boolean>(false);
+  const [todoLoading, setTodoLoading] = useState(false);
+  const [todoSaving, setTodoSaving] = useState(false);
+
+  useEffect(() => {
+    if (!project) return;
+    let cancelled = false;
+    const load = async () => {
+      setTodoLoading(true);
+      try {
+        const d = await getTodo(project);
+        if (!cancelled) {
+          setTodoDraft(d.content);
+          setTodoExists(d.exists);
+        }
+      } catch (e) {
+        console.error('Failed to load todo.md:', e);
+        if (!cancelled) message.error(`加载 todo.md 失败：${e instanceof Error ? e.message : e}`);
+      } finally {
+        if (!cancelled) setTodoLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [project]);
+
+  const handleTodoSave = async () => {
+    if (!project) return;
+    setTodoSaving(true);
+    try {
+      await saveTodo(project, todoDraft);
+      message.success('todo.md 已保存');
+      setTodoExists(true);
+      const d = await getTodo(project);
+      setTodoDraft(d.content);
+      setTodoExists(d.exists);
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      message.error(`保存失败：${errorMessage}`);
+      console.error('Failed to save todo.md:', e);
+    } finally {
+      setTodoSaving(false);
     }
   };
 
@@ -98,11 +149,63 @@ export default function SelfReviewPanel({ config, onSave }: SelfReviewPanelProps
           </Text>
         </Form>
       </Card>
-      <div style={{ textAlign: 'right', marginTop: 24 }}>
-        <Button type="primary" onClick={handleSave} data-testid="self-review-save">
-          保 存
-        </Button>
-      </div>
+
+      {/* todo.md 为项目级文件：仅项目级作用域提供查看与编辑 */}
+      {project ? (
+        <Card style={{ marginTop: 16 }} data-testid="todo-section">
+          <h3 style={{ marginTop: 0 }}>todo.md</h3>
+          <Text type="secondary">
+            项目 <code>.fenix/todo.md</code>——自省 Agent 每晚追加写入当日回顾。
+            保存为整文件覆写，请注意与 daemon 夜间追加的时序（建议日间编辑）。
+          </Text>
+          {!todoExists && !todoLoading && (
+            <Alert
+              style={{ marginTop: 8 }}
+              type="info"
+              showIcon
+              message="尚无 todo.md（自省首次运行后生成），可保存以下内容提前创建。"
+              data-testid="todo-missing-alert"
+            />
+          )}
+          <TextArea
+            data-testid="todo-textarea"
+            value={todoDraft}
+            onChange={(e) => setTodoDraft(e.target.value)}
+            disabled={todoLoading}
+            placeholder={'## 2026-09-04\n\n### 可改进\n- 证据：……'}
+            autoSize={{ minRows: 10, maxRows: 24 }}
+            style={{ marginTop: 12, fontFamily: 'monospace' }}
+          />
+          <div style={{ marginTop: 12, textAlign: 'right' }}>
+            <Button
+              style={{ marginRight: 8 }}
+              onClick={async () => {
+                const d = await getTodo(project);
+                setTodoDraft(d.content);
+                setTodoExists(d.exists);
+                message.info('已从磁盘重新加载');
+              }}
+              data-testid="todo-reload"
+            >
+              重新加载
+            </Button>
+            <Button
+              type="primary"
+              loading={todoSaving}
+              onClick={handleTodoSave}
+              data-testid="todo-save"
+            >
+              保存 todo.md
+            </Button>
+          </div>
+        </Card>
+      ) : (
+        <Card style={{ marginTop: 16 }}>
+          <Text type="secondary">
+            todo.md 为项目级文件（<code>.fenix/todo.md</code>）。查看与编辑请切换到项目级作用域。
+          </Text>
+        </Card>
+      )}
     </div>
   );
 }

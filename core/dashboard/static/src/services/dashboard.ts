@@ -630,6 +630,33 @@ export async function saveProjectPrompt(
   });
 }
 
+// ── 项目 todo.md（/api/todo，设置页「自省」面板查看与编辑）──
+
+export interface TodoData {
+  project: string;
+  path: string;
+  /** 文件尚不存在（自省未运行过）时为 false，content 为空串 */
+  exists: boolean;
+  content: string;
+}
+
+export async function getTodo(project: string): Promise<TodoData> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request<TodoData>(`/api/todo${q}`);
+}
+
+export async function saveTodo(
+  project: string,
+  content: string,
+): Promise<{ ok: boolean; project: string; path: string }> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request(`/api/todo${q}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+}
+
 // ── 帮助中心（/api/help/*，读取框架仓库 docs/help/）──
 
 export interface HelpDocMeta {

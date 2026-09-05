@@ -17,6 +17,7 @@ import shutil
 import tempfile
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -1623,35 +1624,28 @@ def get_runs(project_root, spec_name: str | None = None,
 
 
 def _read_run_lines(path: Path, max_lines: int = 3) -> list:
-    """读取产物文件最后几行 JSON，逐行容错。"""
-    out = []
+    """读取产物文件最后几行 JSON，逐行容错。
+
+    逐行流式读取（deque 保留尾部），不用末尾字节窗口 seek：result/error
+    终结事件行可能超长（result 携带完整结果数据，4KB+），字节窗口会把末行
+    从字节中间截断、parse 失败后被包装成伪 stderr 事件排在真实末尾，
+    classify_run 因此把已完成 run 误判为 running（overview 活跃 Agent 数
+    虚高）。run 产物均为 MB 级以下小文件，全量逐行读开销可忽略。
+    """
+    tail = deque(maxlen=max_lines)
     try:
         with path.open("rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            if size > 4096:
-                f.seek(max(0, size - 4096))
-            else:
-                f.seek(0)
-            raw = f.read()
-        # 向前扫描到合法 UTF-8 起始字节，避免 seek 落在多字节字符中间
-        start = 0
-        while start < len(raw) and (raw[start] & 0xC0) == 0x80:
-            start += 1
-        text = raw[start:].decode("utf-8", errors="replace")
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                out.append({"type": "stderr", "line": line})
-            if len(out) > max_lines:
-                out.pop(0)
+            for raw in f:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    tail.append(json.loads(line))
+                except json.JSONDecodeError:
+                    tail.append({"type": "stderr", "line": line})
     except OSError:
         pass
-    return out
+    return list(tail)
 
 
 def _parse_run_lines(lines) -> list:

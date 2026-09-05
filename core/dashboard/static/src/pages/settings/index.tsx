@@ -202,7 +202,11 @@ export default function SettingsPage() {
                   <VerifyPanel config={config} onSave={handleSave} />
                 )}
                 {activeKey === 'self-review' && (
-                  <SelfReviewPanel config={config} onSave={handleSave} />
+                  <SelfReviewPanel
+                    config={config}
+                    onSave={handleSave}
+                    project={scope === 'project' ? project : undefined}
+                  />
                 )}
                 {activeKey === 'project-profile' && (
                   <ProjectProfilePanel config={config} onSave={handleSave} project={project} />

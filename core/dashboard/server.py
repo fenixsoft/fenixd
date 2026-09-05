@@ -323,6 +323,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(self._api_config_get(query))
         elif path == "/api/prompts":
             self._json(self._api_prompts_get(query))
+        elif path == "/api/todo":
+            self._api_todo_get(query)
         elif path == "/api/spec-doc":
             self._json(self._api_spec_doc(query))
         elif path == "/api/help/docs":
@@ -928,6 +930,69 @@ class DashboardHandler(BaseHTTPRequestHandler):
         target.write_text(content, encoding="utf-8")
         self._json({"ok": True, "agent_type": agent_type, "path": str(target)})
 
+    def _todo_project_or_error(self, query):
+        """todo.md 端点共用校验：缺 project 400、项目未知/不存在 404。
+
+        通过返回项目 dict；失败已发送错误响应并返回 None。
+        """
+        name = query.get("project", [None])[0]
+        if not name:
+            self._error(400, "缺少 project 参数（todo.md 为项目级文件）")
+            return None
+        project = self.server.project_by_name(name)
+        if project is None or not project.get("exists"):
+            self._error(404, "project not found")
+            return None
+        return project
+
+    def _api_todo_get(self, query) -> None:
+        """GET /api/todo?project=<name> — 项目 todo.md 读取（设置页「自省」面板）。
+
+        路径固定为 <项目根>/.fenix/todo.md，不接受任意路径参数。
+        文件尚不存在（自省未运行过）返回空串 + exists=false。
+        """
+        project = self._todo_project_or_error(query)
+        if project is None:
+            return
+        proot = Path(project["path"])
+        target = proot / ".fenix" / "todo.md"
+        exists = target.is_file()
+        content = ""
+        try:
+            if exists:
+                content = target.read_text(encoding="utf-8")
+        except OSError as e:
+            self._error(500, f"todo.md 读取失败: {e}")
+            return
+        self._json({"project": project["name"], "path": str(target),
+                    "exists": exists, "content": content})
+
+    def _api_todo_post(self, query):
+        """POST /api/todo?project=<name> — 保存项目 todo.md（整文件覆写）。
+
+        body: {"content": <自由 Markdown>}。文件不存在时自动创建；
+        daemon 自省会追加写入此文件，覆写保存以 UI 提交内容为准。
+        """
+        body = self._read_json_body()
+        if body is None:
+            return
+        project = self._todo_project_or_error(query)
+        if project is None:
+            return
+        content = body.get("content")
+        if not isinstance(content, str):
+            self._error(400, "content 必须为字符串（自由 Markdown，不做 schema 校验）")
+            return
+        proot = Path(project["path"])
+        target = proot / ".fenix" / "todo.md"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+        except OSError as e:
+            self._error(500, f"todo.md 保存失败: {e}")
+            return
+        self._json({"ok": True, "project": project["name"], "path": str(target)})
+
     def _api_alerts(self, query) -> dict:
         """读取 Administrator 告警。
 
@@ -1152,6 +1217,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_config_post(query)
         elif path == "/api/prompts":
             self._api_prompts_post(query)
+        elif path == "/api/todo":
+            self._api_todo_post(query)
         elif path == "/api/spec-error-clear":
             self._api_spec_error_clear(query)
         elif path == "/api/spec-priority":
