@@ -576,6 +576,8 @@ export interface VerifyConfig {
   static_scope?: 'main' | 'worktree';
   /** worktree node_modules 供给模式：prefer-offline=npm 缓存安装（默认）| hardlink=主树硬链接副本 */
   deps_mode?: 'prefer-offline' | 'hardlink';
+  /** planner 生成节流：全框架同时在出题的 planner 数上限（0/缺省=不节流） */
+  planner_max_concurrent?: number;
 }
 
 export interface SelfReviewConfig {

@@ -33,10 +33,10 @@
 
 ## 2. planner 生成节流（planner-generation-throttle）
 
-- [ ] 2.1 `agent_runner.run_planner` 入口加跨管线信号量：`verify.planner_max_concurrent`（0/缺省=不节流），BoundedSemaphore 按配置惰性重建（热更新生效），try/finally 释放（取消/异常不泄漏）
-- [ ] 2.2 排队可观测：等待信号量时打 INFO 日志（spec 名+等待序位）；等待期 run 保活事件（防 stuck 误判，设计 D2 备选方案）
-- [ ] 2.3 `ParallelSettingsPanel.tsx` 新增「planner 生成节流」Switch（默认关）+ 上限 InputNumber（1-10）+ 注解文案（限什么/为什么/代价三点）；`dashboard.ts` 配置读写通道
-- [ ] 2.4 `tests/test_planner_throttle.py`：上限生效/缺省不节流/取消释放/冻结复用零节流/配置热更新生效
+- [x] 2.1 `agent_runner.run_planner` 入口加跨管线信号量：`verify.planner_max_concurrent`（0/缺省=不节流），BoundedSemaphore 按配置惰性重建（热更新生效），try/finally 释放（取消/异常不泄漏）
+- [x] 2.2 排队可观测：等待信号量时打 INFO 日志（spec 名+等待序位）；等待期 run 保活事件（防 stuck 误判，设计 D2 备选方案）
+- [x] 2.3 `ParallelSettingsPanel.tsx` 新增「planner 生成节流」Switch（默认关）+ 上限 InputNumber（1-10）+ 注解文案（限什么/为什么/代价三点）；`dashboard.ts` 配置读写通道
+- [x] 2.4 `tests/test_planner_throttle.py`：上限生效/缺省不节流/取消释放/冻结复用零节流/配置热更新生效
 
 ## 3. run 级 API 延迟直方图（run-latency-observability）
 

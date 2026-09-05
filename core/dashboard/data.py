@@ -3167,6 +3167,15 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 f"verify.deps_mode must be one of ['prefer-offline', 'hardlink']: "
                 f"{v_patch['deps_mode']}"
             )
+        # add-planner-efficiency：planner 生成节流上限——非负整数（0=不节流）。
+        if "planner_max_concurrent" in v_patch \
+                and v_patch["planner_max_concurrent"] is not None:
+            pmc = v_patch["planner_max_concurrent"]
+            if not isinstance(pmc, int) or isinstance(pmc, bool) or pmc < 0:
+                return fail(
+                    f"verify.planner_max_concurrent must be a non-negative integer "
+                    f"(0=不节流): {pmc!r}"
+                )
 
     # 2. 合并受管键
     merged = _deep_merge_managed(raw, config_patch)

@@ -77,6 +77,25 @@ ROUTE_MAP_REL = ".fenix/route-map.md"
 ROUTE_MAP_HEAD_MARKER_REL = ".fenix/.route-map-head"
 ROUTE_MAP_GENERATOR_REL = "bin/gen-route-map.py"
 
+# ── planner 生成节流（add-planner-efficiency：planner-generation-throttle）──
+# 配置键 `verify.planner_max_concurrent`：0/缺省=不节流（现状）；正整数=跨
+# verify 管线的 planner 阶段级并发上限。信号量在 `run_planner` 入口（design
+# D2：全部 planner 路径——完整管线+fast-track+重排——的单一咽喉），一处包裹
+# 全覆盖；取消/异常经 try/finally 释放不泄漏。按配置惰性重建（热更新生效）。
+#
+# 模块级状态（进程内全局）：
+# - 多 run 并发（worker 池）共享同一信号量，节流语义是「全框架同时在出题的
+#   planner 数」，与派发层 agents.max_concurrent 语义正交（本限制是管线内
+#   新增的第二道门，不动 parallelism-config/priority-parallel-scheduler）。
+# - 配置读取走 AgentRunner._get_config（每次现读），重建只在上限值变化时发生；
+#   值为 0/缺省时信号量为 None（不节流路径零开销）。
+_PLANNER_SEMAPHORE: threading.BoundedSemaphore | None = None
+_PLANNER_SEMAPHORE_LIMIT: int = 0
+_PLANNER_SEMAPHORE_LOCK = threading.Lock()
+# 排队等待保活事件节流：每秒至多写一次 throttled-wait（run 流保持新鲜，
+# 防 recovery watch 把「已派发、在持槽等待」误判为 stuck/dispatch_stalled）。
+THROTTLED_WAIT_HEARTBEAT_SECONDS = 60.0
+
 
 def _route_map_head(wt_path: Path, logger) -> str:
     """读取 worktree 当前 HEAD（git rev-parse），失败返回空串（不阻断生成）。"""
@@ -596,7 +615,109 @@ class AgentRunner:
         if mode not in ("plan", "judge"):
             raise ValueError(f"mode 必须是 'plan' 或 'judge'，实际: {mode}")
         run_id = f"planner-{mode}-{spec_name}-{int(time.time())}"
-        return self._execute_agent(spec_name, f"planner-{mode}", run_id)
+        sem = self._planner_throttle_semaphore()
+        if sem is None:
+            # 未开启节流：直接派发（现状行为）
+            return self._execute_agent(spec_name, f"planner-{mode}", run_id)
+        # ── 节流持槽等待（add-planner-efficiency：planner-generation-throttle）──
+        # 持槽等待期间不派发 attempt——run 尚未创建，先写保活事件到预生成
+        # run 文件（防 recovery watch 在长等待中把「已派发但未启动」误判为
+        # 无进度/stuck；design D2 备选方案，见 _planner_throttle_acquire）。
+        acquired = self._planner_throttle_acquire(spec_name, run_id)
+        if not acquired:
+            return AgentRunResult(
+                run_id, spec_name, f"planner-{mode}",
+                success=False, duration_seconds=0,
+                error="planner throttle 获取信号量失败",
+            )
+        try:
+            return self._execute_agent(spec_name, f"planner-{mode}", run_id)
+        finally:
+            # 取消/异常均释放信号量（不泄漏占位导致后续 spec 永久排队）
+            sem.release()
+
+    def _planner_throttle_semaphore(self) -> Optional[threading.BoundedSemaphore]:
+        """按配置惰性重建 planner 节流信号量（0/缺省=不节流）。
+
+        add-planner-efficiency（planner-generation-throttle 2.1）：配置键
+        ``verify.planner_max_concurrent``。热更新生效——每次 run_planner
+        重新读配置，上限变化即重建 BoundedSemaphore（既有占位按新上限重计）。
+        返回 None 表示未开启节流（调用方不获取、直接派发）。
+        """
+        global _PLANNER_SEMAPHORE, _PLANNER_SEMAPHORE_LIMIT
+        limit = self._get_config("verify.planner_max_concurrent", 0) or 0
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 0
+        if limit <= 0:
+            return None
+        with _PLANNER_SEMAPHORE_LOCK:
+            if _PLANNER_SEMAPHORE is None or _PLANNER_SEMAPHORE_LIMIT != limit:
+                _PLANNER_SEMAPHORE = threading.BoundedSemaphore(limit)
+                _PLANNER_SEMAPHORE_LIMIT = limit
+                self.logger.info(
+                    "agent_runner",
+                    f"planner 生成节流启用：跨管线并发上限 {limit} "
+                    f"（verify.planner_max_concurrent）",
+                )
+            return _PLANNER_SEMAPHORE
+
+    def _planner_throttle_acquire(self, spec_name: str, run_id: str) -> bool:
+        """持槽等待信号量（可观测 + 等待期保活，design D2 备选方案）。
+
+        - 排队可观测：等待开始时打 INFO 日志（spec 名 + 当前占用者数量），
+          时间轴可审计；
+        - 等待期保活：run 尚未启动（_execute_agent 内才创建 attempt run），
+          以带超时的 acquire 轮询获取，等待期间按心跳周期向预生成 run 文件
+          追加 ``throttled-wait`` 事件行——保持 run 流新鲜，避免等待超过
+          stuck 阈值（160min）且无写入时被 recovery watch 误判为
+          stuck/dispatch_stalled（spec「排队不被误判」Scenario）。
+        - 取消（RunCancelledError）在等待期不可达（无子进程可终止），因此
+          仅释放义务由调用方 finally 承担。
+        """
+        sem = _PLANNER_SEMAPHORE
+        if sem is None:
+            return True
+        self.logger.info(
+            "agent_runner",
+            f"planner 节流排队中: spec={spec_name} run={run_id} "
+            f"当前占用 {sem._value}/{_PLANNER_SEMAPHORE_LIMIT}（持槽等待）",
+        )
+        # 预生成 run 文件：等待期保活事件写入目标（避免无文件可写）
+        runs_dir = self.project_root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        run_file = runs_dir / f"{run_id}.jsonl"
+        try:
+            run_file.touch(exist_ok=True)
+        except OSError:
+            pass
+        deadline = time.monotonic() + THROTTLED_WAIT_HEARTBEAT_SECONDS
+        while True:
+            if sem.acquire(timeout=THROTTLED_WAIT_HEARTBEAT_SECONDS):
+                # 获取成功，补一次保活事件标记正式开始
+                try:
+                    append_run_line(run_file, {
+                        "type": "throttled-wait",
+                        "event": "acquired",
+                        "spec": spec_name,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                except OSError:
+                    pass
+                return True
+            # 等待仍在继续：保活心跳（约每 60s 一次），run 流保持新鲜
+            if time.monotonic() >= deadline:
+                deadline = time.monotonic() + THROTTLED_WAIT_HEARTBEAT_SECONDS
+                try:
+                    append_run_line(run_file, {
+                        "type": "throttled-wait",
+                        "event": "heartbeat",
+                        "spec": spec_name,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                except OSError:
+                    pass
 
     def ensure_planner_route_map(self, spec_name: str) -> Path | None:
         """阶段1 前置接入：对 spec 当前使用的 impl worktree 生成/复用路由地图。
