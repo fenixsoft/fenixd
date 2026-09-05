@@ -459,7 +459,7 @@ class TestConsumerCompat(_PMEngineBase):
         self.assertIn("可见", content)
         self.assertIn("不存在", content)
         # 场景结果表含分类列
-        self.assertIn("| 场景 | 状态 | 失败断言 | 分类 |", content)
+        self.assertIn("| 场景 | 描述 | 状态 | 失败断言 | 分类 |", content)
         self.assertIn("product-bug", content)
 
     def test_old_format_report_parse_does_not_crash(self):
