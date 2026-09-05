@@ -136,6 +136,7 @@ def make_run(proot, run_id, terminal, ts=None):
 class TestSelfReviewScheduling:
     def test_trigger_after_run_at(self, proot, monkeypatch):
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
         runner = FakeReviewRunner()
         sched = make_scheduler(proot, run_at="22:00", runner=runner)
         res = sched.check_and_run()
@@ -174,6 +175,7 @@ class TestSelfReviewScheduling:
     def test_catch_up_on_late_start(self, proot, monkeypatch):
         """23:30 启动且今日未执行 → 启动后首轮巡检补跑（spec 错过后补跑场景）。"""
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 23, 30))
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
         runner = FakeReviewRunner()
         sched = make_scheduler(proot, run_at="22:00", runner=runner)
         res = sched.check_and_run()
@@ -204,6 +206,7 @@ class TestSelfReviewScheduling:
         from core.config import ConfigLoader
         from core.dashboard.data import write_config
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 23, 0))
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
         runner = FakeReviewRunner()
         # 设置页先保存一次完整三键（写盘）→ 热更新原地替换共享 config
         res = write_config(proot, {"self_review": {
@@ -236,10 +239,72 @@ class TestSelfReviewScheduling:
         }}, scope="project")
         ConfigLoader.resolve_config_into(config, proot)
         _freeze_time(monkeypatch, datetime(2026, 9, 6, 23, 0))
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 6, 10))}", "done")
         sched3 = SelfReviewScheduler(config, proot, FakeLogger(), FakeSM(),
                                      agent_runner=runner,
                                      store=AdminStore(proot, FakeLogger()))
         assert sched3.check_and_run()["triggered"] is True
+
+
+# ── 零活动防护（2026-09-05 用户决策：当日无 SPEC 不唤醒 admin） ──
+
+class TestZeroActivitySkip:
+    def test_zero_runs_skips_admin_and_notes_todo(self, proot, monkeypatch):
+        """当日 0 run → 不发起自省 run，仅在 todo.md 记一句占位并照常落状态。"""
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        runner = FakeReviewRunner()
+        sched = make_scheduler(proot, run_at="22:00", runner=runner)
+        res = sched.check_and_run()
+        assert res == {"triggered": True, "ok": True, "date": "2026-09-04",
+                       "skipped": True, "reason": "no_spec_activity"}
+        assert runner.calls == []  # admin 未被唤醒
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "## 2026-09-04" in content
+        assert "当日无 SPEC，跳过自省。" in content
+        # 占位为日期节下裸 bullet（无小节），不进闭环判定条目收集
+        assert "###" not in content
+        state = json.loads((proot / ".fenix" / "self_review_state.json").read_text())
+        assert state["last_run_date"] == "2026-09-04"
+        # 零活动是正常路径：不产生失败告警
+        assert AdminStore(proot, FakeLogger()).read_all() == []
+
+    def test_review_prefix_run_not_counted_as_activity(self, proot, monkeypatch):
+        """当日仅剩 review- 自省 run 残留 → 仍视为零 SPEC 活动。"""
+        make_run(proot, "review-2026-09-04", "done",
+                 ts=datetime(2026, 9, 4, 2, 0).timestamp())
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        runner = FakeReviewRunner()
+        res = make_scheduler(proot, run_at="22:00", runner=runner).check_and_run()
+        assert res.get("skipped") is True
+        assert runner.calls == []
+
+    def test_next_day_with_activity_reviews_normally(self, proot, monkeypatch):
+        """跳过次日有活动 → 正常执行完整自省（跳过不污染后续调度）。"""
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        make_scheduler(proot, run_at="22:00", runner=FakeReviewRunner()).check_and_run()
+        make_run(proot, f"impl-a-{_ts(datetime(2026, 9, 5, 10))}", "done")
+        _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 30))
+        runner2 = FakeReviewRunner()
+        res = make_scheduler(proot, run_at="22:00", runner=runner2).check_and_run()
+        assert res["triggered"] is True and "skipped" not in res
+        assert len(runner2.calls) == 1
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        # 09-04 占位保留 + 09-05 完整分节追加
+        assert "当日无 SPEC，跳过自省。" in content
+        assert "### 浪费" in content
+        assert content.index("## 2026-09-04") < content.index("## 2026-09-05")
+
+    def test_existing_today_section_not_duplicated(self, proot, monkeypatch):
+        """状态文件丢失重跑且 todo 已有当日节 → 不重复追加占位。"""
+        (proot / ".fenix" / "todo.md").write_text(
+            "## 2026-09-04\n\n### 浪费\n- 旧条目\n", encoding="utf-8")
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        runner = FakeReviewRunner()
+        res = make_scheduler(proot, run_at="22:00", runner=runner).check_and_run()
+        assert res.get("skipped") is True
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert content.count("## 2026-09-04") == 1
+        assert "当日无 SPEC" not in content
 
 
 # ── 2.4 失败处理 ───────────────────────────────────────────
@@ -247,6 +312,7 @@ class TestSelfReviewScheduling:
 class TestSelfReviewFailure:
     def test_failure_records_warning_and_marks_today(self, proot, monkeypatch):
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
         runner = FakeReviewRunner(fail=True)
         sched = make_scheduler(proot, run_at="22:00", runner=runner)
         res = sched.check_and_run()
@@ -266,11 +332,13 @@ class TestSelfReviewFailure:
     def test_next_day_natural_retry(self, proot, monkeypatch):
         # 9/4 失败
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
         runner = FakeReviewRunner(fail=True)
         sched = make_scheduler(proot, run_at="22:00", runner=runner)
         sched.check_and_run()
         # 9/5 到点 → 自然重试
         _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 30))
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 5, 10))}", "done")
         runner2 = FakeReviewRunner()
         sched2 = make_scheduler(proot, run_at="22:00", runner=runner2)
         res = sched2.check_and_run()
@@ -324,6 +392,7 @@ class TestTodoAppend:
         (proot / ".fenix" / "todo.md").write_text("## 2026-09-03\n\n### 浪费\n- 历史\n", encoding="utf-8")
         # read_todo=true → 注入全文
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
         runner_on = FakeReviewRunner()
         sched_on = make_scheduler(proot, read_todo=True, runner=runner_on)
         sched_on.check_and_run()
@@ -331,6 +400,7 @@ class TestTodoAppend:
         assert "## 2026-09-03" in runner_on.calls[0][2]
         # read_todo=false → 不注入
         _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 30))
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 5, 10))}", "done")
         runner_off = FakeReviewRunner()
         sched_off = make_scheduler(proot, read_todo=False, runner=runner_off)
         sched_off.check_and_run()
@@ -365,6 +435,7 @@ class TestTodoAppend:
 class TestNoAutoCreation:
     def test_no_state_or_spec_new_entries(self, proot, monkeypatch):
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
         state_before = (proot / ".fenix" / "STATE.md").read_text(encoding="utf-8")
         changes_before = sorted(
             p.name for p in (proot / "spec" / "changes").iterdir() if p.is_dir()
@@ -542,6 +613,7 @@ class TestAdminMonitorHook:
         proot = tmp_path / "proj"
         (proot / ".fenix").mkdir(parents=True)
         (proot / ".fenix" / "STATE.md").write_text("# State\n\n## Specs\n\n", encoding="utf-8")
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
         runner = FakeReviewRunner()
         mon = AdminMonitor(
             {"admin": {"enabled": True,
@@ -904,6 +976,7 @@ class TestTodoCleanup:
         """read_todo=true 全链路：注入 ID 条目 → resolved 生效移除 → 追加当日节。"""
         write_todo(proot, TODO_MULTI_DAY)
         _freeze_time(monkeypatch, datetime(2026, 9, 7, 22, 30))
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 7, 10))}", "done")
         result = FakeReviewResult(
             waste=["新W"], mistakes=["新M"], improvements=["新I"],
             resolved=[{"id": "2026-09-05#浪费#1", "reason": "SPEC 已落地"}],
@@ -923,6 +996,7 @@ class TestTodoCleanup:
         """read_todo=false：不注入条目、resolved 不生效（行为与既往一致）。"""
         write_todo(proot, TODO_MULTI_DAY)
         _freeze_time(monkeypatch, datetime(2026, 9, 7, 22, 30))
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 7, 10))}", "done")
         result = FakeReviewResult(
             waste=["W"], mistakes=["M"], improvements=["I"],
             resolved=[{"id": "2026-09-04#浪费#1", "reason": "不应生效"}],
@@ -933,6 +1007,94 @@ class TestTodoCleanup:
         assert runner.calls[0][3] is None
         content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
         assert "证据：A1" in content  # 未被移除
+
+
+class TestTodoMultilineFormat:
+    """条目「影响/证据/建议」三行渲染（用户确认格式，2026-09-05）。
+
+    agent JSON 契约升级为结构化对象 {impact, evidence, suggestion}，
+    _append_todo 渲染为多行 bullet 块；旧字符串条目按旧行内格式透传。
+    """
+
+    def test_append_todo_structured_entry_renders_three_lines(self, proot):
+        sched = make_scheduler(proot)
+        result = FakeReviewResult(waste=[{
+            "impact": "1 轮 impl run 约 19 分钟整轮作废",
+            "evidence": "run impl-x 在 03:01Z 被 SIGTERM",
+            "suggestion": "重启前先排水",
+        }], mistakes=[], improvements=[])
+        sched._append_todo("2026-09-07", result)
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "- 影响：1 轮 impl run 约 19 分钟整轮作废\n" \
+               "  证据：run impl-x 在 03:01Z 被 SIGTERM\n" \
+               "  建议：重启前先排水" in content
+
+    def test_append_todo_partial_and_empty_structured_entries(self, proot):
+        sched = make_scheduler(proot)
+        result = FakeReviewResult(
+            waste=[{"impact": "仅有影响", "evidence": "", "suggestion": None},
+                   {}],
+            mistakes=[], improvements=[])
+        sched._append_todo("2026-09-07", result)
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "- 影响：仅有影响" in content
+        assert "证据：" not in content and "建议：" not in content
+        # 全部字段为空的条目被跳过，无有效条目的小节回落（当日无）
+        assert "（当日无）" in content
+
+    def test_append_todo_string_entry_legacy_single_line(self, proot):
+        """旧字符串条目（历史 agent 输出）保持行内格式。"""
+        sched = make_scheduler(proot)
+        result = FakeReviewResult(waste=["证据：3 次秒挂；建议：冷却"],
+                                  mistakes=[], improvements=[])
+        sched._append_todo("2026-09-07", result)
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "### 浪费\n- 证据：3 次秒挂；建议：冷却" in content
+
+    def test_cleanup_collect_multiline_blocks(self, proot):
+        """多行条目按块收集：id/序号按块计，text 取影响行。"""
+        write_todo(proot, """## 2026-09-06
+
+### 浪费
+- 影响：X1
+  证据：E1
+  建议：S1
+- 影响：X2
+  证据：E2
+  建议：S2
+
+### 失误
+- （当日无）
+""")
+        sched = make_scheduler(proot)
+        entries = sched._collect_recent_entries("2026-09-07")
+        by_id = {e["id"]: e for e in entries}
+        assert by_id["2026-09-06#浪费#1"]["text"] == "影响：X1"
+        assert by_id["2026-09-06#浪费#2"]["text"] == "影响：X2"
+        assert len(entries) == 2  # （当日无）不成条
+
+    def test_cleanup_remove_multiline_block_whole(self, proot):
+        """移除命中条目时整块删除（含证据/建议续行），其余块逐字保留。"""
+        todo_text = """## 2026-09-06
+
+### 浪费
+- 影响：X1
+  证据：E1
+  建议：S1
+- 影响：X2
+  证据：E2
+  建议：S2
+"""
+        write_todo(proot, todo_text)
+        sched = make_scheduler(proot)
+        entries = sched._collect_recent_entries("2026-09-07")
+        removed = sched._remove_resolved(entries, [
+            {"id": "2026-09-06#浪费#1", "reason": "已修复"}])
+        assert [r["id"] for r in removed] == ["2026-09-06#浪费#1"]
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "影响：X1" not in content and "证据：E1" not in content \
+            and "建议：S1" not in content  # 整块删除
+        assert "- 影响：X2\n  证据：E2\n  建议：S2" in content  # 其余块逐字保留
 
 
 class TestSelfReviewPromptEntries:

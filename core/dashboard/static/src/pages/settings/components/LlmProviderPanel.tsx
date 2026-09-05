@@ -159,7 +159,7 @@ export default function LlmProviderPanel({ config, onSave }: LlmProviderPanelPro
 
   return (
     <div>
-      <h3>LLM Provider</h3>
+      <h3>模型</h3>
       <Text type="secondary">定义可用的 LLM 提供者（Base URL / API Key / 默认模型）。</Text>
       <Form form={form} initialValues={initialValues} layout="vertical" style={{ marginTop: 12 }}>
         <Form.Item

@@ -61,7 +61,7 @@ from .watcher import FileWatcher
 from core.agent_runner.prompt_builder import (
     AGENT_PROMPT_DIR,
     AGENT_PROMPT_FILES,
-    is_self_referencing_project,
+    project_agents_dir,
 )
 from core.fenix_session import start_daemon, stop_daemon
 
@@ -859,8 +859,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """GET /api/prompts[?project=<name>] — agent 提示词读取。
 
         缺省 → 仅通用层六文件（用户级只读视图）；带 project → 追加项目级
-        .fenix/agents/ 附加内容与自引用标记。通用层一律只读，端点不提供
-        通用层写入。
+        .fenix/agents/ 附加内容。通用层一律只读，端点不提供通用层写入。
         """
         agents = []
         for atype, fname in AGENT_PROMPT_FILES.items():
@@ -877,13 +876,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not project.get("exists"):
             return {"error": "project not found"}
         proot = Path(project["path"])
-        self_referencing = is_self_referencing_project(proot)
         out["project"] = {
             "name": project["name"],
             "path": project["path"],
-            "self_referencing": self_referencing,
-            # 自引用项目的项目级即通用层：不返回 extras（UI 禁用编辑并说明原因）
-            "extras": {} if self_referencing else {
+            # 所有项目一视同仁（含 fenixd 自身）；仅废弃软链布局 extras 为空串
+            "extras": {
                 atype: self._read_project_extra(proot, atype)
                 for atype in AGENT_PROMPT_FILES
             },
@@ -892,7 +889,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _read_project_extra(proot: Path, agent_type: str) -> str:
-        path = proot / ".fenix" / "agents" / AGENT_PROMPT_FILES[agent_type]
+        agents_dir = project_agents_dir(proot)
+        if agents_dir is None:
+            return ""
+        path = agents_dir / AGENT_PROMPT_FILES[agent_type]
         if not path.is_file():
             return ""
         try:
@@ -905,7 +905,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         body: {"agent_type": <白名单键>, "content": <自由 Markdown>}。
         写入 <项目根>/.fenix/agents/<agent-type>.md（该目录唯一写入口，
-        框架运行时代码不写项目级目录）；自引用项目拒绝（403，design D4）。
+        框架运行时代码不写项目级目录）；.fenix/agents 解析为通用层目录的
+        废弃软链布局拒绝（403，项目通道永不触碰通用层）。
         """
         body = self._read_json_body()
         if body is None:
@@ -923,18 +924,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._error(400, f"非法 agent_type（白名单外）: {agent_type}")
             return
         proot = Path(project["path"])
-        if is_self_referencing_project(proot):
+        agents_dir = project_agents_dir(proot)
+        if agents_dir is None:
             self._error(
                 403,
-                "自引用项目（项目根或 .fenix 解析为框架根）无项目级附加层："
-                "运行时跳过读取，框架自身提示词演进走 SPEC 流程",
+                "项目 .fenix/agents 解析为框架通用层 agents/（废弃自引用软链布局），"
+                "项目通道禁止写入通用提示词",
             )
             return
         content = body.get("content")
         if not isinstance(content, str):
             self._error(400, "content 必须为字符串（自由 Markdown，不做 schema 校验）")
             return
-        target = proot / ".fenix" / "agents" / AGENT_PROMPT_FILES[agent_type]
+        target = agents_dir / AGENT_PROMPT_FILES[agent_type]
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         self._json({"ok": True, "agent_type": agent_type, "path": str(target)})

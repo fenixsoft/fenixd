@@ -602,7 +602,10 @@ class AgentRunner:
 
         self._clear_admin_disposition(disp_path)
         try:
-            output, turns, _session_id = self._run_claude(
+            # _run_claude 返回 4 元组（add-cost-observability D1 加 usage_info）；
+            # admin 不消费 usage，此调用点曾漏改按 3 元组解包——admin run 一启动
+            # 即崩 too many values to unpack（2026-09-05 回检发现）
+            output, turns, _session_id, _usage = self._run_claude(
                 prompt, self.project_root, run_id, model_override, env_overrides,
                 max_turns=self._get_config("agents.max_turns", 300),
                 spec_name=spec,
@@ -972,6 +975,23 @@ class AgentRunner:
             return idx
         return -1
 
+    def _worktree_path_valid(self, wt_path: Path) -> bool:
+        """worktree 路径存在性快检（fix-resume-stale-worktree 3a）。
+
+        目录存在且仍是可解析的 git 工作树；任何异常（权限/超时）按失效处置，
+        由调用方走各自回退路径（新建/显式失败）。
+        """
+        try:
+            if not wt_path.is_dir():
+                return False
+            proc = subprocess.run(
+                ["git", "-C", str(wt_path), "rev-parse", "--is-inside-work-tree"],
+                capture_output=True, text=True, timeout=10,
+            )
+            return proc.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
     def _execute_agent(self, spec_name: str, agent_type: str, run_id: str,
                        pre_wt_path: Path | None = None,
                        conflict_summary: dict | None = None) -> AgentRunResult:
@@ -1194,10 +1214,32 @@ class AgentRunner:
             # fast-track 与 implementer 同语义：跨 attempt 复用同一 worktree（失败续跑）。
             # repair 沿用同一语义：repair run 的 attempt 复用同一个 repair worktree
             #（add-merge-back-repair-lane——worktree 由调度层解析，内部 attempt 不重造）。
-            reuse_worktree = (
-                agent_type in ("implementer", "fast-track", "repair")
-                and wt_path is not None
-            )
+            # fix-resume-stale-worktree（todo 09-04 失误#3 处方 3a）：复用前校验路径
+            # 真实存在——恢复清理/孤儿回收可能在 attempt 间隙删除目录，盲复用以
+            # [Errno 2] 秒挂白烧一次重试额度。失效处置：implementer/fast-track 丢弃
+            # 引用改走新建分支路径；repair 载体失效显式失败交还调度层重新解析
+            # （repair 语义要求在实现分支内修复，换新分支即失去载体意义）。
+            reuse_worktree = False
+            if (agent_type in ("implementer", "fast-track", "repair")
+                    and wt_path is not None):
+                if self._worktree_path_valid(wt_path):
+                    reuse_worktree = True
+                elif agent_type == "repair":
+                    error_msg = (f"repair worktree {wt_path} lost between attempts "
+                                 f"— need fresh carrier resolution")
+                    self.logger.error("agent_runner", error_msg)
+                    return AgentRunResult(
+                        attempt_run_id, spec_name, agent_type,
+                        success=False, duration_seconds=time.time() - start_time,
+                        error=error_msg, provider_used=provider_name, model_used=model,
+                    )
+                else:
+                    self.logger.warning(
+                        "agent_runner",
+                        f"Worktree {wt_path} for '{spec_name}' no longer exists "
+                        f"(deleted between attempts) — fresh create instead of resume",
+                    )
+                    wt_path = None
 
             # 跨 attempt 切换打点（design D5 / spec failover-dispatch「切换留痕」）：
             # 本次实际使用的 provider 与上一次不同 → 输出 "provider switched" 日志；

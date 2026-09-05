@@ -135,8 +135,8 @@ export default function AgentModelPanel({ config, onSave }: AgentModelPanelProps
       </Text>
       {providers.length === 0 && (
         <div style={{ color: '#faad14', marginTop: 12 }}>
-          ⚠ 当前作用域没有可用的 LLM Provider，无法为 Agent 分配模型。请先在上方「LLM Provider
-          列表」添加 Provider 并保存，再回来分配；或切换到项目级配置（选择项目后进入配置页）进行分配。
+          ⚠ 当前作用域没有可用的 LLM Provider，无法为 Agent 分配模型。请先在上方「模型
+          页签」添加 Provider 并保存，再回来分配；或切换到项目级配置（选择项目后进入配置页）进行分配。
         </div>
       )}
       <Form form={form} initialValues={initialValues} layout="vertical" style={{ marginTop: 12 }}>

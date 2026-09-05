@@ -31,22 +31,23 @@ AGENT_PROMPT_FILES = {
 }
 
 
-def is_self_referencing_project(proot) -> bool:
-    """项目根或其 .fenix 解析为框架根（自引用项目，add-agent-prompt-files D4）。
+def project_agents_dir(proot) -> Path | None:
+    """项目级 agents 目录 <项目根>/.fenix/agents；解析为通用层时返回 None。
 
-    fenixd 自身项目无独立项目级附加层：运行时跳过项目级读取（写入即死
-    文件），框架自身提示词的演进走 SPEC 流程——读取跳过、编辑禁用。
-    （"项目级 .fenix/agents/ 即通用层 agents/" 是已废弃 .fenix 自引用
-    符号链接设计的旧前提：2026-09-04 状态文件迁入后 .fenix 为真实目录。）
+    项目通道永不触碰通用层：仅当 <项目根>/.fenix/agents 经符号链接解析为
+    通用层 AGENT_PROMPT_DIR 本身（废弃 .fenix 自引用软链布局）时，读取会
+    把通用文件当项目附加叠加、写入会覆盖通用文件——读取返回 None（零注入）、
+    写入端点拒绝。普通项目（.fenix 为真实目录，含 fenixd 自身：项目级即
+    <root>/.fenix/agents/，与通用层 agents/ 互不相干）不受任何特殊处理。
     模块级函数供 PromptBuilder 与 Dashboard 端点共用同一判定。
     """
+    d = Path(proot) / ".fenix" / "agents"
     try:
-        rp = Path(proot).resolve()
-        if rp == FRAMEWORK_ROOT.resolve():
-            return True
-        return (rp / ".fenix").resolve() == FRAMEWORK_ROOT.resolve()
+        if d.resolve() == AGENT_PROMPT_DIR.resolve():
+            return None
     except OSError:
-        return False
+        return None
+    return d
 
 
 class PromptBuilder:
@@ -185,7 +186,7 @@ class PromptBuilder:
         <项目根>/.fenix/agents/<agent-type>.md 存在则读入，以
         「## 项目附加提示词」标题附加在 prompt 完整内容（通用主体 + 动态段）
         之后；缺席零注入（prompt 与仅通用层时逐字节一致）。
-        自引用项目跳过（D4/任务 2.3）——其项目级即通用层。
+        通用层重合布局跳过（project_agents_dir 返回 None，见其 docstring）。
         """
         agents_dir = self._project_agents_dir()
         if agents_dir is None:
@@ -202,10 +203,8 @@ class PromptBuilder:
         return f"\n\n## 项目附加提示词\n\n{content}\n"
 
     def _project_agents_dir(self):
-        """项目级 agents 目录；自引用项目返回 None（任务 2.3，D4）。"""
-        if is_self_referencing_project(self._pm.project_root):
-            return None
-        return Path(self._pm.project_root) / ".fenix" / "agents"
+        """项目级 agents 目录；解析为通用层时返回 None（见 project_agents_dir）。"""
+        return project_agents_dir(self._pm.project_root)
 
     def _verifier_breakpoint_section(self, spec_name: str) -> str:
         """断点续跑段（verifier-checkpoint-resume spec）。

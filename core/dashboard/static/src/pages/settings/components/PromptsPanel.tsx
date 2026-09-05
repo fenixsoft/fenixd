@@ -1,4 +1,4 @@
-import { Alert, Button, Input, Select, Typography, message } from 'antd';
+import { Button, Input, Select, Typography, message } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
@@ -64,8 +64,6 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
     () => data?.agents.find((a) => a.type === activeAgent)?.content ?? '',
     [data, activeAgent],
   );
-
-  const selfReferencing = data?.project?.self_referencing ?? false;
 
   const handleSave = async () => {
     if (!project) return;
@@ -142,40 +140,28 @@ export default function PromptsPanel({ project }: PromptsPanelProps) {
       {isProjectScope && (
         <div style={{ marginTop: 16 }} data-testid="prompts-extra-section">
           <Title level={5}>项目附加提示词</Title>
-          {selfReferencing ? (
-            <Alert
-              type="warning"
-              showIcon
-              data-testid="prompts-selfref-alert"
-              message="本项目为 fenixd 自身（项目根即框架根）：agent 提示词即通用层本体，无项目级附加层"
-              description="项目级附加提示词对本项目无效（运行时跳过读取，写入即死文件），且框架自身提示词的演进走 SPEC 流程。项目级编辑已禁用。"
-            />
-          ) : (
-            <>
-              <Text type="secondary">
-                保存在项目 <code>.fenix/agents/{activeAgent}.md</code>，
-                为空表示该项目无附加提示词。
-              </Text>
-              <TextArea
-                data-testid="prompts-extra-textarea"
-                value={extraDraft}
-                onChange={(e) => setExtraDraft(e.target.value)}
-                placeholder="自由 Markdown，例如本项目特有的验证规范、选择器约定等"
-                autoSize={{ minRows: 6, maxRows: 14 }}
-                style={{ marginTop: 8 }}
-              />
-              <div style={{ marginTop: 12, textAlign: 'right' }}>
-                <Button
-                  type="primary"
-                  data-testid="prompts-extra-save"
-                  loading={saving}
-                  onClick={handleSave}
-                >
-                  保存项目附加提示词
-                </Button>
-              </div>
-            </>
-          )}
+          <Text type="secondary">
+            保存在项目 <code>.fenix/agents/{activeAgent}.md</code>，
+            为空表示该项目无附加提示词。
+          </Text>
+          <TextArea
+            data-testid="prompts-extra-textarea"
+            value={extraDraft}
+            onChange={(e) => setExtraDraft(e.target.value)}
+            placeholder="自由 Markdown，例如本项目特有的验证规范、选择器约定等"
+            autoSize={{ minRows: 6, maxRows: 14 }}
+            style={{ marginTop: 8 }}
+          />
+          <div style={{ marginTop: 12, textAlign: 'right' }}>
+            <Button
+              type="primary"
+              data-testid="prompts-extra-save"
+              loading={saving}
+              onClick={handleSave}
+            >
+              保存项目附加提示词
+            </Button>
+          </div>
         </div>
       )}
     </div>

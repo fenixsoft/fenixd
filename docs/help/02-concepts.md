@@ -15,14 +15,16 @@ Fenix 是一个**闭环**开发框架：需求输入后，从设计、实现、�
 
 ```mermaid
 graph TB
-    subgraph "Fenix Daemon"
+    subgraph DAEMON ["Fenix Daemon"]
+        FW["File Watcher\n（文件监听器）"]
+        AM["Admin Monitor\n（告警监视器）"]
         PM["PM Engine\n（调度引擎）"]
         SM["State Machine\n（状态机）"]
-        AM["Admin Monitor\n（告警监视器）"]
-        FW["File Watcher\n（文件监听器）"]
+        FW -.-> PM
+        PM --> SM
     end
 
-    subgraph "Agent Pool"
+    subgraph POOL ["Agent Pool（七类 Agent）"]
         IMP["Implementer\n（实现者）"]
         VER["Verifier\n（验证者）"]
         PP["Planner-Plan\n（规划器）"]
@@ -30,19 +32,26 @@ graph TB
         FT["Fast-Track\n（轻量实现）"]
         ADM["Administrator\n（自愈运维）"]
         SR["Self-Review\n（自省）"]
+        IMP ~~~ PP
+        PP ~~~ FT
+        VER ~~~ PJ
+        PJ ~~~ ADM
+        ADM ~~~ SR
     end
 
-    subgraph "Dashboard"
-        WEB["Web UI\n（概览/项目/设置/运维/帮助）"]
+    subgraph DASH ["Dashboard"]
         API["REST API\n（/api/*）"]
+        WEB["Web UI\n（概览/项目/设置/运维/帮助）"]
+        API -.-> WEB
     end
 
-    PM --> SM
-    PM --> IMP & VER & PP & PJ & FT
+    PM --> IMP
+    PM --> VER
     AM --> ADM
     SM -.-> API
-    API -.-> WEB
-    FW -.-> PM
+    SM ~~~ IMP
+    SM ~~~ VER
+    SR ~~~ API
 ```
 
 从图上可以看出分工：PM Engine 是调度中枢，做派发决策并唤起 Agent Pool 中的各类 Agent；State Machine 维护 SPEC 的状态转移；Admin Monitor 监视困境信号，必要时唤起 Administrator 自愈；File Watcher 监听文件变化反馈给 PM Engine。对外则由 REST API 把状态暴露给 Web UI 展示。

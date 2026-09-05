@@ -11,6 +11,7 @@
 """
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -253,6 +254,8 @@ class TestChainSelectExecute:
         monkeypatch.setattr(runner, "_now", lambda: now)
         runner.worktree_manager = MagicMock()
         wt = tmp_path / "wt"
+        wt.mkdir()
+        subprocess.run(["git", "init", "-q", str(wt)], check=True)  # 3a：须为可解析 git 工作树
         runner.worktree_manager.create.return_value = wt
 
         calls = {"n": 0, "resume_seen": False, "providers": [], "fresh_after_switch": False}
@@ -294,6 +297,8 @@ class TestChainSelectExecute:
         monkeypatch.setattr(runner, "_now", lambda: now)
         runner.worktree_manager = MagicMock()
         wt = tmp_path / "wt"
+        wt.mkdir()
+        subprocess.run(["git", "init", "-q", str(wt)], check=True)  # 3a：须为可解析 git 工作树
         runner.worktree_manager.create.return_value = wt
 
         calls = {"n": 0, "resumes": []}

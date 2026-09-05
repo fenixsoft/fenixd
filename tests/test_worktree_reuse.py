@@ -147,3 +147,99 @@ class TestWorktreeReuse:
             wm.keep_for_reuse("demo", wt)
             assert len(wm._legacy) == 1, "覆盖式更新，遗产链不膨胀"
             assert wt.exists()
+
+
+# ── 3a（todo 09-04 失误#3）：跨 attempt / 预置 worktree 复用前存在性校验 ──
+
+def _exec_runner(proot: Path):
+    """构造可跑 _execute_agent 的最小 AgentRunner（依赖全部 stub）。"""
+    from unittest.mock import MagicMock
+    from core.agent_runner import AgentRunner
+
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.config = {"agents": {"max_retries": 3}}
+    runner.project_root = proot
+    (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+    runner.logger = FakeLogger()
+    runner.state_machine = None
+    runner._running_agents = {}
+    runner._daily_run_count = 0
+    runner._daily_reset_date = None
+    runner._daily_provider_attempts = {}
+    runner._daily_provider_warned = {}
+    runner.provider_circuits = {}
+    runner._cancel_meta = {}
+    runner._last_model_used = None
+    wm = MagicMock()
+    wm.create.return_value = proot / "wt-fresh"
+    wm.get_branch_name.return_value = "fenix/fresh"
+    runner.worktree_manager = wm
+    runner._run_claude = MagicMock(return_value=(
+        "ok", 1, "sess-1",
+        {"input_tokens": 0, "output_tokens": 0,
+         "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+         "cost_usd": None}))
+    runner._spec_is_frozen = lambda name: False
+    runner._cancel_is_requested = lambda rid: False
+    runner._cancel_clear = lambda rid: None
+    runner._check_daily_limit = lambda: None
+    runner._get_agent_model_assignment = lambda at: []
+    runner._record_daily_provider_attempt = lambda p: None
+    runner._write_provider_marker = lambda *a, **k: None
+    runner._v2_launch_for_worktree = lambda p: None
+    runner._v2_inject_env = lambda p: {}
+    runner._v2_stop_for_worktree = lambda p: None
+    runner._build_prompt = lambda *a, **k: "prompt"
+    runner._resumable_session_id = lambda *a, **k: None
+    runner._extract_usage_info = lambda x: {"input_tokens": 0, "output_tokens": 0,
+                                            "cost_usd": None}
+    runner._record_instant_fail = lambda *a, **k: None
+    runner._extract_session_id = lambda p: None
+    runner._accumulate_token_usage = lambda *a, **k: None
+    runner._record_verify_progress_tokens = lambda *a, **k: None
+    runner._reset_instant_fail = lambda *a, **k: None
+    runner._should_give_up_before_retry = lambda *a, **k: False
+    return runner
+
+
+class TestStaleWorktreeValidation:
+    """attempt 间隙 worktree 被恢复清理/孤儿回收删除后，盲复用会以
+    [Errno 2] 秒挂白烧一次重试额度（09-04 add-run-cancel 实证）。
+    复用前必须校验存在性：implementer/fast-track 失效即改走新建；
+    repair 载体失效显式失败交还调度层重新解析（repair 语义要求在
+    实现分支内修复，不能换新分支）。"""
+
+    def test_stale_worktree_falls_back_to_fresh_create(self, tmp_path):
+        runner = _exec_runner(tmp_path)
+        stale = tmp_path / "gone-wt"  # 不存在
+        result = runner._execute_agent(
+            "spec-a", "implementer", "impl-spec-a-1", pre_wt_path=stale)
+        assert result.success is True
+        runner.worktree_manager.create.assert_called_once_with(
+            "spec-a", "implementer")
+        # claude 的 cwd 是新建 worktree，而非失效路径
+        assert runner._run_claude.call_args.args[1] == tmp_path / "wt-fresh"
+
+    def test_repair_stale_worktree_fails_fast(self, tmp_path):
+        runner = _exec_runner(tmp_path)
+        stale = tmp_path / "gone-repair-wt"
+        result = runner._execute_agent(
+            "spec-r", "repair", "repair-spec-r-1",
+            pre_wt_path=stale, conflict_summary={})
+        assert result.success is False
+        assert "repair worktree" in result.error
+        # 不烧重试额度：不派发 claude、不新建 worktree（repair 不能换分支）
+        runner._run_claude.assert_not_called()
+        runner.worktree_manager.create.assert_not_called()
+
+    def test_valid_worktree_still_reused(self, tmp_path):
+        """真实 worktree 按原语义复用（校验不得误伤正常路径）。"""
+        runner = _exec_runner(tmp_path)
+        real = tmp_path / "real-wt"
+        init_repo(real)
+        result = runner._execute_agent(
+            "spec-v", "repair", "repair-spec-v-1",
+            pre_wt_path=real, conflict_summary={})
+        assert result.success is True
+        runner.worktree_manager.create.assert_not_called()
+        assert runner._run_claude.call_args.args[1] == real

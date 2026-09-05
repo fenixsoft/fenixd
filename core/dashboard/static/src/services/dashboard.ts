@@ -642,8 +642,6 @@ export interface AgentPrompt {
 export interface ProjectPromptsMeta {
   name: string;
   path: string;
-  /** 自引用项目（.fenix 解析为框架根）：项目级即通用层，编辑禁用 */
-  self_referencing: boolean;
   extras: Record<string, string>;
 }
 

@@ -59,5 +59,4 @@ CRITICAL: 你必须在真实浏览器/用户环境中测试，仅靠代码分析
 MANDATORY: 每一步、每个场景之后都必须写进度。
 MANDATORY: 浏览器测试必须使用 playwright-cli，不走捷径。
 MANDATORY: 若无法启动真实被测项目，按失败上报。
-IMPORTANT: 禁止 Read 图片/截图文件（.png/.jpg），当前模型不支持图像输入，读图会被 hook 拦截；截图仅作为证据文件保存到报告，验证用 DOM snapshot 文本。
 IMPORTANT: 不要修改 .fenix/STATE.md。

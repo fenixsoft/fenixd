@@ -57,13 +57,13 @@ async function renderMermaid(code: string, container: HTMLDivElement) {
     const mermaid = await getMermaid();
     const id = `mermaid-${++mermaidIdCounter}`;
     // 初始化（幂等，重复调用无害）；neutral 主题配色低饱和，适合文档场景；
-    // 字号统一压到 13px（sequence 族字号独立于 themeVariables，须单独设）
+    // 字号统一 14px（sequence 族字号独立于 themeVariables，须单独设）
     mermaid.initialize({
       startOnLoad: false,
       theme: 'neutral',
       securityLevel: 'loose',
-      themeVariables: { fontSize: '13px' },
-      sequence: { actorFontSize: 13, messageFontSize: 13, noteFontSize: 13 },
+      themeVariables: { fontSize: '14px' },
+      sequence: { actorFontSize: 14, messageFontSize: 14, noteFontSize: 14 },
     });
     const { svg } = await mermaid.render(id, code);
     container.innerHTML = svg;

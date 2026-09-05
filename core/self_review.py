@@ -11,6 +11,11 @@ run → 按 resolved 移除已闭环历史条目 + 追加写入项目 ``.fenix/t
 今天」→ 触发。天然获得补跑（启动后首轮巡检即补）与防重复（状态文件）。
 失败当日不重试（也写 last_run_date=今天，防风暴），次日自然重试。
 
+零活动防护（2026-09-05 用户决策）：当日无任何 SPEC run（``review-`` 前缀
+自省 run 已排除）→ 不发起 run、不唤醒 admin，仅在 todo.md 记一句「当日无
+SPEC，跳过自省。」占位（裸 bullet，不进闭环判定条目），照常提交与写状态
+文件。
+
 硬约束（spec「禁止自动创建 SPEC」）：本模块及自省链路 MUST NOT 创建
 spec/changes 条目、注册 STATE.md 条目或派发任何 agent——产出仅供用户
 阅读判定。token 归账到 cost-observability 独立类目（.fenix/cost/），
@@ -294,6 +299,11 @@ class SelfReviewScheduler:
             self._save_state(today)
             return {"triggered": True, "ok": False, "reason": "no_runner", "date": today}
 
+        # 零活动防护：当日无任何 SPEC run（review- 自省 run 已排除）→ 不唤醒
+        # admin，仅在 todo.md 记一句占位并跳过（2026-09-05 用户决策）。
+        if collect_runs_stats(self.project_root, today)["total"] == 0:
+            return self._skip_review(today)
+
         daily_summary = self.collect_daily_summary(today)
         # 闭环判定条目（read_todo=true 时收集窗口内既有条目并 ID 标注注入）
         cleanup_entries: List[Dict[str, str]] = []
@@ -337,6 +347,41 @@ class SelfReviewScheduler:
         )
         return {"triggered": True, "ok": True, "date": today,
                 "todo_written": str(written), "committed": committed}
+
+    # ── 零活动防护（2026-09-05 用户决策） ─────────────────────
+
+    def _skip_review(self, today: str) -> dict:
+        """当日零 SPEC 活动跳过：不发起 run（不唤醒 admin），仅在 todo.md
+        记一句占位，照常提交 + 写状态文件（当日不再重试）。
+
+        占位写为日期节下的裸 bullet（无小节）——_collect_recent_entries 只
+        收小节下条目，故不进闭环判定清单、也不参与闭环移除，作为「当天执行
+        过调度但无可回顾内容」的痕迹保留。当日节已存在（状态文件丢失重跑）
+        时不重复追加。占位写入失败仅记 WARNING，不影响跳过语义。
+        """
+        todo = self.project_root / ".fenix" / "todo.md"
+        try:
+            existing = ""
+            if todo.is_file():
+                existing = todo.read_text(encoding="utf-8", errors="replace")
+            if not re.search(rf"(?m)^## {re.escape(today)}\s*$", existing):
+                block = f"## {today}\n\n- 当日无 SPEC，跳过自省。\n"
+                if existing.strip():
+                    todo.write_text(
+                        existing.rstrip("\n") + "\n\n" + block, encoding="utf-8")
+                else:
+                    todo.parent.mkdir(parents=True, exist_ok=True)
+                    todo.write_text(block, encoding="utf-8")
+        except OSError as e:
+            self.logger.warning(
+                "self_review", f"{today}: 零活动占位写入 todo.md 失败: {e}")
+        self._commit_todo(today)
+        self._save_state(today)
+        self.logger.info(
+            "self_review",
+            f"{today}: 当日无 SPEC 活动（0 run），跳过自省（未唤醒 admin）")
+        return {"triggered": True, "ok": True, "date": today,
+                "skipped": True, "reason": "no_spec_activity"}
 
     # ── 四源数据摘要（spec 场景锁定数据源清单） ───────────────
 
@@ -557,7 +602,21 @@ class SelfReviewScheduler:
             cur: Optional[Dict[str, Any]] = None
             head: List[str] = []
             tail: List[str] = []
+            pending: Optional[List[str]] = None  # 未决 bullet 块（原文行，含续行）
+            skip_block = False  # 上一 bullet 块被移除 → 其缩进续行一并吞掉
             for line in body:
+                is_new_bullet = line.startswith("- ")
+                is_cont = line[:1] in (" ", "\t")
+                if skip_block:
+                    if is_cont:
+                        continue  # 已删块的续行随块消失
+                    skip_block = False
+                if pending is not None:
+                    if is_cont:
+                        pending.append(line)  # 多行条目的 证据/建议 续行随块
+                        continue
+                    cur["bullets"].append(pending)  # 非续行 → 块落盘
+                    pending = None
                 m = _TODO_SECTION_RE.match(line)
                 if m:
                     cur = {"title": m.group(1), "bullets": []}
@@ -566,15 +625,18 @@ class SelfReviewScheduler:
                 if cur is None:
                     head.append(line)  # 日期节标题下的游离内容（备注等）保留
                     continue
-                if line.startswith("- "):
+                if is_new_bullet:
                     item = line[2:].strip()
                     eid = match_key.get((date, cur["title"], item))
                     if eid and eid not in matched_ids:
                         matched_ids.add(eid)
-                        continue  # 命中快照 → 删除该行
-                    cur["bullets"].append(item)
+                        skip_block = True  # 命中快照 → 整块移除
+                        continue
+                    pending = [line]
                     continue
                 tail.append(line)
+            if pending is not None and cur is not None:
+                cur["bullets"].append(pending)
             kept = [s for s in sections if s["bullets"]]
             if not kept and not any(l.strip() for l in head + tail):
                 continue  # 小节全空且无游离内容 → 日期节整体剔除
@@ -582,7 +644,8 @@ class SelfReviewScheduler:
             out.extend(head)
             for s in kept:
                 out.append(f"### {s['title']}")
-                out.extend(f"- {b}" for b in s["bullets"])
+                for blk in s["bullets"]:
+                    out.extend(blk)  # 保留块逐字回写（含续行）
                 out.append("")
             out.extend(tail)
             new_blocks.append((date, out))
@@ -619,12 +682,36 @@ class SelfReviewScheduler:
 
     # ── todo.md 结构化追加（spec「todo.md 结构化追加」） ────────
 
+    @staticmethod
+    def _render_entry_lines(item) -> List[str]:
+        """单条目 → 渲染行列表（2026-09-05 用户确认的三行格式）。
+
+        dict 条目（结构化契约 {impact, evidence, suggestion}）渲染为
+        「- 影响：…／  证据：…／  建议：…」多行 bullet 块，空字段跳行；
+        str 条目（历史 agent 输出）按旧行内格式单行透传。空渲染返回 []。
+        """
+        if isinstance(item, dict):
+            lines: List[str] = []
+            impact = str(item.get("impact") or "").strip()
+            evidence = str(item.get("evidence") or "").strip()
+            suggestion = str(item.get("suggestion") or "").strip()
+            if impact:
+                lines.append(f"- 影响：{impact}")
+            if evidence:
+                lines.append(f"  证据：{evidence}")
+            if suggestion:
+                lines.append(f"  建议：{suggestion}")
+            return lines
+        item_str = str(item).strip()
+        return [f"- {item_str}"] if item_str else []
+
     def _append_todo(self, date_str: str, result) -> Path:
         """把自省结果按固定结构追加到 .fenix/todo.md（首次写入创建文件）。
 
-        结构：``## YYYY-MM-DD`` 分节 + 「浪费」「失误」「可改进」三个小节，
-        每条含证据与建议（Agent 已在条目文本中嵌入）。历史分节不变（追加
-        在尾部）。返回 todo.md 路径。
+        结构：``## YYYY-MM-DD`` 分节 + 「浪费」「失误」「可改进」三个小节。
+        结构化条目每条渲染为三行块（影响/证据/建议分行，2 空格缩进续行）；
+        字符串条目单行透传（历史格式兼容）。历史分节不变（追加在尾部）。
+        返回 todo.md 路径。
         """
         todo = self.project_root / ".fenix" / "todo.md"
         sections: List[str] = []
@@ -636,9 +723,7 @@ class SelfReviewScheduler:
             sections.append(f"### {title}")
             if items:
                 for item in items:
-                    item_str = str(item).strip()
-                    if item_str:
-                        sections.append(f"- {item_str}")
+                    sections.extend(self._render_entry_lines(item))
             if len(sections) == 0 or sections[-1] == f"### {title}":
                 sections.append("- （当日无）")
             sections.append("")

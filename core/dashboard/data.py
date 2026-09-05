@@ -1297,6 +1297,9 @@ def parse_run_result_scenarios(project_root, spec_name) -> list:
 
     合成报告（verify_report.py 兜底）场景下 report.json 可能不存在，而逐场景明细
     只存在于 .fenix-run-result.json（verify-progress 优先，项目根回退且需 spec 匹配）。
+    full 模式 tester 结果场景在顶层 ``scenarios``；fast-track 结果（fast_track_result.py
+    schema）嵌套在 ``verification.scenarios``——顶层缺失时回退读嵌套键，否则
+    fast-track spec 的 Dashboard「场景结果」页签恒空（数据在专属副本里并不缺）。
     返回场景 dict 列表（已归一化截图字段），不可得返回 []。
     """
     candidates = [
@@ -1316,6 +1319,10 @@ def parse_run_result_scenarios(project_root, spec_name) -> list:
         if idx == 1 and isinstance(data.get("spec"), str) and data["spec"] and data["spec"] != spec_name:
             continue
         scenarios = data.get("scenarios")
+        if not isinstance(scenarios, list) or not scenarios:
+            # fast-track 格式回退：场景嵌套在 verification.scenarios
+            ver = data.get("verification")
+            scenarios = ver.get("scenarios") if isinstance(ver, dict) else None
         if not isinstance(scenarios, list) or not scenarios:
             continue
         out = []

@@ -18,7 +18,7 @@ import SelfReviewPanel from './components/SelfReviewPanel';
 const { Text } = Typography;
 
 const BASE_MENU_ITEMS = [
-  { key: 'llm', label: 'LLM Provider' },
+  { key: 'llm', label: '模型' },
   { key: 'agents', label: '模型分配' },
   { key: 'prompts', label: '提示词' },
   { key: 'parallel', label: '并发度' },

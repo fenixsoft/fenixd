@@ -434,3 +434,71 @@ class TestDashboardDescriptionConfig(unittest.TestCase):
         # 验证 description 字段存在且正确
         self.assertIn("description", result)
         self.assertEqual(result["description"], "测试项目简介")
+
+
+class TestRunResultScenariosFastTrack(unittest.TestCase):
+    """fast-track 结果文件场景明细读取（场景结果页签对 fast-track spec 恒空的根因）。
+
+    fast-track 的 .fenix-run-result.json（fast_track_result.py schema）把逐场景
+    结果嵌套在 ``verification.scenarios``；full 模式 tester 结果是顶层
+    ``scenarios``。读取端 parse_run_result_scenarios 原先只认顶层键，导致所有
+    fast-track spec 的 Dashboard「场景结果」页签空白（数据在专属副本里并不缺）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.spec = "fix-demo-fast-track"
+        vp = Path(self.tmpdir) / ".fenix" / "verify-progress" / self.spec
+        vp.mkdir(parents=True)
+        self.vp_result = vp / ".fenix-run-result.json"
+        self.sc = {"scenario_id": "s1", "description": "场景一",
+                   "status": "pass", "assertion_results": []}
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _fast_track_payload(self):
+        return {
+            "status": "success", "spec": self.spec, "mode": "fast-track",
+            "summary": "done",
+            "verification": {"scenarios": [dict(self.sc)], "verdict": "verified",
+                             "bugs": []},
+        }
+
+    def test_fast_track_nested_verification_scenarios_read(self):
+        from core.dashboard.data import parse_run_result_scenarios
+        self.vp_result.write_text(json.dumps(self._fast_track_payload()),
+                                  encoding="utf-8")
+        out = parse_run_result_scenarios(self.tmpdir, self.spec)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["scenario_id"], "s1")
+
+    def test_full_mode_top_level_scenarios_still_win(self):
+        from core.dashboard.data import parse_run_result_scenarios
+        data = self._fast_track_payload()
+        data["scenarios"] = [{"scenario_id": "top", "description": "顶层",
+                              "status": "pass"}]
+        self.vp_result.write_text(json.dumps(data), encoding="utf-8")
+        out = parse_run_result_scenarios(self.tmpdir, self.spec)
+        self.assertEqual(out[0]["scenario_id"], "top")
+
+    def test_main_tree_fallback_with_spec_match(self):
+        from core.dashboard.data import parse_run_result_scenarios
+        root = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
+        root.write_text(json.dumps(self._fast_track_payload()),
+                        encoding="utf-8")
+        out = parse_run_result_scenarios(self.tmpdir, self.spec)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["scenario_id"], "s1")
+
+    def test_main_tree_other_spec_still_ignored(self):
+        from core.dashboard.data import parse_run_result_scenarios
+        data = self._fast_track_payload()
+        data["spec"] = "another-spec"
+        root = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
+        root.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(parse_run_result_scenarios(self.tmpdir, self.spec), [])
+
+    def test_empty_everywhere_returns_empty(self):
+        from core.dashboard.data import parse_run_result_scenarios
+        self.assertEqual(parse_run_result_scenarios(self.tmpdir, self.spec), [])

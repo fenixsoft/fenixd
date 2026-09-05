@@ -2,7 +2,7 @@
 
 覆盖 spec 全部 Scenario：
 - 通用提示词文件为唯一真相：文件加载与占位符替换、文件缺失 fail-fast、动态段语义保持；
-- 项目级附加提示词：附加生效、缺席零注入、自引用防护；
+- 项目级附加提示词：附加生效、缺席零注入、通用层重合布局防护；
 - 死知识清理：死关键词断言；
 - Dashboard 端点：读写与 agent-type 白名单校验。
 """
@@ -298,58 +298,62 @@ class TestDeadKeywords:
         assert "点击遍历被测应用的每个主要界面" in verifier
 
 
-# ── 自引用防护 ───────────────────────────────────────────────────────
+# ── 项目通道与通用层隔离 ─────────────────────────────────────────────
 
 
-class TestSelfReferenceGuard:
-    """Scenario: 自引用项目禁用项目级附加（任务 2.3 / design D4）。"""
+class TestProjectAgentsDirResolution:
+    """Scenario: fenixd 自身按普通项目处理；仅废弃软链布局（.fenix/agents
+    解析为通用层目录）读取零注入、写入拒绝。
 
-    def _extra_setup(self, proot: Path) -> None:
-        extra = proot / ".fenix" / "agents"
-        extra.mkdir(parents=True, exist_ok=True)
-        (extra / "verifier.md").write_text("- 自引用不应注入此行\n", encoding="utf-8")
+    2026-09-05 用户决策：不对 fenixd 特殊处理——其项目级提示词即
+    <root>/.fenix/agents/（真实目录，与通用层 agents/ 互不相干），照常
+    可编辑、派发时注入。原「自引用项目禁用编辑」（add-agent-prompt-files
+    D4）语义退役，仅保留路径解析级防护（project_agents_dir）。
+    """
 
-    def test_project_root_equals_framework_root_skipped(self, tmp_path, monkeypatch):
-        """项目根解析与框架根相同（fenixd 自身项目）→ 项目级读取跳过。"""
+    def test_self_project_extra_injected(self, tmp_path, monkeypatch):
+        """项目根即框架根（fenixd 自身）→ 项目级附加照常注入（代码无任何分支）。"""
         proot = tmp_path / "selfproj"
         _mk_spec_dir(proot, "demo")
-        self._extra_setup(proot)
-        monkeypatch.setattr(pb_module, "FRAMEWORK_ROOT", proot)
+        extra = proot / ".fenix" / "agents"
+        extra.mkdir(parents=True)
+        (extra / "verifier.md").write_text("- 自身项目附加生效\n", encoding="utf-8")
+        monkeypatch.setattr(pb_module, "FRAMEWORK_ROOT", proot)  # 语义标注：即框架根
         runner = make_runner(proot)
         prompt = runner._prompt_builder._build_prompt("demo", "verifier")
-        assert "项目附加提示词" not in prompt
-        assert "自引用不应注入此行" not in prompt
+        assert "## 项目附加提示词" in prompt
+        assert "自身项目附加生效" in prompt
 
-    def test_fenix_symlink_to_framework_root_skipped(self, tmp_path, monkeypatch):
-        """.fenix 符号链接解析为框架根（自引用）→ 项目级读取跳过。
+    def test_helper_normal_project_returns_path(self, tmp_path):
+        proot = tmp_path / "proj"
+        agents = proot / ".fenix" / "agents"
+        agents.mkdir(parents=True)
+        assert pb_module.project_agents_dir(proot) == agents
 
-        自引用场景下项目级 .fenix/agents/ 即框架 agents/（写入会覆盖通用
-        文件），附加文件位于框架 agents/ 内以模拟该重合。
-        """
+    def test_symlink_into_universal_layer_zero_injection(self, tmp_path, monkeypatch):
+        """.fenix 软链到框架根（废弃自引用布局）→ 项目通道解析为通用层，
+        读取零注入（通用主体只出现一份，不把通用文件当附加叠加）。"""
         framework = tmp_path / "framework"
         (framework / "agents").mkdir(parents=True)
         (framework / "agents" / "verifier.md").write_text(
-            "- 自引用不应注入此行\n", encoding="utf-8")
+            "通用主体唯一行\n", encoding="utf-8")
         proot = tmp_path / "proj"
         _mk_spec_dir(proot, "demo")
         (proot / ".fenix").symlink_to(framework)
-        monkeypatch.setattr(pb_module, "FRAMEWORK_ROOT", framework)
+        monkeypatch.setattr(pb_module, "AGENT_PROMPT_DIR", framework / "agents")
         runner = make_runner(proot)
         prompt = runner._prompt_builder._build_prompt("demo", "verifier")
+        assert prompt.count("通用主体唯一行") == 1
         assert "项目附加提示词" not in prompt
-        assert "自引用不应注入此行" not in prompt
 
-    def test_normal_project_unaffected(self, tmp_path, monkeypatch):
-        """普通项目（.fenix 为真实目录且≠框架根）附加照常生效。"""
+    def test_helper_universal_collision_returns_none(self, tmp_path, monkeypatch):
         framework = tmp_path / "framework"
-        framework.mkdir()
+        (framework / "agents").mkdir(parents=True)
         proot = tmp_path / "proj"
-        _mk_spec_dir(proot, "demo")
-        self._extra_setup(proot)
-        monkeypatch.setattr(pb_module, "FRAMEWORK_ROOT", framework)
-        runner = make_runner(proot)
-        prompt = runner._prompt_builder._build_prompt("demo", "verifier")
-        assert "自引用不应注入此行" in prompt
+        proot.mkdir()
+        (proot / ".fenix").symlink_to(framework)
+        monkeypatch.setattr(pb_module, "AGENT_PROMPT_DIR", framework / "agents")
+        assert pb_module.project_agents_dir(proot) is None
 
 
 # ── Dashboard「提示词」端点 ──────────────────────────────────────────
@@ -382,12 +386,12 @@ class TestPromptsAPI:
             assert a["content"], f"{a['type']} 通用内容非空"
         assert "project" not in data
 
-    def test_get_project_level_returns_extras_and_flag(self, prompts_server):
+    def test_get_project_level_returns_extras(self, prompts_server):
         proot, srv = prompts_server
         status, data = srv.get("/api/prompts?project=proj-a")
         assert status == 200
         assert data["project"]["name"] == "proj-a"
-        assert data["project"]["self_referencing"] is False
+        assert "self_referencing" not in data["project"]
         assert set(data["project"]["extras"].keys()) == set(AGENT_PROMPT_FILES.keys())
         assert data["project"]["extras"]["verifier"] == ""
 
@@ -442,12 +446,12 @@ class TestPromptsAPI:
             "/api/prompts?project=nope", {"agent_type": "verifier", "content": "x"})
         assert status == 404
 
-    def _register_selfref_project(self, tmp_path, srv, name: str):
-        """注册一个自引用项目（.fenix → 框架根）并击穿 projects TTL 缓存。
+    def _register_universal_layer_project(self, tmp_path, srv, name: str):
+        """注册一个 .fenix → 框架根软链项目（废弃自引用布局）并击穿 projects TTL 缓存。
 
         迁移后 add_project 校验 .fenix/STATE.md——经符号链接解析到真实框架根，
-        存在性依赖开发环境（干净检出会挂）。自引用夹具的意图是 403 防护而非
-        注册校验，故直写 registry 配置绕过校验；显式注册本就不做项目标记检查。
+        存在性依赖开发环境（干净检出会挂）。夹具的意图是通用层重合布局防护
+        而非注册校验，故直写 registry 配置绕过校验；显式注册本就不做项目标记检查。
         """
         selfroot = tmp_path / name
         selfroot.mkdir()
@@ -465,10 +469,10 @@ class TestPromptsAPI:
         srv.httpd._cache_ts = 0.0
         return selfroot
 
-    def test_post_rejects_self_referencing_project(self, prompts_server, tmp_path):
-        """自引用项目（.fenix → 框架根）POST 403，通用文件不被改写。"""
+    def test_post_rejects_universal_layer_collision(self, prompts_server, tmp_path):
+        """项目 .fenix/agents 解析为通用层 agents/（废弃软链布局）→ POST 拒绝，通用文件不被改写。"""
         proot, srv = prompts_server
-        selfroot = self._register_selfref_project(tmp_path, srv, "self-proj")
+        selfroot = self._register_universal_layer_project(tmp_path, srv, "self-proj")
         # 通用层基准内容（确保未被写入破坏）
         generic = AGENT_PROMPT_DIR / AGENT_PROMPT_FILES["verifier"]
         before = generic.read_text(encoding="utf-8")
@@ -479,13 +483,14 @@ class TestPromptsAPI:
         assert status == 403
         assert generic.read_text(encoding="utf-8") == before
 
-    def test_get_self_referencing_project_flags_and_blank_extras(self, prompts_server, tmp_path):
+    def test_get_universal_layer_collision_blank_extras(self, prompts_server, tmp_path):
+        """废弃软链布局 GET：extras 为空串（不把通用层内容当项目附加回显）。"""
         _, srv = prompts_server
-        self._register_selfref_project(tmp_path, srv, "self-proj-2")
+        self._register_universal_layer_project(tmp_path, srv, "self-proj-2")
         status, data = srv.get("/api/prompts?project=self-proj-2")
         assert status == 200
-        assert data["project"]["self_referencing"] is True
-        assert data["project"]["extras"] == {}
+        assert "self_referencing" not in data["project"]
+        assert data["project"]["extras"]["verifier"] == ""
 
 
 if __name__ == "__main__":
