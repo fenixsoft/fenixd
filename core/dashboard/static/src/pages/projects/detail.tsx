@@ -792,6 +792,57 @@ export default function SpecDetailPage() {
             };
           }
 
+          if (item.kind === 'admin') {
+            // 运维事件节点（add-timeline-admin-events）：紧凑卡片——标题行
+            // （时间 + 运维处置/升级告警 Tag + severity 着色 + 状态 Tag）+ 一句话
+            // 摘要（description，ellipsis 单行截断）。不渲染 summary markdown 全文
+            // （完整四段总结仍由运维记录页承载）。
+            const isEscalation = item.record_kind === 'escalation';
+            const sev = String(item.severity || '');
+            // severity 着色复用运维记录页语义：critical 红 / major 橙 / 其余灰
+            const sevColor = sev === 'critical' ? 'red' : sev === 'major' ? 'orange' : 'default';
+            // 状态 Tag：disposition 终态（resolved 等）绿「已解决」、pending 蓝「处置中」；
+            // escalation handled 绿「已处理」、未处理橙
+            const dispResult = String(item.result || '');
+            const dispDone = dispResult !== 'pending';
+            const statusTag = isEscalation
+              ? (item.handled
+                ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已处理</Tag>
+                : <Tag color="orange" style={{ marginInlineEnd: 0 }}>未处理</Tag>)
+              : (dispDone
+                ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已解决</Tag>
+                : <Tag color="blue" style={{ marginInlineEnd: 0 }}>处置中</Tag>);
+            return {
+              color: 'blue',
+              children: (
+                <div style={cardBox(false)}>
+                  <div style={headRow}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {fmtTime(item.time)}
+                    </Typography.Text>
+                    <Tag>{isEscalation ? '升级告警' : '运维处置'}</Tag>
+                    <Tag color={sevColor} style={{ marginInlineEnd: 0 }}>
+                      {SEV_LABEL[sev] || sev || '未知'}
+                    </Tag>
+                    {statusTag}
+                  </div>
+                  <Typography.Text
+                    ellipsis={{ tooltip: String(item.description || '') }}
+                    style={{ display: 'block', fontSize: 13 }}
+                  >
+                    {item.description || ''}
+                  </Typography.Text>
+                </div>
+              ),
+            };
+          }
+
+          // 未知 kind 守卫（add-timeline-admin-events）：state/admin/run 之外不渲染
+          // 卡片体（脏数据降级只留时间轴圆点），不报错崩渲染
+          if (item.kind !== 'run') {
+            return { color: 'gray' };
+          }
+
           // 运行节点
           const st = item.status || '';
           const isErr = st === 'error';
