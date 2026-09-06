@@ -89,9 +89,9 @@
 
 ## 5. planner 指导与提示词中立化
 
-- [ ] 5.1 `agents/planner-plan.md`：kind 选择判定树（页面→web / 端点→api / 命令落盘→cli / 混合拆场景+depends_on）、三套词表摘要（标注权威源=core/verify_engine/scenarios.py VALID 常量）、cli 非零退出不判失败与 api 响应命名捕获特异规则、「HTTP 端点验证用 api 场景」治理指引
-- [ ] 5.2 `agents/verifier.md` / `agents/planner-judge.md` / `agents/fast-track.md`：取证措辞「截图」→「证据（截图/命令输出/HTTP 响应体）」中立化；遵循 prompt 双落点约定（先 merge main + merge-tree 自证零冲突）
-- [ ] 5.3 交互契约非 web 场景空转回归：`collect_display_declarations` 对 run/http_request 步骤不误报、covers 空登记合法
+- [x] 5.1 `agents/planner-plan.md`：kind 选择判定树（页面→web / 端点→api / 命令落盘→cli / 混合拆场景+depends_on）、三套词表摘要（标注权威源=core/verify_engine/scenarios.py VALID 常量）、cli 非零退出不判失败与 api 响应命名捕获特异规则、「HTTP 端点验证用 api 场景」治理指引
+- [x] 5.2 `agents/verifier.md` / `agents/planner-judge.md` / `agents/fast-track.md`：取证措辞「截图」→「证据（截图/命令输出/HTTP 响应体）」中立化；遵循 prompt 双落点约定（先 merge main + merge-tree 自证零冲突）
+- [x] 5.3 交互契约非 web 场景空转回归：`collect_display_declarations` 对 run/http_request 步骤不误报、covers 空登记合法
 
 ## 6. docs/help 文档更新
 
