@@ -17,8 +17,11 @@
   kind: modify
 - path: core/dashboard/static/src/pages/projects/list.tsx
   kind: modify
+# dist 为前端构建产物（.gitignore dist/ 排除、不入 git，由框架重建），声明为
+# reference 仅审计留痕，不参与守卫缺件硬校验——add-spec-hooks dist 守卫自伤
+# 事故同型预防（2026-09-06，modify 声明在 git 对账下任何分支不可满足）。
 - path: core/dashboard/static/dist/index.html
-  kind: modify
+  kind: reference
 - path: tests/test_spec_scheduling.py
   kind: new
 - path: skills/fenix-new/SKILL.md
