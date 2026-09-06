@@ -80,6 +80,29 @@ if 'mode:' not in text:
 - 存量 spec（无 mode 行）daemon 一律按 `full` 处理，零迁移
 - 用户未指定模式时按 1.5 的建议写入；用户显式指定时按用户指定写入
 
+**3.1.2 写入定时拾取时间（add-spec-scheduling-controls）**
+
+用户传入 `--start-after` 参数时（可选，见「规则」节），按以下约定换算为
+ISO8601 UTC 时间戳，注册时经 `add_spec` attrs 写入 STATE.md entry 的
+`start_after` 字段（daemon 在该时间点之后才会拾取该 SPEC）：
+
+- **绝对时间**（如 `--start-after "2026-09-07 09:00"`）：按本地时区 UTC+8 解释。
+  示例本地 09:00 → UTC `2026-09-07T01:00:00+00:00`。换算：
+  ```bash
+  python3 -c "
+  from datetime import datetime, timedelta, timezone
+  local = datetime.strptime('2026-09-07 09:00', '%Y-%m-%d %H:%M').replace(
+      tzinfo=timezone(timedelta(hours=8)))
+  print(local.astimezone(timezone.utc).isoformat())
+  "
+  ```
+- **相对时长**（如 `--start-after +2h` / `--start-after +30m`）：按提交（注册）
+  时刻解释为未来时间点——`+2h` = 当前 UTC 时间 + 2 小时，`+30m` = + 30 分钟。
+- **未指定**：不写 `start_after` 字段（缺省 null，daemon 立即按既有逻辑拾取）。
+
+换算结果在 §4 注册时写入（见下）；`--modify <name>` 更新时若用户调整定时，
+同样同步更新 STATE.md 的 `start_after` 字段。
+
 **3.2 按依赖顺序生成 artifact**
 
 ```bash
@@ -127,9 +150,27 @@ python3 .fenix/bin/fenix_spec.py status --change <name>
 2. 每完成一个 artifact 后重跑 `status`，继续处理下一个 `ready` artifact。
 3. 重复直到所有 artifact 为 `done`（`isComplete` 为 true，`applyRequires` 的 `tasks` 就绪）。
 
+### 3.3 晋升 lint 预检（提案即校验，daemon 同源规则）
+
+全部 artifact `done` 后、**注册（§4）之前** MUST 运行与 daemon 晋升同源的 lint 预检（`sys.path` 指向 `.fenix/` 部署副本，与 daemon 审的是同一份 `core/deliverables.py`）：
+
+```bash
+python3 -c "
+import sys; sys.path.insert(0, '.fenix')
+from core.deliverables import lint_declared, lint_tasks_parseable
+v = lint_declared('spec/changes/<name>', '.') + lint_tasks_parseable('spec/changes/<name>', '.')
+print('\n'.join(v) if v else 'OK')
+sys.exit(1 if v else 0)
+"
+```
+
+- 输出 `OK`（exit 0）→ 进入 §4
+- exit 1 → 按 violation 消息就地修正 `tasks.md`（声明路径 / kind / `## <编号>. 分组` 格式），改完**重跑直到 OK**，禁止带着违规进入注册
+- 为什么不能跳过：注册（add_spec）会立即触发 daemon 晋升，声明 lint 违规会让 spec 卡 `drafted + error`，只能等 30 分钟周期扫描重试（add-spec-hooks / add-spec-scheduling-controls 双卡事故 2026-09-06：gitignore 运行时产物声明为 reference、`~` 用户级路径声明为 reference）
+
 ### 4. 注册到 STATE.md
 
-SPEC 创建完成后，运行：
+SPEC 创建完成后（§3.3 lint 预检必须已通过），运行：
 
 ```bash
 python3 -c "
@@ -141,6 +182,10 @@ sm.add_spec('<spec-name>', {'status': 'drafted', 'priority': 5})
 print(f'SPEC <spec-name> registered')
 "
 ```
+
+用户指定了 `--start-after` 时，把换算好的 ISO8601 UTC 时间戳（见 §3.1.2）作为
+attrs 一并写入：`sm.add_spec('<spec-name>', {'status': 'drafted', 'priority': 5,
+'start_after': '<ISO8601-UTC>'})`。未指定时不写该键（缺省 null，立即进入调度）。
 
 告知用户：**「SPEC `<name>` 已创建并注册。fenixd 会自动拾取并开始实现。」**
 
@@ -161,7 +206,7 @@ git commit -m "[fenix] spec: <spec-name>"
 
 ## SPEC 修改
 
-如果用户传入 `--modify <name>`：读取现有 SPEC → 理解变更 → 更新 artifacts → 重置状态为 drafted。
+如果用户传入 `--modify <name>`：读取现有 SPEC → 理解变更 → 更新 artifacts → 运行 §3.3 lint 预检（必须 OK）→ 重置状态为 drafted。
 
 ## 规则
 
@@ -173,4 +218,9 @@ git commit -m "[fenix] spec: <spec-name>"
   - 用户显式指定（`--fast-track` / `--full`）时 MUST 尊重用户指定，不得以评估结果覆盖
   - 确认后 MUST 把 mode 写入 `.spec.yaml`（见 3.1.1）；存量 spec 缺省 full
   - `--modify <name>` 更新 spec 时，如需变更执行模式，同样同步更新 `.spec.yaml` 的 mode 行
+- **定时拾取（add-spec-scheduling-controls）**：
+  - 用户传入 `--start-after` 时 MUST 换算为 ISO8601 UTC 时间戳，注册时经 `add_spec` attrs 写入 STATE.md entry 的 `start_after` 字段（见 3.1.2 / §4）
+  - 绝对时间按本地时区 UTC+8 解释；`+Nh`/`+Nm` 相对时长按提交（注册）时刻解释
+  - 未指定时 MUST NOT 写 `start_after` 字段（缺省 null，daemon 立即按既有逻辑拾取）
+  - `--modify <name>` 更新时若用户调整定时，同步更新 STATE.md 的 `start_after` 字段
 - **确定能力全集时必须搜索归档目录**：`spec/specs/` 仅存放当前活跃的 specs，历史的 specs 已归档到 `spec/archive/` 中。判断某个能力是新增还是修改时，必须同时搜索 `spec/archive/` 下的所有 `specs/` 子目录，确保不会将已存在的归档能力误判为新能力。
