@@ -61,22 +61,27 @@ class ScenarioEntry:
 
     ``covers``：交互契约元数据（add-interaction-contract-and-per-assert-triage
     D2）——本场景覆盖的可交互元素标识列表；旧集无此字段（缺省空表，不追溯）。
+    ``kind``：场景 kind（web/cli/api，缺省 web）——可选字段，补齐全集用于
+    正确 Runner 执行（multi-kind-report-compat：冻结集补齐/合并携带 kind）。
     """
 
-    __slots__ = ("id", "description", "added_in_round", "covers")
+    __slots__ = ("id", "description", "added_in_round", "covers", "kind")
 
     def __init__(self, id: str, description: str = "", added_in_round: int = 1,
-                 covers: Optional[list] = None):
+                 covers: Optional[list] = None, kind: str = "web"):
         self.id = id
         self.description = description
         self.added_in_round = added_in_round
         self.covers = [str(c) for c in (covers or [])]
+        self.kind = str(kind or "web")
 
     def to_dict(self) -> dict:
         d = {"id": self.id, "description": self.description,
              "added_in_round": self.added_in_round}
         if self.covers:
             d["covers"] = list(self.covers)
+        if self.kind != "web":
+            d["kind"] = self.kind
         return d
 
     @classmethod
@@ -87,6 +92,7 @@ class ScenarioEntry:
             description=d.get("description", ""),
             added_in_round=int(d.get("added_in_round", 1) or 1),
             covers=covers if isinstance(covers, list) else None,
+            kind=d.get("kind", "web"),
         )
 
 
@@ -286,6 +292,15 @@ def _covers_of(scenario: dict) -> list:
     return [str(c) for c in covers if c]
 
 
+def _kind_of(scenario: dict) -> str:
+    """场景对象的 kind（multi-kind-report-compat：冻结条目携带 kind，
+    读侧缺失缺省 web，存量冻结文件零迁移）。"""
+    kind = scenario.get("kind") if isinstance(scenario, dict) else None
+    if kind not in ("web", "cli", "api"):
+        return "web"
+    return str(kind)
+
+
 def _display_declarations_of(planner_scenarios: list) -> list:
     """planner 产出中登记的纯展示声明（D2：declared-display 登记进元数据）。"""
     from core.interaction_contract import collect_display_declarations
@@ -318,7 +333,8 @@ def diff_planner_output(project_root, spec_name: str, state: Optional[dict],
         entries = [
             ScenarioEntry(id=str(s["id"]), description=str(s.get("description", "")),
                           added_in_round=current_round,
-                          covers=_covers_of(s))
+                          covers=_covers_of(s),
+                          kind=_kind_of(s))
             for s in planner_scenarios
             if isinstance(s, dict) and s.get("id")
         ]
@@ -347,11 +363,13 @@ def diff_planner_output(project_root, spec_name: str, state: Optional[dict],
         planner_by_id[sid] = s
 
     # 交互契约元数据（D2）：既有条目的 covers 以 planner 本轮产出为准刷新
-    # （场景重排后映射可能变化），新增条目直接携带。
+    # （场景重排后映射可能变化），新增条目直接携带。kind 同样以本轮产出为准
+    # 刷新（multi-kind-report-compat：补齐/合并携带 kind，正确 Runner 执行）。
     for e in persisted.scenarios:
         s = planner_by_id.get(e.id)
         if s is not None:
             e.covers = _covers_of(s)
+            e.kind = _kind_of(s)
 
     # ── 删减检测：持久化集有、planner 没有 ──
     missing = [e for e in persisted.scenarios if e.id not in planner_ids]
@@ -372,7 +390,8 @@ def diff_planner_output(project_root, spec_name: str, state: Optional[dict],
         s = planner_by_id[sid]
         new_entries.append(ScenarioEntry(
             id=sid, description=str(s.get("description", "")),
-            added_in_round=current_round, covers=_covers_of(s)))
+            added_in_round=current_round, covers=_covers_of(s),
+            kind=_kind_of(s)))
 
     # ── 受控增量约束（design D2）──
     # 修复轮且未声明新增交付：任何新增均属「超发」，必须拦截（spec：修复轮不扩容）。

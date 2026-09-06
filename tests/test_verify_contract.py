@@ -357,3 +357,63 @@ class TestEnsureAppReachableScopes(unittest.TestCase):
         reachable, blocked, note = engine._verification._ensure_app_reachable("spec-a")
         self.assertFalse(reachable)
         self.assertIn("commands.start", note)
+
+
+class TestContractFormReverseInference(unittest.TestCase):
+    """契约形态按场景集 kind 反推（add-verify-multi-kind-runner PR2）：
+    纯 cli 场景集跳过 serve/ready（不回退 commands.start）；含 web/api 必须。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        (self.tmp / ".fenix").mkdir()
+        self.logger = MagicMock()
+
+    def _mk_engine(self, config=None):
+        from test_inplace_bug_repair import _mk_engine
+        engine, _ = _mk_engine(self.tmp, self.logger, config)
+        return engine
+
+    def _scenarios(self, scenarios):
+        p = self.tmp / ".fenix" / "verify-progress" / "spec-a" / "test_scenarios.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(scenarios, ensure_ascii=False), encoding="utf-8")
+        return p
+
+    def test_pure_cli_skips_serve_and_prepare_fails_is_env_gate(self):
+        """纯 cli：serve 全省；契约 prepare 失败仍是环境门。"""
+        _write(self.tmp, ".fenix/verify.yaml",
+               "prepare:\n  - run: \"exit 1\"\nserve:\n  kind: static\n  root: site\n")
+        self._scenarios([{"id": "c1", "kind": "cli",
+                          "steps": [{"action": "run", "command": "true"}],
+                          "assertions": []}])
+        engine = self._mk_engine()
+        reachable, blocked, note = engine._verification._ensure_app_reachable("spec-a")
+        self.assertFalse(reachable)
+        self.assertIn("prepare 失败", note)
+
+    def test_pure_cli_does_not_require_serve(self):
+        """纯 cli + 无契约（无 serve）→ 正常短路，不报 serve 缺失。"""
+        self._scenarios([{"id": "c1", "kind": "cli",
+                          "steps": [{"action": "run", "command": "true"}],
+                          "assertions": []}])
+        engine = self._mk_engine()
+        reachable, blocked, note = engine._verification._ensure_app_reachable("spec-a")
+        self.assertTrue(reachable)
+        self.assertIn("纯 cli", note)
+
+    def test_mixed_api_cli_requires_serve(self):
+        """混合集（api+cli）：serve 必需，缺失时明确错误打回。"""
+        self._scenarios([
+            {"id": "a1", "kind": "api",
+             "steps": [{"action": "http_request", "method": "GET",
+                        "url": "http://stale:1/api"}], "assertions": []},
+            {"id": "c1", "kind": "cli",
+             "steps": [{"action": "run", "command": "true"}], "assertions": []},
+        ])
+        engine = self._mk_engine()
+        engine._get_config = MagicMock(return_value="")
+        reachable, blocked, note = engine._verification._ensure_app_reachable("spec-a")
+        self.assertFalse(reachable)
+        self.assertIn("serve", note)
+        self.assertIn("api", note)

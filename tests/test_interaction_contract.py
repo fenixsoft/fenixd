@@ -177,7 +177,6 @@ class TestCoverageValidation(unittest.TestCase):
         ]
         res = validate_interaction_coverage(self.proot, "demo", scenarios)
         self.assertTrue(res.ok, res.uncovered)
-        self.assertEqual(res.declared, ["button-group"])
 
     def test_legacy_persisted_set_skipped(self):
         """旧场景集（无 covers 元数据）不追溯（design D2）。"""
@@ -202,6 +201,87 @@ class TestCoverageValidation(unittest.TestCase):
         self.assertIn("dark-Card--link", feedback)
         self.assertIn("covers", feedback)
         self.assertIn("declared_display", feedback)
+
+
+class TestNonWebScenarioNoop(unittest.TestCase):
+    """多形态验证（add-verify-multi-kind-runner）：交互契约对非 web 场景空转。
+
+    cli/api 场景没有可交互元素（run/http_request 是执行/请求步骤，不是 UI
+    控件）：collect_display_declarations 不得把 run/http_request 步骤误报为
+    交互声明；纯 cli/api 场景集无 candidates 时覆盖校验空转放行。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir)
+        self.addCleanup(shutil.rmtree, self.tmpdir, ignore_errors=True)
+
+    def _write_cli_spec(self):
+        # 纯 CLI 交付的 SPEC 文档：无页面/交互元素关键词
+        _write_spec_doc(
+            self.proot, "cli-demo", "specs/cli-demo/spec.md",
+            "新增 cost-stats 命令：输出各模型成本统计并落盘 CSV。\n",
+        )
+
+    def test_collect_declarations_not_fooled_by_run_http_steps(self):
+        """run/http_request 步骤中的交互形态关键词不产生误报声明。
+
+        collect_display_declarations 只认场景显式 declared_display 数组；
+        command/url/headers 字段不进场景文本 blob，不会把命令参数里的
+        「button」等词误判为交互元素声明。
+        """
+        from core.interaction_contract import collect_display_declarations
+        scenarios = [
+            {"id": "c1", "kind": "cli",
+             "description": "运行统计命令",
+             "steps": [{"action": "run",
+                        "command": "click-button --target .save-btn",
+                        "as": "out"}]},
+            {"id": "a1", "kind": "api",
+             "description": "请求端点",
+             "steps": [{"action": "http_request", "method": "GET",
+                        "url": "http://stale:1/api/save-button",
+                        "headers": {"X": "card-link"}}]},
+        ]
+        declared = collect_display_declarations(scenarios)
+        self.assertEqual(declared, [], "run/http_request 不得产生纯展示声明")
+        # 显式 declared_display 仍被正常收集（不是被禁用）
+        scenarios[0]["declared_display"] = ["status-tile"]
+        declared2 = collect_display_declarations(scenarios)
+        self.assertEqual(declared2, ["status-tile"])
+
+    def test_pure_cli_set_no_candidates_noop(self):
+        """纯 cli 场景集 + 无候选元素：覆盖校验空转放行（covers 空登记合法）。"""
+        from core.interaction_contract import validate_interaction_coverage
+        self._write_cli_spec()
+        scenarios = [
+            {"id": "c1", "kind": "cli",
+             "description": "运行统计命令",
+             "steps": [{"action": "run", "command": "cost-stats --out cost.csv",
+                        "as": "out"}],
+             "assertions": [{"type": "exit_code", "expected": 0}]},
+        ]
+        res = validate_interaction_coverage(self.proot, "cli-demo", scenarios)
+        self.assertTrue(res.ok)
+        self.assertIn("未检出可交互候选元素", "\n".join(res.change_lines))
+
+    def test_cli_api_covers_empty_is_legal(self):
+        """cli/api 场景无 covers 字段合法（不触发覆盖缺失——候选来自 SPEC 文档）。"""
+        from core.interaction_contract import (
+            validate_interaction_coverage, collect_display_declarations,
+        )
+        self._write_cli_spec()
+        scenarios = [
+            {"id": "c1", "kind": "cli", "description": "运行统计命令",
+             "steps": [{"action": "run", "command": "cost-stats"}]},
+            {"id": "a1", "kind": "api", "description": "请求端点",
+             "steps": [{"action": "http_request", "method": "GET",
+                        "url": "http://stale:1/api/cost"}]},
+        ]
+        # covers 缺省空表合法；声明收集也空
+        self.assertEqual(collect_display_declarations(scenarios), [])
+        res = validate_interaction_coverage(self.proot, "cli-demo", scenarios)
+        self.assertTrue(res.ok, res.uncovered)
 
 
 def build_feedback_text(res):

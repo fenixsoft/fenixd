@@ -356,6 +356,38 @@ class VerificationPipeline:
         if wt:
             self._remove_serving_worktree(wt)
 
+    def _current_instance_base_url(self, spec_name: str) -> str:
+        """本轮被测实例的 base_url（契约统一供给，引擎分发给各 Runner）。
+
+        取代旧「从候选场景 navigate 步骤文本正则考古 base_url」的回退逻辑
+        （该逻辑在场景失联时会漏判）：serve 流程已确定实例地址，直接取。
+
+        优先级：
+          1. ``_contract_static_servers`` 缓存中的 server.base_url
+             （契约 static/command 两型：worktree 作用域键=spec_name、
+             主树 static 共享实例键="main"）；
+          2. 无契约兜底 spawn（commands.start）时查 serving 登记；
+          3. 均无 → 空串（引擎/web runner 落回 navigate 考古，api runner
+             无实例形态探针保守健康）。
+        """
+        cache = self.__dict__.get("_contract_static_servers", {})
+        for key in (spec_name, "main"):
+            entry = cache.get(key)
+            if entry is None:
+                continue
+            srv = entry.get("server") if isinstance(entry, dict) else entry
+            if srv is not None and getattr(srv, "base_url", ""):
+                return srv.base_url
+        # 兜底 spawn（commands.start，无契约）：serving 登记里的端口
+        try:
+            reg = ServingRegistry(self._pm.project_root, self._pm.logger).entries()
+            for e in (reg or []):
+                if isinstance(e, dict) and e.get("spec") == spec_name and e.get("port"):
+                    return f"http://127.0.0.1:{e['port']}"
+        except Exception:
+            pass
+        return ""
+
     def _ensure_app_reachable(self, spec_name: str) -> tuple:
         """验证前确保应用可达：自动启动 commands.start、处理端口冲突。
 
@@ -379,21 +411,46 @@ class VerificationPipeline:
         except Exception:
             return True, False, ""
 
-        # 收集场景 navigate 目标 URL（应用入口）
+        # ── 契约形态按场景集反推（verify-runner-engine D4：serve/ready 必要性
+        # 由场景集 kind 组成决定，零新增字段）──
+        # 纯 cli 场景集：serve/ready 全省（不回退 commands.start——无人消费的
+        # 实例不拉起）；契约 prepare 仍执行（构建/命令可用性是唯一环境门）。
+        # 含 web/api 场景：serve（或 commands.start 兜底）必须有效，缺失时
+        # 下方报明确错误打回 plan。
+        kinds = {str(sc.get("kind", "web")) for sc in data if isinstance(sc, dict)}
+        if kinds and kinds <= {"cli"}:
+            contract = load_verify_contract(self._pm.project_root, self._pm.logger)
+            if contract is not None and contract.prepare:
+                # 纯 cli 无实例形态：不建 serving worktree，prepare 在主树执行
+                err = run_prepare_steps(contract, self._pm.project_root)
+                if err:
+                    return False, False, f"验证契约 prepare 失败: {err}"
+            return True, False, "纯 cli 场景集，跳过 serve/ready（无实例形态）"
+        if not kinds:
+            return True, False, ""
+
+        # 收集场景实例入口 URL（web navigate / api http_request、sse_connect）
         urls: list[str] = []
         for sc in (data if isinstance(data, list) else []):
             if not isinstance(sc, dict):
                 continue
             for step in sc.get("steps", []) or []:
-                if isinstance(step, dict) and step.get("action") == "navigate":
+                if not isinstance(step, dict):
+                    continue
+                action = step.get("action")
+                if action == "navigate":
                     # navigate 目标 URL 存于 value（见 scenarios.TestStep）：191 个场景
                     # 全部用 value 携带链接，target/url 为空。旧代码读 url/target 导致
                     # urls 恒空，_ensure_app_reachable 恒判可达，可达性门禁永不触发。
                     u = str(step.get("value") or step.get("url") or step.get("target") or "")
-                    if u.startswith("http") and u not in urls:
-                        urls.append(u)
-        if not urls:
-            return True, False, ""
+                elif action in ("http_request", "sse_connect"):
+                    # api 场景打同一实例（BASE_URL 铁律扩展：URL origin 全量改写），
+                    # 入口 URL 同样参与可达性探测
+                    u = str(step.get("url") or "")
+                else:
+                    continue
+                if u.startswith("http") and u not in urls:
+                    urls.append(u)
 
         # ── 声明式验证契约（.fenix/verify.yaml，字段语义见 verify_contract.py）──
         # 场景必须打「被测实现 fresh 构建出的可运行形态」。契约存在时：prepare
@@ -443,7 +500,12 @@ class VerificationPipeline:
         start_cmd = start_cmd_override or str(
             self._pm._get_config("commands.start", "") or "").strip()
         if not start_cmd or start_cmd in ("echo 'No start command configured yet'",):
-            return False, False, "应用不可达且未配置验证契约 serve / commands.start（无法自动启动验证目标应用）"
+            kind_label = "、".join(sorted(kinds))
+            return False, False, (
+                f"场景集含 {kind_label} 场景但无 serve 配置"
+                f"（.fenix/verify.yaml serve 段或 config commands.start 兜底）"
+                f"——无法启动被测实例，退回 plan 修复"
+            )
 
         # 端口注入（与 worktree 路径同机制）：cmd 引用 {port} 时分配空闲
         # 端口替换并导出 FENIX_VERIFY_PORT——主树兜底自启同样不撞既有实例
@@ -978,6 +1040,11 @@ class VerificationPipeline:
                 engine = VerifyEngine(
                     spec_name, self._pm.project_root, self._pm.logger, self._pm.config
                 )
+                # 契约统一供给 base_url（design verify-runner-engine base_url 统一供给）：
+                # 取代「从候选场景 navigate 步骤文本正则考古」——serve 流程已知
+                # 实例地址，直接分发各 Runner（web/api URL origin 改写依据、
+                # 环境门探针定位依据）。无实例形态（纯 cli）为空串无害空操作。
+                engine.base_url = self._current_instance_base_url(spec_name)
                 report = asyncio.run(engine.run(scenarios))
                 env_error = report.get("env_error")
 

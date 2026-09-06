@@ -19,7 +19,7 @@ sequenceDiagram
     VE->>VE: prepare（构建）
     VE->>VE: serve（启动被测实例）
     VE->>VE: 注入 BASE_URL
-    VE->>VE: 逐场景执行/截图
+    VE->>VE: 逐场景执行/取证（截图 / 命令输出 / HTTP 响应体）
     VE->>PM: 验证报告
     PM->>JUDGE: 阶段3 门禁判定
     JUDGE->>JUDGE: 应用可达性 + 报告完整性
@@ -57,6 +57,27 @@ ready:
 
 被测实例在哪里构建由 `static_scope` 决定：默认值 `main` 在主树构建并起被测实例；改为 `worktree` 则在专用 serving worktree 内构建服务，与主树完全隔离。
 
+## 多形态验证（web / cli / api）
+
+验证不只有浏览器一种形态。场景按交付物形态选择 `kind`（场景级字段，缺省 `web`），三套 runner 分工：
+
+| kind | 适用交付物 | 场景步骤 | 断言形态 |
+|------|------------|----------|----------|
+| **web** | 页面 / 交互 / 视觉 | `navigate` / `click` / `type` 等 DOM 步骤 | 元素存在性、交互可用性、内容正确性、布局完整性（Playwright） |
+| **cli** | 命令 / 脚本 / 落盘 | `run`（command/cwd/env/stdin/timeout） | `exit_code` / `file_exists` / `output_match` / `file_content` / `json_output` / `dir_contains` |
+| **api** | HTTP 端点 | `http_request` / `sse_connect` | `status_code` / `json_path` / `response_header` / `body_contains` / `json_schema` / `latency_under` / `sse_event_*` |
+
+**kind 选择**：页面/交互交付→`web`；HTTP 端点交付→`api`（**不要再用 web 场景 navigate 到端点 `text_contains` 断 JSON 文本凑合**）；命令/脚本交付→`cli`；混合交付按交付物拆分场景、各自 kind，跨 kind 数据先后用 `depends_on` 串接。单场景内不混排步骤类型；关联词表的权威源是 `core/verify_engine/scenarios.py` 的 per-kind 常量。
+
+**分层语义跨 kind 统一**：第 1/3 层断言失败=一定是 Bug；第 4 层（如 `latency_under`）失败=warning 需结合上下文；CLI/API 无第 2 层（交互可用性是 DOM 概念）。
+
+**CLI/API 特异规则**：
+- cli **非零退出码不判步骤失败**（错误路径测试的正常预期），由 `exit_code` 断言仲裁；`run` 步骤自动注入 `FENIX_VERIFY_BASE_URL` / `FENIX_VERIFY_PORT`（框架值优先）。
+- api 用 `as` 命名响应、断言 `response` 字段引用（缺省最近一次）；`http_request` / `sse_connect` 的 URL origin 由框架全量改写（路径保留）。
+- 证据形态为命令输出 / HTTP 响应体（**无截图属合法形态**），同样 64KB 截断纪律；CLI/API 场景报告的 `screenshots` / `visual_results` 恒为空列表。
+
+**纯 CLI 交付不需要 serve**：契约形态由场景集自动反推——纯 `cli` 场景集跳过 serve/ready（不回退 `commands.start`），含 web/api 场景则 serve（或 `commands.start` 兜底）必须有效，缺失时验收报错打回 plan。
+
 ## 场景冻结与跨轮复用
 
 验证场景（`test_scenarios.json`）由 planner **只设计一次**，验收通过即冻结，写入 `.fenix/verify-progress/<spec>/test_scenarios.json`。**此后无论重入验证多少次（打回重验、修复轮、重试），都直接复用冻结场景，绝不重新出题**——planner 单轮设计成本在小时级/千万 token 级，只应支付一次；更重要的是「同一把尺子量到底」：修复是否有效，衡量的始终是同一组标准。
@@ -81,7 +102,7 @@ ready:
 
 ## 验证报告与修复循环
 
-验证产物集中在 `.fenix/verify-progress/<spec>/` 下。report.json 记录总体情况（summary：总场景数/通过/失败/警告/错误数）与逐场景明细（scenarios：每个场景的判定、失败信息、截图）；verification-report.md 则以 Markdown 形式汇总缺陷根因。
+验证产物集中在 `.fenix/verify-progress/<spec>/` 下。report.json 记录总体情况（summary：总场景数/通过/失败/警告/错误数）与逐场景明细（scenarios：每个场景的 kind/判定/失败信息/证据——web 为截图，CLI/API 为命令输出与 HTTP 响应体）；verification-report.md 则以 Markdown 形式汇总缺陷根因。
 
 验证失败后 SPEC 进入 `bug-found`，派生 fix 分支修复再重新验证。修复循环有三轮熔断：同一缺陷连续 3 轮验证失败即自动 blocked 转人工，防止在修不好的缺陷上无限烧钱。
 
@@ -101,7 +122,7 @@ ready:
 
 - **Dashboard**：SPEC 详情页的「验证报告」页签
 - **CLI**：`/fenix-process <spec-name>` → 验证报告
-- **文件**：`.fenix/verify-progress/<spec>/report.json`、`verification-report.md`、`screenshots/`（含失败截图）
+- **文件**：`.fenix/verify-progress/<spec>/report.json`、`verification-report.md`、`screenshots/`（web 失败截图；CLI/API 证据在报告断言明细）
 
 ## 相关文档
 

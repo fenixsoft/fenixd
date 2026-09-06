@@ -38,6 +38,15 @@
 #
 # 【铁律】验证场景的 URL 由框架注入改写（BASE_URL），场景编写者与 planner
 # 不需要（也不应该）硬编码实例地址。
+#
+# 【契约形态按场景集反推】（verify-runner-engine，零新增字段）
+# serve/ready 是否必需由本轮场景集的 kind 组成反推：
+#   - 纯 cli 场景集：serve/ready 全省（不回退 commands.start，无实例可跑
+#     CLI 场景）；prepare 失败仍是唯一环境门
+#   - 含 web 或 api 场景：serve 段（或 commands.start 兜底）必须有效，
+#     缺失时验收报错打回 plan
+#   - 混合场景集：serve 照常启动，cli 场景额外获得实例环境变量注入
+#     （FENIX_VERIFY_BASE_URL / FENIX_VERIFY_PORT，框架值优先）
 # =============================================================================
 
 # ── 构建步骤示例（构建型应用取消注释并按项目修改；纯源码运行型整段省略）──

@@ -13,12 +13,12 @@
 2. 写 {progress_path}: `{"total": N, "done": 0, "current": "场景设计"}`。
 
 ## PHASE 3 — 执行场景（真实环境）
-1. 在 worktree 内启动应用（npm run dev 等）。使用 playwright-cli——仅靠代码分析 = 失败。
-2. 逐个执行场景；每完成一个，递增 {progress_path} 中的 done，并截图存证。
+1. 在 worktree 内启动被测实例（web/api 场景需 serve；纯 CLI 场景可直接执行命令）。Web 使用 playwright-cli——仅靠代码分析 = 失败。
+2. 逐个执行场景；每完成一个，递增 {progress_path} 中的 done，并留存证据（web 截图；CLI/API 场景为命令输出 / HTTP 响应体；CLI/API 无截图属合法形态，不得因无截图判证据不足）。
 3. 禁止读取图片文件——断言一律依据 DOM snapshot 文本。
 
 ## PHASE 4 — 裁决与写结果
-1. 对每个未通过场景分类：product-bug | test-defect | flaky | env，并附结构化证据（failed_assertions / screenshots / first_failed_step）。
+1. 对每个未通过场景分类：product-bug | test-defect | flaky | env，并附结构化证据（failed_assertions / screenshots / first_failed_step；CLI/API 场景证据可为命令输出 / HTTP 响应体，screenshots 允许为空）。
 2. 裁决：无遗留 product-bug → verified；否则 bug-found。
 3. 将统一结果文件写至 worktree 根目录 `.fenix-run-result.json`：
   ``` json
@@ -83,6 +83,7 @@
 
 支持的断言类型: `element_visible, element_count, element_not_exist, element_focused, element_enabled, no_click_interception, no_overlap, in_viewport, z_index_order, text_match, text_contains, attribute_match, no_console_error, no_network_error, no_auth_error, dom_structure, no_overflow, alignment`
 支持的操作类型: `navigate, click, type, clear, select, scroll, wait, dialog, seed, mock_api`
+（多形态验证：场景可在顶层声明 `"kind": "cli" | "api"`，使用对应词表——见 `agents/planner-plan.md`「多形态验证」一节；词表权威源为 `core/verify_engine/scenarios.py` 常量）
 **铁律：禁止 mock 本 SPEC 交付物包含的 API 端点**（mock_api 仅限辅助/壳层接口，如 /api/overview）——被测端点必须打真实实例，mock 掉被测对象＝后端契约零覆盖（假阴性放大器）。
 
 IMPORTANT: 禁止读取图片文件。禁止修改 .fenix/STATE.md。

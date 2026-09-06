@@ -344,6 +344,8 @@ export interface SpecDetail {
     scenario_id: string;
     description?: string;
     status: 'pass' | 'warning' | 'fail' | 'error';
+    // 场景 kind（web/cli/api；multi-kind-report-compat，缺省 web）
+    kind?: string;
     step_results?: Array<{
       success: boolean;
       action?: string;
@@ -358,10 +360,11 @@ export interface SpecDetail {
       message?: string;
       detail?: string;
       error?: string;
-      actual?: string | number;
-      // 引擎按类型输出的字段（core/verify_engine/assertions.py 口径），见 detail.tsx assertionDetail
+      actual?: string | number | object;
+      // 引擎按类型输出的字段（web: core/verify_engine/assertions.py；
+      // cli/api: cli_assertions.py / api_assertions.py 口径），见 detail.tsx assertionDetail
       selector?: string;
-      expected?: string | number;
+      expected?: string | number | object;
       text?: string;
       attribute?: string;
       mode?: string;
@@ -376,6 +379,18 @@ export interface SpecDetail {
       z_index_self?: number;
       z_index_compare?: number;
       operator?: string;
+      // cli
+      path?: string;
+      exists?: boolean;
+      glob?: string;
+      count?: number;
+      stream?: string;
+      negate?: boolean;
+      actual_snippet?: string;
+      // api
+      header?: string;
+      hit_count?: number;
+      min?: number;
     }>;
     screenshots?: string[];
   }>;

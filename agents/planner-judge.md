@@ -59,6 +59,8 @@
   - `failed_assertions`：从场景 assertion_results 中摘取未通过断言（type/selector/expected/actual）；
   - `screenshots`：证据截图路径列表（取自场景 screenshots）；
   - `first_failed_step`：首个失败步骤的中文描述。三者至少提供其一，且 `failed_assertions` 与 `screenshots` 优先从既有数据摘取。
+  - **证据形态中立（add-verify-multi-kind-runner）**：CLI/API 场景的取证证据为**命令输出 / HTTP 响应体**（无截图属合法形态），可从
+    assertion_results 的 actual / error / actual_snippet 摘取，或直接在 evidence 中引用响应体/命令输出片段。MUST NOT 因无截图判证据不足。
 
 - assertion_triage 逐断言归因（强制，add-interaction-contract-and-per-assert-triage）
   ```json

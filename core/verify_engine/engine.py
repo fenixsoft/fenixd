@@ -1,10 +1,13 @@
 """
-engine.py — 验证引擎主控
+engine.py — 验证引擎主控（Runner 插件化调度，design D1）
 
-职责：
-  - 接收测试场景列表，驱动浏览器并行执行
-  - 对所有场景运行DOM断言和视觉对比
-  - 汇总生成结构化验证报告
+职责（纯调度，不含 per-kind 执行分支）：
+  - 接收测试场景列表，规范化并按 kind 查注册表分派
+  - 验收门收集：逐场景委托 Runner.validate（失败不启任何 Runner、不执行）
+  - 按场景集实际出现的 kind **lazy setup/teardown**（纯 CLI/API 轮次不启浏览器）
+  - 拓扑排序 + 信号量并行执行（每场景委托 Runner.execute）
+  - 环境健全性门骨架：候选识别 → 整轮一次探针（探针本体委托 Runner）→ 批量降级
+  - 场景状态判定 / 进度写盘 / 报告构建与保存
 
 并行策略（默认）：
   - 拓扑排序：按 depends_on 声明分层层级
@@ -14,33 +17,42 @@ engine.py — 验证引擎主控
 
 import asyncio
 import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from .browser import BrowserManager
-from .assertions import AssertionRunner
-from .visual_diff import VisualDiffer
-from .scenarios import TestScenario
+from .runner import (
+    VerifyRunner,
+    RUNNER_REGISTRY,
+    get_runner_class,
+    determine_scenario_status,
+    _NullLogger,
+)
+from .scenarios import TestScenario, VALID_KINDS
 from .env_gate import (
     finalize_scenario_status,
     is_env_candidate,
+    is_connection_error_candidate,
     probe_http_health,
-    probe_push_health,
 )
+# 导入 Runner 模块触发注册（web→WebRunner / api→ApiRunner / cli→CliRunner）；
+# 引擎只按注册表分派，新增 kind 仅需在此追加导入。
+from .web_runner import WebRunner, locate_app_base_url  # noqa: F401,E402
+from .api_runner import ApiRunner  # noqa: F401,E402
+from .cli_runner import CliRunner  # noqa: F401,E402
 
 
 class VerifyEngine:
-    """验证引擎主控。
+    """验证引擎主控（纯调度）。
 
     流程：
     1. 加载测试场景（从JSON或直接传入）
-    2. 启动浏览器（单例）
-    3. 拓扑排序 → 并行执行场景
-    4. 每个场景：执行步骤 → DOM断言 → 视觉对比
-    5. 汇总报告
-    6. 停止浏览器
+    2. 验收门（逐场景委托 Runner.validate）
+    3. 按场景集实际 kind lazy setup（只 setup 出现过的 Runner）
+    4. 拓扑排序 → 并行执行场景（每场景委托对应 Runner.execute）
+    5. 环境健全性门（探针委托 Runner.probe_env）
+    6. 汇总报告
+    7. teardown 全部已 setup 的 Runner
     """
 
     def __init__(
@@ -53,14 +65,46 @@ class VerifyEngine:
         self.spec_name = spec_name
         self.project_root = project_root
         self.logger = logger or _NullLogger()
-        self.browser = BrowserManager(project_root=project_root, logger=self.logger)
-        self.asserter = AssertionRunner()
-        self.differ = VisualDiffer(spec_name, project_root)
+        self.config = config or {}
+        self._runners: dict[str, VerifyRunner] = {}
+        self._env_probe = None
+        # 契约统一供给的实例 base_url（design D4/D2.3：验证开始时确定，
+        # 传给各 Runner，取代 navigate 文本正则考古）。无实例形态为空串。
+        self.base_url = ""
 
         # 并行度配置
         verify_cfg = (config or {}).get("verify_engine", {})
         self.max_parallel = verify_cfg.get("max_parallel", 5)
         self.headless = verify_cfg.get("headless", True)
+
+        # 兼容旧访问点：web Runner 的浏览器管理器（未创建 web Runner 时为
+        # None；测试/回退路径可直连注入假浏览器）。
+        self.browser = None
+
+    # ── Runner 分派 ───────────────────────────────────────────
+
+    def _runner_for(self, kind: str) -> VerifyRunner:
+        """按 kind 查注册表惰性创建 Runner（memoize）。
+
+        调度器唯一的分派点：无 per-kind if/else 执行分支。
+        """
+        if kind not in self._runners:
+            cls = get_runner_class(kind)
+            if cls is None:
+                raise ValueError(
+                    f"场景 kind '{kind}' 未注册 Runner，"
+                    f"支持: {', '.join(sorted(RUNNER_REGISTRY))}"
+                )
+            runner = cls(self.spec_name, self.project_root, self.logger,
+                         self.config)
+            if self.base_url:
+                runner.base_url = self.base_url
+            self._runners[kind] = runner
+            if kind == "web":
+                self.browser = runner.browser  # 兼容旧访问点
+        return self._runners[kind]
+
+    # ── 主入口 ────────────────────────────────────────────────
 
     async def run(self, scenarios: list) -> dict:
         """主入口。
@@ -92,18 +136,22 @@ class VerifyEngine:
                 )
 
         # ── 场景验收门（2026-08-28：相对 navigate 导致白屏整轮假失败）──
-        # 验收失败不启动浏览器、不执行任何场景，返回带 env_error 的空报告，
-        # 由 pm_engine 退回 plan 阶段重新生成（上限与反馈机制在调用方）。
+        # 验收失败不启动任何 Runner、不执行任何场景，返回带 env_error 的
+        # 空报告，由 pm_engine 退回 plan 阶段重新生成（上限与反馈机制在调用方）。
         acceptance_errors: list[str] = []
         for s in normalized:
-            acceptance_errors.extend(s.validate())
-        if not self.browser.is_extension_project:
-            for s in normalized:
-                if not any(st.action == "navigate" for st in s.steps):
-                    acceptance_errors.append(
-                        f"场景'{s.id}'缺少 navigate 步骤"
-                        f"（web 场景必须以绝对 URL 打开被测页面）"
-                    )
+            if s.kind not in VALID_KINDS:
+                acceptance_errors.extend(s.validate())
+                continue
+            if get_runner_class(s.kind) is None:
+                # kind 合法但 Runner 未注册（如 cli/api 尚未实现）：属验收
+                # 错误打回 plan，而非运行时崩溃。
+                acceptance_errors.append(
+                    f"场景'{s.id}' kind '{s.kind}' 未注册 Runner，"
+                    f"支持: {', '.join(sorted(RUNNER_REGISTRY))}"
+                )
+                continue
+            acceptance_errors.extend(self._runner_for(s.kind).validate(s))
         if acceptance_errors:
             head = "; ".join(acceptance_errors[:5])
             more = f" 等 {len(acceptance_errors)} 项" if len(acceptance_errors) > 5 else ""
@@ -121,7 +169,21 @@ class VerifyEngine:
             f"{len(normalized)} 个场景, 并行度={self.max_parallel}",
         )
 
-        await self.browser.start(headless=self.headless)
+        # ── lazy setup：仅对场景集中实际出现的 kind 执行 ──
+        kinds = {s.kind for s in normalized}
+        for kind in kinds:
+            runner = self._runner_for(kind)
+            try:
+                await runner.setup()
+            except Exception as e:
+                # Runner setup 失败（如 ApiRunner 依赖缺失）＝验证环境错误，
+                # 不判 bug-found（design D2：lazy setup 与资源纪律）。
+                msg = f"验证环境错误: {kind} Runner 初始化失败: {e}"
+                self.logger.error("verify_engine", msg)
+                report = self._build_report([])
+                report["env_error"] = msg
+                self._save_report(report)
+                return report
 
         try:
             results = await self._execute_parallel(normalized)
@@ -131,7 +193,12 @@ class VerifyEngine:
             # 全部候选场景共享同一探针结论：失联 → 降级 blocked-env。
             await self._post_classify_environment(normalized, results)
         finally:
-            await self.browser.stop()
+            for kind in kinds:
+                try:
+                    await self._runners[kind].teardown()
+                except Exception as e:
+                    self.logger.warning("verify_engine",
+                                        f"Runner '{kind}' teardown 异常: {e}")
 
         report = self._build_report(results)
         self._save_report(report)
@@ -148,39 +215,10 @@ class VerifyEngine:
     # ── 并行执行引擎 ───────────────────────────────────────────
 
     async def _execute_parallel(self, scenarios: list[TestScenario]) -> list[dict]:
-        """按依赖关系分层，同层场景通过信号量控制的并发池并行执行。"""
-        # ── 场景执行前健康检查 ──
-        # 健康检查仅对扩展项目做硬阻断：扩展项目的场景依赖 navigate_to_app
-        # 自动注入应用页面，若加载失败则所有场景必然失败。
-        # 非扩展项目（如自带 HTTP 服务的 Web 应用）由场景自身的 navigate
-        # 步骤负责加载页面，健康检查不做前置阻断。
-        if self.browser.is_extension_project:
-            health_ok = await self._perform_health_check()
-            if not health_ok:
-                self.logger.error(
-                    "verify_engine",
-                    "扩展应用页面加载失败，无法执行场景验证",
-                )
-                return [
-                    {
-                        "scenario_id": s.id,
-                        "description": s.description,
-                        "status": "error",
-                        "error": "应用页面加载失败：.fenix-dashboard 元素不存在，"
-                                 "请确认 dist/ 构建产物完整",
-                        "step_results": [],
-                        "assertion_results": [],
-                        "visual_results": [],
-                        "screenshots": [],
-                    }
-                    for s in scenarios
-                ]
-        else:
-            self.logger.info(
-                "verify_engine",
-                "非扩展项目，跳过前置健康检查（场景自行导航）",
-            )
+        """按依赖关系分层，同层场景通过信号量控制的并发池并行执行。
 
+        每个场景按 kind 分派给对应 Runner.execute（调度器零 kind 分支）。
+        """
         semaphore = asyncio.Semaphore(self.max_parallel)
         results: list[dict] = []
         completed_ids: set[str] = set()
@@ -206,21 +244,8 @@ class VerifyEngine:
 
             async def run_one(scenario: TestScenario) -> dict:
                 async with semaphore:
-                    context = await self.browser.new_context()
-                    page = await context.new_page()
-                    # 扩展项目：确保页面已加载应用内容（不依赖场景的 navigate 步骤）
-                    # 非扩展项目由场景自身的 navigate 步骤负责
-                    if self.browser.is_extension_project:
-                        nav_ok = await self.browser.navigate_to_app(page)
-                        if not nav_ok:
-                            self.logger.warning(
-                                "verify_engine",
-                                f"场景'{scenario.id}': navigate_to_app 失败，页面可能为空白",
-                            )
-                    try:
-                        return await self._execute_scenario(scenario, page, context)
-                    finally:
-                        await context.close()
+                    runner = self._runner_for(scenario.kind)
+                    return await runner.execute(scenario)
 
             batch_results = await asyncio.gather(
                 *[run_one(s) for s in ready],
@@ -248,167 +273,7 @@ class VerifyEngine:
 
         return results
 
-    async def _perform_health_check(self) -> bool:
-        """场景执行前健康检查：验证应用页面是否能成功加载。
-
-        创建独立的 context/page，导航到应用并等待 .fenix-dashboard 出现。
-        若预检失败，所有场景都会因同一原因失败，无需逐个执行。
-
-        Returns:
-            True 表示应用页面加载成功（.fenix-dashboard 在 DOM 中可见）
-        """
-        try:
-            context = await self.browser.new_context()
-            page = await context.new_page()
-            try:
-                nav_ok = await self.browser.navigate_to_app(page)
-                if not nav_ok:
-                    # 增强诊断：记录页面 URL 和 HTML 长度
-                    try:
-                        current_url = page.url
-                        html_len = await page.evaluate(
-                            "() => document.documentElement.outerHTML.length"
-                        )
-                    except Exception:
-                        current_url = "unknown"
-                        html_len = "unknown"
-                    self.logger.warning(
-                        "verify_engine",
-                        f"健康检查失败: navigate_to_app 返回 False "
-                        f"(当前URL={current_url}, HTML长度={html_len})",
-                    )
-                    return False
-
-                # 等待应用根容器出现（Playwright auto-wait，最多 10 秒）
-                try:
-                    await page.wait_for_selector(
-                        ".fenix-dashboard",
-                        state="visible",
-                        timeout=10000,
-                    )
-                    self.logger.info("verify_engine", "健康检查通过: .fenix-dashboard 已出现")
-                    return True
-                except Exception:
-                    # 增强诊断：记录页面 URL 和 #root 内容
-                    try:
-                        current_url = page.url
-                        root_html = await page.evaluate(
-                            "() => document.getElementById('root')?.innerHTML?.substring(0, 200) || '(empty)'"
-                        )
-                    except Exception:
-                        current_url = "unknown"
-                        root_html = "unknown"
-                    self.logger.warning(
-                        "verify_engine",
-                        f"健康检查失败: .fenix-dashboard 在 10 秒内未出现 "
-                        f"(当前URL={current_url}, #root内容={root_html})",
-                    )
-                    return False
-            finally:
-                await context.close()
-        except Exception as e:
-            self.logger.warning(
-                "verify_engine",
-                f"健康检查异常: {type(e).__name__}: {e}",
-            )
-            return False
-
-    async def _execute_scenario(
-        self, scenario: TestScenario, page, context
-    ) -> dict:
-        """执行单个测试场景的所有步骤和断言。"""
-        self.logger.debug("verify_engine", f"  执行场景: {scenario.id}")
-
-        step_results: list[dict] = []
-        screenshots: list[str] = []
-        screenshot_dir = (
-            self.project_root / ".fenix" / "verify-progress"
-            / self.spec_name / "screenshots"
-        )
-
-        # ── 执行操作步骤 ──
-        steps_failed = False
-        for i, step in enumerate(scenario.steps):
-            step_dict = step.to_dict()
-
-            result = await self.browser.execute_action(page, step_dict)
-            step_results.append(result)
-
-            # 操作失败即停止后续步骤，且跳过断言执行（断言「根本没进行」）。
-            # 此时不截图：截图只在断言真正执行且失败时发生（见下方），
-            # 避免环境未正确加载时对同一错误页面产生重复取证。
-            if not result.get("success"):
-                steps_failed = True
-                break
-
-            # 标记为关键步骤的成功操作：按场景声明截图
-            if step_dict.get("screenshot", False):
-                try:
-                    ss = await self.browser.screenshot(
-                        page, f"{scenario.id}_step{i}", screenshot_dir
-                    )
-                    screenshots.append(ss)
-                except Exception:
-                    pass
-
-        # ── 运行断言（步骤失败 → 断言未进行，跳过）──
-        assertion_defs = [a.to_dict() for a in scenario.assertions]
-
-        # 注入运行时数据（console/network错误 + 场景级外部 API 网络豁免标记）
-        for a_def in assertion_defs:
-            if a_def.get("type") == "no_console_error":
-                a_def["_console_errors"] = self.browser.get_console_errors(context)
-                a_def["_external_net_errors_ok"] = scenario.external_net_errors_ok
-            if a_def.get("type") == "no_network_error":
-                a_def["_network_errors"] = self.browser.get_network_errors(context)
-
-        assertion_results: list[dict] = []
-        if not steps_failed:
-            assertion_results = await self.asserter.run(page, assertion_defs)
-
-            # 断言真正执行且至少一个失败 → 截图取证（真实产品缺陷）。
-            # 断言全部通过则不截图。步骤失败已在上方 break，不进入此分支。
-            if any(not a.get("pass", True) for a in assertion_results):
-                try:
-                    ss = await self.browser.screenshot(
-                        page, f"{scenario.id}_assert_fail", screenshot_dir
-                    )
-                    screenshots.append(ss)
-                except Exception:
-                    pass
-
-        # ── 视觉对比 ──
-        visual_results: list[dict] = []
-        if scenario.visual_baseline:
-            try:
-                visual_results = await self.differ.compare(
-                    page, scenario.visual_baseline, scenario.id
-                )
-            except Exception as e:
-                visual_results = [{
-                    "baseline": scenario.visual_baseline,
-                    "status": "error",
-                    "ssim": None,
-                    "pass": False,
-                    "error": str(e),
-                }]
-
-        # ── 判定场景状态 ──
-        status = self._determine_scenario_status(
-            step_results, assertion_results, visual_results
-        )
-
-        return {
-            "scenario_id": scenario.id,
-            "description": scenario.description,
-            "status": status,
-            "step_results": step_results,
-            "assertion_results": assertion_results,
-            "visual_results": visual_results,
-            "screenshots": screenshots,
-        }
-
-    # ── 状态判定 ───────────────────────────────────────────────
+    # ── 状态判定（跨 kind 共用，design D3）──────────────────────
 
     def _determine_scenario_status(
         self,
@@ -416,43 +281,9 @@ class VerifyEngine:
         assertion_results: list[dict],
         visual_results: list[dict],
     ) -> str:
-        """判定场景整体状态。
-
-        - 任何步骤失败 → "fail"
-        - 任何第1-3层断言失败 → "fail"
-        - 仅第4层断言失败 → "warning"
-        - 视觉差异超阈值 → "warning"
-        - 全部通过 → "pass"
-        """
-        # 步骤失败
-        if any(not s.get("success", True) for s in step_results):
-            return "fail"
-
-        # 断言判定
-        has_layer_1_3_fail = False
-        has_layer_4_fail = False
-        for a in assertion_results:
-            if a.get("pass", True):
-                continue
-            layer = a.get("layer", 0)
-            if 1 <= layer <= 3:
-                has_layer_1_3_fail = True
-            elif layer == 4:
-                has_layer_4_fail = True
-
-        if has_layer_1_3_fail:
-            return "fail"
-
-        # 视觉差异
-        if any(v.get("status") == "diff_detected" for v in visual_results):
-            return "warning"
-        if any(v.get("status") == "warning" for v in visual_results):
-            return "warning"
-
-        if has_layer_4_fail:
-            return "warning"
-
-        return "pass"
+        """判定场景整体状态（兼容访问点，委托 runner.determine_scenario_status）。"""
+        return determine_scenario_status(
+            step_results, assertion_results, visual_results)
 
     # ── 环境健全性门（design D1/D2）───────────────────────────
 
@@ -469,7 +300,8 @@ class VerifyEngine:
         Returns:
             {"probe_healthy": bool, "blocked_env": int, "probe_detail": str}
         """
-        candidates = [r for r in results if is_env_candidate(r)]
+        candidates = [r for r in results
+                      if is_env_candidate(r) or is_connection_error_candidate(r)]
         if not candidates:
             self._env_probe = {"healthy": True, "detail": "无候选场景，跳过探针"}
             return {"probe_healthy": True, "blocked_env": 0, "probe_detail": self._env_probe["detail"]}
@@ -498,24 +330,45 @@ class VerifyEngine:
                 "probe_detail": probe.get("detail", "")}
 
     async def _run_environment_probe(self, candidates: list[dict]) -> dict:
-        """环境健全性探针：连通 + 推流检查。
+        """环境健全性探针：探针本体委托 Runner.probe_env（整轮一次）。
 
-        1) HTTP 连通性 + 数据端点（dashboard /api/state 等价端点）探测；
-        2) 扩展项目额外做真实页面推流检查（DOM 数据域是否渲染）。
-        探针本身无法完成（无入口/异常）时保守判健康，避免误降级真缺陷。
+        按候选场景的 kind 归属选择探针 Runner（web 优先，保持既有行为）；
+        无 Runner 可探时（测试直连注入浏览器等回退路径）落回
+        _fallback_environment_probe。
         """
-        base = self.browser.base_url
+        kinds = []
+        for c in candidates:
+            k = c.get("kind", "web")
+            if k not in kinds:
+                kinds.append(k)
+        kinds.sort(key=lambda k: 0 if k == "web" else 1)
+        runners = getattr(self, "_runners", {})
+        for kind in kinds:
+            runner = runners.get(kind)
+            if runner is None:
+                continue
+            sub = [c for c in candidates if c.get("kind", "web") == kind]
+            return await runner.probe_env(sub)
+        return await self._fallback_environment_probe(candidates)
+
+    async def _fallback_environment_probe(self, candidates: list[dict]) -> dict:
+        """回退探针（无 Runner 可探：测试直连注入浏览器等路径）。
+
+        与 WebRunner.probe_env 同语义（HTTP 连通 + 推流检查），供引擎在
+        无 web Runner 的兼容形态下保持既有行为。
+        """
+        base = getattr(self.browser, "base_url", "") if self.browser else ""
         detail = ""
         healthy = True
         if not base and self.project_root:
-            base = self._locate_app_base_url(candidates)
+            base = locate_app_base_url(candidates)
         if base:
             healthy = probe_http_health(base, timeout=2.0)
             detail = f"HTTP 探测 {base}: {'连通' if healthy else '失联'}"
-        # 推流检查（扩展项目 / 浏览器可用时）
-        if healthy and self.browser.is_extension_project:
+        if healthy and self.browser and getattr(self.browser, "is_extension_project", False):
             try:
-                push_ok = await self._probe_push_in_browser()
+                from .web_runner import _probe_web_push
+                push_ok = await _probe_web_push(self.browser)
                 healthy = healthy and push_ok
                 detail += f"；推流{'正常' if push_ok else '中断'}"
             except Exception as e:
@@ -523,48 +376,8 @@ class VerifyEngine:
         return {"healthy": healthy, "detail": detail.strip("；")}
 
     def _locate_app_base_url(self, candidates: list[dict]) -> str:
-        """从候选场景的 navigate 步骤定位被测应用入口（回退路径）。"""
-        for r in candidates:
-            for step in r.get("step_results") or []:
-                if not isinstance(step, dict) or step.get("action") != "navigate":
-                    continue
-                # navigate 失败（如 ERR_CONNECTION_REFUSED）时 URL 在 error 而非
-                # detail —— 只扫 detail 会漏掉失联场景，探针保守判健康，
-                # 整轮伪失败无法降级 blocked-env（add-v3-spec-detail-page 教训）。
-                detail = f"{step.get('detail') or ''} {step.get('error') or ''}"
-                m = re.search(r"(https?://[^\s'\");]+)", detail)
-                if m:
-                    url = m.group(1).rstrip("/")
-                    # 截断到 origin（路径部分留给 /api 端点探测）
-                    from urllib.parse import urlsplit
-                    parts = urlsplit(url)
-                    if parts.scheme and parts.netloc:
-                        return f"{parts.scheme}://{parts.netloc}"
-        return ""
-
-    async def _probe_push_in_browser(self) -> bool:
-        """在真实浏览器中验证数据推流：加载应用并等待数据域渲染。
-
-        mock 斩断 SSE 时数据节点永不渲染 → 等待超时 → 判定推流中断。
-        复用 browser.navigate_to_app + wait_selector，与场景执行同一浏览器实例。
-        """
-        context = await self.browser.new_context()
-        page = await context.new_page()
-        try:
-            nav_ok = await self.browser.navigate_to_app(page)
-            if not nav_ok:
-                return False
-            try:
-                await page.wait_for_selector(
-                    ".fenix-dashboard [data-live], .fenix-dashboard [data-state], "
-                    "#root [data-live]",
-                    timeout=3000,
-                )
-                return True
-            except Exception:
-                return False
-        finally:
-            await context.close()
+        """从候选场景的 navigate 步骤定位被测应用入口（兼容访问点）。"""
+        return locate_app_base_url(candidates)
 
     # ── 报告生成 ───────────────────────────────────────────────
 
@@ -631,12 +444,3 @@ class VerifyEngine:
             "verify_engine",
             f"📊 报告已保存: {report_path}",
         )
-
-
-class _NullLogger:
-    """空日志器，当未提供logger时的默认实现。"""
-
-    def info(self, *args, **kwargs): pass
-    def debug(self, *args, **kwargs): pass
-    def warning(self, *args, **kwargs): pass
-    def error(self, *args, **kwargs): pass
