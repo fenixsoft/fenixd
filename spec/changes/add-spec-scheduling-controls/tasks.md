@@ -63,3 +63,9 @@
 - [x] 6.2 覆盖定时解冻：到期自动解冻恢复原状态并清 frozen_until、幂等竞争、daemon 重启后扫描兜底、设置过去时间立即解冻、时间轴含「定时解冻」来源标记
 - [x] 6.3 回归覆盖冻结双轨：StateMachine.freeze_spec 冻结 → dashboard unfreeze → status 正确恢复（半死态消除）；dashboard freeze → daemon 感知停止调度
 - [x] 6.4 全量测试跑通（tests/ 无新增失败），API 层用 test_dashboard_api.py 同款夹具方式覆盖两个新路由
+
+## 验证修复（第 1 轮失败）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-spec-scheduling-controls/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
