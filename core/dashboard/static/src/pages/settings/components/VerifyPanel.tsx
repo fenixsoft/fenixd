@@ -70,7 +70,7 @@ export default function VerifyPanel({ config, onSave }: VerifyPanelProps) {
                     <Text type="secondary">
                       在专用 serving worktree 内构建并启动服务，与主树运行实例
                       完全隔离（验证流量不影响主实例）。每次 HEAD 变化自动重建
-                      worktree 与产物，node_modules 按「依赖供给模式」自动装入。
+                      worktree 与产物。
                     </Text>
                   </div>
                 </Radio>
@@ -85,7 +85,7 @@ export default function VerifyPanel({ config, onSave }: VerifyPanelProps) {
               </>
             }
             rules={[{ required: true, message: '请选择依赖供给模式' }]}
-            extra="实现/验证 worktree 缺 node_modules 时的装入方式（实现 worktree 创建与验证构建共用）"
+            extra="设置 worktree 中 node_modules 的引用方式，仅使用 node.js 的项目需要设置此选项"
           >
             <Radio.Group>
               <div style={{ display: 'block', marginBottom: 16 }}>

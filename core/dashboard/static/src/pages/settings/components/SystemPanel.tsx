@@ -1,12 +1,15 @@
 import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
 import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
+import SelfReviewPanel from './SelfReviewPanel';
 
 const { Text } = Typography;
 
 interface SystemPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
+  /** 项目名；透传给自省面板（todo.md 编辑区仅项目级作用域显示） */
+  project?: string;
 }
 
 const ADMIN_ANNOTATIONS: {
@@ -62,7 +65,7 @@ const ADMIN_ANNOTATIONS: {
   },
 ];
 
-export default function SystemPanel({ config, onSave }: SystemPanelProps) {
+export default function SystemPanel({ config, onSave, project }: SystemPanelProps) {
   const [form] = Form.useForm();
 
   const admin = config.admin ?? {};
@@ -99,7 +102,7 @@ export default function SystemPanel({ config, onSave }: SystemPanelProps) {
     <div data-testid="system-panel">
       <h3>系统</h3>
       <Text type="secondary">
-        admin.* 系统级行为（自愈监视器、重启排水等）的设置界面。保存后约 30 秒经配置热更新生效。
+        系统级行为（自愈监视器、重启排水等）的设置界面。保存后约 30 秒经配置热更新生效。
       </Text>
       <Card style={{ marginTop: 12 }}>
         <Form form={form} layout="vertical">
@@ -144,6 +147,11 @@ export default function SystemPanel({ config, onSave }: SystemPanelProps) {
         <Button type="primary" onClick={handleSave} data-testid="system-save-btn">
           保存
         </Button>
+      </div>
+      {/* 自省设置并入系统页签（原独立「自省」页签已移除），衔接在系统设置之后；
+          两面板各自独立 Form 与保存按钮（字段名有重叠，不可合并为单 Form） */}
+      <div style={{ marginTop: 32 }}>
+        <SelfReviewPanel config={config} onSave={onSave} project={project} />
       </div>
     </div>
   );

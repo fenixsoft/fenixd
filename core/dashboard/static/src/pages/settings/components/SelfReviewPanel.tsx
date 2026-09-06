@@ -99,8 +99,7 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
       <h3>自省</h3>
       <Text type="secondary">
         Fenix Daemon 每晚在指定时间由 Administrator Agent 自动执行当日工作回顾（浪费 /
-        失误 / 可改进），结果追加写入项目根 todo.md 并自动提交。enabled=false
-        时全链路零动作。
+        失误 / 可改进），结果追加写入项目根 todo.md 并自动提交。
       </Text>
       <Card style={{ marginTop: 12 }}>
         <Form form={form} initialValues={initial} layout="vertical">
@@ -140,6 +139,11 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
             开启时把项目根 todo.md 全文注入自省 prompt，供 Agent 识别历史条目、
             避免重复并标注已闭环项。缺省关闭。
           </Text>
+          <div style={{ textAlign: 'right', marginTop: 24 }}>
+            <Button type="primary" onClick={handleSave} data-testid="self-review-save-btn">
+              保存
+            </Button>
+          </div>
         </Form>
       </Card>
 
