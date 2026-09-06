@@ -188,13 +188,21 @@ class TestHasNonTerminalChildFix(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════
 
 class TestGuardOneResetSuppression(unittest.TestCase):
-    """守卫一：fix spec 有非终态子 fix 时抑制 reset，保持 bug-found。"""
+    """守卫一：fix spec 有非终态子 fix 时抑制 reset，保持 bug-found。
+
+    add-bug-repair-mode-config：守卫一在 derive 模式（admin.bug_repair_mode=derive）
+    下生效；inplace（缺省）下 fix-* 名字 SPEC 同样原地打回、不派生。
+    """
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.project_root = Path(self.tmpdir)
         self.logger = MagicMock()
-        self.engine, self.sm = _mk_engine(self.project_root, self.logger)
+        self.engine, self.sm = _mk_engine(
+            self.project_root, self.logger,
+            config={"admin": {"bug_repair_mode": "derive"}},
+        )
+        self.engine._enqueue = MagicMock()
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -229,7 +237,10 @@ class TestGuardOneResetSuppression(unittest.TestCase):
         self.assertEqual(self.sm.read_one("fix-x")["status"], "bug-found")
 
     def test_no_suppression_when_not_fix_spec(self):
-        """非 fix spec 不触发守卫一（add-inplace-bug-repair：走原地打回）。"""
+        """非 fix spec 不触发守卫一（inplace 缺省：走原地打回）。"""
+        # 独立引擎：缺省配置（未配置 bug_repair_mode=inplace），非 fix 父走原地打回
+        self.engine, self.sm = _mk_engine(self.project_root, self.logger)
+        self.engine._enqueue = MagicMock()
         self.sm.add_spec("my-spec", {"status": "bug-found"})
         # 没有 fix-my-spec 存在；非 fix 父 SPEC 走原地打回而非派生
         self.engine._family._do_spec_bug_found("my-spec")
@@ -494,15 +505,21 @@ class TestZeroBehaviorDiffFallback(unittest.TestCase):
         self.assertEqual(int(parent.get("_verify_fail_rounds", 0)), 1)
 
     def test_fix_spec_no_child_unaffected(self):
-        """fix spec 无子时重置行为不变。"""
-        self.sm.add_spec("fix-x", {"status": "bug-found"})
-        self.engine._family._do_spec_bug_found("fix-x")
+        """fix spec 无子时重置行为不变（derive 模式下派生闭环生效）。"""
+        # 独立引擎：显式 derive，fix-* 名字 SPEC 无子 → 递归派生 fix-fix-x
+        engine, sm = _mk_engine(
+            self.project_root, self.logger,
+            config={"admin": {"bug_repair_mode": "derive"}},
+        )
+        engine._enqueue = MagicMock()
+        sm.add_spec("fix-x", {"status": "bug-found"})
+        engine._family._do_spec_bug_found("fix-x")
         # 无子 → 守卫一不生效；_resolve_fix_spec_name 递归生成 fix-fix-x 作为新承载方
-        new_child = self.sm.read_one("fix-fix-x")
+        new_child = sm.read_one("fix-fix-x")
         self.assertIsNotNone(new_child)
         self.assertEqual(new_child["status"], "ready")
         # 父保持 bug-found（reset 抑制守卫只拦重实现，不重置父态）
-        self.assertEqual(self.sm.read_one("fix-x")["status"], "bug-found")
+        self.assertEqual(sm.read_one("fix-x")["status"], "bug-found")
 
     def test_same_root_siblings_empty_for_non_fix(self):
         """非 fix spec 同根兄弟列表为空。"""

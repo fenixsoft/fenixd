@@ -373,11 +373,21 @@ class FamilyGovernor:
     def _do_spec_bug_found(self, spec_name: str):
         """实际执行 bug-found 处理逻辑。
 
-        新裁决路径（inplace-bug-repair）：父 SPEC 原地打回重修，不再派生 fix-* 子 SPEC。
-        存量 fix-* 链保留 legacy 闭环直至自然终态。
+        分流依据（add-bug-repair-mode-config D2）：`admin.bug_repair_mode` 有效值
+        取代 SPEC 名称前缀（`_is_fix_spec` 分流退役）。每次 bug-found 事件实时读取
+        配置（经 get_admin_config 同源路径，不做实例级缓存）——与配置热更新（30s
+        mtime）语义对齐，切换模式后下一次事件即按新值生效。
+        - inplace（含未配置缺省）：对任何 SPEC（含 fix-* 名字）原地打回重修；
+        - derive：派生 fix-* 子 SPEC（守卫一、族谱收敛 governor、_resolve_fix_spec_name
+          逐级命名、done→父重验闭环全部保留生效）。
         """
-        # ── legacy 兼容：存量 fix-* SPEC 保持原有闭环 ──
-        if self._is_fix_spec(spec_name):
+        from core.config import ConfigLoader
+        mode = ConfigLoader.get_admin_config(self._pm.config).get(
+            "bug_repair_mode", "inplace"
+        )
+
+        if mode == "derive":
+            # ── derive 模式：派生 fix-* 子 SPEC（可配置保留的 legacy 派生闭环）──
             # 守卫一（fix-repair-lane-dedup）：fix spec 已有非终态子 fix 时抑制 reset
             carrier = self._has_non_terminal_child_fix(spec_name)
             if carrier:
@@ -390,11 +400,12 @@ class FamilyGovernor:
                     "error": f"修复由子 fix '{carrier}' 承载，抑制重实现重置",
                 })
                 return
-            # fix-* SPEC 走 legacy 派生闭环（子 fix 完成 → 父 SPEC 自动重验）
+            # 派生闭环（守卫一 + 族谱 governor + _resolve_fix_spec_name 在函数内生效）
             self._do_legacy_fix_spec_bug_found(spec_name)
             return
 
-        # ── 新裁决路径：原地打回（inplace-bug-repair D1-D3）──
+        # ── inplace 模式（含未配置缺省）：原地打回（inplace-bug-repair D1-D3）──
+        # 对任何 SPEC 生效，包括名称带 fix- 前缀的 SPEC（名称前缀分流已退役）。
         entry = self._pm.state_machine.read_one(spec_name) or {}
         fail_rounds = 0
         try:

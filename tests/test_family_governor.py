@@ -112,7 +112,8 @@ class FamilyGateFixture:
 
 
 class TestFamilyGateInterception(unittest.TestCase):
-    """task 3.1：_do_spec_bug_found 创建前拦截。"""
+    """task 3.1：_do_spec_bug_found 创建前拦截（derive 模式：名称前缀分流退役后，
+    族谱收敛治理仅于 admin.bug_repair_mode=derive 时生效）。"""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -120,7 +121,10 @@ class TestFamilyGateInterception(unittest.TestCase):
         self.logger = MagicMock()
         # .fenix 目录（信号落盘真实路径）
         (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
-        self.engine, self.sm = _mk_engine(self.project_root, self.logger)
+        self.engine, self.sm = _mk_engine(
+            self.project_root, self.logger,
+            config={"admin": {"bug_repair_mode": "derive"}},
+        )
         self.engine._enqueue = MagicMock()
 
     def tearDown(self):
@@ -211,14 +215,17 @@ class TestFamilyGateInterception(unittest.TestCase):
 
 
 class TestFamilyWaiver(unittest.TestCase):
-    """task 3.2：人工放行「恰好一次」语义。"""
+    """task 3.2：人工放行「恰好一次」语义（derive 模式下族谱治理生效）。"""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.project_root = Path(self.tmpdir)
         self.logger = MagicMock()
         (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
-        self.engine, self.sm = _mk_engine(self.project_root, self.logger)
+        self.engine, self.sm = _mk_engine(
+            self.project_root, self.logger,
+            config={"admin": {"bug_repair_mode": "derive"}},
+        )
         self.engine._enqueue = MagicMock()
 
     def tearDown(self):
@@ -295,6 +302,97 @@ class TestFamilyWaiver(unittest.TestCase):
         self.assertTrue(self.engine._family._consume_family_waiver("fix-fix-fix-x"))
         self.assertFalse(self.engine._family._consume_family_waiver("fix-fix-fix-x"))
         self.assertFalse(self.engine._family._family_waiver_set("fix-fix-fix-x"))
+
+
+# ── add-bug-repair-mode-config：bug-found 修复方式分流（task 2.3） ──────
+# 分流依据由 SPEC 名称前缀（_is_fix_spec）改为 admin.bug_repair_mode 有效值：
+# inplace（缺省）对任何 SPEC（含 fix-* 名字）原地打回；derive 派生子 fix 并闭环重验；
+# 每次 bug-found 事件实时读取配置（不缓存），切换后下一次即生效。
+
+class TestBugRepairModeSplit(unittest.TestCase):
+    """task 2.3：配置驱动的 bug-found 修复方式分流。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        self.logger = MagicMock()
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.engine, self.sm = _mk_engine(self.project_root, self.logger)
+        self.engine._enqueue = MagicMock()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_buggy_spec(self, name):
+        self.sm.add_spec(name, {"priority": 5})
+        for s in ("ready", "implementing", "implemented", "testing", "bug-found"):
+            self.sm.transition(name, s)
+
+    def _write_tasks(self, name):
+        spec_dir = self.project_root / "spec" / "changes" / name
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "tasks.md").write_text("# Tasks\n\n## 1. 实现\n\n- [ ] 1.1 x\n",
+                                           encoding="utf-8")
+
+    def test_fix_named_spec_inplace_by_default(self):
+        """未配置（缺省 inplace）→ fix-* 名字 SPEC 原地打回，不派生 fix-fix-*。"""
+        self._make_buggy_spec("fix-quick-links")
+        self._write_tasks("fix-quick-links")
+        before = set(self.sm.read_all().keys())
+
+        self.engine._family._do_spec_bug_found("fix-quick-links")
+
+        after = self.sm.read_all()
+        self.assertEqual(set(after.keys()), before, "不得派生 fix-fix-* 子 SPEC")
+        entry = after["fix-quick-links"]
+        self.assertEqual(entry["status"], "implementing")
+        self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 1)
+        txt = (self.project_root / "spec" / "changes" / "fix-quick-links" / "tasks.md")\
+            .read_text(encoding="utf-8")
+        self.assertIn("## 验证修复", txt)
+        self.engine._enqueue.assert_called_once_with("fix-quick-links", "implementer")
+
+    def test_derive_for_non_fix_spec_spawns_child_and_closes_loop(self):
+        """显式 derive → 非 fix 名字 SPEC 派生子 fix；子完成后闭环重验父。"""
+        self.engine.config = {"admin": {"bug_repair_mode": "derive"}}
+        self._make_buggy_spec("spec-a")
+        self._write_tasks("spec-a")
+
+        self.engine._family._do_spec_bug_found("spec-a")
+
+        child = self.sm.read_one("fix-spec-a")
+        self.assertIsNotNone(child, "derive 模式应派生子 fix")
+        self.assertEqual(child["status"], "ready")
+        # 父保持 bug-found 等待子 fix 完成闭环
+        self.assertEqual(self.sm.read_one("spec-a")["status"], "bug-found")
+
+        # 子 fix 完成 → 父 SPEC 自动进入重验（_on_spec_done 闭环保留生效）
+        self.sm.update_spec("fix-spec-a", {"status": "done"})
+        self.engine._enqueue.reset_mock()
+        self.engine._on_spec_done("fix-spec-a")
+        self.assertEqual(self.sm.read_one("spec-a")["status"], "implemented")
+        self.engine._enqueue.assert_called_once_with("spec-a", "verifier")
+
+    def test_mode_switch_effective_on_next_event(self):
+        """模式实时生效：derive → 未配置（inplace）切换后下一次按 inplace 分流。"""
+        self.engine.config = {"admin": {"bug_repair_mode": "derive"}}
+        self._make_buggy_spec("spec-b")
+        self._write_tasks("spec-b")
+        self.engine._family._do_spec_bug_found("spec-b")
+        self.assertIsNotNone(self.sm.read_one("fix-spec-b"), "derive 首轮派生子 fix")
+
+        # 热切换：原地替换 config（与 fenixd 30s mtime 热更新同语义）
+        self.engine.config = {}
+        self.sm.update_spec("spec-b", {"status": "bug-found"})
+        self.sm.remove_spec("fix-spec-b")
+        self.engine._enqueue.reset_mock()
+        self.engine._family._do_spec_bug_found("spec-b")
+
+        entry = self.sm.read_one("spec-b")
+        self.assertEqual(entry["status"], "implementing")
+        self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 1)
+        self.assertIsNone(self.sm.read_one("fix-spec-b"), "切换后不再派生")
+        self.engine._enqueue.assert_called_once_with("spec-b", "implementer")
 
 
 # ── AdminMonitor 摄取 family_explosion 信号 ─────────────────
