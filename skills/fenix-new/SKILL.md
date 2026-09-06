@@ -127,9 +127,27 @@ python3 .fenix/bin/fenix_spec.py status --change <name>
 2. 每完成一个 artifact 后重跑 `status`，继续处理下一个 `ready` artifact。
 3. 重复直到所有 artifact 为 `done`（`isComplete` 为 true，`applyRequires` 的 `tasks` 就绪）。
 
+### 3.3 晋升 lint 预检（提案即校验，daemon 同源规则）
+
+全部 artifact `done` 后、**注册（§4）之前** MUST 运行与 daemon 晋升同源的 lint 预检（`sys.path` 指向 `.fenix/` 部署副本，与 daemon 审的是同一份 `core/deliverables.py`）：
+
+```bash
+python3 -c "
+import sys; sys.path.insert(0, '.fenix')
+from core.deliverables import lint_declared, lint_tasks_parseable
+v = lint_declared('spec/changes/<name>', '.') + lint_tasks_parseable('spec/changes/<name>', '.')
+print('\n'.join(v) if v else 'OK')
+sys.exit(1 if v else 0)
+"
+```
+
+- 输出 `OK`（exit 0）→ 进入 §4
+- exit 1 → 按 violation 消息就地修正 `tasks.md`（声明路径 / kind / `## <编号>. 分组` 格式），改完**重跑直到 OK**，禁止带着违规进入注册
+- 为什么不能跳过：注册（add_spec）会立即触发 daemon 晋升，声明 lint 违规会让 spec 卡 `drafted + error`，只能等 30 分钟周期扫描重试（add-spec-hooks / add-spec-scheduling-controls 双卡事故 2026-09-06：gitignore 运行时产物声明为 reference、`~` 用户级路径声明为 reference）
+
 ### 4. 注册到 STATE.md
 
-SPEC 创建完成后，运行：
+SPEC 创建完成后（§3.3 lint 预检必须已通过），运行：
 
 ```bash
 python3 -c "
@@ -161,7 +179,7 @@ git commit -m "[fenix] spec: <spec-name>"
 
 ## SPEC 修改
 
-如果用户传入 `--modify <name>`：读取现有 SPEC → 理解变更 → 更新 artifacts → 重置状态为 drafted。
+如果用户传入 `--modify <name>`：读取现有 SPEC → 理解变更 → 更新 artifacts → 运行 §3.3 lint 预检（必须 OK）→ 重置状态为 drafted。
 
 ## 规则
 
