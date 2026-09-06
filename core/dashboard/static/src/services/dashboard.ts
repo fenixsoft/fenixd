@@ -317,9 +317,10 @@ export interface SpecDetail {
   }>;
   // tasks.md 空解析显式提示（task-track R3）— 存在但未解析出任务分组时非空
   tasks_note?: string | null;
-  // 时间轴 — 状态节点字段为 from/to，运行节点为 agent_type（get_spec_timeline 返回结构）
+  // 时间轴 — 状态节点字段为 from/to，运行节点为 agent_type，admin 运维节点
+  // 为 record_kind/severity/handled/result（get_spec_timeline 返回结构）
   timeline?: Array<{
-    kind: 'state' | 'run';
+    kind: 'state' | 'run' | 'admin';
     time: string;
     from?: string;
     to?: string;
@@ -338,6 +339,13 @@ export interface SpecDetail {
     retry_max?: number;
     // add-model-billing-cost-display：可计价 run 的本地计算成本（$；不可计价不渲染）
     cost_usd?: number;
+    // admin 运维节点（add-timeline-admin-events）：escalation/disposition 事件
+    record_kind?: 'escalation' | 'disposition';
+    signal_type?: string;
+    severity?: string;
+    description?: string;
+    handled?: boolean;
+    result?: string;
   }>;
   // 场景结果 — report.json 的 scenarios 平铺数组（parse_report）
   scenarios?: Array<{
