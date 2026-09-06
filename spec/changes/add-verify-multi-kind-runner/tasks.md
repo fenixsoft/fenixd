@@ -74,10 +74,10 @@
 
 ## 3. PR3：CliRunner 与无 serve 形态
 
-- [ ] 3.1 CLI 词表常量 + 新建 `core/verify_engine/cli_assertions.py`：exit_code / file_exists / output_match / file_content / json_output / dir_contains（分层语义与字段口径按 spec）
-- [ ] 3.2 新建 `core/verify_engine/cli_runner.py`：`run` 步骤（字符串=shell/列表=argv 复用 prepare 解析约定、cwd 相对验证树根、env/stdin/timeout/as）；非零退出码不判步骤失败；超时杀进程组=步骤失败；信号死亡与 FileNotFoundError=error；`FENIX_VERIFY_BASE_URL`/`FENIX_VERIFY_PORT` 自动注入且框架值优先；stdout/stderr 64KB 截断
-- [ ] 3.3 新建 `tests/test_verify_cli_runner.py`：语义矩阵单测（true/false/echo 假命令——非零退出不误判、超时 fail、信号死亡 error、二进制缺失 error、截断、env 注入框架值优先、混合场景集跨 kind depends_on 调度）
-- [ ] 3.4 验收门 per-kind 校验接线：未知 kind/步骤不属于本 kind 词表/必填字段缺失/含 web-api 但无 serve 配置，错误消息带「支持: …」词表速查
+- [x] 3.1 CLI 词表常量 + 新建 `core/verify_engine/cli_assertions.py`：exit_code / file_exists / output_match / file_content / json_output / dir_contains（分层语义与字段口径按 spec）
+- [x] 3.2 新建 `core/verify_engine/cli_runner.py`：`run` 步骤（字符串=shell/列表=argv 复用 prepare 解析约定、cwd 相对验证树根、env/stdin/timeout/as）；非零退出码不判步骤失败；超时杀进程组=步骤失败；信号死亡与 FileNotFoundError=error；`FENIX_VERIFY_BASE_URL`/`FENIX_VERIFY_PORT` 自动注入且框架值优先；stdout/stderr 64KB 截断
+- [x] 3.3 新建 `tests/test_verify_cli_runner.py`：语义矩阵单测（true/false/echo 假命令——非零退出不误判、超时 fail、信号死亡 error、二进制缺失 error、截断、env 注入框架值优先、混合场景集跨 kind depends_on 调度）
+- [x] 3.4 验收门 per-kind 校验接线：未知 kind/步骤不属于本 kind 词表/必填字段缺失/含 web-api 但无 serve 配置，错误消息带「支持: …」词表速查
 
 ## 4. 下游兼容与前端
 

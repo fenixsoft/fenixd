@@ -39,6 +39,7 @@ from .env_gate import (
 # 引擎只按注册表分派，新增 kind 仅需在此追加导入。
 from .web_runner import WebRunner, locate_app_base_url  # noqa: F401,E402
 from .api_runner import ApiRunner  # noqa: F401,E402
+from .cli_runner import CliRunner  # noqa: F401,E402
 
 
 class VerifyEngine:
