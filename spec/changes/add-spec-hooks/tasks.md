@@ -17,8 +17,11 @@
   kind: new
 - path: core/dashboard/static/src/components/HookManager.tsx
   kind: new
+# core/dashboard/static/dist/index.html 为前端构建产物（.gitignore dist/ 排除、
+# 不入 git，由框架重建），声明为 reference 仅审计留痕，不参与守卫缺件硬校验。
+# admin 裁决 2026-09-06：原 modify 声明在任何实现分支不可满足，系守卫自伤（admin_disposition-admin-add-spec-hooks-1788685533）。
 - path: core/dashboard/static/dist/index.html
-  kind: modify
+  kind: reference
 - path: tests/test_hook_engine.py
   kind: new
 - path: tests/test_dashboard_hooks_api.py
