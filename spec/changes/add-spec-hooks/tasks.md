@@ -29,20 +29,20 @@
 
 ## 1. HookEngine 核心模块（core/hook_engine.py）
 
-- [ ] 1.1 新建 `core/hook_engine.py`：hook 配置读取与校验（`hooks.global` 列表 + `hooks.specs.<name>` 列表；events 非空且在十状态枚举内、action 七枚举、webhook 必填 url、shell 必填 command）
-- [ ] 1.2 事件匹配：`(spec, event_type)` → 命中的全局 hooks + 该 spec 的 spec 级 hooks，`enabled=false` 记 skipped（写审计、不告警、不执行）
-- [ ] 1.3 审计写入：`.fenix/hook_audit.jsonl` 带锁追加（字段 ts/spec/event/from_status/to_status/hook_id/action/scope/status/detail≤2KB/duration_ms），导出审计尾部读取纯函数（按 spec 过滤 + limit 倒序）
-- [ ] 1.4 异步执行骨架：每命中 hook 一个 daemon 线程并发执行，单 hook 异常互不影响，不阻塞调用方
-- [ ] 1.5 失败处理：动作失败写 status=failure 审计 + `admin_store.append()` 产生 `hook_failure` 站内告警（severity major，含 spec/事件/动作/错误摘要），不重试
+- [x] 1.1 新建 `core/hook_engine.py`：hook 配置读取与校验（`hooks.global` 列表 + `hooks.specs.<name>` 列表；events 非空且在十状态枚举内、action 七枚举、webhook 必填 url、shell 必填 command）
+- [x] 1.2 事件匹配：`(spec, event_type)` → 命中的全局 hooks + 该 spec 的 spec 级 hooks，`enabled=false` 记 skipped（写审计、不告警、不执行）
+- [x] 1.3 审计写入：`.fenix/hook_audit.jsonl` 带锁追加（字段 ts/spec/event/from_status/to_status/hook_id/action/scope/status/detail≤2KB/duration_ms），导出审计尾部读取纯函数（按 spec 过滤 + limit 倒序）
+- [x] 1.4 异步执行骨架：每命中 hook 一个 daemon 线程并发执行，单 hook 异常互不影响，不阻塞调用方
+- [x] 1.5 失败处理：动作失败写 status=failure 审计 + `admin_store.append()` 产生 `hook_failure` 站内告警（severity major，含 spec/事件/动作/错误摘要），不重试
 
 ## 2. 七种消费动作
 
-- [ ] 2.1 `restart-daemon`：touch `<project_root>/.fenix/restart_request`，创建成功即成功
-- [ ] 2.2 `commit`：`git add -A` + `git commit -m <模板渲染>`（模板变量 {spec}/{event}，缺省 `[fenix] hook: {spec} {event}`，未知变量原样保留）；无变更 → noop 成功；git 失败 → 失败
-- [ ] 2.3 `push` / `commit-push`：`git push`（跟随 upstream）；commit-push 先 commit 后 push，commit noop 时仍 push，push 失败不回滚本地提交
-- [ ] 2.4 `restart-dashboard`：`tmux respawn-window -k -t <target>`（target 缺省 fenix-dashboard，可配）执行固化启动命令，命令含 `env -u CLAUDE_PID` 且保持 8787 端口与原工作目录；重启后探测端口恢复 HTTP 可服务（超时 → 失败告警）
-- [ ] 2.5 `webhook`：POST JSON（event/spec/from_status/to_status/ts/error/frozen/hook_id/action/project 字段，Content-Type: application/json，timeout_seconds 缺省 10），2xx 成功，响应体截断 2KB 记审计
-- [ ] 2.6 `shell`：`bash -c <command>`，cwd=项目根，注入 FENIX_HOOK_EVENT/FENIX_HOOK_SPEC/FENIX_HOOK_FROM_STATUS/FENIX_HOOK_TO_STATUS/FENIX_HOOK_ERROR/FENIX_HOOK_PROJECT_ROOT，timeout_seconds 缺省 60 超时强杀，退出码 0 成功，stdout+stderr 尾部 ≤2KB 入审计
+- [x] 2.1 `restart-daemon`：touch `<project_root>/.fenix/restart_request`，创建成功即成功
+- [x] 2.2 `commit`：`git add -A` + `git commit -m <模板渲染>`（模板变量 {spec}/{event}，缺省 `[fenix] hook: {spec} {event}`，未知变量原样保留）；无变更 → noop 成功；git 失败 → 失败
+- [x] 2.3 `push` / `commit-push`：`git push`（跟随 upstream）；commit-push 先 commit 后 push，commit noop 时仍 push，push 失败不回滚本地提交
+- [x] 2.4 `restart-dashboard`：`tmux respawn-window -k -t <target>`（target 缺省 fenix-dashboard，可配）执行固化启动命令，命令含 `env -u CLAUDE_PID` 且保持 8787 端口与原工作目录；重启后探测端口恢复 HTTP 可服务（超时 → 失败告警）
+- [x] 2.5 `webhook`：POST JSON（event/spec/from_status/to_status/ts/error/frozen/hook_id/action/project 字段，Content-Type: application/json，timeout_seconds 缺省 10），2xx 成功，响应体截断 2KB 记审计
+- [x] 2.6 `shell`：`bash -c <command>`，cwd=项目根，注入 FENIX_HOOK_EVENT/FENIX_HOOK_SPEC/FENIX_HOOK_FROM_STATUS/FENIX_HOOK_TO_STATUS/FENIX_HOOK_ERROR/FENIX_HOOK_PROJECT_ROOT，timeout_seconds 缺省 60 超时强杀，退出码 0 成功，stdout+stderr 尾部 ≤2KB 入审计
 
 ## 3. EventBus 集成与 daemon 装配
 
