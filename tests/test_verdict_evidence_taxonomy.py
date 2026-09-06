@@ -590,5 +590,66 @@ class TestV2ConfigPageFixture(_PMEngineBase):
         self.assertEqual(len(forced), 14)
 
 
+class TestPostReadySettle(unittest.TestCase):
+    """探针通过后静置 POST_READY_SETTLE_SECONDS 再放行开跑场景（白屏纵深三）。"""
+
+    def test_probe_pass_sleeps_then_ok(self):
+        import tempfile
+        from pathlib import Path as _Path
+        from unittest.mock import MagicMock, patch
+        from core.pm_engine import verification as _vmod
+        from core.pm_engine.verification import VerificationPipeline
+        from core.verify_contract import ReadyProbe, VerifyContract
+
+        tmp = _Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        scenarios = tmp / "test_scenarios.json"
+        scenarios.write_text("[]", encoding="utf-8")
+
+        pipeline = VerificationPipeline.__new__(VerificationPipeline)
+        srv = MagicMock()
+        srv.base_url = "http://127.0.0.1:1"
+        contract = VerifyContract(ready=ReadyProbe(url="/", expect=200, timeout=1))
+
+        with patch.object(_vmod, "probe_ready",
+                          return_value=(True, "就绪探针通过")), \
+                patch.object(_vmod.time, "sleep") as sleep_mock:
+            ok, blocked, note = pipeline._finalize_static(
+                srv, contract, scenarios, "主树")
+
+        self.assertTrue(ok)
+        self.assertFalse(blocked)
+        sleep_mock.assert_called_once_with(_vmod.POST_READY_SETTLE_SECONDS)
+        self.assertIn("静置", note)
+
+    def test_probe_fail_returns_without_settle(self):
+        import tempfile
+        from pathlib import Path as _Path
+        from unittest.mock import MagicMock, patch
+        from core.pm_engine import verification as _vmod
+        from core.pm_engine.verification import VerificationPipeline
+        from core.verify_contract import ReadyProbe, VerifyContract
+
+        tmp = _Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        scenarios = tmp / "test_scenarios.json"
+        scenarios.write_text("[]", encoding="utf-8")
+
+        pipeline = VerificationPipeline.__new__(VerificationPipeline)
+        srv = MagicMock()
+        srv.base_url = "http://127.0.0.1:1"
+        contract = VerifyContract(ready=ReadyProbe(url="/", expect=200, timeout=1))
+
+        with patch.object(_vmod, "probe_ready",
+                          return_value=(False, "就绪探针超时")), \
+                patch.object(_vmod.time, "sleep") as sleep_mock:
+            ok, blocked, note = pipeline._finalize_static(
+                srv, contract, scenarios, "主树")
+
+        self.assertFalse(ok)
+        sleep_mock.assert_not_called()
+        self.assertIn("就绪探针超时", note)
+
+
 if __name__ == "__main__":
     unittest.main()

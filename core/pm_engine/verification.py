@@ -29,6 +29,10 @@ from core.verify_contract import (
     StaticVerifyServer,
 )
 
+# 探针通过后的静置秒数（_finalize_static）：吸收冷实例后端收尾/前端首帧的
+# 长尾，再放行开跑场景（add-spec-hooks 白屏 env 事故第三道纵深，2026-09-06）。
+POST_READY_SETTLE_SECONDS = 10
+
 
 class VerificationPipeline:
     """验证流水线组件（门面 PMEngine 的组合组件）。"""
@@ -288,12 +292,25 @@ class VerificationPipeline:
             srv, contract, scenarios_path, "命令 worktree")
 
     def _finalize_static(self, srv, contract, scenarios_path, scope_label) -> tuple:
-        """BASE_URL 注入 + 就绪探针：static 两类 scope 的共同收尾。"""
+        """BASE_URL 注入 + 就绪探针：static 两类 scope 的共同收尾。
+
+        探针通过后静置 ``POST_READY_SETTLE_SECONDS`` 再放行开跑场景：探针
+        语义只保证「探针路径此刻可达」，冷实例的后端收尾/前端首帧渲染仍有
+        长尾（add-spec-hooks 第 1 轮 4 个 web 场景白屏 env 事故——探针通过
+        与场景开跑同一秒）。与 browser 首帧渲染等待、探针鉴别力自检同层，
+        白屏防复发第三道纵深。用户指令 2026-09-06。
+        """
         n = rewrite_scenarios_origin(scenarios_path, srv.base_url)
         ok, probe_note = probe_ready(srv.base_url, contract.ready)
+        if not ok:
+            note = (f"验证契约 static[{scope_label}]: 被测实例 {srv.base_url}"
+                    f"（场景 origin 改写 {n} 处）— {probe_note}")
+            return (False, False, note)
+        time.sleep(POST_READY_SETTLE_SECONDS)
         note = (f"验证契约 static[{scope_label}]: 被测实例 {srv.base_url}"
-                f"（场景 origin 改写 {n} 处）— {probe_note}")
-        return (True, False, note) if ok else (False, False, note)
+                f"（场景 origin 改写 {n} 处，探针通过后静置 "
+                f"{POST_READY_SETTLE_SECONDS}s）— {probe_note}")
+        return (True, False, note)
 
     def _remove_serving_worktree(self, wt_path) -> None:
         subprocess.run(
