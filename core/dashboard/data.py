@@ -275,7 +275,10 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
 
 # ── SPEC 人工冻结/解冻（用户指令冻结；admin_monitor 认 blocked+前缀为有意等待态） ──
 
-FREEZE_ERROR_PREFIX = "用户指令冻结："
+# 冻结前缀与「原状态 X」解析单点（add-spec-scheduling-controls D4）：冻结/解冻
+# 统一走 StateMachine 官方通道（freeze_spec/unfreeze_spec），此处只保留展示用
+# 判定常量，文案契约在 state_machine 定义，避免双轨漂移。
+from core.state_machine import FREEZE_ERROR_PREFIX, parse_orig_status
 
 
 def is_spec_frozen(entry: dict) -> bool:
@@ -289,7 +292,11 @@ def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
     """人工冻结 SPEC：status→blocked，error 以「用户指令冻结：」开头并记录原状态。
 
     - done/pushed 终态不可冻结（冻结终态破坏语义），返回 ok=True + frozen=False
-    - 写回经 StateMachine（带文件锁）；daemon 经 STATE.md watcher 感知后停止调度
+    - 写回委托 StateMachine.freeze_spec（add-spec-scheduling-controls D4 收编）：
+      结构化 frozen: True 标记 + 原状态并入 reason（``用户指令冻结：原状态 X
+      [ · reason]``），daemon 经 STATE.md watcher 感知后停止调度。此前直写
+      update_spec 只写 {status, error} 不写 frozen 标记，与 StateMachine 冻结
+      双轨并行时产生「解冻后 status 被冻结保护剥离」的半死态，本版本消除。
     """
     specs = parse_state(project_root)
     if spec_name not in specs:
@@ -302,15 +309,20 @@ def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
         return {"ok": True, "found": True, "frozen": False,
                 "error": f"终态 spec（{entry.get('status')}）不可冻结"}
     orig = entry.get("status") or "ready"
-    note = f"{FREEZE_ERROR_PREFIX}原状态 {orig}" + (f" · {reason}" if reason else "")
+    note = f"原状态 {orig}" + (f" · {reason}" if reason else "")
     from core.state_machine import StateMachine
     sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
-    sm.update_spec(spec_name, {"status": "blocked", "error": note})
+    sm.freeze_spec(spec_name, reason=note)
     return {"ok": True, "found": True, "frozen": True, "error": None}
 
 
 def unfreeze_spec(project_root, spec_name: str) -> dict:
-    """解冻 SPEC：从冻结 error 中恢复原状态并清空 error；未冻结则为 no-op。"""
+    """解冻 SPEC：从冻结 error 中恢复原状态并清空 error；未冻结则为 no-op。
+
+    委托 StateMachine.unfreeze_spec（D4 收编）：status 传解析出的原状态，
+    恢复为冻结前状态并清 error/frozen_until。此前直写 update_spec 对带
+    frozen 标记的结构化冻结 spec 会被冻结保护剥离 status，残留半死态。
+    """
     specs = parse_state(project_root)
     if spec_name not in specs:
         return {"ok": False, "found": False, "frozen": False,
@@ -318,11 +330,10 @@ def unfreeze_spec(project_root, spec_name: str) -> dict:
     entry = specs[spec_name]
     if not is_spec_frozen(entry):
         return {"ok": True, "found": True, "frozen": False, "error": None}
-    m = re.search(r"原状态\s+(\S+)", entry.get("error") or "")
-    orig = m.group(1) if m else "ready"
+    orig = parse_orig_status(entry.get("error"))
     from core.state_machine import StateMachine
     sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
-    sm.update_spec(spec_name, {"status": orig, "error": None})
+    sm.unfreeze_spec(spec_name, status=orig)
     return {"ok": True, "found": True, "frozen": False, "error": None}
 
 
