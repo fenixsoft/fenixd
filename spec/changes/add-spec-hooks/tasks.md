@@ -25,8 +25,6 @@
   kind: new
 - path: .fenix/config.yaml
   kind: reference
-- path: .fenix/hook_audit.jsonl
-  kind: reference
 ```
 
 ## 1. HookEngine 核心模块（core/hook_engine.py）

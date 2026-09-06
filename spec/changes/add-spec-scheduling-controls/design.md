@@ -49,7 +49,7 @@ dashboard `freeze_spec`/`unfreeze_spec` 改为委托 `StateMachine.freeze_spec`/
 - 提交前 dayjs → UTC ISO 转换；时间解析/换算工具后端单点实现，前端只做本地时区输入与展示
 
 ### D7: fenix-new 流程更新
-`~/.claude/skills/fenix-new/SKILL.md` 增补：`--start-after` 参数约定（绝对时间按本地 UTC+8 解释 / `+Nh`/`+Nm` 相对时长按提交时刻解释）、注册时经 `add_spec` attrs 写入 `start_after`、未指定时不写字段。Deliverables 声明为 `reference`（skill 文件不在本仓库，守卫仅审计）。
+项目源 `skills/fenix-new/SKILL.md` 增补：`--start-after` 参数约定（绝对时间按本地 UTC+8 解释 / `+Nh`/`+Nm` 相对时长按提交时刻解释）、注册时经 `add_spec` attrs 写入 `start_after`、未指定时不写字段。Deliverables 声明为 `modify`（项目源在本仓库，守卫可精确对账）；安装副本 `~/.claude/skills/fenix-new/SKILL.md` 由任务同步保持一致（沿用 add-fast-track-mode 的「项目源 + 同步安装副本」模式）。
 
 ## Risks / Trade-offs
 

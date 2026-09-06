@@ -21,8 +21,8 @@
   kind: modify
 - path: tests/test_spec_scheduling.py
   kind: new
-- path: ~/.claude/skills/fenix-new/SKILL.md
-  kind: reference
+- path: skills/fenix-new/SKILL.md
+  kind: modify
 ```
 
 ## 1. 状态机层共享基础
@@ -52,7 +52,7 @@
 
 ## 5. fenix-new 流程更新
 
-- [ ] 5.1 更新 ~/.claude/skills/fenix-new/SKILL.md：新增 `--start-after` 参数约定（绝对时间按本地 UTC+8 解释、`+Nh`/`+Nm` 相对时长按提交时刻解释），注册时经 add_spec attrs 写入 start_after，未指定不写字段
+- [ ] 5.1 更新项目源 skills/fenix-new/SKILL.md：新增 `--start-after` 参数约定（绝对时间按本地 UTC+8 解释、`+Nh`/`+Nm` 相对时长按提交时刻解释），注册时经 add_spec attrs 写入 start_after，未指定不写字段；同步安装副本 ~/.claude/skills/fenix-new/SKILL.md 保持两份一致（沿用 add-fast-track-mode 6.1/6.2 模式）
 
 ## 6. 测试与回归
 
