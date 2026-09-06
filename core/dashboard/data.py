@@ -3130,7 +3130,7 @@ def overview(registry_projects: list) -> dict:
 # ── 配置读写（受管键：llm / agents.* / gates.approve_mode / runs / verify.*） ──
 
 # Dashboard 管理的配置键子集：写回时只更新这些键，其它键原样保留
-_MANAGED_KEYS = ["llm", "agents", "gates", "runs", "verify"]
+_MANAGED_KEYS = ["llm", "agents", "gates", "runs", "verify", "hooks"]
 # 在 agents 下管理的子键白名单
 _AGENTS_MANAGED_SUBKEYS = ["models", "max_concurrent", "run_timeout_seconds", "max_turns", "daily_run_limit", "token_budget_millions", "impl_run_budget", "verify_redo_budget"]
 
@@ -3153,7 +3153,9 @@ _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 # 验证契约键（verify.*：静态服务范围 / worktree 依赖供给模式）
                 "verify.static_scope", "verify.deps_mode",
                 # add-planner-efficiency：planner 生成节流上限
-                "verify.planner_max_concurrent"]
+                "verify.planner_max_concurrent",
+                # add-spec-hooks：两级 hook 订阅配置（global + specs）
+                "hooks"]
 
 # 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
 # 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
@@ -3215,6 +3217,9 @@ def _managed_key_sources(raw: dict) -> dict:
                    "bug_repair_mode"):
             if _k in admin_raw:
                 sources[f"admin.{_k}"] = "project"
+    # add-spec-hooks：hooks 段显式定义 → project
+    if isinstance(raw.get("hooks"), dict):
+        sources["hooks"] = "project"
     return sources
 
 
@@ -3288,6 +3293,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "self_review": dict(_DEFAULT_SELF_REVIEW),
         # add-settings-system-tab：admin.* 受管键（5 键 + 缺省填充）
         "admin": dict(_ADMIN_DEFAULTS, merge_breaker_threshold=2),
+        # add-spec-hooks：两级 hook 订阅配置（缺省空订阅，零行为）
+        "hooks": {"global": [], "specs": {}},
         "scope": scope,
         "raw_exists": False,
         "sources": _managed_key_sources({}),
@@ -3372,6 +3379,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
         result["self_review"] = _CL.get_self_review_config(raw)
         # add-settings-system-tab：受管 admin 键提取（5 键 + 缺省填充，不透传未知键）
         result["admin"] = _managed_admin_keys(raw)
+    # add-spec-hooks：hooks 段原样透传（读回 UI 编辑视图）
+    hooks_raw = raw.get("hooks")
+    if isinstance(hooks_raw, dict):
+        result["hooks"] = hooks_raw
     return result
 
 
@@ -3428,6 +3439,8 @@ def read_effective_config(project_root) -> dict:
         "self_review": dict(_DEFAULT_SELF_REVIEW),
         # add-settings-system-tab：admin.* 受管键（5 键 + 缺省填充）
         "admin": dict(_ADMIN_DEFAULTS, merge_breaker_threshold=2),
+        # add-spec-hooks：两级 hook 订阅配置（缺省空订阅，零行为）
+        "hooks": {"global": [], "specs": {}},
         "scope": "project",
         "raw_exists": proj_path.exists(),
         "sources": _managed_key_sources({}),
@@ -3505,6 +3518,10 @@ def read_effective_config(project_root) -> dict:
     result["self_review"] = ConfigLoader.get_self_review_config(effective)
     # add-settings-system-tab：受管 admin 键提取（5 键 + 缺省填充，不透传未知键）
     result["admin"] = _managed_admin_keys(effective)
+    # add-spec-hooks：hooks 段有效值透传（读回 UI 编辑视图）
+    hooks_eff = effective.get("hooks")
+    if isinstance(hooks_eff, dict):
+        result["hooks"] = hooks_eff
 
     # 提取 project.description → 顶层 description（非 str 或缺失 → ""）
     project_eff = effective.get("project")
@@ -3623,6 +3640,9 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         if not isinstance(merged.get("project"), dict):
             merged["project"] = {}
         merged["project"]["description"] = patch["description"]
+    # add-spec-hooks：hooks 段整体替换（patch 中存在即替换，不存在则保留原段）
+    if "hooks" in patch:
+        merged["hooks"] = copy.deepcopy(patch["hooks"])
 
     return merged
 
@@ -3752,6 +3772,14 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 return fail(
                     f"admin.bug_repair_mode must be one of ['inplace', 'derive']: {brm!r}"
                 )
+
+    # add-spec-hooks D7：hooks 段前置校验（非法值直接拒绝 400 且不写入——规则：
+    # events 非空且合法、action 合法、webhook 必填 url、shell 必填 command）。
+    if isinstance(config_patch.get("hooks"), dict):
+        from core.hook_engine import validate_hooks_config
+        hooks_err = validate_hooks_config(config_patch)
+        if hooks_err:
+            return fail(f"hooks 配置非法：{hooks_err}")
 
     # 2. 合并受管键
     merged = _deep_merge_managed(raw, config_patch)
@@ -3911,6 +3939,13 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         ):
             if _k in admin_m and admin_m[_k] is not None and not _rule(admin_m[_k]):
                 raise ValueError(f"admin.{_k} 非法：{admin_m[_k]!r}（保存被拒绝，请修正后重试）")
+        # add-spec-hooks D7：merged 视图 hooks 校验（兜底防绕过前置校验的直连调用；
+        # 校验规则同前置，但作用于合并后视图，含项目级手工写入的非受管 hooks 段）
+        from core.hook_engine import validate_hooks_config as _validate_hooks
+        if isinstance(merged.get("hooks"), dict):
+            _err = _validate_hooks(merged)
+            if _err:
+                raise ValueError(f"hooks 配置非法：{_err}")
     except ValueError as e:
         return fail(str(e))
 
