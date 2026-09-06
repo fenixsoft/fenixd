@@ -42,6 +42,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 from typing import Iterable, List
 
@@ -567,6 +568,35 @@ def match_basename_in_tree(project_root, path: str) -> List[str]:
     return hits
 
 
+def _path_is_gitignored(project_root, candidates: List[str]) -> bool:
+    """任一 candidate 被 .gitignore 排除返回 True（规则 5 判定核心）。
+
+    用 ``git check-ignore -q`` 而非自写 gitignore 解析：嵌套 .gitignore 与
+    否定规则（``.fenix/*`` + ``!.fenix/verify.yaml``）语义复杂，check-ignore
+    原生正确。returncode 0=被排除；1=未排除；其余（非仓库等 git 错误）与
+    subprocess 异常一律 fail-open 视为未排除（不因环境缺 git 阻塞晋升）。
+
+    Args:
+        project_root: 项目根（check-ignore 的 cwd，须为 git 仓库内）。
+        candidates: 待判定路径（字面 + 归一化）。
+
+    Returns:
+        任一路径被排除返回 True；未被排除或判定不可用返回 False。
+    """
+    for cand in candidates:
+        try:
+            r = subprocess.run(
+                ["git", "-c", "core.fsmonitor=", "check-ignore", "-q", "--", cand],
+                cwd=str(project_root), capture_output=True, timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if r.returncode == 0:
+            return True
+        # >=2 = git 自身错误（非仓库等）：fail-open 视为未排除，继续下一候选
+    return False
+
+
 def lint_declared(spec_dir, project_root) -> List[str]:
     """晋升 lint（drafted → ready）：Deliverables 声明形态机械校验。
 
@@ -589,6 +619,12 @@ def lint_declared(spec_dir, project_root) -> List[str]:
        目标路径；零命中或多命中放行（fail-open 取向，交由派发处方与守卫终审
        层兜底——语义矛盾（多 basename 命中/basename 内笔误/语境等价）原理上
        需要 LLM 裁决，lint 只拦确定性唯一命中）。
+    5. ``kind: modify``/``kind: new`` 的路径被 .gitignore 排除——modify 语义
+       即修改已入库文件、new 语义即产出提交入库，gitignored 文件两者均不可
+       满足，守卫的 git 对账在任何分支必报缺件（add-spec-hooks dist/index.html
+       守卫自伤事故 2026-09-06 同型）。``kind: reference`` 不受限：gitignored
+       运行时产物/配置作 reference（仅审计留痕、不参与守卫硬校验）是既有
+       合法模式（.fenix/config.yaml、dist/index.html 先例）。
 
     lint 自身故障一律 fail-open（返回空清单放行晋升），不因 lint 阻塞流水线。
 
@@ -655,6 +691,17 @@ def lint_declared(spec_dir, project_root) -> List[str]:
         normalized = normalize_check_path(path)
         if normalized != path:
             candidates.append(normalized)
+        # 规则 5（gitignored 不可满足声明，add-spec-hooks dist 守卫自伤防复发
+        # 2026-09-06）：modify/new 语义均以「文件可入 git」为前提，被 .gitignore
+        # 排除即任何分支不可满足。不 continue：目录/存在性校验相互独立，可叠加。
+        if kind in ("modify", "new") and _path_is_gitignored(project_root, candidates):
+            violations.append(
+                f"[{path}] 被 .gitignore 排除——{kind} 声明要求文件"
+                f"{'已入库可修改' if kind == 'modify' else '产出可提交入库'}，"
+                f"gitignored 文件在守卫 git 对账下任何分支不可满足"
+                f"（add-spec-hooks dist 守卫自伤同型）；请改为 kind: reference"
+                f"（仅审计留痕，不参与守卫硬校验）或从声明中移除"
+            )
         if kind == "modify":
             is_dir = any((project_root / c).is_dir() for c in candidates)
             if is_dir:

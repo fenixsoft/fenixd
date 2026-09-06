@@ -90,6 +90,65 @@ class TestLintDeclared(unittest.TestCase):
             lint_declared(self.pr / "spec/changes/ghost", self.pr), [])
 
 
+class TestGitignoredDeclaration(unittest.TestCase):
+    """规则 5：gitignored 路径不得声明为 modify/new（dist 守卫自伤防复发）。
+
+    reference 不受限（.fenix/config.yaml、dist/index.html 审计留痕先例）；
+    否定例外（!.fenix/keep.yaml）与非 git 目录 fail-open 均不拦。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.pr = Path(self.tmpdir) / "repo"
+        self.pr.mkdir(parents=True, exist_ok=True)
+        _git(self.pr, "init", "-q")
+        (self.pr / ".gitignore").write_text(
+            "dist/\n.fenix/*\n!.fenix/keep.yaml\n", encoding="utf-8")
+        dist = self.pr / "dist"
+        dist.mkdir(parents=True, exist_ok=True)
+        (dist / "index.html").write_text("x", encoding="utf-8")
+        fenix = self.pr / ".fenix"
+        fenix.mkdir(parents=True, exist_ok=True)
+        (fenix / "keep.yaml").write_text("x", encoding="utf-8")
+        self.spec_dir = self.pr / "spec" / "changes" / "demo"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_modify_gitignored_is_violation(self):
+        _mk_tasks_md(self.spec_dir, "- path: dist/index.html\n  kind: modify\n")
+        violations = lint_declared(self.spec_dir, self.pr)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("gitignore", violations[0])
+        self.assertIn("reference", violations[0])  # 处方给出出路
+
+    def test_new_gitignored_is_violation(self):
+        _mk_tasks_md(self.spec_dir, "- path: .fenix/secret.json\n  kind: new\n")
+        violations = lint_declared(self.spec_dir, self.pr)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("gitignore", violations[0])
+
+    def test_reference_gitignored_passes(self):
+        # gitignored 运行时产物作 reference 是既有合法模式（审计留痕）
+        _mk_tasks_md(self.spec_dir,
+                     "- path: dist/index.html\n  kind: reference\n")
+        self.assertEqual(lint_declared(self.spec_dir, self.pr), [])
+
+    def test_negated_exception_passes(self):
+        # .fenix/* 排除 + !.fenix/keep.yaml 否定 → 未被排除，不拦
+        _mk_tasks_md(self.spec_dir, "- path: .fenix/keep.yaml\n  kind: modify\n")
+        self.assertEqual(lint_declared(self.spec_dir, self.pr), [])
+
+    def test_non_git_root_fails_open(self):
+        # 非 git 目录（check-ignore 128）→ fail-open 放行，不阻塞晋升
+        pr = Path(self.tmpdir) / "plain"
+        pr.mkdir(parents=True, exist_ok=True)
+        (pr / "file.py").write_text("x", encoding="utf-8")
+        spec_dir = pr / "spec" / "changes" / "demo"
+        _mk_tasks_md(spec_dir, "- path: file.py\n  kind: modify\n")
+        self.assertEqual(lint_declared(spec_dir, pr), [])
+
+
 class TestPromotionLintGate(unittest.TestCase):
     """drafted→ready 晋升拦截：违规保持 drafted 并写 error，修正后放行。"""
 
