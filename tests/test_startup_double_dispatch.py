@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.state_machine import StateMachine
-from core.pm_engine.engine import PMEngine
+from core.pm_engine.engine import PMEngine, DISPATCH_COOLDOWN_SECONDS
 
 
 class TestSingleFlightGuard(unittest.TestCase):
@@ -98,7 +98,13 @@ class TestSingleFlightGuard(unittest.TestCase):
         self.engine._on_spec_ready("test-spec")
         self.assertEqual(len(enqueue_calls), 1)
 
-        # Second dispatch (after first completes) should be allowed
+        # 冷却窗口豁免（双派发穿透原地修 2026-09-06）：成功派发后 DISPATCH_COOLDOWN_SECONDS
+        # 内的顺序重复触发被冷却跳过——单飞键的「不误伤顺序派发」语义由冷却过期后
+        # 放行验证（本测试把上次派发时刻拨回窗口外，回归保护单飞键本身不误伤）。
+        self.engine._last_dispatch_at["test-spec"] -= (
+            DISPATCH_COOLDOWN_SECONDS + 1)
+
+        # Second dispatch (after first completes + cooldown) should be allowed
         self.engine._on_spec_ready("test-spec")
         self.assertEqual(len(enqueue_calls), 2)
 

@@ -49,6 +49,13 @@ from core.state_machine import (
 
 # 假就绪巡检：ready 滞留超过该阈值且期间无派发活动 → 阻塞项（design D6）
 DEFAULT_READY_STALL_THRESHOLD_MINUTES = 20
+
+# 派发冷却窗口（双派发穿透原地修 2026-09-06）：成功派发后该窗口内同 spec 的重复
+# _on_spec_ready 触发一律跳过。窗口需覆盖 dispatch→create 拿锁的亚秒窗口与失败
+# 回写 ready 外溢的秒级重入；合法重试（Retry/full_scan 周期/退避定时器）间隔为
+# 分钟级，不受影响。
+DISPATCH_COOLDOWN_SECONDS = 10
+
 class PMEngine:
     """
     Project Management Engine — the brain of fenixd.
@@ -86,6 +93,13 @@ class PMEngine:
         # 派发单飞守卫（fix-startup-double-dispatch）：跟踪正在派发中的 spec，
         # 防止启动扫描与事件回放对同一 spec 的重复派发
         self._pending_dispatches: set = set()
+        # 派发冷却登记（双派发穿透原地修 2026-09-06）：spec -> 上次成功派发时刻。
+        # 单飞键只覆盖「同时在飞」——dispatch 流程 <50ms 返回后标记即释放，而锁要等
+        # run 线程执行 create() 才可见：full_scan 与 STATE 监听/spec_ready 双通道在
+        # ~50ms 内连发两派、失败回写 ready 的 Retry 外溢 ~1s 内触发第三派，均在
+        # has_active_worktree 可见之前穿透（2026-09-06 add-spec-scheduling-controls
+        # 事故）。冷却窗口内重复触发跳过，是 dispatch→create 窗口的兜底防线。
+        self._last_dispatch_at: dict = {}
 
         # done→pushed 全链单飞锁（fix-daemon-lifecycle-races D5）：approve_push
         # 的全临界区（status 重读 → git push → transition(pushed)）持本锁执行，
@@ -204,6 +218,20 @@ class PMEngine:
         if self.shutting_down:
             return
 
+        # 派发冷却窗口（双派发穿透原地修 2026-09-06）：成功派发后短窗口内同 spec
+        # 的重复触发（STATE 监听 + spec_ready 双通道、失败回写 Retry 外溢）直接跳过。
+        # 此刻锁尚未由 run 线程 create() 加上，has_active_worktree 不可见。跳过不写
+        # STATE（避免「写 error → 触发 spec_ready 事件」的自触发热循环），重派由
+        # Retry/full_scan 周期兜底。
+        last_dispatch = self._last_dispatch_at.get(spec_name)
+        if last_dispatch is not None \
+                and (time.time() - last_dispatch) < DISPATCH_COOLDOWN_SECONDS:
+            self.logger.debug(
+                "pm_engine",
+                f"Skipping dispatch for '{spec_name}': cooldown window active",
+            )
+            return
+
         # 派发单飞守卫（fix-startup-double-dispatch）：原子检查是否已在派发中
         # 同一 spec 的并发 spec_ready 处理只放行一个；单飞标记须在 worktree 锁
         # 创建之前占位，封死启动窗口
@@ -267,6 +295,8 @@ class PMEngine:
                 else "implementer"
             )
             self._enqueue(spec_name, agent_type)
+            # 冷却起点（双派发穿透原地修 2026-09-06）：以实际入队时刻计时
+            self._last_dispatch_at[spec_name] = time.time()
         finally:
             # 派发完成（成功或失败），从 pending 中移除，允许未来派发
             self._pending_dispatches.discard(spec_name)

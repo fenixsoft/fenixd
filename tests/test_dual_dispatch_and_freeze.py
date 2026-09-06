@@ -28,7 +28,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.state_machine import StateMachine
-from core.worktree_manager import WorktreeManager
+from core.worktree_manager import WorktreeManager, STALE_LOCK_IDLE_SECONDS
 from core.agent_runner.runner import AgentRunner
 from core.admin_monitor import AdminMonitor
 
@@ -343,6 +343,101 @@ class TestBlockedStuckFrozenExemption(unittest.TestCase):
                   "severity": "major"}
         mon._handle_signal(signal)
         mon.agent_runner.run_administrator.assert_called_once()
+
+
+class TestStaleLockCreateWindowExemption(unittest.TestCase):
+    """陈锁回收的 create 构建窗口豁免（双派发穿透原地修 2026-09-06）。
+
+    事故：run A 在 create() 内构建（worktree add + seed + node_modules 供给，
+    实测十几秒），attempt 子进程与 run 流文件均未产生，陈锁回收按「无进程且
+    无流文件」在锁龄 6s 时误判释放 → 第二派穿透 → 并行 run。豁免：流文件
+    缺失时以锁龄二次确认，年轻锁（< STALE_LOCK_IDLE_SECONDS）保守保留。
+    """
+
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp(prefix="fenix-lock-age-test-"))
+        self.repo = self.tmp / "repo"
+        init_repo(self.repo)
+        self.logger = CapturingLogger()
+        self.wm = WorktreeManager(
+            base_dir=self.tmp / "worktrees",
+            project_root=self.repo,
+            logger=self.logger,
+            process_scanner=lambda spec: False,  # 进程扫描始终未命中（create 窗口态）
+        )
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _hold_lock(self, spec_name: str, age_seconds: float):
+        key = f"{spec_name}:implementer"
+        self.wm._spec_locks.add(key)
+        self.wm._lock_since[key] = time.time() - age_seconds
+
+    def test_young_lock_without_stream_is_kept(self):
+        """create 窗口态（年轻锁 + 无进程 + 无流文件）：保守视为持锁，不释放。"""
+        self._hold_lock("spec-y", age_seconds=5)
+        with patch.object(self.wm, "_latest_stream_mtime", return_value=None):
+            self.assertTrue(self.wm.has_active_worktree("spec-y"))
+        self.assertTrue(self.wm.has_active_lock("spec-y", "implementer"))
+
+    def test_old_lock_without_stream_is_released(self):
+        """真孤儿（超龄锁 + 无进程 + 无流文件）：仍按陈锁回收，语义不变。"""
+        self._hold_lock(
+            "spec-o", age_seconds=STALE_LOCK_IDLE_SECONDS + 10)
+        with patch.object(self.wm, "_latest_stream_mtime", return_value=None):
+            self.assertFalse(self.wm.has_active_worktree("spec-o"))
+        self.assertFalse(self.wm.has_active_lock("spec-o", "implementer"))
+
+    def test_refresh_locks_keeps_young(self):
+        """refresh_locks 周期回收跳过年轻锁（同豁免口径）。"""
+        self._hold_lock("spec-r", age_seconds=5)
+        with patch.object(self.wm, "_latest_stream_mtime", return_value=None):
+            released = self.wm.refresh_locks()
+        self.assertEqual(released, [])
+        self.assertTrue(self.wm.has_active_lock("spec-r", "implementer"))
+
+
+class TestDispatchCooldownWindow(unittest.TestCase):
+    """派发冷却窗口（双派发穿透原地修 2026-09-06）。
+
+    单飞键只覆盖「同时在飞」：dispatch 流程 <50ms 返回后 _pending_dispatches
+    即释放，而锁要等 run 线程 create() 才可见——双通道连发两派在亚秒窗口穿透。
+    冷却窗口内同 spec 的重复 _on_spec_ready 直接跳过。
+    """
+
+    def _make_engine(self, last_dispatch_at=None):
+        from core.pm_engine.engine import PMEngine
+        eng = PMEngine.__new__(PMEngine)  # 跳过 __init__，只装配冷却路径所需属性
+        eng.shutting_down = False
+        eng._pending_dispatches = set()
+        eng._last_dispatch_at = {} if last_dispatch_at is None else last_dispatch_at
+        eng.logger = MagicMock()
+        return eng
+
+    def test_cooldown_active_skips_dispatch(self):
+        """冷却窗口内重复触发：跳过，不进入后续流程（哨兵 agent_runner=None）。"""
+        eng = self._make_engine({"spec-c": time.time() - 2})
+        eng.agent_runner = None  # 冷却失效走到 worktree 检查即 AttributeError
+        eng._on_spec_ready("spec-c")
+        eng.logger.debug.assert_called()
+
+    def test_cooldown_expired_hands_over_to_pending(self):
+        """冷却过期：不再拦截，由后续单飞键接手（pending 命中 return）。"""
+        from core.pm_engine.engine import DISPATCH_COOLDOWN_SECONDS
+        eng = self._make_engine({"spec-p": time.time() - DISPATCH_COOLDOWN_SECONDS - 5})
+        eng._pending_dispatches.add("spec-p")
+        eng.agent_runner = None
+        eng._on_spec_ready("spec-p")
+
+    def test_no_dispatch_history_not_blocked(self):
+        """无派发历史：冷却不拦截（首次派发放行至 pending 检查）。"""
+        eng = self._make_engine({})
+        eng._pending_dispatches.add("spec-n")
+        eng.agent_runner = None
+        eng._on_spec_ready("spec-n")
 
 
 if __name__ == "__main__":

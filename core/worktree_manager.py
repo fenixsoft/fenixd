@@ -132,6 +132,11 @@ class WorktreeManager:
         self._active_worktrees: Set[str] = set()
         self._wt_branches: Dict[str, str] = {}  # wt_path -> branch name
         self._spec_locks: Set[str] = set()  # SPECs currently being worked on
+        # 锁龄登记（双派发穿透原地修 2026-09-06）：key -> 拿锁时刻。run 流文件由
+        # attempt 子进程启动后才创建，而锁在 create() 内即持有（worktree add + seed +
+        # node_modules 供给实测可达十几秒）——「无进程且无流文件」无法区分 create
+        # 构建中与孤儿死锁，陈锁判定按锁龄豁免构建窗口（见 _lock_young）。
+        self._lock_since: Dict[str, float] = {}
         # 锁治理（D4）：进程表扫描函数，默认 pgrep 实现；测试可注入替身。
         # 签名 (spec_name) -> bool，表示进程表中是否存在指向该 spec worktree 的进程。
         self._process_scanner = process_scanner or self._pgrep_spec_process
@@ -181,6 +186,7 @@ class WorktreeManager:
                 )
                 return None
             self._spec_locks.add(lock_key)
+            self._lock_since[lock_key] = time.time()
 
         # worktree 继承（fast-track 打回重派）：优先认领上一轮保留的复用遗产，
         # 在同一目录同一分支上继续（继承已提交成果与未提交现场），不再从零新建。
@@ -641,6 +647,7 @@ class WorktreeManager:
             ]
             for k in to_remove:
                 self._spec_locks.discard(k)
+                self._lock_since.pop(k, None)
             # 进程扫描缓存随之失效（下一次判定须重新扫描，防读到陈旧「存活」结果）
             for k in to_remove:
                 self._proc_scan_cache.pop(self._lock_spec_name(k), None)
@@ -692,6 +699,7 @@ class WorktreeManager:
 
         self._active_worktrees.clear()
         self._spec_locks.clear()
+        self._lock_since.clear()
         self._proc_scan_cache.clear()
 
     def has_active_worktree(self, spec_name: str) -> bool:
@@ -725,6 +733,12 @@ class WorktreeManager:
         mtime = self._latest_stream_mtime(spec_name)
         if mtime is not None and (time.time() - mtime) <= STALE_LOCK_IDLE_SECONDS:
             return True  # 进程扫描未命中但流仍在增长：保守视为持锁
+        # create 构建窗口豁免（双派发穿透原地修 2026-09-06）：流文件缺失时以锁龄
+        # 二次确认——锁在 create() 拿到而 attempt 子进程与其流文件尚未产生（实测
+        # 构建可达十几秒），年轻锁保守保留，防误释放后第二派穿透；超龄仍按陈锁
+        # 回收，孤儿清理语义不变。
+        if mtime is None and self._lock_young(spec_name):
+            return True
         released = self._release_spec_locks(spec_name, "stale lock (no live process)")
         if released:
             self.logger.warning(
@@ -755,6 +769,8 @@ class WorktreeManager:
             mtime = self._latest_stream_mtime(spec)
             if mtime is not None and (time.time() - mtime) <= STALE_LOCK_IDLE_SECONDS:
                 continue
+            if mtime is None and self._lock_young(spec):
+                continue  # create 构建窗口豁免（同 has_active_worktree，防误回收年轻锁）
             # ── 恢复重派遗产（add-recovery-legacy-check D2）──
             # 陈锁释放的同一时刻：若该 spec 尚有未被清理的 implementer worktree（孤儿，
             # 如 daemon 重启后锁已失、但 worktree 目录仍在），注册为遗产兜底保留，
@@ -906,6 +922,7 @@ class WorktreeManager:
         # 释放 spec 锁（与 cleanup 的 finally 段同语义，按 spec 精确匹配）
         for k in [k for k in self._spec_locks if k.split(":")[0] == spec_name]:
             self._spec_locks.discard(k)
+            self._lock_since.pop(k, None)
         self._proc_scan_cache.pop(spec_name, None)
         self.logger.info(
             "worktree_manager",
@@ -1067,14 +1084,32 @@ class WorktreeManager:
         worktree」而无法可靠区分前缀，因此两把一起登记，宁可多拦不漏放。
         """
         self._spec_locks.add(f"{spec_name}:implementer")
+        self._lock_since[f"{spec_name}:implementer"] = time.time()
         self._spec_locks.add(f"{spec_name}:verifier")
+        self._lock_since[f"{spec_name}:verifier"] = time.time()
 
     def _release_spec_locks(self, spec_name: str, reason: str) -> list:
         """释放该 spec 的全部在册锁，返回被释放的 key（已不在册则返回空）。"""
         to_remove = [k for k in self._spec_locks if self._lock_spec_name(k) == spec_name]
         for k in to_remove:
             self._spec_locks.discard(k)
+            self._lock_since.pop(k, None)
         return to_remove
+
+    def _lock_young(self, spec_name: str) -> bool:
+        """该 spec 任一在册锁的锁龄 < STALE_LOCK_IDLE_SECONDS（create 构建窗口豁免）。
+
+        锁龄缺失（历史锁未登记时刻）按不年轻处理——豁免只对确定年轻的锁生效，
+        失败方向保守（宁可走既有陈锁回收，不额外放行）。
+        """
+        now = time.time()
+        for k in self._spec_locks:
+            if self._lock_spec_name(k) != spec_name:
+                continue
+            since = self._lock_since.get(k)
+            if since is not None and (now - since) < STALE_LOCK_IDLE_SECONDS:
+                return True
+        return False
 
     def _spec_process_alive(self, spec_name: str) -> bool:
         """进程表中是否存在指向该 spec worktree 的进程（带短缓存）。
