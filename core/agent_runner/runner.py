@@ -742,7 +742,8 @@ class AgentRunner:
             # 取消/异常均释放信号量（不泄漏占位导致后续 spec 永久排队）
             sem.release()
 
-    def run_dispute_judge(self, spec_name: str, judge_input: dict) -> AgentRunResult:
+    def run_dispute_judge(self, spec_name: str, judge_input: dict,
+                          run_id: str | None = None) -> AgentRunResult:
         """Run the Dispute Judge Agent for a SPEC (deliverable-declaration-triage D3).
 
         收工守卫判缺件后、打回/重派前由 dispatch 调用：轻量**单轮只读**裁决者。
@@ -751,6 +752,8 @@ class AgentRunner:
 
         - run_id 前缀 ``dispute-judge-<spec>-<ts>``（_RUN_PREFIXES 同步扩展，
           见 run_files.py 前缀元组与 admin_monitor._RUN_PREFIXES，两处同源）；
+          调用方（dispatch）可注入预生成 run_id——终审期间 spec 的 error 字段须
+          先行携带该 id（D5：blocked + 「LLM 终审进行中」阻断重派竞态）；
         - 输入（缺件清单 + spec 语境摘录 + 实现 run findings + basename 候选）
           由调用方组装为 ``judge_input`` dict，本方法落盘
           ``.fenix/verify-progress/<spec>/dispute_judge_input.json`` 并经 prompt
@@ -764,12 +767,14 @@ class AgentRunner:
         Args:
             spec_name: SPEC 名。
             judge_input: 裁决输入 dict（missing/spec_context/findings 等）。
+            run_id: 预生成 run id（派发前已写入 spec error 的场景）；省略则
+                本方法生成 ``dispute-judge-<spec>-<ts>``。
 
         Returns:
             AgentRunResult（success 仅表示 run 正常收工；裁决语义合法性由调用方
             读取结果文件校验——run 失败/超时/输出不合法等价 unclear）。
         """
-        run_id = f"dispute-judge-{spec_name}-{int(time.time())}"
+        run_id = run_id or f"dispute-judge-{spec_name}-{int(time.time())}"
         vp_dir = self.project_root / ".fenix" / "verify-progress" / spec_name
         input_path = vp_dir / "dispute_judge_input.json"
         try:

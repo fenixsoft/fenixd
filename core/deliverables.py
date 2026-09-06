@@ -381,6 +381,128 @@ def extract_declared(spec_dir) -> "dict | None":
     return typed
 
 
+def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
+    """机械替换 tasks.md 声明段条目的 path（add-deliverable-declaration-triage D4）。
+
+    在 tasks.md ``## Deliverables`` 段内找到 ``path == element`` 的条目并确定
+    性替换其 path 为 ``actual_path``；若声明段内已存在同名 actual_path 条目
+    （同 kind）则删除 element 条目（去重）。逐行精确文本操作（不经 yaml 反序列
+    化再序列化——保留注释/顺序，diff 最小）。修正前重读文件、按条目精确替换，
+    任何失败上抛（调用方等价 ``unclear`` 转人工，design D4/D6）。
+
+    Returns:
+        {"element", "actual_path", "before": <声明段原文>, "after": <声明段新文>}，
+        供审计流落 diff（4.5）。
+    """
+    tasks = Path(spec_dir) / "tasks.md"
+    text = tasks.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if _DECLARED_HEADING_RE.match(line):
+            start = i + 1
+            break
+    if start is None:
+        raise ValueError(f"tasks.md 无 Deliverables 声明段（无法修正 {element}）")
+    end = len(lines)
+    for i in range(start, len(lines)):
+        if _H2_RE.match(lines[i]):
+            end = i
+            break
+
+    def _path_line_re(p: str):
+        return re.compile(
+            rf"^(\s*-\s*path\s*:\s*){re.escape(p)}(\s*(#.*)?)$"
+        )
+
+    elem_idx = None
+    for i in range(start, end):
+        if _path_line_re(element).match(lines[i]):
+            elem_idx = i
+            break
+    if elem_idx is None:
+        raise ValueError(f"声明段无条目匹配 {element}（无法修正）")
+
+    before = "\n".join(lines[start:end])
+    # 去重：声明段已存在 actual_path 条目 → 删除 element 条目（path 行 + 紧随
+    # 的 kind 行），而不是制造两份同名声明
+    dup_idx = None
+    for i in range(start, end):
+        if i != elem_idx and _path_line_re(actual_path).match(lines[i]):
+            dup_idx = i
+            break
+    if dup_idx is not None:
+        remove_end = elem_idx + 1
+        if remove_end < len(lines) and re.match(r"^\s+kind\s*:", lines[remove_end]):
+            remove_end += 1
+        del lines[elem_idx:remove_end]
+    else:
+        m = _path_line_re(element).match(lines[elem_idx])
+        lines[elem_idx] = f"{m.group(1)}{actual_path}{m.group(2)}"
+    after = "\n".join(lines[start:end])
+
+    tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"element": element, "actual_path": actual_path,
+            "before": before, "after": after}
+
+
+def soften_declared_kind(spec_dir, element: str) -> dict:
+    """将 tasks.md 声明段条目的 kind 改为 reference（D4：reference 软化）。
+
+    确定性文本替换：``kind: new/modify → kind: reference``，该路径移入 references
+    软校验（不再参与守卫缺件判定）。条目不存在/无 kind 行/改写失败上抛（调用方
+    等价 ``unclear`` 转人工）。
+
+    Returns:
+        {"element", "before": <声明段原文>, "after": <声明段新文>}。
+    """
+    tasks = Path(spec_dir) / "tasks.md"
+    text = tasks.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if _DECLARED_HEADING_RE.match(line):
+            start = i + 1
+            break
+    if start is None:
+        raise ValueError(f"tasks.md 无 Deliverables 声明段（无法软化 {element}）")
+    end = len(lines)
+    for i in range(start, len(lines)):
+        if _H2_RE.match(lines[i]):
+            end = i
+            break
+
+    path_idx = None
+    for i in range(start, end):
+        if re.match(rf"^\s*-\s*path\s*:\s*{re.escape(element)}\s*(#.*)?$",
+                    lines[i]):
+            path_idx = i
+            break
+    if path_idx is None:
+        raise ValueError(f"声明段无条目匹配 {element}（无法软化）")
+
+    before = "\n".join(lines[start:end])
+    kind_idx = None
+    kind_match = None
+    for i in range(path_idx + 1, min(end, path_idx + 3)):
+        m = re.match(
+            r"^(\s*)kind\s*:\s*(new|modify|reference)(\s*(#.*)?)$",
+            lines[i],
+        )
+        if m:
+            kind_idx = i
+            kind_match = m
+            break
+    if kind_idx is None or kind_match is None:
+        raise ValueError(f"条目 {element} 无 kind 行可软化")
+
+    lines[kind_idx] = f"{kind_match.group(1)}kind: reference{kind_match.group(3)}"
+    after = "\n".join(lines[start:end])
+
+    tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"element": element, "before": before, "after": after}
+
+
 def extract_paths(spec_dir) -> List[str]:
     """从 SPEC 目录提取声明交付的文件路径清单（去重、保序）。
 

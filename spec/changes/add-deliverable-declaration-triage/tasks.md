@@ -48,12 +48,12 @@
 
 ## 4. PR4 守卫接入 LLM 终审与裁决机械执行（core/pm_engine/dispatch.py + core/admin_store.py）
 
-- [ ] 4.1 dispatch 缺件分支改造（dispatch.py 现有 `_deliverable_gate_missing` 消费处）：判缺件后不再直接打回/重派——先组装 judge 输入（缺件清单 + spec proposal/design/tasks 相关段摘录 + 实现 run `.fenix-run-result.json` findings + 全部缺件路径 basename 候选），派 `dispute-judge-` run，同时 spec 置 blocked 且 error 含 `dispute-judge` run id 与「LLM 终审进行中」（阻断既有轮询重派竞态）
-- [ ] 4.2 judge 结果消费：run 收工回调读取裁决 JSON；`status` 非 success / 超时 / JSON 不合法 / verdicts 缺失 → 全部待裁缺件等价 `unclear`
-- [ ] 4.3 裁决机械执行（daemon 侧，不经 agent 改文档）：`typo` → tasks.md 声明段对应条目 path 确定性替换为 actual_path（同名条目已存在则去重；修正前重读文件、按条目精确替换，失败等价 unclear）；`reference` → 该条目 kind 改为 reference（转软校验）；`missing` → 既有打回/重派路径（带精准缺件清单）；`unclear` → 既有 deliverable-dispute blocked 人工裁决话术
-- [ ] 4.4 防洗白闸门：typo 修正声明后**重跑守卫对账**，actual_path 在实现分支真实存在才推进合并；仍缺失按缺件走既有打回路径（修正声明 ≠ 放行缺件）
-- [ ] 4.5 dispute 审计落盘（core/admin_store.py）：新增 dispute 审计存取（独立 jsonl `.fenix/dispute_audits.jsonl`：裁决 JSON 全文、声明段修正前后 diff、触发 run id、UTC 时间戳），typo/reference 裁决执行时写入
-- [ ] 4.6 回归测试：spec.md 终审四 Scenario（缺件触发终审不立即打回 / judge 失败等价 unclear / typo 自动修正放行 / unclear 转人工）+ reference 软化 + 审计可复核 + 防洗白（actual_path 也缺失仍打回）
+- [x] 4.1 dispatch 缺件分支改造（dispatch.py 现有 `_deliverable_gate_missing` 消费处）：判缺件后不再直接打回/重派——先组装 judge 输入（缺件清单 + spec proposal/design/tasks 相关段摘录 + 实现 run `.fenix-run-result.json` findings + 全部缺件路径 basename 候选），派 `dispute-judge-` run，同时 spec 置 blocked 且 error 含 `dispute-judge` run id 与「LLM 终审进行中」（阻断既有轮询重派竞态）
+- [x] 4.2 judge 结果消费：run 收工回调读取裁决 JSON；`status` 非 success / 超时 / JSON 不合法 / verdicts 缺失 → 全部待裁缺件等价 `unclear`
+- [x] 4.3 裁决机械执行（daemon 侧，不经 agent 改文档）：`typo` → tasks.md 声明段对应条目 path 确定性替换为 actual_path（同名条目已存在则去重；修正前重读文件、按条目精确替换，失败等价 unclear）；`reference` → 该条目 kind 改为 reference（转软校验）；`missing` → 既有打回/重派路径（带精准缺件清单）；`unclear` → 既有 deliverable-dispute blocked 人工裁决话术
+- [x] 4.4 防洗白闸门：typo 修正声明后**重跑守卫对账**，actual_path 在实现分支真实存在才推进合并；仍缺失按缺件走既有打回路径（修正声明 ≠ 放行缺件）
+- [x] 4.5 dispute 审计落盘（core/admin_store.py）：新增 dispute 审计存取（独立 jsonl `.fenix/dispute_audits.jsonl`：裁决 JSON 全文、声明段修正前后 diff、触发 run id、UTC 时间戳），typo/reference 裁决执行时写入
+- [x] 4.6 回归测试：spec.md 终审四 Scenario（缺件触发终审不立即打回 / judge 失败等价 unclear / typo 自动修正放行 / unclear 转人工）+ reference 软化 + 审计可复核 + 防洗白（actual_path 也缺失仍打回）
 
 ## 5. PR5 收尾与全量回归
 
