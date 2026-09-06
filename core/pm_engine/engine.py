@@ -404,6 +404,16 @@ class PMEngine:
                     "pm_engine",
                     f"start_after 到期唤起 '{name}' 失败（非阻塞）: {e}",
                 )
+        # 唤起后立即处理派发队列，使「到期精确触发」不依赖后续其它事件驱动
+        #（periodic full_scan 仍为兜底；_process_queue 幂等，空队列直接返回）。
+        if signaled:
+            try:
+                self._process_queue()
+            except Exception as e:
+                self.logger.warning(
+                    "pm_engine",
+                    f"start_after 唤起后派发队列处理失败（非阻塞，full_scan 兜底）: {e}",
+                )
         return {"unfrozen": unfrozen, "signaled": signaled}
 
     # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）──────────────────
