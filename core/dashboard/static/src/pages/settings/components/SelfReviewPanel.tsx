@@ -104,17 +104,14 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
       </Text>
       <Card style={{ marginTop: 12 }}>
         <Form form={form} initialValues={initial} layout="vertical">
-          <Form.Item
-            name="enabled"
-            label={
-              <>
-                启用每日自省<span className="label-note">（admin.self_review.enabled）</span>
-              </>
-            }
-            valuePropName="checked"
-          >
-            <Switch />
-          </Form.Item>
+          <div className="switch-inline-row">
+            <Form.Item name="enabled" valuePropName="checked" noStyle>
+              <Switch />
+            </Form.Item>
+            <span className="switch-inline-label">
+              启用每日自省<span className="label-note">（admin.self_review.enabled）</span>
+            </span>
+          </div>
           <Text type="secondary">缺省关闭。开启后于次日 run_at 时间点生效（错过后启动补跑）。</Text>
 
           <Form.Item
@@ -131,18 +128,14 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
           </Form.Item>
           <Text type="secondary">缺省 02:00。实际触发时刻为 run_at 后的第一个巡检周期。</Text>
 
-          <Form.Item
-            name="read_todo"
-            label={
-              <>
-                注入既有 todo.md 上下文<span className="label-note">（admin.self_review.read_todo）</span>
-              </>
-            }
-            valuePropName="checked"
-            style={{ marginTop: 24 }}
-          >
-            <Switch />
-          </Form.Item>
+          <div className="switch-inline-row" style={{ marginTop: 24 }}>
+            <Form.Item name="read_todo" valuePropName="checked" noStyle>
+              <Switch />
+            </Form.Item>
+            <span className="switch-inline-label">
+              注入既有 todo.md 上下文<span className="label-note">（admin.self_review.read_todo）</span>
+            </span>
+          </div>
           <Text type="secondary">
             开启时把项目根 todo.md 全文注入自省 prompt，供 Agent 识别历史条目、
             避免重复并标注已闭环项。缺省关闭。

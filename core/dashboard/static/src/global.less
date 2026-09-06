@@ -29,10 +29,35 @@ body {
   background-color: #efefef;
 }
 
-// 设置卡片 label 括号注解弱化显示（如（agents.max_concurrent）（选填，…））
-#root .settings-page .ant-form-item .label-note {
+// 设置卡片 label 括号注解弱化显示（如（agents.max_concurrent）（选填，…））；
+// 开关行（.switch-inline-row）用 noStyle Form.Item，注解不在 .ant-form-item 内，选择器放宽到容器级
+#root .settings-page .label-note {
   color: #8c8c8c;
   font-size: 12px;
+}
+
+// 设置页开关行：开关控件在前、名称紧随其后同行展示（不换行）
+#root .settings-page .switch-inline-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+#root .settings-page .switch-inline-row .switch-inline-label {
+  white-space: nowrap;
+}
+
+// 设置项与紧随其后的注释文字：注释须贴近所属设置项——前置 Form.Item/开关行的
+// 24px 下边距压到 8px；注释自身带 24px 下边距与下一设置项分隔（块流中与后者
+// 显式 marginTop:24 折叠取大，全页节奏统一「8 / 24」）
+#root .settings-page .ant-form-item:has(+ .ant-typography),
+#root .settings-page .switch-inline-row:has(+ .ant-typography) {
+  margin-bottom: 8px;
+}
+#root .settings-page .ant-form-item + .ant-typography,
+#root .settings-page .switch-inline-row + .ant-typography {
+  display: block;
+  margin-bottom: 24px;
 }
 
 // claude-msg 输出面板（迁移自 claudecodeui）：shadcn 语义变量（HSL 三元组），
@@ -125,4 +150,9 @@ body {
 // min-content（一字一行）；窄屏改回 block 排版让文本正常换行
 #root .screen-xs .settings-page .ant-form-item-label label {
   display: block;
+}
+
+// 设置页开关行：窄屏一行放不下（名称+配置键注解），允许名称自身折行避免横向溢出
+#root .screen-xs .settings-page .switch-inline-row .switch-inline-label {
+  white-space: normal;
 }

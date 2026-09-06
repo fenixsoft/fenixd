@@ -62,12 +62,10 @@ export default function MiscSettingsPanel({ config, onSave }: MiscSettingsPanelP
           >
             <InputNumber step={10} style={{ width: '100%' }} />
           </Form.Item>
-          <div>
-            <Text type="secondary">
-              默认 50。已完成（done/pushed）的 SPEC 数量超过此阈值时，自动将最久完成的归档到 archive 目录（保留 STATE.md 条目，可在「已归档」视图查看）。
-              0 = 禁用。超过阈值时自动归档完成最久的 SPEC。保存后立即生效，无需重启 daemon。
-            </Text>
-          </div>
+          <Text type="secondary">
+            默认 50。已完成（done/pushed）的 SPEC 数量超过此阈值时，自动将最久完成的归档到 archive 目录（保留 STATE.md 条目，可在「已归档」视图查看）。
+            0 = 禁用。超过阈值时自动归档完成最久的 SPEC。保存后立即生效，无需重启 daemon。
+          </Text>
         </Form>
       </Card>
       <div style={{ textAlign: 'right', marginTop: 24 }}>

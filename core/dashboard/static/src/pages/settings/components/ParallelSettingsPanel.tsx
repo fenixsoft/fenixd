@@ -111,18 +111,14 @@ export default function ParallelSettingsPanel({ config, onSave }: ParallelSettin
 
           {/* add-planner-efficiency（planner-generation-throttle 2.3）：planner 生成节流。
               开关（默认关）+ 上限输入（1-10）+ 三点注解（限什么/作用/代价）。 */}
-          <Form.Item
-            name="planner_throttle"
-            label={
-              <>
-                Planner 生成节流<span className="label-note">（verify.planner_max_concurrent）</span>
-              </>
-            }
-            valuePropName="checked"
-            style={{ marginTop: 24 }}
-          >
-            <Switch data-testid="planner-throttle-switch" />
-          </Form.Item>
+          <div className="switch-inline-row" style={{ marginTop: 24 }}>
+            <Form.Item name="planner_throttle" valuePropName="checked" noStyle>
+              <Switch data-testid="planner-throttle-switch" />
+            </Form.Item>
+            <span className="switch-inline-label">
+              Planner 生成节流<span className="label-note">（verify.planner_max_concurrent）</span>
+            </span>
+          </div>
           <Text type="secondary">
             默认关闭（不节流）。① 开启后限制<strong>全框架同时在出题的 Planner 数量</strong>
             （上限为 1-10，默认 1）——超出者排队持有槽等待；② 作用：多个 Planner 并发

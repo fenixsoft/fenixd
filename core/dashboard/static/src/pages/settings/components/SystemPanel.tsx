@@ -105,29 +105,36 @@ export default function SystemPanel({ config, onSave }: SystemPanelProps) {
         <Form form={form} layout="vertical">
           {ADMIN_ANNOTATIONS.map(({ key, label, note, rule }) => (
             <div key={key} style={{ marginBottom: 4 }}>
-              <Form.Item
-                name={key}
-                label={
-                  <>
+              {key === 'enabled' ? (
+                <div className="switch-inline-row" data-testid={`system-field-${key}`}>
+                  <Form.Item name={key} valuePropName="checked" noStyle>
+                    <Switch data-testid={`system-control-${key}`} />
+                  </Form.Item>
+                  <span className="switch-inline-label">
                     {label}
                     <span className="label-note">（admin.{key}）</span>
-                  </>
-                }
-                valuePropName={key === 'enabled' ? 'checked' : undefined}
-                rules={rule}
-                data-testid={`system-field-${key}`}
-              >
-                {key === 'enabled' ? (
-                  <Switch data-testid={`system-control-${key}`} />
-                ) : (
+                  </span>
+                </div>
+              ) : (
+                <Form.Item
+                  name={key}
+                  label={
+                    <>
+                      {label}
+                      <span className="label-note">（admin.{key}）</span>
+                    </>
+                  }
+                  rules={rule}
+                  data-testid={`system-field-${key}`}
+                >
                   <InputNumber
                     data-testid={`system-control-${key}`}
                     style={{ width: 220 }}
                     step={1}
                     precision={0}
                   />
-                )}
-              </Form.Item>
+                </Form.Item>
+              )}
               {note && <Text type="secondary">{note}</Text>}
             </div>
           ))}
