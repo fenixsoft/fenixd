@@ -50,6 +50,14 @@ prepare:
   # 使命令型实例与常驻 dashboard 同等保真（worktree 作用域下 cwd 在三层
   # 子目录，恰好指回项目根）；主树执行时 .fenix 已存在，此步自然跳过
   - run: test -e .fenix || ln -s ../../../.fenix .fenix
+  # admin 修 2026-09-06（add-spec-scheduling-controls 第 1 轮 13 场景 env 阻塞）：
+  # 冻结场景集假设被测实例可见夹具项目 scheduling-showcase（8 个特定状态
+  # spec），但 serve.cmd 只启动 dashboard、无夹具供给——夹具缺失即 api 场景
+  # 404 unknown project、web 场景无行可点。本步每轮验证前幂等重建/复位夹具
+  # 并确保注册表登记（场景会真实改写夹具 STATE.md，跨轮持久故须复位）。
+  # 主路径 = worktree 内 git 跟踪的 bin/ 脚本；fallback = .fenix/bin 运行态
+  # 副本（覆盖 worktree 落在旧提交、尚无该脚本的窗口）。
+  - run: python3 bin/fixture_scheduling_showcase.py --reset || python3 .fenix/bin/fixture_scheduling_showcase.py --reset
 
 serve:
   # command + static_scope=worktree：serving worktree 内起真实全栈实例
