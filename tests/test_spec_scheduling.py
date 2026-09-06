@@ -327,6 +327,8 @@ class TestStartAfterDispatchGate(unittest.TestCase):
         pm.logger = _SilentLogger()
         pm.shutting_down = False
         pm._pending_dispatches = set()
+        # __new__ 绕过 __init__：补派发冷却登记（engine.py 派发冷却窗口依赖）
+        pm._last_dispatch_at = {}
         pm._dispatch_backoffed = lambda spec: False
         pm._dependencies_satisfied = lambda n: True
         pm.project_root = self.proot
