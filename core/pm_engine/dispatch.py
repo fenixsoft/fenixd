@@ -12,6 +12,8 @@ import threading
 import time
 from pathlib import Path
 
+from core.state_machine import start_after_pending
+
 
 # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）────────────────────
 # 派发 implementer 遇「worktree already active」时不再硬试三连发：按此序列指数
@@ -353,6 +355,15 @@ class Dispatcher:
                         continue
                     if self._pm._dispatch_backoffed(spec):
                         continue
+                    # add-spec-scheduling-controls D2：start_after 未到期静默跳过
+                    #（不写 error 不翻状态，对齐退避门控的防自触发设计）；到期后由
+                    # 60s 定时唤起 / full_scan 兜底恢复调度。
+                    if start_after_pending(spec):
+                        self._pm.logger.debug(
+                            "pm_engine",
+                            f"start_after 未到期，跳过 {atype} 派发 '{sname}'（定时拾取）",
+                        )
+                        continue
                     # cli-retry-backoff 2.2：秒挂冷却期内跳过 implementer/fast-track/
                     # repair 派发（不耗预算、不起进程），并排程到期自动恢复。
                     if atype in ("implementer", "fast-track", "repair") \
@@ -406,6 +417,15 @@ class Dispatcher:
                     if atype == "verifier" and status != "implemented":
                         continue
                     if self._pm._dispatch_backoffed(spec):
+                        continue
+                    # add-spec-scheduling-controls D2：start_after 未到期静默跳过
+                    #（不写 error 不翻状态，对齐退避门控的防自触发设计）；到期后由
+                    # 60s 定时唤起 / full_scan 兜底恢复调度。
+                    if start_after_pending(spec):
+                        self._pm.logger.debug(
+                            "pm_engine",
+                            f"start_after 未到期，跳过 {atype} 派发 '{sname}'（定时拾取）",
+                        )
                         continue
                     # cli-retry-backoff 2.2：秒挂冷却期内跳过派发（与 best_valid_prio
                     # 扫描同判定，保证队列继续扫描后续条目不被冷却 spec 阻塞）。
