@@ -2790,6 +2790,10 @@ _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "agents.token_budget_millions", "agents.impl_run_budget", "gates.approve_mode",
                 # add-daily-self-review：admin.self_review 三键
                 "admin.self_review",
+                # add-settings-system-tab：admin.* 受管键（5 键）
+                "admin.enabled", "admin.interval_minutes",
+                "admin.escalation_cooldown_minutes",
+                "admin.merge_breaker_threshold", "admin.shutdown_drain_seconds",
                 # 验证契约键（verify.*：静态服务范围 / worktree 依赖供给模式）
                 "verify.static_scope", "verify.deps_mode",
                 # add-planner-efficiency：planner 生成节流上限
@@ -2846,7 +2850,52 @@ def _managed_key_sources(raw: dict) -> dict:
     admin_raw = raw.get("admin")
     if isinstance(admin_raw, dict) and isinstance(admin_raw.get("self_review"), dict):
         sources["admin.self_review"] = "project"
+    # add-settings-system-tab：admin.* 受管键（5 键）显式定义 → project
+    if isinstance(admin_raw, dict):
+        for _k in ("enabled", "interval_minutes", "escalation_cooldown_minutes",
+                   "merge_breaker_threshold", "shutdown_drain_seconds"):
+            if _k in admin_raw:
+                sources[f"admin.{_k}"] = "project"
     return sources
+
+
+# add-settings-system-tab：受管 admin.* 键缺省（与 ConfigLoader.get_admin_config
+# 缺省一致：enabled=True / interval_minutes=5 / escalation_cooldown_minutes=15 /
+# merge_breaker_threshold 复用 agents.merge_breaker_threshold（缺省 2）/
+# shutdown_drain_seconds=1800）
+_ADMIN_DEFAULTS = {
+    "enabled": True,
+    "interval_minutes": 5,
+    "escalation_cooldown_minutes": 15,
+    "shutdown_drain_seconds": 1800,
+}
+
+
+def _managed_admin_keys(config: dict) -> dict:
+    """受管 admin.* 键提取：5 键 + 缺省填充，不透传未知 admin 键/self_review 子段。
+
+    与 llm/agents 段「缺省填充」形态一致：文件里为合法类型的值才回显，否则用缺省。
+    merge_breaker_threshold 缺省沿用 agents.merge_breaker_threshold（未配置则为 2）。
+    """
+    admin = config.get("admin") if isinstance(config, dict) else None
+    admin = admin if isinstance(admin, dict) else {}
+    breaker = admin.get("merge_breaker_threshold")
+    if not isinstance(breaker, int) or isinstance(breaker, bool) or breaker < 1:
+        agents = config.get("agents") if isinstance(config, dict) else None
+        breaker = agents.get("merge_breaker_threshold") if isinstance(agents, dict) else None
+        if not isinstance(breaker, int) or isinstance(breaker, bool) or breaker < 1:
+            breaker = 2
+    out = {"merge_breaker_threshold": breaker}
+    for key, default in _ADMIN_DEFAULTS.items():
+        val = admin.get(key, default)
+        if key == "enabled":
+            out[key] = val if isinstance(val, bool) else default
+        else:
+            # 数值键：非数值/布尔一律回退缺省（写路径校验保证合法值才能落盘）
+            if not isinstance(val, (int, float)) or isinstance(val, bool):
+                val = default
+            out[key] = val
+    return out
 
 
 def read_config(scope_root, scope: str = "project") -> dict:
@@ -2872,6 +2921,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "archive": {"auto_threshold": 50},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
         "self_review": dict(_DEFAULT_SELF_REVIEW),
+        # add-settings-system-tab：admin.* 受管键（5 键 + 缺省填充）
+        "admin": dict(_ADMIN_DEFAULTS, merge_breaker_threshold=2),
         "scope": scope,
         "raw_exists": False,
         "sources": _managed_key_sources({}),
@@ -2952,6 +3003,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
     if isinstance(admin_raw, dict):
         from core.config import ConfigLoader as _CL
         result["self_review"] = _CL.get_self_review_config(raw)
+        # add-settings-system-tab：受管 admin 键提取（5 键 + 缺省填充，不透传未知键）
+        result["admin"] = _managed_admin_keys(raw)
     return result
 
 
@@ -3006,6 +3059,8 @@ def read_effective_config(project_root) -> dict:
         "archive": {"auto_threshold": 50},
         # add-daily-self-review：admin.self_review 三键（缺省 false/false/02:00）
         "self_review": dict(_DEFAULT_SELF_REVIEW),
+        # add-settings-system-tab：admin.* 受管键（5 键 + 缺省填充）
+        "admin": dict(_ADMIN_DEFAULTS, merge_breaker_threshold=2),
         "scope": "project",
         "raw_exists": proj_path.exists(),
         "sources": _managed_key_sources({}),
@@ -3079,6 +3134,8 @@ def read_effective_config(project_root) -> dict:
     result["archive"] = {"auto_threshold": ConfigLoader.effective_auto_archive_threshold(effective)}
     # add-daily-self-review：经生效助手取值（run_at 非法值回退 02:00，回显一致）
     result["self_review"] = ConfigLoader.get_self_review_config(effective)
+    # add-settings-system-tab：受管 admin 键提取（5 键 + 缺省填充，不透传未知键）
+    result["admin"] = _managed_admin_keys(effective)
 
     # 提取 project.description → 顶层 description（非 str 或缺失 → ""）
     project_eff = effective.get("project")
@@ -3178,6 +3235,16 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         if _CL.is_valid_hhmm(run_at):
             sr["run_at"] = run_at
         merged["admin"]["self_review"] = sr
+    # add-settings-system-tab：admin.* 五键合并。只动 5 个受管键——保留 admin 段内
+    # 的 self_review / agent_model / workers 等未知或非受管键（写路径校验保证
+    # 进入此处的值合法，self_review 由顶层 patch 分支单独合并）。
+    if "admin" in patch and isinstance(patch["admin"], dict):
+        if not isinstance(merged.get("admin"), dict):
+            merged["admin"] = {}
+        for ak in ("enabled", "interval_minutes", "escalation_cooldown_minutes",
+                   "merge_breaker_threshold", "shutdown_drain_seconds"):
+            if ak in patch["admin"] and patch["admin"][ak] is not None:
+                merged["admin"][ak] = patch["admin"][ak]
     # description 分支：patch 顶层 description（str）写入 merged["project"]["description"]
     if "description" in patch and isinstance(patch["description"], str):
         if not isinstance(merged.get("project"), dict):
@@ -3270,6 +3337,39 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 return fail(
                     f"verify.planner_max_concurrent must be a non-negative integer "
                     f"(0=不节流): {pmc!r}"
+                )
+
+    # add-settings-system-tab：admin.* 五键前置校验（非法值直接拒绝，不静默忽略——
+    # 与 verify/self_review 同模式，前端输入类型错误在后端权威兜底）。
+    if isinstance(config_patch.get("admin"), dict):
+        adm = config_patch["admin"]
+        if "enabled" in adm and adm["enabled"] is not None \
+                and not isinstance(adm["enabled"], bool):
+            return fail(f"admin.enabled must be a boolean: {adm['enabled']!r}")
+        if "interval_minutes" in adm and adm["interval_minutes"] is not None:
+            im = adm["interval_minutes"]
+            if not isinstance(im, (int, float)) or isinstance(im, bool) or im <= 0:
+                return fail(f"admin.interval_minutes must be a positive number: {im!r}")
+        if "escalation_cooldown_minutes" in adm \
+                and adm["escalation_cooldown_minutes"] is not None:
+            ec = adm["escalation_cooldown_minutes"]
+            if not isinstance(ec, (int, float)) or isinstance(ec, bool) or ec < 0:
+                return fail(
+                    f"admin.escalation_cooldown_minutes must be a non-negative number: {ec!r}"
+                )
+        if "merge_breaker_threshold" in adm \
+                and adm["merge_breaker_threshold"] is not None:
+            mb = adm["merge_breaker_threshold"]
+            if not isinstance(mb, int) or isinstance(mb, bool) or mb < 1:
+                return fail(
+                    f"admin.merge_breaker_threshold must be a positive integer: {mb!r}"
+                )
+        if "shutdown_drain_seconds" in adm \
+                and adm["shutdown_drain_seconds"] is not None:
+            sd = adm["shutdown_drain_seconds"]
+            if not isinstance(sd, int) or isinstance(sd, bool) or sd < 0:
+                return fail(
+                    f"admin.shutdown_drain_seconds must be a non-negative integer: {sd!r}"
                 )
 
     # 2. 合并受管键
@@ -3401,6 +3501,23 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                     raise ValueError(
                         f"admin.self_review.run_at must be HH:MM (00:00-23:59): {sr['run_at']}"
                     )
+        # add-settings-system-tab：admin.* 五键（merged 视图校验；写路径前置校验
+        # 已拒绝非法 patch，此处兜底防绕过前置校验的直连调用）
+        if "enabled" in admin_m and admin_m["enabled"] is not None \
+                and not isinstance(admin_m["enabled"], bool):
+            raise ValueError(f"admin.enabled must be a boolean: {admin_m['enabled']!r}")
+        for _k, _rule in (
+            ("interval_minutes", lambda v: isinstance(v, (int, float))
+             and not isinstance(v, bool) and v > 0),
+            ("escalation_cooldown_minutes", lambda v: isinstance(v, (int, float))
+             and not isinstance(v, bool) and v >= 0),
+            ("merge_breaker_threshold", lambda v: isinstance(v, int)
+             and not isinstance(v, bool) and v >= 1),
+            ("shutdown_drain_seconds", lambda v: isinstance(v, int)
+             and not isinstance(v, bool) and v >= 0),
+        ):
+            if _k in admin_m and admin_m[_k] is not None and not _rule(admin_m[_k]):
+                raise ValueError(f"admin.{_k} 非法：{admin_m[_k]!r}（保存被拒绝，请修正后重试）")
     except ValueError as e:
         return fail(str(e))
 
