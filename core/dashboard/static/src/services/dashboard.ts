@@ -619,7 +619,7 @@ export interface SelfReviewConfig {
   read_todo?: boolean;
 }
 
-// add-settings-system-tab：系统页签受管 admin.* 键（read_config 白名单 5 键）
+// add-settings-system-tab：系统页签受管 admin.* 键（read_config 白名单 6 键）
 export interface AdminConfig {
   /** 自动自愈总开关（缺省 true） */
   enabled?: boolean;
@@ -631,6 +631,9 @@ export interface AdminConfig {
   merge_breaker_threshold?: number;
   /** 计划性重启排水窗口（秒，0=快速停机，缺省 1800） */
   shutdown_drain_seconds?: number;
+  /** 验证失败（bug-found）修复方式（add-bug-repair-mode-config，缺省 inplace）：
+   * inplace=原地打回（缺省）；derive=派生 fix-* 子 SPEC */
+  bug_repair_mode?: 'inplace' | 'derive';
 }
 
 export interface ConfigData {
