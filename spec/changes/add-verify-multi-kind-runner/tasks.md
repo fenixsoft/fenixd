@@ -57,11 +57,11 @@
 
 ## 1. PR1：引擎 Runner 化等价重构
 
-- [ ] 1.1 新建 `core/verify_engine/runner.py`：Runner 接口（`kind`/`validate`/`setup`/`execute`/`teardown`/`probe_env`）与按 kind 注册表；模块注释写明「调度器不得含 per-kind 执行分支」约定
-- [ ] 1.2 `core/verify_engine/scenarios.py`：`TestScenario.kind` 字段（缺省 `web`、from_dict 透传、取值 ∈ web/cli/api 校验）；VALID_ACTIONS/VALID_ASSERTIONS 组织为 per-kind 词表常量（web 词表内容不变）
-- [ ] 1.3 新建 `core/verify_engine/web_runner.py`：BrowserManager 生命周期、extension 健康检查、per-scenario context、console/network 错误注入、截图取证、视觉对比、推流探针整体归位，行为不变（navigate 硬要求校验随迁）
-- [ ] 1.4 `core/verify_engine/engine.py` 瘦身为纯调度：验收门逐场景委托 Runner.validate、按场景集实际 kind lazy setup/teardown（纯 CLI/API 轮次不启浏览器）、结果组装、状态判定/进度写盘/报告构建/环境门后置分类骨架保留
-- [ ] 1.5 回归验证：现有 verify 相关测试全绿（test_verify_contract / test_verify_scenarios / test_verify_command_port / test_verify_report_gate 等）+ Dashboard fixture 验证配方回归；新增 `tests/test_verify_multi_kind.py` 覆盖 kind 缺省/非法值/调度分派/lazy setup
+- [x] 1.1 新建 `core/verify_engine/runner.py`：Runner 接口（`kind`/`validate`/`setup`/`execute`/`teardown`/`probe_env`）与按 kind 注册表；模块注释写明「调度器不得含 per-kind 执行分支」约定
+- [x] 1.2 `core/verify_engine/scenarios.py`：`TestScenario.kind` 字段（缺省 `web`、from_dict 透传、取值 ∈ web/cli/api 校验）；VALID_ACTIONS/VALID_ASSERTIONS 组织为 per-kind 词表常量（web 词表内容不变）
+- [x] 1.3 新建 `core/verify_engine/web_runner.py`：BrowserManager 生命周期、extension 健康检查、per-scenario context、console/network 错误注入、截图取证、视觉对比、推流探针整体归位，行为不变（navigate 硬要求校验随迁）
+- [x] 1.4 `core/verify_engine/engine.py` 瘦身为纯调度：验收门逐场景委托 Runner.validate、按场景集实际 kind lazy setup/teardown（纯 CLI/API 轮次不启浏览器）、结果组装、状态判定/进度写盘/报告构建/环境门后置分类骨架保留
+- [x] 1.5 回归验证：现有 verify 相关测试全绿（test_verify_contract / test_verify_scenarios / test_verify_command_port / test_verify_report_gate 等）+ Dashboard fixture 验证配方回归；新增 `tests/test_verify_multi_kind.py` 覆盖 kind 缺省/非法值/调度分派/lazy setup
 
 ## 2. PR2：ApiRunner 与契约形态反推
 

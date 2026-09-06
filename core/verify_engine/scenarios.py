@@ -11,10 +11,22 @@ import re
 
 
 # ── 常量 ──────────────────────────────────────────────────────────
+#
+# 多形态验证（add-verify-multi-kind-runner）：场景 kind ∈ web/cli/api，
+# 词表按 kind 组织为 per-kind 常量。**本文件是词表唯一权威源**——
+# agents/planner-plan.md 只引用摘要并标注本文件为权威源（spec
+# multi-kind-planning-guidance：防枚举双源漂移），词表扩展须先改这里。
 
-VALID_ACTIONS = {"click", "type", "clear", "select", "scroll", "hover", "wait", "navigate", "drag", "contextmenu", "seed", "dialog", "mock_api"}
+VALID_KINDS = {"web", "cli", "api"}
 
-VALID_ASSERTIONS = {
+# ── web 词表（存量内容，行为不变）────────────────────────────
+
+WEB_ACTIONS = {
+    "click", "type", "clear", "select", "scroll", "hover", "wait",
+    "navigate", "drag", "contextmenu", "seed", "dialog", "mock_api",
+}
+
+WEB_ASSERTIONS = {
     # 第1层：元素存在性（确定性，0误判）
     "element_visible", "element_count", "element_not_exist",
     "element_focused", "element_enabled",
@@ -27,7 +39,7 @@ VALID_ASSERTIONS = {
     "no_overflow", "alignment",
 }
 
-ASSERTION_LAYERS = {
+WEB_ASSERTION_LAYERS = {
     "element_visible": 1, "element_count": 1, "element_not_exist": 1,
     "element_focused": 1, "element_enabled": 1,
     "no_click_interception": 2, "no_overlap": 2, "in_viewport": 2, "z_index_order": 2,
@@ -36,12 +48,73 @@ ASSERTION_LAYERS = {
     "no_overflow": 4, "alignment": 4,
 }
 
-# 需要选择器的断言类型（不需要的：text_contains / no_console_error / no_network_error / no_auth_error）
+# ── cli 词表（spec multi-kind-scenario-model：CLI 词表与执行语义）────────
+# 仅 run 一种步骤；6 种断言。无第 2 层（交互可用性是 DOM 概念）。
+
+CLI_ACTIONS = {"run"}
+
+CLI_ASSERTIONS = {
+    # 第1层：存在性/状态（确定性，0误判）
+    "exit_code", "file_exists", "dir_contains",
+    # 第3层：内容正确性（确定性，0误判）
+    "output_match", "file_content", "json_output",
+}
+
+CLI_ASSERTION_LAYERS = {
+    "exit_code": 1, "file_exists": 1, "dir_contains": 1,
+    "output_match": 3, "file_content": 3, "json_output": 3,
+}
+
+# ── api 词表（spec multi-kind-scenario-model：API 词表与响应捕获）──────
+# http_request 通常一致；sse_connect 为流式（复杂度高时 fast-follow）。
+# 无第 2 层。
+
+API_ACTIONS = {"http_request", "sse_connect"}
+
+API_ASSERTIONS = {
+    # 第1层：存在性/状态（确定性，0误判）
+    "status_code", "sse_event_count",
+    # 第3层：内容正确性（确定性，0误判）
+    "json_path", "response_header", "body_contains", "json_schema",
+    "sse_event_matches",
+    # 第4层：启发式阈值（失败=warning，需上下文判定）
+    "latency_under",
+}
+
+API_ASSERTION_LAYERS = {
+    "status_code": 1, "sse_event_count": 1,
+    "json_path": 3, "response_header": 3, "body_contains": 3,
+    "json_schema": 3, "sse_event_matches": 3,
+    "latency_under": 4,
+}
+
+# ── 按 kind 词表索引（权威源）──────────────────────────────────
+
+KIND_ACTIONS = {"web": WEB_ACTIONS, "cli": CLI_ACTIONS, "api": API_ACTIONS}
+KIND_ASSERTIONS = {"web": WEB_ASSERTIONS, "cli": CLI_ASSERTIONS, "api": API_ASSERTIONS}
+KIND_ASSERTION_LAYERS = {
+    "web": WEB_ASSERTION_LAYERS,
+    "cli": CLI_ASSERTION_LAYERS,
+    "api": API_ASSERTION_LAYERS,
+}
+
+# ── 向后兼容别名（存量引用不变）────────────────────────────────
+# web→VALID_ACTIONS：潜在别名与集合方法共存，避免库外引用断裂。
+
+VALID_ACTIONS = WEB_ACTIONS
+
+VALID_ASSERTIONS = WEB_ASSERTIONS
+
+ASSERTION_LAYERS = {
+    **WEB_ASSERTION_LAYERS, **CLI_ASSERTION_LAYERS, **API_ASSERTION_LAYERS,
+}
+
+# 需要选择器的断言类型（web 语义；CLI/API 断言不含 selector 概念）
 ASSERTIONS_REQUIRING_SELECTOR = VALID_ASSERTIONS - {
     "text_contains", "no_console_error", "no_network_error", "no_auth_error",
 }
 
-# 需要target选择器的操作（mock_api 的 target 为 URL 模式，seed 为 localStorage 键）
+# 需要target选择器的操作（web 语义；mock_api 的 target 为 URL 模式，seed 为 localStorage 键）
 ACTIONS_REQUIRING_TARGET = {"click", "type", "clear", "select", "scroll", "drag", "contextmenu", "seed", "mock_api"}
 
 
@@ -52,12 +125,30 @@ class TestStep:
     """单个测试操作步骤。
 
     Attributes:
-        action: 操作类型（click/type/clear/select/scroll/wait/navigate/dialog）
+        action: 操作类型（web: click/type/clear/select/scroll/wait/navigate/
+            dialog…；cli: run；api: http_request/sse_connect）
         target: CSS选择器（优先data-testid，其次语义选择器）
         value: 输入值（type/select/navigate/dialog使用）
         screenshot: 操作后是否截图
         description: 人类可读描述
         dialog: 点击触发的浏览器对话框处理（accept | dismiss）
+        status: mock 响应状态码（mock_api 分支）
+        prompt_text: prompt 对话框 accept 时提交的文本
+        # cli run 字段
+        command: 命令（字符串=shell / 列表=argv），见 prepare 解析约定
+        cwd: 相对验证树根的工作目录
+        env: 环境变量（值支持 {env:VAR} 插值）
+        stdin: 注入标准输入
+        timeout: 超时秒数（CLI 超时强杀=步骤失败；API 请求超时）
+        as_: 命名结果（CLI run 命名输出；api http_request 命名响应，
+            sse_connect 命名事件流）
+        # api http_request / sse_connect 字段
+        method: HTTP 方法（GET/POST/…）
+        url: 绝对 URL（origin 由框架改写，路径保留）
+        headers: 请求头（值支持 {env:VAR} 插值）
+        body: 请求体
+        body_type: 请求体类型（json/text）
+        duration: sse_connect 收集窗口秒数
     """
     action: str
     target: str = ""
@@ -71,6 +162,19 @@ class TestStep:
     # 场景拿到空串 → 断言系统性伪失败。
     status: int = 0
     prompt_text: str = ""
+    # 多形态验证字段（add-verify-multi-kind-runner）
+    command: object = None  # str 或 list
+    cwd: str = ""
+    env: dict = field(default_factory=dict)
+    stdin: str = ""
+    timeout: float = 0.0
+    as_: str = ""
+    method: str = ""
+    url: str = ""
+    headers: dict = field(default_factory=dict)
+    body: str = ""
+    body_type: str = ""
+    duration: float = 0.0
 
     def to_dict(self) -> dict:
         d: dict = {"action": self.action}
@@ -88,6 +192,30 @@ class TestStep:
             d["status"] = self.status
         if self.prompt_text:
             d["prompt_text"] = self.prompt_text
+        if self.command not in (None, ""):
+            d["command"] = self.command
+        if self.cwd:
+            d["cwd"] = self.cwd
+        if self.env:
+            d["env"] = self.env
+        if self.stdin:
+            d["stdin"] = self.stdin
+        if self.timeout:
+            d["timeout"] = self.timeout
+        if self.as_:
+            d["as"] = self.as_
+        if self.method:
+            d["method"] = self.method
+        if self.url:
+            d["url"] = self.url
+        if self.headers:
+            d["headers"] = self.headers
+        if self.body:
+            d["body"] = self.body
+        if self.body_type:
+            d["body_type"] = self.body_type
+        if self.duration:
+            d["duration"] = self.duration
         return d
 
     @classmethod
@@ -101,6 +229,18 @@ class TestStep:
             dialog=d.get("dialog", ""),
             status=d.get("status", 0) or 0,
             prompt_text=d.get("prompt_text", "") or "",
+            command=d.get("command"),
+            cwd=d.get("cwd", ""),
+            env=d.get("env") or {},
+            stdin=d.get("stdin", ""),
+            timeout=float(d.get("timeout") or 0),
+            as_=d.get("as", ""),
+            method=d.get("method", ""),
+            url=d.get("url", ""),
+            headers=d.get("headers") or {},
+            body=d.get("body", ""),
+            body_type=d.get("body_type", ""),
+            duration=float(d.get("duration") or 0),
         )
 
 
@@ -178,65 +318,25 @@ class TestScenario:
     visual_baseline: str = ""
     depends_on: list[str] = field(default_factory=list)
     external_net_errors_ok: bool = False
+    # 场景 kind（web/cli/api，缺省 web）。kind 是场景级字段：混合 spec =
+    # 场景集混排 + depends_on 跨 kind 编排；单场景内不混排步骤类型。
+    kind: str = "web"
 
     def validate(self) -> list[str]:
         """验证场景定义的合法性，返回错误列表。
 
-        空列表表示场景定义完全合法。
+        按场景 kind 校验：web 用 web 词表（navigate 硬要求等存量规则），
+        cli/api 用各自词表与必填字段。空列表表示场景定义完全合法。
+        词表校验的权威源是本模块 per-kind 常量（KIND_ACTIONS /
+        KIND_ASSERTIONS），planner 提示词只做摘要并标注此处为权威源。
         """
-        errors: list[str] = []
-
-        # 检查 scenario ID
-        if not self.id or not self.id.strip():
-            errors.append("场景ID不能为空")
-
-        # 检查步骤
-        for i, step in enumerate(self.steps):
-            if step.action not in VALID_ACTIONS:
-                errors.append(
-                    f"场景'{self.id}'步骤{i}: 未知操作 '{step.action}'，"
-                    f"支持: {', '.join(sorted(VALID_ACTIONS))}"
-                )
-            if step.action in ACTIONS_REQUIRING_TARGET and not step.target:
-                errors.append(
-                    f"场景'{self.id}'步骤{i}: 操作 '{step.action}' 需要 target 选择器"
-                )
-
-        # 检查断言
-        for i, a in enumerate(self.assertions):
-            if a.type not in VALID_ASSERTIONS:
-                errors.append(
-                    f"场景'{self.id}'断言{i}: 未知类型 '{a.type}'，"
-                    f"支持: {', '.join(sorted(VALID_ASSERTIONS))}"
-                )
-            if a.type in ASSERTIONS_REQUIRING_SELECTOR and not a.selector:
-                errors.append(
-                    f"场景'{self.id}'断言{i}: 类型 '{a.type}' 需要 selector"
-                )
-
-        # navigate URL 验收（2026-08-28：相对路径导致浏览器白屏、整轮断言全灭）
-        nav_steps = [s for s in self.steps if s.action == "navigate"]
-        if not nav_steps:
-            errors.append(
-                f"场景'{self.id}'缺少 navigate 步骤"
-                f"（web 场景必须以绝对 URL 打开被测页面）"
-            )
-        for i, step in enumerate(self.steps):
-            if step.action == "navigate" and not re.match(
-                r"^https?://\S+$", (step.value or "").strip()
-            ):
-                errors.append(
-                    f"场景'{self.id}'步骤{i}: navigate URL 必须为绝对地址"
-                    f"（http://或https://开头，含主机与端口），收到 '{step.value}'"
-                    f"——相对路径会被验收拒绝并退回 plan 阶段"
-                )
-
-        return errors
+        return validate_scenario(self)
 
     def to_dict(self) -> dict:
         d: dict = {
             "id": self.id,
             "description": self.description,
+            "kind": self.kind,
             "steps": [s.to_dict() for s in self.steps],
             "assertions": [a.to_dict() for a in self.assertions],
         }
@@ -258,7 +358,219 @@ class TestScenario:
             visual_baseline=d.get("visual_baseline", ""),
             depends_on=d.get("depends_on", []),
             external_net_errors_ok=d.get("external_net_errors_ok", False),
+            kind=d.get("kind", "web"),
         )
+
+
+# ── per-kind 场景验收校验 ─────────────────────────────────────────
+# 各 Runner 的 validate 委托本函数（WebRunner/CliRunner/ApiRunner 一致入口，
+# 词表权威源唯一）。验收错误消息带「支持: …」词表速查（spec
+# multi-kind-planning-guidance 打回路径：plan 侧无需查询源码即可修正）。
+
+
+def _supported_actions(kind: str) -> str:
+    return ", ".join(sorted(KIND_ACTIONS.get(kind, set())))
+
+
+def _supported_assertions(kind: str) -> str:
+    return ", ".join(sorted(KIND_ASSERTIONS.get(kind, set())))
+
+
+def _validate_web(scenario: TestScenario) -> list[str]:
+    """web 词表校验（存量规则，navigate 硬要求 + target/selector 必填）。"""
+    errors: list[str] = []
+
+    for i, step in enumerate(scenario.steps):
+        if step.action not in WEB_ACTIONS:
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: 未知操作 '{step.action}'，"
+                f"支持: {_supported_actions('web')}"
+            )
+        if step.action in ACTIONS_REQUIRING_TARGET and not step.target:
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: 操作 '{step.action}' 需要 target 选择器"
+            )
+
+    for i, a in enumerate(scenario.assertions):
+        if a.type not in WEB_ASSERTIONS:
+            errors.append(
+                f"场景'{scenario.id}'断言{i}: 未知类型 '{a.type}'，"
+                f"支持: {_supported_assertions('web')}"
+            )
+        if a.type in ASSERTIONS_REQUIRING_SELECTOR and not a.selector:
+            errors.append(
+                f"场景'{scenario.id}'断言{i}: 类型 '{a.type}' 需要 selector"
+            )
+
+    # navigate URL 验收（2026-08-28：相对路径导致浏览器白屏、整轮断言全灭）
+    nav_steps = [s for s in scenario.steps if s.action == "navigate"]
+    if not nav_steps:
+        errors.append(
+            f"场景'{scenario.id}'缺少 navigate 步骤"
+            f"（web 场景必须以绝对 URL 打开被测页面）"
+        )
+    for i, step in enumerate(scenario.steps):
+        if step.action == "navigate" and not re.match(
+            r"^https?://\S+$", (step.value or "").strip()
+        ):
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: navigate URL 必须为绝对地址"
+                f"（http://或https://开头，含主机与端口），收到 '{step.value}'"
+                f"——相对路径会被验收拒绝并退回 plan 阶段"
+            )
+    return errors
+
+
+def _validate_cli(scenario: TestScenario) -> list[str]:
+    """cli 词表校验：仅 run 步骤 + CLI 断言必填字段。
+
+    run 步骤必填 command（字符串=shell/列表=argv）；cwd 相对验证树根、
+    env 值支持 {env:VAR} 插值、stdin/timeout/as 可选。断言必填字段见
+    spec multi-kind-scenario-model「CLI 词表与执行语义」。
+    """
+    errors: list[str] = []
+
+    for i, step in enumerate(scenario.steps):
+        if step.action not in CLI_ACTIONS:
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: 未知操作 '{step.action}'，"
+                f"支持: {_supported_actions('cli')}"
+            )
+            continue
+        if not step.command:
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: run 步骤必须提供 command"
+                f"（字符串=经 shell 执行；列表=argv 直接执行）"
+            )
+
+    for i, a in enumerate(scenario.assertions):
+        if a.type not in CLI_ASSERTIONS:
+            errors.append(
+                f"场景'{scenario.id}'断言{i}: 未知类型 '{a.type}'，"
+                f"支持: {_supported_assertions('cli')}"
+            )
+            continue
+        if a.type in ("file_exists", "file_content", "json_output",
+                      "dir_contains"):
+            if a.type == "dir_contains":
+                path_or_glob = a.extra.get("glob")
+            else:
+                path_or_glob = a.extra.get("path")
+            if not path_or_glob:
+                field = "path" if a.type != "dir_contains" else "glob"
+                errors.append(
+                    f"场景'{scenario.id}'断言{i}: 类型 '{a.type}' 需要 {field}"
+                )
+        if a.type in ("output_match", "file_content") and not a.expected:
+            errors.append(
+                f"场景'{scenario.id}'断言{i}: {a.type} 需要 expected"
+            )
+        if a.type == "json_output":
+            if not a.extra.get("step"):
+                errors.append(
+                    f"场景'{scenario.id}'断言{i}: json_output 需要 step"
+                    f"（指定解析哪个命名结果的 stdout）"
+                )
+            if not a.extra.get("path"):
+                errors.append(
+                    f"场景'{scenario.id}'断言{i}: json_output 需要 path"
+                )
+    return errors
+
+
+def _validate_api(scenario: TestScenario) -> list[str]:
+    """api 词表校验：http_request/sse_connect 步骤 + API 断言必填字段。
+
+    http_request 必填 method/url（绝对 URL，origin 由框架改写）；断言必填
+    字段见 spec multi-kind-scenario-model「API 词表与响应捕获」。
+    """
+    errors: list[str] = []
+
+    for i, step in enumerate(scenario.steps):
+        if step.action not in API_ACTIONS:
+            errors.append(
+                f"场景'{scenario.id}'步骤{i}: 未知操作 '{step.action}'，"
+                f"支持: {_supported_actions('api')}"
+            )
+            continue
+        if step.action == "http_request":
+            if not step.method:
+                errors.append(
+                    f"场景'{scenario.id}'步骤{i}: http_request 必须提供 method"
+                )
+            if not step.url:
+                errors.append(
+                    f"场景'{scenario.id}'步骤{i}: http_request 必须提供 url"
+                    f"（绝对 URL，origin 由框架改写）"
+                )
+        elif step.action == "sse_connect":
+            if not step.url:
+                errors.append(
+                    f"场景'{scenario.id}'步骤{i}: sse_connect 必须提供 url"
+                )
+
+    for i, a in enumerate(scenario.assertions):
+        if a.type not in API_ASSERTIONS:
+            errors.append(
+                f"场景'{scenario.id}'断言{i}: 未知类型 '{a.type}'，"
+                f"支持: {_supported_assertions('api')}"
+            )
+            continue
+        if a.type == "status_code" and a.expected in ("", None):
+            errors.append(
+                f"场景'{scenario.id}'断言{i}: status_code 需要 expected"
+            )
+        if a.type == "json_path" and not a.extra.get("path"):
+            errors.append(
+                f"场景'{scenario.id}'断言{i}: json_path 需要 path"
+            )
+        if a.type == "response_header" and not a.extra.get("header"):
+            errors.append(
+                f"场景'{scenario.id}'断言{i}: response_header 需要 header"
+            )
+        if a.type == "body_contains" and not a.expected:
+            errors.append(
+                f"场景'{scenario.id}'断言{i}: body_contains 需要 expected"
+            )
+        if a.type == "json_schema" and not a.extra.get("schema"):
+            errors.append(
+                f"场景'{scenario.id}'断言{i}: json_schema 需要 schema"
+            )
+        if a.type == "latency_under" and a.expected in ("", None):
+            errors.append(
+                f"场景'{scenario.id}'断言{i}: latency_under 需要 expected"
+                f"（毫秒上限）"
+            )
+        if a.type == "sse_event_count" and a.extra.get("min") is None:
+            errors.append(
+                f"场景'{scenario.id}'断言{i}: sse_event_count 需要 min（下限）"
+            )
+        if a.type == "sse_event_matches" and not a.expected:
+            errors.append(
+                f"场景'{scenario.id}'断言{i}: sse_event_matches 需要 expected"
+            )
+    return errors
+
+
+def validate_scenario(scenario: TestScenario) -> list[str]:
+    """按场景 kind 分派 per-kind 词表校验（Runner.validate 与
+    TestScenario.validate 的公共入口，词表权威源唯一）。"""
+    errors: list[str] = []
+    if not scenario.id or not scenario.id.strip():
+        errors.append("场景ID不能为空")
+    if scenario.kind not in VALID_KINDS:
+        errors.append(
+            f"场景'{scenario.id}'未知 kind '{scenario.kind}'，"
+            f"支持: {', '.join(sorted(VALID_KINDS))}"
+        )
+        return errors
+    if scenario.kind == "web":
+        errors.extend(_validate_web(scenario))
+    elif scenario.kind == "cli":
+        errors.extend(_validate_cli(scenario))
+    elif scenario.kind == "api":
+        errors.extend(_validate_api(scenario))
+    return errors
 
 
 # ── 场景加载 ──────────────────────────────────────────────────────
