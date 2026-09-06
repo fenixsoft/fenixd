@@ -258,3 +258,73 @@ class TestV2ConfigPageFixture:
         # 声明新增交付：17 个全部保留（11 既有 + 6 新增范围）
         assert sorted(diff.scenario_set.ids) == sorted(self.ROUND2_17)
         assert len(diff.added) == 6
+
+
+# ── 4. multi-kind-report-compat：冻结条目 kind 携带 ───────────────
+
+class TestScenarioEntryKind:
+    def test_kind_default_web(self):
+        e = ScenarioEntry("s1")
+        assert e.kind == "web"
+        e2 = ScenarioEntry.from_dict({"id": "s1"})
+        assert e2.kind == "web"
+
+    def test_kind_serialized_when_non_web(self):
+        e = ScenarioEntry("s1", kind="cli")
+        d = e.to_dict()
+        assert d.get("kind") == "cli"
+
+    def test_roundtrip_kind(self):
+        proot = _tmp_project()
+        ss = ScenarioSet("demo", 1, [
+            ScenarioEntry("web-s", kind="web"),
+            ScenarioEntry("cli-s", kind="cli"),
+            ScenarioEntry("api-s", kind="api"),
+        ])
+        save_scenario_set(proot, ss)
+        got = load_scenario_set(proot, "demo")
+        by_id = {e.id: e.kind for e in got.scenarios}
+        assert by_id == {"web-s": "web", "cli-s": "cli", "api-s": "api"}
+
+    def test_legacy_freeze_zero_migration(self):
+        """存量冻结文件无 kind → 读侧缺省 web，diff 与写回兼容。"""
+        proot = _tmp_project()
+        ss = ScenarioSet("demo", 1, [ScenarioEntry("legacy-s1")])
+        save_scenario_set(proot, ss)
+        # 读回缺省 web
+        got = load_scenario_set(proot, "demo")
+        assert got.scenarios[0].kind == "web"
+        # planner 产出无 kind → 合并后条目仍 web
+        diff = diff_planner_output(proot, "demo", None,
+                                   [{"id": "legacy-s1"}], 2)
+        assert {e.id: e.kind for e in diff.scenario_set.scenarios} == {
+            "legacy-s1": "web"}
+
+    def test_first_round_carries_kind(self):
+        """首轮冻结：planner 产出的 cli/api 场景 kind 写入 scenarios.json。"""
+        proot = _tmp_project()
+        planner = [
+            {"id": "w1"},
+            {"id": "c1", "kind": "cli"},
+            {"id": "a1", "kind": "api"},
+        ]
+        diff = diff_planner_output(proot, "demo", None, planner, 1)
+        save_scenario_set(proot, diff.scenario_set)
+        got = load_scenario_set(proot, "demo")
+        by_id = {e.id: e.kind for e in got.scenarios}
+        assert by_id == {"w1": "web", "c1": "cli", "a1": "api"}
+
+    def test_missing_backfill_carries_kind(self):
+        """无理由缺场景补齐：持久化集的 cli 条目被补齐后仍为 cli。"""
+        proot = _tmp_project()
+        _seed_persisted(proot, "demo", ["s1"])
+        # 手动改写持久化集为 cli（模拟混合集）
+        ss = load_scenario_set(proot, "demo")
+        ss.scenarios[0].kind = "cli"
+        save_scenario_set(proot, ss)
+        # 非修复轮（state=None）允许新增条目
+        diff = diff_planner_output(proot, "demo", None,
+                                   [{"id": "other"}], 2)
+        assert diff.ok is False  # s1 无理由缺失 → 补齐
+        by_id = {e.id: e.kind for e in diff.scenario_set.scenarios}
+        assert by_id == {"s1": "cli", "other": "web"}

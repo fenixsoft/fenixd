@@ -45,8 +45,9 @@ const VERDICT_COUNTS: Array<[keyof NonNullable<SpecDetail['verdict']>['summary']
   ['env_issues', '环境问题'],
 ];
 
-// 断言类型中文标签（对齐 core/verify_engine/scenarios.py 的 18 种 type；未收录值原样显示）
+// 断言类型中文标签（对齐 core/verify_engine/scenarios.py 三套词表；未收录值原样显示）
 const ASSERTION_LABELS: Record<string, string> = {
+  // web（18 种）
   element_visible: '元素可见',
   element_count: '元素数量',
   element_not_exist: '元素不存在',
@@ -65,6 +66,22 @@ const ASSERTION_LABELS: Record<string, string> = {
   dom_structure: 'DOM 结构正确',
   no_overflow: '无溢出',
   alignment: '对齐正常',
+  // cli
+  exit_code: '退出码',
+  file_exists: '文件存在',
+  output_match: '输出匹配',
+  file_content: '文件内容',
+  json_output: 'JSON 输出',
+  dir_contains: '目录包含',
+  // api
+  status_code: '状态码',
+  json_path: 'JSON 路径',
+  response_header: '响应头',
+  body_contains: '响应体包含',
+  json_schema: 'JSON Schema',
+  latency_under: '延迟上限',
+  sse_event_matches: 'SSE 事件匹配',
+  sse_event_count: 'SSE 事件数',
 };
 
 // 断言类型值 → 中文标签；bug.assertion 可能是「type + 附加说明」自由文本，命中前缀时仅替换前缀
@@ -80,11 +97,13 @@ type AssertionResultItem = NonNullable<
 >[number];
 
 // 断言行明细摘要：优先设计 label / 结果 message；通过断言常缺省这两者，
-// 按引擎输出字段（core/verify_engine/assertions.py 口径）分类型组装可读文本
+// 按引擎输出字段（core/verify_engine/assertions.py / api_assertions.py /
+// cli_assertions.py 口径）分类型组装可读文本（字段驱动，不按 kind 分支）
 function assertionDetail(a: AssertionResultItem): string {
   if (a.label) return a.label;
   if (a.message) return a.message;
   switch (a.type) {
+    // ── web ──
     case 'element_count':
       return `期望 ${a.expected ?? 1} 个，实际 ${a.actual ?? '?'} 个`;
     case 'element_not_exist':
@@ -114,9 +133,68 @@ function assertionDetail(a: AssertionResultItem): string {
       return `${a.parent || '?'} ${a.relation === 'direct-child' ? '直接包含' : '包含'} ${a.child || '?'}`;
     case 'z_index_order':
       return `${a.selector || '?'} 的 z-index ${a.z_index_self ?? '?'} ${a.operator || '>'} ${a.z_index_compare ?? '?'}（对比 ${a.compare_selector || '?'}）`;
-    default:
-      return a.selector || '';
+    // ── cli ──
+    case 'exit_code':
+      return `期望退出码 ${a.expected ?? 0}，实际 ${a.actual ?? '?'}`;
+    case 'file_exists':
+      return `${a.path || '?'} ${a.exists ? '存在' : '不存在'}`;
+    case 'dir_contains':
+      return `匹配 ${a.glob || '?'} 共 ${a.count ?? '?'} 个`;
+    case 'output_match': {
+      const streamWord = a.stream === 'stderr' ? 'stderr' : a.stream === 'stdout' ? 'stdout' : '输出';
+      const neg = a.negate ? '（取反）' : '';
+      const snippet = a.actual_snippet ? `，片段「${a.actual_snippet}」` : '';
+      return `${streamWord} 匹配「${a.expected ?? ''}」${neg}${snippet}`;
+    }
+    case 'file_content':
+      return `文件内容匹配「${a.expected ?? ''}」${a.negate ? '（取反）' : ''}`;
+    case 'json_output': {
+      const actual = a.actual !== undefined ? `，实际「${JSON.stringify(a.actual) ?? a.actual}」` : '';
+      return `JSON ${a.path || '?'} 期望「${JSON.stringify(a.expected) ?? a.expected}」${actual}`;
+    }
+    // ── api ──
+    case 'status_code':
+      return `期望状态码 ${a.expected ?? '?'}，实际 ${a.actual ?? '?'}`;
+    case 'json_path': {
+      const actual = a.actual !== undefined ? `，实际「${JSON.stringify(a.actual) ?? a.actual}」` : '';
+      return `路径 ${a.path || '?'} 期望「${JSON.stringify(a.expected) ?? a.expected}」${actual}`;
+    }
+    case 'response_header':
+      return `头 ${a.header || '?'} 期望「${a.expected ?? ''}」，实际「${a.actual ?? ''}」`;
+    case 'body_contains':
+      return a.actual_snippet ? `包含「${a.expected ?? ''}」，命中「${a.actual_snippet}」` : `包含「${a.expected ?? ''}」`;
+    case 'json_schema':
+      return 'JSON Schema 校验';
+    case 'latency_under':
+      return `期望延迟 < ${a.expected ?? '?'}ms，实际 ${a.actual ?? '?'}ms`;
+    case 'sse_event_matches':
+      return `事件匹配「${a.expected ?? ''}」（命中 ${a.hit_count ?? 0} 条）`;
+    case 'sse_event_count':
+      return `期望事件 ≥ ${a.min ?? 1}，实际 ${a.actual ?? 0}`;
+    // ── 字段驱动兜底（cli/api 无 selector；按实际存在字段摘要）──
+    default: {
+      if (a.selector) return a.selector;
+      const bits: string[] = [];
+      if (a.path) bits.push(`路径 ${a.path}`);
+      if (a.header) bits.push(`头 ${a.header}`);
+      if (a.expected !== undefined) bits.push(`期望「${JSON.stringify(a.expected) ?? a.expected}」`);
+      if (a.actual !== undefined && a.actual !== null && a.actual !== '')
+        bits.push(`实际「${JSON.stringify(a.actual) ?? a.actual}」`);
+      return bits.join('，');
+    }
   }
+}
+
+// 场景 kind 徽章（web/cli/api 视觉区分；multi-kind-report-compat）
+const KIND_META: Record<string, { color: string; label: string }> = {
+  web: { color: 'blue', label: 'web' },
+  cli: { color: 'purple', label: 'cli' },
+  api: { color: 'geekblue', label: 'api' },
+};
+
+function KindBadge({ kind }: { kind?: string }) {
+  const meta = KIND_META[kind || 'web'] || { color: 'default', label: kind || 'web' };
+  return <Tag color={meta.color} style={{ marginInlineEnd: 0 }}>{meta.label}</Tag>;
 }
 
 // overview「任务进度」同款进度条控件：大百分比 + 已完成 x/y + 渐变进度条（验证进度/任务清单共用）
@@ -904,6 +982,7 @@ export default function SpecDetailPage() {
                                 ? '✗ 失败'
                                 : '✗ 错误'}
                         </Tag>
+                        <KindBadge kind={scenario.kind} />
                         <Typography.Text strong>{scenario.scenario_id}</Typography.Text>
                       </Space>
                     }
@@ -1153,7 +1232,7 @@ export default function SpecDetailPage() {
               </Image.PreviewGroup>
             </div>
           ) : (
-            <Empty description="暂无失败截图" />
+            <Empty description="暂无截图——CLI/API 场景证据为命令输出 / HTTP 响应体（在场景页签断言明细中）" />
           )}
         </div>
       ),

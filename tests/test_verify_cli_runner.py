@@ -280,6 +280,39 @@ class TestEngineCliDispatch(unittest.TestCase):
         # 验收失败不执行任何场景
         self.assertEqual(report["summary"]["total"], 0)
 
+    def test_report_carries_kind_and_empty_evidence(self):
+        """report.json scenarios 透传 kind；cli/api 的 screenshots/visual_results 恒空。"""
+        scenarios = [
+            Scenario.from_dict({
+                "id": "c1", "kind": "cli",
+                "steps": [{"action": "run", "command": "true"}],
+                "assertions": [{"type": "exit_code", "expected": 0}],
+            }),
+            Scenario.from_dict({
+                "id": "w1",
+                "steps": [{"action": "navigate", "value": "http://127.0.0.1:9"}],
+                "assertions": [],
+            }),
+        ]
+        web_execute = AsyncMock(return_value={
+            "scenario_id": "w1", "description": "", "kind": "web",
+            "status": "pass", "step_results": [], "assertion_results": [],
+            "visual_results": [], "screenshots": [],
+        })
+        with mock.patch.object(WebRunner, "setup", new=AsyncMock()), \
+                mock.patch.object(WebRunner, "teardown", new=AsyncMock()), \
+                mock.patch.object(WebRunner, "execute", new=web_execute):
+            engine = self._engine()
+            report = asyncio.run(engine.run(scenarios))
+        kinds = {sc["scenario_id"]: sc.get("kind") for sc in report["scenarios"]}
+        self.assertEqual(kinds, {"c1": "cli", "w1": "web"})
+        cli_sc = next(s for s in report["scenarios"] if s["scenario_id"] == "c1")
+        self.assertEqual(cli_sc["screenshots"], [])
+        self.assertEqual(cli_sc["visual_results"], [])
+        # summary 口径不变（blocked-env 仍计入 warning）
+        self.assertEqual(report["summary"]["total"], 2)
+        self.assertEqual(report["summary"]["passed"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

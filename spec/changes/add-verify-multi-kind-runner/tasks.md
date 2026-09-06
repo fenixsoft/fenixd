@@ -81,11 +81,11 @@
 
 ## 4. 下游兼容与前端
 
-- [ ] 4.1 report.json scenarios 元素透传 `kind`；`screenshots`/`visual_results` 空列表 schema 兼容（summary 口径不变）
-- [ ] 4.2 `core/verify_scenarios.py`：`ScenarioEntry` 可选 `kind` 字段（to_dict 序列化、读侧缺省 web、冻结集补齐/合并携带）；`tests/test_verify_scenarios.py` 补用例
-- [ ] 4.3 verdict 链回归夹具（不改 `verdict_check.py`）：cli/api 失败场景的 assertion_triage 四分类、product-bug 拦截豁免、无截图证据合规三不变量
-- [ ] 4.4 `core/dashboard/static/src/pages/projects/detail.tsx`：场景 kind 徽章（web/cli/api）、断言详情字段驱动渲染（不按 kind 分支组件）、截图区空占位说明
-- [ ] 4.5 dashboard 前端构建与相关测试回归（dist 出 git，merge 后框架自动重建，不提交 dist）
+- [x] 4.1 report.json scenarios 元素透传 `kind`；`screenshots`/`visual_results` 空列表 schema 兼容（summary 口径不变）
+- [x] 4.2 `core/verify_scenarios.py`：`ScenarioEntry` 可选 `kind` 字段（to_dict 序列化、读侧缺省 web、冻结集补齐/合并携带）；`tests/test_verify_scenarios.py` 补用例
+- [x] 4.3 verdict 链回归夹具（不改 `verdict_check.py`）：cli/api 失败场景的 assertion_triage 四分类、product-bug 拦截豁免、无截图证据合规三不变量
+- [x] 4.4 `core/dashboard/static/src/pages/projects/detail.tsx`：场景 kind 徽章（web/cli/api）、断言详情字段驱动渲染（不按 kind 分支组件）、截图区空占位说明
+- [x] 4.5 dashboard 前端构建与相关测试回归（dist 出 git，merge 后框架自动重建，不提交 dist）
 
 ## 5. planner 指导与提示词中立化
 
