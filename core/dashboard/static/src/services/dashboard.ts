@@ -168,6 +168,10 @@ export interface SpecSummary {
   created: string | null;
   updated: string | null;
   error: string | null;
+  /** add-spec-scheduling-controls D6：定时拾取时间（ISO8601 UTC 或 null，未到期前不被 daemon 拾取） */
+  start_after?: string | null;
+  /** add-spec-scheduling-controls D6：冻结定时解冻目标时间（ISO8601 UTC 或 null，null=永久冻结） */
+  frozen_until?: string | null;
   /** add-task-progress-verify-phase：任务进度列阶段——"verify" 仅当 status==testing，其余 "impl"（判定单点在后端） */
   progress_phase?: 'verify' | 'impl';
   /** add-task-progress-verify-phase：verify 阶段当前步骤文案（验证引擎 current，非空才渲染） */
@@ -234,6 +238,59 @@ export function unfreezeSpec(project: string, spec: string) {
   return request(
     `/api/spec-unfreeze?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
     { method: 'POST' },
+  );
+}
+
+// ── SPEC 定时拾取 / 冻结管理（add-spec-scheduling-controls D5/D6） ──
+
+export interface StartAfterResult {
+  ok: boolean;
+  project: string;
+  spec: string;
+  start_after: string | null;
+  error?: string;
+}
+
+/** 设置/清除 SPEC 定时拾取时间（value=ISO8601 UTC 或 null 清除） */
+export function setSpecStartAfter(project: string, spec: string, value: string | null) {
+  return request<StartAfterResult>(
+    `/api/spec-start-after?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    },
+  );
+}
+
+export interface FreezeConfigResult {
+  ok: boolean;
+  project: string;
+  spec: string;
+  mode: 'permanent' | 'scheduled' | 'unfreeze';
+  frozen_until: string | null;
+  unfrozen?: boolean;
+  error?: string;
+}
+
+/**
+ * 冻结管理配置：permanent=永久冻结（清定时解冻）；
+ * scheduled=设置定时解冻时间（until=ISO8601 UTC，已过去立即解冻）；
+ * unfreeze=立即解冻。仅对冻结 spec 生效。
+ */
+export function setSpecFreezeConfig(
+  project: string,
+  spec: string,
+  mode: 'permanent' | 'scheduled' | 'unfreeze',
+  until?: string | null,
+) {
+  return request<FreezeConfigResult>(
+    `/api/spec-freeze-config?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, until: until ?? null }),
+    },
   );
 }
 

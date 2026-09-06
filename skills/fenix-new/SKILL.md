@@ -80,6 +80,29 @@ if 'mode:' not in text:
 - 存量 spec（无 mode 行）daemon 一律按 `full` 处理，零迁移
 - 用户未指定模式时按 1.5 的建议写入；用户显式指定时按用户指定写入
 
+**3.1.2 写入定时拾取时间（add-spec-scheduling-controls）**
+
+用户传入 `--start-after` 参数时（可选，见「规则」节），按以下约定换算为
+ISO8601 UTC 时间戳，注册时经 `add_spec` attrs 写入 STATE.md entry 的
+`start_after` 字段（daemon 在该时间点之后才会拾取该 SPEC）：
+
+- **绝对时间**（如 `--start-after "2026-09-07 09:00"`）：按本地时区 UTC+8 解释。
+  示例本地 09:00 → UTC `2026-09-07T01:00:00+00:00`。换算：
+  ```bash
+  python3 -c "
+  from datetime import datetime, timedelta, timezone
+  local = datetime.strptime('2026-09-07 09:00', '%Y-%m-%d %H:%M').replace(
+      tzinfo=timezone(timedelta(hours=8)))
+  print(local.astimezone(timezone.utc).isoformat())
+  "
+  ```
+- **相对时长**（如 `--start-after +2h` / `--start-after +30m`）：按提交（注册）
+  时刻解释为未来时间点——`+2h` = 当前 UTC 时间 + 2 小时，`+30m` = + 30 分钟。
+- **未指定**：不写 `start_after` 字段（缺省 null，daemon 立即按既有逻辑拾取）。
+
+换算结果在 §4 注册时写入（见下）；`--modify <name>` 更新时若用户调整定时，
+同样同步更新 STATE.md 的 `start_after` 字段。
+
 **3.2 按依赖顺序生成 artifact**
 
 ```bash
@@ -160,6 +183,10 @@ print(f'SPEC <spec-name> registered')
 "
 ```
 
+用户指定了 `--start-after` 时，把换算好的 ISO8601 UTC 时间戳（见 §3.1.2）作为
+attrs 一并写入：`sm.add_spec('<spec-name>', {'status': 'drafted', 'priority': 5,
+'start_after': '<ISO8601-UTC>'})`。未指定时不写该键（缺省 null，立即进入调度）。
+
 告知用户：**「SPEC `<name>` 已创建并注册。fenixd 会自动拾取并开始实现。」**
 
 ### 5. 自动提交 spec（防 merge-back autostash 熔断）
@@ -191,4 +218,9 @@ git commit -m "[fenix] spec: <spec-name>"
   - 用户显式指定（`--fast-track` / `--full`）时 MUST 尊重用户指定，不得以评估结果覆盖
   - 确认后 MUST 把 mode 写入 `.spec.yaml`（见 3.1.1）；存量 spec 缺省 full
   - `--modify <name>` 更新 spec 时，如需变更执行模式，同样同步更新 `.spec.yaml` 的 mode 行
+- **定时拾取（add-spec-scheduling-controls）**：
+  - 用户传入 `--start-after` 时 MUST 换算为 ISO8601 UTC 时间戳，注册时经 `add_spec` attrs 写入 STATE.md entry 的 `start_after` 字段（见 3.1.2 / §4）
+  - 绝对时间按本地时区 UTC+8 解释；`+Nh`/`+Nm` 相对时长按提交（注册）时刻解释
+  - 未指定时 MUST NOT 写 `start_after` 字段（缺省 null，daemon 立即按既有逻辑拾取）
+  - `--modify <name>` 更新时若用户调整定时，同步更新 STATE.md 的 `start_after` 字段
 - **确定能力全集时必须搜索归档目录**：`spec/specs/` 仅存放当前活跃的 specs，历史的 specs 已归档到 `spec/archive/` 中。判断某个能力是新增还是修改时，必须同时搜索 `spec/archive/` 下的所有 `specs/` 子目录，确保不会将已存在的归档能力误判为新能力。

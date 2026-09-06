@@ -8,7 +8,7 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import pytest
@@ -95,7 +95,7 @@ def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
     )
 
     # 事件日志（时间戳必须是最近时间，get_recent_events 按分钟窗口过滤）
-    from datetime import datetime, timezone
+    from datetime import datetime, timezone, timedelta
     (proot / ".fenix" / "logs" / "fenixd-2026.log").write_text(
         json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "level": "INFO",
                     "component": "pm_engine", "message": "scan"}, ensure_ascii=False) + "\n",
@@ -350,6 +350,141 @@ class TestServerAPI:
             s.listen(1)
             free = find_free_port(occupied)
             assert free != occupied
+
+
+class TestSpecSchedulingAPI:
+    """定时拾取 / 冻结配置路由（add-spec-scheduling-controls，同款夹具）。
+
+    夹具 make_project：myspec=testing（非终态）、otherspec=done（终态）。
+    """
+
+    def test_start_after_set_and_reload(self, server_fx):
+        proot, srv = server_fx
+        status, body = srv.post_json(
+            "/api/spec-start-after?project=proj-a&spec=myspec",
+            {"value": "2026-09-07T01:00:00+00:00"},
+        )
+        assert status == 200
+        assert body["ok"] is True
+        assert body["start_after"] == "2026-09-07T01:00:00+00:00"
+        entry = dash_data.parse_state(proot)["myspec"]
+        assert entry.get("start_after") == "2026-09-07T01:00:00+00:00"
+
+    def test_start_after_null_clears(self, server_fx):
+        proot, srv = server_fx
+        srv.post_json(
+            "/api/spec-start-after?project=proj-a&spec=myspec",
+            {"value": "2026-09-07T01:00:00+00:00"},
+        )
+        status, body = srv.post_json(
+            "/api/spec-start-after?project=proj-a&spec=myspec",
+            {"value": None},
+        )
+        assert status == 200
+        assert body["start_after"] is None
+        entry = dash_data.parse_state(proot)["myspec"]
+        assert entry.get("start_after") is None
+
+    def test_start_after_invalid_rejected(self, server_fx):
+        proot, srv = server_fx
+        status, body = srv.post_json(
+            "/api/spec-start-after?project=proj-a&spec=myspec",
+            {"value": "明天早上"},
+        )
+        assert status == 400
+        entry = dash_data.parse_state(proot)["myspec"]
+        assert entry.get("start_after") is None  # STATE 不变
+
+    def test_start_after_terminal_rejected(self, server_fx):
+        proot, srv = server_fx
+        status, body = srv.post_json(
+            "/api/spec-start-after?project=proj-a&spec=otherspec",
+            {"value": "2026-09-07T01:00:00+00:00"},
+        )
+        assert status == 403
+        entry = dash_data.parse_state(proot)["otherspec"]
+        assert entry.get("start_after") is None
+
+    def test_freeze_config_permanent(self, server_fx):
+        proot, srv = server_fx
+        srv.post("/api/spec-freeze?project=proj-a&spec=myspec")
+        status, body = srv.post_json(
+            "/api/spec-freeze-config?project=proj-a&spec=myspec",
+            {"mode": "permanent"},
+        )
+        assert status == 200
+        assert body["mode"] == "permanent"
+        assert body["frozen_until"] is None
+        entry = dash_data.parse_state(proot)["myspec"]
+        assert entry.get("status") == "blocked"
+        assert entry.get("frozen_until") is None
+
+    def test_freeze_config_scheduled(self, server_fx):
+        proot, srv = server_fx
+        srv.post("/api/spec-freeze?project=proj-a&spec=myspec")
+        status, body = srv.post_json(
+            "/api/spec-freeze-config?project=proj-a&spec=myspec",
+            {"mode": "scheduled", "until": "2026-09-08T01:00:00+00:00"},
+        )
+        assert status == 200
+        assert body["unfrozen"] is False
+        assert body["frozen_until"] == "2026-09-08T01:00:00+00:00"
+        entry = dash_data.parse_state(proot)["myspec"]
+        assert entry.get("status") == "blocked"  # 冻结态保持
+        assert entry.get("frozen_until") == "2026-09-08T01:00:00+00:00"
+
+    def test_freeze_config_scheduled_past_immediate_unfreeze(self, server_fx):
+        proot, srv = server_fx
+        srv.post("/api/spec-freeze?project=proj-a&spec=myspec")
+        past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        status, body = srv.post_json(
+            "/api/spec-freeze-config?project=proj-a&spec=myspec",
+            {"mode": "scheduled", "until": past},
+        )
+        assert status == 200
+        assert body["unfrozen"] is True
+        entry = dash_data.parse_state(proot)["myspec"]
+        assert entry.get("status") == "testing"  # 恢复原状态
+        assert entry.get("frozen_until") is None  # 不残留
+
+    def test_freeze_config_unfreeze(self, server_fx):
+        proot, srv = server_fx
+        srv.post("/api/spec-freeze?project=proj-a&spec=myspec")
+        status, body = srv.post_json(
+            "/api/spec-freeze-config?project=proj-a&spec=myspec",
+            {"mode": "unfreeze"},
+        )
+        assert status == 200
+        assert body["unfrozen"] is True
+        entry = dash_data.parse_state(proot)["myspec"]
+        assert entry.get("status") == "testing"
+        assert entry.get("error") is None
+
+    def test_freeze_config_invalid_mode(self, server_fx):
+        proot, srv = server_fx
+        srv.post("/api/spec-freeze?project=proj-a&spec=myspec")
+        status, body = srv.post_json(
+            "/api/spec-freeze-config?project=proj-a&spec=myspec",
+            {"mode": "bogus"},
+        )
+        assert status == 400
+
+    def test_freeze_config_invalid_until(self, server_fx):
+        proot, srv = server_fx
+        srv.post("/api/spec-freeze?project=proj-a&spec=myspec")
+        status, body = srv.post_json(
+            "/api/spec-freeze-config?project=proj-a&spec=myspec",
+            {"mode": "scheduled", "until": "下周一"},
+        )
+        assert status == 400
+
+    def test_freeze_config_non_frozen_rejected(self, server_fx):
+        proot, srv = server_fx
+        status, body = srv.post_json(
+            "/api/spec-freeze-config?project=proj-a&spec=myspec",
+            {"mode": "permanent"},
+        )
+        assert status == 409
 
 
 class TestProjectLifecycleAPI:

@@ -374,6 +374,9 @@ class FenixDaemon:
         # verify-process-lifecycle（D4/D6 周期清扫）：dev-server 孤儿 + 登记制
         # command 实例回收的独立计时（600s ≤ 规格 10 分钟上限）
         orphan_clean_ts = time.time()
+        # add-spec-scheduling-controls D3：定时调度到期检测独立计时（60s，
+        # 对齐恢复复查/recovery watch 模式：try/except 记日志不中断主循环）。
+        scheduling_check_ts = time.time()
         try:
             while self.running:
                 time.sleep(1)
@@ -427,6 +430,17 @@ class FenixDaemon:
                     except Exception as e:
                         self.logger.error(
                             "fenixd", f"Auto-archive check failed: {e}")
+                # 定时调度到期检测（add-spec-scheduling-controls D3）：每 60s
+                # 检查 auto 解冻（frozen_until 到期）与定时拾取（start_after
+                # 到期唤起派发）。周期扫描（full_scan）作为兜底，二者先后到达
+                # 均只触发一次（幂等由写前重读 STATE 保证）。
+                if time.time() - scheduling_check_ts >= 60:
+                    scheduling_check_ts = time.time()
+                    try:
+                        self.pm_engine.check_scheduling_deadlines()
+                    except Exception as e:
+                        self.logger.error(
+                            "fenixd", f"Scheduling deadlines check failed: {e}")
                 # verify-process-lifecycle（D4 周期清扫）：孤儿泄漏可见窗口
                 # ≤ 一个周期（600s）。覆盖 dev-server 与 servers.json 登记实例；
                 # 首轮启动清扫已处理存量，此后周期性兜底。

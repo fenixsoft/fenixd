@@ -1,4 +1,4 @@
-import { MoreOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, MoreOutlined } from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
 import {
   Alert,
@@ -6,6 +6,7 @@ import {
   Badge,
   Button,
   Card,
+  DatePicker,
   Dropdown,
   Input,
   List,
@@ -39,7 +40,9 @@ import {
   clearSpecError,
   deleteSpec,
   freezeSpec,
+  setSpecFreezeConfig,
   setSpecPriority,
+  setSpecStartAfter,
   statusMeta,
   unfreezeSpec,
 } from '@/services/dashboard';
@@ -223,6 +226,28 @@ function VerifyCell({ project, record }: { project: string; record: SpecSummary 
 // done/pushed 为终态不再调整优先级；其余状态优先级可点击，样式与验证列一致
 const PRIORITY_TERMINAL = new Set(['done', 'pushed']);
 
+// ── 定时拾取标记（add-spec-scheduling-controls D6） ──
+// start_after 未到期的 spec 渲染「定时」Tag：目标时间本地渲染 + 分钟级倒计时。
+// 倒计时在渲染时刻用 dayjs() 求值，随列表既有刷新节奏（30s 心跳 / SSE 增量 /
+// visibilitychange）更新，不另起秒级定时器（design D6）。
+function ScheduledPickupTag({ record }: { record: SpecSummary }) {
+  const sa = record.start_after;
+  if (!sa) return null;
+  const target = dayjs(sa);
+  if (!target.isValid()) return null;
+  const diffMin = Math.round(target.diff(dayjs(), 'minute', true));
+  if (diffMin < 0) return null; // 已到期：交调度器正常拾取，不再展示等待标记
+  const targetLocal = target.format('MM-DD HH:mm');
+  const tip = `定时拾取 · ${targetLocal}（本地）启动，约 ${diffMin} 分钟后被 daemon 拾取`;
+  return (
+    <Tooltip title={tip}>
+      <Tag icon={<ClockCircleOutlined />} color="blue" style={{ marginInlineEnd: 0 }}>
+        {diffMin <= 1 ? '即将调度' : `${diffMin}分后`}
+      </Tag>
+    </Tooltip>
+  );
+}
+
 function PriorityCell({
   record,
   onEdit,
@@ -330,6 +355,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
             <div style={{ width: '100%', minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <Badge color={TONE_DOT[m.tone]} text={m.label} />
+                <ScheduledPickupTag record={record} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <SpecNameCell project={project} record={record} />
                 </div>
@@ -419,6 +445,14 @@ export default function SpecListPage() {
 
   // 呼叫 Admin 介入弹窗
   const [adminInvoke, setAdminInvoke] = useState<{ spec: string } | null>(null);
+
+  // add-spec-scheduling-controls：设置拾取时间弹窗（非终态 spec）
+  const [startAfterEdit, setStartAfterEdit] = useState<{ spec: string } | null>(null);
+  const [saDate, setSaDate] = useState<dayjs.Dayjs | null>(null);
+  // add-spec-scheduling-controls：冻结管理弹窗（冻结态 spec）
+  const [freezeManage, setFreezeManage] = useState<{ spec: string } | null>(null);
+  const [freezeMode, setFreezeMode] = useState<'permanent' | 'scheduled'>('permanent');
+  const [freezeUntil, setFreezeUntil] = useState<dayjs.Dayjs | null>(null);
 
   const load = useCallback(async () => {
     if (!name) return;
@@ -650,6 +684,68 @@ export default function SpecListPage() {
     }
   };
 
+  // ── 设置拾取时间（add-spec-scheduling-controls D6）──────────────────
+  const openStartAfterModal = (record: SpecSummary) => {
+    // 预填既有定时（ISO → 本地时区展示）；无定时则为 null（清除路径）
+    setSaDate(record.start_after ? dayjs(record.start_after) : null);
+    setStartAfterEdit({ spec: record.name });
+  };
+
+  const handleStartAfterOk = async () => {
+    if (!startAfterEdit) return;
+    try {
+      // DatePicker 输入为本地时区；dayjs.toISOString() 输出 UTC ISO8601（Z 后缀）
+      const value = saDate ? saDate.toISOString() : null;
+      await setSpecStartAfter(name, startAfterEdit.spec, value);
+      message.success(saDate ? '已设置定时拾取时间' : '已清除定时，立即恢复调度');
+      setStartAfterEdit(null);
+      void load();
+    } catch (err) {
+      message.error(`设置失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  // ── 冻结管理（add-spec-scheduling-controls D6）──────────────────────
+  const openFreezeManage = (record: SpecSummary) => {
+    const scheduled = !!record.frozen_until;
+    setFreezeMode(scheduled ? 'scheduled' : 'permanent');
+    setFreezeUntil(scheduled && record.frozen_until ? dayjs(record.frozen_until) : null);
+    setFreezeManage({ spec: record.name });
+  };
+
+  const handleFreezeManageOk = async () => {
+    if (!freezeManage) return;
+    try {
+      if (freezeMode === 'scheduled') {
+        if (!freezeUntil) {
+          message.error('请选择定时解冻时间');
+          return;
+        }
+        await setSpecFreezeConfig(name, freezeManage.spec, 'scheduled', freezeUntil.toISOString());
+        message.success('已设置定时解冻，到期 daemon 自动恢复');
+      } else {
+        await setSpecFreezeConfig(name, freezeManage.spec, 'permanent');
+        message.success('已切换为永久冻结（人工解冻）');
+      }
+      setFreezeManage(null);
+      void load();
+    } catch (err) {
+      message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const handleFreezeManageUnfreeze = async () => {
+    if (!freezeManage) return;
+    try {
+      await setSpecFreezeConfig(name, freezeManage.spec, 'unfreeze');
+      message.success(`Spec「${freezeManage.spec}」已解冻`);
+      setFreezeManage(null);
+      void load();
+    } catch (err) {
+      message.error(`解冻失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   const specMenuItems = (record: SpecSummary) => {
     const terminal = PRIORITY_TERMINAL.has(record.status || '');
     // add-spec-archive：已归档视图操作收敛——隐藏调度类操作（优先级/冻结/归档），
@@ -663,6 +759,13 @@ export default function SpecListPage() {
     return [
       { key: 'admin', label: '呼叫 Admin 介入' },
       { key: 'priority', label: '调整优先级', disabled: terminal },
+      // add-spec-scheduling-controls：非终态 spec 可设置定时拾取（start_after）
+      { key: 'pickup-time', label: '设置拾取时间', disabled: terminal },
+      // add-spec-scheduling-controls：冻结 spec 的「冻结管理」弹窗
+      //（永久 ↔ 定时解冻切换、立即解冻），与既有「冻结/解冻 Spec」并存
+      ...(isFrozen(record)
+        ? [{ key: 'freeze-manage' as const, label: '冻结管理' }]
+        : []),
       {
         key: isFrozen(record) ? 'unfreeze' : 'freeze',
         label: isFrozen(record) ? '解冻 Spec' : '冻结 Spec',
@@ -680,6 +783,10 @@ export default function SpecListPage() {
       void handleAdminInvoke(record);
     } else if (key === 'priority') {
       setPriorityEdit({ spec: record.name, value: record.priority ?? 5 });
+    } else if (key === 'pickup-time') {
+      openStartAfterModal(record);
+    } else if (key === 'freeze-manage') {
+      openFreezeManage(record);
     } else if (key === 'freeze' || key === 'unfreeze') {
       void handleFreezeToggle(record);
     } else if (key === 'archive') {
@@ -694,13 +801,18 @@ export default function SpecListPage() {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: '8%',
+      width: '12%',
       sorter: (a: SpecSummary, b: SpecSummary) => (a.status || '').localeCompare(b.status || ''),
       onHeaderCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
       onCell: () => ({ style: { whiteSpace: 'nowrap', paddingInline: 8 } }),
-      render: (v: string | null) => {
+      render: (v: string | null, record: SpecSummary) => {
         const m = statusMeta(v || '');
-        return <Badge color={TONE_DOT[m.tone]} text={m.label} />;
+        return (
+          <Space size={4} wrap>
+            <Badge color={TONE_DOT[m.tone]} text={m.label} />
+            <ScheduledPickupTag record={record} />
+          </Space>
+        );
       },
     },
     {
@@ -1021,6 +1133,97 @@ export default function SpecListPage() {
             }
           />
         </Space>
+      </Modal>
+
+      {/* add-spec-scheduling-controls：设置拾取时间弹窗（非终态 spec） */}
+      <Modal
+        title="设置拾取时间"
+        open={!!startAfterEdit}
+        onOk={() => void handleStartAfterOk()}
+        onCancel={() => setStartAfterEdit(null)}
+        okText="确定"
+        cancelText="取消"
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          <Typography.Text type="secondary">
+            在此时间点之前，daemon 不会拾取该 SPEC（保持当前状态等待调度）。以本地时区选择，
+            提交后转为 UTC 存储；也可清除定时使其立即恢复调度。
+          </Typography.Text>
+          <DatePicker
+            showTime
+            style={{ width: '100%' }}
+            value={saDate}
+            onChange={(d) => setSaDate(d)}
+            placeholder="选择拾取时间"
+          />
+          <Button danger type="link" style={{ paddingInline: 0 }} disabled={!saDate} onClick={() => setSaDate(null)}>
+            清除定时（立即恢复调度）
+          </Button>
+        </Space>
+      </Modal>
+
+      {/* add-spec-scheduling-controls：冻结管理弹窗（冻结态 spec） */}
+      <Modal
+        title="冻结管理"
+        open={!!freezeManage}
+        onOk={() => void handleFreezeManageOk()}
+        onCancel={() => setFreezeManage(null)}
+        okText="确定"
+        cancelText="取消"
+        footer={
+          freezeManage ? (
+            <Space>
+              <Button danger onClick={() => void handleFreezeManageUnfreeze()}>
+                立即解冻
+              </Button>
+              <Button onClick={() => setFreezeManage(null)}>取消</Button>
+              <Button type="primary" onClick={() => void handleFreezeManageOk()}>
+                确定
+              </Button>
+            </Space>
+          ) : null
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <Typography.Text type="secondary">当前模式：</Typography.Text>
+            <Typography.Text strong>
+              {freezeManage && specMap[freezeManage.spec]?.frozen_until
+                ? '定时解冻'
+                : '永久冻结（人工解冻）'}
+            </Typography.Text>
+            {freezeManage && specMap[freezeManage.spec]?.frozen_until ? (
+              <div style={{ fontSize: 12, color: 'rgba(0, 0, 0, 0.45)' }}>
+                目标时间：
+                {dayjs(specMap[freezeManage.spec]?.frozen_until).format('YYYY-MM-DD HH:mm')}
+                （本地），到期 daemon 自动解冻
+              </div>
+            ) : null}
+          </div>
+          {freezeManage && specMap[freezeManage.spec]?.error ? (
+            <div>
+              <Typography.Text type="secondary">冻结原因：</Typography.Text>
+              <Typography.Text>{specMap[freezeManage.spec]?.error}</Typography.Text>
+            </div>
+          ) : null}
+          <Radio.Group
+            value={freezeMode}
+            onChange={(e) => setFreezeMode(e.target.value as 'permanent' | 'scheduled')}
+            options={[
+              { label: '永久冻结（人工解冻）', value: 'permanent' },
+              { label: '定时解冻', value: 'scheduled' },
+            ]}
+          />
+          {freezeMode === 'scheduled' ? (
+            <DatePicker
+              showTime
+              style={{ width: '100%' }}
+              value={freezeUntil}
+              onChange={setFreezeUntil}
+              placeholder="选择自动解冻时间"
+            />
+          ) : null}
+        </div>
       </Modal>
     </PageContainer>
   );

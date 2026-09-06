@@ -275,7 +275,10 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
 
 # ── SPEC 人工冻结/解冻（用户指令冻结；admin_monitor 认 blocked+前缀为有意等待态） ──
 
-FREEZE_ERROR_PREFIX = "用户指令冻结："
+# 冻结前缀与「原状态 X」解析单点（add-spec-scheduling-controls D4）：冻结/解冻
+# 统一走 StateMachine 官方通道（freeze_spec/unfreeze_spec），此处只保留展示用
+# 判定常量，文案契约在 state_machine 定义，避免双轨漂移。
+from core.state_machine import FREEZE_ERROR_PREFIX, parse_orig_status
 
 
 def is_spec_frozen(entry: dict) -> bool:
@@ -289,7 +292,11 @@ def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
     """人工冻结 SPEC：status→blocked，error 以「用户指令冻结：」开头并记录原状态。
 
     - done/pushed 终态不可冻结（冻结终态破坏语义），返回 ok=True + frozen=False
-    - 写回经 StateMachine（带文件锁）；daemon 经 STATE.md watcher 感知后停止调度
+    - 写回委托 StateMachine.freeze_spec（add-spec-scheduling-controls D4 收编）：
+      结构化 frozen: True 标记 + 原状态并入 reason（``用户指令冻结：原状态 X
+      [ · reason]``），daemon 经 STATE.md watcher 感知后停止调度。此前直写
+      update_spec 只写 {status, error} 不写 frozen 标记，与 StateMachine 冻结
+      双轨并行时产生「解冻后 status 被冻结保护剥离」的半死态，本版本消除。
     """
     specs = parse_state(project_root)
     if spec_name not in specs:
@@ -302,15 +309,20 @@ def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
         return {"ok": True, "found": True, "frozen": False,
                 "error": f"终态 spec（{entry.get('status')}）不可冻结"}
     orig = entry.get("status") or "ready"
-    note = f"{FREEZE_ERROR_PREFIX}原状态 {orig}" + (f" · {reason}" if reason else "")
+    note = f"原状态 {orig}" + (f" · {reason}" if reason else "")
     from core.state_machine import StateMachine
     sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
-    sm.update_spec(spec_name, {"status": "blocked", "error": note})
+    sm.freeze_spec(spec_name, reason=note)
     return {"ok": True, "found": True, "frozen": True, "error": None}
 
 
 def unfreeze_spec(project_root, spec_name: str) -> dict:
-    """解冻 SPEC：从冻结 error 中恢复原状态并清空 error；未冻结则为 no-op。"""
+    """解冻 SPEC：从冻结 error 中恢复原状态并清空 error；未冻结则为 no-op。
+
+    委托 StateMachine.unfreeze_spec（D4 收编）：status 传解析出的原状态，
+    恢复为冻结前状态并清 error/frozen_until。此前直写 update_spec 对带
+    frozen 标记的结构化冻结 spec 会被冻结保护剥离 status，残留半死态。
+    """
     specs = parse_state(project_root)
     if spec_name not in specs:
         return {"ok": False, "found": False, "frozen": False,
@@ -318,12 +330,130 @@ def unfreeze_spec(project_root, spec_name: str) -> dict:
     entry = specs[spec_name]
     if not is_spec_frozen(entry):
         return {"ok": True, "found": True, "frozen": False, "error": None}
-    m = re.search(r"原状态\s+(\S+)", entry.get("error") or "")
-    orig = m.group(1) if m else "ready"
+    orig = parse_orig_status(entry.get("error"))
     from core.state_machine import StateMachine
     sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
-    sm.update_spec(spec_name, {"status": orig, "error": None})
+    sm.unfreeze_spec(spec_name, status=orig)
     return {"ok": True, "found": True, "frozen": False, "error": None}
+
+
+# ── SPEC 定时拾取 start_after（add-spec-scheduling-controls D5） ───────
+
+def get_spec_start_after(entry: dict) -> str | None:
+    """读取 entry 的 start_after 规范值（ISO8601 UTC 字符串或 None）。
+
+    纯读函数：非法格式/缺失按「无限制」处理（返回 None），供列表倒计时
+    展示与前端状态推导用。时间换算/校验单点在后端（design D6）。
+    """
+    from core.state_machine import parse_utc
+
+    raw = entry.get("start_after") if isinstance(entry, dict) else None
+    if raw is None:
+        return None
+    dt = parse_utc(raw)
+    return dt.isoformat() if dt is not None else None
+
+
+def get_frozen_until(entry: dict) -> str | None:
+    """读取 entry 的 frozen_until 规范值（ISO8601 UTC 字符串或 None）。
+
+    与 get_spec_start_after 同构：非法格式视为无定时解冻目标（返回 None）。
+    """
+    from core.state_machine import parse_utc
+
+    raw = entry.get("frozen_until") if isinstance(entry, dict) else None
+    if raw is None:
+        return None
+    dt = parse_utc(raw)
+    return dt.isoformat() if dt is not None else None
+
+
+def set_spec_start_after(project_root, spec: str, value) -> dict:
+    """设置/清除 SPEC 的 start_after（定时拾取时间，ISO8601 UTC 或 null）。
+
+    - spec 不在 STATE.md → {found: False}
+    - value 为 None/空串 → 清除定时（start_after 置 null，立即恢复调度）
+    - value 非法 ISO8601 → {invalid: True}（拒绝写入，STATE.md 不变）
+    - 终态（done/pushed）→ {terminal: True}（拒绝，定时不影响终态语义）
+    - 成功 → {ok: True, start_after: <ISO8601 UTC 或 None>}
+    写入经 StateMachine.update_spec（flock + 原子 rename，与 daemon 并发写安全）。
+    """
+    from core.state_machine import StateMachine, parse_utc
+
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "found": False, "error": f"spec not found: {spec}"}
+    entry = specs[spec]
+    if entry.get("status") in ("done", "pushed"):
+        return {"ok": False, "found": True, "terminal": True,
+                "error": f"终态 spec（{entry.get('status')}）不可设置定时拾取"}
+    if value is None or (isinstance(value, str) and not value.strip()):
+        normalized = None
+    else:
+        dt = parse_utc(value)
+        if dt is None:
+            return {"ok": False, "found": True, "invalid": True,
+                    "error": f"start_after 非法 ISO8601: {value!r}"}
+        normalized = dt.isoformat()
+    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    sm.update_spec(spec, {"start_after": normalized})
+    return {"ok": True, "found": True, "start_after": normalized}
+
+
+# ── 冻结配置 frozen_until（add-spec-scheduling-controls D5） ─────────
+
+def configure_spec_freeze(project_root, spec: str, mode: str, until=None) -> dict:
+    """冻结管理配置：永久冻结 ↔ 定时解冻 ↔ 立即解冻。
+
+    - mode=permanent：清 frozen_until（保持冻结态，永久人工解冻）
+    - mode=scheduled：写 frozen_until（ISO8601 校验；已过去 → 立即解冻，
+      等价到期，不残留字段）
+    - mode=unfreeze：立即解冻（复用官方解冻，status 传解析出的原状态）
+    - spec 必须处于冻结态（is_spec_frozen），否则拒绝——保证 frozen_until
+      只存在于冻结态 spec 上（spec scheduled-spec-unfreeze 字段契约）。
+    - 非 scheduled 的 until 参数忽略；非法 mode → {invalid: True}。
+
+    写入经 StateMachine（flock + 原子 rename）：frozen_until 更新不带 status
+    键，不触发冻结保护剥离；带 status 的解冻一律走 unfreeze_spec 官方通道。
+    """
+    from core.state_machine import StateMachine, parse_utc
+
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "found": False, "error": f"spec not found: {spec}"}
+    entry = specs[spec]
+    if not is_spec_frozen(entry):
+        return {"ok": False, "found": True,
+                "error": "spec 未处于冻结态（冻结管理仅对冻结 spec 生效）"}
+    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    if mode == "unfreeze":
+        orig = parse_orig_status(entry.get("error"))
+        sm.unfreeze_spec(spec, status=orig)
+        return {"ok": True, "found": True, "mode": "unfreeze",
+                "unfrozen": True, "frozen_until": None}
+    if mode == "permanent":
+        sm.update_spec(spec, {"frozen_until": None})
+        return {"ok": True, "found": True, "mode": "permanent",
+                "frozen_until": None}
+    if mode == "scheduled":
+        dt = parse_utc(until)
+        if dt is None:
+            return {"ok": False, "found": True, "invalid": True,
+                    "error": f"frozen_until 非法 ISO8601: {until!r}"}
+        normalized = dt.isoformat()
+        if dt <= datetime.now(timezone.utc):
+            # 已过去 → 立即解冻（等价到期，不留待下一轮 tick/扫描）
+            orig = parse_orig_status(entry.get("error"))
+            sm.unfreeze_spec(spec, status=orig)
+            return {"ok": True, "found": True, "mode": "scheduled",
+                    "unfrozen": True, "frozen_until": normalized}
+        sm.update_spec(spec, {"frozen_until": normalized})
+        return {"ok": True, "found": True, "mode": "scheduled",
+                "frozen_until": normalized}
+    return {"ok": False, "found": True, "invalid": True,
+            "error": f"未知冻结模式: {mode!r}"}
 
 
 # ── SPEC 文档读取（proposal.md / design.md，add-spec-doc-buttons） ──
@@ -2083,6 +2213,11 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         "created": entry.get("created"),
         "updated": entry.get("updated"),
         "error": entry.get("error"),
+        # add-spec-scheduling-controls D6：定时拾取（start_after）与定时解冻
+        # （frozen_until）规范值（ISO8601 UTC 或 null），前端列表据此渲染
+        # 定时 Tag/倒计时与冻结模式。
+        "start_after": get_spec_start_after(entry),
+        "frozen_until": get_frozen_until(entry),
         # add-task-progress-verify-phase：阶段判定单点在后端——仅 testing 切
         # verify（验证引擎运行中），其余一切状态按 impl；fast-track 经
         # _fast_track_advance_to_verified 瞬时连转 testing→verified 不停留，

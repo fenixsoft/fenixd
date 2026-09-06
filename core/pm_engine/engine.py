@@ -18,7 +18,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from core.dashboard.data import find_impl_run_file, get_runs, parse_run_task_done
+from core.dashboard.data import (
+    find_impl_run_file,
+    get_runs,
+    parse_run_task_done,
+    record_project_event,
+)
 from core.pm_engine.family import FamilyGovernor
 from core.pm_engine.budget import ImplBudget
 from core.pm_engine.verification import VerificationPipeline
@@ -45,6 +50,14 @@ from core.pm_engine.budget import (
 from core.state_machine import (
     BUDGET_EXEMPT_ALERTED_FIELD,
     BUDGET_EXEMPT_RUNS_FIELD,
+    FREEZE_ERROR_PREFIX,
+    FROZEN_FIELD,
+    FROZEN_UNTIL_FIELD,
+    START_AFTER_FIELD,
+    SpecStatus,
+    parse_orig_status,
+    parse_utc,
+    start_after_pending,
 )
 
 # 假就绪巡检：ready 滞留超过该阈值且期间无派发活动 → 阻塞项（design D6）
@@ -280,6 +293,25 @@ class PMEngine:
                     f"Skipping '{spec_name}': dispatch backoff active",
                 )
                 return
+            # add-spec-scheduling-controls D2：start_after 未到期静默跳过（对齐退避
+            # 门控的「不写 error 不翻状态」防自触发设计）。
+            # 派发入口全覆盖核对结论（任务清单 2.2，2026-09-06）：
+            #   - event_bus full_scan recovery（_recover_ready）与 STATE.md watcher
+            #     状态变更 → handle_event("spec_ready") → 本方法；
+            #   - boot recovery（recover_interrupted 重置为 ready）→ full_scan →
+            #     _recover_ready → 本方法（recovery.py 无独立派发入口，只重置状态）；
+            #   - _on_spec_drafted 晋升后同步直调 → 本方法；
+            #   - _schedule_backoff_retry / _on_instant_fail_recovery 定时器回调 → 本方法；
+            #   - family._do_spec_bug_found 的 fix 唤起 → 本方法。
+            # 其余绕过本方法的直入队列路径（_enqueue 的 implementer/fast-track/
+            # repair/verifier 条目，如 auto-recovery 的 ready 重派、失败重派）在
+            # dispatch._process_queue 候选筛选处等价过谓词（两处 start_after_pending）。
+            if start_after_pending(spec):
+                self.logger.debug(
+                    "pm_engine",
+                    f"Skipping '{spec_name}': start_after pending (scheduled pickup)",
+                )
+                return
             if not self._dependencies_satisfied(spec_name):
                 self.logger.info(
                     "pm_engine",
@@ -300,6 +332,119 @@ class PMEngine:
         finally:
             # 派发完成（成功或失败），从 pending 中移除，允许未来派发
             self._pending_dispatches.discard(spec_name)
+
+    # ── 定时调度到期检测（add-spec-scheduling-controls D3）────────────────────
+
+    @staticmethod
+    def _frozen_state(entry: dict) -> bool:
+        """冻结态判定（state_machine 侧）：frozen 结构化标记或 legacy 文本契约。"""
+        if not isinstance(entry, dict):
+            return False
+        if entry.get(FROZEN_FIELD) is True:
+            return True
+        return (
+            entry.get("status") == SpecStatus.BLOCKED
+            and (entry.get("error") or "").startswith(FREEZE_ERROR_PREFIX)
+        )
+
+    def check_scheduling_deadlines(self) -> dict:
+        """定时调度到期检测（add-spec-scheduling-controls D3）。
+
+        daemon 主循环每 60s 独立计时段调用（对齐 recovery watch 模式；
+        不做进程内一次性 Timer——周期即兜底，daemon 重启天然恢复检测）：
+
+        1. 冻结 spec 的 ``frozen_until`` ≤ now → 自动解冻：恢复冻结前状态
+           （``parse_orig_status`` 从冻结 error 解析「原状态 X」，缺失回退
+           ready）、清空 error 与 ``frozen_until``，全部经
+           ``StateMachine.unfreeze_spec`` 官方通道。**写前重读 STATE 确认仍
+           处于冻结态**——定时器与周期扫描竞争时后到者视为无需操作，解冻幂等
+           （spec scheduled-spec-unfreeze「幂等竞争」）。自动解冻落项目日志 +
+           事件流，携带「定时解冻」来源标记（与人工解冻可区分）。
+        2. 非终态 spec 的 ``start_after`` 已到期且状态可派发（ready → 唤起
+           ``_on_spec_ready`` 精触发；drafted → ``_on_spec_drafted`` 晋升链
+           同步唤起）——补齐 full_scan 间隔（缺省 30 分钟）内的时间窗；周期
+           扫描仍为兜底，二者先后到达均只触发一次正常派发。
+
+        逐条异常捕获记日志不中断整轮。Returns: {"unfrozen": [...], "signaled": [...]}
+        """
+        unfrozen: list = []
+        signaled: list = []
+        now = datetime.now(timezone.utc)
+        for name, entry in self.state_machine.read_all().items():
+            if not isinstance(entry, dict):
+                continue
+            # ── 1) frozen_until 到期自动解冻（幂等：写前重读确认仍冻结）──
+            until_raw = entry.get(FROZEN_UNTIL_FIELD)
+            if until_raw:
+                until = parse_utc(until_raw)
+                if until is not None and until <= now:
+                    fresh = self.state_machine.read_one(name) or {}
+                    if not self._frozen_state(fresh):
+                        continue  # 竞争后到者：已解冻/非冻结，跳过
+                    orig = parse_orig_status(fresh.get("error"))
+                    before = fresh.get(FROZEN_UNTIL_FIELD)
+                    try:
+                        self.state_machine.unfreeze_spec(name, status=orig)
+                    except Exception as e:
+                        self.logger.error(
+                            "pm_engine",
+                            f"定时解冻写回失败 '{name}'（留待下轮重试）: {e}",
+                        )
+                        continue
+                    unfrozen.append(name)
+                    try:
+                        self._append_project_log(
+                            f"⏰ 定时解冻 SPEC: **{name}**"
+                            f"（原状态 {orig}，frozen_until {before} 到期自动恢复）"
+                        )
+                        record_project_event(
+                            self.project_root, "pm_engine",
+                            f"定时解冻 SPEC '{name}'（原状态 {orig}）",
+                            context={"source": "scheduled-unfreeze",
+                                     "frozen_until": before},
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            "pm_engine",
+                            f"定时解冻事件记录失败 '{name}'（非阻塞）: {e}",
+                        )
+                    self.logger.info(
+                        "pm_engine",
+                        f"Scheduled unfreeze '{name}': frozen_until {before} "
+                        f"expired → restored to {orig}",
+                    )
+            # ── 2) start_after 到期唤起派发（仅登记过定时字段的 spec）──
+            sa = entry.get(START_AFTER_FIELD)
+            if sa is None or parse_utc(sa) is None:
+                continue  # 无定时字段（或非法）→ 无到期检测需求
+            if start_after_pending(entry, now):
+                continue  # 尚未到期
+            status = entry.get("status")
+            if status not in (SpecStatus.DRAFTED, SpecStatus.READY):
+                continue
+            try:
+                if status == SpecStatus.DRAFTED:
+                    # drafted 走晋升链（lint 拦截/error 写回由 _on_spec_drafted 自理）
+                    self._on_spec_drafted(name)
+                else:
+                    self._on_spec_ready(name)
+                signaled.append(name)
+            except Exception as e:
+                self.logger.warning(
+                    "pm_engine",
+                    f"start_after 到期唤起 '{name}' 失败（非阻塞）: {e}",
+                )
+        # 唤起后立即处理派发队列，使「到期精确触发」不依赖后续其它事件驱动
+        #（periodic full_scan 仍为兜底；_process_queue 幂等，空队列直接返回）。
+        if signaled:
+            try:
+                self._process_queue()
+            except Exception as e:
+                self.logger.warning(
+                    "pm_engine",
+                    f"start_after 唤起后派发队列处理失败（非阻塞，full_scan 兜底）: {e}",
+                )
+        return {"unfrozen": unfrozen, "signaled": signaled}
 
     # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）──────────────────
 
