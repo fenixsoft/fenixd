@@ -324,7 +324,13 @@ class TestLoadBillingTable:
         assert "prov-off" not in table
         assert "prov-plain" not in table
 
-    def test_missing_config_returns_empty_table(self, tmp_path):
+    def test_missing_config_returns_empty_table(self, tmp_path, monkeypatch):
+        # 用户级配置隔离（isolated_user_config 惯例）：_load_billing_config 经
+        # read_effective_config 合并用户级 ~/.fenix/config.yaml，本机该文件可能
+        # 显式声明 billing 卡片，断言「缺省空表」不隔离就会环境敏感假失败。
+        user_dir = tmp_path / "user-fenix"
+        monkeypatch.setattr("core.config.USER_CONFIG_DIR", user_dir)
+        monkeypatch.setattr(dashboard_data, "USER_CONFIG_PATH", user_dir / "config.yaml")
         proot = tmp_path / "noproj"
         (proot / ".fenix").mkdir(parents=True)
         assert dashboard_data._load_billing_config(proot) == {}
