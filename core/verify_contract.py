@@ -56,6 +56,11 @@ Fenix 是通用开发框架，被管项目形态各异：前端应用有构建�
                                      # 未迁移契约的邻近扫描兜底用；引用 {port}
                                      # 后无需再填）
     # ── 可选。就绪探针；缺省探被测实例根路径、期望 200、等待 60 秒。
+    # 通过后框架做一次鉴别力自检：再请求一个随机不存在路径，若响应（状态码
+    # + body）与探针完全一致＝本实例对任意路径同响应（SPA fallback 形态），
+    # 探针被吞掉、无法区分就绪/未就绪 → 判就绪失败并给处方（SPA 应用禁止
+    # 探会被 fallback 兜底的路径，改探真实 API 端点；add-spec-hooks 白屏
+    # env 事故 2026-09-06 防复发）。
     ready:
       url: /#/overview               # 探针路径（相对被测实例），缺省 /
       expect: 200                    # 期望 HTTP 状态码，缺省 200
@@ -107,6 +112,7 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -548,8 +554,46 @@ def provision_worktree_node_modules(worktree_root: Path, project_root: Path,
     return done
 
 
+def _probe_vacuity_note(base_url: str, ready: ReadyProbe, probe_body: bytes) -> str:
+    """就绪探针鉴别力自检：探针响应与任意不存在路径完全一致 → 无鉴别力。
+
+    add-spec-hooks 第 1 轮 4 个 web 场景白屏 env 事故防复发（2026-09-06）：
+    SPA fallback 对任意路径在 HTTP 服务一监听时即回同一 HTML，探针同秒通过
+    而「就绪」未发生——探针被 fallback 吞掉，无法区分就绪/未就绪。判定法：
+    探针通过后再请求一个随机不存在路径，状态码与 body（截断 4KB）完全一致
+    即判探针无鉴别力（确定性无效形态，与晋升 lint 同哲学）。任意路径 404
+    等 HTTPError ＝ 路径有鉴别力；自检自身异常一律放行（fail-open，不因自检
+    网络抖动牵连主判定）。
+
+    Returns:
+        违规说明（探针无鉴别力时）；空串 = 有鉴别力或自检不可判。
+    """
+    rand_path = f"/__fenix_probe_{uuid.uuid4().hex[:12]}"
+    try:
+        req = Request(f"{base_url.rstrip('/')}{rand_path}", method="GET",
+                      headers={"User-Agent": "fenix-verify-contract"})
+        with urlopen(req, timeout=3) as resp:
+            if resp.status != ready.expect:
+                return ""
+            body = resp.read(4096)
+    except Exception:
+        return ""
+    if body != probe_body:
+        return ""
+    return (
+        f"就绪探针无鉴别力: GET {ready.url} 与任意不存在路径（{rand_path}）响应"
+        f"完全一致（status={ready.expect} 且 body 相同）——本实例对任意路径同响应"
+        f"（SPA fallback 形态），探针通过≠应用就绪（add-spec-hooks 白屏 env 事故"
+        f"根源，2026-09-06）。请把 ready.url 改为真实 API 端点（先例 /api/projects）。"
+    )
+
+
 def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
     """就绪探针：轮询 GET ``base_url + ready.url`` 直至期望状态码或超时。
+
+    通过后做一次鉴别力自检（``_probe_vacuity_note``）：探针响应与任意不存
+    在路径完全一致（SPA fallback 形态）→ 判就绪失败并给处方——探针通过但
+    零鉴别力即假 ready，宁可在此大声失败也不把白屏实例推进断言窗口。
 
     Returns: (ok, note)
     """
@@ -562,6 +606,10 @@ def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
                           headers={"User-Agent": "fenix-verify-contract"})
             with urlopen(req, timeout=3) as resp:
                 if resp.status == ready.expect:
+                    body = resp.read(4096)
+                    vacuity = _probe_vacuity_note(base_url, ready, body)
+                    if vacuity:
+                        return False, vacuity
                     return True, f"就绪探针通过: {url}"
                 last_err = f"状态码 {resp.status} != {ready.expect}"
         except Exception as e:

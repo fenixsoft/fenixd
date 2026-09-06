@@ -5,8 +5,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.request
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.verify_contract import (
     DEFAULT_DEPS_MODE,
+    ReadyProbe,
     StaticVerifyServer,
     load_verify_contract,
     probe_ready,
@@ -417,3 +420,79 @@ class TestContractFormReverseInference(unittest.TestCase):
         self.assertFalse(reachable)
         self.assertIn("serve", note)
         self.assertIn("api", note)
+
+
+class TestProbeVacuityCheck(unittest.TestCase):
+    """就绪探针鉴别力自检：探针响应与任意不存在路径一致 → 判无鉴别力。
+
+    add-spec-hooks 白屏 env 事故防复发（2026-09-06）：SPA fallback 对任意
+    路径同响应，探针通过≠就绪。自检异常 fail-open 不牵连主判定。
+    """
+
+    def _serve(self, handler_cls) -> str:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
+    def test_vacuous_probe_rejected(self):
+        """SPA fallback 形态：任意路径回同一 HTML → 探针通过但判就绪失败。"""
+
+        class Fallback(SimpleHTTPRequestHandler):
+            def do_GET(self):
+                body = b"<html><body><div id=root></div></body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        base = self._serve(Fallback)
+        ok, note = probe_ready(base, ReadyProbe(url="/", expect=200, timeout=3))
+        self.assertFalse(ok)
+        self.assertIn("无鉴别力", note)
+        self.assertIn("真实 API 端点", note)  # 处方给出现例
+
+    def test_discriminating_probe_passes(self):
+        """API 探针 + 404 fallback：探针与任意路径响应不同 → 正常通过。"""
+
+        class Api(SimpleHTTPRequestHandler):
+            def do_GET(self):
+                if self.path.startswith("/api/"):
+                    body = b'{"projects":[]}'
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                else:
+                    body = b""
+                    self.send_response(404)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        base = self._serve(Api)
+        ok, note = probe_ready(
+            base, ReadyProbe(url="/api/projects", expect=200, timeout=3))
+        self.assertTrue(ok)
+        self.assertIn("就绪探针通过", note)
+
+    def test_vacuity_check_failure_fails_open(self):
+        """自检请求异常 → 放行主判定（探针通过仍算通过），不牵连。"""
+        resp = MagicMock()
+        resp.status = 200
+        resp.read.return_value = b"probe-body"
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        with patch("core.verify_contract.urlopen",
+                   side_effect=[resp, OSError("self-check boom")]):
+            ok, note = probe_ready(
+                "http://127.0.0.1:1", ReadyProbe(url="/", expect=200, timeout=1))
+        self.assertTrue(ok)
+        self.assertIn("就绪探针通过", note)
