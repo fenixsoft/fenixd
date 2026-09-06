@@ -1316,6 +1316,12 @@ class Dispatcher:
                 "pm_engine",
                 f"dispute judge 裁决执行后守卫重跑通过 '{spec_name}' — 放行 merge",
             )
+            # 终审期间置 blocked 属临时态：恢复 in-flight（implementing），
+            # worker 合并路径的 implementing → implemented 转换才合法
+            self._pm.state_machine.update_spec(spec_name, {
+                "status": "implementing",
+                "error": None,
+            })
             return {"action": "proceed"}
 
         # 仍有缺件：分类 remaining 的归宿。remaining 可能含 typo 修正后的

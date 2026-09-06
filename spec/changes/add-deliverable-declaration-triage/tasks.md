@@ -57,5 +57,5 @@
 
 ## 5. PR5 收尾与全量回归
 
-- [ ] 5.1 全量回归：tests/test_deliverable_gate.py、tests/test_deliverable_lint.py、tests/test_deliverable_declaration_triage.py 及相邻 pm_engine 套件全绿；无声明段存量 spec 全链路行为不变核验（lint 早退 + 守卫回退提取路径）
-- [ ] 5.2 行为自检：构造「声明笔误 spec」干跑三层（lint 拒晋升 → 绕过 lint 后派发处方含候选 → 构造缺件触发 judge 全链路 mock 验证），确认四归宿无静默放行路径
+- [x] 5.1 全量回归：tests/test_deliverable_gate.py、tests/test_deliverable_lint.py、tests/test_deliverable_declaration_triage.py 及相邻 pm_engine 套件全绿；无声明段存量 spec 全链路行为不变核验（lint 早退 + 守卫回退提取路径）
+- [x] 5.2 行为自检：构造「声明笔误 spec」干跑三层（lint 拒晋升 → 绕过 lint 后派发处方含候选 → 构造缺件触发 judge 全链路 mock 验证），确认四归宿无静默放行路径

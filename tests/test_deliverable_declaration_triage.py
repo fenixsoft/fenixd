@@ -838,5 +838,122 @@ class TestAdjudicateMechanicalExecution(_AdjudicationFixture):
                          ("s1", "implementer"))
 
 
+# ── PR5 行为自检：声明笔误 spec 三层干跑（tasks 5.2） ──────────────────────
+
+class TestTriageChainSelfCheck(_AdjudicationFixture):
+    """构造「声明笔误 spec」干跑三层，确认四归宿无静默放行路径。
+
+    第一层：晋升 lint 拒唯一 basename 命中（drafted 停留）；
+    第二层：绕过 lint 后派发处方含候选与 dispute 登记约定；
+    第三层：构造缺件驱动 implementer worker 全链路终审——
+      - missing 裁决 → 打回重派（不静默合并）；
+      - unclear 裁决 → blocked 人工（不静默放行）；
+      - typo 修正且 actual_path 存在 → 守卫重跑通过 → 正常合并推进。
+    """
+
+    TYPO_DECL = (
+        "# Tasks\n\n## Deliverables\n\n```yaml\n"
+        "- path: core/verification.py\n  kind: new\n```\n"
+        "## 1. 分组\n\n- [ ] 1.1 新建 `core/verification.py`\n"
+    )
+
+    def _make_typo_main_tree(self):
+        (self.project_root / "core" / "pm_engine").mkdir(parents=True,
+                                                         exist_ok=True)
+        (self.project_root / "core" / "pm_engine" / "verification.py"
+         ).write_text("# engine\n", encoding="utf-8")
+
+    def _drive_worker_chain(self, verdicts, status="success",
+                            file_exists=None):
+        """装配并驱动 implementer worker：成功收工 + 缺件 → 终审 → 裁决执行。"""
+        from types import SimpleNamespace
+        self.write_spec_dir(self.TYPO_DECL)
+        self._make_typo_main_tree()
+        self.runner.run_implementer.return_value = SimpleNamespace(
+            success=True, run_id="impl-s1-1-a1", branch="fenix/s1",
+            error=None, worktree_dirty=[], duration_seconds=1.0,
+        )
+        self.engine._read_implementer_result = mock.MagicMock(
+            return_value={"status": "success", "findings": []})
+        self.write_judge_result(verdicts, status=status)
+        self.stub_judge_run()
+        if file_exists is not None:
+            self.wm.file_exists_on_branch.side_effect = file_exists
+        # proceed 路径 merge 兼容（(bool, str) 解包）
+        self.runner.worktree_manager.merge_back_from_branch.return_value = (True, "")
+        # 吸收 worker finally 的重派派发（避免后台线程链式再跑）
+        self.engine._process_queue = mock.MagicMock()
+        self.engine._run_agent_worker("s1", "implementer", 5)
+
+    def test_layer1_lint_rejects_typo_declaration(self):
+        """第一层：唯一 basename 命中的笔误声明被 lint 拒晋升。"""
+        self.write_spec_dir(self.TYPO_DECL)
+        self._make_typo_main_tree()
+        violations = lint_declared(
+            self.project_root / "spec" / "changes" / "s1", self.project_root)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("疑似笔误", violations[0])
+        self.assertIn("core/pm_engine/verification.py", violations[0])
+
+    def test_layer2_prescription_injects_candidate(self):
+        """第二层：绕过 lint 后派发处方含候选与 dispute 登记约定。"""
+        from test_agent_runner import make_runner
+        self.write_spec_dir(self.TYPO_DECL)
+        self._make_typo_main_tree()
+        runner = make_runner(self.project_root)
+        runner.worktree_manager = mock.MagicMock()
+        runner.worktree_manager.get_legacy.return_value = None
+        prompt = runner._prompt_builder._build_prompt("s1", "implementer")
+        self.assertIn("声明清单 × 仓库现实", prompt)
+        self.assertIn("core/verification.py", prompt)
+        self.assertIn("core/pm_engine/verification.py", prompt)
+        self.assertIn("deliverable-dispute", prompt)
+        self.assertIn("不得静默改变交付落点", prompt)
+
+    def test_layer3_missing_verdict_no_silent_merge(self):
+        """第三层·missing：缺件终审后打回重派，绝不静默合并推进。"""
+        self._drive_worker_chain([
+            {"element": "core/verification.py", "verdict": "missing",
+             "actual_path": None, "reasoning": "实现未落地", "confidence": "high"},
+        ])
+        entry = self.sm.read_one("s1")
+        self.assertEqual(entry["status"], "ready")  # 打回重派而非 implemented
+        self.assertIn("交付物守卫", entry["error"])
+        # merge 未被调用（未静默放行）
+        self.runner.worktree_manager.merge_back_from_branch.assert_not_called()
+        self.assertEqual(self.engine._dispatcher._run_queue[-1][1:3],
+                         ("s1", "implementer"))
+
+    def test_layer3_unclear_verdict_no_silent_pass(self):
+        """第三层·unclear：blocked 人工裁决，绝不自动放行。"""
+        self._drive_worker_chain([
+            {"element": "core/verification.py", "verdict": "unclear",
+             "actual_path": None, "reasoning": "信息不足", "confidence": "low"},
+        ])
+        entry = self.sm.read_one("s1")
+        self.assertEqual(entry["status"], "blocked")
+        self.assertIn("待人工裁决", entry["error"])
+        self.runner.worktree_manager.merge_back_from_branch.assert_not_called()
+        self.assertEqual(self.engine._dispatcher._run_queue, [])
+
+    def test_layer3_typo_fix_merges_after_guard_repass(self):
+        """第三层·typo：修正声明 + 守卫重跑通过 → 正常合并推进（放行 merge）。"""
+        self._drive_worker_chain([
+            {"element": "core/verification.py", "verdict": "typo",
+             "actual_path": "core/pm_engine/verification.py",
+             "reasoning": "唯一 basename 命中", "confidence": "high"},
+        ], file_exists=lambda branch, path: path == "core/pm_engine/verification.py")
+        entry = self.sm.read_one("s1")
+        self.assertEqual(entry["status"], "implemented")  # 守卫放行后正常合并
+        self.runner.worktree_manager.merge_back_from_branch.assert_called_once()
+        # 声明段已修正为实际路径
+        tasks_text = (self.project_root / "spec" / "changes" / "s1"
+                      / "tasks.md").read_text(encoding="utf-8")
+        self.assertIn("- path: core/pm_engine/verification.py", tasks_text)
+        # verifier 已排队（merge 后既有推进路径）
+        self.assertEqual(self.engine._dispatcher._run_queue[-1][1:3],
+                         ("s1", "verifier"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
