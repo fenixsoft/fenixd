@@ -83,6 +83,15 @@ IMPL_RUN_BUDGET_USED_FIELD = "_impl_run_budget_used"
 BUDGET_EXEMPT_RUNS_FIELD = "_budget_exempt_runs"
 BUDGET_EXEMPT_ALERTED_FIELD = "_exempt_alerted"
 
+# ── 重启重验预算计数（fix-daemon-lifecycle-races D3）──────────────────
+# - _verify_redo_count：daemon 重启恢复路径（testing→implemented 重派 verify）
+#   的累计次数，跨重启持久化；与 _verify_fail_rounds（失败→fix 轮数）语义正交，
+#   互不读写对方字段。达 agents.verify_redo_budget 阈值即冻结等待人工裁决，
+#   堵死「毒 spec 借反复重启无限重验」敞口。
+VERIFY_REDO_COUNT_FIELD = "_verify_redo_count"
+# 重启重验预算缺省阈值（agents.verify_redo_budget 未配置时沿用本值）
+DEFAULT_VERIFY_REDO_BUDGET = 3
+
 
 # ── STATE.md Parser ─────────────────────────────────────────────────
 
@@ -406,6 +415,17 @@ class StateMachine:
         """
         return self._bump_counter(spec_name, BUDGET_EXEMPT_RUNS_FIELD, 1)
 
+    def bump_verify_redo_count(self, spec_name: str, delta: int = 1) -> int:
+        """重启重验计数原子增减（``_verify_redo_count``）。
+
+        仅由 daemon 重启恢复路径（recover_interrupted 的 testing→implemented
+        分支）递增调用；运行期中断/重试不经过此路径，计数天然只反映「重启恢复
+        重验」次数（fix-daemon-lifecycle-races D3）。
+
+        Returns: 增减后的累计值（跨重启持久化）。
+        """
+        return self._bump_counter(spec_name, VERIFY_REDO_COUNT_FIELD, delta)
+
     def update_spec(self, spec_name: str, updates: dict) -> bool:
         """Update a single SPEC's fields atomically. Returns True if updated."""
         specs = self.read_all()
@@ -454,10 +474,16 @@ class StateMachine:
         })
 
     def unfreeze_spec(self, spec_name: str, status: str = None) -> bool:
-        """解除人工冻结。status 给定时同时恢复到该状态（绕过冻结保护）。"""
+        """解除人工冻结。status 给定时同时恢复到该状态（绕过冻结保护）。
+
+        解冻即人工裁决完成——重启重验计数一并清零（fix-daemon-lifecycle-races
+        D3），使人工放行后的重验预算重新从零起算。
+        """
         updates: dict = {FROZEN_FIELD: False}
         if status is not None:
             updates["status"] = status
+        # 计数清零并入同一原子写，避免解冻后残留计数立即再次触发冻结
+        updates[VERIFY_REDO_COUNT_FIELD] = 0
         return self.update_spec(spec_name, updates)
 
     def add_spec(self, spec_name: str, entry: dict) -> bool:
@@ -512,6 +538,22 @@ class StateMachine:
 
         old_status = spec.get("status", SpecStatus.DRAFTED)
 
+        # 幂等自迁移短路（fix-daemon-lifecycle-races D4）：new_status == old_status
+        # 视为幂等自迁移，INFO 降级直接返回 True，不进入 VALID_TRANSITIONS 拒绝
+        # 分支。历史 ERROR 噪声（done→pushed 双路径并发必触发的 pushed→pushed
+        # 假告警）由此消噪；真实非法迁移（如 implemented→verified）仍记 ERROR。
+        # 依赖返回 False 阻断重复副作用的调用点须改为前置状态判断或接受幂等覆盖：
+        # 全库核查见 engine.py:332（done→done 时 total_duration 重算覆盖为同值，
+        # 幂等无害）与 dispatch.py:480-503（已有 cur_status != "implementing"
+        # 前置判断的同型防护）。
+        if new_status == old_status:
+            self.logger.info(
+                "state_machine",
+                f"Idempotent transition: {spec_name} {old_status} → {new_status} "
+                f"(already in state, skipped)",
+            )
+            return True
+
         # Validate transition
         if new_status not in VALID_TRANSITIONS.get(old_status, []):
             self.logger.error(
@@ -544,6 +586,17 @@ class StateMachine:
             return False
 
         old_status = spec.get("status", SpecStatus.DRAFTED)
+
+        # 幂等自迁移短路（fix-daemon-lifecycle-races D4）：同 transition() 语义，
+        # old==new 视为幂等，INFO 直接返回 True，不进 GATE_TRANSITIONS 拒绝分支。
+        if new_status == old_status:
+            self.logger.info(
+                "state_machine",
+                f"Idempotent gate transition: {spec_name} {old_status} → {new_status} "
+                f"(already in state, skipped)",
+            )
+            return True
+
         if new_status not in GATE_TRANSITIONS.get(old_status, []):
             self.logger.error(
                 "state_machine",
@@ -594,7 +647,8 @@ class StateMachine:
 
     # ── Recovery ───────────────────────────────────────────────────
 
-    def recover_interrupted(self, project_root=None, worktree_manager=None) -> List[str]:
+    def recover_interrupted(self, project_root=None, worktree_manager=None,
+                            verify_redo_budget: int = DEFAULT_VERIFY_REDO_BUDGET) -> List[str]:
         """
         On daemon restart, revert any SPECs stuck in interrupted states.
         Uses update_spec directly (bypasses transition validation for recovery).
@@ -610,6 +664,16 @@ class StateMachine:
         - testing（验证中断）→ implemented 重派 verifier——实现已合并/落分支，
           重置 ready 会误派 implementer 从头实现已合并代码并劫持 branch 字段
           （pushed 记录被写成 rogue 分支）；配合场景冻结复用，重验代价极小。
+          fix-daemon-lifecycle-races（D3）：恢复重验递增 ``_verify_redo_count``
+          并持久化，累计达 ``verify_redo_budget`` 阈值即结构化冻结（blocked +
+          frozen）等待人工裁决，本次启动不再派发 verifier——毒 spec 无法借反复
+          重启无限重验。
+
+        Args:
+            project_root: 项目根（interrupt-recovery-preserve 保留判定用）。
+            worktree_manager: worktree 三态单源查询器（保留续做用）。
+            verify_redo_budget: 重启重验预算阈值（agents.verify_redo_budget
+                配置值，缺省 DEFAULT_VERIFY_REDO_BUDGET=3）。
         """
         recovered = []
         for status in INTERRUPTED_STATES:
@@ -620,6 +684,24 @@ class StateMachine:
                     f"Recovering interrupted SPEC: {name} (was {status})",
                 )
                 if status == SpecStatus.TESTING:
+                    # 重启恢复重验计数（fix-daemon-lifecycle-races D3）：递增并
+                    # 持久化（_bump_counter 文件锁内原子读写）。仅此恢复路径递增
+                    # ——运行期中断/重派不经过 recover_interrupted，天然不计数。
+                    redo_count = self.bump_verify_redo_count(name, 1)
+                    if redo_count >= max(1, int(verify_redo_budget or 0)):
+                        # 超限冻结：blocked + frozen + 规范 error 前缀，本次启动
+                        # 不再重派 verifier（冻结期间自动链路的 status 改写被
+                        # update_spec 剥离），唯一出路是人工 unfreeze_spec。
+                        self.freeze_spec(
+                            name, reason="重启重验超限，等待人工裁决")
+                        self.logger.error(
+                            "state_machine",
+                            f"SPEC '{name}' 重启重验已达预算上限 "
+                            f"({redo_count}/{verify_redo_budget}) — 冻结为 "
+                            f"blocked 等待人工裁决（unfreeze_spec 可解冻并清零计数）",
+                        )
+                        recovered.append(name)
+                        continue
                     # 清 tester_run 让验证流水线全新重入；branch/implementer_run
                     # 保留（实现的身份事实，验证不重做实现）
                     self.update_spec(name, {

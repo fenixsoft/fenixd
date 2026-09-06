@@ -36,6 +36,66 @@ JUDGE_TIMEOUT_SECONDS = 120
 # 活性快照 last_output 片段截断字符数（D1）
 LIVENESS_SNIPPET_CHARS = 400
 
+# ── 启动终态补写扫描（fix-daemon-lifecycle-races D1）──────────────────────
+# run jsonl 的终态事件类型（对齐 runner.py _run_was_interrupted 与
+# admin_monitor.py _run_has_interrupted_marker 的判定口径）：
+# result=自然完成, interrupted=daemon shutdown, error=进程异常终止,
+# cancelled=人工取消。任一类型出现即视为 run 已终结。
+RUN_TERMINAL_EVENT_TYPES = frozenset({
+    "result", "interrupted", "error", "cancelled",
+})
+
+
+def sweep_runs_without_terminal_state(runs_dir: Path) -> list:
+    """启动终态补写扫描：扫描 runs_dir 顶层 *.jsonl，对尾部无终态事件的
+    run 文件追加 ``{"type": "interrupted", "reason": "startup terminal-state
+    sweep"}`` 终态事件。
+
+    仅在 daemon 启动期调用一次（AgentRunner 初始化后、任何派发前）；
+    孤儿 claude 进程存活不阻塞补写——run 文件由 daemon 侧转写，孤儿
+    进程不会再产生新事件。
+
+    Returns: 被补写的文件列表 ``[(run_file_name_stem, Path), ...]``。
+    """
+    if not runs_dir.is_dir():
+        return []
+    patched = []
+    try:
+        files = list(runs_dir.glob("*.jsonl"))
+    except OSError:
+        return []
+    for run_file in files:
+        has_terminal = False
+        try:
+            with run_file.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if (isinstance(entry, dict)
+                            and entry.get("type") in RUN_TERMINAL_EVENT_TYPES):
+                        has_terminal = True
+                        break
+        except OSError:
+            continue
+        if has_terminal:
+            continue
+        # 无终态事件——追加 interrupted 终态（O_APPEND 单行原子追加）
+        try:
+            append_run_line(run_file, {
+                "type": "interrupted",
+                "reason": "startup terminal-state sweep",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            patched.append((run_file.stem, run_file))
+        except OSError:
+            pass
+    return patched
+
 
 class LivenessSupervisor:
     """LivenessSupervisor组件（门面 AgentRunner 的组合组件）。"""

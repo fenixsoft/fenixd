@@ -16,6 +16,7 @@ export default function TokenBudgetPanel({ config, onSave }: TokenBudgetPanelPro
     token_budget_millions: config.agents.token_budget_millions ?? 50,
     daily_run_limit: config.agents.daily_run_limit ?? 50,
     impl_run_budget: config.agents.impl_run_budget ?? 6,
+    verify_redo_budget: config.agents.verify_redo_budget ?? 3,
   };
 
   useEffect(() => {
@@ -23,6 +24,7 @@ export default function TokenBudgetPanel({ config, onSave }: TokenBudgetPanelPro
       token_budget_millions: config.agents.token_budget_millions ?? 50,
       daily_run_limit: config.agents.daily_run_limit ?? 50,
       impl_run_budget: config.agents.impl_run_budget ?? 6,
+      verify_redo_budget: config.agents.verify_redo_budget ?? 3,
     });
   }, [config.agents, form]);
 
@@ -34,6 +36,7 @@ export default function TokenBudgetPanel({ config, onSave }: TokenBudgetPanelPro
           token_budget_millions: values.token_budget_millions,
           daily_run_limit: values.daily_run_limit,
           impl_run_budget: values.impl_run_budget,
+          verify_redo_budget: values.verify_redo_budget,
         },
       });
     } catch (error) {
@@ -92,6 +95,22 @@ export default function TokenBudgetPanel({ config, onSave }: TokenBudgetPanelPro
           </Form.Item>
           <Text type="secondary">
             默认 4。每 SPEC 跨修复周期的实现 run 启动次数上限（含首次实现与每轮修复重派）。达到上限即冻结该 SPEC 并交人工裁决，需人工调大预算或推进状态。合法范围 1-10。
+          </Text>
+
+          <Form.Item
+            name="verify_redo_budget"
+            label={
+              <>
+                重启重验预算<span className="label-note">（agents.verify_redo_budget，1-10）</span>
+              </>
+            }
+            rules={[{ required: true, message: '请输入重启重验预算' }]}
+            style={{ marginTop: 24 }}
+          >
+            <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Text type="secondary">
+            默认 3。daemon 重启恢复路径（testing → implemented 重派 verify）的累计重验次数上限。达上限即冻结该 SPEC 并交人工裁决（人工解冻后计数清零），防止「毒 spec 借反复重启无限重验」烧 token。合法范围 1-10。
           </Text>
         </Form>
       </Card>

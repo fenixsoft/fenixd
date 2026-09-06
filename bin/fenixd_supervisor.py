@@ -18,6 +18,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,6 +93,51 @@ def log(msg: str):
         pass
 
 
+# ── 启动自报：SIGKILL 等待窗口与启动时间戳（fix-daemon-lifecycle-races D2）──────
+# supervisor 每次启动时原子覆写 supervisor_runtime.json，供 daemon 启动
+# 自检读取：文件缺失 = 旧代码 supervisor 进程未升级（排水窗口可能被截断）；
+# sigkill_wait < drain+120 = 配置漂移（建议重启 supervisor）。
+# 路径在调用时经 FENIX_DIR 解析（而非模块加载时固化），保证测试注入
+# FENIX_DIR 后写入目标随动。
+
+
+def _supervisor_runtime_file() -> Path:
+    return FENIX_DIR / "supervisor_runtime.json"
+
+
+def _write_supervisor_runtime() -> None:
+    """原子写入 .fenix/supervisor_runtime.json（temp + rename）。"""
+    data = {
+        "sigkill_wait": _sigkill_wait_seconds(),
+        "started_at": _now_iso(),
+    }
+    import json
+    FENIX_DIR.mkdir(parents=True, exist_ok=True)
+    target = _supervisor_runtime_file()
+    try:
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            prefix=".supervisor_runtime.", suffix=".tmp", dir=str(FENIX_DIR),
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, str(target))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        log(
+            f"supervisor_runtime written: sigkill_wait={data['sigkill_wait']}s, "
+            f"started_at={data['started_at']}"
+        )
+    except OSError as e:
+        log(f"supervisor_runtime write failed (non-blocking): {e}")
+
+
 def start_daemon():
     """启动 daemon 子进程（经 .fenix/fenixd.py 软链，保持其 FENIX_DIR 解析正确）。"""
     DAEMON_STARTED.write_text(_now_iso() + "\n", encoding="utf-8")
@@ -105,6 +151,9 @@ def start_daemon():
 def main():
     FENIX_DIR.mkdir(parents=True, exist_ok=True)
     log(f"supervisor starting (pid {os.getpid()}, root {PROJECT_ROOT})")
+    # 启动自报：SIGKILL 等待窗口 + 启动时间（fix-daemon-lifecycle-races D2）。
+    # daemon 启动一致性自检将读取该文件，缺失/不一致 → WARNING 提示重启 supervisor。
+    _write_supervisor_runtime()
 
     while True:
         if STOP_FLAG.exists():

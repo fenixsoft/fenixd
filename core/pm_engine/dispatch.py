@@ -2200,6 +2200,8 @@ class Dispatcher:
             "error": None,
             "_inconclusive_attempts": 0,
             "_verify_fail_rounds": 0,
+            # fix-daemon-lifecycle-races D3：验证自然通过清零点（fast-track 同语义）。
+            "_verify_redo_count": 0,
             "_env_block_rounds": 0,
         })
         self._pm.logger.info(

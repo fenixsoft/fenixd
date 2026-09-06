@@ -63,6 +63,13 @@ ADMIN_DISPOSITION_STALE_SECONDS = 24 * 3600
 PRESERVE_SIDECAR = PROJECT_ROOT / ".fenix" / "interrupted_runs.json"
 # supervisor SIGKILL 等待相对排水窗口的固定余量（D2）：保证排水期不被截断。
 SUPERVISOR_KILL_MARGIN_SECONDS = 120
+# supervisor_runtime.started_at 漂移判定阈值（fix-daemon-lifecycle-races 3.2）：
+# 当前 daemon 启动时间戳（.fenix/daemon_started）早于 runtime.started_at 超过
+# 该值，视为 runtime 文件残留自此前 supervisor 进程（当前进程未刷新上报），按
+# 「未上报」处理打 WARNING。缺省 24h：daemon 自动重启循环（restart_request/
+# 崩溃自愈）间隔分钟级，健康 supervisor 场景漂移远小于该阈值；长驻 supervisor
+# 残留文件的漂移必然超限，恰是「文件残留自旧进程」的检出信号。
+SUPERVISOR_RUNTIME_DRIFT_SECONDS = 24 * 3600
 
 
 def _read_preserve_sidecar() -> list:
@@ -279,6 +286,39 @@ class FenixDaemon:
         # Scan initial state
         self.logger.info("fenixd", "Performing initial STATE.md scan...")
 
+        # ── 启动终态补写扫描（fix-daemon-lifecycle-races D1）──
+        # AgentRunner 已初始化、任何派发与恢复派发之前：对上次 daemon 非正常
+        # 死亡（SIGKILL/断电/崩溃）遗留的无终态 run 补写 interrupted 终态。
+        # daemon 刚启动时注册表为空 + 单实例锁，存量无终态 run 必为遗留死 run；
+        # 孤儿 claude 进程存活不阻塞补写（run 文件由 daemon 侧转写）。sweep
+        # 仅启动期执行一次，运行期不重复。异常降级 WARNING，不阻塞 daemon 启动。
+        try:
+            from core.agent_runner.liveness import sweep_runs_without_terminal_state
+            _runs_dir = PROJECT_ROOT / ".fenix" / "runs"
+            _swept = sweep_runs_without_terminal_state(_runs_dir)
+            if _swept:
+                self.logger.warning(
+                    "fenixd",
+                    f"Startup terminal-state sweep: 补写 {len(_swept)} 个遗留 "
+                    f"无终态 run 的 interrupted 终态: "
+                    + ", ".join(run_id for run_id, _ in _swept),
+                )
+        except Exception as e:
+            self.logger.warning(
+                "fenixd",
+                f"Startup terminal-state sweep failed (non-blocking): {e}",
+            )
+
+        # ── 排水窗口一致性自检（fix-daemon-lifecycle-races D2）──
+        # supervisor SIGKILL 等待窗口 vs 排水窗口；不一致/旧进程 → WARNING。
+        try:
+            self._check_supervisor_drain_consistency()
+        except Exception as e:
+            self.logger.warning(
+                "fenixd",
+                f"Supervisor drain consistency check failed (non-blocking): {e}",
+            )
+
         # 启动清理孤儿 worktree（fix-fenix-token-waste）：上次异常退出的残留。
         # 锁治理（improve-run-lifecycle-governance D4）：清理前先以进程表重建在册锁
         # —— 孤儿 attempt 进程仍存活的 worktree 会被跳过并重建登记，不被误删。
@@ -288,7 +328,11 @@ class FenixDaemon:
         # recover_interrupted 的保留续做会把保全在册的 worktree（在场或重建）
         # 登记进活动集；先于 cleanup_stale_worktrees 完成，使孤儿清理自然跳过
         # 被保全引用的 worktree——清理与保全永不互删。
-        self.state_machine.recover_interrupted(PROJECT_ROOT, self.worktree_manager)
+        # verify_redo_budget（fix-daemon-lifecycle-races D3）：重启恢复重验的
+        # 预算阈值，缺省 3；恢复路径据此决定重验派发或冻结等待人工裁决。
+        _redo_budget = int(ConfigLoader.get(self.config, "agents.verify_redo_budget", 3) or 3)
+        self.state_machine.recover_interrupted(
+            PROJECT_ROOT, self.worktree_manager, verify_redo_budget=_redo_budget)
         # 消费后的保全 sidecar 清除（幂等；中断全部由 recovery 接管）
         _clear_preserve_sidecar()
 
@@ -780,6 +824,80 @@ class FenixDaemon:
         else:
             self.logger.info("fenixd", "Drain: no running agents to wait for")
         return running
+
+    def _check_supervisor_drain_consistency(self) -> None:
+        """启动自检：supervisor SIGKILL 等待窗口与 daemon 排水窗口的一致性。
+
+        fix-daemon-lifecycle-races（D2）：排水窗口（shutdown_drain_seconds）
+        必须被 supervisor 的 SIGKILL 等待覆盖，否则排水期被强杀截断、在途 run
+        永久无终态（09-05 实证）。supervisor 每次启动把等待窗口写入
+        `.fenix/supervisor_runtime.json`；此处读取并比对：
+          - 文件缺失 → 旧代码 supervisor 进程未升级（8/26 实证场景）；
+          - sigkill_wait < drain + 120 → supervisor 配置陈旧/计算口径漂移；
+          - started_at 与本次 daemon 启动时间戳（daemon_started）漂移超阈值
+            → runtime 文件残留自此前 supervisor 进程。
+        任一命中 → logger WARNING + 项目日志（提示重启 supervisor）；一致配置
+        静默通过。drain≤0（现行快速停机）时无需比对，直接返回。
+        """
+        drain_seconds = self._shutdown_drain_seconds()
+        if drain_seconds <= 0:
+            return
+        runtime_path = PROJECT_ROOT / ".fenix" / "supervisor_runtime.json"
+        warnings = []
+        if not runtime_path.is_file():
+            warnings.append(
+                f"supervisor 未上报 SIGKILL 等待窗口（.fenix/supervisor_runtime.json "
+                f"缺失）——疑似旧代码 supervisor 进程，排水窗口 {drain_seconds}s 可能被 "
+                f"SIGKILL 截断，建议重启 supervisor"
+            )
+        else:
+            try:
+                data = json.loads(runtime_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as e:
+                warnings.append(
+                    f"supervisor runtime 解析失败（{e}）——按未上报处理，建议重启 "
+                    f"supervisor 刷新上报"
+                )
+                data = {}
+            if not warnings and isinstance(data, dict):
+                try:
+                    sigkill_wait = int(data.get("sigkill_wait") or 0)
+                except (TypeError, ValueError):
+                    sigkill_wait = 0
+                if sigkill_wait < drain_seconds + SUPERVISOR_KILL_MARGIN_SECONDS:
+                    warnings.append(
+                        f"supervisor SIGKILL 等待窗口 {sigkill_wait}s < 排水窗口 "
+                        f"{drain_seconds}s + 余量 {SUPERVISOR_KILL_MARGIN_SECONDS}s —— "
+                        f"排水期可能被截断，建议重启 supervisor 使配置生效"
+                    )
+                # started_at 与 daemon_started 漂移判定（残留自旧进程）
+                daemon_started = PROJECT_ROOT / ".fenix" / "daemon_started"
+                drift_error = None
+                try:
+                    runtime_ts = datetime.fromisoformat(
+                        str(data.get("started_at") or "")).timestamp()
+                    daemon_ts = datetime.fromisoformat(
+                        daemon_started.read_text(encoding="utf-8").strip()
+                    ).timestamp()
+                    if runtime_ts and daemon_ts and daemon_ts - runtime_ts > SUPERVISOR_RUNTIME_DRIFT_SECONDS:
+                        drift_error = (
+                            f"supervisor runtime 上报于 {data.get('started_at')}，"
+                            f"早于本次 daemon 启动 {SUPERVISOR_RUNTIME_DRIFT_SECONDS}s 以上"
+                        )
+                except (ValueError, OSError, TypeError):
+                    drift_error = None  # 时间戳不可解析时不判定漂移
+                if drift_error:
+                    warnings.append(
+                        f"{drift_error}——疑似 runtime 文件残留自此前 supervisor 进程，"
+                        f"建议重启 supervisor 刷新上报"
+                    )
+        for w in warnings:
+            self.logger.warning("fenixd", w)
+            try:
+                if self.pm_engine is not None:
+                    self.pm_engine._append_project_log(f"⚠️ {w}")
+            except Exception:
+                pass
 
     def _preserve_interrupted_runs(self, run_ids: list, reason: str) -> list:
         """排水超时 terminate 前保全在跑 run 的 spec 上下文到 sidecar（D3）。
