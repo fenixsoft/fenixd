@@ -22,6 +22,8 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     POST /api/spec-delete?project=<name>&spec=<name>  → 软删除 SPEC（STATE.md 剔除 + 目录移入 archive，运行中返回 409）
     POST /api/spec-archive?project=<name>&spec=<name> → 归档终态 SPEC（目录移入 archive/YYYY-MM-DD-<name>，STATE.md 保留，仅 done/pushed）
     POST /api/spec-admin-invoke?project=<name>&spec=<name>  → 手动唤起 Admin（写 .fenix/admin_invoke_request.json，进行中返回 409）
+    POST /api/spec-start-after?project=<name>&spec=<name> → 设置/清除定时拾取 start_after（body: {"value": iso|null}，非法 400 / 终态 403）
+    POST /api/spec-freeze-config?project=<name>&spec=<name> → 冻结管理（body: {"mode": permanent|scheduled|unfreeze, "until"?: iso}，非法 400 / 非冻结 409）
     GET /api/config?project=<name> → 读取受管配置（llm / agents.models / gates.approve_mode）
     POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
     GET /api/verify-yaml?project=<name> → 验证契约文件 .fenix/verify.yaml 原文（设置页「项目简介」面板）
@@ -623,6 +625,101 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._error(404, result.get("error") or "spec not found")
             return
         self._json(result)
+
+    def _api_spec_start_after(self, query) -> dict:
+        """POST /api/spec-start-after?project=<name>&spec=<name>
+        body: {"value": "<iso-utc>"|null}
+
+        设置/清除 SPEC 定时拾取时间（start_after，ISO8601 UTC；null 即清除）。
+        - project 不存在 → 404；spec 不在项目 STATE.md → 404
+        - 终态（done/pushed）→ 403「终态不可设置定时拾取」
+        - value 非法 ISO8601 → 400（STATE.md 不变）
+        - 成功 → 200 + {ok: true, start_after: <iso|null>}
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        body = self._read_json_body()
+        if body is None:
+            return
+        if "value" not in body:
+            self._error(400, "value required in request body (ISO8601 UTC or null)")
+            return
+        proot = Path(project["path"])
+        try:
+            result = dashboard_data.set_spec_start_after(proot, spec, body["value"])
+        except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
+            self._error(500, f"set spec start_after failed: {e}")
+            return
+        if not result.get("found"):
+            self._error(404, result.get("error") or "spec not found")
+            return
+        if result.get("terminal"):
+            self._error(403, result.get("error") or "终态不可设置定时拾取")
+            return
+        if result.get("invalid"):
+            self._error(400, result.get("error") or "start_after 非法 ISO8601")
+            return
+        self._json({"ok": True, "project": project["name"], "spec": spec,
+                    "start_after": result.get("start_after")})
+
+    def _api_spec_freeze_config(self, query) -> dict:
+        """POST /api/spec-freeze-config?project=<name>&spec=<name>
+        body: {"mode": "permanent"|"scheduled"|"unfreeze", "until": "<iso-utc>"?}
+
+        冻结管理配置：永久 ↔ 定时解冻 ↔ 立即解冻。
+        - project 不存在 → 404；spec 不在项目 STATE.md → 404
+        - spec 未处于冻结态 → 409「冻结管理仅对冻结 spec 生效」
+        - mode 非法 / scheduled 的 until 非法 ISO8601 → 400
+        - 成功 → 200 + {ok: true, mode, frozen_until, unfrozen?}
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        body = self._read_json_body()
+        if body is None:
+            return
+        if "mode" not in body:
+            self._error(400, "mode required in request body")
+            return
+        proot = Path(project["path"])
+        try:
+            result = dashboard_data.configure_spec_freeze(
+                proot, spec, body["mode"], body.get("until"))
+        except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
+            self._error(500, f"configure spec freeze failed: {e}")
+            return
+        if not result.get("found"):
+            self._error(404, result.get("error") or "spec not found")
+            return
+        if result.get("invalid"):
+            self._error(400, result.get("error") or "非法请求")
+            return
+        if result.get("error") and not result.get("ok"):
+            self._error(409, result.get("error"))
+            return
+        self._json({
+            "ok": True, "project": project["name"], "spec": spec,
+            "mode": result.get("mode"),
+            "frozen_until": result.get("frozen_until"),
+            "unfrozen": result.get("unfrozen", False),
+        })
 
     def _api_spec_archive(self, query) -> dict:
         """POST /api/spec-archive?project=<name>&spec=<name>
@@ -1326,6 +1423,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_spec_freeze(query)
         elif path == "/api/spec-unfreeze":
             self._api_spec_unfreeze(query)
+        elif path == "/api/spec-start-after":
+            self._api_spec_start_after(query)
+        elif path == "/api/spec-freeze-config":
+            self._api_spec_freeze_config(query)
         elif path == "/api/spec-archive":
             self._api_spec_archive(query)
         elif path == "/api/alerts/clear":
