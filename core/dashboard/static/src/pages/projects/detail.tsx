@@ -285,11 +285,12 @@ function agentLabel(item: { agent_type?: string; run_id?: string }): string {
 // 回退原因含「verification report」时渲染为链接（点击打开验证报告弹窗）
 const VERIFICATION_LINK_RE = /^(.*?)verification report(.*)$/i;
 
+// 状态转移节点的输出信息用默认黑色正文（此前 secondary 灰色不易读），链接分支保留可点
 function ReasonText({ reason, onOpenReport }: { reason: string; onOpenReport: () => void }) {
   const m = reason.match(VERIFICATION_LINK_RE);
-  if (!m) return <Typography.Text type="secondary">{reason}</Typography.Text>;
+  if (!m) return <Typography.Text>{reason}</Typography.Text>;
   return (
-    <Typography.Text type="secondary">
+    <Typography.Text>
       {m[1]}
       <a onClick={onOpenReport}>verification report</a>
       {m[2]}
@@ -782,7 +783,7 @@ export default function SpecDetailPage() {
                     <OutlinedTag tone={statusMeta(item.to || '').tone}>{toLabel}</OutlinedTag>
                   </div>
                   {isRollback && (
-                    <div style={{ whiteSpace: 'pre-wrap' }}>
+                    <div style={{ whiteSpace: 'pre-wrap', marginTop: 10 }}>
                       <ReasonText reason={item.reason || '状态回退'} onOpenReport={() => openDocModal('verification')} />
                     </div>
                   )}

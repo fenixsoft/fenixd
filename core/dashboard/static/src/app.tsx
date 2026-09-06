@@ -86,9 +86,9 @@ export const layout: RunTimeLayoutConfig = ({ initialState }) => {
       <Space size={8} align="center">
         <img src={logoUrl} alt="logo" style={{ width: 22, height: 22, display: 'block' }} />
         <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.3 }}>
-          Fenix
+          Fenix 
           <span style={{ fontWeight: 400, marginLeft: 6, color: 'rgba(0, 0, 0, 0.45)' }}>
-            Dashboard
+            Harness
           </span>
         </span>
       </Space>
