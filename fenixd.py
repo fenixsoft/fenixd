@@ -50,6 +50,7 @@ from core.agent_runner.runner import ADMIN_DISPOSITION_GLOB
 from core.v2_dev_server import cleanup_orphans as v2_cleanup_orphans
 from core.admin_store import AdminStore, DISPOSITION
 from core.admin_monitor import AdminMonitor
+from core.hook_engine import HookEngine
 from core.pm_engine import PMEngine
 
 # Administrator 处置状态实例文件的残留清扫阈值（fix-admin-run-blocks-mainloop
@@ -173,6 +174,7 @@ class FenixDaemon:
         self._admin_pool_lock = threading.Lock()
         self._admin_pool_stats = {"submitted": 0, "completed": 0, "failed": 0}
         self.pm_engine = None
+        self.hook_engine = None
 
     def initialize(self):
         """Load config and initialize all components."""
@@ -257,6 +259,17 @@ class FenixDaemon:
         )
         self.logger.info("fenixd", "PMEngine initialized")
 
+        # 6.5 Initialize HookEngine（add-spec-hooks：SPEC 状态事件 hook 引擎）。
+        # 配置从共享 config 对象实时读取（30s 热更新自动生效）；失败告警复用
+        # admin_store 站内告警通道。实例化后注入 EventBus 作为 hook_dispatcher。
+        self.hook_engine = HookEngine(
+            PROJECT_ROOT,
+            self.config,
+            self.logger,
+            admin_store=self.admin_store,
+        )
+        self.logger.info("fenixd", "HookEngine initialized")
+
         # 7. Initialize EventBus (last, as it triggers the PM Engine)
         self.event_bus = EventBus(
             state_path,
@@ -264,6 +277,7 @@ class FenixDaemon:
             self.pm_engine,
             self.config,
             self.logger,
+            hook_dispatcher=self.hook_engine.dispatch,
         )
         self.logger.info("fenixd", "EventBus initialized")
 

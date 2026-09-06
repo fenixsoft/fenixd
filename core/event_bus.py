@@ -21,12 +21,16 @@ class EventBus:
     (with optional inotify support on Linux).
     """
 
-    def __init__(self, state_path: Path, state_machine, pm_engine, config, logger):
+    def __init__(self, state_path: Path, state_machine, pm_engine, config, logger,
+                 hook_dispatcher=None):
         self.state_path = Path(state_path)
         self.state_machine = state_machine
         self.pm_engine = pm_engine
         self.config = config
         self.logger = logger
+        # add-spec-hooks D1/D8：可选 hook 分发回调（HookEngine.dispatch）。
+        # 未注入则行为与现状一致——状态机与 EventBus 不产生对 hook 引擎的硬依赖。
+        self.hook_dispatcher = hook_dispatcher
 
         self._running = False
         self._watch_thread = None
@@ -326,11 +330,14 @@ class EventBus:
 
             if old_status is None:
                 # New SPEC appeared — dispatch event based on its current status
+                # （add-spec-hooks D1：新 spec 进入状态同样产生 hook 事件，from=None）
+                self._dispatch_hook(name, None, new_status, entry)
                 event_kind = EventBus._status_to_event(new_status)
                 if event_kind:
                     events.append((event_kind, name, entry))
             elif old_status != new_status:
                 # Status changed
+                self._dispatch_hook(name, old_status, new_status, entry)
                 event_kind = self._status_to_event(new_status)
                 if event_kind:
                     events.append((event_kind, name, entry))
@@ -367,3 +374,23 @@ class EventBus:
             "done": "spec_done",
         }
         return mapping.get(status, "")
+
+    def _dispatch_hook(self, spec_name: str, old_status, new_status: str,
+                       entry: dict) -> None:
+        """状态 diff → hook 分发（add-spec-hooks D1）。
+
+        与 PM Engine 事件并列的独立通道：hook 订阅任意状态（含 PM Engine
+        不关心 implementing/testing/blocked/pushed 等中间态），因此每条
+        old_status != new_status 都调用。未注入 hook_dispatcher 时零开销。
+        hook 引擎抛异常不得影响状态机写入路径（单条捕获，只记日志）。
+        """
+        if self.hook_dispatcher is None:
+            return
+        try:
+            self.hook_dispatcher(spec_name, old_status, new_status, entry)
+        except Exception as e:
+            self.logger.error(
+                "event_bus",
+                f"Hook dispatch failed for '{spec_name}' "
+                f"{old_status} → {new_status}: {type(e).__name__}: {e}",
+            )

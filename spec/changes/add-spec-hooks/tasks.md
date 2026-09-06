@@ -46,8 +46,8 @@
 
 ## 3. EventBus 集成与 daemon 装配
 
-- [ ] 3.1 `core/event_bus.py`：构造参数新增可选 `hook_dispatcher`；`_dispatch_changes` 状态 diff 处对每条 `old_status != new_status` 调用分发（传 spec/old/new/entry），未注入时行为不变；启动快照语义保持（重启不重发存量）
-- [ ] 3.2 daemon 装配：daemon 启动时实例化 HookEngine 并作为 hook_dispatcher 注入 EventBus；执行时实时从 config 对象读 hooks 段（享受 30s 热更新）
+- [x] 3.1 `core/event_bus.py`：构造参数新增可选 `hook_dispatcher`；`_dispatch_changes` 状态 diff 处对每条 `old_status != new_status` 调用分发（传 spec/old/new/entry），未注入时行为不变；启动快照语义保持（重启不重发存量）
+- [x] 3.2 daemon 装配：daemon 启动时实例化 HookEngine 并作为 hook_dispatcher 注入 EventBus；执行时实时从 config 对象读 hooks 段（享受 30s 热更新）
 
 ## 4. Dashboard API（core/dashboard/server.py）
 
