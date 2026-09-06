@@ -73,6 +73,8 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 
 `verify.*` 与 `.fenix/verify.yaml` 的分工需要特别说明。`verify.*` 是 config.yaml 的命名空间，存放机器本地的运行时开关——不入库，随 config.yaml 热更新；而 `.fenix/verify.yaml` 是项目验证契约（prepare/serve/ready），随仓库提交、手工编辑，Dashboard 不会改写这个文件。deps_mode 也可以在 verify.yaml 顶层按项目声明 `deps_mode:`，优先于 config。
 
+契约的 serve/ready 形态按场景集 kind 自动反推（多形态验证，见 `05-verification.md`）：**纯 cli 场景集**跳过 serve/ready（不回退 `commands.start`，prepare 失败仍是唯一环境门）；**含 web/api 场景**则 serve 段（或 `commands.start` 兜底）必须有效，缺失时验收报错打回 plan；**混合场景集**照常起实例，cli 场景额外获得 `FENIX_VERIFY_BASE_URL` / `FENIX_VERIFY_PORT` 注入（框架值优先）。纯 CLI 交付的项目只需 `prepare`（构建/命令可用性），无需 serve 段。
+
 deps_mode 仅对 nodejs 项目生效——供给入口是 package.json/node_modules，其他项目自动跳过、零副作用。C/C++/Java 等其他语言的依赖安装与构建经 verify.yaml 的 prepare 声明（语言无关，如 `mvn package`、`cmake --build`），依赖缓存多为用户级天然共享。
 
 ### pm.push

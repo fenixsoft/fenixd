@@ -111,7 +111,8 @@ Dashboard 支持同时监控多个 Fenixd 项目。每个项目拥有自己的 `
 | **SPEC** | 软件需求规格说明书，对应 `spec/changes/<name>/` 目录 |
 | **STATE.md** | `.fenix/` 目录下的状态文件，记录所有 SPEC 的当前状态与元数据 |
 | **worktree** | Git 工作树，提供隔离的代码工作区 |
-| **verify.yaml** | 项目级验证契约，声明构建、启动、就绪探针 |
+| **verify.yaml** | 项目级验证契约，声明构建、启动、就绪探针（纯 CLI 交付可只声明 prepare） |
+| **场景 kind** | 验证场景形态（web/cli/api）：页面→web、HTTP 端点→api、命令/落盘→cli；混合交付拆场景 + `depends_on` 串接 |
 | **门禁** | 验证后由 planner-judge 判定通过/失败的环节 |
 | **熔断** | 预算耗尽或连续失败达到阈值后停止自动重派，升级人工 |
 | **困境信号** | Admin Monitor 检测到的 SPEC 异常状态（卡住、抖动、合并反复失败等） |

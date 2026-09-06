@@ -95,6 +95,6 @@
 
 ## 6. docs/help 文档更新
 
-- [ ] 6.1 `docs/help/05-verification.md`：新增多形态验证章节（三 Runner 分工、契约形态按场景集反推、kind 选择、纯 CLI 无 serve 形态、CLI/API 证据形态），中立化「验证=浏览器」表述
-- [ ] 6.2 `docs/help/08-config.md`：verify.yaml 契约说明与多形态示例核对更新
-- [ ] 6.3 `docs/help/02-concepts.md` / `docs/help/01-quick-start.md`：验证相关表述中立化核对
+- [x] 6.1 `docs/help/05-verification.md`：新增多形态验证章节（三 Runner 分工、契约形态按场景集反推、kind 选择、纯 CLI 无 serve 形态、CLI/API 证据形态），中立化「验证=浏览器」表述
+- [x] 6.2 `docs/help/08-config.md`：verify.yaml 契约说明与多形态示例核对更新
+- [x] 6.3 `docs/help/02-concepts.md` / `docs/help/01-quick-start.md`：验证相关表述中立化核对
