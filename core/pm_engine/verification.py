@@ -824,6 +824,12 @@ class VerificationPipeline:
         _verify_modules = [
             "core.verify_engine.visual_diff",
             "core.verify_engine.browser",
+            # admin 修 2026-09-06：web_runner 持有 `from .browser import
+            # BrowserManager` 的旧类引用（reload 不会更新其他模块已导入的
+            # 名称），不 reload 它则 browser.py 的更新经 WebRunner 实例化
+            # 路径完全不生效（add-spec-hooks admin 处置实测：browser 首帧
+            # 等待修复被旧 BrowserManager 类屏蔽）。须先于 engine reload。
+            "core.verify_engine.web_runner",
             "core.verify_engine.assertions",
             "core.verify_engine.scenarios",
             "core.verify_engine.engine",
