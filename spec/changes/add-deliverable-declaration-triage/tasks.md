@@ -25,11 +25,11 @@
 
 ## 1. PR1 晋升 lint 存在性校验（core/deliverables.py）
 
-- [ ] 1.1 新增 basename 模糊匹配工具函数：以 `Path(path).name` 对主树文件做 basename 精确匹配（rglob），排除清单 `.git`/`node_modules`/`dist`/`.fenix`/`__pycache__`，返回命中路径列表（确定性排序）
-- [ ] 1.2 `lint_declared` 新增规则 3：`kind: modify` 与 `kind: reference` 的路径在主树（`project_root`）不存在时拒绝晋升，违规消息含路径与「必须存在」语义（沿用既有目录判定的 candidates 归一化手法）
-- [ ] 1.3 `lint_declared` 新增规则 4：`kind: new` 路径主树不存在时调用 1.1 工具，命中**唯一** → 拒绝晋升，消息格式 `[{path}] 在主树不存在，疑似笔误——仓库内唯一 basename 命中 [{actual}]，请修正声明路径或改 kind`；零命中或多命中放行
-- [ ] 1.4 fail-open 保持：新规则仅增量逻辑，任何异常沿用既有「返回空清单放行」语义；无声明段 spec 行为不变（`start is None` 早退路径不触碰）
-- [ ] 1.5 回归测试（tests/test_deliverable_declaration_triage.py）：spec.md 四个 lint Scenario（modify 缺拦 / new 唯一命中拦含疑似目标文案 / 多命中与零命中放行 / reference 缺拦）+ lint 自身异常 fail-open 用例
+- [x] 1.1 新增 basename 模糊匹配工具函数：以 `Path(path).name` 对主树文件做 basename 精确匹配（rglob），排除清单 `.git`/`node_modules`/`dist`/`.fenix`/`__pycache__`，返回命中路径列表（确定性排序）
+- [x] 1.2 `lint_declared` 新增规则 3：`kind: modify` 与 `kind: reference` 的路径在主树（`project_root`）不存在时拒绝晋升，违规消息含路径与「必须存在」语义（沿用既有目录判定的 candidates 归一化手法）
+- [x] 1.3 `lint_declared` 新增规则 4：`kind: new` 路径主树不存在时调用 1.1 工具，命中**唯一** → 拒绝晋升，消息格式 `[{path}] 在主树不存在，疑似笔误——仓库内唯一 basename 命中 [{actual}]，请修正声明路径或改 kind`；零命中或多命中放行
+- [x] 1.4 fail-open 保持：新规则仅增量逻辑，任何异常沿用既有「返回空清单放行」语义；无声明段 spec 行为不变（`start is None` 早退路径不触碰）
+- [x] 1.5 回归测试（tests/test_deliverable_declaration_triage.py）：spec.md 四个 lint Scenario（modify 缺拦 / new 唯一命中拦含疑似目标文案 / 多命中与零命中放行 / reference 缺拦）+ lint 自身异常 fail-open 用例
 
 ## 2. PR2 派发前声明现实处方注入（core/agent_runner/prompt_builder.py）
 

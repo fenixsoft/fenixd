@@ -87,6 +87,11 @@ _SCENARIO_HEADING_RE = re.compile(r"^#{1,6}\s+.*Scenario", re.IGNORECASE)
 # `## Deliverables` 显式声明段标题（planner 交付契约，守卫机械对账优先于正则提取）。
 _DECLARED_HEADING_RE = re.compile(r"^##\s+Deliverables\s*$", re.IGNORECASE)
 
+# basename 模糊匹配排除目录（D1，add-deliverable-declaration-triage）：产物/
+# 依赖/状态目录不参与「疑似笔误」判定——node_modules/dist 的包内同名文件会在
+# 不同 spec 语境反复误命中，.fenix/git 是框架自身状态而非交付落点。
+_BASENAME_EXCLUDE_DIRS = (".git", "node_modules", "dist", ".fenix", "__pycache__")
+
 # 声明段合法 kind：new=本仓库新建文件（硬校验）；modify=修改既有文件（硬校验）；
 # reference=运行时写入目标/既有引用（软校验，仅审计，不参与缺件判定）。
 _DECLARED_KINDS = ("new", "modify", "reference")
@@ -379,6 +384,48 @@ def extract_paths(spec_dir) -> List[str]:
     return ordered
 
 
+def match_basename_in_tree(project_root, path: str) -> List[str]:
+    """主树 basename 精确匹配（add-deliverable-declaration-triage D1）。
+
+    以 ``Path(path).name`` 对主树文件做 basename 精确匹配（rglob），排除
+    ``_BASENAME_EXCLUDE_DIRS``（``.git``/``node_modules``/``dist``/
+    ``.fenix``/``__pycache__``）目录内的命中；返回相对项目根的命中路径列表，
+    确定性排序（字符串升序）。不引入编辑距离/模糊串匹配（D1：basename 内
+    笔误如 ``verifcation.py`` 由 judge 层兜底，lint 层保持零误拦取向）。
+
+    ``new`` 声明路径在主树不存在时调用（晋升 lint 规则 4 与派发处方干跑共用），
+    命中唯一即判疑似笔误候选；零或多命中放行（交由后续层兜底）。
+
+    Args:
+        project_root: 项目根（主树基准）。
+        path: 声明路径（以其余 ``Path(path).name`` 为匹配键）。
+
+    Returns:
+        命中相对路径列表（排序）；无命中或遍历异常返回空列表（fail-open）。
+    """
+    root = Path(project_root)
+    name = Path(path or "").name
+    if not name:
+        return []
+    excluded = set(_BASENAME_EXCLUDE_DIRS)
+    hits: List[str] = []
+    try:
+        for p in root.rglob(name):
+            if not p.is_file():
+                continue
+            try:
+                rel = p.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if set(rel.split("/")) & excluded:
+                continue
+            hits.append(rel)
+    except OSError:
+        return []
+    hits.sort()
+    return hits
+
+
 def lint_declared(spec_dir, project_root) -> List[str]:
     """晋升 lint（drafted → ready）：Deliverables 声明形态机械校验。
 
@@ -392,7 +439,15 @@ def lint_declared(spec_dir, project_root) -> List[str]:
        跳过该条目，声明形同虚设（fix-admin-run-blocks-mainloop 同族坑）；
     2. ``kind: modify`` 的路径在主树是目录——目录声明与守卫判定形态不匹配
        （守卫按 blob/tree 校验对象，精确到文件的声明才可对账），处方：改为
-       目录下确定性锚点文件（如 ``dist/index.html``）。
+       目录下确定性锚点文件（如 ``dist/index.html``）；
+    3. ``kind: modify``/``kind: reference`` 的路径在主树不存在（存在性硬校验，
+       add-deliverable-declaration-triage D1）——modify 语义即修改既有文件、
+       reference 语义即既有引用，不存在即声明有错，停留 drafted 附 error；
+    4. ``kind: new`` 的路径在主树不存在时做 basename 模糊匹配（规则 3 同型
+       形态错误），仓库内唯一命中即判疑似笔误拒绝晋升，违规消息直接给出疑似
+       目标路径；零命中或多命中放行（fail-open 取向，交由派发处方与守卫终审
+       层兜底——语义矛盾（多 basename 命中/basename 内笔误/语境等价）原理上
+       需要 LLM 裁决，lint 只拦确定性唯一命中）。
 
     lint 自身故障一律 fail-open（返回空清单放行晋升），不因 lint 阻塞流水线。
 
@@ -454,19 +509,42 @@ def lint_declared(spec_dir, project_root) -> List[str]:
                 f"声明形同虚设，请改为具体字面路径"
             )
             continue
-        if kind != "modify":
-            continue
         # 目录声明按字面路径判定（.fenix 归一化已退役，恒等映射自然退化）
         candidates = [path]
         normalized = normalize_check_path(path)
         if normalized != path:
             candidates.append(normalized)
-        is_dir = any((project_root / c).is_dir() for c in candidates)
-        if is_dir:
-            violations.append(
-                f"[{path}] 是目录——目录声明无法精确对账（tree ≠ 具体交付物），"
-                f"请改为目录下确定性锚点文件（如 dist/index.html）"
-            )
+        if kind == "modify":
+            is_dir = any((project_root / c).is_dir() for c in candidates)
+            if is_dir:
+                violations.append(
+                    f"[{path}] 是目录——目录声明无法精确对账（tree ≠ 具体交付物），"
+                    f"请改为目录下确定性锚点文件（如 dist/index.html）"
+                )
+                # 目录本身在主树存在：不落入下方存在性校验（避免重复违规）
+                continue
+        # 规则 3（add-deliverable-declaration-triage D1）：modify/reference
+        # 路径在主树必须存在。reference 语义即既有引用，modify 语义即修改既有
+        # 文件——不存在即声明有错（声明 vs 现实的确定性矛盾，零误拦）。
+        if kind in ("modify", "reference"):
+            if not any((project_root / c).exists() for c in candidates):
+                violations.append(
+                    f"[{path}] 在主树不存在——{kind} 声明路径必须在主树存在"
+                    f"（必须存在，指向既有文件），请核对声明路径"
+                    f"（新建文件请用 kind: new）"
+                )
+            continue
+        # 规则 4（D1）：new 路径主树不存在时做 basename 模糊匹配，仓库内唯一
+        # 命中即判疑似笔误拒绝晋升；零命中或多命中放行（语义矛盾交由后续层）。
+        if kind == "new":
+            if any((project_root / c).exists() for c in candidates):
+                continue
+            hits = match_basename_in_tree(project_root, path)
+            if len(hits) == 1:
+                violations.append(
+                    f"[{path}] 在主树不存在，疑似笔误——仓库内唯一 basename "
+                    f"命中 [{hits[0]}]，请修正声明路径或改 kind"
+                )
     return violations
 
 
