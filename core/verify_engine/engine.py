@@ -32,10 +32,13 @@ from .scenarios import TestScenario, VALID_KINDS
 from .env_gate import (
     finalize_scenario_status,
     is_env_candidate,
+    is_connection_error_candidate,
     probe_http_health,
 )
-# 导入 WebRunner 触发注册（web→WebRunner）；后续 api/cli Runner 同样经此注册。
-from .web_runner import WebRunner, locate_app_base_url  # noqa: F401
+# 导入 Runner 模块触发注册（web→WebRunner / api→ApiRunner / cli→CliRunner）；
+# 引擎只按注册表分派，新增 kind 仅需在此追加导入。
+from .web_runner import WebRunner, locate_app_base_url  # noqa: F401,E402
+from .api_runner import ApiRunner  # noqa: F401,E402
 
 
 class VerifyEngine:
@@ -296,7 +299,8 @@ class VerifyEngine:
         Returns:
             {"probe_healthy": bool, "blocked_env": int, "probe_detail": str}
         """
-        candidates = [r for r in results if is_env_candidate(r)]
+        candidates = [r for r in results
+                      if is_env_candidate(r) or is_connection_error_candidate(r)]
         if not candidates:
             self._env_probe = {"healthy": True, "detail": "无候选场景，跳过探针"}
             return {"probe_healthy": True, "blocked_env": 0, "probe_detail": self._env_probe["detail"]}

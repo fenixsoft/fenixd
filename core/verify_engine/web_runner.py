@@ -271,6 +271,7 @@ class WebRunner(VerifyRunner):
         return {
             "scenario_id": scenario.id,
             "description": scenario.description,
+            "kind": scenario.kind,
             "status": status,
             "step_results": step_results,
             "assertion_results": assertion_results,

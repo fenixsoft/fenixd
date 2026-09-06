@@ -97,6 +97,24 @@ def is_env_candidate(scenario_result: dict) -> bool:
     return bool(wait_errors)
 
 
+def is_connection_error_candidate(scenario_result: dict) -> bool:
+    """API 场景连接失败类候选（verify-runner-engine：连接失败类=环境候选）。
+
+    候选 = step_results 含 http_request/sse_connect 步骤且 error_type 为
+    connection_failed（实例失联/不可达）。探针确认失联 → 降级 blocked-env；
+    连接失败不代表产品逻辑缺陷，不得进入 product-bug 管道。
+    """
+    step_results = scenario_result.get("step_results")
+    if not isinstance(step_results, list):
+        return False
+    return any(
+        isinstance(s, dict)
+        and s.get("action") in ("http_request", "sse_connect")
+        and s.get("error_type") == "connection_failed"
+        for s in step_results
+    )
+
+
 def finalize_scenario_status(scenario_result: dict, probe_healthy: bool) -> str:
     """场景状态最终结算：对 fail 候选做 blocked-env 后置分类。
 
@@ -114,8 +132,8 @@ def finalize_scenario_status(scenario_result: dict, probe_healthy: bool) -> str:
     # 探针健康 → 维持真失败（design D1：此时确属真缺陷或慢场景）
     if probe_healthy:
         return "fail"
-    # 探针失联 + 候选 → blocked-env（计入 warning 统计，不计入 fail）
-    if is_env_candidate(scenario_result):
+    # 探针失联 + 候选（web mock 断流 / api 连接失败）→ blocked-env
+    if is_env_candidate(scenario_result) or is_connection_error_candidate(scenario_result):
         return "blocked-env"
     return "fail"
 

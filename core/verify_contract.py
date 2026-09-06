@@ -71,6 +71,33 @@ Fenix 是通用开发框架，被管项目形态各异：前端应用有构建�
   契约由进程归属/邻近扫描兜底发现并记迁移告警。
 - ``prepare`` 失败＝验证环境错误（返回不可达 + 说明），验证门禁会拦截、
   不会判 verified/bug-found——构建失败不是产品缺陷。
+
+## 多形态验证（verify-runner-engine，零新增字段）
+
+serve/ready 是否必需由**本轮场景集的 kind 组成反推**（场景 kind ∈
+web/cli/api，见 core/verify_engine/scenarios.py 词表）：
+
+- **纯 cli 场景集**：serve/ready 全省——纯 CLI 交付没有可服务的 HTTP 形态，
+  验证只依赖 prepare（构建/命令可用性）。**MUST NOT 回退 commands.start**
+  （无人消费的实例不拉起）；``_ensure_app_reachable`` 无实例形态短路。
+- **含 web 或 api 场景**：serve 段（或 commands.start 兜底）必须有效；
+  缺失时验收报明确错误打回 plan，不静默跑空。
+- **混合场景集**：serve 照常启动，cli 场景额外获得实例环境变量注入
+  （``FENIX_VERIFY_BASE_URL`` / ``FENIX_VERIFY_PORT``，框架值优先）。
+
+BASE_URL 注入范围扩展（design D4）：
+
+- ``navigate``（web）：现状不变，场景 origin 全量改写。
+- ``http_request`` / ``sse_connect``（api）：``url`` 字段 origin 全量改写
+  （路径保留）——文件级 ``rewrite_scenarios_origin`` 与 ApiRunner 运行时
+  ``rewrite_origin`` 双通道，planner 写什么都被覆盖。
+- CLI ``run`` 步骤：执行环境自动注入 ``FENIX_VERIFY_BASE_URL`` 与
+  ``FENIX_VERIFY_PORT``，且框架值优先——场景 ``env`` 中同名变量被覆盖
+  （防 stale 地址事故同一防护逻辑）。
+
+实例 base_url 由验证流程在开始时确定并**统一供给**各 Runner（探针与断言
+上下文共用），取代旧「从候选场景 navigate 步骤文本正则考古 base_url」的
+回退逻辑（该逻辑在场景失联时会漏判）。无实例形态下改写与注入为无害空操作。
 """
 
 import os
