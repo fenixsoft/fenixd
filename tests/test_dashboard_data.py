@@ -266,6 +266,61 @@ class TestSpecTimelineRollbackWithoutTransition(unittest.TestCase):
         self.assertEqual(rollbacks[0]["reason"], "fast-track run failed")
 
 
+class TestClassifyRunTerminalTypes(unittest.TestCase):
+    """run 终态分类与框架口径对齐（读侧同步写侧 RUN_TERMINAL_EVENT_TYPES）。
+
+    liveness.py 启动终态补写扫描 / 优雅停机 / 人工取消会向 run 产物追加
+    interrupted / cancelled 终态事件（runner「终态后置」不变量：终态行必为
+    最后一行）。dashboard classify_run 只认 result/error 曾把 11 个已终结
+    run 全部判成 running，overview 活跃 Agent 数虚高 10 倍（2026-09-06 实证：
+    active_run_count=11，真实活跃仅 1）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.runs_dir = Path(self.tmpdir) / ".fenix" / "runs"
+        self.runs_dir.mkdir(parents=True)
+
+    def _write_run(self, run_id: str, last_event: dict):
+        body = json.dumps({"type": "assistant", "message": {"content": []}})
+        (self.runs_dir / f"{run_id}.jsonl").write_text(
+            body + "\n" + json.dumps(last_event) + "\n", encoding="utf-8")
+
+    def test_interrupted_last_line_is_terminal(self):
+        from core.dashboard.data import get_runs
+        ts = int(time.time())
+        self._write_run(f"impl-demo-{ts}",
+                        {"type": "interrupted", "reason": "startup terminal-state sweep"})
+        runs = get_runs(self.tmpdir)
+        self.assertEqual(runs[0]["status"], "interrupted")
+
+    def test_cancelled_last_line_is_terminal(self):
+        from core.dashboard.data import get_runs
+        ts = int(time.time())
+        self._write_run(f"impl-demo-{ts}",
+                        {"type": "cancelled", "reason": "user cancel"})
+        runs = get_runs(self.tmpdir)
+        self.assertEqual(runs[0]["status"], "cancelled")
+
+    def test_terminal_runs_not_counted_active(self):
+        """overview 活跃 Agent 数回归：interrupted/cancelled run 不得计入活跃。"""
+        from core.dashboard.data import active_run_count
+        ts = int(time.time())
+        self._write_run(f"impl-s-{ts}-a1", {"type": "interrupted", "reason": "sweep"})
+        self._write_run(f"impl-s-{ts}-a2", {"type": "cancelled", "reason": "user"})
+        self._write_run(f"impl-s-{ts}-a3", {"type": "assistant", "message": {"content": []}})
+        self.assertEqual(active_run_count(self.tmpdir), 1)
+
+    def test_terminal_types_cover_framework_canonical_set(self):
+        """映射必须覆盖 liveness.RUN_TERMINAL_EVENT_TYPES 全部类型（防再次漂移）。"""
+        from core.agent_runner.liveness import RUN_TERMINAL_EVENT_TYPES
+        from core.dashboard.data import classify_run
+        for t in RUN_TERMINAL_EVENT_TYPES:
+            status = classify_run([{"type": t}])
+            self.assertNotEqual(status, "running",
+                                f"终态事件类型 {t!r} 被误判为 running")
+
+
 class TestGetRunsAgentType(unittest.TestCase):
     """get_runs 从 run_id 前缀推断 agent 类型（admin- 必须归 administrator，其余前缀不受影响）。"""
 

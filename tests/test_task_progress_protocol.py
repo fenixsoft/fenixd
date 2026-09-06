@@ -289,7 +289,8 @@ class TestRunProgressObservability(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _write_run(self, subjects, completed_task_ids, in_progress_task_ids=()):
+    def _write_run(self, subjects, completed_task_ids, in_progress_task_ids=(),
+                   terminal_event=None):
         runs_dir = self.proot / ".fenix" / "runs"
         runs_dir.mkdir(parents=True, exist_ok=True)
         lines = []
@@ -317,6 +318,8 @@ class TestRunProgressObservability(unittest.TestCase):
                     "input": {"taskId": tid, "status": "completed"},
                 }]},
             }))
+        if terminal_event is not None:
+            lines.append(json.dumps(terminal_event))
         (runs_dir / "impl-demo-1789001000.jsonl").write_text(
             "\n".join(lines), encoding="utf-8")
 
@@ -389,6 +392,26 @@ class TestRunProgressObservability(unittest.TestCase):
             [], in_progress_task_ids=[2])
         rp = run_task_progress(self.proot, "demo")
         self.assertEqual(rp, {"done": 0, "total": 3, "current": ["#2"]})
+
+    def test_terminal_run_current_suppressed(self):
+        """终态 run（interrupted/cancelled/result/error）不携带进行中任务。
+
+        run-progress-current 是实时线索，仅对仍在产事件的 run 有意义。被启动
+        清扫补写 interrupted 终态的僵尸 run 曾把残留 in_progress 带成 pushed
+        spec 的「进行中 1.2」（2026-09-06 实证：清扫追加终态行抬高 mtime 使
+        find_impl_run_file 选中僵尸文件，残留 in_progress 外显到已推送 SPEC）。
+        """
+        from core.dashboard.data import run_task_progress
+        for terminal in ({"type": "interrupted", "reason": "startup terminal-state sweep"},
+                         {"type": "cancelled", "reason": "user cancel"},
+                         {"type": "result", "result": "ok"},
+                         {"type": "error", "error": "boom"}):
+            with self.subTest(terminal=terminal["type"]):
+                self._write_run(
+                    [f"Task 1.{i}: t{i}" for i in range(1, 3)],
+                    [], in_progress_task_ids=[1], terminal_event=terminal)
+                rp = run_task_progress(self.proot, "demo")
+                self.assertEqual(rp, {"done": 0, "total": 2, "current": []})
 
 
 if __name__ == "__main__":

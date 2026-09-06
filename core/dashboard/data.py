@@ -1135,7 +1135,8 @@ def run_task_progress(project_root, spec_name) -> dict:
 
     从最新 impl run 产物用 parse_run_task_done 解析：done = TaskUpdate completed
     的 taskId 去重数（flat_done），total = created_count，current = 进行中任务
-    id 列表（in_progress 且未 completed，run-progress-current）。**不依赖 TaskCreate
+    id 列表（in_progress 且未 completed，run-progress-current；run 已终态时
+    恒空——终态 run 没有「进行中」，残留状态不得外显）。**不依赖 TaskCreate
     subject 是否内嵌 tasks.md 编号**——这正是它作为 tasks.md 快照失效时兜底
     展示的资本。无 run / 解析失败为 {"done": 0, "total": 0, "current": []}。
     """
@@ -1143,10 +1144,18 @@ def run_task_progress(project_root, spec_name) -> dict:
     if run_file is None:
         return {"done": 0, "total": 0, "current": []}
     rd = parse_run_task_done(run_file)
+    # run-progress-current 终态闸门：终态 run（result/interrupted/cancelled/error）
+    # 没有「进行中」任务。current 是实时线索，仅对仍在产事件的 run 有意义；
+    # 被杀/清扫补写终态的 run 残留 in_progress 状态不得外显（pushed spec 显示
+    # 「进行中 1.2」事故：清扫追加终态行抬高 mtime 使 find_impl_run_file 选中
+    # 僵尸文件，残留 in_progress 外显到已推送 SPEC）。
+    current = list(rd.get("in_progress_ids") or [])
+    if current and classify_run(_read_run_lines(run_file, max_lines=3)) not in ("running", "empty"):
+        current = []
     return {
         "done": len(rd.get("flat_done") or set()),
         "total": int(rd.get("created_count") or 0),
-        "current": list(rd.get("in_progress_ids") or []),
+        "current": current,
     }
 
 
@@ -1950,19 +1959,32 @@ def parse_filtered_failures(project_root, spec_name) -> list:
 
 # ── 运行记录（.fenix/runs/） ─────────────────────────────────────
 
+# run 终态事件类型 → classify_run 状态映射。写侧唯一权威是
+# core.agent_runner.liveness.RUN_TERMINAL_EVENT_TYPES（result=自然完成,
+# error=进程异常终止, interrupted=daemon 停机/启动终态补写, cancelled=人工取消），
+# 读侧缺类型会把已终结 run 永远判成 running（overview 活跃 Agent 数虚高事故：
+# 11 个被杀 run 全部计入活跃，真实活跃仅 1）。测试锁两侧同步。
+_RUN_TERMINAL_STATUS_MAP = {
+    "result": "done",
+    "error": "error",
+    "interrupted": "interrupted",
+    "cancelled": "cancelled",
+}
+
+
 def classify_run(lines: list) -> str:
-    """根据产物文件行判定运行终态：done / error / running / empty。"""
+    """根据产物文件行判定运行终态：done / error / interrupted / cancelled / running / empty。
+
+    runner「终态后置」不变量保证任一终态事件即文件最后一行（result/error 在
+    收尾 join 后落盘，interrupted 由 daemon 停机/启动清扫追加，cancelled 由
+    取消路径最后落盘），故只看末行即可判定。
+    """
     if not lines:
         return "empty"
     last = lines[-1]
     if not isinstance(last, dict):
         return "running"
-    t = last.get("type")
-    if t == "result":
-        return "done"
-    if t == "error":
-        return "error"
-    return "running"
+    return _RUN_TERMINAL_STATUS_MAP.get(last.get("type"), "running")
 
 
 def _resolve_run_file(project_root, run_id: str) -> Path:

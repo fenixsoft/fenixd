@@ -923,8 +923,11 @@ export default function SpecDetailPage() {
           // 运行节点
           const st = item.status || '';
           const isErr = st === 'error';
+          // interrupted/cancelled：已终结但非崩溃（daemon 停机/启动清扫补写/
+          // 人工取消），橙色区别于 error 红；不处理会落入 else 误显成功绿
+          const isAborted = st === 'interrupted' || st === 'cancelled';
           const isRunning = st === 'running' || st === 'empty';
-          const dotColor = isErr ? 'red' : isRunning ? 'blue' : 'green';
+          const dotColor = isErr ? 'red' : isAborted ? 'orange' : isRunning ? 'blue' : 'green';
           const dur = item.duration_seconds != null ? fmtDuration(item.duration_seconds) : '';
           const isFix = item.spec && String(item.spec).startsWith('fix-');
 

@@ -129,7 +129,10 @@ export default function AdminInvokeModal({ project, spec, open, onClose }: Admin
   }, [open, invoked, runId, project, spec]);
 
   const handleRunStatus = (status: string) => {
-    if (status === 'done' || status === 'error' || status === 'missing') {
+    // interrupted/cancelled：终态但非崩溃（daemon 停机/人工取消），同样解除
+    // 「处置进行中」——否则被取消的 admin run 会把按钮永久锁死
+    if (status === 'done' || status === 'error' || status === 'interrupted'
+      || status === 'cancelled' || status === 'missing') {
       setRunDone(true);
       // 处置完成、按钮恢复可用时同步清空输入框，便于直接输入下一个提示词
       setPrompt('');
