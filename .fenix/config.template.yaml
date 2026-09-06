@@ -199,8 +199,10 @@ admin:
   # merge_breaker_threshold: 2
   # 规划性重启（supervisor 检测到 .fenix/restart_request）时的排水窗口（秒）：
   # daemon 收到 SIGTERM 后等待在跑 run 自然终态，到期才走 terminate 收口；
-  # 0 = 不排水、保持现行快速停机。supervisor 的 SIGKILL 等待 = 本值 + 120s 余量。
-  shutdown_drain_seconds: 1800
+  # 0 = 不排水、快速停机（在飞任务标记 interrupted，重启后继续做）。
+  # supervisor 的 SIGKILL 等待 = 本值 + 120s 余量。新项目缺省 0：避免 1-2 小时级
+  # implementer/planner 在飞场景每次重启必等满排水窗口；有特殊需求可手改大值。
+  shutdown_drain_seconds: 0
 
 # ---- Agent Run 超时护栏（可选）----
 # timeout_supervision 监控单次 Agent 运行的墙钟上限，防止超时参数再次与 run 超时脱钩。
