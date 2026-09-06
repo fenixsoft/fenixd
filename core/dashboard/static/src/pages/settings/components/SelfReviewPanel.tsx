@@ -1,52 +1,19 @@
 import { Alert, Button, Card, Form, Input, Switch, TimePicker, Typography, message } from 'antd';
-import dayjs from 'dayjs';
 import { useEffect, useState } from 'react';
 import { getTodo, saveTodo } from '@/services/dashboard';
-import type { ConfigData } from '@/services/dashboard';
 
 const { Text } = Typography;
 const { TextArea } = Input;
 
-// run_at 缺省与后端 ConfigLoader.SELF_REVIEW_DEFAULT_RUN_AT 一致（凌晨两点）
-const DEFAULT_RUN_AT = '02:00';
-
 interface SelfReviewPanelProps {
-  config: ConfigData;
-  onSave: (values: Partial<ConfigData>) => Promise<void>;
   /** 项目名；undefined = 用户级作用域（todo.md 为项目级文件，不显示编辑区） */
   project?: string;
 }
 
-export default function SelfReviewPanel({ config, onSave, project }: SelfReviewPanelProps) {
-  const [form] = Form.useForm();
-
-  const initial = {
-    enabled: config.self_review?.enabled ?? false,
-    // TimePicker 值为 dayjs 对象（结构性保证 HH:mm 合法），保存时转回字符串
-    run_at: dayjs(config.self_review?.run_at ?? DEFAULT_RUN_AT, 'HH:mm'),
-    read_todo: config.self_review?.read_todo ?? false,
-  };
-
-  useEffect(() => {
-    form.setFieldsValue(initial);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.self_review, form]);
-
-  const handleSave = async () => {
-    try {
-      const values = await form.validateFields();
-      await onSave({
-        self_review: {
-          enabled: values.enabled,
-          run_at: values.run_at.format('HH:mm'),
-          read_todo: values.read_todo,
-        },
-      });
-    } catch {
-      // 校验失败：antd 已在表单内渲染 explain-error 提示，无需额外日志
-    }
-  };
-
+// 自省设置区块：并入系统页签后不再持有独立 Form——字段经 antd context 挂到
+// SystemPanel 的表单（name 嵌套于 self_review 段，避免与 admin.enabled 重名），
+// 保存由系统页签底部按钮统一提交
+export default function SelfReviewPanel({ project }: SelfReviewPanelProps) {
   // ── todo.md 查看与编辑（项目级作用域）──
   const [todoDraft, setTodoDraft] = useState<string>('');
   const [todoExists, setTodoExists] = useState<boolean>(false);
@@ -95,56 +62,49 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
   };
 
   return (
-    <div>
+    <div style={{ marginTop: 32 }}>
       <h3>自省</h3>
       <Text type="secondary">
         Fenix Daemon 每晚在指定时间由 Administrator Agent 自动执行当日工作回顾（浪费 /
         失误 / 可改进），结果追加写入项目根 todo.md 并自动提交。
       </Text>
       <Card style={{ marginTop: 12 }}>
-        <Form form={form} initialValues={initial} layout="vertical">
-          <div className="switch-inline-row">
-            <Form.Item name="enabled" valuePropName="checked" noStyle>
-              <Switch />
-            </Form.Item>
-            <span className="switch-inline-label">
-              启用每日自省<span className="label-note">（admin.self_review.enabled）</span>
-            </span>
-          </div>
-          <Text type="secondary">缺省关闭。开启后于次日 run_at 时间点生效（错过后启动补跑）。</Text>
-
-          <Form.Item
-            name="run_at"
-            label={
-              <>
-                每日执行时间<span className="label-note">（admin.self_review.run_at，HH:MM）</span>
-              </>
-            }
-            style={{ marginTop: 24 }}
-            rules={[{ required: true, message: '请选择执行时间' }]}
-          >
-            <TimePicker format="HH:mm" allowClear={false} style={{ width: 160 }} />
+        <div className="switch-inline-row">
+          <Form.Item name={['self_review', 'enabled']} valuePropName="checked" noStyle>
+            <Switch />
           </Form.Item>
-          <Text type="secondary">缺省 02:00。实际触发时刻为 run_at 后的第一个巡检周期。</Text>
+          <span className="switch-inline-label">
+            启用每日自省<span className="label-note">（admin.self_review.enabled）</span>
+          </span>
+        </div>
+        <Text type="secondary">缺省关闭。开启后于次日 run_at 时间点生效（错过后启动补跑）。</Text>
 
-          <div className="switch-inline-row" style={{ marginTop: 24 }}>
-            <Form.Item name="read_todo" valuePropName="checked" noStyle>
-              <Switch />
-            </Form.Item>
-            <span className="switch-inline-label">
-              注入既有 todo.md 上下文<span className="label-note">（admin.self_review.read_todo）</span>
-            </span>
-          </div>
-          <Text type="secondary">
-            开启时把项目根 todo.md 全文注入自省 prompt，供 Agent 识别历史条目、
-            避免重复并标注已闭环项。缺省关闭。
-          </Text>
-          <div style={{ textAlign: 'right', marginTop: 24 }}>
-            <Button type="primary" onClick={handleSave} data-testid="self-review-save-btn">
-              保存
-            </Button>
-          </div>
-        </Form>
+        <Form.Item
+          name={['self_review', 'run_at']}
+          label={
+            <>
+              每日执行时间<span className="label-note">（admin.self_review.run_at，HH:MM）</span>
+            </>
+          }
+          style={{ marginTop: 24 }}
+          rules={[{ required: true, message: '请选择执行时间' }]}
+        >
+          <TimePicker format="HH:mm" allowClear={false} style={{ width: 160 }} />
+        </Form.Item>
+        <Text type="secondary">缺省 02:00。实际触发时刻为 run_at 后的第一个巡检周期。</Text>
+
+        <div className="switch-inline-row" style={{ marginTop: 24 }}>
+          <Form.Item name={['self_review', 'read_todo']} valuePropName="checked" noStyle>
+            <Switch />
+          </Form.Item>
+          <span className="switch-inline-label">
+            注入既有 todo.md 上下文<span className="label-note">（admin.self_review.read_todo）</span>
+          </span>
+        </div>
+        <Text type="secondary">
+          开启时把项目根 todo.md 全文注入自省 prompt，供 Agent 识别历史条目、
+          避免重复并标注已闭环项。缺省关闭。
+        </Text>
       </Card>
 
       {/* todo.md 为项目级文件：仅项目级作用域提供查看与编辑 */}

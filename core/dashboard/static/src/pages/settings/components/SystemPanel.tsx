@@ -1,14 +1,18 @@
 import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
+import dayjs from 'dayjs';
 import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import SelfReviewPanel from './SelfReviewPanel';
 
 const { Text } = Typography;
 
+// 自省 run_at 缺省与后端 ConfigLoader.SELF_REVIEW_DEFAULT_RUN_AT 一致（凌晨两点）
+const DEFAULT_RUN_AT = '02:00';
+
 interface SystemPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
-  /** 项目名；透传给自省面板（todo.md 编辑区仅项目级作用域显示） */
+  /** 项目名；透传给自省区块（todo.md 编辑区仅项目级作用域显示） */
   project?: string;
 }
 
@@ -69,17 +73,27 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
   const [form] = Form.useForm();
 
   const admin = config.admin ?? {};
+  const selfReview = config.self_review;
+
+  // 自省字段（self_review.*）并入本表单：TimePicker 值为 dayjs 对象（结构性保证
+  // HH:mm 合法），保存时转回字符串
+  const initialValues = {
+    enabled: admin.enabled ?? true,
+    interval_minutes: admin.interval_minutes ?? 5,
+    escalation_cooldown_minutes: admin.escalation_cooldown_minutes ?? 15,
+    merge_breaker_threshold: admin.merge_breaker_threshold ?? 2,
+    shutdown_drain_seconds: admin.shutdown_drain_seconds ?? 1800,
+    self_review: {
+      enabled: selfReview?.enabled ?? false,
+      run_at: dayjs(selfReview?.run_at ?? DEFAULT_RUN_AT, 'HH:mm'),
+      read_todo: selfReview?.read_todo ?? false,
+    },
+  };
 
   useEffect(() => {
-    form.setFieldsValue({
-      enabled: admin.enabled ?? true,
-      interval_minutes: admin.interval_minutes ?? 5,
-      escalation_cooldown_minutes: admin.escalation_cooldown_minutes ?? 15,
-      merge_breaker_threshold: admin.merge_breaker_threshold ?? 2,
-      shutdown_drain_seconds: admin.shutdown_drain_seconds ?? 1800,
-    });
+    form.setFieldsValue(initialValues);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.admin, form]);
+  }, [config.admin, config.self_review, form]);
 
   const handleSave = async () => {
     try {
@@ -92,6 +106,11 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
           merge_breaker_threshold: values.merge_breaker_threshold,
           shutdown_drain_seconds: values.shutdown_drain_seconds,
         },
+        self_review: {
+          enabled: values.self_review.enabled,
+          run_at: values.self_review.run_at.format('HH:mm'),
+          read_todo: values.self_review.read_todo,
+        },
       });
     } catch {
       // 校验失败：antd 已在表单内渲染 explain-error 提示
@@ -100,12 +119,14 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
 
   return (
     <div data-testid="system-panel">
-      <h3>系统</h3>
-      <Text type="secondary">
-        系统级行为（自愈监视器、重启排水等）的设置界面。保存后约 30 秒经配置热更新生效。
-      </Text>
-      <Card style={{ marginTop: 12 }}>
-        <Form form={form} layout="vertical">
+      {/* 自省设置并入本页签（原独立「自省」页签已移除）：单 Form 覆盖系统+自省
+          两段，底部统一一个保存按钮（与其他页签一致：Card 外、右下对齐） */}
+      <Form form={form} initialValues={initialValues} layout="vertical">
+        <h3>系统</h3>
+        <Text type="secondary">
+          系统级行为（自愈监视器、重启排水等）的设置界面。保存后约 30 秒经配置热更新生效。
+        </Text>
+        <Card style={{ marginTop: 12 }}>
           {ADMIN_ANNOTATIONS.map(({ key, label, note, rule }) => (
             <div key={key} style={{ marginBottom: 4 }}>
               {key === 'enabled' ? (
@@ -141,17 +162,13 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
               {note && <Text type="secondary">{note}</Text>}
             </div>
           ))}
-        </Form>
-      </Card>
+        </Card>
+        <SelfReviewPanel project={project} />
+      </Form>
       <div style={{ textAlign: 'right', marginTop: 24 }}>
         <Button type="primary" onClick={handleSave} data-testid="system-save-btn">
           保存
         </Button>
-      </div>
-      {/* 自省设置并入系统页签（原独立「自省」页签已移除），衔接在系统设置之后；
-          两面板各自独立 Form 与保存按钮（字段名有重叠，不可合并为单 Form） */}
-      <div style={{ marginTop: 32 }}>
-        <SelfReviewPanel config={config} onSave={onSave} project={project} />
       </div>
     </div>
   );
