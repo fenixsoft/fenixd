@@ -49,6 +49,73 @@ FROZEN_FIELD = "frozen"
 FREEZE_ERROR_PREFIX = "用户指令冻结："
 
 
+# ── SPEC 定时调度（add-spec-scheduling-controls D1）────────────────────
+# 单一事实源 = STATE.md entry 字段：start_after（定时拾取）与 frozen_until
+# （冻结定时解冻）均为可空 ISO8601 UTC，缺省 null（=无限制/永久冻结）。
+# 序列化/解析在此声明（见 StateParser），保证 update_spec 透传的两字段真正
+# 落盘——design 的「任意键透传」在 serialize 白名单下并不成立，字段须显式登记。
+START_AFTER_FIELD = "start_after"
+FROZEN_UNTIL_FIELD = "frozen_until"
+
+
+def parse_utc(value) -> Optional[datetime]:
+    """ISO8601 UTC 解析（容错）。非法/空/None 返回 None，绝不抛异常。
+
+    支持带偏移（2026-09-07T01:00:00+00:00）与 'Z' 后缀；naive 时间按 UTC
+    解释。调度门控与 dashboard 写侧校验共用本函数（design D6「时间换算
+    工具后端单点实现」），解析漂移收敛单点。
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except (ValueError, TypeError):
+            return None
+    if not dt.tzinfo:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def start_after_pending(entry: dict, now: Optional[datetime] = None) -> bool:
+    """start_after 定时拾取门控：晚于当前时刻返回 True（未到期，应跳过派发）。
+
+    语义（spec scheduled-spec-pickup）：字段缺失/null/非法格式一律视为不阻塞
+    （解析失败 fail-open，脏值不卡死调度——与 ``_dispatch_backoffed`` 容错同型）；
+    早于/等于 now 的值等价 null（不阻塞拾取）。
+    """
+    value = (entry or {}).get(START_AFTER_FIELD)
+    if value is None:
+        return False
+    when = parse_utc(value)
+    if when is None:
+        return False
+    if now is None:
+        now = datetime.now(timezone.utc)
+    return when > now
+
+
+def parse_orig_status(error) -> str:
+    """从冻结 error 中解析「原状态 X」（人工冻结文本契约的共享读函数）。
+
+    匹配格式：``用户指令冻结：原状态 testing · <reason>``（freeze_spec 写入）。
+    缺失/非法时回退 ``ready``（迁移期存量 spec 无原状态记录的安全兜底）。
+    """
+    m = re.search(r"原状态\s+(\S+)", str(error or ""))
+    if m:
+        status = m.group(1).strip().rstrip("·，,。")
+        if status:
+            return status
+    return SpecStatus.READY
+
+
 # Valid state transitions: from → [to, ...]
 VALID_TRANSITIONS: Dict[str, List[str]] = {
     SpecStatus.DRAFTED:      [SpecStatus.READY],
@@ -165,7 +232,7 @@ class StateParser:
                     # _recovery_resume（interrupt-recovery-preserve）同型处理。
                     value = value.lower() in ("true", "1", "yes")
                 elif key in ("implementer_run", "tester_run", "branch", "error",
-                             "total_duration"):
+                             "total_duration", START_AFTER_FIELD, FROZEN_UNTIL_FIELD):
                     if value.lower() in ("null", "none", ""):
                         value = None
 
@@ -204,7 +271,8 @@ class StateParser:
             lines.append(f"### {name}")
             for key in ["status", "priority", "created", "updated",
                          "implementer_run", "tester_run", "branch", "error",
-                         "depends_on", "total_duration", FROZEN_FIELD]:
+                         "depends_on", "total_duration", FROZEN_FIELD,
+                         START_AFTER_FIELD, FROZEN_UNTIL_FIELD]:
                 val = entry.get(key, "null")
                 if val is None:
                     val = "null"
@@ -477,13 +545,17 @@ class StateMachine:
         """解除人工冻结。status 给定时同时恢复到该状态（绕过冻结保护）。
 
         解冻即人工裁决完成——重启重验计数一并清零（fix-daemon-lifecycle-races
-        D3），使人工放行后的重验预算重新从零起算。
+        D3），使人工放行后的重验预算重新从零起算。error 与 frozen_until
+        （定时解冻目标，add-spec-scheduling-controls D3）随解冻一并清除，
+        保证恢复后 spec 回到「无 error、无冻结残留」的干净可调度态。
         """
         updates: dict = {FROZEN_FIELD: False}
         if status is not None:
             updates["status"] = status
         # 计数清零并入同一原子写，避免解冻后残留计数立即再次触发冻结
         updates[VERIFY_REDO_COUNT_FIELD] = 0
+        updates["error"] = None
+        updates[FROZEN_UNTIL_FIELD] = None
         return self.update_spec(spec_name, updates)
 
     def add_spec(self, spec_name: str, entry: dict) -> bool:
