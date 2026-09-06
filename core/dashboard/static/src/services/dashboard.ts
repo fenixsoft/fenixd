@@ -593,6 +593,8 @@ export interface AgentsConfig {
   daily_run_limit?: number;
   token_budget_millions?: number;
   impl_run_budget?: number;
+  /** 重启重验预算（agents.verify_redo_budget，缺省 3）：daemon 重启恢复路径累计重验次数上限 */
+  verify_redo_budget?: number;
 }
 
 export interface GatesConfig {

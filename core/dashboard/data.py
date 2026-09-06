@@ -2997,7 +2997,7 @@ def overview(registry_projects: list) -> dict:
 # Dashboard 管理的配置键子集：写回时只更新这些键，其它键原样保留
 _MANAGED_KEYS = ["llm", "agents", "gates", "runs", "verify"]
 # 在 agents 下管理的子键白名单
-_AGENTS_MANAGED_SUBKEYS = ["models", "max_concurrent", "run_timeout_seconds", "max_turns", "daily_run_limit", "token_budget_millions", "impl_run_budget"]
+_AGENTS_MANAGED_SUBKEYS = ["models", "max_concurrent", "run_timeout_seconds", "max_turns", "daily_run_limit", "token_budget_millions", "impl_run_budget", "verify_redo_budget"]
 
 # 用户级配置文件路径（与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定）
 USER_CONFIG_PATH = Path.home() / ".fenix" / "config.yaml"
@@ -3005,7 +3005,8 @@ USER_CONFIG_PATH = Path.home() / ".fenix" / "config.yaml"
 # 受管键的来源标注键（前端用于「继承自用户级」badge）
 _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "agents.run_timeout_seconds", "agents.max_turns", "agents.daily_run_limit",
-                "agents.token_budget_millions", "agents.impl_run_budget", "gates.approve_mode",
+                "agents.token_budget_millions", "agents.impl_run_budget", "agents.verify_redo_budget",
+                "gates.approve_mode",
                 # add-daily-self-review：admin.self_review 三键
                 "admin.self_review",
                 # add-settings-system-tab：admin.* 受管键（5 键）
@@ -3053,6 +3054,8 @@ def _managed_key_sources(raw: dict) -> dict:
             sources["agents.token_budget_millions"] = "project"
         if "impl_run_budget" in agents_raw:
             sources["agents.impl_run_budget"] = "project"
+        if "verify_redo_budget" in agents_raw:
+            sources["agents.verify_redo_budget"] = "project"
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         sources["gates.approve_mode"] = "project"
@@ -3130,7 +3133,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
     config_path = USER_CONFIG_PATH if scope == "user" else Path(scope_root) / ".fenix" / "config.yaml"
     result = {
         "llm": {},
-        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4},
+        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4, "verify_redo_budget": 3},
         "gates": {"approve_mode": "manual"},
         "runs": {"keep": 50},
         # 验证契约键（static_scope 服务范围 / deps_mode worktree 依赖供给模式）
@@ -3191,6 +3194,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
             agents_result["token_budget_millions"] = agents_raw["token_budget_millions"]
         if isinstance(agents_raw.get("impl_run_budget"), int):
             agents_result["impl_run_budget"] = agents_raw["impl_run_budget"]
+        if isinstance(agents_raw.get("verify_redo_budget"), int):
+            agents_result["verify_redo_budget"] = agents_raw["verify_redo_budget"]
         if agents_result:
             # 只在结果中有受管键时覆盖默认，避免清空默认值
             for k, v in agents_result.items():
@@ -3268,7 +3273,7 @@ def read_effective_config(project_root) -> dict:
 
     result = {
         "llm": {},
-        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4},
+        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4, "verify_redo_budget": 3},
         "gates": {"approve_mode": "manual"},
         "runs": {"keep": 50},
         # 验证契约键（static_scope 服务范围 / deps_mode worktree 依赖供给模式）
@@ -3332,6 +3337,8 @@ def read_effective_config(project_root) -> dict:
             result["agents"]["token_budget_millions"] = agents_eff["token_budget_millions"]
         if isinstance(agents_eff.get("impl_run_budget"), int):
             result["agents"]["impl_run_budget"] = agents_eff["impl_run_budget"]
+        if isinstance(agents_eff.get("verify_redo_budget"), int):
+            result["agents"]["verify_redo_budget"] = agents_eff["verify_redo_budget"]
     gates_eff = effective.get("gates")
     if isinstance(gates_eff, dict) and "approve_mode" in gates_eff:
         result["gates"] = {"approve_mode": gates_eff["approve_mode"]}
@@ -3401,6 +3408,9 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["agents"]["token_budget_millions"] = patch["agents"]["token_budget_millions"]
         if "impl_run_budget" in patch["agents"]:
             merged["agents"]["impl_run_budget"] = patch["agents"]["impl_run_budget"]
+        if "verify_redo_budget" in patch["agents"]:
+            # fix-daemon-lifecycle-races 验证发现：缺合并分支导致保存被静默丢弃
+            merged["agents"]["verify_redo_budget"] = patch["agents"]["verify_redo_budget"]
 
     if "gates" in patch and isinstance(patch["gates"], dict):
         if "approve_mode" in patch["gates"]:
@@ -3675,6 +3685,12 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             if not isinstance(irb, int) or irb < 1 or irb > 10:
                 raise ValueError(
                     f"agents.impl_run_budget must be an integer in [1, 10]: {irb}"
+                )
+        if "verify_redo_budget" in agents:
+            vrb = agents["verify_redo_budget"]
+            if not isinstance(vrb, int) or vrb < 1 or vrb > 10:
+                raise ValueError(
+                    f"agents.verify_redo_budget must be an integer in [1, 10]: {vrb}"
                 )
         gates = merged.get("gates") or {}
         if "approve_mode" in gates and gates["approve_mode"] is not None:
