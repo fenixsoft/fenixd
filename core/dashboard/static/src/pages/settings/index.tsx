@@ -14,6 +14,7 @@ import VerifyPanel from './components/VerifyPanel';
 import ProjectProfilePanel from './components/ProjectProfilePanel';
 import PromptsPanel from './components/PromptsPanel';
 import SystemPanel from './components/SystemPanel';
+import HooksPanel from './components/HooksPanel';
 
 const { Text } = Typography;
 
@@ -26,6 +27,7 @@ const BASE_MENU_ITEMS = [
   { key: 'token', label: '预算' },
   { key: 'misc', label: '归档' },
   { key: 'verify', label: '验证' },
+  { key: 'hook', label: 'Hook' },
   { key: 'system', label: '系统' },
 ];
 
@@ -200,6 +202,13 @@ export default function SettingsPage() {
                 )}
                 {activeKey === 'verify' && (
                   <VerifyPanel config={config} onSave={handleSave} />
+                )}
+                {activeKey === 'hook' && (
+                  <HooksPanel
+                    config={config}
+                    onSave={handleSave}
+                    project={scope === 'project' ? project : undefined}
+                  />
                 )}
                 {activeKey === 'system' && (
                   <SystemPanel

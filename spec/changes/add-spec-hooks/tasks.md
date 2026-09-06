@@ -56,11 +56,11 @@
 
 ## 5. 前端（v3）
 
-- [ ] 5.1 API client（`services/dashboard.ts`）：新增 hook 审计查询与 hooks 配置读写封装
-- [ ] 5.2 共享组件 `components/HookManager.tsx`：hook 列表（含来源列「全局/本 spec」、启停开关）+ 新增/编辑/删除表单（事件多选、动作下拉、按动作类型显隐参数：url/command/message/timeout_seconds/target）+ 最近执行记录列表（时间/动作/结果/耗时/摘要）
-- [ ] 5.3 spec 详情页（`pages/projects/detail.tsx`）：「失败截图」页签之后新增「Hook」页签——生效中的 Hooks（全局+spec 级合并、来源标注）、本 spec 的 Hooks（spec 级 CRUD，写入 hooks.specs.<name>）、最近执行（该 spec 审计）
-- [ ] 5.4 设置页（`pages/settings/index.tsx` + 新组件 `settings/components/HooksPanel.tsx`）：新增「Hook」菜单项与面板——全局 hooks CRUD（写入 hooks.global）+ 跨 spec 最近执行记录
-- [ ] 5.5 前端构建产物重建（dist 由框架重建，不提交 dist 源码变更）
+- [x] 5.1 API client（`services/dashboard.ts`）：新增 hook 审计查询与 hooks 配置读写封装
+- [x] 5.2 共享组件 `components/HookManager.tsx`：hook 列表（含来源列「全局/本 spec」、启停开关）+ 新增/编辑/删除表单（事件多选、动作下拉、按动作类型显隐参数：url/command/message/timeout_seconds/target）+ 最近执行记录列表（时间/动作/结果/耗时/摘要）
+- [x] 5.3 spec 详情页（`pages/projects/detail.tsx`）：「失败截图」页签之后新增「Hook」页签——生效中的 Hooks（全局+spec 级合并、来源标注）、本 spec 的 Hooks（spec 级 CRUD，写入 hooks.specs.<name>）、最近执行（该 spec 审计）
+- [x] 5.4 设置页（`pages/settings/index.tsx` + 新组件 `settings/components/HooksPanel.tsx`）：新增「Hook」菜单项与面板——全局 hooks CRUD（写入 hooks.global）+ 跨 spec 最近执行记录
+- [x] 5.5 前端构建产物重建（dist 由框架重建，不提交 dist 源码变更）
 
 ## 6. 测试与验证
 

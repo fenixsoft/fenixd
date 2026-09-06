@@ -6,8 +6,9 @@ import { history, useParams } from '@umijs/max';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { clearSpecError, getAlerts, getSpecDetail, getSpecs, markAlertHandled, statusMeta } from '@/services/dashboard';
-import type { AlertItem, SpecDetail, SpecSummary } from '@/services/dashboard';
+import { clearSpecError, getAlerts, getConfig, getHookAudit, getSpecDetail, getSpecs, markAlertHandled, saveConfig, statusMeta } from '@/services/dashboard';
+import type { AlertItem, ConfigData, HookAuditRecord, HookConfig, HooksConfig, SpecDetail, SpecSummary } from '@/services/dashboard';
+import HookManager from '@/components/HookManager';
 import { markdownComponents } from './components/SpecDocModal';
 import SpecDocModal from './components/SpecDocModal';
 import type { DocType } from './components/SpecDocModal';
@@ -421,6 +422,82 @@ function FilteredFailuresBlock({
         以下失败/错误场景被裁决分类为测试缺陷/环境问题/偶发（非产品 Bug），故未进入 Bug 列表
       </Typography.Text>
       {body}
+    </div>
+  );
+}
+
+// ── spec 详情页 Hook 页签（add-spec-hooks）─────────────────────────
+// 「生效中的 Hooks」= 全局 + 本 spec 合并（来源标注）；「本 spec 的 Hooks」
+// = spec 级 CRUD（写入 hooks.specs.<spec>）；「最近执行」= 该 spec 审计。
+function SpecHooksSection({ name, spec }: { name: string; spec: string }) {
+  const { message } = App.useApp();
+  const [config, setConfig] = useState<ConfigData | null>(null);
+  const [audit, setAudit] = useState<HookAuditRecord[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setAuditLoading(true);
+      try {
+        const [cfg, aud] = await Promise.all([
+          getConfig(name),
+          getHookAudit(name, spec, 20),
+        ]);
+        if (!cancelled) {
+          setConfig(cfg);
+          setAudit(aud.audit ?? []);
+        }
+      } catch (e) {
+        console.error('Failed to load spec hooks:', e);
+        if (!cancelled) message.error(`加载 Hook 配置失败：${e instanceof Error ? e.message : e}`);
+      } finally {
+        if (!cancelled) setAuditLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [name, spec, message]);
+
+  const hooksCfg: HooksConfig = config?.hooks ?? {};
+  const globalHooks: HookConfig[] = Array.isArray(hooksCfg.global) ? hooksCfg.global : [];
+  const specHooks: HookConfig[] = Array.isArray(hooksCfg.specs?.[spec]) ? hooksCfg.specs![spec] : [];
+
+  // 生效合并视图（含来源标注）
+  const effective = [
+    ...globalHooks.map((hook) => ({ hook, source: 'global' as const })),
+    ...specHooks.map((hook) => ({ hook, source: 'spec' as const })),
+  ];
+
+  const handleSave = async (nextSpecHooks: HookConfig[]) => {
+    setSaving(true);
+    try {
+      const cfg = await saveConfig(name, {
+        hooks: {
+          ...hooksCfg,
+          specs: { ...(hooksCfg.specs || {}), [spec]: nextSpecHooks },
+        },
+      });
+      setConfig(cfg);
+      message.success('保存成功');
+    } catch (e) {
+      message.error(`保存失败：${e instanceof Error ? e.message : e}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: '20px 0' }}>
+      <HookManager
+        hooks={specHooks}
+        onSave={handleSave}
+        saving={saving}
+        effective={effective}
+        audit={audit}
+        auditLoading={auditLoading}
+      />
     </div>
   );
 }
@@ -1288,6 +1365,15 @@ export default function SpecDetailPage() {
           )}
         </div>
       ),
+    },
+    {
+      key: 'hooks',
+      label: (
+        <span>
+          Hook
+        </span>
+      ),
+      children: <SpecHooksSection name={name} spec={spec} />,
     },
   ];
 

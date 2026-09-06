@@ -633,6 +633,61 @@ export interface AdminConfig {
   shutdown_drain_seconds?: number;
 }
 
+// ── SPEC 状态事件 hook 订阅（add-spec-hooks，存 .fenix/config.yaml hooks 段） ──
+
+export type HookAction =
+  | 'restart-daemon'
+  | 'restart-dashboard'
+  | 'commit'
+  | 'push'
+  | 'commit-push'
+  | 'webhook'
+  | 'shell';
+
+export interface HookConfig {
+  /** 短随机 id（前端生成），UI 增删改的稳定 key */
+  id: string;
+  enabled?: boolean;
+  /** 订阅的事件类型（十状态枚举，非空） */
+  events: string[];
+  action: HookAction;
+  /** webhook 必填：POST 目标 URL */
+  url?: string;
+  /** shell 必填：命令行（bash -c 执行） */
+  command?: string;
+  /** commit/commit-push 可选：提交信息模板（缺省 `[fenix] hook: {spec} {event}`） */
+  message?: string;
+  /** shell 缺省 60 / webhook 缺省 10 */
+  timeout_seconds?: number;
+  /** restart-dashboard 可选：目标 tmux 会话名（缺省 fenix-dashboard） */
+  target?: string;
+}
+
+export interface HooksConfig {
+  global?: HookConfig[];
+  specs?: Record<string, HookConfig[]>;
+}
+
+export const HOOK_ACTIONS: HookAction[] = [
+  'restart-daemon',
+  'restart-dashboard',
+  'commit',
+  'push',
+  'commit-push',
+  'webhook',
+  'shell',
+];
+
+export const HOOK_ACTION_LABELS: Record<HookAction, string> = {
+  'restart-daemon': '重启 daemon',
+  'restart-dashboard': '重启 dashboard',
+  commit: '提交变更（commit）',
+  push: '推送（push）',
+  'commit-push': '提交并推送（commit-push）',
+  webhook: 'Webhook 通知',
+  shell: '执行 Shell 命令',
+};
+
 export interface ConfigData {
   llm: LlmConfig;
   agents: AgentsConfig;
@@ -645,6 +700,8 @@ export interface ConfigData {
   self_review?: SelfReviewConfig;
   /** add-settings-system-tab：系统配置（admin.* 受管键） */
   admin?: AdminConfig;
+  /** add-spec-hooks：两级 hook 订阅配置（global + specs） */
+  hooks?: HooksConfig;
   scope: 'user' | 'project';
   raw_exists: boolean;
   sources: Record<string, string>;
@@ -770,9 +827,41 @@ export async function saveVerifyYaml(
   });
 }
 
-/** 契约模板（core/verify_contract_template.yaml，全注释 = 惰性 YAML） */
 export async function getVerifyYamlTemplate(): Promise<{ path: string; template: string }> {
   return request(`/api/verify-yaml-template`);
+}
+
+// ── SPEC 状态事件 hook 审计（add-spec-hooks，/api/hooks/audit） ──
+
+export interface HookAuditRecord {
+  ts: string;
+  spec: string;
+  event: string;
+  from_status?: string | null;
+  to_status?: string | null;
+  hook_id?: string | null;
+  action: HookAction | string;
+  scope: 'global' | 'spec';
+  status: 'success' | 'failure' | 'noop' | 'skipped';
+  detail?: string;
+  duration_ms?: number;
+}
+
+export interface HookAuditData {
+  project?: string | null;
+  audit: HookAuditRecord[];
+}
+
+export async function getHookAudit(
+  project: string,
+  spec?: string,
+  limit = 20,
+): Promise<HookAuditData> {
+  const q = new URLSearchParams();
+  q.set('project', project);
+  if (spec) q.set('spec', spec);
+  q.set('limit', String(limit));
+  return request<HookAuditData>(`/api/hooks/audit?${q.toString()}`);
 }
 
 // ── 帮助中心（/api/help/*，读取框架仓库 docs/help/）──
