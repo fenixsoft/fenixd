@@ -1166,6 +1166,53 @@ def count_scenarios(project_root, spec_name) -> int:
     return count
 
 
+def count_generated_scenarios(project_root, spec_name) -> int:
+    """统计 planner 已落盘的场景数（verification-phase-progress）。
+
+    读 .fenix/verify-progress/<spec>/test_scenarios.json（planner-plan 出题
+    产物，分批整体重写）；缺失/损坏/非列表以 0 计——出题进度是纯展示信号，
+    任何解析异常都不阻断摘要（fail-open，与 count_scenarios 同风格）。
+    """
+    pf = (
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / spec_name
+        / "test_scenarios.json"
+    )
+    if not pf.exists():
+        return 0
+    try:
+        data = json.loads(pf.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return 0
+    if isinstance(data, dict):
+        data = data.get("scenarios")
+    return len(data) if isinstance(data, list) else 0
+
+
+def spec_generation_progress(project_root, spec_name, entry, vp=None) -> dict | None:
+    """出题进度（verification-phase-progress）：场景生成阶段的 N/M 进度。
+
+    场景生成（planner-plan）是验证链主要耗时而后续执行很快——testing 且执行
+    进度未产生（verify_total=0）时返回 {"done": 已落盘场景数, "total": spec
+    场景目标数}；其余状态 / 执行已开始 / 尚无场景落盘均返回 None。
+
+    total 可为 0（spec 无 `#### Scenario:` 块而出题有多形态扩展），前端对
+    total=0 只展示计数不出百分比。done>0 才返回（0 场景无进度可言）。
+    """
+    if entry.get("status") != "testing":
+        return None
+    if vp is None:
+        vp = parse_verify_progress(project_root, spec_name)
+    if vp.get("total", 0):
+        return None
+    done = count_generated_scenarios(project_root, spec_name)
+    if not done:
+        return None
+    return {"done": done, "total": count_scenarios(project_root, spec_name)}
+
+
 # ── fenixd 日志块偏移索引（dashboard-log-offset-index D5） ─────
 
 # 每 64KB 一块；查询窗口只读尾部 ≤1MB（16 块），不再全量扫描日志文件。
@@ -2232,6 +2279,8 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         "verify_done": vp.get("done", 0),
         "verify_total": vp.get("total", 0),
         "verify_error": vp.get("error"),
+        # verification-phase-progress：出题进度（生成阶段 verify_total=0 时有值）
+        "generation": spec_generation_progress(project_root, spec_name, entry, vp=vp),
         "scenario_count": count_scenarios(project_root, spec_name),
         "total_duration": total_duration,
         "latest_run": runs[0]["run_id"] if runs else None,
@@ -2969,6 +3018,9 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "tasks_note": tasks_note(project_root, spec_name, spec_status),
         "run_progress": run_task_progress(project_root, spec_name),
         "verify_progress": parse_verify_progress(project_root, spec_name),
+        # verification-phase-progress：出题进度（生成阶段 verify_progress 为空态，
+        # 详情页验证进度卡片据此展示「出题 N/M」而非「暂无验证进度」）
+        "generation": spec_generation_progress(project_root, spec_name, entry),
         "report": {
             "exists": report.get("exists", False),
             "error": report.get("error"),

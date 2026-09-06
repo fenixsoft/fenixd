@@ -1591,6 +1591,12 @@ export default function SpecDetailPage() {
               <Typography.Text type="secondary">当前：{detail.verify_progress.current}</Typography.Text>
             )}
           </>
+        ) : detail?.generation ? (
+          /* verification-phase-progress：场景生成阶段（执行未开始）展示出题进度 */
+          <>
+            <Typography.Text type="secondary">场景生成中（出题）</Typography.Text>
+            <ProgressBarTile done={detail.generation.done} total={detail.generation.total} />
+          </>
         ) : (
           <Typography.Text type="secondary">暂无验证进度</Typography.Text>
         )}

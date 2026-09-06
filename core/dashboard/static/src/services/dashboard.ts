@@ -183,6 +183,8 @@ export interface SpecSummary {
   verify_done: number;
   verify_total: number;
   verify_error: string | null;
+  /** verification-phase-progress：出题进度（testing 且执行未开始时后端统计场景文件已落盘数；其余 null） */
+  generation?: { done: number; total: number } | null;
   scenario_count: number;
   total_duration: number;
   latest_run: string | null;
@@ -359,6 +361,8 @@ export interface SpecDetail {
     step?: string | null;
     error?: string | null;
   };
+  // verification-phase-progress：出题进度（生成阶段 verify_progress 为空态时有值）
+  generation?: { done: number; total: number } | null;
   // run 层实时进度 — run_task_progress() 返回结构（不依赖 tasks.md 编号）
   run_progress?: { done: number; total: number; current?: string[] } | null;
   // 任务清单 — parse_tasks() 返回的分组数组（非 {groups} 包装）

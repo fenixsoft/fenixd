@@ -59,6 +59,9 @@ const HEARTBEAT_MS = 30000;
 // 搜索/筛选输入防抖
 const SEARCH_DEBOUNCE_MS = 300;
 const TRACK_LIGHT = '#e6f4ff'; // antd blue-1，与 #1677ff 同 ramp
+const TRACK_GREEN = 'rgb(225, 236, 215)'; // 淡绿底轨（用户指定色），verify 阶段空条可辨
+// 未完成（非 done/pushed 终态）spec 行底色：浅蓝紫提示仍在进行中
+const ROW_INCOMPLETE_BG = 'rgb(250, 250, 255)';
 
 // 状态圆点配色（table-list 风格：色点 + 文字，不用标签）
 const TONE_DOT: Record<string, string> = {
@@ -882,7 +885,18 @@ export default function SpecListPage() {
         // 阶段感知（add-task-progress-verify-phase）：仅 testing（progress_phase
         // = "verify"）切绿色验证进度，其余状态维持 impl 蓝色路径零回归。
         const isVerify = record.progress_phase === 'verify';
-        const p = isVerify ? pct(record.verify_done, record.verify_total) : pct(record.task_done, record.task_total);
+        // verification-phase-progress：执行未开始（verify_total=0）而后端已统计到
+        // 出题落盘数时，进度条展示场景生成进度——出题是验证链主要耗时，不能让
+        // 进度条在生成阶段长期停在 0/0。青色区分生成与执行两段。
+        const gen =
+          isVerify && record.verify_total === 0 && record.generation && record.generation.total > 0
+            ? record.generation
+            : null;
+        const p = isVerify
+          ? gen
+            ? Math.min(100, pct(gen.done, gen.total))
+            : pct(record.verify_done, record.verify_total)
+          : pct(record.task_done, record.task_total);
         // run 层实时线索（fix-implementer-task-progress D3）：tasks.md 快照落后于
         // run 实际推进（subject 无编号 / agent 未勾 tasks.md）时叠加 run 完成度，
         // 任一数据源失效都不再呈现静止的 0/N；快照已覆盖时不重复打扰。
@@ -892,19 +906,21 @@ export default function SpecListPage() {
         // run-progress-current：done=0 阶段也有进行中任务的观感
         const runCurrent = rp?.current && rp.current.length > 0 ? rp.current : null;
         // 对齐 v1：条下方两侧分别显示 done/total 与 百分比
+        // 底轨随阶段同 ramp：verify 阶段 0/0 空条靠底轨读出「淡绿=验证未开始」，
+        // 否则与 impl 蓝色空条同观感，误读成任务没完成（add-task-progress-verify-phase 补充）。
         return (
           <div style={{ minWidth: 0 }}>
             <Progress
               percent={p}
               size="small"
               showInfo={false}
-              strokeColor={isVerify ? '#52c41a' : '#1677ff'}
-              trailColor={TRACK_LIGHT}
+              strokeColor={gen ? '#13c2c2' : isVerify ? '#52c41a' : '#1677ff'}
+              trailColor={isVerify ? (gen ? TRACK_LIGHT : TRACK_GREEN) : TRACK_LIGHT}
             />
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, lineHeight: '18px' }}>
               {isVerify ? (
                 <Typography.Text type="secondary" data-testid="task-progress-cell">
-                  {record.verify_done}/{record.verify_total}
+                  {gen ? `出题 ${gen.done}/${gen.total}` : `${record.verify_done}/${record.verify_total}`}
                 </Typography.Text>
               ) : (
                 <Typography.Text type="secondary" data-testid="task-progress-cell">
@@ -1068,6 +1084,13 @@ export default function SpecListPage() {
           <Table
             rowKey="name"
             tableLayout="fixed"
+            // 未完成（非 done/pushed 终态）行加浅蓝底：内联样式落在 tr 上，
+            // antd 的 cell 级 hover 背景（cell-row-hover）不受影响照常生效
+            onRow={(record) => ({
+              style: PRIORITY_TERMINAL.has(record.status || '')
+                ? undefined
+                : { backgroundColor: ROW_INCOMPLETE_BG },
+            })}
           columns={columns}
           dataSource={tree}
           loading={loading}

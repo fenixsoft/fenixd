@@ -3,7 +3,10 @@
 ## 步骤
 1. 读取 {spec_dir}/proposal.md, {spec_dir}/design.md, {spec_dir}/specs/*.md
 2. 分析所有功能点，为每个功能生成至少一个测试场景
-3. 将生成的场景保存到 {scenarios_path}
+3. 将生成的场景保存到 {scenarios_path}，**分批落盘**（框架据文件内容向用户展示出题进度，一次性最后才写会让进度条长时间无意义）：
+   - 先写入骨架：全部场景的 id/kind/description（合法 JSON 数组，此时 steps/assertions 可为空数组）
+   - 之后每完成约 1/3 场景，就把**完整文件整体重写**一次（始终全量重写、保持合法 JSON 数组，不做增量追加）
+   - 最后一轮落盘必须包含全部场景的完整 steps/assertions
 4. 将运行结果写入 {result_path}（绝对路径，与场景文件同目录，不要写别处）：`{"status":"plan-ready","spec":"{spec_name}"}`
 
 ## 场景覆盖规则
