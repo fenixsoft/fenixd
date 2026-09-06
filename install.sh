@@ -49,6 +49,21 @@ else
   echo "  ⚠️  PyYAML 未安装，正在安装..."
   pip3 install pyyaml -q && echo "  ✅ PyYAML 安装完成" || { echo "  ❌ PyYAML 安装失败，请手动执行: pip3 install pyyaml"; fail=1; }
 fi
+# ApiRunner 硬依赖（add-verify-multi-kind-runner PR2）：缺失时 api 场景
+# 验证在 Runner setup 报环境错误打回，不判 bug-found。
+if python3 -c "import httpx" 2>/dev/null; then
+  echo "  ✅ httpx ($(python3 -c 'import httpx; print(httpx.__version__)' 2>/dev/null))"
+else
+  echo "  ⚠️  httpx 未安装，正在安装..."
+  pip3 install httpx -q && echo "  ✅ httpx 安装完成" || { echo "  ❌ httpx 安装失败，请手动执行: pip3 install httpx"; fail=1; }
+fi
+# json_schema 断言依赖（可选：缺失仅 json_schema 断言在验收期打回）
+if python3 -c "import jsonschema" 2>/dev/null; then
+  echo "  ✅ jsonschema ($(python3 -c 'import jsonschema; print(jsonschema.__version__)' 2>/dev/null))"
+else
+  echo "  ⚠️  jsonschema 未安装（可选：api json_schema 断言需要），正在安装..."
+  pip3 install jsonschema -q && echo "  ✅ jsonschema 安装完成" || { echo "  ⚠️ jsonschema 安装失败（可稍后手动执行: pip3 install jsonschema）"; }
+fi
 
 if [ "$fail" -ne 0 ]; then
   echo ""
