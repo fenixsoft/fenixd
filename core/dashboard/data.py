@@ -2631,6 +2631,11 @@ def get_spec_timeline(project_root, spec_name: str) -> list:
                            "reason": reason, "_precise_reason": bool(err)})
             current = to
 
+    # admin 运维事件节点（escalation + disposition）：与 state/run 节点统一
+    # 按事件时间排序（admin 在 _timeline_sort_key 中 rank=1，夹在 state/run 间）。
+    # 折叠逻辑零改动：admin 节点非 state，天然打断连续前向状态折叠。
+    events.extend(_admin_events_for_spec(project_root, spec_name))
+
     # 排序：解析时间戳 + 同秒内 state 先于 run（_timeline_sort_key 内注释说明根因）
     events.sort(key=_timeline_sort_key)
 
@@ -2701,13 +2706,16 @@ def _timeline_sort_key(e: dict):
     也不能只按解析后时间排序：run started 取自 run_id 的 int(time.time()) 秒
     截断，真实启动在该秒内、且必然晚于同秒发生的状态转移（先 transition 后
     spawn，见 pm_engine/dispatch.py），故同秒内 state 恒先于 run。
+    admin 运维节点（add-timeline-admin-events）夹在中间：同秒内的真实时序是
+    「状态转移（testing→bug-found）→ admin 处置完成 → 触发重派的 run 启动」，
+    kind 次序显式映射为 state=0、admin=1、run=2（state/run 相对次序不变）。
     解析失败的事件按原字符串排在末尾，保持稳定。
     """
     dt = _parse_iso_ts(e.get("time", ""))
     if dt is None:
         from datetime import datetime as _dt, timezone as _tz
         return (_dt.max.replace(tzinfo=_tz), 2, str(e.get("time", "")))
-    kind_rank = 0 if e.get("kind") == "state" else 1
+    kind_rank = {"state": 0, "admin": 1, "run": 2}.get(e.get("kind"), 2)
     return (dt.replace(microsecond=0), kind_rank, dt)
 
 
