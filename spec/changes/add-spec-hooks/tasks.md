@@ -64,7 +64,7 @@
 
 ## 6. 测试与验证
 
-- [ ] 6.1 `tests/test_hook_engine.py`：匹配矩阵（全局/spec 级/多消费者/enabled=false skip）、七动作核心行为（commit noop、push 到本地 bare 远端、webhook 对本地 HTTP 端点、shell env 注入与超时、restart-daemon 请求文件）、审计记录字段、失败告警产生
-- [ ] 6.2 `tests/test_dashboard_hooks_api.py`：GET /api/hooks/audit 过滤/倒序/limit/空文件；POST /api/config hooks 校验 400 用例
-- [ ] 6.3 EventBus 集成测试：状态 diff 触发分发、未注入 dispatcher 行为不变、跨进程写入（直接改 STATE.md）被捕获
+- [x] 6.1 `tests/test_hook_engine.py`：匹配矩阵（全局/spec 级/多消费者/enabled=false skip）、七动作核心行为（commit noop、push 到本地 bare 远端、webhook 对本地 HTTP 端点、shell env 注入与超时、restart-daemon 请求文件）、审计记录字段、失败告警产生
+- [x] 6.2 `tests/test_dashboard_hooks_api.py`：GET /api/hooks/audit 过滤/倒序/limit/空文件；POST /api/config hooks 校验 400 用例
+- [x] 6.3 EventBus 集成测试：状态 diff 触发分发、未注入 dispatcher 行为不变、跨进程写入（直接改 STATE.md）被捕获
 - [ ] 6.4 全链自验：worktree 实例配置全局+spec 级 hook → 伪造状态变化 → 审计与告警按 spec 场景断言；全部既有测试无回归
