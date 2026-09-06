@@ -302,3 +302,64 @@ class AdminStore:
                 continue
             return rec
         return None
+
+
+class DisputeAuditStore:
+    """dispute 裁决审计（add-deliverable-declaration-triage D6 / 4.5）。
+
+    独立 jsonl 文件 ``.fenix/dispute_audits.jsonl``（逐行 JSON，append-only），
+    与 admin_alerts.json 分开——judge **自动裁决**不可与人工告警混流。复用
+    AdminStore 的 flock 持久化模式（同进程线程锁 + 跨进程文件排他锁）。
+
+    记录字段（design D6）：``spec``、``trigger_run_id``（实现 run）、
+    ``judge_run_id``（dispute-judge run）、``verdicts``（裁决 JSON 全文）、
+    ``diff``（声明段修正前后），``created``（UTC 时间戳）。人工可复核、
+    可回滚（回滚 = 恢复声明段原文 + 触发重派）。
+    """
+
+    def __init__(self, project_root, logger=None):
+        self.project_root = Path(project_root)
+        self.audit_path = self.project_root / ".fenix" / "dispute_audits.jsonl"
+        self._lockfile = Path(str(self.audit_path) + ".lock")
+        self._thread_lock = threading.Lock()
+        self._logger = logger
+
+    def append(self, entry: dict) -> None:
+        """追加一条审计记录（排他锁内 append + flush）。入口字段就地补齐。"""
+        rec = {"kind": "dispute-audit", "created": _utcnow_iso()}
+        rec.update(entry or {})
+        try:
+            self.audit_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        with self._thread_lock:
+            with self._lockfile.open("w", encoding="utf-8") as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                try:
+                    with self.audit_path.open("a", encoding="utf-8") as f:
+                        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                        f.flush()
+                finally:
+                    fcntl.flock(lf, fcntl.LOCK_UN)
+
+    def read_all(self) -> list:
+        """读取全部审计记录（最新的在前）。损坏/缺失返回空列表。"""
+        if not self.audit_path.exists():
+            return []
+        out: list = []
+        try:
+            with self.audit_path.open(encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(d, dict):
+                        out.append(d)
+        except OSError:
+            return []
+        out.sort(key=lambda e: e.get("created", ""), reverse=True)
+        return out

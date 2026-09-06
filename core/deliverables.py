@@ -87,6 +87,11 @@ _SCENARIO_HEADING_RE = re.compile(r"^#{1,6}\s+.*Scenario", re.IGNORECASE)
 # `## Deliverables` 显式声明段标题（planner 交付契约，守卫机械对账优先于正则提取）。
 _DECLARED_HEADING_RE = re.compile(r"^##\s+Deliverables\s*$", re.IGNORECASE)
 
+# basename 模糊匹配排除目录（D1，add-deliverable-declaration-triage）：产物/
+# 依赖/状态目录不参与「疑似笔误」判定——node_modules/dist 的包内同名文件会在
+# 不同 spec 语境反复误命中，.fenix/git 是框架自身状态而非交付落点。
+_BASENAME_EXCLUDE_DIRS = (".git", "node_modules", "dist", ".fenix", "__pycache__")
+
 # 声明段合法 kind：new=本仓库新建文件（硬校验）；modify=修改既有文件（硬校验）；
 # reference=运行时写入目标/既有引用（软校验，仅审计，不参与缺件判定）。
 _DECLARED_KINDS = ("new", "modify", "reference")
@@ -275,32 +280,14 @@ def extract_paths_typed(spec_dir) -> dict:
     return typed
 
 
-def extract_declared(spec_dir) -> "dict | None":
-    """tasks.md 的 ``## Deliverables`` 显式声明段（planner 交付契约）。
+def extract_declared_entries(spec_dir) -> "list | None":
+    """tasks.md ``## Deliverables`` 声明段原始条目（path + kind，保序）。
 
-    语义：planner 在 tasks.md 中用 fenced yaml 显式声明交付清单与语境类别，守卫
-    做机械对账，不再做正则语境猜测（语境分类曾致三次误判事故：Scenario 示例、
-    ``<run_id>`` 占位符、勾选行内的运行时写入目标 ``.fenix/config.yaml``）。
-
-    格式（tasks.md 内）::
-
-        ## Deliverables
-
-        ```yaml
-        - path: core/dashboard/data.py
-          kind: modify
-        - path: .fenix/config.yaml
-          kind: reference   # 运行时写入目标，非本仓库交付物
-        ```
-
-    kind 语义见 ``_DECLARED_KINDS``：new/modify → deliverables（硬校验）；
-    reference → references（软校验）。声明段不受 ``_DELIVERABLE_PREFIXES``
-    限制（skills/ 等前缀同样可声明为交付物）。
-
-    Returns:
-        ``{"deliverables": [...], "references": [...]}``；无声明段、无有效围栏块、
-        yaml 解析失败或全部条目非法 → ``None``（守卫回退 ``extract_paths_typed``，
-        向后兼容存量 spec）。
+    ``extract_declared`` 与派发处方快照（add-deliverable-declaration-triage
+    PR2 2.1）共用的条目级解析：返回过滤后的 ``[{"path": ..., "kind": ...}]``
+    列表（kind ∈ new/modify/reference）；无声明段、无有效围栏块、yaml 解析
+    失败或全部条目非法 → ``None``。``extract_declared`` 按 kind 归类复用本函数，
+    快照按条目级做存在性检查与 basename 匹配（kind 语义不可从归类结果反推）。
     """
     import yaml as _yaml
 
@@ -337,7 +324,7 @@ def extract_declared(spec_dir) -> "dict | None":
     if not isinstance(entries, list):
         return None
 
-    typed: dict = {"deliverables": [], "references": []}
+    out: List[dict] = []
     for e in entries:
         if not isinstance(e, dict):
             continue
@@ -348,6 +335,43 @@ def extract_declared(spec_dir) -> "dict | None":
         if (_ABSOLUTE_RE.match(path) or _WILDCARD_RE.search(path)
                 or _DIRECTORY_RE.search(path)):
             continue
+        out.append({"path": path, "kind": kind})
+    return out if out else None
+
+
+def extract_declared(spec_dir) -> "dict | None":
+    """tasks.md 的 ``## Deliverables`` 显式声明段（planner 交付契约）。
+
+    语义：planner 在 tasks.md 中用 fenced yaml 显式声明交付清单与语境类别，守卫
+    做机械对账，不再做正则语境猜测（语境分类曾致三次误判事故：Scenario 示例、
+    ``<run_id>`` 占位符、勾选行内的运行时写入目标 ``.fenix/config.yaml``）。
+
+    格式（tasks.md 内）::
+
+        ## Deliverables
+
+        ```yaml
+        - path: core/dashboard/data.py
+          kind: modify
+        - path: .fenix/config.yaml
+          kind: reference   # 运行时写入目标，非本仓库交付物
+        ```
+
+    kind 语义见 ``_DECLARED_KINDS``：new/modify → deliverables（硬校验）；
+    reference → references（软校验）。声明段不受 ``_DELIVERABLE_PREFIXES``
+    限制（skills/ 等前缀同样可声明为交付物）。
+
+    Returns:
+        ``{"deliverables": [...], "references": [...]}``；无声明段、无有效围栏块、
+        yaml 解析失败或全部条目非法 → ``None``（守卫回退 ``extract_paths_typed``，
+        向后兼容存量 spec）。
+    """
+    entries = extract_declared_entries(spec_dir)
+    if not entries:
+        return None
+    typed: dict = {"deliverables": [], "references": []}
+    for e in entries:
+        path, kind = e["path"], e["kind"]
         if path in typed["deliverables"] or path in typed["references"]:
             continue
         key = "deliverables" if kind in ("new", "modify") else "references"
@@ -355,6 +379,128 @@ def extract_declared(spec_dir) -> "dict | None":
     if not typed["deliverables"] and not typed["references"]:
         return None
     return typed
+
+
+def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
+    """机械替换 tasks.md 声明段条目的 path（add-deliverable-declaration-triage D4）。
+
+    在 tasks.md ``## Deliverables`` 段内找到 ``path == element`` 的条目并确定
+    性替换其 path 为 ``actual_path``；若声明段内已存在同名 actual_path 条目
+    （同 kind）则删除 element 条目（去重）。逐行精确文本操作（不经 yaml 反序列
+    化再序列化——保留注释/顺序，diff 最小）。修正前重读文件、按条目精确替换，
+    任何失败上抛（调用方等价 ``unclear`` 转人工，design D4/D6）。
+
+    Returns:
+        {"element", "actual_path", "before": <声明段原文>, "after": <声明段新文>}，
+        供审计流落 diff（4.5）。
+    """
+    tasks = Path(spec_dir) / "tasks.md"
+    text = tasks.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if _DECLARED_HEADING_RE.match(line):
+            start = i + 1
+            break
+    if start is None:
+        raise ValueError(f"tasks.md 无 Deliverables 声明段（无法修正 {element}）")
+    end = len(lines)
+    for i in range(start, len(lines)):
+        if _H2_RE.match(lines[i]):
+            end = i
+            break
+
+    def _path_line_re(p: str):
+        return re.compile(
+            rf"^(\s*-\s*path\s*:\s*){re.escape(p)}(\s*(#.*)?)$"
+        )
+
+    elem_idx = None
+    for i in range(start, end):
+        if _path_line_re(element).match(lines[i]):
+            elem_idx = i
+            break
+    if elem_idx is None:
+        raise ValueError(f"声明段无条目匹配 {element}（无法修正）")
+
+    before = "\n".join(lines[start:end])
+    # 去重：声明段已存在 actual_path 条目 → 删除 element 条目（path 行 + 紧随
+    # 的 kind 行），而不是制造两份同名声明
+    dup_idx = None
+    for i in range(start, end):
+        if i != elem_idx and _path_line_re(actual_path).match(lines[i]):
+            dup_idx = i
+            break
+    if dup_idx is not None:
+        remove_end = elem_idx + 1
+        if remove_end < len(lines) and re.match(r"^\s+kind\s*:", lines[remove_end]):
+            remove_end += 1
+        del lines[elem_idx:remove_end]
+    else:
+        m = _path_line_re(element).match(lines[elem_idx])
+        lines[elem_idx] = f"{m.group(1)}{actual_path}{m.group(2)}"
+    after = "\n".join(lines[start:end])
+
+    tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"element": element, "actual_path": actual_path,
+            "before": before, "after": after}
+
+
+def soften_declared_kind(spec_dir, element: str) -> dict:
+    """将 tasks.md 声明段条目的 kind 改为 reference（D4：reference 软化）。
+
+    确定性文本替换：``kind: new/modify → kind: reference``，该路径移入 references
+    软校验（不再参与守卫缺件判定）。条目不存在/无 kind 行/改写失败上抛（调用方
+    等价 ``unclear`` 转人工）。
+
+    Returns:
+        {"element", "before": <声明段原文>, "after": <声明段新文>}。
+    """
+    tasks = Path(spec_dir) / "tasks.md"
+    text = tasks.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if _DECLARED_HEADING_RE.match(line):
+            start = i + 1
+            break
+    if start is None:
+        raise ValueError(f"tasks.md 无 Deliverables 声明段（无法软化 {element}）")
+    end = len(lines)
+    for i in range(start, len(lines)):
+        if _H2_RE.match(lines[i]):
+            end = i
+            break
+
+    path_idx = None
+    for i in range(start, end):
+        if re.match(rf"^\s*-\s*path\s*:\s*{re.escape(element)}\s*(#.*)?$",
+                    lines[i]):
+            path_idx = i
+            break
+    if path_idx is None:
+        raise ValueError(f"声明段无条目匹配 {element}（无法软化）")
+
+    before = "\n".join(lines[start:end])
+    kind_idx = None
+    kind_match = None
+    for i in range(path_idx + 1, min(end, path_idx + 3)):
+        m = re.match(
+            r"^(\s*)kind\s*:\s*(new|modify|reference)(\s*(#.*)?)$",
+            lines[i],
+        )
+        if m:
+            kind_idx = i
+            kind_match = m
+            break
+    if kind_idx is None or kind_match is None:
+        raise ValueError(f"条目 {element} 无 kind 行可软化")
+
+    lines[kind_idx] = f"{kind_match.group(1)}kind: reference{kind_match.group(3)}"
+    after = "\n".join(lines[start:end])
+
+    tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"element": element, "before": before, "after": after}
 
 
 def extract_paths(spec_dir) -> List[str]:
@@ -379,6 +525,48 @@ def extract_paths(spec_dir) -> List[str]:
     return ordered
 
 
+def match_basename_in_tree(project_root, path: str) -> List[str]:
+    """主树 basename 精确匹配（add-deliverable-declaration-triage D1）。
+
+    以 ``Path(path).name`` 对主树文件做 basename 精确匹配（rglob），排除
+    ``_BASENAME_EXCLUDE_DIRS``（``.git``/``node_modules``/``dist``/
+    ``.fenix``/``__pycache__``）目录内的命中；返回相对项目根的命中路径列表，
+    确定性排序（字符串升序）。不引入编辑距离/模糊串匹配（D1：basename 内
+    笔误如 ``verifcation.py`` 由 judge 层兜底，lint 层保持零误拦取向）。
+
+    ``new`` 声明路径在主树不存在时调用（晋升 lint 规则 4 与派发处方干跑共用），
+    命中唯一即判疑似笔误候选；零或多命中放行（交由后续层兜底）。
+
+    Args:
+        project_root: 项目根（主树基准）。
+        path: 声明路径（以其余 ``Path(path).name`` 为匹配键）。
+
+    Returns:
+        命中相对路径列表（排序）；无命中或遍历异常返回空列表（fail-open）。
+    """
+    root = Path(project_root)
+    name = Path(path or "").name
+    if not name:
+        return []
+    excluded = set(_BASENAME_EXCLUDE_DIRS)
+    hits: List[str] = []
+    try:
+        for p in root.rglob(name):
+            if not p.is_file():
+                continue
+            try:
+                rel = p.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if set(rel.split("/")) & excluded:
+                continue
+            hits.append(rel)
+    except OSError:
+        return []
+    hits.sort()
+    return hits
+
+
 def lint_declared(spec_dir, project_root) -> List[str]:
     """晋升 lint（drafted → ready）：Deliverables 声明形态机械校验。
 
@@ -392,7 +580,15 @@ def lint_declared(spec_dir, project_root) -> List[str]:
        跳过该条目，声明形同虚设（fix-admin-run-blocks-mainloop 同族坑）；
     2. ``kind: modify`` 的路径在主树是目录——目录声明与守卫判定形态不匹配
        （守卫按 blob/tree 校验对象，精确到文件的声明才可对账），处方：改为
-       目录下确定性锚点文件（如 ``dist/index.html``）。
+       目录下确定性锚点文件（如 ``dist/index.html``）；
+    3. ``kind: modify``/``kind: reference`` 的路径在主树不存在（存在性硬校验，
+       add-deliverable-declaration-triage D1）——modify 语义即修改既有文件、
+       reference 语义即既有引用，不存在即声明有错，停留 drafted 附 error；
+    4. ``kind: new`` 的路径在主树不存在时做 basename 模糊匹配（规则 3 同型
+       形态错误），仓库内唯一命中即判疑似笔误拒绝晋升，违规消息直接给出疑似
+       目标路径；零命中或多命中放行（fail-open 取向，交由派发处方与守卫终审
+       层兜底——语义矛盾（多 basename 命中/basename 内笔误/语境等价）原理上
+       需要 LLM 裁决，lint 只拦确定性唯一命中）。
 
     lint 自身故障一律 fail-open（返回空清单放行晋升），不因 lint 阻塞流水线。
 
@@ -454,19 +650,42 @@ def lint_declared(spec_dir, project_root) -> List[str]:
                 f"声明形同虚设，请改为具体字面路径"
             )
             continue
-        if kind != "modify":
-            continue
         # 目录声明按字面路径判定（.fenix 归一化已退役，恒等映射自然退化）
         candidates = [path]
         normalized = normalize_check_path(path)
         if normalized != path:
             candidates.append(normalized)
-        is_dir = any((project_root / c).is_dir() for c in candidates)
-        if is_dir:
-            violations.append(
-                f"[{path}] 是目录——目录声明无法精确对账（tree ≠ 具体交付物），"
-                f"请改为目录下确定性锚点文件（如 dist/index.html）"
-            )
+        if kind == "modify":
+            is_dir = any((project_root / c).is_dir() for c in candidates)
+            if is_dir:
+                violations.append(
+                    f"[{path}] 是目录——目录声明无法精确对账（tree ≠ 具体交付物），"
+                    f"请改为目录下确定性锚点文件（如 dist/index.html）"
+                )
+                # 目录本身在主树存在：不落入下方存在性校验（避免重复违规）
+                continue
+        # 规则 3（add-deliverable-declaration-triage D1）：modify/reference
+        # 路径在主树必须存在。reference 语义即既有引用，modify 语义即修改既有
+        # 文件——不存在即声明有错（声明 vs 现实的确定性矛盾，零误拦）。
+        if kind in ("modify", "reference"):
+            if not any((project_root / c).exists() for c in candidates):
+                violations.append(
+                    f"[{path}] 在主树不存在——{kind} 声明路径必须在主树存在"
+                    f"（必须存在，指向既有文件），请核对声明路径"
+                    f"（新建文件请用 kind: new）"
+                )
+            continue
+        # 规则 4（D1）：new 路径主树不存在时做 basename 模糊匹配，仓库内唯一
+        # 命中即判疑似笔误拒绝晋升；零命中或多命中放行（语义矛盾交由后续层）。
+        if kind == "new":
+            if any((project_root / c).exists() for c in candidates):
+                continue
+            hits = match_basename_in_tree(project_root, path)
+            if len(hits) == 1:
+                violations.append(
+                    f"[{path}] 在主树不存在，疑似笔误——仓库内唯一 basename "
+                    f"命中 [{hits[0]}]，请修正声明路径或改 kind"
+                )
     return violations
 
 

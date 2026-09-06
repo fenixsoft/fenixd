@@ -1988,6 +1988,12 @@ class PMEngine:
     def _disputed_deliverables(self, impl_result, missing) -> list:
         return self._verification._disputed_deliverables(impl_result, missing)
 
+    def _adjudicate_deliverable_missing(self, spec_name: str, result,
+                                        impl_result, missing: list) -> dict:
+        """缺件 LLM 终审 + 裁决机械执行（add-deliverable-declaration-triage D3/D4）。"""
+        return self._dispatcher._adjudicate_deliverable_missing(
+            spec_name, result, impl_result, missing)
+
     @staticmethod
     def _normalize_fail_signature(text: str) -> str:
         return VerificationPipeline._normalize_fail_signature(text)

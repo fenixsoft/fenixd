@@ -685,46 +685,20 @@ class Dispatcher:
                                 f"blocked 待裁决，不重派 run={result.run_id}",
                             )
                             return
-                        # ── 守卫拒绝路径注册分支遗产 ─────────────────────────
-                        # 成功收工的 worktree 已清理，但完整已提交成果仍在分支上。
-                        # 仅分支模式登记，让后继 run 的任务书携带「遗产检查」段，
-                        # 自主判断收编（cherry-pick）/弃用，而非从零重做无感知。
-                        _wm = self._pm.agent_runner.worktree_manager
-                        _branch = getattr(result, "branch", None)
-                        if _branch and hasattr(_wm, "register_legacy"):
-                            _wm.register_legacy(spec_name, None, _branch)
-                        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
-                        prev_retries = 0
-                        try:
-                            prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
-                        except (TypeError, ValueError):
-                            prev_retries = 0
-                        retries = prev_retries + 1
-                        max_r = self._pm._get_config("agents.max_retries", 3)
-                        missing_q = "、".join(missing)
-                        err_note = (f"交付物守卫：缺件 [{missing_q}] — 不合并不推进，"
-                                    f"重派实现补齐（第 {retries} 次）")
-                        updates: dict = {
-                            "status": "ready",
-                            "error": err_note,
-                            "_retry_count": retries,
-                        }
-                        if retries >= max_r:
-                            updates["status"] = "blocked"
-                            updates["tester_run"] = None
-                            updates["error"] = (
-                                f"交付物守卫连续 {max_r} 次缺件 [{missing_q}] — 已 blocked，"
-                                f"需人工检查任务书声明与实际落地差异"
-                            )
-                        self._pm.state_machine.update_spec(spec_name, updates)
-                        self._pm.logger.error(
-                            "pm_engine",
-                            f"交付物守卫触发 '{spec_name}'（缺件 {missing_q}）— "
-                            f"run={result.run_id}",
-                        )
-                        if updates["status"] != "blocked":
-                            self._pm._enqueue_front(spec_name, "implementer")
-                        return
+                        # ── 缺件 LLM 终审与裁决机械执行（add-deliverable-declaration-triage）──
+                        # 判缺件后不再直接打回/重派：先派 dispute-judge- run 语义终审
+                        # （机械规则拦不住的声明 vs 现实矛盾由 LLM 裁决）。终审期间
+                        # spec 置 blocked（error 含 run id 与「LLM 终审进行中」）阻断
+                        # 轮询重派竞态（D5）。裁决机械执行（D4）：
+                        #   typo → tasks.md 声明 path 修正 → 重跑守卫对账（4.4 防洗白）
+                        #            → 通过则放行 merge；
+                        #   reference → 声明软化（转软校验）；
+                        #   missing → 既有打回/重派路径（带精准缺件清单）；
+                        #   unclear → 既有 deliverable-dispute blocked 人工裁决话术。
+                        adjudication = self._pm._adjudicate_deliverable_missing(
+                            spec_name, result, impl_result, missing)
+                        if adjudication.get("action") != "proceed":
+                            return
 
                 if is_success:
                     # 计数对账（fix-budget-counting-semantics D3）：守卫放行/merge
@@ -1074,6 +1048,369 @@ class Dispatcher:
             "pm_engine",
             f"'{spec_name}' {msg} —— stash 保留，可用 git stash show 找回被丢弃改动",
         )
+
+    # ── 缺件 LLM 终审与裁决机械执行（add-deliverable-declaration-triage D3/D4）──
+
+    def _build_dispute_judge_input(self, spec_name: str, impl_result,
+                                   missing: list) -> dict:
+        """组装 dispute-judge 输入（4.1）：缺件 + basename 候选 + spec 语境 + findings。
+
+        Returns:
+            dict：``{"spec", "missing": [{"path", "candidates"}],
+            "spec_context": {"excerpts", "declared_entries"},
+            "findings": [...]}``。任一部件读取失败静默降级（fail-open）。
+        """
+        from core.deliverables import match_basename_in_tree
+
+        missing_entries = []
+        for m in missing:
+            candidates = []
+            try:
+                candidates = match_basename_in_tree(self._pm.project_root, m)
+            except Exception:
+                candidates = []
+            missing_entries.append({"path": m, "candidates": candidates})
+
+        findings = []
+        if isinstance(impl_result, dict):
+            findings = impl_result.get("findings") or []
+
+        return {
+            "spec": spec_name,
+            "missing": missing_entries,
+            "spec_context": self._dispute_spec_context(spec_name, missing),
+            "findings": findings,
+        }
+
+    def _dispute_spec_context(self, spec_name: str, missing: list) -> dict:
+        """spec 三文档语境摘录：含缺件路径的段落 + Deliverables 声明段全文。
+
+        对 proposal.md/design.md/tasks.md/specs/*.md：以缺件路径为关键词抽取
+        命中行 ±2 行上下文（每文档独立段落清单）；tasks.md 的声明段经
+        ``extract_declared_entries`` 结构化摘录。读取失败静默跳过（fail-open）。
+        """
+        import re as _re
+        from pathlib import Path as _Path
+
+        spec_dir = _Path(self._pm.project_root) / "spec" / "changes" / spec_name
+        docs = {}
+        for name in ("proposal.md", "design.md", "tasks.md"):
+            p = spec_dir / name
+            if p.is_file():
+                try:
+                    docs[name] = p.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    pass
+        specs_dir = spec_dir / "specs"
+        if specs_dir.is_dir():
+            try:
+                for f in sorted(specs_dir.rglob("*.md")):
+                    if f.is_file():
+                        docs[f.name] = f.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                pass
+
+        excerpts = {}
+        for name, text in docs.items():
+            lines = text.splitlines()
+            hits: list = []
+            for i, line in enumerate(lines):
+                if any(m in line for m in missing):
+                    start = max(0, i - 2)
+                    end = min(len(lines), i + 3)
+                    block = "\n".join(lines[start:end])
+                    if block not in hits:
+                        hits.append(block)
+            if hits:
+                excerpts[name] = hits
+
+        context: dict = {"excerpts": excerpts}
+        try:
+            from core.deliverables import extract_declared_entries
+            entries = extract_declared_entries(spec_dir)
+            if entries:
+                context["declared_entries"] = entries
+        except Exception:
+            pass
+        return context
+
+    def _read_dispute_verdicts(self, spec_name: str, judge_run_id: str,
+                               judge_result) -> "dict | None":
+        """读取 dispute-judge 裁决 JSON（4.2 结果消费）。
+
+        判据：run 未成功收工 / 结果文件缺失或 JSON 不合法 / 顶层 status 非
+        success / verdicts 缺失或非列表 → 返回 None（调用方等价 ``unclear``，
+        全部待裁缺件转人工）。
+
+        Returns:
+            合法裁决 JSON dict 或 None。
+        """
+        result_path = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / "dispute_judge_result.json"
+        )
+        if judge_result is None or not getattr(judge_result, "success", False):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"dispute judge run 失败 '{spec_name}'（等价 unclear）: "
+                f"{getattr(judge_result, 'error', '') or ''}",
+            )
+            return None
+        try:
+            data = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"dispute judge 结果 JSON 不合法 '{spec_name}'（等价 unclear）",
+            )
+            return None
+        if not isinstance(data, dict) or data.get("status") != "success":
+            self._pm.logger.warning(
+                "pm_engine",
+                f"dispute judge 结果 status 非 success '{spec_name}'（等价 unclear）",
+            )
+            return None
+        verdicts = data.get("verdicts")
+        if not isinstance(verdicts, list) or not verdicts:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"dispute judge 结果缺 verdicts '{spec_name}'（等价 unclear）",
+            )
+            return None
+        return data
+
+    def _adjudicate_deliverable_missing(self, spec_name: str, result,
+                                        impl_result, missing: list) -> dict:
+        """缺件 LLM 终审 + 裁决机械执行（D3/D4，Tasks 4.1-4.4）。
+
+        在既有 dispute 异议通道之后调用（实现 run 已对缺件提出 deliverable-dispute
+        异议的 spec 走 blocked 人工，不进入终审）。流程：
+
+        1. spec 置 blocked（error 含 dispute-judge run id 与「LLM 终审进行中」），
+           阻断轮询/巡检重派竞态（D5）；
+        2. 组装 judge 输入并派单轮 dispute-judge run（主树只读、无 worktree）；
+        3. 读取裁决 JSON（4.2）：run 失败/超时/JSON 不合法/verdicts 缺失 →
+           全部待裁缺件等价 unclear；
+        4. 按裁决机械执行（4.3）：typo → tasks.md 声明 path 确定性替换为
+           actual_path（同名去重）；reference → 条目 kind 软化；missing/unclear
+           保持缺件处置；
+        5. 防洗白闸门（4.4）：typo 修正 + reference 软化后重跑守卫对账——
+           actual_path 在实现分支真实存在才放行 merge；仍缺失按缺件走既有
+           打回路径（修正声明 ≠ 放行缺件）；
+        6. typo/reference 裁决执行落 dispute 审计流（4.5）。
+
+        Returns:
+            dict：{"action": "proceed"} → 守卫重跑通过/缺件已软化，调用方继续
+            merge 推进；{"action": "handled"} → 已终态处置（打回重派 / blocked
+            人工 / 防洗白打回），调用方直接 return。
+        """
+        judge_run_id = f"dispute-judge-{spec_name}-{int(time.time())}"
+        # 1. 终审期间 spec 置 blocked（error 含 run id），阻断重派竞态
+        self._pm.state_machine.update_spec(spec_name, {
+            "status": "blocked",
+            "tester_run": None,
+            "error": (f"交付物守卫缺件 [{', '.join(missing)}] — LLM 终审进行中"
+                      f"（judge run {judge_run_id}）"),
+        })
+        self._pm.logger.warning(
+            "pm_engine",
+            f"交付物守卫缺件 '{spec_name}' 进入 LLM 终审（{judge_run_id}）",
+        )
+
+        # 2. 组装输入并派单轮 dispute-judge run
+        judge_input = self._build_dispute_judge_input(spec_name, impl_result, missing)
+        judge_result = None
+        try:
+            judge_result = self._pm.agent_runner.run_dispute_judge(
+                spec_name, judge_input, run_id=judge_run_id)
+        except Exception as e:
+            self._pm.logger.error(
+                "pm_engine",
+                f"dispute judge 派发异常 '{spec_name}'（等价 unclear）: {e}",
+            )
+            judge_result = None
+
+        # 3. 结果消费：非法裁决 → 全部待裁缺件等价 unclear
+        verdict_data = self._read_dispute_verdicts(spec_name, judge_run_id,
+                                                   judge_result)
+        verdict_by_element = {}
+        if verdict_data is not None:
+            for v in verdict_data.get("verdicts") or []:
+                if isinstance(v, dict) and v.get("element"):
+                    verdict_by_element[str(v["element"])] = v
+
+        def _verdict_of(path: str) -> dict:
+            v = verdict_by_element.get(path)
+            if isinstance(v, dict) and v.get("verdict") in (
+                    "typo", "reference", "missing", "unclear"):
+                return v
+            return {"verdict": "unclear"}
+
+        # 4. 裁决机械执行：typo 修正 / reference 软化（逐条，失败等价 unclear）
+        executed_verdicts: list = []
+        diff_by_element: dict = {}
+        for m in missing:
+            v = _verdict_of(m)
+            verdict = v.get("verdict")
+            try:
+                if verdict == "typo":
+                    actual_path = str(v.get("actual_path") or "").strip()
+                    if not actual_path:
+                        verdict_by_element[m] = {"verdict": "unclear"}
+                        continue
+                    from core.deliverables import replace_declared_path
+                    diff = replace_declared_path(
+                        self._pm.project_root / "spec" / "changes" / spec_name,
+                        m, actual_path)
+                    diff_by_element[m] = diff
+                    executed_verdicts.append({"element": m, **v})
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"dispute judge 裁决 typo '{spec_name}': "
+                        f"{m} → {actual_path}（声明段已修正）",
+                    )
+                elif verdict == "reference":
+                    from core.deliverables import soften_declared_kind
+                    diff = soften_declared_kind(
+                        self._pm.project_root / "spec" / "changes" / spec_name, m)
+                    diff_by_element[m] = diff
+                    executed_verdicts.append({"element": m, **v})
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"dispute judge 裁决 reference '{spec_name}': "
+                        f"{m} 已软化为 reference（转软校验）",
+                    )
+            except Exception as e:
+                # 声明段修正失败（并发改写/格式漂移）→ 该条等价 unclear（D6）
+                verdict_by_element[m] = {"verdict": "unclear"}
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"dispute judge 裁决执行失败 '{spec_name}'（{m} 等价 unclear）: {e}",
+                )
+
+        # 5. 审计留痕（4.5）：typo/reference 裁决执行落 dispute 审计流
+        if executed_verdicts:
+            try:
+                from core.admin_store import DisputeAuditStore
+                DisputeAuditStore(self._pm.project_root, self._pm.logger).append({
+                    "spec": spec_name,
+                    "trigger_run_id": getattr(result, "run_id", "") or "",
+                    "judge_run_id": judge_run_id,
+                    "verdicts": verdict_data.get("verdicts")
+                    if verdict_data else executed_verdicts,
+                    "diff": {
+                        k: {"before": d.get("before"), "after": d.get("after")}
+                        for k, d in diff_by_element.items()
+                    },
+                })
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine", f"dispute 审计写盘失败 '{spec_name}'（非阻塞）: {e}",
+                )
+
+        # 6. 防洗白闸门（4.4）：修正后重跑守卫对账——actual_path 在实现分支
+        # 真实存在才放行；仍缺失按缺件走既有打回路径（修正声明 ≠ 放行缺件）。
+        remaining = self._pm._deliverable_gate_missing(spec_name, result)
+        if not remaining:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"dispute judge 裁决执行后守卫重跑通过 '{spec_name}' — 放行 merge",
+            )
+            # 终审期间置 blocked 属临时态：恢复 in-flight（implementing），
+            # worker 合并路径的 implementing → implemented 转换才合法
+            self._pm.state_machine.update_spec(spec_name, {
+                "status": "implementing",
+                "error": None,
+            })
+            return {"action": "proceed"}
+
+        # 仍有缺件：分类 remaining 的归宿。remaining 可能含 typo 修正后的
+        # actual_path（非原 element）——凡能追溯到「已执行 typo 修正」或
+        # 「missing 裁决」的路径按既有打回路径处置（防洗白：修正声明 ≠ 放行
+        # 缺件）；unclear 项（含裁决执行失败/判据不明）→ blocked 人工裁决。
+        typo_fixed_paths = set()
+        for m in missing:
+            v = _verdict_of(m)
+            if v.get("verdict") == "typo":
+                ap = str(v.get("actual_path") or "").strip()
+                if ap:
+                    typo_fixed_paths.add(ap)
+        unclear_remaining = []
+        for p in remaining:
+            # typo 修正后的 actual_path：修正声明后文件仍不存在 = 防洗白 → 打回
+            if p in typo_fixed_paths:
+                continue
+            v = _verdict_of(p)
+            if v.get("verdict") == "unclear":
+                unclear_remaining.append(p)
+                continue
+            # 非 unclear：missing 裁决的原 element 按缺件打回；既非原 element
+            # 又非任何修正路径 → 裁决未覆盖，保守按 unclear 转人工（防 judge
+            # 输出与清单不一致）。
+            if p in missing:
+                continue
+            unclear_remaining.append(p)
+        if unclear_remaining:
+            u_q = "、".join(unclear_remaining)
+            self._pm.state_machine.update_spec(spec_name, {
+                "status": "blocked",
+                "tester_run": None,
+                "error": (
+                    f"交付物守卫缺件 [{u_q}] LLM 终审裁决 unclear/不可信 — "
+                    f"已 blocked 待人工裁决，不自动重派（judge run {judge_run_id}）"
+                ),
+            })
+            self._pm.logger.error(
+                "pm_engine",
+                f"交付物守卫缺件终审 unclear '{spec_name}'（{u_q}）— blocked 待人工",
+            )
+            return {"action": "handled"}
+
+        # 真缺件 / typo 防洗白落空：既有打回/重派路径（带精准缺件清单）
+        self._redispatch_for_missing(spec_name, result, remaining)
+        return {"action": "handled"}
+
+    def _redispatch_for_missing(self, spec_name: str, result, missing_list: list) -> None:
+        """缺件打回/重派（add-implementer-deliverable-gate 既有路径，4.3 missing）。
+
+        注册分支遗产（供后继 run 收编）→ 重试计数 → 重派 implementer；
+        连续 ``agents.max_retries`` 次封顶 blocked。自 judge 终审进入的调用
+        同样走此路径——judge 不放行不存在的文件（防洗白，D4）。
+        """
+        _wm = self._pm.agent_runner.worktree_manager
+        _branch = getattr(result, "branch", None)
+        if _branch and hasattr(_wm, "register_legacy"):
+            _wm.register_legacy(spec_name, None, _branch)
+        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        try:
+            prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
+        except (TypeError, ValueError):
+            prev_retries = 0
+        retries = prev_retries + 1
+        max_r = self._pm._get_config("agents.max_retries", 3)
+        missing_q = "、".join(missing_list)
+        err_note = (f"交付物守卫：缺件 [{missing_q}] — 不合并不推进，"
+                    f"重派实现补齐（第 {retries} 次）")
+        updates: dict = {
+            "status": "ready",
+            "error": err_note,
+            "_retry_count": retries,
+        }
+        if retries >= max_r:
+            updates["status"] = "blocked"
+            updates["tester_run"] = None
+            updates["error"] = (
+                f"交付物守卫连续 {max_r} 次缺件 [{missing_q}] — 已 blocked，"
+                f"需人工检查任务书声明与实际落地差异"
+            )
+        self._pm.state_machine.update_spec(spec_name, updates)
+        self._pm.logger.error(
+            "pm_engine",
+            f"交付物守卫触发 '{spec_name}'（缺件 {missing_q}）— "
+            f"run={getattr(result, 'run_id', '') or ''}",
+        )
+        if updates["status"] != "blocked":
+            self._pm._enqueue_front(spec_name, "implementer")
 
     # ── fast-track 单 run 全包 worker（add-fast-track-mode D1/D4/D5/D6）──
 

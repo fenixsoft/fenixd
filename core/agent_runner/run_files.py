@@ -37,9 +37,13 @@ def run_spec_part(run_id: str) -> str:
     """从 run_id 推断 spec 名（与 get_runs 的推断逻辑对齐，供索引分组使用）。
 
     依次剥离 agent 类型前缀、attempt 段（-a<n>）与时间戳段（-<unix秒>）。
+
+    ⚠️ 前缀表与 core/admin_monitor.py:_RUN_PREFIXES 同源互指，新增 run 前缀
+    （如 add-deliverable-declaration-triage 的 dispute-judge-）两处必须同步。
+    子串前缀（planner-）必须排在更长前缀（planner-judge-/planner-plan-）之后。
     """
     spec_part = run_id
-    for prefix in ("admin-", "planner-judge-", "planner-plan-",
+    for prefix in ("admin-", "dispute-judge-", "planner-judge-", "planner-plan-",
                    "planner-", "impl-", "verify-", "test-"):
         if run_id.startswith(prefix):
             spec_part = run_id[len(prefix):]

@@ -742,6 +742,117 @@ class AgentRunner:
             # 取消/异常均释放信号量（不泄漏占位导致后续 spec 永久排队）
             sem.release()
 
+    def run_dispute_judge(self, spec_name: str, judge_input: dict,
+                          run_id: str | None = None) -> AgentRunResult:
+        """Run the Dispute Judge Agent for a SPEC (deliverable-declaration-triage D3).
+
+        收工守卫判缺件后、打回/重派前由 dispatch 调用：轻量**单轮只读**裁决者。
+        与 planner-judge 同属 judge 范式，但**不创建 worktree**（design D3：
+        主树只读上下文，--add-dir 主树、无 worktree、无写权限任务书）：
+
+        - run_id 前缀 ``dispute-judge-<spec>-<ts>``（_RUN_PREFIXES 同步扩展，
+          见 run_files.py 前缀元组与 admin_monitor._RUN_PREFIXES，两处同源）；
+          调用方（dispatch）可注入预生成 run_id——终审期间 spec 的 error 字段须
+          先行携带该 id（D5：blocked + 「LLM 终审进行中」阻断重派竞态）；
+        - 输入（缺件清单 + spec 语境摘录 + 实现 run findings + basename 候选）
+          由调用方组装为 ``judge_input`` dict，本方法落盘
+          ``.fenix/verify-progress/<spec>/dispute_judge_input.json`` 并经 prompt
+          指示 judge 读取；
+        - 输出契约：``.fenix/verify-progress/<spec>/dispute_judge_result.json``
+          顶层 ``status: "success"`` + ``verdicts: [{element, verdict,
+          actual_path, reasoning, confidence}]``（verdict 四取一
+          typo|reference|missing|unclear）；
+        - 裁决的机械执行（D4）由调用方（dispatch）完成——本方法只派发与收工。
+
+        Args:
+            spec_name: SPEC 名。
+            judge_input: 裁决输入 dict（missing/spec_context/findings 等）。
+            run_id: 预生成 run id（派发前已写入 spec error 的场景）；省略则
+                本方法生成 ``dispute-judge-<spec>-<ts>``。
+
+        Returns:
+            AgentRunResult（success 仅表示 run 正常收工；裁决语义合法性由调用方
+            读取结果文件校验——run 失败/超时/输出不合法等价 unclear）。
+        """
+        run_id = run_id or f"dispute-judge-{spec_name}-{int(time.time())}"
+        vp_dir = self.project_root / ".fenix" / "verify-progress" / spec_name
+        input_path = vp_dir / "dispute_judge_input.json"
+        try:
+            vp_dir.mkdir(parents=True, exist_ok=True)
+            input_path.write_text(
+                json.dumps(judge_input or {}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            return AgentRunResult(
+                run_id, spec_name, "dispute-judge",
+                success=False, duration_seconds=0.0,
+                error=f"dispute judge 输入落盘失败: {e}",
+            )
+
+        try:
+            prompt = self._build_prompt(
+                spec_name, "dispute-judge",
+                detail={"dispute_input_path": str(input_path)},
+            )
+        except Exception as e:
+            return AgentRunResult(
+                run_id, spec_name, "dispute-judge",
+                success=False, duration_seconds=0.0,
+                error=f"dispute judge prompt 构建失败: {e}",
+            )
+
+        # 模型路由（design Non-Goal：不新增配置键）：已分配 provider 用分配模型
+        # 直连（与 administrator 同通道）；未分配走默认网关（cc-switch），
+        # --model 用官方模型名常量，由网关映射到可用模型。
+        assignment = self._get_agent_model_assignment("dispute-judge")
+        env_overrides: Dict[str, str] = {}
+        provider_name = None
+        if assignment:
+            provider, model_override = assignment[0]
+            provider_name = provider["name"]
+            env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
+            env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
+            env_overrides["ANTHROPIC_MODEL"] = model_override
+            env_overrides["CLAUDE_CONFIG_DIR"] = str(
+                self._ensure_agent_config_dir(provider["name"])
+            )
+            for k, v in (provider.get("env") or {}).items():
+                env_overrides[k] = v
+            # 观测：run jsonl 写 provider_marker（与 dispatch attempt 路径同口径）
+            self._write_provider_marker(
+                run_id, spec_name, "dispute-judge",
+                provider["name"], model_override, 0, 1,
+            )
+        else:
+            model_override = DEFAULT_GATEWAY_MODEL
+
+        start_time = time.time()
+        try:
+            output, turns, _session_id, _usage = self._run_claude(
+                prompt, self.project_root, run_id, model_override, env_overrides,
+                max_turns=self._get_config("agents.max_turns", 300),
+                spec_name=spec_name,
+                agent_type="dispute-judge",
+            )
+            return AgentRunResult(
+                run_id, spec_name, "dispute-judge",
+                success=True, duration_seconds=time.time() - start_time,
+                turns_used=turns, output=output or "",
+                provider_used=provider_name, model_used=model_override,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "agent_runner",
+                f"dispute judge run 失败 '{spec_name}'（等价 unclear）: {e}",
+            )
+            return AgentRunResult(
+                run_id, spec_name, "dispute-judge",
+                success=False, duration_seconds=time.time() - start_time,
+                error=str(e),
+                provider_used=provider_name, model_used=model_override,
+            )
+
     def _planner_throttle_semaphore(self) -> Optional[threading.BoundedSemaphore]:
         """按配置惰性重建 planner 节流信号量（0/缺省=不节流）。
 
