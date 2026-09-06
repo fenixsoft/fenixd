@@ -18,6 +18,12 @@ import urllib.request
 
 from core.serving_registry import ServingRegistry
 from core.proc_utils import find_free_port
+
+# judge-scenario-repair：judge 原地场景修复预算（上限重入轮数）。
+# 场景文件自身缺陷（夹具未自建/步骤客观错误/依赖序缺失）由 judge 原地修复
+# 后重执行，不再「env 伪失败→原样重验」空转；上限与阶段1 replan_left 对齐。
+_SCENARIO_REPAIR_MAX_ROUNDS = 2
+
 from core.verify_contract import (
     CommandVerifyServer,
     load_verify_contract,
@@ -811,7 +817,7 @@ class VerificationPipeline:
                 "pm_engine", f"场景集变更小节写回失败 '{spec_name}': {e}")
 
 
-    def _run_three_stage_verification(self, spec_name: str):
+    def _run_three_stage_verification(self, spec_name: str, _repair_depth: int = 0):
         """三步验证流水线主逻辑。"""
         # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）：入口状态
         # 非 testing → DEBUG 丢弃本流水线结果（注明当前状态），不执行任何迁移/
@@ -1176,9 +1182,17 @@ class VerificationPipeline:
         if self._pm._detect_uniform_verify_failure(spec_name, report):
             return
 
-        # ── 阶段3: Planner 判定结果 ──
-        self._pm.logger.info("pm_engine", f"[阶段3] Planner 判定: {spec_name}")
-        judge_result = self._pm.agent_runner.run_planner(spec_name, "judge")
+        # ── 阶段3 快道：全绿机械 verified（judge 效率治理 2026-09-06）──
+        # 0 失败且 0 警告时 judge 无信息增量（无分类对象；洗白门禁仅在
+        # 「0 通过或 env 失败」可触发，全绿恒无违规）——跳过 LLM 裁决
+        # （常态 15-50 分钟），合成结果文件后走与 judge 完全同源的采纳
+        # 尾段（进度核对/报告闸门/洗白门禁/transition）。tester_run 记
+        # mechanical-all-green 留痕。
+        judge_result = self._all_green_fast_path(spec_name, report, fail_count)
+        if judge_result is None:
+            # ── 阶段3: Planner 判定结果 ──
+            self._pm.logger.info("pm_engine", f"[阶段3] Planner 判定: {spec_name}")
+            judge_result = self._pm.agent_runner.run_planner(spec_name, "judge")
 
         if not judge_result.success:
             # ── 人工取消 hold-state（add-run-cancel D4，judge 同语义）──
@@ -1290,6 +1304,42 @@ class VerificationPipeline:
                 f"spec no longer in testing, result dropped",
             )
             return
+        # ── 阶段3+ 场景原地修复通道（judge-scenario-repair）──
+        # 测试场景文件自身也可能有缺陷（夹具未自建/步骤客观错误/依赖序缺失）。
+        # judge 原地修复场景文件并申报 scenario-repaired：框架经冻结 diff 记账
+        # （无理由移除会被确定性补齐——judge 无法靠删场景凑通过）后有界重入
+        # 阶段2/3——serving 实例在同函数缓存中存续，重执行秒级。与既有通道
+        # 分工：机械缺陷原地修（省一次完整出题）；覆盖级缺陷走交互契约退回
+        # plan；测试 harness 代码缺陷走 bug-found fix 链。
+        if verifier_status == "scenario-repaired":
+            if _repair_depth >= _SCENARIO_REPAIR_MAX_ROUNDS:
+                self._pm.state_machine.update_spec(spec_name, {
+                    "error": (
+                        f"judge 场景原地修复预算耗尽（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮）"
+                        f"— 保持 testing 等待下一轮重验，若仍场景缺陷将按既有升级路径处置"
+                    ),
+                })
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"'{spec_name}' judge 场景修复预算耗尽 "
+                    f"（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮）— 不再重入",
+                )
+                return
+            try:
+                self._pm._apply_scenario_freeze(spec_name)
+            except Exception as e:
+                # 冻结记账属辅助治理，异常不阻断修复重入
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"修复轮场景冻结记账跳过 '{spec_name}'（异常不阻断）: {e}",
+                )
+            self._pm.logger.info(
+                "pm_engine",
+                f"[阶段3+] judge 场景原地修复采纳 '{spec_name}' — 重入执行"
+                f"（第 {_repair_depth + 1}/{_SCENARIO_REPAIR_MAX_ROUNDS} 次修复）",
+            )
+            return self._run_three_stage_verification(
+                spec_name, _repair_depth=_repair_depth + 1)
         if verifier_status == "bug-found":
             # judge 自述环境问题守卫：judge 自己把根因描述为环境/基础设施问题时，
             # 属「验证没能发生」而非「验证发现了缺陷」，不得流转 bug-found
@@ -1990,6 +2040,82 @@ class VerificationPipeline:
             self._pm.logger.warning(
                 "pm_engine", f"env 升级通道异常 '{spec_name}': {e}")
 
+    def _all_green_fast_path(self, spec_name: str, report: dict, fail_count: int):
+        """全绿快道（judge 效率治理 A，2026-09-06）：0 失败 0 警告 → 机械 verified。
+
+        返回合成 ``AgentRunResult``（run_id=mechanical-all-green）供既有采纳
+        尾段原样消费；返回 None = 存在失败/警告，走常规 judge。结果文件写
+        primary 路径并**覆盖上一轮 judge 残留**（防 ``_read_planner_result``
+        读到旧裁决）。写回失败不阻断——``_read_planner_result`` 对缺失文件
+        本就按 verified 兜底（_read_verifier_result docstring 语义）。
+        """
+        summary = report.get("summary") or {}
+        if (fail_count != 0
+                or (summary.get("warnings") or 0) != 0
+                or (summary.get("passed") or 0) <= 0):
+            return None
+        result_path = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / ".fenix-run-result.json"
+        )
+        text = (
+            f"全绿快道: {summary.get('passed')}/{summary.get('total')} 场景通过、"
+            "0 失败 0 警告——无分类对象，跳过 judge 机械 verified"
+        )
+        payload = {"spec": spec_name, "status": "verified", "bugs": [],
+                   "summary": text, "mechanical": True}
+        try:
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=1),
+                encoding="utf-8")
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"全绿快道结果文件写回失败 '{spec_name}'（不阻断）: {e}",
+            )
+        self._pm.logger.info(
+            "pm_engine", f"[阶段3] 全绿快道 '{spec_name}' — {text}")
+        from core.agent_runner.runner import AgentRunResult
+        return AgentRunResult(
+            run_id="mechanical-all-green", spec_name=spec_name,
+            agent_type="planner-judge", success=True, duration_seconds=0.0,
+            output=text)
+
+    def _persist_verdict_cache(self, spec_name: str, report: dict) -> None:
+        """采纳成功后持久化跨轮裁决缓存（judge 效率治理 E，2026-09-06）。
+
+        每个已裁决 non-PASS 场景记 {fingerprint, classification, evidence,
+        assertion_triage}；下轮派发 judge 前由 prompt_builder 按指纹命中注入，
+        命中场景免复现。每轮整体重写（场景消失/变化自然出清）；失败静默
+        （fail-open，缓存缺失只导致下轮全量重裁，不影响正确性）。
+        """
+        from core.verdict_check import scenario_fingerprint, save_verdict_cache
+        cache = {}
+        for sc in report.get("scenarios") or []:
+            if not isinstance(sc, dict):
+                continue
+            if sc.get("status") in ("pass", "passed"):
+                continue
+            cls = sc.get("classification")
+            if not cls:
+                continue  # 未裁决条目不入缓存
+            fp = scenario_fingerprint(sc)
+            if not fp:
+                continue
+            cache[str(sc.get("scenario_id"))] = {
+                "fingerprint": fp,
+                "classification": cls,
+                "evidence": sc.get("evidence"),
+                "assertion_triage": sc.get("assertion_triage"),
+            }
+        save_verdict_cache(self._pm.project_root, spec_name, cache)
+        if cache:
+            self._pm.logger.info(
+                "pm_engine",
+                f"跨轮裁决缓存已更新 '{spec_name}': {len(cache)} 个场景结论入缓存",
+            )
+
     def _verify_verdict_evidence(self, spec_name: str, retry_judge: bool = False) -> bool:
         """确定性校验裁决 report.json 的分类/证据合规，并按映射强制重写 status。
 
@@ -2017,6 +2143,7 @@ class VerificationPipeline:
         if result["ok"]:
             # 合规：清掉历史驳回清单（若有）后强制重写 status 映射（D3）写回
             self._pm._clear_verdict_violations(spec_name)
+            self._persist_verdict_cache(spec_name, report)
             mapping = enforce_status_mapping(report)
             if mapping["corrected"]:
                 try:
@@ -2062,6 +2189,7 @@ class VerificationPipeline:
             result2 = validate_report(report2)
             if result2["ok"]:
                 self._pm._clear_verdict_violations(spec_name)
+                self._persist_verdict_cache(spec_name, report2)
                 mapping2 = enforce_status_mapping(report2)
                 try:
                     save_report(self._pm.project_root, spec_name, report2)
@@ -2295,6 +2423,7 @@ class VerificationPipeline:
         返回 "verified" 表示全部通过。
         返回 "bug-found" 表示验证发现 Bug。
         返回 "plan-ready" 表示Planner已生成场景。
+        返回 "scenario-repaired" 表示 judge 原地修复了场景文件（judge-scenario-repair）。
         """
         try:
             if not result_path.exists():
@@ -2305,7 +2434,7 @@ class VerificationPipeline:
                 return None
             data = json.loads(result_path.read_text(encoding="utf-8"))
             status = data.get("status", "")
-            if status in ("verified", "bug-found", "plan-ready"):
+            if status in ("verified", "bug-found", "plan-ready", "scenario-repaired"):
                 bugs = data.get("bugs", [])
                 bug_count = len(bugs) if isinstance(bugs, list) else 0
                 self._pm.logger.info(

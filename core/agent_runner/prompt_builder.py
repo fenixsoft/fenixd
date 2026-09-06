@@ -175,6 +175,9 @@ class PromptBuilder:
         elif agent_type == "planner-judge":
             prompt += self._scenario_freeze_section(spec_name)
             prompt += self._triage_recheck_section(spec_name)
+            # 跨轮已裁决场景注入（judge 效率治理 E）：先于驳回段——正向复用
+            # 清单在前，强制修复清单殿后保持紧迫性
+            prompt += self._verdict_cache_section(spec_name)
             prompt += self._verdict_rejection_section(spec_name)
         elif agent_type == "fast-track":
             # 任务进度契约段（fix-implementer-task-progress D1，与 full 分支共用
@@ -902,7 +905,60 @@ class PromptBuilder:
         lines.append(
             "- ⚠️ report.json 中已存在的 classification/evidence（上一轮残留）"
             "不代表裁决合规——缺失的 `assertion_triage` 逐断言归因同样是强制字段。\n"
-            "- 你 MUST 对全部非 PASS 场景补齐缺口（含逐断言 assertion_triage）后"
-            "覆盖写回 report.json，不得因部分字段已存在而判定「无需改写」。\n"
+            "- **重试定向纪律（judge 效率治理 2026-09-06）**：只对上述违规清单中的"
+            "场景重新裁决/取证；其余非 PASS 场景已写入 report.json 的 "
+            "classification/evidence/assertion_triage 视为受理——**原样保留、"
+            "禁止重新复现或改写**，覆盖写回时不得改动清单外场景的任何字段"
+            "（整轮重跑式重试是 15-25 分钟×N 的确定性浪费）。\n"
         )
+        return "".join(lines)
+
+    def _verdict_cache_section(self, spec_name: str) -> str:
+        """跨轮已裁决场景注入段（judge 效率治理 E，2026-09-06）。
+
+        当前轮 report.json 的非 PASS 场景按断言指纹（``scenario_fingerprint``，
+        引擎侧失败断言内容 hash）比对上轮采纳缓存（verdict_cache.json），命中
+        者注入「结论可直接沿用」清单——judge 对命中场景免复现/免重取证，仅把
+        既有结论原样写回 report.json（确定性校验器仍要求全量字段在位，写回
+        不可省）。无缓存/零命中/读取异常 → 返回空串（零注入，prompt 回退）。
+        """
+        from core.verdict_check import load_verdict_cache, scenario_fingerprint
+        report_path = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / "report.json"
+        )
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return ""
+        if not isinstance(report, dict):
+            return ""
+        cache = load_verdict_cache(self._pm.project_root, spec_name)
+        if not cache:
+            return ""
+        hits = []
+        for sc in report.get("scenarios") or []:
+            if not isinstance(sc, dict) or sc.get("status") in ("pass", "passed"):
+                continue
+            entry = cache.get(str(sc.get("scenario_id")))
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("fingerprint") != scenario_fingerprint(sc):
+                continue
+            hits.append((str(sc.get("scenario_id")), entry))
+        if not hits:
+            return ""
+        lines = [
+            "\n\n## ♻️ 跨轮已裁决场景（断言指纹一致，免复现）\n"
+            "- 下列场景的失败断言内容与上一轮已采纳裁决完全一致（框架指纹比对），"
+            "其下述 classification/evidence/assertion_triage **直接原样写回 "
+            "report.json**，MUST NOT 重新复现/重取证/改写（重验轮的确定性浪费）。\n"
+            "- 仅对本清单之外的场景做完整裁决。\n"
+        ]
+        for sid, entry in hits:
+            lines.append(
+                f"  - `{sid}`: classification={entry.get('classification')}, "
+                f"evidence={json.dumps(entry.get('evidence'), ensure_ascii=False)}, "
+                f"assertion_triage={json.dumps(entry.get('assertion_triage'), ensure_ascii=False)}\n"
+            )
         return "".join(lines)

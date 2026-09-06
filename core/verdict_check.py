@@ -519,3 +519,73 @@ def save_report(project_root, spec_name, report: dict) -> None:
         except OSError:
             pass
         raise
+
+
+# ── 跨轮裁决缓存（judge 效率治理 2026-09-06）──────────────────────────
+# 裁决耗时 ≈ 输出 tokens 量（实测 12 个 judge run 恒定 ~1300-2200 tok/min）。
+# 重验轮的失败场景与上轮高度重叠（冻结场景集未变 + 失败复现一致），按断言
+# 指纹命中即可沿用上轮结论，judge 免复现——写侧在裁决采纳处（verification
+# _persist_verdict_cache），读侧在 judge 派发前（prompt_builder 注入段）。
+
+VERDICT_CACHE_FILENAME = "verdict_cache.json"
+
+
+def _verdict_cache_path(project_root, spec_name) -> Path:
+    return (Path(project_root) / ".fenix" / "verify-progress"
+            / spec_name / VERDICT_CACHE_FILENAME)
+
+
+def scenario_fingerprint(scenario: dict) -> str:
+    """非 PASS 场景的断言指纹：scenario_id + status + 失败断言内容稳定 hash。
+
+    取引擎侧 ``assertion_results`` 的失败条目（judge 增强前的原始执行产物，
+    跨轮稳定），不取 evidence/assertion_triage（judge 产物，轮间会重写）。
+    指纹一致 ⇒ 冻结场景与失败复现均未变，上轮结论可沿用。
+
+    异常/缺字段返回空串（调用方按未命中处理，fail-open）。
+    """
+    import hashlib as _hashlib
+    try:
+        failed = [
+            {k: a.get(k) for k in ("type", "layer", "expected", "actual",
+                                   "selector") if a.get(k) is not None}
+            for a in (scenario.get("assertion_results") or [])
+            if isinstance(a, dict) and not a.get("pass", True)
+        ]
+        payload = json.dumps(
+            {"sid": scenario.get("scenario_id"),
+             "status": scenario.get("status"),
+             "failed": failed},
+            ensure_ascii=False, sort_keys=True,
+        )
+        return _hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    except (TypeError, ValueError, AttributeError):
+        return ""
+
+
+def load_verdict_cache(project_root, spec_name) -> dict:
+    """读取跨轮裁决缓存；缺失/损坏返回 {}（fail-open）。"""
+    p = _verdict_cache_path(project_root, spec_name)
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_verdict_cache(project_root, spec_name, cache: dict) -> None:
+    """原子写跨轮裁决缓存（每轮采纳后整体重写，消失/变化的场景自然出清）。
+
+    写失败静默——缓存缺失只导致下轮全量重裁，不影响正确性。
+    """
+    p = _verdict_cache_path(project_root, spec_name)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(
+            json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(p)
+    except OSError:
+        pass
