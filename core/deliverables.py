@@ -280,32 +280,14 @@ def extract_paths_typed(spec_dir) -> dict:
     return typed
 
 
-def extract_declared(spec_dir) -> "dict | None":
-    """tasks.md 的 ``## Deliverables`` 显式声明段（planner 交付契约）。
+def extract_declared_entries(spec_dir) -> "list | None":
+    """tasks.md ``## Deliverables`` 声明段原始条目（path + kind，保序）。
 
-    语义：planner 在 tasks.md 中用 fenced yaml 显式声明交付清单与语境类别，守卫
-    做机械对账，不再做正则语境猜测（语境分类曾致三次误判事故：Scenario 示例、
-    ``<run_id>`` 占位符、勾选行内的运行时写入目标 ``.fenix/config.yaml``）。
-
-    格式（tasks.md 内）::
-
-        ## Deliverables
-
-        ```yaml
-        - path: core/dashboard/data.py
-          kind: modify
-        - path: .fenix/config.yaml
-          kind: reference   # 运行时写入目标，非本仓库交付物
-        ```
-
-    kind 语义见 ``_DECLARED_KINDS``：new/modify → deliverables（硬校验）；
-    reference → references（软校验）。声明段不受 ``_DELIVERABLE_PREFIXES``
-    限制（skills/ 等前缀同样可声明为交付物）。
-
-    Returns:
-        ``{"deliverables": [...], "references": [...]}``；无声明段、无有效围栏块、
-        yaml 解析失败或全部条目非法 → ``None``（守卫回退 ``extract_paths_typed``，
-        向后兼容存量 spec）。
+    ``extract_declared`` 与派发处方快照（add-deliverable-declaration-triage
+    PR2 2.1）共用的条目级解析：返回过滤后的 ``[{"path": ..., "kind": ...}]``
+    列表（kind ∈ new/modify/reference）；无声明段、无有效围栏块、yaml 解析
+    失败或全部条目非法 → ``None``。``extract_declared`` 按 kind 归类复用本函数，
+    快照按条目级做存在性检查与 basename 匹配（kind 语义不可从归类结果反推）。
     """
     import yaml as _yaml
 
@@ -342,7 +324,7 @@ def extract_declared(spec_dir) -> "dict | None":
     if not isinstance(entries, list):
         return None
 
-    typed: dict = {"deliverables": [], "references": []}
+    out: List[dict] = []
     for e in entries:
         if not isinstance(e, dict):
             continue
@@ -353,6 +335,43 @@ def extract_declared(spec_dir) -> "dict | None":
         if (_ABSOLUTE_RE.match(path) or _WILDCARD_RE.search(path)
                 or _DIRECTORY_RE.search(path)):
             continue
+        out.append({"path": path, "kind": kind})
+    return out if out else None
+
+
+def extract_declared(spec_dir) -> "dict | None":
+    """tasks.md 的 ``## Deliverables`` 显式声明段（planner 交付契约）。
+
+    语义：planner 在 tasks.md 中用 fenced yaml 显式声明交付清单与语境类别，守卫
+    做机械对账，不再做正则语境猜测（语境分类曾致三次误判事故：Scenario 示例、
+    ``<run_id>`` 占位符、勾选行内的运行时写入目标 ``.fenix/config.yaml``）。
+
+    格式（tasks.md 内）::
+
+        ## Deliverables
+
+        ```yaml
+        - path: core/dashboard/data.py
+          kind: modify
+        - path: .fenix/config.yaml
+          kind: reference   # 运行时写入目标，非本仓库交付物
+        ```
+
+    kind 语义见 ``_DECLARED_KINDS``：new/modify → deliverables（硬校验）；
+    reference → references（软校验）。声明段不受 ``_DELIVERABLE_PREFIXES``
+    限制（skills/ 等前缀同样可声明为交付物）。
+
+    Returns:
+        ``{"deliverables": [...], "references": [...]}``；无声明段、无有效围栏块、
+        yaml 解析失败或全部条目非法 → ``None``（守卫回退 ``extract_paths_typed``，
+        向后兼容存量 spec）。
+    """
+    entries = extract_declared_entries(spec_dir)
+    if not entries:
+        return None
+    typed: dict = {"deliverables": [], "references": []}
+    for e in entries:
+        path, kind = e["path"], e["kind"]
         if path in typed["deliverables"] or path in typed["references"]:
             continue
         key = "deliverables" if kind in ("new", "modify") else "references"

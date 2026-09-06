@@ -33,10 +33,10 @@
 
 ## 2. PR2 派发前声明现实处方注入（core/agent_runner/prompt_builder.py）
 
-- [ ] 2.1 数据侧快照构建：SPEC 存在 Deliverables 声明段时干跑 `extract_declared`，对每个 `new`/`modify` 路径做主树存在性检查与 1.1 basename 匹配，产出快照 dict（路径、kind、存在性、候选列表）
-- [ ] 2.2 implementer 提示词注入段：将快照以「声明清单 × 仓库现实」文案注入 implementer 提示词（不修改 agents/implementer.md 模板，注入在 prompt_builder 构建层）；文案约定：判断声明路径系笔误时以实际正确路径实现，并在 `.fenix-run-result.json` findings 登记 `deliverable-dispute`（element/current/suggestion），不得静默改变交付落点
-- [ ] 2.3 干跑异常 fail-open：spec 目录读取失败等异常时静默跳过注入，派发照常
-- [ ] 2.4 回归测试：疑似笔误候选注入文案用例 + 无声明段不注入用例 + 干跑异常不阻塞派发用例
+- [x] 2.1 数据侧快照构建：SPEC 存在 Deliverables 声明段时干跑 `extract_declared`，对每个 `new`/`modify` 路径做主树存在性检查与 1.1 basename 匹配，产出快照 dict（路径、kind、存在性、候选列表）
+- [x] 2.2 implementer 提示词注入段：将快照以「声明清单 × 仓库现实」文案注入 implementer 提示词（不修改 agents/implementer.md 模板，注入在 prompt_builder 构建层）；文案约定：判断声明路径系笔误时以实际正确路径实现，并在 `.fenix-run-result.json` findings 登记 `deliverable-dispute`（element/current/suggestion），不得静默改变交付落点
+- [x] 2.3 干跑异常 fail-open：spec 目录读取失败等异常时静默跳过注入，派发照常
+- [x] 2.4 回归测试：疑似笔误候选注入文案用例 + 无声明段不注入用例 + 干跑异常不阻塞派发用例
 
 ## 3. PR3 judge run 范式（agents/dispute-judge.md + prompt_builder/runner/run_files/admin_monitor）
 

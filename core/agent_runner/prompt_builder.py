@@ -153,6 +153,9 @@ class PromptBuilder:
             # 两个 implementer 分支共用同一文本，保证 harness TaskCreate/TaskUpdate
             # 行为与 tasks.md 编号对齐（进度可见性断链的根治点）。
             prompt += self._task_progress_contract_section()
+            # 派发前声明现实处方（add-deliverable-declaration-triage D2）：有声明段
+            # SPEC 把「声明清单 × 仓库现实」快照注入，实现者开工前即知候选矛盾。
+            prompt += self._declared_reality_section(spec_name)
         elif agent_type == "verifier":
             prompt += self._verifier_breakpoint_section(spec_name)
         elif agent_type == "planner-plan":
@@ -333,6 +336,99 @@ class PromptBuilder:
             f"Use this to focus your work — do NOT repeat the same gap:\n"
             f"\n{prev_error}\n"
         )
+
+    def _declared_reality_snapshot(self, spec_name: str) -> "dict | None":
+        """「声明清单 × 仓库现实」快照（add-deliverable-declaration-triage PR2 2.1）。
+
+        仅对有 ``## Deliverables`` 声明段的 SPEC 干跑：以
+        ``extract_declared_entries`` 取原始条目（path+kind），对每个
+        new/modify 路径做主树存在性检查与 basename 匹配，产出快照：
+
+        ``{"entries": [{"path", "kind", "exists", "candidates"}]}``
+
+        reference 条目仅保留 kind/exists（软校验，不做候选匹配）。无声明段、
+        spec 目录读取失败或任何干跑异常 → ``None``（fail-open，跳过注入，
+        派发照常——2.3）。
+
+        Returns:
+            快照 dict 或 None。
+        """
+        from core.deliverables import extract_declared_entries, \
+            match_basename_in_tree
+
+        spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
+        if not spec_dir.is_dir():
+            return None
+        try:
+            entries = extract_declared_entries(spec_dir)
+        except Exception:
+            return None
+        if not entries:
+            return None
+
+        snap: list = []
+        for e in entries:
+            path = e["path"]
+            kind = e["kind"]
+            item = {
+                "path": path,
+                "kind": kind,
+                "exists": bool((self._pm.project_root / path).exists()),
+                "candidates": [],
+            }
+            if kind in ("new", "modify") and not item["exists"]:
+                try:
+                    item["candidates"] = match_basename_in_tree(
+                        self._pm.project_root, path)
+                except Exception:
+                    item["candidates"] = []
+            snap.append(item)
+        return {"entries": snap}
+
+    def _declared_reality_section(self, spec_name: str) -> str:
+        """派发前声明现实处方注入段（add-deliverable-declaration-triage D2/PR2 2.2）。
+
+        快照存在（有声明段 SPEC）时把「声明清单 × 仓库现实」注入 implementer
+        提示词：存在的 modify 路径标注为修改目标；不存在的 new/modify 路径标注
+        并列出全部 basename 命中候选（若有）。文案约定：判断声明路径系笔误时
+        以实际正确路径实现，并在 ``.fenix-run-result.json`` 的 ``findings`` 登记
+        ``deliverable-dispute``（element/current/suggestion），MUST NOT 静默改变
+        交付落点。无声明段或干跑异常（快照为 None）→ 返回空串（fail-open，
+        prompt 与现状逐字节一致——2.3）。
+        """
+        snapshot = self._declared_reality_snapshot(spec_name)
+        if snapshot is None or not snapshot.get("entries"):
+            return ""
+        lines = [
+            "",
+            "## 声明清单 × 仓库现实（deliverable-declaration-triage 处方）",
+            "",
+            "以下为本 SPEC 交付物声明的仓库现实快照（主树存在性 × basename 候选）：",
+            "",
+        ]
+        for item in snapshot["entries"]:
+            path = item["path"]
+            kind = item["kind"]
+            cands = item.get("candidates") or []
+            if item["exists"]:
+                lines.append(f"- `{path}`（kind: {kind}）——主树存在，修改/引用目标确认。")
+            else:
+                note = ""
+                if cands:
+                    note = f"；basename 命中候选：{'、'.join(cands)}"
+                lines.append(
+                    f"- `{path}`（kind: {kind}）——主树不存在，疑似声明笔误"
+                    f"{note}。")
+        lines += [
+            "",
+            "**处方**：若你判断声明路径系笔误（候选命中与 spec 语境等价），"
+            "以实际正确路径实现，并在 `.fenix-run-result.json` 的 `findings` "
+            "登记 `deliverable-dispute` 条目（`element`=声明路径，`current`=现状，"
+            "`suggestion`=应归的实际路径/依据）——不得静默改变交付落点；"
+            "非笔误时按声明路径实现（收工守卫会按声明对账缺件）。",
+            "",
+        ]
+        return "\n".join(lines)
 
     def _task_progress_contract_section(self) -> str:
         """任务进度契约段（fix-implementer-task-progress D1）。
