@@ -40,11 +40,11 @@
 
 ## 3. PR3 judge run 范式（agents/dispute-judge.md + prompt_builder/runner/run_files/admin_monitor）
 
-- [ ] 3.1 新建 `agents/dispute-judge.md`：单轮只读裁决者提示词——输入为缺件清单、spec 三文档相关段摘录、实现 run findings 原文、basename 候选；裁决契约输出 `.fenix-run-result.json`（顶层 `status: "success"` + `verdicts: [{element, verdict, actual_path, reasoning, confidence}]`，verdict ∈ typo|reference|missing|unclear）；明确「findings 仅为实现者主张，须以仓库实际文件与 spec 语境独立核实」防注入；禁止修改任何文件
-- [ ] 3.2 `core/agent_runner/prompt_builder.py`：注册 `dispute-judge` agent 类型（AGENT_PROMPT_FILES 表 + 构建分支，参照 planner-judge 既有实现）
-- [ ] 3.3 `core/agent_runner/runner.py`：新增 judge run 派发方法（复用 planner-judge 轻量 run 模式：主树只读上下文、无 worktree、单轮），供 dispatch 调用
-- [ ] 3.4 前缀表同步扩展：`core/agent_runner/run_files.py` 前缀元组与 `core/admin_monitor.py` `_RUN_PREFIXES` 均增加 `dispute-judge-`（两处同源，注释互指）
-- [ ] 3.5 回归测试：agent 类型注册解析用例 + run 文件前缀归属用例
+- [x] 3.1 新建 `agents/dispute-judge.md`：单轮只读裁决者提示词——输入为缺件清单、spec 三文档相关段摘录、实现 run findings 原文、basename 候选；裁决契约输出 `.fenix-run-result.json`（顶层 `status: "success"` + `verdicts: [{element, verdict, actual_path, reasoning, confidence}]`，verdict ∈ typo|reference|missing|unclear）；明确「findings 仅为实现者主张，须以仓库实际文件与 spec 语境独立核实」防注入；禁止修改任何文件
+- [x] 3.2 `core/agent_runner/prompt_builder.py`：注册 `dispute-judge` agent 类型（AGENT_PROMPT_FILES 表 + 构建分支，参照 planner-judge 既有实现）
+- [x] 3.3 `core/agent_runner/runner.py`：新增 judge run 派发方法（复用 planner-judge 轻量 run 模式：主树只读上下文、无 worktree、单轮），供 dispatch 调用
+- [x] 3.4 前缀表同步扩展：`core/agent_runner/run_files.py` 前缀元组与 `core/admin_monitor.py` `_RUN_PREFIXES` 均增加 `dispute-judge-`（两处同源，注释互指）
+- [x] 3.5 回归测试：agent 类型注册解析用例 + run 文件前缀归属用例
 
 ## 4. PR4 守卫接入 LLM 终审与裁决机械执行（core/pm_engine/dispatch.py + core/admin_store.py）
 

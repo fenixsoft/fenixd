@@ -18,8 +18,9 @@ from pathlib import Path
 FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
 AGENT_PROMPT_DIR = FRAMEWORK_ROOT / "agents"
 
-# 七类 agent → 提示词文件名（agent-type 白名单的单一来源，Dashboard 端点复用）
+# 八类 agent → 提示词文件名（agent-type 白名单的单一来源，Dashboard 端点复用）
 # add-daily-self-review：新增 self-review（每日自省）类型。
+# add-deliverable-declaration-triage：新增 dispute-judge（交付物缺件 LLM 终审）类型。
 AGENT_PROMPT_FILES = {
     "implementer": "implementer.md",
     "verifier": "verifier.md",
@@ -28,6 +29,7 @@ AGENT_PROMPT_FILES = {
     "fast-track": "fast-track.md",
     "administrator": "administrator.md",
     "self-review": "self-review.md",
+    "dispute-judge": "dispute-judge.md",
 }
 
 
@@ -100,6 +102,13 @@ class PromptBuilder:
                 root / ".fenix" / "verify-progress" / f"{spec_name}.json")
         elif agent_type == "fast-track":
             values["{progress_path}"] = str(vp_dir / f"{spec_name}.json")
+        elif agent_type == "dispute-judge":
+            # 交付物缺件 LLM 终审（add-deliverable-declaration-triage D3）：
+            # 输入（缺件清单 + spec 语境 + findings + basename 候选）由 dispatch
+            # 层落盘，结果契约由 judge 写回（与 planner 结果文件并置、独立命名）。
+            values["{dispute_input_path}"] = str(vp_dir / "dispute_judge_input.json")
+            values["{dispute_result_path}"] = str(
+                vp_dir / "dispute_judge_result.json")
         values.update({
             "{sig_type}": sig.get("signal_type") or "unknown",
             "{sig_spec}": sig.get("spec") or spec_name,

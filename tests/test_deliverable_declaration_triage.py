@@ -347,5 +347,83 @@ class TestExtractDeclaredEntries(unittest.TestCase):
         self.assertIsNone(extract_declared_entries(self.spec_dir))
 
 
+# ── PR3 judge run 范式：agent 注册 + 前缀归属 ───────────────────────────────
+
+class TestDisputeJudgeRegistration(unittest.TestCase):
+    """dispute-judge agent 类型注册解析（3.2）：白名单 + 提示词加载 + 占位符。"""
+
+    def setUp(self):
+        from test_agent_runner import make_runner
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.proot = self.tmpdir / "proj"
+        (self.proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.runner = make_runner(self.proot)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def write_spec(self, name="demo"):
+        spec_dir = self.proot / "spec" / "changes" / name
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "tasks.md").write_text(
+            "# Tasks\n\n- [ ] 1.1 do it\n", encoding="utf-8")
+
+    def test_agent_type_registered_in_whitelist(self):
+        from core.agent_runner.prompt_builder import AGENT_PROMPT_FILES
+        self.assertEqual(AGENT_PROMPT_FILES["dispute-judge"], "dispute-judge.md")
+
+    def test_prompt_build_fills_judge_placeholders(self):
+        """dispute-judge 提示词可构建：dispute_input/result 占位符替换为路径。"""
+        self.write_spec()
+        prompt = self.runner._prompt_builder._build_prompt("demo", "dispute-judge")
+        vp = self.proot / ".fenix" / "verify-progress" / "demo"
+        self.assertIn(str(vp / "dispute_judge_input.json"), prompt)
+        self.assertIn(str(vp / "dispute_judge_result.json"), prompt)
+        self.assertNotIn("{dispute_input_path}", prompt)
+        self.assertNotIn("{dispute_result_path}", prompt)
+
+    def test_template_contract_present(self):
+        """模板含裁决契约：四取一 verdict + verdicts 数组 + 防注入声明。"""
+        from core.agent_runner.prompt_builder import (
+            AGENT_PROMPT_DIR, AGENT_PROMPT_FILES)
+        template = (AGENT_PROMPT_DIR / AGENT_PROMPT_FILES["dispute-judge"]).read_text(
+            encoding="utf-8")
+        for marker in ("typo | reference | missing | unclear", "verdicts",
+                       "仅为实现 run 的", "禁止修改任何文件",
+                       "{dispute_input_path}", "{dispute_result_path}"):
+            self.assertIn(marker, template)
+
+
+class TestDisputeJudgeRunPrefixOwnership(unittest.TestCase):
+    """run 文件前缀归属（3.4）：run_spec_part 与 admin_monitor 两处同源。"""
+
+    def test_run_spec_part_strips_dispute_judge_prefix(self):
+        from core.agent_runner.run_files import run_spec_part
+        ts = 1788657853
+        self.assertEqual(run_spec_part(f"dispute-judge-myspec-{ts}"), "myspec")
+        self.assertEqual(run_spec_part(f"dispute-judge-myspec-{ts}-a1"), "myspec")
+        self.assertEqual(run_spec_part(f"dispute-judge-myspec"), "myspec")
+
+    def test_admin_monitor_prefix_includes_dispute_judge(self):
+        from core.admin_monitor import AdminMonitor, _RUN_PREFIXES
+        self.assertIn("dispute-judge-", _RUN_PREFIXES)
+        # 同源还原：dispute-judge run_id → spec 名（跨层 import dashboard 前的哨）
+        ts = 1788657853
+        self.assertEqual(
+            AdminMonitor._spec_from_run_id(f"dispute-judge-myspec-{ts}"), "myspec")
+
+    def test_prefixes_same_source_sync(self):
+        """两处前缀表同源互指：新前缀不能只加一方。"""
+        from core.admin_monitor import _RUN_PREFIXES
+        from core.agent_runner.run_files import run_spec_part
+        ts = 1788657853
+        for prefix in _RUN_PREFIXES:
+            if not prefix.endswith("-"):
+                continue
+            sample = f"{prefix}myspec-{ts}"
+            self.assertEqual(run_spec_part(sample), "myspec",
+                             f"前缀 {prefix} 未同步到 run_files.run_spec_part")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
