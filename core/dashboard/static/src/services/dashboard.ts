@@ -609,6 +609,20 @@ export interface SelfReviewConfig {
   read_todo?: boolean;
 }
 
+// add-settings-system-tab：系统页签受管 admin.* 键（read_config 白名单 5 键）
+export interface AdminConfig {
+  /** 自动自愈总开关（缺省 true） */
+  enabled?: boolean;
+  /** 自愈监视器巡检周期（分钟，缺省 5） */
+  interval_minutes?: number;
+  /** 同 spec 同类困境信号的唤起冷却（分钟，缺省 15） */
+  escalation_cooldown_minutes?: number;
+  /** merge 熔断阈值（复用 agents.merge_breaker_threshold，缺省 2） */
+  merge_breaker_threshold?: number;
+  /** 计划性重启排水窗口（秒，0=快速停机，缺省 1800） */
+  shutdown_drain_seconds?: number;
+}
+
 export interface ConfigData {
   llm: LlmConfig;
   agents: AgentsConfig;
@@ -619,6 +633,8 @@ export interface ConfigData {
   archive?: { auto_threshold: number };
   /** add-daily-self-review：每日自省（admin.self_review 三键） */
   self_review?: SelfReviewConfig;
+  /** add-settings-system-tab：系统配置（admin.* 受管键） */
+  admin?: AdminConfig;
   scope: 'user' | 'project';
   raw_exists: boolean;
   sources: Record<string, string>;

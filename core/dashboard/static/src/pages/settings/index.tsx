@@ -14,6 +14,7 @@ import VerifyPanel from './components/VerifyPanel';
 import ProjectProfilePanel from './components/ProjectProfilePanel';
 import PromptsPanel from './components/PromptsPanel';
 import SelfReviewPanel from './components/SelfReviewPanel';
+import SystemPanel from './components/SystemPanel';
 
 const { Text } = Typography;
 
@@ -27,6 +28,7 @@ const BASE_MENU_ITEMS = [
   { key: 'misc', label: '归档' },
   { key: 'verify', label: '验证' },
   { key: 'self-review', label: '自省' },
+  { key: 'system', label: '系统' },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -207,6 +209,9 @@ export default function SettingsPage() {
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}
                   />
+                )}
+                {activeKey === 'system' && (
+                  <SystemPanel config={config} onSave={handleSave} />
                 )}
                 {activeKey === 'project-profile' && (
                   <ProjectProfilePanel config={config} onSave={handleSave} project={project} />
