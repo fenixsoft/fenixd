@@ -87,6 +87,13 @@ class PMEngine:
         # 防止启动扫描与事件回放对同一 spec 的重复派发
         self._pending_dispatches: set = set()
 
+        # done→pushed 全链单飞锁（fix-daemon-lifecycle-races D5）：approve_push
+        # 的全临界区（status 重读 → git push → transition(pushed)）持本锁执行，
+        # check-then-act 原子化。并发第二流在锁上排队，进入后见 pushed 即幂等
+        # 跳过——消除双 git push main / 重复 project log / pushed→pushed ERROR。
+        # 全局锁而非 per-spec 锁：不同 spec 并发 push main 的竞态同样需要串行。
+        self._push_lock = threading.Lock()
+
         # 恢复闭环复查注册表随 RecoveryWatch 组件同迁（design D3 规则 1）；
         # 此处触发加载（.fenix/recovery_watch.json → 组件内存态）。
         self._recovery._load_recovery_watch()
@@ -329,6 +336,10 @@ class PMEngine:
                 return
 
             self.logger.info("pm_engine", f"Verification passed: '{spec_name}' → done")
+            # fix-daemon-lifecycle-races D4：transition() 对 old==new 幂等返回 True，
+            # 事件回放（done→done）时此处仍会进入——total_duration 重算为同值覆盖无害，
+            # _evict_spec_serving 幂等，project log 由 _on_spec_done 防重入（_guard:done）
+            # 去重。无需额外前置判断。
             if self.state_machine.transition(spec_name, "done"):
                 # verify-process-lifecycle D6（spec 终局驱逐）：done 落定后同步
                 # 回收该 spec 的被测实例——stop 登记服务 + 驱逐缓存 + 移除 serving
@@ -419,24 +430,39 @@ class PMEngine:
         """SPEC is done — log, re-verify parent if this was a fix SPEC.
 
         若 gates.approve_mode == "auto"，自动执行 git push 并推进到 pushed。
+        防重入（fix-daemon-lifecycle-races D5）：verify 成功后的同步直调
+        （_on_spec_verified → 本方法）与 event_bus spec_done 事件双路径并发进入，
+        用 _guard:done 键去重——同一 spec 的 done 处理只执行一次，重复 project
+        log（✅ SPEC completed）不再产生；push 幂等由 approve_push 实例锁兜底。
         """
-        spec = self.state_machine.read_one(spec_name) or {}
-        status = spec.get("status", "")
+        event_key = ("_guard:done", spec_name)
+        if event_key in self._handling_events:
+            self.logger.debug(
+                "pm_engine",
+                f"Skipping duplicate spec_done for '{spec_name}'",
+            )
+            return
+        self._handling_events.add(event_key)
+        try:
+            spec = self.state_machine.read_one(spec_name) or {}
+            status = spec.get("status", "")
 
-        self.logger.info(
-            "pm_engine",
-            f"SPEC '{spec_name}' is done — awaiting push approval",
-        )
+            self.logger.info(
+                "pm_engine",
+                f"SPEC '{spec_name}' is done — awaiting push approval",
+            )
 
-        self._append_project_log(
-            f"✅ SPEC completed: **{spec_name}** — awaiting push approval"
-        )
+            self._append_project_log(
+                f"✅ SPEC completed: **{spec_name}** — awaiting push approval"
+            )
 
-        # 自动审批：approve_mode=auto 且状态为 done 时触发
-        # （若已 pushed 则 _auto_approve 内部幂等跳过，不重复推送）
-        approve_mode = self._get_approve_mode()
-        if approve_mode == "auto" and status == "done":
-            self._auto_approve(spec_name)
+            # 自动审批：approve_mode=auto 且状态为 done 时触发
+            # （若已 pushed 则 _auto_approve 内部幂等跳过，不重复推送）
+            approve_mode = self._get_approve_mode()
+            if approve_mode == "auto" and status == "done":
+                self._auto_approve(spec_name)
+        finally:
+            self._handling_events.discard(event_key)
 
         # ── legacy：存量 fix-* SPEC 完成 → 父 SPEC 自动重验（D4 过渡期兼容）──
         # 仅对 fix-* 链条生效；新裁决不再产生 fix-* 派生，待存量链收敛后自然耗尽。
@@ -975,61 +1001,85 @@ class PMEngine:
           2. feature 分支尽力推送 — 本地存在时推送，失败不影响 pushed 判定
         退避（design D3）：连续失败按指数退避延迟重试；超限发 push_failed 信号并停止。
         成功（含去重判定）→ 清 error、推 pushed。
-        """
-        spec = self.state_machine.read_one(spec_name)
-        if not spec or spec.get("status") != "done":
-            self.logger.warning(
-                "pm_engine", f"Cannot push '{spec_name}': not in done state"
-            )
-            return False
 
-        # ── D3: 退避期内跳过 ──
-        if self._is_push_backoffed(spec):
+        单飞（fix-daemon-lifecycle-races D5）：全临界区在实例级 ``_push_lock`` 内
+        执行——重读 spec status → git push → transition(pushed) 原子化。verify
+        成功后的同步直调（_on_spec_verified）与 event_bus spec_done 事件双路径
+        并发进入时，第二流在锁上排队，进入后见 pushed 即幂等跳过（返回 True），
+        不再双 push / 重复 project log / 触发 pushed→pushed ERROR。
+        """
+        # 全临界区持锁（check-then-act 原子化）。锁内不调用任何会再次获取
+        # _push_lock 的路径（approve_push 自身不可重入调用），锁范围最小化。
+        with self._push_lock:
+            spec = self.state_machine.read_one(spec_name)
+            if not spec:
+                self.logger.warning(
+                    "pm_engine", f"Cannot push '{spec_name}': SPEC not found"
+                )
+                return False
+            status = spec.get("status", "")
+            if status == "pushed":
+                # 幂等跳过：已 pushed（并发/回放先到），不重复 push 与 project log
+                self.logger.info(
+                    "pm_engine",
+                    f"Push idempotent skip: '{spec_name}' already pushed "
+                    f"(concurrent path or replay)",
+                )
+                return True
+            if status != "done":
+                self.logger.warning(
+                    "pm_engine", f"Cannot push '{spec_name}': not in done state "
+                                 f"(is '{status}')"
+                )
+                return False
+
+            # ── D3: 退避期内跳过 ──
+            if self._is_push_backoffed(spec):
+                self.logger.info(
+                    "pm_engine",
+                    f"Push backoff active for '{spec_name}' — skipping (recovery replay)",
+                )
+                return False
+
+            # ── D1: main 推送（成功判据） ──
+            self.logger.info(
+                "pm_engine", f"Pushing main for '{spec_name}' (main-first)"
+            )
+            main_ok, main_err = self._git_push_ref("main")
+
+            if not main_ok:
+                self._handle_push_failure(spec_name, spec, main_err, "main")
+                return False
+
+            self.logger.info("pm_engine", f"Main push succeeded for '{spec_name}'")
+
+            # ── D1: 分支尽力推送（best-effort，失败不阻断 pushed） ──
+            branch = self._resolve_push_branch(spec_name, spec)
+            self._push_branch_best_effort(spec_name, branch)
+
+            # ── 归档收口（archive-auto-commit）：代码 push 之后追加归档提交 ──
+            # main 与分支推送成功后在流程尾部一次性收口当天全部归档移动
+            # 残留（独立 commit + push）。失败仅 WARNING 不阻塞 spec 终态，残留留给
+            # 下次 push 重试。零残留零动作。
+            try:
+                self._archive_auto_commit()
+            except Exception as e:
+                self.logger.warning(
+                    "pm_engine",
+                    f"归档收口执行异常（残留留给下次 push 重试，不阻塞 pushed）: {e}",
+                )
+
+            # ── 推送成功 → 推进 pushed，清 error + 退避标记 ──
+            self.state_machine.transition(spec_name, "pushed")
+            self.state_machine.update_spec(spec_name, {"error": None})
+            self._append_project_log(
+                f"🚀 SPEC pushed: **{spec_name}** (main pushed, branch: {branch})"
+            )
             self.logger.info(
                 "pm_engine",
-                f"Push backoff active for '{spec_name}' — skipping (recovery replay)",
+                f"SPEC pushed: {spec_name} (main ok, branch={branch})",
             )
-            return False
-
-        # ── D1: main 推送（成功判据） ──
-        self.logger.info(
-            "pm_engine", f"Pushing main for '{spec_name}' (main-first)"
-        )
-        main_ok, main_err = self._git_push_ref("main")
-
-        if not main_ok:
-            self._handle_push_failure(spec_name, spec, main_err, "main")
-            return False
-
-        self.logger.info("pm_engine", f"Main push succeeded for '{spec_name}'")
-
-        # ── D1: 分支尽力推送（best-effort，失败不阻断 pushed） ──
-        branch = self._resolve_push_branch(spec_name, spec)
-        self._push_branch_best_effort(spec_name, branch)
-
-        # ── 归档收口（archive-auto-commit）：代码 push 之后追加归档提交 ──
-        # main 与分支推送成功后在流程尾部一次性收口当天全部归档移动
-        # 残留（独立 commit + push）。失败仅 WARNING 不阻塞 spec 终态，残留留给
-        # 下次 push 重试。零残留零动作。
-        try:
-            self._archive_auto_commit()
-        except Exception as e:
-            self.logger.warning(
-                "pm_engine",
-                f"归档收口执行异常（残留留给下次 push 重试，不阻塞 pushed）: {e}",
-            )
-
-        # ── 推送成功 → 推进 pushed，清 error + 退避标记 ──
-        self.state_machine.transition(spec_name, "pushed")
-        self.state_machine.update_spec(spec_name, {"error": None})
-        self._append_project_log(
-            f"🚀 SPEC pushed: **{spec_name}** (main pushed, branch: {branch})"
-        )
-        self.logger.info(
-            "pm_engine",
-            f"SPEC pushed: {spec_name} (main ok, branch={branch})",
-        )
-        return True
+            return True
 
     # ── 归档自动提交（archive-auto-commit）──────────────────────────
 

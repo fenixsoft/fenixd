@@ -796,6 +796,19 @@ class VerificationPipeline:
 
     def _run_three_stage_verification(self, spec_name: str):
         """三步验证流水线主逻辑。"""
+        # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）：入口状态
+        # 非 testing → DEBUG 丢弃本流水线结果（注明当前状态），不执行任何迁移/
+        # 回退/派发。覆盖 stale-result 防护拨回 implemented、并发双路径中先到者
+        # 已推进、以及一切状态漂移变体。正常路径（dispatch 刚置 testing）不受影响。
+        _entry_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status", "")
+        if _entry_status != "testing":
+            self._pm.logger.debug(
+                "pm_engine",
+                f"Verify result discarded for '{spec_name}': spec is "
+                f"'{_entry_status}', not testing at pipeline entry — dropped",
+            )
+            return
+
         import asyncio
         import importlib
         import sys
@@ -1176,6 +1189,21 @@ class VerificationPipeline:
                 return
             raise RuntimeError(f"Planner judge 失败: {judge_result.error}")
 
+        # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
+        # judge run 完成时刻再次核对 spec 状态：在飞旧 verify run 完成时若 spec
+        # 已被重置（stale-result 防护拨回 implemented / 并发新 attempt 已接管），
+        # 结果按 DEBUG 静默丢弃——不走失败迁移、不触发 fallback 重派整轮 verifier
+        # （02:13 事故：implemented→verified 被拒后回退转 testing 重派）。
+        _apply_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status", "")
+        if _apply_status != "testing":
+            self._pm.logger.debug(
+                "pm_engine",
+                f"Stale/foreign verify result discarded for '{spec_name}' "
+                f"(run {judge_result.run_id}, current state '{_apply_status}', "
+                f"result verified) — spec no longer in testing, result dropped",
+            )
+            return
+
         # ── 阶段3+ 裁决证据分类校验与重试（add-verdict-evidence-taxonomy D1-D5）──
         # judge 已在 report.json 增强每个非 PASS 场景的 classification/evidence。
         # 此处确定性校验：不合规 → 走既有 judge 重试一次（同 run_planner 调用）；
@@ -1227,6 +1255,18 @@ class VerificationPipeline:
 
         # 读取判定结果
         verifier_status = self._pm._read_planner_result(spec_name)
+        # ── 结果状态判据（fix-daemon-lifecycle-races D6，结果应用处最终核对）──
+        # 前道守卫之后的取证校验/重试窗口内 spec 亦可能漂移，此处兜底：非 testing
+        # → DEBUG 丢弃，不迁移/不派生/不重派。
+        _apply_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status", "")
+        if _apply_status != "testing":
+            self._pm.logger.debug(
+                "pm_engine",
+                f"Stale/foreign verify result discarded for '{spec_name}' "
+                f"(current state '{_apply_status}', result {verifier_status}) — "
+                f"spec no longer in testing, result dropped",
+            )
+            return
         if verifier_status == "bug-found":
             # judge 自述环境问题守卫：judge 自己把根因描述为环境/基础设施问题时，
             # 属「验证没能发生」而非「验证发现了缺陷」，不得流转 bug-found
@@ -1313,6 +1353,10 @@ class VerificationPipeline:
                 # 的唯一归零点——跨修复周期累计的失败计数在此清零并持久化，
                 # 打回重派/修复收工等中间转换不再归零（见 _do_spec_bug_found）。
                 "_verify_fail_rounds": 0,
+                # fix-daemon-lifecycle-races D3：验证自然通过（verified 落定）是
+                # _verify_redo_count（重启恢复重验计数）的清零点，与
+                # _verify_fail_rounds 清零点对齐；人工 unfreeze_spec 亦清零。
+                "_verify_redo_count": 0,
                 "_env_block_rounds": 0,
             })
             # 本轮场景集变更小节追加到验证报告（spec 需求 2.3）
@@ -1590,6 +1634,17 @@ class VerificationPipeline:
 
     def _run_legacy_verification(self, spec_name: str):
         """降级方案：使用旧版单体 Verifier Agent。"""
+        # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）：入口状态
+        # 非 testing → DEBUG 丢弃（注明当前状态），不执行任何迁移/回退/重派。
+        _entry_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status", "")
+        if _entry_status != "testing":
+            self._pm.logger.debug(
+                "pm_engine",
+                f"Verify result discarded for '{spec_name}': spec is "
+                f"'{_entry_status}', not testing at legacy pipeline entry — dropped",
+            )
+            return
+
         result = self._pm.agent_runner.run_verifier(spec_name)
 
         # ── provider 熔断拦截（fix-fix-stashpop-deadlock：provider-fault-fuse） ──
@@ -1670,38 +1725,20 @@ class VerificationPipeline:
                 # 0 通过或 env 失败不得放行，升级 admin 处置
                 if not self._pm._env_whitewash_gate(spec_name):
                     return
-                # Verifier final state reconciliation (fix-startup-double-dispatch):
-                # If spec state is not "testing" due to race conditions, reconcile
-                current_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status", "")
-                if current_status != "testing":
-                    # State changed by race condition - reconcile
-                    if current_status == "implemented":
-                        # Verification passed and implementation merged - replay legal path
-                        self._pm.logger.info(
-                            "pm_engine",
-                            f"Reconciling '{spec_name}': verification found bugs, "
-                            f"but spec is in '{current_status}' - replaying to bug-found",
-                        )
-                        # Replay: implemented → testing → bug-found
-                        if self._pm.state_machine.is_valid_transition(current_status, "testing"):
-                            self._pm.state_machine.transition(spec_name, "testing")
-                            self._pm.state_machine.transition(spec_name, "bug-found")
-                        else:
-                            # Cannot transition - block with evidence
-                            self._pm.state_machine.update_spec(spec_name, {
-                                "status": "blocked",
-                                "error": f"Verification found bugs but cannot reconcile state "
-                                         f"from '{current_status}': {result.error}",
-                            })
-                            return
-                    else:
-                        # Other state - block with evidence
-                        self._pm.state_machine.update_spec(spec_name, {
-                            "status": "blocked",
-                            "error": f"Verification found bugs but spec is in unexpected state "
-                                     f"'{current_status}': {result.error}",
-                        })
-                        return
+                # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
+                # 结果应用前 spec 已非 testing（stale-result 防护拨回 implemented /
+                # 并发新 attempt 已接管 / 其它状态漂移）→ DEBUG 丢弃，不走失败迁移
+                # 与 fallback 重派（拆除旧 reconcile：implemented→testing→bug-found
+                # 回放 + 重复派发整轮 verifier）。正常路径 spec 恒为 testing。
+                _cur = (self._pm.state_machine.read_one(spec_name) or {}).get("status", "")
+                if _cur != "testing":
+                    self._pm.logger.debug(
+                        "pm_engine",
+                        f"Stale/foreign verify result discarded for '{spec_name}' "
+                        f"(run {result.run_id}, current state '{_cur}', result "
+                        f"bug-found) — spec no longer in testing, result dropped",
+                    )
+                    return
 
                 self._pm.state_machine.transition(spec_name, "bug-found")
                 self._pm.state_machine.update_spec(spec_name, {
@@ -1757,38 +1794,20 @@ class VerificationPipeline:
                 # 0 通过或 env 失败不得放行，升级 admin 处置
                 if not self._pm._env_whitewash_gate(spec_name):
                     return
-                # Verifier final state reconciliation (fix-startup-double-dispatch):
-                # If spec state is not "testing" due to race conditions, reconcile
-                current_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status", "")
-                if current_status != "testing":
-                    # State changed by race condition - reconcile
-                    if current_status == "implemented" and verifier_status != "bug-found":
-                        # Verification passed and implementation merged - replay legal path
-                        self._pm.logger.info(
-                            "pm_engine",
-                            f"Reconciling '{spec_name}': verification passed, "
-                            f"but spec is in '{current_status}' - replaying to verified",
-                        )
-                        # Replay: implemented → testing → verified
-                        if self._pm.state_machine.is_valid_transition(current_status, "testing"):
-                            self._pm.state_machine.transition(spec_name, "testing")
-                            self._pm.state_machine.transition(spec_name, "verified")
-                        else:
-                            # Cannot transition - block with evidence
-                            self._pm.state_machine.update_spec(spec_name, {
-                                "status": "blocked",
-                                "error": f"Verification passed but cannot reconcile state "
-                                         f"from '{current_status}'",
-                            })
-                            return
-                    else:
-                        # Other state or verification failed - block with evidence
-                        self._pm.state_machine.update_spec(spec_name, {
-                            "status": "blocked",
-                            "error": f"Verification result mismatch: spec is in '{current_status}' "
-                                     f"but verifier reported '{verifier_status}'",
-                        })
-                        return
+                # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
+                # 结果应用前 spec 已非 testing → DEBUG 丢弃，不走迁移与 fallback
+                # 重派（拆除旧 reconcile：implemented→testing→verified 回放 +
+                # 重派整轮 verifier）。02:13 事故即此路径：拨回 implemented 后在飞
+                # 旧 judge 完成，结果被丢弃而非回退重派。
+                _cur = (self._pm.state_machine.read_one(spec_name) or {}).get("status", "")
+                if _cur != "testing":
+                    self._pm.logger.debug(
+                        "pm_engine",
+                        f"Stale/foreign verify result discarded for '{spec_name}' "
+                        f"(run {result.run_id}, current state '{_cur}', result "
+                        f"verified) — spec no longer in testing, result dropped",
+                    )
+                    return
 
                 self._pm.state_machine.transition(spec_name, "verified")
                 self._pm.state_machine.update_spec(spec_name, {
@@ -1797,6 +1816,8 @@ class VerificationPipeline:
                     "_inconclusive_attempts": 0,
                     # add-fail-counter-budget D1：PASS 唯一归零点（legacy 路径同语义）。
                     "_verify_fail_rounds": 0,
+                    # fix-daemon-lifecycle-races D3：验证自然通过清零点（legacy 同语义）。
+                    "_verify_redo_count": 0,
                     "_env_block_rounds": 0,
                 })
                 self._pm._on_spec_verified(spec_name)
