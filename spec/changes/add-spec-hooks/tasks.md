@@ -51,8 +51,8 @@
 
 ## 4. Dashboard API（core/dashboard/server.py）
 
-- [ ] 4.1 `GET /api/hooks/audit?spec=<name>&limit=20`：读 `.fenix/hook_audit.jsonl` 尾部，按 spec 过滤、时间倒序、limit 截断；文件不存在返回空列表
-- [ ] 4.2 `POST /api/config` hooks 段校验并入现有受管配置通道：events 非空且合法、action 合法、webhook 必填 url、shell 必填 command，违规 400 且不写入
+- [x] 4.1 `GET /api/hooks/audit?spec=<name>&limit=20`：读 `.fenix/hook_audit.jsonl` 尾部，按 spec 过滤、时间倒序、limit 截断；文件不存在返回空列表
+- [x] 4.2 `POST /api/config` hooks 段校验并入现有受管配置通道：events 非空且合法、action 合法、webhook 必填 url、shell 必填 command，违规 400 且不写入
 
 ## 5. 前端（v3）
 

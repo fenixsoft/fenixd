@@ -326,6 +326,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(self._api_admin_activities(query))
         elif path == "/api/config":
             self._json(self._api_config_get(query))
+        elif path == "/api/hooks/audit":
+            self._json(self._api_hooks_audit(query))
         elif path == "/api/prompts":
             self._json(self._api_prompts_get(query))
         elif path == "/api/todo":
@@ -856,6 +858,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         config = dashboard_data.read_effective_config(project["path"])
         config["project"] = project["name"]
         return config
+
+    def _api_hooks_audit(self, query) -> dict:
+        """GET /api/hooks/audit?project=<name>&spec=<name>&limit=20 — hook 审计记录查询。
+
+        - 项目缺失/不存在 → 空列表（用户级作用域无 hook 审计文件）
+        - spec 可选过滤（事件按 spec 记审计）；limit 默认 20，夹取 [1, 200]
+        - 读取 .fenix/hook_audit.jsonl 尾部，时间倒序（read_hook_audit 纯函数）
+        """
+        from core.hook_engine import read_hook_audit
+        project = self._project_from_query(query)
+        if project is None or not project.get("exists"):
+            return {"project": None, "audit": []}
+        spec = query.get("spec", [None])[0]
+        try:
+            limit = max(1, min(200, int(query.get("limit", ["20"])[0])))
+        except (TypeError, ValueError):
+            limit = 20
+        records = read_hook_audit(
+            Path(project["path"]), spec=(spec or None), limit=limit
+        )
+        return {"project": project["name"], "audit": records}
 
     # ── agent 提示词（add-agent-prompt-files 任务 3.1）────────────────
 
