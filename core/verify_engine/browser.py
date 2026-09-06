@@ -701,8 +701,18 @@ class BrowserManager:
     async def _wait_stable(self, page):
         """等待页面布局稳定。
 
+        0. 等待首帧真实渲染（body 出现非空文本）
         1. 等待布局偏移分数（CLS）稳定
         （networkidle 等待已移除，见下）
+
+        admin 修 2026-09-06（add-spec-hooks 第 1 轮 4 个 web 场景白屏 env
+        阻塞）：CSR SPA 冷启动时 domcontentloaded 后 body 仍空白（JS 包
+        尚未执行完），而空白页没有任何布局偏移 → CLS 恒「稳定」，本方法
+        立即返回，白屏原样穿透到断言窗口（元素不存在＝伪失败；重载机器
+        上冷浏览器首帧渲染实测超出 500ms+5s 断言窗口，judge 复现实证）。
+        先等 body 出现非空文本再进入 CLS 判定：已渲染页面立即通过（零
+        附加延迟，不影响既有场景断言时点），空白页最多等 8s（渲染失败/
+        纯画布等极端形态退化为原行为，不放大失败）。
 
         admin 修 2026-08-29（fix-fix-stashpop 族谱爆炸根因之一）：dashboard
         页面常驻 SSE 连接（/api/stream；mock 场景中被 _hold_sse 永久挂起，
@@ -714,6 +724,15 @@ class BrowserManager:
            → bug-found → 派生 fix 子 SPEC 空转完整周期（族谱爆炸推手）。
         稳定性判定改为完全依赖 CLS 稳定 + 场景显式 wait 步骤。
         """
+        # 首帧真实渲染：等待 body 出现非空文本（空白页 CLS 恒稳定，见 docstring）
+        try:
+            await page.wait_for_function(
+                "() => (document.body && document.body.innerText || '').trim().length > 0",
+                timeout=8000,
+            )
+        except Exception:
+            pass  # 渲染失败/纯画布等形态：退化为原 CLS 等待，不在此处判失败
+
         # CLS 稳定
 
         # CLS 稳定

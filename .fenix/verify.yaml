@@ -59,6 +59,11 @@ serve:
   cmd: python3 bin/fenix_dashboard.py --serve --port {port}
 
 ready:
-  url: /
+  # admin 修 2026-09-06（add-spec-hooks 第 1 轮 4 个 web 场景白屏 env 阻塞）：
+  # 就绪探针禁用 / —— SPA fallback 对任意路径（含 /）在 HTTP 服务一监听时就
+  # 回 200，探针同秒通过而应用后端初始化/前端产物可用性未发生（日志实证：
+  # 探针通过与 16 场景开跑同一秒），冷实例被打进断言窗口＝白屏伪失败。
+  # 改探真实 API 端点（等价 dashboard 探活双重校验的 API 半边）。
+  url: /api/projects
   expect: 200
   timeout: 120
