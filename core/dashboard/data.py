@@ -2452,6 +2452,77 @@ def _split_llm_marker(llm: str) -> tuple:
     return llm, ""
 
 
+def _admin_events_for_spec(project_root, spec_name: str) -> list:
+    """过滤当前 SPEC 关联的 admin 运维事件，输出 kind="admin" 时间轴节点。
+
+    数据源复用 AdminStore.read_all()（既有带锁、容错读，缺失/损坏返回 []）：
+    - 过滤：kind in {escalation, disposition} 且 spec 精确匹配目标 SPEC；
+      缺 spec 字段（历史脏数据）跳过，不误挂到当前 SPEC。
+    - 归并：同 admin_run_id 的 disposition 组内存在非 pending 最终处置时
+      （result/status 非 pending），仅保留最新最终处置，避免时间轴出现
+      「永久处置中」；无最终处置保留 pending；无 admin_run_id 的记录独立成节点
+      （与运维记录页 best_by_run 归并语义一致，不引入置顶/_pin 页面概念）。
+    - 输出节点字段：time=created、kind="admin"、record_kind、signal_type、
+      severity、description；状态字段 escalation 取 handled、disposition 取 result。
+    - 读取异常 fail-open 返回空列表，时间轴照常渲染 state/run 两类节点。
+    """
+    from core.admin_store import AdminStore, DISPOSITION, ESCALATION
+    try:
+        records = AdminStore(project_root).read_all()
+    except Exception:
+        return []
+    if not records:
+        return []
+    spec_records = [
+        r for r in records
+        if r.get("kind") in (ESCALATION, DISPOSITION)
+        and r.get("spec") == spec_name
+    ]
+    if not spec_records:
+        return []
+
+    # 按 admin_run_id 归并 disposition（轻量 best_by_run 语义）：
+    # 非 pending 优先于 pending；同为非 pending 取最新；无 admin_run_id 独立。
+    best_by_run: dict = {}
+    for rec in spec_records:
+        if rec.get("kind") != DISPOSITION:
+            continue
+        rid = rec.get("admin_run_id") or f"run-{id(rec)}"
+        status = rec.get("result") or rec.get("status")
+        is_pending = status == "pending"
+        existing = best_by_run.get(rid)
+        if existing is None:
+            best_by_run[rid] = (is_pending, rec)
+            continue
+        if is_pending and not existing[0]:
+            continue  # 已有最终处置，pending 被替代
+        if not is_pending and existing[0]:
+            best_by_run[rid] = (False, rec)
+        elif (rec.get("created") or "") > (existing[1].get("created") or ""):
+            best_by_run[rid] = (is_pending, rec)
+
+    nodes: list[dict] = []
+    for rec in spec_records:
+        if rec.get("kind") == DISPOSITION:
+            rid = rec.get("admin_run_id") or f"run-{id(rec)}"
+            if best_by_run.get(rid, (False, None))[1] is not rec:
+                continue  # 该 pending 已被最终处置替代
+        node = {
+            "time": rec.get("created") or "",
+            "kind": "admin",
+            "record_kind": rec.get("kind"),
+            "signal_type": rec.get("signal_type"),
+            "severity": rec.get("severity"),
+            "description": rec.get("description") or "",
+        }
+        if rec.get("kind") == ESCALATION:
+            node["handled"] = bool(rec.get("handled"))
+        else:
+            node["result"] = rec.get("result") or rec.get("status")
+        nodes.append(node)
+    return nodes
+
+
 def get_spec_timeline(project_root, spec_name: str) -> list:
     """构建 SPEC 生命周期时间轴（按时间排序）。
 
