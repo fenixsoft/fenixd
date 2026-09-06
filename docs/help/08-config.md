@@ -86,12 +86,16 @@ deps_mode 仅对 nodejs 项目生效——供给入口是 package.json/node_modu
 
 ### admin
 
-| 键 | 默认值 | 生效方式 |
-|----|--------|---------|
-| enabled | true | 热更新 |
-| interval_minutes | 5 | 热更新 |
-| escalation_cooldown_minutes | 15 | 热更新 |
-| agent_model | 复用默认模型 | 热更新 |
+| 键 | 默认值 | 范围 | 生效方式 |
+|----|--------|------|---------|
+| enabled | true | bool | 热更新 |
+| interval_minutes | 5 | 正数（分钟） | 热更新 |
+| escalation_cooldown_minutes | 15 | 非负数（分钟） | 热更新 |
+| merge_breaker_threshold | 2（复用 `agents.merge_breaker_threshold`） | 正整数 | 热更新 |
+| agent_model | 复用默认模型 | 模型名 | 热更新 |
+| shutdown_drain_seconds | **模板 0**（代码缺省 1800） | 非负整数（0=快速停机） | 重启 |
+
+`admin.shutdown_drain_seconds` 双侧行为：计划性重启（supervisor 检测到 `.fenix/restart_request`）时，daemon 收到 SIGTERM 后先等——上限为本值（秒），等到期才走 terminate 收口；supervisor 的 SIGKILL 强杀等待 = 本值 + 120s。值为 0 时不排水、秒级退出——在飞任务标记 interrupted、重启后继续做（快速停机 + resume 兜底路径）；配置大值（如 1800）则每次计划性重启等待满排水窗口，1-2 小时级 implementer/planner 在飞场景会明显拖慢重启。设置页「系统」页签可编辑 enabled/interval_minutes/escalation_cooldown_minutes/merge_breaker_threshold/shutdown_drain_seconds 五项；`admin.agent_model` 为 legacy 兜底键（解析链：agents.models.administrator > admin.agent_model > 默认网关），设置页不提供编辑，避免与「模型分配」页签的 Administrator 条目双入口。`admin.self_review.*` 见「自省」页签。
 
 ### pm.dispatch.aging / pm.family
 
@@ -108,7 +112,7 @@ deps_mode 仅对 nodejs 项目生效——供给入口是 package.json/node_modu
 
 | 键 | 默认值 | 说明 |
 |----|--------|------|
-| merge_breaker_threshold | 2（复用 `agents.merge_breaker_threshold`） | merge 熔断阈值 |
+| stuck_threshold_minutes | 由 `agents.run_timeout_seconds` 单源派生 | stuck 判定阈值（run_timeout + 600s 宽限）；旧 `admin.stuck_threshold_minutes` 键已弃用 |
 
 ### commands / logging / dashboard
 
@@ -128,6 +132,7 @@ deps_mode 仅对 nodejs 项目生效——供给入口是 package.json/node_modu
 | agents.impl_run_budget | 4 | **6** | 模板注释也称「缺省 4」，实际代码缺省 6（`DEFAULT_IMPL_RUN_BUDGET = 6`） |
 | agents.daily_run_limit | 300 | **50** | 模板默认 300，代码缺省 50（`agents.daily_run_limit` 未配置时） |
 | agents.token_budget_millions | 50 | **50** | 一致 |
+| admin.shutdown_drain_seconds | 0 | **1800** | 模板（fenix-init 新项目）开箱即得快速停机；存量项目未配置该键时仍按代码缺省 1800 排水 |
 | 顶层 timeout_supervision | enabled: false | 以 `agents.timeout_supervision` 为准 | 顶层键仅是回退开关，`agents.timeout_supervision` 是 canonical 位置 |
 
 **结论**：不要凭模板注释理解缺省值。判断某个键的实际生效值，应查看项目 `.fenix/config.yaml` 是否配置了该键——配置了以配置值为准，未配置则按代码缺省。
@@ -140,6 +145,7 @@ deps_mode 仅对 nodejs 项目生效——供给入口是 package.json/node_modu
 | Token 预算面板 | agents.token_budget_millions |
 | 验证 | verify.static_scope / verify.deps_mode（存于 config.yaml；`.fenix/verify.yaml` 契约手工编辑，不经设置页改写） |
 | 提示词管理 | agents/ 通用层 + .fenix/agents/ 项目级 |
+| 系统 | admin.enabled / admin.interval_minutes / admin.escalation_cooldown_minutes / admin.merge_breaker_threshold / admin.shutdown_drain_seconds |
 
 ## 相关文档
 
