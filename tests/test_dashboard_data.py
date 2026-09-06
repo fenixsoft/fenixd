@@ -1004,3 +1004,206 @@ class TestSpecSummaryProgressPhase(unittest.TestCase):
             s = spec_summary(self.root, "demo", {"status": status})
             self.assertEqual(s["progress_phase"], "impl",
                              f"fast-track {status} 恒 impl")
+
+
+class TestSpecTimelineAdminEvents(unittest.TestCase):
+    """SPEC 时间轴 admin 运维事件节点（add-timeline-admin-events）。
+
+    数据源 .fenix/admin_alerts.json（AdminStore 读路径）：escalation/disposition
+    记录按 spec 过滤成 kind="admin" 节点，与 state/run 统一排序；pending 被
+    最终处置替代；缺失/损坏/缺 spec 字段 fail-open。
+    """
+
+    SPEC = "demo-spec"
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        runs_dir = Path(self.tmpdir) / ".fenix" / "runs"
+        logs_dir.mkdir(parents=True)
+        runs_dir.mkdir(parents=True)
+        # 状态节点 11:05:31（与 run 同秒，验证 state→admin→run 次序）
+        log_entry = {
+            "timestamp": "2026-09-01T11:05:31.212625Z",
+            "level": "INFO",
+            "component": "state_machine",
+            "message": f"Transition: {self.SPEC} drafted → ready",
+        }
+        (logs_dir / "fenixd.log").write_text(
+            json.dumps(log_entry) + "\n", encoding="utf-8",
+        )
+        # run 与 transition 同一秒（int(time.time()) 截断）
+        (runs_dir / f"impl-{self.SPEC}-1788260731-a1.jsonl").write_text(
+            '{"type": "provider_marker"}\n', encoding="utf-8",
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_alerts(self, records: list):
+        alerts = Path(self.tmpdir) / ".fenix" / "admin_alerts.json"
+        alerts.parent.mkdir(parents=True, exist_ok=True)
+        alerts.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+
+    def _admin_nodes(self, timeline) -> list:
+        return [e for e in timeline if e.get("kind") == "admin"]
+
+    def test_escalation_and_disposition_nodes_with_fields(self):
+        """escalation/disposition 节点下发：record_kind、severity、状态字段齐全。"""
+        self._write_alerts([
+            {"kind": "escalation", "spec": self.SPEC, "signal_type": "family_explosion",
+             "severity": "critical", "handled": True, "description": "告警描述",
+             "created": "2026-09-01T11:05:32.000000Z"},
+            {"kind": "disposition", "spec": self.SPEC, "signal_type": "family_explosion",
+             "severity": "major", "result": "resolved", "description": "处置摘要",
+             "created": "2026-09-01T11:05:33.000000Z"},
+        ])
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, self.SPEC)
+        admin = self._admin_nodes(timeline)
+        self.assertEqual(len(admin), 2, f"admin 节点缺失: {timeline}")
+        esc = next(e for e in admin if e["record_kind"] == "escalation")
+        self.assertEqual(esc["severity"], "critical")
+        self.assertIs(esc["handled"], True)
+        self.assertEqual(esc["signal_type"], "family_explosion")
+        self.assertEqual(esc["time"], "2026-09-01T11:05:32.000000Z")
+        disp = next(e for e in admin if e["record_kind"] == "disposition")
+        self.assertEqual(disp["result"], "resolved")
+        self.assertEqual(disp["severity"], "major")
+
+    def test_other_spec_admin_records_not_leaked(self):
+        """其他 SPEC 的运维记录不串扰：只下发目标 spec 的节点。"""
+        self._write_alerts([
+            {"kind": "escalation", "spec": "other-spec", "severity": "critical",
+             "handled": False, "created": "2026-09-01T11:05:32.000000Z"},
+            {"kind": "disposition", "spec": "other-spec", "result": "resolved",
+             "created": "2026-09-01T11:05:33.000000Z"},
+        ])
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, self.SPEC)
+        self.assertEqual(self._admin_nodes(timeline), [])
+
+    def test_pending_replaced_by_final_disposition(self):
+        """同 admin_run_id：pending 被最终处置替代，仅保留最终节点。"""
+        self._write_alerts([
+            {"kind": "disposition", "spec": self.SPEC, "admin_run_id": "admin-demo-spec-1788260700",
+             "result": "pending", "description": "处置中",
+             "created": "2026-09-01T11:04:00.000000Z"},
+            {"kind": "disposition", "spec": self.SPEC, "admin_run_id": "admin-demo-spec-1788260700",
+             "result": "resolved", "description": "最终处置",
+             "created": "2026-09-01T11:05:00.000000Z"},
+        ])
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, self.SPEC)
+        admin = self._admin_nodes(timeline)
+        self.assertEqual(len(admin), 1, f"pending 未被替代: {admin}")
+        self.assertEqual(admin[0]["result"], "resolved")
+
+    def test_pending_only_independent_node(self):
+        """无最终处置时 pending 独立成节点；无 admin_run_id 的 pending 也独立。"""
+        self._write_alerts([
+            {"kind": "disposition", "spec": self.SPEC, "admin_run_id": "admin-demo-spec-1788260700",
+             "result": "pending", "description": "处置中",
+             "created": "2026-09-01T11:04:00.000000Z"},
+            {"kind": "disposition", "spec": self.SPEC, "result": "pending",
+             "description": "孤儿 pending", "created": "2026-09-01T11:04:30.000000Z"},
+        ])
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, self.SPEC)
+        admin = self._admin_nodes(timeline)
+        self.assertEqual(len(admin), 2, f"pending 独立节点缺失: {admin}")
+        self.assertTrue(all(e["result"] == "pending" for e in admin))
+
+    def test_same_second_state_admin_run_order(self):
+        """同秒次序：state → admin → run。"""
+        self._write_alerts([
+            {"kind": "disposition", "spec": self.SPEC, "result": "resolved",
+             "description": "同秒处置", "created": "2026-09-01T11:05:31.500000Z"},
+        ])
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, self.SPEC)
+        kinds = [e["kind"] for e in timeline]
+        self.assertIn("admin", kinds)
+        self.assertLess(kinds.index("state"), kinds.index("admin"),
+                        f"state 必须先于 admin: {kinds}")
+        self.assertLess(kinds.index("admin"), kinds.index("run"),
+                        f"admin 必须先于 run: {kinds}")
+
+    def test_admin_node_breaks_forward_state_collapse(self):
+        """admin 节点打断连续前向状态折叠：折叠不跨过 admin。"""
+        logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        e1 = {"timestamp": "2026-09-01T11:03:00.000000Z", "level": "INFO",
+              "component": "state_machine",
+              "message": f"Transition: {self.SPEC} drafted → ready"}
+        e2 = {"timestamp": "2026-09-01T11:03:10.000000Z", "level": "INFO",
+              "component": "state_machine",
+              "message": f"Transition: {self.SPEC} ready → implementing"}
+        e3 = {"timestamp": "2026-09-01T11:03:20.000000Z", "level": "INFO",
+              "component": "state_machine",
+              "message": f"Transition: {self.SPEC} implementing → testing"}
+        (logs_dir / "fenixd.log").write_text(
+            "\n".join(json.dumps(x) for x in (e1, e2, e3)) + "\n",
+            encoding="utf-8",
+        )
+        self._write_alerts([
+            {"kind": "escalation", "spec": self.SPEC, "severity": "major",
+             "handled": False, "created": "2026-09-01T11:03:15.000000Z"},
+        ])
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, self.SPEC)
+        state_nodes = [e for e in timeline if e["kind"] == "state"]
+        # 若无 admin 打断，drafted→ready→implementing→testing 三条前向会折叠为
+        # drafted→testing 单节点；admin(11:03:15) 打断使前两段先折叠为
+        # drafted→implementing，其后 implementing→testing 独立一段 → 两个 state 节点
+        self.assertEqual(len(state_nodes), 2, f"折叠未被 admin 打断: {timeline}")
+        self.assertEqual(state_nodes[0]["from"], "drafted")
+        self.assertEqual(state_nodes[0]["to"], "implementing")
+        self.assertEqual(state_nodes[1]["from"], "implementing")
+        self.assertEqual(state_nodes[1]["to"], "testing")
+
+    def test_alerts_file_missing_fail_open(self):
+        """admin_alerts.json 缺失：时间轴正常返回 state/run 节点。"""
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, self.SPEC)
+        self.assertEqual(self._admin_nodes(timeline), [])
+        kinds = {e["kind"] for e in timeline}
+        self.assertIn("state", kinds)
+        self.assertIn("run", kinds)
+
+    def test_alerts_file_corrupt_fail_open(self):
+        """admin_alerts.json 损坏（非法 JSON）：fail-open 返回空，不抛异常。"""
+        alerts = Path(self.tmpdir) / ".fenix" / "admin_alerts.json"
+        alerts.parent.mkdir(parents=True, exist_ok=True)
+        alerts.write_text("{corrupt-json", encoding="utf-8")
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, self.SPEC)
+        self.assertEqual(self._admin_nodes(timeline), [])
+        self.assertTrue(timeline)
+
+    def test_missing_spec_field_skipped(self):
+        """缺 spec 字段的旧记录跳过：不下发、不误挂当前 SPEC。"""
+        self._write_alerts([
+            {"kind": "escalation", "severity": "critical", "handled": False,
+             "created": "2026-09-01T11:05:32.000000Z"},
+            {"kind": "disposition", "spec": self.SPEC, "result": "resolved",
+             "created": "2026-09-01T11:05:33.000000Z"},
+        ])
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, self.SPEC)
+        admin = self._admin_nodes(timeline)
+        self.assertEqual(len(admin), 1)
+        self.assertEqual(admin[0]["record_kind"], "disposition")
+
+    def test_signal_kind_not_included(self):
+        """signal 内部审计记录不下发到时间轴。"""
+        self._write_alerts([
+            {"kind": "signal", "spec": self.SPEC, "signal_type": "family_explosion",
+             "created": "2026-09-01T11:05:32.000000Z"},
+            {"kind": "disposition", "spec": self.SPEC, "result": "resolved",
+             "created": "2026-09-01T11:05:33.000000Z"},
+        ])
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, self.SPEC)
+        admin = self._admin_nodes(timeline)
+        self.assertEqual(len(admin), 1)
+        self.assertEqual(admin[0]["record_kind"], "disposition")
