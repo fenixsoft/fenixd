@@ -427,30 +427,36 @@ class TestDashboardDescriptionConfig(unittest.TestCase):
         """read_effective_config 有效视图回显 verify.planner_max_concurrent（与写路径对称）"""
         from core.dashboard.data import read_effective_config
 
-        # 缺省：verify 回显默认值，不含 planner_max_concurrent
-        result = read_effective_config(self.config_dir.parent)
-        self.assertNotIn("planner_max_concurrent", result.get("verify", {}))
-        self.assertEqual(result["sources"].get("verify.planner_max_concurrent"), "user")
+        # 用户级配置隔离（isolated_user_config 惯例的 unittest 版）：本机
+        # ~/.fenix/config.yaml 可能显式写 planner_max_concurrent，断言缺省
+        # 行为不隔离就会环境敏感假失败。patch 后用户层按空 dict 兜底。
+        user_dir = Path(self.tmpdir) / "user-fenix"
+        with patch("core.config.USER_CONFIG_DIR", user_dir), \
+             patch("core.dashboard.data.USER_CONFIG_PATH", user_dir / "config.yaml"):
+            # 缺省：verify 回显默认值，不含 planner_max_concurrent
+            result = read_effective_config(self.config_dir.parent)
+            self.assertNotIn("planner_max_concurrent", result.get("verify", {}))
+            self.assertEqual(result["sources"].get("verify.planner_max_concurrent"), "user")
 
-        # 写入 verify.planner_max_concurrent: 3
-        import yaml
-        config = {
-            "project": {"name": "test", "type": "web"},
-            "verify": {"planner_max_concurrent": 3},
-        }
-        with open(self.config_path, "w", encoding="utf-8") as f:
-            yaml.dump(config, f, allow_unicode=True)
+            # 写入 verify.planner_max_concurrent: 3
+            import yaml
+            config = {
+                "project": {"name": "test", "type": "web"},
+                "verify": {"planner_max_concurrent": 3},
+            }
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                yaml.dump(config, f, allow_unicode=True)
 
-        result = read_effective_config(self.config_dir.parent)
-        self.assertEqual(result["verify"]["planner_max_concurrent"], 3)
-        self.assertEqual(result["sources"]["verify.planner_max_concurrent"], "project")
+            result = read_effective_config(self.config_dir.parent)
+            self.assertEqual(result["verify"]["planner_max_concurrent"], 3)
+            self.assertEqual(result["sources"]["verify.planner_max_concurrent"], "project")
 
-        # 非法值（负数/布尔）不进入有效视图
-        config["verify"] = {"planner_max_concurrent": -1}
-        with open(self.config_path, "w", encoding="utf-8") as f:
-            yaml.dump(config, f, allow_unicode=True)
-        result = read_effective_config(self.config_dir.parent)
-        self.assertNotIn("planner_max_concurrent", result.get("verify", {}))
+            # 非法值（负数/布尔）不进入有效视图
+            config["verify"] = {"planner_max_concurrent": -1}
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                yaml.dump(config, f, allow_unicode=True)
+            result = read_effective_config(self.config_dir.parent)
+            self.assertNotIn("planner_max_concurrent", result.get("verify", {}))
 
     def test_project_summary_includes_description(self):
         """project_summary 包含 description 字段"""
@@ -650,6 +656,278 @@ class TestVerifyProgressFastTrackFallback(unittest.TestCase):
     def test_empty_everywhere_returns_empty(self):
         from core.dashboard.data import parse_run_result_scenarios
         self.assertEqual(parse_run_result_scenarios(self.tmpdir, self.spec), [])
+
+
+class TestVerdictFastTrackFallback(unittest.TestCase):
+    """parse_verdict 对 fast-track 裁决结果文件的回退合成。
+
+    verification-report.md 是 full 模式 tester 产物；fast-track 单 agent 全包
+    不产该文件，裁决结论只存在于 .fenix-run-result.json 的 verification 段
+    （fast_track_result.py 契约）。parse_verdict 原先只读 md 文件，导致所有
+    fast-track spec的列表「验证」列 Popover 与详情页 VerdictPanel 恒隐
+    （verdict.exists=False，数据在专属副本里并不缺）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.spec = "fix-demo-fast-track"
+        self.vp = Path(self.tmpdir) / ".fenix" / "verify-progress" / self.spec
+        self.vp.mkdir(parents=True)
+        self.vp_result = self.vp / ".fenix-run-result.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _fast_track_payload(self, scenarios, verdict="verified", bugs=None):
+        return {
+            "status": "success", "spec": self.spec, "mode": "fast-track",
+            "summary": "done",
+            "verification": {"scenarios": scenarios, "verdict": verdict,
+                             "bugs": bugs or []},
+        }
+
+    def _scenario(self, i, status="pass"):
+        return {"scenario_id": f"s{i}", "description": f"场景{i}",
+                "status": status, "assertion_results": []}
+
+    def test_verified_dedicated_copy_synthesizes_verdict(self):
+        from core.dashboard.data import parse_verdict
+        self.vp_result.write_text(
+            json.dumps(self._fast_track_payload(
+                [self._scenario(i) for i in range(1, 7)])),
+            encoding="utf-8")
+        out = parse_verdict(self.tmpdir, self.spec)
+        self.assertTrue(out["exists"])
+        self.assertIn("✅", out["status"])
+        self.assertEqual(out["status_detail"], "裁决: verified")
+        self.assertEqual(out["summary"]["passed"], 6)
+        self.assertEqual(out["summary"]["failed"], 0)
+        self.assertEqual(out["summary"]["errors"], 0)
+        self.assertEqual(out["summary"]["product_bugs"], 0)
+
+    def test_bug_found_status_and_bug_count(self):
+        from core.dashboard.data import parse_verdict
+        scenarios = [self._scenario(1),
+                     {"scenario_id": "s2", "description": "失败场景",
+                      "status": "fail", "assertion_results": []},
+                     {"scenario_id": "s3", "description": "错误场景",
+                      "status": "error", "assertion_results": []}]
+        self.vp_result.write_text(
+            json.dumps(self._fast_track_payload(
+                scenarios, verdict="bug-found",
+                bugs=[{"id": "BUG-01"}, {"id": "BUG-02"}])),
+            encoding="utf-8")
+        out = parse_verdict(self.tmpdir, self.spec)
+        self.assertTrue(out["exists"])
+        self.assertIn("❌", out["status"])
+        self.assertIn("未通过", out["status"])
+        self.assertEqual(out["summary"]["passed"], 1)
+        self.assertEqual(out["summary"]["failed"], 1)
+        self.assertEqual(out["summary"]["errors"], 1)
+        self.assertEqual(out["summary"]["product_bugs"], 2)
+
+    def test_main_tree_fallback_with_spec_match(self):
+        from core.dashboard.data import parse_verdict
+        root = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
+        root.write_text(json.dumps(self._fast_track_payload([self._scenario(1)])),
+                        encoding="utf-8")
+        out = parse_verdict(self.tmpdir, self.spec)
+        self.assertTrue(out["exists"])
+
+    def test_main_tree_other_spec_still_ignored(self):
+        from core.dashboard.data import parse_verdict
+        data = self._fast_track_payload([self._scenario(1)])
+        data["spec"] = "another-spec"
+        root = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
+        root.write_text(json.dumps(data), encoding="utf-8")
+        self.assertFalse(parse_verdict(self.tmpdir, self.spec)["exists"])
+
+    def test_illegal_verdict_keeps_fail_closed(self):
+        from core.dashboard.data import parse_verdict
+        data = self._fast_track_payload([self._scenario(1)])
+        data["verification"]["verdict"] = "not-a-verdict"
+        self.vp_result.write_text(json.dumps(data), encoding="utf-8")
+        self.assertFalse(parse_verdict(self.tmpdir, self.spec)["exists"])
+
+    def test_missing_verification_section_keeps_empty_state(self):
+        from core.dashboard.data import parse_verdict
+        self.vp_result.write_text(
+            json.dumps({"status": "success", "spec": self.spec}),
+            encoding="utf-8")
+        out = parse_verdict(self.tmpdir, self.spec)
+        self.assertFalse(out["exists"])
+
+    def test_verification_report_md_still_wins(self):
+        """full 模式 md 报告在场时优先（既有路径零回归）。"""
+        from core.dashboard.data import parse_verdict
+        self.vp_result.write_text(
+            json.dumps(self._fast_track_payload([self._scenario(1)])),
+            encoding="utf-8")
+        spec_dir = Path(self.tmpdir) / "spec" / "changes" / self.spec
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "verification-report.md").write_text(
+            "## 结论：✅ 通过（verified）\n\n| 通过 | 10 |\n",
+            encoding="utf-8")
+        out = parse_verdict(self.tmpdir, self.spec)
+        self.assertTrue(out["exists"])
+        self.assertEqual(out["summary"]["passed"], "10")  # md 解析值为字符串
+
+
+class TestBugsFastTrackFallback(unittest.TestCase):
+    """parse_bugs 对 fast-track 裁决结果文件 bugs 清单的回退收录。
+
+    Bug 列表唯一数据源是 report.json（full 模式 verify_engine 产物）；fast-track
+    不产该文件，裁决出的 bugs 清单只存在于 .fenix-run-result.json（fast-track
+    嵌套 verification.bugs，full 模式 verifier 顶层 bugs）→ 详情页 Bug 列表
+    页签对 fast-track spec 恒空（第五读侧缺口，同族：场景页签/报告场景表/
+    验证进度/验证结论）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.spec = "fix-demo-fast-track"
+        self.vp = Path(self.tmpdir) / ".fenix" / "verify-progress" / self.spec
+        self.vp.mkdir(parents=True)
+        self.vp_result = self.vp / ".fenix-run-result.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _fast_track_payload(self, bugs, verdict="bug-found"):
+        scenarios = [{"scenario_id": "s1", "description": "场景一",
+                      "status": "fail", "assertion_results": []}]
+        return {
+            "status": "success", "spec": self.spec, "mode": "fast-track",
+            "summary": "done",
+            "verification": {"scenarios": scenarios, "verdict": verdict,
+                             "bugs": bugs},
+        }
+
+    def _bug(self, **over):
+        bug = {"severity": "critical",
+               "scenario_ids": ["s1", "s2"],
+               "assertion_type": "element_visible",
+               "description": "核心元素不可见",
+               "root_cause": "渲染分支缺省",
+               "evidence": {"failed_assertions": [
+                   {"type": "element_visible", "pass": False,
+                    "message": "元素不可见"}]}}
+        bug.update(over)
+        return bug
+
+    def test_dedicated_copy_bugs_collected(self):
+        from core.dashboard.data import parse_bugs
+        self.vp_result.write_text(
+            json.dumps(self._fast_track_payload([self._bug()])),
+            encoding="utf-8")
+        out = parse_bugs(self.tmpdir, self.spec)
+        self.assertEqual(len(out), 1)
+        b = out[0]
+        self.assertEqual(b["source"], "run-result")
+        self.assertEqual(b["severity"], "critical")
+        self.assertEqual(b["scenario_ids"], ["s1", "s2"])
+        self.assertEqual(b["assertion_type"], "element_visible")
+        self.assertEqual(b["description"], "核心元素不可见")
+        # evidence dict 序列化为 JSON 串（对齐 full 路径 sc_evidence 处理）
+        self.assertIn("failed_assertions", b["evidence"])
+        self.assertEqual(b["root_cause"], "渲染分支缺省")
+        # 前端卡片渲染兼容字段（dashboard.ts 类型 bug.scenario / bug.assertion）
+        self.assertEqual(b["scenario"], "s1, s2")
+        self.assertEqual(b["assertion"], "element_visible")
+
+    def test_evidence_missing_falls_back_to_root_cause(self):
+        from core.dashboard.data import parse_bugs
+        self.vp_result.write_text(
+            json.dumps(self._fast_track_payload(
+                [self._bug(evidence=None, root_cause="根因兜底")])),
+            encoding="utf-8")
+        out = parse_bugs(self.tmpdir, self.spec)
+        self.assertEqual(out[0]["evidence"], "根因兜底")
+
+    def test_report_json_still_wins(self):
+        """full 模式 report.json 在场时优先（既有路径零回归）。"""
+        from core.dashboard.data import parse_bugs
+        self.vp_result.write_text(
+            json.dumps(self._fast_track_payload([self._bug()])),
+            encoding="utf-8")
+        rp = self.vp / "report.json"
+        rp.write_text(json.dumps({
+            "exists": True,
+            "scenarios": [{"scenario_id": "r1", "description": "报告场景",
+                           "status": "fail", "assertion_results": []}],
+        }), encoding="utf-8")
+        out = parse_bugs(self.tmpdir, self.spec)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["scenario_ids"], ["r1"])
+
+    def test_verified_no_bugs_returns_empty(self):
+        from core.dashboard.data import parse_bugs
+        self.vp_result.write_text(
+            json.dumps(self._fast_track_payload([], verdict="verified")),
+            encoding="utf-8")
+        self.assertEqual(parse_bugs(self.tmpdir, self.spec), [])
+
+    def test_main_tree_other_spec_ignored(self):
+        from core.dashboard.data import parse_bugs
+        data = self._fast_track_payload([self._bug()])
+        data["spec"] = "another-spec"
+        root = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
+        root.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(parse_bugs(self.tmpdir, self.spec), [])
+
+    def test_full_mode_top_level_bugs_fallback(self):
+        """full 模式 verifier 结果（verifier.md schema：顶层 status+bugs）同样兜底。"""
+        from core.dashboard.data import parse_bugs
+        root = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
+        root.write_text(json.dumps({
+            "status": "bug-found", "spec": self.spec,
+            "bugs": [self._bug()],
+        }), encoding="utf-8")
+        out = parse_bugs(self.tmpdir, self.spec)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["source"], "run-result")
+        self.assertEqual(out[0]["severity"], "critical")
+
+    def test_verifier_freeform_bug_schema_normalized(self):
+        """verifier.md 未定义条目 schema，实测产出漂移为 id/severity:high|medium/title/
+        location/description（无 scenario_ids/evidence）——读取端归一兼容。"""
+        from core.dashboard.data import parse_bugs
+        root = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
+        root.write_text(json.dumps({
+            "status": "bug-found", "spec": self.spec,
+            "bugs": [{
+                "id": "BUG-1", "severity": "high",
+                "title": "保存时其它子键被默认值覆盖",
+                "location": "core/dashboard/static/app.js:collectConfigData()",
+                "description": "空/非法时回退硬编码默认值并回写配置。",
+            }, {"id": "BUG-2", "severity": "low", "title": "横幅路径误导"}],
+        }), encoding="utf-8")
+        out = parse_bugs(self.tmpdir, self.spec)
+        self.assertEqual(len(out), 2)
+        b0 = out[0]
+        self.assertEqual(b0["severity"], "major")  # high → major 归一
+        self.assertEqual(b0["description"], "空/非法时回退硬编码默认值并回写配置。")
+        self.assertEqual(b0["id"], "BUG-1")
+        self.assertEqual(b0["title"], "保存时其它子键被默认值覆盖")
+        self.assertEqual(b0["location"], "core/dashboard/static/app.js:collectConfigData()")
+        self.assertEqual(out[1]["severity"], "minor")  # low → minor 归一
+        self.assertEqual(out[1]["description"], "横幅路径误导")  # 无 description 时 title 兜底
+
+    def test_full_path_bugs_gain_scenario_assertion_fields(self):
+        """full 路径条目补 scenario/assertion 兼容字段（历史展示缺口：类型单复数漂移）。"""
+        from core.dashboard.data import parse_bugs
+        rp = self.vp / "report.json"
+        rp.write_text(json.dumps({
+            "exists": True,
+            "scenarios": [{"scenario_id": "r1", "description": "报告场景",
+                           "status": "fail",
+                           "assertion_results": [
+                               {"type": "text_contains", "pass": False,
+                                "message": "文案不符"}]}],
+        }), encoding="utf-8")
+        out = parse_bugs(self.tmpdir, self.spec)
+        self.assertEqual(out[0]["scenario"], "r1")
+        self.assertEqual(out[0]["assertion"], "text_contains")
 
 
 class TestSpecSummaryProgressPhase(unittest.TestCase):

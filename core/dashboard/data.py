@@ -1427,6 +1427,88 @@ def _fold_summary(summary: dict, key: str, val: str) -> dict:
     return summary
 
 
+def _load_run_result(project_root, spec_name) -> dict | None:
+    """读取裁决 .fenix-run-result.json（两路候选，不可得返回 None）。
+
+    专属副本（.fenix/verify-progress/<spec>/.fenix-run-result.json）优先；
+    项目根 .fenix/.fenix-run-result.json 为共享文件，携带的 spec 与当前 spec
+    不符时视为其它 spec 残留忽略。损坏/非对象同样返回 None（fail-closed）。
+    """
+    candidates = [
+        Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json",
+        Path(project_root) / ".fenix" / ".fenix-run-result.json",
+    ]
+    for idx, path in enumerate(candidates):
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if idx == 1 and isinstance(data.get("spec"), str) and data["spec"] and data["spec"] != spec_name:
+            continue
+        return data
+    return None
+
+
+def _run_result_verdict_and_bugs(data: dict) -> tuple:
+    """从 run-result dict 提取（裁决值, bugs 清单）；无合法裁决返回 ("", [])。
+
+    fast-track：裁决嵌套在 verification.verdict、bugs 在 verification.bugs
+    （fast_track_result.py 契约）；full 模式：顶层 status 即裁决值、顶层 bugs
+    （agents/verifier.md schema）。verdict 非法取值一律 fail-closed 拒收。
+    """
+    ver = data.get("verification")
+    if isinstance(ver, dict) and ver.get("verdict") in ("verified", "bug-found"):
+        bugs = ver.get("bugs")
+        return ver["verdict"], bugs if isinstance(bugs, list) else []
+    if data.get("status") in ("verified", "bug-found"):
+        bugs = data.get("bugs")
+        return data["status"], bugs if isinstance(bugs, list) else []
+    return "", []
+
+
+def _verdict_from_run_result(project_root, spec_name) -> dict:
+    """从 .fenix-run-result.json 的裁决段合成 verdict（verification-report.md 缺失时兜底）。
+
+    fast-track 单 agent 全包不产 verification-report.md，裁决结论只存在于
+    .fenix-run-result.json 的 verification 段（fast_track_result.py 契约）；
+    full 模式 md 缺失时结果文件顶层 status 也可能是裁决值。缺失/非法一律
+    fail-closed 返回 exists: False（维持空态，不伪造结论）。
+    """
+    data = _load_run_result(project_root, spec_name)
+    if data is not None:
+        verdict_value, _bugs = _run_result_verdict_and_bugs(data)
+        if verdict_value:
+            scenarios = data.get("verification", {}).get("scenarios") \
+                if isinstance(data.get("verification"), dict) else None
+            if not isinstance(scenarios, list):
+                scenarios = data.get("scenarios")
+            summary = {"passed": 0, "failed": 0, "errors": 0,
+                       "product_bugs": len(_bugs), "env_issues": None}
+            if isinstance(scenarios, list):
+                for sc in scenarios:
+                    status = sc.get("status") if isinstance(sc, dict) else None
+                    if status == "pass":
+                        summary["passed"] += 1
+                    elif status in ("fail", "failed"):
+                        summary["failed"] += 1
+                    elif status == "error":
+                        summary["errors"] += 1
+                    # warning/exempt 豁免类不入三桶（与裁决链豁免语义一致）
+            return {
+                "exists": True,
+                "status": ("✅ 验证通过（verified）" if verdict_value == "verified"
+                           else "❌ 未通过（Bug Found）"),
+                "status_detail": f"裁决: {verdict_value}",
+                "conclusion": "",
+                "summary": summary,
+            }
+    return {"exists": False, "status": "", "status_detail": "", "conclusion": "", "summary": {}}
+
+
 def parse_verdict(project_root, spec_name) -> dict:
     """解析 verification-report.md 的验证结论，供 Dashboard 直接展示。
 
@@ -1435,10 +1517,14 @@ def parse_verdict(project_root, spec_name) -> dict:
     - status_detail: **状态:** 行（如 "环境问题 — Dashboard 服务未启动"）
     - conclusion: 结论段落（人类可读，避免用户只看 "0通过, 31失败"）
     - summary: {"passed","failed","errors","product_bugs","env_issues"} 尽力解析
+
+    md 文件缺失时回退 .fenix-run-result.json 的裁决段（_verdict_from_run_result）：
+    fast-track 模式不产 verification-report.md，原先 verdict.exists 恒 False，
+    列表「验证」列 Popover 与详情页 VerdictPanel 对 fast-track spec 恒隐。
     """
     path = Path(project_root) / "spec" / "changes" / spec_name / "verification-report.md"
     if not path.exists():
-        return {"exists": False, "status": "", "status_detail": "", "conclusion": "", "summary": {}}
+        return _verdict_from_run_result(project_root, spec_name)
     try:
         content = path.read_text(encoding="utf-8")
     except Exception:
@@ -1523,12 +1609,62 @@ def parse_bugs(project_root, spec_name) -> list:
     分类过滤（add-verdict-evidence-taxonomy）：test-defect/flaky/env 归类 =
     非产品缺陷，不进 Bug 列表（与报告「产品 Bug」计数同语义）；product-bug、
     旧格式无分类（向后兼容）及未知取值（fail-open）照常收录。
+
+    回退（第五读侧缺口）：report.json 缺失/损坏时从 .fenix-run-result.json 的
+    bugs 清单收录（fast-track 嵌套 verification.bugs，full 模式 verifier 顶层
+    bugs；裁决段由 _run_result_verdict_and_bugs 单点解析）——fast-track 不产
+    report.json，原先详情页 Bug 列表对其恒空（source 标记 "run-result"）。
+    条目统一携带 scenario/assertion 兼容字段（前端 dashboard.ts 类型为单数
+    bug.scenario / bug.assertion，后端原先只给 scenario_ids/assertion_type，
+    「关联场景」「断言类型」两行因此从未渲染过）。
     """
     from core.verdict_check import VERDICT_CLASSES
     non_product_classes = tuple(c for c in VERDICT_CLASSES if c != "product-bug")
     bugs = []
     report = parse_report(project_root, spec_name)
     if not report.get("exists") or report.get("error"):
+        # report.json 缺失/损坏：run-result bugs 清单回退（fail-closed 无数据返回 []）
+        data = _load_run_result(project_root, spec_name)
+        if data is None:
+            return bugs
+        _verdict, rt_bugs = _run_result_verdict_and_bugs(data)
+        # severity 归一：fast-track.md 模板是 critical|major|minor，verifier 自由
+        # 产出实测漂移为 high|medium|low（agents/verifier.md 步骤 8 未定义条目
+        # schema）——读取端统一映射到前端三档色系，未知值原样透传由前端兜底。
+        severity_map = {"critical": "critical", "high": "major", "major": "major",
+                        "medium": "major", "minor": "minor", "low": "minor"}
+        for bug in rt_bugs:
+            if not isinstance(bug, dict):
+                continue
+            ev = bug.get("evidence")
+            if isinstance(ev, dict):
+                ev = json.dumps(ev, ensure_ascii=False)
+            elif not isinstance(ev, str):
+                ev = ""
+            scenario_ids = bug.get("scenario_ids")
+            if not isinstance(scenario_ids, list):
+                scenario_ids = []
+            assertion_type = bug.get("assertion_type") or ""
+            raw_severity = bug.get("severity") or ""
+            bugs.append({
+                "source": "run-result",
+                "severity": severity_map.get(raw_severity, raw_severity) or "major",
+                "scenario_ids": scenario_ids,
+                "assertion_type": assertion_type,
+                "description": bug.get("description") or bug.get("title") or "",
+                "evidence": ev or (bug.get("root_cause") or ""),
+                "root_cause": bug.get("root_cause") or "",
+                "classification": None,
+                "status_corrected": False,
+                "screenshots": [],
+                # verifier 自由 schema 透传（id/title/location），fast-track 无则缺省
+                "id": bug.get("id") or "",
+                "title": bug.get("title") or "",
+                "location": bug.get("location") or "",
+                # 前端卡片渲染兼容字段（bug.scenario / bug.assertion）
+                "scenario": ", ".join(str(s) for s in scenario_ids),
+                "assertion": assertion_type,
+            })
         return bugs
     for sc in report.get("scenarios", []):
         if not isinstance(sc, dict):
@@ -1569,6 +1705,9 @@ def parse_bugs(project_root, spec_name) -> list:
                 "status_corrected": sc.get("status_corrected", False),
                 "screenshots": screenshots,
                 "scenario_status": status,
+                # 前端卡片渲染兼容字段（bug.scenario / bug.assertion，类型单复数漂移）
+                "scenario": str(sc.get("scenario_id", "?")),
+                "assertion": a.get("type", "step"),
             })
     return bugs
 
