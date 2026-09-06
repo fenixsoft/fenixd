@@ -28,6 +28,11 @@ STUCK_FALLBACK_SECONDS = RUN_TIMEOUT_FALLBACK_SECONDS + STUCK_GRACE_SECONDS
 # run_timeout_seconds + 该值时按 run_timeout_seconds + 该值兜底生效。
 SUPERVISION_EXTENSION_SECONDS = 7200
 
+# ── add-bug-repair-mode-config：admin.bug_repair_mode 取值枚举 ────────
+# bug-found 处置的修复方式：inplace（原地打回，缺省）/ derive（派生 fix-* 子
+# SPEC）。枚举而非布尔，为未来第三种修复策略留扩展位（design D1）。
+VALID_BUG_REPAIR_MODES = ("inplace", "derive")
+
 # ── add-daily-self-review：admin.self_review 段 ──────────────────────
 # run_at 缺省 02:00（每晚时间点），enabled/read_todo 缺省 false（纯增量，
 # 零行为变化）。run_at 非法值打 ERROR 并回退本缺省（design「Migration
@@ -258,6 +263,16 @@ class ConfigLoader:
             if not isinstance(drain, (int, float)) or isinstance(drain, bool) or drain < 0:
                 raise ValueError(
                     f"admin.shutdown_drain_seconds must be a non-negative number: {drain}"
+                )
+        # add-bug-repair-mode-config：admin.bug_repair_mode 护栏。允许缺省
+        # （None/未配置 → 消费方缺省 inplace）或字符串枚举 inplace/derive；
+        # 非法取值（非字符串或非枚举值）直接拒绝，报错风格与既有 admin 护栏一致。
+        if "bug_repair_mode" in admin and admin["bug_repair_mode"] is not None:
+            brm = admin["bug_repair_mode"]
+            if brm not in VALID_BUG_REPAIR_MODES:
+                raise ValueError(
+                    f"admin.bug_repair_mode must be one of "
+                    f"{list(VALID_BUG_REPAIR_MODES)}: {brm!r}"
                 )
 
         # add-daily-self-review：admin.self_review 段护栏。
@@ -730,6 +745,8 @@ class ConfigLoader:
           effective_stuck_threshold_seconds，旧 schedule/admin.stuck_threshold_minutes
           键已弃用、不再生效）
         - merge_breaker_threshold: 复用 agents.merge_breaker_threshold（默认 2）
+        - shutdown_drain_seconds: 1800（0 = 快速停机）
+        - bug_repair_mode: "inplace"（原地打回；derive = 派生 fix-* 子 SPEC）
         """
         admin = config.get("admin") or {}
         # D2：stuck 阈值单源派生，旧键不再作为生效输入（告警在助手内节流）。
@@ -737,6 +754,10 @@ class ConfigLoader:
         breaker = cls.get(config, "admin.merge_breaker_threshold", None)
         if breaker is None:
             breaker = cls.get(config, "agents.merge_breaker_threshold", 2)
+        brm = admin.get("bug_repair_mode", "inplace")
+        if brm not in VALID_BUG_REPAIR_MODES:
+            # 校验层已拦截非法值；运行期兜底（直读脏配置的旁路调用）回退缺省
+            brm = "inplace"
         return {
             "enabled": bool(admin.get("enabled", True)),
             "interval_minutes": float(admin.get("interval_minutes", 5)),
@@ -750,6 +771,8 @@ class ConfigLoader:
             # 快速停机。缺省 1800（半小时量级，用户已确认方向）。
             "shutdown_drain_seconds": max(
                 0, int(admin.get("shutdown_drain_seconds", 1800) or 1800)),
+            # add-bug-repair-mode-config：bug-found 修复方式（未配置缺省 inplace）
+            "bug_repair_mode": brm,
             # add-daily-self-review：自省配置段（enabled 缺省 false）
             "self_review": cls.get_self_review_config(config),
         }

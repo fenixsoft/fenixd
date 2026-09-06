@@ -263,9 +263,15 @@ class TestExistingCheckboxPreserved(_InplaceBase):
 
 
 class TestLegacyFixChainReverify(_InplaceBase):
-    """存量 fix 链重验闭环回归（D4 legacy 路径仍生效）。"""
+    """存量 fix 链重验闭环回归（D4 legacy 路径仍生效，derive 模式下）。"""
 
     def test_legacy_fix_child_preserved_on_parent_bugfound(self):
+        # 显式 derive：fix-* 名字 SPEC 失败继续派生闭环（名称前缀分流已退役）
+        self.engine, self.sm = _mk_engine(
+            self.project_root, self.logger,
+            config={"admin": {"bug_repair_mode": "derive"}},
+        )
+        self.engine._enqueue = MagicMock()
         # 存量 fix-quick-links-folders 仍在 bug-found，已有 done 子 fix-fix-...
         self.sm.add_spec("fix-quick-links-folders", {"priority": 5})
         self.sm.transition("fix-quick-links-folders", "ready")

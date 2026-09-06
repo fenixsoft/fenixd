@@ -32,7 +32,7 @@ class TestSystemAdminReadBack(unittest.TestCase):
             yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
 
     def test_read_config_admin_defaults_filled(self):
-        """缺省填充：无 admin 段时返回 5 键各自缺省值。"""
+        """缺省填充：无 admin 段时返回 6 键各自缺省值（含 bug_repair_mode=inplace）。"""
         from core.dashboard.data import read_config
 
         echoed = read_config(self.tmpdir)
@@ -44,6 +44,7 @@ class TestSystemAdminReadBack(unittest.TestCase):
                 "escalation_cooldown_minutes": 15,
                 "merge_breaker_threshold": 2,
                 "shutdown_drain_seconds": 1800,
+                "bug_repair_mode": "inplace",
             },
         )
         # 缺省来源标注为 user（未在本文件定义）
@@ -104,7 +105,7 @@ class TestSystemAdminReadBack(unittest.TestCase):
         self.assertEqual(
             set(echoed["admin"].keys()),
             {"enabled", "interval_minutes", "escalation_cooldown_minutes",
-             "merge_breaker_threshold", "shutdown_drain_seconds"},
+             "merge_breaker_threshold", "shutdown_drain_seconds", "bug_repair_mode"},
         )
         self.assertNotIn("self_review", echoed["admin"])
 
@@ -235,6 +236,66 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
                          {"static_scope": "worktree", "deps_mode": "hardlink"})
         self.assertEqual(echoed["self_review"]["enabled"], True)
         self.assertEqual(echoed["admin"]["shutdown_drain_seconds"], 300)
+
+
+class TestBugRepairModeConfig(unittest.TestCase):
+    """add-bug-repair-mode-config：bug_repair_mode 设置读取/持久化契约。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.config_dir = Path(self.tmpdir) / ".fenix"
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.config_path = self.config_dir / "config.yaml"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_raw(self, raw: dict):
+        with self.config_path.open("w", encoding="utf-8") as f:
+            yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
+
+    def test_unconfigured_defaults_to_inplace(self):
+        """未配置 → 读取链路返回缺省 inplace。"""
+        from core.dashboard.data import read_config
+
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["admin"]["bug_repair_mode"], "inplace")
+        self.assertEqual(echoed["sources"]["admin.bug_repair_mode"], "user")
+
+    def test_derive_write_persists_and_reads_back(self):
+        """配置 derive → 写入落盘、读取链路返回 derive 且来源标注 project。"""
+        from core.dashboard.data import read_config, write_config
+
+        result = write_config(self.tmpdir, {"admin": {"bug_repair_mode": "derive"}})
+        self.assertTrue(result["ok"], result.get("error"))
+        with self.config_path.open("r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        self.assertEqual(raw["admin"]["bug_repair_mode"], "derive")
+
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["admin"]["bug_repair_mode"], "derive")
+        self.assertEqual(echoed["sources"]["admin.bug_repair_mode"], "project")
+
+    def test_illegal_value_rejected_and_not_persisted(self):
+        """非法取值（如 always）拒绝保存，配置文件不变（回显仍缺省 inplace）。"""
+        from core.dashboard.data import read_config, write_config
+
+        before = read_config(self.tmpdir)
+        result = write_config(self.tmpdir, {"admin": {"bug_repair_mode": "always"}})
+        self.assertFalse(result["ok"])
+        self.assertIn("bug_repair_mode", result["error"])
+        after = read_config(self.tmpdir)
+        self.assertEqual(after["admin"], before["admin"])
+
+    def test_raw_derive_file_reads_back_without_write(self):
+        """手工写入 derive → read_config 直接回显 derive（读侧白名单对称）。"""
+        from core.dashboard.data import read_config
+
+        self._write_raw({"admin": {"bug_repair_mode": "derive"}})
+        echoed = read_config(self.tmpdir)
+        self.assertEqual(echoed["admin"]["bug_repair_mode"], "derive")
+        # 其余受管键仍为缺省填充，不透传未知键
+        self.assertEqual(echoed["admin"]["enabled"], True)
 
 
 if __name__ == "__main__":

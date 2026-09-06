@@ -1,4 +1,4 @@
-import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
+import { Button, Card, Form, InputNumber, Select, Switch, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
@@ -67,6 +67,11 @@ const ADMIN_ANNOTATIONS: {
           : Promise.reject(new Error('须为非负整数')),
     }],
   },
+  {
+    key: 'bug_repair_mode',
+    label: '验证失败修复方式',
+    note: '验证裁决 bug-found 后的修复方式：原地打回（inplace，缺省）对父 SPEC 直接注入「验证修复」任务段重修；派生 fix SPEC（derive）创建/复用 fix-* 子 SPEC 并自动闭环重验。',
+  },
 ];
 
 export default function SystemPanel({ config, onSave, project }: SystemPanelProps) {
@@ -83,6 +88,7 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
     escalation_cooldown_minutes: admin.escalation_cooldown_minutes ?? 15,
     merge_breaker_threshold: admin.merge_breaker_threshold ?? 2,
     shutdown_drain_seconds: admin.shutdown_drain_seconds ?? 1800,
+    bug_repair_mode: admin.bug_repair_mode ?? 'inplace',
     self_review: {
       enabled: selfReview?.enabled ?? false,
       run_at: dayjs(selfReview?.run_at ?? DEFAULT_RUN_AT, 'HH:mm'),
@@ -105,6 +111,7 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
           escalation_cooldown_minutes: values.escalation_cooldown_minutes,
           merge_breaker_threshold: values.merge_breaker_threshold,
           shutdown_drain_seconds: values.shutdown_drain_seconds,
+          bug_repair_mode: values.bug_repair_mode,
         },
         self_review: {
           enabled: values.self_review.enabled,
@@ -139,6 +146,26 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
                     <span className="label-note">（admin.{key}）</span>
                   </span>
                 </div>
+              ) : key === 'bug_repair_mode' ? (
+                <Form.Item
+                  name={key}
+                  label={
+                    <>
+                      {label}
+                      <span className="label-note">（admin.{key}）</span>
+                    </>
+                  }
+                  data-testid={`system-field-${key}`}
+                >
+                  <Select
+                    data-testid={`system-control-${key}`}
+                    style={{ width: 260 }}
+                    options={[
+                      { value: 'inplace', label: '原地打回（inplace）' },
+                      { value: 'derive', label: '派生 fix SPEC（derive）' },
+                    ]}
+                  />
+                </Form.Item>
               ) : (
                 <Form.Item
                   name={key}

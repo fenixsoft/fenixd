@@ -137,6 +137,60 @@ class TestConfigLoader(unittest.TestCase):
         self.assertIsNone(ConfigLoader.get({}, "admin.workers"))
         self.assertEqual(ConfigLoader.get({}, "admin.workers", 2), 2)
 
+    # ── admin.bug_repair_mode（add-bug-repair-mode-config） ──────────
+
+    def _admin_cfg(self, brm):
+        cfg = {
+            "project": {"name": "test", "type": "web"},
+            "schedule": {"poll_interval_minutes": 30},
+            "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
+            "worktree": {"base_dir": ".", "implement_branch_prefix": "f", "verify_branch_prefix": "v"},
+            "gates": {"require_push_approval": True},
+            "commands": {"test": "", "build": "", "start": ""},
+            "logging": {"dir": ".", "level": "INFO"},
+        }
+        if brm is not None:
+            cfg["admin"] = {"bug_repair_mode": brm}
+        return cfg
+
+    def test_bug_repair_mode_unconfigured_defaults_inplace(self):
+        """未配置 → get_admin_config 返回缺省 inplace。"""
+        self._write_config(self._admin_cfg(None))
+        config = ConfigLoader.load(self.config_path)
+        self.assertEqual(
+            ConfigLoader.get_admin_config(config)["bug_repair_mode"], "inplace"
+        )
+
+    def test_bug_repair_mode_valid_values_accepted(self):
+        """合法枚举 inplace/derive 通过校验并回读。"""
+        for mode in ("inplace", "derive"):
+            self._write_config(self._admin_cfg(mode))
+            config = ConfigLoader.load(self.config_path)
+            self.assertEqual(
+                ConfigLoader.get_admin_config(config)["bug_repair_mode"], mode
+            )
+
+    def test_bug_repair_mode_illegal_value_rejected(self):
+        """非法取值（非字符串、非枚举）被校验拒绝，配置不生效。"""
+        for bad in ("always", 42, True, ["derive"]):
+            self._write_config(self._admin_cfg(bad))
+            with self.assertRaises(ValueError) as cm:
+                ConfigLoader.load(self.config_path)
+            self.assertIn("admin.bug_repair_mode", str(cm.exception))
+
+    def test_bug_repair_mode_validate_rejects_and_unchanged(self):
+        """宽松路径（resolve_config）同拒非法值；合法值经 get_admin_config 取回。"""
+        ConfigLoader.reset_stuck_threshold_state()
+        proot = Path(self.tmpdir) / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        import yaml
+        (proot / ".fenix" / "config.yaml").write_text(
+            "project:\n  name: proj\nadmin:\n  bug_repair_mode: always\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(ValueError):
+            ConfigLoader.resolve_config(proot)
+
 
 class TestDeepMerge(unittest.TestCase):
     """测试深度合并：deep_merge 必须正确合并嵌套字典。"""

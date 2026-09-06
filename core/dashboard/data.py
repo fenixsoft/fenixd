@@ -3148,6 +3148,8 @@ _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "admin.enabled", "admin.interval_minutes",
                 "admin.escalation_cooldown_minutes",
                 "admin.merge_breaker_threshold", "admin.shutdown_drain_seconds",
+                # add-bug-repair-mode-config：bug-found 修复方式（inplace/derive）
+                "admin.bug_repair_mode",
                 # 验证契约键（verify.*：静态服务范围 / worktree 依赖供给模式）
                 "verify.static_scope", "verify.deps_mode",
                 # add-planner-efficiency：planner 生成节流上限
@@ -3209,7 +3211,8 @@ def _managed_key_sources(raw: dict) -> dict:
     # add-settings-system-tab：admin.* 受管键（5 键）显式定义 → project
     if isinstance(admin_raw, dict):
         for _k in ("enabled", "interval_minutes", "escalation_cooldown_minutes",
-                   "merge_breaker_threshold", "shutdown_drain_seconds"):
+                   "merge_breaker_threshold", "shutdown_drain_seconds",
+                   "bug_repair_mode"):
             if _k in admin_raw:
                 sources[f"admin.{_k}"] = "project"
     return sources
@@ -3218,20 +3221,23 @@ def _managed_key_sources(raw: dict) -> dict:
 # add-settings-system-tab：受管 admin.* 键缺省（与 ConfigLoader.get_admin_config
 # 缺省一致：enabled=True / interval_minutes=5 / escalation_cooldown_minutes=15 /
 # merge_breaker_threshold 复用 agents.merge_breaker_threshold（缺省 2）/
-# shutdown_drain_seconds=1800）
+# shutdown_drain_seconds=1800 / bug_repair_mode=inplace）
 _ADMIN_DEFAULTS = {
     "enabled": True,
     "interval_minutes": 5,
     "escalation_cooldown_minutes": 15,
     "shutdown_drain_seconds": 1800,
+    "bug_repair_mode": "inplace",
 }
 
 
 def _managed_admin_keys(config: dict) -> dict:
-    """受管 admin.* 键提取：5 键 + 缺省填充，不透传未知 admin 键/self_review 子段。
+    """受管 admin.* 键提取：6 键 + 缺省填充，不透传未知 admin 键/self_review 子段。
 
     与 llm/agents 段「缺省填充」形态一致：文件里为合法类型的值才回显，否则用缺省。
-    merge_breaker_threshold 缺省沿用 agents.merge_breaker_threshold（未配置则为 2）。
+    merge_breaker_threshold 缺省沿用 agents.merge_breaker_threshold（未配置则为 2）；
+    bug_repair_mode 仅 inplace/derive 回显，非法值回退缺省 inplace（写路径校验
+    保证合法值才能落盘）。
     """
     admin = config.get("admin") if isinstance(config, dict) else None
     admin = admin if isinstance(admin, dict) else {}
@@ -3246,6 +3252,9 @@ def _managed_admin_keys(config: dict) -> dict:
         val = admin.get(key, default)
         if key == "enabled":
             out[key] = val if isinstance(val, bool) else default
+        elif key == "bug_repair_mode":
+            # 字符串枚举：仅 inplace/derive 回显，非法/非字符串回退缺省
+            out[key] = val if val in ("inplace", "derive") else default
         else:
             # 数值键：非数值/布尔一律回退缺省（写路径校验保证合法值才能落盘）
             if not isinstance(val, (int, float)) or isinstance(val, bool):
@@ -3598,14 +3607,15 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         if _CL.is_valid_hhmm(run_at):
             sr["run_at"] = run_at
         merged["admin"]["self_review"] = sr
-    # add-settings-system-tab：admin.* 五键合并。只动 5 个受管键——保留 admin 段内
+    # add-settings-system-tab：admin.* 六键合并。只动 6 个受管键——保留 admin 段内
     # 的 self_review / agent_model / workers 等未知或非受管键（写路径校验保证
     # 进入此处的值合法，self_review 由顶层 patch 分支单独合并）。
     if "admin" in patch and isinstance(patch["admin"], dict):
         if not isinstance(merged.get("admin"), dict):
             merged["admin"] = {}
         for ak in ("enabled", "interval_minutes", "escalation_cooldown_minutes",
-                   "merge_breaker_threshold", "shutdown_drain_seconds"):
+                   "merge_breaker_threshold", "shutdown_drain_seconds",
+                   "bug_repair_mode"):
             if ak in patch["admin"] and patch["admin"][ak] is not None:
                 merged["admin"][ak] = patch["admin"][ak]
     # description 分支：patch 顶层 description（str）写入 merged["project"]["description"]
@@ -3733,6 +3743,14 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             if not isinstance(sd, int) or isinstance(sd, bool) or sd < 0:
                 return fail(
                     f"admin.shutdown_drain_seconds must be a non-negative integer: {sd!r}"
+                )
+        # add-bug-repair-mode-config：bug_repair_mode 枚举校验（inplace/derive，
+        # 非法值直接拒绝——前端类型错误在后端权威兜底，与其它 admin 键同模式）。
+        if "bug_repair_mode" in adm and adm["bug_repair_mode"] is not None:
+            brm = adm["bug_repair_mode"]
+            if brm not in ("inplace", "derive"):
+                return fail(
+                    f"admin.bug_repair_mode must be one of ['inplace', 'derive']: {brm!r}"
                 )
 
     # 2. 合并受管键
@@ -3870,11 +3888,17 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                     raise ValueError(
                         f"admin.self_review.run_at must be HH:MM (00:00-23:59): {sr['run_at']}"
                     )
-        # add-settings-system-tab：admin.* 五键（merged 视图校验；写路径前置校验
+        # add-settings-system-tab：admin.* 六键（merged 视图校验；写路径前置校验
         # 已拒绝非法 patch，此处兜底防绕过前置校验的直连调用）
         if "enabled" in admin_m and admin_m["enabled"] is not None \
                 and not isinstance(admin_m["enabled"], bool):
             raise ValueError(f"admin.enabled must be a boolean: {admin_m['enabled']!r}")
+        if "bug_repair_mode" in admin_m and admin_m["bug_repair_mode"] is not None \
+                and admin_m["bug_repair_mode"] not in ("inplace", "derive"):
+            raise ValueError(
+                f"admin.bug_repair_mode 非法：{admin_m['bug_repair_mode']!r}"
+                f"（保存被拒绝，请修正后重试）"
+            )
         for _k, _rule in (
             ("interval_minutes", lambda v: isinstance(v, (int, float))
              and not isinstance(v, bool) and v > 0),
