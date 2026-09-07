@@ -48,7 +48,7 @@
 
 - [ ] 5.1 schema.yaml tasks 工件 instruction 追加四类不可交付模式表：dist/构建产物 → 锚点文件 + `reference`；gitignored 路径 → 禁 `new/modify`；`~`/仓库外路径 → 禁 `new/modify`；`.fenix/` 运行时文件 → `reference`
 - [ ] 5.2 `skills/fenix-new/SKILL.md` §3.2 tasks 指引注入同表（措辞与 schema 一致），注明「daemon 晋升时对命中条目机械软化并审计留痕」
-- [ ] 5.3 部署副本同步：`cp core/deliverables.py .fenix/core/deliverables.py`、`cp schemas/spec-driven/schema.yaml .fenix/schemas/spec-driven/schema.yaml`（.fenix 为 gitignore 运行时目录，不入库）
+- [ ] 5.3 部署副本同步（**merge-back 后于主树执行**，worktree 内 `.fenix` 为运行时目录断链、不在 worktree 内同步）：`cp core/deliverables.py .fenix/core/deliverables.py`、`cp schemas/spec-driven/schema.yaml .fenix/schemas/spec-driven/schema.yaml`（.fenix 为 gitignore 运行时目录，不入库）
 - [ ] 5.4 回归测试：`instructions tasks` 输出含四类模式关键词；SKILL.md 含四类模式表
 
 ## 6. PR6 收尾与全量回归
