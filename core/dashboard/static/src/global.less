@@ -158,6 +158,36 @@ body {
   white-space: normal;
 }
 
+// 概览页统计卡移动端优化
+#root :is(.screen-xs, .screen-sm) .overview-intro-row .ant-card-body {
+  padding: 12px 16px !important;
+}
+#root :is(.screen-xs, .screen-sm) .overview-tile-eyebrow {
+  display: none;
+}
+#root :is(.screen-xs, .screen-sm) .overview-tile-numrow {
+  flex-wrap: wrap;
+  white-space: normal !important;
+  overflow: visible !important;
+}
+
+// 概览页项目清单卡头两行移动端优化
+#root :is(.screen-xs, .screen-sm) .overview-project-card .ant-card-head-wrapper {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+#root :is(.screen-xs, .screen-sm) .ant-card-extra {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+#root :is(.screen-xs, .screen-sm) .overview-project-card .ant-input-search {
+  width: 100% !important;
+}
+// 桌面端数字行保持nowrap
+#root :not(.screen-xs):not(.screen-sm) .overview-tile-numrow {
+  white-space: nowrap !important;
+}
+
 // 移动端触控目标扩展工具类：padding 8px 扩大命中区 + 负 margin 完全抵消视觉，命中区 ≥32px ≥ WCAG AA
 .touch-expand {
   display: inline-block;

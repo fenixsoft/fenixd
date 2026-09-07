@@ -48,7 +48,7 @@ function Tile({
       styles={{ body: CARD_BODY, header: { borderBottom: 'none', paddingInline: 16 } }}
     >
       {/* 原有自绘标题行：浅灰小字（头部 title 为 ant-card-head-title 默认黑粗大字） */}
-      <div style={{ fontSize: 14, color: TITLE_GRAY, marginBottom: 4 }}>{title}</div>
+      <div className="overview-tile-eyebrow" style={{ fontSize: 14, color: TITLE_GRAY, marginBottom: 4 }}>{title}</div>
       {children}
     </Card>
   );
@@ -83,7 +83,7 @@ function TaskProgressTile({ totals }: { totals: OverviewTotals }) {
   const progress = pct(totals.task_done ?? 0, totals.task_total ?? 0);
   return (
     <Tile title="任务进度">
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '4px 0 10px', flexWrap: 'wrap' }}>
+      <div className="overview-tile-numrow" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '4px 0 10px', flexWrap: 'wrap' }}>
         <span style={{ fontSize: 28, fontWeight: 600, lineHeight: '40px' }}>{progress}%</span>
         <span>
           <Typography.Text type="secondary">已完成 </Typography.Text>
@@ -168,6 +168,7 @@ function ActiveAgentTile({ totals }: { totals: OverviewTotals }) {
   return (
     <Tile title="活跃 Agent 运行" tooltip="运行中/刚启动的 agent run 按类型占比">
       <div
+        className="overview-tile-numrow"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -235,6 +236,7 @@ function TokenTile({ recent }: { recent: TokenUsageItem[] }) {
       tooltip="最近 20 个有消耗的 SPEC（_tokens_in + _tokens_out 累计），按最近活跃排序；悬浮查看单点数值"
     >
       <div
+        className="overview-tile-numrow"
         style={{
           display: 'flex',
           alignItems: 'baseline',
@@ -287,6 +289,7 @@ export default function IntroduceRow({
 }) {
   return (
     <div
+      className="overview-intro-row"
       style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
