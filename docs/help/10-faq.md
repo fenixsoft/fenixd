@@ -86,6 +86,14 @@
 
 **处置**：对照 [文件与数据地图](09-artifacts.md#出问题去哪查对照表) 逐项核对。`.fenix/` 内的文件都可以安全重新生成，缺失不一定代表异常。
 
+## 11. 配了 hook 但没触发 / 收到 hook_failure 告警
+
+**现象**：SPEC 状态变化后配置的 hook 没有执行；或运维记录页出现 `hook_failure` 告警。
+
+**根因**：hook 动作失败不重试也不去重（git 失败、webhook 不可达、shell 非零退出/超时），每次失败都直接告警。没触发则常见于：手工编辑 config.yaml 漏了 `id`（缺失 id 的条目不执行且无任何痕迹）、`events` 拼写不在十状态枚举内、`enabled: false`（审计记 skipped）、保存后未满 30 秒热更新窗口。
+
+**处置**：先查 `.fenix/hook_audit.jsonl`（或 Dashboard Hook 页签「最近执行」）按 spec 找记录——status=skipped 是被停用；status=failure 是动作报错，detail 含输出摘要；完全没有记录则是匹配阶段未命中（核对 id 与 events）。修正配置后 ≤30 秒热更新自动生效。完整键参考见[配置参考](08-config.md#hooks)。
+
 ## 相关文档
 
 - [核心概念与架构](02-concepts.md)、[SPEC 生命周期与状态机](03-lifecycle.md)
