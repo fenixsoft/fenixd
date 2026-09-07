@@ -1262,3 +1262,212 @@ class TestSpecTimelineAdminEvents(unittest.TestCase):
         admin = self._admin_nodes(timeline)
         self.assertEqual(len(admin), 1)
         self.assertEqual(admin[0]["record_kind"], "disposition")
+
+
+class TestArchivedSpecDocReadback(unittest.TestCase):
+    """归档 SPEC 读侧回退（fix-archived-spec-doc-readback D1-D4）。
+
+    归档实现为目录移动（spec/changes/<name>/ → spec/archive/YYYY-MM-DD-<name>/）
+    + STATE.md 条目保留；读侧 get_spec_doc/parse_tasks/tasks_note 原先硬编码
+    活跃目录，归档 SPEC 的五类文档页签与任务卡片空白。修复后活跃优先、归档回退，
+    防穿越校验对回退路径同样生效。
+    """
+
+    SPEC = "demo-spec"
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.p = Path(self.tmpdir)
+        self.spec_dir = self.p / "spec" / "changes" / self.SPEC
+        self.archive_root = self.p / "spec" / "archive"
+        self.compare_dir = self.archive_root
+        # 注意：活跃布局在用例内按需构造（_archive_layout 会移走活跃目录）
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write(self, base: Path, name: str, content: str):
+        p = base / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        return p
+
+    def _active_layout(self):
+        """活跃布局五类文档全量（proposal/design/tasks/verification/scenarios）。"""
+        self._write(self.spec_dir, "proposal.md", "# 活跃提案\n\n正文-active")
+        self._write(self.spec_dir, "design.md", "# 活跃设计\n\n正文-active")
+        self._write(self.spec_dir, "tasks.md",
+                    "# Tasks\n\n## 1. 实施\n\n- [x] 1.1 active已完成\n- [ ] 1.2 active待办\n")
+        self._write(self.spec_dir, "verification-report.md",
+                    "## 结论：✅ 通过（verified）\n\nactive")
+        self._write(self.spec_dir / "specs" / "active-capability", "spec.md",
+                    "## Scenario: 活跃场景")
+
+    def _archived_layout(self, prefix="2026-09-02", content_marker="archived"):
+        """归档布局：活跃目录移入 spec/archive/<prefix>-<SPEC>/。
+        内容统一以 content_marker 标识，与活跃布局内容可区分。
+        """
+        self._active_layout()
+        archive_dir = self.archive_root / f"{prefix}-{self.SPEC}"
+        shutil.move(str(self.spec_dir), str(archive_dir))
+        # 清掉活跃布局遗留的 specs/（避免与归档场景混合拼接），再覆写五类文档
+        shutil.rmtree(archive_dir / "specs", ignore_errors=True)
+        self._write(archive_dir, "proposal.md", f"# 归档提案\n\n正文-{content_marker}")
+        self._write(archive_dir, "design.md", f"# 归档设计\n\n正文-{content_marker}")
+        self._write(archive_dir, "tasks.md",
+                    f"# Tasks\n\n## 1. 归档任务\n\n- [x] 1.1 完成-{content_marker}\n- [ ] 1.2 待办-{content_marker}\n")
+        self._write(archive_dir, "verification-report.md",
+                    f"## 结论：✅ 通过（verified）\n\n{content_marker}")
+        self._write(archive_dir / "specs" / "archived-capability", "spec.md",
+                    f"## Scenario: 归档场景-{content_marker}")
+        return archive_dir
+
+    # ── resolve_spec_dir helper 直测 ──────────────────────────────────────
+
+    def test_resolve_invalid_spec_returns_none(self):
+        from core.dashboard.data import resolve_spec_dir
+        self._active_layout()
+        for bad in ("..", "../outside", "..%2Fetc", "a/b", "UPPER", ""):
+            self.assertIsNone(resolve_spec_dir(self.tmpdir, bad),
+                              f"非法 spec {bad!r} 必须返回 None")
+
+    def test_resolve_active_dir_priority(self):
+        from core.dashboard.data import resolve_spec_dir
+        self._archived_layout()
+        # 同时存在活跃与归档 → 活跃优先
+        self._active_layout()
+        self.assertEqual(resolve_spec_dir(self.tmpdir, self.SPEC), self.spec_dir)
+
+    def test_resolve_archive_fallback(self):
+        from core.dashboard.data import resolve_spec_dir
+        archive_dir = self._archived_layout()
+        self.assertEqual(resolve_spec_dir(self.tmpdir, self.SPEC), archive_dir)
+
+    def test_resolve_multiple_archives_latest_wins(self):
+        from core.dashboard.data import resolve_spec_dir
+        old = self._archived_layout(prefix="2026-09-01", content_marker="old")
+        new = self._archived_layout(prefix="2026-09-05", content_marker="new")
+        resolved = resolve_spec_dir(self.tmpdir, self.SPEC)
+        self.assertEqual(resolved, new)
+
+    def test_resolve_conflict_suffix_variant(self):
+        from core.dashboard.data import resolve_spec_dir
+        d1 = self._archived_layout(prefix="2026-09-02", content_marker="base")
+        # 冲突后缀变体：同日期追加 -{毫秒}；重建活跃目录后移入带后缀名。
+        # 字典序最大 = 后缀最大（"2026-09-02-demo-spec" < "...-987654321000"）
+        self._active_layout()
+        suffixed = self.archive_root / "2026-09-02-demo-spec-987654321000"
+        shutil.move(str(self.spec_dir), str(suffixed))
+        self.assertEqual(resolve_spec_dir(self.tmpdir, self.SPEC), suffixed)
+        self.assertNotEqual(resolve_spec_dir(self.tmpdir, self.SPEC), d1)
+
+    def test_resolve_soft_delete_variant_not_matched(self):
+        """软删除命名（<name>-<Unix秒>，无日期前缀）不匹配——此类条目已从
+        STATE.md 移除，dashboard 无入口，读侧不得误命中。"""
+        from core.dashboard.data import resolve_spec_dir
+        self._active_layout()
+        self._write(self.spec_dir, "tasks.md", "# T\n")
+        soft = self.archive_root / f"{self.SPEC}-1788260731"
+        shutil.move(str(self.spec_dir), str(soft))
+        self.assertIsNone(resolve_spec_dir(self.tmpdir, self.SPEC))
+
+    def test_resolve_no_dir_returns_none(self):
+        from core.dashboard.data import resolve_spec_dir
+        self.assertIsNone(resolve_spec_dir(self.tmpdir, self.SPEC))
+
+    # ── get_spec_doc 归档回退 ─────────────────────────────────────────────
+
+    def test_archived_spec_five_docs_all_found(self):
+        from core.dashboard.data import get_spec_doc
+        archive_dir = self._archived_layout()
+        expected = {
+            "proposal": f"# 归档提案\n\n正文-archived",
+            "design": f"# 归档设计\n\n正文-archived",
+            "tasks": "# Tasks\n\n## 1. 归档任务\n\n- [x] 1.1 完成-archived\n- [ ] 1.2 待办-archived\n",
+            "verification": "## 结论：✅ 通过（verified）\n\narchived",
+            "scenarios": "# archived-capability\n\n## Scenario: 归档场景-archived",
+        }
+        for doc, want in expected.items():
+            r = get_spec_doc(self.tmpdir, self.SPEC, doc)
+            self.assertTrue(r["found"], f"{doc} 应 found=true")
+            self.assertEqual(r["content"].strip(), want.strip(),
+                             f"{doc} 内容须与归档目录原文一致")
+
+    def test_archived_spec_tasks_parsed_from_archive(self):
+        from core.dashboard.data import parse_tasks, tasks_note
+        archive_dir = self._archived_layout()
+        groups = parse_tasks(self.tmpdir, self.SPEC)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["title"], "归档任务")
+        self.assertEqual([t["id"] for t in groups[0]["tasks"]], ["1.1", "1.2"])
+        self.assertEqual(groups[0]["tasks"][0]["done"], True)
+        self.assertEqual(groups[0]["tasks"][1]["done"], False)
+        self.assertEqual(groups[0]["done"], 1)
+        self.assertEqual(groups[0]["total"], 2)
+        self.assertIsNone(tasks_note(self.tmpdir, self.SPEC))
+
+    def test_archived_spec_verification_and_scenarios(self):
+        from core.dashboard.data import get_spec_doc
+        self._archived_layout()
+        v = get_spec_doc(self.tmpdir, self.SPEC, "verification")
+        self.assertTrue(v["found"])
+        self.assertIn("archived", v["content"])
+        s = get_spec_doc(self.tmpdir, self.SPEC, "scenarios")
+        self.assertTrue(s["found"])
+        self.assertIn("归档场景-archived", s["content"])
+
+    def test_multiple_archives_doc_latest_wins(self):
+        from core.dashboard.data import get_spec_doc
+        self._archived_layout(prefix="2026-09-01", content_marker="old")
+        self._archived_layout(prefix="2026-09-05", content_marker="new")
+        r = get_spec_doc(self.tmpdir, self.SPEC, "proposal")
+        self.assertTrue(r["found"])
+        self.assertIn("正文-new", r["content"])
+        self.assertNotIn("正文-old", r["content"])
+
+    def test_active_spec_unchanged(self):
+        from core.dashboard.data import get_spec_doc, parse_tasks
+        self._active_layout()
+        # 活跃 SPEC：五类文档均读活跃目录，回退不介入
+        for doc in ("proposal", "design", "tasks", "verification", "scenarios"):
+            r = get_spec_doc(self.tmpdir, self.SPEC, doc)
+            self.assertTrue(r["found"], f"活跃 {doc} 应 found=true")
+            self.assertIn("active", r["content"], f"活跃 {doc} 应从活跃目录读取")
+        self.assertIn("正文-active", get_spec_doc(self.tmpdir, self.SPEC, "proposal")["content"])
+        # 任务清单从活跃 tasks.md 解析（标题"实施"），不回退归档
+        groups = parse_tasks(self.tmpdir, self.SPEC)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["title"], "实施")
+        self.assertEqual(groups[0]["done"], 1)
+        self.assertEqual(groups[0]["total"], 2)
+
+    def test_spec_dir_missing_returns_found_false(self):
+        from core.dashboard.data import get_spec_doc
+        # spec 合法但活跃/归档都不存在 → 保持既有 found=False 语义
+        for doc in ("proposal", "design", "tasks", "verification", "scenarios"):
+            r = get_spec_doc(self.tmpdir, self.SPEC, doc)
+            self.assertEqual(r, {"found": False, "content": ""})
+
+    def test_traversal_spec_rejected(self):
+        from core.dashboard.data import get_spec_doc, InvalidSpecName, InvalidSpecDoc
+        self._archived_layout()
+        for bad in ("..", "../outside", "..%2Fetc", "demo-spec/../../etc"):
+            with self.assertRaises(InvalidSpecName, msg=f"spec {bad!r} 必须拒绝"):
+                get_spec_doc(self.tmpdir, bad, "proposal")
+        # doc 侧穿越由白名单拦截（InvalidSpecDoc），同样不返回任何文件内容
+        with self.assertRaises((InvalidSpecName, InvalidSpecDoc)):
+            get_spec_doc(self.tmpdir, self.SPEC, "../outside")
+
+    def test_invalid_doc_rejected(self):
+        from core.dashboard.data import get_spec_doc, InvalidSpecDoc
+        self._archived_layout()
+        with self.assertRaises(InvalidSpecDoc):
+            get_spec_doc(self.tmpdir, self.SPEC, "proposal/../design")
+
+    def test_tasks_note_archive_empty_groups_warning(self):
+        from core.dashboard.data import tasks_note
+        archive_dir = self._archived_layout()
+        # 空 tasks.md（无分组）→ 提示文案（归档回退同样触发）
+        (archive_dir / "tasks.md").write_text("# Tasks\n\nOops\n", encoding="utf-8")
+        self.assertEqual(tasks_note(self.tmpdir, self.SPEC),
+                         "tasks.md 存在但未解析出任务分组（分组格式不匹配或文件为空）")
