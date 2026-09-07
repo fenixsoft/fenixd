@@ -41,6 +41,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -595,6 +596,128 @@ def _path_is_gitignored(project_root, candidates: List[str]) -> bool:
             return True
         # >=2 = git 自身错误（非仓库等）：fail-open 视为未排除，继续下一候选
     return False
+
+
+def _path_is_outside_root(project_root, candidates) -> bool:
+    """任一 candidate 解析后不在 project_root 内返回 True（规则 6 判定核心）。
+
+    判定顺序（design D1）：``os.path.expanduser``（``~``/``~user`` 展开）；相对
+    路径先拼接到 project_root 下（声明段路径相对项目根而非 cwd）；``resolve``
+    （``..`` 越界在此归一）；与 resolve 后的 project_root 做前缀判定
+    （``os.path.commonpath``，``..`` 段已消解）。非仓库外（含仓库内相对路径）
+    → False；解析异常 fail-open 返回 False（不因判定故障阻塞晋升）。
+
+    ``reference`` 不受本函数约束（它就是非交付物语义，仓库外引用合法放行）。
+
+    Args:
+        project_root: 项目根（前缀判定基准，resolve 后使用）。
+        candidates: 待判定路径（字面 + 归一化候选）。
+
+    Returns:
+        任一路径解析后不在根内返回 True；全部在根内或判定不可用返回 False。
+    """
+    root = Path(project_root).resolve()
+    for cand in candidates:
+        try:
+            p = Path(os.path.expanduser(str(cand)))
+            p = p if p.is_absolute() else (root / p)
+            resolved = p.resolve()
+            common = os.path.commonpath([str(root), str(resolved)])
+            if common != str(root):
+                return True
+        except (OSError, ValueError, TypeError):
+            # fail-open：判定故障（非法路径/平台差异）视为在根内，不阻塞晋升
+            continue
+    return False
+
+
+def classify_unsatisfiable(entry, project_root) -> bool:
+    """判定声明条目是否命中确定性不可交付模式（design D1）。
+
+    ``kind ∈ {new, modify}`` 且（``_path_is_gitignored`` 或
+    ``_path_is_outside_root`` 命中）→ True。``reference`` 恒 False（它就是软化
+    终点）；entry 缺 path/kind、path/kind 非法或判定异常均返回 False（fail-open，
+    交由后续 lint 照常拒绝兜底）。
+
+    排除规则 1-4 形态（design D1：这四种不软化，维持既有拒绝语义——需 path
+    修正非 kind 修正）：
+    - 占位符（``<``/``>``）路径：规则 1，软化会掩盖声明格式问题；
+    - 目录路径（``kind: modify`` + 主树存在且为目录）：规则 2，软化后 lint
+      不再拦截但语义仍不可交付；
+
+    零语义推断：只认 gitignored（check-ignore 原生判定）与仓库外（路径解析）
+    两个确定性信号。
+
+    Args:
+        entry: 声明条目 dict（含 ``path`` / ``kind``）。
+        project_root: 项目根（判定基准）。
+
+    Returns:
+        命中不可交付模式返回 True；其余（含 reference、缺字段、判定不可用、
+        规则 1-4 形态）返回 False。
+    """
+    if not isinstance(entry, dict):
+        return False
+    path = str(entry.get("path") or "").strip()
+    kind = str(entry.get("kind") or "").strip().lower()
+    if not path or kind not in _DECLARED_KINDS:
+        return False
+    if kind not in ("new", "modify"):
+        return False  # reference 恒 False（软化终点，无需求再软化）
+    # ── 排除规则 1-4 形态（不软化，维持既有拒绝语义）──
+    # 规则 1：占位符路径（软化会掩盖声明格式问题）
+    if "<" in path or ">" in path:
+        return False
+    # 规则 2：目录路径（软化为 reference 后 lint 不再拦截，但目录不可交付）
+    if kind == "modify":
+        candidates_dir = [path]
+        normalized_dir = normalize_check_path(path)
+        if normalized_dir != path:
+            candidates_dir.append(normalized_dir)
+        pr = Path(project_root)
+        if any(pr.joinpath(c).is_dir() for c in candidates_dir):
+            return False
+    # ── 正向命中判定 ──
+    candidates = [path]
+    normalized = normalize_check_path(path)
+    if normalized != path:
+        candidates.append(normalized)
+    if _path_is_gitignored(project_root, candidates):
+        return True
+    return _path_is_outside_root(project_root, candidates)
+
+
+def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
+    """晋升前软化命中不可交付模式的 new/modify 声明（design D1/D2）。
+
+    逐条 ``classify_unsatisfiable``，命中即 ``soften_declared_kind``
+    （kind → reference 确定性文本改写）；单条改写异常（并发改写/格式漂移）
+    跳过该条记 warning 不中断（fail-safe，交由后续 lint 拒绝兜底）。
+    无声明段（``extract_declared_entries`` 返回 None）早退返回 []。
+
+    Returns:
+        软化记录 ``[{element, kind_before, kind_after}]``（保序）；无命中返回 []。
+    """
+    entries = extract_declared_entries(spec_dir)
+    if not entries:
+        return []
+    softened: list = []
+    for e in entries:
+        path = e["path"]
+        if not classify_unsatisfiable(e, project_root):
+            continue
+        try:
+            diff = soften_declared_kind(spec_dir, path)
+        except Exception as exc:
+            # 单条改写失败：跳过该条记 warning，交由后续 lint 照常拒绝兜底
+            print(f"WARNING: 软化声明 {path} 失败（跳过，lint 兜底）: {exc}")
+            continue
+        softened.append({
+            "element": path,
+            "kind_before": e["kind"],
+            "kind_after": "reference",
+        })
+    return softened
 
 
 def lint_declared(spec_dir, project_root) -> List[str]:
