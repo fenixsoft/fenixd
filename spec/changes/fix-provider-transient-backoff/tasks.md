@@ -40,14 +40,14 @@
 
 ## 3. worktree 现场保留扩展（provider-transient-backoff）
 
-- [ ] 3.1 attempt 间 worktree 保留白名单删除（runner 现保留清单仅 implementer/fast-track/repair），全 agent_type 保留，复用前仍过 frozen/取消检查
-- [ ] 3.2 transient 终态失败分支：`cleanup(success=False)` 前先判定瞬断 → `keep_for_reuse` 登记（worktree_manager 泛化 agent_type 参数）；非瞬断维持现行清理
-- [ ] 3.3 下轮派发认领：implementer/planner 族派发经 `_take_reusable_worktree` 认领复用遗产（照 fast-track 既有通道），长期无人认领由既有 stale 清扫兜底
+- [x] 3.1 attempt 间 worktree 保留白名单删除（runner 现保留清单仅 implementer/fast-track/repair），全 agent_type 保留，复用前仍过 frozen/取消检查
+- [x] 3.2 transient 终态失败分支：`cleanup(success=False)` 前先判定瞬断 → `keep_for_reuse` 登记（worktree_manager 泛化 agent_type 参数）；非瞬断维持现行清理
+- [x] 3.3 下轮派发认领：implementer/planner 族派发经 `_take_reusable_worktree` 认领复用遗产（照 fast-track 既有通道），长期无人认领由既有 stale 清扫兜底
 - [ ] 3.4 单元测试：planner-judge attempt 间复用、瞬断终态 keep_for_reuse、非瞬断终态照旧清理、认领继承现场
 
 ## 4. dispatch 排程等待与全局熔断（transient-dispatch-gating）
 
-- [ ] 4.1 runner 瞬断终态收场时 error 消息头部注入 `[provider-transient]` 结构化标记（写侧统一）
+- [x] 4.1 runner 瞬断终态收场时 error 消息头部注入 `[provider-transient]` 结构化标记（写侧统一）
 - [ ] 4.2 dispatch 失败处理分支识别标记 → 走 `_schedule_transient_recovery`（仿 instant_fail_recovery 定时器模式，`transient_redispatch_delay_seconds` 缺省 600）→ 到期重入派发；跳过 `_retry_count` 递增/清零路径；死亡豁免保持
 - [ ] 4.3 provider_circuit 新增全局错误指纹熔断：错误文本归一化指纹（剥 model 名/时间戳）+ 滑动窗口计数（`transient_break_threshold/window/cooldown`，缺省 3/600/600）→ 派发闸门冻结 + major 告警（15 分钟 throttle）；进程内存态
 - [ ] 4.4 单元测试：标记注入、排程等待不写 retries exhausted、非 transient 路径逐字节不变、熔断触发/解除/告警节流

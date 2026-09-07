@@ -1931,12 +1931,19 @@ class AgentRunner:
                             exc_has_result = getattr(e, "has_result", None)
                             resume_dead = (
                                 error and "No conversation found with session ID" in error)
-                            if (not resume_dead
-                                    and transient_retries < len(transient_budget)
-                                    and self.classify_transient_error(
-                                        exc_stderr,
-                                        exc_exit if exc_exit is not None else 1,
-                                        bool(exc_has_result))):
+                            is_transient = (
+                                not resume_dead and self.classify_transient_error(
+                                    exc_stderr,
+                                    exc_exit if exc_exit is not None else 1,
+                                    bool(exc_has_result)))
+                            if is_transient:
+                                # 瞬断终态/重试共用标记（transient-dispatch-gating D4）：写侧统一
+                                # 在 error 头部注入 `[provider-transient]`，供 dispatch 读侧识别
+                                # 与终态 keep_for_reuse 判定（task 3.2 / 4.1）。
+                                if "[provider-transient]" not in error:
+                                    error = f"[provider-transient] {error}"
+                            if (is_transient
+                                    and transient_retries < len(transient_budget)):
                                 # 原地退避重试：写 transient_retry 事件留痕，按退避序列
                                 # 下一档 sleep，然后 while 循环顶部以同 provider 重跑该
                                 # attempt（不递增 attempt、不触发 switch 冷却、不改 chain_cursor）。
@@ -2097,10 +2104,10 @@ class AgentRunner:
                 # 走终态清理路径后 break，由循环后的 cancelled 收口返回 cancelled=True。
                 if attempt < max_retries and not cancelled_flag:
                     time.sleep(10)  # Wait before retry
-                    if agent_type not in ("implementer", "fast-track", "repair"):
-                        self._v2_stop_for_worktree(wt_path)
-                        self.worktree_manager.cleanup(wt_path, success=False)
-                        wt_path = None
+                    # fix-provider-transient-backoff（D3）：attempt 间 worktree
+                    # 保留扩展到全部 agent_type——非 implementer 族复用前仍过
+                    # frozen/取消检查（见上方 reuse_worktree 判定），不再清工作树。
+                    # dev-server 随之复用，不重复启停。
                 else:
                     self._v2_stop_for_worktree(wt_path)
                     if agent_type == "fast-track":
@@ -2113,6 +2120,20 @@ class AgentRunner:
                         # 终态失败保留现场：dispatch 层负责回收（fallback 清理）
                         kept_wt_path = wt_path
                         handed_off.add(wt_path)
+                    elif error and "[provider-transient]" in error:
+                        # fix-provider-transient-backoff（D3）：transient 终态失败保留现场
+                        # 供下轮认领（替代 cleanup(success=False)）——复用遗产机制，
+                        # 下轮经 _take_reusable_worktree 认领同一目录与分支继承现场。
+                        # 非 transient 终态失败维持现行清理，避免真实缺陷现场被误续用。
+                        self.worktree_manager.keep_for_reuse(
+                            spec_name, wt_path, agent_type=agent_type)
+                        kept_wt_path = wt_path
+                        handed_off.add(wt_path)
+                        self.logger.warning(
+                            "agent_runner",
+                            f"Transient terminal failure for '{spec_name}' — worktree "
+                            f"{wt_path} kept for reuse (fix-provider-transient-backoff)",
+                        )
                     else:
                         self.worktree_manager.cleanup(wt_path, success=False)
                     wt_path = None
