@@ -180,8 +180,12 @@ body {
   flex: 1 1 100%;
   min-width: 0;
 }
-// extra 内 Space 撑满（inline-flex 宽度随内容收缩，width:100% 子项无从解析）
+// extra 内 Space 撑满（inline-flex 宽度随内容收缩，width:100% 子项无从解析）；
+// Space item wrapper 同撑满，使 .ant-input-search 的 width:100% 真正铺满整行
 #root :is(.screen-xs, .screen-sm) .overview-project-card .ant-card-extra .ant-space {
+  width: 100%;
+}
+#root :is(.screen-xs, .screen-sm) .overview-project-card .ant-card-extra .ant-space-item {
   width: 100%;
 }
 #root :is(.screen-xs, .screen-sm) .overview-project-card .ant-input-search {
