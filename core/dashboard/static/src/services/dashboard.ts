@@ -658,6 +658,16 @@ export interface AgentsConfig {
   impl_run_budget?: number;
   /** 重启重验预算（agents.verify_redo_budget，缺省 3）：daemon 重启恢复路径累计重验次数上限 */
   verify_redo_budget?: number;
+  /** 瞬断治理（fix-provider-transient-backoff D6）：原地退避秒序列（逗号分隔，缺省 30,60,120） */
+  transient_backoff_schedule?: string;
+  /** 瞬断终态 dispatch 排程等待秒（缺省 600） */
+  transient_redispatch_delay_seconds?: number;
+  /** 全局同错误指纹熔断阈值（窗口内次数，缺省 3；0=关闭） */
+  transient_break_threshold?: number;
+  /** 熔断滑动窗口秒（缺省 600） */
+  transient_break_window_seconds?: number;
+  /** 熔断冷却秒（缺省 600） */
+  transient_break_cooldown_seconds?: number;
 }
 
 export interface GatesConfig {

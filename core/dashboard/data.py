@@ -3285,7 +3285,13 @@ _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 # add-planner-efficiency：planner 生成节流上限
                 "verify.planner_max_concurrent",
                 # add-spec-hooks：两级 hook 订阅配置（global + specs）
-                "hooks"]
+                "hooks",
+                # fix-provider-transient-backoff（D6）：瞬断治理五键
+                "agents.transient_backoff_schedule",
+                "agents.transient_redispatch_delay_seconds",
+                "agents.transient_break_threshold",
+                "agents.transient_break_window_seconds",
+                "agents.transient_break_cooldown_seconds"]
 
 # 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
 # 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
@@ -3325,6 +3331,12 @@ def _managed_key_sources(raw: dict) -> dict:
             sources["agents.impl_run_budget"] = "project"
         if "verify_redo_budget" in agents_raw:
             sources["agents.verify_redo_budget"] = "project"
+        # fix-provider-transient-backoff（D6）：瞬断治理五键显式定义 → project
+        for _tk in ("transient_backoff_schedule", "transient_redispatch_delay_seconds",
+                    "transient_break_threshold", "transient_break_window_seconds",
+                    "transient_break_cooldown_seconds"):
+            if _tk in agents_raw:
+                sources[f"agents.{_tk}"] = "project"
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         sources["gates.approve_mode"] = "project"
@@ -3626,6 +3638,13 @@ def read_effective_config(project_root) -> dict:
             result["agents"]["impl_run_budget"] = agents_eff["impl_run_budget"]
         if isinstance(agents_eff.get("verify_redo_budget"), int):
             result["agents"]["verify_redo_budget"] = agents_eff["verify_redo_budget"]
+        # fix-provider-transient-backoff（D6）：瞬断治理五键回显到 agents 段
+        #（缺省填充，语义与 ConfigLoader.get_transient_config 一致——非法值回退缺省）。
+        _transient = ConfigLoader.get_transient_config(effective)
+        for _tk in ("transient_backoff_schedule", "transient_redispatch_delay_seconds",
+                    "transient_break_threshold", "transient_break_window_seconds",
+                    "transient_break_cooldown_seconds"):
+            result["agents"][_tk] = _transient[_tk]
     gates_eff = effective.get("gates")
     if isinstance(gates_eff, dict) and "approve_mode" in gates_eff:
         result["gates"] = {"approve_mode": gates_eff["approve_mode"]}
@@ -3702,6 +3721,13 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         if "verify_redo_budget" in patch["agents"]:
             # fix-daemon-lifecycle-races 验证发现：缺合并分支导致保存被静默丢弃
             merged["agents"]["verify_redo_budget"] = patch["agents"]["verify_redo_budget"]
+        # fix-provider-transient-backoff（D6）：瞬断治理五键合并分支（前置校验
+        # 已拒绝非法值，此处只应用合法值；缺省透传由 get_transient_config 兜底）。
+        for _tk in ("transient_backoff_schedule", "transient_redispatch_delay_seconds",
+                    "transient_break_threshold", "transient_break_window_seconds",
+                    "transient_break_cooldown_seconds"):
+            if _tk in patch["agents"]:
+                merged["agents"][_tk] = patch["agents"][_tk]
 
     if "gates" in patch and isinstance(patch["gates"], dict):
         if "approve_mode" in patch["gates"]:
@@ -4003,6 +4029,43 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 raise ValueError(
                     f"agents.verify_redo_budget must be an integer in [1, 10]: {vrb}"
                 )
+        # fix-provider-transient-backoff（D6）：瞬断治理四数值键——非负整数校验
+        #（非法值直接拒绝 400，与 verify/self_review/admin 同模式，前端类型错误
+        # 由后端权威兜底；缺省回显与回退仍走 get_transient_config）。
+        for _tk in ("transient_redispatch_delay_seconds",
+                    "transient_break_threshold",
+                    "transient_break_window_seconds",
+                    "transient_break_cooldown_seconds"):
+            if _tk in agents and agents[_tk] is not None:
+                _tv = agents[_tk]
+                if isinstance(_tv, bool) or not isinstance(_tv, (int, float)) or _tv < 0:
+                    raise ValueError(
+                        f"agents.{_tk} must be a non-negative integer: {_tv!r}"
+                    )
+        if "transient_backoff_schedule" in agents \
+                and agents["transient_backoff_schedule"] is not None:
+            _ts = agents["transient_backoff_schedule"]
+            if not isinstance(_ts, str):
+                raise ValueError(
+                    "agents.transient_backoff_schedule must be a comma-separated "
+                    f"seconds string: {_ts!r}"
+                )
+            # 逗号秒序列校验：任一元素非正整数即拒绝（空串=关闭原地退避，允许）
+            if _ts.strip():
+                for _part in _ts.split(","):
+                    _p = _part.strip()
+                    if not _p:
+                        continue
+                    try:
+                        _iv = int(_p)
+                    except (TypeError, ValueError):
+                        raise ValueError(
+                            f"agents.transient_backoff_schedule 元素非正整数: {_part!r}"
+                        )
+                    if _iv <= 0:
+                        raise ValueError(
+                            f"agents.transient_backoff_schedule 元素非正整数: {_part!r}"
+                        )
         gates = merged.get("gates") or {}
         if "approve_mode" in gates and gates["approve_mode"] is not None:
             mode = gates["approve_mode"]

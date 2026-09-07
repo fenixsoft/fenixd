@@ -3,7 +3,8 @@
 覆盖 keep_for_reuse / create() 认领 / 继承语义 / 失效回退 / 宽限期回收：
   1. keep 后下轮 fast-track create 复用同一目录同一分支（含已提交成果继承）
   2. 复用遗产失效（目录被回收）→ 回退全新创建
-  3. implementer 不参与复用（语义保持 implementer 自有遗产收编流程）
+  3. implementer/planner 族认领保留遗产（fix-provider-transient-backoff D3：
+     认领通道扩展到全 agent_type，transient 终态保留现场下轮继承）
   4. reuse 遗产纳入宽限期兜底回收（复用 legacy 清扫机制）
   5. 成功收尾 cleanup 后认领痕迹清除（prompt 不再误注入继承说明）
 基于真实 git 仓库 fixture（与 test_worktree_merge_guard 同构）。
@@ -106,8 +107,13 @@ class TestWorktreeReuse:
         assert wm.get_reuse_record("demo") is None or \
             wm.get_reuse_record("demo").get("path") == str(wt2)
 
-    def test_implementer_does_not_reuse(self, tmp_path):
-        """复用仅限 fast-track；implementer 保持自有遗产收编语义。"""
+    def test_implementer_claims_reuse_record(self, tmp_path):
+        """认领通道扩展到 implementer（fix-provider-transient-backoff D3/task 3.3）。
+
+        旧语义「复用仅限 fast-track、implementer 自有遗产收编」已废止：transient
+        终态保留的遗产对同 spec 下轮任意 implementer 族派发可见，同一目录同一
+        分支继承现场。
+        """
         root = tmp_path / "repo"
         init_repo(root)
         wm = make_wm(root)
@@ -115,9 +121,11 @@ class TestWorktreeReuse:
         wt1 = wm.create("demo", "fast-track")
         wm.keep_for_reuse("demo", wt1)
 
-        time.sleep(1.1)  # 跨秒避免 impl-<spec>-<ts> 目录名撞上保留中的旧目录
         wt2 = wm.create("demo", "implementer")
-        assert wt2 is not None and Path(wt2) != Path(wt1)
+        assert wt2 is not None and Path(wt2) == Path(wt1), \
+            "implementer 应回认领保留的复用遗产（D3 task 3.3）"
+        assert wm.get_branch_name(wt2) == wm.get_branch_name(wt1), \
+            "认领须落在同一分支（继承现场）"
 
     def test_reuse_record_reclaimed_after_grace(self, tmp_path):
         """reuse 遗产走 legacy 同一宽限期兜底回收，目录与分支一并清除。"""

@@ -76,11 +76,84 @@ const ADMIN_ANNOTATIONS: {
   },
 ];
 
+// 瞬断治理（fix-provider-transient-backoff D6）：键名 = agents.transient_*，
+// 与后端 ConfigLoader.get_transient_config 缺省一致（30,60,120 / 600 / 3 / 600 / 600）。
+const TRANSIENT_ANNOTATIONS: {
+  key: string;
+  label: string;
+  note: string;
+  rule?: object[];
+}[] = [
+  {
+    key: 'transient_backoff_schedule',
+    label: '原地退避序列（秒）',
+    note: '网关瞬断（model 拒绝 / 5xx / 断连）首败后同 provider 原地退避的秒序列，逗号分隔，长度=单 attempt 内原地重试上限。留空关闭原地退避。',
+    rule: [{
+      validator: (_: unknown, v: string | undefined | null) => {
+        if (v == null || String(v).trim() === '') return Promise.resolve();
+        return String(v).split(',').every(p => {
+          const s = p.trim();
+          if (!s) return true;
+          return /^\d+$/.test(s) && Number(s) > 0;
+        })
+          ? Promise.resolve()
+          : Promise.reject(new Error('须为逗号分隔的正整数秒'));
+      },
+    }],
+  },
+  {
+    key: 'transient_redispatch_delay_seconds',
+    label: '重派等待（秒）',
+    note: '瞬断终态（[provider-transient] 标记）后排程延迟重派秒数，不写 retries exhausted。缺省 600。',
+    rule: [{
+      validator: (_: unknown, v: number | undefined | null) =>
+        v != null && Number.isInteger(v) && (v as number) >= 0
+          ? Promise.resolve()
+          : Promise.reject(new Error('须为非负整数')),
+    }],
+  },
+  {
+    key: 'transient_break_threshold',
+    label: '熔断阈值（次数）',
+    note: '全局同错误指纹在窗口内出现次数达此值触发全局派发冻结；0=关闭熔断。缺省 3。',
+    rule: [{
+      validator: (_: unknown, v: number | undefined | null) =>
+        v != null && Number.isInteger(v) && (v as number) >= 0
+          ? Promise.resolve()
+          : Promise.reject(new Error('须为非负整数')),
+    }],
+  },
+  {
+    key: 'transient_break_window_seconds',
+    label: '熔断窗口（秒）',
+    note: '全局同错误指纹计数的滑动窗口秒数。缺省 600。',
+    rule: [{
+      validator: (_: unknown, v: number | undefined | null) =>
+        v != null && Number.isInteger(v) && (v as number) >= 0
+          ? Promise.resolve()
+          : Promise.reject(new Error('须为非负整数')),
+    }],
+  },
+  {
+    key: 'transient_break_cooldown_seconds',
+    label: '熔断冷却（秒）',
+    note: '触发全局熔断后冻结新 run 派发的时长。缺省 600。',
+    rule: [{
+      validator: (_: unknown, v: number | undefined | null) =>
+        v != null && Number.isInteger(v) && (v as number) >= 0
+          ? Promise.resolve()
+          : Promise.reject(new Error('须为非负整数')),
+    }],
+  },
+];
+
 export default function SystemPanel({ config, onSave, project }: SystemPanelProps) {
   const [form] = Form.useForm();
 
   const admin = config.admin ?? {};
   const selfReview = config.self_review;
+  // 瞬断治理（fix-provider-transient-backoff D6）：agents.transient_* 五键
+  const transient = config.agents ?? {};
 
   // ── todo.md 草稿状态上提至此（原 SelfReviewPanel 局部状态）：主保存按钮
   //    统一提交配置 + todo.md（2026-09-07 用户决策：移除独立的重新加载/
@@ -122,6 +195,11 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
     merge_breaker_threshold: admin.merge_breaker_threshold ?? 2,
     shutdown_drain_seconds: admin.shutdown_drain_seconds ?? 1800,
     bug_repair_mode: admin.bug_repair_mode ?? 'inplace',
+    transient_backoff_schedule: transient.transient_backoff_schedule ?? '30,60,120',
+    transient_redispatch_delay_seconds: transient.transient_redispatch_delay_seconds ?? 600,
+    transient_break_threshold: transient.transient_break_threshold ?? 3,
+    transient_break_window_seconds: transient.transient_break_window_seconds ?? 600,
+    transient_break_cooldown_seconds: transient.transient_break_cooldown_seconds ?? 600,
     self_review: {
       enabled: selfReview?.enabled ?? false,
       run_at: dayjs(selfReview?.run_at ?? DEFAULT_RUN_AT, 'HH:mm'),
@@ -132,7 +210,7 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
   useEffect(() => {
     form.setFieldsValue(initialValues);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.admin, config.self_review, form]);
+  }, [config.admin, config.self_review, config.agents, form]);
 
   const handleSave = async () => {
     let ok = false;
@@ -146,6 +224,16 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
           merge_breaker_threshold: values.merge_breaker_threshold,
           shutdown_drain_seconds: values.shutdown_drain_seconds,
           bug_repair_mode: values.bug_repair_mode,
+        },
+        agents: {
+          transient_backoff_schedule:
+            typeof values.transient_backoff_schedule === 'string'
+              ? values.transient_backoff_schedule.trim()
+              : String(values.transient_backoff_schedule ?? ''),
+          transient_redispatch_delay_seconds: values.transient_redispatch_delay_seconds,
+          transient_break_threshold: values.transient_break_threshold,
+          transient_break_window_seconds: values.transient_break_window_seconds,
+          transient_break_cooldown_seconds: values.transient_break_cooldown_seconds,
         },
         self_review: {
           enabled: values.self_review.enabled,
@@ -221,6 +309,57 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
                     <>
                       {label}
                       <span className="label-note">（admin.{key}）</span>
+                    </>
+                  }
+                  rules={rule}
+                  data-testid={`system-field-${key}`}
+                >
+                  <InputNumber
+                    data-testid={`system-control-${key}`}
+                    style={{ width: 220 }}
+                    step={1}
+                    precision={0}
+                  />
+                </Form.Item>
+              )}
+              {note && <Text type="secondary">{note}</Text>}
+            </div>
+          ))}
+        </Card>
+        {/* 瞬断治理（fix-provider-transient-backoff D6）：agents.transient_* 五键分组 */}
+        <h3 style={{ marginTop: 20 }}>瞬断治理</h3>
+        <Text type="secondary">
+          provider 网关瞬时故障（model 拒绝 / 5xx / 断连）的退避与熔断策略。保存后约 30 秒经配置热更新生效。
+        </Text>
+        <Card style={{ marginTop: 12 }}>
+          {TRANSIENT_ANNOTATIONS.map(({ key, label, note, rule }) => (
+            <div key={key} style={{ marginBottom: 4 }}>
+              {key === 'transient_backoff_schedule' ? (
+                <Form.Item
+                  name={key}
+                  label={
+                    <>
+                      {label}
+                      <span className="label-note">（agents.{key}）</span>
+                    </>
+                  }
+                  rules={rule}
+                  data-testid={`system-field-${key}`}
+                >
+                  <InputNumber
+                    data-testid={`system-control-${key}`}
+                    style={{ width: 220 }}
+                    stringMode
+                    placeholder="30,60,120"
+                  />
+                </Form.Item>
+              ) : (
+                <Form.Item
+                  name={key}
+                  label={
+                    <>
+                      {label}
+                      <span className="label-note">（agents.{key}）</span>
                     </>
                   }
                   rules={rule}

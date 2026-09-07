@@ -39,6 +39,33 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 | run_timeout_seconds | 3600 | ≥1 | 热更新 |
 | use_new_verifier | true | bool | 重启 |
 
+### agents.（瞬断治理）——provider 网关瞬时故障的退避与熔断
+
+| 键 | 默认值 | 范围 | 生效方式 |
+|----|--------|------|---------|
+| transient_backoff_schedule | `30,60,120` | 逗号分隔正整数秒序列；空串关闭原地退避 | 热更新 |
+| transient_redispatch_delay_seconds | 600 | ≥0 | 热更新 |
+| transient_break_threshold | 3 | ≥0（0=关闭熔断） | 热更新 |
+| transient_break_window_seconds | 600 | ≥0 | 热更新 |
+| transient_break_cooldown_seconds | 600 | ≥0 | 热更新 |
+
+`agents.transient_*` 五键治理 provider 网关瞬时故障（model 拒绝 / 5xx / 断连），语义与
+`fix-provider-transient-backoff` SPEC 的 design D6 一致；非法值自动回退缺省。设置页
+「系统」页签「瞬断治理」分组可编辑五键。
+
+- `transient_backoff_schedule`：瞬断首败后同 provider 原地退避的秒序列，长度=单
+  attempt 内原地重试上限。缺省 `30,60,120` 表示首败等 30s、再败等 60s、第三次等 120s
+  后仍失败才走换链逻辑；留空 `""` 关闭原地退避（回退到既有换链 + switch 冷却行为）。
+  原地重试不递增 attempt 计数、不触发 switch 冷却、不改链指针。
+- `transient_redispatch_delay_seconds`：dispatch 层遇到 `[provider-transient]` 终态
+  失败后延迟重派的等待秒数（仿秒挂冷却定时器模式），等待期内不写 retries exhausted、
+  不消耗死亡豁免预算。缺省 600（历史死亡 run 重派 16 分钟后成功）。
+- `transient_break_threshold` / `transient_break_window_seconds` / 
+  `transient_break_cooldown_seconds`：全局同错误指纹熔断。窗口（window）内同一错误
+  指纹（错误文本归一化：剥离 model 名/时间戳）出现次数达阈值（threshold）→ 冻结全部
+  新 run 派发冷却（cooldown）秒并发 major 告警（15 分钟节流）；冷却到期自动恢复且
+  窗口计数清零。阈值 0 关闭熔断。熔断状态进程内存、daemon 重启清零。
+
 ### agents.timeout_supervision
 
 | 键 | 默认值 | 生效方式 |
@@ -224,6 +251,7 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 | 验证 | verify.static_scope / verify.deps_mode（存于 config.yaml；`.fenix/verify.yaml` 契约手工编辑，不经设置页改写） |
 | 提示词管理 | agents/ 通用层 + .fenix/agents/ 项目级 |
 | 系统 | admin.enabled / admin.interval_minutes / admin.escalation_cooldown_minutes / admin.merge_breaker_threshold / admin.shutdown_drain_seconds |
+| 系统·瞬断治理 | agents.transient_backoff_schedule / agents.transient_redispatch_delay_seconds / agents.transient_break_threshold / agents.transient_break_window_seconds / agents.transient_break_cooldown_seconds |
 | Hook | hooks.global / hooks.specs.<spec 名>（两级订阅，见 [hooks](#hooks)） |
 
 ## 相关文档

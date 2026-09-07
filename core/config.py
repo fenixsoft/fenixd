@@ -94,6 +94,90 @@ class ConfigLoader:
     # Valid approve modes
     VALID_APPROVE_MODES = ["manual", "auto"]
 
+    # ── 瞬断治理配置（fix-provider-transient-backoff D6 / transient-controls-ui）──
+    # 五键缺省值（design D6 表）。消费方（runner/provider_circuit/dispatch）经
+    # _get_config 读取，非法值由本类防御式规范化回退缺省。
+    TRANSIENT_BACKOFF_SCHEDULE_DEFAULT = "30,60,120"      # 原地退避秒序列（长度=原地重试上限）
+    TRANSIENT_REDISPATCH_DELAY_DEFAULT = 600              # dispatch 排程等待秒
+    TRANSIENT_BREAK_THRESHOLD_DEFAULT = 3                 # 熔断窗口内同指纹次数
+    TRANSIENT_BREAK_WINDOW_DEFAULT = 600                  # 熔断窗口秒
+    TRANSIENT_BREAK_COOLDOWN_DEFAULT = 600                # 熔断冷却秒
+
+    @classmethod
+    def normalize_transient_backoff_schedule(cls, raw) -> str:
+        """规范 `agents.transient_backoff_schedule` 为合法逗号秒序列字符串。
+
+        非法（非字符串 / 非逗号分隔正整数序列）回退缺省 ``"30,60,120"``（防御式
+        先例同 ``_shutdown_drain_seconds``）。空串视为关闭原地退避（设计 Migration
+        Plan：`transient_backoff_schedule: ""` 关闭原地退避），保持原样返回。
+        """
+        if raw is None or not isinstance(raw, str):
+            return cls.TRANSIENT_BACKOFF_SCHEDULE_DEFAULT
+        if not raw.strip():
+            return ""  # 显式空串 = 关闭原地退避（Migration Plan）
+        parts = []
+        for part in raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                val = int(part)
+            except (TypeError, ValueError):
+                return cls.TRANSIENT_BACKOFF_SCHEDULE_DEFAULT
+            if val <= 0:
+                return cls.TRANSIENT_BACKOFF_SCHEDULE_DEFAULT
+            parts.append(str(val))
+        if not parts:
+            return cls.TRANSIENT_BACKOFF_SCHEDULE_DEFAULT
+        return ",".join(parts)
+
+    @classmethod
+    def _normalize_transient_seconds(cls, config, key: str, default: int) -> int:
+        """读取并规范化某瞬断治理秒/次数字段（非负整数，非法回退缺省）。"""
+        try:
+            val = cls.get(config, key, None)
+        except Exception:
+            return default
+        if val is None:
+            return default
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            return default
+        if val < 0:
+            return default
+        return int(val)
+
+    @classmethod
+    def get_transient_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """返回规范化后的瞬断治理配置（五键 + 缺省填充，供 Settings UI / 消费方）。
+
+        语义与 design D6 表一致；非法值（负数/非数字/坏序列）回退缺省，保证
+        展示与生效值不脱节。``transient_backoff_schedule`` 保留字符串形态
+        （逗号秒序列），其余四键为 int。
+        """
+        agents = config.get("agents") if isinstance(config, dict) else None
+        agents = agents if isinstance(agents, dict) else {}
+        return {
+            "transient_backoff_schedule": cls.normalize_transient_backoff_schedule(
+                agents.get("transient_backoff_schedule")
+            ),
+            "transient_redispatch_delay_seconds": cls._normalize_transient_seconds(
+                config, "agents.transient_redispatch_delay_seconds",
+                cls.TRANSIENT_REDISPATCH_DELAY_DEFAULT,
+            ),
+            "transient_break_threshold": cls._normalize_transient_seconds(
+                config, "agents.transient_break_threshold",
+                cls.TRANSIENT_BREAK_THRESHOLD_DEFAULT,
+            ),
+            "transient_break_window_seconds": cls._normalize_transient_seconds(
+                config, "agents.transient_break_window_seconds",
+                cls.TRANSIENT_BREAK_WINDOW_DEFAULT,
+            ),
+            "transient_break_cooldown_seconds": cls._normalize_transient_seconds(
+                config, "agents.transient_break_cooldown_seconds",
+                cls.TRANSIENT_BREAK_COOLDOWN_DEFAULT,
+            ),
+        }
+
     @classmethod
     def resolve_config(cls, project_root) -> Dict[str, Any]:
         """解析某项目的有效配置：用户级 + 项目级深合并（项目级优先）。
@@ -204,6 +288,29 @@ class ConfigLoader:
                 val = agents[field]
                 if not isinstance(val, int) or val <= 0:
                     raise ValueError(f"agents.{field} must be a positive integer: {val}")
+
+        # fix-provider-transient-backoff（D6）：瞬断治理五键防御式校验。非法值不
+        # 拒绝加载——由 get_transient_config / 消费方回退缺省（Migration Plan 回滚
+        # 语义 = 配置键置空），仅对「值类型极端非法以致无法安全解析」打 ERROR。
+        # 写法对齐 loads 阶段只拦截明显损坏的类型（字符串数字歧义由规范化兜底）。
+        for field in ("transient_redispatch_delay_seconds",
+                      "transient_break_threshold",
+                      "transient_break_window_seconds",
+                      "transient_break_cooldown_seconds"):
+            if field in agents and agents[field] is not None:
+                val = agents[field]
+                if (isinstance(val, bool)
+                        or not isinstance(val, (int, float))
+                        or val < 0):
+                    raise ValueError(
+                        f"agents.{field} must be a non-negative number: {val!r}")
+        if "transient_backoff_schedule" in agents \
+                and agents["transient_backoff_schedule"] is not None:
+            schedule_val = agents["transient_backoff_schedule"]
+            if not isinstance(schedule_val, str) and not isinstance(schedule_val, list):
+                raise ValueError(
+                    "agents.transient_backoff_schedule must be a comma-separated "
+                    f"seconds string or list: {schedule_val!r}")
 
         # Validate project type — 仅当 project 存在且（严格路径 或 显式提供 type）时校验
         project = config.get("project")
