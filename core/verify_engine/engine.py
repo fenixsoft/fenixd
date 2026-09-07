@@ -185,6 +185,10 @@ class VerifyEngine:
                 self._save_report(report)
                 return report
 
+        # 执行起点进度（fix-verify-progress-granularity）：此前首个写点在批次
+        # 完成，出题结束到首批 gather 完成之间进度文件不存在，进度条恒 0。
+        self._write_progress(0, len(normalized), "开始执行")
+
         try:
             results = await self._execute_parallel(normalized)
             # ── 环境健全性门：场景结算后的统一后置分类（design D1）──
@@ -224,6 +228,8 @@ class VerifyEngine:
         completed_ids: set[str] = set()
         remaining = list(scenarios)
         batch_num = 0
+        done_count = 0  # 逐场景完成计数（fix-verify-progress-granularity）
+        total = len(scenarios)
 
         while remaining:
             # 找出所有依赖已满足的场景
@@ -243,9 +249,19 @@ class VerifyEngine:
             )
 
             async def run_one(scenario: TestScenario) -> dict:
+                nonlocal done_count
                 async with semaphore:
-                    runner = self._runner_for(scenario.kind)
-                    return await runner.execute(scenario)
+                    try:
+                        runner = self._runner_for(scenario.kind)
+                        return await runner.execute(scenario)
+                    finally:
+                        # 逐场景完成即写进度（含异常路径，fix-verify-progress-granularity）：
+                        # 批次级写点对无依赖场景集退化成「结尾一次性」（0→100% 跳变
+                        # 根因 2）。事件循环单线程，done_count 递增与写文件间无 await。
+                        done_count += 1
+                        self._write_progress(
+                            done_count, total,
+                            f"已完成 {done_count}/{total}（{scenario.id}）")
 
             batch_results = await asyncio.gather(
                 *[run_one(s) for s in ready],
@@ -259,15 +275,14 @@ class VerifyEngine:
                     self.logger.error("verify_engine", f"场景'{sid}'异常: {r}")
                     results.append({
                         "scenario_id": sid,
+                        "kind": ready[i].kind,
                         "status": "error",
                         "error": str(r),
                     })
                 else:
                     results.append(r)
 
-            # 每批次完成后更新进度文件，供仪表盘实时展示
-            self._write_progress(len(completed_ids), len(scenarios),
-                                 f"批次{batch_num}完成: {ready[-1].id if ready else '?'}")
+            # 批次收尾不再重复写进度：批次内每个场景的逐场景写点已覆盖
 
             remaining = [s for s in remaining if s.id not in completed_ids]
 
