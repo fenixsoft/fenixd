@@ -22,5 +22,5 @@
 ## 3. 构建与双视口验证
 
 - [x] 3.1 `cd core/dashboard/static && npm run build` 构建通过
-- [ ] 3.2 playwright 390×844：四统计卡单标题、body padding 12px 16px、Token「平均每 SPEC」注释完整换行、活跃 Agent 图例完整、搜索框全宽可输入、`scrollWidth === 390`
-- [ ] 3.3 playwright 1920×1080 对照基线：四卡双标题 + 16px 24px padding + nowrap 单行、项目清单卡头单行 + 160px 搜索框，逐像素一致
+- [x] 3.2 playwright 390×844：四统计卡单标题、body padding 12px 16px、Token「平均每 SPEC」注释完整换行、活跃 Agent 图例完整、搜索框全宽可输入、`scrollWidth === 390`
+- [x] 3.3 playwright 1920×1080 对照基线：四卡双标题 + 16px 24px padding + nowrap 单行、项目清单卡头单行 + 160px 搜索框，逐像素一致
