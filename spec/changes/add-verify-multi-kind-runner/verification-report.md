@@ -105,7 +105,7 @@
 | 断言 | 期望 | 实际 |
 |---|---|---|
 | element_visible `.ant-tabs-tabpane-active .ant-empty` | 空态占位组件可见 | 超时 3000ms |
-| text_contains `暂无截图——CLI/API 场景证据为命令输出 / HTTP 响应体` | 占位文案可见 | 未找到 |
+| text_contains `暂无截图` | 占位文案可见 | 未找到 |
 
 **归因**（两条均为 test-defect）：
 - **选择器失效**：同上，`.ant-tabs-tabpane-active` 在 antd v5 不存在。

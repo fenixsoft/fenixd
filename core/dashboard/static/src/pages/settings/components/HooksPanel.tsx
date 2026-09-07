@@ -4,8 +4,8 @@
  * 管理全局 hooks（config.hooks.global 增删改/启停）+ 跨 spec 最近执行记录。
  * 结构复用共享组件 HookManager；保存经设置页 onSave 统一走 /api/config。
  *
- * 作用域说明（design Non-Goal）：hook 配置仅项目级（.fenix/config.yaml），
- * 用户级作用域下本面板只读展示提示，不做 CRUD。
+ * 作用域说明：hook 配置仅项目级（.fenix/config.yaml），设置页菜单仅在
+ * 项目级作用域下展示本页签（见 settings/index.tsx），故 project 必传。
  */
 
 import { Typography, message } from 'antd';
@@ -20,12 +20,11 @@ interface HooksPanelProps {
   /** 设置页统一保存回调（写回 /api/config） */
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void> | void;
-  /** undefined = 用户级作用域；项目名 = 项目级 */
-  project?: string;
+  /** 项目级作用域的项目名（本面板仅项目级可达） */
+  project: string;
 }
 
 export default function HooksPanel({ config, onSave, project }: HooksPanelProps) {
-  const isProjectScope = Boolean(project);
   const [audit, setAudit] = useState<HookAuditRecord[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -71,16 +70,6 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
       setSaving(false);
     }
   };
-
-  if (!isProjectScope) {
-    return (
-      <div>
-        <Text type="secondary">
-          Hook 订阅为项目级配置（.fenix/config.yaml 的 hooks 段）。请切换到项目级作用域后配置。
-        </Text>
-      </div>
-    );
-  }
 
   return (
     <div>

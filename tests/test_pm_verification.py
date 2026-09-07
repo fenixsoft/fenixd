@@ -618,6 +618,115 @@ class TestScenarioReloadAfterReachabilityHeal(unittest.TestCase):
         self.engine._enqueue.assert_called_once_with("demo-spec", "verifier")
 
 
+class TestJudgeScenarioRepair(unittest.TestCase):
+    """judge-scenario-repair：judge 原地修复场景文件的采纳与预算通道。
+
+    场景文件自身缺陷（夹具未自建/步骤客观错误）由 judge 原地修复并申报
+    scenario-repaired：框架冻结记账（无理由移除会被补齐）后有界重入
+    阶段2/3 重执行；预算耗尽写 error 停止重入，不误流转 verified/bug-found。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        from types import SimpleNamespace
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
+        )
+        self.verify_dir = Path(self.tmpdir) / ".fenix" / "verify-progress" / "demo-spec"
+        self.verify_dir.mkdir(parents=True)
+        self.scenarios_path = self.verify_dir / "test_scenarios.json"
+        self.scenarios_path.write_text(json.dumps([
+            {
+                "id": "scn-a",
+                "description": "场景A",
+                "steps": [
+                    {"action": "navigate", "value": "http://localhost:8787/#/projects/demo"},
+                    {"action": "wait", "target": ".x", "description": "等待"},
+                ],
+                "assertions": [{"type": "element_visible", "selector": ".x", "label": "可见"}],
+            },
+        ], ensure_ascii=False), encoding="utf-8")
+
+        self.sm.add_spec("demo-spec", {"priority": 5})
+        self.sm.transition("demo-spec", "ready")
+        self.sm.transition("demo-spec", "implementing")
+        self.sm.transition("demo-spec", "implemented")
+        self.sm.transition("demo-spec", "testing")
+
+        self.engine._enqueue = MagicMock()
+        self.engine.agent_runner.run_planner = MagicMock(
+            return_value=SimpleNamespace(
+                success=True, error=None, run_id="planner-judge-demo-spec-1-a1")
+        )
+        self.engine._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._apply_interaction_contract = MagicMock(return_value=None)
+        self.engine._verify_verdict_evidence = MagicMock(return_value=True)
+        self.engine._update_warning_streaks = MagicMock(return_value=[])
+        self.engine._ensure_app_reachable = MagicMock(return_value=(True, False, ""))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _run_with_report(self, on_execute):
+        """冻结复用路径跑通阶段2/3：FakeEngine 每次执行回调 on_execute，
+        返回 1 过 1 败报告（避开全败哨/环境失联门，直达阶段3 判定）。"""
+
+        class FakeEngine:
+            def __init__(self, spec_name, project_root, logger=None, config=None):
+                pass
+
+            async def run(self, scenarios):
+                on_execute()
+                return {
+                    "spec": "demo-spec",
+                    "summary": {
+                        "total": 2, "passed": 1, "warnings": 0,
+                        "failed": 1, "errors": 0, "blocked_env": 0,
+                    },
+                    "scenarios": [],
+                }
+
+        with patch("importlib.reload", lambda m: m), \
+                patch("core.verify_engine.VerifyEngine", FakeEngine):
+            self.engine._run_three_stage_verification("demo-spec")
+
+    def test_repair_reenters_execution_and_budget_exhausts(self):
+        """scenario-repaired → 冻结记账 + 重入执行；预算耗尽写 error 停止重入。"""
+        from core.pm_engine.verification import _SCENARIO_REPAIR_MAX_ROUNDS
+        runs = []
+        self.engine._read_planner_result = MagicMock(return_value="scenario-repaired")
+        self._run_with_report(lambda: runs.append(1))
+        # 1 次初始 + 2 次修复重入 = 3 轮执行；每次修复采纳先冻结记账
+        self.assertEqual(len(runs), 1 + _SCENARIO_REPAIR_MAX_ROUNDS)
+        self.assertEqual(
+            self.engine._apply_scenario_freeze.call_count,
+            _SCENARIO_REPAIR_MAX_ROUNDS)
+        entry = self.sm.read_one("demo-spec")
+        self.assertIn("预算耗尽", str(entry.get("error")))
+        # 停在 testing：修复通道绝不误流转 verified/bug-found
+        self.assertEqual(entry["status"], "testing")
+
+    def test_repair_then_verified(self):
+        """修复一轮后 judge 判 verified → 正常晋级，冻结记账恰一次。"""
+        self.engine._read_planner_result = MagicMock(
+            side_effect=["scenario-repaired", "verified"])
+        self.engine._check_verification_gate = MagicMock(return_value=None)
+        self.engine._ensure_verification_report = MagicMock(return_value=None)
+        self.engine._env_whitewash_gate = MagicMock(return_value=True)
+        self.engine._render_scenario_change_section_to_report = MagicMock()
+        self.engine._on_spec_verified = MagicMock()
+        runs = []
+        self._run_with_report(lambda: runs.append(1))
+        self.assertEqual(len(runs), 2)
+        self.assertEqual(self.engine._apply_scenario_freeze.call_count, 1)
+        self.assertEqual(self.sm.read_one("demo-spec")["status"], "verified")
+
+
 class TestLocateAppBaseUrlFromError(unittest.TestCase):
     """环境门 _locate_app_base_url 须能从 navigate 失败的 error 文本提取 URL。
 

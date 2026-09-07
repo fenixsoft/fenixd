@@ -13,11 +13,11 @@ const { Text } = Typography;
 // 与 v1 KNOWN_AGENT_TYPES 严格一致（6 个角色，勿增删）
 const AGENT_ROLES = [
   { key: 'implementer', label: 'Implementer（执行）' },
-  { key: 'fast-track', label: 'Fast-Track（快速通道）' },
   { key: 'planner-plan', label: 'Planner Plan（生成场景）' },
   { key: 'planner-judge', label: 'Planner Judge（判定结果）' },
   { key: 'verifier', label: 'Verifier（验证）' },
   { key: 'administrator', label: 'Administrator（运维）' },
+  { key: 'fast-track', label: 'Fast-Track（快速通道）' },
 ];
 
 interface ChainRow {

@@ -1,11 +1,17 @@
 """每日自省（add-daily-self-review）测试：调度 / 产物 / 失败处理 / 数据摘要。
 
 对应 tasks：
-- 1.4 单测：定时触发 / 同日防重复 / 23:30 启动补跑 / enabled=false 全链路零动作
-- 2.4 失败处理：run 失败记 warning 告警、当日不重试、次日自然重试
+- 1.4 单测：定时触发 / 24h 内防重复 / 23:30 启动补跑 / enabled=false 全链路零动作
+- 2.4 失败处理：run 失败记 warning 告警、24h 内不重试、满 24h 自然重试
 - 2.5 单测：首次创建 / 追加不覆盖 / read_todo 开关注入与不注入 / 自省后
   spec 目录与 STATE 零新增 / commit 仅含 .fenix/todo.md
 - 3.4 端点读写（见 test_dashboard_data.py 或本文件后段）
+
+24h 滚动窗口改造（2026-09-07 用户决策，原地修改未立项）：
+- 调度判定「last_run_date == 今天」→「距上次执行 ≥24h」（状态文件
+  last_run_at ISO 时间戳；旧格式仅 last_run_date 视为从未执行）；
+- 数据聚合窗口「自然日」→「执行前 24 小时」（runs/日志 ERROR/admin 记录）；
+- 零活动防护按 24h 窗口判定，占位文案改为「近24小时无 SPEC 活动」。
 """
 
 import json
@@ -142,9 +148,11 @@ class TestSelfReviewScheduling:
         res = sched.check_and_run()
         assert res["triggered"] is True and res["ok"] is True
         assert res["date"] == "2026-09-04"
-        # 状态文件记录今日
+        # 状态文件记录执行时刻（24h 判定基准）+ 执行日
         state = json.loads((proot / ".fenix" / "self_review_state.json").read_text())
         assert state["last_run_date"] == "2026-09-04"
+        assert datetime.fromisoformat(state["last_run_at"]) \
+            == datetime(2026, 9, 4, 22, 30)
         assert len(runner.calls) == 1
         # todo.md 已创建
         todo = proot / ".fenix" / "todo.md"
@@ -163,17 +171,45 @@ class TestSelfReviewScheduling:
         assert not (proot / ".fenix" / "self_review_state.json").exists()
         assert not (proot / ".fenix" / "todo.md").exists()
 
-    def test_same_day_no_duplicate(self, proot, monkeypatch, tmp_path):
+    def test_within_24h_no_duplicate(self, proot, monkeypatch):
+        """距上次执行不足 24h → 不触发（原「同日防重复」的 24h 版）。"""
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
         runner = FakeReviewRunner()
         sched = make_scheduler(proot, run_at="22:00", runner=runner)
-        sched._save_state("2026-09-04")  # 今日已执行
+        sched._save_state("2026-09-04")  # 刚执行过（last_run_at=now）
         res = sched.check_and_run()
-        assert res == {"triggered": False, "reason": "already_run"}
+        assert res == {"triggered": False, "reason": "within_24h"}
         assert runner.calls == []
 
+    def test_after_24h_retriggers(self, proot, monkeypatch):
+        """距上次执行满 24h 且再次到达 run_at → 再次触发（每日节奏）。"""
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        make_run(proot, f"impl-a-{_ts(datetime(2026, 9, 4, 10))}", "done")
+        make_scheduler(proot, run_at="22:00",
+                       runner=FakeReviewRunner()).check_and_run()
+        # 次日 22:31（>24h）→ 新窗口有活动 → 再触发
+        _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 31))
+        make_run(proot, f"impl-b-{_ts(datetime(2026, 9, 5, 10))}", "done")
+        runner2 = FakeReviewRunner()
+        res = make_scheduler(proot, run_at="22:00", runner=runner2).check_and_run()
+        assert res["triggered"] is True and res["ok"] is True
+        assert len(runner2.calls) == 1
+
+    def test_legacy_state_without_last_run_at_triggers(self, proot, monkeypatch):
+        """旧格式状态文件（仅 last_run_date，无 last_run_at）→ 视为从未执行，
+        新标准下立即触发（兼作 24h 判定上线后的手动触发通道）。"""
+        (proot / ".fenix" / "self_review_state.json").write_text(json.dumps({
+            "last_run_date": "2026-09-04",
+            "updated_at": "2026-09-04T02:00:27+08:00",
+        }), encoding="utf-8")
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
+        runner = FakeReviewRunner()
+        res = make_scheduler(proot, run_at="22:00", runner=runner).check_and_run()
+        assert res["triggered"] is True and res["ok"] is True
+
     def test_catch_up_on_late_start(self, proot, monkeypatch):
-        """23:30 启动且今日未执行 → 启动后首轮巡检补跑（spec 错过后补跑场景）。"""
+        """23:30 启动且距上次执行 ≥24h → 启动后首轮巡检补跑（spec 错过后补跑场景）。"""
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 23, 30))
         make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
         runner = FakeReviewRunner()
@@ -246,11 +282,11 @@ class TestSelfReviewScheduling:
         assert sched3.check_and_run()["triggered"] is True
 
 
-# ── 零活动防护（2026-09-05 用户决策：当日无 SPEC 不唤醒 admin） ──
+# ── 零活动防护（2026-09-05 用户决策：窗口内无 SPEC 不唤醒 admin；窗口=24h） ──
 
 class TestZeroActivitySkip:
     def test_zero_runs_skips_admin_and_notes_todo(self, proot, monkeypatch):
-        """当日 0 run → 不发起自省 run，仅在 todo.md 记一句占位并照常落状态。"""
+        """24h 窗口 0 run → 不发起自省 run，仅在 todo.md 记一句占位并照常落状态。"""
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
         runner = FakeReviewRunner()
         sched = make_scheduler(proot, run_at="22:00", runner=runner)
@@ -260,16 +296,30 @@ class TestZeroActivitySkip:
         assert runner.calls == []  # admin 未被唤醒
         content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
         assert "## 2026-09-04" in content
-        assert "当日无 SPEC，跳过自省。" in content
+        assert "近24小时无 SPEC 活动，跳过自省。" in content
         # 占位为日期节下裸 bullet（无小节），不进闭环判定条目收集
         assert "###" not in content
         state = json.loads((proot / ".fenix" / "self_review_state.json").read_text())
         assert state["last_run_date"] == "2026-09-04"
+        assert "last_run_at" in state
         # 零活动是正常路径：不产生失败告警
         assert AdminStore(proot, FakeLogger()).read_all() == []
 
+    def test_stale_run_outside_24h_window_skips(self, proot, monkeypatch):
+        """活动在 24h 窗口之外（>24h 前的 run）→ 仍视为零活动跳过。
+
+        这正是本次改造的核心负例：凌晨执行时自然日几乎无数据，但 24h 窗口
+        覆盖昨日 → 有活动必触发；反之窗口外陈旧 run 不计入。
+        """
+        make_run(proot, f"impl-old-{_ts(datetime(2026, 9, 3, 8))}", "done")
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))  # 窗口 09-03 22:30 起
+        runner = FakeReviewRunner()
+        res = make_scheduler(proot, run_at="22:00", runner=runner).check_and_run()
+        assert res.get("skipped") is True
+        assert runner.calls == []
+
     def test_review_prefix_run_not_counted_as_activity(self, proot, monkeypatch):
-        """当日仅剩 review- 自省 run 残留 → 仍视为零 SPEC 活动。"""
+        """窗口内仅剩 review- 自省 run 残留 → 仍视为零 SPEC 活动。"""
         make_run(proot, "review-2026-09-04", "done",
                  ts=datetime(2026, 9, 4, 2, 0).timestamp())
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
@@ -290,7 +340,7 @@ class TestZeroActivitySkip:
         assert len(runner2.calls) == 1
         content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
         # 09-04 占位保留 + 09-05 完整分节追加
-        assert "当日无 SPEC，跳过自省。" in content
+        assert "近24小时无 SPEC 活动，跳过自省。" in content
         assert "### 浪费" in content
         assert content.index("## 2026-09-04") < content.index("## 2026-09-05")
 
@@ -310,17 +360,17 @@ class TestZeroActivitySkip:
 # ── 2.4 失败处理 ───────────────────────────────────────────
 
 class TestSelfReviewFailure:
-    def test_failure_records_warning_and_marks_today(self, proot, monkeypatch):
+    def test_failure_records_warning_and_marks_now(self, proot, monkeypatch):
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
         make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
         runner = FakeReviewRunner(fail=True)
         sched = make_scheduler(proot, run_at="22:00", runner=runner)
         res = sched.check_and_run()
         assert res["triggered"] is True and res["ok"] is False
-        # 状态文件已标记今日 → 当日不重试
+        # 状态文件已记录执行时刻 → 24h 内不重试
         state = json.loads((proot / ".fenix" / "self_review_state.json").read_text())
         assert state["last_run_date"] == "2026-09-04"
-        assert sched.check_and_run()["reason"] == "already_run"
+        assert sched.check_and_run()["reason"] == "within_24h"
         # warning 告警（已标记 handled，不进人工队列）
         recs = AdminStore(proot, FakeLogger()).read_all()
         assert any(r.get("signal_type") == "self_review_failed"
@@ -336,7 +386,7 @@ class TestSelfReviewFailure:
         runner = FakeReviewRunner(fail=True)
         sched = make_scheduler(proot, run_at="22:00", runner=runner)
         sched.check_and_run()
-        # 9/5 到点 → 自然重试
+        # 9/5 到点（距上次执行满 24h）→ 自然重试
         _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 30))
         make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 5, 10))}", "done")
         runner2 = FakeReviewRunner()
@@ -407,7 +457,7 @@ class TestTodoAppend:
         assert runner_off.calls[0][2] is None
 
     def test_run_summary_injects_daily_summary(self, proot, monkeypatch):
-        """数据摘要四源注入：STATE 终态 / runs / admin / ERROR。"""
+        """数据摘要四源注入：STATE 终态 / runs / admin / ERROR（24h 窗口）。"""
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
         specs = {"spec-a": {"status": "done"}, "spec-b": {"status": "implementing"}}
         make_run(proot, f"impl-spec-a-{_ts(datetime(2026, 9, 4, 10))}", "done")
@@ -423,6 +473,8 @@ class TestTodoAppend:
         sched = make_scheduler(proot, runner=runner, specs=specs)
         sched.check_and_run()
         summary = runner.calls[0][1]
+        assert "近24小时数据摘要" in summary
+        assert "窗口:" in summary
         assert "STATE 终态分布" in summary
         assert "done: 1" in summary and "implementing: 1" in summary
         assert "超时: 1" in summary
@@ -773,7 +825,7 @@ class TestSummaryHelpers:
         make_run(proot, f"impl-d-{_ts(base)}", "error", ts=base.timestamp())
         make_run(proot, f"impl-e-{_ts(base)}", "empty", ts=base.timestamp())
         make_run(proot, "review-2026-09-04", "done", ts=base.timestamp())  # 自省 run 排除
-        stats = collect_runs_stats(proot, "2026-09-04")
+        stats = collect_runs_stats(proot, datetime(2026, 9, 4, 0, 0))
         assert stats["succeeded"] == 1
         assert stats["timeout"] == 1
         assert stats["instant_hang"] == 1
@@ -781,10 +833,11 @@ class TestSummaryHelpers:
         assert stats["dropped"] == 1
         assert stats["total"] == 5  # review- 不计入
 
-    def test_runs_stats_other_day_excluded(self, proot):
+    def test_runs_stats_outside_window_excluded(self, proot):
+        """窗口开始时刻之前的 run 不计入（24h 滚动窗口语义）。"""
         make_run(proot, f"impl-a-{_ts(datetime(2026, 9, 4, 10))}", "done")
         make_run(proot, f"impl-b-{_ts(datetime(2026, 9, 3, 10))}", "done")
-        stats = collect_runs_stats(proot, "2026-09-04")
+        stats = collect_runs_stats(proot, datetime(2026, 9, 4, 0, 0))
         assert stats["total"] == 1
 
     def test_log_errors_aggregate(self, proot):
@@ -797,11 +850,11 @@ class TestSummaryHelpers:
                                      "timestamp": "2026-09-04T0%s:00:00Z" % (2 + i)}))
         lines.append(json.dumps({"level": "INFO", "message": "ok",
                                  "timestamp": "2026-09-04T05:00:00Z"}))
-        # 前一天 ERROR 不计入
-        lines.append(json.dumps({"level": "ERROR", "message": "yesterday",
+        # 窗口开始前 ERROR 不计入
+        lines.append(json.dumps({"level": "ERROR", "message": "before-window",
                                  "timestamp": "2026-09-03T05:00:00Z"}))
         log.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        agg = collect_log_errors(proot, "2026-09-04")
+        agg = collect_log_errors(proot, datetime(2026, 9, 4, 0, 0))
         assert agg["error_count"] == 3
         assert len(agg["samples"]) == 3
         assert all("err" in s for s in agg["samples"])
@@ -1133,12 +1186,12 @@ class TestSummaryGitCommits:
         subprocess.run(["git", "-C", str(proot), "add", "f.txt"], check=True)
         subprocess.run(["git", "-C", str(proot), "commit", "-qm", "fix: 闭环修复提交"],
                        check=True)
-        summary = make_scheduler(proot).collect_daily_summary("2026-09-04")
+        summary = make_scheduler(proot).collect_daily_summary(datetime(2026, 9, 4))
         assert "## 5. 近 3 日 git 提交" in summary
         assert "fix: 闭环修复提交" in summary
 
     def test_daily_summary_git_unavailable_degrades(self, proot):
         # 非 git 目录 → 降级提示，不阻断摘要
-        summary = make_scheduler(proot).collect_daily_summary("2026-09-04")
+        summary = make_scheduler(proot).collect_daily_summary(datetime(2026, 9, 4))
         assert "## 5. 近 3 日 git 提交" in summary
         assert "（git log 读取失败）" in summary

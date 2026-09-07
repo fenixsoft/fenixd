@@ -338,6 +338,8 @@ export interface SpecDetail {
   error: string | null;
   branch?: string | null;
   depends_on?: string | null;
+  // add-spec-detail-duration：累计耗时（秒），与列表页耗时列同源同口径
+  total_duration?: number;
   // 验证结论 — 对应后端 data.py parse_verdict() 返回结构
   verdict?: {
     exists: boolean;

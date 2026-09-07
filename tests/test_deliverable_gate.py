@@ -28,7 +28,8 @@ from core.worktree_manager import WorktreeManager
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # add-deliverable-extractor-semantics 回归夹具（真实分支 + 真实 SPEC 文档）
-INTERACTION_CONTRACT_SPEC = "add-interaction-contract-and-per-assert-triage"
+# 该 spec 已归档（2026-09-07）：夹具路径指向归档固定副本
+INTERACTION_CONTRACT_SPEC = "2026-09-07-add-interaction-contract-and-per-assert-triage"
 INTERACTION_CONTRACT_BRANCH = "fenix/add-interaction-contract-and-per-assert-triage-1788091910"
 INTERACTION_CONTRACT_REFERENCES = [
     ".fenix/core/agent_runner.py",
@@ -57,7 +58,9 @@ class _FakeLogger:
 class TestExtractPaths(unittest.TestCase):
     def test_extract_from_real_v2_config_page_fixture(self):
         """从真实事故现场文档提取出 config.json 等预期路径。"""
-        spec_dir = REPO_ROOT / "spec" / "changes" / "v2-config-page"
+        # v2-config-page 已归档（2026-09-06）：真实夹具改指向归档固定副本，
+        # 避免 spec 归档移动令本测试失效（judge 判定噪音源）
+        spec_dir = REPO_ROOT / "spec" / "archive" / "2026-09-06-v2-config-page"
         paths = extract_paths(spec_dir)
         # proposal.md 与 tasks.md 均声明了 core/dashboard/static/v2/pages/config.json
         self.assertIn("core/dashboard/static/v2/pages/config.json", paths)
@@ -160,7 +163,7 @@ class TestExtractPaths(unittest.TestCase):
 class TestExtractPathsTyped(unittest.TestCase):
     def test_reference_context_not_deliverable_real_fixture(self):
         """真实样本（interaction-contract tasks.md）：头部「实现依据」段 4 路径归 references。"""
-        spec_dir = REPO_ROOT / "spec" / "changes" / INTERACTION_CONTRACT_SPEC
+        spec_dir = REPO_ROOT / "spec" / "archive" / INTERACTION_CONTRACT_SPEC
         typed = extract_paths_typed(spec_dir)
         for ref in INTERACTION_CONTRACT_REFERENCES:
             self.assertIn(ref, typed["references"])

@@ -2286,16 +2286,11 @@ def project_summary(project_root, name: str, path: str) -> dict:
     }
 
 
-def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
-    """单个 SPEC 的摘要（/api/specs 列表项）。"""
-    done, total = task_progress(project_root, spec_name, entry.get("status", ""))
-    vp = parse_verify_progress(project_root, spec_name)
-    # 含归档：run 产物被清理后列表页耗时统计不缩水
-    runs = get_runs(project_root, spec_name, include_archive=True)
-    # add-done-duration-persist（D4）：done/pushed 的 SPEC 优先读 STATE.md 固化的
-    # total_duration（done 时刻快照，不随 run 产物清理归零）；parse_state 返回
-    # 字符串，须 int 容错转换，脏值/缺失回退实时求和。非完成状态忽略字段，
-    # 运行中的 SPEC 耗时应持续增长，冻结值仅对终态有意义（D5）。
+def _spec_total_duration(project_root, spec_name: str, entry: dict, runs: list) -> int:
+    """SPEC 累计耗时（add-spec-detail-duration：列表 spec_summary / 详情 spec_detail
+    共用同一口径，保证两页数值严格一致）。done/pushed 优先读 STATE.md 固化的
+    total_duration（done 时刻快照，不随 run 产物清理归零）；其余状态或脏值回退
+    实时求和（运行中的 SPEC 耗时应持续增长，固化值仅对终态有意义）。"""
     persisted = None
     if entry.get("status") in ("done", "pushed"):
         raw = entry.get("total_duration")
@@ -2307,9 +2302,17 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
     if persisted is None:
         # 耗时 = 该 spec 全部运行记录（implementer/verifier/planner/tester 等）的
         # duration_seconds 求和；无任何运行记录时为 0。
-        total_duration = sum(int(r.get("duration_seconds") or 0) for r in runs)
-    else:
-        total_duration = persisted
+        return sum(int(r.get("duration_seconds") or 0) for r in runs)
+    return persisted
+
+
+def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
+    """单个 SPEC 的摘要（/api/specs 列表项）。"""
+    done, total = task_progress(project_root, spec_name, entry.get("status", ""))
+    vp = parse_verify_progress(project_root, spec_name)
+    # 含归档：run 产物被清理后列表页耗时统计不缩水
+    runs = get_runs(project_root, spec_name, include_archive=True)
+    total_duration = _spec_total_duration(project_root, spec_name, entry, runs)
     # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
     from core.spec_mode import read_spec_mode
     mode = read_spec_mode(project_root, spec_name)
@@ -3098,6 +3101,9 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "runs": runs,
         "verdict": verdict,
         "timeline": timeline,
+        # add-spec-detail-duration：详情页「耗时」与列表页「耗时」列同源同口径
+        # （runs 已含归档，见 _spec_total_duration）
+        "total_duration": _spec_total_duration(project_root, spec_name, entry, runs),
         # add-model-billing-cost-display：SPEC 级成本合计（计费关闭时缺省 None）
         "cost_summary": cost_summary,
         # add-cost-observability（D2）：治理区展示的累计 token 与成本可用性标记。

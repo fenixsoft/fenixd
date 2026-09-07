@@ -143,7 +143,7 @@ class PromptBuilder:
             return self._build_repair_prompt(spec_name, detail or {})
 
         # add-daily-self-review：自省 prompt 独立构建（无 spec 维度占位符，
-        # 注入当日数据摘要与可选 todo.md 全文）。
+        # 注入近 24 小时数据摘要与可选 todo.md 全文）。
         if agent_type == "self-review":
             return self._build_self_review_prompt(spec_name, detail or {})
 
@@ -556,8 +556,8 @@ class PromptBuilder:
 
         加载 agents/self-review.md（文件化体系，缺失 fail-fast），以
         str.replace 填充占位符（不用 str.format——正文含大量 {} JSON 示例）：
-        - {review_date}: 自省归属自然日
-        - {daily_summary}: 框架聚合的当日数据摘要（五源：STATE 终态 /
+        - {review_date}: 自省归属执行日
+        - {daily_summary}: 框架聚合的近 24 小时数据摘要（五源：STATE 终态 /
           runs 统计 / admin 告警与处置 / 日志 ERROR / 近 3 日 git 提交）
         - {todo_md_content}: read_todo=true 时的既有 todo.md 全文；
           关闭或不存在时为占位提示（Agent 无需区分）

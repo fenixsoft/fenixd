@@ -112,5 +112,49 @@ class TestSpecSummaryDurationPersistence(unittest.TestCase):
         self.assertEqual(s["total_duration"], 42)
 
 
+class TestSpecDetailDuration(unittest.TestCase):
+    """add-spec-detail-duration：spec_detail 下发 total_duration，口径与 spec_summary 一致
+    （done/pushed 优先读 STATE 固化快照，否则按含归档 runs 的 duration_seconds 求和）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.root = Path(self.tmpdir)
+        (self.root / ".fenix").mkdir(parents=True, exist_ok=True)
+        (self.root / ".fenix" / "STATE.md").write_text("", encoding="utf-8")
+        _mk_spec(self.root, "demo")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_run(self, run_id, start_ts, duration):
+        """创建 run 产物并定 mtime，使 duration_seconds = duration。"""
+        runs_dir = self.root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        p = runs_dir / f"{run_id}.jsonl"
+        p.write_text("", encoding="utf-8")
+        os.utime(p, (start_ts + duration, start_ts + duration))
+
+    def test_done_uses_persisted_value(self):
+        """① done spec 有固化字段时详情返回字段值（与列表同源，run 缺失也返回）。"""
+        d = spec_detail(self.root, "demo", {"status": "done", "total_duration": "150"})
+        self.assertEqual(d["total_duration"], 150)
+
+    def test_running_sums_runs(self):
+        """② 运行中 spec 忽略固化字段，详情与列表同样走实时求和。"""
+        self._make_run("impl-demo-1789000000-a1", 1789000000, 42)
+        d = spec_detail(self.root, "demo",
+                        {"status": "implementing", "total_duration": "150"})
+        self.assertEqual(d["total_duration"], 42)
+
+    def test_matches_summary(self):
+        """③ 同一 entry 下详情与列表数值严格一致。"""
+        self._make_run("impl-demo-1789000000-a1", 1789000000, 42)
+        entry = {"status": "implementing"}
+        self.assertEqual(
+            spec_detail(self.root, "demo", entry)["total_duration"],
+            spec_summary(self.root, "demo", entry)["total_duration"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

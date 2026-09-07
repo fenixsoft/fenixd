@@ -91,9 +91,20 @@ class TestCandidateExtraction(unittest.TestCase):
         self.assertTrue(hit[0].declared_display)
 
     def test_real_v2_overview_page_spec_yields_candidates(self):
-        """真实夹具（任务 4.1）：v2-overview-page SPEC 文档可检出卡片候选。"""
+        """真实夹具（任务 4.1）：v2-overview-page SPEC 文档可检出卡片候选。
+
+        原始 spec 已归档（spec/archive/2026-09-05-v2-overview-page）：归档移动
+        会令指向 spec/changes 的真实夹具失效（judge 判定噪音源），此处把归档
+        副本拷入临时项目结构后按同一路径约定收集。
+        """
         from core.interaction_contract import collect_spec_candidates
-        cands = collect_spec_candidates(REPO_ROOT, "v2-overview-page")
+        with tempfile.TemporaryDirectory() as td:
+            spec_copy = Path(td) / "spec" / "changes" / "v2-overview-page"
+            spec_copy.parent.mkdir(parents=True)
+            shutil.copytree(
+                REPO_ROOT / "spec" / "archive" / "2026-09-05-v2-overview-page",
+                spec_copy)
+            cands = collect_spec_candidates(td, "v2-overview-page")
         keys = [c.key for c in cands]
         # proposal.md「项目 cards(启动/停止/删除按钮…)」是事故复发点
         self.assertTrue(any("card" in k for k in keys), keys)

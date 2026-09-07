@@ -11,7 +11,7 @@
  * 统一读写 config hooks 段，避免跨组件状态碎片。
  */
 
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined } from '@ant-design/icons';
 import {
   Button, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography,
 } from 'antd';
@@ -168,6 +168,7 @@ export default function HookManager({
         title: '事件',
         dataIndex: 'events',
         key: 'events',
+        width: 140,
         render: (events: string[]) => (
           <Space wrap size={4}>
             {events.map((ev) => (
@@ -182,7 +183,7 @@ export default function HookManager({
         title: '动作',
         dataIndex: 'action',
         key: 'action',
-        width: 170,
+        width: 311,
         render: (a: HookAction | string) => HOOK_ACTION_LABELS[a as HookAction] || a,
       },
       {
@@ -229,6 +230,9 @@ export default function HookManager({
 
   // ── 生效合并表格列（仅 spec 详情页）────────────────────────────
 
+  // 生效合并表格列（仅 spec 详情页）。
+  // 列宽口径：事件列实测 732px 收缩为 1/4（183）；腾出的宽度连同动作列
+  // 原有宽度由动作列与参数列等宽平分（各 360），固定列总宽守恒。
   const effectiveColumns = [
     {
       title: '来源',
@@ -243,10 +247,13 @@ export default function HookManager({
       title: '事件',
       dataIndex: 'hook.events',
       key: 'events',
+      width: 183,
       render: (_: unknown, r: { hook: HookConfig }) => (
         <Space wrap size={4}>
           {r.hook.events.map((ev) => (
-            <Tag key={ev}>{EVENT_LABELS[ev] || ev}</Tag>
+            <Tag key={ev} color="blue">
+              {EVENT_LABELS[ev] || ev}
+            </Tag>
           ))}
         </Space>
       ),
@@ -255,8 +262,18 @@ export default function HookManager({
       title: '动作',
       dataIndex: 'hook.action',
       key: 'action',
-      width: 170,
+      width: 360,
       render: (_: unknown, r: { hook: HookConfig }) => HOOK_ACTION_LABELS[r.hook.action as HookAction] || r.hook.action,
+    },
+    {
+      title: '参数',
+      key: 'param',
+      width: 360,
+      render: (_: unknown, r: { hook: HookConfig }) => (
+        <Text type="secondary" ellipsis style={{ maxWidth: 320 }}>
+          {paramSummary(r.hook)}
+        </Text>
+      ),
     },
     {
       title: '状态',
@@ -282,6 +299,7 @@ export default function HookManager({
             pagination={false}
             size="small"
             rowKey="key"
+            tableLayout="fixed"
             style={{ marginBottom: 24 }}
           />
         </>
@@ -290,7 +308,7 @@ export default function HookManager({
       {/* ── Hook CRUD 列表 ──────────────────────────────────── */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <Title level={5} style={{ marginTop: 0 }}>Hook 列表</Title>
-        <Button type="primary" size="small" icon={<PlusOutlined />} onClick={handleAdd}>
+        <Button type="primary" onClick={handleAdd}>
           新增 Hook
         </Button>
       </div>

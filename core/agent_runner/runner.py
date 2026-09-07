@@ -1186,11 +1186,11 @@ class AgentRunner:
         ``.fenix/self_review_out-<run_id>.json``（JSON：
         date/waste/mistakes/improvements/resolved/summary），run 结束读取
         并清理。失败（异常/超时/rc!=0）返回 success=False（调度器记告警、
-        当日不重试）。
+        24h 内不重试）。
 
         Args:
-            date_str: 自省归属自然日 YYYY-MM-DD（即 run_id 内嵌日期）。
-            daily_summary: 框架聚合的当日数据摘要（五源），注入 prompt。
+            date_str: 自省归属执行日 YYYY-MM-DD（即 run_id 内嵌日期）。
+            daily_summary: 框架聚合的近 24 小时数据摘要（五源），注入 prompt。
             todo_md: read_todo=true 时的既有 todo.md 全文；None 不注入。
             todo_entries: read_todo=true 时 ID 标注的近 3 日条目清单
                 （闭环判定对象）；None 注入占位提示。

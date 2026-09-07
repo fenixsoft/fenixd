@@ -27,7 +27,6 @@ const BASE_MENU_ITEMS = [
   { key: 'token', label: '预算' },
   { key: 'misc', label: '归档' },
   { key: 'verify', label: '验证' },
-  { key: 'hook', label: 'Hook' },
   { key: 'system', label: '系统' },
 ];
 
@@ -84,27 +83,35 @@ export default function SettingsPage() {
     const { scope: nextScope, project: nextProject } = decodeScopeValue(value);
     setScope(nextScope);
     setProject(nextProject);
+    // Hook 页签仅项目级存在：切回用户级时不能停留在已消失的页签上
+    if (nextScope === 'user' && activeKey === 'hook') {
+      setActiveKey('llm');
+    }
   };
 
-  // 处理保存操作
-  const handleSave = async (values: Partial<ConfigData>) => {
+  // 处理保存操作（返回是否成功：系统页签保存成功后还会连带提交 todo.md）
+  const handleSave = async (values: Partial<ConfigData>): Promise<boolean> => {
     try {
       await saveConfig(project, values);
       message.success('保存成功');
       // 重新加载配置
       const configData = await getConfig(project);
       setConfig(configData);
+      return true;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       message.error(`保存失败：${errorMessage}`);
       console.error('Failed to save config:', error);
+      return false;
     }
   };
 
-  // 运行时构造菜单：项目级作用域时追加项目简介页签
+  // 运行时构造菜单：项目级作用域时追加项目简介页签；
+  // Hook 为项目级设置，随项目级作用域出现并置于菜单最末
   const menuItems = [...BASE_MENU_ITEMS];
   if (scope === 'project' && project) {
     menuItems.push({ key: 'project-profile', label: project });
+    menuItems.push({ key: 'hook', label: 'Hook' });
   }
 
   return (
@@ -203,12 +210,8 @@ export default function SettingsPage() {
                 {activeKey === 'verify' && (
                   <VerifyPanel config={config} onSave={handleSave} />
                 )}
-                {activeKey === 'hook' && (
-                  <HooksPanel
-                    config={config}
-                    onSave={handleSave}
-                    project={scope === 'project' ? project : undefined}
-                  />
+                {activeKey === 'hook' && project && (
+                  <HooksPanel config={config} onSave={handleSave} project={project} />
                 )}
                 {activeKey === 'system' && (
                   <SystemPanel

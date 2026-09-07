@@ -1,6 +1,7 @@
-import { Button, Card, Form, InputNumber, Select, Switch, Typography } from 'antd';
+import { Button, Card, Form, InputNumber, Select, Switch, Typography, message } from 'antd';
 import dayjs from 'dayjs';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { getTodo, saveTodo } from '@/services/dashboard';
 import type { ConfigData } from '@/services/dashboard';
 import SelfReviewPanel from './SelfReviewPanel';
 
@@ -11,7 +12,8 @@ const DEFAULT_RUN_AT = '02:00';
 
 interface SystemPanelProps {
   config: ConfigData;
-  onSave: (values: Partial<ConfigData>) => Promise<void>;
+  /** 返回保存是否成功：false 时主保存不再提交 todo.md（配置失败不连带覆写） */
+  onSave: (values: Partial<ConfigData>) => Promise<boolean>;
   /** 项目名；透传给自省区块（todo.md 编辑区仅项目级作用域显示） */
   project?: string;
 }
@@ -80,6 +82,37 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
   const admin = config.admin ?? {};
   const selfReview = config.self_review;
 
+  // ── todo.md 草稿状态上提至此（原 SelfReviewPanel 局部状态）：主保存按钮
+  //    统一提交配置 + todo.md（2026-09-07 用户决策：移除独立的重新加载/
+  //    保存 todo 按钮）；project 变化（作用域切换）时重新加载磁盘内容 ──
+  const [todoDraft, setTodoDraft] = useState('');
+  const [todoExists, setTodoExists] = useState(false);
+  const [todoLoading, setTodoLoading] = useState(false);
+
+  useEffect(() => {
+    if (!project) return;
+    let cancelled = false;
+    const load = async () => {
+      setTodoLoading(true);
+      try {
+        const d = await getTodo(project);
+        if (!cancelled) {
+          setTodoDraft(d.content);
+          setTodoExists(d.exists);
+        }
+      } catch (e) {
+        console.error('Failed to load todo.md:', e);
+        if (!cancelled) {
+          message.error(`加载 todo.md 失败：${e instanceof Error ? e.message : e}`);
+        }
+      } finally {
+        if (!cancelled) setTodoLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [project]);
+
   // 自省字段（self_review.*）并入本表单：TimePicker 值为 dayjs 对象（结构性保证
   // HH:mm 合法），保存时转回字符串
   const initialValues = {
@@ -102,9 +135,10 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
   }, [config.admin, config.self_review, form]);
 
   const handleSave = async () => {
+    let ok = false;
     try {
       const values = await form.validateFields();
-      await onSave({
+      ok = await onSave({
         admin: {
           enabled: values.enabled,
           interval_minutes: values.interval_minutes,
@@ -121,6 +155,20 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
       });
     } catch {
       // 校验失败：antd 已在表单内渲染 explain-error 提示
+      return;
+    }
+    // 配置保存成功后连调 /api/todo 保存 todo.md（同一「保存」动作的两段提交；
+    // 配置失败不连带覆写 todo.md）。成功后回读磁盘，兼作原「重新加载」语义
+    if (!project || !ok) return;
+    try {
+      await saveTodo(project, todoDraft);
+      const d = await getTodo(project);
+      setTodoDraft(d.content);
+      setTodoExists(d.exists);
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      message.error(`todo.md 保存失败：${errorMessage}`);
+      console.error('Failed to save todo.md:', e);
     }
   };
 
@@ -190,7 +238,13 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
             </div>
           ))}
         </Card>
-        <SelfReviewPanel project={project} />
+        <SelfReviewPanel
+          project={project}
+          todoDraft={todoDraft}
+          todoExists={todoExists}
+          todoLoading={todoLoading}
+          onTodoDraftChange={setTodoDraft}
+        />
       </Form>
       <div style={{ textAlign: 'right', marginTop: 24 }}>
         <Button type="primary" onClick={handleSave} data-testid="system-save-btn">

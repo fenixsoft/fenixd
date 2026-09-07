@@ -711,13 +711,15 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
+        runner.logger = FakeLogger()
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
         runner._get_agent_model_assignment = lambda agent_type: None
         runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
-            return "output", 5, "sess"
+            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                         "cost_usd": 0.0}
 
         runner._run_claude = fake_run_claude
         runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
@@ -923,6 +925,7 @@ class TestRunAdministrator:
         disp_path.write_text(json.dumps({"spec": "old", "result": "stale"}), encoding="utf-8")
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
+        runner.logger = FakeLogger()
         runner._clear_admin_disposition(disp_path)
         assert not disp_path.exists()
 
@@ -932,6 +935,7 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
+        runner.logger = FakeLogger()
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
         runner._get_agent_model_assignment = lambda agent_type: None
@@ -946,7 +950,8 @@ class TestRunAdministrator:
                 "result": "resolved",
                 "escalate": False,
             }), encoding="utf-8")
-            return "output", 5, "sess"
+            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                         "cost_usd": 0.0}
 
         runner._run_claude = fake_run_claude
         disp = runner.run_administrator(
@@ -964,6 +969,7 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
+        runner.logger = FakeLogger()
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
         runner._get_agent_model_assignment = lambda agent_type: None
@@ -979,7 +985,8 @@ class TestRunAdministrator:
                 "escalate": False,
                 "summary": summary,
             }), encoding="utf-8")
-            return "output", 5, "sess"
+            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                         "cost_usd": 0.0}
 
         runner._run_claude = fake_run_claude
         disp = runner.run_administrator(
@@ -993,6 +1000,7 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
+        runner.logger = FakeLogger()
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
         runner._get_agent_model_assignment = lambda agent_type: None
@@ -1002,7 +1010,8 @@ class TestRunAdministrator:
             admin_disposition_path(cwd, run_id).write_text(json.dumps({
                 "spec": "spec-a", "result": "resolved",
             }), encoding="utf-8")
-            return "output", 5, "sess"
+            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                         "cost_usd": 0.0}
 
         runner._run_claude = fake_run_claude
         disp = runner.run_administrator(
@@ -1017,6 +1026,7 @@ class TestRunAdministrator:
         disp_path = proot / ".fenix" / "admin_disposition-admin-spec-a-1.json"
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
+        runner.logger = FakeLogger()
 
         # 列表 → 用换行符拼接（每条独立一行，design D5）
         disp_path.write_text(json.dumps({
@@ -1066,6 +1076,7 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
+        runner.logger = FakeLogger()
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
         runner._get_agent_model_assignment = lambda agent_type: [
@@ -1080,7 +1091,8 @@ class TestRunAdministrator:
             captured["env"] = env_overrides
             admin_disposition_path(cwd, run_id).write_text(
                 json.dumps({"spec": "spec-a", "result": "resolved"}), encoding="utf-8")
-            return "output", 5, "sess"
+            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                         "cost_usd": 0.0}
 
         runner._run_claude = fake_run_claude
         runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
@@ -1097,6 +1109,7 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
+        runner.logger = FakeLogger()
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-opus-4"
         runner._get_agent_model_assignment = lambda agent_type: None
@@ -1108,7 +1121,8 @@ class TestRunAdministrator:
             captured["env"] = env_overrides
             admin_disposition_path(cwd, run_id).write_text(
                 json.dumps({"spec": "spec-a", "result": "resolved"}), encoding="utf-8")
-            return "output", 5, "sess"
+            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                         "cost_usd": 0.0}
 
         runner._run_claude = fake_run_claude
         runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
@@ -1124,6 +1138,7 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
+        runner.logger = FakeLogger()
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
         runner._get_agent_model_assignment = lambda agent_type: None
@@ -1135,7 +1150,8 @@ class TestRunAdministrator:
             disposition_path_from_prompt(prompt).write_text(json.dumps({
                 "spec": "spec-a", "problem": "注入链路", "result": "resolved",
             }), encoding="utf-8")
-            return "output", 5, "sess"
+            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                         "cost_usd": 0.0}
 
         runner._run_claude = fake_run_claude
         disp = runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
@@ -1158,6 +1174,7 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
+        runner.logger = FakeLogger()
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
         runner._get_agent_model_assignment = lambda agent_type: None
@@ -1167,7 +1184,8 @@ class TestRunAdministrator:
             disp_path = admin_disposition_path(cwd, run_id)
             disp_path.write_text(json.dumps({"result": "resolved"}), encoding="utf-8")
             assert disp_path.exists()
-            return "output", 5, "sess"
+            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                         "cost_usd": 0.0}
 
         runner._run_claude = fake_run_claude
         disp = runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
@@ -1181,6 +1199,7 @@ class TestRunAdministrator:
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
+        runner.logger = FakeLogger()
         runner._get_config = lambda key, default=None: default
         runner._get_admin_model = lambda: "claude-sonnet-5"
         runner._get_agent_model_assignment = lambda agent_type: None
@@ -1201,7 +1220,8 @@ class TestRunAdministrator:
                 "problem": f"问题-{idx}",
                 "result": "resolved",
             }), encoding="utf-8")
-            return "output", 5, "sess"
+            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                         "cost_usd": 0.0}
 
         runner._run_claude = fake_run_claude
         results = {}

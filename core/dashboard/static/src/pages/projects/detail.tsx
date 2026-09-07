@@ -1364,25 +1364,27 @@ export default function SpecDetailPage() {
               </Image.PreviewGroup>
             </div>
           ) : (
-            <Empty description="暂无截图——CLI/API 场景证据为命令输出 / HTTP 响应体（在场景页签断言明细中）" />
+            <Empty description="暂无截图" />
           )}
         </div>
       ),
     },
-    {
-      key: 'hooks',
-      label: (
-        <span>
-          Hook
-        </span>
-      ),
-      children: <SpecHooksSection name={name} spec={spec} />,
-    },
+    // Hook 页签仅未到终态（pushed）的 SPEC 展示：pushed 后状态不再变化，
+    // 状态订阅型 hook 对其无意义
+    ...(detail?.status !== 'pushed'
+      ? [
+          {
+            key: 'hooks',
+            label: <span>Hook</span>,
+            children: <SpecHooksSection name={name} spec={spec} />,
+          },
+        ]
+      : []),
   ];
 
   return (
     <PageContainer breadcrumbRender={false} header={headerCfg}>
-      {/* 项目信息（置顶）：基础元信息 + 累计 Token 消耗（只展示输入/输出，成本不回传不准不算） */}
+      {/* 项目信息（置顶）：基础元信息 + 累计 Token 消耗（只展示输入/输出，成本不回传不准不算）+ 耗时/成本 */}
       <Card
         title={
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1412,25 +1414,31 @@ export default function SpecDetailPage() {
           <Descriptions.Item label="输出 Token">
             {detail?.token_usage ? fmtMillions(detail.token_usage.tokens_out) : '—'}
           </Descriptions.Item>
-          {/* add-model-billing-cost-display：SPEC 级成本合计（本地计算口径）。
-              计费开关关闭时后端不下发 cost_summary → 整行不渲染；
-              computed_usd 为 null（全部未计价）→ 「成本不可用」，绝不显示 $0.00 */}
-          {detail?.cost_summary && (
-            <Descriptions.Item label="成本">
-              {detail.cost_summary.computed_usd != null ? (
-                <>
-                  <Typography.Text strong>{formatUsd(detail.cost_summary.computed_usd)}</Typography.Text>
-                  {detail.cost_summary.unpriced_runs > 0 && (
-                    <Typography.Text type="secondary" style={{ marginLeft: 4 }}>
-                      （含 {detail.cost_summary.unpriced_runs} 个未计价 run）
-                    </Typography.Text>
-                  )}
-                </>
-              ) : (
-                <Typography.Text type="secondary">成本不可用</Typography.Text>
-              )}
-            </Descriptions.Item>
-          )}
+          {/* add-spec-detail-duration：耗时与列表页「耗时」列同源同口径（后端
+              _spec_total_duration 共享实现），格式同列表 fmtDuration */}
+          <Descriptions.Item label="耗时">
+            {detail ? fmtDuration(detail.total_duration ?? 0) : '—'}
+          </Descriptions.Item>
+          {/* add-model-billing-cost-display + 成本恒显示：computed_usd 非空 → 金额
+              （含未计价 run 提示）；计价表为空（后端不下发 cost_summary）或全部
+              run 不可计价 → 「成本不可用」，绝不显示 $0.00；detail 未加载完显示
+              — 防止加载瞬间闪「成本不可用」 */}
+          <Descriptions.Item label="成本">
+            {!detail ? (
+              '—'
+            ) : detail.cost_summary?.computed_usd != null ? (
+              <>
+                <Typography.Text strong>{formatUsd(detail.cost_summary.computed_usd)}</Typography.Text>
+                {detail.cost_summary.unpriced_runs > 0 && (
+                  <Typography.Text type="secondary" style={{ marginLeft: 4 }}>
+                    （含 {detail.cost_summary.unpriced_runs} 个未计价 run）
+                  </Typography.Text>
+                )}
+              </>
+            ) : (
+              <Typography.Text type="secondary">成本不可用</Typography.Text>
+            )}
+          </Descriptions.Item>
         </Descriptions>
       </Card>
 

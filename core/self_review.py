@@ -1,20 +1,26 @@
 """self_review.py — 每日定时自省（add-daily-self-review spec）。
 
 每晚本地时间 ``admin.self_review.run_at``（缺省 02:00）后，由 Administrator
-通道执行一次当日工作回顾：聚合当日数据摘要（STATE 终态 / runs 统计 /
+通道执行一次工作回顾：聚合执行前 24 小时的数据摘要（STATE 终态 / runs 统计 /
 admin 告警与处置 / 日志 ERROR / 近 3 日 git 提交五源）→ 发起 ``self-review``
 run → 按 resolved 移除已闭环历史条目 + 追加写入项目 ``.fenix/todo.md``
 → 单文件 commit + push。
 
 调度判定挂在 admin_monitor 巡检循环（design D1，不新增线程/定时器）：
-每轮巡检检查「enabled && 本地时间 ≥ run_at && 状态文件 last_run_date <
-今天」→ 触发。天然获得补跑（启动后首轮巡检即补）与防重复（状态文件）。
-失败当日不重试（也写 last_run_date=今天，防风暴），次日自然重试。
+每轮巡检检查「enabled && 本地时间 ≥ run_at && 距上次执行 ≥24h」→ 触发。
+天然获得补跑（启动后首轮巡检即补）与防重复（状态文件 last_run_at 时间戳）。
+失败后 24h 内不重试（也写 last_run_at=now，防风暴），满 24h 后自然重试。
 
-零活动防护（2026-09-05 用户决策）：当日无任何 SPEC run（``review-`` 前缀
-自省 run 已排除）→ 不发起 run、不唤醒 admin，仅在 todo.md 记一句「当日无
-SPEC，跳过自省。」占位（裸 bullet，不进闭环判定条目），照常提交与写状态
-文件。
+24h 滚动窗口（2026-09-07 用户决策，原地修改）：调度防重复与数据聚合窗口
+均以「执行前 24 小时」为准——凌晨 run_at 执行时自然日刚开始、按自然日聚合
+几乎扫不到数据（09-07 事故：02:00 自省只覆盖 00:00-02:00 → 零活动跳过）；
+改为 24h 窗口后昨日活动必然落入回顾范围。旧格式状态文件（仅 last_run_date
+无 last_run_at）视为从未执行，上线后首轮巡检即按新标准补跑一次。
+
+零活动防护（2026-09-05 用户决策，窗口改 24h）：近 24 小时无任何 SPEC run
+（``review-`` 前缀自省 run 已排除）→ 不发起 run、不唤醒 admin，仅在
+todo.md 记一句「近24小时无 SPEC 活动，跳过自省。」占位（裸 bullet，不进
+闭环判定条目），照常提交与写状态文件。
 
 硬约束（spec「禁止自动创建 SPEC」）：本模块及自省链路 MUST NOT 创建
 spec/changes 条目、注册 STATE.md 条目或派发任何 agent——产出仅供用户
@@ -60,19 +66,28 @@ _RUN_TS_RE = re.compile(r"-(\d{9,10})(?:-a\d+)?$")
 
 
 def local_today_str() -> str:
-    """本地自然日字符串 YYYY-MM-DD（调度与状态文件均按本地时间）。"""
+    """本地自然日字符串 YYYY-MM-DD（todo 日期节与状态文件均按本地时间）。"""
     return datetime.now().date().isoformat()
 
 
-def _iso_to_local_date(iso_str: Optional[str]) -> Optional[str]:
-    """ISO 时间戳（含 Z 后缀）→ 本地自然日字符串；解析失败返回 None。"""
+def _iso_to_local_dt(iso_str: Optional[str]) -> Optional[datetime]:
+    """ISO 时间戳（含 Z 后缀）→ 本地 naive datetime；解析失败返回 None。"""
     if not iso_str:
         return None
     try:
         dt = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
     except (ValueError, TypeError):
         return None
-    return dt.astimezone().date().isoformat()
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    return dt
+
+
+def _in_window(dt: Optional[datetime], window_start: datetime) -> bool:
+    """naive 本地 datetime 是否落在 [window_start, now] 窗口内。"""
+    if dt is None:
+        return False
+    return window_start <= dt <= datetime.now()
 
 
 def _parse_run_at(run_at: str, today) -> datetime:
@@ -138,11 +153,12 @@ def _classify_run(run_id: str, lines: list) -> tuple:
     return "failed", text[:140]
 
 
-def collect_runs_stats(project_root, date_str: str) -> Dict[str, int]:
-    """当日 runs 统计（成功/失败/秒挂/超时/丢弃/在跑），排除 self-review run 自身。
+def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
+    """近 24 小时窗口 runs 统计（成功/失败/秒挂/超时/丢弃/在跑），排除
+    self-review run 自身。
 
-    按 run_id 内嵌开始时间戳判定归属自然日（缺失回退文件 mtime），与
-    get_runs 的解析口径一致。产物文件只读，不触发任何写操作。
+    窗口 = [window_start, now]，按 run_id 内嵌开始时间戳判定归属（缺失回退
+    文件 mtime），与 get_runs 的解析口径一致。产物文件只读，不触发任何写操作。
     """
     counts = {"total": 0, "succeeded": 0, "failed": 0, "instant_hang": 0,
               "timeout": 0, "dropped": 0, "running": 0}
@@ -163,7 +179,7 @@ def collect_runs_stats(project_root, date_str: str) -> Dict[str, int]:
             continue
         start_ts = _run_start_ts(run_id)
         ts = start_ts if start_ts is not None else int(stat.st_mtime)
-        if datetime.fromtimestamp(ts).date().isoformat() != date_str:
+        if not _in_window(datetime.fromtimestamp(ts), window_start):
             continue
         category, _detail = _classify_run(run_id, _read_run_tail(p, 3))
         counts["total"] += 1
@@ -171,8 +187,10 @@ def collect_runs_stats(project_root, date_str: str) -> Dict[str, int]:
     return counts
 
 
-def collect_log_errors(project_root, date_str: str, limit: int = 20) -> Dict[str, Any]:
-    """当日 fenixd.log ERROR 聚合：总数 + 最近 limit 条样本（含时间戳/组件/消息）。"""
+def collect_log_errors(project_root, window_start: datetime,
+                       limit: int = 20) -> Dict[str, Any]:
+    """近 24 小时窗口 fenixd.log ERROR 聚合：总数 + 最近 limit 条样本
+    （含时间戳/组件/消息）。"""
     log_path = Path(project_root) / ".fenix" / "logs" / "fenixd.log"
     errors: List[dict] = []
     if log_path.is_file():
@@ -187,7 +205,8 @@ def collect_log_errors(project_root, date_str: str, limit: int = 20) -> Dict[str
                         continue
                     if entry.get("level") != "ERROR":
                         continue
-                    if _iso_to_local_date(entry.get("timestamp")) != date_str:
+                    if not _in_window(_iso_to_local_dt(entry.get("timestamp")),
+                                      window_start):
                         continue
                     errors.append(entry)
         except OSError:
@@ -270,41 +289,45 @@ class SelfReviewScheduler:
     # ── 调度判定（design D1） ──────────────────────────────────
 
     def check_and_run(self) -> dict:
-        """巡检检查点：enabled && 本地时间 ≥ run_at && 今日未执行 → 触发自省。
+        """巡检检查点：enabled && 本地时间 ≥ run_at && 距上次执行 ≥24h → 触发。
 
         返回结果 dict（触发与否/原因/结果）供测试与审计。enabled=false 时
-        全链路零动作（不调度、不执行、不写文件）。
+        全链路零动作（不调度、不执行、不写文件）。防重复以状态文件
+        last_run_at 时间戳为准（24h 滚动窗口）；旧格式状态文件（仅
+        last_run_date）视为从未执行，上线后首轮巡检即按新标准补跑。
         """
         from .config import ConfigLoader
         sr = ConfigLoader.get_self_review_config(self.config)
         if not sr["enabled"]:
             return {"triggered": False, "reason": "disabled"}
 
-        today = local_today_str()
-        if self._load_state().get("last_run_date") == today:
-            return {"triggered": False, "reason": "already_run"}
-
         now = datetime.now()
         if now < _parse_run_at(sr["run_at"], now.date()):
             return {"triggered": False, "reason": "before_run_at"}
 
-        # 触发：成功/失败都写 last_run_date=今天（失败当日不重试，次日自然重试）
-        return self._execute_review(today, sr)
+        last_run_at = self._load_last_run_at()
+        if last_run_at is not None and now - last_run_at < timedelta(hours=24):
+            return {"triggered": False, "reason": "within_24h"}
 
-    def _execute_review(self, today: str, sr: dict) -> dict:
-        """执行一次自省：聚合数据 → 发起 run → 追加 todo.md → 提交。"""
+        # 触发：成功/失败都写 last_run_at=now（失败 24h 内不重试，满 24h 自然重试）
+        return self._execute_review(local_today_str(), now, sr)
+
+    def _execute_review(self, today: str, now: datetime, sr: dict) -> dict:
+        """执行一次自省：聚合近 24h 数据 → 发起 run → 追加 todo.md → 提交。"""
         if self.agent_runner is None:
             self._record_failure_alert(
                 f"{today}: agent_runner 不可用（未装配），无法执行自省")
             self._save_state(today)
             return {"triggered": True, "ok": False, "reason": "no_runner", "date": today}
 
-        # 零活动防护：当日无任何 SPEC run（review- 自省 run 已排除）→ 不唤醒
-        # admin，仅在 todo.md 记一句占位并跳过（2026-09-05 用户决策）。
-        if collect_runs_stats(self.project_root, today)["total"] == 0:
+        # 零活动防护：近 24 小时无任何 SPEC run（review- 自省 run 已排除）→
+        # 不唤醒 admin，仅在 todo.md 记一句占位并跳过（2026-09-05 用户决策，
+        # 窗口 2026-09-07 起改 24h）。
+        window_start = now - timedelta(hours=24)
+        if collect_runs_stats(self.project_root, window_start)["total"] == 0:
             return self._skip_review(today)
 
-        daily_summary = self.collect_daily_summary(today)
+        daily_summary = self.collect_daily_summary(window_start)
         # 闭环判定条目（read_todo=true 时收集窗口内既有条目并 ID 标注注入）
         cleanup_entries: List[Dict[str, str]] = []
         todo_md = None
@@ -351,8 +374,8 @@ class SelfReviewScheduler:
     # ── 零活动防护（2026-09-05 用户决策） ─────────────────────
 
     def _skip_review(self, today: str) -> dict:
-        """当日零 SPEC 活动跳过：不发起 run（不唤醒 admin），仅在 todo.md
-        记一句占位，照常提交 + 写状态文件（当日不再重试）。
+        """近 24 小时零 SPEC 活动跳过：不发起 run（不唤醒 admin），仅在
+        todo.md 记一句占位，照常提交 + 写状态文件（24h 内不再重试）。
 
         占位写为日期节下的裸 bullet（无小节）——_collect_recent_entries 只
         收小节下条目，故不进闭环判定清单、也不参与闭环移除，作为「当天执行
@@ -365,7 +388,7 @@ class SelfReviewScheduler:
             if todo.is_file():
                 existing = todo.read_text(encoding="utf-8", errors="replace")
             if not re.search(rf"(?m)^## {re.escape(today)}\s*$", existing):
-                block = f"## {today}\n\n- 当日无 SPEC，跳过自省。\n"
+                block = f"## {today}\n\n- 近24小时无 SPEC 活动，跳过自省。\n"
                 if existing.strip():
                     todo.write_text(
                         existing.rstrip("\n") + "\n\n" + block, encoding="utf-8")
@@ -379,20 +402,26 @@ class SelfReviewScheduler:
         self._save_state(today)
         self.logger.info(
             "self_review",
-            f"{today}: 当日无 SPEC 活动（0 run），跳过自省（未唤醒 admin）")
+            f"{today}: 近 24 小时无 SPEC 活动（0 run），跳过自省（未唤醒 admin）")
         return {"triggered": True, "ok": True, "date": today,
                 "skipped": True, "reason": "no_spec_activity"}
 
     # ── 四源数据摘要（spec 场景锁定数据源清单） ───────────────
 
-    def collect_daily_summary(self, date_str: str) -> str:
-        """聚合当日数据摘要：STATE 终态 / runs 统计 / admin 告警与处置 / 日志
-        ERROR / 近 3 日 git 提交五源。
+    def collect_daily_summary(self, window_start: datetime) -> str:
+        """聚合近 24 小时数据摘要：STATE 终态 / runs 统计 / admin 告警与处置 /
+        日志 ERROR / 近 3 日 git 提交五源。
 
-        输出 markdown 文本块，作为自省 prompt 的「当日数据摘要」注入（与人工
-        复盘同源）。任一源读取失败降级为空段（不阻断自省）。
+        窗口 = [window_start, now]（调度器传执行前 24 小时起点）。输出
+        markdown 文本块，作为自省 prompt 的「数据摘要」注入（与人工复盘同
+        源）。任一源读取失败降级为空段（不阻断自省）。
         """
-        lines = ["# 当日数据摘要", f"日期: {date_str}", ""]
+        lines = [
+            "# 近24小时数据摘要",
+            f"窗口: {window_start:%Y-%m-%d %H:%M} ~ "
+            f"{datetime.now():%Y-%m-%d %H:%M}（本地时间，执行前 24 小时）",
+            "",
+        ]
 
         # 1. STATE 终态分布
         lines.append("## 1. STATE 终态分布")
@@ -405,8 +434,8 @@ class SelfReviewScheduler:
         lines.append("")
 
         # 2. runs 统计
-        lines.append("## 2. runs 统计（当日）")
-        stats = collect_runs_stats(self.project_root, date_str)
+        lines.append("## 2. runs 统计（近24小时）")
+        stats = collect_runs_stats(self.project_root, window_start)
         lines.append(f"- 总 run 数: {stats['total']}")
         lines.append(f"- 成功: {stats['succeeded']}")
         lines.append(f"- 失败: {stats['failed']}")
@@ -417,20 +446,20 @@ class SelfReviewScheduler:
         lines.append("")
 
         # 3. admin 告警与处置记录
-        lines.append("## 3. admin 告警与处置记录（当日）")
-        lines.extend(self._collect_admin_summary(date_str))
+        lines.append("## 3. admin 告警与处置记录（近24小时）")
+        lines.extend(self._collect_admin_summary(window_start))
         lines.append("")
 
         # 4. 日志 ERROR 聚合
-        lines.append("## 4. 日志 ERROR 聚合（当日）")
-        err = collect_log_errors(self.project_root, date_str)
+        lines.append("## 4. 日志 ERROR 聚合（近24小时）")
+        err = collect_log_errors(self.project_root, window_start)
         lines.append(f"- ERROR 总数: {err['error_count']}")
         if err["samples"]:
             lines.append("- 最近样本:")
             for s in err["samples"]:
                 lines.append(f"  - {s}")
         else:
-            lines.append("- （当日无 ERROR）")
+            lines.append("- （窗口内无 ERROR）")
         lines.append("")
 
         # 5. 近 3 日 git 提交（闭环判定硬证据：问题是否已有对应修复落地）
@@ -453,18 +482,18 @@ class SelfReviewScheduler:
             dist[status] = dist.get(status, 0) + 1
         return dist
 
-    def _collect_admin_summary(self, date_str: str) -> List[str]:
+    def _collect_admin_summary(self, window_start: datetime) -> List[str]:
         try:
             records = self.store.read_all()
         except Exception:
             return ["- （admin store 读取失败）"]
-        today_records = [
+        window_records = [
             r for r in records
-            if _iso_to_local_date(r.get("created")) == date_str
+            if _in_window(_iso_to_local_dt(r.get("created")), window_start)
         ]
-        signals = [r for r in today_records if r.get("kind") == "signal"]
-        escalations = [r for r in today_records if r.get("kind") == "escalation"]
-        dispositions = [r for r in today_records if r.get("kind") == "disposition"]
+        signals = [r for r in window_records if r.get("kind") == "signal"]
+        escalations = [r for r in window_records if r.get("kind") == "escalation"]
+        dispositions = [r for r in window_records if r.get("kind") == "disposition"]
         unhandled = [r for r in escalations if not r.get("handled")]
         lines = [
             f"- 信号: {len(signals)} 条",
@@ -477,8 +506,8 @@ class SelfReviewScheduler:
                 f"  - 未处理升级 [{u.get('signal_type')}] spec={u.get('spec')}: "
                 f"{str(u.get('description') or '')[:160]}"
             )
-        if not today_records:
-            return ["- （当日无 admin 记录）"]
+        if not window_records:
+            return ["- （窗口内无 admin 记录）"]
         return lines
 
     def _collect_recent_commits(self, days: int = CLEANUP_WINDOW_DAYS,
@@ -803,17 +832,32 @@ class SelfReviewScheduler:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return {}
-        if not isinstance(data, dict) or not isinstance(data.get("last_run_date"), str):
-            return {}
-        return data
+        return data if isinstance(data, dict) else {}
+
+    def _load_last_run_at(self) -> Optional[datetime]:
+        """状态文件 last_run_at → 本地 naive datetime；缺失/畸形返回 None。
+
+        旧格式状态文件（仅 last_run_date，24h 判定上线前写入）按「从未执行」
+        处理——上线后首轮巡检即按新标准补跑一次（兼作新标准触发通道）。
+        """
+        raw = self._load_state().get("last_run_at")
+        if not isinstance(raw, str) or not raw:
+            return None
+        return _iso_to_local_dt(raw)
 
     def _save_state(self, date_str: str) -> None:
+        """记录执行时刻（last_run_at，24h 防重复判定基准）与执行日。
+
+        last_run_date 保留写入：人读友好、与 git 提交标题（daily self-review:
+        <date>）对齐；调度判定只看 last_run_at。
+        """
         path = self._state_path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
                 json.dumps({
                     "last_run_date": date_str,
+                    "last_run_at": datetime.now().isoformat(),
                     "updated_at": datetime.now().astimezone().isoformat(),
                 }, ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -821,7 +865,7 @@ class SelfReviewScheduler:
         except OSError as e:
             self.logger.error("self_review", f"状态文件写入失败: {e}")
 
-    # ── 失败处理（design D5：静默降级为告警，当日不重试） ───────
+    # ── 失败处理（design D5：静默降级为告警，24h 内不重试） ───────
 
     def _record_failure_alert(self, message: str) -> None:
         """自省失败记 admin WARNING 告警（含原因）。
@@ -839,7 +883,8 @@ class SelfReviewScheduler:
                 "description": f"每日自省失败：{message}",
                 "evidence": f"date={local_today_str()}",
                 "recommended_action": (
-                    "次日将自然重试；如需立即执行可检查 admin.self_review 配置后重启 daemon"
+                    "距上次执行满 24 小时后将自然重试；如需立即执行可检查 "
+                    "admin.self_review 配置后重启 daemon"
                 ),
             })
             try:
