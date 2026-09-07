@@ -41,7 +41,7 @@ const ADMIN_ANNOTATIONS: {
   {
     key: 'escalation_cooldown_minutes',
     label: '唤起冷却（分钟）',
-    note: '同一 spec 同类困境信号的唤起冷却：冷却期内不重复唤起，避免同一问题反复烧钱。',
+    note: '同一 SPEC 同类困境信号的唤起冷却：冷却期内不重复唤起，避免同一问题反复烧钱。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
         v != null && v >= 0 ? Promise.resolve() : Promise.reject(new Error('须为非负数')),
@@ -50,7 +50,7 @@ const ADMIN_ANNOTATIONS: {
   {
     key: 'merge_breaker_threshold',
     label: 'merge 熔断阈值',
-    note: 'merge 熔断阈值：同一 spec merge-back 连续失败达该次数仍滞留时触发熔断信号（缺省沿用 agents 同名键=2）。',
+    note: 'merge 熔断阈值：同一 SPEC merge-back 连续失败达该次数仍滞留时触发熔断信号（缺省沿用 agents 同名键=2）。',
     rule: [{
       validator: (_: unknown, v: number | undefined | null) =>
         Number.isInteger(v) && (v as number) > 0

@@ -609,10 +609,10 @@ export default function SpecListPage() {
 
   const handleDeleteSpec = (record: SpecSummary) => {
     Modal.confirm({
-      title: '删除 Spec',
+      title: '删除 SPEC',
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认删除 Spec「${record.name}」？\n\n`}
+          {`确认删除 SPEC「${record.name}」？\n\n`}
           软删除：STATE.md 移除该条目，spec/changes/{record.name}/ 目录移入 archive 归档。
           {'\n'}归档路径：spec/archive/{record.name}-&lt;时间戳&gt;/
         </div>
@@ -630,10 +630,10 @@ export default function SpecListPage() {
   // add-spec-archive：归档确认弹窗（对齐删除确认模式：确认 → 调 API → 成功提示+刷新）
   const handleArchiveSpec = (record: SpecSummary) => {
     Modal.confirm({
-      title: '归档 Spec',
+      title: '归档 SPEC',
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认归档 Spec「${record.name}」？\n\n`}
+          {`确认归档 SPEC「${record.name}」？\n\n`}
           将 `spec/changes/{record.name}/` 移入归档目录
           （archive/YYYY-MM-DD-{record.name}/），STATE.md 条目保留。
           {'\n'}归档后可随时在列表「已归档」视图查看。
@@ -644,7 +644,7 @@ export default function SpecListPage() {
       onOk: async () => {
         try {
           await archiveSpec(name, record.name);
-          message.success(`Spec「${record.name}」已归档`);
+          message.success(`SPEC「${record.name}」已归档`);
           void load();
         } catch (err) {
           message.error(`归档失败：${err instanceof Error ? err.message : String(err)}`);
@@ -676,10 +676,10 @@ export default function SpecListPage() {
     try {
       if (isFrozen(record)) {
         await unfreezeSpec(name, record.name);
-        message.success(`Spec「${record.name}」已解冻`);
+        message.success(`SPEC「${record.name}」已解冻`);
       } else {
         await freezeSpec(name, record.name);
-        message.success(`Spec「${record.name}」已冻结，daemon 停止调度`);
+        message.success(`SPEC「${record.name}」已冻结，daemon 停止调度`);
       }
       void load();
     } catch (err) {
@@ -741,7 +741,7 @@ export default function SpecListPage() {
     if (!freezeManage) return;
     try {
       await setSpecFreezeConfig(name, freezeManage.spec, 'unfreeze');
-      message.success(`Spec「${freezeManage.spec}」已解冻`);
+      message.success(`SPEC「${freezeManage.spec}」已解冻`);
       setFreezeManage(null);
       void load();
     } catch (err) {
@@ -756,7 +756,7 @@ export default function SpecListPage() {
     if (archivedOnly) {
       return [
         { type: 'divider' as const },
-        { key: 'delete', label: '删除 Spec', danger: true },
+        { key: 'delete', label: '删除 SPEC', danger: true },
       ];
     }
     return [
@@ -771,13 +771,13 @@ export default function SpecListPage() {
         : []),
       {
         key: isFrozen(record) ? 'unfreeze' : 'freeze',
-        label: isFrozen(record) ? '解冻 Spec' : '冻结 Spec',
+        label: isFrozen(record) ? '解冻 SPEC' : '冻结 SPEC',
         disabled: terminal,
       },
       // 归档 Spec：仅终态（done/pushed）可用，非终态置灰；位于「冻结/解冻」之后
-      { key: 'archive', label: '归档 Spec', disabled: !terminal },
+      { key: 'archive', label: '归档 SPEC', disabled: !terminal },
       { type: 'divider' as const },
-      { key: 'delete', label: '删除 Spec', danger: true },
+      { key: 'delete', label: '删除 SPEC', danger: true },
     ];
   };
 

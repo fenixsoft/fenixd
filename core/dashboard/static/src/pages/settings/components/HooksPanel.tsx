@@ -75,7 +75,7 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
     <div>
       <Typography.Title level={5} style={{ marginTop: 0 }}>全局 Hook 订阅</Typography.Title>
       <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
-        全局 hooks 对所有 SPEC 生效（spec 详情页 Hook 页签可配置 spec 级 hook，两者取并集）。
+        全局 hooks 对所有 SPEC 生效（SPEC 详情页 Hook 页签可配置 SPEC 级 hook，两者取并集）。
         动作失败会写审计日志并产生站内告警，不会自动重试。
       </Text>
       <HookManager

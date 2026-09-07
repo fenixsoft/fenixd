@@ -240,7 +240,7 @@ export default function HookManager({
       key: 'source',
       width: 80,
       render: (s: string) => (
-        <Tag color={s === 'global' ? 'orange' : 'purple'}>{s === 'global' ? '全局' : '本 spec'}</Tag>
+        <Tag color={s === 'global' ? 'orange' : 'purple'}>{s === 'global' ? '全局' : '本 SPEC'}</Tag>
       ),
     },
     {
@@ -413,7 +413,7 @@ export default function HookManager({
                 }
               },
             },
-            { title: 'Spec', dataIndex: 'spec', key: 'spec', width: 120 },
+            { title: 'SPEC', dataIndex: 'spec', key: 'spec', width: 120 },
             {
               title: '动作',
               dataIndex: 'action',

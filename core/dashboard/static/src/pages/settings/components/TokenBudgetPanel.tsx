@@ -110,7 +110,7 @@ export default function TokenBudgetPanel({ config, onSave }: TokenBudgetPanelPro
             <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} />
           </Form.Item>
           <Text type="secondary">
-            默认 3。daemon 重启恢复路径（testing → implemented 重派 verify）的累计重验次数上限。达上限即冻结该 SPEC 并交人工裁决（人工解冻后计数清零），防止「毒 spec 借反复重启无限重验」烧 token。合法范围 1-10。
+            默认 3。daemon 重启恢复路径（testing → implemented 重派 verify）的累计重验次数上限。达上限即冻结该 SPEC 并交人工裁决（人工解冻后计数清零），防止「毒 SPEC 借反复重启无限重验」烧 token。合法范围 1-10。
           </Text>
         </Form>
       </Card>
