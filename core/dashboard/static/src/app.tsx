@@ -72,7 +72,7 @@ function crumbItems(pathname: string) {
 
 function HeaderCrumb() {
   const { pathname } = useLocation();
-  return <Breadcrumb items={crumbItems(pathname)} style={{ marginInlineEnd: 0 }} />;
+  return <Breadcrumb items={crumbItems(pathname)} style={{ marginInlineEnd: 0 }} className="global-header-crumb" />;
 }
 
 // ProLayout 支持的 api https://procomponents.ant.design/components/layout
