@@ -9,9 +9,9 @@
 
 ## 1. 归档读侧回退
 
-- [ ] 1.1 新增 `resolve_spec_dir(project_root, spec)` helper（core/dashboard/data.py）：spec 不匹配 `_SPEC_NAME_RE` 返回 None；`spec/changes/<spec>` 为目录返回活跃目录；否则在 `spec/archive/` 下按 `^\d{4}-\d{2}-\d{2}-{re.escape(spec)}(-\d+)*$` 匹配归档目录，命中多个取 `sorted()[-1]`；无命中返回 None
-- [ ] 1.2 `get_spec_doc` 改用 helper：spec_dir 为 None 时五类文档返回 found=False；proposal/design/tasks/verification 的 target 基于 spec_dir 解析且防穿越校验改为 `target.is_relative_to(spec_dir.resolve())`；scenarios 分支传 `spec_dir / "specs"`；入口 raise 语义保留
-- [ ] 1.3 `parse_tasks`/`tasks_note` 改用 helper：tasks_path 初值基于 resolve 结果回退到原 changes 拼接；implementing worktree 优先分支保持在前，overlay 逻辑不动
+- [x] 1.1 新增 `resolve_spec_dir(project_root, spec)` helper（core/dashboard/data.py）：spec 不匹配 `_SPEC_NAME_RE` 返回 None；`spec/changes/<spec>` 为目录返回活跃目录；否则在 `spec/archive/` 下按 `^\d{4}-\d{2}-\d{2}-{re.escape(spec)}(-\d+)*$` 匹配归档目录，命中多个取 `sorted()[-1]`；无命中返回 None
+- [x] 1.2 `get_spec_doc` 改用 helper：spec_dir 为 None 时五类文档返回 found=False；proposal/design/tasks/verification 的 target 基于 spec_dir 解析且防穿越校验改为 `target.is_relative_to(spec_dir.resolve())`；scenarios 分支传 `spec_dir / "specs"`；入口 raise 语义保留
+- [x] 1.3 `parse_tasks`/`tasks_note` 改用 helper：tasks_path 初值基于 resolve 结果回退到原 changes 拼接；implementing worktree 优先分支保持在前，overlay 逻辑不动
 
 ## 2. 回归测试与验证
 
