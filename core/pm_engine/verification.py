@@ -1168,6 +1168,19 @@ class VerificationPipeline:
                 "pm_engine",
                 f"验证门禁: '{spec_name}' 应用不可达，未判定 verified — {reach_note}",
             )
+            # 死端修复（admin 2026-09-07，notes-standalone-sync 卡 testing 事故）：
+            # 此前的裸 return 使 spec 永久滞留 testing——blocked:app-unreachable
+            # 标记全库无消费者，且冻结场景集路径（scenario-reuse-on-reenter）
+            # 不会重新出题，BLOCKER CHECK 的 auto-recovery 只会原样重验并再次
+            # 撞门禁，形成每 stuck_threshold 一次的无效静默重试循环。按冻结
+            # 复用路径同款语义升级：blocked + 自动呼叫 Administrator 处置验证
+            # 基建（场景 URL/serve 配置属 admin 职权，planner 无法自愈）。
+            self._escalate_env_blocked(
+                spec_name,
+                [f"应用不可达，验证无法执行（冻结场景集下自动重验无效，需 admin "
+                 f"修正场景 URL/serve 配置）: {(reach_note or '应用不可达')[:200]}"],
+                title="验证环境阻塞",
+            )
             return
 
         # ── 阶段2.6 环境性失联门禁（verify-environment-sanity-gate / design D2）──
