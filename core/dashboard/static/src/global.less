@@ -179,6 +179,10 @@ body {
   flex: 1 1 100%;
   min-width: 0;
 }
-#root :is(.screen-xs, .screen-sm) .ant-card-extra .ant-input-search {
+#root :is(.screen-xs, .screen-sm) .overview-project-card .ant-input-search {
   width: 100% !important;
+}
+// 桌面端数字行保持nowrap
+#root :not(.screen-xs):not(.screen-sm) .overview-tile-numrow {
+  white-space: nowrap !important;
 }
