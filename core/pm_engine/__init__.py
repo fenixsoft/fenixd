@@ -17,5 +17,14 @@
 （core.pm_engine.subprocess 等）全部保持可用。
 """
 
-from .engine import PMEngine  # noqa: F401
-from .engine import *  # noqa: F401,F403
+# ── verified→done 门禁任务缺口结论的结构化标记 ─────────────────────
+# 门禁 _task_completion_blocker 因未完成数字任务拦截时，以此前缀写入
+# STATE error 字段；恢复巡检 check_blockers 据此前缀识别「待人工裁决」
+# 而非执行 auto-recover；门禁放行时清除既有此前缀 error（人工补勾感知）。
+# 写侧（门禁）与读侧（恢复巡检、门禁自清除）共用此常量，杜绝字面量漂移。
+# 置于 `.engine` import 之前：engine.py 顶层以 `from core.pm_engine import
+# TASK_GAP_ERROR_PREFIX` 直接引用，避免模块初始化顺序的循环依赖。
+TASK_GAP_ERROR_PREFIX = "task-gap:"
+
+from .engine import PMEngine  # noqa: F401,E402
+from .engine import *  # noqa: F401,F403,E402

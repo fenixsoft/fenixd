@@ -33,6 +33,7 @@ from core.pm_engine.reporting import ReportBuilder
 from core.pm_engine.dispatch import (
     DEFAULT_DISPATCH_BACKOFF_SCHEDULE,
 )
+from core.pm_engine import TASK_GAP_ERROR_PREFIX  # noqa: E402
 from core.pm_engine.recovery import (
     SIGNAL_RECOMMENDATION_DISPATCH_STALLED,
     RECOVERY_WATCH_FILE,
@@ -819,6 +820,81 @@ class PMEngine:
             pass
         return None
 
+    def _write_impl_result_snapshot(self, spec_name: str, result_dict: dict) -> None:
+        """把 implementer 成功结果 dict 原子快照到 .fenix/verify-progress/<spec>/impl-result.json。
+
+        复用 family.py prev-impl-result.json 同款手法：tempfile + os.replace 原子写。
+        快照用于 verified→done 门禁证据源（fix-verified-gate-evidence-race D1/D2），
+        优先级高于共享文件 .fenix/.fenix-run-result.json。
+        快照写失败仅记 WARNING，不阻塞派发主流程（fail-open；快照缺失由门禁
+        fail-closed 兜底，见 _task_completion_blocker D2）。
+        重派后新成功自然覆盖旧快照（os.replace 天然幂等）。
+        """
+        vp_dir = self.project_root / ".fenix" / "verify-progress" / spec_name
+        try:
+            vp_dir.mkdir(parents=True, exist_ok=True)
+            snap_path = vp_dir / "impl-result.json"
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".impl-result.{spec_name}.", suffix=".tmp",
+                dir=str(vp_dir),
+            )
+            tmp_path = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(result_dict, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(str(tmp_path), str(snap_path))
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
+        except OSError as e:
+            self.logger.warning(
+                "pm_engine",
+                f"impl-result 快照写入失败 '{spec_name}'（非阻塞）: {e}",
+            )
+
+    def _read_impl_result_for_gate(self, spec_name: str) -> Optional[dict]:
+        """门禁证据读取（fix-verified-gate-evidence-race D2）：per-spec 快照优先。
+
+        优先级：
+        1. 快照 .fenix/verify-progress/<spec>/impl-result.json（stamp=本 spec 才采信）；
+        2. 快照缺失/stamp 不符 → 回退共享文件路径（``_read_implementer_result``
+           既有 worktree/root 行为不变，仅门禁内部改读序，不影响 dispatch 语义）。
+
+        2026-09-07 事故：共享文件 .fenix/.fenix-run-result.json 是跨 spec 共享的，
+        被其它 spec 成功覆盖后门禁「无法证伪即放行」静默放行带未勾任务的 spec。
+        快照是同 spec 的持久证据，不随共享文件覆盖而蒸发。
+        """
+        # 1) per-spec 快照优先
+        snap_path = (
+            self.project_root / ".fenix" / "verify-progress"
+            / spec_name / "impl-result.json"
+        )
+        if snap_path.exists():
+            try:
+                data = json.loads(snap_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    stamped = data.get("spec")
+                    if isinstance(stamped, str) and stamped and stamped != spec_name:
+                        self.logger.warning(
+                            "pm_engine",
+                            f"Ignoring stale impl-result snapshot {snap_path}: "
+                            f"spec='{stamped}' != '{spec_name}'",
+                        )
+                    elif data.get("spec") == spec_name:
+                        # status 归一化与 _read_implementer_result 同语义
+                        if data.get("status") in ("verified", "bug-found"):
+                            data["status"] = "success"
+                        return data
+            except (json.JSONDecodeError, OSError):
+                pass
+        # 2) 快照缺失/stamp 不符 → 共享文件兜底（现有行为不变）
+        return self._read_implementer_result(spec_name)
+
     # ── 任务进度写侧回写（add-task-progress-sync） ───────────────────
     #
     # implementer run 成功后，从 run 产物确定性解析已完成任务集，把主树
@@ -982,26 +1058,56 @@ class PMEngine:
             return False, str(e)
 
     def _task_completion_blocker(self, spec_name: str) -> str | None:
-        """verified→done 任务完成一致性门禁（add-task-progress-sync）。
+        """verified→done 任务完成一致性门禁（add-task-progress-sync + fix-verified-gate-evidence-race）。
 
-        返回 None 表示门禁通过（可推进到 done）；返回非空字符串表示缺口描述，
-        此时应阻断 auto approve / verified→done，把缺口写入 error 字段供人工裁决。
+        返回 None 表示门禁通过（可推进到 done）；返回带 ``TASK_GAP_ERROR_PREFIX``
+        前缀的字符串表示缺口拦截，此时应阻断 auto approve / verified→done，
+        把缺口写入 error 字段供人工裁决。
 
-        判定规则：
-        - 无 run 记录可查（.fenix/.fenix-run-result.json 缺失/无效）→ 放行（无法证伪即放行）。
-        - run 声明 success，但存在「tasks.md 未勾选 且 不在 run done_ids」的任务
-          → 阻断，返回缺口清单（任务 id 列表）。
-        - 全部任务可确认完成（勾选 ∪ done_ids 覆盖全部）→ 放行。
-        - fix-* SPEC 走完全相同规则。
+        证据源优先级（fix-verified-gate-evidence-race D2）：
+        1. per-spec 快照 .fenix/verify-progress/<spec>/impl-result.json（stamp=本 spec）；
+        2. 快照缺失时主树共享结果文件（stamp=本 spec）（存量在飞 spec 兼容）；
+        3. 两者皆缺失：
+           - STATE.implementer_run 为空（legacy/手工）→ 放行；
+           - implementer_run 在场 → fail-closed 拦截。
+
+        tasks.md 缺失或不含数字编号任务时直接放行（无 gap 概念，现状不变）。
+        放行路径自动清除既有 task-gap: error（人工补勾感知路径）。
         """
-        result = self._read_implementer_result(spec_name)
-        # 无法证伪即放行（无 run 记录 / 非 implementer 产物）
-        if not result:
-            return None
+        result = self._read_impl_result_for_gate(spec_name)
+
+        if result is None:
+            # 两者皆缺失 → fail-closed 分支（D2 规则 3）
+            spec_entry = self.state_machine.read_one(spec_name) or {}
+            if not spec_entry.get("implementer_run"):
+                # legacy / 手工 spec：无 run 记录 → 放行（现状不变）
+                return None
+            # implementer_run 在场 → 检查 tasks.md 是否有未勾数字任务
+            tasks_path = (
+                self.project_root / "spec" / "changes" / spec_name / "tasks.md"
+            )
+            if not tasks_path.exists():
+                return None
+            has_unchecked_numeric = False
+            try:
+                for line in tasks_path.read_text(encoding="utf-8").split("\n"):
+                    m = re.match(r"^- \[(x| )\] (\d+\.\d+)", line)
+                    if m and m.group(1) != "x":
+                        has_unchecked_numeric = True
+                        break
+            except (OSError, UnicodeDecodeError):
+                return None
+            if not has_unchecked_numeric:
+                return None  # 全勾 / 无数字任务 → 无缺口可拦
+            return (
+                TASK_GAP_ERROR_PREFIX
+                + "run 证据缺失（快照与共享文件均无），需人工确认"
+            )
+
+        # 证据存在 → 检查 impl_status
         impl_status = result.get("status")
-        # 仅当 run 声明 success 时才做一致性校验；其它状态（error/缺失）放行。
         if impl_status != "success":
-            return None
+            return None  # 非 success（error/其它）→ 放行（现状不变）
 
         tasks_path = self.project_root / "spec" / "changes" / spec_name / "tasks.md"
         if not tasks_path.exists():
@@ -1030,8 +1136,30 @@ class PMEngine:
         # 缺口：未勾选 且 不在 done_ids 中的任务
         gap = [tid for tid in all_ids if tid not in checked_ids and tid not in done_ids]
         if gap:
-            return "未完成任务：" + "、".join(gap)
+            return TASK_GAP_ERROR_PREFIX + "未完成任务：" + "、".join(gap)
+
+        # ── 无缺口：清除既有 task-gap error（人工补勾的感知路径）──
+        # 重评门禁时 snapshot 持久在，缺口已消除 → 放行并显式清除此前写入
+        # 的 task-gap: 标记，使 error 字段不再残留过期结论。
+        self._clear_task_gap_error(spec_name)
         return None
+
+    def _clear_task_gap_error(self, spec_name: str) -> None:
+        """放行路径清除既有 task-gap: error（人工补勾的感知路径，D2）。
+
+        仅当 error 字段以 TASK_GAP_ERROR_PREFIX 开头时清除，不误删其它 error。
+        """
+        try:
+            spec_entry = self.state_machine.read_one(spec_name) or {}
+        except Exception:
+            return
+        err = spec_entry.get("error")
+        if isinstance(err, str) and err.startswith(TASK_GAP_ERROR_PREFIX):
+            self.state_machine.update_spec(spec_name, {"error": None})
+            self.logger.info(
+                "pm_engine",
+                f"task-gap 已补勾，清除 error：'{spec_name}'",
+            )
 
 
 
@@ -1855,11 +1983,31 @@ class PMEngine:
                     v_elapsed = int((now - u).total_seconds() / 60)
                 except (ValueError, TypeError):
                     v_elapsed = 0
+                # fix-verified-gate-evidence-race D3：error 带 task-gap: 前缀的卡
+                # verified spec 属「任务缺口待人工裁决」，blocker 条目 reason 改述
+                # 为裁决形态并携带缺口摘要（去前缀），供 admin 工作台直接定位；
+                # 不得按「瞬态」语义改述（下方案例 4.4 断言依赖此措辞）。
+                stored_error = entry.get("error") or "No error recorded"
+                if (
+                    isinstance(stored_error, str)
+                    and stored_error.startswith(TASK_GAP_ERROR_PREFIX)
+                ):
+                    gap_summary = stored_error[len(TASK_GAP_ERROR_PREFIX):].strip()
+                    blockers.append({
+                        "spec": name,
+                        "status": status,
+                        "reason": (
+                            f"任务缺口待人工裁决：{gap_summary or '详情见 error 字段'}"
+                        ),
+                        "error": stored_error,
+                        "elapsed_minutes": v_elapsed,
+                    })
+                    continue
                 blockers.append({
                     "spec": name,
                     "status": status,
                     "reason": f"卡在 verified 状态 {v_elapsed} 分钟（应为瞬态，需要推进到 done）",
-                    "error": entry.get("error") or "No error recorded",
+                    "error": stored_error,
                     "elapsed_minutes": v_elapsed,
                 })
                 continue
@@ -1976,6 +2124,21 @@ class PMEngine:
                     # 不进入「每轮 defer」死循环。
                     self.register_recovery_watch(
                         spec_name, "auto-recovery deferred (live child present)")
+                    continue
+                # fix-verified-gate-evidence-race D3：task-gap 前缀的 blocker 是
+                # 门禁结论（任务缺口待人工裁决），recovery 不得触发 auto-recover
+                # 状态突变——缺口不因恢复而消失，恢复只会造成状态机扰动。持续列
+                # 入 blocker 清单即告警通道；人工补勾后由 event_bus re-trigger
+                # 门禁放行（确定性重评，幂等）。
+                if (
+                    isinstance(b.get("error"), str)
+                    and b.get("error").startswith(TASK_GAP_ERROR_PREFIX)
+                ):
+                    self.logger.info(
+                        "pm_engine",
+                        f"task-gap blocker，不 auto-recover：'{spec_name}' "
+                        f"(reason={b.get('reason')})",
+                    )
                     continue
                 self.logger.info(
                     "pm_engine",

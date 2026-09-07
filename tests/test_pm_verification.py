@@ -924,3 +924,271 @@ class TestServingRegistry(unittest.TestCase):
         finally:
             proc.kill()
             proc.wait()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# fix-verified-gate-evidence-race：per-spec 快照 + 门禁证据源 + fail-closed
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestVerifiedGateEvidenceRace(unittest.TestCase):
+    """fix-verified-gate-evidence-race：per-spec 快照 + 门禁 fail-closed + 兼容矩阵。
+
+    覆盖 spec/changes/fix-verified-gate-evidence-race/specs/verified-gate-evidence
+    的全部 Scenario（事故回归、兼容矩阵、快照写点、人工补勾闭环、恢复尊重）。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        from core.pm_engine import TASK_GAP_ERROR_PREFIX
+        self.TASK_GAP = TASK_GAP_ERROR_PREFIX
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, self.project_root, self.logger,
+        )
+        self.engine._enqueue = MagicMock()
+        self.engine._on_spec_done = MagicMock()
+        self.engine._check_verification_gate = MagicMock(return_value=None)
+        # Mock worktree 查找让 _read_implementer_result 走主树根回退
+        self.engine.agent_runner.worktree_manager.find_implementer_worktree = (
+            MagicMock(return_value=None)
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_spec(self, name, with_impl_run=True):
+        self.sm.add_spec(name, {"priority": 5})
+        for st in ("ready", "implementing", "implemented", "testing", "verified"):
+            self.sm.transition(name, st)
+        if with_impl_run:
+            self.sm.update_spec(name, {"implementer_run": f"impl-{name}-1-a1"})
+
+    def _write_tasks(self, spec_name, content):
+        spec_dir = self.project_root / "spec" / "changes" / spec_name
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "tasks.md").write_text(content, encoding="utf-8")
+
+    def _write_snapshot(self, spec_name, status="success"):
+        """写 per-spec 快照 .fenix/verify-progress/<spec>/impl-result.json。"""
+        vp = self.project_root / ".fenix" / "verify-progress" / spec_name
+        vp.mkdir(parents=True, exist_ok=True)
+        (vp / "impl-result.json").write_text(
+            json.dumps({"spec": spec_name, "status": status}),
+            encoding="utf-8",
+        )
+
+    def _write_shared_result(self, spec_name, status="success"):
+        """写共享文件 .fenix/.fenix-run-result.json（主树根）。"""
+        path = self.project_root / ".fenix" / ".fenix-run-result.json"
+        path.write_text(
+            json.dumps({"spec": spec_name, "status": status}),
+            encoding="utf-8",
+        )
+
+    # ── 4.1 事故回归测试 ──────────────────────────────────────────────
+
+    def test_accident_regression_shared_overwrite_robust(self):
+        """事故时序复现：门禁首次拦截 → 共享文件被其它 spec 覆盖 →
+        re-trigger 重评仍拦截（从快照读取），维护 verified。
+
+        对齐 2026-09-07 fix-mobile-breakpoint-hook-tables 事故实证：
+        共享文件 stamp 被覆盖 → 门禁「无法证伪即放行」导致静默推送。
+        """
+        spec = "fix-mobile-breakpoint-hook-tables"
+        self._make_spec(spec)
+        self._write_tasks(spec, (
+            "# Tasks\n\n## 4. 实现\n\n"
+            "- [x] 4.1 done\n"
+            "- [ ] 4.2 unchecked\n"
+            "- [ ] 4.3 unchecked\n"
+        ))
+        self._write_snapshot(spec, "success")
+        self._write_shared_result(spec, "success")
+
+        # 首次拦截：snapshot 存在且有缺口 → task-gap error
+        blocker = self.engine._task_completion_blocker(spec)
+        self.assertIsNotNone(blocker)
+        self.assertIn("4.2", blocker)
+        self.assertIn("4.3", blocker)
+        self.assertTrue(blocker.startswith(self.TASK_GAP))
+
+        # 调用门禁走 verified→done 路径：被拦截，error 落 STATE
+        self.engine._on_spec_verified(spec)
+        entry = self.sm.read_one(spec)
+        self.assertEqual(entry["status"], "verified")
+        self.assertIn("4.2", entry.get("error", ""))
+
+        # 模拟其它 spec 的成功覆盖共享文件（stamp 不同）
+        self._write_shared_result("some-other-spec", "success")
+
+        # re-trigger 重评：从 snapshot 读取，缺口仍在 → 再次拦截
+        blocker2 = self.engine._task_completion_blocker(spec)
+        self.assertIsNotNone(blocker2)
+        self.assertIn("4.2", blocker2)
+        self.assertTrue(blocker2.startswith(self.TASK_GAP))
+        self.engine._on_spec_verified(spec)
+        entry2 = self.sm.read_one(spec)
+        self.assertEqual(entry2["status"], "verified")
+
+    # ── 4.2 兼容矩阵测试（对齐 design D4 六行）───────────────────────
+
+    def test_compat_snapshot_all_checked_pass(self):
+        """D4 行 1：快照存在 + 全勾 → 放行。"""
+        spec = "snap-pass"
+        self._make_spec(spec)
+        self._write_tasks(spec, (
+            "# Tasks\n\n## 1. 实现\n\n"
+            "- [x] 1.1 done\n- [x] 1.2 done\n"
+        ))
+        self._write_snapshot(spec, "success")
+        self.assertIsNone(self.engine._task_completion_blocker(spec))
+
+    def test_compat_snapshot_gap_blocks(self):
+        """D4 行 2：快照存在 + 有缺口 → 拦截。"""
+        spec = "snap-block"
+        self._make_spec(spec)
+        self._write_tasks(spec, (
+            "# Tasks\n\n## 1. 实现\n\n"
+            "- [x] 1.1 done\n- [ ] 1.2 unchecked\n"
+        ))
+        self._write_snapshot(spec, "success")
+        blocker = self.engine._task_completion_blocker(spec)
+        self.assertIsNotNone(blocker)
+        self.assertIn("1.2", blocker)
+        self.assertTrue(blocker.startswith(self.TASK_GAP))
+
+    def test_compat_shared_file_fallback(self):
+        """D4 行 3：快照缺失 + 共享文件 stamp=本 spec → 按共享文件评估。"""
+        spec = "shared-fallback"
+        self._make_spec(spec)
+        self._write_tasks(spec, (
+            "# Tasks\n\n## 1. 实现\n\n"
+            "- [x] 1.1 done\n- [ ] 1.2 unchecked\n"
+        ))
+        # 不写快照，写共享文件
+        self._write_shared_result(spec, "success")
+        blocker = self.engine._task_completion_blocker(spec)
+        self.assertIsNotNone(blocker)
+        self.assertIn("1.2", blocker)
+        self.assertTrue(blocker.startswith(self.TASK_GAP))
+
+    def test_compat_both_missing_impl_run_fail_closed(self):
+        """D4 行 4：两者皆缺失 + implementer_run 在场 → fail-closed 拦截。"""
+        spec = "fail-closed"
+        self._make_spec(spec, with_impl_run=True)
+        self._write_tasks(spec, (
+            "# Tasks\n\n## 1. 实现\n\n"
+            "- [x] 1.1 done\n- [ ] 1.2 unchecked\n"
+        ))
+        # 不写快照，不写共享文件
+        blocker = self.engine._task_completion_blocker(spec)
+        self.assertIsNotNone(blocker)
+        self.assertTrue(blocker.startswith(self.TASK_GAP))
+        self.assertIn("证据缺失", blocker)
+
+    def test_compat_both_missing_no_impl_run_pass(self):
+        """D4 行 5：无 implementer_run（legacy/手工）→ 放行。"""
+        spec = "legacy-spec"
+        self._make_spec(spec, with_impl_run=False)
+        self._write_tasks(spec, (
+            "# Tasks\n\n## 1. 实现\n\n- [ ] 1.1 unchecked\n"
+        ))
+        self.assertIsNone(self.engine._task_completion_blocker(spec))
+
+    def test_compat_tasks_md_no_numeric_pass(self):
+        """D4 行 6：tasks.md 无数字编号任务 → 放行。"""
+        spec = "no-numeric"
+        self._make_spec(spec)
+        self._write_tasks(spec, (
+            "# Tasks\n\n## 1. 实现\n\n- [ ] 实现功能\n- [ ] 写测试\n"
+        ))
+        self._write_snapshot(spec, "success")
+        self.assertIsNone(self.engine._task_completion_blocker(spec))
+
+    # ── 4.4 人工补勾闭环 + 恢复尊重测试 ──────────────────────────────
+
+    def test_human_checkoff_clears_gap_and_passes(self):
+        """人工补勾闭环：task-gap 拦截 → 人工在 tasks.md 补勾 → re-trigger
+        门禁放行 → task-gap error 被清除 → verified→done → auto-approve 正常。
+        """
+        spec = "human-checkoff"
+        self._make_spec(spec)
+        self._write_tasks(spec, (
+            "# Tasks\n\n## 1. 实现\n\n"
+            "- [x] 1.1 done\n- [ ] 1.2 unchecked\n"
+        ))
+        self._write_snapshot(spec, "success")
+
+        # 首次拦截
+        blocker = self.engine._task_completion_blocker(spec)
+        self.assertIsNotNone(blocker)
+        self.assertTrue(blocker.startswith(self.TASK_GAP))
+        self.engine._on_spec_verified(spec)
+        entry = self.sm.read_one(spec)
+        self.assertEqual(entry["status"], "verified")
+        self.assertIn("1.2", entry.get("error", ""))
+
+        # 人工补勾 1.2
+        tasks_path = (self.project_root / "spec" / "changes"
+                      / spec / "tasks.md")
+        text = tasks_path.read_text(encoding="utf-8")
+        tasks_path.write_text(
+            text.replace("- [ ] 1.2 unchecked", "- [x] 1.2 unchecked"),
+            encoding="utf-8",
+        )
+
+        # re-trigger 重评：无缺口 → 放行 → error 被清除
+        blocker2 = self.engine._task_completion_blocker(spec)
+        self.assertIsNone(blocker2)
+        entry2 = self.sm.read_one(spec)
+        self.assertIsNone(entry2.get("error"))
+
+    def test_blocker_check_respects_task_gap_no_autorecover(self):
+        """BLOCKER CHECK：task-gap 前缀 spec → 不 auto-recover，reason 为待人工裁决形态。"""
+        spec = "tg-blocker"
+        self._make_spec(spec, with_impl_run=True)
+        self._write_tasks(spec, (
+            "# Tasks\n\n## 1. 实现\n\n- [ ] 1.1 unchecked\n"
+        ))
+        # 写 task-gap error 到 state（模拟门禁拦截后的状态）
+        self.sm.update_spec(spec, {"error": f"{self.TASK_GAP}run 证据缺失"})
+
+        # 检查 check_blockers 行为
+        result = self.engine.check_blockers()
+        blockers = result["blockers"]
+        tg_blockers = [
+            b for b in blockers
+            if b["spec"] == spec and b["status"] == "verified"
+        ]
+        self.assertTrue(len(tg_blockers) >= 1)
+        reason = tg_blockers[0]["reason"]
+        self.assertIn("任务缺口待人工裁决", reason)
+        # 验证不 auto-recover：verified 状态保持不变（不会被 reset）
+        entry = self.sm.read_one(spec)
+        self.assertEqual(entry["status"], "verified")
+
+    def test_event_bus_retrigger_not_suppressed(self):
+        """event_bus re-trigger：task-gap 拦截生效期间不被抑制，仍然
+        调用 handle_event → _on_spec_verified → 门禁重评。"""
+        spec = "retrigger-spec"
+        self._make_spec(spec, with_impl_run=True)
+        self._write_tasks(spec, (
+            "# Tasks\n\n## 1. 实现\n\n- [ ] 1.1 unchecked\n"
+        ))
+        self._write_snapshot(spec, "success")
+        self.sm.update_spec(spec, {"error": f"{self.TASK_GAP}缺口任务"})
+
+        entry = self.sm.read_one(spec)
+        # 模拟 event_bus._recover_one 的 verified 分支
+        self.engine.handle_event("spec_verified", spec, entry)
+        # re-trigger 应正常调用 _on_spec_verified（不被抑制）
+        # 门禁重评后仍有缺口 → error 维持
+        entry2 = self.sm.read_one(spec)
+        self.assertEqual(entry2["status"], "verified")
+        self.assertIn("1.1", entry2.get("error", ""))

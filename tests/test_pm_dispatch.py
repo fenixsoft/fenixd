@@ -833,6 +833,133 @@ class TestTaskCompletionGate(unittest.TestCase):
         self.sm.transition.assert_not_called()
 
 
+class TestImplResultSnapshot(unittest.TestCase):
+    """fix-verified-gate-evidence-race 4.3：implementer 成功路径 per-spec 快照写点。
+
+    覆盖 spec/changes/fix-verified-gate-evidence-race/specs/verified-gate-evidence
+    Requirement「implementer 结果 per-spec 快照」的 Scenario：
+    成功即快照 / 重派覆盖旧快照 / 快照写失败不阻塞。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.logger = MagicMock()
+        self.sm = MagicMock()
+        self.sm.read_one = MagicMock(return_value={"status": "implementing"})
+        self.sm.transition = MagicMock()
+        self.sm.update_spec = MagicMock()
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, self.project_root, self.logger,
+        )
+        self.engine._enqueue = MagicMock()
+        self.sm.add_spec = MagicMock()
+        self.sm.add_spec("demo", {"priority": 5})
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _snap(self, spec="demo"):
+        return (self.project_root / ".fenix" / "verify-progress"
+                / spec / "impl-result.json")
+
+    def test_success_writes_snapshot_with_spec_and_status(self):
+        """成功即快照：快照文件存在，含 spec=本 spec 与 status=success。"""
+        impl_result = {"spec": "demo", "status": "success", "summary": "ok"}
+        self.engine._write_impl_result_snapshot("demo", impl_result)
+        snap = self._snap()
+        self.assertTrue(snap.exists())
+        data = json.loads(snap.read_text(encoding="utf-8"))
+        self.assertEqual(data["spec"], "demo")
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["summary"], "ok")
+
+    def test_redispatch_overwrites_snapshot(self):
+        """重派后新成功原子覆盖旧快照，不残留旧字段。"""
+        old = {"spec": "demo", "status": "success", "summary": "round-1",
+               "extra_old": "should disappear"}
+        new = {"spec": "demo", "status": "success", "summary": "round-2"}
+        self.engine._write_impl_result_snapshot("demo", old)
+        self.engine._write_impl_result_snapshot("demo", new)
+        data = json.loads(self._snap().read_text(encoding="utf-8"))
+        self.assertEqual(data["summary"], "round-2")
+        self.assertNotIn("extra_old", data)
+
+    def test_snapshot_write_failure_not_blocking(self):
+        """快照写失败（mock OSError）→ 主流程继续（WARNING 不抛出）。"""
+        impl_result = {"spec": "demo", "status": "success"}
+        with patch.object(Path, "mkdir", side_effect=OSError("disk full")):
+            # 不应抛出
+            self.engine._write_impl_result_snapshot("demo", impl_result)
+        self.assertTrue(self.engine.logger.warning.called)
+
+    def test_dispatch_success_path_writes_snapshot(self):
+        """真实派发成功收口点：implementer 成功即写快照（D1 写点验证）。"""
+        from types import SimpleNamespace
+
+        # 共享结果文件 + run 产物
+        (self.project_root / ".fenix" / ".fenix-run-result.json").write_text(
+            json.dumps({"spec": "demo", "status": "success"}),
+            encoding="utf-8",
+        )
+        self.sm.read_one.return_value = {"status": "implementing",
+                                         "implementer_run": "impl-demo-1-a1"}
+        result = SimpleNamespace(
+            success=True, error=None, run_id="impl-demo-1-a1", branch=None,
+            worktree_dirty=[], cancelled=False,
+        )
+        # 零变更哨 / 交付物守卫返回无缺口，merge-back 成功
+        self.engine._implementer_zero_change = MagicMock(return_value=False)
+        self.engine._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._reconcile_impl_budget = MagicMock()
+        wm = MagicMock()
+        wm.find_implementer_worktree = MagicMock(return_value=None)
+        wm.merge_back_from_branch.return_value = (True, "")
+        self.engine.agent_runner.worktree_manager = wm
+        self.engine.agent_runner.run_implementer = MagicMock(
+            return_value=result)
+        # 状态推进
+        self.sm.transition.return_value = True
+
+        # 驱动 _run_agent_worker 的 implementer 分支
+        self.engine._run_agent_worker("demo", "implementer", 5)
+
+        snap = self._snap()
+        self.assertTrue(snap.exists())
+        data = json.loads(snap.read_text(encoding="utf-8"))
+        self.assertEqual(data["spec"], "demo")
+        self.assertEqual(data["status"], "success")
+        # 快照写点须在 merge-back 之前（成功即快照，不依赖 merge 成功与否）
+        self.sm.transition.assert_called()
+
+    def test_dispatch_failure_path_does_not_write_snapshot(self):
+        """失败路径不写快照：run 失败 → 无 impl-result.json。"""
+        from types import SimpleNamespace
+
+        (self.project_root / ".fenix" / ".fenix-run-result.json").write_text(
+            json.dumps({"spec": "demo", "status": "error", "error": "boom"}),
+            encoding="utf-8",
+        )
+        self.sm.read_one.return_value = {"status": "implementing",
+                                         "implementer_run": "impl-demo-2-a1"}
+        result = SimpleNamespace(
+            success=False, error="boom", run_id="impl-demo-2-a1",
+            branch=None, worktree_dirty=[], cancelled=False,
+        )
+        self.engine.agent_runner.run_implementer = MagicMock(
+            return_value=result)
+        wm = MagicMock()
+        wm.merge_back_from_branch.return_value = (True, "")
+        self.engine.agent_runner.worktree_manager = wm
+
+        self.engine._run_agent_worker("demo", "implementer", 5)
+
+        self.assertFalse(self._snap().exists())
+
+
 class TestDoneDurationPersist(unittest.TestCase):
     """add-done-duration-persist 2.1/2.2：verified→done 时写入 total_duration。"""
 

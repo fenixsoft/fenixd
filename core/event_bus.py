@@ -151,6 +151,11 @@ class EventBus:
                 self.pm_engine.handle_event("spec_bug_found", name, entry)
             elif status == "verified":
                 # Skip if already done (verified→done transition already happened)
+                # ── fix-verified-gate-evidence-race D3：re-trigger 心跳保留 ──
+                # task-gap 拦截生效期间，re-trigger 每 30 分钟重评门禁——快照持久
+                # 后重评是确定性的（有缺口幂等再拦、人工补勾后放行 + 清 error），
+                # 不触发状态突变。re-trigger 是人工修复的感知心跳，不是危害源；
+                # 不因 task-gap 前缀抑制，否则人工补勾后 spec 永远卡在 verified。
                 self.logger.info("event_bus", f"Recovery: re-triggering verified→done for '{name}'")
                 self.pm_engine.handle_event("spec_verified", name, entry)
             return True

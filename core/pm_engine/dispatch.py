@@ -779,6 +779,26 @@ class Dispatcher:
                             return
 
                 if is_success:
+                    # ── impl-result per-spec 快照（fix-verified-gate-evidence-race D1）──
+                    # implementer 成功即把已解析的结果 dict 原样原子快照到
+                    # .fenix/verify-progress/<spec>/impl-result.json，供 verified→done
+                    # 门禁 _task_completion_blocker 读取——门禁证据不再依赖跨 spec
+                    # 共享文件 .fenix/.fenix-run-result.json（2026-09-07 事故：共享文件
+                    # 被其它 spec 成功覆盖 → 门禁「无法证伪即放行」静默放行带未勾任务的
+                    # spec）。快照写失败仅 WARNING 不阻塞（fail-open，门禁 fail-closed
+                    # 兜底）；重派后新成功原子覆盖旧快照（幂等）。
+                    # fast-track 车道不需要快照：其代码路径与本 is_success 收口点分离，
+                    # 且 fast-track 的 verified→done 与成功处理同周期同步执行
+                    # （_fast_track_advance_to_verified 内直接 _on_spec_verified），
+                    # 不存在跨 spec 覆盖窗口，无需持久证据。
+                    if impl_result is not None:
+                        try:
+                            self._pm._write_impl_result_snapshot(spec_name, impl_result)
+                        except Exception as e:
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"impl-result 快照写入失败 '{spec_name}'（非阻塞）: {e}",
+                            )
                     # 计数对账（fix-budget-counting-semantics D3）：守卫放行/merge
                     # 收工后回读 used 与正常收工 run 数比对，偏差记 WARNING。
                     self._pm._reconcile_impl_budget(spec_name)
