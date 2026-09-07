@@ -696,7 +696,9 @@ def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
     无声明段（``extract_declared_entries`` 返回 None）早退返回 []。
 
     Returns:
-        软化记录 ``[{element, kind_before, kind_after}]``（保序）；无命中返回 []。
+        软化记录 ``[{element, kind_before, kind_after, reason}]``（保序）；
+        ``reason`` 区分 ``"gitignored"`` 与 ``"outside-root"``，供审计
+        reasoning 构造；无命中返回 []。
     """
     entries = extract_declared_entries(spec_dir)
     if not entries:
@@ -706,8 +708,20 @@ def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
         path = e["path"]
         if not classify_unsatisfiable(e, project_root):
             continue
+        # 判定 reason（供审计 reasoning 区分 gitignored / outside-root）
+        reason = "gitignored"
         try:
-            diff = soften_declared_kind(spec_dir, path)
+            # 归一化候选与 classify 同源
+            candidates = [path]
+            normalized = normalize_check_path(path)
+            if normalized != path:
+                candidates.append(normalized)
+            if not _path_is_gitignored(project_root, candidates):
+                reason = "outside-root"
+        except Exception:
+            reason = "outside-root"  # 判定异常保守取 outside-root
+        try:
+            soften_declared_kind(spec_dir, path)
         except Exception as exc:
             # 单条改写失败：跳过该条记 warning，交由后续 lint 照常拒绝兜底
             print(f"WARNING: 软化声明 {path} 失败（跳过，lint 兜底）: {exc}")
@@ -716,6 +730,7 @@ def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
             "element": path,
             "kind_before": e["kind"],
             "kind_after": "reference",
+            "reason": reason,
         })
     return softened
 
@@ -837,8 +852,15 @@ def lint_declared(spec_dir, project_root) -> List[str]:
         # 规则 3（add-deliverable-declaration-triage D1）：modify/reference
         # 路径在主树必须存在。reference 语义即既有引用，modify 语义即修改既有
         # 文件——不存在即声明有错（声明 vs 现实的确定性矛盾，零误拦）。
+        # 例外：仓库外 reference 放行（design D3：reference 本就是非交付物语义，
+        # ~/x.md/.claude/settings.json 等仓库外引用合法，软化后转 reference
+        # 不应被存在性校验拦截）。
         if kind in ("modify", "reference"):
             if not any((project_root / c).exists() for c in candidates):
+                # reference 仓库外放行（design D3）
+                if kind == "reference" and _path_is_outside_root(
+                        project_root, candidates):
+                    continue
                 violations.append(
                     f"[{path}] 在主树不存在——{kind} 声明路径必须在主树存在"
                     f"（必须存在，指向既有文件），请核对声明路径"

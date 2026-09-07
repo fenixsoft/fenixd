@@ -32,6 +32,8 @@ from core.deliverables import (
     soften_declared_kind,
     soften_unsatisfiable_declarations,
 )
+from core.pm_engine import PMEngine
+from core.state_machine import StateMachine
 
 
 def _git(root: Path, *args, check=True):
@@ -48,6 +50,32 @@ def _mk_tasks_md(spec_dir: Path, yaml_block: str, with_header: bool = True) -> N
     text = ("# Tasks\n\n## Deliverables\n\n```yaml\n"
             + yaml_block + "\n```\n\n## 1. x\n\n- [ ] 1.1 do it\n")
     (spec_dir / "tasks.md").write_text(text, encoding="utf-8")
+
+
+class PromotionTestMixin(unittest.TestCase):
+    """StateMachine + PMEngine 基础夹具（PR2 晋升测试共用）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.pr = Path(self.tmpdir) / "repo"
+        self.pr.mkdir(parents=True, exist_ok=True)
+        _git(self.pr, "init", "-q")
+        _git(self.pr, "config", "user.email", "test@fenix.local")
+        _git(self.pr, "config", "user.name", "Fenix Test")
+        _git(self.pr, "config", "commit.gpgsign", "false")
+        (self.pr / ".gitignore").write_text(
+            "dist/\n.fenix/*\n!.fenix/keep.yaml\n", encoding="utf-8")
+        (self.pr / ".fenix").mkdir(parents=True, exist_ok=True)
+        from unittest.mock import MagicMock
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.pr / ".fenix" / "STATE.md", self.logger)
+        self.engine = PMEngine(self.sm, MagicMock(), {}, self.pr, self.logger)
+        self.engine._on_spec_ready = MagicMock()
+        self.spec_dir = self.pr / "spec" / "changes" / "demo"
+        self.sm.add_spec("demo", {"priority": 5})
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
 
 
 class _GitRepoFixture(unittest.TestCase):
@@ -168,9 +196,11 @@ class TestSoftenUnsatisfiableDeclarations(_GitRepoFixture):
             softened,
             [
                 {"element": "core/dashboard/static/dist/index.html",
-                 "kind_before": "modify", "kind_after": "reference"},
+                 "kind_before": "modify", "kind_after": "reference",
+                 "reason": "gitignored"},
                 {"element": ".fenix/secret.json",
-                 "kind_before": "new", "kind_after": "reference"},
+                 "kind_before": "new", "kind_after": "reference",
+                 "reason": "gitignored"},
             ],
         )
         text = self.read_tasks()
@@ -187,7 +217,8 @@ class TestSoftenUnsatisfiableDeclarations(_GitRepoFixture):
         self.assertEqual(
             softened,
             [{"element": "~/configs/app.yaml",
-              "kind_before": "new", "kind_after": "reference"}],
+              "kind_before": "new", "kind_after": "reference",
+              "reason": "outside-root"}],
         )
         text = self.read_tasks()
         # 只有 ~ 条目被软化，仓库内数据条目不动
@@ -260,7 +291,8 @@ class TestSoftenUnsatisfiableDeclarations(_GitRepoFixture):
         self.assertEqual(
             softened,
             [{"element": ".fenix/secret.json",
-              "kind_before": "new", "kind_after": "reference"}],
+              "kind_before": "new", "kind_after": "reference",
+              "reason": "gitignored"}],
         )
         text = self.read_tasks()
         self.assertIn("- path: .fenix/secret.json\n  kind: reference", text)
@@ -286,6 +318,121 @@ class TestSoftenedTasksRemainValidDeclarations(_GitRepoFixture):
             [{"path": "core/dashboard/static/dist/index.html",
               "kind": "reference"}],
         )
+
+
+class TestPromotionSoftening(PromotionTestMixin):
+    """add-declaration-premechanize PR2：晋升前软化接线。
+
+    覆盖 tasks 2.4：
+    1. gitignored modify 声明 spec 晋升后状态 ready 且 tasks.md 已软化
+    2. 审计含 promotion-soften
+    3. 占位符 spec 照旧 drafted+error
+    4. 软化编排异常降级 warning（不卡死晋升）
+    """
+
+    def test_gitignored_modify_softened_promotes(self):
+        """gitignored modify 声明 → 晋升前软化 → tasks.md 变 reference → ready。"""
+        dist = self.pr / "core/dashboard/static/dist"
+        dist.mkdir(parents=True, exist_ok=True)
+        (dist / "index.html").write_text("x", encoding="utf-8")
+        _mk_tasks_md(self.spec_dir,
+                     "- path: core/dashboard/static/dist/index.html\n"
+                     "  kind: modify\n")
+        self.engine._on_spec_drafted("demo")
+        # 状态应晋升到 ready（非 drafted+error）
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "ready")
+        # tasks.md 已软化为 reference
+        text = (self.spec_dir / "tasks.md").read_text(encoding="utf-8")
+        self.assertIn("kind: reference", text)
+        self.assertIn("core/dashboard/static/dist/index.html", text)
+
+    def test_audit_contains_promotion_soften(self):
+        """审计记录包含 promotion-soften reasoning。"""
+        dist = self.pr / "core/dashboard/static/dist"
+        dist.mkdir(parents=True, exist_ok=True)
+        (dist / "index.html").write_text("x", encoding="utf-8")
+        _mk_tasks_md(self.spec_dir,
+                     "- path: core/dashboard/static/dist/index.html\n"
+                     "  kind: modify\n")
+        self.engine._on_spec_drafted("demo")
+        # 检查审计文件
+        audit_path = self.pr / ".fenix" / "dispute_audits.jsonl"
+        self.assertTrue(audit_path.exists(), "dispute_audits.jsonl 应被创建")
+        with open(audit_path, encoding="utf-8") as f:
+            lines = [l.strip() for l in f if l.strip()]
+        # 应至少有一条记录
+        self.assertTrue(len(lines) >= 1, "应有审计记录")
+        import json
+        rec = json.loads(lines[0])
+        self.assertEqual(rec.get("kind"), "dispute-audit")
+        self.assertEqual(rec.get("spec"), "demo")
+        verdicts = rec.get("verdicts", [])
+        self.assertTrue(len(verdicts) >= 1, "verdicts 应非空")
+        v0 = verdicts[0]
+        self.assertEqual(v0.get("verdict"), "reference")
+        self.assertTrue(
+            v0.get("reasoning", "").startswith("promotion-soften:"),
+            f"reasoning 应以 promotion-soften: 开头，实际: {v0.get('reasoning')}",
+        )
+
+    def test_placeholder_declaration_blocks_promotion(self):
+        """占位符声明（规则 1）不软化 → drafted+error。"""
+        _mk_tasks_md(self.spec_dir,
+                     "- path: .fenix/admin_disposition-<run_id>.json\n"
+                     "  kind: reference\n")
+        self.engine._on_spec_drafted("demo")
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "drafted")
+        self.assertIn("占位符", entry.get("error", ""))
+
+    def test_soften_exception_does_not_block_promotion(self):
+        """软化编排异常 → 降级 warning → lint 照旧执行（fail-safe）。"""
+        dist = self.pr / "core/dashboard/static/dist"
+        dist.mkdir(parents=True, exist_ok=True)
+        (dist / "index.html").write_text("x", encoding="utf-8")
+        _mk_tasks_md(self.spec_dir,
+                     "- path: core/dashboard/static/dist/index.html\n"
+                     "  kind: modify\n")
+        with mock.patch(
+            "core.deliverables.soften_unsatisfiable_declarations",
+            side_effect=RuntimeError("boom"),
+        ):
+            self.engine._on_spec_drafted("demo")
+        # 即使软化异常，lint 仍会拒绝 gitignored 声明
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "drafted")
+        self.assertIn("gitignore", entry.get("error", ""))
+
+    def test_outside_root_softened_promotes(self):
+        """仓库外路径声明 → 软化 → ready。"""
+        _mk_tasks_md(self.spec_dir,
+                     "- path: ~/configs/app.yaml\n  kind: new\n")
+        self.engine._on_spec_drafted("demo")
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "ready")
+        text = (self.spec_dir / "tasks.md").read_text(encoding="utf-8")
+        self.assertIn("kind: reference", text)
+        self.assertIn("~/configs/app.yaml", text)
+
+    def test_mixed_clean_and_softenable_promotes(self):
+        """混合：一条需软化、一条合法 → 软化后两条均合法 → ready。"""
+        dist = self.pr / "core/dashboard/static/dist"
+        dist.mkdir(parents=True, exist_ok=True)
+        (dist / "index.html").write_text("x", encoding="utf-8")
+        (self.pr / "core").mkdir(parents=True, exist_ok=True)
+        (self.pr / "core" / "data.py").write_text("x", encoding="utf-8")
+        _mk_tasks_md(self.spec_dir,
+                     "- path: core/dashboard/static/dist/index.html\n"
+                     "  kind: modify\n"
+                     "- path: core/data.py\n  kind: modify\n")
+        self.engine._on_spec_drafted("demo")
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "ready")
+        text = (self.spec_dir / "tasks.md").read_text(encoding="utf-8")
+        self.assertIn("core/dashboard/static/dist/index.html\n  kind: reference",
+                      text)
+        self.assertIn("core/data.py\n  kind: modify", text)
 
 
 if __name__ == "__main__":
