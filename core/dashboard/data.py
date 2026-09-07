@@ -3489,6 +3489,14 @@ def read_config(scope_root, scope: str = "project") -> dict:
             agents_result["impl_run_budget"] = agents_raw["impl_run_budget"]
         if isinstance(agents_raw.get("verify_redo_budget"), int):
             agents_result["verify_redo_budget"] = agents_raw["verify_redo_budget"]
+        # fix-provider-transient-backoff（D6）：瞬断治理五键回显到 agents 段
+        #（缺省填充，语义与 read_effective_config 的 get_transient_config 一致）
+        from core.config import ConfigLoader as _CLT
+        _transient = _CLT.get_transient_config(raw)
+        for _tk in ("transient_backoff_schedule", "transient_redispatch_delay_seconds",
+                    "transient_break_threshold", "transient_break_window_seconds",
+                    "transient_break_cooldown_seconds"):
+            agents_result[_tk] = _transient[_tk]
         if agents_result:
             # 只在结果中有受管键时覆盖默认，避免清空默认值
             for k, v in agents_result.items():
