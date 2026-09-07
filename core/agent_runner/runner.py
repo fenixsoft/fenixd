@@ -1798,134 +1798,204 @@ class AgentRunner:
                         f"route-map 生成异常（fail-open，不阻断 planner 派发）: {e}",
                     )
 
-            # Build and execute the prompt
-            try:
-                if agent_type == "repair":
-                    # repair prompt 注入冲突摘要（add-merge-back-repair-lane D5）
-                    prompt = self._build_prompt(
-                        spec_name, agent_type, detail=conflict_summary or {},
-                        wt_path=wt_path,
+
+            # ── 原地重试子循环（fix-provider-transient-backoff D1） ──
+            # 瞬断类失败时同一 attempt 内指数退避重试：provider 不变、不触发 switch
+            # 冷却、不推进 chain_cursor、不递增 attempt 计数。run_id 加 r{n} 后缀
+            # 产生独立产物文件；session 从上一子产物提取续 --resume。
+            transient_retries = 0  # 本 attempt 已原地重试次数（预算 = 退避序列长度）
+            transient_budget = self._parse_transient_backoff_schedule(
+                self._get_config("agents.transient_backoff_schedule", "30,60,120"))
+            resume_failures = 0  # 连续 resume 失败次数（≥2 后本次 attempt 改全新会话）
+            sub_run_id = (attempt_run_id if transient_retries == 0
+                          else f"{attempt_run_id}-r{transient_retries}")
+
+            while True:
+                if transient_retries > 0:
+                    sub_run_id = f"{attempt_run_id}-r{transient_retries}"
+                try:
+                    if agent_type == "repair":
+                        # repair prompt 注入冲突摘要（add-merge-back-repair-lane D5）
+                        prompt = self._build_prompt(
+                            spec_name, agent_type, detail=conflict_summary or {},
+                            wt_path=wt_path,
+                        )
+                    else:
+                        prompt = self._build_prompt(
+                            spec_name, agent_type, wt_path=wt_path)
+                    env_overrides: Dict[str, str] = {}
+                    # add-worktree-test-server（D1 注入）：把该 worktree 专属 dev-server 地址
+                    # 注入 agent 运行环境，使 Playwright baseURL 指向 worktree 副本而非主 8787。
+                    # 未启动 dev-server（端口冲突/启动失败）时不注入，测试回退缺省 8787。
+                    env_overrides.update(self._v2_inject_env(wt_path))
+                    if provider is not None:
+                        env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
+                        env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
+                        env_overrides["ANTHROPIC_MODEL"] = model
+                        # add-agent-llm-isolation：Provider 生效时完全隔离——CLAUDE_CONFIG_DIR
+                        # 指向独立配置目录，彻底绕过 ~/.claude/settings.json 的 env 覆盖，
+                        # 使 Provider 的 baseurl/apikey/model 绝对生效（spec D1）。
+                        # add-provider-failover：隔离目录随候选同步切换（design D4 / task 3.2）。
+                        env_overrides["CLAUDE_CONFIG_DIR"] = str(
+                            self._ensure_agent_config_dir(provider["name"])
+                        )
+                        # 注入 provider 自定义环境变量（如 CLAUDE_CODE_MAX_CONTEXT_TOKENS）
+                        for k, v in (provider.get("env") or {}).items():
+                            env_overrides[k] = v
+                        model_override = model
+                    else:
+                        # 未分配 agent（含 Administrator）走默认网关（cc-switch），--model 用
+                        # 官方模型名常量，由 cc-switch 网关自行映射到可用模型。
+                        model_override = DEFAULT_GATEWAY_MODEL
+                    output, turns, run_session_id, usage_info = self._run_claude(
+                        prompt, wt_path, sub_run_id, model_override, env_overrides,
+                        resume_session_id=self._resumable_session_id(
+                            session_id, session_provider, provider_name, reuse_worktree,
+                        ),
+                        max_turns=self._get_config("agents.max_turns", 300),
+                        spec_name=spec_name,
+                        agent_type=agent_type,
                     )
-                else:
-                    prompt = self._build_prompt(
-                        spec_name, agent_type, wt_path=wt_path)
-                env_overrides: Dict[str, str] = {}
-                # add-worktree-test-server（D1 注入）：把该 worktree 专属 dev-server 地址
-                # 注入 agent 运行环境，使 Playwright baseURL 指向 worktree 副本而非主 8787。
-                # 未启动 dev-server（端口冲突/启动失败）时不注入，测试回退缺省 8787。
-                env_overrides.update(self._v2_inject_env(wt_path))
-                if provider is not None:
-                    env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
-                    env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
-                    env_overrides["ANTHROPIC_MODEL"] = model
-                    # add-agent-llm-isolation：Provider 生效时完全隔离——CLAUDE_CONFIG_DIR
-                    # 指向独立配置目录，彻底绕过 ~/.claude/settings.json 的 env 覆盖，
-                    # 使 Provider 的 baseurl/apikey/model 绝对生效（spec D1）。
-                    # add-provider-failover：隔离目录随候选同步切换（design D4 / task 3.2）。
-                    env_overrides["CLAUDE_CONFIG_DIR"] = str(
-                        self._ensure_agent_config_dir(provider["name"])
-                    )
-                    # 注入 provider 自定义环境变量（如 CLAUDE_CODE_MAX_CONTEXT_TOKENS）
-                    for k, v in (provider.get("env") or {}).items():
-                        env_overrides[k] = v
-                    model_override = model
-                else:
-                    # 未分配 agent（含 Administrator）走默认网关（cc-switch），--model 用
-                    # 官方模型名常量，由 cc-switch 网关自行映射到可用模型。
-                    model_override = DEFAULT_GATEWAY_MODEL
-                output, turns, run_session_id, usage_info = self._run_claude(
-                    prompt, wt_path, attempt_run_id, model_override, env_overrides,
-                    resume_session_id=self._resumable_session_id(
-                        session_id, session_provider, provider_name, reuse_worktree,
-                    ),
-                    max_turns=self._get_config("agents.max_turns", 300),
-                    spec_name=spec_name,
-                    agent_type=agent_type,
-                )
-                if run_session_id:
-                    session_id = run_session_id
-                    session_provider = provider_name
-                success = True
-                error = None
-            except RunCancelledError as e:
-                # add-run-cancel D5：RunCancelledError 专用捕获——不重试、不计秒挂、
-                # 不触发 provider 链切换，直接返回 cancelled=True 失败结果。
-                # 取消旗标已在 _run_claude 轮询环内确认并清理 _running_agents，
-                # 此处只负责结果收口。
-                output = ""
-                turns = 0
-                success = False
-                cancelled_flag = True
-                cancel_reason = e.reason
-                error = "cancelled by admin" + (f": {e.reason}" if e.reason else "")
-                self.logger.info(
-                    "agent_runner",
-                    f"{agent_type} for '{spec_name}' run 被人工取消"
-                    f"（attempt {attempt}）：{error}",
-                )
-                usage_info = self._extract_usage_info(None)
-            except Exception as e:
-                output = ""
-                turns = 0
-                success = False
-                error = str(e)
-                # cli-retry-backoff（2.1）：attempt 失败按存活时长判定秒挂并累计。
-                # 仅「进程确实启动过」的失败才判定（worktree 创建失败等进程未起的
-                # 分支走上方 return/continue，不进入本法）；框架主动 SIGTERM 由
-                # _run_was_interrupted 识别不计入。
-                self._record_instant_fail(
-                    spec_name,
-                    time.time() - attempt_started_at,
-                    self.project_root / ".fenix" / "runs" / f"{attempt_run_id}.jsonl",
-                )
-                # add-cost-observability（D1）：_run_claude 抛错（超时/kill/非 0 退出/
-                # rc==0 但 result 标记 error），stream-json 终态已被丢弃，按 0 计 usage，
-                # 仅 DEBUG 留痕（异常早夭的 run 消耗小，与 jsonl 考古一致偏差可接受）。
-                usage_info = self._extract_usage_info(None)
-                self.logger.debug(
-                    "agent_runner",
-                    f"{agent_type} for '{spec_name}' ended in error — tokens counted "
-                    f"as 0 (add-cost-observability): {error}",
-                )
-                # 4xx 熔断计数（fix-stashpop-deadlock：provider-fault-fuse）。
-                # 仅对「已分配 provider」且错误文本能解析出 HTTP 4xx 的情况计数（design D4）；
-                # 5xx/网络错误不计数（瞬态，走既有 retry）。解析不到 code 视为失败、不计数。
-                if provider_name:
-                    code = self.parse_api_error_status(error)
-                    if code is not None and code in PROVIDER_CIRCUIT_4XX:
-                        was_half_open = False
-                        st = self.provider_circuits.get(provider_name)
-                        if st and st.get("count", 0) >= PROVIDER_CIRCUIT_THRESHOLD \
-                                and st.get("cooldown_until", 0) > 0 \
-                                and st["cooldown_until"] <= self._now():
-                            # 半开探针仍 4xx → 重新冷却（design D4），不重复计数。
-                            was_half_open = True
-                        self._record_provider_4xx(provider_name, code)
-                        if was_half_open:
-                            self._record_provider_probe(provider_name, success=False)
-                    # add-provider-failover（design D2/D3）：切换类错误 → 该 provider 进入
-                    # switch 短冷却，同 run 后续 attempt 前进到下一候选（跨 provider 不 resume，
-                    # 见 _resumable_session_id）。
-                    # 4xx 配额/鉴权类不触发（维持既有熔断语义、链指针不动）。
-                    elif self.classify_switch_error(error):
-                        self._record_switch_cooldown(provider_name)
-                        # 仅当链上还有后续候选才前进指针；否则保持当前（全链耗尽将在下一
-                        # attempt 的 _select_chain_candidate 中判定为 chain_exhausted）。
-                        if chain_cursor + 1 < len(chain):
-                            chain_cursor += 1
-                # implementer 失败后从产物尾部提取 session_id，供下一次 attempt --resume 续跑
-                if agent_type == "implementer":
-                    run_file = self.project_root / ".fenix" / "runs" / f"{attempt_run_id}.jsonl"
-                    sid = self._extract_session_id(run_file)
-                    if sid:
-                        session_id = sid
+                    if run_session_id:
+                        session_id = run_session_id
                         session_provider = provider_name
-                # fix 跨 provider resume：resume 报「会话不存在」说明该 session_id 已失效
-                # （典型：上一次 attempt 切换了 provider，session 在旧 CLAUDE_CONFIG_DIR 里），
-                # 若不清除，后续 attempt 会带着死 id 反复秒挂、烧尽全部重试。
-                if error and "No conversation found with session ID" in error:
-                    session_id = None
-                    session_provider = None
+                    success = True
+                    error = None
+                    break  # 原地重试子循环：成功退出 while
+                except RunCancelledError as e:
+                    # add-run-cancel D5：RunCancelledError 专用捕获——不重试、不计秒挂、
+                    # 不触发 provider 链切换，直接返回 cancelled=True 失败结果。
+                    # 取消旗标已在 _run_claude 轮询环内确认并清理 _running_agents，
+                    # 此处只负责结果收口。
+                    output = ""
+                    turns = 0
+                    success = False
+                    cancelled_flag = True
+                    cancel_reason = e.reason
+                    error = "cancelled by admin" + (f": {e.reason}" if e.reason else "")
+                    self.logger.info(
+                        "agent_runner",
+                        f"{agent_type} for '{spec_name}' run 被人工取消"
+                        f"（attempt {attempt}）：{error}",
+                    )
+                    usage_info = self._extract_usage_info(None)
+                    break  # 原地重试子循环：取消退出 while
+                except Exception as e:
+                    output = ""
+                    turns = 0
+                    success = False
+                    error = str(e)
+                    # cli-retry-backoff（2.1）：attempt 失败按存活时长判定秒挂并累计。
+                    # 仅「进程确实启动过」的失败才判定（worktree 创建失败等进程未起的
+                    # 分支走上方 return/continue，不进入本法）；框架主动 SIGTERM 由
+                    # _run_was_interrupted 识别不计入。
+                    self._record_instant_fail(
+                        spec_name,
+                        time.time() - attempt_started_at,
+                        self.project_root / ".fenix" / "runs" / f"{attempt_run_id}.jsonl",
+                    )
+                    # add-cost-observability（D1）：_run_claude 抛错（超时/kill/非 0 退出/
+                    # rc==0 但 result 标记 error），stream-json 终态已被丢弃，按 0 计 usage，
+                    # 仅 DEBUG 留痕（异常早夭的 run 消耗小，与 jsonl 考古一致偏差可接受）。
+                    usage_info = self._extract_usage_info(None)
+                    self.logger.debug(
+                        "agent_runner",
+                        f"{agent_type} for '{spec_name}' ended in error — tokens counted "
+                        f"as 0 (add-cost-observability): {error}",
+                    )
+                    # 4xx 熔断计数（fix-stashpop-deadlock：provider-fault-fuse）。
+                    # 仅对「已分配 provider」且错误文本能解析出 HTTP 4xx 的情况计数（design D4）；
+                    # 5xx/网络错误不计数（瞬态，走既有 retry）。解析不到 code 视为失败、不计数。
+                    if provider_name:
+                        code = self.parse_api_error_status(error)
+                        if code is not None and code in PROVIDER_CIRCUIT_4XX:
+                            was_half_open = False
+                            st = self.provider_circuits.get(provider_name)
+                            if st and st.get("count", 0) >= PROVIDER_CIRCUIT_THRESHOLD \
+                                    and st.get("cooldown_until", 0) > 0 \
+                                    and st["cooldown_until"] <= self._now():
+                                # 半开探针仍 4xx → 重新冷却（design D4），不重复计数。
+                                was_half_open = True
+                            self._record_provider_4xx(provider_name, code)
+                            if was_half_open:
+                                self._record_provider_probe(provider_name, success=False)
+                        else:
+                            # fix-provider-transient-backoff（D1）：瞬断判定独立于
+                            # classify_switch_error——降噪后 error 文本可能不含
+                            # unrecognized_model 字样（D5 已过滤），判定必须依赖原始
+                            # stderr 信号（异常携带的 stderr_lines / has_result）。
+                            # resume 死 session（No conversation found）不属网关瞬断，
+                            # 排除在瞬断判定之外（其处置走下方 session 清理兜底）。
+                            exc_stderr = getattr(e, "stderr_lines", None) or []
+                            exc_exit = getattr(e, "exit_code", None)
+                            exc_has_result = getattr(e, "has_result", None)
+                            resume_dead = (
+                                error and "No conversation found with session ID" in error)
+                            if (not resume_dead
+                                    and transient_retries < len(transient_budget)
+                                    and self.classify_transient_error(
+                                        exc_stderr,
+                                        exc_exit if exc_exit is not None else 1,
+                                        bool(exc_has_result))):
+                                # 原地退避重试：写 transient_retry 事件留痕，按退避序列
+                                # 下一档 sleep，然后 while 循环顶部以同 provider 重跑该
+                                # attempt（不递增 attempt、不触发 switch 冷却、不改 chain_cursor）。
+                                backoff = transient_budget[transient_retries]
+                                transient_retries += 1
+                                append_run_line(
+                                    self.project_root / ".fenix" / "runs"
+                                    / f"{sub_run_id}.jsonl", {
+                                        "type": "transient_retry",
+                                        "spec": spec_name,
+                                        "provider": provider_name,
+                                        "backoff_seconds": backoff,
+                                        "retry_number": transient_retries,
+                                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    })
+                                self.logger.warning(
+                                    "agent_runner",
+                                    f"Transient error for '{spec_name}' (attempt {attempt}, "
+                                    f"provider {provider_name}) — in-place retry "
+                                    f"{transient_retries}/{len(transient_budget)} "
+                                    f"after {backoff}s backoff (fix-provider-transient-backoff)",
+                                )
+                                time.sleep(backoff)
+                                continue  # 回到 while 顶部重跑同一 attempt（新 sub_run_id）
+                            # 非瞬断或原地预算耗尽 → 现行切换逻辑
+                            # add-provider-failover（design D2/D3）：切换类错误 → 该 provider
+                            # 进入 switch 短冷却，同 run 后续 attempt 前进到下一候选（跨
+                            # provider 不 resume，见 _resumable_session_id）。
+                            # 4xx 配额/鉴权类不触发（维持既有熔断语义、链指针不动）。
+                            if self.classify_switch_error(error):
+                                self._record_switch_cooldown(provider_name)
+                                # 仅当链上还有后续候选才前进指针；否则保持当前（全链耗尽将
+                                # 在下一 attempt 的 _select_chain_candidate 中判定为 chain_exhausted）。
+                                if chain_cursor + 1 < len(chain):
+                                    chain_cursor += 1
+                    # fix-provider-transient-backoff（D2）：implementer 失败后从产物尾部
+                    # 提取 session_id 供续跑——全 agent_type 均提取（attempt 间 worktree
+                    # 保留扩展到全部 agent_type，session 随同现场保留）。
+                    if error and agent_type != "repair":
+                        run_file = self.project_root / ".fenix" / "runs" / f"{sub_run_id}.jsonl"
+                        sid = self._extract_session_id(run_file)
+                        if sid:
+                            session_id = sid
+                            session_provider = provider_name
+                    # fix 跨 provider resume：resume 报「会话不存在」说明该 session_id 已失效
+                    # （典型：上一次 attempt 切换了 provider，session 在旧 CLAUDE_CONFIG_DIR 里），
+                    # 若不清除，后续 attempt 会带着死 id 反复秒挂、烧尽全部重试。
+                    if error and "No conversation found with session ID" in error:
+                        resume_failures += 1
+                        session_id = None
+                        session_provider = None
+                        # 连续 2 次 resume 失败后本次 attempt 剩余重试改全新会话
+                        if resume_failures >= 2:
+                            self.logger.warning(
+                                "agent_runner",
+                                f"Resume dead session x{resume_failures} for '{spec_name}' — "
+                                f"switching to fresh session for remaining in-place retries",
+                            )
+                    break  # 非瞬断（或预算耗尽）退出 while 循环
 
             # 记录分支名（在 cleanup 之前，cleanup 会从 _wt_branches 中移除）
             branch = self.worktree_manager.get_branch_name(wt_path) if success else None
@@ -2478,6 +2548,28 @@ class AgentRunner:
         error_msg = ("\n".join(effective_lines[-5:])[:500] if effective_lines
                      else f"Exit code: {returncode}")
         return effective_lines, error_msg
+
+    @staticmethod
+    def _parse_transient_backoff_schedule(raw: str) -> list:
+        """解析原地退避序列为正整数列表（fix-provider-transient-backoff D1）。
+
+        配置键 `agents.transient_backoff_schedule`，逗号分隔的秒序列，
+        如 "30,60,120" → [30, 60, 120]。非法元素静默跳过，全非法回退
+        缺省 [30,60,120]。序列长度即原地重试预算上限。
+        """
+        DEFAULT_SCHEDULE = [30, 60, 120]
+        if not raw or not isinstance(raw, str):
+            return DEFAULT_SCHEDULE
+        result = []
+        for part in raw.split(","):
+            part = part.strip()
+            try:
+                val = int(part)
+                if val > 0:
+                    result.append(val)
+            except (ValueError, TypeError):
+                continue
+        return result if result else DEFAULT_SCHEDULE
 
 
 

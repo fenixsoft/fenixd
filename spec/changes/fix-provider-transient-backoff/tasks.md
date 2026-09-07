@@ -27,15 +27,15 @@
 
 ## 1. 错误归因降噪与瞬断判定（error-attribution-denoise）
 
-- [ ] 1.1 runner `_run_claude` error 拼装处（现 `runner.py:2427` 附近）：过滤 `^\[claude-code:` 诊断行后再拼接，过滤后为空回退 `Exit code: {returncode}`；jsonl stderr 原始事件保持不过滤
-- [ ] 1.2 新增瞬断判定函数：全量 stderr_lines 命中 switch 类 pattern（unrecognized_model / 5xx / 连接类）**或**（exit≠0 且本进程无 result 事件且 stderr 存在 `[claude-code:]` 行）→ 判为瞬断；判定不依赖降噪后 error 字符串
-- [ ] 1.3 单元测试：诊断行过滤、全噪音回退、双通道判定各正反例（tests/test_transient_backoff.py）
+- [x] 1.1 runner `_run_claude` error 拼装处（现 `runner.py:2427` 附近）：过滤 `^\[claude-code:` 诊断行后再拼接，过滤后为空回退 `Exit code: {returncode}`；jsonl stderr 原始事件保持不过滤
+- [x] 1.2 新增瞬断判定函数：全量 stderr_lines 命中 switch 类 pattern（unrecognized_model / 5xx / 连接类）**或**（exit≠0 且本进程无 result 事件且 stderr 存在 `[claude-code:]` 行）→ 判为瞬断；判定不依赖降噪后 error 字符串
+- [x] 1.3 单元测试：诊断行过滤、全噪音回退、双通道判定各正反例（tests/test_transient_backoff.py）
 
 ## 2. 原地退避与 resume 续跑（provider-transient-backoff）
 
-- [ ] 2.1 attempt 循环插入原地重试分支：瞬断判定命中且预算未耗尽 → 写 `transient_retry` 事件（含退避秒数/重试序号）→ sleep `transient_backoff_schedule` 下一档 → 同 provider 重跑该 attempt（run_id 加 `r{n}` 后缀独立产物），不递增 attempt、不触发 switch 冷却、不改 chain_cursor
-- [ ] 2.2 `r{n}` 子重试的 session 续跑：从上一产物提取 session_id，`_resumable_session_id` 对「同 provider + worktree 复用」的原地重试放行；`No conversation found` 时清 session 全新会话重试，连续 2 次 resume 失败后改全新会话
-- [ ] 2.3 原地预算耗尽后接现行逻辑：switch 冷却 + chain 前进，下一 provider 同 worktree 新会话
+- [x] 2.1 attempt 循环插入原地重试分支：瞬断判定命中且预算未耗尽 → 写 `transient_retry` 事件（含退避秒数/重试序号）→ sleep `transient_backoff_schedule` 下一档 → 同 provider 重跑该 attempt（run_id 加 `r{n}` 后缀独立产物），不递增 attempt、不触发 switch 冷却、不改 chain_cursor
+- [x] 2.2 `r{n}` 子重试的 session 续跑：从上一产物提取 session_id，`_resumable_session_id` 对「同 provider + worktree 复用」的原地重试放行；`No conversation found` 时清 session 全新会话重试，连续 2 次 resume 失败后改全新会话
+- [x] 2.3 原地预算耗尽后接现行逻辑：switch 冷却 + chain 前进，下一 provider 同 worktree 新会话
 - [ ] 2.4 单元测试：原地重试不递增 attempt/不冷却、预算耗尽转换链、resume 死 session 兜底、run_id 后缀产物独立
 
 ## 3. worktree 现场保留扩展（provider-transient-backoff）
