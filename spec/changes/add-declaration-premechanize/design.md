@@ -53,7 +53,7 @@ lint 调用之前插入：`softened = soften_unsatisfiable_declarations(spec_dir
 
 ### D6 部署副本同步
 
-`.fenix/core/deliverables.py` 与 `.fenix/schemas/spec-driven/schema.yaml` 是主树副本（fenix-new lint 预检 sys.path 指向 `.fenix/`）。实现收尾同步两文件（cp 主树 → .fenix），daemon 重启后运行时与预检同源。
+`.fenix/core/deliverables.py` 与 `.fenix/schemas/spec-driven/schema.yaml` 是主树副本（fenix-new lint 预检 sys.path 指向 `.fenix/`）。实现收尾在 **merge-back 后的主树**执行同步（cp 主树 → .fenix）——worktree 内 `.fenix` 为运行时目录断链（不可在 worktree 内同步），daemon 重启后运行时与预检同源。
 
 ## Risks / Trade-offs
 
