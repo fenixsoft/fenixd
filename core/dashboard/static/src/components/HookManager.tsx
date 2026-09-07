@@ -13,10 +13,11 @@
 
 import { DeleteOutlined, EditOutlined } from '@ant-design/icons';
 import {
-  Button, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography,
+  Button, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, Typography,
 } from 'antd';
 import dayjs from 'dayjs';
 import { useState, useMemo } from 'react';
+import { useIsMobile } from '@/hooks/useIsMobile';
 import { HOOK_ACTION_LABELS } from '@/services/dashboard';
 import type { HookAction, HookAuditRecord, HookConfig } from '@/services/dashboard';
 
@@ -84,6 +85,8 @@ export interface HookManagerProps {
   auditLoading?: boolean;
   /** 是否隐藏生效合并视图（settings 全局面板无需） */
   hideEffective?: boolean;
+  /** 终态只读：禁用所有编辑/删除操作，隐藏新增按钮 */
+  readOnly?: boolean;
 }
 
 // ── 组件 ──────────────────────────────────────────────────────────
@@ -96,10 +99,12 @@ export default function HookManager({
   audit,
   auditLoading,
   hideEffective,
+  readOnly,
 }: HookManagerProps) {
   const [editIdx, setEditIdx] = useState<number | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [form] = Form.useForm();
+  const isMobile = useIsMobile();
 
   const editingAction = Form.useWatch('action', form);
 
@@ -293,27 +298,118 @@ export default function HookManager({
       {!hideEffective && effective && effective.length > 0 && (
         <>
           <Title level={5} style={{ marginTop: 0 }}>生效中的 Hooks</Title>
-          <Table
-            dataSource={effective.map((e, i) => ({ ...e, key: i }))}
-            columns={effectiveColumns}
-            pagination={false}
-            size="small"
-            rowKey="key"
-            tableLayout="fixed"
-            style={{ marginBottom: 24 }}
-          />
+          {isMobile ? (
+            <List
+              dataSource={effective.map((e, i) => ({ ...e, key: i }))}
+              pagination={false}
+              size="small"
+              renderItem={(item: { hook: HookConfig; source: 'global' | 'spec'; key: number }) => (
+                <List.Item>
+                  <div style={{ width: '100%', minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <Tag color={item.source === 'global' ? 'orange' : 'purple'}>
+                        {item.source === 'global' ? '全局' : '本 SPEC'}
+                      </Tag>
+                      <Space wrap size={4}>
+                        {item.hook.events.map((ev) => (
+                          <Tag key={ev} color="blue">{EVENT_LABELS[ev] || ev}</Tag>
+                        ))}
+                      </Space>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                      <Text strong>{HOOK_ACTION_LABELS[item.hook.action as HookAction] || item.hook.action}</Text>
+                      <Tag color={item.hook.enabled !== false ? 'green' : 'default'}>
+                        {item.hook.enabled !== false ? '启用' : '停用'}
+                      </Tag>
+                    </div>
+                    {paramSummary(item.hook) && (
+                      <Text type="secondary" style={{ display: 'block', marginTop: 4, wordBreak: 'break-all' }}>
+                        {paramSummary(item.hook)}
+                      </Text>
+                    )}
+                  </div>
+                </List.Item>
+              )}
+            />
+          ) : (
+            <Table
+              dataSource={effective.map((e, i) => ({ ...e, key: i }))}
+              columns={effectiveColumns}
+              pagination={false}
+              size="small"
+              rowKey="key"
+              tableLayout="fixed"
+              scroll={{ x: 'max-content' }}
+              style={{ marginBottom: 24 }}
+            />
+          )}
         </>
       )}
 
       {/* ── Hook CRUD 列表 ──────────────────────────────────── */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <Title level={5} style={{ marginTop: 0 }}>Hook 列表</Title>
-        <Button type="primary" onClick={handleAdd}>
-          新增 Hook
-        </Button>
+        {!readOnly && (
+          <Button type="primary" onClick={handleAdd}>
+            新增 Hook
+          </Button>
+        )}
       </div>
       {hooks.length === 0 ? (
         <Text type="secondary">暂无 Hook 订阅</Text>
+      ) : isMobile ? (
+        <List
+          dataSource={hooks.map((h, i) => ({ ...h, key: h.id || i }))}
+          pagination={false}
+          size="small"
+          renderItem={(item: HookConfig & { key: string | number }) => {
+            const realIdx = hooks.findIndex((h) => h.id === item.id);
+            return (
+              <List.Item>
+                <div style={{ width: '100%', minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <Space wrap size={4}>
+                      {item.events.map((ev) => (
+                        <Tag key={ev} color="blue">{EVENT_LABELS[ev] || ev}</Tag>
+                      ))}
+                    </Space>
+                    <Switch
+                      size="small"
+                      disabled={readOnly}
+                      checked={item.enabled !== false}
+                      onChange={(checked) => handleToggle(realIdx, checked)}
+                    />
+                  </div>
+                  <div style={{ marginTop: 4 }}>
+                    <Text strong>{HOOK_ACTION_LABELS[item.action as HookAction] || item.action}</Text>
+                  </div>
+                  {paramSummary(item) && (
+                    <Text type="secondary" style={{ display: 'block', marginTop: 4, wordBreak: 'break-all' }}>
+                      {paramSummary(item)}
+                    </Text>
+                  )}
+                  {!readOnly && (
+                    <Space style={{ marginTop: 8 }}>
+                      <Button type="link" size="small" icon={<EditOutlined />} onClick={() => handleEdit(realIdx)}>
+                        编辑
+                      </Button>
+                      <Popconfirm title="确定删除？" onConfirm={() => handleDelete(realIdx)} okText="删除" cancelText="取消">
+                        <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+                          删除
+                        </Button>
+                      </Popconfirm>
+                    </Space>
+                  )}
+                  {readOnly && (
+                    <Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
+                      SPEC 已推送（终态），订阅不再变化，仅供查看
+                    </Text>
+                  )}
+                </div>
+              </List.Item>
+            );
+          }}
+        />
       ) : (
         <Table
           dataSource={hooks.map((h, i) => ({ ...h, key: h.id || i }))}
@@ -321,6 +417,7 @@ export default function HookManager({
           pagination={false}
           size="small"
           rowKey="key"
+          scroll={{ x: 'max-content' }}
         />
       )}
 
@@ -393,12 +490,44 @@ export default function HookManager({
       <Title level={5} style={{ marginTop: 24 }}>最近执行</Title>
       {audit.length === 0 ? (
         <Text type="secondary">暂无执行记录</Text>
+      ) : isMobile ? (
+        <List
+          dataSource={audit.map((a, i) => ({ ...a, key: a.ts + '-' + i }))}
+          pagination={false}
+          size="small"
+          renderItem={(item: HookAuditRecord & { key: string }) => (
+            <List.Item>
+              <div style={{ width: '100%', minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {(() => { try { return dayjs(item.ts).format('YYYY-MM-DD HH:mm:ss'); } catch { return item.ts; } })()}
+                  </Text>
+                  <Tag color={AUDIT_STATUS_COLORS[item.status] || 'default'}>
+                    {AUDIT_STATUS_LABELS[item.status] || item.status}
+                  </Tag>
+                </div>
+                <div style={{ marginTop: 4, wordBreak: 'break-all' }}>
+                  <Text strong>{HOOK_ACTION_LABELS[item.action as HookAction] || item.action}</Text>
+                  <Text type="secondary" style={{ marginLeft: 8 }}>
+                    {item.spec}{item.duration_ms != null ? ` · ${item.duration_ms}ms` : ''}
+                  </Text>
+                </div>
+                {item.detail && (
+                  <Text type="secondary" style={{ display: 'block', marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 12 }}>
+                    {item.detail}
+                  </Text>
+                )}
+              </div>
+            </List.Item>
+          )}
+        />
       ) : (
         <Table
           dataSource={audit.map((a, i) => ({ ...a, key: a.ts + '-' + i }))}
           pagination={false}
           size="small"
           rowKey="key"
+          scroll={{ x: 'max-content' }}
           columns={[
             {
               title: '时间',
