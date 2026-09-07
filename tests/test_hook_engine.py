@@ -457,3 +457,119 @@ class TestEndToEndDispatch(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAllDoneEvent(unittest.TestCase):
+    """「全部 SPEC 完成」项目级事件（fix-hook-all-specs-done）。
+
+    语义：任一 spec 状态迁移到 done/pushed 时，若 STATE 中全部 spec 均处于
+    成功终态（done/pushed，与前端 PRIORITY_TERMINAL 同口径），以 event=all-done
+    触发全局 hook——供用户在项目级 hook 界面挂 restart-daemon，获得
+    「全部 SPEC 自然收口后」的安全重启点（替代不可靠的排水窗口等待）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir) / "proj"
+        (self.proot / ".fenix").mkdir(parents=True)
+        self.addCleanup(lambda: subprocess.run(
+            ["rm", "-rf", self.tmpdir], check=False))
+
+    def _write_state(self, statuses):
+        lines = ["# Fenix Project State", "", "## Specs", ""]
+        for name, st in statuses.items():
+            lines += [f"### {name}", f"- status: {st}", ""]
+        (self.proot / ".fenix" / "STATE.md").write_text(
+            "\n".join(lines), encoding="utf-8")
+
+    def _engine(self):
+        cfg = {"hooks": {"global": [
+            {"id": "g-all", "events": ["all-done"], "action": "restart-daemon"},
+        ], "specs": {}}}
+        return HookEngine(self.proot, cfg, logger=None, admin_store=MagicMock())
+
+    @staticmethod
+    def _wait_for(cond, timeout=3.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if cond():
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_validate_accepts_all_done(self):
+        self.assertIsNone(validate_hook_entry(
+            {"events": ["all-done"], "action": "restart-daemon"}))
+        self.assertIsNone(validate_hooks_config(
+            {"global": [{"id": "x", "events": ["all-done"],
+                         "action": "restart-daemon"}], "specs": {}}))
+
+    def test_match_global_scope_only(self):
+        """all-done 是项目级事件：仅全局 hook 匹配，spec 级订阅被忽略。"""
+        cfg = {"hooks": {
+            "global": [{"id": "g1", "events": ["all-done"], "action": "restart-daemon"}],
+            "specs": {"s1": [{"id": "s1a", "events": ["all-done"],
+                              "action": "commit"}]},
+        }}
+        matched = match_hooks(cfg, "*", "all-done")
+        self.assertEqual([(h["id"], s) for h, s in matched], [("g1", "global")])
+
+    def test_fires_when_all_specs_terminal(self):
+        self._write_state({"spec-a": "done", "spec-b": "pushed"})
+        engine = self._engine()
+        engine.dispatch("spec-b", "testing", "pushed", {})
+        self.assertTrue(self._wait_for(
+            lambda: (self.proot / ".fenix" / "restart_request").exists()),
+            "全部 SPEC 终态后未触发 all-done hook（restart_request 未写入）")
+        audit = [a for a in read_hook_audit(self.proot) if a.get("event") == "all-done"]
+        self.assertEqual(len(audit), 1)
+        self.assertEqual(audit[0]["status"], STATUS_SUCCESS)
+        self.assertEqual(audit[0]["scope"], "global")
+
+    def test_not_fired_while_any_spec_active(self):
+        self._write_state({"spec-a": "implementing", "spec-b": "pushed"})
+        engine = self._engine()
+        engine.dispatch("spec-b", "testing", "pushed", {})
+        time.sleep(0.3)
+        self.assertFalse((self.proot / ".fenix" / "restart_request").exists(),
+                         "仍有进行中 spec 时不应触发 all-done")
+        self.assertEqual([a for a in read_hook_audit(self.proot)
+                          if a.get("event") == "all-done"], [])
+
+    def test_not_fired_while_spec_blocked(self):
+        self._write_state({"spec-a": "blocked", "spec-b": "pushed"})
+        engine = self._engine()
+        engine.dispatch("spec-b", "testing", "pushed", {})
+        time.sleep(0.3)
+        self.assertFalse((self.proot / ".fenix" / "restart_request").exists())
+
+    def test_fires_once_until_spec_leaves_terminal(self):
+        """全员终态期间去重只发一次；任一 spec 离开终态后复位可再发。
+
+        每次迁移前先改 STATE（对齐真实时序：状态机先落盘、EventBus 再派发）。
+        """
+        self._write_state({"spec-a": "done", "spec-b": "testing"})
+        engine = self._engine()
+        # ① spec-b: testing → pushed，全员终态 → 发
+        self._write_state({"spec-a": "done", "spec-b": "pushed"})
+        engine.dispatch("spec-b", "testing", "pushed", {})
+        self.assertTrue(self._wait_for(lambda: len(
+            [a for a in read_hook_audit(self.proot)
+             if a.get("event") == "all-done"]) == 1))
+        # ② spec-b: done → pushed（STATE 已是 pushed，a/b 均终态）→ 去重不发
+        engine.dispatch("spec-b", "done", "pushed", {})
+        time.sleep(0.3)
+        self.assertEqual(len([a for a in read_hook_audit(self.proot)
+                              if a.get("event") == "all-done"]), 1)
+        # ③ 打回：spec-b pushed → implementing → 复位去重标志
+        self._write_state({"spec-a": "done", "spec-b": "implementing"})
+        engine.dispatch("spec-b", "pushed", "implementing", {})
+        time.sleep(0.3)
+        self.assertEqual(len([a for a in read_hook_audit(self.proot)
+                              if a.get("event") == "all-done"]), 1)
+        # ④ 再收口：spec-b implementing → pushed → 再发
+        self._write_state({"spec-a": "done", "spec-b": "pushed"})
+        engine.dispatch("spec-b", "implementing", "pushed", {})
+        self.assertTrue(self._wait_for(lambda: len(
+            [a for a in read_hook_audit(self.proot)
+             if a.get("event") == "all-done"]) == 2))

@@ -76,6 +76,8 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
       <Typography.Title level={5} style={{ marginTop: 0 }}>全局 Hook 订阅</Typography.Title>
       <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
         全局 hooks 对所有 SPEC 生效（SPEC 详情页 Hook 页签可配置 SPEC 级 hook，两者取并集）。
+        订阅「全部SPEC完成（all-done）」可在所有 SPEC 均处于完成/已推送终态时触发动作
+        （如重启 daemon，作为全部任务自然收口后的安全重启点）。
         动作失败会写审计日志并产生站内告警，不会自动重试。
       </Text>
       <HookManager
@@ -85,6 +87,7 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
         audit={audit}
         auditLoading={auditLoading}
         hideEffective
+        allowProjectEvent
       />
     </div>
   );

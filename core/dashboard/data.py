@@ -1216,11 +1216,16 @@ def count_scenarios(project_root, spec_name) -> int:
 
 
 def count_generated_scenarios(project_root, spec_name) -> int:
-    """统计 planner 已落盘的场景数（verification-phase-progress）。
+    """统计 planner 已补全的场景数（verification-phase-progress）。
 
     读 .fenix/verify-progress/<spec>/test_scenarios.json（planner-plan 出题
     产物，分批整体重写）；缺失/损坏/非列表以 0 计——出题进度是纯展示信号，
     任何解析异常都不阻断摘要（fail-open，与 count_scenarios 同风格）。
+
+    口径=「已补全场景数」（steps/assertions 非空才算）：分批落盘强制骨架
+    先行（fix-planner-scenarios-batching-hook）后，骨架含全部 id 但无肉，
+    若按条数计则骨架落盘瞬间出题条 0→N/N 一次跳；数带肉场景使出题条
+    随每 1/3 重写真实爬升。
     """
     pf = (
         Path(project_root)
@@ -1237,7 +1242,12 @@ def count_generated_scenarios(project_root, spec_name) -> int:
         return 0
     if isinstance(data, dict):
         data = data.get("scenarios")
-    return len(data) if isinstance(data, list) else 0
+    if not isinstance(data, list):
+        return 0
+    return sum(
+        1 for sc in data
+        if isinstance(sc, dict) and (sc.get("steps") or sc.get("assertions"))
+    )
 
 
 def spec_generation_progress(project_root, spec_name, entry, vp=None) -> dict | None:

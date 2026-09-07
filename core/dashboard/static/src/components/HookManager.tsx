@@ -39,6 +39,9 @@ const EVENT_LABELS: Record<string, string> = {
   blocked: '阻塞',
   done: '完成',
   pushed: '已推送',
+  // 项目级伪事件（fix-hook-all-specs-done）：全部 SPEC 均处 done/pushed 终态时触发，
+  // 仅全局作用域（HookManager allowProjectEvent）可选，spec 级订阅被后端忽略
+  'all-done': '全部SPEC完成',
 };
 
 const AUDIT_STATUS_COLORS: Record<string, string> = {
@@ -87,6 +90,8 @@ export interface HookManagerProps {
   hideEffective?: boolean;
   /** 终态只读：禁用所有编辑/删除操作，隐藏新增按钮 */
   readOnly?: boolean;
+  /** 是否开放项目级伪事件 all-done（fix-hook-all-specs-done）：仅全局面板为 true */
+  allowProjectEvent?: boolean;
 }
 
 // ── 组件 ──────────────────────────────────────────────────────────
@@ -100,6 +105,7 @@ export default function HookManager({
   auditLoading,
   hideEffective,
   readOnly,
+  allowProjectEvent,
 }: HookManagerProps) {
   const [editIdx, setEditIdx] = useState<number | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -436,8 +442,9 @@ export default function HookManager({
           <Form.Item name="events" label="订阅事件" rules={[{ required: true, message: '请选择至少一个事件' }]}>
             <Select
               mode="multiple"
-              placeholder="选择事件类型（十状态枚举）"
-              options={ALL_EVENTS.map((ev) => ({ value: ev, label: `${EVENT_LABELS[ev]}（${ev}）` }))}
+              placeholder="选择事件类型"
+              options={(allowProjectEvent ? [...ALL_EVENTS, 'all-done'] : ALL_EVENTS)
+                .map((ev) => ({ value: ev, label: `${EVENT_LABELS[ev] || ev}（${ev}）` }))}
             />
           </Form.Item>
           <Form.Item name="action" label="动作" rules={[{ required: true }]}>

@@ -1441,3 +1441,54 @@ class TestArchivedSpecDocReadback(unittest.TestCase):
         (archive_dir / "tasks.md").write_text("# Tasks\n\nOops\n", encoding="utf-8")
         self.assertEqual(tasks_note(self.tmpdir, self.SPEC),
                          "tasks.md 存在但未解析出任务分组（分组格式不匹配或文件为空）")
+
+
+class TestGenerationProgressCounting(unittest.TestCase):
+    """出题计数口径（fix-planner-scenarios-batching-hook 配套）：
+
+    planner 分批落盘为骨架→每 1/3 补全→最终完整。骨架含全部 id 但
+    steps/assertions 全空——若计入，骨架落盘瞬间出题条 0→N/N 一次跳。
+    口径改为「已补全场景数」（steps/assertions 非空），出题条随每批
+    重写真实爬升。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write(self, scenarios):
+        vp = Path(self.tmpdir) / ".fenix" / "verify-progress" / "spec-x"
+        vp.mkdir(parents=True, exist_ok=True)
+        (vp / "test_scenarios.json").write_text(
+            json.dumps(scenarios, ensure_ascii=False), encoding="utf-8")
+
+    def _skeleton(self, n=3):
+        return [{"id": f"s{i}", "kind": "web", "description": "d",
+                 "steps": [], "assertions": []} for i in range(n)]
+
+    @staticmethod
+    def _flesh(s):
+        return dict(s,
+                    steps=[{"action": "navigate", "value": "http://x/#/p"}],
+                    assertions=[{"type": "no_console_error"}])
+
+    def test_skeleton_counts_zero_fleshed_counts_climb(self):
+        from core.dashboard.data import count_generated_scenarios
+        skeleton = self._skeleton()
+        self._write(skeleton)
+        self.assertEqual(count_generated_scenarios(self.tmpdir, "spec-x"), 0,
+                         "骨架（steps/assertions 全空）不应计入已落盘场景数")
+        self._write([self._flesh(skeleton[0])] + skeleton[1:])
+        self.assertEqual(count_generated_scenarios(self.tmpdir, "spec-x"), 1,
+                         "补全 1 个场景后计数应为 1")
+        self._write([self._flesh(s) for s in skeleton])
+        self.assertEqual(count_generated_scenarios(self.tmpdir, "spec-x"), 3,
+                         "全部补全后计数应为全部场景数")
+
+    def test_missing_or_corrupt_file_still_zero(self):
+        from core.dashboard.data import count_generated_scenarios
+        self.assertEqual(count_generated_scenarios(self.tmpdir, "spec-x"), 0)
+        self._write("garbage")
+        self.assertEqual(count_generated_scenarios(self.tmpdir, "spec-x"), 0)

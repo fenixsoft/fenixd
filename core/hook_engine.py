@@ -39,9 +39,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .admin_store import AdminStore, ESCALATION
-from .state_machine import SpecStatus
+from .state_machine import SpecStatus, StateParser
 
 # ── 常量 ───────────────────────────────────────────────────────────
+
+# 项目级伪事件（fix-hook-all-specs-done）：全部 SPEC 均处于成功终态时触发，
+# 仅全局作用域匹配。供用户在项目级 hook 界面挂 restart-daemon 等
+# 项目级收口动作——「全部 SPEC 自然收口后的安全重启点」。
+HOOK_EVENT_ALL_DONE = "all-done"
+
+# 成功终态集合：all-done 判定口径（与前端 PRIORITY_TERMINAL 一致）。
+# blocked/bug-found/frozen 等非终态视为「仍有进行中」不触发。
+SPEC_SUCCESS_TERMINAL = (SpecStatus.DONE, SpecStatus.PUSHED)
 
 # 全部合法动作（D4 七枚举）
 HOOK_ACTIONS = (
@@ -54,8 +63,8 @@ HOOK_ACTIONS = (
     "shell",
 )
 
-# 订阅事件类型 = 十状态枚举（drafted … pushed）
-VALID_EVENTS = tuple(SpecStatus.ALL)
+# 订阅事件类型 = 十状态枚举 + 项目级伪事件 all-done
+VALID_EVENTS = tuple(SpecStatus.ALL) + (HOOK_EVENT_ALL_DONE,)
 
 # 超时缺省（D4：shell 缺省 60，webhook 缺省 10）
 DEFAULT_SHELL_TIMEOUT_SECONDS = 60
@@ -206,12 +215,15 @@ def match_hooks(config: dict, spec: str, event_type: str) -> List[Tuple[dict, st
 
     返回 [(hook_cfg, scope), ...]，scope ∈ "global" | "spec"。
     匹配不看 enabled（disabled 在执行阶段记 skipped 审计）；事件类型 = 新状态。
+    all-done 是项目级伪事件：仅全局作用域匹配（spec 级订阅被忽略）。
     """
     hooks = hook_config(config)
     matched: List[Tuple[dict, str]] = []
     for h in hooks.get("global") or []:
         if isinstance(h, dict) and event_type in (h.get("events") or []):
             matched.append((h, "global"))
+    if event_type == HOOK_EVENT_ALL_DONE:
+        return matched
     spec_hooks = hooks.get("specs") or {}
     for h in spec_hooks.get(spec) or []:
         if isinstance(h, dict) and event_type in (h.get("events") or []):
@@ -262,6 +274,10 @@ class HookEngine:
         self.logger = logger
         self.admin_store = admin_store
         self._audit_lock = threading.Lock()
+        # all-done 去重（fix-hook-all-specs-done）：全员终态期间只发一次，
+        # 任一 spec 离开终态即复位（见 dispatch）。进程内存态，重启自然复位。
+        self._all_done_fired = False
+        self._all_done_lock = threading.Lock()
         # 框架目录：core/hook_engine.py → 框架根（bin/fenix_dashboard.py 所在）
         self._framework_root = Path(__file__).resolve().parent.parent
         self._project_name = None
@@ -280,14 +296,59 @@ class HookEngine:
             self._log_error(
                 f"hook 匹配失败 spec={spec} event={to_status}: {type(e).__name__}: {e}")
             return
-        if not matches:
-            return
         for cfg, scope in matches:
             hook_id = cfg.get("id") if isinstance(cfg, dict) else None
             th = threading.Thread(
                 target=self._execute_one,
                 args=(hook_id, scope, spec, from_status, to_status, entry or {}),
                 name=f"hook-{hook_id or 'anon'}-{spec}",
+                daemon=True,
+            )
+            th.start()
+
+        # 项目级 all-done 评估（fix-hook-all-specs-done）：迁移进成功终态时
+        # 检查全员是否收口；迁移到任何非终态则复位去重标志（打回后再收口
+        # 可再次触发）。
+        if to_status in SPEC_SUCCESS_TERMINAL:
+            self._maybe_dispatch_all_done(spec)
+        else:
+            with self._all_done_lock:
+                self._all_done_fired = False
+
+    # ── 项目级 all-done（fix-hook-all-specs-done）────────────────────
+
+    def _maybe_dispatch_all_done(self, trigger_spec: str) -> None:
+        """终态迁移时评估「全部 SPEC 均完成」：是则以 all-done 触发全局 hook。
+
+        - 口径：STATE.md 全部条目 status ∈ (done, pushed)——blocked/bug-found/
+          frozen 等一律视为「仍有进行中」不触发（STATE 由状态机先行落盘，
+          EventBus 派发读到的必为迁移后状态）；
+        - 去重：全员终态期间只发一次（内存标志），任一 spec 离开终态即复位；
+        - 触发 spec 以 "*" 记审计（项目级语义），trigger_spec 入 entry 供
+          webhook/shell 溯源。
+        """
+        try:
+            entries = StateParser.parse(
+                self.project_root / ".fenix" / "STATE.md")
+        except Exception as e:
+            self._log_warning(f"all-done 评估失败（跳过）: {e}")
+            return
+        if not entries:
+            return
+        if any(e.get("status") not in SPEC_SUCCESS_TERMINAL
+               for e in entries.values()):
+            return
+        with self._all_done_lock:
+            if self._all_done_fired:
+                return
+            self._all_done_fired = True
+        for cfg, scope in match_hooks(self.config, "*", HOOK_EVENT_ALL_DONE):
+            hook_id = cfg.get("id") if isinstance(cfg, dict) else None
+            th = threading.Thread(
+                target=self._execute_one,
+                args=(hook_id, scope, "*", None, HOOK_EVENT_ALL_DONE,
+                      {"trigger_spec": trigger_spec}),
+                name=f"hook-{hook_id or 'anon'}-all-done",
                 daemon=True,
             )
             th.start()
