@@ -24,3 +24,9 @@
 - [x] 3.1 `cd core/dashboard/static && npm run build` 构建通过
 - [x] 3.2 playwright 390×844：四统计卡单标题、body padding 12px 16px、Token「平均每 SPEC」注释完整换行、活跃 Agent 图例完整、搜索框全宽可输入、`scrollWidth === 390`
 - [x] 3.3 playwright 1920×1080 对照基线：四卡双标题 + 16px 24px padding + nowrap 单行、项目清单卡头单行 + 160px 搜索框，逐像素一致
+
+## 验证修复（第 1 轮失败）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/fix-mobile-overview-tiles/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
