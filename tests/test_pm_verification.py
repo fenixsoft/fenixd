@@ -11,6 +11,7 @@ import time
 import unittest
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch, PropertyMock, AsyncMock
 
 # Add project root to path
@@ -459,6 +460,303 @@ class TestLocateAppBaseUrlFromError(unittest.TestCase):
             self.assertEqual(eng._locate_app_base_url(candidates), "http://127.0.0.1:8787")
         finally:
             _sh.rmtree(tmpdir, ignore_errors=True)
+
+
+class TestVerifierCircuitOpenHoldsState(unittest.TestCase):
+    """verifier 断路器保持（regression-coverage Requirement「provider 熔断打开时 verifier 状态保持」）。
+
+    背景（c310ee5 refactor-test-structure）：原 TestVerifierCircuitOpenHoldsState 被
+    替换为空壳后随清理删除，断言丢失。
+
+    测试从 ProviderCircuit 状态构造出发驱动 verification 层，覆盖两条路径：
+    - legacy 路径（run_verifier 返回 circuit open error → _verifier_error_is_infra
+      判定 infrastructure failure → 状态保持）
+    - new 验证路径（run_planner 返回 circuit open error → hold-state → 状态保持）
+
+    spec Scenario「熔断打开时 verifier 失败不误判 bug-found」：
+    - spec 状态保持原状（testing/在跑态），不发生 →bug-found 迁移
+    - _verify_fail_rounds 不递增
+    - 失败按基础设施口径记录（error 写入基础设施错误文本）
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
+        )
+        self.engine._enqueue = MagicMock()
+        self.engine._on_spec_bug_found = MagicMock()
+        self.engine._on_spec_verified = MagicMock()
+        self.engine._task_completion_blocker = MagicMock(return_value=None)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_testing_spec(self, name="demo-spec"):
+        self.sm.add_spec(name, {"priority": 5})
+        self.sm.transition(name, "ready")
+        self.sm.transition(name, "implementing")
+        self.sm.transition(name, "implemented")
+        self.sm.transition(name, "testing")
+
+    def _make_circuit_open_error(self, provider_name="volc"):
+        """构造 ProviderCircuit open 时返回的基础设施错误文本。"""
+        # 直接从 ProviderCircuit._circuit_open_error 的格式构造，
+        # 模拟 runner._execute_agent 熔断拦截时返回的 error。
+        return (
+            f"provider circuit open: {provider_name} "
+            f"(HTTP 429 x 5) — cooldown 300s remaining"
+        )
+
+    def test_legacy_circuit_open_holds_testing_not_bugfound(self):
+        """legacy 路径：run_verifier 返回 circuit open → 保持 testing，不 bug-found。"""
+        self._make_testing_spec()
+        circuit_err = self._make_circuit_open_error()
+        self.engine.agent_runner.run_verifier = MagicMock(
+            return_value=SimpleNamespace(
+                success=False, error=circuit_err,
+                run_id="verify-demo-spec-1-a1", cancelled=False,
+            ))
+        self.engine._run_legacy_verification("demo-spec")
+        entry = self.sm.read_one("demo-spec")
+        self.assertEqual(entry["status"], "testing")
+        self.assertNotEqual(entry["status"], "bug-found")
+        self.assertIn("provider circuit open", entry.get("error", ""))
+
+    def test_legacy_circuit_open_does_not_increment_fail_rounds(self):
+        """legacy 路径：circuit open → _verify_fail_rounds 不递增。"""
+        self._make_testing_spec()
+        self.sm.update_spec("demo-spec", {"_verify_fail_rounds": 2})
+        circuit_err = self._make_circuit_open_error()
+        self.engine.agent_runner.run_verifier = MagicMock(
+            return_value=SimpleNamespace(
+                success=False, error=circuit_err,
+                run_id="verify-demo-spec-2-a1", cancelled=False,
+            ))
+        self.engine._run_legacy_verification("demo-spec")
+        entry = self.sm.read_one("demo-spec")
+        self.assertEqual(entry["status"], "testing")
+        self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 2)
+
+    def test_legacy_circuit_open_does_not_trigger_bugfound(self):
+        """legacy 路径：circuit open → _on_spec_bug_found 未被调用。"""
+        self._make_testing_spec()
+        circuit_err = self._make_circuit_open_error()
+        self.engine.agent_runner.run_verifier = MagicMock(
+            return_value=SimpleNamespace(
+                success=False, error=circuit_err,
+                run_id="verify-demo-spec-3-a1", cancelled=False,
+            ))
+        self.engine._run_legacy_verification("demo-spec")
+        self.engine._on_spec_bug_found.assert_not_called()
+
+    def test_new_verifier_planner_circuit_open_holds_state(self):
+        """new 验证路径：planner plan 阶段返回 circuit open → 保持 testing，不 bug-found。"""
+        self._make_testing_spec()
+        circuit_err = self._make_circuit_open_error()
+        self.engine.agent_runner.run_planner = MagicMock(
+            return_value=SimpleNamespace(
+                success=False, error=circuit_err,
+                run_id="planner-plan-demo-spec-1-a1", cancelled=False,
+            ))
+        self.engine._read_planner_result = MagicMock(return_value="plan-ready")
+        self.engine._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._apply_interaction_contract = MagicMock(return_value=None)
+
+        with patch("importlib.reload", lambda m: m):
+            self.engine._run_three_stage_verification("demo-spec")
+
+        entry = self.sm.read_one("demo-spec")
+        self.assertEqual(entry["status"], "testing")
+        self.assertNotEqual(entry["status"], "bug-found")
+        self.assertIn("provider circuit open", entry.get("error", ""))
+
+    def test_new_verifier_planner_circuit_open_no_fail_rounds(self):
+        """new 验证路径：planner circuit open → _verify_fail_rounds 不递增。"""
+        self._make_testing_spec()
+        self.sm.update_spec("demo-spec", {"_verify_fail_rounds": 3})
+        circuit_err = self._make_circuit_open_error()
+        self.engine.agent_runner.run_planner = MagicMock(
+            return_value=SimpleNamespace(
+                success=False, error=circuit_err,
+                run_id="planner-plan-demo-spec-2-a1", cancelled=False,
+            ))
+        self.engine._read_planner_result = MagicMock(return_value="plan-ready")
+        self.engine._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._apply_interaction_contract = MagicMock(return_value=None)
+
+        with patch("importlib.reload", lambda m: m):
+            self.engine._run_three_stage_verification("demo-spec")
+
+        entry = self.sm.read_one("demo-spec")
+        self.assertEqual(entry["status"], "testing")
+        self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 3)
+
+    def test_new_verifier_planner_circuit_open_no_bugfound(self):
+        """new 验证路径：planner circuit open → _on_spec_bug_found 未被调用。"""
+        self._make_testing_spec()
+        circuit_err = self._make_circuit_open_error()
+        self.engine.agent_runner.run_planner = MagicMock(
+            return_value=SimpleNamespace(
+                success=False, error=circuit_err,
+                run_id="planner-plan-demo-spec-3-a1", cancelled=False,
+            ))
+        self.engine._read_planner_result = MagicMock(return_value="plan-ready")
+        self.engine._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._apply_interaction_contract = MagicMock(return_value=None)
+
+        with patch("importlib.reload", lambda m: m):
+            self.engine._run_three_stage_verification("demo-spec")
+
+        self.engine._on_spec_bug_found.assert_not_called()
+
+
+class TestUniformVerifyFailure(unittest.TestCase):
+    """验证失败形态归一与轮次计数（spec Requirement「验证失败形态归一与轮次计数」）。
+
+    背景（c310ee5 refactor-test-structure）：原 TestUniformVerifyFailure 被替换为
+    空壳（仅断言 status==testing 的恒真）后随清理删除，断言丢失。
+
+    当前源码汇聚点（design D1-3 调查结论）：
+    - **verifier run 异常**：``_run_legacy_verification`` 走 success=False 且非
+      infra 分支 → ``transition(bug-found)``，此后 event_bus 捕获 STATE 变化补发
+      ``spec_bug_found`` 事件 → ``_on_spec_bug_found`` → ``_do_spec_bug_found``
+      递增 ``_verify_fail_rounds`` 并原地打回注入「验证修复」任务段。
+    - **verdict bug-found**：结果文件 status=bug-found → bug-found 分支显式调用
+      ``_on_spec_bug_found`` → 同上递增。
+    - **结果文件畸形**：当前实现把 status 不在白名单的结果文件视为 verified
+      （``_read_verifier_result`` 对未知 status 返回 None → 走 verified 分支），
+      **不产生 bug-found 失败信号、不递增 fail_rounds**——与 spec 期望不一致，
+      按 design D1 登记为 spec-inconsistency 发现并以 xfail 呈现（测试锁定
+      当前实际行为 = 不递增，供人工裁决是否需要实现侧改进）。
+
+    spec 两个 Scenario：
+    - 各失败形态统一递增失败轮次（run 异常 / verdict bug-found 各自 +1）
+    - 验证通过时失败轮次归零
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
+        )
+        self.engine._enqueue = MagicMock()
+        self.engine._on_spec_verified = MagicMock()
+        self.engine._task_completion_blocker = MagicMock(return_value=None)
+        self.engine._ensure_verification_report = MagicMock(return_value=None)
+        self.engine._env_whitewash_gate = MagicMock(return_value=True)
+        self.engine._check_verification_gate = MagicMock(return_value=None)
+        # 修复任务注入依赖 tasks.md（存在即可，_inject_verify_fix_task 幂等追加）
+        spec_dir = Path(self.tmpdir) / "spec" / "changes" / "demo-spec"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "tasks.md").write_text(
+            "# Tasks\n\n## 1. 实现\n\n- [x] 1.1 done\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_testing_spec(self, name="demo-spec"):
+        self.sm.add_spec(name, {"priority": 5})
+        self.sm.transition(name, "ready")
+        self.sm.transition(name, "implementing")
+        self.sm.transition(name, "implemented")
+        self.sm.transition(name, "testing")
+
+    def _assert_bug_found_round(self, name="demo-spec", expected=1):
+        """断言统一失败信号：fail_rounds 递增 + 原地打回 + 修复任务段注入。"""
+        entry = self.sm.read_one(name)
+        self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), expected)
+        # inplace 打回：testing → implementing，注入「验证修复」任务段
+        self.assertEqual(entry["status"], "implementing")
+        tasks_text = (
+            Path(self.tmpdir) / "spec" / "changes" / name / "tasks.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("## 验证修复", tasks_text)
+        self.engine._enqueue.assert_called_with(name, "implementer")
+
+    def test_run_exception_unifies_to_bug_found(self):
+        """形态 1：verifier run 异常 → bug-found 信号，fail_rounds +1（经 event_bus 补发）。"""
+        self._make_testing_spec()
+        self.engine.agent_runner.run_verifier = MagicMock(
+            return_value=SimpleNamespace(
+                success=False, error="Verifier agent crashed",
+                run_id="verify-demo-spec-1-a1", cancelled=False,
+            ))
+        self.engine._run_legacy_verification("demo-spec")
+        # run 异常本身立即可见的信号：bug-found 状态 + error 记录
+        entry = self.sm.read_one("demo-spec")
+        self.assertEqual(entry["status"], "bug-found")
+        self.assertIn("Verifier agent failed", str(entry.get("error")))
+        # event_bus 捕获 STATE 变化补发 spec_bug_found 事件（生产链路）
+        self.engine.handle_event("spec_bug_found", "demo-spec", entry)
+        self._assert_bug_found_round()
+
+    def test_verdict_bug_found_unifies_to_bug_found(self):
+        """形态 2：verdict=bug-found → 统一失败信号，fail_rounds +1。"""
+        self._make_testing_spec()
+        self.engine.agent_runner.run_verifier = MagicMock(
+            return_value=SimpleNamespace(
+                success=True, error=None, run_id="verify-demo-spec-2-a1"))
+        run_result_path = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
+        run_result_path.write_text(json.dumps({
+            "spec": "demo-spec", "status": "bug-found",
+        }), encoding="utf-8")
+        import os
+        os.utime(run_result_path, (time.time(), time.time()))
+        self.engine._run_legacy_verification("demo-spec")
+        self._assert_bug_found_round()
+
+    @unittest.expectedFailure
+    def test_malformed_result_file_current_behavior(self):
+        """形态 3：结果文件畸形—— spec 期望归一到失败信号。
+
+        当前实现（verbatim 行为）：``_read_verifier_result`` 对未知 status
+        记录 warning 并返回 None，legacy verified 分支据此推进 verified，
+        fail_rounds 不递增。此为 design D1 登记的 spec-inconsistency。
+        """
+        self._make_testing_spec()
+        self.engine.agent_runner.run_verifier = MagicMock(
+            return_value=SimpleNamespace(
+                success=True, error=None, run_id="verify-demo-spec-3-a1"))
+        run_result_path = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
+        run_result_path.write_text(json.dumps({
+            "spec": "demo-spec", "status": "garbage-status",
+        }), encoding="utf-8")
+        import os
+        os.utime(run_result_path, (time.time(), time.time()))
+        self.engine._run_legacy_verification("demo-spec")
+        # spec 期望：统一失败信号 → fail_rounds +1 → 原地打回
+        self._assert_bug_found_round()
+
+    def test_verify_pass_resets_fail_rounds(self):
+        """Scenario: 验证通过时失败轮次归零。"""
+        self._make_testing_spec()
+        # 先有一轮失败计数（跨修复周期累计）
+        self.sm.update_spec("demo-spec", {"_verify_fail_rounds": 2})
+        self.sm.update_spec("demo-spec", {"status": "testing"})
+        self.engine.agent_runner.run_verifier = MagicMock(
+            return_value=SimpleNamespace(
+                success=True, error=None, run_id="verify-demo-spec-4-a1"))
+        run_result_path = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
+        run_result_path.write_text(json.dumps({
+            "spec": "demo-spec", "status": "verified",
+        }), encoding="utf-8")
+        import os
+        os.utime(run_result_path, (time.time(), time.time()))
+        self.engine._run_legacy_verification("demo-spec")
+        entry = self.sm.read_one("demo-spec")
+        self.assertEqual(entry["status"], "verified")
+        self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 0)
 
 
 class TestServingRegistry(unittest.TestCase):
