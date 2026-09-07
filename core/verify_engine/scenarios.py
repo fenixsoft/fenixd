@@ -321,6 +321,12 @@ class TestScenario:
     # 场景 kind（web/cli/api，缺省 web）。kind 是场景级字段：混合 spec =
     # 场景集混排 + depends_on 跨 kind 编排；单场景内不混排步骤类型。
     kind: str = "web"
+    # 场景级视口（admin 修 2026-09-07，fix-mobile-touch-disclosure 验证阻塞根因）。
+    # 此前本模型无此字段，场景声明的 {"width":390,"height":844} 被 from_dict
+    # 静默丢弃、browser.new_context 硬编码 1280×800 桌面视口——useIsMobile
+    # 门控的移动端条件渲染（渐进披露等）在验证中永不出现，断言必然超时的
+    # 伪失败被误判为产品缺陷。None = 沿用桌面缺省，存量场景行为不变。
+    viewport: Optional[dict] = None
 
     def validate(self) -> list[str]:
         """验证场景定义的合法性，返回错误列表。
@@ -346,7 +352,23 @@ class TestScenario:
             d["depends_on"] = self.depends_on
         if self.external_net_errors_ok:
             d["external_net_errors_ok"] = True
+        if self.viewport:
+            d["viewport"] = self.viewport
         return d
+
+    @staticmethod
+    def _parse_viewport(raw) -> Optional[dict]:
+        """顶层 viewport 字段解析：仅接受 {width:int, height:int} 正值，
+        其余形态一律忽略（回退桌面缺省），不制造新的验收失败模式。"""
+        if not isinstance(raw, dict):
+            return None
+        try:
+            w, h = int(raw["width"]), int(raw["height"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if w <= 0 or h <= 0 or w > 3840 or h > 2160:
+            return None
+        return {"width": w, "height": h}
 
     @classmethod
     def from_dict(cls, d: dict) -> "TestScenario":
@@ -359,6 +381,7 @@ class TestScenario:
             depends_on=d.get("depends_on", []),
             external_net_errors_ok=d.get("external_net_errors_ok", False),
             kind=d.get("kind", "web"),
+            viewport=cls._parse_viewport(d.get("viewport")),
         )
 
 

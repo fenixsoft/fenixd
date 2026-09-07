@@ -266,16 +266,19 @@ class BrowserManager:
 
         self._stop_dev_server()
 
-    async def new_context(self) -> "BrowserContext":
+    async def new_context(self, viewport: Optional[dict] = None) -> "BrowserContext":
         """创建隔离的浏览器上下文。
 
         每个场景一个独立的 context，实现状态隔离。
+        viewport：场景级视口覆盖（TestScenario.viewport，移动端/响应式场景）；
+        None 沿用桌面缺省 1280×800（admin 修 2026-09-07：此前场景声明的
+        移动端视口被静默丢弃，useIsMobile 门控的 UI 在验证中永不渲染）。
         """
         if not self._started:
             raise RuntimeError("浏览器未启动，请先调用 start()")
 
         context = await self._browser.new_context(
-            viewport={"width": 1280, "height": 800},
+            viewport=viewport or {"width": 1280, "height": 800},
             reduced_motion="reduce",
             locale="zh-CN",
             timezone_id="Asia/Shanghai",

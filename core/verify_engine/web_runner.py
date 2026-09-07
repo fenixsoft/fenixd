@@ -98,6 +98,7 @@ class WebRunner(VerifyRunner):
         if not getattr(self, "_setup_health_ok", True):
             return {
                 "scenario_id": scenario.id,
+                "kind": scenario.kind,
                 "description": scenario.description,
                 "status": "error",
                 "error": "应用页面加载失败：.fenix-dashboard 元素不存在，"
@@ -107,7 +108,9 @@ class WebRunner(VerifyRunner):
                 "visual_results": [],
                 "screenshots": [],
             }
-        context = await self.browser.new_context()
+        context = await self.browser.new_context(
+            viewport=getattr(scenario, "viewport", None)
+        )
         page = await context.new_page()
         # 扩展项目：确保页面已加载应用内容（不依赖场景的 navigate 步骤）
         # 非扩展项目由场景自身的 navigate 步骤负责
