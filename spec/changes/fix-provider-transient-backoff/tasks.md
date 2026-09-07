@@ -66,3 +66,9 @@
 - [ ] 6.2 回归：daemon 重启恢复路径（recover_interrupted）与 keep_for_reuse 遗产认领协同无互删
 - [ ] 6.3 全量既有测试套通过（test_provider_circuit / test_provider_failover / test_runner_provider 等零回归）
 - [ ] 6.4 真实故障文本 fixture 回放：以 2026-09 死亡 run 的 stderr 样本回放判定与降噪路径（参照 tests/test_provider_failover.py:173 真实故障 fixture 惯例）
+
+## 验证修复（第 1 轮失败）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/fix-provider-transient-backoff/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
