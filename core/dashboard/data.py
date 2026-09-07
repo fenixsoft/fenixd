@@ -464,6 +464,34 @@ _SPEC_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _SPEC_DOC_WHITELIST = ("proposal", "design", "tasks", "verification", "scenarios")
 
 
+def resolve_spec_dir(project_root, spec) -> Path | None:
+    """解析 SPEC 目录：活跃优先，归档回退（fix-archived-spec-doc-readback D1）。
+
+    1. spec 不匹配 ``_SPEC_NAME_RE`` → 返回 None（kebab-case 白名单天然排除
+       ``..``/``/``，此处校验同时强化 parse_tasks 的健壮性）
+    2. ``spec/changes/<spec>`` 为目录 → 返回活跃目录（活跃优先，既有行为不变）
+    3. 否则遍历 ``spec/archive/``，目录名匹配日期前缀 + 可选冲突数字后缀
+       （``^\\d{4}-\\d{2}-\\d{2}-{re.escape(spec)}(-\\d+)*$``；``re.escape``
+       防 spec 名含 ``-`` 引发歧义），命中多个取 ``sorted()[-1]``
+       （字典序最大 = 日期最新/后缀最大，与写入端冲突追加序一致）
+    4. 无命中 → None
+    """
+    if not isinstance(spec, str) or not _SPEC_NAME_RE.match(spec):
+        return None
+    active = Path(project_root) / "spec" / "changes" / spec
+    if active.is_dir():
+        return active
+    archive_root = Path(project_root) / "spec" / "archive"
+    if not archive_root.is_dir():
+        return None
+    pattern = re.compile(r"^\d{4}-\d{2}-\d{2}-" + re.escape(spec) + r"(-\d+)*$")
+    matches = [d for d in archive_root.iterdir()
+               if d.is_dir() and pattern.match(d.name)]
+    if not matches:
+        return None
+    return sorted(matches)[-1]
+
+
 class InvalidSpecName(ValueError):
     """spec 名称非法（非 kebab-case 或含路径穿越）。"""
 
@@ -498,17 +526,21 @@ def get_spec_doc(project_root, spec: str, doc: str) -> dict:
     if doc not in _SPEC_DOC_WHITELIST:
         raise InvalidSpecDoc(doc)
 
-    changes_root = Path(project_root) / "spec" / "changes"
+    spec_dir = resolve_spec_dir(project_root, spec)
+    if spec_dir is None:
+        # spec 合法但活跃/归档目录均不存在 → 与原有"目录不存在"行为一致
+        return {"found": False, "content": ""}
     if doc == "verification":
         # 验证报告：verification-report.md（可能尚未生成 → found=False）
-        target = (changes_root / spec / "verification-report.md").resolve()
+        target = (spec_dir / "verification-report.md").resolve()
     elif doc == "scenarios":
         # 测试场景清单：specs/<capability>/spec.md 的汇总拼接
-        return _read_spec_scenarios(changes_root / spec / "specs")
+        return _read_spec_scenarios(spec_dir / "specs")
     else:
-        target = (changes_root / spec / f"{doc}.md").resolve()
-    # 防御性校验：解析后必须仍位于 changes 目录内，杜绝任何 `..` 拼接越界
-    if not target.is_relative_to(changes_root.resolve()):
+        target = (spec_dir / f"{doc}.md").resolve()
+    # 防御性校验：解析后必须仍位于该 SPEC 目录内（活跃/归档回退同样生效），
+    # 杜绝任何 `..` 拼接越界
+    if not target.is_relative_to(spec_dir.resolve()):
         raise InvalidSpecName(spec)
     if not target.is_file():
         return {"found": False, "content": ""}
@@ -1039,7 +1071,12 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
     For implementing SPECs, reads from the active implementer worktree first.
     live=True 时按 _should_overlay 叠加最新 impl run 的实时完成状态（并集）。
     """
-    tasks_path = Path(project_root) / "spec" / "changes" / spec_name / "tasks.md"
+    # 活跃优先、归档回退（fix-archived-spec-doc-readback D3）；归档 SPEC 的
+    # tasks.md 从归档目录读取，详情页任务卡片不再空白
+    spec_dir = resolve_spec_dir(project_root, spec_name)
+    tasks_path = (
+        spec_dir or Path(project_root) / "spec" / "changes" / spec_name
+    ) / "tasks.md"
     if spec_status == "implementing":
         wt = find_implementer_worktree(project_root, spec_name)
         if wt:
@@ -1122,7 +1159,10 @@ def tasks_note(project_root, spec_name, spec_status: str = ""):
     空态可区分）；否则返回 ``None``。与 ``tasks`` 字段共用同一次解析语义
     （implementing 状态同样优先读 worktree 内的 tasks.md）。
     """
-    tasks_path = Path(project_root) / "spec" / "changes" / spec_name / "tasks.md"
+    spec_dir = resolve_spec_dir(project_root, spec_name)
+    tasks_path = (
+        spec_dir or Path(project_root) / "spec" / "changes" / spec_name
+    ) / "tasks.md"
     if not tasks_path.exists():
         return None
     if parse_tasks(project_root, spec_name, spec_status):
