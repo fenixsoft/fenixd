@@ -92,6 +92,24 @@ agents:
   # 使用三步验证流水线（Planner → VerifyEngine → Judge），比旧版 verifier 快 5-10x
   use_new_verifier: true
 
+  # 瞬断治理（fix-provider-transient-backoff D6）：provider 网关瞬时故障（model 拒绝 /
+  # 5xx / 断连）的退避与熔断策略。非法值自动回退缺省，配置后约 30s 配置热更新生效。
+  #
+  # 原地退避秒序列（逗号分隔，长度=单 attempt 内原地重试上限）。缺省 30,60,120 表示
+  # 瞬断首败原地等 30s 重试、再败等 60s、再败等 120s；耗尽才走换链逻辑。留空 "" 关闭
+  # 原地退避（回退到既有换链行为）。
+  transient_backoff_schedule: "30,60,120"
+  # dispatch 层瞬断终态排程等待秒数：`[provider-transient]` 标记失败后延迟重派，
+  # 不写 retries exhausted。缺省 600（10 分钟，历史死亡 run 重派 16 分钟后成功）。
+  transient_redispatch_delay_seconds: 600
+  # 全局同错误指纹熔断阈值：窗口内同一错误指纹出现次数达此值触发全局派发冻结。
+  # 设为 0 关闭熔断。缺省 3。
+  transient_break_threshold: 3
+  # 熔断滑动窗口秒数。缺省 600。
+  transient_break_window_seconds: 600
+  # 熔断冷却秒数：触发后全局冻结新 run 派发的时长。缺省 600。
+  transient_break_cooldown_seconds: 600
+
   # 按 Agent 角色分配模型（可选）。未列出的角色使用默认模型。
   # 角色可选: implementer | planner-plan | planner-judge | verifier | administrator
   #
