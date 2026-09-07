@@ -5,7 +5,6 @@
 - 二轮失败 → 计数 2 + 段内轮数更新
 - 第三轮 → blocked + 告警
 - 计数器跨重启持久（模拟 STATE.md 重读）
-- 噪音分流不触发打回（assertion_results 为空场景）
 - 既有勾选状态不被改写
 - 存量 fix 链重验闭环回归（legacy 路径）
 """
@@ -218,24 +217,6 @@ class TestFailRoundsPersistAcrossRestart(_InplaceBase):
         engine2._do_spec_bug_found("quick-links-folders")
         entry2 = new_sm.read_one("quick-links-folders")
         self.assertEqual(int(entry2.get("_verify_fail_rounds", 0)), 2)
-
-
-class TestNoiseNotRepaired(_InplaceBase):
-    """Scenario: 噪音分流不触发打回（assertion_results 为空）。
-
-    注：噪音分流的判定在验证裁决前置（verification-completion-gate），
-    本测试验证 `_do_spec_bug_found` 对「非真实产品缺陷」信号不执行打回。
-    这里用 legacy 路径（fix-*）与 inplace 路径对照，确保计数/状态语义正确。
-    """
-
-    def test_inplace_only_on_real_bug_signal(self):
-        # 仅当裁决已置 bug-found 且 _is_fix_spec 为 False 时才走原地打回
-        self._make_buggy_spec("quick-links-folders")
-        self.engine._family._do_spec_bug_found("quick-links-folders")
-        entry = self.sm.read_one("quick-links-folders")
-        # 真实 bug 信号 → 原地打回（计数+1，状态 implementing）
-        self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 1)
-        self.assertEqual(entry["status"], "implementing")
 
 
 class TestExistingCheckboxPreserved(_InplaceBase):

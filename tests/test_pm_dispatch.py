@@ -243,37 +243,14 @@ class TestPMEngineSameStatusResetDispatch(unittest.TestCase):
         self.assertIn(("my-spec", "implementer"), queued)
 
 
-class TestRouteTableGuard(unittest.TestCase):
-    """路由表守卫：未注册的 agent_type 不得绕过路由表直派。"""
-
-    def setUp(self):
-        from core.pm_engine import PMEngine
-        self.tmpdir = tempfile.mkdtemp()
-        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
-        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
-        self.logger = MagicMock()
-        self.sm = StateMachine(self.state_path, self.logger)
-        self.engine = PMEngine(
-            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
-        )
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_unknown_agent_type_raises(self):
-        self.sm.add_spec("test-spec", {"priority": 1})
-        self.sm.transition("test-spec", "ready")
-        # Test that unknown agent type is handled appropriately
-        # The Dispatcher uses _enqueue to add to queue
-        self.engine._dispatcher._enqueue("test-spec", "unknown_type")
-        # Verify it was added to the queue
-        self.assertTrue(any(e[1] == "test-spec" and e[2] == "unknown_type"
-                          for e in self.engine._dispatcher._run_queue))
-
-
 class TestEngineRouteCrossCheck(unittest.TestCase):
-    """引擎路由交叉校验：所有合法 agent_type 必须有对应路由。"""
+    """引擎路由交叉校验：合法 agent_type 经 Dispatcher._enqueue 入队。
+
+    覆盖口径说明：本类只钉住入队面（原 TestRouteTableGuard 已删——其名称
+    宣称"未注册类型不得直派"但断言的是入队成功，与守卫语义相反且互为重复）。
+    派发路由分发的真实语义（implementer/fast-track/verifier 的 if/elif 分支）
+    由 dispatch.py:_run_agent_worker 承担，待后续 SPEC 补直测。
+    """
 
     def test_all_statuses_have_routes(self):
         from core.pm_engine import PMEngine

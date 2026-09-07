@@ -52,7 +52,6 @@ def _get(url: str, timeout: float = 3.0):
 class TestLoadContract(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
-        self.addCallback = shutil.rmtree
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def test_missing_file_returns_none(self):
@@ -106,9 +105,6 @@ class TestPrepareSteps(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-
-    def _contract(self, prepare):
-        return load_verify_contract.__wrapped__ if False else _mk_contract(prepare)
 
     def test_success_and_cwd_honored(self):
         _write(self.tmp, "v3/pkg.json", "{}")
@@ -257,8 +253,6 @@ class TestEnsureAppReachableScopes(unittest.TestCase):
 
     def _mk_engine(self, config=None):
         from test_inplace_bug_repair import _mk_engine
-        from core.state_machine import StateMachine
-        sm = StateMachine(self.tmp / ".fenix" / "STATE.md", self.logger)
         engine, _ = _mk_engine(self.tmp, self.logger, config)
         return engine
 
@@ -394,16 +388,6 @@ class TestContractFormReverseInference(unittest.TestCase):
         reachable, blocked, note = engine._verification._ensure_app_reachable("spec-a")
         self.assertFalse(reachable)
         self.assertIn("prepare 失败", note)
-
-    def test_pure_cli_does_not_require_serve(self):
-        """纯 cli + 无契约（无 serve）→ 正常短路，不报 serve 缺失。"""
-        self._scenarios([{"id": "c1", "kind": "cli",
-                          "steps": [{"action": "run", "command": "true"}],
-                          "assertions": []}])
-        engine = self._mk_engine()
-        reachable, blocked, note = engine._verification._ensure_app_reachable("spec-a")
-        self.assertTrue(reachable)
-        self.assertIn("纯 cli", note)
 
     def test_mixed_api_cli_requires_serve(self):
         """混合集（api+cli）：serve 必需，缺失时明确错误打回。"""

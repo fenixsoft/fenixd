@@ -5,7 +5,7 @@ add-settings-system-tab：设置页系统页签配置契约测试。
 1. read_config admin 段回显（含缺省填充、不透传未知键、merge_breaker 回退 agents）
 2. write_config admin 段非法值拒绝（enabled/interval_minutes/escalation_cooldown_minutes/
    merge_breaker_threshold/shutdown_drain_seconds）与合法值落盘回环
-3. 既有段（llm/agents/verify/self_review）零回归
+3. 既有段（llm/agents/gates/verify）零回归
 """
 import shutil
 import tempfile
@@ -193,7 +193,11 @@ class TestSystemAdminWriteValidation(unittest.TestCase):
 
 
 class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
-    """admin 段扩展后既有段（llm/agents/verify/self_review）零回归。"""
+    """admin 段扩展后既有段（llm/agents/gates/verify）零回归。
+
+    self_review 缺省三元组回显由 test_daily_self_review.py 的
+    TestDashboardSelfReview 承担（跨文件二留一，此处不再重复断言）。
+    """
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -205,7 +209,7 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_existing_sections_structure_unchanged(self):
-        """read_config 既有段返回结构逐字段不变（llm/agents/gates/verify/self_review）。"""
+        """read_config 既有段返回结构逐字段不变（llm/agents/gates/verify）。"""
         from core.dashboard.data import read_config
 
         echoed = read_config(self.tmpdir)
@@ -216,12 +220,10 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
                   "daily_run_limit", "token_budget_millions", "impl_run_budget"):
             self.assertIn(k, echoed["agents"], k)
         self.assertEqual(echoed["agents"]["max_concurrent"], 2)
-        # gates / verify / self_review
+        # gates / verify
         self.assertEqual(echoed["gates"], {"approve_mode": "manual"})
         self.assertEqual(echoed["verify"],
                          {"static_scope": "main", "deps_mode": "prefer-offline"})
-        self.assertEqual(echoed["self_review"],
-                         {"enabled": False, "run_at": "02:00", "read_todo": False})
 
     def test_roundtrip_verify_and_self_review_after_admin_write(self):
         """写入 admin 段后，verify/self_review 写读仍正常（互不干扰）。"""

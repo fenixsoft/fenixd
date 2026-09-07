@@ -446,22 +446,18 @@ class TestSupervisorRuntimeWrite(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_write_supervisor_runtime_reports_sigkill_wait(self):
-        """supervisor 启动写 runtime 文件：sigkill_wait 与配置计算值一致。"""
+    def test_write_supervisor_runtime_file_shape(self):
+        """supervisor 启动写 runtime 文件：字段形状（sigkill_wait 数值口径
+        已由 test_interrupt_recovery_preserve::TestSupervisorWait 单源覆盖）。"""
         (self.fenix / "config.yaml").write_text(
             "admin:\n  shutdown_drain_seconds: 1800\n", encoding="utf-8")
         self.sup._write_supervisor_runtime()
         path = self.fenix / "supervisor_runtime.json"
         self.assertTrue(path.is_file())
         data = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(data["sigkill_wait"], 1800 + 120)
+        self.assertIsInstance(data["sigkill_wait"], int)
+        self.assertGreater(data["sigkill_wait"], 0)
         self.assertTrue(data["started_at"])
-
-    def test_write_supervisor_runtime_drain_zero_falls_back(self):
-        """drain=0 → sigkill_wait 回退 60。"""
-        self.sup._write_supervisor_runtime()
-        data = json.loads((self.fenix / "supervisor_runtime.json").read_text())
-        self.assertEqual(data["sigkill_wait"], 60)
 
 
 class TestDrainConsistencyCheck(unittest.TestCase):

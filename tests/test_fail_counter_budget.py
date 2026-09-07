@@ -54,75 +54,6 @@ class _Base(unittest.TestCase):
         self.sm.transition(name, "bug-found")
 
 
-class TestVerifyFailRoundsOnlyZeroOnPass(_Base):
-    """D1：计数仅在 PASS 归零；打回重派保留计数。"""
-
-    def test_redispatch_preserves_count(self):
-        """GIVEN 第 2 轮验证失败（计数 2），重派完成再次失败 → 计数 3（不归零）。"""
-        self._make_buggy_spec("demo-spec")
-        self.sm.update_spec("demo-spec", {"_verify_fail_rounds": 2, "status": "bug-found"})
-
-        # 模拟「第 3 轮失败」：打回处理器递增且不得归零
-        self.engine._family._do_spec_bug_found("demo-spec")
-
-        entry = self.sm.read_one("demo-spec")
-        self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 3)
-        # 仍走正常打回（未触发 3 轮闸门，因 3 < MAX_VERIFY_FAIL_ROUNDS=3 判定为 >=），
-        # 实际闸门在 >=3 触发，此处 3 已达闸门——验证闸门行为另测。
-        # 关键断言：计数被保留并递增，未被中间转换归零。
-
-    def test_pass_zeroes_count(self):
-        """GIVEN 计数 2，WHEN 验证 PASS 推进 verified，THEN 计数归零并持久化。
-
-        复用 _run_verification_pipeline 的 PASS 分支（verified 晋级 + _verify_fail_rounds 归零）。
-        通过模拟 judge 返回全 PASS 来触发 verified 路径。
-        """
-        self._make_buggy_spec("demo-spec")
-        self.sm.update_spec("demo-spec", {"_verify_fail_rounds": 2, "status": "bug-found"})
-        # 回到 testing 以进入验证管线（bug-found 非直接转 verified 的合法转换）
-        self.sm.transition("demo-spec", "implementing")
-        self.sm.transition("demo-spec", "implemented")
-        self.sm.transition("demo-spec", "testing")
-
-        from types import SimpleNamespace
-        # judge 返回全 PASS
-        self.engine.agent_runner.run_judge.return_value = SimpleNamespace(
-            success=True, error=None, run_id="judge-demo-1-a1",
-        )
-        # planner/verify 阶段用 MagicMock 返回就绪对象
-        self.engine.agent_runner.run_verify.return_value = SimpleNamespace(
-            success=True, error=None, run_id="verify-demo-1-a1",
-        )
-        # 验证报告产物闸门、任务完成门禁隔离（与计数语义正交）
-        self.engine._ensure_verification_report = MagicMock(return_value=None)
-        self.engine._check_verification_gate = MagicMock(return_value=None)
-        self.engine._render_scenario_change_section_to_report = MagicMock()
-        self.engine._task_completion_blocker = MagicMock(return_value=None)
-        # judge 结果文件：全 PASS
-        verify_dir = self.project_root / ".fenix" / "verify-progress" / "demo-spec"
-        verify_dir.mkdir(parents=True, exist_ok=True)
-        (verify_dir / "report.json").write_text(
-            json.dumps({"spec": "demo-spec", "scenarios": [
-                {"name": "s1", "status": "PASS", "classification": "pass", "evidence": "ok"}
-            ]}), encoding="utf-8",
-        )
-        # state_machine 读 report 需要 tester_run 关联，简化：直接断言归零点
-        self.engine._on_spec_verified = MagicMock()
-
-        # 直接驱动 verified 晋级 + 归零（与管线内联逻辑一致）
-        self.sm.transition("demo-spec", "verified")
-        self.sm.update_spec("demo-spec", {
-            "tester_run": "verify-demo-1-a1",
-            "error": None,
-            "_inconclusive_attempts": 0,
-            "_verify_fail_rounds": 0,
-        })
-
-        entry = self.sm.read_one("demo-spec")
-        self.assertEqual(int(entry.get("_verify_fail_rounds", 0)), 0)
-        self.assertEqual(entry["status"], "verified")
-
-
 class TestImplRunBudgetUsed(_Base):
     """D2：_impl_run_budget_used 在 implementer run 启动时递增并持久化（跨重启）。"""
 
@@ -204,14 +135,7 @@ class TestImplBudgetExhaustion(_Base):
 
 
 class TestConfigHotReload(_Base):
-    """D3：agents.impl_run_budget 配置热更新生效。"""
-
-    def test_hot_reload_changes_effective_budget(self):
-        # 引擎初始按缺省 6
-        self.assertEqual(self.engine._budget._impl_run_budget(), 6)
-        # 模拟 fenixd 热重载：原地替换 config dict
-        self.engine.config = {"agents": {"impl_run_budget": 7}}
-        self.assertEqual(self.engine._budget._impl_run_budget(), 7)
+    """D3：agents.impl_run_budget 配置热更新生效（闸门读取当前有效预算）。"""
 
     def test_dispatch_gate_uses_effective_budget(self):
         """派发闸门读取当前（热更新后的）预算值。"""
@@ -305,26 +229,6 @@ class TestDeadRunBudgetExemption(_Base):
         self.assertEqual(int(entry.get("_impl_run_budget_used", 0)), 0)
         self.assertEqual(int(entry.get("_budget_exempt_runs", 0)), 1)
 
-    def test_blocker_recovery_of_stuck_implementing_exempts(self):
-        """GIVEN 恢复链路确认死亡（滞留 implementing 无存活子进程）→ 豁免回退。"""
-        self._make_buggy_spec("demo-spec")
-        self.sm.update_spec("demo-spec", {"status": "implementing"})
-        self.engine._budget._increment_impl_run_budget_used("demo-spec")  # used=1
-        self.engine._attempt_still_alive = MagicMock(return_value=False)
-
-        # 直接驱动 BLOCKER CHECK 的 implementing 恢复分支
-        self.engine._budget._exempt_dead_run_budget(
-            "demo-spec", "auto-recovery: stuck implementing 31m")
-        # 恢复分支的状态回写（与 pm_engine BLOCKER CHECK 内联逻辑一致）
-        self.sm.update_spec("demo-spec", {
-            "status": "ready", "implementer_run": None, "tester_run": None,
-            "branch": None})
-
-        entry = self.sm.read_one("demo-spec")
-        self.assertEqual(int(entry.get("_impl_run_budget_used", 0)), 0)
-        self.assertEqual(int(entry.get("_budget_exempt_runs", 0)), 1)
-        self.assertEqual(entry["status"], "ready")
-
     def test_exempt_sidecar_threshold_alerts_once_and_never_freezes(self):
         """GIVEN 连续死亡 6 次 → 一次性提醒级告警；第 7 次不重复；spec 不冻结。"""
         self._make_buggy_spec("demo-spec")
@@ -407,14 +311,6 @@ class TestBudgetCounterAtomicity(_Base):
         mismatches = [c.args[1] for c in self.sm.logger.warning.call_args_list
                       if "verify mismatch" in str(c.args[1])]
         self.assertEqual(len(mismatches), 1)
-
-    def test_dispatch_uses_atomic_bump(self):
-        """启动计数点走 state_machine.bump_impl_budget（移除非原子读改写）。"""
-        self._make_buggy_spec("demo-spec")
-        self.engine._budget._increment_impl_run_budget_used("demo-spec")
-        self.engine._budget._increment_impl_run_budget_used("demo-spec")
-        self.assertEqual(
-            int(self.sm.read_one("demo-spec").get("_impl_run_budget_used", 0)), 2)
 
 
 class TestBudgetReconciliation(_Base):

@@ -44,28 +44,24 @@ class TestTaskProgressContractPrompt(unittest.TestCase):
         runner = make_runner(self.proot)
         return runner._prompt_builder._build_prompt("demo", agent_type)
 
-    def test_full_implementer_prompt_contains_contract(self):
-        prompt = self._prompt("implementer")
-        assert "任务进度契约" in prompt
-        assert "task-progress-contract" in prompt
-        # subject 格式示例断言（id 直取 tasks.md 分组号.任务号）
-        assert "Task <id>: <标题>" in prompt
-        assert "Task 1.3: 配置解析签名缓存" in prompt
-        # 禁止归并 / 分组标题当任务
-        assert "归并为一条" in prompt
-        assert "分组（## 标题）当任务创建" in prompt
-        # 完成即汇报，不得攒批
-        assert "不得攒批到收尾" in prompt
-        # 收尾逐项勾选与 TaskCreate/TaskUpdate 一一对应
-        assert "一一对应，不留半勾" in prompt
-
-    def test_fast_track_prompt_contains_contract(self):
-        prompt = self._prompt("fast-track")
-        assert "任务进度契约" in prompt
-        assert "Task <id>: <标题>" in prompt
-        assert "Task 1.3: 配置解析签名缓存" in prompt
-        assert "不得攒批到收尾" in prompt
-        assert "一一对应，不留半勾" in prompt
+    def test_prompt_contains_task_progress_contract(self):
+        """双分支 prompt 均含任务编号契约段（契约段文本两分支共用，见
+        test_contract_text_shared_between_branches 的逐字节一致锁定）。"""
+        for agent_type in ("implementer", "fast-track"):
+            with self.subTest(agent_type=agent_type):
+                prompt = self._prompt(agent_type)
+                assert "任务进度契约" in prompt
+                assert "task-progress-contract" in prompt
+                # subject 格式示例断言（id 直取 tasks.md 分组号.任务号）
+                assert "Task <id>: <标题>" in prompt
+                assert "Task 1.3: 配置解析签名缓存" in prompt
+                # 禁止归并 / 分组标题当任务
+                assert "归并为一条" in prompt
+                assert "分组（## 标题）当任务创建" in prompt
+                # 完成即汇报，不得攒批
+                assert "不得攒批到收尾" in prompt
+                # 收尾逐项勾选与 TaskCreate/TaskUpdate 一一对应
+                assert "一一对应，不留半勾" in prompt
 
     def test_contract_text_shared_between_branches(self):
         """文本复用：两分支注入的契约段逐字节一致（独立构建路径各自注入）。"""

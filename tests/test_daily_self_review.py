@@ -181,19 +181,52 @@ class TestSelfReviewScheduling:
         assert res == {"triggered": False, "reason": "within_24h"}
         assert runner.calls == []
 
-    def test_after_24h_retriggers(self, proot, monkeypatch):
-        """距上次执行满 24h 且再次到达 run_at → 再次触发（每日节奏）。"""
+    @pytest.mark.parametrize(
+        "prior_day", ["success", "failure", "zero_activity_skip"])
+    def test_next_day_retriggers_after_prior_cycle(
+            self, proot, monkeypatch, prior_day):
+        """满 24h 且次日到 run_at、窗口有活动 → 再次触发（每日节奏）。
+
+        三种首日形态（成功 / 失败 / 零活动跳过）都不阻断次日调度。原
+        test_after_24h_retriggers / test_next_day_natural_retry /
+        test_next_day_with_activity_reviews_normally 三条同核用例合并，
+        各自的独有断言按分支逐条保留。
+        """
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
-        make_run(proot, f"impl-a-{_ts(datetime(2026, 9, 4, 10))}", "done")
-        make_scheduler(proot, run_at="22:00",
-                       runner=FakeReviewRunner()).check_and_run()
-        # 次日 22:31（>24h）→ 新窗口有活动 → 再触发
-        _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 31))
+        if prior_day == "zero_activity_skip":
+            make_scheduler(proot, run_at="22:00",
+                           runner=FakeReviewRunner()).check_and_run()
+        else:
+            make_run(proot, f"impl-a-{_ts(datetime(2026, 9, 4, 10))}", "done")
+            make_scheduler(proot, run_at="22:00",
+                           runner=FakeReviewRunner(
+                               fail=(prior_day == "failure")),
+                           ).check_and_run()
+
+        # 次日到点（≥24h）→ 新窗口有活动 → 再次触发
+        if prior_day == "success":
+            # 22:31 严格大于 24h，避开与 22:30 的边界（与原用例一致）
+            _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 31))
+        else:
+            _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 30))
         make_run(proot, f"impl-b-{_ts(datetime(2026, 9, 5, 10))}", "done")
         runner2 = FakeReviewRunner()
-        res = make_scheduler(proot, run_at="22:00", runner=runner2).check_and_run()
+        res = make_scheduler(
+            proot, run_at="22:00", runner=runner2).check_and_run()
         assert res["triggered"] is True and res["ok"] is True
+        assert "skipped" not in res
         assert len(runner2.calls) == 1
+        if prior_day == "failure":
+            # 首日失败不阻断次日重试：重试正常落当日节
+            assert res["date"] == "2026-09-05"
+            assert "## 2026-09-05" in (proot / ".fenix" / "todo.md").read_text(
+                encoding="utf-8")
+        elif prior_day == "zero_activity_skip":
+            # 首日占位保留 + 次日完整分节追加，日期节按序
+            content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+            assert "近24小时无 SPEC 活动，跳过自省。" in content
+            assert "### 浪费" in content
+            assert content.index("## 2026-09-04") < content.index("## 2026-09-05")
 
     def test_legacy_state_without_last_run_at_triggers(self, proot, monkeypatch):
         """旧格式状态文件（仅 last_run_date，无 last_run_at）→ 视为从未执行，
@@ -328,22 +361,6 @@ class TestZeroActivitySkip:
         assert res.get("skipped") is True
         assert runner.calls == []
 
-    def test_next_day_with_activity_reviews_normally(self, proot, monkeypatch):
-        """跳过次日有活动 → 正常执行完整自省（跳过不污染后续调度）。"""
-        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
-        make_scheduler(proot, run_at="22:00", runner=FakeReviewRunner()).check_and_run()
-        make_run(proot, f"impl-a-{_ts(datetime(2026, 9, 5, 10))}", "done")
-        _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 30))
-        runner2 = FakeReviewRunner()
-        res = make_scheduler(proot, run_at="22:00", runner=runner2).check_and_run()
-        assert res["triggered"] is True and "skipped" not in res
-        assert len(runner2.calls) == 1
-        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
-        # 09-04 占位保留 + 09-05 完整分节追加
-        assert "近24小时无 SPEC 活动，跳过自省。" in content
-        assert "### 浪费" in content
-        assert content.index("## 2026-09-04") < content.index("## 2026-09-05")
-
     def test_existing_today_section_not_duplicated(self, proot, monkeypatch):
         """状态文件丢失重跑且 todo 已有当日节 → 不重复追加占位。"""
         (proot / ".fenix" / "todo.md").write_text(
@@ -378,24 +395,6 @@ class TestSelfReviewFailure:
                    for r in recs)
         # 未写 todo.md
         assert not (proot / ".fenix" / "todo.md").exists()
-
-    def test_next_day_natural_retry(self, proot, monkeypatch):
-        # 9/4 失败
-        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
-        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
-        runner = FakeReviewRunner(fail=True)
-        sched = make_scheduler(proot, run_at="22:00", runner=runner)
-        sched.check_and_run()
-        # 9/5 到点（距上次执行满 24h）→ 自然重试
-        _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 30))
-        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 5, 10))}", "done")
-        runner2 = FakeReviewRunner()
-        sched2 = make_scheduler(proot, run_at="22:00", runner=runner2)
-        res = sched2.check_and_run()
-        assert res["triggered"] is True and res["ok"] is True
-        assert res["date"] == "2026-09-05"
-        assert (proot / ".fenix" / "todo.md").exists()
-        assert "## 2026-09-05" in (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
 
 
 # ── 2.5 产物写入 ───────────────────────────────────────────
@@ -436,25 +435,6 @@ class TestTodoAppend:
         content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
         assert "### 浪费" in content and "### 失误" in content and "### 可改进" in content
         assert content.count("（当日无）") == 3
-
-    def test_read_todo_switches(self, proot, monkeypatch):
-        """read_todo=true 注入 todo.md 全文；false 不注入（None）。"""
-        (proot / ".fenix" / "todo.md").write_text("## 2026-09-03\n\n### 浪费\n- 历史\n", encoding="utf-8")
-        # read_todo=true → 注入全文
-        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
-        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
-        runner_on = FakeReviewRunner()
-        sched_on = make_scheduler(proot, read_todo=True, runner=runner_on)
-        sched_on.check_and_run()
-        assert runner_on.calls[0][2] is not None
-        assert "## 2026-09-03" in runner_on.calls[0][2]
-        # read_todo=false → 不注入
-        _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 30))
-        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 5, 10))}", "done")
-        runner_off = FakeReviewRunner()
-        sched_off = make_scheduler(proot, read_todo=False, runner=runner_off)
-        sched_off.check_and_run()
-        assert runner_off.calls[0][2] is None
 
     def test_run_summary_injects_daily_summary(self, proot, monkeypatch):
         """数据摘要四源注入：STATE 终态 / runs / admin / ERROR（24h 窗口）。"""
@@ -1040,6 +1020,9 @@ class TestTodoCleanup:
         assert res["triggered"] is True and res["ok"] is True
         # 注入的 ID 标注条目（第 4 参）
         assert "[2026-09-04#浪费#1]" in runner.calls[0][3]
+        # read_todo=true 注入 todo.md 全文（第 3 参；原 test_read_todo_switches 断言收编）
+        assert runner.calls[0][2] is not None
+        assert "## 2026-09-03" in runner.calls[0][2]
         # resolved 移除生效 + 当日节追加
         content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
         assert "证据：B1" not in content
@@ -1057,7 +1040,9 @@ class TestTodoCleanup:
         runner = FakeReviewRunner(result=result)
         sched = make_scheduler(proot, run_at="22:00", read_todo=False, runner=runner)
         sched.check_and_run()
+        # read_todo=false：todo.md 全文（第 3 参）与条目清单（第 4 参）均不注入
         assert runner.calls[0][3] is None
+        assert runner.calls[0][2] is None
         content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
         assert "证据：A1" in content  # 未被移除
 

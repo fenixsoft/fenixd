@@ -4,7 +4,7 @@ Tests for dashboard-connection-limit: SSE 连接上限与 HTTP 线程上限。
 import json
 import socket
 import sys
-import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -14,25 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.dashboard import server as server_mod
 from core.dashboard.registry import Registry
 from core.dashboard.server import (
-    DashboardHTTPServer,
     MAX_SSE_CONNECTIONS,
     MAX_SERVER_THREADS,
-    find_free_port,
 )
 
-
-# ── 辅助：在临时目录启动一个最小 dashboard server ─────────────────────────
-
-class _TestServer:
-    def __init__(self, registry: Registry, static_dir: Path):
-        self.port = find_free_port(21000)
-        self.httpd = DashboardHTTPServer(("127.0.0.1", self.port), registry, static_dir)
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
-        self.thread.start()
-
-    def stop(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
+# _TestServer 已收敛至 tests/conftest.py
+from conftest import _TestServer
 
 
 def _open_sse(port: int, timeout: float = 5.0):

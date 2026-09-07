@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch, PropertyMock
 
@@ -77,3 +78,57 @@ def cleanup_temp_dir(tmpdir):
     """Safely cleanup a temporary directory."""
     if tmpdir and os.path.exists(tmpdir):
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ── 逐字节相同助手收编（审查报告第 4 项）──────────────────────────
+# 仅收编各测试文件间逐字节相同、且无模块级 logger 语义绑定的副本；
+# 语义有微差的（如 test_provider_failover 的记录型 FakeLogger / 本地 make_runner）
+# 保留在原文件。
+
+class FakeLogger:
+    """四方法静默 logger（test_admin / test_agent_runner / test_cost_observability /
+    test_provider_circuit 四处原逐字节相同副本）。"""
+
+    def debug(self, *a, **k):
+        pass
+
+    def info(self, *a, **k):
+        pass
+
+    def warning(self, *a, **k):
+        pass
+
+    def error(self, *a, **k):
+        pass
+
+
+def make_runner(proot: Path, config: dict | None = None):
+    """构造最小 AgentRunner 实例（绕过真实 __init__ 的 worktree/state_machine 依赖）。
+
+    自 test_provider_circuit.py / test_provider_failover.py 的同名助手收编；
+    两者函数体逐字节相同，但原实现绑定各自模块级 FakeLogger——failover 版为
+    记录型 logger（其断言依赖 logger.records），语义有微差，保留在原文件。
+    """
+    from core.agent_runner import AgentRunner
+
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.config = config or {}
+    runner.worktree_manager = None
+    runner.state_machine = None
+    runner.project_root = proot
+    runner.logger = FakeLogger()
+    runner._running_agents = {}
+    runner._daily_run_count = 0
+    runner._daily_reset_date = None
+    runner._daily_provider_attempts = {}
+    runner._daily_provider_warned = {}
+    runner.provider_circuits = {}
+    return runner
+
+
+def utcnow_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def iso_ago(minutes: float) -> str:
+    return datetime.fromtimestamp(time.time() - minutes * 60, tz=timezone.utc).isoformat()

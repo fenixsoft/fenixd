@@ -551,36 +551,25 @@ class TestSupervisorWait:
         spec.loader.exec_module(sup)
         return sup
 
-    def test_sigkill_wait_default_60(self, tmp_path, monkeypatch):
-        """解析失败/未配置 → 回退 60s（与旧版硬编码一致）。"""
+    @pytest.mark.parametrize(
+        "config_text, expected",
+        [
+            (None, 60),                                        # 未配置/解析失败 → 回退 60
+            ("admin:\n  shutdown_drain_seconds: 1800\n", 1800 + 120),  # drain + margin
+            ("admin:\n  shutdown_drain_seconds: 0\n", 60),     # drain=0 快速停机回退 60
+        ],
+        ids=["default-60", "drain-plus-margin", "drain-zero-fallback"],
+    )
+    def test_sigkill_wait(self, config_text, expected, tmp_path, monkeypatch):
+        """SIGKILL 等待 = drain + 120s margin；未配置 / drain=0 回退 60s。"""
         sup = self._load_supervisor()
         fake_fenix = tmp_path / ".fenix"
         fake_fenix.mkdir(parents=True, exist_ok=True)
+        if config_text is not None:
+            (fake_fenix / "config.yaml").write_text(config_text, encoding="utf-8")
         sup.FENIX_DIR = fake_fenix
         sup.PROJECT_ROOT = tmp_path
-        assert sup._sigkill_wait_seconds() == 60
-
-    def test_sigkill_wait_drain_plus_margin(self, tmp_path):
-        """配置 shutdown_drain_seconds=1800 → SIGKILL 等待 = 1800 + 120。"""
-        sup = self._load_supervisor()
-        fake_fenix = tmp_path / ".fenix"
-        fake_fenix.mkdir(parents=True, exist_ok=True)
-        (fake_fenix / "config.yaml").write_text(
-            "admin:\n  shutdown_drain_seconds: 1800\n", encoding="utf-8")
-        sup.FENIX_DIR = fake_fenix
-        sup.PROJECT_ROOT = tmp_path
-        assert sup._sigkill_wait_seconds() == 1800 + 120
-
-    def test_sigkill_wait_drain_zero_falls_back(self, tmp_path):
-        """drain=0 → 快速停机语义，SIGKILL 等待回退 60s。"""
-        sup = self._load_supervisor()
-        fake_fenix = tmp_path / ".fenix"
-        fake_fenix.mkdir(parents=True, exist_ok=True)
-        (fake_fenix / "config.yaml").write_text(
-            "admin:\n  shutdown_drain_seconds: 0\n", encoding="utf-8")
-        sup.FENIX_DIR = fake_fenix
-        sup.PROJECT_ROOT = tmp_path
-        assert sup._sigkill_wait_seconds() == 60
+        assert sup._sigkill_wait_seconds() == expected
 
 
 # ── 6. resume 派发复用继承语义（prompt 继承注记，2.3） ───────────────────────

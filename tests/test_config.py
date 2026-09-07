@@ -21,6 +21,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.config import ConfigLoader
 
 
+def _valid_cfg() -> dict:
+    """最小合法配置底座（load 严格路径各组校验 / _base_cfg 共用）。"""
+    return {
+        "project": {"name": "test", "type": "web"},
+        "schedule": {"poll_interval_minutes": 30},
+        "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
+        "worktree": {"base_dir": ".claude/worktrees", "implement_branch_prefix": "fenix", "verify_branch_prefix": "fenix/verify"},
+        "gates": {"require_push_approval": True},
+        "commands": {"test": "", "build": "", "start": ""},
+        "logging": {"dir": ".fenix/logs", "level": "INFO"},
+    }
+
+
+def _cfg_set(cfg: dict, dotted: str, value) -> None:
+    """按点路径写入配置（project__type 形式 → project.type）。"""
+    keys = dotted.replace("__", ".").split(".")
+    d = cfg
+    for k in keys[:-1]:
+        d = d.setdefault(k, {})
+    d[keys[-1]] = value
+
+
 class TestConfigLoader(unittest.TestCase):
     """Test configuration loading and validation."""
 
@@ -36,6 +58,13 @@ class TestConfigLoader(unittest.TestCase):
         import yaml
         with open(self.config_path, "w") as f:
             yaml.dump(config_dict, f)
+
+    def _write_valid(self, **overrides):
+        """写一份最小合法配置，可按点路径覆盖单键（admin__workers 等）。"""
+        cfg = _valid_cfg()
+        for dotted, value in overrides.items():
+            _cfg_set(cfg, dotted, value)
+        self._write_config(cfg)
 
     def test_load_valid_config(self):
         self._write_config({
@@ -60,123 +89,58 @@ class TestConfigLoader(unittest.TestCase):
         with self.assertRaises(ValueError):
             ConfigLoader.load(self.config_path)
 
-    def test_invalid_project_type(self):
-        self._write_config({
-            "project": {"name": "test", "type": "invalid_type"},
-            "schedule": {"poll_interval_minutes": 30},
-            "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
-            "worktree": {"base_dir": ".", "implement_branch_prefix": "f", "verify_branch_prefix": "v"},
-            "gates": {"require_push_approval": True},
-            "commands": {"test": "", "build": "", "start": ""},
-            "logging": {"dir": ".", "level": "INFO"},
-        })
-        with self.assertRaises(ValueError):
-            ConfigLoader.load(self.config_path)
-
-    def test_invalid_poll_interval(self):
-        self._write_config({
-            "project": {"name": "test", "type": "web"},
-            "schedule": {"poll_interval_minutes": -5},
-            "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
-            "worktree": {"base_dir": ".", "implement_branch_prefix": "f", "verify_branch_prefix": "v"},
-            "gates": {"require_push_approval": True},
-            "commands": {"test": "", "build": "", "start": ""},
-            "logging": {"dir": ".", "level": "INFO"},
-        })
-        with self.assertRaises(ValueError):
-            ConfigLoader.load(self.config_path)
+    def test_invalid_scalar_values_rejected(self):
+        """同键非法值成组校验：project.type / poll_interval / admin.workers /
+        admin.bug_repair_mode 的非法取值均被 load 严格路径拒绝
+        （原 test_invalid_project_type / test_invalid_poll_interval /
+        admin.workers 负例 / bug_repair_mode 非法值共 5 条逐键用例合并，
+        断言逐条保留，键名定位为新增强化）。"""
+        cases = [
+            ("project__type", "invalid_type", None),
+            ("schedule__poll_interval_minutes", -5, None),
+            ("admin__workers", -1, "admin.workers"),
+            ("admin__workers", "two", "admin.workers"),
+            ("admin__bug_repair_mode", "always", "admin.bug_repair_mode"),
+            ("admin__bug_repair_mode", 42, "admin.bug_repair_mode"),
+            ("admin__bug_repair_mode", True, "admin.bug_repair_mode"),
+            ("admin__bug_repair_mode", ["derive"], "admin.bug_repair_mode"),
+        ]
+        for dotted, bad, keyword in cases:
+            with self.subTest(key=dotted, value=bad):
+                self._write_valid(**{dotted: bad})
+                with self.assertRaises(ValueError) as cm:
+                    ConfigLoader.load(self.config_path)
+                if keyword:
+                    self.assertIn(keyword, str(cm.exception))
 
     # ── admin.workers（fix-admin-run-blocks-mainloop D6：worker 池可配置） ──
 
     def test_admin_workers_valid_values_accepted(self):
         """非负整数（含 0=禁用后台池回退同步）合法。"""
         for workers in (0, 1, 2, 8):
-            self._write_config({
-                "project": {"name": "test", "type": "web"},
-                "schedule": {"poll_interval_minutes": 30},
-                "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
-                "worktree": {"base_dir": ".", "implement_branch_prefix": "f", "verify_branch_prefix": "v"},
-                "gates": {"require_push_approval": True},
-                "commands": {"test": "", "build": "", "start": ""},
-                "logging": {"dir": ".", "level": "INFO"},
-                "admin": {"workers": workers},
-            })
-            config = ConfigLoader.load(self.config_path)
-            self.assertEqual(ConfigLoader.get(config, "admin.workers"), workers)
-
-    def test_admin_workers_negative_rejected(self):
-        self._write_config({
-            "project": {"name": "test", "type": "web"},
-            "schedule": {"poll_interval_minutes": 30},
-            "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
-            "worktree": {"base_dir": ".", "implement_branch_prefix": "f", "verify_branch_prefix": "v"},
-            "gates": {"require_push_approval": True},
-            "commands": {"test": "", "build": "", "start": ""},
-            "logging": {"dir": ".", "level": "INFO"},
-            "admin": {"workers": -1},
-        })
-        with self.assertRaises(ValueError):
-            ConfigLoader.load(self.config_path)
-
-    def test_admin_workers_non_integer_rejected(self):
-        self._write_config({
-            "project": {"name": "test", "type": "web"},
-            "schedule": {"poll_interval_minutes": 30},
-            "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
-            "worktree": {"base_dir": ".", "implement_branch_prefix": "f", "verify_branch_prefix": "v"},
-            "gates": {"require_push_approval": True},
-            "commands": {"test": "", "build": "", "start": ""},
-            "logging": {"dir": ".", "level": "INFO"},
-            "admin": {"workers": "two"},
-        })
-        with self.assertRaises(ValueError):
-            ConfigLoader.load(self.config_path)
-
-    def test_admin_workers_defaults_to_two(self):
-        """未配置 → 读取方默认 2（design D6；池在 fenixd 侧以 get(...,2) 兜底）。"""
-        self.assertIsNone(ConfigLoader.get({}, "admin.workers"))
-        self.assertEqual(ConfigLoader.get({}, "admin.workers", 2), 2)
+            with self.subTest(workers=workers):
+                self._write_valid(**{"admin__workers": workers})
+                config = ConfigLoader.load(self.config_path)
+                self.assertEqual(ConfigLoader.get(config, "admin.workers"), workers)
 
     # ── admin.bug_repair_mode（add-bug-repair-mode-config） ──────────
 
-    def _admin_cfg(self, brm):
-        cfg = {
-            "project": {"name": "test", "type": "web"},
-            "schedule": {"poll_interval_minutes": 30},
-            "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
-            "worktree": {"base_dir": ".", "implement_branch_prefix": "f", "verify_branch_prefix": "v"},
-            "gates": {"require_push_approval": True},
-            "commands": {"test": "", "build": "", "start": ""},
-            "logging": {"dir": ".", "level": "INFO"},
-        }
-        if brm is not None:
-            cfg["admin"] = {"bug_repair_mode": brm}
-        return cfg
-
-    def test_bug_repair_mode_unconfigured_defaults_inplace(self):
-        """未配置 → get_admin_config 返回缺省 inplace。"""
-        self._write_config(self._admin_cfg(None))
+    def test_bug_repair_mode_valid_values_accepted(self):
+        """未配置 → get_admin_config 缺省 inplace；合法枚举 inplace/derive
+        通过校验并回读（原缺省回显用例并入此处：与 settings 页回显侧
+        二留一后，本侧保留 get_admin_config 读取方缺省口径）。"""
+        self._write_valid()
         config = ConfigLoader.load(self.config_path)
         self.assertEqual(
             ConfigLoader.get_admin_config(config)["bug_repair_mode"], "inplace"
         )
-
-    def test_bug_repair_mode_valid_values_accepted(self):
-        """合法枚举 inplace/derive 通过校验并回读。"""
         for mode in ("inplace", "derive"):
-            self._write_config(self._admin_cfg(mode))
-            config = ConfigLoader.load(self.config_path)
-            self.assertEqual(
-                ConfigLoader.get_admin_config(config)["bug_repair_mode"], mode
-            )
-
-    def test_bug_repair_mode_illegal_value_rejected(self):
-        """非法取值（非字符串、非枚举）被校验拒绝，配置不生效。"""
-        for bad in ("always", 42, True, ["derive"]):
-            self._write_config(self._admin_cfg(bad))
-            with self.assertRaises(ValueError) as cm:
-                ConfigLoader.load(self.config_path)
-            self.assertIn("admin.bug_repair_mode", str(cm.exception))
+            with self.subTest(mode=mode):
+                self._write_valid(**{"admin__bug_repair_mode": mode})
+                config = ConfigLoader.load(self.config_path)
+                self.assertEqual(
+                    ConfigLoader.get_admin_config(config)["bug_repair_mode"], mode
+                )
 
     def test_bug_repair_mode_validate_rejects_and_unchanged(self):
         """宽松路径（resolve_config）同拒非法值；合法值经 get_admin_config 取回。"""
@@ -206,20 +170,6 @@ class TestDeepMerge(unittest.TestCase):
         self.assertEqual(result["e"], 4)
 
 
-class TestResolveConfig(unittest.TestCase):
-    """测试配置解析：resolve_config 必须正确解析配置。"""
-
-    def test_resolve_config(self):
-        self.assertIsNotNone(ConfigLoader)
-
-
-class TestConfigHotReload(unittest.TestCase):
-    """测试配置热重载：配置热重载必须正确工作。"""
-
-    def test_config_hot_reload(self):
-        self.assertIsNotNone(ConfigLoader)
-
-
 class TestLogger(unittest.TestCase):
     """测试日志器：Logger 必须正确工作。"""
 
@@ -237,19 +187,42 @@ class TestLogger(unittest.TestCase):
 
 
 class TestDaemonSingletonFlock(unittest.TestCase):
-    """daemon-singleton：flock 排他锁语义（第二个实例被拒，释放后可获取）。"""
+    """daemon-singleton：fenixd._acquire_singleton_lock 真实路径
+    （第二个实例打印提示并 sys.exit(1)，释放后可重新获取）。
+
+    按绝对路径直载 fenixd.py（避免仓库根 __init__.py 使 `import fenixd`
+    解析到同名包而非守护脚本模块），且实例不注册进 sys.modules，
+    与其他测试的 fenixd 导入互不串扰。
+    """
+
+    def setUp(self):
+        import importlib.util
+        repo_root = Path(__file__).resolve().parent.parent
+        spec = importlib.util.spec_from_file_location(
+            "fenixd_daemon_under_test", repo_root / "fenixd.py")
+        self.fenixd = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.fenixd)
+        self.tmpdir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        fd = getattr(self.fenixd, "_LOCK_FD", None)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_second_acquire_is_rejected_until_release(self):
-        import fcntl
-        lock_path = Path(tempfile.mkdtemp()) / "daemon.lock"
-        fd1 = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
-        fcntl.flock(fd1, fcntl.LOCK_EX | fcntl.LOCK_NB)  # 第一个实例持有
-        fd2 = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
-        with self.assertRaises(OSError):
-            fcntl.flock(fd2, fcntl.LOCK_EX | fcntl.LOCK_NB)  # 第二个实例被拒
-        os.close(fd1)  # 第一个实例退出 → 锁释放
-        fcntl.flock(fd2, fcntl.LOCK_EX | fcntl.LOCK_NB)  # 第三个实例可获取
-        os.close(fd2)
+        with patch.object(self.fenixd, "FENIX_DIR", self.tmpdir):
+            self.fenixd._acquire_singleton_lock()  # 第一个实例持有
+            self.assertTrue((self.tmpdir / "daemon.lock").exists())
+            with self.assertRaises(SystemExit) as cm:
+                self.fenixd._acquire_singleton_lock()  # 第二个实例被拒
+            self.assertEqual(cm.exception.code, 1)
+            os.close(self.fenixd._LOCK_FD)  # 第一个实例退出 → 锁释放
+            self.fenixd._LOCK_FD = None
+            self.fenixd._acquire_singleton_lock()  # 新实例可获取
 
 
 class TestShutdownStopsDispatch(unittest.TestCase):
@@ -597,15 +570,7 @@ class TestOverviewDaemonField(unittest.TestCase):
 
 def _base_cfg(models=None, llm=None) -> dict:
     """构造带完整顶层键的配置（load 严格路径 / resolve_config 宽松路径共用）。"""
-    cfg = {
-        "project": {"name": "test", "type": "web"},
-        "schedule": {"poll_interval_minutes": 30},
-        "agents": {"max_concurrent": 2, "max_retries": 3, "max_turns": 50},
-        "worktree": {"base_dir": ".claude/worktrees", "implement_branch_prefix": "fenix", "verify_branch_prefix": "fenix/verify"},
-        "gates": {"require_push_approval": True},
-        "commands": {"test": "", "build": "", "start": ""},
-        "logging": {"dir": ".fenix/logs", "level": "INFO"},
-    }
+    cfg = _valid_cfg()
     if models is not None:
         cfg["agents"]["models"] = models
     if llm is not None:

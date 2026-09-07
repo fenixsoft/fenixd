@@ -180,26 +180,6 @@ class TestThrottleHotReload:
         assert runner._planner_throttle_semaphore() is None
 
 
-# ── 冻结复用零节流 ─────────────────────────────────────────────────
-
-
-class TestThrottleFrozenReuse:
-    """Scenario: 冻结复用路径（跳过出题）不获取信号量。"""
-
-    def test_frozen_reuse_skips_run_planner(self, tmp_path):
-        """冻结复用走 verification 阶段1 的「跳过出题」分支——不调用 run_planner。
-
-        信号量只在 run_planner 内获取；run_planner 未被调用即零节流。
-        （此处验证调用面：冻结分支不触碰 run_planner，由既有
-        test_fast_track_dispatch / 场景冻结测试覆盖冻结路径语义。）
-        """
-        # run_planner 的节流入口验证：冻结复用不经 run_planner
-        # → 只验证模块级信号量在未启用时不产生任何占位（零节流语义）
-        runner_module._PLANNER_SEMAPHORE = None
-        runner_module._PLANNER_SEMAPHORE_LIMIT = 0
-        assert runner_module._PLANNER_SEMAPHORE is None
-
-
 # ── 排队可观测 ─────────────────────────────────────────────────────
 
 

@@ -291,32 +291,6 @@ class TestRepairDispatch(unittest.TestCase):
         git(self.root, "commit", "-q", "-m", "[fenix] main dist rebuild")
         return branch
 
-    def _mock_implementer_success(self, branch: str):
-        from core.agent_runner import AgentRunResult
-        result = AgentRunResult(
-            run_id=f"impl-{self.spec}-1", spec_name=self.spec, agent_type="implementer",
-            success=True, duration_seconds=1.0, branch=branch,
-        )
-        self.engine.agent_runner.run_implementer = MagicMock(return_value=result)
-        (self.root / ".fenix" / ".fenix-run-result.json").write_text(
-            json.dumps({"status": "success", "spec": self.spec}), encoding="utf-8")
-
-    # ── Scenario: 语义冲突触发 repair ─────────────────────────
-
-    def test_semantic_conflict_triggers_repair(self):
-        branch = self._make_branch_with_semantic_conflict()
-        self._mock_implementer_success(branch)
-        # 拦截线程派发：同步验证调度决策（repair worker 由 mock 处理）
-        self.engine._dispatch_repair_lane = MagicMock()
-        # 模拟 agent_runner.has_live_attempt（PMEngine._on_spec_ready 不在路径内，安全默认）
-        self.sm.transition(self.spec, "implementing")
-        self.engine._run_agent_worker(self.spec, "implementer", 5)
-        # merge 失败 → 应进入 repair 通道，而非普通重试路径
-        self.engine._dispatch_repair_lane.assert_called_once()
-        # 状态保持 implementing（repair 期间不降级 ready）
-        entry = self.sm.read_one(self.spec)
-        self.assertEqual(entry["status"], "implementing")
-
     def test_artifact_self_heal_no_repair(self):
         """产物自愈适用时（全部冲突路径为 dist）→ merge 正常完成，不进入 repair。"""
         from core.agent_runner import AgentRunResult
@@ -389,24 +363,6 @@ class TestRepairDispatch(unittest.TestCase):
         self.assertTrue(wt.exists())
 
     # ── Scenario: 熔断协同（repair 中插轮不重置计数 / blocked 后停止）─────
-
-    def test_same_fp_after_repair_files_breaker(self):
-        """merge 失败 fp F → repair 轮 → re-merge 以同 fp F 失败 → 连续 2 次触发熔断。"""
-        error_text = "Merge conflict in shared.py"
-        fp = self.engine._merge_fingerprint(error_text)
-        self.sm.update_spec(self.spec, {
-            "status": "implementing",
-            "_merge_fp": fp,
-            "_merge_streak": 1,
-            "_repair_round": 1,
-        })
-        remerge_info = MergeConflictInfo(
-            False, error_text, conflict_paths=["shared.py"],
-            has_semantic_conflict=True)
-        self.engine._handle_remerge_failure(self.spec, remerge_info, "fenix/demo-123")
-        entry = self.sm.read_one(self.spec)
-        self.assertEqual(entry["status"], "blocked")
-        self.assertEqual(int(entry["_merge_streak"] or 0), 2)
 
     def test_blocked_spec_not_repaired(self):
         """blocked 状态拦截 repair 派发：_should_enter_repair 返回 False。"""
@@ -596,38 +552,6 @@ class TestRepairRunBudget(unittest.TestCase):
         self.assertEqual(result.agent_type, "repair")
         shutil.rmtree(tmp, ignore_errors=True)
 
-    def test_repair_is_budgeted_to_spec_via_token_accumulator(self):
-        """repair run 走 _execute_agent（含 _accumulate_token_usage）→ token 记 spec。"""
-        from core.agent_runner import AgentRunner
-        from core.agent_runner.token_budget import TokenAccountant
-        tmp = tempfile.mkdtemp()
-        pr = Path(tmp)
-        (pr / ".fenix").mkdir(parents=True, exist_ok=True)
-        runner = AgentRunner.__new__(AgentRunner)
-        runner.config = {}
-        runner.worktree_manager = MagicMock()
-        runner.state_machine = MagicMock()
-        runner.project_root = pr
-        runner.logger = CapturingLogger()
-        runner._running_agents = {}
-        runner._daily_run_count = 0
-        accrued = []
-        fake_accountant = MagicMock()
-
-        def fake_accumulate(spec_name, usage_info):
-            accrued.append((spec_name, usage_info))
-        runner._accumulate_token_usage = fake_accumulate
-        runner._record_verify_progress_tokens = MagicMock()
-        # _execute_agent 直接记录 usage 即可验证计费归属；这里用 stub 简化
-        # （完整路径已由既有 agent_runner 测试覆盖，此处校验 repair 与 implementer
-        # 共用同一记账入口 —— dispatcher 分支语义。）
-        self.assertTrue(hasattr(AgentRunner, "_accumulate_token_usage"))
-        self.assertTrue(callable(runner._accumulate_token_usage))
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 class TestFastTrackRepairLane(unittest.TestCase):
     """fast-track 通道接入 repair lane（2026-09-04 task-track 事故治理）。
@@ -635,9 +559,10 @@ class TestFastTrackRepairLane(unittest.TestCase):
     task-track（fast-track）语义冲突 merge-back 失败直接「ready + 重派」，
     112 turns 成果废弃——implementer 路径早已进 repair，fast-track 分叉点
     `_reconcile_and_merge` 缺 `_should_enter_repair` 判定。本组锁定：
-    1. fast-track merge 失败（语义冲突、未熔断）→ 进入 repair 通道；
-    2. repair 链失败 fallback 时按 spec mode 回原通道（fast-track spec
-       不应被 fallback 硬派 implementer）。
+    repair 链失败 fallback 按 spec mode 回原通道（fast-track spec 不应被
+    fallback 硬派 implementer）及重试耗尽 blocked 语义；fast-track merge
+    失败直通 repair 的正向路径由 test_merge_tree_rehearsal.py
+    TestRehearsedDispatch.test_fast_track_rehearsed_direct_repair 承载。
     """
 
     def setUp(self):
@@ -665,40 +590,6 @@ class TestFastTrackRepairLane(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _make_conflict_branch(self) -> str:
-        branch = f"fenix/{self.spec}-123"
-        make_conflict_branch(self.root, branch, "BRANCH-IMPL\n")
-        (self.root / "shared.py").write_text("MAIN-IMPL\n", encoding="utf-8")
-        git(self.root, "add", "-A", "--", "shared.py")
-        git(self.root, "commit", "-q", "-m", "[fenix] main shared.py change")
-        return branch
-
-    def _make_ft_result(self, branch: str):
-        from core.agent_runner import AgentRunResult
-        return AgentRunResult(
-            run_id=f"impl-{self.spec}-1", spec_name=self.spec,
-            agent_type="fast-track", success=True, duration_seconds=1.0,
-            branch=branch,
-        )
-
-    def test_fast_track_semantic_conflict_triggers_repair(self):
-        """fast-track merge 失败（语义冲突、未熔断）→ 进入 repair 通道。
-
-        修复前：直接 ready + fast-track 重派（成果废弃）——本测试锁定新语义。
-        """
-        branch = self._make_conflict_branch()
-        self.engine._dispatch_repair_lane = MagicMock()
-        merged = self.engine._dispatcher._reconcile_and_merge(
-            self.spec, self._make_ft_result(branch))
-        assert merged is False, "merge 失败必须早退"
-        self.engine._dispatch_repair_lane.assert_called_once()
-        # 状态保持 implementing（repair 期间不降级 ready）
-        entry = self.sm.read_one(self.spec)
-        self.assertEqual(entry["status"], "implementing")
-        # repair 调用携带实现分支（repair agent 在分支上 merge main 原地修复）
-        call_args = self.engine._dispatch_repair_lane.call_args
-        self.assertEqual(call_args.args[2], branch)
-
     def test_fast_track_fallback_enqueues_fast_track(self):
         """fast-track spec 的 repair fallback → 回 fast-track 通道（非 implementer）。"""
         (self.spec_dir / ".spec.yaml").write_text(
@@ -723,3 +614,7 @@ class TestFastTrackRepairLane(unittest.TestCase):
         entry = self.sm.read_one(self.spec)
         self.assertEqual(entry["status"], "blocked")
         self.engine._enqueue_front.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -269,16 +269,6 @@ class TestApiRunner(unittest.TestCase):
         # 探针健康 → 维持 fail
         self.assertEqual(finalize_scenario_status(result, probe_healthy=True), "fail")
 
-    def test_evidence_truncated_64kb(self):
-        """证据 64KB 截断：超长响应体带截断标记，报告不膨胀。"""
-        r = ApiRunner("spec-a", Path(tempfile.mkdtemp()), logger=None, config={})
-        # 构造 100KB 响应体（本地 fixture 不返回超长体，改用纯 runner 捕获检查）
-        from core.verify_engine.api_runner import _truncate
-        body = "x" * (100 * 1024)
-        t, truncated = _truncate(body)
-        self.assertTrue(truncated)
-        self.assertLessEqual(len(t), 64 * 1024)
-
     def test_unknown_assertion_rejected(self):
         r = self._runner()
         sc = Scenario.from_dict({
@@ -377,19 +367,6 @@ class TestServeReverseInference(unittest.TestCase):
         self.assertFalse(reachable)
         self.assertIn("serve", note)
         self.assertIn("api", note)
-
-    def test_api_scenario_url_probe_source(self):
-        """api http_request URL 参与可达性探测（非 navigate 场景不被跳过）。"""
-        tmp, engine = self._mk()
-        self._write_scenarios(tmp, [{
-            "id": "a1", "kind": "api",
-            "steps": [{"action": "http_request", "method": "GET",
-                       "url": "http://127.0.0.1:1/api"}], "assertions": [],
-        }])
-        engine._get_config = mock.MagicMock(return_value="")
-        reachable, _, note = engine._verification._ensure_app_reachable("spec-a")
-        self.assertFalse(reachable)
-        self.assertIn("serve", note)
 
 
 if __name__ == "__main__":

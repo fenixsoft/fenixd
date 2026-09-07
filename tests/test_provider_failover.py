@@ -408,17 +408,31 @@ class TestConfigDirSwitch:
 
 class TestProviderObservability:
     def test_provider_marker_written_and_result_fields(self, tmp_path, monkeypatch):
-        """attempt 启动时 run jsonl 写 provider_marker；AgentRunResult 带 provider_used/model_used。"""
-        runner = make_runner(tmp_path, chain_config("inferaiapi.com"))
+        """attempt 启动时 run jsonl 写 provider_marker（provider/model/chain_index）；
+        AgentRunResult 带 provider_used/model_used。
+
+        （原 TestModelChangedLog.test_model_changed_marker_in_provider_marker 与本测试
+        同一 marker 扫描逻辑、仅分别断言 model 字段与 provider/chain_index 字段——
+        审查后合并为对象链 config 一次扫描全断言。）
+        """
+        config = object_chain_config([
+            {"provider": "inferaiapi.com", "model": "deepseek-v4-flash"},
+            {"provider": "bigmodel.cn",    "model": "glm-5.3-flash"},
+        ])
+        runner = make_runner(tmp_path, config)
         now = 1000.0
         monkeypatch.setattr(runner, "_now", lambda: now)
         runner.worktree_manager = MagicMock()
         runner.worktree_manager.create.return_value = tmp_path / "wt"
-        runner._run_claude = MagicMock(return_value=("ok", 1, "sess"))
+        # _run_claude 契约为 4 元组 (output, turns, session_id, usage_info)——
+        # 旧 3 元组桩会在解包处 ValueError→被 attempt 循环吞掉走重试耗尽路径
+        runner._run_claude = MagicMock(return_value=(
+            "ok", 1, "sess",
+            {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}))
         result = runner.run_implementer("s")
         assert result.provider_used == "inferaiapi.com"
         assert result.model_used == "deepseek-v4-flash"
-        # run jsonl 含 provider_marker，指明 chain_index=0
+        # run jsonl 含 provider_marker，指明元素级 model 与 chain_index=0
         runs = tmp_path / ".fenix" / "runs"
         marker = None
         for f in runs.glob("*.jsonl"):
@@ -428,6 +442,7 @@ class TestProviderObservability:
                     marker = e
         assert marker is not None
         assert marker["provider"] == "inferaiapi.com"
+        assert marker["model"] == "deepseek-v4-flash"
         assert marker["chain_index"] == 0
 
 
@@ -436,12 +451,29 @@ class TestProviderObservability:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestModelChangedLog:
-    def test_cross_model_switch_appends_model_changed(self, tmp_path, monkeypatch):
-        """跨模型切换（deepseek-v4-flash → glm-5.3-flash）日志含 model_changed 标记。"""
-        config = object_chain_config([
-            {"provider": "inferaiapi.com", "model": "deepseek-v4-flash"},
-            {"provider": "bigmodel.cn",    "model": "glm-5.3-flash"},
-        ])
+    # 跨模型链 / 同模型链（provider 变 model 不变）两形态共用同一 stub 与断言骨架
+    CHAINS = [
+        pytest.param(
+            [{"provider": "inferaiapi.com", "model": "deepseek-v4-flash"},
+             {"provider": "bigmodel.cn",    "model": "glm-5.3-flash"}],
+            True, id="cross-model"),
+        pytest.param(
+            [{"provider": "inferaiapi.com", "model": "same-model"},
+             {"provider": "aliyun",         "model": "same-model"}],
+            False, id="same-model"),
+    ]
+
+    @pytest.mark.parametrize("chain,expect_model_changed", CHAINS)
+    def test_model_changed_scoped_to_model_change(self, tmp_path, monkeypatch,
+                                                  chain, expect_model_changed):
+        """provider 切换日志恒含 provider switched；model_changed 标记仅在跨模型
+        切换时出现（improve-failover-model-mapping-ui D3）。
+
+        （原 test_cross_model_switch_appends_model_changed 与
+        test_same_model_no_model_changed 同一 stub 骨架、仅链形态与反向断言不同——
+        审查后合并为参数化，断言逐条保留。）
+        """
+        config = object_chain_config(chain)
         runner = make_runner(tmp_path, config)
         now = 1000.0
         monkeypatch.setattr(runner, "_now", lambda: now)
@@ -451,7 +483,7 @@ class TestModelChangedLog:
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None, spec_name=None,
                             agent_type=None):
-            # 首候选失败 → 触发链前进到 bigmodel.cn
+            # 首候选失败 → 触发链前进到次候选
             if "a.com" in env_overrides.get("ANTHROPIC_BASE_URL", ""):
                 raise RuntimeError("unrecognized_model")
             return ("ok", 1, "sess", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
@@ -459,65 +491,18 @@ class TestModelChangedLog:
         runner._run_claude = fake_run_claude
         runner._extract_session_id = MagicMock(return_value="sess")
         runner.run_implementer("s")
-        # 日志含 model_changed 标记，指明旧→新模型名
-        assert runner.logger.has(
-            "model_changed: deepseek-v4-flash→glm-5.3-flash"
-        )
-        # 同时包含 provider switched
+        # 两个场景都包含 provider switched
         assert runner.logger.has("provider switched")
-
-    def test_same_model_no_model_changed(self, tmp_path, monkeypatch):
-        """同模型切换（provider 变但 model 不变）日志不含 model_changed。"""
-        config = object_chain_config([
-            {"provider": "inferaiapi.com", "model": "same-model"},
-            {"provider": "aliyun",         "model": "same-model"},
-        ])
-        runner = make_runner(tmp_path, config)
-        now = 1000.0
-        monkeypatch.setattr(runner, "_now", lambda: now)
-        runner.worktree_manager = MagicMock()
-        runner.worktree_manager.create.return_value = tmp_path / "wt"
-
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
-                            resume_session_id=None, max_turns=None, spec_name=None,
-                            agent_type=None):
-            if "a.com" in env_overrides.get("ANTHROPIC_BASE_URL", ""):
-                raise RuntimeError("unrecognized_model")
-            return ("ok", 1, "sess", {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "cost_usd": None})
-
-        runner._run_claude = fake_run_claude
-        runner._extract_session_id = MagicMock(return_value="sess")
-        runner.run_implementer("s")
-        # 日志包含 provider switched
-        assert runner.logger.has("provider switched")
-        # 但不含 model_changed（模型名未变）
-        assert not runner.logger.has("model_changed")
-
-    def test_model_changed_marker_in_provider_marker(self, tmp_path, monkeypatch):
-        """provider_marker 行含 model 字段，指明元素级模型。"""
-        config = object_chain_config([
-            {"provider": "inferaiapi.com", "model": "deepseek-v4-flash"},
-            {"provider": "bigmodel.cn",    "model": "glm-5.3-flash"},
-        ])
-        runner = make_runner(tmp_path, config)
-        now = 1000.0
-        monkeypatch.setattr(runner, "_now", lambda: now)
-        runner.worktree_manager = MagicMock()
-        runner.worktree_manager.create.return_value = tmp_path / "wt"
-        runner._run_claude = MagicMock(return_value=("ok", 1, "sess"))
-        runner.run_implementer("s")
-        # run jsonl 的 provider_marker 含 model
-        runs = tmp_path / ".fenix" / "runs"
-        marker = None
-        for f in runs.glob("*.jsonl"):
-            for line in f.read_text(encoding="utf-8").splitlines():
-                e = json.loads(line)
-                if e.get("type") == "provider_marker":
-                    marker = e
-        assert marker is not None
-        assert marker["model"] == "deepseek-v4-flash"
-        assert marker["provider"] == "inferaiapi.com"
-        assert marker["chain_index"] == 0
+        if expect_model_changed:
+            # 跨模型：日志含 model_changed 标记，指明旧→新模型名
+            assert runner.logger.has(
+                "model_changed: deepseek-v4-flash→glm-5.3-flash")
+        else:
+            # 同模型：不含 model_changed 标记（模型名未变）。断言用真实日志格式
+            # "model_changed: "（runner.py: " — model_changed: {old}→{new}"）而非裸
+            # 子串——裸 "model_changed" 会误命中 pytest 按测试名截断生成的
+            # tmp_path/worktree 目录名（test_model_changed_scoped_to_m0），假失败。
+            assert not runner.logger.has("model_changed: ")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

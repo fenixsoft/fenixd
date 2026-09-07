@@ -22,8 +22,11 @@ from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.verify_engine.api_runner import _truncate as _api_truncate
 from core.verify_engine.cli_runner import CliRunner, _truncate
 from core.verify_engine.scenarios import TestScenario as Scenario
 from core.verify_engine.engine import VerifyEngine
@@ -34,6 +37,16 @@ def _tmp_project():
     tmp = Path(tempfile.mkdtemp())
     (tmp / ".fenix").mkdir(parents=True, exist_ok=True)
     return tmp
+
+
+@pytest.mark.parametrize("truncate", [_api_truncate, _truncate], ids=["api", "cli"])
+def test_truncate_shared_semantics(truncate):
+    """证据截断共享语义（api/cli 两 runner 同规格）：超 64KB 截断带标记且不超限，短文本原样。"""
+    body = "x" * (100 * 1024)
+    t, truncated = truncate(body)
+    assert truncated is True
+    assert len(t) <= 64 * 1024
+    assert truncate("short")[1] is False
 
 
 class TestCliRunnerSemantics(unittest.TestCase):
@@ -97,14 +110,6 @@ class TestCliRunnerSemantics(unittest.TestCase):
             "assertions": [],
         })
         self.assertEqual(r["status"], "error")
-
-    def test_output_truncated_at_64kb(self):
-        """证据截断：超过 64KB 截断并带截断标记。"""
-        body = "x" * (100 * 1024)
-        t, truncated = _truncate(body)
-        self.assertTrue(truncated)
-        self.assertLessEqual(len(t), 64 * 1024)
-        self.assertFalse(_truncate("short")[1])
 
     def test_env_injection_framework_priority(self):
         """FENIX_VERIFY_* 自动注入且框架值优先（场景声明被覆盖）。"""

@@ -117,30 +117,32 @@ class TestLegacyOnDeath:
         wm.cleanup_stale_worktrees()
         rec = wm.get_legacy("s1")
         assert rec is not None  # 仍在册（豁免，未兜底回收）
-        # 真实 git 调用会失败（非 git 仓库），但豁免判断在调用前已跳过该目录
-        assert wt.exists() or rec is not None
+        # 豁免判断在真实 git 调用前已跳过该目录（cleanup_stale_worktrees 的
+        # legacy_names 分支），宽限期内遗产目录必须物理保留
+        assert wt.exists()
 
 
 class TestLegacyGraceExpiry:
-    def test_expired_legacy_reclaimed_by_sweeper(self, tmp_path):
-        """宽限期超时：sweeper 兜底回收并记审计。"""
+    @pytest.mark.parametrize(
+        "registered_ago, expect_reclaimed",
+        [(LEGACY_GRACE_SECONDS + 60, True), (0, False)],
+        ids=["expired-reclaimed", "fresh-kept"],
+    )
+    def test_legacy_grace_expiry_reclaim(self, tmp_path, registered_ago,
+                                         expect_reclaimed):
+        """宽限期超时：sweeper 兜底回收并记审计；宽限期内不动。"""
         wm = make_wm(tmp_path)
         wt = tmp_path / ".claude" / "worktrees" / "impl-s1-100"
         wt.mkdir(parents=True, exist_ok=True)
         wm.register_legacy("s1", wt, "fenix/s1-100")
-        # 人为把注册时刻拨到宽限期之前
-        wm._legacy["s1"]["registered_at"] = time.time() - (LEGACY_GRACE_SECONDS + 60)
+        # 人为拨注册时刻：超时（宽限期 + 60s 前）或新鲜（当前）
+        wm._legacy["s1"]["registered_at"] = time.time() - registered_ago
         reclaimed = wm._reclaim_expired_legacy()
-        assert "s1" in reclaimed
-        assert wm.get_legacy("s1") is None
-
-    def test_fresh_legacy_not_reclaimed(self, tmp_path):
-        wm = make_wm(tmp_path)
-        wt = tmp_path / ".claude" / "worktrees" / "impl-s1-100"
-        wt.mkdir(parents=True, exist_ok=True)
-        wm.register_legacy("s1", wt, "fenix/s1-100")
-        wm._legacy["s1"]["registered_at"] = time.time()
-        assert wm._reclaim_expired_legacy() == []
+        if expect_reclaimed:
+            assert "s1" in reclaimed
+            assert wm.get_legacy("s1") is None
+        else:
+            assert reclaimed == []
 
     def test_refresh_locks_registers_legacy_for_orphan(self, tmp_path):
         """D2：陈锁释放且物理残留 implementer worktree → refresh_locks 兜底注册遗产。"""

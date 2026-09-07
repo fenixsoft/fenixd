@@ -177,33 +177,6 @@ class TestSchedulingFieldsPersistence(unittest.TestCase):
         )
 
 
-class TestStateMachineUnfreezeClearsResiduals(unittest.TestCase):
-    """1.1/2.3 解冻路径清残留：error + frozen_until 随官方通道一并清除。"""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.proot = make_spec_scheduling_project(Path(self.tmpdir))
-        self.sm = make_state_machine(self.proot)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_unfreeze_clears_error_and_frozen_until(self):
-        self.assertTrue(self.sm.freeze_spec("myspec", "原状态 ready"))
-        self.assertTrue(self.sm.update_spec("myspec", {"frozen_until": "2026-09-08T01:00:00+00:00"}))
-        entry = self.sm.read_one("myspec")
-        self.assertTrue(entry.get("frozen"))
-        self.assertEqual(entry.get("status"), "blocked")
-        self.assertIsNotNone(entry.get("frozen_until"))
-
-        self.assertTrue(self.sm.unfreeze_spec("myspec", status="ready"))
-        entry = self.sm.read_one("myspec")
-        self.assertEqual(entry.get("status"), "ready")
-        self.assertFalse(entry.get("frozen"))
-        self.assertIsNone(entry.get("error"))
-        self.assertIsNone(entry.get("frozen_until"))
-
-
 # ── 最小 PMEngine/Dispatcher 夹具（dispatch 门控测试用） ───────────────
 
 class _SilentLogger:
@@ -439,19 +412,36 @@ class TestFreezeDualTrackRegression(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_sm_freeze_then_dashboard_unfreeze_restores_status(self):
-        # 路径 A：StateMachine.freeze_spec 冻结（带 frozen: True 结构化标记）→
-        # dashboard unfreeze_spec 解冻 → status 正确恢复（此前 update_spec 直写
-        # 会因冻结保护剥离 status，残留「error 清空但 status 仍 blocked」半死态）。
+    def test_unfreeze_restores_status_and_clears_residuals(self):
+        """1.1/2.3 解冻双通道合一（原 TestStateMachineUnfreezeClearsResiduals +
+        路径 A 合并）：SM.unfreeze_spec 与 dashboard unfreeze_spec（委托前者）
+        均恢复 status 并清 error/frozen_until 残留（半死态消除）。
+
+        背景：此前 update_spec 直写会因冻结保护剥离 status，残留
+        「error 清空但 status 仍 blocked」半死态。
+        """
         from core.dashboard.data import unfreeze_spec
-        self.sm.freeze_spec("myspec", "人工处置中")
-        r = unfreeze_spec(self.proot, "myspec")
-        self.assertTrue(r["ok"])
-        self.assertFalse(r["frozen"])
-        entry = self.sm.read_one("myspec")
-        self.assertEqual(entry.get("status"), "ready", "半死态消除：status 恢复原状态")
-        self.assertFalse(entry.get("frozen"))
-        self.assertIsNone(entry.get("error"))
+
+        for channel, unfreeze in (
+            ("sm", lambda: self.sm.unfreeze_spec("myspec", status="ready")),
+            ("dashboard", lambda: unfreeze_spec(self.proot, "myspec")),
+        ):
+            with self.subTest(channel=channel):
+                self.assertTrue(self.sm.freeze_spec("myspec", "原状态 ready"))
+                self.assertTrue(self.sm.update_spec(
+                    "myspec", {"frozen_until": "2026-09-08T01:00:00+00:00"}))
+                entry = self.sm.read_one("myspec")
+                self.assertTrue(entry.get("frozen"))
+                self.assertEqual(entry.get("status"), "blocked")
+                self.assertIsNotNone(entry.get("frozen_until"))
+
+                self.assertTrue(unfreeze())
+                entry = self.sm.read_one("myspec")
+                self.assertEqual(entry.get("status"), "ready",
+                                 "半死态消除：status 恢复原状态")
+                self.assertFalse(entry.get("frozen"))
+                self.assertIsNone(entry.get("error"))
+                self.assertIsNone(entry.get("frozen_until"))
 
     def test_dashboard_freeze_then_sm_unfreeze_restores_status(self):
         # 路径 B：dashboard freeze_spec 冻结 → StateMachine.unfreeze_spec 解冻
@@ -477,6 +467,29 @@ class TestFreezeDualTrackRegression(unittest.TestCase):
         freeze_spec(self.proot, "myspec")
         self.assertTrue(PMEngine._frozen_state(self.sm.read_one("myspec")),
                         "daemon 侧冻结态判定必须命中")
+
+    def test_structured_freeze_marker_distinguishes_bare_blocked(self):
+        """blocked 语义以结构化冻结为准（原 test_state_machine.TestBlockedState
+        裸写 status=blocked 的写法并入为对照断言）：daemon 侧 _frozen_state
+        只认 frozen 标记或 legacy 文本契约（blocked + 「用户指令冻结：」前缀），
+        裸 blocked 不被感知为冻结，也就不会停止调度。"""
+        from core.pm_engine.engine import PMEngine
+
+        # 裸写 blocked（原 TestBlockedState 的写法）：无 frozen 标记、error 无前缀
+        self.sm.update_spec("myspec", {"status": "blocked"})
+        self.assertFalse(
+            PMEngine._frozen_state(self.sm.read_one("myspec")),
+            "裸写 blocked 不得被感知为冻结")
+
+        # 结构化冻结：frozen=True + blocked + 冻结前缀 error（state_machine FROZEN_FIELD 契约）
+        self.sm.update_spec("myspec", {
+            "frozen": True,
+            "status": "blocked",
+            "error": "用户指令冻结：原状态 ready",
+        })
+        self.assertTrue(
+            PMEngine._frozen_state(self.sm.read_one("myspec")),
+            "结构化冻结必须命中冻结态判定")
 
 
 if __name__ == "__main__":

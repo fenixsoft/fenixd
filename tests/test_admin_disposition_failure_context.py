@@ -3,28 +3,16 @@
 CLI 失败 → final 记录含 error / 兜底 recommended_action / description 非空；
 成功记录不受影响；WARNING 日志在 _run_claude 异常时被调用。
 """
-import json
-import time
-from datetime import datetime, timezone
-from pathlib import Path
-
 import pytest
 
 from core.admin_store import AdminStore, DISPOSITION
 from core.admin_monitor import AdminMonitor
 from core.agent_runner import AdminDisposition
 from core.agent_runner.runner import AgentRunner, admin_disposition_path
+from tests.helpers import iso_ago
 
 
 # ── 辅助 ────────────────────────────────────────────────
-
-
-def utcnow_iso():
-    return datetime.now(timezone.utc).isoformat()
-
-
-def iso_ago(minutes: float) -> str:
-    return datetime.fromtimestamp(time.time() - minutes * 60, tz=timezone.utc).isoformat()
 
 
 class FakeLogger:
@@ -167,18 +155,11 @@ class TestFailedDispositionFailureContext:
 
 
 class TestSuccessfulDispositionUnaffected:
-    """成功记录不受影响：无 error 键或空串；recommended_action 取 disp 值。"""
+    """成功记录不受影响：无 error 键或空串；recommended_action 取 disp 值。
 
-    def test_successful_record_error_empty(self, tmp_path):
-        runner = SuccessRunner()
-        proot, mon, _ = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": iso_ago(120)},
-        }, runner=runner)
-        mon._invoke_administrator(make_signal(), None)
-        recs = mon.store.read_all()
-        disp = next(r for r in recs if r["kind"] == DISPOSITION)
-        assert disp["result"] == "resolved"
-        assert disp["error"] == ""
+    （原 test_successful_record_error_empty 与 preserves_all_fields 断言完全
+    子集重叠——result/error 两键后者均已覆盖——审查后并入删除。）
+    """
 
     def test_successful_record_recommended_action_not_fallback(self, tmp_path):
         runner = SuccessRunner()
@@ -210,9 +191,20 @@ class TestSuccessfulDispositionUnaffected:
 
 
 class TestRunAdministratorWarningLog:
-    """_run_claude 异常路径产生 WARNING 日志（fix-admin-disposition-empty-shell）。"""
+    """_run_claude 异常路径产生 WARNING 日志（fix-admin-disposition-empty-shell）。
 
-    def _make_runner(self, proot, logger):
+    （原 test_warning_log_contains_run_id_and_error 与 test_warning_log_context_has_run_id
+    同一 fixture 同一调用路径，仅分别断言 message / context 两个键——审查后合并；
+    test_failed_disposition_error_field_set 的三断言由
+    TestFailedDispositionFailureContext.test_failed_record_carries_error（记录层）
+    与 test_admin.py::test_run_administrator_failure_falls_back（disp 层）覆盖，删除。）
+    """
+
+    def test_warning_log_carries_run_id_and_error(self, tmp_path):
+        logger = FakeLogger()
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
         runner = AgentRunner.__new__(AgentRunner)
         runner.project_root = proot
         runner._get_config = lambda key, default=None: default
@@ -226,42 +218,15 @@ class TestRunAdministratorWarningLog:
 
         runner._run_claude = failing_run_claude
         runner.logger = logger
-        return runner
 
-    def test_warning_log_contains_run_id_and_error(self, tmp_path):
-        logger = FakeLogger()
-        proot = tmp_path / "proj"
-        proot.mkdir(parents=True, exist_ok=True)
-        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        runner = self._make_runner(proot, logger)
         disp = runner.run_administrator(make_signal())
 
-        # WARNING 日志被调用
+        # WARNING 日志被调用，message 含 run_id 与异常文本
         assert len(logger.warnings) >= 1
         warn = logger.warnings[0]
         assert warn["component"] == "agent_runner"
-        assert disp.run_id in warn["message"]  # run_id 包含在内
-        assert "Exit code: 143" in warn["message"]  # 异常文本包含在内
-
-    def test_warning_log_context_has_run_id(self, tmp_path):
-        logger = FakeLogger()
-        proot = tmp_path / "proj"
-        proot.mkdir(parents=True, exist_ok=True)
-        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        runner = self._make_runner(proot, logger)
-        disp = runner.run_administrator(make_signal())
-
-        warn = logger.warnings[0]
+        assert disp.run_id in warn["message"]
+        assert "Exit code: 143" in warn["message"]
+        # context 结构化字段同样携带 run_id 与异常文本
         assert warn["context"]["run_id"] == disp.run_id
         assert "Exit code: 143" in warn["context"]["error"]
-
-    def test_failed_disposition_error_field_set(self, tmp_path):
-        logger = FakeLogger()
-        proot = tmp_path / "proj"
-        proot.mkdir(parents=True, exist_ok=True)
-        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        runner = self._make_runner(proot, logger)
-        disp = runner.run_administrator(make_signal())
-        assert disp.success is False
-        assert "Exit code: 143" in disp.error
-        assert disp.result == "failed"

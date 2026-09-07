@@ -512,7 +512,7 @@ class TestInconclusiveDoesNotBurnSignalBudget(unittest.TestCase):
     def _monitor(self, tmp, specs, proot):
         mon = AdminMonitor(
             {}, _SpecsSM(specs), proot, _FakeLogger(),
-            store=AdminStore(proot / ".fenix" / "admin", _FakeLogger()),
+            store=AdminStore(proot, _FakeLogger()),
         )
         return mon
 

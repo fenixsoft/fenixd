@@ -95,36 +95,6 @@ class TestDashboardConfigIO(unittest.TestCase):
         self.assertEqual(echoed["verify"]["planner_max_concurrent"], 0)
 
 
-class TestDashboardParallelismConfig(unittest.TestCase):
-    """Dashboard 并行配置：并行配置必须正确工作。"""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_parallelism_config(self):
-        # 模拟并行配置
-        self.assertIsNotNone(self.tmpdir)
-
-
-class TestWorktreeMergeBack(unittest.TestCase):
-    """Worktree merge-back：merge-back 必须正确工作。"""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_worktree_merge_back(self):
-        # 模拟 worktree merge-back
-        self.assertIsNotNone(self.tmpdir)
-
-
 class TestSpecTimelineOrdering(unittest.TestCase):
     """SPEC 时间轴排序：同秒内状态转移必须先于运行节点。
 

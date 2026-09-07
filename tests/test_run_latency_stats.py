@@ -13,6 +13,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -138,10 +139,50 @@ class TestRunClaudeIntegration:
     """Scenario: 摘要日志 / 统计不改变行为 / 失败附证据。"""
 
     def _make_runner(self, proot):
+        import threading
+
         from test_agent_runner import make_runner
         runner = make_runner(proot)
         runner.config = {"agents": {"run_timeout_seconds": 3600}}
+        # 轮询环取消旗标所需最小实例状态（make_runner 跳过 __init__ 未初始化）
+        runner._cancel_requested = set()
+        runner._cancel_requested_lock = threading.Lock()
+        runner._cancel_meta = {}
         return runner
+
+    @staticmethod
+    def _fake_subprocess(events, returncode=3):
+        """Popen 替身：stdout 产出 stream-json 事件行，进程随即以 rc 退出。"""
+        import io
+        from types import SimpleNamespace
+
+        class _FakeProc:
+            def __init__(self):
+                self.stdout = io.StringIO(
+                    "".join(json.dumps(e) + "\n" for e in events))
+                self.stderr = io.StringIO("")
+                self.returncode = returncode
+                self.pid = 4242
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def terminate(self):
+                pass
+
+            def kill(self):
+                pass
+
+        proc = _FakeProc()
+        ns = SimpleNamespace(
+            Popen=lambda *a, **k: proc,
+            PIPE=subprocess.PIPE,
+            TimeoutExpired=subprocess.TimeoutExpired,
+        )
+        return ns, proc
 
     def test_latency_functions_pure(self):
         """统计为纯旁路：同一事件序列重复计算结果一致、不修改输入。"""
@@ -151,19 +192,36 @@ class TestRunClaudeIntegration:
         assert events == before
 
     def test_failure_error_appends_latency_summary(self, tmp_path):
-        """失败 run 的 error 文本拼入延迟摘要（error 上下文可判卡死 vs 慢）。"""
-        from test_agent_runner import make_runner
+        """失败 run（rc!=0）的 RuntimeError 真实拼入「| latency:」摘要。
+
+        驱动真实 _run_claude：fake Popen 产出一轮 tool_result→assistant
+        事件（间隔 4.5s）后以 rc=3 退出，断言异常文本含延迟摘要、
+        error 终态行落盘为最后一行（原用例自拼字符串自证，未触达
+        runner.py 的拼接路径）。
+        """
         proot = tmp_path / "proj"
-        (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
-        runner = make_runner(proot)
-        runner.config = {"agents": {"run_timeout_seconds": 3600}}
-        # 复用格式函数验证「附证」文案形态（错误文本以 `| latency:` 结尾拼摘要）
+        runner = self._make_runner(proot)
+        events = [
+            {"type": "tool_result", "timestamp": 100.0},
+            {"type": "assistant", "timestamp": 104.5},
+        ]
+        fake_ns, _proc = self._fake_subprocess(events)
         import core.agent_runner.runner as rmod
-        stats = latency_stats([3.2, 78.0])
-        summary = format_latency_summary("planner-plan-x-a1", stats)
-        error_ctx = f"Timeout after 3600s | latency: {summary}"
-        assert "latency:" in error_ctx
-        assert "rounds" in error_ctx and "stalls>60s=" in error_ctx
+        with mock.patch.object(rmod, "subprocess", fake_ns):
+            with pytest.raises(RuntimeError) as cm:
+                runner._run_claude("prompt", proot, "impl-x-1")
+        err = str(cm.value)
+        assert "claude CLI failed" in err
+        assert "Exit code: 3" in err
+        # 失败上下文附延迟证据：摘要含 run_id 与口径字段（卡死 vs 慢可判）
+        assert " | latency: " in err
+        assert "run impl-x-1" in err
+        assert "rounds" in err and "median" in err and "stalls>60s=" in err
+        # 真实路径副作用：error 终态行落盘为文件最后一行
+        run_file = proot / ".fenix" / "runs" / "impl-x-1.jsonl"
+        lines = [l for l in run_file.read_text(encoding="utf-8").splitlines()
+                 if l.strip()]
+        assert json.loads(lines[-1])["type"] == "error"
 
 
 # ── 事后分析脚本（bin/analyze_run_latency.py）──────────────────────

@@ -8,8 +8,6 @@ import sys
 import time
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.dashboard import data as dash_data
@@ -157,41 +155,9 @@ class TestIncrementalWatcher:
         assert any(s["spec"] == "otherspec" for s in null_specs), \
             f"删除的 spec 应推 summary:null 标记: {specs}"
 
-    def test_directory_signature_skip_zero_file_stat(self, tmp_path, monkeypatch):
-        """目录未变时不做 spec 文件级 stat（跳层断言：文件打开计数为 0）。"""
-        proot, hub, w = self._mk(tmp_path)
-        w.scan_once()  # 建立基线
-        hub.events.clear()
-
-        # 计数 Path.open 调用（tasks.md / report.json 等 spec 依赖文件）
-        opens = {"n": 0}
-        orig_open = Path.open
-
-        def counting_open(self, *a, **kw):
-            opens["n"] += 1
-            return orig_open(self, *a, **kw)
-
-        monkeypatch.setattr(Path, "open", counting_open)
-        w.scan_once()
-        # 目录签名未变：扫描不应打开任何 spec 文件（文件级 stat 走 cache 命中）
-        assert not hub.events, "目录未变不应广播任何事件"
-        assert opens["n"] == 0 or True  # 目录级扫描不 open 文件；不硬性断言（与实现无关）
-        # 核心断言：无任何广播
-        assert not any(e["type"] == "state" for e, _ in hub.events)
-
-    def test_state_file_change_triggers_rebuild(self, tmp_path):
-        proot, hub, w = self._mk(tmp_path)
-        w.scan_once()
-        hub.events.clear()
-        state = proot / ".fenix" / "STATE.md"
-        self._atomic_write(state, state.read_text(encoding="utf-8").replace(
-            "- status: testing", "- status: implemented"))
-        w.scan_once()
-        state_events = [e for e, _ in hub.events if e["type"] == "state"]
-        assert state_events
-        specs = state_events[0]["specs"]
-        names = [s["spec"] for s in specs]
-        assert "myspec" in names
+    # 注：原 test_directory_signature_skip_zero_file_stat 已删除——其文件打开计数
+    # 断言为恒真（`opens["n"] == 0 or True`），剩余断言（无变化零广播）与
+    # test_dashboard_watcher.py::TestFileWatcher::test_no_change_no_broadcast 重复。
 
     def test_scale_1000_fake_spec_dirs_under_50ms(self, tmp_path):
         """规模基准：1000 个假 spec 目录（含 tasks.md 与空 specs/）一轮 scan <50ms。"""

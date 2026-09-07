@@ -152,21 +152,12 @@ class TestStateParserTotalDuration(unittest.TestCase):
 
 
 class TestStateParserHalfWriteDefense(unittest.TestCase):
-    """1.1 半写 STATE.md 读取防御——证实非法条目击穿扫描的点位并锁定防御契约。"""
+    """1.1 半写 STATE.md 读取防御——锁定「解析层不得产出字符串条目」契约。
 
-    def test_poison_string_entry_breaks_recovery_loop(self):
-        """复现崩溃点位：若 read_all 返回值含字符串形态条目，
-        full_scan recovery 循环 ``entry.get('status')`` 抛 AttributeError，
-        整轮扫描中止。该测试证明「解析层不得产出字符串条目」契约的必要性。"""
-        poison = {
-            "good": {"status": "ready", "error": None, "implementer_run": None},
-            # 字符串形态条目：模拟被撕裂写入 / 外部工具改写的 STATE.md 经解析外泄
-            "bad": "### bad-spec\n- status: ready\n",
-        }
-        with self.assertRaises(AttributeError):
-            # 模拟 core/event_bus.py L84 的 recovery 循环访问
-            for name, entry in poison.items():
-                entry.get("status", "")  # noqa: B018
+    背景点位：若 read_all 返回值含字符串形态条目，full_scan recovery 循环
+    ``entry.get('status')``（core/event_bus.py）即抛 AttributeError、整轮扫描
+    中止——故解析层契约被回归破坏时，下游读取端必须有归一防线（下两方法）。
+    """
 
     def test_half_written_state_md_parse_no_crash(self):
         """半身写 STATE.md 不得引发异常；合法条目仍可被正确读取。"""
@@ -453,31 +444,3 @@ class TestVerifiedTestingEscapeHatch(unittest.TestCase):
         self.sm.update_spec("demo", {"status": "done"})
         self.assertFalse(self.sm.transition_gate("demo", "testing"))
         self.assertEqual(self.sm.read_one("demo")["status"], "done")
-
-
-class TestBlockedState(unittest.TestCase):
-    """测试 blocked 状态：blocked 状态必须正确处理。"""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
-        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
-        self.logger = MagicMock()
-        self.sm = StateMachine(self.state_path, self.logger)
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_blocked_state(self):
-        self.sm.add_spec("test-spec", {"priority": 1})
-        self.sm.transition("test-spec", "ready")
-        self.sm.transition("test-spec", "implementing")
-        self.sm.transition("test-spec", "implemented")
-        self.sm.transition("test-spec", "testing")
-        self.sm.transition("test-spec", "bug-found")
-        
-        # 模拟 blocked 状态
-        self.sm.update_spec("test-spec", {"status": "blocked"})
-        entry = self.sm.read_one("test-spec")
-        self.assertEqual(entry["status"], "blocked")

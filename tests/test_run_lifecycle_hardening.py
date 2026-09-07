@@ -8,6 +8,7 @@ Tests for run-lifecycle-hardening SPEC.
 4. lifecycle-hygiene：frozen 终止重试链 / STATE 路径唯一 / 预算对账自动校正
 """
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -17,6 +18,8 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 import sys
 
@@ -450,17 +453,14 @@ class TestInstantFailDispatchGate(unittest.TestCase):
 # 3. per-agent-timeout-override
 # ══════════════════════════════════════════════════════════════════════
 
-class TestTimeoutOverrideConfig(unittest.TestCase):
+class TestTimeoutOverrideConfig:
     """effective_run_timeout_seconds / judge_timeout_seconds / normalize。"""
 
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.root = Path(self.tmpdir)
+    @pytest.fixture(autouse=True)
+    def _env(self, tmp_path):
+        self.root = tmp_path
         self.logger = make_logger()
         self.base = {"agents": {"run_timeout_seconds": 9000}}
-
-    def tearDown(self):
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _cfg(self, overrides):
         cfg = {"agents": {"run_timeout_seconds": 9000}}
@@ -471,81 +471,142 @@ class TestTimeoutOverrideConfig(unittest.TestCase):
     def test_override_applies_to_named_type(self):
         from core.config import ConfigLoader
         cfg = self._cfg({"planner-plan": 2700})
-        self.assertEqual(
-            ConfigLoader.effective_run_timeout_seconds(cfg, "planner-plan"), 2700)
+        assert ConfigLoader.effective_run_timeout_seconds(cfg, "planner-plan") == 2700
         # 未配置类型回退全局
-        self.assertEqual(
-            ConfigLoader.effective_run_timeout_seconds(cfg, "implementer"), 9000)
-        self.assertEqual(
-            ConfigLoader.effective_run_timeout_seconds(cfg, "verifier"), 9000)
+        assert ConfigLoader.effective_run_timeout_seconds(cfg, "implementer") == 9000
+        assert ConfigLoader.effective_run_timeout_seconds(cfg, "verifier") == 9000
 
-    def test_all_seven_agent_types_coverable(self):
+    @pytest.mark.parametrize("atype", [
+        "implementer", "verifier", "planner-plan", "planner-judge",
+        "fast-track", "repair", "administrator",
+    ])
+    def test_agent_type_coverable(self, atype):
         from core.config import ConfigLoader
-        for atype in ("implementer", "verifier", "planner-plan", "planner-judge",
-                      "fast-track", "repair", "administrator"):
-            cfg = self._cfg({atype: 3600})
-            self.assertEqual(
-                ConfigLoader.effective_run_timeout_seconds(cfg, atype), 3600,
-                f"{atype} 应可被覆盖",
-            )
+        cfg = self._cfg({atype: 3600})
+        assert ConfigLoader.effective_run_timeout_seconds(cfg, atype) == 3600, \
+            f"{atype} 应可被覆盖"
 
     def test_global_default_when_no_override(self):
         from core.config import ConfigLoader
-        self.assertEqual(
-            ConfigLoader.effective_run_timeout_seconds(self.base, "verifier"), 9000)
+        assert ConfigLoader.effective_run_timeout_seconds(self.base, "verifier") == 9000
         # 全局缺失 → 回退 3600
-        self.assertEqual(
-            ConfigLoader.effective_run_timeout_seconds({"agents": {}}, "verifier"),
-            3600.0,
-        )
+        assert ConfigLoader.effective_run_timeout_seconds({"agents": {}}, "verifier") == 3600.0
 
-    def test_invalid_key_ignored_others_work(self):
+    def test_invalid_key_ignored_others_work(self, caplog):
         from core.config import ConfigLoader
         cfg = self._cfg({"unknown-type": 3600, "planner-plan": 2700})
-        with self.assertLogs("fenixd.config", level="ERROR") as logs:
+        with caplog.at_level(logging.ERROR, logger="fenixd.config"):
             out = ConfigLoader.normalize_timeout_overrides(cfg)
-        self.assertNotIn("unknown-type", out)
-        self.assertEqual(out["planner-plan"], 2700)
-        self.assertTrue(any("非法" in m for m in logs.output))
+        assert "unknown-type" not in out
+        assert out["planner-plan"] == 2700
+        assert any("非法" in r.getMessage() for r in caplog.records)
         # 生效值查询不受非法键影响
-        self.assertEqual(
-            ConfigLoader.effective_run_timeout_seconds(cfg, "planner-plan"), 2700)
-        self.assertEqual(
-            ConfigLoader.effective_run_timeout_seconds(cfg, "implementer"), 9000)
+        assert ConfigLoader.effective_run_timeout_seconds(cfg, "planner-plan") == 2700
+        assert ConfigLoader.effective_run_timeout_seconds(cfg, "implementer") == 9000
 
-    def test_invalid_value_ignored(self):
+    @pytest.mark.parametrize("bad", [100, -5, "2700", 3.5, True],
+                             ids=["too-small-int", "negative", "str", "float", "bool"])
+    def test_invalid_value_ignored(self, caplog, bad):
         from core.config import ConfigLoader
-        for bad in (100, -5, "2700", 3.5, True):
-            cfg = self._cfg({"implementer": bad})
-            with self.assertLogs("fenixd.config", level="ERROR"):
-                out = ConfigLoader.normalize_timeout_overrides(cfg)
-            self.assertNotIn("implementer", out, f"{bad!r} 应被忽略")
-            self.assertEqual(
-                ConfigLoader.effective_run_timeout_seconds(cfg, "implementer"), 9000)
+        cfg = self._cfg({"implementer": bad})
+        with caplog.at_level(logging.ERROR, logger="fenixd.config"):
+            out = ConfigLoader.normalize_timeout_overrides(cfg)
+        assert "implementer" not in out, f"{bad!r} 应被忽略"
+        # 原 assertLogs 语义保留：每次非法值必须留 ERROR 日志
+        assert any(r.levelno >= logging.ERROR for r in caplog.records)
+        assert ConfigLoader.effective_run_timeout_seconds(cfg, "implementer") == 9000
 
     def test_supervision_judge_under_300_allowed(self):
         from core.config import ConfigLoader
         cfg = self._cfg({"supervision-judge": 240})
-        self.assertEqual(ConfigLoader.judge_timeout_seconds(cfg), 240)
+        assert ConfigLoader.judge_timeout_seconds(cfg) == 240
 
     def test_supervision_judge_default(self):
         from core.config import ConfigLoader
-        self.assertEqual(ConfigLoader.judge_timeout_seconds(self.base), 120)
-        self.assertEqual(ConfigLoader.judge_timeout_seconds({}), 120)
+        assert ConfigLoader.judge_timeout_seconds(self.base) == 120
+        assert ConfigLoader.judge_timeout_seconds({}) == 120
 
     def test_stuck_threshold_unchanged_by_overrides(self):
         """stuck 阈值派生保持全局默认值语义，不随覆盖变化（design D4）。"""
         from core.config import ConfigLoader
         base = ConfigLoader.effective_stuck_threshold_seconds(self.base)
         cfg = self._cfg({"planner-plan": 2700})
-        self.assertEqual(
-            ConfigLoader.effective_stuck_threshold_seconds(cfg), base)
+        assert ConfigLoader.effective_stuck_threshold_seconds(cfg) == base
 
     def test_runner_effective_timeout(self):
         cfg = self._cfg({"planner-plan": 2700})
         runner = make_runner_with_config(self.root, cfg, logger=self.logger)
-        self.assertEqual(runner._effective_run_timeout("planner-plan"), 2700)
-        self.assertEqual(runner._effective_run_timeout("implementer"), 9000)
+        assert runner._effective_run_timeout("planner-plan") == 2700
+        assert runner._effective_run_timeout("implementer") == 9000
+
+
+class TestSupervisionAbsoluteMaxFloor:
+    """supervision absolute_max 的 floor 派生三分支（2026-09-07 审查并组）。
+
+    合并来源：本文件原 test_absolute_max_floor_rises_with_override /
+    test_global_timeout_floor_when_no_override +
+    test_run_lifecycle_governance.py 原
+    test_absolute_max_raised_to_cover_extension_budget。
+    生产语义见 core/agent_runner/liveness.py::_supervision_deadline_action：
+    配置值 < run_timeout + 续期总额 时抬到 floor 并 ERROR 留痕。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _env(self, tmp_path):
+        self.root = tmp_path
+        (self.root / ".fenix" / "runs").mkdir(parents=True)
+        self.logger = make_logger()
+        self.run_file = self.root / ".fenix" / "runs" / "impl-spec-1-a1.jsonl"
+        self.run_file.write_text('{"type":"init"}\n', encoding="utf-8")
+
+    def _cfg(self, overrides, abs_max):
+        cfg = {
+            "agents": {
+                "run_timeout_seconds": 3600,
+                "timeout_supervision": {
+                    "enabled": True,
+                    "max_extensions": 2,
+                    "extension_seconds": 1800,
+                    "absolute_max_seconds": abs_max,
+                },
+            },
+        }
+        if overrides:
+            cfg["agents"]["timeout_overrides"] = overrides
+        return cfg
+
+    @pytest.mark.parametrize(
+        "overrides, abs_max, started_ago, agent_type, cap_floor, expect_error",
+        [
+            # 覆盖值 7200 → floor = 7200 + 2*1800 = 10800，配置 9000 被抬升
+            ({"planner-plan": 7200}, 9000, 10 ** 9, "planner-plan", 10800, True),
+            # 未覆盖类型：floor = 3600 + 2*1800 = 7200 ≤ 9000，不抬升
+            ({}, 9000, 10 ** 9, "verifier", 9000, False),
+            # 配置偏小（100）抬到 3600 + 2*1800 = 7200：刚启动 60s 不得被截断的
+            # 总上限误杀（原 governance 分支）
+            (None, 100, 60, None, 7200, True),
+        ],
+        ids=["override-raises-floor", "global-floor-no-raise", "floor-covers-budget"],
+    )
+    def test_absolute_max_floor_derivation(self, overrides, abs_max, started_ago,
+                                           agent_type, cap_floor, expect_error):
+        runner = make_runner_with_config(self.root, self._cfg(overrides, abs_max),
+                                         logger=self.logger)
+        judge = MagicMock(return_value={"verdict": "advancing", "evidence": "ok"})
+        action = runner._supervision_deadline_action(
+            self.run_file, "spec", "run-1", started_at=time.time() - started_ago,
+            extensions_used=0, agent_type=agent_type, judge=judge)
+        if started_ago >= cap_floor:
+            # cap 命中：无条件终止，reason 注明派生后的生效值
+            assert action["action"] == "kill"
+            assert f"absolute_max_seconds cap reached ({cap_floor}s" in action["reason"]
+            judge.assert_not_called()
+        else:
+            # cap 未命中：floor 兜底后不得以截断的总上限误杀短时 run
+            assert "absolute_max_seconds" not in action["reason"]
+        # ERROR 留痕开关：配置 < floor 时必须留痕，≥ floor 时静默
+        err_msgs = [str(c) for c in runner.logger.error.call_args_list]
+        assert any("兜底生效" in m for m in err_msgs) is expect_error
 
 
 class TestTimeoutOverrideSupervision(unittest.TestCase):
@@ -577,33 +638,6 @@ class TestTimeoutOverrideSupervision(unittest.TestCase):
         if overrides:
             cfg["agents"]["timeout_overrides"] = overrides
         return cfg
-
-    def test_absolute_max_floor_rises_with_override(self):
-        """覆盖值 7200 → floor = 7200 + 2*1800 = 10800，配置 9000 被抬升。"""
-        cfg = self._cfg({"planner-plan": 7200})
-        runner = make_runner_with_config(self.root, cfg, logger=self.logger)
-        action = runner._supervision_deadline_action(
-            self.run_file, "spec", "run-1", started_at=0.0,
-            extensions_used=0, agent_type="planner-plan")
-        self.assertEqual(action["action"], "kill")
-        self.assertIn("absolute_max_seconds cap reached (10800s", action["reason"])
-        err_msgs = [str(c) for c in runner.logger.error.call_args_list]
-        self.assertTrue(any("absolute_max" in m and "兜底生效" in m
-                            for m in err_msgs),
-                        "低于派生 floor 时应 ERROR 留痕")
-
-    def test_global_timeout_floor_when_no_override(self):
-        """未覆盖类型：floor = 3600 + 2*1800 = 7200，配置 9000 ≥ floor 不抬升。"""
-        cfg = self._cfg({})
-        runner = make_runner_with_config(self.root, cfg, logger=self.logger)
-        action = runner._supervision_deadline_action(
-            self.run_file, "spec", "run-1", started_at=0.0,
-            extensions_used=0, agent_type="verifier")
-        self.assertEqual(action["action"], "kill")
-        self.assertIn("absolute_max_seconds cap reached (9000s", action["reason"])
-        # 配置值 ≥ floor：不抬升、无 ERROR 留痕
-        err_msgs = [str(c) for c in runner.logger.error.call_args_list]
-        self.assertFalse(any("兜底生效" in m for m in err_msgs))
 
     def test_supervision_judge_timeout_reads_config(self):
         cfg = self._cfg({"supervision-judge": 240})

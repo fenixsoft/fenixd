@@ -288,36 +288,36 @@ class TestFastTrackScenarioSourcing(_GateTestBase):
         # fast-track 场景不得混入（优先级：report.json 顶层覆盖）
         self.assertNotIn("hash-route-default-overview", content)
 
-    def test_both_missing_leaves_table_empty_but_report_ok(self):
-        from core.verify_report import synthesize_verification_report
-        # 只放 run_result 且 verification.scenarios 为空（等价于两路皆缺场景数据）
-        progress = self.project_root / ".fenix" / "verify-progress" / SPEC
-        progress.mkdir(parents=True, exist_ok=True)
-        rr = {"status": "verified", "spec": SPEC, "bugs": [],
-              "verification": {"scenarios": [], "verdict": "verified", "bugs": []}}
-        (progress / ".fenix-run-result.json").write_text(
-            json.dumps(rr, ensure_ascii=False), encoding="utf-8")
-        result = synthesize_verification_report(self.project_root, SPEC)
-        self.assertTrue(result["ok"], result)
-        content = self._report_path().read_text(encoding="utf-8")
-        # 场景表留空（无表头行），其余章节照常
-        self.assertNotIn("## 场景结果", content)
-        self.assertIn("## 结论：✅ 通过（verified）", content)
-        self.assertIn("| 通过 | 0 |", content)
+    def test_synthesize_ok_when_scenario_sources_both_missing(self):
+        """两路皆缺场景数据 → 合成仍 ok、场景表留空、其余章节照常。
 
-    def test_synthesize_ok_even_when_both_data_sources_missing(self):
+        参数化两种输入形态（断言并集一致）：
+        1. run_result 带 verification 键但 verification.scenarios 为空；
+        2. run_result 无 verification 键（非法/缺键）。
+        """
         from core.verify_report import synthesize_verification_report
-        # report.json 缺失、结果文件存在但无 scenarios 键（非法/缺键）→ 合成仍 ok、表留空
-        progress = self.project_root / ".fenix" / "verify-progress" / SPEC
-        progress.mkdir(parents=True, exist_ok=True)
-        rr = {"status": "verified", "spec": SPEC, "bugs": []}
-        (progress / ".fenix-run-result.json").write_text(
-            json.dumps(rr, ensure_ascii=False), encoding="utf-8")
-        result = synthesize_verification_report(self.project_root, SPEC)
-        self.assertTrue(result["ok"], result)
-        content = self._report_path().read_text(encoding="utf-8")
-        self.assertNotIn("## 场景结果", content)
-        self.assertIn("## 结论：✅ 通过（verified）", content)
+        cases = [
+            ("verification_scenarios_empty", {
+                "status": "verified", "spec": SPEC, "bugs": [],
+                "verification": {"scenarios": [], "verdict": "verified",
+                                 "bugs": []}}),
+            ("no_verification_key", {
+                "status": "verified", "spec": SPEC, "bugs": []}),
+        ]
+        for label, rr in cases:
+            with self.subTest(case=label):
+                progress = (
+                    self.project_root / ".fenix" / "verify-progress" / SPEC)
+                progress.mkdir(parents=True, exist_ok=True)
+                (progress / ".fenix-run-result.json").write_text(
+                    json.dumps(rr, ensure_ascii=False), encoding="utf-8")
+                result = synthesize_verification_report(self.project_root, SPEC)
+                self.assertTrue(result["ok"], result)
+                content = self._report_path().read_text(encoding="utf-8")
+                # 场景表留空（无表头行），其余章节照常
+                self.assertNotIn("## 场景结果", content)
+                self.assertIn("## 结论：✅ 通过（verified）", content)
+                self.assertIn("| 通过 | 0 |", content)
 
 
 class TestVerdictConclusionPreservesParagraphs(_GateTestBase):

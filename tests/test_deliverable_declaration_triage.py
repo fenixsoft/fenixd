@@ -656,34 +656,33 @@ class TestAdjudicateTerminalReview(_AdjudicationFixture):
         # 不立即打回：未重派 implementer
         self.assertEqual(self.engine._dispatcher._run_queue, [])
 
-    def test_judge_failure_equiv_unclear(self):
-        """Scenario「judge 失败等价 unclear」：run 失败/无合法 JSON → 转人工。"""
-        self.write_spec_dir(_DECL_TASKS)
-        self.stub_judge_run(judge_result=AgentRunResult(
-            "dispute-judge-s1-1", "s1", "dispute-judge",
-            success=False, duration_seconds=1.0, error="boom"))
+    def test_judge_failure_or_invalid_json_equiv_unclear(self):
+        """Scenario「judge 失败等价 unclear」：run 失败 / 结果 status 非 success
+        （无合法 verdicts）→ 全部等价 unclear，转人工（失败形态参数化）。"""
+        cases = {
+            "run-failed": None,
+            "result-not-success": "write-error-result",
+        }
+        for mode, marker in cases.items():
+            with self.subTest(mode=mode):
+                self.write_spec_dir(_DECL_TASKS)
+                if marker is None:
+                    # 形态 1：judge run 本身失败（无合法结果落盘）
+                    self.stub_judge_run(judge_result=AgentRunResult(
+                        "dispute-judge-s1-1", "s1", "dispute-judge",
+                        success=False, duration_seconds=1.0, error="boom"))
+                else:
+                    # 形态 2：run 成功但结果 JSON status 非 success
+                    self.write_judge_result([], status="error")
+                    self.stub_judge_run()
 
-        outcome = self.engine._adjudicate_deliverable_missing(
-            "s1", self.make_result(), None, ["core/verification.py"])
+                outcome = self.engine._adjudicate_deliverable_missing(
+                    "s1", self.make_result(), None, ["core/verification.py"])
 
-        self.assertEqual(outcome["action"], "handled")
-        entry = self.sm.read_one("s1")
-        self.assertEqual(entry["status"], "blocked")
-        self.assertIn("待人工裁决", entry["error"])
-
-    def test_judge_invalid_json_equiv_unclear(self):
-        """judge 结果 JSON 不合法 / status 非 success → 全部等价 unclear。"""
-        self.write_spec_dir(_DECL_TASKS)
-        self.write_judge_result([], status="error")
-        self.stub_judge_run()
-
-        outcome = self.engine._adjudicate_deliverable_missing(
-            "s1", self.make_result(), None, ["core/verification.py"])
-
-        self.assertEqual(outcome["action"], "handled")
-        entry = self.sm.read_one("s1")
-        self.assertEqual(entry["status"], "blocked")
-        self.assertIn("待人工裁决", entry["error"])
+                self.assertEqual(outcome["action"], "handled")
+                entry = self.sm.read_one("s1")
+                self.assertEqual(entry["status"], "blocked")
+                self.assertIn("待人工裁决", entry["error"])
 
     def test_unclear_verdict_blocks_human(self):
         """Scenario「unclear 裁决转人工」：spec 保持 blocked，error 用人工裁决话术。"""
@@ -708,32 +707,12 @@ class TestAdjudicateTerminalReview(_AdjudicationFixture):
 
 
 class TestAdjudicateMechanicalExecution(_AdjudicationFixture):
-    """裁决机械执行（spec.md「裁决机械执行与审计留痕」）。"""
+    """裁决机械执行（spec.md「裁决机械执行与审计留痕」）。
 
-    def test_typo_verdict_fixes_and_proceeds(self):
-        """Scenario「typo 裁决自动修正声明并放行」：path 替换 + 守卫重跑通过。"""
-        self.write_spec_dir(_DECL_TASKS)
-        self.write_judge_result([
-            {"element": "core/verification.py", "verdict": "typo",
-             "actual_path": "core/pm_engine/verification.py",
-             "reasoning": "唯一 basename 命中", "confidence": "high"},
-        ])
-        self.stub_judge_run()
-        (self.project_root / "core" / "pm_engine").mkdir(parents=True,
-                                                         exist_ok=True)
-        (self.project_root / "core" / "pm_engine" / "verification.py"
-         ).write_text("x", encoding="utf-8")
-        self.wm.file_exists_on_branch.side_effect = (
-            lambda branch, path: path == "core/pm_engine/verification.py")
-
-        outcome = self.engine._adjudicate_deliverable_missing(
-            "s1", self.make_result(), None, ["core/verification.py"])
-
-        self.assertEqual(outcome["action"], "proceed")
-        tasks_text = (self.project_root / "spec" / "changes" / "s1"
-                      / "tasks.md").read_text(encoding="utf-8")
-        self.assertIn("- path: core/pm_engine/verification.py", tasks_text)
-        self.assertNotIn("- path: core/verification.py", tasks_text)
+    typo 归宿的声明修正与守卫重跑放行由 worker 全链路版覆盖
+    （TestTriageChainSelfCheck.test_layer3_typo_fix_merges_after_guard_repass），
+    此处不再重复直驱用例；「action == proceed」契约并入审计用例断言。
+    """
 
     def test_reference_verdict_softens(self):
         """Scenario「reference 裁决软化校验」：kind → reference，转软校验放行。"""
@@ -786,7 +765,8 @@ class TestAdjudicateMechanicalExecution(_AdjudicationFixture):
         self.wm.register_legacy.assert_called_once()
 
     def test_audit_written_on_typo_execution(self):
-        """Scenario「审计可复核」：裁决 JSON 全文 + diff + run id 落审计流。"""
+        """Scenario「审计可复核」：裁决 JSON 全文 + diff + run id 落审计流；
+        并断言 typo 执行后 action=proceed、声明段已机械修正。"""
         from core.admin_store import DisputeAuditStore
         self.write_spec_dir(_DECL_TASKS)
         verdicts = [
@@ -803,8 +783,15 @@ class TestAdjudicateMechanicalExecution(_AdjudicationFixture):
         self.wm.file_exists_on_branch.side_effect = (
             lambda branch, path: path == "core/pm_engine/verification.py")
 
-        self.engine._adjudicate_deliverable_missing(
+        outcome = self.engine._adjudicate_deliverable_missing(
             "s1", self.make_result(), None, ["core/verification.py"])
+
+        # 修正 + 守卫重跑通过 → proceed（调用方继续 merge 推进）
+        self.assertEqual(outcome["action"], "proceed")
+        tasks_text = (self.project_root / "spec" / "changes" / "s1"
+                      / "tasks.md").read_text(encoding="utf-8")
+        self.assertIn("- path: core/pm_engine/verification.py", tasks_text)
+        self.assertNotIn("- path: core/verification.py", tasks_text)
 
         records = DisputeAuditStore(self.project_root, None).read_all()
         self.assertEqual(len(records), 1)
@@ -817,37 +804,21 @@ class TestAdjudicateMechanicalExecution(_AdjudicationFixture):
         self.assertIn("core/verification.py", diff["before"])
         self.assertIn("core/pm_engine/verification.py", diff["after"])
 
-    def test_missing_verdict_redispatch(self):
-        """missing 裁决：既有打回/重派路径（带精准缺件清单）。"""
-        self.write_spec_dir(_DECL_TASKS)
-        self.write_judge_result([
-            {"element": "core/verification.py", "verdict": "missing",
-             "actual_path": None, "reasoning": "实现未落地", "confidence": "high"},
-        ])
-        self.stub_judge_run()
-        self.wm.file_exists_on_branch.return_value = False
-
-        outcome = self.engine._adjudicate_deliverable_missing(
-            "s1", self.make_result(), None, ["core/verification.py"])
-
-        self.assertEqual(outcome["action"], "handled")
-        entry = self.sm.read_one("s1")
-        self.assertEqual(entry["status"], "ready")
-        self.assertIn("core/verification.py", entry["error"])
-        self.assertEqual(self.engine._dispatcher._run_queue[-1][1:3],
-                         ("s1", "implementer"))
+    # missing 裁决的打回/重派归宿由 worker 全链路版覆盖：
+    # TestTriageChainSelfCheck.test_layer3_missing_verdict_no_silent_merge
+    # （status ready + 精准缺件清单 error + 重派 implementer + 不静默 merge）。
 
 
 # ── PR5 行为自检：声明笔误 spec 三层干跑（tasks 5.2） ──────────────────────
 
 class TestTriageChainSelfCheck(_AdjudicationFixture):
-    """构造「声明笔误 spec」干跑三层，确认四归宿无静默放行路径。
+    """构造「声明笔误 spec」干跑 implementer 收工全链路，确认归宿无静默放行。
 
-    第一层：晋升 lint 拒唯一 basename 命中（drafted 停留）；
-    第二层：绕过 lint 后派发处方含候选与 dispute 登记约定；
-    第三层：构造缺件驱动 implementer worker 全链路终审——
+    三层中的前两层不再在此重复干跑（同夹具同断言，单点覆盖即可）：
+      - 第一层：晋升 lint 拒唯一 basename 命中 → TestLintNewBasenameTriage；
+      - 第二层：派发处方含候选与 dispute 登记约定 → TestDeclaredRealityInjection。
+    本类聚焦第三层：构造缺件驱动 implementer worker 全链路终审——
       - missing 裁决 → 打回重派（不静默合并）；
-      - unclear 裁决 → blocked 人工（不静默放行）；
       - typo 修正且 actual_path 存在 → 守卫重跑通过 → 正常合并推进。
     """
 
@@ -885,31 +856,6 @@ class TestTriageChainSelfCheck(_AdjudicationFixture):
         self.engine._process_queue = mock.MagicMock()
         self.engine._run_agent_worker("s1", "implementer", 5)
 
-    def test_layer1_lint_rejects_typo_declaration(self):
-        """第一层：唯一 basename 命中的笔误声明被 lint 拒晋升。"""
-        self.write_spec_dir(self.TYPO_DECL)
-        self._make_typo_main_tree()
-        violations = lint_declared(
-            self.project_root / "spec" / "changes" / "s1", self.project_root)
-        self.assertEqual(len(violations), 1)
-        self.assertIn("疑似笔误", violations[0])
-        self.assertIn("core/pm_engine/verification.py", violations[0])
-
-    def test_layer2_prescription_injects_candidate(self):
-        """第二层：绕过 lint 后派发处方含候选与 dispute 登记约定。"""
-        from test_agent_runner import make_runner
-        self.write_spec_dir(self.TYPO_DECL)
-        self._make_typo_main_tree()
-        runner = make_runner(self.project_root)
-        runner.worktree_manager = mock.MagicMock()
-        runner.worktree_manager.get_legacy.return_value = None
-        prompt = runner._prompt_builder._build_prompt("s1", "implementer")
-        self.assertIn("声明清单 × 仓库现实", prompt)
-        self.assertIn("core/verification.py", prompt)
-        self.assertIn("core/pm_engine/verification.py", prompt)
-        self.assertIn("deliverable-dispute", prompt)
-        self.assertIn("不得静默改变交付落点", prompt)
-
     def test_layer3_missing_verdict_no_silent_merge(self):
         """第三层·missing：缺件终审后打回重派，绝不静默合并推进。"""
         self._drive_worker_chain([
@@ -919,22 +865,12 @@ class TestTriageChainSelfCheck(_AdjudicationFixture):
         entry = self.sm.read_one("s1")
         self.assertEqual(entry["status"], "ready")  # 打回重派而非 implemented
         self.assertIn("交付物守卫", entry["error"])
+        # 打回 error 带精准缺件清单
+        self.assertIn("core/verification.py", entry["error"])
         # merge 未被调用（未静默放行）
         self.runner.worktree_manager.merge_back_from_branch.assert_not_called()
         self.assertEqual(self.engine._dispatcher._run_queue[-1][1:3],
                          ("s1", "implementer"))
-
-    def test_layer3_unclear_verdict_no_silent_pass(self):
-        """第三层·unclear：blocked 人工裁决，绝不自动放行。"""
-        self._drive_worker_chain([
-            {"element": "core/verification.py", "verdict": "unclear",
-             "actual_path": None, "reasoning": "信息不足", "confidence": "low"},
-        ])
-        entry = self.sm.read_one("s1")
-        self.assertEqual(entry["status"], "blocked")
-        self.assertIn("待人工裁决", entry["error"])
-        self.runner.worktree_manager.merge_back_from_branch.assert_not_called()
-        self.assertEqual(self.engine._dispatcher._run_queue, [])
 
     def test_layer3_typo_fix_merges_after_guard_repass(self):
         """第三层·typo：修正声明 + 守卫重跑通过 → 正常合并推进（放行 merge）。"""

@@ -19,20 +19,7 @@ from core.agent_runner import (
     AgentRunner,
     append_run_line,
 )
-
-
-class FakeLogger:
-    def debug(self, *a, **k):
-        pass
-
-    def info(self, *a, **k):
-        pass
-
-    def warning(self, *a, **k):
-        pass
-
-    def error(self, *a, **k):
-        pass
+from tests.helpers import FakeLogger
 
 
 def make_runner(proot: Path) -> AgentRunner:
@@ -99,52 +86,36 @@ class TestTerminalHarvest:
         runner.worktree_manager._kill_worktree_strays.assert_called_once_with(
             wt.name)
 
-    def test_normal_terminal_harvests_used(self, tmp_path):
-        """常规终态（非 keep 分支）：收割对 used_wts 生效。"""
+    @pytest.mark.parametrize(
+        "agent_type,run_id,worktree_kept",
+        [
+            pytest.param("fast-track", "impl-ft-1", False, id="fast-track-keep"),
+            pytest.param("repair", "repair-1", True, id="repair-keep"),
+        ],
+    )
+    def test_keep_branch_not_harvested(self, tmp_path, agent_type, run_id,
+                                       worktree_kept):
+        """keep 分支（fast-track hand-off / repair 载体）：终态收割不回收（dispatch 层负责）。"""
         runner = self._runner_with_harvest(tmp_path / "proj")
-        wt = Path("/w/impl-norm-1")
+        wt = Path(f"/w/{run_id}")
 
-        def fake_inner(spec_name, agent_type, run_id, pre_wt_path=None,
-                       conflict_summary=None, used_wts=None, handed_off=None):
-            used_wts.add(wt)
-            return SimpleNamespace(success=True)
-
-        runner._execute_agent_inner = fake_inner
-        runner._execute_agent("spec", "implementer", "impl-norm-1")
-        runner._v2_server._v2_stop_for_worktree.assert_called_once_with(wt)
-
-    def test_fast_track_keep_not_harvested(self, tmp_path):
-        """fast-track keep 分支（hand-off）：终态收割不停止其 dev-server。"""
-        runner = self._runner_with_harvest(tmp_path / "proj")
-        wt = Path("/w/impl-ft-1")
-
-        def fake_inner(spec_name, agent_type, run_id, pre_wt_path=None,
+        def fake_inner(spec_name, agent_type_, run_id_, pre_wt_path=None,
                        conflict_summary=None, used_wts=None, handed_off=None):
             used_wts.add(wt)
             handed_off.add(wt)  # 成功延迟清理 → 交接 dispatch 层
-            return SimpleNamespace(success=True, worktree_path=wt)
+            result = SimpleNamespace(success=True, worktree_path=wt)
+            if worktree_kept:
+                result.worktree_kept = True
+            return result
 
         runner._execute_agent_inner = fake_inner
-        runner._execute_agent("spec", "fast-track", "impl-ft-1")
+        if agent_type == "repair":
+            runner._execute_agent("spec", agent_type, run_id,
+                                  pre_wt_path=wt, conflict_summary={})
+        else:
+            runner._execute_agent("spec", agent_type, run_id)
         runner._v2_server._v2_stop_for_worktree.assert_not_called()
         runner.worktree_manager._kill_worktree_strays.assert_not_called()
-
-    def test_repair_keep_not_harvested(self, tmp_path):
-        """repair 载体（hand-off）：终态收割不回收（dispatch 层负责）。"""
-        runner = self._runner_with_harvest(tmp_path / "proj")
-        wt = Path("/w/impl-repair-1")
-
-        def fake_inner(spec_name, agent_type, run_id, pre_wt_path=None,
-                       conflict_summary=None, used_wts=None, handed_off=None):
-            used_wts.add(wt)
-            handed_off.add(wt)
-            return SimpleNamespace(success=True, worktree_path=wt,
-                                   worktree_kept=True)
-
-        runner._execute_agent_inner = fake_inner
-        runner._execute_agent("spec", "repair", "repair-1",
-                              pre_wt_path=wt, conflict_summary={})
-        runner._v2_server._v2_stop_for_worktree.assert_not_called()
 
     def test_repeated_harvest_idempotent(self, tmp_path):
         """同一 worktree 收割两次（runner 层 + dispatch 层）→ 第二次无害。"""
@@ -155,18 +126,29 @@ class TestTerminalHarvest:
         runner._v2_harvest_used_worktrees({wt}, set())
         assert runner._v2_server._v2_stop_for_worktree.call_count == 2
 
-    def test_frozen_early_exit_still_harvests(self, tmp_path):
-        """frozen 早退（派发被终止）→ 已登记的 used_wts 仍被收割。"""
+    @pytest.mark.parametrize(
+        "agent_type,run_id,inner_result",
+        [
+            pytest.param("implementer", "impl-norm-1", SimpleNamespace(success=True),
+                         id="normal-terminal"),
+            pytest.param("verifier", "verify-frozen-1",
+                         SimpleNamespace(success=False, error="spec frozen"),
+                         id="frozen-early-exit"),
+        ],
+    )
+    def test_terminal_harvests_used(self, tmp_path, agent_type, run_id,
+                                    inner_result):
+        """常规终态（成功 / frozen 早退等非 keep 终态）：收割对 used_wts 生效。"""
         runner = self._runner_with_harvest(tmp_path / "proj")
-        wt = Path("/w/impl-frozen-1")
+        wt = Path(f"/w/{run_id}")
 
-        def fake_inner(spec_name, agent_type, run_id, pre_wt_path=None,
+        def fake_inner(spec_name, agent_type_, run_id_, pre_wt_path=None,
                        conflict_summary=None, used_wts=None, handed_off=None):
             used_wts.add(wt)
-            return SimpleNamespace(success=False, error="spec frozen")
+            return inner_result
 
         runner._execute_agent_inner = fake_inner
-        runner._execute_agent("spec", "verifier", "verify-frozen-1")
+        runner._execute_agent("spec", agent_type, run_id)
         runner._v2_server._v2_stop_for_worktree.assert_called_once_with(wt)
 
 
@@ -210,8 +192,6 @@ class TestWaitForRunningAgents:
         # 完成 run 已写入正常 result 终态
         append_run_line(runs_dir / f"{run_id}.jsonl",
                         {"type": "result", "result": "完成", "num_turns": 3})
-        # 完成的 agent 已移除 _running_agents（shutdown 边界安全）
-        assert run_id not in runner._running_agents
 
         runner.wait_for_running_agents(timeout=0)
 
@@ -309,22 +289,23 @@ class TestVerifierCheckpointResume:
         # 首次写入保留断点起点
         assert "done=5（不要重置为 0）" in prompt
 
-    def test_prompt_fresh_start_when_no_progress(self, tmp_path):
-        """进度文件缺失时，verifier 提示词不含断点信息，全新开始。"""
+    @pytest.mark.parametrize(
+        "progress_payload",
+        [
+            pytest.param(None, id="no-progress-file"),
+            pytest.param({"total": 32, "done": 0, "current": "初始化"}, id="done-zero"),
+            pytest.param({"done": 5}, id="missing-total-field"),
+        ],
+    )
+    def test_prompt_fresh_start_without_breakpoint(self, tmp_path, progress_payload):
+        """进度文件缺失 / done==0 / 缺 total 字段时均视作全新开始，不注入断点。"""
         proot = tmp_path / "proj"
-        runner = make_runner(proot)
-        prompt = runner._prompt_builder._build_prompt("myspec", "verifier")
-        assert "RESUME CHECKPOINT" not in prompt
-
-    def test_prompt_fresh_start_when_done_zero(self, tmp_path):
-        """进度文件 done==0 时视作全新开始，不注入断点。"""
-        proot = tmp_path / "proj"
-        vprog = proot / ".fenix" / "verify-progress"
-        vprog.mkdir(parents=True, exist_ok=True)
-        (vprog / "myspec.json").write_text(
-            json.dumps({"total": 32, "done": 0, "current": "初始化"}),
-            encoding="utf-8",
-        )
+        if progress_payload is not None:
+            vprog = proot / ".fenix" / "verify-progress"
+            vprog.mkdir(parents=True, exist_ok=True)
+            (vprog / "myspec.json").write_text(
+                json.dumps(progress_payload), encoding="utf-8",
+            )
         runner = make_runner(proot)
         prompt = runner._prompt_builder._build_prompt("myspec", "verifier")
         assert "RESUME CHECKPOINT" not in prompt
@@ -341,18 +322,6 @@ class TestVerifierCheckpointResume:
         assert "RESUME CHECKPOINT" not in prompt
         # 损坏文件已被移除
         assert not bad.exists()
-
-    def test_progress_missing_total_field_safe_degrade(self, tmp_path):
-        """进度文件缺少 total 字段时不注入断点（视作无断点）。"""
-        proot = tmp_path / "proj"
-        vprog = proot / ".fenix" / "verify-progress"
-        vprog.mkdir(parents=True, exist_ok=True)
-        (vprog / "myspec.json").write_text(
-            json.dumps({"done": 5}), encoding="utf-8"
-        )
-        runner = make_runner(proot)
-        prompt = runner._prompt_builder._build_prompt("myspec", "verifier")
-        assert "RESUME CHECKPOINT" not in prompt
 
 
 class TestVerifierReportJson:

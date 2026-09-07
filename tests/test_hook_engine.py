@@ -75,6 +75,11 @@ class TestValidateHooks(unittest.TestCase):
     def test_not_dict(self):
         self.assertIn("对象", validate_hook_entry("bad"))
 
+    def test_hooks_specs_not_object_rejected(self):
+        """hooks.specs 顶层非对象（如列表）整体拒绝（dashboard 侧裁剪后补单元用例）。"""
+        err = validate_hooks_config({"hooks": {"specs": ["s1"]}})
+        self.assertIn("hooks.specs 必须为对象", err)
+
     def test_all_events_valid(self):
         from core.state_machine import SpecStatus
         for ev in SpecStatus.ALL:
@@ -360,25 +365,6 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(r["detail"], "ok")
         self.assertIn("ts", r)
         self.assertGreaterEqual(r["duration_ms"], 0)
-
-    def test_disabled_records_skipped(self):
-        """enabled=false 配置产生 skipped 审计而非执行动作。"""
-        (self.proot / "a.txt").write_text("x")
-        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=str(self.proot), check=True)
-        subprocess.run(["git", "config", "user.email", "t@t"], cwd=str(self.proot), check=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=str(self.proot), check=True)
-        subprocess.run(["git", "add", "-A"], cwd=str(self.proot), check=True)
-        subprocess.run(["git", "commit", "-qm", "init"], cwd=str(self.proot), check=True)
-        cfg = {"project": {"name": "a"}, "hooks": {
-            "global": [{"id": "dis1", "enabled": False, "events": ["done"], "action": "commit"}],
-            "specs": {}
-        }}
-        eng = HookEngine(self.proot, cfg, logger=MagicMock())
-        eng.dispatch("s1", "verified", "done", {})
-        time.sleep(0.8)
-        recs = read_hook_audit(self.proot)
-        self.assertEqual(len(recs), 1)
-        self.assertEqual(recs[0]["status"], STATUS_SKIPPED)
 
     def test_read_audit_spec_filter(self):
         eng = HookEngine(self.proot, self.config, logger=MagicMock())

@@ -129,32 +129,38 @@ class TestHasLiveAttempt:
         runner._running_agents = {}
         return runner
 
-    def test_live_child_process_detected(self, tmp_path):
+    @pytest.mark.parametrize(
+        "pgrep_alive, expected",
+        [(True, True), (False, False)],
+        ids=["live-child-detected", "dead-process-no-stream"],
+    )
+    def test_pgrep_probe_result(self, tmp_path, pgrep_alive, expected):
+        """存活子进程 / 已死进程：pgrep 探针结果直通判定。"""
         runner = self.make_runner(tmp_path)
-        runner._pgrep_live_attempt = lambda spec: True
-        assert runner.has_live_attempt("s1") is True
+        runner._pgrep_live_attempt = lambda spec: pgrep_alive
+        assert runner.has_live_attempt("s1") is expected
 
-    def test_dead_process_no_stream(self, tmp_path):
+    @pytest.mark.parametrize(
+        "pgrep_stub, stream_age, expected",
+        [
+            ("raise", 10, True),    # pgrep 不可用 → 回退新近流文件判存活
+            ("false", 600, False),  # pgrep 判死 + 流文件陈旧 → 不存活
+        ],
+        ids=["recent-stream-fallback", "stale-stream-not-alive"],
+    )
+    def test_fallback_stream_file(self, tmp_path, pgrep_stub, stream_age, expected):
+        """进程扫描回退路径：run 流文件 mtime 判定（窗口 120s）。"""
         runner = self.make_runner(tmp_path)
-        runner._pgrep_live_attempt = lambda spec: False
-        assert runner.has_live_attempt("s1") is False
 
-    def test_fallback_recent_stream_file(self, tmp_path):
-        """进程扫描不可用（pgrep 失败）→ 回退 run 流文件 mtime < 120s。"""
-        runner = self.make_runner(tmp_path)
+        if pgrep_stub == "raise":
+            def _boom(spec):
+                raise OSError("pgrep unavailable")
 
-        def _boom(spec):
-            raise OSError("pgrep unavailable")
-
-        runner._pgrep_live_attempt = _boom
-        touch_run_stream(tmp_path, "s1", "impl-s1-7", age=10)
-        assert runner.has_live_attempt("s1") is True
-
-    def test_fallback_old_stream_file_not_alive(self, tmp_path):
-        runner = self.make_runner(tmp_path)
-        runner._pgrep_live_attempt = lambda spec: False
-        touch_run_stream(tmp_path, "s1", "impl-s1-7", age=600)
-        assert runner.has_live_attempt("s1") is False
+            runner._pgrep_live_attempt = _boom
+        else:
+            runner._pgrep_live_attempt = lambda spec: False
+        touch_run_stream(tmp_path, "s1", "impl-s1-7", age=stream_age)
+        assert runner.has_live_attempt("s1") is expected
 
     def test_pgrep_matches_worktree_literal(self, tmp_path):
         """pgrep 匹配串锚定 worktree 目录字面量（impl/verify 两前缀）。"""
@@ -873,14 +879,9 @@ class TestSupervisionDeadlineAction(unittest.TestCase):
         self.assertEqual(d["reason"], "judged stagnant")
         self.assertEqual(d["evidence"], "same bash call looped")
 
-    def test_absolute_max_raised_to_cover_extension_budget(self):
-        """配置的 absolute_max 偏小时抬到 run_timeout + 续期总额（预算不被截断）。"""
-        self.runner.config = {
-            "agents": {"timeout_supervision": {
-                "absolute_max_seconds": 100, "max_extensions": 2}}}
-        # run_timeout 3600 + 2×1800 = 7200 > 100：刚启动 60s 不得触发绝对上限
-        d = self.decision(extensions=0, started_ago=60)
-        self.assertNotIn("absolute_max_seconds", d["reason"])
+    # test_absolute_max_raised_to_cover_extension_budget 已并入
+    # test_run_lifecycle_hardening.py::TestSupervisionAbsoluteMaxFloor（floor
+    # 派生三分支并组，2026-09-07 审查）。
 
     def test_defaults_enable_supervision(self):
         sup = self.runner._supervision_settings()

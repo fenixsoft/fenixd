@@ -1,46 +1,13 @@
 """
-Tests for AgentRunner provider functionality.
+Tests for AgentRunner 数据结构（AgentRunResult）。
 
 Split from test_core.py as part of refactor-test-structure.
+审查清理（2026-09-07）：原 TestAgentRunnerModelRouting.test_model_routing /
+TestRunClaudeStreaming.test_streaming_run 仅 assertIsNotNone(runner)（同义反复），
+TestExecuteAgentAttemptRunId.test_run_id_generation 只断言本地 f-string 生成值的
+前缀（未触任何源码符号），均已删除；保留对 AgentRunResult 字段契约的真实断言。
 """
-import json
-import os
-import shutil
-import tempfile
-import time
 import unittest
-import io
-from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
-
-# Add project root to path
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from core.state_machine import StateMachine, StateParser, SpecStatus, VALID_TRANSITIONS
-from tests.helpers import _FakeProc
-
-
-class TestAgentRunnerModelRouting(unittest.TestCase):
-    """AgentRunner 模型路由：模型选择必须正确路由。"""
-
-    def setUp(self):
-        from core.agent_runner import AgentRunner
-        self.tmpdir = tempfile.mkdtemp()
-        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
-        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
-        self.logger = MagicMock()
-        self.sm = StateMachine(self.state_path, self.logger)
-        # AgentRunner requires: config, worktree_manager, state_machine, project_root, logger
-        self.runner = AgentRunner({}, MagicMock(), self.sm, Path(self.tmpdir), self.logger)
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_model_routing(self):
-        # 模拟模型路由
-        self.assertIsNotNone(self.runner)
 
 
 class TestAgentRunResult(unittest.TestCase):
@@ -64,49 +31,3 @@ class TestAgentRunResult(unittest.TestCase):
         self.assertEqual(self.run_result.spec_name, "test-spec")
         self.assertEqual(self.run_result.agent_type, "implementer")
         self.assertEqual(self.run_result.duration_seconds, 10.5)
-
-
-class TestRunClaudeStreaming(unittest.TestCase):
-    """Claude 运行流式测试：流式运行必须正确处理。"""
-
-    def setUp(self):
-        from core.agent_runner import AgentRunner
-        self.tmpdir = tempfile.mkdtemp()
-        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
-        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
-        self.logger = MagicMock()
-        self.sm = StateMachine(self.state_path, self.logger)
-        # AgentRunner requires: config, worktree_manager, state_machine, project_root, logger
-        self.runner = AgentRunner({}, MagicMock(), self.sm, Path(self.tmpdir), self.logger)
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_streaming_run(self):
-        # 模拟流式运行
-        self.assertIsNotNone(self.runner)
-
-
-class TestExecuteAgentAttemptRunId(unittest.TestCase):
-    """执行器尝试运行 ID：运行 ID 必须正确生成。"""
-
-    def setUp(self):
-        from core.agent_runner import AgentRunner
-        self.tmpdir = tempfile.mkdtemp()
-        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
-        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
-        self.logger = MagicMock()
-        self.sm = StateMachine(self.state_path, self.logger)
-        # AgentRunner requires: config, worktree_manager, state_machine, project_root, logger
-        self.runner = AgentRunner({}, MagicMock(), self.sm, Path(self.tmpdir), self.logger)
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_run_id_generation(self):
-        # 模拟运行 ID 生成
-        run_id = f"run-{int(time.time())}"
-        self.assertIsNotNone(run_id)
-        self.assertTrue(run_id.startswith("run-"))

@@ -8,9 +8,7 @@ Tests for Dashboard help documentation API (add-dashboard-help-center D1/D2).
 - docs/help/ 缺失 → 清单空列表 / 单篇 404
 - 目录为空 → 清单空列表
 """
-import json
 import sys
-import threading
 from pathlib import Path
 
 import pytest
@@ -21,31 +19,8 @@ from core.dashboard import server as server_mod
 from core.dashboard.registry import Registry
 from core.dashboard.server import HELP_DOC_NAME_RE
 
-
-# ── 辅助：起一个真实 DashboardHTTPServer（对齐 test_dashboard_api 模式）──
-
-class _TestServer:
-    def __init__(self, registry, static_dir: Path):
-        from core.dashboard.server import DashboardHTTPServer, find_free_port
-        self.port = find_free_port(21000)
-        self.httpd = DashboardHTTPServer(("127.0.0.1", self.port), registry, static_dir)
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
-        self.thread.start()
-
-    def get(self, path: str):
-        import http.client
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        try:
-            conn.request("GET", path)
-            resp = conn.getresponse()
-            body = resp.read()
-            return resp.status, json.loads(body)
-        finally:
-            conn.close()
-
-    def stop(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
+# _TestServer 已收敛至 tests/conftest.py（get 接口签名一致）
+from conftest import _TestServer
 
 
 @pytest.fixture()

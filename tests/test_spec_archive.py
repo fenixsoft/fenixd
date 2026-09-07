@@ -1,9 +1,10 @@
 """
 Tests for SPEC 归档能力（add-spec-archive）。
 
-覆盖 data.py::archive_spec / is_spec_archived / spec_summary.archived /
-record_project_event 与 server.py::POST /api/spec-archive 端点，以及
-daemon 自动归档（auto_archive_check）与配置校验（archive.auto_threshold）。
+覆盖 data.py::archive_spec / spec_summary.archived（归档判定，无独立
+is_spec_archived 断言）/ record_project_event 与 server.py::POST
+/api/spec-archive 端点，以及 daemon 自动归档（auto_archive_check）与
+配置校验（archive.auto_threshold）。
 """
 import json
 import os
@@ -18,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.dashboard import data as dash_data
 from core.dashboard.data import (
-    archive_spec, is_spec_archived, parse_state, record_project_event,
+    archive_spec, parse_state, record_project_event,
     spec_summary,
 )
 

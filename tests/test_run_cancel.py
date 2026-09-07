@@ -117,45 +117,22 @@ class TestCancelRunPrimitive:
         with runner._cancel_requested_lock:
             assert "impl-x-123" not in runner._cancel_requested
 
-    def test_attempt_suffix_normalization_matches(self, tmp_path):
+    @pytest.mark.parametrize("cancel_arg", ["impl-x-123", "impl-x-123-a2"])
+    def test_cancel_run_id_base_normalization(self, tmp_path, cancel_arg):
+        """基础 run_id 与 -a2 后缀两种调用命中同一旗标（基础归一化）。"""
         proot = tmp_path / "proj"
         proot.mkdir()
         runner = make_runner(proot)
         proc = spawn_sleep(30)
         runner._running_agents["impl-x-123-a2"] = proc
         try:
-            # 以 -a2 调用
-            r1 = runner.cancel_run("impl-x-123-a2", reason="r")
-            assert r1["status"] == "cancel_requested"
+            result = runner.cancel_run(cancel_arg, reason="r")
+            assert result["status"] == "cancel_requested"
             with runner._cancel_requested_lock:
                 assert "impl-x-123" in runner._cancel_requested
         finally:
             proc.kill()
             proc.wait()
-
-    def test_base_run_id_and_attempt_suffix_equivalent(self, tmp_path):
-        proot = tmp_path / "proj"
-        proot.mkdir()
-        # 基础 run_id 与 -a2 后缀两种调用命中同一旗标（基础归一化）
-        r1 = make_runner(proot)
-        p1 = spawn_sleep(30)
-        r1._running_agents["impl-x-123-a2"] = p1
-        try:
-            res1 = r1.cancel_run("impl-x-123")
-            assert res1["status"] == "cancel_requested"
-        finally:
-            p1.kill()
-            p1.wait()
-
-        r2 = make_runner(proot)
-        p2 = spawn_sleep(30)
-        r2._running_agents["impl-x-123-a2"] = p2
-        try:
-            res2 = r2.cancel_run("impl-x-123-a2")
-            assert res2["status"] == "cancel_requested"
-        finally:
-            p2.kill()
-            p2.wait()
 
     def test_cancel_run_does_not_touch_state_machine(self, tmp_path):
         proot = tmp_path / "proj"

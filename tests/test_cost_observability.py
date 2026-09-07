@@ -5,7 +5,12 @@
 - 80% / 100% 一次性告警与标记持久；预算 0 关闭
 - 「成本不可用」渲染（cost_available=False）
 - 验证链侧车 tokens.json 写入
-- v2-config-page 真实 jsonl 结构提取数值（对照人工考古 42M）
+
+审查清理（2026-09-07）：原 TestV2ConfigPageFixture.test_extract_42m_equivalent
+以人为凑数（30M+8M+4M=42M）的合成事件重复 _extract_usage_info 提取路径——
+提取契约已由 test_full_usage_with_cache（四分项字段）与
+test_accumulate_with_cache_subtotals（含 cache 累加口径）覆盖，无新增断言语义，
+删除。
 
 注：StateMachine 将 STATE.md 字段以字符串存储，读取时按类型规整。
 """
@@ -17,20 +22,7 @@ from core.agent_runner import AgentRunner
 from core.dashboard import data as dashboard_data
 from core.state_machine import StateMachine
 from core.verify_report import render_verification_report, _sum_verify_chain_tokens
-
-
-class FakeLogger:
-    def debug(self, *a, **k):
-        pass
-
-    def info(self, *a, **k):
-        pass
-
-    def warning(self, *a, **k):
-        pass
-
-    def error(self, *a, **k):
-        pass
+from tests.helpers import FakeLogger
 
 
 def make_runner(proot: Path) -> AgentRunner:
@@ -305,37 +297,40 @@ class TestVerifyProgressSidecar:
 
 
 class TestCostUnavailableRender:
-    def test_token_usage_view_cost_missing(self):
+    def test_token_usage_view_cost_missing_cache_absent(self):
+        """历史 spec：无成本与缓存分项字段 → cost_available=False / cache 字段 None
+        （前端不显示括号，不显示伪 0%）。
+
+        （原 test_token_usage_view_cost_missing 与 test_token_usage_view_cache_fields_absent
+        使用同一 entry、仅分别断言成本/缓存侧——审查后合并。）
+        """
         entry = {"_tokens_in": 42_000_000, "_tokens_out": 300_000}
         view = dashboard_data._token_usage_view(entry)
         assert view["tokens_in"] == 42_000_000
         assert view["tokens_out"] == 300_000
         assert view["cost_available"] is False
         assert view["cost_usd"] is None
-
-    def test_token_usage_view_cost_present(self):
-        entry = {"_tokens_in": 1_000_000, "_tokens_out": 10_000, "_cost_usd": 1.23}
-        view = dashboard_data._token_usage_view(entry)
-        assert view["cost_available"] is True
-        assert view["cost_usd"] == 1.23
-
-    def test_token_usage_view_cache_fields_absent(self):
-        """历史 spec 无缓存分项字段 → None（前端不显示括号，不显示伪 0%）。"""
-        entry = {"_tokens_in": 42_000_000, "_tokens_out": 300_000}
-        view = dashboard_data._token_usage_view(entry)
         assert view["cache_read_input_tokens"] is None
         assert view["cache_creation_input_tokens"] is None
 
-    def test_token_usage_view_cache_fields_present(self):
-        """新 spec 有缓存分项字段（STATE 读出为字符串）→ 透传 int 值。"""
-        entry = {
+    def test_token_usage_view_cost_present_cache_present(self):
+        """字段在场时透传真实值（STATE 读出为字符串的缓存分项规整为 int）。
+
+        （原 test_token_usage_view_cost_present 与 test_token_usage_view_cache_fields_present
+        合并；两个 entry 形状分别保留原断言。）
+        """
+        cost_view = dashboard_data._token_usage_view(
+            {"_tokens_in": 1_000_000, "_tokens_out": 10_000, "_cost_usd": 1.23})
+        assert cost_view["cost_available"] is True
+        assert cost_view["cost_usd"] == 1.23
+
+        cache_view = dashboard_data._token_usage_view({
             "_tokens_in": 73_600_000, "_tokens_out": 10_000,
             "_cache_read_tokens": "71100000",
             "_cache_creation_tokens": "2500000",
-        }
-        view = dashboard_data._token_usage_view(entry)
-        assert view["cache_read_input_tokens"] == 71_100_000
-        assert view["cache_creation_input_tokens"] == 2_500_000
+        })
+        assert cache_view["cache_read_input_tokens"] == 71_100_000
+        assert cache_view["cache_creation_input_tokens"] == 2_500_000
 
     def test_render_report_includes_chain_tokens_row(self, tmp_path):
         proot = tmp_path / "proj"
@@ -352,30 +347,3 @@ class TestCostUnavailableRender:
         )
         assert "本链增量 Token（输入）" in md
         assert "2.00M" in md
-
-
-class TestV2ConfigPageFixture:
-    """对照人工考古 42M 的提取数值回归（task 4.2）。
-
-    无真实 jsonl 夹具时，构造等价结构的 result 事件断言提取路径正确。
-    """
-
-    def test_extract_42m_equivalent(self):
-        runner = make_runner(Path("/tmp"))
-        # 人工考古：v2-config-page 24h 烧 42M input tokens（含 cache）。
-        # 模拟一次 result 事件提取等价结构。
-        ev = {
-            "type": "result",
-            "usage": {
-                "input_tokens": 30_000_000,
-                "output_tokens": 300_000,
-                "cache_creation_input_tokens": 8_000_000,
-                "cache_read_input_tokens": 4_000_000,
-            },
-        }
-        info = runner._extract_usage_info(ev)
-        # 仅 input 本体（不含 cache）≈ 30M；累计口径含 cache = 42M
-        assert info["input_tokens"] == 30_000_000
-        total = (info["input_tokens"] + info["cache_creation_input_tokens"]
-                 + info["cache_read_input_tokens"])
-        assert total == 42_000_000

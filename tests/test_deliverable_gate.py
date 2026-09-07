@@ -1,13 +1,13 @@
 """add-implementer-deliverable-gate 单元测试与集成测试。
 
 覆盖：
-1. deliverables.extract_paths 纯函数（真实 v2-config-page 夹具 + 边界）
+1. deliverables 提取规则（原 extract_paths 兼容包装已删：全仓无生产调用点，
+   边界用例迁为 extract_paths_typed 直调；语境分类见 TestExtractPathsTyped）
 2. PMEngine 收工守卫（缺件阻断 / 全存在放行 / 无路径跳过 / 3 次封顶 blocked）
 3. 守卫零成本断言（无 LLM/测试/网络调用，仅文件 stat）
-4. agent_runner 重派 prompt 注入上轮 error（D4）
+4. agent_runner 重派 prompt 注入上轮 error（D4，implementer/fast-track 共用段）
 """
 
-import json
 import shutil
 import subprocess
 import sys
@@ -19,7 +19,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.agent_runner import AgentRunner, AgentRunResult
-from core.deliverables import extract_declared, extract_paths, \
+from core.deliverables import extract_declared, \
     extract_paths_typed, normalize_check_path
 from core.pm_engine import PMEngine
 from core.state_machine import StateMachine
@@ -53,15 +53,29 @@ class _FakeLogger:
         pass
 
 
-# ── deliverables.extract_paths 纯函数 ──────────────────────────────────────
+# ── deliverables 提取规则 ──────────────────────────────────────────────────
+#
+# 原 extract_paths 兼容包装（deliverables.py）全仓无生产调用点，包装本体与
+# 旧包装测试已删除；以下边界用例迁为 extract_paths_typed 直调，经 _union_paths
+# 复现原包装的拼接去重语义（语境分类见 TestExtractPathsTyped）。
 
-class TestExtractPaths(unittest.TestCase):
+def _union_paths(spec_dir) -> list:
+    """原 extract_paths 包装的等价语义：deliverables + references 拼接去重。"""
+    typed = extract_paths_typed(spec_dir)
+    ordered: list = []
+    for p in typed["deliverables"] + typed["references"]:
+        if p not in ordered:
+            ordered.append(p)
+    return ordered
+
+
+class TestExtractPathRules(unittest.TestCase):
     def test_extract_from_real_v2_config_page_fixture(self):
         """从真实事故现场文档提取出 config.json 等预期路径。"""
         # v2-config-page 已归档（2026-09-06）：真实夹具改指向归档固定副本，
         # 避免 spec 归档移动令本测试失效（judge 判定噪音源）
         spec_dir = REPO_ROOT / "spec" / "archive" / "2026-09-06-v2-config-page"
-        paths = extract_paths(spec_dir)
+        paths = _union_paths(spec_dir)
         # proposal.md 与 tasks.md 均声明了 core/dashboard/static/v2/pages/config.json
         self.assertIn("core/dashboard/static/v2/pages/config.json", paths)
         # 去重：proposal 与 tasks 各声明一次，仅出现一次
@@ -79,7 +93,7 @@ class TestExtractPaths(unittest.TestCase):
                 "```\ncore/bar.py\nscripts/run.sh\n/core/abs.py\ncore/dir/\n```\n",
                 encoding="utf-8",
             )
-            paths = extract_paths(d)
+            paths = _union_paths(d)
             self.assertIn("core/foo.py", paths)
             self.assertIn("tests/test_foo.py", paths)
             self.assertIn("core/bar.py", paths)
@@ -98,7 +112,7 @@ class TestExtractPaths(unittest.TestCase):
             (d / "proposal.md").write_text(
                 "路径: core/a.py core/b.py\n", encoding="utf-8"
             )
-            paths = extract_paths(d)
+            paths = _union_paths(d)
             self.assertIn("core/a.py", paths)
             self.assertIn("core/b.py", paths)
         finally:
@@ -112,12 +126,12 @@ class TestExtractPaths(unittest.TestCase):
                 "# No deliverables here\n- 只是一些说明文字，无显式路径\n",
                 encoding="utf-8",
             )
-            self.assertEqual(extract_paths(d), [])
+            self.assertEqual(_union_paths(d), [])
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
     def test_nonexistent_dir_returns_empty(self):
-        self.assertEqual(extract_paths(Path("/nonexistent_xyz_123")), [])
+        self.assertEqual(_union_paths(Path("/nonexistent_xyz_123")), [])
 
     def test_wildcard_excluded(self):
         """通配符路径不计入（是目录批量描述，不是单交付物）。"""
@@ -126,7 +140,7 @@ class TestExtractPaths(unittest.TestCase):
             (d / "tasks.md").write_text(
                 "- 覆盖 `core/*.py`\n- 单文件 `core/real.py`\n", encoding="utf-8"
             )
-            paths = extract_paths(d)
+            paths = _union_paths(d)
             self.assertIn("core/real.py", paths)
             self.assertNotIn("core/*.py", paths)
         finally:
@@ -255,23 +269,6 @@ class TestExtractPathsTyped(unittest.TestCase):
         self.assertEqual(normalize_check_path("core/x.py"), "core/x.py")
         self.assertEqual(normalize_check_path(""), "")
         self.assertEqual(normalize_check_path(".fenix/"), ".fenix/")
-
-    def test_compat_wrapper_union_unchanged(self):
-        """旧 extract_paths = deliverables + references 拼接去重（既有调用方不破坏）。"""
-        d = Path(tempfile.mkdtemp())
-        try:
-            (d / "tasks.md").write_text(
-                "# T\n"
-                "实现依据：`.fenix/core/base.py`（既有框架文件）\n"
-                "## 1\n"
-                "- [ ] 1.1 写 `core/foo.py`\n",
-                encoding="utf-8",
-            )
-            typed = extract_paths_typed(d)
-            self.assertEqual(extract_paths(d),
-                             typed["deliverables"] + typed["references"])
-        finally:
-            shutil.rmtree(d, ignore_errors=True)
 
 
 # ── PMEngine 收工守卫集成 ──────────────────────────────────────────────────
@@ -526,7 +523,13 @@ class TestDeliverableGateTyped(_GateFixture):
 
 # ── agent_runner 重派 prompt 注入（D4） ────────────────────────────────────
 
-class TestImplementerPromptErrorInjection(unittest.TestCase):
+class TestPrevErrorInjection(unittest.TestCase):
+    """`_prev_error_section`（implementer/fast-track 共用段，prompt_builder）。
+
+    正向用例按 agent 类型参数化：两个注入分支（prompt_builder 的 implementer
+    与 fast-track 分支）都必须真实接线（fast-track 曾漏注入，三连打回根因）。
+    """
+
     def setUp(self):
         self.tmpdir = Path(tempfile.mkdtemp())
         self.project_root = self.tmpdir
@@ -553,9 +556,12 @@ class TestImplementerPromptErrorInjection(unittest.TestCase):
         self.sm.update_spec("s1", {
             "error": "交付物守卫：缺件 [core/foo.py] — 不合并不推进，重派实现补齐（第 1 次）",
         })
-        prompt = self.runner._prompt_builder._build_prompt("s1", "implementer")
-        self.assertIn("Previous run error", prompt)
-        self.assertIn("交付物守卫：缺件 [core/foo.py]", prompt)
+        for agent_type in ("implementer", "fast-track"):
+            with self.subTest(agent_type=agent_type):
+                prompt = self.runner._prompt_builder._build_prompt(
+                    "s1", agent_type)
+                self.assertIn("Previous run error", prompt)
+                self.assertIn("交付物守卫：缺件 [core/foo.py]", prompt)
 
 
 class TestExtractDeclared(unittest.TestCase):
@@ -585,13 +591,18 @@ class TestExtractDeclared(unittest.TestCase):
                          ["core/dashboard/data.py", "skills/fenix-setup/SKILL.md"])
         self.assertEqual(typed["references"], [".fenix/config.yaml"])
 
-    def test_absent_section_returns_none(self):
-        self.write_tasks("# Tasks\n\n- [ ] 1.1 写 `core/foo.py`\n")
-        self.assertIsNone(extract_declared(self.spec_dir))
-
-    def test_invalid_yaml_returns_none(self):
-        self.write_tasks("## Deliverables\n\n```yaml\n- [broken: :::\n```\n")
-        self.assertIsNone(extract_declared(self.spec_dir))
+    def test_none_semantics_by_input(self):
+        """无声明段 / yaml 非法 / 全部条目非法 → 均返回 None（守卫回退正则提取）。"""
+        cases = {
+            "absent-section": "# Tasks\n\n- [ ] 1.1 写 `core/foo.py`\n",
+            "invalid-yaml": "## Deliverables\n\n```yaml\n- [broken: :::\n```\n",
+            "all-entries-invalid":
+                "## Deliverables\n\n```yaml\n- path: /x.py\n  kind: new\n```\n",
+        }
+        for label, text in cases.items():
+            with self.subTest(case=label):
+                self.write_tasks(text)
+                self.assertIsNone(extract_declared(self.spec_dir))
 
     def test_invalid_entries_skipped(self):
         self.write_tasks(
@@ -605,10 +616,6 @@ class TestExtractDeclared(unittest.TestCase):
         typed = extract_declared(self.spec_dir)
         self.assertEqual(typed["deliverables"], ["core/good.py"])
         self.assertEqual(typed["references"], [])
-
-    def test_all_invalid_returns_none_falls_back(self):
-        self.write_tasks("## Deliverables\n\n```yaml\n- path: /x.py\n  kind: new\n```\n")
-        self.assertIsNone(extract_declared(self.spec_dir))
 
 
 class TestGateDeclaredOverride(_GateFixture):

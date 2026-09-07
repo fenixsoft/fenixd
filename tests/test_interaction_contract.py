@@ -138,30 +138,31 @@ class TestCoverageValidation(unittest.TestCase):
         res = validate_interaction_coverage(self.proot, "demo", scenarios)
         self.assertFalse(res.ok)
         self.assertEqual(sorted(res.uncovered), ["button-group", "card-link"])
-        self.assertIn("dark-Card--link", build_feedback_text(res))
+        # 反馈文本内容断言见 test_feedback_text_requests_completion（不重复）
 
-    def test_scenario_text_coverage_passes(self):
-        """场景描述/断言引用元素 → 覆盖成立（design D1：description 引用即覆盖）。"""
+    def test_scenario_coverage_channels_pass(self):
+        """两条覆盖通道均放行：description 文本引用 / covers 显式登记。"""
         from core.interaction_contract import validate_interaction_coverage
-        scenarios = [
-            {"id": "s1", "description": "点击项目卡片（dark-Card--link）后跳转项目详情页"},
-            {"id": "s2", "description": "点击 button-group 中的启动按钮，toast 提示"},
-        ]
-        res = validate_interaction_coverage(self.proot, "demo", scenarios)
-        self.assertTrue(res.ok, res.uncovered)
+        channels = {
+            "description-text": [
+                {"id": "s1", "description": "点击项目卡片（dark-Card--link）后跳转项目详情页"},
+                {"id": "s2", "description": "点击 button-group 中的启动按钮，toast 提示"},
+            ],
+            "covers-metadata": [
+                {"id": "s1", "description": "卡片交互流程", "covers": ["dark-Card--link"]},
+                {"id": "s2", "description": "操作区交互", "covers": ["button-group"]},
+            ],
+        }
+        for channel, scenarios in channels.items():
+            with self.subTest(channel=channel):
+                res = validate_interaction_coverage(self.proot, "demo", scenarios)
+                self.assertTrue(res.ok, res.uncovered)
+        # 文本引用通道覆盖映射（design D1：description 引用即覆盖）
+        res = validate_interaction_coverage(self.proot, "demo",
+                                            channels["description-text"])
         covered = {k: v for k, v in res.covered}
         self.assertEqual(covered.get("card-link"), ["s1"])
         self.assertEqual(covered.get("button-group"), ["s2"])
-
-    def test_covers_metadata_channel(self):
-        """通道 1：planner 用 covers 显式登记元素标识。"""
-        from core.interaction_contract import validate_interaction_coverage
-        scenarios = [
-            {"id": "s1", "description": "卡片交互流程", "covers": ["dark-Card--link"]},
-            {"id": "s2", "description": "操作区交互", "covers": ["button-group"]},
-        ]
-        res = validate_interaction_coverage(self.proot, "demo", scenarios)
-        self.assertTrue(res.ok, res.uncovered)
 
     def test_declared_display_channel(self):
         """通道：planner declared_display 纯展示声明放行。"""
@@ -262,8 +263,10 @@ class TestNonWebScenarioNoop(unittest.TestCase):
         self.assertEqual(declared2, ["status-tile"])
 
     def test_pure_cli_set_no_candidates_noop(self):
-        """纯 cli 场景集 + 无候选元素：覆盖校验空转放行（covers 空登记合法）。"""
-        from core.interaction_contract import validate_interaction_coverage
+        """纯 cli/api 场景集 + 无候选元素：覆盖校验空转放行（covers 空登记合法）。"""
+        from core.interaction_contract import (
+            validate_interaction_coverage, collect_display_declarations,
+        )
         self._write_cli_spec()
         scenarios = [
             {"id": "c1", "kind": "cli",
@@ -271,33 +274,15 @@ class TestNonWebScenarioNoop(unittest.TestCase):
              "steps": [{"action": "run", "command": "cost-stats --out cost.csv",
                         "as": "out"}],
              "assertions": [{"type": "exit_code", "expected": 0}]},
-        ]
-        res = validate_interaction_coverage(self.proot, "cli-demo", scenarios)
-        self.assertTrue(res.ok)
-        self.assertIn("未检出可交互候选元素", "\n".join(res.change_lines))
-
-    def test_cli_api_covers_empty_is_legal(self):
-        """cli/api 场景无 covers 字段合法（不触发覆盖缺失——候选来自 SPEC 文档）。"""
-        from core.interaction_contract import (
-            validate_interaction_coverage, collect_display_declarations,
-        )
-        self._write_cli_spec()
-        scenarios = [
-            {"id": "c1", "kind": "cli", "description": "运行统计命令",
-             "steps": [{"action": "run", "command": "cost-stats"}]},
             {"id": "a1", "kind": "api", "description": "请求端点",
              "steps": [{"action": "http_request", "method": "GET",
                         "url": "http://stale:1/api/cost"}]},
         ]
-        # covers 缺省空表合法；声明收集也空
+        # cli/api 场景无 covers 字段合法（候选来自 SPEC 文档）；声明收集也空
         self.assertEqual(collect_display_declarations(scenarios), [])
         res = validate_interaction_coverage(self.proot, "cli-demo", scenarios)
         self.assertTrue(res.ok, res.uncovered)
-
-
-def build_feedback_text(res):
-    from core.interaction_contract import build_replan_feedback
-    return build_replan_feedback(res)
+        self.assertIn("未检出可交互候选元素", "\n".join(res.change_lines))
 
 
 # ───────────────── 3. scenarios.json 元数据（任务 1.2） ─────────────────

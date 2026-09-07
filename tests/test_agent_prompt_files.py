@@ -22,8 +22,7 @@ from core.agent_runner.prompt_builder import (
     AGENT_PROMPT_FILES,
     PromptBuilder,
 )
-from core.state_machine import StateMachine
-from test_agent_runner import FakeLogger, make_runner
+from test_agent_runner import make_runner
 
 
 AGENT_TYPES = list(AGENT_PROMPT_FILES.keys())
@@ -112,14 +111,6 @@ class TestFileLoadAndPlaceholders:
 class TestMissingFileFailFast:
     """Scenario: 文件缺失 fail-fast——不静默回退内置 prompt。"""
 
-    def test_missing_file_raises(self, tmp_path, monkeypatch):
-        proot = tmp_path / "proj"
-        _mk_spec_dir(proot, "demo")
-        monkeypatch.setattr(pb_module, "AGENT_PROMPT_DIR", tmp_path / "empty-agents")
-        runner = make_runner(proot)
-        with pytest.raises(FileNotFoundError, match="唯一真相"):
-            runner._prompt_builder._build_prompt("demo", "implementer")
-
     def test_missing_file_reports_every_agent_type(self, tmp_path, monkeypatch):
         proot = tmp_path / "proj"
         _mk_spec_dir(proot, "demo")
@@ -129,7 +120,8 @@ class TestMissingFileFailFast:
             with pytest.raises(FileNotFoundError):
                 runner._prompt_builder._build_prompt("demo", agent_type)
 
-    def test_error_carries_path(self, tmp_path, monkeypatch):
+    def test_error_carries_path_and_intent(self, tmp_path, monkeypatch):
+        """报错信息携带缺失文件名与「唯一真相」设计语义（不静默回退）。"""
         proot = tmp_path / "proj"
         _mk_spec_dir(proot, "demo")
         monkeypatch.setattr(pb_module, "AGENT_PROMPT_DIR", tmp_path / "empty-agents")
@@ -137,6 +129,7 @@ class TestMissingFileFailFast:
         with pytest.raises(FileNotFoundError) as ei:
             runner._prompt_builder._build_prompt("demo", "verifier")
         assert "verifier.md" in str(ei.value)
+        assert "唯一真相" in str(ei.value)
 
 
 class TestDynamicSectionsPreserved:
@@ -155,17 +148,9 @@ class TestDynamicSectionsPreserved:
         assert "从第 6 个场景开始" in prompt
         assert "done=5（不要重置为 0）" in prompt
 
-    def test_fast_track_prev_error_injected(self, tmp_path):
-        proot = tmp_path / "proj"
-        _mk_spec_dir(proot, "demo")
-        sm = StateMachine(tmp_path / "STATE.md", FakeLogger())
-        sm.add_spec("demo", {"priority": 5})
-        sm.update_spec("demo", {"error": "交付物守卫：缺件 [core/foo.py]"})
-        runner = make_runner(proot)
-        runner.state_machine = sm
-        prompt = runner._prompt_builder._build_prompt("demo", "fast-track")
-        assert "Previous run error" in prompt
-        assert "交付物守卫：缺件 [core/foo.py]" in prompt
+    # prev_error 动态段（implementer/fast-track 共用）的注入语义与两个分支的
+    # 接线断言由 test_deliverable_gate.py::TestPrevErrorInjection 集中覆盖，
+    # 此处不再跨文件重复。
 
     def test_planner_plan_replan_feedback_injected(self, tmp_path):
         proot = tmp_path / "proj"
@@ -377,7 +362,7 @@ def prompts_server(tmp_path):
 class TestPromptsAPI:
     """Scenario: 端点读写与白名单校验（任务 3.1）。"""
 
-    def test_get_user_level_lists_six_agents(self, prompts_server):
+    def test_get_user_level_lists_all_agents(self, prompts_server):
         proot, srv = prompts_server
         status, data = srv.get("/api/prompts")
         assert status == 200

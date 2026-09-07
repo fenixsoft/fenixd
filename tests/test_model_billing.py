@@ -48,6 +48,57 @@ def valid_llm():
     return {"providers": [valid_provider()]}
 
 
+# ── 拒绝矩阵变异构造器（每例独立构造 fresh dict，禁止跨例共享可变夹具） ──
+
+
+def _llm_negative_price():
+    llm = valid_llm()
+    llm["providers"][0]["billing"]["prices"][0]["input_per_million"] = -0.1
+    return llm
+
+
+def _llm_non_numeric_price():
+    llm = valid_llm()
+    llm["providers"][0]["billing"]["prices"][0]["output_per_million"] = "abc"
+    return llm
+
+
+def _llm_missing_price_field():
+    llm = valid_llm()
+    del llm["providers"][0]["billing"]["prices"][0]["cache_read_per_million"]
+    return llm
+
+
+def _llm_duplicate_model_in_card():
+    llm = valid_llm()
+    llm["providers"][0]["billing"]["prices"].append(valid_price())
+    return llm
+
+
+def _llm_non_bool_enabled():
+    llm = valid_llm()
+    llm["providers"][0]["billing"]["enabled"] = "yes"
+    return llm
+
+
+def _llm_billing_not_object():
+    llm = valid_llm()
+    llm["providers"][0]["billing"] = "on"
+    return llm
+
+
+def _llm_prices_not_list():
+    llm = valid_llm()
+    llm["providers"][0]["billing"]["prices"] = {"model": "x"}
+    return llm
+
+
+def _llm_price_row_not_object():
+    llm = valid_llm()
+    llm["providers"][0]["billing"]["prices"] = ["oops"]
+    return llm
+
+
 # ── 配置层：providers[i].billing 校验拒绝矩阵 / 合法写入 / 读侧回显 ──
 
 
@@ -55,6 +106,45 @@ class TestBillingWriteValidation:
     def _write(self, proot, llm):
         r = dashboard_data.write_config(proot, {"llm": llm})
         return r
+
+    # 拒绝矩阵（原 6 个 test_*_rejected 合并为参数化 8 例：malformed 三子形态拆为独立参数；
+    # 每例断言 ok=False + 错误文本必须含的子串，断言语义逐条保留）
+    @pytest.mark.parametrize(
+        "llm_factory,expected_subs",
+        [
+            pytest.param(_llm_negative_price,
+                         ["必须为非负数值", "prices[0]", "providers[0]"],
+                         id="negative-price"),
+            pytest.param(_llm_non_numeric_price, ["必须为非负数值"],
+                         id="non-numeric-price"),
+            pytest.param(_llm_missing_price_field, ["cache_read_per_million"],
+                         id="missing-price-field"),
+            pytest.param(_llm_duplicate_model_in_card, ["重复", "prices[1]"],
+                         id="duplicate-model-in-card"),
+            pytest.param(_llm_non_bool_enabled, ["enabled must be a boolean"],
+                         id="non-bool-enabled"),
+            pytest.param(_llm_billing_not_object, ["must be an object"],
+                         id="billing-not-object"),
+            pytest.param(_llm_prices_not_list, ["prices must be a list"],
+                         id="prices-not-list"),
+            pytest.param(_llm_price_row_not_object, [],
+                         id="price-row-not-object"),
+        ],
+    )
+    def test_billing_rejection_matrix(self, tmp_path, llm_factory, expected_subs):
+        r = self._write(tmp_path, llm_factory())
+        assert r["ok"] is False, r.get("error")
+        for sub in expected_subs:
+            assert sub in r["error"]
+
+    def test_duplicate_model_across_cards_allowed(self, tmp_path):
+        # 同一卡片内 model 唯一；不同卡片可同 model（挂靠各自卡片价格）
+        llm = {"providers": [
+            valid_provider(name="inferaiapi.com"),
+            valid_provider(name="bigmodel"),
+        ]}
+        r = self._write(tmp_path, llm)
+        assert r["ok"] is True
 
     def test_valid_provider_billing_writes_and_persists(self, tmp_path):
         r = self._write(tmp_path, valid_llm())
@@ -70,71 +160,6 @@ class TestBillingWriteValidation:
         assert prov["billing"]["prices"][0]["input_per_million"] == 0.27
         assert prov["billing"]["prices"][0]["model"] == "deepseek-v4-flash"
         assert "provider" not in prov["billing"]["prices"][0]
-
-    def test_negative_price_rejected(self, tmp_path):
-        llm = valid_llm()
-        llm["providers"][0]["billing"]["prices"][0]["input_per_million"] = -0.1
-        r = self._write(tmp_path, llm)
-        assert r["ok"] is False
-        assert "必须为非负数值" in r["error"]
-        assert "prices[0]" in r["error"]
-        assert "providers[0]" in r["error"]
-
-    def test_non_numeric_price_rejected(self, tmp_path):
-        llm = valid_llm()
-        llm["providers"][0]["billing"]["prices"][0]["output_per_million"] = "abc"
-        r = self._write(tmp_path, llm)
-        assert r["ok"] is False
-        assert "必须为非负数值" in r["error"]
-
-    def test_missing_price_field_rejected(self, tmp_path):
-        llm = valid_llm()
-        del llm["providers"][0]["billing"]["prices"][0]["cache_read_per_million"]
-        r = self._write(tmp_path, llm)
-        assert r["ok"] is False
-        assert "cache_read_per_million" in r["error"]
-
-    def test_duplicate_model_in_card_rejected(self, tmp_path):
-        llm = valid_llm()
-        llm["providers"][0]["billing"]["prices"].append(valid_price())
-        r = self._write(tmp_path, llm)
-        assert r["ok"] is False
-        assert "重复" in r["error"]
-        assert "prices[1]" in r["error"]
-
-    def test_duplicate_model_across_cards_allowed(self, tmp_path):
-        # 同一卡片内 model 唯一；不同卡片可同 model（挂靠各自卡片价格）
-        llm = {"providers": [
-            valid_provider(name="inferaiapi.com"),
-            valid_provider(name="bigmodel"),
-        ]}
-        r = self._write(tmp_path, llm)
-        assert r["ok"] is True
-
-    def test_non_bool_enabled_rejected(self, tmp_path):
-        llm = valid_llm()
-        llm["providers"][0]["billing"]["enabled"] = "yes"
-        r = self._write(tmp_path, llm)
-        assert r["ok"] is False
-        assert "enabled must be a boolean" in r["error"]
-
-    def test_malformed_billing_shapes_rejected(self, tmp_path):
-        llm = valid_llm()
-        llm["providers"][0]["billing"] = "on"
-        r = self._write(tmp_path, llm)
-        assert r["ok"] is False
-        assert "must be an object" in r["error"]
-
-        llm2 = valid_llm()
-        llm2["providers"][0]["billing"]["prices"] = {"model": "x"}
-        r2 = self._write(tmp_path, llm2)
-        assert r2["ok"] is False
-        assert "prices must be a list" in r2["error"]
-
-        llm3 = valid_llm()
-        llm3["providers"][0]["billing"]["prices"] = ["oops"]
-        r3 = self._write(tmp_path, llm3)
-        assert r3["ok"] is False
 
     def test_billing_absent_is_not_validated(self, tmp_path):
         # 不带 billing 的 llm 段（既有行为）不受影响

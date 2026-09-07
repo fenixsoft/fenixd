@@ -25,6 +25,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.state_machine import StateMachine
@@ -147,46 +149,34 @@ class TestWorktreeLockIdempotency(unittest.TestCase):
         self.assertFalse(self.wm.has_active_lock("spec-a", "verifier"))
 
 
-class TestRetryGiveUp(unittest.TestCase):
+class TestRetryGiveUp:
     """S3：attempt 重试前的放弃判定——锁活跃或人工冻结时不再重试。"""
 
-    def _make_runner(self):
+    @staticmethod
+    def _make_runner():
         runner = AgentRunner.__new__(AgentRunner)
         runner.worktree_manager = MagicMock()
         runner.state_machine = MagicMock()
         runner.logger = CapturingLogger()
         return runner
 
-    def test_give_up_when_lock_active(self):
-        """另一 run 持锁（并行风险）→ 放弃重试。"""
+    @pytest.mark.parametrize(
+        "lock_stub, spec_entry, expect_give_up",
+        [
+            ({"return_value": True}, {}, True),              # 另一 run 持锁（并行风险）
+            ({"return_value": False}, {"frozen": True}, True),  # spec 被人工冻结
+            ({"return_value": False}, {"status": "implementing"}, False),  # 正常重试
+            ({"side_effect": RuntimeError("boom")}, {}, False),  # 检查异常 fail-open
+        ],
+        ids=["lock-active", "frozen", "normal-retry", "check-failure-fail-open"],
+    )
+    def test_give_up_decision(self, lock_stub, spec_entry, expect_give_up):
+        """锁活跃/人工冻结 → 放弃重试；锁空闲未冻结/检查异常 → 正常重试。"""
         runner = self._make_runner()
-        runner.worktree_manager.has_active_lock.return_value = True
-        runner.state_machine.read_one.return_value = {}
-        self.assertTrue(
-            runner._should_give_up_before_retry("spec-a", "implementer"))
-
-    def test_give_up_when_frozen(self):
-        """spec 被人工冻结 → 放弃重试。"""
-        runner = self._make_runner()
-        runner.worktree_manager.has_active_lock.return_value = False
-        runner.state_machine.read_one.return_value = {"frozen": True}
-        self.assertTrue(
-            runner._should_give_up_before_retry("spec-a", "implementer"))
-
-    def test_no_give_up_normal_case(self):
-        """锁空闲 + 未冻结 → 正常重试。"""
-        runner = self._make_runner()
-        runner.worktree_manager.has_active_lock.return_value = False
-        runner.state_machine.read_one.return_value = {"status": "implementing"}
-        self.assertFalse(
-            runner._should_give_up_before_retry("spec-a", "implementer"))
-
-    def test_check_failure_fails_open(self):
-        """检查自身异常时不阻塞重试主路径（fail-open）。"""
-        runner = self._make_runner()
-        runner.worktree_manager.has_active_lock.side_effect = RuntimeError("boom")
-        self.assertFalse(
-            runner._should_give_up_before_retry("spec-a", "implementer"))
+        runner.worktree_manager.has_active_lock.configure_mock(**lock_stub)
+        runner.state_machine.read_one.return_value = spec_entry
+        result = runner._should_give_up_before_retry("spec-a", "implementer")
+        assert bool(result) is expect_give_up
 
 
 class TestFreezeSemantics(unittest.TestCase):
@@ -345,7 +335,7 @@ class TestBlockedStuckFrozenExemption(unittest.TestCase):
         mon.agent_runner.run_administrator.assert_called_once()
 
 
-class TestStaleLockCreateWindowExemption(unittest.TestCase):
+class TestStaleLockCreateWindowExemption:
     """陈锁回收的 create 构建窗口豁免（双派发穿透原地修 2026-09-06）。
 
     事故：run A 在 create() 内构建（worktree add + seed + node_modules 供给，
@@ -354,50 +344,46 @@ class TestStaleLockCreateWindowExemption(unittest.TestCase):
     缺失时以锁龄二次确认，年轻锁（< STALE_LOCK_IDLE_SECONDS）保守保留。
     """
 
-    def setUp(self):
-        import tempfile
-        self.tmp = Path(tempfile.mkdtemp(prefix="fenix-lock-age-test-"))
-        self.repo = self.tmp / "repo"
+    @pytest.fixture(autouse=True)
+    def _wm(self, tmp_path):
+        self.repo = tmp_path / "repo"
         init_repo(self.repo)
         self.logger = CapturingLogger()
         self.wm = WorktreeManager(
-            base_dir=self.tmp / "worktrees",
+            base_dir=tmp_path / "worktrees",
             project_root=self.repo,
             logger=self.logger,
             process_scanner=lambda spec: False,  # 进程扫描始终未命中（create 窗口态）
         )
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _hold_lock(self, spec_name: str, age_seconds: float):
         key = f"{spec_name}:implementer"
         self.wm._spec_locks.add(key)
         self.wm._lock_since[key] = time.time() - age_seconds
 
-    def test_young_lock_without_stream_is_kept(self):
-        """create 窗口态（年轻锁 + 无进程 + 无流文件）：保守视为持锁，不释放。"""
-        self._hold_lock("spec-y", age_seconds=5)
+    @pytest.mark.parametrize(
+        "age_seconds, expect_kept",
+        [
+            (5, True),                              # create 窗口态：年轻锁保守保留
+            (STALE_LOCK_IDLE_SECONDS + 10, False),  # 真孤儿：超龄锁仍按陈锁回收
+        ],
+        ids=["young-lock-kept", "orphan-lock-released"],
+    )
+    def test_lock_age_exemption_without_stream(self, age_seconds, expect_kept):
+        """无进程 + 无流文件时按锁龄二次确认：年轻锁保留、超龄锁回收。"""
+        self._hold_lock("spec-y", age_seconds=age_seconds)
         with patch.object(self.wm, "_latest_stream_mtime", return_value=None):
-            self.assertTrue(self.wm.has_active_worktree("spec-y"))
-        self.assertTrue(self.wm.has_active_lock("spec-y", "implementer"))
-
-    def test_old_lock_without_stream_is_released(self):
-        """真孤儿（超龄锁 + 无进程 + 无流文件）：仍按陈锁回收，语义不变。"""
-        self._hold_lock(
-            "spec-o", age_seconds=STALE_LOCK_IDLE_SECONDS + 10)
-        with patch.object(self.wm, "_latest_stream_mtime", return_value=None):
-            self.assertFalse(self.wm.has_active_worktree("spec-o"))
-        self.assertFalse(self.wm.has_active_lock("spec-o", "implementer"))
+            kept = self.wm.has_active_worktree("spec-y")
+        assert bool(kept) is expect_kept
+        assert bool(self.wm.has_active_lock("spec-y", "implementer")) is expect_kept
 
     def test_refresh_locks_keeps_young(self):
         """refresh_locks 周期回收跳过年轻锁（同豁免口径）。"""
         self._hold_lock("spec-r", age_seconds=5)
         with patch.object(self.wm, "_latest_stream_mtime", return_value=None):
             released = self.wm.refresh_locks()
-        self.assertEqual(released, [])
-        self.assertTrue(self.wm.has_active_lock("spec-r", "implementer"))
+        assert released == []
+        assert self.wm.has_active_lock("spec-r", "implementer")
 
 
 class TestDispatchCooldownWindow(unittest.TestCase):
@@ -431,6 +417,12 @@ class TestDispatchCooldownWindow(unittest.TestCase):
         eng._pending_dispatches.add("spec-p")
         eng.agent_runner = None
         eng._on_spec_ready("spec-p")
+        # 显式断言：冷却未拦截（无 cooldown 日志），到达单飞键
+        # （already pending 跳过日志），且 pending 标记保持原样未被消费
+        debug_texts = " ".join(str(c) for c in eng.logger.debug.call_args_list)
+        self.assertNotIn("cooldown window active", debug_texts)
+        self.assertIn("already pending", debug_texts)
+        self.assertIn("spec-p", eng._pending_dispatches)
 
     def test_no_dispatch_history_not_blocked(self):
         """无派发历史：冷却不拦截（首次派发放行至 pending 检查）。"""
@@ -438,6 +430,11 @@ class TestDispatchCooldownWindow(unittest.TestCase):
         eng._pending_dispatches.add("spec-n")
         eng.agent_runner = None
         eng._on_spec_ready("spec-n")
+        # 显式断言：无派发历史 → 无 cooldown 日志；单飞键接管并保持 pending
+        debug_texts = " ".join(str(c) for c in eng.logger.debug.call_args_list)
+        self.assertNotIn("cooldown window active", debug_texts)
+        self.assertIn("already pending", debug_texts)
+        self.assertIn("spec-n", eng._pending_dispatches)
 
 
 if __name__ == "__main__":

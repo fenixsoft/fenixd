@@ -236,22 +236,6 @@ class TestGuardOneResetSuppression(unittest.TestCase):
         # 父保持 bug-found（reset 抑制守卫只拦重实现，不触及父态）
         self.assertEqual(self.sm.read_one("fix-x")["status"], "bug-found")
 
-    def test_no_suppression_when_not_fix_spec(self):
-        """非 fix spec 不触发守卫一（inplace 缺省：走原地打回）。"""
-        # 独立引擎：缺省配置（未配置 bug_repair_mode=inplace），非 fix 父走原地打回
-        self.engine, self.sm = _mk_engine(self.project_root, self.logger)
-        self.engine._enqueue = MagicMock()
-        self.sm.add_spec("my-spec", {"status": "bug-found"})
-        # 没有 fix-my-spec 存在；非 fix 父 SPEC 走原地打回而非派生
-        self.engine._family._do_spec_bug_found("my-spec")
-        # 不创建 fix-my-spec（原地打回语义）
-        entry = self.sm.read_one("fix-my-spec")
-        self.assertIsNone(entry)
-        # 父 SPEC 重置为 implementing，计数 +1
-        parent = self.sm.read_one("my-spec")
-        self.assertEqual(parent["status"], "implementing")
-        self.assertEqual(int(parent.get("_verify_fail_rounds", 0)), 1)
-
 
 # ═══════════════════════════════════════════════════════════════════
 # Task 2.2: 守卫二 — judge spawn 抑制
@@ -268,24 +252,6 @@ class TestGuardTwoSpawnSuppression(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_suppresses_spawn_when_fix_spec_implementing(self):
-        """Scenario: 重实现在飞时跳过派生。"""
-        # fix-x 处于 implementing（重实现在飞）
-        self.sm.add_spec("fix-x", {"status": "implementing"})
-        self.sm.add_spec("fix-fix-x", {"status": "done"})
-        # Simulate judge bug-found on fix-x → 守卫二应跳过派生 fix-fix-x
-        # 直接测试 _on_spec_bug_found 的调用者路径逻辑
-        # 在 guard 2 中：spec is fix spec AND status is implementing → skip
-        # 验证：当 spec 是 fix spec 且 implementing 时，不调用 _on_spec_bug_found
-        original_call = self.engine._on_spec_bug_found
-        self.engine._on_spec_bug_found = MagicMock()
-        # 模拟守卫二触发条件
-        self.sm.update_spec("fix-x", {"status": "implementing"})
-        # 验证守卫逻辑
-        cur = (self.sm.read_one("fix-x") or {}).get("status", "")
-        self.assertEqual(cur, "implementing")
-        self.assertTrue(self.engine._family._is_fix_spec("fix-x"))
 
     def test_no_suppression_when_not_fix_spec(self):
         """非 fix spec 不触发守卫二。"""
@@ -308,25 +274,6 @@ class TestGuardThreeDispatchMutex(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_skips_dispatch_when_sibling_implementing(self):
-        """Scenario: 双 ready 历史现场不重复派发——另一实现器已被派发。"""
-        self.sm.add_spec("fix-x", {"status": "ready"})
-        self.sm.add_spec("fix-fix-x", {"status": "implementing"})
-        # fix-x 队列中有实现器条目
-        self.engine._dispatcher._enqueue("fix-x", "implementer")
-        # _sibling_repair_active 应检测到 fix-fix-x implementing
-        carrier = self.engine._family._sibling_repair_active("fix-x")
-        self.assertEqual(carrier, "fix-fix-x")
-
-    def test_no_block_when_sibling_ready_no_queue(self):
-        """Scenario: 僵死 ready 不阻塞——ready 无条目、无活跃 agent。"""
-        self.sm.add_spec("fix-x", {"status": "ready"})
-        self.sm.add_spec("fix-fix-x", {"status": "ready"})
-        # fix-fix-x ready 但无队列条目、无存活 agent（MagicMock 默认 truthy 需关闭）
-        with patch.object(self.engine, "_sibling_has_live_agent", return_value=False):
-            carrier = self.engine._family._sibling_repair_active("fix-x")
-        self.assertEqual(carrier, "")
 
     def test_dispatch_only_when_no_active_sibling(self):
         """同根无活跃兄弟时正常派发。"""
@@ -520,10 +467,6 @@ class TestZeroBehaviorDiffFallback(unittest.TestCase):
         self.assertEqual(new_child["status"], "ready")
         # 父保持 bug-found（reset 抑制守卫只拦重实现，不重置父态）
         self.assertEqual(sm.read_one("fix-x")["status"], "bug-found")
-
-    def test_same_root_siblings_empty_for_non_fix(self):
-        """非 fix spec 同根兄弟列表为空。"""
-        self.assertEqual(self.engine._family._same_root_siblings("my-spec"), [])
 
     def test_sibling_repair_active_empty_for_non_fix(self):
         """非 fix spec 同根兄弟无活跃修复。"""

@@ -22,7 +22,6 @@ from core.verify_scenarios import (
     render_first_write_section,
     is_repair_round,
     declares_new_delivery,
-    read_verify_fix_section,
 )
 
 

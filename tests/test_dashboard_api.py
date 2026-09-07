@@ -3,11 +3,7 @@ Tests for Dashboard server API functionality.
 
 Split from test_dashboard.py as part of refactor-test-structure.
 """
-import json
-import os
 import sys
-import threading
-import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -16,173 +12,15 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# 共享夹具已收敛至 tests/conftest.py（make_project / _TestServer / server_fx）
+from conftest import _TestServer, make_project  # noqa: E402
+
 from core.dashboard import data as dash_data
 from core.dashboard.registry import Registry
-from core.dashboard.server import (
-    DashboardHTTPServer, DashboardHandler, find_free_port,
-    serve, _find_dashboard_occupant, _is_dashboard_serve_cmd,
-)
-
-
-# ── 辅助：构造一个可用的 Fenixd 项目目录 ──────────────────────────────
-
-def make_project(tmp_path: Path, name: str = "proj-a") -> Path:
-    proot = tmp_path / name
-    (proot / ".fenix" / "logs").mkdir(parents=True, exist_ok=True)
-    (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
-    (proot / ".fenix" / "verify-progress" / "myspec" / "screenshots").mkdir(parents=True, exist_ok=True)
-    (proot / "spec" / "changes" / "myspec" / "specs").mkdir(parents=True, exist_ok=True)
-
-    (proot / ".fenix" / "STATE.md").write_text(
-        "# Fenix Project State\n\n## Specs\n\n"
-        "### myspec\n- status: testing\n- priority: 2\n- created: 2026-01-01T00:00:00+00:00\n"
-        "- updated: 2026-01-02T00:00:00+00:00\n- error: null\n- depends_on: null\n\n"
-        "### otherspec\n- status: done\n- priority: 1\n- created: 2026-02-01T00:00:00+00:00\n"
-        "- updated: 2026-02-02T00:00:00+00:00\n- error: null\n- depends_on: null\n",
-        encoding="utf-8",
-    )
-
-    (proot / ".fenix" / "config.yaml").write_text("project:\n  name: fake\n", encoding="utf-8")
-
-    (proot / "spec" / "changes" / "myspec" / "tasks.md").write_text(
-        "## 1. 阶段一\n\n"
-        "- [x] 1.1 任务一\n"
-        "- [ ] 1.2 任务二\n\n"
-        "## 2. 阶段二\n\n"
-        "- [ ] 2.1 任务三\n",
-        encoding="utf-8",
-    )
-
-    (proot / "spec" / "changes" / "myspec" / "specs" / "spec.md").write_text(
-        "## ADDED Requirements\n\n### Requirement: 功能\n\n"
-        "#### Scenario: 场景一\n- **WHEN** x\n- **THEN** y\n\n"
-        "#### Scenario: 场景二\n- **WHEN** a\n- **THEN** b\n",
-        encoding="utf-8",
-    )
-
-    # 验证产物
-    (proot / ".fenix" / "verify-progress" / "myspec.json").write_text(
-        json.dumps({"total": 3, "done": 1, "current": "场景二"}), encoding="utf-8"
-    )
-    (proot / ".fenix" / "verify-progress" / "myspec" / "report.json").write_text(
-        json.dumps({
-            "summary": {"total": 2, "passed": 1, "failed": 1, "warnings": 0, "errors": 0},
-            "scenarios": [
-                {"scenario_id": "sc-1", "status": "pass", "description": "通过场景",
-                 "assertion_results": [{"type": "element_visible", "pass": True}]},
-                {"scenario_id": "sc-2", "status": "fail", "description": "失败场景",
-                 "assertion_results": [{"type": "text_match", "pass": False,
-                                        "message": "期望 '5' 实际 'x'"}],
-                 "screenshots": ["fail.png"]},
-            ],
-        }), encoding="utf-8"
-    )
-    (proot / ".fenix" / "verify-progress" / "myspec" / "test_scenarios.json").write_text(
-        json.dumps([{"id": "sc-1"}, {"id": "sc-2"}]), encoding="utf-8"
-    )
-    (proot / ".fenix" / "verify-progress" / "myspec" / "screenshots" / "fail.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
-
-    # 运行记录（一条已完成 + 一条运行中）
-    (proot / ".fenix" / "runs" / "impl-myspec-1780000000.jsonl").write_text(
-        json.dumps({"type": "system", "subtype": "init"}, ensure_ascii=False) + "\n"
-        + json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "开始实现"}]}}, ensure_ascii=False) + "\n"
-        + json.dumps({"type": "result", "result": "完成", "num_turns": 5}, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    (proot / ".fenix" / "runs" / "verify-myspec-1780001000.jsonl").write_text(
-        json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "playwright_cli", "input": {"action": "click"}}]}}, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-
-    # 事件日志（时间戳必须是最近时间，get_recent_events 按分钟窗口过滤）
-    from datetime import datetime, timezone, timedelta
-    (proot / ".fenix" / "logs" / "fenixd-2026.log").write_text(
-        json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), "level": "INFO",
-                    "component": "pm_engine", "message": "scan"}, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-
-    (proot / "spec" / "changes" / "myspec" / "verification-report.md").write_text(
-        "# 验证报告\n\n## Bug 汇总\n- 严重缺陷：点击保存按钮无反应\n  根因：事件未绑定\n",
-        encoding="utf-8",
-    )
-    return proot
+from core.dashboard.server import find_free_port
 
 
 # ── server.py ─────────────────────────────────────────────────────────
-
-class _TestServer:
-    """在临时目录上启动 DashboardHTTPServer，线程后台运行。"""
-
-    def __init__(self, registry: Registry, static_dir: Path):
-        self.port = find_free_port(20000)
-        self.httpd = DashboardHTTPServer(("127.0.0.1", self.port), registry, static_dir)
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
-        self.thread.start()
-
-    def get(self, path: str, raw: bool = False):
-        import http.client
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        try:
-            conn.request("GET", path)
-            resp = conn.getresponse()
-            body = resp.read()
-            if raw:
-                return resp.status, resp.getheader("Content-Type"), body
-            return resp.status, json.loads(body)
-        finally:
-            conn.close()
-
-    def _req(self, method: str, path: str):
-        import http.client
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        try:
-            conn.request(method, path)
-            resp = conn.getresponse()
-            body = resp.read()
-            return resp.status, json.loads(body)
-        finally:
-            conn.close()
-
-    def post(self, path: str):
-        return self._req("POST", path)
-
-    def post_json(self, path: str, payload: dict):
-        import http.client
-        body = json.dumps(payload).encode("utf-8")
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        try:
-            conn.request(
-                "POST", path, body=body,
-                headers={"Content-Type": "application/json",
-                         "Content-Length": str(len(body))},
-            )
-            resp = conn.getresponse()
-            data = resp.read()
-            return resp.status, json.loads(data)
-        finally:
-            conn.close()
-
-    def delete(self, path: str):
-        return self._req("DELETE", path)
-
-    def stop(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
-
-
-@pytest.fixture()
-def server_fx(tmp_path):
-    proot = make_project(tmp_path)
-    cfg = tmp_path / "dashboard.yaml"
-    reg = Registry(config_path=cfg)
-    reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
-              "scan_dirs": [str(tmp_path / "scan-empty")]})
-    srv = _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
-    yield proot, srv
-    srv.stop()
-
-
 class TestServerAPI:
     def test_index_served(self, server_fx):
         # 根路由直接服务 dashboard 首页（v3 SPA，自 static/ 上移后 dist/ 不再有 v3 层级）
@@ -405,9 +243,16 @@ class TestSpecSchedulingAPI:
         entry = dash_data.parse_state(proot)["otherspec"]
         assert entry.get("start_after") is None
 
-    def test_freeze_config_permanent(self, server_fx):
+    @pytest.fixture()
+    def frozen_spec(self, server_fx):
+        """已冻结 myspec 的 server（freeze-config 组共享前置，原各用例首行 freeze）。"""
         proot, srv = server_fx
-        srv.post("/api/spec-freeze?project=proj-a&spec=myspec")
+        status, _ = srv.post("/api/spec-freeze?project=proj-a&spec=myspec")
+        assert status == 200
+        yield proot, srv
+
+    def test_freeze_config_permanent(self, frozen_spec):
+        proot, srv = frozen_spec
         status, body = srv.post_json(
             "/api/spec-freeze-config?project=proj-a&spec=myspec",
             {"mode": "permanent"},
@@ -419,9 +264,8 @@ class TestSpecSchedulingAPI:
         assert entry.get("status") == "blocked"
         assert entry.get("frozen_until") is None
 
-    def test_freeze_config_scheduled(self, server_fx):
-        proot, srv = server_fx
-        srv.post("/api/spec-freeze?project=proj-a&spec=myspec")
+    def test_freeze_config_scheduled(self, frozen_spec):
+        proot, srv = frozen_spec
         status, body = srv.post_json(
             "/api/spec-freeze-config?project=proj-a&spec=myspec",
             {"mode": "scheduled", "until": "2026-09-08T01:00:00+00:00"},
@@ -433,9 +277,8 @@ class TestSpecSchedulingAPI:
         assert entry.get("status") == "blocked"  # 冻结态保持
         assert entry.get("frozen_until") == "2026-09-08T01:00:00+00:00"
 
-    def test_freeze_config_scheduled_past_immediate_unfreeze(self, server_fx):
-        proot, srv = server_fx
-        srv.post("/api/spec-freeze?project=proj-a&spec=myspec")
+    def test_freeze_config_scheduled_past_immediate_unfreeze(self, frozen_spec):
+        proot, srv = frozen_spec
         past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         status, body = srv.post_json(
             "/api/spec-freeze-config?project=proj-a&spec=myspec",
@@ -447,9 +290,8 @@ class TestSpecSchedulingAPI:
         assert entry.get("status") == "testing"  # 恢复原状态
         assert entry.get("frozen_until") is None  # 不残留
 
-    def test_freeze_config_unfreeze(self, server_fx):
-        proot, srv = server_fx
-        srv.post("/api/spec-freeze?project=proj-a&spec=myspec")
+    def test_freeze_config_unfreeze(self, frozen_spec):
+        proot, srv = frozen_spec
         status, body = srv.post_json(
             "/api/spec-freeze-config?project=proj-a&spec=myspec",
             {"mode": "unfreeze"},
@@ -460,21 +302,15 @@ class TestSpecSchedulingAPI:
         assert entry.get("status") == "testing"
         assert entry.get("error") is None
 
-    def test_freeze_config_invalid_mode(self, server_fx):
-        proot, srv = server_fx
-        srv.post("/api/spec-freeze?project=proj-a&spec=myspec")
+    @pytest.mark.parametrize("payload", [
+        {"mode": "bogus"},                          # 非法 mode
+        {"mode": "scheduled", "until": "下周一"},    # 非法 until
+    ])
+    def test_freeze_config_invalid_payload_rejected(self, frozen_spec, payload):
+        proot, srv = frozen_spec
         status, body = srv.post_json(
             "/api/spec-freeze-config?project=proj-a&spec=myspec",
-            {"mode": "bogus"},
-        )
-        assert status == 400
-
-    def test_freeze_config_invalid_until(self, server_fx):
-        proot, srv = server_fx
-        srv.post("/api/spec-freeze?project=proj-a&spec=myspec")
-        status, body = srv.post_json(
-            "/api/spec-freeze-config?project=proj-a&spec=myspec",
-            {"mode": "scheduled", "until": "下周一"},
+            payload,
         )
         assert status == 400
 
@@ -583,19 +419,13 @@ class TestProjectDescribeAPI:
         finally:
             srv.stop()
 
-    def test_describe_prompt_contains_project_identity(self, tmp_path, monkeypatch):
+    def test_describe_prompt_contains_project_identity(self, server_fx, monkeypatch):
         """prompt 必须携带项目名与路径，否则 README 主题重叠的项目（如 fenix-desktop
         与 fenixd）会生成彼此的简介。"""
-        proot = make_project(tmp_path)
+        proot, srv = server_fx
         (proot / "README.md").write_text(
             "# 同一个框架\n这是两个不同项目共用的说明文案。", encoding="utf-8"
         )
-
-        cfg = tmp_path / "dashboard.yaml"
-        reg = Registry(config_path=cfg)
-        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
-                  "scan_dirs": [str(tmp_path / "scan-empty")]})
-        srv = self._make_server(tmp_path, reg)
 
         mock_result = type('MockResult', (), {'returncode': 0, 'stdout': '简介', 'stderr': ''})()
         captured = {}
@@ -606,25 +436,16 @@ class TestProjectDescribeAPI:
 
         monkeypatch.setattr("subprocess.run", fake_run)
 
-        try:
-            status, body = srv.post("/api/project/describe?project=proj-a")
-            assert status == 200 and body["ok"] is True
-            prompt = captured['args'][2]  # ["claude", "-p", prompt]
-            assert "proj-a" in prompt, "prompt 未包含项目名"
-            assert str(proot) in prompt, "prompt 未包含项目路径"
-        finally:
-            srv.stop()
+        status, body = srv.post("/api/project/describe?project=proj-a")
+        assert status == 200 and body["ok"] is True
+        prompt = captured['args'][2]  # ["claude", "-p", prompt]
+        assert "proj-a" in prompt, "prompt 未包含项目名"
+        assert str(proot) in prompt, "prompt 未包含项目路径"
 
-    def test_describe_success_with_readme(self, tmp_path, monkeypatch):
-        proot = make_project(tmp_path)
+    def test_describe_success_with_readme(self, server_fx, monkeypatch):
+        proot, srv = server_fx
         # 创建 README.md
         (proot / "README.md").write_text("# 测试项目\n这是一个测试项目，用于演示功能。", encoding="utf-8")
-
-        cfg = tmp_path / "dashboard.yaml"
-        reg = Registry(config_path=cfg)
-        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
-                  "scan_dirs": [str(tmp_path / "scan-empty")]})
-        srv = self._make_server(tmp_path, reg)
 
         # Mock subprocess.run
         mock_result = type('MockResult', (), {
@@ -634,32 +455,23 @@ class TestProjectDescribeAPI:
         })()
         monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: mock_result)
 
-        try:
-            status, body = srv.post("/api/project/describe?project=proj-a")
-            assert status == 200
-            assert body["ok"] is True
-            assert "description" in body
-            assert body["description"] == "这是一个由测试生成的项目简介，用于验证 describe 接口功能。"
+        status, body = srv.post("/api/project/describe?project=proj-a")
+        assert status == 200
+        assert body["ok"] is True
+        assert "description" in body
+        assert body["description"] == "这是一个由测试生成的项目简介，用于验证 describe 接口功能。"
 
-            # 验证配置已写入
-            config_path = proot / ".fenix" / "config.yaml"
-            assert config_path.exists()
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-            assert config["project"]["description"] == "这是一个由测试生成的项目简介，用于验证 describe 接口功能。"
-        finally:
-            srv.stop()
+        # 验证配置已写入
+        config_path = proot / ".fenix" / "config.yaml"
+        assert config_path.exists()
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+        assert config["project"]["description"] == "这是一个由测试生成的项目简介，用于验证 describe 接口功能。"
 
-    def test_describe_success_without_readme(self, tmp_path, monkeypatch):
-        proot = make_project(tmp_path)
+    def test_describe_success_without_readme(self, server_fx, monkeypatch):
+        proot, srv = server_fx
         # 不创建 README.md，创建 package.json 作为 fallback
         (proot / "package.json").write_text('{"name": "test-project", "version": "1.0.0"}', encoding="utf-8")
-
-        cfg = tmp_path / "dashboard.yaml"
-        reg = Registry(config_path=cfg)
-        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
-                  "scan_dirs": [str(tmp_path / "scan-empty")]})
-        srv = self._make_server(tmp_path, reg)
 
         # Mock subprocess.run
         mock_result = type('MockResult', (), {
@@ -669,104 +481,41 @@ class TestProjectDescribeAPI:
         })()
         monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: mock_result)
 
-        try:
-            status, body = srv.post("/api/project/describe?project=proj-a")
-            assert status == 200
-            assert body["ok"] is True
-            assert body["description"] == "这是一个基于 package.json 生成的项目简介。"
-        finally:
-            srv.stop()
+        status, body = srv.post("/api/project/describe?project=proj-a")
+        assert status == 200
+        assert body["ok"] is True
+        assert body["description"] == "这是一个基于 package.json 生成的项目简介。"
 
-    def test_describe_timeout_returns_error(self, tmp_path, monkeypatch):
-        proot = make_project(tmp_path)
+    @pytest.mark.parametrize("mock_kind,expected_frag", [
+        ("timeout", "超时"),
+        ("nonzero", "非零退出码"),
+        ("empty", "为空"),
+    ])
+    def test_describe_error_returns_error_and_keeps_config(self, server_fx, monkeypatch, mock_kind, expected_frag):
+        """超时 / 非零退出码 / 空输出 → 200 + error 且不写 description。"""
+        import subprocess
+        proot, srv = server_fx
         (proot / "README.md").write_text("# 测试项目", encoding="utf-8")
 
-        cfg = tmp_path / "dashboard.yaml"
-        reg = Registry(config_path=cfg)
-        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
-                  "scan_dirs": [str(tmp_path / "scan-empty")]})
-        srv = self._make_server(tmp_path, reg)
-
-        # Mock subprocess.run to raise TimeoutExpired
-        import subprocess
-        def mock_run(*args, **kwargs):
-            raise subprocess.TimeoutExpired(cmd=args[0], timeout=120)
+        if mock_kind == "timeout":
+            def mock_run(*args, **kwargs):
+                raise subprocess.TimeoutExpired(cmd=args[0], timeout=120)
+        elif mock_kind == "nonzero":
+            mock_result = type('MockResult', (), {
+                'returncode': 1, 'stdout': '', 'stderr': 'Error: Claude CLI failed'})()
+            mock_run = lambda *args, **kwargs: mock_result
+        else:  # empty
+            mock_result = type('MockResult', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+            mock_run = lambda *args, **kwargs: mock_result
         monkeypatch.setattr("subprocess.run", mock_run)
 
-        try:
-            status, body = srv.post("/api/project/describe?project=proj-a")
-            assert status == 200
-            assert "error" in body
-            assert "超时" in body["error"]
+        status, body = srv.post("/api/project/describe?project=proj-a")
+        assert status == 200
+        assert "error" in body
+        assert expected_frag in body["error"]
 
-            # 验证配置未被修改
-            config_path = proot / ".fenix" / "config.yaml"
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-            assert "description" not in config.get("project", {})
-        finally:
-            srv.stop()
-
-    def test_describe_nonzero_exit_returns_error(self, tmp_path, monkeypatch):
-        proot = make_project(tmp_path)
-        (proot / "README.md").write_text("# 测试项目", encoding="utf-8")
-
-        cfg = tmp_path / "dashboard.yaml"
-        reg = Registry(config_path=cfg)
-        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
-                  "scan_dirs": [str(tmp_path / "scan-empty")]})
-        srv = self._make_server(tmp_path, reg)
-
-        # Mock subprocess.run with non-zero exit code
-        mock_result = type('MockResult', (), {
-            'returncode': 1,
-            'stdout': '',
-            'stderr': 'Error: Claude CLI failed'
-        })()
-        monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: mock_result)
-
-        try:
-            status, body = srv.post("/api/project/describe?project=proj-a")
-            assert status == 200
-            assert "error" in body
-            assert "非零退出码" in body["error"]
-
-            # 验证配置未被修改
-            config_path = proot / ".fenix" / "config.yaml"
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-            assert "description" not in config.get("project", {})
-        finally:
-            srv.stop()
-
-    def test_describe_empty_output_returns_error(self, tmp_path, monkeypatch):
-        proot = make_project(tmp_path)
-        (proot / "README.md").write_text("# 测试项目", encoding="utf-8")
-
-        cfg = tmp_path / "dashboard.yaml"
-        reg = Registry(config_path=cfg)
-        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
-                  "scan_dirs": [str(tmp_path / "scan-empty")]})
-        srv = self._make_server(tmp_path, reg)
-
-        # Mock subprocess.run with empty output
-        mock_result = type('MockResult', (), {
-            'returncode': 0,
-            'stdout': '',
-            'stderr': ''
-        })()
-        monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: mock_result)
-
-        try:
-            status, body = srv.post("/api/project/describe?project=proj-a")
-            assert status == 200
-            assert "error" in body
-            assert "为空" in body["error"]
-
-            # 验证配置未被修改
-            config_path = proot / ".fenix" / "config.yaml"
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-            assert "description" not in config.get("project", {})
-        finally:
-            srv.stop()
+        # 验证配置未被修改
+        config_path = proot / ".fenix" / "config.yaml"
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+        assert "description" not in config.get("project", {})

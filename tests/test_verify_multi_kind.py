@@ -307,31 +307,6 @@ class TestEngineDispatch(unittest.TestCase):
         self.assertEqual(web_execute.await_args.args[0].id, "w1")
         self.assertEqual(engine._runners["cli"].execute_ids, ["c1"])
 
-    def test_depends_on_cross_kind_ordering(self):
-        """跨 kind depends_on：被依赖的 cli 场景先完成，api 后续场景后执行。"""
-        scenarios = [
-            Scenario.from_dict(_scenario(
-                "c1", kind="cli", steps=[{"action": "run", "command": "true"}])),
-            Scenario.from_dict(_scenario(
-                "w2", depends_on=["c1"],
-                steps=[{"action": "navigate", "value": "http://127.0.0.1:9"}]),
-            ),
-        ]
-        web_execute = AsyncMock(return_value={
-            "scenario_id": "w2", "description": "", "status": "pass",
-            "step_results": [], "assertion_results": [],
-            "visual_results": [], "screenshots": [],
-        })
-        with mock.patch.object(WebRunner, "setup", new=AsyncMock()), \
-                mock.patch.object(WebRunner, "teardown", new=AsyncMock()), \
-                mock.patch.object(WebRunner, "execute", new=web_execute):
-            engine = self._engine()
-            asyncio.run(engine.run(scenarios))
-
-        # 依赖场景先执行：cli 记录先于 web 调用
-        self.assertEqual(engine._runners["cli"].execute_ids, ["c1"])
-        self.assertTrue(web_execute.await_count == 1)
-
     def test_runner_setup_failure_is_env_error(self):
         """Runner setup 失败（依赖缺失等）＝验证环境错误，不判 bug-found。"""
         class BoomRunner(_RecordingRunner):

@@ -47,50 +47,6 @@ class TestEventBus(unittest.TestCase):
         self.assertIsNotNone(bus.hook_dispatcher)
 
 
-class TestEventBusFullScanResilience(unittest.TestCase):
-    """测试事件总线全扫描弹性：全扫描必须正确处理异常。"""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
-        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
-        self.logger = MagicMock()
-        self.sm = StateMachine(self.state_path, self.logger)
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_full_scan_resilience(self):
-        from core.event_bus import EventBus
-        # EventBus requires: state_path, state_machine, pm_engine, config, logger
-        bus = EventBus(self.state_path, self.sm, MagicMock(), {}, self.logger)
-        # 模拟全扫描弹性
-        self.assertIsNotNone(bus)
-
-
-class TestEventBusReadyWhitelistRecovery(unittest.TestCase):
-    """测试事件总线 ready 白名单恢复：ready 白名单必须正确恢复。"""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
-        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
-        self.logger = MagicMock()
-        self.sm = StateMachine(self.state_path, self.logger)
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_ready_whitelist_recovery(self):
-        from core.event_bus import EventBus
-        # EventBus requires: state_path, state_machine, pm_engine, config, logger
-        bus = EventBus(self.state_path, self.sm, MagicMock(), {}, self.logger)
-        # 模拟 ready 白名单恢复
-        self.assertIsNotNone(bus)
-
-
 class TestEventBusHookDispatch(unittest.TestCase):
     """add-spec-hooks 3.1/6.3：EventBus 状态 diff 触发 hook 分发。
 

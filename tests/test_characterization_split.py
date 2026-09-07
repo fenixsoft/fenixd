@@ -3,9 +3,10 @@
 锁定将被搬移且当前无测试覆盖的方法在拆分前的行为，搬移后必须逐条保持一致：
 - PMEngine._same_root / _sibling_has_live_agent（→ core/pm_engine/family.py）
 - PMEngine._rewrite_scenario_port（→ core/pm_engine/verification.py）
-- PMEngine.generate_report / generate_daily_report / get_pushable_specs /
-  _signal_push_failed / _dependencies_satisfied / get_health_summary
-  （→ core/pm_engine/reporting.py）
+- PMEngine.generate_report / generate_daily_report / get_pushable_specs
+  （→ core/pm_engine/reporting.py，engine.py 保留门面）
+- PMEngine._signal_push_failed / get_health_summary / _dependencies_satisfied
+  （留在 core/pm_engine/engine.py，未迁入 reporting.py）
 
 覆盖口径：core/ 双巨文件 per-method 行覆盖分析（2026-08-31 基线，见
 spec/changes/refactor-core-packages/findings.md）。本文件只新增，

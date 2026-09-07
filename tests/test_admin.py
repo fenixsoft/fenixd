@@ -21,30 +21,13 @@ from core.agent_runner import AdminDisposition, AgentRunner
 from core.agent_runner.runner import admin_disposition_path
 from core.dashboard.registry import Registry
 from core.dashboard.server import DashboardHTTPServer, find_free_port
+from tests.helpers import FakeLogger, utcnow_iso, iso_ago
 
 
 # ── 辅助 ────────────────────────────────────────────────
 
-def utcnow_iso():
-    return datetime.now(timezone.utc).isoformat()
-
-
-def iso_ago(minutes: float) -> str:
-    return datetime.fromtimestamp(time.time() - minutes * 60, tz=timezone.utc).isoformat()
-
-
-class FakeLogger:
-    def debug(self, *a, **k):
-        pass
-
-    def info(self, *a, **k):
-        pass
-
-    def warning(self, *a, **k):
-        pass
-
-    def error(self, *a, **k):
-        pass
+# FakeLogger / utcnow_iso / iso_ago 收编至 tests/helpers.py（原为本文件与
+# 多个测试文件逐字节相同的副本）。
 
 
 class FakeSM:
@@ -122,6 +105,48 @@ def disposition_path_from_prompt(prompt: str) -> Path:
 def wait_for_event(evt: threading.Event, timeout: float = 5.0):
     """等待 worker 线程完成（超时断言，避免测试静默挂起/假通过）。"""
     assert evt.wait(timeout), "worker 未在超时内完成处置"
+
+
+def make_admin_runner_stub(proot: Path, *, fake_run_claude=None,
+                           admin_model: str = "claude-sonnet-5",
+                           assignment_fn=None) -> AgentRunner:
+    """run_administrator 测试共用的最小 AgentRunner 替身（绕过真实 __init__）。
+
+    原 TestRunAdministrator 内 10 条测试逐条复制同一 8-10 行桩链
+    （project_root/logger/_get_config/_get_admin_model/_get_agent_model_assignment/
+    _prompt_builder._build_prompt），收编为此 helper。
+    assignment_fn：_get_agent_model_assignment 替身（默认恒 None，即未分配 provider）。
+    """
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.project_root = proot
+    runner.logger = FakeLogger()
+    runner._get_config = lambda key, default=None: default
+    runner._get_admin_model = lambda: admin_model
+    runner._get_agent_model_assignment = assignment_fn or (lambda agent_type: None)
+    runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
+    if fake_run_claude is not None:
+        runner._run_claude = fake_run_claude
+    return runner
+
+
+def _fake_admin_writes_payload(payload: dict):
+    """构造模拟 Admin 按提示词注入的实例路径写处置文件的 _run_claude 替身。"""
+    def fake(prompt, cwd, run_id, model_override, env_overrides, max_turns,
+             spec_name=None, agent_type=None):
+        admin_disposition_path(cwd, run_id).write_text(
+            json.dumps(payload), encoding="utf-8")
+        return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                     "cost_usd": 0.0}
+    return fake
+
+
+def _jline(ts_min_ago=None, **fields):
+    """构造 fenixd.log 单行 JSON 事件；ts_min_ago=None 表示缺 timestamp。"""
+    ev = {"level": "ERROR", "component": "fenixd", "message": "boom"}
+    if ts_min_ago is not None:
+        ev["timestamp"] = iso_ago(ts_min_ago)
+    ev.update(fields)
+    return json.dumps(ev, ensure_ascii=False)
 
 
 # ── 4.2 admin_store 读写 + 标记已处理 ───────────────────
@@ -421,205 +446,64 @@ class TestAdminMonitorDetection:
         signals = mon.run_once()
         assert all(s["signal_type"] != "blocked_stuck" for s in signals)
 
-    def test_daemon_errors(self, tmp_path):
-        """新口径事故回归：两条同 message ERROR 相隔 30s、中间夹 INFO → 触发。
+    # ── daemon-error-escalation：指纹复现升级新口径（触发矩阵）─────────
+    #
+    # 原 8 条独立测试共用同一夹具（写日志行 → run_once → 断言触发与否），
+    # 审查合并为参数化矩阵。原 test_daemon_errors（两条同指纹 ERROR 中夹 INFO
+    # 仍触发的口径回归）与 test_daemon_errors_signal_wording_new_semantics
+    # （文案断言）分别与 TestDaemonErrorEscalationTiming::
+    # test_next_inspection_produces_critical_signal 的场景/断言重复，已并入该
+    # 超集测试（文案+severity 在彼处断言）。
 
-        优化前（improve-hot-reload-robustness）：旧"尾部物理连续 ≥3"口径遇 INFO 即断，
-        活跃期永不触发；新口径与错误复现率挂钩，中间被打断不影响同指纹计数。
-        """
+    @pytest.mark.parametrize(
+        "log_lines,expect_triggered",
+        [
+            # 单条错误不触发升级（防抖：单次瞬时不足复现）
+            pytest.param([_jline(0.1)], False, id="single-error-not-triggered"),
+            # 两条不同错误各 1 次（message 骨架不同）→ 指纹不同、不聚合升级
+            pytest.param([_jline(0.4, message="provider timeout"),
+                          _jline(0.1, message="merge conflict")],
+                         False, id="distinct-errors-not-aggregated"),
+            # 同指纹相隔 8 分钟（>5min 上限）→ 孤立抖动不触发
+            pytest.param([_jline(8.2), _jline(0.2)], False,
+                         id="gap-8min-not-triggered"),
+            # 同指纹第 1 次出现在 11 分钟前（超出 10 分钟窗口）、第 2 次当前 → 不触发
+            # （窗口滑动自然过期，恢复无需显式清零）
+            pytest.param([_jline(11.0), _jline(0.1)], False,
+                         id="first-outside-window-not-triggered"),
+            # message 内嵌变量（run_id/时间戳）不同但归一化后指纹相同 → 复现成立
+            pytest.param([_jline(0.4, message="run 1780000001 failed at 2026-09-05T02:00:00Z"),
+                          _jline(0.1, message="run 1780000002 failed at 2026-09-05T02:00:30Z")],
+                         True, id="embedded-variables-normalized"),
+            # 日志含 traceback 原文等非 JSON 行：不崩溃，该行按 raw 归一化回退参与指纹统计
+            pytest.param(["Traceback (most recent call last):",
+                          '  File "/app/runner.py", line 42, in run',
+                          _jline(0.4), _jline(0.1)],
+                         True, id="non-json-line-fallback"),
+            # 两条一模一样的非 JSON raw 行 → raw 指纹复现 2 次 → 触发（容错方向）
+            pytest.param(['  File "/app/runner.py", line 42, in run',
+                          '  File "/app/runner.py", line 42, in run'],
+                         True, id="raw-repetition-triggers"),
+            # 缺 timestamp 的重复 ERROR → 计同指纹复现 2 次触发（fail-closed 不丢告警）
+            pytest.param([_jline(None), _jline(None)], True,
+                         id="missing-timestamp-fail-closed"),
+        ],
+    )
+    def test_daemon_errors_trigger_matrix(self, tmp_path, log_lines,
+                                          expect_triggered):
+        """daemon-error-escalation 新口径触发矩阵。"""
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
         })
         log_dir = proot / ".fenix" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / "fenixd.log").write_text(
-            json.dumps({"timestamp": iso_ago(0.5), "level": "INFO", "message": "ok"}) + "\n"
-            + json.dumps({"timestamp": iso_ago(0.4), "level": "ERROR",
-                          "component": "fenixd", "message": "boom"}) + "\n"
-            + json.dumps({"timestamp": iso_ago(0.2), "level": "INFO", "message": "mid"}) + "\n"
-            + json.dumps({"timestamp": iso_ago(0.1), "level": "ERROR",
-                          "component": "fenixd", "message": "boom"}) + "\n",
-            encoding="utf-8",
-        )
+            "".join(l + "\n" for l in log_lines), encoding="utf-8")
         signals = mon.run_once()
-        assert any(s["signal_type"] == "daemon_errors" for s in signals)
-
-    # ── daemon-error-escalation：指纹复现升级新口径 ─────────────────
-
-    def test_daemon_errors_single_error_not_triggered(self, tmp_path):
-        """单条错误不触发升级（防抖：单次瞬时不足复现）。"""
-        proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
-        log_dir = proot / ".fenix" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "fenixd.log").write_text(
-            json.dumps({"timestamp": iso_ago(0.1), "level": "ERROR",
-                        "component": "fenixd", "message": "boom"}) + "\n",
-            encoding="utf-8",
-        )
-        signals = mon.run_once()
-        assert all(s["signal_type"] != "daemon_errors" for s in signals)
-
-    def test_daemon_errors_distinct_errors_not_aggregated(self, tmp_path):
-        """两条不同错误各 1 次（message 骨架不同）→ 指纹不同、不聚合升级。"""
-        proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
-        log_dir = proot / ".fenix" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "fenixd.log").write_text(
-            json.dumps({"timestamp": iso_ago(0.4), "level": "ERROR",
-                        "component": "fenixd", "message": "provider timeout"}) + "\n"
-            + json.dumps({"timestamp": iso_ago(0.1), "level": "ERROR",
-                          "component": "fenixd", "message": "merge conflict"}) + "\n",
-            encoding="utf-8",
-        )
-        signals = mon.run_once()
-        assert all(s["signal_type"] != "daemon_errors" for s in signals)
-
-    def test_daemon_errors_8min_gap_not_triggered(self, tmp_path):
-        """同指纹相隔 8 分钟（>5min 上限）→ 孤立抖动不触发。"""
-        proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
-        log_dir = proot / ".fenix" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "fenixd.log").write_text(
-            json.dumps({"timestamp": iso_ago(8.2), "level": "ERROR",
-                        "component": "fenixd", "message": "boom"}) + "\n"
-            + json.dumps({"timestamp": iso_ago(0.2), "level": "ERROR",
-                          "component": "fenixd", "message": "boom"}) + "\n",
-            encoding="utf-8",
-        )
-        signals = mon.run_once()
-        assert all(s["signal_type"] != "daemon_errors" for s in signals)
-
-    def test_daemon_errors_first_outside_window_not_triggered(self, tmp_path):
-        """同指纹第 1 次出现在 11 分钟前（超出 10 分钟窗口）、第 2 次当前 → 不触发
-        （窗口滑动自然过期，恢复无需显式清零）。"""
-        proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
-        log_dir = proot / ".fenix" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "fenixd.log").write_text(
-            json.dumps({"timestamp": iso_ago(11.0), "level": "ERROR",
-                        "component": "fenixd", "message": "boom"}) + "\n"
-            + json.dumps({"timestamp": iso_ago(0.1), "level": "ERROR",
-                          "component": "fenixd", "message": "boom"}) + "\n",
-            encoding="utf-8",
-        )
-        signals = mon.run_once()
-        assert all(s["signal_type"] != "daemon_errors" for s in signals)
-
-    def test_daemon_errors_embedded_variables_normalized(self, tmp_path):
-        """message 内嵌变量（run_id/时间戳）不同但归一化后指纹相同 → 复现成立。"""
-        proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
-        log_dir = proot / ".fenix" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "fenixd.log").write_text(
-            json.dumps({"timestamp": iso_ago(0.4), "level": "ERROR",
-                        "component": "fenixd",
-                        "message": "run 1780000001 failed at 2026-09-05T02:00:00Z"}) + "\n"
-            + json.dumps({"timestamp": iso_ago(0.1), "level": "ERROR",
-                          "component": "fenixd",
-                          "message": "run 1780000002 failed at 2026-09-05T02:00:30Z"}) + "\n",
-            encoding="utf-8",
-        )
-        signals = mon.run_once()
-        assert any(s["signal_type"] == "daemon_errors" for s in signals)
-
-    def test_daemon_errors_non_json_line_fallback(self, tmp_path):
-        """日志含 traceback 原文等非 JSON 行：不崩溃，该行按 raw 归一化回退参与指纹统计。"""
-        proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
-        log_dir = proot / ".fenix" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "fenixd.log").write_text(
-            "Traceback (most recent call last):\n"
-            '  File "/app/runner.py", line 42, in run\n'
-            + json.dumps({"timestamp": iso_ago(0.4), "level": "ERROR",
-                          "component": "fenixd", "message": "boom"}) + "\n"
-            + json.dumps({"timestamp": iso_ago(0.1), "level": "ERROR",
-                          "component": "fenixd", "message": "boom"}) + "\n",
-            encoding="utf-8",
-        )
-        signals = mon.run_once()  # 不崩溃
-        assert any(s["signal_type"] == "daemon_errors" for s in signals)
-
-    def test_daemon_errors_non_json_raw_repetition_triggers(self, tmp_path):
-        """两条一模一样的非 JSON raw 行 → raw 指纹同指纹复现 2 次 → 触发（容错方向）。"""
-        proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
-        log_dir = proot / ".fenix" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        raw = '  File "/app/runner.py", line 42, in run'
-        (log_dir / "fenixd.log").write_text(
-            raw + "\n" + raw + "\n", encoding="utf-8",
-        )
-        signals = mon.run_once()
-        assert any(s["signal_type"] == "daemon_errors" for s in signals)
-
-    def test_daemon_errors_missing_timestamp_fail_closed(self, tmp_path):
-        """缺 timestamp 的重复 ERROR → 计同指纹复现 2 次触发（fail-closed 不丢告警）。"""
-        proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
-        log_dir = proot / ".fenix" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "fenixd.log").write_text(
-            json.dumps({"level": "ERROR", "component": "fenixd", "message": "boom"}) + "\n"
-            + json.dumps({"level": "ERROR", "component": "fenixd", "message": "boom"}) + "\n",
-            encoding="utf-8",
-        )
-        signals = mon.run_once()
-        assert any(s["signal_type"] == "daemon_errors" for s in signals)
-
-    def test_daemon_errors_signal_wording_new_semantics(self, tmp_path):
-        """signal 文案用新口径：含"复现 N 次"，不再用"连续 N 条 ERROR"。"""
-        proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
-        log_dir = proot / ".fenix" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "fenixd.log").write_text(
-            json.dumps({"level": "ERROR", "component": "fenixd", "message": "boom"}) + "\n"
-            + json.dumps({"level": "ERROR", "component": "fenixd", "message": "boom"}) + "\n",
-            encoding="utf-8",
-        )
-        signals = mon.run_once()
-        sig = next(s for s in signals if s["signal_type"] == "daemon_errors")
-        assert "复现 2 次" in sig["description"]
-        assert "连续" not in sig["description"]
-
-    def test_daemon_errors_cooldown_no_reinvoke(self, tmp_path):
-        """升级触发后冷却期内同 signal_type 再次满足升级条件 → 仅记录不重复唤起。"""
-        runner = FakeRunner()
-        proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        }, runner=runner)
-        log_dir = proot / ".fenix" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / "fenixd.log"
-
-        def write_recurring():
-            log_path.write_text(
-                json.dumps({"level": "ERROR", "component": "fenixd", "message": "boom"}) + "\n"
-                + json.dumps({"level": "ERROR", "component": "fenixd", "message": "boom"}) + "\n",
-                encoding="utf-8",
-            )
-
-        write_recurring()
-        mon.run_once()
-        assert len(runner.calls) == 1
-        # 冷却窗口（15 分钟）内再次巡检：满足升级但节流，仅记录不重复唤起
-        mon.run_once()
-        assert len(runner.calls) == 1
+        if expect_triggered:
+            assert any(s["signal_type"] == "daemon_errors" for s in signals)
+        else:
+            assert all(s["signal_type"] != "daemon_errors" for s in signals)
 
     def test_healthy_no_signal(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
@@ -648,14 +532,37 @@ class TestAdminMonitorDetection:
 # ── 4.1 节流 / 冷却 ─────────────────────────────────────
 
 class TestAdminMonitorThrottle:
-    def test_throttle_prevents_repeated_invoke(self, tmp_path):
+    @pytest.mark.parametrize(
+        "scenario",
+        [
+            pytest.param("stuck", id="stuck"),
+            pytest.param("daemon_errors", id="daemon_errors"),
+        ],
+    )
+    def test_throttle_prevents_repeated_invoke(self, tmp_path, scenario):
+        """同信号在冷却窗口内：第二次巡检只记录、不再唤起。
+
+        stuck 与 daemon_errors 升级路径同口径（原 test_daemon_errors_cooldown_no_reinvoke
+        并入本矩阵，覆盖升级触发后冷却期内同 signal_type 再次满足升级条件的场景）。
+        """
         runner = FakeRunner()
         proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": iso_ago(120)},
+            "spec-a": {
+                "status": "implementing",
+                "updated": utcnow_iso() if scenario == "daemon_errors" else iso_ago(120),
+            },
         }, runner=runner)
+        if scenario == "daemon_errors":
+            log_dir = proot / ".fenix" / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            (log_dir / "fenixd.log").write_text(
+                json.dumps({"level": "ERROR", "component": "fenixd", "message": "boom"}) + "\n"
+                + json.dumps({"level": "ERROR", "component": "fenixd", "message": "boom"}) + "\n",
+                encoding="utf-8",
+            )
         mon.run_once()
         assert len(runner.calls) == 1
-        # 同信号在冷却窗口内：第二次只记录、不再唤起
+        # 同信号在冷却窗口（15 分钟）内：第二次满足升级条件但节流，仅记录、不再唤起
         mon.run_once()
         assert len(runner.calls) == 1
 
@@ -709,19 +616,12 @@ class TestRunAdministrator:
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        runner = AgentRunner.__new__(AgentRunner)
-        runner.project_root = proot
-        runner.logger = FakeLogger()
-        runner._get_config = lambda key, default=None: default
-        runner._get_admin_model = lambda: "claude-sonnet-5"
-        runner._get_agent_model_assignment = lambda agent_type: None
-        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
                                          "cost_usd": 0.0}
 
-        runner._run_claude = fake_run_claude
+        runner = make_admin_runner_stub(proot, fake_run_claude=fake_run_claude)
         runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
         recs = AdminStore(proot, FakeLogger()).read_all()
         pendings = [r for r in recs if r.get("kind") == DISPOSITION and r.get("status") == "pending"]
@@ -933,27 +833,16 @@ class TestRunAdministrator:
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        runner = AgentRunner.__new__(AgentRunner)
-        runner.project_root = proot
-        runner.logger = FakeLogger()
-        runner._get_config = lambda key, default=None: default
-        runner._get_admin_model = lambda: "claude-sonnet-5"
-        runner._get_agent_model_assignment = lambda agent_type: None
-        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
-
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
+        runner = make_admin_runner_stub(
+            proot,
             # Admin 按提示词注入的实例路径写入（而非旧全局文件）
-            admin_disposition_path(cwd, run_id).write_text(json.dumps({
+            fake_run_claude=_fake_admin_writes_payload({
                 "spec": "spec-a",
                 "problem": "卡死",
                 "actions_taken": ["kill", "reset"],
                 "result": "resolved",
                 "escalate": False,
-            }), encoding="utf-8")
-            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
-                                         "cost_usd": 0.0}
-
-        runner._run_claude = fake_run_claude
+            }))
         disp = runner.run_administrator(
             {"spec": "spec-a", "signal_type": "stuck", "description": "卡死"})
         assert disp.success is True
@@ -967,28 +856,17 @@ class TestRunAdministrator:
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        runner = AgentRunner.__new__(AgentRunner)
-        runner.project_root = proot
-        runner.logger = FakeLogger()
-        runner._get_config = lambda key, default=None: default
-        runner._get_admin_model = lambda: "claude-sonnet-5"
-        runner._get_agent_model_assignment = lambda agent_type: None
-        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
         summary = "根因是工作树状态陈旧；已清理并重新调度；无需人工介入。"
-
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
-            admin_disposition_path(cwd, run_id).write_text(json.dumps({
+        runner = make_admin_runner_stub(
+            proot,
+            fake_run_claude=_fake_admin_writes_payload({
                 "spec": "spec-a",
                 "problem": "卡死",
                 "actions_taken": ["clean", "reset"],
                 "result": "resolved",
                 "escalate": False,
                 "summary": summary,
-            }), encoding="utf-8")
-            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
-                                         "cost_usd": 0.0}
-
-        runner._run_claude = fake_run_claude
+            }))
         disp = runner.run_administrator(
             {"spec": "spec-a", "signal_type": "stuck", "description": "卡死"})
         assert disp.summary == summary
@@ -998,22 +876,11 @@ class TestRunAdministrator:
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        runner = AgentRunner.__new__(AgentRunner)
-        runner.project_root = proot
-        runner.logger = FakeLogger()
-        runner._get_config = lambda key, default=None: default
-        runner._get_admin_model = lambda: "claude-sonnet-5"
-        runner._get_agent_model_assignment = lambda agent_type: None
-        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
-
-        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
-            admin_disposition_path(cwd, run_id).write_text(json.dumps({
+        runner = make_admin_runner_stub(
+            proot,
+            fake_run_claude=_fake_admin_writes_payload({
                 "spec": "spec-a", "result": "resolved",
-            }), encoding="utf-8")
-            return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
-                                         "cost_usd": 0.0}
-
-        runner._run_claude = fake_run_claude
+            }))
         disp = runner.run_administrator(
             {"spec": "spec-a", "signal_type": "stuck", "description": "卡死"})
         assert disp.summary == ""
@@ -1050,21 +917,15 @@ class TestRunAdministrator:
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        runner = AgentRunner.__new__(AgentRunner)
-        runner.project_root = proot
-        runner.logger = FakeLogger()
-        runner._get_config = lambda key, default=None: default
-        runner._get_admin_model = lambda: "claude-sonnet-5"
-        runner._get_agent_model_assignment = lambda agent_type: None
-        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         def failing_run_claude(*a, **k):
             raise RuntimeError("claude 崩溃")
 
-        runner._run_claude = failing_run_claude
+        runner = make_admin_runner_stub(proot, fake_run_claude=failing_run_claude)
         disp = runner.run_administrator(
             {"spec": "spec-a", "signal_type": "stuck", "description": "卡死"})
         assert disp.success is False
+        assert disp.result == "failed"
         assert "claude 崩溃" in disp.error
         # 失败时无处置文件 → 用信号详情兜底
         assert disp.problem == "卡死"
@@ -1074,16 +935,6 @@ class TestRunAdministrator:
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        runner = AgentRunner.__new__(AgentRunner)
-        runner.project_root = proot
-        runner.logger = FakeLogger()
-        runner._get_config = lambda key, default=None: default
-        runner._get_admin_model = lambda: "claude-sonnet-5"
-        runner._get_agent_model_assignment = lambda agent_type: [
-            ({"name": "volc", "baseurl": "https://v.com", "apikey": "sk-v"},
-             "deepseek-v4-flash"),
-        ] if agent_type == "administrator" else None
-        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         captured = {}
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
@@ -1094,7 +945,13 @@ class TestRunAdministrator:
             return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
                                          "cost_usd": 0.0}
 
-        runner._run_claude = fake_run_claude
+        runner = make_admin_runner_stub(
+            proot,
+            fake_run_claude=fake_run_claude,
+            assignment_fn=lambda agent_type: [
+                ({"name": "volc", "baseurl": "https://v.com", "apikey": "sk-v"},
+                 "deepseek-v4-flash"),
+            ] if agent_type == "administrator" else None)
         runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
         assert captured["model"] == "deepseek-v4-flash"
         assert captured["env"]["ANTHROPIC_BASE_URL"] == "https://v.com"
@@ -1107,13 +964,6 @@ class TestRunAdministrator:
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        runner = AgentRunner.__new__(AgentRunner)
-        runner.project_root = proot
-        runner.logger = FakeLogger()
-        runner._get_config = lambda key, default=None: default
-        runner._get_admin_model = lambda: "claude-opus-4"
-        runner._get_agent_model_assignment = lambda agent_type: None
-        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         captured = {}
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
@@ -1124,7 +974,8 @@ class TestRunAdministrator:
             return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
                                          "cost_usd": 0.0}
 
-        runner._run_claude = fake_run_claude
+        runner = make_admin_runner_stub(
+            proot, fake_run_claude=fake_run_claude, admin_model="claude-opus-4")
         runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
         assert captured["model"] == "claude-opus-4"
         assert "ANTHROPIC_BASE_URL" not in captured["env"]
@@ -1136,12 +987,6 @@ class TestRunAdministrator:
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        runner = AgentRunner.__new__(AgentRunner)
-        runner.project_root = proot
-        runner.logger = FakeLogger()
-        runner._get_config = lambda key, default=None: default
-        runner._get_admin_model = lambda: "claude-sonnet-5"
-        runner._get_agent_model_assignment = lambda agent_type: None
         prompts = []
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
@@ -1153,7 +998,9 @@ class TestRunAdministrator:
             return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
                                          "cost_usd": 0.0}
 
-        runner._run_claude = fake_run_claude
+        runner = make_admin_runner_stub(proot, fake_run_claude=fake_run_claude)
+        # 本测试特例：恢复真实 prompt_builder（helper 默认桩掉 _build_prompt）
+        del runner.__dict__["_prompt_builder_instance"]
         disp = runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
 
         assert len(prompts) == 1
@@ -1172,13 +1019,6 @@ class TestRunAdministrator:
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        runner = AgentRunner.__new__(AgentRunner)
-        runner.project_root = proot
-        runner.logger = FakeLogger()
-        runner._get_config = lambda key, default=None: default
-        runner._get_admin_model = lambda: "claude-sonnet-5"
-        runner._get_agent_model_assignment = lambda agent_type: None
-        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides, max_turns, spec_name=None, agent_type=None):
             disp_path = admin_disposition_path(cwd, run_id)
@@ -1187,7 +1027,7 @@ class TestRunAdministrator:
             return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
                                          "cost_usd": 0.0}
 
-        runner._run_claude = fake_run_claude
+        runner = make_admin_runner_stub(proot, fake_run_claude=fake_run_claude)
         disp = runner.run_administrator({"spec": "spec-a", "signal_type": "stuck"})
         assert disp.result == "resolved"
         assert not admin_disposition_path(proot, disp.run_id).exists()
@@ -1197,13 +1037,6 @@ class TestRunAdministrator:
         proot = tmp_path / "proj"
         proot.mkdir(parents=True, exist_ok=True)
         (proot / ".fenix").mkdir(parents=True, exist_ok=True)
-        runner = AgentRunner.__new__(AgentRunner)
-        runner.project_root = proot
-        runner.logger = FakeLogger()
-        runner._get_config = lambda key, default=None: default
-        runner._get_admin_model = lambda: "claude-sonnet-5"
-        runner._get_agent_model_assignment = lambda agent_type: None
-        runner._prompt_builder._build_prompt = lambda *a, **k: "prompt"
 
         seen_paths = []
         started = threading.Barrier(2)
@@ -1223,7 +1056,7 @@ class TestRunAdministrator:
             return "output", 5, "sess", {"input_tokens": 0, "output_tokens": 0,
                                          "cost_usd": 0.0}
 
-        runner._run_claude = fake_run_claude
+        runner = make_admin_runner_stub(proot, fake_run_claude=fake_run_claude)
         results = {}
 
         def run_once(idx):
@@ -2103,6 +1936,8 @@ class TestDaemonErrorEscalationTiming:
         # 下一轮巡检即命中（无需等日志安静）
         signals = mon.run_once()
         sig = next(s for s in signals if s["signal_type"] == "daemon_errors")
+        # daemon_errors 是 daemon 全局信号（_make_signal 第二参恒 None），不归属具体 spec
+        assert sig["spec"] is None
         assert sig["severity"] == "critical"
         assert "复现 2 次" in sig["description"]
         assert "连续" not in sig["description"]

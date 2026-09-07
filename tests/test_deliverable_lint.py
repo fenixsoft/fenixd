@@ -6,7 +6,6 @@
 （B 为 skills/fenix-new 规则文本，非代码）
 """
 
-import json
 import shutil
 import subprocess
 import sys
@@ -71,23 +70,19 @@ class TestLintDeclared(unittest.TestCase):
         self.assertIn("占位符", violations[0])
 
     def test_clean_file_declarations_pass(self):
+        """合法声明放行：modify/new/reference 三种 kind 各一（无声明段与缺
+        tasks.md 的 fail-open 语义见 test_deliverable_declaration_triage 的
+        TestLintFailOpen，此处不重复）。"""
         (self.pr / "core").mkdir(parents=True, exist_ok=True)
         (self.pr / "core" / "data.py").write_text("x", encoding="utf-8")
+        (self.pr / "third-party").mkdir(parents=True, exist_ok=True)
+        (self.pr / "third-party" / "manifest.json").write_text("x",
+                                                               encoding="utf-8")
         _mk_tasks_md(self.spec_dir,
                      "- path: core/data.py\n  kind: modify\n"
-                     "- path: core/new_thing.py\n  kind: new\n")
+                     "- path: core/new_thing.py\n  kind: new\n"
+                     "- path: third-party/manifest.json\n  kind: reference\n")
         self.assertEqual(lint_declared(self.spec_dir, self.pr), [])
-
-    def test_no_deliverables_section_passes(self):
-        spec_dir = self.spec_dir
-        spec_dir.mkdir(parents=True, exist_ok=True)
-        (spec_dir / "tasks.md").write_text(
-            "# Tasks\n\n## 1. x\n\n- [ ] 1.1 do it\n", encoding="utf-8")
-        self.assertEqual(lint_declared(spec_dir, self.pr), [])
-
-    def test_missing_tasks_md_passes(self):
-        self.assertEqual(
-            lint_declared(self.pr / "spec/changes/ghost", self.pr), [])
 
 
 class TestGitignoredDeclaration(unittest.TestCase):
@@ -115,18 +110,22 @@ class TestGitignoredDeclaration(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_modify_gitignored_is_violation(self):
-        _mk_tasks_md(self.spec_dir, "- path: dist/index.html\n  kind: modify\n")
-        violations = lint_declared(self.spec_dir, self.pr)
-        self.assertEqual(len(violations), 1)
-        self.assertIn("gitignore", violations[0])
-        self.assertIn("reference", violations[0])  # 处方给出出路
-
-    def test_new_gitignored_is_violation(self):
-        _mk_tasks_md(self.spec_dir, "- path: .fenix/secret.json\n  kind: new\n")
-        violations = lint_declared(self.spec_dir, self.pr)
-        self.assertEqual(len(violations), 1)
-        self.assertIn("gitignore", violations[0])
+    def test_gitignored_modify_or_new_is_violation(self):
+        """modify/new 声明 gitignored 路径均被拦（同型规则，仅差 kind 参数）。"""
+        cases = [
+            # (kind, path, 处方是否给出 reference 出路提示)
+            ("modify", "dist/index.html", True),
+            ("new", ".fenix/secret.json", False),
+        ]
+        for kind, path, expect_reference_hint in cases:
+            with self.subTest(kind=kind, path=path):
+                _mk_tasks_md(self.spec_dir,
+                             f"- path: {path}\n  kind: {kind}\n")
+                violations = lint_declared(self.spec_dir, self.pr)
+                self.assertEqual(len(violations), 1)
+                self.assertIn("gitignore", violations[0])
+                if expect_reference_hint:
+                    self.assertIn("reference", violations[0])  # 处方给出出路
 
     def test_reference_gitignored_passes(self):
         # gitignored 运行时产物作 reference 是既有合法模式（审计留痕）
