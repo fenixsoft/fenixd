@@ -176,16 +176,20 @@ body {
   flex-wrap: wrap;
   row-gap: 4px;
 }
-#root :is(.screen-xs, .screen-sm) .ant-card-extra {
+#root :is(.screen-xs, .screen-sm) .overview-project-card .ant-card-extra {
   flex: 1 1 100%;
   min-width: 0;
 }
+// extra 内 Space 撑满（inline-flex 宽度随内容收缩，width:100% 子项无从解析）；
+// Space item wrapper 同撑满，使 .ant-input-search 的 width:100% 真正铺满整行
+#root :is(.screen-xs, .screen-sm) .overview-project-card .ant-card-extra .ant-space {
+  width: 100%;
+}
+#root :is(.screen-xs, .screen-sm) .overview-project-card .ant-card-extra .ant-space-item {
+  width: 100%;
+}
 #root :is(.screen-xs, .screen-sm) .overview-project-card .ant-input-search {
   width: 100% !important;
-}
-// 桌面端数字行保持nowrap
-#root :not(.screen-xs):not(.screen-sm) .overview-tile-numrow {
-  white-space: nowrap !important;
 }
 
 // 移动端触控目标扩展工具类：padding 8px 扩大命中区 + 负 margin 完全抵消视觉，命中区 ≥32px ≥ WCAG AA
