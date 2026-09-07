@@ -15,5 +15,5 @@
 
 ## 2. 回归测试与验证
 
-- [ ] 2.1 tests/test_dashboard_data.py 新增归档回退用例：tmp_path 夹具构造活跃/归档（含冲突后缀变体）两种布局，断言归档 SPEC 五类文档 found=true 且内容与归档文件一致、多归档目录取名称排序最大、活跃 SPEC 结果不变、含穿越片段的 spec 参数仍被拒绝
-- [ ] 2.2 运行 `python3 -m pytest tests/test_dashboard_data.py -q` 与相关 dashboard API 测试全绿；对真实归档 spec（如 add-fenix-dashboard）冒烟验证 `/api/spec-doc` 返回归档原文
+- [x] 2.1 tests/test_dashboard_data.py 新增归档回退用例：tmp_path 夹具构造活跃/归档（含冲突后缀变体）两种布局，断言归档 SPEC 五类文档 found=true 且内容与归档文件一致、多归档目录取名称排序最大、活跃 SPEC 结果不变、含穿越片段的 spec 参数仍被拒绝
+- [x] 2.2 运行 `python3 -m pytest tests/test_dashboard_data.py -q` 与相关 dashboard API 测试全绿；对真实归档 spec（如 add-fenix-dashboard）冒烟验证 `/api/spec-doc` 返回归档原文
