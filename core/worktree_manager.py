@@ -188,9 +188,11 @@ class WorktreeManager:
             self._spec_locks.add(lock_key)
             self._lock_since[lock_key] = time.time()
 
-        # worktree 继承（fast-track 打回重派）：优先认领上一轮保留的复用遗产，
+        # worktree 继承（fast-track 打回重派 / fix-provider-transient-backoff D3：
+        # transient 终态保留的全 agent_type 遗产）：优先认领上一轮保留的复用遗产，
         # 在同一目录同一分支上继续（继承已提交成果与未提交现场），不再从零新建。
-        if agent_type == "fast-track":
+        if agent_type in ("fast-track", "implementer", "planner-plan",
+                          "planner-judge", "verifier"):
             reuse = self._take_reusable_worktree(spec_name)
             if reuse is not None:
                 wt_path, branch = reuse
@@ -898,12 +900,17 @@ class WorktreeManager:
     # 复用遗产机制做宽限期回收与清扫豁免），下一轮派发 create() 优先认领同一
     # 目录同一分支继续工作——继承上一轮已提交成果与未提交现场，不再从零重做。
 
-    def keep_for_reuse(self, spec_name: str, wt_path: Path) -> None:
-        """fast-track 打回/失败：保留 worktree 目录与分支，登记供下轮重派继承。
+    def keep_for_reuse(self, spec_name: str, wt_path: Path,
+                       agent_type: str = "") -> None:
+        """保留 worktree 目录与分支，登记供下轮重派继承。
 
         底层复用 register_legacy（同一登记表：宽限期回收、清扫器豁免全继承），
         仅追加 ``reuse`` 标记供 create() 认领。与 cleanup(success=False) 的差异：
         不删除目录与分支、仅释放锁与活动集；dev-server 由调用方先行回收。
+
+        fix-provider-transient-backoff（D3）：transient 终态失败同样走此路径
+        （替代 cleanup(success=False)），agent_type 参数供日志区分来源
+        （fast-track / implementer / transient 其他 agent_type）。
         """
         wt_str = str(wt_path)
         branch = (
@@ -927,7 +934,8 @@ class WorktreeManager:
         self.logger.info(
             "worktree_manager",
             f"Kept worktree for reuse: {wt_path} (branch {branch}, "
-            f"spec '{spec_name}')",
+            f"spec '{spec_name}'" + (f", agent_type '{agent_type}'" if agent_type else "")
+            + ")",
         )
 
     def get_reuse_record(self, spec_name: str) -> Optional[dict]:
