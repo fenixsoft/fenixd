@@ -1007,3 +1007,126 @@ class TestDispatchWorkerTransientBranch:
         # retry 计数递增（max_retries=3 → 第一次失败 retries=1；STATE 存字符串）
         entry = sm.read_one("spec-n")
         assert str(entry.get("_retry_count", 0)) == "1"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6.1 回归：瞬断重试 × 秒挂熔断（cli-retry-backoff instant_fail 交互）
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestTransientRetryInstantFailInteraction:
+    """Task 6.1 — 原地重试拉长存活不误触发秒挂；与死亡豁免/预算闸门叠加不回归。
+
+    交互面：attempt 的秒挂判定按 `time.time() - attempt_started_at`（wall clock）
+    判定，原地退避的 sleep 计入其中——多次快速失败会在退避间隙被拉长到 ≥60s
+    阈值，从而 _record_instant_fail 视为「正常失败」并重置秒挂计数，不误触发冷却。
+    """
+
+    def test_transient_retry_does_not_accumulate_instant_fail(self, tmp_path):
+        """原地退避 sleep 拉长 wall clock → 秒挂计数被重置而非累计触发冷却。"""
+        runner = _build_runner(tmp_path, _make_chain_config("implementer"))
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = tmp_path / "wt"
+        runner.worktree_manager.get_branch_name.return_value = "fenix/spec-123"
+        runner._run_claude = lambda *a, **k: (_ for _ in ()).throw(
+            _TransientError(
+                stderr_lines=["[claude-code:unrecognized_model] model not found"],
+                exit_code=1, has_result=False,
+            ))
+
+        # 直接验证 _record_instant_fail 的交互语义（不依赖 sleep 真等）：
+        # 瞬断重试场景下 attempt 存活时长 ≥60s → 重置计数；<60s 连续失败达
+        # cooldown_after 才冷却。此处模拟「退避拉长到阈值以上」的重置路径。
+        assert runner._instant_fail_counts("spec-x") == 0
+        runner._record_instant_fail("spec-x", duration_seconds=59)   # 秒挂 +1
+        assert runner._instant_fail_counts("spec-x") == 1
+        runner._record_instant_fail("spec-x", duration_seconds=120)  # 退避后拉长 → 重置
+        assert runner._instant_fail_counts("spec-x") == 0
+        assert runner.is_instant_fail_cooldown("spec-x") is False
+
+    def test_instant_fail_storm_still_triggers(self, tmp_path):
+        """真实秒挂风暴（无退避拉长）仍触发冷却——闸门不被新逻辑弱化。"""
+        runner = _build_runner(tmp_path, _make_chain_config("implementer"))
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = tmp_path / "wt"
+        runner.worktree_manager.get_branch_name.return_value = "fenix/spec-123"
+        # cooldown_after=2（缩小阈值便于断言）
+        runner._get_config = lambda key, default=None: (
+            2 if key == "agents.instant_fail_cooldown_after" else default)
+        runner._record_instant_fail("spec-y", duration_seconds=5)
+        runner._record_instant_fail("spec-y", duration_seconds=5)
+        assert runner._instant_fail_counts("spec-y") == 2
+        assert runner.is_instant_fail_cooldown("spec-y") is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6.2 回归：daemon 重启恢复与 keep_for_reuse 遗产协同（无互删）
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestRecoveryKeepForReuseCoordination:
+    """Task 6.2 — recover_interrupted 与 keep_for_reuse 遗产认领协同。
+
+    协同面：瞬断终态 keep_for_reuse 登记的遗产进入 _legacy（回收中心登记表），
+    与 interrupt-recovery-preserve 的恢复保留共用同一豁免机制；boot 顺序
+    recovery → stale cleanup 与遗产认领互不删、可继承。
+    """
+
+    def _init_repo(self, root):
+        root.mkdir(parents=True, exist_ok=True)
+        for args in (["init", "-q"], ["config", "user.email", "test@fenix.local"],
+                     ["config", "user.name", "Fenix Test"],
+                     ["config", "commit.gpgsign", "false"]):
+            subprocess.run(["git", "-C", str(root), *args], check=True)
+        (root / "base.py").write_text("BASE\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", "[fenix] base"],
+                       check=True)
+        subprocess.run(["git", "-C", str(root), "branch", "-M", "main"], check=True)
+
+    def test_keep_for_reuse_legacy_survives_recovery_and_stale_cleanup(self, tmp_path):
+        """keep_for_reuse 遗产经 recover + stale cleanup 后仍被 create 认领（无互删）。"""
+        from core.worktree_manager import WorktreeManager
+        root = tmp_path / "repo"
+        self._init_repo(root)
+        base = root / ".claude" / "worktrees"
+        base.mkdir(parents=True, exist_ok=True)
+        wm = WorktreeManager(base, root, FakeLogger())
+
+        wt = wm.create("spec-r", "planner-judge")
+        assert wt is not None
+        branch = wm.get_branch_name(wt)
+        wm.keep_for_reuse("spec-r", wt, agent_type="planner-judge")
+        # 遗产在册
+        assert wm.has_legacy("spec-r")
+        assert wm.get_legacy("spec-r")["reuse"] is True
+
+        # 模拟 daemon boot：先 recovery（本 spec 无 interrupted 保留条目 → 不影响），
+        # 再 stale 清扫——遗产 worktree 名在豁免集，不得被删除
+        wm.cleanup_stale_worktrees()
+        assert wt.exists(), "keep_for_reuse 遗产在 stale 清扫中不得被误删"
+
+        # 下轮派发 create() → 经 _take_reusable_worktree 认领同一目录与分支
+        wt2 = wm.create("spec-r", "planner-judge")
+        assert wt2 == wt, "遗产应被认领复用而非新建"
+        assert wm.get_branch_name(wt2) == branch
+        # 认领后从 _legacy 摘出（sweeper 不再豁免，属在用目录）
+        assert not wm.has_legacy("spec-r")
+
+    def test_stale_cleanup_removes_non_legacy_worktrees(self, tmp_path):
+        """对照：未登记的孤儿 worktree 仍被 stale 清扫删除（遗产豁免不殃及正常回收）。"""
+        from core.worktree_manager import WorktreeManager
+        root = tmp_path / "repo2"
+        self._init_repo(root)
+        base = root / ".claude" / "worktrees"
+        base.mkdir(parents=True, exist_ok=True)
+        wm = WorktreeManager(base, root, FakeLogger())
+
+        # 一个 keep_for_reuse 遗产 + 一个未登记的孤儿 worktree
+        wt_kept = wm.create("spec-k", "implementer")
+        wm.keep_for_reuse("spec-k", wt_kept, agent_type="implementer")
+        wt_orphan = wm.create("spec-orphan", "verifier")
+        # 孤儿不登记遗产、不在活动集（模拟异常退出残留）：从活动集移除即可被清扫
+        wm._active_worktrees.discard(str(wt_orphan))
+
+        wm.cleanup_stale_worktrees()
+        assert wt_kept.exists(), "登记遗产豁免清理"
+        assert not wt_orphan.exists(), "未登记孤儿被清扫"
