@@ -763,6 +763,11 @@ def lint_declared(spec_dir, project_root) -> List[str]:
        守卫自伤事故 2026-09-06 同型）。``kind: reference`` 不受限：gitignored
        运行时产物/配置作 reference（仅审计留痕、不参与守卫硬校验）是既有
        合法模式（.fenix/config.yaml、dist/index.html 先例）。
+    6. 仓库外路径（add-declaration-premechanize D3）——``kind: modify``/``kind:
+       new`` 的路径解析后（``~`` 展开、``..`` 越界、绝对路径归一）不在项目根内，
+       规则 5 的 gitignore 机制覆盖不到仓库外，该声明任何分支不可交付。```
+       ``kind: reference`` 不受限：仓库外引用（``~/.claude/settings.json`` 等）
+       本就是非交付物语义，合法放行。
 
     lint 自身故障一律 fail-open（返回空清单放行晋升），不因 lint 阻塞流水线。
 
@@ -839,6 +844,19 @@ def lint_declared(spec_dir, project_root) -> List[str]:
                 f"gitignored 文件在守卫 git 对账下任何分支不可满足"
                 f"（add-spec-hooks dist 守卫自伤同型）；请改为 kind: reference"
                 f"（仅审计留痕，不参与守卫硬校验）或从声明中移除"
+            )
+        # 规则 6（add-declaration-premechanize D3）：仓库外路径。规则 5 的
+        # gitignore 机制覆盖不到仓库外（~/x.md、../outside.md 等展开/越界后
+        # 不在项目根内）；kind: new/modify 语义均以文件在仓库内为前提，仓库外
+        # 路径任何分支不可交付。reference 放行（reference 本就是非交付物语义，
+        # 仓库外引用合法）。与规则 5 并列共存、相互独立，可叠加违规。
+        if kind in ("modify", "new") and _path_is_outside_root(
+                project_root, candidates):
+            violations.append(
+                f"[{path}] 是仓库外路径——{kind} 声明要求文件在仓库内"
+                f"（{'修改既有仓库文件' if kind == 'modify' else '产出入库'}），"
+                f"仓库外路径不可作为 {kind} 交付物，应声明 reference"
+                f"或改为仓库内路径"
             )
         if kind == "modify":
             is_dir = any((project_root / c).is_dir() for c in candidates)

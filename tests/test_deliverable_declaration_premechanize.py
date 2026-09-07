@@ -435,5 +435,70 @@ class TestPromotionSoftening(PromotionTestMixin):
         self.assertIn("core/data.py\n  kind: modify", text)
 
 
+class TestLintRule6OutsideRoot(_GitRepoFixture):
+    """add-declaration-premechanize PR3：lint 规则 6 仓库外路径。
+
+    覆盖 tasks 3.3：
+    1. ~/x new 与 ../y modify 违规且消息含处方文案
+    2. 仓库外 reference 放行
+    3. 规则 5 与规则 6 并列共存不互相遮蔽
+    """
+
+    def test_new_home_expansion_violation(self):
+        """~/x new → 规则 6 违规，消息含路径与处方文案。"""
+        _mk_tasks_md(self.spec_dir,
+                     "- path: ~/x.md\n  kind: new\n")
+        violations = lint_declared(self.spec_dir, self.pr)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("仓库外", violations[0])
+        self.assertIn("~/x.md", violations[0])
+        self.assertIn("reference", violations[0])
+
+    def test_modify_parent_escape_violation(self):
+        """../y modify → 规则 6 违规（仓库外），规则 3 也报（modify 路径不存在）。
+        两个违规并列，消息均含路径。"""
+        _mk_tasks_md(self.spec_dir,
+                     "- path: ../outside.md\n  kind: modify\n")
+        violations = lint_declared(self.spec_dir, self.pr)
+        vjoint = "\n".join(violations)
+        # 至少有规则 6（仓库外）
+        self.assertTrue(any("仓库外" in v for v in violations))
+        # 同时规则 3 也会报（modify 路径在主树不存在）
+        self.assertTrue(any("在主树不存在" in v for v in violations))
+
+    def test_outside_root_reference_passes(self):
+        """仓库外 reference（~/.claude/settings.json）→ 放行。"""
+        _mk_tasks_md(self.spec_dir,
+                     "- path: ~/.claude/settings.json\n  kind: reference\n")
+        self.assertEqual(lint_declared(self.spec_dir, self.pr), [])
+
+    def test_rule5_and_rule6_coexist(self):
+        """gitignored 与仓库外并列共存：各自报违规不互相遮蔽。
+
+        dist/index.html 是 gitignored（规则 5）；~/x.md 是仓库外（规则 6）。
+        """
+        dist = self.pr / "dist"
+        dist.mkdir(parents=True, exist_ok=True)
+        (dist / "index.html").write_text("x", encoding="utf-8")
+        _mk_tasks_md(self.spec_dir,
+                     "- path: dist/index.html\n  kind: modify\n"
+                     "- path: ~/x.md\n  kind: new\n")
+        violations = lint_declared(self.spec_dir, self.pr)
+        vjoint = "\n".join(violations)
+        self.assertIn("gitignore", vjoint)
+        self.assertIn("仓库外", vjoint)
+
+    def test_inside_root_relative_passes(self):
+        """仓库内相对路径 new/modify → 规则 6 不拦。"""
+        (self.pr / "core").mkdir(parents=True, exist_ok=True)
+        (self.pr / "core" / "data.py").write_text("x", encoding="utf-8")
+        _mk_tasks_md(self.spec_dir,
+                     "- path: core/data.py\n  kind: modify\n"
+                     "- path: core/new_thing.py\n  kind: new\n")
+        violations = lint_declared(self.spec_dir, self.pr)
+        # 仓库内路径不触发规则 6
+        self.assertFalse(any("仓库外" in v for v in violations))
+
+
 if __name__ == "__main__":
     unittest.main()
