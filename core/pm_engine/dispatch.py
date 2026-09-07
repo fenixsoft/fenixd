@@ -1272,12 +1272,153 @@ class Dispatcher:
             return None
         return data
 
+    def _preclassify_missing(self, spec_name: str, result,
+                             missing: list) -> dict:
+        """守卫缺件确定性预分类（add-declaration-premechanize D4，Task 4.1-4.3）。
+
+        在组装 judge 输入之前，对缺件清单做确定性分类：命中不可交付模式
+        （gitignored / 仓库外）的条目直接机械软化 + 审计 + 重跑守卫；全清走
+        放行分支且不派 judge run；剩余项才进入 dispute-judge。
+
+        预分类异常全量回退既有 judge 流程（fail-open：不因解析/软化异常阻塞
+        终审）。
+
+        Returns:
+            {"action": "proceed"} → 全部缺件已确定性软化，守卫重跑通过；
+            {"action": "continue", "remaining": [...]} → 仍有剩余，带入 judge；
+            {"action": "fallback"} → 预分类不可用，回退既有 judge 流程
+            （missing 不变）。
+        """
+        from core.deliverables import classify_unsatisfiable, extract_declared_entries
+
+        # 声明段无条目（存量 spec 正则提取）→ 不预分类，回退 judge
+        spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
+        entries = extract_declared_entries(spec_dir)
+        if not entries:
+            return {"action": "fallback"}
+
+        # 快照软化前 tasks.md 声明段（供审计 diff.before）
+        before_text = ""
+        tasks_path = spec_dir / "tasks.md"
+        if tasks_path.exists():
+            try:
+                before_text = tasks_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                before_text = ""
+
+        # 将条目列表转为 path → entry 映射（按 path 查找）
+        entry_by_path: dict = {}
+        for e in entries:
+            if isinstance(e, dict) and e.get("path"):
+                entry_by_path[e["path"]] = e
+
+        # 分类：确定性命中 → deterministic；声明段无该条目或不命中 → 留在 remaining
+        deterministic: list = []
+        remaining: list = []
+        for m in missing:
+            entry = entry_by_path.get(m)
+            if entry and classify_unsatisfiable(entry, self._pm.project_root):
+                deterministic.append(m)
+            else:
+                remaining.append(m)
+
+        if not deterministic:
+            # 无可软化缺件 → 回退 judge 流程（remaining == missing）
+            return {"action": "fallback"}
+
+        # 逐条软化（单条异常留在 remaining 并 warning）
+        diff_by_element: dict = {}
+        for m in deterministic[:]:  # copy以便异常时移除
+            entry = entry_by_path[m]
+            try:
+                from core.deliverables import soften_declared_kind
+                diff = soften_declared_kind(spec_dir, m)
+                diff_by_element[m] = diff
+            except Exception as exc:
+                # 单条软化异常：留在 remaining 清单（异常不阻塞其余）
+                remaining.append(m)
+                deterministic.remove(m)
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"预分类软化异常 '{spec_name}'（{m} 回退 judge）: {exc}",
+                )
+
+        if not deterministic:
+            # 全部软化异常 → 回退 judge
+            return {"action": "fallback"}
+
+        # 审计留痕（reasoning 前缀 guard-preclassify）
+        try:
+            from core.admin_store import DisputeAuditStore
+            # after 已是软化后文本（soften_declared_kind 已写盘）
+            after_text = ""
+            if tasks_path.exists():
+                after_text = tasks_path.read_text(encoding="utf-8")
+            DisputeAuditStore(self._pm.project_root, self._pm.logger).append({
+                "spec": spec_name,
+                "trigger_run_id": "",
+                "judge_run_id": "",
+                "verdicts": [
+                    {
+                        "element": m,
+                        "verdict": "reference",
+                        "reasoning": "guard-preclassify: gitignored/outside-root",
+                    }
+                    for m in deterministic
+                ],
+                "diff": {
+                    "before": before_text,
+                    "after": after_text,
+                },
+            })
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预分类审计写盘失败 '{spec_name}'（非阻塞）: {e}",
+            )
+
+        # 重跑守卫对账
+        try:
+            gate_result = self._pm._deliverable_gate_missing(spec_name, result)
+        except Exception as e:
+            self._pm.logger.error(
+                "pm_engine",
+                f"预分类后守卫重跑异常 '{spec_name}'（回退 judge）: {e}",
+            )
+            # 异常回退：把已软化条目放回 remaining（soften 已写盘，无法回滚）
+            remaining.extend(deterministic)
+            return {"action": "fallback"}
+
+        if not gate_result:
+            # 全清 → 走「裁决执行后守卫重跑通过」放行分支
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预分类缺件全清 '{spec_name}' — 守卫重跑通过，放行 merge",
+            )
+            self._pm.state_machine.update_spec(spec_name, {
+                "status": "implementing",
+                "error": None,
+            })
+            return {"action": "proceed"}
+
+        # 仍有剩余 → remaining 带入 judge
+        return {"action": "continue", "remaining": remaining}
+
     def _adjudicate_deliverable_missing(self, spec_name: str, result,
                                         impl_result, missing: list) -> dict:
         """缺件 LLM 终审 + 裁决机械执行（D3/D4，Tasks 4.1-4.4）。
 
         在既有 dispute 异议通道之后调用（实现 run 已对缺件提出 deliverable-dispute
-        异议的 spec 走 blocked 人工，不进入终审）。流程：
+        异议的 spec 走 blocked 人工，不进入终审）。
+
+        预分类（add-declaration-premechanize D4，Task 4.1-4.3）：
+        - 组装 judge 输入之前，先对缺件清单做确定性分类：命中不可交付模式
+          （gitignored / 仓库外）的条目直接机械软化 kind → reference + 审计
+          （reasoning 前缀 guard-preclassify）+ 重跑守卫；全清则走放行分支且
+          不派 judge run；剩余项才进入既有 dispute-judge 流程。
+        - 预分类异常（声明段解析失败/软化改写异常）→ 全量回退既有 judge 流程。
+
+        流程：
 
         1. spec 置 blocked（error 含 dispute-judge run id 与「LLM 终审进行中」），
            阻断轮询/巡检重派竞态（D5）；
@@ -1297,12 +1438,26 @@ class Dispatcher:
             merge 推进；{"action": "handled"} → 已终态处置（打回重派 / blocked
             人工 / 防洗白打回），调用方直接 return。
         """
+        # ── 预分类（add-declaration-premechanize D4）：确定性缺件先行软化 ──
+        # 在组装 judge 输入之前，先对缺件清单做确定性分类：命中不可交付模式
+        # 的条目直接机械软化 + 审计 + 重跑守卫；全清走放行分支且不派 judge run；
+        # 剩余项才进入 dispute-judge。预分类异常全量回退既有 judge 流程。
+        preclassify_result = self._preclassify_missing(spec_name, result, missing)
+        if preclassify_result.get("action") == "proceed":
+            return preclassify_result
+        # remaining 是预分类后仍存在的缺件清单；若预分类全清则 proceed，
+        # 否则剩余项带入后续 judge 流程（judge 输入只含剩余项）。
+        remaining = preclassify_result.get("remaining", missing)
+        # judge 输入快照：typo_fixed_paths 构造需基于 judge 的输入清单
+        # （后续 remaining 会被守卫重跑结果覆盖，不可再作 judge 输入引用）。
+        judge_input_paths = list(remaining)
+
         judge_run_id = f"dispute-judge-{spec_name}-{int(time.time())}"
         # 1. 终审期间 spec 置 blocked（error 含 run id），阻断重派竞态
         self._pm.state_machine.update_spec(spec_name, {
             "status": "blocked",
             "tester_run": None,
-            "error": (f"交付物守卫缺件 [{', '.join(missing)}] — LLM 终审进行中"
+            "error": (f"交付物守卫缺件 [{', '.join(remaining)}] — LLM 终审进行中"
                       f"（judge run {judge_run_id}）"),
         })
         self._pm.logger.warning(
@@ -1310,8 +1465,8 @@ class Dispatcher:
             f"交付物守卫缺件 '{spec_name}' 进入 LLM 终审（{judge_run_id}）",
         )
 
-        # 2. 组装输入并派单轮 dispute-judge run
-        judge_input = self._build_dispute_judge_input(spec_name, impl_result, missing)
+        # 2. 组装输入并派单轮 dispute-judge run（仅含预分类后剩余项）
+        judge_input = self._build_dispute_judge_input(spec_name, impl_result, remaining)
         judge_result = None
         try:
             judge_result = self._pm.agent_runner.run_dispute_judge(
@@ -1342,7 +1497,7 @@ class Dispatcher:
         # 4. 裁决机械执行：typo 修正 / reference 软化（逐条，失败等价 unclear）
         executed_verdicts: list = []
         diff_by_element: dict = {}
-        for m in missing:
+        for m in remaining:
             v = _verdict_of(m)
             verdict = v.get("verdict")
             try:
@@ -1422,7 +1577,7 @@ class Dispatcher:
         # 「missing 裁决」的路径按既有打回路径处置（防洗白：修正声明 ≠ 放行
         # 缺件）；unclear 项（含裁决执行失败/判据不明）→ blocked 人工裁决。
         typo_fixed_paths = set()
-        for m in missing:
+        for m in judge_input_paths:
             v = _verdict_of(m)
             if v.get("verdict") == "typo":
                 ap = str(v.get("actual_path") or "").strip()
@@ -1440,7 +1595,7 @@ class Dispatcher:
             # 非 unclear：missing 裁决的原 element 按缺件打回；既非原 element
             # 又非任何修正路径 → 裁决未覆盖，保守按 unclear 转人工（防 judge
             # 输出与清单不一致）。
-            if p in missing:
+            if p in judge_input_paths:
                 continue
             unclear_remaining.append(p)
         if unclear_remaining:

@@ -168,6 +168,73 @@ class PMEngine:
 
     def _on_spec_drafted(self, spec_name: str):
         """Auto-promote drafted → ready, then immediately schedule implementer."""
+        # 晋升期机械软化（add-declaration-premechanize D2）：lint 之前对声明段
+        # 命中确定性不可交付模式（gitignored / 仓库外）的 new/modify 条目
+        # 机械改写 kind → reference（复用 soften_declared_kind），软化记录落
+        # dispute 审计流（trigger 经 reasoning 前缀 promotion-soften 区分）。
+        # 软化编排自身异常降级 warning（fail-safe，晋升流程继续走既有 lint
+        # 判定，不产生新卡死形态）。
+        try:
+            from core.deliverables import (
+                extract_declared_entries,
+                soften_unsatisfiable_declarations,
+            )
+            spec_dir = self.project_root / "spec" / "changes" / spec_name
+            # 快照声明段（before）：读 tasks.md 声明段原文，供审计 diff。
+            before_text = ""
+            if spec_dir.is_dir():
+                tasks_path = spec_dir / "tasks.md"
+                if tasks_path.exists():
+                    try:
+                        before_text = tasks_path.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        before_text = ""
+            softened = soften_unsatisfiable_declarations(
+                spec_dir, self.project_root)
+            if softened:
+                self.logger.info(
+                    "pm_engine",
+                    f"晋升前软化声明 '{spec_name}': "
+                    f"{[s['element'] for s in softened]}（kind → reference）",
+                )
+                # 快照软化后声明段（after）
+                after_text = ""
+                if tasks_path.exists():
+                    try:
+                        after_text = tasks_path.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        after_text = ""
+                try:
+                    from core.admin_store import DisputeAuditStore
+                    DisputeAuditStore(self.project_root, self.logger).append({
+                        "spec": spec_name,
+                        "trigger_run_id": "",
+                        "judge_run_id": "",
+                        "verdicts": [
+                            {
+                                "element": s["element"],
+                                "verdict": "reference",
+                                "reasoning": (
+                                    f"promotion-soften: {s['reason']}"
+                                ),
+                            }
+                            for s in softened
+                        ],
+                        "diff": {
+                            "before": before_text,
+                            "after": after_text,
+                        },
+                    })
+                except Exception as e:
+                    self.logger.warning(
+                        "pm_engine",
+                        f"晋升软化审计写盘失败 '{spec_name}'（非阻塞）: {e}",
+                    )
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"晋升前软化编排异常 '{spec_name}'（降级走既有 lint 判定）: {e}",
+            )
         # 晋升 lint（deliverables 声明形态机械校验）：不可满足/失效声明在撰写
         # 当下拦截，不再等到收工守卫才暴露（判定发生在一次完整 run 之后，
         # 形态错误代价 = 一轮 run + 打回循环）。违规保持 drafted 并写 error，

@@ -41,6 +41,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -597,6 +598,143 @@ def _path_is_gitignored(project_root, candidates: List[str]) -> bool:
     return False
 
 
+def _path_is_outside_root(project_root, candidates) -> bool:
+    """任一 candidate 解析后不在 project_root 内返回 True（规则 6 判定核心）。
+
+    判定顺序（design D1）：``os.path.expanduser``（``~``/``~user`` 展开）；相对
+    路径先拼接到 project_root 下（声明段路径相对项目根而非 cwd）；``resolve``
+    （``..`` 越界在此归一）；与 resolve 后的 project_root 做前缀判定
+    （``os.path.commonpath``，``..`` 段已消解）。非仓库外（含仓库内相对路径）
+    → False；解析异常 fail-open 返回 False（不因判定故障阻塞晋升）。
+
+    ``reference`` 不受本函数约束（它就是非交付物语义，仓库外引用合法放行）。
+
+    Args:
+        project_root: 项目根（前缀判定基准，resolve 后使用）。
+        candidates: 待判定路径（字面 + 归一化候选）。
+
+    Returns:
+        任一路径解析后不在根内返回 True；全部在根内或判定不可用返回 False。
+    """
+    root = Path(project_root).resolve()
+    for cand in candidates:
+        try:
+            p = Path(os.path.expanduser(str(cand)))
+            p = p if p.is_absolute() else (root / p)
+            resolved = p.resolve()
+            common = os.path.commonpath([str(root), str(resolved)])
+            if common != str(root):
+                return True
+        except (OSError, ValueError, TypeError):
+            # fail-open：判定故障（非法路径/平台差异）视为在根内，不阻塞晋升
+            continue
+    return False
+
+
+def classify_unsatisfiable(entry, project_root) -> bool:
+    """判定声明条目是否命中确定性不可交付模式（design D1）。
+
+    ``kind ∈ {new, modify}`` 且（``_path_is_gitignored`` 或
+    ``_path_is_outside_root`` 命中）→ True。``reference`` 恒 False（它就是软化
+    终点）；entry 缺 path/kind、path/kind 非法或判定异常均返回 False（fail-open，
+    交由后续 lint 照常拒绝兜底）。
+
+    排除规则 1-4 形态（design D1：这四种不软化，维持既有拒绝语义——需 path
+    修正非 kind 修正）：
+    - 占位符（``<``/``>``）路径：规则 1，软化会掩盖声明格式问题；
+    - 目录路径（``kind: modify`` + 主树存在且为目录）：规则 2，软化后 lint
+      不再拦截但语义仍不可交付；
+
+    零语义推断：只认 gitignored（check-ignore 原生判定）与仓库外（路径解析）
+    两个确定性信号。
+
+    Args:
+        entry: 声明条目 dict（含 ``path`` / ``kind``）。
+        project_root: 项目根（判定基准）。
+
+    Returns:
+        命中不可交付模式返回 True；其余（含 reference、缺字段、判定不可用、
+        规则 1-4 形态）返回 False。
+    """
+    if not isinstance(entry, dict):
+        return False
+    path = str(entry.get("path") or "").strip()
+    kind = str(entry.get("kind") or "").strip().lower()
+    if not path or kind not in _DECLARED_KINDS:
+        return False
+    if kind not in ("new", "modify"):
+        return False  # reference 恒 False（软化终点，无需求再软化）
+    # ── 排除规则 1-4 形态（不软化，维持既有拒绝语义）──
+    # 规则 1：占位符路径（软化会掩盖声明格式问题）
+    if "<" in path or ">" in path:
+        return False
+    # 规则 2：目录路径（软化为 reference 后 lint 不再拦截，但目录不可交付）
+    if kind == "modify":
+        candidates_dir = [path]
+        normalized_dir = normalize_check_path(path)
+        if normalized_dir != path:
+            candidates_dir.append(normalized_dir)
+        pr = Path(project_root)
+        if any(pr.joinpath(c).is_dir() for c in candidates_dir):
+            return False
+    # ── 正向命中判定 ──
+    candidates = [path]
+    normalized = normalize_check_path(path)
+    if normalized != path:
+        candidates.append(normalized)
+    if _path_is_gitignored(project_root, candidates):
+        return True
+    return _path_is_outside_root(project_root, candidates)
+
+
+def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
+    """晋升前软化命中不可交付模式的 new/modify 声明（design D1/D2）。
+
+    逐条 ``classify_unsatisfiable``，命中即 ``soften_declared_kind``
+    （kind → reference 确定性文本改写）；单条改写异常（并发改写/格式漂移）
+    跳过该条记 warning 不中断（fail-safe，交由后续 lint 拒绝兜底）。
+    无声明段（``extract_declared_entries`` 返回 None）早退返回 []。
+
+    Returns:
+        软化记录 ``[{element, kind_before, kind_after, reason}]``（保序）；
+        ``reason`` 区分 ``"gitignored"`` 与 ``"outside-root"``，供审计
+        reasoning 构造；无命中返回 []。
+    """
+    entries = extract_declared_entries(spec_dir)
+    if not entries:
+        return []
+    softened: list = []
+    for e in entries:
+        path = e["path"]
+        if not classify_unsatisfiable(e, project_root):
+            continue
+        # 判定 reason（供审计 reasoning 区分 gitignored / outside-root）
+        reason = "gitignored"
+        try:
+            # 归一化候选与 classify 同源
+            candidates = [path]
+            normalized = normalize_check_path(path)
+            if normalized != path:
+                candidates.append(normalized)
+            if not _path_is_gitignored(project_root, candidates):
+                reason = "outside-root"
+        except Exception:
+            reason = "outside-root"  # 判定异常保守取 outside-root
+        try:
+            soften_declared_kind(spec_dir, path)
+        except Exception as exc:
+            # 单条改写失败：跳过该条记 warning，交由后续 lint 照常拒绝兜底
+            print(f"WARNING: 软化声明 {path} 失败（跳过，lint 兜底）: {exc}")
+            continue
+        softened.append({
+            "element": path,
+            "kind_before": e["kind"],
+            "kind_after": "reference",
+            "reason": reason,
+        })
+    return softened
+
+
 def lint_declared(spec_dir, project_root) -> List[str]:
     """晋升 lint（drafted → ready）：Deliverables 声明形态机械校验。
 
@@ -625,6 +763,11 @@ def lint_declared(spec_dir, project_root) -> List[str]:
        守卫自伤事故 2026-09-06 同型）。``kind: reference`` 不受限：gitignored
        运行时产物/配置作 reference（仅审计留痕、不参与守卫硬校验）是既有
        合法模式（.fenix/config.yaml、dist/index.html 先例）。
+    6. 仓库外路径（add-declaration-premechanize D3）——``kind: modify``/``kind:
+       new`` 的路径解析后（``~`` 展开、``..`` 越界、绝对路径归一）不在项目根内，
+       规则 5 的 gitignore 机制覆盖不到仓库外，该声明任何分支不可交付。```
+       ``kind: reference`` 不受限：仓库外引用（``~/.claude/settings.json`` 等）
+       本就是非交付物语义，合法放行。
 
     lint 自身故障一律 fail-open（返回空清单放行晋升），不因 lint 阻塞流水线。
 
@@ -702,6 +845,19 @@ def lint_declared(spec_dir, project_root) -> List[str]:
                 f"（add-spec-hooks dist 守卫自伤同型）；请改为 kind: reference"
                 f"（仅审计留痕，不参与守卫硬校验）或从声明中移除"
             )
+        # 规则 6（add-declaration-premechanize D3）：仓库外路径。规则 5 的
+        # gitignore 机制覆盖不到仓库外（~/x.md、../outside.md 等展开/越界后
+        # 不在项目根内）；kind: new/modify 语义均以文件在仓库内为前提，仓库外
+        # 路径任何分支不可交付。reference 放行（reference 本就是非交付物语义，
+        # 仓库外引用合法）。与规则 5 并列共存、相互独立，可叠加违规。
+        if kind in ("modify", "new") and _path_is_outside_root(
+                project_root, candidates):
+            violations.append(
+                f"[{path}] 是仓库外路径——{kind} 声明要求文件在仓库内"
+                f"（{'修改既有仓库文件' if kind == 'modify' else '产出入库'}），"
+                f"仓库外路径不可作为 {kind} 交付物，应声明 reference"
+                f"或改为仓库内路径"
+            )
         if kind == "modify":
             is_dir = any((project_root / c).is_dir() for c in candidates)
             if is_dir:
@@ -714,8 +870,15 @@ def lint_declared(spec_dir, project_root) -> List[str]:
         # 规则 3（add-deliverable-declaration-triage D1）：modify/reference
         # 路径在主树必须存在。reference 语义即既有引用，modify 语义即修改既有
         # 文件——不存在即声明有错（声明 vs 现实的确定性矛盾，零误拦）。
+        # 例外：仓库外 reference 放行（design D3：reference 本就是非交付物语义，
+        # ~/x.md/.claude/settings.json 等仓库外引用合法，软化后转 reference
+        # 不应被存在性校验拦截）。
         if kind in ("modify", "reference"):
             if not any((project_root / c).exists() for c in candidates):
+                # reference 仓库外放行（design D3）
+                if kind == "reference" and _path_is_outside_root(
+                        project_root, candidates):
+                    continue
                 violations.append(
                     f"[{path}] 在主树不存在——{kind} 声明路径必须在主树存在"
                     f"（必须存在，指向既有文件），请核对声明路径"
