@@ -853,6 +853,12 @@ class VerificationPipeline:
             # 路径完全不生效（add-spec-hooks admin 处置实测：browser 首帧
             # 等待修复被旧 BrowserManager 类屏蔽）。须先于 engine reload。
             "core.verify_engine.web_runner",
+            # admin 修 2026-09-07：三个 runner 一并 reload——此前 cli/api
+            # runner 不在列表内，其代码修复同样不生效；配合 runner.py 的
+            # 同模块重注册放行（否则装饰器对已注册 kind raise、reload 整体
+            # 失败且被下方静默吞掉，sys.modules 留存旧类）。
+            "core.verify_engine.cli_runner",
+            "core.verify_engine.api_runner",
             "core.verify_engine.assertions",
             "core.verify_engine.scenarios",
             "core.verify_engine.engine",
@@ -862,8 +868,15 @@ class VerificationPipeline:
             if mod_name in sys.modules:
                 try:
                     importlib.reload(sys.modules[mod_name])
-                except Exception:
-                    pass  # 重新加载失败时使用缓存版本
+                except Exception as e:
+                    # reload 失败绝不可静默：sys.modules 将留存旧代码，admin
+                    # 的引擎修复看似已生效实则被旧类屏蔽（本类根因曾静默潜伏
+                    # 至 fix-mobile-touch-disclosure 轮才暴露）。降级告警留痕。
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"verify_engine 模块热重载失败 '{mod_name}'（将沿用旧代码）: "
+                        f"{type(e).__name__}: {e}",
+                    )
 
         # 额外保障：强制从磁盘重新导入核心模块
         # Python 的 import 系统会检查 sys.modules，但如果 reload 失败，

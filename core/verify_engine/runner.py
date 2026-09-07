@@ -155,11 +155,17 @@ RUNNER_REGISTRY: dict[str, type] = {}
 def register_runner(cls: type) -> type:
     """注册 Runner 到按 kind 注册表（装饰器）。
 
-    注册表键 = ``cls.kind``；重复注册同名 kind 属实现错误，直接报错暴露。
+    注册表键 = ``cls.kind``；不同模块重复注册同名 kind 属实现错误，直接报错
+    暴露。**同模块重注册放行并替换**（admin 修 2026-09-07）：importlib.reload
+    会重新执行类定义与装饰器，若一律 raise，reload 即失败且被验证流水线的
+    静默吞异常掩盖——sys.modules 留存旧 Runner 类，admin 对引擎的修复永不
+    生效（fix-mobile-touch-disclosure 验证阻塞实证：viewport 修复提交后引擎
+    仍跑 1280×800 旧代码）。
     """
     if not getattr(cls, "kind", ""):
         raise ValueError(f"Runner {cls.__name__} 必须声明 kind 属性")
-    if cls.kind in RUNNER_REGISTRY:
+    existing = RUNNER_REGISTRY.get(cls.kind)
+    if existing is not None and existing.__module__ != cls.__module__:
         raise ValueError(f"Runner kind 重复注册: {cls.kind}")
     RUNNER_REGISTRY[cls.kind] = cls
     return cls
