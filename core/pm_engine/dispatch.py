@@ -1375,6 +1375,9 @@ class Dispatcher:
         # remaining 是预分类后仍存在的缺件清单；若预分类全清则 proceed，
         # 否则剩余项带入后续 judge 流程（judge 输入只含剩余项）。
         remaining = preclassify_result.get("remaining", missing)
+        # judge 输入快照：typo_fixed_paths 构造需基于 judge 的输入清单
+        # （后续 remaining 会被守卫重跑结果覆盖，不可再作 judge 输入引用）。
+        judge_input_paths = list(remaining)
 
         judge_run_id = f"dispute-judge-{spec_name}-{int(time.time())}"
         # 1. 终审期间 spec 置 blocked（error 含 run id），阻断重派竞态
@@ -1501,7 +1504,7 @@ class Dispatcher:
         # 「missing 裁决」的路径按既有打回路径处置（防洗白：修正声明 ≠ 放行
         # 缺件）；unclear 项（含裁决执行失败/判据不明）→ blocked 人工裁决。
         typo_fixed_paths = set()
-        for m in remaining:
+        for m in judge_input_paths:
             v = _verdict_of(m)
             if v.get("verdict") == "typo":
                 ap = str(v.get("actual_path") or "").strip()
@@ -1519,7 +1522,7 @@ class Dispatcher:
             # 非 unclear：missing 裁决的原 element 按缺件打回；既非原 element
             # 又非任何修正路径 → 裁决未覆盖，保守按 unclear 转人工（防 judge
             # 输出与清单不一致）。
-            if p in missing:
+            if p in judge_input_paths:
                 continue
             unclear_remaining.append(p)
         if unclear_remaining:
