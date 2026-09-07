@@ -48,6 +48,10 @@ class Dispatcher:
         # 秒挂冷却恢复定时器（cli-retry-backoff 2.2）：{spec_name}，幂等排程防重复。
         # 冷却到期由定时器重入 _on_spec_ready，不依赖 30 分钟全量扫描兜底。
         self._instant_fail_timers: set = set()
+        # fix-provider-transient-backoff（D4）：transient 恢复排程定时器：{spec_name}。
+        # 瞬断终态触发后按 `transient_redispatch_delay_seconds`（缺省 600s）延迟重入
+        # _on_spec_ready，同 instant_fail_timers 同款幂等去重。
+        self._transient_timers: set = set()
 
     def _dispatch_backoff_schedule(self) -> list:
         """退避序列（秒）。可配 pm.dispatch_backoff_schedule，默认 [30, 120, 600]。
@@ -182,6 +186,60 @@ class Dispatcher:
         self._pm.logger.info(
             "pm_engine",
             f"秒挂冷却到期，恢复调度 '{spec_name}'（cli-retry-backoff 自动恢复）",
+        )
+        try:
+            self._pm._on_spec_ready(spec_name)
+        finally:
+            self._pm._process_queue()
+
+    # ── fix-provider-transient-backoff（D4）：transient 恢复排程 ──────────
+    # 仿秒挂冷却（instant_fail_recovery）定时器模式：瞬断终态后按
+    # `agents.transient_redispatch_delay_seconds`（缺省 600s）延迟重入
+    # `_on_spec_ready` + `_process_queue`。与 _retry_count 正交——不清零、不递增。
+
+    def _schedule_transient_recovery(self, spec_name: str,
+                                    lock_held: bool = False) -> None:
+        """瞬断终态后排程等待，到期重新触发派发（fix-provider-transient-backoff D4）。
+
+        幂等：已为该 spec 排程恢复定时器则不再重复（``_transient_timers`` 集合
+        判重）。等待时长按 ``agents.transient_redispatch_delay_seconds``
+        （缺省 600s）配置。
+
+        ``lock_held``：调用方已持 ``_queue_lock`` 时为 True，跳过内部再取锁。
+        """
+        if lock_held:
+            self._schedule_transient_recovery_locked(spec_name)
+            return
+        with self._queue_lock:
+            self._schedule_transient_recovery_locked(spec_name)
+
+    def _schedule_transient_recovery_locked(self, spec_name: str) -> None:
+        """锁内实现（fix-provider-transient-backoff）排程 transient 恢复定时器。"""
+        if spec_name in self._transient_timers:
+            return
+        delay = float(self._pm._get_config(
+            "agents.transient_redispatch_delay_seconds", 600))
+        delay = max(10.0, delay)  # 最小等待 10s，避免零值/负值
+        timer = threading.Timer(
+            delay, self._on_transient_recovery, args=(spec_name,),
+        )
+        timer.daemon = True
+        self._transient_timers.add(spec_name)
+        timer.start()
+        self._pm.logger.info(
+            "pm_engine",
+            f"Transient recovery scheduled for '{spec_name}' in {int(delay)}s "
+            f"(fix-provider-transient-backoff)",
+        )
+
+    def _on_transient_recovery(self, spec_name: str) -> None:
+        """瞬断冷却到期回调：重新唤起派发（幂等，多定时器并发安全）。"""
+        with self._queue_lock:
+            self._transient_timers.discard(spec_name)
+        self._pm.logger.info(
+            "pm_engine",
+            f"Transient recovery fired for '{spec_name}' — resuming dispatch "
+            f"(fix-provider-transient-backoff)",
         )
         try:
             self._pm._on_spec_ready(spec_name)
@@ -917,6 +975,21 @@ class Dispatcher:
                         self._pm.state_machine.update_spec(spec_name, {
                             "error": final_error,
                         })
+                    elif final_error and "[provider-transient]" in final_error:
+                        # fix-provider-transient-backoff（D4）：transient 终态——不走
+                        # _retry_count 递增/清零路径，改排程等待后重派（复用
+                        # instant_fail_recovery 定时器模式，`transient_redispatch_delay_seconds`
+                        # 缺省 600s）。死亡 run 预算豁免行为保持不变。
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"Provider transient for '{spec_name}' — scheduling "
+                            f"delayed redispatch, no retry/state flip: {final_error}",
+                        )
+                        # 写入 error 供 dashboard 可见，但不翻转状态
+                        self._pm.state_machine.update_spec(spec_name, {
+                            "error": final_error,
+                        })
+                        self._schedule_transient_recovery(spec_name)
                     else:
                         # Retry or mark error
                         spec_entry = self._pm.state_machine.read_one(spec_name)

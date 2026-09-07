@@ -48,7 +48,7 @@
 ## 4. dispatch 排程等待与全局熔断（transient-dispatch-gating）
 
 - [x] 4.1 runner 瞬断终态收场时 error 消息头部注入 `[provider-transient]` 结构化标记（写侧统一）
-- [ ] 4.2 dispatch 失败处理分支识别标记 → 走 `_schedule_transient_recovery`（仿 instant_fail_recovery 定时器模式，`transient_redispatch_delay_seconds` 缺省 600）→ 到期重入派发；跳过 `_retry_count` 递增/清零路径；死亡豁免保持
+- [x] 4.2 dispatch 失败处理分支识别标记 → 走 `_schedule_transient_recovery`（仿 instant_fail_recovery 定时器模式，`transient_redispatch_delay_seconds` 缺省 600）→ 到期重入派发；跳过 `_retry_count` 递增/清零路径；死亡豁免保持
 - [ ] 4.3 provider_circuit 新增全局错误指纹熔断：错误文本归一化指纹（剥 model 名/时间戳）+ 滑动窗口计数（`transient_break_threshold/window/cooldown`，缺省 3/600/600）→ 派发闸门冻结 + major 告警（15 分钟 throttle）；进程内存态
 - [ ] 4.4 单元测试：标记注入、排程等待不写 retries exhausted、非 transient 路径逐字节不变、熔断触发/解除/告警节流
 
