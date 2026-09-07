@@ -52,6 +52,14 @@ SWITCH_ERROR_CONN_PATTERNS = (
 # 可配 pm.failover.daily_attempts_warn，默认 50。
 PROVIDER_DAILY_ATTEMPTS_WARN = 50
 
+# ── 全局瞬断错误指纹熔断（fix-provider-transient-backoff D4 / transient-dispatch-gating） ──
+# 与 4xx/switch 冷却同构的进程内存态（重启清零）；同错误指纹在窗口内达阈值
+# 触发全局派发冻结。
+TRANSIENT_BREAK_WINDOW_SECONDS = 600       # 窗口时长（秒）
+TRANSIENT_BREAK_THRESHOLD = 3              # 窗口内同指纹次数达此次数 → 触发熔断
+TRANSIENT_BREAK_COOLDOWN_SECONDS = 600     # 触发后全局冻结时长（秒）
+TRANSIENT_BREAK_ALERT_THROTTLE_MINUTES = 15 # major 告警节流（分钟）
+
 
 class ProviderCircuit:
     """provider 熔断与切换冷却组件（门面 AgentRunner 的组合组件）。"""
@@ -77,6 +85,14 @@ class ProviderCircuit:
         self._daily_provider_attempts: Dict[str, int] = {}
         self._daily_provider_warned: Dict[str, bool] = {}
         self._daily_reset_date = datetime.now(timezone.utc).date()
+
+        # fix-provider-transient-backoff（D4 / transient-dispatch-gating）：全局
+        # 瞬断错误指纹熔断态。进程内存、不落盘（与 4xx 熔断/switch 冷却同构，
+        # daemon 重启清零可接受）。
+        #   _transient_break_events: {指纹: [window 内失败时间戳, ...]}
+        #   _transient_break_until: 全局冻结到期单调秒（0 = 未冻结）
+        self._transient_break_events: Dict[str, list] = {}
+        self._transient_break_until: float = 0.0
 
     @staticmethod
     def parse_api_error_status(error_text: str) -> Optional[int]:
@@ -304,6 +320,157 @@ class ProviderCircuit:
                 "agent_runner",
                 f"Provider '{provider_name}' daily attempts ({count}) exceeded "
                 f"pm.failover.daily_attempts_warn ({warn}) — check for silent cost",
+            )
+
+
+    # ── 全局瞬断错误指纹熔断（fix-provider-transient-backoff D4 / transcendent-dispatch-gating）──
+    # 全局维度的瞬断错误指纹计数：错误文本归一化（剥离 model 名/时间戳等可变字段）
+    # 生成指纹，在窗口内同一指纹出现次数达阈值 → 触发全局派发冻结。计数与熔断
+    # 状态保持进程内存（与既有 4xx 熔断同构，daemon 重启清零）。
+
+    @staticmethod
+    def normalize_transient_fingerprint(error_text: str) -> str:
+        """把瞬断错误文本归一化为指纹（design D4）。
+
+        归一化只剥离「可变字段」：HTTP 状态码之外的具体 model 标识、run 专属
+        时间戳、会话 id 等。保留错误类别骨架（如 ``unrecognized_model``、
+        ``HTTP 503`` 字样），使不同 spec 的同型瞬断收敛为同一指纹、真实缺陷型
+        错误文本各异则指纹不同。
+
+        实现要点：小写化 → 剥离 ``[claude-code:...]`` 诊断前缀 → 剥 model 名
+        （``deepseek-v4-flash`` / ``glm-5.3-flash`` / ``claude-*`` 等形态）→
+        剥 ISO 时间戳与长数字串 → 压空白。
+        """
+        if not error_text:
+            return ""
+        text = error_text.lower()
+        # 剥 [claude-code:...] 诊断前缀（v2.1.233+ 每请求写入的噪音）
+        text = re.sub(r"\[claude-code:[^\]]*\]", "", text)
+        # 剥 model 名：版本化模型名形如 deepseek-v4-flash / glm-5.3-flash /
+        # claude-3-5-haiku（含「-<数字>」片段）。统一替换为占位符，使不同
+        # 模型变体的同型瞬断收敛为同一指纹。
+        text = re.sub(
+            r"\b[a-z][a-z0-9]*(?:-[a-z0-9]+)*-v?\d+(?:\.\d+)*(?:-[a-z0-9.]+)*\b",
+            "<model>",
+            text,
+        )
+        # 剥 iso 时间戳（2026-09-07t10:40:03z 等）
+        text = re.sub(r"\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}:\d{2}(?:\.\d+)?z?", "", text)
+        # 剥长数字串（unix 时间戳 / session id 碎片）
+        text = re.sub(r"\d{4,}", "", text)
+        # 剥分隔符噪音与空白
+        text = re.sub(r"[\s:/.,()\"'-]+", " ", text).strip()
+        return text
+
+    def record_transient_error(self, error_text: str,
+                               now: float | None = None) -> bool:
+        """记录一次瞬断错误，窗口内同指纹累计 → 达阈值触发全局熔断。
+
+        Returns:
+            True 表示本次记录**触发了**全局熔断（首次达阈值）；False 表示未触发
+            （未达阈值 / 已在熔断中 / 指纹为空）。
+        """
+        fingerprint = self.normalize_transient_fingerprint(error_text)
+        if not fingerprint:
+            return False
+        if self.is_global_transient_break(now=now):
+            # 已冻结中：只记账不重复触发/告警（冷却到期由查询侧清零重记）。
+            self._transient_break_events.setdefault(fingerprint, []).append(
+                now if now is not None else self._pm._now())
+            return False
+        now = self._pm._now() if now is None else now
+        window = int(self._pm._get_config(
+            "agents.transient_break_window_seconds", TRANSIENT_BREAK_WINDOW_SECONDS) or 0)
+        if window <= 0:
+            return False
+        events = self._transient_break_events.setdefault(fingerprint, [])
+        # 滑出窗口外旧事件
+        events = [t for t in events if now - t <= window]
+        events.append(now)
+        self._transient_break_events[fingerprint] = events
+        threshold = int(self._pm._get_config(
+            "agents.transient_break_threshold", TRANSIENT_BREAK_THRESHOLD) or 0)
+        if threshold <= 0:
+            return False
+        if len(events) >= threshold:
+            cooldown = int(self._pm._get_config(
+                "agents.transient_break_cooldown_seconds",
+                TRANSIENT_BREAK_COOLDOWN_SECONDS) or 0)
+            self._transient_break_until = now + (cooldown or TRANSIENT_BREAK_COOLDOWN_SECONDS)
+            self._alert_transient_break(fingerprint, len(events), window)
+            self._pm.logger.error(
+                "agent_runner",
+                f"Global transient break TRIGGERED for fingerprint '{fingerprint}' "
+                f"({len(events)} failures within {int(window)}s window) — "
+                f"freezing all new run dispatch for "
+                f"{int(self._transient_break_until - now)}s "
+                f"(fix-provider-transient-backoff D4)",
+            )
+            return True
+        return False
+
+    def is_global_transient_break(self, now: float | None = None) -> bool:
+        """全局是否处于瞬断熔断冻结期（派发闸门查询）。
+
+        冷却到期自动解除并清零窗口内指纹计数（重新起算，与 is_instant_fail_cooled
+        到期恢复语义一致）；无冻结 / 已到期返回 False（恢复派发）。
+        """
+        if self._transient_break_until <= 0:
+            return False
+        now = self._pm._now() if now is None else now
+        if now >= self._transient_break_until:
+            self._transient_break_until = 0.0
+            self._transient_break_events.clear()
+            self._pm.logger.warning(
+                "agent_runner",
+                "Global transient break expired — dispatch resumed, "
+                "fingerprint window reset",
+            )
+            return False
+        return True
+
+    def _alert_transient_break(self, fingerprint: str, count: int,
+                               window: int) -> None:
+        """触发全局瞬断熔断时发 major 告警（15 分钟节流去重）。
+
+        与 _alert_instant_fail_storm 同构：AdminStore.latest_signal 按
+        (spec, signal_type) 在窗口内查重，窗口内已有同信号则不发第二条。
+        """
+        try:
+            from core.admin_store import AdminStore, ESCALATION
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            if store.latest_signal(
+                    "global-transient", "transient_break_storm",
+                    TRANSIENT_BREAK_ALERT_THROTTLE_MINUTES) is not None:
+                self._pm.logger.debug(
+                    "agent_runner",
+                    f"transient_break_storm 告警已 throttle "
+                    f"({TRANSIENT_BREAK_ALERT_THROTTLE_MINUTES} 分钟内已有)",
+                )
+                return
+            store.append({
+                "kind": ESCALATION,
+                "signal_type": "transient_break_storm",
+                "spec": "global-transient",
+                "severity": "major",
+                "description": (
+                    f"全局瞬断风暴：错误指纹 '{fingerprint}' 在 {int(window)}s 窗口内 "
+                    f"出现 {count} 次 — 已冻结全部新 run 派发，冷却期内不再启动新 run"
+                ),
+                "evidence": (
+                    f"fingerprint={fingerprint}; count={count}; "
+                    f"window_seconds={int(window)}; "
+                    f"cooldown_seconds={int(self._transient_break_until - self._pm._now())}"
+                ),
+                "recommended_action": (
+                    "检查网关/默认 provider 瞬时故障（model 拒绝 / 5xx / 断连）；"
+                    "熔断自动冷却到期后恢复派发，无需人工干预"
+                ),
+            })
+        except Exception as e:
+            self._pm.logger.error(
+                "agent_runner",
+                f"transient_break_storm 告警写入失败: {e}",
             )
 
 

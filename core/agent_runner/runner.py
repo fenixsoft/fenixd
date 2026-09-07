@@ -1942,6 +1942,18 @@ class AgentRunner:
                                 # 与终态 keep_for_reuse 判定（task 3.2 / 4.1）。
                                 if "[provider-transient]" not in error:
                                     error = f"[provider-transient] {error}"
+                                # 全局瞬断错误指纹计数（fix-provider-transient-backoff D4）：
+                                # 每次瞬断失败记账到全局熔断；达阈值触发全局派发冻结。
+                                # 指纹源用原始 stderr（降噪后 error 可能丢 unrecognized_model
+                                # 字样），与 D2 判定同源。
+                                try:
+                                    self.record_transient_break(
+                                        "\n".join(str(l) for l in exc_stderr) or error)
+                                except Exception as _break_err:
+                                    self.logger.debug(
+                                        "agent_runner",
+                                        f"global transient break 记账失败（不阻断）: {_break_err}",
+                                    )
                             if (is_transient
                                     and transient_retries < len(transient_budget)):
                                 # 原地退避重试：写 transient_retry 事件留痕，按退避序列
@@ -3035,6 +3047,16 @@ class AgentRunner:
     def _record_provider_probe(self, provider_name: str, success: bool,
                                now: float | None = None) -> None:
         return self._provider_circuit._record_provider_probe(provider_name, success, now)
+
+    # ── 全局瞬断熔断转导（fix-provider-transient-backoff D4）──────────────────
+
+    def record_transient_break(self, error_text: str) -> bool:
+        """记录一次瞬断失败到全局指纹计数（D4）。返回 True = 首次触发熔断。"""
+        return self._provider_circuit.record_transient_error(error_text)
+
+    def is_global_transient_break_active(self, now: float | None = None) -> bool:
+        """全局瞬断熔断是否生效（dispatch 闸门查询）。"""
+        return self._provider_circuit.is_global_transient_break(now=now)
 
     def _accumulate_token_usage(self, spec_name: str, usage_info: dict) -> None:
         return self._token_accountant._accumulate_token_usage(spec_name, usage_info)

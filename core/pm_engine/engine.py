@@ -2452,6 +2452,22 @@ class PMEngine:
         except Exception:
             return False
 
+    def _global_transient_break_active(self) -> bool:
+        """全局瞬断熔断判定（fix-provider-transient-backoff D4）：熔断期冻结全部新派发。
+
+        委托到 agent_runner.is_global_transient_break_active；runner 不可用或判定
+        异常时 fail-open（返回 False，不阻塞派发），保证熔断机制故障不放大为
+        调度故障（与 _instant_fail_cooled 同构）。
+        """
+        runner = getattr(self, "agent_runner", None)
+        checker = getattr(runner, "is_global_transient_break_active", None)
+        if not callable(checker):
+            return False
+        try:
+            return checker() is True
+        except Exception:
+            return False
+
     def _effective_run_timeout(self, agent_type: str | None = None) -> float:
         """agent run 生效超时（per-agent-timeout-override 3.2）：override → 全局回退。
 

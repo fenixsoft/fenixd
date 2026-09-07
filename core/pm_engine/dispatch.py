@@ -369,6 +369,15 @@ class Dispatcher:
         if self._pm.shutting_down:
             self._pm.logger.debug("pm_engine", "Shutting down — dispatch paused")
             return
+        # fix-provider-transient-backoff D4：全局瞬断熔断冻结期间暂停一切新派发。
+        # 与 instant_fail_cooled 同构：冷却到期自动恢复；在飞 run 不受影响。
+        if self._pm._global_transient_break_active():
+            self._pm.logger.debug(
+                "pm_engine",
+                "Global transient break active — dispatch paused "
+                "(fix-provider-transient-backoff D4)",
+            )
+            return
         max_concurrent = self._pm._get_config("agents.max_concurrent", 2)
 
         # 本轮调用内已被守卫三抑制的条目（spec, agent_type）。
