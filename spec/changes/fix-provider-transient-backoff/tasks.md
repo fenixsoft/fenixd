@@ -65,10 +65,12 @@
 - [x] 6.1 回归：瞬断重试与秒挂熔断（instant_fail 60s 存活时长判定）交互——原地重试拉长存活不误触发秒挂；与死亡豁免/预算闸门叠加语义不回归
 - [x] 6.2 回归：daemon 重启恢复路径（recover_interrupted）与 keep_for_reuse 遗产认领协同无互删
 - [x] 6.3 全量既有测试套通过（test_provider_circuit / test_provider_failover / test_runner_provider 等零回归）
-- [x] 6.4 真实故障文本 fixture 回放：以 2026-09 死亡 run 的 stderr 样本回放判定与降噪路径（参照 tests/test_provider_failover.py:173 真实故障 fixture 惯例）
+- [x] 6.4 真实故障文本 fixture 回放：以 2026-09 死亡 run 的 stderr 样本回放判定与降噪路径（参照 tests/test_provider_failover.py:173 真实故障 fixture 惯例）## 验证修复（第 2 轮失败）
 
-## 验证修复（第 1 轮失败）
+### 上轮实现结论（自动携带，来自上一轮 implementer 收工结论）
 
-- [x] 先复核失败有效性：逐条核对 `spec/changes/fix-provider-transient-backoff/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [x] 修复后重跑验证确认通过
+全部 27 项任务完成。实现内容：① error-attribution-denoise（1.x）：runner 拼装 error 前过滤 [claude-code:] stderr 诊断噪音行、全噪音回退 Exit code、双通道瞬断判定（全量 stderr switch pattern 或 exit≠0+无 result+诊断行）不依赖降噪后 error；② provider-transient-backoff（2.x/3.x）：attempt 原地退避重试（run_id r{n} 后缀独立产物、transient_retry 事件、预算耗尽才换链）、resume 死 session 兜底、worktree 保留扩展全 agent_type、瞬断终态 keep_for_reuse（worktree_manager 泛化 agent_type）与既有 _take_reusable_worktree 认领通道协同；③ transient-dispatch-gating（4.x）：[provider-transient] 标记写侧统一注入、dispatch _schedule_transient_recovery 排程等待重派（不写 retries exhausted）、ProviderCircuit 全局错误指纹熔断（指纹归一化剥 model/时间戳、滑动窗口 3/600/600 触发、_process_queue 闸门冻结、15min 节流 major 告警）；④ transient-controls-ui（5.x）：core/config.py 五键定义校验（非法回退缺省）、config.template.yaml 模板注释、SystemPanel「瞬断治理」分组（5 控件 + 校验拦截）、docs/help/08-config.md 文档、前端构建产物重建；⑤ 回归
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/fix-provider-transient-backoff/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
