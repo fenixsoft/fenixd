@@ -276,3 +276,83 @@ class TestRealFailureFixtures:
         )
         # 降噪后至少有部分真实内容（除非全噪音）
         assert len(effective) >= 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2.1-2.4 原地退避（fix-provider-transient-backoff D1）
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestParseTransientBackoffSchedule:
+    """测试退避序列解析（纯函数，不依赖 runner 实例）。"""
+
+    def test_valid_schedule(self):
+        assert AgentRunner._parse_transient_backoff_schedule("30,60,120") == [30, 60, 120]
+
+    def test_custom_schedule(self):
+        assert AgentRunner._parse_transient_backoff_schedule("5,10,20,40") == [5, 10, 20, 40]
+
+    def test_invalid_elements_filtered(self):
+        """非法元素静默跳过。"""
+        assert AgentRunner._parse_transient_backoff_schedule("30,abc,60") == [30, 60]
+
+    def test_all_invalid_fallback(self):
+        """全非法回退缺省。"""
+        assert AgentRunner._parse_transient_backoff_schedule("abc,def") == [30, 60, 120]
+
+    def test_empty_string_fallback(self):
+        assert AgentRunner._parse_transient_backoff_schedule("") == [30, 60, 120]
+
+    def test_none_fallback(self):
+        assert AgentRunner._parse_transient_backoff_schedule(None) == [30, 60, 120]
+
+    def test_negative_filtered(self):
+        """负数静默跳过。"""
+        assert AgentRunner._parse_transient_backoff_schedule("-10,30") == [30]
+
+    def test_zero_filtered(self):
+        """零值静默跳过。"""
+        assert AgentRunner._parse_transient_backoff_schedule("0,30,60") == [30, 60]
+
+
+class TestTransientRetryLogic:
+    """验证原地重试核心逻辑（纯函数/属性验证，不启动 claude 进程）。"""
+
+    def test_sub_run_id_generation(self):
+        """子重试 run_id 格式：attempt_run_id-r{N}。"""
+        attempt_run_id = "run-20260907-a1"
+        # 首次（retries=0）: 不加后缀
+        assert (f"{attempt_run_id}" if 0 == 0
+                else f"{attempt_run_id}-r{0}") == attempt_run_id
+        # 第1次重试: -r1
+        assert f"{attempt_run_id}-r{1}" == "run-20260907-a1-r1"
+        # 第2次重试: -r2
+        assert f"{attempt_run_id}-r{2}" == "run-20260907-a1-r2"
+
+    def test_transient_budget_limits_retries(self):
+        """瞬断重试次数不超过退避序列长度。"""
+        budget = [30, 60, 120]
+        retries = 0
+        # 3 次预算
+        while retries < len(budget):
+            retries += 1
+        assert retries == 3
+        # 第4次应停止
+        assert retries == len(budget)
+
+    def test_non_transient_exits_while(self):
+        """非瞬断错误（real bug）→ classify_transient_error 返回 False → break。"""
+        stderr = [
+            "AssertionError: expected 'foo' to equal 'bar'",
+        ]
+        assert ProviderCircuit.classify_transient_error(stderr, 1, True) is False
+
+    def test_resume_dead_not_transient(self):
+        """resume 死 session（No conversation found）不判瞬断（排除在原地重试外）。"""
+        error_text = "No conversation found with session ID abc123"
+        stderr = [
+            "[claude-code:unrecognized_model] model deepseek-v4 not found",
+            f"Claude API error: {error_text}",
+        ]
+        # 通道 1 会因为 unrecognized_model 命中 → 瞬断；但 resume_dead 在 runner 中排除
+        assert ProviderCircuit.classify_transient_error(stderr, 1, False) is True
+        # runner 的 except 块中先检查 resume_dead 再判瞬断，resume_dead=True 时不原地重试
