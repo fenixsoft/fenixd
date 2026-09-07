@@ -500,5 +500,138 @@ class TestLintRule6OutsideRoot(_GitRepoFixture):
         self.assertFalse(any("仓库外" in v for v in violations))
 
 
+class _GuardPreclassifyFixture(unittest.TestCase):
+    """真实 StateMachine + mock runner，驱动守卫预分类（PR4）。"""
+
+    def setUp(self):
+        from unittest.mock import MagicMock
+        from core.agent_runner import AgentRunResult
+        from core.pm_engine.dispatch import Dispatcher
+        self.Dispatcher = Dispatcher
+        self.AgentRunResult = AgentRunResult
+        self.tmpdir = Path(tempfile.mkdtemp()) / "repo"
+        self.tmpdir.mkdir(parents=True, exist_ok=True)
+        self.project_root = self.tmpdir
+        _git(self.project_root, "init", "-q")
+        _git(self.project_root, "config", "user.email", "test@fenix.local")
+        _git(self.project_root, "config", "user.name", "Fenix Test")
+        _git(self.project_root, "config", "commit.gpgsign", "false")
+        (self.project_root / ".fenix").mkdir(exist_ok=True)
+        (self.project_root / ".gitignore").write_text(
+            "dist/\n.fenix/*\n!.fenix/keep.yaml\n", encoding="utf-8")
+        self.logger = mock.MagicMock()
+        self.sm = StateMachine(self.project_root / ".fenix" / "STATE.md",
+                               self.logger)
+        self.runner = mock.MagicMock()
+        self.runner.worktree_manager = mock.MagicMock()
+        self.config = {}
+        self.engine = PMEngine(self.sm, self.runner, self.config,
+                               self.project_root, self.logger)
+        self.wm = self.runner.worktree_manager
+        # 守卫存在性检查默认缺失（MagicMock 真值会假放行缺件）
+        self.wm.file_exists_on_branch.return_value = False
+        self.sm.add_spec("s1", {"priority": 5})
+        self.sm.transition("s1", "ready")
+        # 正确构造 Dispatcher（继承 PMEngine._dispatcher 属性的初始化方式）
+        self.dispatcher = self.Dispatcher(self.engine)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir.parent, ignore_errors=True)
+
+    def write_spec_dir(self, yaml_block):
+        spec_dir = self.project_root / "spec" / "changes" / "s1"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "tasks.md").write_text(
+            "# Tasks\n\n## Deliverables\n\n```yaml\n"
+            + yaml_block + "\n```\n\n## 1. x\n\n- [ ] 1.1 do it\n",
+            encoding="utf-8",
+        )
+        return spec_dir
+
+    def make_result(self, branch="fenix/s1", run_id="impl-s1-1-a1"):
+        return self.AgentRunResult(run_id, "s1", "implementer",
+                                   success=True, duration_seconds=1.0,
+                                   branch=branch)
+
+    def create_impl_file(self, path):
+        p = self.project_root / path
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x", encoding="utf-8")
+
+
+class TestGuardPreclassify(_GuardPreclassifyFixture):
+    """add-declaration-premechanize PR4：守卫缺件确定性预分类。"""
+
+    def _assert_no_judge_dispatched(self):
+        self.runner.run_dispute_judge.assert_not_called()
+
+    def test_all_deterministic_soften_and_proceed_no_judge(self):
+        """全部缺件命中确定性模式 → 软化 + 审计 + 放行，不派 judge。"""
+        self.write_spec_dir(
+            "- path: core/dashboard/static/dist/index.html\n  kind: modify\n"
+            "- path: core/other.py\n  kind: modify\n")
+        # implementations: dist 已软化 reference（不参与缺件），other.py 真缺件
+        # 但缺件清单只含 dist（other.py 在分支存在）
+        self.wm.file_exists_on_branch.side_effect = lambda branch, fp: (
+            fp == "core/other.py")
+        result = self.make_result()
+        # 构造缺件清单仅含 dist
+        from core.deliverables import extract_declared_entries
+        entries = extract_declared_entries(
+            self.project_root / "spec" / "changes" / "s1")
+        missing = ["core/dashboard/static/dist/index.html"]
+        # _deliverable_gate_missing 依赖 worktree 产物；直接调用预分类内部逻辑
+        # 用 mock 的 _deliverable_gate_missing 模拟守卫重跑
+        self.engine._deliverable_gate_missing = mock.MagicMock(return_value=[])
+        outcome = self.dispatcher._preclassify_missing("s1", result, missing)
+        self.assertEqual(outcome["action"], "proceed")
+        self._assert_no_judge_dispatched()
+
+    def test_mixed_missing_judge_input_contains_only_remaining(self):
+        """混合缺件：确定性条目软化，judge 输入仅含剩余真缺件。"""
+        self.write_spec_dir(
+            "- path: core/dashboard/static/dist/index.html\n  kind: modify\n"
+            "- path: core/real.py\n  kind: new\n")
+        missing = ["core/dashboard/static/dist/index.html", "core/real.py"]
+        result = self.make_result()
+        # 模拟守卫重跑：软化 dist 后只余 real
+        self.engine._deliverable_gate_missing = mock.MagicMock(
+            return_value=["core/real.py"])
+        outcome = self.dispatcher._preclassify_missing("s1", result, missing)
+        self.assertEqual(outcome["action"], "continue")
+        self.assertEqual(outcome["remaining"], ["core/real.py"])
+
+    def test_preclassify_exception_falls_back_to_judge(self):
+        """预分类异常 → 全量回退既有 judge 流程。"""
+        self.write_spec_dir(
+            "- path: core/dashboard/static/dist/index.html\n  kind: modify\n")
+        missing = ["core/dashboard/static/dist/index.html"]
+        result = self.make_result()
+        # extract_declared_entries 返回 None（无声明段）→ fallback
+        with mock.patch("core.deliverables.extract_declared_entries",
+                        return_value=None):
+            outcome = self.dispatcher._preclassify_missing("s1", result, missing)
+        self.assertEqual(outcome["action"], "fallback")
+
+    def test_full_adjudicate_proceeds_without_judge(self):
+        """全链路：_adjudicate_deliverable_missing 命中预分类后直接 proceed。"""
+        self.write_spec_dir(
+            "- path: core/dashboard/static/dist/index.html\n  kind: modify\n")
+        missing = ["core/dashboard/static/dist/index.html"]
+        result = self.make_result()
+        self.engine._deliverable_gate_missing = mock.MagicMock(return_value=[])
+        outcome = self.dispatcher._adjudicate_deliverable_missing(
+            "s1", result, None, missing)
+        self.assertEqual(outcome["action"], "proceed")
+        self._assert_no_judge_dispatched()
+        entry = self.sm.read_one("s1")
+        self.assertEqual(entry["status"], "implementing")
+        # tasks.md 已软化
+        text = (self.project_root / "spec" / "changes" / "s1" / "tasks.md")\
+            .read_text(encoding="utf-8")
+        self.assertIn("core/dashboard/static/dist/index.html\n  kind: reference",
+                      text)
+
+
 if __name__ == "__main__":
     unittest.main()
