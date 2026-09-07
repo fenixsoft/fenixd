@@ -1130,3 +1130,60 @@ class TestRecoveryKeepForReuseCoordination:
         wm.cleanup_stale_worktrees()
         assert wt_kept.exists(), "登记遗产豁免清理"
         assert not wt_orphan.exists(), "未登记孤儿被清扫"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6.4 真实故障文本 fixture 回放（补充：瞬断指纹 × 全局熔断链路）
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestRealFailureFingerprintReplay:
+    """Task 6.4 — 2026-09 死亡 run 的 stderr 样本回放全局熔断指纹链路。
+
+    样本与 TestRealFailureFixtures 同源；此处验证归一化指纹在真实故障文本上
+    收敛（不同 model 变体同指纹 → 熔断触发），且真实缺陷文本指纹互异（不误伤）。
+    """
+
+    def test_real_transient_samples_converge_to_one_fingerprint(self):
+        """死亡 run 的三个真实瞬断 stderr 样本归一化为同一指纹。"""
+        samples = [
+            "[claude-code:unrecognized_model] model deepseek-v4 not found\n"
+            'API error: unrecognized model "deepseek-v4-flash"\n'
+            "[claude-code:token_usage] total=0\n",
+            "[claude-code:unrecognized_model] model deepseek-v4 not found\n"
+            'API error: unrecognized model "glm-5.3-flash"\n'
+            "[claude-code:token_usage] total=0\n",
+            "[claude-code:unrecognized_model] model deepseek-v4 not found\n"
+            'API error: unrecognized model "claude-sonnet-5"\n'
+            "[claude-code:token_usage] total=0\n",
+        ]
+        fps = [ProviderCircuit.normalize_transient_fingerprint(s) for s in samples]
+        assert len(set(fps)) == 1, f"三个真实瞬断样本应归一化为同一指纹: {fps}"
+
+    def test_real_transient_samples_trigger_global_break(self):
+        """三个不同 spec 的真实瞬断死亡 → 第 3 次触发全局熔断。"""
+        pm = type("_PM", (), {
+            "config": {}, "project_root": None, "logger": FakeLogger(),
+            "now": 1000.0,
+            "_now": lambda self: 1000.0,
+            "_get_config": lambda self, key, default=None: default,
+        })()
+        pc = ProviderCircuit(pm)
+        samples = [
+            'API error: unrecognized model "deepseek-v4-flash"',
+            'API error: unrecognized model "glm-5.3-flash"',
+            'API error: unrecognized model "claude-sonnet-5"',
+        ]
+        assert pc.record_transient_error(samples[0]) is False
+        assert pc.record_transient_error(samples[1]) is False
+        assert pc.record_transient_error(samples[2]) is True
+        assert pc.is_global_transient_break() is True
+
+    def test_real_bug_texts_have_distinct_fingerprints(self):
+        """真实缺陷类错误文本指纹互异（不收敛、不误触发熔断）。"""
+        bugs = [
+            "AssertionError: expected 'foo' to equal 'bar'",
+            "TypeError: unsupported operand type(s) for +: 'NoneType' and 'str'",
+            "ValueError: invalid literal for int() with base 10: 'abc'",
+        ]
+        fps = [ProviderCircuit.normalize_transient_fingerprint(b) for b in bugs]
+        assert len(set(fps)) == 3, f"真实缺陷文本指纹应互异: {fps}"
