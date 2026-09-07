@@ -633,5 +633,38 @@ class TestGuardPreclassify(_GuardPreclassifyFixture):
                       text)
 
 
+class TestPremarketingTeaching(unittest.TestCase):
+    """add-declaration-premechanize PR5：产出期教学与部署副本。"""
+
+    def setUp(self):
+        self.repo_root = Path(__file__).resolve().parent.parent
+
+    def test_schema_yaml_tasks_instruction_has_four_patterns(self):
+        """schema.yaml tasks instruction 包含四类不可交付模式关键词。"""
+        import yaml
+        schema_path = self.repo_root / "schemas" / "spec-driven" / "schema.yaml"
+        with open(schema_path, encoding="utf-8") as f:
+            schema = yaml.safe_load(f)
+        tasks = next(a for a in schema["artifacts"] if a["id"] == "tasks")
+        instr = tasks["instruction"]
+        # 四类模式关键词
+        self.assertIn("dist/构建产物", instr)
+        self.assertIn("gitignored", instr)
+        self.assertIn("~/", instr)
+        self.assertIn(".fenix/", instr)
+        self.assertIn("reference", instr)
+
+    def test_skill_md_has_four_patterns_table(self):
+        """SKILL.md §3.2 tasks 指引包含四类不可交付模式表。"""
+        skill_path = self.repo_root / "skills" / "fenix-new" / "SKILL.md"
+        text = skill_path.read_text(encoding="utf-8")
+        self.assertIn("不可交付路径模式", text)
+        self.assertIn("dist/构建产物", text)
+        self.assertIn("gitignored", text)
+        self.assertIn("~/", text)
+        self.assertIn(".fenix/", text)
+        self.assertIn("promotion-soften", text)
+
+
 if __name__ == "__main__":
     unittest.main()

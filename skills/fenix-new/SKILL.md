@@ -142,6 +142,20 @@ python3 .fenix/bin/fenix_spec.py status --change <name>
      **不是**本仓库交付物，缺失不拦截）。守卫对 new/modify 硬校验实现分支存在性，
      reference 仅审计；无声明段的存量 spec 回退正则提取（保守易误拦，新 spec 一律写声明段）。
 
+     **不可交付路径模式（declaration-premechanize，daemon 会机械校验并软化）：**
+
+     以下四类路径在声明段中有特殊约束。daemon 在 spec 晋升（drafted → ready）
+     时会对命中条目自动软化 `kind → reference` 并审计留痕（reasoning 前缀
+     `promotion-soften`），守卫缺件判定时同样会预分类软化（reasoning 前缀
+     `guard-preclassify`）：
+
+     | 模式 | 示例 | 正确 kind | 说明 |
+     |------|------|-----------|------|
+     | dist/构建产物目录 | `dist/index.html`、`build/output.js` | `reference` | 构建产物运行时重建，非 git 交付物；声明 `reference` 即可 |
+     | gitignored 路径 | `.fenix/config.yaml`、`dist/...` | `reference` | `git check-ignore` 命中的路径不可作为 `new/modify`；改为 `reference` 或移除 |
+     | `~/`/仓库外路径 | `~/configs/app.yaml`、`../outside.md` | `reference` | `~` 展开后或 `..` 越界后不在仓库内的路径不可作为 `new/modify` |
+     | `.fenix/` 运行时文件 | `.fenix/dispute_audits.jsonl` | `reference` | `.fenix/` 下的文件是框架运行时产物，非交付物 |
+
      **path 必须是具体文件，禁止写目录**（强制，drafted→ready 晋升 lint 会拒绝）：
      构建产物目录写其确定性锚点文件——如前端产物写 `core/dashboard/static/dist/index.html`
      而非 `core/dashboard/static/dist`；`<...>` 模板占位符同样禁止（守卫会静默跳过，
