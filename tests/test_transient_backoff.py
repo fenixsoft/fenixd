@@ -7,6 +7,8 @@
 """
 
 import re
+import subprocess
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -14,6 +16,7 @@ import pytest
 
 from core.agent_runner import AgentRunner
 from core.agent_runner.provider_circuit import ProviderCircuit
+from tests.helpers import FakeLogger
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -356,3 +359,258 @@ class TestTransientRetryLogic:
         # 通道 1 会因为 unrecognized_model 命中 → 瞬断；但 resume_dead 在 runner 中排除
         assert ProviderCircuit.classify_transient_error(stderr, 1, False) is True
         # runner 的 except 块中先检查 resume_dead 再判瞬断，resume_dead=True 时不原地重试
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 3.4 worktree 保留扩展（fix-provider-transient-backoff D3）
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class _TransientError(RuntimeError):
+    """模拟 Claude CLI 瞬断失败异常（携带 stderr_lines / exit_code / has_result）。"""
+
+    def __init__(self, msg="cli transient failure", *, stderr_lines=None,
+                 exit_code=1, has_result=False):
+        super().__init__(msg)
+        self.stderr_lines = stderr_lines or []
+        self.exit_code = exit_code
+        self.has_result = has_result
+
+
+class _NonTransientError(RuntimeError):
+    """模拟真实代码缺陷类异常（不触发瞬断判定）。"""
+
+    def __init__(self, msg="AssertionError: expected 'foo' to equal 'bar'",
+                 *, stderr_lines=None, exit_code=1, has_result=True):
+        super().__init__(msg)
+        self.stderr_lines = stderr_lines or [
+            "AssertionError: expected 'foo' to equal 'bar'",
+            "  at tests/test_feature.py:42",
+        ]
+        self.exit_code = exit_code
+        self.has_result = has_result
+
+
+def _make_chain_config(agent_type="planner-judge"):
+    """构造含单 provider 候选链的 config（供 provider_name 非空路径测试）。"""
+    return {
+        "llm": {"providers": [
+            {"name": "inferaiapi.com", "baseurl": "https://a.com", "apikey": "k1"},
+        ]},
+        "agents": {
+            "models": {
+                agent_type: {
+                    "provider": "inferaiapi.com",
+                    "model": "deepseek-v4-flash",
+                },
+            },
+            "max_retries": 2,
+            "transient_backoff_schedule": "1",   # 预算长度 1，两次即耗尽
+        },
+    }
+
+
+def _build_runner(tmp_path, config=None):
+    """构造可驱动 _execute_agent 的最小 runner 实例。
+
+    绕过 __init__，手动填充必要属性并注入 mock 组件（v2_server / token_accountant /
+    build_prompt / run_claude），使 _execute_agent_inner 可正常跑通而不触发真实子进程。
+    """
+    from core.agent_runner import AgentRunner
+    runner = AgentRunner.__new__(AgentRunner)
+    runner.config = config or {}
+    runner.worktree_manager = None
+    runner.state_machine = None
+    runner.project_root = tmp_path
+    runner.logger = FakeLogger()
+    runner._running_agents = {}
+    runner._daily_run_count = 0
+    runner._daily_reset_date = None
+    runner._daily_provider_attempts = {}
+    runner._daily_provider_warned = {}
+    runner.provider_circuits = {}
+    # mock v2_server（避免真实 dev-server 启停）
+    runner.__dict__["_v2_server_instance"] = MagicMock()
+    runner._v2_server._v2_inject_env.return_value = {}
+    # mock token accountant（避免 state_machine 依赖）
+    runner.__dict__["_token_accountant_instance"] = MagicMock()
+    # mock _build_prompt（避免 spec 文件读取）
+    runner._build_prompt = lambda *a, **k: "test prompt"
+    # mock _v2_harvest（在 _execute_agent finally 中调用）
+    runner._v2_server._v2_stop_for_worktree.return_value = None
+    return runner
+
+
+class TestWorktreeReuseAcrossAttempts:
+    """Task 3.4 — planner-judge attempt 间复用（D3：全 agent_type 保留 worktree）。
+
+    场景：planner-judge attempt 1 死于瞬断 → 原地重试耗尽 → 转换链 → attempt 2
+    使用与 attempt 1 相同的 worktree 目录与分支，不新建 worktree。
+    """
+
+    def test_planner_judge_reuses_worktree_between_attempts(self, tmp_path, monkeypatch):
+        """planner-judge attempt 1 瞬断 → attempt 2 复用同一 worktree，create 仅调一次。"""
+        monkeypatch.setattr(time, "sleep", lambda _: None)   # 抹掉 attempt 间隔 sleep
+
+        config = _make_chain_config("planner-judge")
+        runner = _build_runner(tmp_path, config)
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = wt
+        runner.worktree_manager.get_branch_name.return_value = "fenix/spec-123"
+
+        stderr_real = [
+            "[claude-code:unrecognized_model] model deepseek-v4 not found",
+            "API error: unrecognized model",
+        ]
+        attempt_n = {"n": 0}
+        call_cwds = []
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None,
+                            spec_name=None, agent_type=None):
+            attempt_n["n"] += 1
+            call_cwds.append(cwd)
+            if attempt_n["n"] <= 2:
+                # attempt 1：初始 + 原地重试 1 次（预算 [1]）均瞬断
+                raise _TransientError(stderr_lines=stderr_real, exit_code=1, has_result=False)
+            # attempt 2 成功
+            return ("done", 1, "sess-2", {"input_tokens": 0, "output_tokens": 0,
+                                          "cache_creation_input_tokens": 0,
+                                          "cache_read_input_tokens": 0, "cost_usd": None})
+
+        runner._run_claude = fake_run_claude
+        result = runner._execute_agent("test-spec", "planner-judge", "run-1")
+
+        # create 只被调用 1 次（attempt 2 复用 attempt 1 创建的 worktree）
+        assert runner.worktree_manager.create.call_count == 1
+        # 两次 _run_claude 调用的 cwd 完全相同（worktree 复用）
+        assert len(call_cwds) >= 2
+        assert call_cwds[0] == call_cwds[1] == wt
+        # attempt 2 成功
+        assert result.success is True
+
+
+class TestTransientTerminalKeepForReuse:
+    """Task 3.4 — 瞬断终态保留现场（D3：transient → keep_for_reuse）。
+
+    场景：implementer run 烧尽 attempt 与原地重试预算，终态 error 带
+    [provider-transient] 标记 → keep_for_reuse 登记（非 cleanup）。
+    """
+
+    def test_transient_terminal_calls_keep_for_reuse(self, tmp_path, monkeypatch):
+        """瞬断终态 → keep_for_reuse 被调用，cleanup 不被调用。"""
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+
+        config = _make_chain_config("implementer")
+        config["agents"]["max_retries"] = 1   # 单次 attempt 即终态
+        runner = _build_runner(tmp_path, config)
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = wt
+        runner.worktree_manager.get_branch_name.return_value = "fenix/spec-123"
+
+        stderr_real = [
+            "[claude-code:unrecognized_model] model deepseek-v4 not found",
+            "API error: unrecognized model",
+        ]
+
+        def fake_run_claude(*args, **kwargs):
+            raise _TransientError(stderr_lines=stderr_real, exit_code=1, has_result=False)
+
+        runner._run_claude = fake_run_claude
+        result = runner._execute_agent("test-spec", "implementer", "run-2")
+
+        # 终态标记 → keep_for_reuse 被调用（传入 agent_type）
+        runner.worktree_manager.keep_for_reuse.assert_called_once()
+        call_args = runner.worktree_manager.keep_for_reuse.call_args
+        assert call_args[1].get("agent_type") == "implementer" or (
+            len(call_args[0]) >= 3 and call_args[0][2] == "implementer"
+        )
+        # cleanup(success=False) 未被调用
+        runner.worktree_manager.cleanup.assert_not_called()
+        # 结果标记 worktree_kept
+        assert result.worktree_kept is True
+        assert "[provider-transient]" in (result.error or "")
+
+
+class TestNonTransientTerminalCleanup:
+    """Task 3.4 — 非瞬断终态照旧清理（真实缺陷 → cleanup）。
+
+    场景：implementer run 因真实缺陷类错误（非瞬断判定）烧尽全部重试
+    → 终态处置维持 cleanup(success=False) 行为。
+    """
+
+    def test_non_transient_terminal_calls_cleanup(self, tmp_path, monkeypatch):
+        """非瞬断终态 → cleanup(success=False) 被调用，keep_for_reuse 不被调用。"""
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+
+        config = _make_chain_config("implementer")
+        config["agents"]["max_retries"] = 1
+        runner = _build_runner(tmp_path, config)
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = wt
+        runner.worktree_manager.get_branch_name.return_value = "fenix/spec-123"
+
+        def fake_run_claude(*args, **kwargs):
+            raise _NonTransientError()
+
+        runner._run_claude = fake_run_claude
+        result = runner._execute_agent("test-spec", "implementer", "run-3")
+
+        # 非瞬断 → cleanup(success=False) 被调用
+        runner.worktree_manager.cleanup.assert_called_once_with(wt, success=False)
+        # keep_for_reuse 未被调用
+        runner.worktree_manager.keep_for_reuse.assert_not_called()
+        assert result.success is False
+
+
+class TestReuseClaimInheritance:
+    """Task 3.4 — 认领继承现场（_take_reusable_worktree 认领 keep_for_reuse 遗产）。
+
+    场景：keep_for_reuse 登记 worktree 后，下轮 dispatch 调用 create() 时
+    经 _take_reusable_worktree 认领同一目录与分支，继承已提交与未提交现场。
+    """
+
+    def test_claim_inherited_worktree_after_keep_for_reuse(self, tmp_path):
+        """keep_for_reuse → create() 返回同一 worktree 路径与分支。"""
+        from core.worktree_manager import WorktreeManager
+        root = tmp_path / "repo"
+        root.mkdir()
+        subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(root), "config", "user.email",
+                        "test@fenix.local"], check=True)
+        subprocess.run(["git", "-C", str(root), "config", "user.name",
+                        "Fenix Test"], check=True)
+        subprocess.run(["git", "-C", str(root), "config", "commit.gpgsign",
+                        "false"], check=True)
+        (root / "base.py").write_text("BASE\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(root), "commit", "-q", "-m",
+                        "[fenix] base"], check=True)
+        subprocess.run(["git", "-C", str(root), "branch", "-M", "main"], check=True)
+
+        base = root / ".claude" / "worktrees"
+        base.mkdir(parents=True, exist_ok=True)
+        wm = WorktreeManager(base, root, FakeLogger())
+
+        # 首次 create → 得到 worktree
+        wt1 = wm.create("demo-spec", "planner-judge")
+        assert wt1 is not None
+        branch = wm.get_branch_name(wt1)
+        assert branch is not None
+
+        # keep_for_reuse 登记
+        wm.keep_for_reuse("demo-spec", wt1, agent_type="planner-judge")
+
+        # 再次 create → 经 _take_reusable_worktree 认领同一 worktree
+        wt2 = wm.create("demo-spec", "planner-judge")
+        assert wt2 == wt1, "认领应返回同一 worktree 路径"
+        assert wm.get_branch_name(wt2) == branch, "认领应继承同一分支"
