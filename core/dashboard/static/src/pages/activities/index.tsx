@@ -29,6 +29,7 @@ import type {
   AlertsData,
   ProjectActivities,
 } from '@/services/dashboard';
+import { useIsMobile } from '@/hooks/useIsMobile';
 
 const REFRESH_THROTTLE_MS = 500;
 
@@ -90,14 +91,29 @@ function signalTag(signalType?: string) {
   return <Tag color="purple">{SIGNAL_LABEL[signalType] || signalType}</Tag>;
 }
 
-function ActivityCard({ a, onViewRun }: { a: ActivityItem; onViewRun?: (a: ActivityItem) => void }) {
+function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?: (a: ActivityItem) => void; isMobile?: boolean }) {
   const unhandled = a.handled === false;
   // fix-admin-disposition-empty-shell：失败处置自解释——error 携带 CLI 失败原因，
   // 空 summary 兜底文案同步附带 error，空壳卡片（仅时间+spec）不再出现。
   const errText = a.error || '';
 
+  // 移动端渐进披露：isMobile && summary.length > 300 时折叠
+  const [expanded, setExpanded] = useState(false);
+  const shouldFold = isMobile && (a.summary || '').length > 300;
+
   const body = a.summary ? (
-    <div style={{ marginBottom: 8, fontSize: 13, lineHeight: 1.65 }}>
+    <div
+      style={{
+        marginBottom: 8,
+        fontSize: 13,
+        lineHeight: 1.65,
+        maxHeight: shouldFold && !expanded ? 88 : undefined,
+        overflow: shouldFold && !expanded ? 'hidden' : undefined,
+        position: shouldFold && !expanded ? 'relative' : undefined,
+        maskImage: shouldFold && !expanded ? 'linear-gradient(to bottom, black 60%, transparent 100%)' : undefined,
+        WebkitMaskImage: shouldFold && !expanded ? 'linear-gradient(to bottom, black 60%, transparent 100%)' : undefined,
+      }}
+    >
       <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
         {a.summary}
       </Markdown>
@@ -130,7 +146,7 @@ function ActivityCard({ a, onViewRun }: { a: ActivityItem; onViewRun?: (a: Activ
         {resultPill(a.result)}
         {unhandled && <Tag color="red">需人工决策</Tag>}
         {a.admin_run_id && a.project && onViewRun && (
-          <Button type="link" size="small" style={{ padding: 0, height: 'auto' }} onClick={() => onViewRun(a)}>
+          <Button type="link" size="small" className="touch-expand" onClick={() => onViewRun(a)}>
             查看处置过程
           </Button>
         )}
@@ -141,6 +157,13 @@ function ActivityCard({ a, onViewRun }: { a: ActivityItem; onViewRun?: (a: Activ
         </div>
       ) : null}
       {body}
+      {shouldFold && (
+        <div style={{ textAlign: 'right', marginTop: 4 }}>
+          <Button type="link" size="small" className="touch-expand" onClick={() => setExpanded(!expanded)}>
+            {expanded ? '收起' : '展开全文'}
+          </Button>
+        </div>
+      )}
       {a.actions_taken && (
         <div style={{ marginBottom: 4, fontSize: 13, lineHeight: 1.65 }}>
           <Typography.Text type="secondary">处置：</Typography.Text>
@@ -166,11 +189,13 @@ function ActivityTimeline({
   current,
   onPageChange,
   onViewRun,
+  isMobile,
 }: {
   activities: ActivityItem[];
   current: number;
   onPageChange: (page: number) => void;
   onViewRun?: (a: ActivityItem) => void;
+  isMobile?: boolean;
 }) {
   if (!activities || activities.length === 0) {
     return <Empty description="暂无运维记录" />;
@@ -184,8 +209,9 @@ function ActivityTimeline({
     <div>
       <Timeline
         items={pageItems.map((a) => ({
+          key: a.id,
           color: a.handled === false ? 'red' : 'gray',
-          children: <ActivityCard a={a} onViewRun={onViewRun} />,
+          children: <ActivityCard a={a} onViewRun={onViewRun} isMobile={isMobile} />,
         }))}
       />
       {activities.length > PAGE_SIZE ? (
@@ -332,6 +358,7 @@ function AlertPanel({
 
 export default function ActivitiesPage() {
   const { message } = App.useApp();
+  const isMobile = useIsMobile();
   const [data, setData] = useState<AdminActivitiesData | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsData | null>(null);
   const [optimistic, setOptimistic] = useState<string[]>([]);
@@ -461,6 +488,7 @@ export default function ActivitiesPage() {
         current={current}
         onPageChange={setCurrent}
         onViewRun={handleViewRun}
+        isMobile={isMobile}
       />
     );
   };

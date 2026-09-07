@@ -123,6 +123,84 @@ deps_mode 仅对 nodejs 项目生效——供给入口是 package.json/node_modu
 | logging.level | INFO | 重启 |
 | dashboard.port | 8787 | 重启 |
 
+### hooks
+
+SPEC 状态变化事件 hook 的订阅配置。SPEC 每次状态转换都会发布一条事件（事件类型 = 目标状态，取十状态枚举值：drafted/ready/implementing/implemented/testing/verified/bug-found/blocked/done/pushed），你可以订阅这些事件，在 SPEC 进入指定状态时自动执行动作。
+
+订阅分两级：`hooks.global`（对所有 SPEC 生效，设置页「Hook」面板配置）与 `hooks.specs.<spec 名>`（仅对该 SPEC 生效，SPEC 详情页「Hook」页签配置）。一次状态变化可同时命中多条 hook，各自独立并发执行、互不阻塞。无 `hooks` 段 = 零行为。
+
+```yaml
+hooks:
+  global:                        # 对所有 SPEC 生效
+    - id: h-3f9a2b               # 必填且须唯一（见下方注意事项）
+      enabled: true
+      events: [done]             # 订阅的事件 = 目标状态
+      action: restart-daemon     # SPEC 完成 → 优雅重启 daemon 让新代码生效
+    - id: h-7c1d9e
+      enabled: true
+      events: [blocked]
+      action: shell              # 任意 SPEC 阻塞 → 自定义命令通知
+      command: 'curl -s -X POST "https://notify.example.com/$FENIX_HOOK_SPEC" -d "$FENIX_HOOK_ERROR"'
+      timeout_seconds: 30
+  specs:                         # 仅对指定 SPEC 生效
+    add-xxx:
+      - id: h-9b2e4f
+        enabled: true
+        events: [verified, done]
+        action: webhook
+        url: https://example.com/hook
+```
+
+#### hook 条目键
+
+| 键 | 默认值 | 约束 | 说明 |
+|----|--------|------|------|
+| id | — | 必填，全段唯一 | Dashboard 保存时自动生成；手工编辑必须自带（缺失的条目不会执行，见注意事项） |
+| enabled | true | bool | false 时跳过执行，审计记 skipped、不告警 |
+| events | — | 必填，非空列表 | 订阅的事件类型，取值须在十状态枚举内 |
+| action | — | 必填，七枚举 | restart-daemon / restart-dashboard / commit / push / commit-push / webhook / shell |
+| url | — | webhook 必填 | 通知地址 |
+| command | — | shell 必填 | 以 `bash -c` 在项目根执行的命令 |
+| message | `[fenix] hook: {spec} {event}` | commit/commit-push 可选 | 提交信息模板，变量 `{spec}`/`{event}`，未知变量原样保留 |
+| timeout_seconds | webhook 10 / shell 60 | 正数 | webhook 请求超时 / shell 执行超时（超时强制终止） |
+| target | `fenix-dashboard` | restart-dashboard 可选 | 要重启的 dashboard tmux 会话名 |
+
+#### 七种动作
+
+| 动作 | 行为 |
+|------|------|
+| restart-daemon | 写 `.fenix/restart_request`，由 supervisor 按既有协议优雅重启 daemon（合并新代码后让其生效的常规手段） |
+| restart-dashboard | `tmux respawn-window -k` 重启 dashboard 会话（重启命令固定含 `env -u CLAUDE_PID`、保持端口与工作目录），以端口恢复 HTTP 可服务为成功判据 |
+| commit | 项目根 `git add -A` 后按模板提交；工作区无变更记 noop 成功、不告警 |
+| push | `git push` 推送当前分支到其 upstream |
+| commit-push | 先 commit 后 push；commit 无变更仍 push；push 失败不回滚已产生的本地提交 |
+| webhook | 向 `url` POST 一次 JSON（字段：event/spec/from_status/to_status/ts/error/frozen/hook_id/action/project），2xx 成功 |
+| shell | `bash -c <command>`，工作目录为项目根，注入事件环境变量（下表），退出码 0 成功 |
+
+shell 动作注入的环境变量：
+
+| 变量 | 内容 |
+|------|------|
+| FENIX_HOOK_EVENT | 触发的事件类型（= 目标状态） |
+| FENIX_HOOK_SPEC | SPEC 名 |
+| FENIX_HOOK_FROM_STATUS | 前一状态（可能为空） |
+| FENIX_HOOK_TO_STATUS | 目标状态（与 EVENT 相同） |
+| FENIX_HOOK_ERROR | 状态携带的错误信息（无则为空） |
+| FENIX_HOOK_PROJECT_ROOT | 项目根绝对路径 |
+
+#### 执行语义与审计
+
+hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写入路径。动作失败（git 失败、webhook 不可达、shell 非零退出/超时等）时：写 status=failure 审计 + 运维记录页产生一条 `hook_failure` 站内告警（severity major），**不自动重试**、不做去重降噪。每次触发（含 skipped）都追加写入 `.fenix/hook_audit.jsonl`，字段与查询见[文件与数据地图](09-artifacts.md)；SPEC 详情页「Hook」页签与设置页「Hook」面板均可看「最近执行」。
+
+经 Dashboard 保存时校验配置（events 非空且合法、action 合法、webhook 必填 url、shell 必填 command），违规直接拒绝写入；手工编辑则在触发时校验，非法记 failure 审计（不告警）。
+
+**注意事项**：
+
+- **id 必填且唯一**：手工编辑 config.yaml 新增 hook 时必须自带唯一 id——缺失 id 的条目匹配后不会执行，也不写审计、不告警（完全无痕）。
+- **不要在 hook 动作中修改 SPEC 状态**（如 shell 里直写 STATE.md）：状态变化会再次发布事件，形成自激循环；框架不对 hook 做熔断，循环只能靠审计与告警事后暴露。
+- **push / commit-push 是显式授权的自动推送**：Fenix 默认由 `/fenix-approve` 人工门禁把守推送，配置 push 类动作即表示你接受订阅范围内的自动推送，属有意为之的例外。
+- 配置修改 ≤30 秒热更新生效，无需重启。
+
 ## 模板值与代码缺省不一致
 
 `.fenix/config.template.yaml`（随仓库入库的配置模板）与代码缺省存在若干差异，**实际生效值以项目 config.yaml 为准**（未配置该键时以代码缺省为准）。易混淆点集中列出：
@@ -146,6 +224,7 @@ deps_mode 仅对 nodejs 项目生效——供给入口是 package.json/node_modu
 | 验证 | verify.static_scope / verify.deps_mode（存于 config.yaml；`.fenix/verify.yaml` 契约手工编辑，不经设置页改写） |
 | 提示词管理 | agents/ 通用层 + .fenix/agents/ 项目级 |
 | 系统 | admin.enabled / admin.interval_minutes / admin.escalation_cooldown_minutes / admin.merge_breaker_threshold / admin.shutdown_drain_seconds |
+| Hook | hooks.global / hooks.specs.<spec 名>（两级订阅，见 [hooks](#hooks)） |
 
 ## 相关文档
 

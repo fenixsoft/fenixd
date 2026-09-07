@@ -25,6 +25,7 @@
     logs/              # 框架日志
       fenixd-<year>.log         # daemon 滚动日志
     admin_alerts.json  # 告警与处置记录
+    hook_audit.jsonl   # hook 触发与执行审计（append-only）
     admin_invoke_request.json   # Admin 唤起请求信号（daemon 拾取后清除）
     todo.md            # 当日待办/自省列表
     PROJECT_LOG.md     # 项目日志（事件时间线）
@@ -83,6 +84,7 @@ proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change a
 | 验证结果 | `.fenix/verify-progress/<spec>/report.json` + verification-report.md |
 | 场景失败截图 | `.fenix/verify-progress/<spec>/screenshots/` |
 | 告警与自动处置 | `.fenix/admin_alerts.json` |
+| Hook 触发与执行结果 | `.fenix/hook_audit.jsonl`（spec/event/action/status/duration，尾部倒序） |
 | Administrator 时间线 | Dashboard「运维记录」页 / admin_alerts.json disposition 记录 |
 | daemon 日志 | `.fenix/logs/fenixd-<year>.log` |
 | 项目事件时间线 | `.fenix/PROJECT_LOG.md` |
