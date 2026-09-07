@@ -1438,7 +1438,12 @@ class WorktreeManager:
           - 人工手工 stash 的条目无此前缀，永不触碰。
 
         pop 冲突时沿用 restore_after_merge 的自愈策略（丢弃 stash 版本保 HEAD、
-        清 UU 使主树可写），stash 条目由 git 保留（pop 冲突不删条目）。
+        清 UU 使主树可写）。自愈完成后 drop 该条目（fix-autostash-conflict-loop）：
+        冲突方内容已按策略丢弃、非冲突方改动已落工作区，条目保留不再有恢复价值；
+        而本巡检每 60s 跑一次，条目若滞留栈顶会被原样重试 → 每分钟一条 ERROR 的
+        无限循环（2026-09-07 指纹 a6fd0e29 事故），daemon 重启无法清除（状态在
+        git stash 栈）。drop 前核对 sha 仍在栈顶（防并发新 autostash 插队误删），
+        sha 记入日志，gc 前可按 sha 找回。
 
         Returns: True 表示成功恢复了一个条目。
         """
@@ -1456,6 +1461,12 @@ class WorktreeManager:
         top = lst.stdout.strip() if lst.returncode == 0 else ""
         if AUTOSTASH_MSG_PREFIX not in top:
             return False
+        rev = subprocess.run(
+            ["git", "-C", str(self.project_root), "rev-parse", "--verify",
+             "stash@{0}"],
+            capture_output=True, text=True, timeout=30,
+        )
+        sha_before = rev.stdout.strip() if rev.returncode == 0 else ""
         pop = subprocess.run(
             ["git", "-C", str(self.project_root), "stash", "pop"],
             capture_output=True, text=True, timeout=30,
@@ -1471,12 +1482,45 @@ class WorktreeManager:
             conflict_files = self._list_unmerged_files()
             if conflict_files:
                 self._heal_unmerged_files(conflict_files)
-            self.logger.error(
-                "worktree_manager",
-                f"Stale autostash pop conflicted with merged implementation; "
-                f"healed UU files {conflict_files}, stash entry preserved "
-                f"(recover via git stash show)",
-            )
+            if self._list_unmerged_files():
+                # 自愈未完成（checkout 超时等）：条目保留交人工，绝不 drop
+                self.logger.error(
+                    "worktree_manager",
+                    f"Stale autostash pop conflict heal incomplete; unmerged "
+                    f"files remain, stash entry preserved "
+                    f"(recover via git stash show)",
+                )
+                return False
+            drop_sha = ""
+            if sha_before:
+                cur = subprocess.run(
+                    ["git", "-C", str(self.project_root), "rev-parse",
+                     "--verify", "stash@{0}"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if cur.returncode == 0 and cur.stdout.strip() == sha_before:
+                    dropped = subprocess.run(
+                        ["git", "-C", str(self.project_root), "stash", "drop",
+                         "stash@{0}"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    if dropped.returncode == 0:
+                        drop_sha = sha_before
+            if drop_sha:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Stale autostash pop conflicted with merged "
+                    f"implementation; healed UU files {conflict_files}, entry "
+                    f"dropped (commit {drop_sha}, recoverable until gc)",
+                )
+            else:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Stale autostash pop conflicted with merged "
+                    f"implementation; healed UU files {conflict_files}, "
+                    f"stash entry preserved (top entry moved, recover via "
+                    f"git stash show)",
+                )
             return False
         self.logger.warning(
             "worktree_manager",
