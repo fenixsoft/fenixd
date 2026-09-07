@@ -2424,11 +2424,24 @@ class AgentRunner:
         session_id = last_result.get("session_id") if last_result else None
 
         if returncode != 0:
-            error_msg = "\n".join(stderr_lines[-5:])[:500] if stderr_lines else f"Exit code: {returncode}"
+            # error-attribution-denoise（D5）：拼装 error 前过滤 CLI stderr 诊断
+            # 噪音行（v2.1.233+ 每请求写入 `[claude-code:...]`、与死因无关），避免
+            # 死因被系统性误标。过滤后无剩余内容 → 回退 `Exit code: {returncode}`。
+            # run 产物 jsonl 的 stderr 原始事件保持不过滤（取证现场完整）。
+            effective_lines, error_msg = self._denoise_stderr(stderr_lines, returncode)
             append_run_error(run_file, error_msg, returncode)
-            raise RuntimeError(
+            exc = RuntimeError(
                 f"claude CLI failed: {error_msg}"
                 + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
+            # fix-provider-transient-backoff（D2）：异常携带**原始** stderr 信号与
+            # result 事件存在性，供 attempt 循环瞬断判定——判定不得读降噪后的
+            # error 文本反推（unrecognized_model 已被过滤），必须用原始信号。
+            # 超时/强杀路径（timeout_error/turn_limit_error）不携带（空列表），
+            # 保证超时卡死不被误判为瞬断。
+            exc.stderr_lines = list(stderr_lines)
+            exc.has_result = bool(last_result)
+            exc.exit_code = returncode
+            raise exc
 
         # D5: 终态语义校验前置 —— rc==0 但 last_result 标记为 error 时仍判失败
         # （Claude CLI 可能把 API 错误包装成 result/success 终止事件且 exit 0）
@@ -2445,6 +2458,26 @@ class AgentRunner:
         # add-cost-observability（D1）：从 stream-json 终态 result 事件提取 usage 与
         # 成本字段；失败/异常路径上 _run_claude 已抛错，此处仅成功终态能拿到 usage。
         return output, turns, session_id, self._extract_usage_info(last_result)
+
+
+    @staticmethod
+    def _denoise_stderr(stderr_lines: list, returncode: int) -> tuple:
+        """error 拼装前过滤 CLI stderr 诊断噪音行（error-attribution-denoise D5）。
+
+        v2.1.233+ 每请求向 stderr 写入 `[claude-code:...]` 诊断行，与死因无关；
+        按 `^[claude-code:` 前缀过滤后再取末 5 行拼接。过滤后无剩余内容 →
+        回退 `Exit code: {returncode}` 形态。jsonl 中 stderr 原始事件行保持
+        不过滤（取证现场完整，降噪只影响 error 文本）。
+
+        Returns: (effective_lines, error_msg)——effective_lines 为过滤后的有效行，
+        供需要原始信号的调用方复用（避免重复过滤）。
+        """
+        effective_lines = [
+            l for l in stderr_lines if not re.match(r"^\[claude-code:", l)
+        ]
+        error_msg = ("\n".join(effective_lines[-5:])[:500] if effective_lines
+                     else f"Exit code: {returncode}")
+        return effective_lines, error_msg
 
 
 
@@ -2850,6 +2883,14 @@ class AgentRunner:
     @staticmethod
     def classify_switch_error(error_text: str) -> bool:
         return ProviderCircuit.classify_switch_error(error_text)
+
+    @staticmethod
+    def classify_transient_error(stderr_lines: list, exit_code: int,
+                                 has_result: bool) -> bool:
+        """瞬断判定转导（fix-provider-transient-backoff D2）——见
+        ProviderCircuit.classify_transient_error（全量 stderr 信号，与降噪解耦）。"""
+        return ProviderCircuit.classify_transient_error(stderr_lines, exit_code,
+                                                        has_result)
 
     def _circuit_state(self, provider_name: str) -> dict:
         return self._provider_circuit._circuit_state(provider_name)

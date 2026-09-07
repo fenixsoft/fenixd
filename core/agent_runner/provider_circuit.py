@@ -141,6 +141,46 @@ class ProviderCircuit:
         return False
 
 
+    @staticmethod
+    def classify_transient_error(stderr_lines: list, exit_code: int,
+                                 has_result: bool) -> bool:
+        """瞬断判定（fix-provider-transient-backoff D2，与降噪解耦）。
+
+        判定信号（任一命中即瞬断）：
+        - 全量 stderr_lines 命中 switch 类 pattern（unrecognized_model / 5xx /
+          连接类），从**全量** stderr 匹配而非末 5 行（末 5 行含 `[claude-code:...]`
+          诊断噪音行的 run 会漏判）；
+        - 或（exit≠0 且本进程无 result 事件且 stderr 存在 `[claude-code:...]`
+          诊断行）——CLI 实验实证：400 fatal / 500 耗尽 / 流断耗尽三种形态均为
+          exit 1 + 无 result + stderr 仅剩诊断行。
+
+        前置条件：exit=0 且 has_result=True 时直接返回 False（CLI 成功完成，
+        不是瞬断——即使 stderr 含 switch pattern 诊断噪音行）。判定依赖**原始**
+        stderr 信号与结构化信号（exit_code / has_result），不得读降噪后的 error
+        字符串反推（D2：unrecognized_model 可能已被过滤）。
+
+        Args:
+            stderr_lines: 本进程 stderr 全量原始行（未降噪，jsonl 事件同源）。
+            exit_code: 子进程退出码（≠0 表示非零退出）。
+            has_result: 本进程流中是否出现 result 事件（无则说明 CLI 未走到终态）。
+        """
+        if not stderr_lines:
+            return False
+        # 前置：CLI 成功完成（exit=0 + 有 result 事件）→ 不是瞬断
+        if exit_code == 0 and has_result:
+            return False
+        full_text = "\n".join(str(l) for l in stderr_lines)
+        # 通道 1：全量 stderr 命中 switch 类 pattern（复用 switch 文本匹配语义，
+        # 4xx 配额/鉴权类自动排除——那属熔断面，不判瞬断）。
+        if full_text and ProviderCircuit.classify_switch_error(full_text):
+            return True
+        # 通道 2：非零退出 + 无 result 事件 + stderr 含 `[claude-code:` 诊断行。
+        if exit_code != 0 and not has_result:
+            if any(str(l).startswith("[claude-code:") for l in stderr_lines):
+                return True
+        return False
+
+
     def _circuit_state(self, provider_name: str) -> dict:
         """返回（惰性创建）某 provider 的熔断状态 dict。
 
