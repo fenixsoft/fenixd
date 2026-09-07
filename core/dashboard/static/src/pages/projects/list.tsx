@@ -367,7 +367,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                   placement="bottomRight"
                   trigger={['click']}
                 >
-                  <Button type="link" size="small" icon={<MoreOutlined />}>更多</Button>
+                  <Button type="link" size="small" icon={<MoreOutlined />} className="touch-expand">更多</Button>
                 </Dropdown>
               </div>
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 4, fontSize: 12 }}>
@@ -389,7 +389,7 @@ function SpecCardList({ data, project, loading, onDocView, onMenu, menuItems, on
                   <Typography.Text type="secondary">
                     {record.task_done}/{record.task_total}
                   </Typography.Text>
-                  <Typography.Text type="secondary">{progress}%</Typography.Text>
+                  <Typography.Text type="secondary">{progress >= 100 ? '已完成' : `${progress}%`}</Typography.Text>
                 </div>
               </div>
               <div style={{ marginTop: 8 }}>

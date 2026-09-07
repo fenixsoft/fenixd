@@ -158,6 +158,18 @@ body {
   white-space: normal;
 }
 
+// 移动端触控目标扩展工具类：padding 8px 扩大命中区 + 负 margin 完全抵消视觉，命中区 ≥32px ≥ WCAG AA
+.touch-expand {
+  display: inline-block;
+  padding: 8px;
+  margin: -8px;
+}
+
+// 移动端隐藏顶栏全局面包屑（与返回箭头语义重复）
+#root .screen-xs .global-header-crumb {
+  display: none;
+}
+
 // 全站 Modal 移动端宽度上限：防止固定宽度（如 520px）在窄屏溢出视口
 #root :is(.screen-xs, .screen-sm) .ant-modal {
   max-width: calc(100vw - 32px);

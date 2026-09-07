@@ -187,7 +187,7 @@ export default function ProjectCards({
                   key="enter"
                   type="link"
                   size="small"
-                  style={{ paddingInline: 0 }}
+                  className="touch-expand"
                   onClick={() => history.push(`/projects/${encodeURIComponent(project.name)}`)}
                 >
                   进入
@@ -198,7 +198,7 @@ export default function ProjectCards({
                   placement="bottomRight"
                   trigger={['click']}
                 >
-                  <Button type="link" size="small" icon={<MoreOutlined />}>
+                  <Button type="link" size="small" icon={<MoreOutlined />} className="touch-expand">
                     更多
                   </Button>
                 </Dropdown>,
