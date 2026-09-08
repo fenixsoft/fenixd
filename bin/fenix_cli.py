@@ -63,11 +63,6 @@ def main():
     parser = argparse.ArgumentParser(
         description="Fenix CLI 工具集（人工操作子命令）",
     )
-    parser.add_argument(
-        "--project", "-p",
-        default=None,
-        help="项目根目录（默认当前目录）",
-    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     p_promote = subparsers.add_parser(
@@ -75,6 +70,11 @@ def main():
         help="晋升 drafted SPEC → ready（软化+lint+transition）",
     )
     p_promote.add_argument("spec", help="要晋升的 SPEC 名称")
+    p_promote.add_argument(
+        "--project", "-p",
+        default=None,
+        help="项目根目录（默认当前目录）",
+    )
 
     args = parser.parse_args()
 
