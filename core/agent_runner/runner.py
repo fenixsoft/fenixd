@@ -544,16 +544,27 @@ class AgentRunner:
 
     @staticmethod
     def _normalize_run_id(run_id: str) -> str:
-        """剥掉 -a<n> attempt 后缀，返回基础 run_id。
+        """剥掉尾部连续多组 -a<n>（attempt）/ -r<n>（瞬态重试）后缀，返回基础 run_id。
 
-        ``cancel_run`` 按基础 run_id 登记旗标，轮询环/attempt 循环按
-        基础 run_id 检查——两者使用同一归一化函数，保证匹配一致。
-        无 attempt 后缀时原样返回（幂等）。
+        ``cancel_run`` 按基础 run_id 登记旗标，轮询环/attempt 循环按基础 run_id
+        检查——两者使用同一归一化函数，保证匹配一致。瞬态重试子循环产生形如
+        ``<base>-a1-r1`` 的在飞 run_id（fix-provider-transient-backoff），故归一化
+        需连续剥离 ``-a<n>`` / ``-r<n>`` 任意组合（``(?:-a\\d+|-r\\d+)+$``），使
+        登记键与两类消费点收敛到同一 base 键。无后缀时原样返回（幂等）。
+
+        风险注释：spec 名若以 ``-a<n>``/``-r<n>`` 字面形态结尾会被多剥——与既有
+        ``-a\\d+$`` 剥离同级风险，本项目 kebab-case spec 名无此形态（设计已登记）。
         """
-        return re.sub(r"-a\d+$", "", run_id)
+        return re.sub(r"(?:-a\d+|-r\d+)+$", "", run_id)
 
     def _cancel_is_requested(self, base_run_id: str) -> bool:
-        """base_run_id 是否命中取消旗标（锁内判定，幂等读）。"""
+        """base_run_id 是否命中取消旗标（锁内判定，幂等读）。
+
+        入参先做同一归一化再精确匹配：消费点传入的键形态不一（attempt 循环顶
+        传 run 级 id、轮询环传 attempt/子 run id，后者可能带 ``-r<n>`` 瞬态重试
+        后缀），归一化后与 ``cancel_run`` 登记键收敛到同一 base 键。
+        """
+        base_run_id = self._normalize_run_id(base_run_id)
         with self._cancel_requested_lock:
             return base_run_id in self._cancel_requested
 
