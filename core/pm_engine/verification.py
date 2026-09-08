@@ -524,11 +524,44 @@ class VerificationPipeline:
             self._pm._get_config("commands.start", "") or "").strip()
         if not start_cmd or start_cmd in ("echo 'No start command configured yet'",):
             kind_label = "、".join(sorted(kinds))
-            return False, False, (
+            # 契约缺失/损坏：产生 verify_contract_missing 信号派发 Administrator 起草
+            # （设计 D1：确定性死局不等 4 次失败计数与升级冷却）
+            note = (
                 f"场景集含 {kind_label} 场景但无 serve 配置"
                 f"（.fenix/verify.yaml serve 段或 config commands.start 兜底）"
-                f"——无法启动被测实例，退回 plan 修复"
+                f"——已派发 Administrator 起草验证契约"
             )
+            # 检测是否为契约解析失败（文件存在但 YAML 解析失败）
+            contract_path = self._pm.project_root / ".fenix" / "verify.yaml"
+            parse_error = False
+            if contract_path.is_file() and contract is None:
+                # 文件存在但 load_verify_contract 返回 None = 解析失败
+                parse_error = True
+            # 写入 verify_contract_missing 信号（形态参照 verify_uniform_failure）
+            from core.admin_store import AdminStore, SIGNAL
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            try:
+                store.append({
+                    "kind": SIGNAL,
+                    "signal_type": "verify_contract_missing",
+                    "spec": spec_name,
+                    "severity": "major",
+                    "description": note,
+                    "evidence": (
+                        f"项目根={self._pm.project_root}; "
+                        f"场景kind集={','.join(sorted(kinds))}; "
+                        f"parse_error={'是' if parse_error else '否'}"
+                    ),
+                    "recommended_action": (
+                        "Administrator 起草 .fenix/verify.yaml 验证契约："
+                        "检查项目构建命令、静态目录、服务启动方式；"
+                        "草稿写临时路径 → bin/fenix_verify_contract.py 自证 → "
+                        "全通才落位 → git 提交 → spec 复位 ready 触发重验证"),
+                })
+            except Exception as e:
+                self._pm.logger.error(
+                    "pm_engine", f"verify_contract_missing 信号写入失败: {e}")
+            return False, False, note
 
         # 端口注入（与 worktree 路径同机制）：cmd 引用 {port} 时分配空闲
         # 端口替换并导出 FENIX_VERIFY_PORT——主树兜底自启同样不撞既有实例

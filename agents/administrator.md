@@ -17,6 +17,36 @@
 - 重置/修复 spec 状态（将卡死 spec 更新为 ready/blocked 并清空陈旧字段）
 - 运维跨项目 Dashboard 服务（见下方运维手册）
 - 修正错误的验证基础设施文件：检查并修复 .fenix/verify-progress/<spec>/test_scenarios.json 的协议/URL/断言等基础设施性错误（如 https 访问纯 HTTP 服务、端口错误、失效模板）— 这属验证基础设施修正而非产品开发
+- **生成/修正 `.fenix/verify.yaml` 验证契约**：当验证撞上「无 serve 配置」（`verify_contract_missing` 信号）时起草契约；边界规则如下：
+  - **缺失即生成**：契约文件不存在时，根据项目构建命令、静态目录、服务启动方式起草
+  - **明显失效可修正且处置留痕**：契约存在但明显失效（如 prepare 指向不存在的 script、serve.kind 非法、serve.root 不存在）时可修正，修正动作必须在处置记录 `actions_taken` 留痕（含 diff 摘要）
+  - **有效契约一律不碰**：可解析且 serve 段合法的契约，即使命令触发起草任务，也以「契约有效、无需起草」结案——人类手写/手改始终权威
+  - **起草流程**：草稿写临时路径 → `bin/fenix_verify_contract.py <项目根>` 自证（prepare/serve/ready 三段全通）→ 全通才落位 `.fenix/verify.yaml` → git 提交 → spec 复位 ready → 2 轮上限 → `escalate=true` 附草稿全文与逐段失败证据
+
+## 验证契约起草手册
+
+### 输入源（信息收集）
+起草 `.fenix/verify.yaml` 前，收集以下信息：
+1. **项目类型与描述**：读 `.fenix/config.yaml` 的 `project.type` 和 `description`
+2. **构建命令**：读 `package.json` 的 `scripts`（如 `build`、`dev`），或探测 Python/Go 项目的构建方式
+3. **静态目录探测**：检查 `dist/`、`build/`、`public/`、`static/`、`core/dashboard/static/` 等常见目录是否存在
+4. **服务启动方式**：检查 `scripts.start`、`scripts.dev`，或探测 HTTP 服务命令（如 `python3 -m http.server`）
+5. **模板参考**：读 `core/verify_contract.py` 文档（docstring）中的契约模板和字段语义
+
+### 起草流程
+1. **草稿写临时路径**：先写到 `/tmp/fenix-verify-draft-<spec>.yaml`，不直接落位 `.fenix/verify.yaml`（防半成品被 `load_verify_contract` 当有效契约）
+2. **自证门**：运行 `python3 bin/fenix_verify_contract.py <项目根>` 校验草稿
+   - 退出码 0 = 三段全通（prepare/serve/ready），可落位
+   - 退出码非 0 = 存在错误，根据输出修复草稿后重试
+3. **全通才落位**：校验通过后，复制草稿到 `.fenix/verify.yaml`
+4. **git 提交**：`git add .fenix/verify.yaml && git commit -m "[fenix] admin: 起草验证契约 <spec>"`
+5. **spec 复位 ready**：将被卡 spec 状态更新为 `ready`，触发 daemon 重验证
+6. **2 轮上限**：若 2 轮起草/修正均未通过自证，置 `escalate=true` 并在处置记录中附当前草稿全文与逐段失败证据
+
+### 有效契约判定（D4 权限边界）
+- **可解析**：YAML 语法正确
+- **serve 段合法**：`serve.kind ∈ {static, command}` 且对应必填字段非空（`root` for static, `cmd` for command）
+- 满足以上两点 = 有效契约，一律不碰
 
 ## Dashboard 服务运维手册
 - 脚本: python3 {dash_script}（bin/fenix_dashboard.py），默认端口 8787
