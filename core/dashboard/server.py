@@ -28,6 +28,7 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
     GET /api/verify-yaml?project=<name> → 验证契约文件 .fenix/verify.yaml 原文（设置页「项目简介」面板）
     POST /api/verify-yaml?project=<name> → 保存验证契约（整文件覆写；YAML 语法 + 顶层映射校验，失败 400）
+    POST /api/verify-yaml-autodraft?project=<name> → 触发 AI 起草验证契约（body: {"overwrite"?: bool}；契约有效无 overwrite 返回 skipped，否则派发信号）
     GET /api/verify-yaml-template → 契约模板原文（core/verify_contract_template.yaml，设置页「插入模板」用）
     GET /api/prompts?project=<name> → agent 提示词：通用层（只读）+ 项目级 .fenix/agents/ 附加（缺 project 仅通用层）
     POST /api/prompts?project=<name> → 保存项目附加提示词（body: {"agent_type","content"}；白名单校验、自引用项目拒绝 403）
@@ -66,6 +67,7 @@ from core.agent_runner.prompt_builder import (
     project_agents_dir,
 )
 from core.fenix_session import start_daemon, stop_daemon
+from core.admin_store import AdminStore, SIGNAL
 
 STATIC_DIR = Path(__file__).parent / "static"
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -1204,6 +1206,58 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._json({"path": str(template), "template": content})
 
+    def _api_verify_yaml_autodraft_post(self, query: dict):
+        """POST /api/verify-yaml-autodraft?project=<name> — 触发 AI 起草验证契约。
+
+        项目解析复用现有 verify-yaml 端点路径（未知项目 404）；
+        load_verify_contract 轻量判定——契约缺失/解析失败写 verify_contract_missing
+        SIGNAL（AdminStore.append，source=ui-manual、请求带覆盖确认时携带 overwrite
+        标记，spec 字段留空、项目名入 evidence）响应 dispatched；
+        契约有效且无 overwrite 响应 skipped（附「契约已有效」文案）不写信号；
+        有效且带 overwrite 照常派发。
+        """
+        body = self._read_json_body()
+        if body is None:
+            return
+        project = self._project_query_or_error(query, "verify-yaml-autodraft")
+        if project is None:
+            return
+        proot = Path(project["path"])
+        from core.verify_contract import load_verify_contract
+        contract = load_verify_contract(proot, logger=None)
+        overwrite = bool(body.get("overwrite"))
+        if contract is not None and not overwrite:
+            # 有效契约且无覆盖确认 → skipped
+            self._json({
+                "ok": True,
+                "project": project["name"],
+                "status": "skipped",
+                "message": "契约已有效，无需自动起草。如需覆盖，请确认覆盖意图后重试。",
+            })
+            return
+        # 契约缺失/解析失败/带覆盖确认 → 派发 verify_contract_missing 信号
+        store = AdminStore(proot, logger=None)
+        evidence_detail = f"项目名={project['name']}"
+        if overwrite:
+            evidence_detail += "; 覆盖确认=是"
+        store.append({
+            "kind": SIGNAL,
+            "signal_type": "verify_contract_missing",
+            "spec": None,
+            "severity": "major",
+            "description": "AI 起草验证契约请求（UI 手动触发）",
+            "evidence": evidence_detail,
+            "source": "ui-manual",
+            "overwrite": overwrite,
+            "recommended_action": "Administrator 将在下一轮巡检拾取（数分钟内），结果见运维记录；完成后可点重新加载查看新契约。",
+        })
+        self._json({
+            "ok": True,
+            "project": project["name"],
+            "status": "dispatched",
+            "message": "已提交 AI 起草请求，Administrator 将在下一轮巡检拾取（数分钟内），结果见运维记录；完成后可点重新加载查看新契约。",
+        })
+
     def _api_alerts(self, query) -> dict:
         """读取 Administrator 告警。
 
@@ -1432,6 +1486,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_todo_post(query)
         elif path == "/api/verify-yaml":
             self._api_verify_yaml_post(query)
+        elif path == "/api/verify-yaml-autodraft":
+            self._api_verify_yaml_autodraft_post(query)
         elif path == "/api/spec-error-clear":
             self._api_spec_error_clear(query)
         elif path == "/api/spec-priority":

@@ -907,6 +907,18 @@ export async function getVerifyYamlTemplate(): Promise<{ path: string; template:
   return request(`/api/verify-yaml-template`);
 }
 
+export async function autodraftVerifyYaml(
+  project: string,
+  overwrite: boolean,
+): Promise<{ ok: boolean; project: string; status: 'dispatched' | 'skipped'; message: string }> {
+  const q = `?project=${encodeURIComponent(project)}`;
+  return request(`/api/verify-yaml-autodraft${q}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ overwrite }),
+  });
+}
+
 // ── SPEC 状态事件 hook 审计（add-spec-hooks，/api/hooks/audit） ──
 
 export interface HookAuditRecord {

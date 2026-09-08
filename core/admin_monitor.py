@@ -99,7 +99,7 @@ SIGNAL_RECOMMENDATION = {
 # pm_engine 直接写入 store、由本监视器摄取唤起的信号类型（写入即待唤起型）。
 # family_explosion 既有；dispatch_stalled 属 run 生命周期治理（锁冲突退避耗尽 /
 # 恢复闭环复查未通过）。
-STORED_SIGNAL_TYPES = ("family_explosion", "dispatch_stalled")
+STORED_SIGNAL_TYPES = ("family_explosion", "dispatch_stalled", "verify_contract_missing")
 
 # run_id 前缀 → 计入"失败 run"的 agent 类型
 # ⚠️ 与 core/agent_runner/run_files.py:run_spec_part 前缀元组同源互指，新增 run
@@ -388,7 +388,17 @@ class AdminMonitor:
                 continue
             if rec.get("escalated"):
                 continue  # 已唤起过，跳过
+            stype = rec.get("signal_type")
+            # 手动触发信号（source=ui-manual）无关联 spec，项目名从 evidence 携带
             spec = rec.get("spec")
+            if not spec and stype == "verify_contract_missing":
+                # 从 evidence 提取项目名（格式: "项目名=<name>; ..."）
+                evidence = rec.get("evidence") or ""
+                for part in evidence.split(";"):
+                    part = part.strip()
+                    if part.startswith("项目名="):
+                        spec = part.split("=", 1)[1].strip()
+                        break
             if not spec:
                 continue
             stype = rec.get("signal_type")
@@ -414,7 +424,8 @@ class AdminMonitor:
                 stype, spec,
                 rec.get("description") or (
                     "fix 族谱越界派生被拦截" if stype == "family_explosion"
-                    else "派发长期被 worktree 锁冲突滞留"
+                    else "派发长期被 worktree 锁冲突滞留" if stype == "dispatch_stalled"
+                    else "AI 起草验证契约请求（UI 手动触发）"
                 ),
                 rec.get("evidence") or "拦截详情见 pm_engine 日志",
             )

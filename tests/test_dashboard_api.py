@@ -519,3 +519,103 @@ class TestProjectDescribeAPI:
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
         assert "description" not in config.get("project", {})
+
+    # ── verify-yaml-autodraft tests ──────────────────────────────────────────
+
+    def test_autodraft_unknown_project_returns_404(self, server_fx):
+        """未知项目 404，不写任何信号。"""
+        _, srv = server_fx
+        status, body = srv.post_json(
+            "/api/verify-yaml-autodraft?project=nonexistent",
+            {"overwrite": False},
+        )
+        assert status == 404
+        assert body.get("error") == "project not found"
+
+    def test_autodraft_missing_contract_dispatches_signal(self, server_fx):
+        """契约缺失 → dispatched + 信号落盘含 source 标注。"""
+        proot, srv = server_fx
+        status, body = srv.post_json(
+            "/api/verify-yaml-autodraft?project=proj-a",
+            {"overwrite": False},
+        )
+        assert status == 200
+        assert body["ok"] is True
+        assert body["status"] == "dispatched"
+        assert "AI 起草请求" in body["message"]
+        # 检查信号落盘
+        from core.admin_store import AdminStore
+        store = AdminStore(proot)
+        records = store.read_all()
+        signals = [r for r in records if r.get("signal_type") == "verify_contract_missing"]
+        assert len(signals) == 1
+        sig = signals[0]
+        assert sig["source"] == "ui-manual"
+        assert sig["spec"] is None
+        assert sig["overwrite"] is False
+        assert "项目名=proj-a" in sig["evidence"]
+
+    def test_autodraft_valid_contract_no_overwrite_skipped(self, server_fx):
+        """契约有效无 overwrite → skipped 且零信号。"""
+        proot, srv = server_fx
+        # 写入有效契约
+        (proot / ".fenix" / "verify.yaml").write_text(
+            "prepare:\n  - run: echo ok\nserve:\n  kind: command\n  cmd: echo serve\n",
+            encoding="utf-8",
+        )
+        status, body = srv.post_json(
+            "/api/verify-yaml-autodraft?project=proj-a",
+            {"overwrite": False},
+        )
+        assert status == 200
+        assert body["status"] == "skipped"
+        assert "契约已有效" in body["message"]
+        # 检查零信号
+        from core.admin_store import AdminStore
+        store = AdminStore(proot)
+        records = store.read_all()
+        signals = [r for r in records if r.get("signal_type") == "verify_contract_missing"]
+        assert len(signals) == 0
+
+    def test_autodraft_valid_contract_with_overwrite_dispatches(self, server_fx):
+        """契约有效带 overwrite → dispatched。"""
+        proot, srv = server_fx
+        # 写入有效契约
+        (proot / ".fenix" / "verify.yaml").write_text(
+            "prepare:\n  - run: echo ok\nserve:\n  kind: command\n  cmd: echo serve\n",
+            encoding="utf-8",
+        )
+        status, body = srv.post_json(
+            "/api/verify-yaml-autodraft?project=proj-a",
+            {"overwrite": True},
+        )
+        assert status == 200
+        assert body["status"] == "dispatched"
+        # 检查信号落盘
+        from core.admin_store import AdminStore
+        store = AdminStore(proot)
+        records = store.read_all()
+        signals = [r for r in records if r.get("signal_type") == "verify_contract_missing"]
+        assert len(signals) == 1
+        sig = signals[0]
+        assert sig["overwrite"] is True
+
+    def test_autodraft_signal_record_completeness(self, server_fx):
+        """信号记录字段完整性：signal_type/source/overwrite/evidence 项目名。"""
+        proot, srv = server_fx
+        status, _ = srv.post_json(
+            "/api/verify-yaml-autodraft?project=proj-a",
+            {"overwrite": True},
+        )
+        assert status == 200
+        from core.admin_store import AdminStore
+        store = AdminStore(proot)
+        records = store.read_all()
+        sig = next(r for r in records if r.get("signal_type") == "verify_contract_missing")
+        # 字段完整性
+        assert sig["signal_type"] == "verify_contract_missing"
+        assert sig["source"] == "ui-manual"
+        assert sig["overwrite"] is True
+        assert "项目名=proj-a" in sig["evidence"]
+        assert sig["spec"] is None
+        assert sig["kind"] == "signal"
