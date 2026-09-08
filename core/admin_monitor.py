@@ -542,6 +542,12 @@ class AdminMonitor:
             status = entry.get("status")
             if status not in ("implementing", "testing"):
                 continue
+            # 取消保持豁免（fix-cancel-holdstate-recovery D5）：人工取消的
+            # hold spec 是有意等待态，不产生 stuck 信号、不自动升级
+            # Administrator（自动升级可能自行复位，破坏「我来决定何时重派」
+            # 的人工决策）。唯一出路是显式复位（update_spec 携带 status）。
+            if entry.get("_cancelled_hold"):
+                continue
             updated_str = entry.get("updated") or entry.get("created") or ""
             try:
                 updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))

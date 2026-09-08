@@ -977,6 +977,9 @@ class Dispatcher:
                         )
                         self._pm.state_machine.update_spec(spec_name, {
                             "error": cancelled_err,
+                            # 取消保持持久标记（fix-cancel-holdstate-recovery D1）：
+                            # 随 STATE.md 存活，重启恢复/监测链路据此跳过该 spec。
+                            "_cancelled_hold": True,
                         })
                         return
                     # ── 死亡 run 豁免（fix-budget-counting-semantics D1）──────
@@ -1811,6 +1814,8 @@ class Dispatcher:
             )
             self._pm.state_machine.update_spec(spec_name, {
                 "error": cancelled_err,
+                # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
+                "_cancelled_hold": True,
             })
             return
 
@@ -2251,6 +2256,8 @@ class Dispatcher:
                 )
                 self._pm.state_machine.update_spec(spec_name, {
                     "error": cancelled_err,
+                    # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
+                    "_cancelled_hold": True,
                 })
                 return
 

@@ -226,10 +226,12 @@ class StateParser:
                         value = int(value)
                     except ValueError:
                         value = 999
-                elif key in (FROZEN_FIELD, "_recovery_resume"):
+                elif key in (FROZEN_FIELD, "_recovery_resume", "_cancelled_hold"):
                     # 布尔字段显式转换：字符串 "False" 也是 truthy，不转会把
                     # 解冻后的 spec 永久误判为冻结（fix-restart-dual-dispatch S4）；
                     # _recovery_resume（interrupt-recovery-preserve）同型处理。
+                    # _cancelled_hold（fix-cancel-holdstate-recovery D1）：取消保持
+                    # 标记随 STATE.md 往返，False 不转会被误判为保持态。
                     value = value.lower() in ("true", "1", "yes")
                 elif key in ("implementer_run", "tester_run", "branch", "error",
                              "total_duration", START_AFTER_FIELD, FROZEN_UNTIL_FIELD):
@@ -517,6 +519,12 @@ class StateMachine:
             )
 
         # Apply updates
+        # 取消保持解锁（fix-cancel-holdstate-recovery D4）：显式携带 status 的
+        # 更新（admin 处置复位、面板重派、unfreeze 等复位路径）即人工裁决，
+        # 顺带清除取消保持标记；仅 error 等隐式 updates 不清（取消收尾自身
+        # 只写 error，不自清）。
+        if "status" in updates:
+            updates["_cancelled_hold"] = False
         specs[spec_name].update(updates)
         specs[spec_name]["updated"] = datetime.now(timezone.utc).isoformat()
         self.write_all(specs)
@@ -751,6 +759,17 @@ class StateMachine:
         for status in INTERRUPTED_STATES:
             specs = self.get_by_status(status)
             for name, entry in specs:
+                # ── 取消保持跳过（fix-cancel-holdstate-recovery D3）──
+                # 被人工取消的 hold spec（_cancelled_hold=True）是有意等待态：
+                # 重启恢复不复位、不重派、不递增重启重验计数——人工「随根因
+                # 修复一并重派」的决策不被恢复链路静默覆盖。status/error/run
+                # 字段原样保留，唯一出路是显式复位（update_spec 携带 status）。
+                if entry.get("_cancelled_hold"):
+                    self.logger.info(
+                        "state_machine",
+                        f"跳过重启恢复：人工取消保持 '{name}'",
+                    )
+                    continue
                 self.logger.warning(
                     "state_machine",
                     f"Recovering interrupted SPEC: {name} (was {status})",

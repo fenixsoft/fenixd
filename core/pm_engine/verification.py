@@ -1030,6 +1030,8 @@ class VerificationPipeline:
                         )
                         self._pm.state_machine.update_spec(spec_name, {
                             "error": cancelled_err,
+                            # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
+                            "_cancelled_hold": True,
                         })
                         self._pm.logger.warning(
                             "pm_engine",
@@ -1292,6 +1294,8 @@ class VerificationPipeline:
                 )
                 self._pm.state_machine.update_spec(spec_name, {
                     "error": cancelled_err,
+                    # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
+                    "_cancelled_hold": True,
                 })
                 self._pm.logger.warning(
                     "pm_engine",
@@ -1823,6 +1827,8 @@ class VerificationPipeline:
             )
             self._pm.state_machine.update_spec(spec_name, {
                 "error": cancelled_err,
+                # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
+                "_cancelled_hold": True,
             })
             self._pm.logger.warning(
                 "pm_engine",
