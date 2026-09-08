@@ -94,6 +94,20 @@ export default function AgentModelPanel({ config, onSave }: AgentModelPanelProps
     return names.map((n) => ({ value: n, label: n }));
   };
 
+  // 选中 Provider 后模型名留空 → 自动填入该 Provider 的默认模型（显式化运行期
+  // 的「留空回退 Provider 默认」解析值）；已手填不覆盖，无默认模型则保持留空。
+  const autofillProviderDefault = (roleIndex: number, rowIndex: number, providerName: string) => {
+    if (!providerName) return;
+    const rows = form.getFieldValue(['roleList', roleIndex, 'rows']);
+    if (!Array.isArray(rows)) return;
+    const row = rows[rowIndex];
+    if (!row || (row.model || '').trim()) return;
+    const def = (providers.find((p) => p.name === providerName) || {}).model;
+    if (!def) return;
+    const next = rows.map((r, i) => (i === rowIndex ? { ...r, model: def } : r));
+    form.setFieldValue(['roleList', roleIndex, 'rows'], next);
+  };
+
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
@@ -194,6 +208,7 @@ export default function AgentModelPanel({ config, onSave }: AgentModelPanelProps
                                       placeholder="-- 选择 Provider --"
                                       options={providerOptions(curProvider)}
                                       style={{ width: '100%' }}
+                                      onChange={(val) => autofillProviderDefault(index, rIdx, val as string)}
                                     />
                                   </Form.Item>
                                 </Col>
