@@ -1323,6 +1323,39 @@ class WorktreeManager:
 
     # ── 主树健康检查（fix-fenix-token-waste） ──────────────────────
 
+    def _list_dirty_tracked_files(self) -> list:
+        """提取主树脏 tracked 文件清单（fix-mergeback-stashpop-silent-loss D3）。
+
+        ensure_clean_tree 的 porcelain 脏判定提炼为共享 helper：porcelain v1
+        每行 "XY " 前缀，X=索引状态、Y=工作区状态，第 3 个字符恒为分隔符空格
+        ——脏判定看 [0]/[1] 任一非空格（历史版本误查 [2] 致 autostash 从未
+        触发，2026-09-02 修）。untracked（'??'）不计入。命令失败返回空列表
+        （调用方按「无重叠」处理，不阻塞流程）。
+
+        Returns: 排序后的脏 tracked 文件路径列表（rename 两侧都计入）。
+        """
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(self.project_root), "status", "--porcelain"],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return []
+        if result.returncode != 0:
+            return []
+        files: list = []
+        for line in result.stdout.splitlines():
+            if len(line) < 3 or line.startswith("?? "):
+                continue
+            if line[0] == " " and line[1] == " ":
+                continue
+            path = line[3:].strip()
+            if " -> " in path:
+                files.extend(p.strip() for p in path.split(" -> "))
+            else:
+                files.append(path)
+        return sorted(p for p in files if p)
+
     def ensure_clean_tree(self) -> bool:
         """merge guard 段内确保主树 tracked 状态干净，保证 merge-back 可成功。
 
@@ -1341,20 +1374,9 @@ class WorktreeManager:
         implementer 就找不到 SPEC 文件而空转（fix：曾因此烧掉 ~450 轮）。
         spec 文件应在创建时提交；此处排除作为兜底。
         """
-        result = subprocess.run(
-            ["git", "-C", str(self.project_root), "status", "--porcelain"],
-            capture_output=True, text=True, timeout=30,
-        )
-        # 只关心 tracked 修改：porcelain v1 每行 "XY " 前缀，X=索引状态、Y=工作区
-        # 状态，第 3 个字符恒为分隔符空格——脏判定必须看 [0]/[1] 任一非空格
-        # （历史版本误查 [2] 致检测恒 False、autostash 从未触发，2026-09-02 修）。
-        # untracked（'??'）由 merge 内部 backup 机制处理，不计入。
-        dirty_tracked = any(
-            len(line) >= 3
-            and not line.startswith("?? ")
-            and (line[0] != " " or line[1] != " ")
-            for line in result.stdout.splitlines()
-        ) if result.returncode == 0 else False
+        # 脏判定复用共享 helper（fix-mergeback-stashpop-silent-loss D3），
+        # 判定语义与历史实现逐字节一致。
+        dirty_tracked = bool(self._list_dirty_tracked_files())
         if not dirty_tracked:
             return False
         stash = subprocess.run(
@@ -1839,14 +1861,62 @@ class WorktreeManager:
                 return rehearsed_info
 
             self.last_stash_pop_conflicts = []
+            # WIP 重叠预检（fix-mergeback-stashpop-silent-loss D3）：预演闸放行后、
+            # stash 之前，检测「分支改动文件 ∩ 主树脏 tracked 文件」。只读、不阻断
+            # ——重叠仅是预警（不同 hunk 可自动合并），清单挂到返回的
+            # MergeConflictInfo.wip_overlap 供 dispatch 并入告警文本。
+            wip_overlap = self._detect_wip_overlap(branch)
+
             stashed = self.ensure_clean_tree()
             try:
-                return self._merge_back_from_branch_locked(branch)
+                info = self._merge_back_from_branch_locked(branch)
+                info.wip_overlap = wip_overlap
+                return info
             finally:
                 if stashed:
                     _ok, conflict_files = self.restore_after_merge()
                     if conflict_files:
                         self.last_stash_pop_conflicts = list(conflict_files)
+
+    def _detect_wip_overlap(self, branch: str) -> list:
+        """merge-back 前 WIP 重叠预检（fix-mergeback-stashpop-silent-loss D3）。
+
+        计算主树脏 tracked 文件与 ``merge-base..branch`` 分支改动文件的交集。
+        非空 → 记 WARNING（含重叠清单），返回清单供挂到 MergeConflictInfo；
+        空/命令失败 → 返回空列表、零行为变化。只读不阻断：不 stash、不改状态。
+
+        Returns: 排序后的重叠文件路径列表（无重叠为空列表）。
+        """
+        try:
+            dirty = self._list_dirty_tracked_files()
+            if not dirty:
+                return []
+            mb = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "merge-base", "HEAD", branch],
+                capture_output=True, text=True, timeout=30,
+            )
+            if mb.returncode != 0 or not mb.stdout.strip():
+                return []
+            diff = subprocess.run(
+                ["git", "-C", str(self.project_root), "diff", "--name-only",
+                 mb.stdout.strip(), branch],
+                capture_output=True, text=True, timeout=30,
+            )
+            if diff.returncode != 0:
+                return []
+            branch_files = {ln.strip() for ln in diff.stdout.splitlines() if ln.strip()}
+            overlap = sorted(set(dirty) & branch_files)
+            if overlap:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"WIP overlap precheck before merge-back of '{branch}': "
+                    f"{len(overlap)} dirty tracked file(s) also changed on branch "
+                    f"— {overlap} (warning only, merge proceeds)",
+                )
+            return overlap
+        except (subprocess.TimeoutExpired, OSError):
+            return []
 
     # ── merge-tree 预演闸（add-merge-tree-rehearsal D1/D4）───────────────────
     # 真合并前以 `git merge-tree --write-tree` 只读预演（不触碰主树索引与工作区），
