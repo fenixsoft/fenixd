@@ -319,7 +319,7 @@ def show_progress(spec_name):
     events = parse_logs(spec_name)
     if events:
         print(f"\n{BOLD}📋 fenixd 时间线{RESET}\n")
-        for ev in events[:20]:
+        for ev in events:
             ts = _local_ts(ev["time"])
             comp_short = {"state_machine": "📦", "pm_engine": "🧠",
                           "agent_runner": "🤖", "event_bus": "📡",

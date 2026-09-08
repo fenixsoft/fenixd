@@ -182,8 +182,11 @@ class RecoveryWatch:
             return
         self._signal_fingerprints[spec_name] = (fp, now)
 
-        store_cooldown = float(
-            self._pm._get_config("admin.escalation_cooldown_minutes", 15) or 15)
+        # 同源路径（family.py bug_repair_mode 先例）：get_admin_config 缺省填充，
+        # 旁路 _get_config + 硬编码 fallback 会与权威缺省漂移（缺省现为 60 分钟）
+        from core.config import ConfigLoader
+        store_cooldown = float(ConfigLoader.get_admin_config(
+            self._pm.config)["escalation_cooldown_minutes"])
         store = AdminStore(self._pm.project_root, self._pm.logger)
         try:
             if store.latest_signal(spec_name, "dispatch_stalled", store_cooldown) is not None:

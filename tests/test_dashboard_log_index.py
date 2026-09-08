@@ -159,8 +159,8 @@ class TestLogOffsetIndex:
         recent = dash_data.get_recent_events(proot, minutes=10)
         assert isinstance(recent, list)
 
-    def test_spec_timeline_uses_tail_window(self, tmp_path):
-        """get_spec_timeline 同样走尾部窗口，Transition 提取逻辑不变。"""
+    def test_spec_timeline_reads_log(self, tmp_path):
+        """get_spec_timeline 能提取 Transition 状态节点（读取语义不变）。"""
         proot = _make_project_with_log(tmp_path, size_mb=0)
         log = proot / ".fenix" / "logs" / "fenixd.log"
         with log.open("a", encoding="utf-8") as f:
@@ -172,3 +172,59 @@ class TestLogOffsetIndex:
         states = [e for e in timeline if e.get("kind") == "state"]
         assert states, "应提取到 Transition 状态节点"
         assert any(e.get("to") == "implementing" for e in states)
+
+    @staticmethod
+    def _write_line(f, ts: str, message: str, pad: int = 0):
+        f.write(json.dumps({
+            "timestamp": ts,
+            "level": "INFO",
+            "component": "pm_engine",
+            "message": message + "y" * pad,
+        }, ensure_ascii=False) + "\n")
+
+    def test_spec_timeline_created_anchor_beyond_tail_window(self, tmp_path):
+        """created 锚定：>1MB 日志中尾窗外的早期 Transition 仍可提取。
+
+        回归场景：长周期 spec 的早期派发/报错事件落在尾部 1MB 尾窗之外，
+        旧实现静默截断（dashboard 时间轴只剩收尾几条）。
+        """
+        proot = _make_project_with_log(tmp_path, size_mb=0)
+        log = proot / ".fenix" / "logs" / "fenixd.log"
+        early_ts = "2026-09-07T08:09:28.000000Z"
+        with log.open("a", encoding="utf-8") as f:
+            # 早期 Transition 在前，随后 >1MB 填充把其推出尾窗
+            self._write_line(f, early_ts, "Transition: myspec ready → implementing")
+            written = 0
+            idx = 0
+            while written < 1.2 * 1024 * 1024:
+                entry = json.dumps({
+                    "timestamp": "2026-09-08T00:00:00.000000Z",
+                    "level": "INFO",
+                    "component": "pm_engine",
+                    "message": f"filler-{idx}-" + "x" * 1024,
+                }, ensure_ascii=False) + "\n"
+                f.write(entry)
+                written += len(entry.encode("utf-8"))
+                idx += 1
+        timeline = dash_data.get_spec_timeline(
+            proot, "myspec", created="2026-09-07T08:08:27.000000+00:00")
+        states = [e for e in timeline if e.get("kind") == "state"]
+        assert any(
+            e.get("from") == "ready" and e.get("to") == "implementing"
+            for e in states), "尾窗外的早期 Transition 应经 created 锚定窗口提取到"
+
+    def test_spec_timeline_created_anchor_excludes_early_events(self, tmp_path):
+        """created 锚定生效：锚点早于的事件不进入时间轴，锚点后事件保留。"""
+        proot = _make_project_with_log(tmp_path, size_mb=0)
+        log = proot / ".fenix" / "logs" / "fenixd.log"
+        with log.open("a", encoding="utf-8") as f:
+            self._write_line(f, "2026-09-07T08:09:28.000000Z",
+                             "Transition: myspec ready → implementing")
+            self._write_line(f, "2026-09-07T09:00:00.000000Z",
+                             "Transition: myspec implementing → implemented")
+        # 锚点介于两条之间：首条被排除，第二条保留
+        timeline = dash_data.get_spec_timeline(
+            proot, "myspec", created="2026-09-07T08:30:00.000000+00:00")
+        states = [e for e in timeline if e.get("kind") == "state"]
+        assert not any(e.get("to") == "implementing" for e in states)
+        assert any(e.get("to") == "implemented" for e in states)

@@ -91,7 +91,7 @@ flowchart TD
 | family_explosion | major | SPEC fix 族爆炸 |
 | dispatch_stalled | major | 派发停滞 |
 
-为防止同一信号反复唤起烧钱，Administrator 的唤起有冷却期（`admin.escalation_cooldown_minutes` 默认 15 分钟）。
+为防止同一信号反复唤起烧钱，Administrator 的唤起有冷却期（`admin.escalation_cooldown_minutes` 默认 60 分钟）。
 
 ## 重启协议
 

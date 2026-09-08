@@ -73,7 +73,8 @@ export default function HooksPanel({ config, onSave, project }: HooksPanelProps)
 
   return (
     <div>
-      <Typography.Title level={5} style={{ marginTop: 0 }}>全局 Hook 订阅</Typography.Title>
+      {/* 与其他设置页签统一的家规标题模式（h3 默认顶距），勿改 Typography.Title+marginTop:0 */}
+      <h3>全局 Hook 订阅</h3>
       <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
         全局 hooks 对所有 SPEC 生效（SPEC 详情页 Hook 页签可配置 SPEC 级 hook，两者取并集）。
         订阅「全部SPEC完成（all-done）」可在所有 SPEC 均处于完成/已推送终态时触发动作

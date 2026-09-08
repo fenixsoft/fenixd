@@ -38,6 +38,17 @@ description: Use when the user wants to create a new development requirement, as
 
 用户确认后，把最终模式记入待创建 SPEC 的 `.spec.yaml`（见 3.1）；用户显式指定（`--fast-track` / `--full`）时 **MUST 尊重用户指定**，不得以评估结果覆盖或追问。
 
+### 1.6 确认执行时机（add-spec-scheduling-controls）
+
+澄清需求与执行模式后，MUST 向用户确认执行时机（可与 1.5 的模式确认合并为一次问询），二选一：
+
+- **立即执行**：注册后 daemon 立即拾取（不写 `start_after`）。
+- **定时调度**：询问具体开始时间（绝对时间如「今晚 23:00」「明晚 02:00」按本地时区 UTC+8 解释；相对时长如 `+2h` / `+30m` 按注册时刻解释），按 §3.1.2 换算写入 `start_after`。
+
+建议话术：「SPEC 立项后是立即开始调度实现，还是定时到某个时间点再开始（如今晚 23:00、明晚凌晨 02:00、+2h）？」
+
+用户已显式指定开始时间（如传入 `--start-after ...` 或对话中明说了时间点）或已明确表示立即执行时，视为已确认，MUST NOT 重复追问。确认结果按 §3.1.2 / §4 写入；两者都未表达时默认立即执行（不写 `start_after` 字段）。
+
 ### 2. 生成 kebab-case 名称
 
 从需求描述中提取简洁的 kebab-case 名称：
@@ -82,8 +93,8 @@ if 'mode:' not in text:
 
 **3.1.2 写入定时拾取时间（add-spec-scheduling-controls）**
 
-用户传入 `--start-after` 参数时（可选，见「规则」节），按以下约定换算为
-ISO8601 UTC 时间戳，注册时经 `add_spec` attrs 写入 STATE.md entry 的
+定时拾取时间来自 §1.6 的用户确认。用户确认定时（或传入 `--start-after` 参数）时，
+按以下约定换算为 ISO8601 UTC 时间戳，注册时经 `add_spec` attrs 写入 STATE.md entry 的
 `start_after` 字段（daemon 在该时间点之后才会拾取该 SPEC）：
 
 - **绝对时间**（如 `--start-after "2026-09-07 09:00"`）：按本地时区 UTC+8 解释。
@@ -233,6 +244,7 @@ git commit -m "[fenix] spec: <spec-name>"
   - 确认后 MUST 把 mode 写入 `.spec.yaml`（见 3.1.1）；存量 spec 缺省 full
   - `--modify <name>` 更新 spec 时，如需变更执行模式，同样同步更新 `.spec.yaml` 的 mode 行
 - **定时拾取（add-spec-scheduling-controls）**：
+  - 每次立项 MUST 按 1.6 向用户确认执行时机（立即执行 / 定时调度）；用户已显式给出时间或明确说立即执行时不得重复追问
   - 用户传入 `--start-after` 时 MUST 换算为 ISO8601 UTC 时间戳，注册时经 `add_spec` attrs 写入 STATE.md entry 的 `start_after` 字段（见 3.1.2 / §4）
   - 绝对时间按本地时区 UTC+8 解释；`+Nh`/`+Nm` 相对时长按提交（注册）时刻解释
   - 未指定时 MUST NOT 写 `start_after` 字段（缺省 null，daemon 立即按既有逻辑拾取）

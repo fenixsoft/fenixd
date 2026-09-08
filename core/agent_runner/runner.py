@@ -1310,7 +1310,12 @@ class AgentRunner:
             if not isinstance(val, list):
                 data[field] = []
             else:
-                data[field] = [str(x) for x in val if x]
+                # 结构化条目（dict，{impact, evidence, analysis?, suggestion}）
+                # 保持原形直达渲染层，仅非 dict/str 标量兜底 str——无差别
+                # str() 会把合规 dict 打成 dict-repr 字符串，渲染层四行格式
+                # 失效退化为机器形态（09-08 事故）。
+                data[field] = [x if isinstance(x, (dict, str)) else str(x)
+                               for x in val if x]
         sm = data.get("summary")
         if sm is None:
             data["summary"] = ""
@@ -2339,6 +2344,15 @@ class AgentRunner:
             # 残留 token 会让请求以错误的 Bearer 认证打到 Provider → 401。
             if "ANTHROPIC_API_KEY" in env_overrides:
                 env.pop("ANTHROPIC_AUTH_TOKEN", None)
+
+        # worktree 隔离纵深（2026-09-08 skill 基路径锚定事故）：把项目根与本次
+        # worktree 交给 PreToolUse 守卫 hook（block-main-tree-write.py），拦截
+        # 「skill 注入的主树绝对路径被模型锚定为项目根」导致的写主树。无 worktree
+        # 的 run（cwd == 项目根）置空，hook 全放行、行为不变。
+        env["FENIX_RUN_PROJECT_ROOT"] = str(self.project_root)
+        env["FENIX_RUN_WORKTREE"] = (
+            str(cwd) if str(cwd) != str(self.project_root) else ""
+        )
 
         # Progress dir for verifier to write incremental progress
         progress_dir = self.project_root / ".fenix" / "verify-progress"

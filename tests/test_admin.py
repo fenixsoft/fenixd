@@ -314,7 +314,7 @@ class TestAdminMonitorDetection:
     def test_repeated_failures(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         make_runs(proot, [
             ("impl-spec-a-1780000001", "error"),
             ("impl-spec-a-1780000002", "error"),
@@ -329,7 +329,7 @@ class TestAdminMonitorDetection:
     def test_repeated_failures_below_threshold(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         make_runs(proot, [
             ("impl-spec-a-1780000001", "error"),
             ("impl-spec-a-1780000002", "error"),
@@ -340,7 +340,7 @@ class TestAdminMonitorDetection:
     def test_flapping(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         # 预写历史：10 分钟窗口内 4 次 ready↔implementing 变更（3 次切换）
         hist = proot / ".fenix" / "admin_state_history.json"
         hist.parent.mkdir(parents=True, exist_ok=True)
@@ -356,14 +356,14 @@ class TestAdminMonitorDetection:
 
     def test_stuck(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": iso_ago(120)},  # 2 小时无进展
+            "spec-a": {"status": "implementing", "updated": iso_ago(200)},  # 200 分钟（>160min stuck 缺省回退阈值）无进展
         })
         signals = mon.run_once()
         assert any(s["signal_type"] == "stuck" for s in signals)
 
     def test_stuck_skipped_with_recent_progress(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": iso_ago(120)},
+            "spec-a": {"status": "implementing", "updated": iso_ago(200)},
         })
         make_runs(proot, [("impl-spec-a-1780000000", "running")])  # 最近有 run 活动
         signals = mon.run_once()
@@ -378,11 +378,14 @@ class TestAdminMonitorDetection:
         assert any(s["signal_type"] == "merge_streak" for s in signals)
 
     def test_blocked_stuck(self, tmp_path):
-        """blocked 超时未处理 → 唤起 admin（fix-admin-self-heal）。"""
+        """blocked 超时未处理 → 唤起 admin（fix-admin-self-heal）。
+
+        显式钉冷却 15 分钟：阈值=max(cooldown,15) 与全局默认解耦（默认现为 60），
+        夹具 40 分钟前的 blocked 只对钉值有意义。"""
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "blocked", "updated": iso_ago(40)},
             "spec-b": {"status": "implementing", "updated": utcnow_iso()},  # 触发检测前置条件
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         signals = mon.run_once()
         assert any(s["signal_type"] == "blocked_stuck" for s in signals)
 
@@ -494,7 +497,7 @@ class TestAdminMonitorDetection:
         """daemon-error-escalation 新口径触发矩阵。"""
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         log_dir = proot / ".fenix" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / "fenixd.log").write_text(
@@ -508,7 +511,7 @@ class TestAdminMonitorDetection:
     def test_healthy_no_signal(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         make_runs(proot, [("impl-spec-a-1780000000", "running")])
         signals = mon.run_once()
         assert signals == []
@@ -523,7 +526,7 @@ class TestAdminMonitorDetection:
 
     def test_disabled_monitor_no_action(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": iso_ago(120)},
+            "spec-a": {"status": "implementing", "updated": iso_ago(200)},
         }, config={"admin": {"enabled": False}})
         assert mon.enabled is False
         assert mon.run_once() == []
@@ -549,7 +552,7 @@ class TestAdminMonitorThrottle:
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {
                 "status": "implementing",
-                "updated": utcnow_iso() if scenario == "daemon_errors" else iso_ago(120),
+                "updated": utcnow_iso() if scenario == "daemon_errors" else iso_ago(200),
             },
         }, runner=runner)
         if scenario == "daemon_errors":
@@ -569,7 +572,7 @@ class TestAdminMonitorThrottle:
     def test_unhandled_escalation_suppresses_invoke(self, tmp_path):
         runner = FakeRunner()
         proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": iso_ago(120)},
+            "spec-a": {"status": "implementing", "updated": iso_ago(200)},
         }, runner=runner)
         mon.store.append({"kind": ESCALATION, "signal_type": "stuck", "spec": "spec-a"})
         mon.run_once()
@@ -577,7 +580,7 @@ class TestAdminMonitorThrottle:
 
     def test_no_runner_escalates(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": iso_ago(120)},
+            "spec-a": {"status": "implementing", "updated": iso_ago(200)},
         }, runner=None)
         mon.run_once()
         un = mon.store.unhandled()
@@ -588,7 +591,7 @@ class TestAdminMonitorThrottle:
     def test_disposition_recorded_after_invoke(self, tmp_path):
         runner = FakeRunner()
         proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": iso_ago(120)},
+            "spec-a": {"status": "implementing", "updated": iso_ago(200)},
         }, runner=runner)
         mon.run_once()
         kinds = [r["kind"] for r in mon.store.read_all()]
@@ -601,11 +604,88 @@ class TestAdminMonitorThrottle:
         """_invoke_administrator 把 disp.summary 透传到 admin_alerts.json 的处置记录。"""
         runner = FakeRunner()
         proot, mon = make_monitor(tmp_path, {
-            "spec-a": {"status": "implementing", "updated": iso_ago(120)},
+            "spec-a": {"status": "implementing", "updated": iso_ago(200)},
         }, runner=runner)
         mon.run_once()
         disp = next(r for r in mon.store.read_all() if r["kind"] == DISPOSITION)
         assert disp["summary"] == "诊断结论：测试困境；处置时间线：测试处置；结果：已解决。"
+
+
+class TestEscalationClosedOnFinalDisposition:
+    """run 落最终 disposition 后关闭其名下未处理 escalation（孤儿看护误报残留治理）。
+
+    孤儿看护在处置进行中误判 pending 超时会落同 admin_run_id 的 escalation；
+    run 正常完成后无人关闭它——dashboard 处置卡片永久显示「需人工决策」，
+    与 result=resolved 矛盾，且 unhandled_for 节流会压制该 spec 后续同型告警。
+    """
+
+    @staticmethod
+    def _preset_orphan_escalation(mon):
+        mon.store.append({
+            "kind": ESCALATION, "signal_type": "manual-intervention",
+            "spec": "spec-a", "severity": "critical",
+            "admin_run_id": "admin-test-1",
+            "description": "Administrator 处置中断（误报）",
+        })
+
+    @staticmethod
+    def _escalations(store):
+        return [r for r in store.read_all() if r.get("kind") == ESCALATION]
+
+    def test_resolved_disposition_closes_orphan_escalation(self, tmp_path):
+        runner = FakeRunner()  # result="resolved"
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": iso_ago(200)},
+        }, runner=runner)
+        self._preset_orphan_escalation(mon)
+        mon.run_once()
+        esc = self._escalations(mon.store)
+        assert len(esc) == 1
+        assert esc[0]["handled"] is True
+        assert esc[0].get("resolve_note")  # 闭环留痕
+
+    def test_failed_disposition_keeps_escalation_open(self, tmp_path):
+        """处置失败（result=failed）保守保留 escalation——人工仍需知情。"""
+        class FailedRunner:
+            def run_administrator(self, signal):
+                return AdminDisposition(
+                    run_id="admin-test-1", spec=signal.get("spec"),
+                    success=False, problem="", actions_taken="",
+                    result="failed", error="cli boom", summary="",
+                )
+
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": iso_ago(200)},
+        }, runner=FailedRunner())
+        self._preset_orphan_escalation(mon)
+        mon.run_once()
+        esc = self._escalations(mon.store)
+        assert len(esc) == 1
+        assert esc[0]["handled"] is False
+
+    def test_escalated_disposition_closes_stale_but_leaves_new(self, tmp_path):
+        """admin 主动升级：旧的同 run 误报 escalation 关闭，新裁决告警保持未处理。"""
+        class EscalatingRunner:
+            def run_administrator(self, signal):
+                return AdminDisposition(
+                    run_id="admin-test-1", spec=signal.get("spec"),
+                    success=True, problem="", actions_taken="无法自主处置",
+                    result="escalated", escalate=True,
+                    recommended_action="请人工决策", summary="",
+                )
+
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": iso_ago(200)},
+        }, runner=EscalatingRunner())
+        self._preset_orphan_escalation(mon)
+        mon.run_once()
+        esc = self._escalations(mon.store)
+        assert len(esc) == 2
+        by_desc = {e["description"]: e for e in esc}
+        stale = by_desc["Administrator 处置中断（误报）"]
+        fresh = next(e for e in esc if e is not stale)
+        assert stale["handled"] is True
+        assert fresh["handled"] is False  # admin 裁决接棒，需人工决策
 
 
 # ── run_administrator：处置文件读取 + 陈旧清理 ──────────
@@ -633,7 +713,7 @@ class TestRunAdministrator:
         """pending disposition 超时无最终结果 → 升级人工（admin 被 kill 场景）。"""
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         store = AdminStore(proot, FakeLogger())
         rec = store.append({
             "kind": DISPOSITION, "status": "pending", "result": "pending",
@@ -655,7 +735,7 @@ class TestRunAdministrator:
         """run 含 interrupted 标记 + pending 超时 → 终结且不升级人工（已知 daemon 中断）。"""
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         store = AdminStore(proot, FakeLogger())
         rec = store.append({
             "kind": DISPOSITION, "status": "pending", "result": "pending",
@@ -690,7 +770,7 @@ class TestRunAdministrator:
         """run 无 interrupted 标记（文件缺失）→ 维持升级兜底。"""
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         store = AdminStore(proot, FakeLogger())
         rec = store.append({
             "kind": DISPOSITION, "status": "pending", "result": "pending",
@@ -717,7 +797,7 @@ class TestRunAdministrator:
         """interrupted 终结后下轮巡检不再处理（终结即 final，去重）。"""
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         store = AdminStore(proot, FakeLogger())
         rec = store.append({
             "kind": DISPOSITION, "status": "pending", "result": "pending",
@@ -747,7 +827,7 @@ class TestRunAdministrator:
         """有最终结果的 pending 不升级。"""
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         store = AdminStore(proot, FakeLogger())
         store.append({"kind": DISPOSITION, "status": "pending", "result": "pending",
                       "signal_type": "stuck", "spec": "spec-a", "admin_run_id": "admin-x"})
@@ -765,7 +845,7 @@ class TestRunAdministrator:
         """
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         store = AdminStore(proot, FakeLogger())
         rec = store.append({
             "kind": DISPOSITION, "status": "pending", "result": "pending",
@@ -795,7 +875,7 @@ class TestRunAdministrator:
         """restart_request 过期未清除 → 重启失败 → 升级人工。"""
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         rr = proot / ".fenix" / "restart_request"
         rr.parent.mkdir(parents=True, exist_ok=True)
         rr.write_text("restart", encoding="utf-8")
@@ -810,7 +890,7 @@ class TestRunAdministrator:
         """restart_request 刚发出（窗口内）不升级。"""
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         rr = proot / ".fenix" / "restart_request"
         rr.parent.mkdir(parents=True, exist_ok=True)
         rr.write_text("restart", encoding="utf-8")  # mtime = now
@@ -1920,7 +2000,7 @@ class TestDaemonErrorEscalationTiming:
     def test_next_inspection_produces_critical_signal(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": utcnow_iso()},
-        })
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
         log_dir = proot / ".fenix" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         # 两条同指纹 ERROR 相隔 30s（活跃期被 INFO 打断）→ 升级口径与新错误复现率挂钩

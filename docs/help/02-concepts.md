@@ -100,6 +100,34 @@ fast-track 把实现与验证合并为单次 Agent 调用，省去独立的 veri
 
 每个 implementer/verifier run 都在独立的 git worktree 中工作。隔离带来三层保障：并行的多个 SPEC 实现互不交叉污染；run 结束后 worktree 自动移除，不留垃圾目录；代码完成后经 merge-back 合并回主分支。
 
+## LLM Provider 隔离
+
+Agent 角色的模型通道由配置决定：`llm.providers` 注册 Provider，`agents.models` 按角色分配（键参考见[配置参考](08-config.md#llm)）。**配置了 Provider 分配的角色**，daemon 派发子进程时会注入该 Provider 的 `ANTHROPIC_BASE_URL / API_KEY / MODEL`，并把 `CLAUDE_CONFIG_DIR` 指向项目根（主树）`.fenix/agent-config/<provider>/` 的独立配置目录——分配谁就走谁，与用户会话完全隔离（不同账号、配额与故障域）。目录按 Provider 名区分、按需幂等生成，全部 worktree 的 run 共用同一份。
+
+### 为什么必须换整个配置根目录
+
+根因是 claude CLI 的优先级规则：**`~/.claude/settings.json` 中 `env` 块的优先级高于进程环境变量**。用户级 settings.json 若配置过网关地址（如 cc-switch 的 `ANTHROPIC_BASE_URL`），仅靠环境变量注入的 Provider 会被它静默覆盖——分配沦为死代码，所有 Agent 实际仍打到网关。实测 `--settings <file>` 也无法覆盖该 env 块，唯一有效手段是 `CLAUDE_CONFIG_DIR` 切换配置根目录，彻底绕开用户 settings.json。
+
+### 隔离目录里什么共享、什么隔离
+
+| 内容 | 处理方式 |
+|------|---------|
+| skills / plugins | **共享**——symlink 指向 `~/.claude/`，所有 Provider 同一份技能与插件 |
+| settings.json | 按 Provider 重新生成：`enabledPlugins` 复制自 `~/.claude/settings.json`，hooks 复制自 `.fenix/agent-settings.json`；**不复制任何 `env`**——网关的模型映射类变量对直连 Provider 无用且有毒（陈旧映射会污染子代理模型解析） |
+| 会话 transcript、任务数据、session-env、shell-snapshots、`.claude.json` | **按 Provider 隔离**（API Key 只经进程环境注入，不落盘） |
+
+会话类数据跟随配置根目录被隔离，且这恰好是必要的语义，不是单纯副作用：
+
+- **跨 Provider 不能续跑**。会话 transcript 存在于创建时的配置目录；切换 Provider 后携带旧 session id 去 `--resume` 必然「No conversation found」秒挂。框架的规则是**仅当 worktree 可复用且 Provider 未变时才续跑**，切换 Provider 即开新会话。
+- **TaskCreate 等工具的可用性由网络路径决定**。部分代理网关不提供 Task 工具族、Provider 直连有，会话 init 时即定型——工具集本身就不是跨 Provider 通用的。
+
+未配置 Provider 分配的角色零隔离：不设 `CLAUDE_CONFIG_DIR`，透传 `~/.claude/settings.json` 走默认网关（官方模型名，由网关自行映射）。
+
+### 观测与注意
+
+- 每个带 Provider 分配的 run 会在 run 产物写 provider_marker，SPEC 详情时间轴可见该次 run 实际驱动的 `model@provider`。
+- 隔离目录的 `settings.json` 已存在则跳过重建：**修改 `~/.claude/settings.json` 的 enabledPlugins 或 `.fenix/agent-settings.json` 后，存量隔离目录不会自动刷新**——删除对应 `.fenix/agent-config/<provider>/`（或仅其 settings.json）即可按需重建。
+
 ## 多项目机制
 
 Dashboard 支持同时监控多个 Fenixd 项目。每个项目拥有自己的 `.fenix/config.yaml` 与独立运行的 daemon，互不干扰；Dashboard 把它们聚合到同一个界面里，跨项目的状态、告警与进度一目了然。
@@ -115,6 +143,7 @@ Dashboard 支持同时监控多个 Fenixd 项目。每个项目拥有自己的 `
 | **场景 kind** | 验证场景形态（web/cli/api）：页面→web、HTTP 端点→api、命令/落盘→cli；混合交付拆场景 + `depends_on` 串接 |
 | **门禁** | 验证后由 planner-judge 判定通过/失败的环节 |
 | **熔断** | 预算耗尽或连续失败达到阈值后停止自动重派，升级人工 |
+| **Provider 隔离** | 按 Provider 名切分 `CLAUDE_CONFIG_DIR` 配置根，让 Agent 的模型通道绝对生效（见 [LLM Provider 隔离](#llm-provider-隔离)） |
 | **困境信号** | Admin Monitor 检测到的 SPEC 异常状态（卡住、抖动、合并反复失败等） |
 | **BASE_URL 铁律** | 验证场景的 URL 永远改写为本次被测实例地址，确保测到最新代码 |
 

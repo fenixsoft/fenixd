@@ -52,7 +52,7 @@
 
 **现象**：Dashboard 顶部横幅同一 SPEC 反复出现告警。
 
-**根因**：`admin.escalation_cooldown_minutes`（默认 15 分钟）冷却内会抑制重复告警；频响通常意味着困境真实存在，自动解决之后又复发了。
+**根因**：`admin.escalation_cooldown_minutes`（默认 60 分钟）冷却内会抑制重复告警；频响通常意味着困境真实存在，自动解决之后又复发了。
 
 **处置**：查 admin_alerts.json 的处置记录，看自动解决的依据；再对照信号类型到治理篇查对应规则（[调度与治理规则](06-governance.md)）。
 
@@ -93,6 +93,14 @@
 **根因**：hook 动作失败不重试也不去重（git 失败、webhook 不可达、shell 非零退出/超时），每次失败都直接告警。没触发则常见于：手工编辑 config.yaml 漏了 `id`（缺失 id 的条目不执行且无任何痕迹）、`events` 拼写不在十状态枚举内、`enabled: false`（审计记 skipped）、保存后未满 30 秒热更新窗口。
 
 **处置**：先查 `.fenix/hook_audit.jsonl`（或 Dashboard Hook 页签「最近执行」）按 spec 找记录——status=skipped 是被停用；status=failure 是动作报错，detail 含输出摘要；完全没有记录则是匹配阶段未命中（核对 id 与 events）。修正配置后 ≤30 秒热更新自动生效。完整键参考见[配置参考](08-config.md#hooks)。
+
+## 12. 配了 Provider 但 Agent 没走它（仍打到默认网关）
+
+**现象**：`agents.models` 给某角色分配了 Provider，但从时间轴的 `model@provider` 标记或账单看，请求仍打到 cc-switch 等默认网关。
+
+**根因**：常见四类——角色键配错或用了未知角色键（未知键降级跳过并 ERROR 告警）；Provider 名拼错（`llm.providers` 注册表中无此 `name`，候选被跳过）；候选链上所有候选都处于切换冷却或熔断中（chain_exhausted，本次派发直接失败、不消耗 spec 重试，冷却窗口过后自动恢复）；或配置保存后未过 30 秒热更新窗口。
+
+**处置**：先在 SPEC 详情时间轴看该 run 实际驱动的 `model@provider` 确认通道；再逐字符核对 `agents.models.<角色>.provider` 与 `llm.providers[].name` 是否一致。注意 Agent 通道与用户会话是隔离的（[LLM Provider 隔离](02-concepts.md#llm-provider-隔离)）：Agent 是否走 Provider 只由 `agents.models` 分配决定，改用户 `~/.claude/settings.json` 不会影响已分配的 Agent。
 
 ## 相关文档
 

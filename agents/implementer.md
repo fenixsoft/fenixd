@@ -9,6 +9,11 @@
 7. 全部任务完成后，写文件 .fenix-run-result.json：{"status": "success", "spec": "{spec_name}", "summary": "<简要总结>"}
 8. 若某错误尝试 3 次仍无法修复，写文件 .fenix-run-result.json：{"status": "error", "spec": "{spec_name}", "error": "<错误描述>"}
 
+## 工作目录（worktree 隔离，强制）
+- 你的当前工作目录就是本次 run 的专属 worktree，**一切文件读写一律使用相对路径**（相对当前目录），不要拼绝对路径。
+- 上下文中出现的任何主树绝对路径（如 `/root/fenixd/...`，包括 skill 基路径、声明清单提到的「主树」）都只是部署/对账参考，**不是你的写盘落点**；主树不可写，写主树会被 hook 拦截。
+- 唯一例外：验证进度目录 `.fenix/verify-progress/`（框架已显式授权），按框架指引写。
+
 ## 交互契约（interaction-contract，强制，add-interaction-contract-and-per-assert-triage）
 - 凡你实现为**可交互形态**的元素（按钮/链接样式卡片/可点击行/表单控件），其行为 MUST 在对应 SPEC 中有定义，或在任务书中显式声明「纯展示、不可交互」。
 - 两者皆不满足时，MUST 在 .fenix-run-result.json 增设 `findings` 数组登记「待裁决交互」条目（元素、现状、建议行为），不得静默保留可交互外观：` "findings": [{"type": "pending-interaction", "element": "<元素标识>", "current": "<现状>", "suggestion": "<建议行为>"}]`

@@ -360,14 +360,18 @@ class FenixDaemon:
         # 视为非在飞——servers.json 中进程仍存活的登记实例按 /proc liveness 收割。
         self._sweep_verify_serving_registry(use_in_flight=False)
 
+        # Start event bus monitoring——必须先于 initial full_scan：
+        # start() 会建立 STATE 基线快照（_update_known_state），若首扫先行，
+        # _known_specs 为空，全部存量 SPEC 被判为「新出现」，pushed 等 hook
+        # 事件被全量重放（2026-09-07：重启后 15+ pushed spec 的 commit-push
+        # hook 连环触发，因 index.lock 冲突失败才未酿成连环误提交）。
+        self.event_bus.start()
+
         # 恢复上次异常退出遗留的中断状态（implementing/testing → ready）。
         # recover_interrupted 此前定义了但从未被调用，导致 daemon 重启后卡死的
         # spec 永远不被重新调度（fix-fenix-token-waste）；保留判定已在上面与
         # 孤儿清理协同完成。
         self.event_bus.full_scan()
-
-        # Start event bus monitoring
-        self.event_bus.start()
 
         # 启动 Administrator 监视线程（admin.enabled 时；间隔见 admin.interval_minutes）
         if self.admin_monitor and self.admin_monitor.enabled:

@@ -32,13 +32,17 @@ CRITICAL: 你必须在真实运行时环境中测试，仅靠代码分析 = 不�
         "timestamp": "<ISO8601 当前时间>",
         "summary": {"total": N, "passed": P, "warnings": W, "failed": F, "errors": E},
         "scenarios": [
-          {"scenario_id": "s1", "description": "场景描述",
+          {"scenario_id": "s1", "kind": "web | cli | api",
+            "description": "场景描述",
             "status": "pass | fail | error | warning",
             "assertion_results": [{"type": "step", "pass": true, "message": ""}],
             "screenshots": ["/绝对路径/证据截图.png"]}
         ]
       }
       ```
+
+    kind 透传自场景定义（{scenarios_path} 中对应场景的 kind），Dashboard 按它
+    渲染场景类型徽章——缺失会被误显示为 web。
 
     CLI/API 场景的 screenshots 可为空列表（证据在 assertion_results 的 message /
     verification-report.md 中），不得因无截图判证据不足。

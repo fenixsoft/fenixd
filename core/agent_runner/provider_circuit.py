@@ -20,8 +20,10 @@ import re
 PROVIDER_CIRCUIT_WINDOW_SECONDS = 300      # 滚动窗口 5 分钟
 PROVIDER_CIRCUIT_THRESHOLD = 3             # 窗口内 4xx 达此次数 → 熔断
 PROVIDER_CIRCUIT_COOLDOWN_SECONDS = 1800   # 冷却 30 分钟
-# 计入熔断的 HTTP 4xx 状态码（401 与 400/404 一并计数：余额不足同样要防烧钱）
-PROVIDER_CIRCUIT_4XX = (400, 401, 404)
+# 计入熔断的 HTTP 4xx 状态码（401 与 400/404 一并计数：余额不足同样要防烧钱；
+# 403 同为鉴权/订阅类——inferaiapi 实测「API Error: 403 No active subscription」
+# 反复原地重试烧链预算，fix-403-auth-failover-blindspot 一并纳入）
+PROVIDER_CIRCUIT_4XX = (400, 401, 403, 404)
 # 半开探针成功判据：claude CLI 正常退出（视作网关 200）。解析不到 code 视为失败、不计数。
 PROVIDER_CIRCUIT_PROBE_SUCCESS_CODE = 0
 
@@ -108,9 +110,11 @@ class ProviderCircuit:
         """
         if not error_text:
             return None
-        # 顺序匹配：HTTP <code> / (404) / status code <code> / code <code>
+        # 顺序匹配：HTTP <code> / (404) / status code <code> / code <code> /
+        # 「API Error: 403」（claude CLI 经 SDK 包装的鉴权错误实际形态，
+        # fix-403-auth-failover-blindspot）
         for pat in (r"HTTP\s+(\d{3})", r"\((\d{3})\)", r"status\s*code\s*[:=]?\s*(\d{3})",
-                    r"\bcode\s*[:=]?\s*(\d{3})"):
+                    r"\bcode\s*[:=]?\s*(\d{3})", r"[Ee]rror:?\s*(\d{3})"):
             m = re.search(pat, error_text, re.IGNORECASE)
             if m:
                 try:

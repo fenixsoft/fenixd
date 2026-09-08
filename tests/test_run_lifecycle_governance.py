@@ -331,7 +331,9 @@ from datetime import datetime, timedelta, timezone
 
 
 class RecoveryWatchFixture(LockConflictFixture):
-    def _stale(self, name="s1", hours=2):
+    def _stale(self, name="s1", hours=3):
+        # hours=3：stuck 缺省回退阈值 9600s=160min（RUN_TIMEOUT_FALLBACK 9000+600 宽限），
+        # 2h 已落入阈值之下，故默认取 3h 保证落在阈值之上
         specs = self.sm.read_all()
         specs[name]["updated"] = (
             datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
@@ -645,7 +647,7 @@ class TestPmEngineUsesExtensionBaseline(RecoveryWatchFixture):
         self.sm.add_spec("s1", {"priority": 5})
         self.sm.transition("s1", "ready")
         self.sm.transition("s1", "implementing")
-        self._stale(hours=2)
+        self._stale(hours=3)  # 须落在 stuck 缺省回退阈值 160min 之上
         self.runner.has_live_attempt.return_value = False
 
     def test_fresh_baseline_suppresses_stuck_blocker(self):
@@ -664,7 +666,7 @@ class TestPmEngineUsesExtensionBaseline(RecoveryWatchFixture):
         result = self.engine.check_blockers()
         stuck = [b for b in result["blockers"] if b["spec"] == "s1"]
         self.assertEqual(len(stuck), 1)
-        self.assertGreaterEqual(stuck[0]["elapsed_minutes"], 110)
+        self.assertGreaterEqual(stuck[0]["elapsed_minutes"], 170)
 
     def test_baseline_probe_exception_falls_back(self):
         """基准探针异常/返回非数值 → 回退 updated 计算，不抛出。"""
@@ -841,7 +843,9 @@ class TestSupervisionDeadlineAction(unittest.TestCase):
         self.runner.config = {
             "agents": {"timeout_supervision": {
                 "absolute_max_seconds": 7200, "max_extensions": 2}}}
-        d = self.decision(extensions=0, started_ago=8000)
+        # run_timeout 缺省回退 9000 后，absolute_max 地板 = 9000 + 2×1800 = 12600，
+        # started_ago 须越过地板才触发无条件终止
+        d = self.decision(extensions=0, started_ago=14000)
         self.assertEqual(d["action"], "kill")
         self.assertIn("absolute_max_seconds", d["reason"])
 

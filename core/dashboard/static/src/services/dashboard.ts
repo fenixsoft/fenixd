@@ -399,18 +399,28 @@ export interface SpecDetail {
   // tasks.md 空解析显式提示（task-track R3）— 存在但未解析出任务分组时非空
   tasks_note?: string | null;
   // 时间轴 — 状态节点字段为 from/to，运行节点为 agent_type，admin 运维节点
-  // 为 record_kind/severity/handled/result（get_spec_timeline 返回结构）
+  // 为 record_kind/severity/handled/result，验证执行节点为 total/passed 等
+  // （get_spec_timeline 返回结构）
   timeline?: Array<{
-    kind: 'state' | 'run' | 'admin';
+    kind: 'state' | 'run' | 'admin' | 'verify';
     time: string;
     from?: string;
     to?: string;
+    // 折叠状态节点：完整状态序列（首尾与 from/to 一致，中间状态不省略）
+    chain?: string[];
     reason?: string;
     run_id?: string;
     agent_type?: string;
     status?: string;
     duration_seconds?: number;
     spec?: string;
+    // 验证执行节点：verify_engine 报告摘要（report.json 仅引擎验证写入）
+    total?: number;
+    passed?: number;
+    failed?: number;
+    warnings?: number;
+    errors?: number;
+    env_error?: string;
     // 运行节点：ClaudeCode 最后一条总结（result 事件的 result 字段，兜底 assistant 文本）
     summary?: string;
     // 运行节点：实际驱动的 LLM（provider_marker 的 model@provider，failover 取最后一个）
@@ -557,6 +567,9 @@ export interface RunEvent {
   agent?: string;
   status?: string;
   content?: string;
+  // 终态事件原因：error 事件为 error，interrupted/cancelled 事件为 reason
+  error?: string;
+  reason?: string;
   timestamp?: string;
   thinking?: boolean;
   reset?: boolean;

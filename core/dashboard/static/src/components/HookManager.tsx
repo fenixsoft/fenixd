@@ -179,7 +179,7 @@ export default function HookManager({
         title: '事件',
         dataIndex: 'events',
         key: 'events',
-        width: 140,
+        width: '18.6%',
         render: (events: string[]) => (
           <Space wrap size={4}>
             {events.map((ev) => (
@@ -194,15 +194,21 @@ export default function HookManager({
         title: '动作',
         dataIndex: 'action',
         key: 'action',
-        width: 311,
+        width: '41.3%',
         render: (a: HookAction | string) => HOOK_ACTION_LABELS[a as HookAction] || a,
       },
       {
         title: '参数',
         dataIndex: 'action',
         key: 'param',
+        width: '25.6%',
+        // 换行渲染（对齐执行记录摘要列口径）：ellipsis+maxWidth 会截断长
+        // webhook URL/command；配合 tableLayout fixed 定宽，超宽文本换行展示
         render: (_: unknown, record: HookConfig) => (
-          <Text type="secondary" ellipsis style={{ maxWidth: 200 }}>
+          <Text
+            type="secondary"
+            style={{ display: 'block', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
+          >
             {paramSummary(record)}
           </Text>
         ),
@@ -211,7 +217,7 @@ export default function HookManager({
         title: '启停',
         dataIndex: 'enabled',
         key: 'enabled',
-        width: 72,
+        width: '6.8%',
         render: (_: unknown, __: HookConfig, idx: number) => (
           <Switch
             size="small"
@@ -223,7 +229,7 @@ export default function HookManager({
       {
         title: '操作',
         key: 'actions',
-        width: 80,
+        width: '7.6%',
         render: (_: unknown, __: HookConfig, idx: number) => (
           <Space size={4}>
             <Tooltip title="编辑">
@@ -423,7 +429,11 @@ export default function HookManager({
           pagination={false}
           size="small"
           rowKey="key"
-          scroll={{ x: 'max-content' }}
+          tableLayout="fixed"
+          // 不用 scroll max-content；tableLayout fixed + 全列百分比定宽
+          // （事件 18.6 / 动作 41.3 / 参数 25.6 / 启停 6.8 / 操作 7.6，
+          // 1440 实测基准：参数列收到原弹性的 60%，40% 按原宽比例给事件/动作），
+          // 各列随容器等比伸缩，长 URL/command 在参数列内换行
         />
       )}
 
@@ -534,13 +544,16 @@ export default function HookManager({
           pagination={false}
           size="small"
           rowKey="key"
-          scroll={{ x: 'max-content' }}
+          tableLayout="fixed"
+          // 列宽为显式百分比分配（用户指定 colgroup：时间12/SPEC18/动作12/
+          // 结果5/耗时5/摘要48）；不用 scroll max-content，max-content 定宽
+          // 会被 detail 单行（命令输出 ≤2KB）撑爆整表
           columns={[
             {
               title: '时间',
               dataIndex: 'ts',
               key: 'ts',
-              width: 170,
+              width: '12%',
               render: (ts: string) => {
                 try {
                   return dayjs(ts).format('YYYY-MM-DD HH:mm:ss');
@@ -549,19 +562,19 @@ export default function HookManager({
                 }
               },
             },
-            { title: 'SPEC', dataIndex: 'spec', key: 'spec', width: 120 },
+            { title: 'SPEC', dataIndex: 'spec', key: 'spec', width: '18%' },
             {
               title: '动作',
               dataIndex: 'action',
               key: 'action',
-              width: 150,
+              width: '12%',
               render: (a: string) => HOOK_ACTION_LABELS[a as HookAction] || a,
             },
             {
               title: '结果',
               dataIndex: 'status',
               key: 'status',
-              width: 80,
+              width: '5%',
               render: (s: string) => (
                 <Tag color={AUDIT_STATUS_COLORS[s] || 'default'}>
                   {AUDIT_STATUS_LABELS[s] || s}
@@ -572,15 +585,24 @@ export default function HookManager({
               title: '耗时',
               dataIndex: 'duration_ms',
               key: 'duration_ms',
-              width: 80,
+              width: '5%',
               render: (ms: number) => ms != null ? `${ms}ms` : '—',
             },
             {
               title: '摘要',
               dataIndex: 'detail',
               key: 'detail',
-              ellipsis: true,
-              render: (d: string) => <Text type="secondary" ellipsis>{d || '—'}</Text>,
+              width: '48%',
+              // 换行渲染（与移动端视图口径一致）；列宽由 colgroup 百分比定，
+              // 不再需要 maxWidth 钳制
+              render: (d: string) => (
+                <Text
+                  type="secondary"
+                  style={{ display: 'block', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
+                >
+                  {d || '—'}
+                </Text>
+              ),
             },
           ]}
         />

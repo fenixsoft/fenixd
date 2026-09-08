@@ -21,8 +21,8 @@ _logger = logging.getLogger("fenixd.config")
 # D1：派生宽限常量（秒），非配置项。阈值 = run_timeout_seconds + 该宽限，
 # 保证 runner 自身超时终止与 auto-recovery 恢复判定之间留确定性时序余量。
 STUCK_GRACE_SECONDS = 600
-# D4：run_timeout_seconds 缺失或 ≤0 时的派生回退基准（3600+600=4200）。
-RUN_TIMEOUT_FALLBACK_SECONDS = 3600
+# D4：run_timeout_seconds 缺失或 ≤0 时的派生回退基准（9000+600=9600）。
+RUN_TIMEOUT_FALLBACK_SECONDS = 9000
 STUCK_FALLBACK_SECONDS = RUN_TIMEOUT_FALLBACK_SECONDS + STUCK_GRACE_SECONDS
 # D5：absolute_max 联动兜底续期上限（秒）。absolute_max 低于
 # run_timeout_seconds + 该值时按 run_timeout_seconds + 该值兜底生效。
@@ -872,7 +872,7 @@ class ConfigLoader:
         - enabled: True
         - interval_minutes: 5
         - agent_model: None（未配置时复用 agents.subagent_model 默认）
-        - escalation_cooldown_minutes: 15
+        - escalation_cooldown_minutes: 60
         - stuck_threshold_minutes: 由 agents.run_timeout_seconds 单源派生（见
           effective_stuck_threshold_seconds，旧 schedule/admin.stuck_threshold_minutes
           键已弃用、不再生效）
@@ -895,7 +895,7 @@ class ConfigLoader:
             "interval_minutes": float(admin.get("interval_minutes", 5)),
             "agent_model": admin.get("agent_model") or None,
             "escalation_cooldown_minutes": float(
-                admin.get("escalation_cooldown_minutes", 15)
+                admin.get("escalation_cooldown_minutes", 60)
             ),
             "stuck_threshold_minutes": stuck_seconds / 60.0,
             "merge_breaker_threshold": int(breaker),
@@ -977,7 +977,7 @@ class ConfigLoader:
         if not isinstance(rt, (int, float)) or rt <= 0:
             _logger.warning(
                 "agents.run_timeout_seconds 缺失或 ≤0，stuck 阈值按 %ss 回退生效"
-                "（=3600 默认超时 + %ss 宽限）；建议显式配置 run_timeout_seconds",
+                "（=9000 默认超时 + %ss 宽限）；建议显式配置 run_timeout_seconds",
                 STUCK_FALLBACK_SECONDS, STUCK_GRACE_SECONDS,
             )
             return float(STUCK_FALLBACK_SECONDS)
@@ -1093,7 +1093,7 @@ class ConfigLoader:
 
         解析顺序 MUST：``agents.timeout_overrides.<agent_type>`` 存在且合法时取覆盖值，
         否则回退 ``agents.run_timeout_seconds`` 全局默认；全局缺失/非正数回退
-        RUN_TIMEOUT_FALLBACK_SECONDS（3600）。
+        RUN_TIMEOUT_FALLBACK_SECONDS（9000）。
 
         覆盖 MUST 适用于全部七类 agent run：implementer、verifier、planner-plan、
         planner-judge、fast-track、repair、administrator（后两者经 _execute_agent
@@ -1164,7 +1164,7 @@ class ConfigLoader:
     def get(cls, config: Dict[str, Any], dotted_key: str, default=None):
         """
         Get a nested config value by dotted key.
-        E.g., config_get(config, "agents.max_turns", 50)
+        E.g., config_get(config, "agents.max_turns", 400)
         """
         keys = dotted_key.split(".")
         value = config

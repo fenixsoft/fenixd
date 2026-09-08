@@ -473,6 +473,19 @@ class PMEngine:
 
     def _on_spec_implemented(self, spec_name: str):
         """Schedule verifier for implemented SPEC."""
+        # fast-track 单 run 全包（实现→场景设计→验证→判定），不设 verifier 车道
+        # （fasttrack-orphan-planner-race）：fast-track 收尾仍会触发本事件，若照常
+        # 入队 verifier，与 _fast_track_advance_to_verified 竞态会派出孤儿 planner
+        # run 对已终态 spec 白跑（2026-09-08 fix-verify-cli-cwd-isolation：已 pushed
+        # 后场景生成 run 白跑 14min）。读侧容错缺省 full，存量 spec 零影响。
+        from core.spec_mode import is_fast_track
+        if is_fast_track(self.project_root, spec_name):
+            self.logger.debug(
+                "pm_engine",
+                f"Skipping verifier enqueue for fast-track '{spec_name}' "
+                "(单 run 全包，验证在 fast-track run 内完成)",
+            )
+            return
         self._enqueue(spec_name, "verifier")
 
     def _on_spec_verified(self, spec_name: str):

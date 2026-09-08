@@ -1,4 +1,9 @@
-import { Alert, Card, Form, Input, Switch, TimePicker, Typography } from 'antd';
+import { Alert, Card, Form, Input, Switch, Tabs, TimePicker, Typography } from 'antd';
+import { useState } from 'react';
+import Markdown from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
+import remarkGfm from 'remark-gfm';
+import { markdownComponents } from '@/pages/projects/components/SpecDocModal';
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -21,6 +26,10 @@ interface SelfReviewPanelProps {
 export default function SelfReviewPanel({
   project, todoDraft, todoExists, todoLoading, onTodoDraftChange,
 }: SelfReviewPanelProps) {
+  // todo.md 视图页签：预览在前且为默认（先看渲染效果，需要改动再切编辑）；
+  // 切换纯前端状态，草稿由 SystemPanel 持有，两页签共享无损
+  const [todoView, setTodoView] = useState<'edit' | 'preview'>('preview');
+
   return (
     <div style={{ marginTop: 32 }}>
       <h3>自省</h3>
@@ -89,14 +98,56 @@ export default function SelfReviewPanel({
               data-testid="todo-missing-alert"
             />
           )}
-          <TextArea
-            data-testid="todo-textarea"
-            value={todoDraft}
-            onChange={(e) => onTodoDraftChange(e.target.value)}
-            disabled={todoLoading}
-            placeholder={'## 2026-09-04\n\n### 可改进\n- 证据：……'}
-            autoSize={{ minRows: 10, maxRows: 24 }}
-            style={{ marginTop: 12, fontFamily: 'monospace' }}
+          <Tabs
+            type="card"
+            className="todo-md-tabs"
+            activeKey={todoView}
+            onChange={(k) => setTodoView(k as 'edit' | 'preview')}
+            style={{ marginTop: 12 }}
+            items={[
+              {
+                key: 'preview',
+                label: '预览',
+                children: (
+                  <div
+                    data-testid="todo-preview"
+                    style={{
+                      minHeight: 120, maxHeight: 600, overflow: 'auto',
+                      background: '#fff', border: '1px solid #f0f0f0',
+                      borderTop: 0, borderRadius: 0, padding: 12,
+                    }}
+                  >
+                    {todoDraft ? (
+                      <Markdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownComponents}>
+                        {todoDraft}
+                      </Markdown>
+                    ) : (
+                      <Text type="secondary">暂无内容——切到「编辑」页签写入后此处实时渲染。</Text>
+                    )}
+                  </div>
+                ),
+              },
+              {
+                key: 'edit',
+                label: '编辑',
+                children: (
+                  <TextArea
+                    data-testid="todo-textarea"
+                    value={todoDraft}
+                    onChange={(e) => onTodoDraftChange(e.target.value)}
+                    disabled={todoLoading}
+                    placeholder={'## 2026-09-04\n\n### 可改进\n- 证据：……'}
+                    autoSize={{ minRows: 10, maxRows: 24 }}
+                    style={{
+                      fontFamily: 'monospace', borderTop: 0, borderRadius: 0,
+                      // 边框颜色钉死与预览容器一致：内联样式压制 antd 默认深灰
+                      // 与 hover/focus 态的蓝色边框；焦点外发光一并压掉
+                      borderColor: '#f0f0f0', boxShadow: 'none',
+                    }}
+                  />
+                ),
+              },
+            ]}
           />
         </Card>
       ) : (

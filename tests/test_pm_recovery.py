@@ -38,8 +38,8 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
         self.state_path = self.project_root / ".fenix" / "STATE.md"
         self.sm = StateMachine(self.state_path, self.logger)
         # stuck 阈值由 agents.run_timeout_seconds 单源派生（config.py D1/D4，
-        # 缺省回退 4200s=70min），旧键 schedule.stuck_threshold_minutes 已弃用
-        # 不再生效——本组测试的 stale（2h）只要落在阈值之上即可，无需配键。
+        # 缺省回退 9600s=160min），旧键 schedule.stuck_threshold_minutes 已弃用
+        # 不再生效——本组测试的 stale（3h）只要落在阈值之上即可，无需配键。
         config = {}
         self.engine = PMEngine(self.sm, MagicMock(), config, self.project_root, self.logger)
 
@@ -48,10 +48,10 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _stale(self, name="s1"):
-        """把 spec 的 updated 改为 2 小时前（模拟卡死），须在 transition 之后调用。"""
+        """把 spec 的 updated 改为 3 小时前（模拟卡死），须在 transition 之后调用。"""
         from datetime import datetime, timedelta, timezone
         specs = self.sm.read_all()
-        specs[name]["updated"] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        specs[name]["updated"] = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
         self.sm.write_all(specs)
 
     def test_implementer_dispatch_failure_rolls_back_to_ready(self):

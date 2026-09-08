@@ -60,9 +60,23 @@ class TestParseApiErrorStatus:
     def test_parses_status_code_form(self):
         assert AgentRunner.parse_api_error_status("request failed with status code 400") == 400
 
+    def test_parses_api_error_colon_form(self):
+        """claude CLI 实际形态「API Error: 403 ...」：冒号后裸数字（fix-403-auth-failover-blindspot）。"""
+        err = "Failed to authenticate. API Error: 403 No active subscription found for this group"
+        assert AgentRunner.parse_api_error_status(err) == 403
+
     def test_returns_none_when_no_code(self):
         assert AgentRunner.parse_api_error_status("network timeout") is None
         assert AgentRunner.parse_api_error_status("") is None
+
+    def test_403_in_4xx_set(self):
+        """403 鉴权/订阅类与 401 同语义，应计入熔断面（fix-403-auth-failover-blindspot）。"""
+        assert 403 in PROVIDER_CIRCUIT_4XX
+
+    def test_403_does_not_trigger_switch(self):
+        """403 属鉴权类不触发链前进，走既有熔断路径（fix-403-auth-failover-blindspot）。"""
+        err = "Failed to authenticate. API Error: 403 No active subscription found for this group"
+        assert not AgentRunner.classify_switch_error(err)
 
     def test_5xx_not_in_4xx_set(self):
         code = AgentRunner.parse_api_error_status("HTTP 500")

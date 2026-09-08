@@ -22,11 +22,11 @@ const BASE_MENU_ITEMS = [
   { key: 'llm', label: '模型' },
   { key: 'agents', label: '模型分配' },
   { key: 'prompts', label: '提示词' },
-  { key: 'parallel', label: '并发度' },
-  { key: 'approval', label: '审批' },
+  { key: 'parallel', label: '并行' },
   { key: 'token', label: '预算' },
-  { key: 'misc', label: '归档' },
   { key: 'verify', label: '验证' },
+  { key: 'approval', label: '审批' },
+  { key: 'misc', label: '归档' },
   { key: 'system', label: '系统' },
 ];
 

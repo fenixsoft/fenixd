@@ -191,7 +191,7 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
   const initialValues = {
     enabled: admin.enabled ?? true,
     interval_minutes: admin.interval_minutes ?? 5,
-    escalation_cooldown_minutes: admin.escalation_cooldown_minutes ?? 15,
+    escalation_cooldown_minutes: admin.escalation_cooldown_minutes ?? 60,
     merge_breaker_threshold: admin.merge_breaker_threshold ?? 2,
     shutdown_drain_seconds: admin.shutdown_drain_seconds ?? 1800,
     bug_repair_mode: admin.bug_repair_mode ?? 'inplace',
@@ -271,7 +271,10 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
         </Text>
         <Card style={{ marginTop: 12 }}>
           {ADMIN_ANNOTATIONS.map(({ key, label, note, rule }) => (
-            <div key={key} style={{ marginBottom: 4 }}>
+            // 行距由行内最后元素的下边距（24/8px）collapse 提供，此处不挂 inline
+            // margin——否则末行会在卡底残留（global.less 的 :last-child 清零压不过
+            // inline style）
+            <div key={key}>
               {key === 'enabled' ? (
                 <div className="switch-inline-row" data-testid={`system-field-${key}`}>
                   <Form.Item name={key} valuePropName="checked" noStyle>

@@ -9,6 +9,7 @@ import shutil
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch, PropertyMock
 
@@ -159,6 +160,208 @@ class TestSpecTimelineOrdering(unittest.TestCase):
         self.assertEqual(len(run_idx), 2)
         # 两个 run 都在 state 之后
         self.assertTrue(all(i > state_idx for i in run_idx))
+
+
+class TestTimelineFoldChain(unittest.TestCase):
+    """折叠状态节点携带 chain（完整状态序列）：中间状态不省略。
+
+    fast-track 连跳 implemented→testing→verified→done→pushed 折叠后若只显示
+    一头一尾，testing/verified 等真实途经状态被掩盖（2026-09-08 用户要求
+    同一节点内全链展示，状态不省略）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        logs_dir.mkdir(parents=True)
+        lines = [
+            {"timestamp": "2026-09-07T03:57:54.000000Z",
+             "message": "Transition: demo-spec implementing → implemented"},
+            {"timestamp": "2026-09-07T03:57:54.100000Z",
+             "message": "Transition: demo-spec implemented → testing"},
+            {"timestamp": "2026-09-07T03:57:54.200000Z",
+             "message": "Transition: demo-spec testing → verified"},
+            {"timestamp": "2026-09-07T03:57:54.300000Z",
+             "message": "Transition: demo-spec verified → done"},
+        ]
+        (logs_dir / "fenixd.log").write_text(
+            "\n".join(json.dumps(l) for l in lines) + "\n", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_folded_node_carries_full_chain(self):
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, "demo-spec")
+        states = [e for e in timeline if e["kind"] == "state"]
+        self.assertEqual(len(states), 1)
+        node = states[0]
+        self.assertEqual(node["from"], "implementing")
+        self.assertEqual(node["to"], "done")
+        self.assertEqual(
+            node["chain"],
+            ["implementing", "implemented", "testing", "verified", "done"])
+
+    def test_single_transition_has_no_chain(self):
+        """单条转换不折叠（无 chain 字段），前端回退 from/to 渲染。"""
+        logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        (logs_dir / "fenixd.log").write_text(json.dumps({
+            "timestamp": "2026-09-07T04:00:00.000000Z",
+            "message": "Transition: demo-spec done → pushed",
+        }) + "\n", encoding="utf-8")
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, "demo-spec")
+        states = [e for e in timeline if e["kind"] == "state"]
+        self.assertEqual(len(states), 1)
+        self.assertNotIn("chain", states[0])
+        self.assertEqual(states[0]["from"], "done")
+        self.assertEqual(states[0]["to"], "pushed")
+
+
+class TestGetRunsStartedRealTimestamp(unittest.TestCase):
+    """started 优先取 run 产物首行事件时间戳（真实启动时刻）。
+
+    run_id 内嵌时间戳是首次派发时刻：多 attempt run 复用同一 run_id 基座，
+    按 run_id 解析会让所有 attempt 显示同一开始时刻且 duration 虚增
+    （2026-09-08：a1 error 与 a2 done 同显示 16:09:28，紧邻状态转移节点
+    被误读为 error 触发了转移）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.runs_dir = Path(self.tmpdir) / ".fenix" / "runs"
+        self.runs_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_attempt_runs_show_real_start_times(self):
+        from core.dashboard.data import get_runs, _parse_iso_ts
+        base = int(time.time()) - 10000
+        # a2 真实启动时刻 = 派发（base）后 1 小时（同日相对时间，避免跨日歧义）
+        real_a2 = datetime.fromtimestamp(base + 3600, tz=timezone.utc).isoformat()
+        # a1：全文件无 timestamp → 回退 run_id 派发时刻；
+        # a2：复用同一 run_id 基座（-a2）+ 首行携带真实启动时间戳
+        (self.runs_dir / f"impl-demo-{base}-a1.jsonl").write_text(
+            '{"type": "system"}\n'
+            '{"type": "error", "error": "Max turns (600) reached"}\n',
+            encoding="utf-8")
+        (self.runs_dir / f"impl-demo-{base}-a2.jsonl").write_text(
+            json.dumps({"type": "system", "timestamp": real_a2}) + "\n"
+            '{"type": "result", "subtype": "success"}\n', encoding="utf-8")
+        runs = {r["run_id"]: r for r in get_runs(self.tmpdir)}
+        a1, a2 = runs[f"impl-demo-{base}-a1"], runs[f"impl-demo-{base}-a2"]
+        self.assertEqual(a2["started"], real_a2,
+                         "a2 started 必须是产物首行真实启动时刻")
+        self.assertEqual(
+            a1["started"],
+            datetime.fromtimestamp(base, tz=timezone.utc).isoformat(),
+            "a1 无时间戳样本应回退 run_id 派发时刻")
+        self.assertLess(a1["started"], a2["started"],
+                        "真实时序：a1（error）先于 a2")
+        expected_dur = int(
+            (self.runs_dir / f"impl-demo-{base}-a2.jsonl").stat().st_mtime
+            - _parse_iso_ts(real_a2).timestamp())
+        self.assertEqual(a2["duration_seconds"], expected_dur,
+                         "duration = 结束 mtime - 真实启动时刻")
+
+    def test_timestamp_on_later_line_is_found(self):
+        """首行无 timestamp（异常行等）时扫描后续行取第一个可解析值。"""
+        from core.dashboard.data import get_runs
+        base = int(time.time()) - 10000
+        (self.runs_dir / f"impl-demo-{base}.jsonl").write_text(
+            'not-json-garbage\n'
+            '{"type": "assistant", "timestamp": "2026-09-07T08:09:44.000000Z"}\n',
+            encoding="utf-8")
+        runs = get_runs(self.tmpdir)
+        self.assertIn("08:09:44", runs[0]["started"])
+
+
+class TestTimelineVerifyNode(unittest.TestCase):
+    """验证执行节点：verify_engine 确定性执行（非 agent run）必须在时间轴可见。
+
+    full 模式验证执行不产生 runs/*.jsonl，testing→verified 之间无节点打断折叠，
+    观感是「实现完直接连跳已推送」（fix-provider-transient-backoff 误读事故）。
+    节点以 report.json（仅引擎验证写入）+ 日志「开始验证」行构建，折叠在它处断开。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        logs_dir.mkdir(parents=True)
+        self.log_lines = [
+            {"timestamp": "2026-09-07T19:17:52.287000Z",
+             "message": "Transition: demo-spec implementing → implemented"},
+            {"timestamp": "2026-09-07T19:17:52.359000Z",
+             "message": "Transition: demo-spec implemented → testing"},
+            {"timestamp": "2026-09-07T19:18:50.000000Z",
+             "message": "🚀 开始验证 'demo-spec': 16 个场景, 并行度=5"},
+            {"timestamp": "2026-09-07T19:20:45.273000Z",
+             "message": "Transition: demo-spec testing → verified"},
+            {"timestamp": "2026-09-07T19:20:45.310000Z",
+             "message": "Transition: demo-spec verified → done"},
+        ]
+        (logs_dir / "fenixd.log").write_text(
+            "\n".join(json.dumps(l) for l in self.log_lines) + "\n", encoding="utf-8")
+        rp_dir = Path(self.tmpdir) / ".fenix" / "verify-progress" / "demo-spec"
+        rp_dir.mkdir(parents=True)
+        (rp_dir / "report.json").write_text(json.dumps({
+            "spec": "demo-spec",
+            "timestamp": "2026-09-07T19:20:45.253704+00:00",
+            "summary": {"total": 16, "passed": 16, "warnings": 0,
+                        "failed": 0, "errors": 0, "blocked_env": 0},
+            "scenarios": [],
+        }), encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _timeline_kinds(self):
+        from core.dashboard.data import get_spec_timeline
+        return get_spec_timeline(self.tmpdir, "demo-spec")
+
+    def test_verify_node_breaks_fold(self):
+        timeline = self._timeline_kinds()
+        verify_nodes = [e for e in timeline if e["kind"] == "verify"]
+        self.assertEqual(len(verify_nodes), 1)
+        v = verify_nodes[0]
+        self.assertEqual(v["time"], "2026-09-07T19:18:50.000000Z",
+                         "节点时间取日志「开始验证」行（引擎开始时刻）")
+        self.assertEqual(v["duration_seconds"], 115)
+        self.assertEqual((v["total"], v["passed"], v["failed"]), (16, 16, 0))
+        # 折叠在验证执行节点处断开：testing 之前一段、之后 verified 系列一段
+        v_idx = timeline.index(v)
+        before = next(e for e in timeline if e["kind"] == "state"
+                      and e.get("to") == "testing")
+        after = next(e for e in timeline if e["kind"] == "state"
+                     and "verified" in (e.get("chain") or []))
+        self.assertLess(timeline.index(before), v_idx)
+        self.assertGreater(timeline.index(after), v_idx)
+        self.assertEqual(before.get("chain"),
+                         ["implementing", "implemented", "testing"])
+        self.assertEqual(after.get("chain"), ["testing", "verified", "done"])
+
+    def test_verify_node_fallback_to_report_timestamp(self):
+        """日志「开始验证」行缺失（env 受阻早退等）→ 退化用报告完成时刻。"""
+        logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        kept = [l for l in self.log_lines if "开始验证" not in l["message"]]
+        (logs_dir / "fenixd.log").write_text(
+            "\n".join(json.dumps(l) for l in kept) + "\n", encoding="utf-8")
+        timeline = self._timeline_kinds()
+        v = next(e for e in timeline if e["kind"] == "verify")
+        self.assertEqual(v["time"], "2026-09-07T19:20:45.253704+00:00")
+        self.assertNotIn("duration_seconds", v)
+        # 与 verified 转换同秒：节点必须按精确时间排在 verified 转换之前
+        verified_idx = next(i for i, e in enumerate(timeline)
+                            if e["kind"] == "state"
+                            and "verified" in (e.get("chain") or []))
+        self.assertLess(timeline.index(v), verified_idx)
+
+    def test_no_report_no_verify_node(self):
+        rp = Path(self.tmpdir) / ".fenix" / "verify-progress" / "demo-spec" / "report.json"
+        rp.unlink()
+        timeline = self._timeline_kinds()
+        self.assertFalse([e for e in timeline if e["kind"] == "verify"])
 
 
 class TestSpecTimelineRollbackWithoutTransition(unittest.TestCase):
@@ -1492,6 +1695,130 @@ class TestGenerationProgressCounting(unittest.TestCase):
         self.assertEqual(count_generated_scenarios(self.tmpdir, "spec-x"), 0)
         self._write("garbage")
         self.assertEqual(count_generated_scenarios(self.tmpdir, "spec-x"), 0)
+
+
+class TestRunTailInsightsTerminalReason(unittest.TestCase):
+    """_run_tail_insights 提取终态事件原因（时间轴 run 节点错误原因可见化）。
+
+    根因：run 产物终态事件自带原因（error 事件的 error 字段、interrupted /
+    cancelled 事件的 reason 字段），但 _run_tail_insights 只提取
+    summary/llm/usage，时间轴 run 节点只有红色 error Tag 无原因文本——
+    用户只能靠时长猜死因（add-declaration-premechanize 2026-09-07 实证：
+    「Max turns (600) reached」被误猜为 2.5h 运行上限）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.runs_dir = Path(self.tmpdir) / ".fenix" / "runs"
+        self.runs_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_run(self, run_id: str, events: list) -> Path:
+        p = self.runs_dir / f"{run_id}.jsonl"
+        p.write_text(
+            "\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+        return p
+
+    def test_error_event_reason_extracted(self):
+        from core.dashboard.data import _run_tail_insights
+        p = self._write_run("impl-demo-1788840000-a1", [
+            {"type": "provider_marker", "model": "m1", "provider": "p1"},
+            {"type": "assistant", "content": "x"},
+            {"type": "error", "error": "Max turns (600) reached", "exit_code": -9},
+        ])
+        ins = _run_tail_insights(p)
+        self.assertEqual(ins["reason"], "Max turns (600) reached")
+
+    def test_interrupted_reason_extracted(self):
+        from core.dashboard.data import _run_tail_insights
+        p = self._write_run("impl-demo-1788840001-a1", [
+            {"type": "assistant", "content": "x"},
+            {"type": "interrupted", "reason": "startup terminal-state sweep",
+             "timestamp": "2026-09-07T08:10:09+00:00"},
+        ])
+        ins = _run_tail_insights(p)
+        self.assertEqual(ins["reason"], "startup terminal-state sweep")
+
+    def test_cancelled_reason_extracted(self):
+        from core.dashboard.data import _run_tail_insights
+        p = self._write_run("impl-demo-1788840002-a1", [
+            {"type": "assistant", "content": "x"},
+            {"type": "cancelled", "reason": "人工取消", "by": "dashboard"},
+        ])
+        ins = _run_tail_insights(p)
+        self.assertEqual(ins["reason"], "人工取消")
+
+    def test_done_run_reason_empty(self):
+        from core.dashboard.data import _run_tail_insights
+        p = self._write_run("impl-demo-1788840003-a1", [
+            {"type": "assistant", "content": "x"},
+            {"type": "result", "result": "全部完成"},
+        ])
+        ins = _run_tail_insights(p)
+        self.assertEqual(ins["reason"], "")
+
+    def test_missing_file_reason_empty(self):
+        from core.dashboard.data import _run_tail_insights
+        ins = _run_tail_insights(self.runs_dir / "nope.jsonl")
+        self.assertEqual(ins["reason"], "")
+
+
+class TestTimelineRunNodeTerminalReason(unittest.TestCase):
+    """时间轴 run 节点下发 reason 字段（前端原因行数据源）。
+
+    run 节点复用 state 节点的 reason 命名：人类可读的终态原因；
+    无终态原因（运行中/成功）不下发或空，前端不渲染。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        runs_dir = Path(self.tmpdir) / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True)
+        self.runs_dir = runs_dir
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _timeline_run_nodes(self):
+        from core.dashboard.data import get_spec_timeline
+        timeline = get_spec_timeline(self.tmpdir, "demo-spec")
+        return [e for e in timeline if e.get("kind") == "run"]
+
+    def test_error_run_node_has_reason(self):
+        ts = int(time.time())
+        (self.runs_dir / f"impl-demo-spec-{ts}-a1.jsonl").write_text(
+            json.dumps({"type": "assistant", "content": "x"}) + "\n"
+            + json.dumps({"type": "error", "error": "Max turns (600) reached",
+                          "exit_code": -9}) + "\n",
+            encoding="utf-8")
+        nodes = self._timeline_run_nodes()
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["status"], "error")
+        self.assertEqual(nodes[0]["reason"], "Max turns (600) reached")
+
+    def test_interrupted_run_node_has_reason(self):
+        ts = int(time.time())
+        (self.runs_dir / f"impl-demo-spec-{ts}-a2.jsonl").write_text(
+            json.dumps({"type": "assistant", "content": "x"}) + "\n"
+            + json.dumps({"type": "interrupted", "reason": "startup sweep"}) + "\n",
+            encoding="utf-8")
+        nodes = self._timeline_run_nodes()
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["status"], "interrupted")
+        self.assertEqual(nodes[0]["reason"], "startup sweep")
+
+    def test_done_run_node_no_reason(self):
+        ts = int(time.time())
+        (self.runs_dir / f"impl-demo-spec-{ts}-a3.jsonl").write_text(
+            json.dumps({"type": "assistant", "content": "x"}) + "\n"
+            + json.dumps({"type": "result", "result": "完成"}) + "\n",
+            encoding="utf-8")
+        nodes = self._timeline_run_nodes()
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0]["status"], "done")
+        self.assertFalse(nodes[0].get("reason"))
 
 
 class TestGatesPromoteModeConfigIO(unittest.TestCase):
