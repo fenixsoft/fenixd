@@ -60,12 +60,16 @@ class CliRunner(VerifyRunner):
     kind = "cli"
 
     def __init__(self, spec_name, project_root=None, logger=None,
-                 config: dict = None):
-        super().__init__(spec_name, project_root, logger, config)
+                 config: dict = None, scenario_root=None):
+        super().__init__(spec_name, project_root, logger, config,
+                         scenario_root=scenario_root)
         # 契约统一供给的实例 base_url（引擎注入；FENIX_VERIFY_BASE_URL/PORT
         # 注入依据）。无实例形态（纯 cli 轮次）为空字符串（注入空操作）。
         self.base_url = ""
-        self.asserter = CliAssertionRunner(project_root=self.project_root)
+        self.asserter = CliAssertionRunner(
+            project_root=self.project_root,
+            scenario_root=self.scenario_root,
+        )
 
     # ── 场景验收 ───────────────────────────────────────────────
 
@@ -229,10 +233,17 @@ class CliRunner(VerifyRunner):
     # ── 辅助 ───────────────────────────────────────────────────
 
     def _resolve_cwd(self, rel: str):
-        """cwd 相对验证树根；目录不存在返回 None（步骤失败）。"""
+        """cwd 相对验证树根（scenario_root）；无显式 cwd 时以验证树根为
+        缺省（worktree 轮落验证树，无 worktree 轮回退 project_root）。
+        目录不存在返回 None（步骤失败）。
+        """
         if not rel:
-            return Path(self.project_root)
-        p = Path(self.project_root) / rel
+            # 回退链：scenario_root（有 serving worktree 时）→ project_root
+            root = self.scenario_root or self.project_root
+            return Path(root)
+        # 有显式 cwd 时：相对验证树根
+        root = self.scenario_root or self.project_root
+        p = Path(root) / rel
         return p if p.is_dir() else None
 
     def _build_env(self, declared_env: dict) -> dict:

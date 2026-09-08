@@ -50,11 +50,15 @@ class VerifyRunner:
         project_root=None,
         logger=None,
         config: Optional[dict] = None,
+        scenario_root=None,
     ):
         self.spec_name = spec_name
         self.project_root = project_root
         self.logger = logger or _NullLogger()
         self.config = config or {}
+        # 场景执行根：worktree 轮传入 serving worktree 根，CLI 步骤
+        # 缺省 cwd 以此为准；None 时回退 project_root（无 worktree 轮）。
+        self.scenario_root = scenario_root
 
     # ── 场景验收 ───────────────────────────────────────────────
 
