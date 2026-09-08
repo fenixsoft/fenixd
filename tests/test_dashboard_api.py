@@ -619,3 +619,114 @@ class TestProjectDescribeAPI:
         assert "项目名=proj-a" in sig["evidence"]
         assert sig["spec"] is None
         assert sig["kind"] == "signal"
+
+
+# ── SPEC 人工晋升（add-draft-promotion-gate D4/D5） ──────────────────
+class TestSpecPromoteAPI:
+    """POST /api/spec-promote：drafted → ready 人工晋升。"""
+
+    def _make_drafted_project(self, tmp_path, spec_name="draft-spec"):
+        """构造含 drafted spec 的项目（复用 make_project 后改状态）。"""
+        proot = make_project(tmp_path, name="proj-a")
+        # 添加一个 drafted spec
+        from core.state_machine import StateMachine
+        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm.add_spec(spec_name, {"status": "drafted"})
+        # 创建 spec 目录与 tasks.md（声明段合法）
+        (proot / "spec" / "changes" / spec_name).mkdir(parents=True, exist_ok=True)
+        (proot / "spec" / "changes" / spec_name / "tasks.md").write_text(
+            "## 1. 阶段一\n\n- [x] 1.1 任务一\n", encoding="utf-8"
+        )
+        return proot
+
+    def test_promote_success(self, tmp_path):
+        """成功晋升：drafted → ready。"""
+        proot = self._make_drafted_project(tmp_path)
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+        try:
+            status, body = srv.post("/api/spec-promote?project=proj-a&spec=draft-spec")
+            assert status == 200
+            assert body["ok"] is True
+            entry = dash_data.parse_state(proot)["draft-spec"]
+            assert entry["status"] == "ready"
+        finally:
+            srv.stop()
+
+    def test_promote_not_found(self, tmp_path):
+        """spec 不存在 → 404。"""
+        proot = self._make_drafted_project(tmp_path)
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+        try:
+            status, _ = srv.post("/api/spec-promote?project=proj-a&spec=ghost")
+            assert status == 404
+        finally:
+            srv.stop()
+
+    def test_promote_unknown_project(self, tmp_path):
+        """project 不存在 → 404。"""
+        proot = self._make_drafted_project(tmp_path)
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+        try:
+            status, _ = srv.post("/api/spec-promote?project=ghost&spec=draft-spec")
+            assert status == 404
+        finally:
+            srv.stop()
+
+    def test_promote_non_drafted_rejected(self, tmp_path):
+        """非 drafted 状态拒绝：spec 保持原状态且 STATE 不变更。"""
+        proot = self._make_drafted_project(tmp_path)
+        # 先把 draft-spec 晋升为 ready
+        from core.state_machine import StateMachine
+        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm.transition("draft-spec", "ready")
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+        try:
+            status, body = srv.post("/api/spec-promote?project=proj-a&spec=draft-spec")
+            assert status == 200
+            assert body["ok"] is False
+            assert "ready" in body["reason"]
+            entry = dash_data.parse_state(proot)["draft-spec"]
+            assert entry["status"] == "ready"  # 状态不变更
+        finally:
+            srv.stop()
+
+    def test_promote_lint_violation_writes_state_error(self, tmp_path):
+        """lint 违规：返回 violations，STATE error 写入，SPEC 停留 drafted。"""
+        proot = self._make_drafted_project(tmp_path)
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+        try:
+            # Mock promote_drafted to return violations（直接注入违规，避免依赖 lint 实现）
+            import core.dashboard.data as dash_data
+            original_fn = dash_data.promote_spec
+            def mock_promote(pr, sn):
+                return {"ok": False, "found": True, "violations": ["bad path declaration"]}
+            dash_data.promote_spec = mock_promote
+            try:
+                status, body = srv.post("/api/spec-promote?project=proj-a&spec=draft-spec")
+                assert status == 200
+                assert body["ok"] is False
+                assert body["violations"] == ["bad path declaration"]
+            finally:
+                dash_data.promote_spec = original_fn
+        finally:
+            srv.stop()
