@@ -77,7 +77,7 @@ class MergeConflictInfo:
     __slots__ = (
         "success", "error", "conflict_paths",
         "self_heal_applicable", "self_heal_succeeded", "has_semantic_conflict",
-        "rehearsed",
+        "rehearsed", "wip_overlap",
     )
 
     def __init__(self, success: bool, error: str,
@@ -85,7 +85,8 @@ class MergeConflictInfo:
                  self_heal_applicable: bool = False,
                  self_heal_succeeded: bool = False,
                  has_semantic_conflict: bool = False,
-                 rehearsed: bool = False):
+                 rehearsed: bool = False,
+                 wip_overlap: list | None = None):
         self.success = bool(success)
         self.error = error
         self.conflict_paths = list(conflict_paths or [])
@@ -93,6 +94,9 @@ class MergeConflictInfo:
         self.self_heal_succeeded = self_heal_succeeded
         self.has_semantic_conflict = has_semantic_conflict
         self.rehearsed = bool(rehearsed)
+        # WIP 重叠预检（fix-mergeback-stashpop-silent-loss D3）：主树脏 tracked
+        # 文件与分支改动文件的交集，空列表 = 无重叠。只预警不阻断。
+        self.wip_overlap = list(wip_overlap or [])
 
     def __iter__(self):
         """兼容 (bool, str) 解包：既有调用方 ``success, err = ...`` 照常工作。"""
@@ -107,7 +111,8 @@ class MergeConflictInfo:
             f"MergeConflictInfo(success={self.success}, error={self.error!r}, "
             f"conflict_paths={self.conflict_paths}, "
             f"self_heal={self.self_heal_applicable}/{self.self_heal_succeeded}, "
-            f"semantic={self.has_semantic_conflict}, rehearsed={self.rehearsed})"
+            f"semantic={self.has_semantic_conflict}, rehearsed={self.rehearsed}, "
+            f"wip_overlap={self.wip_overlap})"
         )
 
 
@@ -1389,8 +1394,24 @@ class WorktreeManager:
              状态，普通 checkout 会报 "path is unmerged"）——丢弃 stash 版本、保留已
              merge 进 HEAD 的实现（最不可丢失的产物）；
           3. ``git reset`` 清空 index 残留的 staged 冲突条目，主树恢复干净可写。
-        stash 条目**不**自动 drop，被丢弃内容可由人工从 stash 中找回。
+        stash 条目**不**自动 drop，被丢弃内容可由人工从 stash 中找回——除非
+        自愈后核对确认条目零独有内容（fix-mergeback-stashpop-silent-loss D2）：
+        对每个 UU 文件跑树级 ``git diff --quiet <sha> HEAD -- <file>``，全部一致
+        说明 stash 版已被合并结果完全取代，条目永远等不到清理，按
+        reclaim_stale_autostash（4f753ed）同款「sha 仍在栈顶才 drop」模式自动
+        drop 并记 sha 日志；任一文件有差异则保留条目并给出逐文件找回命令。
         """
+        # pop 前钉住栈顶 sha（fix-mergeback-stashpop-silent-loss D2）：guard 锁内
+        # LIFO，此时栈顶即刚 push 的条目；drop 前以「sha 仍为栈顶」防并发插队。
+        pinned_sha = ""
+        rev = subprocess.run(
+            ["git", "-C", str(self.project_root), "rev-parse", "--verify",
+             "stash@{0}"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if rev.returncode == 0:
+            pinned_sha = rev.stdout.strip()
+
         result = subprocess.run(
             ["git", "-C", str(self.project_root), "stash", "pop"],
             capture_output=True, text=True, timeout=30,
@@ -1419,12 +1440,25 @@ class WorktreeManager:
         conflict_files = self._list_unmerged_files()
         if conflict_files:
             self._heal_unmerged_files(conflict_files)
-            self.logger.warning(
-                "worktree_manager",
-                f"Stash pop conflict self-healed; discarded stash changes on "
-                f"{len(conflict_files)} file(s): {conflict_files} "
-                f"(stash preserved, recover via git stash show)",
-            )
+            # 被取代条目自动 drop 判定（fix-mergeback-stashpop-silent-loss D2）：
+            # 树级 diff 逐一核对 stash 版是否已被合并后 HEAD 完全取代。
+            if self._drop_superseded_stash_entry(pinned_sha, conflict_files):
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Stash pop conflict self-healed; stash changes on "
+                    f"{len(conflict_files)} file(s): {conflict_files} were fully "
+                    f"subsumed by merge result — entry auto-dropped",
+                )
+            else:
+                recover_cmds = " ".join(
+                    f"git show {pinned_sha}:{f}" for f in conflict_files
+                ) if pinned_sha else "git stash show"
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Stash pop conflict self-healed; discarded stash changes on "
+                    f"{len(conflict_files)} file(s): {conflict_files} "
+                    f"(stash preserved, recover via: {recover_cmds})",
+                )
         else:
             # 输出含 CONFLICT 但已无 UU 条目（罕见：冲突已自行消解）——照常处理
             self.logger.warning(
@@ -1433,6 +1467,73 @@ class WorktreeManager:
                 f"stash preserved: {output.strip()}",
             )
         return True, conflict_files
+
+    def _drop_superseded_stash_entry(self, pinned_sha: str, conflict_files: list) -> bool:
+        """pop 冲突自愈后判定 stash 条目是否已被合并结果完全取代（D2）。
+
+        判据（树级 diff 而非文本比较，二进制/模式变更天然覆盖）：对每个 UU 文件
+        ``git diff --quiet <sha> HEAD -- <file>``——stash 提交树即 stash 时刻工作区
+        快照，HEAD 已含合并结果，退出码 0 即「stash 版被完全取代」。全部 0 → 零
+        独有内容，drop 该条目；任一非 0 → 保留。
+
+        drop 前核对 sha 仍在栈顶（reclaim_stale_autostash 同款防线，防并发新条目
+        插队误删）；sha 未知/不在栈顶/drop 失败均保留条目并记跳过原因。
+
+        Returns: True = 已 drop；False = 保留（差异 / sha 防线未通过）。
+        """
+        if not pinned_sha:
+            self.logger.warning(
+                "worktree_manager",
+                "Superseded-stash check skipped: pop 前 sha 未知 — 条目保留",
+            )
+            return False
+        superseded = True
+        for f in conflict_files:
+            try:
+                d = subprocess.run(
+                    ["git", "-C", str(self.project_root),
+                     "diff", "--quiet", pinned_sha, "HEAD", "--", f],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                superseded = False
+                break
+            if d.returncode != 0:
+                superseded = False
+                break
+        if not superseded:
+            return False
+        # sha 仍在栈顶才 drop（防并发 autostash 插队误删）
+        cur = subprocess.run(
+            ["git", "-C", str(self.project_root), "rev-parse", "--verify",
+             "stash@{0}"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if cur.returncode != 0 or cur.stdout.strip() != pinned_sha:
+            self.logger.warning(
+                "worktree_manager",
+                f"Superseded stash entry not dropped: stash@{{0}} 已变化 "
+                f"(pinned={pinned_sha[:12]}) — 条目保留",
+            )
+            return False
+        dropped = subprocess.run(
+            ["git", "-C", str(self.project_root), "stash", "drop", "stash@{0}"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if dropped.returncode != 0:
+            self.logger.warning(
+                "worktree_manager",
+                f"Superseded stash entry drop failed "
+                f"(commit {pinned_sha[:12]}, recoverable until gc): "
+                f"{dropped.stderr.strip()}",
+            )
+            return False
+        self.logger.warning(
+            "worktree_manager",
+            f"Superseded stash entry auto-dropped (commit {pinned_sha[:12]}, "
+            f"recoverable until gc) — stash 版已被合并结果完全取代",
+        )
+        return True
 
     def reclaim_stale_autostash(self) -> bool:
         """兜底回收滞留的 pre-dispatch autostash 条目（fix-autostash-orphans）。
