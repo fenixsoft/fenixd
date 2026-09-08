@@ -1125,8 +1125,19 @@ class VerificationPipeline:
                     env_error = f"自愈改写后场景文件验收失败: {e}"
 
             if env_error is None:
+                # 场景执行根：worktree 轮传入 serving worktree 根（CLI 步骤
+                # 缺省 cwd 以此为准，seed 写入落验证树而非主树）；
+                # 无 worktree 轮不传（回退主树 project_root，行为不变）。
+                scenario_root = None
+                _sv_cache = self.__dict__.get("_contract_static_servers", {})
+                _sv_entry = _sv_cache.get(spec_name)
+                if isinstance(_sv_entry, dict):
+                    _wt_path = _sv_entry.get("wt_path")
+                    if _wt_path:
+                        scenario_root = Path(_wt_path)
                 engine = VerifyEngine(
-                    spec_name, self._pm.project_root, self._pm.logger, self._pm.config
+                    spec_name, self._pm.project_root, self._pm.logger,
+                    self._pm.config, scenario_root=scenario_root,
                 )
                 # 契约统一供给 base_url（design verify-runner-engine base_url 统一供给）：
                 # 取代「从候选场景 navigate 步骤文本正则考古」——serve 流程已知

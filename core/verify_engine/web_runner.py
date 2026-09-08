@@ -53,8 +53,8 @@ class WebRunner(VerifyRunner):
     kind = "web"
 
     def __init__(self, spec_name, project_root=None, logger=None,
-                 config: dict = None):
-        super().__init__(spec_name, project_root, logger, config)
+                 config: dict = None, **kwargs):
+        super().__init__(spec_name, project_root, logger, config, **kwargs)
         self.browser = BrowserManager(project_root=project_root,
                                       logger=self.logger)
         self.asserter = AssertionRunner()

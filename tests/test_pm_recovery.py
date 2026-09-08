@@ -313,7 +313,8 @@ class TestPMEngineReplanLimit(unittest.TestCase):
         captured = {}
 
         class FakeEngine:
-            def __init__(self, spec_name, project_root, logger=None, config=None):
+            def __init__(self, spec_name, project_root, logger=None, config=None,
+                         scenario_root=None):
                 captured["spec"] = spec_name
 
             async def run(self, scenarios):
@@ -373,7 +374,8 @@ class TestPMEngineReplanLimit(unittest.TestCase):
         captured = {}
 
         class FakeEngine:
-            def __init__(self, spec_name, project_root, logger=None, config=None):
+            def __init__(self, spec_name, project_root, logger=None, config=None,
+                         scenario_root=None):
                 pass
 
             async def run(self, scenarios):

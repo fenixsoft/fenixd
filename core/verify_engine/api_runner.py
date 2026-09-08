@@ -75,8 +75,8 @@ class ApiRunner(VerifyRunner):
     kind = "api"
 
     def __init__(self, spec_name, project_root=None, logger=None,
-                 config: dict = None):
-        super().__init__(spec_name, project_root, logger, config)
+                 config: dict = None, **kwargs):
+        super().__init__(spec_name, project_root, logger, config, **kwargs)
         # 契约统一供给的实例 base_url（引擎注入；http_request/sse_connect
         # URL origin 全量改写依据）。无实例形态为空字符串（无害空操作）。
         self.base_url = ""

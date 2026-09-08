@@ -61,11 +61,16 @@ class VerifyEngine:
         project_root: Path,
         logger=None,
         config: Optional[dict] = None,
+        scenario_root: Optional[Path] = None,
     ):
         self.spec_name = spec_name
         self.project_root = project_root
         self.logger = logger or _NullLogger()
         self.config = config or {}
+        # 场景执行根：worktree 轮传入 serving worktree 根，CLI 步骤
+        # 缺省 cwd 以此为准；None 时回退 project_root（无 worktree 轮）。
+        # 簿记路径（verify-progress）仍固定 project_root，不受此影响。
+        self.scenario_root = scenario_root
         self._runners: dict[str, VerifyRunner] = {}
         self._env_probe = None
         # 契约统一供给的实例 base_url（design D4/D2.3：验证开始时确定，
@@ -96,7 +101,7 @@ class VerifyEngine:
                     f"支持: {', '.join(sorted(RUNNER_REGISTRY))}"
                 )
             runner = cls(self.spec_name, self.project_root, self.logger,
-                         self.config)
+                         self.config, scenario_root=self.scenario_root)
             if self.base_url:
                 runner.base_url = self.base_url
             self._runners[kind] = runner

@@ -29,8 +29,10 @@ class CliAssertionRunner:
     返回统一格式 dict: {type, layer, pass, ...}。
     """
 
-    def __init__(self, project_root=None):
-        self.project_root = Path(project_root) if project_root else Path(".")
+    def __init__(self, project_root=None, scenario_root=None):
+        # 文件类断言解析根：worktree 轮用 scenario_root（步骤写入隔离树），
+        # 无 worktree 轮用 project_root（既有行为）。
+        self.project_root = Path(scenario_root or project_root or ".")
 
     # ── 断言执行入口 ──────────────────────────────────────────
 

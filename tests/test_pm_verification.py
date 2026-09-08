@@ -241,7 +241,8 @@ class TestScenarioReloadAfterReachabilityHeal(unittest.TestCase):
         captured = {}
 
         class FakeEngine:
-            def __init__(self, spec_name, project_root, logger=None, config=None):
+            def __init__(self, spec_name, project_root, logger=None, config=None,
+                         scenario_root=None):
                 captured["spec"] = spec_name
 
             async def run(self, scenarios):
@@ -279,7 +280,8 @@ class TestScenarioReloadAfterReachabilityHeal(unittest.TestCase):
         captured = {}
 
         class FakeEngine:
-            def __init__(self, spec_name, project_root, logger=None, config=None):
+            def __init__(self, spec_name, project_root, logger=None, config=None,
+                         scenario_root=None):
                 pass
 
             async def run(self, scenarios):
@@ -363,7 +365,8 @@ class TestJudgeScenarioRepair(unittest.TestCase):
         返回 1 过 1 败报告（避开全败哨/环境失联门，直达阶段3 判定）。"""
 
         class FakeEngine:
-            def __init__(self, spec_name, project_root, logger=None, config=None):
+            def __init__(self, spec_name, project_root, logger=None, config=None,
+                         scenario_root=None):
                 pass
 
             async def run(self, scenarios):
