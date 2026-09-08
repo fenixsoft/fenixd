@@ -60,6 +60,7 @@ const SIGNAL_LABEL: Record<string, string> = {
   ready_stuck: '就绪滞留',
   family_explosion: 'SPEC 族爆炸',
   daemon_errors: '守护进程异常',
+  stash_pop_conflict: '合并冲突改动滞留',
 };
 
 const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', minor: '一般' };

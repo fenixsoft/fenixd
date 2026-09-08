@@ -643,3 +643,262 @@ class TestDistBuildContractDriven:
         init_repo(tmp_path)
         wm = make_wm(tmp_path)
         assert wm._run_dist_build() is False
+
+
+class TestSupersededStashDrop:
+    """fix-mergeback-stashpop-silent-loss D2：pop 冲突自愈后被取代条目自动 drop。
+
+    三个 spec scenario：
+      1. stash 版被合并结果完全取代（树级 diff 全 0）→ 条目自动 drop
+      2. stash 版有独立差异 → 条目保留（端到端 pop 冲突自愈路径）
+      3. pop 后 sha 被新条目顶掉 → 放弃 drop
+    """
+
+    def _branch_modifies_shared(self, root: Path, branch_content: str):
+        """从 BASE 派生分支 fenix/impl 修改 shared.py，checkout 回 BASE。返回 BASE sha。"""
+        base_sha = git(root, "rev-parse", "HEAD").stdout.strip()
+        git(root, "checkout", "-q", "-b", "fenix/impl")
+        (root / "shared.py").write_text(branch_content, encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] branch modifies shared.py")
+        git(root, "checkout", "-q", base_sha)
+        return base_sha
+
+    def _make_conflicting_stash(self, root: Path, wip_content: str) -> str:
+        """构造「HEAD 已含合并结果 + 主树 WIP 已 autostash」的判定现场。
+
+        _drop_superseded_stash_entry 的判定语义是「stash 版 vs 合并后 HEAD 版」，
+        因此先写 WIP（≠ 当前 BASE，保证主树脏可 autostash）→ ensure_clean_tree
+        stash → 再推进 HEAD 到分支（等价 merge 结果已入 HEAD）。stash 提交树
+        即 WIP 时刻工作区快照，此后 stash 版与推进后的 HEAD 版可逐 blob 对比。
+        """
+        (root / "shared.py").write_text(wip_content, encoding="utf-8")
+        wm_probe = make_wm(root)
+        assert wm_probe.ensure_clean_tree() is True
+        st = git(root, "stash", "list").stdout
+        assert "fenix: pre-dispatch autostash" in st
+        git(root, "merge", "--no-ff", "fenix/impl",
+            "-m", "[fenix] merge impl (simulated)")
+        assert (root / "shared.py").read_text(encoding="utf-8") == "MERGED\n"
+        return git(root, "rev-parse", "--verify", "stash@{0}").stdout.strip()
+
+    def test_stash_subsumed_by_merge_result_is_dropped(self, tmp_path):
+        """scenario 1: stash 版 == 合并后 HEAD 版（树级 diff 全 0）→ 条目自动 drop。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._branch_modifies_shared(root, "MERGED\n")
+        # WIP 与分支版一致：stash 提交树中 shared.py == 合并后 HEAD 版
+        sha = self._make_conflicting_stash(root, "MERGED\n")
+
+        wm = make_wm(root)
+        assert wm._drop_superseded_stash_entry(sha, ["shared.py"]) is True
+
+        lst = git(root, "stash", "list")
+        assert "fenix: pre-dispatch autostash" not in lst.stdout, \
+            f"被取代条目应被 drop，实际栈: {lst.stdout!r}"
+        drop_logs = [w for w in wm.logger.warnings
+                     if "auto-dropped" in w and sha[:12] in w]
+        assert drop_logs, f"应记录含 drop sha 的日志: {wm.logger.warnings}"
+
+    def test_clean_pop_no_drop_side_effect(self, tmp_path):
+        """scenario 1 补充：pop 干净成功（无 UU）→ 不触发 drop 判定、内容完整回贴。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        # 分支修改 shared.py 并新增 tracked extra.py
+        base_sha = git(root, "rev-parse", "HEAD").stdout.strip()
+        git(root, "checkout", "-q", "-b", "fenix/impl")
+        (root / "shared.py").write_text("MERGED\n", encoding="utf-8")
+        (root / "extra.py").write_text("BASE-EXTRA\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] branch +extra")
+        git(root, "checkout", "-q", base_sha)
+        # 主树 WIP：extra.py 改成与分支版相同内容（无冲突语义，pop 干净）
+        (root / "extra.py").write_text("BASE-EXTRA\n", encoding="utf-8")
+        # extra.py 与 BASE 内容相同 → 主树不脏；改用 shared.py 制造脏（与 BASE 不同）
+        (root / "shared.py").write_text("WIP\n", encoding="utf-8")
+        wm = make_wm(root)
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, err = info
+        assert success, f"merge 应成功，实际失败: {err}"
+        # WIP 与分支版不同 → 有独立差异 → 条目保留
+        lst = git(root, "stash", "list")
+        assert "fenix: pre-dispatch autostash" in lst.stdout
+        assert (root / "extra.py").read_text(encoding="utf-8") == "BASE-EXTRA\n"
+
+    def test_stash_with_unique_diff_is_preserved(self, tmp_path):
+        """scenario 2: stash 版与合并后 HEAD 版树级 diff 非空 → 条目保留 + 找回命令。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._branch_modifies_shared(root, "MERGED\n")
+        sha = self._make_conflicting_stash(root, "WIP-UNIQUE\n")
+
+        wm = make_wm(root)
+        assert wm._drop_superseded_stash_entry(sha, ["shared.py"]) is False
+
+        lst = git(root, "stash", "list")
+        assert "fenix: pre-dispatch autostash" in lst.stdout, \
+            f"有独立差异的条目应保留，实际栈: {lst.stdout!r}"
+
+    def test_restore_conflict_preserves_entry_and_logs_recover_cmd(self, tmp_path):
+        """scenario 2 端到端：真实 pop 冲突自愈路径，条目保留且日志含找回命令。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._branch_modifies_shared(root, "MERGED\n")
+        sha = self._make_conflicting_stash(root, "WIP-UNIQUE\n")
+
+        wm = make_wm(root)
+        ok, conflict_files = wm.restore_after_merge()
+        assert ok is True
+        assert conflict_files == ["shared.py"], f"应检出 UU 冲突文件: {conflict_files}"
+        # 主树为合并结果、干净可写
+        assert (root / "shared.py").read_text(encoding="utf-8") == "MERGED\n"
+        st = git(root, "status", "--porcelain")
+        assert not st.stdout.strip(), f"主树应干净: {st.stdout!r}"
+        # 有独立差异 → 条目保留
+        lst = git(root, "stash", "list")
+        assert "fenix: pre-dispatch autostash" in lst.stdout, \
+            f"有差异条目应保留，实际栈: {lst.stdout!r}"
+        # 日志含逐文件找回命令
+        keep_logs = [w for w in wm.logger.warnings
+                     if f"git show {sha}:shared.py" in w]
+        assert keep_logs, f"应记录逐文件找回命令: {wm.logger.warnings}"
+
+    def test_sha_no_longer_top_aborts_drop(self, tmp_path, monkeypatch):
+        """scenario 3: drop 前栈顶核对发现 sha 被新条目顶掉 → 放弃 drop。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._branch_modifies_shared(root, "MERGED\n")
+        sha = self._make_conflicting_stash(root, "MERGED\n")
+
+        wm = make_wm(root)
+        # 模拟「自愈期间有新条目入栈」：drop 前的栈顶核对返回不同 sha
+        orig_run = subprocess.run
+
+        def fake_run(cmd, **kw):
+            if "rev-parse" in cmd and any("stash@{0}" in a for a in cmd):
+                class R:
+                    returncode = 0
+                    stdout = "f" * 40 + "\n"
+                    stderr = ""
+                return R()
+            return orig_run(cmd, **kw)
+
+        import core.worktree_manager as twm
+        monkeypatch.setattr(twm.subprocess, "run", fake_run)
+        assert wm._drop_superseded_stash_entry(sha, ["shared.py"]) is False
+
+        # 条目保留
+        lst = git(root, "stash", "list")
+        assert "fenix: pre-dispatch autostash" in lst.stdout, \
+            f"放弃 drop 后条目应保留，实际栈: {lst.stdout!r}"
+        skip_logs = [w for w in wm.logger.warnings if "已变化" in w]
+        assert skip_logs, f"应记录跳过原因: {wm.logger.warnings}"
+
+    def test_unknown_pinned_sha_skips_drop(self, tmp_path):
+        """sha 未知（pop 前 rev-parse 失败）→ 保守保留条目。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        self._branch_modifies_shared(root, "MERGED\n")
+        sha = self._make_conflicting_stash(root, "MERGED\n")
+
+        wm = make_wm(root)
+        assert wm._drop_superseded_stash_entry("", ["shared.py"]) is False
+        lst = git(root, "stash", "list")
+        assert "fenix: pre-dispatch autostash" in lst.stdout
+
+
+class TestWipOverlapPrecheck:
+    """fix-mergeback-stashpop-silent-loss D3：merge-back 前 WIP 重叠预检。
+
+    两个 spec scenario：
+      1. 脏 tracked 文件与分支改动相交 → WARNING + wip_overlap 非空
+      2. 无交集 → 零 WARNING、流程与现状一致
+    """
+
+    def _branch_touches(self, root: Path, edits: dict):
+        """从 BASE 派生分支 fenix/impl 修改若干 tracked 文件，checkout 回 BASE。"""
+        base_sha = git(root, "rev-parse", "HEAD").stdout.strip()
+        git(root, "checkout", "-q", "-b", "fenix/impl")
+        for path, content in edits.items():
+            p = root / path
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] branch edits")
+        git(root, "checkout", "-q", base_sha)
+
+    def test_overlap_warns_and_populates_wip_overlap(self, tmp_path):
+        """scenario 1: 脏文件 core/a.py 与分支改动都含 core/a.py → WARNING + 非空。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        (root / "core").mkdir()
+        (root / "core" / "a.py").write_text("BASE-A\n", encoding="utf-8")
+        (root / "core" / "b.py").write_text("BASE-B\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] add core files")
+        self._branch_touches(root, {
+            "core/a.py": "BRANCH-A\n",
+            "core/b.py": "BRANCH-B\n",
+        })
+
+        # 主树 WIP：改 core/a.py（与分支相交）与 core/b.py（不相交的另一个）
+        (root / "core" / "a.py").write_text("WIP-A\n", encoding="utf-8")
+
+        wm = make_wm(root)
+        overlap = wm._detect_wip_overlap("fenix/impl")
+        assert overlap == ["core/a.py"], f"应仅含相交文件: {overlap}"
+        warn_logs = [w for w in wm.logger.warnings
+                     if "WIP overlap" in w and "core/a.py" in w]
+        assert warn_logs, f"应记录含重叠清单的 WARNING: {wm.logger.warnings}"
+
+        # 端到端：merge_back_from_branch 返回的 MergeConflictInfo 携带重叠清单
+        (root / "core" / "a.py").write_text("WIP-A\n", encoding="utf-8")
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, err = info
+        assert success, f"merge 应成功（预检不阻断），实际失败: {err}"
+        assert info.wip_overlap == ["core/a.py"], \
+            f"MergeConflictInfo.wip_overlap 应非空: {info.wip_overlap}"
+
+    def test_no_overlap_is_silent_and_unchanged(self, tmp_path):
+        """scenario 2: 无交集 → 零重叠 WARNING、merge 成功、wip_overlap 空。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        (root / "core").mkdir()
+        (root / "core" / "a.py").write_text("BASE-A\n", encoding="utf-8")
+        (root / "core" / "b.py").write_text("BASE-B\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] add core files")
+        self._branch_touches(root, {"core/a.py": "BRANCH-A\\n"})
+
+        # 主树 WIP：只改不相交的 core/b.py
+        (root / "core" / "b.py").write_text("WIP-B\\n", encoding="utf-8")
+
+        wm = make_wm(root)
+        overlap = wm._detect_wip_overlap("fenix/impl")
+        assert overlap == [], f"无交集应返回空: {overlap}"
+        overlap_warns = [w for w in wm.logger.warnings if "WIP overlap" in w]
+        assert not overlap_warns, f"不应有重叠 WARNING: {wm.logger.warnings}"
+
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, err = info
+        assert success, f"merge 应成功，实际失败: {err}"
+        assert info.wip_overlap == [], \
+            f"无重叠时 wip_overlap 应为空: {info.wip_overlap}"
+        # 流程与现状一致：merge 结果正常落主树，autostash 正常恢复
+        assert (root / "core" / "a.py").read_text(encoding="utf-8") == "BRANCH-A\\n"
+        assert (root / "core" / "b.py").read_text(encoding="utf-8") == "WIP-B\\n"
+
+    def test_clean_tree_produces_no_warning(self, tmp_path):
+        """主树干净 → 预检零开销静默、零 WARNING。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        (root / "core").mkdir()
+        (root / "core" / "a.py").write_text("BASE-A\\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] add core/a.py")
+        self._branch_touches(root, {"core/a.py": "BRANCH-A\\n"})
+
+        wm = make_wm(root)
+        assert wm._detect_wip_overlap("fenix/impl") == []
+        overlap_warns = [w for w in wm.logger.warnings if "WIP overlap" in w]
+        assert not overlap_warns

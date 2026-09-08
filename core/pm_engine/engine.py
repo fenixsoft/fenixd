@@ -2616,8 +2616,10 @@ class PMEngine:
     def _rollback_failed_dispatch(self, spec_name: str, agent_type: str, exc: Exception):
         return self._dispatcher._rollback_failed_dispatch(spec_name, agent_type, exc)
 
-    def _report_stash_pop_conflict(self, spec_name: str, conflict_files: list) -> None:
-        return self._dispatcher._report_stash_pop_conflict(spec_name, conflict_files)
+    def _report_stash_pop_conflict(self, spec_name: str, conflict_files: list,
+                                   merge_info=None) -> None:
+        return self._dispatcher._report_stash_pop_conflict(
+            spec_name, conflict_files, merge_info=merge_info)
 
     def _run_fast_track_worker(self, spec_name: str) -> None:
         """fast-track 单 run 全包 worker（add-fast-track-mode D1/D4/D5/D6）。"""
