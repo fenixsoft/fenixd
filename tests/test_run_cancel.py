@@ -230,31 +230,164 @@ class TestRunClaudeCancelPolling:
         assert "impl-x-123-a1" not in runner._running_agents
 
 
+class TestTransientRetryCancel:
+    """fix-run-cancel-retry-flag-miss：-r<n> 瞬态重试后缀轮的旗标命中。"""
+
+    def test_polling_loop_hits_flag_on_r1_retry_round(self, tmp_path, monkeypatch):
+        """①事故路径复现（2026-09-08 verify-draft-fixture）：
+
+        在飞子 run `planner-judge-x-123-a1-r1`（瞬态重试轮），按 base id
+        `planner-judge-x-123` 登记取消 → 轮询环下一周期命中旗标，terminate
+        子进程并落 cancelled 终态。修复前轮询环键 `<base>-a1-r1` 与登记键
+        `<base>` 精确匹配失配，旗标永不消费。
+        """
+        proot = tmp_path / "proj"
+        (proot / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
+        runner = make_runner(proot)
+        runner.config = {"agents": {"run_timeout_seconds": 3600}}
+
+        orig_popen = runner_module.subprocess.Popen
+
+        def fake_popen(cmd, **kw):
+            kw.pop("text", None)
+            kw.pop("bufsize", None)
+            kw.pop("env", None)
+            kw.pop("cwd", None)
+            return orig_popen(["python3", "-c", "import time; time.sleep(30)"],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        monkeypatch.setattr(runner_module.subprocess, "Popen", fake_popen)
+
+        outcome = {}
+
+        def worker():
+            try:
+                runner._run_claude(
+                    "prompt", proot, "planner-judge-x-123-a1-r1",
+                    model_override="m", max_turns=50,
+                    spec_name="x", agent_type="judge",
+                )
+                outcome["result"] = "returned"
+            except RunCancelledError as e:
+                outcome["result"] = "cancelled"
+                outcome["reason"] = e.reason
+            except Exception as e:  # noqa: BLE001
+                outcome["result"] = f"err:{e}"
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        deadline = time.time() + 5
+        while time.time() < deadline and \
+                "planner-judge-x-123-a1-r1" not in runner._running_agents:
+            time.sleep(0.05)
+        assert "planner-judge-x-123-a1-r1" in runner._running_agents
+
+        result = runner.cancel_run("planner-judge-x-123", reason="瞬态重试轮取消")
+        assert result["status"] == "cancel_requested"
+
+        t.join(timeout=AGENT_TERMINATE_GRACE_SECONDS + 5)
+        assert outcome.get("result") == "cancelled"
+        assert outcome.get("reason") == "瞬态重试轮取消"
+
+        lines = read_run_file(proot, "planner-judge-x-123-a1-r1")
+        assert lines[-1]["type"] == "cancelled"
+        with runner._cancel_requested_lock:
+            assert "planner-judge-x-123" not in runner._cancel_requested
+        assert "planner-judge-x-123-a1-r1" not in runner._running_agents
+
+    def test_attempt_top_blocks_next_attempt_with_r_suffix(self, tmp_path):
+        """②attempt 顶旗标命中阻断后续派发：旗标按 base id 登记，attempt 2
+        循环顶（run_id 带 -a2 后缀）归一化后命中 → 不派发、不建 worktree。"""
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        runner = make_runner(proot)
+
+        def first_run_claude(*a, **k):
+            # attempt 1 正常失败结束，attempt 2 派发前按 base id 登记旗标
+            runner._cancel_requested.add("impl-spec-123")
+            raise RuntimeError("普通失败")
+
+        _patch_exec_deps(runner, proot, first_run_claude)
+
+        import core.agent_runner.runner as _rm
+        orig_sleep = _rm.time.sleep
+
+        def fake_sleep(sec):
+            pass
+
+        _rm.time.sleep = fake_sleep
+        try:
+            r = runner._execute_agent("spec", "implementer", "impl-spec-123")
+        finally:
+            _rm.time.sleep = orig_sleep
+
+        assert r.cancelled is True
+        assert r.success is False
+        assert "cancelled by admin" in r.error
+        assert runner._run_claude.call_count == 1
+        assert not (proot / ".fenix" / "runs" / "impl-spec-123-a2.jsonl").exists()
+
+
+class TestNormalizeRunIdSuffixes:
+    """③回归 + ④多组后缀剥离幂等（fix-run-cancel-retry-flag-miss 1.2）。"""
+
+    @pytest.mark.parametrize("raw,base", [
+        # 回归：无后缀输入幂等
+        ("impl-x-123", "impl-x-123"),
+        # 回归：纯 -a<N> 后缀照常剥离
+        ("impl-x-123-a2", "impl-x-123"),
+        # 事故路径：-a1-r1 瞬态重试轮
+        ("planner-judge-x-123-a1-r1", "planner-judge-x-123"),
+        # 任意顺序/混合多组连续剥离
+        ("impl-x-123-r1", "impl-x-123"),
+        ("impl-x-123-r1-a2", "impl-x-123"),
+        ("impl-x-123-a1-r2-a3-r4", "impl-x-123"),
+    ])
+    def test_normalization(self, raw, base):
+        assert AgentRunner._normalize_run_id(raw) == base
+
+    @pytest.mark.parametrize("raw", [
+        "impl-x-123", "impl-x-123-a1-r2", "planner-judge-x-123-r1-a2",
+    ])
+    def test_normalization_idempotent(self, raw):
+        once = AgentRunner._normalize_run_id(raw)
+        assert AgentRunner._normalize_run_id(once) == once
+
+    def test_overstrip_documented_semantics(self):
+        """设计登记的过度剥离风险：spec 名尾段为 -a<N>/-r<N> 字面形态会被多剥
+        （与既有 -a\\d+$ 剥离同级风险，本项目 kebab-case spec 名无此形态）。"""
+        assert AgentRunner._normalize_run_id("fix-runner-a2") == "fix-runner"
+
+
+def _patch_exec_deps(runner, proot, run_claude_side_effect):
+    """给 runner 装上可跑 _execute_agent 的 worktree_manager / _run_claude mock。"""
+    wm = MagicMock()
+    wm.create.return_value = proot / "wt"
+    runner.worktree_manager = wm
+    runner.state_machine = MagicMock()
+    runner.state_machine.read_one.return_value = {}
+    runner._get_config = lambda key, default=None: {
+        "agents.max_retries": 3,
+    }.get(key, default)
+    runner._run_claude = MagicMock(side_effect=run_claude_side_effect)
+    runner._extract_usage_info = lambda r: {}
+    runner._accumulate_token_usage = lambda *a, **k: None
+    runner._record_verify_progress_tokens = lambda *a, **k: None
+    runner._check_daily_limit = lambda: None
+    runner._get_agent_model_assignment = lambda at: []
+    runner._v2_launch_for_worktree = lambda wt: None
+    runner._v2_stop_for_worktree = lambda wt: None
+    runner._v2_inject_env = lambda wt: {}
+    runner._build_prompt = lambda *a, **k: "prompt"
+    runner._resumable_session_id = lambda *a, **k: None
+    runner._record_daily_provider_attempt = lambda p: None
+    runner._select_chain_candidate = lambda *a, **k: 0
+    runner._daily_run_count = 0
+
+
 class TestExecuteAgentCancel:
     def _patch_exec_deps(self, runner, proot, run_claude_side_effect):
-        """给 runner 装上可跑 _execute_agent 的 worktree_manager / _run_claude mock。"""
-        wm = MagicMock()
-        wm.create.return_value = proot / "wt"
-        runner.worktree_manager = wm
-        runner.state_machine = MagicMock()
-        runner.state_machine.read_one.return_value = {}
-        runner._get_config = lambda key, default=None: {
-            "agents.max_retries": 3,
-        }.get(key, default)
-        runner._run_claude = MagicMock(side_effect=run_claude_side_effect)
-        runner._extract_usage_info = lambda r: {}
-        runner._accumulate_token_usage = lambda *a, **k: None
-        runner._record_verify_progress_tokens = lambda *a, **k: None
-        runner._check_daily_limit = lambda: None
-        runner._get_agent_model_assignment = lambda at: []
-        runner._v2_launch_for_worktree = lambda wt: None
-        runner._v2_stop_for_worktree = lambda wt: None
-        runner._v2_inject_env = lambda wt: {}
-        runner._build_prompt = lambda *a, **k: "prompt"
-        runner._resumable_session_id = lambda *a, **k: None
-        runner._record_daily_provider_attempt = lambda p: None
-        runner._select_chain_candidate = lambda *a, **k: 0
-        runner._daily_run_count = 0
+        _patch_exec_deps(runner, proot, run_claude_side_effect)
 
     def test_attempt1_cancelled_no_attempt2(self, tmp_path):
         """attempt 1 被取消：返回 cancelled=True，无 -a2 attempt 文件。"""
