@@ -249,6 +249,221 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
                           deps_mode=deps_mode)
 
 
+@dataclass
+class ValidateResult:
+    """契约校验结果：逐段通过与否与错误详情，以及 valid 判定。
+
+    valid 判定（design D4 权限边界）：YAML 可解析且 serve 段合法（kind ∈
+    static/command 且对应必填字段非空）。Administrator 据此判定：valid →
+    「契约有效、无需起草」结案；invalid → 修正路径。
+    """
+    valid: bool  # YAML 可解析 + serve 段合法（D4 权限边界判定）
+    prepare_ok: bool
+    prepare_error: str
+    serve_ok: bool
+    serve_error: str
+    ready_ok: bool
+    ready_error: str
+    # 段级详细信息（供 CLI 输出）
+    prepare_steps_run: int = 0
+    serve_kind: str = ""
+    serve_port: Optional[int] = None
+    ready_url: str = ""
+    ready_expect: int = 200
+
+
+def validate_contract(project_root: Path, logger=None) -> ValidateResult:
+    """契约校验入口：逐段执行 prepare → serve → ready → 停 serve。
+
+    返回各段通过与否与错误详情，同时输出 valid 判定（YAML 可解析且 serve 段
+    合法，供 D4 权限边界判定）。Administrator 在草稿上运行此函数，全通才把
+    文件落位 .fenix/verify.yaml（草稿先写临时路径，防半成品被
+    load_verify_contract 当有效契约）。
+
+    校验流程：
+    1. 加载契约（YAML 解析失败 → valid=False，返回解析错误）
+    2. 执行 prepare 构建步骤（复用 run_prepare_steps）
+    3. 启动 serve 实例（static/command 两形态复用既有 Server 类）
+    4. 探活 ready 就绪探针（复用 probe_ready 含鉴别力自检）
+    5. 停 serve 实例
+    6. 返回结果（全通 exit 0，任一段失败 exit 非 0）
+
+    Args:
+        project_root: 项目根目录（契约路径 = project_root/.fenix/verify.yaml）
+        logger: 日志记录器（可选）
+
+    Returns:
+        ValidateResult：逐段结果与 valid 判定
+    """
+    project_root = Path(project_root)
+    contract_path = project_root / ".fenix" / CONTRACT_FILENAME
+
+    # 1. 加载契约（YAML 解析）
+    try:
+        contract = load_verify_contract(project_root, logger)
+    except Exception as e:
+        return ValidateResult(
+            valid=False,
+            prepare_ok=False, prepare_error=f"契约解析失败: {e}",
+            serve_ok=False, serve_error="",
+            ready_ok=False, ready_error="",
+        )
+
+    if contract is None:
+        # 文件不存在或解析失败（load_verify_contract 返回 None）
+        if not contract_path.is_file():
+            return ValidateResult(
+                valid=False,
+                prepare_ok=False, prepare_error=f"契约文件不存在: {contract_path}",
+                serve_ok=False, serve_error="",
+                ready_ok=False, ready_error="",
+            )
+        else:
+            return ValidateResult(
+                valid=False,
+                prepare_ok=False, prepare_error="契约 YAML 解析失败",
+                serve_ok=False, serve_error="",
+                ready_ok=False, ready_error="",
+            )
+
+    # 2. valid 判定（D4：YAML 可解析 + serve 段合法）
+    valid = True
+    serve_ok = True
+    serve_error = ""
+    serve_kind = ""
+    serve_port = None
+
+    # 检查原始 YAML 中的 serve 段（load_verify_contract 会静默丢弃无效 kind）
+    try:
+        raw_data = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+        if isinstance(raw_data, dict):
+            raw_serve = raw_data.get("serve")
+            if isinstance(raw_serve, dict):
+                raw_kind = raw_serve.get("kind", "")
+                if raw_kind not in ("static", "command"):
+                    valid = False
+                    serve_ok = False
+                    serve_error = f"serve.kind 非法: {raw_kind}（应为 static 或 command）"
+                elif raw_kind == "static" and not raw_serve.get("root"):
+                    valid = False
+                    serve_ok = False
+                    serve_error = "serve.root 为空（kind=static 必填）"
+                elif raw_kind == "command" and not raw_serve.get("cmd"):
+                    valid = False
+                    serve_ok = False
+                    serve_error = "serve.cmd 为空（kind=command 必填）"
+    except Exception:
+        pass  # YAML 解析失败已在上方处理
+
+    # 从加载的契约中获取 serve 信息（用于输出）
+    if contract.serve is not None:
+        serve_kind = contract.serve.kind
+        serve_port = contract.serve.port
+
+    # 3. 执行 prepare 构建步骤
+    prepare_ok = True
+    prepare_error = ""
+    prepare_steps_run = len(contract.prepare)
+    if contract.prepare:
+        err = run_prepare_steps(contract, project_root)
+        if err:
+            prepare_ok = False
+            prepare_error = err
+            # prepare 失败不改变 valid 判定：契约结构有效（YAML 正确 + serve 段合法），
+            # 只是构建步骤失败——这是验证环境错误，不是契约格式问题。
+
+    # 4. 启动 serve 实例 + 探活 ready
+    server = None
+    ready_ok = True
+    ready_error = ""
+    ready_url = ""
+    ready_expect = contract.ready.expect
+    if contract.serve is not None and prepare_ok:
+        base_url = ""
+        try:
+            if contract.serve.kind == "static":
+                root_dir = project_root / contract.serve.root
+                if not root_dir.is_dir():
+                    serve_ok = False
+                    serve_error = f"serve.root 不存在: {contract.serve.root}"
+                    # serve.root 不存在是运行时问题，不是契约格式问题——契约结构有效
+                else:
+                    server = StaticVerifyServer(root_dir)
+                    base_url = server.base_url
+            elif contract.serve.kind == "command":
+                # command 形态：分配端口、替换占位符、启动进程
+                from core.proc_utils import find_free_port as _ffp
+                injected_port = _ffp()
+                cmd_str = contract.serve.cmd
+                if "{port}" in cmd_str:
+                    cmd_str = cmd_str.replace("{port}", str(injected_port))
+                env = {**os.environ, "FENIX_VERIFY_PORT": str(injected_port)}
+                try:
+                    proc = subprocess.Popen(
+                        cmd_str, shell=True, cwd=str(project_root),
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        start_new_session=True, env=env,
+                    )
+                except Exception as e:
+                    serve_ok = False
+                    serve_error = f"serve 命令启动失败: {e}"
+                    # serve 命令启动失败是运行时问题，不是契约格式问题——契约结构有效
+                if serve_ok:
+                    # 使用 CommandVerifyServer 进行端口发现（注入端口精确探 +
+                    # 进程归属发现 + 邻近扫描）
+                    srv = CommandVerifyServer(
+                        proc, injected_port,
+                        timeout=contract.ready.timeout or 60,
+                        legacy_hint=contract.serve.port)
+                    if not srv.ok:
+                        serve_ok = False
+                        serve_error = (
+                            srv.failure_note
+                            or "serve 命令未就绪（注入端口未被消费）")
+                        # serve 命令未就绪是运行时问题，不是契约格式问题——契约结构有效
+                    else:
+                        base_url = srv.base_url
+                    # 停 serve（validate 只证声明自洽，不残留实例）
+                    try:
+                        srv.stop()
+                    except Exception:
+                        pass
+                    server = None  # 已手动停止
+
+            # 5. 探活 ready 就绪探针（复用 probe_ready 含鉴别力自检）
+            if base_url and serve_ok:
+                ready_url = contract.ready.url
+                ok, note = probe_ready(base_url, contract.ready)
+                ready_ok = ok
+                ready_error = note if not ok else ""
+                # ready 探针失败是运行时问题，不是契约格式问题——契约结构有效
+        except Exception as e:
+            serve_ok = False
+            serve_error = f"serve 启动异常: {e}"
+            # serve 启动异常是运行时问题，不是契约格式问题——契约结构有效
+            ready_ok = False
+            ready_error = ""
+        finally:
+            # 6. 停 serve 实例
+            if server is not None:
+                try:
+                    server.stop()
+                except Exception:
+                    pass
+            # command 形态已在 command 块内通过 srv.stop() 停止（validate
+            # 只证声明自洽，不残留实例），此处不再重复终止
+
+    return ValidateResult(
+        valid=valid,
+        prepare_ok=prepare_ok, prepare_error=prepare_error,
+        serve_ok=serve_ok, serve_error=serve_error,
+        ready_ok=ready_ok, ready_error=ready_error,
+        prepare_steps_run=prepare_steps_run,
+        serve_kind=serve_kind, serve_port=serve_port,
+        ready_url=ready_url, ready_expect=ready_expect,
+    )
+
+
 def resolve_deps_mode(contract=None, config_value=None) -> str:
     """deps_mode 解析优先级：verify.yaml deps_mode > config verify.deps_mode > 默认。"""
     if contract is not None and getattr(contract, "deps_mode", "") in DEPS_MODES:
