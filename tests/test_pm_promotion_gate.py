@@ -260,5 +260,74 @@ class TestSharedPromotionFunction(unittest.TestCase):
         self.assertIsNone(entry.get("error"))
 
 
+class TestCLI(unittest.TestCase):
+    """CLI promote 命令测试（函数级调用，避免子进程脆弱性）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_cli_promote_success(self):
+        """CLI promote：成功晋升退出码 0。"""
+        from bin.fenix_cli import _resolve_project_root, cmd_promote
+        from argparse import Namespace
+        proot, sm, _ = _setup_project(self.tmpdir)
+        args = Namespace(spec="myspec", project=str(proot))
+        # Monkey-patch _resolve_project_root to return our proot
+        import bin.fenix_cli as cli_mod
+        original_fn = cli_mod._resolve_project_root
+        cli_mod._resolve_project_root = lambda x: proot
+        try:
+            cmd_promote(args)
+        except SystemExit as e:
+            self.assertEqual(e.code, 0)
+        finally:
+            cli_mod._resolve_project_root = original_fn
+        entry = sm.read_one("myspec")
+        self.assertEqual(entry["status"], "ready")
+
+    def test_cli_promote_lint_violation_nonzero(self):
+        """CLI promote：lint 违规退出码非 0。"""
+        from bin.fenix_cli import _resolve_project_root, cmd_promote
+        from argparse import Namespace
+        proot, sm, _ = _setup_project(self.tmpdir)
+        args = Namespace(spec="myspec", project=str(proot))
+        # Mock promote_drafted to return violations
+        import bin.fenix_cli as cli_mod
+        from unittest.mock import patch
+        original_fn = cli_mod._resolve_project_root
+        cli_mod._resolve_project_root = lambda x: proot
+        try:
+            with patch("core.pm_engine.promotion._lint_deliverable_declarations",
+                       return_value=["bad path declaration"]):
+                with self.assertRaises(SystemExit) as ctx:
+                    cmd_promote(args)
+                self.assertEqual(ctx.exception.code, 1)
+        finally:
+            cli_mod._resolve_project_root = original_fn
+        entry = sm.read_one("myspec")
+        self.assertEqual(entry["status"], "drafted")
+
+    def test_cli_promote_external_project(self):
+        """CLI promote：--project 指向外部路径生效。"""
+        from bin.fenix_cli import _resolve_project_root, cmd_promote
+        from argparse import Namespace
+        proot, sm, _ = _setup_project(self.tmpdir)
+        args = Namespace(spec="myspec", project=str(proot))
+        import bin.fenix_cli as cli_mod
+        original_fn = cli_mod._resolve_project_root
+        cli_mod._resolve_project_root = lambda x: proot
+        try:
+            cmd_promote(args)
+        except SystemExit as e:
+            self.assertEqual(e.code, 0)
+        finally:
+            cli_mod._resolve_project_root = original_fn
+        entry = sm.read_one("myspec")
+        self.assertEqual(entry["status"], "ready")
+
+
 if __name__ == "__main__":
     unittest.main()
