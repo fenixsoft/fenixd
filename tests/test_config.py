@@ -686,6 +686,18 @@ class TestAgentModelsUnknownKeyTolerance(unittest.TestCase):
             self.assertEqual(len(assign), 1)
             self.assertEqual(assign[0][0]["name"], "volc")
 
+    def test_self_review_is_known_agent_model_key(self):
+        """self-review 已入白名单：加载零 ERROR、分配照常解析（自省专属模型分配）。"""
+        cfg = _base_cfg(models={"self-review": {"provider": "volc"}},
+                        llm=[_volc_provider()])
+        self._write_config(cfg)
+        with self.assertNoLogs("fenixd.config", level="ERROR"):
+            config = ConfigLoader.load(self.config_path)
+        assign = ConfigLoader.get_agent_model_assignment(config, "self-review")
+        self.assertEqual(len(assign), 1)
+        self.assertEqual(assign[0][0]["name"], "volc")
+        self.assertEqual(assign[0][1], "claude-sonnet-5")
+
     def test_models_section_non_dict_ignored_rest_applied(self):
         """agents.models 整段非 dict → 忽略该段 + 告警，其余段照常校验应用。"""
         self._write_proj_cfg(

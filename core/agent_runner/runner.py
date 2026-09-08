@@ -1179,8 +1179,9 @@ class AgentRunner:
           STATE（自省链路禁止注册 STATE 条目）；
         - 超时走 agents.run_timeout_seconds 全局默认（_run_claude 内生效，
           不设 override）。
-        - 模型与 Administrator 同解析链：agents.models.administrator 分配
-          优先，否则 admin.agent_model → 默认网关。
+        - 模型解析链：agents.models.self-review 分配优先；未配置回退
+          agents.models.administrator（向后兼容，自省源自运维通道）；
+          再回退 admin.agent_model → 默认网关。
 
         Agent 按 prompt 把回顾写入实例文件
         ``.fenix/self_review_out-<run_id>.json``（JSON：
@@ -1205,9 +1206,11 @@ class AgentRunner:
             "out_path": str(out_path),
         })
 
-        # 模型解析链：与 Administrator 一致（自省由 Administrator Agent 执行）
+        # 模型解析链：agents.models.self-review > 回退 agents.models.administrator
+        # （向后兼容：自省未单独配置时继承运维通道分配）> admin.agent_model → 默认网关
         env_overrides: Dict[str, str] = {}
-        assignment = self._get_agent_model_assignment("administrator")
+        assignment = (self._get_agent_model_assignment("self-review")
+                      or self._get_agent_model_assignment("administrator"))
         if assignment:
             provider, model_override = assignment[0]
             env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]

@@ -789,6 +789,89 @@ class TestRunSelfReviewRunner:
         assert result.resolved == []
 
 
+class TestRunSelfReviewModelChain:
+    """自省模型解析链：agents.models.self-review > 回退 administrator >
+    admin.agent_model（自省专属模型分配，2026-09-08）。"""
+
+    @staticmethod
+    def _assignment(provider_name, model):
+        return [({"name": provider_name, "baseurl": f"https://{provider_name}.com",
+                  "apikey": "k"}, model)]
+
+    def _capture_runner(self, proot, assignment_fn):
+        from core.agent_runner import AgentRunner
+
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.project_root = proot
+        runner.config = {}
+        runner._get_config = lambda key, default=None: default
+        runner._get_admin_model = lambda: "claude-sonnet-5"
+        runner._get_agent_model_assignment = assignment_fn
+        from core.agent_runner.prompt_builder import PromptBuilder
+        from types import SimpleNamespace
+        runner._prompt_builder_instance = PromptBuilder(SimpleNamespace(project_root=proot))
+
+        captured = {}
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            max_turns, spec_name=None):
+            captured["model"] = model_override
+            captured["env"] = env_overrides
+            (proot / ".fenix" / f"self_review_out-{run_id}.json").write_text(
+                json.dumps({"date": "2026-09-08", "waste": [], "mistakes": [],
+                            "improvements": []}),
+                encoding="utf-8")
+            return "out", 1, "sess", {"input_tokens": 0, "output_tokens": 0,
+                                      "cost_usd": 0.0}
+
+        runner._run_claude = fake_run_claude
+        return runner, captured
+
+    def test_prefers_self_review_assignment(self, tmp_path):
+        """agents.models.self-review 已配置 → 优先于 Administrator 分配。"""
+        proot = tmp_path / "proj-m1"
+        (proot / ".fenix").mkdir(parents=True)
+
+        def assignment_fn(agent_type):
+            if agent_type == "self-review":
+                return self._assignment("sr-gw", "self-review-model")
+            if agent_type == "administrator":
+                return self._assignment("admin-gw", "admin-model")
+            return None
+
+        runner, captured = self._capture_runner(proot, assignment_fn)
+        runner.run_self_review("2026-09-08", "摘要", None)
+        assert captured["model"] == "self-review-model"
+        assert captured["env"]["ANTHROPIC_BASE_URL"] == "https://sr-gw.com"
+        assert captured["env"]["ANTHROPIC_API_KEY"] == "k"
+        assert captured["env"]["ANTHROPIC_MODEL"] == "self-review-model"
+
+    def test_falls_back_to_administrator_assignment(self, tmp_path):
+        """self-review 未配置 → 回退 Administrator 分配（向后兼容）。"""
+        proot = tmp_path / "proj-m2"
+        (proot / ".fenix").mkdir(parents=True)
+
+        def assignment_fn(agent_type):
+            if agent_type == "administrator":
+                return self._assignment("admin-gw", "admin-model")
+            return None
+
+        runner, captured = self._capture_runner(proot, assignment_fn)
+        runner.run_self_review("2026-09-08", "摘要", None)
+        assert captured["model"] == "admin-model"
+        assert captured["env"]["ANTHROPIC_BASE_URL"] == "https://admin-gw.com"
+        assert captured["env"]["ANTHROPIC_MODEL"] == "admin-model"
+
+    def test_falls_back_to_admin_model(self, tmp_path):
+        """两级分配均未配置 → admin.agent_model 兜底、无 provider env。"""
+        proot = tmp_path / "proj-m3"
+        (proot / ".fenix").mkdir(parents=True)
+        runner, captured = self._capture_runner(proot, lambda agent_type: None)
+        runner.run_self_review("2026-09-08", "摘要", None)
+        assert captured["model"] == "claude-sonnet-5"
+        assert captured["env"] == {}
+
+
 # ── 数据摘要辅助 ───────────────────────────────────────────
 
 def _ts(dt: datetime) -> int:
