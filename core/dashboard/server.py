@@ -779,6 +779,37 @@ class DashboardHandler(BaseHTTPRequestHandler):
             resp["commit_warning"] = result["commit_warning"]
         self._json(resp)
 
+    def _api_spec_promote(self, query) -> dict:
+        """POST /api/spec-promote?project=<name>&spec=<name>
+
+        人工晋升 drafted SPEC：调用共享晋升函数（软化+lint+transition ready）。
+        - project 不存在 → 404；spec 不在项目 STATE.md → 404
+        - 非 drafted → 200 + {ok: false, reason: ...}
+        - lint 违规 → 200 + {ok: false, violations: [...]}
+        - 成功 → 200 + {ok: true}
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        proot = Path(project["path"])
+        try:
+            result = dashboard_data.promote_spec(proot, spec)
+        except Exception as e:  # noqa: BLE001 兜底：晋升异常不崩溃进程
+            self._error(500, f"promote spec failed: {e}")
+            return
+        if not result.get("found"):
+            self._error(404, result.get("error") or f"spec not found: {spec}")
+            return
+        self._json(result)
+
     def _api_spec_delete(self, query):
         """POST /api/spec-delete?project=<name>&spec=<name>
 
@@ -1508,6 +1539,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_spec_freeze_config(query)
         elif path == "/api/spec-archive":
             self._api_spec_archive(query)
+        elif path == "/api/spec-promote":
+            self._api_spec_promote(query)
         elif path == "/api/alerts/clear":
             self._api_alerts_clear()
         elif path.startswith("/api/alerts/") and path.endswith("/handled"):
