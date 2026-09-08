@@ -37,6 +37,23 @@ Fenix daemon 自动调度 SPEC 时受一组预算、重试与熔断规则约束�
 
 daemon 重启时，处于 `implementing`/`testing` 中断状态的 SPEC 自动回退 `ready`，同时清空陈旧 run 字段、重置重试计数，重新进入调度池。这是设计行为而非数据丢失。
 
+## 草稿人工放行
+
+默认情况下，SPEC 注册为 drafted 后由 PM Engine 自动晋升 ready 并立即调度实现。对于重要改动，你可以关闭自动晋升，让 SPEC 停留在草稿态供人工阅读，确认无误后再放行。
+
+**配置开关**：`gates.auto_promote_draft`（默认 `true`，热更新生效）
+- `true`（默认）：SPEC 注册后自动晋升 ready 并调度（现状不变）
+- `false`：SPEC 停留 drafted，不晋升、不派发、不写 error（设计行为而非故障）
+
+**放行方式**：
+
+1. **Dashboard 项目页**：对 drafted 状态的 SPEC，点击「晋升 ready」菜单项，确认后执行晋升（软化+lint+transition）
+2. **CLI 命令**：`python3 bin/fenix_cli.py promote <spec> [--project <path>]`（缺省当前目录）
+
+**Lint 拦截**：晋升时仍执行完整 lint（声明形态+tasks 可解析性），违规时 SPEC 停留 drafted 并在 STATE 写入错误明细，可在 Dashboard 或 CLI 反馈中查看。修正后重新晋升。
+
+**闸口关闭后的存量处理**：重新开启 `auto_promote_draft` 后，下一次 full_scan recovery 会自动晋升停留 drafted 的存量 SPEC，无需逐个手动操作。
+
 ## merge 修复通道与熔断
 
 合并失败按指数退避重试（`pm.push.retry_backoff_seconds` 默认 `[300, 900]`）；连续失败达到 `merge_breaker_threshold`（复用 `agents.merge_breaker_threshold`，默认 2）后，自动 merge 被阻断并转人工处置，产生 critical 级的 `merge_streak` 困境信号。落到体感上：同一 SPEC 连续 merge 失败几次就会停止自动重试并发出红脸告警，提示你去检查 git 冲突根因，而不是让框架继续盲目重试。

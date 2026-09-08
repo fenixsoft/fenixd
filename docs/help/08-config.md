@@ -90,6 +90,7 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 |----|--------|------|---------|
 | require_push_approval | true | bool | 热更新 |
 | approve_mode | `manual` | manual/auto | 热更新 |
+| auto_promote_draft | `true` | bool | 热更新 |
 
 ### verify
 
@@ -246,7 +247,7 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 
 | 设置页面板 | 对应配置键 |
 |-----------|-----------|
-| 配置管理 | llm.providers / agents.models / gates.approve_mode |
+| 配置管理 | llm.providers / agents.models / gates.approve_mode / gates.auto_promote_draft |
 | Token 预算面板 | agents.token_budget_millions |
 | 验证 | verify.static_scope / verify.deps_mode（存于 config.yaml；`.fenix/verify.yaml` 契约手工编辑，不经设置页改写） |
 | 提示词管理 | agents/ 通用层 + .fenix/agents/ 项目级 |
