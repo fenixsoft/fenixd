@@ -1,4 +1,4 @@
-import { Button, Card, Form, Radio, Typography } from 'antd';
+import { Button, Card, Form, Radio, Switch, Typography } from 'antd';
 import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 
@@ -13,17 +13,19 @@ export default function ApprovalModePanel({ config, onSave }: ApprovalModePanelP
   const [form] = Form.useForm();
 
   useEffect(() => {
-    // 确保 approve_mode 有值，默认为 'manual'
+    // 确保字段有值，使用配置值或默认值
     form.setFieldsValue({
+      auto_promote_draft: config.gates.auto_promote_draft ?? true,
       approve_mode: config.gates.approve_mode || 'manual',
     });
-  }, [config.gates.approve_mode, form]);
+  }, [config.gates.approve_mode, config.gates.auto_promote_draft, form]);
 
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
       await onSave({
         gates: {
+          auto_promote_draft: values.auto_promote_draft,
           approve_mode: values.approve_mode,
         },
       });
@@ -41,9 +43,21 @@ export default function ApprovalModePanel({ config, onSave }: ApprovalModePanelP
       <Card style={{ marginTop: 12 }}>
         <Form
           form={form}
-          initialValues={{ approve_mode: config.gates.approve_mode || 'manual' }}
+          initialValues={{
+            auto_promote_draft: config.gates.auto_promote_draft ?? true,
+            approve_mode: config.gates.approve_mode || 'manual',
+          }}
           layout="vertical"
         >
+          {/* 草稿自动晋升开关（add-draft-promotion-gate D5） */}
+          <Form.Item
+            name="auto_promote_draft"
+            label="草稿自动晋升"
+            valuePropName="checked"
+            extra="开启时 SPEC 注册后立即自动进入调度；关闭后 SPEC 停留草稿态，供人工阅读，确认后在项目页手动放行"
+          >
+            <Switch />
+          </Form.Item>
           <Form.Item
             name="approve_mode"
             rules={[{ required: true, message: '请选择审批模式' }]}
