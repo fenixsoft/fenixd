@@ -392,6 +392,8 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                     base_url = server.base_url
             elif contract.serve.kind == "command":
                 # command 形态：分配端口、替换占位符、启动进程
+                # srv 声明提前到此处，由 finally 统一 stop（先探 ready 再停）
+                srv = None
                 from core.proc_utils import find_free_port as _ffp
                 injected_port = _ffp()
                 cmd_str = contract.serve.cmd
@@ -423,12 +425,8 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                         # serve 命令未就绪是运行时问题，不是契约格式问题——契约结构有效
                     else:
                         base_url = srv.base_url
-                    # 停 serve（validate 只证声明自洽，不残留实例）
-                    try:
-                        srv.stop()
-                    except Exception:
-                        pass
-                    server = None  # 已手动停止
+                    # 注意：command 形态不在这里 stop——先探 ready 再统一 stop
+                    # （validate_command_stop_order 2026-09-08 修复）
 
             # 5. 探活 ready 就绪探针（复用 probe_ready 含鉴别力自检）
             if base_url and serve_ok:
@@ -444,14 +442,19 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
             ready_ok = False
             ready_error = ""
         finally:
-            # 6. 停 serve 实例
+            # 6. 停 serve 实例（static + command 统一收口，ready 探针已在上方执行）
             if server is not None:
                 try:
                     server.stop()
                 except Exception:
                     pass
-            # command 形态已在 command 块内通过 srv.stop() 停止（validate
-            # 只证声明自洽，不残留实例），此处不再重复终止
+            # command 形态：srv 在 finally 再 stop（先探 ready 再停实例，
+            # 修复 validate_command_stop_order 2026-09-08）
+            if srv is not None and srv.ok:
+                try:
+                    srv.stop()
+                except Exception:
+                    pass
 
     return ValidateResult(
         valid=valid,
