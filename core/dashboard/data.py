@@ -3575,6 +3575,9 @@ def _managed_key_sources(raw: dict) -> dict:
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         sources["gates.approve_mode"] = "project"
+    # add-draft-promotion-gate：草稿晋升模式显式定义 → project
+    if isinstance(gates_raw, dict) and "promote_mode" in gates_raw:
+        sources["gates.promote_mode"] = "project"
     verify_src = raw.get("verify")
     if isinstance(verify_src, dict):
         if "static_scope" in verify_src:
@@ -3660,7 +3663,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
     result = {
         "llm": {},
         "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 9000, "max_turns": 400, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4, "verify_redo_budget": 3},
-        "gates": {"approve_mode": "manual"},
+        "gates": {"approve_mode": "manual", "promote_mode": "auto"},
         "runs": {"keep": 50},
         # 验证契约键（static_scope 服务范围 / deps_mode worktree 依赖供给模式）
         "verify": {"static_scope": "main", "deps_mode": "prefer-offline"},
@@ -3739,6 +3742,11 @@ def read_config(scope_root, scope: str = "project") -> dict:
     gates_raw = raw.get("gates")
     if isinstance(gates_raw, dict) and "approve_mode" in gates_raw:
         result["gates"] = {"approve_mode": gates_raw["approve_mode"]}
+    # add-draft-promotion-gate：promote_mode 提取（合法枚举才回显，非法留空由读侧缺省兜底）
+    if isinstance(gates_raw, dict) and gates_raw.get("promote_mode") in ("auto", "manual"):
+        if "gates" not in result:
+            result["gates"] = {}
+        result["gates"]["promote_mode"] = gates_raw["promote_mode"]
     verify_raw = raw.get("verify")
     if isinstance(verify_raw, dict):
         if verify_raw.get("static_scope") in ("main", "worktree"):
@@ -3814,7 +3822,7 @@ def read_effective_config(project_root) -> dict:
     result = {
         "llm": {},
         "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 9000, "max_turns": 400, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4, "verify_redo_budget": 3},
-        "gates": {"approve_mode": "manual"},
+        "gates": {"approve_mode": "manual", "promote_mode": "auto"},
         "runs": {"keep": 50},
         # 验证契约键（static_scope 服务范围 / deps_mode worktree 依赖供给模式）
         "verify": {"static_scope": "main", "deps_mode": "prefer-offline"},
@@ -3948,6 +3956,7 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     - agents.models: 整体替换（只动 models，其它 agents 子键保留）
     - agents.max_concurrent: 替换（仅 patch 中提供且为正整数时）
     - gates.approve_mode: 只替换 approve_mode 子键
+    - gates.promote_mode: 只替换 promote_mode 子键
     """
     import copy
     merged = copy.deepcopy(raw_config)
@@ -3985,10 +3994,15 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
                 merged["agents"][_tk] = patch["agents"][_tk]
 
     if "gates" in patch and isinstance(patch["gates"], dict):
-        if "approve_mode" in patch["gates"]:
+        if "approve_mode" in patch["gates"] or "promote_mode" in patch["gates"]:
             if not isinstance(merged.get("gates"), dict):
                 merged["gates"] = {}
+        if "approve_mode" in patch["gates"]:
             merged["gates"]["approve_mode"] = patch["gates"]["approve_mode"]
+        # add-draft-promotion-gate 验证修复：缺合并分支导致设置页保存的
+        # promote_mode 在 merge 阶段被静默丢弃（枚举合法性已由 write_config 前置校验把关）
+        if "promote_mode" in patch["gates"]:
+            merged["gates"]["promote_mode"] = patch["gates"]["promote_mode"]
 
     if "runs" in patch and isinstance(patch["runs"], dict):
         keep = patch["runs"].get("keep")

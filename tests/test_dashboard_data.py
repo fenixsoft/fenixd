@@ -1819,3 +1819,126 @@ class TestTimelineRunNodeTerminalReason(unittest.TestCase):
         self.assertEqual(len(nodes), 1)
         self.assertEqual(nodes[0]["status"], "done")
         self.assertFalse(nodes[0].get("reason"))
+
+
+class TestGatesPromoteModeConfigIO(unittest.TestCase):
+    """add-draft-promotion-gate 验证修复：gates.promote_mode 受管键读写全链路。
+
+    产品 Bug 回归：_deep_merge_managed 缺 promote_mode 合并分支，设置页保存的
+    promote_mode 在 merge 阶段被静默丢弃（验证场景 api-config-get-after-save-promote-manual）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir)
+        self.config_dir = self.proot / ".fenix"
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.config_path = self.config_dir / "config.yaml"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_deep_merge_managed_writes_promote_mode(self):
+        """_deep_merge_managed 的 promote_mode 分支：patch gates.promote_mode 写入 merged["gates"]"""
+        from core.dashboard.data import _deep_merge_managed
+
+        raw_config = {
+            "gates": {"approve_mode": "auto", "require_push_approval": True},
+        }
+        patch = {"gates": {"promote_mode": "manual"}}
+
+        result = _deep_merge_managed(raw_config, patch)
+
+        # promote_mode 写入；approve_mode 与非受管子键保留（不整段覆盖丢失）
+        self.assertEqual(result["gates"]["promote_mode"], "manual")
+        self.assertEqual(result["gates"]["approve_mode"], "auto")
+        self.assertEqual(result["gates"]["require_push_approval"], True)
+
+    def test_deep_merge_managed_promote_only_patch_keeps_approve(self):
+        """只 patch promote_mode 时原始 gates 段无受管键也能正确创建"""
+        from core.dashboard.data import _deep_merge_managed
+
+        raw_config = {"project": {"name": "t"}}
+        result = _deep_merge_managed(raw_config, {"gates": {"promote_mode": "auto"}})
+        self.assertEqual(result["gates"]["promote_mode"], "auto")
+
+    def test_write_config_promote_mode_persists(self):
+        """write_config 保存 promote_mode 后落盘可读回（设置页保存生效闭环）"""
+        from core.dashboard.data import write_config
+
+        result = write_config(self.proot, {"gates": {"promote_mode": "manual"}})
+        self.assertTrue(result["ok"], result.get("error"))
+
+        import yaml
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+        self.assertEqual(config["gates"]["promote_mode"], "manual")
+
+        # 二次保存切回 auto（幂等覆盖）
+        result = write_config(self.proot, {"gates": {"promote_mode": "auto"}})
+        self.assertTrue(result["ok"], result.get("error"))
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+        self.assertEqual(config["gates"]["promote_mode"], "auto")
+
+    def test_write_config_promote_mode_invalid_rejected(self):
+        """非法枚举值前置校验拒绝（不写盘）"""
+        from core.dashboard.data import write_config
+
+        result = write_config(self.proot, {"gates": {"promote_mode": "yes"}})
+        self.assertFalse(result["ok"])
+        self.assertIn("auto", result["error"])
+        self.assertIn("manual", result["error"])
+
+    def test_read_effective_config_promote_mode_echo_and_sources(self):
+        """read_effective_config 回显 promote_mode + sources 标注；改晋升模式不丢审批模式"""
+        from core.dashboard.data import read_effective_config, write_config
+
+        user_dir = Path(self.tmpdir) / "user-fenix"
+        with patch("core.config.USER_CONFIG_DIR", user_dir), \
+             patch("core.dashboard.data.USER_CONFIG_PATH", user_dir / "config.yaml"):
+            # 缺省：promote_mode 回显 auto，sources 标 user
+            result = read_effective_config(self.proot)
+            self.assertEqual(result["gates"]["promote_mode"], "auto")
+            self.assertEqual(result["sources"].get("gates.promote_mode"), "user")
+
+            # 写入 manual（同时带 approve_mode，模拟设置页保存载荷）
+            w = write_config(self.proot, {"gates": {"promote_mode": "manual",
+                                                    "approve_mode": "manual"}})
+            self.assertTrue(w["ok"], w.get("error"))
+            result = read_effective_config(self.proot)
+            self.assertEqual(result["gates"]["promote_mode"], "manual")
+            self.assertEqual(result["gates"]["approve_mode"], "manual")
+            self.assertEqual(result["sources"].get("gates.promote_mode"), "project")
+
+            # 只改 promote_mode、不带 approve_mode 的 patch：approve_mode 保留
+            w = write_config(self.proot, {"gates": {"promote_mode": "auto"}})
+            self.assertTrue(w["ok"], w.get("error"))
+            import yaml
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+            self.assertEqual(config["gates"]["promote_mode"], "auto")
+            self.assertEqual(config["gates"]["approve_mode"], "manual")
+
+    def test_read_config_view_promote_mode_echo(self):
+        """编辑视图（read_config raw 提取）回显 promote_mode；缺省填 auto"""
+        from core.dashboard.data import read_config
+
+        # 缺省（文件不存在）：promote_mode 缺省 auto
+        result = read_config(self.proot)
+        self.assertEqual(result["gates"].get("promote_mode"), "auto")
+        self.assertEqual(result["sources"].get("gates.promote_mode"), "user")
+
+        # 显式 manual：回显 manual + sources 标 project
+        import yaml
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml.dump({"gates": {"promote_mode": "manual"}}, f)
+        result = read_config(self.proot)
+        self.assertEqual(result["gates"].get("promote_mode"), "manual")
+        self.assertEqual(result["sources"].get("gates.promote_mode"), "project")
+
+        # 非法值不回显（读侧缺省兜底 auto）
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml.dump({"gates": {"promote_mode": "bogus"}}, f)
+        result = read_config(self.proot)
+        self.assertEqual(result["gates"].get("promote_mode"), "auto")
