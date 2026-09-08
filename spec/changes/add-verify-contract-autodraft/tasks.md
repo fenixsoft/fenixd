@@ -41,5 +41,5 @@
 ## 4. 收尾链路与存量
 
 - [x] 4.1 起草收尾演练：夹具项目上验证「契约落盘 → git 提交 → spec 状态复位 ready」全链路可达（复位走既有 state_machine 权限），daemon 重验证使用新契约
-- [ ] 4.2 存量补提交：fenix-desktop 项目 admin 手写的 `.fenix/verify.yaml`（reference，跨仓库运维动作）git 提交，作为机制首个实战样本
+- [x] 4.2 存量补提交：fenix-desktop 项目 admin 手写的 `.fenix/verify.yaml`（reference，跨仓库运维动作）git 提交，作为机制首个实战样本
 - [x] 4.3 全量回归：`tests/test_verify_contract_autodraft.py` 及既有验证链相关测试（test_pm_engine_dispatch_fixes、test_pm_recovery、test_admin）全绿
