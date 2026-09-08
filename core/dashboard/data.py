@@ -3015,7 +3015,10 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
                     if _LIFECYCLE_ORDER.get(to, 9) < _LIFECYCLE_ORDER.get(frm, 9):
                         reason = _backtrack_reason(frm, to)
                     events.append({"time": ts, "kind": "state", "from": frm, "to": to, "reason": reason})
-                if "Updated SPEC" in msg and spec_name in msg:
+                # 带引号全匹配（写点唯一于 state_machine.update_spec 的
+                # f"Updated SPEC '{spec_name}'"）：子串匹配会让前缀名 spec
+                # （如 add-foo）吸收姊妹 spec（add-foo-ui）的状态更新
+                if "Updated SPEC" in msg and f"'{spec_name}'" in msg:
                     updates = entry.get("context", {}).get("updates", {}) or {}
                     err = updates.get("error")
                     if err:
