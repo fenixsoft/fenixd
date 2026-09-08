@@ -374,6 +374,10 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
 
     # 4. 启动 serve 实例 + 探活 ready
     server = None
+    # srv（command 形态实例句柄）与 server 同层级初始化：command 分支外的路径
+    # （static kind / prepare 失败 / 分支前异常）finally 的统一 stop 引用
+    # srv 时不得 UnboundLocalError（validate_contract CLI exit 1 实证）
+    srv = None
     ready_ok = True
     ready_error = ""
     ready_url = ""
