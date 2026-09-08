@@ -46,6 +46,32 @@ RUN_TERMINAL_EVENT_TYPES = frozenset({
 })
 
 
+def _file_has_terminal_event(run_file: Path) -> bool:
+    """读 run jsonl 逐行判定尾部是否已有终态事件（运行期/启动清扫共享口径）。
+
+    终态口径 = ``RUN_TERMINAL_EVENT_TYPES``（result/interrupted/error/cancelled），
+    两种清扫 MUST 复用本 helper，不得各自实现解析逻辑（runtime-run-sweep
+    「与启动清扫口径一致」Requirement）。损坏 JSON 行跳过不阻断；
+    文件不可读（OSError）视为无终态事件。
+    """
+    try:
+        with run_file.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (isinstance(entry, dict)
+                        and entry.get("type") in RUN_TERMINAL_EVENT_TYPES):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def sweep_runs_without_terminal_state(runs_dir: Path) -> list:
     """启动终态补写扫描：扫描 runs_dir 顶层 *.jsonl，对尾部无终态事件的
     run 文件追加 ``{"type": "interrupted", "reason": "startup terminal-state
@@ -65,24 +91,7 @@ def sweep_runs_without_terminal_state(runs_dir: Path) -> list:
     except OSError:
         return []
     for run_file in files:
-        has_terminal = False
-        try:
-            with run_file.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if (isinstance(entry, dict)
-                            and entry.get("type") in RUN_TERMINAL_EVENT_TYPES):
-                        has_terminal = True
-                        break
-        except OSError:
-            continue
-        if has_terminal:
+        if _file_has_terminal_event(run_file):
             continue
         # 无终态事件——追加 interrupted 终态（O_APPEND 单行原子追加）
         try:
