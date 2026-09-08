@@ -843,7 +843,9 @@ export default function SpecDetailPage() {
             // 状态节点：头部保留「状态转移」标签，from → to 中文标签（同 SPEC 列表 statusMeta）换行显示在内容区；
             // 折叠节点携带 chain（完整状态序列）时全链展开渲染，中间状态不省略
             // （fast-track 连跳 implemented→testing→verified→done→pushed 只显示一头一尾会掩盖真实途经状态）
-            const isRollback = !!item.reason;
+            // 回退方向单源后端 backward 字段（缺失时回退旧判定兼容存量/归档数据）：
+            // 带 reason 的前向节点（如恢复直写行的精确 error）不再挂「↩ 状态回退」徽标
+            const isRollback = item.backward === true || (item.backward === undefined && !!item.reason);
             const chainStatuses: string[] = (item.chain && item.chain.length > 1)
               ? item.chain
               : [item.from || '', item.to || ''];

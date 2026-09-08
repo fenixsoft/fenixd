@@ -3011,11 +3011,16 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
                 m = pat.search(msg)
                 if m:
                     frm, to = m.group(1), m.group(2)
-                    reason = ""
-                    if _LIFECYCLE_ORDER.get(to, 9) < _LIFECYCLE_ORDER.get(frm, 9):
-                        reason = _backtrack_reason(frm, to)
-                    events.append({"time": ts, "kind": "state", "from": frm, "to": to, "reason": reason})
-                if "Updated SPEC" in msg and spec_name in msg:
+                    # 方向单源：backward 按生命周期序判定（与打回重建路径
+                    # 同式），Transition 回退判定复用为该字段来源
+                    backward = _LIFECYCLE_ORDER.get(to, 9) < _LIFECYCLE_ORDER.get(frm, 9)
+                    reason = _backtrack_reason(frm, to) if backward else ""
+                    events.append({"time": ts, "kind": "state", "from": frm, "to": to,
+                                   "reason": reason, "backward": backward})
+                # 带引号全匹配（写点唯一于 state_machine.update_spec 的
+                # f"Updated SPEC '{spec_name}'"）：子串匹配会让前缀名 spec
+                # （如 add-foo）吸收姊妹 spec（add-foo-ui）的状态更新
+                if "Updated SPEC" in msg and f"'{spec_name}'" in msg:
                     updates = entry.get("context", {}).get("updates", {}) or {}
                     err = updates.get("error")
                     if err:
@@ -3105,9 +3110,19 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
                 current = to
                 continue
             frm = current if current is not None else "?"
-            reason = err[:120] if err else _backtrack_reason(frm, to)
+            # 方向按生命周期序判定（与 Transition 路径同式）。前向节点不落
+            # 「状态回退」兜底文案：无同行 err 时 reason 置空（可被折叠链
+            # 合并，与 Transition 前向节点行为一致）——从结构上消除前向节点
+            # 被 errors_at 就近覆写传染的通道；有同行 err 时 reason=err
+            # （_precise_reason 保护不被覆写）。回退节点维持现状。
+            backward = _LIFECYCLE_ORDER.get(to, 9) < _LIFECYCLE_ORDER.get(frm, 9)
+            if backward:
+                reason = err[:120] if err else _backtrack_reason(frm, to)
+            else:
+                reason = err[:120] if err else ""
             events.append({"time": ts, "kind": "state", "from": frm, "to": to,
-                           "reason": reason, "_precise_reason": bool(err)})
+                           "reason": reason, "backward": backward,
+                           "_precise_reason": bool(err)})
             current = to
 
     # admin 运维事件节点（escalation + disposition）：与 state/run 节点统一
@@ -3153,9 +3168,11 @@ def _collapse_timeline(events: list) -> list:
     buf: list[dict] = []   # 待合并的前向状态节点缓冲
 
     def _flush() -> dict:
+        # 折叠缓冲按构造只收前向节点（回退节点带 reason 天然打断），backward=false
         node = {
             "time": buf[0]["time"], "kind": "state",
             "from": buf[0]["from"], "to": buf[-1]["to"], "reason": "",
+            "backward": False,
         }
         if len(buf) > 1:
             node["chain"] = [buf[0]["from"]] + [b["to"] for b in buf]
