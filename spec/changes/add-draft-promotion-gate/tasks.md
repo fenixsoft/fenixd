@@ -63,10 +63,12 @@
 ## 5. 回归验证
 
 - [x] 5.1 相关测试全绿：tests/test_config.py、tests/test_pm_promotion_gate.py、tests/test_dashboard_api.py 及既有 pm_engine/dispatch 回归（test_pm_engine_dispatch_fixes.py 等）无回归
-- [x] 5.2 前端编译验证：core/dashboard/static 下 tsc/build 通过（dist 产物不入库，仅本地验证）
+- [x] 5.2 前端编译验证：core/dashboard/static 下 tsc/build 通过（dist 产物不入库，仅本地验证）## 验证修复（第 2 轮失败）
 
-## 验证修复（第 1 轮失败）
+### 上轮实现结论（自动携带，来自上一轮 implementer 收工结论）
 
-- [x] 先复核失败有效性：逐条核对 `spec/changes/add-draft-promotion-gate/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [x] 修复后重跑验证确认通过
+修复 CLI --project 参数位置 Bug（将 --project 从主解析器移到 promote 子解析器），CLI promote 命令现在支持 SPEC/文档声明的 promote <spec> [--project <path>] 语法；回归测试全部通过（config/promotion/dashboard-api/dispatch）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-draft-promotion-gate/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
