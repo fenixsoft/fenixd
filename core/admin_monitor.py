@@ -990,6 +990,30 @@ class AdminMonitor:
         # 文本动作（放行 / _family_waiver / waive）兜底，兼容自由文本处置。
         self._apply_family_waiver(signal, disp)
 
+        # fix-stale-escalation-close：run 有最终结果即关闭其名下旧 escalation
+        # （孤儿看护在处置进行中误判 pending 超时的残留）。不关闭则 dashboard
+        # 处置卡片永久「需人工决策」、与 result=resolved 矛盾，且 unhandled_for
+        # 节流会压制该 spec 后续同型告警。failed/interrupted 保守保留——处置
+        # 未成功闭环，人工仍需知情。escalated 的接棒告警在其后落盘，不受影响。
+        if disp.result in ("resolved", "partially-resolved", "escalated"):
+            try:
+                closed = self.store.close_escalations_for_run(
+                    disp.run_id,
+                    f"随处置最终记录闭环（run {disp.run_id} 最终 result={disp.result}）",
+                )
+            except Exception as e:  # noqa: BLE001 — 闭环失败不阻塞处置落痕
+                closed = 0
+                self.logger.error(
+                    "admin_monitor",
+                    f"Failed to close stale escalations for run {disp.run_id}: {e}",
+                )
+            if closed:
+                self.logger.info(
+                    "admin_monitor",
+                    f"Closed {closed} stale escalation(s) for run {disp.run_id} "
+                    f"(final result={disp.result})",
+                )
+
         if disp.escalate:
             # Administrator 判定无法自主处置 → 升级人工
             self.store.append(attach_trigger({

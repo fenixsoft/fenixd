@@ -21,6 +21,11 @@ commit-push / webhook / shell。命中 hook 在独立 daemon 线程并发执行�
 审计 `.fenix/hook_audit.jsonl` append-only（D6），dashboard 经
 `read_hook_audit` 纯函数读取尾部。
 
+one-shot 重启 hook（hook-restart-once）：all-done → restart-daemon 触发成功后
+写 `.fenix/hook_cleanup_request.json` 清理标记；daemon 重启后 HookEngine 于
+启动时清扫标记并从项目级/用户级 config.yaml 摘除该 hook——挂一次触发一次，
+不会每次全员收口都重启（再需重启重新挂 hook 即可）。
+
 线程安全：审计写入带进程内线程锁 + 跨进程 fcntl.flock（风格对齐
 admin_store 的 DisputeAuditStore 追加模式）。
 """
@@ -51,6 +56,11 @@ HOOK_EVENT_ALL_DONE = "all-done"
 # 成功终态集合：all-done 判定口径（与前端 PRIORITY_TERMINAL 一致）。
 # blocked/bug-found/frozen 等非终态视为「仍有进行中」不触发。
 SPEC_SUCCESS_TERMINAL = (SpecStatus.DONE, SpecStatus.PUSHED)
+
+# one-shot 重启清理标记（hook-restart-once）：all-done → restart-daemon 触发
+# 成功后写入；daemon 重启后 HookEngine 启动清扫消费此标记，从项目级/用户级
+# config.yaml 摘除对应 hook，实现「挂一次、触发一次」。
+HOOK_RESTART_CLEANUP_FILENAME = "hook_cleanup_request.json"
 
 # 全部合法动作（D4 七枚举）
 HOOK_ACTIONS = (
@@ -281,6 +291,14 @@ class HookEngine:
         # 框架目录：core/hook_engine.py → 框架根（bin/fenix_dashboard.py 所在）
         self._framework_root = Path(__file__).resolve().parent.parent
         self._project_name = None
+        # one-shot 清扫（hook-restart-once）：消费上次 all-done → restart-daemon
+        # 触发遗留的清理标记，摘除对应 hook；失败仅告警不阻断 daemon 启动。
+        try:
+            self._consume_restart_cleanup()
+        except Exception as e:
+            self._log_warning(
+                f"one-shot 重启 hook 清扫失败（hook 保留，下次启动重试）: "
+                f"{type(e).__name__}: {e}")
 
     # ── 事件分发（EventBus diff 处调用，只投递不阻塞）────────────────
 
@@ -417,6 +435,16 @@ class HookEngine:
         if action == "restart-daemon":
             ok, detail = self._action_restart_daemon()
             status = STATUS_SUCCESS if ok else STATUS_FAILURE
+            # one-shot（hook-restart-once）：仅 all-done 触发且 hook 有 id 时写
+            # 清理标记。标记失败不降级本次成功（hook 留存，下一轮收口再触发）；
+            # 无 id 的手写 hook 无法定位摘除目标，保持常驻旧语义。
+            if ok and to_status == HOOK_EVENT_ALL_DONE and hook_id:
+                mark_err = self._mark_restart_cleanup(hook_id)
+                detail = (
+                    f"{detail}；清理标记写入失败（hook 保留）: {mark_err}"
+                    if mark_err else
+                    f"{detail}（one-shot：重启后本 hook 将自动清理）"
+                )
         elif action == "commit":
             status, detail = self._action_commit(cfg, spec, to_status)
         elif action == "push":
@@ -450,6 +478,159 @@ class HookEngine:
             return True, "restart_request 已写入（supervisor 将执行优雅重启）"
         except OSError as e:
             return False, f"touch .fenix/restart_request 失败: {e}"
+
+    # ── one-shot 重启 hook（hook-restart-once）──────────────────────
+
+    def _mark_restart_cleanup(self, hook_id) -> Optional[str]:
+        """all-done → restart-daemon 触发成功后写清理标记。
+
+        fcntl 锁内读-改-写合并 hook_ids（多个 all-done 重启 hook 并发触发不
+        互吞），临时文件 + rename 原子落盘（防 supervisor SIGKILL 截断出
+        半截 JSON）。返回 None 成功，否则错误描述。
+        """
+        path = self.project_root / ".fenix" / HOOK_RESTART_CLEANUP_FILENAME
+        lockfile = Path(str(path) + ".lock")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with lockfile.open("w", encoding="utf-8") as lf:
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                try:
+                    ids: List[str] = []
+                    if path.exists():
+                        try:
+                            data = json.loads(path.read_text(encoding="utf-8"))
+                            raw = data.get("hook_ids") if isinstance(data, dict) else None
+                            ids = [str(x) for x in raw if x] if isinstance(raw, list) else []
+                        except (json.JSONDecodeError, OSError):
+                            ids = []  # 半截/损坏标记：重建即可
+                    hid = str(hook_id or "")
+                    if hid and hid not in ids:
+                        ids.append(hid)
+                    payload = {"ts": _utcnow_iso(), "hook_ids": ids}
+                    tmp = path.with_suffix(".json.tmp")
+                    tmp.write_text(
+                        json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                    tmp.replace(path)
+                finally:
+                    fcntl.flock(lf, fcntl.LOCK_UN)
+            return None
+        except OSError as e:
+            return f"标记写入失败: {e}"
+
+    def _consume_restart_cleanup(self) -> None:
+        """启动清扫（hook-restart-once）：消费清理标记，摘除已触发过的重启 hook。
+
+        项目级与用户级 config.yaml 分别读-改-写（不用合并视图回写，避免把
+        用户级 hooks 复制进项目文件）；内存视图同步过滤，热更新从已清理
+        磁盘重收敛前保持一致。无标记 no-op；标记删除放最后——配置摘除成功
+        而删标记失败时，下次启动幂等重扫（ids 已不在，等价 noop）。
+        """
+        path = self.project_root / ".fenix" / HOOK_RESTART_CLEANUP_FILENAME
+        if not path.exists():
+            return
+        hook_ids: set = set()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            raw = data.get("hook_ids") if isinstance(data, dict) else None
+            hook_ids = {str(x) for x in raw if x} if isinstance(raw, list) else set()
+        except (json.JSONDecodeError, OSError) as e:
+            self._log_warning(f"hook 清理标记损坏，跳过清扫: {e}")
+            return
+        if hook_ids:
+            changed = self._remove_hook_ids_from_config_files(hook_ids)
+            self._remove_hook_ids_from_memory(hook_ids)
+            self._log_warning(
+                f"one-shot 重启 hook 清扫: 已从配置摘除 {sorted(hook_ids)}"
+                f"（改动 {changed} 个配置文件）")
+        else:
+            self._log_warning("hook 清理标记为空，按 noop 消费")
+        try:
+            path.unlink()
+        except OSError as e:
+            self._log_warning(f"hook 清理标记删除失败（下次启动重试）: {e}")
+
+    def _hook_config_paths(self) -> List[Path]:
+        """清理涉及的两级配置文件路径（用户级优先，均可能不存在）。"""
+        paths: List[Path] = []
+        try:
+            from .config import USER_CONFIG_DIR
+            paths.append(USER_CONFIG_DIR / "config.yaml")
+        except Exception:
+            pass
+        paths.append(self.project_root / ".fenix" / "config.yaml")
+        return paths
+
+    @staticmethod
+    def _split_yaml_header(raw: str) -> str:
+        """取文件头部连续注释/空行块原样保留（safe_dump 会丢弃注释）。"""
+        header: List[str] = []
+        for line in raw.splitlines(keepends=True):
+            if line.strip() == "" or line.lstrip().startswith("#"):
+                header.append(line)
+            else:
+                break
+        return "".join(header)
+
+    def _remove_hook_ids_from_config_files(self, hook_ids: set) -> int:
+        """从两级 config.yaml 的 hooks 段按 id 摘除条目，返回实际改写文件数。"""
+        import yaml
+        changed = 0
+        for cfg_path in self._hook_config_paths():
+            try:
+                if not cfg_path.exists():
+                    continue
+                raw = cfg_path.read_text(encoding="utf-8")
+                data = yaml.safe_load(raw)
+                hooks = data.get("hooks") if isinstance(data, dict) else None
+                if not isinstance(hooks, dict):
+                    continue
+                dirty = False
+                g = hooks.get("global")
+                if isinstance(g, list):
+                    kept = [h for h in g
+                            if not (isinstance(h, dict) and h.get("id") in hook_ids)]
+                    if kept != g:
+                        hooks["global"] = kept
+                        dirty = True
+                specs = hooks.get("specs")
+                if isinstance(specs, dict):
+                    for name, lst in list(specs.items()):
+                        if not isinstance(lst, list):
+                            continue
+                        kept = [h for h in lst
+                                if not (isinstance(h, dict) and h.get("id") in hook_ids)]
+                        if kept != lst:
+                            specs[name] = kept
+                            dirty = True
+                if not dirty:
+                    continue
+                tmp = cfg_path.with_suffix(".yaml.tmp")
+                tmp.write_text(
+                    self._split_yaml_header(raw)
+                    + yaml.safe_dump(data, allow_unicode=True,
+                                     default_flow_style=False, sort_keys=False),
+                    encoding="utf-8")
+                tmp.replace(cfg_path)
+                changed += 1
+            except (OSError, yaml.YAMLError) as e:
+                self._log_warning(f"hook 清扫读改 {cfg_path} 失败: {e}")
+        return changed
+
+    def _remove_hook_ids_from_memory(self, hook_ids: set) -> None:
+        """内存合并视图同步过滤（热更新从已清理磁盘重收敛前保持一致）。"""
+        hooks = self.config.get("hooks") if isinstance(self.config, dict) else None
+        if not isinstance(hooks, dict):
+            return
+        g = hooks.get("global")
+        if isinstance(g, list):
+            hooks["global"] = [h for h in g
+                               if not (isinstance(h, dict) and h.get("id") in hook_ids)]
+        specs = hooks.get("specs")
+        if isinstance(specs, dict):
+            for name, lst in list(specs.items()):
+                if isinstance(lst, list):
+                    specs[name] = [h for h in lst
+                                   if not (isinstance(h, dict) and h.get("id") in hook_ids)]
 
     def _action_commit(self, cfg: dict, spec: str, event: str) -> Tuple[str, str]:
         """git add -A + git commit -m <模板渲染>；无变更 → noop 成功。"""

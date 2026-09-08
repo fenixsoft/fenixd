@@ -132,6 +132,25 @@ export function runEventsToChatMessages(events: RunEvent[]): ChatMessage[] {
       continue;
     }
 
+    // 终态事件：error 渲染为错误行（MessageItem 红色「错误」头），原因在
+    // error 字段；interrupted/cancelled 渲染为系统行，原因在 reason 字段。
+    // 原先落 fallback 只剩 [error]/[interrupted] 心跳行，原因文本丢失
+    // （Max turns (600) reached 之类死因在运行记录里不可见）。
+    if (ev.type === 'error' || ev.type === 'interrupted' || ev.type === 'cancelled') {
+      const text = String(ev.error || ev.reason || '').trim();
+      if (text) {
+        flushThinking();
+        out.push(
+          ev.type === 'error'
+            ? { type: 'error', content: text, timestamp }
+            : { type: 'system', content: text, timestamp },
+        );
+      } else {
+        out.push({ type: 'system', content: `[${ev.type}]`, timestamp });
+      }
+      continue;
+    }
+
     // fallback：顶层字符串 content（纯文本事件形态）
     const text = typeof ev.content === 'string' ? ev.content : '';
     if (ev.type === 'assistant') {

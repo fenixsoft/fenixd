@@ -142,6 +142,13 @@ class TestConfigLoader(unittest.TestCase):
                     ConfigLoader.get_admin_config(config)["bug_repair_mode"], mode
                 )
 
+    def test_admin_escalation_cooldown_default_60(self):
+        """未配置 → get_admin_config 缺省唤起冷却 60 分钟（2026-09-07 用户决策：
+        原 15 分钟使孤儿检测宽限过短，「Administrator 处置中断」告警频繁）。"""
+        self.assertEqual(
+            ConfigLoader.get_admin_config({})["escalation_cooldown_minutes"], 60
+        )
+
     def test_bug_repair_mode_validate_rejects_and_unchanged(self):
         """宽松路径（resolve_config）同拒非法值；合法值经 get_admin_config 取回。"""
         ConfigLoader.reset_stuck_threshold_state()

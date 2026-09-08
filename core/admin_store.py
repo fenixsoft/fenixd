@@ -248,6 +248,32 @@ class AdminStore:
             return changed
         return self._mutate(mutate, skip_unchanged=True)
 
+    def close_escalations_for_run(self, admin_run_id: str, resolve_note: str) -> int:
+        """关闭某 admin run 名下的全部未处理升级告警（随最终处置闭环）。
+
+        典型场景：AdminMonitor 孤儿看护在处置进行中误判 pending 超时（升级
+        escalation 带同 admin_run_id），随后 run 正常完成落最终 disposition——
+        误报 escalation 若无人关闭，dashboard 处置卡片永久显示「需人工决策」
+        与 result=resolved 矛盾，且 unhandled_for 节流会压制该 spec 后续同型
+        告警。仅改写 handled 族字段；已处理条目不可覆盖。返回关闭数量。
+        """
+        if not admin_run_id:
+            return 0
+        closed_at = _utcnow_iso()
+
+        def mutate(records):
+            changed = 0
+            for rec in records:
+                if (rec.get("kind") == ESCALATION and not rec.get("handled")
+                        and rec.get("admin_run_id") == admin_run_id):
+                    rec["handled"] = True
+                    rec["handled_by"] = AUTO_RESOLVE_BY
+                    rec["handled_at"] = closed_at
+                    rec["resolve_note"] = resolve_note
+                    changed += 1
+            return changed
+        return self._mutate(mutate, skip_unchanged=True)
+
     def latest_signal(self, spec: Optional[str], signal_type: str,
                       within_minutes: float) -> Optional[dict]:
         """返回最近一条匹配（spec, signal_type）的记录，供节流判断。

@@ -34,9 +34,9 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 | max_retries | 3 | ≥0 | 热更新 |
 | impl_run_budget | **代码缺省 6**（模板 4） | 1-10 | 热更新 |
 | token_budget_millions | **代码缺省 50**（模板 50） | 0-1000（0=关闭） | 热更新 |
-| max_turns | 300 | ≥1 | 重启 |
+| max_turns | 400 | ≥1 | 重启 |
 | daily_run_limit | **代码缺省 50**（模板 300） | ≥0（0=无限） | 热更新 |
-| run_timeout_seconds | 3600 | ≥1 | 热更新 |
+| run_timeout_seconds | 9000 | ≥1 | 热更新 |
 | use_new_verifier | true | bool | 重启 |
 
 ### agents.（瞬断治理）——provider 网关瞬时故障的退避与熔断
@@ -75,6 +75,49 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 | max_extensions | 2 | 热更新 |
 | absolute_max_seconds | 7200 | 热更新 |
 | judge_window | 600 | 热更新 |
+
+### llm
+
+Agent 可用的模型通道（Provider）注册表。未配置 = 空注册表，所有角色走默认网关（用户 `~/.claude/settings.json` 决定的通道）。
+
+| 键 | 默认值 | 范围 | 生效方式 |
+|----|--------|------|---------|
+| llm.providers | `[]` | 列表，条目 schema 见下 | 热更新 |
+
+每个 Provider 条目：
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| name | 是 | 唯一标识，被 `agents.models` 引用；同时用作隔离目录名（`.fenix/agent-config/<name>/`） |
+| baseurl | 是 | Anthropic 兼容网关地址（注入 `ANTHROPIC_BASE_URL`） |
+| apikey | 是 | API Key——只注入子进程环境变量，不写入任何磁盘文件（`.fenix/config.yaml` 已 gitignore） |
+| model | 否 | 该 Provider 的默认模型名，分配元素未带 model 时的兜底 |
+| env | 否 | 附加环境变量 dict（如 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`），随 Provider 注入 |
+| billing | 否 | 计价配置：`enabled`（bool）+ `prices`（按 model 行级单价 `input/output/cache_read/cache_creation_per_million`），供成本展示 |
+
+### agents.models
+
+按 Agent 角色声明模型通道，键取七角色：`implementer` / `fast-track` / `planner-plan` / `planner-judge` / `verifier` / `administrator` / `self-review`。未知角色键降级跳过并 ERROR 告警（新角色键需重启 daemon 使白名单生效）；未分配的角色走默认网关。
+
+```yaml
+agents:
+  models:
+    implementer:                    # 单 Provider：最简形态
+      provider: "volc-engine"
+      model: "deepseek-v4-flash"    # 角色级默认模型
+    planner-plan:
+      provider:                     # 候选链：按序 failover
+        - "aliyun"                  #   字符串元素
+        - provider: "bigmodel.cn"   #   对象元素，可带元素级 model
+          model: "glm-5"
+      model: "deepseek-v4-pro"      # 链元素未带 model 时的角色级兜底
+```
+
+**候选链与 failover**：`provider` 支持字符串 / 字符串数组 / 对象数组（`{provider, model?}`）及混合。attempt 级派发角色（implementer / verifier / planner / fast-track）按链序选择首个未熔断、未处于切换冷却的候选；切换类错误（模型拒绝 / 5xx / 瞬断原地退避耗尽，见[瞬断治理](#agents瞬断治理provider-网关瞬时故障的退避与熔断)）失败后该 Provider 进入短冷却，同 run 下一次 attempt 自动前进到下一候选。administrator / self-review / dispute-judge 只取链首选，不接 attempt 级 failover。
+
+**模型名解析顺序**：链元素自带 model > 角色级 model > Provider 条目的 `model`；三者皆空的候选运行期跳过。模型名经 `--model` 直接发给网关，须填该网关支持的名字——`unrecognized_model` 报错先核对网关支持列表，多为网关瞬时故障，勿盲目改配置。
+
+**生效链路**：配置了分配的角色，其 baseurl/apikey/model 经进程环境注入 + `CLAUDE_CONFIG_DIR` 隔离目录保证绝对生效，机制与共享/隔离边界详见[核心概念 · LLM Provider 隔离](02-concepts.md#llm-provider-隔离)。
 
 ### worktree
 
@@ -118,7 +161,7 @@ deps_mode 仅对 nodejs 项目生效——供给入口是 package.json/node_modu
 |----|--------|------|---------|
 | enabled | true | bool | 热更新 |
 | interval_minutes | 5 | 正数（分钟） | 热更新 |
-| escalation_cooldown_minutes | 15 | 非负数（分钟） | 热更新 |
+| escalation_cooldown_minutes | 60 | 非负数（分钟） | 热更新 |
 | merge_breaker_threshold | 2（复用 `agents.merge_breaker_threshold`） | 正整数 | 热更新 |
 | agent_model | 复用默认模型 | 模型名 | 热更新 |
 | shutdown_drain_seconds | **模板 0**（代码缺省 1800） | 非负整数（0=快速停机） | 重启 |

@@ -21,8 +21,8 @@ export default function ParallelSettingsPanel({ config, onSave }: ParallelSettin
 
   const initialValues = {
     max_concurrent: config.agents.max_concurrent ?? 2,
-    max_turns: config.agents.max_turns ?? 300,
-    run_timeout_seconds: config.agents.run_timeout_seconds ?? 3600,
+    max_turns: config.agents.max_turns ?? 400,
+    run_timeout_seconds: config.agents.run_timeout_seconds ?? 9000,
     planner_throttle: throttleEnabled,
     planner_max_concurrent: throttleValue,
   };
@@ -30,8 +30,8 @@ export default function ParallelSettingsPanel({ config, onSave }: ParallelSettin
   useEffect(() => {
     form.setFieldsValue({
       max_concurrent: config.agents.max_concurrent ?? 2,
-      max_turns: config.agents.max_turns ?? 300,
-      run_timeout_seconds: config.agents.run_timeout_seconds ?? 3600,
+      max_turns: config.agents.max_turns ?? 400,
+      run_timeout_seconds: config.agents.run_timeout_seconds ?? 9000,
       planner_throttle: throttleEnabled,
       planner_max_concurrent: throttleValue,
     });
@@ -62,7 +62,7 @@ export default function ParallelSettingsPanel({ config, onSave }: ParallelSettin
 
   return (
     <div>
-      <h3>并发度</h3>
+      <h3>并行</h3>
       <Text type="secondary">
         同时运行的 Agent 进程数上限。调度采用严格优先级并行：高优先级任务先执行；同一优先级内可并行至该上限；不同优先级不并行（低优先级等高优先级全部完成后才启动）。
       </Text>
@@ -72,7 +72,7 @@ export default function ParallelSettingsPanel({ config, onSave }: ParallelSettin
             name="max_concurrent"
             label={
               <>
-                并发度<span className="label-note">（agents.max_concurrent）</span>
+                并行<span className="label-note">（agents.max_concurrent）</span>
               </>
             }
             rules={[{ required: true, message: '请输入并行度' }]}
@@ -93,13 +93,13 @@ export default function ParallelSettingsPanel({ config, onSave }: ParallelSettin
           >
             <InputNumber min={1} step={1} style={{ width: '100%' }} />
           </Form.Item>
-          <Text type="secondary">默认 300（上限而非目标值）。单个 Agent 运行轮次达到此值即被终止并触发重试。</Text>
+          <Text type="secondary">默认 400（上限而非目标值）。单个 Agent 运行轮次达到此值即被终止并触发重试。</Text>
 
           <Form.Item
             name="run_timeout_seconds"
             label={
               <>
-                单次运行时长上限<span className="label-note">（agents.run_timeout_seconds，秒）</span>
+                单次 Agent 运行时长上限<span className="label-note">（agents.run_timeout_seconds，秒）</span>
               </>
             }
             rules={[{ required: true, message: '请输入时长上限' }]}
@@ -107,7 +107,7 @@ export default function ParallelSettingsPanel({ config, onSave }: ParallelSettin
           >
             <InputNumber min={60} step={60} style={{ width: '100%' }} />
           </Form.Item>
-          <Text type="secondary">默认 3600（1 小时）。单个 Agent 运行超时即终止并触发重试。</Text>
+          <Text type="secondary">默认 9000（2.5 小时）。单个 Agent 运行超时即终止并触发重试。以上两个参数应随你项目 SPEC 的规模大小而定。</Text>
 
           {/* add-planner-efficiency（planner-generation-throttle 2.3）：planner 生成节流。
               开关（默认关）+ 上限输入（1-10）+ 三点注解（限什么/作用/代价）。 */}

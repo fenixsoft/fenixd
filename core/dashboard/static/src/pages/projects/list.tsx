@@ -96,7 +96,7 @@ function fmtDuration(sec?: number | null) {
   return `${Math.floor(m / 60)}时${m % 60}分${s ? `${s}秒` : ''}`;
 }
 
-type TypeFilter = '' | 'req' | 'issue';
+type TypeFilter = '' | 'active' | 'completed';
 
 // ── 名称列 Why 悬浮提示（对齐 v1 why-hint：悬停 200ms 拉取 proposal 的 ## Why 段） ──
 // 提取与缓存逻辑在 src/utils/proposalWhy.ts（任务详情页「任务背景描述」共用）
@@ -582,8 +582,9 @@ export default function SpecListPage() {
       .filter((s) => {
         if (kw && !s.name.toLowerCase().includes(kw)) return false;
         if (statusList.length && !statusList.includes(s.status || '')) return false;
-        if (type === 'req' && s.name.startsWith('fix-')) return false;
-        if (type === 'issue' && !s.name.startsWith('fix-')) return false;
+        // 进度过滤：口径与行高亮一致，PRIORITY_TERMINAL（done/pushed）为已完成，其余为进行中
+        if (type === 'active' && PRIORITY_TERMINAL.has(s.status || '')) return false;
+        if (type === 'completed' && !PRIORITY_TERMINAL.has(s.status || '')) return false;
         // add-spec-archive：默认展示未归档（archivedOnly=false），切换后仅展示已归档
         if (!!s.archived !== archivedOnly) return false;
         return true;
@@ -1072,6 +1073,7 @@ export default function SpecListPage() {
           />
           <Select
             mode="multiple"
+            showSearch={false}
             allowClear
             placeholder="全部状态"
             maxTagCount="responsive"
@@ -1090,8 +1092,8 @@ export default function SpecListPage() {
             onChange={(e) => setType(e.target.value as TypeFilter)}
             options={[
               { label: '全部', value: '' },
-              { label: '仅需求', value: 'req' },
-              { label: '仅问题', value: 'issue' },
+              { label: '进行中', value: 'active' },
+              { label: '已完成', value: 'completed' },
             ]}
           />
           </Space>

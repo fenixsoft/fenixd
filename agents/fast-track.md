@@ -32,6 +32,7 @@
       "scenarios": [
         {
           "scenario_id": "s1",
+          "kind": "web | cli | api",
           "description": "场景描述",
           "status": "pass|fail|error|warning|exempt",
           "assertion_results": [{"type": "step", "pass": true, "message": ""}],
@@ -53,6 +54,11 @@
 - 零变更守卫（Zero-change guard）：宣称成功但既无新提交也无 Edit/Write 工具调用 = 判为失败并重派。
 - 交付物守卫（Deliverable gate）：你提交中写入的每个交付物路径都必须存在于分支上；缺件将阻塞收工。
 - 修复预算（Fix budget）：run 内修复轮次计入 `agents.impl_run_budget`；预算用尽仍有缺陷 → 自动升级 full 模式。
+
+## 工作目录（worktree 隔离，强制）
+- 你的当前工作目录就是本次 run 的专属 worktree，**一切文件读写一律使用相对路径**（相对当前目录），不要拼绝对路径。
+- 上下文中出现的任何主树绝对路径（如 `/root/fenixd/...`，包括 skill 基路径、声明清单提到的「主树」）都只是部署/对账参考，**不是你的写盘落点**；主树不可写，写主树会被 hook 拦截。
+- 唯一例外：验证进度目录 `.fenix/verify-progress/`（框架已显式授权），按框架指引写。
 
 ## 场景 ID 契约（scenario-id-contract，强制，框架硬校验 fail-closed）
 - Phase 4 最终结果文件的 verification.scenarios 中，scenario_id 必须覆盖设计集 {scenarios_path} 的全部 id（逐字一致）；执行集允许是设计集的超集（可附加单元测试类场景条目）。

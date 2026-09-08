@@ -41,7 +41,7 @@ class TestSystemAdminReadBack(unittest.TestCase):
             {
                 "enabled": True,
                 "interval_minutes": 5,
-                "escalation_cooldown_minutes": 15,
+                "escalation_cooldown_minutes": 60,
                 "merge_breaker_threshold": 2,
                 "shutdown_drain_seconds": 1800,
                 "bug_repair_mode": "inplace",

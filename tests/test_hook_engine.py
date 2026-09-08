@@ -16,7 +16,7 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -573,3 +573,159 @@ class TestAllDoneEvent(unittest.TestCase):
         self.assertTrue(self._wait_for(lambda: len(
             [a for a in read_hook_audit(self.proot)
              if a.get("event") == "all-done"]) == 2))
+
+
+class TestAllDoneRestartOnce(unittest.TestCase):
+    """one-shot 重启 hook（hook-restart-once）。
+
+    all-done → restart-daemon 触发成功后写 .fenix/hook_cleanup_request.json
+    清理标记；daemon 重启（HookEngine 重新实例化）时启动清扫自动摘除该
+    hook——项目级/用户级 config.yaml 分别处理，内存视图同步过滤。
+    """
+
+    PROJECT_HOOKS = {
+        "hooks": {
+            "global": [
+                {"id": "h-alldone1", "enabled": True, "events": ["all-done"],
+                 "action": "restart-daemon"},
+                {"id": "h-keep", "events": ["done"], "action": "commit"},
+            ],
+            "specs": {
+                "s1": [{"id": "h-spec1", "events": ["blocked"],
+                        "action": "webhook", "url": "http://x/"}],
+            },
+        }
+    }
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+        self.proot = _make_repo(self.tmpdir)
+        self.addCleanup(lambda: subprocess.run(
+            ["rm", "-rf", self.tmpdir], check=False))
+        # 用户级配置常量必须 patch（用户级配置敏感测试约定，禁触真实 ~/.fenix）
+        self.user_dir = self.tmpdir / "fake-home-fenix"
+        self.user_dir.mkdir(parents=True)
+        p = patch("core.config.USER_CONFIG_DIR", self.user_dir)
+        p.start()
+        self.addCleanup(p.stop)
+        self.marker = self.proot / ".fenix" / "hook_cleanup_request.json"
+        self.proj_cfg = self.proot / ".fenix" / "config.yaml"
+        self.user_cfg = self.user_dir / "config.yaml"
+
+    def _write_proj_cfg(self):
+        self.proj_cfg.write_text(
+            "# Fenix 配置文件\n# 头注释应被清扫保留\n\n"
+            "hooks:\n"
+            "  global:\n"
+            "  - id: h-alldone1\n"
+            "    enabled: true\n"
+            "    events:\n"
+            "    - all-done\n"
+            "    action: restart-daemon\n"
+            "  - id: h-keep\n"
+            "    events:\n"
+            "    - done\n"
+            "    action: commit\n"
+            "  specs:\n"
+            "    s1:\n"
+            "    - id: h-spec1\n"
+            "      events:\n"
+            "      - blocked\n"
+            "      action: webhook\n"
+            "      url: http://x/\n",
+            encoding="utf-8")
+
+    def _write_user_cfg(self):
+        self.user_cfg.write_text(
+            "hooks:\n"
+            "  global:\n"
+            "  - id: h-ualldone\n"
+            "    events:\n"
+            "    - all-done\n"
+            "    action: restart-daemon\n",
+            encoding="utf-8")
+
+    def _engine(self):
+        cfg = {"hooks": {
+            "global": [
+                {"id": "h-alldone1", "enabled": True, "events": ["all-done"],
+                 "action": "restart-daemon"},
+                {"id": "h-keep", "events": ["done"], "action": "commit"},
+            ],
+            "specs": {"s1": [{"id": "h-spec1", "events": ["blocked"],
+                              "action": "webhook", "url": "http://x/"}]},
+        }}
+        return HookEngine(self.proot, cfg, logger=MagicMock())
+
+    def test_fire_writes_cleanup_marker(self):
+        eng = self._engine()
+        eng._execute_action(
+            {"id": "h-alldone1", "events": ["all-done"],
+             "action": "restart-daemon"},
+            "global", "*", None, "all-done", {})
+        self.assertTrue((self.proot / ".fenix" / "restart_request").exists())
+        data = json.loads(self.marker.read_text(encoding="utf-8"))
+        self.assertEqual(data["hook_ids"], ["h-alldone1"])
+        audit = [a for a in read_hook_audit(self.proot)
+                 if a.get("event") == "all-done"]
+        self.assertEqual(len(audit), 1)
+        self.assertEqual(audit[0]["status"], STATUS_SUCCESS)
+        self.assertIn("one-shot", audit[0]["detail"])
+
+    def test_fire_non_alldone_no_marker(self):
+        """普通 done 事件触发的 restart-daemon 不写清理标记（保持常驻）。"""
+        eng = self._engine()
+        eng._execute_action(
+            {"id": "h-r", "events": ["done"], "action": "restart-daemon"},
+            "global", "s1", "testing", "done", {})
+        self.assertFalse(self.marker.exists())
+
+    def test_marker_merges_ids(self):
+        """多个 all-done 重启 hook 并发触发时 ids 合并不互吞。"""
+        eng = self._engine()
+        self.marker.write_text(
+            json.dumps({"ts": "t0", "hook_ids": ["h-a"]}), encoding="utf-8")
+        self.assertIsNone(eng._mark_restart_cleanup("h-b"))
+        data = json.loads(self.marker.read_text(encoding="utf-8"))
+        self.assertEqual(sorted(data["hook_ids"]), ["h-a", "h-b"])
+
+    def test_consume_on_engine_init_removes_hook(self):
+        """重启后首个 HookEngine 实例化即清扫：两级配置 + 内存视图 + 删标记。"""
+        self._write_proj_cfg()
+        self._write_user_cfg()
+        self.marker.write_text(json.dumps(
+            {"ts": "t0", "hook_ids": ["h-alldone1", "h-ualldone"]}),
+            encoding="utf-8")
+        eng = self._engine()
+        # 标记已消费
+        self.assertFalse(self.marker.exists())
+        # 项目级：h-alldone1 摘除，h-keep / h-spec1 保留，头注释保留
+        text = self.proj_cfg.read_text(encoding="utf-8")
+        self.assertNotIn("h-alldone1", text)
+        self.assertIn("h-keep", text)
+        self.assertIn("h-spec1", text)
+        self.assertTrue(text.startswith("# Fenix 配置文件"))
+        # 用户级：h-ualldone 摘除
+        utext = self.user_cfg.read_text(encoding="utf-8")
+        self.assertNotIn("h-ualldone", utext)
+        # 内存视图同步过滤
+        ids = [h["id"] for h in eng.config["hooks"]["global"]]
+        self.assertNotIn("h-alldone1", ids)
+        self.assertIn("h-keep", ids)
+        self.assertEqual(eng.config["hooks"]["specs"]["s1"][0]["id"], "h-spec1")
+
+    def test_consume_noop_without_marker(self):
+        """无标记时启动不清动配置。"""
+        self._write_proj_cfg()
+        self._engine()
+        self.assertIn("h-alldone1", self.proj_cfg.read_text(encoding="utf-8"))
+
+    def test_consume_unknown_ids_noop_on_files(self):
+        """标记里的 id 已不在配置（重复消费/手工移除）：文件不动，标记删除。"""
+        self._write_proj_cfg()
+        self.marker.write_text(
+            json.dumps({"ts": "t0", "hook_ids": ["h-gone"]}), encoding="utf-8")
+        eng = self._engine()
+        self.assertFalse(self.marker.exists())
+        self.assertIn("h-alldone1", self.proj_cfg.read_text(encoding="utf-8"))
+        self.assertIn("h-alldone1", [h["id"] for h in eng.config["hooks"]["global"]])

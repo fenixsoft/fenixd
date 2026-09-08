@@ -52,13 +52,13 @@ agents:
   # 合法范围 0-1000；设为 0 表示关闭预算检查。留空即采用缺省值 50。
   token_budget_millions: 50
   # Maximum turns per Agent invocation (claude -p --max-turns)
-  # 默认 300：单次 Agent 运行轮次上限（覆盖旧默认值 50/150）。该值为「上限」而非目标，
+  # 默认 400：单次 Agent 运行轮次上限（覆盖旧默认值 50/150/300）。该值为「上限」而非目标，
   # 超时/强杀保护仍在；对 32 场景级别验证为合理预算。
-  max_turns: 300
+  max_turns: 400
   # Daily limit on total Agent runs (0 = unlimited)
   daily_run_limit: 300
   # Timeout in seconds for a single Agent run
-  run_timeout_seconds: 3600
+  run_timeout_seconds: 9000
   # run_timeout 按 agent_type 覆盖（per-agent-timeout-override）：键 ∈ 全部七类
   # agent run（implementer/verifier/planner-plan/planner-judge/fast-track/repair/
   # administrator）+ supervision-judge；agent run 值须为 ≥300 整数，supervision-judge
@@ -85,8 +85,9 @@ agents:
     extension_seconds: 1800
     # 续期次数上限（0 = 到点即按活性判定终止，不续期）
     max_extensions: 2
-    # 总墙钟上限（秒）；默认 7200 = 3600 运行 + 2×1800 续期
-    absolute_max_seconds: 7200
+    # 总墙钟上限（秒）；默认 16200 = 9000 运行 + 2×1800 续期，向上对齐护栏下限
+    # （run_timeout + 续期上限 7200，见 core/config.py SUPERVISION_EXTENSION_SECONDS）
+    absolute_max_seconds: 16200
     # 活性判定窗口（秒）：窗口内零事件直接判停滞；judge 的快照也取此窗口
     judge_window: 600
   # 使用三步验证流水线（Planner → VerifyEngine → Judge），比旧版 verifier 快 5-10x
@@ -210,7 +211,7 @@ admin:
   # Administrator Agent 使用的模型名（官方 Claude 模型名；未配置时复用框架默认 cc-switch 网关模型）
   agent_model: "claude-sonnet-5"
   # 同 spec 同类困境信号的唤起冷却（分钟），避免反复唤起烧钱
-  escalation_cooldown_minutes: 15
+  escalation_cooldown_minutes: 60
   # 注：admin.stuck_threshold_minutes 已弃用。stuck 阈值现由 agents.run_timeout_seconds
   # 单源派生（run_timeout + 600s 宽限），此处不再保留该配置行。
   # merge 熔断阈值（复用 agents.merge_breaker_threshold 默认 2）
@@ -229,9 +230,9 @@ admin:
 timeout_supervision:
   # 是否启用 supervision（false 时整段不参与校验，也不对运行施加额外墙钟上限）
   enabled: false
-  # 单次运行墙钟硬上限（秒）。默认值 14400 = run_timeout(3600) + 续期上限(7200) 对齐，
+  # 单次运行墙钟硬上限（秒）。默认值 16200 = run_timeout(9000) + 续期上限(7200) 对齐，
   # 与超时参数单源联动，杜绝「absolute_max 远小于跑满的运行」类脱钩事故。
-  absolute_max_seconds: 14400
+  absolute_max_seconds: 16200
 
 # ---- PM（派发与治理，可选）----
 # 全部缺省均向后兼容：不配置时进入默认行为（老化关闭、族谱上限 3/2）。

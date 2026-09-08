@@ -1472,6 +1472,72 @@ def _iter_tail_log_entries(proot: Path, lf: Path, cutoff: str = "") -> list:
     return out
 
 
+def _norm_utc_iso(ts: str) -> str:
+    """时间戳归一为 ...Z 形态（+00:00 → Z），供同格式字典序比较。
+
+    日志时间戳统一 UTC 以 "...Z" 落盘（core/logger.py），STATE.md 的 created 是
+    "...+00:00" 形态；同构 ISO 字符串字典序即时间序（微秒位数差异的偏差远小于
+    块粒度，不影响定位）。
+    """
+    return ts.replace("+00:00", "Z")
+
+
+def _read_log_window_from(proot: Path, log_path: Path, start_ts: str) -> bytes:
+    """从时间戳 start_ts 对应位置读到文件尾（块偏移索引二分定位起点）。
+
+    spec 时间轴的读取窗口：尾部 1MB 尾窗对跨窗口存活的长周期 spec 会静默截断
+    早期事件（fenixd.log 无轮转持续增长后，早于尾窗的派发/报错/重派全部丢失）。
+    改为按 spec created 锚定：日志 append-only 且时间戳单调，二分最后一个
+    首行时间戳 < start_ts 的块，从该块读至文件尾（锚点前的残留行由调用方
+    spec 名过滤兜底，属无害冗余）。start_ts 为空 → 全文件读取（正确性优先，
+    仅低频 REST 详情页触达）；块首行探测失败 → 保守回退全文件。
+    """
+    idx = _load_log_index(proot, log_path)
+    size = idx.get("size", 0)
+    offsets = idx.get("offsets", [0]) or [0]
+    if size == 0:
+        return b""
+
+    def _read(start: int) -> bytes:
+        try:
+            with log_path.open("rb") as f:
+                f.seek(start)
+                return f.read(size - start)
+        except OSError:
+            return b""
+
+    if not start_ts:
+        return _read(0)
+    target = _norm_utc_iso(start_ts)
+
+    def _first_ts(offset: int) -> "str | None":
+        try:
+            with log_path.open("rb") as f:
+                f.seek(offset)
+                chunk = f.read(LOG_INDEX_BLOCK)
+            line = chunk.split(b"\n", 1)[0].decode("utf-8", errors="replace")
+            return _norm_utc_iso(json.loads(line).get("timestamp", "")) or None
+        except (OSError, json.JSONDecodeError, ValueError,
+                UnicodeDecodeError, AttributeError):
+            return None
+
+    ts0 = _first_ts(offsets[0])
+    if ts0 is None or ts0 >= target:
+        return _read(0)
+    lo, hi = 0, len(offsets) - 1
+    # 不变量：块 lo 的首行 ts < target；收敛到满足条件的最大块
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        ts_mid = _first_ts(offsets[mid])
+        if ts_mid is None:
+            return _read(0)
+        if ts_mid < target:
+            lo = mid
+        else:
+            hi = mid - 1
+    return _read(offsets[lo])
+
+
 def get_recent_events(project_root, minutes=10, limit=30) -> list:
     """读取最近 N 分钟的 fenixd 结构化日志事件。
 
@@ -1651,6 +1717,34 @@ def parse_run_result_scenarios(project_root, spec_name) -> list:
                 if isinstance(s, str) and s.strip()
             ]
             out.append(norm)
+        # 场景结果缺 kind（契约补 kind 前的存量 run-result）时按 scenario_id
+        # 从出题定义 test_scenarios.json 映射补齐；定义同样缺 kind 的旧 spec
+        # 维持缺失（前端按缺省 web 渲染）。fail-open：读取异常不影响主数据。
+        if any(not sc.get("kind") for sc in out):
+            kind_by_id = {}
+            try:
+                ts_path = (
+                    Path(project_root) / ".fenix" / "verify-progress"
+                    / spec_name / "test_scenarios.json"
+                )
+                ts_data = json.loads(ts_path.read_text(encoding="utf-8"))
+                ts_scenarios = (
+                    ts_data.get("scenarios") if isinstance(ts_data, dict) else ts_data
+                )
+                if isinstance(ts_scenarios, list):
+                    kind_by_id = {
+                        str(s.get("id") or s.get("scenario_id")): s.get("kind")
+                        for s in ts_scenarios
+                        if isinstance(s, dict) and s.get("kind")
+                    }
+            except (json.JSONDecodeError, OSError, AttributeError):
+                kind_by_id = {}
+            if kind_by_id:
+                for sc in out:
+                    if not sc.get("kind"):
+                        k = kind_by_id.get(str(sc.get("scenario_id")))
+                        if k:
+                            sc["kind"] = k
         return out
     return []
 
@@ -2081,6 +2175,37 @@ def _resolve_run_file(project_root, run_id: str) -> Path:
     return proot / ".fenix" / "runs" / "archive" / f"{run_id}.jsonl"
 
 
+def _first_run_event_ts(path: Path) -> "str | None":
+    """run 产物首个带 timestamp 事件的时间（真实启动时刻）。
+
+    run_id 内嵌时间戳是**首次派发**时刻：多 attempt run（-a2+）复用同一
+    run_id 基座只加后缀，按 run_id 解析会让所有 attempt 显示同一开始时刻、
+    duration 虚增（含前序 attempt 寿命）。真实起点取产物首个带 timestamp 的
+    事件：文件头部是无时间戳的 provider_marker/hook/system 事件（实测 10+ 行），
+    故扫描前 200 行、命中即停；全部无样本返回 None（调用方回退 run_id 内嵌
+    时间戳）。
+    """
+    try:
+        with path.open("rb") as f:
+            for _ in range(200):
+                raw = f.readline()
+                if not raw:
+                    break
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = ev.get("timestamp") if isinstance(ev, dict) else None
+                if ts and _parse_iso_ts(str(ts)) is not None:
+                    return str(ts)
+    except OSError:
+        return None
+    return None
+
+
 def get_runs(project_root, spec_name: str | None = None,
              include_archive: bool = False) -> list:
     """列出项目的运行记录（.fenix/runs/*.jsonl）。
@@ -2139,7 +2264,21 @@ def get_runs(project_root, spec_name: str | None = None,
         # 回退 `-<ts>`（旧格式无 attempt 后缀），再无则退化 mtime（现状兜底）。
         tm = re.search(r"-(\d{9,10})-a\d+$", run_id) or re.search(r"-(\d{9,10})$", run_id)
         start_ts = int(tm.group(1)) if tm else stat.st_mtime
-        duration_seconds = max(0, int(stat.st_mtime - start_ts))
+        # started 优先取产物首行事件时间戳（真实启动时刻）：run_id 内嵌时间戳
+        # 是首次派发时刻，多 attempt run 复用基座会显示同一时刻且 duration 虚增。
+        # mtime 仍是结束时间（started 用派发/启动时刻而非结束时刻的语义不变）。
+        real_start = _first_run_event_ts(p)
+        real_dt = _parse_iso_ts(real_start) if real_start else None
+        if real_dt is not None:
+            started = real_dt.astimezone(timezone.utc).isoformat()
+            duration_seconds = max(0, int(stat.st_mtime - real_dt.timestamp()))
+        else:
+            # started 用 run_id 解析出的开始时间戳，而非文件 mtime
+            # （mtime 是运行 *结束* 时间）。duration_seconds = mtime - start_ts 已真实计算，
+            # 若 started 仍取 mtime，则运行列表/时间轴会把每次运行显示为「在结束时刻才开始」，
+            # 与真实耗时自相矛盾（耗时列为真实秒数而开始时间却是结束时刻）。
+            started = datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()
+            duration_seconds = max(0, int(stat.st_mtime - start_ts))
         lines = _read_run_lines(p, max_lines=3)
         out.append({
             "run_id": run_id,
@@ -2147,11 +2286,7 @@ def get_runs(project_root, spec_name: str | None = None,
             "spec": spec_part,
             "status": classify_run(lines),
             "duration_seconds": duration_seconds,
-            # started 用 run_id 解析出的真实开始时间戳（start_ts），而非文件 mtime
-            # （mtime 是运行 *结束* 时间）。duration_seconds = mtime - start_ts 已真实计算，
-            # 若 started 仍取 mtime，则运行列表/时间轴会把每次运行显示为「在结束时刻才开始」，
-            # 与真实耗时自相矛盾（耗时列为真实秒数而开始时间却是结束时刻）。
-            "started": datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat(),
+            "started": started,
             "file_size": stat.st_size,
         })
     return out
@@ -2608,14 +2743,17 @@ def _load_billing_config(project_root) -> dict:
 
 def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
                        marker_scan_cap: int = 4 << 20) -> dict:
-    """读取 run 产物尾部：ClaudeCode 最后一条总结 + 实际驱动的 LLM + usage 四分项。
+    """读取 run 产物尾部：ClaudeCode 最后一条总结 + 实际驱动的 LLM + usage 四分项 + 终态原因。
 
     summary 优先取 result 事件的 result 字段（run 最终总结，markdown 文本，
     与 runner.py 提取产物口径一致）；无 result（运行中/中断）时回退最后一条
     assistant 文本。llm 取最后一个 provider_marker 事件（attempt 启动时写入，
     failover 切换产生多个，取最后 = 实际完成 run 的网关）。usage 取 result 事件
     的 usage 字段（add-model-billing-cost-display D2，成本本地计算数据源；
-    result 是流终态必在尾窗内，无 result → None）。只读文件尾部
+    result 是流终态必在尾窗内，无 result → None）。reason 取终态事件的人类
+    可读原因（error 事件的 error 字段 / interrupted、cancelled 事件的 reason
+    字段；终态后置不变量保证末行即终态，遍历顺序天然取末行生效），时间轴
+    run 节点据此展示失败/中止原因，无终态或成功 run 为空串。只读文件尾部
     tail_bytes 字节避免时间轴加载全量扫描；seek 产生的截断首行直接丢弃。
     marker 可能落在 attempt 大量输出之外（尾窗扫不到），此时按 256KB 块
     向前回扫（上限 marker_scan_cap），仍无则留空。
@@ -2627,7 +2765,7 @@ def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
                 f.seek(-tail_bytes, 2)
             data = f.read().decode("utf-8", errors="replace")
     except OSError:
-        return {"summary": "", "llm": "", "usage": None}
+        return {"summary": "", "llm": "", "usage": None, "reason": ""}
 
     def parse_chunk(raw: str, skip_first: bool) -> tuple:
         lines = raw.split("\n")
@@ -2635,6 +2773,7 @@ def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
             lines = lines[1:]
         result_text = last_asst = llm = ""
         usage = None
+        reason = ""
         for line in lines:
             line = line.strip()
             if not line:
@@ -2665,9 +2804,13 @@ def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
                     joined = "\n".join(t for t in texts if t.strip())
                     if joined.strip():
                         last_asst = joined.strip()
-        return result_text or last_asst, llm, usage
+            elif t in _RUN_TERMINAL_STATUS_MAP and t != "result":
+                # 终态原因：error 事件原因在 error 字段，interrupted/cancelled
+                # 在 reason 字段；末行终态后处理，天然取末行生效
+                reason = str(e.get("error") or e.get("reason") or "").strip()
+        return result_text or last_asst, llm, usage, reason
 
-    summary, llm, usage = parse_chunk(data, skip_first=size > tail_bytes)
+    summary, llm, usage, reason = parse_chunk(data, skip_first=size > tail_bytes)
     if not llm and size > tail_bytes:
         chunk = 262144
         floor = max(0, size - tail_bytes - marker_scan_cap)
@@ -2677,9 +2820,9 @@ def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
                 start = max(floor, pos - chunk)
                 f.seek(start)
                 raw = f.read(pos - start).decode("utf-8", errors="replace")
-                _, llm, _ = parse_chunk(raw, skip_first=start > 0)
+                _, llm, _, _ = parse_chunk(raw, skip_first=start > 0)
                 pos = start
-    return {"summary": summary, "llm": llm, "usage": usage}
+    return {"summary": summary, "llm": llm, "usage": usage, "reason": reason}
 
 
 def compute_run_cost(usage: "dict | None", model_used: str,
@@ -2817,12 +2960,16 @@ def _admin_events_for_spec(project_root, spec_name: str) -> list:
     return nodes
 
 
-def get_spec_timeline(project_root, spec_name: str) -> list:
+def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
     """构建 SPEC 生命周期时间轴（按时间排序）。
 
     数据源：
     - 事件日志（fenixd*.log）中的 `Transition: <spec> from → to` → 状态节点
     - `.fenix/runs/` 运行产物 → 运行节点（可点击展开 LLM 对话）
+
+    日志读取窗口按 created 锚定（_read_log_window_from）：从 spec 创建时间读到
+    文件尾，长周期 spec 的早期事件不再被尾部 1MB 尾窗静默截断；created 缺失
+    （存量/归档条目）退化为全文件读取。
 
     每条:
     - 状态: {time, kind:"state", from, to, reason}  （回退节点带 reason）
@@ -2834,16 +2981,19 @@ def get_spec_timeline(project_root, spec_name: str) -> list:
     # (timestamp, new_status, err) —— update_spec 直写的 status 变更（打回路径，
     # 无 Transition 行；add-agent-prompt-files 事故：时间轴上看不到打回与原因）
     status_updates: list[tuple] = []
+    verify_start_ts = ""   # 最近一轮 verify_engine「开始验证」日志时刻（报告只有完成时刻）
 
     if logs_dir.is_dir():
         try:
             log_files = sorted(logs_dir.glob("fenixd*.log"), reverse=True)
         except OSError:
             log_files = []
-        for lf in log_files[:2]:
+        for lf in log_files:
             try:
-                # dashboard-log-offset-index D5：只读尾部窗口（≤1MB），不整文件扫描
-                content = _read_log_tail_window(Path(project_root), lf).decode(
+                # created 锚定窗口（原尾部 1MB 尾窗对早期事件静默截断）；
+                # 锚点早于文件首行 → 整文件，锚点晚于文件尾 → 仅尾块，量均有限
+                content = _read_log_window_from(
+                    Path(project_root), lf, created).decode(
                     "utf-8", errors="replace"
                 )
             except OSError:
@@ -2874,6 +3024,10 @@ def get_spec_timeline(project_root, spec_name: str) -> list:
                     if new_status:
                         status_updates.append(
                             (ts, str(new_status), str(err) if err else ""))
+                if "开始验证" in msg and f"'{spec_name}'" in msg:
+                    # verify_engine 每轮开跑的唯一一行（多轮验证取最后一轮，
+                    # 与每轮覆盖的 report.json 配对）
+                    verify_start_ts = ts
 
     # 运行节点（含归档：旧 spec 的 run 产物被清理后时间轴仍可回看）。
     # improve-provider-billing-config（D2）：计价表非空（有任一声明 billing 的
@@ -2886,13 +3040,44 @@ def get_spec_timeline(project_root, spec_name: str) -> list:
                 "agent_type": r["agent_type"], "status": r["status"],
                 "spec": r.get("spec"),
                 "duration_seconds": r.get("duration_seconds"),
-                "summary": insights["summary"], "llm": insights["llm"]}
+                "summary": insights["summary"], "llm": insights["llm"],
+                "reason": insights["reason"]}
         if billing_table:
             model, provider = _split_llm_marker(insights["llm"])
             cost = compute_run_cost(insights["usage"], model, provider, billing_table)
             if cost is not None:
                 node["cost_usd"] = cost
         events.append(node)
+
+    # ── 验证执行节点：verify_engine 是确定性引擎而非 agent run（不产生
+    # runs/*.jsonl），时间轴原本不可见——full 模式 testing→verified 之间无节点
+    # 打断折叠，观感是「实现完直接连跳已推送」（fix-provider-transient-backoff
+    # 误读事故）。report.json 仅引擎验证写入（fast-track 的 agent 自验不产生），
+    # 时间取日志「开始验证」行（引擎开始时刻，报告只有完成时刻）；日志行缺失
+    # 退化用报告完成时刻（与 verified 转换同秒，靠 _timeline_sort_key 第三键
+    # 精确时间排在 verified 之前）。多轮验证 report 每轮覆盖 → 只留最后一轮。
+    report = parse_report(project_root, spec_name)
+    if report.get("exists") and not report.get("error"):
+        summary = report.get("summary") or {}
+        rep_ts = str(report.get("timestamp", "") or "")
+        # 时间优先取日志「开始验证」行（引擎开始时刻）；缺失退化报告完成时刻
+        v_time = verify_start_ts or rep_ts
+        if v_time:
+            v_node: dict = {
+                "time": v_time, "kind": "verify",
+                "total": summary.get("total"),
+                "passed": summary.get("passed"),
+                "failed": summary.get("failed"),
+                "warnings": summary.get("warnings"),
+                "errors": summary.get("errors"),
+            }
+            if verify_start_ts and rep_ts:
+                d = _ts_delta(rep_ts, verify_start_ts)
+                if d is not None and d >= 0:
+                    v_node["duration_seconds"] = int(d)
+            if report.get("env_error"):
+                v_node["env_error"] = str(report["env_error"])[:200]
+            events.append(v_node)
 
     # ── 打回节点重建：update_spec 直写 status 的变更（无 Transition 行）补建状态节点 ──
     # transition() 成对写的 Updated SPEC 行（与 Transition 节点 Δt<2s 且目标相同）去重跳过；
@@ -2959,27 +3144,34 @@ def _collapse_timeline(events: list) -> list:
     规则：
     - 连续出现的「前向状态节点」（无 reason）合并为一个节点，展示整体跨度；
       如 drafted→ready / ready→implementing / … → 折叠为 drafted → implementing。
+      折叠时携带 chain（完整状态序列，首尾与 from/to 一致）：前端展开渲染
+      全部中间状态不省略（fast-track 连跳 implemented→testing→verified→
+      done→pushed 若只显示一头一尾，会掩盖 testing/verified 等真实途经状态）。
     - 回退节点（带 reason，如 testing→bug-found）与运行节点保持独立，并打断合并。
     """
     out: list[dict] = []
     buf: list[dict] = []   # 待合并的前向状态节点缓冲
+
+    def _flush() -> dict:
+        node = {
+            "time": buf[0]["time"], "kind": "state",
+            "from": buf[0]["from"], "to": buf[-1]["to"], "reason": "",
+        }
+        if len(buf) > 1:
+            node["chain"] = [buf[0]["from"]] + [b["to"] for b in buf]
+        return node
+
     for e in events:
         if e.get("kind") == "state" and not e.get("reason"):
             buf.append(e)
             continue
         # 遇到回退状态 / 运行节点 / 其它 → 先冲刷缓冲，再追加当前事件
         if buf:
-            out.append({
-                "time": buf[0]["time"], "kind": "state",
-                "from": buf[0]["from"], "to": buf[-1]["to"], "reason": "",
-            })
+            out.append(_flush())
             buf = []
         out.append(e)
     if buf:
-        out.append({
-            "time": buf[0]["time"], "kind": "state",
-            "from": buf[0]["from"], "to": buf[-1]["to"], "reason": "",
-        })
+        out.append(_flush())
     return out
 
 
@@ -3003,13 +3195,17 @@ def _timeline_sort_key(e: dict):
     admin 运维节点（add-timeline-admin-events）夹在中间：同秒内的真实时序是
     「状态转移（testing→bug-found）→ admin 处置完成 → 触发重派的 run 启动」，
     kind 次序显式映射为 state=0、admin=1、run=2（state/run 相对次序不变）。
+    verify（验证执行节点）与 state 同 rank：退化场景（日志「开始验证」行缺失）
+    节点取报告完成时刻、与 verified 转换同秒且真实次序在前（报告先落盘），
+    须靠第三键精确时间排在 verified 之前；正常场景（引擎开始时刻）独占一秒，
+    rank 不参与。
     解析失败的事件按原字符串排在末尾，保持稳定。
     """
     dt = _parse_iso_ts(e.get("time", ""))
     if dt is None:
         from datetime import datetime as _dt, timezone as _tz
         return (_dt.max.replace(tzinfo=_tz), 2, str(e.get("time", "")))
-    kind_rank = {"state": 0, "admin": 1, "run": 2}.get(e.get("kind"), 2)
+    kind_rank = {"state": 0, "verify": 0, "admin": 1, "run": 2}.get(e.get("kind"), 2)
     return (dt.replace(microsecond=0), kind_rank, dt)
 
 
@@ -3102,9 +3298,11 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
     from core.spec_mode import read_spec_mode
     mode = read_spec_mode(project_root, spec_name)
-    # 时间轴（含运行节点 cost_usd；计费开关关闭时 get_spec_timeline 不下发）
+    # 时间轴（含运行节点 cost_usd；计费开关关闭时 get_spec_timeline 不下发）；
+    # created 锚定读取窗口：STATE 条目的 created 使早期事件不被日志尾窗截断
     timeline = _timeline_with_retry(
-        get_spec_timeline(project_root, spec_name), project_root, entry)
+        get_spec_timeline(project_root, spec_name, entry.get("created") or ""),
+        project_root, entry)
     # improve-provider-billing-config（D2）：SPEC 级成本合计——计价表非空
     # （有任一声明 billing 的卡片）时进入计价分支；单 run 计价由匹配函数自行
     # 判定未开启卡片 → None（未开启卡片 run 不计入 priced_runs）。
@@ -3403,13 +3601,13 @@ def _managed_key_sources(raw: dict) -> dict:
 
 
 # add-settings-system-tab：受管 admin.* 键缺省（与 ConfigLoader.get_admin_config
-# 缺省一致：enabled=True / interval_minutes=5 / escalation_cooldown_minutes=15 /
+# 缺省一致：enabled=True / interval_minutes=5 / escalation_cooldown_minutes=60 /
 # merge_breaker_threshold 复用 agents.merge_breaker_threshold（缺省 2）/
 # shutdown_drain_seconds=1800 / bug_repair_mode=inplace）
 _ADMIN_DEFAULTS = {
     "enabled": True,
     "interval_minutes": 5,
-    "escalation_cooldown_minutes": 15,
+    "escalation_cooldown_minutes": 60,
     "shutdown_drain_seconds": 1800,
     "bug_repair_mode": "inplace",
 }
@@ -3461,7 +3659,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
     config_path = USER_CONFIG_PATH if scope == "user" else Path(scope_root) / ".fenix" / "config.yaml"
     result = {
         "llm": {},
-        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4, "verify_redo_budget": 3},
+        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 9000, "max_turns": 400, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4, "verify_redo_budget": 3},
         "gates": {"approve_mode": "manual"},
         "runs": {"keep": 50},
         # 验证契约键（static_scope 服务范围 / deps_mode worktree 依赖供给模式）
@@ -3615,7 +3813,7 @@ def read_effective_config(project_root) -> dict:
 
     result = {
         "llm": {},
-        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 3600, "max_turns": 300, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4, "verify_redo_budget": 3},
+        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 9000, "max_turns": 400, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4, "verify_redo_budget": 3},
         "gates": {"approve_mode": "manual"},
         "runs": {"keep": 50},
         # 验证契约键（static_scope 服务范围 / deps_mode worktree 依赖供给模式）

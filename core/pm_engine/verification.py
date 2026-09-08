@@ -993,6 +993,24 @@ class VerificationPipeline:
                         + "\n\n重新输出全部场景；navigate 的 value 必须为绝对 URL。\n",
                         encoding="utf-8",
                     )
+                # ── 阶段1 派 run 前状态重查（fasttrack-orphan-planner-race）──
+                # D6 入口检查只覆盖 pipeline 进入时刻；竞态窗口内 fast-track
+                # advance（_fast_track_advance_to_verified）可能已把 spec 推过
+                # verified/done/pushed——此刻再派 planner run 即成孤儿
+                # （2026-09-08 fix-verify-cli-cwd-isolation：已 pushed 后场景生成
+                # run 白跑 14min）。非 testing 一律丢弃，与 D6 同语义（注明当前
+                # 状态，不迁移不回退不派发）；replan 重排轮次同样经过本检查点。
+                _stage1_status = (
+                    self._pm.state_machine.read_one(spec_name) or {}
+                ).get("status", "")
+                if _stage1_status != "testing":
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"[阶段1] Planner 派发前状态重查丢弃 '{spec_name}': spec is "
+                        f"'{_stage1_status}', not testing at planner dispatch — "
+                        "dropped (orphan-planner guard)",
+                    )
+                    return
                 self._pm.logger.info("pm_engine", f"[阶段1] Planner 生成场景: {spec_name}")
                 # 路由地图前置生成（add-planner-efficiency：planner-route-map 1.1）：
                 # 阶段1 进入处接入，对 impl worktree 生成/复用路由地图（HEAD 键控、

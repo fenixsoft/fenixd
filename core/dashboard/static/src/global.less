@@ -60,6 +60,18 @@ body {
   margin-bottom: 24px;
 }
 
+// 设置页卡片底部留白对称化：卡片内容最后元素自身的 24px 下边距（Form.Item /
+// 开关行 / 注释块）经 margin collapse 外化到卡片 body 底部，叠加 body 自身
+// padding 24px，使下内边距（49px）近乎上内边距（25px）两倍。仅清「与卡底相邻」
+// 的源 margin；嵌套中层的间距节奏（注释 8px 规则、行间 24px 节奏）不受影响。
+#root .settings-page .ant-card-body > .ant-form:last-child > .ant-form-item:last-child,
+#root .settings-page .ant-card-body > .ant-form:last-child > .ant-typography:last-child,
+#root .settings-page .ant-card-body > .ant-typography:last-child,
+#root .settings-page .ant-card-body > div:last-child > .ant-form-item:last-child,
+#root .settings-page .ant-card-body > div:last-child > .ant-typography:last-child {
+  margin-bottom: 0;
+}
+
 // claude-msg 输出面板（迁移自 claudecodeui）：shadcn 语义变量（HSL 三元组），
 // 由 Tailwind 配置里的 hsl(var(--*)) 引用；限定在面板容器内不污染 antd。
 .claude-msg-pane {
@@ -90,6 +102,26 @@ body {
 // 展开时的标题-内容间隔由内容 div 自身的 margin-top 提供（折叠时随 display:none 消失）。
 #root .spec-detail-alert .ant-alert-title {
   margin-bottom: 0;
+}
+
+// SPEC 详情项目信息：三列（sm=2/md=3）宽度平均分配。antd Descriptions 内层是
+// auto 布局表格，列宽随内容漂移；fixed + 显式列宽均分。实测仅 table-layout:fixed
+// 不生效（Chromium 不均分），必须给首行 td 显式宽度；末行「成本」colspan=2 对应双份。
+// 移动端单列（xs）下不适用，回退 auto/自适应。
+#root .spec-detail-desc .ant-descriptions-view > table {
+  table-layout: fixed;
+}
+#root .spec-detail-desc td.ant-descriptions-item {
+  width: 33.33%;
+}
+#root .spec-detail-desc td.ant-descriptions-item[colspan='2'] {
+  width: 66.66%;
+}
+#root .screen-xs .spec-detail-desc .ant-descriptions-view > table {
+  table-layout: auto;
+}
+#root .screen-xs .spec-detail-desc td.ant-descriptions-item {
+  width: auto;
 }
 
 // SPEC 详情下拉快速切换面板：行 hover 高亮提示可点击（表格行样式）
@@ -192,11 +224,27 @@ body {
   width: 100% !important;
 }
 
-// 移动端触控目标扩展工具类：padding 8px 扩大命中区 + 负 margin 完全抵消视觉，命中区 ≥32px ≥ WCAG AA
-.touch-expand {
+// 移动端触控目标扩展工具类：padding 8px 扩大命中区 + 负 margin 完全抵消视觉，命中区 ≥32px ≥ WCAG AA。
+// #root 前缀提特异性到 1,1,0：antd v6 css-in-js 组件级规则形如
+// :where(.css-x).ant-typography.ant-typography-link { padding: 0 }（0,2,0），裸 .touch-expand
+// 的 padding 会被压制——margin -8px 却无对抗照常生效，Typography.Link 形态（自带 padding:0）
+// 被平移出 ant-card-head-title（overflow:hidden）右缘 8px，「文档」文字截断（spec 详情页实证）。
+// 同理所有命中规则全库统一 #root 前缀惯例。
+#root .touch-expand {
   display: inline-block;
   padding: 8px;
   margin: -8px;
+
+  // antd Button 是固定 height（small=24px border-box），叠加此处 padding 8px
+  // 会把 content box 压到 8px，文字行盒自顶起排向下溢出——比同行 12px tag 的
+  // 文字中线低 ~5px（activities「查看处置过程」实证）。放开固定高度并把字号
+  // 行高对齐到 tag 体系（12px/20px），文字中线与 tag 完全重合；负 margin 仍
+  // 抵消 padding，视觉占位不变。Typography.Link 形态自动高度，无需此修正。
+  &.ant-btn {
+    height: auto;
+    font-size: 12px;
+    line-height: 20px;
+  }
 }
 
 // 移动端隐藏顶栏全局面包屑（与返回箭头语义重复）
@@ -207,4 +255,10 @@ body {
 // 全站 Modal 移动端宽度上限：防止固定宽度（如 520px）在窄屏溢出视口
 #root :is(.screen-xs, .screen-sm) .ant-modal {
   max-width: calc(100vw - 32px);
+}
+
+// 设置页 todo.md 卡片段签（SelfReviewPanel）：去掉 antd Tabs 默认的
+// 16px 页签条下边距，让内容区紧贴卡片段头
+#root .todo-md-tabs > .ant-tabs-nav {
+  margin-bottom: 0;
 }

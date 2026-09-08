@@ -34,7 +34,7 @@ class TestVerifiedStuckBlocker(unittest.TestCase):
         self.state_path = self.project_root / ".fenix" / "STATE.md"
         self.sm = StateMachine(self.state_path, self.logger)
         # stuck 阈值由 agents.run_timeout_seconds 单源派生（config.py D1/D4，
-        # 缺省回退 4200s=70min），旧键 schedule.stuck_threshold_minutes 已弃用
+        # 缺省回退 9600s=160min），旧键 schedule.stuck_threshold_minutes 已弃用
         # 不再生效——不配键即用缺省派生值。
         config = {}
         self.engine = PMEngine(self.sm, MagicMock(), config, self.project_root, self.logger)

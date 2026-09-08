@@ -489,8 +489,8 @@ class TestTimeoutOverrideConfig:
     def test_global_default_when_no_override(self):
         from core.config import ConfigLoader
         assert ConfigLoader.effective_run_timeout_seconds(self.base, "verifier") == 9000
-        # 全局缺失 → 回退 3600
-        assert ConfigLoader.effective_run_timeout_seconds({"agents": {}}, "verifier") == 3600.0
+        # 全局缺失 → 回退 9000
+        assert ConfigLoader.effective_run_timeout_seconds({"agents": {}}, "verifier") == 9000.0
 
     def test_invalid_key_ignored_others_work(self, caplog):
         from core.config import ConfigLoader

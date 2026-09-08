@@ -1,7 +1,7 @@
 import { PageContainer } from '@ant-design/pro-components';
 import { Alert, App, Badge, Button, Card, Checkbox, Collapse, Descriptions, Dropdown, Empty, Image, Progress, Space, Spin, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
 import { CloseOutlined, DownOutlined, ExclamationCircleFilled, FullscreenOutlined, InfoCircleFilled } from '@ant-design/icons';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { history, useParams } from '@umijs/max';
 import dayjs from 'dayjs';
 import Markdown from 'react-markdown';
@@ -429,7 +429,7 @@ function FilteredFailuresBlock({
 // ── spec 详情页 Hook 页签（add-spec-hooks）─────────────────────────
 // 「生效中的 Hooks」= 全局 + 本 spec 合并（来源标注）；「本 spec 的 Hooks」
 // = spec 级 CRUD（写入 hooks.specs.<spec>）；「最近执行」= 该 spec 审计。
-function SpecHooksSection({ name, spec }: { name: string; spec: string }) {
+function SpecHooksSection({ name, spec, readOnly = false }: { name: string; spec: string; readOnly?: boolean }) {
   const { message } = App.useApp();
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [audit, setAudit] = useState<HookAuditRecord[]>([]);
@@ -497,6 +497,7 @@ function SpecHooksSection({ name, spec }: { name: string; spec: string }) {
         effective={effective}
         audit={audit}
         auditLoading={auditLoading}
+        readOnly={readOnly}
       />
     </div>
   );
@@ -839,10 +840,19 @@ export default function SpecDetailPage() {
       <Timeline
         items={timeline.map((item) => {
           if (item.kind === 'state') {
-            // 状态节点：头部保留「状态转移」标签，from → to 中文标签（同 SPEC 列表 statusMeta）换行显示在内容区
+            // 状态节点：头部保留「状态转移」标签，from → to 中文标签（同 SPEC 列表 statusMeta）换行显示在内容区；
+            // 折叠节点携带 chain（完整状态序列）时全链展开渲染，中间状态不省略
+            // （fast-track 连跳 implemented→testing→verified→done→pushed 只显示一头一尾会掩盖真实途经状态）
             const isRollback = !!item.reason;
-            const fromLabel = item.from ? statusMeta(item.from).label : '?';
-            const toLabel = item.to ? statusMeta(item.to).label : '?';
+            const chainStatuses: string[] = (item.chain && item.chain.length > 1)
+              ? item.chain
+              : [item.from || '', item.to || ''];
+            const statusSeq = chainStatuses.map((s, i) => (
+              <Fragment key={`${s}-${i}`}>
+                {i > 0 && <Typography.Text type="secondary">→</Typography.Text>}
+                <OutlinedTag tone={statusMeta(s || '').tone}>{s ? statusMeta(s).label : '?'}</OutlinedTag>
+              </Fragment>
+            ));
             return {
               color: isRollback ? '#ec835a' : 'gray',
               children: (
@@ -855,9 +865,7 @@ export default function SpecDetailPage() {
                     {isRollback && <Tag color="orange">↩ 状态回退</Tag>}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <OutlinedTag tone={statusMeta(item.from || '').tone}>{fromLabel}</OutlinedTag>
-                    <Typography.Text type="secondary">→</Typography.Text>
-                    <OutlinedTag tone={statusMeta(item.to || '').tone}>{toLabel}</OutlinedTag>
+                    {statusSeq}
                   </div>
                   {isRollback && (
                     <div style={{ whiteSpace: 'pre-wrap', marginTop: 10 }}>
@@ -914,6 +922,69 @@ export default function SpecDetailPage() {
             };
           }
 
+          // 验证执行节点（verify_engine 确定性执行，非 agent run）：原时间轴
+          // 不可见导致 testing→verified 连跳被误读为「跳过验证」
+          // （fix-provider-transient-backoff 事故）。节点不着红：有失败也可能
+          // 被 judge 判定通过（裁决权在 judge），失败数只在内容行文字着色。
+          // 橙=有失败/警告/env 受阻，绿=全过。
+          if (item.kind === 'verify') {
+            const vFailed = (item.failed || 0) + (item.errors || 0);
+            const hasIssue = vFailed > 0 || !!item.env_error;
+            const vWarn = (item.warnings || 0) > 0;
+            const vDur = item.duration_seconds != null ? fmtDuration(item.duration_seconds) : '';
+            // 统计明细（N 场景/通过/失败/错误/警告）放内容区正文行：数字着色、
+            // 0 值项省略，分隔符对齐列表页 VerifyCell 悬浮汇总口径；耗时放标题行
+            const statParts: React.ReactNode[] = [];
+            if (item.total != null) statParts.push(<span key="total">{item.total} 场景</span>);
+            if (item.passed != null) {
+              statParts.push(<span key="passed" style={{ color: '#52c41a' }}>通过 {item.passed}</span>);
+            }
+            if (!!item.failed) {
+              statParts.push(<span key="failed" style={{ color: '#ff4d4f' }}>失败 {item.failed}</span>);
+            }
+            if (!!item.errors) {
+              statParts.push(<span key="errors" style={{ color: '#ff4d4f' }}>错误 {item.errors}</span>);
+            }
+            if (!!item.warnings) {
+              statParts.push(<span key="warnings" style={{ color: '#faad14' }}>警告 {item.warnings}</span>);
+            }
+            return {
+              color: hasIssue || vWarn ? 'orange' : 'green',
+              children: (
+                <div style={cardBox(false)}>
+                  <div style={headRow}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {fmtTime(item.time)}
+                    </Typography.Text>
+                    <Typography.Text style={{ fontSize: 12 }}>验证执行</Typography.Text>
+                    {vDur && (
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        耗时 {vDur}
+                      </Typography.Text>
+                    )}
+                  </div>
+                  {statParts.length > 0 && (
+                    <div style={{ fontSize: 14 }}>
+                      {statParts.map((node, i) => (
+                        <Fragment key={i}>
+                          {i > 0 && <span style={{ color: 'rgba(0, 0, 0, 0.45)' }}> · </span>}
+                          {node}
+                        </Fragment>
+                      ))}
+                    </div>
+                  )}
+                  {item.env_error && (
+                    <div style={{ whiteSpace: 'pre-wrap', marginTop: 4 }}>
+                      <Typography.Text type="warning" style={{ fontSize: 12 }}>
+                        环境受阻：{item.env_error}
+                      </Typography.Text>
+                    </div>
+                  )}
+                </div>
+              ),
+            };
+          }
+
           // 未知 kind 守卫（add-timeline-admin-events）：state/admin/run 之外不渲染
           // 卡片体（脏数据降级只留时间轴圆点），不报错崩渲染
           if (item.kind !== 'run') {
@@ -939,7 +1010,7 @@ export default function SpecDetailPage() {
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                     {fmtTime(item.time)}
                   </Typography.Text>
-                  <Typography.Text>{agentLabel(item)}</Typography.Text>
+                  <Typography.Text style={{ fontSize: 12 }}>{agentLabel(item)}</Typography.Text>
                   {item.llm && <Tag color="blue" style={{ marginInlineEnd: 0 }}>{item.llm}</Tag>}
                   {/* add-model-billing-cost-display：可计价 run 成本标注（样式同 llm Tag；
                       不可计价节点不下发 cost_usd，不渲染，避免历史节点噪音） */}
@@ -977,6 +1048,17 @@ export default function SpecDetailPage() {
                     </Typography.Text>
                   )}
                 </div>
+                {/* 终态原因（run 产物 error/interrupted/cancelled 事件的人类可读原因）：
+                    不展开运行记录即可见死因；运行中/成功 run 下发空串不渲染。
+                    error 红色，interrupted/cancelled 已终结非崩溃用橙色（同节点圆点语义） */}
+                {!!item.reason && (
+                  <div style={{ marginBottom: 8 }}>
+                    <Typography.Text type={isErr ? 'danger' : 'warning'} style={{ fontSize: 13 }}>
+                      {isErr ? '失败原因：' : '中止原因：'}
+                      {item.reason}
+                    </Typography.Text>
+                  </div>
+                )}
                 {/* ClaudeCode 最后一条总结（result 字段，markdown）：不展开运行记录即可掌握结论 */}
                 {item.summary && (
                   <div
@@ -1369,17 +1451,13 @@ export default function SpecDetailPage() {
         </div>
       ),
     },
-    // Hook 页签仅未到终态（pushed）的 SPEC 展示：pushed 后状态不再变化，
-    // 状态订阅型 hook 对其无意义
-    ...(detail?.status !== 'pushed'
-      ? [
-          {
-            key: 'hooks',
-            label: <span>Hook</span>,
-            children: <SpecHooksSection name={name} spec={spec} />,
-          },
-        ]
-      : []),
+    // Hook 页签始终展示：pushed（终态）spec 仍可查看执行记录，
+    // 只是订阅配置转只读（新增/编辑/启停禁用，见 HookManager readOnly）
+    {
+      key: 'hooks',
+      label: <span>Hook</span>,
+      children: <SpecHooksSection name={name} spec={spec} readOnly={detail?.status === 'pushed'} />,
+    },
   ];
 
   return (
@@ -1395,7 +1473,8 @@ export default function SpecDetailPage() {
         size="small"
         style={{ marginBottom: 16 }}
       >
-        <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small">
+        {/* spec-detail-desc：三列等宽分配（global.less 中 table-layout:fixed），移动端单列不适用 */}
+        <Descriptions className="spec-detail-desc" column={{ xs: 1, sm: 2, md: 3 }} size="small">
           <Descriptions.Item label="优先级">
             <span>P{detail?.priority ?? '?'}</span>
           </Descriptions.Item>
@@ -1406,7 +1485,7 @@ export default function SpecDetailPage() {
             {detail?.updated ? dayjs(detail.updated).format('YYYY-MM-DD HH:mm:ss') : '—'}
           </Descriptions.Item>
           <Descriptions.Item label="依赖">
-            {detail?.depends_on || '—'}
+            {detail?.depends_on || '无依赖'}
           </Descriptions.Item>
           <Descriptions.Item label="输入 Token">
             {detail?.token_usage ? fmtInputTokens(detail.token_usage) : '—'}
@@ -1428,7 +1507,7 @@ export default function SpecDetailPage() {
               '—'
             ) : detail.cost_summary?.computed_usd != null ? (
               <>
-                <Typography.Text strong>{formatUsd(detail.cost_summary.computed_usd)}</Typography.Text>
+                <Typography.Text>{formatUsd(detail.cost_summary.computed_usd)}</Typography.Text>
                 {detail.cost_summary.unpriced_runs > 0 && (
                   <Typography.Text type="secondary" style={{ marginLeft: 4 }}>
                     （含 {detail.cost_summary.unpriced_runs} 个未计价 run）

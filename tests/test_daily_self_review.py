@@ -12,6 +12,14 @@
   last_run_at ISO 时间戳；旧格式仅 last_run_date 视为从未执行）；
 - 数据聚合窗口「自然日」→「执行前 24 小时」（runs/日志 ERROR/admin 记录）；
 - 零活动防护按 24h 窗口判定，占位文案改为「近24小时无 SPEC 活动」。
+
+自然日触发 + 增量窗口改造（2026-09-08 用户决策，原地修改未立项）：
+- 调度判定回归「last_run_date == 今天」同日防重复（成功/失败/占位跳过
+  都写当日 → 当日不再跑，失败次日 run_at 自然重试），消除 24h 滚动窗口
+  的永久漂移缺陷（迟到补跑后 02:00 永久失效）；
+- 数据聚合/活动判定窗口 = [last_run_at, now] 增量（无 last_run_at 首跑/
+  旧格式回退 24h），审查范围即上次执行以来产生的 spec/告警/运维记录；
+- 占位文案改为「自上次自省以来无 SPEC 活动」。
 """
 
 import json
@@ -148,7 +156,7 @@ class TestSelfReviewScheduling:
         res = sched.check_and_run()
         assert res["triggered"] is True and res["ok"] is True
         assert res["date"] == "2026-09-04"
-        # 状态文件记录执行时刻（24h 判定基准）+ 执行日
+        # 状态文件记录执行时刻（窗口锚点）+ 执行日（同日防重复基准）
         state = json.loads((proot / ".fenix" / "self_review_state.json").read_text())
         assert state["last_run_date"] == "2026-09-04"
         assert datetime.fromisoformat(state["last_run_at"]) \
@@ -171,21 +179,21 @@ class TestSelfReviewScheduling:
         assert not (proot / ".fenix" / "self_review_state.json").exists()
         assert not (proot / ".fenix" / "todo.md").exists()
 
-    def test_within_24h_no_duplicate(self, proot, monkeypatch):
-        """距上次执行不足 24h → 不触发（原「同日防重复」的 24h 版）。"""
+    def test_same_day_no_duplicate(self, proot, monkeypatch):
+        """当日已执行（成功/失败/占位跳过都写 last_run_date）→ 不再触发。"""
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
         runner = FakeReviewRunner()
         sched = make_scheduler(proot, run_at="22:00", runner=runner)
-        sched._save_state("2026-09-04")  # 刚执行过（last_run_at=now）
+        sched._save_state("2026-09-04")  # 刚执行过（last_run_date=今天）
         res = sched.check_and_run()
-        assert res == {"triggered": False, "reason": "within_24h"}
+        assert res == {"triggered": False, "reason": "already_ran_today"}
         assert runner.calls == []
 
     @pytest.mark.parametrize(
         "prior_day", ["success", "failure", "zero_activity_skip"])
     def test_next_day_retriggers_after_prior_cycle(
             self, proot, monkeypatch, prior_day):
-        """满 24h 且次日到 run_at、窗口有活动 → 再次触发（每日节奏）。
+        """次日到 run_at、增量窗口有活动 → 再次触发（每日节奏）。
 
         三种首日形态（成功 / 失败 / 零活动跳过）都不阻断次日调度。原
         test_after_24h_retriggers / test_next_day_natural_retry /
@@ -203,7 +211,7 @@ class TestSelfReviewScheduling:
                                fail=(prior_day == "failure")),
                            ).check_and_run()
 
-        # 次日到点（≥24h）→ 新窗口有活动 → 再次触发
+        # 次日到点 → 增量窗口 [last_run_at, now] 有活动 → 再次触发
         if prior_day == "success":
             # 22:31 严格大于 24h，避开与 22:30 的边界（与原用例一致）
             _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 31))
@@ -224,13 +232,26 @@ class TestSelfReviewScheduling:
         elif prior_day == "zero_activity_skip":
             # 首日占位保留 + 次日完整分节追加，日期节按序
             content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
-            assert "近24小时无 SPEC 活动，跳过自省。" in content
+            assert "自上次自省以来无 SPEC 活动，跳过自省。" in content
             assert "### 浪费" in content
             assert content.index("## 2026-09-04") < content.index("## 2026-09-05")
 
-    def test_legacy_state_without_last_run_at_triggers(self, proot, monkeypatch):
-        """旧格式状态文件（仅 last_run_date，无 last_run_at）→ 视为从未执行，
-        新标准下立即触发（兼作 24h 判定上线后的手动触发通道）。"""
+    def test_legacy_state_date_only_past_triggers(self, proot, monkeypatch):
+        """旧格式状态文件（仅 last_run_date，无 last_run_at）且为过去日期 →
+        回退 24h 窗口触发（兼作手动触发通道：把 last_run_date 改为昨日）。"""
+        (proot / ".fenix" / "self_review_state.json").write_text(json.dumps({
+            "last_run_date": "2026-09-03",
+            "updated_at": "2026-09-03T02:00:27+08:00",
+        }), encoding="utf-8")
+        _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
+        make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
+        runner = FakeReviewRunner()
+        res = make_scheduler(proot, run_at="22:00", runner=runner).check_and_run()
+        assert res["triggered"] is True and res["ok"] is True
+
+    def test_legacy_state_date_only_today_dedups(self, proot, monkeypatch):
+        """旧格式状态文件（仅 last_run_date）且为当日 → 同日防重复照样生效
+        （新判定只依赖 last_run_date，无需 last_run_at）。"""
         (proot / ".fenix" / "self_review_state.json").write_text(json.dumps({
             "last_run_date": "2026-09-04",
             "updated_at": "2026-09-04T02:00:27+08:00",
@@ -239,7 +260,8 @@ class TestSelfReviewScheduling:
         make_run(proot, f"impl-seed-{_ts(datetime(2026, 9, 4, 10))}", "done")
         runner = FakeReviewRunner()
         res = make_scheduler(proot, run_at="22:00", runner=runner).check_and_run()
-        assert res["triggered"] is True and res["ok"] is True
+        assert res == {"triggered": False, "reason": "already_ran_today"}
+        assert runner.calls == []
 
     def test_catch_up_on_late_start(self, proot, monkeypatch):
         """23:30 启动且距上次执行 ≥24h → 启动后首轮巡检补跑（spec 错过后补跑场景）。"""
@@ -252,6 +274,36 @@ class TestSelfReviewScheduling:
         assert res["date"] == "2026-09-04"
         state = json.loads((proot / ".fenix" / "self_review_state.json").read_text())
         assert state["last_run_date"] == "2026-09-04"
+
+    def test_window_anchored_at_last_run_at(self, proot, monkeypatch):
+        """活动判定窗口锚定 last_run_at（2026-09-08 新语义核心）。
+
+        上次执行 9-4 20:00，窗口 = [9-4 20:00, now]。9-4 21:00 的 run 落在
+        窗口内（但在 now-24h 回退窗口 [9-3 22:30, 9-4 22:30] 之外）→ 触发；
+        9-4 19:00 的 run 在窗口外 → 占位跳过。
+        """
+        (proot / ".fenix" / "self_review_state.json").write_text(json.dumps({
+            "last_run_date": "2026-09-04",
+            "last_run_at": "2026-09-04T20:00:00",
+        }), encoding="utf-8")
+        _freeze_time(monkeypatch, datetime(2026, 9, 5, 22, 30))
+        # 负例：窗口前（19:00 < last_run_at 20:00）的活动不计入
+        make_run(proot, f"impl-old-{_ts(datetime(2026, 9, 4, 19))}", "done")
+        runner = FakeReviewRunner()
+        res = make_scheduler(proot, run_at="22:00", runner=runner).check_and_run()
+        assert res.get("skipped") is True
+        assert runner.calls == []
+        # 正例：窗口内（21:00 ≥ last_run_at 20:00）的活动触发
+        # （负例 _skip_review 已把 last_run_date 写成当日，重置回窗口锚点）
+        (proot / ".fenix" / "self_review_state.json").write_text(json.dumps({
+            "last_run_date": "2026-09-04",
+            "last_run_at": "2026-09-04T20:00:00",
+        }), encoding="utf-8")
+        make_run(proot, f"impl-new-{_ts(datetime(2026, 9, 4, 21))}", "done")
+        runner2 = FakeReviewRunner()
+        res = make_scheduler(proot, run_at="22:00", runner=runner2).check_and_run()
+        assert res["triggered"] is True and res["ok"] is True
+        assert len(runner2.calls) == 1
 
     def test_disabled_zero_action(self, proot, monkeypatch):
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 23, 30))
@@ -315,11 +367,12 @@ class TestSelfReviewScheduling:
         assert sched3.check_and_run()["triggered"] is True
 
 
-# ── 零活动防护（2026-09-05 用户决策：窗口内无 SPEC 不唤醒 admin；窗口=24h） ──
+# ── 零活动防护（2026-09-05 用户决策：窗口内无 SPEC 不唤醒 admin；
+#    窗口 2026-09-08 起为 [last_run_at, now] 增量，无 last_run_at 回退 24h） ──
 
 class TestZeroActivitySkip:
     def test_zero_runs_skips_admin_and_notes_todo(self, proot, monkeypatch):
-        """24h 窗口 0 run → 不发起自省 run，仅在 todo.md 记一句占位并照常落状态。"""
+        """窗口 0 run → 不发起自省 run，仅在 todo.md 记一句占位并照常落状态。"""
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
         runner = FakeReviewRunner()
         sched = make_scheduler(proot, run_at="22:00", runner=runner)
@@ -329,7 +382,7 @@ class TestZeroActivitySkip:
         assert runner.calls == []  # admin 未被唤醒
         content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
         assert "## 2026-09-04" in content
-        assert "近24小时无 SPEC 活动，跳过自省。" in content
+        assert "自上次自省以来无 SPEC 活动，跳过自省。" in content
         # 占位为日期节下裸 bullet（无小节），不进闭环判定条目收集
         assert "###" not in content
         state = json.loads((proot / ".fenix" / "self_review_state.json").read_text())
@@ -338,11 +391,11 @@ class TestZeroActivitySkip:
         # 零活动是正常路径：不产生失败告警
         assert AdminStore(proot, FakeLogger()).read_all() == []
 
-    def test_stale_run_outside_24h_window_skips(self, proot, monkeypatch):
-        """活动在 24h 窗口之外（>24h 前的 run）→ 仍视为零活动跳过。
+    def test_stale_run_outside_window_skips(self, proot, monkeypatch):
+        """窗口外陈旧 run 不计入（无 last_run_at 回退 24h 窗口语义）。
 
-        这正是本次改造的核心负例：凌晨执行时自然日几乎无数据，但 24h 窗口
-        覆盖昨日 → 有活动必触发；反之窗口外陈旧 run 不计入。
+        这正是 24h 改造的核心负例沿用：凌晨执行时自然日几乎无数据，但
+        24h 回退窗口覆盖昨日 → 有活动必触发；反之窗口外陈旧 run 不计入。
         """
         make_run(proot, f"impl-old-{_ts(datetime(2026, 9, 3, 8))}", "done")
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))  # 窗口 09-03 22:30 起
@@ -384,10 +437,10 @@ class TestSelfReviewFailure:
         sched = make_scheduler(proot, run_at="22:00", runner=runner)
         res = sched.check_and_run()
         assert res["triggered"] is True and res["ok"] is False
-        # 状态文件已记录执行时刻 → 24h 内不重试
+        # 状态文件已记录执行日 → 当日不再重试（次日 run_at 自然重试）
         state = json.loads((proot / ".fenix" / "self_review_state.json").read_text())
         assert state["last_run_date"] == "2026-09-04"
-        assert sched.check_and_run()["reason"] == "within_24h"
+        assert sched.check_and_run()["reason"] == "already_ran_today"
         # warning 告警（已标记 handled，不进人工队列）
         recs = AdminStore(proot, FakeLogger()).read_all()
         assert any(r.get("signal_type") == "self_review_failed"
@@ -437,7 +490,7 @@ class TestTodoAppend:
         assert content.count("（当日无）") == 3
 
     def test_run_summary_injects_daily_summary(self, proot, monkeypatch):
-        """数据摘要四源注入：STATE 终态 / runs / admin / ERROR（24h 窗口）。"""
+        """数据摘要五源注入：STATE 终态 / runs / admin / ERROR（增量窗口）。"""
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))
         specs = {"spec-a": {"status": "done"}, "spec-b": {"status": "implementing"}}
         make_run(proot, f"impl-spec-a-{_ts(datetime(2026, 9, 4, 10))}", "done")
@@ -453,7 +506,7 @@ class TestTodoAppend:
         sched = make_scheduler(proot, runner=runner, specs=specs)
         sched.check_and_run()
         summary = runner.calls[0][1]
-        assert "近24小时数据摘要" in summary
+        assert "数据摘要" in summary
         assert "窗口:" in summary
         assert "STATE 终态分布" in summary
         assert "done: 1" in summary and "implementing: 1" in summary
@@ -723,6 +776,36 @@ class TestRunSelfReviewRunner:
             (proot / ".fenix" / "cost" / "self_review_tokens.json").read_text())
         assert ledger["runs"][0]["input_tokens"] == 100
         assert ledger["runs"][0]["date"] == "2026-09-04"
+
+    def test_run_self_review_preserves_structured_entries(self, tmp_path):
+        """结构化条目（dict）保持 dict 形态直达渲染层。
+
+        09-08 事故回归：解析层 `[str(x) for x in val]` 把 agent 合规输出的
+        dict 无差别打成 dict-repr 字符串，渲染层四行格式失效退化为机器形态。
+        """
+        proot = tmp_path / "proj-s"
+        (proot / ".fenix").mkdir(parents=True)
+        runner = self._runner(proot)
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            max_turns, spec_name=None):
+            (proot / ".fenix" / f"self_review_out-{run_id}.json").write_text(
+                json.dumps({
+                    "date": "2026-09-08",
+                    "waste": [{"impact": "i", "evidence": "e",
+                               "analysis": "a", "suggestion": "s"}],
+                    "mistakes": ["旧字符串条目"],
+                    "improvements": [],
+                }),
+                encoding="utf-8")
+            return "out", 5, "sess", {"input_tokens": 10, "output_tokens": 5,
+                                      "cost_usd": 0.01}
+
+        runner._run_claude = fake_run_claude
+        result = runner.run_self_review("2026-09-08", "摘要", None)
+        assert result.waste == [{"impact": "i", "evidence": "e",
+                                 "analysis": "a", "suggestion": "s"}]
+        assert result.mistakes == ["旧字符串条目"]
 
     def test_run_self_review_failure_returns_success_false(self, tmp_path):
         proot = tmp_path / "proj"
@@ -1137,18 +1220,108 @@ class TestTodoMultilineFormat:
     _append_todo 渲染为多行 bullet 块；旧字符串条目按旧行内格式透传。
     """
 
-    def test_append_todo_structured_entry_renders_three_lines(self, proot):
+    def test_append_todo_structured_entry_renders_title_and_nested_lines(self, proot):
+        """结构化条目 = 短标题行 + 嵌套明细 bullets（2026-09-08 用户改版：
+        条目 Markdown 松列表，人扫标题定位事件、嵌套 bullet 读细节）。"""
         sched = make_scheduler(proot)
         result = FakeReviewResult(waste=[{
+            "title": "秒挂风暴烧掉 3 轮派发",
             "impact": "1 轮 impl run 约 19 分钟整轮作废",
             "evidence": "run impl-x 在 03:01Z 被 SIGTERM",
             "suggestion": "重启前先排水",
         }], mistakes=[], improvements=[])
         sched._append_todo("2026-09-07", result)
         content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
-        assert "- 影响：1 轮 impl run 约 19 分钟整轮作废\n" \
-               "  证据：run impl-x 在 03:01Z 被 SIGTERM\n" \
-               "  建议：重启前先排水" in content
+        assert "- **秒挂风暴烧掉 3 轮派发**\n" \
+               "  - 影响：1 轮 impl run 约 19 分钟整轮作废\n" \
+               "  - 证据：run impl-x 在 03:01Z 被 SIGTERM\n" \
+               "  - 建议：重启前先排水" in content
+
+    def test_append_todo_entries_separated_by_blank_line(self, proot):
+        """同小节两个条目之间空行（2026-09-08 用户要求）。"""
+        sched = make_scheduler(proot)
+        result = FakeReviewResult(
+            waste=[{"title": "T1", "impact": "i1"},
+                   {"title": "T2", "impact": "i2"}],
+            mistakes=[], improvements=[])
+        sched._append_todo("2026-09-07", result)
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "- **T1**\n  - 影响：i1\n\n- **T2**\n  - 影响：i2" in content
+
+    def test_append_todo_structured_entry_renders_analysis_line(self, proot):
+        """analysis 字段渲染为「调查评估」嵌套 bullet，位于证据与建议之间；
+        无 analysis 少一行；title 缺省省略标题行（历史兼容）。"""
+        sched = make_scheduler(proot)
+        result = FakeReviewResult(waste=[{
+            "title": "声明违规三次人工修正",
+            "impact": "声明违规 3 次人工修正后才规则化",
+            "evidence": "14d6efc/c254246/ba5e4a8 三次修正",
+            "analysis": "已核实四次提交时间线；根因为逐例救火未前置机械化",
+            "suggestion": "planner 产出期校验 + 守卫机械改判",
+        }], mistakes=[], improvements=[])
+        sched._append_todo("2026-09-07", result)
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "- **声明违规三次人工修正**\n" \
+               "  - 影响：声明违规 3 次人工修正后才规则化\n" \
+               "  - 证据：14d6efc/c254246/ba5e4a8 三次修正\n" \
+               "  - 调查评估：已核实四次提交时间线；根因为逐例救火未前置机械化\n" \
+               "  - 建议：planner 产出期校验 + 守卫机械改判" in content
+        # 缺 title/analysis 的条目：无标题行、无第四行
+        result2 = FakeReviewResult(mistakes=[{
+            "impact": "i", "evidence": "e", "suggestion": "s",
+        }], improvements=[])
+        sched._append_todo("2026-09-08", result2)
+        content2 = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "- 影响：i\n  - 证据：e\n  - 建议：s" in content2
+
+    def test_append_todo_rescues_dict_repr_string(self, proot):
+        """dict-repr 字符串条目（旧解析层/其他 writer 产物）抢救为结构化渲染。
+
+        渲染层对 str 条目先 literal_eval 抢救：解析出含契约键的 dict → 按
+        结构化嵌套格式渲染（无 title 则省标题行）；失败 → 旧行内格式单行
+        透传（09-08 事故纵深防御）。
+        """
+        sched = make_scheduler(proot)
+        raw = str({"impact": "i1", "evidence": "e1", "suggestion": "s1"})
+        result = FakeReviewResult(waste=[raw], mistakes=[], improvements=[])
+        sched._append_todo("2026-09-08", result)
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "- 影响：i1\n  - 证据：e1\n  - 建议：s1" in content
+        assert "{'impact'" not in content
+        # 带 title 的 dict-repr 也渲染标题行
+        raw2 = str({"title": "T", "impact": "i2", "suggestion": "s2"})
+        result2 = FakeReviewResult(mistakes=[raw2], improvements=[])
+        sched._append_todo("2026-09-09", result2)
+        content2 = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "- **T**\n  - 影响：i2\n  - 建议：s2" in content2
+        # 非 dict-repr 的普通字符串不受影响
+        result3 = FakeReviewResult(improvements=["证据：x；建议：y"])
+        sched._append_todo("2026-09-10", result3)
+        content3 = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "### 可改进\n- 证据：x；建议：y" in content3
+
+    def test_remove_resolved_matches_entry_with_analysis_line(self, proot):
+        """带「调查评估」续行的条目整块移除时快照逐字匹配不受影响。"""
+        sched = make_scheduler(proot)
+        todo = write_todo(proot, """## 2026-09-06
+
+### 失误
+- 影响：i1
+  证据：e1
+  调查评估：a1
+  建议：s1
+- 影响：i2
+  证据：e2
+  建议：s2
+""")
+        entries = sched._collect_recent_entries("2026-09-07")
+        assert len(entries) == 2
+        removed = sched._remove_resolved(entries, [
+            {"id": entries[0]["id"], "reason": "已修"}])
+        assert [r["id"] for r in removed] == [entries[0]["id"]]
+        content = todo.read_text(encoding="utf-8")
+        assert "调查评估：a1" not in content
+        assert "证据：e2" in content  # 未命中条目保留
 
     def test_append_todo_partial_and_empty_structured_entries(self, proot):
         sched = make_scheduler(proot)
@@ -1158,10 +1331,66 @@ class TestTodoMultilineFormat:
             mistakes=[], improvements=[])
         sched._append_todo("2026-09-07", result)
         content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
-        assert "- 影响：仅有影响" in content
+        assert "  - 影响：仅有影响" in content
         assert "证据：" not in content and "建议：" not in content
         # 全部字段为空的条目被跳过，无有效条目的小节回落（当日无）
         assert "（当日无）" in content
+
+    def test_cleanup_collect_new_format_blocks(self, proot):
+        """新格式（标题+嵌套明细+条目间空行）按块收集：text 取标题行，
+        嵌套明细不拆成独立条目。"""
+        write_todo(proot, """## 2026-09-06
+
+### 浪费
+
+- **标题一**
+  - 影响：X1
+  - 建议：S1
+
+- **标题二**
+  - 影响：X2
+  - 建议：S2
+
+### 失误
+- （当日无）
+""")
+        sched = make_scheduler(proot)
+        entries = sched._collect_recent_entries("2026-09-07")
+        by_id = {e["id"]: e for e in entries}
+        assert by_id["2026-09-06#浪费#1"]["text"] == "**标题一**"
+        assert by_id["2026-09-06#浪费#2"]["text"] == "**标题二**"
+        assert len(entries) == 2  # （当日无）与嵌套明细不成条
+
+    def test_cleanup_remove_new_format_block_keeps_layout(self, proot):
+        """新格式整块移除（含嵌套明细续行），其余条目与条目间空行布局保留。"""
+        todo = write_todo(proot, """## 2026-09-06
+
+### 浪费
+
+- **标题一**
+  - 影响：X1
+  - 建议：S1
+
+- **标题二**
+  - 影响：X2
+  - 建议：S2
+
+- **标题三**
+  - 影响：X3
+  - 建议：S3
+""")
+        sched = make_scheduler(proot)
+        entries = sched._collect_recent_entries("2026-09-07")
+        assert len(entries) == 3
+        removed = sched._remove_resolved(entries, [
+            {"id": "2026-09-06#浪费#2", "reason": "已修复"}])
+        assert [r["id"] for r in removed] == ["2026-09-06#浪费#2"]
+        content = todo.read_text(encoding="utf-8")
+        assert "标题二" not in content and "X2" not in content \
+            and "S2" not in content  # 整块删除
+        # 其余条目逐字保留，条目间空行布局不变形
+        assert "- **标题一**\n  - 影响：X1\n  - 建议：S1\n\n" \
+               "- **标题三**\n  - 影响：X3\n  - 建议：S3" in content
 
     def test_append_todo_string_entry_legacy_single_line(self, proot):
         """旧字符串条目（历史 agent 输出）保持行内格式。"""

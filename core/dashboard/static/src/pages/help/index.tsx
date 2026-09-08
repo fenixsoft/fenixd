@@ -4,11 +4,14 @@
  * 桌面端：左侧文档目录（选中高亮）+ 右侧 Markdown 正文。
  * 移动端（<768px）：正文上方抽屉式目录切换（Drawer）。
  * URL query 同步当前文档：`?doc=<name>`，缺省 README.md，刷新/直链可还原。
- * 正文 mermaid 代码块动态 import 按需渲染；相对链接改为页内切换。
+ * 正文 mermaid 代码块动态 import 按需渲染；相对链接改为页内切换：
+ * 纯文档名 → 切换文档；`doc.md#锚点` → 切换文档后滚动到小节；
+ * `#锚点` → 当前文档页内滚动（heading 按 GitHub slug 规则注入 id）。
  */
 import { Empty, Menu, Skeleton, Alert, Drawer, Button, Card } from 'antd';
 import { MenuOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { PageContainer } from '@ant-design/pro-components';
@@ -85,9 +88,49 @@ function MermaidBlock({ code }: { code: string }) {
   return <div ref={ref} style={{ margin: '12px 0', minHeight: 40, display: 'flex', justifyContent: 'center' }} />;
 }
 
+// ── 锚点支持：heading id 注入 + 锚点滚动 ───────────────────────────
+
+/** 提取 React 子节点的纯文本（heading 文本 → slug 用）。 */
+function nodeText(node: any): string {
+  if (node == null || node === false || node === true) return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join('');
+  if (typeof node === 'object' && node.props) return nodeText(node.props.children);
+  return '';
+}
+
+/** GitHub 风格 slug：小写、去标点（保留 Unicode 字母/数字/空格/连字符/下划线）、空格转连字符。 */
+function githubSlug(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s_-]/gu, '')
+    .replace(/\s+/g, '-');
+}
+
+/** 平滑滚动到文档内锚点；锚点不存在时静默。 */
+function scrollToAnchor(anchor: string) {
+  try {
+    document.getElementById(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch {
+    // 元素未挂载等异常：静默
+  }
+}
+
+/** heading 组件工厂：保留原字号样式，注入 GitHub slug id（锚点跳转目标）。 */
+function headingComponent(Tag: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6', style: CSSProperties) {
+  return function Heading({ children }: any) {
+    return (
+      <Tag id={githubSlug(nodeText(children))} style={{ ...style, scrollMarginTop: 76 }}>
+        {children}
+      </Tag>
+    );
+  };
+}
+
 // ── MarkdownComponents：扩展 markdownComponents，拦截 mermaid + 帮助文档链接 ──
 
-function buildHelpComponents(onNavigate: (docName: string) => void, docs: HelpDocMeta[]): Components {
+function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => void, docs: HelpDocMeta[]): Components {
   const docNames = new Set(docs.map((d) => d.name));
   return {
     ...markdownComponents,
@@ -104,22 +147,49 @@ function buildHelpComponents(onNavigate: (docName: string) => void, docs: HelpDo
         </code>
       );
     },
+    // heading 注入 GitHub slug id（页内锚点跳转目标）；字号样式同 markdownComponents
+    h1: headingComponent('h1', { fontSize: 18, fontWeight: 600 }),
+    h2: headingComponent('h2', { fontSize: 16, fontWeight: 600 }),
+    h3: headingComponent('h3', { fontSize: 14, fontWeight: 400 }),
+    h4: headingComponent('h4', { fontSize: 14, fontWeight: 400 }),
+    h5: headingComponent('h5', { fontSize: 14, fontWeight: 400 }),
+    h6: headingComponent('h6', { fontSize: 14, fontWeight: 400 }),
     a({ href, children, ...rest }: any) {
-      // 拦截指向帮助文档的相对链接（如 ./01-quick-start.md 或 01-quick-start.md）
+      // 纯锚点（#xxx，排除 SPA 路由 #/）：当前文档页内滚动
+      if (href && href.startsWith('#') && !href.startsWith('#/') && href.length > 1) {
+        return (
+          <a
+            href={href}
+            onClick={(e) => { e.preventDefault(); scrollToAnchor(href.slice(1)); }}
+            style={{ color: '#1677ff', cursor: 'pointer' }}
+            {...rest}
+          >
+            {children}
+          </a>
+        );
+      }
+      // 拦截指向帮助文档的相对链接（如 ./01-quick-start.md、08-config.md#hooks）
       if (href && !href.startsWith('http') && !href.startsWith('mailto:')) {
+        let docPart = href;
+        let anchor = '';
+        const hashIdx = href.indexOf('#');
+        if (hashIdx >= 0) {
+          anchor = href.slice(hashIdx + 1);
+          docPart = href.slice(0, hashIdx);
+        }
         let target: string | null = null;
-        if (docNames.has(href)) {
-          target = href;
+        if (docNames.has(docPart)) {
+          target = docPart;
         } else {
           // 尝试去掉 ./ 前缀
-          const cleaned = href.replace(/^\.\//, '');
+          const cleaned = docPart.replace(/^\.\//, '');
           if (docNames.has(cleaned)) target = cleaned;
         }
         if (target) {
           return (
             <a
               href={`#${window.location.hash.split('?')[0].replace('#', '')}?doc=${encodeURIComponent(target)}`}
-              onClick={(e) => { e.preventDefault(); onNavigate(target!); }}
+              onClick={(e) => { e.preventDefault(); onNavigate(target!, anchor || undefined); }}
               style={{ color: '#1677ff', cursor: 'pointer' }}
               {...rest}
             >
@@ -201,10 +271,30 @@ export default function HelpPage() {
     setDrawerOpen(false);
   }, []);
 
-  // 页内相对链接导航回调
-  const onNavigate = useCallback((name: string) => {
+  // 跨文档锚点跳转：待滚动锚点暂存，内容就绪后消费（见下方 effect）
+  const pendingAnchorRef = useRef<string | null>(null);
+
+  // 页内相对链接导航回调（可携带锚点：doc.md#anchor）
+  const onNavigate = useCallback((name: string, anchor?: string) => {
     handleDocChange(name);
-  }, [handleDocChange]);
+    if (!anchor) return;
+    if (name === currentDoc) {
+      // 同文档：内容已在渲染，等一帧后滚动
+      requestAnimationFrame(() => scrollToAnchor(anchor));
+    } else {
+      // 跨文档：暂存锚点，等新文档加载渲染完成（滚动 effect 消费）
+      pendingAnchorRef.current = anchor;
+    }
+  }, [handleDocChange, currentDoc]);
+
+  // 文档内容就绪后执行待滚动锚点（跨文档锚点跳转）
+  useEffect(() => {
+    if (docLoading || !docData) return;
+    const anchor = pendingAnchorRef.current;
+    if (!anchor) return;
+    pendingAnchorRef.current = null;
+    requestAnimationFrame(() => scrollToAnchor(anchor));
+  }, [docData, docLoading]);
 
   const helpComponents = useMemo(() => buildHelpComponents(onNavigate, docs), [onNavigate, docs]);
 
