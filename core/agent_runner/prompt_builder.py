@@ -205,6 +205,9 @@ class PromptBuilder:
             # 清单在前，强制修复清单殿后保持紧迫性
             prompt += self._verdict_cache_section(spec_name)
             prompt += self._verdict_rejection_section(spec_name)
+            # add-judge-artifact-gate D3：截断恢复注入（上一轮 checkpoint 残留
+            # 已归因场景直接沿用、只补缺失）——先于硬门契约段注入
+            prompt += self._checkpoint_recovery_section(spec_name)
             # add-judge-artifact-gate D2：产物硬门契约注入（结果文件缺失=run失败）
             prompt += self._result_gate_section(spec_name)
         elif agent_type == "fast-track":
@@ -964,6 +967,70 @@ class PromptBuilder:
             "（fail-closed）。\n"
             "- **先落盘再深入**：先完成最小必要产物落盘，再做深入调查/复现——"
             "深入调查不会为产物缺失兜底。\n"
+        )
+
+    # ── 截断恢复（add-judge-artifact-gate D3：逐场景 checkpoint 的恢复语义）────
+    # 判据与跨轮裁决缓存（指纹匹配）不同：checkpoint 恢复只看**字段在位性**——
+    # classification/evidence 已合法落盘的非 PASS 场景视为已归档，重试 judge
+    # 直接沿用、只补缺失/非法场景；不要求断言指纹跨轮一致（其实是同一轮失败后的
+    # 原地重试，复现结果天然一致）。
+
+    _CLASSIFICATION_VALUES = ("product-bug", "test-defect", "flaky", "env")
+
+    @staticmethod
+    def _scenario_classified(scenario: dict) -> bool:
+        """非 PASS 场景是否已归因存档：classification 合法且 evidence 非空。"""
+        if not isinstance(scenario, dict):
+            return False
+        cls = scenario.get("classification")
+        if not isinstance(cls, str) or cls not in PromptBuilder._CLASSIFICATION_VALUES:
+            return False
+        ev = scenario.get("evidence")
+        return isinstance(ev, dict) and bool(ev)
+
+    def _checkpoint_recovery_section(self, spec_name: str) -> str:
+        """截断恢复注入段（add-judge-artifact-gate D3，checkpoint 恢复语义）。
+
+        上一轮 run 可能已把对 report.json 的增强以逐场景 checkpoint 形式落盘
+        （流截断后产物硬门判失败 → 原地重试）。读取现 report.json，把已带合法
+        classification/evidence 的非 PASS 场景注入「直接沿用、只补缺失」清单——
+        与跨轮已裁决场景注入段（judge 效率治理 E，断言指纹判据）正交：本段判据为
+        **字段在位性**，是同一轮失败后原地重试的恢复语义。
+
+        报告文件缺失/损坏/无遗留 → 返回空串（零注入，首轮 judge 不注入）。
+        """
+        report_path = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / "report.json"
+        )
+        try:
+            data = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        kept = []
+        for sc in data.get("scenarios") or []:
+            if not isinstance(sc, dict):
+                continue
+            if sc.get("status") in ("pass", "passed"):
+                continue
+            if self._scenario_classified(sc):
+                kept.append(sc)
+        if not kept:
+            return ""
+        ids = "、".join(str(sc.get("scenario_id")) for sc in kept)
+        return (
+            "\n\n## ♻️ 截断恢复：已归因场景直接沿用（add-judge-artifact-gate）\n"
+            "- 上一次以失败收场的 run（网关流截断等瞬态）已对下列场景完成逐场景"
+            "checkpoint 写盘，其 classification/evidence 已合法落盘——"
+            "**直接沿用，MUST NOT 二次裁决/复现/改写**，覆盖写回时对仍在位的字段"
+            "原样保留：\n"
+            f"  - {ids}\n"
+            "- 已归档场景仍需逐场景核对 `assertion_triage` 是否齐全：缺则只补断言"
+            "归因后覆盖写回，不重新取证。\n"
+            "- 仅对**缺失或非法**（无 classification / 非法 classification / "
+            "空 evidence）的场景做完整裁决，并逐一写回 checkpoint。\n"
         )
 
     def _verdict_cache_section(self, spec_name: str) -> str:
