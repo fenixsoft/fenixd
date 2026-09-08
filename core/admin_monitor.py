@@ -85,6 +85,9 @@ SIGNAL_SEVERITY = {
     "family_explosion": "major",
     "dispatch_stalled": "major",
     "verify_contract_missing": "major",
+    # fix-mergeback-stashpop-silent-loss D1：pop 冲突自愈丢弃的用户改动，
+    # 内容找回需人工核对（stash 栈 + 逐文件 git show），major 级。
+    "stash_pop_conflict": "major",
 }
 SIGNAL_RECOMMENDATION = {
     "repeated_failures": "检查重复失败的根因（如构建/测试命令错误），必要时重置 spec 状态或修复框架配置",
@@ -96,12 +99,19 @@ SIGNAL_RECOMMENDATION = {
     "family_explosion": "检修根因环境（如验证报告互相咬合导致 fix 递归）；确认放行一次则对父 SPEC 设置 _family_waiver=true",
     "dispatch_stalled": "检查持锁进程是否为孤儿（ps/pgrep 确认后 kill），清理残留 worktree 锁后让 spec 重新派发",
     "verify_contract_missing": "Administrator 起草 .fenix/verify.yaml 验证契约：检查项目构建命令、静态目录、服务启动方式；草稿写临时路径 → bin/fenix_verify_contract.py 自证 → 全通才落位 → git 提交 → spec 复位 ready 触发重验证",
+    # fix-mergeback-stashpop-silent-loss D1：核对指引——查 stash 栈确认条目去向，
+    # 按 sha / 逐文件 git show 找回被自愈丢弃的改动，确认无独有内容后可清理条目。
+    "stash_pop_conflict": "merge-back stash pop 冲突已自愈，主树已恢复可写但部分未提交改动被丢弃：git stash list 查条目去向（保留/drop + sha）；按告警中逐文件 git show <sha>:<file> 命令核对内容，仍需要的改动手动落回工作区；确认零独有内容后 git stash drop 清理",
 }
 
 # pm_engine 直接写入 store、由本监视器摄取唤起的信号类型（写入即待唤起型）。
 # family_explosion 既有；dispatch_stalled 属 run 生命周期治理（锁冲突退避耗尽 /
-# 恢复闭环复查未通过）。
-STORED_SIGNAL_TYPES = ("family_explosion", "dispatch_stalled", "verify_contract_missing")
+# 恢复闭环复查未通过）；stash_pop_conflict 属 merge-back pop 冲突可视治理
+# （fix-mergeback-stashpop-silent-loss D1）。
+STORED_SIGNAL_TYPES = (
+    "family_explosion", "dispatch_stalled", "verify_contract_missing",
+    "stash_pop_conflict",
+)
 
 # run_id 前缀 → 计入"失败 run"的 agent 类型
 # ⚠️ 与 core/agent_runner/run_files.py:run_spec_part 前缀元组同源互指，新增 run
