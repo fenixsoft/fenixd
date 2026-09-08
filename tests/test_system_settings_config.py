@@ -220,8 +220,9 @@ class TestSystemAdminExistingSectionsNoRegression(unittest.TestCase):
                   "daily_run_limit", "token_budget_millions", "impl_run_budget"):
             self.assertIn(k, echoed["agents"], k)
         self.assertEqual(echoed["agents"]["max_concurrent"], 2)
-        # gates / verify
-        self.assertEqual(echoed["gates"], {"approve_mode": "manual"})
+        # gates / verify（gates.promote_mode 为 add-draft-promotion-gate 新增受管键）
+        self.assertEqual(echoed["gates"],
+                         {"approve_mode": "manual", "promote_mode": "auto"})
         self.assertEqual(echoed["verify"],
                          {"static_scope": "main", "deps_mode": "prefer-offline"})
 

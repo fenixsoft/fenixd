@@ -374,6 +374,10 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
 
     # 4. 启动 serve 实例 + 探活 ready
     server = None
+    # command 形态的实例句柄：finally 统一 stop（先探 ready 再停，
+    # validate_command_stop_order 修复）——须在 try 外声明，static 形态或
+    # prepare 失败路径下 finally 才不致 UnboundLocalError（2026-09-09 修复）。
+    srv = None
     ready_ok = True
     ready_error = ""
     ready_url = ""
