@@ -3365,6 +3365,9 @@ class AgentRunner:
     def has_live_attempt(self, spec_name: str) -> bool:
         return self._liveness.has_live_attempt(spec_name)
 
+    def sweep_dangling_runs(self) -> list:
+        return self._liveness.sweep_dangling_runs()
+
     def _pgrep_live_attempt(self, spec_name: str) -> bool:
         return self._liveness._pgrep_live_attempt(spec_name)
 
