@@ -2567,6 +2567,15 @@ class AgentRunner:
                 except subprocess.TimeoutExpired:
                     pass
                 returncode = -9
+        except Exception as e:
+            # add-runtime-run-sweeper D4（源头修复）：轮询环未预期异常即刻落显式
+            # error 终态（含 repr 归因），不再依赖运行期清扫器 30 分钟后兜底——
+            # 线程级死亡与进程级死亡（清扫器负责）分层收口。except 先于 finally
+            # 执行，崩溃场景 last_result/cancel_error 均为空，error 行即文件末行
+            # （finally 内无 result/cancelled 可写）。原样 re-raise 保持 attempt
+            # 循环既有失败处理（预算计数/STATE 转换/异常通道）语义不变。
+            append_run_error(run_file, f"run thread crashed: {e!r}", returncode)
+            raise
         finally:
             # 等待读线程把残留行刷完，再决定终态，保证 error 终态行是文件最后一行
             t_out.join(timeout=5)
@@ -3364,6 +3373,9 @@ class AgentRunner:
 
     def has_live_attempt(self, spec_name: str) -> bool:
         return self._liveness.has_live_attempt(spec_name)
+
+    def sweep_dangling_runs(self) -> list:
+        return self._liveness.sweep_dangling_runs()
 
     def _pgrep_live_attempt(self, spec_name: str) -> bool:
         return self._liveness._pgrep_live_attempt(spec_name)

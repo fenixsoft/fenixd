@@ -45,6 +45,42 @@ RUN_TERMINAL_EVENT_TYPES = frozenset({
     "result", "interrupted", "error", "cancelled",
 })
 
+# ── 运行期悬空 run 清扫（add-runtime-run-sweeper D2）──────────────────────
+# 三重判据之流停阈值：run jsonl mtime 停更 ≥ 该秒数且不在在飞注册表、尾部
+# 无终态事件 → 判为悬空并补写 interrupted 终态。任何存活写入者（主线程轮询环、
+# stderr/stdout 读线程）都会持续刷新 mtime，故 mtime 冷却是「无写入者」的可靠
+# 信号。取值 1800s = 3 × judge_window(600s)（SUPERVISION_DEFAULTS）：活性监督
+# 判停滞窗口的 3 倍，保证监督续期路径（每轮 extension 也会写 timeout_extension
+# 事件刷新 mtime）先于清扫器动作；最坏检测延迟 = 阈值 + 扫描周期（periodic
+# scan 默认 30 分钟 ≈ 60 分钟），对比事故 12.3h 悬空。
+RUNTIME_SWEEP_IDLE_SECONDS = 1800
+
+
+def _file_has_terminal_event(run_file: Path) -> bool:
+    """读 run jsonl 逐行判定尾部是否已有终态事件（运行期/启动清扫共享口径）。
+
+    终态口径 = ``RUN_TERMINAL_EVENT_TYPES``（result/interrupted/error/cancelled），
+    两种清扫 MUST 复用本 helper，不得各自实现解析逻辑（runtime-run-sweep
+    「与启动清扫口径一致」Requirement）。损坏 JSON 行跳过不阻断；
+    文件不可读（OSError）视为无终态事件。
+    """
+    try:
+        with run_file.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (isinstance(entry, dict)
+                        and entry.get("type") in RUN_TERMINAL_EVENT_TYPES):
+                    return True
+    except OSError:
+        return False
+    return False
+
 
 def sweep_runs_without_terminal_state(runs_dir: Path) -> list:
     """启动终态补写扫描：扫描 runs_dir 顶层 *.jsonl，对尾部无终态事件的
@@ -65,24 +101,7 @@ def sweep_runs_without_terminal_state(runs_dir: Path) -> list:
     except OSError:
         return []
     for run_file in files:
-        has_terminal = False
-        try:
-            with run_file.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if (isinstance(entry, dict)
-                            and entry.get("type") in RUN_TERMINAL_EVENT_TYPES):
-                        has_terminal = True
-                        break
-        except OSError:
-            continue
-        if has_terminal:
+        if _file_has_terminal_event(run_file):
             continue
         # 无终态事件——追加 interrupted 终态（O_APPEND 单行原子追加）
         try:
@@ -112,9 +131,85 @@ class LivenessSupervisor:
         # 流停止增长即失效）。
         self._extension_baselines: Dict[str, dict] = {}
 
+        # 运行期清扫已验证终态缓存（add-runtime-run-sweeper 1.4）：文件 stem 集合。
+        # 确认含终态事件或已被本清扫器补写的文件入缓存，后续轮次不再打开读取；
+        # 在飞文件（注册表命中）不入缓存——其终态由 run 线程写入，入缓存会跳过
+        # 后续验证。首轮全量建缓存，此后增量。
+        self._terminal_verified: set[str] = set()
+
+    def sweep_dangling_runs(self) -> list:
+        """运行期悬空 run 清扫（add-runtime-run-sweeper 1.3）：daemon 存活期间
+        周期性（每轮 periodic scan）扫描 runs 目录，对满足三重判据（AND，缺一
+        不扫、判据不过不打开读取）的 run 文件补写 interrupted 终态：
+
+        ① run_id 不在 ``_running_agents`` 注册表（键 = 文件 stem，直接成员判定）
+           —— 在飞保护，权威源；
+        ② mtime 停更 ≥ ``RUNTIME_SWEEP_IDLE_SECONDS`` —— 流停保护，先行短路
+           免读文件（任何存活写入者都会刷新 mtime）；
+        ③ ``_file_has_terminal_event`` 为 False —— 尾部无终态事件。
+
+        安全性：result 终态只能由 run 线程的 finally 块写出；线程不在注册表 =
+        该 run 的终态写入者已不可达，补写 interrupted 只把「框架已知的死亡」
+        显式化，不销毁可恢复数据。派发/finally 窗口（µs–ms 级）因 mtime 新鲜
+        被判据 ② 跳过。
+
+        缓存：确认终态或已补写的 stem 入 ``_terminal_verified``，命中即跳过；
+        在飞文件不入缓存。
+
+        Returns: 被补写的文件列表 ``[(run_file_name_stem, Path), ...]``。
+        """
+        runs_dir = self._pm.project_root / ".fenix" / "runs"
+        if not runs_dir.is_dir():
+            return []
+        try:
+            files = list(runs_dir.glob("*.jsonl"))
+        except OSError:
+            return []
+        now = time.time()
+        patched = []
+        for run_file in files:
+            stem = run_file.stem
+            # 缓存命中：终态已确认/已补写，不打开读取
+            if stem in self._terminal_verified:
+                continue
+            # 判据 ①：在飞保护（注册表命中 → 跳过且不入缓存）
+            if stem in self._pm._running_agents:
+                continue
+            # 判据 ②：流停保护，先行短路免读
+            try:
+                idle_seconds = int(now - run_file.stat().st_mtime)
+            except OSError:
+                continue
+            if idle_seconds < RUNTIME_SWEEP_IDLE_SECONDS:
+                continue
+            # 判据 ③：尾部无终态事件（含终态 → 入缓存，后续轮次零读取）
+            if _file_has_terminal_event(run_file):
+                self._terminal_verified.add(stem)
+                continue
+            # 三重判据全中——补写 interrupted 终态（O_APPEND 单行原子追加）
+            try:
+                append_run_line(run_file, {
+                    "type": "interrupted",
+                    "reason": "runtime terminal-state sweep",
+                    "idle_seconds": max(0, idle_seconds),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+            except OSError:
+                continue
+            self._terminal_verified.add(stem)
+            patched.append((stem, run_file))
+        if patched:
+            # 告警格式对齐启动清扫（fenixd.py 启动清扫 WARNING）
+            self._pm.logger.warning(
+                "agent_runner",
+                f"Runtime terminal-state sweep: 补写 {len(patched)} 个悬空 "
+                f"无终态 run 的 interrupted 终态: "
+                + ", ".join(run_id for run_id, _ in patched),
+            )
+        return patched
+
     def has_live_attempt(self, spec_name: str) -> bool:
         """探测某 SPEC 是否仍有存活的 attempt 子进程（恢复一致性 D4 接口）。
-
         判定顺序：
           1. pgrep 进程表：cmdline 含该 spec 的 worktree 目录字面量
              （``worktrees/{impl,verify}-<spec>-<ts>``）→ 存活；
