@@ -319,5 +319,136 @@ class TestEngineCliDispatch(unittest.TestCase):
         self.assertEqual(report["summary"]["passed"], 2)
 
 
+# ── 场景执行根隔离（fix-verify-cli-cwd-isolation）───────────────────
+
+class TestScenarioRootIsolation(unittest.TestCase):
+    """场景执行根（scenario_root）隔离：CLI 步骤缺省 cwd 落验证树而非主树。"""
+
+    def setUp(self):
+        self.main_root = _tmp_project()   # 模拟主树
+        self.scenario_root = _tmp_project()  # 模拟 serving worktree
+        self.addCleanup(shutil.rmtree, self.main_root, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, self.scenario_root, ignore_errors=True)
+
+    def test_seed_write_falls_to_scenario_root(self):
+        """双根隔离：无显式 cwd 的 CLI 步骤，seed 写入落 scenario_root，主树零污染。"""
+        engine = VerifyEngine(
+            "spec-seed", self.main_root, logger=None, config={},
+            scenario_root=self.scenario_root,
+        )
+        scenarios = [
+            Scenario.from_dict({
+                "id": "seed-write", "kind": "cli",
+                "steps": [
+                    # seed 型步骤：相对路径写入 .fenix/STATE.md 和 spec/changes/xxx/tasks.md
+                    {"action": "run",
+                     "command": "mkdir -p .fenix && echo 'state' > .fenix/STATE.md && "
+                                "mkdir -p spec/changes/test-spec && "
+                                "echo 'tasks' > spec/changes/test-spec/tasks.md"},
+                ],
+                "assertions": [
+                    {"type": "exit_code", "expected": 0},
+                ],
+            }),
+        ]
+        report = asyncio.run(engine.run(scenarios))
+        self.assertEqual(report["summary"]["passed"], 1)
+
+        # 写入落在 scenario_root
+        self.assertTrue((self.scenario_root / ".fenix" / "STATE.md").exists())
+        self.assertTrue((self.scenario_root / "spec" / "changes" / "test-spec" / "tasks.md").exists())
+
+        # 主树零污染
+        self.assertFalse((self.main_root / ".fenix" / "STATE.md").exists())
+        self.assertFalse((self.main_root / "spec" / "changes" / "test-spec" / "tasks.md").exists())
+
+    def test_no_scenario_root_fallback_to_project_root(self):
+        """无 scenario_root 时，CLI 步骤缺省 cwd 回退到 project_root（行为不变）。"""
+        engine = VerifyEngine(
+            "spec-fallback", self.main_root, logger=None, config={},
+            scenario_root=None,
+        )
+        scenarios = [
+            Scenario.from_dict({
+                "id": "fallback", "kind": "cli",
+                "steps": [
+                    {"action": "run", "command": "echo 'hello' > output.txt"},
+                ],
+                "assertions": [
+                    {"type": "exit_code", "expected": 0},
+                    {"type": "file_exists", "path": "output.txt"},
+                ],
+            }),
+        ]
+        report = asyncio.run(engine.run(scenarios))
+        self.assertEqual(report["summary"]["passed"], 1)
+        # 文件落主树
+        self.assertTrue((self.main_root / "output.txt").exists())
+        # scenario_root 不受影响
+        self.assertFalse((self.scenario_root / "output.txt").exists())
+
+    def test_bookkeeping_stays_on_main_root(self):
+        """引擎簿记路径（verify-progress）仍指向主树 project_root，不随 scenario_root 改变。"""
+        engine = VerifyEngine(
+            "spec-book", self.main_root, logger=None, config={},
+            scenario_root=self.scenario_root,
+        )
+        scenarios = [
+            Scenario.from_dict({
+                "id": "book", "kind": "cli",
+                "steps": [{"action": "run", "command": "true"}],
+                "assertions": [{"type": "exit_code", "expected": 0}],
+            }),
+        ]
+        report = asyncio.run(engine.run(scenarios))
+        self.assertEqual(report["summary"]["passed"], 1)
+
+        # 进度文件应写在主树
+        progress_path = (
+            self.main_root / ".fenix" / "verify-progress" / "spec-book.json"
+        )
+        self.assertTrue(progress_path.exists(),
+                        f"进度文件应写在主树: {progress_path}")
+
+        # scenario_root 无进度文件
+        wt_progress = (
+            self.scenario_root / ".fenix" / "verify-progress" / "spec-book.json"
+        )
+        self.assertFalse(wt_progress.exists(),
+                         f"进度文件不应写在 scenario_root: {wt_progress}")
+
+    def test_explicit_cwd_resolves_relative_to_scenario_root(self):
+        """显式 cwd 相对路径解析到 scenario_root（worktree 轮语义）。
+
+        注意：file_exists 断言的 path 相对验证树根（scenario_root），
+        而非 cwd。步骤在 cwd 中创建的文件，断言需用 cwd/文件名 匹配。
+        """
+        # 在 scenario_root 创建子目录
+        sub = self.scenario_root / "mydir"
+        sub.mkdir(parents=True, exist_ok=True)
+
+        engine = VerifyEngine(
+            "spec-cwd", self.main_root, logger=None, config={},
+            scenario_root=self.scenario_root,
+        )
+        scenarios = [
+            Scenario.from_dict({
+                "id": "cwd-relative", "kind": "cli",
+                "steps": [
+                    {"action": "run", "command": "echo 'ok' > result.txt", "cwd": "mydir"},
+                ],
+                "assertions": [
+                    {"type": "exit_code", "expected": 0},
+                    # 文件在 mydir/result.txt（cwd相对），断言 path 需相对验证树根
+                    {"type": "file_exists", "path": "mydir/result.txt"},
+                ],
+            }),
+        ]
+        report = asyncio.run(engine.run(scenarios))
+        self.assertEqual(report["summary"]["passed"], 1)
+        # 文件落在 scenario_root/mydir/
+        self.assertTrue((sub / "result.txt").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
