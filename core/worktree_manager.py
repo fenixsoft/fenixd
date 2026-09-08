@@ -169,6 +169,10 @@ class WorktreeManager:
         # 最近一次 guard 段内 stash pop 冲突自愈丢弃的文件清单（dispatch 层读走
         # 做 admin 告警后失效）；guard 进入时清空。
         self.last_stash_pop_conflicts: list = []
+        # 最近一次 pop 冲突自愈后 stash 条目去向（fix-mergeback-stashpop-silent-loss
+        # D1/D2）：{"kept": bool, "sha": str}——kept=False 表示已被自动 drop（sha
+        # 可 gc 前找回），kept=True 表示条目保留。dispatch 层读走并入告警文本。
+        self.last_stash_entry_fate: dict = {"kept": True, "sha": ""}
 
     def create(self, spec_name: str, agent_type: str = "implementer") -> Optional[Path]:
         """
@@ -1465,6 +1469,7 @@ class WorktreeManager:
             # 被取代条目自动 drop 判定（fix-mergeback-stashpop-silent-loss D2）：
             # 树级 diff 逐一核对 stash 版是否已被合并后 HEAD 完全取代。
             if self._drop_superseded_stash_entry(pinned_sha, conflict_files):
+                self.last_stash_entry_fate = {"kept": False, "sha": pinned_sha}
                 self.logger.warning(
                     "worktree_manager",
                     f"Stash pop conflict self-healed; stash changes on "
@@ -1861,6 +1866,7 @@ class WorktreeManager:
                 return rehearsed_info
 
             self.last_stash_pop_conflicts = []
+            self.last_stash_entry_fate = {"kept": True, "sha": ""}
             # WIP 重叠预检（fix-mergeback-stashpop-silent-loss D3）：预演闸放行后、
             # stash 之前，检测「分支改动文件 ∩ 主树脏 tracked 文件」。只读、不阻断
             # ——重叠仅是预警（不同 hunk 可自动合并），清单挂到返回的

@@ -932,7 +932,8 @@ class Dispatcher:
                         # 不阻塞 merge-back 与状态推进）。须放在上面 update_spec(error=None)
                         # 之后，避免被清空。见 fix-stashpop-deadlock。
                         if conflict_files:
-                            self._pm._report_stash_pop_conflict(spec_name, conflict_files)
+                            self._pm._report_stash_pop_conflict(
+                                spec_name, conflict_files, merge_info=merge_info)
                         # 写侧确定性回写：把已完成的任务勾选同步进主树 tasks.md
                         # （add-task-progress-sync）。任何异常都不阻塞 run 终态主流程。
                         try:
@@ -1146,13 +1147,17 @@ class Dispatcher:
             self._pm.logger.error("pm_engine", f"State rollback failed for '{spec_name}': {e2}")
 
 
-    def _report_stash_pop_conflict(self, spec_name: str, conflict_files: list) -> None:
+    def _report_stash_pop_conflict(self, spec_name: str, conflict_files: list,
+                                   merge_info=None) -> None:
         """pop 冲突自愈后上报被丢弃的 stash 改动文件清单（fix-stashpop-deadlock）。
 
         主树已通过 checkout HEAD + reset 自愈回到干净可写状态，merge 结果不丢失、
-        状态正常推进到 implemented；此处仅把「被丢弃的 stash 改动文件」写入 spec 的
-        error 字段（覆盖 None），利用既有 admin_monitor distressed 规则触发告警，
-        提示人工用 ``git stash show`` 找回内容。零新增持久化状态。
+        状态正常推进到 implemented。上报走双通道（fix-mergeback-stashpop-silent-loss
+        D1）：既有 spec.error 字段写入保持不变（向后兼容 dashboard 时间轴读侧）；
+        另经 admin_store.append 直发一条 ``signal_type=stash_pop_conflict`` 告警——
+        通知不再依赖瞬态 error 字段或日志指纹风暴规则。告警 description 含 spec 名、
+        冲突文件清单、stash 条目去向（保留/drop + sha）、逐文件找回命令，以及
+        merge-back 前的 WIP 重叠预检清单（若有）。
 
         error 文本格式（供 dashboard/admin 可读）：``stash pop conflict: files=[...]``
         """
@@ -1170,6 +1175,67 @@ class Dispatcher:
             "pm_engine",
             f"'{spec_name}' {msg} —— stash 保留，可用 git stash show 找回被丢弃改动",
         )
+        # admin 告警直发（fix-mergeback-stashpop-silent-loss D1）：低频事件、
+        # 无风暴风险，不加节流。任何异常都不阻塞 merge-back 主流程。
+        try:
+            from core.admin_store import AdminStore, SIGNAL
+            # 条目去向从 worktree_manager 读（dispatch 层不持锁，读实例属性足够——
+            # guard 段已结束、无并发写者）。
+            try:
+                fate = dict(self._pm.agent_runner.worktree_manager.last_stash_entry_fate)
+            except Exception:
+                fate = {"kept": True, "sha": ""}
+            sha = fate.get("sha", "") or ""
+            short_sha = sha[:12] if sha else ""
+            if fate.get("kept"):
+                fate_desc = (
+                    f"stash 条目保留在栈中（栈顶 sha {short_sha}，"
+                    f"git stash list 可见）" if short_sha else "stash 条目保留在栈中"
+                )
+            else:
+                fate_desc = (
+                    f"stash 版已被合并结果完全取代，条目已自动 drop"
+                    f"（commit {short_sha}，gc 前可按 sha 找回）"
+                    if short_sha else "stash 条目已被自动 drop"
+                )
+            recover_cmds = "; ".join(
+                f"git show {sha}:{f}" for f in conflict_files
+            ) if sha else "git stash show / git stash list 人工核对"
+            overlap = list(getattr(merge_info, "wip_overlap", []) or [])
+            overlap_desc = (
+                f"；merge-back 前 WIP 重叠预检命中 {len(overlap)} 文件"
+                f"（可能与本次丢弃相关）：{overlap}" if overlap else ""
+            )
+            description = (
+                f"SPEC '{spec_name}' merge-back stash pop 冲突已自愈："
+                f"{len(conflict_files)} 个文件的未提交改动被丢弃 "
+                f"({', '.join(conflict_files)})。{fate_desc}{overlap_desc}。"
+                f"逐文件找回：{recover_cmds}"
+            )
+            store = AdminStore(self._pm.project_root, self._pm.logger)
+            store.append({
+                "kind": SIGNAL,
+                "signal_type": "stash_pop_conflict",
+                "spec": spec_name,
+                "severity": "major",
+                "description": description,
+                "evidence": {"conflict_files": list(conflict_files),
+                             "stash_kept": bool(fate.get("kept")),
+                             "stash_sha": sha, "wip_overlap": overlap},
+                "recommended_action": (
+                    "git stash list 查条目去向；按逐文件 git show <sha>:<file> 命令"
+                    "核对内容，仍需要的改动手动落回工作区；确认零独有内容后 "
+                    "git stash drop 清理"),
+            })
+            self._pm.logger.info(
+                "pm_engine",
+                f"stash_pop_conflict 告警已写入 admin store: '{spec_name}'",
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"stash_pop_conflict 告警写入失败 '{spec_name}'（非阻塞）: {e}",
+            )
 
     # ── 缺件 LLM 终审与裁决机械执行（add-deliverable-declaration-triage D3/D4）──
 
