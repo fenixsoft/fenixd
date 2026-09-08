@@ -266,16 +266,17 @@ class TestSpecSchedulingAPI:
 
     def test_freeze_config_scheduled(self, frozen_spec):
         proot, srv = frozen_spec
+        until = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         status, body = srv.post_json(
             "/api/spec-freeze-config?project=proj-a&spec=myspec",
-            {"mode": "scheduled", "until": "2026-09-08T01:00:00+00:00"},
+            {"mode": "scheduled", "until": until},
         )
         assert status == 200
         assert body["unfrozen"] is False
-        assert body["frozen_until"] == "2026-09-08T01:00:00+00:00"
+        assert body["frozen_until"] == until
         entry = dash_data.parse_state(proot)["myspec"]
         assert entry.get("status") == "blocked"  # 冻结态保持
-        assert entry.get("frozen_until") == "2026-09-08T01:00:00+00:00"
+        assert entry.get("frozen_until") == until
 
     def test_freeze_config_scheduled_past_immediate_unfreeze(self, frozen_spec):
         proot, srv = frozen_spec
