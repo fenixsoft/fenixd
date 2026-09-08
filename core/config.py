@@ -94,6 +94,9 @@ class ConfigLoader:
     # Valid approve modes
     VALID_APPROVE_MODES = ["manual", "auto"]
 
+    # Valid draft promote modes（add-draft-promotion-gate：值语义与 approve_mode 对齐）
+    VALID_PROMOTE_MODES = ["auto", "manual"]
+
     # ── 瞬断治理配置（fix-provider-transient-backoff D6 / transient-controls-ui）──
     # 五键缺省值（design D6 表）。消费方（runner/provider_circuit/dispatch）经
     # _get_config 读取，非法值由本类防御式规范化回退缺省。
@@ -342,12 +345,12 @@ class ConfigLoader:
                     f"gates.approve_mode must be one of {cls.VALID_APPROVE_MODES}: {mode}"
                 )
 
-        # Validate gates.auto_promote_draft (optional — defaults to True)
-        if "auto_promote_draft" in gates and gates["auto_promote_draft"] is not None:
-            val = gates["auto_promote_draft"]
-            if not isinstance(val, bool):
+        # Validate gates.promote_mode (optional — defaults to auto)
+        if "promote_mode" in gates and gates["promote_mode"] is not None:
+            mode = gates["promote_mode"]
+            if mode not in cls.VALID_PROMOTE_MODES:
                 raise ValueError(
-                    f"gates.auto_promote_draft must be a boolean: {val!r}"
+                    f"gates.promote_mode must be one of {cls.VALID_PROMOTE_MODES}: {mode}"
                 )
 
         # D5：timeout_supervision.absolute_max_seconds 联动护栏，启动/热更新时校验；
@@ -848,18 +851,18 @@ class ConfigLoader:
         return mode
 
     @classmethod
-    def get_auto_promote_draft(cls, config: Dict[str, Any]) -> bool:
-        """Return auto_promote_draft flag, defaulting to True.
+    def get_promote_mode(cls, config: Dict[str, Any]) -> str:
+        """Return the draft promote mode, defaulting to 'auto'.
 
-        When True (default), drafted SPECs are automatically promoted to ready
-        by PM Engine. When False, drafted SPECs stay in draft state awaiting
-        manual promotion via Dashboard or CLI.
+        'auto' (default): drafted SPECs are automatically promoted to ready by
+        PM Engine. 'manual': drafted SPECs stay in draft state awaiting manual
+        promotion via Dashboard, CLI promote, or /fenix-ready.
         """
         gates = config.get("gates") or {}
-        val = gates.get("auto_promote_draft")
-        if not isinstance(val, bool):
-            return True
-        return val
+        mode = gates.get("promote_mode")
+        if mode not in cls.VALID_PROMOTE_MODES:
+            return "auto"
+        return mode
 
     @classmethod
     def get_admin_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:

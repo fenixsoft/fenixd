@@ -1,8 +1,8 @@
 """tests for draft-promotion-gate and shared promotion function.
 
 Covers:
-- Gate closed: all drafted trigger paths stay drafted (no error, no dispatch)
-- Gate open: promotion chain identical to pre-gate behavior
+- Gate manual: all drafted trigger paths stay drafted (no error, no dispatch)
+- Gate auto: promotion chain identical to pre-gate behavior
 - Re-enable: full_scan recovery restores auto-promotion for stuck drafts
 - Shared function: lint violation interception, non-drafted rejection, not-found rejection
 """
@@ -35,7 +35,7 @@ def _setup_project(tmpdir, spec_name="myspec", status="drafted"):
 
 
 class TestGateClosed(unittest.TestCase):
-    """Gate auto_promote_draft=False: all drafted paths stay drafted."""
+    """Gate promote_mode=manual: all drafted paths stay drafted."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -52,7 +52,7 @@ class TestGateClosed(unittest.TestCase):
 
     def test_spec_drafted_event_stays_draft(self):
         """spec_drafted event: gate closed → spec stays drafted, no error."""
-        engine, sm, _ = self._engine({"gates": {"auto_promote_draft": False}})
+        engine, sm, _ = self._engine({"gates": {"promote_mode": "manual"}})
         engine._on_spec_drafted("myspec")
         entry = sm.read_one("myspec")
         self.assertEqual(entry["status"], "drafted")
@@ -66,7 +66,7 @@ class TestGateClosed(unittest.TestCase):
         """start_after expiry: gate closed → spec stays drafted."""
         engine, sm, proot = _setup_project(self.tmpdir)
         engine_obj = MagicMock()
-        engine_obj.config = {"gates": {"auto_promote_draft": False}}
+        engine_obj.config = {"gates": {"promote_mode": "manual"}}
         engine_obj.project_root = proot
         engine_obj.logger = MagicMock()
         engine_obj.state_machine = sm
@@ -89,7 +89,7 @@ class TestGateClosed(unittest.TestCase):
         from core.pm_engine import PMEngine
         proot, sm, _ = _setup_project(self.tmpdir)
         logger = MagicMock()
-        config = {"gates": {"auto_promote_draft": False}}
+        config = {"gates": {"promote_mode": "manual"}}
         engine = PMEngine(sm, MagicMock(), config, proot, logger)
         # Simulate recovery path: handle_event calls _on_spec_drafted
         engine._on_spec_drafted("myspec")
@@ -102,7 +102,7 @@ class TestGateClosed(unittest.TestCase):
         from core.pm_engine import PMEngine
         proot, sm, _ = _setup_project(self.tmpdir)
         logger = MagicMock()
-        config = {"gates": {"auto_promote_draft": False}}
+        config = {"gates": {"promote_mode": "manual"}}
         engine = PMEngine(sm, MagicMock(), config, proot, logger)
         engine._on_spec_drafted("myspec")
         entry = sm.read_one("myspec")
@@ -111,7 +111,7 @@ class TestGateClosed(unittest.TestCase):
 
 
 class TestGateOpen(unittest.TestCase):
-    """Gate auto_promote_draft=True: promotion chain works as before."""
+    """Gate promote_mode=auto: promotion chain works as before."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -124,7 +124,7 @@ class TestGateOpen(unittest.TestCase):
         from core.pm_engine import PMEngine
         proot, sm, _ = _setup_project(self.tmpdir)
         logger = MagicMock()
-        config = {"gates": {"auto_promote_draft": True}}
+        config = {"gates": {"promote_mode": "auto"}}
         engine = PMEngine(sm, MagicMock(), config, proot, logger)
         # Patch _on_spec_ready to prevent actual dispatch
         engine._on_spec_ready = MagicMock()
@@ -138,7 +138,7 @@ class TestGateOpen(unittest.TestCase):
         from core.pm_engine import PMEngine
         proot, sm, _ = _setup_project(self.tmpdir)
         logger = MagicMock()
-        config = {"gates": {"auto_promote_draft": True}}
+        config = {"gates": {"promote_mode": "auto"}}
         engine = PMEngine(sm, MagicMock(), config, proot, logger)
         engine._on_spec_ready = MagicMock()
         # Patch promote_drafted's internal lint to return violations
@@ -154,7 +154,7 @@ class TestGateOpen(unittest.TestCase):
 
 
 class TestGateReEnable(unittest.TestCase):
-    """Re-enable auto_promote_draft: stuck drafts recover via full_scan."""
+    """Re-enable auto promote_mode: stuck drafts recover via full_scan."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -168,7 +168,7 @@ class TestGateReEnable(unittest.TestCase):
         proot, sm, _ = _setup_project(self.tmpdir)
         logger = MagicMock()
         # Start with gate closed
-        config_closed = {"gates": {"auto_promote_draft": False}}
+        config_closed = {"gates": {"promote_mode": "manual"}}
         engine = PMEngine(sm, MagicMock(), config_closed, proot, logger)
         engine._on_spec_ready = MagicMock()
         engine._on_spec_drafted("myspec")
@@ -176,7 +176,7 @@ class TestGateReEnable(unittest.TestCase):
         self.assertEqual(sm.read_one("myspec")["status"], "drafted")
 
         # Re-enable gate
-        config_open = {"gates": {"auto_promote_draft": True}}
+        config_open = {"gates": {"promote_mode": "auto"}}
         engine.config = config_open
         # Simulate full_scan recovery triggering _on_spec_drafted
         engine._on_spec_drafted("myspec")

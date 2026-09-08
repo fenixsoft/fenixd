@@ -170,19 +170,19 @@ class PMEngine:
     def _on_spec_drafted(self, spec_name: str):
         """Auto-promote drafted → ready, then immediately schedule implementer.
 
-        Gates: if gates.auto_promote_draft is False, spec stays drafted
+        Gates: if gates.promote_mode is 'manual', spec stays drafted
         (no promotion, no error, no dispatch) — awaiting manual promotion.
         """
         from core.config import ConfigLoader
         from core.pm_engine.promotion import promote_drafted
 
-        # 草稿自动晋升闸口（add-draft-promotion-gate D1）：关闭时 drafted SPEC
+        # 草稿晋升闸口（add-draft-promotion-gate D1）：manual 时 drafted SPEC
         # 停留草稿态，不软化、不 lint、不写 error、不派发。等待人工通过
-        # Dashboard 按钮或 CLI promote 放行。
-        if not ConfigLoader.get_auto_promote_draft(self.config):
+        # Dashboard 按钮、CLI promote 或 /fenix-ready 放行。
+        if ConfigLoader.get_promote_mode(self.config) != "auto":
             self.logger.info(
                 "pm_engine",
-                f"自动晋升已关闭，SPEC '{spec_name}' 停留 drafted 等待人工放行",
+                f"草稿晋升为 manual，SPEC '{spec_name}' 停留 drafted 等待人工放行",
             )
             return
 

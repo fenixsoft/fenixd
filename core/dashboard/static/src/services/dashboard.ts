@@ -690,8 +690,8 @@ export interface AgentsConfig {
 
 export interface GatesConfig {
   approve_mode?: 'manual' | 'auto';
-  /** 草稿自动晋升（add-draft-promotion-gate）：false 时 drafted SPEC 停留草稿态等待人工放行 */
-  auto_promote_draft?: boolean;
+  /** 草稿晋升模式（add-draft-promotion-gate）：manual 时 drafted SPEC 停留草稿态等待人工放行（/fenix-ready / 项目页按钮 / CLI promote） */
+  promote_mode?: 'manual' | 'auto';
 }
 
 export interface VerifyConfig {

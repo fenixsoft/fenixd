@@ -59,5 +59,5 @@ CLI 与 Dashboard 进程完成晋升（transition ready 落盘）后，daemon SH
 - **THEN** daemon 感知 ready 状态并调度 implementer（即时经 STATE watcher 事件，或最迟在下一轮 full_scan recovery 兜底派发）
 
 #### Scenario: 闸口关闭不影响已晋升 SPEC
-- **WHEN** `gates.auto_promote_draft` 为 `false` 且 SPEC 已被人工晋升为 ready
+- **WHEN** `gates.promote_mode` 为 `manual` 且 SPEC 已被人工晋升为 ready
 - **THEN** daemon 对该 ready SPEC 正常派发（闸口只作用于 drafted → ready 晋升，不拦截 ready 之后的调度）

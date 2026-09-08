@@ -1,4 +1,4 @@
-import { Button, Card, Form, Radio, Switch, Typography } from 'antd';
+import { Button, Card, Form, Radio, Typography } from 'antd';
 import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 
@@ -15,17 +15,17 @@ export default function ApprovalModePanel({ config, onSave }: ApprovalModePanelP
   useEffect(() => {
     // 确保字段有值，使用配置值或默认值
     form.setFieldsValue({
-      auto_promote_draft: config.gates.auto_promote_draft ?? true,
+      promote_mode: config.gates.promote_mode || 'auto',
       approve_mode: config.gates.approve_mode || 'manual',
     });
-  }, [config.gates.approve_mode, config.gates.auto_promote_draft, form]);
+  }, [config.gates.approve_mode, config.gates.promote_mode, form]);
 
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
       await onSave({
         gates: {
-          auto_promote_draft: values.auto_promote_draft,
+          promote_mode: values.promote_mode,
           approve_mode: values.approve_mode,
         },
       });
@@ -38,34 +38,63 @@ export default function ApprovalModePanel({ config, onSave }: ApprovalModePanelP
     <div>
       <h3>审批</h3>
       <Text type="secondary">
-        SPEC 到达 done 后的行为。auto 模式将自动执行 git push 到远端，请谨慎使用。
+        草稿晋升（drafted → ready）与推送审批（done → push）行为。auto 推送模式将自动执行 git push 到远端，请谨慎使用。
       </Text>
       <Card style={{ marginTop: 12 }}>
         <Form
           form={form}
           initialValues={{
-            auto_promote_draft: config.gates.auto_promote_draft ?? true,
+            promote_mode: config.gates.promote_mode || 'auto',
             approve_mode: config.gates.approve_mode || 'manual',
           }}
           layout="vertical"
         >
-          {/* 草稿自动晋升开关（add-draft-promotion-gate D5） */}
+          {/* 草稿晋升模式（add-draft-promotion-gate D5，值语义对齐 approve_mode） */}
           <Form.Item
-            name="auto_promote_draft"
-            label="草稿自动晋升"
-            valuePropName="checked"
-            extra="开启时 SPEC 注册后立即自动进入调度；关闭后 SPEC 停留草稿态，供人工阅读，确认后在项目页手动放行"
-          >
-            <Switch />
-          </Form.Item>
-          <Form.Item
-            name="approve_mode"
-            rules={[{ required: true, message: '请选择审批模式' }]}
+            name="promote_mode"
+            label={
+              <>
+                草稿晋升模式<span className="label-note">（gates.promote_mode）</span>
+              </>
+            }
+            rules={[{ required: true, message: '请选择草稿晋升模式' }]}
           >
             <Radio.Group>
               <div style={{ display: 'block', marginBottom: 16 }}>
                 <Radio value="manual">
-                  <strong>manual</strong> — 人工审批（推荐）
+                  <strong>manual</strong> — 人工审批
+                  <div>
+                    <Text type="secondary">
+                      SPEC 停留在草稿态供人工阅读，确认后经 /fenix-ready、项目页按钮或 CLI 手动放行。
+                    </Text>
+                  </div>
+                </Radio>
+              </div>
+              <div style={{ display: 'block' }}>
+                <Radio value="auto">
+                  <strong>auto</strong> — 自动晋升
+                  <div>
+                    <Text type="secondary">
+                      SPEC 注册为草稿后立即自动晋升 ready 并进入调度。
+                    </Text>
+                  </div>
+                </Radio>
+              </div>
+            </Radio.Group>
+          </Form.Item>
+          <Form.Item
+            name="approve_mode"
+            label={
+              <>
+                推送审批模式<span className="label-note">（gates.approve_mode）</span>
+              </>
+            }
+            rules={[{ required: true, message: '请选择推送审批模式' }]}
+          >
+            <Radio.Group>
+              <div style={{ display: 'block', marginBottom: 16 }}>
+                <Radio value="manual">
+                  <strong>manual</strong> — 人工审批
                   <div>
                     <Text type="secondary">
                       SPEC 完成后停留在 done，等待 /fenix-approve 人工推送。

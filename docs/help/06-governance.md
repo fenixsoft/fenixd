@@ -39,20 +39,21 @@ daemon 重启时，处于 `implementing`/`testing` 中断状态的 SPEC 自动�
 
 ## 草稿人工放行
 
-默认情况下，SPEC 注册为 drafted 后由 PM Engine 自动晋升 ready 并立即调度实现。对于重要改动，你可以关闭自动晋升，让 SPEC 停留在草稿态供人工阅读，确认无误后再放行。
+默认情况下，SPEC 注册为 drafted 后由 PM Engine 自动晋升 ready 并立即调度实现。对于重要改动，你可以把草稿晋升切为人工审批，让 SPEC 停留在草稿态供人工阅读，确认无误后再放行。
 
-**配置开关**：`gates.auto_promote_draft`（默认 `true`，热更新生效）
-- `true`（默认）：SPEC 注册后自动晋升 ready 并调度（现状不变）
-- `false`：SPEC 停留 drafted，不晋升、不派发、不写 error（设计行为而非故障）
+**配置开关**：`gates.promote_mode`（默认 `auto`，热更新生效，设置页「审批」页签可调；值语义与 `gates.approve_mode` 一致）
+- `auto`（默认）：SPEC 注册后自动晋升 ready 并调度（现状不变）
+- `manual`：SPEC 停留 drafted，不晋升、不派发、不写 error（设计行为而非故障）
 
 **放行方式**：
 
 1. **Dashboard 项目页**：对 drafted 状态的 SPEC，点击「晋升 ready」菜单项，确认后执行晋升（软化+lint+transition）
 2. **CLI 命令**：`python3 bin/fenix_cli.py promote <spec> [--project <path>]`（缺省当前目录）
+3. **/fenix-ready skill**：在 Claude Code 会话中执行 `/fenix-ready <spec>`，先阅读草稿再放行
 
 **Lint 拦截**：晋升时仍执行完整 lint（声明形态+tasks 可解析性），违规时 SPEC 停留 drafted 并在 STATE 写入错误明细，可在 Dashboard 或 CLI 反馈中查看。修正后重新晋升。
 
-**闸口关闭后的存量处理**：重新开启 `auto_promote_draft` 后，下一次 full_scan recovery 会自动晋升停留 drafted 的存量 SPEC，无需逐个手动操作。
+**闸口切回后的存量处理**：把 `promote_mode` 从 `manual` 改回 `auto` 后，下一次 full_scan recovery 会自动晋升停留 drafted 的存量 SPEC，无需逐个手动操作。
 
 ## merge 修复通道与熔断
 

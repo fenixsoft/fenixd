@@ -763,8 +763,8 @@ class TestAgentModelsUnknownKeyTolerance(unittest.TestCase):
         self.assertIsNone(ConfigLoader.get_agent_model_assignment(config, "verifier"))
 
 
-class TestAutoPromoteDraft(unittest.TestCase):
-    """gates.auto_promote_draft 校验与 getter（add-draft-promotion-gate D3）。"""
+class TestPromoteMode(unittest.TestCase):
+    """gates.promote_mode 校验与 getter（add-draft-promotion-gate D3，值语义对齐 approve_mode）。"""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -781,53 +781,53 @@ class TestAutoPromoteDraft(unittest.TestCase):
         with open(self.config_path, "w") as f:
             yaml.dump(cfg, f)
 
-    def test_validation_rejects_non_bool(self):
-        """非 bool 值被校验拒绝。"""
-        self._write_valid(auto_promote_draft="yes")
+    def test_validation_rejects_invalid_value(self):
+        """枚举外值被校验拒绝。"""
+        self._write_valid(promote_mode="yes")
         with self.assertRaises(ValueError) as ctx:
             ConfigLoader.load(self.config_path)
-        self.assertIn("auto_promote_draft", str(ctx.exception))
-        self.assertIn("boolean", str(ctx.exception))
+        self.assertIn("promote_mode", str(ctx.exception))
+        self.assertIn("'auto', 'manual'", str(ctx.exception))
 
-    def test_validation_rejects_int(self):
-        """整数值被校验拒绝。"""
-        self._write_valid(auto_promote_draft=1)
+    def test_validation_rejects_bool(self):
+        """布尔值被校验拒绝（曾为 bool 键，形态已迁移枚举）。"""
+        self._write_valid(promote_mode=True)
         with self.assertRaises(ValueError):
             ConfigLoader.load(self.config_path)
 
-    def test_validation_accepts_bool_true(self):
-        """显式 True 通过校验。"""
-        self._write_valid(auto_promote_draft=True)
+    def test_validation_accepts_auto(self):
+        """显式 auto 通过校验。"""
+        self._write_valid(promote_mode="auto")
         config = ConfigLoader.load(self.config_path)
-        self.assertTrue(ConfigLoader.get_auto_promote_draft(config))
+        self.assertEqual(ConfigLoader.get_promote_mode(config), "auto")
 
-    def test_validation_accepts_bool_false(self):
-        """显式 False 通过校验。"""
-        self._write_valid(auto_promote_draft=False)
+    def test_validation_accepts_manual(self):
+        """显式 manual 通过校验。"""
+        self._write_valid(promote_mode="manual")
         config = ConfigLoader.load(self.config_path)
-        self.assertFalse(ConfigLoader.get_auto_promote_draft(config))
+        self.assertEqual(ConfigLoader.get_promote_mode(config), "manual")
 
-    def test_getter_defaults_to_true(self):
-        """缺失键时 getter 返回 True（保持现行为）。"""
+    def test_getter_defaults_to_auto(self):
+        """缺失键时 getter 返回 auto（保持现行为）。"""
         cfg = _valid_cfg()
         import yaml
         with open(self.config_path, "w") as f:
             yaml.dump(cfg, f)
         config = ConfigLoader.load(self.config_path)
-        self.assertTrue(ConfigLoader.get_auto_promote_draft(config))
+        self.assertEqual(ConfigLoader.get_promote_mode(config), "auto")
 
-    def test_getter_empty_gates_returns_true(self):
-        """空 gates 段返回 True。"""
+    def test_getter_empty_gates_returns_auto(self):
+        """空 gates 段返回 auto。"""
         cfg = _valid_cfg()
         cfg["gates"] = {}
         import yaml
         with open(self.config_path, "w") as f:
             yaml.dump(cfg, f)
         config = ConfigLoader.load(self.config_path)
-        self.assertTrue(ConfigLoader.get_auto_promote_draft(config))
+        self.assertEqual(ConfigLoader.get_promote_mode(config), "auto")
 
-    def test_getter_non_bool_falls_back_to_true(self):
-        """非 bool 值（如遗留配置）回退 True。"""
-        result = ConfigLoader.get_auto_promote_draft({"gates": {"auto_promote_draft": "yes"}})
-        self.assertTrue(result)
+    def test_getter_invalid_value_falls_back_to_auto(self):
+        """枚举外值（如遗留配置）回退 auto。"""
+        result = ConfigLoader.get_promote_mode({"gates": {"promote_mode": "yes"}})
+        self.assertEqual(result, "auto")
 

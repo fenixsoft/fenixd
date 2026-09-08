@@ -3307,8 +3307,8 @@ _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "agents.run_timeout_seconds", "agents.max_turns", "agents.daily_run_limit",
                 "agents.token_budget_millions", "agents.impl_run_budget", "agents.verify_redo_budget",
                 "gates.approve_mode",
-                # add-draft-promotion-gate：草稿自动晋升开关
-                "gates.auto_promote_draft",
+                # add-draft-promotion-gate：草稿晋升模式
+                "gates.promote_mode",
                 # add-daily-self-review：admin.self_review 三键
                 "admin.self_review",
                 # add-settings-system-tab：admin.* 受管键（5 键）
@@ -3693,18 +3693,18 @@ def read_effective_config(project_root) -> dict:
     gates_eff = effective.get("gates")
     if isinstance(gates_eff, dict) and "approve_mode" in gates_eff:
         result["gates"] = {"approve_mode": gates_eff["approve_mode"]}
-    # add-draft-promotion-gate：草稿自动晋升开关回显（缺省 True）
-    if isinstance(gates_eff, dict) and "auto_promote_draft" in gates_eff:
-        val = gates_eff["auto_promote_draft"]
-        if isinstance(val, bool):
+    # add-draft-promotion-gate：草稿晋升模式回显（缺省 auto）
+    if isinstance(gates_eff, dict) and "promote_mode" in gates_eff:
+        val = gates_eff["promote_mode"]
+        if val in ("auto", "manual"):
             if "gates" not in result:
                 result["gates"] = {}
-            result["gates"]["auto_promote_draft"] = val
+            result["gates"]["promote_mode"] = val
     elif "gates" not in result:
-        # 缺失时填默认值 True（对齐 ConfigLoader.get_auto_promote_draft）
-        result["gates"] = {"auto_promote_draft": True}
-    elif "auto_promote_draft" not in result.get("gates", {}):
-        result["gates"]["auto_promote_draft"] = True
+        # 缺失时填默认值 auto（对齐 ConfigLoader.get_promote_mode）
+        result["gates"] = {"promote_mode": "auto"}
+    elif "promote_mode" not in result.get("gates", {}):
+        result["gates"]["promote_mode"] = "auto"
     verify_eff = effective.get("verify")
     if isinstance(verify_eff, dict):
         if verify_eff.get("static_scope") in ("main", "worktree"):
@@ -3986,13 +3986,13 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                     f"admin.bug_repair_mode must be one of ['inplace', 'derive']: {brm!r}"
                 )
 
-    # add-draft-promotion-gate：gates.auto_promote_draft 前置校验（非 bool 拒绝）
+    # add-draft-promotion-gate：gates.promote_mode 前置校验（枚举拒绝，对齐 approve_mode）
     if isinstance(config_patch.get("gates"), dict):
         g_patch = config_patch["gates"]
-        if "auto_promote_draft" in g_patch and g_patch["auto_promote_draft"] is not None \
-                and not isinstance(g_patch["auto_promote_draft"], bool):
+        if "promote_mode" in g_patch and g_patch["promote_mode"] is not None \
+                and g_patch["promote_mode"] not in ("auto", "manual"):
             return fail(
-                f"gates.auto_promote_draft must be a boolean: {g_patch['auto_promote_draft']!r}"
+                f"gates.promote_mode must be one of ['auto', 'manual']: {g_patch['promote_mode']!r}"
             )
 
     # add-spec-hooks D7：hooks 段前置校验（非法值直接拒绝 400 且不写入——规则：
