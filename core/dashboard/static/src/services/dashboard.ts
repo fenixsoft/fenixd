@@ -690,6 +690,8 @@ export interface AgentsConfig {
 
 export interface GatesConfig {
   approve_mode?: 'manual' | 'auto';
+  /** 草稿自动晋升（add-draft-promotion-gate）：false 时 drafted SPEC 停留草稿态等待人工放行 */
+  auto_promote_draft?: boolean;
 }
 
 export interface VerifyConfig {
