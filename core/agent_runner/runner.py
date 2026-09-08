@@ -17,7 +17,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from core.agent_runner.prompt_builder import PromptBuilder
+from core.agent_runner.prompt_builder import (
+    PromptBuilder,
+    planner_result_path,
+)
 from core.agent_runner.liveness import (
     AGENT_TERMINATE_GRACE_SECONDS,
     LIVE_ATTEMPT_STREAM_WINDOW_SECONDS,
@@ -220,6 +223,19 @@ class RunCancelledError(Exception):
         if reason:
             msg += f": {reason}"
         super().__init__(msg)
+
+
+class AgentArtifactGateError(Exception):
+    """planner 产物硬门失败（add-judge-artifact-gate D1）。
+
+    进程 exit 0 但结果文件（judge: .fenix-run-result.json / plan:
+    test_scenarios.json）缺失、为空或非法 JSON 时抛出——run 按瞬态失败走
+    既有原地退避重试通道，不进入 validate_report 的「裁决重试一次」预算。
+    """
+
+    def __init__(self, message: str = ""):
+        self.artifact_error = message
+        super().__init__(message)
 
 
 class AgentRunResult:
@@ -1862,6 +1878,14 @@ class AgentRunner:
                     if run_session_id:
                         session_id = run_session_id
                         session_provider = provider_name
+                    # add-judge-artifact-gate D1：planner 产物存在性硬门——成功判定
+                    # 从「进程 exit 0」升级为「exit 0 且结果文件落盘且可解析」；
+                    # 不满足抛 AgentArtifactGateError，落入下方瞬态退避重试通道
+                    # （复用 fix-provider-transient-backoff，不消耗 validate_report
+                    # 的「裁决重试一次」预算）。
+                    gate_err = self._check_agent_result_artifact(spec_name, agent_type)
+                    if gate_err:
+                        raise AgentArtifactGateError(gate_err)
                     success = True
                     error = None
                     break  # 原地重试子循环：成功退出 while
@@ -1883,6 +1907,55 @@ class AgentRunner:
                     )
                     usage_info = self._extract_usage_info(None)
                     break  # 原地重试子循环：取消退出 while
+                except AgentArtifactGateError as e:
+                    # add-judge-artifact-gate D1：exit 0 但产物缺失/为空/非法 JSON
+                    # → 按瞬态失败走既有原地退避重试（fix-provider-transient-backoff
+                    # 通道原样复用，不新增重试机制；不消耗 validate_report 的「裁决
+                    # 重试一次」预算）。run 已完整执行（exit 0），不计数秒挂；usage
+                    # 保留 _run_claude 实测值（区别于早期抛错按 0 计）。
+                    output = ""
+                    turns = 0
+                    success = False
+                    error = str(e)
+                    self.logger.warning(
+                        "agent_runner",
+                        f"Artifact gate failed for '{spec_name}' ({agent_type}): {error}",
+                    )
+                    if "[provider-transient]" not in error:
+                        error = f"[provider-transient] {error}"
+                    # 全局瞬断指纹计数（transient-dispatch-gating D4 同语义）：
+                    # 产物硬门失败同样记账，保留 dispatch 闸门对瞬断风暴的可见性。
+                    try:
+                        self.record_transient_break(str(e))
+                    except Exception as _break_err:
+                        self.logger.debug(
+                            "agent_runner",
+                            f"global transient break 记账失败（不阻断）: {_break_err}",
+                        )
+                    if transient_retries < len(transient_budget):
+                        backoff = transient_budget[transient_retries]
+                        transient_retries += 1
+                        append_run_line(
+                            self.project_root / ".fenix" / "runs"
+                            / f"{sub_run_id}.jsonl", {
+                                "type": "transient_retry",
+                                "spec": spec_name,
+                                "provider": provider_name,
+                                "backoff_seconds": backoff,
+                                "retry_number": transient_retries,
+                                "reason": "artifact_gate",
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            })
+                        self.logger.warning(
+                            "agent_runner",
+                            f"Artifact gate for '{spec_name}' (attempt {attempt}, "
+                            f"{agent_type}) — in-place retry "
+                            f"{transient_retries}/{len(transient_budget)} "
+                            f"after {backoff}s backoff (add-judge-artifact-gate)",
+                        )
+                        time.sleep(backoff)
+                        continue
+                    break  # 原地预算耗尽 → 退出 while，attempt 层继续重试
                 except Exception as e:
                     output = ""
                     turns = 0
@@ -2944,6 +3017,43 @@ class AgentRunner:
                       wt_path: Path | None = None) -> str:
         return self._prompt_builder._build_prompt(
             spec_name, agent_type, detail, wt_path=wt_path)
+
+    # ── planner 产物硬门（add-judge-artifact-gate D1）────────────────────
+
+    def _check_agent_result_artifact(self, spec_name: str,
+                                     agent_type: str) -> str | None:
+        """planner 产物存在性硬门校验（fail-closed）。
+
+        成功判定从「进程 exit 0」升级为「exit 0 **且**结果文件落盘且可解析」：
+        - planner-judge 结果文件 = planner_result_path(..., "planner-judge")
+          （.fenix-run-result.json）
+        - planner-plan  结果文件 = planner_result_path(..., "planner-plan")
+          （test_scenarios.json）
+        路径与 prompt_builder 注入的 {result_path}/{scenarios_path} 同源计算，
+        防双实现漂移。文件缺失 / 为空 / 非法 JSON 一律视为缺失（fail-closed）。
+
+        Args:
+            spec_name: spec 名（决定 verify-progress 子目录）。
+            agent_type: 仅 planner-judge / planner-plan 有产物契约；其余返回 None。
+
+        Returns:
+            None = 通过；否则返回失败归因文案（含「结果文件缺失」语义，
+            供 error 直用）。
+        """
+        if agent_type not in ("planner-judge", "planner-plan"):
+            return None
+        path = planner_result_path(self.project_root, spec_name, agent_type)
+        try:
+            if not path.is_file():
+                return (f"exit 0 但结果文件缺失（{agent_type} 产物硬门）: {path}")
+            if path.stat().st_size == 0:
+                return (f"exit 0 但结果文件为空（{agent_type} 产物硬门）: {path}")
+            json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as e:
+            return (f"exit 0 但结果文件不可读（{agent_type} 产物硬门）: {path} ({e})")
+        except json.JSONDecodeError as e:
+            return (f"exit 0 但结果文件非法 JSON（{agent_type} 产物硬门）: {path} ({e})")
+        return None
 
     def _build_legacy_section(self, spec_name: str) -> str:
         return self._prompt_builder._build_legacy_section(spec_name)

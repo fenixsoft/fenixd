@@ -33,6 +33,26 @@ AGENT_PROMPT_FILES = {
 }
 
 
+def planner_result_path(project_root, spec_name: str, agent_type: str) -> Path:
+    """planner 阶段产物结果文件路径（add-judge-artifact-gate D1，注入/校验同源）。
+
+    - planner-judge 结果文件 = ``<vp_dir>/.fenix-run-result.json``
+    - planner-plan  场景集   = ``<vp_dir>/test_scenarios.json``
+
+    prompt_builder 注入侧（{result_path}/{scenarios_path} 占位符）与 runner 产物
+    硬门校验侧共用同一计算，避免双实现漂移；其余 agent 类型无 planner 产物契约，
+    调用即 ValueError（fail-fast，防误用）。
+    """
+    vp_dir = Path(project_root) / ".fenix" / "verify-progress" / spec_name
+    if agent_type == "planner-judge":
+        return vp_dir / ".fenix-run-result.json"
+    if agent_type == "planner-plan":
+        return vp_dir / "test_scenarios.json"
+    raise ValueError(
+        f"planner_result_path 仅支持 planner-judge/planner-plan，收到 '{agent_type}'"
+    )
+
+
 def project_agents_dir(proot) -> Path | None:
     """项目级 agents 目录 <项目根>/.fenix/agents；解析为通用层时返回 None。
 
@@ -90,11 +110,15 @@ class PromptBuilder:
         root = self._pm.project_root
         vp_dir = root / ".fenix" / "verify-progress" / spec_name
         sig = detail or {}
+        # add-judge-artifact-gate D1：planner 产物路径经 planner_result_path 统一
+        # 计算（注入侧与 runner 硬门校验侧同源，防双实现漂移）。{result_path}/
+        # {scenarios_path} 值按两类型产物文件名恒定——fast-track/judge/plan 共用
+        # 的 .fenix-run-result.json 与 test_scenarios.json 同此路径。
         values = {
             "{spec_name}": spec_name,
             "{spec_dir}": f"spec/changes/{spec_name}",
-            "{scenarios_path}": str(vp_dir / "test_scenarios.json"),
-            "{result_path}": str(vp_dir / ".fenix-run-result.json"),
+            "{scenarios_path}": str(planner_result_path(root, spec_name, "planner-plan")),
+            "{result_path}": str(planner_result_path(root, spec_name, "planner-judge")),
             "{report_path}": str(vp_dir / "report.json"),
         }
         if agent_type == "verifier":
@@ -172,6 +196,8 @@ class PromptBuilder:
             prompt += self._scenario_freeze_section(spec_name)
             prompt += self._interaction_contract_section(spec_name)
             prompt += self._triage_recheck_section(spec_name)
+            # add-judge-artifact-gate D2：产物硬门契约注入（结果文件缺失=run失败）
+            prompt += self._result_gate_section(spec_name)
         elif agent_type == "planner-judge":
             prompt += self._scenario_freeze_section(spec_name)
             prompt += self._triage_recheck_section(spec_name)
@@ -179,6 +205,11 @@ class PromptBuilder:
             # 清单在前，强制修复清单殿后保持紧迫性
             prompt += self._verdict_cache_section(spec_name)
             prompt += self._verdict_rejection_section(spec_name)
+            # add-judge-artifact-gate D3：截断恢复注入（上一轮 checkpoint 残留
+            # 已归因场景直接沿用、只补缺失）——先于硬门契约段注入
+            prompt += self._checkpoint_recovery_section(spec_name)
+            # add-judge-artifact-gate D2：产物硬门契约注入（结果文件缺失=run失败）
+            prompt += self._result_gate_section(spec_name)
         elif agent_type == "fast-track":
             # 任务进度契约段（fix-implementer-task-progress D1，与 full 分支共用
             # 同一文本；fast-track 的 PHASE 1 主体已迁移 agents/fast-track.md）。
@@ -912,6 +943,95 @@ class PromptBuilder:
             "（整轮重跑式重试是 15-25 分钟×N 的确定性浪费）。\n"
         )
         return "".join(lines)
+
+    def _result_gate_section(self, spec_name: str) -> str:
+        """planner 产物硬门契约注入段（add-judge-artifact-gate D2）。
+
+        告知 planner-judge/planner-plan：run 成功判定 = 进程正常退出 **且** 结果
+        文件落盘且为可解析非空 JSON；收工不写/写空/非法 JSON → 判失败并自动原地
+        退避重试（不进裁决重试预算）。路径经 planner_result_path 与 runner 硬门
+        同源计算。纯静态文本，零 IO、零状态条件。
+        """
+        result_path = planner_result_path(
+            self._pm.project_root, spec_name, "planner-judge")
+        scenarios_path = planner_result_path(
+            self._pm.project_root, spec_name, "planner-plan")
+        return (
+            "\n\n## 结果文件硬门（add-judge-artifact-gate，强制）\n"
+            "- 框架对本次 run 的成功判定 = 进程正常退出 **且** 结果文件已落盘"
+            "且为可解析的非空 JSON。\n"
+            f"  - planner-judge 结果文件：{result_path}\n"
+            f"  - planner-plan 结果文件：{scenarios_path}\n"
+            "- 收工前未写 / 文件为空 / 非法 JSON → 本次 run 判**失败**并自动原地"
+            "退避重试（不消耗裁决重试预算）；产物缺失的运行结果不会被当作成功采纳"
+            "（fail-closed）。\n"
+            "- **先落盘再深入**：先完成最小必要产物落盘，再做深入调查/复现——"
+            "深入调查不会为产物缺失兜底。\n"
+        )
+
+    # ── 截断恢复（add-judge-artifact-gate D3：逐场景 checkpoint 的恢复语义）────
+    # 判据与跨轮裁决缓存（指纹匹配）不同：checkpoint 恢复只看**字段在位性**——
+    # classification/evidence 已合法落盘的非 PASS 场景视为已归档，重试 judge
+    # 直接沿用、只补缺失/非法场景；不要求断言指纹跨轮一致（其实是同一轮失败后的
+    # 原地重试，复现结果天然一致）。
+
+    _CLASSIFICATION_VALUES = ("product-bug", "test-defect", "flaky", "env")
+
+    @staticmethod
+    def _scenario_classified(scenario: dict) -> bool:
+        """非 PASS 场景是否已归因存档：classification 合法且 evidence 非空。"""
+        if not isinstance(scenario, dict):
+            return False
+        cls = scenario.get("classification")
+        if not isinstance(cls, str) or cls not in PromptBuilder._CLASSIFICATION_VALUES:
+            return False
+        ev = scenario.get("evidence")
+        return isinstance(ev, dict) and bool(ev)
+
+    def _checkpoint_recovery_section(self, spec_name: str) -> str:
+        """截断恢复注入段（add-judge-artifact-gate D3，checkpoint 恢复语义）。
+
+        上一轮 run 可能已把对 report.json 的增强以逐场景 checkpoint 形式落盘
+        （流截断后产物硬门判失败 → 原地重试）。读取现 report.json，把已带合法
+        classification/evidence 的非 PASS 场景注入「直接沿用、只补缺失」清单——
+        与跨轮已裁决场景注入段（judge 效率治理 E，断言指纹判据）正交：本段判据为
+        **字段在位性**，是同一轮失败后原地重试的恢复语义。
+
+        报告文件缺失/损坏/无遗留 → 返回空串（零注入，首轮 judge 不注入）。
+        """
+        report_path = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / "report.json"
+        )
+        try:
+            data = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        kept = []
+        for sc in data.get("scenarios") or []:
+            if not isinstance(sc, dict):
+                continue
+            if sc.get("status") in ("pass", "passed"):
+                continue
+            if self._scenario_classified(sc):
+                kept.append(sc)
+        if not kept:
+            return ""
+        ids = "、".join(str(sc.get("scenario_id")) for sc in kept)
+        return (
+            "\n\n## ♻️ 截断恢复：已归因场景直接沿用（add-judge-artifact-gate）\n"
+            "- 上一次以失败收场的 run（网关流截断等瞬态）已对下列场景完成逐场景"
+            "checkpoint 写盘，其 classification/evidence 已合法落盘——"
+            "**直接沿用，MUST NOT 二次裁决/复现/改写**，覆盖写回时对仍在位的字段"
+            "原样保留：\n"
+            f"  - {ids}\n"
+            "- 已归档场景仍需逐场景核对 `assertion_triage` 是否齐全：缺则只补断言"
+            "归因后覆盖写回，不重新取证。\n"
+            "- 仅对**缺失或非法**（无 classification / 非法 classification / "
+            "空 evidence）的场景做完整裁决，并逐一写回 checkpoint。\n"
+        )
 
     def _verdict_cache_section(self, spec_name: str) -> str:
         """跨轮已裁决场景注入段（judge 效率治理 E，2026-09-06）。

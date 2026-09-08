@@ -7,18 +7,22 @@
 - **简洁工作风格**：工具调用前一句话说明意图即可，不写分析长文；分析结论写入 report.json 的结构化字段，不散落在对话文本里。
 - **最终回复 ≤10 行**：结论 + 分类计数 + 缺口清单，不写长篇 markdown（人类可读报告由框架从结构化数据合成）。
 - **不写 verification-report.md**——框架在裁决放行时从结构化数据确定性合成，judge 重复写入属纯浪费。
+- **先落盘再深入（add-judge-artifact-gate，强制）**：先对全部非 PASS 场景完成最小增强并**逐场景立即写回** report.json（每归类完一个就原子覆盖写盘一次，temp+rename），再做深入调查/复现——流截断时已归因场景不丢失，深入调查不会为产物缺失兜底（run 成功判定 = exit 0 且结果文件落盘）。
 
 ## 步骤
 1. 读取 {report_path}
 2. 按照判定规则分析每个断言结果
 3. 聚合同类型失败，避免重复报告
-4. **裁决证据分类（强制，add-verdict-evidence-taxonomy）**：对 {report_path} 中每一个 `status` 为 `fail`/`failed`/`error`/`warning` 的场景条目，在原位补充 `classification` 字段（四选一，见下方定义）与 `evidence` 字段（结构化证据，见下方格式），并把增强后的完整 report.json **覆盖写回** {report_path}（保持其它字段不变，仅对 FIT 场景增量写入 `classification/evidence`）。
-   - 同时对每个非 PASS 场景补充 `assertion_triage` 数组——逐断言归因（强制，add-interaction-contract-and-per-assert-triage，格式见下方）。
+4. **逐场景 checkpoint 最小增强（强制，add-judge-artifact-gate 重写）**：对 {report_path} 中每一个 `status` 为 `fail`/`failed`/`error`/`warning` 的场景条目，在原位补充 `classification` 字段（四选一，见下方定义）、`evidence` 字段（结构化证据，见下方格式）与 `assertion_triage` 数组（逐断言归因，强制，格式见下方）。
+   - **每归类完一个非 PASS 场景，立即把增强后的完整 report.json 原子覆盖写回 {report_path} 一次**（temp + rename 语义，与 verdict_check.save_report 同款；保持其它字段不变，仅对该场景增量写入 `classification/evidence/assertion_triage`）——逐场景 checkpoint，已完成场景的分类成果即时落盘，流截断不丢失。
+   - 本步先**只做最小增强**（分类 + 证据 + 断言归因，引用 report 既有数据即可），对全部非 PASS 场景按顺序逐个 checkpoint 落盘完毕；**深入调查/复现是下一步**（「先落盘再深入」纪律）。
    - 本步 MUST 对全部非 PASS 场景补齐，缺一不可——缺分类、证据或逐断言归因会导致框架校验失败并重试裁决。
    - 若 `report.json` 中已存在 `classification/evidence`（上一轮裁决残留），仍 MUST 逐场景核对 `assertion_triage` 是否齐全，缺则补齐后覆盖写回，不得因部分字段已存在而判定「无需改写」。
    - **重试定向纪律**：若注入了「上一轮裁决已被校验驳回」段——只对清单内场景重新裁决/取证，其余场景已受理字段**原样保留、禁止重新复现或改写**。
    - **跨轮复用**：若注入了「跨轮已裁决场景」段——命中场景（断言指纹一致）按下述既有结论**原样写回**，MUST NOT 重新复现/重取证；只对清单外场景做完整裁决。
-5. 将运行结果写入 {result_path}（绝对路径，与场景/报告文件同目录，
+   - **截断恢复**：若注入了「截断恢复：已归因场景直接沿用」段——清单内场景已带合法 classification/evidence（上一轮被截断 run 的 checkpoint 残留），**直接沿用、禁止二次裁决/复现/改写**，仅核对 assertion_triage 是否齐全、缺则补齐；只对**缺失或非法**场景做完整裁决。
+5. **深入调查/复现（最小增强全部落盘后才开始，add-judge-artifact-gate）**：按下方「复现预算分级」只对存疑场景（分类在 product-bug/test-defect/flaky/env 间摇摆的）做深入调查/复现；确需修订分类/证据的场景，修订后同样**逐场景立即写回**（checkpoint 不中断）。
+6. 将运行结果写入 {result_path}（绝对路径，与场景/报告文件同目录，
 不要写别处）
 
 ## 复现预算分级（judge 效率治理 2026-09-06，强制）
