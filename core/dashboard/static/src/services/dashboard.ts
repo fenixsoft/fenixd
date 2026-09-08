@@ -243,6 +243,24 @@ export function unfreezeSpec(project: string, spec: string) {
   );
 }
 
+// ── SPEC 人工晋升 drafted → ready（add-draft-promotion-gate D4） ──
+
+export interface PromoteResult {
+  ok: boolean;
+  found: boolean;
+  violations?: string[];
+  reason?: string;
+  error?: string;
+}
+
+/** 人工晋升 drafted SPEC（软化+lint+transition ready） */
+export function promoteSpec(project: string, spec: string) {
+  return request<PromoteResult>(
+    `/api/spec-promote?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    { method: 'POST' },
+  );
+}
+
 // ── SPEC 定时拾取 / 冻结管理（add-spec-scheduling-controls D5/D6） ──
 
 export interface StartAfterResult {
