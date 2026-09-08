@@ -304,6 +304,18 @@ class EventBus:
             time.sleep(max(interval, 0.5) * 60)
             if self._running:
                 self.logger.debug("event_bus", "Periodic scan triggered")
+                # ── 运行期悬空 run 清扫（add-runtime-run-sweeper 3.1/3.2）──
+                # 每轮 full_scan() **前**调用：先扫后 scan，让当轮 full_scan
+                # 消费最新终态事实。经既有 pm_engine → agent_runner 引用，
+                # 无新增构造参数。异常降级 WARNING 不阻断当轮扫描。
+                try:
+                    self.pm_engine.agent_runner.sweep_dangling_runs()
+                except Exception as e:
+                    self.logger.warning(
+                        "event_bus",
+                        f"Runtime dangling-run sweep failed (scan continues): "
+                        f"{type(e).__name__}: {e}",
+                    )
                 self.full_scan()
 
     def _file_checksum(self) -> str:

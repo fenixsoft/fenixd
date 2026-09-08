@@ -71,9 +71,11 @@
 
 - [x] 先复核失败有效性：逐条核对 `spec/changes/add-draft-promotion-gate/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
 - [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [x] 修复后重跑验证确认通过
+- [x] 修复后重跑验证确认通过## 验证修复（第 2 轮失败）
 
-## 验证修复（第 1 轮失败）
+### 上轮实现结论（自动携带，来自上一轮 implementer 收工结论）
+
+解决 2 文件 5 处冲突：data.py 两处同构冲突（保留 main 的 run_timeout_seconds=9000/max_turns=400 默认值更新 + 分支的 gates.promote_mode 受管键）；test_dashboard_data.py 三处为两侧同类位置各自新增测试类（TestGatesPromoteModeConfigIO vs TestRunTailInsights*/TestTimelineRunNode*），按索引版本重建为双方类集合精确并集。dashboard data 测试 99 条全绿；全量套件失败 26 条经主树基线对照确认为 test_verify_* 域存量串行隔离性 flake，与本次改动无关。
 
 - [x] 先复核失败有效性：逐条核对 `spec/changes/add-draft-promotion-gate/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
 - [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
