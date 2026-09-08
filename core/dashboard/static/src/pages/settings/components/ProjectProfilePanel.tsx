@@ -2,6 +2,7 @@ import { Alert, Button, Card, Input, Popconfirm, Typography, message } from 'ant
 import { useState, useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import {
+  autodraftVerifyYaml,
   getVerifyYaml,
   getVerifyYamlTemplate,
   regenerateProjectDescription,
@@ -67,6 +68,7 @@ export default function ProjectProfilePanel({ config, onSave, project }: Project
   const [yamlExists, setYamlExists] = useState<boolean>(false);
   const [yamlLoading, setYamlLoading] = useState(false);
   const [yamlSaving, setYamlSaving] = useState(false);
+  const [autodraftLoading, setAutodraftLoading] = useState(false);
 
   const loadVerifyYaml = async (silent = false) => {
     if (!project) return;
@@ -114,6 +116,29 @@ export default function ProjectProfilePanel({ config, onSave, project }: Project
       const errorMessage = e instanceof Error ? e.message : String(e);
       message.error(`模板加载失败：${errorMessage}`);
       console.error('Failed to load verify.yaml template:', e);
+    }
+  };
+
+  const handleAutodraft = async (overwrite: boolean) => {
+    if (!project) return;
+    setAutodraftLoading(true);
+    try {
+      const result = await autodraftVerifyYaml(project, overwrite);
+      if (result.ok) {
+        if (result.status === 'dispatched') {
+          message.success(result.message);
+        } else {
+          message.info(result.message);
+        }
+      } else {
+        message.error(result.message || '自动起草失败');
+      }
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      message.error(`自动起草失败：${errorMessage}`);
+      console.error('Failed to autodraft verify.yaml:', e);
+    } finally {
+      setAutodraftLoading(false);
     }
   };
 
@@ -188,6 +213,40 @@ export default function ProjectProfilePanel({ config, onSave, project }: Project
                   插入模板
                 </Button>
               )}
+              {/* AI 自动生成按钮 */}
+              {!yamlExists && !yamlLoading ? (
+                <Popconfirm
+                  title="AI 起草验证契约"
+                  description="将探索项目 → 生成契约 → 三段自证 → 提交仓库，约数分钟"
+                  okText="确认起草"
+                  cancelText="取消"
+                  onConfirm={() => handleAutodraft(false)}
+                >
+                  <Button
+                    style={{ marginLeft: 8 }}
+                    loading={autodraftLoading}
+                    data-testid="verify-yaml-autodraft"
+                  >
+                    AI 自动生成
+                  </Button>
+                </Popconfirm>
+              ) : yamlExists ? (
+                <Popconfirm
+                  title="⚠️ 覆盖现有契约"
+                  description="现有验证契约将被覆盖，未保存的编辑也会丢失。确定继续？"
+                  okText="确认覆盖"
+                  cancelText="取消"
+                  onConfirm={() => handleAutodraft(true)}
+                >
+                  <Button
+                    style={{ marginLeft: 8 }}
+                    loading={autodraftLoading}
+                    data-testid="verify-yaml-autodraft"
+                  >
+                    AI 自动生成
+                  </Button>
+                </Popconfirm>
+              ) : null}
               <Button
                 style={{ marginLeft: 8 }}
                 onClick={() => loadVerifyYaml()}
