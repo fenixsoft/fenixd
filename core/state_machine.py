@@ -226,10 +226,12 @@ class StateParser:
                         value = int(value)
                     except ValueError:
                         value = 999
-                elif key in (FROZEN_FIELD, "_recovery_resume"):
+                elif key in (FROZEN_FIELD, "_recovery_resume", "_cancelled_hold"):
                     # 布尔字段显式转换：字符串 "False" 也是 truthy，不转会把
                     # 解冻后的 spec 永久误判为冻结（fix-restart-dual-dispatch S4）；
                     # _recovery_resume（interrupt-recovery-preserve）同型处理。
+                    # _cancelled_hold（fix-cancel-holdstate-recovery D1）：取消保持
+                    # 标记随 STATE.md 往返，False 不转会被误判为保持态。
                     value = value.lower() in ("true", "1", "yes")
                 elif key in ("implementer_run", "tester_run", "branch", "error",
                              "total_duration", START_AFTER_FIELD, FROZEN_UNTIL_FIELD):
