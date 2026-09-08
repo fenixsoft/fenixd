@@ -40,6 +40,7 @@ import {
   clearSpecError,
   deleteSpec,
   freezeSpec,
+  promoteSpec,
   setSpecFreezeConfig,
   setSpecPriority,
   setSpecStartAfter,
@@ -687,6 +688,37 @@ export default function SpecListPage() {
     }
   };
 
+  // ── 手动晋升 drafted → ready（add-draft-promotion-gate D5）──────────
+  const handlePromoteSpec = (record: SpecSummary) => {
+    Modal.confirm({
+      title: '晋升 ready',
+      content: (
+        <div style={{ whiteSpace: 'pre-wrap' }}>
+          {`确认将 SPEC「${record.name}」从 drafted 晋升为 ready？\n\n`}
+          晋升将执行声明软化与 lint 检查；lint 违规时 SPEC 停留 drafted
+          并在 STATE 写入错误明细。
+        </div>
+      ),
+      okText: '晋升',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const result = await promoteSpec(name, record.name);
+          if (result.ok) {
+            message.success(`SPEC「${record.name}」已晋升 ready，等待调度`);
+            void load();
+          } else {
+            // lint 违规或非 drafted 拒绝
+            const detail = result.violations?.join('；') || result.reason || result.error || '晋升失败';
+            message.error(`晋升失败：${detail}`);
+          }
+        } catch (err) {
+          message.error(`晋升失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+    });
+  };
+
   // ── 设置拾取时间（add-spec-scheduling-controls D6）──────────────────
   const openStartAfterModal = (record: SpecSummary) => {
     // 预填既有定时（ISO → 本地时区展示）；无定时则为 null（清除路径）
@@ -760,6 +792,10 @@ export default function SpecListPage() {
       ];
     }
     return [
+      // add-draft-promotion-gate：drafted 状态可手动晋升
+      ...(record.status === 'drafted'
+        ? [{ key: 'promote' as const, label: '晋升 ready' }]
+        : []),
       { key: 'admin', label: '呼叫 Admin 介入' },
       { key: 'priority', label: '调整优先级', disabled: terminal },
       // add-spec-scheduling-controls：非终态 spec 可设置定时拾取（start_after）
@@ -782,7 +818,9 @@ export default function SpecListPage() {
   };
 
   const onSpecMenu = (record: SpecSummary, key: string) => {
-    if (key === 'admin') {
+    if (key === 'promote') {
+      void handlePromoteSpec(record);
+    } else if (key === 'admin') {
       void handleAdminInvoke(record);
     } else if (key === 'priority') {
       setPriorityEdit({ spec: record.name, value: record.priority ?? 5 });

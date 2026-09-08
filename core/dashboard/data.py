@@ -337,6 +337,41 @@ def unfreeze_spec(project_root, spec_name: str) -> dict:
     return {"ok": True, "found": True, "frozen": False, "error": None}
 
 
+# ── SPEC 人工晋升 drafted → ready（add-draft-promotion-gate D4） ──────
+
+def promote_spec(project_root, spec_name: str) -> dict:
+    """人工晋升 drafted SPEC：调用共享晋升函数（软化+lint+判定）。
+
+    - spec 不存在 → {ok: False, found: False, error: ...}
+    - spec 非 drafted → {ok: False, found: True, ok: False, reason: ...}
+    - lint 违规 → {ok: False, found: True, violations: [...], error: ...}
+    - 成功 → {ok: True, found: True, violations: []}
+    """
+    specs = parse_state(project_root)
+    if spec_name not in specs:
+        return {"ok": False, "found": False,
+                "error": f"spec not found: {spec_name}"}
+    from core.pm_engine.promotion import promote_drafted
+    from core.state_machine import StateMachine
+    from core.logger import Logger
+    proot = Path(project_root)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    logger = Logger(proot)
+    result = promote_drafted(proot, spec_name, state_machine=sm, logger=logger)
+    if result["ok"]:
+        # 成功：transition drafted → ready（由 watcher/full_scan 感知派发）
+        sm.transition(spec_name, "ready")
+        return {"ok": True, "found": True, "violations": []}
+    # 失败
+    if "reason" in result:
+        # 非 drafted 或不存在
+        return {"ok": False, "found": True, "reason": result["reason"],
+                "error": result["reason"]}
+    # lint 违规（STATE error 已由 promote_drafted 写入）
+    return {"ok": False, "found": True, "violations": result["violations"],
+            "error": f"晋升 lint 未通过：{'; '.join(result['violations'])}"}
+
+
 # ── SPEC 定时拾取 start_after（add-spec-scheduling-controls D5） ───────
 
 def get_spec_start_after(entry: dict) -> str | None:
@@ -3272,6 +3307,8 @@ _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "agents.run_timeout_seconds", "agents.max_turns", "agents.daily_run_limit",
                 "agents.token_budget_millions", "agents.impl_run_budget", "agents.verify_redo_budget",
                 "gates.approve_mode",
+                # add-draft-promotion-gate：草稿自动晋升开关
+                "gates.auto_promote_draft",
                 # add-daily-self-review：admin.self_review 三键
                 "admin.self_review",
                 # add-settings-system-tab：admin.* 受管键（5 键）
@@ -3656,6 +3693,18 @@ def read_effective_config(project_root) -> dict:
     gates_eff = effective.get("gates")
     if isinstance(gates_eff, dict) and "approve_mode" in gates_eff:
         result["gates"] = {"approve_mode": gates_eff["approve_mode"]}
+    # add-draft-promotion-gate：草稿自动晋升开关回显（缺省 True）
+    if isinstance(gates_eff, dict) and "auto_promote_draft" in gates_eff:
+        val = gates_eff["auto_promote_draft"]
+        if isinstance(val, bool):
+            if "gates" not in result:
+                result["gates"] = {}
+            result["gates"]["auto_promote_draft"] = val
+    elif "gates" not in result:
+        # 缺失时填默认值 True（对齐 ConfigLoader.get_auto_promote_draft）
+        result["gates"] = {"auto_promote_draft": True}
+    elif "auto_promote_draft" not in result.get("gates", {}):
+        result["gates"]["auto_promote_draft"] = True
     verify_eff = effective.get("verify")
     if isinstance(verify_eff, dict):
         if verify_eff.get("static_scope") in ("main", "worktree"):
@@ -3936,6 +3985,15 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 return fail(
                     f"admin.bug_repair_mode must be one of ['inplace', 'derive']: {brm!r}"
                 )
+
+    # add-draft-promotion-gate：gates.auto_promote_draft 前置校验（非 bool 拒绝）
+    if isinstance(config_patch.get("gates"), dict):
+        g_patch = config_patch["gates"]
+        if "auto_promote_draft" in g_patch and g_patch["auto_promote_draft"] is not None \
+                and not isinstance(g_patch["auto_promote_draft"], bool):
+            return fail(
+                f"gates.auto_promote_draft must be a boolean: {g_patch['auto_promote_draft']!r}"
+            )
 
     # add-spec-hooks D7：hooks 段前置校验（非法值直接拒绝 400 且不写入——规则：
     # events 非空且合法、action 合法、webhook 必填 url、shell 必填 command）。

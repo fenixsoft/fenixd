@@ -762,3 +762,72 @@ class TestAgentModelsUnknownKeyTolerance(unittest.TestCase):
         # 链缺失/未配置角色 → None 走默认网关（现行为不变）
         self.assertIsNone(ConfigLoader.get_agent_model_assignment(config, "verifier"))
 
+
+class TestAutoPromoteDraft(unittest.TestCase):
+    """gates.auto_promote_draft 校验与 getter（add-draft-promotion-gate D3）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.config_path = Path(self.tmpdir) / "config.yaml"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_valid(self, **gates_overrides):
+        cfg = _valid_cfg()
+        cfg["gates"] = {**cfg.get("gates", {}), **gates_overrides}
+        import yaml
+        with open(self.config_path, "w") as f:
+            yaml.dump(cfg, f)
+
+    def test_validation_rejects_non_bool(self):
+        """非 bool 值被校验拒绝。"""
+        self._write_valid(auto_promote_draft="yes")
+        with self.assertRaises(ValueError) as ctx:
+            ConfigLoader.load(self.config_path)
+        self.assertIn("auto_promote_draft", str(ctx.exception))
+        self.assertIn("boolean", str(ctx.exception))
+
+    def test_validation_rejects_int(self):
+        """整数值被校验拒绝。"""
+        self._write_valid(auto_promote_draft=1)
+        with self.assertRaises(ValueError):
+            ConfigLoader.load(self.config_path)
+
+    def test_validation_accepts_bool_true(self):
+        """显式 True 通过校验。"""
+        self._write_valid(auto_promote_draft=True)
+        config = ConfigLoader.load(self.config_path)
+        self.assertTrue(ConfigLoader.get_auto_promote_draft(config))
+
+    def test_validation_accepts_bool_false(self):
+        """显式 False 通过校验。"""
+        self._write_valid(auto_promote_draft=False)
+        config = ConfigLoader.load(self.config_path)
+        self.assertFalse(ConfigLoader.get_auto_promote_draft(config))
+
+    def test_getter_defaults_to_true(self):
+        """缺失键时 getter 返回 True（保持现行为）。"""
+        cfg = _valid_cfg()
+        import yaml
+        with open(self.config_path, "w") as f:
+            yaml.dump(cfg, f)
+        config = ConfigLoader.load(self.config_path)
+        self.assertTrue(ConfigLoader.get_auto_promote_draft(config))
+
+    def test_getter_empty_gates_returns_true(self):
+        """空 gates 段返回 True。"""
+        cfg = _valid_cfg()
+        cfg["gates"] = {}
+        import yaml
+        with open(self.config_path, "w") as f:
+            yaml.dump(cfg, f)
+        config = ConfigLoader.load(self.config_path)
+        self.assertTrue(ConfigLoader.get_auto_promote_draft(config))
+
+    def test_getter_non_bool_falls_back_to_true(self):
+        """非 bool 值（如遗留配置）回退 True。"""
+        result = ConfigLoader.get_auto_promote_draft({"gates": {"auto_promote_draft": "yes"}})
+        self.assertTrue(result)
+
