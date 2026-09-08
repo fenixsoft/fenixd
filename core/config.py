@@ -342,6 +342,14 @@ class ConfigLoader:
                     f"gates.approve_mode must be one of {cls.VALID_APPROVE_MODES}: {mode}"
                 )
 
+        # Validate gates.auto_promote_draft (optional — defaults to True)
+        if "auto_promote_draft" in gates and gates["auto_promote_draft"] is not None:
+            val = gates["auto_promote_draft"]
+            if not isinstance(val, bool):
+                raise ValueError(
+                    f"gates.auto_promote_draft must be a boolean: {val!r}"
+                )
+
         # D5：timeout_supervision.absolute_max_seconds 联动护栏，启动/热更新时校验；
         # enabled=true 且配置值低于 run_timeout + 续期上限时打 ERROR 并按兜底值生效。
         cls.effective_supervision_absolute_max_seconds(config)
@@ -838,6 +846,20 @@ class ConfigLoader:
         if mode not in cls.VALID_APPROVE_MODES:
             return "manual"
         return mode
+
+    @classmethod
+    def get_auto_promote_draft(cls, config: Dict[str, Any]) -> bool:
+        """Return auto_promote_draft flag, defaulting to True.
+
+        When True (default), drafted SPECs are automatically promoted to ready
+        by PM Engine. When False, drafted SPECs stay in draft state awaiting
+        manual promotion via Dashboard or CLI.
+        """
+        gates = config.get("gates") or {}
+        val = gates.get("auto_promote_draft")
+        if not isinstance(val, bool):
+            return True
+        return val
 
     @classmethod
     def get_admin_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:

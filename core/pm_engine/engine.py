@@ -168,94 +168,36 @@ class PMEngine:
             self._handling_events.discard(event_key)
 
     def _on_spec_drafted(self, spec_name: str):
-        """Auto-promote drafted → ready, then immediately schedule implementer."""
-        # 晋升期机械软化（add-declaration-premechanize D2）：lint 之前对声明段
-        # 命中确定性不可交付模式（gitignored / 仓库外）的 new/modify 条目
-        # 机械改写 kind → reference（复用 soften_declared_kind），软化记录落
-        # dispute 审计流（trigger 经 reasoning 前缀 promotion-soften 区分）。
-        # 软化编排自身异常降级 warning（fail-safe，晋升流程继续走既有 lint
-        # 判定，不产生新卡死形态）。
-        try:
-            from core.deliverables import (
-                extract_declared_entries,
-                soften_unsatisfiable_declarations,
-            )
-            spec_dir = self.project_root / "spec" / "changes" / spec_name
-            # 快照声明段（before）：读 tasks.md 声明段原文，供审计 diff。
-            before_text = ""
-            if spec_dir.is_dir():
-                tasks_path = spec_dir / "tasks.md"
-                if tasks_path.exists():
-                    try:
-                        before_text = tasks_path.read_text(encoding="utf-8")
-                    except (OSError, UnicodeDecodeError):
-                        before_text = ""
-            softened = soften_unsatisfiable_declarations(
-                spec_dir, self.project_root)
-            if softened:
-                self.logger.info(
-                    "pm_engine",
-                    f"晋升前软化声明 '{spec_name}': "
-                    f"{[s['element'] for s in softened]}（kind → reference）",
-                )
-                # 快照软化后声明段（after）
-                after_text = ""
-                if tasks_path.exists():
-                    try:
-                        after_text = tasks_path.read_text(encoding="utf-8")
-                    except (OSError, UnicodeDecodeError):
-                        after_text = ""
-                try:
-                    from core.admin_store import DisputeAuditStore
-                    DisputeAuditStore(self.project_root, self.logger).append({
-                        "spec": spec_name,
-                        "trigger_run_id": "",
-                        "judge_run_id": "",
-                        "verdicts": [
-                            {
-                                "element": s["element"],
-                                "verdict": "reference",
-                                "reasoning": (
-                                    f"promotion-soften: {s['reason']}"
-                                ),
-                            }
-                            for s in softened
-                        ],
-                        "diff": {
-                            "before": before_text,
-                            "after": after_text,
-                        },
-                    })
-                except Exception as e:
-                    self.logger.warning(
-                        "pm_engine",
-                        f"晋升软化审计写盘失败 '{spec_name}'（非阻塞）: {e}",
-                    )
-        except Exception as e:
-            self.logger.warning(
+        """Auto-promote drafted → ready, then immediately schedule implementer.
+
+        Gates: if gates.auto_promote_draft is False, spec stays drafted
+        (no promotion, no error, no dispatch) — awaiting manual promotion.
+        """
+        from core.config import ConfigLoader
+        from core.pm_engine.promotion import promote_drafted
+
+        # 草稿自动晋升闸口（add-draft-promotion-gate D1）：关闭时 drafted SPEC
+        # 停留草稿态，不软化、不 lint、不写 error、不派发。等待人工通过
+        # Dashboard 按钮或 CLI promote 放行。
+        if not ConfigLoader.get_auto_promote_draft(self.config):
+            self.logger.info(
                 "pm_engine",
-                f"晋升前软化编排异常 '{spec_name}'（降级走既有 lint 判定）: {e}",
+                f"自动晋升已关闭，SPEC '{spec_name}' 停留 drafted 等待人工放行",
             )
-        # 晋升 lint（deliverables 声明形态机械校验）：不可满足/失效声明在撰写
-        # 当下拦截，不再等到收工守卫才暴露（判定发生在一次完整 run 之后，
-        # 形态错误代价 = 一轮 run + 打回循环）。违规保持 drafted 并写 error，
-        # 修正 tasks.md 后重新晋升触发。lint 自身故障 fail-open 放行。
-        violations = self._lint_deliverable_declarations(spec_name)
-        # tasks.md 可解析性 lint（task-track D2）：与声明 lint 并列，违规合并进
-        # 同一 error 写入路径（保持 drafted + STATE error），异常 fail-open。
-        tasks_violations = self._lint_tasks_parseable(spec_name)
-        if violations or tasks_violations:
-            msgs = []
-            if violations:
-                msgs.append("Deliverables 声明 lint 未通过：" + "；".join(violations))
-            if tasks_violations:
-                msgs.append("tasks.md 可解析性 lint 未通过：" + "；".join(tasks_violations))
-            err = "；".join(msgs)
-            self.logger.error(
-                "pm_engine", f"Promotion lint failed '{spec_name}': {err}",
-            )
-            self.state_machine.update_spec(spec_name, {"error": err})
             return
+
+        # 共享晋升函数：软化 + lint + 判定（D2 提取）
+        result = promote_drafted(
+            self.project_root,
+            spec_name,
+            state_machine=self.state_machine,
+            logger=self.logger,
+        )
+        if not result["ok"]:
+            # lint 违规或非 drafted 拒绝：error 已由 promote_drafted 写入 STATE（lint 违规），
+            # 或返回拒绝原因（非 drafted）。两种情况都不派发。
+            return
+        # 全部通过：transition drafted → ready + 直接排队实现
         self.logger.info("pm_engine", f"Auto-promoting '{spec_name}': drafted → ready")
         self.state_machine.transition(spec_name, "ready")
         # 直接调用 _on_spec_ready 排队实现，不依赖事件循环
