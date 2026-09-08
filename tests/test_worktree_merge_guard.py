@@ -805,3 +805,100 @@ class TestSupersededStashDrop:
         assert wm._drop_superseded_stash_entry("", ["shared.py"]) is False
         lst = git(root, "stash", "list")
         assert "fenix: pre-dispatch autostash" in lst.stdout
+
+
+class TestWipOverlapPrecheck:
+    """fix-mergeback-stashpop-silent-loss D3：merge-back 前 WIP 重叠预检。
+
+    两个 spec scenario：
+      1. 脏 tracked 文件与分支改动相交 → WARNING + wip_overlap 非空
+      2. 无交集 → 零 WARNING、流程与现状一致
+    """
+
+    def _branch_touches(self, root: Path, edits: dict):
+        """从 BASE 派生分支 fenix/impl 修改若干 tracked 文件，checkout 回 BASE。"""
+        base_sha = git(root, "rev-parse", "HEAD").stdout.strip()
+        git(root, "checkout", "-q", "-b", "fenix/impl")
+        for path, content in edits.items():
+            p = root / path
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] branch edits")
+        git(root, "checkout", "-q", base_sha)
+
+    def test_overlap_warns_and_populates_wip_overlap(self, tmp_path):
+        """scenario 1: 脏文件 core/a.py 与分支改动都含 core/a.py → WARNING + 非空。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        (root / "core").mkdir()
+        (root / "core" / "a.py").write_text("BASE-A\n", encoding="utf-8")
+        (root / "core" / "b.py").write_text("BASE-B\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] add core files")
+        self._branch_touches(root, {
+            "core/a.py": "BRANCH-A\n",
+            "core/b.py": "BRANCH-B\n",
+        })
+
+        # 主树 WIP：改 core/a.py（与分支相交）与 core/b.py（不相交的另一个）
+        (root / "core" / "a.py").write_text("WIP-A\n", encoding="utf-8")
+
+        wm = make_wm(root)
+        overlap = wm._detect_wip_overlap("fenix/impl")
+        assert overlap == ["core/a.py"], f"应仅含相交文件: {overlap}"
+        warn_logs = [w for w in wm.logger.warnings
+                     if "WIP overlap" in w and "core/a.py" in w]
+        assert warn_logs, f"应记录含重叠清单的 WARNING: {wm.logger.warnings}"
+
+        # 端到端：merge_back_from_branch 返回的 MergeConflictInfo 携带重叠清单
+        (root / "core" / "a.py").write_text("WIP-A\n", encoding="utf-8")
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, err = info
+        assert success, f"merge 应成功（预检不阻断），实际失败: {err}"
+        assert info.wip_overlap == ["core/a.py"], \
+            f"MergeConflictInfo.wip_overlap 应非空: {info.wip_overlap}"
+
+    def test_no_overlap_is_silent_and_unchanged(self, tmp_path):
+        """scenario 2: 无交集 → 零重叠 WARNING、merge 成功、wip_overlap 空。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        (root / "core").mkdir()
+        (root / "core" / "a.py").write_text("BASE-A\n", encoding="utf-8")
+        (root / "core" / "b.py").write_text("BASE-B\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] add core files")
+        self._branch_touches(root, {"core/a.py": "BRANCH-A\\n"})
+
+        # 主树 WIP：只改不相交的 core/b.py
+        (root / "core" / "b.py").write_text("WIP-B\\n", encoding="utf-8")
+
+        wm = make_wm(root)
+        overlap = wm._detect_wip_overlap("fenix/impl")
+        assert overlap == [], f"无交集应返回空: {overlap}"
+        overlap_warns = [w for w in wm.logger.warnings if "WIP overlap" in w]
+        assert not overlap_warns, f"不应有重叠 WARNING: {wm.logger.warnings}"
+
+        info = wm.merge_back_from_branch("fenix/impl")
+        success, err = info
+        assert success, f"merge 应成功，实际失败: {err}"
+        assert info.wip_overlap == [], \
+            f"无重叠时 wip_overlap 应为空: {info.wip_overlap}"
+        # 流程与现状一致：merge 结果正常落主树，autostash 正常恢复
+        assert (root / "core" / "a.py").read_text(encoding="utf-8") == "BRANCH-A\\n"
+        assert (root / "core" / "b.py").read_text(encoding="utf-8") == "WIP-B\\n"
+
+    def test_clean_tree_produces_no_warning(self, tmp_path):
+        """主树干净 → 预检零开销静默、零 WARNING。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        (root / "core").mkdir()
+        (root / "core" / "a.py").write_text("BASE-A\\n", encoding="utf-8")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "[fenix] add core/a.py")
+        self._branch_touches(root, {"core/a.py": "BRANCH-A\\n"})
+
+        wm = make_wm(root)
+        assert wm._detect_wip_overlap("fenix/impl") == []
+        overlap_warns = [w for w in wm.logger.warnings if "WIP overlap" in w]
+        assert not overlap_warns
