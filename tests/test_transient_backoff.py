@@ -6,6 +6,7 @@
 参照 tests/test_provider_failover.py 真实故障 fixture 惯例（2026-09 死亡 run stderr 样本）。
 """
 
+import json
 import re
 import subprocess
 import time
@@ -476,7 +477,17 @@ class TestWorktreeReuseAcrossAttempts:
             if attempt_n["n"] <= 2:
                 # attempt 1：初始 + 原地重试 1 次（预算 [1]）均瞬断
                 raise _TransientError(stderr_lines=stderr_real, exit_code=1, has_result=False)
-            # attempt 2 成功
+            # attempt 2 成功：写入 planner-judge 产物（add-judge-artifact-gate D1）
+            # 产物落盘点为 project_root（runner 硬门同源路径），非 worktree cwd
+            result_path = (
+                Path(tmp_path) / ".fenix" / "verify-progress" / "test-spec"
+                / ".fenix-run-result.json"
+            )
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(
+                json.dumps({"status": "verified", "summary": "ok"}),
+                encoding="utf-8",
+            )
             return ("done", 1, "sess-2", {"input_tokens": 0, "output_tokens": 0,
                                           "cache_creation_input_tokens": 0,
                                           "cache_read_input_tokens": 0, "cost_usd": None})
