@@ -1323,6 +1323,54 @@ class TestTodoMultilineFormat:
         assert "调查评估：a1" not in content
         assert "证据：e2" in content  # 未命中条目保留
 
+    def test_append_todo_structured_entry_renders_analysis_line(self, proot):
+        """analysis 字段（2026-09-07 增补）渲染为「调查评估」行，位于
+        证据与建议之间；无 analysis 的条目保持三行（历史兼容）。"""
+        sched = make_scheduler(proot)
+        result = FakeReviewResult(waste=[{
+            "impact": "声明违规 3 次人工修正后才规则化",
+            "evidence": "14d6efc/c254246/ba5e4a8 三次修正",
+            "analysis": "已核实四次提交时间线；根因为逐例救火未前置机械化",
+            "suggestion": "planner 产出期校验 + 守卫机械改判",
+        }], mistakes=[], improvements=[])
+        sched._append_todo("2026-09-07", result)
+        content = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        # 渲染格式（2026-09-08 用户改版）：嵌套明细 bullet——「  - 标签：值」
+        assert "  - 影响：声明违规 3 次人工修正后才规则化\n" \
+               "  - 证据：14d6efc/c254246/ba5e4a8 三次修正\n" \
+               "  - 调查评估：已核实四次提交时间线；根因为逐例救火未前置机械化\n" \
+               "  - 建议：planner 产出期校验 + 守卫机械改判" in content
+        # 空/缺失 analysis 不渲染第四行
+        result2 = FakeReviewResult(mistakes=[{
+            "impact": "i", "evidence": "e", "suggestion": "s",
+        }], improvements=[])
+        sched._append_todo("2026-09-08", result2)
+        content2 = (proot / ".fenix" / "todo.md").read_text(encoding="utf-8")
+        assert "  - 影响：i\n  - 证据：e\n  - 建议：s" in content2
+
+    def test_remove_resolved_matches_entry_with_analysis_line(self, proot):
+        """带「调查评估」续行的条目整块移除时快照逐字匹配不受影响。"""
+        sched = make_scheduler(proot)
+        todo = write_todo(proot, """## 2026-09-06
+
+### 失误
+- 影响：i1
+  证据：e1
+  调查评估：a1
+  建议：s1
+- 影响：i2
+  证据：e2
+  建议：s2
+""")
+        entries = sched._collect_recent_entries("2026-09-07")
+        assert len(entries) == 2
+        removed = sched._remove_resolved(entries, [
+            {"id": entries[0]["id"], "reason": "已修"}])
+        assert [r["id"] for r in removed] == [entries[0]["id"]]
+        content = todo.read_text(encoding="utf-8")
+        assert "调查评估：a1" not in content
+        assert "证据：e2" in content  # 未命中条目保留
+
     def test_append_todo_partial_and_empty_structured_entries(self, proot):
         sched = make_scheduler(proot)
         result = FakeReviewResult(
