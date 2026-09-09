@@ -49,9 +49,13 @@ class TestClampImplRunBudget(unittest.TestCase):
         self.assertEqual(clamp_impl_run_budget(100), 10)
         self.assertEqual(clamp_impl_run_budget(-5), 1)
 
-    def test_string_int_parseable(self):
-        self.assertEqual(clamp_impl_run_budget("7"), 7)
-        self.assertEqual(clamp_impl_run_budget("0"), 1)
+    def test_string_int_is_non_integer(self):
+        """字符串数字属于非整数类型 → None（回退下一优先级），与 API 400 口径一致。"""
+        self.assertIsNone(clamp_impl_run_budget("7"))
+        self.assertIsNone(clamp_impl_run_budget("0"))
+        self.assertIsNone(clamp_impl_run_budget(5.5))
+        self.assertIsNone(clamp_impl_run_budget("5.5"))
+        self.assertIsNone(clamp_impl_run_budget([1, 2]))
 
     def test_non_int_returns_none(self):
         self.assertIsNone(clamp_impl_run_budget(None))
