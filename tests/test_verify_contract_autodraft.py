@@ -226,6 +226,140 @@ class TestVerifyContractMissingSignal(unittest.TestCase):
         self.assertIn("parse_error=是", signals[0].get("evidence", ""))
 
 
+class _FakeLogger:
+    def debug(self, *a, **k):
+        pass
+
+    def info(self, *a, **k):
+        pass
+
+    def warning(self, *a, **k):
+        pass
+
+    def error(self, *a, **k):
+        pass
+
+
+class _FakeSM:
+    def __init__(self, specs: dict):
+        self._specs = specs
+
+    def read_all(self):
+        return self._specs
+
+    def read_one(self, name):
+        return self._specs.get(name)
+
+    def update_spec(self, name, updates):
+        return True
+
+    def hasattr_update(self):
+        return True
+
+
+class _FakeRunner:
+    def __init__(self):
+        self.calls = []
+
+    def run_administrator(self, signal):
+        self.calls.append(signal)
+        from core.agent_runner import AdminDisposition
+        return AdminDisposition(
+            run_id="admin-redraft-1",
+            spec=signal.get("spec"),
+            success=True,
+            problem=signal.get("description", ""),
+            actions_taken="测试处置",
+            result="resolved",
+            summary="诊断结论：复核现有契约有效；结果：按授权重起草。",
+        )
+
+
+class TestVerifyContractRedraftSignal(unittest.TestCase):
+    """verify_contract_redraft 信号被 admin_monitor 摄取唤起 Administrator（4.2）。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_redraft_signal_picked_up_and_admin_invoked(self):
+        """未 escalated 的 redraft 信号被巡检拾取、按 evidence 提取项目名唤起。"""
+        from core.admin_monitor import AdminMonitor, SIGNAL_RECOMMENDATION, STORED_SIGNAL_TYPES
+        from core.admin_store import AdminStore, SIGNAL
+        # 注册断言：类型已纳入 STORED_SIGNAL_TYPES（摄取管道一致）
+        self.assertIn("verify_contract_redraft", STORED_SIGNAL_TYPES)
+        # 指引区别于 missing 且含复核/显式授权语义
+        rec = SIGNAL_RECOMMENDATION["verify_contract_redraft"]
+        self.assertIn("复核现有契约有效性", rec)
+        self.assertIn("用户已显式授权覆盖", rec)
+        self.assertNotEqual(rec, SIGNAL_RECOMMENDATION["verify_contract_missing"])
+        self.assertNotIn("起草 .fenix/verify.yaml 验证契约", rec.split("复核现有契约有效性")[0])
+
+        store = AdminStore(self.tmp, _FakeLogger())
+        store.append({
+            "kind": SIGNAL,
+            "signal_type": "verify_contract_redraft",
+            "spec": None,  # UI 手动触发：spec 留空，项目名从 evidence 提取
+            "severity": "major",
+            "description": "AI 起草验证契约请求（UI 手动触发）",
+            "evidence": "项目名=fenixd; 覆盖确认=是",
+            "source": "ui-manual",
+            "overwrite": True,
+        })
+        runner = _FakeRunner()
+        mon = AdminMonitor(
+            {"admin": {"enabled": True}},
+            _FakeSM({"fenixd": {"status": "testing"}}),
+            self.tmp,
+            _FakeLogger(),
+            store=store,
+            agent_runner=runner,
+        )
+        signals = mon.run_once()
+
+        self.assertEqual(len(runner.calls), 1, "redraft 信号应唤起 Administrator 一次")
+        call = runner.calls[0]
+        self.assertEqual(call["signal_type"], "verify_contract_redraft")
+        self.assertEqual(call["spec"], "fenixd", "项目名应从 evidence 提取")
+        self.assertIn("复核现有契约有效性", call["recommended_action"])
+        self.assertGreaterEqual(len(signals), 1)
+        # 摄取后源记录已 escalated（同记录不反复唤起）
+        self.assertTrue(all(
+            r.get("escalated")
+            for r in store.read_all()
+            if r.get("kind") == SIGNAL
+            and r.get("signal_type") == "verify_contract_redraft"
+        ))
+
+    def test_redraft_signal_not_reinvoked_next_tick(self):
+        """已 escalated 的 redraft 记录下一巡检不重复唤起。"""
+        from core.admin_monitor import AdminMonitor
+        from core.admin_store import AdminStore, SIGNAL
+        store = AdminStore(self.tmp, _FakeLogger())
+        rec = store.append({
+            "kind": SIGNAL,
+            "signal_type": "verify_contract_redraft",
+            "spec": None,
+            "severity": "major",
+            "description": "AI 起草验证契约请求（UI 手动触发）",
+            "evidence": "项目名=fenixd; 覆盖确认=是",
+            "source": "ui-manual",
+            "overwrite": True,
+        })
+        store.mark_escalated(rec["id"])
+        runner = _FakeRunner()
+        mon = AdminMonitor(
+            {"admin": {"enabled": True}},
+            _FakeSM({"fenixd": {"status": "testing"}}),
+            self.tmp,
+            _FakeLogger(),
+            store=store,
+            agent_runner=runner,
+        )
+        mon.run_once()
+        self.assertEqual(len(runner.calls), 0, "已 escalated 记录不得反复唤起")
+
+
 class TestPermissionBoundary(unittest.TestCase):
     """权限边界测试：有效契约不被覆盖，失效契约可修正。"""
 
