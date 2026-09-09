@@ -376,9 +376,15 @@ class TestCancelFinalizeSemantics(unittest.TestCase):
         self.sm.transition("s1", "implemented")
         self.sm.transition("s1", "testing")
         result = _CancelledResult()
-        with patch.object(self.engine.agent_runner, "run_planner",
-                          return_value=result):
-            # 三阶段验证阶段1：planner 取消分支保持 testing、只写 error+标记
+        with patch("importlib.reload", lambda m: m), \
+                patch.object(self.engine.agent_runner, "run_planner",
+                             return_value=result):
+            # 三阶段验证阶段1：planner 取消分支保持 testing、只写 error+标记。
+            # patch importlib.reload（test_pm_verification 同款处方）：
+            # _run_three_stage_verification 开头对 core.verify_engine 热重载，
+            # 测试进程里 reload 会换掉 TestScenario/VerifyEngine 类对象，
+            # 同进程后续测试的 isinstance 判定全部失配（全量跑时
+            # test_verify_multi_kind 的 TestEngineDispatch 非确定性 0 场景假败）。
             self.engine._run_three_stage_verification("s1")
         entry = self.sm.read_one("s1")
         self.assertEqual(entry["status"], "testing")
