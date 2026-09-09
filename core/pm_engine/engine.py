@@ -2414,7 +2414,7 @@ class PMEngine:
     def _run_legacy_verification(self, spec_name: str):
         return self._verification._run_legacy_verification(spec_name)
 
-    def _verify_verdict_evidence(self, spec_name: str, retry_judge: bool = False) -> bool:
+    def _verify_verdict_evidence(self, spec_name: str, retry_judge: bool = False) -> dict:
         return self._verification._verify_verdict_evidence(spec_name, retry_judge)
 
     def _env_whitewash_gate(self, spec_name: str) -> bool:
@@ -2455,6 +2455,21 @@ class PMEngine:
 
     def _clear_verdict_violations(self, spec_name: str) -> None:
         return self._verification._clear_verdict_violations(spec_name)
+
+    # ── 失败历史侧车门面（fix-verdict-retry-misattribution D6）──
+    def _read_fail_history(self, spec_name: str) -> list:
+        return self._verification._read_fail_history(spec_name)
+
+    def _append_fail_history(self, spec_name: str, cause_type: str,
+                             failed_scenarios: list) -> None:
+        return self._verification._append_fail_history(
+            spec_name, cause_type, failed_scenarios)
+
+    def _clear_fail_history(self, spec_name: str) -> None:
+        return self._verification._clear_fail_history(spec_name)
+
+    def _failed_scenario_ids(self, spec_name: str) -> list:
+        return self._verification._failed_scenario_ids(spec_name)
 
     @property
     def _last_scenario_diff(self):

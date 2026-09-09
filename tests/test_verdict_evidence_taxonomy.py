@@ -300,17 +300,20 @@ class TestVerdictAdoption(_PMEngineBase):
     """采纳处：证据分类校验 / 映射重写 / warning 升级（任务 4.1）。"""
 
     def test_missing_classification_blocks_to_blocked_env_after_retry(self):
-        """分类缺失→judge 重试一次→仍缺→blocked-env + 告警（design D2）。"""
+        """分类缺失→judge 重试一次→仍缺→cause=violations（调用方 blocked+告警）。"""
         self._seed_report(_load_fixture("v2-config-page-report-0014.json"))
         # judge 重试仍返回「未补全」报告（与首次一致）
         self.engine.agent_runner.run_planner = MagicMock(
             return_value=type("R", (), {"success": True, "error": None,
                                         "run_id": "j"})())
-        ok = self.engine._verification._verify_verdict_evidence("v2-config-page", retry_judge=True)
-        self.assertFalse(ok)  # 校验器只判合规与否；blocked-env + 告警由调用方执行
+        ret = self.engine._verification._verify_verdict_evidence("v2-config-page", retry_judge=True)
+        # fix-verdict-retry-misattribution：返回语义化结构，真二次违规 → cause=violations
+        self.assertFalse(ret["ok"])
+        self.assertEqual(ret["cause"], "violations")
+        self.assertTrue(isinstance(ret["violations"], list))
+        self.assertGreater(len(ret["violations"]), 0)  # 携带 validate_report 原始明细
         # 校验器确实重试了 judge 一次（首次不合规 + 一次重试）
         self.assertEqual(self.engine.agent_runner.run_planner.call_count, 1)
-        # run_planner 返回值非 None 且 success → 校验器走完一轮重试路径（无异常）
 
     def test_product_bug_mislabeled_warning_forced_failed(self):
         """product-bug 误挂 warning：采纳处强制 failed + 标注 status_corrected。"""
@@ -336,8 +339,9 @@ class TestVerdictAdoption(_PMEngineBase):
                 break
         assert mislabeled is not None
         self._seed_report(report)
-        ok = self.engine._verification._verify_verdict_evidence("v2-config-page", retry_judge=True)
-        self.assertTrue(ok)
+        ret = self.engine._verification._verify_verdict_evidence("v2-config-page", retry_judge=True)
+        self.assertTrue(ret["ok"])
+        self.assertEqual(ret["cause"], "pass")
         reloaded = json.loads(
             (self.project_root / ".fenix" / "verify-progress" / "v2-config-page"
              / "report.json").read_text(encoding="utf-8"))

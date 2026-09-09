@@ -38,6 +38,10 @@ from core.verify_contract import (
 # fix-verdict-read-failclosed D3：与 runner 产物硬门共用同一 status 白名单单一来源
 # （prompt_builder 定义、两侧 import，避免双实现漂移）。
 from core.agent_runner.prompt_builder import planner_result_status_whitelist
+# fix-verdict-retry-misattribution D3：frozen 门 error 文案与 runner.py 派发门共用
+# 同一导出常量（防文案改动使匹配失效），取消判定沿用 AgentRunResult.cancelled 结构化
+# 字段（非字符串匹配）。
+from core.agent_runner.runner import FROZEN_TERMINATED_ERROR_PREFIX
 
 
 class VerdictReadResult:
@@ -1477,6 +1481,19 @@ class VerificationPipeline:
                     f"'{spec_name}', holding implemented: {judge_result.error}",
                 )
                 return
+            # ── 首轮 frozen 让位分支（fix-verdict-retry-misattribution D4）──
+            # judge 首次派发于冻结前、run 在飞期间 spec 被人工冻结、run 完成返回
+            # frozen 失败：与 cancelled「保持 testing 只写 error」及 circuit-open
+            # 「抑制」同型——INFO 留痕后静默退出，不 raise、不重派、不改状态。
+            # 判据与 runner.py 派发门共用导出常量（design D3 文案同源）。
+            if (judge_result.error or "").startswith(FROZEN_TERMINATED_ERROR_PREFIX):
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"Planner judge run 完成时 spec 已冻结 — 让位退出 '{spec_name}'"
+                    f"（在飞 run 结果按 frozen 处置，不重派不改状态）: "
+                    f"{judge_result.error}",
+                )
+                return
             raise RuntimeError(f"Planner judge 失败: {judge_result.error}")
 
         # ── 在飞 verify 结果状态判据（fix-daemon-lifecycle-races D6）──
@@ -1494,22 +1511,124 @@ class VerificationPipeline:
             )
             return
 
-        # ── 阶段3+ 裁决证据分类校验与重试（add-verdict-evidence-taxonomy D1-D5）──
+        # ── 阶段3+ 裁决证据分类校验与重试（add-verdict-evidence-taxonomy D1-D5；
+        #    fix-verdict-retry-misattribution D1/D2/D5/D7）──
         # judge 已在 report.json 增强每个非 PASS 场景的 classification/evidence。
         # 此处确定性校验：不合规 → 走既有 judge 重试一次（同 run_planner 调用）；
-        # 二次仍不合规 → blocked-env + 告警（与 verify-report-gate 阻断语义一致，
-        # 宁可不推进也不带病采纳）。合规后按分类-状态映射强制重写 status（D3）。
-        verdict_ok = self._pm._verify_verdict_evidence(spec_name, retry_judge=True)
-        if not verdict_ok:
+        # 二次仍不合规 → cause=violations，blocked-env + 告警（与 verify-report-gate
+        # 阻断语义一致，宁可不推进也不带病采纳）。重试派发被 frozen/取消拦截 =
+        # 人工已接管 → 静默让位（零写入零告警）；派发失败/异常/产物丢失 → 温和
+        # 处置不发 verdict_evidence_invalid。合规后按分类-状态映射强制重写 status（D3）。
+        verdict_ret = self._pm._verify_verdict_evidence(spec_name, retry_judge=True)
+        if not verdict_ret["ok"]:
+            cause = verdict_ret.get("cause", "violations")
+            violations = verdict_ret.get("violations") or []
+            dispatch_error = verdict_ret.get("dispatch_error") or ""
+            if cause in ("dispatch_frozen", "dispatch_cancelled"):
+                # ── 让位语义（design D2 / fix-verdict-retry-misattribution）──
+                # frozen 门/取消旗标 = 人工已接管：零写入（不 update_spec——不写
+                # status/error、不触 _cancelled_hold）、不发任何人工升级告警；
+                # 留痕已在上游方法内以 INFO 完成，此处补充采纳侧结论供日志对账。
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"裁决证据校验重试派发被"
+                    f"{'取消旗标' if cause == 'dispatch_cancelled' else 'frozen 门'}"
+                    f"拦截 '{spec_name}' — 让位：spec 保持 testing 原状，"
+                    f"不写 blocked、不发告警（cause={cause}）",
+                )
+                return
+            if cause == "dispatch_failed":
+                # ── 派发故障温和处置（design D1）──
+                # 网关拒绝/预算闸门等：写 error 留痕但不动 status、不写 blocked、
+                # 不发 verdict_evidence_invalid（「二次违反证据契约」语义不得被
+                # 派发故障冒用）；spec 保持 testing 等待下轮重验。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"裁决重试 judge 派发失败 '{spec_name}' — 保持 testing，"
+                    f"留 error 待下轮重验: {dispatch_error}",
+                )
+                self._pm.state_machine.update_spec(spec_name, {
+                    "error": f"裁决重试 judge 派发失败（非证据不合规）：{dispatch_error}",
+                })
+                return
+            if cause == "dispatch_exception":
+                # ── 异常早退（design D1 / D7）──
+                # 上游已确保不复读旧 report.json、不打「重试后仍不合规」；此处
+                # 同样不按违规处置——留 error 保持 testing，异常多属瞬态。
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"裁决证据校验重试异常早退 '{spec_name}' — 保持 testing，"
+                    f"留 error 待下轮重验: {dispatch_error}",
+                )
+                self._pm.state_machine.update_spec(spec_name, {
+                    "error": (
+                        f"裁决重试 judge 异常（非证据不合规，未复检旧产物）："
+                        f"{dispatch_error}"
+                    ),
+                })
+                return
+            if cause == "report_missing":
+                # ── 重试成功但产物不可读（design D1）──
+                # fail-closed：无法确定性校验合规即不推进，阻断交人工；信号沿用
+                # 裁决结果不可读通道，不发 verdict_evidence_invalid（非违规判定）。
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"裁决重试 judge 成功但 report.json 不可读 '{spec_name}' — "
+                    f"阻断为 blocked（fail-closed，不按违规处置）",
+                )
+                self._pm.state_machine.update_spec(spec_name, {
+                    "status": "blocked",
+                    "error": (
+                        f"验证裁决重试后 report.json 不可读（产物缺失，非证据不合规），"
+                        f"已 blocked 等待人工裁决"
+                    ),
+                })
+                self._pm._send_human_escalation_alert(
+                    spec_name=spec_name,
+                    signal_type="verdict_result_unreadable",
+                    severity="critical",
+                    description=(
+                        f"'{spec_name}' 裁决重试后 report.json 不可读，已 blocked "
+                        f"等待人工裁决（非证据不合规）"
+                    ),
+                    evidence=(
+                        f"spec={spec_name}; cause=report_missing; report="
+                        f".fenix/verify-progress/{spec_name}/report.json"
+                    ),
+                    recommended_action=(
+                        "检查 judge 重试轮是否覆写/破坏了 report.json（产物门禁外的"
+                        "缺失路径）；修复产物后重置验证或重跑"
+                    ),
+                )
+                return
+            if cause != "violations":
+                # ── 未知 cause 保守处置（design risk：fail-closed）──
+                # 前向兼容防护：枚举之外的 cause 值按 violations 同等保守处置
+                # （blocked + 告警），并 ERROR 留痕——不静默放行。
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"裁决证据校验未知 cause '{cause}' '{spec_name}' — 按 violations "
+                    f"保守处置（fail-closed）: {verdict_ret}",
+                )
+            # ── cause=violations（真·二次违规）：保留既有语义 blocked + 告警 ──
+            # 本轮回合计入失败历史侧车（cause_type=evidence-invalid），供升级闸门
+            # 分型与轮间 diff（fix-verdict-retry-misattribution D6）。
+            self._pm._append_fail_history(
+                spec_name, "evidence-invalid",
+                [v.get("scenario_id") or v.get("id") or "?"
+                 for v in violations if isinstance(v, dict)],
+            )
             self._pm.logger.error(
                 "pm_engine",
-                f"裁决证据分类二次校验仍失败 '{spec_name}' — 阻断推进为 blocked-env",
+                f"裁决证据分类二次校验仍失败 '{spec_name}' — 阻断推进为 blocked-env"
+                f"（{len(violations)} 项违规）",
             )
             self._pm.state_machine.update_spec(spec_name, {
                 "status": "blocked",
                 "error": (
                     f"验证裁决证据分类校验连续失败：report.json 非 PASS 场景缺 "
-                    f"classification/evidence，重试一次仍不合规，已 blocked 等待人工裁决"
+                    f"classification/evidence，重试一次仍不合规（{len(violations)} 项"
+                    f"违规），已 blocked 等待人工裁决"
                 ),
             })
             self._pm._send_human_escalation_alert(
@@ -1517,12 +1636,11 @@ class VerificationPipeline:
                 signal_type="verdict_evidence_invalid",
                 severity="critical",
                 description=(
-                    f"'{spec_name}' 验证裁决证据分类校验连续失败，已 blocked 等待人工裁决"
+                    f"'{spec_name}' 验证裁决证据分类校验连续失败（{len(violations)} 项"
+                    f"违规），已 blocked 等待人工裁决"
                 ),
-                evidence=(
-                    f"spec={spec_name}; report="
-                    f"spec/changes/{spec_name}/verification-report.md"
-                ),
+                evidence=self._verdict_violations_evidence(
+                    spec_name, violations),
                 recommended_action=(
                     "检查 planner-judge 是否遵守 prompt 第4步（对全部非 PASS 场景补 "
                     "classification/evidence）；人工重置后重跑验证"
@@ -1743,6 +1861,8 @@ class VerificationPipeline:
                 "_verify_redo_count": 0,
                 "_env_block_rounds": 0,
             })
+            # 失败历史侧车随 verified 终态清空（fix-verdict-retry-misattribution D6）
+            self._pm._clear_fail_history(spec_name)
             # 本轮场景集变更小节追加到验证报告（spec 需求 2.3）
             self._pm._render_scenario_change_section_to_report(spec_name)
             self._pm._on_spec_verified(spec_name)
@@ -2337,6 +2457,9 @@ class VerificationPipeline:
                     "_verify_redo_count": 0,
                     "_env_block_rounds": 0,
                 })
+                # 失败历史侧车随 verified 终态清空（legacy 同语义，
+                # fix-verdict-retry-misattribution D6）
+                self._pm._clear_fail_history(spec_name)
                 self._pm._on_spec_verified(spec_name)
         else:
             self._pm.state_machine.transition(spec_name, "bug-found")
@@ -2625,19 +2748,49 @@ class VerificationPipeline:
                 f"跨轮裁决缓存已更新 '{spec_name}': {len(cache)} 个场景结论入缓存",
             )
 
-    def _verify_verdict_evidence(self, spec_name: str, retry_judge: bool = False) -> bool:
+    def _verdict_violations_evidence(self, spec_name: str, violations: list) -> str:
+        """格式化 verdict_evidence_invalid 告警 evidence：携带结构化 violations 明细。
+
+        fix-verdict-retry-misattribution D5：每条 `scenario_id + reason`，超过 20 条
+        截断并注明总数——人工无需读 report.json 即可定位违规形状。
+        """
+        shown = [v for v in (violations or []) if isinstance(v, dict)][:20]
+        parts = [
+            f"spec={spec_name}",
+            f"report=spec/changes/{spec_name}/verification-report.md",
+            f"violations_total={len(violations or [])}",
+        ]
+        for v in shown:
+            sid = v.get("scenario_id") or v.get("id") or "?"
+            reason = str(v.get("reason") or "?").strip()
+            parts.append(f"violation[scenario_id={sid}; reason={reason}]")
+        if len(violations or []) > 20:
+            parts.append(f"violations_truncated=20/{len(violations)}")
+        return "; ".join(parts)
+
+
+    def _verify_verdict_evidence(self, spec_name: str, retry_judge: bool = False) -> dict:
         """确定性校验裁决 report.json 的分类/证据合规，并按映射强制重写 status。
 
-        流程（design D1-D3）：
+        流程（design D1-D3，fix-verdict-retry-misattribution D1）：
           1. 读 report.json（judge 应在其中增强 classification/evidence）；
           2. validate_report：每个非 PASS 场景 MUST 有合法 classification + 非空 evidence；
           3. 不合规且 ``retry_judge`` 为真 → 走既有 judge 重试一次（同 run_planner 调用），
-             重试后再次校验；二次仍不合规 → 返回 False（调用方 blocked-env + 告警）；
-          4. 合规 → enforce_status_mapping（product-bug/test-defect → failed，D3），
-             原子写回 report.json，返回 True。
+             重试后再次校验；二次仍不合规 → 返回 ``cause=violations``（调用方
+             blocked-env + 告警，与 verify-report-gate 阻断语义一致，宁可不推进也不
+             带病采纳）。合规后按分类-状态映射强制重写 status（D3），原子写回
+             report.json。
+          4. 返回结构化结果 ``{"ok", "cause", "violations", "dispatch_error"}``：
+             cause ∈ pass / violations / dispatch_frozen / dispatch_cancelled /
+             dispatch_failed / dispatch_exception / report_missing。
 
         注意：judge 失败（process 级）已由调用方在 ``judge_result.success`` 处拦截，
         本方法只负责「judge 已成功但产物不合规」的确定性校验与重试。
+
+        dispatch_frozen / dispatch_cancelled = 人工已接管（frozen 门/取消旗标拦截
+        重试派发）→ 语义化返回供调用方静默让位（零写入零告警）；dispatch_exception
+        = ``run_planner`` 抛异常立即早退，**禁止**落至 ``load_report`` 复读第一轮
+        违规的旧文件（现路径假 ERROR 根除）。
         """
         from core.verdict_check import (
             validate_report, enforce_status_mapping, load_report, save_report,
@@ -2646,7 +2799,7 @@ class VerificationPipeline:
         if report is None:
             # 无 report.json：验证产物门禁（verify-report-gate）会兜底，此处不阻断
             # （不制造伪 violation），交由既有流程处理。
-            return True
+            return {"ok": True, "cause": "pass", "violations": [], "dispatch_error": ""}
 
         result = validate_report(report)
         if result["ok"]:
@@ -2668,7 +2821,7 @@ class VerificationPipeline:
                         f"裁决映射强制重写 '{spec_name}' 场景 {c['scenario_id']}: "
                         f"{c['from_status']} → failed ({c['classification']})",
                     )
-            return True
+            return {"ok": True, "cause": "pass", "violations": [], "dispatch_error": ""}
 
         # 一次不合规：judge 重试一次（design D2）；违规明细落盘供重试 prompt 注入
         if retry_judge:
@@ -2682,19 +2835,62 @@ class VerificationPipeline:
             try:
                 re_judge = self._pm.agent_runner.run_planner(spec_name, "judge")
             except Exception as e:
+                # dispatch_exception：run_planner 抛异常（re_judge=None）→ 立即早退。
+                # 禁止继续执行 load_report 复读第一轮违规的旧 report.json（现路径
+                # 会据此打出「重试后仍不合规」假 ERROR）；是否写 blocked 由调用方
+                # 按 cause 决定。
                 self._pm.logger.warning(
                     "pm_engine", f"裁决重试 judge 异常 '{spec_name}': {e}",
                 )
-                re_judge = None
+                return {
+                    "ok": False, "cause": "dispatch_exception",
+                    "violations": violations_1, "dispatch_error": str(e),
+                }
             if re_judge is not None and not re_judge.success:
+                # ── 重试派发失败三分支（fix-verdict-retry-misattribution）──
+                # frozen 门拦截：spec 已人工冻结 → 让位（不写 blocked、不发告警），
+                # 语义化返回供调用方 INFO 留痕。判据与 runner.py 门共用导出常量。
+                if (re_judge.error or "").startswith(FROZEN_TERMINATED_ERROR_PREFIX):
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"裁决重试 judge 派发被 frozen 门拦截 '{spec_name}'"
+                        f"（人工已冻结，让位不写状态）: {re_judge.error}",
+                    )
+                    return {
+                        "ok": False, "cause": "dispatch_frozen",
+                        "violations": violations_1,
+                        "dispatch_error": re_judge.error,
+                    }
+                # 取消旗标拦截：结构化字段判定（非字符串匹配，design D3）→ 同语义让位
+                if getattr(re_judge, "cancelled", False):
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"裁决重试 judge 派发被取消旗标拦截 '{spec_name}'"
+                        f"（run 已人工取消，让位不写状态）: {re_judge.error}",
+                    )
+                    return {
+                        "ok": False, "cause": "dispatch_cancelled",
+                        "violations": violations_1,
+                        "dispatch_error": re_judge.error,
+                    }
+                # 其它派发失败（网关拒绝/预算闸门等）：携带原始 error，由调用方按
+                # dispatch_failed 温和处置——不得冒充「二次违反证据契约」。
                 self._pm.logger.warning(
                     "pm_engine",
-                    f"裁决重试 judge 失败 '{spec_name}': {re_judge.error}",
+                    f"裁决重试 judge 派发失败 '{spec_name}': {re_judge.error}",
                 )
-                return False
+                return {
+                    "ok": False, "cause": "dispatch_failed",
+                    "violations": violations_1,
+                    "dispatch_error": re_judge.error,
+                }
             report2 = load_report(self._pm.project_root, spec_name)
             if report2 is None:
-                return False
+                # 重试成功但 report.json 不可读 → report_missing（产物丢失，非违规）
+                return {
+                    "ok": False, "cause": "report_missing",
+                    "violations": violations_1, "dispatch_error": "",
+                }
             result2 = validate_report(report2)
             if result2["ok"]:
                 self._pm._clear_verdict_violations(spec_name)
@@ -2713,15 +2909,117 @@ class VerificationPipeline:
                         f"裁决重试后映射强制重写 '{spec_name}' 场景 "
                         f"{c['scenario_id']}: {c['from_status']} → failed",
                     )
-                return True
+                return {"ok": True, "cause": "pass", "violations": [], "dispatch_error": ""}
+            # 真·二次违规（重试确实发生）：violations 携带 validate_report 原始明细，
+            # 由调用方按既有语义处置（blocked + verdict_evidence_invalid 告警）。
             self._pm.logger.error(
                 "pm_engine",
                 f"裁决重试后证据分类仍不合规 '{spec_name}'："
                 f"{[v['scenario_id'] for v in result2['violations']]}",
             )
-            return False
+            return {
+                "ok": False, "cause": "violations",
+                "violations": result2["violations"], "dispatch_error": "",
+            }
 
-        return False
+        # 无重试预算的首轮不合规：按 violations 处置（调用方若未显式指定
+        # retry_judge，语义即「首轮已违规」）。
+        return {
+            "ok": False, "cause": "violations",
+            "violations": result["violations"], "dispatch_error": "",
+        }
+
+
+    # ── 失败历史侧车（fix-verdict-retry-misattribution D6）────────────────
+    # `.fenix/verify-progress/<spec>/fail_history.json`：每轮裁决采纳失败时原子
+    # 追加 {round, cause_type, failed_scenarios}；spec 进入 verified 终态或升级
+    # 闸门告警消费后清空。写盘失败静默降级（缺侧车 → 升级告警分型 unknown），
+    # 不阻断升级闸门。
+    _FAIL_HISTORY_FILENAME = "fail_history.json"
+
+    def _fail_history_path(self, spec_name: str) -> Path:
+        return (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / self._FAIL_HISTORY_FILENAME
+        )
+
+    def _read_fail_history(self, spec_name: str) -> list:
+        """读取失败历史侧车；缺失/损坏返回 []（升级告警据此标注 unknown）。"""
+        try:
+            path = self._fail_history_path(spec_name)
+            if not path.exists():
+                return []
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, list):
+                return []
+            return [r for r in loaded if isinstance(r, dict)]
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return []
+
+    def _append_fail_history(self, spec_name: str, cause_type: str,
+                             failed_scenarios: list) -> None:
+        """原子追加一轮裁决采纳失败记录 {round, cause_type, failed_scenarios}。
+
+        ``cause_type`` ∈ evidence-invalid（证据校验不合规） / real-bugs（真缺陷）。
+        写盘失败（含读损坏）静默降级：仅 warning 留痕，不阻断调用方流程。
+        """
+        try:
+            path = self._fail_history_path(spec_name)
+            rounds = self._read_fail_history(spec_name)
+            next_round = max(
+                [int(r.get("round", 0) or 0) for r in rounds], default=0) + 1
+            rounds.append({
+                "round": next_round,
+                "cause_type": cause_type,
+                "failed_scenarios": [str(s) for s in (failed_scenarios or [])],
+            })
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(path.parent), prefix=".fail_history.",
+                suffix=".json.tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(rounds, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                os.replace(tmp_path, path)
+            except OSError:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fail_history 写回失败 '{spec_name}'（静默降级）: {e}",
+            )
+
+    def _clear_fail_history(self, spec_name: str) -> None:
+        """清空失败历史侧车（verified 终态 / 升级告警消费后）。"""
+        try:
+            path = self._fail_history_path(spec_name)
+            if path.exists():
+                path.unlink()
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fail_history 清理失败 '{spec_name}'（静默降级）: {e}",
+            )
+
+    def _failed_scenario_ids(self, spec_name: str) -> list:
+        """从当前 report.json 提取非 PASS 场景 id 列表（失败轮 failed_scenarios）。"""
+        from core.verdict_check import load_report
+        report = load_report(self._pm.project_root, spec_name)
+        if not isinstance(report, dict):
+            return []
+        ids = []
+        for sc in report.get("scenarios") or []:
+            if not isinstance(sc, dict):
+                continue
+            if sc.get("status") not in ("pass", "passed"):
+                sid = sc.get("scenario_id") or sc.get("id")
+                if sid:
+                    ids.append(str(sid))
+        return ids
 
 
     def _update_warning_streaks(self, spec_name: str) -> list:

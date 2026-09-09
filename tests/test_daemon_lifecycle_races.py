@@ -625,7 +625,9 @@ class TestStaleVerdictGuard(unittest.TestCase):
         self.engine._ensure_verification_report = MagicMock(return_value=None)
         self.engine._env_whitewash_gate = MagicMock(return_value=True)
         self.engine._check_verification_gate = MagicMock(return_value=None)
-        self.engine._verify_verdict_evidence = MagicMock(return_value=True)
+        self.engine._verify_verdict_evidence = MagicMock(return_value={
+            "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
+        })
         self.result_path = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
         # 本类用例真实调 _run_three_stage_verification：引擎开头的
         # core.verify_engine importlib.reload（daemon 热更新设计）在测试进程里
