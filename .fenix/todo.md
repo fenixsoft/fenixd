@@ -1,15 +1,5 @@
 最近两天的SPEC经历了许多曲折，速度慢，烧钱也多。你今晚自省时重点关注最近两天超过1个小时完成的SPEC，分析它们的耗时，除LLM网关延迟外，有什么是框架可改进的地方
 
-## 2026-09-08
-
-### 浪费
-
-- **autostash 栈 75 条只增不减**
-  - 影响：pre-dispatch autostash 栈累积 75 条，最早一条 2026-08-25（13 天前），跨越多轮实现与重启仍无法清理。每条保留一份完整 diff 快照，占用 git 对象空间，且老条目可能引用已删除路径（如 v3/dist 重构前的路径）使 pop 自愈成本上升。窗口内新增 3 条（09-07 12:22/16:49、09-08 02:00），与窗口内 3 次冲突直接对应。
-  - 证据：git stash list 75 条，stash@{0} 2026-09-08 02:00 至 stash@{74} 2026-08-25 10:28。reclaim_stale_autostash（worktree_manager.py:1437）每 60s 调用一次（fenixd.py:435），但要求主树干净且仅处理栈顶一条。当前主树有 20+ 未提交改动文件（git status 显示），导致 reclaim 持续返回 False，清理完全停滞。
-  - 调查评估：核实：stash list 命令输出原始数据，reclaim 调用路径 fenixd.py:435 已核实。git status 确认主树脏。根因：reclaim 的主树干净条件（worktree_manager.py:1462）在活跃开发期无法满足；叠加每次 dispatch 新增一条 autostash，形成只增不减的堆积。与 2026-09-07 自省条目 #1 的修复关系：4f753ed 解决了无限循环（同条目重复 pop），但未解决存量堆积——该修复的 drop 路径仅在 pop 成功或自愈完成后触发，对于因主树脏无法被 reclaim 触达的条目无效。结论：这是系统性缺口，reclaim 机制在并发开发环境下实际失效。
-  - 建议：为 reclaim 增加「批量清理模式」：在 spec 已 pushed 且对应 autostash 条目年龄 > 阈值（如 48h）时，不论主树状态，直接 drop 该条目并记录 WARNING（附 sha 和 diff 摘要）。同时在 daemon 启动时做一次全栈扫描，对所有已 pushed spec 对应的陈旧条目一次性清理，而非依赖 60s 增量回收。
-
 ## 2026-09-09
 
 ### 浪费
@@ -50,9 +40,3 @@
   - 证据：STATE.md add-runtime-run-sweeper status=implementing、implementer_run: null、start_after: 2026-09-08T18:00（18:00:13 才转 implementing，之后仍无派发记录）；本次数据摘要「在跑/无终态: 25」；df2b46d1 09-08 11:37 spec 落地提交。
   - 调查评估：已核实：STATE 字段与 admin_state_history.json（18:00:13 转 implementing）一致，至窗口结束未派发 implementer。根因：活跃 spec 3 个（含两个被冻结 blocked 的）与 max_concurrent: 3 的派发竞争，叠加 start_after 调度延迟，修复项自身被排队拖住。与存量关系：该 spec 正是 09-07#浪费#1 悬空问题的修复载体，其落地缓慢使原问题既不闭环也无法验证修复效果。结论：调度延迟为系统性现象，修复项被同域问题拖累形成闭环死锁风险，值得干预。
   - 建议：核实 start_after 到期后派发是否存在主树干净等附加前置条件；若无，将该 spec 优先级提至 4 尽快派发落地，落地前用 09-07 实测数字（悬空 11.8–12.5h）作为验证基线。
-
-- **stash pop 冲突新增 1 次，autostash 栈增至 76 条（恶化）**
-  - 影响：窗口内 08:59 add-draft-promotion-gate 再次 stash pop 冲突（test_dashboard_api.py），本地改动沉入 stash 待人工找回，单次代价参照 09-08 实测：1 次 admin 往返 + 1 份改动丢失风险；autostash 栈 75→76 条（新增 09-08 16:59 一条），最老条目 2026-08-25 已 14 天。
-  - 证据：fenixd.log 08:59:20 [pm_engine] 'add-draft-promotion-gate' stash pop conflict: files=['tests/test_dashboard_api.py']；git stash list 实测 76 条，stash@{0} 2026-09-08 16:59:20，stash@{75} 2026-08-25 10:28:59。
-  - 调查评估：已核实：stash 栈实测 +1（新增条目时间与 dispatch 记录吻合），冲突 ERROR 为 09-08#浪费#1 同型事件（并发分支改同一文件后 merge-back pop 冲突）。与存量关系：fix-mergeback-stashpop-silent-loss spec 已立项（09-08 09:21 创建）但 status=implementing、implementer_run: null，未落地——与 add-runtime-run-sweeper 同样陷于派发排队。09-08#浪费#2 的批量清理建议同样无 SPEC 载体落地。结论：两个既有条目均未闭环且当日各恶化一次（冲突 +1、栈 +1），缺口维持原判。
-  - 建议：将 fix-mergeback-stashpop-silent-loss 与 autostash 批量清理合并排期优先派发；落地前降低并发实现分支对同一测试文件（tests/ 目录）的并行认领概率。
