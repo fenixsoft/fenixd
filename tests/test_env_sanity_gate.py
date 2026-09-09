@@ -200,6 +200,65 @@ class TestFinalizeScenarioStatus(unittest.TestCase):
         self.assertEqual(eg.finalize_scenario_status(s, probe_healthy=False), "fail")
 
 
+class TestBlankRenderCandidate(unittest.TestCase):
+    """白屏候选（B1，fenixd-registry-ignored-false-attribution-loop）：
+
+    CSR SPA 冷启动白屏时首帧等待 8s 超时，后续「元素不存在」断言全灭，
+    曾被误归因为「registry ignored 项目列表空」打回 implementer 空转两轮。
+    白屏 = step_results 显式 first_frame_ok is False（缺失不算，保守），
+    属客户端渲染维度证据，降级 blocked-env 不依赖服务探针健康与否。
+    """
+
+    def _blank_scenario(self, status="fail"):
+        return {
+            "status": status,
+            "step_results": [
+                {"action": "navigate", "success": True, "first_frame_ok": False},
+                {"action": "click", "success": False,
+                 "error": "Locator.wait_for: Timeout 5000ms exceeded."},
+            ],
+            "assertion_results": [],
+        }
+
+    def test_candidate_when_first_frame_explicitly_failed(self):
+        self.assertTrue(eg.is_blank_render_candidate(self._blank_scenario()))
+
+    def test_not_candidate_without_marker(self):
+        s = self._blank_scenario()
+        del s["step_results"][0]["first_frame_ok"]
+        self.assertFalse(eg.is_blank_render_candidate(s))
+
+    def test_not_candidate_when_marker_true(self):
+        s = self._blank_scenario()
+        s["step_results"][0]["first_frame_ok"] = True
+        self.assertFalse(eg.is_blank_render_candidate(s))
+
+    def test_not_candidate_when_step_results_missing(self):
+        self.assertFalse(eg.is_blank_render_candidate({"status": "fail"}))
+
+    def test_degrades_regardless_of_probe_health(self):
+        # 核心新语义：白屏是客户端证据，探针（服务端）健康不否定「本轮未渲染」
+        for healthy in (True, False):
+            self.assertEqual(
+                eg.finalize_scenario_status(self._blank_scenario(), healthy),
+                "blocked-env",
+            )
+
+    def test_pass_scenario_with_marker_untouched(self):
+        s = self._blank_scenario(status="pass")
+        self.assertEqual(eg.finalize_scenario_status(s, probe_healthy=True), "pass")
+
+    def test_mixed_fail_elsewhere_stays_fail(self):
+        # 无白屏标记的普通失败不受影响（防误伤回归）
+        s = {
+            "status": "fail",
+            "step_results": [{"action": "navigate", "success": True,
+                              "first_frame_ok": True}],
+            "assertion_results": [{"pass": False, "error": "text mismatch"}],
+        }
+        self.assertEqual(eg.finalize_scenario_status(s, probe_healthy=True), "fail")
+
+
 class _FakeResp:
     """忠实模拟 http.client.HTTPResponse 的上下文管理器，status 为整数。"""
 

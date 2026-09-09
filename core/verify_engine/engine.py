@@ -33,6 +33,7 @@ from .env_gate import (
     finalize_scenario_status,
     is_env_candidate,
     is_connection_error_candidate,
+    is_blank_render_candidate,
     probe_http_health,
 )
 # 导入 Runner 模块触发注册（web→WebRunner / api→ApiRunner / cli→CliRunner）；
@@ -321,7 +322,8 @@ class VerifyEngine:
             {"probe_healthy": bool, "blocked_env": int, "probe_detail": str}
         """
         candidates = [r for r in results
-                      if is_env_candidate(r) or is_connection_error_candidate(r)]
+                      if is_env_candidate(r) or is_connection_error_candidate(r)
+                      or is_blank_render_candidate(r)]
         if not candidates:
             self._env_probe = {"healthy": True, "detail": "无候选场景，跳过探针"}
             return {"probe_healthy": True, "blocked_env": 0, "probe_detail": self._env_probe["detail"]}

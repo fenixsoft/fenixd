@@ -428,8 +428,15 @@ class BrowserManager:
                     actual_url = f"{self._base_url}/{target}"
 
                 await page.goto(actual_url, wait_until="domcontentloaded", timeout=15000)
-                await self._wait_stable(page)
-                return {"success": True, "action": action, "detail": f"已导航到 {actual_url}"}
+                first_frame_ok = await self._wait_stable(page)
+                result = {"success": True, "action": action,
+                          "detail": f"已导航到 {actual_url}"}
+                # B1：仅首帧超时时显式落 False（True 不写键，旧报告/测试兼容）；
+                # env_gate.is_blank_render_candidate 依赖此键把白屏场景降级
+                # blocked-env，不再伪装成「元素不存在」类产品/场景失败
+                if first_frame_ok is False:
+                    result["first_frame_ok"] = False
+                return result
 
             # wait 操作可以没有 target（此时使用 value 作为暂停毫秒数）
             if action == "wait" and not target:
@@ -734,7 +741,12 @@ class BrowserManager:
                 timeout=8000,
             )
         except Exception:
-            pass  # 渲染失败/纯画布等形态：退化为原 CLS 等待，不在此处判失败
+            # B1（fenixd-registry-ignored-false-attribution-loop）：首帧 8s 超时
+            # 不再完全无声——返回 False，navigate 步骤据此落 first_frame_ok=False，
+            # env_gate.is_blank_render_candidate 据此把白屏场景降级 blocked-env
+            # （客户端渲染失败不进产品/场景归因）。「不在此处判失败」的原语义
+            # 保留：极端形态（纯画布等）仍走 CLS 退化，不放大为步骤失败。
+            return False
 
         # CLS 稳定
 
@@ -770,6 +782,8 @@ class BrowserManager:
             }""")
         except Exception:
             pass  # 浏览器不支持 CLS API 时跳过
+
+        return True
 
     # ── 数据采集 ───────────────────────────────────────────────
 

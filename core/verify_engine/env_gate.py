@@ -115,6 +115,32 @@ def is_connection_error_candidate(scenario_result: dict) -> bool:
     )
 
 
+def is_blank_render_candidate(scenario_result: dict) -> bool:
+    """web 场景白屏候选（B1，fenixd-registry-ignored-false-attribution-loop）。
+
+    候选 = step_results 存在显式 ``first_frame_ok is False`` 的步骤
+    （browser._wait_stable 首帧等待 8s 超时后由 navigate 步骤落盘）。
+    CSR SPA 冷启动白屏时后续断言全为「元素不存在」类无业务信息失败，
+    曾被误归因为 registry/数据问题打回 implementer 空转。
+
+    白屏是**客户端渲染维度**证据：即便服务探针健康（实例在线、API 正常），
+    「该场景本轮未完成渲染」的事实不变——finalize 对本候选**不依赖**
+    probe_healthy 一律降级 blocked-env。真前端崩溃（JS 异常白屏）由
+    pm_engine 的 blocked-env 升级通道（_escalate_env_blocked）送人工复核，
+    不静默丢失。
+
+    保守性：仅信任显式 ``is False``（缺失/True 均不算）；调用方须确保
+    场景 status == "fail"（与 is_env_candidate 同一单一职责约定）。
+    """
+    step_results = scenario_result.get("step_results")
+    if not isinstance(step_results, list):
+        return False
+    return any(
+        isinstance(s, dict) and s.get("first_frame_ok") is False
+        for s in step_results
+    )
+
+
 def finalize_scenario_status(scenario_result: dict, probe_healthy: bool) -> str:
     """场景状态最终结算：对 fail 候选做 blocked-env 后置分类。
 
@@ -129,6 +155,10 @@ def finalize_scenario_status(scenario_result: dict, probe_healthy: bool) -> str:
     status = scenario_result.get("status", "pass")
     if status != "fail":
         return status
+    # 白屏候选直接降级：客户端渲染失败证据不因服务探针健康而被推翻（B1），
+    # 真前端崩溃走 pm_engine blocked-env 升级通道送人工，不进产品归因
+    if is_blank_render_candidate(scenario_result):
+        return "blocked-env"
     # 探针健康 → 维持真失败（design D1：此时确属真缺陷或慢场景）
     if probe_healthy:
         return "fail"
