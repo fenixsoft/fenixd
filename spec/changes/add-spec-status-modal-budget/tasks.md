@@ -51,10 +51,12 @@
 
 - [x] 5.1 全量跑新增与相关既有测试（test_dashboard_freeze / test_spec_scheduling / test_spec_archive 回归），零失败
 - [x] 5.2 前端构建通过（`core/dashboard/static` 下 build/type-check 零错误）；dist 由框架 merge 后自动重建，不提交
-- [x] 5.3 场景核对：对照 specs/per-spec-impl-budget 与 specs/spec-status-actions-modal 全部 Scenario 逐条自验（含移动端卡片菜单入口）
+- [x] 5.3 场景核对：对照 specs/per-spec-impl-budget 与 specs/spec-status-actions-modal 全部 Scenario 逐条自验（含移动端卡片菜单入口）## 验证修复（第 2 轮失败）
 
-## 验证修复（第 1 轮失败）
+### 上轮实现结论（自动携带，来自上一轮 implementer 收工结论）
 
-- [x] 先复核失败有效性：逐条核对 `spec/changes/add-spec-status-modal-budget/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [x] 修复后重跑验证确认通过
+修复 clamp_impl_run_budget 非整数强转 Bug（字符串数字应返回 None 回退全局预算）；修复场景文件 test-defect（api-budget-403 Unicode 转义断言改 json_path、保存按钮 antd 双汉字空格选择器、mobile 遮罩断言时序、四确认流断言时序）。
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-spec-status-modal-budget/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
