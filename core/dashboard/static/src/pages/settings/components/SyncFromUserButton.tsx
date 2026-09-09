@@ -62,11 +62,12 @@ export default function SyncFromUserButton({ project, page, onSynced }: SyncFrom
   );
 }
 
-// 页签底部操作行的统一布局：左=同步用户级设置（项目级显示），右=保存。
+// 页签底部操作行的统一布局：右对齐，「同步用户级设置」紧邻「保存」左侧。
 // 面板各自的保存按钮行引用此样式，保持八个页签视觉一致。
 export const SETTINGS_ACTIONS_ROW_STYLE: React.CSSProperties = {
   display: 'flex',
-  justifyContent: 'space-between',
+  justifyContent: 'flex-end',
   alignItems: 'center',
+  gap: 8,
   marginTop: 24,
 };

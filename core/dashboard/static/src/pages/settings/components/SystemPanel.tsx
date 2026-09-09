@@ -359,20 +359,22 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
           marginTop: 24,
         }}
       >
-        {/* 左侧：重启 Fenixd + 同步用户级设置（均白色底，仅项目级显示） */}
+        {/* 左：重启 Fenixd（项目级显示）；右：同步用户级设置 + 保存 */}
+        {project ? (
+          <Button onClick={handleRestart} data-testid="system-restart-btn">
+            重启 Fenixd
+          </Button>
+        ) : (
+          <span />
+        )}
         <Space>
-          {project && (
-            <Button onClick={handleRestart} data-testid="system-restart-btn">
-              重启 Fenixd
-            </Button>
-          )}
           {project && onConfigSynced && (
             <SyncFromUserButton project={project} page="system" onSynced={onConfigSynced} />
           )}
+          <Button type="primary" onClick={handleSave} data-testid="system-save-btn">
+            保存
+          </Button>
         </Space>
-        <Button type="primary" onClick={handleSave} data-testid="system-save-btn">
-          保存
-        </Button>
       </div>
     </div>
   );
