@@ -149,6 +149,10 @@ INTERRUPTED_STATES = {SpecStatus.IMPLEMENTING, SpecStatus.TESTING}
 IMPL_RUN_BUDGET_USED_FIELD = "_impl_run_budget_used"
 BUDGET_EXEMPT_RUNS_FIELD = "_budget_exempt_runs"
 BUDGET_EXEMPT_ALERTED_FIELD = "_exempt_alerted"
+# ── per-spec 预算覆盖属性（add-spec-status-modal-budget D3）────────────
+# 人工管理属性：null/缺失 = 跟随全局 agents.impl_run_budget；1-10 整数 = per-spec
+# 有效预算。与 priority/start_after 同类，须随条目序列化（serialize 显式键表）。
+IMPL_RUN_BUDGET_OVERRIDE_FIELD = "impl_run_budget_override"
 
 # ── 重启重验预算计数（fix-daemon-lifecycle-races D3）──────────────────
 # - _verify_redo_count：daemon 重启恢复路径（testing→implemented 重派 verify）
@@ -226,6 +230,13 @@ class StateParser:
                         value = int(value)
                     except ValueError:
                         value = 999
+                elif key == IMPL_RUN_BUDGET_OVERRIDE_FIELD:
+                    # per-spec 预算覆盖：整数值显式转换（写入端恒 int 或 null；
+                    # 非法值按 null 容错，闸门读侧以 clamp 兜底）
+                    try:
+                        value = int(value)
+                    except ValueError:
+                        value = None
                 elif key in (FROZEN_FIELD, "_recovery_resume", "_cancelled_hold"):
                     # 布尔字段显式转换：字符串 "False" 也是 truthy，不转会把
                     # 解冻后的 spec 永久误判为冻结（fix-restart-dual-dispatch S4）；
@@ -274,7 +285,8 @@ class StateParser:
             for key in ["status", "priority", "created", "updated",
                          "implementer_run", "tester_run", "branch", "error",
                          "depends_on", "total_duration", FROZEN_FIELD,
-                         START_AFTER_FIELD, FROZEN_UNTIL_FIELD]:
+                         START_AFTER_FIELD, FROZEN_UNTIL_FIELD,
+                         IMPL_RUN_BUDGET_OVERRIDE_FIELD]:
                 val = entry.get(key, "null")
                 if val is None:
                     val = "null"

@@ -205,6 +205,12 @@ export interface SpecSummary {
   total_duration: number;
   latest_run: string | null;
   latest_run_status: string | null;
+  /** add-spec-status-modal-budget D3：实现尝试预算已用次数（_impl_run_budget_used，缺省 0） */
+  budget_used?: number;
+  /** add-spec-status-modal-budget D3：per-spec 覆盖值（1-10 整数或 null=跟随全局） */
+  budget_override?: number | null;
+  /** add-spec-status-modal-budget D3：有效预算（覆盖 > 全局 > 缺省，与闸门同源解析，前端不重复实现） */
+  budget_effective?: number;
 }
 
 export async function getSpecs(project: string): Promise<{ project: string; specs: SpecSummary[] }> {
@@ -334,6 +340,28 @@ export function archiveSpec(project: string, spec: string) {
   return request<{ ok: boolean; from: string; to: string }>(
     `/api/spec-archive?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
     { method: 'POST' },
+  );
+}
+
+// ── per-spec 实现尝试预算覆盖（add-spec-status-modal-budget D3） ──
+
+export interface SpecBudgetResult {
+  ok: boolean;
+  project: string;
+  spec: string;
+  budget: number | null;
+  error?: string;
+}
+
+/** 设置/清除 SPEC 的实现尝试预算覆盖（budget=1-10 整数写入；null 清除，恢复跟随全局） */
+export function setSpecBudget(project: string, spec: string, budget: number | null) {
+  return request<SpecBudgetResult>(
+    `/api/spec-budget?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ budget }),
+    },
   );
 }
 

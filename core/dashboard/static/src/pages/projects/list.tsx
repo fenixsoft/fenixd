@@ -36,21 +36,17 @@ import remarkGfm from 'remark-gfm';
 import { markdownComponents } from './components/SpecDocModal';
 import { getSpecDetail, getSpecs } from '@/services/dashboard';
 import {
-  archiveSpec,
   clearSpecError,
   deleteSpec,
-  freezeSpec,
-  promoteSpec,
-  setSpecFreezeConfig,
   setSpecPriority,
   setSpecStartAfter,
   statusMeta,
-  unfreezeSpec,
 } from '@/services/dashboard';
 import type { SpecDetail, SpecSummary } from '@/services/dashboard';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
 import SpecDocModal from './components/SpecDocModal';
 import AdminInvokeModal from './components/AdminInvokeModal';
+import SpecStatusModal from './components/SpecStatusModal';
 
 const REFRESH_THROTTLE_MS = 500;
 // dashboard-sse-refresh：增量 patch 去重窗口（同 spec 1s 内多事件只应用最新）
@@ -453,10 +449,8 @@ export default function SpecListPage() {
   // add-spec-scheduling-controls：设置拾取时间弹窗（非终态 spec）
   const [startAfterEdit, setStartAfterEdit] = useState<{ spec: string } | null>(null);
   const [saDate, setSaDate] = useState<dayjs.Dayjs | null>(null);
-  // add-spec-scheduling-controls：冻结管理弹窗（冻结态 spec）
-  const [freezeManage, setFreezeManage] = useState<{ spec: string } | null>(null);
-  const [freezeMode, setFreezeMode] = useState<'permanent' | 'scheduled'>('permanent');
-  const [freezeUntil, setFreezeUntil] = useState<dayjs.Dayjs | null>(null);
+  // add-spec-status-modal-budget：修改状态弹窗（归档/冻结/晋升/预算 四区块收敛入口）
+  const [statusModal, setStatusModal] = useState<{ spec: string } | null>(null);
 
   const load = useCallback(async () => {
     if (!name) return;
@@ -629,32 +623,6 @@ export default function SpecListPage() {
     });
   };
 
-  // add-spec-archive：归档确认弹窗（对齐删除确认模式：确认 → 调 API → 成功提示+刷新）
-  const handleArchiveSpec = (record: SpecSummary) => {
-    Modal.confirm({
-      title: '归档 SPEC',
-      content: (
-        <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认归档 SPEC「${record.name}」？\n\n`}
-          将 `spec/changes/{record.name}/` 移入归档目录
-          （archive/YYYY-MM-DD-{record.name}/），STATE.md 条目保留。
-          {'\n'}归档后可随时在列表「已归档」视图查看。
-        </div>
-      ),
-      okText: '归档',
-      cancelText: '取消',
-      onOk: async () => {
-        try {
-          await archiveSpec(name, record.name);
-          message.success(`SPEC「${record.name}」已归档`);
-          void load();
-        } catch (err) {
-          message.error(`归档失败：${err instanceof Error ? err.message : String(err)}`);
-        }
-      },
-    });
-  };
-
   const handlePriorityOk = async () => {
     if (!priorityEdit) return;
     try {
@@ -668,56 +636,6 @@ export default function SpecListPage() {
 
   const handleAdminInvoke = (record: SpecSummary) => {
     setAdminInvoke({ spec: record.name });
-  };
-
-  const isFrozen = (record: SpecSummary) =>
-    record.status === 'blocked' &&
-    (record.error || '').startsWith('用户指令冻结：');
-
-  const handleFreezeToggle = async (record: SpecSummary) => {
-    try {
-      if (isFrozen(record)) {
-        await unfreezeSpec(name, record.name);
-        message.success(`SPEC「${record.name}」已解冻`);
-      } else {
-        await freezeSpec(name, record.name);
-        message.success(`SPEC「${record.name}」已冻结，daemon 停止调度`);
-      }
-      void load();
-    } catch (err) {
-      message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-
-  // ── 手动晋升 drafted → ready（add-draft-promotion-gate D5）──────────
-  const handlePromoteSpec = (record: SpecSummary) => {
-    Modal.confirm({
-      title: '晋升 ready',
-      content: (
-        <div style={{ whiteSpace: 'pre-wrap' }}>
-          {`确认将 SPEC「${record.name}」从 drafted 晋升为 ready？\n\n`}
-          晋升将执行声明软化与 lint 检查；lint 违规时 SPEC 停留 drafted
-          并在 STATE 写入错误明细。
-        </div>
-      ),
-      okText: '晋升',
-      cancelText: '取消',
-      onOk: async () => {
-        try {
-          const result = await promoteSpec(name, record.name);
-          if (result.ok) {
-            message.success(`SPEC「${record.name}」已晋升 ready，等待调度`);
-            void load();
-          } else {
-            // lint 违规或非 drafted 拒绝
-            const detail = result.violations?.join('；') || result.reason || result.error || '晋升失败';
-            message.error(`晋升失败：${detail}`);
-          }
-        } catch (err) {
-          message.error(`晋升失败：${err instanceof Error ? err.message : String(err)}`);
-        }
-      },
-    });
   };
 
   // ── 设置拾取时间（add-spec-scheduling-controls D6）──────────────────
@@ -741,47 +659,6 @@ export default function SpecListPage() {
     }
   };
 
-  // ── 冻结管理（add-spec-scheduling-controls D6）──────────────────────
-  const openFreezeManage = (record: SpecSummary) => {
-    const scheduled = !!record.frozen_until;
-    setFreezeMode(scheduled ? 'scheduled' : 'permanent');
-    setFreezeUntil(scheduled && record.frozen_until ? dayjs(record.frozen_until) : null);
-    setFreezeManage({ spec: record.name });
-  };
-
-  const handleFreezeManageOk = async () => {
-    if (!freezeManage) return;
-    try {
-      if (freezeMode === 'scheduled') {
-        if (!freezeUntil) {
-          message.error('请选择定时解冻时间');
-          return;
-        }
-        await setSpecFreezeConfig(name, freezeManage.spec, 'scheduled', freezeUntil.toISOString());
-        message.success('已设置定时解冻，到期 daemon 自动恢复');
-      } else {
-        await setSpecFreezeConfig(name, freezeManage.spec, 'permanent');
-        message.success('已切换为永久冻结（人工解冻）');
-      }
-      setFreezeManage(null);
-      void load();
-    } catch (err) {
-      message.error(`操作失败：${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-
-  const handleFreezeManageUnfreeze = async () => {
-    if (!freezeManage) return;
-    try {
-      await setSpecFreezeConfig(name, freezeManage.spec, 'unfreeze');
-      message.success(`SPEC「${freezeManage.spec}」已解冻`);
-      setFreezeManage(null);
-      void load();
-    } catch (err) {
-      message.error(`解冻失败：${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-
   const specMenuItems = (record: SpecSummary) => {
     const terminal = PRIORITY_TERMINAL.has(record.status || '');
     // add-spec-archive：已归档视图操作收敛——隐藏调度类操作（优先级/冻结/归档），
@@ -792,47 +669,30 @@ export default function SpecListPage() {
         { key: 'delete', label: '删除 SPEC', danger: true },
       ];
     }
+    // add-spec-status-modal-budget D2：菜单收敛——状态类操作（晋升/冻结/解冻/
+    // 冻结管理/归档）全部并入「修改状态」弹窗，保留 admin/priority/pickup-time/delete。
+    // 终态置灰仅作用于 priority/pickup-time（现状语义）；「修改状态」终态仍可点
+    // （归档区块可用）。
     return [
-      // add-draft-promotion-gate：drafted 状态可手动晋升
-      ...(record.status === 'drafted'
-        ? [{ key: 'promote' as const, label: '晋升 ready' }]
-        : []),
+      { key: 'status', label: '修改状态' },
       { key: 'admin', label: '呼叫 Admin 介入' },
       { key: 'priority', label: '调整优先级', disabled: terminal },
       // add-spec-scheduling-controls：非终态 spec 可设置定时拾取（start_after）
       { key: 'pickup-time', label: '设置拾取时间', disabled: terminal },
-      // add-spec-scheduling-controls：冻结 spec 的「冻结管理」弹窗
-      //（永久 ↔ 定时解冻切换、立即解冻），与既有「冻结/解冻 Spec」并存
-      ...(isFrozen(record)
-        ? [{ key: 'freeze-manage' as const, label: '冻结管理' }]
-        : []),
-      {
-        key: isFrozen(record) ? 'unfreeze' : 'freeze',
-        label: isFrozen(record) ? '解冻 SPEC' : '冻结 SPEC',
-        disabled: terminal,
-      },
-      // 归档 Spec：仅终态（done/pushed）可用，非终态置灰；位于「冻结/解冻」之后
-      { key: 'archive', label: '归档 SPEC', disabled: !terminal },
       { type: 'divider' as const },
       { key: 'delete', label: '删除 SPEC', danger: true },
     ];
   };
 
   const onSpecMenu = (record: SpecSummary, key: string) => {
-    if (key === 'promote') {
-      void handlePromoteSpec(record);
+    if (key === 'status') {
+      setStatusModal({ spec: record.name });
     } else if (key === 'admin') {
       void handleAdminInvoke(record);
     } else if (key === 'priority') {
       setPriorityEdit({ spec: record.name, value: record.priority ?? 5 });
     } else if (key === 'pickup-time') {
       openStartAfterModal(record);
-    } else if (key === 'freeze-manage') {
-      openFreezeManage(record);
-    } else if (key === 'freeze' || key === 'unfreeze') {
-      void handleFreezeToggle(record);
-    } else if (key === 'archive') {
-      handleArchiveSpec(record);
     } else if (key === 'delete') {
       handleDeleteSpec(record);
     }
@@ -1225,69 +1085,16 @@ export default function SpecListPage() {
         </Space>
       </Modal>
 
-      {/* add-spec-scheduling-controls：冻结管理弹窗（冻结态 spec） */}
-      <Modal
-        title="冻结管理"
-        open={!!freezeManage}
-        onOk={() => void handleFreezeManageOk()}
-        onCancel={() => setFreezeManage(null)}
-        okText="确定"
-        cancelText="取消"
-        footer={
-          freezeManage ? (
-            <Space>
-              <Button danger onClick={() => void handleFreezeManageUnfreeze()}>
-                立即解冻
-              </Button>
-              <Button onClick={() => setFreezeManage(null)}>取消</Button>
-              <Button type="primary" onClick={() => void handleFreezeManageOk()}>
-                确定
-              </Button>
-            </Space>
-          ) : null
-        }
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div>
-            <Typography.Text type="secondary">当前模式：</Typography.Text>
-            <Typography.Text strong>
-              {freezeManage && specMap[freezeManage.spec]?.frozen_until
-                ? '定时解冻'
-                : '永久冻结（人工解冻）'}
-            </Typography.Text>
-            {freezeManage && specMap[freezeManage.spec]?.frozen_until ? (
-              <div style={{ fontSize: 12, color: 'rgba(0, 0, 0, 0.45)' }}>
-                目标时间：
-                {dayjs(specMap[freezeManage.spec]?.frozen_until).format('YYYY-MM-DD HH:mm')}
-                （本地），到期 daemon 自动解冻
-              </div>
-            ) : null}
-          </div>
-          {freezeManage && specMap[freezeManage.spec]?.error ? (
-            <div>
-              <Typography.Text type="secondary">冻结原因：</Typography.Text>
-              <Typography.Text>{specMap[freezeManage.spec]?.error}</Typography.Text>
-            </div>
-          ) : null}
-          <Radio.Group
-            value={freezeMode}
-            onChange={(e) => setFreezeMode(e.target.value as 'permanent' | 'scheduled')}
-            options={[
-              { label: '永久冻结（人工解冻）', value: 'permanent' },
-              { label: '定时解冻', value: 'scheduled' },
-            ]}
-          />
-          {freezeMode === 'scheduled' ? (
-            <DatePicker
-              showTime
-              style={{ width: '100%' }}
-              value={freezeUntil}
-              onChange={setFreezeUntil}
-              placeholder="选择自动解冻时间"
-            />
-          ) : null}
-        </div>
-      </Modal>
+      {/* add-spec-status-modal-budget D1：修改状态弹窗（归档/冻结/晋升/预算四区块，
+          桌面与移动端共用 specMenuItems 的 status 入口） */}
+      <SpecStatusModal
+        project={name}
+        spec={statusModal?.spec || ''}
+        open={!!statusModal}
+        summary={statusModal ? (specMap[statusModal.spec] ?? null) : null}
+        onClose={() => setStatusModal(null)}
+        onDone={() => void load()}
+      />
     </PageContainer>
   );
 }

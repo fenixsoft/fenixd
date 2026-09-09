@@ -2307,9 +2307,9 @@ class PMEngine:
     ):
         return self._family._send_human_escalation_alert(spec_name, signal_type, severity, description, evidence, recommended_action, trigger)
 
-    # ── 实现尝试总预算（add-fail-counter-budget D2/D4）──────────────
-    def _impl_run_budget(self) -> int:
-        return self._budget._impl_run_budget()
+    # ── 实现尝试总预算（add-fail-counter-budget D2/D4 / add-spec-status-modal-budget D3）──────────────
+    def _impl_run_budget(self, spec_name: str | None = None) -> int:
+        return self._budget._impl_run_budget(spec_name)
 
     def _increment_impl_run_budget_used(self, spec_name: str) -> int:
         return self._budget._increment_impl_run_budget_used(spec_name)

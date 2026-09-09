@@ -2059,3 +2059,141 @@ class TestSyncConfigFromUser(unittest.TestCase):
         result = self._sync("verify")
         self.assertFalse(result["ok"])
         self.assertFalse((self.proot / ".fenix" / "config.yaml").exists())
+
+
+class TestSpecBudgetData(unittest.TestCase):
+    """set_spec_budget 返回形状与写盘断言（add-spec-status-modal-budget D3）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.sm = StateMachine(self.project_root / ".fenix" / "STATE.md", None)
+        self.sm.add_spec("demo-spec", {"priority": 5})
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_set_override_writes_and_returns(self):
+        from core.dashboard.data import set_spec_budget, parse_state
+        result = set_spec_budget(self.project_root, "demo-spec", 8)
+        self.assertEqual(result, {"ok": True, "found": True, "budget": 8})
+        entry = parse_state(self.project_root)["demo-spec"]
+        self.assertEqual(entry.get("impl_run_budget_override"), 8)
+
+    def test_clear_null(self):
+        from core.dashboard.data import set_spec_budget, parse_state
+        set_spec_budget(self.project_root, "demo-spec", 8)
+        result = set_spec_budget(self.project_root, "demo-spec", None)
+        self.assertEqual(result, {"ok": True, "found": True, "budget": None})
+        entry = parse_state(self.project_root)["demo-spec"]
+        self.assertEqual(entry.get("impl_run_budget_override"), None)
+
+    def test_spec_not_found(self):
+        from core.dashboard.data import set_spec_budget
+        result = set_spec_budget(self.project_root, "ghost", 5)
+        self.assertFalse(result["found"])
+        self.assertFalse(result["ok"])
+
+    def test_terminal_rejected(self):
+        from core.dashboard.data import set_spec_budget
+        self.sm.update_spec("demo-spec", {"status": "done"})
+        result = set_spec_budget(self.project_root, "demo-spec", 5)
+        self.assertTrue(result["terminal"])
+        self.assertFalse(result["ok"])
+
+    def test_invalid_values_rejected(self):
+        from core.dashboard.data import set_spec_budget, parse_state
+        for bad in (0, 11, "5", 3.5, True, -1):
+            result = set_spec_budget(self.project_root, "demo-spec", bad)
+            self.assertTrue(result["invalid"], f"budget={bad!r} 应拒绝")
+        entry = parse_state(self.project_root)["demo-spec"]
+        # serialize 总写 impl_run_budget_override（null），非法值拒绝写入 → 仍为 null
+        self.assertIsNone(entry.get("impl_run_budget_override"))
+
+    def test_does_not_touch_used_counter(self):
+        from core.dashboard.data import set_spec_budget, parse_state
+        self.sm.update_spec("demo-spec", {"_impl_run_budget_used": 3})
+        set_spec_budget(self.project_root, "demo-spec", 6)
+        entry = parse_state(self.project_root)["demo-spec"]
+        self.assertEqual(int(entry.get("_impl_run_budget_used", 0)), 3)
+
+
+class TestSpecSummaryBudgetFields(unittest.TestCase):
+    """spec_summary 三预算字段（覆盖/无覆盖/非法覆盖三态，与闸门口径一致）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        (self.project_root / "spec" / "changes" / "demo-spec").mkdir(parents=True, exist_ok=True)
+        self.sm = StateMachine(self.project_root / ".fenix" / "STATE.md", None)
+        self.sm.add_spec("demo-spec", {"priority": 5})
+        # 项目级 config 无 impl_run_budget（真实环境可能有用户级配置影响，
+        # 测试通过 mock ConfigLoader.resolve_config 控制全局值，保证 DEFAULT 回退路径可测）
+        (self.project_root / ".fenix" / "config.yaml").write_text(
+            "project:\n  name: t\n", encoding="utf-8")
+        # 重置全局预算缓存，避免跨测试污染
+        from core.dashboard.data import _GLOBAL_BUDGET_CACHE
+        _GLOBAL_BUDGET_CACHE.clear()
+
+    def tearDown(self):
+        from core.dashboard.data import _GLOBAL_BUDGET_CACHE
+        _GLOBAL_BUDGET_CACHE.clear()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _summary(self):
+        from core.dashboard.data import spec_summary, parse_state
+        entry = parse_state(self.project_root)["demo-spec"]
+        return spec_summary(self.project_root, "demo-spec", entry)
+
+    def test_no_override_fallback_default(self):
+        """无 override 且回退全局 config（mock resolve_config 无 impl_run_budget 键）
+        → 回退 DEFAULT_IMPL_RUN_BUDGET = 6。"""
+        from core.pm_engine.budget import DEFAULT_IMPL_RUN_BUDGET
+        with patch("core.config.ConfigLoader.resolve_config",
+                   return_value={}), \
+             patch("core.config.ConfigLoader.get", return_value=None):
+            from core.dashboard.data import _GLOBAL_BUDGET_CACHE
+            _GLOBAL_BUDGET_CACHE.clear()
+            s = self._summary()
+        self.assertEqual(s["budget_used"], 0)
+        self.assertIsNone(s["budget_override"])
+        self.assertEqual(s["budget_effective"], DEFAULT_IMPL_RUN_BUDGET)
+
+    def test_override_set(self):
+        self.sm.update_spec("demo-spec", {"impl_run_budget_override": 8,
+                                          "_impl_run_budget_used": 5})
+        s = self._summary()
+        self.assertEqual(s["budget_used"], 5)
+        self.assertEqual(s["budget_override"], 8)
+        self.assertEqual(s["budget_effective"], 8)
+
+    def test_invalid_override_fallback_global(self):
+        """非法覆盖值经 parse 归一为 None → 回退全局 config（mock 为无值 → DEFAULT 6）。"""
+        self.sm.update_spec("demo-spec", {"impl_run_budget_override": "abc"})
+        from core.pm_engine.budget import DEFAULT_IMPL_RUN_BUDGET
+        with patch("core.config.ConfigLoader.resolve_config",
+                   return_value={}), \
+             patch("core.config.ConfigLoader.get", return_value=None):
+            from core.dashboard.data import _GLOBAL_BUDGET_CACHE
+            _GLOBAL_BUDGET_CACHE.clear()
+            s = self._summary()
+        self.assertIsNone(s["budget_override"])
+        self.assertEqual(s["budget_effective"], DEFAULT_IMPL_RUN_BUDGET)
+
+    def test_override_clamped_like_gate(self):
+        """覆盖越界与闸门同口径夹紧（0→1，11→10）。"""
+        self.sm.update_spec("demo-spec", {"impl_run_budget_override": 11})
+        s = self._summary()
+        self.assertEqual(s["budget_override"], 10)
+        self.assertEqual(s["budget_effective"], 10)
+
+    def test_used_tolerant_on_bad_value(self):
+        self.sm.update_spec("demo-spec", {"_impl_run_budget_used": "oops"})
+        s = self._summary()
+        self.assertEqual(s["budget_used"], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

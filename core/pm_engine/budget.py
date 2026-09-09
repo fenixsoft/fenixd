@@ -18,6 +18,33 @@ import re
 # 4→6（add-v3-spec-quick-switch 2026-09-02）：4 次预算中 merge 冲突重试、恢复
 # 误派等机制摩擦可吞掉全部预算，真 bug 修复轮次为 0；上调留出摩擦余量。
 DEFAULT_IMPL_RUN_BUDGET = 6
+# ── per-spec 预算覆盖属性（add-spec-status-modal-budget D3）──────────
+# 人工管理属性（不带下划线前缀，与 priority/start_after 同类；下划线前缀保留给
+# 框架私有字段 _impl_run_budget_used 等）。null/缺失 = 跟随全局 agents.impl_run_budget。
+IMPL_RUN_BUDGET_OVERRIDE_FIELD = "impl_run_budget_override"
+
+
+def clamp_impl_run_budget(raw) -> int | None:
+    """预算值归一化纯函数（模块级导出，闸门与 Dashboard 同源，防口径漂移）。
+
+    - 可解析为整数 → 夹紧到 1-10 返回（bool 是 int 子类但语义非法 → None）；
+    - None / 不可解析（字符串数字、浮点等）→ 返回 None（调用方回退下一优先级）。
+
+    覆盖值与全局配置共用此函数，保证越界夹紧口径完全一致（design D3 / risk 单点）。
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return None
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if val < 1:
+        val = 1
+    if val > 10:
+        val = 10
+    return val
 # 持久化字段名：当前 spec 已累计启动的实现 run 次数。
 IMPL_RUN_BUDGET_USED_FIELD = "_impl_run_budget_used"
 # ── 死亡 run 豁免（fix-budget-counting-semantics D1）──────────────
@@ -33,23 +60,27 @@ class ImplBudget:
     def __init__(self, pm):
         self._pm = pm  # 门面回引（design D3 规则 3：组件 → 门面 单向）
 
-    # ── 实现尝试总预算（add-fail-counter-budget D2/D4）──────────────
-    def _impl_run_budget(self) -> int:
-        """读取实现尝试预算（agents.impl_run_budget），缺省 DEFAULT_IMPL_RUN_BUDGET。
+    # ── 实现尝试总预算（add-fail-counter-budget D2/D4 / add-spec-status-modal-budget D3）──────────────
+    def _impl_run_budget(self, spec_name: str | None = None) -> int:
+        """读取实现尝试有效预算，缺省 DEFAULT_IMPL_RUN_BUDGET。
+
+        add-spec-status-modal-budget D3 覆盖优先解析：
+        1. spec_name 非空且 STATE 条目 ``impl_run_budget_override`` 存在且可解析为
+           整数 → 同口径夹紧 1-10 使用（per-spec 覆盖）；
+        2. 否则回退全局配置 ``agents.impl_run_budget``（现状逻辑）；
+        3. 全局缺失/非法 → DEFAULT_IMPL_RUN_BUDGET。
 
         范围约束 1-10（D3 界面校验同口径）；配置越界时夹紧到合法区间，避免
-        极端配置使闸门失效或永远触发。
+        极端配置使闸门失效或永远触发。夹紧逻辑收敛到模块级纯函数
+        clamp_impl_run_budget（与 dashboard 摘要同源，防口径漂移）。
         """
-        try:
-            raw = self._pm._get_config("agents.impl_run_budget", DEFAULT_IMPL_RUN_BUDGET)
-            val = int(raw) if raw is not None else DEFAULT_IMPL_RUN_BUDGET
-        except (TypeError, ValueError):
-            val = DEFAULT_IMPL_RUN_BUDGET
-        if val < 1:
-            val = 1
-        if val > 10:
-            val = 10
-        return val
+        if spec_name:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+            override = clamp_impl_run_budget(entry.get(IMPL_RUN_BUDGET_OVERRIDE_FIELD))
+            if override is not None:
+                return override
+        raw = self._pm._get_config("agents.impl_run_budget", DEFAULT_IMPL_RUN_BUDGET)
+        return clamp_impl_run_budget(raw) or DEFAULT_IMPL_RUN_BUDGET
 
 
     def _increment_impl_run_budget_used(self, spec_name: str) -> int:
@@ -63,7 +94,7 @@ class ImplBudget:
         used = self._pm.state_machine.bump_impl_budget(spec_name, 1)
         self._pm.logger.info(
             "pm_engine",
-            f"实现尝试预算计数 +1: '{spec_name}' used={used}/{self._impl_run_budget()}",
+            f"实现尝试预算计数 +1: '{spec_name}' used={used}/{self._impl_run_budget(spec_name)}",
         )
         return used
 
@@ -96,7 +127,7 @@ class ImplBudget:
         self._pm.logger.warning(
             "pm_engine",
             f"预算豁免（死亡 run）: '{spec_name}' used 回退至 "
-            f"{used}/{self._impl_run_budget()}，_budget_exempt_runs={exempt}，"
+            f"{used}/{self._impl_run_budget(spec_name)}，_budget_exempt_runs={exempt}，"
             f"reason={reason}",
         )
         if exempt >= self._budget_exempt_alert_threshold():
@@ -269,7 +300,7 @@ class ImplBudget:
         本方法只在「即将开启新一轮」时调用。幂等：已是 blocked 时直接返回 True
         不再重复告警。
         """
-        budget = self._impl_run_budget()
+        budget = self._impl_run_budget(spec_name)
         used = self._impl_run_budget_used(spec_name)
         if used < budget:
             return False

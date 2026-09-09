@@ -480,6 +480,55 @@ def set_spec_start_after(project_root, spec: str, value) -> dict:
     return {"ok": True, "found": True, "start_after": normalized}
 
 
+# ── per-spec 实现尝试预算覆盖（add-spec-status-modal-budget D3）──────────────
+
+def set_spec_budget(project_root, spec: str, budget) -> dict:
+    """设置/清除 SPEC 的实现尝试预算覆盖（impl_run_budget_override）。
+
+    budget 取值：
+    - None：清除覆盖（属性置 null，恢复跟随全局 agents.impl_run_budget）；
+    - 1-10 整数：写入 per-spec 覆盖值（API 层已校验 isinstance(int) and not isinstance(bool)）；
+    - 其余：{invalid: True}（拒绝写入，STATE.md 不变）。
+
+    校验：
+    - spec 不在 STATE.md → {found: False}
+    - 终态（done/pushed）→ {terminal: True}（终态修改预算无意义）
+    - 非法值 → {invalid: True}
+    - 成功 → {ok: True, budget: <1-10 整数或 None>}
+    写入经 StateMachine.update_spec（flock + 原子 rename，与 daemon 并发写安全）。
+
+    边界（add-spec-status-modal-budget D3）：本函数只写覆盖属性
+    ``impl_run_budget_override``，MUST NOT 触碰 ``_impl_run_budget_used``
+    已用计数——已用次数归对账组件 _reconcile_impl_budget 管辖，本能力只改预算上限。
+    """
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "found": False, "budget": None,
+                "error": f"spec not found: {spec}"}
+    entry = specs[spec]
+    if entry.get("status") in ("done", "pushed"):
+        return {"ok": False, "found": True, "terminal": True, "budget": None,
+                "error": f"终态 spec（{entry.get('status')}）不可设置预算覆盖"}
+    # null 清除
+    if budget is None:
+        from core.state_machine import StateMachine
+        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm.update_spec(spec, {"impl_run_budget_override": None})
+        return {"ok": True, "found": True, "budget": None}
+    # 非法值校验（int，非 bool，1-10）
+    if isinstance(budget, bool) or not isinstance(budget, int):
+        return {"ok": False, "found": True, "budget": None, "invalid": True,
+                "error": "budget must be an integer between 1 and 10 (or null to clear)"}
+    if budget < 1 or budget > 10:
+        return {"ok": False, "found": True, "budget": None, "invalid": True,
+                "error": "budget must be an integer between 1 and 10 (or null to clear)"}
+    from core.state_machine import StateMachine
+    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    sm.update_spec(spec, {"impl_run_budget_override": budget})
+    return {"ok": True, "found": True, "budget": budget}
+
+
 # ── 冻结配置 frozen_until（add-spec-scheduling-controls D5） ─────────
 
 def configure_spec_freeze(project_root, spec: str, mode: str, until=None) -> dict:
@@ -972,6 +1021,11 @@ def parse_state(project_root) -> dict:
                         val = int(val)
                     except ValueError:
                         val = 999
+                elif key == "impl_run_budget_override":
+                    try:
+                        val = int(val)
+                    except ValueError:
+                        val = None
                 elif val.lower() in ("null", "none", ""):
                     val = None
                 current_entry[key] = val
@@ -2530,6 +2584,38 @@ def _spec_total_duration(project_root, spec_name: str, entry: dict, runs: list) 
     return persisted
 
 
+# ── 全局 impl_run_budget 缓存（add-spec-status-modal-budget D3）──────────────
+# budget_effective 需读全局 config agents.impl_run_budget 做 fallback，每次
+# spec_summary 调用都 resolve_config 是浪费（O(N) YAML 解析）；以 config 文件
+# 签名键缓存一次解析结果，签名不变直返缓存。与 _EFFECTIVE_CONFIG_CACHE 同模式。
+_GLOBAL_BUDGET_CACHE: dict = {}
+_GLOBAL_BUDGET_CACHE_MAX = 64
+
+
+def _resolve_global_impl_run_budget(project_root) -> int:
+    """读取全局 agents.impl_run_budget 有效值，fallback DEFAULT_IMPL_RUN_BUDGET。
+
+    结果按项目级 config.yaml 签名键缓存（config 变化自动失效），与闸门口径一致：
+    ConfigLoader.get 读合并配置 → clamp_impl_run_budget 夹紧 → fallback DEFAULT。
+    """
+    from core.pm_engine.budget import clamp_impl_run_budget, DEFAULT_IMPL_RUN_BUDGET
+    from core.config import ConfigLoader
+    proot = Path(project_root)
+    cfg_path = proot / ".fenix" / "config.yaml"
+    sig = _config_file_sig(cfg_path)
+    cache_key = (str(proot.resolve()), sig)
+    cached = _GLOBAL_BUDGET_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    cfg = ConfigLoader.resolve_config(proot)
+    raw = ConfigLoader.get(cfg, "agents.impl_run_budget")
+    budget = clamp_impl_run_budget(raw) or DEFAULT_IMPL_RUN_BUDGET
+    if len(_GLOBAL_BUDGET_CACHE) > _GLOBAL_BUDGET_CACHE_MAX:
+        _GLOBAL_BUDGET_CACHE.clear()
+    _GLOBAL_BUDGET_CACHE[cache_key] = budget
+    return budget
+
+
 def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
     """单个 SPEC 的摘要（/api/specs 列表项）。"""
     done, total = task_progress(project_root, spec_name, entry.get("status", ""))
@@ -2540,6 +2626,19 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
     # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
     from core.spec_mode import read_spec_mode
     mode = read_spec_mode(project_root, spec_name)
+    # add-spec-status-modal-budget D3：per-spec 预算字段
+    # 三字段读取与预算闸门同源（clamp_impl_run_budget 单点），前端不重复实现解析。
+    from core.pm_engine.budget import clamp_impl_run_budget, IMPL_RUN_BUDGET_OVERRIDE_FIELD, DEFAULT_IMPL_RUN_BUDGET
+    budget_override_raw = entry.get(IMPL_RUN_BUDGET_OVERRIDE_FIELD) if entry else None
+    budget_override = clamp_impl_run_budget(budget_override_raw)
+    try:
+        budget_used = int(entry.get("_impl_run_budget_used", 0) or 0) if entry else 0
+    except (TypeError, ValueError):
+        budget_used = 0
+    if budget_override is not None:
+        budget_effective = budget_override
+    else:
+        budget_effective = _resolve_global_impl_run_budget(project_root)
     return {
         "name": spec_name,
         "status": entry.get("status"),
@@ -2574,6 +2673,11 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         "total_duration": total_duration,
         "latest_run": runs[0]["run_id"] if runs else None,
         "latest_run_status": runs[0]["status"] if runs else None,
+        # add-spec-status-modal-budget D3：per-spec 预算覆盖三字段
+        #（used 容错读；override 非法视为 null；effective 与闸门同源解析）
+        "budget_used": budget_used,
+        "budget_override": budget_override,
+        "budget_effective": budget_effective,
     }
 
 
@@ -2651,6 +2755,10 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict,
     vp_dir = proot / ".fenix" / "verify-progress" / spec_name
     add(vp_dir / "report.json")
     add(vp_dir / "test_scenarios.json")
+    # add-spec-status-modal-budget D3：budget_effective 依赖全局 config
+    #（agents.impl_run_budget 覆盖优先解析的兜底来源），项目级与用户级
+    # config.yaml 变化须触发摘要失效（宁多勿漏原则）。
+    add(proot / ".fenix" / "config.yaml")
     for p, sig in (runs_sigs.get(spec_name) or {}).items():
         sigs[p] = sig
     return sigs
