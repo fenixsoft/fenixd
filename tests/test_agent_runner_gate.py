@@ -192,11 +192,10 @@ class TestArtifactGate:
         runner.worktree_manager.create.return_value = wt
         runner.worktree_manager.get_branch_name.return_value = "fenix/spec-x"
 
-        invalid = {"written": False}
+        # 无效文件须在 fake_run_claude 内写入，确保 mtime ≥ attempt_started_at
+        # （fix-verdict-read-failclosed D2 新鲜度约束：预写文件可能因
+        # mtime < run_started_at 被拦截为陈旧残留而非非法 JSON）。
         result_path = planner_result_path(tmp_path, "spec-x", "planner-judge")
-        result_path.parent.mkdir(parents=True, exist_ok=True)
-        result_path.write_text("{{not-json", encoding="utf-8")
-        assert invalid == {"written": False}  # 仅占位：产物已预写为非法 JSON
 
         calls = {"n": 0}
 
@@ -204,6 +203,8 @@ class TestArtifactGate:
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None):
             calls["n"] += 1
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text("{{not-json", encoding="utf-8")
             return ("done", 1, "sess-gate", _usage_ok())
 
         runner._run_claude = fake_run_claude
@@ -222,14 +223,19 @@ class TestArtifactGate:
         runner.worktree_manager.cleanup.return_value = None
 
         result_path = planner_result_path(tmp_path, "spec-x", "planner-judge")
-        result_path.parent.mkdir(parents=True, exist_ok=True)
-        result_path.write_text(
-            json.dumps({"status": "verified", "summary": "ok"}),
-            encoding="utf-8",
-        )
 
-        runner._run_claude = MagicMock(
-            return_value=("done", 1, "sess-ok", _usage_ok()))
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None,
+                            spec_name=None, agent_type=None):
+            # 产物须在 run 启动后写入（D2 新鲜度：mtime ≥ attempt_started_at）
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(
+                json.dumps({"status": "verified", "summary": "ok"}),
+                encoding="utf-8",
+            )
+            return ("done", 1, "sess-ok", _usage_ok())
+
+        runner._run_claude = fake_run_claude
         result = runner._execute_agent("spec-x", "planner-judge", "run-g3")
         assert result.success is True
         # 成功后 worktree 被清理（非 fast-track/repair 类型）
@@ -271,12 +277,17 @@ class TestArtifactGate:
         runner.worktree_manager.cleanup.return_value = None
 
         scenarios_path = planner_result_path(tmp_path, "spec-x", "planner-plan")
-        scenarios_path.parent.mkdir(parents=True, exist_ok=True)
-        scenarios_path.write_text(json.dumps([{"id": "s1", "description": "d"}]),
-                                  encoding="utf-8")
 
-        runner._run_claude = MagicMock(
-            return_value=("plan-ready", 1, "sess-plan", _usage_ok()))
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None,
+                            spec_name=None, agent_type=None):
+            # 产物须在 run 启动后写入（D2 新鲜度：mtime ≥ attempt_started_at）
+            scenarios_path.parent.mkdir(parents=True, exist_ok=True)
+            scenarios_path.write_text(json.dumps([{"id": "s1", "description": "d"}]),
+                                      encoding="utf-8")
+            return ("plan-ready", 1, "sess-plan", _usage_ok())
+
+        runner._run_claude = fake_run_claude
         result = runner._execute_agent("spec-x", "planner-plan", "run-p2")
         assert result.success is True
 
@@ -317,6 +328,141 @@ class TestArtifactGate:
         result = runner._execute_agent("spec-x", "planner-judge", "run-g4")
         assert result.success is True
         assert calls["n"] == 2  # 首次 gate 失败 → 原地重试（r1）即成功
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# fix-verdict-read-failclosed：拷回时序 / 新鲜度 / status 白名单（Task 1.4）
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestVerdictReadFailClosedGate:
+    """产物硬门三增补：拷回前置门检、mtime 新鲜度、顶层 status 白名单。"""
+
+    def _gate_path(self, proot: Path, spec: str) -> Path:
+        return planner_result_path(proot, spec, "planner-judge")
+
+    # ── ① worktree 侧非法 JSON（裸换行复刻事故）→ 拷回后门检拦截 ────────
+
+    def test_worktree_invalid_json_caught_after_copyback(self, tmp_path,
+                                                         monkeypatch):
+        """worktree 侧写裸换行非法 JSON → 拷回后门检拦截（瞬态重试）。
+
+        复刻 add-verify-contract-autodraft 事故签名：judge 以相对路径写产物
+        落在 worktree 真实 .fenix/ 下；拷回先于门检（D1），门验到主树同路径
+        本轮真实产物（非法 JSON）→ 拦截走瞬态退避重试。
+        """
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+        runner = _make_runner(tmp_path, _standard_chain_config("planner-judge"))
+        wt = tmp_path / "wt"
+        wt.mkdir(parents=True)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = wt
+        runner.worktree_manager.get_branch_name.return_value = "fenix/spec-x"
+
+        # worktree 真实 .fenix/ 下的产物：summary 字符串含未转义裸换行
+        wt_vp = wt / ".fenix" / "verify-progress" / "spec-x"
+        wt_vp.mkdir(parents=True, exist_ok=True)
+
+        calls = {"n": 0}
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None,
+                            spec_name=None, agent_type=None):
+            calls["n"] += 1
+            # 每轮重写 worktree 侧非法产物（本轮真实产出 = 非法 JSON）
+            (wt_vp / ".fenix-run-result.json").write_text(
+                '{"status": "bug-found", "summary": "line1\nline2"}',
+                encoding="utf-8")
+            return ("done", 1, "sess-gate", _usage_ok())
+
+        runner._run_claude = fake_run_claude
+        result = runner._execute_agent("spec-x", "planner-judge", "run-v1")
+        assert result.success is False
+        assert "非法 JSON" in (result.error or "")
+        assert calls["n"] >= 2  # 瞬态退避重试发生
+        # 拷回先行证据：主树同路径已被本轮 worktree 产物覆盖（非法 JSON）
+        assert self._gate_path(tmp_path, "spec-x").is_file()
+
+    def test_worktree_valid_bugfound_passes_after_copyback(self, tmp_path):
+        """worktree 侧写合法 bug-found → 拷回后门检通过 → run success。"""
+        runner = _make_runner(tmp_path, _standard_chain_config("planner-judge"))
+        wt = tmp_path / "wt"
+        wt.mkdir(parents=True)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = wt
+        runner.worktree_manager.get_branch_name.return_value = "fenix/spec-x"
+        runner.worktree_manager.cleanup.return_value = None
+
+        wt_vp = wt / ".fenix" / "verify-progress" / "spec-x"
+        wt_vp.mkdir(parents=True, exist_ok=True)
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None,
+                            spec_name=None, agent_type=None):
+            (wt_vp / ".fenix-run-result.json").write_text(
+                json.dumps({"status": "bug-found", "summary": "found"}),
+                encoding="utf-8")
+            return ("done", 1, "sess-gate", _usage_ok())
+
+        runner._run_claude = fake_run_claude
+        result = runner._execute_agent("spec-x", "planner-judge", "run-v2")
+        assert result.success is True
+        # 拷回生效：主树同路径已有本轮产物（而非依赖残留）
+        assert self._gate_path(tmp_path, "spec-x").is_file()
+
+    # ── ② 主树残留上一轮合法文件 + 本轮零产出 → 新鲜度拦截 ─────────────
+
+    def test_stale_main_tree_artifact_freshness_rejected(self, tmp_path,
+                                                         monkeypatch):
+        """主树残留上一轮合法文件 + 本轮零产出 → mtime 新鲜度拦截。"""
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+        runner = _make_runner(tmp_path, _standard_chain_config("planner-judge"))
+        wt = tmp_path / "wt"
+        wt.mkdir(parents=True)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = wt
+        runner.worktree_manager.get_branch_name.return_value = "fenix/spec-x"
+
+        # 主树残留上一轮合法产物（mtime 远早于本轮 attempt 启动）
+        stale_path = self._gate_path(tmp_path, "spec-x")
+        stale_path.parent.mkdir(parents=True, exist_ok=True)
+        stale_path.write_text(json.dumps({"status": "verified", "summary": "old"}),
+                              encoding="utf-8")
+        old = time.time() - 3600
+        import os
+        os.utime(stale_path, (old, old))
+
+        runner._run_claude = MagicMock(
+            return_value=("done", 1, "sess-gate", _usage_ok()))
+        result = runner._execute_agent("spec-x", "planner-judge", "run-v3")
+        assert result.success is False
+        assert "早于本轮启动" in (result.error or "")
+
+    # ── ③ 顶层 status="success" → 白名单拦截 ─────────────────────────────
+
+    def test_gate_rejects_non_whitelist_status(self, tmp_path):
+        """顶层 status='success'（verdict 语义错位）→ 白名单拦截，附实际值。"""
+        runner = _make_runner(tmp_path)
+        p = self._gate_path(tmp_path, "spec-x")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"status": "success", "summary": "impl ok"}),
+                     encoding="utf-8")
+        err = runner._check_agent_result_artifact("spec-x", "planner-judge")
+        assert err is not None
+        assert "'success'" in err
+        assert "白名单" in err
+
+    # ── ④ 合法 verified / bug-found → 通过 ───────────────────────────────
+
+    @pytest.mark.parametrize("status", ["verified", "bug-found",
+                                        "scenario-repaired"])
+    def test_gate_pass_on_whitelist_status(self, tmp_path, status):
+        """白名单内合法 status → 门检放行（None）。"""
+        runner = _make_runner(tmp_path)
+        p = self._gate_path(tmp_path, "spec-x")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"status": status, "summary": "ok"}),
+                     encoding="utf-8")
+        assert runner._check_agent_result_artifact("spec-x", "planner-judge") is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════

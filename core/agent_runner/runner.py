@@ -21,7 +21,15 @@ from typing import Optional, Dict, Any
 from core.agent_runner.prompt_builder import (
     PromptBuilder,
     planner_result_path,
+    planner_result_status_whitelist,
 )
+
+# fix-verdict-read-failclosed D2（新鲜度宽限，秒）：planner 产物硬门 mtime 新鲜度
+# 校验的容差。文件系统 mtime 写入存在滞后（tmpfs 实测 ~6ms），紧邻
+# attempt_started_at 后写入的高速度假 run 会被严格 mtime 校验误标陈旧。宽限远小于
+# 真实轮间间隙（agent 全程分钟级，上一轮残留 mtime 滞差秒以上），真陈旧产物仍被
+# 可靠拦截，仅吸收 mtime 时钟滞后。
+_ARTIFACT_FRESHNESS_GRACE_SECONDS = 1.0
 from core.agent_runner.liveness import (
     AGENT_TERMINATE_GRACE_SECONDS,
     LIVE_ATTEMPT_STREAM_WINDOW_SECONDS,
@@ -1895,12 +1903,32 @@ class AgentRunner:
                     if run_session_id:
                         session_id = run_session_id
                         session_provider = provider_name
+                    # fix-verdict-read-failclosed D1（拷回前置）：_run_claude 返回后、
+                    # 产物硬门**之前**立即拷回 worktree 验证产物——门检对象必须是本轮
+                    # run 真实写出的结果文件。历史事故（add-verify-contract-autodraft）：
+                    # 拷回晚于门检，门验到主树上一轮残留旧合法文件而放行，随后拷回把
+                    # 非法 JSON（裸换行）落到主树 → 读侧 fail-open 放行 → auto-push。
+                    # 语义：主树缺失或 worktree 版本 mtime 较新才拷贝（mtime 守卫与
+                    # 原「成功时拷回」块相同，防止 worktree 复用继承的陈旧产物回灌覆盖
+                    # 主树较新的冻结场景集）；目录不存在零动作。拷回幂等、前置无副作用。
+                    wt_result = wt_path / ".fenix-run-result.json"
+                    root_result = self.project_root / ".fenix" / ".fenix-run-result.json"
+                    if wt_result.exists():
+                        try:
+                            root_result.write_text(
+                                wt_result.read_text(encoding="utf-8"),
+                                encoding="utf-8",
+                            )
+                        except OSError:
+                            pass
+                    self._copyback_verify_progress(wt_path, spec_name)
                     # add-judge-artifact-gate D1：planner 产物存在性硬门——成功判定
                     # 从「进程 exit 0」升级为「exit 0 且结果文件落盘且可解析」；
                     # 不满足抛 AgentArtifactGateError，落入下方瞬态退避重试通道
                     # （复用 fix-provider-transient-backoff，不消耗 validate_report
                     # 的「裁决重试一次」预算）。
-                    gate_err = self._check_agent_result_artifact(spec_name, agent_type)
+                    gate_err = self._check_agent_result_artifact(
+                        spec_name, agent_type, run_started_at=attempt_started_at)
                     if gate_err:
                         raise AgentArtifactGateError(gate_err)
                     success = True
@@ -2111,26 +2139,6 @@ class AgentRunner:
 
             # 记录分支名（在 cleanup 之前，cleanup 会从 _wt_branches 中移除）
             branch = self.worktree_manager.get_branch_name(wt_path) if success else None
-
-            # 成功时，把 worktree 中的 .fenix-run-result.json 复制到主树。
-            if success:
-                wt_result = wt_path / ".fenix-run-result.json"
-                root_result = self.project_root / ".fenix" / ".fenix-run-result.json"
-                if wt_result.exists():
-                    try:
-                        root_result.write_text(
-                            wt_result.read_text(encoding="utf-8"),
-                            encoding="utf-8",
-                        )
-                    except OSError:
-                        pass
-                # add-worktree-verify-progress-copyback（D1/D2/D3/D4）：把 worktree 内
-                # per-spec 验证产物目录逐文件拷回主树同路径，使 agent 绕道 Bash 相对路径
-                # 落在 worktree 真实 `.fenix/` 的产物（`.fenix-run-result.json`、
-                # `test_scenarios.json`、进度文件等）在 worktree 清理后仍可被读侧读取。
-                # 语义：主树缺失或 worktree 版本 mtime 较新才拷贝（防止复用继承的陈旧
-                # 产物回灌覆盖主树较新的冻结场景集），子目录递归；目录不存在零动作。
-                self._copyback_verify_progress(wt_path, spec_name)
 
             if success:
                 # 半开探针闭合（fix-stashpop-deadlock）：若该 provider 此前已进入熔断但
@@ -3094,7 +3102,8 @@ class AgentRunner:
     # ── planner 产物硬门（add-judge-artifact-gate D1）────────────────────
 
     def _check_agent_result_artifact(self, spec_name: str,
-                                     agent_type: str) -> str | None:
+                                     agent_type: str,
+                                     run_started_at: float | None = None) -> str | None:
         """planner 产物存在性硬门校验（fail-closed）。
 
         成功判定从「进程 exit 0」升级为「exit 0 **且**结果文件落盘且可解析」：
@@ -3105,9 +3114,20 @@ class AgentRunner:
         路径与 prompt_builder 注入的 {result_path}/{scenarios_path} 同源计算，
         防双实现漂移。文件缺失 / 为空 / 非法 JSON 一律视为缺失（fail-closed）。
 
+        fix-verdict-read-failclosed D2（新鲜度）：``run_started_at`` 为本轮 attempt
+        启动时刻（attempt 循环内的 attempt_started_at）；结果文件 mtime 早于
+        ``run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS`` 按「本轮零产物
+        （陈旧残留）」处理——上一轮残留的旧合法文件不得替本轮放行
+        （add-verify-contract-autodraft 事故：门验到旧合法文件而放行，随后拷回
+        非法 JSON 落主树 → 读侧 fail-open 放行）。宽限 1s 仅吸收文件系统 mtime
+        写入滞后（tmpfs 实测 ~6ms），真实轮间间隙（分钟级）远大于此，真陈旧仍
+        被可靠拦截。
+
         Args:
             spec_name: spec 名（决定 verify-progress 子目录）。
             agent_type: 仅 planner-judge / planner-plan 有产物契约；其余返回 None。
+            run_started_at: 本轮 attempt 启动 epoch 秒；为 None 时跳过新鲜度校验
+                （兼容无 attempt 上下文的单测直调）。
 
         Returns:
             None = 通过；否则返回失败归因文案（含「结果文件缺失」语义，
@@ -3121,7 +3141,30 @@ class AgentRunner:
                 return (f"exit 0 但结果文件缺失（{agent_type} 产物硬门）: {path}")
             if path.stat().st_size == 0:
                 return (f"exit 0 但结果文件为空（{agent_type} 产物硬门）: {path}")
-            json.loads(path.read_text(encoding="utf-8"))
+            if run_started_at is not None:
+                mtime = path.stat().st_mtime
+                if mtime < run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS:
+                    return (
+                        f"exit 0 但结果文件早于本轮启动（陈旧残留，{agent_type} "
+                        f"产物硬门）: {path} (mtime={mtime:.1f} < "
+                        f"run_started_at - grace={run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS:.1f})"
+                    )
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if agent_type == "planner-judge":
+                # fix-verdict-read-failclosed D3：judge 裁决文件（.fenix-run-result.json）
+                # 顶层 status 须在白名单内（语义错位取值如 implementer 共享残留的
+                # success 不得流入读侧被「unknown status 视为 verified」）。planner-plan
+                # 产物为场景数组（test_scenarios.json），无 status 契约，仅校验可解析。
+                if not isinstance(data, dict):
+                    return (
+                        f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {path}"
+                    )
+                status = data.get("status", "")
+                if status not in planner_result_status_whitelist:
+                    return (
+                        f"exit 0 但结果文件 status='{status}' 不在白名单"
+                        f"（{agent_type} 产物硬门）: {path}"
+                    )
         except (OSError, UnicodeDecodeError) as e:
             return (f"exit 0 但结果文件不可读（{agent_type} 产物硬门）: {path} ({e})")
         except json.JSONDecodeError as e:

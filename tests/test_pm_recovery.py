@@ -17,6 +17,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.state_machine import StateMachine, StateParser, SpecStatus, VALID_TRANSITIONS
+from core.pm_engine.verification import VerdictReadResult
 
 
 class TestPMEngineInfraFailureRecovery(unittest.TestCase):
@@ -223,7 +224,8 @@ class TestPMEngineReplanLimit(unittest.TestCase):
             )
 
         self.engine.agent_runner.run_planner = MagicMock(side_effect=_fake_planner)
-        self.engine._read_planner_result = MagicMock(return_value="plan-ready")
+        self.engine._read_planner_result = MagicMock(
+            return_value=VerdictReadResult.success("plan-ready"))
         self.engine._apply_scenario_freeze = MagicMock(return_value={})
         self.engine._apply_interaction_contract = MagicMock(return_value=None)
         self.engine._enqueue = MagicMock()

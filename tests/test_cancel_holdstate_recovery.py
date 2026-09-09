@@ -66,9 +66,9 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
         ("core/pm_engine/dispatch.py", 982, "implementer"),
         ("core/pm_engine/dispatch.py", 1818, "fast-track"),
         ("core/pm_engine/dispatch.py", 2260, "repair"),
-        ("core/pm_engine/verification.py", 1126, "planner-plan"),
-        ("core/pm_engine/verification.py", 1409, "planner-judge"),
-        ("core/pm_engine/verification.py", 1977, "legacy-verifier"),
+        ("core/pm_engine/verification.py", 1169, "planner-plan"),
+        ("core/pm_engine/verification.py", 1459, "planner-judge"),
+        ("core/pm_engine/verification.py", 2083, "legacy-verifier"),
     ]
 
     def _load(self, rel: str) -> list:

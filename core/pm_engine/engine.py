@@ -2435,10 +2435,10 @@ class PMEngine:
     def _check_verification_gate(self, spec_name: str) -> str | None:
         return self._verification._check_verification_gate(spec_name)
 
-    def _read_verifier_result(self, result_path: Path) -> str | None:
+    def _read_verifier_result(self, result_path: Path) -> "VerdictReadResult":
         return self._verification._read_verifier_result(result_path)
 
-    def _read_planner_result(self, spec_name: str) -> str | None:
+    def _read_planner_result(self, spec_name: str) -> "VerdictReadResult":
         return self._verification._read_planner_result(spec_name)
 
     def _judge_bugs_declare_env(self, spec_name: str) -> bool:
