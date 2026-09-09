@@ -881,9 +881,9 @@ export default function SpecDetailPage() {
 
           if (item.kind === 'admin') {
             // 运维事件节点（add-timeline-admin-events）：紧凑卡片——标题行
-            // （时间 + 运维处置/升级告警 Tag + severity 着色 + 状态 Tag）+ 一句话
-            // 摘要（description，ellipsis 单行截断）。不渲染 summary markdown 全文
-            // （完整四段总结仍由运维记录页承载）。
+            // （时间 + 运维处置/升级告警 Tag + severity 着色 + 状态 Tag）+ 摘要
+            // （description，与其他节点同口径：默认 14px、pre-wrap 可换行）。
+            // 不渲染 summary markdown 全文（完整四段总结仍由运维记录页承载）。
             const isEscalation = item.record_kind === 'escalation';
             const sev = String(item.severity || '');
             // severity 着色复用运维记录页语义：critical 红 / major 橙 / 其余灰
@@ -913,10 +913,7 @@ export default function SpecDetailPage() {
                     </Tag>
                     {statusTag}
                   </div>
-                  <Typography.Text
-                    ellipsis={{ tooltip: String(item.description || '') }}
-                    style={{ display: 'block', fontSize: 13 }}
-                  >
+                  <Typography.Text style={{ whiteSpace: 'pre-wrap', display: 'block' }}>
                     {item.description || ''}
                   </Typography.Text>
                 </div>

@@ -93,7 +93,7 @@ export default function ProjectCards({
         <div style={{ whiteSpace: 'pre-wrap' }}>
           {`确认从监控移除项目「${project.name}」？\n\n`}
           该项目 daemon 会被停止，但项目文件、STATE.md、spec/、.fenix/ 等数据全部保留在磁盘。
-          {'\n'}此操作仅为"软删除"——可通过手工编辑 ~/.config/fenixd/dashboard.yaml，
+          {'\n'}此操作仅为"软删除"，可通过手工编辑 ~/.config/fenixd/dashboard.yaml，
           从 ignored 列表中删除对应路径来恢复监控。
         </div>
       ),
