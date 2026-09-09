@@ -1299,11 +1299,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """POST /api/verify-yaml-autodraft?project=<name> — 触发 AI 起草验证契约。
 
         项目解析复用现有 verify-yaml 端点路径（未知项目 404）；
-        load_verify_contract 轻量判定——契约缺失/解析失败写 verify_contract_missing
-        SIGNAL（AdminStore.append，source=ui-manual、请求带覆盖确认时携带 overwrite
-        标记，spec 字段留空、项目名入 evidence）响应 dispatched；
+        load_verify_contract 轻量判定——契约缺失/解析失败（contract is None）写
+        verify_contract_missing SIGNAL；契约可解析且带覆盖确认（overwrite=true）改写
+        verify_contract_redraft SIGNAL（fix-verify-contract-signal-semantics B：
+        语义拆分，missing 回归纯缺失语义，覆盖重起草不再旁路 missing）。
+        两者均为 AdminStore.append，source=ui-manual、overwrite 标记、spec 字段留空、
+        项目名入 evidence，响应 dispatched；
         契约有效且无 overwrite 响应 skipped（附「契约已有效」文案）不写信号；
-        有效且带 overwrite 照常派发。
+        写前在途去重（D2）：同项目同 signal_type 未消费信号已存在则不重复写，
+        响应仍 dispatched 且 message 注明已有在途请求。
         """
         body = self._read_json_body()
         if body is None:
@@ -1324,14 +1328,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "message": "契约已有效，无需自动起草。如需覆盖，请确认覆盖意图后重试。",
             })
             return
-        # 契约缺失/解析失败/带覆盖确认 → 派发 verify_contract_missing 信号
+        # 契约缺失/解析失败 → verify_contract_missing；契约有效且带覆盖确认 → verify_contract_redraft
+        signal_type = "verify_contract_missing" if contract is None else "verify_contract_redraft"
         store = AdminStore(proot, logger=None)
         evidence_detail = f"项目名={project['name']}"
         if overwrite:
             evidence_detail += "; 覆盖确认=是"
+        # 在途去重（D2）：同项目同 signal_type 未消费信号已存在 → 不重复写。
+        # 异类型互不抑制（missing 在途不挡 redraft——契约被修正后确认覆盖是新意图）；
+        # 已 handled 的历史信号不抑制（用户可再次请求）。
+        inflight = [
+            r for r in store.read_all()
+            if r.get("kind") == SIGNAL
+            and r.get("signal_type") == signal_type
+            and not r.get("handled")
+            and f"项目名={project['name']}" in (r.get("evidence") or "")
+        ]
+        if inflight:
+            self._json({
+                "ok": True,
+                "project": project["name"],
+                "status": "dispatched",
+                "message": "已有在途的验证契约处理请求，无需重复触发；Administrator 将在下一轮巡检拾取（数分钟内），结果见运维记录。",
+            })
+            return
         store.append({
             "kind": SIGNAL,
-            "signal_type": "verify_contract_missing",
+            "signal_type": signal_type,
             "spec": None,
             "severity": "major",
             "description": "AI 起草验证契约请求（UI 手动触发）",
