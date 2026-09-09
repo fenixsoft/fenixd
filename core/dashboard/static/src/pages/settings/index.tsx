@@ -14,6 +14,7 @@ import VerifyPanel from './components/VerifyPanel';
 import ProjectProfilePanel from './components/ProjectProfilePanel';
 import PromptsPanel from './components/PromptsPanel';
 import SystemPanel from './components/SystemPanel';
+import SelfReviewPanel from './components/SelfReviewPanel';
 import HooksPanel from './components/HooksPanel';
 
 const { Text } = Typography;
@@ -28,6 +29,7 @@ const BASE_MENU_ITEMS = [
   { key: 'approval', label: '审批' },
   { key: 'misc', label: '归档' },
   { key: 'system', label: '系统' },
+  { key: 'self-review', label: '自省' },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -214,7 +216,10 @@ export default function SettingsPage() {
                   <HooksPanel config={config} onSave={handleSave} project={project} />
                 )}
                 {activeKey === 'system' && (
-                  <SystemPanel
+                  <SystemPanel config={config} onSave={handleSave} />
+                )}
+                {activeKey === 'self-review' && (
+                  <SelfReviewPanel
                     config={config}
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}

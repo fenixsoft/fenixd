@@ -1,21 +1,12 @@
-import { Button, Card, Form, InputNumber, Select, Switch, Typography, message } from 'antd';
-import dayjs from 'dayjs';
-import { useEffect, useState } from 'react';
-import { getTodo, saveTodo } from '@/services/dashboard';
+import { Button, Card, Form, InputNumber, Select, Switch, Typography } from 'antd';
+import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
-import SelfReviewPanel from './SelfReviewPanel';
 
 const { Text } = Typography;
 
-// 自省 run_at 缺省与后端 ConfigLoader.SELF_REVIEW_DEFAULT_RUN_AT 一致（凌晨两点）
-const DEFAULT_RUN_AT = '02:00';
-
 interface SystemPanelProps {
   config: ConfigData;
-  /** 返回保存是否成功：false 时主保存不再提交 todo.md（配置失败不连带覆写） */
   onSave: (values: Partial<ConfigData>) => Promise<boolean>;
-  /** 项目名；透传给自省区块（todo.md 编辑区仅项目级作用域显示） */
-  project?: string;
 }
 
 const ADMIN_ANNOTATIONS: {
@@ -147,47 +138,14 @@ const TRANSIENT_ANNOTATIONS: {
   },
 ];
 
-export default function SystemPanel({ config, onSave, project }: SystemPanelProps) {
+export default function SystemPanel({ config, onSave }: SystemPanelProps) {
   const [form] = Form.useForm();
 
   const admin = config.admin ?? {};
-  const selfReview = config.self_review;
   // 瞬断治理（fix-provider-transient-backoff D6）：agents.transient_* 五键
   const transient = config.agents ?? {};
 
-  // ── todo.md 草稿状态上提至此（原 SelfReviewPanel 局部状态）：主保存按钮
-  //    统一提交配置 + todo.md（2026-09-07 用户决策：移除独立的重新加载/
-  //    保存 todo 按钮）；project 变化（作用域切换）时重新加载磁盘内容 ──
-  const [todoDraft, setTodoDraft] = useState('');
-  const [todoExists, setTodoExists] = useState(false);
-  const [todoLoading, setTodoLoading] = useState(false);
-
-  useEffect(() => {
-    if (!project) return;
-    let cancelled = false;
-    const load = async () => {
-      setTodoLoading(true);
-      try {
-        const d = await getTodo(project);
-        if (!cancelled) {
-          setTodoDraft(d.content);
-          setTodoExists(d.exists);
-        }
-      } catch (e) {
-        console.error('Failed to load todo.md:', e);
-        if (!cancelled) {
-          message.error(`加载 todo.md 失败：${e instanceof Error ? e.message : e}`);
-        }
-      } finally {
-        if (!cancelled) setTodoLoading(false);
-      }
-    };
-    load();
-    return () => { cancelled = true; };
-  }, [project]);
-
-  // 自省字段（self_review.*）并入本表单：TimePicker 值为 dayjs 对象（结构性保证
-  // HH:mm 合法），保存时转回字符串
+  // 自省字段（self_review.*）已拆至独立「自省」页签（SelfReviewPanel）
   const initialValues = {
     enabled: admin.enabled ?? true,
     interval_minutes: admin.interval_minutes ?? 5,
@@ -200,23 +158,17 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
     transient_break_threshold: transient.transient_break_threshold ?? 3,
     transient_break_window_seconds: transient.transient_break_window_seconds ?? 600,
     transient_break_cooldown_seconds: transient.transient_break_cooldown_seconds ?? 600,
-    self_review: {
-      enabled: selfReview?.enabled ?? false,
-      run_at: dayjs(selfReview?.run_at ?? DEFAULT_RUN_AT, 'HH:mm'),
-      read_todo: selfReview?.read_todo ?? false,
-    },
   };
 
   useEffect(() => {
     form.setFieldsValue(initialValues);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.admin, config.self_review, config.agents, form]);
+  }, [config.admin, config.agents, form]);
 
   const handleSave = async () => {
-    let ok = false;
     try {
       const values = await form.validateFields();
-      ok = await onSave({
+      await onSave({
         admin: {
           enabled: values.enabled,
           interval_minutes: values.interval_minutes,
@@ -235,35 +187,17 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
           transient_break_window_seconds: values.transient_break_window_seconds,
           transient_break_cooldown_seconds: values.transient_break_cooldown_seconds,
         },
-        self_review: {
-          enabled: values.self_review.enabled,
-          run_at: values.self_review.run_at.format('HH:mm'),
-          read_todo: values.self_review.read_todo,
-        },
       });
     } catch {
       // 校验失败：antd 已在表单内渲染 explain-error 提示
       return;
     }
-    // 配置保存成功后连调 /api/todo 保存 todo.md（同一「保存」动作的两段提交；
-    // 配置失败不连带覆写 todo.md）。成功后回读磁盘，兼作原「重新加载」语义
-    if (!project || !ok) return;
-    try {
-      await saveTodo(project, todoDraft);
-      const d = await getTodo(project);
-      setTodoDraft(d.content);
-      setTodoExists(d.exists);
-    } catch (e) {
-      const errorMessage = e instanceof Error ? e.message : String(e);
-      message.error(`todo.md 保存失败：${errorMessage}`);
-      console.error('Failed to save todo.md:', e);
-    }
   };
 
   return (
     <div data-testid="system-panel">
-      {/* 自省设置并入本页签（原独立「自省」页签已移除）：单 Form 覆盖系统+自省
-          两段，底部统一一个保存按钮（与其他页签一致：Card 外、右下对齐） */}
+      {/* 自省设置已拆至独立「自省」页签（SelfReviewPanel）：本页签单 Form 覆盖
+          系统+瞬断治理两段，底部统一一个保存按钮（与其他页签一致：Card 外、右下对齐） */}
       <Form form={form} initialValues={initialValues} layout="vertical">
         <h3>系统</h3>
         <Text type="secondary">
@@ -380,13 +314,6 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
             </div>
           ))}
         </Card>
-        <SelfReviewPanel
-          project={project}
-          todoDraft={todoDraft}
-          todoExists={todoExists}
-          todoLoading={todoLoading}
-          onTodoDraftChange={setTodoDraft}
-        />
       </Form>
       <div style={{ textAlign: 'right', marginTop: 24 }}>
         <Button type="primary" onClick={handleSave} data-testid="system-save-btn">
