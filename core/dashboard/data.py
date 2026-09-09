@@ -4503,3 +4503,85 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         return fail(f"写入配置文件失败: {e}")
 
     return {"ok": True, "error": None, "scope": scope, "path": str(config_path)}
+
+
+# ── 同步用户级设置到项目级（设置页项目级作用域「同步用户级设置」按钮） ──
+
+# 页面标识 → 用户级 config.yaml 中被同步的受管键白名单。
+# 键集与各设置页签 onSave 提交的 patch 键一一对应（「只覆盖当前页面的设置值」）：
+# llm 页取 providers 整段；agents 页只取 models；parallel 页取并发三键 +
+# verify.planner_max_concurrent；token 页取预算四键；verify 页取 static_scope/
+# deps_mode；approval 页取 gates 两键；misc 页取 archive.auto_threshold；
+# system 页取 admin.* 六键 + agents.transient_* 五键。
+_SYNC_PAGE_KEYS = {
+    "llm": {"llm": ["providers"]},
+    "agents": {"agents": ["models"]},
+    "parallel": {
+        "agents": ["max_concurrent", "max_turns", "run_timeout_seconds"],
+        "verify": ["planner_max_concurrent"],
+    },
+    "token": {
+        "agents": ["token_budget_millions", "daily_run_limit",
+                   "impl_run_budget", "verify_redo_budget"],
+    },
+    "verify": {"verify": ["static_scope", "deps_mode"]},
+    "approval": {"gates": ["promote_mode", "approve_mode"]},
+    "misc": {"archive": ["auto_threshold"]},
+    "system": {
+        "admin": ["enabled", "interval_minutes", "escalation_cooldown_minutes",
+                  "merge_breaker_threshold", "shutdown_drain_seconds",
+                  "bug_repair_mode"],
+        "agents": ["transient_backoff_schedule", "transient_redispatch_delay_seconds",
+                   "transient_break_threshold", "transient_break_window_seconds",
+                   "transient_break_cooldown_seconds"],
+    },
+}
+
+
+def sync_config_from_user(project_root, page: str) -> dict:
+    """把用户级 config.yaml 中 page 页签对应的受管键覆盖写入项目级配置。
+
+    以用户级文件原始值为 patch 源（read_config 的回显含缺省填充，会把用户级
+    未显式配置的键也一并覆盖成缺省值），经 write_config 走完整的前置校验 +
+    受管键合并 + 原子写盘——非受管键与其它页签的设置值不受影响。
+
+    Args:
+        project_root: 项目根路径
+        page: 页面标识（_SYNC_PAGE_KEYS 键）
+
+    Returns: {"ok": bool, "error": str|null, "synced": {...}|None, "path": str}
+    """
+    if page not in _SYNC_PAGE_KEYS:
+        return {"ok": False, "error": f"未知页面标识: {page}", "synced": None, "path": None}
+
+    # 读用户级原始文件（raw dict，不做缺省填充）：用户级未显式配置的键不覆盖
+    user_raw = {}
+    if USER_CONFIG_PATH.exists():
+        try:
+            with USER_CONFIG_PATH.open("r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+            if isinstance(loaded, dict):
+                user_raw = loaded
+        except (yaml.YAMLError, OSError) as e:
+            return {"ok": False, "error": f"读取用户级配置失败: {e}", "synced": None,
+                    "path": str(USER_CONFIG_PATH)}
+
+    section_map = _SYNC_PAGE_KEYS[page]
+    patch = {}
+    for section, keys in section_map.items():
+        sec_raw = user_raw.get(section)
+        if not isinstance(sec_raw, dict):
+            continue  # 用户级未配置该段：本页无可同步值，跳过（不写空覆盖）
+        picked = {k: sec_raw[k] for k in keys if k in sec_raw}
+        if picked:
+            patch[section] = picked
+
+    if not patch:
+        return {"ok": False,
+                "error": "用户级配置中该页面没有已设置的值，无可同步内容",
+                "synced": None, "path": str(USER_CONFIG_PATH)}
+
+    result = write_config(project_root, patch, scope="project")
+    return {"ok": result["ok"], "error": result.get("error"),
+            "synced": patch if result["ok"] else None,
+            "path": result.get("path")}

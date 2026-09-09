@@ -8,6 +8,8 @@ import {
 import { useEffect } from 'react';
 import type { AgentModelAssignment, AgentsModels, ConfigData } from '@/services/dashboard';
 
+import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
+
 const { Text } = Typography;
 
 // 与后端 KNOWN_AGENT_TYPES 严格一致（7 个角色，勿增删）
@@ -71,9 +73,13 @@ function toModels(roleList: RoleValue[] = []): AgentsModels {
 interface AgentModelPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
+  /** 当前项目名；项目级作用域才显示「同步用户级设置」按钮 */
+  project?: string;
+  /** 同步成功后回填配置（父组件 setConfig 驱动表单刷新） */
+  onConfigSynced?: (config: ConfigData) => void;
 }
 
-export default function AgentModelPanel({ config, onSave }: AgentModelPanelProps) {
+export default function AgentModelPanel({ config, onSave, project, onConfigSynced }: AgentModelPanelProps) {
   const [form] = Form.useForm();
   const providers = config.llm.providers || [];
 
@@ -249,7 +255,10 @@ export default function AgentModelPanel({ config, onSave }: AgentModelPanelProps
                   </Card>
                 );
               })}
-              <div style={{ textAlign: 'right' }}>
+              <div style={project ? { ...SETTINGS_ACTIONS_ROW_STYLE, marginTop: 12 } : { textAlign: 'right' }}>
+                {project && onConfigSynced && (
+                  <SyncFromUserButton project={project} page="agents" onSynced={onConfigSynced} />
+                )}
                 <Button type="primary" onClick={handleSave}>
                   保存
                 </Button>

@@ -78,6 +78,16 @@ export function restartProjectDaemon(name: string) {
     `/api/projects/${encodeURIComponent(name)}/restart`, { method: 'POST' });
 }
 
+/** 同步用户级设置：把用户级 config.yaml 中 page 页签对应的受管键覆盖写入项目级。
+ *  page 白名单：llm/agents/parallel/token/verify/approval/misc/system */
+export function syncConfigFromUser(project: string, page: string): Promise<ConfigData> {
+  return request<ConfigData>(`/api/config/sync-from-user?project=${encodeURIComponent(project)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ page }),
+  });
+}
+
 export function deleteProject(name: string) {
   return request(`/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }

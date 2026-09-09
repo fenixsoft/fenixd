@@ -427,6 +427,67 @@ class TestProjectLifecycleAPI:
             srv.stop()
 
 
+class TestConfigSyncFromUserAPI:
+    """POST /api/config/sync-from-user：把用户级 page 页签受管键覆盖写入项目级。"""
+
+    def _make_server(self, tmp_path, registry):
+        return _TestServer(registry, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+
+    def test_sync_writes_project_config_and_echoes(self, tmp_path, monkeypatch):
+        import yaml
+        proot = make_project(tmp_path)
+        user_dir = tmp_path / "user-fenix"
+        user_dir.mkdir()
+        with open(user_dir / "config.yaml", "w", encoding="utf-8") as f:
+            yaml.dump({"gates": {"promote_mode": "manual", "approve_mode": "auto"}}, f)
+        monkeypatch.setattr("core.dashboard.data.USER_CONFIG_PATH", user_dir / "config.yaml")
+
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post_json("/api/config/sync-from-user?project=proj-a",
+                          {"page": "approval"})
+            assert status == 200 and body["saved"] is True
+            assert body["synced"] == {"gates": {"promote_mode": "manual", "approve_mode": "auto"}}
+            proj_cfg = yaml.safe_load((proot / ".fenix" / "config.yaml").read_text(encoding="utf-8"))
+            assert proj_cfg["gates"]["promote_mode"] == "manual"
+        finally:
+            srv.stop()
+
+    def test_sync_unknown_page_returns_400(self, tmp_path, monkeypatch):
+        proot = make_project(tmp_path)
+        user_dir = tmp_path / "user-fenix"
+        user_dir.mkdir()
+        monkeypatch.setattr("core.dashboard.data.USER_CONFIG_PATH", user_dir / "config.yaml")
+
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post_json("/api/config/sync-from-user?project=proj-a",
+                          {"page": "bogus"})
+            assert status == 400 and "未知页面标识" in body["error"]
+        finally:
+            srv.stop()
+
+    def test_sync_unknown_project_returns_400(self, tmp_path):
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [], "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post_json("/api/config/sync-from-user?project=ghost",
+                          {"page": "approval"})
+            assert status == 400 and body["error"]
+        finally:
+            srv.stop()
+
+
 class TestProjectDescribeAPI:
     """测试 /api/project/describe 端点"""
 

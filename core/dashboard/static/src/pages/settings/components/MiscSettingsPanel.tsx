@@ -1,15 +1,20 @@
 import { Button, Card, Form, InputNumber, Typography } from 'antd';
 import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
+import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
 
 const { Text } = Typography;
 
 interface MiscSettingsPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
+  /** 当前项目名；项目级作用域才显示「同步用户级设置」按钮 */
+  project?: string;
+  /** 同步成功后回填配置（父组件 setConfig 驱动表单刷新） */
+  onConfigSynced?: (config: ConfigData) => void;
 }
 
-export default function MiscSettingsPanel({ config, onSave }: MiscSettingsPanelProps) {
+export default function MiscSettingsPanel({ config, onSave, project, onConfigSynced }: MiscSettingsPanelProps) {
   const [form] = Form.useForm();
 
   useEffect(() => {
@@ -68,7 +73,10 @@ export default function MiscSettingsPanel({ config, onSave }: MiscSettingsPanelP
           </Text>
         </Form>
       </Card>
-      <div style={{ textAlign: 'right', marginTop: 24 }}>
+      <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>
+        {project && onConfigSynced && (
+          <SyncFromUserButton project={project} page="misc" onSynced={onConfigSynced} />
+        )}
         <Button type="primary" onClick={handleSave} data-testid="misc-save">
           保 存
         </Button>

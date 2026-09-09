@@ -1525,6 +1525,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _handle_api_post(self, path: str, query: dict):
         if path == "/api/config":
             self._api_config_post(query)
+        elif path == "/api/config/sync-from-user":
+            self._api_config_sync_from_user(query)
         elif path == "/api/prompts":
             self._api_prompts_post(query)
         elif path == "/api/todo":
@@ -1639,6 +1641,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
         config["saved"] = True
         config["scope"] = result["scope"]
         config["path"] = result["path"]
+        self._json(config)
+
+    def _api_config_sync_from_user(self, query):
+        """POST /api/config/sync-from-user?project=<name>  body: {"page": "<页标识>"}
+
+        把用户级 config.yaml 中 page 页签对应的受管键覆盖写入项目级配置
+        （设置页项目级「同步用户级设置」按钮）。page 白名单见
+        data._SYNC_PAGE_KEYS；成功返回最新项目级生效配置（读回以确认）。
+        """
+        body = self._read_json_body()
+        if body is None:
+            return
+        project = self._project_from_query(query)
+        if project is None or not project.get("exists"):
+            self._error(400, "project not found")
+            return
+        page = body.get("page")
+        if not isinstance(page, str) or not page:
+            self._error(400, "body.page 必须为页面标识字符串")
+            return
+        result = dashboard_data.sync_config_from_user(project["path"], page)
+        if not result["ok"]:
+            self._error(400, result.get("error") or "同步失败")
+            return
+        config = dashboard_data.read_effective_config(project["path"])
+        config["project"] = project["name"]
+        config["saved"] = True
+        config["synced"] = result["synced"]
         self._json(config)
 
     def _api_project_describe(self, query):

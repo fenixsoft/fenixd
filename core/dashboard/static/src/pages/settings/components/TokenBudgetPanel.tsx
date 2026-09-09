@@ -1,15 +1,20 @@
 import { Button, Card, Form, InputNumber, Typography } from 'antd';
 import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
+import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
 
 const { Text } = Typography;
 
 interface TokenBudgetPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
+  /** 当前项目名；项目级作用域才显示「同步用户级设置」按钮 */
+  project?: string;
+  /** 同步成功后回填配置（父组件 setConfig 驱动表单刷新） */
+  onConfigSynced?: (config: ConfigData) => void;
 }
 
-export default function TokenBudgetPanel({ config, onSave }: TokenBudgetPanelProps) {
+export default function TokenBudgetPanel({ config, onSave, project, onConfigSynced }: TokenBudgetPanelProps) {
   const [form] = Form.useForm();
 
   const initialValues = {
@@ -114,7 +119,10 @@ export default function TokenBudgetPanel({ config, onSave }: TokenBudgetPanelPro
           </Text>
         </Form>
       </Card>
-      <div style={{ textAlign: 'right', marginTop: 24 }}>
+      <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>
+        {project && onConfigSynced && (
+          <SyncFromUserButton project={project} page="token" onSynced={onConfigSynced} />
+        )}
         <Button type="primary" onClick={handleSave}>
           保存
         </Button>

@@ -192,25 +192,60 @@ export default function SettingsPage() {
                   </div>
                 )}
                 {activeKey === 'llm' && (
-                  <LlmProviderPanel config={config} onSave={handleSave} />
+                  <LlmProviderPanel
+                    config={config}
+                    onSave={handleSave}
+                    project={scope === 'project' ? project : undefined}
+                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                  />
                 )}
                 {activeKey === 'agents' && (
-                  <AgentModelPanel config={config} onSave={handleSave} />
+                  <AgentModelPanel
+                    config={config}
+                    onSave={handleSave}
+                    project={scope === 'project' ? project : undefined}
+                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                  />
                 )}
                 {activeKey === 'parallel' && (
-                  <ParallelSettingsPanel config={config} onSave={handleSave} />
+                  <ParallelSettingsPanel
+                    config={config}
+                    onSave={handleSave}
+                    project={scope === 'project' ? project : undefined}
+                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                  />
                 )}
                 {activeKey === 'approval' && (
-                  <ApprovalModePanel config={config} onSave={handleSave} />
+                  <ApprovalModePanel
+                    config={config}
+                    onSave={handleSave}
+                    project={scope === 'project' ? project : undefined}
+                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                  />
                 )}
                 {activeKey === 'token' && (
-                  <TokenBudgetPanel config={config} onSave={handleSave} />
+                  <TokenBudgetPanel
+                    config={config}
+                    onSave={handleSave}
+                    project={scope === 'project' ? project : undefined}
+                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                  />
                 )}
                 {activeKey === 'misc' && (
-                  <MiscSettingsPanel config={config} onSave={handleSave} />
+                  <MiscSettingsPanel
+                    config={config}
+                    onSave={handleSave}
+                    project={scope === 'project' ? project : undefined}
+                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                  />
                 )}
                 {activeKey === 'verify' && (
-                  <VerifyPanel config={config} onSave={handleSave} />
+                  <VerifyPanel
+                    config={config}
+                    onSave={handleSave}
+                    project={scope === 'project' ? project : undefined}
+                    onConfigSynced={scope === 'project' ? setConfig : undefined}
+                  />
                 )}
                 {activeKey === 'hook' && project && (
                   <HooksPanel config={config} onSave={handleSave} project={project} />
@@ -220,6 +255,7 @@ export default function SettingsPage() {
                     config={config}
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}
+                    onConfigSynced={scope === 'project' ? setConfig : undefined}
                   />
                 )}
                 {activeKey === 'self-review' && (

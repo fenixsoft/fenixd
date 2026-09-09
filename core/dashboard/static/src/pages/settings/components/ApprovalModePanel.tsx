@@ -1,15 +1,20 @@
 import { Button, Card, Form, Radio, Typography } from 'antd';
 import { useEffect } from 'react';
 import type { ConfigData } from '@/services/dashboard';
+import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
 
 const { Text } = Typography;
 
 interface ApprovalModePanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
+  /** 当前项目名；项目级作用域才显示「同步用户级设置」按钮 */
+  project?: string;
+  /** 同步成功后回填配置（父组件 setConfig 驱动表单刷新） */
+  onConfigSynced?: (config: ConfigData) => void;
 }
 
-export default function ApprovalModePanel({ config, onSave }: ApprovalModePanelProps) {
+export default function ApprovalModePanel({ config, onSave, project, onConfigSynced }: ApprovalModePanelProps) {
   const [form] = Form.useForm();
 
   useEffect(() => {
@@ -116,7 +121,10 @@ export default function ApprovalModePanel({ config, onSave }: ApprovalModePanelP
           </Form.Item>
         </Form>
       </Card>
-      <div style={{ textAlign: 'right', marginTop: 24 }}>
+      <div style={project ? SETTINGS_ACTIONS_ROW_STYLE : { textAlign: 'right', marginTop: 24 }}>
+        {project && onConfigSynced && (
+          <SyncFromUserButton project={project} page="approval" onSynced={onConfigSynced} />
+        )}
         <Button type="primary" onClick={handleSave}>
           保存
         </Button>

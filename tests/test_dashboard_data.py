@@ -1942,3 +1942,120 @@ class TestGatesPromoteModeConfigIO(unittest.TestCase):
             yaml.dump({"gates": {"promote_mode": "bogus"}}, f)
         result = read_config(self.proot)
         self.assertEqual(result["gates"].get("promote_mode"), "auto")
+
+
+class TestSyncConfigFromUser(unittest.TestCase):
+    """设置页「同步用户级设置」按钮（项目级）：把用户级 config.yaml 中 page 页签
+    对应的受管键覆盖写入项目级——只覆盖当前页面的设置值，其它页签与项目级
+    特有键不受影响；用户级未显式配置的键不覆盖（raw 读取无缺省填充）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir) / "proj"
+        (self.proot / ".fenix").mkdir(parents=True)
+        self.user_dir = Path(self.tmpdir) / "user-fenix"
+        self.user_dir.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _sync(self, page):
+        from core.dashboard.data import sync_config_from_user
+        with patch("core.dashboard.data.USER_CONFIG_PATH", self.user_dir / "config.yaml"):
+            return sync_config_from_user(self.proot, page)
+
+    def _write_user(self, cfg):
+        import yaml
+        with open(self.user_dir / "config.yaml", "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, allow_unicode=True)
+
+    def _read_proj(self):
+        import yaml
+        with open(self.proot / ".fenix" / "config.yaml", encoding="utf-8") as f:
+            return yaml.safe_load(f)
+
+    def test_unknown_page_rejected(self):
+        result = self._sync("no-such-page")
+        self.assertFalse(result["ok"])
+        self.assertIn("未知页面标识", result["error"])
+
+    def test_sync_single_page_copies_only_page_keys(self):
+        """approval 页只同步 gates 两键——项目级已有 agents 键不受影响"""
+        self._write_user({"gates": {"promote_mode": "manual", "approve_mode": "auto"}})
+        # 项目级已有其它页的设置
+        import yaml
+        with open(self.proot / ".fenix" / "config.yaml", "w", encoding="utf-8") as f:
+            yaml.dump({"agents": {"max_concurrent": 7}}, f)
+        result = self._sync("approval")
+        self.assertTrue(result["ok"], result["error"])
+        proj = self._read_proj()
+        self.assertEqual(proj["gates"]["promote_mode"], "manual")
+        self.assertEqual(proj["gates"]["approve_mode"], "auto")
+        self.assertEqual(proj["agents"]["max_concurrent"], 7, "其它页设置值不被覆盖")
+
+    def test_sync_does_not_touch_keys_outside_page_whitelist(self):
+        """system 页只同步 admin 六键+transient 五键——admin.self_review 不被覆盖"""
+        self._write_user({
+            "admin": {
+                "enabled": False,
+                "interval_minutes": 9,
+                "self_review": {"enabled": True, "run_at": "03:00"},
+            },
+            "agents": {"transient_break_threshold": 5},
+        })
+        # 项目级已有自己的 self_review
+        import yaml
+        with open(self.proot / ".fenix" / "config.yaml", "w", encoding="utf-8") as f:
+            yaml.dump({"admin": {"self_review": {"enabled": False, "run_at": "04:00"}}}, f)
+        result = self._sync("system")
+        self.assertTrue(result["ok"], result["error"])
+        proj = self._read_proj()
+        self.assertEqual(proj["admin"]["enabled"], False)
+        self.assertEqual(proj["admin"]["interval_minutes"], 9)
+        self.assertEqual(proj["admin"]["self_review"]["enabled"], False,
+                         "self_review 不在 system 页白名单，项目级值保留")
+        self.assertEqual(proj["agents"]["transient_break_threshold"], 5)
+
+    def test_user_level_unset_keys_not_overwritten(self):
+        """用户级未显式配置的键不覆盖项目级（raw 读取无缺省填充）"""
+        self._write_user({"agents": {"max_concurrent": 3}})  # 未配 max_turns
+        import yaml
+        with open(self.proot / ".fenix" / "config.yaml", "w", encoding="utf-8") as f:
+            yaml.dump({"agents": {"max_concurrent": 9, "max_turns": 123}}, f)
+        result = self._sync("parallel")
+        self.assertTrue(result["ok"], result["error"])
+        proj = self._read_proj()
+        self.assertEqual(proj["agents"]["max_concurrent"], 3, "用户级显式值覆盖")
+        self.assertEqual(proj["agents"]["max_turns"], 123,
+                         "用户级未配置的键保留项目级值")
+
+    def test_user_file_missing_returns_error(self):
+        # 用户级配置不存在：无可同步内容
+        result = self._sync("token")
+        self.assertFalse(result["ok"])
+        self.assertIn("无可同步内容", result["error"])
+        self.assertFalse((self.proot / ".fenix" / "config.yaml").exists(),
+                         "失败同步不写项目级文件")
+
+    def test_user_section_missing_returns_error(self):
+        """用户级存在但无该页对应段：无可同步内容"""
+        self._write_user({"gates": {"approve_mode": "manual"}})
+        result = self._sync("misc")  # misc 页要 archive 段
+        self.assertFalse(result["ok"])
+        self.assertIn("无可同步内容", result["error"])
+
+    def test_synced_echoes_patch(self):
+        self._write_user({"verify": {"static_scope": "worktree", "deps_mode": "hardlink"}})
+        result = self._sync("verify")
+        self.assertTrue(result["ok"], result["error"])
+        self.assertEqual(result["synced"], {"verify": {"static_scope": "worktree", "deps_mode": "hardlink"}})
+        proj = self._read_proj()
+        self.assertEqual(proj["verify"]["static_scope"], "worktree")
+        self.assertEqual(proj["verify"]["deps_mode"], "hardlink")
+
+    def test_invalid_user_value_rejected_by_write_validation(self):
+        """用户级非法值经 write_config 前置校验拒绝，不写盘"""
+        self._write_user({"verify": {"static_scope": "bogus"}})
+        result = self._sync("verify")
+        self.assertFalse(result["ok"])
+        self.assertFalse((self.proot / ".fenix" / "config.yaml").exists())

@@ -3,6 +3,8 @@ import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { useEffect } from 'react';
 import type { ConfigData, LlmProvider, ProviderBillingPrice } from '@/services/dashboard';
 
+import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
+
 const { Text } = Typography;
 
 // env 对象 ↔ 编辑行数组（Form.List 需要数组形态）
@@ -88,9 +90,13 @@ function toProviders(values: FormValues): LlmProvider[] {
 interface LlmProviderPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<void>;
+  /** 当前项目名；项目级作用域才显示「同步用户级设置」按钮 */
+  project?: string;
+  /** 同步成功后回填配置（父组件 setConfig 驱动表单刷新） */
+  onConfigSynced?: (config: ConfigData) => void;
 }
 
-export default function LlmProviderPanel({ config, onSave }: LlmProviderPanelProps) {
+export default function LlmProviderPanel({ config, onSave, project, onConfigSynced }: LlmProviderPanelProps) {
   const [form] = Form.useForm();
   // 观察整个 providers 数组以驱动每张卡片「启用计费」开关对价格区的显隐
   const providersWatch = Form.useWatch('providers', form);
@@ -393,7 +399,10 @@ export default function LlmProviderPanel({ config, onSave }: LlmProviderPanelPro
             </>
           )}
         </Form.List>
-        <div style={{ textAlign: 'right' }}>
+        <div style={project ? { ...SETTINGS_ACTIONS_ROW_STYLE, marginTop: 12 } : { textAlign: 'right' }}>
+          {project && onConfigSynced && (
+            <SyncFromUserButton project={project} page="llm" onSynced={onConfigSynced} />
+          )}
           <Button type="primary" onClick={handleSave}>
             保存
           </Button>

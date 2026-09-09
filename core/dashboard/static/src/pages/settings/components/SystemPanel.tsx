@@ -1,6 +1,7 @@
-import { Button, Card, Form, InputNumber, Modal, Select, Switch, Typography, message } from 'antd';
+import { Button, Card, Form, InputNumber, Modal, Select, Space, Switch, Typography, message } from 'antd';
 import { useEffect } from 'react';
 import { restartProjectDaemon } from '@/services/dashboard';
+import SyncFromUserButton from './SyncFromUserButton';
 import type { ConfigData } from '@/services/dashboard';
 
 const { Text } = Typography;
@@ -8,8 +9,10 @@ const { Text } = Typography;
 interface SystemPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<boolean>;
-  /** 当前作用域项目名；undefined = 用户级作用域（无项目 daemon，重启按钮隐藏） */
+  /** 当前作用域项目名；undefined = 用户级作用域（重启/同步按钮隐藏） */
   project?: string;
+  /** 同步成功后回填配置（父组件 setConfig 驱动表单刷新） */
+  onConfigSynced?: (config: ConfigData) => void;
 }
 
 const ADMIN_ANNOTATIONS: {
@@ -141,7 +144,7 @@ const TRANSIENT_ANNOTATIONS: {
   },
 ];
 
-export default function SystemPanel({ config, onSave, project }: SystemPanelProps) {
+export default function SystemPanel({ config, onSave, project, onConfigSynced }: SystemPanelProps) {
   const [form] = Form.useForm();
 
   // 重启 Fenixd（项目级作用域才显示）：确认后写 restart_request，supervisor
@@ -356,14 +359,17 @@ export default function SystemPanel({ config, onSave, project }: SystemPanelProp
           marginTop: 24,
         }}
       >
-        {/* 重启 Fenixd：靠左、白色底（antd 默认按钮非 primary），仅项目级显示 */}
-        {project ? (
-          <Button onClick={handleRestart} data-testid="system-restart-btn">
-            重启 Fenixd
-          </Button>
-        ) : (
-          <span />
-        )}
+        {/* 左侧：重启 Fenixd + 同步用户级设置（均白色底，仅项目级显示） */}
+        <Space>
+          {project && (
+            <Button onClick={handleRestart} data-testid="system-restart-btn">
+              重启 Fenixd
+            </Button>
+          )}
+          {project && onConfigSynced && (
+            <SyncFromUserButton project={project} page="system" onSynced={onConfigSynced} />
+          )}
+        </Space>
         <Button type="primary" onClick={handleSave} data-testid="system-save-btn">
           保存
         </Button>
