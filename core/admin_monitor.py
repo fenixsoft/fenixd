@@ -85,6 +85,8 @@ SIGNAL_SEVERITY = {
     "family_explosion": "major",
     "dispatch_stalled": "major",
     "verify_contract_missing": "major",
+    # fix-verify-contract-signal-semantics B：契约有效 + 用户显式覆盖确认的重起草信号
+    "verify_contract_redraft": "major",
     # fix-mergeback-stashpop-silent-loss D1：pop 冲突自愈丢弃的用户改动，
     # 内容找回需人工核对（stash 栈 + 逐文件 git show），major 级。
     "stash_pop_conflict": "major",
@@ -99,6 +101,10 @@ SIGNAL_RECOMMENDATION = {
     "family_explosion": "检修根因环境（如验证报告互相咬合导致 fix 递归）；确认放行一次则对父 SPEC 设置 _family_waiver=true",
     "dispatch_stalled": "检查持锁进程是否为孤儿（ps/pgrep 确认后 kill），清理残留 worktree 锁后让 spec 重新派发",
     "verify_contract_missing": "Administrator 起草 .fenix/verify.yaml 验证契约：检查项目构建命令、静态目录、服务启动方式；草稿写临时路径 → bin/fenix_verify_contract.py 自证 → 全通才落位 → git 提交 → spec 复位 ready 触发重验证",
+    # fix-verify-contract-signal-semantics B：覆盖重起草指引——先复核现有契约有效性；
+    # 有效契约按 D4 权限边界默认不碰，用户已显式授权覆盖（evidence 含「覆盖确认=是」）
+    # 时方可重起草；重起草草稿同样须经 bin/fenix_verify_contract.py 三段自证全通才落位。
+    "verify_contract_redraft": "复核现有契约有效性：若契约仍有效，Administrator 按权限边界默认不碰，仅当用户已显式授权覆盖（evidence 含「覆盖确认=是」）时方可重起草；重起草草稿写临时路径 → bin/fenix_verify_contract.py 自证 → 全通才落位 → git 提交 → spec 复位 ready 触发重验证",
     # fix-mergeback-stashpop-silent-loss D1：核对指引——查 stash 栈确认条目去向，
     # 按 sha / 逐文件 git show 找回被自愈丢弃的改动，确认无独有内容后可清理条目。
     "stash_pop_conflict": "merge-back stash pop 冲突已自愈，主树已恢复可写但部分未提交改动被丢弃：git stash list 查条目去向（保留/drop + sha）；按告警中逐文件 git show <sha>:<file> 命令核对内容，仍需要的改动手动落回工作区；确认零独有内容后 git stash drop 清理",
@@ -110,7 +116,7 @@ SIGNAL_RECOMMENDATION = {
 # （fix-mergeback-stashpop-silent-loss D1）。
 STORED_SIGNAL_TYPES = (
     "family_explosion", "dispatch_stalled", "verify_contract_missing",
-    "stash_pop_conflict",
+    "stash_pop_conflict", "verify_contract_redraft",
 )
 
 # run_id 前缀 → 计入"失败 run"的 agent 类型
@@ -403,7 +409,7 @@ class AdminMonitor:
             stype = rec.get("signal_type")
             # 手动触发信号（source=ui-manual）无关联 spec，项目名从 evidence 携带
             spec = rec.get("spec")
-            if not spec and stype == "verify_contract_missing":
+            if not spec and stype in ("verify_contract_missing", "verify_contract_redraft"):
                 # 从 evidence 提取项目名（格式: "项目名=<name>; ..."）
                 evidence = rec.get("evidence") or ""
                 for part in evidence.split(";"):
