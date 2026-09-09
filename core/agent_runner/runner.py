@@ -8,6 +8,7 @@ Handles result parsing, retry logic, and token/turn budget control.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -2123,6 +2124,13 @@ class AgentRunner:
                         )
                     except OSError:
                         pass
+                # add-worktree-verify-progress-copyback（D1/D2/D3/D4）：把 worktree 内
+                # per-spec 验证产物目录逐文件拷回主树同路径，使 agent 绕道 Bash 相对路径
+                # 落在 worktree 真实 `.fenix/` 的产物（`.fenix-run-result.json`、
+                # `test_scenarios.json`、进度文件等）在 worktree 清理后仍可被读侧读取。
+                # 语义：主树缺失或 worktree 版本 mtime 较新才拷贝（防止复用继承的陈旧
+                # 产物回灌覆盖主树较新的冻结场景集），子目录递归；目录不存在零动作。
+                self._copyback_verify_progress(wt_path, spec_name)
 
             if success:
                 # 半开探针闭合（fix-stashpop-deadlock）：若该 provider 此前已进入熔断但
@@ -2275,6 +2283,37 @@ class AgentRunner:
         )
 
     # ── token 累计与预算告警（add-cost-observability D1 / D4）──────────────────
+
+    def _copyback_verify_progress(self, wt_path: Path, spec_name: str) -> None:
+        """成功收尾：把 worktree 的 per-spec 验证产物目录逐文件拷回主树同路径。
+
+        add-worktree-verify-progress-copyback（D2 mtime 守卫 / D3 fail-open /
+        D4 零动作）：worktree `.fenix/verify-progress/<spec>/` 不存在时直接返回
+        （不创建主树目录、不打日志）；存在时逐文件 copy2——主树同路径缺失或
+        worktree 版本 mtime 较新才拷贝，主树较新则跳过（防止 worktree 复用继承的
+        陈旧产物回灌覆盖主树较新的冻结场景集）。单文件 OSError 仅记 WARNING 后
+        继续，不抛出、不阻塞 run 收尾。
+        """
+        wt_vp = wt_path / ".fenix" / "verify-progress" / spec_name
+        if not wt_vp.is_dir():
+            return
+        root_vp = self.project_root / ".fenix" / "verify-progress" / spec_name
+        for src in wt_vp.rglob("*"):
+            if not src.is_file():
+                continue
+            dst = root_vp / src.relative_to(wt_vp)
+            try:
+                if not dst.exists() or src.stat().st_mtime_ns > dst.stat().st_mtime_ns:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
+            except OSError:
+                self.logger.warning(
+                    "agent_runner",
+                    f"verify-progress copyback failed for '{spec_name}' "
+                    f"(add-worktree-verify-progress-copyback): "
+                    f"{src} -> {dst}",
+                )
+
 
 
 
