@@ -1214,6 +1214,20 @@ def _acquire_singleton_lock() -> None:
 
 def main():
     """Entry point for fenixd."""
+    # 入口路径守卫：FENIX_DIR 必须解析为项目内 .fenix/（正常启动经 .fenix/fenixd.py
+    # 软链）。直接跑仓库根实体 fenixd.py 时 __file__ 不跟随软链，FENIX_DIR 解析为
+    # 仓库根 → PROJECT_ROOT 退化为上级目录（曾致 /root/.fenix/ 幻影状态目录、
+    # 仓库根散落 0 字节 daemon.lock/fenixd.log，自省与排障双双被误导）。
+    # 守卫置于 main() 内：模块级 import fenixd（test_config.py 等按路径直载）
+    # 不触发。放在单实例锁之前，错误启动不污染锁文件。
+    if FENIX_DIR.name != ".fenix":
+        print(
+            f"FATAL: fenixd.py 必须经项目的 .fenix/fenixd.py 软链启动"
+            f"（当前 __file__ 解析为 {FENIX_DIR}，FENIX_DIR 不是 .fenix/）。\n"
+            f"正确启动方式：cd <项目根> && python3 .fenix/fenixd.py",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     _acquire_singleton_lock()
     daemon = FenixDaemon()
 
