@@ -35,6 +35,49 @@ from core.verify_contract import (
     StaticVerifyServer,
 )
 
+# fix-verdict-read-failclosed D3：与 runner 产物硬门共用同一 status 白名单单一来源
+# （prompt_builder 定义、两侧 import，避免双实现漂移）。
+from core.agent_runner.prompt_builder import planner_result_status_whitelist
+
+
+class VerdictReadResult:
+    """verdict 结果文件读取三态结果（fix-verdict-read-failclosed D4）。
+
+    - ok=True  → status 为白名单内合法裁决（verified/bug-found/plan-ready/
+      scenario-repaired）。
+    - ok=False → 结果文件**不可读**（missing/parse/unknown-status/foreign-stamp），
+      reason 归因、detail 附解析错误原文。不可读**绝不**等价于 verified——历史
+      add-verify-contract-autodraft 事故：summary 裸换行致非法 JSON → 读侧按
+      None 处理 → else 分支 → verified → done → auto-push。
+    """
+
+    __slots__ = ("status", "reason", "detail")
+
+    def __init__(self, status=None, reason: str = "", detail: str = ""):
+        self.status = status
+        self.reason = reason
+        self.detail = detail
+
+    @property
+    def ok(self) -> bool:
+        return self.status is not None
+
+    @classmethod
+    def success(cls, status: str) -> "VerdictReadResult":
+        return cls(status=status)
+
+    @classmethod
+    def failure(cls, reason: str, detail: str) -> "VerdictReadResult":
+        return cls(status=None, reason=reason, detail=detail)
+
+    def __repr__(self):
+        if self.ok:
+            return f"<VerdictReadResult ok status={self.status}>"
+        return (
+            f"<VerdictReadResult unreadable reason={self.reason} "
+            f"detail={self.detail!r}>"
+        )
+
 # 探针通过后的静置秒数（_finalize_static）：吸收冷实例后端收尾/前端首帧的
 # 长尾，再放行开跑场景（add-spec-hooks 白屏 env 事故第三道纵深，2026-09-06）。
 POST_READY_SETTLE_SECONDS = 10
@@ -1148,25 +1191,32 @@ class VerificationPipeline:
                     raise RuntimeError(f"Planner plan 失败: {plan_result.error}")
 
                 # 验证 Planner 是否成功生成场景文件
-                plan_status = self._pm._read_planner_result(spec_name)
-                if plan_status != "plan-ready":
+                plan_read = self._pm._read_planner_result(spec_name)
+                # fix-verdict-read-failclosed：plan 结果不可读（缺失/非法/白名单外）
+                # 与「非 plan-ready」同判——阶段1 本就 fail-closed（≠plan-ready 即
+                # 降级 legacy），不可读绝不等于「场景已生成」（fail-open 的反面）。
+                if not plan_read.ok or plan_read.status != "plan-ready":
                     # fix-planner-invalid-output-alert：planner run 成功收工却无有效产出
                     # ＝ 整轮 planner 时长/成本白烧，必须显式留痕（error 字段 + ERROR 级
                     # 日志），否则只在降级 WARNING 里一笔带过，浪费不可见。
+                    plan_status_text = (
+                        f"不可读({plan_read.reason}: {plan_read.detail})"
+                        if not plan_read.ok else f"'{plan_read.status}'"
+                    )
                     self._pm.state_machine.update_spec(spec_name, {
                         "error": (
-                            f"Planner 场景生成无效（status={plan_status}，run="
+                            f"Planner 场景生成无效（status={plan_status_text}，run="
                             f"{plan_result.run_id}，{plan_result.duration_seconds / 60:.1f}min）"
                             f"— 降级旧版验证流程"
                         ),
                     })
                     self._pm.logger.error(
                         "pm_engine",
-                        f"Planner 未生成有效场景 '{spec_name}'（status={plan_status}，"
+                        f"Planner 未生成有效场景 '{spec_name}'（status={plan_status_text}，"
                         f"run={plan_result.run_id}，白烧 "
                         f"{plan_result.duration_seconds / 60:.1f}min）— 降级旧版 verifier",
                     )
-                    raise RuntimeError(f"Planner 未生成有效场景，status={plan_status}")
+                    raise RuntimeError(f"Planner 未生成有效场景，status={plan_status_text}")
 
                 # ── 场景集冻结（add-verify-scenario-freeze）──
                 # 首轮写入 / 修复轮 diff 校验（design D3：确定性，planner 不可绕过）。
@@ -1493,8 +1543,9 @@ class VerificationPipeline:
                 f"warning_streaks 更新跳过（异常不阻断采纳）'{spec_name}': {e}",
             )
 
-        # 读取判定结果
-        verifier_status = self._pm._read_planner_result(spec_name)
+        # 读取判定结果（fix-verdict-read-failclosed：结构化三态）
+        verifier_result = self._pm._read_planner_result(spec_name)
+        verifier_status = verifier_result.status if verifier_result.ok else None
         # ── 结果状态判据（fix-daemon-lifecycle-races D6，结果应用处最终核对）──
         # 前道守卫之后的取证校验/重试窗口内 spec 亦可能漂移，此处兜底：非 testing
         # → DEBUG 丢弃，不迁移/不派生/不重派。
@@ -1507,6 +1558,63 @@ class VerificationPipeline:
                 f"spec no longer in testing, result dropped",
             )
             return
+        # ── 裁决不可读 → fail-closed（fix-verdict-read-failclosed D4）──
+        # 结果文件缺失/非法 JSON/status 白名单外一律不得晋级 verified（历史事故：
+        # add-verify-contract-autodraft 裸换行非法 JSON → None → else 分支 →
+        # verified → done → auto-push）。处置：重派 judge 一次 → 复读；二次仍不可读
+        # → blocked + critical 告警（含解析错误原文与结果文件完整路径），不推进
+        # bug-found、不派生 fix。重试前复用入口状态判据（非 testing 丢弃，与
+        # stale-result 防护同构，不新增竞态面）。
+        if not verifier_result.ok:
+            verdict_result_path = (
+                self._pm.project_root / ".fenix" / "verify-progress"
+                / spec_name / ".fenix-run-result.json"
+            )
+            retry_status = (self._pm.state_machine.read_one(spec_name) or {}).get(
+                "status", "")
+            if retry_status == "testing":
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"裁决结果不可读 '{spec_name}'（reason={verifier_result.reason}）"
+                    f"— 重派 judge 一次后复读: {verifier_result.detail}",
+                )
+                retry_judge = self._pm.agent_runner.run_planner(spec_name, "judge")
+                if retry_judge.success:
+                    verifier_result = self._pm._read_planner_result(spec_name)
+                    verifier_status = (
+                        verifier_result.status if verifier_result.ok else None)
+            if not verifier_result.ok:
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"裁决结果二次仍不可读 '{spec_name}' — 阻断为 blocked"
+                    f"（reason={verifier_result.reason}）: {verifier_result.detail}",
+                )
+                self._pm.state_machine.update_spec(spec_name, {
+                    "status": "blocked",
+                    "error": (
+                        f"验证裁决结果文件不可读（重派 judge 一次后仍不可读，"
+                        f"reason={verifier_result.reason}）：{verifier_result.detail}"
+                    ),
+                })
+                self._pm._send_human_escalation_alert(
+                    spec_name=spec_name,
+                    signal_type="verdict_result_unreadable",
+                    severity="critical",
+                    description=(
+                        f"'{spec_name}' 验证裁决结果文件不可读，已 blocked 等待人工裁决"
+                        f"（reason={verifier_result.reason}）"
+                    ),
+                    evidence=(
+                        f"spec={spec_name}; result_file={verdict_result_path}; "
+                        f"parse_error={verifier_result.detail}"
+                    ),
+                    recommended_action=(
+                        "检查 planner-judge 是否以合法 JSON 写入结果文件（字符串内换行/"
+                        "引号/控制字符须转义，建议以代码 json.dump 生成而非手工拼接）；"
+                        "修复文件后重置验证或重跑"
+                    ),
+                )
+                return
         # ── 阶段3+ 场景原地修复通道（judge-scenario-repair）──
         # 测试场景文件自身也可能有缺陷（夹具未自建/步骤客观错误/依赖序缺失）。
         # judge 原地修复场景文件并申报 scenario-repaired：框架经冻结 diff 记账
@@ -2003,7 +2111,105 @@ class VerificationPipeline:
             if self._pm._handle_env_blocked_inconclusive(spec_name, report):
                 return
             run_result_path = self._pm.project_root / ".fenix" / ".fenix-run-result.json"
-            verifier_status = self._pm._read_verifier_result(run_result_path)
+            verifier_result = self._pm._read_verifier_result(run_result_path)
+            verifier_status = (
+                verifier_result.status if verifier_result.ok else None)
+            # fix-verdict-read-failclosed D5（legacy 同门）：旧版 verifier 结果不可读
+            # （缺失/非法 JSON/白名单外）→ blocked + critical 告警，绝不晋级
+            # verified。legacy 是降级通道（三阶段两连败才进），结果不可读说明结构性
+            # 异常而非偶发——自动重派整轮 verifier 只会烧钱，交人工。例外：status 白
+            # 名单外（如 implementer 共享残留的 "success"）文件本身可读，须先走既有
+            # 陈旧/归属护栏（foreign-spec 残留 → re-dispatch）再决定 blocked。
+            if not verifier_result.ok:
+                if verifier_result.reason == "unknown-status":
+                    # 白名单外 status：文件可读，可能是共享文件中的其它 spec 残留
+                    # 或 implementer 残留——走既有陈旧/归属护栏（检测 spec stamp
+                    # 不符 / mtime 陈旧），foreign → re-dispatch 不 blocked。
+                    if self._pm._verifier_result_is_stale(
+                            result, run_result_path, spec_name):
+                        self._pm.state_machine.update_spec(spec_name, {
+                            "status": "implemented",
+                            "tester_run": None,
+                            "error": (
+                                "stale/foreign verifier result replayed"
+                                " — re-dispatching fresh verify"),
+                        })
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"Stale/foreign verifier result for '{spec_name}' — "
+                            f"re-dispatching fresh verification",
+                        )
+                        return
+                    # 文件属当前 spec 且 mtime 新鲜，但 status 白名单外 → blocked
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"Verifier (legacy) status 白名单外 '{spec_name}' — "
+                        f"阻断为 blocked（reason={verifier_result.reason}）: "
+                        f"{verifier_result.detail}",
+                    )
+                    self._pm.state_machine.update_spec(spec_name, {
+                        "status": "blocked",
+                        "tester_run": result.run_id,
+                        "error": (
+                            f"Verifier (legacy) 结果文件 status 白名单外"
+                            f"（reason={verifier_result.reason}）："
+                            f"{verifier_result.detail}"
+                        ),
+                    })
+                    self._pm._send_human_escalation_alert(
+                        spec_name=spec_name,
+                        signal_type="verdict_result_unreadable",
+                        severity="critical",
+                        description=(
+                            f"'{spec_name}' legacy 验证裁决结果 status "
+                            f"白名单外，已 blocked 等待人工裁决"
+                            f"（reason={verifier_result.reason}）"
+                        ),
+                        evidence=(
+                            f"spec={spec_name}; result_file={run_result_path}; "
+                            f"parse_error={verifier_result.detail}"
+                        ),
+                        recommended_action=(
+                            "检查旧版 verifier 结果文件 status 是否在 "
+                            "verified/bug-found/plan-ready/scenario-repaired "
+                            "白名单内；修复后人工重置验证"
+                        ),
+                    )
+                    return
+                # 缺失 / 非法 JSON → D5 直接 blocked（不可读属结构性异常，
+                # 自动重派整轮 verifier 只会烧钱，交人工）。
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"Verifier (legacy) 结果不可读 '{spec_name}' — 阻断为 blocked"
+                    f"（reason={verifier_result.reason}）: "
+                    f"{verifier_result.detail}",
+                )
+                self._pm.state_machine.update_spec(spec_name, {
+                    "status": "blocked",
+                    "tester_run": result.run_id,
+                    "error": (
+                        f"Verifier (legacy) 结果文件不可读（reason="
+                        f"{verifier_result.reason}）：{verifier_result.detail}"
+                    ),
+                })
+                self._pm._send_human_escalation_alert(
+                    spec_name=spec_name,
+                    signal_type="verdict_result_unreadable",
+                    severity="critical",
+                    description=(
+                        f"'{spec_name}' legacy 验证裁决结果文件不可读，已 blocked "
+                        f"等待人工裁决（reason={verifier_result.reason}）"
+                    ),
+                    evidence=(
+                        f"spec={spec_name}; result_file={run_result_path}; "
+                        f"parse_error={verifier_result.detail}"
+                    ),
+                    recommended_action=(
+                        "检查旧版 verifier 是否以合法 JSON 写入结果文件；修复后"
+                        "人工重置验证"
+                    ),
+                )
+                return
             # 结果文件新鲜度/归属护栏：共享单文件会被任何 spec 的后续运行覆写，
             # 陈旧或异 spec 的判定重放到当前轮次 = 假 bug-found / 假 verified
             # （2026-08-28 improve-failover-model-mapping-ui 09:41 旧判定 12:21 重放实证）。
@@ -2342,8 +2548,12 @@ class VerificationPipeline:
         返回合成 ``AgentRunResult``（run_id=mechanical-all-green）供既有采纳
         尾段原样消费；返回 None = 存在失败/警告，走常规 judge。结果文件写
         primary 路径并**覆盖上一轮 judge 残留**（防 ``_read_planner_result``
-        读到旧裁决）。写回失败不阻断——``_read_planner_result`` 对缺失文件
-        本就按 verified 兜底（_read_verifier_result docstring 语义）。
+        读到旧裁决）。
+
+        fix-verdict-read-failclosed D6（fail-closed 语义反转）：写回失败**不得**
+        静默 verified——快道产物是机械合成，写回失败极罕见，此时按「本轮无裁决
+        产物」退化为常规 judge（返回 None），由 judge 补一轮真实裁决；绝无
+        「按 verified 兜底」的旧语义（读侧缺失文件按通过放行即历史事故根因）。
         """
         summary = report.get("summary") or {}
         if (fail_count != 0
@@ -2366,10 +2576,13 @@ class VerificationPipeline:
                 json.dumps(payload, ensure_ascii=False, indent=1),
                 encoding="utf-8")
         except OSError as e:
-            self._pm.logger.warning(
+            # fix-verdict-read-failclosed D6：机械写回失败 → 退化常规 judge（返回
+            # None），不得按 verified 兜底放行（历史 fail-open 语义已清除）。
+            self._pm.logger.error(
                 "pm_engine",
-                f"全绿快道结果文件写回失败 '{spec_name}'（不阻断）: {e}",
+                f"全绿快道结果文件写回失败 '{spec_name}' — 退化为常规 judge: {e}",
             )
+            return None
         self._pm.logger.info(
             "pm_engine", f"[阶段3] 全绿快道 '{spec_name}' — {text}")
         from core.agent_runner.runner import AgentRunResult
@@ -2712,47 +2925,71 @@ class VerificationPipeline:
         return None
 
 
-    def _read_verifier_result(self, result_path: Path) -> str | None:
-        """读取 verifier 写入的 .fenix-run-result.json，返回 status 字段。
+    def _read_verifier_result(self, result_path: Path) -> VerdictReadResult:
+        """读取 verifier 写入的 .fenix-run-result.json，返回结构化三态结果。
 
-        返回 None 表示文件不存在或格式无效（视为 verified）。
-        返回 "verified" 表示全部通过。
-        返回 "bug-found" 表示验证发现 Bug。
-        返回 "plan-ready" 表示Planner已生成场景。
-        返回 "scenario-repaired" 表示 judge 原地修复了场景文件（judge-scenario-repair）。
+        fix-verdict-read-failclosed（fail-closed 语义反转）：
+        结果文件缺失 / 非法 JSON / status 白名单外一律返回 ok=False 的不可读结果
+        （reason ∈ missing / parse / unknown-status），**绝不**返回 None 表示
+        「视为 verified」——裁决读不出来 = 按通过放行是历史事故根因
+        （add-verify-contract-autodraft：裸换行非法 JSON → None → else 分支
+        → verified → done → auto-push）。不可读的处置（重试/blocked）由调用方
+        决定，本方法只负责如实归因。
+
+        ok=True 时的 status 取值：
+        - "verified" 表示全部通过；
+        - "bug-found" 表示验证发现 Bug；
+        - "plan-ready" 表示 Planner 已生成场景；
+        - "scenario-repaired" 表示 judge 原地修复了场景文件（judge-scenario-repair）。
         """
+        if not result_path.exists():
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Verifier result file not found: {result_path}",
+            )
+            return VerdictReadResult.failure("missing", f"{result_path}")
         try:
-            if not result_path.exists():
-                self._pm.logger.warning(
-                    "pm_engine",
-                    f"Verifier result file not found: {result_path}",
-                )
-                return None
             data = json.loads(result_path.read_text(encoding="utf-8"))
-            status = data.get("status", "")
-            if status in ("verified", "bug-found", "plan-ready", "scenario-repaired"):
-                bugs = data.get("bugs", [])
-                bug_count = len(bugs) if isinstance(bugs, list) else 0
-                self._pm.logger.info(
-                    "pm_engine",
-                    f"Verifier result: status={status}, bugs={bug_count}",
-                )
-                return status
+        except json.JSONDecodeError as e:
             self._pm.logger.warning(
                 "pm_engine",
-                f"Unknown verifier status: '{status}', treating as verified",
+                f"Failed to read verifier result (fail-closed): {e}",
             )
-            return None
-        except (json.JSONDecodeError, OSError) as e:
+            return VerdictReadResult.failure("parse", f"{e}")
+        except OSError as e:
             self._pm.logger.warning(
                 "pm_engine",
-                f"Failed to read verifier result: {e}",
+                f"Failed to read verifier result (fail-closed): {e}",
             )
-            return None
+            return VerdictReadResult.failure("parse", f"{e}")
+        if not isinstance(data, dict):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Unknown verifier result structure (fail-closed): {result_path}",
+            )
+            return VerdictReadResult.failure("parse", f"顶层非对象: {result_path}")
+        status = data.get("status", "")
+        if status not in planner_result_status_whitelist:
+            # fail-closed：白名单外 status（如 implementer 共享文件残留的
+            # success/error）不得被当成 verified 放行（历史日志：
+            # "Unknown verifier status: 'success', treating as verified"）。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Unknown verifier status: '{status}' (fail-closed, not treating "
+                "as verified)",
+            )
+            return VerdictReadResult.failure("unknown-status", f"status='{status}'")
+        bugs = data.get("bugs", [])
+        bug_count = len(bugs) if isinstance(bugs, list) else 0
+        self._pm.logger.info(
+            "pm_engine",
+            f"Verifier result: status={status}, bugs={bug_count}",
+        )
+        return VerdictReadResult.success(status)
 
 
-    def _read_planner_result(self, spec_name: str) -> str | None:
-        """读取 Planner 写入的结果文件，返回 status 字段。
+    def _read_planner_result(self, spec_name: str) -> VerdictReadResult:
+        """读取 Planner 写入的结果文件，返回结构化三态结果（fail-closed）。
 
         优先读 verify-progress/<spec>/.fenix-run-result.json（Planner prompt 中
         指定的确定性产物路径），回退主树 .fenix/.fenix-run-result.json（兼容旧行为：
@@ -2763,6 +3000,9 @@ class VerificationPipeline:
         pm_engine 误读主树共享文件会看到 implementer 残留状态（不在
         verified/bug-found/plan-ready 白名单），误判「Planner 未生成有效场景」，
         进而降级旧版 verifier 导致验证反复失败（admin 处置根因）。
+
+        fix-verdict-read-failclosed：不可读（含 fallback spec-stamp 拦截的
+        foreign 残留）一律返回 ok=False，绝不以 None 等价 verified。
         """
         primary = (
             self._pm.project_root / ".fenix" / "verify-progress"
@@ -2777,8 +3017,8 @@ class VerificationPipeline:
         if fallback.exists():
             try:
                 fb_data = json.loads(fallback.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                return self._pm._read_verifier_result(fallback)
+            except (json.JSONDecodeError, OSError) as e:
+                return VerdictReadResult.failure("parse", f"{fallback}: {e}")
             stamped = fb_data.get("spec") if isinstance(fb_data, dict) else None
             if isinstance(stamped, str) and stamped and stamped != spec_name:
                 self._pm.logger.warning(
@@ -2786,7 +3026,8 @@ class VerificationPipeline:
                     f"Ignoring stale result file {fallback}: "
                     f"spec='{stamped}' != '{spec_name}'",
                 )
-                return None
+                return VerdictReadResult.failure(
+                    "foreign-stamp", f"{fallback}: spec='{stamped}'")
         return self._pm._read_verifier_result(fallback)
 
 

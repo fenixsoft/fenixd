@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.pm_engine import PMEngine
+from core.pm_engine.verification import VerdictReadResult
 from core.state_machine import StateMachine
 
 
@@ -99,7 +100,9 @@ class TestStage1StatusRecheckBeforePlanner(_OrphanRaceTestBase):
         plan_result.success = True
         plan_result.duration_seconds = 120.0
         self.agent_runner.run_planner.return_value = plan_result
-        self.engine._read_planner_result = MagicMock(return_value="plan-invalid")
+        self.engine._read_planner_result = MagicMock(
+            return_value=VerdictReadResult.failure(
+                "unknown-status", "status='plan-invalid'"))
 
         try:
             self.engine._run_three_stage_verification("race-spec")
@@ -120,7 +123,9 @@ class TestStage1StatusRecheckBeforePlanner(_OrphanRaceTestBase):
         plan_result.success = True
         plan_result.duration_seconds = 120.0
         self.agent_runner.run_planner.return_value = plan_result
-        self.engine._read_planner_result = MagicMock(return_value="plan-invalid")
+        self.engine._read_planner_result = MagicMock(
+            return_value=VerdictReadResult.failure(
+                "unknown-status", "status='plan-invalid'"))
 
         with self.assertRaises(RuntimeError):
             self.engine._run_three_stage_verification("ok-spec")

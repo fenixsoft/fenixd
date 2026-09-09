@@ -19,6 +19,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.state_machine import StateMachine, StateParser, SpecStatus, VALID_TRANSITIONS
+from core.pm_engine.verification import VerdictReadResult
 
 
 class TestVerifierStaleResultGuard(unittest.TestCase):
@@ -88,11 +89,13 @@ class TestVerifierStaleResultGuard(unittest.TestCase):
         self.assertIn("stale", str(e.get("error")))
 
     def test_missing_result_not_treated_as_verified(self):
+        """结果文件缺失 → 不得晋级 verified；legacy 路径按 D5 阻断为 blocked。"""
         self._make_impl_spec()
         self._run_verify(int(time.time()))
         e = self.sm.read_one("quick-links-folders")
-        self.assertEqual(e["status"], "implemented")
-        self.assertIn("stale", str(e.get("error")))
+        self.assertNotEqual(e["status"], "verified")
+        self.assertEqual(e["status"], "blocked")
+        self.assertIn("不可读", str(e.get("error")))
 
     def test_fresh_bugfound_still_counts(self):
         self._make_impl_spec()
@@ -220,7 +223,8 @@ class TestScenarioReloadAfterReachabilityHeal(unittest.TestCase):
         self.engine.agent_runner.run_planner = MagicMock(
             return_value=SimpleNamespace(success=True, error=None, run_id="planner-plan-demo-spec-1-a1")
         )
-        self.engine._read_planner_result = MagicMock(return_value="plan-ready")
+        self.engine._read_planner_result = MagicMock(
+            return_value=VerdictReadResult.success("plan-ready"))
         self.engine._apply_scenario_freeze = MagicMock(return_value={})
         self.engine._apply_interaction_contract = MagicMock(return_value=None)
 
@@ -388,7 +392,8 @@ class TestJudgeScenarioRepair(unittest.TestCase):
         """scenario-repaired → 冻结记账 + 重入执行；预算耗尽写 error 停止重入。"""
         from core.pm_engine.verification import _SCENARIO_REPAIR_MAX_ROUNDS
         runs = []
-        self.engine._read_planner_result = MagicMock(return_value="scenario-repaired")
+        self.engine._read_planner_result = MagicMock(
+            return_value=VerdictReadResult.success("scenario-repaired"))
         self._run_with_report(lambda: runs.append(1))
         # 1 次初始 + 2 次修复重入 = 3 轮执行；每次修复采纳先冻结记账
         self.assertEqual(len(runs), 1 + _SCENARIO_REPAIR_MAX_ROUNDS)
@@ -403,7 +408,8 @@ class TestJudgeScenarioRepair(unittest.TestCase):
     def test_repair_then_verified(self):
         """修复一轮后 judge 判 verified → 正常晋级，冻结记账恰一次。"""
         self.engine._read_planner_result = MagicMock(
-            side_effect=["scenario-repaired", "verified"])
+            side_effect=[VerdictReadResult.success("scenario-repaired"),
+                        VerdictReadResult.success("verified")])
         self.engine._check_verification_gate = MagicMock(return_value=None)
         self.engine._ensure_verification_report = MagicMock(return_value=None)
         self.engine._env_whitewash_gate = MagicMock(return_value=True)
@@ -567,7 +573,8 @@ class TestVerifierCircuitOpenHoldsState(unittest.TestCase):
                 success=False, error=circuit_err,
                 run_id="planner-plan-demo-spec-1-a1", cancelled=False,
             ))
-        self.engine._read_planner_result = MagicMock(return_value="plan-ready")
+        self.engine._read_planner_result = MagicMock(
+            return_value=VerdictReadResult.success("plan-ready"))
         self.engine._apply_scenario_freeze = MagicMock(return_value={})
         self.engine._apply_interaction_contract = MagicMock(return_value=None)
 
@@ -589,7 +596,8 @@ class TestVerifierCircuitOpenHoldsState(unittest.TestCase):
                 success=False, error=circuit_err,
                 run_id="planner-plan-demo-spec-2-a1", cancelled=False,
             ))
-        self.engine._read_planner_result = MagicMock(return_value="plan-ready")
+        self.engine._read_planner_result = MagicMock(
+            return_value=VerdictReadResult.success("plan-ready"))
         self.engine._apply_scenario_freeze = MagicMock(return_value={})
         self.engine._apply_interaction_contract = MagicMock(return_value=None)
 
@@ -609,7 +617,8 @@ class TestVerifierCircuitOpenHoldsState(unittest.TestCase):
                 success=False, error=circuit_err,
                 run_id="planner-plan-demo-spec-3-a1", cancelled=False,
             ))
-        self.engine._read_planner_result = MagicMock(return_value="plan-ready")
+        self.engine._read_planner_result = MagicMock(
+            return_value=VerdictReadResult.success("plan-ready"))
         self.engine._apply_scenario_freeze = MagicMock(return_value={})
         self.engine._apply_interaction_contract = MagicMock(return_value=None)
 
@@ -632,11 +641,12 @@ class TestUniformVerifyFailure(unittest.TestCase):
       递增 ``_verify_fail_rounds`` 并原地打回注入「验证修复」任务段。
     - **verdict bug-found**：结果文件 status=bug-found → bug-found 分支显式调用
       ``_on_spec_bug_found`` → 同上递增。
-    - **结果文件畸形**：当前实现把 status 不在白名单的结果文件视为 verified
-      （``_read_verifier_result`` 对未知 status 返回 None → 走 verified 分支），
-      **不产生 bug-found 失败信号、不递增 fail_rounds**——与 spec 期望不一致，
-      按 design D1 登记为 spec-inconsistency 发现并以 xfail 呈现（测试锁定
-      当前实际行为 = 不递增，供人工裁决是否需要实现侧改进）。
+    - **结果文件畸形**：``_read_verifier_result`` 对 status 不在白名单的结果文件
+      返回不可读结果（fail-closed，fix-verdict-read-failclosed），legacy 采纳处
+      阻断为 **blocked** + 告警——**不产生 bug-found 失败信号、不递增 fail_rounds**，
+      与 spec 期望（统一失败信号）不一致，按 design D1 登记为 spec-inconsistency
+      发现并以 xfail 呈现（测试锁定当前实际行为 = blocked，供人工裁决是否需要
+      实现侧改进）。
 
     spec 两个 Scenario：
     - 各失败形态统一递增失败轮次（run 异常 / verdict bug-found 各自 +1）
@@ -721,11 +731,12 @@ class TestUniformVerifyFailure(unittest.TestCase):
 
     @unittest.expectedFailure
     def test_malformed_result_file_current_behavior(self):
-        """形态 3：结果文件畸形—— spec 期望归一到失败信号。
+        """形态 3：结果文件畸形—— spec 期望统一归一到失败信号，当前实际 blocked。
 
-        当前实现（verbatim 行为）：``_read_verifier_result`` 对未知 status
-        记录 warning 并返回 None，legacy verified 分支据此推进 verified，
-        fail_rounds 不递增。此为 design D1 登记的 spec-inconsistency。
+        fix-verdict-read-failclosed 后：``_read_verifier_result`` 对不在白名单的
+        status 返回不可读结果（fail-closed），legacy 采纳处阻断为 **blocked** + 告警，
+        而非 verified（旧 fail-open）也非 bug-found（spec 期望的统一失败信号）。
+        此为 design D1 登记的 spec-inconsistency，测试锁定 blocked 行为。
         """
         self._make_testing_spec()
         self.engine.agent_runner.run_verifier = MagicMock(

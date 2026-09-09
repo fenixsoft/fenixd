@@ -53,6 +53,19 @@ def planner_result_path(project_root, spec_name: str, agent_type: str) -> Path:
     )
 
 
+# planner 裁决结果文件顶层 status 白名单（fix-verdict-read-failclosed D3）。
+# runner 产物硬门（_check_agent_result_artifact）与 pm_engine 读侧
+# （_read_verifier_result）共用此单一来源——白名单外取值（如 implementer 共享
+# 文件残留的 "success"/"error"）一律不得视作合法裁决。语义错位 status 若被
+# 读侧当作 verified 放行即历史 fail-open 事故（add-verify-contract-autodraft）。
+planner_result_status_whitelist = (
+    "verified",
+    "bug-found",
+    "plan-ready",
+    "scenario-repaired",
+)
+
+
 def project_agents_dir(proot) -> Path | None:
     """项目级 agents 目录 <项目根>/.fenix/agents；解析为通用层时返回 None。
 
@@ -1000,6 +1013,9 @@ class PromptBuilder:
             "- 收工前未写 / 文件为空 / 非法 JSON → 本次 run 判**失败**并自动原地"
             "退避重试（不消耗裁决重试预算）；产物缺失的运行结果不会被当作成功采纳"
             "（fail-closed）。\n"
+            "- 结果文件 MUST 为合法 JSON——字符串内换行/引号/控制字符必须转义，"
+            "建议以代码 `json.dump` 生成而非手工拼接文本（fix-verdict-read-failclosed"
+            " D7；不可解析的裁决读侧按 fail-closed 阻断，不视为 verified）。\n"
             "- **先落盘再深入**：先完成最小必要产物落盘，再做深入调查/复现——"
             "深入调查不会为产物缺失兜底。\n"
         )

@@ -23,7 +23,9 @@
    - **截断恢复**：若注入了「截断恢复：已归因场景直接沿用」段——清单内场景已带合法 classification/evidence（上一轮被截断 run 的 checkpoint 残留），**直接沿用、禁止二次裁决/复现/改写**，仅核对 assertion_triage 是否齐全、缺则补齐；只对**缺失或非法**场景做完整裁决。
 5. **深入调查/复现（最小增强全部落盘后才开始，add-judge-artifact-gate）**：按下方「复现预算分级」只对存疑场景（分类在 product-bug/test-defect/flaky/env 间摇摆的）做深入调查/复现；确需修订分类/证据的场景，修订后同样**逐场景立即写回**（checkpoint 不中断）。
 6. 将运行结果写入 {result_path}（绝对路径，与场景/报告文件同目录，
-不要写别处）
+不要写别处）。**必须为合法 JSON**——字符串内的换行/引号/控制字符必须
+转义，建议以代码 `json.dump` 生成文件而非手工拼接文本（框架硬门与读侧
+对不可解析的文件按 fail-closed 拦截/阻断，不视为 verified）。
 
 ## 复现预算分级（judge 效率治理 2026-09-06，强制）
 
@@ -129,6 +131,6 @@
 1. 直接修改 {scenarios_path}：补自建夹具/种子场景（cli `run` 步骤）、修正客观错误步骤与断言、补 `depends_on` 串接；被移除的场景条目 MUST 携带 `"remove_reason"` 字段（缺理由的移除会被框架确定性回补）
 2. 红线：**不得为凑通过弱化或删除既有断言**；不得修改场景文件与报告之外的任何文件；不得修改 .fenix/STATE.md
 3. report.json 中被修复场景分类标 `test-defect`，evidence 写明「场景文件缺陷：<改了什么、为什么>」
-4. {result_path} 写 `{"status": "scenario-repaired", "scenario_repair": {"repaired_ids": [...], "added_ids": [...], "removed": [{"id": "...", "reason": "..."}], "summary": "修复说明"}}`——**不写 verified/bug-found**，框架会确定性校验并重执行场景后再次裁决
+4. {result_path} 写 `{"status": "scenario-repaired", "scenario_repair": {"repaired_ids": [...], "added_ids": [...], "removed": [{"id": "...", "reason": "..."}], "summary": "修复说明"}}`——**不写 verified/bug-found**，框架会确定性校验并重执行场景后再次裁决；同样 MUST 为合法 JSON（以代码 `json.dump` 生成，勿手工拼接文本）
 
 IMPORTANT: 不要修改 .fenix/STATE.md。
