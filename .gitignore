@@ -48,5 +48,9 @@ dist/
 # 验证契约 worktree 服务范围的临时 serving worktree（verify-contract 自管理）
 verify-serving/
 
+# daemon 运行时产物（锁文件/日志，本仓库自托管时生成于根目录）
+daemon.lock
+fenixd.log
+
 # gh CLI 本机设备标识等本地运行时状态
 .local/
