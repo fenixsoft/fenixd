@@ -27,19 +27,16 @@ IMPL_RUN_BUDGET_OVERRIDE_FIELD = "impl_run_budget_override"
 def clamp_impl_run_budget(raw) -> int | None:
     """预算值归一化纯函数（模块级导出，闸门与 Dashboard 同源，防口径漂移）。
 
-    - 可解析为整数 → 夹紧到 1-10 返回（bool 是 int 子类但语义非法 → None）；
-    - None / 不可解析（字符串数字、浮点等）→ 返回 None（调用方回退下一优先级）。
+    - 整数（非 bool）→ 夹紧到 1-10 返回；
+    - None / 非整数（字符串数字、浮点、bool 等）→ 返回 None（调用方回退下一优先级）。
 
     覆盖值与全局配置共用此函数，保证越界夹紧口径完全一致（design D3 / risk 单点）。
     """
     if raw is None:
         return None
-    if isinstance(raw, bool):
+    if not isinstance(raw, int) or isinstance(raw, bool):
         return None
-    try:
-        val = int(raw)
-    except (TypeError, ValueError):
-        return None
+    val = raw
     if val < 1:
         val = 1
     if val > 10:
