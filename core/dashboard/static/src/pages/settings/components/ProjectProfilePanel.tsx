@@ -1,5 +1,5 @@
 import { Alert, Button, Card, Input, Popconfirm, Typography, message } from 'antd';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { ConfigData } from '@/services/dashboard';
 import {
   autodraftVerifyYaml,
@@ -69,6 +69,10 @@ export default function ProjectProfilePanel({ config, onSave, project }: Project
   const [yamlLoading, setYamlLoading] = useState(false);
   const [yamlSaving, setYamlSaving] = useState(false);
   const [autodraftLoading, setAutodraftLoading] = useState(false);
+  // fix-verify-contract-signal-semantics D3：同步防重入锁——setAutodraftLoading 的
+  // loading 渲染生效存在 React 调度间隙（实证 100ms 内双击穿透），useRef 写读同帧
+  // 原子、无渲染依赖，在途期间重复触发直接 return 不发网络请求。
+  const autodraftInFlight = useRef(false);
 
   const loadVerifyYaml = async (silent = false) => {
     if (!project) return;
@@ -121,6 +125,8 @@ export default function ProjectProfilePanel({ config, onSave, project }: Project
 
   const handleAutodraft = async (overwrite: boolean) => {
     if (!project) return;
+    if (autodraftInFlight.current) return; // 竞态窗口内重复触发：同步锁拦截
+    autodraftInFlight.current = true;
     setAutodraftLoading(true);
     try {
       const result = await autodraftVerifyYaml(project, overwrite);
@@ -139,6 +145,7 @@ export default function ProjectProfilePanel({ config, onSave, project }: Project
       console.error('Failed to autodraft verify.yaml:', e);
     } finally {
       setAutodraftLoading(false);
+      autodraftInFlight.current = false;
     }
   };
 

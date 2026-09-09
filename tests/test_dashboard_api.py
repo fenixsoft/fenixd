@@ -676,7 +676,7 @@ class TestProjectDescribeAPI:
         assert len(signals) == 0
 
     def test_autodraft_valid_contract_with_overwrite_dispatches(self, server_fx):
-        """契约有效带 overwrite → dispatched。"""
+        """契约有效带 overwrite → dispatched + 写入 verify_contract_redraft 信号。"""
         proot, srv = server_fx
         # 写入有效契约
         (proot / ".fenix" / "verify.yaml").write_text(
@@ -689,14 +689,125 @@ class TestProjectDescribeAPI:
         )
         assert status == 200
         assert body["status"] == "dispatched"
-        # 检查信号落盘
+        # 检查信号落盘：覆盖重起草改写 verify_contract_redraft，不再旁路 missing
         from core.admin_store import AdminStore
         store = AdminStore(proot)
         records = store.read_all()
-        signals = [r for r in records if r.get("signal_type") == "verify_contract_missing"]
-        assert len(signals) == 1
-        sig = signals[0]
+        redraft = [r for r in records if r.get("signal_type") == "verify_contract_redraft"]
+        missing = [r for r in records if r.get("signal_type") == "verify_contract_missing"]
+        assert len(redraft) == 1
+        assert len(missing) == 0
+        sig = redraft[0]
         assert sig["overwrite"] is True
+        assert sig["source"] == "ui-manual"
+        assert "项目名=proj-a" in sig["evidence"]
+        assert "覆盖确认=是" in sig["evidence"]
+
+    def test_autodraft_redraft_signal_severity_major(self, server_fx):
+        """redraft 信号 severity=major（与 SPEC Requirement 一致）。"""
+        proot, srv = server_fx
+        (proot / ".fenix" / "verify.yaml").write_text(
+            "prepare:\n  - run: echo ok\nserve:\n  kind: command\n  cmd: echo serve\n",
+            encoding="utf-8",
+        )
+        srv.post_json(
+            "/api/verify-yaml-autodraft?project=proj-a",
+            {"overwrite": True},
+        )
+        from core.admin_store import AdminStore
+        store = AdminStore(proot)
+        records = store.read_all()
+        sig = next(r for r in records if r.get("signal_type") == "verify_contract_redraft")
+        assert sig["severity"] == "major"
+
+    def test_autodraft_inflight_dedup_no_duplicate_write(self, server_fx):
+        """在途去重：同类型未消费信号已存在 → 二次触发不落盘 + message 注明在途。"""
+        proot, srv = server_fx
+        (proot / ".fenix" / "verify.yaml").write_text(
+            "prepare:\n  - run: echo ok\nserve:\n  kind: command\n  cmd: echo serve\n",
+            encoding="utf-8",
+        )
+        # 第一次触发：写入 redraft 信号
+        _, body1 = srv.post_json(
+            "/api/verify-yaml-autodraft?project=proj-a",
+            {"overwrite": True},
+        )
+        assert body1["status"] == "dispatched"
+        # 第二次触发：在途信号存在 → 不重复写，message 含在途提示
+        status, body2 = srv.post_json(
+            "/api/verify-yaml-autodraft?project=proj-a",
+            {"overwrite": True},
+        )
+        assert status == 200
+        assert body2["status"] == "dispatched"
+        assert "已有在途" in body2["message"]
+        from core.admin_store import AdminStore
+        store = AdminStore(proot)
+        records = store.read_all()
+        redraft = [r for r in records if r.get("signal_type") == "verify_contract_redraft"]
+        assert len(redraft) == 1, "同类型在途信号存在时不得重复落盘"
+
+    def test_autodraft_handled_signal_does_not_suppress(self, server_fx):
+        """已消费（handled）信号不抑制新触发 → 正常写入新信号。"""
+        proot, srv = server_fx
+        (proot / ".fenix" / "verify.yaml").write_text(
+            "prepare:\n  - run: echo ok\nserve:\n  kind: command\n  cmd: echo serve\n",
+            encoding="utf-8",
+        )
+        # 第一次触发落盘
+        srv.post_json(
+            "/api/verify-yaml-autodraft?project=proj-a",
+            {"overwrite": True},
+        )
+        # 模拟 Administrator 已处置：把该信号标记 handled
+        alerts_path = proot / ".fenix" / "admin_alerts.json"
+        import json as _json
+        records = _json.loads(alerts_path.read_text(encoding="utf-8"))
+        for rec in records:
+            if rec.get("signal_type") == "verify_contract_redraft":
+                rec["handled"] = True
+        alerts_path.write_text(
+            _json.dumps(records, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        # 再次触发：handled 不抑制 → 新信号落盘
+        _, body = srv.post_json(
+            "/api/verify-yaml-autodraft?project=proj-a",
+            {"overwrite": True},
+        )
+        assert body["status"] == "dispatched"
+        assert "已有在途" not in body["message"]
+        from core.admin_store import AdminStore
+        store = AdminStore(proot)
+        records = store.read_all()
+        redraft = [r for r in records if r.get("signal_type") == "verify_contract_redraft"]
+        assert len(redraft) == 2, "已 handled 信号不抑制新触发"
+
+    def test_autodraft_missing_inflight_does_not_suppress_redraft(self, server_fx):
+        """异类型互不抑制：missing 在途不挡 redraft。"""
+        proot, srv = server_fx
+        # 无契约触发 → missing 信号落盘（在途）
+        _, body1 = srv.post_json(
+            "/api/verify-yaml-autodraft?project=proj-a",
+            {"overwrite": False},
+        )
+        assert body1["status"] == "dispatched"
+        # 契约被修正为可解析 + 用户确认覆盖 → redraft 信号正常落盘
+        (proot / ".fenix" / "verify.yaml").write_text(
+            "prepare:\n  - run: echo ok\nserve:\n  kind: command\n  cmd: echo serve\n",
+            encoding="utf-8",
+        )
+        _, body2 = srv.post_json(
+            "/api/verify-yaml-autodraft?project=proj-a",
+            {"overwrite": True},
+        )
+        assert body2["status"] == "dispatched"
+        assert "已有在途" not in body2["message"]
+        from core.admin_store import AdminStore
+        store = AdminStore(proot)
+        records = store.read_all()
+        missing = [r for r in records if r.get("signal_type") == "verify_contract_missing"]
+        redraft = [r for r in records if r.get("signal_type") == "verify_contract_redraft"]
+        assert len(missing) == 1
+        assert len(redraft) == 1, "missing 在途不得抑制 redraft"
 
     def test_autodraft_signal_record_completeness(self, server_fx):
         """信号记录字段完整性：signal_type/source/overwrite/evidence 项目名。"""
