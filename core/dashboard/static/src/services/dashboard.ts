@@ -72,6 +72,12 @@ export function stopProject(name: string) {
   return request(`/api/projects/${encodeURIComponent(name)}/stop`, { method: 'POST' });
 }
 
+/** 优雅重启项目 daemon：写 .fenix/restart_request，supervisor 排水后拉起 */
+export function restartProjectDaemon(name: string) {
+  return request<{ ok: boolean; error?: string }>(
+    `/api/projects/${encodeURIComponent(name)}/restart`, { method: 'POST' });
+}
+
 export function deleteProject(name: string) {
   return request(`/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }

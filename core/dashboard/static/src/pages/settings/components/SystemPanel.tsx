@@ -1,5 +1,6 @@
-import { Button, Card, Form, InputNumber, Select, Switch, Typography } from 'antd';
+import { Button, Card, Form, InputNumber, Modal, Select, Switch, Typography, message } from 'antd';
 import { useEffect } from 'react';
+import { restartProjectDaemon } from '@/services/dashboard';
 import type { ConfigData } from '@/services/dashboard';
 
 const { Text } = Typography;
@@ -7,6 +8,8 @@ const { Text } = Typography;
 interface SystemPanelProps {
   config: ConfigData;
   onSave: (values: Partial<ConfigData>) => Promise<boolean>;
+  /** 当前作用域项目名；undefined = 用户级作用域（无项目 daemon，重启按钮隐藏） */
+  project?: string;
 }
 
 const ADMIN_ANNOTATIONS: {
@@ -138,8 +141,38 @@ const TRANSIENT_ANNOTATIONS: {
   },
 ];
 
-export default function SystemPanel({ config, onSave }: SystemPanelProps) {
+export default function SystemPanel({ config, onSave, project }: SystemPanelProps) {
   const [form] = Form.useForm();
+
+  // 重启 Fenixd（项目级作用域才显示）：确认后写 restart_request，supervisor
+  // 排水（admin.shutdown_drain_seconds）后优雅重启，dashboard 不直接杀进程
+  const handleRestart = () => {
+    if (!project) return;
+    Modal.confirm({
+      title: '重启 Fenixd',
+      content: (
+        <div style={{ whiteSpace: 'pre-wrap' }}>
+          {`确认重启项目「${project}」的 Fenixd daemon？\n\n`}
+          写入 restart_request 后由 supervisor 优雅重启：在跑任务先排水收工
+          （上限 = admin.shutdown_drain_seconds），期间新 SPEC 不派发。
+        </div>
+      ),
+      okText: '重启',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const res = await restartProjectDaemon(project);
+          if (res?.ok) {
+            message.success('重启请求已写入，daemon 将排水后自动重启');
+          } else {
+            message.error(`重启失败：${res?.error ?? '未知错误'}`);
+          }
+        } catch (err) {
+          message.error(`重启失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+    });
+  };
 
   const admin = config.admin ?? {};
   // 瞬断治理（fix-provider-transient-backoff D6）：agents.transient_* 五键
@@ -315,7 +348,22 @@ export default function SystemPanel({ config, onSave }: SystemPanelProps) {
           ))}
         </Card>
       </Form>
-      <div style={{ textAlign: 'right', marginTop: 24 }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginTop: 24,
+        }}
+      >
+        {/* 重启 Fenixd：靠左、白色底（antd 默认按钮非 primary），仅项目级显示 */}
+        {project ? (
+          <Button onClick={handleRestart} data-testid="system-restart-btn">
+            重启 Fenixd
+          </Button>
+        ) : (
+          <span />
+        )}
         <Button type="primary" onClick={handleSave} data-testid="system-save-btn">
           保存
         </Button>

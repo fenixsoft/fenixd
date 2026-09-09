@@ -1416,17 +1416,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # ── 项目管理端点（启停 daemon / 软删除） ──────────────
 
     def _resolve_project_or_400(self, path: str, prefix: str, require_exists: bool = True):
-        """从 /api/projects/<name>[/start|/stop] 或 /api/projects/<name> 解析项目名。
+        """从 /api/projects/<name>[/start|/stop|/restart] 或 /api/projects/<name> 解析项目名。
 
-        路径可能带 /start、/stop 动作后缀，先剥离再按项目名匹配。
+        路径可能带 /start、/stop、/restart 动作后缀，先剥离再按项目名匹配。
         项目不存在（不在监控列表）返回 None；require_exists 时目录不存在也返回 None，
         调用方发 400。删除接口传 require_exists=False 以支持移除缺失项目。
         """
         if not path.startswith(prefix):
             return None
         name = urllib.parse.unquote(path[len(prefix):])
-        # 剥离可能的动作后缀（/start、/stop）
-        for suffix in ("/start", "/stop"):
+        # 剥离可能的动作后缀（/start、/stop、/restart）
+        for suffix in ("/start", "/stop", "/restart"):
             if name.endswith(suffix):
                 name = name[: -len(suffix)]
                 break
@@ -1438,7 +1438,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return project
 
     def _api_project_lifecycle(self, action: str, path: str, query: dict):
-        """POST /api/projects/<name>/start|stop。成功广播 refresh 让概览自动刷新。"""
+        """POST /api/projects/<name>/start|stop|restart。成功广播 refresh 让概览自动刷新。
+
+        restart 走 supervisor 优雅重启协议（写 .fenix/restart_request，与
+        hook restart-daemon 同构）：daemon 自行排水退出后由 supervisor 拉起，
+        dashboard 进程不直接杀/拉 daemon。
+        """
         project = self._resolve_project_or_400(path, "/api/projects/")
         if project is None:
             self._error(400, "项目不存在或未监控")
@@ -1446,8 +1451,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             if action == "start":
                 result = start_daemon(project["path"])
-            else:
+            elif action == "stop":
                 result = stop_daemon(project["path"])
+            else:  # restart
+                req_path = Path(project["path"]) / ".fenix" / "restart_request"
+                try:
+                    req_path.parent.mkdir(parents=True, exist_ok=True)
+                    req_path.touch()
+                    result = {"ok": True, "error": None,
+                              "requested": True, "session": None}
+                except OSError as e:
+                    result = {"ok": False, "error": f"写入 restart_request 失败: {e}"}
         except Exception as e:  # 环境异常（tmux 不可用等）→ 返回错误对象，不 500
             self._json({"ok": False, "error": f"操作失败: {e}"})
             return
@@ -1557,6 +1571,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.endswith("/stop"):
             # POST /api/projects/<name>/stop —— 停止项目 daemon
             self._api_project_lifecycle("stop", path, query)
+        elif path.endswith("/restart"):
+            # POST /api/projects/<name>/restart —— 优雅重启项目 daemon
+            self._api_project_lifecycle("restart", path, query)
         else:
             self._error(404, "Not Found")
 

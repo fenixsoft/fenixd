@@ -216,7 +216,11 @@ export default function SettingsPage() {
                   <HooksPanel config={config} onSave={handleSave} project={project} />
                 )}
                 {activeKey === 'system' && (
-                  <SystemPanel config={config} onSave={handleSave} />
+                  <SystemPanel
+                    config={config}
+                    onSave={handleSave}
+                    project={scope === 'project' ? project : undefined}
+                  />
                 )}
                 {activeKey === 'self-review' && (
                   <SelfReviewPanel

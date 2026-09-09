@@ -390,6 +390,42 @@ class TestProjectLifecycleAPI:
         finally:
             srv.stop()
 
+    def test_restart_writes_restart_request_signal(self, tmp_path, monkeypatch):
+        """restart 走 supervisor 优雅重启协议：写 .fenix/restart_request 文件信号，
+        不直接调用 start/stop_daemon。"""
+        proot = make_project(tmp_path)
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+
+        lifecycle_calls = []
+        monkeypatch.setattr("core.dashboard.server.start_daemon",
+                            lambda root: lifecycle_calls.append(("start", root)) or {"ok": True})
+        monkeypatch.setattr("core.dashboard.server.stop_daemon",
+                            lambda root: lifecycle_calls.append(("stop", root)) or {"ok": True})
+
+        try:
+            status, body = srv.post("/api/projects/proj-a/restart")
+            assert status == 200 and body["ok"] is True
+            assert (proot / ".fenix" / "restart_request").exists(), \
+                "restart 必须写 restart_request 信号（supervisor 优雅重启协议）"
+            assert lifecycle_calls == [], "restart 不应直接调用 start/stop_daemon"
+        finally:
+            srv.stop()
+
+    def test_restart_unknown_project_returns_400(self, tmp_path):
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [], "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = self._make_server(tmp_path, reg)
+        try:
+            status, body = srv.post("/api/projects/ghost/restart")
+            assert status == 400 and body["error"]
+        finally:
+            srv.stop()
+
 
 class TestProjectDescribeAPI:
     """测试 /api/project/describe 端点"""
