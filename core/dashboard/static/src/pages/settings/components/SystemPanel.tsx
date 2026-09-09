@@ -147,12 +147,12 @@ const TRANSIENT_ANNOTATIONS: {
 export default function SystemPanel({ config, onSave, project, onConfigSynced }: SystemPanelProps) {
   const [form] = Form.useForm();
 
-  // 重启 Fenixd（项目级作用域才显示）：确认后写 restart_request，supervisor
+  // 重启 Fenix Daemon（项目级作用域才显示）：确认后写 restart_request，supervisor
   // 排水（admin.shutdown_drain_seconds）后优雅重启，dashboard 不直接杀进程
   const handleRestart = () => {
     if (!project) return;
     Modal.confirm({
-      title: '重启 Fenixd',
+      title: '重启 Fenix Daemon',
       content: (
         <div style={{ whiteSpace: 'pre-wrap' }}>
           {`确认重启项目「${project}」的 Fenixd daemon？\n\n`}
@@ -359,10 +359,10 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
           marginTop: 24,
         }}
       >
-        {/* 左：重启 Fenixd（项目级显示）；右：同步用户级设置 + 保存 */}
+        {/* 左：重启 Fenix Daemon（项目级显示，danger 标示危险操作）；右：同步用户级设置 + 保存 */}
         {project ? (
-          <Button onClick={handleRestart} data-testid="system-restart-btn">
-            重启 Fenixd
+          <Button type="primary" danger onClick={handleRestart} data-testid="system-restart-btn">
+            重启 Fenix Daemon
           </Button>
         ) : (
           <span />
