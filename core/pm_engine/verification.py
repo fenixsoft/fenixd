@@ -670,12 +670,24 @@ class VerificationPipeline:
         design D3：确定性、纯 Python，planner 无法通过输出文本绕过。
         在场景执行前调用（_run_three_stage_verification 阶段1 之后）。
 
+        写端 schema 门（fix-frozen-scenario-orphan-reservoir D1/D2/D3）：
+        - 收编写回 / 补齐写回 test_scenarios.json 前过 ``validate_scenario_dicts``
+          同源校验（与读端 load_scenarios 同源），坏条目剔除留痕（id 清单）、
+          不整批拒绝；剔除数超本轮 20% 时 ERROR 升级（Task 2.4）。
+        - ``_scenarios_full.json`` 备份仅当 planner 产出全部合法时更新
+          （备份价值在「可恢复」，存毒即失去价值）；含非法条目时保留旧备份
+          + WARNING 留痕。
+        - 无理由缺场景且备份缺定义 → 改弃场景（D3）：登记「定义不可恢复」
+          剔除清单，不再写 ``{"id","description"}`` 非法占位，验证以剩余
+          场景继续；备份有完整定义时维持既有补回行为（Task 3.2）。
+
         Returns:
             dict：{'diff': <DiffResult>, 'path': <写入路径>}，便于报告渲染复用。
         """
         from core.verify_scenarios import (
             load_scenario_set, diff_planner_output, save_scenario_set,
         )
+        from core.verify_engine.scenarios import validate_scenario_dicts
         verify_dir = (
             self._pm.project_root / ".fenix" / "verify-progress" / spec_name
         )
@@ -695,20 +707,65 @@ class VerificationPipeline:
         diff = diff_planner_output(
             self._pm.project_root, spec_name, entry, planner_scenarios, current_round)
 
+        # ── 写端 schema 门（D1/D2）：planner 产物收编写回前置校验 ──
+        # 与读端 load_scenarios 同源（validate_scenario_dicts，单一来源）。
+        # 非法条目剔除留痕（id 清单），合法部分照常落盘，不整批拒绝。
+        # 剔除数超本轮 20% → ERROR 升级（场景数骤降可见性兜底，design Risk）。
+        valid_planner: list = []
+        rejected: list[str] = []
+        for idx, item in enumerate(planner_scenarios):
+            if not isinstance(item, dict):
+                rejected.append(f"[{idx}]非对象({type(item).__name__})")
+                continue
+            item_id = item.get("id") or f"[{idx}]"
+            errs = validate_scenario_dicts([item])
+            if errs:
+                rejected.append(f"{item_id}（{'；'.join(errs[:2])}）")
+                continue
+            valid_planner.append(item)
+        if rejected:
+            reject_note = "、".join(rejected)
+            total = len(planner_scenarios) or 1
+            ratio = len(rejected) / total
+            log_fn = (self._pm.logger.error if ratio > 0.2
+                      else self._pm.logger.warning)
+            log_fn(
+                "pm_engine",
+                f"场景写端校验剔除 {len(rejected)}/{len(planner_scenarios)} 条"
+                f"非法条目（{'超本轮20%' if ratio > 0.2 else '未超20%'}），"
+                f"合法部分照常落盘: {reject_note}",
+            )
+            diff.change_lines.append(
+                f"- 写端校验剔除 {len(rejected)} 条非法条目（未落盘）：{reject_note}"
+            )
+
         # 写回 scenarios.json（原子写；首轮写入 / 合并追加 / 补齐后稳定集）
         path = save_scenario_set(self._pm.project_root, diff.scenario_set)
         # 全量场景定义备份（_scenarios_full.json）：供无理由缺场景时按持久化集
         # 补齐 test_scenarios.json 的原始定义（design D2：不丢回归面）。
         # 仅当本轮未删减既有场景时更新备份（保留最全的历史定义）。
-        if not diff.removed:
-            full_backup = verify_dir / "_scenarios_full.json"
-            try:
-                full_backup.write_text(
-                    json.dumps(planner_scenarios, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
+        # D2 特例：备份仅当 planner 产出全部合法时更新——存毒即失去可恢复价值，
+        # 含非法条目时保留旧备份并 WARNING 留痕。
+        # D3 交互：当存在无理由缺场景（unreasoned_missing）时，旧备份是补回
+        # 所需的历史定义源——此时 MUST NOT 覆盖（否则 reconcile 无法取回定义，
+        # 缺定义场景被误判为不可恢复）。仅当 diff.ok（无无理由缺失）时更新。
+        if not diff.removed and not diff.unreasoned_missing:
+            if rejected:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"场景备份未更新 '{spec_name}'：planner 产出含 "
+                    f"{len(rejected)} 条非法条目（_scenarios_full.json 存毒即"
+                    f"失去可恢复价值，保留旧备份）",
                 )
-            except OSError:
-                pass
+            else:
+                full_backup = verify_dir / "_scenarios_full.json"
+                try:
+                    full_backup.write_text(
+                        json.dumps(valid_planner, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    pass
         self._pm.logger.info(
             "pm_engine",
             f"场景集冻结 '{spec_name}'（第 {current_round} 轮）：稳定集 "
@@ -721,7 +778,7 @@ class VerificationPipeline:
         # 上一轮全量备份 _scenarios_full.json 取回被丢弃场景的原始定义。
         if not diff.ok and diff.unreasoned_missing:
             missing_ids = {e.id for e in diff.unreasoned_missing}
-            reconciled = [s for s in planner_scenarios
+            reconciled = [s for s in valid_planner
                           if isinstance(s, dict) and s.get("id")
                           and s.get("id") not in missing_ids]
             backup = verify_dir / "_scenarios_full.json"
@@ -733,19 +790,54 @@ class VerificationPipeline:
                             backup_map[s["id"]] = s
                 except (OSError, json.JSONDecodeError, UnicodeDecodeError):
                     backup_map = {}
+            # D3：备份缺定义 → 改弃场景（不再写 {"id","description"} 占位）。
+            # 备份取回的条目可能来自旧备份（未经写端门），统一过下方
+            # 收编写回 schema 门剔除坏条目；备份缺定义的条目登记「定义不可恢复」
+            # 从本轮验证集剔除（宁少验一个，不写必败文件）。
+            unrecoverable: list[str] = []
             for mid in missing_ids:
                 if mid in backup_map:
                     reconciled.append(backup_map[mid])
                 else:
-                    # 备份缺失：退化为最小占位（仅 id+description），保证回归面不丢
-                    e = next((x for x in diff.unreasoned_missing
-                              if x.id == mid), None)
-                    rec = {"id": mid,
-                           "description": e.description if e else ""}
-                    reconciled.append(rec)
+                    unrecoverable.append(mid)
+            if unrecoverable:
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"无理由缺失且备份缺定义的场景定义不可恢复，从本轮验证集"
+                    f"剔除（宁少验一个，不写必败文件）: {'、'.join(unrecoverable)}",
+                )
+                diff.change_lines.append(
+                    f"- 无理由缺失且备份缺定义的场景 {len(unrecoverable)} 个"
+                    f"定义不可恢复，已剔除：{'、'.join(unrecoverable)}"
+                )
+            # ── 收编写回 schema 门（D1/D2）──
+            # 备份取回条目与合法 planner 产出再次整体过结构校验：坏条目剔除留痕，
+            # 合法部分照常落盘，不整批拒绝。
+            write_valid: list = []
+            write_rejected: list[str] = []
+            for idx, item in enumerate(reconciled):
+                if not isinstance(item, dict):
+                    write_rejected.append(f"[{idx}]非对象({type(item).__name__})")
+                    continue
+                item_id = item.get("id") or f"[{idx}]"
+                errs = validate_scenario_dicts([item])
+                if errs:
+                    write_rejected.append(f"{item_id}（{'；'.join(errs[:2])}）")
+                    continue
+                write_valid.append(item)
+            if write_rejected:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"补齐写回剔除 {len(write_rejected)} 条非法条目（未落盘）: "
+                    f"{'、'.join(write_rejected)}",
+                )
+                diff.change_lines.append(
+                    f"- 补齐写回剔除 {len(write_rejected)} 条非法条目（未落盘）："
+                    f"{'、'.join(write_rejected)}"
+                )
             try:
                 scenarios_path.write_text(
-                    json.dumps(reconciled, ensure_ascii=False, indent=2),
+                    json.dumps(write_valid, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
             except OSError as e:
@@ -1168,13 +1260,32 @@ class VerificationPipeline:
                 env_error = report.get("env_error")
 
             if env_error:
-                if env_error == prev_replan_error:
+                # ── 重跑消费硬门（fix-frozen-scenario-orphan-reservoir D5）──
+                # 验收失败退回 plan 重跑前，先比对上一轮错误清单：本轮错误与上轮
+                # 相同或为上轮超集 → planner 未消费反馈，**不再 continue 重跑**
+                # （重跑即纯烧钱），直接走 _escalate_env_blocked 分级升级
+                # （blocked → admin 自动处置 → 阈值冻结转人工）。
+                # 错误实质性消除（数量减少或主体变化）→ 预算内照常重跑。
+                cur_items = self._extract_replan_error_items(env_error)
+                prev_items = (self._extract_replan_error_items(prev_replan_error)
+                              if prev_replan_error else None)
+                if self._replan_errors_unconsumed(prev_items, cur_items):
                     self._pm.logger.error(
                         "pm_engine",
-                        f"场景验收错误与上一轮一字不差 '{spec_name}' — planner 未消费"
-                        f"反馈，重跑属高风险重复（错误清单已内联进本轮 prompt）: "
-                        f"{env_error[:200]}",
+                        f"场景验收错误与上轮相同或为上轮超集 '{spec_name}' — "
+                        f"planner 未消费反馈（{len(prev_items)} 条错误一条未消），"
+                        f"拒绝重跑，升级 admin 自动处置: {env_error[:200]}",
                     )
+                    self._escalate_env_blocked(
+                        spec_name,
+                        [f"场景验收连续失败且 planner 未消费反馈（错误清单与上一轮"
+                         f"相同或为上轮超集，重跑即纯烧钱）。处置选项：① 修复场景"
+                         f"文件（test_scenarios.json 写回须过结构校验门，且与 "
+                         f"scenarios.json 同源坏条目同步清理，双文件一致）；"
+                         f"② 删除冻结集批准重新出题。"],
+                        title="场景计划争议",
+                    )
+                    return
                 prev_replan_error = env_error
                 if replan_left <= 0:
                     self._pm.state_machine.update_spec(spec_name, {
@@ -1722,6 +1833,39 @@ class VerificationPipeline:
         t = _re.sub(r"['\"`]", "", t)
         return _re.sub(r"\s+", " ", t).strip()
 
+    @staticmethod
+    def _extract_replan_error_items(env_error: str) -> list[str]:
+        """抽取场景验收错误文本中的逐条错误清单（消费硬门比对基准，D5）。
+
+        场景文件验收错误文本（load_scenarios ValueError）形如：
+            "场景文件包含 N 个错误:\n  - 场景'a'步骤0: ...\n  - ..."
+        逐条抽取 "- " 前缀行作为错误项；无该形态（单条错误/其它来源）时
+        退化为整段文本单条目，与既有「一字不差」比对语义同源。
+
+        Returns:
+            错误条目列表；env_error 为空返回空表。
+        """
+        if not env_error:
+            return []
+        items: list[str] = []
+        for line in (env_error or "").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- "):
+                items.append(stripped[2:].strip())
+        if items:
+            return items
+        return [env_error.strip()]
+
+    @staticmethod
+    def _replan_errors_unconsumed(prev_items: list, cur_items: list) -> bool:
+        """消费硬门判定：本轮错误清单是否为上轮相同或超集（D5）。
+
+        上轮错误逐条在本轮全部复现（相同或超集）→ True（planner 未消费反馈）；
+        错误实质性消除（数量减少或主体变化）→ False。空清单不作判定（False）。
+        """
+        if not prev_items:
+            return False
+        return set(prev_items) <= set(cur_items)
 
     def _detect_uniform_verify_failure(self, spec_name: str, report: dict) -> bool:
         """全场景同因失败哨：pass=0 且全部失败场景错误签名一致 → 疑环境/场景问题。
@@ -2060,14 +2204,23 @@ class VerificationPipeline:
         重启/端口清理在其权限内），处置完成走既有重验证；连续 2 轮仍阻塞 →
         frozen 结构化冻结 + 人工升级告警——admin 权限也无法处理时唯一出口是
         人工介入。title 区分升级类别（验证环境阻塞 / 场景计划争议）。
+
+        冻结转人工（fix-frozen-scenario-orphan-reservoir D5）：告警描述追加
+        上轮 planner run 实际成本（tokens/费用/时长）作为「删除冻结集重新出题」
+        的裁决参考。
         """
         try:
             spec = self._pm.state_machine.read_one(spec_name) or {}
             rounds = int(spec.get("_env_block_rounds") or 0) + 1
             frozen = rounds >= 2  # 阈值：连续 2 轮阻塞 → 冻结转人工
+            planner_cost = (self._last_planner_run_cost(spec_name)
+                            if frozen else "")
+            cost_note = (f"\n\n> 🪙 重新出题成本参考：{planner_cost}"
+                         if planner_cost else "")
             error_msg = (
                 f"用户指令冻结（{title}连续 {rounds} 轮，admin 处置未奏效，"
                 f"转人工）：{'；'.join(violations[:3])}"
+                f"{cost_note}"
                 if frozen else
                 f"{title}（第 {rounds} 轮）：{'；'.join(violations[:3])}"
             )
@@ -2124,6 +2277,9 @@ class VerificationPipeline:
                     recommended_action=(
                         "等待 Administrator 自动处置并重验；若已冻结请人工检查"
                         "环境（依赖/服务/端口）后解冻重跑验证"
+                        + (f"；删除冻结集重新出题将重付出题成本"
+                           + (f"（{planner_cost}）" if planner_cost else "")
+                           if frozen else "")
                     ),
                 )
             except Exception as e:
@@ -2133,6 +2289,52 @@ class VerificationPipeline:
             # 升级通道自身失败不得抛穿裁决流程
             self._pm.logger.warning(
                 "pm_engine", f"env 升级通道异常 '{spec_name}': {e}")
+
+    def _last_planner_run_cost(self, spec_name: str) -> str:
+        """最近一次 planner run 的实际成本摘要（冻结转人工告警的裁决参考，D5）。
+
+        从 STATE 累计 ``_cost_usd``/``_tokens_in`` 与 ``.fenix/runs/`` 中该 spec
+        最近一次 planner-plan 产物（``planner-plan-<spec>-*.jsonl``）取时长。
+        任一来源缺失 → 返回空串（告警附注段 fail-open，不因取数失败阻断升级）。
+
+        Returns:
+            人类可读成本摘要（如 ``累计 $176.65 / 2.61亿 tokens；最近 planner
+            run 5.3 小时``）；无数据返回空串。
+        """
+        spec = self._pm.state_machine.read_one(spec_name) or {}
+        parts: list[str] = []
+        try:
+            cost = float(spec.get("_cost_usd") or 0)
+            tokens_in = int(spec.get("_tokens_in") or 0)
+            if cost > 0 or tokens_in > 0:
+                cost_txt = f"${cost:.2f}" if cost > 0 else "费用未回传"
+                tokens_txt = f"{tokens_in/1e6:.1f}M tokens" if tokens_in else "tokens 未记录"
+                parts.append(f"累计 {cost_txt} / {tokens_txt}")
+        except (TypeError, ValueError):
+            pass
+        try:
+            runs_dir = self._pm.project_root / ".fenix" / "runs"
+            if runs_dir.is_dir():
+                candidates = sorted(runs_dir.glob(f"planner-plan-{spec_name}-*.jsonl"))
+                if candidates:
+                    last = candidates[-1]
+                    duration_s = None
+                    for line in last.read_text(encoding="utf-8",
+                                               errors="ignore").splitlines():
+                        try:
+                            d = json.loads(line)
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+                        if isinstance(d, dict) and d.get("type") == "result":
+                            dur = d.get("duration_ms")
+                            if dur:
+                                duration_s = float(dur) / 1000.0
+                    if duration_s:
+                        hours = duration_s / 3600.0
+                        parts.append(f"最近 planner run {hours:.1f} 小时")
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            pass
+        return "；".join(parts)
 
     def _all_green_fast_path(self, spec_name: str, report: dict, fail_count: int):
         """全绿快道（judge 效率治理 A，2026-09-06）：0 失败 0 警告 → 机械 verified。

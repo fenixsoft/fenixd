@@ -598,6 +598,35 @@ def validate_scenario(scenario: TestScenario) -> list[str]:
 
 # ── 场景加载 ──────────────────────────────────────────────────────
 
+def validate_scenario_dicts(raw: list) -> list[str]:
+    """结构校验场景 dict 列表（scenario-write-schema-gate 单一来源）。
+
+    读端 ``load_scenarios`` 与全部写端（planner 产物收编、补齐写回、
+    ``save_scenario_set``、``_scenarios_full.json`` 备份更新）共用同一
+    校验：输入 dict 列表，逐条经 ``TestScenario.from_dict`` +
+    ``validate()`` 校验，返回逐条错误清单。空列表表示全部合法；本函数
+    不抛异常，拒绝/剔除策略由调用方决定。
+
+    Args:
+        raw: 场景 dict 列表。
+
+    Returns:
+        错误清单（人类可读，含场景 id / 下标定位）；全部合法时为空列表。
+    """
+    if not isinstance(raw, list):
+        return [f"场景数据格式错误: 期望数组，实际为 {type(raw).__name__}"]
+    all_errors: list[str] = []
+    for i, item in enumerate(raw):
+        try:
+            scenario = TestScenario.from_dict(item)
+            errors = scenario.validate()
+            if errors:
+                all_errors.extend(errors)
+        except Exception as e:
+            all_errors.append(f"场景[{i}]解析失败: {e}")
+    return all_errors
+
+
 def load_scenarios(filepath) -> list[TestScenario]:
     """从JSON文件加载场景列表，并校验合法性。
 
@@ -623,26 +652,17 @@ def load_scenarios(filepath) -> list[TestScenario]:
     if not isinstance(raw, list):
         raise ValueError(f"场景文件格式错误: 期望JSON数组，实际为 {type(raw).__name__}")
 
-    scenarios: list[TestScenario] = []
-    all_errors: list[str] = []
-
-    for i, item in enumerate(raw):
-        try:
-            scenario = TestScenario.from_dict(item)
-            errors = scenario.validate()
-            if errors:
-                all_errors.extend(errors)
-            scenarios.append(scenario)
-        except Exception as e:
-            all_errors.append(f"场景[{i}]解析失败: {e}")
-
+    # 读端校验与写端 schema 门同源（fix-frozen-scenario-orphan-reservoir D1）：
+    # 校验逻辑提取为 validate_scenario_dicts 独立可调用，此处调用它（行为零变化，
+    # 报错格式「场景文件包含 N 个错误」不变）。
+    all_errors = validate_scenario_dicts(raw)
     if all_errors:
         raise ValueError(
             f"场景文件包含 {len(all_errors)} 个错误:\n" +
             "\n".join(f"  - {e}" for e in all_errors)
         )
 
-    return scenarios
+    return [TestScenario.from_dict(item) for item in raw]
 
 
 def save_scenarios(scenarios: list[TestScenario], filepath) -> None:
