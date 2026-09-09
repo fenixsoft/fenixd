@@ -61,7 +61,9 @@ class _FailClosedTestBase(unittest.TestCase):
         self.engine._check_verification_gate = MagicMock(return_value=None)
         self.engine._apply_scenario_freeze = MagicMock(return_value={})
         self.engine._apply_interaction_contract = MagicMock(return_value=None)
-        self.engine._verify_verdict_evidence = MagicMock(return_value=True)
+        self.engine._verify_verdict_evidence = MagicMock(return_value={
+            "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
+        })
         self.engine._update_warning_streaks = MagicMock(return_value=[])
         self.engine._ensure_app_reachable = MagicMock(return_value=(True, False, ""))
         self.engine._send_human_escalation_alert = MagicMock()

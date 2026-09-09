@@ -89,6 +89,13 @@ ROUTE_MAP_REL = ".fenix/route-map.md"
 ROUTE_MAP_HEAD_MARKER_REL = ".fenix/.route-map-head"
 ROUTE_MAP_GENERATOR_REL = "bin/gen-route-map.py"
 
+# ── 派发拦截 error 文案常量（fix-verdict-retry-misattribution D3）────────
+# frozen 门 error 文案与 verification.py 的 frozen 判定共用此导出常量（防文案
+# 改动使匹配失效）；取消旗标路径沿用 AgentRunResult.cancelled 结构化字段（非
+# 字符串匹配），其 error 前缀同样抽为常量以便统改。对外文案与常量抽取前逐字一致。
+FROZEN_TERMINATED_ERROR_PREFIX = "spec frozen"
+CANCELLED_BY_ADMIN_ERROR_PREFIX = "cancelled by admin"
+
 # ── planner 生成节流（add-planner-efficiency：planner-generation-throttle）──
 # 配置键 `verify.planner_max_concurrent`：0/缺省=不节流（现状）；正整数=跨
 # verify 管线的 planner 阶段级并发上限。信号量在 `run_planner` 入口（design
@@ -1605,7 +1612,7 @@ class AgentRunner:
                 return AgentRunResult(
                     run_id, spec_name, agent_type,
                     success=False, duration_seconds=time.time() - start_time,
-                    error=(f"spec frozen — auto-retry terminated "
+                    error=(f"{FROZEN_TERMINATED_ERROR_PREFIX} — auto-retry terminated "
                            f"(attempt {attempt}/{max_retries})"),
                     provider_used=provider_name, model_used=model,
                 )
@@ -1638,7 +1645,7 @@ class AgentRunner:
                 return AgentRunResult(
                     run_id, spec_name, agent_type,
                     success=False, duration_seconds=time.time() - start_time,
-                    error=("cancelled by admin"
+                    error=(CANCELLED_BY_ADMIN_ERROR_PREFIX
                            + (f": {cancel_reason}" if cancel_reason else "")),
                     cancelled=True,
                     provider_used=provider_name, model_used=model,
@@ -1944,7 +1951,7 @@ class AgentRunner:
                     success = False
                     cancelled_flag = True
                     cancel_reason = e.reason
-                    error = "cancelled by admin" + (f": {e.reason}" if e.reason else "")
+                    error = CANCELLED_BY_ADMIN_ERROR_PREFIX + (f": {e.reason}" if e.reason else "")
                     self.logger.info(
                         "agent_runner",
                         f"{agent_type} for '{spec_name}' run 被人工取消"

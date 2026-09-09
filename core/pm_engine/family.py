@@ -370,6 +370,74 @@ class FamilyGovernor:
             )
 
 
+    # ── 失败历史分类与证据（fix-verdict-retry-misattribution D6）─────────
+    @staticmethod
+    def _classify_fail_history(history: list) -> list:
+        """为失败历史每轮标注分型与相邻轮 failed_scenarios diff。
+
+        - repeat：该轮 failed_scenarios 与上一轮完全相同（无进展信号）；
+        - 否则按 cause_type：evidence-invalid / real-bugs；
+        - 侧车缺失（history 为空）→ 全轮标注 unknown。
+        """
+        if not history:
+            return []
+        out = []
+        prev_set = None
+        for r in history:
+            scenarios = [str(s) for s in (r.get("failed_scenarios") or [])]
+            cur_set = set(scenarios)
+            ftype = r.get("cause_type") or "unknown"
+            if prev_set is not None and cur_set == prev_set:
+                ftype = "repeat"
+            if ftype not in ("evidence-invalid", "real-bugs", "repeat"):
+                ftype = "unknown"
+            if prev_set is None:
+                diff = {"added": sorted(cur_set), "removed": [], "persisted": []}
+            else:
+                diff = {
+                    "added": sorted(cur_set - prev_set),
+                    "removed": sorted(prev_set - cur_set),
+                    "persisted": sorted(cur_set & prev_set),
+                }
+            out.append({
+                "round": r.get("round"),
+                "type": ftype,
+                "cause_type": r.get("cause_type"),
+                "scenarios": sorted(cur_set),
+                "diff_vs_prev": diff,
+            })
+            prev_set = cur_set
+        return out
+
+    @staticmethod
+    def _format_fail_history_evidence(classified: list, fail_rounds: int) -> str:
+        """格式化升级闸门告警 evidence：分型摘要 + 相邻轮 diff 明细。"""
+        if not classified:
+            return (
+                f"failure_profile=unknown（fail_history 缺失或首轮即触发冻结，"
+                f"侧车无足够数据）; fail_rounds={fail_rounds}"
+            )
+        parts = [f"fail_rounds={fail_rounds}"]
+        type_summary = [f"round{c.get('round')}:{c.get('type')}" for c in classified]
+        parts.append(f"failure_profile={'; '.join(type_summary)}")
+        for c in classified:
+            d = c["diff_vs_prev"]
+            round_num = c.get("round")
+            parts.append(
+                f"diff[round{round_num}]: "
+                f"added={d['added']} removed={d['removed']} "
+                f"persisted={d['persisted']}"
+            )
+        repeats = [c for c in classified if c.get("type") == "repeat"]
+        if repeats:
+            rounds = [c.get("round") for c in repeats]
+            parts.append(
+                f"repeat_rounds={rounds}"
+                f"（与上一轮失败场景集完全相同，相邻轮 diff 为空——"
+                f"可能属「根因已修复但闸门仍冻结」的误置情形，建议人工核对）"
+            )
+        return "; ".join(parts)
+
     def _do_spec_bug_found(self, spec_name: str):
         """实际执行 bug-found 处理逻辑。
 
@@ -414,19 +482,27 @@ class FamilyGovernor:
             fail_rounds = 0
         fail_rounds += 1
 
+        # ── 失败历史侧车（fix-verdict-retry-misattribution D6）──
+        # 本轮 bug-found 采纳 = 真缺陷失败轮（cause_type=real-bugs），记入侧车供
+        # 升级闸门分型与轮间 diff。写盘失败静默降级（分型 unknown，不阻断闸门）。
+        self._pm._append_fail_history(
+            spec_name, "real-bugs", self._pm._failed_scenario_ids(spec_name))
+
         if fail_rounds >= MAX_VERIFY_FAIL_ROUNDS:
             # ── 升级闸门：冻结为 blocked + human-escalation-alerts 告警 ──
+            history = self._pm._read_fail_history(spec_name)
+            classified = self._classify_fail_history(history)
             self._pm.state_machine.update_spec(spec_name, {
                 "_verify_fail_rounds": fail_rounds,
                 "status": "blocked",
                 "error": (
-                    f"验证连续失败 {fail_rounds} 轮，已冻结等待人工裁决。"
+                    f"升级闸门连续失败第 {fail_rounds} 轮，已冻结等待人工裁决。"
                     f"详见 `spec/changes/{spec_name}/verification-report.md`"
                 ),
             })
             self._pm.logger.error(
                 "pm_engine",
-                f"升级闸门：'{spec_name}' 验证失败 {fail_rounds} 轮，"
+                f"升级闸门：'{spec_name}' 升级闸门连续失败第 {fail_rounds} 轮，"
                 f"冻结为 blocked，等待人工裁决",
             )
             self._send_human_escalation_alert(
@@ -434,17 +510,21 @@ class FamilyGovernor:
                 signal_type="verify_fail_escalation",
                 severity="major",
                 description=(
-                    f"'{spec_name}' 验证连续失败 {fail_rounds} 轮，已冻结等待人工裁决"
+                    f"'{spec_name}' 升级闸门连续失败第 {fail_rounds} 轮，"
+                    f"已冻结等待人工裁决"
                 ),
                 evidence=(
-                    f"spec={spec_name}; fail_rounds={fail_rounds}; "
-                    f"report=spec/changes/{spec_name}/verification-report.md"
+                    f"spec={spec_name}; "
+                    + self._format_fail_history_evidence(classified, fail_rounds)
+                    + f"; report=spec/changes/{spec_name}/verification-report.md"
                 ),
                 recommended_action=(
                     "检查验证报告定位根因，人工调整 SPEC 状态后重跑验证；"
                     "人工重置计数器即重新获得自动修复机会"
                 ),
             )
+            # 失败历史已被本次告警消费，清空侧车避免陈旧记录污染下一链条
+            self._pm._clear_fail_history(spec_name)
             return
 
         # ── 正常打回：递增计数 + 重置 implementing + 注入修复任务 ──
@@ -452,18 +532,18 @@ class FamilyGovernor:
             "_verify_fail_rounds": fail_rounds,
             "status": "implementing",
             "error": (
-                f"验证失败第 {fail_rounds} 轮，原地打回重修"
+                f"验证失败（原地打回第 {fail_rounds} 轮），重修中"
             ),
         })
         self._pm.logger.warning(
             "pm_engine",
-            f"原地打回：'{spec_name}' 第 {fail_rounds} 轮失败，"
+            f"原地打回第 {fail_rounds} 轮：'{spec_name}' 验证失败，"
             f"重置为 implementing 并注入修复任务",
         )
         # 注入 tasks.md「验证修复」段
         self._inject_verify_fix_task(spec_name, fail_rounds)
         self._pm._append_project_log(
-            f"🐛 Bug found in **{spec_name}** → 原地打回（第 {fail_rounds} 轮）"
+            f"🐛 Bug found in **{spec_name}** → 原地打回第 {fail_rounds} 轮"
         )
         # 排队实现器
         self._pm._enqueue(spec_name, "implementer")
@@ -626,7 +706,7 @@ class FamilyGovernor:
         # 产品 Bug 触发整条修复链（3 轮实现 5.24h 修一个不存在的 bug）。
         prev = self._read_prev_impl_conclusions(spec_name)
         section = (
-            f"\n\n## 验证修复（第 {fail_rounds} 轮失败）\n"
+            f"\n\n## 验证修复（原地打回第 {fail_rounds} 轮）\n"
             f"{prev}"
             f"\n- [ ] 先复核失败有效性：逐条核对 `{report_path}` 中失败场景的期望断言"
             f"（状态字面量/选择器/前置数据）与产品实际行为是否相符——"
@@ -658,7 +738,7 @@ class FamilyGovernor:
         tasks_path.write_text(new_text, encoding="utf-8")
         self._pm.logger.info(
             "pm_engine",
-            f"验证修复段已{'更新' if m else '注入'}：{spec_name}（第 {fail_rounds} 轮）",
+            f"验证修复段已{'更新' if m else '注入'}：{spec_name}（原地打回第 {fail_rounds} 轮）",
         )
 
 
