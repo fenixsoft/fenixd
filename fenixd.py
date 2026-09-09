@@ -412,6 +412,14 @@ class FenixDaemon:
                     self._check_cancel_requests()
                 except Exception as e:
                     self.logger.error("fenixd", f"cancel_run pickup failed: {e}")
+                # 清空定时拾取即派发信号（2026-09-08 清空 start_after 后等 30min
+                # recovery 才派发事故的 API 侧修复）：dashboard 清空 start_after
+                # 时写入 .fenix/scheduling_kick_request.json，主循环下一轮（≤2s）
+                # 消费并唤起派发。
+                try:
+                    self._check_scheduling_kick_requests()
+                except Exception as e:
+                    self.logger.error("fenixd", f"scheduling_kick pickup failed: {e}")
                 # 配置热更新：每 30s 检查配置文件 mtime，变更则原地重载
                 if time.time() - config_check_ts >= 30:
                     config_check_ts = time.time()
@@ -699,6 +707,74 @@ class FenixDaemon:
             self.logger.error(
                 "fenixd",
                 f"cancel_run 调用失败 run_id={run_id}: {e}",
+            )
+
+    def _check_scheduling_kick_requests(self):
+        """主循环每轮扫描「清空定时拾取即派发」的文件信号并消费。
+
+        dashboard 的 /api/spec-start-after 在清空 start_after（value=null）时
+        原子写入 .fenix/scheduling_kick_request.json（含 spec/action/created）；
+        本方法在主循环（1s 粒度）中检测其存在：读取→删除→按 spec 当前状态
+        唤起 _on_spec_ready / _on_spec_drafted（与 check_scheduling_deadlines
+        的到期拾取同语义）→立即 _process_queue。与 _check_cancel_requests
+        同构：损坏 JSON 删除防卡死；删除失败下轮再试。
+
+        spec 已不在 STATE.md（已归档/删除）时仍删信号防反复报错；spec 处于
+        终态或派发中时由 _on_spec_ready 内部谓词自然拦截（幂等，无需此处
+        重复校验——2026-09-08 清空 start_after 后等 30min recovery 才派发事故
+        的 API 侧修复）。
+        """
+        req_path = PROJECT_ROOT / ".fenix" / "scheduling_kick_request.json"
+        if not req_path.exists():
+            return
+        try:
+            with req_path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            # 损坏的信号文件：删除避免每轮报错卡死
+            try:
+                req_path.unlink()
+            except OSError:
+                pass
+            return
+        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
+        try:
+            req_path.unlink()
+        except OSError:
+            return
+
+        spec = payload.get("spec")
+        if not spec:
+            self.logger.warning("fenixd", "scheduling_kick 请求缺少 spec，忽略")
+            return
+        if self.pm_engine is None:
+            self.logger.warning("fenixd", "pm_engine 未初始化，丢弃 scheduling_kick 请求")
+            return
+
+        entry = self.pm_engine.state_machine.read_one(spec)
+        if not entry:
+            self.logger.info(
+                "fenixd",
+                f"消费 scheduling_kick 信号：spec '{spec}' 已不存在，丢弃",
+            )
+            return
+        status = entry.get("status")
+        self.logger.info(
+            "fenixd",
+            f"消费 scheduling_kick 信号：唤起 spec '{spec}'（status={status}）",
+        )
+        try:
+            if status == "drafted":
+                # drafted 走晋升链（lint 拦截/error 写回由 _on_spec_drafted 自理）
+                self.pm_engine._on_spec_drafted(spec)
+            else:
+                self.pm_engine._on_spec_ready(spec)
+            # 唤起后立即处理派发队列，对齐 check_scheduling_deadlines 的到期拾取
+            self.pm_engine._process_queue()
+        except Exception as e:
+            self.logger.error(
+                "fenixd",
+                f"scheduling_kick 唤起 '{spec}' 失败（full_scan 兜底）: {e}",
             )
 
     def _submit_admin_run(self, signal: dict) -> bool:

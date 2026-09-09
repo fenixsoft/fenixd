@@ -374,6 +374,43 @@ def promote_spec(project_root, spec_name: str) -> dict:
 
 # ── SPEC 定时拾取 start_after（add-spec-scheduling-controls D5） ───────
 
+# daemon 主循环轮询的「清空定时拾取即派发」请求信号文件名（与 fenixd.py 约定一致）
+SCHEDULING_KICK_REQUEST = ".fenix/scheduling_kick_request.json"
+
+
+def _write_scheduling_kick_signal(project_root, spec: str) -> dict:
+    """写入清空 start_after 后的即时派发唤醒信号（.fenix/scheduling_kick_request.json）。
+
+    原子写（tmp+rename），与 request_admin_invoke 同构；已存在未消费信号时
+    不覆盖（返回 conflict），避免把先到的请求顶掉——两个 spec 的唤醒互不冲突，
+    daemon 拾取侧按各自 spec 独立派发即可。
+    """
+    req_path = Path(project_root) / SCHEDULING_KICK_REQUEST
+    if req_path.exists():
+        return {"ok": False, "conflict": True, "file": str(req_path)}
+    payload = {
+        "spec": spec,
+        "action": "clear-start-after",
+        "created": datetime.now(timezone.utc).isoformat(),
+    }
+    req_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(req_path.parent), prefix=".scheduling_kick_request.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, req_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    return {"ok": True, "conflict": False, "file": str(req_path)}
+
+
 def get_spec_start_after(entry: dict) -> str | None:
     """读取 entry 的 start_after 规范值（ISO8601 UTC 字符串或 None）。
 
@@ -433,6 +470,13 @@ def set_spec_start_after(project_root, spec: str, value) -> dict:
         normalized = dt.isoformat()
     sm = StateMachine(proot / ".fenix" / "STATE.md", None)
     sm.update_spec(spec, {"start_after": normalized})
+    # 清空即唤醒（2026-09-08 fix-run-cancel-retry-flag-miss 事故路径）：status 恒为
+    # ready，event_bus watcher 只盯 status 不发事件、check_scheduling_deadlines 只管
+    # 「时间流逝到期」，此前清空后要等 30min 一轮 recovery full_scan 才被捞起。
+    # 写文件信号（与 cancel_run_request 同构），daemon 主循环 1s 粒度拾取即派发；
+    # 信号冲突（上一信号未消费）不阻塞清空本身，daemon 拾取时对新 spec 一并生效。
+    if normalized is None:
+        _write_scheduling_kick_signal(proot, spec)
     return {"ok": True, "found": True, "start_after": normalized}
 
 

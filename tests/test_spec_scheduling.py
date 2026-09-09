@@ -492,5 +492,150 @@ class TestFreezeDualTrackRegression(unittest.TestCase):
             "结构化冻结必须命中冻结态判定")
 
 
+class TestSchedulingKickSignal(unittest.TestCase):
+    """清空 start_after 立即唤醒派发（文件信号，与 cancel_run_request 同构）。
+
+    事故（2026-09-08）：dashboard 清空 start_after 后 status 恒为 ready，
+    event_bus watcher 只盯 status 不发事件、check_scheduling_deadlines 只管
+    「时间流逝到期」，最后靠 30min 一轮 recovery full_scan 才捞起——「清空=
+    立即恢复调度」缺了即时唤醒。修复（API 侧）：set_spec_start_after 清空
+    分支写 .fenix/scheduling_kick_request.json，daemon 主循环（1s 粒度）拾取
+    后 _on_spec_ready + _process_queue。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = make_spec_scheduling_project(Path(self.tmpdir))
+        self.sm = make_state_machine(self.proot)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    # ── 写入侧（dashboard data 层）──
+
+    def test_clear_start_after_writes_kick_signal(self):
+        from core.dashboard.data import set_spec_start_after
+        self.sm.update_spec("myspec", {
+            "start_after": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+        })
+        result = set_spec_start_after(self.proot, "myspec", None)
+        self.assertTrue(result["ok"])
+        req = self.proot / ".fenix" / "scheduling_kick_request.json"
+        self.assertTrue(req.exists(), "清空 start_after 必须写唤醒信号")
+        payload = json.loads(req.read_text(encoding="utf-8"))
+        self.assertEqual(payload["spec"], "myspec")
+        self.assertEqual(payload["action"], "clear-start-after")
+
+    def test_clear_start_after_conflict_keeps_existing_signal(self):
+        from core.dashboard.data import set_spec_start_after
+        req = self.proot / ".fenix" / "scheduling_kick_request.json"
+        req.write_text(json.dumps({"spec": "other"}), encoding="utf-8")
+        result = set_spec_start_after(self.proot, "myspec", None)
+        self.assertTrue(result["ok"], "信号冲突不阻塞清空本身（STATE 已写）")
+        payload = json.loads(req.read_text(encoding="utf-8"))
+        self.assertEqual(payload["spec"], "other", "已有未消费信号不被覆盖")
+
+    def test_set_start_after_no_kick_signal(self):
+        from core.dashboard.data import set_spec_start_after
+        result = set_spec_start_after(
+            self.proot, "myspec",
+            (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+        )
+        self.assertTrue(result["ok"])
+        self.assertFalse(
+            (self.proot / ".fenix" / "scheduling_kick_request.json").exists(),
+            "设置定时不需要唤醒（到期唤起走 check_scheduling_deadlines）")
+
+    # ── 拾取侧（daemon 主循环）──
+    #
+    # 按绝对路径直载 fenixd.py（tests/test_config.py 同款处方）：仓库根
+    # __init__.py 会在测试执行期把 `import fenixd` 截胡成同名包（sys.path
+    # 顺序随收集/执行阶段漂移），函数内延迟 import 不稳定，故不使用。
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        repo_root = Path(__file__).resolve().parent.parent
+        spec = importlib.util.spec_from_file_location(
+            "fenixd_scheduling_kick_under_test", repo_root / "fenixd.py")
+        cls._fenixd_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls._fenixd_mod)
+
+    def _fake_daemon(self, pm):
+        daemon = self._fenixd_mod.FenixDaemon.__new__(self._fenixd_mod.FenixDaemon)
+        daemon.running = True
+        daemon.pm_engine = pm
+        daemon.logger = _SilentLogger()
+        return daemon
+
+    def _make_pm(self):
+        from core.pm_engine import PMEngine
+        pm = PMEngine.__new__(PMEngine)
+        pm.state_machine = self.sm
+        pm.logger = _SilentLogger()
+        pm.project_root = self.proot
+        pm._pending_dispatches = set()
+        pm._last_dispatch_at = {}
+        pm._dispatch_backoffed = lambda spec: False
+        pm._dependencies_satisfied = lambda n: True
+        pm.shutting_down = False
+        return pm
+
+    def test_kick_request_pickup_invokes_on_spec_ready(self):
+        from core.state_machine import SpecStatus
+        self.sm.update_spec("myspec", {"status": SpecStatus.READY})
+        pm = self._make_pm()
+        calls = []
+        pm._on_spec_ready = lambda n: calls.append(n)
+        processed = []
+        pm._process_queue = lambda: processed.append(True)
+        daemon = self._fake_daemon(pm)
+        req = self.proot / ".fenix" / "scheduling_kick_request.json"
+        req.write_text(json.dumps({"spec": "myspec", "action": "clear-start-after"}),
+                       encoding="utf-8")
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._check_scheduling_kick_requests()
+        self.assertEqual(calls, ["myspec"], "拾取信号后必须唤起 _on_spec_ready")
+        self.assertEqual(processed, [True], "唤起后必须立即 _process_queue")
+        self.assertFalse(req.exists(), "信号消费后删除")
+
+    def test_kick_request_unknown_spec_dropped(self):
+        pm = self._make_pm()
+        calls = []
+        pm._on_spec_ready = lambda n: calls.append(n)
+        daemon = self._fake_daemon(pm)
+        req = self.proot / ".fenix" / "scheduling_kick_request.json"
+        req.write_text(json.dumps({"spec": "ghost"}), encoding="utf-8")
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._check_scheduling_kick_requests()
+        self.assertEqual(calls, [], "不存在的 spec 不派发")
+        self.assertFalse(req.exists(), "信号仍删除防反复报错")
+
+    def test_kick_request_corrupt_deleted_without_exception(self):
+        pm = self._make_pm()
+        daemon = self._fake_daemon(pm)
+        req = self.proot / ".fenix" / "scheduling_kick_request.json"
+        req.write_text("{ not valid json !!!", encoding="utf-8")
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._check_scheduling_kick_requests()
+        self.assertFalse(req.exists())
+        pm._on_spec_ready.assert_not_called() if hasattr(pm._on_spec_ready, "assert_not_called") else None
+
+    def test_kick_request_drafts_spec_promotes(self):
+        """drafted spec 清空定时 → 走晋升链（_on_spec_drafted），与到期拾取同语义。"""
+        from core.state_machine import SpecStatus
+        self.sm.update_spec("myspec", {"status": SpecStatus.DRAFTED})
+        pm = self._make_pm()
+        calls = []
+        pm._on_spec_drafted = lambda n: calls.append(n)
+        pm._process_queue = lambda: None
+        daemon = self._fake_daemon(pm)
+        req = self.proot / ".fenix" / "scheduling_kick_request.json"
+        req.write_text(json.dumps({"spec": "myspec"}), encoding="utf-8")
+        with mock.patch.object(self._fenixd_mod, "PROJECT_ROOT", self.proot):
+            daemon._check_scheduling_kick_requests()
+        self.assertEqual(calls, ["myspec"], "drafted spec 拾取走晋升链")
+
+
 if __name__ == "__main__":
     unittest.main()
