@@ -35,6 +35,14 @@ class _OrphanRaceTestBase(unittest.TestCase):
         self.engine = PMEngine(
             self.sm, self.agent_runner, {}, self.project_root, self.logger
         )
+        # 本类用例真实调 _run_three_stage_verification：引擎开头的
+        # core.verify_engine importlib.reload（daemon 热更新设计）在测试进程里
+        # 换掉 TestScenario/VerifyEngine 类对象，污染同进程后续测试的
+        # isinstance 判定（test_cancel_holdstate_recovery 6ce7461e 同款处方）。
+        from unittest.mock import patch as _patch
+        self._reload_patcher = _patch("importlib.reload", lambda m: m)
+        self._reload_patcher.start()
+        self.addCleanup(self._reload_patcher.stop)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
