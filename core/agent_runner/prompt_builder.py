@@ -225,10 +225,40 @@ class PromptBuilder:
             prompt += self._prev_error_section(spec_name)
             prompt += self._fast_track_reuse_note(spec_name)
         # administrator 无条件动态段：困境信号经占位符注入
+        if agent_type == "administrator":
+            # fix-frozen-scenario-orphan-reservoir D6：admin 处置场景文件时的
+            # 约束指令——修复写回必须过结构校验门（validate_scenario_dicts），
+            # 被门拒绝时须按逐条错误清单重修；test_scenarios.json 与 scenarios.json
+            # 同源坏条目须同步清理（双文件一致性），处置结果须报告两文件状态。
+            prompt += self._admin_scenario_fix_constraints()
 
         # 项目级附加提示词（D2）：附加在完整 prompt（通用主体 + 动态段）之后
         prompt += self._project_extra_section(agent_type, spec_name, wt_path)
         return prompt
+
+    def _admin_scenario_fix_constraints(self) -> str:
+        """admin 处置场景文件的约束指令段（fix-frozen-scenario-orphan-reservoir D6）。
+
+        追加在 administrator prompt 末尾，约束 admin 修复场景文件时的行为：
+          1. 修复写回必须通过结构校验门（与读端 load_scenarios 同源，
+             validate_scenario_dicts）——被门拒绝时按逐条错误清单重修；
+          2. test_scenarios.json 与 scenarios.json（持久化集）同源坏条目必须
+             同步清理（双文件一致性），防储库复活；
+          3. 处置结果须报告两文件状态（清理/修复情况）。
+        """
+        return (
+            "\n\n## 场景文件修复约束（写端结构校验门 + 双文件一致性）\n"
+            "当你修复/清理验证场景文件（test_scenarios.json 或 scenarios.json）时：\n"
+            "1. **修复写回必须通过结构校验**：所有写回的内容会经过与读端同源的"
+            "结构校验门（validate_scenario_dicts，逐条检查 id/kind/steps 等）。"
+            "若你的写入被门拒绝，框架会反馈逐条错误清单——请按错误清单逐条重修后"
+            "再次写回，不要绕过门或整文件乱写。\n"
+            "2. **双文件一致性**：test_scenarios.json 与 scenarios.json 是同一场景"
+            "集的两种形态，同源坏条目（如缺 kind 的孤儿条目）必须在两文件中同步清理"
+            "——只清一个文件会让孤儿在另一个文件中存活、跨轮复活。\n"
+            "3. **处置结果报告两文件状态**：在处置记录中写明 test_scenarios.json 与 "
+            "scenarios.json 的清理/修复情况（各清了几条、剩几条）。\n"
+        )
 
     def _project_extra_section(self, agent_type: str, spec_name: str = "",
                                wt_path: Path | None = None) -> str:

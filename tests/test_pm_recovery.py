@@ -235,13 +235,18 @@ class TestPMEngineReplanLimit(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _write_invalid_scenarios(self):
-        """相对 URL 场景 → load_scenarios 验收失败（env_error 触发 replan）。"""
+    def _write_invalid_scenarios(self, variant: int = 0):
+        """相对 URL 场景 → load_scenarios 验收失败（env_error 触发 replan）。
+
+        ``variant`` 使每轮错误不同（消费硬门 D5 只拦截「与上轮相同/超集」的
+        错误清单）——预算上限测试需要各轮独立错误才能走到 replan_left 归零；
+        消费硬门行为由 test_frozen_scenario_reservoir.py 单独覆盖。
+        """
         self.scenarios_path.write_text(json.dumps([
             {
-                "id": "scn-a",
-                "description": "相对URL场景",
-                "steps": [{"action": "navigate", "value": "/dashboard"}],
+                "id": f"scn-a{variant}",
+                "description": f"相对URL场景{variant}",
+                "steps": [{"action": "navigate", "value": f"/dashboard{variant}"}],
                 "assertions": [{"type": "element_visible", "selector": ".x", "label": "可见"}],
             },
         ], ensure_ascii=False), encoding="utf-8")
@@ -273,7 +278,9 @@ class TestPMEngineReplanLimit(unittest.TestCase):
         # 第一次 planner run 前场景文件不存在 → _load_frozen_scenarios 返回 None → 进入 replan 循环
         def _planner_exhaust(spec_name, kind):
             self.planner_calls.append((spec_name, kind))
-            self._write_invalid_scenarios()  # 每次都产出不合格场景
+            # 每轮给不同错误（v0/v1/v2……）——消费硬门只拦「与上轮相同/超集」，
+            # 预算上限测试要走到 replan_left 归零必须各轮错误独立。
+            self._write_invalid_scenarios(variant=len(self.planner_calls))
             return self._ns(
                 success=True, error=None,
                 run_id=f"planner-plan-{spec_name}-{len(self.planner_calls)}-a1",
@@ -419,7 +426,9 @@ class TestPMEngineReplanLimit(unittest.TestCase):
 
         def _planner_budget_r2(spec_name, kind):
             first_run["calls"] += 1
-            self._write_invalid_scenarios()  # 第二轮恒不合格
+            # 每轮独立错误（v5/v6/v7……）——消费硬门只拦与上轮相同的错误清单，
+            # 预算归零测试需各轮错误独立才能走到 replan_left 耗尽。
+            self._write_invalid_scenarios(variant=first_run["calls"])
             return _NS(
                 success=True, error=None,
                 run_id=f"planner-plan-{spec_name}-{first_run['calls']}-a1",

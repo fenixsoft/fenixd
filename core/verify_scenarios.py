@@ -80,8 +80,10 @@ class ScenarioEntry:
              "added_in_round": self.added_in_round}
         if self.covers:
             d["covers"] = list(self.covers)
-        if self.kind != "web":
-            d["kind"] = self.kind
+        # fix-frozen-scenario-orphan-reservoir D1/D4：kind 恒定写入——写端 schema
+        # 门保证每条目均有合法 kind，文件层面「缺 kind」即孤儿信号（加载净化
+        # 以其为剔除判据），存量文件在首轮重写后自然归一。
+        d["kind"] = self.kind
         return d
 
     @classmethod
@@ -149,7 +151,14 @@ def scenarios_path_for(project_root, spec_name: str) -> Path:
 
 
 def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
-    """读取持久化场景集；文件缺失/损坏返回 None（不抛出）。"""
+    """读取持久化场景集；文件缺失/损坏返回 None（不抛出）。
+
+    加载净化（fix-frozen-scenario-orphan-reservoir D4）：读入时剔除 raw dict
+    缺 ``kind`` 键值的孤儿条目（无 kind 无法路由到任何 Runner，储库复活
+    通道），WARNING 留痕剔除 id 清单。**只影响内存集合**，不改写
+    scenarios.json 文件（读操作不带写副作用；文件层面储库清除由写端门与
+    D7 清理负责）。
+    """
     path = scenarios_path_for(project_root, spec_name)
     if not path.exists():
         return None
@@ -159,6 +168,24 @@ def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
         return None
     if not isinstance(data, dict):
         return None
+    raw_entries = data.get("scenarios")
+    if isinstance(raw_entries, list):
+        kept: list = []
+        rejected: list[str] = []
+        for item in raw_entries:
+            if not isinstance(item, dict) or item.get("kind") is None:
+                rid = item.get("id") if isinstance(item, dict) else f"[{len(kept)}]非对象"
+                rejected.append(str(rid or "?"))
+                continue
+            kept.append(item)
+        if rejected:
+            import logging
+            logging.getLogger("pm_engine").warning(
+                "持久化集加载净化剔除 %d 条缺 kind 孤儿条目"
+                "（scenarios.json 文件不改写，仅内存集合净化）: %s",
+                len(rejected), "、".join(rejected),
+            )
+            data = {**data, "scenarios": kept}
     return ScenarioSet.from_dict(data)
 
 
@@ -181,8 +208,63 @@ def _atomic_write(path: Path, data: dict) -> None:
             pass
 
 
+# ── 持久化集条目结构校验（fix-frozen-scenario-orphan-reservoir D1/D4）────
+
+def validate_scenario_entries(entry_dicts: list) -> list[str]:
+    """持久化集条目（'scenarios.json' 的 dict 列表）结构校验。
+
+    scenarios.json 的 ScenarioEntry 与 test_scenarios.json 的 TestScenario
+    形态不同（无 steps/assertions），无法直接复用 ``validate_scenario_dicts``；
+    这里对 ScenarioEntry 形态做等价的结构校验——**每条 MUST 有合法 kind**
+    （无 kind 无法路由到任何 Runner＝孤儿，储库复活根因）。返回错误清单，
+    空列表表示全部合法；本函数不抛异常。
+    """
+    errors: list[str] = []
+    if not isinstance(entry_dicts, list):
+        return [f"场景集数据格式错误: 期望数组，实际为 {type(entry_dicts).__name__}"]
+    for i, item in enumerate(entry_dicts):
+        if not isinstance(item, dict):
+            errors.append(f"场景集条目[{i}]解析失败: 期望对象，"
+                          f"实际为 {type(item).__name__}")
+            continue
+        sid = item.get("id") or f"[{i}]"
+        kind = item.get("kind")
+        if kind not in ("web", "cli", "api"):
+            errors.append(
+                f"场景集条目 '{sid}' 缺少合法 kind（收到 {kind!r}），"
+                f"无法路由到 Runner，属孤儿条目"
+            )
+    return errors
+
+
 def save_scenario_set(project_root, scenario_set: ScenarioSet) -> Path:
-    """持久化场景集（原子写）。返回写入路径。"""
+    """持久化场景集（原子写）。返回写入路径。
+
+    写端 schema 门（fix-frozen-scenario-orphan-reservoir D1/D2）：写回前对
+    ScenarioEntry 列表做结构校验，非法条目（如缺 kind 的孤儿）剔除并留痕，
+    合法部分照常落盘——不整批拒绝（避免单条坏数据放大成整轮验证无法进行）。
+    """
+    import logging
+    clean_entries: list[ScenarioEntry] = []
+    rejected: list[str] = []
+    for e in scenario_set.scenarios:
+        if isinstance(e, ScenarioEntry):
+            d = {"id": e.id, "kind": e.kind,
+                 "description": e.description, "added_in_round": e.added_in_round}
+        else:
+            d = dict(e)
+        errs = validate_scenario_entries([d])
+        if errs:
+            rejected.append(f"{d.get('id') or '?'}（{'；'.join(errs)}）")
+            continue
+        clean_entries.append(e)
+
+    if rejected:
+        logging.getLogger("pm_engine").warning(
+            "场景集写端校验剔除 %d 个非法条目（scenarios.json 不落盘）: %s",
+            len(rejected), "、".join(rejected),
+        )
+    scenario_set.scenarios = clean_entries
     path = scenarios_path_for(project_root, scenario_set.spec)
     _atomic_write(path, scenario_set.to_dict())
     return path
