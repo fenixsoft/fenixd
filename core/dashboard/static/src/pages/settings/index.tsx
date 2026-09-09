@@ -29,7 +29,6 @@ const BASE_MENU_ITEMS = [
   { key: 'approval', label: '审批' },
   { key: 'misc', label: '归档' },
   { key: 'system', label: '系统' },
-  { key: 'self-review', label: '自省' },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -85,8 +84,8 @@ export default function SettingsPage() {
     const { scope: nextScope, project: nextProject } = decodeScopeValue(value);
     setScope(nextScope);
     setProject(nextProject);
-    // Hook 页签仅项目级存在：切回用户级时不能停留在已消失的页签上
-    if (nextScope === 'user' && activeKey === 'hook') {
+    // 自省/Hook 页签仅项目级存在：切回用户级时不能停留在已消失的页签上
+    if (nextScope === 'user' && (activeKey === 'hook' || activeKey === 'self-review')) {
       setActiveKey('llm');
     }
   };
@@ -108,11 +107,12 @@ export default function SettingsPage() {
     }
   };
 
-  // 运行时构造菜单：项目级作用域时追加项目简介页签；
-  // Hook 为项目级设置，随项目级作用域出现并置于菜单最末
+  // 运行时构造菜单：自省与项目简介均为项目级页签，随项目级作用域出现；
+  // Hook 为项目级设置置于菜单最末。项目简介页签固定名「项目」，不随项目名变长
   const menuItems = [...BASE_MENU_ITEMS];
   if (scope === 'project' && project) {
-    menuItems.push({ key: 'project-profile', label: project });
+    menuItems.push({ key: 'self-review', label: '自省' });
+    menuItems.push({ key: 'project-profile', label: '项目' });
     menuItems.push({ key: 'hook', label: 'Hook' });
   }
 
