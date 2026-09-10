@@ -36,8 +36,8 @@
 
 ## 4. judge prompt 路由约定修订（scenario-defect-reroute-gate R4）
 
-- [ ] 4.1 修订 `agents/planner-judge.md`：test-defect 分类定义处（`test-defect` 枚举行附近）内联「场景文件缺陷 → 原地修复」路由指引——根因在场景文件本身（{scenarios_path}）而非 tests/ harness 代码时 MUST 申报 scenario-repaired、MUST NOT 写入 bug 清单走 bug-found；显式声明修复已裁决场景（含跨轮写回场景）合法、受冻结 diff 记账保护（无理由移除才确定性补齐）、不视为冻结违规；文末协议段保留细节不删除
-- [ ] 4.2 prompt 构建回归核对：planner-judge prompt 含新指引、其余 agent 类型 prompt 逐字节不变（模板改动不外溢）
+- [x] 4.1 修订 `agents/planner-judge.md`：test-defect 分类定义处（`test-defect` 枚举行附近）内联「场景文件缺陷 → 原地修复」路由指引——根因在场景文件本身（{scenarios_path}）而非 tests/ harness 代码时 MUST 申报 scenario-repaired、MUST NOT 写入 bug 清单走 bug-found；显式声明修复已裁决场景（含跨轮写回场景）合法、受冻结 diff 记账保护（无理由移除才确定性补齐）、不视为冻结违规；文末协议段保留细节不删除
+- [x] 4.2 prompt 构建回归核对：planner-judge prompt 含新指引、其余 agent 类型 prompt 逐字节不变（模板改动不外溢）
 
 ## 5. 回归与收尾验证
 
