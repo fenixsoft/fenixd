@@ -367,6 +367,378 @@ def exempted_assertions(report: dict) -> List[dict]:
     return rows
 
 
+# ── 归因分级（add-verdict-credibility-gate / spec: verdict-attribution-evidence-gate）──
+# 框架侧机械计算归因级别（design D2）：judge 只产出归因文本与证据引用，
+# 级别由框架算出（不依赖 judge 自律与多模态能力）。
+ATTRIBUTION_LEVEL_EVIDENCE_BACKED = "evidence-backed"
+ATTRIBUTION_LEVEL_SPECULATIVE = "speculative"
+ATTRIBUTION_LEVEL_PENDING_VISUAL = "pending-visual"
+ATTRIBUTION_LEVELS = (
+    ATTRIBUTION_LEVEL_EVIDENCE_BACKED,
+    ATTRIBUTION_LEVEL_SPECULATIVE,
+    ATTRIBUTION_LEVEL_PENDING_VISUAL,
+)
+
+# 视觉类断言关键词（用于 pending-visual 判定）
+_VISUAL_ASSERTION_KEYWORDS = (
+    "render", "style", "layout", "visual", "screenshot", "css",
+    "screenshot_mismatch", "pixel", "image", "visible",
+    "display", "color", "font", "border", "background",
+)
+
+
+def _scenario_has_substantive_evidence(scenario: dict) -> bool:
+    """判断场景是否有「实质性证据」支撑归因（非空 evidence 构成）。
+
+    实质性证据 = 非空截图列表 / 有算法标签 / 有 first_failed_step /
+    有 failed_assertions / 有 first_frame_ok 结构化字段。
+    """
+    evidence = scenario.get("evidence") or {}
+    screenshots = evidence.get("screenshots") or scenario.get("screenshots") or []
+    if isinstance(screenshots, list) and any(
+        isinstance(s, str) and s.strip() for s in screenshots
+    ):
+        return True
+    labels = scenario.get("screenshot_labels") or {}
+    if labels:
+        return True
+    for key in ("first_failed_step", "first_frame_ok"):
+        val = evidence.get(key)
+        if isinstance(val, str) and val.strip():
+            return True
+        if isinstance(val, bool):
+            return True
+    if _scenario_has_failed_assertion_evidence(scenario):
+        return True
+    return False
+
+
+def _scenario_has_failed_assertion_evidence(scenario: dict) -> bool:
+    """场景是否有失败断言归因（assertion_triage 带非空 evidence）。"""
+    triage = scenario.get("assertion_triage") or []
+    if not isinstance(triage, list):
+        return False
+    for t in triage:
+        if not isinstance(t, dict):
+            continue
+        ev = t.get("evidence")
+        if isinstance(ev, str) and ev.strip():
+            return True
+        if isinstance(ev, dict) and ev:
+            return True
+    return False
+
+
+def _is_visual_classification(classification: str) -> bool:
+    """分类是否涉及视觉现象（visual/rendering 断言）。"""
+    return classification in ("product-bug",)
+
+
+def _has_visual_assertions(scenario: dict) -> bool:
+    """场景的失败断言是否涉及视觉现象。"""
+    triage = scenario.get("assertion_triage") or []
+    if isinstance(triage, list):
+        for t in triage:
+            if not isinstance(t, dict):
+                continue
+            assertion_text = str(t.get("assertion") or "").lower()
+            evidence_text = str(t.get("evidence") or "").lower()
+            for kw in _VISUAL_ASSERTION_KEYWORDS:
+                if kw in assertion_text or kw in evidence_text:
+                    return True
+    ars = scenario.get("assertion_results") or []
+    if isinstance(ars, list):
+        for a in ars:
+            if not isinstance(a, dict):
+                continue
+            if not a.get("pass", True):
+                atype = str(a.get("type") or "").lower()
+                if any(kw in atype for kw in _VISUAL_ASSERTION_KEYWORDS):
+                    return True
+    return False
+
+
+def compute_attribution_level(scenario: dict) -> str:
+    """框架侧机械计算归因级别（design D2 / Task 2.1）。
+
+    输入：增强后的 scenario dict（含 classification / evidence /
+    assertion_triage / screenshot_labels / screenshots）。
+
+    规则（与 judge 模型能力无关，只读证据构成）：
+      - evidence-backed：归因引用了结构化证据（失败断言文本、算法标签、
+        结构化字段如 first_frame_ok/blank_screenshot）且与证据不矛盾
+      - speculative：归因仅为推理链推测（无截图、无算法标签、无结构化字段支撑）
+      - pending-visual：归因涉及视觉现象（渲染/样式/布局类断言）但既无截图
+        佐证也无算法标签
+
+    Returns:
+        归因级别字符串（ATTRIBUTION_LEVELS 之一）
+    """
+    classification = scenario.get("classification")
+    if classification in (None, "pass"):
+        return ATTRIBUTION_LEVEL_EVIDENCE_BACKED  # pass 场景不需要归因
+
+    labels = scenario.get("screenshot_labels") or {}
+    has_blank = labels.get("blank_screenshot", False)
+    has_low_contrast = labels.get("low_contrast", False)
+    has_labels = bool(labels)
+
+    # 截图健全性标签是最强证据：白屏/低对比度均有算法标签佐证
+    if has_blank or has_low_contrast:
+        return ATTRIBUTION_LEVEL_EVIDENCE_BACKED
+
+    # 有真实截图 + 有失败断言归因 → evidence-backed（视觉断言有截图佐证）
+    screenshots = scenario.get("screenshots") or []
+    evidence = scenario.get("evidence") or {}
+    ev_screenshots = evidence.get("screenshots") or []
+    has_real_screenshots = (
+        (isinstance(screenshots, list) and any(isinstance(s, str) and s.strip() for s in screenshots))
+        or (isinstance(ev_screenshots, list) and any(isinstance(s, str) and s.strip() for s in ev_screenshots))
+    )
+
+    # 有算法标签 + 有失败断言归因 → evidence-backed
+    if has_labels and _scenario_has_failed_assertion_evidence(scenario):
+        return ATTRIBUTION_LEVEL_EVIDENCE_BACKED
+
+    if has_real_screenshots and _scenario_has_failed_assertion_evidence(scenario):
+        return ATTRIBUTION_LEVEL_EVIDENCE_BACKED
+
+    # 归因涉及视觉现象但无截图/标签佐证 → pending-visual（必须在通用
+    # evidence-backed 检测之后：有截图时视觉断言可被证据支撑 → evidence-backed）
+    if _is_visual_classification(classification):
+        if _has_visual_assertions(scenario):
+            return ATTRIBUTION_LEVEL_PENDING_VISUAL
+
+    # 有 first_failed_step + 失败断言归因 → evidence-backed
+    first_failed_step = evidence.get("first_failed_step") or ""
+    if isinstance(first_failed_step, str) and first_failed_step.strip():
+        if _scenario_has_failed_assertion_evidence(scenario):
+            return ATTRIBUTION_LEVEL_EVIDENCE_BACKED
+
+    # first_frame_ok=False 且分类为 env → evidence-backed（引擎结构化字段佐证）
+    first_frame_ok = evidence.get("first_frame_ok")
+    if first_frame_ok is False and classification == "env":
+        return ATTRIBUTION_LEVEL_EVIDENCE_BACKED
+
+    # 有其他证据但无法支撑分类 → 降级
+    has_evidence = _scenario_has_substantive_evidence(scenario)
+    if not has_evidence:
+        return ATTRIBUTION_LEVEL_SPECULATIVE
+
+    # 有失败断言归因但无截图/标签佐证 → 判断是否涉及视觉
+    if _has_visual_assertions(scenario):
+        return ATTRIBUTION_LEVEL_PENDING_VISUAL
+
+    # 有 first_failed_step 但无失败断言归因 → 纯推理链 → speculative
+    if isinstance(first_failed_step, str) and first_failed_step.strip():
+        if not _scenario_has_failed_assertion_evidence(scenario):
+            return ATTRIBUTION_LEVEL_SPECULATIVE
+
+    return ATTRIBUTION_LEVEL_EVIDENCE_BACKED
+
+
+def validate_attribution_levels(report: dict) -> dict:
+    """校验并写入 report.json 全部场景的 attribution_level（设计 D2 / Task 2.1）。
+
+    在 report 落盘/打回上下文组装前调用（与 validate_report 同入口位）。
+    原地修改每个非 PASS 场景的 attribution_level 字段。
+
+    Returns:
+        {"ok": bool, "violations": [str, ...]}
+    """
+    if not isinstance(report, dict):
+        return {"ok": True, "violations": []}
+    scenarios = report.get("scenarios")
+    if not isinstance(scenarios, list):
+        return {"ok": True, "violations": []}
+    violations = []
+    for sc in scenarios:
+        if not isinstance(sc, dict):
+            continue
+        status = sc.get("status")
+        if status in ("pass", "passed"):
+            continue
+        sc["attribution_level"] = compute_attribution_level(sc)
+    return {"ok": True, "violations": violations}
+
+
+def enforce_blank_screenshot_direction(scenario: dict) -> Optional[str]:
+    """白屏方向约束（Task 2.3）：evidence 含 blank_screenshot: true 时归因
+    必须引用该标签且限定 env 方向，不得归因于数据层或产品逻辑。
+
+    框架强制改写：classification 不是 env → 改为 env（白屏有算法标签佐证，
+    attribution_level 由 compute_attribution_level 判为 evidence-backed）。
+
+    Returns:
+        新的 classification（需要改写时）或 None（不需改写）。
+    """
+    labels = scenario.get("screenshot_labels") or {}
+    if not labels.get("blank_screenshot", False):
+        return None
+    classification = scenario.get("classification") or ""
+    if classification == "env":
+        return None
+    return "env"
+
+
+def should_suppress_bug_found(report: dict) -> bool:
+    """打回依据全部为 speculative 时抑制 bug-found 打回（Task 2.2）。
+
+    当全部「驱动打回的场景」（classification ∈ product-bug/test-defect，
+    即会作为 bug 依据打回 implementer 的场景）的 attribution_level 均为
+    speculative（无任何 evidence-backed / pending-visual）时，返回 True——
+    应抑制 bug-found 打回：转重验一次或写 error「归因证据不足待人工复核」，
+    不得带推测信号打回 implementer。
+
+    非驱动场景（env/flaky/warning 等排除类）不参与判定——它们不构成打回依据。
+    """
+    if not isinstance(report, dict):
+        return False
+    scenarios = report.get("scenarios")
+    if not isinstance(scenarios, list):
+        return False
+    driver_count = 0
+    for sc in scenarios:
+        if not isinstance(sc, dict):
+            continue
+        status = sc.get("status")
+        if status in ("pass", "passed"):
+            continue
+        classification = sc.get("classification")
+        if classification not in FORCE_FAILED_CLASSES:
+            continue  # 非驱动场景（env/flaky 等）不参与打回判定
+        driver_count += 1
+        level = sc.get("attribution_level") or ATTRIBUTION_LEVEL_SPECULATIVE
+        if level in (ATTRIBUTION_LEVEL_EVIDENCE_BACKED, ATTRIBUTION_LEVEL_PENDING_VISUAL):
+            return False  # 至少一个驱动场景证据充分/待定，不抑制
+    # 无驱动场景（全部 env/flaky 或全 PASS）→ 不存在 bug-found 打回依据
+    return driver_count > 0
+
+
+def check_batch_attribution_dedup(report: dict) -> dict:
+    """报告落盘前批量归因查重（Task 3.2 / D4）。
+
+    对全部非 PASS 场景归因文本归一化（strip + 空白折叠）：≥3 个场景逐字
+    相同 → 拒绝落盘（返回 violations），要求逐场景归因后重合成。
+
+    Returns:
+        {"ok": bool, "violations": [{"scenario_ids": [...], "reason": str}]}
+    """
+    if not isinstance(report, dict):
+        return {"ok": True, "violations": []}
+    scenarios = report.get("scenarios")
+    if not isinstance(scenarios, list):
+        return {"ok": True, "violations": []}
+
+    def _normalize_attribution(sc: dict) -> str:
+        """归一化场景归因文本（空白折叠 + strip）。"""
+        import re as _re
+        parts = []
+        classification = sc.get("classification") or ""
+        parts.append(f"cls={classification}")
+        evidence = sc.get("evidence") or {}
+        if isinstance(evidence, dict):
+            ffs = evidence.get("first_failed_step") or ""
+            if isinstance(ffs, str) and ffs.strip():
+                parts.append(f"ffs={ffs.strip()}")
+        triage = sc.get("assertion_triage") or []
+        if isinstance(triage, list):
+            for t in triage:
+                if isinstance(t, dict):
+                    assertion = str(t.get("assertion") or "").strip()
+                    cls = str(t.get("classification") or "").strip()
+                    ev = t.get("evidence")
+                    if isinstance(ev, str):
+                        ev = ev.strip()
+                    else:
+                        ev = str(ev or "").strip()
+                    parts.append(f"a={assertion}:c={cls}:e={ev}")
+        normalized = " ".join(parts)
+        return _re.sub(r"\s+", " ", normalized).strip()
+
+    groups: dict[str, list[str]] = {}
+    for sc in scenarios:
+        if not isinstance(sc, dict):
+            continue
+        status = sc.get("status")
+        if status in ("pass", "passed"):
+            continue
+        sid = str(sc.get("scenario_id") or sc.get("id") or "?")
+        norm = _normalize_attribution(sc)
+        if not norm:
+            continue
+        groups.setdefault(norm, []).append(sid)
+
+    violations = []
+    for norm_text, sids in groups.items():
+        if len(sids) >= 3:
+            violations.append({
+                "scenario_ids": sids,
+                "reason": (
+                    f"{len(sids)} 个场景归因文本完全相同"
+                    f"（归一化后逐字相同），疑似批量套用硬编码归因："
+                    f"涉及场景 {', '.join(sids)}；"
+                    f"重复文本=[{norm_text[:200]}]"
+                ),
+            })
+    return {"ok": len(violations) == 0, "violations": violations}
+
+
+def tag_cached_attributions(report: dict, cache: dict, spec_name: str = "") -> list:
+    """跨轮缓存归因打标（Task 3.1 / D3）。
+
+    在 _verify_verdict_evidence 写回 report 前调用：对 verdict_cache 指纹
+    命中的场景打 cached_from_previous_round: true + 来源轮次；纯缓存归因
+    （无本轮新增 evidence-backed 证据）按 speculative 口径参与门禁。
+
+    原地修改 report 的场景 dict。返回被打标的场景 id 列表。
+    """
+    if not isinstance(report, dict) or not isinstance(cache, dict):
+        return []
+    scenarios = report.get("scenarios")
+    if not isinstance(scenarios, list):
+        return []
+    tagged_ids = []
+    for sc in scenarios:
+        if not isinstance(sc, dict):
+            continue
+        status = sc.get("status")
+        if status in ("pass", "passed"):
+            continue
+        sid = str(sc.get("scenario_id") or sc.get("id") or "")
+        entry = cache.get(sid)
+        if not isinstance(entry, dict):
+            continue
+        fp = entry.get("fingerprint") or ""
+        if not fp or fp != scenario_fingerprint(sc):
+            continue
+        sc["cached_from_previous_round"] = True
+        cached_round = entry.get("source_round") or ""
+        if cached_round:
+            sc["cached_source_round"] = cached_round
+        # 纯缓存归因（无本轮新增 evidence-backed 证据）→ 按 speculative 口径
+        level = sc.get("attribution_level") or ATTRIBUTION_LEVEL_EVIDENCE_BACKED
+        labels = sc.get("screenshot_labels") or {}
+        evidence = sc.get("evidence") or {}
+        ev_screenshots = evidence.get("screenshots") or []
+        has_real_screenshots = (
+            isinstance(ev_screenshots, list)
+            and any(isinstance(s, str) and s.strip() for s in ev_screenshots)
+        )
+        has_relevant_labels = (
+            labels.get("blank_screenshot") or labels.get("low_contrast")
+        )
+        if not (has_real_screenshots or has_relevant_labels):
+            # 纯缓存归因 → 降级 speculative（无论原级别：设计 D3
+            # 规定纯缓存归因按 speculative 口径参与 2.2 门禁，
+            # 防止跨轮缓存归因逃逸推测级抑制）
+            if level != ATTRIBUTION_LEVEL_SPECULATIVE:
+                sc["attribution_level"] = ATTRIBUTION_LEVEL_SPECULATIVE
+                sc["cached_override_level"] = True
+        tagged_ids.append(sid)
+    return tagged_ids
+
+
 # ── fast-track 统一结果文件硬校验（add-fast-track-mode / D6）────────────
 # 三要素：
 #   ① 报告结构完整（场景/结果/判定字段齐全）

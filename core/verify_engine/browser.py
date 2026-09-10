@@ -787,16 +787,26 @@ class BrowserManager:
 
     # ── 数据采集 ───────────────────────────────────────────────
 
-    async def screenshot(self, page, name: str, output_dir: Path) -> str:
+    async def screenshot(self, page, name: str, output_dir: Path) -> dict:
         """截图并保存到磁盘。
 
+        落盘后调用 screenshot_lab.classify_screenshot 做健全性判定（纯算法，
+        spec screenshot-evidence-labeling），标签（blank_screenshot /
+        low_contrast + 量化指标）并入返回值。判定自身异常时返回空标签且
+        不抛出——截图主流程不受健全性判定影响。
+
         Returns:
-            截图文件的绝对路径
+            {
+                "path": 截图文件的绝对路径,
+                "labels": 健全性标签 dict（无标签=正常，兼容旧消费方）,
+            }
         """
         output_dir.mkdir(parents=True, exist_ok=True)
         path = output_dir / f"{name}.png"
         await page.screenshot(path=str(path), full_page=False)
-        return str(path)
+        from .screenshot_lab import classify_screenshot
+        labels = classify_screenshot(str(path))
+        return {"path": str(path), "labels": labels}
 
     async def capture_dom_snapshot(self, page) -> dict:
         """捕获结构化DOM快照（用于断言和调试）。

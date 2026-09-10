@@ -574,6 +574,10 @@ class StateMachine:
             updates["status"] = status
         # 计数清零并入同一原子写，避免解冻后残留计数立即再次触发冻结
         updates[VERIFY_REDO_COUNT_FIELD] = 0
+        # add-verdict-credibility-gate / design D6：inconclusive 循环计数同样
+        # 随人工解冻清零——人工处置后 blocked-env 轮次从 1 重新计数（与
+        # _verify_redo_count 同语义，B6「恢复尊重暂停标记」闭环的人工侧）。
+        updates["_inconclusive_attempts"] = 0
         updates["error"] = None
         updates[FROZEN_UNTIL_FIELD] = None
         return self.update_spec(spec_name, updates)

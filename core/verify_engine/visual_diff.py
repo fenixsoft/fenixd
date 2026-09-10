@@ -60,7 +60,34 @@ class VisualDiffer:
         # 截取当前页面
         await page.screenshot(path=str(current_path), full_page=False)
 
-        # 首次运行：建立基线
+        # ── 视觉基线防污染（attribution-freshness-governance / D5）──
+        # 首次建立基线前先做健全性判定：命中 blank_screenshot / low_contrast →
+        # 拒绝固化（白屏/低对比度基线无断言价值，且会污染后续 SSIM 对比——
+        # 事故链教训：白屏被固化为基线，干净截图反而被判差异）。后续轮次
+        # 截图干净时正常建立，不扩大失败。
+        if not baseline_path.exists():
+            from .screenshot_lab import classify_screenshot
+            labels = classify_screenshot(str(current_path))
+            has_pollution = (
+                labels.get("blank_screenshot") or labels.get("low_contrast")
+            )
+            if has_pollution:
+                return [{
+                    "baseline": baseline_name,
+                    "status": "baseline_rejected",
+                    "ssim": None,
+                    "pass": False,
+                    "note": (
+                        "首次运行，截图健全性判定不通过"
+                        f"（{'blank_screenshot' if labels.get('blank_screenshot') else 'low_contrast'}），"
+                        "拒绝固化为基线——环境性伪画面不得固化，"
+                        "后续轮次截图干净时正常建立基线"
+                    ),
+                    "screenshot_labels": labels,
+                    "scenario_id": scenario_id,
+                }]
+
+        # 首次运行：建立基线（截图通过健全性判定，或非首次）
         if not baseline_path.exists():
             baseline_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(str(current_path), str(baseline_path))

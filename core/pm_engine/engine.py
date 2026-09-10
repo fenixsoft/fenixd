@@ -2417,6 +2417,10 @@ class PMEngine:
     def _verify_verdict_evidence(self, spec_name: str, retry_judge: bool = False) -> dict:
         return self._verification._verify_verdict_evidence(spec_name, retry_judge)
 
+    def _speculative_bug_found_gate(self, spec_name: str) -> bool:
+        """归因分级门禁（add-verdict-credibility-gate / D2 / Task 2.2）。"""
+        return self._verification._speculative_bug_found_gate(spec_name)
+
     def _env_whitewash_gate(self, spec_name: str) -> bool:
         return self._verification._env_whitewash_gate(spec_name)
 
