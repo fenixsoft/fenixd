@@ -41,5 +41,5 @@
 
 ## 5. 回归与收尾验证
 
-- [ ] 5.1 全量单测回归（pytest tests/），确认既有验证链用例零回归
-- [ ] 5.2 用 add-spec-status-modal-budget 事故现场残留场景集（.fenix/verify-progress/add-spec-status-modal-budget/test_scenarios.json，含 :57905 跨轮端口与双汉字样本）做真实数据冒烟：扫描器产出预期 findings、改道判定对当轮 report.json 输出符合预期分布统计
+- [x] 5.1 全量单测回归（pytest tests/），确认既有验证链用例零回归
+- [x] 5.2 用 add-spec-status-modal-budget 事故现场残留场景集（.fenix/verify-progress/add-spec-status-modal-budget/test_scenarios.json，含 :57905 跨轮端口与双汉字样本）做真实数据冒烟：扫描器产出预期 findings、改道判定对当轮 report.json 输出符合预期分布统计

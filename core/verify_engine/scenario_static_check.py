@@ -67,12 +67,23 @@ class StaticFinding:
 
 
 def _matching_ports(text: str) -> list[str]:
-    """提取文本中的字面端口号（去重、保持出现序）。"""
+    """提取文本中的字面端口号（去重、保持出现序）。
+
+    只收确定性规则（design D4 Risk：初始模式只收确定性规则、防误报磨掉
+    judge 信任）：端口值须落在高端口区间 1024–65535——serving 实例端口来自
+    find_free_port（临时端口，恒 >1024），事故端口（57905/39781）亦在此区间；
+    时间戳形态 ``T08:00:00``/``00`` 等低值（<1024）天然排除，不误报。
+    """
     out: list[str] = []
     seen: set[str] = set()
     for pat in _PORT_PATTERNS:
         for m in pat.finditer(text):
             port = m.group(1)
+            if not port.isdigit():
+                continue
+            pv = int(port)
+            if pv < 1024 or pv > 65535:
+                continue  # 特权端口/时间戳形态（:00/:08/:30）非 serving 端口
             if port not in seen:
                 seen.add(port)
                 out.append(port)

@@ -116,6 +116,22 @@ class TestStaleLiteralPort:
         assert len(stale) == 1
         assert "5001" in stale[0].message
 
+    def test_timestamp_like_not_flagged(self):
+        # ISO 时间戳 T08:00:00 中的 :00/:08 非 serving 端口（高端口区间排除）
+        sc = _cli_scenario(
+            "import yaml\n"
+            "'frozen_until': '2099-01-01T08:00:00+00:00'\n"
+            "sm.add_spec('x', {'status': 'blocked'})",
+        )
+        finds = scan_scenarios([sc], serving_port="6000")
+        assert not [f for f in finds if f.rule_id == "stale_literal_port"]
+
+    def test_privileged_port_not_flagged(self):
+        # 特权端口(80<1024)非 serving 端口形态，不参与比对（确定性规则）
+        sc = _cli_scenario("curl http://localhost:80/x")
+        finds = scan_scenarios([sc], serving_port="6000")
+        assert not [f for f in finds if f.rule_id == "stale_literal_port"]
+
 
 # ── 2. 端口一致不误报 ──────────────────────────────────────────────
 
