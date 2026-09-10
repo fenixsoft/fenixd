@@ -1220,7 +1220,22 @@ class VerificationPipeline:
                         f"run={plan_result.run_id}，白烧 "
                         f"{plan_result.duration_seconds / 60:.1f}min）— 降级旧版 verifier",
                     )
+                    # add-planready-artifact-gate D3：降级前落盘上下文
+                    # （供 verify_report 合成路径注入降级标注，G3）。
+                    self._write_degrade_context(
+                        spec_name,
+                        reason=(
+                            f"Planner 未生成有效场景，status={plan_status_text}"
+                        ),
+                        run_id=plan_result.run_id,
+                        duration_seconds=plan_result.duration_seconds or 0,
+                    )
                     raise RuntimeError(f"Planner 未生成有效场景，status={plan_status_text}")
+
+                # add-planready-artifact-gate D3：plan-ready 校验通过（新一轮验证
+                # 正常启动）→ 删除陈旧 degrade_context.json，防旧降级事实污染后续
+                # 正常报告（成功时才清理，失败/重验路径历史留痕）。
+                self._clear_degrade_context(spec_name)
 
                 # ── 场景集冻结（add-verify-scenario-freeze）──
                 # 首轮写入 / 修复轮 diff 校验（design D3：确定性，planner 不可绕过）。
@@ -2618,6 +2633,107 @@ class VerificationPipeline:
             # 升级通道自身失败不得抛穿裁决流程
             self._pm.logger.warning(
                 "pm_engine", f"env 升级通道异常 '{spec_name}': {e}")
+
+    def _last_planner_cost_usd(self, spec_name: str) -> float | None:
+        """最近一次 planner-plan run 的网关回传成本（degrade 上下文用，D3）。
+
+        从验证链侧车 ``.fenix/verify-progress/<spec>/tokens.json`` 取最后一个
+        agent_type=planner-plan 条目的 cost_usd。网关不回传时为 None（不伪造）。
+
+        Returns:
+            cost_usd 或 None（侧车缺失/无 planner 条目/回传为 None）。
+        """
+        tokens_json = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / "tokens.json"
+        )
+        if not tokens_json.is_file():
+            return None
+        try:
+            data = json.loads(tokens_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        runs = data.get("runs")
+        if not isinstance(runs, list):
+            return None
+        for r in reversed(runs):
+            if not isinstance(r, dict):
+                continue
+            if r.get("agent_type") != "planner-plan":
+                continue
+            cost = r.get("cost_usd")
+            if cost is None:
+                return None
+            try:
+                return float(cost)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _write_degrade_context(self, spec_name: str, reason: str, run_id: str,
+                               duration_seconds: float) -> None:
+        """降级前落盘 degrade 上下文（add-planready-artifact-gate D3）。
+
+        新验证流程降级 legacy verifier 的判定点调用：把降级原因与被降级轮次
+        代价（时长/成本）持久化到 ``.fenix/verify-progress/<spec>/degrade_context.json``，
+        供 verify_report 合成路径注入降级标注（G3）。写失败不阻断降级主流程
+        （WARNING 留痕，观测增强）。
+
+        Args:
+            spec_name: spec 名。
+            reason: 降级原因归因文案（planner 阶段失败归因，如
+                「Planner 未生成有效场景，status=不可读(missing: ...)」）。
+            run_id: 被降级的 planner run id。
+            duration_seconds: 被降级轮次的时长（秒）。
+        """
+        ctx_path = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / "degrade_context.json"
+        )
+        cost_usd = self._last_planner_cost_usd(spec_name)
+        payload = {
+            "reason": str(reason or ""),
+            "run_id": str(run_id or ""),
+            "duration_seconds": (float(duration_seconds or 0)
+                                 if duration_seconds else 0.0),
+            "cost_usd": (float(cost_usd) if cost_usd is not None else None),
+            "degraded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            ctx_path.parent.mkdir(parents=True, exist_ok=True)
+            ctx_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except (OSError, TypeError, ValueError) as e:
+            # 观测量写入绝不分叉降级主流程：MagicMock 泄漏/路径不可写/类型
+            # 非法统一 WARNING 留痕（design D3「写失败不阻断」）。
+            self._pm.logger.warning(
+                "pm_engine",
+                f"degrade_context 落盘失败（不阻断降级）'{spec_name}': {e}",
+            )
+
+    def _clear_degrade_context(self, spec_name: str) -> None:
+        """新验证流程成功路径删除陈旧 degrade 上下文（add-planready-artifact-gate D3）。
+
+        plan-ready 校验通过后调用——覆盖旧降级事实，防陈旧标注污染后续正常报告
+        （D3：成功时删除；失败/重验路径之外不清，历史留痕）。删除失败仅 WARNING
+        （陈旧标注风险窗口极小，不阻断验证主流程）。
+        """
+        ctx_path = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / "degrade_context.json"
+        )
+        try:
+            if ctx_path.exists():
+                ctx_path.unlink()
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"陈旧 degrade_context 清理失败 '{spec_name}': {e}",
+            )
 
     def _last_planner_run_cost(self, spec_name: str) -> str:
         """最近一次 planner run 的实际成本摘要（冻结转人工告警的裁决参考，D5）。

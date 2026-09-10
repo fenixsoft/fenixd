@@ -22,7 +22,7 @@
 
 ## 2. 降级上下文落盘与合成报告标注（G3，design D3/D4）
 
-- [ ] 2.1 `core/pm_engine/verification.py` 阶段1 降级判定点：降级前写 `.fenix/verify-progress/<spec>/degrade_context.json`（reason=归因文案、run_id、duration_seconds、cost_usd、degraded_at UTC ISO）；写失败不阻断降级主流程（WARNING 留痕）；新验证流程成功路径（plan-ready 校验通过后）删除陈旧 degrade_context.json（防污染后续正常报告）
+- [x] 2.1 `core/pm_engine/verification.py` 阶段1 降级判定点：降级前写 `.fenix/verify-progress/<spec>/degrade_context.json`（reason=归因文案、run_id、duration_seconds、cost_usd、degraded_at UTC ISO）；写失败不阻断降级主流程（WARNING 留痕）；新验证流程成功路径（plan-ready 校验通过后）删除陈旧 degrade_context.json（防污染后续正常报告）
 - [ ] 2.2 `core/verify_report.py` `synthesize_verification_report`/`render_verification_report`：合成时读 degrade_context.json，report.json 顶层注入 `degrade_annotation` 字段（reason/run_id/duration_seconds/cost_usd/degraded_at）持久化，verification-report.md 头部渲染「⚠️ 降级说明」引用块（含原因+run_id+分钟+美元）；无 degrade_context.json 时零注入零渲染（正常报告不含该字段）
 - [ ] 2.3 `core/dashboard/static/src/pages/projects/detail.tsx` 验证报告区：条件渲染降级标注一行提示（数据源自报告 degrade_annotation 字段），无字段不渲染
 - [ ] 2.4 `tests/test_planready_artifact_gate.py` 扩展：降级合成报告携带标注三 Scenario（降级标注持久化 report.json + markdown 渲染、正常报告无字段、degrade_context 缺失时合成行为不变）；pm_engine 侧降级判定点写文件与新流程成功删文件的分支覆盖
