@@ -79,4 +79,4 @@ Fenix 根据四维标准自动选择实现路径：
 
 - [快速上手](01-quick-start.md) — 端到端流程实操
 - [核心概念与架构](02-concepts.md) — Agent 角色与模式原理
-- [关键配置](08-config.md) — gates.approve_mode 等开关
+- [关键配置](09-config.md) — gates.approve_mode 等开关

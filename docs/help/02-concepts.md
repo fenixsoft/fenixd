@@ -102,7 +102,7 @@ fast-track 把实现与验证合并为单次 Agent 调用，省去独立的 veri
 
 ## LLM Provider 隔离
 
-Agent 角色的模型通道由配置决定：`llm.providers` 注册 Provider，`agents.models` 按角色分配（键参考见[配置参考](08-config.md#llm)）。**配置了 Provider 分配的角色**，daemon 派发子进程时会注入该 Provider 的 `ANTHROPIC_BASE_URL / API_KEY / MODEL`，并把 `CLAUDE_CONFIG_DIR` 指向项目根（主树）`.fenix/agent-config/<provider>/` 的独立配置目录——分配谁就走谁，与用户会话完全隔离（不同账号、配额与故障域）。目录按 Provider 名区分、按需幂等生成，全部 worktree 的 run 共用同一份。
+Agent 角色的模型通道由配置决定：`llm.providers` 注册 Provider，`agents.models` 按角色分配（键参考见[配置参考](09-config.md#llm)）。**配置了 Provider 分配的角色**，daemon 派发子进程时会注入该 Provider 的 `ANTHROPIC_BASE_URL / API_KEY / MODEL`，并把 `CLAUDE_CONFIG_DIR` 指向项目根（主树）`.fenix/agent-config/<provider>/` 的独立配置目录——分配谁就走谁，与用户会话完全隔离（不同账号、配额与故障域）。目录按 Provider 名区分、按需幂等生成，全部 worktree 的 run 共用同一份。
 
 ### 为什么必须换整个配置根目录
 

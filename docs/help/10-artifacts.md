@@ -93,6 +93,6 @@ proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change a
 
 ## 相关文档
 
-- [Dashboard 使用指南](07-dashboard.md) — 图形界面看同一份数据
+- [Dashboard 使用指南](08-dashboard.md) — 图形界面看同一份数据
 - [验证体系](05-verification.md) — 验证产物语义
-- [FAQ 与故障排查](10-faq.md) — 按现象直连处置
+- [FAQ 与故障排查](11-faq.md) — 按现象直连处置
