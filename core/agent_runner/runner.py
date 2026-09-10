@@ -1920,6 +1920,11 @@ class AgentRunner:
 
             while True:
                 if transient_retries > 0:
+                    # 换新 sub_run_id = 弃置旧产物文件（fix-retry-orphan-active-runs
+                    # 交叉引用）：两处原地重试通道（provider 瞬断 / artifact-gate）
+                    # 在 transient_retry 落盘后均已向旧文件补写 superseded 终态，
+                    # 故此处换新不留下无终态尸体；daemon 退避窗口内死亡由
+                    # interrupted 补写接续（末行仍终态）。
                     sub_run_id = f"{attempt_run_id}-r{transient_retries}"
                 try:
                     if agent_type == "repair":
@@ -2055,6 +2060,18 @@ class AgentRunner:
                                 "reason": "artifact_gate",
                                 "timestamp": datetime.now(timezone.utc).isoformat(),
                             })
+                        # fix-retry-orphan-active-runs D1：superseded 终态补写
+                        # ——与 provider 瞬断通道同语义：superseded 紧跟
+                        # transient_retry = 本文件终态，重试在新 sub_run_id 文件
+                        # 继续（runner.py:1922 换新注释处交叉引用）。
+                        append_run_line(
+                            self.project_root / ".fenix" / "runs"
+                            / f"{sub_run_id}.jsonl", {
+                                "type": "superseded",
+                                "spec": spec_name,
+                                "provider": provider_name,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            })
                         self.logger.warning(
                             "agent_runner",
                             f"Artifact gate for '{spec_name}' (attempt {attempt}, "
@@ -2180,6 +2197,20 @@ class AgentRunner:
                                         "provider": provider_name,
                                         "backoff_seconds": backoff,
                                         "retry_number": transient_retries,
+                                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                                    })
+                                # fix-retry-orphan-active-runs D1：superseded
+                                # 终态补写——本文件末行恒为终态，恢复「终态后置」
+                                # 不变量。写侧紧跟 transient_retry = 本文件终态，
+                                # 重试在新 sub_run_id 文件继续（runner.py:1922
+                                # 换新注释处交叉引用）；daemon 退避窗口内死亡
+                                # 由 interrupted 补写接续（末行仍终态）。
+                                append_run_line(
+                                    self.project_root / ".fenix" / "runs"
+                                    / f"{sub_run_id}.jsonl", {
+                                        "type": "superseded",
+                                        "spec": spec_name,
+                                        "provider": provider_name,
                                         "timestamp": datetime.now(timezone.utc).isoformat(),
                                     })
                                 self.logger.warning(
