@@ -1850,6 +1850,17 @@ class VerificationPipeline:
             # 派生伪 fix 级联（admin 处置 2026-08-28 failover 相对 URL 伪失败实证）。
             if self._pm._judge_bugs_declare_env(spec_name) and self._pm._handle_judge_env_declared(spec_name):
                 return
+            # ── 场景缺陷改道门（add-scenario-defect-triage-gate D1/D2/D3）──
+            # judge 申报 bug-found 后、打回 implementer 前，读 report.json 场景
+            # classification 分布：非 PASS 场景全部显式 test-defect/flaky 且
+            # product-bug=0 → 纯场景缺陷清单，拒绝打回 implementer（不再烧实现轮
+            # 修场景文件——add-spec-status-modal-budget 事故的直接教训），定向重派
+            # judge 一次走 scenario-repaired 原地修复通道。None/未知值/含任一
+            # product-bug 一律不走改道（保守，D1）。重派计入 _SCENARIO_REPAIR_
+            # MAX_ROUNDS 预算（与 scenario-repaired 重入共用 _repair_depth）。
+            if self._pm._scenario_defect_reroute_gate(
+                    spec_name, _repair_depth, judge_result):
+                return
             # 验证报告产物闸门（add-verify-report-gate）：裁决 Agent 漏写报告时
             # 由框架合成兜底，合成失败则阻断推进（下游修复引用的路径必然可读）
             report_blocker = self._pm._ensure_verification_report(spec_name)
@@ -3196,6 +3207,250 @@ class VerificationPipeline:
                 if sid:
                     ids.append(str(sid))
         return ids
+
+
+    # ── 场景缺陷改道门（add-scenario-defect-triage-gate D1/D2/D3）────────
+
+    def _scenario_classification_distribution(self, spec_name: str) -> dict:
+        """读 report.json 场景 classification 分布（改道门判定依据）。
+
+        Returns:
+            dict：{'total': n, 'failed_ids': [...], 'counts': {分类: 数},
+                   'product_bug': int, 'all_scenario_defects': bool,
+                   'unclassified': int}——任意读取/解析异常返回空统计
+            （total=0，改道判定自然不触发，保守不改道）。
+        """
+        from collections import Counter
+        dist = {
+            "total": 0, "failed_ids": [],
+            "counts": {}, "product_bug": 0,
+            "all_scenario_defects": False, "unclassified": 0,
+        }
+        report = self._read_verify_report(spec_name)
+        if not isinstance(report, dict):
+            return dist
+        scenarios = report.get("scenarios") or []
+        if not isinstance(scenarios, list):
+            return dist
+        failed: list = []
+        for sc in scenarios:
+            if not isinstance(sc, dict):
+                continue
+            if sc.get("status") in ("pass", "passed"):
+                continue
+            sid = sc.get("scenario_id") or sc.get("id") or "?"
+            failed.append((str(sid), sc.get("classification")))
+        if not failed:
+            return dist
+        counts = Counter(cls for _sid, cls in failed)
+        product_bug = int(counts.get("product-bug", 0) or 0)
+        unclassified = sum(
+            1 for _sid, cls in failed if not isinstance(cls, str)
+            or cls not in ("product-bug", "test-defect", "flaky", "env"))
+        # 全场景缺陷判定：全部失败场景均为显式 test-defect/flaky 且 product-bug=0
+        # （未显式分类 / 含 env / 含产品缺陷 → False，保守不改道）。
+        all_scenario_defects = (
+            len(failed) > 0
+            and product_bug == 0
+            and unclassified == 0
+            and all(cls in ("test-defect", "flaky")
+                    for _sid, cls in failed)
+        )
+        return {
+            "total": len(failed),
+            "failed_ids": [sid for sid, _cls in failed],
+            "counts": dict(counts),
+            "product_bug": product_bug,
+            "unclassified": unclassified,
+            "all_scenario_defects": all_scenario_defects,
+        }
+
+
+    def _scenario_defect_reroute_gate(self, spec_name: str, _repair_depth: int,
+                                      judge_result) -> bool:
+        """bug-found 申报打回 implementer 前的分类改道门。
+
+        judge 申报 bug-found 后、打回 implementer 前插入（D1：框架侧机械判定，
+        零 token）。report.json 非 PASS 场景全部显式 test-defect/flaky 且
+        product-bug=0 → **拒绝打回 implementer**，定向重派 judge 一次（D2）：
+        注入改道指令段，责令按原地修复协议申报 scenario-repaired；改道后
+        scenario-repaired 沿用既有通道（冻结 diff 记账→重入阶段2/3）。
+
+        预算（D2/D3）：改道重派计入 ``_SCENARIO_REPAIR_MAX_ROUNDS``，与
+        scenario-repaired 重入共用 ``_repair_depth`` 计数（防两通道叠加无限重入）。
+        预算耗尽仍 bug-found 且 product-bug=0 → 停止重派，升级人工
+        （``_send_human_escalation_alert``，附失败清单/classification 分布/
+        judge 申报记录），spec 保持 testing。改道路径不触碰 impl_run_budget。
+
+        Returns:
+            True 表示已按改道处置（调用方直接 return）；False 表示走现行
+            bug-found 路由（打回 implementer）。
+        """
+        dist = self._scenario_classification_distribution(spec_name)
+        if not dist["all_scenario_defects"]:
+            self._pm.logger.info(
+                "pm_engine",
+                f"改道门不放行 '{spec_name}'（失败 "
+                f"{dist['total']} 个，product-bug={dist['product_bug']}，"
+                f"未分类 {dist['unclassified']}）— 走现行 bug-found 路由",
+            )
+            return False
+
+        # 判定分布记日志留痕（3.1）
+        self._pm.logger.warning(
+            "pm_engine",
+            f"场景缺陷改道门触发 '{spec_name}'：失败 {dist['total']} 个全部显式"
+            f"test-defect/flaky（分布 {dist['counts']}），product-bug=0 ——"
+            f"拒绝打回 implementer，改道重派 judge（深度 {_repair_depth}）",
+        )
+
+        if _repair_depth >= _SCENARIO_REPAIR_MAX_ROUNDS:
+            return self._escalate_scenario_defect_reroute(
+                spec_name, dist, _repair_depth)
+
+        # 写改道指令文件（prompt_builder _scenario_reroute_directive_section 读取）
+        directive_path = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / "scenario_reroute_directive.json"
+        )
+        try:
+            directive_path.parent.mkdir(parents=True, exist_ok=True)
+            directive_path.write_text(
+                json.dumps(dist, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"改道指令文件写失败 '{spec_name}'（仍重派 judge）: {e}",
+            )
+
+        try:
+            reroute_judge = self._pm.agent_runner.run_planner(spec_name, "judge")
+        except Exception as e:
+            self._pm.logger.error(
+                "pm_engine",
+                f"改道重派 judge 异常 '{spec_name}'（保持 testing）: "
+                f"{type(e).__name__}: {e}",
+            )
+            self._pm.state_machine.update_spec(spec_name, {
+                "error": f"场景缺陷改道重派 judge 异常（保持 testing）：{e}",
+            })
+            return True
+        finally:
+            try:
+                directive_path.unlink()
+            except OSError:
+                pass
+
+        if not reroute_judge.success:
+            # 改道重派失败：取消/派发故障。保持 testing，不升级人工
+            #（与裁决重试派发失败同型，温和处置留 error）。
+            if getattr(reroute_judge, "cancelled", False):
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"改道重派 judge 被取消 '{spec_name}' — hold-state（保持 testing）",
+                )
+            else:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"改道重派 judge 派发失败 '{spec_name}' — 保持 testing，"
+                    f"留 error 待下轮重验: {reroute_judge.error}",
+                )
+                self._pm.state_machine.update_spec(spec_name, {
+                    "error": f"改道重派 judge 派发失败（保持 testing）："
+                             f"{reroute_judge.error}",
+                })
+            return True
+
+        # 重派结果判定
+        reroute_read = self._pm._read_planner_result(spec_name)
+        if reroute_read.ok and reroute_read.status == "scenario-repaired":
+            # 改道后 scenario-repaired：沿用既有通道（冻结 diff 记账 → 重入）
+            try:
+                self._pm._apply_scenario_freeze(spec_name)
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"改道后场景冻结记账跳过 '{spec_name}'（异常不阻断）: {e}",
+                )
+            self._pm.logger.info(
+                "pm_engine",
+                f"[改道] judge 原地修复采纳 '{spec_name}' — 重入执行"
+                f"（第 {_repair_depth + 1}/{_SCENARIO_REPAIR_MAX_ROUNDS} 次修复）",
+            )
+            self._run_three_stage_verification(
+                spec_name, _repair_depth=_repair_depth + 1)
+            return True
+
+        if reroute_read.ok and reroute_read.status == "bug-found":
+            # 改道后仍 bug-found：再读分布——
+            # 若含 product-bug（judge 改判真产品缺陷）→ 正常打回 implementer 路由；
+            # 若仍全场景缺陷且预算耗尽 → 升级人工。
+            new_dist = self._scenario_classification_distribution(spec_name)
+            if new_dist["product_bug"] > 0 or not new_dist[
+                    "all_scenario_defects"]:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"改道后 judge 改判含产品缺陷 '{spec_name}'（product-bug="
+                    f"{new_dist['product_bug']}）— 走现行 bug-found 路由",
+                )
+                return False
+            return self._escalate_scenario_defect_reroute(
+                spec_name, new_dist, _repair_depth + 1)
+
+        # 结果不可读/其他状态：fail-closed 保守，保持 testing 等待下轮重验
+        self._pm.logger.error(
+            "pm_engine",
+            f"改道重派结果不可读 '{spec_name}'（reason="
+            f"{reroute_read.reason if reroute_read.ok is False else '?'}）— "
+            f"保持 testing 等待下轮重验",
+        )
+        self._pm.state_machine.update_spec(spec_name, {
+            "error": "改道重派 judge 结果不可读（保持 testing，等待下轮重验）",
+        })
+        return True
+
+
+    def _escalate_scenario_defect_reroute(self, spec_name: str, dist: dict,
+                                          _repair_depth: int) -> bool:
+        """改道预算耗尽升级人工：附失败清单/classification 分布/申报记录。"""
+        self._pm.state_machine.update_spec(spec_name, {
+            "error": (
+                f"场景缺陷改道预算耗尽（{_SCENARIO_REPAIR_MAX_ROUNDS} 轮），"
+                f"仍为纯场景缺陷（product-bug=0）— 已升级人工裁决，spec 保持"
+                f"testing，不再消耗实现轮预算"
+            ),
+        })
+        self._pm.logger.error(
+            "pm_engine",
+            f"场景缺陷改道预算耗尽 '{spec_name}'（深度 {_repair_depth}）— "
+            f"升级人工，不等打回 implementer 修场景",
+        )
+        self._pm._send_human_escalation_alert(
+            spec_name=spec_name,
+            signal_type="scenario_defect_reroute_exhausted",
+            severity="major",
+            description=(
+                f"'{spec_name}' 验证失败清单全部为场景缺陷（test-defect/flaky）"
+                f"且 product-bug=0，改道重派 judge {_SCENARIO_REPAIR_MAX_ROUNDS} "
+                f"轮后仍未原地修复完成——已停止重派，升级人工裁决。"
+            ),
+            evidence=(
+                f"spec={spec_name}; classification_distribution="
+                f"{json.dumps(dist.get('counts'), ensure_ascii=False)}; "
+                f"failed_ids={','.join(dist.get('failed_ids') or [])[:500]}; "
+                f"impl_run_budget 未消耗（改道路径不触碰实现预算）"
+            ),
+            recommended_action=(
+                "检查失败场景文件（.fenix/verify-progress/"
+                f"{spec_name}/test_scenarios.json）与验证报告，人工裁决："
+                "① admin 场景修复通道修场景（schema 门内）；② 确认为真产品缺陷"
+                "则重置分类/直接打回 implementer；③ 场景集已过时则删除冻结集批准"
+                "重新出题。"
+            ),
+        )
+        return True
 
 
     def _update_warning_streaks(self, spec_name: str) -> list:

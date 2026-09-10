@@ -29,10 +29,10 @@
 
 ## 3. bug-found 分类改道门（scenario-defect-reroute-gate R1/R2/R3）
 
-- [ ] 3.1 `core/pm_engine/verification.py` bug-found 分支（`_on_spec_bug_found` 调用前）插入改道判定：读 report.json 场景 classification 分布，failed 全部显式 test-defect/flaky 且 product-bug=0 才触发改道；None/未知值/含任一 product-bug 一律走现行路由；判定分布记日志留痕
-- [ ] 3.2 实现定向重派 judge：`core/agent_runner/prompt_builder.py` 新增 `_scenario_reroute_directive_section`（上轮清单全场景缺陷统计 + MUST 申报 scenario-repaired 禁止 bug-found + 已裁决场景修复合法与冻结记账保护声明），改道触发时重派 planner-judge 并注入该段；重派后 scenario-repaired 沿用既有通道重入
-- [ ] 3.3 改道预算与升级：定向重派计入 `_SCENARIO_REPAIR_MAX_ROUNDS`（与 scenario-repaired 重入共用 `_repair_depth` 计数）；预算耗尽仍 bug-found 且 product-bug=0 → 停止重派，`_send_human_escalation_alert` 升级人工（附失败清单/classification 分布/judge 各轮申报记录），spec 保持 testing；确认改道路径不触碰 impl_run_budget 计数
-- [ ] 3.4 改道门单测 `tests/test_scenario_reroute_gate.py`：全 test-defect 触发改道且不打回 implementer、含 product-bug 不改道、None 保守不改道、改道后 scenario-repaired 正常重入、改道后 bug-found 含 product-bug 正常派发、预算耗尽升级人工、impl_run_budget used 不变
+- [x] 3.1 `core/pm_engine/verification.py` bug-found 分支（`_on_spec_bug_found` 调用前）插入改道判定：读 report.json 场景 classification 分布，failed 全部显式 test-defect/flaky 且 product-bug=0 才触发改道；None/未知值/含任一 product-bug 一律走现行路由；判定分布记日志留痕
+- [x] 3.2 实现定向重派 judge：`core/agent_runner/prompt_builder.py` 新增 `_scenario_reroute_directive_section`（上轮清单全场景缺陷统计 + MUST 申报 scenario-repaired 禁止 bug-found + 已裁决场景修复合法与冻结记账保护声明），改道触发时重派 planner-judge 并注入该段；重派后 scenario-repaired 沿用既有通道重入
+- [x] 3.3 改道预算与升级：定向重派计入 `_SCENARIO_REPAIR_MAX_ROUNDS`（与 scenario-repaired 重入共用 `_repair_depth` 计数）；预算耗尽仍 bug-found 且 product-bug=0 → 停止重派，`_send_human_escalation_alert` 升级人工（附失败清单/classification 分布/judge 各轮申报记录），spec 保持 testing；确认改道路径不触碰 impl_run_budget 计数
+- [x] 3.4 改道门单测 `tests/test_scenario_reroute_gate.py`：全 test-defect 触发改道且不打回 implementer、含 product-bug 不改道、None 保守不改道、改道后 scenario-repaired 正常重入、改道后 bug-found 含 product-bug 正常派发、预算耗尽升级人工、impl_run_budget used 不变
 
 ## 4. judge prompt 路由约定修订（scenario-defect-reroute-gate R4）
 
