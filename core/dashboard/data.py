@@ -2241,20 +2241,33 @@ def parse_filtered_failures(project_root, spec_name) -> list:
 # error=进程异常终止, interrupted=daemon 停机/启动终态补写, cancelled=人工取消），
 # 读侧缺类型会把已终结 run 永远判成 running（overview 活跃 Agent 数虚高事故：
 # 11 个被杀 run 全部计入活跃，真实活跃仅 1）。测试锁两侧同步。
+# fix-retry-orphan-active-runs 追加变体：运行期间原地重试换新 sub_run_id 弃置
+# 旧产物文件（写侧补写 superseded 终态），interrupted 补写够不到（daemon 存活
+# 期无停机），缺 superseded 映射会把弃置文件永远判成 running——2026-09-10
+# 实测 23 活跃仅 2 真实，21 具尸体全数源于该形态。
 _RUN_TERMINAL_STATUS_MAP = {
     "result": "done",
     "error": "error",
     "interrupted": "interrupted",
     "cancelled": "cancelled",
+    "superseded": "superseded",  # fix-retry-orphan-active-runs：原地重试弃置产物终态
 }
+
+# 读侧 mtime 陈旧兜底阈值（fix-retry-orphan-active-runs D2）：末行非终态
+# （running/empty）且产物 mtime 停更超过该秒数 → get_runs 判 stale（弃置/断尾，
+# 读侧专属状态枚举，非事件类型，不写入任何产物文件）。退避档上限 120s + agent
+# 单 turn（长构建/长测试）余量；live run 每 turn 写事件，30 分钟无写入必非在飞。
+# 不做配置项（design D2：避免触发「新增配置必须带 Dashboard 界面」约束）。
+_RUN_STALE_SECONDS = 1800
 
 
 def classify_run(lines: list) -> str:
-    """根据产物文件行判定运行终态：done / error / interrupted / cancelled / running / empty。
+    """根据产物文件行判定运行终态：done / error / interrupted / cancelled /
+    superseded / running / empty。
 
     runner「终态后置」不变量保证任一终态事件即文件最后一行（result/error 在
     收尾 join 后落盘，interrupted 由 daemon 停机/启动清扫追加，cancelled 由
-    取消路径最后落盘），故只看末行即可判定。
+    取消路径最后落盘，superseded 由原地重试弃置前补写），故只看末行即可判定。
     """
     if not lines:
         return "empty"
@@ -2329,6 +2342,7 @@ def get_runs(project_root, spec_name: str | None = None,
         files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:
         return []
+    now = time.time()
     for p in files:
         run_id = p.stem
         if spec_name and spec_name not in run_id:
@@ -2378,11 +2392,18 @@ def get_runs(project_root, spec_name: str | None = None,
             started = datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()
             duration_seconds = max(0, int(stat.st_mtime - start_ts))
         lines = _read_run_lines(p, max_lines=3)
+        status = classify_run(lines)
+        # fix-retry-orphan-active-runs D3：stale 判定挂在 get_runs 的 status
+        # 组装处（classify_run 保持纯函数不注入 mtime）。末行非终态且文件 mtime
+        # 停更超过 _RUN_STALE_SECONDS → 判 stale（原地重试弃置尸体 / 进程被杀
+        # 无终态断尾），stale 不进 _RUN_TERMINAL_STATUS_MAP（非事件类型）。
+        if status in ("running", "empty") and (now - stat.st_mtime) > _RUN_STALE_SECONDS:
+            status = "stale"
         out.append({
             "run_id": run_id,
             "agent_type": agent_type,
             "spec": spec_part,
-            "status": classify_run(lines),
+            "status": status,
             "duration_seconds": duration_seconds,
             "started": started,
             "file_size": stat.st_size,

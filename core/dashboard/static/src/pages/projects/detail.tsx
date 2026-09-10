@@ -997,7 +997,10 @@ export default function SpecDetailPage() {
           // 人工取消），橙色区别于 error 红；不处理会落入 else 误显成功绿
           const isAborted = st === 'interrupted' || st === 'cancelled';
           const isRunning = st === 'running' || st === 'empty';
-          const dotColor = isErr ? 'red' : isAborted ? 'orange' : isRunning ? 'blue' : 'green';
+          // stale（fix-retry-orphan-active-runs）：弃置/断尾——原地重试换文件
+          // 弃置或进程被杀无终态，读侧 mtime 兜底判定；灰色区别于 running 蓝 /
+          // error 红，归入非在飞非错误分支
+          const dotColor = isErr ? 'red' : isAborted ? 'orange' : st === 'stale' ? 'gray' : isRunning ? 'blue' : 'green';
           const dur = item.duration_seconds != null ? fmtDuration(item.duration_seconds) : '';
           const isFix = item.spec && String(item.spec).startsWith('fix-');
 
@@ -1021,7 +1024,7 @@ export default function SpecDetailPage() {
                       重试 {item.retry_count}{item.retry_max ? `/${item.retry_max}` : ''}
                     </Tag>
                   )}
-                  <Tag color={isErr ? 'red' : isRunning ? 'blue' : 'green'} style={{ marginInlineEnd: 0 }}>
+                  <Tag color={isErr ? 'red' : st === 'stale' ? 'gray' : isRunning ? 'blue' : 'green'} style={{ marginInlineEnd: 0 }}>
                     {st || '未知状态'}
                   </Tag>
                   {isFix && <Tag color="orange">🔧 {item.spec}</Tag>}
