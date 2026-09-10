@@ -47,6 +47,66 @@ class TestEventBus(unittest.TestCase):
         self.assertIsNotNone(bus.hook_dispatcher)
 
 
+class TestRecoverOneInconclusiveHold(unittest.TestCase):
+    """B6：inconclusive 暂停期 recovery 不得 re-trigger verify。
+
+    事故（fenixd-registry-ignored-false-attribution-loop 后续）：全批
+    blocked-env → inconclusive 连续超限 → _handle_env_blocked_inconclusive
+    写 error + _inconclusive_attempts 暂停自动重验，但 recovery 的 implemented
+    分支只查 tester_run（暂停时恰被置 None）→ 每个扫描周期无视暂停标记强行
+    re-trigger，add-spec-status-modal-budget 实证每小时重验 9 轮（第 3→11 轮）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        from core.event_bus import EventBus
+        self.pm = MagicMock()
+        self.bus = EventBus(self.state_path, self.sm, self.pm, {}, self.logger)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_held_by_inconclusive_attempts(self):
+        """暂停标记存在 → 跳过 re-trigger（不发 spec_implemented）。"""
+        ok = self.bus._recover_one("spec-a", {
+            "status": "implemented", "tester_run": None,
+            "_inconclusive_attempts": 3,
+        })
+        self.assertTrue(ok)
+        self.pm.handle_event.assert_not_called()
+
+    def test_retrigger_without_hold_marker(self):
+        """无暂停标记（正常 implemented 未验证）→ 维持既有 re-trigger。"""
+        ok = self.bus._recover_one("spec-b", {
+            "status": "implemented", "tester_run": None,
+        })
+        self.assertTrue(ok)
+        self.pm.handle_event.assert_called_once_with(
+            "spec_implemented", "spec-b", {"status": "implemented", "tester_run": None})
+
+    def test_zero_attempts_does_not_hold(self):
+        """attempts=0（清零残留）不算暂停 → re-trigger。"""
+        ok = self.bus._recover_one("spec-c", {
+            "status": "implemented", "tester_run": None,
+            "_inconclusive_attempts": 0,
+        })
+        self.assertTrue(ok)
+        self.pm.handle_event.assert_called_once()
+
+    def test_tester_run_present_skips_as_before(self):
+        """已有 tester_run → 既有跳过逻辑不受影响。"""
+        ok = self.bus._recover_one("spec-d", {
+            "status": "implemented", "tester_run": "verify-x",
+        })
+        self.assertTrue(ok)
+        self.pm.handle_event.assert_not_called()
+
+
 class TestEventBusHookDispatch(unittest.TestCase):
     """add-spec-hooks 3.1/6.3：EventBus 状态 diff 触发 hook 分发。
 

@@ -142,6 +142,24 @@ class EventBus:
                 if entry.get("tester_run"):
                     self.logger.debug("event_bus", f"Skipping recovery for '{name}': already verified")
                     return True
+                # B6（fenixd-registry-ignored-false-attribution-loop 后续）：
+                # inconclusive 暂停期（_handle_env_blocked_inconclusive /
+                # judge 自述环境暂停）写 _inconclusive_attempts 暂停自动重验，
+                # 暂停时 tester_run 恰被置 None——本分支若只查 tester_run 会在
+                # 每个扫描周期无视暂停标记强行 re-trigger（add-spec-status-
+                # modal-budget 实证每小时重验 9 轮）。暂停唯一出路是人工处置后
+                # 解冻/清计数，与「暂停自动重验」语义一致。
+                try:
+                    attempts = int(entry.get("_inconclusive_attempts", 0) or 0)
+                except (TypeError, ValueError):
+                    attempts = 0
+                if attempts > 0:
+                    self.logger.info(
+                        "event_bus",
+                        f"Skipping recovery for '{name}': inconclusive 暂停自动重验中"
+                        f"（_inconclusive_attempts={attempts}），等待人工处置",
+                    )
+                    return True
                 self.logger.info("event_bus", f"Recovery: re-triggering verify for '{name}'")
                 self.pm_engine.handle_event("spec_implemented", name, entry)
             elif status == "ready":
