@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional, Set, Dict
 
 from core.proc_utils import is_claude_process
+from core.wip_checkpoint import collapse_wip_commits
 
 # 历史导入路径兼容（verify-process-lifecycle D4：判定上移至 core.proc_utils，
 # 避免 v2_dev_server 等模块 import 本模块造成循环依赖）。
@@ -2071,6 +2072,13 @@ class WorktreeManager:
                     f"Branch '{branch}' already merged — skipping merge-back",
                 )
                 return MergeConflictInfo(True, "already merged")
+
+            # WIP 塌缩（add-impl-wip-checkpoint D4）：merge-back 前把分支上的
+            # ``fenix(wip):`` 前缀提交塌缩为单提交——主树历史零 WIP 污染。
+            # 无 WIP 提交时零动作（常规成功路径逐字节现行行为）；失败仅
+            # WARNING 降级，merge-back 以未塌缩分支继续（D6）。塌缩是分支
+            # 引用级 soft-reset 语义操作，文件内容逐字节不变。
+            collapse_wip_commits(self.project_root, branch, self.logger)
 
             # merge 前按 implementer 分支新增路径，把主树中冲突的 untracked 文件移开
             # （Layer 2 兜底，fix-merge-untracked-guard 泛化）：即使 spec 未被
