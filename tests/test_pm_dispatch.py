@@ -1008,3 +1008,107 @@ class TestDoneDurationPersist(unittest.TestCase):
         entry = self.sm.read_one("demo")
         self.assertEqual(entry["status"], "done")
         self.assertEqual(str(entry["total_duration"]), "0")
+
+
+class TestFastTrackImplResultSnapshot(unittest.TestCase):
+    """fast-track 车道同写 impl-result.json 快照（add-planready-artifact-gate 实证缺口）。
+
+    fast-track 因 verified→done 门禁拦截（未勾任务）滞留 verified 时，同样存在
+    跨 spec 共享文件覆盖窗口——2026-09-10 实证：共享文件被姊妹 spec 成功覆盖后，
+    门禁 fail-closed 误报「run 证据缺失」。成功收口必须落 per-spec 快照，且写点
+    须在 _fast_track_advance_to_verified（同步触发 _on_spec_verified 门禁评估）
+    之前。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.logger = MagicMock()
+        self.sm = MagicMock()
+        self.sm.read_one = MagicMock(return_value={"status": "implementing"})
+        self.sm.transition = MagicMock(return_value=True)
+        self.sm.update_spec = MagicMock()
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, self.project_root, self.logger,
+        )
+        self.engine._enqueue = MagicMock()
+        self.sm.add_spec = MagicMock()
+        self.sm.add_spec("demo", {"priority": 5})
+        # fast-track 结果文件（共享路径，spec stamp + 顶层 success）
+        (self.project_root / ".fenix" / ".fenix-run-result.json").write_text(
+            json.dumps({"spec": "demo", "status": "success",
+                        "mode": "fast-track"}),
+            encoding="utf-8",
+        )
+        # worktree 无活跃结果文件 → 读共享路径
+        self.engine.agent_runner.worktree_manager.find_implementer_worktree = \
+            MagicMock(return_value=None)
+        # 守卫/校验/merge 全放行（_hard_check/_reconcile/_advance 是 Dispatcher
+        # 自身方法，须 mock 在 dispatcher 上；守卫两件在 engine 上）
+        self.engine._implementer_zero_change = MagicMock(return_value=False)
+        self.engine._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._dispatcher._hard_check_fast_track = MagicMock(
+            return_value={"verdict": "verified", "bugs": []})
+        self.engine._dispatcher._reconcile_and_merge = MagicMock(
+            return_value=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _snap(self, spec="demo"):
+        return (self.project_root / ".fenix" / "verify-progress"
+                / spec / "impl-result.json")
+
+    def _result(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            success=True, error=None, run_id="impl-demo-1-a1", branch="fb",
+            worktree_dirty=[], cancelled=False,
+            worktree_path=None, worktree_kept=False,
+        )
+
+    def test_success_writes_snapshot_before_verified_gate(self):
+        """成功收口写快照，且写点在同步 verified 门禁评估之前。"""
+        seen = {}
+
+        def _probe(spec_name, result):
+            seen["exists"] = self._snap().exists()
+            if seen["exists"]:
+                seen["data"] = json.loads(
+                    self._snap().read_text(encoding="utf-8"))
+
+        self.engine._dispatcher._fast_track_advance_to_verified = MagicMock(
+            side_effect=_probe)
+        self.engine._dispatcher._run_fast_track_flow("demo", self._result())
+
+        self.assertTrue(self._snap().exists())
+        data = json.loads(self._snap().read_text(encoding="utf-8"))
+        self.assertEqual(data["spec"], "demo")
+        self.assertEqual(data["status"], "success")
+        # 推进 verified（同步门禁评估）时快照已在场
+        self.assertTrue(seen.get("exists"))
+        self.assertEqual(seen["data"]["spec"], "demo")
+
+    def test_bugfound_escalation_writes_snapshot(self):
+        """bug-found 升级路径同样落快照（实现成功语义，与 full 车道一致）。"""
+        self.engine._dispatcher._hard_check_fast_track = MagicMock(
+            return_value={"verdict": "bug-found",
+                          "bugs": [{"severity": "major", "scenario_ids": ["s1"]}]})
+        self.engine._dispatcher._escalate_to_full_mode = MagicMock()
+        self.engine._dispatcher._run_fast_track_flow("demo", self._result())
+        self.assertTrue(self._snap().exists())
+        data = json.loads(self._snap().read_text(encoding="utf-8"))
+        self.assertEqual(data["status"], "success")
+
+    def test_cancelled_path_does_not_write_snapshot(self):
+        """取消路径不写快照（hold-state 语义不变）。"""
+        from types import SimpleNamespace
+        result = SimpleNamespace(
+            success=False, cancelled=True, error="测试原因", run_id="r",
+            branch=None, worktree_dirty=None,
+            worktree_path=None, worktree_kept=False,
+        )
+        self.engine._dispatcher._run_fast_track_flow("demo", result)
+        self.assertFalse(self._snap().exists())

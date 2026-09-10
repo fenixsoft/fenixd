@@ -63,12 +63,12 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
     """
 
     WRITE_POINTS = [
-        ("core/pm_engine/dispatch.py", 982, "implementer"),
-        ("core/pm_engine/dispatch.py", 1818, "fast-track"),
-        ("core/pm_engine/dispatch.py", 2260, "repair"),
-        ("core/pm_engine/verification.py", 1173, "planner-plan"),
-        ("core/pm_engine/verification.py", 1478, "planner-judge"),
-        ("core/pm_engine/verification.py", 2218, "legacy-verifier"),
+        ("core/pm_engine/dispatch.py", 981, "implementer"),
+        ("core/pm_engine/dispatch.py", 1817, "fast-track"),
+        ("core/pm_engine/dispatch.py", 2275, "repair"),
+        ("core/pm_engine/verification.py", 1431, "planner-plan"),
+        ("core/pm_engine/verification.py", 1742, "planner-judge"),
+        ("core/pm_engine/verification.py", 2515, "legacy-verifier"),
     ]
 
     def _load(self, rel: str) -> list:
