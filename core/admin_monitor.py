@@ -85,6 +85,10 @@ SIGNAL_SEVERITY = {
     "family_explosion": "major",
     "dispatch_stalled": "major",
     "verify_contract_missing": "major",
+    # add-verdict-credibility-gate / design D6：连续 blocked-env 达阈值唤起
+    # Administrator 核查验证环境（repeated_failures/stuck/blocked_stuck 三层
+    # 检测口径均实证错过该故障形态，独立升级通道不依赖它们）。
+    "inconclusive_loop": "major",
     # fix-verify-contract-signal-semantics B：契约有效 + 用户显式覆盖确认的重起草信号
     "verify_contract_redraft": "major",
     # fix-mergeback-stashpop-silent-loss D1：pop 冲突自愈丢弃的用户改动，
@@ -100,6 +104,8 @@ SIGNAL_RECOMMENDATION = {
     "daemon_errors": "检查 fenixd 重复 ERROR 的根因（同错误 10 分钟窗口内复现 ≥2 次），必要时重启 daemon",
     "family_explosion": "检修根因环境（如验证报告互相咬合导致 fix 递归）；确认放行一次则对父 SPEC 设置 _family_waiver=true",
     "dispatch_stalled": "检查持锁进程是否为孤儿（ps/pgrep 确认后 kill），清理残留 worktree 锁后让 spec 重新派发",
+    # add-verdict-credibility-gate / design D6：处置建议指向环境核查 + 恢复路径
+    "inconclusive_loop": "验证环境核查清单：① 被测实例是否就绪（serve/start 命令与端口）；② 资源与并行度（max_parallel 是否挤爆实例）；③ mock+SSE 链路（mock_api 是否误拦推流、SSE 是否断流）；④ 探针摘要（见 evidence 末轮 blocked_env 数）。恢复路径：人工处置后解冻 spec（unfreeze）并清 `_inconclusive_attempts`，后续 blocked-env 轮次从 1 重新计数",
     "verify_contract_missing": "Administrator 起草 .fenix/verify.yaml 验证契约：检查项目构建命令、静态目录、服务启动方式；草稿写临时路径 → bin/fenix_verify_contract.py 自证 → 全通才落位 → git 提交 → spec 复位 ready 触发重验证",
     # fix-verify-contract-signal-semantics B：覆盖重起草指引——先复核现有契约有效性；
     # 有效契约按 D4 权限边界默认不碰，用户已显式授权覆盖（evidence 含「覆盖确认=是」）
@@ -117,6 +123,10 @@ SIGNAL_RECOMMENDATION = {
 STORED_SIGNAL_TYPES = (
     "family_explosion", "dispatch_stalled", "verify_contract_missing",
     "stash_pop_conflict", "verify_contract_redraft",
+    # add-verdict-credibility-gate / design D6：连续 blocked-env 达阈值时
+    # pm_engine 写入、本监视器摄取唤起（写入即待唤起型，recovery 尊重暂停
+    # 标记，人工处置是唯一出路）。
+    "inconclusive_loop",
 )
 
 # run_id 前缀 → 计入"失败 run"的 agent 类型
@@ -443,6 +453,8 @@ class AdminMonitor:
                 rec.get("description") or (
                     "fix 族谱越界派生被拦截" if stype == "family_explosion"
                     else "派发长期被 worktree 锁冲突滞留" if stype == "dispatch_stalled"
+                    else "连续多轮验证全部为环境性失联（blocked-env）"
+                        if stype == "inconclusive_loop"
                     else "AI 起草验证契约请求（UI 手动触发）"
                 ),
                 rec.get("evidence") or "拦截详情见 pm_engine 日志",

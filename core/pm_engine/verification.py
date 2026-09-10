@@ -140,6 +140,36 @@ class VerificationPipeline:
         max_attempts = int(
             self._pm._get_config("verify_engine.inconclusive_max_attempts", 3) or 3
         )
+        escalate_attempts = int(
+            self._pm._get_config(
+                "verify_engine.inconclusive_escalate_attempts", 4) or 4
+        )
+
+        # ── B7 升级通道（add-verdict-credibility-gate / design D6）──
+        # 连续计数达到升级阈值（缺省 4）：向 admin store 写 kind=SIGNAL 记录，
+        # 经 admin_monitor 摄取唤起 Administrator。三层既有检测口径
+        # （repeated_failures / stuck / blocked_stuck）均实证错过该故障形态，
+        # 不可依赖它们。写入后停止自动重验：计数不清零则 recovery（B6）保持
+        # 跳过，人工处置是唯一出路——与「暂停自动重验」语义闭环。
+        if attempts >= escalate_attempts:
+            self._write_inconclusive_loop_signal(
+                spec_name, attempts, blocked_env, report)
+            self._pm.logger.error(
+                "pm_engine",
+                f"'{spec_name}' 连续 {attempts} 轮验证全部 blocked-env，"
+                f"已达升级阈值 {escalate_attempts}，SIGNAL 已写 admin store，"
+                f"暂停自动重验等待人工处置",
+            )
+            self._pm.state_machine.update_spec(spec_name, {
+                "status": "implemented",
+                "tester_run": None,
+                "error": (f"连续 {attempts} 轮验证全部环境性失联（blocked-env），"
+                          f"已呼叫 Administrator 核查验证环境；"
+                          f"人工处置后需清 _inconclusive_attempts 才能恢复自动重验"),
+                "_inconclusive_attempts": attempts,
+                "_dispatch_backoff_until": int(datetime.now(timezone.utc).timestamp()) + 1800,
+            })
+            return True
 
         if attempts < max_attempts:
             self._pm.logger.warning(
@@ -173,6 +203,180 @@ class VerificationPipeline:
             "_dispatch_backoff_until": int(datetime.now(timezone.utc).timestamp()) + 1800,
         })
         return True
+
+    def _write_inconclusive_loop_signal(
+        self, spec_name: str, attempts: int, blocked_env: int, report: dict,
+    ) -> bool:
+        """向 admin store 写 inconclusive_loop SIGNAL（design D6 / Task 5.2）。
+
+        连续 blocked-env 达升级阈值时调用：kind=SIGNAL，type=inconclusive_loop，
+        附 spec 名、连续轮数、末轮 blocked_env 数、最近实例探针摘要。admin_monitor
+        _detect_family_explosion 摄取后按既有 SIGNAL 通道唤起 Administrator。
+
+        写失败静默降级（信号只是升级通道，spec 的 error 字段已承载人工可见信息），
+        返回是否写入成功。
+        """
+        # 最近实例探针摘要：末轮 blocked-env 场景的 env_probe_detail 里取第一条
+        probe_detail = ""
+        for sc in (report.get("scenarios") or []):
+            if not isinstance(sc, dict):
+                continue
+            if sc.get("status") != "blocked-env":
+                continue
+            probe_detail = str(sc.get("env_probe_detail") or "").strip()
+            if probe_detail:
+                break
+        from core.admin_store import AdminStore, SIGNAL
+        store = AdminStore(self._pm.project_root, self._pm.logger)
+        try:
+            store.append({
+                "kind": SIGNAL,
+                "signal_type": "inconclusive_loop",
+                "spec": spec_name,
+                "severity": "major",
+                "description": (
+                    f"'{spec_name}' 连续 {attempts} 轮验证全部为 blocked-env"
+                    f"（环境性失联），已达升级阈值，请 Administrator 核查验证环境"
+                ),
+                "evidence": (
+                    f"spec={spec_name}; 连续轮数={attempts}; "
+                    f"末轮blocked_env数={blocked_env}; "
+                    f"探针摘要={probe_detail or '无'}"
+                ),
+                "recommended_action": (
+                    "验证环境核查清单：① 被测实例是否就绪（serve/start 命令与端口）；"
+                    "② 资源与并行度（max_parallel 是否挤爆实例）；"
+                    "③ mock+SSE 链路（mock_api 是否误拦推流、SSE 是否断流）；"
+                    "④ 探针摘要（见 evidence）。恢复路径：人工处置后解冻 spec "
+                    "（unfreeze）并清 `_inconclusive_attempts`，后续 blocked-env "
+                    "轮次从 1 重新计数"
+                ),
+            })
+            return True
+        except Exception as e:
+            self._pm.logger.error(
+                "pm_engine",
+                f"inconclusive_loop 信号写入失败 '{spec_name}': {e}",
+            )
+            return False
+
+    def _speculative_bug_found_gate(self, spec_name: str) -> bool:
+        """归因分级门禁（add-verdict-credibility-gate / design D2 / Task 2.2）。
+
+        在 bug-found 打回决定前调用：读取 report.json（judge 已增强），框架侧
+        机械计算 attribution_level，白屏方向约束强制改写分类，然后判断打回
+        依据是否全部为推测级（speculative）——是则抑制 bug-found：
+          - 门禁预算内（verify_engine.credibility_gate_max_retries，缺省 1）：
+            回 implemented 转重验一次，不向 implementer 带推测信号打回；
+          - 预算耗尽：blocked + 告警（attribution_evidence_insufficient），
+            交人工复核。
+
+        Returns:
+            True 表示已按门禁处置（调用方应 return，不推进 bug-found）；
+            False 表示归因有证据支撑（或门禁异常降级不阻断），按既有流程推进。
+        """
+        try:
+            from core.verdict_check import (
+                validate_attribution_levels, should_suppress_bug_found,
+                enforce_blank_screenshot_direction,
+                load_report as _load_gate_report,
+            )
+            gate_report = _load_gate_report(self._pm.project_root, spec_name)
+            if gate_report is None:
+                return False  # 无 report.json，门禁无对象可判，不阻断
+            validate_attribution_levels(gate_report)
+            for _sc in gate_report.get("scenarios") or []:
+                if isinstance(_sc, dict):
+                    _new_cls = enforce_blank_screenshot_direction(_sc)
+                    if _new_cls:
+                        _sc["classification"] = _new_cls
+                        _sc["blank_direction_forced"] = True
+            if not should_suppress_bug_found(gate_report):
+                # 清空门禁计数：本轮未触发（有证据支撑的归因，不记入 speculative 统计）
+                spec_data = self._pm.state_machine.read_one(spec_name) or {}
+                if spec_data.get("_credibility_gate_attempts"):
+                    try:
+                        self._pm.state_machine.update_spec(spec_name, {
+                            "_credibility_gate_attempts": 0,
+                        })
+                    except Exception:
+                        pass
+                return False
+
+            max_retries = int(
+                self._pm._get_config(
+                    "verify_engine.credibility_gate_max_retries", 1
+                ) or 1
+            )
+            spec = self._pm.state_machine.read_one(spec_name) or {}
+            gate_attempts = int(spec.get("_credibility_gate_attempts", 0) or 0)
+            if gate_attempts < max_retries:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"'{spec_name}' 打回归因全部为 speculative（推测级），"
+                    f"抑制 bug-found——转重验一次"
+                    f"（第 {gate_attempts + 1}/{max_retries} 次）",
+                )
+                self._pm.state_machine.update_spec(spec_name, {
+                    "status": "implemented",
+                    "tester_run": None,
+                    "error": (
+                        f"归因证据不足待人工复核：全部驱动场景归因"
+                        f"为推测级（speculative），已抑制 bug-found "
+                        f"打回并重验一次（第 {gate_attempts + 1}/"
+                        f"{max_retries} 次）"
+                    ),
+                    "_credibility_gate_attempts": gate_attempts + 1,
+                    "_inconclusive_attempts": 0,
+                })
+                self._pm._enqueue(spec_name, "verifier")
+                return True
+
+            # 重试预算已耗尽：阻断为 blocked + 告警（交人工复核）
+            self._pm.logger.error(
+                "pm_engine",
+                f"'{spec_name}' 归因证据不足待人工复核：连续 "
+                f"{gate_attempts} 次推测级归因，门禁预算耗尽，"
+                f"阻断为 blocked",
+            )
+            self._pm.state_machine.update_spec(spec_name, {
+                "status": "blocked",
+                "error": (
+                    f"归因证据不足待人工复核：全部驱动场景归因"
+                    f"连续 {gate_attempts} 次为推测级（speculative），"
+                    f"门禁重试预算耗尽，已 blocked 等待人工裁决"
+                ),
+            })
+            self._pm._send_human_escalation_alert(
+                spec_name=spec_name,
+                signal_type="attribution_evidence_insufficient",
+                severity="major",
+                description=(
+                    f"'{spec_name}' 验证归因证据不足待人工复核："
+                    f"连续 {gate_attempts} 次驱动场景归因均为推测级"
+                    f"（speculative），门禁已 blocked 等待人工裁决"
+                ),
+                evidence=(
+                    f"spec={spec_name}; max_retries={max_retries}; "
+                    f"连续推测轮数={gate_attempts}"
+                ),
+                recommended_action=(
+                    "人工核验验证场景与失败断言：若为真·产品缺陷请"
+                    "在 triage_violations.json 标注后重派 verify；"
+                    "若为场景缺陷请退回 plan 修复场景"
+                ),
+            )
+            return True
+        except Exception as e:
+            # 门禁自身异常不阻断既有裁决（治理代码是附加治理，框架级门禁
+            # 崩溃按「不阻断」退化——judge 正常裁决继续，避免附加治理代码
+            # 成为新单点故障）
+            self._pm.logger.warning(
+                "pm_engine",
+                f"门禁校验异常跳过（不阻断裁决）'{spec_name}': "
+                f"{type(e).__name__}: {e}",
+            )
+            return False
 
 
     def _serve_static_in_main(self, contract, scenarios_path) -> tuple:
@@ -1524,6 +1728,21 @@ class VerificationPipeline:
             cause = verdict_ret.get("cause", "violations")
             violations = verdict_ret.get("violations") or []
             dispatch_error = verdict_ret.get("dispatch_error") or ""
+            if cause == "batch_attribution_dedup":
+                # ── 批量归因查重拒绝落盘（add-verdict-credibility-gate / D4）──
+                # error 写清要求后保持 testing 等待重合成，不阻断、不发告警
+                # （合成错误属可自愈的产物问题，judge 下轮修文后自然通过；重试
+                # judge 不解决批量同文案问题，重派只会烧 token）。
+                detail = (violations[0].get("reason") if violations else "")
+                self._pm.state_machine.update_spec(spec_name, {
+                    "error": f"批量归因查重拒绝落盘（要求逐场景归因后重合成）: {detail}",
+                })
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"批量归因查重拒绝落盘 '{spec_name}' — 保持 testing，"
+                    f"要求逐场景归因后重合成: {detail}",
+                )
+                return
             if cause in ("dispatch_frozen", "dispatch_cancelled"):
                 # ── 让位语义（design D2 / fix-verdict-retry-misattribution）──
                 # frozen 门/取消旗标 = 人工已接管：零写入（不 update_spec——不写
@@ -1770,6 +1989,13 @@ class VerificationPipeline:
             return self._run_three_stage_verification(
                 spec_name, _repair_depth=_repair_depth + 1)
         if verifier_status == "bug-found":
+            # ── 归因分级门禁（add-verdict-credibility-gate / design D2 / Task 2.2）──
+            # 打回依据全部为 speculative（推测级）时抑制 bug-found 打回：
+            # 转重验一次或写 error「归因证据不足待人工复核」，不得带推测
+            # 信号打回 implementer（B2/B7：宁可多一次重验也不可带假信号打回，
+            # 本次事故直接教训）。
+            if self._pm._speculative_bug_found_gate(spec_name):
+                return
             # judge 自述环境问题守卫：judge 自己把根因描述为环境/基础设施问题时，
             # 属「验证没能发生」而非「验证发现了缺陷」，不得流转 bug-found
             # 派生伪 fix 级联（admin 处置 2026-08-28 failover 相对 URL 伪失败实证）。
@@ -2377,6 +2603,10 @@ class VerificationPipeline:
                     )
                     return
 
+                # ── 归因分级门禁（legacy 路径同门禁，add-verdict-credibility-gate / D2）──
+                if self._pm._speculative_bug_found_gate(spec_name):
+                    return
+
                 self._pm.state_machine.transition(spec_name, "bug-found")
                 self._pm.state_machine.update_spec(spec_name, {
                     "tester_run": result.run_id,
@@ -2803,6 +3033,74 @@ class VerificationPipeline:
 
         result = validate_report(report)
         if result["ok"]:
+            # ── 归因分级门（add-verdict-credibility-gate / design D2）──
+            # 框架侧机械计算 attribution_level，白屏方向约束强制改写分类；
+            # 批量归因查重拒绝硬编码套用；缓存归因打新鲜度标。
+            # 全部发生在报告落盘/打回上下文组装前（本方法即统一入口）。
+            try:
+                from core.verdict_check import (
+                    validate_attribution_levels,
+                    enforce_blank_screenshot_direction,
+                    check_batch_attribution_dedup,
+                    load_verdict_cache,
+                    tag_cached_attributions,
+                )
+                validate_attribution_levels(report)
+                # 白屏方向约束：blank_screenshot 标签强制 env 方向
+                for sc in report.get("scenarios") or []:
+                    if not isinstance(sc, dict):
+                        continue
+                    new_cls = enforce_blank_screenshot_direction(sc)
+                    if new_cls:
+                        old_cls = sc.get("classification")
+                        sc["classification"] = new_cls
+                        sc["blank_direction_forced"] = True
+                        self._pm.logger.info(
+                            "pm_engine",
+                            f"白屏方向约束 '{spec_name}' 场景 "
+                            f"{sc.get('scenario_id')}: classification "
+                            f"'{old_cls}' → '{new_cls}'（blank_screenshot 标签强制 env 方向）",
+                        )
+                # 批量归因查重：≥3 场景逐字相同 → 拒绝落盘
+                dedup = check_batch_attribution_dedup(report)
+                if not dedup["ok"]:
+                    for v in dedup["violations"]:
+                        sids = v.get("scenario_ids") or []
+                        self._pm.logger.error(
+                            "pm_engine",
+                            f"批量归因查重拒绝落盘 '{spec_name}': {v.get('reason')}",
+                        )
+                    # 拒绝落盘：保持 testing 等待重合成（requeue judge 一次）
+                    self._pm.state_machine.update_spec(spec_name, {
+                        "error": (
+                            f"批量归因查重拒绝落盘（疑似批量硬编码归因）："
+                            f"{dedup['violations'][0]['reason']}"
+                        ),
+                    })
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"批量归因查重拒绝落盘 '{spec_name}' — 保持 testing，"
+                        f"要求逐场景归因后重合成",
+                    )
+                    return {"ok": False, "cause": "batch_attribution_dedup",
+                            "violations": dedup["violations"], "dispatch_error": ""}
+                # 跨轮缓存归因打标（design D3 / Task 3.1）
+                cache = load_verdict_cache(self._pm.project_root, spec_name)
+                tagged = tag_cached_attributions(report, cache, spec_name)
+                if tagged:
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"跨轮缓存归因打标 '{spec_name}': "
+                        f"{len(tagged)} 个场景带 cached_from_previous_round 标",
+                    )
+            except Exception as e:
+                # 归因分级自身异常不阻断既有裁决链（分级是附加治理，宁可缺失
+                # 也不让增强流程因治理代码崩溃——judge 正常裁决继续）
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"归因分级校验异常跳过 '{spec_name}'（不阻断裁决）: "
+                    f"{type(e).__name__}: {e}",
+                )
             # 合规：清掉历史驳回清单（若有）后强制重写 status 映射（D3）写回
             self._pm._clear_verdict_violations(spec_name)
             self._persist_verdict_cache(spec_name, report)
@@ -2893,6 +3191,56 @@ class VerificationPipeline:
                 }
             result2 = validate_report(report2)
             if result2["ok"]:
+                # ── 归因分级门（重试轮同样执行，design D2 统一入口）──
+                try:
+                    from core.verdict_check import (
+                        validate_attribution_levels,
+                        enforce_blank_screenshot_direction,
+                        check_batch_attribution_dedup,
+                        load_verdict_cache,
+                        tag_cached_attributions,
+                    )
+                    validate_attribution_levels(report2)
+                    for sc in report2.get("scenarios") or []:
+                        if not isinstance(sc, dict):
+                            continue
+                        new_cls = enforce_blank_screenshot_direction(sc)
+                        if new_cls:
+                            old_cls = sc.get("classification")
+                            sc["classification"] = new_cls
+                            sc["blank_direction_forced"] = True
+                            self._pm.logger.info(
+                                "pm_engine",
+                                f"白屏方向约束（重试轮）'{spec_name}' 场景 "
+                                f"{sc.get('scenario_id')}: classification "
+                                f"'{old_cls}' → '{new_cls}'（blank_screenshot 标签强制 env 方向）",
+                            )
+                    dedup = check_batch_attribution_dedup(report2)
+                    if not dedup["ok"]:
+                        for v in dedup["violations"]:
+                            self._pm.logger.error(
+                                "pm_engine",
+                                f"批量归因查重拒绝落盘（重试轮）'{spec_name}': "
+                                f"{v.get('reason')}",
+                            )
+                        return {
+                            "ok": False, "cause": "batch_attribution_dedup",
+                            "violations": dedup["violations"], "dispatch_error": "",
+                        }
+                    cache = load_verdict_cache(self._pm.project_root, spec_name)
+                    tagged = tag_cached_attributions(report2, cache, spec_name)
+                    if tagged:
+                        self._pm.logger.info(
+                            "pm_engine",
+                            f"跨轮缓存归因打标（重试轮）'{spec_name}': "
+                            f"{len(tagged)} 个场景带 cached_from_previous_round 标",
+                        )
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"归因分级校验异常跳过（重试轮）'{spec_name}'"
+                        f"（不阻断裁决）: {type(e).__name__}: {e}",
+                    )
                 self._pm._clear_verdict_violations(spec_name)
                 self._persist_verdict_cache(spec_name, report2)
                 mapping2 = enforce_status_mapping(report2)
@@ -3376,10 +3724,40 @@ class VerificationPipeline:
         max_attempts = int(
             self._pm._get_config("verify_engine.inconclusive_max_attempts", 3) or 3
         )
+        escalate_attempts = int(
+            self._pm._get_config(
+                "verify_engine.inconclusive_escalate_attempts", 4) or 4
+        )
         note = (
             f"judge 判定 bug-found 但所有 bug 根因均自述为环境/基础设施问题"
             f"（伪失败，不派生 fix），第 {attempts}/{max_attempts} 次重验"
         )
+
+        # ── B7 升级通道（design D6）──
+        if attempts >= escalate_attempts:
+            # 构造一个简化 report（blocked-env 场景信息从 state 读）：
+            # judge 自述环境问题时，blocked-env 数需要从上轮 report 提取，
+            # 此处用 _inconclusive_attempts 作为上下文。
+            self._write_inconclusive_loop_signal(
+                spec_name, attempts, 0,
+                {"scenarios": [], "summary": {"blocked_env": 0}})
+            self._pm.logger.error(
+                "pm_engine",
+                f"'{spec_name}' judge 连续 {attempts} 轮均自述环境问题，"
+                f"已达升级阈值 {escalate_attempts}，SIGNAL 已写 admin store，"
+                f"暂停自动重验等待人工处置",
+            )
+            self._pm.state_machine.update_spec(spec_name, {
+                "status": "implemented",
+                "tester_run": None,
+                "error": (f"连续 {attempts} 轮验证均因环境/基础设施问题未完成"
+                          f"（judge 自述），已呼叫 Administrator 核查验证环境；"
+                          f"人工处置后需清 _inconclusive_attempts 才能恢复自动重验"),
+                "_inconclusive_attempts": attempts,
+                "_dispatch_backoff_until": int(datetime.now(timezone.utc).timestamp()) + 1800,
+            })
+            return True
+
         if attempts < max_attempts:
             self._pm.logger.warning("pm_engine", f"'{spec_name}' {note}")
             self._pm.state_machine.update_spec(spec_name, {

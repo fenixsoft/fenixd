@@ -319,16 +319,20 @@ class TestVerdictAdoption(_PMEngineBase):
         """product-bug 误挂 warning：采纳处强制 failed + 标注 status_corrected。"""
         report = _load_fixture("v2-config-page-report-0014.json")
         mislabeled = None
+        # 注：归因文本须按场景区分（add-verdict-credibility-gate 批量查重门——
+        # ≥3 场景归一化后逐字相同会被拒绝落盘）。本测试意图是 enforce_status_mapping
+        # 而非批量归因，故 first_failed_step/triage 含场景 id 保持可区分。
         for sc in report["scenarios"]:
             if sc["status"] in ("fail", "warning"):
+                scid = sc["scenario_id"]
                 sc["classification"] = "test-defect"
-                sc["evidence"] = {"first_failed_step": "x"}
+                sc["evidence"] = {"first_failed_step": f"x_{scid}"}
                 # 逐断言归因（add-interaction-contract-and-per-assert-triage）：
                 # 全部失败断言单独归类为非 product-bug，方可被豁免路径放行
                 sc["assertion_triage"] = [{
-                    "assertion": "step_failed",
+                    "assertion": f"step_failed_{scid}",
                     "classification": "test-defect",
-                    "evidence": "harness 缺陷",
+                    "evidence": f"harness 缺陷（{scid}）",
                 }]
         # 注入一个 LLM 漂移：product-bug 误挂 warning
         for sc in report["scenarios"]:

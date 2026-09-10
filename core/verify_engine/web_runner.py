@@ -66,6 +66,20 @@ class WebRunner(VerifyRunner):
         self.headless = verify_cfg.get("headless", True)
         self._setup_health_ok = True
 
+    @staticmethod
+    def _extract_screenshot_result(ss) -> tuple:
+        """兼容 browser.screenshot() 新旧两种返回形态。
+
+        新形态（screenshot-evidence-labeling，design D1）：dict
+        {"path": str, "labels": dict}；旧形态 / 测试 mock：纯字符串路径。
+        统一返回 (path, labels)，labels 为空 dict 表示无标签（正常截图）。
+        """
+        if isinstance(ss, dict):
+            path = ss.get("path") or ""
+            labels = ss.get("labels") if isinstance(ss.get("labels"), dict) else {}
+            return path, labels
+        return ss or "", {}
+
     # ── 场景验收 ───────────────────────────────────────────────
 
     def validate(self, scenario) -> list[str]:
@@ -107,6 +121,7 @@ class WebRunner(VerifyRunner):
                 "assertion_results": [],
                 "visual_results": [],
                 "screenshots": [],
+                "screenshot_labels": {},
             }
         context = await self.browser.new_context(
             viewport=getattr(scenario, "viewport", None)
@@ -194,6 +209,7 @@ class WebRunner(VerifyRunner):
 
         step_results: list[dict] = []
         screenshots: list[str] = []
+        screenshot_labels: dict[str, dict] = {}
         screenshot_dir = (
             self.project_root / ".fenix" / "verify-progress"
             / self.spec_name / "screenshots"
@@ -220,7 +236,11 @@ class WebRunner(VerifyRunner):
                     ss = await self.browser.screenshot(
                         page, f"{scenario.id}_step{i}", screenshot_dir
                     )
-                    screenshots.append(ss)
+                    path, labels = self._extract_screenshot_result(ss)
+                    screenshots.append(path)
+                    if labels:
+                        screenshot_labels.setdefault(
+                            path, {}).update(labels)
                 except Exception:
                     pass
 
@@ -246,7 +266,11 @@ class WebRunner(VerifyRunner):
                     ss = await self.browser.screenshot(
                         page, f"{scenario.id}_assert_fail", screenshot_dir
                     )
-                    screenshots.append(ss)
+                    path, labels = self._extract_screenshot_result(ss)
+                    screenshots.append(path)
+                    if labels:
+                        screenshot_labels.setdefault(
+                            path, {}).update(labels)
                 except Exception:
                     pass
 
@@ -280,6 +304,10 @@ class WebRunner(VerifyRunner):
             "assertion_results": assertion_results,
             "visual_results": visual_results,
             "screenshots": screenshots,
+            # screenshot-evidence-labeling（design D1）：截图健全性算法标签，
+            # 引擎侧随场景结果持久化进 report.json 供 judge/校验器读取。
+            # 向后兼容：旧 browser.screenshot 返回纯字符串路径时为空 dict。
+            "screenshot_labels": screenshot_labels,
         }
 
     # ── 环境探针 ───────────────────────────────────────────────

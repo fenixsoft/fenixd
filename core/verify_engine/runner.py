@@ -140,6 +140,11 @@ def determine_scenario_status(
         return "fail"
 
     visual_results = visual_results or []
+    # 视觉基线防污染（add-verdict-credibility-gate / D5）：基线被拒固化
+    # （白屏/低对比度）→ 本轮按环境存疑处理（warning），不产生像素比对结论。
+    # 后续轮次截图干净时正常建立基线后，视觉断言才恢复常态判定。
+    if any(v.get("status") == "baseline_rejected" for v in visual_results):
+        return "warning"
     if any(v.get("status") == "diff_detected" for v in visual_results):
         return "warning"
     if any(v.get("status") == "warning" for v in visual_results):
