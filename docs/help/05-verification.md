@@ -128,5 +128,5 @@ ready:
 
 - [SPEC 生命周期与状态机](03-lifecycle.md) — verified/bug-found 转移与逃生门
 - [调度与治理规则](06-governance.md) — 修复循环三轮熔断
-- [文件与数据地图](09-artifacts.md) — verify-progress 目录结构
-- [FAQ 与故障排查](10-faq.md) — 验证反复失败怎么办
+- [文件与数据地图](10-artifacts.md) — verify-progress 目录结构
+- [FAQ 与故障排查](11-faq.md) — 验证反复失败怎么办

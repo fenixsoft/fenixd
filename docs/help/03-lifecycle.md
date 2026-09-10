@@ -113,11 +113,11 @@ SPEC 处于 `implementing`/`testing` 这类中断状态时，daemon 重启会自
 
 ## STATE.md 与时间轴
 
-每个 SPEC 的状态字段、优先级、创建/更新时间、run 引用、error 等都记录在项目的 `.fenix/STATE.md` 中，格式详见 [文件与数据地图](09-artifacts.md)。时间轴有两个观察入口：Dashboard「运维记录」页展示 Administrator 活动时间线，`/fenix-process <name>` 展示单个 SPEC 的时间线。
+每个 SPEC 的状态字段、优先级、创建/更新时间、run 引用、error 等都记录在项目的 `.fenix/STATE.md` 中，格式详见 [文件与数据地图](10-artifacts.md)。时间轴有两个观察入口：Dashboard「运维记录」页展示 Administrator 活动时间线，`/fenix-process <name>` 展示单个 SPEC 的时间线。
 
 ## 状态变化事件与 Hook
 
-SPEC 每次状态转换——包括 Dashboard 处置、人工冻结这类不经状态机 `transition()` 的跨进程写入——都会在 ≤5 秒内发布一条状态变化事件，事件类型即目标状态（十状态枚举）。你可以用 hook 订阅这些事件，在 SPEC 进入指定状态时自动执行动作：重启 daemon / dashboard、git 提交与推送、webhook 通知、任意 shell 命令。订阅分全局与 SPEC 级两级，配置存于 `.fenix/config.yaml` 的 `hooks` 段（30 秒热更新生效），完整配置参考见[配置参考](08-config.md#hooks)，Dashboard 操作入口见[Dashboard 使用指南](07-dashboard.md)，执行审计见[文件与数据地图](09-artifacts.md)。
+SPEC 每次状态转换——包括 Dashboard 处置、人工冻结这类不经状态机 `transition()` 的跨进程写入——都会在 ≤5 秒内发布一条状态变化事件，事件类型即目标状态（十状态枚举）。你可以用 hook 订阅这些事件，在 SPEC 进入指定状态时自动执行动作：重启 daemon / dashboard、git 提交与推送、webhook 通知、任意 shell 命令。订阅分全局与 SPEC 级两级，配置存于 `.fenix/config.yaml` 的 `hooks` 段（30 秒热更新生效），完整配置参考见[配置参考](09-config.md#hooks)，Dashboard 操作入口见[Dashboard 使用指南](08-dashboard.md)，执行审计见[文件与数据地图](10-artifacts.md)。
 
 > 不要在 hook 动作里修改 SPEC 状态——状态变化会再次发布事件形成自激循环；框架不对 hook 做熔断，只能靠审计与告警事后暴露。
 
@@ -125,4 +125,4 @@ SPEC 每次状态转换——包括 Dashboard 处置、人工冻结这类不经�
 
 - [验证体系](05-verification.md) — 三步流水线与门禁判定细节
 - [调度与治理规则](06-governance.md) — 预算、熔断、人工恢复
-- [FAQ 与故障排查](10-faq.md) — SPEC 卡住怎么办
+- [FAQ 与故障排查](11-faq.md) — SPEC 卡住怎么办

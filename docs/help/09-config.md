@@ -261,7 +261,7 @@ shell 动作注入的环境变量：
 
 #### 执行语义与审计
 
-hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写入路径。动作失败（git 失败、webhook 不可达、shell 非零退出/超时等）时：写 status=failure 审计 + 运维记录页产生一条 `hook_failure` 站内告警（severity major），**不自动重试**、不做去重降噪。每次触发（含 skipped）都追加写入 `.fenix/hook_audit.jsonl`，字段与查询见[文件与数据地图](09-artifacts.md)；SPEC 详情页「Hook」页签与设置页「Hook」面板均可看「最近执行」。
+hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写入路径。动作失败（git 失败、webhook 不可达、shell 非零退出/超时等）时：写 status=failure 审计 + 运维记录页产生一条 `hook_failure` 站内告警（severity major），**不自动重试**、不做去重降噪。每次触发（含 skipped）都追加写入 `.fenix/hook_audit.jsonl`，字段与查询见[文件与数据地图](10-artifacts.md)；SPEC 详情页「Hook」页签与设置页「Hook」面板均可看「最近执行」。
 
 经 Dashboard 保存时校验配置（events 非空且合法、action 合法、webhook 必填 url、shell 必填 command），违规直接拒绝写入；手工编辑则在触发时校验，非法记 failure 审计（不告警）。
 
@@ -301,5 +301,5 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 ## 相关文档
 
 - [调度与治理规则](06-governance.md) — 各预算键的运行时行为
-- [Dashboard 使用指南](07-dashboard.md) — 设置页操作
-- [FAQ 与故障排查](10-faq.md) — 配置改不动/不生效排查
+- [Dashboard 使用指南](08-dashboard.md) — 设置页操作
+- [FAQ 与故障排查](11-faq.md) — 配置改不动/不生效排查

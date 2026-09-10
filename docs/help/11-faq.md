@@ -26,7 +26,7 @@
 
 **根因**：常见有三类——验证场景反复失败导致修复循环多轮重验；卡住的 run 在超时监督续期（extension）中空转；多个同根 fix 并行派生。
 
-**处置**：先把 `agents.timeout_supervision.max_extensions` 调小或置 0，压缩续期上限；再检查是否陷入修复循环——看 `.fenix/verify-progress/<spec>/` 的重验轮数与失败截图；紧急止损可直接在 Dashboard 冻结该 SPEC。注意预算告警本身不会自动冻结 SPEC，处置由人工决策（[配置参考](08-config.md#agents)）。
+**处置**：先把 `agents.timeout_supervision.max_extensions` 调小或置 0，压缩续期上限；再检查是否陷入修复循环——看 `.fenix/verify-progress/<spec>/` 的重验轮数与失败截图；紧急止损可直接在 Dashboard 冻结该 SPEC。注意预算告警本身不会自动冻结 SPEC，处置由人工决策（[配置参考](09-config.md#agents)）。
 
 ## 4. merge 冲突反复失败
 
@@ -46,7 +46,7 @@
 
 **处置**：先排除伪失败——构建失败/应用不可达不会判 bug-found，确认不是环境问题再继续；然后看失败截图 `.fenix/verify-progress/<spec>/screenshots/` 与 report.json 的 assertion message 定位根因。修复循环有三轮熔断，若触发了 `family_explosion`（fix 族谱超限）则转人工；同时人工审视 verify.yaml 契约（BASE_URL 铁律是否正常注入）。
 
-相关：[验证体系](05-verification.md)、[文件与数据地图](09-artifacts.md)
+相关：[验证体系](05-verification.md)、[文件与数据地图](10-artifacts.md)
 
 ## 6. 告警横幅频响（升级告警反复弹）
 
@@ -70,13 +70,13 @@
 
 **处置**：冻结用 Dashboard SPEC 行「冻结」或 `/fenix-freeze`，SPEC 进入 blocked + frozen 标记，自动链全部剥离；处理完后用「解冻」恢复原状态。若只想让 Administrator 诊断一次，用 SPEC 行「呼叫 Admin」，它会写 admin_invoke_request.json，daemon 下一轮拾取后唤起。
 
-相关：[SPEC 生命周期与状态机](03-lifecycle.md#冻结与解冻)、[Dashboard 使用指南](07-dashboard.md)
+相关：[SPEC 生命周期与状态机](03-lifecycle.md#冻结与解冻)、[Dashboard 使用指南](08-dashboard.md)
 
 ## 9. 配置改了不生效
 
 **现象**：改了 `.fenix/config.yaml` 的键，行为没有变化。
 
-**根因**：改的是需重启生效的键（对照表见 [配置参考](08-config.md)）；或 `agents.timeout_supervision` 与顶层 `timeout_supervision` 同时配置——顶层只是回退开关；或被「模板值与代码缺省不一致」误导（[模板值与代码缺省不一致](08-config.md#模板值与代码缺省不一致)）。
+**根因**：改的是需重启生效的键（对照表见 [配置参考](09-config.md)）；或 `agents.timeout_supervision` 与顶层 `timeout_supervision` 同时配置——顶层只是回退开关；或被「模板值与代码缺省不一致」误导（[模板值与代码缺省不一致](09-config.md#模板值与代码缺省不一致)）。
 
 **处置**：按键标注的生效方式决定是否重启 daemon；判断实际生效值以项目 config.yaml 为准。
 
@@ -84,7 +84,7 @@
 
 **现象**：排查时需要某个产物（报告/日志/截图），但找不到。
 
-**处置**：对照 [文件与数据地图](09-artifacts.md#出问题去哪查对照表) 逐项核对。`.fenix/` 内的文件都可以安全重新生成，缺失不一定代表异常。
+**处置**：对照 [文件与数据地图](10-artifacts.md#出问题去哪查对照表) 逐项核对。`.fenix/` 内的文件都可以安全重新生成，缺失不一定代表异常。
 
 ## 11. 配了 hook 但没触发 / 收到 hook_failure 告警
 
@@ -92,7 +92,7 @@
 
 **根因**：hook 动作失败不重试也不去重（git 失败、webhook 不可达、shell 非零退出/超时），每次失败都直接告警。没触发则常见于：手工编辑 config.yaml 漏了 `id`（缺失 id 的条目不执行且无任何痕迹）、`events` 拼写不在十状态枚举内、`enabled: false`（审计记 skipped）、保存后未满 30 秒热更新窗口。
 
-**处置**：先查 `.fenix/hook_audit.jsonl`（或 Dashboard Hook 页签「最近执行」）按 spec 找记录——status=skipped 是被停用；status=failure 是动作报错，detail 含输出摘要；完全没有记录则是匹配阶段未命中（核对 id 与 events）。修正配置后 ≤30 秒热更新自动生效。完整键参考见[配置参考](08-config.md#hooks)。
+**处置**：先查 `.fenix/hook_audit.jsonl`（或 Dashboard Hook 页签「最近执行」）按 spec 找记录——status=skipped 是被停用；status=failure 是动作报错，detail 含输出摘要；完全没有记录则是匹配阶段未命中（核对 id 与 events）。修正配置后 ≤30 秒热更新自动生效。完整键参考见[配置参考](09-config.md#hooks)。
 
 ## 12. 配了 Provider 但 Agent 没走它（仍打到默认网关）
 
@@ -106,4 +106,4 @@
 
 - [核心概念与架构](02-concepts.md)、[SPEC 生命周期与状态机](03-lifecycle.md)
 - [验证体系](05-verification.md)、[调度与治理规则](06-governance.md)
-- [配置参考](08-config.md)、[文件与数据地图](09-artifacts.md)
+- [配置参考](09-config.md)、[文件与数据地图](10-artifacts.md)

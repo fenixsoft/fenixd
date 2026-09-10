@@ -36,7 +36,7 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 
 详情行工具条集中了针对单个 SPEC 的运维操作：设置优先级（1-9，P1 最高）、冻结/解冻（人工冻结为 blocked + 标记，解冻恢复）、清除错误（在线清除 error 字段并写回 STATE.md）、归档（终态 SPEC 目录移入 archive）、删除（软删除，剔除 STATE.md 条目并把目录移入 archive，运行中返回 409），以及呼叫 Admin（手动唤起 Administrator，写 admin_invoke_request.json）。
 
-详情页还有「Hook」页签（「失败截图」页签之后），分三个区块：「生效中的 Hooks」合并展示全局 hooks 与该 SPEC 的 spec 级 hooks（来源列标注「全局/本 spec」，含启停状态）；「本 spec 的 Hooks」对该 SPEC 的专属订阅做增删改与启停，表单为订阅事件多选 + 动作下拉 + 按动作类型显隐的参数（Webhook URL / Shell 命令 / 提交信息模板 / 超时秒数 / 目标 tmux 会话）；「最近执行」展示该 SPEC 的 hook 审计尾部（时间/动作/结果/耗时/摘要，失败可见错误详情）。事件与动作的完整语义见[配置参考](08-config.md#hooks)。
+详情页还有「Hook」页签（「失败截图」页签之后），分三个区块：「生效中的 Hooks」合并展示全局 hooks 与该 SPEC 的 spec 级 hooks（来源列标注「全局/本 spec」，含启停状态）；「本 spec 的 Hooks」对该 SPEC 的专属订阅做增删改与启停，表单为订阅事件多选 + 动作下拉 + 按动作类型显隐的参数（Webhook URL / Shell 命令 / 提交信息模板 / 超时秒数 / 目标 tmux 会话）；「最近执行」展示该 SPEC 的 hook 审计尾部（时间/动作/结果/耗时/摘要，失败可见错误详情）。事件与动作的完整语义见[配置参考](09-config.md#hooks)。
 
 ### 设置页（/settings）
 
@@ -58,4 +58,4 @@ Dashboard 仅绑定 `127.0.0.1`，不对公网开放；同时它没有鉴权机�
 
 - [帮助中心首页](README.md) — 返回本帮助中心
 - [核心概念与架构](02-concepts.md) — 多项目机制
-- [配置参考](08-config.md) — Dashboard 设置页与配置键映射
+- [配置参考](09-config.md) — Dashboard 设置页与配置键映射

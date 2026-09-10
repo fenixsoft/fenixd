@@ -79,4 +79,4 @@ flowchart TD
 
 - [核心概念与架构](02-concepts.md) — 理解闭环原理与 Agent 角色
 - [SPEC 生命周期与状态机](03-lifecycle.md) — 10 状态全景
-- [Dashboard 使用指南](07-dashboard.md) — 图形界面操作
+- [Dashboard 使用指南](08-dashboard.md) — 图形界面操作
