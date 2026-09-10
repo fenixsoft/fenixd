@@ -17,8 +17,8 @@
 
 ## 1. planner-plan 产物硬门扩展（G1/G2，design D1/D2）
 
-- [ ] 1.1 `core/agent_runner/runner.py` `_check_agent_result_artifact`：planner-plan 分支在既有 test_scenarios.json 校验之上叠加 `.fenix-run-result.json` 校验——路径经 `planner_result_path(self.project_root, spec_name, "planner-judge")` 同源计算；校验存在/非空/合法 JSON/顶层对象/status ∈ `("plan-ready",)`；mtime 新鲜度守卫与 test_scenarios.json 同规则（`run_started_at` 宽限期）；任一不满足返回含具体文件路径与原因类别的失败文案；同步更新 `AgentArtifactGateError` docstring（plan 类型也含结果文件契约）与旧注释「planner-plan 无 status 契约」
-- [ ] 1.2 `tests/test_planready_artifact_gate.py`：覆盖 spec 四 Scenario——未写结果文件拦截+走退避重试通道（`AgentArtifactGateError` 断言）、status='success' 白名单外拦截且文案含真实取值、双产物齐备放行（返回 None）、结果文件 mtime 陈旧残留拦截；另覆盖健康 plan-ready 文件+场景文件任一缺失时的组合行为
+- [x] 1.1 `core/agent_runner/runner.py` `_check_agent_result_artifact`：planner-plan 分支在既有 test_scenarios.json 校验之上叠加 `.fenix-run-result.json` 校验——路径经 `planner_result_path(self.project_root, spec_name, "planner-judge")` 同源计算；校验存在/非空/合法 JSON/顶层对象/status ∈ `("plan-ready",)`；mtime 新鲜度守卫与 test_scenarios.json 同规则（`run_started_at` 宽限期）；任一不满足返回含具体文件路径与原因类别的失败文案；同步更新 `AgentArtifactGateError` docstring（plan 类型也含结果文件契约）与旧注释「planner-plan 无 status 契约」
+- [x] 1.2 `tests/test_planready_artifact_gate.py`：覆盖 spec 四 Scenario——未写结果文件拦截+走退避重试通道（`AgentArtifactGateError` 断言）、status='success' 白名单外拦截且文案含真实取值、双产物齐备放行（返回 None）、结果文件 mtime 陈旧残留拦截；另覆盖健康 plan-ready 文件+场景文件任一缺失时的组合行为
 
 ## 2. 降级上下文落盘与合成报告标注（G3，design D3/D4）
 
