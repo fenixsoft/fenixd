@@ -2374,6 +2374,9 @@ class PMEngine:
     def _apply_scenario_freeze(self, spec_name: str) -> dict:
         return self._verification._apply_scenario_freeze(spec_name)
 
+    def _run_scenario_static_check(self, spec_name: str) -> None:
+        return self._verification._run_scenario_static_check(spec_name)
+
     def _apply_interaction_contract(self, spec_name: str) -> dict:
         return self._verification._apply_interaction_contract(spec_name)
 

@@ -23,9 +23,9 @@
 
 ## 2. 扫描挂点与 judge 情报注入（scenario-static-defect-scan R2）
 
-- [ ] 2.1 `core/pm_engine/verification.py`：在 `_apply_scenario_freeze` 完成后、阶段2 执行前调用扫描器，findings 覆盖写 `.fenix/verify-progress/<spec>/scenario_static_findings.json`（写失败仅 WARNING，不阻断）
-- [ ] 2.2 `core/agent_runner/prompt_builder.py`：新增 `_scenario_static_findings_section`（读 findings 文件渲染定向情报段，逐条 scenario_id+缺陷说明+「修复属 judge 职责、先修已知缺陷再裁决」声明），挂载于 planner-judge 分支 `_verdict_cache_section` 之后、`_result_gate_section` 之前；findings 缺失/为空零注入
-- [ ] 2.3 情报段注入单测（并入 tests/test_scenario_static_check.py 或独立用例）：有 findings 注入、空 findings 零注入、文件损坏零注入不抛
+- [x] 2.1 `core/pm_engine/verification.py`：在 `_apply_scenario_freeze` 完成后、阶段2 执行前调用扫描器，findings 覆盖写 `.fenix/verify-progress/<spec>/scenario_static_findings.json`（写失败仅 WARNING，不阻断）
+- [x] 2.2 `core/agent_runner/prompt_builder.py`：新增 `_scenario_static_findings_section`（读 findings 文件渲染定向情报段，逐条 scenario_id+缺陷说明+「修复属 judge 职责、先修已知缺陷再裁决」声明），挂载于 planner-judge 分支 `_verdict_cache_section` 之后、`_result_gate_section` 之前；findings 缺失/为空零注入
+- [x] 2.3 情报段注入单测（并入 tests/test_scenario_static_check.py 或独立用例）：有 findings 注入、空 findings 零注入、文件损坏零注入不抛
 
 ## 3. bug-found 分类改道门（scenario-defect-reroute-gate R1/R2/R3）
 

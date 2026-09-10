@@ -711,6 +711,59 @@ class VerificationPipeline:
         return fail_rounds + 1
 
 
+    def _serving_port_for_spec(self, spec_name: str):
+        """本轮 serving 端口（从契约 base_url 解析）；无实例形态返回 None。"""
+        base_url = self._current_instance_base_url(spec_name)
+        if not base_url:
+            return None
+        try:
+            from urllib.parse import urlparse
+            return urlparse(base_url).port
+        except Exception:
+            return None
+
+
+    def _run_scenario_static_check(self, spec_name: str) -> None:
+        """场景静态缺陷扫描挂点（add-scenario-defect-triage-gate D3）。
+
+        在场景集冻结完成后、阶段2 执行前调用（_run_three_stage_verification
+        经门面转调）。findings 覆盖写 ``scenario_static_findings.json`` 供
+        judge prompt 情报段注入——**只做情报不拦截执行**，任何异常记 WARNING
+        不阻断验证（fail-open）。
+        """
+        from core.verify_engine.scenario_static_check import (
+            scan_scenarios, write_findings,
+        )
+        scenarios_path = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / "test_scenarios.json"
+        )
+        try:
+            if not scenarios_path.exists():
+                return
+            data = json.loads(scenarios_path.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                return
+            serving_port = self._serving_port_for_spec(spec_name)
+            findings = scan_scenarios(data, serving_port=serving_port)
+            write_findings(self._pm.project_root, spec_name, findings)
+            if findings:
+                from collections import Counter
+                dist = dict(Counter(f.rule_id for f in findings))
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"场景静态扫描 '{spec_name}'（serving 端口 "
+                    f"{serving_port or '未知'}）检出 {len(findings)} 条情报: "
+                    f"{dist}",
+                )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"场景静态扫描跳过 '{spec_name}'（fail-open，不阻断验证）: "
+                f"{type(e).__name__}: {e}",
+            )
+
+
     def _apply_scenario_freeze(self, spec_name: str) -> dict:
         """应用场景集冻结：planner 产出 vs 持久化集 diff，写回 scenarios.json。
 
@@ -1033,6 +1086,7 @@ class VerificationPipeline:
             "core.verify_engine.api_runner",
             "core.verify_engine.assertions",
             "core.verify_engine.scenarios",
+            "core.verify_engine.scenario_static_check",
             "core.verify_engine.engine",
             "core.verify_engine",
         ]
@@ -1306,6 +1360,12 @@ class VerificationPipeline:
                     env_error = f"自愈改写后场景文件验收失败: {e}"
 
             if env_error is None:
+                # ── 场景静态缺陷扫描（add-scenario-defect-triage-gate D3）──
+                # 在场景集冻结完成后、执行前调用：findings 只作情报落盘
+                # （scenario_static_findings.json）+ judge prompt 定向注入，
+                # fail-open——任何异常记 WARNING，不阻断验证执行。
+                self._pm._run_scenario_static_check(spec_name)
+
                 # 场景执行根：worktree 轮传入 serving worktree 根（CLI 步骤
                 # 缺省 cwd 以此为准，seed 写入落验证树而非主树）；
                 # 无 worktree 轮不传（回退主树 project_root，行为不变）。

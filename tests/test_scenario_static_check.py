@@ -12,6 +12,7 @@
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 from core.verify_engine.scenario_static_check import (
     PATTERN_TABLE,
@@ -19,6 +20,7 @@ from core.verify_engine.scenario_static_check import (
     write_findings,
     load_findings,
 )
+from core.agent_runner.prompt_builder import PromptBuilder
 
 
 def _tmp_project() -> Path:
@@ -332,7 +334,86 @@ class TestFindingsPersistence:
         assert load_findings(proot, "demo") == []
 
 
-# ── 7. 模式表结构（design D4）──────────────────────────────────────
+# ── 8. judge prompt 情报段注入（2.3）───────────────────────────────
+
+class TestJudgeFindingsInjection:
+    def test_has_findings_injects(self):
+        proot = _tmp_project()
+        pb = PromptBuilder(SimpleNamespace(project_root=proot))
+        sc = _web_scenario(assertions=[
+            {"type": "element_visible", "selector": 'button:has-text("确定")'},
+        ])
+        finds = scan_scenarios([sc], serving_port="6000")
+        write_findings(proot, "spec", finds)
+        section = pb._scenario_static_findings_section("spec")
+        assert "场景静态缺陷情报" in section
+        assert "web-1" in section
+        assert "double_han_text_selector" in section
+        assert "修复属 judge 职责" in section
+        assert "先修复已知缺陷再裁决" in section
+
+    def test_stale_port_finding_injects(self):
+        proot = _tmp_project()
+        pb = PromptBuilder(SimpleNamespace(project_root=proot))
+        sc = _cli_scenario("print('http://127.0.0.1:57905/')")
+        finds = scan_scenarios([sc], serving_port="6000")
+        assert finds
+        write_findings(proot, "spec", finds)
+        section = pb._scenario_static_findings_section("spec")
+        assert "stale_literal_port" in section
+        assert "57905" in section
+
+    def test_empty_findings_zero_injection(self):
+        proot = _tmp_project()
+        pb = PromptBuilder(SimpleNamespace(project_root=proot))
+        write_findings(proot, "spec", [])
+        assert pb._scenario_static_findings_section("spec") == ""
+
+    def test_missing_file_zero_injection(self):
+        proot = _tmp_project()
+        pb = PromptBuilder(SimpleNamespace(project_root=proot))
+        assert pb._scenario_static_findings_section("nope") == ""
+
+    def test_corrupt_file_zero_injection_no_throw(self):
+        proot = _tmp_project()
+        pb = PromptBuilder(SimpleNamespace(project_root=proot))
+        path = proot / ".fenix" / "verify-progress" / "spec" \
+            / "scenario_static_findings.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{corrupt", encoding="utf-8")
+        assert pb._scenario_static_findings_section("spec") == ""
+
+    def test_mounted_in_judge_prompt_between_cache_and_gate(self):
+        # 端到端：build_prompt(planner-judge) 全量 prompt 中情报段位于
+        # verdict 缓存段之后、结果硬门之前
+        proot = _tmp_project()
+        pb = PromptBuilder(SimpleNamespace(project_root=proot))
+        sc = _web_scenario(assertions=[
+            {"type": "element_visible", "selector": 'button:has-text("保存")'},
+        ])
+        finds = scan_scenarios([sc], serving_port="6000")
+        write_findings(proot, "spec", finds)
+        prompt = pb._build_prompt("spec", "planner-judge")
+        assert "场景静态缺陷情报" in prompt
+        assert "结果文件硬门" in prompt
+        assert prompt.index("场景静态缺陷情报") < prompt.index("结果文件硬门")
+
+    def test_judge_prompt_build_end_to_end(self):
+        # 端到端：build_prompt(planner-judge) 全量 prompt 含情报段
+        proot = _tmp_project()
+        pb = PromptBuilder(SimpleNamespace(project_root=proot))
+        sc = _web_scenario(assertions=[
+            {"type": "element_visible", "selector": 'button:has-text("确定")'},
+        ])
+        finds = scan_scenarios([sc], serving_port="6000")
+        write_findings(proot, "spec", finds)
+        prompt = pb._build_prompt("spec", "planner-judge")
+        assert "场景静态缺陷情报" in prompt
+        assert "修复属 judge 职责" in prompt
+        assert "结果文件硬门" in prompt
+
+
+# ── 9. 模式表结构（design D4）──────────────────────────────────────
 
 class TestPatternTable:
     def test_initial_three_rules(self):

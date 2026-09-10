@@ -218,6 +218,10 @@ class PromptBuilder:
             # 清单在前，强制修复清单殿后保持紧迫性
             prompt += self._verdict_cache_section(spec_name)
             prompt += self._verdict_rejection_section(spec_name)
+            # 场景静态缺陷情报段（add-scenario-defect-triage-gate D5）：在
+            # verdict 缓存之后、硬门契约之前——先给情报（修复属 judge 职责、
+            # 先修已知缺陷再裁决）后给结果文件硬门，情报不改变硬门契约语义。
+            prompt += self._scenario_static_findings_section(spec_name)
             # add-judge-artifact-gate D3：截断恢复注入（上一轮 checkpoint 残留
             # 已归因场景直接沿用、只补缺失）——先于硬门契约段注入
             prompt += self._checkpoint_recovery_section(spec_name)
@@ -1133,3 +1137,42 @@ class PromptBuilder:
                 f"assertion_triage={json.dumps(entry.get('assertion_triage'), ensure_ascii=False)}\n"
             )
         return "".join(lines)
+
+
+    def _scenario_static_findings_section(self, spec_name: str) -> str:
+        """场景静态缺陷情报段（add-scenario-defect-triage-gate D5）。
+
+        读取 ``scenario_static_findings.json``（扫描器落盘，pattern 表驱动：
+        跨轮端口残留 / 双汉字文本选择器等机械可查模式）渲染定向情报段——
+        逐条 scenario_id + 缺陷说明，声明「修复属 judge 职责、先修已知缺陷
+        再裁决」。findings 缺失/为空/损坏 → 返回空串（零注入，prompt 与现状
+        逐字节一致）。
+        """
+        from core.verify_engine.scenario_static_check import load_findings
+        findings = load_findings(self._pm.project_root, spec_name)
+        if not findings:
+            return ""
+        lines = [
+            "",
+            "## 场景静态缺陷情报（定向情报，修复属 judge 职责）",
+            "",
+            "框架对当前场景集做了机械可查的静态缺陷扫描，下列场景存在已知缺陷模式：",
+            "",
+        ]
+        for f in findings:
+            lines.append(
+                f"- `{f.get('scenario_id')}` [{f.get('rule_id')} "
+                f"{f.get('location')}]: {f.get('message')}"
+            )
+        lines += [
+            "",
+            "处理要求：",
+            "- **修复属 judge 职责**：对上述已检出场景，必须先修复已知缺陷再裁决"
+            "（属场景文件缺陷 → 按文末「原地修复协议」申报 scenario-repaired）；",
+            "- 修复已裁决场景（含跨轮写回场景）合法，受冻结 diff 记账保护"
+            "（无理由移除才确定性补齐），不视为冻结违规；",
+            "- 本情报为静态机械检出（只收确定性模式），可能误报——修复前请以源码/"
+            "执行证据核实，非缺陷项在 evidence 中说明即可。",
+            "",
+        ]
+        return "\n".join(lines)
