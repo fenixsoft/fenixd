@@ -1698,6 +1698,31 @@ export default function SpecDetailPage() {
         ) : (
           <Typography.Text type="secondary">暂无验证结论</Typography.Text>
         )}
+        {/* add-planready-artifact-gate D4：降级标注一行提示（报告 degrade_annotation
+            字段条件渲染；无字段不渲染）。新验证流程 planner 阶段失败降级 legacy 时
+            合成报告携带该标注，前端据此透出降级事实与代价。 */}
+        {detail?.report?.degrade_annotation && (
+          <Alert
+            type="warning"
+            showIcon
+            data-testid="degrade-annotation"
+            style={{ marginTop: 12 }}
+            message={
+              <span>
+                ⚠️ 降级说明：本报告由框架合成（新验证流程 planner 阶段失败：
+                {detail.report.degrade_annotation.reason || '未知原因'}；被降级轮次{' '}
+                {detail.report.degrade_annotation.run_id || '未知 run'} 烧{' '}
+                {detail.report.degrade_annotation.duration_seconds != null
+                  ? `${(detail.report.degrade_annotation.duration_seconds / 60).toFixed(1)}min`
+                  : '时长未知'}
+                {detail.report.degrade_annotation.cost_usd != null
+                  ? ` / $${detail.report.degrade_annotation.cost_usd.toFixed(2)}`
+                  : ''}
+                ）
+              </span>
+            }
+          />
+        )}
       </Card>
 
       {/* 页签区 */}

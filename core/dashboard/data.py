@@ -3503,6 +3503,10 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
             "error": report.get("error"),
             "timestamp": report.get("timestamp"),
             "summary": report.get("summary"),
+            # add-planready-artifact-gate D4：降级标注（框架合成报告时从
+            # degrade_context.json 注入 report.json 顶层 degrade_annotation），
+            # 前端报告区据此条件渲染「⚠️ 降级说明」一行提示；无降级时缺省。
+            "degrade_annotation": report.get("degrade_annotation"),
         },
         "scenarios": scenarios,
         "bugs": bugs,
