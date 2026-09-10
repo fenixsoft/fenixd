@@ -29,5 +29,5 @@
 
 ## 3. 收尾验证
 
-- [ ] 3.1 全量跑 `tests/test_planready_artifact_gate.py` + 既有 `tests/test_agent_runner_gate.py`、`tests/test_verify_report_gate.py` 无回归；标注真实生效路径：模拟 planner 未写结果文件 → 硬门拦截 → 重试 → 仍失败 → 降级 → 合成报告含降级标注（单测集成路径或本地脚本演练，截图/输出存 .history）
+- [x] 3.1 全量跑 `tests/test_planready_artifact_gate.py` + 既有 `tests/test_agent_runner_gate.py`、`tests/test_verify_report_gate.py` 无回归；标注真实生效路径：模拟 planner 未写结果文件 → 硬门拦截 → 重试 → 仍失败 → 降级 → 合成报告含降级标注（单测集成路径或本地脚本演练，截图/输出存 .history）
 - [ ] 3.2 合并后重启 daemon（supervisor 协议），确认新码生效（进程代码版本核对）——2026-09-09 事故第 4 层根因（旧码运行）的收尾防线
