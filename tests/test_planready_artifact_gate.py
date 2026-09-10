@@ -337,3 +337,240 @@ class TestPlanreadyArtifactGateIntegration:
         runner._run_claude = fake_run_claude
         result = runner._execute_agent(spec, "planner-plan", "run-pgate5")
         assert result.success is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2.4 降级合成报告标注（degrade-annotation spec）
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestDegradeAnnotationReport:
+    """合成报告携带降级标注三 Scenario（degrade-annotation spec）。"""
+
+    def _deg_ctx(self, **overrides):
+        ctx = {
+            "reason": "Planner 未生成有效场景，status=不可读(missing: x)",
+            "run_id": "planner-plan-demo-1-a1",
+            "duration_seconds": 429.0,
+            "cost_usd": 2.28,
+            "degraded_at": "2026-09-09T15:39:18+00:00",
+        }
+        ctx.update(overrides)
+        return ctx
+
+    def _setup_legacy_result(self, root: Path, spec: str) -> Path:
+        """legacy 合成场景：.fenix-run-result.json 存在、report.json 缺失。"""
+        vp = root / ".fenix" / "verify-progress" / spec
+        vp.mkdir(parents=True, exist_ok=True)
+        (root / "spec" / "changes" / spec).mkdir(parents=True, exist_ok=True)
+        (vp / ".fenix-run-result.json").write_text(json.dumps({
+            "status": "bug-found", "spec": spec, "bugs": [],
+            "summary": "legacy 降级后的裁决结果",
+        }), encoding="utf-8")
+        return vp
+
+    def test_scenario_degraded_report_carries_annotation(self, tmp_path):
+        """Scenario 1：降级上下文存在 → report.json 持久化标注 + markdown 渲染。"""
+        root = tmp_path
+        spec = "demo-spec"
+        vp = self._setup_legacy_result(root, spec)
+        (vp / "degrade_context.json").write_text(
+            json.dumps(self._deg_ctx()), encoding="utf-8")
+
+        from core.verify_report import synthesize_verification_report
+        result = synthesize_verification_report(root, spec)
+        assert result.get("ok"), result
+
+        # 标注随 report.json 顶层持久化（非仅日志）
+        persisted = json.loads((vp / "report.json").read_text(encoding="utf-8"))
+        ann = persisted.get("degrade_annotation")
+        assert ann is not None
+        assert ann["run_id"] == "planner-plan-demo-1-a1"
+        assert ann["duration_seconds"] == 429.0
+        assert ann["cost_usd"] == 2.28
+        assert "degraded_at" in ann
+
+        # markdown 头部渲染「⚠️ 降级说明」引用块（原因+run_id+分钟+美元）
+        md = (root / "spec" / "changes" / spec / "verification-report.md").read_text(
+            encoding="utf-8")
+        assert "⚠️ 降级说明" in md
+        assert "Planner 未生成有效场景" in md
+        assert "planner-plan-demo-1-a1" in md
+        assert "7.2min" in md  # 429/60
+        assert "$2.28" in md
+
+    def test_scenario_normal_report_no_annotation(self, tmp_path):
+        """Scenario 2：无降级 → 报告不携带标注（字段缺省），markdown 无降级块。"""
+        root = tmp_path
+        spec = "demo-spec"
+        vp = self._setup_legacy_result(root, spec)
+
+        from core.verify_report import synthesize_verification_report
+        result = synthesize_verification_report(root, spec)
+        assert result.get("ok"), result
+
+        md = (root / "spec" / "changes" / spec / "verification-report.md").read_text(
+            encoding="utf-8")
+        assert "降级说明" not in md
+        if (vp / "report.json").exists():
+            data = json.loads((vp / "report.json").read_text(encoding="utf-8"))
+            assert "degrade_annotation" not in data
+
+    def test_scenario_annotation_persisted_in_report_json(self, tmp_path):
+        """Scenario 3：标注随 report.json 数据结构持久化（还原降级事实与代价）。"""
+        root = tmp_path
+        spec = "demo-spec"
+        vp = self._setup_legacy_result(root, spec)
+        # 已有 report.json（引擎写入的正常产物）时标注注入顶层而非覆盖其余字段
+        (vp / "report.json").write_text(json.dumps({
+            "summary": {"passed": 0, "failed": 1, "total": 1},
+            "scenarios": [{"scenario_id": "s1", "status": "fail"}],
+        }), encoding="utf-8")
+        (vp / "degrade_context.json").write_text(
+            json.dumps(self._deg_ctx()), encoding="utf-8")
+
+        from core.verify_report import synthesize_verification_report
+        result = synthesize_verification_report(root, spec)
+        assert result.get("ok"), result
+
+        persisted = json.loads((vp / "report.json").read_text(encoding="utf-8"))
+        assert persisted["degrade_annotation"]["run_id"] == "planner-plan-demo-1-a1"
+        # 原字段不被覆盖（标注注入而非重建）
+        assert persisted["summary"]["passed"] == 0
+        assert persisted["scenarios"][0]["scenario_id"] == "s1"
+
+    def test_degrade_context_missing_synthesis_unchanged(self, tmp_path):
+        """degrade_context.json 缺失 → 合成行为与现状一致（无标注、正常产物）。"""
+        root = tmp_path
+        spec = "demo-spec"
+        vp = self._setup_legacy_result(root, spec)
+        assert not (vp / "degrade_context.json").exists()
+
+        from core.verify_report import render_verification_report
+        from core.verify_report import synthesize_verification_report
+        result = synthesize_verification_report(root, spec)
+        assert result.get("ok"), result
+        # 渲染函数缺省不渲染（显式缺省参数零渲染）
+        content = render_verification_report(
+            spec, {"status": "verified"}, {"summary": {"passed": 1}})
+        assert "降级说明" not in content
+
+    def test_render_default_no_annotation(self):
+        """render_verification_report 缺省 degrade_annotation → 报告与现状逐字节一致。"""
+        from core.verify_report import render_verification_report
+        content = render_verification_report(
+            "demo-spec", {"status": "verified"},
+            {"summary": {"passed": 1, "total": 1}})
+        assert "降级说明" not in content
+        assert "本报告由框架" in content
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2.4 pm_engine 侧降级判定点写文件 / 成功路径删文件分支覆盖
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestPmEngineDegradeContext:
+    """阶段1 降级判定点写 degrade_context.json；plan-ready 成功路径删除。"""
+
+    def _mk_pm(self, tmp_path, spec="demo-spec"):
+        from core.pm_engine import PMEngine
+        from core.state_machine import StateMachine
+        from unittest.mock import MagicMock as MM
+        state_path = tmp_path / ".fenix" / "STATE.md"
+        logger = MM()
+        sm = StateMachine(state_path, logger)
+        engine = PMEngine(sm, MM(), {}, tmp_path, logger)
+        sm.add_spec(spec, {"priority": 5})
+        for s in ("ready", "implementing", "implemented", "testing"):
+            sm.transition(spec, s)
+        # 阶段1 之后路径的组件 mock（聚焦降级判定点）
+        engine._enqueue = MM()
+        engine._apply_scenario_freeze = MM(return_value={})
+        engine._apply_interaction_contract = MM(return_value=None)
+        engine._on_spec_verified = MM()
+        engine._on_spec_bug_found = MM()
+        engine._ensure_app_reachable = MM(return_value=(True, False, ""))
+        engine._ensure_verification_report = MM(return_value=None)
+        engine._check_verification_gate = MM(return_value=None)
+        engine._env_whitewash_gate = MM(return_value=True)
+        engine._task_completion_blocker = MM(return_value=None)
+        engine._verify_verdict_evidence = MM(return_value={
+            "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
+        })
+        engine._update_warning_streaks = MM(return_value=[])
+        engine._send_human_escalation_alert = MM()
+        return engine, sm
+
+    def _vp_dir(self, root, spec):
+        return Path(root) / ".fenix" / "verify-progress" / spec
+
+    def test_degrade_point_writes_context(self, tmp_path):
+        """降级判定点：plan 结果不可读 → 写 degrade_context.json 后 raise。"""
+        from types import SimpleNamespace
+        from core.pm_engine.verification import VerdictReadResult
+        engine, sm = self._mk_pm(tmp_path, "spec-a")
+        engine.agent_runner = MagicMock()
+        engine.agent_runner.run_planner = MagicMock(return_value=SimpleNamespace(
+            success=True, error=None,
+            run_id="planner-plan-spec-a-1-a1",
+            duration_seconds=429.0,
+        ))
+        engine._read_planner_result = MagicMock(
+            return_value=VerdictReadResult.failure("missing", "file-not-found"))
+
+        import pytest
+        with pytest.raises(RuntimeError):
+            engine._run_three_stage_verification("spec-a")
+
+        ctx_path = self._vp_dir(tmp_path, "spec-a") / "degrade_context.json"
+        assert ctx_path.is_file()
+        data = json.loads(ctx_path.read_text(encoding="utf-8"))
+        assert data["run_id"] == "planner-plan-spec-a-1-a1"
+        assert data["duration_seconds"] == 429.0
+        assert "Planner 未生成有效场景" in data["reason"]
+        assert "degraded_at" in data
+
+    def test_planready_success_clears_stale_context(self, tmp_path):
+        """plan-ready 校验通过 → 删除陈旧 degrade_context.json（防污染正常报告）。"""
+        from types import SimpleNamespace
+        from core.pm_engine.verification import VerdictReadResult
+        from core.verify_engine import VerifyEngine
+        engine, sm = self._mk_pm(tmp_path, "spec-b")
+        engine.agent_runner = MagicMock()
+        engine.agent_runner.run_planner = MagicMock(return_value=SimpleNamespace(
+            success=True, error=None,
+            run_id="planner-plan-spec-b-1-a1",
+            duration_seconds=120.0,
+        ))
+        engine._read_planner_result = MagicMock(
+            return_value=VerdictReadResult.success("plan-ready"))
+
+        # 陈旧 degrade_context.json 预置（上一轮降级残留）
+        vp = self._vp_dir(tmp_path, "spec-b")
+        vp.mkdir(parents=True, exist_ok=True)
+        (vp / "degrade_context.json").write_text(
+            json.dumps({"reason": "旧降级", "run_id": "old-run"}),
+            encoding="utf-8")
+        # 不写 test_scenarios.json：_load_frozen_scenarios 返回 None → 进入
+        # planner 设计闭环 → run_planner 成功 + plan-ready → 成功路径调
+        # _clear_degrade_context（本测试焦点）→ 随后阶段2 因场景文件缺失走
+        # env_error 路径返回（不抛出）；断言在流程后仍成立。
+
+        from unittest.mock import patch
+        class FakeEngine:
+            def __init__(self, *a, **k):
+                pass
+            async def run(self, scenarios):
+                return {"spec": "spec-b",
+                        "summary": {"total": 1, "passed": 1, "failed": 0,
+                                    "warnings": 0, "errors": 0},
+                        "scenarios": []}
+        try:
+            with patch("importlib.reload", lambda m: m), \
+                    patch("core.verify_engine.VerifyEngine", FakeEngine):
+                engine._run_three_stage_verification("spec-b")
+        except Exception:
+            # 阶段2 因无场景文件走异常路径属预期——_clear_degrade_context 已在
+            # plan-ready 校验通过后、阶段2 之前执行完毕（本测试焦点）
+            pass
+
+        assert not (vp / "degrade_context.json").exists()
