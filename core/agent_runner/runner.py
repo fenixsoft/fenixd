@@ -30,6 +30,13 @@ from core.agent_runner.prompt_builder import (
 # 真实轮间间隙（agent 全程分钟级，上一轮残留 mtime 滞差秒以上），真陈旧产物仍被
 # 可靠拦截，仅吸收 mtime 时钟滞后。
 _ARTIFACT_FRESHNESS_GRACE_SECONDS = 1.0
+# add-planready-artifact-gate D2：planner-plan 结果文件 status 合法值收窄至
+# 单值 ("plan-ready",)。planner-plan 的唯一合法终态是 plan-ready；
+# verified/bug-found/scenario-repaired 是 judge/verifier 词汇，出现即语义错位
+# （implementer 残留 "success" 同理）。读侧判定本就是 status != "plan-ready"
+# 即降级——硬门与读侧口径完全一致。不复用四值白名单常量 planner_result_status_whitelist，
+# 防「judge 合法值替 plan 类型放行」。
+_PLANREADY_STATUSES = ("plan-ready",)
 from core.agent_runner.liveness import (
     AGENT_TERMINATE_GRACE_SECONDS,
     LIVE_ATTEMPT_STREAM_WINDOW_SECONDS,
@@ -242,11 +249,15 @@ class RunCancelledError(Exception):
 
 
 class AgentArtifactGateError(Exception):
-    """planner 产物硬门失败（add-judge-artifact-gate D1）。
+    """planner 产物硬门失败（add-judge-artifact-gate D1。
+
+    add-planready-artifact-gate：plan 类型也含结果文件契约——planner-plan
+    现亦校验 .fenix-run-result.json（status='plan-ready'）。
 
     进程 exit 0 但结果文件（judge: .fenix-run-result.json / plan:
-    test_scenarios.json）缺失、为空或非法 JSON 时抛出——run 按瞬态失败走
-    既有原地退避重试通道，不进入 validate_report 的「裁决重试一次」预算。
+    test_scenarios.json + .fenix-run-result.json）缺失、为空、非法 JSON 或
+    status 白名单外时抛出——run 按瞬态失败走既有原地退避重试通道，不进入
+    validate_report 的「裁决重试一次」预算。
     """
 
     def __init__(self, message: str = ""):
@@ -3108,6 +3119,39 @@ class AgentRunner:
 
     # ── planner 产物硬门（add-judge-artifact-gate D1）────────────────────
 
+    def _check_artifact_json_file(self, path: Path, agent_type: str,
+                                  run_started_at: float | None) -> tuple:
+        """单产物文件基础校验（存在/非空/mtime 新鲜/可解析 JSON）。
+
+        多个产物文件共用同一套基础校验（add-planready-artifact-gate：planner-plan
+        双产物叠加校验）。新鲜度守卫（fix-verdict-read-failclosed D2）与既有
+        test_scenarios.json 同规则。
+
+        Returns:
+            (err, data)：err 非 None = 失败归因文案（含具体文件路径与原因类别，
+            供 error 直用）；否则 data 为解析出的 JSON 值（可为任意类型）。
+        """
+        try:
+            if not path.is_file():
+                return (f"exit 0 但结果文件缺失（{agent_type} 产物硬门）: {path}", None)
+            if path.stat().st_size == 0:
+                return (f"exit 0 但结果文件为空（{agent_type} 产物硬门）: {path}", None)
+            if run_started_at is not None:
+                mtime = path.stat().st_mtime
+                if mtime < run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS:
+                    return (
+                        f"exit 0 但结果文件早于本轮启动（陈旧残留，{agent_type} "
+                        f"产物硬门）: {path} (mtime={mtime:.1f} < "
+                        f"run_started_at - grace={run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS:.1f})",
+                        None,
+                    )
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as e:
+            return (f"exit 0 但结果文件不可读（{agent_type} 产物硬门）: {path} ({e})", None)
+        except json.JSONDecodeError as e:
+            return (f"exit 0 但结果文件非法 JSON（{agent_type} 产物硬门）: {path} ({e})", None)
+        return (None, data)
+
     def _check_agent_result_artifact(self, spec_name: str,
                                      agent_type: str,
                                      run_started_at: float | None = None) -> str | None:
@@ -3117,9 +3161,17 @@ class AgentRunner:
         - planner-judge 结果文件 = planner_result_path(..., "planner-judge")
           （.fenix-run-result.json）
         - planner-plan  结果文件 = planner_result_path(..., "planner-plan")
-          （test_scenarios.json）
+          （test_scenarios.json）**叠加** planner_result_path(..., "planner-judge")
+          （.fenix-run-result.json，status='plan-ready'）
         路径与 prompt_builder 注入的 {result_path}/{scenarios_path} 同源计算，
         防双实现漂移。文件缺失 / 为空 / 非法 JSON 一律视为缺失（fail-closed）。
+
+        add-planready-artifact-gate：planner-plan 分支在既有 test_scenarios.json
+        校验（存在/非空/mtime 新鲜/合法 JSON）之上叠加 .fenix-run-result.json
+        plan-ready 契约校验（存在/非空/合法 JSON/顶层对象/status ∈
+        ("plan-ready",)）——planner 忘写结果文件（2026-09-09 白烧事故）不再被
+        "succeeded" 放行。结果文件路径经 planner_result_path(..., "planner-judge")
+        计算（与 pm_engine 读侧 primary 同源），不落盘到 worktree 相对路径。
 
         fix-verdict-read-failclosed D2（新鲜度）：``run_started_at`` 为本轮 attempt
         启动时刻（attempt 循环内的 attempt_started_at）；结果文件 mtime 早于
@@ -3142,40 +3194,50 @@ class AgentRunner:
         """
         if agent_type not in ("planner-judge", "planner-plan"):
             return None
+        if agent_type == "planner-plan":
+            # 双产物叠加校验：test_scenarios.json（既有，保持不变）+
+            # .fenix-run-result.json（add-planready-artifact-gate，新增）。
+            scenarios_path = planner_result_path(
+                self.project_root, spec_name, "planner-plan")
+            result_path = planner_result_path(
+                self.project_root, spec_name, "planner-judge")
+            err, _data = self._check_artifact_json_file(
+                scenarios_path, agent_type, run_started_at)
+            if err is not None:
+                return err
+            err, data = self._check_artifact_json_file(
+                result_path, agent_type, run_started_at)
+            if err is not None:
+                return err
+            if not isinstance(data, dict):
+                return (
+                    f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {result_path}"
+                )
+            status = data.get("status", "")
+            if status not in _PLANREADY_STATUSES:
+                return (
+                    f"exit 0 但结果文件 status='{status}' 不在白名单"
+                    f"（{agent_type} 产物硬门）: {result_path}"
+                )
+            return None
         path = planner_result_path(self.project_root, spec_name, agent_type)
-        try:
-            if not path.is_file():
-                return (f"exit 0 但结果文件缺失（{agent_type} 产物硬门）: {path}")
-            if path.stat().st_size == 0:
-                return (f"exit 0 但结果文件为空（{agent_type} 产物硬门）: {path}")
-            if run_started_at is not None:
-                mtime = path.stat().st_mtime
-                if mtime < run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS:
-                    return (
-                        f"exit 0 但结果文件早于本轮启动（陈旧残留，{agent_type} "
-                        f"产物硬门）: {path} (mtime={mtime:.1f} < "
-                        f"run_started_at - grace={run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS:.1f})"
-                    )
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if agent_type == "planner-judge":
-                # fix-verdict-read-failclosed D3：judge 裁决文件（.fenix-run-result.json）
-                # 顶层 status 须在白名单内（语义错位取值如 implementer 共享残留的
-                # success 不得流入读侧被「unknown status 视为 verified」）。planner-plan
-                # 产物为场景数组（test_scenarios.json），无 status 契约，仅校验可解析。
-                if not isinstance(data, dict):
-                    return (
-                        f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {path}"
-                    )
-                status = data.get("status", "")
-                if status not in planner_result_status_whitelist:
-                    return (
-                        f"exit 0 但结果文件 status='{status}' 不在白名单"
-                        f"（{agent_type} 产物硬门）: {path}"
-                    )
-        except (OSError, UnicodeDecodeError) as e:
-            return (f"exit 0 但结果文件不可读（{agent_type} 产物硬门）: {path} ({e})")
-        except json.JSONDecodeError as e:
-            return (f"exit 0 但结果文件非法 JSON（{agent_type} 产物硬门）: {path} ({e})")
+        err, data = self._check_artifact_json_file(
+            path, agent_type, run_started_at)
+        if err is not None:
+            return err
+        # fix-verdict-read-failclosed D3：judge 裁决文件（.fenix-run-result.json）
+        # 顶层 status 须在白名单内（语义错位取值如 implementer 共享残留的
+        # success 不得流入读侧被「unknown status 视为 verified」）。
+        if not isinstance(data, dict):
+            return (
+                f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {path}"
+            )
+        status = data.get("status", "")
+        if status not in planner_result_status_whitelist:
+            return (
+                f"exit 0 但结果文件 status='{status}' 不在白名单"
+                f"（{agent_type} 产物硬门）: {path}"
+            )
         return None
 
     def _build_legacy_section(self, spec_name: str) -> str:

@@ -267,7 +267,7 @@ class TestArtifactGate:
         assert "结果文件缺失" in (result.error or "")
 
     def test_plan_with_scenarios_artifact_passes(self, tmp_path):
-        """planner-plan 落盘 test_scenarios.json → run 成功。"""
+        """planner-plan 落盘双产物（test_scenarios.json + status=plan-ready 结果文件）→ run 成功。"""
         runner = _make_runner(tmp_path, _standard_chain_config("planner-plan"))
         wt = tmp_path / "wt"
         wt.mkdir(parents=True)
@@ -277,14 +277,20 @@ class TestArtifactGate:
         runner.worktree_manager.cleanup.return_value = None
 
         scenarios_path = planner_result_path(tmp_path, "spec-x", "planner-plan")
+        result_path = planner_result_path(tmp_path, "spec-x", "planner-judge")
 
         def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
                             resume_session_id=None, max_turns=None,
                             spec_name=None, agent_type=None):
-            # 产物须在 run 启动后写入（D2 新鲜度：mtime ≥ attempt_started_at）
+            # 双产物须在 run 启动后写入（D2 新鲜度：mtime ≥ attempt_started_at）；
+            # add-planready-artifact-gate：planner-plan 结果文件契约与 judge 同源路径
             scenarios_path.parent.mkdir(parents=True, exist_ok=True)
             scenarios_path.write_text(json.dumps([{"id": "s1", "description": "d"}]),
                                       encoding="utf-8")
+            result_path.write_text(
+                json.dumps({"status": "plan-ready", "spec": "spec-x"}),
+                encoding="utf-8",
+            )
             return ("plan-ready", 1, "sess-plan", _usage_ok())
 
         runner._run_claude = fake_run_claude
