@@ -550,6 +550,16 @@ export interface SpecDetail {
       errors?: number;
       blocked_env?: number;
     };
+    // 降级标注（add-planready-artifact-gate D4）：框架合成报告时从
+    // degrade_context.json 注入 report.json 顶层 degrade_annotation；
+    // 无降级时缺省（前端不渲染）
+    degrade_annotation?: {
+      reason?: string;
+      run_id?: string;
+      duration_seconds?: number;
+      cost_usd?: number | null;
+      degraded_at?: string;
+    };
   };
   // Bug 列表
   bugs?: Array<{

@@ -124,6 +124,59 @@ def _load_run_result(project_root, spec_name):
     return None
 
 
+def _load_degrade_context(project_root, spec_name):
+    """读取降级上下文 .fenix/verify-progress/<spec>/degrade_context.json。
+
+    add-planready-artifact-gate D3：pm_engine 阶段1 降级判定点落盘（reason/
+    run_id/duration_seconds/cost_usd/degraded_at）；合成报告路径读取后注入
+    降级标注（G3）。文件缺失/损坏 → 返回 None（零注入零渲染，正常报告不含
+    该字段）。
+    """
+    path = (
+        Path(project_root) / ".fenix" / "verify-progress"
+        / spec_name / "degrade_context.json"
+    )
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if not data.get("reason") and not data.get("run_id"):
+        return None
+    return data
+
+
+def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
+    """把降级标注注入 report.json 顶层并落盘（持久化，D3/D4）。
+
+    降级合成报告必须随 report.json 持久化（非仅日志），后续读取报告（时间轴/
+    报告页/CLI）能还原降级事实与代价。写入失败静默跳过（annotation 是纯观测量，
+    不得阻断报告合成主流程）。
+    """
+    report_path = (
+        Path(project_root) / ".fenix" / "verify-progress"
+        / spec_name / "report.json"
+    )
+    try:
+        data = {}
+        if report_path.is_file():
+            try:
+                loaded = json.loads(report_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                loaded = {}
+            if isinstance(loaded, dict):
+                data = loaded
+        data["degrade_annotation"] = annotation
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
 # ── 渲染 ─────────────────────────────────────────────────────────
 
 def _derive_status(run_result, report) -> str:
@@ -303,11 +356,16 @@ def _render_scenarios_table(report) -> list:
 
 
 def render_verification_report(spec_name, run_result, report, now=None,
-                              project_root=None) -> str:
+                              project_root=None, degrade_annotation=None) -> str:
     """把结构化数据渲染为人读报告 Markdown。
 
     纯函数：不做 IO、不写文件，便于测试与下游复用。project_root 用于读取验证链
     token 侧车（add-cost-observability 2.2），缺失时跳过「本链增量 token」行。
+
+    add-planready-artifact-gate D4：degrade_annotation 为可选降级标注 dict
+    （reason/run_id/duration_seconds/cost_usd/degraded_at，源自 degrade_context.json），
+    存在时在报告头部追加「⚠️ 降级说明」引用块；缺省 None 时零渲染（正常报告
+    不含该标注，与无降级时逐字节一致）。
     """
     status = _derive_status(run_result, report)
     passed, failed, errors, total = _summary_counts(report)
@@ -325,6 +383,30 @@ def render_verification_report(spec_name, run_result, report, now=None,
         f"内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。"
     )
     lines.append("")
+
+    # ── 降级说明引用块（add-planready-artifact-gate D4，G3 留痕）──
+    # 新验证流程 planner 阶段失败降级 legacy verifier 时，合成报告须标注降级
+    # 原因与被降级轮次代价（不再静默合成）。
+    if isinstance(degrade_annotation, dict):
+        reason = str(degrade_annotation.get("reason") or "未知原因")
+        run_id = str(degrade_annotation.get("run_id") or "未知 run")
+        duration_s = degrade_annotation.get("duration_seconds")
+        cost_usd = degrade_annotation.get("cost_usd")
+        if isinstance(duration_s, (int, float)):
+            minutes = f"{float(duration_s) / 60:.1f}min"
+        else:
+            minutes = "时长未知"
+        cost_part = ""
+        if cost_usd is not None:
+            try:
+                cost_part = f"/${float(cost_usd):.2f}"
+            except (TypeError, ValueError):
+                cost_part = ""
+        lines.append(
+            f"> ⚠️ 降级说明：本报告由框架合成（新验证流程 planner 阶段失败："
+            f"{reason}；被降级轮次 {run_id} 烧 {minutes}{cost_part}）"
+        )
+        lines.append("")
 
     # ── 结论标题（内联状态，parse_verdict 的 status 来源）──
     if status == "bug-found":
@@ -432,6 +514,11 @@ def synthesize_verification_report(project_root, spec_name, now=None) -> dict:
 
     返回 {"ok": True, "path": <str>}；结构化数据缺失/不可解析时返回
     {"ok": False, "error": <文案>}，且不写任何文件（不产出空报告）。
+
+    add-planready-artifact-gate D3：合成路径读取 degrade_context.json，存在时
+    degrade_annotation 注入渲染 **并持久化到 report.json 顶层**（后续读取报告
+    ——时间轴/报告页/CLI——能还原降级事实与代价，G3）。无 degrade_context.json
+    时零注入零渲染（正常报告不含该字段）。
     """
     report = _load_report_json(project_root, spec_name)
     run_result = _load_run_result(project_root, spec_name)
@@ -452,7 +539,19 @@ def synthesize_verification_report(project_root, spec_name, now=None) -> dict:
         report = dict(report or {})
         report["scenarios"] = resolved_scenarios
 
-    content = render_verification_report(spec_name, run_result, report, now=now, project_root=project_root)
+    degrade_annotation = _load_degrade_context(project_root, spec_name)
+    if degrade_annotation is not None:
+        # 持久化到 report.json 顶层（design D3：随报告结构持久化，非仅日志）
+        _persist_degrade_annotation(project_root, spec_name, degrade_annotation)
+        if report is not None:
+            report = dict(report)
+        else:
+            report = {}
+        report["degrade_annotation"] = degrade_annotation
+
+    content = render_verification_report(
+        spec_name, run_result, report, now=now, project_root=project_root,
+        degrade_annotation=degrade_annotation)
     out_path = (
         Path(project_root) / "spec" / "changes"
         / spec_name / "verification-report.md"
