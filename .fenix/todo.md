@@ -1,54 +1,44 @@
 最近两天的SPEC经历了许多曲折，速度慢，烧钱也多。你今晚自省时重点关注最近两天超过1个小时完成的SPEC，分析它们的耗时，除LLM网关延迟外，有什么是框架可改进的地方
 
-## 2026-09-10
+
+
+## 2026-09-11
 
 ### 浪费
-- **验证五连 blocked-env 空转暂停未硬生效**
-  - 影响：第 3 轮实现合并（23:22）后验证连打 5 轮全 blocked-env，空转至次日 02:00（约 2.5h 墙钟、该窗口 .fenix/runs/ 无任何新验证 run 产物）；SPEC 全链 3 轮实现+1 次 plan+6 次 judge 累计 $163.84 / 158.7M tokens，收官停在 implemented（未验证）需人工处置
-  - 证据：fenixd.log 16:10Z/16:12Z WARNING「第 1/2 次重验」、16:14Z/17:09Z/18:00Z ERROR「连续 3/4/5 轮全部 blocked-env，疑为 mock/SSE 推送环境故障，暂停自动重验」；STATE.md add-spec-status-modal-budget error 同文案、_cost_usd 163.836、_tokens_in 158688205
-  - 调查评估：已核实：第 3 轮合并后验证重验轮次从 00:10 打到 02:00，三次 ERROR 判「暂停」后第 4/5 轮仍被拉起，暂停未硬生效；该窗口内无对应 judge run 文件，说明验证会话在 runner 层即被环境阻断（连转录都没产出）。根因：mock/SSE 推送环境故障未被前置探测，框架在已知环境失联下继续按重验节奏调度；B1 门禁（b04843ed 白屏降级 blocked-env）让环境性失败不再被静默放行——语义正确，但暴露的是环境本身未修复（内存记忆已载：浏览器 mock_api 忽略 status 参数、SSE 覆盖竞态）。与 fix-verify-verdict-visibility / add-verify-multi-kind-runner 的验证环境知识一致，无在飞 SPEC 覆盖「环境健康判定」。结论：环境性失败须与产品失败分流，硬暂停语义值得立项（见 improvements[0]）。
-  - 建议：blocked-env 连续 ≥2 轮即硬暂停并升级 admin，暂停后禁止自动重验再次拉起（当前第 3 轮暂停后 4/5 轮仍被执行）；暂停期间不调度任何验证 run
+- **blocked-env 重验风暴 11 轮**
+  - 影响：单一 SPEC 连续 11 轮验证全部 blocked-env（16:10Z→23:39Z 约 9.5h），每轮仍空跑完整 27 场景批次；框架口径白烧 $24，SPEC 滞留 implemented 无进展近 10h，验证被迫推迟到次日 00:39 环境恢复后才通过。
+  - 证据：.fenix/logs/fenixd.log：16:10:49「第 1/3 次重验」→16:14:30「连续 3 轮…暂停自动重验」→23:39:28「连续 11 轮」，_inconclusive_attempts 3→11；16:14:30「环境健全性门: 候选=18, 探针=健康, blocked-env=10」；16:37/17:07/00:07 多次「Recovery: re-triggering verify」；修复 commit 120a9ade 自述「暂停声明后仍每小时重验 9 轮（第 3→11 轮），白烧 $24」。
+  - 调查评估：已核实（git show 120a9ade + fenixd.log）：暂停自第 3 轮（16:14Z）即声明，但 B6 recovery 的 implemented 分支只查 tester_run（暂停时恰被置 None），对 _inconclusive_attempts 暂停标记视而不见，仍每小时强推重验；且 root 探针判「健康」却 10 场景 blocked-env，说明探针未覆盖场景真实依赖的 mock API/SSE 面，环境故障未在批次前暴露。根因是「recovery 不读完整状态」的结构性缺陷（120a9ade 自注为 verified-gate「recovery 不读 error」同款变体），属系统性缺口而非一次性失误。该缺陷已由 120a9ade（09-10 08:31，implemented 分支 re-trigger 前查 _inconclusive_attempts>0 即跳过）修复，提交后窗口内未再出现同型连环重验；与 add-scenario-defect-triage-gate（缺陷分类改道）互补不重复。残余缺口：暂停不产生人工升级动作、环境恢复后无自动解冻信号，且风暴期间每轮仍全量跑 27 场景批次（健全性门失败未短路）。结论：损失已发生、修复已落地，本条为损失记录并给残余预防。
+  - 建议：在 120a9ade 基础上补两段：①blocked-env 连续 ≥3 轮时健全性门失败即短路整批执行，不再空跑 27 场景；②环境自检通过事件作为自动解冻信号，恢复后自动重验并清 _inconclusive_attempts，暂停期间升级人工告警。
 
-- **瞬态错误致实现首轮中断重做**
-  - 影响：首轮实现 23:03–00:06 共 63min（276 条 assistant 消息）因瞬态错误中断零产出，第二轮从零重做 40min/$17.90；SPEC 累计 $27.09 未含首轮成本，实际更高
-  - 证据：impl-fix-verdict-retry-misattribution-1788966172-a1 末尾 records 为 interrupted/error/transient_retry 且无 result；fenixd.log 16:06:47Z「Transient error attempt 1 in-place retry 1/3 after 30s backoff」后 19 秒即 16:07:06Z「Recovering interrupted SPEC」；第二轮 impl-1788971827 39.9min/$17.90；git log 该 SPEC 仅 2c433e9d 一个实现提交
-  - 调查评估：已核实：in-place retry 声明的瞬态重试未能救回会话——19 秒内转为 Recovering interrupted，进程级死亡导致首轮 63min 工作全丢（独立 worktree 未提交内容在第二轮全新 worktree 中不可见）；首轮成本未计入 STATE _cost_usd（27.09 = 第二轮 17.90 + plan 5.45 + judge 3.74，账实不符）。根因：run 级无 checkpoint/恢复协议，瞬态失败=整轮重做，且中断 run 成本漏账影响预算告警阈值判断。与 fix-provider-transient-backoff（活跃，未归档）互补：其仅覆盖 API 请求级 in-place 重试，未覆盖会话/进程级中断。结论：checkpoint 续跑 + 中断成本入账为系统能力缺口（见 improvements[2]）。
-  - 建议：实现 run 按任务阶段周期落 checkpoint，瞬态中断后从 checkpoint 续跑而非新开 worktree 从零开始；无 result 的中断 run 成本计入 SPEC 的 _cost_usd/_tokens_in
-
-- **新验证流程 planner 白烧 7.5 分钟**
-  - 影响：planner 未生成有效场景（status=None），白烧 7.5min/$2.28，降级旧版 verifier 补跑 12.6min/$2.48 且报告由框架合成；新验证流程（planner 出题→judge）首次实战即失败
-  - 证据：fenixd.log 15:39:18Z ERROR「Planner 未生成有效场景 'add-verdict-contract-singularity'（status=None，run=planner-plan-add-verdict-contract-singularity-1788967907-a1，白烧 7.5min）— 降级旧版 verifier」；run 1788967907 duration 7.1min cost $2.28；verify-add-verdict-contract-singularity-1788968358 12.6min/$2.48
-  - 调查评估：已核实：add-verdict-contract-singularity 实现合并（23:31）后新验证流程 planner 出题返回 status=None，pm_engine 判白烧并降级旧版 verifier，最终验证报告为框架合成（验证报告闸门 WARNING 15:52:25Z）。根因：planner 出题失败无内联重试、无失败诊断即降级，属系统缺口而非一次性失误。与 add-planner-efficiency（活跃，路由地图/生成节流/延迟直方图）互补：其优化 planner 轮次与延迟，未覆盖「出题失败重试与降级留痕」。结论：低成本改进，值得直接落地。
-  - 建议：planner 出题 status=None 时把失败原因内联进 prompt 重试一次，仍失败才降级；降级须在验证报告标注降级原因与代价
+- **budget SPEC 三番重建约**
+  - 影响：add-spec-status-modal-budget 从 spec 创建（09-09 04:28Z）到 verified（09-10 00:39Z）近 20h：3 次 spec 重建、3 轮实现合计 381min、7 次 judge 重试；框架口径累计 $119.37（三轮实现）+$22.55（replan）+$9.27（judge 重试）+$24（blocked-env 风暴）≈$151，为近期最大单点损耗。
+  - 证据：spec 三连提交 f35979b6(12:28)/101753ca(18:15)/6aa7d6a0(21:45)；impl run 1788928128/1788948951/1788961506 时长 118.6/165.5/97.2min；judge 1788945507「场景文件缺陷 25 个」、1788947632「19 test-defect」、1788959262/1788960304 各 12-13 test-defect、1789000547 终验「0 bug 19 warning 全 flaky」；金额出自 add-scenario-defect-triage-gate proposal Why 段。
+  - 调查评估：已核实：耗时由三层叠加——①环境/夹具前置缺陷：dashboard.yaml ignored 列表含已软删除项目 /root/scheduling-showcase，10 个 web 场景跨 5 轮 404/test-defect 未收敛（judge 1788945507 实证）；②judge 将 100% 场景缺陷申报 bug-found 打回 implementer，而框架 bug-found 路由不读 classification，两轮实现（$88+）被整轮耗在改场景文件（triage-gate proposal 实证）；③SSIM 视觉抖动 flaky 每轮 7-19 个且 DOM 全过，拉长每轮归因。根因属多环节系统性缺口，但大部分已被随后落地的 SPEC 覆盖：add-scenario-defect-triage-gate（静态扫描+bug-found 分类改道门，09-10 11:51 merge）、120a9ade（暂停语义）、b04843ed（白屏降级 blocked-env 不再静默放行）。残余缺口仅在「验证环境/夹具脏数据前置自检」与「SSIM flaky 治理」两处（见 improvements 两条）。结论：本 SPEC 是多条框架修复的直接触发源，损失已记录，防复发依赖残余两项。
+  - 建议：以 add-scenario-defect-triage-gate 已落地的静态扫描为基底扩展：验证启动前对 registry/dashboard 配置的项目残留与 ignored 脏数据做预检（模式表扩展至环境配置面），从源头拦下同类「环境脏→整批场景失败→多轮打回」的循环。
 
 ### 失误
-- **跨轮场景写回缺陷拖出第三轮实现**
-  - 影响：第 1 轮验证 27 场景 20 失败中 19 个为 test-defect（12 个跨轮已裁决场景原样写回未自建夹具），第 2 轮验证仍以场景缺陷失败，拖出第 3 轮实现 97min/$24.35 主要修场景文件；三轮实现累计 $119.37 + 出题 plan 144min/$22.55 产出即缺陷场景
-  - 证据：verification-report.md（2026-09-09T10:15:51Z 合成）「12 个跨轮已裁决场景原样写回（行选择器未匹配/项目列表空，seed 未自建 registry 夹具）+ 7 个新增 test-defect，唯一真 bug 为 clamp_impl_run_budget 非整数强转」；commit 6faace7d「复核失败有效性并修复场景文件缺陷」；impl 三轮成本 31.15+63.87+24.35、plan 1788935322 143.8min/$22.55、round-2 三次 judge $9.27
-  - 调查评估：已核实：round-1 验证把 20 个失败中 19 个归因为 test-defect，唯一产品 bug（clamp 非整数强转）第 2 轮 166min/$63.87 已修，但其验证（21:07/21:25/21:39 三次 judge，$9.27）仍失败，第 3 轮实现标题即「复核失败有效性并修复场景文件缺陷」——整轮消耗在框架自身出题缺陷上；出题 plan 单独烧掉 144min。根因：planner 出题跨轮写回已裁决场景时未重跑 seed 夹具、行选择器/antd 双汉字空格/弹窗遮罩等已知 test-defect 模式无 judge 前静态预检。与 fix-frozen-scenario-orphan-reservoir（已归档，写端 schema 门/加载净化/replan 消费硬门）互补但未覆盖「seed 自建校验」与「已知模式预检」。结论：场景静态自检前置可省一个实现轮 + 至少两轮 judge。
-  - 建议：场景文件进 judge 前做静态自检：seed 步骤须自建 registry 夹具（禁止依赖跨轮残留）、行选择器存在性、antd 双汉字按钮空格等已知模式；检出缺陷直接归场景侧并就地修复，不占用实现尝试预算
-
-- **实现预算闸门未收口 token 超限 58%**
-  - 影响：100M token 预算第 2 轮结束即超（132.23M/134.77M 告警），第 3 轮仍启动续跑至 158.7M（超 58.7%）；实现尝试 used=3 用尽后 SPEC 悬停在 implemented（未验证）而非冻结 blocked，留人工处置尾巴
-  - 证据：fenixd.log 13:04Z/13:23Z「token budget alert (warning) for 'add-spec-status-modal-budget': 132.23M/134.77M / 100M」；STATE.md _tokens_in 158688205、_impl_run_budget_used 3、status implemented + error「连续 5 轮…」；15:22:43Z state_machine ERROR「Invalid transition: blocked → implemented」
-  - 调查评估：已核实：token 预算超限仅告警不阻断，第 3 轮照常启动；used=3 用尽后因末轮验证为 blocked-env（非 bug-found）状态机无收口路径，SPEC 停在 implemented 而非 blocked，且合并轮出现 blocked→implemented 非法迁移报错，状态漂移可见。根因：预算闸门缺 warning→pause→freeze 档位；blocked-env 终态无「预算用尽强制冻结」规则。与 add-spec-status-modal-budget 自身（本 SPEC 恰是实现次数预算功能）互为表里：次数预算已实现，token 预算硬停与终态收口仍是洞。结论：预算闸门加硬档位 + 环境性终态强制落 blocked 可立项。
-  - 建议：token/实现预算提供 warning→pause→freeze 可配档位（超 100% 硬停）；验证终态为 blocked-env 且实现预算用尽时强制落 blocked 等 admin，杜绝 implemented 悬置
+- **两 SPEC 首轮零提交被打回重派**
+  - 影响：add-verdict-credibility-gate 首轮 run 1789001677（36.5min）与 add-impl-wip-checkpoint 首轮 run 1789002687（31.8min）双双因分支零提交被交付物守卫打回重派，合计约 68min 实现时间白耗 + 2 次 dispute-judge（164s/320s）+ 重派延迟，两 SPEC 整体耗时因此达到 2.1h / 1.4h。
+  - 证据：守卫日志：01:31:39/01:44:02 置 blocked → 01:34:31/01:49:29「缺件 [core/verify_engine/screenshot_lab.py] / [tests/test_impl_wip_checkpoint.py] 重派（第 1 次）」；dispute-judge 1789003899「实现分支零实现提交，分支顶即 SPEC 立项提交」、1789004641「已写出文件且 pytest 15 passed，但全程未 commit，worktree 清理后全部丢失」。
+  - 调查评估：已核实（守卫日志 + 两份 dispute 裁决 + run 转录）：两案均非「实现了但文件名对不上」的误判，守卫裁决经四层核实严谨成立。根因在 run 生命周期：credibility a1 转录末行（01:31:34）是实现完成、正要执行 git add 时 run 被切断，成果未上分支；wip a1 则是写毕未 commit 即终态，收口清理吞掉全部产物（dispute-judge 自注「正是本 SPEC 锚点 A 要防的问题，在自身实现轮上先发生」）。add-interrupt-recovery-preserve（09-05 落地）只覆盖「排水超时 terminate 在跑 run」，add-impl-wip-checkpoint 锚点（09-10 10:37 merge）只覆盖排水完成与 transient 退避两个锚点，二者均不含「run 正常终态但零提交」的保全与检测——属系统性残留缺口而非一次性失误。守卫虽兜住了「无据产物不合并且重派」，但时点在成果丢失之后。结论：每个零提交 run 以整轮重做（实测 32-36min/轮）为代价，值得修复。
+  - 建议：对 run 终态增加两道检查：①分支相对 main 零新 commit 即判异常终态并携带原因透传（区分截断/忘记提交）；②正常终态但有未提交产物时先 stash/快照留档再清理 worktree。另把「最终必交付物清单」纳入实现者 prompt 的收尾自检段，防整轮漏交付。
 
 ### 可改进
-- **验证前置环境健康探针缺失**
-  - 影响：复发敞口：同一环境故障窗口内两个 SPEC 受害——add-spec-status-modal-budget 五连 blocked-env 空转约 2.5h 墙钟，fix-verdict-retry-misattribution 因「env 失败场景不得判 verified」被洗白门禁拦截而 blocked（01:57）；B1 门禁收紧后环境性失败不再被静默放行，单次复发的验证空转代价以本轮实测为参照（验证轮无 run 产物但吞噬墙钟与调度）
-  - 证据：fenixd.log 17:57:21Z「verified 洗白门禁拦截 'fix-verdict-retry-misattribution': env 失败场景不得判 verified（须升级 admin 处置）」+「验证环境阻塞第 1 轮，自动呼叫 Administrator」；同窗口 add-spec-status-modal-budget 五连 blocked-env；b04843ed「B1 白屏降级 blocked-env——首帧 8s 超时不再静默放行」
-  - 调查评估：已核实：17:57:21Z 洗白门禁正确拦截 env 失败场景（fail-closed 语义，fix-verdict-read-failclosed 落地），但同一时段的两个 SPEC 都因环境而非产品被卡——环境故障是共同根因；serving_registry 只登记 serving 实例不做健康检查（16:17Z/17:17Z「harvested … without in-flight spec」）。根因：框架缺验证前置环境健康判定，把环境故障当验证轮次反复消耗。与 add-verify-multi-kind-runner / fix-verify-verdict-visibility 环境知识一致，无在飞 SPEC 覆盖。结论：mock/SSE 连通性探针 + 环境性失败分流语义可立项，直接治本。
-  - 建议：验证轮前探测 mock server / SSE 推送连通性（可复用 playwright-cli 自检脚本），不健康即跳过 judge 直判 blocked-env 并升级 admin；同时修复浏览器 mock_api 无法模拟 status/SSE 推送的环境缺口
+- **环境健全性门仅探根 HTTP**
+  - 影响：复发敞口：环境故障期间健全性门探针仍报「健康」而 10 场景 blocked-env（当日实测），环境真实故障无法在批次执行前暴露，每轮仍空跑 27 场景全量批次（约 1.5-2min），故障期逐轮重复消耗。
+  - 证据：16:14:30「环境健全性门: 候选=18, 探针=健康, blocked-env=10 — HTTP 探测 http://127.0.0.1:43453: 连通」；风暴 11 轮中该现象反复出现；B1（b04843ed）上线后白屏场景由静默放行改为 blocked-env，暴露此前被掩盖的环境性失败。
+  - 调查评估：已核实：健康门只做根可达性探测，未覆盖场景实际依赖的 mock API 与 SSE 推送面，故出现「根 HTTP 通 + 场景全断」并存的矛盾诊断（记忆中的 mock_api 无 status 字段、列表端点被 SSE 覆盖竞态同属该依赖面）。B1 上线使环境性失败由被掩盖转为显式 blocked-env，风暴正是该面故障的集中暴露。根因在验证环境契约缺少「场景依赖面多探针」定义；add-verify-multi-kind-runner 的 sse_connect 属场景内执行步骤、与预检探针互补不重复，add-scenario-defect-triage-gate 管场景文件、不涉环境依赖面。结论：多探针健全性门是环境故障早暴露、防整批空跑的可行立项点。
+  - 建议：立项 SPEC：健全性门扩展为多探针——按场景集依赖的 API 端点/SSE 面逐一探测，任一不健康即短路整批执行并输出含各级探针明细的诊断块，供 pm_engine 判定 blocked-env 或待环境恢复，取代单一根 HTTP 探测。
 
-- **验证场景全量重跑无增量裁剪**
-  - 影响：复发敞口：6 次 judge 全部全量 27 场景（单次 4.9–31.3min、$1.46–6.00，累计 $21.92），三轮实现每轮内部验证往返亦全量回归；按变更影响面裁剪场景子集预计省 50-60% 验证 token 与墙钟（以本轮单轮 judge 时长为参照）
-  - 证据：planner-judge-add-spec-status-modal-budget-1788944150/1788945507/1788947632/1788959262/1788960304/1788961185 六轮全量 27 场景（duration 4.9–31.3min）；三轮实现 95.1/166.2/96.8min 均含全量回归
-  - 调查评估：已核实：同一批 27 个场景在三个实现轮与六次 judge 中反复全量执行，且第 2/3 轮验证场景与第 1 轮几乎相同（跨轮写回，见 mistakes[0]），验证成本与实现轮次成正比放大。根因：验证无「变更影响面」裁剪，实现侧改动点（如 core/pm_engine/budget.py）本可只跑 CLI/单测类场景子集。与 add-planner-efficiency 路由地图互补：地图省 planner 逐轮 grep 取证，本项省场景执行量。结论：按变更文件域映射场景子集、终轮才全量的增量验证值得立项。
-  - 建议：验证按本轮实现变更文件域映射场景子集（改核心逻辑只跑 CLI/单测类场景，改 dashboard 才跑 web 场景），仅终轮/验收轮做全量；增量缺映射时降级全量并在报告标注
+- **视觉 SSIM flaky 每轮 7-19 场景**
+  - 影响：复发敞口：每轮 27 场景中 7-19 个仅截图 SSIM 失败（0.68-0.93 低于阈值）而 DOM/功能断言全过，6 轮 judge 均需重新归因，终验仍带 19 warning 入库；同类时序敏感 SPEC 将持续承受此归因 token 与验证时长。
+  - 证据：judge 1788945507/1788947632/1788959262/1788960304/1788961185/1789000547 六轮 flaky 计数 1/8/7/6/8/19，全部标注「视觉 SSIM 时序抖动、DOM 断言通过、无 console error」；终验 1789000547「verified，19 warning 全 flaky」。
+  - 调查评估：已核实：flaky 集中在弹窗/菜单/状态位等截图时序敏感 web 场景，属拍照未 settle 的视觉校验噪声而非功能缺陷；框架已有跨轮指纹比对复用既往判定（终验「跨轮已裁决 8 场景原样写回」），但首轮仍需全量执行+逐场景归因，每轮 7-19 个 warning 显著拉长 judge 档期。现有 SPEC 链（triage 分类/守卫/暂停语义）均不涉截图稳健性，无重叠。结论：verify_engine 视觉校验稳健性（settle 等待/自动重拍/阈值校准）是独立、可量化、修复面明确的立项点。
+  - 建议：立项 verify_engine 视觉校验稳健性 SPEC：截图前按场景类型增加 settle 等待、SSIM 低于阈值自动重拍（限次）、按弹窗/列表/整体页分类校准阈值，目标把每轮 flaky 噪声压到 <3 并缩短首轮判定时长。
 
-- **run 级 checkpoint 恢复与中断成本入账缺失**
-  - 影响：复发敞口：瞬态失败即整轮重做，本轮 fix-verdict-retry-misattribution 首轮 63min 全丢、重做 40min/$17.90（waste[1] 实测）；且中断 run 成本未计入 _cost_usd，SPEC 级成本核算与预算告警阈值因此失真
-  - 证据：waste[1] 全部证据；STATE.md fix-verdict-retry-misattribution _cost_usd 27.088（=第二轮 17.90+plan 5.45+judge 3.74，首轮缺失）；fix-provider-transient-backoff 仍在 spec/changes/ 活跃未归档
-  - 调查评估：已核实：fix-provider-transient-backoff 的 in-place retry 只覆盖 API 请求级瞬态，本次实证在进程/会话级中断时失效（retry 声明 19 秒后即 Recovering）；run 无阶段 checkpoint，中断即从零重做，成本也无归集。根因：run 生命周期缺 checkpoint/恢复协议与中断成本核算。与 fix-provider-transient-backoff（活跃）互补不重复：其解决请求级重试，本项解决会话级恢复与账实。结论：implementer 阶段 checkpoint + 无 result run 成本入账作为系统能力可立项。
-  - 建议：为 implementer run 定义阶段 checkpoint 协议（每完成一任务阶段落盘工作树快照/任务进度），瞬态中断后续跑同一 worktree 而非新开；成本核算把无 result 的中断 run 计入 SPEC 的 _cost_usd 与 _tokens_in
+- **run 终态零提交缺保全与异常检测**
+  - 影响：复发敞口：run 结束判定不校验「分支相对 main 是否有新 commit」，也不对工作区未提交产物做保全，收口清理即全丢；本次两案合计 68min 首轮实现白耗，每次复发的单轮代价为整轮重做（实测 32-36min）。
+  - 证据：credibility a1 转录末行 01:31:34 为中断的 git add 工具调用、01:31:39 守卫随即打回；wip a1 转录 280/337 行有 pytest 15 passed 但全程无 commit；两份 dispute-judge 裁决均确认「分支零提交、产物随 worktree 清理丢失」。
+  - 调查评估：已核实：两 run 均为「正常终态却零提交」，产物在守卫打回后随 worktree 清理全部丢失。既有机制覆盖边界已核实：interrupt-recovery-preserve 只覆盖「排水超时 terminate 在跑 run」（前置条件 branch ahead>0），wip-checkpoint 锚点 A/B 只覆盖排水完成与 transient 退避两个生命周期点，均未覆盖「run 自然终态但有未提交产物」——本次正是该盲区实证。守卫兜底有效但时点滞后于成果丢失，属『先损失后告警』。结论：run 终态统一保全+零提交异常检测是明确可立项的系统性缺口，与既有两 SPEC 互补不重复。
+  - 建议：立项/扩项 SPEC：run 生命周期收口路径统一增加「有未提交产物→stash/快照留档并取证」「零提交→异常终态并携带原因」双检查，配合守卫打回信息把缺件清单直接回灌重派 run，消除整轮重做。
