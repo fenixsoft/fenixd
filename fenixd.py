@@ -48,6 +48,10 @@ from core.worktree_manager import WorktreeManager
 from core.agent_runner import AgentRunner
 from core.agent_runner.runner import ADMIN_DISPOSITION_GLOB
 from core.v2_dev_server import cleanup_orphans as v2_cleanup_orphans
+from core.wip_checkpoint import (
+    ANCHOR_DRAIN_PRESERVE,
+    commit_wip_checkpoint,
+)
 from core.admin_store import AdminStore, DISPOSITION
 from core.admin_monitor import AdminMonitor
 from core.hook_engine import HookEngine
@@ -1074,6 +1078,43 @@ class FenixDaemon:
             )
         return sorted(seen_wt)
 
+    def _wip_checkpoint_preserved_worktrees(self, preserved_wts: list) -> None:
+        """锚点 A（add-impl-wip-checkpoint D2）：排水超时收口静默窗口的 WIP 提交。
+
+        在 ``wait_for_running_agents()`` 之后（所有在飞 agent 进程已死、
+        worktree 静默可证明）、``cleanup_orphans`` 之前调用，对保全集每个
+        worktree 执行一次 ``fenix(wip): checkpoint drain-preserve <spec>``
+        提交——使中断时刻分支必有可恢复提交（ahead ≥ 1），下一 daemon 的
+        ``_recovery_preserve_spec`` 保留续做判定自然命中，不再降级清空重建。
+
+        空变更（git status --porcelain 为空）跳过；git 操作 15s 超时；任何
+        失败仅 WARNING 留痕不阻塞收口（D6，与 _preserve_interrupted_runs
+        同风格的尽力而为保全）。
+        """
+        if not preserved_wts:
+            return
+        # 以 sidecar 为 worktree → spec 映射源（_preserve_interrupted_runs
+        # 刚写入，进程内存条目与落盘一致；读失败按「无映射」跳过提交）。
+        wt_to_spec = {
+            e.get("worktree"): e.get("spec")
+            for e in _read_preserve_sidecar()
+            if e.get("worktree") and e.get("spec")
+        }
+        for wt in preserved_wts:
+            spec = wt_to_spec.get(str(wt)) or ""
+            try:
+                commit_wip_checkpoint(
+                    wt, spec or "unknown", ANCHOR_DRAIN_PRESERVE,
+                    self.logger,
+                )
+            except Exception as e:
+                # 兜底：helper 理论上不抛，防御性捕获保证收口序列不被打断
+                self.logger.warning(
+                    "fenixd",
+                    f"WIP checkpoint (drain-preserve) failed for '{wt}': "
+                    f"{e} — non-blocking",
+                )
+
     @staticmethod
     def _spec_from_run_id(run_id: str) -> Optional[str]:
         """run_id（``<prefix>-<spec>-<ts>-a<attempt>`` 或无 attempt 后缀）→ spec 名。
@@ -1178,6 +1219,12 @@ class FenixDaemon:
             # 不传 timeout 以沿用 AGENT_TERMINATE_GRACE_SECONDS，确保总关停 ≪ supervisor 60s。
             # 排水到期残留 run 在此收口（sidecar 保全已先行落盘）。
             self.agent_runner.wait_for_running_agents()
+            # add-impl-wip-checkpoint（锚点 A / D2）：所有在飞 agent 进程已死、
+            # worktree 静默可证明，在 cleanup_orphans 之前对保全集 worktree 逐个
+            # WIP 提交——中断时刻分支必有可恢复提交（ahead ≥ 1），下一 daemon
+            # _recovery_preserve_spec 保留续做判定自然命中，不再降级清空重建。
+            # 失败仅 WARNING 留痕，不阻塞后续 _v2_stop_all 和 cleanup_orphans（D6）。
+            self._wip_checkpoint_preserved_worktrees(preserved_wts)
             # add-worktree-test-server（D2 关闭回收）：agent 收尾后回收全部在册 dev-server，
             # 释放端口，避免遗留进程占用。
             try:

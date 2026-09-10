@@ -74,6 +74,10 @@ from core.v2_dev_server import (
     base_url as v2_base_url,
     cleanup_orphans as v2_cleanup_orphans,
 )
+from core.wip_checkpoint import (
+    ANCHOR_TRANSIENT_BACKOFF,
+    commit_wip_checkpoint,
+)
 
 
 # 无 provider 分配的 agent（含 Administrator）走默认网关（cc-switch）时 --model 用的
@@ -1531,6 +1535,39 @@ class AgentRunner:
         except (OSError, subprocess.TimeoutExpired):
             return False
 
+    def _wip_checkpoint_before_backoff(self, spec_name: str, wt_path) -> None:
+        """锚点 B（add-impl-wip-checkpoint D3）：transient 原地退避前的 WIP 提交。
+
+        attempt 循环判定瞬断、写入 ``transient_retry`` 记录后、进入
+        ``time.sleep(backoff)`` 前调用——此刻子进程已退出、worktree 静默可
+        证明。对当前 attempt 使用的 worktree 执行 ``fenix(wip): checkpoint
+        transient-backoff <spec>`` 提交：即便 daemon 在退避窗口内死亡重启，
+        该分支上已有可恢复提交，recovery 走保留续做而非降级重建。
+
+        无 worktree 载体（pre_wt_path 为 None 且本 attempt 未建且不等于复用
+        路径）或路径已失效时跳过——现行行为逐字节不变。失败由 helper 内部
+        WARNING 降级，不阻断退避循环。
+        """
+        if wt_path is None:
+            return
+        if not self._worktree_path_valid(wt_path):
+            self.logger.debug(
+                "agent_runner",
+                f"WIP checkpoint (transient-backoff) skip: worktree "
+                f"{wt_path} not a valid git worktree for '{spec_name}'",
+            )
+            return
+        try:
+            commit_wip_checkpoint(
+                wt_path, spec_name, ANCHOR_TRANSIENT_BACKOFF, self.logger)
+        except Exception as e:
+            # 兜底：helper 理论上不抛，防御性捕获保证退避循环不被打断
+            self.logger.warning(
+                "agent_runner",
+                f"WIP checkpoint (transient-backoff) failed for '{spec_name}': "
+                f"{e} — non-blocking",
+            )
+
     def _execute_agent(self, spec_name: str, agent_type: str, run_id: str,
                        pre_wt_path: Path | None = None,
                        conflict_summary: dict | None = None) -> AgentRunResult:
@@ -2025,6 +2062,10 @@ class AgentRunner:
                             f"{transient_retries}/{len(transient_budget)} "
                             f"after {backoff}s backoff (add-judge-artifact-gate)",
                         )
+                        # 锚点 B（add-impl-wip-checkpoint D3）：transient_retry
+                        # 记录写后、sleep 前的静默窗口 WIP 提交——即便 daemon 在
+                        # 退避窗口内死亡，分支上已有可恢复提交（无载体则跳过）。
+                        self._wip_checkpoint_before_backoff(spec_name, wt_path)
                         time.sleep(backoff)
                         continue
                     break  # 原地预算耗尽 → 退出 while，attempt 层继续重试
@@ -2148,6 +2189,10 @@ class AgentRunner:
                                     f"{transient_retries}/{len(transient_budget)} "
                                     f"after {backoff}s backoff (fix-provider-transient-backoff)",
                                 )
+                                # 锚点 B（add-impl-wip-checkpoint D3）：transient_retry
+                                # 记录写后、sleep 前的静默窗口 WIP 提交——即便 daemon 在
+                                # 退避窗口内死亡，分支上已有可恢复提交（无载体则跳过）。
+                                self._wip_checkpoint_before_backoff(spec_name, wt_path)
                                 time.sleep(backoff)
                                 continue  # 回到 while 顶部重跑同一 attempt（新 sub_run_id）
                             # 非瞬断或原地预算耗尽 → 现行切换逻辑
