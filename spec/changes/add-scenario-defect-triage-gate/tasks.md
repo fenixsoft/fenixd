@@ -17,9 +17,9 @@
 
 ## 1. 静态扫描器模块（scenario-static-defect-scan R1/R3）
 
-- [ ] 1.1 新建 `core/verify_engine/scenario_static_check.py`：模式表驱动的扫描器主体（模式表 = 模块级数据结构：rule_id / 适用 kind / 匹配函数），初始三模式——①cli/api 场景 command/stdin 字面端口 ≠ 本轮 serving 端口（rule_id=stale_literal_port）、②web navigate URL 字面端口 ≠ serving 端口（rule_id=stale_navigate_port）、③双汉字文本选择器（rule_id=double_han_text_selector）；finding 结构含 scenario_id/rule_id/location/message
-- [ ] 1.2 实现 fail-open 边界：扫描任何异常记 WARNING 返回空 findings（不抛出）；serving 端口未知时端口比对类模式整体跳过（双汉字纯文本模式仍执行）
-- [ ] 1.3 扫描器单测 `tests/test_scenario_static_check.py`：跨轮端口残留检出、端口一致不误报、双汉字检出、恰 2 汉字边界（1/3 汉字不报）、异常 fail-open、端口未知时端口模式跳过
+- [x] 1.1 新建 `core/verify_engine/scenario_static_check.py`：模式表驱动的扫描器主体（模式表 = 模块级数据结构：rule_id / 适用 kind / 匹配函数），初始三模式——①cli/api 场景 command/stdin 字面端口 ≠ 本轮 serving 端口（rule_id=stale_literal_port）、②web navigate URL 字面端口 ≠ serving 端口（rule_id=stale_navigate_port）、③双汉字文本选择器（rule_id=double_han_text_selector）；finding 结构含 scenario_id/rule_id/location/message
+- [x] 1.2 实现 fail-open 边界：扫描任何异常记 WARNING 返回空 findings（不抛出）；serving 端口未知时端口比对类模式整体跳过（双汉字纯文本模式仍执行）
+- [x] 1.3 扫描器单测 `tests/test_scenario_static_check.py`：跨轮端口残留检出、端口一致不误报、双汉字检出、恰 2 汉字边界（1/3 汉字不报）、异常 fail-open、端口未知时端口模式跳过
 
 ## 2. 扫描挂点与 judge 情报注入（scenario-static-defect-scan R2）
 
