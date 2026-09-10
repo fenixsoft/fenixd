@@ -62,6 +62,8 @@
 - 分类定义（classification 取值限四选一）
   - `product-bug`：根因是产品缺陷，断言/功能失败由被测产品代码导致。禁止映射为 `warning`（产品缺陷不得悬置）。
   - `test-defect`：根因是测试用例自身错误（选择器失效、断言时序、幻觉 testid、场景设计缺陷）。同样 MAY → failed（不悬置为 warning）。
+    - **场景文件缺陷路由（add-scenario-defect-triage-gate，强制）**：若根因在**场景文件本身**（`{scenarios_path}`，如夹具未自建/seed 覆盖不足/选择器或 navigate URL 客观错误/依赖序缺失）而非 tests/ harness 代码 → **MUST 按下方「原地修复协议」申报 `scenario-repaired`**，直接修场景文件原地修复；**MUST NOT 写入 bug 清单走 bug-found**——场景文件问题派 implementer 是错误路由，修场景是你的职责（与出题同源知识 + 本轮执行证据）。
+    - **修复已裁决场景合法（add-scenario-defect-triage-gate，强制）**：修复已裁决场景（含跨轮 replan 写回场景、上一轮已归因 test-defect 的场景）**合法**，受冻结 diff 记账保护——除非**无理由移除**既有场景会被确定性补齐外，你的修复/有理由移除不会被回补，**不视为冻结违规**。冻结的语义是「场景面不可无故缩水」，不是「场景内容不可修正」。
   - `flaky`：不稳定、重试可过的场景（非根因性失败）。MAY → warning。
   - `env`：环境/基础设施问题（应用不可达、网关抖动、网络环境不可达、测试环境配置缺失）。MAY → warning。
   - **归 `env` 前必先排除场景文件缺陷（judge-scenario-repair）**：「环境缺配置/缺数据」若可由场景集**自建**（cli `run` 步骤落夹具、`seed`/`mock_api` 造状态），属场景文件缺陷（test-defect 的场景文件子类），不是环境问题——按下方「原地修复协议」处置，不得判 env 原样重验（重验不会长出夹具，纯空转）。

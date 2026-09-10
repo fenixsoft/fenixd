@@ -478,6 +478,56 @@ class TestPromptsAPI:
         assert data["project"]["extras"]["verifier"] == ""
 
 
+# ── add-scenario-defect-triage-gate 4.2：prompt 构建回归核对 ────────────────
+# planner-judge prompt 含新路由指引；其余 agent 类型模板逐字节不变
+#（模板改动不外溢——本 SPEC 仅修订 agents/planner-judge.md）。
+
+
+class TestJudgeRoutingGuidanceRegression:
+    """Task 4.2：judge prompt 路由指引回归核对。"""
+
+    def test_planner_judge_prompt_contains_routing_guidance(self, tmp_path):
+        """planner-judge prompt（模板主体）含场景文件缺陷路由指引与修复合法性声明。"""
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        template = (AGENT_PROMPT_DIR / AGENT_PROMPT_FILES["planner-judge"]).read_text(
+            encoding="utf-8")
+        assert "场景文件缺陷路由" in template
+        assert "MUST 按下方「原地修复协议」申报" in template
+        assert "修复已裁决场景合法" in template
+        assert "不视为冻结违规" in template
+
+    def test_planner_judge_built_prompt_has_guidance(self, tmp_path):
+        """端到端 build_prompt(planner-judge) 含新指引（模板是 prompt 唯一真相）。"""
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "planner-judge")
+        assert "场景文件缺陷路由" in prompt
+        assert "修复已裁决场景合法" in prompt
+        assert "不视为冻结违规" in prompt
+
+    def test_other_agent_prompts_unmodified(self, tmp_path):
+        """其余 agent 类型模板逐字节不含本 SPEC 新指引（改动只落在 planner-judge.md）。"""
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        for agent_type in AGENT_TYPES:
+            if agent_type == "planner-judge":
+                continue
+            template = (AGENT_PROMPT_DIR / AGENT_PROMPT_FILES[agent_type]).read_text(
+                encoding="utf-8")
+            # 新指引关键词不得外溢到其他 agent 模板
+            assert "场景文件缺陷路由" not in template
+            assert "修复已裁决场景合法" not in template
+
+    def test_verify_listed_prompt_files_match_tasks(self, tmp_path):
+        """tasks.md 声明的 agents/planner-judge.md 修改已落实（git 工作区快照）。"""
+        from core.agent_runner.prompt_builder import AGENT_PROMPT_FILES
+        assert AGENT_PROMPT_FILES["planner-judge"] == "planner-judge.md"
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

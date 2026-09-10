@@ -2374,6 +2374,14 @@ class PMEngine:
     def _apply_scenario_freeze(self, spec_name: str) -> dict:
         return self._verification._apply_scenario_freeze(spec_name)
 
+    def _run_scenario_static_check(self, spec_name: str) -> None:
+        return self._verification._run_scenario_static_check(spec_name)
+
+    def _scenario_defect_reroute_gate(self, spec_name: str, _repair_depth: int,
+                                      judge_result) -> bool:
+        return self._verification._scenario_defect_reroute_gate(
+            spec_name, _repair_depth, judge_result)
+
     def _apply_interaction_contract(self, spec_name: str) -> dict:
         return self._verification._apply_interaction_contract(spec_name)
 
