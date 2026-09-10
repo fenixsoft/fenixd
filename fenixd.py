@@ -1107,6 +1107,11 @@ class FenixDaemon:
         # 造成「杀一个又起一个」的关闭死循环
         if self.pm_engine:
             self.pm_engine.shutting_down = True
+        if self.agent_runner:
+            # shutdown 守卫信号源（shutdown-interrupted guard）：runner attempt
+            # 循环据此区分「框架主动终止」与「网关瞬断」——不误判、不排僵尸
+            # 原地重试、不污染瞬断熔断计数。
+            self.agent_runner.shutting_down = True
 
         if self._admin_thread:
             self._admin_thread.join(timeout=5)

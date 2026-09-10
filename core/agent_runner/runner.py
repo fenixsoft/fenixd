@@ -491,6 +491,12 @@ class AgentRunner:
     Manages retry logic, run limits, and result tracking.
     """
 
+    # shutdown 守卫信号（shutdown-interrupted guard）：daemon 关停入口置位
+    # （fenixd.shutdown），时序上早于一切子进程 SIGTERM——attempt 循环失败分支
+    # 据此把「框架主动终止」与「网关瞬断」区分开。类属性缺省 False：绕过
+    # __init__ 的测试构造（__new__）无需逐处补默认。
+    shutting_down = False
+
     def __init__(self, config: dict, worktree_manager, state_machine,
                  project_root: Path, logger):
         self.config = config
@@ -1596,6 +1602,9 @@ class AgentRunner:
         # 或 attempt 顶部旗标命中）。cancelled_flag 为 True 时不再进入下一 attempt。
         cancelled_flag = False
         cancel_reason = ""
+        # shutdown-interrupted 守卫（2026-09-09 事故）：本 run 被框架主动终止。
+        # True 时不再进入下一 attempt、终态保留现场交 recovery/保全处置。
+        shutdown_interrupted = False
 
         for attempt in range(1, max_retries + 1):
             attempt_run_id = f"{run_id}-a{attempt}"
@@ -2013,6 +2022,28 @@ class AgentRunner:
                     turns = 0
                     success = False
                     error = str(e)
+                    # ── shutdown-interrupted 守卫（2026-09-09 事故）──
+                    # 框架主动终止/daemon 濒死期间的失败不是网关的错：不做瞬断
+                    # 判定、不排原地重试、不记瞬断熔断。SIGTERM 死法（exit≠0 +
+                    # 无 result + stderr 仅 [claude-code: 诊断行）会被通道2 误判
+                    # provider-transient——排僵尸原地重试与下一 daemon recovery
+                    # 重派赛跑、污染全局瞬断指纹计数。shutting_down 置位早于一切
+                    # SIGTERM（无竞态主信号）；产物 interrupted 标记为辅（覆盖
+                    # 外部终止已带标记的形态）。先于 _record_instant_fail：濒死
+                    # 期间的快速死亡不计 spec 秒挂计数。
+                    if self.shutting_down or self._run_was_interrupted(
+                            self.project_root / ".fenix" / "runs"
+                            / f"{sub_run_id}.jsonl"):
+                        error = f"[shutdown-interrupted] {error}"
+                        shutdown_interrupted = True
+                        usage_info = self._extract_usage_info(None)
+                        self.logger.warning(
+                            "agent_runner",
+                            f"{agent_type} for '{spec_name}' terminated by daemon "
+                            f"shutdown (attempt {attempt}) — skip transient "
+                            f"classify/retry (shutdown-interrupted guard)",
+                        )
+                        break  # 原地重试子循环：退出 while，attempt 层收口
                     # cli-retry-backoff（2.1）：attempt 失败按存活时长判定秒挂并累计。
                     # 仅「进程确实启动过」的失败才判定（worktree 创建失败等进程未起的
                     # 分支走上方 return/continue，不进入本法）；框架主动 SIGTERM 由
@@ -2229,7 +2260,8 @@ class AgentRunner:
                 # - 其他 / 终态失败：清理 worktree 并回收其 dev-server，下次 attempt 全新创建。
                 # add-run-cancel D5：取消（cancelled_flag）时不再进入下一 attempt——
                 # 走终态清理路径后 break，由循环后的 cancelled 收口返回 cancelled=True。
-                if attempt < max_retries and not cancelled_flag:
+                if attempt < max_retries and not cancelled_flag \
+                        and not shutdown_interrupted:
                     time.sleep(10)  # Wait before retry
                     # fix-provider-transient-backoff（D3）：attempt 间 worktree
                     # 保留扩展到全部 agent_type——非 implementer 族复用前仍过
@@ -2237,7 +2269,14 @@ class AgentRunner:
                     # dev-server 随之复用，不重复启停。
                 else:
                     self._v2_stop_for_worktree(wt_path)
-                    if agent_type == "fast-track":
+                    if shutdown_interrupted:
+                        # daemon 濒死：保留现场交 recovery/排水保全处置——
+                        # cleanup 会销毁待保全的未提交工作（checkpoint 锚点 A
+                        # 的保护对象）；keep_for_reuse 的复用认领语义也不适用
+                        # （续做与否由下一 daemon recovery 单源决定）。
+                        kept_wt_path = wt_path
+                        handed_off.add(wt_path)
+                    elif agent_type == "fast-track":
                         self.worktree_manager.keep_for_reuse(spec_name, wt_path)
                         kept_wt_path = wt_path
                         # 终态失败保留复用遗产：下轮在同一 worktree 继承成果，
@@ -2264,7 +2303,7 @@ class AgentRunner:
                     else:
                         self.worktree_manager.cleanup(wt_path, success=False)
                     wt_path = None
-                    if cancelled_flag:
+                    if cancelled_flag or shutdown_interrupted:
                         break
 
         # All retries exhausted
@@ -2279,6 +2318,17 @@ class AgentRunner:
                 success=False, duration_seconds=duration,
                 error=error,
                 cancelled=True,
+                provider_used=provider_name, model_used=model,
+                worktree_path=kept_wt_path,
+                worktree_kept=kept_wt_path is not None,
+            )
+        if shutdown_interrupted:
+            # shutdown-interrupted 终态：error 已带 [shutdown-interrupted] 前缀；
+            # usage 按 0（异常早夭同源）且不入账（对齐取消路径，避免濒死写 STATE）。
+            return AgentRunResult(
+                run_id, spec_name, agent_type,
+                success=False, duration_seconds=duration,
+                error=error,
                 provider_used=provider_name, model_used=model,
                 worktree_path=kept_wt_path,
                 worktree_kept=kept_wt_path is not None,

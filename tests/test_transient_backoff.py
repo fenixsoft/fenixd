@@ -1198,3 +1198,88 @@ class TestRealFailureFingerprintReplay:
         ]
         fps = [ProviderCircuit.normalize_transient_fingerprint(b) for b in bugs]
         assert len(set(fps)) == 3, f"真实缺陷文本指纹应互异: {fps}"
+
+
+class TestShutdownInterruptGuard:
+    """shutdown-kill 不进瞬断通道（2026-09-09 事故守卫）。
+
+    事故：restart_request 排水收口 SIGTERM 杀在飞 implementer（exit 143 + stderr
+    仅 [claude-code: 诊断行 + 无 result），被通道2 误判 provider-transient →
+    排 30s 僵尸原地重试（与下一 daemon recovery 重派赛跑）+ 污染全局瞬断计数。
+    守卫：shutting_down 置位（无竞态主信号）或产物 interrupted 标记（辅信号）
+    命中 → 跳过瞬断判定/原地重试/熔断记账，error 打 [shutdown-interrupted]
+    前缀，终态保留 worktree 现场（交 recovery/保全处置，不 cleanup 销毁）。
+    """
+
+    def _incident_signature_error(self):
+        """精确复刻 09-09 事故签名：SIGTERM 死法 → 通道2 必命中。"""
+        return _TransientError(
+            stderr_lines=["[claude-code:ERROR] session terminated by signal"],
+            exit_code=143,
+            has_result=False,
+        )
+
+    def _build_incident_runner(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(time, "sleep", lambda _: None)
+        config = _make_chain_config("implementer")
+        config["agents"]["max_retries"] = 2
+        runner = _build_runner(tmp_path, config)
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+        runner.worktree_manager = MagicMock()
+        runner.worktree_manager.create.return_value = wt
+        runner.worktree_manager.get_branch_name.return_value = "fenix/spec-123"
+        return runner, wt
+
+    def test_shutting_down_skips_transient_retry(self, tmp_path, monkeypatch):
+        """shutting_down 置位 + 事故签名 → 不重试、[shutdown-interrupted] 前缀、保留现场。"""
+        runner, _wt = self._build_incident_runner(tmp_path, monkeypatch)
+        runner.shutting_down = True
+
+        calls = {"n": 0}
+
+        def fake_run_claude(*args, **kwargs):
+            calls["n"] += 1
+            raise self._incident_signature_error()
+
+        runner._run_claude = fake_run_claude
+        result = runner._execute_agent("test-spec", "implementer", "run-1")
+
+        # 单次调用即终态：无原地重试、无 attempt 2
+        assert calls["n"] == 1, f"应只调用一次 _run_claude，实际 {calls['n']} 次"
+        assert result.success is False
+        assert (result.error or "").startswith("[shutdown-interrupted]")
+        # 现场保留（交 recovery/保全处置），不 cleanup 销毁未提交工作
+        runner.worktree_manager.cleanup.assert_not_called()
+        runner.worktree_manager.keep_for_reuse.assert_not_called()
+        assert result.worktree_kept is True
+
+    def test_interrupted_marker_skips_transient_retry(self, tmp_path, monkeypatch):
+        """产物已带 interrupted 标记（shutting_down 未置位）→ 同样短路瞬断通道。"""
+        runner, _wt = self._build_incident_runner(tmp_path, monkeypatch)
+
+        calls = {"n": 0}
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None,
+                            spec_name=None, agent_type=None):
+            calls["n"] += 1
+            # 模拟 daemon 侧同步写入 interrupted 标记（liveness 第二步）
+            runs_dir = runner.project_root / ".fenix" / "runs"
+            runs_dir.mkdir(parents=True, exist_ok=True)
+            run_file = runs_dir / f"{run_id}.jsonl"
+            with run_file.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "type": "interrupted",
+                    "reason": "daemon shutdown",
+                    "by": "agent_runner",
+                }) + "\n")
+            raise self._incident_signature_error()
+
+        runner._run_claude = fake_run_claude
+        result = runner._execute_agent("test-spec", "implementer", "run-2")
+
+        assert calls["n"] == 1, f"应只调用一次 _run_claude，实际 {calls['n']} 次"
+        assert (result.error or "").startswith("[shutdown-interrupted]")
+        runner.worktree_manager.cleanup.assert_not_called()
