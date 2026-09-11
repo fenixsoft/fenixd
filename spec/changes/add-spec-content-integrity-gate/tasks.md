@@ -32,4 +32,4 @@
 
 - [x] 4.1 新建 `tests/test_spec_content_integrity.py`：`spec_has_content` 各形态单测（不存在/空目录/只有无关文件/有 tasks/有 proposal/只有 specs 子目录/读目录异常放行）
 - [x] 4.2 闸门命中集成断言：无内容 spec 派发前 → blocked + 告警记录 + 不启动 run；有内容 spec → 正常派发；已 blocked → 幂等不重复告警
-- [ ] 4.3 运行 `python3 .fenix/bin/fenix_spec.py status` 确认全 artifact done，并跑 lint 预检与测试套件全绿
+- [x] 4.3 运行 `python3 .fenix/bin/fenix_spec.py status` 确认全 artifact done，并跑 lint 预检与测试套件全绿
