@@ -741,6 +741,9 @@ class VerificationPipeline:
             contract = load_verify_contract(self._pm.project_root, self._pm.logger)
             if contract is not None and contract.prepare:
                 # 纯 cli 无实例形态：不建 serving worktree，prepare 在主树执行
+                # （add-main-tree-deps-provision 锚点：该案在主树 prepare 前做
+                # 依赖供给（ensure_main_tree_deps），本 SPEC 的入口预检在其
+                # 之后的 spawn 点——顺序：供给 → prepare → 预检 → spawn。）
                 err = run_prepare_steps(contract, self._pm.project_root)
                 if err:
                     return False, False, f"验证契约 prepare 失败: {err}"
@@ -786,6 +789,9 @@ class VerificationPipeline:
             wt_scope = scope == "worktree"
             # 主树 prepare 仅在实例落于主树时需要——worktree 作用域在
             # serving worktree 内构建（共享助手），主树构建纯属双倍等待
+            # （add-main-tree-deps-provision 锚点：该案在此主树 prepare 前做
+            # 依赖供给，本 SPEC 预检在其后 spawn 前——供给 → prepare → 预检
+            # → spawn。）
             if contract.prepare and not wt_scope:
                 err = run_prepare_steps(contract, self._pm.project_root)
                 if err:
