@@ -1616,6 +1616,44 @@ class VerificationPipeline:
                         f"{contract.get('uncovered')}",
                     )
 
+            # ── 契约消费期轻量自证（design D2）──
+            # mtime 变化后的首验轮执行（serve 段合法性 + 现有实例 ready 鉴别力
+            # 自检，不执行 prepare、不起实例）；自证失败 = 契约错误 fail-fast，
+            # 不进入场景执行（场景执行数=0），走 verify_contract_missing 信号
+            # 通道呼叫 Administrator。契约缺失/纯 cli 形态返回 None 天然放行。
+            selfcheck_err = None
+            try:
+                from core.verify_contract import selfcheck_contract_light
+                selfcheck_err = selfcheck_contract_light(
+                    self._pm.project_root, self._pm.logger,
+                    base_url=self._current_instance_base_url(spec_name))
+            except Exception as e:
+                # 自证自身异常 fail-open：不因自证代码缺陷牵连验证主流程
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"契约轻量自证跳过 '{spec_name}'（异常不阻断验证）: {e}")
+            if selfcheck_err:
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"契约轻量自证失败 '{spec_name}' — fail-fast 阻断场景执行: "
+                    f"{selfcheck_err}")
+                self._write_verify_contract_missing(
+                    spec_name,
+                    f"{selfcheck_err}（契约消费期轻量自证失败，场景执行数为 0）",
+                    f"项目根={self._pm.project_root}; 自证类型=轻量(mtime 门+serve 段)"
+                    f"+ready 鉴别力",
+                    recommended_action=(
+                        "Administrator 修正 .fenix/verify.yaml 验证契约：按错误信息"
+                        "中的段落与原因修正（serve 段字段/static root 目录/ready 探针"
+                        "配置），修正后 git 提交 → spec 复位 ready 触发重验证"),
+                )
+                self._escalate_env_blocked(
+                    spec_name,
+                    [selfcheck_err],
+                    title="验证环境阻塞（契约轻量自证失败）",
+                )
+                return
+
             # ── 阶段2: 验证引擎执行 ──
             self._pm.logger.info("pm_engine", f"[阶段2] 验证引擎执行: {spec_name}")
             scenarios_path = (
