@@ -2564,6 +2564,9 @@ class Dispatcher:
             "tester_run": result.run_id,
             "error": None,
             "_inconclusive_attempts": 0,
+            # add-verify-parallel-backoff / design D2：fast-track verified 是
+            # 既有清零点，降档并行度同轮复位（与 _inconclusive_attempts 同生命周期）。
+            "_verify_parallel_override": None,
             "_verify_fail_rounds": 0,
             # fix-daemon-lifecycle-races D3：验证自然通过清零点（fast-track 同语义）。
             "_verify_redo_count": 0,
