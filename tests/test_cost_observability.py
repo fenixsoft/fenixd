@@ -86,8 +86,22 @@ class TestExtractUsageInfo:
             "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
             "cost_usd": None,
         }
-        assert runner._extract_usage_info(None) == zero
-        assert runner._extract_usage_info({"type": "result"}) == zero
+        # add-turn-limit-anchor-c（D4）：result 缺失（None/非 dict）→ 四数值键
+        # 全零且置位 unobserved（观测兜底语义，非确认为零）；dict result 但无
+        # usage 字段 → 全零、正常路径不置位。
+        none_info = runner._extract_usage_info(None)
+        for k, v in zero.items():
+            assert none_info[k] == v
+        assert none_info["unobserved"] is True
+        for bad in (42, "x", ["a"]):
+            bad_info = runner._extract_usage_info(bad)
+            for k, v in zero.items():
+                assert bad_info[k] == v
+            assert bad_info["unobserved"] is True
+        dict_info = runner._extract_usage_info({"type": "result"})
+        for k, v in zero.items():
+            assert dict_info[k] == v
+        assert "unobserved" not in dict_info
 
     def test_cost_not_faked_from_zero(self):
         runner = make_runner(Path("/tmp"))
