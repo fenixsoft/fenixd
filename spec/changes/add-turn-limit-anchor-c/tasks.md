@@ -39,4 +39,4 @@
 ## 4. 回归与收尾
 
 - [x] 4.1 全量回归：`pytest tests/test_impl_wip_checkpoint.py tests/test_turn_limit_lifecycle.py tests/test_agent_runner_gate.py`（含既有终态次序钉点：error 行是文件最后一行）通过
-- [ ] 4.2 tasks.md 全部勾选 + 声明交付物对账（5 个声明路径全部有真实变更）+ `.fenix-run-result.json` 收尾
+- [x] 4.2 tasks.md 全部勾选 + 声明交付物对账（5 个声明路径全部有真实变更）+ `.fenix-run-result.json` 收尾
