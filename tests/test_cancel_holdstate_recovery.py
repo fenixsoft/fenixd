@@ -66,14 +66,17 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
         # 2026-09-11 零变更哨确认型 no-op 放行通道在 dispatch.py 前部插入 24 行，
         # implementer/fast-track/repair 写点整体后移（原 981/1817/2275 → 现
         # 1005/1841/2299），写点语义不变。
-        ("core/pm_engine/dispatch.py", 1005, "implementer"),
-        ("core/pm_engine/dispatch.py", 1841, "fast-track"),
-        ("core/pm_engine/dispatch.py", 2299, "repair"),
+        # 35706f95 之后 add-tasksmd-relint-gate（5f51eb4a）在 dispatch.py 三处
+        # 挂点、verification.py 尾部一处挂点，写点再后移
+        # （1005/1841/2299/2560 → 现 1028/1912/2391/2611），写点语义不变。
+        ("core/pm_engine/dispatch.py", 1028, "implementer"),
+        ("core/pm_engine/dispatch.py", 1912, "fast-track"),
+        ("core/pm_engine/dispatch.py", 2391, "repair"),
         # add-verify-parallel-backoff 在 verification.py 插入降档读写后行号
-        # 整体后移（原 1431/1742/2515 → 现 1451/1781/2560），写点语义不变。
+        # 整体后移（原 1431/1742/2515 → 现 1451/1781/2611），写点语义不变。
         ("core/pm_engine/verification.py", 1451, "planner-plan"),
         ("core/pm_engine/verification.py", 1781, "planner-judge"),
-        ("core/pm_engine/verification.py", 2560, "legacy-verifier"),
+        ("core/pm_engine/verification.py", 2611, "legacy-verifier"),
     ]
 
     def _load(self, rel: str) -> list:
