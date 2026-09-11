@@ -169,10 +169,18 @@ class VerifyEngine:
             self._save_report(report)
             return report
 
+        # add-verify-parallel-backoff / design D3：降档轮（inconclusive 重验
+        # 由 pm_engine 以 `_verify_parallel_override` 覆盖 max_parallel 后置位
+        # `_parallel_override_active`）日志附降档来源标记，时间轴可追溯
+        # 「因连续 blocked-env 降档至并行度 N」。
+        _backoff_mark = (
+            "（inconclusive 降档）"
+            if getattr(self, "_parallel_override_active", False) else ""
+        )
         self.logger.info(
             "verify_engine",
             f"🚀 开始验证 '{self.spec_name}': "
-            f"{len(normalized)} 个场景, 并行度={self.max_parallel}",
+            f"{len(normalized)} 个场景, 并行度={self.max_parallel}{_backoff_mark}",
         )
 
         # ── lazy setup：仅对场景集中实际出现的 kind 执行 ──
@@ -419,6 +427,11 @@ class VerifyEngine:
         return {
             "spec": self.spec_name,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            # add-verify-parallel-backoff / design D3：所有轮都写有效并行度
+            # （正常轮=配置值，降档轮=override 值），降档语义由值与配置值的差
+            # + 启动日志降档标记承载，不新增布尔键。测试经 object.__new__
+            # 轻量构造绕过 __init__ 时不带 max_parallel，容错回退配置默认 5。
+            "effective_parallel": getattr(self, "max_parallel", 5),
             "summary": {
                 "total": total,
                 "passed": passed,

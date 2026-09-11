@@ -129,10 +129,17 @@ class VerificationPipeline:
         blocked_env = int(summary.get("blocked_env", 0) or 0)
         failed = int(summary.get("failed", 0) or 0)
         errors = int(summary.get("errors", 0) or 0)
+        spec = self._pm.state_machine.read_one(spec_name) or {}
         if blocked_env <= 0 or (failed + errors) > 0:
+            # add-verify-parallel-backoff / design D2：非 inconclusive 判定即
+            # 健康轮（出现真实 verdict），复位降档并行度——存在才清，避免每轮
+            # 无谓写盘（与 _inconclusive_attempts 同生命周期：链条断即复位）。
+            if "_verify_parallel_override" in spec:
+                self._pm.state_machine.update_spec(spec_name, {
+                    "_verify_parallel_override": None,
+                })
             return False
 
-        spec = self._pm.state_machine.read_one(spec_name) or {}
         try:
             attempts = int(spec.get("_inconclusive_attempts", 0) or 0) + 1
         except (TypeError, ValueError):
@@ -177,13 +184,23 @@ class VerificationPipeline:
                 f"'{spec_name}' 本轮 {blocked_env} 个失败场景全部为 blocked-env"
                 f"（环境性失联），verdict=inconclusive，第 {attempts}/{max_attempts} 次重验",
             )
-            self._pm.state_machine.update_spec(spec_name, {
+            updates = {
                 "status": "implemented",
                 "tester_run": None,
                 "error": (f"环境性失联：{blocked_env} 个失败场景均 blocked-env，"
                           f"第 {attempts}/{max_attempts} 次重验（inconclusive 不判 fail）"),
                 "_inconclusive_attempts": attempts,
-            })
+            }
+            # add-verify-parallel-backoff / design D1：连续 blocked-env 重验按
+            # attempt 递减有效并行度——attempts≥2 起降档（配置值逐轮减半向下
+            # 取整、下限 1），首轮不降档（白屏证据尚不存在，降档会冤枉健康
+            # 环境）。下一轮 VerifyEngine 构造时读取覆盖 max_parallel。
+            if attempts >= 2:
+                base = int(
+                    self._pm._get_config("verify_engine.max_parallel", 5) or 5
+                )
+                updates["_verify_parallel_override"] = max(1, base >> (attempts - 1))
+            self._pm.state_machine.update_spec(spec_name, updates)
             self._pm._enqueue(spec_name, "verifier")
             return True
 
@@ -328,6 +345,9 @@ class VerificationPipeline:
                     ),
                     "_credibility_gate_attempts": gate_attempts + 1,
                     "_inconclusive_attempts": 0,
+                    # add-verify-parallel-backoff / design D2：计数清零处同步清
+                    # 降档并行度（_inconclusive_attempts 同生命周期）。
+                    "_verify_parallel_override": None,
                 })
                 self._pm._enqueue(spec_name, "verifier")
                 return True
@@ -1584,6 +1604,25 @@ class VerificationPipeline:
                     spec_name, self._pm.project_root, self._pm.logger,
                     self._pm.config, scenario_root=scenario_root,
                 )
+                # add-verify-parallel-backoff / design D1（读端）：spec attrs 的
+                # `_verify_parallel_override` 非空时覆盖 max_parallel 配置值——
+                # 该字段仅由 inconclusive 重验链路（连续 blocked-env 降档）写入、
+                # 健康轮自动复位，构造签名不变，既有测试兼容。降档来源标记随
+                # 引擎启动日志与 report 顶层 effective_parallel 透出（D3）。
+                _parallel_override = (
+                    self._pm.state_machine.read_one(spec_name) or {}
+                ).get("_verify_parallel_override")
+                if _parallel_override is not None:
+                    try:
+                        engine.max_parallel = int(_parallel_override)
+                        engine._parallel_override_active = True
+                    except (TypeError, ValueError):
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"降档并行度解析失败 '{spec_name}' "
+                            f"(_verify_parallel_override={_parallel_override!r})，"
+                            f"沿用配置并行度",
+                        )
                 # 契约统一供给 base_url（design verify-runner-engine base_url 统一供给）：
                 # 取代「从候选场景 navigate 步骤文本正则考古」——serve 流程已知
                 # 实例地址，直接分发各 Runner（web/api URL origin 改写依据、
@@ -2105,6 +2144,9 @@ class VerificationPipeline:
                 "error": "Verification found bugs — see verification report",
                 # 明确非环境性失联：复位 inconclusive 计数（环境恢复后从零重算）
                 "_inconclusive_attempts": 0,
+                # add-verify-parallel-backoff / design D2：bug-found 属健康轮
+                # 判定（非 inconclusive），降档并行度同轮复位。
+                "_verify_parallel_override": None,
             })
             # 本轮场景集变更小节追加到验证报告（spec 需求 2.3）
             self._pm._render_scenario_change_section_to_report(spec_name)
@@ -2163,6 +2205,9 @@ class VerificationPipeline:
                 "tester_run": judge_result.run_id,
                 "error": None,
                 "_inconclusive_attempts": 0,
+                # add-verify-parallel-backoff / design D2：verified 属健康轮，
+                # 降档并行度同轮复位（与 _inconclusive_attempts 同生命周期）。
+                "_verify_parallel_override": None,
                 # add-fail-counter-budget D1：验证 PASS 是 _verify_fail_rounds
                 # 的唯一归零点——跨修复周期累计的失败计数在此清零并持久化，
                 # 打回重派/修复收工等中间转换不再归零（见 _do_spec_bug_found）。
@@ -2698,6 +2743,9 @@ class VerificationPipeline:
                     "tester_run": result.run_id,
                     "error": "Verification found bugs — see verification report",
                     "_inconclusive_attempts": 0,
+                    # add-verify-parallel-backoff / design D2：bug-found 属健康轮，
+                    # 降档并行度同轮复位（legacy 路径同语义）。
+                    "_verify_parallel_override": None,
                 })
                 self._pm.logger.warning(
                     "pm_engine",
@@ -2767,6 +2815,9 @@ class VerificationPipeline:
                     "tester_run": result.run_id,
                     "error": None,
                     "_inconclusive_attempts": 0,
+                    # add-verify-parallel-backoff / design D2：verified 属健康轮，
+                    # 降档并行度同轮复位（legacy 路径同语义）。
+                    "_verify_parallel_override": None,
                     # add-fail-counter-budget D1：PASS 唯一归零点（legacy 路径同语义）。
                     "_verify_fail_rounds": 0,
                     # fix-daemon-lifecycle-races D3：验证自然通过清零点（legacy 同语义）。
