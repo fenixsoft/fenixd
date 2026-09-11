@@ -25,6 +25,7 @@ from core.worktree_manager import WorktreeManager
 from core.wip_checkpoint import (
     ANCHOR_DRAIN_PRESERVE,
     ANCHOR_TRANSIENT_BACKOFF,
+    ANCHOR_TURN_LIMIT,
     WIP_COMMIT_PREFIX,
     collapse_wip_commits,
     commit_wip_checkpoint,
@@ -536,3 +537,93 @@ class TestWipCommitContract:
                                      FakeLogger()) is False
         branch = wm.get_branch_name(wt)
         assert ahead_count(root, branch) == 0
+
+
+# ── 锚点 C：强杀收口前 WIP 提交（task 1.2/1.3/1.4） ──────────────────────────
+
+
+class TestAnchorC:
+    def test_forced_kill_checkpoint_branch_ahead(self, tmp_path):
+        """dirty worktree 强杀收口 → 产生 fenix(wip): checkpoint turn-limit <spec>
+        提交（锚点 C 消息契约），零提交型 run 现场保全。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "implementer")
+        branch = wm.get_branch_name(wt)
+        # 事故原型：10 个文件未提交、分支零 ahead
+        for i in range(10):
+            (wt / f"f{i}.py").write_text(f"WIP-{i}\n", encoding="utf-8")
+        assert ahead_count(root, branch) == 0
+
+        runner = make_runner(root, {})
+        runner._wip_checkpoint_on_forced_kill("demo", wt)
+
+        assert ahead_count(root, branch) == 1
+        msgs = branch_log(root, branch)
+        assert msgs[0].startswith(
+            f"{WIP_COMMIT_PREFIX} checkpoint {ANCHOR_TURN_LIMIT} demo")
+        # 现场内容完整入提交
+        assert git(root, "show", f"{branch}:f9.py").stdout == "WIP-9\n"
+
+    def test_forced_kill_clean_worktree_idempotent(self, tmp_path):
+        """干净 worktree 强杀收口 → 零动作幂等（不产生空提交、不报错）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "implementer")
+        branch = wm.get_branch_name(wt)
+        assert ahead_count(root, branch) == 0
+
+        runner = make_runner(root, {})
+        runner._wip_checkpoint_on_forced_kill("demo", wt)
+
+        assert ahead_count(root, branch) == 0, "空变更不得产生 WIP 提交"
+        assert not branch_log(root, branch), "分支不应有额外提交"
+
+    def test_forced_kill_no_worktree_skip(self, tmp_path):
+        """无 worktree 载体（None/失效路径）→ 跳过，不抛错。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        runner = make_runner(root, {})
+        runner._wip_checkpoint_on_forced_kill("demo", None)  # 不得抛错
+        runner._wip_checkpoint_on_forced_kill("demo", root / "nonexistent")
+        assert git(root, "log", "--format=%s", "main").stdout.strip() == "[fenix] base"
+
+    def test_forced_kill_helper_failure_does_not_block(self, monkeypatch, tmp_path):
+        """helper 失败（git 超时桩）→ 收口流程照常（方法不抛、无提交、仅降级）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "implementer")
+        branch = wm.get_branch_name(wt)
+        (wt / "work.py").write_text("WIP-C\n", encoding="utf-8")
+
+        import core.agent_runner.runner as runner_mod
+
+        def _boom(*a, **k):
+            raise subprocess.TimeoutExpired("git status --porcelain", 15)
+
+        monkeypatch.setattr(runner_mod, "commit_wip_checkpoint", _boom)
+        runner = make_runner(root, {})
+        runner._wip_checkpoint_on_forced_kill("demo", wt)  # 不得抛错
+        assert ahead_count(root, branch) == 0, "超时降级不产生提交"
+        assert (wt / "work.py").read_text(encoding="utf-8") == "WIP-C\n", \
+            "未提交现场保留在 worktree（未被破坏）"
+
+    def test_timeout_anchor_reuses_forced_kill_with_anchor_param(self, tmp_path):
+        """timeout 收口同走锚点 C（_wip_checkpoint_on_forced_kill 复用）；
+        默认 anchor = turn-limit，显式传其它 anchor 亦生效。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "implementer")
+        branch = wm.get_branch_name(wt)
+        (wt / "work.py").write_text("WIP-T\n", encoding="utf-8")
+
+        runner = make_runner(root, {})
+        runner._wip_checkpoint_on_forced_kill(
+            "demo", wt, anchor=ANCHOR_TURN_LIMIT)
+        msgs = branch_log(root, branch)
+        assert msgs[0].startswith(
+            f"{WIP_COMMIT_PREFIX} checkpoint {ANCHOR_TURN_LIMIT} demo")

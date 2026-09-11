@@ -1,13 +1,17 @@
 """
 wip_checkpoint.py — WIP checkpoint 提交与 merge-back 塌缩（add-impl-wip-checkpoint）。
 
-框架控制的 WIP 提交只出现在两处可证明 agent 不再写盘的生命周期锚点：
+框架控制的 WIP 提交只出现在三处可证明 agent 不再写盘的生命周期锚点：
   - 锚点 A（drain-preserve）：排水超时收口路径——所有在飞 agent 进程终止
     完成后（wait_for_running_agents 返回）、cleanup_orphans 之前，对保全集
     worktree 逐个提交（D2）。
   - 锚点 B（transient-backoff）：runner attempt 循环判定瞬断、写入
     transient_retry 记录后、进入 time.sleep(backoff) 前，对当前 attempt 的
     worktree 提交（D3）。
+  - 锚点 C（turn-limit）：轮询环判定 run 触达 max_turns 轮次上限并对子进程
+    执行终止（kill 序列）后、异常收口（append_run_error + raise）前，对当前
+    attempt 的 worktree 提交——保全零提交型强杀现场（add-turn-limit-anchor-c
+    D1：builtin a1 84min 未提交工作滞留 worktree 的事故补位）。
 
 消息契约（D5）：``fenix(wip): checkpoint <anchor> <spec>``，机器可识别前缀
 供 merge-back 前塌缩（D4）扫描与人工审计。提交尊重 worktree 的 gitignore
@@ -25,6 +29,7 @@ WIP_TIMEOUT_SECONDS = 15
 
 ANCHOR_DRAIN_PRESERVE = "drain-preserve"
 ANCHOR_TRANSIENT_BACKOFF = "transient-backoff"
+ANCHOR_TURN_LIMIT = "turn-limit"
 
 
 # ── 锚点提交（锚点 A / B 共用，D5/D6）───────────────────────────────────────
