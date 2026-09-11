@@ -395,3 +395,141 @@ def load_findings(project_root: Path, spec_name: str) -> list[dict]:
         return []
     except Exception:  # noqa: BLE001 — fail-open 设计
         return []
+
+
+# ── 契约只读一致性检查（planner-contract-findings，design D4）──────────────
+# 与场景静态扫描同一情报注入机制（contract_findings.json + prompt 注入），
+# 但契约检查与场景无关，独立扫描函数不混入场景扫描器。fail-open：任何异常
+# 记 WARNING 返回空 findings，不阻断出题。
+
+CONTRACT_FINDINGS_FILENAME = "contract_findings.json"
+
+
+def _package_start_entry(project_root: Path) -> str | None:
+    """读 package.json 的 start script 入口路径（string 命令形态）。
+
+    仅支持 start script 为字符串形态（``"start": "node dist/server.js"``）；
+    对象形态（platform 分派）/缺失/损坏返回 None（跳过该规则比对）。
+    """
+    try:
+        pkg = json.loads((Path(project_root) / "package.json").read_text(
+            encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(pkg, dict):
+        return None
+    scripts = pkg.get("scripts")
+    if not isinstance(scripts, dict):
+        return None
+    start = scripts.get("start")
+    if not isinstance(start, str) or not start.strip():
+        return None
+    return start.strip()
+
+
+def scan_contract(project_root: Path) -> list[dict]:
+    """契约只读一致性检查（planner 出题期，零 token 纯机械）。
+
+    初始规则表（design D4，机械可查、误报即删）：
+    1. ``serve_entry_missing``（high）：serve.cmd 入口（D1 同源解析器）文件不存在；
+    2. ``serve_entry_vs_start_mismatch``（info）：serve.cmd 入口 ≠ package.json
+       start script 入口（差异可能是合法设计，仅提示不拦截）；
+    3. ``serve_entry_no_port_injection``（info）：cmd 无 {port} 且无
+       $FENIX_VERIFY_PORT（与 load 侧 warning 同判据，补落盘让 admin 可见）。
+
+    Returns:
+        findings 列表（每条 {rule_id, severity, message, evidence}）；
+        解析失败/异常记 WARNING 返回空列表（fail-open）。
+    """
+    findings: list[dict] = []
+    try:
+        from core.verify_contract import (
+            entry_preflight_error,
+            load_verify_contract,
+            resolve_entry_path,
+        )
+        project_root = Path(project_root)
+        contract = load_verify_contract(project_root)
+        serve = contract.serve if contract is not None else None
+        if serve is None or serve.kind != "command" or not serve.cmd.strip():
+            return findings  # 非 command 形态 / 无契约：契约检查不适用
+        cmd = serve.cmd.strip()
+        entry = resolve_entry_path(cmd, project_root)
+        # ① 入口存在性（与预检同源解析器，出题期提前暴露）
+        if entry is not None and not Path(entry).is_file():
+            # 与预检同款候选提示（entry_preflight_error 的判定+提示逻辑）
+            preflight = entry_preflight_error(cmd, project_root)
+            evidence = (preflight if preflight
+                        else f"cmd={cmd!r}; cwd={project_root}")
+            findings.append(dict(
+                rule_id="serve_entry_missing",
+                severity="high",
+                message=(
+                    f"serve.cmd 入口不存在: {entry}（cmd={cmd!r}）——场景执行将在"
+                    f"spawn 前被入口存在性预检 fail-fast 拦截，建议先修正入口路径"
+                    f"或确认构建产物已生成"),
+                evidence=evidence,
+            ))
+        # ② serve.cmd 入口 vs package.json start script 入口
+        start_cmd = _package_start_entry(project_root)
+        start_entry = (resolve_entry_path(start_cmd, project_root)
+                       if start_cmd else None)
+        if (entry is not None and start_entry is not None
+                and Path(entry) != Path(start_entry)):
+            findings.append(dict(
+                rule_id="serve_entry_vs_start_mismatch",
+                severity="info",
+                message=(
+                    f"serve.cmd 入口 {entry} ≠ package.json start script 入口 "
+                    f"{start_entry}——两者可能是合法设计（start 为 dev 形态、serve "
+                    f"为构建产物形态），仅提示；若本意一致建议对齐"),
+                evidence=(
+                    f"serve.cmd={cmd!r}; package.json start={start_cmd!r}; "
+                    f"pkg 入口={start_entry}"),
+            ))
+        # ③ 端口注入缺失（与 load 侧 warning 同判据，落盘让 admin 可见）
+        if "{port}" not in cmd and "$FENIX_VERIFY_PORT" not in cmd:
+            findings.append(dict(
+                rule_id="serve_entry_no_port_injection",
+                severity="info",
+                message=(
+                    "serve.cmd 未引用端口注入（{port} 占位符或 $FENIX_VERIFY_PORT "
+                    "环境变量）——验证实例将与既有实例争抢固定端口（dashboard 端口"
+                    "独占语义下 = 杀占用者接管）。建议迁移：cmd 中的端口写作 {port}"),
+                evidence=(
+                    f"cmd={cmd!r}; 缺 '{{port}}' 与 '$FENIX_VERIFY_PORT' "
+                    f"（与 load 侧 warning 同判据）"),
+            ))
+    except Exception as e:  # noqa: BLE001 — fail-open 设计
+        logger.warning(
+            "scenario_static_check",
+            f"契约静态检查异常（fail-open，返回空 findings）: "
+            f"{type(e).__name__}: {e}",
+        )
+        return []
+    return findings
+
+
+def write_contract_findings(project_root: Path, spec_name: str,
+                            findings: Sequence[dict]) -> None:
+    """findings 覆盖写 ``.fenix/verify-progress/<spec>/contract_findings.json``。
+
+    与 scenario 静态 findings 文件名分离（design D4：命名空间隔离比混表干净，
+    注入段各自独立）。写失败仅 WARNING，不阻断出题（fail-open）。
+    """
+    target = (
+        Path(project_root) / ".fenix" / "verify-progress"
+        / spec_name / CONTRACT_FINDINGS_FILENAME
+    )
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(list(findings), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:  # noqa: BLE001 — fail-open 设计
+        logger.warning(
+            "scenario_static_check",
+            f"契约检查 findings 落盘失败 '{spec_name}'（写失败仅 WARNING，"
+            f"不阻断）: {type(e).__name__}: {e}",
+        )

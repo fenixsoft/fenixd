@@ -334,7 +334,8 @@ class TestEnsureAppReachableScopes(unittest.TestCase):
             reachable, blocked, note = engine._verification._ensure_app_reachable("spec-a")
             self.assertTrue(reachable, note)
             self.assertIn("命令 worktree", note)
-            serving = list((self.tmp / ".fenix" / "verify-serving").glob("spec-a-*"))
+            serving = [p for p in (self.tmp / ".fenix" / "verify-serving").glob("spec-a-*")
+                       if p.is_dir()]
             self.assertEqual(len(serving), 1)
             self.assertTrue((serving[0] / "site" / "built.txt").exists(),
                             "prepare 应在 worktree 内执行")

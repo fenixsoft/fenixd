@@ -105,8 +105,10 @@ BASE_URL 注入范围扩展（design D4）：
 回退逻辑（该逻辑在场景失联时会漏判）。无实例形态下改写与注入为无害空操作。
 """
 
+import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -583,9 +585,11 @@ class CommandVerifyServer:
 
     def __init__(self, proc: subprocess.Popen, injected_port: Optional[int],
                  timeout: int = 60, legacy_hint: Optional[int] = None,
-                 legacy_pre: Optional[set] = None):
+                 legacy_pre: Optional[set] = None,
+                 boot_log: Optional[object] = None):
         self._proc = proc
         self.failure_note = ""
+        self._boot_log = boot_log
         self._port = self._discover_port(
             injected_port, timeout, legacy_hint, legacy_pre or set())
 
@@ -696,6 +700,12 @@ class CommandVerifyServer:
         except Exception:
             try:
                 os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
+        # 进程退出后关闭 boot.log 句柄（design D3：Popen 持句柄、退出后关闭）
+        if self._boot_log is not None:
+            try:
+                self._boot_log.close()
             except Exception:
                 pass
 
@@ -861,3 +871,208 @@ def rewrite_scenarios_origin(scenarios_path: Path, base_url: str) -> int:
         except OSError:
             return 0
     return n
+
+
+# 入口存在性预检（design D1） ────────────────────────────────────────────────
+
+# 脚本型运行时可执行名（argv[0] 去目录后）
+_SCRIPT_RUNTIME_EXECS = frozenset({"node", "nodejs", "tsx", "ts-node", "bun", "deno"})
+
+# shell 元字符：出现任一则跳过预检（复合命令保守放行，零误杀）
+_SHELL_METACHARS = ("&&", "||", "|", ";", ">", "<", "$(", "`")
+
+# 内联代码 / REPL 形态：无文件入口，跳过预检（防把代码片段当路径误杀）
+_INLINE_CODE_FLAGS = frozenset({"-e", "--eval", "-p", "--print", "-i", "--interactive"})
+
+
+def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
+    """从 serve.cmd 机械解析脚本入口路径；无法解析返回 None（跳过预检）。
+
+    确定性优先（design D1）：只拦「100% 是错误」的形态——脚本型运行时
+    （node/nodejs/tsx/ts-node/bun/deno）+ 单入口 + 无 shell 元字符。
+    复合命令、npm run、python -m 等其余形态一律返回 None 放行（零误杀，
+    漏检交给既有探活兜底）。纯函数零 IO：文件存在性由调用方检查。
+
+    Examples
+    --------
+    >>> resolve_entry_path("node dist/server.js", Path("/prj"))
+    PosixPath('/prj/dist/server.js')
+    >>> resolve_entry_path("npm run build && node x.js", Path("/prj")) is None
+    True
+    """
+    if not cmd or not isinstance(cmd, str):
+        return None
+    # shell 元字符检测（保守：出现任一即跳过）
+    if any(mc in cmd for mc in _SHELL_METACHARS):
+        return None
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return None  # 引号不配对：无法可靠解析，跳过
+    if not argv:
+        return None
+    exe = Path(argv[0]).name  # 去目录只看可执行名
+    if exe not in _SCRIPT_RUNTIME_EXECS:
+        return None  # 非脚本型运行时（npm/python/…）
+    # 内联代码 / REPL 模式：无文件入口，跳过
+    if any(arg in _INLINE_CODE_FLAGS for arg in argv[1:]):
+        return None
+    rest = argv[1:]
+    # 子命令展开（deno 必带 run；bun run <script> 可能是 package.json 脚本名，保守跳过）
+    if exe == "deno" and rest and rest[0] == "run":
+        rest = rest[1:]
+    elif exe == "bun" and rest and rest[0] == "run":
+        return None
+    for arg in rest:
+        if arg.startswith("-"):
+            continue
+        return (Path(cwd) / arg).resolve()
+    return None  # 只有 flag 没有入口（如 node --version）
+
+
+def _entry_candidates(entry: Path) -> list:
+    """缺失入口的确定性候选：同名目录下 index.js + 同目录 *.js 文件。"""
+    cands = []
+    parent = entry.parent
+    try:
+        # 1. 同名目录下的 index.js（如 dist/server.js → dist/server/index.js）
+        named_dir = parent / entry.stem
+        named_idx = named_dir / "index.js"
+        if named_idx.is_file():
+            cands.append(named_idx)
+        # 2. 同目录 *.js 文件
+        for p in sorted(parent.glob("*.js")):
+            if p.is_file() and p not in cands:
+                cands.append(p)
+    except OSError:
+        pass
+    return cands
+
+
+def entry_preflight_error(cmd: str, cwd: Path) -> Optional[str]:
+    """serve.cmd 入口存在性预检；返回错误串或 None（放行）。
+
+    调用 resolve_entry_path 解析出入口后校验文件存在性：不存在返回结构化
+    错误（含缺失路径全文 + 同目录 *.js/index.js 存在候选提示），存在或
+    无法解析返回 None。此为 spawn 前 fail-fast 的判定函数（design D1）。
+
+    Examples
+    --------
+    >>> entry_preflight_error("node dist/server.js", Path("/prj"))
+    若 dist/server.js 不存在：'入口存在性预检失败: /prj/dist/server.js 不存在（...）'
+    >>> entry_preflight_error("npm run build && node x.js", Path("/prj"))
+    None  # 复合命令跳过
+    """
+    entry = resolve_entry_path(cmd, cwd)
+    if entry is None:
+        return None
+    if entry.is_file():
+        return None
+    candidates = _entry_candidates(entry)
+    hint = ""
+    if candidates:
+        cand_strs = []
+        for c in candidates[:3]:
+            cand_strs.append(f"{c} 存在")
+        hint = "（候选: " + "、".join(cand_strs) + "）"
+    return f"入口存在性预检失败: {entry} 不存在{hint}"
+
+
+# ── 契约消费期轻量自证（design D2） ─────────────────────────────────────────
+
+SELFCHECK_FILENAME = "contract_selfcheck.json"
+
+
+def selfcheck_contract_light(project_root: Path, logger=None,
+                             base_url: str = "") -> Optional[str]:
+    """契约消费期轻量自证：mtime 快照门 + serve 段合法性 + ready 鉴别力自检。
+
+    与 ``validate_contract`` 三段自证的关键差异：**不执行 prepare、不起实例**
+    （消费期不承担构建/启动成本）——serve 段合法性为纯静态检查，ready 探针
+    鉴别力自检仅在有现存可达实例（``base_url`` 非空）时执行。
+
+    判定流程（design D2）：
+    1. mtime 快照门：契约 mtime 与上次自证记录一致 → 返回 None（零开销）；
+    2. serve 段合法性：kind 枚举、static 模式 root 目录存在、command 模式
+       cmd 非空（复用 load 后的 VerifyContract + 原始 YAML serve 段，
+       同 ``validate_contract`` 第 2 步口径）；
+    3. ready 探测鉴别力自检：``base_url`` 非空时复用 ``probe_ready``
+       （含 SPA fallback 无鉴别力判定）；为空则跳过（无实例，不起实例）；
+    4. 通过 → 写 mtime 快照；失败 → 返回错误串（含段落与原因）且不写快照
+       （下轮 mtime 仍落后，自动重证）。
+
+    Returns:
+        错误串（自证失败）或 None（快照命中 / 自证通过）。
+    """
+    project_root = Path(project_root)
+    contract_path = project_root / ".fenix" / CONTRACT_FILENAME
+    if not contract_path.is_file():
+        return None  # 无契约：既有「无契约回退」路径处理，自证不相关
+    try:
+        mtime_ns = contract_path.stat().st_mtime_ns
+    except OSError as e:
+        return f"契约 mtime 读取失败: {e}"
+    # 1. mtime 快照门
+    selfcheck_path = (project_root / ".fenix" / "verify-serving"
+                      / SELFCHECK_FILENAME)
+    try:
+        if selfcheck_path.is_file():
+            snap = json.loads(selfcheck_path.read_text(encoding="utf-8"))
+            if isinstance(snap, dict) and snap.get("mtime_ns") == mtime_ns:
+                return None  # 契约未变，零开销放行
+    except Exception:
+        pass  # 快照缺失/损坏 → 本次照常自证
+
+    # 2. serve 段合法性（静态，同 validate_contract 第 2 步）
+    contract = load_verify_contract(project_root, logger)
+    if contract is None:
+        errors = []
+        try:
+            raw = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                raw_serve = raw.get("serve")
+                if isinstance(raw_serve, dict):
+                    kind = raw_serve.get("kind", "")
+                    if kind not in ("static", "command"):
+                        errors.append(f"serve.kind 非法: {kind}（应为 static 或 command）")
+                    elif kind == "static" and not raw_serve.get("root"):
+                        errors.append("serve.root 为空（kind=static 必填）")
+                    elif kind == "command" and not raw_serve.get("cmd"):
+                        errors.append("serve.cmd 为空（kind=command 必填）")
+        except Exception as e:
+            errors.append(f"契约 YAML 解析失败: {e}")
+        if errors:
+            return "轻量自证失败（serve 段）: " + "；".join(errors)
+        return None  # 无 serve 段（纯 cli 形态）不在消费期自证范围
+
+    serve = contract.serve
+    if serve is None:
+        return None  # 无 serve 段：纯 cli 场景集，serve/ready 不相关
+    if serve.kind == "static":
+        if not serve.root:
+            return "轻量自证失败（serve 段）: serve.root 为空（kind=static 必填）"
+        root_dir = project_root / serve.root
+        if not root_dir.is_dir():
+            return (f"轻量自证失败（serve 段）: serve.root 不存在: "
+                    f"{serve.root}（{root_dir}）")
+    elif serve.kind == "command":
+        if not serve.cmd:
+            return "轻量自证失败（serve 段）: serve.cmd 为空（kind=command 必填）"
+
+    # 3. ready 探针鉴别力自检（仅现存可达实例，不起实例）
+    if base_url:
+        ok, note = probe_ready(base_url, contract.ready)
+        if not ok:
+            return f"轻量自证失败（ready 鉴别力）: {note}"
+
+    # 4. 通过 → 写 mtime 快照
+    try:
+        (project_root / ".fenix" / "verify-serving").mkdir(parents=True,
+                                                           exist_ok=True)
+        selfcheck_path.write_text(json.dumps({"mtime_ns": mtime_ns}),
+                                  encoding="utf-8")
+    except OSError as e:
+        if logger:
+            logger.warning("verify_contract",
+                           f"契约自证快照写入失败（下轮重证）: {e}")
+    return None

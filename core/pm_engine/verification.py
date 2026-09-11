@@ -26,6 +26,7 @@ _SCENARIO_REPAIR_MAX_ROUNDS = 2
 
 from core.verify_contract import (
     CommandVerifyServer,
+    entry_preflight_error,
     load_verify_contract,
     probe_ready,
     provision_worktree_node_modules,
@@ -545,23 +546,44 @@ class VerificationPipeline:
         legacy_hint = contract.serve.port or (int(m.group(1)) if m else None)
         pre = ({p for p in range(legacy_hint, legacy_hint + 51)
                 if self._port_responds(p)} if legacy_hint else set())
-        cmd_str = (contract.serve.cmd or "").replace("{port}", str(port))
+        # 入口存在性预检（design D1）：{port} 替换前的原 cmd 检查（{port} 不在
+        # 路径段）；入口文件不存在 → fail-fast，不 spawn、不跑场景，场景执行数=0。
+        orig_cmd = contract.serve.cmd or ""
+        preflight_err = entry_preflight_error(orig_cmd, Path(wt))
+        if preflight_err:
+            self._write_verify_contract_missing(
+                spec_name,
+                f"{preflight_err}（入口存在性预检失败，spawn 前 fail-fast）",
+                f"serve.cmd 原文={orig_cmd!r}; cwd={wt}",
+                recommended_action=(
+                    "Administrator 修正 .fenix/verify.yaml serve.cmd 入口路径："
+                    "按错误信息中「候选」提示修正，或确认构建产物已生成后重验"),
+            )
+            return False, False, preflight_err
+        cmd_str = orig_cmd.replace("{port}", str(port))
         env = {**os.environ, "FENIX_VERIFY_PORT": str(port)}
+        # design D3：worktree 路径同样落盘 boot.log（非 DEVNULL 吞掉），
+        # 启动即死错误证据经 CommandVerifyServer 句柄关闭前可读。
+        boot_log = self._open_boot_log(spec_name)
         try:
             proc = subprocess.Popen(
                 cmd_str, shell=True, cwd=str(wt),
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=boot_log, stderr=boot_log,
                 start_new_session=True, env=env,
             )
         except Exception as e:
+            boot_log.close()
             return False, False, f"验证命令实例启动失败: {e}"
         srv = CommandVerifyServer(
             proc, port, timeout=contract.ready.timeout or 60,
-            legacy_hint=legacy_hint, legacy_pre=pre)
+            legacy_hint=legacy_hint, legacy_pre=pre, boot_log=boot_log)
         if not srv.ok:
+            # 启动即死：boot.log 尾部附入失败描述（Cannot find module 等）
+            boot_tail = self._read_boot_log_tail(spec_name, boot_log)
             srv.stop()
             return False, False, (
-                srv.failure_note or "验证命令实例未就绪（注入端口未被消费）")
+                (srv.failure_note or "验证命令实例未就绪（注入端口未被消费）")
+                + boot_tail)
         cache[spec_name] = {
             "server": srv, "wt_path": wt, "head": head, "mode": "command",
         }
@@ -719,6 +741,9 @@ class VerificationPipeline:
             contract = load_verify_contract(self._pm.project_root, self._pm.logger)
             if contract is not None and contract.prepare:
                 # 纯 cli 无实例形态：不建 serving worktree，prepare 在主树执行
+                # （add-main-tree-deps-provision 锚点：该案在主树 prepare 前做
+                # 依赖供给（ensure_main_tree_deps），本 SPEC 的入口预检在其
+                # 之后的 spawn 点——顺序：供给 → prepare → 预检 → spawn。）
                 err = run_prepare_steps(contract, self._pm.project_root)
                 if err:
                     return False, False, f"验证契约 prepare 失败: {err}"
@@ -764,6 +789,9 @@ class VerificationPipeline:
             wt_scope = scope == "worktree"
             # 主树 prepare 仅在实例落于主树时需要——worktree 作用域在
             # serving worktree 内构建（共享助手），主树构建纯属双倍等待
+            # （add-main-tree-deps-provision 锚点：该案在此主树 prepare 前做
+            # 依赖供给，本 SPEC 预检在其后 spawn 前——供给 → prepare → 预检
+            # → spawn。）
             if contract.prepare and not wt_scope:
                 err = run_prepare_steps(contract, self._pm.project_root)
                 if err:
@@ -855,17 +883,44 @@ class VerificationPipeline:
             f"验证目标应用不可达，自动启动服务: {start_cmd}",
         )
 
-        # 启动一次（后台、脱离会话、输出丢弃）；随后等待可达或扫描邻近端口
+        # 入口存在性预检（design D1）：主树兜底自启同样在 spawn 前校验入口
+        # 存在性——serve.cmd 入口指向不存在文件时 fail-fast（场景执行数=0，
+        # 确定性错误不等探活超时浪费 30s）；commands.start 等非脚本型运行时
+        # 形态由解析器返回 None 放行（零误杀）。
+        preflight_err = entry_preflight_error(start_cmd, self._pm.project_root)
+        if preflight_err:
+            self._write_verify_contract_missing(
+                spec_name,
+                f"{preflight_err}（入口存在性预检失败，spawn 前 fail-fast）",
+                (f"start_cmd 原文={start_cmd!r}; cwd={self._pm.project_root}; "
+                 f"来源={'契约 serve.cmd' if start_cmd_override else 'config commands.start 兜底'}"),
+                recommended_action=(
+                    "Administrator 修正入口路径：按错误信息中「候选」提示修正 "
+                    ".fenix/verify.yaml serve.cmd（或 commands.start），确认构建"
+                    "产物已生成后重验"),
+            )
+            self._escalate_env_blocked(
+                spec_name,
+                [preflight_err],
+                title="验证环境阻塞（入口存在性预检失败）",
+            )
+            return False, False, preflight_err
+
+        # 启动一次（后台、脱离会话、stdout/stderr 落盘 boot.log）；
+        # 随后等待可达或扫描邻近端口。启动即死错误（Cannot find module 等）
+        # 从 DEVNULL 吞掉改为落盘（design D3），探活失败时尾部附入告警。
+        boot_log = self._open_boot_log(spec_name)
         env = {**os.environ}
         if injected_port:
             env["FENIX_VERIFY_PORT"] = str(injected_port)
         try:
             proc = subprocess.Popen(
                 start_cmd, shell=True, cwd=str(self._pm.project_root),
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=boot_log, stderr=boot_log,
                 start_new_session=True, env=env,
             )
         except Exception as e:
+            boot_log.close()
             return False, False, f"启动验证目标应用失败: {e}"
         # verify-process-lifecycle D6：兜底 spawn 同登记纳入管理
         # （pid/spec/worktree 空、端口先按 hint，实际可达端口由探测修正）
@@ -874,6 +929,7 @@ class VerificationPipeline:
         for _ in range(30):
             time.sleep(1)
             if all(_probe(u) for u in urls):
+                boot_log.close()
                 return True, False, "已自动启动应用服务"
 
         # 场景 URL 端口 ≠ commands.start 端口（planner 臆测端口，如 3000 vs 8787）：
@@ -898,6 +954,7 @@ class VerificationPipeline:
                         v = re.sub(r":%s(?=[/\?#]|$)" % p, f":{base_port}", v)
                     urls_new.append(v)
                 if all(_probe(u) for u in urls_new):
+                    boot_log.close()
                     return True, False, (
                         f"场景 URL 端口 {sorted(foreign_ports, key=int)} 与应用实际端口 "
                         f"{base_port} 不符（planner 臆测），已改写场景端口并确认可达"
@@ -911,11 +968,81 @@ class VerificationPipeline:
                     urls_new = [re.sub(r":%d(?=[/\?]|$)" % base_port, f":{port}", u) for u in urls]
                     if all(_probe(u) for u in urls_new):
                         self._pm._rewrite_scenario_port(scenarios_path, base_port, port)
+                        boot_log.close()
                         return True, False, f"已自动启动应用服务（端口冲突，改用 {port}）"
 
+        # 探活最终失败：boot.log 尾部（≤2KB）附入错误串，启动即死错误
+        # （Cannot find module 等）对 admin 直接可读（design D3）
+        boot_tail = self._read_boot_log_tail(spec_name, boot_log)
+        boot_log.close()
         return False, False, ("应用仍不可达：已自动执行 commands.start 并扫描邻近端口，"
-                              "仍无法连接（可能需人工启动/换端口，或属需用户参与的验证场景）")
+                              "仍无法连接（可能需人工启动/换端口，或属需用户参与的验证场景）"
+                              + boot_tail)
 
+    def _open_boot_log(self, spec_name: str):
+        """打开 .fenix/verify-serving/<spec>-boot.log（覆盖写句柄，design D3）。
+
+        兜底/命令型 spawn 的 stdout/stderr 落盘于此（替代 DEVNULL 吞掉），
+        启动即死错误（Cannot find module 等）对 admin 可读。启动前 truncate
+        控制单轮大小（验证实例生命周期短，分钟级，接受无界增长）。
+        """
+        log_dir = Path(self._pm.project_root) / ".fenix" / "verify-serving"
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            return open(log_dir / f"{spec_name}-boot.log", "wb")
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine", f"boot.log 打开失败（回退丢弃输出）: {e}")
+            return subprocess.DEVNULL
+
+    def _read_boot_log_tail(self, spec_name: str, handle) -> str:
+        """读 boot.log 尾部 ≤2KB 附入探活失败错误串（design D3）。
+
+        句柄关闭前调用以 flush 子进程残留输出；读失败/空文件返回空串
+        （不因取证自身异常改动错误判定）。
+        """
+        try:
+            handle.flush()
+        except Exception:
+            pass
+        try:
+            log_path = (Path(self._pm.project_root) / ".fenix"
+                        / "verify-serving" / f"{spec_name}-boot.log")
+            data = log_path.read_bytes()[-2048:]
+            if not data.strip():
+                return ""
+            tail = data.decode("utf-8", errors="replace").rstrip()
+            return f"\n── boot.log 尾部（≤2KB）──\n{tail}"
+        except Exception:
+            return ""
+
+    def _write_verify_contract_missing(self, spec_name: str, note: str,
+                                       evidence: str,
+                                       recommended_action: str = "") -> None:
+        """写 verify_contract_missing 信号呼叫 Administrator（契约相关 fail-fast 共用）。
+
+        契约缺失/损坏/入口预检失败/轻量自证失败的统一出口（design D1/D2）：
+        spawn 前确定性错误不等待失败计数与升级冷却，直接派发。失败记 warning
+        不抛穿调用方（信号通道自身不可影响验证判定）。
+        """
+        from core.admin_store import AdminStore, SIGNAL
+        store = AdminStore(self._pm.project_root, self._pm.logger)
+        try:
+            store.append({
+                "kind": SIGNAL,
+                "signal_type": "verify_contract_missing",
+                "spec": spec_name,
+                "severity": "major",
+                "description": note,
+                "evidence": evidence,
+                "recommended_action": recommended_action or (
+                    "Administrator 修正 .fenix/verify.yaml 验证契约："
+                    "检查构建命令、serve 段入口/静态目录、端口注入；"
+                    "修正后 git 提交 → spec 复位 ready 触发重验证"),
+            })
+        except Exception as e:
+            self._pm.logger.error(
+                "pm_engine", f"verify_contract_missing 信号写入失败: {e}")
 
     def _rewrite_scenario_port(self, scenarios_path: Path, old_port: int, new_port: int):
         """端口冲突换端口后，重写 test_scenarios.json 中的 URL 端口。"""
@@ -987,6 +1114,36 @@ class VerificationPipeline:
             self._pm.logger.warning(
                 "pm_engine",
                 f"场景静态扫描跳过 '{spec_name}'（fail-open，不阻断验证）: "
+                f"{type(e).__name__}: {e}",
+            )
+
+    def _run_contract_static_check(self, spec_name: str) -> None:
+        """契约只读一致性检查挂点（planner-contract-findings，design D4）。
+
+        在 planner-plan 产物验收通过后（出题完成处）调用：对验证契约做只读
+        一致性检查（入口存在性/与 start script 一致性/端口注入），findings
+        覆盖写 ``contract_findings.json`` 供 admin 处置 prompt 注入。
+        **只做情报不拦截出题**，任何异常记 WARNING 不阻断（fail-open）。
+        """
+        from core.verify_engine.scenario_static_check import (
+            scan_contract, write_contract_findings,
+        )
+        try:
+            findings = scan_contract(self._pm.project_root)
+            write_contract_findings(
+                self._pm.project_root, spec_name, findings)
+            if findings:
+                from collections import Counter
+                dist = dict(Counter(f["rule_id"] for f in findings))
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"契约静态检查 '{spec_name}' 检出 {len(findings)} 条情报: "
+                    f"{dist}",
+                )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"契约静态检查跳过 '{spec_name}'（fail-open，不阻断出题）: "
                 f"{type(e).__name__}: {e}",
             )
 
@@ -1518,6 +1675,12 @@ class VerificationPipeline:
                 # 正常报告（成功时才清理，失败/重验路径历史留痕）。
                 self._clear_degrade_context(spec_name)
 
+                # ── 契约只读一致性检查（planner-contract-findings，design D4）──
+                # planner-plan 产物验收通过后（出题完成处）：对验证契约做只读
+                # 一致性检查并落盘 contract_findings.json（fail-open，不阻断
+                # 出题——契约检查与场景生成相互独立）。
+                self._run_contract_static_check(spec_name)
+
                 # ── 场景集冻结（add-verify-scenario-freeze）──
                 # 首轮写入 / 修复轮 diff 校验（design D3：确定性，planner 不可绕过）。
                 # 在场景执行前应用：以持久化集约束 planner 产出，缺场景补齐后继续验证。
@@ -1550,6 +1713,44 @@ class VerificationPipeline:
                         f"交互契约重排预算耗尽 '{spec_name}' — 违规留痕继续验证: "
                         f"{contract.get('uncovered')}",
                     )
+
+            # ── 契约消费期轻量自证（design D2）──
+            # mtime 变化后的首验轮执行（serve 段合法性 + 现有实例 ready 鉴别力
+            # 自检，不执行 prepare、不起实例）；自证失败 = 契约错误 fail-fast，
+            # 不进入场景执行（场景执行数=0），走 verify_contract_missing 信号
+            # 通道呼叫 Administrator。契约缺失/纯 cli 形态返回 None 天然放行。
+            selfcheck_err = None
+            try:
+                from core.verify_contract import selfcheck_contract_light
+                selfcheck_err = selfcheck_contract_light(
+                    self._pm.project_root, self._pm.logger,
+                    base_url=self._current_instance_base_url(spec_name))
+            except Exception as e:
+                # 自证自身异常 fail-open：不因自证代码缺陷牵连验证主流程
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"契约轻量自证跳过 '{spec_name}'（异常不阻断验证）: {e}")
+            if selfcheck_err:
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"契约轻量自证失败 '{spec_name}' — fail-fast 阻断场景执行: "
+                    f"{selfcheck_err}")
+                self._write_verify_contract_missing(
+                    spec_name,
+                    f"{selfcheck_err}（契约消费期轻量自证失败，场景执行数为 0）",
+                    f"项目根={self._pm.project_root}; 自证类型=轻量(mtime 门+serve 段)"
+                    f"+ready 鉴别力",
+                    recommended_action=(
+                        "Administrator 修正 .fenix/verify.yaml 验证契约：按错误信息"
+                        "中的段落与原因修正（serve 段字段/static root 目录/ready 探针"
+                        "配置），修正后 git 提交 → spec 复位 ready 触发重验证"),
+                )
+                self._escalate_env_blocked(
+                    spec_name,
+                    [selfcheck_err],
+                    title="验证环境阻塞（契约轻量自证失败）",
+                )
+                return
 
             # ── 阶段2: 验证引擎执行 ──
             self._pm.logger.info("pm_engine", f"[阶段2] 验证引擎执行: {spec_name}")
