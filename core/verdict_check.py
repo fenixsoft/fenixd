@@ -45,6 +45,48 @@ EXEMPTION_REASON = {
     "env": "环境因素（非产品缺陷）",
 }
 
+# ── 非驱动视觉状态（fix-visual-baseline-settle D4）──────────────────
+# baseline_deferred（基线固化前置条件未满足，本轮不固化不比对）与
+# baseline_rejected（健全性判定拒绝固化）属「本轮无法/拒绝对比」语义，与
+# env/flaky 同属不构成打回依据：
+#   - 引擎侧 determine_scenario_status 已保证此类视觉状态不使场景降档
+#     （baseline_deferred 不落 warning/failed，场景按 DOM 断言正常判档）；
+#   - 既有豁免通道（_EXEMPT_ALLOWED_CLASSES / is_scenario_exemptible）对其
+#     放行——此类场景要么 status=pass 无需分类，要么按 DOM 断言单独归因。
+NON_DRIVING_VISUAL_STATUSES = ("baseline_deferred", "baseline_rejected")
+
+
+def has_only_non_driving_visual_indicators(scenario: dict) -> bool:
+    """场景的失败信号是否仅来自非驱动视觉状态（无 DOM/步骤失败）。
+
+    Returns:
+        True 表示：全部 DOM 断言通过、无步骤失败，且 visual_results 中存在
+        baseline_deferred/baseline_rejected（不含 diff_detected/warning 类
+        驱动视觉结论）——judge 不得将其计入 bug-found 打回依据（同 flaky/env
+        待遇）；场景整体 status 应判 pass，无需分类与归因。
+    """
+    if not isinstance(scenario, dict):
+        return False
+    for a in scenario.get("assertion_results") or []:
+        if isinstance(a, dict) and not a.get("pass", True):
+            return False
+    for s in scenario.get("step_results") or []:
+        if isinstance(s, dict) and not s.get("success", True):
+            return False
+    visual = scenario.get("visual_results")
+    if not isinstance(visual, list) or not visual:
+        return False
+    for v in visual:
+        if not isinstance(v, dict):
+            continue
+        if v.get("status") in ("diff_detected", "warning"):
+            return False  # 存在驱动视觉结论，非「仅非驱动」
+    return any(
+        isinstance(v, dict)
+        and v.get("status") in NON_DRIVING_VISUAL_STATUSES
+        for v in visual
+    )
+
 
 def _is_non_pass(status: Optional[str]) -> bool:
     if not status:

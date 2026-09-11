@@ -145,6 +145,12 @@ def determine_scenario_status(
     # 后续轮次截图干净时正常建立基线后，视觉断言才恢复常态判定。
     if any(v.get("status") == "baseline_rejected" for v in visual_results):
         return "warning"
+    # baseline_deferred（fix-visual-baseline-settle D4）：基线固化前置条件
+    # 未满足（步骤/断言存在失败）时本轮不固化、不产生比对结论——与
+    # baseline_created 同属「非判定性视觉状态」，不计为视觉失败（不落
+    # warning/failed），场景按 DOM 断言正常判档；judge 侧随即按非打回依据
+    # 处理（同 flaky/env 待遇）。此处无需特判：非三档（rejected/diff/warning）
+    # 即自然放行至层 4 断言与 pass 判定。
     if any(v.get("status") == "diff_detected" for v in visual_results):
         return "warning"
     if any(v.get("status") == "warning" for v in visual_results):
