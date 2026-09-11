@@ -66,9 +66,11 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
         ("core/pm_engine/dispatch.py", 981, "implementer"),
         ("core/pm_engine/dispatch.py", 1817, "fast-track"),
         ("core/pm_engine/dispatch.py", 2275, "repair"),
-        ("core/pm_engine/verification.py", 1431, "planner-plan"),
-        ("core/pm_engine/verification.py", 1742, "planner-judge"),
-        ("core/pm_engine/verification.py", 2515, "legacy-verifier"),
+        # add-verify-parallel-backoff 在 verification.py 插入降档读写后行号
+        # 整体后移（原 1431/1742/2515 → 现 1451/1781/2560），写点语义不变。
+        ("core/pm_engine/verification.py", 1451, "planner-plan"),
+        ("core/pm_engine/verification.py", 1781, "planner-judge"),
+        ("core/pm_engine/verification.py", 2560, "legacy-verifier"),
     ]
 
     def _load(self, rel: str) -> list:

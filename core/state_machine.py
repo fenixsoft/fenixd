@@ -245,7 +245,8 @@ class StateParser:
                     # 标记随 STATE.md 往返，False 不转会被误判为保持态。
                     value = value.lower() in ("true", "1", "yes")
                 elif key in ("implementer_run", "tester_run", "branch", "error",
-                             "total_duration", START_AFTER_FIELD, FROZEN_UNTIL_FIELD):
+                             "total_duration", START_AFTER_FIELD, FROZEN_UNTIL_FIELD,
+                             "_verify_parallel_override"):
                     if value.lower() in ("null", "none", ""):
                         value = None
 
@@ -578,6 +579,10 @@ class StateMachine:
         # 随人工解冻清零——人工处置后 blocked-env 轮次从 1 重新计数（与
         # _verify_redo_count 同语义，B6「恢复尊重暂停标记」闭环的人工侧）。
         updates["_inconclusive_attempts"] = 0
+        # add-verify-parallel-backoff / design D2：降档并行度与
+        # _inconclusive_attempts 完全同生命周期——人工解冻同轮清 override，
+        # 重验从配置并行度重新开始，不留降档残留。
+        updates["_verify_parallel_override"] = None
         updates["error"] = None
         updates[FROZEN_UNTIL_FIELD] = None
         return self.update_spec(spec_name, updates)
