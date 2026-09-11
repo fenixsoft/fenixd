@@ -1,8 +1,13 @@
 /**
- * SpecStatusModal.tsx — 「修改状态」弹窗（add-spec-status-modal-budget / spec-status-actions-modal）。
+ * SpecStatusModal.tsx — 「修改状态」弹窗（add-spec-status-modal-budget / spec-status-actions-modal /
+ * add-spec-approve-push-modal）。
  *
- * 按当前状态条件渲染四个区块（归档/冻结/晋升/预算），走既有后端 API，
+ * 按当前状态条件渲染五个区块（审批推送/归档/冻结/晋升/预算），走既有后端 API，
  * 零新状态语义。受控 props：project/spec/open/onClose/summary/onDone。
+ *
+ * 审批推送区块（done 态专用，pushed 不渲染）：确认后写 .fenix/approve_push_request.json
+ * 文件信号，daemon 主循环拾取后调 pm_engine.approve_push 执行推送——main 先行+
+ * 分支尽力，成功后 SPEC 推进 pushed 终态；失败走既有退避重试，超限升级 push_failed 告警。
  *
  * 冻结态判定：status === 'blocked' && error.startsWith('用户指令冻结：')，
  * 与 list.tsx isFrozen 同源。非冻结 blocked（如预算耗尽冻结）在冻结区显示
@@ -24,6 +29,7 @@ import {
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useState } from 'react';
 import {
+  approveSpecPush,
   archiveSpec,
   freezeSpec,
   promoteSpec,
@@ -229,6 +235,41 @@ export default function SpecStatusModal({
     });
   }, [project, spec, onDone, message, appModal, onClose]);
 
+  // ── 审批推送（done，add-spec-approve-push-modal） ──────────
+  // done 态的唯一闭环动作：确认后写 .fenix/approve_push_request.json 文件信号，
+  // daemon 主循环（≤2s）拾取并调 pm_engine.approve_push 执行推送（main 先行+
+  // 分支尽力、SHA 去重、退避重试、归档收口全部沿用既有语义）；推送成功后 SPEC
+  // 推进 pushed 终态。状态非 done（pushed 幂等/其他非法）或 daemon 未运行/
+  // 已有进行中信号时后端 403/409，此处展示后端 error 文案。
+  const handleApprovePush = useCallback(() => {
+    if (!summary) return;
+    appModal.confirm({
+      title: '审批推送 SPEC',
+      content: (
+        <div style={{ whiteSpace: 'pre-wrap' }}>
+          {`确认审批推送 SPEC「${summary.name}」？\n\n`}
+          将由 daemon 执行推送：main 分支先行、feature 分支尽力（远端 origin）。
+          成功后 SPEC 推进到 pushed 终态；推送失败走既有退避重试，超限升级
+          push_failed 人工告警。
+        </div>
+      ),
+      okText: '审批推送',
+      cancelText: '取消',
+      onOk: async () => {
+        setLoading(true);
+        try {
+          await approveSpecPush(project, spec);
+          message.success('已提交推送，daemon 执行中');
+          onDone();
+        } catch (err) {
+          message.error(`审批推送失败：${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          setLoading(false);
+        }
+      },
+    });
+  }, [project, spec, summary, onDone, message, appModal]);
+
   // ── 预算保存（setSpecBudget） ──────────────────────
   const handleBudgetSave = useCallback(async () => {
     setLoading(true);
@@ -274,6 +315,25 @@ export default function SpecStatusModal({
       width={520}
     >
       <Space direction="vertical" style={{ width: '100%' }} size={0}>
+        {/* ── 审批推送区块（done 专用，pushed 不渲染；add-spec-approve-push-modal D5：
+            done 态首要意图是审批推送（闭环动作），故置于归档区块之前） ── */}
+        {summary?.status === 'done' && (
+          <div style={{ marginBottom: 16 }}>
+            <Typography.Text strong style={{ fontSize: 14 }}>审批推送</Typography.Text>
+            <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
+              审批后由 daemon 执行推送：main 分支先行、feature 分支尽力（远端 origin）。
+              成功后 SPEC 推进到 pushed 终态；推送失败走既有退避重试，超限升级 push_failed 人工告警。
+            </Typography.Paragraph>
+            <Button
+              type="primary"
+              onClick={handleApprovePush}
+              loading={loading}
+            >
+              审批推送
+            </Button>
+          </div>
+        )}
+
         {/* ── 归档区块（终态 done/pushed） ─────────────── */}
         {done && (
           <div style={{ marginBottom: 16 }}>
