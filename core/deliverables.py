@@ -932,28 +932,22 @@ def _tasks_parse_counts(text: str) -> tuple:
     return group_count, item_count
 
 
-def lint_tasks_parseable(spec_dir, project_root) -> List[str]:
-    """晋升 lint（drafted → ready）：tasks.md 可解析性校验（task-track R2）。
+def lint_tasks_text(text: str) -> List[str]:
+    """tasks.md 文本可解析性判定（task-track R2 同源规则，收口复检共用）。
 
-    tasks.md 不存在 → 返回 ``[]``（不拦：fast-track 前置 spec 允许后补）。
-    存在 → 以与下游解析器同源的分组正则（见 ``_TASKS_GROUP_RE`` 注释）解析，
-    0 个任务分组（含文件为空/无任务行的情形——无可跟踪任务属撰写缺陷，拦截
-    早于 run 烧钱）→ 返回含「tasks.md」字样的违规消息；分组数 ≥ 1 但任务行
-    总数为 0（2026-09-11 add-impl-terminal-nocommit-gate 事故形态：sed 把任务行
-    写成 ``^- [x] 1.1 …``，分组完好、任务行全灭）→ 同样违规，文案点名损伤
-    特征并给出修正处方；分组与任务行均正常 → 不拦。本函数不读
-    ``project_root``，仅保持与 ``lint_declared`` 同构签名（统一调用点形态）。
+    ``lint_tasks_parseable`` 与 dispatch 收口复检挂点（full/fast-track 车道）
+    共用同一判定逻辑，避免两套解析口径漂移。文本形态直接判定：
+
+    - 0 个任务分组（含文件为空/无任务行的情形）→ 违规（既有形态，拦截早于
+      run 烧钱）；
+    - 分组数 ≥ 1 但任务行总数为 0（2026-09-11 add-impl-terminal-nocommit-gate
+      事故形态：sed 把任务行写成 ``^- [x] 1.1 …``，分组完好、任务行全灭）
+      → 违规，文案点名损伤特征并给出修正处方；
+    - 分组与任务行均正常 → 放行。
 
     Returns:
-        违规描述清单；空列表 = 通过。读取类异常直接上抛，由调用方
-        （engine）的 fail-open 语义兜底。
+        违规描述清单；空列表 = 通过。
     """
-    spec_dir = Path(spec_dir)
-    tasks = spec_dir / "tasks.md"
-    if not tasks.exists():
-        return []
-    text = tasks.read_text(encoding="utf-8")
-
     group_count, item_count = _tasks_parse_counts(text)
 
     if group_count == 0:
@@ -972,3 +966,23 @@ def lint_tasks_parseable(spec_dir, project_root) -> List[str]:
             "把 `^- [` 改回 `- [ ` 并恢复 `[x]`/`[ ]`，否则下游无法跟踪任务"
         ]
     return []
+
+
+def lint_tasks_parseable(spec_dir, project_root) -> List[str]:
+    """晋升 lint（drafted → ready）：tasks.md 可解析性校验（task-track R2）。
+
+    tasks.md 不存在 → 返回 ``[]``（不拦：fast-track 前置 spec 允许后补）。
+    存在 → 交由 ``lint_tasks_text`` 判定（与收口复检挂点同源同口径）。
+    本函数不读 ``project_root``，仅保持与 ``lint_declared`` 同构签名
+    （统一调用点形态）。
+
+    Returns:
+        违规描述清单；空列表 = 通过。读取类异常直接上抛，由调用方
+        （engine）的 fail-open 语义兜底。
+    """
+    spec_dir = Path(spec_dir)
+    tasks = spec_dir / "tasks.md"
+    if not tasks.exists():
+        return []
+    text = tasks.read_text(encoding="utf-8")
+    return lint_tasks_text(text)

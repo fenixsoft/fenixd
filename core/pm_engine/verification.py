@@ -2337,6 +2337,56 @@ class VerificationPipeline:
             )
         return missing
 
+    def _tasks_md_relint_from_branch(self, spec_name: str, branch) -> list:
+        """full 车道 tasks.md 收口复检：读实现分支 HEAD 版本并判定违规。
+
+        基准 = 分支上的 tasks.md（merge 前主树版本 = 立项旧版本，读分支才反映
+        中途编辑）。``git show`` 非零退出（路径不存在）→ fail-open 返回 ``[]``，
+        与 lint「文件不存在不拦」语义一致（task-track relint fail-open）。
+        """
+        if not branch:
+            return []
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(self._pm.project_root), "show",
+                 f"{branch}:spec/changes/{spec_name}/tasks.md"],
+                capture_output=True, text=True, timeout=15,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"tasks.md relint git show 失败（fail-open）'{spec_name}': {e}",
+            )
+            return []
+        if proc.returncode != 0:
+            # 路径不存在 → fail-open（fast-track 前置 spec 允许后补）
+            return []
+        from core.deliverables import lint_tasks_text
+        return lint_tasks_text(proc.stdout)
+
+    def _tasks_md_relint_from_worktree(self, spec_name: str, worktree_path) -> list:
+        """fast-track 车道 tasks.md 收口复检：读 worktree 内版本并判定违规。
+
+        path 不存在 → fail-open 返回 ``[]``（同晋升 lint「文件不存在不拦」语义）。
+        任何异常 → WARNING + fail-open，不阻塞成功收口。
+        """
+        if worktree_path is None:
+            return []
+        try:
+            tasks_file = (Path(worktree_path) / "spec" / "changes"
+                          / spec_name / "tasks.md")
+            if not tasks_file.exists():
+                return []
+            text = tasks_file.read_text(encoding="utf-8")
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"tasks.md relint 读取失败（fail-open）'{spec_name}': {e}",
+            )
+            return []
+        from core.deliverables import lint_tasks_text
+        return lint_tasks_text(text)
+
     def _disputed_deliverables(self, impl_result, missing) -> list:
         """实现 run 对缺件提出的 deliverable-dispute 异议与缺件清单求交。
 
