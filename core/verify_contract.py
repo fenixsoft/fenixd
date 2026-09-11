@@ -786,6 +786,74 @@ def provision_worktree_node_modules(worktree_root: Path, project_root: Path,
     return done
 
 
+def ensure_main_tree_deps(project_root: Path, sub_dirs: list,
+                          mode: str = DEFAULT_DEPS_MODE, logger=None) -> list:
+    """主树 prepare 前依赖预检与预装（main-tree-deps-provision D1）。
+
+    git 不携带 node_modules，被管项目主树只被 merge-back 写入、无人手工
+    ``npm install``——首次验证在 prepare（``npm run build``）时必踩
+    ``tsc: not found`` 类 exit 127（add-ssh-foundation 事故，2026-09-10）。
+    本入口在主树执行契约 prepare 前逐子目录预检：含 package.json 且缺
+    node_modules 时按 prefer-offline 预装（主树自装 hardlink 无意义——源与
+    目标重合即 self-copy，一律走 npm 安装；``mode`` 仅为与 worktree 供给同源
+    的解析结果，供日志说明）。
+
+    与 ``provision_worktree_node_modules`` 的关系（design D1）：worktree 供给
+    （源=主树→目标=worktree）与主树自装（源=无，目标=主树）语义不同，独立
+    入口各自可测；本函数不改造既有供给语义。
+
+    best-effort：单目录失败记 WARNING 继续（不抛异常、不阻塞派发/验证——
+    prepare 失败由既有「prepare 失败＝验证环境错误」门禁链路接管，design D3）。
+
+    Args:
+        project_root: 项目根目录（目标目录 = project_root/sub）
+        sub_dirs: prepare 步骤 cwd 集合（相对 project_root；元素含 "." 表示根）
+        mode: deps_mode 解析结果（调用方传 ``resolve_deps_mode`` 值；主树自装
+            一律走 prefer-offline，此处仅供日志）
+        logger: 日志记录器（可选）
+
+    Returns:
+        已预装依赖的目录列表（相对 project_root），供调用方记日志。
+    """
+    done = []
+    for sub in sub_dirs:
+        target = Path(project_root) / sub
+        if not (target / "package.json").is_file():
+            continue
+        if (target / "node_modules").exists():
+            continue
+        try:
+            r = subprocess.run(
+                ["npm", "ci", "--prefer-offline", "--no-audit", "--no-fund"],
+                cwd=str(target), capture_output=True, text=True, timeout=900,
+            )
+            if r.returncode != 0:
+                r = subprocess.run(
+                    ["npm", "install", "--prefer-offline", "--no-audit",
+                     "--no-fund"],
+                    cwd=str(target), capture_output=True, text=True,
+                    timeout=900,
+                )
+            if r.returncode == 0:
+                done.append(str(sub))
+                if logger:
+                    logger.info(
+                        "verify_contract",
+                        f"主树依赖预装完成（{sub}，deps_mode={mode}）: "
+                        "npm ci --prefer-offline",
+                    )
+            elif logger:
+                logger.warning(
+                    "verify_contract",
+                    f"主树依赖预装失败（{sub}）: "
+                    f"{(r.stderr or r.stdout or '').strip()[-200:]}")
+        except (subprocess.SubprocessError, OSError) as e:
+            if logger:
+                logger.warning(
+                    "verify_contract", f"主树依赖预装异常（{sub}）: {e}")
+    return done
+
+
 def _probe_vacuity_note(base_url: str, ready: ReadyProbe, probe_body: bytes) -> str:
     """就绪探针鉴别力自检：探针响应与任意不存在路径完全一致 → 无鉴别力。
 

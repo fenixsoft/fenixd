@@ -26,6 +26,7 @@ _SCENARIO_REPAIR_MAX_ROUNDS = 2
 
 from core.verify_contract import (
     CommandVerifyServer,
+    ensure_main_tree_deps,
     entry_preflight_error,
     load_verify_contract,
     probe_ready,
@@ -741,9 +742,16 @@ class VerificationPipeline:
             contract = load_verify_contract(self._pm.project_root, self._pm.logger)
             if contract is not None and contract.prepare:
                 # 纯 cli 无实例形态：不建 serving worktree，prepare 在主树执行
-                # （add-main-tree-deps-provision 锚点：该案在主树 prepare 前做
-                # 依赖供给（ensure_main_tree_deps），本 SPEC 的入口预检在其
-                # 之后的 spawn 点——顺序：供给 → prepare → 预检 → spawn。）
+                # （add-main-tree-deps-provision：主树 prepare 前按 prepare cwd
+                # 集合预装依赖，防 add-ssh-foundation 事故 exit 127 复发；本 SPEC
+                # 入口预检在其后的 spawn 点——顺序：供给 → prepare → 预检 → spawn。）
+                ensure_main_tree_deps(
+                    self._pm.project_root,
+                    sorted({(s.cwd or ".") for s in contract.prepare}),
+                    mode=resolve_deps_mode(
+                        contract, self._pm._get_config("verify.deps_mode", "")),
+                    logger=self._pm.logger,
+                )
                 err = run_prepare_steps(contract, self._pm.project_root)
                 if err:
                     return False, False, f"验证契约 prepare 失败: {err}"
@@ -793,6 +801,16 @@ class VerificationPipeline:
             # 依赖供给，本 SPEC 预检在其后 spawn 前——供给 → prepare → 预检
             # → spawn。）
             if contract.prepare and not wt_scope:
+                # add-main-tree-deps-provision：主树 prepare 前按 prepare cwd
+                # 集合预装依赖（本 SPEC 预检在其后 spawn 前——供给 → prepare
+                # → 预检 → spawn）
+                ensure_main_tree_deps(
+                    self._pm.project_root,
+                    sorted({(s.cwd or ".") for s in contract.prepare}),
+                    mode=resolve_deps_mode(
+                        contract, self._pm._get_config("verify.deps_mode", "")),
+                    logger=self._pm.logger,
+                )
                 err = run_prepare_steps(contract, self._pm.project_root)
                 if err:
                     return False, False, f"验证契约 prepare 失败: {err}"
