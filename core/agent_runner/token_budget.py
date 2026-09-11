@@ -13,6 +13,11 @@ class TokenAccountant:
 
     def __init__(self, pm):
         self._pm = pm  # 门面回引（design D3 规则 3：组件 → 门面 单向）
+        # add-turn-limit-anchor-c（D4）：unobserved usage 跳过累计的 DEBUG 留痕
+        # 计数——供成本审计区分「确认为零」与「观测不到」（强杀路径真实消耗
+        # 大概率非零）。仅内存计数 + DEBUG 日志，不新增 STATE 字段（展示层
+        # 不伪造原则：无可展示的真实数字就不展示）。
+        self._unobserved_runs = 0
 
     def _accumulate_token_usage(self, spec_name: str, usage_info: dict) -> None:
         """收工处累加本次 run 的 usage 到 STATE 内部字段（add-cost-observability D1）。
@@ -21,12 +26,26 @@ class TokenAccountant:
         ``_tokens_out`` = output。成本仅网关回传 total_cost_usd 时累计到 ``_cost_usd``，
         否则不写（不伪造，spec「金额展示不伪造」）。累加后触发预算阈值检查。
 
+        unobserved 语义（add-turn-limit-anchor-c D4）：usage_info 带
+        ``"unobserved": True``（强杀路径无 result 终态，四数值键全零只是观测
+        兜底而非确认零）时**跳过累计**（全零本就不增），并计入 DEBUG 留痕计数
+        供审计区分「零消耗」与「未观测」——不凭空补数、不把不可观测当零入账。
+
         state_machine 缺失（测试/未初始化）时安全跳过；STATE 条目缺失不写（spec 必已注册）。
         """
         if self._pm.state_machine is None:
             return
         if not isinstance(usage_info, dict):
             usage_info = {}
+        if usage_info.get("unobserved"):
+            self._unobserved_runs += 1
+            self._pm.logger.debug(
+                "agent_runner",
+                f"token usage unobserved for '{spec_name}' — skipped accumulation "
+                f"(unobserved total: {self._unobserved_runs}, "
+                f"add-turn-limit-anchor-c D4)",
+            )
+            return
         tokens_in = (
             int(usage_info.get("input_tokens", 0) or 0)
             + int(usage_info.get("cache_creation_input_tokens", 0) or 0)

@@ -79,12 +79,20 @@ class SessionTracker:
               "cache_creation_input_tokens": int,
               "cache_read_input_tokens": int,
               "cost_usd": float | None,       # 网关回传 total_cost_usd 才非 None；不伪造
+              "unobserved": True,             # result 缺失/非 dict 时才置位（见下）
             }
 
         Claude CLI stream-json 的 result 事件 usage 字段形如：
             {"input_tokens": N, "output_tokens": M,
              "cache_creation_input_tokens": C, "cache_read_input_tokens": R}
         旧版可能落在 ``total_cost_usd`` 或 ``cost_usd``。任何解析异常 → 全 0 / None（保守）。
+
+        unobserved 语义（add-turn-limit-anchor-c design D4）：turn-limit/timeout
+        等强杀路径无 result 终态事件，此时四数值键全 0 是**观测兜底**而非确认真实
+        消耗为零——真实消耗大概率非零（对照 a2 实测成本证明）。result 为 None 或
+        非 dict 时置 ``"unobserved": True``，供调用方区分「观测不到」与「确认为零」；
+        正常 result 路径不置位。STATE 累计侧读固定四键，多余 key 自然忽略、不泄入
+        展示层。调用方 12 处返回形状不变（向后兼容）。
         """
         empty = {
             "input_tokens": 0,
@@ -94,7 +102,7 @@ class SessionTracker:
             "cost_usd": None,
         }
         if not isinstance(result_event, dict):
-            return empty
+            return {**empty, "unobserved": True}
         usage = result_event.get("usage") or {}
         if not isinstance(usage, dict):
             usage = {}

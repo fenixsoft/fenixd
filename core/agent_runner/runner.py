@@ -76,6 +76,7 @@ from core.v2_dev_server import (
 )
 from core.wip_checkpoint import (
     ANCHOR_TRANSIENT_BACKOFF,
+    ANCHOR_TURN_LIMIT,
     commit_wip_checkpoint,
 )
 
@@ -418,6 +419,21 @@ class SelfReviewResult:
 # _parse_event_timestamp（以惰性解析避免类定义前的默认参数引用）。
 
 LATENCY_STALL_SECONDS = 60.0
+
+
+# ── 轮次上限活性感知续期（add-turn-limit-anchor-c design D2）────────────────
+# 轮询环判定 run 触达 max_turns 上限时，按封闭决策矩阵（分支提交活性 / 尾部
+# 窗口 tool_result 流量活性）判定续期或终止——有活性且续期未达封顶 → extend
+# 上限量；无活性或封顶 → kill + 锚点 C 收口。机制与超时路径
+# _supervision_deadline_action（improve-run-lifecycle-governance D3）同构。
+# 参数依据（design D2）：每次续期步长 = max_turns 的 25%（400 → +100 轮），
+# 封顶 2 次（理论最大 600 轮）——保守取值：无活性 run 一次都续不到，最坏墙钟
+# 增幅 = 200 轮 ≈ +26-42min，仅对真活性 run 发生。配置常量落模块级（不进
+# config.yaml，参照 AGENT_TERMINATE_GRACE_SECONDS 先例——框架生命周期内部
+# 治理参数，后续有需求再暴露配置）。活性判定窗口复用延迟采样口径（60s）。
+TURN_EXTENSION_STEP_FRACTION = 0.25
+TURN_EXTENSION_MAX = 2
+TURN_EXTENSION_WINDOW_SECONDS = 60.0
 
 
 def iter_events(entries):
@@ -1673,6 +1689,207 @@ class AgentRunner:
                 f"{e} — non-blocking",
             )
 
+    def _wip_checkpoint_on_forced_kill(self, spec_name: str, wt_path,
+                                       anchor: str = ANCHOR_TURN_LIMIT) -> None:
+        """锚点 C（add-turn-limit-anchor-c D1）：强杀收口前的 WIP 提交。
+
+        turn-limit / timeout 两强杀路径共用：轮询环已 kill 子进程、读线程
+        已 join（finally 语义保证 worktree 静默）后、``append_run_error``
+        之前调用——此刻 agent 已可证明不再写盘（事故取证：第 12 提交与
+        SIGKILL 同秒落盘，kill 前提交可能纳入半写文件）。对当前 attempt
+        使用的 worktree 执行 ``fenix(wip): checkpoint <anchor> <spec>``
+        提交，零提交型 run 的现场（builtin a1 84min 未提交产物）得以保全，
+        后续 attempt resume 或降级重建均可从该提交恢复。
+
+        无 worktree 载体或路径失效时跳过（与锚点 A/B 同语义，幂等）。
+        失败由 helper 内部 WARNING 降级（git 超时/失败不阻断收口流程）。
+        """
+        if wt_path is None:
+            return
+        if not self._worktree_path_valid(wt_path):
+            self.logger.debug(
+                "agent_runner",
+                f"WIP checkpoint ({anchor}) skip: worktree "
+                f"{wt_path} not a valid git worktree for '{spec_name}'",
+            )
+            return
+        try:
+            commit_wip_checkpoint(
+                wt_path, spec_name, anchor, self.logger)
+        except Exception as e:
+            # 兜底：helper 理论上不抛，防御性捕获保证强杀收口不被阻断
+            self.logger.warning(
+                "agent_runner",
+                f"WIP checkpoint ({anchor}) failed for '{spec_name}': "
+                f"{e} — non-blocking",
+            )
+
+    def _turn_limit_action(self, run_file: Path, spec_name: str | None,
+                           run_id: str, turn_extensions_used: int,
+                           wt_path, agent_type: str | None = None,
+                           *, max_turns: int | None = None) -> dict:
+        """轮次上限到期后的监督决策（add-turn-limit-anchor-c design D2）：续期 or 终止。
+
+        封闭矩阵（先封顶后活性，与超时路径 ``_supervision_deadline_action``
+        （improve-run-lifecycle-governance D3）同构但计数独立）：
+          1. 已用满 ``TURN_EXTENSION_MAX`` → 无条件 kill（封顶语义）；
+          2. 分支活性：工作树分支相对 run 起点（主树 HEAD）有提交，且较上次
+             判定有增量 → extend；
+          3. 流量活性：run 文件尾部 ``TURN_EXTENSION_WINDOW_SECONDS`` 窗口内
+             有新 ``tool_result`` 事件（复用 ``_parse_event_timestamp`` 口径，
+             与 latency 采样同源）→ extend；
+          4. 双无活性 → kill。
+
+        任一活性证据命中即续期（design D2「任一命中即 extend」）；rev-list
+        失败 fail-open（分支状态不可知不判死，视为有活性——封顶次数兜住最坏
+        情况）。判定只在命中轮次上限的轮询轮执行（rev-list 不在常规 1s 轮询
+        路径上，无周期拖慢）。
+
+        Returns: {"action": "extend"|"kill", "extension_index",
+                  "turn_step", "evidence", "new_turn_cap"}
+        """
+        if not hasattr(self, "_turn_branch_state"):
+            self._turn_branch_state = {}
+        turn_step = int((max_turns or 0) * TURN_EXTENSION_STEP_FRACTION)
+        base = {
+            "extension_index": turn_extensions_used,
+            "turn_step": turn_step,
+        }
+        if turn_extensions_used >= TURN_EXTENSION_MAX:
+            return {
+                **base,
+                "action": "kill",
+                "evidence": (
+                    f"turn extension budget exhausted "
+                    f"({turn_extensions_used}/{TURN_EXTENSION_MAX})"),
+                "new_turn_cap": (max_turns or 0)
+                + turn_extensions_used * turn_step,
+            }
+
+        # ── 活性证据 a：分支提交增量（首次以主树 HEAD 为 run 起点基线）──
+        branch_alive = False
+        branch_evidence = ""
+        if wt_path is not None and self._worktree_path_valid(wt_path):
+            try:
+                base_head = subprocess.run(
+                    ["git", "-C", str(self.project_root), "rev-parse", "HEAD"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                branch_tip = subprocess.run(
+                    ["git", "-C", str(wt_path), "rev-parse", "HEAD"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if (base_head.returncode != 0 or branch_tip.returncode != 0
+                        or not base_head.stdout.strip()
+                        or not branch_tip.stdout.strip()):
+                    raise subprocess.SubprocessError(
+                        "rev-parse failed: "
+                        f"base={base_head.returncode} tip={branch_tip.returncode}")
+                rc = subprocess.run(
+                    ["git", "-C", str(wt_path), "rev-list", "--count",
+                     f"{base_head.stdout.strip()}..{branch_tip.stdout.strip()}"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if rc.returncode != 0 or not rc.stdout.strip():
+                    raise subprocess.SubprocessError(
+                        f"rev-list failed: {rc.stderr.strip() or rc.stdout.strip()}")
+                count = int(rc.stdout.strip())
+            except (subprocess.SubprocessError, OSError,
+                    subprocess.TimeoutExpired, ValueError) as e:
+                # fail-open：git 不可用/慢/版本异常时不得判死（封顶次数兜底）
+                branch_alive = True
+                self.logger.debug(
+                    "agent_runner",
+                    f"turn-limit branch liveness check unavailable for "
+                    f"'{spec_name}' ({run_id}): {e} — fail-open as alive",
+                )
+            else:
+                state = self._turn_branch_state.setdefault(run_id, {})
+                prev = state.get("commit_count")
+                if prev is None:
+                    # 首次判定：以 run 起点（主树 HEAD 基线）计分支新提交
+                    branch_alive = count > 0
+                else:
+                    branch_alive = count > prev  # 较上次判定有增量
+                state["commit_count"] = count
+                if branch_alive:
+                    branch_evidence = f"branch commits {prev or 0}→{count}"
+
+        # ── 活性证据 b：尾部窗口 tool_result 流量 ──
+        traffic_alive = self._turn_traffic_active(run_file)
+        evidence_parts = []
+        if branch_alive:
+            evidence_parts.append(branch_evidence or "branch commits present")
+        if traffic_alive:
+            evidence_parts.append(
+                f"tool_result traffic in last {int(TURN_EXTENSION_WINDOW_SECONDS)}s")
+
+        if branch_alive or traffic_alive:
+            new_index = turn_extensions_used + 1
+            return {
+                **base,
+                "action": "extend",
+                "extension_index": new_index,
+                "evidence": " or ".join(evidence_parts) or "liveness evidence",
+                "new_turn_cap": (max_turns or 0) + new_index * turn_step,
+            }
+        return {
+            **base,
+            "action": "kill",
+            "evidence": (
+                "no liveness: no branch commits and no tool_result traffic "
+                f"within {int(TURN_EXTENSION_WINDOW_SECONDS)}s"),
+            "new_turn_cap": (max_turns or 0) + turn_extensions_used * turn_step,
+        }
+
+    def _turn_traffic_active(self, run_file: Path,
+                             window_seconds: float = TURN_EXTENSION_WINDOW_SECONDS
+                             ) -> bool:
+        """尾部窗口内 run 文件是否有新 tool_result 事件（design D2 活性证据 b）。
+
+        读文件尾部 64KiB（与 SessionTracker._extract_session_id 同窗口径），
+        逐行解析：``type == "tool_result"`` 且 timestamp 落在
+        ``now - window_seconds`` 内 → 有流量活性。事件无时间戳时回退文件
+        mtime 判定（与 liveness._liveness_snapshot 同口径，纯 stderr 流不失真）。
+        文件缺失/不可读 → False（无流量活性）。
+        """
+        cutoff = time.time() - max(0.0, window_seconds)
+        try:
+            size = run_file.stat().st_size
+            if size == 0:
+                return False
+            with run_file.open("rb") as f:
+                if size > 65536:
+                    f.seek(size - 65536)
+                tail = f.read().decode("utf-8", "replace")
+        except OSError:
+            return False
+        mtime_ok = False
+        try:
+            mtime_ok = run_file.stat().st_mtime >= cutoff
+        except OSError:
+            pass
+        for line in tail.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("type") != "tool_result":
+                continue
+            ts = self._parse_event_timestamp(entry)
+            if ts is None:
+                if mtime_ok:
+                    return True  # 无时间戳：文件在窗口内已写入即算流量
+                continue
+            if ts >= cutoff:
+                return True
+        return False
+
     def _execute_agent(self, spec_name: str, agent_type: str, run_id: str,
                        pre_wt_path: Path | None = None,
                        conflict_summary: dict | None = None) -> AgentRunResult:
@@ -2256,14 +2473,17 @@ class AgentRunner:
                         time.time() - attempt_started_at,
                         self.project_root / ".fenix" / "runs" / f"{attempt_run_id}.jsonl",
                     )
-                    # add-cost-observability（D1）：_run_claude 抛错（超时/kill/非 0 退出/
-                    # rc==0 但 result 标记 error），stream-json 终态已被丢弃，按 0 计 usage，
-                    # 仅 DEBUG 留痕（异常早夭的 run 消耗小，与 jsonl 考古一致偏差可接受）。
+                    # add-cost-observability（D1）+ add-turn-limit-anchor-c（D4）：
+                    # _run_claude 抛错（超时/kill/非 0 退出/rc==0 但 result 标记
+                    # error），stream-json 终态已被丢弃，usage 不可观测（unobserved
+                    # 语义，非确认为零——对照 a2 实测成本证明真实消耗大概率非零），
+                    # 仅 DEBUG 留痕。文案不得再写「tokens counted as 0」防审计误导。
                     usage_info = self._extract_usage_info(None)
                     self.logger.debug(
                         "agent_runner",
-                        f"{agent_type} for '{spec_name}' ended in error — tokens counted "
-                        f"as 0 (add-cost-observability): {error}",
+                        f"{agent_type} for '{spec_name}' ended in error — usage "
+                        f"unobserved (no result terminal event; real consumption "
+                        f"likely non-zero, add-cost-observability): {error}",
                     )
                     # 4xx 熔断计数（fix-stashpop-deadlock：provider-fault-fuse）。
                     # 仅对「已分配 provider」且错误文本能解析出 HTTP 4xx 的情况计数（design D4）；
@@ -2847,6 +3067,11 @@ class AgentRunner:
         started_at = time.time()
         deadline = started_at + timeout
         extensions_used = 0  # 本 run 已续期次数（D3 封闭矩阵）
+        # add-turn-limit-anchor-c（design D2/D3）：轮次续期独立计数与当前上限。
+        # current_turn_cap 初始 = max_turns，extend 后累加步长；两套续期计数
+        # （extensions_used / turn_extensions_used）各自封顶、互不读写。
+        turn_extensions_used = 0
+        current_turn_cap = max_turns
         # add-run-cancel D1/D3：轮询环每轮检查取消旗标，命中则
         # terminate→grace→kill→写 cancelled 终态行→抛 RunCancelledError
         base_run_id = self._normalize_run_id(run_id)
@@ -2915,9 +3140,38 @@ class AgentRunner:
                         timeout_error += f" | evidence: {action['evidence']}"
                     proc.kill()
                     break
-                if max_turns and turn_count[0] >= max_turns:
+                if max_turns and turn_count[0] >= current_turn_cap:
+                    # 轮次上限活性监督（add-turn-limit-anchor-c D2/D3）：触达当前
+                    # 上限不立即杀——按封闭决策矩阵（封顶 → 分支提交活性 →
+                    # tool_result 流量活性）判定续期或终止，与超时路径同构。
+                    action = self._turn_limit_action(
+                        run_file, spec_name, run_id, turn_extensions_used,
+                        cwd, agent_type=agent_type, max_turns=max_turns)
+                    if action["action"] == "extend":
+                        turn_extensions_used = int(action["extension_index"])
+                        current_turn_cap = int(action["new_turn_cap"])
+                        append_run_line(run_file, {
+                            "type": "turn_extension",
+                            "extension": turn_extensions_used,
+                            "turn_step": int(action.get("turn_step") or 0),
+                            "evidence": str(action.get("evidence") or "")[:400],
+                            "new_turn_cap": current_turn_cap,
+                        })
+                        self.logger.info(
+                            "agent_runner",
+                            f"Turn limit extended for '{spec_name}' "
+                            f"({turn_extensions_used}/{TURN_EXTENSION_MAX}): "
+                            f"step={int(action.get('turn_step') or 0)}, "
+                            f"new_cap={current_turn_cap}, "
+                            f"evidence={action.get('evidence')}",
+                            {"run_id": run_id},
+                        )
+                        continue
+                    turn_limit_error = (
+                        f"Max turns ({current_turn_cap}) reached — "
+                        f"{action['evidence']}"
+                    )
                     proc.kill()
-                    turn_limit_error = f"Max turns ({max_turns}) reached"
                     break
                 rc = proc.poll()
                 if rc is not None:
@@ -2984,12 +3238,20 @@ class AgentRunner:
             raise cancel_error
 
         if timeout_error is not None:
+            # 锚点 C（add-turn-limit-anchor-c D1）：超时强杀收口前的 WIP 保全。
+            # 此刻子进程已 kill、读线程已 join（finally 语义保证 worktree 静默可
+            # 证明），先保全未提交现场再 append_run_error——失败降级不阻断收口。
+            self._wip_checkpoint_on_forced_kill(spec_name, cwd)
             append_run_error(run_file, timeout_error, returncode)
             raise RuntimeError(
                 f"claude CLI {timeout_error}"
                 + (f" | latency: {latency_summary_text}" if latency_summary_text else ""))
 
         if turn_limit_error is not None:
+            # 锚点 C（add-turn-limit-anchor-c D1）：turn-limit 强杀收口前的 WIP
+            # 保全——零提交型 run（builtin a1 84min 未提交工作滞留 worktree）的
+            # 现场保全点，后续 attempt resume 或降级重建从该提交恢复。
+            self._wip_checkpoint_on_forced_kill(spec_name, cwd)
             append_run_error(run_file, turn_limit_error, returncode)
             raise RuntimeError(
                 f"claude CLI {turn_limit_error}"
