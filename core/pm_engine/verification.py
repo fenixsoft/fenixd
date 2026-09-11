@@ -1111,6 +1111,36 @@ class VerificationPipeline:
                 f"{type(e).__name__}: {e}",
             )
 
+    def _run_contract_static_check(self, spec_name: str) -> None:
+        """契约只读一致性检查挂点（planner-contract-findings，design D4）。
+
+        在 planner-plan 产物验收通过后（出题完成处）调用：对验证契约做只读
+        一致性检查（入口存在性/与 start script 一致性/端口注入），findings
+        覆盖写 ``contract_findings.json`` 供 admin 处置 prompt 注入。
+        **只做情报不拦截出题**，任何异常记 WARNING 不阻断（fail-open）。
+        """
+        from core.verify_engine.scenario_static_check import (
+            scan_contract, write_contract_findings,
+        )
+        try:
+            findings = scan_contract(self._pm.project_root)
+            write_contract_findings(
+                self._pm.project_root, spec_name, findings)
+            if findings:
+                from collections import Counter
+                dist = dict(Counter(f["rule_id"] for f in findings))
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"契约静态检查 '{spec_name}' 检出 {len(findings)} 条情报: "
+                    f"{dist}",
+                )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"契约静态检查跳过 '{spec_name}'（fail-open，不阻断出题）: "
+                f"{type(e).__name__}: {e}",
+            )
+
 
     def _apply_scenario_freeze(self, spec_name: str) -> dict:
         """应用场景集冻结：planner 产出 vs 持久化集 diff，写回 scenarios.json。
@@ -1638,6 +1668,12 @@ class VerificationPipeline:
                 # 正常启动）→ 删除陈旧 degrade_context.json，防旧降级事实污染后续
                 # 正常报告（成功时才清理，失败/重验路径历史留痕）。
                 self._clear_degrade_context(spec_name)
+
+                # ── 契约只读一致性检查（planner-contract-findings，design D4）──
+                # planner-plan 产物验收通过后（出题完成处）：对验证契约做只读
+                # 一致性检查并落盘 contract_findings.json（fail-open，不阻断
+                # 出题——契约检查与场景生成相互独立）。
+                self._run_contract_static_check(spec_name)
 
                 # ── 场景集冻结（add-verify-scenario-freeze）──
                 # 首轮写入 / 修复轮 diff 校验（design D3：确定性，planner 不可绕过）。

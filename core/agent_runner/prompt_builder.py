@@ -257,6 +257,10 @@ class PromptBuilder:
             # 被门拒绝时须按逐条错误清单重修；test_scenarios.json 与 scenarios.json
             # 同源坏条目须同步清理（双文件一致性），处置结果须报告两文件状态。
             prompt += self._admin_scenario_fix_constraints()
+            # 契约静态检查情报段（planner-contract-findings，design D4）：admin
+            # 职责含修正验证契约（judge 不修契约故不注入 judge）——serve 入口
+            # 路径/端口注入类偏差在处置时可直接定位修正。findings 缺失零注入。
+            prompt += self._contract_findings_section(spec_name)
 
         # 项目级附加提示词（D2）：附加在完整 prompt（通用主体 + 动态段）之后
         prompt += self._project_extra_section(agent_type, spec_name, wt_path)
@@ -285,6 +289,56 @@ class PromptBuilder:
             "3. **处置结果报告两文件状态**：在处置记录中写明 test_scenarios.json 与 "
             "scenarios.json 的清理/修复情况（各清了几条、剩几条）。\n"
         )
+
+    def _contract_findings_section(self, spec_name: str) -> str:
+        """契约静态检查情报段（planner-contract-findings，design D4）。
+
+        读取 ``contract_findings.json``（scan_contract 落盘：serve 入口存在性 /
+        与 package.json start 一致性 / 端口注入缺失等只读检查）渲染定向情报
+        段——逐条 rule_id + severity + message + evidence，并声明「本情报为
+        机械检出，处置前请以源码/执行证据核实」。findings 缺失/为空/损坏 →
+        返回空串（零注入，prompt 与现状逐字节一致）。
+        """
+        path = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / "contract_findings.json"
+        )
+        if not path.exists():
+            return ""
+        try:
+            findings = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return ""
+        if not isinstance(findings, list) or not findings:
+            return ""
+        lines = [
+            "",
+            "## 契约静态检查情报（定向情报，供处置参考）",
+            "",
+            "框架对验证契约做了机械可查的只读一致性检查，下列偏差已检出：",
+            "",
+        ]
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            rid = f.get("rule_id") or "?"
+            sev = f.get("severity") or "?"
+            msg = f.get("message") or ""
+            ev = f.get("evidence") or ""
+            lines.append(
+                f"- `{rid}` [{sev}]: {msg}"
+                + (f"\n  evidence: {ev}" if ev else "")
+            )
+        lines += [
+            "",
+            "处置要求：",
+            "- **修正契约是你的职责**：入口路径/端口注入类偏差可在处置时直接修正 "
+            "（.fenix/verify.yaml serve 段），修正后 git 提交并复位 spec 触发重验证；",
+            "- **本情报为机械检出，处置前请以源码/执行证据核实**——两类偏差可能是"
+            "合法设计（如 start 为 dev 形态、serve 为构建产物形态），核实后再动。",
+            "",
+        ]
+        return "\n".join(lines)
 
     def _project_extra_section(self, agent_type: str, spec_name: str = "",
                                wt_path: Path | None = None) -> str:
