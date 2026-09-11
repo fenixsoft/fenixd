@@ -585,9 +585,11 @@ class CommandVerifyServer:
 
     def __init__(self, proc: subprocess.Popen, injected_port: Optional[int],
                  timeout: int = 60, legacy_hint: Optional[int] = None,
-                 legacy_pre: Optional[set] = None):
+                 legacy_pre: Optional[set] = None,
+                 boot_log: Optional[object] = None):
         self._proc = proc
         self.failure_note = ""
+        self._boot_log = boot_log
         self._port = self._discover_port(
             injected_port, timeout, legacy_hint, legacy_pre or set())
 
@@ -698,6 +700,12 @@ class CommandVerifyServer:
         except Exception:
             try:
                 os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
+            except Exception:
+                pass
+        # 进程退出后关闭 boot.log 句柄（design D3：Popen 持句柄、退出后关闭）
+        if self._boot_log is not None:
+            try:
+                self._boot_log.close()
             except Exception:
                 pass
 

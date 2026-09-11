@@ -562,21 +562,28 @@ class VerificationPipeline:
             return False, False, preflight_err
         cmd_str = orig_cmd.replace("{port}", str(port))
         env = {**os.environ, "FENIX_VERIFY_PORT": str(port)}
+        # design D3：worktree 路径同样落盘 boot.log（非 DEVNULL 吞掉），
+        # 启动即死错误证据经 CommandVerifyServer 句柄关闭前可读。
+        boot_log = self._open_boot_log(spec_name)
         try:
             proc = subprocess.Popen(
                 cmd_str, shell=True, cwd=str(wt),
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=boot_log, stderr=boot_log,
                 start_new_session=True, env=env,
             )
         except Exception as e:
+            boot_log.close()
             return False, False, f"验证命令实例启动失败: {e}"
         srv = CommandVerifyServer(
             proc, port, timeout=contract.ready.timeout or 60,
-            legacy_hint=legacy_hint, legacy_pre=pre)
+            legacy_hint=legacy_hint, legacy_pre=pre, boot_log=boot_log)
         if not srv.ok:
+            # 启动即死：boot.log 尾部附入失败描述（Cannot find module 等）
+            boot_tail = self._read_boot_log_tail(spec_name, boot_log)
             srv.stop()
             return False, False, (
-                srv.failure_note or "验证命令实例未就绪（注入端口未被消费）")
+                (srv.failure_note or "验证命令实例未就绪（注入端口未被消费）")
+                + boot_tail)
         cache[spec_name] = {
             "server": srv, "wt_path": wt, "head": head, "mode": "command",
         }
@@ -893,17 +900,21 @@ class VerificationPipeline:
             )
             return False, False, preflight_err
 
-        # 启动一次（后台、脱离会话、输出丢弃）；随后等待可达或扫描邻近端口
+        # 启动一次（后台、脱离会话、stdout/stderr 落盘 boot.log）；
+        # 随后等待可达或扫描邻近端口。启动即死错误（Cannot find module 等）
+        # 从 DEVNULL 吞掉改为落盘（design D3），探活失败时尾部附入告警。
+        boot_log = self._open_boot_log(spec_name)
         env = {**os.environ}
         if injected_port:
             env["FENIX_VERIFY_PORT"] = str(injected_port)
         try:
             proc = subprocess.Popen(
                 start_cmd, shell=True, cwd=str(self._pm.project_root),
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=boot_log, stderr=boot_log,
                 start_new_session=True, env=env,
             )
         except Exception as e:
+            boot_log.close()
             return False, False, f"启动验证目标应用失败: {e}"
         # verify-process-lifecycle D6：兜底 spawn 同登记纳入管理
         # （pid/spec/worktree 空、端口先按 hint，实际可达端口由探测修正）
@@ -912,6 +923,7 @@ class VerificationPipeline:
         for _ in range(30):
             time.sleep(1)
             if all(_probe(u) for u in urls):
+                boot_log.close()
                 return True, False, "已自动启动应用服务"
 
         # 场景 URL 端口 ≠ commands.start 端口（planner 臆测端口，如 3000 vs 8787）：
@@ -936,6 +948,7 @@ class VerificationPipeline:
                         v = re.sub(r":%s(?=[/\?#]|$)" % p, f":{base_port}", v)
                     urls_new.append(v)
                 if all(_probe(u) for u in urls_new):
+                    boot_log.close()
                     return True, False, (
                         f"场景 URL 端口 {sorted(foreign_ports, key=int)} 与应用实际端口 "
                         f"{base_port} 不符（planner 臆测），已改写场景端口并确认可达"
@@ -949,10 +962,53 @@ class VerificationPipeline:
                     urls_new = [re.sub(r":%d(?=[/\?]|$)" % base_port, f":{port}", u) for u in urls]
                     if all(_probe(u) for u in urls_new):
                         self._pm._rewrite_scenario_port(scenarios_path, base_port, port)
+                        boot_log.close()
                         return True, False, f"已自动启动应用服务（端口冲突，改用 {port}）"
 
+        # 探活最终失败：boot.log 尾部（≤2KB）附入错误串，启动即死错误
+        # （Cannot find module 等）对 admin 直接可读（design D3）
+        boot_tail = self._read_boot_log_tail(spec_name, boot_log)
+        boot_log.close()
         return False, False, ("应用仍不可达：已自动执行 commands.start 并扫描邻近端口，"
-                              "仍无法连接（可能需人工启动/换端口，或属需用户参与的验证场景）")
+                              "仍无法连接（可能需人工启动/换端口，或属需用户参与的验证场景）"
+                              + boot_tail)
+
+    def _open_boot_log(self, spec_name: str):
+        """打开 .fenix/verify-serving/<spec>-boot.log（覆盖写句柄，design D3）。
+
+        兜底/命令型 spawn 的 stdout/stderr 落盘于此（替代 DEVNULL 吞掉），
+        启动即死错误（Cannot find module 等）对 admin 可读。启动前 truncate
+        控制单轮大小（验证实例生命周期短，分钟级，接受无界增长）。
+        """
+        log_dir = Path(self._pm.project_root) / ".fenix" / "verify-serving"
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            return open(log_dir / f"{spec_name}-boot.log", "wb")
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine", f"boot.log 打开失败（回退丢弃输出）: {e}")
+            return subprocess.DEVNULL
+
+    def _read_boot_log_tail(self, spec_name: str, handle) -> str:
+        """读 boot.log 尾部 ≤2KB 附入探活失败错误串（design D3）。
+
+        句柄关闭前调用以 flush 子进程残留输出；读失败/空文件返回空串
+        （不因取证自身异常改动错误判定）。
+        """
+        try:
+            handle.flush()
+        except Exception:
+            pass
+        try:
+            log_path = (Path(self._pm.project_root) / ".fenix"
+                        / "verify-serving" / f"{spec_name}-boot.log")
+            data = log_path.read_bytes()[-2048:]
+            if not data.strip():
+                return ""
+            tail = data.decode("utf-8", errors="replace").rstrip()
+            return f"\n── boot.log 尾部（≤2KB）──\n{tail}"
+        except Exception:
+            return ""
 
     def _write_verify_contract_missing(self, spec_name: str, note: str,
                                        evidence: str,
