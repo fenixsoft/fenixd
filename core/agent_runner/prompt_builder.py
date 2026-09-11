@@ -218,6 +218,10 @@ class PromptBuilder:
             # 清单在前，强制修复清单殿后保持紧迫性
             prompt += self._verdict_cache_section(spec_name)
             prompt += self._verdict_rejection_section(spec_name)
+            # 批量归因查重重合成指令段（fix-verdict-dedup-resynthesis）：查重
+            # 拒绝时框架写 dedup_resynthesis_directive.json——注入被拒场景清单 +
+            # 差异化素材 + 归因文本契约；非拒绝轮文件缺失零注入。
+            prompt += self._resynthesis_directive_section(spec_name)
             # 场景静态缺陷情报段（add-scenario-defect-triage-gate D5）：在
             # verdict 缓存之后、硬门契约之前——先给情报（修复属 judge 职责、
             # 先修已知缺陷再裁决）后给结果文件硬门，情报不改变硬门契约语义。
@@ -966,6 +970,12 @@ class PromptBuilder:
         读取 pm_engine 落盘的 ``.fenix/verify-progress/<spec>/verdict_violations.json``
         （上一轮裁决被确定性校验驳回的违规明细），注入 judge prompt，告知重试
         judge 具体缺口。文件缺失/为空 → 返回空串（首轮裁决不注入）。
+
+        fix-verdict-dedup-resynthesis：兼容批量归因查重违规形态（条目
+        ``{"scenario_ids": [...], "reason": ...}``，无单场景 scenario_id），
+        并扩展定向纪律——查重拒绝的重试是**轻量重合成**：只重写清单内场景的
+        ``first_failed_step`` 与断言 triage evidence 归因文本字段，其余字段
+        原样保留，禁止复现/调查/改判定。
         """
         rejection_path = (
             self._pm.project_root / ".fenix" / "verify-progress"
@@ -984,8 +994,19 @@ class PromptBuilder:
             "- 你现在看到的是重试裁决：上一轮写回的 report.json 未通过框架确定性校验，"
             "违规明细如下：\n"
         ]
+        is_dedup = False
         for v in data:
-            if isinstance(v, dict):
+            if not isinstance(v, dict):
+                continue
+            if v.get("scenario_ids"):
+                # 批量归因查重违规（fix-verdict-dedup-resynthesis）：无单场景
+                # scenario_id，场景集在 scenario_ids 列表
+                is_dedup = True
+                sids = "、".join(str(s) for s in v["scenario_ids"] if s)
+                lines.append(
+                    f"  - 批量归因查重违规（场景：{sids}）：{v.get('reason')}\n"
+                )
+            else:
                 lines.append(
                     f"  - 场景 `{v.get('scenario_id')}`（status={v.get('status')}）："
                     f"{v.get('reason')}\n"
@@ -999,6 +1020,74 @@ class PromptBuilder:
             "禁止重新复现或改写**，覆盖写回时不得改动清单外场景的任何字段"
             "（整轮重跑式重试是 15-25 分钟×N 的确定性浪费）。\n"
         )
+        if is_dedup:
+            lines.append(
+                "- **查重拒绝 = 轻量重合成（fix-verdict-dedup-resynthesis）**："
+                "对上述查重违规场景，MUST 只重写其归因**文本字段**（`first_failed_step` "
+                "与断言 triage 的 `evidence`），MUST NOT 重新调查/复现/改写判定、"
+                "MUST NOT 改动任何未拒绝场景的字段；归因文本 MUST 引用本场景自己的"
+                "步骤序号/断言 label/完整 error（见下方重合成指令段逐场景素材），"
+                "MUST NOT 套用共享模板串——连步骤引用都复制的同文仍会被查重门再拒。\n"
+            )
+        return "".join(lines)
+
+    def _resynthesis_directive_section(self, spec_name: str) -> str:
+        """重合成指令注入段（fix-verdict-dedup-resynthesis 3.2）。
+
+        批量归因查重拒绝时框架写 ``dedup_resynthesis_directive.json``；存在时
+        注入：被拒场景清单 + 逐场景现有归因文本与失败步骤序号/断言 label 差异化
+        素材 + 归因文本契约（MUST 引用本场景局部数据、MUST NOT 套用共享模板串）。
+        文件缺失/损坏 → 返回空串（普通裁决轮零注入，prompt 与现状逐字节一致）。
+        """
+        directive_path = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / "dedup_resynthesis_directive.json"
+        )
+        if not directive_path.exists():
+            return ""
+        try:
+            data = json.loads(directive_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        violations = data.get("violations") or []
+        scenarios = data.get("scenarios") or []
+        if not violations or not scenarios:
+            return ""
+        lines = [
+            "\n\n## ♻️ 批量归因查重重合成指令（fix-verdict-dedup-resynthesis，强制）\n"
+            "- 本轮是**轻量重合成**：只重写下列被拒场景的归因文本字段"
+            "（`first_failed_step` 与断言 triage 的 `evidence`），MUST NOT "
+            "调查/复现/改写判定、MUST NOT 改动未拒绝场景的任何字段。\n"
+            "- 被拒场景清单：\n"
+        ]
+        for v in violations:
+            if not isinstance(v, dict):
+                continue
+            sids = "、".join(str(s) for s in (v.get("scenario_ids") or []) if s)
+            lines.append(f"  - {sids}: {v.get('reason')}\n")
+        lines.append(
+            "- 各被拒场景的差异化素材（框架已掌握的场景局部数据，归因改写 MUST "
+            "逐场景引用，MUST NOT 套用共享模板串）：\n"
+        )
+        for sc in scenarios:
+            if not isinstance(sc, dict):
+                continue
+            sid = sc.get("scenario_id") or "?"
+            ffs = sc.get("first_failed_step") or ""
+            step_no = sc.get("failed_step_number") or ""
+            labels = "、".join(str(s) for s in (sc.get("assertion_labels") or [])) or "（无）"
+            lines.append(
+                f"  - `{sid}`（classification={sc.get('classification') or '?'}，"
+                f"status={sc.get('status') or '?'}）:\n"
+                f"      first_failed_step 现状: {ffs}\n"
+                f"      失败步骤序号: {step_no or '（未提取）'}；"
+                f"断言 label: {labels}\n"
+                f"      → 改写后 first_failed_step/断言 evidence MUST 引用上述"
+                f"本场景步骤序号与断言 label（完整 error 优先取自 assertion_results），"
+                f"禁止与其它场景共享逐字相同的归因文本\n"
+            )
         return "".join(lines)
 
     def _result_gate_section(self, spec_name: str) -> str:

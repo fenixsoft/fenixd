@@ -103,6 +103,11 @@
   - 场景级豁免（不记产品 Bug）仅当该场景**全部失败断言**均被单独归类为非 product-bug 时成立；任一断言归类 product-bug → 场景 MUST `failed`，不得整体豁免。
   - 校验器会核对条目数与失败断言数、归类取值与证据非空，缺失或漏条目会触发裁决重试。
 
+- 归因文本契约（fix-verdict-dedup-resynthesis，强制，≤10 行）
+  - 根因/classification 允许跨场景共享（同一根因级联失败是合法形态），但**归因文本必须逐场景可区分**：`first_failed_step` 与断言 triage 的 `evidence` 必须引用本场景自己的步骤序号、断言 label 或完整 error。
+  - 禁止把 error 截断成同一段（如 `error[:120]` 批量套用）导致多场景同文，禁止套用共享模板串——批量查重门（≥3 场景归一化后逐字相同）会拒绝采纳并触发轻量重合成/升级。
+  - 逐场景引用局部数据代价为零：步骤序号/断言 label/完整 error 都在 report.json 与 assertion_results 里，直接引用即可。
+
 - .fenix-run-result.json 格式
   ```json
   {

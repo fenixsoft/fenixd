@@ -343,6 +343,135 @@ class TestBatchAttributionDedup(unittest.TestCase):
         self.assertTrue(result["ok"])
 
 
+# ── 8. 归一化细分 + 级联豁免（fix-verdict-dedup-resynthesis D3）─────────
+
+
+def _cascade_scenario(sid, step_no, assertion, cls="env"):
+    """构造单根因级联形态场景：同一根因描述体 + 各异失败步骤/断言。
+
+    evidence 走共享截断模板（模拟 judge 批量生成时 ``error[:120]`` 截断 +
+    共享模板串的 16:39 事故形态）——模板偷懒的「同文」集中在归一化指纹里，
+    局部区分只能来自步骤序号与断言 label（design D3 的级联豁免判据）。
+    """
+    return {
+        "scenario_id": sid,
+        "status": "fail",
+        "classification": cls,
+        "evidence": {
+            "first_failed_step": f"步骤{step_no}: 应用初始化失败，前置实例未就绪",
+        },
+        "assertion_triage": [{
+            "assertion": assertion,
+            "classification": cls,
+            "evidence": "错误信息（截断）: 断言未通过，详见 assertion_results",
+        }],
+    }
+
+
+class TestDedupNormalizationCascadeExemption(unittest.TestCase):
+    """Scenario: 单根因级联失败不再误拒；模板偷懒仍被拦截。"""
+
+    def test_cascade_varied_steps_passed(self):
+        """「共享根因 + 各异步骤序号」→ 放行（单根因级联合法形态）。"""
+        report = {"scenarios": [
+            _cascade_scenario("s1", 1, "项目列表行可见"),
+            _cascade_scenario("s2", 2, "筛选结果正确"),
+            _cascade_scenario("s3", 3, "分页器可用"),
+            _cascade_scenario("s4", 4, "详情卡片渲染"),
+            _cascade_scenario("s5", 5, "按钮可点击"),
+        ]}
+        result = check_batch_attribution_dedup(report)
+        self.assertTrue(result["ok"],
+                        "步骤序号各异的级联场景不得因共享根因模板被误拒")
+
+    def test_cascade_same_step_varied_assertions_passed(self):
+        """「共享根因 + 同步骤 + 断言清单各异」→ 放行（OR 语义：断言差异即豁免）。"""
+        report = {"scenarios": [
+            _cascade_scenario("s1", 1, "项目列表行可见"),
+            _cascade_scenario("s2", 1, "筛选结果正确"),
+            _cascade_scenario("s3", 1, "分页器可用"),
+        ]}
+        result = check_batch_attribution_dedup(report)
+        self.assertTrue(result["ok"])
+
+    def test_same_step_same_text_still_rejected(self):
+        """「共享根因 + 同步骤 + 同断言」→ 仍拒（纯模板偷懒形态）。"""
+        report = {"scenarios": [
+            _cascade_scenario("s1", 2, "项目列表行可见"),
+            _cascade_scenario("s2", 2, "项目列表行可见"),
+            _cascade_scenario("s3", 2, "项目列表行可见"),
+        ]}
+        result = check_batch_attribution_dedup(report)
+        self.assertFalse(result["ok"])
+        self.assertEqual(len(result["violations"][0]["scenario_ids"]), 3)
+
+    def test_shared_text_no_step_no_triage_still_rejected(self):
+        """共享模板串 + 无步骤序号 + 无断言 → 仍拒（16:39 模板偷懒原形）。"""
+        report = {"scenarios": [
+            {"scenario_id": "s1", "status": "fail",
+             "classification": "env",
+             "evidence": {"first_failed_step": "CROSS_FIRST_FAILED"},
+             "assertion_triage": []},
+            {"scenario_id": "s2", "status": "fail",
+             "classification": "env",
+             "evidence": {"first_failed_step": "CROSS_FIRST_FAILED"},
+             "assertion_triage": []},
+            {"scenario_id": "s3", "status": "fail",
+             "classification": "env",
+             "evidence": {"first_failed_step": "CROSS_FIRST_FAILED"},
+             "assertion_triage": []},
+        ]}
+        result = check_batch_attribution_dedup(report)
+        self.assertFalse(result["ok"])
+
+    def test_two_identical_cascade_steps_passed(self):
+        """2 场景边界：即使同文也放行（threshold=3 不变）。"""
+        report = {"scenarios": [
+            _cascade_scenario("s1", 1, "项目列表行可见"),
+            _cascade_scenario("s2", 1, "项目列表行可见"),
+        ]}
+        result = check_batch_attribution_dedup(report)
+        self.assertTrue(result["ok"])
+
+    def test_four_identical_template_rejected(self):
+        """4 场景纯同文（含步骤与断言）→ 拒。"""
+        report = {"scenarios": [
+            _cascade_scenario("s1", 1, "项目列表行可见"),
+            _cascade_scenario("s2", 1, "项目列表行可见"),
+            _cascade_scenario("s3", 1, "项目列表行可见"),
+            _cascade_scenario("s4", 1, "项目列表行可见"),
+        ]}
+        result = check_batch_attribution_dedup(report)
+        self.assertFalse(result["ok"])
+        self.assertEqual(len(result["violations"]), 1)
+        self.assertEqual(len(result["violations"][0]["scenario_ids"]), 4)
+
+    def test_exemption_only_for_same_classification(self):
+        """豁免只对同 classification 生效（不同分类的场景组不豁免）。"""
+        sig_a = {"classification": "env", "ffs_step": "1",
+                 "ffs_desc": "应用初始化失败", "triage_labels": ["a"]}
+        sig_b = {"classification": "env", "ffs_step": "2",
+                 "ffs_desc": "应用初始化失败", "triage_labels": ["b"]}
+        sig_c = {"classification": "product-bug", "ffs_step": "3",
+                 "ffs_desc": "应用初始化失败", "triage_labels": ["c"]}
+        # 分类混杂：级联豁免前提（组内 classification 相同）不成立 → 不豁免
+        from core.verdict_check import _cascade_root_exemption
+        self.assertFalse(_cascade_root_exemption([sig_a, sig_b, sig_c]))
+        # 分类全同 + 步骤各异 → 豁免成立
+        self.assertTrue(_cascade_root_exemption([sig_a, sig_b]))
+
+    def test_desc_prefix_similarity_gate(self):
+        """描述体前缀重合 <80% 不豁免（各自描述差异过大 → 属正常多因，查重照常）。"""
+        from core.verdict_check import _cascade_root_exemption
+        sigs = [
+            {"classification": "env", "ffs_step": "1",
+             "ffs_desc": "应用初始化失败，前置实例未就绪", "triage_labels": ["a"]},
+            {"classification": "env", "ffs_step": "2",
+             "ffs_desc": "完全不同的一句话描述另一个失败", "triage_labels": ["b"]},
+        ]
+        self.assertFalse(_cascade_root_exemption(sigs))
+
+
 # ── 7. validate_attribution_levels 写入 report.json ─────────────
 
 

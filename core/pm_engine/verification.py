@@ -1804,18 +1804,19 @@ class VerificationPipeline:
             violations = verdict_ret.get("violations") or []
             dispatch_error = verdict_ret.get("dispatch_error") or ""
             if cause == "batch_attribution_dedup":
-                # ── 批量归因查重拒绝落盘（add-verdict-credibility-gate / D4）──
-                # error 写清要求后保持 testing 等待重合成，不阻断、不发告警
-                # （合成错误属可自愈的产物问题，judge 下轮修文后自然通过；重试
-                # judge 不解决批量同文案问题，重派只会烧 token）。
+                # ── 批量归因查重拒绝采纳（fix-verdict-dedup-resynthesis D1/D2）──
+                # 查重拒绝已由 _verify_verdict_evidence 内部完成「落盘违规 →
+                # 派发重合成 judge → 回灌校验」闭环；本分支仅剩的语义是「重合成
+                # 预算耗尽已升级 blocked」——_handle_attr_dedup_rejection 已置
+                # blocked + admin 告警，此处仅 WARNING 对账，不重复写 error。
+                # report.json 实际已在盘上（judge 自己写的），拒绝的是状态机
+                # 采纳而非落盘——不再「保持 testing 静默等待」（170 分钟自锁
+                # 与全量重跑罚金的根因已消除）。
                 detail = (violations[0].get("reason") if violations else "")
-                self._pm.state_machine.update_spec(spec_name, {
-                    "error": f"批量归因查重拒绝落盘（要求逐场景归因后重合成）: {detail}",
-                })
                 self._pm.logger.warning(
                     "pm_engine",
-                    f"批量归因查重拒绝落盘 '{spec_name}' — 保持 testing，"
-                    f"要求逐场景归因后重合成: {detail}",
+                    f"批量归因查重拒绝采纳 '{spec_name}'（重合成预算耗尽）— "
+                    f"已 blocked 等待人工裁决: {detail}",
                 )
                 return
             if cause in ("dispatch_frozen", "dispatch_cancelled"):
@@ -3186,6 +3187,367 @@ class VerificationPipeline:
         return "; ".join(parts)
 
 
+    # ── 批量归因查重拒绝 → 重合成闭环（fix-verdict-dedup-resynthesis D1/D2）──
+    # 2026-09-10 事故解剖（proposal）：查重门拒绝后框架「保持 testing 等重合成」
+    # 但**不存在重合成回路**（不 requeue、不落盘违规清单、重试 prompt 收不到
+    # 查重要求）→ spec 卡 testing 170 分钟撞 stuck 阈值全量重跑。本闭环：
+    # 落盘违规清单 → 派发轻量重合成 judge run → 回灌同一校验入口 → 连续 2 次
+    # 重合成仍被拒 → blocked + admin 升级（MUST NOT 无限重试）。
+    _RESYNTHESIS_DIRECTIVE_FILENAME = "dedup_resynthesis_directive.json"
+    # 重合成预算：连续 2 轮重合成产物仍被查重拒绝 → 升级人工（design D2）。
+    _RESYNTHESIS_MAX_ATTEMPTS = 2
+
+    def _resynthesis_directive_path(self, spec_name: str) -> Path:
+        return (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / self._RESYNTHESIS_DIRECTIVE_FILENAME
+        )
+
+    def _read_resynthesis_directive(self, spec_name: str) -> dict:
+        """读取重合成指令（缺失/损坏返回 {}，fail-open）。"""
+        try:
+            path = self._resynthesis_directive_path(spec_name)
+            if not path.exists():
+                return {}
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return {}
+
+    def _clear_resynthesis_directive(self, spec_name: str) -> None:
+        """合规采纳后清除重合成指令（防下轮误注入）。写失败静默。"""
+        try:
+            self._resynthesis_directive_path(spec_name).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _resynthesis_directive_scenarios(self, report: dict,
+                                         violations: list) -> list:
+        """提取被拒场景的差异化素材（重合成指令输入）。
+
+        对违规组内每个 scenario_id，从 report 取：分类、状态、
+        first_failed_step 原文、失败步骤序号、断言 label 清单——judge 改写
+        归因文本时必须引用本场景局部数据（MUST NOT 套用共享模板串）。
+        """
+        from core.verdict_check import _extract_step_number
+        involved = set()
+        for v in (violations or []):
+            if not isinstance(v, dict):
+                continue
+            for sid in (v.get("scenario_ids") or []):
+                if sid:
+                    involved.add(str(sid))
+        rows = []
+        for sc in report.get("scenarios") or []:
+            if not isinstance(sc, dict):
+                continue
+            sid = str(sc.get("scenario_id") or sc.get("id") or "")
+            if sid not in involved:
+                continue
+            evidence = sc.get("evidence") or {}
+            ffs_text = ""
+            if isinstance(evidence, dict):
+                ffs = evidence.get("first_failed_step") or ""
+                if isinstance(ffs, str):
+                    ffs_text = ffs
+            triage = sc.get("assertion_triage") or []
+            labels = []
+            if isinstance(triage, list):
+                for t in triage:
+                    if isinstance(t, dict):
+                        assertion = str(t.get("assertion") or "").strip()
+                        if assertion:
+                            labels.append(assertion)
+            rows.append({
+                "scenario_id": sid,
+                "classification": str(sc.get("classification") or ""),
+                "status": str(sc.get("status") or ""),
+                "first_failed_step": ffs_text,
+                "failed_step_number": _extract_step_number(ffs_text),
+                "assertion_labels": labels,
+            })
+        return rows
+
+    def _write_resynthesis_directive(self, spec_name: str, report: dict,
+                                     violations: list, rejection_round: int,
+                                     resynthesis_attempts: int) -> None:
+        """写重合成指令文件（fix-verdict-dedup-resynthesis D1）。
+
+        内容：被拒场景清单（scenario_ids + reason）、逐场景现有归因文本与
+        框架已掌握的场景局部数据（失败步骤序号 / 断言 label）作为差异化素材、
+        拒绝计数（rejection_round / resynthesis_attempts，独立轻量计数落在
+        verify-progress 目录，不膨胀 STATE.md）。写失败静默降级（只影响
+        重合成 prompt 注入，不阻断闭环）。
+        """
+        try:
+            payload = {
+                "spec": spec_name,
+                "rejection_round": rejection_round,
+                "resynthesis_attempts": resynthesis_attempts,
+                "violations": violations,
+                "scenarios": self._resynthesis_directive_scenarios(
+                    report, violations),
+            }
+            path = self._resynthesis_directive_path(spec_name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(path.parent), prefix=".resynth.", suffix=".json.tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                os.replace(tmp_path, path)
+            except OSError:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine", f"重合成指令写盘失败 '{spec_name}': {e}",
+            )
+
+    def _escalate_dedup_resynthesis(self, spec_name: str, rejection_round: int,
+                                    violations: list) -> dict:
+        """重合成预算耗尽（连续 2 轮重合成仍被拒）→ blocked + admin 升级告警。
+
+        error 携带多轮违规摘要；spec 置 blocked 后自动链路对 status 的改写被
+        update_spec 剥离（人工接管），MUST NOT 无限重试重合成。
+        """
+        summary = "; ".join(
+            str(v.get("reason") or "")[:160] for v in (violations or []))
+        error = (
+            f"批量归因查重连续 {rejection_round} 次拒绝采纳"
+            f"（含 {self._RESYNTHESIS_MAX_ATTEMPTS} 轮轻量重合成仍同文），"
+            f"已 blocked 等待人工裁决（违规摘要: {summary}）"
+        )
+        self._pm.state_machine.update_spec(spec_name, {
+            "status": "blocked",
+            "error": error,
+        })
+        self._pm._send_human_escalation_alert(
+            spec_name=spec_name,
+            signal_type="verdict_dedup_resynthesis_exhausted",
+            severity="critical",
+            description=(
+                f"'{spec_name}' 批量归因查重连续拒绝（含 {self._RESYNTHESIS_MAX_ATTEMPTS} "
+                f"轮轻量重合成）已 blocked，等待人工裁决"
+            ),
+            evidence=(
+                f"spec={spec_name}; rejections={rejection_round}; "
+                f"违规摘要: {summary}"
+            ),
+            recommended_action=(
+                "人工核查归因模板偷懒或级联豁免误判；修正归因后解除 blocked"
+            ),
+        )
+        return {
+            "ok": False, "cause": "batch_attribution_dedup",
+            "violations": violations, "dispatch_error": "",
+        }
+
+    def _handle_attr_dedup_rejection(self, spec_name: str, report: dict,
+                                     dedup_violations: list) -> dict:
+        """批量归因查重拒绝统一收口（首轮 + 重试轮共用）。
+
+        ``_verify_verdict_evidence`` 的查重拒绝处（首轮 + 重试轮）全部经此闭环：
+          1. 落盘违规清单（``_write_verdict_violations``，重试 prompt 经
+             ``_verdict_rejection_section`` 注入定向修复纪律）+ 写
+             ``dedup_resynthesis_directive.json``（重合成指令：被拒场景清单 +
+             逐场景现有归因 + 步骤序号/断言 label 差异化素材）；
+          2. 派发轻量重合成 judge run（``run_planner(spec_name, "judge")``——
+             复用既有 judge 重试通道，frozen 门/取消旗标/stale-result 防护/产物
+             硬门全部免费继承），只重写被拒场景的归因文本字段，不重做调查/复现；
+          3. 重合成产物回灌完整校验链（load_report → validate_report → 归因
+             分级门 → 查重门，与既有路径同源、非旁路），合规按既有语义采纳
+             （清 violations + 清 directive + 状态映射重写 + 裁决缓存）；
+          4. 重合成产物仍被查重拒绝 → 连续拒绝计数递增（directive 文件
+             resynthesis_attempts 字段），达预算上限（2 轮）→ blocked +
+             admin 升级告警，MUST NOT 无限重试。
+
+        Returns:
+            {"ok", "cause", "violations", "dispatch_error"}（与
+            ``_verify_verdict_evidence`` 同契约；cause=pass 时重合成已闭环
+            采纳，其余 cause 由调用方按既有语义处置）。
+        """
+        from core.verdict_check import (
+            validate_report, enforce_status_mapping, load_report, save_report,
+        )
+        prior = self._read_resynthesis_directive(spec_name)
+        prior_attempts = int(prior.get("resynthesis_attempts") or 0) \
+            if isinstance(prior, dict) else 0
+        rejection_round = int(prior.get("rejection_round") or 0) \
+            if isinstance(prior, dict) else 0
+        rejection_round += 1
+
+        # 1) 违规清单落盘（verdict_violations.json 通道，与既有校验违规同源）
+        violations_entries = [{
+            "scenario_ids": [str(s) for s in (v.get("scenario_ids") or [])],
+            "reason": str(v.get("reason") or ""),
+        } for v in (dedup_violations or [])]
+        self._pm._write_verdict_violations(spec_name, violations_entries)
+
+        # 预算上限（design D2：连续 2 次重合成仍被拒 → 升级人工，MUST NOT 无限重试）
+        if prior_attempts >= self._RESYNTHESIS_MAX_ATTEMPTS:
+            self._pm.logger.error(
+                "pm_engine",
+                f"批量归因查重拒绝采纳（重合成预算耗尽）'{spec_name}'（第 "
+                f"{rejection_round} 次）— 升级 blocked 等待人工裁决",
+            )
+            return self._escalate_dedup_resynthesis(
+                spec_name, rejection_round, violations_entries)
+
+        # 2) 重合成指令落盘（含差异化素材与拒绝计数：本轮派发计数 = prior + 1）
+        self._write_resynthesis_directive(
+            spec_name, report, violations_entries,
+            rejection_round=rejection_round,
+            resynthesis_attempts=prior_attempts + 1,
+        )
+        self._pm.logger.warning(
+            "pm_engine",
+            f"批量归因查重拒绝采纳 '{spec_name}'（第 {rejection_round} 次，"
+            f"已重合成 {prior_attempts} 轮）— 派发轻量重合成 judge run"
+            f"（只重写被拒场景归因字段，禁止复现/调查/改判定）",
+        )
+
+        # 3) 派发重合成 judge（复用 judge 通道；异常立即早退，禁止复读旧 report）
+        try:
+            re_judge = self._pm.agent_runner.run_planner(spec_name, "judge")
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine", f"重合成 judge 异常 '{spec_name}': {e}",
+            )
+            return {
+                "ok": False, "cause": "dispatch_exception",
+                "violations": violations_entries, "dispatch_error": str(e),
+            }
+        if re_judge is not None and not re_judge.success:
+            if (re_judge.error or "").startswith(FROZEN_TERMINATED_ERROR_PREFIX):
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"重合成 judge 派发被 frozen 门拦截 '{spec_name}'"
+                    f"（人工已冻结，让位不写状态）: {re_judge.error}",
+                )
+                return {
+                    "ok": False, "cause": "dispatch_frozen",
+                    "violations": violations_entries,
+                    "dispatch_error": re_judge.error,
+                }
+            if getattr(re_judge, "cancelled", False):
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"重合成 judge 派发被取消旗标拦截 '{spec_name}'"
+                    f"（run 已人工取消，让位不写状态）: {re_judge.error}",
+                )
+                return {
+                    "ok": False, "cause": "dispatch_cancelled",
+                    "violations": violations_entries,
+                    "dispatch_error": re_judge.error,
+                }
+            self._pm.logger.warning(
+                "pm_engine",
+                f"重合成 judge 派发失败 '{spec_name}': {re_judge.error}",
+            )
+            return {
+                "ok": False, "cause": "dispatch_failed",
+                "violations": violations_entries,
+                "dispatch_error": re_judge.error,
+            }
+
+        # 4) 重合成产物回灌完整校验链（与 _verify_verdict_evidence 既有路径同源）
+        report2 = load_report(self._pm.project_root, spec_name)
+        if report2 is None:
+            return {
+                "ok": False, "cause": "report_missing",
+                "violations": violations_entries, "dispatch_error": "",
+            }
+        result2 = validate_report(report2)
+        if not result2["ok"]:
+            # 重合成产物在分类/证据层仍不合规（非查重）→ 既有「二次违规」处置
+            self._pm.logger.error(
+                "pm_engine",
+                f"重合成产物证据分类仍不合规 '{spec_name}'："
+                f"{[v['scenario_id'] for v in result2['violations']]}",
+            )
+            return {
+                "ok": False, "cause": "violations",
+                "violations": result2["violations"], "dispatch_error": "",
+            }
+        # 归因分级门 + 查重门（同一入口位，非旁路）
+        try:
+            from core.verdict_check import (
+                validate_attribution_levels,
+                enforce_blank_screenshot_direction,
+                check_batch_attribution_dedup,
+                load_verdict_cache,
+                tag_cached_attributions,
+            )
+            validate_attribution_levels(report2)
+            for sc in report2.get("scenarios") or []:
+                if not isinstance(sc, dict):
+                    continue
+                new_cls = enforce_blank_screenshot_direction(sc)
+                if new_cls:
+                    old_cls = sc.get("classification")
+                    sc["classification"] = new_cls
+                    sc["blank_direction_forced"] = True
+                    self._pm.logger.info(
+                        "pm_engine",
+                        f"白屏方向约束（重合成）'{spec_name}' 场景 "
+                        f"{sc.get('scenario_id')}: classification "
+                        f"'{old_cls}' → '{new_cls}'（blank_screenshot 标签强制 env 方向）",
+                    )
+            dedup2 = check_batch_attribution_dedup(report2)
+            if not dedup2["ok"]:
+                for v in dedup2["violations"]:
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"批量归因查重拒绝采纳（重合成轮）'{spec_name}': "
+                        f"{v.get('reason')}",
+                    )
+                # 重合成产物再拒 → 递归进入下一轮（或达上限升级）
+                return self._handle_attr_dedup_rejection(
+                    spec_name, report2, dedup2["violations"])
+            cache = load_verdict_cache(self._pm.project_root, spec_name)
+            tagged = tag_cached_attributions(report2, cache, spec_name)
+            if tagged:
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"跨轮缓存归因打标（重合成）'{spec_name}': "
+                    f"{len(tagged)} 个场景带 cached_from_previous_round 标",
+                )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"归因分级校验异常跳过（重合成）'{spec_name}'"
+                f"（不阻断裁决）: {type(e).__name__}: {e}",
+            )
+
+        # 5) 合规采纳：清 violations + 清 directive + 状态映射重写 + 裁决缓存
+        self._pm._clear_verdict_violations(spec_name)
+        self._clear_resynthesis_directive(spec_name)
+        self._persist_verdict_cache(spec_name, report2)
+        mapping2 = enforce_status_mapping(report2)
+        try:
+            save_report(self._pm.project_root, spec_name, report2)
+        except OSError as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"裁决映射重写写回失败 '{spec_name}': {e}",
+            )
+        for c in mapping2["corrected"]:
+            self._pm.logger.info(
+                "pm_engine",
+                f"重合成采纳后映射强制重写 '{spec_name}' 场景 "
+                f"{c['scenario_id']}: {c['from_status']} → failed",
+            )
+        self._pm.logger.warning(
+            "pm_engine",
+            f"重合成产物合规 '{spec_name}' — 已按既有语义采纳推进",
+        )
+        return {"ok": True, "cause": "pass", "violations": [], "dispatch_error": ""}
+
+
     def _verify_verdict_evidence(self, spec_name: str, retry_judge: bool = False) -> dict:
         """确定性校验裁决 report.json 的分类/证据合规，并按映射强制重写 status。
 
@@ -3248,29 +3610,19 @@ class VerificationPipeline:
                             f"{sc.get('scenario_id')}: classification "
                             f"'{old_cls}' → '{new_cls}'（blank_screenshot 标签强制 env 方向）",
                         )
-                # 批量归因查重：≥3 场景逐字相同 → 拒绝落盘
+                # 批量归因查重：≥3 场景逐字相同 → 拒绝采纳 → 重合成闭环
                 dedup = check_batch_attribution_dedup(report)
                 if not dedup["ok"]:
                     for v in dedup["violations"]:
                         sids = v.get("scenario_ids") or []
                         self._pm.logger.error(
                             "pm_engine",
-                            f"批量归因查重拒绝落盘 '{spec_name}': {v.get('reason')}",
+                            f"批量归因查重拒绝采纳 '{spec_name}': {v.get('reason')}",
                         )
-                    # 拒绝落盘：保持 testing 等待重合成（requeue judge 一次）
-                    self._pm.state_machine.update_spec(spec_name, {
-                        "error": (
-                            f"批量归因查重拒绝落盘（疑似批量硬编码归因）："
-                            f"{dedup['violations'][0]['reason']}"
-                        ),
-                    })
-                    self._pm.logger.warning(
-                        "pm_engine",
-                        f"批量归因查重拒绝落盘 '{spec_name}' — 保持 testing，"
-                        f"要求逐场景归因后重合成",
-                    )
-                    return {"ok": False, "cause": "batch_attribution_dedup",
-                            "violations": dedup["violations"], "dispatch_error": ""}
+                    # 统一收口：落盘违规 + 派发重合成 + 回灌校验（fix-verdict-
+                    # dedup-resynthesis D1/D2；返回 cause=pass 已闭环采纳）
+                    return self._handle_attr_dedup_rejection(
+                        spec_name, report, dedup["violations"])
                 # 跨轮缓存归因打标（design D3 / Task 3.1）
                 cache = load_verdict_cache(self._pm.project_root, spec_name)
                 tagged = tag_cached_attributions(report, cache, spec_name)
@@ -3407,13 +3759,12 @@ class VerificationPipeline:
                         for v in dedup["violations"]:
                             self._pm.logger.error(
                                 "pm_engine",
-                                f"批量归因查重拒绝落盘（重试轮）'{spec_name}': "
+                                f"批量归因查重拒绝采纳（重试轮）'{spec_name}': "
                                 f"{v.get('reason')}",
                             )
-                        return {
-                            "ok": False, "cause": "batch_attribution_dedup",
-                            "violations": dedup["violations"], "dispatch_error": "",
-                        }
+                        # 统一收口：重试轮查重拒绝同样进重合成闭环
+                        return self._handle_attr_dedup_rejection(
+                            spec_name, report2, dedup["violations"])
                     cache = load_verdict_cache(self._pm.project_root, spec_name)
                     tagged = tag_cached_attributions(report2, cache, spec_name)
                     if tagged:
