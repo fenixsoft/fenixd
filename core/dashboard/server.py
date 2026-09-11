@@ -2079,7 +2079,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _error(self, code: int, msg: str):
-        body = json.dumps({"error": msg}).encode("utf-8")
+        # 与 _json 保持一致用 ensure_ascii=False，中文错误文案以可读字面输出
+        body = json.dumps({"error": msg}, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
