@@ -424,6 +424,13 @@ class FenixDaemon:
                     self._check_scheduling_kick_requests()
                 except Exception as e:
                     self.logger.error("fenixd", f"scheduling_kick pickup failed: {e}")
+                # SPEC 审批推送信号（add-spec-approve-push-modal）：dashboard
+                # 审批 done SPEC 时写入 .fenix/approve_push_request.json，主循环
+                # 下一轮（≤2s）消费并调 pm_engine.approve_push 执行推送。
+                try:
+                    self._check_approve_push_requests()
+                except Exception as e:
+                    self.logger.error("fenixd", f"approve_push pickup failed: {e}")
                 # 配置热更新：每 30s 检查配置文件 mtime，变更则原地重载
                 if time.time() - config_check_ts >= 30:
                     config_check_ts = time.time()
@@ -779,6 +786,74 @@ class FenixDaemon:
             self.logger.error(
                 "fenixd",
                 f"scheduling_kick 唤起 '{spec}' 失败（full_scan 兜底）: {e}",
+            )
+
+    # ── SPEC 审批推送信号消费（add-spec-approve-push-modal） ───────
+
+    def _check_approve_push_requests(self):
+        """主循环每轮扫描「SPEC 审批推送」的文件信号并消费。
+
+        dashboard 的 /api/spec-approve-push 校验通过后原子写入
+        .fenix/approve_push_request.json（含 spec/source/created）；本方法在
+        主循环（1s 粒度）中检测其存在：读取→删除→调 pm_engine.approve_push(spec)。
+        与 _check_cancel_requests / _check_scheduling_kick_requests 同构：
+        损坏 JSON 删除防卡死；删除失败（先读后删被并发消费）下轮再试。
+
+        推送语义完全复用 pm_engine.approve_push 既有实现（单飞锁、main 先行+
+        分支尽力、SHA 去重、退避、归档收口、project log），本方法不新增任何
+        推送语义。返回 False 时记 WARNING 不重试（design D3）：False 的三种
+        来源各有既有兜底——非 done（幂等拒绝，重试无意义）、退避期内
+        （_is_push_backoffed，重放由 recovery full_scan 覆盖）、推送失败
+        （_handle_push_failure 已写回退避标记或升级 push_failed 信号）。
+        """
+        req_path = PROJECT_ROOT / ".fenix" / "approve_push_request.json"
+        if not req_path.exists():
+            return
+        try:
+            with req_path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            # 损坏的信号文件：删除避免每轮报错卡死
+            try:
+                req_path.unlink()
+            except OSError:
+                pass
+            return
+        # 先读后删：删除失败（被并发消费）则本次跳过，下一轮再试
+        try:
+            req_path.unlink()
+        except OSError:
+            return
+
+        spec = payload.get("spec")
+        if not spec:
+            self.logger.warning("fenixd", "approve_push 请求缺少 spec，忽略")
+            return
+        if self.pm_engine is None:
+            self.logger.warning("fenixd", "pm_engine 未初始化，丢弃 approve_push 请求")
+            return
+
+        self.logger.info(
+            "fenixd",
+            f"消费审批推送信号：spec='{spec}'，source={payload.get('source', 'dashboard')}",
+        )
+        try:
+            ok = self.pm_engine.approve_push(spec)
+        except Exception as e:
+            self.logger.error(
+                "fenixd",
+                f"approve_push 调用失败 spec={spec}（recovery 兜底）: {e}",
+            )
+            return
+        if ok:
+            self.logger.info("fenixd", f"审批推送成功：spec='{spec}' 已推进 pushed")
+        else:
+            # design D3：不重试；退避重放由 recovery full_scan 覆盖，推送失败
+            # 由 _handle_push_failure 退避/升级链路接管
+            self.logger.warning(
+                "fenixd",
+                f"审批推送未成功 spec='{spec}'（非 done/退避期内/推送失败），"
+                "不重试，退避与 recovery 兜底覆盖",
             )
 
     def _submit_admin_run(self, signal: dict) -> bool:

@@ -25,6 +25,7 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
     POST /api/spec-start-after?project=<name>&spec=<name> → 设置/清除定时拾取 start_after（body: {"value": iso|null}，非法 400 / 终态 403）
     POST /api/spec-freeze-config?project=<name>&spec=<name> → 冻结管理（body: {"mode": permanent|scheduled|unfreeze, "until"?: iso}，非法 400 / 非冻结 409）
     POST /api/spec-budget?project=<name>&spec=<name> → 设置/清除 per-spec 实现尝试预算覆盖（body: {"budget": 1-10 整数|null}，缺键/非法 400 / 终态 403）
+    POST /api/spec-approve-push?project=<name>&spec=<name> → 审批推送 done SPEC（写 .fenix/approve_push_request.json 信号，daemon 未运行/已有信号 409，非 done 403）
     GET /api/config?project=<name> → 读取受管配置（llm / agents.models / gates.approve_mode）
     POST /api/config?project=<name> → 写回受管配置（原子写、校验失败返回 400）
     GET /api/verify-yaml?project=<name> → 验证契约文件 .fenix/verify.yaml 原文（设置页「项目简介」面板）
@@ -868,6 +869,49 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._json(result)
 
+    def _api_spec_approve_push(self, query):
+        """POST /api/spec-approve-push?project=<name>&spec=<name>
+
+        审批推送 done SPEC：写入 .fenix/approve_push_request.json 文件信号，
+        由 daemon 主循环下一轮（≤2s）拾取并调 pm_engine.approve_push 执行推送。
+        - project 不存在 → 404；spec 不在项目 STATE.md → 404
+        - daemon 未运行 → 409「daemon 未运行，请先启动 daemon」（信号无人消费）
+        - 已有未消费信号 → 409「已有进行中的审批推送请求」
+        - spec 非 done → 403（pushed 幂等无操作、其他状态非法，error 区分）
+        - 成功 → 200 + {ok: true, project, spec, created}
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        proot = Path(project["path"])
+        try:
+            result = dashboard_data.request_spec_approve_push(proot, spec)
+        except Exception as e:  # noqa: BLE001 兜底：写文件异常不崩溃进程
+            self._error(500, f"spec approve push request failed: {e}")
+            return
+        if not result.get("found"):
+            self._error(404, result.get("error") or f"spec not found: {spec}")
+            return
+        if result.get("daemon_down"):
+            self._error(409, result.get("error") or "daemon 未运行，请先启动 daemon")
+            return
+        if result.get("conflict"):
+            self._error(409, result.get("error") or "已有进行中的审批推送请求")
+            return
+        if result.get("terminal"):
+            self._error(403, result.get("error") or "仅 done 状态可审批推送")
+            return
+        self._json({"ok": True, "project": project["name"], "spec": spec,
+                    "created": result.get("created")})
+
     def _api_spec_delete(self, query):
         """POST /api/spec-delete?project=<name>&spec=<name>
 
@@ -1640,6 +1684,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_spec_archive(query)
         elif path == "/api/spec-promote":
             self._api_spec_promote(query)
+        elif path == "/api/spec-approve-push":
+            self._api_spec_approve_push(query)
         elif path == "/api/alerts/clear":
             self._api_alerts_clear()
         elif path.startswith("/api/alerts/") and path.endswith("/handled"):

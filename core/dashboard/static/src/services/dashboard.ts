@@ -283,6 +283,24 @@ export function promoteSpec(project: string, spec: string) {
   );
 }
 
+// ── SPEC 审批推送（add-spec-approve-push-modal） ──
+
+export interface ApprovePushResult {
+  ok: boolean;
+  project?: string;
+  spec?: string;
+  created?: string;
+  error?: string;
+}
+
+/** 审批推送 done SPEC（写文件信号，daemon 主循环拾取后执行 approve_push） */
+export function approveSpecPush(project: string, spec: string) {
+  return request<ApprovePushResult>(
+    `/api/spec-approve-push?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    { method: 'POST' },
+  );
+}
+
 // ── SPEC 定时拾取 / 冻结管理（add-spec-scheduling-controls D5/D6） ──
 
 export interface StartAfterResult {

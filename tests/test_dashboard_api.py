@@ -939,3 +939,159 @@ class TestSpecPromoteAPI:
                 dash_data.promote_spec = original_fn
         finally:
             srv.stop()
+
+
+# ── SPEC 审批推送 API（add-spec-approve-push-modal Task 5.2/5.3） ────
+
+class TestSpecApprovePushAPI:
+    """POST /api/spec-approve-push：done SPEC 审批推送的 HTTP 全分支语义。"""
+
+    def _make_done_project(self, tmp_path, spec_name="done-spec"):
+        """构造含 done spec 的项目。"""
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        from core.state_machine import StateMachine
+        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm.add_spec(spec_name, {"status": "done"})
+        return proot
+
+    def _server_for(self, proot, tmp_path):
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        return _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+
+    def test_approve_push_success_200(self, tmp_path, monkeypatch):
+        """成功：200 + {ok: true, project, spec, created}。"""
+        proot = self._make_done_project(tmp_path)
+        monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.post("/api/spec-approve-push?project=proj-a&spec=done-spec")
+            assert status == 200
+            assert body["ok"] is True
+            assert body["project"] == "proj-a"
+            assert body["spec"] == "done-spec"
+            assert isinstance(body["created"], str)
+        finally:
+            srv.stop()
+
+    def test_approve_push_spec_not_found_404(self, tmp_path, monkeypatch):
+        """spec 不存在 → 404。"""
+        proot = self._make_done_project(tmp_path)
+        monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.post("/api/spec-approve-push?project=proj-a&spec=ghost")
+            assert status == 404
+        finally:
+            srv.stop()
+
+    def test_approve_push_unknown_project_404(self, tmp_path, monkeypatch):
+        """project 不存在 → 404。"""
+        proot = self._make_done_project(tmp_path)
+        monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.post("/api/spec-approve-push?project=ghost&spec=done-spec")
+            assert status == 404
+        finally:
+            srv.stop()
+
+    def test_approve_push_non_done_ready_403(self, tmp_path, monkeypatch):
+        """status=ready → 403，文案含「仅 done 状态可审批推送」与当前状态。"""
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        from core.state_machine import StateMachine
+        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm.add_spec("ready-spec", {"status": "ready"})
+        monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.post("/api/spec-approve-push?project=proj-a&spec=ready-spec")
+            assert status == 403
+            assert "仅 done 状态可审批推送" in body["error"]
+            assert "ready" in body["error"]
+        finally:
+            srv.stop()
+
+    def test_approve_push_pushed_403(self, tmp_path, monkeypatch):
+        """status=pushed → 403，文案含「已推送」。"""
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        from core.state_machine import StateMachine
+        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm.add_spec("pushed-spec", {"status": "pushed"})
+        monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.post("/api/spec-approve-push?project=proj-a&spec=pushed-spec")
+            assert status == 403
+            assert "已推送" in body["error"]
+        finally:
+            srv.stop()
+
+    def test_approve_push_daemon_down_409(self, tmp_path, monkeypatch):
+        """daemon 未运行 → 409，文案含「daemon 未运行」。"""
+        proot = self._make_done_project(tmp_path)
+        monkeypatch.setattr(dash_data, "_is_running", lambda p: False)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.post("/api/spec-approve-push?project=proj-a&spec=done-spec")
+            assert status == 409
+            assert "daemon 未运行" in body["error"]
+        finally:
+            srv.stop()
+
+    def test_approve_push_conflict_409(self, tmp_path, monkeypatch):
+        """已有未消费信号 → 409 冲突。"""
+        proot = self._make_done_project(tmp_path)
+        monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status1, body1 = srv.post("/api/spec-approve-push?project=proj-a&spec=done-spec")
+            assert status1 == 200
+            assert body1["ok"] is True
+            status2, body2 = srv.post("/api/spec-approve-push?project=proj-a&spec=done-spec")
+            assert status2 == 409
+            assert "已有进行中的审批推送请求" in body2["error"]
+        finally:
+            srv.stop()
+
+    def test_approve_push_body_keys_aligned_with_budget(self, tmp_path, monkeypatch):
+        """响应体键断言对齐 budget/promote API 测试风格：ok/project/spec 三键必须存在。"""
+        proot = self._make_done_project(tmp_path)
+        monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.post("/api/spec-approve-push?project=proj-a&spec=done-spec")
+            assert status == 200
+            assert "ok" in body
+            assert "project" in body
+            assert "spec" in body
+            assert "created" in body
+        finally:
+            srv.stop()
+
+    def test_approve_push_missing_spec_query_404(self, tmp_path, monkeypatch):
+        """缺少 spec query 参数 → 404。"""
+        proot = self._make_done_project(tmp_path)
+        monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status, body = srv.post("/api/spec-approve-push?project=proj-a")
+            assert status == 404
+        finally:
+            srv.stop()
+
+    def test_approve_push_idempotent_two_calls_second_409(self, tmp_path, monkeypatch):
+        """Task 5.3：连续两次调用（中间不消费）→ 第二次 409。"""
+        proot = self._make_done_project(tmp_path)
+        monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
+        srv = self._server_for(proot, tmp_path)
+        try:
+            status1, _ = srv.post("/api/spec-approve-push?project=proj-a&spec=done-spec")
+            assert status1 == 200
+            status2, body2 = srv.post("/api/spec-approve-push?project=proj-a&spec=done-spec")
+            assert status2 == 409
+            assert body2["error"]
+        finally:
+            srv.stop()

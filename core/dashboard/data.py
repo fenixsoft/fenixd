@@ -584,6 +584,101 @@ def configure_spec_freeze(project_root, spec: str, mode: str, until=None) -> dic
             "error": f"未知冻结模式: {mode!r}"}
 
 
+# ── SPEC 审批推送（add-spec-approve-push-modal） ─────────────────────
+
+# daemon 主循环轮询的审批推送请求信号文件名（与 fenixd.py 约定一致）
+APPROVE_PUSH_REQUEST = ".fenix/approve_push_request.json"
+
+
+def request_spec_approve_push(project_root, spec: str) -> dict:
+    """写入 SPEC 审批推送的文件信号（.fenix/approve_push_request.json）。
+
+    校验链（全部通过才写信号）：
+    - spec 不在项目 STATE.md → {ok: False, found: False}
+    - status 非 done → {ok: False, terminal: True}（error 区分 pushed 幂等
+      文案与其它非 done 状态文案）
+    - daemon 未运行（复用 core.fenix_session.is_running 进程探测）→
+      {ok: False, daemon_down: True}——信号无人消费会静默滞留，比明确报错
+      更糟（design D2），前置 409 拦截
+    - 已存在未消费信号 → {ok: False, conflict: True}（对齐 request_run_cancel
+      冲突语义，读既有 created 供返回）
+    通过校验后原子写（tmp+rename + fsync，与 request_admin_invoke 同构）
+    {"spec": spec, "source": "dashboard", "created": <ISO8601 UTC>}。
+
+    本函数只写信号、不触碰 STATE.md——状态推进（done → pushed）由 daemon
+    侧 `pm_engine.approve_push` 的 `transition(pushed)` 完成；退避/失败由
+    既有 `_handle_push_failure` 链路接管（推送失败写回退避标记或升级
+    push_failed 信号），本函数不新增任何推送语义。
+
+    Returns:
+        {"ok": bool, "found": bool, "terminal": bool, "daemon_down": bool,
+         "conflict": bool, "file": str|null, "created": str|null,
+         "error": str|null}
+    """
+    proot = Path(project_root)
+    specs = parse_state(proot)
+    if spec not in specs:
+        return {"ok": False, "found": False, "terminal": False,
+                "daemon_down": False, "conflict": False,
+                "file": None, "created": None,
+                "error": f"spec not found: {spec}"}
+
+    entry = specs[spec]
+    status = entry.get("status")
+    if status != "done":
+        if status == "pushed":
+            # 幂等拒绝：已推送终态，无需审批（与 approve_push 幂等跳过同语义）
+            msg = "SPEC 已推送（pushed），无需审批"
+        else:
+            msg = f"仅 done 状态可审批推送（当前 {status}）"
+        return {"ok": False, "found": True, "terminal": True,
+                "daemon_down": False, "conflict": False,
+                "file": None, "created": None, "error": msg}
+
+    # daemon 存活探测（design D2）：信号无人消费时静默滞留，前置拦截
+    if not _is_running(proot):
+        return {"ok": False, "found": True, "terminal": False,
+                "daemon_down": True, "conflict": False,
+                "file": None, "created": None,
+                "error": "daemon 未运行，请先启动 daemon"}
+
+    req_path = proot / APPROVE_PUSH_REQUEST
+    if req_path.exists():
+        # 读既有 created 供返回（对齐 request_run_cancel 冲突语义）
+        existing_created = None
+        try:
+            existing = json.loads(req_path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                existing_created = existing.get("created")
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            pass
+        return {"ok": False, "found": True, "terminal": False,
+                "daemon_down": False, "conflict": True,
+                "file": str(req_path), "created": existing_created,
+                "error": "已有进行中的审批推送请求"}
+
+    created = datetime.now(timezone.utc).isoformat()
+    payload = {"spec": spec, "source": "dashboard", "created": created}
+    req_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(req_path.parent), prefix=".approve_push_request.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, req_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    return {"ok": True, "found": True, "terminal": False,
+            "daemon_down": False, "conflict": False,
+            "file": str(req_path), "created": created, "error": None}
+
+
 # ── SPEC 文档读取（proposal.md / design.md，add-spec-doc-buttons） ──
 
 # kebab-case：小写字母/数字开头，仅含小写字母/数字/连字符（防御路径穿越）
