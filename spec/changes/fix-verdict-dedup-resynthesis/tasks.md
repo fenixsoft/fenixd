@@ -21,10 +21,10 @@
 
 ## 1. 查重归一化细分与级联豁免（core/verdict_check.py）
 
-- [ ] 1.1 `_normalize_attribution` 扩展：从 `first_failed_step` 拆出失败步骤序号（正则提取「步骤N」/「step N」前缀）单独进指纹；描述体截断哈希保留；断言 triage 的 assertion label（type+selector）确认在指纹内
-- [ ] 1.2 级联豁免判定：被比对场景组 classification 相同、描述体归一化后前缀重合 ≥80%、但步骤序号集合或断言清单逐场景不同 → 该组不计违规；纯同文（步骤序号也相同）仍拒
-- [ ] 1.3 单测（tests/test_verdict_credibility_gate.py 扩展）：「共享根因+各异步骤」放行、「共享根因+同步骤同文」仍拒、2/3/4 场景边界、豁免只对同 classification 生效
-- [ ] 1.4 回归：tests/test_incident_replay_credibility.py 既有查重用例全绿（模板偷懒拦截语义不回退）
+- [x] 1.1 `_normalize_attribution` 扩展：从 `first_failed_step` 拆出失败步骤序号（正则提取「步骤N」/「step N」前缀）单独进指纹；描述体截断哈希保留；断言 triage 的 assertion label（type+selector）确认在指纹内
+- [x] 1.2 级联豁免判定：被比对场景组 classification 相同、描述体归一化后前缀重合 ≥80%、但步骤序号集合或断言清单逐场景不同 → 该组不计违规；纯同文（步骤序号也相同）仍拒
+- [x] 1.3 单测（tests/test_verdict_credibility_gate.py 扩展）：「共享根因+各异步骤」放行、「共享根因+同步骤同文」仍拒、2/3/4 场景边界、豁免只对同 classification 生效
+- [x] 1.4 回归：tests/test_incident_replay_credibility.py 既有查重用例全绿（模板偷懒拦截语义不回退）
 
 ## 2. 拒后重合成回路（core/pm_engine/verification.py）
 

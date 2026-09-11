@@ -774,7 +774,7 @@ def check_batch_attribution_dedup(report: dict) -> dict:
     """报告落盘前批量归因查重（Task 3.2 / D4；fix-verdict-dedup-resynthesis）。
 
     对全部非 PASS 场景归因归一化（strip + 空白折叠 + ffs 描述体哈希化）：
-    ≥3 个场景逐字相同 → 拒绝落盘（返回 violations），要求逐场景归因后重合成。
+    ≥3 个场景逐字相同 → 拒绝采纳（返回 violations），要求逐场景归因后重合成。
 
     归一化细分 + 级联豁免（fix-verdict-dedup-resynthesis D3）：
     - 步骤序号进指纹——16:39 事故 5 个级联场景因 error[:120] 截断同文而误拒，
