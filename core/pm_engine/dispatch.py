@@ -565,6 +565,20 @@ class Dispatcher:
                             self._active_priority_counts[base_prio] = cnt
                         self._active_priorities.discard(base_prio)
                     continue
+                # add-spec-content-integrity-gate：派发前内容完整性闸门。
+                # 空 spec 目录（无 proposal/design/tasks/specs）冻结派发，
+                # 不烧预算；与预算闸门同层并列，复用回滚范式。
+                if self._pm._check_spec_content_missing(spec_name):
+                    with self._queue_lock:
+                        self._run_queue.insert(0, entry_to_dispatch)
+                        self._active_runs -= 1
+                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
+                        if cnt <= 0:
+                            self._active_priority_counts.pop(base_prio, None)
+                        else:
+                            self._active_priority_counts[base_prio] = cnt
+                        self._active_priorities.discard(base_prio)
+                    continue
                 # 修复重派时状态已是 implementing（同态转换非法），跳过 transition
                 cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
                 if cur_status != "implementing":
@@ -573,6 +587,19 @@ class Dispatcher:
                 # fast-track：与 implementer 同语义，派发即进入 implementing；
                 # 失败打回重派时状态已是 implementing，跳过同态转换。
                 if self._pm._check_impl_budget_exhausted(spec_name):
+                    with self._queue_lock:
+                        self._run_queue.insert(0, entry_to_dispatch)
+                        self._active_runs -= 1
+                        cnt = self._active_priority_counts.get(base_prio, 0) - 1
+                        if cnt <= 0:
+                            self._active_priority_counts.pop(base_prio, None)
+                        else:
+                            self._active_priority_counts[base_prio] = cnt
+                        self._active_priorities.discard(base_prio)
+                    continue
+                # add-spec-content-integrity-gate：内容完整性闸门（fast-track 分支，
+                # 与 implementer 同层并列；空 spec 冻结派发，不烧预算）。
+                if self._pm._check_spec_content_missing(spec_name):
                     with self._queue_lock:
                         self._run_queue.insert(0, entry_to_dispatch)
                         self._active_runs -= 1
