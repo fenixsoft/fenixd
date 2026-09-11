@@ -212,6 +212,18 @@ class FenixDaemon:
         )
         self.logger.info("fenixd", "AgentRunner initialized")
 
+        # 5.4. Initialize PMEngine（提前于 AdminMonitor：add-blocked-reverify-lane
+        # D2 的处置收尾复位需要 pm_engine 引用以派发 verifier；PMEngine 构造仅
+        # 轻量初始化 + 加载 recovery_watch，无启动扫描副作用）
+        self.pm_engine = PMEngine(
+            self.state_machine,
+            self.agent_runner,
+            self.config,
+            PROJECT_ROOT,
+            self.logger,
+        )
+        self.logger.info("fenixd", "PMEngine initialized")
+
         # 5.5. Initialize AdminStore + AdminMonitor（零成本健康监视 + 困境唤起）
         self.admin_store = AdminStore(PROJECT_ROOT, self.logger)
         self.admin_monitor = AdminMonitor(
@@ -221,6 +233,7 @@ class FenixDaemon:
             self.logger,
             store=self.admin_store,
             agent_runner=self.agent_runner,
+            pm_engine=self.pm_engine,
         )
         if self.admin_monitor.enabled:
             self.logger.info(
@@ -252,16 +265,6 @@ class FenixDaemon:
                 "fenixd",
                 "Admin run worker pool disabled (admin.workers: 0) — synchronous fallback",
             )
-
-        # 6. Initialize PMEngine
-        self.pm_engine = PMEngine(
-            self.state_machine,
-            self.agent_runner,
-            self.config,
-            PROJECT_ROOT,
-            self.logger,
-        )
-        self.logger.info("fenixd", "PMEngine initialized")
 
         # 6.5 Initialize HookEngine（add-spec-hooks：SPEC 状态事件 hook 引擎）。
         # 配置从共享 config 对象实时读取（30s 热更新自动生效）；失败告警复用

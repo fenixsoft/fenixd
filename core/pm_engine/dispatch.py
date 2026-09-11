@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 
-from core.state_machine import start_after_pending
+from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, start_after_pending
 
 
 # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）────────────────────
@@ -2686,7 +2686,9 @@ class Dispatcher:
             "_verify_fail_rounds": 0,
             # fix-daemon-lifecycle-races D3：验证自然通过清零点（fast-track 同语义）。
             "_verify_redo_count": 0,
-            "_env_block_rounds": 0,
+            # add-blocked-reverify-lane D3：env 阻塞轮次清零点（fast-track verified
+            # 属「验证通过」唯一自动清零点语义，与全模式 verified 落定同款）。
+            ENV_BLOCK_ROUNDS_FIELD: 0,
         })
         self._pm.logger.info(
             "pm_engine",

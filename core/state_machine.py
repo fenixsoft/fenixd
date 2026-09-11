@@ -130,12 +130,14 @@ VALID_TRANSITIONS: Dict[str, List[str]] = {
     SpecStatus.PUSHED:       [],  # terminal state
 }
 
-# 门禁自动路径额外允许的「逃生门」转换（verifier-judgment-integrity D7）：
-# VERIFIED→TESTING 仅允许由 _on_spec_verified 门禁拦截触发的自动回退调用，
+# 门禁自动路径额外允许的「逃生门」转换（verifier-judgment-integrity D7 + add-blocked-reverify-lane）：
+# - VERIFIED→TESTING：由 _on_spec_verified 门禁拦截触发的自动回退调用，保留断点。
+# - BLOCKED→TESTING：env 阻塞冻结的 spec 在实现分支已合并时，由 admin 处置收尾
+#   框架自动调用（transition_gate + 守卫），跳过全量重实现直达重验。
 # 人工路径（直接调 transition）仍受 VALID_TRANSITIONS 约束被拒，不得绕过。
-# 回退保留 implementer_run 与既有 progress 断点。
 GATE_TRANSITIONS: Dict[str, List[str]] = {
     SpecStatus.VERIFIED: [SpecStatus.TESTING],
+    SpecStatus.BLOCKED: [SpecStatus.TESTING],
 }
 
 # States that are considered "interrupted" on daemon restart (revert to ready)
@@ -162,6 +164,14 @@ IMPL_RUN_BUDGET_OVERRIDE_FIELD = "impl_run_budget_override"
 VERIFY_REDO_COUNT_FIELD = "_verify_redo_count"
 # 重启重验预算缺省阈值（agents.verify_redo_budget 未配置时沿用本值）
 DEFAULT_VERIFY_REDO_BUDGET = 3
+
+# ── env 阻塞轮次生命周期计数（add-blocked-reverify-lane D3）──────────
+# 字段名单点定义（pm_engine 与 state_machine 共用，避免两处漂移）：
+# _env_block_rounds：spec 生命周期内累计的 env 阻塞轮数（跨 admin 处置复位/
+# daemon 恢复/fix 链等中间转换不清零）。唯一清零点=验证通过（verified 落定，
+# 与 _verify_fail_rounds 的 PASS 唯一归零点同语义）与人工 unfreeze_spec。
+# 冻结阈值（rounds >= 2）判定在 pm_engine.verification 升级通道。
+ENV_BLOCK_ROUNDS_FIELD = "_env_block_rounds"
 
 
 # ── STATE.md Parser ─────────────────────────────────────────────────
@@ -583,6 +593,11 @@ class StateMachine:
         # _inconclusive_attempts 完全同生命周期——人工解冻同轮清 override，
         # 重验从配置并行度重新开始，不留降档残留。
         updates["_verify_parallel_override"] = None
+        # add-blocked-reverify-lane D3：env 阻塞轮次随人工解冻清零——人工处置
+        # 后 env 轮次从 1 重新计数（与 _verify_redo_count/_inconclusive_attempts
+        # 人工解冻清零同款，同一原子写）。其余中间转换（admin 处置复位、daemon
+        # 恢复、fix 链）一律不清零，保证「第 2 次阻塞即冻结转人工」可达。
+        updates[ENV_BLOCK_ROUNDS_FIELD] = 0
         updates["error"] = None
         updates[FROZEN_UNTIL_FIELD] = None
         return self.update_spec(spec_name, updates)
