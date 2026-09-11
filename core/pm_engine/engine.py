@@ -26,6 +26,7 @@ from core.dashboard.data import (
 )
 from core.pm_engine.family import FamilyGovernor
 from core.pm_engine.budget import ImplBudget
+from core.pm_engine.spec_integrity import SpecIntegrityGate
 from core.pm_engine.verification import VerificationPipeline
 from core.pm_engine.dispatch import Dispatcher
 from core.pm_engine.recovery import RecoveryWatch
@@ -2244,6 +2245,18 @@ class PMEngine:
             self.__dict__["_budget_instance"] = inst
         return inst
 
+    @property
+    def _spec_integrity(self) -> SpecIntegrityGate:
+        """组合组件（add-spec-content-integrity-gate D5）：SpecIntegrityGate。
+
+        惰性构造：测试以 ``PMEngine.__new__`` 绕过 ``__init__`` 的实例也安全。
+        """
+        inst = self.__dict__.get("_spec_integrity_instance")
+        if inst is None:
+            inst = SpecIntegrityGate(self)
+            self.__dict__["_spec_integrity_instance"] = inst
+        return inst
+
 
     # ── 组合组件委托（阶段 4：family/budget 已迁组件，门面保持调用路径）──
 
@@ -2343,6 +2356,9 @@ class PMEngine:
 
     def _check_impl_budget_exhausted(self, spec_name: str) -> bool:
         return self._budget._check_impl_budget_exhausted(spec_name)
+
+    def _check_spec_content_missing(self, spec_name: str) -> bool:
+        return self._spec_integrity.check_spec_content_missing(spec_name)
 
     # ── 组合组件（refactor-core-packages 阶段 5）────────────────────────
 
