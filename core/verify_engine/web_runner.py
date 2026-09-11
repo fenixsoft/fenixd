@@ -58,7 +58,10 @@ class WebRunner(VerifyRunner):
         self.browser = BrowserManager(project_root=project_root,
                                       logger=self.logger)
         self.asserter = AssertionRunner()
-        self.differ = VisualDiffer(spec_name, project_root)
+        # 视觉对比器持有配置（settle 上限 / 重拍次数，verify_engine 段，
+        # 缺省回退），见 visual_diff.py D6 配置读取。
+        self.differ = VisualDiffer(spec_name, project_root,
+                                   config=config, logger=self.logger)
         # 契约统一供给的 base_url（引擎注入；优先级高于 navigate 文本考古）。
         # 无实例形态（纯 CLI 轮次）下为空字符串，改写/探针为无害空操作。
         self.base_url = ""
@@ -278,8 +281,17 @@ class WebRunner(VerifyRunner):
         visual_results: list[dict] = []
         if scenario.visual_baseline:
             try:
+                # 传场景通过性上下文（steps_failed + 断言结果）：基线固化门
+                # 仅在该场景步骤/断言全过时固化，否则 baseline_deferred 顺延
+                # （fix-visual-baseline-settle D3）；污染基线侦测据此判定
+                # 「diff_detected 是否伴随 DOM 全过」。
                 visual_results = await self.differ.compare(
-                    page, scenario.visual_baseline, scenario.id
+                    page, scenario.visual_baseline, scenario.id,
+                    scenario_context={
+                        "steps_failed": steps_failed,
+                        "step_results": step_results,
+                        "assertion_results": assertion_results,
+                    },
                 )
             except Exception as e:
                 visual_results = [{

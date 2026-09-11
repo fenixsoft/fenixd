@@ -144,6 +144,22 @@ agents:
 
 `verify.*` 与 `.fenix/verify.yaml` 的分工需要特别说明。`verify.*` 是 config.yaml 的命名空间，存放机器本地的运行时开关——不入库，随 config.yaml 热更新；而 `.fenix/verify.yaml` 是项目验证契约（prepare/serve/ready），随仓库提交、手工编辑，Dashboard 不会改写这个文件。deps_mode 也可以在 verify.yaml 顶层按项目声明 `deps_mode:`，优先于 config。
 
+### verify_engine（视觉校验）
+
+web 场景视觉对比（`VisualDiffer.compare`）的稳健性配置（fix-visual-baseline-settle D6）。**Dashboard 设置页暂不纳入（YAML-only）**——两键经 config.yaml 的 `verify_engine` 段声明，后续按需补设置页 UI；未配置时取代码缺省，零迁移。
+
+| 键 | 默认值 | 语义 |
+|----|--------|------|
+| verify_engine.visual_settle_timeout_ms | 3000 | 视觉截图前动画静置（settle）等待上限（毫秒）；0=禁用（行为与现状一致，逃生门）。截图前等待 `document.getAnimations()` 全部 finished，覆盖 CLS 检测不到的 opacity/transform 渐变动画（antd Modal ~300ms fade 污染基线事故链根因）；达上限仍有未完成动画（如 SSE 驱动的循环动画）按超时退化继续截图，不放大失败 |
+| verify_engine.visual_retake_max | 2 | SSIM 低分（pass=False，含 warning 档）自动重拍次数上限；每次重拍前重新 settle，取最高 SSIM 分作最终结果；重拍耗尽仍低则维持原判定（不放宽阈值、不掩盖真回归）。首拍即通过零重拍零附加开销 |
+
+```yaml
+# 示例：放宽 settle 上限、关闭重拍
+verify_engine:
+  visual_settle_timeout_ms: 5000
+  visual_retake_max: 0
+```
+
 契约的 serve/ready 形态按场景集 kind 自动反推（多形态验证，见 `05-verification.md`）：**纯 cli 场景集**跳过 serve/ready（不回退 `commands.start`，prepare 失败仍是唯一环境门）；**含 web/api 场景**则 serve 段（或 `commands.start` 兜底）必须有效，缺失时验收报错打回 plan；**混合场景集**照常起实例，cli 场景额外获得 `FENIX_VERIFY_BASE_URL` / `FENIX_VERIFY_PORT` 注入（框架值优先）。纯 CLI 交付的项目只需 `prepare`（构建/命令可用性），无需 serve 段。
 
 deps_mode 仅对 nodejs 项目生效——供给入口是 package.json/node_modules，其他项目自动跳过、零副作用。C/C++/Java 等其他语言的依赖安装与构建经 verify.yaml 的 prepare 声明（语言无关，如 `mvn package`、`cmake --build`），依赖缓存多为用户级天然共享。
