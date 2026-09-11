@@ -1,44 +1,52 @@
-最近两天的SPEC经历了许多曲折，速度慢，烧钱也多。你今晚自省时重点关注最近两天超过1个小时完成的SPEC，分析它们的耗时，除LLM网关延迟外，有什么是框架可改进的地方
-
-
-
-## 2026-09-11
+## 2026-09-12
 
 ### 浪费
-- **blocked-env 重验风暴 11 轮**
-  - 影响：单一 SPEC 连续 11 轮验证全部 blocked-env（16:10Z→23:39Z 约 9.5h），每轮仍空跑完整 27 场景批次；框架口径白烧 $24，SPEC 滞留 implemented 无进展近 10h，验证被迫推迟到次日 00:39 环境恢复后才通过。
-  - 证据：.fenix/logs/fenixd.log：16:10:49「第 1/3 次重验」→16:14:30「连续 3 轮…暂停自动重验」→23:39:28「连续 11 轮」，_inconclusive_attempts 3→11；16:14:30「环境健全性门: 候选=18, 探针=健康, blocked-env=10」；16:37/17:07/00:07 多次「Recovery: re-triggering verify」；修复 commit 120a9ade 自述「暂停声明后仍每小时重验 9 轮（第 3→11 轮），白烧 $24」。
-  - 调查评估：已核实（git show 120a9ade + fenixd.log）：暂停自第 3 轮（16:14Z）即声明，但 B6 recovery 的 implemented 分支只查 tester_run（暂停时恰被置 None），对 _inconclusive_attempts 暂停标记视而不见，仍每小时强推重验；且 root 探针判「健康」却 10 场景 blocked-env，说明探针未覆盖场景真实依赖的 mock API/SSE 面，环境故障未在批次前暴露。根因是「recovery 不读完整状态」的结构性缺陷（120a9ade 自注为 verified-gate「recovery 不读 error」同款变体），属系统性缺口而非一次性失误。该缺陷已由 120a9ade（09-10 08:31，implemented 分支 re-trigger 前查 _inconclusive_attempts>0 即跳过）修复，提交后窗口内未再出现同型连环重验；与 add-scenario-defect-triage-gate（缺陷分类改道）互补不重复。残余缺口：暂停不产生人工升级动作、环境恢复后无自动解冻信号，且风暴期间每轮仍全量跑 27 场景批次（健全性门失败未短路）。结论：损失已发生、修复已落地，本条为损失记录并给残余预防。
-  - 建议：在 120a9ade 基础上补两段：①blocked-env 连续 ≥3 轮时健全性门失败即短路整批执行，不再空跑 27 场景；②环境自检通过事件作为自动解冻信号，恢复后自动重验并清 _inconclusive_attempts，暂停期间升级人工告警。
+- **探针超时仍跑整轮验证首轮作废**
+  - 影响：add-spec-approve-push-modal 首轮验证在就绪探针 120s 超时（应用不可达）后仍整轮执行 14 场景，产出 6 通过/1 警告/7 环境伪失败，连带 judge 50 turns 后将 spec 原地打回重新实现（69 turns），该 spec 全流程成本 $39.12 居窗口之首；复发敞口=每次 spawn 后探针失败均整轮空转。
+  - 证据：fenixd.log 2026-09-11 02:03:21 UTC「应用可达性: 不可达 — … 就绪探针超时（120s）: http://127.0.0.1:50555/api/projects — timed out」，同秒 02:03:21.953「🚀 开始验证 14 个场景」；02:04:14「阶段2 完成: 14场景, 6通过, 1警告, 7失败」；02:41:40「原地打回第 1 轮」注入修复段。
+  - 调查评估：已核实 verification.py 阶段2.5（约 1795 行）：_ensure_app_reachable 结果仅记日志，自愈失败由执行后门禁兜底、不 fail-fast 中止本轮，故探针超时后仍整轮执行。根因=可达性失败未短路本轮验证。与窗口内在飞 add-verify-preflight-gate（12:29 立 spec、20:41 合并，D1 入口存在性预检 / D3 boot.log 兜底取证）互补但未覆盖：preflight 管 spawn 前预检与取证，本缺口在 spawn 后探针失败路径。结论=残余缺口成立，值得立项或并入该 spec 后续轮次。
+  - 建议：扩展 add-verify-preflight-gate：就绪探针超时即本轮 env fail-fast 中止（保留半日志与 boot.log 取证落盘），避免整轮场景空转与洗白门禁→升级 admin 的人工链路。
 
-- **budget SPEC 三番重建约**
-  - 影响：add-spec-status-modal-budget 从 spec 创建（09-09 04:28Z）到 verified（09-10 00:39Z）近 20h：3 次 spec 重建、3 轮实现合计 381min、7 次 judge 重试；框架口径累计 $119.37（三轮实现）+$22.55（replan）+$9.27（judge 重试）+$24（blocked-env 风暴）≈$151，为近期最大单点损耗。
-  - 证据：spec 三连提交 f35979b6(12:28)/101753ca(18:15)/6aa7d6a0(21:45)；impl run 1788928128/1788948951/1788961506 时长 118.6/165.5/97.2min；judge 1788945507「场景文件缺陷 25 个」、1788947632「19 test-defect」、1788959262/1788960304 各 12-13 test-defect、1789000547 终验「0 bug 19 warning 全 flaky」；金额出自 add-scenario-defect-triage-gate proposal Why 段。
-  - 调查评估：已核实：耗时由三层叠加——①环境/夹具前置缺陷：dashboard.yaml ignored 列表含已软删除项目 /root/scheduling-showcase，10 个 web 场景跨 5 轮 404/test-defect 未收敛（judge 1788945507 实证）；②judge 将 100% 场景缺陷申报 bug-found 打回 implementer，而框架 bug-found 路由不读 classification，两轮实现（$88+）被整轮耗在改场景文件（triage-gate proposal 实证）；③SSIM 视觉抖动 flaky 每轮 7-19 个且 DOM 全过，拉长每轮归因。根因属多环节系统性缺口，但大部分已被随后落地的 SPEC 覆盖：add-scenario-defect-triage-gate（静态扫描+bug-found 分类改道门，09-10 11:51 merge）、120a9ade（暂停语义）、b04843ed（白屏降级 blocked-env 不再静默放行）。残余缺口仅在「验证环境/夹具脏数据前置自检」与「SSIM flaky 治理」两处（见 improvements 两条）。结论：本 SPEC 是多条框架修复的直接触发源，损失已记录，防复发依赖残余两项。
-  - 建议：以 add-scenario-defect-triage-gate 已落地的静态扫描为基底扩展：验证启动前对 registry/dashboard 配置的项目残留与 ignored 脏数据做预检（模式表扩展至环境配置面），从源头拦下同类「环境脏→整批场景失败→多轮打回」的循环。
+- **fast-track 结果文件缺失连发重派**
+  - 影响：两起成功 fast-track 因「结果文件未产出」被整体作废重派：add-turn-limit-anchor-c run1 $8.83（181 turns、19 次 Edit，无提交无结果文件）、add-main-tree-deps-provision run1 $8.91（已全量提交 5 个 commit 仍判死亡）；两 spec 各重置 ready、预算豁免 1/6、自动重派 run2（分别 +$4.49 / +$0.92），直接损失约 $5.4 + 2 次状态回退；复发敞口≈$8.8/次（run1 成本实测）。
+  - 证据：fenixd.log 07:06:03.850「Ignoring stale result file /root/fenixd/.fenix/.fenix-run-result.json: spec='add-tasksmd-relint-gate' != 'add-turn-limit-anchor-c'」→ 07:06:03.968「预算豁免（死亡 run）… reason=fast-track no run-result… 状态回退 ready + 自动重试 1/3」；同型 13:48:37 主树残留 spec='add-spec-content-integrity-gate' 触发 add-main-tree-deps-provision 重派；另有 planner-plan artifact gate 同型（10:26:01「exit 0 但结果文件缺失」→ r1 原地重试）。
+  - 调查评估：已核实 engine.py _read_implementer_result（725 行）：先读 worktree 内 .fenix-run-result.json，缺位后读主树共享文件，spec stamp 不符即 ignore 返回 None→误判 run 死亡。根因=结果文件契约脆弱：当前 run 未写入正确位置，残留前 spec 文件反而拦截成功收口。与 35706f95（零变更哨交付物守卫：分支零提交⟺已并入主树）同族——main-tree run1 全量已提交却仍重派，恰是该守卫语义未覆盖结果文件缺位路径。worktree 复用（Kept worktree for reuse）部分挽回 turn-limit 损失（run2 62 turns 完成全部 6 任务为证），但状态回退与重派轮成本已发生。结论=系统性契约缺口，值得立项。
+  - 建议：将「结果文件缺失→重派」升级为「结果文件缺失 且 分支零提交→重派」（复用 35706f95 交付物守卫语义），分支有提交即按成功收口；daemon 消费主树共享 .fenix-run-result.json 后即时删除，消除跨 spec 残留误拦。
 
 ### 失误
-- **两 SPEC 首轮零提交被打回重派**
-  - 影响：add-verdict-credibility-gate 首轮 run 1789001677（36.5min）与 add-impl-wip-checkpoint 首轮 run 1789002687（31.8min）双双因分支零提交被交付物守卫打回重派，合计约 68min 实现时间白耗 + 2 次 dispute-judge（164s/320s）+ 重派延迟，两 SPEC 整体耗时因此达到 2.1h / 1.4h。
-  - 证据：守卫日志：01:31:39/01:44:02 置 blocked → 01:34:31/01:49:29「缺件 [core/verify_engine/screenshot_lab.py] / [tests/test_impl_wip_checkpoint.py] 重派（第 1 次）」；dispute-judge 1789003899「实现分支零实现提交，分支顶即 SPEC 立项提交」、1789004641「已写出文件且 pytest 15 passed，但全程未 commit，worktree 清理后全部丢失」。
-  - 调查评估：已核实（守卫日志 + 两份 dispute 裁决 + run 转录）：两案均非「实现了但文件名对不上」的误判，守卫裁决经四层核实严谨成立。根因在 run 生命周期：credibility a1 转录末行（01:31:34）是实现完成、正要执行 git add 时 run 被切断，成果未上分支；wip a1 则是写毕未 commit 即终态，收口清理吞掉全部产物（dispute-judge 自注「正是本 SPEC 锚点 A 要防的问题，在自身实现轮上先发生」）。add-interrupt-recovery-preserve（09-05 落地）只覆盖「排水超时 terminate 在跑 run」，add-impl-wip-checkpoint 锚点（09-10 10:37 merge）只覆盖排水完成与 transient 退避两个锚点，二者均不含「run 正常终态但零提交」的保全与检测——属系统性残留缺口而非一次性失误。守卫虽兜住了「无据产物不合并且重派」，但时点在成果丢失之后。结论：每个零提交 run 以整轮重做（实测 32-36min/轮）为代价，值得修复。
-  - 建议：对 run 终态增加两道检查：①分支相对 main 零新 commit 即判异常终态并携带原因透传（区分截断/忘记提交）；②正常终态但有未提交产物时先 stash/快照留档再清理 worktree。另把「最终必交付物清单」纳入实现者 prompt 的收尾自检段，防整轮漏交付。
+- **重启排水强杀实现 run 整轮作废**
+  - 影响：impl-add-blocked-reverify-lane-1789107185 在 planned restart 排水窗 1800s 后被 SIGTERM 作废（14:13→16:21 本地运行 128 分钟、0 提交残留），成为窗口唯一 failed run（1/30），尝试预算 1→2/6，自动重派 run2 152 turns 才完成。
+  - 证据：supervisor.log 07:51:01 UTC「restart_request detected — SIGTERM daemon for restart」；fenixd.log 08:21:12「Drain finished after 1800s, remaining runs: ['impl-add-blocked-reverify-lane-1789107185-a1']」+「Preserving interrupted run … branch 'none', ahead=0」+ SIGTERM +「implementer failed … Exit code: 143」；08:51:24 Retry 1/3 重派，10:05:22 成功（152 turns）。
+  - 调查评估：已核实事件链：框架代码窗口内高频更新（91 commits）使运行中 daemon 规则过期，触发 restart_request 热重载，排水 30 分钟未等 run 自然收口即强杀。被杀 run 无 commit/worktree 登记（branch='none', ahead=0），add-impl-terminal-nocommit-gate 的 stash 留档通道（1.3/2.2 已实现）在此场景未生效。根因=重启策略未对长活实现 run 自适应。结论=执行层可改进项，非系统缺陷。
+  - 建议：planned restart 触发时若存在活跃实现 run，排水窗按运行时长自适应（>60min run 给足 3600s）或强杀前先 stash create 留档（复用 add-impl-terminal-nocommit-gate 留档通道），保证中断不丢工作。
+
+- **sed 误转义破坏 tasks.md 勾选行**
+  - 影响：add-impl-terminal-nocommit-gate 的 tasks.md 勾选行因 sed replacement 误转义 \^ 丢失前导符，dashboard 任务清单解析为空，需 2ef1938d 一版 12 行修复提交；复发敞口=任何用 raw sed 改 checklist 行均可能重演。
+  - 证据：2ef1938d（09-11 10:47 +0800）「修复 tasks.md 勾选行的 ^- 前缀（sed replacement 误转义 \^ 导致 dashboard 任务清单解析为空）」，改动 spec/changes/add-impl-terminal-nocommit-gate/tasks.md 12 行。
+  - 调查评估：已核实 commit 内容与时间：落后该 spec fast-track 成功（09:41 本地）约 1 小时，属事后纠偏直接入主树。根因=以 sed -i 文本替换任务行时 \^ 转义失当。窗口内 13:27 已合并 add-tasksmd-relint-gate 的 lint（分组/解析结构校验）但不校验任务行前导符完形，未拦截此类回归。结论=一次性脚本失误，可被 lint 覆盖闭合。
+  - 建议：给 add-tasksmd-relint-gate 追加一条 lint：任务行必须以 ^- 前缀（或标准 checklist 前缀）开头，缺前缀即违规报错，使 sed 误转义在实现阶段即被拦。
+
+- **start_after 未到期误报滞留**
+  - 影响：add-main-tree-deps-provision 设 start_after 16:00 UTC 定时拾取，未到期期间被假就绪巡检误报 dispatch_stalled：signal 1 条 + 处置记录 3 条（07:29:01 信号、07:33:54/07:56:18 两次处置），召唤 Administrator 占人工注意力；且每 30 分钟被误标 orphan ready 重触发产生噪音事件。
+  - 证据：admin_alerts.json 窗口内 dispatch_stalled signal（07:29:01, add-main-tree-deps-provision, severity=major）+ 07:33:54/07:56:18 两条 disposition；修复提交 08a8628a（15:48）自述「每 30 分钟被误标孤儿 ready 重触发一次」「30 分钟即误判滞留并呼叫 Administrator」。
+  - 调查评估：已核实告警与修复双向对应：BLOCKER CHECK 假就绪巡检与 event_bus _recover_ready 均未豁免 start_after_pending（与退避/活子进程豁免同语义缺漏）。根因=巡检豁免清单不全。窗口内 15:48 已修复（engine.py + event_bus.py + 2 条回归测试），属已闭环失误。结论=按历史失误记录，防回归即可。
+  - 建议：已修复（08a8628a）；保留其 2 条回归测试，后续巡检类豁免改造时显式引用 start_after_pending 场景防再次遗漏。
 
 ### 可改进
-- **环境健全性门仅探根 HTTP**
-  - 影响：复发敞口：环境故障期间健全性门探针仍报「健康」而 10 场景 blocked-env（当日实测），环境真实故障无法在批次执行前暴露，每轮仍空跑 27 场景全量批次（约 1.5-2min），故障期逐轮重复消耗。
-  - 证据：16:14:30「环境健全性门: 候选=18, 探针=健康, blocked-env=10 — HTTP 探测 http://127.0.0.1:43453: 连通」；风暴 11 轮中该现象反复出现；B1（b04843ed）上线后白屏场景由静默放行改为 blocked-env，暴露此前被掩盖的环境性失败。
-  - 调查评估：已核实：健康门只做根可达性探测，未覆盖场景实际依赖的 mock API 与 SSE 推送面，故出现「根 HTTP 通 + 场景全断」并存的矛盾诊断（记忆中的 mock_api 无 status 字段、列表端点被 SSE 覆盖竞态同属该依赖面）。B1 上线使环境性失败由被掩盖转为显式 blocked-env，风暴正是该面故障的集中暴露。根因在验证环境契约缺少「场景依赖面多探针」定义；add-verify-multi-kind-runner 的 sse_connect 属场景内执行步骤、与预检探针互补不重复，add-scenario-defect-triage-gate 管场景文件、不涉环境依赖面。结论：多探针健全性门是环境故障早暴露、防整批空跑的可行立项点。
-  - 建议：立项 SPEC：健全性门扩展为多探针——按场景集依赖的 API 端点/SSE 面逐一探测，任一不健康即短路整批执行并输出含各级探针明细的诊断块，供 pm_engine 判定 blocked-env 或待环境恢复，取代单一根 HTTP 探测。
+- **静态行号锚点三连漂移修复**
+  - 影响：窗口内 3 次写点/锚点漂移修复提交（14380774、2e98e052、762b4aee），每次手工重钉 3-4 个行号；2e98e052 说明 relint-gate 合并插入 154 行后 test_cancel_holdstate_recovery 4/6 子用例红灯（回归暴露）；复发敞口=每个并行分支合并周期（窗口 91 commits/24h）。
+  - 证据：14380774「verification.py 插入降档读写后，_cancelled_hold 写点行号整体后移（1431/1742/2515 → 1451/1781/2560）」；2e98e052「relint-gate 合并…在 dispatch.py 三处挂点、verification.py 尾部一处挂点共插入 154 行…（1005/1841/2299/2560 → 1028/1912/2391/2611）…4/6 子用例红灯」；762b4aee「内容闸门…各插入 14/13 行…后移 27 行（1028/1912/2391 → 1055/1939/2418）」。
+  - 调查评估：已核实三 commit 均为 WRITE_POINTS/行号静态钉点的行号重钉、无语义改动，且 2e98e052 还带出真实红灯回归。根因=测试断言与被测代码以绝对行号耦合，在高频并行合并下必然失配，每次靠人工重钉。检索 spec/changes 与 spec/archive 未见行号锚点专项 → 新立项方向。结论=系统性缺口，值得 SPEC 立项。
+  - 建议：立项将取消/写点断言改为语义锚点（函数名/最近唯一模式串 + 相对偏移），并在 post-merge 增加锚点自检（合并后自动重算、失配即红测试提示），消除手工行号对齐。
 
-- **视觉 SSIM flaky 每轮 7-19 场景**
-  - 影响：复发敞口：每轮 27 场景中 7-19 个仅截图 SSIM 失败（0.68-0.93 低于阈值）而 DOM/功能断言全过，6 轮 judge 均需重新归因，终验仍带 19 warning 入库；同类时序敏感 SPEC 将持续承受此归因 token 与验证时长。
-  - 证据：judge 1788945507/1788947632/1788959262/1788960304/1788961185/1789000547 六轮 flaky 计数 1/8/7/6/8/19，全部标注「视觉 SSIM 时序抖动、DOM 断言通过、无 console error」；终验 1789000547「verified，19 warning 全 flaky」。
-  - 调查评估：已核实：flaky 集中在弹窗/菜单/状态位等截图时序敏感 web 场景，属拍照未 settle 的视觉校验噪声而非功能缺陷；框架已有跨轮指纹比对复用既往判定（终验「跨轮已裁决 8 场景原样写回」），但首轮仍需全量执行+逐场景归因，每轮 7-19 个 warning 显著拉长 judge 档期。现有 SPEC 链（triage 分类/守卫/暂停语义）均不涉截图稳健性，无重叠。结论：verify_engine 视觉校验稳健性（settle 等待/自动重拍/阈值校准）是独立、可量化、修复面明确的立项点。
-  - 建议：立项 verify_engine 视觉校验稳健性 SPEC：截图前按场景类型增加 settle 等待、SSIM 低于阈值自动重拍（限次）、按弹窗/列表/整体页分类校准阈值，目标把每轮 flaky 噪声压到 <3 并缩短首轮判定时长。
+- **run 延迟观测全盲 30 连发**
+  - 影响：窗口内全部 30 个 run 完成时 latency_rounds=0 / latency_stalls=0 / latency_p90=null，依赖该口径的秒挂/停滞检测与 add-turn-limit-anchor-c 锚点 C 的 unobserved 续期判定基于空数据运行；复发敞口=每次 run 均无延迟证据，秒挂=0 与超时=0 统计可信度存疑。
+  - 证据：fenixd.log 每条 run 完成均报「0 rounds（无 timestamp 样本，旧转录跳过）」（如 3373 行 run impl-add-main-tree-deps-provision-1789132993 latency_p90=null）；但同 run 转录 .fenix/runs/impl-add-turn-limit-anchor-c-1789107200-a1.jsonl 实际 181/288 条 assistant 行含 ISO timestamp（如 2026-09-11T06:13:50.042Z）。
+  - 调查评估：已核实转录含 timestamp 而解析器报无样本，判定延迟解析器与当前 stream-json 转录格式失配（「旧转录跳过」）。根因=转录格式更新后解析器未同步。add-turn-limit-anchor-c 的 ANCHOR_TURN_LIMIT / 续期矩阵 / unobserved 口径直接消费该观测 → 护栏失效波及锚点判定。窗口内未见修复。结论=观测基础设施空缺，值得小 SPEC 修复并加自检。
+  - 建议：修复 run 延迟解析器对当前转录 timestamp 的兼容（重建 rounds/timestamp 映射），并加「latency_rounds>0」观测自检：若持续为 0 则显式告警，避免静默盲区。
 
-- **run 终态零提交缺保全与异常检测**
-  - 影响：复发敞口：run 结束判定不校验「分支相对 main 是否有新 commit」，也不对工作区未提交产物做保全，收口清理即全丢；本次两案合计 68min 首轮实现白耗，每次复发的单轮代价为整轮重做（实测 32-36min）。
-  - 证据：credibility a1 转录末行 01:31:34 为中断的 git add 工具调用、01:31:39 守卫随即打回；wip a1 转录 280/337 行有 pytest 15 passed 但全程无 commit；两份 dispute-judge 裁决均确认「分支零提交、产物随 worktree 清理丢失」。
-  - 调查评估：已核实：两 run 均为「正常终态却零提交」，产物在守卫打回后随 worktree 清理全部丢失。既有机制覆盖边界已核实：interrupt-recovery-preserve 只覆盖「排水超时 terminate 在跑 run」（前置条件 branch ahead>0），wip-checkpoint 锚点 A/B 只覆盖排水完成与 transient 退避两个生命周期点，均未覆盖「run 自然终态但有未提交产物」——本次正是该盲区实证。守卫兜底有效但时点滞后于成果丢失，属『先损失后告警』。结论：run 终态统一保全+零提交异常检测是明确可立项的系统性缺口，与既有两 SPEC 互补不重复。
-  - 建议：立项/扩项 SPEC：run 生命周期收口路径统一增加「有未提交产物→stash/快照留档并取证」「零提交→异常终态并携带原因」双检查，配合守卫打回信息把缺件清单直接回灌重派 run，消除整轮重做。
+- **两簇存量测试失败拖累回归**
+  - 影响：修复前，5 例 daemon_lifecycle + 18 例 verify 系失败属存量（import fenixd 包截胡可溯源 08-16 迁移遗留，已 26 天），期间任何全量回归须先甄别 23 个非当前改动失败才能判新回归，污染每轮解释；15:19 修复后全量 2651 passed。
+  - 证据：d4978dbf（09-11 15:19）「修复全量回归两簇存量失败（import fenixd 包截胡 + verify_engine reload 换类污染）…全量 2651 passed」；正文列根因：仓库根 __init__.py（08-16 迁移遗留 51B 纯注释）使 pytest 执行期 import fenixd 撞包；test_planready_artifact_gate 未 patch importlib.reload 触发 TestScenario 类热换。
+  - 调查评估：已核实 commit 内容：两簇根因均为测试基座缺陷而非产品缺陷，窗口内已修复并 2651 passed 验证。根因=测试基础设施无自洽清理（import 守卫缺失）+ reload 副作用未隔离，且存量失败长期无独立追踪渠道（未见 known-failures 清单）。与在飞 SPEC 无重叠。结论=一次性清理完成，建议补回归锚点防回退。
+  - 建议：新增两条回归锚点：① 仓库根 __init__.py 保持空或禁包，import fenixd 用 sys.modules 断言守卫；② test_planready_artifact_gate 补 importlib.reload patch，避免同簇失败 26 天后再现。
