@@ -486,6 +486,35 @@ class TestReadyStallPatrol(RecoveryWatchFixture):
         result = self.engine.check_blockers()
         self.assertEqual([b for b in result["blockers"] if b["spec"] == "s1"], [])
 
+    def test_start_after_pending_ready_not_reported(self):
+        """start_after 定时拾取门未到期的 ready spec 是有意等待，不算假就绪滞留。
+
+        回归：2026-09-11 add-main-tree-deps-provision 被误报 dispatch_stalled——
+        daemon 每轮按 start_after_pending 正确 skip 派发，但假就绪巡检未豁免
+        start_after 未到期的 spec，30 分钟即被误判滞留并呼叫 Administrator。
+        """
+        self.make_ready_spec("s1")
+        self.sm.update_spec("s1", {
+            "start_after": (datetime.now(timezone.utc) + timedelta(hours=8)).isoformat()})
+        self._stale(hours=1)
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+        result = self.engine.check_blockers()
+        self.assertEqual([b for b in result["blockers"] if b["spec"] == "s1"], [])
+        recs = AdminStore(self.project_root, self.logger).read_all()
+        self.assertEqual(
+            [r for r in recs if r.get("signal_type") == "dispatch_stalled"], [])
+
+    def test_expired_start_after_still_reported(self):
+        """start_after 已到期（等于/早于 now 不阻塞拾取）→ 照常巡检不豁免。"""
+        self.make_ready_spec("s1")
+        self.sm.update_spec("s1", {
+            "start_after": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()})
+        self._stale(hours=1)
+        result = self.engine.check_blockers()
+        stalled = [b for b in result["blockers"] if b["spec"] == "s1"]
+        self.assertEqual(len(stalled), 1)
+        self.assertIn("假就绪滞留", stalled[0]["reason"])
+
     def test_recent_run_activity_not_reported(self):
         self.make_ready_spec("s1")
         self._stale(hours=1)

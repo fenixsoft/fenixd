@@ -191,6 +191,21 @@ class EventBus:
         ``_ready_has_live_child`` 给出；存活则跳过并记「skip: live child present」，
         不重置状态、不清字段；否则重新派发前清 error、保留 implementer_run。
         """
+        # start_after 定时拾取门未到期的 spec（scheduled-spec-pickup）：不是孤儿
+        # ——daemon 每轮 dispatch 已按 start_after_pending 正确 skip，recovery 再
+        # 重触发只会生产噪音事件（实证 2026-09-11 add-main-tree-deps-provision 每
+        # 30 分钟被误标孤儿 ready 重触发一次）。未到期直接跳过，到期后自然拾取。
+        try:
+            from core.state_machine import start_after_pending
+            if start_after_pending(entry):
+                self.logger.info(
+                    "event_bus",
+                    f"Recovery: skip '{name}' — start_after scheduled pickup pending",
+                )
+                return
+        except Exception:
+            pass  # 无法判定时不阻塞既有恢复路径（fail-open）
+
         # 白名单判定：存在存活 agent 子进程 → 视为正在工作，跳过并保留状态
         if self._ready_has_live_child(name):
             self.logger.info(
