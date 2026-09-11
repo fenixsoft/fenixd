@@ -36,23 +36,17 @@ def spec_has_content(project_root, spec_name: str) -> bool:
         False = 目录不存在 / 目录为空 / 无常驻 spec 内容文件。
     """
     spec_dir = Path(project_root) / "spec" / "changes" / spec_name
-    if not spec_dir.is_dir():
-        return False
     try:
+        if not spec_dir.is_dir():
+            return False
         # 四选一判定：proposal / design / tasks / specs/**/*.md 任一存在即满足
         for name in ("proposal.md", "design.md", "tasks.md"):
             if (spec_dir / name).is_file():
                 return True
         specs_dir = spec_dir / "specs"
         if specs_dir.is_dir():
-            try:
-                # specs/ 子目录递归扫 *.md：覆盖只有 specs/ 无三文档的形态
-                if next(specs_dir.rglob("*.md"), None) is not None:
-                    return True
-            except (OSError, PermissionError):
-                logging.getLogger("pm_engine").warning(
-                    "读取 specs/ 子目录失败（保守放行）: %s", specs_dir,
-                )
+            # specs/ 子目录递归扫 *.md：覆盖只有 specs/ 无三文档的形态
+            if next(specs_dir.rglob("*.md"), None) is not None:
                 return True
         return False
     except OSError:
