@@ -28,6 +28,11 @@ from pathlib import Path
 
 from .admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION
 from .alert_lifecycle import attach_trigger, find_resolvable
+# add-blocked-reverify-lane D2：env 阻塞复位判定与复位路径常量
+from core.pm_engine.verification import (
+    ENV_BLOCK_SIGNAL_TYPES,
+    resolve_env_blocked_reset_path,
+)
 
 # 默认阈值（design D2）
 REPEAT_FAILURE_WINDOW_MINUTES = 30
@@ -114,6 +119,10 @@ SIGNAL_RECOMMENDATION = {
     # fix-mergeback-stashpop-silent-loss D1：核对指引——查 stash 栈确认条目去向，
     # 按 sha / 逐文件 git show 找回被自愈丢弃的改动，确认无独有内容后可清理条目。
     "stash_pop_conflict": "merge-back stash pop 冲突已自愈，主树已恢复可写但部分未提交改动被丢弃：git stash list 查条目去向（保留/drop + sha）；按告警中逐文件 git show <sha>:<file> 命令核对内容，仍需要的改动手动落回工作区；确认零独有内容后 git stash drop 清理",
+    # add-blocked-reverify-lane D2：env 阻塞处置建议同步复位收敛措辞——
+    # 处置范围限于环境修复，result 写入后框架自动判定复位路径（实现分支已合并→
+    # 直通道 testing 重验，否则→ready），无需手动 reset spec 状态。
+    "verify_env_blocked": "验证环境阻塞（依赖/服务/端口问题）：Administrator 仅需修复环境；处置完成写 result 后框架自动判定复位路径（实现分支已合并→直通道 testing 重验；否则→ready 重实现），无需手动 reset spec 状态",
 }
 
 # pm_engine 直接写入 store、由本监视器摄取唤起的信号类型（写入即待唤起型）。
@@ -181,7 +190,7 @@ class AdminMonitor:
     """困境信号检测 + 节流 + 唤起调度。run_once() 为单次检测入口。"""
 
     def __init__(self, config: dict, state_machine, project_root, logger,
-                 store=None, agent_runner=None):
+                 store=None, agent_runner=None, pm_engine=None):
         from .config import ConfigLoader
         self.config = config
         self.admin_cfg = ConfigLoader.get_admin_config(config)
@@ -191,6 +200,10 @@ class AdminMonitor:
         self.store = store if store is not None else AdminStore(self.project_root, logger)
         # agent_runner 提供 run_administrator(signal)；None 时只检测、不唤起（测试/禁用态）
         self.agent_runner = agent_runner
+        # pm_engine 提供 handle_event/spec_implemented 入队（add-blocked-reverify-lane
+        # D2）：env 阻塞处置收尾复位到 testing 后经此派发 verifier 重验；None 时
+        # 仅复位状态、不派发（测试替身/独立组件最小上下文），重派由 recovery 兜底。
+        self.pm_engine = pm_engine
         self._history_path = self.project_root / ".fenix" / "admin_state_history.json"
         # add-alert-auto-resolve D4：启动首轮扫描执行存量回填（仅一次）
         self._lifecycle_backfilled = False
@@ -1024,6 +1037,17 @@ class AdminMonitor:
         # 文本动作（放行 / _family_waiver / waive）兜底，兼容自由文本处置。
         self._apply_family_waiver(signal, disp)
 
+        # env 阻塞处置收尾复位（add-blocked-reverify-lane D2/D3）：result 为
+        # resolved/partially-resolved 且信号属 env 族时，框架机械判定复位路径——
+        # 实现分支已合并 → transition_gate(testing) 直通道重验（跳过全量重实现）；
+        # 否则 → 既有 transition(ready)。两条路径均保留 _env_block_rounds（不清零，
+        # 生命周期累计语义），仅清 error。escalated 表示 admin 升级人工，不触发
+        # 自动复位（人工处置是唯一出路）。
+        if disp.result in ("resolved", "partially-resolved"):
+            sig_type = signal.get("signal_type")
+            if sig_type in ENV_BLOCK_SIGNAL_TYPES:
+                self._reset_env_blocked_after_disposition(signal, disp)
+
         # fix-stale-escalation-close：run 有最终结果即关闭其名下旧 escalation
         # （孤儿看护在处置进行中误判 pending 超时的残留）。不关闭则 dashboard
         # 处置卡片永久「需人工决策」、与 result=resolved 矛盾，且 unhandled_for
@@ -1068,6 +1092,62 @@ class AdminMonitor:
             )
 
     # ── 辅助 ────────────────────────────────────────────────────
+
+    def _reset_env_blocked_after_disposition(self, signal: dict, disp) -> None:
+        """env 阻塞处置收尾自动复位（add-blocked-reverify-lane D2）。
+
+        result=resolved/partially-resolved + signal_type∈env 族 → 框架机械判定：
+        branch 已合并 → transition_gate(testing) 直通道 + verifier 入队重验；
+        未合并/无 branch → transition(ready) + implementer 重派。两条路径均保留
+        _env_block_rounds（不清零，生命周期累计语义），仅清 error。
+
+        自身异常不得阻塞处置落痕（右关联设计：处置记录永远先落盘）。
+        """
+        # 防御：result 非 resolved/partially-resolved（如 escalated/failed）不触发
+        # 自动复位——消费点已前置检查，此处再兜底，杜绝调用路径遗漏。
+        if getattr(disp, "result", None) not in ("resolved", "partially-resolved"):
+            return
+        spec = signal.get("spec")
+        if not spec:
+            return
+        sm = self.state_machine
+        if not hasattr(sm, "read_one") or not hasattr(sm, "update_spec"):
+            return
+        spec_entry = sm.read_one(spec)
+        if not spec_entry:
+            return
+        reset_path = resolve_env_blocked_reset_path(spec_entry, self.project_root)
+        if reset_path is None:
+            return
+
+        try:
+            if reset_path == "testing":
+                # 直通道：gate transition 不走 VALID_TRANSITIONS，仅门禁白名单放行
+                sm.transition_gate(spec, "testing")
+                sm.update_spec(spec, {"error": None})
+                # verifier 入队：pm_engine 存在时最小侵入调用 handle_event；
+                # pm_engine 缺失时仅靠 daemon recovery 的 implemented 分支兜底
+                # （testing 态在 INTERRUPTED_STATES 中，重启回退 ready 重新检测）
+                if self.pm_engine is not None:
+                    self.pm_engine.handle_event("spec_implemented", spec)
+                self.logger.info(
+                    "admin_monitor",
+                    f"env 阻塞处置复位（直通道）：'{spec}' transition_gate(testing)"
+                    f" + verifier 入队重验",
+                )
+            else:
+                # 既有路径：VALID_TRANSITIONS 允许 BLOCKED→READY
+                sm.transition(spec, "ready")
+                sm.update_spec(spec, {"error": None})
+                self.logger.info(
+                    "admin_monitor",
+                    f"env 阻塞处置复位：'{spec}' → ready（实现阶段熔断/未合并）",
+                )
+        except Exception as e:
+            self.logger.warning(
+                "admin_monitor",
+                f"env 阻塞处置复位失败 '{spec}'（reset_path={reset_path}）: {e}",
+            )
 
     def _apply_family_waiver(self, signal: dict, disp) -> None:
         """family_explosion 处置「放行一次」→ 设置父 SPEC 豁免位 _family_waiver=true。

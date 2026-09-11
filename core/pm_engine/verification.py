@@ -42,6 +42,9 @@ from core.agent_runner.prompt_builder import planner_result_status_whitelist
 # 同一导出常量（防文案改动使匹配失效），取消判定沿用 AgentRunResult.cancelled 结构化
 # 字段（非字符串匹配）。
 from core.agent_runner.runner import FROZEN_TERMINATED_ERROR_PREFIX
+# add-blocked-reverify-lane D3：env 阻塞轮次计数清零点收敛后与 state_machine
+# 共用同一字段常量（防字符串漂移；唯一清零点=verified 落定与 unfreeze_spec）。
+from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, FREEZE_ERROR_PREFIX
 
 
 class VerdictReadResult:
@@ -2217,7 +2220,10 @@ class VerificationPipeline:
                 # _verify_redo_count（重启恢复重验计数）的清零点，与
                 # _verify_fail_rounds 清零点对齐；人工 unfreeze_spec 亦清零。
                 "_verify_redo_count": 0,
-                "_env_block_rounds": 0,
+                # add-blocked-reverify-lane D3：env 阻塞轮次唯一自动清零点=验证
+                # 通过（与 _verify_fail_rounds PASS 唯一归零点同语义）；处置复位/
+                # 恢复/fix 链等中间转换不清零。
+                ENV_BLOCK_ROUNDS_FIELD: 0,
             })
             # 失败历史侧车随 verified 终态清空（fix-verdict-retry-misattribution D6）
             self._pm._clear_fail_history(spec_name)
@@ -2873,7 +2879,8 @@ class VerificationPipeline:
                     "_verify_fail_rounds": 0,
                     # fix-daemon-lifecycle-races D3：验证自然通过清零点（legacy 同语义）。
                     "_verify_redo_count": 0,
-                    "_env_block_rounds": 0,
+                    # add-blocked-reverify-lane D3：env 阻塞轮次清零点（legacy 同语义）。
+                    ENV_BLOCK_ROUNDS_FIELD: 0,
                 })
                 # 失败历史侧车随 verified 终态清空（legacy 同语义，
                 # fix-verdict-retry-misattribution D6）
@@ -2958,7 +2965,7 @@ class VerificationPipeline:
         """
         try:
             spec = self._pm.state_machine.read_one(spec_name) or {}
-            rounds = int(spec.get("_env_block_rounds") or 0) + 1
+            rounds = int(spec.get(ENV_BLOCK_ROUNDS_FIELD) or 0) + 1
             frozen = rounds >= 2  # 阈值：连续 2 轮阻塞 → 冻结转人工
             planner_cost = (self._last_planner_run_cost(spec_name)
                             if frozen else "")
@@ -2974,7 +2981,7 @@ class VerificationPipeline:
             entry = {
                 "status": "blocked",
                 "error": error_msg,
-                "_env_block_rounds": rounds,
+                ENV_BLOCK_ROUNDS_FIELD: rounds,
             }
             if frozen:
                 entry["frozen"] = True
@@ -2995,11 +3002,11 @@ class VerificationPipeline:
                 from core.dashboard.data import request_admin_invoke
                 inv = request_admin_invoke(self._pm.project_root, spec_name, (
                     f"{title}自动升级（verified 洗白门禁/场景冻结复用）：{error_msg[:300]}。"
-                    "请诊断并处置——典型动作：主树/worktree 依赖安装、被测服务"
+                    "请诊断并处置——处置范围仅限环境修复（依赖安装、被测服务"
                     "/dashboard 重启、端口占用清理、验证产物重建、裁决场景集"
-                    "变更（修复/删除冻结文件）。环境与计划问题不是产品缺陷："
-                    "不要打回实现分支、不要修改产品代码。处置完成后触发该 spec"
-                    "重新验证。"
+                    "变更）。环境问题不是产品缺陷：不要打回实现分支、不要修改"
+                    "产品代码，不要手动 reset spec 状态。处置完成后，框架将自动"
+                    "判定复位路径并触发重验证。"
                 ))
                 if isinstance(inv, dict) and inv.get("conflict"):
                     self._pm.logger.info(
@@ -3022,10 +3029,17 @@ class VerificationPipeline:
                         f"report=spec/changes/{spec_name}/verification-report.md"
                     ),
                     recommended_action=(
-                        "等待 Administrator 自动处置并重验；若已冻结请人工检查"
-                        "环境（依赖/服务/端口）后解冻重跑验证"
-                        + (f"；删除冻结集重新出题将重付出题成本"
-                           + (f"（{planner_cost}）" if planner_cost else "")
+                        # add-blocked-reverify-lane D2：处置收尾框架自动复位——
+                        # admin 无需手动 reset spec 状态（手动 StateMachine 旁路
+                        # 写法失去必要性）。未冻结：等待框架自动重验；已冻结：
+                        # 人工检查环境后 unfreeze 清零重试（解冻即清零 rounds）。
+                        "无需手动 reset spec 状态：处置完成并写入 result 后，框架"
+                        "自动判定复位路径（实现分支已合并→直接重验 testing；"
+                        "否则→ready 重实现）"
+                        + (f"；已冻结转人工：请检查环境（依赖/服务/端口）后"
+                           f"unfreeze_spec 清零重试"
+                           + (f"；删除冻结集重新出题将重付出题成本"
+                              + (f"（{planner_cost}）" if planner_cost else "") if frozen else "")
                            if frozen else "")
                     ),
                 )
@@ -4702,3 +4716,71 @@ class VerificationPipeline:
             self._pm._verdict_violations_path(spec_name).unlink(missing_ok=True)
         except OSError:
             pass
+
+# ── env 阻塞复位判定（add-blocked-reverify-lane D2）────────────────
+# 决定 env 阻塞 spec 在 admin 处置完成后走哪条复位路径：BLOCKED→TESTING 重验
+# 直通道（实现分支已合并）还是既有 BLOCKED→READY 全量重实现。模块级函数（非
+# VerificationPipeline 方法）：admin_monitor 处置收尾消费点直接 import 复用，
+# 两处共享同一守卫判定，避免语义漂移。
+
+# env 族信号类型：仅这些信号触发的 blocking 复位才适用重验直通道判定，其余
+# 信号（如 blocked_stuck 等）的复位语义不动。
+ENV_BLOCK_SIGNAL_TYPES = ("verify_env_blocked", "verify_env_inconclusive")
+
+# git 合并判定超时（subprocess timeout；异常/超时按「未合并」fail-safe 回退
+# ready 通道——宁可多重实现不可错误直达 testing）。
+ENV_BLOCK_MERGE_CHECK_TIMEOUT_SECONDS = 10
+
+
+def resolve_env_blocked_reset_path(spec: dict, project_root) -> str | None:
+    """env 阻塞复位路径判定（D1 守卫链）。
+
+    Args:
+        spec: STATE.md spec entry（须含 status/error/frozen/branch）。
+        project_root: 主树 project_root——git 合并判定统一在此执行
+            （subprocess cwd，与验证引擎其他 git 操作同侧）。
+
+    Returns:
+        "testing": branch 非空且 merge commit 已在主树历史（实现分支已合并）——
+            可走 BLOCKED→TESTING 重验直通道（transition_gate）。
+        "ready":   branch 为空（实现阶段熔断）或 branch 未合并——走既有
+            BLOCKED→READY 重实现通道（transition）。
+        None:      spec 非 blocked，或人工冻结（frozen=True / error 以冻结前缀
+            开头），或无法判定——调用方不应触发任何复位转换。
+    """
+    if not isinstance(spec, dict) or spec.get("status") != "blocked":
+        return None
+    # 人工冻结：frozen 结构化标记或 error 文本契约（FREEZE_ERROR_PREFIX）任一
+    # 命中即视为人工冻结，不走自动复位（人工处置是唯一出路）。
+    if spec.get("frozen"):
+        return None
+    error = str(spec.get("error") or "")
+    if error.startswith(FREEZE_ERROR_PREFIX):
+        return None
+    branch = spec.get("branch")
+    if not branch:
+        return "ready"
+    if _branch_merged_into_tree(branch, project_root):
+        return "testing"
+    return "ready"
+
+
+def _branch_merged_into_tree(branch: str, project_root) -> bool:
+    """branch 的 merge commit 是否存在于主树历史（git merge-base --is-ancestor）。
+
+    统一在主树 project_root 执行（design D4：worktree 布局差异不影响判定）；
+    subprocess 异常（git 不可用/仓库异常/超时）一律按「未合并」fail-safe 处理——
+    宁可回退 ready 全量重实现，不可错误直达 testing 造成验证前置缺失。
+    """
+    try:
+        from pathlib import Path
+        root = Path(project_root)
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", str(branch), "HEAD"],
+            cwd=str(root),
+            capture_output=True,
+            timeout=ENV_BLOCK_MERGE_CHECK_TIMEOUT_SECONDS,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
