@@ -69,9 +69,12 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
         # 35706f95 之后 add-tasksmd-relint-gate（5f51eb4a）在 dispatch.py 三处
         # 挂点、verification.py 尾部一处挂点，写点再后移
         # （1005/1841/2299/2560 → 现 1028/1912/2391/2611），写点语义不变。
-        ("core/pm_engine/dispatch.py", 1028, "implementer"),
-        ("core/pm_engine/dispatch.py", 1912, "fast-track"),
-        ("core/pm_engine/dispatch.py", 2391, "repair"),
+        # add-spec-content-integrity-gate 在 implementer/fast-track 分支各插入内容
+        # 闸门（+14/+13 行），repair 写点随后漂移 27 行
+        # （1028/1912/2391 → 现 1055/1939/2418），写点语义不变。
+        ("core/pm_engine/dispatch.py", 1055, "implementer"),
+        ("core/pm_engine/dispatch.py", 1939, "fast-track"),
+        ("core/pm_engine/dispatch.py", 2418, "repair"),
         # add-verify-parallel-backoff 在 verification.py 插入降档读写后行号
         # 整体后移（原 1431/1742/2515 → 现 1451/1781/2611），写点语义不变。
         ("core/pm_engine/verification.py", 1451, "planner-plan"),
