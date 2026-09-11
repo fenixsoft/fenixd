@@ -63,9 +63,12 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
     """
 
     WRITE_POINTS = [
-        ("core/pm_engine/dispatch.py", 981, "implementer"),
-        ("core/pm_engine/dispatch.py", 1817, "fast-track"),
-        ("core/pm_engine/dispatch.py", 2275, "repair"),
+        # 2026-09-11 零变更哨确认型 no-op 放行通道在 dispatch.py 前部插入 24 行，
+        # implementer/fast-track/repair 写点整体后移（原 981/1817/2275 → 现
+        # 1005/1841/2299），写点语义不变。
+        ("core/pm_engine/dispatch.py", 1005, "implementer"),
+        ("core/pm_engine/dispatch.py", 1841, "fast-track"),
+        ("core/pm_engine/dispatch.py", 2299, "repair"),
         # add-verify-parallel-backoff 在 verification.py 插入降档读写后行号
         # 整体后移（原 1431/1742/2515 → 现 1451/1781/2560），写点语义不变。
         ("core/pm_engine/verification.py", 1451, "planner-plan"),

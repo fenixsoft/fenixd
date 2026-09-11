@@ -696,6 +696,30 @@ class Dispatcher:
                 # is_error 三闸失明）。不合并、不推进状态，按失败重派；
                 # 连续 3 次零变更 → blocked 交人工。
                 if is_success and self._pm._implementer_zero_change(spec_name, result):
+                    # ── 验证确认型 no-op 放行（2026-09-11 add-web-ui 事故原地修）──
+                    # admin 把 env-blocked spec 复位 ready 而实现分支已 merge 进
+                    # main 时，agent 验证确认「全部绿、无需改动」报成功是唯一正确
+                    # 行为，被本哨误判空转 → 重派第二轮重蹈覆辙（$1.42 + 重建
+                    # $1.30）。哨兵触发后先跑交付物守卫：交付物齐备 = 合法确认
+                    # 完成，走正常成功收口（implemented → verifier）；
+                    # 缺件仍按空转重派。守卫方法内自带无声明 spec 跳过。
+                    # （分支零提交时 rev-list main..branch == 0 ⟺ 分支已并入 main，
+                    # 无需另查 merge-base。）
+                    if not self._pm._deliverable_gate_missing(spec_name, result):
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"零变更哨·确认型 no-op '{spec_name}' — 交付物齐备且分支"
+                            f"零提交（已并入 main），走成功收口（不重派）"
+                            f"run={result.run_id}",
+                        )
+                        self._pm.state_machine.transition(spec_name, "implemented")
+                        self._pm.state_machine.update_spec(spec_name, {
+                            "implementer_run": result.run_id,
+                            "error": None,
+                            "_zero_change_attempts": 0,
+                        })
+                        self._pm._enqueue_front(spec_name, "verifier")
+                        return
                     attempts = 0
                     spec_entry = self._pm.state_machine.read_one(spec_name) or {}
                     try:

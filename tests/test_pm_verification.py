@@ -1208,3 +1208,145 @@ class TestVerifiedGateEvidenceRace(unittest.TestCase):
         entry2 = self.sm.read_one(spec)
         self.assertEqual(entry2["status"], "verified")
         self.assertIn("1.1", entry2.get("error", ""))
+
+
+class TestZeroChangeConfirmationPath(unittest.TestCase):
+    """零变更哨放行通道：验证确认型 no-op 不重派，直接进验证（2026-09-11 原地修）。
+
+    2026-09-10 fenix-server add-web-ui 事故（impl-add-web-ui-1789053420-a1，
+    $1.42 + r1 重建 $1.30）：admin 把 env-blocked 的 spec 复位 ready，但实现分支
+    已 merge 进 main——agent 正确验证确认「全部绿、无需改动」报成功，被零变更
+    哨误判空转重派，第二轮重蹈覆辙被 admin 亲手 kill。收尾报告已声明零变更原因，
+    交付物 19/19 在分支上——哨兵触发时先对账交付物：齐备且分支已并入 main =
+    合法确认完成，走正常成功收口（implemented → verifier），不再烧一轮重派。
+    """
+
+    def setUp(self):
+        import subprocess as sp
+        from core.pm_engine import PMEngine
+        self.sp = sp
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.logger = MagicMock()
+        self.sm = StateMachine(
+            self.project_root / ".fenix" / "STATE.md", self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, self.project_root, self.logger,
+        )
+        # 真实 git 仓库：main 一个提交，分支 fenix/demo 从 main 同点创建（零新提交）
+        def git(*a):
+            r = sp.run(["git", "-C", str(self.project_root), *a],
+                       capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr
+            return r.stdout
+        self.git = git
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        (self.project_root / "f.txt").write_text("x", encoding="utf-8")
+        git("add", ".")
+        git("commit", "-qm", "init")
+        git("branch", "fenix/demo")
+        # SPEC 声明交付物 web/main.tsx（Deliverables 声明段）
+        spec_dir = self.project_root / "spec" / "changes" / "demo"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "tasks.md").write_text(
+            "# Tasks: demo\n\n## Deliverables\n\n```yaml\n"
+            "- path: web/main.tsx\n  kind: new\n```\n\n"
+            "## 1. 实现\n\n- [x] 1.1 done\n",
+            encoding="utf-8",
+        )
+        # 状态：implementing（零变更哨触发时 spec 的真实状态）
+        self.sm.add_spec("demo", {"priority": 5})
+        self.sm.transition("demo", "ready")
+        self.sm.transition("demo", "implementing")
+        self.sm.update_spec("demo", {"_zero_change_attempts": 1})
+        # 空 run 转录（无 Edit/Write 工具调用 = 哨兵判定第二条件成立；
+        # 缺文件会让 _implementer_zero_change 因 OSError fail-open 返回 False）
+        runs_dir = self.project_root / ".fenix" / "runs"
+        runs_dir.mkdir(exist_ok=True)
+        (runs_dir / "impl-demo-1-a1.jsonl").write_text("", encoding="utf-8")
+        # 分支 HEAD 补上交付物（零提交不变——文件在 main 上就有，分支同点）
+        git("add", ".")  # no-op，仅保证干净
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_deliverable_on_branch(self):
+        """在 main 上落交付物（分支同点继承）——模拟「实现已合并」场景。"""
+        web = self.project_root / "web"
+        web.mkdir(exist_ok=True)
+        (web / "main.tsx").write_text("// impl\n", encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-qm", "[fenix] impl")
+
+    def _result(self, run_id="impl-demo-1-a1"):
+        return SimpleNamespace(
+            success=True, error=None, run_id=run_id, branch="fenix/demo",
+            worktree_dirty=[], cancelled=False,
+        )
+
+    def _drive_worker(self, file_on_branch=False):
+        """驱动 _run_agent_worker 的 implementer 零变更哨分支。
+
+        file_on_branch 模拟 file_exists_on_branch 的返回（交付物守卫校验基准
+        为实现分支 HEAD）；真实存在性由真实 git 仓库覆盖（merge-base 判据）。
+        """
+        self.engine._enqueue = MagicMock()
+        self.engine._enqueue_front = MagicMock()
+        self.engine._write_impl_result_snapshot = MagicMock()
+        self.engine._reconcile_impl_budget = MagicMock()
+        self.engine._sync_task_progress = MagicMock()
+        self.engine._clear_dispatch_conflict = MagicMock(return_value={})
+        wm = MagicMock()
+        wm.find_implementer_worktree = MagicMock(return_value=None)
+        wm.merge_back_from_branch.return_value = (True, "")
+        wm.last_stash_pop_conflicts = []
+        wm.consume_legacy = MagicMock()
+        wm.file_exists_on_branch = MagicMock(return_value=file_on_branch)
+        self.engine.agent_runner.worktree_manager = wm
+        self.engine.agent_runner.run_implementer = MagicMock(
+            return_value=self._result())
+        self.engine._dispatcher._run_agent_worker("demo", "implementer", 5)
+
+    def test_confirmed_noop_advances_to_verification(self):
+        """交付物齐备 + 分支已并入 main → 确认型 no-op：转 implemented 入队
+        verifier，不重派 implementer，零变更计数清零。"""
+        self._write_deliverable_on_branch()
+        self._drive_worker(file_on_branch=True)
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "implemented")
+        # 正常成功收口语义：verifier 排队（队列头）、run 字段落定、error 清、计数清零
+        self.engine._enqueue_front.assert_called_once_with("demo", "verifier")
+        impl_calls = [
+            c for c in self.engine._enqueue_front.call_args_list
+            if c.args[1] == "implementer"
+        ]
+        self.assertEqual(impl_calls, [])
+        self.assertIsNone(entry["error"])
+        self.assertEqual(int(entry.get("_zero_change_attempts", 0) or 0), 0)
+        self.assertEqual(entry["implementer_run"], "impl-demo-1-a1")
+
+    def test_missing_deliverables_still_redispatches(self):
+        """交付物缺件（分支上没有声明的路径）→ 真空转，维持既有重派路径。"""
+        # 分支已并入 main（同点）但 main 上没有 web/main.tsx → 缺件
+        self._drive_worker()
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "ready")
+        self.assertIn("零变更", entry["error"])
+        self.assertEqual(int(entry["_zero_change_attempts"]), 2)
+        self.engine._enqueue_front.assert_called_once_with("demo", "implementer")
+
+    def test_branch_gone_fails_open_to_redispatch(self):
+        """分支不存在（rev-list 失败）→ 哨兵判定 fail-open 返回 False，
+        零变更哨不触发；结果文件 status=success 时按正常成功路径走
+        （implemented），不误派。锁定既有 fail-open 语义不被放行通道破坏。"""
+        self._write_deliverable_on_branch()
+        self.git("branch", "-D", "fenix/demo")
+        r = self._result()
+        self.assertFalse(self.engine._implementer_zero_change("demo", r))
+
+
+if __name__ == "__main__":
+    unittest.main()
