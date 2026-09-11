@@ -29,5 +29,5 @@
 
 ## 3. 回归与收口
 
-- [ ] 3.1 既有回归零破坏：tests/test_task_track.py、tests/test_deliverable_lint.py、tests/test_deliverable_gate.py、tests/test_fast_track*.py（如存在）全绿
-- [ ] 3.2 自检：grep 确认 data.py / fenix_process.py 解析端零改动；复检挂点仅在 implementer 成功路径（full+fast-track）生效，verifier/repair/planner 车道不受影响；fail-open 语义两车道一致
+- [x] 3.1 既有回归零破坏：tests/test_task_track.py、tests/test_deliverable_lint.py、tests/test_deliverable_gate.py、tests/test_fast_track*.py（如存在）全绿
+- [x] 3.2 自检：grep 确认 data.py / fenix_process.py 解析端零改动；复检挂点仅在 implementer 成功路径（full+fast-track）生效，verifier/repair/planner 车道不受影响；fail-open 语义两车道一致
