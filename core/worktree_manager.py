@@ -628,6 +628,15 @@ class WorktreeManager:
                 )
                 # If git worktree remove fails, try manual directory removal
                 if wt_path.exists():
+                    # add-impl-terminal-nocommit-gate（D4）：rmtree 硬删前对 dirty
+                    # worktree 执行 `git stash create` 生成快照引用（纯引用生成、
+                    # 不入 stash 栈），快照 SHA 记入日志——消灭「守卫裁决需要证据而
+                    # 现场已毁」的取证盲区（09-09 verify-add-verdict-contract 已暴露
+                    # 同款 untracked 告警；2026-09-10 双零提交事故即死于先删后查）。
+                    # 对全 agent_type 生效（verifier 成功路径留档同样受益）；失败仅
+                    # WARNING 降级，不阻断清理流程。
+                    self._snapshot_dirty_worktree(
+                        wt_path, self._wt_branches.get(wt_str))
                     shutil.rmtree(str(wt_path), ignore_errors=True)
                     # Also prune the worktree reference
                     subprocess.run(
@@ -665,6 +674,53 @@ class WorktreeManager:
                 self._proc_scan_cache.pop(self._lock_spec_name(k), None)
                 # worktree 继承：认领痕迹随之清除（防止后续 prompt 误注入继承说明）
                 self._active_reuse.pop(self._lock_spec_name(k), None)
+
+    def _snapshot_dirty_worktree(self, wt_path: Path,
+                                   branch: str | None = None) -> str:
+        """cleanup rmtree fallback 前对 dirty worktree 做 stash create 快照留档。
+
+        add-impl-terminal-nocommit-gate（D4）：用 ``git stash create``（引用式、
+        不入 stash 栈）生成快照 commit SHA，记入日志（WARNING 级，含分支名）；
+        后续争议裁决可通过 ``git stash store <sha>`` 将其转正进栈、或
+        ``git fsck --unreachable | grep <sha>`` 追溯，消灭「现场毁灭后取证靠
+        转录间接复原」的盲区。
+
+        Returns: 快照 commit SHA（留档成功）或空字符串（跳过/失败）。
+        """
+        try:
+            status = subprocess.run(
+                ["git", "-C", str(wt_path), "status", "--porcelain"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if status.returncode != 0 or not status.stdout.strip():
+                return ""  # 干净，无快照价值
+            snap = subprocess.run(
+                ["git", "-C", str(wt_path), "stash", "create",
+                 f"fenix: pre-rmtree snapshot {branch or wt_path.name}"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if snap.returncode != 0 or not snap.stdout.strip():
+                self.logger.warning(
+                    "worktree_manager",
+                    f"Pre-rmtree snapshot skipped for {wt_path}: "
+                    f"{snap.stderr.strip() or 'empty stash create output'}",
+                )
+                return ""
+            sha = snap.stdout.strip()
+            self.logger.warning(
+                "worktree_manager",
+                f"Pre-rmtree snapshot saved for {wt_path} "
+                f"(branch {branch or '?'}): commit {sha} — "
+                f"recover via: git stash store {sha}",
+            )
+            return sha
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"Pre-rmtree snapshot failed for {wt_path}: {e} — "
+                f"cleanup proceeds",
+            )
+            return ""
 
     def cleanup_orphans(self, protected: set | None = None):
         """Clean up any remaining worktree directories on shutdown.
