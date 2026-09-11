@@ -15,7 +15,7 @@
 
 ## 1. 判定函数
 
-- [ ] 1.1 新建 `core/pm_engine/spec_integrity.py`：实现 `spec_has_content(project_root, spec_name)` 纯函数——目录不存在返回 False；目录内存在 `proposal.md`/`design.md`/`tasks.md`/`specs/**/*.md` 任一返回 True；其余返回 False；读目录 IO 异常记 WARNING 返回 True
+- [x] 1.1 新建 `core/pm_engine/spec_integrity.py`：实现 `spec_has_content(project_root, spec_name)` 纯函数——目录不存在返回 False；目录内存在 `proposal.md`/`design.md`/`tasks.md`/`specs/**/*.md` 任一返回 True；其余返回 False；读目录 IO 异常记 WARNING 返回 True
 
 ## 2. 闸门封装与派发接入
 
