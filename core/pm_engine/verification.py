@@ -26,6 +26,7 @@ _SCENARIO_REPAIR_MAX_ROUNDS = 2
 
 from core.verify_contract import (
     CommandVerifyServer,
+    entry_preflight_error,
     load_verify_contract,
     probe_ready,
     provision_worktree_node_modules,
@@ -545,7 +546,21 @@ class VerificationPipeline:
         legacy_hint = contract.serve.port or (int(m.group(1)) if m else None)
         pre = ({p for p in range(legacy_hint, legacy_hint + 51)
                 if self._port_responds(p)} if legacy_hint else set())
-        cmd_str = (contract.serve.cmd or "").replace("{port}", str(port))
+        # 入口存在性预检（design D1）：{port} 替换前的原 cmd 检查（{port} 不在
+        # 路径段）；入口文件不存在 → fail-fast，不 spawn、不跑场景，场景执行数=0。
+        orig_cmd = contract.serve.cmd or ""
+        preflight_err = entry_preflight_error(orig_cmd, Path(wt))
+        if preflight_err:
+            self._write_verify_contract_missing(
+                spec_name,
+                f"{preflight_err}（入口存在性预检失败，spawn 前 fail-fast）",
+                f"serve.cmd 原文={orig_cmd!r}; cwd={wt}",
+                recommended_action=(
+                    "Administrator 修正 .fenix/verify.yaml serve.cmd 入口路径："
+                    "按错误信息中「候选」提示修正，或确认构建产物已生成后重验"),
+            )
+            return False, False, preflight_err
+        cmd_str = orig_cmd.replace("{port}", str(port))
         env = {**os.environ, "FENIX_VERIFY_PORT": str(port)}
         try:
             proc = subprocess.Popen(
@@ -855,6 +870,29 @@ class VerificationPipeline:
             f"验证目标应用不可达，自动启动服务: {start_cmd}",
         )
 
+        # 入口存在性预检（design D1）：主树兜底自启同样在 spawn 前校验入口
+        # 存在性——serve.cmd 入口指向不存在文件时 fail-fast（场景执行数=0，
+        # 确定性错误不等探活超时浪费 30s）；commands.start 等非脚本型运行时
+        # 形态由解析器返回 None 放行（零误杀）。
+        preflight_err = entry_preflight_error(start_cmd, self._pm.project_root)
+        if preflight_err:
+            self._write_verify_contract_missing(
+                spec_name,
+                f"{preflight_err}（入口存在性预检失败，spawn 前 fail-fast）",
+                (f"start_cmd 原文={start_cmd!r}; cwd={self._pm.project_root}; "
+                 f"来源={'契约 serve.cmd' if start_cmd_override else 'config commands.start 兜底'}"),
+                recommended_action=(
+                    "Administrator 修正入口路径：按错误信息中「候选」提示修正 "
+                    ".fenix/verify.yaml serve.cmd（或 commands.start），确认构建"
+                    "产物已生成后重验"),
+            )
+            self._escalate_env_blocked(
+                spec_name,
+                [preflight_err],
+                title="验证环境阻塞（入口存在性预检失败）",
+            )
+            return False, False, preflight_err
+
         # 启动一次（后台、脱离会话、输出丢弃）；随后等待可达或扫描邻近端口
         env = {**os.environ}
         if injected_port:
@@ -916,6 +954,33 @@ class VerificationPipeline:
         return False, False, ("应用仍不可达：已自动执行 commands.start 并扫描邻近端口，"
                               "仍无法连接（可能需人工启动/换端口，或属需用户参与的验证场景）")
 
+    def _write_verify_contract_missing(self, spec_name: str, note: str,
+                                       evidence: str,
+                                       recommended_action: str = "") -> None:
+        """写 verify_contract_missing 信号呼叫 Administrator（契约相关 fail-fast 共用）。
+
+        契约缺失/损坏/入口预检失败/轻量自证失败的统一出口（design D1/D2）：
+        spawn 前确定性错误不等待失败计数与升级冷却，直接派发。失败记 warning
+        不抛穿调用方（信号通道自身不可影响验证判定）。
+        """
+        from core.admin_store import AdminStore, SIGNAL
+        store = AdminStore(self._pm.project_root, self._pm.logger)
+        try:
+            store.append({
+                "kind": SIGNAL,
+                "signal_type": "verify_contract_missing",
+                "spec": spec_name,
+                "severity": "major",
+                "description": note,
+                "evidence": evidence,
+                "recommended_action": recommended_action or (
+                    "Administrator 修正 .fenix/verify.yaml 验证契约："
+                    "检查构建命令、serve 段入口/静态目录、端口注入；"
+                    "修正后 git 提交 → spec 复位 ready 触发重验证"),
+            })
+        except Exception as e:
+            self._pm.logger.error(
+                "pm_engine", f"verify_contract_missing 信号写入失败: {e}")
 
     def _rewrite_scenario_port(self, scenarios_path: Path, old_port: int, new_port: int):
         """端口冲突换端口后，重写 test_scenarios.json 中的 URL 端口。"""

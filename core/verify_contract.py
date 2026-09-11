@@ -107,6 +107,7 @@ BASE_URL 注入范围扩展（design D4）：
 
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -861,3 +862,108 @@ def rewrite_scenarios_origin(scenarios_path: Path, base_url: str) -> int:
         except OSError:
             return 0
     return n
+
+
+# ── 入口存在性预检（design D1） ──────────────────────────────────────────────
+
+# 脚本型运行时可执行名（argv[0] 去目录后）
+_SCRIPT_RUNTIME_EXECS = frozenset({"node", "nodejs", "tsx", "ts-node", "bun", "deno"})
+
+# shell 元字符：出现任一则跳过预检（复合命令保守放行，零误杀）
+_SHELL_METACHARS = ("&&", "||", "|", ";", ">", "<", "$(", "`")
+
+# 内联代码 / REPL 形态：无文件入口，跳过预检（防把代码片段当路径误杀）
+_INLINE_CODE_FLAGS = frozenset({"-e", "--eval", "-p", "--print", "-i", "--interactive"})
+
+
+def resolve_entry_path(cmd: str, cwd: Path) -> Optional[Path]:
+    """从 serve.cmd 机械解析脚本入口路径；无法解析返回 None（跳过预检）。
+
+    确定性优先（design D1）：只拦「100% 是错误」的形态——脚本型运行时
+    （node/nodejs/tsx/ts-node/bun/deno）+ 单入口 + 无 shell 元字符。
+    复合命令、npm run、python -m 等其余形态一律返回 None 放行（零误杀，
+    漏检交给既有探活兜底）。纯函数零 IO：文件存在性由调用方检查。
+
+    Examples
+    --------
+    >>> resolve_entry_path("node dist/server.js", Path("/prj"))
+    PosixPath('/prj/dist/server.js')
+    >>> resolve_entry_path("npm run build && node x.js", Path("/prj")) is None
+    True
+    """
+    if not cmd or not isinstance(cmd, str):
+        return None
+    # shell 元字符检测（保守：出现任一即跳过）
+    if any(mc in cmd for mc in _SHELL_METACHARS):
+        return None
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return None  # 引号不配对：无法可靠解析，跳过
+    if not argv:
+        return None
+    exe = Path(argv[0]).name  # 去目录只看可执行名
+    if exe not in _SCRIPT_RUNTIME_EXECS:
+        return None  # 非脚本型运行时（npm/python/…）
+    # 内联代码 / REPL 模式：无文件入口，跳过
+    if any(arg in _INLINE_CODE_FLAGS for arg in argv[1:]):
+        return None
+    rest = argv[1:]
+    # 子命令展开（deno 必带 run；bun run <script> 可能是 package.json 脚本名，保守跳过）
+    if exe == "deno" and rest and rest[0] == "run":
+        rest = rest[1:]
+    elif exe == "bun" and rest and rest[0] == "run":
+        return None
+    for arg in rest:
+        if arg.startswith("-"):
+            continue
+        return (Path(cwd) / arg).resolve()
+    return None  # 只有 flag 没有入口（如 node --version）
+
+
+def _entry_candidates(entry: Path) -> list:
+    """缺失入口的确定性候选：同名目录下 index.js + 同目录 *.js 文件。"""
+    cands = []
+    parent = entry.parent
+    try:
+        # 1. 同名目录下的 index.js（如 dist/server.js → dist/server/index.js）
+        named_dir = parent / entry.stem
+        named_idx = named_dir / "index.js"
+        if named_idx.is_file():
+            cands.append(named_idx)
+        # 2. 同目录 *.js 文件
+        for p in sorted(parent.glob("*.js")):
+            if p.is_file() and p not in cands:
+                cands.append(p)
+    except OSError:
+        pass
+    return cands
+
+
+def entry_preflight_error(cmd: str, cwd: Path) -> Optional[str]:
+    """serve.cmd 入口存在性预检；返回错误串或 None（放行）。
+
+    调用 resolve_entry_path 解析出入口后校验文件存在性：不存在返回结构化
+    错误（含缺失路径全文 + 同目录 *.js/index.js 存在候选提示），存在或
+    无法解析返回 None。此为 spawn 前 fail-fast 的判定函数（design D1）。
+
+    Examples
+    --------
+    >>> entry_preflight_error("node dist/server.js", Path("/prj"))
+    若 dist/server.js 不存在：'入口存在性预检失败: /prj/dist/server.js 不存在（...）'
+    >>> entry_preflight_error("npm run build && node x.js", Path("/prj"))
+    None  # 复合命令跳过
+    """
+    entry = resolve_entry_path(cmd, cwd)
+    if entry is None:
+        return None
+    if entry.is_file():
+        return None
+    candidates = _entry_candidates(entry)
+    hint = ""
+    if candidates:
+        cand_strs = []
+        for c in candidates[:3]:
+            cand_strs.append(f"{c} 存在")
+        hint = "（候选: " + "、".join(cand_strs) + "）"
+    return f"入口存在性预检失败: {entry} 不存在{hint}"
