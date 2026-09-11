@@ -1535,6 +1535,93 @@ class AgentRunner:
         except (OSError, subprocess.TimeoutExpired):
             return False
 
+    def _check_terminal_no_commit_gate(self, spec_name: str, agent_type: str,
+                                       wt_path, branch, wt_dirty: list,
+                                       sub_run_id: str) -> None:
+        """终态零提交门判定（add-impl-terminal-nocommit-gate D2）。
+
+        仅 implementer 车道生效：分支相对 main 零新提交（`git rev-list --count
+        main..branch` == 0）且 worktree dirty 取证非空时，抛携带
+        `[terminal-no-commit]` 前缀与机械归因文案的 `AgentArtifactGateError`，
+        进入既有原地退避重试通道（锚点 B WIP 提交 + 退避 + resume 续做）。
+
+        放行（不拦）情形：分支有新提交、零提交且 worktree 干净（真空转归既有
+        零变更哨管辖）、fast-track/repair/verifier 车道、rev-list 失败
+        （fail-open——门自身故障绝不打断正常收口）。
+        """
+        if agent_type != "implementer" or not wt_dirty:
+            return
+        if not branch:
+            return
+        try:
+            rc = subprocess.run(
+                ["git", "-C", str(self.project_root), "rev-list",
+                 "--count", f"main..{branch}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            zero_commit = (
+                rc.returncode == 0 and int(rc.stdout.strip() or "0") == 0)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            zero_commit = False  # fail-open：不因门故障误拦
+        if not zero_commit:
+            return
+        attribution = self._classify_terminal_no_commit(sub_run_id)
+        raise AgentArtifactGateError(
+            f"[terminal-no-commit] 归因:{attribution} — "
+            f"implementer 正常终态但分支零提交且 worktree 有 "
+            f"{len(wt_dirty)} 个未提交产物；进入退避通道：WIP "
+            f"提交保全 + 原地退避 + 同 worktree resume 续做"
+        )
+
+    # ── 终态零提交门机械归因（add-impl-terminal-nocommit-gate D3）──────────
+    # 归因为纯文本机械匹配、零 LLM：读 run 转录最后一条含 text 块的 assistant
+    # 消息，看其是否含「假工具调用」特征——模型把工具调用写成了正文（XML
+    # `<function_calls>` 形态或 markdown fenced code 形态），SDK 不从 text 解析
+    # 工具 → `end_turn`「自然完成」→ 成功判定但零提交（2026-09-10 双事故根因）。
+    # 归因仅用于 audit 与日志语义区分，不改变处置路径（resume 对两种原因均正确）。
+    _TERMINAL_NO_COMMIT_TOOL_PATTERN = (
+        r"(?:<function_calls>"
+        r"|```\s*(?:(?:Edit|Write|Bash|NotebookEdit)\b|<invoke))"
+    )
+
+    def _classify_terminal_no_commit(self, sub_run_id: str) -> str:
+        """机械归因：run 转录末轮 assistant text 的假工具调用特征判定。
+
+        - text 含 ``<function_calls>``（XML 内嵌工具调用）→ 「格式回退截断」
+        - text 含 markdown fenced code 紧随工具名（Edit/Write/Bash/NotebookEdit）
+          或 ``<invoke`` → 「格式回退截断」
+        - 无上述特征 → 「未提交即收工」
+        - 转录缺失/损坏 → 降级「未提交即收工」（fail-open）
+
+        基准为逐行扫描整个转录并**持续更新**最后一条 assistant text 块（stream-json
+        逐行追加，末轮即最后读到的一个 text 块）；找不到任何 assistant text 时同样
+        降级为「未提交即收工」。
+        """
+        last_text: str = ""
+        run_file = self.project_root / ".fenix" / "runs" / f"{sub_run_id}.jsonl"
+        try:
+            with run_file.open(encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if d.get("type") != "assistant":
+                        continue
+                    for c in (d.get("message") or {}).get("content") or []:
+                        if isinstance(c, dict) and c.get("type") == "text":
+                            last_text = c.get("text") or ""
+        except OSError:
+            return "未提交即收工"
+        if re.search(
+                self._TERMINAL_NO_COMMIT_TOOL_PATTERN,
+                last_text, re.IGNORECASE):
+            return "格式回退截断"
+        return "未提交即收工"
+
     def _wip_checkpoint_before_backoff(self, spec_name: str, wt_path) -> None:
         """锚点 B（add-impl-wip-checkpoint D3）：transient 原地退避前的 WIP 提交。
 
@@ -2039,13 +2126,18 @@ class AgentRunner:
                         error = f"[provider-transient] {error}"
                     # 全局瞬断指纹计数（transient-dispatch-gating D4 同语义）：
                     # 产物硬门失败同样记账，保留 dispatch 闸门对瞬断风暴的可见性。
-                    try:
-                        self.record_transient_break(str(e))
-                    except Exception as _break_err:
-                        self.logger.debug(
-                            "agent_runner",
-                            f"global transient break 记账失败（不阻断）: {_break_err}",
-                        )
+                    # add-impl-terminal-nocommit-gate（D1 处置）：终态零提交门
+                    # 触发的错误（文本以 [terminal-no-commit] 开头）是「格式回退/
+                    # 忘提交」而非网关瞬断——跳过全局瞬断指纹记账，避免污染 dispatch
+                    # 闸门对瞬断风暴的可见性（多计保守、少计危险；此处精确跳过）。
+                    if not str(e).startswith("[terminal-no-commit]"):
+                        try:
+                            self.record_transient_break(str(e))
+                        except Exception as _break_err:
+                            self.logger.debug(
+                                "agent_runner",
+                                f"global transient break 记账失败（不阻断）: {_break_err}",
+                            )
                     if transient_retries < len(transient_budget):
                         backoff = transient_budget[transient_retries]
                         transient_retries += 1
@@ -2295,6 +2387,20 @@ class AgentRunner:
                     )
                     if st.returncode == 0:
                         wt_dirty = [l for l in st.stdout.splitlines() if l.strip()]
+                # add-impl-terminal-nocommit-gate（D2）：终态零提交门——wt_dirty
+                # 取证之后、fast-track/repair 分流之前判定。implementer 正常终态
+                # （exit 0 + 合法结果文件）但分支相对 main 零新提交且 worktree 有
+                # 未提交产物时，拦截为可恢复错误（复用 AgentArtifactGateError 既有
+                # 通道：锚点 B WIP 提交 + 原地退避 + 同 worktree --resume 续做），
+                # 替代「成功判定 → cleanup 硬删 → 交付物守卫打回整轮重做」的零提交
+                # 死法（2026-09-10 双 SPEC 首轮全丢事故根因补位）。rev-list 失败
+                # fail-open 不拦——门自身故障绝不打断正常收口。
+                if agent_type == "implementer":
+                    self._check_terminal_no_commit_gate(
+                        spec_name=spec_name, agent_type=agent_type,
+                        wt_path=wt_path,
+                        branch=self.worktree_manager.get_branch_name(wt_path),
+                        wt_dirty=wt_dirty, sub_run_id=sub_run_id)
                 # add-merge-back-repair-lane：repair 与 fast-track 同语义，
                 # 成功不清理 worktree——冲突解决成果仍在分支上，交给 dispatch
                 # 层的 re-merge-back 决定终态；多轮 repair 需原地复用现场。
