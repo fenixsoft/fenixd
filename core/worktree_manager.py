@@ -2412,11 +2412,24 @@ class WorktreeManager:
         prepare 视为「无构建步骤」，直接成功。
         供 merge 后确定性重建使用；测试通过 patch 本方法模拟构建产物/失败。
         """
-        from core.verify_contract import load_verify_contract, run_prepare_steps
+        from core.verify_contract import (
+            ensure_main_tree_deps, load_verify_contract, read_config_deps_mode,
+            resolve_deps_mode, run_prepare_steps)
         contract = load_verify_contract(self.project_root, self.logger)
         if contract is not None:
             if not contract.prepare:
                 return True
+            # add-main-tree-deps-provision：merge 后主树重建 dist 与验证同样
+            # 可能缺 node_modules（主树只被 merge-back 写入、无人手工安装），
+            # prepare 前按 cwd 集合预装依赖（mode 无 pm 配置通道，走
+            # read_config_deps_mode + resolve_deps_mode 同源解析）。
+            ensure_main_tree_deps(
+                self.project_root,
+                sorted({(s.cwd or ".") for s in contract.prepare}),
+                mode=resolve_deps_mode(
+                    contract, read_config_deps_mode(self.project_root)),
+                logger=self.logger,
+            )
             err = run_prepare_steps(contract, self.project_root)
             if err:
                 self.logger.warning(
