@@ -256,7 +256,7 @@ class VisualDiffer:
         # suspicious + admin 人工告警。基线只标记不处置（重建交人工确认，
         # 自动覆盖会洗白「基线对、当前版本真回归」镜像场景）。
         self._update_baseline_streaks(scenario_id, baseline_name,
-                                      scenario_context, final, baseline_path)
+                                      scenario_context, final)
 
         return [final]
 
@@ -381,7 +381,7 @@ class VisualDiffer:
 
     def _update_baseline_streaks(self, scenario_id: str, baseline_name: str,
                                  scenario_context: Optional[dict],
-                                 result: dict, baseline_path: Path) -> None:
+                                 result: dict) -> None:
         """连续异常计数侧车更新（D5，仅对已存在基线的对比轮）。
 
         - diff_detected + DOM 全过 → 计数 +1（达 3 标记 suspicious + 告警）
