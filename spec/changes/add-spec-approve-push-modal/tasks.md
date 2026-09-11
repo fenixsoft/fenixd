@@ -49,3 +49,9 @@
 - [x] 6.1 全量跑新增与相关既有测试（test_dashboard_api / test_dashboard_data / test_run_cancel 如有信号同构断言 / test_spec_scheduling 回归），零失败
 - [x] 6.2 前端构建通过（`core/dashboard/static` 下 build/type-check 零错误）；dist 不提交
 - [x] 6.3 场景核对：对照 specs/spec-approve-push-modal 全部 Scenario 逐条自验
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-spec-approve-push-modal/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过

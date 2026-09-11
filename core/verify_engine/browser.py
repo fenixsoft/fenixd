@@ -71,6 +71,61 @@ def _make_handler(directory: str):
     return Handler
 
 
+async def wait_animations_settled(page, timeout_ms: int) -> bool:
+    """等待页面动画静置（settle，fix-visual-baseline-settle D1）。
+
+    注入 JS 轮询 ``document.getAnimations()``，等待全部进行中动画（playState
+    为 running）到达 finished；全部静置返回 True，达 ``timeout_ms`` 上限仍有
+    未完成动画返回 False。``timeout_ms <= 0`` 直接返回 True（不等待，行为与
+    现状一致，逃生门）。
+
+    覆盖 ``_wait_stable`` 的 CLS 判定检测不到的 opacity/transform 渐变动画
+    （antd Modal ~300ms fade：Playwright 的 visible 判定不看 opacity，DOM
+    断言通过而截图拍到动画早段画面）。注入失败（老内核/异常页面）按超时
+    退化返回 False，不抛出——与 CLS 检测同容错模式，不放大失败。
+
+    Args:
+        page: Playwright Page 对象。
+        timeout_ms: 等待上限（毫秒）；0/负值跳过等待。
+
+    Returns:
+        True=动画全部静置（或跳过等待）；False=达上限仍有未完成动画（或注入失败）。
+    """
+    if not timeout_ms or timeout_ms <= 0:
+        return True
+    try:
+        settled = await page.evaluate("""(timeoutMs) => {
+            if (!timeoutMs || timeoutMs <= 0) return true;
+            const deadline = performance.now() + timeoutMs;
+            return new Promise((resolve) => {
+                const tick = () => {
+                    let running = 0;
+                    try {
+                        if (document.getAnimations) {
+                            running = document.getAnimations().filter(
+                                (a) => a && a.playState === 'running'
+                            ).length;
+                        }
+                    } catch (e) {
+                        running = 0;  // getAnimations 异常按无动画处理
+                    }
+                    if (running === 0) {
+                        resolve(true);
+                    } else if (performance.now() >= deadline) {
+                        resolve(false);
+                    } else {
+                        requestAnimationFrame(tick);
+                    }
+                };
+                tick();
+            });
+        }""", timeout_ms)
+        return bool(settled)
+    except Exception:
+        # 注入失败（老内核/异常页面）按超时退化处理，不放大失败
+        return False
+
+
 class BrowserManager:
     """Playwright 浏览器管理器。
 
