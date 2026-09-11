@@ -19,10 +19,10 @@
 
 ## 2. 闸门封装与派发接入
 
-- [ ] 2.1 在 `core/pm_engine/spec_integrity.py` 实现闸门方法 `check_spec_content_missing(spec_name)`：调用 `spec_has_content`；无内容且状态非 blocked 时 `update_spec(status=blocked, error=内容缺失)` + `_send_human_escalation_alert(signal_type="spec_content_missing", severity="major")`；返回 True 表示已拦（blocked 幂等）
-- [ ] 2.2 `core/pm_engine/engine.py` 加薄转发 `_check_spec_content_missing(spec_name)`（同 `_check_impl_budget_exhausted` 的 type 转发风格）
-- [ ] 2.3 `core/pm_engine/dispatch.py` 在 implementer 分支（预算闸门旁）加内容闸门：命中即回滚队列占用 + `continue`（镜像预算闸门的三行回滚块）
-- [ ] 2.4 `core/pm_engine/dispatch.py` 在 fast-track 分支做同样接入
+- [x] 2.1 在 `core/pm_engine/spec_integrity.py` 实现闸门方法 `check_spec_content_missing(spec_name)`：调用 `spec_has_content`；无内容且状态非 blocked 时 `update_spec(status=blocked, error=内容缺失)` + `_send_human_escalation_alert(signal_type="spec_content_missing", severity="major")`；返回 True 表示已拦（blocked 幂等）
+- [x] 2.2 `core/pm_engine/engine.py` 加薄转发 `_check_spec_content_missing(spec_name)`（同 `_check_impl_budget_exhausted` 的 type 转发风格）
+- [x] 2.3 `core/pm_engine/dispatch.py` 在 implementer 分支（预算闸门旁）加内容闸门：命中即回滚队列占用 + `continue`（镜像预算闸门的三行回滚块）
+- [x] 2.4 `core/pm_engine/dispatch.py` 在 fast-track 分支做同样接入
 
 ## 3. 告警生命周期闭环
 

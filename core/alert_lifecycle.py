@@ -40,9 +40,12 @@ AUTO_RESOLVE_BY = "auto-resolve"
 # verify_fail_escalation / blocked_stuck 均属 spec_terminal_or_unblocked 类
 # （design D2）：前者由 pm_engine 升级闸门产生，后者经 admin_monitor 升级人工
 # 产生——两条写入管道都经 attach_trigger 统一埋点。
+# spec_content_missing（add-spec-content-integrity-gate D4）：派发前内容完整性
+# 闸门命中产生；spec 补内容解冻离开 blocked（或到达终态）即自动闭环。
 _SIGNAL_CONDITIONS = {
     "verify_fail_escalation": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
     "blocked_stuck": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
+    "spec_content_missing": CONDITION_SPEC_TERMINAL_OR_UNBLOCKED,
 }
 
 
