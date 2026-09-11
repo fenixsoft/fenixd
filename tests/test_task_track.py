@@ -129,6 +129,33 @@ class TestLintTasksParseable(unittest.TestCase):
         )
         self.assertEqual(lint_tasks_parseable(self.spec_dir, self.pr), [])
 
+    def test_damaged_prefix_with_valid_groups_is_violation(self):
+        """分组存在但任务行全部带损伤前缀（^- [x]）应触发违规（task-track R2 relint）。"""
+        _write_tasks(
+            self.spec_dir,
+            "# Tasks\n\n## 1. Setup\n\n^- [x] 1.1 a\n^- [x] 1.2 b\n\n"
+            "## 2. Core\n\n^- [x] 2.1 c\n",
+        )
+        violations = lint_tasks_parseable(self.spec_dir, self.pr)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("tasks.md", violations[0])
+        self.assertIn("任务分组", violations[0])
+        # 修正处方须提及 `- [ ]` 或 `- [x]` 行首形态
+        self.assertIn("- [ ]", violations[0])
+        self.assertIn("- [x]", violations[0])
+        # 点名损伤特征 `^-`
+        self.assertIn("^-", violations[0])
+
+    def test_damaged_prefix_no_tasks_is_violation(self):
+        """分组存在但任务行为空（无 checkbox）也应触发违规。"""
+        _write_tasks(
+            self.spec_dir,
+            "# Tasks\n\n## 1. Setup\n\nsome prose\n\n## 2. Core\n\nmore prose\n",
+        )
+        violations = lint_tasks_parseable(self.spec_dir, self.pr)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("tasks.md", violations[0])
+
     def test_deliverables_block_with_numbered_groups_passes(self):
         # 本仓库 tasks.md 既有形态：## Deliverables 声明段 + 编号分组
         _write_tasks(

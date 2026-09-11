@@ -910,15 +910,39 @@ _TASKS_GROUP_RE = re.compile(r"^##\s+\d+\.?\s+(.+)$")
 _TASKS_ITEM_RE = re.compile(r"^- \[(x| )\]")
 
 
+def _tasks_parse_counts(text: str) -> tuple:
+    """tasks.md 文本解析计数纯函数（task-track D2「同源规则」复用点）。
+
+    Args:
+        text: tasks.md 全文。
+
+    Returns:
+        (分组数, 任务行数) 二元组。分组按 ``_TASKS_GROUP_RE`` 匹配；
+        任务行按 ``_TASKS_ITEM_RE``（checkbox 前缀）计数——只要求
+        checkbox、不要求任务 id，与 data.py 口径相比偏宽松：本门禁的
+        目的是「下游能否展示出任务」，checkbox 存在即可读出任务。
+    """
+    group_count = 0
+    item_count = 0
+    for line in text.split("\n"):
+        if _TASKS_GROUP_RE.match(line):
+            group_count += 1
+        if _TASKS_ITEM_RE.match(line):
+            item_count += 1
+    return group_count, item_count
+
+
 def lint_tasks_parseable(spec_dir, project_root) -> List[str]:
     """晋升 lint（drafted → ready）：tasks.md 可解析性校验（task-track R2）。
 
     tasks.md 不存在 → 返回 ``[]``（不拦：fast-track 前置 spec 允许后补）。
     存在 → 以与下游解析器同源的分组正则（见 ``_TASKS_GROUP_RE`` 注释）解析，
     0 个任务分组（含文件为空/无任务行的情形——无可跟踪任务属撰写缺陷，拦截
-    早于 run 烧钱）→ 返回含「tasks.md」字样的违规消息；≥1 分组（含点号可选
-    双历史格式）→ 不拦。本函数不读 ``project_root``，仅保持与
-    ``lint_declared`` 同构签名（统一调用点形态）。
+    早于 run 烧钱）→ 返回含「tasks.md」字样的违规消息；分组数 ≥ 1 但任务行
+    总数为 0（2026-09-11 add-impl-terminal-nocommit-gate 事故形态：sed 把任务行
+    写成 ``^- [x] 1.1 …``，分组完好、任务行全灭）→ 同样违规，文案点名损伤
+    特征并给出修正处方；分组与任务行均正常 → 不拦。本函数不读
+    ``project_root``，仅保持与 ``lint_declared`` 同构签名（统一调用点形态）。
 
     Returns:
         违规描述清单；空列表 = 通过。读取类异常直接上抛，由调用方
@@ -930,15 +954,21 @@ def lint_tasks_parseable(spec_dir, project_root) -> List[str]:
         return []
     text = tasks.read_text(encoding="utf-8")
 
-    group_count = 0
-    for line in text.split("\n"):
-        if _TASKS_GROUP_RE.match(line):
-            group_count += 1
+    group_count, item_count = _tasks_parse_counts(text)
 
-    if group_count > 0:
-        return []
-    return [
-        "tasks.md 存在但未解析出任务分组——分组标题必须为 `## <编号>. <标题>`"
-        "（阿拉伯数字编号，点号可选），如 `## 1. Setup`；"
-        "当前格式无法被下游解析器跟踪，请修正后重新晋升"
-    ]
+    if group_count == 0:
+        return [
+            "tasks.md 存在但未解析出任务分组——分组标题必须为 `## <编号>. <标题>`"
+            "（阿拉伯数字编号，点号可选），如 `## 1. Setup`；"
+            "当前格式无法被下游解析器跟踪，请修正后重新晋升"
+        ]
+    if item_count == 0:
+        return [
+            "tasks.md 存在任务分组（"
+            f"{group_count} 个），但未解析出任何任务行——任务行必须为 "
+            "`- [ ] <编号>. <任务>` / `- [x] <编号>. <任务>` 行首形态"
+            "（行首仅 `-` 空格 `[`，不得有多余字符）；若任务行以 `^-` 开头"
+            "（如 `^- [x] 1.1 …`）即 sed 转义损伤特征，请改用编辑器直接勾选："
+            "把 `^- [` 改回 `- [ ` 并恢复 `[x]`/`[ ]`，否则下游无法跟踪任务"
+        ]
+    return []
