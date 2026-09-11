@@ -811,6 +811,29 @@ class Dispatcher:
                         if adjudication.get("action") != "proceed":
                             return
 
+                # ── tasks.md 收口复检门禁（add-tasksmd-relint-gate）──────────────
+                # 2026-09-11 add-impl-terminal-nocommit-gate 事故：implementer 用 sed
+                # 勾选 tasks.md 把任务行写成 `^- [x] 1.1 …`，分组完好任务行全灭，晋升
+                # lint（立项期跑一次）穿透、收口期零校验 → dashboard 任务清单空白。
+                # 此处为 merge 前事后复检：以实现分支 HEAD 的 tasks.md 为基准（merge 前
+                # 主树版本 = 立项旧版本，读分支才反映中途编辑），违规 → 不合并不推进，
+                # 走失败重派 + error 写违规明细与修正处方。读取失败/异常 → fail-open。
+                if is_success:
+                    try:
+                        relint = self._pm._tasks_md_relint_from_branch(
+                            spec_name, getattr(result, "branch", None))
+                    except Exception as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"tasks.md relint 执行异常（fail-open）'{spec_name}': {e}",
+                        )
+                        relint = []
+                    if relint:
+                        self._redispatch_tasks_relint(
+                            spec_name, relint,
+                            run_id=getattr(result, "run_id", "") or "")
+                        return
+
                 if is_success:
                     # ── impl-result per-spec 快照（fix-verified-gate-evidence-race D1）──
                     # implementer 成功即把已解析的结果 dict 原样原子快照到
@@ -1781,6 +1804,54 @@ class Dispatcher:
         if updates["status"] != "blocked":
             self._pm._enqueue_front(spec_name, "implementer")
 
+    # ── tasks.md 收口复检门禁处置（add-tasksmd-relint-gate）─────────────────
+    # 读取与判定逻辑在 VerificationPipeline._tasks_md_relint_from_branch /
+    # _tasks_md_relint_from_worktree（经 PMEngine 门面 com 组件委托访问，
+    # design D3 规则 3）；本处仅处置违规（重派/计数），不重复实现判定。
+
+    def _redispatch_tasks_relint(self, spec_name: str, relint: list,
+                                 *, agent_type: str = "implementer",
+                                 run_id: str = "") -> None:
+        """tasks.md 收口复检违规处置：不合并、不推进，按失败重派。
+
+        error 写违规明细（逐条）与修正处方；连续计数沿用既有重派语义
+        （``_retry_count`` 递增，``agents.max_retries`` 封顶 blocked），
+        与交付物守卫缺件处置同构。
+        """
+        spec_entry = self._pm.state_machine.read_one(spec_name) or {}
+        try:
+            prev_retries = int(spec_entry.get("_retry_count", 0) or 0)
+        except (TypeError, ValueError):
+            prev_retries = 0
+        retries = prev_retries + 1
+        max_r = self._pm._get_config("agents.max_retries", 3)
+        detail = "；".join(relint)
+        err_note = (
+            f"tasks.md 收口复检违规 — 不合并不推进，重派修正（第 {retries} 次）："
+            f"{detail}。修正处方：任务行行首必须为 `- [ ]` / `- [x]`；"
+            f"若现为 `^- [x]` 即 sed 转义损伤，请改回 `- [` 并恢复 checkbox"
+        )
+        updates: dict = {
+            "status": "ready",
+            "error": err_note,
+            "_retry_count": retries,
+        }
+        if retries >= max_r:
+            updates["status"] = "blocked"
+            updates["tester_run"] = None
+            updates["error"] = (
+                f"tasks.md 收口复检连续 {max_r} 次违规 — 已 blocked，"
+                f"需人工修复 tasks.md（行首 `- [ ]`/`- [x]`）"
+            )
+        self._pm.state_machine.update_spec(spec_name, updates)
+        self._pm.logger.error(
+            "pm_engine",
+            f"tasks.md relint 触发 '{spec_name}'（第 {retries} 次）— "
+            f"run={run_id or 'n/a'}",
+        )
+        if updates["status"] != "blocked":
+            self._pm._enqueue_front(spec_name, agent_type)
+
     # ── fast-track 单 run 全包 worker（add-fast-track-mode D1/D4/D5/D6）──
 
     def _run_fast_track_worker(self, spec_name: str) -> None:
@@ -1885,6 +1956,27 @@ class Dispatcher:
         if missing:
             self._keep_fast_track_worktree(spec_name, result)
             self._handle_fast_track_deliverable_gate(spec_name, result, missing)
+            return
+
+        # ── tasks.md 收口复检门禁（add-tasksmd-relint-gate）──────────────
+        # 与 full 车道同语义的事后复检：fast-track 成功收口前以 worktree 内
+        # tasks.md（最新版本，worktree 成功路径延迟清理仍在）为基准判定。
+        # 违规 → 保留 worktree + 走失败重派（error 写违规明细与修正处方）。
+        # 读取失败/无 path/异常 → fail-open 不拦（lint 既有 fail-open 语义）。
+        try:
+            relint = self._pm._tasks_md_relint_from_worktree(
+                spec_name, getattr(result, "worktree_path", None))
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"tasks.md relint 执行异常（fail-open）'{spec_name}': {e}",
+            )
+            relint = []
+        if relint:
+            self._keep_fast_track_worktree(spec_name, result)
+            self._redispatch_tasks_relint(
+                spec_name, relint, agent_type="fast-track",
+                run_id=getattr(result, "run_id", "") or "")
             return
 
         # ── 硬校验（merge 前执行，失败则不合并、按失败重派） ──

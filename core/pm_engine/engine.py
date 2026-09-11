@@ -2403,6 +2403,12 @@ class PMEngine:
     def _deliverable_gate_missing(self, spec_name: str, result) -> list:
         return self._verification._deliverable_gate_missing(spec_name, result)
 
+    def _tasks_md_relint_from_branch(self, spec_name: str, branch) -> list:
+        return self._verification._tasks_md_relint_from_branch(spec_name, branch)
+
+    def _tasks_md_relint_from_worktree(self, spec_name: str, worktree_path) -> list:
+        return self._verification._tasks_md_relint_from_worktree(spec_name, worktree_path)
+
     def _disputed_deliverables(self, impl_result, missing) -> list:
         return self._verification._disputed_deliverables(impl_result, missing)
 
