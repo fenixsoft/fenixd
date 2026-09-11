@@ -28,18 +28,18 @@
 
 ## 2. 拒后重合成回路（core/pm_engine/verification.py）
 
-- [ ] 2.1 `batch_attribution_dedup` 拒绝分支（首轮 3225 附近 + 重试轮 3400 附近两处统一收口到一个 helper）：调 `_write_verdict_violations` 落盘违规（条目含 scenario_ids 列表与重合成指令 reason）+ 写 `dedup_resynthesis_directive.json`（被拒场景清单、逐场景现有归因文本、失败步骤序号/断言 label 差异化素材）
-- [ ] 2.2 新增重合成派发方法：复用 `run_planner(spec_name, "judge")`，处理 frozen/取消/异常/派发失败四分支语义化返回（照抄 3321-3390 既有模式）；连续拒绝计数（verify-progress 目录 directive 文件存在性+计数），≥2 次仍拒 → blocked + admin 升级告警（error 带两轮违规摘要）
-- [ ] 2.3 重合成返回后回灌：`load_report → validate_report → 归因分级门 + 查重门` 全链复跑（同方法既有路径，不旁路）；合规走 `_clear_verdict_violations` + 状态映射重写既有推进
-- [ ] 2.4 两处「拒绝落盘」日志文案改「拒绝采纳（report.json 已在盘上）」；「judge 下轮修文后自然通过」注释改写为 D1 真实回路描述
-- [ ] 2.5 单测（tests/test_verdict_dedup_resynthesis.py 新建）：拒绝→落盘 violations+directive、重合成成功→回灌采纳、重合成再拒→blocked+告警、frozen 让位零写入、派发异常不复读旧 report（dispatch_exception 早退语义保持）
+- [x] 2.1 `batch_attribution_dedup` 拒绝分支（首轮 3225 附近 + 重试轮 3400 附近两处统一收口到一个 helper）：调 `_write_verdict_violations` 落盘违规（条目含 scenario_ids 列表与重合成指令 reason）+ 写 `dedup_resynthesis_directive.json`（被拒场景清单、逐场景现有归因文本、失败步骤序号/断言 label 差异化素材）
+- [x] 2.2 新增重合成派发方法：复用 `run_planner(spec_name, "judge")`，处理 frozen/取消/异常/派发失败四分支语义化返回（照抄 3321-3390 既有模式）；连续拒绝计数（verify-progress 目录 directive 文件存在性+计数），≥2 次仍拒 → blocked + admin 升级告警（error 带两轮违规摘要）
+- [x] 2.3 重合成返回后回灌：`load_report → validate_report → 归因分级门 + 查重门` 全链复跑（同方法既有路径，不旁路）；合规走 `_clear_verdict_violations` + 状态映射重写既有推进
+- [x] 2.4 两处「拒绝落盘」日志文案改「拒绝采纳（report.json 已在盘上）」；「judge 下轮修文后自然通过」注释改写为 D1 真实回路描述
+- [x] 2.5 单测（tests/test_verdict_dedup_resynthesis.py 新建）：拒绝→落盘 violations+directive、重合成成功→回灌采纳、重合成再拒→blocked+告警、frozen 让位零写入、派发异常不复读旧 report（dispatch_exception 早退语义保持）
 
 ## 3. 重合成 prompt 注入与 judge 契约（core/agent_runner/prompt_builder.py + agents/planner-judge.md）
 
-- [ ] 3.1 `_verdict_rejection_section` 兼容查重违规形态（scenario_ids 列表条目）：定向纪律扩展为「只重写清单内场景的 first_failed_step 与断言 triage evidence、其余字段原样保留、禁止复现/调查/改判定」
-- [ ] 3.2 新增重合成指令段读取（dedup_resynthesis_directive.json 存在时注入）：被拒场景清单 + 逐场景差异化素材 + 「归因文本 MUST 引用本场景局部数据（步骤序号/断言 label/完整 error）、MUST NOT 套用共享模板串」契约
-- [ ] 3.3 agents/planner-judge.md 增加归因文本契约段（≤10 行）：共享根因合法、归因文本逐场景可区分、禁截断同文；确认 worktree 部署路径（agent-config 部署在主树与 .fenix/ 两处，两处同步）
-- [ ] 3.4 单测：directive 注入段渲染（有/无文件两态）、rejection 段对查重条目的清单渲染、judge 模板含契约段
+- [x] 3.1 `_verdict_rejection_section` 兼容查重违规形态（scenario_ids 列表条目）：定向纪律扩展为「只重写清单内场景的 first_failed_step 与断言 triage evidence、其余字段原样保留、禁止复现/调查/改判定」
+- [x] 3.2 新增重合成指令段读取（dedup_resynthesis_directive.json 存在时注入）：被拒场景清单 + 逐场景差异化素材 + 「归因文本 MUST 引用本场景局部数据（步骤序号/断言 label/完整 error）、MUST NOT 套用共享模板串」契约
+- [x] 3.3 agents/planner-judge.md 增加归因文本契约段（≤10 行）：共享根因合法、归因文本逐场景可区分、禁截断同文；确认 worktree 部署路径（agent-config 部署在主树与 .fenix/ 两处，两处同步）
+- [x] 3.4 单测：directive 注入段渲染（有/无文件两态）、rejection 段对查重条目的清单渲染、judge 模板含契约段
 
 ## 4. in-place retry 派发前状态复查（core/agent_runner/runner.py）
 

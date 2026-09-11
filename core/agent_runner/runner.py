@@ -107,6 +107,24 @@ ROUTE_MAP_GENERATOR_REL = "bin/gen-route-map.py"
 FROZEN_TERMINATED_ERROR_PREFIX = "spec frozen"
 CANCELLED_BY_ADMIN_ERROR_PREFIX = "cancelled by admin"
 
+# 原地重试让位失败的前缀标记（fix-verdict-dedup-resynthesis D4）：重派前状态
+# 复查命中（status 迁出本 agent 预期态 / frozen / _cancelled_hold）时返回的
+# 语义化失败 error 以此标记开头，消费侧（verification.py 重试派发三分支外的
+# 其它失败分支）按温和处置识别为「人工接管让位」而非网关故障。
+RETRY_YIELDED_ERROR_PREFIX = "[retry-yielded]"
+
+# agent_type → spec 预期态（fix-verdict-dedup-resynthesis D4）：该 agent 正在
+# 跑时 spec 应处于此态；被人工接管（status 迁移/blocked/frozen 等）后，退避
+# 结束的原地重派必须让位（19:48 事故 $4.77 白烧的直接原因）。未列出的
+# agent_type 不做 status 判定（保持现状重试语义，fail-open）。
+EXPECTED_SPEC_STATUS_BY_AGENT = {
+    "implementer": "implementing",
+    "fast-track": "implementing",
+    "repair": "implementing",
+    "planner-judge": "testing",
+    "verifier": "testing",
+}
+
 # ── planner 生成节流（add-planner-efficiency：planner-generation-throttle）──
 # 配置键 `verify.planner_max_concurrent`：0/缺省=不节流（现状）；正整数=跨
 # verify 管线的 planner 阶段级并发上限。信号量在 `run_planner` 入口（design
@@ -1937,7 +1955,8 @@ class AgentRunner:
                         time.sleep(5)
                         # fix-restart-dual-dispatch S3/S4：重试前判定——锁活跃
                         #（另一 run 在跑）或人工冻结时放弃，不再换名再造并行 run
-                        if self._should_give_up_before_retry(spec_name, agent_type):
+                        if self._should_give_up_before_retry(
+                                        spec_name, agent_type):
                             return AgentRunResult(
                                 attempt_run_id, spec_name, agent_type,
                                 success=False,
@@ -2176,6 +2195,29 @@ class AgentRunner:
                         # 退避窗口内死亡，分支上已有可恢复提交（无载体则跳过）。
                         self._wip_checkpoint_before_backoff(spec_name, wt_path)
                         time.sleep(backoff)
+                        # fix-verdict-dedup-resynthesis D4：退避期间 spec 可能被
+                        # 人工/其它链路接管（status 迁出预期态/frozen/hold）——
+                        # 重派前复查，命中即让位（返回语义化失败，不再产生新的
+                        # transient_retry 重派，19:48 事故 $4.77 白烧根因）。
+                        if self._should_give_up_before_retry(
+                                        spec_name, agent_type,
+                                        check_lock=False):
+                            self.logger.warning(
+                                "agent_runner",
+                                f"Artifact-gate retry for '{spec_name}' "
+                                f"({agent_type}) yields: spec 已被接管，"
+                                f"放弃重派（fix-verdict-dedup-resynthesis D4）",
+                            )
+                            return AgentRunResult(
+                                attempt_run_id, spec_name, agent_type,
+                                success=False,
+                                duration_seconds=time.time() - start_time,
+                                error=(
+                                    f"{RETRY_YIELDED_ERROR_PREFIX} spec 已被接管"
+                                    f"（status 迁出预期态或 frozen/hold），"
+                                    f"重试让位（fix-verdict-dedup-resynthesis D4）"),
+                                provider_used=provider_name, model_used=model,
+                            )
                         continue
                     break  # 原地预算耗尽 → 退出 while，attempt 层继续重试
                 except Exception as e:
@@ -2317,6 +2359,30 @@ class AgentRunner:
                                 # 退避窗口内死亡，分支上已有可恢复提交（无载体则跳过）。
                                 self._wip_checkpoint_before_backoff(spec_name, wt_path)
                                 time.sleep(backoff)
+                                # fix-verdict-dedup-resynthesis D4：退避期间 spec
+                                # 可能被人工/其它链路接管（admin SIGKILL 后 30s 内
+                                # 置 blocked 即 19:48 事故形态）——重派前复查，
+                                # 命中即让位（返回语义化失败，不再产生新的
+                                # transient_retry 重派，token 消耗不再发生）。
+                                if self._should_give_up_before_retry(
+                                        spec_name, agent_type,
+                                        check_lock=False):
+                                    self.logger.warning(
+                                        "agent_runner",
+                                        f"Provider-transient retry for '{spec_name}' "
+                                        f"({agent_type}) yields: spec 已被接管，"
+                                        f"放弃重派（fix-verdict-dedup-resynthesis D4）",
+                                    )
+                                    return AgentRunResult(
+                                        attempt_run_id, spec_name, agent_type,
+                                        success=False,
+                                        duration_seconds=time.time() - start_time,
+                                        error=(
+                                            f"{RETRY_YIELDED_ERROR_PREFIX} spec 已被接管"
+                                            f"（status 迁出预期态或 frozen/hold），"
+                                            f"重试让位（fix-verdict-dedup-resynthesis D4）"),
+                                        provider_used=provider_name, model_used=model,
+                                    )
                                 continue  # 回到 while 顶部重跑同一 attempt（新 sub_run_id）
                             # 非瞬断或原地预算耗尽 → 现行切换逻辑
                             # add-provider-failover（design D2/D3）：切换类错误 → 该 provider
@@ -3095,19 +3161,29 @@ class AgentRunner:
         except Exception:
             return False
 
-    def _should_give_up_before_retry(self, spec_name: str, agent_type: str) -> bool:
+    def _should_give_up_before_retry(self, spec_name: str, agent_type: str,
+                                     check_lock: bool = True) -> bool:
         """attempt 重试前的放弃判定（fix-restart-dual-dispatch S3/S4）。
 
         2026-09-03 事故：双派发场景下 create 撞同名分支 fatal，attempt 循环
         sleep(5) 后换新时间戳重试成功 → 与第一梯队形成并行 run。重试前检查：
-        - 锁活跃：另一个 run 已持 spec 锁，继续重试只会造出第二个并行 run；
-        - 人工冻结：spec 被人为冻结（结构化 frozen 字段），自动重试必须让位。
+        - 锁活跃：另一个 run 已持 spec 锁，继续重试只会造出第二个并行 run
+          （仅 attempt 层 create 前的既有调用点启用；check_lock=False 时跳过）；
+        - 人工冻结：spec 被人为冻结（结构化 frozen 字段），自动重试必须让位；
+        - **重派前状态复查（fix-verdict-dedup-resynthesis D4）**：spec 当前
+          status 已迁出该 agent 的预期态（judge=testing、implementer=
+          implementing，见 EXPECTED_SPEC_STATUS_BY_AGENT），或 _cancelled_hold
+          取消保持态 → 人工已接管，放弃重试让位（退避结束后重派前的复查）。
+
+        check_lock=False 供原地重试子循环的退避后复查使用——锁语义专属于
+        attempt 层 create 前的双派发守卫，退避重派只判「人工接管」态。
 
         检查自身异常时 fail-open（返回 False）——判定故障不放大为 run 故障，
         既有重试语义保持可用。
         """
         try:
-            if self.worktree_manager.has_active_lock(spec_name, agent_type):
+            if check_lock and self.worktree_manager is not None \
+                    and self.worktree_manager.has_active_lock(spec_name, agent_type):
                 self.logger.warning(
                     "agent_runner",
                     f"Giving up retry for '{spec_name}' ({agent_type}): "
@@ -3123,6 +3199,31 @@ class AgentRunner:
                     f"(frozen field set) — auto-retry yields to human decision",
                 )
                 return True
+            # 取消保持态（fix-cancel-holdstate-recovery）：run 被人工取消后的
+            # 有意等待态，自动重派不得复活它。
+            if entry.get("_cancelled_hold"):
+                self.logger.warning(
+                    "agent_runner",
+                    f"Giving up retry for '{spec_name}' ({agent_type}): "
+                    f"spec in cancelled-hold state — auto-retry must not "
+                    f"resurrect a deliberately held spec",
+                )
+                return True
+            # 预期态判定（fix-verdict-dedup-resynthesis D4）：status 迁出预期态
+            # = 人工/其它链路已接管，重派会与接管竞跑（admin SIGKILL 后 30s 内
+            # 改 blocked → 退避结束照派一轮白烧 token）。
+            expected = EXPECTED_SPEC_STATUS_BY_AGENT.get(agent_type)
+            if expected:
+                status = entry.get("status") or ""
+                if status and status != expected:
+                    self.logger.warning(
+                        "agent_runner",
+                        f"Giving up retry for '{spec_name}' ({agent_type}): "
+                        f"spec status '{status}' no longer expected "
+                        f"'{expected}' — retry would race human takeover "
+                        f"(retry-yields guard)",
+                    )
+                    return True
         except Exception:
             return False
         return False

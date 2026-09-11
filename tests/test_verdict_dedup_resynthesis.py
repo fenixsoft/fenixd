@@ -422,5 +422,168 @@ class TestResynthesisIncidentReplay(ResynthesisHarness):
         alert.assert_called_once()
 
 
+# ── 7. in-place retry 派发前状态复查（fix-verdict-dedup-resynthesis D4）──
+
+
+class TestRetryStatusRecheck(unittest.TestCase):
+    """_should_give_up_before_retry 扩展：status 预期态 + frozen/hold + fail-open。"""
+
+    def _runner(self, entry):
+        from core.agent_runner import AgentRunner
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.worktree_manager = mock.MagicMock()
+        runner.worktree_manager.has_active_lock.return_value = False
+        sm = mock.MagicMock()
+        sm.read_one.return_value = entry
+        runner.state_machine = sm
+        runner.logger = mock.MagicMock()
+        return runner
+
+    def test_judge_blocked_yields(self):
+        """judge 预期 testing，spec 已 blocked → 放弃重试让位。"""
+        r = self._runner({"status": "blocked"})
+        self.assertTrue(r._should_give_up_before_retry("s", "planner-judge"))
+
+    def test_judge_testing_retries(self):
+        """judge 预期 testing，spec 仍 testing → 照常重试（正常退避不受影响）。"""
+        r = self._runner({"status": "testing"})
+        self.assertFalse(r._should_give_up_before_retry("s", "planner-judge"))
+
+    def test_implementer_implementing_retries(self):
+        """implementer 预期 implementing，spec 仍 implementing → 照常重试。"""
+        r = self._runner({"status": "implementing"})
+        self.assertFalse(r._should_give_up_before_retry("s", "implementer"))
+
+    def test_implementer_testing_yields(self):
+        """implementer 预期 implementing，spec 被移出（如被转 testing）→ 让位。"""
+        r = self._runner({"status": "testing"})
+        self.assertTrue(r._should_give_up_before_retry("s", "implementer"))
+
+    def test_frozen_yields(self):
+        """frozen 让位（既有语义保持）。"""
+        r = self._runner({"frozen": True, "status": "blocked"})
+        self.assertTrue(r._should_give_up_before_retry("s", "planner-judge"))
+
+    def test_cancelled_hold_yields(self):
+        """_cancelled_hold 取消保持态 → 让位（自动重派不得复活有意保持的 spec）。"""
+        r = self._runner({"_cancelled_hold": True, "status": "blocked"})
+        self.assertTrue(r._should_give_up_before_retry("s", "planner-judge"))
+
+    def test_checker_exception_fail_open(self):
+        """检查自身异常 → fail-open（返回 False，保持既有重试语义）。"""
+        r = self._runner({})
+        r.state_machine.read_one.side_effect = RuntimeError("state read boom")
+        self.assertFalse(r._should_give_up_before_retry("s", "planner-judge"))
+
+    def test_unmapped_agent_type_no_status_judgment(self):
+        """未映射 agent_type（如 administrator）不判 status——保持现状重试语义。"""
+        r = self._runner({"status": "blocked"})
+        self.assertFalse(r._should_give_up_before_retry("s", "administrator"))
+
+
+class TestInPlaceRetryYields(ResynthesisHarness):
+    """4.2 接线：退避结束后重派前复查命中 → 返回语义化失败，不再重派。"""
+
+    def _runner(self, entry):
+        from core.agent_runner import AgentRunner
+        from tests.helpers import FakeLogger as FL
+        runner = AgentRunner.__new__(AgentRunner)
+        runner.config = {
+            "llm": {"providers": [
+                {"name": "inferaiapi.com", "baseurl": "https://a.com",
+                 "apikey": "k1"},
+            ]},
+            "agents": {
+                "models": {"planner-judge": {
+                    "provider": "inferaiapi.com", "model": "m1"}},
+                "max_retries": 2,
+                "transient_backoff_schedule": "1",
+            },
+        }
+        wt = self.tmpdir / "wt"
+        wt.mkdir(parents=True, exist_ok=True)
+        runner.worktree_manager = mock.MagicMock()
+        runner.worktree_manager.create.return_value = wt
+        runner.worktree_manager.get_branch_name.return_value = "fenix/spec-x"
+        runner.worktree_manager.has_active_lock.return_value = False
+        runner.state_machine = mock.MagicMock()
+        runner.state_machine.read_one.return_value = entry
+        runner.project_root = self.tmpdir
+        runner.logger = FL()
+        runner._running_agents = {}
+        runner._daily_run_count = 0
+        runner._daily_reset_date = None
+        runner._daily_provider_attempts = {}
+        runner._daily_provider_warned = {}
+        runner.provider_circuits = {}
+        runner.__dict__["_v2_server_instance"] = mock.MagicMock()
+        runner._v2_server._v2_inject_env.return_value = {}
+        runner.__dict__["_token_accountant_instance"] = mock.MagicMock()
+        runner._build_prompt = lambda *a, **k: "test prompt"
+        (self.tmpdir / ".fenix" / "runs").mkdir(parents=True, exist_ok=True)
+        return runner
+
+    class _TransientError(Exception):
+        def __init__(self, msg):
+            super().__init__(msg)
+            self.stderr_lines = ["connection reset by peer"]
+            self.exit_code = 1
+            self.has_result = False
+
+    def test_provider_transient_then_blocked_yields_no_respawn(self):
+        """judge 瞬断进入退避，期间 spec 被置 blocked → 让位（无新 run 派发）。"""
+        from core.agent_runner import AgentRunner  # noqa: F401
+        runner = self._runner({"status": "blocked"})
+        calls = {"n": 0}
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None,
+                            spec_name=None, agent_type=None):
+            calls["n"] += 1
+            raise self._TransientError("connection reset by peer")
+
+        runner._run_claude = fake_run_claude
+        with mock.patch("time.sleep", lambda _: None):
+            result = runner._execute_agent("spec-x", "planner-judge", "run-y")
+
+        # 只派发 1 次：退避结束复查命中让位，不重派（不产生新的 transient_retry 轮）
+        self.assertEqual(calls["n"], 1)
+        self.assertFalse(result.success)
+        self.assertIn("[retry-yielded]", result.error or "")
+        self.assertIn("已被接管", result.error or "")
+
+    def test_provider_transient_testing_keeps_retrying(self):
+        """judge 瞬断进入退避，期间 spec 仍 testing → 照常原地重试。"""
+        from core.agent_runner.prompt_builder import planner_result_path
+        runner = self._runner({"status": "testing"})
+        calls = {"n": 0}
+
+        def fake_run_claude(prompt, cwd, run_id, model_override, env_overrides,
+                            resume_session_id=None, max_turns=None,
+                            spec_name=None, agent_type=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise self._TransientError("connection reset by peer")
+            # 退避重试轮：成功前写合法产物（planner 产物硬门要求）
+            p = planner_result_path(runner.project_root, "spec-x", "planner-judge")
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps({"status": "verified", "summary": "ok"}),
+                         encoding="utf-8")
+            return ("done", 1, "sess", _usage_ok())
+
+        runner._run_claude = fake_run_claude
+        with mock.patch("time.sleep", lambda _: None):
+            result = runner._execute_agent("spec-x", "planner-judge", "run-y")
+
+        self.assertGreater(calls["n"], 1, "testing 态正常退避重试不回退")
+        self.assertTrue(result.success)
+
+
+def _usage_ok() -> dict:
+    return {"input_tokens": 1, "output_tokens": 2,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0, "cost_usd": None}
+
+
 if __name__ == "__main__":
     unittest.main()
