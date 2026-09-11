@@ -43,12 +43,12 @@
 
 ## 4. in-place retry 派发前状态复查（core/agent_runner/runner.py）
 
-- [ ] 4.1 扩展 `_should_give_up_before_retry`（或同款 helper）：增加 status 预期态判定（judge→testing、implementer→implementing，agent_type 映射表）；frozen/cancelled_hold 判定保持；fail-open 语义保持
-- [ ] 4.2 两处原地重试通道接线：provider-transient（~2262 sleep 后 continue 前）与 artifact-gate（~2140 同位）在重派前调用 4.1 判定，命中放弃 → 返回语义化失败（error 标注「spec 已被接管，重试让位」）+ transient_retry 事件不写
-- [ ] 4.3 单测：admin 置 blocked 后重试让位（无新 run 派发）、testing 态正常重试不回退、frozen 让位（既有语义）、checker 异常 fail-open
+- [x] 4.1 扩展 `_should_give_up_before_retry`（或同款 helper）：增加 status 预期态判定（judge→testing、implementer→implementing，agent_type 映射表）；frozen/cancelled_hold 判定保持；fail-open 语义保持
+- [x] 4.2 两处原地重试通道接线：provider-transient（~2262 sleep 后 continue 前）与 artifact-gate（~2140 同位）在重派前调用 4.1 判定，命中放弃 → 返回语义化失败（error 标注「spec 已被接管，重试让位」）+ transient_retry 事件不写
+- [x] 4.3 单测：admin 置 blocked 后重试让位（无新 run 派发）、testing 态正常重试不回退、frozen 让位（既有语义）、checker 异常 fail-open
 
 ## 5. 集成验证与收尾
 
-- [ ] 5.1 tests/test_verdict_dedup_resynthesis.py 集成链路：模拟 16:39 事故形态（5 场景共享根因模板归因）→ 拒绝 → 重合成差异化 → 采纳推进；模拟 15:53 形态（23 连真偷懒）→ 拒绝 → 重合成仍同文 → blocked 升级
-- [ ] 5.2 全量相关测试：`python3 -m pytest tests/test_verdict_credibility_gate.py tests/test_incident_replay_credibility.py tests/test_verdict_dedup_resynthesis.py tests/test_verdict_retry_misattribution.py tests/test_judge_artifact_gate.py -x -q` 全绿
-- [ ] 5.3 daemon 重启后 fenix-server 项目实盘观察一轮（若有 judge 拒绝场景则验证回路真实触发；无则留档等待自然验证）
+- [x] 5.1 tests/test_verdict_dedup_resynthesis.py 集成链路：模拟 16:39 事故形态（5 场景共享根因模板归因）→ 拒绝 → 重合成差异化 → 采纳推进；模拟 15:53 形态（23 连真偷懒）→ 拒绝 → 重合成仍同文 → blocked 升级
+- [x] 5.2 全量相关测试：`python3 -m pytest tests/test_verdict_credibility_gate.py tests/test_incident_replay_credibility.py tests/test_verdict_dedup_resynthesis.py tests/test_verdict_retry_misattribution.py tests/test_planready_artifact_gate.py -x -q` 全绿（注：任务书所列 `test_judge_artifact_gate.py` 在本仓库不存在，实际产物硬门测试文件为 `test_planready_artifact_gate.py`，按实际路径执行）
+- [x] 5.3 daemon 重启后 fenix-server 项目实盘观察一轮（若有 judge 拒绝场景则验证回路真实触发；无则留档等待自然验证）——本实现环境无 daemon 无法实盘，已留档：回路逻辑经集成测试验证就绪，待部署重启后自然触发或由 dashboard/日志对账确认
