@@ -13,9 +13,28 @@ import threading
 from datetime import datetime, timezone
 
 import pytest
+from unittest import mock
 
 from core.dashboard.registry import Registry
 from core.dashboard.server import DashboardHTTPServer, find_free_port
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _disable_verify_engine_reload():
+    """测试进程禁用 verify_engine 热重载（常驻 daemon 专属设计）。
+
+    ``pm_engine/verification.py`` 的 ``_run_three_stage_verification`` 开头对
+    ``core.verify_engine.*`` 模块链做 ``importlib.reload`` 以支持生产 daemon
+    常驻进程热更新。测试进程每个 pytest 会话都是新解释器，模块已是最新，
+    reload 反而把 ``TestScenario``/``VerifyEngine`` 等类对象换新——使收集阶段
+    绑定的旧类与 reload 后新类 ``isinstance`` 判定分裂，场景在 engine.run 里被
+    静默丢弃（2026-09-11 全量回归：test_planready → test_verify_cli_runner 等
+    18 个失败，summary.passed 恒 0）。项目内无任何测试依赖真 reload（既有
+    fasttrack_orphan_planner_race / cancel_holdstate 等均点状 patch no-op），
+    故在会话级统一禁用，消除「忘了 patch 就污染下游」的踩坑面。
+    """
+    with mock.patch("importlib.reload", lambda m: m):
+        yield
 
 
 def make_project(tmp_path: Path, name: str = "proj-a", otherspec: bool = True) -> Path:

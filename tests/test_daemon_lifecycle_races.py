@@ -33,6 +33,12 @@ from core.agent_runner.liveness import (
     sweep_runs_without_terminal_state,
 )
 
+# 模块级 import（test_admin.py 同款处方）：仓库根 __init__.py 使 pytest 执行期
+# sys.path[0]='/root' 时 `import fenixd` 命中同名包（__init__.py 无
+# FenixDaemon）。模块级 import 在收集阶段（sys.path 尚干净）绑定 fenixd.py 模块，
+# 函数内延迟 import 会撞包 → AttributeError: FenixDaemon。
+import fenixd as _fenixd_mod
+
 
 def _push_spec_to(sm: StateMachine, name: str, target: str):
     """把 spec 沿合法链走到 target（target 必须可达）。"""
@@ -749,7 +755,6 @@ class TestSupervisorRuntimeWrite(unittest.TestCase):
 
 class TestDrainConsistencyCheck(unittest.TestCase):
     def setUp(self):
-        import fenixd as _fenixd_mod
         self.mod = _fenixd_mod
         self.tmpdir = tempfile.mkdtemp()
         self.proot = Path(self.tmpdir)
