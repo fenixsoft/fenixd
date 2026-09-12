@@ -879,6 +879,18 @@ class StateMachine:
         if project_root is None or worktree_manager is None:
             return False
         branch = entry.get("branch")
+        if not branch and worktree_manager is not None:
+            # 首轮在飞 run（STATE branch 未写，run 未到终态即被强杀）→ 回落
+            # worktree_manager 的 spec → worktree 事实查询（git 真相，不依赖
+            # 重启即失的内存表），反查该 spec 在册 worktree 归属分支。
+            resolved = worktree_manager.find_worktree_by_spec(name)
+            if resolved is not None:
+                branch = resolved[1]
+                self.logger.warning(
+                    "state_machine",
+                    f"Recovery preserve: STATE branch 缺失，经 git 事实查询回落 "
+                    f"spec '{name}' 在册 worktree → branch '{branch}'",
+                )
         if not branch:
             return False
         try:

@@ -606,6 +606,13 @@ class WorktreeManager:
             # 否则目录删除后它们成为 cwd 失效的永生孤儿（曾致存活检测永久受骗）
             self._kill_worktree_strays(wt_path.name)
 
+            # 硬删前置留档（fix-preserve-chain-first-round-gap D2）：删除前对
+            # dirty worktree 做快照引用——不再只挂在 `git worktree remove`
+            # 失败的 rmtree 兜底分支（排水强杀 --force 通常成功，旧路径
+            # 系统性触发不了留档）；--force 成功路径同样留档。
+            # 快照失败降级 WARNING，不阻断删除。
+            self._snapshot_dirty_worktree(wt_path, self._wt_branches.get(wt_str))
+
             # Build command without empty strings
             cmd = [
                 "git", "-C", str(self.project_root),
@@ -627,16 +634,8 @@ class WorktreeManager:
                     f"Worktree remove warning: {result.stderr}",
                 )
                 # If git worktree remove fails, try manual directory removal
+                # 快照已在上方完成（Task 3.3 幂等保证），rmtree 前不再重复留档。
                 if wt_path.exists():
-                    # add-impl-terminal-nocommit-gate（D4）：rmtree 硬删前对 dirty
-                    # worktree 执行 `git stash create` 生成快照引用（纯引用生成、
-                    # 不入 stash 栈），快照 SHA 记入日志——消灭「守卫裁决需要证据而
-                    # 现场已毁」的取证盲区（09-09 verify-add-verdict-contract 已暴露
-                    # 同款 untracked 告警；2026-09-10 双零提交事故即死于先删后查）。
-                    # 对全 agent_type 生效（verifier 成功路径留档同样受益）；失败仅
-                    # WARNING 降级，不阻断清理流程。
-                    self._snapshot_dirty_worktree(
-                        wt_path, self._wt_branches.get(wt_str))
                     shutil.rmtree(str(wt_path), ignore_errors=True)
                     # Also prune the worktree reference
                     subprocess.run(
@@ -731,6 +730,11 @@ class WorktreeManager:
                 在册项与保留分支对应的 worktree）在 shutdown 清理时跳过，
                 防止「保全」与「清理」两条链路对同一 worktree 处置不一致。
                 缺省空集，行为与旧版完全一致。
+
+        清理协调（fix-preserve-chain-first-round-gap D2/D3）：任何删除 worktree
+        目录的路径 MUST 在目录被物理删除前对该 worktree 执行
+        ``_snapshot_dirty_worktree`` 留档——清理不留快照是最需要取证场景（排水
+        强杀）里保全链系统性失效的另一半。快照失败降级 WARNING，不阻塞删除。
         """
         protected = {str(p) for p in (protected or set())}
         if not self.base_dir.exists():
@@ -746,6 +750,10 @@ class WorktreeManager:
                     )
                     continue
                 self.logger.info("worktree_manager", f"Cleaning up orphan: {wt_dir}")
+                # 硬删前留档（D2）：git worktree remove --force 成功路径同样先
+                # 留快照引用，消灭「先删后查」取证盲区；失败仅 WARNING 不阻塞。
+                self._snapshot_dirty_worktree(
+                    wt_dir, self._wt_branches.get(str(wt_dir)))
                 try:
                     subprocess.run(
                         [
@@ -3104,6 +3112,109 @@ class WorktreeManager:
                 if listed_branch == f"refs/heads/{branch}" and current_path:
                     return Path(current_path)
         return None
+
+    def find_worktree_by_spec(self, spec_name: str) -> Optional[tuple]:
+        """按 spec 名反查在册 worktree 与其分支（fix-preserve-chain-first-round-gap D1）。
+
+        保全（``_preserve_interrupted_runs``）与恢复保留判定
+        （``_recovery_preserve_spec``）在 STATE ``branch`` 缺失（首轮在飞
+        run 未到终态）时的回落源：以 ``git worktree list --porcelain`` 为
+        真相，不信任 ``_active_worktrees`` / ``_wt_branches`` 内存表（daemon
+        重启即失，不足以支撑 boot 路径）。
+
+        - 按 worktree 目录命名约定（``impl-<spec>-<ts>`` / ``verify-<spec>-<ts>``
+          / ``repair-<spec>-<ts>``，见 create/create_worktree_on_branch）以
+          **完整 spec 名 + 分隔符边界**匹配（解析命名得完整 spec 名再精确比较，
+          禁止子串包含：spec 名互为前缀如 ``fix-x`` 与 ``fix-x-y`` 不误匹配）；
+        - 歧义命中（同一 spec 存在多个在册 worktree）MUST NOT 静默取首个，
+          返回 None 并 WARNING；
+        - 候选经 ``is_available`` 三态单源校验：非 available/rebuildable
+          不作保全与保留依据；
+        - 命令超时/非零退出/异常降级 WARNING 返回 None，MUST NOT 阻塞停机路径。
+
+        Returns: ``(wt_path, branch)`` 元组；无匹配/歧义/不可用/git 失败返回 None。
+        """
+        if not spec_name:
+            return None
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "worktree", "list", "--porcelain"],
+                capture_output=True, text=True, timeout=15,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"find_worktree_by_spec('{spec_name}') 查询失败（降级不阻塞）: {e}",
+            )
+            return None
+        if res.returncode != 0:
+            self.logger.warning(
+                "worktree_manager",
+                f"find_worktree_by_spec('{spec_name}') git 非零退出（降级不阻塞）: "
+                f"{res.stderr.strip()}",
+            )
+            return None
+
+        # porcelain 渲染：`worktree <path>` 开新段，其后属行（HEAD/branch）属于
+        # 该段；detached worktree 无 branch 行，取不到具名分支，不作保全依据。
+        candidates: list = []  # (wt_path, branch) 具名精确匹配的候选
+        current_path: Optional[str] = None
+        for line in res.stdout.splitlines():
+            if line.startswith("worktree "):
+                current_path = line[len("worktree "):].strip()
+                continue
+            if line.startswith("branch ") and current_path:
+                listed_branch = line[len("branch "):].strip()
+                if listed_branch.startswith("refs/heads/"):
+                    listed_branch = listed_branch[len("refs/heads/"):]
+                if self._wt_name_matches_spec(Path(current_path).name, spec_name):
+                    candidates.append((current_path, listed_branch))
+
+        if not candidates:
+            return None
+        # is_available 三态单源校验：非 available/rebuildable 候选不作为依据
+        valid: list = []
+        for path, branch in candidates:
+            state = self.is_available(path, branch)
+            if state in (WT_AVAILABLE, WT_REBUILDABLE):
+                valid.append((path, branch))
+            else:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"find_worktree_by_spec('{spec_name}'): 候选 {path} "
+                    f"(branch {branch}) 三态 {state}，不作保全/保留依据",
+                )
+        if len(valid) > 1:
+            self.logger.warning(
+                "worktree_manager",
+                f"find_worktree_by_spec('{spec_name}'): 歧义命中 {len(valid)} 个 "
+                f"在册 worktree（{[p for p, _ in valid]}）——不静默取首个，"
+                f"按不可用处理",
+            )
+            return None
+        if valid:
+            return valid[0]
+        return None
+
+    @staticmethod
+    def _wt_name_matches_spec(wt_name: str, spec_name: str) -> bool:
+        """worktree 目录名是否精确对应 spec（``{impl,verify,repair}-<spec>-<ts>``）。
+
+        从目录名解析出完整 spec 再与目标精确比较（分隔符边界锚定，禁止子串
+        包含）：``impl-fix-x-1`` 对 spec ``fix-x`` 命中、对 ``fix`` 不命中。
+        非本框架命名（前缀不识别/缺时间戳段）返回 False。
+        """
+        if not wt_name or not spec_name:
+            return False
+        for prefix in ("impl", "verify", "repair"):
+            if wt_name.startswith(f"{prefix}-"):
+                rest = wt_name[len(prefix) + 1:]
+                parts = rest.rsplit("-", 1)
+                if len(parts) == 2 and parts[0] and parts[1].isdigit():
+                    return parts[0] == spec_name
+                return False
+        return False
 
     def branch_exists(self, branch: str) -> bool:
         """分支是否存在（``git rev-parse --verify``）。repair 三态判定基准。"""

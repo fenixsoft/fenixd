@@ -1113,9 +1113,17 @@ class FenixDaemon:
             entry = self.state_machine.read_one(spec) or {}
             branch = entry.get("branch")
             worktree = ""
+            if not branch and self.worktree_manager:
+                # 首轮在飞 run：STATE `branch` 未写（run 未到终态）→ 回落
+                # worktree_manager 的 spec → worktree 事实查询（git 真相，
+                # 不依赖重启即失的内存表），取在册 worktree 与其分支。
+                resolved = self.worktree_manager.find_worktree_by_spec(spec)
+                if resolved is not None:
+                    branch, worktree = resolved[1], str(resolved[0])
+                    seen_wt.add(str(resolved[0]))
             if branch and self.worktree_manager:
                 wt = self.worktree_manager.find_worktree_path(branch)
-                worktree = str(wt) if wt else ""
+                worktree = str(wt) if wt else worktree
                 if wt:
                     seen_wt.add(str(wt))
             ahead = 0
@@ -1310,8 +1318,23 @@ class FenixDaemon:
             except Exception as e:
                 self.logger.error("fenixd", f"V2 dev-server cleanup on shutdown failed: {e}")
         if self.worktree_manager:
-            # 清理协调（D6）：保全在册 worktree 传入保护集，禁止清理与保全互删
-            self.worktree_manager.cleanup_orphans(protected=set(preserved_wts))
+            # 清理协调（D6 + fix-preserve-chain-first-round-gap D3）：保全在册
+            # worktree 传入保护集，禁止清理与保全互删。sidecar 历史条目 worktree
+            # 为空串（首轮在飞 run 的旧保全条目）时，以该 spec 的事实查询回落补入
+            # 在册 worktree —— 保护集 MUST NOT 因 sidecar 字段为空而放行清理
+            # （宁可多保不删：下轮 orphan 清理仍会重新评估）。
+            protected = set(preserved_wts)
+            try:
+                for e in _read_preserve_sidecar():
+                    if e.get("worktree"):
+                        protected.add(str(e["worktree"]))
+                    elif e.get("spec"):
+                        resolved = self.worktree_manager.find_worktree_by_spec(e["spec"])
+                        if resolved is not None:
+                            protected.add(str(resolved[0]))
+            except Exception:
+                pass  # 保护集构造失败按「仅 preserved_wts」处理，不阻塞停机
+            self.worktree_manager.cleanup_orphans(protected=protected)
 
         self.logger.info("fenixd", "fenixd stopped")
         sys.exit(0)
