@@ -1,6 +1,6 @@
 # CLI 操作手册
 
-Fenix 提供 7 个 `/fenix-*` 斜杠命令（skill）与若干 `bin/` 辅助脚本。前者覆盖日常使用的完整动线——从提出需求、查看状态到最终审批，后者是支撑这些命令与 daemon 的底层工具。本章逐个讲解每个命令的用途、触发方式与产出。
+Fenix 提供 7 个 `/fenix-*` 斜杠命令（skill）与若干 `bin/` 辅助脚本。前者覆盖日常使用的完整动线（从提出需求、查看状态到最终审批），后者是支撑这些命令与 daemon 的底层工具。本章逐个讲解每个命令的用途、触发方式与产出。
 
 ## 七个 /fenix-* skill
 
@@ -14,7 +14,7 @@ Fenix 提供 7 个 `/fenix-*` 斜杠命令（skill）与若干 `bin/` 辅助脚�
 
 ### /fenix-setup — 初始化与启动
 
-第一次在项目上启用 Fenix 时使用。命令检查 Python/Git/Node/tmux 依赖是否就绪，创建 `.fenix/` 目录与配置、生成 `.fenix/config.yaml`，最后启动 fenixd daemon。跑完之后你就得到了一个可运行的 Fenix 环境。
+第一次在项目上启用 Fenix 时使用。命令检查 Python/Git/Node/tmux 依赖是否就绪，创建 `.fenix/` 目录与配置、生成 `.fenix/config.yaml`（项目尚未初始化时自动运行 fenix-init 生成完整工程骨架，无需单独执行初始化命令），最后启动 fenixd daemon。跑完之后你就得到了一个可运行的 Fenix 环境。
 
 ```
 /fenix-setup
@@ -30,7 +30,7 @@ Fenix 提供 7 个 `/fenix-*` 斜杠命令（skill）与若干 `bin/` 辅助脚�
 
 ### /fenix-approve — 审批与推送
 
-SPEC 完成验证进入 `done` 后使用。命令引导你审阅已完成的 SPEC，人工确认后执行 git push 推送远程仓库，状态随之从 `done` 流转到 `pushed`。这是 Fenix 中**唯一的人工门禁点**；是否走人工由 `.fenix/config.yaml` 的 `gates.approve_mode` 控制——`manual` 为人工审批，`auto` 则自动推送跳过确认。
+SPEC 完成验证进入 `done` 后使用。命令引导你审阅已完成的 SPEC，人工确认后执行 git push 推送远程仓库，状态随之从 `done` 流转到 `pushed`。这是 Fenix 中**唯一的人工门禁点**；是否走人工由 `.fenix/config.yaml` 的 `gates.approve_mode` 控制：`manual` 为人工审批，`auto` 则自动推送跳过确认。
 
 ### /fenix-dashboard — Web Dashboard
 
@@ -73,7 +73,7 @@ Fenix 根据四维标准自动选择实现路径：
 | **UI 变动** | 有 UI 交互 | 无 UI 或纯逻辑 |
 | **场景数** | >3 个验证场景 | ≤3 个 |
 
-四个条件全部满足时走 fast-track——单次调用完成实现+验证，更省 token；任何一个不满足则自动走 full 模式。
+四个条件全部满足时走 fast-track，单次调用完成实现+验证，更省 token；任何一个不满足则自动走 full 模式。
 
 ## 相关文档
 

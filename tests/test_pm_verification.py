@@ -310,6 +310,168 @@ class TestScenarioReloadAfterReachabilityHeal(unittest.TestCase):
         self.engine._enqueue.assert_called_once_with("demo-spec", "verifier")
 
 
+class TestUnreachableFailFast(unittest.TestCase):
+    """可达性自愈失败即本轮 fail-fast（add-verify-unreachable-failfast D1-D3）。
+
+    _ensure_app_reachable 返回 (False, False, note)（探针超时 / prepare 失败 /
+    契约缺失三个确定性子源）时，阶段2.5 必须短路本轮：不重读场景、不创建/运行
+    VerifyEngine（场景执行数=0）、不退回 plan 重排，直接 _escalate_env_blocked
+    落 blocked + 自动呼叫 Administrator。reachable=True 与 user_blocked=True
+    两个分支验证守卫不误杀。monkeypatch 返回值优先（比构造真实 120s 超时快且稳）。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        from types import SimpleNamespace
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
+        )
+        self.verify_dir = Path(self.tmpdir) / ".fenix" / "verify-progress" / "demo-spec"
+        self.verify_dir.mkdir(parents=True)
+        self.scenarios_path = self.verify_dir / "test_scenarios.json"
+        self.scenarios_path.write_text(json.dumps([
+            {
+                "id": "scn-a",
+                "description": "场景A",
+                "steps": [
+                    {"action": "navigate", "value": "http://localhost:8787/#/projects/demo"},
+                    {"action": "wait", "target": ".x", "description": "等待"},
+                ],
+                "assertions": [{"type": "element_visible", "selector": ".x", "label": "可见"}],
+            },
+        ], ensure_ascii=False), encoding="utf-8")
+
+        self.sm.add_spec("demo-spec", {"priority": 5})
+        self.sm.transition("demo-spec", "ready")
+        self.sm.transition("demo-spec", "implementing")
+        self.sm.transition("demo-spec", "implemented")
+        self.sm.transition("demo-spec", "testing")
+
+        self.engine._enqueue = MagicMock()
+        self.engine.agent_runner.run_planner = MagicMock(
+            return_value=SimpleNamespace(
+                success=True, error=None, run_id="planner-judge-demo-spec-1-a1")
+        )
+        self.engine._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._apply_interaction_contract = MagicMock(return_value=None)
+        self.engine._verify_verdict_evidence = MagicMock(return_value={
+            "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
+        })
+        self.engine._update_warning_streaks = MagicMock(return_value=[])
+        self.engine._read_planner_result = MagicMock(
+            return_value=VerdictReadResult.success("verified"))
+        # verified 采纳尾段（短路轮不消费，可达轮照常消费）
+        self.engine._check_verification_gate = MagicMock(return_value=None)
+        self.engine._ensure_verification_report = MagicMock(return_value=None)
+        self.engine._env_whitewash_gate = MagicMock(return_value=True)
+        self.engine._render_scenario_change_section_to_report = MagicMock()
+        self.engine._on_spec_verified = MagicMock()
+        # human 升级告警 mock 掉，避免真实 AdminStore IO；短路链其余副作用保留
+        self.engine._send_human_escalation_alert = MagicMock()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _tracking_engine(self, runs):
+        """记录 VerifyEngine 构造与 run 的替身：短路轮两者都必须为 0。"""
+        class FakeEngine:
+            def __init__(self, spec_name, project_root, logger=None, config=None,
+                         scenario_root=None):
+                runs.append(("__init__", spec_name))
+
+            async def run(self, scenarios):
+                runs.append(("run", len(scenarios)))
+                return {
+                    "spec": "demo-spec",
+                    "summary": {
+                        "total": 2, "passed": 1, "warnings": 0,
+                        "failed": 1, "errors": 0, "blocked_env": 0,
+                    },
+                    "scenarios": [],
+                }
+        return FakeEngine
+
+    def _run_pipeline(self, fake_engine):
+        with patch("importlib.reload", lambda m: m), \
+                patch("core.verify_engine.VerifyEngine", fake_engine):
+            self.engine._run_three_stage_verification("demo-spec")
+
+    def test_probe_timeout_failfast_zero_scenarios_blocked(self):
+        """就绪探针超时（reachable=False, user_blocked=False）→ 短路：0 场景 + blocked + admin 呼叫。"""
+        reach_note = (
+            "就绪探针超时（120s）: http://127.0.0.1:50555/api/projects — timed out"
+        )
+        self.engine._ensure_app_reachable = MagicMock(
+            return_value=(False, False, reach_note))
+        # 短路不得追加 verify_contract_missing 信号（契约缺失子案的信号仍由
+        # _ensure_app_reachable 内部唯一写入，本短路只补 _escalate_env_blocked）
+        self.engine._verification._write_verify_contract_missing = MagicMock(
+            side_effect=AssertionError(
+                "短路路径不得再次写入 verify_contract_missing 信号"))
+        runs = []
+        self._run_pipeline(self._tracking_engine(runs))
+
+        # 场景执行数=0：不创建、不运行 VerifyEngine
+        self.assertEqual(runs, [], "自愈失败轮不得创建/运行 VerifyEngine")
+        entry = self.sm.read_one("demo-spec")
+        self.assertEqual(entry["status"], "blocked")
+        self.assertIn("验证环境阻塞（应用不可达）", str(entry.get("error")))
+        self.assertIn("就绪探针超时", str(entry.get("error")))
+        self.assertEqual(entry["_env_block_rounds"], "1")
+        # 自动呼叫 Administrator：文件信号已就位
+        invoke_path = Path(self.tmpdir) / ".fenix" / "admin_invoke_request.json"
+        self.assertTrue(invoke_path.exists(), "应产生 admin 自动呼叫请求文件")
+        # 升级链收尾：human escalation 告警按 warning（未达冻结阈值）书写
+        self.engine._send_human_escalation_alert.assert_called_once_with(
+            spec_name="demo-spec",
+            signal_type="verify_env_blocked",
+            severity="warning",
+            description=unittest.mock.ANY,
+            evidence=unittest.mock.ANY,
+            recommended_action=unittest.mock.ANY,
+        )
+
+    def test_prepare_failure_also_short_circuits(self):
+        """契约 prepare 失败（同 (False, False, note)）→ 与探针超时同款短路。"""
+        self.engine._ensure_app_reachable = MagicMock(
+            return_value=(False, False, "验证契约 prepare 失败: npm ERR! exit 1"))
+        runs = []
+        self._run_pipeline(self._tracking_engine(runs))
+        self.assertEqual(runs, [], "prepare 失败轮不得创建/运行 VerifyEngine")
+        entry = self.sm.read_one("demo-spec")
+        self.assertEqual(entry["status"], "blocked")
+        self.assertIn("prepare 失败", str(entry.get("error")))
+
+    def test_reachable_pass_through_no_short_circuit(self):
+        """可达放行：短路点不触发，VerifyEngine 照常运行，行为与现状一致。"""
+        self.engine._ensure_app_reachable = MagicMock(
+            return_value=(True, False, "已自动启动应用服务"))
+        runs = []
+        self._run_pipeline(self._tracking_engine(runs))
+        self.assertEqual(
+            [s for s in runs if s[0] == "run"], [("run", 1)],
+            "可达轮须照常创建并运行 VerifyEngine（短路口不触发）")
+        self.assertNotEqual(self.sm.read_one("demo-spec")["status"], "blocked")
+        self.engine._send_human_escalation_alert.assert_not_called()
+
+    def test_user_blocked_guard_does_not_short_circuit(self):
+        """user_blocked=True（需用户参与预留判定位）→ 守卫放行：不短路、不落 blocked。"""
+        self.engine._ensure_app_reachable = MagicMock(
+            return_value=(False, True, "需用户登录后重试"))
+        runs = []
+        self._run_pipeline(self._tracking_engine(runs))
+        self.assertEqual(
+            [s for s in runs if s[0] == "run"], [("run", 1)],
+            "user_blocked 守卫：不得进入短路分支，维持既有后续路径")
+        self.assertNotEqual(self.sm.read_one("demo-spec")["status"], "blocked")
+        self.engine._send_human_escalation_alert.assert_not_called()
+
+
 class TestJudgeScenarioRepair(unittest.TestCase):
     """judge-scenario-repair：judge 原地修复场景文件的采纳与预算通道。
 

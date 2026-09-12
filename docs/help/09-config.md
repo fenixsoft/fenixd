@@ -4,7 +4,7 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 
 ## 分级合并与热更新
 
-配置分两级：用户级 `~/.fenix/config.yaml` 是所有项目共享的基础配置；项目级 `<项目根>/.fenix/config.yaml`（由 `fenix-init` 生成）覆盖用户级的同名键。合并是键级的 deep merge——项目级只覆盖自己声明的键，而不是整块替换用户级配置。
+配置分两级：用户级 `~/.fenix/config.yaml` 是所有项目共享的基础配置；项目级 `<项目根>/.fenix/config.yaml`（由 `fenix-init` 生成）覆盖用户级的同名键。合并是键级的 deep merge，项目级只覆盖自己声明的键，而不是整块替换用户级配置。
 
 热更新方面，大部分调度/预算键约 30 秒后自动生效（daemon 热加载配置）；需重启生效的键在下表中逐键标注。
 
@@ -39,7 +39,7 @@ Fenix 配置分两级合并，大部分键支持 30 秒热更新，少数需重�
 | run_timeout_seconds | 9000 | ≥1 | 热更新 |
 | use_new_verifier | true | bool | 重启 |
 
-### agents.（瞬断治理）——provider 网关瞬时故障的退避与熔断
+### agents.（瞬断治理）：provider 网关瞬时故障的退避与熔断
 
 | 键 | 默认值 | 范围 | 生效方式 |
 |----|--------|------|---------|
@@ -90,7 +90,7 @@ Agent 可用的模型通道（Provider）注册表。未配置 = 空注册表，
 |------|------|------|
 | name | 是 | 唯一标识，被 `agents.models` 引用；同时用作隔离目录名（`.fenix/agent-config/<name>/`） |
 | baseurl | 是 | Anthropic 兼容网关地址（注入 `ANTHROPIC_BASE_URL`） |
-| apikey | 是 | API Key——只注入子进程环境变量，不写入任何磁盘文件（`.fenix/config.yaml` 已 gitignore） |
+| apikey | 是 | API Key，只注入子进程环境变量，不写入任何磁盘文件（`.fenix/config.yaml` 已 gitignore） |
 | model | 否 | 该 Provider 的默认模型名，分配元素未带 model 时的兜底 |
 | env | 否 | 附加环境变量 dict（如 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`），随 Provider 注入 |
 | billing | 否 | 计价配置：`enabled`（bool）+ `prices`（按 model 行级单价 `input/output/cache_read/cache_creation_per_million`），供成本展示 |
@@ -115,7 +115,7 @@ agents:
 
 **候选链与 failover**：`provider` 支持字符串 / 字符串数组 / 对象数组（`{provider, model?}`）及混合。attempt 级派发角色（implementer / verifier / planner / fast-track）按链序选择首个未熔断、未处于切换冷却的候选；切换类错误（模型拒绝 / 5xx / 瞬断原地退避耗尽，见[瞬断治理](#agents瞬断治理provider-网关瞬时故障的退避与熔断)）失败后该 Provider 进入短冷却，同 run 下一次 attempt 自动前进到下一候选。administrator / self-review / dispute-judge 只取链首选，不接 attempt 级 failover。
 
-**模型名解析顺序**：链元素自带 model > 角色级 model > Provider 条目的 `model`；三者皆空的候选运行期跳过。模型名经 `--model` 直接发给网关，须填该网关支持的名字——`unrecognized_model` 报错先核对网关支持列表，多为网关瞬时故障，勿盲目改配置。
+**模型名解析顺序**：链元素自带 model > 角色级 model > Provider 条目的 `model`；三者皆空的候选运行期跳过。模型名经 `--model` 直接发给网关，须填该网关支持的名字。`unrecognized_model` 报错先核对网关支持列表，多为网关瞬时故障，勿盲目改配置。
 
 **生效链路**：配置了分配的角色，其 baseurl/apikey/model 经进程环境注入 + `CLAUDE_CONFIG_DIR` 隔离目录保证绝对生效，机制与共享/隔离边界详见[核心概念 · LLM Provider 隔离](02-concepts.md#llm-provider-隔离)。
 
@@ -142,7 +142,7 @@ agents:
 | static_scope | `main` | main/worktree | 热更新（下一轮验证生效） |
 | deps_mode | `prefer-offline` | prefer-offline/hardlink | 热更新（下一个 worktree 创建生效） |
 
-`verify.*` 与 `.fenix/verify.yaml` 的分工需要特别说明。`verify.*` 是 config.yaml 的命名空间，存放机器本地的运行时开关——不入库，随 config.yaml 热更新；而 `.fenix/verify.yaml` 是项目验证契约（prepare/serve/ready），随仓库提交、手工编辑，Dashboard 不会改写这个文件。deps_mode 也可以在 verify.yaml 顶层按项目声明 `deps_mode:`，优先于 config。
+`verify.*` 与 `.fenix/verify.yaml` 的分工需要特别说明。`verify.*` 是 config.yaml 的命名空间，存放机器本地的运行时开关，不入库，随 config.yaml 热更新；而 `.fenix/verify.yaml` 是项目验证契约（prepare/serve/ready），随仓库提交、手工编辑，Dashboard 不会改写这个文件。deps_mode 也可以在 verify.yaml 顶层按项目声明 `deps_mode:`，优先于 config。
 
 ### verify_engine（视觉校验）
 
@@ -162,7 +162,7 @@ verify_engine:
 
 契约的 serve/ready 形态按场景集 kind 自动反推（多形态验证，见 `05-verification.md`）：**纯 cli 场景集**跳过 serve/ready（不回退 `commands.start`，prepare 失败仍是唯一环境门）；**含 web/api 场景**则 serve 段（或 `commands.start` 兜底）必须有效，缺失时验收报错打回 plan；**混合场景集**照常起实例，cli 场景额外获得 `FENIX_VERIFY_BASE_URL` / `FENIX_VERIFY_PORT` 注入（框架值优先）。纯 CLI 交付的项目只需 `prepare`（构建/命令可用性），无需 serve 段。
 
-deps_mode 仅对 nodejs 项目生效——供给入口是 package.json/node_modules，其他项目自动跳过、零副作用。C/C++/Java 等其他语言的依赖安装与构建经 verify.yaml 的 prepare 声明（语言无关，如 `mvn package`、`cmake --build`），依赖缓存多为用户级天然共享。
+deps_mode 仅对 nodejs 项目生效，供给入口是 package.json/node_modules，其他项目自动跳过、零副作用。C/C++/Java 等其他语言的依赖安装与构建经 verify.yaml 的 prepare 声明（语言无关，如 `mvn package`、`cmake --build`），依赖缓存多为用户级天然共享。
 
 ### pm.push
 
@@ -182,7 +182,7 @@ deps_mode 仅对 nodejs 项目生效——供给入口是 package.json/node_modu
 | agent_model | 复用默认模型 | 模型名 | 热更新 |
 | shutdown_drain_seconds | **模板 0**（代码缺省 1800） | 非负整数（0=快速停机） | 重启 |
 
-`admin.shutdown_drain_seconds` 双侧行为：计划性重启（supervisor 检测到 `.fenix/restart_request`）时，daemon 收到 SIGTERM 后先等——上限为本值（秒），等到期才走 terminate 收口；supervisor 的 SIGKILL 强杀等待 = 本值 + 120s。值为 0 时不排水、秒级退出——在飞任务标记 interrupted、重启后继续做（快速停机 + resume 兜底路径）；配置大值（如 1800）则每次计划性重启等待满排水窗口，1-2 小时级 implementer/planner 在飞场景会明显拖慢重启。设置页「系统」页签可编辑 enabled/interval_minutes/escalation_cooldown_minutes/merge_breaker_threshold/shutdown_drain_seconds 五项；`admin.agent_model` 为 legacy 兜底键（解析链：agents.models.self-review > agents.models.administrator > admin.agent_model > 默认网关，其中 self-review 为每日自省专属分配、未配置时继承 Administrator），设置页不提供编辑，避免与「模型分配」页签的 Administrator / Self-Review 条目双入口。`admin.self_review.*` 见「自省」页签。
+`admin.shutdown_drain_seconds` 双侧行为：计划性重启（supervisor 检测到 `.fenix/restart_request`）时，daemon 收到 SIGTERM 后先等，上限为本值（秒），等到期才走 terminate 收口；supervisor 的 SIGKILL 强杀等待 = 本值 + 120s。值为 0 时不排水、秒级退出，在飞任务标记 interrupted、重启后继续做（快速停机 + resume 兜底路径）；配置大值（如 1800）则每次计划性重启等待满排水窗口，1-2 小时级 implementer/planner 在飞场景会明显拖慢重启。设置页「系统」页签可编辑 enabled/interval_minutes/escalation_cooldown_minutes/merge_breaker_threshold/shutdown_drain_seconds 五项；`admin.agent_model` 为 legacy 兜底键（解析链：agents.models.self-review > agents.models.administrator > admin.agent_model > 默认网关，其中 self-review 为每日自省专属分配、未配置时继承 Administrator），设置页不提供编辑，避免与「模型分配」页签的 Administrator / Self-Review 条目双入口。`admin.self_review.*` 见「自省」页签。
 
 ### pm.dispatch.aging / pm.family
 
@@ -283,7 +283,7 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 
 **注意事项**：
 
-- **id 必填且唯一**：手工编辑 config.yaml 新增 hook 时必须自带唯一 id——缺失 id 的条目匹配后不会执行，也不写审计、不告警（完全无痕）。
+- **id 必填且唯一**：手工编辑 config.yaml 新增 hook 时必须自带唯一 id，缺失 id 的条目匹配后不会执行，也不写审计、不告警（完全无痕）。
 - **不要在 hook 动作中修改 SPEC 状态**（如 shell 里直写 STATE.md）：状态变化会再次发布事件，形成自激循环；框架不对 hook 做熔断，循环只能靠审计与告警事后暴露。
 - **push / commit-push 是显式授权的自动推送**：Fenix 默认由 `/fenix-approve` 人工门禁把守推送，配置 push 类动作即表示你接受订阅范围内的自动推送，属有意为之的例外。
 - 配置修改 ≤30 秒热更新生效，无需重启。
@@ -300,7 +300,7 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 | admin.shutdown_drain_seconds | 0 | **1800** | 模板（fenix-init 新项目）开箱即得快速停机；存量项目未配置该键时仍按代码缺省 1800 排水 |
 | 顶层 timeout_supervision | enabled: false | 以 `agents.timeout_supervision` 为准 | 顶层键仅是回退开关，`agents.timeout_supervision` 是 canonical 位置 |
 
-**结论**：不要凭模板注释理解缺省值。判断某个键的实际生效值，应查看项目 `.fenix/config.yaml` 是否配置了该键——配置了以配置值为准，未配置则按代码缺省。
+**结论**：不要凭模板注释理解缺省值。判断某个键的实际生效值，应查看项目 `.fenix/config.yaml` 是否配置了该键：配置了以配置值为准，未配置则按代码缺省。
 
 ## Dashboard 设置页与配置键映射
 

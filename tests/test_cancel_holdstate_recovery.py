@@ -60,65 +60,124 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
     六处收尾分支形态各异（缩进/上下文不同），静态钉六处写点：
     对每处断言其 update_spec 调用字典含 "_cancelled_hold": True 键，
     且紧邻的 error 键在同一个调用内（同层写入，逐字段一致契约）。
+
+    写点定位使用语义锚点（_locate 按锚点串动态检索），免疫行号漂移：
+    历史上写点行号随并行合并三次漂移并手工重钉（14380774 / 2e98e052 /
+    762b4aee），当前（2026-09-12）verification.py 三处写点已漂到
+    1629/2003/2836 而测试仍钉旧行号导致 3/6 子用例红灯且无人发现——
+    锚点方案下失配即红（报错含 label + 锚点串 + 命中情况），无需人工对齐行号。
     """
 
+    # 写点语义锚点表：(rel, anchor, label)。
+    # anchor = 写点前向最近、且在其文件内唯一命中的「人工取消
+    # hold-state（add-run-cancel D4…）」分支注释字面（grep -F 逐条
+    # 核验恰好命中 1 次，唯一性由 _locate 与全库扫描双重自证）。
+    # 锚点行 → 写点行偏移：implementer +20 / fast-track +17 / repair
+    # +16（dispatch.py），planner-plan +11 / planner-judge +10 /
+    # legacy-verifier +10（verification.py），全部落在
+    # [anchor_line, anchor_line+25) 窗口内（最大偏移 +20，留 5 行余量）。
     WRITE_POINTS = [
-        # 2026-09-11 零变更哨确认型 no-op 放行通道在 dispatch.py 前部插入 24 行，
-        # implementer/fast-track/repair 写点整体后移（原 981/1817/2275 → 现
-        # 1005/1841/2299），写点语义不变。
-        # 35706f95 之后 add-tasksmd-relint-gate（5f51eb4a）在 dispatch.py 三处
-        # 挂点、verification.py 尾部一处挂点，写点再后移
-        # （1005/1841/2299/2560 → 现 1028/1912/2391/2611），写点语义不变。
-        # add-spec-content-integrity-gate 在 implementer/fast-track 分支各插入内容
-        # 闸门（+14/+13 行），repair 写点随后漂移 27 行
-        # （1028/1912/2391 → 现 1055/1939/2418），写点语义不变。
-        # fix-fasttrack-resultfile-missing-redispatch 在 implementer 成功收口
-        # 插入共享文件清理（+3 行）、fast-track 结果文件缺失分流（+5 行）、
-        # 升级路径抽取 _rewrite_fast_track_to_full/新增 merge 处理器（+22 行），
-        # dispatch 写点后移（1055/1939/2418 → 现 1060/1944/2440），写点语义不变。
-        ("core/pm_engine/dispatch.py", 1060, "implementer"),
-        ("core/pm_engine/dispatch.py", 1944, "fast-track"),
-        ("core/pm_engine/dispatch.py", 2440, "repair"),
-        # add-verify-parallel-backoff 在 verification.py 插入降档读写后行号
-        # 整体后移（原 1431/1742/2515 → 现 1451/1781/2611），写点语义不变。
-        # fix-fasttrack-resultfile-missing-redispatch 前置 typing import（+1 行）
-        # 与 _branch_commit_count/_implementation_branch_has_commits helper
-        #（+34 行，位于 legacy-verifier 写点之前），写点再后移
-        #（1451/1781/2611 → 现 1630/2004/2863），写点语义不变。
-        ("core/pm_engine/verification.py", 1630, "planner-plan"),
-        ("core/pm_engine/verification.py", 2004, "planner-judge"),
-        ("core/pm_engine/verification.py", 2863, "legacy-verifier"),
+        ("core/pm_engine/dispatch.py",
+         "人工取消 hold-state（add-run-cancel D4）",
+         "implementer"),
+        ("core/pm_engine/dispatch.py",
+         "人工取消 hold-state（add-run-cancel D4，fast-track 同语义）",
+         "fast-track"),
+        ("core/pm_engine/dispatch.py",
+         "人工取消 hold-state（add-run-cancel D4，repair worker）",
+         "repair"),
+        ("core/pm_engine/verification.py",
+         "人工取消 hold-state（add-run-cancel D4）",
+         "planner-plan"),
+        ("core/pm_engine/verification.py",
+         "人工取消 hold-state（add-run-cancel D4，judge 同语义）",
+         "planner-judge"),
+        ("core/pm_engine/verification.py",
+         "人工取消 hold-state（add-run-cancel D4，legacy verifier）",
+         "legacy-verifier"),
     ]
+    # 断言窗口：锚点行起向后 WRITE_POINT_WINDOW 行。
+    # 覆盖表内最大偏移 +20 并留 5 行余量；若未来某写点与锚点距离拉大
+    # 越过窗口，报错会提示窗口大小，按表内偏移调整本常量即可。
+    WRITE_POINT_WINDOW = 25
 
-    def _load(self, rel: str) -> list:
+    @staticmethod
+    def _load(rel: str) -> list:
         text = (Path(__file__).resolve().parent.parent / rel).read_text("utf-8")
         return text.splitlines()
 
+    @staticmethod
+    def _locate(rel: str, anchor: str, label: str) -> int:
+        """以锚点串在 rel 中动态定位写点行；未命中/多命中即抛红。
+
+        失配报错内含 rel、label、锚点串原文与当前命中情况，定位即诊断：
+        锚点注释被改写/删除 → 0 次命中；锚点串被复用 → >1 次命中需改精确串。
+        """
+        hits = [i for i, ln in enumerate(
+            CancelFinalizeMarkerContract._load(rel), 1) if anchor in ln]
+        if not hits:
+            raise AssertionError(
+                f"{rel} ({label}) 锚点串未命中：{anchor!r}"
+                "（注释被改写/删除？）")
+        if len(hits) > 1:
+            raise AssertionError(
+                f"{rel} ({label}) 锚点串命中 {len(hits)} 次：{anchor!r}"
+                "（不唯一，请改用更精确串）")
+        return hits[0]
+
     def test_six_holdstate_write_points_carry_marker(self):
-        for rel, line_no, label in self.WRITE_POINTS:
+        for rel, anchor, label in self.WRITE_POINTS:
             with self.subTest(label=label):
                 lines = self._load(rel)
-                # 以写点行号为中心的邻域内必须出现 _cancelled_hold 标记
-                window = lines[line_no - 8: line_no + 6]
+                anchor_line = self._locate(rel, anchor, label)
+                # 锚点行起 +WRITE_POINT_WINDOW 窗口内必须同时出现
+                # _cancelled_hold 标记与 error 键（同层写入，逐字段一致契约）。
+                window = lines[anchor_line: anchor_line + self.WRITE_POINT_WINDOW]
                 self.assertTrue(
                     any('"_cancelled_hold": True' in ln for ln in window),
-                    f"{rel}:{line_no} ({label}) 缺少 _cancelled_hold 写入",
+                    f"{rel} ({label}) 锚点 {anchor!r} 后 "
+                    f"{self.WRITE_POINT_WINDOW} 行窗口内缺少 _cancelled_hold 写入"
+                    "（写点与锚点距离过大？请调整 WRITE_POINT_WINDOW）",
                 )
-                # 同一调用字典内 error 与标记同层：邻域内两键都在
                 self.assertTrue(
                     any('"error": cancelled_err' in ln for ln in window),
-                    f"{rel}:{line_no} ({label}) error 写点漂移，请核对行号",
+                    f"{rel} ({label}) 锚点 {anchor!r} 后 "
+                    f"{self.WRITE_POINT_WINDOW} 行窗口内缺少 error 写点"
+                    "（写点与锚点距离过大？请调整 WRITE_POINT_WINDOW）",
                 )
 
     def test_no_new_holdstate_write_point_missed(self):
-        """全库 hold-state 收尾写点只有六处（未来新增 run 类型会在此失败）。"""
+        """全库 hold-state 收尾写点恰好六处，与锚点表条目数/文件集合互为印证。
+
+        与 test_six_holdstate_write_points_carry_marker 的锚点表并行：
+        文件集合一致（无新增/删减文件）+ 写点总数恰好六处（无漏入表）。
+        未来新增 run 类型时，此处与锚点表会同时红。
+        """
         root = Path(__file__).resolve().parent.parent / "core"
-        hits = []
+        hits = {}
         for py in root.rglob("*.py"):
             text = py.read_text("utf-8")
             if "hold-state" in text and "人工取消" in text:
-                hits.append(str(py.relative_to(root.parent)))
-        self.assertEqual(sorted(hits), sorted({rel for rel, _, _ in self.WRITE_POINTS}))
+                rel = str(py.relative_to(root.parent))
+                # 以 _cancelled_hold 标记写入处数计写点（与锚点表条数同口径）
+                hits[rel] = sum(
+                    1 for ln in text.splitlines()
+                    if '"_cancelled_hold": True' in ln)
+        # 文件集合与锚点表一一对应
+        self.assertEqual(
+            sorted(hits),
+            sorted({rel for rel, _, _ in self.WRITE_POINTS}),
+            "全库 hold-state 写点文件集合与锚点表不一致",
+        )
+        # 写点总数恰好六处，与锚点表条目数互为印证
+        self.assertEqual(
+            sum(hits.values()), 6,
+            "全库 _cancelled_hold 写点总数非六处：新增/删除了写点而未同步锚点表",
+        )
+        self.assertEqual(
+            len(self.WRITE_POINTS), 6,
+            "锚点表条目数非六处：与全库写点总数不一致",
+        )
 
 
 # ── 2. 重启恢复尊重保持 ──────────────────────────────────────

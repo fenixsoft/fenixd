@@ -5,233 +5,58 @@ description: Use when the user wants to check Fenix framework status, view all S
 
 # Fenix: 状态面板
 
-展示 Fenix Loop Engineering Framework 运行状态。**禁止 echo 输出 ASCII 装饰横幅**，但内容需详细完整。
+展示 Fenix Loop Engineering Framework 运行状态。数据与 Web Dashboard 同源（`core/dashboard/data.py`）；TUI 的价值不在复刻 web 表格，而在 **LLM 主动分诊**——告诉用户该看什么、该做什么。
 
 ## 输出要求
 
-- **一句话总结**：在开头用一句话概括当前整体状态（全部完成/进行中/卡住/停止等）
-- 守护进程状态 + PID
-- 每行一个 SPEC：图标、名称、状态、优先级、依赖、错误摘要
-- 按优先级排序，done/pushed 的排在最后
-- 状态统计：总数、done数、进行中数、阻塞数
-- 活跃 Claude 进程数
-- 验证进度文件内容（如有）
-- 阻塞检测结果
-- 待推送提示
+1. **一句话总判**：综合全局状态用一句中文概括（如「1 个 SPEC 验证停滞，其余按计划等待拾取」）——自己判断，不要机械拼接
+2. **需要关注**：分诊清单，按优先级排序；每条 = 问题 + 证据 + **建议动作（具体到命令）**。无异常时明确写「✅ 无需关注」，禁止硬凑条目
+3. **数据速览**：脚本输出的「守护进程/告警/活跃运行/状态统计」头部 + 活跃 SPEC 明细 + 终态折叠行
+4. 结尾附快捷命令
+
+**信号汇总段是分诊素材，不原样罗列**——它的内容已融入「需要关注」。
+
+## 分诊规则
+
+按严重度排序（🔴 → ⚠️ → ℹ️）：
+
+- 🔴 守护进程停止 → 建议运行 `/fenix-setup`
+- 🔴 critical 未处理告警 / ⚠️ major → 给出告警摘要，建议到 dashboard 运维记录页查看处置上下文，或呼叫 Admin 介入
+- ⚠️ 非 done 状态带 error → 摘录错误要点，判断是瞬时故障还是需要人工干预
+- ⚠️ 尝试预算耗尽 → 说明已到重试上限，建议人工排障或 `/fenix-dashboard` 调高该 spec 预算
+- ⚠️ 验证停滞（进度文件 >30 分钟未更新）→ 建议先 `/fenix-process <name>` 看验证结论与运行历史，确认是否真卡死
+- ⚠️ auto 模式下 SPEC 滞留 done → 提示推送可能失败，`/fenix-approve` 人工兜底
+- ℹ️ done 待推送（manual 模式）→ `/fenix-approve`
+- ℹ️ drafted 待晋升（manual 晋升模式）→ `/fenix-ready`
+- ℹ️ bug-found 无活跃 fix 子 SPEC → 提示修复链可能未建立
+- ℹ️ 尝试预算剩最后 1 次 → 提醒即将到达上限
+- **已知等待（冻结 / start_after 定时）不算问题**——归入一句「按计划等待」，不要写进关注清单
+
+跨条目关联判断：多个 spec 同时异常时找共性（同一 provider、同一时间点），一次性指出根因候选，而不是逐条复读。
 
 ## 步骤
 
-### 1. 守护进程状态
-
-session 名由项目根路径派生（唯一，支持多项目并行），并兼容旧版固定名 `fenixd`（见 `bin/fenix_session.py`）。
+### 1. 生成报告
 
 ```bash
-SESSION_NAME=$(python3 .fenix/bin/fenix_session.py name "$(pwd)" 2>/dev/null)
-REAL_SESSION=""
-if [ -n "${SESSION_NAME}" ] && tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
-    REAL_SESSION="${SESSION_NAME}"
-elif tmux has-session -t fenixd 2>/dev/null; then
-    REAL_SESSION="fenixd"   # 兼容旧版固定名
-fi
-echo -n "守护进程: "
-if [ -n "${REAL_SESSION}" ]; then
-    pid=$(tmux list-panes -t "${REAL_SESSION}" -F '#{pane_pid}' 2>/dev/null | head -1)
-    echo "🟢 运行中 (PID: ${pid:-unknown}, session: ${REAL_SESSION})"
-else
-    echo "🔴 已停止 — 运行 /fenix-setup 启动"
-fi
+python3 .fenix/bin/fenix_status.py
 ```
 
-### 2. 总体状态总结
+脚本输出：守护进程/告警/活跃运行/状态统计 → 活跃 SPEC 明细（状态、任务/run/验证/出题进度、预算、耗时、error、冻结与定时标记）→ 终态折叠行 → 信号汇总。数据与 dashboard `/api/specs` 同源，无需自行解析 STATE.md。
 
-```bash
-python3 << 'PYEOF'
-import sys; sys.path.insert(0, '.fenix')
-from pathlib import Path
-from datetime import datetime, timezone
-from core.state_machine import StateMachine
-sm = StateMachine(Path('.fenix/STATE.md'), None)
-specs = sm.read_all()
-total = len(specs)
-done_cnt = sum(1 for e in specs.values() if e.get('status') in ('done','pushed'))
-active_cnt = sum(1 for e in specs.values() if e.get('status') in ('implementing','testing'))
-verified_cnt = sum(1 for e in specs.values() if e.get('status') == 'verified')
-blocked_cnt = sum(1 for e in specs.values() if e.get('error') and e.get('status') not in ('done','pushed'))
+### 2. 分诊并输出
 
-# 检查卡住的任务：基于验证进度文件 mtime（而非 updated 时间戳，后者在实现/验证运行期间不更新）
-now = datetime.now(timezone.utc)
-# 识别「等待 fix SPEC 完成」的父 SPEC：存在活跃 fix-<name> 时，父 SPEC 不算卡住
-active_fix_parents = {n[4:] for n, e in specs.items() if n.startswith('fix-') and e.get('status') not in ('done','pushed')}
-stuck = []
-for name, entry in specs.items():
-    st = entry.get('status','')
-    if st in ('done','pushed'): continue
-    if name in active_fix_parents: continue  # 等待 fix 完成，不算卡住
-    # testing：验证进度文件 mtime 超过 30 分钟未更新 → 验证停滞
-    if st == 'testing':
-        pf = Path('.fenix/verify-progress') / f'{name}.json'
-        if pf.exists():
-            try:
-                m = (now - datetime.fromtimestamp(pf.stat().st_mtime, tz=timezone.utc)).total_seconds() / 60
-                if m > 30: stuck.append(f'{name}(验证停滞{int(m)}分钟)')
-            except: pass
-    # implementing：不再用 updated 时间戳判卡住（daemon 有 attempt 重试机制兜底）
+按「输出要求」组织：总判 → 需要关注（含建议动作）→ 数据速览 → 快捷命令。
 
-import subprocess
-# 本项目 daemon 检测：唯一 session 名 + 旧版 fenixd 兼容（见 bin/fenix_session.py）
-_r = subprocess.run(['python3', '.fenix/bin/fenix_session.py', 'running'],
-                    capture_output=True, text=True)
-daemon_ok = _r.stdout.strip() == 'YES'
+时间戳一律转本地时区表述。活跃 SPEC 可按优先级与异常程度决定详略，但**不要省略任何活跃 SPEC 行**。
 
-# 生成总结
-parts = []
-if not daemon_ok:
-    parts.append('🔴 守护进程已停止')
-elif total == 0:
-    parts.append('📭 暂无 SPEC')
-elif done_cnt == total:
-    parts.append(f'🎯 全部完成 — {total}/{total} 个 SPEC 已就绪，等待推送')
-elif active_cnt > 0:
-    parts.append(f'🔨 开发进行中 — {active_cnt} 个 SPEC 正在开发')
-    if done_cnt > 0: parts[-1] += f'，{done_cnt} 个已完成'
-else:
-    remaining = total - done_cnt
-    parts.append(f'📌 {remaining} 个 SPEC 待处理')
-    if done_cnt > 0: parts[-1] += f'，{done_cnt} 个已完成'
-    if verified_cnt > 0: parts[-1] += f'，{verified_cnt} 个已验证'
-
-if blocked_cnt > 0:
-    parts.append(f'⚠️ {blocked_cnt} 个 SPEC 有未解决错误')
-if stuck:
-    parts.append(f'🔴 卡住: {", ".join(stuck)}')
-
-print('📋 ' + ' | '.join(parts))
-PYEOF
-```
-
-### 3. SPEC 列表 + 状态统计
-
-```bash
-python3 << 'PYEOF'
-import sys, subprocess; sys.path.insert(0, '.fenix')
-from pathlib import Path
-from core.state_machine import StateMachine
-sm = StateMachine(Path('.fenix/STATE.md'), None)
-specs = sm.read_all()
-icons = {'drafted':'📝','ready':'📌','implementing':'🔨','implemented':'🧪','testing':'🔍','verified':'✅','bug-found':'🐛','done':'🎯','pushed':'🚀'}
-counts = {}; done_count = 0; active_count = 0
-
-# Sort: non-done first by priority, then done at the end
-items = sorted(specs.items(), key=lambda x: (x[1].get('status') in ('done','pushed'), x[1].get('priority', 999)))
-
-for name, entry in items:
-    st = entry.get('status','?'); pri = entry.get('priority','?')
-    counts[st] = counts.get(st,0) + 1
-    if st in ('done','pushed'): done_count += 1
-    if st in ('implementing','testing'): active_count += 1
-    deps = entry.get('depends_on')
-    dep_info = f' → 依赖: {deps}' if deps and deps != 'null' else ''
-    print(f'  {icons.get(st,"❓")} {name}: {st} (P{pri}{dep_info})')
-    err = entry.get('error')
-    if err: print(f'     ⚠️ {str(err)[:120]}')
-
-blocked = sum(1 for e in specs.values() if e.get('error') and e.get('status') not in ('done','pushed'))
-pending_push = sum(1 for e in specs.values() if e.get("status") == 'done')
-c = subprocess.run(['ps','aux'], capture_output=True, text=True).stdout.count('claude ')
-
-# 读取审批模式与模型分配（尽力而为，失败不影响主输出）
-approve_mode = 'manual'
-providers_count = 0
-assigned_agents = 0
-try:
-    import yaml
-    with open('.fenix/config.yaml', 'r') as f:
-        cfg = yaml.safe_load(f) or {}
-    mode = (cfg.get('gates') or {}).get('approve_mode', 'manual')
-    if mode in ('manual', 'auto'):
-        approve_mode = mode
-    providers = ((cfg.get('llm') or {}).get('providers')) or []
-    providers_count = len(providers) if isinstance(providers, list) else 0
-    models = ((cfg.get('agents') or {}).get('models')) or {}
-    assigned_agents = len(models) if isinstance(models, dict) else 0
-except Exception:
-    pass
-
-mode_label = '🔒 manual（人工审批）' if approve_mode == 'manual' else '🤖 auto（自动推送）'
-print(f'\n📊 总计 {len(specs)} 个 SPEC | ✅ {done_count} 完成 | 🔨 {active_count} 进行中 | ⚠️ {blocked} 阻塞 | Claude 进程: {c}')
-print(f'   审批模式: {mode_label}')
-if providers_count > 0:
-    print(f'   LLM Provider: {providers_count} 个 | 已分配 Agent: {assigned_agents} 个')
-if pending_push > 0 and approve_mode == 'manual':
-    print(f'🚀 {pending_push} 个 SPEC 等待推送 — 运行 /fenix-approve')
-elif pending_push > 0 and approve_mode == 'auto':
-    print(f'⚠️ {pending_push} 个 SPEC 在 done（auto 模式下可能推送失败，可运行 /fenix-approve 人工兜底）')
-PYEOF
-```
-
-### 4. 验证进度
-
-```bash
-python3 << 'PYEOF'
-from pathlib import Path
-import json
-progress_dir = Path('.fenix/verify-progress')
-files = list(progress_dir.glob('*.json'))
-if files:
-    print('验证进度:')
-    for f in files:
-        # 容错：历史遗留进度文件可能字段为 null，或整体非 dict（如 list）
-        try:
-            d = json.loads(f.read_text())
-            if not isinstance(d, dict):
-                print(f'  ⚠️ {f.stem}: 进度文件结构异常（非对象），跳过')
-                continue
-            done = d.get('done') or 0; total = d.get('total') or 0
-            pct = f'({int(done/total*100)}%)' if total > 0 else '(无总量)'
-            print(f'  🔍 {f.stem}: {done}/{total} {pct} — {str(d.get("current") or "")[:60]}')
-        except Exception as e:
-            print(f'  ⚠️ {f.stem}: 进度文件读取失败（{e}），跳过')
-else:
-    print('验证进度: (无活跃验证任务)')
-PYEOF
-```
-
-### 5. 阻塞检测
-
-```bash
-python3 << 'PYEOF'
-import sys; sys.path.insert(0, '.fenix')
-from pathlib import Path
-from datetime import datetime, timezone
-from core.state_machine import StateMachine
-sm = StateMachine(Path('.fenix/STATE.md'), None)
-now = datetime.now(timezone.utc)
-specs = sm.read_all()
-# 识别「等待 fix SPEC 完成」的父 SPEC：存在活跃 fix-<name> 时，父 SPEC 不算卡住
-active_fix_parents = {n[4:] for n, e in specs.items() if n.startswith('fix-') and e.get('status') not in ('done','pushed')}
-found = False
-for name, entry in specs.items():
-    st = entry.get('status','')
-    if st in ('done','pushed'): continue
-    if name in active_fix_parents: continue  # 等待 fix 完成，不算卡住
-    # testing：验证进度文件 mtime 超过 30 分钟未更新 → 验证停滞
-    if st == 'testing':
-        pf = Path('.fenix/verify-progress') / f'{name}.json'
-        if pf.exists():
-            try:
-                m = (now - datetime.fromtimestamp(pf.stat().st_mtime, tz=timezone.utc)).total_seconds() / 60
-                if m > 30: print(f'  🔴 {name}: 验证停滞 {int(m)} 分钟（进度文件未更新）'); found = True
-            except: pass
-    if entry.get('error') and st in ('ready', 'bug-found'):
-        print(f'  🟡 {name}: {st} 状态有未解决错误 — {str(entry["error"])[:80]}'); found = True
-if not found: print('  ✅ 无阻塞, 所有活跃 SPEC 正常推进')
-PYEOF
-```
-
-### 6. 快捷命令
+### 3. 快捷命令
 
 ```
-/fenix-new "需求"    — 创建新需求
-/fenix-approve       — 审查并推送完成的 SPEC
-/fenix-setup         — 重启 fenixd
+/fenix-new "需求"          — 创建新需求
+/fenix-process <spec-name> — 查看某 SPEC 详情
+/fenix-approve             — 审查并推送完成的 SPEC
+/fenix-ready               — 晋升草稿（manual 晋升模式）
+/fenix-dashboard           — 打开 Web Dashboard（实时监控/运维操作）
+/fenix-setup               — 重启 fenixd
 ```

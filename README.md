@@ -155,27 +155,19 @@ bash install.sh
 
 ## 使用方法
 
-### 1. 初始化项目
+### 1. 初始化并启动
 
-进入（或创建）你的项目目录，运行：
-
-```bash
-fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]
-```
-
-生成工程骨架：`.fenix/`（配置 + 状态文件 + 框架软链接 + 运行时目录）、`spec/`、`.claude/agents/`、`.claude/worktrees/`，并追加 `.gitignore` 条目。
-
-### 2. 启动框架
-
-在项目目录内执行：
+进入（或创建）你的项目目录，执行：
 
 ```
 /fenix-setup
 ```
 
-它会在 tmux 会话中启动守护进程（session 名由项目根路径派生，同机多项目互不干扰），并由 supervisor 看门狗守护。异常退出或收到 `restart_request` 时自动拉起。
+首次运行会自动完成工程骨架初始化（等价于 `fenix-init`）：`.fenix/`（配置 + 状态文件 + 框架软链接 + 运行时目录）、`spec/`、`.claude/agents/`、`.claude/worktrees/`，并追加 `.gitignore` 条目；随后在 tmux 会话中启动守护进程（session 名由项目根路径派生，同机多项目互不干扰），并由 supervisor 看门狗守护。异常退出或收到 `restart_request` 时自动拉起。
 
-### 3. 创建需求
+`fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]` 仍可作为独立命令单独使用（不需要 Claude Code 会话时）。
+
+### 2. 创建需求
 
 ```
 /fenix-new "添加用户登录功能"
@@ -183,7 +175,7 @@ fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]
 
 需求 Agent 会澄清需求、评估复杂度并建议执行模式（fast-track / full），生成完整 SPEC 注册到 `.fenix/STATE.md`。fenixd 随后**全自动**完成实现与验证。
 
-### 4. 监控进度
+### 3. 监控进度
 
 ```
 /fenix-status          # 总览：所有 SPEC 状态、守护进程健康、阻塞检测
@@ -191,7 +183,7 @@ fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]
 /fenix-dashboard       # 浏览器实时监控（多项目聚合，默认 :8787）
 ```
 
-### 5. 审批推送（唯一人工门禁）
+### 4. 审批推送（唯一人工门禁）
 
 ```
 /fenix-approve
@@ -199,7 +191,7 @@ fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]
 
 审查 `done` 状态的 SPEC，确认后推送到远程分支。
 
-### 6. 归档
+### 5. 归档
 
 ```
 /fenix-archive
@@ -211,7 +203,7 @@ fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]
 
 | 命令 | 作用 |
 |------|------|
-| `/fenix-setup` | 初始化 / 重启 Fenixd |
+| `/fenix-setup` | 初始化 / 重启 Fenixd（未初始化项目自动生成工程骨架） |
 | `/fenix-new "需求详情"` | 创建新需求（含 fast-track/full 模式建议） |
 | `/fenix-status` | 查看框架状态 |
 | `/fenix-process <spec_name>` | 查看指定 SPEC 进展 |

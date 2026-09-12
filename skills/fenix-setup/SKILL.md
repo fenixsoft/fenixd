@@ -1,11 +1,11 @@
 ---
 name: fenix-setup
-description: Use when the user wants to initialize or restart the Fenix Loop Engineering Framework. Checks dependencies, creates directories, and starts the fenixd daemon. Invoked via /fenix-setup.
+description: Use when the user wants to initialize or restart the Fenix Loop Engineering Framework, including on a brand-new project that has not been initialized yet. Invoked via /fenix-setup.
 ---
 
 # Fenix: 初始化与启动
 
-设置并启动 Fenix Loop Engineering Framework。
+设置并启动 Fenix Loop Engineering Framework。未初始化的项目会自动运行 fenix-init 生成工程骨架，无需单独执行。
 
 ## 步骤
 
@@ -20,13 +20,38 @@ which claude 2>/dev/null || echo "MISSING: claude CLI"
 python3 -c "import yaml" 2>/dev/null && echo "PyYAML: OK" || { echo "Installing PyYAML..."; pip3 install pyyaml -q; }
 ```
 
-### 2. 创建目录结构
+### 2. 自动初始化项目骨架（未初始化时自动运行 fenix-init）
+
+以 `.fenix/bin/fenix_session.py` 与 `.fenix/core/config.py` 是否存在为判定标志，
+任一缺失即视为未完成初始化（含旧版 setup 预创建空目录导致的半破损状态）。
+未初始化则自动运行 `fenix-init`
+（生成 .fenix/config.yaml、框架软链、状态文件、verify.yaml 模板、spec/、agent 软链、.gitignore），
+不需要用户单独执行 fenix-init：
 
 ```bash
-mkdir -p .fenix/core .fenix/logs .fenix/tests .claude/agents .claude/worktrees
+if [ ! -e ".fenix/bin/fenix_session.py" ] || [ ! -e ".fenix/core/config.py" ]; then
+    echo "项目尚未初始化，自动执行 fenix-init ..."
+    # 先清理旧版 setup 可能预创建的真实空目录（rmdir 只删空目录，软链与非空目录天然安全），
+    # 否则 fenix-init 的软链会因「已存在」被跳过，留下空目录顶替框架软链
+    rmdir .fenix/core .fenix/bin .fenix/tests 2>/dev/null
+    if command -v fenix-init >/dev/null 2>&1; then
+        fenix-init
+    else
+        echo "错误：找不到 fenix-init 命令。请先在 Fenixd 框架仓库运行 bash install.sh"
+        exit 1
+    fi
+else
+    echo "项目已初始化，跳过 fenix-init"
+fi
 ```
 
-### 3. 计算本项目唯一 session 名并检查是否已在运行
+### 3. 创建目录结构（兜底）
+
+```bash
+mkdir -p .fenix/core .fenix/logs .fenix/tests .fenix/verify-progress .fenix/screenshots .claude/agents .claude/worktrees
+```
+
+### 4. 计算本项目唯一 session 名并检查是否已在运行
 
 session 名由项目根路径派生（`fenixd-<目录名>-<哈希>`，见 `bin/fenix_session.py`），
 同一台机器可同时运行多个项目的 daemon，互不干扰。
@@ -44,7 +69,7 @@ if python3 .fenix/bin/fenix_session.py running "$(pwd)" 2>/dev/null | grep -q YE
 fi
 ```
 
-### 4. 生成项目简介
+### 5. 生成项目简介
 
 读取项目根目录的 `README.md`（缺失或信息不足时查看 `package.json`、`pyproject.toml` 等清单文件与目录结构），生成一句约 100 字的中文项目简介，写入 `.fenix/config.yaml` 的 `project.description` 字段。
 
@@ -80,7 +105,7 @@ if [ -z "${DESCRIPTION}" ]; then
     DESCRIPTION="由 Fenix 框架管理的项目，暂无自动生成的简介。"
 fi
 
-# 写入配置文件（存在则合并，不存在则跳过——config 由 fenix-init 渲染，setup 通常在其后）
+# 写入配置文件（存在则合并，不存在则跳过——config 由步骤 2 的 fenix-init 渲染）
 if [ -f ".fenix/config.yaml" ]; then
     python3 -c "
 import yaml, sys
@@ -102,7 +127,7 @@ fi
 echo "项目简介已生成"
 ```
 
-### 5. 初始化状态文件与验证契约模板
+### 6. 初始化状态文件与验证契约模板
 
 如果 .fenix/STATE.md 和 .fenix/PROJECT_LOG.md 不存在，创建它们。
 
@@ -123,7 +148,7 @@ else
 fi
 ```
 
-### 6. 启动 fenixd
+### 7. 启动 fenixd
 
 ```bash
 tmux new-session -d -s "${SESSION_NAME}" "cd $(pwd) && python3 .fenix/fenixd.py 2>&1 | tee .fenix/logs/stdout.log"
@@ -135,7 +160,7 @@ else
 fi
 ```
 
-### 7. 展示启动信息
+### 8. 展示启动信息
 
 ```
   Fenix is running!

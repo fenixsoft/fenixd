@@ -1,103 +1,60 @@
 #!/usr/bin/env python3
-"""
-Fenix Process — 查看指定 SPEC 的详细进展。
+"""fenix_process — SPEC 详情报告（TUI，/fenix-process 数据源）。
+
+与 Dashboard 共用 core/dashboard/data.py 数据层（tui-triage-revamp D1）：
+主数据源 = data.spec_detail()（/api/specs/<name> 同一份组装），外加
+spec_summary 的预算三字段与 worktree 检查。「需要关注」分诊由执行 skill
+的 LLM 依据报告内容现场判断（skills/fenix-process/SKILL.md）。
 
 用法: python3 fenix_process.py <spec-name>
 """
 
-import json
-import os
 import re
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# 使用 .absolute()（不跟随软链接）：脚本经项目内 .fenix/bin/ 软链接调用
+# .absolute()（不跟随软链接）：脚本经项目内 .fenix/bin/ 软链调用时，
+# __file__ = <项目根>/.fenix/bin/fenix_process.py，三级 parent 即项目根。
+# core 包以 PROJECT_ROOT/.fenix 为根导入——不依赖 CWD，防跨项目误锚。
 PROJECT_ROOT = Path(__file__).absolute().parent.parent.parent
-STATE_PATH = PROJECT_ROOT / ".fenix" / "STATE.md"
-CHANGES_DIR = PROJECT_ROOT / "spec" / "changes"
-LOGS_DIR = PROJECT_ROOT / ".fenix" / "logs"
-WORKTREES_DIR = PROJECT_ROOT / ".claude" / "worktrees"
-VERIFY_PROGRESS_DIR = PROJECT_ROOT / ".fenix" / "verify-progress"
+sys.path.insert(0, str(PROJECT_ROOT / ".fenix"))
 
-# ── 颜色常量 ────────────────────────────────────────────────────────
+from core.dashboard import data  # noqa: E402
 
-GREEN = "\033[32m"
-YELLOW = "\033[33m"
-CYAN = "\033[36m"
-RED = "\033[31m"
-GRAY = "\033[90m"
-BOLD = "\033[1m"
-RESET = "\033[0m"
+STATUS_ICONS = {
+    "drafted": "📝", "ready": "📌", "implementing": "🔨",
+    "implemented": "🧪", "testing": "🔍", "verified": "✅",
+    "bug-found": "🐛", "blocked": "🧊", "done": "🎯", "pushed": "🚀",
+}
+RUN_ICONS = {
+    "administrator": "🛡️", "planner": "📋", "planner-plan": "📋",
+    "planner-judge": "⚖️", "implementer": "🔨", "verifier": "🔍",
+    "tester": "🧪", "agent": "🤖",
+}
+RUN_STATUS_DESC = {
+    "done": "完成", "running": "运行中", "empty": "空跑", "error": "出错",
+    "interrupted": "被打断", "cancelled": "已取消",
+}
+NEXT_STEPS = {
+    "drafted": "等待晋升（promote_mode=manual 时运行 /fenix-ready）",
+    "ready": "等待调度 implementer agent",
+    "implementing": "implementer agent 正在工作区修改代码",
+    "implemented": "等待调度 verifier agent 进行验证",
+    "testing": "verifier agent 正在执行验证测试",
+    "verified": "验证通过，等待标记 done",
+    "bug-found": "等待修复（admin 自动创建 fix SPEC，或人工处置）",
+    "blocked": "已冻结/阻塞 — 确认冻结原因或 /fenix-dashboard 解冻",
+    "done": "等待推送 — 运行 /fenix-approve",
+    "pushed": "✅ 已完成并推送",
+}
 
-# ── STATE.md 解析 ────────────────────────────────────────────────────
-
-def parse_state():
-    """解析 STATE.md 获取 SPEC 状态信息"""
-    if not STATE_PATH.exists():
-        return {}
-    specs = {}
-    current_name = None
-    current_entry = {}
-    for line in STATE_PATH.read_text(encoding="utf-8").split("\n"):
-        m = re.match(r"^###\s+(.+)$", line)
-        if m:
-            if current_name and current_entry and "status" in current_entry:
-                specs[current_name] = current_entry
-            current_name = m.group(1).strip()
-            current_entry = {}
-            continue
-        m = re.match(r"^-\s+([a-z_]+):\s*(.*)$", line)
-        if m and current_name:
-            key = m.group(1)
-            val = m.group(2).strip()
-            if key == "priority":
-                try: val = int(val)
-                except: val = 999
-            elif val.lower() in ("null", "none", ""): val = None
-            current_entry[key] = val
-    if current_name and current_entry and "status" in current_entry:
-        specs[current_name] = current_entry
-    return specs
-
-
-def parse_tasks(spec_name):
-    """解析 tasks.md 返回分组任务列表"""
-    tasks_path = CHANGES_DIR / spec_name / "tasks.md"
-    if not tasks_path.exists():
-        return []
-
-    groups = []
-    current_group = None
-
-    for line in tasks_path.read_text(encoding="utf-8").split("\n"):
-        # 分组标题（点号可选双历史格式：`## 1. 标题` / `## 1 标题`）。
-        # 与 core/dashboard/data.py:parse_tasks、core/deliverables.py:
-        # lint_tasks_parseable 同源正则（task-track D1），三处必须一致。
-        m = re.match(r"^##\s+\d+\.?\s+(.+)$", line)
-        if m:
-            current_group = {"title": m.group(1), "tasks": []}
-            groups.append(current_group)
-            continue
-        # 任务项
-        m = re.match(r"^- \[(x| )\] (\d+\.\d+) (.+)$", line)
-        if m and current_group is not None:
-            current_group["tasks"].append({
-                "done": m.group(1) == "x",
-                "id": m.group(2),
-                "desc": m.group(3).strip(),
-            })
-
-    return groups
-
-
-# ── 日志解析 ────────────────────────────────────────────────────────
 
 def _local_ts(iso_str, fmt="%H:%M:%S"):
-    """UTC ISO 时间戳 → 本地时区格式化;解析失败回退裸切片 [:19]。
+    """UTC ISO → 本地时区显示（日志层全 UTC 写入，展示层转本地）。
 
-    日志层统一写 UTC（core/logger.py），展示层负责转本地时区显示。
+    默认 fmt 与回退切片 [:19] 是既有展示契约（test_cli_time_display 钉死）；
+    需要日期的调用点显式传 fmt="%m-%d %H:%M"。
     """
     try:
         return datetime.fromisoformat(str(iso_str).replace("Z", "+00:00")).astimezone().strftime(fmt)
@@ -105,259 +62,296 @@ def _local_ts(iso_str, fmt="%H:%M:%S"):
         return str(iso_str)[:19]
 
 
-def parse_logs(spec_name):
-    """从 fenixd 日志中提取指定 SPEC 的事件时间线"""
-    log_files = sorted(LOGS_DIR.glob("fenixd*.log"), reverse=True)
-    events = []
-
-    for lf in log_files[:3]:  # 只看最近3个日志文件
-        try:
-            for line in lf.read_text(encoding="utf-8").split("\n"):
-                if spec_name not in line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    ts = entry.get("timestamp", "")
-                    msg = entry.get("message", "")
-                    comp = entry.get("component", "")
-                    ctx = entry.get("context", {})
-                    if isinstance(ctx, dict):
-                        status = ctx.get("status") or ctx.get("new_status", "")
-                    else:
-                        status = ""
-                    events.append({
-                        "time": ts,
-                        "component": comp,
-                        "message": msg,
-                        "status": status,
-                    })
-                except json.JSONDecodeError:
-                    continue
-        except Exception:
-            continue
-
-    return events
+def _fmt_dur(seconds) -> str:
+    try:
+        s = int(seconds or 0)
+    except (TypeError, ValueError):
+        return ""
+    if s <= 0:
+        return ""
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    if s < 86400:
+        return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+    return f"{s // 86400}d{(s % 86400) // 3600}h"
 
 
-# ── Worktree 检查 ────────────────────────────────────────────────────
+def _fmt_tokens(n) -> str:
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        return "0"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f}K"
+    return str(n)
 
-def check_worktree(spec_name):
-    """查找该 SPEC 的活跃 worktree"""
-    if not WORKTREES_DIR.exists():
+
+def _render_tasks(tasks):
+    """tasks.md 分组明细：未完成项全显，已完成项保留 id。"""
+    lines = []
+    total = sum(len(g.get("tasks", [])) for g in tasks)
+    done = sum(1 for g in tasks for t in g.get("tasks", []) if t.get("done"))
+    if not total:
+        return lines
+    lines.append(f"tasks.md 进展: {done}/{total}")
+    for g in tasks:
+        g_tasks = g.get("tasks", [])
+        g_done = sum(1 for t in g_tasks if t.get("done"))
+        g_total = len(g_tasks)
+        mark = "✅" if g_done == g_total and g_total else "🔨"
+        lines.append(f"  {mark} {g.get('title', '?')}（{g_done}/{g_total}）")
+        for t in g_tasks:
+            if t.get("done"):
+                # 已完成任务只留 id：TUI 关注未完成的肉，完成明细是噪音
+                lines.append(f"    ✓ {t.get('id', '?')}")
+            else:
+                lines.append(f"    ○ {t.get('id', '?')} {t.get('desc', '')}")
+    return lines
+
+
+def _render_verdict(detail):
+    """验证结论 + 产品 Bug + 非产品失败计数。"""
+    lines = []
+    verdict = detail.get("verdict") or {}
+    bugs = detail.get("bugs") or []
+    filtered = detail.get("filtered_failures") or []
+    has_verdict = verdict.get("exists")
+    if has_verdict:
+        lines.append(f"结论: {verdict.get('status') or '(空)'}")
+        if verdict.get("status_detail"):
+            lines.append(f"状态说明: {verdict['status_detail']}")
+        summary = verdict.get("summary") or {}
+
+        def _cnt(key):
+            v = summary.get(key)
+            return v if v is not None else "-"
+        lines.append(f"计数: 通过 {_cnt('passed')} / 失败 {_cnt('failed')} / 错误 {_cnt('errors')}"
+                     f" ｜ 产品 Bug {_cnt('product_bugs')} ｜ 环境问题 {_cnt('env_issues')}")
+        if verdict.get("conclusion"):
+            lines.append(f"结论段: {verdict['conclusion'][:200]}")
+    if bugs:
+        lines.append("产品 Bug:")
+        for b in bugs:
+            sev = b.get("severity") or "?"
+            sc = b.get("scenario") or ",".join(str(s) for s in (b.get("scenario_ids") or []))
+            desc = str(b.get("description") or b.get("title") or "")[:100]
+            lines.append(f"  🐛 [{sev}] {sc} {desc}")
+    if filtered:
+        lines.append(f"非产品失败（test-defect/env/flaky，已过滤）: {len(filtered)} 条")
+    # 场景截图数（验证证据）
+    shots = detail.get("screenshots") or []
+    if shots:
+        lines.append(f"截图: {len(shots)} 张（.fenix/screenshots/{detail.get('name')}/）")
+    return lines
+
+
+def _render_runs(runs):
+    """运行历史（含归档，最新在前）：attempt 链一目了然。"""
+    lines = []
+    for r in runs[:10]:
+        icon = RUN_ICONS.get(r.get("agent_type"), "🤖")
+        rid = r.get("run_id", "?")
+        status = RUN_STATUS_DESC.get(r.get("status"), r.get("status") or "?")
+        dur = _fmt_dur(r.get("duration_seconds"))
+        started = _local_ts(r.get("started"), "%m-%d %H:%M")
+        tail = f"  耗时 {dur}" if dur else ""
+        lines.append(f"  {icon} {rid}  {status}  {started}{tail}")
+    return lines
+
+
+def _render_timeline(timeline):
+    """时间轴精华：最近 15 个节点（状态转换带方向，打回带原因）。"""
+    lines = []
+    for ev in timeline[-15:]:
+        ts = _local_ts(ev.get("time"), "%m-%d %H:%M")
+        if ev.get("kind") == "state":
+            arrow = "↩️" if ev.get("backward") else "→"
+            reason = f"（{ev['reason']}）" if ev.get("reason") else ""
+            lines.append(f"  {ts} 📦 {ev.get('from')} {arrow} {ev.get('to')}{reason}")
+        else:
+            icon = RUN_ICONS.get(ev.get("agent_type"), "🤖")
+            status = RUN_STATUS_DESC.get(ev.get("status"), ev.get("status") or "")
+            rid = str(ev.get("run_id") or "")
+            if not rid and not status:
+                continue  # 空 run 节点（无 run_id 无状态）是数据噪音，不渲染
+            lines.append(f"  {ts} {icon} {rid} {status}".rstrip())
+    return lines
+
+
+def _check_worktree(proot, spec_name):
+    """活跃 worktree 与最近修改文件（保留原脚本行为）。"""
+    wt_root = proot / ".claude" / "worktrees"
+    if not wt_root.exists():
         return None
-    for wt in WORKTREES_DIR.iterdir():
-        if wt.is_dir() and spec_name.replace("-", "-") in wt.name:
-            # 获取最近修改的文件
-            recent_files = []
-            for f in sorted(wt.rglob("*"), key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True):
-                if f.is_file() and ".git/" not in str(f) and "node_modules" not in str(f):
-                    if any(str(f).endswith(ext) for ext in [".tsx", ".ts", ".css", ".html", ".json", ".py", ".md"]):
-                        mtime = datetime.fromtimestamp(f.stat().st_mtime)
-                        rel = str(f.relative_to(wt))
-                        recent_files.append((rel, mtime))
-                if len(recent_files) >= 15:
-                    break
-            return {"path": str(wt), "files": recent_files}
+    for wt in wt_root.iterdir():
+        if wt.is_dir() and spec_name in wt.name:
+            recent = []
+            try:
+                for f in sorted(wt.rglob("*"), key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True):
+                    if f.is_file() and ".git/" not in str(f) and "node_modules" not in str(f):
+                        if f.suffix in (".tsx", ".ts", ".css", ".html", ".json", ".py", ".md"):
+                            recent.append((str(f.relative_to(wt)), f.stat().st_mtime))
+                    if len(recent) >= 10:
+                        break
+            except OSError:
+                pass
+            return {"path": str(wt), "files": recent}
     return None
 
 
-# ── 验证进度 ─────────────────────────────────────────────────────────
-
-def parse_verify_progress(spec_name):
-    """读取验证进度：进度指针（total/done/current）+ report.json 汇总与场景明细"""
-    pointer_path = VERIFY_PROGRESS_DIR / f"{spec_name}.json"
-    report_path = VERIFY_PROGRESS_DIR / spec_name / "report.json"
-
-    result = {"pointer": None, "summary": None, "scenarios": [], "timestamp": None}
-
-    # 1. 进度指针（验证进行中实时更新）
-    if pointer_path.exists():
-        try:
-            result["pointer"] = json.loads(pointer_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    # 2. report.json（验证完成后生成的完整报告）
-    if report_path.exists():
-        try:
-            data = json.loads(report_path.read_text(encoding="utf-8"))
-            result["summary"] = data.get("summary", {})
-            result["scenarios"] = data.get("scenarios", [])
-            result["timestamp"] = data.get("timestamp")
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    return result
-
-
-def show_verify_progress(spec_name):
-    """输出验证进度区块（有验证数据时才显示）"""
-    vp = parse_verify_progress(spec_name)
-    if not vp["pointer"] and not vp["scenarios"]:
-        return
-
-    print(f"\n{BOLD}🧪 验证进度（planner 场景）{RESET}")
-
-    # 进度指针
-    pointer = vp["pointer"]
-    if pointer:
-        total = pointer.get("total", 0)
-        done = pointer.get("done", 0)
-        current = pointer.get("current", "")
-        print(f"  进度: {done}/{total} 已完成")
-        if current:
-            print(f"  {GRAY}{current}{RESET}")
-
-    # 汇总
-    summary = vp["summary"]
-    if summary:
-        passed = summary.get("passed", 0)
-        failed = summary.get("failed", 0)
-        errors = summary.get("errors", 0)
-        warnings = summary.get("warnings", 0)
-        print(f"  结果: {GREEN}{passed} 通过{RESET} / {RED}{failed} 失败{RESET}"
-              f" / {RED}{errors} 错误{RESET} / {YELLOW}{warnings} 警告{RESET}")
-
-    # 场景明细
-    scenarios = vp["scenarios"]
-    if scenarios:
-        print()
-        for s in scenarios:
-            sid = s.get("scenario_id", "?")
-            desc = s.get("description", "")
-            status = s.get("status", "?")
-            if status == "pass":
-                mark = f"{GREEN}✓{RESET}"
-            elif status == "fail":
-                mark = f"{RED}✗{RESET}"
-            elif status == "error":
-                mark = f"{RED}⚠{RESET}"
-            else:
-                mark = f"{GRAY}·{RESET}"
-            line = f"  {mark} {GRAY}{sid}{RESET}"
-            if desc:
-                line += f" — {desc}"
-            if status == "fail":
-                # 定位首个失败点：优先断言（更具体），其次步骤
-                fail_assert = next((a for a in s.get("assertion_results", []) if not a.get("pass")), None)
-                fail_step = next((r for r in s.get("step_results", []) if not r.get("success")), None)
-                if fail_assert:
-                    label = fail_assert.get("label") or fail_assert.get("type", "?")
-                    line += f"  {RED}[断言失败: {label}]{RESET}"
-                elif fail_step:
-                    detail = fail_step.get("detail") or ""
-                    line += f"  {RED}[步骤失败: {fail_step.get('action')} {detail}]{RESET}"
-            print(line)
-
-
-# ── 输出 ─────────────────────────────────────────────────────────────
-
-STATUS_ICONS = {
-    "drafted": "📝", "ready": "📌", "implementing": "🔨",
-    "implemented": "🧪", "testing": "🔍", "verified": "✅",
-    "bug-found": "🐛", "done": "🎯", "pushed": "🚀",
-}
-
-
-def show_progress(spec_name):
-    """主函数：输出 SPEC 进展报告"""
-    # 1. 基本信息
-    specs = parse_state()
-    entry = specs.get(spec_name)
+def render_report(project_root, spec_name: str) -> str:
+    proot = Path(project_root)
+    entries = data.parse_state(proot)
+    entry = entries.get(spec_name)
     if not entry:
-        print(f"{RED}❌ SPEC '{spec_name}' 未找到{RESET}")
-        sys.exit(1)
+        print(f"❌ SPEC '{spec_name}' 未找到（/fenix-status 查看全部 SPEC 名称）")
+        raise SystemExit(1)
 
+    lines = []
+
+    # ── 头部 ──
     status = entry.get("status", "?")
     icon = STATUS_ICONS.get(status, "❓")
-    priority = entry.get("priority", "?")
-    deps = entry.get("depends_on")
-    error = entry.get("error")
-    impl_run = entry.get("implementer_run")
-    test_run = entry.get("tester_run")
+    try:
+        summary = data.spec_summary(proot, spec_name, entry)
+    except Exception:
+        summary = {}
+    detail = data.spec_detail(proot, spec_name, entry)
+    mode = (summary or {}).get("mode") or detail.get("mode") or "full"
 
-    print(f"\n{BOLD}{'='*60}{RESET}")
-    print(f"  {icon} {BOLD}{spec_name}{RESET}  (P{priority})")
-    print(f"  状态: {icon} {GREEN if status in ('done','pushed') else YELLOW}{status}{RESET}")
-    if deps and deps != "null":
-        print(f"  依赖: {deps}")
-    if error:
-        print(f"  {RED}⚠️  错误: {error}{RESET}")
-    if impl_run:
-        print(f"  实现运行: {GRAY}{impl_run}{RESET}")
-    if test_run:
-        print(f"  测试运行: {GRAY}{test_run}{RESET}")
-    print(f"{BOLD}{'='*60}{RESET}")
+    lines.append(f"{icon} {spec_name}  P{entry.get('priority', '?')}  {status}  [{mode}]")
+    head_notes = []
+    if entry.get("depends_on"):
+        head_notes.append(f"依赖: {entry['depends_on']}")
+    if entry.get("branch"):
+        head_notes.append(f"分支: {entry['branch']}")
+    for label, key in (("创建", "created"), ("更新", "updated")):
+        if entry.get(key):
+            head_notes.append(f"{label} {_local_ts(entry[key], '%m-%d %H:%M')}")
+    if head_notes:
+        lines.append("  " + "  ｜  ".join(head_notes))
+    runs_ref = []
+    if entry.get("implementer_run"):
+        runs_ref.append(f"impl {entry['implementer_run']}")
+    if entry.get("tester_run"):
+        runs_ref.append(f"test {entry['tester_run']}")
+    if runs_ref:
+        lines.append("  " + "  ｜  ".join(runs_ref))
+    frozen = data.is_spec_frozen(entry)
+    err = entry.get("error")
+    if err and not frozen:
+        lines.append(f"  ⚠️ 错误: {err}")
+    until = data.get_frozen_until(entry)
+    if frozen or until:
+        tail = f"，定时解冻 {_local_ts(until, '%m-%d %H:%M')}" if until else ""
+        lines.append(f"  🧊 冻结{tail}")
+    start_after = data.get_spec_start_after(entry)
+    if start_after:
+        lines.append(f"  ⏰ start_after: {_local_ts(start_after, '%m-%d %H:%M')}")
 
-    # 2. tasks.md 进展
-    groups = parse_tasks(spec_name)
-    if groups:
-        total = sum(len(g["tasks"]) for g in groups)
-        done = sum(1 for g in groups for t in g["tasks"] if t["done"])
-        pct = int(done / total * 100) if total > 0 else 0
-        bar_len = 20
-        filled = int(pct / 100 * bar_len)
-        bar = "█" * filled + "░" * (bar_len - filled)
+    # ── 进度 ──
+    lines.append("")
+    lines.append("-- 进度 --")
+    lines.extend(_render_tasks(detail.get("tasks") or []))
+    tasks_note = detail.get("tasks_note")
+    if tasks_note:
+        lines.append(f"  ⚠ {tasks_note}")
+    rp = detail.get("run_progress") or {}
+    if rp.get("total"):
+        cur = f"（进行中 {','.join(rp.get('current') or [])}）" if rp.get("current") else ""
+        lines.append(f"run 层实时: {rp.get('done')}/{rp.get('total')}{cur}")
+    vp = detail.get("verify_progress") or {}
+    if vp.get("total"):
+        cur = f"  当前: {vp.get('current')}" if vp.get("current") else ""
+        lines.append(f"验证: {vp.get('done')}/{vp.get('total')}{cur}")
+    gen = detail.get("generation")
+    if gen:
+        lines.append(f"出题: {gen.get('done')}/{gen.get('total')}（场景生成中）")
+    if not detail.get("tasks") and not vp.get("total") and not rp.get("total") and not gen:
+        lines.append("  （无进度数据）")
+    dur = _fmt_dur(detail.get("total_duration"))
+    if dur:
+        lines.append(f"累计耗时: {dur}")
 
-        print(f"\n{BOLD}📊 tasks.md 进展 [{bar}] {done}/{total} ({pct}%){RESET}\n")
-        for group in groups:
-            g_done = sum(1 for t in group["tasks"] if t["done"])
-            g_total = len(group["tasks"])
-            g_icon = "✅" if g_done == g_total else "🔨"
-            print(f"  {g_icon} {group['title']} ({g_done}/{g_total})")
-            for task in group["tasks"]:
-                mark = f"{GREEN}✓{RESET}" if task["done"] else f"{GRAY}○{RESET}"
-                desc = task["desc"]
-                if task["done"]:
-                    desc = f"{GRAY}{desc}{RESET}"
-                print(f"     {mark} {task['id']} {desc}")
-    elif (CHANGES_DIR / spec_name / "tasks.md").exists():
-        # tasks.md 存在但未解析出任务分组：显式提示，不再静默跳过（task-track R3）
-        print(f"\n{YELLOW}⚠ tasks.md 存在但未解析出任务（分组格式不匹配？）{RESET}")
+    # ── 预算 ──
+    if summary:
+        effective = int(summary.get("budget_effective") or 0)
+        used = int(summary.get("budget_used") or 0)
+        override = summary.get("budget_override")
+        if effective:
+            tag = f"（override {override}）" if override else ""
+            if used >= effective:
+                lines.append(f"尝试预算: {used}/{effective}{tag} ⚠️ 已耗尽 — 需人工介入或调高预算")
+            else:
+                lines.append(f"尝试预算: {used}/{effective}{tag} 剩余 {effective - used} 次")
 
-    # 3. fenixd 日志时间线
-    events = parse_logs(spec_name)
-    if events:
-        print(f"\n{BOLD}📋 fenixd 时间线{RESET}\n")
-        for ev in events:
-            ts = _local_ts(ev["time"])
-            comp_short = {"state_machine": "📦", "pm_engine": "🧠",
-                          "agent_runner": "🤖", "event_bus": "📡",
-                          "worktree_manager": "🌲"}.get(ev["component"], ev["component"][:4])
-            print(f"  {GRAY}{ts}{RESET} {comp_short} {ev['message']}")
+    # ── 验证结论 ──
+    verdict_block = _render_verdict(detail)
+    if verdict_block:
+        lines.append("")
+        lines.append("-- 验证结论 --")
+        lines.extend(verdict_block)
 
-    # 4. Worktree 和文件变更
-    wt = check_worktree(spec_name)
+    # ── 运行历史 ──
+    runs = detail.get("runs") or []
+    if runs:
+        lines.append("")
+        lines.append(f"-- 运行历史（最近 {min(10, len(runs))}/{len(runs)}）--")
+        lines.extend(_render_runs(runs))
+
+    # ── 成本 ──
+    token_usage = detail.get("token_usage") or {}
+    cost_summary = detail.get("cost_summary")
+    if token_usage.get("tokens_in") or token_usage.get("tokens_out") or cost_summary:
+        lines.append("")
+        lines.append("-- 成本 --")
+        lines.append(f"tokens: 输入 {_fmt_tokens(token_usage.get('tokens_in'))}"
+                     f" / 输出 {_fmt_tokens(token_usage.get('tokens_out'))}")
+        if token_usage.get("cost_available"):
+            lines.append(f"累计成本: ${token_usage.get('cost_usd'):.2f}")
+        elif cost_summary:
+            total_cost = cost_summary.get("total_cost_usd")
+            if total_cost is not None:
+                lines.append(f"时间轴计费成本: ${float(total_cost):.2f}")
+        else:
+            lines.append("成本: 不可用（网关未回传计费）")
+
+    # ── 时间轴 ──
+    timeline = detail.get("timeline") or []
+    if timeline:
+        lines.append("")
+        lines.append(f"-- 时间轴（最近 {min(15, len(timeline))} 节点）--")
+        lines.extend(_render_timeline(timeline))
+
+    # ── 工作区 ──
+    wt = _check_worktree(proot, spec_name)
     if wt:
-        print(f"\n{BOLD}🔧 工作区{RESET}")
-        print(f"  {GRAY}{wt['path']}{RESET}\n")
-        if wt["files"]:
-            recent = wt["files"][:10]
-            for fpath, mtime in recent:
-                ts = mtime.strftime("%H:%M")
-                print(f"  {GRAY}{ts}{RESET} {fpath}")
+        lines.append("")
+        lines.append("-- 工作区 --")
+        lines.append(f"  {wt['path']}")
+        for rel, mtime in wt["files"][:10]:
+            ts = datetime.fromtimestamp(mtime).strftime("%H:%M")
+            lines.append(f"  {ts} {rel}")
 
-    # 5. 验证进度（planner 场景数 + 通过/失败）
-    show_verify_progress(spec_name)
+    # ── 下一步 ──
+    lines.append("")
+    lines.append("-- 下一步 --")
+    lines.append(f"  {NEXT_STEPS.get(status, '未知状态')}")
 
-    # 6. 下一步提示
-    print(f"\n{BOLD}⏭️  下一步{RESET}")
-    next_steps = {
-        "drafted": "fenixd 将自动推进 → ready → implementing",
-        "ready": "fenixd 等待调度 implementer agent",
-        "implementing": "implementer agent 正在工作区修改代码",
-        "implemented": "fenixd 将自动调度 verifier agent 进行验证",
-        "testing": "verifier agent 正在执行验证测试",
-        "verified": "验证通过，fenixd 将自动标记为 done",
-        "bug-found": "验证发现 bug，fenixd 将自动创建 fix SPEC",
-        "done": "等待推送 — 运行 /fenix-approve",
-        "pushed": "✅ 已完成并推送",
-    }
-    print(f"  {next_steps.get(status, '未知状态')}")
+    return "\n".join(lines) + "\n"
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        print("用法: python3 fenix_process.py <spec-name>")
+        return 1
+    sys.stdout.write(render_report(PROJECT_ROOT, sys.argv[1]))
+    return 0
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("用法: python3 fenix_process.py <spec-name>")
-        sys.exit(1)
-    show_progress(sys.argv[1])
+    sys.exit(main())

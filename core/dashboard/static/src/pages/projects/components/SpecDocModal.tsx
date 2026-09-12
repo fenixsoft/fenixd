@@ -56,13 +56,13 @@ export const markdownComponents: Components = {
   a: SafeLink,
   h1: ({ children }) => <h1 style={{ fontSize: 18, fontWeight: 600 }}>{children}</h1>,
   h2: ({ children }) => <h2 style={{ fontSize: 16, fontWeight: 600 }}>{children}</h2>,
-  h3: ({ children }) => <h3 style={{ fontSize: 14, fontWeight: 400 }}>{children}</h3>,
+  h3: ({ children }) => <h3 style={{ fontSize: 14, fontWeight: 600 }}>{children}</h3>,
   h4: ({ children }) => <h4 style={{ fontSize: 14, fontWeight: 400 }}>{children}</h4>,
   h5: ({ children }) => <h5 style={{ fontSize: 14, fontWeight: 400 }}>{children}</h5>,
   h6: ({ children }) => <h6 style={{ fontSize: 14, fontWeight: 400 }}>{children}</h6>,
-  p: ({ children }) => <p style={{ fontSize: 14 }}>{children}</p>,
-  ul: ({ children }) => <ul style={{ fontSize: 14, lineHeight: 2 }}>{children}</ul>,
-  ol: ({ children }) => <ol style={{ fontSize: 14, lineHeight: 2 }}>{children}</ol>,
+  p: ({ children }) => <p style={{ fontSize: 14, lineHeight: 1.9 }}>{children}</p>,
+  ul: ({ children }) => <ul style={{ fontSize: 14, lineHeight: 1.9 }}>{children}</ul>,
+  ol: ({ children }) => <ol style={{ fontSize: 14, lineHeight: 1.9 }}>{children}</ol>,
   // antd reset 去掉了表格默认边框，这里补齐：通宽 + 灰色细线网格
   table: ({ children, ...props }) => (
     <table style={{ width: '100%', borderCollapse: 'collapse', margin: '12px 0' }} {...props}>
