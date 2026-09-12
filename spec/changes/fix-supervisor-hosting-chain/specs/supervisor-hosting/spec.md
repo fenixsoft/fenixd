@@ -150,3 +150,22 @@ Dashboard 服务端 MUST 提供 `POST /api/projects/<name>/install-hosting`：�
 
 - **WHEN** 对不在监控列表的项目名调用该端点
 - **THEN** 返回 400 与「项目不存在」错误
+
+### Requirement: 审批推送的消费方校验
+
+`core/dashboard/data.py:request_spec_approve_push(project_root, spec)` 在写 `.fenix/approve_push_request.json` 前 MUST 校验该项目存在**受 supervisor 托管的活跃 daemon**（`hosting_state(project_root) == "managed"`），MUST NOT 仅以「daemon 进程存活」（`is_running`）作为消费方存在的判据——`unmanaged` 项目下 daemon 进程虽在运行，却无人消费该信号，信号将永久滞留并锁死该项目后续全部审批推送。托管态为 `unmanaged` 时 MUST 返回带 `unmanaged: True` 标记的失败结果，端点 `POST /api/spec-approve-push` MUST 返回 409，error MUST 含「未受 supervisor 托管」及经 Dashboard 项目页「安装托管」或 `/fenix-setup` 恢复托管的指引，且 MUST NOT 写入信号文件。托管态为 `stopped` 时 MUST 维持既有「daemon 未运行，请先启动 daemon」文案与行为不变。
+
+#### Scenario: unmanaged 项目拒绝审批推送（事故回归）
+
+- **WHEN** fenix-server 处于 `unmanaged`（daemon 进程在跑但无 supervisor），用户对某 `done` SPEC 点击「审批推送」
+- **THEN** 接口返回 409，error 含「未受 supervisor 托管」与安装托管指引，且 `.fenix/approve_push_request.json` MUST NOT 被写入
+
+#### Scenario: managed 项目审批推送正常通过
+
+- **WHEN** 项目托管态为 `managed`，用户对某 `done` SPEC 点击「审批推送」
+- **THEN** 信号被写入并返回成功，daemon 主循环消费后 SPEC 推进 `pushed`
+
+#### Scenario: stopped 项目维持既有文案
+
+- **WHEN** 项目无 daemon 进程（托管态 `stopped`），用户对某 `done` SPEC 点击「审批推送」
+- **THEN** 接口返回 409 与「daemon 未运行，请先启动 daemon」，不出现托管态相关文案

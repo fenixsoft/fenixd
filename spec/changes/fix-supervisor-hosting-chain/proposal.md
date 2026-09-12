@@ -23,6 +23,7 @@
 - `core/hook_engine.py:_action_restart_daemon`：写请求后校验消费方存在，不存在时返回 failure 并触发既有 `_alert_failure`，不再报假成功。
 - `core/admin_monitor.py:_detect_restart_failure` 的 `recommended_action` 改为按「supervisor 是否存在」分支给出安全建议，移除「手动启动 `.fenix/bin/fenixd_supervisor.py`」这条在多项目拓扑下有害的指引。
 - Dashboard 项目页/概览卡片对 `unmanaged` 项目提供「安装 supervisor 托管」操作（停止裸 daemon → 经 supervisor 重启），作为存量项目（fenix-server、scheduling-showcase）的一次性修复路径。
+- `core/dashboard/data.py:request_spec_approve_push` 的消费方判据从「daemon 进程存活」升级为「受 supervisor 托管运行」（`hosting_state == "managed"`）：`unmanaged` 项目 MUST 拒绝审批推送（409 + 安装托管指引）而非接受请求后让信号永久滞留。与上一条 `restart-daemon` hook 的消费方校验同源——两者都是「写文件信号前必须确认有消费者」。`stopped` 项目维持既有「daemon 未运行」文案与行为不变。
 
 ## Capabilities
 
@@ -36,9 +37,9 @@
 
 ## Impact
 
-- **代码**：`bin/fenixd_supervisor.py`（项目根解析 + 守卫 + 自报扩展）、`core/fenix_session.py`（start/stop 语义 + `supervisor_running` + 托管态）、`core/dashboard/server.py`（项目 restart 前置校验 + 安装托管端点）、`core/dashboard/data.py`（daemon 状态聚合）、`fenixd.py`（启动自检拆分 + 告警落盘）、`core/hook_engine.py`（restart-daemon 消费方校验）、`core/admin_monitor.py`（建议文案分支）。
+- **代码**：`bin/fenixd_supervisor.py`（项目根解析 + 守卫 + 自报扩展）、`core/fenix_session.py`（start/stop 语义 + `supervisor_running` + 托管态）、`core/dashboard/server.py`（项目 restart 前置校验 + 安装托管端点 + 审批推送托管态 409）、`core/dashboard/data.py`（daemon 状态聚合 + 审批推送消费方校验）、`fenixd.py`（启动自检拆分 + 告警落盘）、`core/hook_engine.py`（restart-daemon 消费方校验）、`core/admin_monitor.py`（建议文案分支）。
 - **技能**：`skills/fenix-setup/SKILL.md`（第 7 步启动命令）、`skills/fenix-status/SKILL.md`（托管态展示，如有涉及）。
 - **文档**：`docs/help/04-cli.md`、`docs/help/06-governance.md`、`docs/help/07-safeguards.md`、`docs/help/08-dashboard.md`、`docs/help/09-config.md`、`docs/help/11-faq.md`、`README.md` —— 把「由 supervisor 托管」从**声称**变成**事实**，并补「托管态三态」与「安装托管」说明。
 - **数据/兼容性**：`supervisor_runtime.json` 新增字段为向后兼容的增量键（读侧按缺失处理为「旧版 supervisor」）。旧的无 `--project-root` 启动方式在 cwd 等于项目根时行为不变。
-- **存量现场**：`/root/fenix-server/.fenix/restart_request`（09-12 00:08 残留，daemon 仍跑 09-10 代码）与主树陈旧 supervisor 进程（PID 3325244，不写自报）为本 SPEC 的首批存量验证对象，但**不在实现阶段直接操作生产进程**，由落地后的「安装托管」操作与用户确认后处理。
+- **存量现场**：`/root/fenix-server/.fenix/restart_request`（09-12 00:08 残留，daemon 仍跑 09-10 代码）与主树陈旧 supervisor 进程（PID 3325244，不写自报）为本 SPEC 的首批存量验证对象，但**不在实现阶段直接操作生产进程**，由落地后的「安装托管」操作与用户确认后处理。另有 `/root/fenix-server/.fenix/approve_push_request.json`（09-12 10:31 写入、至今无人消费，正是本 SPEC 新增的 `unmanaged` 拒绝所针对的场景）——该信号无需专门清理，安装托管后由换上新代码的 daemon 主循环经既有 `_check_approve_push_requests` 自然消费（若届时该 SPEC 已非 `done`，按既有语义幂等返回 False 并删除信号）。
 - **非目标**：不引入 systemd / 外部进程管理器；不改变 daemon 自身的排水与恢复语义；不改动 `restart_request` 文件信号协议本身。

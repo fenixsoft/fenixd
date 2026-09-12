@@ -75,6 +75,8 @@
 - [ ] 5.2 `core/dashboard/server.py`：`_api_project_lifecycle` 的 `restart` 分支在校验项目存在后、写 `restart_request` 前检查 `hosting_state`，为 `unmanaged` 时返回 `{"ok": False, "error": <含「未受 supervisor 托管」>}`；新增 `install-hosting` 动作——对 `managed` 幂等返回已托管、其余情况复用 `stop_daemon` + `start_daemon` 转入托管，成功后沿用既有 SSE `refresh` 广播；`_resolve_project_or_400` 的动作后缀剥离列表加入 `/install-hosting`。
 - [ ] 5.3 `core/dashboard/static/src/services/dashboard.ts` 新增 `installHosting(name)`；`core/dashboard/static/src/pages/overview/components/ProjectCards.tsx` 的 `DaemonBadge` 扩展为托管态三态显示（`unmanaged` 渲染为「运行中·未托管」警示样式），项目操作菜单在 `hosting === 'unmanaged'` 时新增「安装托管」项并按 `runAction` 同一路径调用与刷新，不改变既有启动/停止/删除项行为。
 - [ ] 5.4 `tests/test_supervisor_hosting.py`：覆盖 `/api/projects` 与 `/api/overview` 返回三态的 `daemon`/`hosting` 组合；`install-hosting` 对 `unmanaged` 成功转 `managed`、对 `managed` 幂等、对未监控项目返回 400；`restart` 对 `unmanaged` 返回可读错误且不视作成功。
+- [ ] 5.5 `core/dashboard/data.py:request_spec_approve_push()`：把消费方判据从 `_is_running(proot)` 升级为 `hosting_state(proot)`——`unmanaged` 时返回 `{"ok": False, "found": True, "unmanaged": True, "conflict": False, "daemon_down": False, "file": None, "created": None, "error": <含「未受 supervisor 托管」与经 Dashboard「安装托管」或 `/fenix-setup` 恢复托管的指引>}` 且 MUST NOT 写入信号文件；`stopped` 时维持既有 `daemon_down` 分支与「daemon 未运行，请先启动 daemon」文案逐字不变；`managed` 走既有校验与写入路径。`core/dashboard/server.py:_api_spec_approve_push()` 新增 `result.get("unmanaged")` → 409 分支（先于 `conflict` 判定，便于用户区分「托管链断了」与「已有请求在途」）。
+- [ ] 5.6 `tests/test_supervisor_hosting.py`：覆盖 `unmanaged` 项目审批推送返回 409 且 `.fenix/approve_push_request.json` 未被创建（事故回归）；`managed` 项目审批推送写入信号并返回成功；`stopped` 项目返回的文案与既有 `daemon_down` 文案逐字一致。
 
 ## 6. 技能与文档对齐
 
