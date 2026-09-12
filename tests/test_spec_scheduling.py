@@ -203,6 +203,10 @@ def make_min_dispatcher(pm, run_queue, entry_reader):
     pm._is_fix_spec = lambda n: False
     pm._sibling_repair_active = lambda n, enqueued_at=None: None
     pm._check_impl_budget_exhausted = lambda n: False
+    # add-spec-content-integrity-gate 接入 dispatch 后同层新增的派发前闸门：
+    # 本替身不设 pm.project_root，漏桩即 AttributeError（bb9de76c 起 4.1/4.3
+    # 两例红灯）——调度门控测试只验 start_after，内容维度按「有内容」放行。
+    pm._check_spec_content_missing = lambda n: False
 
     d = Dispatcher.__new__(Dispatcher)
     d._pm = pm
