@@ -33,10 +33,8 @@ from core.agent_runner.liveness import (
     sweep_runs_without_terminal_state,
 )
 
-# 模块级 import（test_admin.py 同款处方）：仓库根 __init__.py 使 pytest 执行期
-# sys.path[0]='/root' 时 `import fenixd` 命中同名包（__init__.py 无
-# FenixDaemon）。模块级 import 在收集阶段（sys.path 尚干净）绑定 fenixd.py 模块，
-# 函数内延迟 import 会撞包 → AttributeError: FenixDaemon。
+# 模块级 import（test_admin.py 同款处方）：直接绑定守护脚本模块 fenixd.py，
+# 供用例在测试执行期使用（fixture 内不重复导入）。
 import fenixd as _fenixd_mod
 
 

@@ -197,9 +197,9 @@ class TestDaemonSingletonFlock(unittest.TestCase):
     """daemon-singleton：fenixd._acquire_singleton_lock 真实路径
     （第二个实例打印提示并 sys.exit(1)，释放后可重新获取）。
 
-    按绝对路径直载 fenixd.py（避免仓库根 __init__.py 使 `import fenixd`
-    解析到同名包而非守护脚本模块），且实例不注册进 sys.modules，
-    与其他测试的 fenixd 导入互不串扰。
+    按绝对路径以独立模块名 `fenixd_daemon_under_test` 直载 fenixd.py，不注册
+    进 `sys.modules['fenixd']`，与其他测试的正常 `import fenixd` 互不串扰
+    （模块隔离，避免 sys.modules 命名冲突）。
     """
 
     def setUp(self):
