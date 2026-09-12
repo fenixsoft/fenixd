@@ -362,6 +362,11 @@ class TestGuardThreeNoQueueHeadBlocking(unittest.TestCase):
             self.sm, self.agent_runner, self.config,
             self.project_root, self.logger,
         )
+        # add-spec-content-integrity-gate（bb9de76c）接入 dispatch 后同层新增的
+        # 派发前闸门：本类只验守卫三/队首不阻塞，内容维度按「有内容」放行
+        # （c6d5924c 对调度测试替身的同款补桩处方）。漏桩时：empty tmpdir +
+        # 恒 ready 替身触发闸门 → 摘除条目回队首 → 死循环挂起。
+        self.engine._check_spec_content_missing = lambda n: False
         self._threading = _threading
         self.dispatched = []
         self._orig_thread_start = _threading.Thread.start
