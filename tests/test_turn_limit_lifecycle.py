@@ -108,6 +108,32 @@ def _evt(etype: str, ts: float | None) -> dict:
     return d
 
 
+def _now_user_tool_result_evt(n_blocks: int = 1) -> dict:
+    """真实 stream-json 形态的 tool_result 承载事件（当前时间戳，命中窗口）：
+    ``user`` 事件包裹 ``message.content[]`` 里的 ``tool_result`` content block，
+    顶层无 ``tool_result`` 事件（与实测转录 100% 形态一致）。"""
+    return {
+        "type": "user",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "message": {"content": [
+            {"type": "tool_result", "tool_use_id": f"tu_{i}",
+             "content": f"result-{i}"} for i in range(n_blocks)
+        ]},
+    }
+
+
+def _now_user_text_evt() -> dict:
+    """skill 加载消息形态：``user`` 事件仅含 ``text`` block（非 tool_result），
+    不得被判为流量活性。"""
+    return {
+        "type": "user",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "message": {"content": [
+            {"type": "text", "text": "Base directory for this skill: ..."},
+        ]},
+    }
+
+
 def _now_evt(etype: str) -> dict:
     """带当前时间戳的事件（命中尾部流量窗口）。"""
     return _evt(etype, time.time())
@@ -216,15 +242,20 @@ class TestTurnLimitMatrix:
         assert "commit" in action["evidence"].lower() or action["evidence"]
 
     def test_tool_result_traffic_only_extends(self, tmp_path):
-        """仅 tool_result 流量活性 → extend（builtin 验证期场景：无提交有流量）。"""
+        """仅 tool_result 流量活性 → extend（builtin 验证期场景：无提交有流量）。
+
+        走真实 stream-json 形态：``user`` 事件包裹 ``tool_result`` content
+        block（无顶层 tool_result 事件）——原判定仅认顶层 ``tool_result``
+        恒判无活性，本用例即回归该盲区。
+        """
         root = tmp_path / "repo"
         init_repo(root)
         runner = make_turn_runner(root)
         run_file = root / ".fenix" / "runs" / "impl-demo-1-a1.jsonl"
         run_file.parent.mkdir(parents=True, exist_ok=True)
-        # 尾部窗口内新 tool_result 事件（带当前时间戳）
+        # 尾部窗口内真实形态 tool_result 事件（user 包裹 block + 当前时间戳）
         with run_file.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(_now_evt("tool_result")) + "\n")
+            f.write(json.dumps(_now_user_tool_result_evt()) + "\n")
 
         action = runner._turn_limit_action(
             run_file, "demo", "impl-demo-1-a1", 0, root / "nonexistent-wt",
@@ -232,6 +263,51 @@ class TestTurnLimitMatrix:
         assert action["action"] == "extend"
         assert action["extension_index"] == 1
         assert action["new_turn_cap"] == 500
+        # 证据摘要标注 tool_result 流量（证据 b 真实命中）
+        assert "tool_result traffic" in action["evidence"]
+
+    def test_plain_text_user_event_not_traffic(self, tmp_path):
+        """纯 text user 事件（skill 加载消息）不判流量活性 → kill。
+
+        tool-result-stream-detection 负向场景：`user` 事件仅含 ``text`` block
+        不得产生假流量（该续不续、该杀不杀）。
+        """
+        root = tmp_path / "repo"
+        init_repo(root)
+        runner = make_turn_runner(root)
+        run_file = root / ".fenix" / "runs" / "impl-demo-1-a1.jsonl"
+        run_file.parent.mkdir(parents=True, exist_ok=True)
+        with run_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(_now_user_text_evt()) + "\n")
+
+        action = runner._turn_limit_action(
+            run_file, "demo", "impl-demo-1-a1", 0, root / "nonexistent-wt",
+            max_turns=400)
+        assert action["action"] == "kill"
+        assert "no liveness" in action["evidence"]
+
+    def test_turn_traffic_active_real_shape(self, tmp_path):
+        """_turn_traffic_active 对真实形态直接判 True（单测级，无矩阵耦合）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        runner = make_turn_runner(root)
+        run_file = root / ".fenix" / "runs" / "impl-demo-1-a1.jsonl"
+        run_file.parent.mkdir(parents=True, exist_ok=True)
+        # 真实形态：user 包裹 tool_result（含 2 个并行 block，仍计一次流量）
+        with run_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(_now_user_tool_result_evt(n_blocks=2)) + "\n")
+        assert runner._turn_traffic_active(run_file) is True
+
+    def test_turn_traffic_active_plain_text_false(self, tmp_path):
+        """_turn_traffic_active 对纯 text user 事件判 False（负向单测）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        runner = make_turn_runner(root)
+        run_file = root / ".fenix" / "runs" / "impl-demo-1-a1.jsonl"
+        run_file.parent.mkdir(parents=True, exist_ok=True)
+        with run_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(_now_user_text_evt()) + "\n")
+        assert runner._turn_traffic_active(run_file) is False
 
     def test_no_liveness_kills(self, tmp_path):
         """双无活性 → kill（空分支、无流量）。"""
@@ -354,6 +430,42 @@ class TestTurnExtensionPollLoop:
         last = json.loads(lines[-1])
         assert last["type"] == "error"
         assert "Max turns" in last["error"]
+
+    def test_real_shape_traffic_extends_in_poll_loop(self, monkeypatch, tmp_path):
+        """真实形态端到端：流式 user 包裹 tool_result 事件经 _read_stream 落盘，
+        轮询环 _turn_traffic_active 读回判活性 → 续期留痕（非恒 False 失明）。"""
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        runner = make_turn_runner(proot)
+        max_turns = 5
+        # 真实形态流量事件 + 8 个 assistant（触发 3 次判定：extend、extend、kill）
+        events = [
+            _now_user_tool_result_evt(),
+        ] + [_evt("assistant", None) for _ in range(8)]
+        proc = _BurstFakeProc(events)
+        _patch_popen(monkeypatch, proc)
+
+        with pytest.raises(RuntimeError) as cm:
+            runner._run_claude(
+                "prompt", proot, "impl-demo-95-a1",
+                max_turns=max_turns, spec_name="demo", agent_type="implementer")
+        assert "Max turns" in str(cm.value)
+
+        run_file = proot / ".fenix" / "runs" / "impl-demo-95-a1.jsonl"
+        lines = [l for l in run_file.read_text(encoding="utf-8").splitlines()
+                 if l.strip()]
+        ext_events = [
+            json.loads(l) for l in lines
+            if json.loads(l).get("type") == "turn_extension"
+        ]
+        # 真实形态流量 → 至少一次续期，且证据标注 tool_result 流量
+        assert len(ext_events) >= 1
+        assert "tool_result traffic" in ext_events[0]["evidence"]
+        # 落盘的 user 事件确实是真实形态（读线程原样写盘）
+        user_evts = [json.loads(l) for l in lines
+                     if json.loads(l).get("type") == "user"]
+        assert any(
+            u["message"]["content"][0]["type"] == "tool_result" for u in user_evts)
 
     def test_no_liveness_kills_and_error_last_line(self, monkeypatch, tmp_path):
         """无活性 run（空分支 + 无流量）→ 直达 kill，无 turn_extension 事件；

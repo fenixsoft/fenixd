@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.agent_runner.runner import (
     LATENCY_STALL_SECONDS,
+    _entry_is_tool_result,
     format_latency_summary,
     latency_samples_from_events,
     latency_stats,
@@ -38,6 +39,132 @@ def _evt(etype: str, ts: float | None) -> dict:
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _user_tool_result_evt(ts: float, n_blocks: int = 1) -> dict:
+    """真实 stream-json 形态的 tool_result 承载事件：``user`` 事件包裹
+    ``message.content[]`` 里的 ``tool_result`` content block（顶层无
+    ``tool_result`` 事件——实测转录 100% 走该形态）。"""
+    return {
+        "type": "user",
+        "timestamp": _iso(ts),
+        "message": {"content": [
+            {"type": "tool_result", "tool_use_id": f"tu_{i}",
+             "content": f"result-{i}"} for i in range(n_blocks)
+        ]},
+    }
+
+
+def _user_text_evt(ts: float) -> dict:
+    """skill 加载消息形态：``user`` 事件仅含 ``text`` block（非 tool_result）。"""
+    return {
+        "type": "user",
+        "timestamp": _iso(ts),
+        "message": {"content": [
+            {"type": "text", "text": "Base directory for this skill: ..."},
+        ]},
+    }
+
+
+class _RecordingLogger:
+    """记录型 logger：捕获 warning 调用（FakeLogger 静默，无法断言自检告警）。"""
+
+    def __init__(self):
+        self.records = []
+
+    def debug(self, *a, **k):
+        pass
+
+    def info(self, *a, **k):
+        pass
+
+    def error(self, *a, **k):
+        pass
+
+    def warning(self, *a, **k):
+        self.records.append(("warning", a, k))
+
+
+# ── 统一 tool_result 识别（tool-result-stream-detection）──────────────
+
+
+class TestToolResultDetection:
+    """Scenario: 流转录 tool_result 事件统一识别（单一真源判定）。"""
+
+    def test_user_wrapped_tool_result_block_true(self):
+        assert _entry_is_tool_result(_user_tool_result_evt(100.0))
+
+    def test_plain_text_user_event_false(self):
+        assert not _entry_is_tool_result(_user_text_evt(100.0))
+
+    def test_top_level_tool_result_compat_true(self):
+        assert _entry_is_tool_result(_evt("tool_result", 100.0))
+
+    def test_multi_block_user_event_true(self):
+        assert _entry_is_tool_result(_user_tool_result_evt(100.0, n_blocks=3))
+
+    def test_other_event_types_false(self):
+        for etype in ("assistant", "system", "result", "tool_progress",
+                      "stderr", "provider_marker"):
+            assert not _entry_is_tool_result(_evt(etype, 100.0))
+
+    def test_string_content_user_event_false(self):
+        # message.content 为字符串（非 block 列表）不得误判
+        entry = {"type": "user", "timestamp": 100.0,
+                 "message": {"content": "plain string"}}
+        assert not _entry_is_tool_result(entry)
+
+
+# ── 真实 stream-json 形态样本提取（fix-run-latency-toolresult-parser）──
+
+
+class TestRealShapeExtraction:
+    """Scenario: 真实 stream-json 转录产出非空样本（根治合成自我证明盲区）。"""
+
+    def test_user_wrapped_tool_result_produces_sample(self):
+        events = [
+            _user_tool_result_evt(100.0),
+            _evt("assistant", 104.5),
+        ]
+        samples = latency_samples_from_events(events)
+        assert len(samples) == 1
+        assert samples[0] == pytest.approx(4.5)
+
+    def test_user_wrapped_tool_result_multi_round_trips(self):
+        events = [
+            _user_tool_result_evt(10.0),
+            _evt("assistant", 12.0),
+            _user_tool_result_evt(20.0),
+            _evt("assistant", 80.0),
+        ]
+        assert latency_samples_from_events(events) == [2.0, 60.0]
+
+    def test_plain_text_user_event_not_sampled(self):
+        # 纯 text user 事件（skill 加载消息）不得作为待配对 tool_result
+        events = [
+            _user_text_evt(0.0),
+            _evt("assistant", 5.0),
+        ]
+        assert latency_samples_from_events(events) == []
+
+    def test_multi_block_user_event_counts_single_roundtrip(self):
+        # 一个 user 事件承载 N 个 tool_result block（并行回喂）= 一次 API 往返
+        events = [
+            _user_tool_result_evt(10.0, n_blocks=2),
+            _evt("assistant", 12.0),
+        ]
+        assert latency_samples_from_events(events) == [2.0]
+
+    def test_no_top_level_tool_result_still_samples(self):
+        # 真实转录全程无顶层 tool_result 事件（全部 user 包裹）也能配对出样本
+        events = [
+            _evt("system", 0.0),
+            _user_tool_result_evt(1.0),
+            _evt("assistant", 2.5),
+        ]
+        samples = latency_samples_from_events(events)
+        assert len(samples) == 1
+        assert samples[0] == pytest.approx(1.5)
 
 
 # ── 样本口径（tool_result → assistant 间隔）─────────────────────────
@@ -222,6 +349,59 @@ class TestRunClaudeIntegration:
         lines = [l for l in run_file.read_text(encoding="utf-8").splitlines()
                  if l.strip()]
         assert json.loads(lines[-1])["type"] == "error"
+
+    def test_latency_self_check_warns_on_blind_run(self, tmp_path):
+        """有 assistant 轮次却配不出样本 → WARNING 含「失明」/latency_rounds=0。
+
+        驱动真实 _run_claude：fake Popen 产出仅 assistant 事件、无任何
+        tool_result 形态，rc=3 退出 → finally 延迟自检命中（rounds=0
+        且 turn_count>0），发出 WARNING 日志。
+        """
+        proot = tmp_path / "proj"
+        runner = self._make_runner(proot)
+        rec_logger = _RecordingLogger()
+        runner.logger = rec_logger
+        events = [
+            {"type": "assistant", "timestamp": 100.0},
+            {"type": "assistant", "timestamp": 200.0},
+        ]
+        fake_ns, _proc = self._fake_subprocess(events)
+        import core.agent_runner.runner as rmod
+        with mock.patch.object(rmod, "subprocess", fake_ns):
+            with pytest.raises(RuntimeError):
+                runner._run_claude("prompt", proot, "impl-blind-1")
+        # WARNING 中含「失明」/「latency_rounds=0」且 turn_count=2
+        # logger.warning("component", msg, {extra_dict}) → a = (component, msg, extra)
+        blind_warns = [
+            a[2] for (kind, a, _) in rec_logger.records
+            if kind == "warning"
+            and "失明" in str(a)
+            and (a[2] if len(a) >= 3 else {}).get("latency_rounds") == 0
+        ]
+        assert len(blind_warns) >= 1, f"未检测到失明自检 WARNING；records={rec_logger.records}"
+        extra = blind_warns[0]
+        assert extra.get("turn_count") == 2
+        assert extra.get("run_id") == "impl-blind-1"
+
+    def test_latency_self_check_no_warn_when_vacuum_run(self, tmp_path):
+        """真空跑（rounds=0 且 turn_count=0）→ 不触发失明告警。"""
+        proot = tmp_path / "proj"
+        runner = self._make_runner(proot)
+        rec_logger = _RecordingLogger()
+        runner.logger = rec_logger
+        # 无 assistant 事件（真空跑）→ turn_count 始终为 0
+        fake_ns, _proc = self._fake_subprocess([])
+        import core.agent_runner.runner as rmod
+        with mock.patch.object(rmod, "subprocess", fake_ns):
+            with pytest.raises(RuntimeError):
+                runner._run_claude("prompt", proot, "impl-vacuum-1")
+        blind_warns = [
+            a[2] for (kind, a, _) in rec_logger.records
+            if kind == "warning"
+            and "失明" in str(a)
+            and (a[2] if len(a) >= 3 else {}).get("latency_rounds") == 0
+        ]
+        assert len(blind_warns) == 0, f"真空跑不应触发失明告警；records={rec_logger.records}"
 
 
 # ── 事后分析脚本（bin/analyze_run_latency.py）──────────────────────
