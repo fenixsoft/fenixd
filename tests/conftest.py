@@ -7,6 +7,28 @@ project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+# ── 收集期导入硬守卫（fix-root-init-import-shadow）─────────────────────────
+# 仓库根 __init__.py（08-16 迁移遗留）曾把 /root/fenixd 标记为同名包 fenixd，
+# 使 pytest 执行期 sys.path 命中 /root 时 `import fenixd` 被解析为空包而非
+# 守护脚本模块 fenixd.py，下游静默 AttributeError。该包标记已随根因删除，
+# 此处部署守卫：一旦守卫重现（如回滚不当重新引入 __init__.py），收集阶段
+# 即显式硬失败，而非降级为用例执行期的静默 AttributeError。
+try:
+    import fenixd as _guard_fenixd
+except ImportError as _guard_import_err:
+    raise ImportError(
+        f"import fenixd 失败（{_guard_import_err}）；请检查是否误删 fenixd.py"
+    ) from _guard_import_err
+if (
+    Path(getattr(_guard_fenixd, "__file__", "")).name != "fenixd.py"
+    and not hasattr(_guard_fenixd, "FenixDaemon")
+):
+    raise ImportError(
+        "import fenixd 被同名包截胡（仓库根 __init__.py）：解析到 "
+        f"{getattr(_guard_fenixd, '__file__', '<unknown>')}，而非守护脚本模块 "
+        "fenixd.py。请删除仓库根 __init__.py 恢复 import 解析。"
+    )
+
 # ── Dashboard 测试共享夹具（自 test_dashboard_api.py 收敛，行为逐字等价）────
 import json
 import threading

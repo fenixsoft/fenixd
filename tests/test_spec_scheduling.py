@@ -548,9 +548,9 @@ class TestSchedulingKickSignal(unittest.TestCase):
 
     # ── 拾取侧（daemon 主循环）──
     #
-    # 按绝对路径直载 fenixd.py（tests/test_config.py 同款处方）：仓库根
-    # __init__.py 会在测试执行期把 `import fenixd` 截胡成同名包（sys.path
-    # 顺序随收集/执行阶段漂移），函数内延迟 import 不稳定，故不使用。
+    # 按绝对路径直载 fenixd.py（tests/test_config.py 同款处方）：以独立模块名
+    # `fenixd_scheduling_kick_under_test` 加载，不注册进 `sys.modules['fenixd']`，
+    # 与全量回归中其他测试的 fenixd 导入互不串扰（模块隔离）。
 
     @classmethod
     def setUpClass(cls):

@@ -24,8 +24,8 @@ import pytest
 
 from conftest import _TestServer, make_project
 
-# 模块级 import（test_daemon_lifecycle_races.py 同款处方）：pytest 执行期
-# sys.path 变化可能撞仓库根同名包，模块级 import 绑定真实文件模块。
+# 模块级 import（test_daemon_lifecycle_races.py 同款处方）：直接绑定守护
+# 脚本模块 fenixd.py，供用例在测试执行期使用。
 import fenixd as _fenixd_mod
 import core.fenix_session as fenix_session
 import bin.fenixd_supervisor as supervisor_mod
