@@ -150,7 +150,7 @@ function buildHelpComponents(onNavigate: (docName: string, anchor?: string) => v
     // heading 注入 GitHub slug id（页内锚点跳转目标）；字号样式同 markdownComponents
     h1: headingComponent('h1', { fontSize: 18, fontWeight: 600 }),
     h2: headingComponent('h2', { fontSize: 16, fontWeight: 600 }),
-    h3: headingComponent('h3', { fontSize: 14, fontWeight: 400 }),
+    h3: headingComponent('h3', { fontSize: 14, fontWeight: 600 }),
     h4: headingComponent('h4', { fontSize: 14, fontWeight: 400 }),
     h5: headingComponent('h5', { fontSize: 14, fontWeight: 400 }),
     h6: headingComponent('h6', { fontSize: 14, fontWeight: 400 }),

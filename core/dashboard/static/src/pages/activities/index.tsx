@@ -107,7 +107,7 @@ function ActivityCard({ a, onViewRun, isMobile }: { a: ActivityItem; onViewRun?:
       style={{
         marginBottom: 8,
         fontSize: 13,
-        lineHeight: 1.65,
+        lineHeight: 1.9,
         maxHeight: shouldFold && !expanded ? 88 : undefined,
         overflow: shouldFold && !expanded ? 'hidden' : undefined,
         position: shouldFold && !expanded ? 'relative' : undefined,

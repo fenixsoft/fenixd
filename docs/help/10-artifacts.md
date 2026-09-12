@@ -68,7 +68,7 @@
 
 ## SPEC artifacts 与 Deliverables 声明段
 
-proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change artifacts。其中 tasks.md 的 **Deliverables** YAML 段声明「本 change 交付/修改哪些文件」，是收工守卫（deliverable gate）的判据——遗漏的新交付文件会被守卫拦截。tasks.md 中 `- [x]` 勾选状态即任务进度，`/fenix-process` 与 Dashboard 读取的都是它。
+proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change artifacts。其中 tasks.md 的 **Deliverables** YAML 段声明「本 change 交付/修改哪些文件」，是收工守卫（deliverable gate）的判据，遗漏的新交付文件会被守卫拦截。tasks.md 中 `- [x]` 勾选状态即任务进度，`/fenix-process` 与 Dashboard 读取的都是它。
 
 ## .fenix/runs/ 运行记录
 

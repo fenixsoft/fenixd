@@ -18,15 +18,15 @@
 
 **根因**：派发后 run 秒挂（启动即失败），进入冷却期后又被立即重派，形成空转回路。
 
-**处置**：查看最新 impl run jsonl 的首条事件——秒挂的原因通常是环境或命令错误；再看 Admin Monitor 是否报了 `flapping` 或 `repeated_failures` 信号；修复根因（如损坏的 commands.test/build）后 reset spec。
+**处置**：查看最新 impl run jsonl 的首条事件，秒挂的原因通常是环境或命令错误；再看 Admin Monitor 是否报了 `flapping` 或 `repeated_failures` 信号；修复根因（如损坏的 commands.test/build）后 reset spec。
 
 ## 3. 烧钱快（token 消耗异常）
 
 **现象**：Dashboard token 面板数字涨得快，或收到 80%/100% 预算告警。
 
-**根因**：常见有三类——验证场景反复失败导致修复循环多轮重验；卡住的 run 在超时监督续期（extension）中空转；多个同根 fix 并行派生。
+**根因**：常见有三类：验证场景反复失败导致修复循环多轮重验；卡住的 run 在超时监督续期（extension）中空转；多个同根 fix 并行派生。
 
-**处置**：先把 `agents.timeout_supervision.max_extensions` 调小或置 0，压缩续期上限；再检查是否陷入修复循环——看 `.fenix/verify-progress/<spec>/` 的重验轮数与失败截图；紧急止损可直接在 Dashboard 冻结该 SPEC。注意预算告警本身不会自动冻结 SPEC，处置由人工决策（[配置参考](09-config.md#agents)）。
+**处置**：先把 `agents.timeout_supervision.max_extensions` 调小或置 0，压缩续期上限；再检查是否陷入修复循环，看 `.fenix/verify-progress/<spec>/` 的重验轮数与失败截图；紧急止损可直接在 Dashboard 冻结该 SPEC。注意预算告警本身不会自动冻结 SPEC，处置由人工决策（[配置参考](09-config.md#agents)）。
 
 ## 4. merge 冲突反复失败
 
@@ -44,7 +44,7 @@
 
 **根因**：要么根因没有定位准（验证报告证据不足），要么环境问题导致伪失败。
 
-**处置**：先排除伪失败——构建失败/应用不可达不会判 bug-found，确认不是环境问题再继续；然后看失败截图 `.fenix/verify-progress/<spec>/screenshots/` 与 report.json 的 assertion message 定位根因。修复循环有三轮熔断，若触发了 `family_explosion`（fix 族谱超限）则转人工；同时人工审视 verify.yaml 契约（BASE_URL 铁律是否正常注入）。
+**处置**：先排除伪失败：构建失败/应用不可达不会判 bug-found，确认不是环境问题再继续；然后看失败截图 `.fenix/verify-progress/<spec>/screenshots/` 与 report.json 的 assertion message 定位根因。修复循环有三轮熔断，若触发了 `family_explosion`（fix 族谱超限）则转人工；同时人工审视 verify.yaml 契约（BASE_URL 铁律是否正常注入）。
 
 相关：[验证体系](05-verification.md)、[文件与数据地图](10-artifacts.md)
 
@@ -76,7 +76,7 @@
 
 **现象**：改了 `.fenix/config.yaml` 的键，行为没有变化。
 
-**根因**：改的是需重启生效的键（对照表见 [配置参考](09-config.md)）；或 `agents.timeout_supervision` 与顶层 `timeout_supervision` 同时配置——顶层只是回退开关；或被「模板值与代码缺省不一致」误导（[模板值与代码缺省不一致](09-config.md#模板值与代码缺省不一致)）。
+**根因**：改的是需重启生效的键（对照表见 [配置参考](09-config.md)）；或 `agents.timeout_supervision` 与顶层 `timeout_supervision` 同时配置（顶层只是回退开关）；或被「模板值与代码缺省不一致」误导（[模板值与代码缺省不一致](09-config.md#模板值与代码缺省不一致)）。
 
 **处置**：按键标注的生效方式决定是否重启 daemon；判断实际生效值以项目 config.yaml 为准。
 
@@ -92,13 +92,13 @@
 
 **根因**：hook 动作失败不重试也不去重（git 失败、webhook 不可达、shell 非零退出/超时），每次失败都直接告警。没触发则常见于：手工编辑 config.yaml 漏了 `id`（缺失 id 的条目不执行且无任何痕迹）、`events` 拼写不在十状态枚举内、`enabled: false`（审计记 skipped）、保存后未满 30 秒热更新窗口。
 
-**处置**：先查 `.fenix/hook_audit.jsonl`（或 Dashboard Hook 页签「最近执行」）按 spec 找记录——status=skipped 是被停用；status=failure 是动作报错，detail 含输出摘要；完全没有记录则是匹配阶段未命中（核对 id 与 events）。修正配置后 ≤30 秒热更新自动生效。完整键参考见[配置参考](09-config.md#hooks)。
+**处置**：先查 `.fenix/hook_audit.jsonl`（或 Dashboard Hook 页签「最近执行」）按 spec 找记录：status=skipped 是被停用；status=failure 是动作报错，detail 含输出摘要；完全没有记录则是匹配阶段未命中（核对 id 与 events）。修正配置后 ≤30 秒热更新自动生效。完整键参考见[配置参考](09-config.md#hooks)。
 
 ## 12. 配了 Provider 但 Agent 没走它（仍打到默认网关）
 
 **现象**：`agents.models` 给某角色分配了 Provider，但从时间轴的 `model@provider` 标记或账单看，请求仍打到 cc-switch 等默认网关。
 
-**根因**：常见四类——角色键配错或用了未知角色键（未知键降级跳过并 ERROR 告警）；Provider 名拼错（`llm.providers` 注册表中无此 `name`，候选被跳过）；候选链上所有候选都处于切换冷却或熔断中（chain_exhausted，本次派发直接失败、不消耗 spec 重试，冷却窗口过后自动恢复）；或配置保存后未过 30 秒热更新窗口。
+**根因**：常见四类：角色键配错或用了未知角色键（未知键降级跳过并 ERROR 告警）；Provider 名拼错（`llm.providers` 注册表中无此 `name`，候选被跳过）；候选链上所有候选都处于切换冷却或熔断中（chain_exhausted，本次派发直接失败、不消耗 spec 重试，冷却窗口过后自动恢复）；或配置保存后未过 30 秒热更新窗口。
 
 **处置**：先在 SPEC 详情时间轴看该 run 实际驱动的 `model@provider` 确认通道；再逐字符核对 `agents.models.<角色>.provider` 与 `llm.providers[].name` 是否一致。注意 Agent 通道与用户会话是隔离的（[LLM Provider 隔离](02-concepts.md#llm-provider-隔离)）：Agent 是否走 Provider 只由 `agents.models` 分配决定，改用户 `~/.claude/settings.json` 不会影响已分配的 Agent。
 

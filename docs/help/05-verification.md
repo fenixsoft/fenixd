@@ -26,7 +26,7 @@ sequenceDiagram
     JUDGE->>PM: verified / bug-found
 ```
 
-整条流水线由 PM Engine 串起三个阶段。阶段 1 由 planner-plan 读取 verify.yaml 契约，生成 test_scenarios.json 场景清单；阶段 2 由 VerifyEngine 依次执行 prepare（构建）、serve（启动被测实例）、注入 BASE_URL，再逐场景执行并截图，产出验证报告；阶段 3 由 planner-judge 做门禁判定——先核应用可达性与报告完整性，再给出 verified 或 bug-found 的结论。
+整条流水线由 PM Engine 串起三个阶段。阶段 1 由 planner-plan 读取 verify.yaml 契约，生成 test_scenarios.json 场景清单；阶段 2 由 VerifyEngine 依次执行 prepare（构建）、serve（启动被测实例）、注入 BASE_URL，再逐场景执行并截图，产出验证报告；阶段 3 由 planner-judge 做门禁判定，先核应用可达性与报告完整性，再给出 verified 或 bug-found 的结论。
 
 ## verify.yaml 契约
 
@@ -76,11 +76,11 @@ ready:
 - api 用 `as` 命名响应、断言 `response` 字段引用（缺省最近一次）；`http_request` / `sse_connect` 的 URL origin 由框架全量改写（路径保留）。
 - 证据形态为命令输出 / HTTP 响应体（**无截图属合法形态**），同样 64KB 截断纪律；CLI/API 场景报告的 `screenshots` / `visual_results` 恒为空列表。
 
-**纯 CLI 交付不需要 serve**：契约形态由场景集自动反推——纯 `cli` 场景集跳过 serve/ready（不回退 `commands.start`），含 web/api 场景则 serve（或 `commands.start` 兜底）必须有效，缺失时验收报错打回 plan。
+**纯 CLI 交付不需要 serve**：契约形态由场景集自动反推：纯 `cli` 场景集跳过 serve/ready（不回退 `commands.start`），含 web/api 场景则 serve（或 `commands.start` 兜底）必须有效，缺失时验收报错打回 plan。
 
 ## 场景冻结与跨轮复用
 
-验证场景（`test_scenarios.json`）由 planner **只设计一次**，验收通过即冻结，写入 `.fenix/verify-progress/<spec>/test_scenarios.json`。**此后无论重入验证多少次（打回重验、修复轮、重试），都直接复用冻结场景，绝不重新出题**——planner 单轮设计成本在小时级/千万 token 级，只应支付一次；更重要的是「同一把尺子量到底」：修复是否有效，衡量的始终是同一组标准。
+验证场景（`test_scenarios.json`）由 planner **只设计一次**，验收通过即冻结，写入 `.fenix/verify-progress/<spec>/test_scenarios.json`。**此后无论重入验证多少次（打回重验、修复轮、重试），都直接复用冻结场景，绝不重新出题**：planner 单轮设计成本在小时级/千万 token 级，只应支付一次；更重要的是「同一把尺子量到底」：修复是否有效，衡量的始终是同一组标准。
 
 冻结集的变更只有两条通道：
 
@@ -102,7 +102,7 @@ ready:
 
 ## 验证报告与修复循环
 
-验证产物集中在 `.fenix/verify-progress/<spec>/` 下。report.json 记录总体情况（summary：总场景数/通过/失败/警告/错误数）与逐场景明细（scenarios：每个场景的 kind/判定/失败信息/证据——web 为截图，CLI/API 为命令输出与 HTTP 响应体）；verification-report.md 则以 Markdown 形式汇总缺陷根因。
+验证产物集中在 `.fenix/verify-progress/<spec>/` 下。report.json 记录总体情况（summary：总场景数/通过/失败/警告/错误数）与逐场景明细（scenarios：每个场景的 kind/判定/失败信息/证据，web 为截图，CLI/API 为命令输出与 HTTP 响应体）；verification-report.md 则以 Markdown 形式汇总缺陷根因。
 
 验证失败后 SPEC 进入 `bug-found`，派生 fix 分支修复再重新验证。修复循环有三轮熔断：同一缺陷连续 3 轮验证失败即自动 blocked 转人工，防止在修不好的缺陷上无限烧钱。
 
