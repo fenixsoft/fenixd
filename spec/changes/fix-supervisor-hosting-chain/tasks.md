@@ -87,5 +87,5 @@
 
 ## 7. 回归验证
 
-- [ ] 7.1 运行 `python3 -m pytest tests/ -q` 全量通过，且 `tests/test_supervisor_hosting.py` 全绿。
+- [x] 7.1 运行 `python3 -m pytest tests/ -q` 全量通过，且 `tests/test_supervisor_hosting.py` 全绿。
 - [x] 7.2 在 `core/dashboard/static` 执行 `npm install --no-audit --no-fund` 与 `npm run build` 成功，概览页可正常加载并显示托管态徽标（构建产物 `core/dashboard/static/dist/` 为 gitignored 运行时产物，不入库）。
