@@ -129,12 +129,18 @@ class FakeRunner:
 
 
 class FakeWM:
-    def __init__(self, wt_by_branch: dict | None = None):
+    def __init__(self, wt_by_branch: dict | None = None,
+                 spec_to_wt: dict | None = None):
         self.wt_by_branch = dict(wt_by_branch or {})
         self.cleanup_protected = None
+        # spec → (wt_path, branch) 映射：find_worktree_by_spec 回落查询用
+        self._spec_to_wt = dict(spec_to_wt or {})
 
     def find_worktree_path(self, branch):
         return self.wt_by_branch.get(branch)
+
+    def find_worktree_by_spec(self, spec_name):
+        return self._spec_to_wt.get(spec_name)
 
     def cleanup_orphans(self, protected=None):
         self.cleanup_protected = protected or set()
@@ -149,7 +155,8 @@ class FakeSM:
 
 
 def make_daemon(monkeypatch, tmp_path, *, restart_request, drain_seconds,
-                running: dict, sm_entries: dict, wt_by_branch: dict | None = None):
+                running: dict, sm_entries: dict, wt_by_branch: dict | None = None,
+                spec_to_wt: dict | None = None):
     """构造最小 FenixDaemon 并 patch 关键路径，返回 (daemon, fake_runner, fake_wm)。"""
     fake_root = tmp_path / "proj"
     fake_root.mkdir(parents=True, exist_ok=True)
@@ -165,7 +172,7 @@ def make_daemon(monkeypatch, tmp_path, *, restart_request, drain_seconds,
     daemon.config = {"admin": {"shutdown_drain_seconds": drain_seconds}}
     daemon.logger = FakeLogger()
     daemon.state_machine = FakeSM(sm_entries)
-    daemon.worktree_manager = FakeWM(wt_by_branch)
+    daemon.worktree_manager = FakeWM(wt_by_branch, spec_to_wt)
     daemon.agent_runner = FakeRunner(running)
     daemon.pm_engine = SimpleNamespace(shutting_down=False)
     daemon._admin_thread = None
@@ -610,3 +617,347 @@ class TestRecoveryResumePrompt:
         prompt = runner._prompt_builder._build_prompt("demo", "implementer")
         assert "中断恢复续做" not in prompt
         assert "Worktree 继承" not in prompt
+
+
+# ── 7. spec → worktree 事实查询（fix-preserve-chain-first-round-gap 1.1-1.3） ──
+
+
+class TestFindWorktreeBySpec:
+    """spec → worktree/branch 事实查询：命名约定精确匹配、三态校验、歧义不可用。"""
+
+    def test_basic_impl_match(self, tmp_path):
+        """impl-<spec>-<ts> 目录命中，返回 (wt_path, branch)。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "implementer")
+        branch = wm.get_branch_name(wt)
+        resolved = wm.find_worktree_by_spec("demo")
+        assert resolved is not None
+        rpath, rbranch = resolved
+        assert str(rpath) == str(wt)
+        assert rbranch == branch
+
+    def test_basic_verify_match(self, tmp_path):
+        """verify-<spec>-<ts> 目录同样命中（verifier 分支）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "verifier")
+        branch = wm.get_branch_name(wt)
+        resolved = wm.find_worktree_by_spec("demo")
+        assert resolved is not None
+        assert resolved[1] == branch
+        assert str(resolved[0]) == str(wt)
+
+    def test_no_substring_match(self, tmp_path):
+        """spec 名互为前缀不误匹配（分隔符边界锚定，禁止子串包含）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wm.create("fix-x", "implementer")
+        wm.create("fix-x-y", "implementer")
+        res_x = wm.find_worktree_by_spec("fix-x")
+        assert res_x is not None
+        assert "fix-x-y" not in str(res_x[0]), "fix-x 不得命中 fix-x-y 的目录"
+        res_xy = wm.find_worktree_by_spec("fix-x-y")
+        assert res_xy is not None
+        assert "fix-x-y" in str(res_xy[0])
+
+    def test_ambiguity_returns_none(self, tmp_path):
+        """歧义：同一 spec 两个在册 worktree → None（不静默取首个）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wm.create("demo", "implementer")
+        # 手工再建第二个同 spec worktree（异常并行场景）
+        ts2 = int(time.time()) - 500
+        branch2 = f"fenix/demo-{ts2}"
+        git(root, "branch", branch2)
+        wt2 = wm.base_dir / f"impl-demo-{ts2}"
+        git(root, "worktree", "add", str(wt2), branch2)
+        assert wm.find_worktree_by_spec("demo") is None, "歧义不得静默取首个"
+
+    def test_unavailable_branch_filtered(self, tmp_path):
+        """非 available/rebuildable 候选不作依据：分支已删 → None。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "implementer")
+        branch = wm.get_branch_name(wt)
+        # 强制删除分支 ref（update-ref -d 绕过「分支检出中」护栏：worktree
+        # 目录与注册仍在，但分支不可解析）
+        git(root, "update-ref", "-d", f"refs/heads/{branch}")
+        assert wm.find_worktree_by_spec("demo") is None, \
+            "分支不可解析的候选不得作为保全/保留依据"
+
+    def test_no_match_and_empty_input(self, tmp_path):
+        """无在册 worktree / 空 spec → None。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        assert wm.find_worktree_by_spec("nonexistent") is None
+        assert wm.find_worktree_by_spec("") is None
+        assert wm.find_worktree_by_spec(None) is None
+
+    def test_rebuildable_dir_removed_still_match(self, tmp_path):
+        """目录被外部删除但分支在（rebuildable）→ 仍返回（recovery 重建依据）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "implementer")
+        branch = wm.get_branch_name(wt)
+        import shutil
+        shutil.rmtree(str(wt))
+        resolved = wm.find_worktree_by_spec("demo")
+        assert resolved is not None, "rebuildable（分支在）应命中"
+        assert resolved[1] == branch
+
+
+# ── 8. 首轮在飞 run 保全链回落（fix-preserve-chain-first-round-gap 2.x） ──────
+
+
+class TestFirstRoundPreserve:
+    def test_first_round_preserve_resolves_branch_and_worktree(self, monkeypatch, tmp_path):
+        """首轮在飞 run（STATE branch=None、worktree 在册）被排水强杀：
+        sidecar 条目 MUST 含事实查询解析出的 branch 与 worktree，不得为空串。"""
+        fake_wt = tmp_path / "proj" / ".claude" / "worktrees" / "impl-demo-1750000000"
+        fake_wt.parent.mkdir(parents=True, exist_ok=True)
+        daemon, runner, wm = make_daemon(
+            monkeypatch, tmp_path, restart_request=True, drain_seconds=1,
+            running={"impl-demo-1750000000-a1": FakeProc()},
+            sm_entries={"demo": {}},  # STATE branch 未写入（run 未到终态）
+            spec_to_wt={"demo": (fake_wt, "fenix/demo-1750000000")},
+        )
+        with pytest.raises(SystemExit):
+            daemon.shutdown()
+        sidecar = tmp_path / "proj" / ".fenix" / "interrupted_runs.json"
+        assert sidecar.exists()
+        entries = json.loads(sidecar.read_text(encoding="utf-8"))
+        demo = [e for e in entries if e["spec"] == "demo"]
+        assert demo, f"sidecar 应包含 spec demo：{entries}"
+        assert demo[0]["branch"] == "fenix/demo-1750000000", "分支不得为空串"
+        assert demo[0]["worktree"] == str(fake_wt), "worktree 不得为空串"
+
+    def test_first_round_protected_set_includes_resolved_worktree(self, monkeypatch, tmp_path):
+        """首轮在飞 run 保全后：解析出的 worktree 进入保护集（不被 orphan 清理）。"""
+        fake_wt = tmp_path / "proj" / ".claude" / "worktrees" / "impl-demo-1750000000"
+        fake_wt.parent.mkdir(parents=True, exist_ok=True)
+        daemon, runner, wm = make_daemon(
+            monkeypatch, tmp_path, restart_request=True, drain_seconds=1,
+            running={"impl-demo-1750000000-a1": FakeProc()},
+            sm_entries={"demo": {}},
+            spec_to_wt={"demo": (fake_wt, "fenix/demo-1750000000")},
+        )
+        with pytest.raises(SystemExit):
+            daemon.shutdown()
+        assert str(fake_wt) in wm.cleanup_protected, "回落解析的 worktree 必须进保护集"
+
+    def test_protected_fallback_from_empty_sidecar_worktree(self, monkeypatch, tmp_path):
+        """sidecar 条目 worktree 为空串但在册 worktree 存在：
+        以事实查询回落补入保护集，MUST NOT 放行清理。"""
+        fake_wt = tmp_path / "proj" / ".claude" / "worktrees" / "impl-demo-1750000000"
+        fake_wt.parent.mkdir(parents=True, exist_ok=True)
+        # 预置 sidecar：历史条目 worktree 为空串
+        sidecar = tmp_path / "proj" / ".fenix" / "interrupted_runs.json"
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(json.dumps([
+            {"spec": "demo", "run_id": "impl-demo-1", "branch": "",
+             "worktree": "", "ahead_commits": 1, "reason": "drain timeout",
+             "timestamp": "2026-09-12T00:00:00+00:00"},
+        ]), encoding="utf-8")
+        daemon, runner, wm = make_daemon(
+            monkeypatch, tmp_path, restart_request=True, drain_seconds=1,
+            running={}, sm_entries={},
+            spec_to_wt={"demo": (fake_wt, "fenix/demo-1750000000")},
+        )
+        with pytest.raises(SystemExit):
+            daemon.shutdown()
+        assert str(fake_wt) in wm.cleanup_protected, \
+            "sidecar 条目为空时必须经事实查询回落补入保护集"
+
+
+class TestRecoveryStateBranchFallback:
+    def test_state_branch_empty_but_worktree_has_commits(self, tmp_path):
+        """STATE branch 为空但在册 worktree 分支有提交：
+        判定保留续做，MUST NOT 走清空分支。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        git(root, "checkout", "-q", "-b", "fenix/demo-123")
+        add_commit(root, "feat.py", "IMPL\n", "[fenix] demo: impl")
+        git(root, "checkout", "-q", "main")
+        wm = make_wm(root)
+        # 在册 worktree（分支有提交）
+        wm.create_worktree_on_branch("demo", "fenix/demo-123")
+        sm = make_state_machine(root, {
+            "demo": {"status": "implementing", "implementer_run": "impl-demo-111"},
+            # 注意：无 branch 字段（首轮在飞）
+        })
+        recovered = sm.recover_interrupted(project_root=root, worktree_manager=wm)
+        assert "demo" in recovered
+        entry = sm.read_one("demo")
+        assert entry["branch"] == "fenix/demo-123", "经事实查询回落保留分支"
+        assert entry["implementer_run"] == "impl-demo-111"
+        assert entry.get("_recovery_resume") is True, "标记恢复续做而非清空重派"
+
+    def test_state_branch_empty_but_zero_commit_clears(self, tmp_path):
+        """STATE branch 为空且在册 worktree 分支零提交 → 仍走现行清空（无提交则无工作可丢）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "implementer")  # 分支存在但相对 main 零提交
+        sm = make_state_machine(root, {
+            "demo": {"status": "implementing", "implementer_run": "impl-demo-111"},
+        })
+        recovered = sm.recover_interrupted(project_root=root, worktree_manager=wm)
+        assert "demo" in recovered
+        entry = sm.read_one("demo")
+        assert entry["branch"] is None, "零提交仍走清空"
+        assert entry.get("_recovery_resume") is None
+
+
+# ── 9. 删除前置留档（fix-preserve-chain-first-round-gap 3.x） ─────────────────
+
+
+class TestSnapshotBeforeDelete:
+    def _mock_snapshot(self, wm, calls, dir_existed_at_call):
+        def snap(wt_path, branch=None):
+            calls.append(str(wt_path))
+            dir_existed_at_call.append(Path(wt_path).exists())
+            return ""
+        wm._snapshot_dirty_worktree = snap
+
+    def test_cleanup_orphans_snapshots_before_delete(self, tmp_path):
+        """orphan 清理硬删前留档：快照调用发生在目录删除之前。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "implementer")
+        (wt / "dirty.txt").write_text("WIP\n", encoding="utf-8")  # dirty 有快照价值
+        calls, existed = [], []
+        self._mock_snapshot(wm, calls, existed)
+        wm.cleanup_orphans()
+        assert calls, "删除前必须调用 _snapshot_dirty_worktree"
+        assert existed == [True], "快照必须在目录尚存在（删除前）时调用"
+        assert not wt.exists(), "清理后目录被删除"
+
+    def test_cleanup_force_success_path_snapshots_before_delete(self, tmp_path):
+        """`git worktree remove --force` 成功路径同样留档（不留档不再只挂在失败兜底）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        # implementer 失败走遗产保留路径（不删除），--force 路径以 verifier 失败触发
+        wt = wm.create("demo", "verifier")
+        (wt / "dirty.txt").write_text("WIP\n", encoding="utf-8")
+        calls, existed = [], []
+        self._mock_snapshot(wm, calls, existed)
+        wm.cleanup(wt, success=False)  # 带 --force，通常成功
+        assert calls, "--force 成功路径也必须留档"
+        assert existed == [True], "快照先于删除发生"
+        assert not wt.exists(), "worktree 已删除（--force 成功）"
+
+    def test_cleanup_no_double_snapshot(self, tmp_path):
+        """同一次清理同 worktree 只产生一次快照（幂等/前置短路）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "verifier")
+        (wt / "dirty.txt").write_text("WIP\n", encoding="utf-8")
+        calls, existed = [], []
+        self._mock_snapshot(wm, calls, existed)
+        wm.cleanup(wt, success=False)
+        assert len(calls) == 1, "cleanup 内不得重复留档"
+
+
+# ── 10. 端到端：首轮在飞 run 排水强杀 → 保全 → 重启恢复续做 ──────────────────
+
+
+class TestFirstRoundEndToEnd:
+    """真实 git 仓库 + 真实 WorktreeManager + daemon shutdown 排水路径 端到端。
+
+    对应 spec 端到端验证（5.1/5.2）的核心断言：首轮在飞 run（STATE branch
+    未写、worktree 在册且有提交）被排水强杀时，sidecar 含 branch/worktree、
+    worktree 不被 orphan 清理删除；重启后 recovery 判定保留续做（resume），
+    不从零重派新分支。
+    """
+
+    def _run_e2e(self, tmp_path, monkeypatch):
+        root = tmp_path / "proj"
+        init_repo(root)
+        wm = make_wm(root)  # 真实 WorktreeManager + 真实 git
+        wt = wm.create("demo", "implementer")
+        branch = wm.get_branch_name(wt)
+        # 在 worktree 内产生提交（分支相对 main 有提交 = 有工作可丢）
+        (wt / "impl.py").write_text("CODE\n", encoding="utf-8")
+        git(wt, "add", "-A")
+        git(wt, "commit", "-q", "-m", "[fenix] demo: impl")
+
+        # daemon 装配（复用 FakeRunner 替身，其余为真实组件）
+        fake_root = root
+        (fake_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        (fake_root / ".fenix" / "restart_request").write_text("1\n", encoding="utf-8")
+        monkeypatch.setattr(fenixd, "PROJECT_ROOT", fake_root)
+        monkeypatch.setattr(
+            fenixd, "PRESERVE_SIDECAR",
+            fake_root / ".fenix" / "interrupted_runs.json")
+        monkeypatch.setattr(
+            fenixd.sys, "exit",
+            lambda code=0: (_ for _ in ()).throw(SystemExit(code)))
+
+        daemon = fenixd.FenixDaemon()
+        daemon.config = {"admin": {"shutdown_drain_seconds": 1}}
+        daemon.logger = FakeLogger()
+        daemon.state_machine = FakeSM({"demo": {}})  # STATE branch 未写
+        daemon.worktree_manager = wm
+        daemon.agent_runner = FakeRunner(
+            running={"impl-demo-1750000000-a1": FakeProc()})
+        daemon.pm_engine = SimpleNamespace(shutting_down=False)
+        daemon._admin_thread = None
+        daemon._admin_executor = None
+        daemon.event_bus = None
+
+        with pytest.raises(SystemExit):
+            daemon.shutdown()
+        return root, wm, wt, branch
+
+    def test_e2e_preserve_and_recovery_resume(self, tmp_path, monkeypatch):
+        """排水强杀保全 + 重启 recovery 保留续做 端到端。"""
+        root, wm, wt, branch = self._run_e2e(tmp_path, monkeypatch)
+
+        # ── 强杀后：sidecar 含 branch/worktree，worktree 未被 orphan 清理 ──
+        sidecar = root / ".fenix" / "interrupted_runs.json"
+        entries = json.loads(sidecar.read_text(encoding="utf-8"))
+        demo = [e for e in entries if e["spec"] == "demo"]
+        assert demo, "sidecar 必须包含 demo 保全条目"
+        assert demo[0]["branch"] == branch, "sidecar branch 不得为空串"
+        assert demo[0]["worktree"] == str(wt), "sidecar worktree 不得为空串"
+        assert wt.exists(), "保全 worktree 不得被 cleanup_orphans 删除"
+
+        # ── 重启后：recovery 保留续做，不从零重派 ──
+        sm = make_state_machine(root, {
+            "demo": {"status": "implementing", "implementer_run": "impl-demo-1750000000"},
+        })
+        recovered = sm.recover_interrupted(project_root=root, worktree_manager=wm)
+        assert "demo" in recovered
+        entry = sm.read_one("demo")
+        assert entry["branch"] == branch, "保留原分支（resume 续做）"
+        assert entry.get("_recovery_resume") is True, "标记恢复续做"
+        assert entry["implementer_run"] == "impl-demo-1750000000", "保留 implementer_run"
+        # 载体在场：原地续做，worktree 仍在
+        assert wt.exists()
+
+    def test_e2e_zero_commit_still_clears(self, tmp_path, monkeypatch):
+        """零提交分支（首轮未产生任何提交）：仍走现行清空重建（无工作可丢）。"""
+        root = tmp_path / "proj"
+        init_repo(root)
+        wm = make_wm(root)
+        wt = wm.create("demo", "implementer")  # 分支在册但相对 main 零提交
+        branch = wm.get_branch_name(wt)
+        sm = make_state_machine(root, {
+            "demo": {"status": "implementing", "implementer_run": "impl-demo-1750000000"},
+        })
+        recovered = sm.recover_interrupted(project_root=root, worktree_manager=wm)
+        assert "demo" in recovered
+        entry = sm.read_one("demo")
+        assert entry["branch"] is None, "零提交分支仍走现行清空"
+        assert entry.get("_recovery_resume") is None
