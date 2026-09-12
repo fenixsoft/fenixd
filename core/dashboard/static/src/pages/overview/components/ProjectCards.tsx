@@ -4,12 +4,13 @@ import {
   MoreOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
+  ToolOutlined,
 } from '@ant-design/icons';
 import { Alert, App, Avatar, Button, Card, Dropdown, Input, List, Progress, Radio, Space, Tag, Typography } from 'antd';
 import { useState } from 'react';
 import { history } from '@umijs/max';
 import type { ProjectSummary } from '@/services/dashboard';
-import { deleteProject, startProject, statusMeta, stopProject } from '@/services/dashboard';
+import { deleteProject, installHosting, startProject, statusMeta, stopProject } from '@/services/dashboard';
 import { OutlinedTag } from '@/components/StatusTag';
 
 const TRACK_LIGHT = '#e6f4ff';
@@ -20,8 +21,15 @@ function pct(done: number, total: number) {
   return total > 0 ? Math.round((done / total) * 100) : 0;
 }
 
-function DaemonBadge({ daemon }: { daemon: string }) {
+function DaemonBadge({ daemon, hosting }: { daemon: string; hosting?: string }) {
   if (daemon === 'running') {
+    if (hosting === 'unmanaged') {
+      return (
+        <OutlinedTag tone="warning" filled>
+          运行中·未托管
+        </OutlinedTag>
+      );
+    }
     return (
       <OutlinedTag tone="good" filled>
         运行中
@@ -65,7 +73,7 @@ export default function ProjectCards({
     return true;
   });
 
-  const runAction = async (name: string, action: 'start' | 'stop' | 'delete') => {
+  const runAction = async (name: string, action: 'start' | 'stop' | 'delete' | 'install') => {
     setPendingName(name);
     try {
       if (action === 'delete') {
@@ -74,6 +82,9 @@ export default function ProjectCards({
       } else if (action === 'start') {
         await startProject(name);
         message.success(`项目「${name}」已启动`);
+      } else if (action === 'install') {
+        await installHosting(name);
+        message.success(`项目「${name}」已安装 supervisor 托管`);
       } else {
         await stopProject(name);
         message.success(`项目「${name}」已停止`);
@@ -110,6 +121,11 @@ export default function ProjectCards({
       ? [
           { key: 'start', icon: <PlayCircleOutlined />, label: '启动', disabled: running },
           { key: 'stop', icon: <PauseCircleOutlined />, label: '停止', disabled: !running },
+          // fix-supervisor-hosting-chain 5.3：unmanaged 项目提供「安装托管」
+          // 一次性修复路径（停止裸 daemon → 经 supervisor 重启）
+          ...(project.hosting === 'unmanaged'
+            ? [{ key: 'install', icon: <ToolOutlined />, label: '安装托管' }]
+            : []),
           { type: 'divider' as const },
         ]
       : [];
@@ -119,8 +135,8 @@ export default function ProjectCards({
   const onMenuClick = (project: ProjectSummary, key: string) => {
     if (key === 'delete') {
       confirmDelete(project);
-    } else if (key === 'start' || key === 'stop') {
-      void runAction(project.name, key);
+    } else if (key === 'start' || key === 'stop' || key === 'install') {
+      void runAction(project.name, key as 'start' | 'stop' | 'install');
     }
   };
 
@@ -216,7 +232,7 @@ export default function ProjectCards({
                     >
                       {project.name}
                     </Typography.Text>
-                    <DaemonBadge daemon={project.daemon} />
+                    <DaemonBadge daemon={project.daemon} hosting={project.hosting} />
                     {project.discovered ? <OutlinedTag tone="muted" filled>自动发现</OutlinedTag> : null}
                     {pendingName === project.name ? (
                       <Tag color="processing" style={{ marginInlineEnd: 0 }}>

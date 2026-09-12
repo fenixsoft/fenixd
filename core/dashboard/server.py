@@ -360,7 +360,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 projects.append({
                     "name": p["name"], "path": p["path"],
                     "discovered": p.get("discovered", False),
-                    "exists": False, "daemon": "stopped", "error": "项目路径不存在",
+                    "exists": False, "daemon": "stopped", "hosting": "stopped",
+                    "error": "项目路径不存在",
                 })
                 continue
             s = dashboard_data.project_summary(p["path"], p["name"], p["path"])
@@ -899,6 +900,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if not result.get("found"):
             self._error(404, result.get("error") or f"spec not found: {spec}")
+            return
+        if result.get("unmanaged"):
+            # 先于 conflict 判定：托管链断了（unmanaged）与已有请求在途（conflict）
+            # 是两种不同的失败，便于用户区分处置
+            self._error(409, result.get("error") or "本项目 daemon 未受 supervisor 托管")
             return
         if result.get("daemon_down"):
             self._error(409, result.get("error") or "daemon 未运行，请先启动 daemon")
@@ -1541,17 +1547,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # ── 项目管理端点（启停 daemon / 软删除） ──────────────
 
     def _resolve_project_or_400(self, path: str, prefix: str, require_exists: bool = True):
-        """从 /api/projects/<name>[/start|/stop|/restart] 或 /api/projects/<name> 解析项目名。
+        """从 /api/projects/<name>[/start|/stop|/restart|/install-hosting] 或
+        /api/projects/<name> 解析项目名。
 
-        路径可能带 /start、/stop、/restart 动作后缀，先剥离再按项目名匹配。
+        路径可能带动作后缀，先剥离再按项目名匹配。
         项目不存在（不在监控列表）返回 None；require_exists 时目录不存在也返回 None，
         调用方发 400。删除接口传 require_exists=False 以支持移除缺失项目。
         """
         if not path.startswith(prefix):
             return None
         name = urllib.parse.unquote(path[len(prefix):])
-        # 剥离可能的动作后缀（/start、/stop、/restart）
-        for suffix in ("/start", "/stop", "/restart"):
+        # 剥离可能的动作后缀（/start、/stop、/restart、/install-hosting）
+        for suffix in ("/start", "/stop", "/restart", "/install-hosting"):
             if name.endswith(suffix):
                 name = name[: -len(suffix)]
                 break
@@ -1563,11 +1570,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return project
 
     def _api_project_lifecycle(self, action: str, path: str, query: dict):
-        """POST /api/projects/<name>/start|stop|restart。成功广播 refresh 让概览自动刷新。
+        """POST /api/projects/<name>/start|stop|restart|install-hosting。成功广播 refresh。
 
         restart 走 supervisor 优雅重启协议（写 .fenix/restart_request，与
         hook restart-daemon 同构）：daemon 自行排水退出后由 supervisor 拉起，
-        dashboard 进程不直接杀/拉 daemon。
+        dashboard 进程不直接杀/拉 daemon。fix-supervisor-hosting-chain 5.2：
+        restart 前校验托管态，unmanaged（裸 daemon）时拒绝——写信号无人消费
+        会静默滞留，MUST NOT 视作成功。
+
+        install-hosting（5.2）：对 unmanaged 项目执行「停止裸 daemon → 经
+        supervisor 启动」转入 managed；对 managed 幂等返回已托管（不重启）；
+        对 stopped 等价于启动。复用 stop_daemon/start_daemon，不绕过它们
+        直接操作进程或 tmux。
         """
         project = self._resolve_project_or_400(path, "/api/projects/")
         if project is None:
@@ -1578,15 +1592,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result = start_daemon(project["path"])
             elif action == "stop":
                 result = stop_daemon(project["path"])
+            elif action == "install-hosting":
+                result = self._api_project_install_hosting(project)
             else:  # restart
-                req_path = Path(project["path"]) / ".fenix" / "restart_request"
+                # 消费方校验（D8 同源）：unmanaged = 进程在跑但无 supervisor，
+                # restart_request 无人消费；拒绝而非写信号后静默滞留
                 try:
-                    req_path.parent.mkdir(parents=True, exist_ok=True)
-                    req_path.touch()
-                    result = {"ok": True, "error": None,
-                              "requested": True, "session": None}
-                except OSError as e:
-                    result = {"ok": False, "error": f"写入 restart_request 失败: {e}"}
+                    from core.fenix_session import hosting_state as _hosting_state
+                    hosting = _hosting_state(project["path"])
+                except Exception:
+                    hosting = "stopped"
+                if hosting == "unmanaged":
+                    result = {
+                        "ok": False,
+                        "error": ("本项目 daemon 未受 supervisor 托管，重启请求"
+                                  "不会被消费。经 Dashboard 项目页「安装托管」"
+                                  "或 /fenix-setup 恢复 supervisor 托管后重试"),
+                    }
+                else:
+                    req_path = Path(project["path"]) / ".fenix" / "restart_request"
+                    try:
+                        req_path.parent.mkdir(parents=True, exist_ok=True)
+                        req_path.touch()
+                        result = {"ok": True, "error": None,
+                                  "requested": True, "session": None}
+                    except OSError as e:
+                        result = {"ok": False, "error": f"写入 restart_request 失败: {e}"}
         except Exception as e:  # 环境异常（tmux 不可用等）→ 返回错误对象，不 500
             self._json({"ok": False, "error": f"操作失败: {e}"})
             return
@@ -1604,6 +1635,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "already": result.get("already", False),
             "was_running": result.get("was_running", False),
         })
+
+    def _api_project_install_hosting(self, project: dict) -> dict:
+        """安装 supervisor 托管：停止裸 daemon → 经 supervisor 启动。
+
+        fix-supervisor-hosting-chain D6：存量项目（fenix-server、scheduling-
+        showcase）的托管修复路径。对 managed 幂等返回已托管（不重启）；对
+        stopped 等价于启动；对 unmanaged 停裸 daemon 后经 supervisor 拉起。
+        复用 stop_daemon/start_daemon，强制走同一对已被测试覆盖的启停函数，
+        不出现第三套启停实现。
+        """
+        try:
+            from core.fenix_session import hosting_state as _hosting_state
+            hosting = _hosting_state(project["path"])
+        except Exception:
+            hosting = "stopped"
+        if hosting == "managed":
+            return {"ok": True, "error": None, "already": True, "hosting": "managed"}
+        # unmanaged / stopped：先停裸 daemon（幂等），再经 supervisor 启动
+        stop_result = stop_daemon(project["path"])
+        if not stop_result.get("ok"):
+            return {"ok": False, "error": f"停止裸 daemon 失败: {stop_result.get('error')}"}
+        start_result = start_daemon(project["path"])
+        if not start_result.get("ok"):
+            return {"ok": False, "error": f"经 supervisor 启动失败: {start_result.get('error')}"}
+        return {"ok": True, "error": None, "already": False, "hosting": "managed"}
 
     def _api_project_delete(self, path: str, query: dict):
         """DELETE /api/projects/<name> —— 软删除：停止 daemon + 写入忽略列表。
@@ -1705,6 +1761,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.endswith("/restart"):
             # POST /api/projects/<name>/restart —— 优雅重启项目 daemon
             self._api_project_lifecycle("restart", path, query)
+        elif path.endswith("/install-hosting"):
+            # POST /api/projects/<name>/install-hosting —— 安装 supervisor 托管
+            self._api_project_lifecycle("install-hosting", path, query)
         else:
             self._error(404, "Not Found")
 

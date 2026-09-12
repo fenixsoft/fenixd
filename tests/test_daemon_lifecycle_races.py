@@ -818,6 +818,10 @@ class TestDrainConsistencyCheck(unittest.TestCase):
         import pytest
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(self.mod, "PROJECT_ROOT", self.proot)
+            # fix-supervisor-hosting-chain D4：存在性检查在真实 /proc 下会命中
+            # 无 supervisor → 落告警；测试环境无真实 supervisor，patch 为在跑
+            from core import fenix_session
+            mp.setattr(fenix_session, "supervisor_running", lambda root=None: True)
             self._check()
         self.logger.warning.assert_not_called()
 
@@ -837,11 +841,17 @@ class TestDrainConsistencyCheck(unittest.TestCase):
         self.assertIn("残留自此前 supervisor 进程", warnings)
 
     def test_drain_zero_skips_check(self):
-        """drain=0（快速停机）不比对。"""
+        """drain=0（快速停机）跳过 drain 一致性比对。
+
+        fix-supervisor-hosting-chain D4：drain=0 只跳过「一致性比对」，supervisor
+        存在性检查无条件执行；patch supervisor 在跑 → 两条判定均静默。
+        """
         self.daemon.config = {"admin": {"shutdown_drain_seconds": 0}}
         import pytest
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(self.mod, "PROJECT_ROOT", self.proot)
+            from core import fenix_session
+            mp.setattr(fenix_session, "supervisor_running", lambda root=None: True)
             self._check()
         self.logger.warning.assert_not_called()
         self.pm._append_project_log.assert_not_called()

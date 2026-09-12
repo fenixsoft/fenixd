@@ -86,6 +86,8 @@ daemon 由 `fenixd_supervisor.py` 托管，异常退出后自动拉起。重启�
 
 daemon 由 `fenixd_supervisor.py` 托管的完整重启协议是自愈链路的最后一环：daemon 进程崩溃时 supervisor 自动拉起，启动后执行 boot recovery，将中断状态的 SPEC 回退 `ready`、续查恢复观察项、启动 sweeper。项目的启停通过 `/fenix-dashboard` 或 `/fenix-setup` 操作，跨项目的统一管理由 `/fenix-dashboard` 负责。这个协议保证了 daemon 异常退出不会导致整个系统停摆。
 
+**唯一托管启动路径与托管态**：daemon 的唯一合法启动路径是经 supervisor 托管——`/fenix-setup` 第 7 步与 Dashboard 项目页「启动」均在项目唯一 tmux session 内拉起 `fenixd_supervisor.py --project-root <根>`，tmux 仅承担脱离终端，daemon 是 supervisor 的子进程。停止语义为「写 `.fenix/stop` → SIGTERM daemon → supervisor 收口退出」。daemon 运行状态分三态：`managed`（受托管）、`unmanaged`（裸 daemon——进程在跑但无 supervisor，restart_request 无人消费，需经 Dashboard「安装托管」或 `/fenix-setup` 恢复）、`stopped`（未运行）。daemon 启动自检在托管缺失时落 `supervisor_missing` 告警并升级人工。
+
 ## 告警系统：自愈无法覆盖时升级人工
 
 前四类机制覆盖了大多数异常，但有些情况无法自动化处理：merge 冲突的根因是 git 历史分歧、SPEC 卡在 `blocked` 状态且自动恢复无效、同一 SPEC 反复失败但每次失败原因不同。这些场景需要人工介入，告警系统就是把框架无法解决的问题升级给人的通道。

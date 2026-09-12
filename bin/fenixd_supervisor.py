@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fenixd_supervisor.py — fenixd 外部看门狗（fix-admin-self-heal）。
+fenixd_supervisor.py — fenixd 外部看门狗（fix-admin-self-heal / fix-supervisor-hosting-chain）。
 
 自杀式重启的根因：admin agent 是 daemon 的子进程，直接 kill daemon 会连带杀死
 自己，导致「杀完重启」永远走不到、升级也发不出去。本 supervisor 独立于 daemon
@@ -11,9 +11,11 @@ fenixd_supervisor.py — fenixd 外部看门狗（fix-admin-self-heal）。
 - .fenix/stop 文件存在时不再拉起（显式停止）
 - 每次启动把时间戳写入 .fenix/daemon_started（供 admin/monitor 验证重启生效）
 
-启动方式（cwd 为项目根）：python3 .fenix/bin/fenixd_supervisor.py
+启动方式（推荐）：python3 .fenix/bin/fenixd_supervisor.py --project-root <root>
+备选方式：cd <项目根> && python3 .fenix/bin/fenixd_supervisor.py
 """
 
+import argparse
 import os
 import signal
 import subprocess
@@ -23,7 +25,27 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+def _resolve_project_root() -> tuple:
+    """解析目标项目根，返回 (Path, source 描述)。
+
+    按 --project-root 参数 > FENIX_PROJECT_ROOT 环境变量 > Path.cwd() 解析；
+    fix-supervisor-hosting-chain D1：移除 Path(__file__).resolve() 派生路径
+    （该路径会跟随项目内 .fenix/bin 软链回到框架主树，导致子项目的 supervisor
+    绑定错误目标）。解析结果以绝对路径规范化（expanduser().resolve()）。
+    """
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--project-root", dest="project_root", default=None)
+    args, _ = parser.parse_known_args()
+    if args.project_root:
+        return Path(args.project_root).expanduser().resolve(), "参数 --project-root"
+    env_root = os.environ.get("FENIX_PROJECT_ROOT")
+    if env_root:
+        return Path(env_root).expanduser().resolve(), "环境变量 FENIX_PROJECT_ROOT"
+    return Path.cwd(), "当前工作目录（cwd）"
+
+
+PROJECT_ROOT, PROJECT_ROOT_SOURCE = _resolve_project_root()
 FENIX_DIR = PROJECT_ROOT / ".fenix"
 RESTART_REQUEST = FENIX_DIR / "restart_request"
 STOP_FLAG = FENIX_DIR / "stop"
@@ -105,12 +127,33 @@ def _supervisor_runtime_file() -> Path:
     return FENIX_DIR / "supervisor_runtime.json"
 
 
+def _script_hash() -> str:
+    """supervisor 脚本内容 sha256（读取失败返回空串，调用方省略该键）。"""
+    try:
+        import hashlib
+        return hashlib.sha256(
+            Path(__file__).absolute().read_bytes()
+        ).hexdigest()
+    except OSError:
+        return ""
+
+
 def _write_supervisor_runtime() -> None:
-    """原子写入 .fenix/supervisor_runtime.json（temp + rename）。"""
+    """原子写入 .fenix/supervisor_runtime.json（temp + rename）。
+
+    fix-supervisor-hosting-chain D1/1.3：除既有 sigkill_wait / started_at 外
+    追加 pid（自身进程 pid）、script_hash（本脚本内容 sha256，读取失败省略该键
+    不中断）、project_root（解析出的绝对项目根）。
+    """
     data = {
         "sigkill_wait": _sigkill_wait_seconds(),
         "started_at": _now_iso(),
+        "pid": os.getpid(),
+        "project_root": str(PROJECT_ROOT),
     }
+    script_hash = _script_hash()
+    if script_hash:
+        data["script_hash"] = script_hash
     import json
     FENIX_DIR.mkdir(parents=True, exist_ok=True)
     target = _supervisor_runtime_file()
@@ -132,7 +175,7 @@ def _write_supervisor_runtime() -> None:
             raise
         log(
             f"supervisor_runtime written: sigkill_wait={data['sigkill_wait']}s, "
-            f"started_at={data['started_at']}"
+            f"started_at={data['started_at']}, pid={data['pid']}"
         )
     except OSError as e:
         log(f"supervisor_runtime write failed (non-blocking): {e}")
@@ -149,6 +192,20 @@ def start_daemon():
 
 
 def main():
+    # 启动守卫（fix-supervisor-hosting-chain D1）：解析出的项目根下必须存在
+    # .fenix/（目录或软链），缺失时打印含解析来源与解析结果的可读错误并以
+    # 非零码退出；必须在 _write_supervisor_runtime() 与 start_daemon() 之前返回，
+    # 不产生任何进程、不写入任何 runtime 文件。
+    if not FENIX_DIR.exists():
+        print(
+            f"FATAL: supervisor 目标项目根下不存在 .fenix/（{FENIX_DIR}）。\n"
+            f"  解析来源: {PROJECT_ROOT_SOURCE}\n"
+            f"  解析结果: {PROJECT_ROOT}\n"
+            f"  请确认目标是一个已初始化（/fenix-setup 完成）的 Fenixd 项目，"
+            f"并显式指定 --project-root 或在项目根下执行本命令。",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     FENIX_DIR.mkdir(parents=True, exist_ok=True)
     log(f"supervisor starting (pid {os.getpid()}, root {PROJECT_ROOT})")
     # 启动自报：SIGKILL 等待窗口 + 启动时间（fix-daemon-lifecycle-races D2）。

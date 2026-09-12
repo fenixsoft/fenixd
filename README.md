@@ -163,7 +163,7 @@ bash install.sh
 /fenix-setup
 ```
 
-首次运行会自动完成工程骨架初始化（等价于 `fenix-init`）：`.fenix/`（配置 + 状态文件 + 框架软链接 + 运行时目录）、`spec/`、`.claude/agents/`、`.claude/worktrees/`，并追加 `.gitignore` 条目；随后在 tmux 会话中启动守护进程（session 名由项目根路径派生，同机多项目互不干扰），并由 supervisor 看门狗守护。异常退出或收到 `restart_request` 时自动拉起。
+首次运行会自动完成工程骨架初始化（等价于 `fenix-init`）：`.fenix/`（配置 + 状态文件 + 框架软链接 + 运行时目录）、`spec/`、`.claude/agents/`、`.claude/worktrees/`，并追加 `.gitignore` 条目；随后经 supervisor 看门狗启动守护进程——在项目唯一 tmux 会话（session 名由项目根路径派生，同机多项目互不干扰）内拉起 `fenixd_supervisor.py`，daemon 由 supervisor 作为子进程托管启动，tmux 仅承担脱离终端。异常退出或收到 `restart_request` 时由 supervisor 自动拉起。daemon 运行状态分托管态三态（`managed` / `unmanaged` / `stopped`），`unmanaged`（裸 daemon）项目经 Dashboard 项目页「安装托管」即可转入托管。
 
 `fenix-init [DIR] [--name 项目名] [--type web|cli|library|api]` 仍可作为独立命令单独使用（不需要 Claude Code 会话时）。
 

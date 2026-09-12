@@ -605,6 +605,12 @@ def request_spec_approve_push(project_root, spec: str) -> dict:
     通过校验后原子写（tmp+rename + fsync，与 request_admin_invoke 同构）
     {"spec": spec, "source": "dashboard", "created": <ISO8601 UTC>}。
 
+    消费方判据（fix-supervisor-hosting-chain D8）：从「daemon 进程存活」
+    升级为「受 supervisor 托管的活跃 daemon」（hosting_state == "managed"）
+    ——进程在跑但无 supervisor（unmanaged）时文件信号无人消费，会永久滞留
+    并锁死该项目后续全部审批推送；此时 MUST NOT 写信号，返回带
+    unmanaged: True 的失败结果。
+
     本函数只写信号、不触碰 STATE.md——状态推进（done → pushed）由 daemon
     侧 `pm_engine.approve_push` 的 `transition(pushed)` 完成；退避/失败由
     既有 `_handle_push_failure` 链路接管（推送失败写回退避标记或升级
@@ -612,14 +618,14 @@ def request_spec_approve_push(project_root, spec: str) -> dict:
 
     Returns:
         {"ok": bool, "found": bool, "terminal": bool, "daemon_down": bool,
-         "conflict": bool, "file": str|null, "created": str|null,
-         "error": str|null}
+         "unmanaged": bool, "conflict": bool, "file": str|null,
+         "created": str|null, "error": str|null}
     """
     proot = Path(project_root)
     specs = parse_state(proot)
     if spec not in specs:
         return {"ok": False, "found": False, "terminal": False,
-                "daemon_down": False, "conflict": False,
+                "daemon_down": False, "unmanaged": False, "conflict": False,
                 "file": None, "created": None,
                 "error": f"spec not found: {spec}"}
 
@@ -632,13 +638,27 @@ def request_spec_approve_push(project_root, spec: str) -> dict:
         else:
             msg = f"仅 done 状态可审批推送（当前 {status}）"
         return {"ok": False, "found": True, "terminal": True,
-                "daemon_down": False, "conflict": False,
+                "daemon_down": False, "unmanaged": False, "conflict": False,
                 "file": None, "created": None, "error": msg}
 
-    # daemon 存活探测（design D2）：信号无人消费时静默滞留，前置拦截
-    if not _is_running(proot):
+    # 消费方判据（D8）：托管态为准——unmanaged 拒绝（信号无人消费）、
+    # stopped 维持既有 daemon_down 文案、managed 放行。
+    from core.fenix_session import hosting_state as _hosting_state
+    try:
+        state = _hosting_state(proot)
+    except Exception:
+        state = "stopped"  # 判定异常按未运行兜底，宁拒勿假放行
+    if state == "unmanaged":
         return {"ok": False, "found": True, "terminal": False,
-                "daemon_down": True, "conflict": False,
+                "daemon_down": False, "unmanaged": True, "conflict": False,
+                "file": None, "created": None,
+                "error": ("本项目 daemon 未受 supervisor 托管，审批推送信号"
+                          "不会被消费。经 Dashboard 项目页「安装托管」或 "
+                          "/fenix-setup 恢复 supervisor 托管后重试")}
+    if state != "managed":
+        # stopped（或判定异常兜底）：维持既有 daemon_down 文案逐字不变
+        return {"ok": False, "found": True, "terminal": False,
+                "daemon_down": True, "unmanaged": False, "conflict": False,
                 "file": None, "created": None,
                 "error": "daemon 未运行，请先启动 daemon"}
 
@@ -653,7 +673,7 @@ def request_spec_approve_push(project_root, spec: str) -> dict:
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             pass
         return {"ok": False, "found": True, "terminal": False,
-                "daemon_down": False, "conflict": True,
+                "daemon_down": False, "unmanaged": False, "conflict": True,
                 "file": str(req_path), "created": existing_created,
                 "error": "已有进行中的审批推送请求"}
 
@@ -675,7 +695,7 @@ def request_spec_approve_push(project_root, spec: str) -> dict:
             pass
         raise
     return {"ok": True, "found": True, "terminal": False,
-            "daemon_down": False, "conflict": False,
+            "daemon_down": False, "unmanaged": False, "conflict": False,
             "file": str(req_path), "created": created, "error": None}
 
 
@@ -2633,6 +2653,36 @@ def daemon_health(project_root) -> str:
     return status
 
 
+# ── 托管态检测（fix-supervisor-hosting-chain D3：managed/unmanaged/stopped）──
+
+_HOSTING_STATE_TTL = 5.0   # 秒；结果在 TTL 内复用（与 daemon_health 同窗口）
+_HOSTING_STATE_CACHE: dict = {}   # key=规范化项目根, value=(状态, 时间戳)
+
+
+def hosting_state(project_root) -> str:
+    """项目 daemon 托管态：managed / unmanaged / stopped。
+
+    fix-supervisor-hosting-chain D3/D5：复用 core.fenix_session.hosting_state
+    （supervisor 在跑 = managed；有 daemon 进程但无 supervisor = unmanaged；
+    两者皆无 = stopped）。检测异常时以 "stopped" 兜底，不使请求 500。
+    带短 TTL memo，避免 overview 高频轮询重复扫描 /proc。
+    """
+    key = str(Path(project_root).expanduser().resolve())
+    now = time.monotonic()
+    cached = _HOSTING_STATE_CACHE.get(key)
+    if cached is not None and now - cached[1] < _HOSTING_STATE_TTL:
+        return cached[0]
+    try:
+        from core.fenix_session import hosting_state as _fs_hosting_state
+        state = _fs_hosting_state(key)
+    except Exception:
+        state = "stopped"
+    if len(_HOSTING_STATE_CACHE) > 256:
+        _HOSTING_STATE_CACHE.clear()
+    _HOSTING_STATE_CACHE[key] = (state, now)
+    return state
+
+
 def project_summary(project_root, name: str, path: str) -> dict:
     """单个项目的聚合摘要（/api/projects、/api/overview 共用）。"""
     proot = Path(path)
@@ -2667,6 +2717,7 @@ def project_summary(project_root, name: str, path: str) -> dict:
         "name": name,
         "path": str(path),
         "daemon": daemon_health(proot),
+        "hosting": hosting_state(proot),
         "spec_count": len(specs),
         "status_counts": status_counts,
         "task_done": grand_done,
@@ -3750,7 +3801,8 @@ def overview(registry_projects: list) -> dict:
         if not p.get("exists"):
             projects.append({
                 "name": p["name"], "path": p["path"], "discovered": p.get("discovered", False),
-                "exists": False, "daemon": "stopped", "error": "项目路径不存在",
+                "exists": False, "daemon": "stopped", "hosting": "stopped",
+                "error": "项目路径不存在",
             })
             continue
         s = project_summary(p["path"], p["name"], p["path"])

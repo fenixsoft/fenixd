@@ -64,7 +64,17 @@
 
 **处置**：查 daemon 日志 `.fenix/logs/fenixd-<year>.log` 尾部确认崩溃原因；必要时 `/fenix-setup` 重建环境，或用 `/fenix-dashboard` 跨项目统一管理。需要说明的是，重启恢复是设计行为（[03 生命周期](03-lifecycle.md#daemon-重启中断恢复)），不是数据丢失。
 
-## 8. 希望人工接管某个 SPEC
+## 8. 项目在跑但 restart_request 永不生效（概览显示「运行中·未托管」）
+
+**现象**：daemon 进程在运行，但 `touch .fenix/restart_request` 后 daemon 不重启，restart_request 文件一直残留；Dashboard 概览页该项目卡片显示「运行中·未托管」；审批推送同样无响应。
+
+**根因**：项目处于 `unmanaged` 托管态——有 daemon 进程但无 supervisor（`fenixd_supervisor.py`）。supervisor 是 restart_request 的唯一消费方，裸 daemon 不检查该文件，请求信号永久滞留并锁死该项目后续全部审批推送（单槽位占位）。典型场景：存量项目未经 `/fenix-setup` 托管、或 supervisor 崩溃后无人重启。
+
+**处置**：经 Dashboard 项目卡片「更多」→「安装托管」一键执行「停止裸 daemon → 经 supervisor 启动」；或重新运行 `/fenix-setup`。安装托管后 supervisor 启动即会看到并消费残留的 restart_request，daemon 换上新代码，restart_failed 告警也可关闭。
+
+相关：[调度与治理规则](06-governance.md#重启协议)、[Dashboard 使用指南](08-dashboard.md#托管态徽标与安装托管)
+
+## 9. 希望人工接管某个 SPEC
 
 **现象**：想暂停自动化，自己手工处理，或让 Administrator 介入。
 
