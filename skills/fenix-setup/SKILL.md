@@ -20,43 +20,26 @@ which claude 2>/dev/null || echo "MISSING: claude CLI"
 python3 -c "import yaml" 2>/dev/null && echo "PyYAML: OK" || { echo "Installing PyYAML..."; pip3 install pyyaml -q; }
 ```
 
-### 2. 自动初始化项目骨架（未初始化时自动运行 fenix-init）
+### 2. 确保项目骨架（幂等运行 fenix-init，每次都执行）
 
-以 `.fenix/bin/fenix_session.py` 与 `.fenix/core/config.py` 是否存在为判定标志，
-任一缺失即视为未完成初始化（含旧版 setup 预创建空目录导致的半破损状态）。
-未初始化则自动运行 `fenix-init`
-（生成 .fenix/config.yaml、框架软链、状态文件、verify.yaml 模板、spec/、agent 软链、.gitignore），
-不需要用户单独执行 fenix-init：
+`fenix-init` 完全幂等：已存在的 config.yaml / 框架软链 / 状态文件 / verify.yaml /
+spec 目录 / agent 软链一律跳过，只补齐缺失项（含 `.gitignore` 的 `.fenix/*` 规则）。
+因此本步骤**每次都运行**，一次覆盖「新项目初始化」与「已初始化项目补齐缺失项」
+两种情形——消除了旧逻辑「已初始化即跳过 fenix-init」导致缺失项永远补不上的缺口。
 
-```bash
-if [ ! -e ".fenix/bin/fenix_session.py" ] || [ ! -e ".fenix/core/config.py" ]; then
-    echo "项目尚未初始化，自动执行 fenix-init ..."
-    # 先清理旧版 setup 可能预创建的真实空目录（rmdir 只删空目录，软链与非空目录天然安全），
-    # 否则 fenix-init 的软链会因「已存在」被跳过，留下空目录顶替框架软链
-    rmdir .fenix/core .fenix/bin .fenix/tests 2>/dev/null
-    if command -v fenix-init >/dev/null 2>&1; then
-        fenix-init
-    else
-        echo "错误：找不到 fenix-init 命令。请先在 Fenixd 框架仓库运行 bash install.sh"
-        exit 1
-    fi
-else
-    echo "项目已初始化，跳过 fenix-init"
-fi
-```
-
-### 2.5 确保 .fenix 已在 .gitignore（幂等，每次都执行）
-
-步骤 2 只对**未初始化**项目运行 fenix-init，已初始化项目的 `.gitignore` 若缺
-`.fenix/*` 规则不会被修复——而 `.fenix/config.yaml` 含 API Key、`.fenix/` 下有
-运行时产物（run 转录、日志、agent 会话配置）与指向框架的软链，缺失该规则会导致
-误提交与密钥泄露。本步骤对**所有**项目每次都执行，幂等补齐（已含规则则跳过）：
+`.fenix/config.yaml` 含 API Key、`.fenix/` 下有运行时产物（run 转录、日志、agent
+会话配置）与指向框架的软链，缺失 `.gitignore` 规则会导致误提交与密钥泄露，
+fenix-init 会幂等确保该规则存在。无需用户单独执行 fenix-init：
 
 ```bash
 if command -v fenix-init >/dev/null 2>&1; then
-    fenix-init --ensure-gitignore "$(pwd)"
+    # 先清理旧版 setup 可能预创建的真实空目录（rmdir 只删空目录，软链与非空目录天然安全），
+    # 否则 fenix-init 的软链会因「已存在」被跳过，留下空目录顶替框架软链
+    rmdir .fenix/core .fenix/bin .fenix/tests 2>/dev/null
+    fenix-init
 else
-    echo "提示：未找到 fenix-init，跳过 .gitignore 检查（请在框架仓库运行 bash install.sh）"
+    echo "错误：找不到 fenix-init 命令。请先在 Fenixd 框架仓库运行 bash install.sh"
+    exit 1
 fi
 ```
 
@@ -142,13 +125,12 @@ fi
 echo "项目简介已生成"
 ```
 
-### 6. 初始化状态文件与验证契约模板
+### 6. 兜底：确保验证契约模板
 
-如果 .fenix/STATE.md 和 .fenix/PROJECT_LOG.md 不存在，创建它们。
-
-如果 .fenix/verify.yaml 不存在，从框架模板生成（模板全部配置行注释 =
-无契约，框架安全回退旧行为；用户后续在 Dashboard 设置页或直接编辑取消
-注释启用）。已存在则绝不覆盖：
+`.fenix/STATE.md`、`.fenix/PROJECT_LOG.md`、`.fenix/verify.yaml` 均由步骤 2 的
+fenix-init 创建（已存在则跳过）。本步骤仅作兜底：若 `.fenix/verify.yaml` 异常缺失，
+从框架模板补建（模板全部配置行注释 = 无契约，框架安全回退旧行为；用户后续可在
+Dashboard 设置页或直接编辑取消注释启用）。已存在则绝不覆盖：
 
 ```bash
 if [ ! -f ".fenix/verify.yaml" ]; then
