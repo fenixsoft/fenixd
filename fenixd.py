@@ -180,6 +180,13 @@ class FenixDaemon:
         self._admin_pool_stats = {"submitted": 0, "completed": 0, "failed": 0}
         self.pm_engine = None
         self.hook_engine = None
+        # 框架自进化检查点（add-framework-self-evolution D3 单飞）：
+        # _evolution_in_flight 在派发即置位、worker 收尾复位——与 _running_agents
+        # 的 evo- 前缀判定互补（派发与子进程登记之间的窗口由本标记兜底）。
+        self._evolution_in_flight = False
+        # 宿主守卫去重（add-framework-self-evolution D1/5.2）：非自托管部署
+        # 只记一次日志，不刷屏。
+        self._evolution_host_guard_logged = False
         # 代码陈旧持续状态（add-stale-code-selfheal D1）：每检测周期重算的
         # self._code_stale 取代「每进程一次性提示」的模块级旗标；为真期间保持
         # 可见（WARNING 仅状态边沿落一次 + 未处置 escalation 告警去重），并作为
@@ -416,6 +423,9 @@ class FenixDaemon:
         # add-spec-scheduling-controls D3：定时调度到期检测独立计时（60s，
         # 对齐恢复复查/recovery watch 模式：try/except 记日志不中断主循环）。
         scheduling_check_ts = time.time()
+        # add-framework-self-evolution 5.1：自进化检查点独立计时（节拍复用
+        # admin.interval_minutes，缺省 5 分钟）。
+        evolution_check_ts = time.time()
         try:
             while self.running:
                 time.sleep(1)
@@ -517,6 +527,18 @@ class FenixDaemon:
                     except Exception as e:
                         self.logger.error(
                             "fenixd", f"Periodic serving registry sweep failed: {e}")
+                # add-framework-self-evolution 5.1：自进化检查点（节拍复用
+                # admin.interval_minutes，缺省 5 分钟；异常记 ERROR 不中断主循环，
+                # 就绪即入队、无在途立即启动分析 run）。
+                evo_interval = int(ConfigLoader.get(
+                    self.config, "admin.interval_minutes", 5) or 5) * 60
+                if time.time() - evolution_check_ts >= evo_interval:
+                    evolution_check_ts = time.time()
+                    try:
+                        self._check_evolution_checkpoint()
+                    except Exception as e:
+                        self.logger.error(
+                            "fenixd", f"Evolution checkpoint failed: {e}")
         except KeyboardInterrupt:
             self.logger.info("fenixd", "Received interrupt signal")
         finally:
@@ -1029,6 +1051,179 @@ class FenixDaemon:
                 f"审批推送未成功 spec='{spec}'（非 done/退避期内/推送失败），"
                 "不重试，退避与 recovery 兜底覆盖",
             )
+
+    # ── 框架自进化检查点（add-framework-self-evolution 5.x） ────────
+
+    @staticmethod
+    def _evolution_framework_root() -> Path:
+        """FRAMEWORK_ROOT，与 prompt_builder 同式推导（design D1）。"""
+        from core.agent_runner.prompt_builder import FRAMEWORK_ROOT
+        return FRAMEWORK_ROOT
+
+    def _check_evolution_checkpoint(self) -> None:
+        """自进化检查点（5.1-5.4）：就绪扫描 → 单飞判定 → 派发分析 run。
+
+        节拍由主循环计时器驱动（复用 admin.interval_minutes，缺省 5 分钟）。
+        流程：
+        1. 宿主守卫（5.2）：PROJECT_ROOT.resolve() != FRAMEWORK_ROOT → 整套
+           不启用，仅首次判定记一条 INFO 日志（不刷屏）；
+        2. 单飞：_evolution_in_flight 或 _running_agents 中已有 evo- run →
+           本轮不派发，就绪项目留待下一检查点（D3「就绪即入队」）；
+        3. 就绪扫描：registry 项目 → scan_ready_projects（MUST NOT 等待其他
+           项目到齐）→ 全部就绪项目的 todo.md 解析出待分析条目（含 id），
+           max_items_per_run 截断；
+        4. 派发：无在途则立刻以队列中全部就绪项目启动一次分析 run（同一
+           run 拿到多份 todo.md）。
+        检查点整体 try/except 包裹（5.4：异常记 ERROR，MUST NOT 中断主循环；
+        registry 读取失败同样在此捕获）。
+        """
+        try:
+            # 5.2 宿主守卫：非自托管部署（PROJECT_ROOT != FRAMEWORK_ROOT）下
+            # 本能力整体不启用（日志一次，不刷屏）
+            if PROJECT_ROOT.resolve() != self._evolution_framework_root():
+                if not self._evolution_host_guard_logged:
+                    self._evolution_host_guard_logged = True
+                    self.logger.info(
+                        "fenixd",
+                        "框架自进化未启用：PROJECT_ROOT != FRAMEWORK_ROOT"
+                        f"（{PROJECT_ROOT} != {self._evolution_framework_root()}）",
+                    )
+                return
+
+            # 单飞判定（spec「分析 run 在途的判定基于 daemon 内部活跃 run 状态」）
+            if self._evolution_in_flight:
+                return
+            running = getattr(self.agent_runner, "_running_agents", None) or {}
+            if any(str(rid).startswith("evo-") for rid in running):
+                # 在途 run（含派发-登记窗口未覆盖的情形）→ 留到下一检查点
+                self._evolution_in_flight = True
+                self.logger.info(
+                    "fenixd", "自进化分析 run 在途，就绪项目留待下一检查点")
+                return
+
+            from core.dashboard.registry import Registry
+            from core.evolution import (
+                scan_ready_projects, parse_todo_entries,
+                select_pending_entries, known_ids)
+
+            registry = Registry()
+            projects = registry.discover()
+            ready = scan_ready_projects(projects, PROJECT_ROOT)
+            if not ready:
+                return
+
+            # 汇总全部就绪项目的待分析条目（带 project），max_items_per_run 截断
+            pending: list = []
+            for proj in ready:
+                entries = parse_todo_entries(proj.get("todo_md") or "")
+                for entry in entries:
+                    entry["project"] = proj.get("name") or proj.get("path")
+                batch = select_pending_entries(
+                    entries, known_ids(PROJECT_ROOT), 10 ** 6)
+                pending.extend(batch)
+            se_cfg = ConfigLoader.get_self_evolution_config(self.config)
+            limit = int(se_cfg["max_items_per_run"])
+            if limit > 0:
+                pending = pending[:limit]
+            if not pending:
+                return
+
+            # 单飞标记与派发（水位推进快照时刻 = 派发时刻，见 _evolution_worker）
+            self._evolution_in_flight = True
+            snapshot_at = datetime.now(timezone.utc).isoformat()
+            try:
+                if self._admin_executor is not None:
+                    self._admin_executor.submit(
+                        self._evolution_worker, ready, pending, snapshot_at)
+                else:
+                    self._evolution_worker(ready, pending, snapshot_at)
+            except Exception as e:
+                self._evolution_in_flight = False
+                self.logger.error(
+                    "fenixd", f"自进化分析 run 派发失败: {e}")
+        except Exception as e:
+            self.logger.error(
+                "fenixd", f"Evolution checkpoint failed: {e}")
+
+    def _evolution_warn(self, message: str) -> None:
+        """写一条自进化 admin WARNING 告警（escalation major 级，不阻塞）。"""
+        try:
+            if self.admin_store is not None:
+                self.admin_store.append({
+                    "kind": "escalation",
+                    "severity": "major",
+                    "signal_type": "self-evolution",
+                    "spec": None,
+                    "description": message,
+                })
+        except Exception as e:
+            self.logger.warning(
+                "fenixd", f"自进化 admin 告警写入失败（降级）: {e}")
+
+    def _evolution_worker(self, ready_projects: list,
+                          pending_entries: list, snapshot_at: str) -> None:
+        """worker 线程执行分析 run + 落地 + 自动接受 + 水位推进（5.3/5.4）。
+
+        - 分析 run 成功落地后：auto_accept 为真 → 5.3 对本轮 pending 自动接受
+          （decided_by=auto）；为假 → 保持 pending 等待用户；
+        - 水位推进仅在 run 成功落地后发生，且使用派发时捕获的 snapshot_at
+          （MUST NOT 落地时取 now()，避免漏掉 run 执行期间新写入的条目）；
+        - 分析 run 失败 → WARNING 告警（含 run_id 与原因），水位不推进
+          （下一检查点自动重试）；
+        - 每轮成功落地记 INFO（就绪项目、条目数、草稿数、接受数、失败数）。
+        """
+        try:
+            result = self.agent_runner.run_evolution(
+                ready_projects, pending_entries)
+            if result.success:
+                from core.evolution import auto_accept_pending, advance_watermark
+                se_cfg = ConfigLoader.get_self_evolution_config(self.config)
+                accepted = 0
+                if se_cfg["auto_accept"]:
+                    try:
+                        summary = auto_accept_pending(
+                            PROJECT_ROOT, self.state_machine)
+                        accepted = summary.get("accepted", 0)
+                    except Exception as e:
+                        self.logger.error(
+                            "fenixd",
+                            f"自动接受流程异常（条目保持 pending）: {e}")
+                else:
+                    accepted = result.accepted
+                # 水位推进：仅成功落地后，用 run 启动快照时刻
+                advance_errors = 0
+                for proj in ready_projects:
+                    try:
+                        advance_watermark(
+                            PROJECT_ROOT, proj.get("name"), snapshot_at,
+                            result.run_id)
+                    except Exception as e:
+                        advance_errors += 1
+                        self.logger.warning(
+                            "fenixd",
+                            f"自进化水位推进失败 {proj.get('name')}: {e}")
+                self.logger.info(
+                    "fenixd",
+                    f"自进化分析 run {result.run_id} 落地完成："
+                    f"就绪 {len(ready_projects)} 项目，条目 "
+                    f"{result.items_ingested}，草稿 {result.drafts}，"
+                    f"接受 {accepted}，失败 {advance_errors}"
+                    + (f"（降级: {result.degraded}）" if result.degraded else ""),
+                )
+            else:
+                reason = result.error or "未知原因"
+                self._evolution_warn(
+                    f"自进化分析 run {result.run_id} 失败: {reason}")
+                self.logger.error(
+                    "fenixd",
+                    f"自进化分析 run {result.run_id} 失败（水位不推进）: {reason}",
+                )
+        except Exception as e:
+            # 5.4：检查点整体 try/except（异常记 ERROR，不中断主循环/其它任务）
+            self._evolution_warn(f"自进化分析 run 异常: {e}")
+            self.logger.error("fenixd", f"自进化分析 run 异常: {e}")
+        finally:
+            self._evolution_in_flight = False
 
     def _submit_admin_run(self, signal: dict) -> bool:
         """把一次 Administrator 处置投递到后台 worker 池（D1/D2）。
