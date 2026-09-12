@@ -26,6 +26,12 @@ DEFAULT_FOLLOWUP_CHECK_MINUTES = 15
 # 同 spec 同指纹的巡检/滞留信号冷却（分钟）：指纹未变且冷却期内只记日志
 DEFAULT_SIGNAL_COOLDOWN_MINUTES = 30
 
+# 恢复复查「已恢复推进」的后续态集合（post-recovery-patrol D4）：观察窗口
+# 到达时 spec 已进入 ready 之后的这些状态之一 → 视为已真实恢复推进，关闭
+# 观察项且不告警。implementing 不在其中——实施中的 spec 由「已有活跃派发」
+#（worktree 持锁）覆盖；无活跃派发的 implementing 属卡死形态，应告警。
+RECOVERY_PROGRESS_STATUSES = ("implemented", "testing", "verified", "done", "pushed")
+
 
 class RecoveryWatch:
     """恢复闭环复查注册组件（门面 PMEngine 的组合组件）。"""
@@ -101,9 +107,18 @@ class RecoveryWatch:
     def check_recovery_watch(self) -> list:
         """到期复查观察项（daemon 周期调用 + BLOCKER CHECK 内调用）。
 
-        通过条件（spec Scenario）：spec 已离开 ready 或已有活跃派发（worktree
-        在跑）→ 关闭观察项且不告警；否则触发 dispatch_stalled 信号唤起
-        Administrator，并关闭观察项（后续由巡检指纹冷却与处置接管）。
+        通过条件（post-recovery-patrol D4 收紧为声明语义，不再用「status 与
+        登记时是否相同」判定）：
+
+        - **已恢复推进**：spec 已进入 ready 之后的后续态
+          （implemented/testing/verified/done/pushed），或已有活跃派发
+          （worktree 在跑）→ 关闭观察项且不告警（既有行为）。
+        - **尚未恢复推进**：spec 处于 ready 且无活跃派发（含「登记时
+          implementing、窗口内回退 ready」真实形态）→ **先就地重新派发**
+          （走与 spec_ready 事件同源的派发入口，经既有依赖/预算/内容完整性/
+          冻结闸门）；派发成立 → 关闭观察项且不产生任何告警；派发未成立
+          （被预算/内容完整性/依赖闸门拦下、冻结，或存在活跃派发）→ 关闭
+          观察项并以 dispatch_stalled 信号唤起 Administrator 处置（既有兜底）。
 
         Returns: 本次发出的信号 spec 列表（审计/测试用）。
         """
@@ -116,7 +131,7 @@ class RecoveryWatch:
             self._pm._save_recovery_watch()
             entry = self._pm.state_machine.read_one(spec_name)
             if not entry:
-                continue  # spec 已消失（被人工清理）：观察项静默关闭
+                continue  # spec 已消失（被人工清理）：观察项静默关闭（2.4 不变）
             status = entry.get("status")
             active_dispatch = False
             try:
@@ -124,27 +139,110 @@ class RecoveryWatch:
                     self._pm.agent_runner.worktree_manager.has_active_worktree(spec_name))
             except Exception:
                 active_dispatch = False
-            if status != item.get("status_at_register") or active_dispatch:
+            # 2.1：已恢复推进 = 已进入 ready 之后的后续态，或已有活跃派发
+            if status in RECOVERY_PROGRESS_STATUSES or active_dispatch:
                 self._pm.logger.info(
                     "pm_engine",
                     f"Recovery watch passed for '{spec_name}' "
                     f"(status={status}, active_dispatch={active_dispatch})",
                 )
                 continue
+            # 2.2/2.3：尚未恢复推进 → 先就地重新派发（仅 ready 且无活跃派发
+            # 值得尝试；其余状态由各自事件路径接管，直接走信号兜底）。
+            dispatched = False
+            if status == "ready" and not active_dispatch:
+                dispatched = self._redispatch_stalled_ready(spec_name)
+            if dispatched:
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"Recovery watch redispatch for '{spec_name}' succeeded "
+                    f"(in-place dispatch from ready, no alert)",
+                )
+                continue
             evidence = (
                 f"auto-recovery/defer at {item.get('registered_at')} "
-                f"({item.get('reason')}); spec still ready with no active dispatch "
-                f"after followup window, status={status}, "
+                f"({item.get('reason')}); spec still {status} with no active "
+                f"dispatch after followup window, in-place redispatch "
+                f"{'succeeded' if dispatched else 'not established'}, "
                 f"error={str(entry.get('error') or '')[:120]}"
             )
             self._pm.logger.error(
                 "pm_engine",
-                f"Recovery watch failed for '{spec_name}' — still stalled in ready, "
+                f"Recovery watch failed for '{spec_name}' — not recovered, "
                 f"escalating dispatch_stalled",
             )
             self._pm._signal_dispatch_stalled(spec_name, evidence)
             raised.append(spec_name)
         return raised
+
+    def _redispatch_stalled_ready(self, spec_name: str) -> bool:
+        """就地重新派发滞留 ready 的 spec（post-recovery-patrol D4/2.2/2.3）。
+
+        走与 ``spec_ready`` 事件**同源**的派发入口 ``_on_spec_ready``，复用既有
+        依赖（``_dependencies_satisfied``，同一接受态集合）/预算/内容完整性
+        闸门——不另立判据（D2）。返回派发是否成立：
+        - 成立（成功入队）→ 关闭观察项且不告警；
+        - 未成立（被预算/内容完整性/依赖闸门拦下、冻结）→ 由调用方以
+          dispatch_stalled 信号唤起 Administrator（不静默关闭）。
+
+        异常一律捕获降级 WARNING 返回 False（fail-closed：不误判成立）。
+        """
+        try:
+            # 冻结态（frozen 标记或 blocked+冻结 error）不可派发 → 未成立
+            if self._pm._frozen_state(
+                    self._pm.state_machine.read_one(spec_name) or {}):
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"In-place redispatch skipped for '{spec_name}': frozen",
+                )
+                return False
+            # 预算闸门（发前判定，复用既有 _check_impl_budget_exhausted）
+            if self._pm._check_impl_budget_exhausted(spec_name):
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"In-place redispatch skipped for '{spec_name}': "
+                    f"impl budget exhausted",
+                )
+                return False
+            # 内容完整性闸门（发前判定，复用既有 _check_spec_content_missing）
+            if self._pm._check_spec_content_missing(spec_name):
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"In-place redispatch skipped for '{spec_name}': "
+                    f"spec content missing",
+                )
+                return False
+            # 依赖闸门（复用既有 _dependencies_satisfied，同一接受态集合）
+            if not self._pm._dependencies_satisfied(spec_name):
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"In-place redispatch skipped for '{spec_name}': "
+                    f"dependencies not satisfied",
+                )
+                return False
+            # 与 spec_ready 同源的派发入口：冷却/去重/优先级/并发等其余闸门
+            # 在 _on_spec_ready 内生效；返回 True 即成功入队（派发成立）。
+            ok = bool(self._pm._on_spec_ready(spec_name))
+            if not ok:
+                return False
+            # 入队后立即处理队列，使就地派发当轮完成（对齐唤起后立即处理
+            # 队列的既有模式）；队列处理失败由 full_scan 周期兜底。
+            try:
+                self._pm._process_queue()
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"In-place redispatch queue process failed '{spec_name}' "
+                    f"（非阻塞，full_scan 兜底）: {e}",
+                )
+            return True
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"In-place redispatch failed for '{spec_name}': "
+                f"{type(e).__name__}: {e}",
+            )
+            return False
 
 
     @staticmethod

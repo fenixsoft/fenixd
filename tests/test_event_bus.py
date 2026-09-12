@@ -225,3 +225,157 @@ class TestEventBusHookDispatch(unittest.TestCase):
         bus._dispatch_changes(self.sm.read_all())
         handle_calls = [c.args for c in pm.handle_event.call_args_list]
         self.assertTrue(any("spec_ready" in c for c in handle_calls), handle_calls)
+
+
+class TestDependencyWakeup(unittest.TestCase):
+    """dispatch-dependency-wakeup 3.4/3.5：EventBus 检出依赖转入接受态 → 触发唤醒。
+
+    触发判定（EventBus 层，MagicMock pm 断言调用）：接受态集合与
+    PMEngine._dependencies_satisfied 单点一致（DEPENDENCY_ACCEPTED_STATUSES）；
+    非接受态转移、无 dependents 均不触发（零副作用、零调用）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.sm.add_spec("A", {"status": "ready", "depends_on": "B", "priority": 5})
+        self.sm.add_spec("B", {"status": "implementing"})
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _bus(self):
+        from core.event_bus import EventBus
+        pm = MagicMock()
+        bus = EventBus(self.state_path, self.sm, pm, {}, self.logger)
+        return bus, pm
+
+    def test_wakeup_when_dep_enters_accepted_status(self):
+        """B 由 implementing（非接受态）转 pushed → 反查出 A 并触发唤醒（立即入队）。"""
+        bus, pm = self._bus()
+        bus._update_known_state()
+        self.sm.update_spec("B", {"status": "pushed"})
+        bus._dispatch_changes(self.sm.read_all())
+        pm._wakeup_dependents.assert_called_once_with("B", ["A"])
+
+    def test_no_wakeup_when_dep_not_accepted(self):
+        """B 转 blocked 或仍 implementing → A 不被唤醒（不重评、不入队）。"""
+        bus, pm = self._bus()
+        bus._update_known_state()
+        # blocked：非接受态
+        self.sm.update_spec("B", {"status": "blocked"})
+        bus._dispatch_changes(self.sm.read_all())
+        pm._wakeup_dependents.assert_not_called()
+        # implementing：仍非接受态
+        self.sm.update_spec("B", {"status": "implementing"})
+        bus._dispatch_changes(self.sm.read_all())
+        pm._wakeup_dependents.assert_not_called()
+
+    def test_wakeup_when_dep_enters_other_accepted_statuses(self):
+        """接受态集合全部覆盖：B 转 done / verified / implemented 同样触发唤醒。"""
+        bus, pm = self._bus()
+        bus._update_known_state()
+        for accepted in ("done", "verified", "implemented"):
+            self.sm.update_spec("B", {"status": accepted})
+            bus._dispatch_changes(self.sm.read_all())
+        calls = [c.args for c in pm._wakeup_dependents.call_args_list]
+        self.assertEqual(
+            sorted(c[0] for c in calls),
+            ["B", "B", "B"],
+        )
+        for c in calls:
+            self.assertEqual(c, ("B", ["A"]))
+
+    def test_no_dependents_zero_side_effect(self):
+        """无任何 SPEC 依赖 D → 零调用、零日志（D 转入接受态仅常规事件）。"""
+        self.sm.add_spec("D", {"status": "implementing"})  # 无人依赖它
+        bus, pm = self._bus()
+        bus._update_known_state()
+        self.sm.update_spec("D", {"status": "pushed"})
+        bus._dispatch_changes(self.sm.read_all())
+        pm._wakeup_dependents.assert_not_called()
+
+    def test_dependents_reverse_lookup_precise(self):
+        """反查精确匹配：B2/BB 不因子串误配为 B 的 dependent。"""
+        self.sm.add_spec("A2", {"status": "ready", "depends_on": "B2", "priority": 5})
+        bus, pm = self._bus()
+        bus._update_known_state()
+        self.sm.update_spec("B", {"status": "pushed"})
+        bus._dispatch_changes(self.sm.read_all())
+        pm._wakeup_dependents.assert_called_once_with("B", ["A"])
+
+
+class TestDependencyWakeupIdempotency(unittest.TestCase):
+    """3.5 幂等与去重（PMEngine 层）：已有活跃派发 / 已在飞派发的 dependent
+    不得重复入队；ready 且依赖满足的 dependent 唤醒后入队一次（冷却兜底）。"""
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.runner = MagicMock()
+        self.runner.worktree_manager = MagicMock()
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+        self.runner.has_live_attempt.return_value = False
+        self.engine = PMEngine(self.sm, self.runner, {},
+                               self.project_root, self.logger)
+        self.sm.add_spec("A", {"status": "ready", "depends_on": "B", "priority": 5})
+        self.sm.add_spec("B", {"status": "implementing"})
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _accept_b(self):
+        self.sm.update_spec("B", {"status": "pushed"})
+
+    def test_dependent_with_active_worktree_not_reenqueued(self):
+        """A 已有活跃派发（worktree 持锁）→ 唤醒时跳过，不重复入队。"""
+        self._accept_b()
+        self.runner.worktree_manager.has_active_worktree.return_value = True
+        self.engine._wakeup_dependents("B", ["A"])
+        self.assertEqual(self.engine._run_queue, [])
+
+    def test_dependent_in_flight_dispatch_not_reenqueued(self):
+        """A 已在飞派发（_pending_dispatches）→ 唤醒时跳过，不重复入队。"""
+        self._accept_b()
+        self.engine._pending_dispatches.add("A")
+        try:
+            self.engine._wakeup_dependents("B", ["A"])
+            self.assertEqual(self.engine._run_queue, [])
+        finally:
+            self.engine._pending_dispatches.discard("A")
+
+    def test_dependent_ready_enqueued_once(self):
+        """A ready 且依赖满足 → 唤醒入队一次；重复唤醒（依赖再转接受态）不重复入队。"""
+        self._accept_b()
+        self.engine._process_queue = MagicMock()  # 避免 worker 线程异步副作用
+        self.engine._wakeup_dependents("B", ["A"])
+        self.engine._wakeup_dependents("B", ["A"])
+        entries = [(e[1], e[2]) for e in self.engine._run_queue]
+        self.assertEqual(entries.count(("A", "implementer")), 1)
+
+    def test_dependent_dependency_unsatisfied_not_enqueued(self):
+        """B 尚未转入接受态 → 重评不通过，A 不被入队（等待中保持等待）。"""
+        self.engine._process_queue = MagicMock()
+        self.engine._wakeup_dependents("B", ["A"])
+        self.assertEqual(self.engine._run_queue, [])
+
+    def test_event_bus_to_engine_wakeup_integration(self):
+        """端到端：EventBus 检出 B→pushed → PMEngine 重评 → A 立即入队（无需 full_scan）。"""
+        from core.event_bus import EventBus
+        self.engine._process_queue = MagicMock()  # 入队即成立，避免 worker 副作用
+        bus = EventBus(self.state_path, self.sm, self.engine, {}, self.logger)
+        bus._update_known_state()
+        self._accept_b()
+        bus._dispatch_changes(self.sm.read_all())
+        entries = [(e[1], e[2]) for e in self.engine._run_queue]
+        self.assertIn(("A", "implementer"), entries)

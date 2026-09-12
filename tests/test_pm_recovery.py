@@ -177,6 +177,88 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
             {"_dispatch_backoff_until": int(time.time()) + 300}))
 
 
+class TestPMEngineDependencyWakeupAndRecoveryPatrol(unittest.TestCase):
+    """fix-dispatch-wakeup-gap：依赖定向唤醒 + 恢复复查就地派发（PMEngine 层集成）。
+
+    与 test_event_bus / test_run_lifecycle_governance 的单元覆盖互补：
+    这里用真实 PMEngine 断言两条唤醒路径的行为终态（入队 / dispatch_stalled）。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.logger = MagicMock()
+        from core.state_machine import StateMachine
+        self.state_path = self.project_root / ".fenix" / "STATE.md"
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.runner = MagicMock()
+        self.runner.worktree_manager = MagicMock()
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+        self.runner.has_live_attempt.return_value = False
+        self.engine = PMEngine(self.sm, self.runner, {},
+                               self.project_root, self.logger)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_dependency_wakeup_dispatches_within_event_round(self):
+        """B 转 pushed：A（depends_on B）在事件当轮被唤醒入队，不等 full_scan。"""
+        from core.event_bus import EventBus
+        self.sm.add_spec("A", {"status": "ready", "depends_on": "B", "priority": 5})
+        self.sm.add_spec("B", {"status": "implementing"})
+        # 内容完整性闸门：tmpdir 无 spec 目录会冻结派发，mock 放行聚焦唤醒语义
+        self.engine._check_spec_content_missing = MagicMock(return_value=False)
+        self.engine._check_impl_budget_exhausted = MagicMock(return_value=False)
+        self.engine._process_queue = MagicMock()  # 入队即成立，避免 worker 副作用
+
+        bus = EventBus(self.state_path, self.sm, self.engine, {}, self.logger)
+        bus._update_known_state()
+        self.sm.update_spec("B", {"status": "pushed"})
+        bus._dispatch_changes(self.sm.read_all())
+
+        self.assertTrue(any(
+            (e[1], e[2]) == ("A", "implementer")
+            for e in self.engine._dispatcher._run_queue
+        ), "依赖满足后 dependent 应在事件当轮入队（无需下一轮 full_scan）")
+
+    def test_recovery_patrol_redispatches_regressed_ready(self):
+        """恢复复查：登记 implementing → 窗口内回退 ready → 就地重新派发成立。
+
+        复现 2026-09-12 fix-root-init-import-shadow 事故形态（登记时
+        implementing、窗口内回退 ready），断言不再静默关闭而是就地派发。
+        """
+        self.sm.add_spec("s1", {"priority": 5})
+        self.sm.transition("s1", "ready")
+        self.sm.transition("s1", "implementing")
+        self.engine.register_recovery_watch(
+            "s1", "auto-recovery deferred (live child present)")
+        # 观察项到期
+        watch = dict(self.engine._recovery._recovery_watch)
+        watch["s1"]["due"] = time.time() - 1
+        self.engine._recovery._recovery_watch = watch
+        # 窗口内回退 ready 且无活跃派发
+        self.sm.update_spec("s1", {"status": "ready"})
+        # 闸门放行让就地派发成立（tmpdir 无 spec 目录，内容闸门默认会拦）
+        self.engine._check_impl_budget_exhausted = MagicMock(return_value=False)
+        self.engine._check_spec_content_missing = MagicMock(return_value=False)
+        self.engine._process_queue = MagicMock()
+
+        raised = self.engine.check_recovery_watch()
+        self.assertEqual(raised, [])
+        self.assertNotIn("s1", self.engine._recovery._recovery_watch)
+        from core.admin_store import AdminStore
+        self.assertEqual(
+            [r for r in AdminStore(self.project_root, self.logger).read_all()
+             if r.get("signal_type") == "dispatch_stalled"], [])
+        self.assertTrue(any(
+            (e[1], e[2]) == ("s1", "implementer")
+            for e in self.engine._dispatcher._run_queue
+        ))
+
+
 class TestPMEngineReplanLimit(unittest.TestCase):
     """replan 循环上限退回 + 成功后计数不残留（回归测试补回，spec
     add-lost-semantics-regression-tests Requirement「replan 循环上限退回保护」）。
