@@ -6,14 +6,16 @@ fenix-init — Fenix Loop Engineering Framework 项目初始化命令。
   - .fenix/（项目配置 config.yaml + 状态文件 STATE.md / PROJECT_LOG.md + 运行时目录 + 指向框架的软链接）
   - spec/{changes,specs}/ 与 spec/archive/
   - .claude/agents/（软链接）与 .claude/worktrees/
-  - 追加 fenix 相关 .gitignore 条目
+  - 幂等确保 .gitignore 含 fenix 运行时目录规则（.fenix/* 等）
 
 用法:
     fenix-init [DIR] [--name NAME] [--type web|cli|library|api]
+    fenix-init [--ensure-gitignore] [DIR]   # 仅幂等补 .gitignore，不做其他初始化
 """
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -58,17 +60,20 @@ def render_config(project_name: str, project_type: str) -> str:
 
 
 def append_gitignore(project_root: Path):
-    """将 fenix 相关条目追加到 .gitignore（避免重复）。"""
+    """确保 .gitignore 含 fenix 运行时目录规则（幂等，可重复调用）。
+
+    判据取关键规则 ``^\\.fenix/\\*`` 而非整段标记：旧模板生成的项目（有标记但
+    规则过期）重跑时能补齐；已是新规则的项目跳过，不产生重复条目。
+    """
     snippet_path = FENIXD_HOME / "templates" / "gitignore-fenix.txt"
     snippet = snippet_path.read_text(encoding="utf-8") if snippet_path.exists() else ""
 
     gitignore = project_root / ".gitignore"
-    if gitignore.exists():
-        existing = gitignore.read_text(encoding="utf-8")
-        # 已含标记则跳过
-        if "Fenix Loop Engineering Framework" in existing:
-            log("  ⏭  .gitignore 已包含 fenix 条目，跳过")
-            return
+    existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    if re.search(r"(?m)^\.fenix/\*$", existing):
+        log("  ⏭  .gitignore 已含 .fenix/* 规则，跳过")
+        return
+    if existing:
         if not existing.endswith("\n"):
             existing += "\n"
         gitignore.write_text(existing + "\n" + snippet, encoding="utf-8")
@@ -83,9 +88,22 @@ def main():
     parser.add_argument("dir", nargs="?", default=".", help="目标项目目录（默认当前目录）")
     parser.add_argument("--name", default=None, help="项目名（默认取目录名）")
     parser.add_argument("--type", default="web", choices=VALID_TYPES, help="项目类型（默认 web）")
+    parser.add_argument(
+        "--ensure-gitignore",
+        action="store_true",
+        help="仅幂等确保 .gitignore 含 fenix 运行时规则，不做其他初始化"
+             "（供 fenix-setup 对已初始化项目调用）",
+    )
     args = parser.parse_args()
 
     project_root = Path(args.dir).expanduser().resolve()
+
+    if args.ensure_gitignore:
+        log("fenix-init — 确保 .gitignore（幂等）")
+        log(f"  项目目录: {project_root}")
+        append_gitignore(project_root)
+        return
+
     project_name = args.name or project_root.name or "fenix-project"
     project_type = args.type
 

@@ -5,22 +5,16 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Logs
-.fenix/logs/*.log
-.fenix/logs/*.log.*
-
 # Worktrees (managed by fenixd)
 .claude/worktrees/
 
-# Runtime state（STATE.md / PROJECT_LOG.md / todo.md 等状态文件均在 .fenix/ 下，是否入库由项目自行决定）
-.fenix/state.json
-.fenix/queue.json
-.fenix/.fenix-run-result.json
+# 运行时/敏感目录（.fenix/config.yaml 含 API Key，绝不提交）
+# 用 /* 而非 .fenix/：目录整体排除后无法用 ! 放行其下入库文件
+.fenix/*
+.playwright-cli/
 
-# Verification artifacts (screenshots, progress files)
-.fenix/verify-progress/
-.fenix/screenshot/
-.fenix/screenshots/
-
-# Agent run artifacts (streamed JSONL, see agent-run-artifacts)
-.fenix/runs/
+# 例外：状态文件随仓库入库（todo.md 自省条目 / verify.yaml 验证契约）
+# 项目如需版本化其它状态文件（如 .fenix/STATE.md / PROJECT_LOG.md），
+# 在此追加 `!` 规则即可。
+!.fenix/todo.md
+!.fenix/verify.yaml

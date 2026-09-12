@@ -45,6 +45,21 @@ else
 fi
 ```
 
+### 2.5 确保 .fenix 已在 .gitignore（幂等，每次都执行）
+
+步骤 2 只对**未初始化**项目运行 fenix-init，已初始化项目的 `.gitignore` 若缺
+`.fenix/*` 规则不会被修复——而 `.fenix/config.yaml` 含 API Key、`.fenix/` 下有
+运行时产物（run 转录、日志、agent 会话配置）与指向框架的软链，缺失该规则会导致
+误提交与密钥泄露。本步骤对**所有**项目每次都执行，幂等补齐（已含规则则跳过）：
+
+```bash
+if command -v fenix-init >/dev/null 2>&1; then
+    fenix-init --ensure-gitignore "$(pwd)"
+else
+    echo "提示：未找到 fenix-init，跳过 .gitignore 检查（请在框架仓库运行 bash install.sh）"
+fi
+```
+
 ### 3. 创建目录结构（兜底）
 
 ```bash
