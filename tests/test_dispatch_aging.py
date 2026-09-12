@@ -100,6 +100,12 @@ class TestQueueAgingScheduler(unittest.TestCase):
             self.sm, self.agent_runner, self.config,
             self.project_root, self.logger,
         )
+        # add-spec-content-integrity-gate（bb9de76c）接入 dispatch 后同层新增的
+        # 派发前闸门：本类只验老化调度，内容维度按「有内容」放行（c6d5924c 对
+        # 调度测试替身的同款补桩处方）。漏桩时：empty tmpdir + 恒 ready 替身
+        # 触发闸门 → 摘除条目回队首 → _process_queue 死循环挂起（2026-09-12
+        # 全量回归实测 test_dispatch_aging 挂起，c6d5924c 未覆盖此文件）。
+        self.engine._check_spec_content_missing = lambda n: False
 
         # 拦截 worker 线程启动，仅记录派发条目
         self.dispatched = []  # [(priority, spec_name, agent_type)]

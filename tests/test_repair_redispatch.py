@@ -26,6 +26,11 @@ class _Base(unittest.TestCase):
         self.engine = PMEngine(
             MagicMock(), MagicMock(), {}, self.root, self.logger
         )
+        # add-spec-content-integrity-gate（bb9de76c）接入 dispatch 后同层新增的
+        # 派发前闸门：本类只验重派资格放行，内容维度按「有内容」放行（c6d5924c
+        # 对调度测试替身的同款补桩处方）。漏桩时：empty tmpdir + 恒 ready 替身
+        # 触发闸门 → 摘除条目回队首 → 死循环挂起。
+        self.engine._check_spec_content_missing = lambda n: False
         # 拦截 worker 线程体，避免真实跑 agent
         self.engine._run_agent_worker = MagicMock()
 
@@ -47,6 +52,8 @@ class _Base(unittest.TestCase):
                 )
                 # 拦截 worker 线程体，避免真实跑 agent
                 engine._run_agent_worker = MagicMock()
+                # 内容闸门按「有内容」放行（同 _Base.setUp 补桩，规格同注释）
+                engine._check_spec_content_missing = lambda n: False
                 engine.state_machine.read_one = MagicMock(
                     return_value={"status": status, "priority": 4}
                 )

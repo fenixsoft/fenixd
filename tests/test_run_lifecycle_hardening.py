@@ -386,6 +386,12 @@ class TestInstantFailDispatchGate(unittest.TestCase):
         from core.pm_engine import PMEngine
         self.engine = PMEngine(
             self.sm, self.runner, self.config, self.root, self.logger)
+        # add-spec-content-integrity-gate（bb9de76c）接入 dispatch 后同层新增的
+        # 派发前闸门：本类只验秒挂冷却门控，内容维度按「有内容」放行（c6d5924c
+        # 对调度测试替身的同款补桩处方）。漏桩时：empty tmpdir 使闸门冻结 spec
+        # 为 blocked → 冷却到期后条目仍无法派发 → test_recovery_resumes_dispatch
+        # 断言队列清空失败（2026-09-12 全量回归实测 1 failed）。
+        self.engine._check_spec_content_missing = lambda n: False
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
