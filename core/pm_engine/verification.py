@@ -1789,11 +1789,31 @@ class VerificationPipeline:
                 # ── 阶段2.5: 应用可达性自愈（最终用户验证必选）──
                 # 场景执行前确保应用可被浏览器访问；不可达时自动启动 commands.start、
                 # 端口冲突换端口重试。自愈失败由下方验证门禁兜底，不静默判定通过。
-                app_reachable, _user_blocked, reach_note = self._pm._ensure_app_reachable(spec_name)
+                app_reachable, user_blocked, reach_note = self._pm._ensure_app_reachable(spec_name)
                 self._pm.logger.info(
                     "pm_engine",
                     f"[阶段2] 应用可达性: {'OK' if app_reachable else '不可达'} — {reach_note or '无 navigate 依赖'}",
                 )
+
+                # ── 可达性自愈失败即本轮 fail-fast（add-verify-unreachable-failfast D1）──
+                # 自愈失败（就绪探针超时 / prepare 失败 / 契约缺失）属确定性环境错误，
+                # 继续跑整轮场景只会空转烧钱、由判定链末段兜底还易误拒。此处直接短路：
+                # 场景执行数=0、不重读场景、不创建/运行 VerifyEngine、不退回 plan 重排，
+                # 复用既有 _escalate_env_blocked 升级通道（落 blocked → 自动呼叫
+                # Administrator → 连续 2 轮冻结转人工）。evidence 用 reach_note（已由
+                # add-verify-preflight-gate D3 内嵌 boot.log 尾部）。user_blocked 守卫：
+                # 「需用户参与（收验证码/登录）」预留判定位恒 False，将来实现后不得被
+                # 短路自动判 blocked，故显式含 not user_blocked。
+                if not app_reachable and not user_blocked:
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"[阶段2] 应用不可达，本轮 fail-fast（场景执行数=0）'{spec_name}': "
+                        f"{reach_note}",
+                    )
+                    self._escalate_env_blocked(
+                        spec_name, [reach_note], title="验证环境阻塞（应用不可达）",
+                    )
+                    return
 
                 # 自愈可能改写场景文件端口（planner 臆测端口 → 应用实际端口）：
                 # 上方 load 先于自愈，内存场景仍持臆测端口，改写只落文件、对本次
