@@ -37,5 +37,5 @@
 
 ## 5. 全量验证
 
-- [ ] 5.1 运行全量 `python3 -m pytest tests/ -q`，结果须全绿（基线 2651 passed，不得引入新失败）
-- [ ] 5.2 复核导入收敛无遗漏：`grep -rn "import fenixd" tests/` 遍历每处，确认各站点导入方式与注释理由均当前成立
+- [x] 5.1 运行全量 `python3 -m pytest tests/ -q`，结果须全绿（基线 2651 passed，不得引入新失败）
+- [x] 5.2 复核导入收敛无遗漏：`grep -rn "import fenixd" tests/` 遍历每处，确认各站点导入方式与注释理由均当前成立
