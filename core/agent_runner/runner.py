@@ -411,6 +411,31 @@ class SelfReviewResult:
         self.output = output
 
 
+class EvolutionResult:
+    """框架自进化分析 run 的结果（run_evolution 返回，add-framework-self-evolution）。
+
+    - items_ingested: 成功落地到 items.jsonl 的条目数
+    - drafts: 生成草稿（状态 pending）的条目数
+    - accepted: 本轮已接受（accepted/auto_accepted）条目数（daemon 检查点自动
+      接受后由调用方据实更新；run 本身不执行自动接受——那是 5.3 检查点的职责）
+    - degraded: 降级原因（"no-task-tool" 等）；None 表示未降级
+    - error: success=False 时的失败原因
+    """
+
+    def __init__(self, run_id: str = "", success: bool = True,
+                 items_ingested: int = 0, drafts: int = 0,
+                 accepted: int = 0, degraded: str | None = None,
+                 error: str = "", output: str = ""):
+        self.run_id = run_id
+        self.success = success
+        self.items_ingested = items_ingested
+        self.drafts = drafts
+        self.accepted = accepted
+        self.degraded = degraded
+        self.error = error
+        self.output = output
+
+
 # ── run 级 API 延迟统计（add-planner-efficiency：run-latency-observability）──
 # 在线（_run_claude 流式循环旁路）与事后（bin/analyze_run_latency.py）共用
 # 同一套口径函数：对事件序列 `tool_result → 下一个 assistant` 间隔采样为
@@ -1470,6 +1495,176 @@ class AgentRunner:
             runs.append({
                 "agent_type": "self-review",
                 "date": date_str,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
+                + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
+                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
+                "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
+                "cost_usd": usage_info.get("cost_usd"),
+            })
+            data["runs"] = runs
+            tokens_json.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # ── 框架自进化 run（add-framework-self-evolution spec，design D2） ──
+
+    def run_evolution(self, ready_projects: list,
+                      pending_entries: list | None = None) -> EvolutionResult:
+        """唤起框架自进化分析 run（Administrator 通道语义，design D2 复用）。
+
+        与 implementer/verifier 不同：自进化是运维角色，直接在 main 树
+        （project_root）操作，**不创建 worktree**（与 run_self_review 同形态）。
+        特性：
+        - run_id 前缀 ``evo-<epoch>``：独立前缀，不占 spec 维度预算、
+          不计入每日 agent run 计数（不走 _execute_agent）；
+        - token 归账沿用 _accumulate_self_review_tokens 的既有类目（cost
+          独立类目，不写 STATE）；
+        - 超时走 agents.run_timeout_seconds 全局默认（_run_claude 内生效）；
+        - 模型解析链：agents.models.self-review 分配优先；未配置回退
+          agents.models.administrator；再回退 _get_admin_model → 默认网关
+          （MUST NOT 引入新的 agents.models.* 配置键）。
+        - max_turns / 超时 / 预算 / 告警 / provider 熔断全部走既有
+          _run_claude（spec「分析 run 的角色、模型链与执行形态」）。
+
+        产物路径 ``.fenix/evolution/out-<run_id>.json``（契约 JSON：
+        items[] 含 verdict/analysis_md/spec），run 结束读取并清理（4.4）。
+        产物缺失或解析失败返回 success=False 并带原因，MUST NOT 抛异常
+        穿透到调用方。落地（ingest_item）由本方法执行，自动接受是
+        5.3 检查点的职责（本方法不触碰配置开关）。
+
+        Args:
+            ready_projects: 就绪项目 [{name, path, todo_md}]（scan_ready_projects
+                的返回，同一 run 拿到多份 todo.md）。
+            pending_entries: 待分析条目（含 id），None 由调用方传入。
+        """
+        import time as _time
+        run_id = f"evo-{int(_time.time())}"
+        out_path = self.project_root / ".fenix" / "evolution" / f"out-{run_id}.json"
+        prompt = self._build_prompt(run_id, "evolution", detail={
+            "ready_projects": ready_projects or [],
+            "pending_entries": pending_entries or [],
+            "out_path": str(out_path),
+        })
+
+        # 模型解析链：agents.models.self-review > 回退 agents.models.administrator
+        # > _get_admin_model（与自省 agent 完全同源，spec「模型链与自省同源」）。
+        env_overrides: Dict[str, str] = {}
+        assignment = (self._get_agent_model_assignment("self-review")
+                      or self._get_agent_model_assignment("administrator"))
+        if assignment:
+            provider, model_override = assignment[0]
+            env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
+            env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
+            env_overrides["ANTHROPIC_MODEL"] = model_override
+            env_overrides["CLAUDE_CONFIG_DIR"] = str(
+                self._ensure_agent_config_dir(provider["name"])
+            )
+            for k, v in (provider.get("env") or {}).items():
+                env_overrides[k] = v
+        else:
+            model_override = self._get_admin_model()
+
+        try:
+            output, turns, _session_id, usage_info = self._run_claude(
+                prompt, self.project_root, run_id, model_override, env_overrides,
+                max_turns=self._get_config("agents.max_turns", 300),
+                spec_name="evolution",
+            )
+            run_ok = True
+            error = ""
+        except Exception as e:
+            output = ""
+            run_ok = False
+            error = str(e)
+            usage_info = self._extract_usage_info(None)
+
+        # token 归账到独立类目（不写 STATE，与自省同一约束）
+        self._accumulate_evolution_tokens(run_id, usage_info)
+
+        # 读取契约产物并落地（4.4：产物缺失/解析失败 → success=False 带原因）
+        degraded = None
+        items_ingested = 0
+        drafts = 0
+        if run_ok:
+            try:
+                from core.evolution import (
+                    ContractError, read_contract, ingest_item)
+                try:
+                    contract = read_contract(out_path)
+                    self._delete_evolution_out(out_path)
+                except ContractError as e:
+                    run_ok = False
+                    error = str(e)
+                    contract = None
+            except Exception as e:
+                # 落地异常不应穿透（检查点统一捕获）；整轮视为失败带原因
+                run_ok = False
+                error = f"分析落地异常: {e}"
+                contract = None
+            if run_ok and contract:
+                degraded = contract.get("degraded")
+                for item in contract.get("items") or []:
+                    try:
+                        status = ingest_item(item, self.project_root)
+                    except Exception as e:
+                        # 单条落地失败不使整轮失败（幂等去重保证下轮重试）
+                        _log = getattr(self, "logger", None)
+                        if _log is not None:
+                            _log.warning(
+                                "self-evolution",
+                                f"条目落地异常（跳过）: "
+                                f"{item.get('title')}: {e}")
+                        continue
+                    items_ingested += 1
+                    if status == "pending":
+                        drafts += 1
+
+        return EvolutionResult(
+            run_id=run_id,
+            success=run_ok,
+            items_ingested=items_ingested,
+            drafts=drafts,
+            degraded=degraded,
+            error=error,
+            output=output,
+        )
+
+    def _delete_evolution_out(self, out_path: Path):
+        """run 结束后删除自己的 evolution 输出实例文件（与 self_review 同处理）。"""
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _accumulate_evolution_tokens(self, run_id: str, usage_info: dict) -> None:
+        """自进化 token 归账（沿用 self_review 的独立类目文件与结构）。
+
+        design D2 二选一：追加到 ``.fenix/cost/self_review_tokens.json`` 的
+        runs 数组（与 verify-progress tokens.json 同结构），agent_type 标注
+        ``evolution`` 以便成本对账区分。写失败静默降级（观测增强，不阻断）。
+        """
+        if not isinstance(usage_info, dict):
+            usage_info = {}
+        cost_dir = self.project_root / ".fenix" / "cost"
+        tokens_json = cost_dir / "self_review_tokens.json"
+        try:
+            tokens_json.parent.mkdir(parents=True, exist_ok=True)
+            data = {}
+            if tokens_json.is_file():
+                try:
+                    loaded = json.loads(tokens_json.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    loaded = {}
+                if isinstance(loaded, dict):
+                    data = loaded
+            runs = data.get("runs")
+            if not isinstance(runs, list):
+                runs = []
+            runs.append({
+                "agent_type": "evolution",
+                "date": run_id,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
                 + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
