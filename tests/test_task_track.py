@@ -260,10 +260,19 @@ class TestCliWarning(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.pr = Path(self.tmpdir)
         # fenix_process.py 的 PROJECT_ROOT 按 `.fenix/bin/` 部署布局推断
-        # （__file__.parent.parent.parent），夹具复刻同构布局
+        # （__file__.parent.parent.parent），夹具复刻同构布局。
+        # tui-triage-revamp 起脚本复用 core/dashboard/data.py 数据层——
+        # 真实部署每个项目都有 .fenix/core（agent-config 部署），夹具同构补齐。
         (self.pr / ".fenix" / "bin").mkdir(parents=True)
         shutil.copy(PROJECT_ROOT / "bin" / "fenix_process.py",
                     self.pr / ".fenix" / "bin" / "fenix_process.py")
+        try:
+            (self.pr / ".fenix" / "core").symlink_to(
+                PROJECT_ROOT / ".fenix" / "core", target_is_directory=True)
+        except OSError:
+            shutil.copytree(PROJECT_ROOT / ".fenix" / "core",
+                            self.pr / ".fenix" / "core",
+                            ignore=shutil.ignore_patterns("__pycache__"))
         (self.pr / ".fenix" / "STATE.md").write_text(
             "# Fenixd State\n\n## Specs\n\n"
             "### cli-a\n\n- status: drafted\n- priority: 5\n\n"
