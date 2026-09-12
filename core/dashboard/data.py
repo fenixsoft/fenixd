@@ -23,7 +23,7 @@ from pathlib import Path
 
 import yaml
 
-from core.agent_runner.run_files import run_spec_part
+from core.agent_runner.run_files import archive_spec_runs, run_spec_part
 from core.archive_commit import commit_archive_move
 from core.fenix_session import is_running as _is_running
 
@@ -1012,6 +1012,19 @@ def archive_spec(project_root, spec_name: str) -> dict:
                 "error": f"归档移动失败: {e}"}
     result = {"ok": True, "found": True, "from": str(change_dir), "to": str(moved),
               "error": None}
+    # remove-auto-run-cleanup：run 产物归档的唯一入口 = SPEC 归档。change 目录
+    # 移动成功后，把 .fenix/runs/ 顶层属于该 spec 的产物移入 archive/（不删除
+    # 任何文件）。与 bin/fenix_archive.py::archive_change 同源同步——本函数是
+    # daemon 自动归档（auto_archive_check）与 Dashboard 界面归档
+    # （POST /api/spec-archive）共用的入口，此前漏挂此步，SPEC 归档后 run 产物
+    # 永久滞留 runs 顶层（实证：138 个已归档 SPEC 中 127 个的产物仍在顶层）。
+    # fail-open：runs 归档失败仅在返回 dict 追加告警字段，不阻断 change 归档主流程。
+    try:
+        result["runs_archived"] = archive_spec_runs(
+            proot / ".fenix" / "runs", spec_name
+        )
+    except OSError as e:
+        result["runs_archive_warning"] = str(e)
     # 归档自动提交：移动成功立即入库（fail-open，见 core/archive_commit.py）
     cr = commit_archive_move(proot, spec_name, moved)
     result["committed"] = cr["committed"]

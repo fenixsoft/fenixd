@@ -115,6 +115,63 @@ class TestArchiveSpec(unittest.TestCase):
         self.assertTrue(result["found"])
         self.assertIn("已归档", result["error"])
 
+    def _make_runs(self, root: Path, spec: str) -> Path:
+        """造 runs 顶层产物：3 个属于 spec、1 个属于他 spec。"""
+        runs_dir = root / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        for name in (
+            f"impl-{spec}-1788424595-a1.jsonl",
+            f"planner-plan-{spec}-1788424595-a1.jsonl",
+            f"admin-{spec}-1788424595.jsonl",
+            "impl-otherspec-1788424595-a1.jsonl",
+        ):
+            (runs_dir / name).write_text('{"type":"x"}\n', encoding="utf-8")
+        return runs_dir
+
+    def test_archive_also_archives_spec_runs(self):
+        """归档 SPEC 时其 run 产物同批移入 runs/archive/（与 CLI 归档路径同源）。
+
+        回归（remove-auto-run-cleanup 漏挂）：archive_spec 是 daemon 自动归档
+        （auto_archive_check）与 Dashboard 界面归档（POST /api/spec-archive）
+        共用的入口，此前只搬 spec 目录、没接 archive_spec_runs——run 归档挂钩
+        只接在 bin/fenix_archive.py::archive_change 一条路上，导致 SPEC 早已
+        归档而产物永久滞留 runs 顶层（实证：138 个已归档 SPEC 中 127 个的产物
+        仍留在顶层）。
+        """
+        _make_project(self.root, {"spec-r": {"status": "pushed"}})
+        runs_dir = self._make_runs(self.root, "spec-r")
+        result = archive_spec(self.root, "spec-r")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["runs_archived"], 3)
+        arc = runs_dir / "archive"
+        for name in (
+            "impl-spec-r-1788424595-a1.jsonl",
+            "planner-plan-spec-r-1788424595-a1.jsonl",
+            "admin-spec-r-1788424595.jsonl",
+        ):
+            self.assertTrue((arc / name).is_file(), f"{name} 未归档")
+            self.assertFalse((runs_dir / name).exists(), f"{name} 仍滞留顶层")
+        # 他 spec 产物不受影响
+        self.assertTrue((runs_dir / "impl-otherspec-1788424595-a1.jsonl").is_file())
+
+    def test_archive_spec_runs_failure_fail_open(self):
+        """runs 归档失败不阻断 change 归档主流程（fail-open，告警字段留痕）。"""
+        from unittest import mock
+        _make_project(self.root, {"spec-f": {"status": "done"}})
+        runs_dir = self._make_runs(self.root, "spec-f")
+        with mock.patch.object(dash_data, "archive_spec_runs",
+                               side_effect=OSError("simulated runs archive failure")):
+            result = archive_spec(self.root, "spec-f")
+        # change 目录归档主流程不受影响
+        self.assertTrue(result["ok"])
+        archived = next((self.root / "spec" / "archive").iterdir())
+        self.assertTrue(archived.is_dir())
+        self.assertIn("simulated runs archive failure",
+                      result["runs_archive_warning"])
+        self.assertNotIn("runs_archived", result)
+        # 产物原样留在顶层，未丢失
+        self.assertTrue((runs_dir / "impl-spec-f-1788424595-a1.jsonl").is_file())
+
 
 class TestArchivedFlag(unittest.TestCase):
     """spec_summary.archived：目录存在 / 目录缺失 / CLI 归档后条目保留。"""
