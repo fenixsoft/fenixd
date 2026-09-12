@@ -905,9 +905,12 @@ export async function getEvolutionDraft(
 export async function acceptEvolutionItem(
   itemId: string,
 ): Promise<{ ok: boolean; status?: string; spec_name?: string; error?: string }> {
+  // request() 直传 RequestInit 给 fetch，须以 body 字段携带 JSON 请求体
+  // （与既有 POST 封装同形态，勿用 axios 风格 data 键——fetch 不识别）
   return request('/api/evolution/accept', {
     method: 'POST',
-    data: { item_id: itemId },
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ item_id: itemId }),
   });
 }
 
@@ -916,7 +919,8 @@ export async function rejectEvolutionItem(
 ): Promise<{ ok: boolean; status?: string; error?: string }> {
   return request('/api/evolution/reject', {
     method: 'POST',
-    data: { item_id: itemId },
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ item_id: itemId }),
   });
 }
 
