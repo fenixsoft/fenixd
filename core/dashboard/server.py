@@ -408,6 +408,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(self._api_help_docs())
         elif path == "/api/help/doc":
             self._api_help_doc(query)
+        elif path == "/api/evolution/items":
+            self._api_evolution_items(query)
+        elif path == "/api/evolution/analysis":
+            self._api_evolution_analysis(query)
+        elif path == "/api/evolution/draft":
+            self._api_evolution_draft(query)
         else:
             self._error(404, "Not Found")
 
@@ -1789,6 +1795,115 @@ class DashboardHandler(BaseHTTPRequestHandler):
             pass
         self._json({"ok": True, "path": project["path"]})
 
+    # ── 建议改进项端点（add-framework-self-evolution 6.6）────────────
+
+    @staticmethod
+    def _evolution_state_machine():
+        """框架根 StateMachine（accept_item 注册用；惰性构造，无缓存需求）。"""
+        from core.state_machine import StateMachine
+        return StateMachine(FRAMEWORK_ROOT / ".fenix" / "STATE.md", None)
+
+    def _api_evolution_items(self, query):
+        """GET /api/evolution/items?project=<可选> — 建议改进项摘要列表（倒序）。"""
+        project = (query.get("project") or [None])[0] or None
+        self._json({
+            "items": dashboard_data.read_evolution_items(
+                FRAMEWORK_ROOT, project_filter=project),
+        })
+
+    def _api_evolution_analysis(self, query):
+        """GET /api/evolution/analysis?item_id=<id> — 返回分析结论全文。
+
+        缺参/未知 item_id → 400/404（MUST NOT 读取任何文件）。
+        """
+        item_id = (query.get("item_id") or [None])[0]
+        if not item_id:
+            self._error(400, "缺少 item_id 参数")
+            return
+        result = dashboard_data.read_evolution_analysis(FRAMEWORK_ROOT, item_id)
+        if result.get("not_found"):
+            self._error(404, f"条目不存在: {item_id}")
+            return
+        self._json(result)
+
+    def _api_evolution_draft(self, query):
+        """GET /api/evolution/draft?item_id=<id>&doc=<proposal|design|tasks|spec>
+
+        读取草稿文档返回 ``{found, content}``；doc 非法 → 400（MUST NOT 读取
+        草稿目录之外的任何文件）；item_id 未知 → 404；草稿缺失 → 200 +
+        found:false。
+        """
+        item_id = (query.get("item_id") or [None])[0]
+        doc = (query.get("doc") or [None])[0]
+        if not item_id:
+            self._error(400, "缺少 item_id 参数")
+            return
+        if not doc:
+            self._error(400, "缺少 doc 参数（proposal|design|tasks|spec）")
+            return
+        result = dashboard_data.read_evolution_draft(FRAMEWORK_ROOT, item_id, doc)
+        if result.get("invalid_doc"):
+            self._error(400, f"非法 doc 参数（应为 proposal|design|tasks|spec）: {doc}")
+            return
+        if result.get("not_found"):
+            self._error(404, f"条目不存在: {item_id}")
+            return
+        self._json(result)
+
+    def _api_evolution_accept(self):
+        """POST /api/evolution/accept — body {item_id} → 执行接受路径。
+
+        成功返回 200 + {ok, status, spec_name}；缺参 400；未知条目 404。
+        人工「同意」= accept_item(decided_by="manual")（自动接受是 daemon
+        检查点经 3.7 的另一条路径，二者共用同一实现，design D6）。
+        """
+        body = self._read_json_body()
+        if body is None:
+            return
+        item_id = body.get("item_id")
+        if not isinstance(item_id, str) or not item_id:
+            self._error(400, "缺少 item_id 参数")
+            return
+        from core.evolution import accept_item
+        try:
+            result = accept_item(
+                item_id, FRAMEWORK_ROOT, self._evolution_state_machine(),
+                decided_by="manual")
+        except Exception as e:  # noqa: BLE001 —— 端点不因内部异常 500 崩溃
+            self._error(500, f"接受失败: {e}")
+            return
+        if result.get("status") is None and result.get("error"):
+            self._error(404, result["error"])
+            return
+        if not result.get("ok"):
+            # 状态不允许 / 提交失败：200 + 错误信息（前端刷新回真实状态）
+            self._json(result)
+            return
+        self._json(result)
+
+    def _api_evolution_reject(self):
+        """POST /api/evolution/reject — body {item_id} → 执行拒绝路径。
+
+        成功返回 200 + {ok, status}；缺参 400；未知条目 404。
+        """
+        body = self._read_json_body()
+        if body is None:
+            return
+        item_id = body.get("item_id")
+        if not isinstance(item_id, str) or not item_id:
+            self._error(400, "缺少 item_id 参数")
+            return
+        from core.evolution import reject_item
+        try:
+            result = reject_item(item_id, FRAMEWORK_ROOT)
+        except Exception as e:  # noqa: BLE001
+            self._error(500, f"拒绝失败: {e}")
+            return
+        if result.get("status") is None and result.get("error"):
+            self._error(404, result["error"])
+            return
+        self._json(result)
+
     # ── POST API ────────────────────────────────────────────
 
     def _handle_api_post(self, path: str, query: dict):
@@ -1832,6 +1947,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_spec_approve_push(query)
         elif path == "/api/alerts/clear":
             self._api_alerts_clear()
+        elif path == "/api/evolution/accept":
+            self._api_evolution_accept()
+        elif path == "/api/evolution/reject":
+            self._api_evolution_reject()
         elif path.startswith("/api/alerts/") and path.endswith("/handled"):
             alert_id = urllib.parse.unquote(path[len("/api/alerts/"):-len("/handled")])
             self._api_alert_handled(alert_id, query)

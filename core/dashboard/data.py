@@ -3925,7 +3925,10 @@ _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "agents.transient_break_cooldown_seconds",
                 # add-stale-code-selfheal：陈旧自愈配置节两键
                 "stale_code_selfheal.enabled",
-                "stale_code_selfheal.idle_confirm_seconds"]
+                "stale_code_selfheal.idle_confirm_seconds",
+                # add-framework-self-evolution：self_evolution 全局（用户级）两键
+                "self_evolution.auto_accept",
+                "self_evolution.max_items_per_run"]
 
 # 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
 # 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
@@ -4006,6 +4009,14 @@ def _managed_key_sources(raw: dict) -> dict:
             sources["stale_code_selfheal.enabled"] = "project"
         if "idle_confirm_seconds" in scs_raw:
             sources["stale_code_selfheal.idle_confirm_seconds"] = "project"
+    # add-framework-self-evolution：self_evolution 节（全局用户级键）——项目级
+    # 写入被 write_config 前置校验拒绝；此处仅当手工残留/历史遗留时标注来源。
+    se_raw = raw.get("self_evolution")
+    if isinstance(se_raw, dict):
+        if "auto_accept" in se_raw:
+            sources["self_evolution.auto_accept"] = "project"
+        if "max_items_per_run" in se_raw:
+            sources["self_evolution.max_items_per_run"] = "project"
     return sources
 
 
@@ -4083,6 +4094,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "hooks": {"global": [], "specs": {}},
         # add-stale-code-selfheal：陈旧自愈配置节（enabled 缺省 true / idle_confirm_seconds 缺省 120）
         "stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 120},
+        # add-framework-self-evolution：self_evolution 两键（缺省 auto_accept=false / max_items_per_run=20）
+        "self_evolution": {"auto_accept": False, "max_items_per_run": 20},
         "scope": scope,
         "raw_exists": False,
         "sources": _managed_key_sources({}),
@@ -4188,6 +4201,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
     # 回退缺省，回显与生效值一致）
     from core.config import ConfigLoader as _CLSC
     result["stale_code_selfheal"] = _CLSC.get_stale_code_selfheal_config(raw)
+    # add-framework-self-evolution：self_evolution 节回显（经 get_self_evolution_config
+    # 生效值——非法值回退缺省，回显与生效值一致；用户级全局键）
+    from core.config import ConfigLoader as _CLSE
+    result["self_evolution"] = _CLSE.get_self_evolution_config(raw)
     return result
 
 
@@ -4248,6 +4265,8 @@ def read_effective_config(project_root) -> dict:
         "hooks": {"global": [], "specs": {}},
         # add-stale-code-selfheal：陈旧自愈配置节（enabled 缺省 true / idle_confirm_seconds 缺省 120）
         "stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 120},
+        # add-framework-self-evolution：self_evolution 用户级生效值（项目级只读透出）
+        "self_evolution": {"auto_accept": False, "max_items_per_run": 20},
         "scope": "project",
         "raw_exists": proj_path.exists(),
         "sources": _managed_key_sources({}),
@@ -4351,6 +4370,9 @@ def read_effective_config(project_root) -> dict:
     # add-stale-code-selfheal：陈旧自愈节有效值回显（经生效助手取值——非法值
     # 回退缺省，设置页回显与生效值一致）
     result["stale_code_selfheal"] = ConfigLoader.get_stale_code_selfheal_config(effective)
+    # add-framework-self-evolution：self_evolution 用户级生效值透出（项目级视图
+    # 只读展示全局键，面板在项目级作用域下据此置只读）
+    result["self_evolution"] = ConfigLoader.get_self_evolution_config(effective)
 
     # 提取 project.description → 顶层 description（非 str 或缺失 → ""）
     project_eff = effective.get("project")
@@ -4495,6 +4517,17 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["stale_code_selfheal"]["enabled"] = scs["enabled"]
         if "idle_confirm_seconds" in scs:
             merged["stale_code_selfheal"]["idle_confirm_seconds"] = scs["idle_confirm_seconds"]
+    # add-framework-self-evolution：self_evolution 两键合并（项目级作用域写入已
+    # 被 write_config 前置校验拒绝，此处仅处理用户级合法值；缺省透传由
+    # get_self_evolution_config 兜底）
+    if "self_evolution" in patch and isinstance(patch["self_evolution"], dict):
+        if not isinstance(merged.get("self_evolution"), dict):
+            merged["self_evolution"] = {}
+        se_p = patch["self_evolution"]
+        if "auto_accept" in se_p:
+            merged["self_evolution"]["auto_accept"] = se_p["auto_accept"]
+        if "max_items_per_run" in se_p:
+            merged["self_evolution"]["max_items_per_run"] = se_p["max_items_per_run"]
 
     return merged
 
@@ -4657,6 +4690,34 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 return fail(
                     f"stale_code_selfheal.idle_confirm_seconds must be a positive "
                     f"integer: {_scs_v!r}"
+                )
+
+    # add-framework-self-evolution：self_evolution 两键前置校验 + 项目级作用域拒绝。
+    # 两键为全局（用户级）键：项目级作用域提交含 self_evolution → 400 且不写盘
+    #（spec「项目级写入被拒」）；用户级提交的非法值直接拒绝 400，不静默忽略。
+    if "self_evolution" in config_patch:
+        if scope != "user":
+            return fail(
+                "self_evolution 为全局用户级键（auto_accept / max_items_per_run），"
+                "请在用户级作用域修改"
+            )
+        se_patch = config_patch["self_evolution"]
+        if not isinstance(se_patch, dict):
+            return fail(
+                f"self_evolution must be an object: {se_patch!r}")
+        if "auto_accept" in se_patch and se_patch["auto_accept"] is not None \
+                and not isinstance(se_patch["auto_accept"], bool):
+            return fail(
+                f"self_evolution.auto_accept must be a boolean: "
+                f"{se_patch['auto_accept']!r}")
+        if "max_items_per_run" in se_patch \
+                and se_patch["max_items_per_run"] is not None:
+            _se_v = se_patch["max_items_per_run"]
+            if isinstance(_se_v, bool) or not isinstance(_se_v, int) \
+                    or _se_v < 1 or _se_v > 200:
+                return fail(
+                    f"self_evolution.max_items_per_run must be an integer in "
+                    f"[1, 200]: {_se_v!r}"
                 )
 
     # 2. 合并受管键
@@ -4984,3 +5045,104 @@ def sync_config_from_user(project_root, page: str) -> dict:
     return {"ok": result["ok"], "error": result.get("error"),
             "synced": patch if result["ok"] else None,
             "path": result.get("path")}
+
+
+# ── 建议改进项读取助手（add-framework-self-evolution 6.4/6.5）────────
+
+# 草稿文档白名单（doc 参数；spec → specs/<capability>/spec.md）
+EVOLUTION_DOC_WHITELIST = ("proposal", "design", "tasks", "spec")
+
+
+def read_evolution_items(project_root, project_filter=None) -> list:
+    """读 ``.fenix/evolution/items.jsonl`` 生成摘要列表（6.4）。
+
+    摘要字段：id / project / date_section / section / title / 三项判定 /
+    status / has_draft（草稿目录是否存在）/ spec_name / created_at /
+    decided_at。按 created_at 倒序；文件缺失返回空列表；单行 JSON 损坏由
+    read_items 容错跳过（MUST NOT 让整个列表 500）。
+    """
+    from core.evolution import read_items, draft_dir
+
+    items = read_items(project_root)
+    out = []
+    for rec in items.values():
+        if not isinstance(rec, dict):
+            continue
+        if project_filter and rec.get("project") != project_filter:
+            continue
+        eid = rec.get("id")
+        out.append({
+            "id": eid,
+            "project": rec.get("project"),
+            "date_section": rec.get("date_section"),
+            "section": rec.get("section"),
+            "title": rec.get("title"),
+            "verdict": rec.get("verdict"),
+            "status": rec.get("status"),
+            "has_draft": bool(eid) and draft_dir(project_root, str(eid)).is_dir(),
+            "spec_name": rec.get("spec_name"),
+            "created_at": rec.get("created_at"),
+            "decided_at": rec.get("decided_at"),
+        })
+    out.sort(key=lambda x: (x.get("created_at") or ""), reverse=True)
+    return out
+
+
+def read_evolution_analysis(project_root, item_id_) -> dict:
+    """读取某条目的分析结论全文（6.5）。
+
+    返回 ``{"found": True, "content": analysis_md}`` 或
+    ``{"not_found": True}``（item_id 未知 → 端点 404）。
+    """
+    from core.evolution import read_items
+
+    items = read_items(project_root)
+    rec = items.get(item_id_)
+    if rec is None:
+        return {"not_found": True}
+    return {"found": True, "content": rec.get("analysis_md") or ""}
+
+
+def read_evolution_draft(project_root, item_id_, doc) -> dict:
+    """读取草稿文档（6.5）。
+
+    - ``doc`` 非白名单 → ``{"invalid_doc": True}``（端点 400，MUST NOT 读取
+      草稿目录之外的任何文件）；
+    - ``item_id`` 未知 → ``{"not_found": True}``（端点 404）；
+    - 草稿目录不存在 → ``{"found": False}``（端点 200 + 空态）；
+    - 读取路径 MUST 由 item_id 推导（``.fenix/evolution/drafts/<id>/…``）并
+      经 ``_safe_draft_dir`` 校验解析后仍在草稿目录内，MUST NOT 接受任意
+      路径参数。
+    """
+    from core.evolution import read_items, _safe_draft_dir
+
+    if doc not in EVOLUTION_DOC_WHITELIST:
+        return {"invalid_doc": True}
+    items = read_items(project_root)
+    rec = items.get(item_id_)
+    if rec is None:
+        return {"not_found": True}
+    d = _safe_draft_dir(project_root, item_id_)
+    if d is None or not d.is_dir():
+        return {"found": False}
+    if doc == "spec":
+        capability = ""
+        spec = rec.get("spec") if isinstance(rec.get("spec"), dict) else None
+        if spec:
+            capability = spec.get("capability") or ""
+        rel = f"specs/{capability}/spec.md"
+    else:
+        rel = {"proposal": "proposal.md", "design": "design.md",
+               "tasks": "tasks.md"}[doc]
+    target = (d / rel).resolve()
+    base = d.resolve()
+    # 解析后仍在该条目草稿目录内（符号链接越界拒绝）
+    if not target.is_relative_to(base):
+        return {"invalid_doc": True}
+    if not target.is_file():
+        return {"found": False}
+    try:
+        content = target.read_text(encoding="utf-8")
+    except OSError:
+        return {"found": False}
+    return {"found": True, "content": content}
