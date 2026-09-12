@@ -63,7 +63,7 @@ export default function OverviewPage() {
     <PageContainer
       header={{
         title: '跨项目概览',
-        subtitle: data ? `监控 ${data.projects.length} 个项目` : ' ',
+        subTitle: data ? `监控 ${data.projects.length} 个项目` : ' ',
       }}
     >
       <AlertBanner refreshTick={alertsTick} />
