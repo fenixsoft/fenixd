@@ -446,13 +446,47 @@ def _default_ts_parser(entry: dict):
     return AgentRunner._parse_event_timestamp(entry)
 
 
+def _entry_is_tool_result(entry: dict) -> bool:
+    """统一识别 stream-json 流转录中的 tool_result 事件（tool-result-stream-detection）。
+
+    真实 ``claude -p --output-format stream-json`` 转录**从不**产生顶层
+    ``type == "tool_result"`` 事件（窗口内 12 条实测转录顶层 tool_result
+    0/12）：工具结果一律以 ``type == "user"`` 事件承载，包裹在
+    ``message.content[]`` 中 ``{"type": "tool_result", ...}`` 的 content
+    block 内。判定语义：
+
+    - ``type == "tool_result"`` → True（**兼容层**：存量合成测试 / 旧形态转录；
+      真实数据不产生该形态，注释留证非死代码）；
+    - ``type == "user"`` 且 ``message.content`` 为列表且含至少一个
+      ``{"type": "tool_result", ...}`` block → True（真实形态）；
+    - 其余（``message.content`` 为字符串、仅含 ``text`` block 的 ``user``
+      事件如 skill 加载消息、``assistant``/``system``/``result``/``stderr``
+      等）→ False，杜绝假样本/假流量。
+
+    本判定为延迟采样（``latency_samples_from_events`` / ``_run_claude`` 内联
+    读侧）与流量活性（``_turn_traffic_active``）三处消费点的**单一真源**——
+    不得在别处再次硬编码事件类型比较（design D1：根因即三处独立发散）。
+    """
+    if entry.get("type") == "tool_result":
+        return True
+    if entry.get("type") == "user":
+        content = entry.get("message", {}).get("content")
+        return isinstance(content, list) and any(
+            isinstance(b, dict) and b.get("type") == "tool_result"
+            for b in content)
+    return False
+
+
 def latency_samples_from_events(entries, parser=None) -> list:
     """从事件序列提取 API 往返样本（tool_result → 下一个 assistant 间隔）。
 
     口径（design D3，与 2026-09-05 事故分析一致）：记录最近一个
-    ``tool_result`` 事件的 timestamp，遇到下一个 ``assistant`` 事件时两者
-    之差 = 一次 API 往返样本；随后清空待配对的 tool_result（一个样本只
-    配对一次）。timestamp 缺失的事件不参与（跳过），样本列表可空。
+    ``tool_result`` 事件（按 ``_entry_is_tool_result`` 统一识别——真实
+    stream-json 转录以 ``user`` 事件包裹 ``tool_result`` content block
+    承载，兼容顶层 ``tool_result`` 事件）的 timestamp，遇到下一个
+    ``assistant`` 事件时两者之差 = 一次 API 往返样本；随后清空待配对的
+    tool_result（一个样本只配对一次）。timestamp 缺失的事件不参与（跳过），
+    样本列表可空。
 
     Args:
         entries: 事件 dict 序列（list / 生成器）。
@@ -468,7 +502,7 @@ def latency_samples_from_events(entries, parser=None) -> list:
         if not isinstance(e, dict):
             continue
         etype = e.get("type")
-        if etype == "tool_result":
+        if _entry_is_tool_result(e):
             ts = parser(e)
             if ts is not None:
                 last_tool_result_ts = ts
@@ -517,10 +551,12 @@ def format_latency_summary(run_id: str, stats: dict) -> str:
     """把摘要渲染为日志行（设计示例同款口径）。
 
     ``run planner-plan-xxx-a1: 58 rounds, median 3.2s, p90 78s, max 185s,
-    stalls>60s=15 (26%)``。无样本时标注样本数（时间戳缺失的旧转录）。
+    stalls>60s=15 (26%)``。无样本时标注 0 rounds（中性可诊断文案——该 run
+    无 API 往返样本；「真空跑」与「解析器失明」由延迟观测自检 WARNING 区分，
+    这里不得归因于输入文件/旧转录）。
     """
     if stats.get("rounds", 0) <= 0:
-        return f"run {run_id}: 0 rounds（无 timestamp 样本，旧转录跳过）"
+        return f"run {run_id}: 0 rounds（无 API 往返样本）"
     med = stats.get("median") or 0
     p90 = stats.get("p90") or 0
     mx = stats.get("max") or 0
@@ -1736,8 +1772,10 @@ class AgentRunner:
           2. 分支活性：工作树分支相对 run 起点（主树 HEAD）有提交，且较上次
              判定有增量 → extend；
           3. 流量活性：run 文件尾部 ``TURN_EXTENSION_WINDOW_SECONDS`` 窗口内
-             有新 ``tool_result`` 事件（复用 ``_parse_event_timestamp`` 口径，
-             与 latency 采样同源）→ extend；
+             有新 ``tool_result`` 事件（按 ``_entry_is_tool_result`` 统一识别——
+             真实转录 ``user`` 包裹 ``tool_result`` block，兼容顶层
+             ``tool_result`` 事件，复用 ``_parse_event_timestamp`` 口径）
+             → extend；
           4. 双无活性 → kill。
 
         任一活性证据命中即续期（design D2「任一命中即 extend」）；rev-list
@@ -1845,13 +1883,14 @@ class AgentRunner:
     def _turn_traffic_active(self, run_file: Path,
                              window_seconds: float = TURN_EXTENSION_WINDOW_SECONDS
                              ) -> bool:
-        """尾部窗口内 run 文件是否有新 tool_result 事件（design D2 活性证据 b）。
+        """尾部窗口内 run 文件是否有新 tool_result 流量（design D2 活性证据 b）。
 
         读文件尾部 64KiB（与 SessionTracker._extract_session_id 同窗口径），
-        逐行解析：``type == "tool_result"`` 且 timestamp 落在
-        ``now - window_seconds`` 内 → 有流量活性。事件无时间戳时回退文件
-        mtime 判定（与 liveness._liveness_snapshot 同口径，纯 stderr 流不失真）。
-        文件缺失/不可读 → False（无流量活性）。
+        逐行解析：``_entry_is_tool_result``（统一识别——真实转录以 ``user``
+        事件包裹 ``tool_result`` content block 承载，兼容顶层 ``tool_result``
+        事件）且 timestamp 落在 ``now - window_seconds`` 内 → 有流量活性。
+        事件无时间戳时回退文件 mtime 判定（与 liveness._liveness_snapshot
+        同口径，纯 stderr 流不失真）。文件缺失/不可读 → False（无流量活性）。
         """
         cutoff = time.time() - max(0.0, window_seconds)
         try:
@@ -1879,7 +1918,7 @@ class AgentRunner:
                 continue
             if not isinstance(entry, dict):
                 continue
-            if entry.get("type") != "tool_result":
+            if not _entry_is_tool_result(entry):
                 continue
             ts = self._parse_event_timestamp(entry)
             if ts is None:
@@ -3039,12 +3078,14 @@ class AgentRunner:
                             last_result.update(entry)
                             continue
                         # 延迟样本采集：tool_result → assistant = 一次 API 往返
-                        etype = entry.get("type")
+                        # （tool_result 按 _entry_is_tool_result 统一识别：真实
+                        # stream-json 转录以 user 事件包裹 tool_result block
+                        # 承载，兼容顶层 tool_result 事件）
                         e_ts = AgentRunner._parse_event_timestamp(entry)
-                        if etype == "tool_result":
+                        if AgentRunner._entry_is_tool_result(entry):
                             if e_ts is not None:
                                 latency_state["last_tool_result_ts"] = e_ts
-                        elif etype == "assistant":
+                        elif entry.get("type") == "assistant":
                             if (e_ts is not None
                                     and latency_state["last_tool_result_ts"] is not None):
                                 latency_state["samples"].append(
@@ -3212,6 +3253,20 @@ class AgentRunner:
                      "latency_p90": stats.get("p90"),
                      "latency_max": stats.get("max")},
                 )
+                # 延迟观测自检（fix-run-latency-toolresult-parser design D4）：
+                # latency_rounds==0 但 turn_count>0 = 解析器失明的确定信号
+                # （有 assistant 轮次却配对不出任何样本），显式 WARNING 使盲区
+                # 不再静默。仅日志，不写 admin_alerts（延迟数据不触发独立人工
+                # 告警铁律）；rounds==0 且 turn_count==0（真空跑）不告警。
+                if stats["rounds"] == 0 and turn_count[0] > 0:
+                    self.logger.warning(
+                        "agent_runner",
+                        f"run {run_id}: 延迟观测疑似失明（latency_rounds=0 但 "
+                        f"assistant 轮次={turn_count[0]}）——有模型轮次却配对不出 "
+                        f"任何 API 往返样本，请检查 tool_result 事件识别",
+                        {"run_id": run_id, "latency_rounds": 0,
+                         "turn_count": turn_count[0]},
+                    )
             except Exception as e:
                 self.logger.debug(
                     "agent_runner",
@@ -3366,6 +3421,15 @@ class AgentRunner:
             return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).timestamp()
         except (ValueError, TypeError):
             return None
+
+    @staticmethod
+    def _entry_is_tool_result(entry: dict) -> bool:
+        """类静态入口：委托模块级统一识别（沿用 _parse_event_timestamp 先例）。
+
+        tool-result-stream-detection 单一真源——类内消费点（_run_claude 内联
+        采样 / _turn_traffic_active）统一经此判定，不得各自硬编码事件类型。
+        """
+        return _entry_is_tool_result(entry)
 
 
 
