@@ -881,6 +881,11 @@ class Dispatcher:
                                 "pm_engine",
                                 f"impl-result 快照写入失败 '{spec_name}'（非阻塞）: {e}",
                             )
+                        # 消费后清理共享结果文件（D4，fast-track 车道同语义写点在
+                        # _run_fast_track_flow）：本次采信消费 + 快照落盘之后删除
+                        # 主树共享文件，仅当 stamp 严格匹配本 spec 时删除。删除失败
+                        # 仅 WARNING 不阻塞（fail-open，残留由 stamp 严格校验兜底）。
+                        self._pm._cleanup_shared_result_file(spec_name)
                     # 计数对账（fix-budget-counting-semantics D3）：守卫放行/merge
                     # 收工后回读 used 与正常收工 run 数比对，偏差记 WARNING。
                     self._pm._reconcile_impl_budget(spec_name)
@@ -1943,6 +1948,21 @@ class Dispatcher:
         # ── 读取结果文件（fast-track 结果文件是强制的，缺文件 = 失败） ──
         ft_result = self._pm._read_implementer_result(spec_name)
         if ft_result is None:
+            # ── 结果文件缺失分流（fix-fasttrack-resultfile-missing-redispatch D2）──
+            # 两起事故：分支已提交的成果被当「run 死亡」discard 后从零重派
+            # （add-turn-limit-anchor-c run1 / add-main-tree-deps-provision run1，
+            # 均已全量提交仍判死亡）。结果文件缺失但实现分支相对 main 已有提交
+            # → 不判死亡：不回退预算、不 reset ready，merge 分支 + 改写
+            # .spec.yaml mode→full + enqueue 完整模式 verifier 补齐缺失的 verdict，
+            # 随后走既有 verified→done 门。分支零提交/无 branch → 维持既有
+            # 死亡豁免 + reset ready + 自动重派（原封不动）。
+            # result.success 门：runner 仅在 success 时填 branch（runner.py:2644），
+            # 失败/中断 run 的 branch 为空——显式保留该前置，对齐 spec WHEN 子句
+            # 「正常收工（exit 0，result.success 为真、result.branch 非空）」。
+            if (getattr(result, "success", False)
+                    and self._pm._implementation_branch_has_commits(result)):
+                self._handle_fast_track_missing_result_merge(spec_name, result)
+                return
             self._keep_fast_track_worktree(spec_name, result)
             # 文案面向人：说明发生了什么 + 系统将自动重试（轮次由
             # _handle_fast_track_failure 按实际计数追加）。"fail-closed 不推进"
@@ -2035,6 +2055,12 @@ class Dispatcher:
                 "pm_engine",
                 f"fast-track impl-result 快照写入失败 '{spec_name}'（非阻塞）: {e}",
             )
+        # ── 消费后清理共享结果文件（fix-fasttrack-resultfile-missing-redispatch D4）──
+        # 本次采信消费 + 快照落盘之后删除主树共享 .fenix/.fenix-run-result.json
+        # （仅当 stamp 严格匹配本 spec 即正是本文件被消费时删除），避免已消费
+        # 残留跨 spec 存留对后续死亡判定/读侧的误拦与噪声。删除失败仅 WARNING
+        # 不阻塞（fail-open，残留由 stamp 严格校验兜底拒绝）。
+        self._pm._cleanup_shared_result_file(spec_name)
 
         if verification.get("verdict") == "bug-found":
             self._escalate_to_full_mode(spec_name, result, verification)
@@ -2723,15 +2749,13 @@ class Dispatcher:
         )
         self._pm._on_spec_verified(spec_name)
 
-    def _escalate_to_full_mode(
-        self, spec_name: str, result, verification: dict,
-    ) -> None:
-        """fast-track verdict=bug-found 时升级为完整模式（add-fast-track-mode D5）。
+    def _rewrite_fast_track_to_full(self, spec_name: str) -> None:
+        """把 .spec.yaml 的 mode 从 fast-track 改写为 full（升级路径复用）。
 
-        - mode 改写为 full（同步 .spec.yaml）
-        - spec 保持 implemented，派发完整模式 verifier 流水线
-        - 升级原因写入 spec entry error 字段
-        - 保留已有实现成果，不丢回 ready 重跑 implementer
+        供 ``_escalate_to_full_mode``（verdict=bug-found 升级）与
+        ``_handle_fast_track_missing_result_merge``（结果文件缺失、分支已提交
+        升级补验证）共用。写失败仅记 WARNING（非阻塞，mode 未改写时由 verifier
+        车道语义处置）。
         """
         import yaml as _yaml
         # 1. .spec.yaml 写 mode: full
@@ -2759,6 +2783,19 @@ class Dispatcher:
                 "pm_engine",
                 f"fast-track 升级 .spec.yaml 失败（非阻塞） '{spec_name}': {e}",
             )
+
+    def _escalate_to_full_mode(
+        self, spec_name: str, result, verification: dict,
+    ) -> None:
+        """fast-track verdict=bug-found 时升级为完整模式（add-fast-track-mode D5）。
+
+        - mode 改写为 full（同步 .spec.yaml）
+        - spec 保持 implemented，派发完整模式 verifier 流水线
+        - 升级原因写入 spec entry error 字段
+        - 保留已有实现成果，不丢回 ready 重跑 implementer
+        """
+        # 1. .spec.yaml 写 mode: full
+        self._rewrite_fast_track_to_full(spec_name)
         # 2. 记录升级原因
         bugs_summary = "; ".join(
             b.get("description", "")[:80]
@@ -2774,6 +2811,37 @@ class Dispatcher:
             "pm_engine",
             f"fast-track 升级完整模式 '{spec_name}'：verdict=bug-found，"
             f"实现保留，完整模式 verifier 流水线接管",
+        )
+
+    def _handle_fast_track_missing_result_merge(
+        self, spec_name: str, result,
+    ) -> None:
+        """结果文件缺失但实现分支已有提交：merge + 升级完整模式补验证（D2）。
+
+        触发因「结果文件缺失、分支已提交」而非 bug-found：不判 run 死亡——
+        不回退预算、不 reset ready。merge 复用 ``_reconcile_and_merge``（失败时
+        其内部已处置：保留 worktree + 重派/熔断，此处必须早退）；合并成功后改写
+        .spec.yaml mode→full 并 enqueue 完整模式 verifier 补齐缺失的 verdict
+        （复用 ``_escalate_to_full_mode`` 的 mode-改写 + enqueue 语义），后续走
+        既有 verified→done 门。缺失的逐场景 fail-closed 校验整体移交完整模式
+        verifier 的既有门（verify.yaml 契约 + verdict evidence），不损失校验强度。
+        """
+        # 预算对账 + merge（merge 失败内部已处置，必须早退）
+        merged = self._reconcile_and_merge(spec_name, result)
+        if not merged:
+            return
+        # 改写 mode=full + enqueue 完整模式 verifier（复用升级语义，触发因不同）
+        self._rewrite_fast_track_to_full(spec_name)
+        # 原因写入 spec entry（供人工审计：为何从 fast-track 转完整模式）
+        self._pm.state_machine.update_spec(spec_name, {
+            "error": "结果文件缺失，分支已提交，升级补验证",
+        })
+        self._pm._enqueue(spec_name, "verifier")
+        self._pm.logger.warning(
+            "pm_engine",
+            f"fast-track 结果文件缺失、分支已提交 '{spec_name}'：merge 完成，"
+            f"升级完整模式 verifier 补验证（不豁免预算、不 reset ready），"
+            f"后续走既有 verified→done 门",
         )
 
     def _handle_fast_track_failure(

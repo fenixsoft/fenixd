@@ -72,14 +72,22 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
         # add-spec-content-integrity-gate 在 implementer/fast-track 分支各插入内容
         # 闸门（+14/+13 行），repair 写点随后漂移 27 行
         # （1028/1912/2391 → 现 1055/1939/2418），写点语义不变。
-        ("core/pm_engine/dispatch.py", 1055, "implementer"),
-        ("core/pm_engine/dispatch.py", 1939, "fast-track"),
-        ("core/pm_engine/dispatch.py", 2418, "repair"),
+        # fix-fasttrack-resultfile-missing-redispatch 在 implementer 成功收口
+        # 插入共享文件清理（+3 行）、fast-track 结果文件缺失分流（+5 行）、
+        # 升级路径抽取 _rewrite_fast_track_to_full/新增 merge 处理器（+22 行），
+        # dispatch 写点后移（1055/1939/2418 → 现 1060/1944/2440），写点语义不变。
+        ("core/pm_engine/dispatch.py", 1060, "implementer"),
+        ("core/pm_engine/dispatch.py", 1944, "fast-track"),
+        ("core/pm_engine/dispatch.py", 2440, "repair"),
         # add-verify-parallel-backoff 在 verification.py 插入降档读写后行号
         # 整体后移（原 1431/1742/2515 → 现 1451/1781/2611），写点语义不变。
-        ("core/pm_engine/verification.py", 1451, "planner-plan"),
-        ("core/pm_engine/verification.py", 1781, "planner-judge"),
-        ("core/pm_engine/verification.py", 2611, "legacy-verifier"),
+        # fix-fasttrack-resultfile-missing-redispatch 前置 typing import（+1 行）
+        # 与 _branch_commit_count/_implementation_branch_has_commits helper
+        #（+34 行，位于 legacy-verifier 写点之前），写点再后移
+        #（1451/1781/2611 → 现 1630/2004/2863），写点语义不变。
+        ("core/pm_engine/verification.py", 1630, "planner-plan"),
+        ("core/pm_engine/verification.py", 2004, "planner-judge"),
+        ("core/pm_engine/verification.py", 2863, "legacy-verifier"),
     ]
 
     def _load(self, rel: str) -> list:

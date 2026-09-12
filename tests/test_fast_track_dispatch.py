@@ -327,5 +327,186 @@ class TestResultStatusNormalization(_Base):
         self.assertIn("重写", entry["error"])
 
 
+class TestFastTrackMissingResultMerge(_Base):
+    """fix-fasttrack-resultfile-missing-redispatch D2：结果文件缺失但分支
+    已有提交 → merge + 升级补验证（不豁免预算、不 reset ready）。
+
+    覆盖 proposal 两起事故签名：add-turn-limit-anchor-c run1 /
+    add-main-tree-deps-provision run1，均已全量提交仍判死亡重派。
+    """
+
+    def _mk_in_implementing(self):
+        self._mk()
+        self.sm.transition("demo", "implementing")
+
+    def test_missing_result_branch_has_commits_merges_and_escalates(self):
+        """D2 分流：分支有提交 + 结果文件缺失 → merge 完成、mode→full、
+        enqueue verifier（不豁免预算、不 reset ready、error 记原因）。"""
+        self._mk_in_implementing()
+        self.engine.agent_runner.run_fast_track.return_value = AgentRunResult(
+            "impl-demo-1", "demo", "fast-track", True, 10.0,
+            branch="fenix/demo-1",
+        )
+        # 结果文件缺失
+        self.engine._read_implementer_result = MagicMock(return_value=None)
+        # 分支有提交（helper）
+        self.engine._implementation_branch_has_commits = MagicMock(return_value=True)
+        self.engine._reconcile_impl_budget = MagicMock()
+        self.engine._clear_dispatch_conflict = MagicMock(return_value={})
+        self.engine._sync_task_progress = MagicMock()
+        self.engine._enqueue = MagicMock()
+
+        self.engine._run_fast_track_worker("demo")
+
+        # merge 被调用（通过 merge_back_from_branch）
+        wm = self.engine.agent_runner.worktree_manager
+        wm.merge_back_from_branch.assert_called_once_with("fenix/demo-1")
+        # spec 转 implemented（merge 成功）
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "implemented")
+        # mode 改写为 full
+        self.assertEqual(read_spec_mode(self.pr, "demo"), "full")
+        # verifier 被 enqueue（补验证）
+        self.engine._enqueue.assert_called_once_with("demo", "verifier")
+        # error 记原因
+        self.assertIn("结果文件缺失", entry.get("error", ""))
+        self.assertIn("分支已提交", entry.get("error", ""))
+        self.assertIn("升级补验证", entry.get("error", ""))
+        # 不豁免预算、不 reset ready（._exempt_dead_run_budget 不被调用）
+        self.assertFalse(hasattr(self.engine, "_exempt_mock_called"))
+        # （_handle_fast_track_failure 不被调用 → 不会调 _exempt_dead_run_budget）
+
+    def test_missing_result_zero_commits_keeps_death_path(self):
+        """D2 零提交分支/无 branch：走既有死亡豁免 + reset ready + 重派（不变）。"""
+        self._mk_in_implementing()
+        self.engine.agent_runner.run_fast_track.return_value = AgentRunResult(
+            "impl-demo-1", "demo", "fast-track", True, 10.0,
+            branch="fenix/demo-1",
+        )
+        self.engine._read_implementer_result = MagicMock(return_value=None)
+        # 分支零提交
+        self.engine._implementation_branch_has_commits = MagicMock(return_value=False)
+        # mock budget exemption 用于断言死亡豁免
+        self.engine._exempt_dead_run_budget = MagicMock()
+        self.engine._reconcile_impl_budget = MagicMock()
+        self.engine._clear_dispatch_conflict = MagicMock(return_value={})
+        self.engine._enqueue = MagicMock()
+
+        self.engine._run_fast_track_worker("demo")
+
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "ready")
+        # 死亡豁免预算被调用
+        self.engine._exempt_dead_run_budget.assert_called_once()
+        self.assertIn("fast-track no run-result", self.engine._exempt_dead_run_budget.call_args[0][1])
+        # retry 1 < max(3)：不直接 enqueue，spec 回 ready 由 ready 派发器重派
+        self.engine._enqueue.assert_not_called()
+
+    def test_missing_result_merge_failure_preserves_worktree(self):
+        """merge 失败 → _reconcile_and_merge 内部处置（保留 worktree + 重派），
+        不走升级。"""
+        self._mk_in_implementing()
+        self.engine.agent_runner.run_fast_track.return_value = AgentRunResult(
+            "impl-demo-1", "demo", "fast-track", True, 10.0,
+            worktree_path=Path("/tmp/wt-demo"),
+            branch="fenix/demo-1",
+        )
+        self.engine._read_implementer_result = MagicMock(return_value=None)
+        self.engine._implementation_branch_has_commits = MagicMock(return_value=True)
+        self.engine._reconcile_impl_budget = MagicMock()
+        self.engine._clear_dispatch_conflict = MagicMock(return_value={})
+        self.engine._enqueue = MagicMock()
+        wm = self.engine.agent_runner.worktree_manager
+        wm.merge_back_from_branch.return_value = (False, "conflict")
+        wm.last_stash_pop_conflicts = []
+
+        self.engine._run_fast_track_worker("demo")
+
+        wm.keep_for_reuse.assert_called_once()
+        entry = self.sm.read_one("demo")
+        self.assertIn("Merge-back failed", entry["error"])
+        # 不走升级（mode 仍为 fast-track）
+        self.assertEqual(read_spec_mode(self.pr, "demo"), "fast-track")
+        self.engine._enqueue.assert_not_called()
+
+
+class TestAccidentSignatureReplay(_Base):
+    """fix-fasttrack-resultfile-missing-redispatch 4.2：日志夹具回放。
+
+    对齐 proposal 两起事故签名（真实 git 仓库 + 真实 rev-list 判定，不 mock
+    helper）：实现分支已有提交但结果文件缺失 → 走 merge + 升级补验证而非
+    death 豁免（add-turn-limit-anchor-c run1 / add-main-tree-deps-provision
+    run1：均已全量提交仍被当「run 死亡」discard 后从零重派）。
+    """
+
+    def setUp(self):
+        import subprocess as _sp
+        self._sp = _sp
+        super().setUp()
+
+        def git(*a):
+            r = _sp.run(["git", "-C", str(self.pr), *a],
+                        capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr
+            return r.stdout
+        self.git = git
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        (self.pr / "f.txt").write_text("x", encoding="utf-8")
+        git("add", ".")
+        git("commit", "-qm", "init")
+        git("branch", "fenix/demo")
+
+    def _commit_like_accident(self, n=5):
+        """模拟 add-main-tree-deps-provision run1：分支全量提交 5 个 commit。"""
+        git = self.git
+        git("checkout", "-q", "fenix/demo")
+        for i in range(n):
+            (self.pr / "work.txt").write_text(f"impl {i}", encoding="utf-8")
+            git("add", ".")
+            git("commit", "-qm", f"[fenix] impl {i}")
+        git("checkout", "-q", "main")
+
+    def test_committed_branch_missing_result_merges_and_escalates(self):
+        """夹具回放：分支 5 提交 + 结果文件缺失 → 真实 rev-list 判 True →
+        走 merge + mode→full + enqueue verifier，不豁免预算、不 reset ready。"""
+        # 先落分支提交再建 spec/STATE（git checkout 会清掉未跟踪的 spec 文件与
+        # .fenix/STATE.md，必须先 commit 分支再建状态文件）
+        self._commit_like_accident(5)
+        self._mk()
+        self.sm.transition("demo", "implementing")
+
+        # 真实 rev-list 判定（不 mock helper）
+        self.assertTrue(self.engine._implementation_branch_has_commits(
+            AgentRunResult("r", "demo", "fast-track", True, 0.0,
+                           branch="fenix/demo")))
+        self.engine.agent_runner.run_fast_track.return_value = AgentRunResult(
+            "impl-demo-1", "demo", "fast-track", True, 10.0,
+            branch="fenix/demo",
+        )
+        # 结果文件缺失（事故签名）
+        self.engine._read_implementer_result = MagicMock(return_value=None)
+        self.engine._reconcile_impl_budget = MagicMock()
+        self.engine._clear_dispatch_conflict = MagicMock(return_value={})
+        self.engine._sync_task_progress = MagicMock()
+        self.engine._enqueue = MagicMock()
+        self.engine._exempt_dead_run_budget = MagicMock()
+
+        self.engine._run_fast_track_worker("demo")
+
+        entry = self.sm.read_one("demo")
+        # 不是 death 豁免：预算不豁免、spec 不 reset ready
+        self.engine._exempt_dead_run_budget.assert_not_called()
+        self.assertEqual(entry["status"], "implemented")
+        # 分支被 merge（merge_back_from_branch 被调用）
+        self.engine.agent_runner.worktree_manager.merge_back_from_branch \
+            .assert_called_once_with("fenix/demo")
+        # 升级补验证：mode→full + verifier enqueue
+        self.assertEqual(read_spec_mode(self.pr, "demo"), "full")
+        self.engine._enqueue.assert_called_once_with("demo", "verifier")
+        self.assertIn("结果文件缺失", entry.get("error", ""))
+
+
 if __name__ == "__main__":
     unittest.main()
