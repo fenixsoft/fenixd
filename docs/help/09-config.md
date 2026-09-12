@@ -217,6 +217,25 @@ stale_code_selfheal:
 
 语义：daemon 每 30s 检测点比对 `fenixd.py` + `core/**/*.py` 的 mtime 与进程启动 baseline，命中即置「陈旧」持续状态，除日志 WARNING 外写一条 `signal_type: stale_code` 的 escalation 告警（同类型未处置去重，运维记录页可见）。当 陈旧为真 + `enabled: true` + 项目受 supervisor 托管 + 连续空闲达到 `idle_confirm_seconds`（空闲 = 无活跃 agent run 且无 admin 处置在途任务）时，daemon touch `.fenix/restart_request`，supervisor 执行优雅重启使新代码生效；重启后新 baseline 刷新，陈旧状态自然解除。任一活跃信号出现立即清零空闲计时。未受托管的项目（`unmanaged`）不自愈——`restart_request` 无人消费，写它只会制造死信，此时仅维持陈旧告警，等待经 Dashboard「安装托管」或 `/fenix-setup` 恢复托管。自动重启引入的新代码若无法启动，supervisor 会在连续 3 次启动后 60 秒内崩溃时熔断停止拉起并落 critical 告警，不会无限重启（见[保障机制](07-safeguards.md#代码陈旧自愈与启动失败熔断)）。
 
+### self_evolution（框架自进化）
+
+框架自身的自进化链路（`add-framework-self-evolution`）：跨项目扫描每日自省产物 `.fenix/todo.md`，对新增条目逐条独立回源复核 → 生成 SPEC 草稿 → 人工「同意」或开关打开后自动立项并开发至 push。本配置节控制该链路的全局行为：
+
+| 键 | 默认值 | 范围 | 生效方式 |
+|----|--------|------|---------|
+| auto_accept | `false` | bool | 热更新（下一检查点生效） |
+| max_items_per_run | `20` | 整数 1..200 | 热更新（下一检查点生效） |
+
+```yaml
+self_evolution:
+  auto_accept: false      # 打开后自动接受全部判定值得立项的条目（decided_by=auto）
+  max_items_per_run: 20   # 每轮分析条目上限，超出部分留待下轮（id 未入库自然再选中）
+```
+
+两键均为**全局（用户级）键**：Dashboard 配置写入 API 对项目级作用域提交 `self_evolution` 返回 400（引导到用户级作用域修改），项目级配置文件不会被写入该键；读取侧的有效值取用户级 + 项目级合并后配置。节、键缺失或值非法（`auto_accept` 非布尔、`max_items_per_run` 非 1..200 整数/布尔混入）时回退缺省值，不使 daemon 启动失败，30s 热更新路径不受该节中断。
+
+语义：仅当 daemon 为自托管（`PROJECT_ROOT == FRAMEWORK_ROOT`）时启用自进化检查点（节拍复用 `admin.interval_minutes`，缺省 5 分钟）。检查点按 Dashboard registry 逐项目判定就绪（`.fenix/self_review_state.json` 的 `last_run_at` 晚于 `.fenix/evolution/state.json` 水位，且 `.fenix/todo.md` 非空），就绪即入队；无 `evo-` 分析 run 在途时立刻以队列中全部就绪项目启动一次分析 run。分析结论与草稿落在 gitignored 的 `.fenix/evolution/`（见[文件与数据地图](10-artifacts.md)）；接受后 SPEC 名统一使用 `evo-` 前缀并进入既有流水线（见[生命周期](03-lifecycle.md)）。`auto_accept` 为真时，分析落地完成后对本轮全部 `pending` 条目自动走接受路径（单条失败不影响其余），无需人工点击。
+
 ### pm.dispatch.aging / pm.family
 
 | 键 | 默认值 | 生效方式 |
@@ -345,7 +364,7 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 | 提示词管理 | agents/ 通用层 + .fenix/agents/ 项目级 |
 | 系统 | admin.enabled / admin.interval_minutes / admin.escalation_cooldown_minutes / admin.merge_breaker_threshold / admin.shutdown_drain_seconds |
 | 系统·瞬断治理 | agents.transient_backoff_schedule / agents.transient_redispatch_delay_seconds / agents.transient_break_threshold / agents.transient_break_window_seconds / agents.transient_break_cooldown_seconds |
-| 自愈 | stale_code_selfheal.enabled / stale_code_selfheal.idle_confirm_seconds |
+| 自进化 | stale_code_selfheal.enabled / stale_code_selfheal.idle_confirm_seconds（第一张卡片「代码陈旧自愈」）；self_evolution.auto_accept / self_evolution.max_items_per_run（第二张卡片「建议改进项」，全局用户级键） |
 | Hook | hooks.global / hooks.specs.<spec 名>（两级订阅，见 [hooks](#hooks)） |
 
 ## 相关文档
