@@ -12,9 +12,16 @@ c-sched-clear 两条空占位 spec 各盲跑 6 个 run。本模块在派发前�
   可能只有 proposal），同时拦得住「空目录 / 只有无关文件」的异常；
 - 读目录 IO 异常保守放行（记 WARNING 不误伤）：闸门的目标是拦空 spec，
   不是卡死派发；
-- ``check_spec_content_missing`` 闸门方法：命中即 blocked + human-escalation
-  告警（signal_type=spec_content_missing, severity=major），复用预算闸门的
-  冻结范式；已是 blocked 幂等不重复告警但仍拒绝重派。
+- ``check_spec_content_missing`` 闸门方法：命中即 blocked + 结构化 frozen 标记
+  + human-escalation 告警（signal_type=spec_content_missing, severity=major），
+  复用预算闸门的冻结范式；已是 blocked 幂等不重复告警但仍拒绝重派。
+  frozen 标记不可省（scheduling-showcase 夹具回归）：admin_monitor 的
+  blocked_stuck 豁免只看 ``frozen`` 字段 / error 前缀 ``frozen:`` / error 含
+  「用户指令」三者，闸门自有文案一条都不占——缺标记时冻结满
+  ``admin.escalation_cooldown_minutes``（默认 60 分钟）即自动召唤一次
+  Administrator agent run（夹具实证两次：admin-c-sched-set-1789106554 /
+  admin-c-sched-clear-1789199472，309KB / 348KB 转写纯浪费）。同层先例为
+  env 阻塞冻结（verification.py）：同样写 ``frozen: True`` + 自有文案。
 
 模块落点独立文件（design D5）：与 budget.py 同层并列，未来若需按项目白名单
 扩展判定不污染预算计数逻辑。
@@ -22,6 +29,8 @@ c-sched-clear 两条空占位 spec 各盲跑 6 个 run。本模块在派发前�
 
 import logging
 from pathlib import Path
+
+from core.state_machine import FROZEN_FIELD
 
 
 def spec_has_content(project_root, spec_name: str) -> bool:
@@ -71,8 +80,10 @@ class SpecIntegrityGate:
         """派发前校验 spec 目录有无实质内容（design D1/D4）。
 
         无内容且状态非 blocked 时执行冻结处置：``update_spec(status=blocked,
-        error=内容缺失)`` + ``_send_human_escalation_alert(signal_type=
-        spec_content_missing, severity="major")``。
+        frozen=True, error=内容缺失)`` + ``_send_human_escalation_alert(
+        signal_type=spec_content_missing, severity="major")``。冻结标记使
+        admin_monitor 的 blocked_stuck 豁免生效（自动链路对 status 的改写亦被
+        StateMachine 的冻结保护剥离），唯一出路是补内容后人工 unfreeze_spec。
 
         Returns:
             True = 已拦（spec 因内容缺失被冻结，或已是 blocked 幂等）；
@@ -88,6 +99,7 @@ class SpecIntegrityGate:
 
         self._pm.state_machine.update_spec(spec_name, {
             "status": "blocked",
+            FROZEN_FIELD: True,
             "error": (
                 f"SPEC 内容缺失：spec/changes/{spec_name}/ 目录不含 "
                 f"proposal.md/design.md/tasks.md/specs/**/*.md 任一实质内容，"
