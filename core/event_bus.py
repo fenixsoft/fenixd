@@ -12,6 +12,11 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, Set
 
+# 依赖闸门接受态（fix-dispatch-wakeup-gap D2 单点口径）：与
+# PMEngine._dependencies_satisfied 共用同一常量，杜绝「闸门说满足、唤醒说
+# 不够」的双口径漂移——EventBus 仅据此识别「转入接受态」这一事实。
+from core.pm_engine.engine import DEPENDENCY_ACCEPTED_STATUSES  # noqa: E402
+
 
 class EventBus:
     """
@@ -379,6 +384,9 @@ class EventBus:
     def _dispatch_changes(self, current_specs: dict):
         """Compare current state against known state and dispatch events."""
         events = []
+        # 依赖唤醒候选（dispatch-dependency-wakeup 1.1/1.2）：本轮转入依赖闸门
+        # 接受态的 SPEC 名列表（old → new 变化者，且 new ∈ 接受态集合）。
+        accepted_names = []
 
         # Check for new or changed SPECs
         for name, entry in current_specs.items():
@@ -392,12 +400,19 @@ class EventBus:
                 event_kind = EventBus._status_to_event(new_status)
                 if event_kind:
                     events.append((event_kind, name, entry))
+                # 1.1：新 SPEC 以接受态初次出现（登记时即 done/pushed/...，如
+                # 合并入树/存量规格）同样视为「转入接受态」，触发 dependents 重评。
+                if new_status in DEPENDENCY_ACCEPTED_STATUSES:
+                    accepted_names.append(name)
             elif old_status != new_status:
                 # Status changed
                 self._dispatch_hook(name, old_status, new_status, entry)
                 event_kind = self._status_to_event(new_status)
                 if event_kind:
                     events.append((event_kind, name, entry))
+                # 1.1：转入依赖接受态 → 候选触发 dependents 重评
+                if new_status in DEPENDENCY_ACCEPTED_STATUSES:
+                    accepted_names.append(name)
 
         # Update known state
         self._known_specs = {
@@ -418,6 +433,48 @@ class EventBus:
                     "event_bus",
                     f"PM Engine failed to handle {event_kind}: {e}",
                 )
+
+        # 1.1/1.2/1.5：依赖定向唤醒——为每个转入接受态的 SPEC 反查 dependents
+        # 并经 PMEngine 门面触发重评（D5：EventBus 只识别事实，派发决策留在
+        # PMEngine；复用已读入的 current_specs 字典，不额外读盘的百量级遍历）。
+        for accepted_name in accepted_names:
+            try:
+                dependents = EventBus._find_dependents(current_specs, accepted_name)
+                if dependents:
+                    self.pm_engine._wakeup_dependents(accepted_name, dependents)
+                # 无 dependents → 零副作用、零日志（Task 1.4）
+            except Exception as e:
+                # 1.5 异常隔离：单条异常本轮内捕获降级为 WARNING，MUST NOT 中断
+                # 其他事件派发（full-scan-resilience 同口径）。
+                self.logger.warning(
+                    "event_bus",
+                    f"Dependency wakeup skipped for '{accepted_name}': "
+                    f"{type(e).__name__}: {e}",
+                )
+
+    @staticmethod
+    def _find_dependents(current_specs: dict, dep_name: str) -> list:
+        """反查 dependents（dispatch-dependency-wakeup 1.2）。
+
+        遍历本轮已读入的 ``current_specs`` 字典，匹配 ``depends_on`` 字段含
+        ``dep_name`` 的条目（复用内存字典，无额外 IO；百量级规模不建索引）。
+        非 dict 条目直接跳过。
+
+        ``depends_on`` 的规范形态是逗号分隔的 SPEC 名列表（见
+        PMEngine._dependencies_satisfied 的解析口径）；此处沿用逐名解析做
+        **精确匹配**，避免「B」被「B2」子串误配。
+        """
+        dependents = []
+        for name, entry in current_specs.items():
+            if name == dep_name or not isinstance(entry, dict):
+                continue
+            deps = entry.get("depends_on")
+            if not deps or deps == "null":
+                continue
+            dep_names = [d.strip() for d in str(deps).split(",") if d.strip()]
+            if dep_name in dep_names:
+                dependents.append(name)
+        return dependents
 
     @staticmethod
     def _status_to_event(status: str) -> str:

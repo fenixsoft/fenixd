@@ -65,6 +65,13 @@ from core.state_machine import (
 # 假就绪巡检：ready 滞留超过该阈值且期间无派发活动 → 阻塞项（design D6）
 DEFAULT_READY_STALL_THRESHOLD_MINUTES = 20
 
+# 依赖闸门接受态（fix-dispatch-wakeup-gap D2 单点口径）：依赖 SPEC 转入这些
+# 状态之一时，等待中的 dependents 视为「依赖满足」——EventBus 据此定向唤醒
+# dependents 重评（dispatch-dependency-wakeup 1.1），_dependencies_satisfied
+# 依此判定。接受态集合单点定义，杜绝「闸门说满足、唤醒说不够」的双口径漂移；
+# 未来引入新终态只需改此处。
+DEPENDENCY_ACCEPTED_STATUSES = ("done", "pushed", "implemented", "verified")
+
 # 派发冷却窗口（双派发穿透原地修 2026-09-06）：成功派发后该窗口内同 spec 的重复
 # _on_spec_ready 触发一律跳过。窗口需覆盖 dispatch→create 拿锁的亚秒窗口与失败
 # 回写 ready 外溢的秒级重入；合法重试（Retry/full_scan 周期/退避定时器）间隔为
@@ -340,6 +347,9 @@ class PMEngine:
             self._enqueue(spec_name, agent_type)
             # 冷却起点（双派发穿透原地修 2026-09-06）：以实际入队时刻计时
             self._last_dispatch_at[spec_name] = time.time()
+            # 返回 True 表示成功入队（post-recovery-patrol D4：就地派发的
+            # 「派发成立」判据）。既有调用方均忽略返回值，无兼容影响。
+            return True
         finally:
             # 派发完成（成功或失败），从 pending 中移除，允许未来派发
             self._pending_dispatches.discard(spec_name)
@@ -1919,7 +1929,7 @@ class PMEngine:
                 self.logger.warning("pm_engine", f"Dependency '{dep_name}' not found for '{spec_name}'")
                 return False
             dep_status = dep_spec.get("status", "")
-            if dep_status not in ("done", "pushed", "implemented", "verified"):
+            if dep_status not in DEPENDENCY_ACCEPTED_STATUSES:
                 self.logger.info(
                     "pm_engine",
                     f"'{spec_name}' blocked: dependency '{dep_name}' is '{dep_status}' (need done/pushed/implemented/verified)",
@@ -1927,6 +1937,66 @@ class PMEngine:
                 return False
 
         return True
+
+    def _wakeup_dependents(self, dep_name: str, dependents: list) -> None:
+        """依赖满足定向唤醒（dispatch-dependency-wakeup D1-D3）。
+
+        ``dep_name`` 转入依赖闸门接受态后，EventBus 反查出的等待中 dependents
+        逐个重评：复用既有 ``_dependencies_satisfied``（同一接受态集合、同一
+        STATE.md 读取口径，不另立判据），通过且处于可派发态（ready）时走与
+        ``spec_ready`` **同源**的派发入口 ``_on_spec_ready``——预算/内容完整性/
+        冻结/依赖/冷却/去重/优先级/并发闸门全部自动生效，幂等不在唤醒路径上
+        重新实现（D3）。全部重评后立即处理派发队列，使「事件到达即唤醒」的
+        入队当轮完成，不依赖下一轮 full_scan。
+
+        - 幂等与去重（1.4）：已有活跃派发（worktree 持锁）或已在飞派发
+          （``_pending_dispatches``）的 dependent 跳过，不重复入队；
+        - 异常隔离（1.5）：单个 dependent 的任一异常捕获降级 WARNING，不中断
+          其余 dependent 的重评（沿用 full-scan-resilience 单条隔离口径）。
+        """
+        if not dependents:
+            return  # 无 dependents：零副作用、零日志（1.4）
+        self.logger.info(
+            "pm_engine",
+            f"Dependency wakeup: '{dep_name}' entered accepted status, "
+            f"rechecking {len(dependents)} dependent(s)",
+        )
+        for name in dependents:
+            try:
+                # 幂等与去重（1.4）：已在飞派发中 → 跳过
+                if name in self._pending_dispatches:
+                    continue
+                # 已有活跃派发（worktree 持锁 / 活 run 占用）→ 跳过，不重复入队
+                try:
+                    if self.agent_runner.worktree_manager.has_active_worktree(name):
+                        continue
+                except Exception:
+                    pass
+                # 仅处于可派发态（ready）的 dependent 值得唤醒；其它状态由
+                # 各自事件路径接管（implemented→verifier 等），不在此重复。
+                spec = self.state_machine.read_one(name)
+                if not spec or spec.get("status") != "ready":
+                    continue
+                if not self._dependencies_satisfied(name):
+                    continue
+                # 与 spec_ready 事件同源的派发入口：全部既有闸门在此生效
+                self._on_spec_ready(name)
+            except Exception as e:
+                self.logger.warning(
+                    "pm_engine",
+                    f"Dependency wakeup failed for dependent '{name}' "
+                    f"(dep '{dep_name}'): {type(e).__name__}: {e}",
+                )
+        # 入队后立即处理队列，使唤醒在事件到达当轮完成派发（对齐
+        # check_scheduling_deadlines 的「唤起后立即处理队列」模式）。
+        try:
+            self._process_queue()
+        except Exception as e:
+            self.logger.warning(
+                "pm_engine",
+                f"Dependency wakeup queue process failed (dep '{dep_name}')"
+                f"（非阻塞，full_scan 兜底）: {e}",
+            )
 
     # ── Blocker Detection & Health Reporting ───────────────────────
 
