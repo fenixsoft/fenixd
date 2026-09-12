@@ -147,14 +147,37 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
                 )
 
     def test_no_new_holdstate_write_point_missed(self):
-        """全库 hold-state 收尾写点只有六处（未来新增 run 类型会在此失败）。"""
+        """全库 hold-state 收尾写点恰好六处，与锚点表条目数/文件集合互为印证。
+
+        与 test_six_holdstate_write_points_carry_marker 的锚点表并行：
+        文件集合一致（无新增/删减文件）+ 写点总数恰好六处（无漏入表）。
+        未来新增 run 类型时，此处与锚点表会同时红。
+        """
         root = Path(__file__).resolve().parent.parent / "core"
-        hits = []
+        hits = {}
         for py in root.rglob("*.py"):
             text = py.read_text("utf-8")
             if "hold-state" in text and "人工取消" in text:
-                hits.append(str(py.relative_to(root.parent)))
-        self.assertEqual(sorted(hits), sorted({rel for rel, _, _ in self.WRITE_POINTS}))
+                rel = str(py.relative_to(root.parent))
+                # 以 _cancelled_hold 标记写入处数计写点（与锚点表条数同口径）
+                hits[rel] = sum(
+                    1 for ln in text.splitlines()
+                    if '"_cancelled_hold": True' in ln)
+        # 文件集合与锚点表一一对应
+        self.assertEqual(
+            sorted(hits),
+            sorted({rel for rel, _, _ in self.WRITE_POINTS}),
+            "全库 hold-state 写点文件集合与锚点表不一致",
+        )
+        # 写点总数恰好六处，与锚点表条目数互为印证
+        self.assertEqual(
+            sum(hits.values()), 6,
+            "全库 _cancelled_hold 写点总数非六处：新增/删除了写点而未同步锚点表",
+        )
+        self.assertEqual(
+            len(self.WRITE_POINTS), 6,
+            "锚点表条目数非六处：与全库写点总数不一致",
+        )
 
 
 # ── 2. 重启恢复尊重保持 ──────────────────────────────────────
