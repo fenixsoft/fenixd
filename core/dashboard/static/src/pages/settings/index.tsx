@@ -154,7 +154,15 @@ export default function SettingsPage() {
           <div
             style={
               isMobile
-                ? { borderBottom: '1px solid #f0f0f0' }
+                ? {
+                    // 移动端：外层承载横向滚动。Menu 本体 width: max-content 使
+                    // rc-overflow 测得的容器宽度=内容宽度，页签永不折叠成
+                    // aria-hidden（原实现溢出 7 个页签不可达），全部页签留在
+                    // 正常流内可横向滚动触达
+                    overflowX: 'auto',
+                    WebkitOverflowScrolling: 'touch',
+                    borderBottom: '1px solid #f0f0f0',
+                  }
                 : { width: 224, borderRight: '1px solid #f0f0f0' }
             }
           >
@@ -165,7 +173,7 @@ export default function SettingsPage() {
               items={menuItems}
               style={
                 isMobile
-                  ? { borderBottom: 0, overflowX: 'auto' }
+                  ? { borderBottom: 0, width: 'max-content', minWidth: '100%' }
                   : { height: '100%', borderRight: 0 }
               }
             />
