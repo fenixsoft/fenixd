@@ -116,3 +116,9 @@
 - [x] 9.3 `tests/test_self_evolution.py`：覆盖接受/拒绝路径——`draft_failed`（lint violation / 缺文档 / 非法 name）时草稿目录被删除且不落 `spec/changes/`；接受成功落地提交与注册（用临时 git 仓库 + 临时 STATE）、重名加后缀、提交失败不注册且可重试、重复接受幂等、拒绝越界路径（符号链接）不被删除、已接受条目不可拒绝。
 - [x] 9.4 `tests/test_self_evolution.py`：覆盖自动接受——开关为真时全部 `pending` 被接受且 `decided_by=auto`、单条失败不影响其余、`analyzed` 与 `draft_failed` 不受影响、开关为假时保持 `pending`。
 - [x] 9.5 全量回归：`python3 -m pytest tests/ -q` 全绿（重点确认 `tests/test_stale_code_selfheal.py`、`tests/test_daily_self_review.py`、`tests/test_dashboard_todo_api.py`、`tests/test_system_settings_config.py` 不受影响），并在主树重建 dashboard 产物。
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-framework-self-evolution/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
