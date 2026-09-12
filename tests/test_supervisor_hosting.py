@@ -234,26 +234,61 @@ class TestStartStopHosted:
         assert not (proot / ".fenix" / "stop").exists()
 
     def test_stop_daemon_graceful_order(self, tmp_path, monkeypatch):
-        """优雅收口：写 stop → 仅 SIGTERM daemon（不 SIGTERM supervisor）→ 清除 stop。"""
+        """优雅收口：写 stop → 仅 SIGTERM daemon（不 SIGTERM supervisor）→ 快照全退后清除 stop。"""
         proot = self._make_proj(tmp_path)
         stop_flag = proot / ".fenix" / "stop"
         daemon_pid, supervisor_pid = 41111, 42222
-        # 调用序：already 检查(True) → 轮询首查(False) → 退出后确认(False)
-        monkeypatch.setattr(fenix_session, "is_running", mock.Mock(side_effect=[True, False, False]))
-        monkeypatch.setattr(fenix_session, "_fenix_pids_under", lambda root: [str(supervisor_pid), str(daemon_pid)])
+        # 调用序：入口快照（_fenix_pids_under）→ SIGTERM → 轮询 _alive_pids
+        monkeypatch.setattr(fenix_session, "is_running", mock.Mock(return_value=True))
+        monkeypatch.setattr(fenix_session, "_fenix_pids_under", lambda root: [str(daemon_pid), str(supervisor_pid)])
         # 41111 是 daemon（cmdline 含 .fenix/fenixd.py）；42222 是 supervisor
         monkeypatch.setattr(fenix_session, "_is_daemon_cmdline", lambda pid: pid == str(daemon_pid))
+        # 模拟快照进程快速全退（首轮即空）→ 不触发 30s 真实等待
+        monkeypatch.setattr(fenix_session, "_alive_pids", lambda pids: [])
         killed = []
         monkeypatch.setattr(fenix_session.os, "kill", lambda pid, sig: killed.append((int(pid), sig)))
         result = fenix_session.stop_daemon(str(proot))
         assert result["ok"] is True and result["was_running"] is True
-        # 写 stop → SIGTERM 只发给 daemon
+        # 写 stop → SIGTERM 只发给 daemon，然后快照全退 → 清除 stop
         assert stop_flag.exists() is False  # 已在 finally 清除
         assert (int(daemon_pid), fenix_session.signal.SIGTERM) in killed
         assert not any(pid == supervisor_pid and sig == fenix_session.signal.SIGTERM for pid, sig in killed)
 
+    def test_stop_daemon_waits_supervisor_exit_before_clearing_stop(self, tmp_path, monkeypatch):
+        """stop 文件在快照（daemon 与其父 supervisor）全退前不得清除。
+
+        竞态实证（BUG-01）：daemon 先退出、supervisor 尚在检查 stop flag 时提前
+        清 stop，supervisor 会误判「非显式停止」重新拉起 daemon。stop_daemon 必须
+        等快照（含 supervisor）全退才清 stop 文件。
+        """
+        proot = self._make_proj(tmp_path)
+        stop_flag = proot / ".fenix" / "stop"
+        daemon_pid, supervisor_pid = 44111, 44222
+        monkeypatch.setattr(fenix_session, "is_running", mock.Mock(return_value=True))
+        monkeypatch.setattr(fenix_session, "_fenix_pids_under", lambda root: [str(daemon_pid), str(supervisor_pid)])
+        monkeypatch.setattr(fenix_session, "_is_daemon_cmdline", lambda pid: pid == str(daemon_pid))
+        # 首轮：daemon 已死、supervisor 仍在（等它检查 stop flag 后退出）；次轮全退
+        alive_seq = {"n": 0}
+
+        def _alive(pids):
+            alive_seq["n"] += 1
+            if alive_seq["n"] == 1:
+                return [str(supervisor_pid)]
+            return []
+
+        monkeypatch.setattr(fenix_session, "_alive_pids", _alive)
+        killed = []
+        monkeypatch.setattr(fenix_session.os, "kill", lambda pid, sig: killed.append((int(pid), sig)))
+        result = fenix_session.stop_daemon(str(proot))
+        assert result["ok"] is True
+        # supervisor 仍存活期间 stop 文件必须保留（不被提前 unlink 诱发复活）
+        assert not stop_flag.exists()  # 全退后才清除
+        # SIGTERM 仅 daemon
+        assert (int(daemon_pid), fenix_session.signal.SIGTERM) in killed
+        assert not any(pid == supervisor_pid and sig == fenix_session.signal.SIGTERM for pid, sig in killed)
+
     def test_stop_daemon_timeout_kill_session_no_orphan(self, tmp_path, monkeypatch):
-        """收口超时：kill-session + 对残留 daemon/supervisor 补 SIGKILL，无孤儿。"""
+        """收口超时：kill-session + 仅对快照中仍存活的残留补 SIGKILL，无孤儿。"""
         proot = self._make_proj(tmp_path)
         stop_flag = proot / ".fenix" / "stop"
         daemon_pid, supervisor_pid = 43111, 43222
@@ -261,6 +296,7 @@ class TestStartStopHosted:
         monkeypatch.setattr(fenix_session, "_fenix_pids_under",
                             lambda root: [str(daemon_pid), str(supervisor_pid)])
         monkeypatch.setattr(fenix_session, "_is_daemon_cmdline", lambda pid: pid == str(daemon_pid))
+        monkeypatch.setattr(fenix_session, "_alive_pids", lambda pids: [str(daemon_pid), str(supervisor_pid)])
         killed = []
         monkeypatch.setattr(fenix_session.os, "kill", lambda pid, sig: killed.append((int(pid), sig)))
         tmux_calls = []
@@ -278,10 +314,55 @@ class TestStartStopHosted:
         monkeypatch.setattr(fenix_session.time, "time", _time_side)
         result = fenix_session.stop_daemon(str(proot))
         assert result["ok"] is True
-        # 超时路径：kill-session 被调、残留进程补 SIGKILL
+        # 超时路径：kill-session 被调、残留（快照中仍存活）补 SIGKILL
         assert any("kill-session" in c[0] for c in tmux_calls)
         assert (daemon_pid, fenix_session.signal.SIGKILL) in killed
         assert (supervisor_pid, fenix_session.signal.SIGKILL) in killed
+        assert not stop_flag.exists()
+
+    def test_stop_daemon_concurrent_does_not_kill_foreign_pids(self, tmp_path, monkeypatch):
+        """并发防护（BUG-01 回归）：超时兜底只杀入口快照 pid，绝不重扫误杀他路进程。
+
+        场景：一路 install 的 stop_daemon（快照 = 旧 D1/S1）；另一路已经 start_daemon
+        拉起新的 D2/S2（不在快照中）。本路 stop 超时兜底 MUST NOT 对 D2/S2 发任何
+        信号（旧实现重新 _fenix_pids_under 会误杀，致托管永远无法成立）。
+        """
+        proot = self._make_proj(tmp_path)
+        stop_flag = proot / ".fenix" / "stop"
+        old_daemon, old_supervisor = 45111, 45222       # 本路快照（旧进程）
+        new_daemon, new_supervisor = 45333, 45444       # 他路新拉起（must not 被杀）
+        monkeypatch.setattr(fenix_session, "is_running", mock.Mock(return_value=True))
+        # 入口快照：只含旧进程；重扫（若发生）会返回 4 个——断言扫描只发生一次
+        scan_calls = {"n": 0}
+
+        def _scan(root):
+            scan_calls["n"] += 1
+            return [str(old_daemon), str(old_supervisor)]
+
+        monkeypatch.setattr(fenix_session, "_fenix_pids_under", _scan)
+        monkeypatch.setattr(fenix_session, "_is_daemon_cmdline", lambda pid: pid == str(old_daemon))
+        # 快照进程恒存活 → 走超时兜底路径
+        monkeypatch.setattr(fenix_session, "_alive_pids", lambda pids: list(pids))
+        killed = []
+        monkeypatch.setattr(fenix_session.os, "kill", lambda pid, sig: killed.append((int(pid), sig)))
+        monkeypatch.setattr(fenix_session.subprocess, "run",
+                            lambda *a, **kw: mock.Mock(returncode=0))
+        t0 = time.time()
+        ticks = {"n": 0}
+
+        def _time_side():
+            ticks["n"] += 1
+            return t0 + 31 + ticks["n"] * 40
+
+        monkeypatch.setattr(fenix_session.time, "time", _time_side)
+        result = fenix_session.stop_daemon(str(proot))
+        assert result["ok"] is True
+        # 兜底 SIGKILL 只落在快照（旧进程）上，他路新进程零接触
+        killed_pids = {pid for pid, _ in killed}
+        assert old_daemon in killed_pids and old_supervisor in killed_pids
+        assert new_daemon not in killed_pids and new_supervisor not in killed_pids
+        # 入口只扫描一次（轮询不再重扫全项目）
+        assert scan_calls["n"] == 1
         assert not stop_flag.exists()
 
 

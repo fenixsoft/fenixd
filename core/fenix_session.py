@@ -319,6 +319,12 @@ def stop_daemon(root: str | None = None) -> dict:
     SIGTERM/SIGKILL 只作用于 cwd 或 --project-root 等于该项目根的进程
     （经 _fenix_pids_under 定位），禁止按 cmdline 裸匹配杀进程。
 
+    并发安全（fix-supervisor-hosting-chain 验证修复 BUG-01）：停止目标 pid
+    在入口一次快照；SIGTERM 与超时 SIGKILL 只作用快照中的 pid（SIGKILL 前经
+    kill(pid, 0) 探活），超时路径绝不重新扫描——否则一次并发的 stop/install
+    在兜底时刻会把另一路刚拉起的新 supervisor/daemon 当作「残留」误杀，
+    致托管永远无法成立。
+
     返回: {"ok": bool, "error": str|None, "session": str|None, "was_running": bool}
     任何 subprocess/信号异常均返回 ok=False 的错误对象，不抛异常。
     """
@@ -328,6 +334,9 @@ def stop_daemon(root: str | None = None) -> dict:
     if not is_running(proot):
         return {"ok": True, "error": None, "session": session, "was_running": False}
 
+    # 入口快照停止目标（并发安全：超时兜底只杀快照 pid，不重扫）
+    target_pids = _fenix_pids_under(proot)
+
     # ① 写 stop（supervisor 主循环开头与 daemon 退出后都会检查）
     try:
         stop_flag.parent.mkdir(parents=True, exist_ok=True)
@@ -336,22 +345,32 @@ def stop_daemon(root: str | None = None) -> dict:
         return {"ok": False, "error": f"写 .fenix/stop 失败: {e}", "session": session, "was_running": True}
 
     try:
-        # ② SIGTERM 该项目 daemon 进程（仅 cwd/--project-root 锚定且为 daemon 的
-        # 进程——supervisor 见 stop flag 后自行退出，SIGTERM 不发给它）
-        for pid in _fenix_pids_under(proot):
+        # ② SIGTERM 该项目 daemon 进程（仅快照中的 cwd/--project-root 锚定且为
+        # daemon 的进程——supervisor 见 stop flag 后自行退出，SIGTERM 不发给它）
+        for pid in target_pids:
             if _is_daemon_cmdline(pid):
                 try:
                     os.kill(int(pid), signal.SIGTERM)
                 except (ProcessLookupError, PermissionError):
                     pass
-        # ③ 轮询等待 daemon 与 supervisor 双双退出（上限约 30 秒）
+        # ③ 轮询等待 daemon 与 supervisor 双双退出（上限约 30 秒）。
+        # 只等快照 pid：并发时另一路新拉起的进程不在此列，不会让本路误等满窗。
+        # 快照为空（/proc 不可用但 tmux 回退判定运行中）时退化为项目级轮询。
         deadline = time.time() + 30
-        while time.time() < deadline:
-            if not is_running(proot):
-                break
-            time.sleep(0.5)
-        if is_running(proot):
-            # ④ 超时：kill session 并对残留 daemon/supervisor 补 SIGKILL
+        if target_pids:
+            while time.time() < deadline:
+                if not _alive_pids(target_pids):
+                    break
+                time.sleep(0.5)
+        else:
+            while time.time() < deadline:
+                if not is_running(proot):
+                    break
+                time.sleep(0.5)
+        # ④ 超时兜底：kill session 并对**快照中仍存活的残留**补 SIGKILL——
+        # 不重新扫描项目（并发场景下新拉起的 supervisor 绝不被误杀）
+        remaining = _alive_pids(target_pids)
+        if remaining or (not target_pids and is_running(proot)):
             try:
                 subprocess.run(
                     ["tmux", "kill-session", "-t", session],
@@ -359,7 +378,7 @@ def stop_daemon(root: str | None = None) -> dict:
                 )
             except Exception:
                 pass
-            for pid in _fenix_pids_under(proot):
+            for pid in remaining:
                 try:
                     os.kill(int(pid), signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
@@ -377,3 +396,20 @@ def stop_daemon(root: str | None = None) -> dict:
         except OSError:
             pass
         return {"ok": False, "error": f"停止 daemon 失败: {e}", "session": session, "was_running": True}
+
+
+def _alive_pids(pids) -> list:
+    """过滤仍存活的 pid（kill(pid, 0) 探测，0 号信号不改变目标）。
+
+    fix-supervisor-hosting-chain 验证修复 BUG-01：stop_daemon 轮询/超时兜底
+    均只面向「入口快照」的 pid——探测失败（进程已退出/权限不足）安全跳过，
+    不抛异常。返回值仅含仍存活的 pid 串列表。
+    """
+    alive = []
+    for pid in pids:
+        try:
+            os.kill(int(pid), 0)
+            alive.append(pid)
+        except (ProcessLookupError, PermissionError):
+            pass
+    return alive

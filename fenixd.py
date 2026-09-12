@@ -179,6 +179,12 @@ class FenixDaemon:
         self._admin_pool_stats = {"submitted": 0, "completed": 0, "failed": 0}
         self.pm_engine = None
         self.hook_engine = None
+        # 收口幂等守卫（fix-supervisor-hosting-chain 验证修复 BUG-01）：supervisor
+        # 见 stop flag 会主动 SIGTERM daemon（停止协作），与 stop_daemon 的 SIGTERM
+        # 可能叠加成双重信号。Python 信号处理器在字节码边界打断主线程——若在第一次
+        # shutdown 收口中再触发，重入的 shutdown 会在 wait_for_running_agents 完成
+        # 前提前 sys.exit(0)，遗留未终止的 agent。首次进入置位，重入直接返回。
+        self._shutdown_started = False
 
     def initialize(self):
         """Load config and initialize all components."""
@@ -1268,6 +1274,9 @@ class FenixDaemon:
 
     def shutdown(self):
         """Graceful shutdown."""
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
         self.logger.info("fenixd", "Shutting down...")
         self.running = False
 
@@ -1282,8 +1291,13 @@ class FenixDaemon:
             # 原地重试、不污染瞬断熔断计数。
             self.agent_runner.shutting_down = True
 
+        # 收口加速（fix-supervisor-hosting-chain 验证修复 BUG-01）：admin 线程
+        # 大部时间睡在 interval_minutes 轮询中，join(5) 纯白等 5s——与 event_bus
+        # 两线程 join 累加使非计划 SIGTERM 快速停机实测 10s+，逼近 dashboard
+        # stop/install 端点 30s 超时线并击穿 12s「安装托管」等待窗。线程为
+        # daemon 线程（进程退出由 OS 回收），join 仅作「放过当前轮」宽容窗。
         if self._admin_thread:
-            self._admin_thread.join(timeout=5)
+            self._admin_thread.join(timeout=2)
         # Administrator worker 池优雅关闭（fix-admin-run-blocks-mainloop tasks 2.3）：
         # 取消排队中任务、不等待在途处置——在途 run 由 pending disposition 标记
         # 可追溯，其 claude 子进程随后被 wait_for_running_agents 终止（interrupted

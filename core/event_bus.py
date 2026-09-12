@@ -68,10 +68,17 @@ class EventBus:
     def stop(self):
         """Stop monitoring."""
         self._running = False
+        # 收口加速（fix-supervisor-hosting-chain 验证修复 BUG-01）：两线程均为
+        # daemon 线程（进程退出由 OS 兜底回收），join(timeout) 仅作为「放过当前
+        # 轮」的宽容窗。旧值 5s 对分钟级轮询的 scan 线程是纯白等（线程正睡在
+        # poll_interval 长 sleep 中），累计再叠加 admin 线程 join 使非计划 SIGTERM
+        # 快速停机实测 10s+——逼近 dashboard stop/install 端点 30s 超时线并直接
+        # 击穿 12s 安装托管等待窗。watch 2s 一轮保留 2s 宽容；scan 长 sleep 只需
+        # 极短等待（其当前轮要么已回到循环头部检查 _running，要么本就在 sleep）。
         if self._watch_thread:
-            self._watch_thread.join(timeout=5)
+            self._watch_thread.join(timeout=2)
         if self._scan_thread:
-            self._scan_thread.join(timeout=5)
+            self._scan_thread.join(timeout=0.5)
         self.logger.info("event_bus", "Stopped")
 
     def full_scan(self):
