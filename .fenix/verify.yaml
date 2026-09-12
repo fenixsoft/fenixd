@@ -78,6 +78,14 @@ ready:
   # 并无 SPA fallback——同秒通过的真实机制是「监听即服务静态壳」（/ 恒 200
   # 无需 fallback）；白屏根治靠 browser.py 首帧渲染等待（42bdf8f），本探针
   # 改 API 端点语义上仍更诚实（探活后端而非静态壳）。
-  url: /api/projects
+  # 换端点 2026-09-12（fix-supervisor-hosting-chain / fix-dashboard-fault-isolation
+  # 验证环境阻塞）：原探针 /api/projects 的成本随 .fenix/runs/ 产物量线性增长
+  # ——project_summary → get_runs 每次请求都全量重读重解析 runs 顶层所有 jsonl
+  # （实测 413 文件 / 481MB 时：冷实例 8-11s、稳态 2.4s），而 probe_ready 单次
+  # 请求硬编码 urlopen(timeout=3)，于是每次尝试必超时 → 120s 预算耗尽 →
+  # 就绪失败 fail-fast。改探 /api/alerts：无参时跨项目聚合告警，仍走真实后端
+  # 数据路径（项目发现 + 逐项目读告警文件），成本与 runs 产物量无关，实测主树
+  # 与 serving worktree 均 0.01s；未知路径回 404，鉴别力自检照常通过。
+  url: /api/alerts
   expect: 200
-  timeout: 120
+  timeout: 60
