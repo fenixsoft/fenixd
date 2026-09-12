@@ -45,6 +45,7 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
 
 import gzip
 import json
+import logging
 import mimetypes
 import os
 import queue
@@ -70,6 +71,8 @@ from core.agent_runner.prompt_builder import (
 )
 from core.fenix_session import start_daemon, stop_daemon
 from core.admin_store import AdminStore, SIGNAL
+
+logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -209,11 +212,22 @@ class DashboardHTTPServer(ThreadingHTTPServer):
             self._request_slots = max(0, self._request_slots - 1)
 
     def projects(self) -> list:
-        """带 TTL 的发现结果缓存（扫描开销低但避免每次请求都扫盘）。"""
+        """带 TTL 的发现结果缓存（扫描开销低但避免每次请求都扫盘）。
+
+        发现异常兜底（fix-dashboard-fault-isolation D5）：`discover()` 抛异常时
+        保留上次成功结果（从未成功过则为空列表）并记录错误，异常 MUST NOT
+        冒泡；`_cache_ts` 无条件推进，使 TTL 内后续请求复用上次结果而非每个
+        请求都重试一次注定失败的发现。
+        """
         now = time.time()
         if now - self._cache_ts > self._cache_ttl:
-            self._projects_cache = self.registry.discover()
-            self._cache_ts = now
+            try:
+                self._projects_cache = self.registry.discover()
+            except Exception as exc:  # noqa: BLE001 —— 发现层兜底，不得使请求失败
+                # 保留 _projects_cache 原值；记录错误；不抛出
+                logger.error("项目发现失败，复用上次成功结果: %s", exc)
+            finally:
+                self._cache_ts = now
         return self._projects_cache
 
     def project_by_name(self, name: str):
@@ -364,10 +378,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "error": "项目路径不存在",
                 })
                 continue
-            s = dashboard_data.project_summary(p["path"], p["name"], p["path"])
-            s["discovered"] = p.get("discovered", False)
-            s["exists"] = True
-            projects.append(s)
+            try:
+                s = dashboard_data.project_summary(p["path"], p["name"], p["path"])
+                s["discovered"] = p.get("discovered", False)
+                s["exists"] = True
+                projects.append(s)
+            except Exception as exc:  # noqa: BLE001 —— 单项目失败降级，端点仍返回 200
+                projects.append(dashboard_data._degraded_project(p, f"摘要计算失败: {exc}"))
         return {"projects": projects}
 
     def _api_overview(self) -> dict:

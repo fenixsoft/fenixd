@@ -18,9 +18,17 @@ registry.py — 多项目发现与注册（dashboard-server D3）。
 显式注册（`add_project`）为扫描的补充，可纳入扫描范围之外的路径。
 """
 
+import errno
+import logging
+import errno
+import logging
 import os
 import yaml
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8787
 DEFAULT_CONFIG = Path.home() / ".config" / "fenixd" / "dashboard.yaml"
@@ -41,6 +49,54 @@ class Registry:
             return str(Path(path).expanduser().resolve())
         except (OSError, RuntimeError):
             return str(Path(path).expanduser())
+
+    # ── 子目录探测（容错三态：present / absent / unreadable）──────────
+
+    _PROBE_PRESENT = "present"
+    _PROBE_ABSENT = "absent"
+    _PROBE_UNREADABLE = "unreadable"
+
+    # pathlib.Path.is_file()/_is_dir() 内部只吞 ENOENT/ENOTDIR/EBADF/ELOOP，
+    # 但 EIO 等其它 OSError 会直接上抛。这里显式捕获以区分「正常不存在」与「不可读」。
+    _ABSENT_ERRNOS = {errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP}
+
+    def probe_child(self, child: Path) -> str:
+        """对扫描候选子目录执行 is_dir() + .fenix/STATE.md is_file() 探测。
+
+        返回三态：
+          present    —— 是目录且存在 .fenix/STATE.md（Fenixd 项目）
+          absent     —— 正常不存在（非目录，或缺少 STATE.md），静默
+          unreadable —— 探测抛 OSError（含 EIO），写 WARNING 日志后跳过
+
+        实现须显式 try/except OSError——MUST NOT 依赖 pathlib 默认吞异常
+        （其 _IGNORED_ERROS 不含 EIO，EIO 会直接上抛）。
+        """
+        # 目录类型判断
+        try:
+            if not child.is_dir():
+                return self._PROBE_ABSENT
+        except OSError as exc:
+            return self._log_unreadable(child, exc)
+
+        # .fenix/STATE.md 存在性探测
+        state_path = child / ".fenix" / "STATE.md"
+        try:
+            if not state_path.is_file():
+                return self._PROBE_ABSENT
+        except OSError as exc:
+            return self._log_unreadable(child, exc)
+
+        return self._PROBE_PRESENT
+
+    @staticmethod
+    def _log_unreadable(path: Path, exc: OSError) -> str:
+        """对「不可读」子目录写一条 WARNING 日志并返回 unreadable 三态。"""
+        errno_code = errno.errorcode.get(exc.errno, "?")
+        logger.warning(
+            "发现层跳过不可读路径 %s（%s, errno=%s）: %s",
+            path, errno_code, exc.errno, exc,
+        )
+        return Registry._PROBE_UNREADABLE
 
     # ── 配置读写 ─────────────────────────────────────────────
 
@@ -121,26 +177,31 @@ class Registry:
             scan_dirs = [str(Path.home())]
         for sd in scan_dirs:
             base = Path(sd).expanduser()
-            if not base.is_dir():
+            try:
+                if not base.is_dir():
+                    continue
+            except OSError:
                 continue
             try:
                 children = sorted(base.iterdir())
             except OSError:
+                # 扫描根整体不可读：跳过该根，继续处理其余扫描根与显式项目
                 continue
             for child in children:
-                if not child.is_dir():
-                    continue
-                if not (child / ".fenix" / "STATE.md").is_file():
-                    continue
-                rp = child.resolve()
-                key = str(rp)
+                # 忽略过滤前置：任何可能抛 OSError 的探测之前先短路，
+                # 使软删除对不可读路径同样生效（写侧与读侧共用 _norm）。
+                key = self._norm(child)
                 if key in ignored:
                     continue
                 if key in seen:
                     continue
+                # 三态探测：present（Fenixd 项目）/ absent（静默跳过）/
+                # unreadable（写 WARNING 日志后跳过），均不中断整体发现。
+                if self.probe_child(child) != self._PROBE_PRESENT:
+                    continue
                 seen.add(key)
                 projects.append({
-                    "name": rp.name or key,
+                    "name": child.name or key,
                     "path": key,
                     "discovered": True,
                     "exists": True,

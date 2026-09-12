@@ -1,5 +1,5 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Alert, Card, Space, Spin } from 'antd';
+import { Alert, Button, Card, Space, Spin } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
 import { getOverview } from '@/services/dashboard';
 import type { OverviewData } from '@/services/dashboard';
@@ -22,6 +22,8 @@ export default function OverviewPage() {
       setData(d);
       setError('');
     } catch (e) {
+      // fix-dashboard-fault-isolation 3.1：请求失败 MUST NOT 清空已成功加载的
+      // data——错误提示叠加在既有数据之上，刷新失败不清空已展示的项目卡片与 totals
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
@@ -72,6 +74,11 @@ export default function OverviewPage() {
           style={{ marginBottom: 16 }}
           message="概览数据加载失败"
           description={error}
+          action={
+            <Button size="small" onClick={() => void load()}>
+              重试
+            </Button>
+          }
         />
       ) : null}
 

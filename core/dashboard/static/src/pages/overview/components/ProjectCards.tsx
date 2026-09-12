@@ -116,6 +116,11 @@ export default function ProjectCards({
   };
 
   const menuItems = (project: ProjectSummary) => {
+    // fix-dashboard-fault-isolation 3.3：错误态项目（摘要带非空 error）内容不可读，
+    // 禁 start/stop/install 操作，仅保留「进入」与「删除」（删除 = 软删除逃生通道）。
+    if (project.error) {
+      return [{ key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true }];
+    }
     const running = project.daemon === 'running';
     const items = project.exists
       ? [
@@ -187,6 +192,63 @@ export default function ProjectCards({
         itemLayout="horizontal"
         dataSource={filtered}
         renderItem={(project) => {
+          // fix-dashboard-fault-isolation 3.3：项目级错误态——摘要携带非空 error 时
+          // 呈现警示色错误卡片（不渲染 daemon 徽标 / 状态 Tag / 进度数字），
+          // 卡片 MUST 仍出现在概览中，作为「该项目当前不可用」的可见信号。
+          if (project.error) {
+            return (
+              <List.Item
+                actions={[
+                  <Button
+                    key="enter"
+                    type="link"
+                    size="small"
+                    className="touch-expand"
+                    onClick={() => history.push(`/projects/${encodeURIComponent(project.name)}`)}
+                  >
+                    进入
+                  </Button>,
+                  <Dropdown
+                    key="more"
+                    menu={{ items: menuItems(project), onClick: ({ key }) => onMenuClick(project, key) }}
+                    placement="bottomRight"
+                    trigger={['click']}
+                  >
+                    <Button type="link" size="small" icon={<MoreOutlined />} className="touch-expand">
+                      更多
+                    </Button>
+                  </Dropdown>,
+                ]}
+              >
+                <List.Item.Meta
+                  avatar={
+                    <Avatar
+                      shape="square"
+                      icon={<FolderOutlined />}
+                      style={{ backgroundColor: '#fff1f0', color: '#ff4d4f' }}
+                    />
+                  }
+                  title={
+                    <Space wrap size={10}>
+                      <Typography.Text strong>{project.name}</Typography.Text>
+                      <OutlinedTag tone="critical" filled>项目错误</OutlinedTag>
+                      {project.discovered ? <OutlinedTag tone="muted" filled>自动发现</OutlinedTag> : null}
+                    </Space>
+                  }
+                  description={
+                    <div>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {project.path}
+                      </Typography.Text>
+                      <Typography.Text type="danger" style={{ display: 'block', fontSize: 12 }}>
+                        {project.error}
+                      </Typography.Text>
+                    </div>
+                  }
+                />
+              </List.Item>
+            );
+          }
           const running = project.daemon === 'running';
           const progress = pct(project.task_done, project.task_total);
           const statusTags = Object.entries(project.status_counts || {}).map(([st, n]) => {
