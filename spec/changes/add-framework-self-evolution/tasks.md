@@ -115,4 +115,4 @@
 - [x] 9.2 `tests/test_self_evolution.py`：覆盖就绪扫描五分支（状态文件缺失 / `last_run_at` 非法 / 不晚于水位 / todo.md 缺失或空白 / 就绪）、非自托管宿主不启用、分析 run 失败（替身返回失败）时水位不推进且写 WARNING 告警、检查点内部抛异常时主循环不中断。
 - [x] 9.3 `tests/test_self_evolution.py`：覆盖接受/拒绝路径——`draft_failed`（lint violation / 缺文档 / 非法 name）时草稿目录被删除且不落 `spec/changes/`；接受成功落地提交与注册（用临时 git 仓库 + 临时 STATE）、重名加后缀、提交失败不注册且可重试、重复接受幂等、拒绝越界路径（符号链接）不被删除、已接受条目不可拒绝。
 - [x] 9.4 `tests/test_self_evolution.py`：覆盖自动接受——开关为真时全部 `pending` 被接受且 `decided_by=auto`、单条失败不影响其余、`analyzed` 与 `draft_failed` 不受影响、开关为假时保持 `pending`。
-- [ ] 9.5 全量回归：`python3 -m pytest tests/ -q` 全绿（重点确认 `tests/test_stale_code_selfheal.py`、`tests/test_daily_self_review.py`、`tests/test_dashboard_todo_api.py`、`tests/test_system_settings_config.py` 不受影响），并在主树重建 dashboard 产物。
+- [x] 9.5 全量回归：`python3 -m pytest tests/ -q` 全绿（重点确认 `tests/test_stale_code_selfheal.py`、`tests/test_daily_self_review.py`、`tests/test_dashboard_todo_api.py`、`tests/test_system_settings_config.py` 不受影响），并在主树重建 dashboard 产物。
