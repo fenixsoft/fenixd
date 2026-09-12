@@ -111,11 +111,12 @@ def _clear_preserve_sidecar() -> None:
         pass
 
 
-# ── 代码陈旧检测（improve-hot-reload-robustness D4）────────────────────
+# ── 代码陈旧检测（improve-hot-reload-robustness D4 / add-stale-code-selfheal）─
 # daemon 启动后代码更新（rsync/patch/checkout/未提交修改）时，进程内校验规则
 # 可能是旧版；以 mtime 指纹判定并在热重载检测点提示重启。mtime 覆盖 git
 # rev-parse 覆盖不了的未提交修改，worktree 友好；误报面仅"touch 无内容变化"。
-_CODE_STALE_WARNED = False  # 每进程生命周期只提示一次（模块级旗标）
+# add-stale-code-selfheal：愈发渲染为持续状态 self._code_stale（每检测周期重算），
+# 不再用模块级一次性旗标——命中后保持可见（escalation 告警），并驱动空闲自愈。
 
 
 def code_tracked_files(project_root) -> list:
@@ -179,6 +180,13 @@ class FenixDaemon:
         self._admin_pool_stats = {"submitted": 0, "completed": 0, "failed": 0}
         self.pm_engine = None
         self.hook_engine = None
+        # 代码陈旧持续状态（add-stale-code-selfheal D1）：每检测周期重算的
+        # self._code_stale 取代「每进程一次性提示」的模块级旗标；为真期间保持
+        # 可见（WARNING 仅状态边沿落一次 + 未处置 escalation 告警去重），并作为
+        # 空闲自愈触发的前置。_stale_idle_since 为连续空闲计时起点（None=未开始）。
+        self._code_stale = False
+        self._stale_idle_since = None
+        self._heal_block_reason = None
         # 收口幂等守卫（fix-supervisor-hosting-chain 验证修复 BUG-01）：supervisor
         # 见 stop flag 会主动 SIGTERM daemon（停止协作），与 stop_daemon 的 SIGTERM
         # 可能叠加成双重信号。Python 信号处理器在字节码边界打断主线程——若在第一次
@@ -418,6 +426,13 @@ class FenixDaemon:
                     self._check_admin_invoke_requests()
                 except Exception as e:
                     self.logger.error("fenixd", f"admin_invoke pickup failed: {e}")
+                # 陈旧自愈触发（add-stale-code-selfheal 2.2）：主循环 1s 粒度累计
+                # 连续空闲时长，达到 idle_confirm_seconds 后 touch restart_request。
+                # 异常捕获记日志不中断主循环（同其它轮询项模式）。
+                try:
+                    self._maybe_stale_selfheal_tick()
+                except Exception as e:
+                    self.logger.error("fenixd", f"Stale-code selfheal check failed: {e}")
                 # run 人工取消文件信号拾取（add-run-cancel D5）：
                 # dashboard 写入 .fenix/cancel_run_request.json，主循环下一轮
                 # 消费并调 agent_runner.cancel_run（只设旗标，微秒级，不投 worker 池）。
@@ -547,10 +562,11 @@ class FenixDaemon:
         """配置文件 mtime 变化时热加载：原地更新共享 config dict，组件自动看到新值。
 
         校验失败保留旧值并告警；成功则刷新 admin_cfg 快照。每次调用顺带执行
-        代码陈旧检测（improve-hot-reload-robustness tasks 2.3）：磁盘代码 mtime
-        超启动 baseline → 每进程一次 WARNING 提示重启。
+        代码陈旧检测（improve-hot-reload-robustness tasks 2.3 → add-stale-code-
+        selfheal 1.1）：磁盘代码 mtime 超启动 baseline → 更新持续状态
+        self._code_stale（每周期重算，不再一次性置位后永久静默）。
         """
-        self._warn_stale_code_once()
+        self._update_stale_code_state()
         current = self._config_mtimes()
         if current == getattr(self, "_config_snapshot", None):
             return
@@ -574,16 +590,18 @@ class FenixDaemon:
             "Configuration hot-reloaded (user/project config.yaml changed)",
         )
 
-    def _warn_stale_code_once(self):
-        """磁盘代码较启动 baseline 更新 → 提示重启（每进程生命周期一次）。
+    def _update_stale_code_state(self):
+        """代码陈旧持续状态更新（add-stale-code-selfheal 1.1/1.2/1.3）。
 
-        improve-hot-reload-robustness tasks 2.3 / D4：进程内校验规则可能为旧版，
-        未知键白名单等演进不会自动生效，需重启 daemon。mtime 指纹误报面仅
-        "touch 无内容变化"，且每进程只提示一次，噪音可控。
+        每检测周期（既有 30s 配置热更新检测点）重算 self._code_stale：磁盘代码
+        mtime 超启动 baseline → 为真；否则为假。取代「命中后永久跳过检测」的
+        一次性旗标语义，按状态边沿记录：
+          - 假→真：落一次 WARNING（保留 improve-hot-reload-robustness D4 文案），
+            并经 AdminStore 写入一条 signal_type: stale_code 的 escalation 告警
+            （同类型未处置去重，不重复堆积）——陈旧成为 dashboard 可见的持续状态。
+          - 真→假：记录状态解除（重启后新进程 baseline 刷新，或磁盘代码回退），
+            不产生新告警；既有未处置告警可经既有处置流程关闭。
         """
-        global _CODE_STALE_WARNED
-        if _CODE_STALE_WARNED:
-            return
         baseline = getattr(self, "_code_baseline_ns", None)
         files = getattr(self, "_code_files", None)
         if baseline is None or not files:
@@ -592,15 +610,162 @@ class FenixDaemon:
             changed = code_files_changed_since(baseline, files)
         except Exception:  # noqa: BLE001 — 陈旧检测非关键路径，失败静默跳过
             return
-        if not changed:
+        if changed == self._code_stale:
             return
-        _CODE_STALE_WARNED = True
-        self.logger.warning(
-            "fenixd",
-            "检测到磁盘代码较进程启动时已更新（fenixd.py/core/**/*.py mtime 超 "
-            "baseline），进程内校验规则可能为旧版，建议重启 daemon 生效"
-            "（touch .fenix/restart_request）",
-        )
+        self._code_stale = changed
+        if changed:
+            self.logger.warning(
+                "fenixd",
+                "检测到磁盘代码较进程启动时已更新（fenixd.py/core/**/*.py mtime 超 "
+                "baseline），进程内校验规则可能为旧版，建议重启 daemon 生效"
+                "（touch .fenix/restart_request）——stale_code_selfheal 启用时将在"
+                "连续空闲后自动触发重启",
+            )
+            try:
+                if self.admin_store is not None:
+                    # 同类型未处置告警去重（复用 supervisor_missing 告警范式）
+                    if self.admin_store.unhandled_for(None, "stale_code") is None:
+                        self.admin_store.append({
+                            "kind": ESCALATION,
+                            "signal_type": "stale_code",
+                            "spec": None,
+                            "severity": "major",
+                            "description": (
+                                "daemon 进程持旧代码，自愈将在连续空闲后触发重启"
+                                "（stale_code_selfheal 配置启用时）"
+                            ),
+                            "evidence": (
+                                "fenixd 30s 检测点：fenixd.py/core/**/*.py mtime "
+                                "超进程启动 baseline"
+                            ),
+                            "action_taken": "fenixd 陈旧检测命中，升级人工（等待空闲自愈）",
+                            "recommended_action": (
+                                "无需人工干预：连续空闲达到 "
+                                "stale_code_selfheal.idle_confirm_seconds 后自适应重启；"
+                                "如需立即生效可 touch .fenix/restart_request 或手动重启 "
+                                "daemon；关闭自愈见 stale_code_selfheal.enabled"
+                            ),
+                        })
+            except Exception as e:
+                self.logger.warning(
+                    "fenixd", f"stale_code 告警写入失败（non-blocking）: {e}")
+        else:
+            self.logger.info(
+                "fenixd",
+                "代码陈旧状态解除：磁盘代码与进程运行代码已一致（重启后新 baseline 或磁盘回退）",
+            )
+
+    def _is_idle(self) -> bool:
+        """空闲判定（add-stale-code-selfheal D2）：双源内部状态，不依赖外部进程扫描。
+
+        「空闲」= agent_runner 无活跃 run（_active_runs == 0，覆盖 planner /
+        implementer / verifier / judge 全部 run 形态）**且** admin 处置 worker 池
+        无在途任务。任一非零即判非空闲；_admin_executor 为 None（admin.workers=0
+        同步回退）时该维度视为空闲。admin 池在途数 = submitted - completed -
+        failed（_admin_pool_stats 计数，独立成法便于单测隔离）。
+        """
+        if self.pm_engine is not None:
+            try:
+                if self.pm_engine._active_runs != 0:  # noqa: SLF001 — 既有内部状态复用
+                    return False
+            except Exception:
+                return False  # 内部状态不可读按非空闲处理，宁紧勿松
+        if self._admin_executor is not None:
+            with self._admin_pool_lock:
+                stats = dict(self._admin_pool_stats)
+            if stats["submitted"] - stats["completed"] - stats["failed"] > 0:
+                return False
+        return True
+
+    def _maybe_stale_selfheal_tick(self) -> None:
+        """陈旧自愈触发（add-stale-code-selfheal 2.2/2.3，主循环 1s 粒度轮询）。
+
+        前置：self._code_stale 为真 + stale_code_selfheal.enabled 为真 + 项目受
+        supervisor 托管（supervisor_running）且 .fenix/restart_request 不在册。
+        满足前置且空闲时累计连续空闲时长，达到 idle_confirm_seconds 后 touch
+        .fenix/restart_request（复用既有 supervisor 优雅重启协议，不改变协议
+        语义）并记录触发日志（含触发原因与等待时长）。任一阻断/非空闲信号
+        出现立即清零计时。阻断原因按状态边沿记日志（原因变化时打一次），
+        不刷屏。
+        """
+        req = PROJECT_ROOT / ".fenix" / "restart_request"
+        if not self._code_stale:
+            # 状态解除：清零计时与边沿记忆，恢复正常
+            self._stale_idle_since = None
+            self._heal_block_reason = None
+            return
+
+        # 阻断原因判定（边沿日志：仅原因变化时打一次明示，避免 1s 粒度刷屏）
+        reason = None
+        try:
+            cfg = ConfigLoader.get_stale_code_selfheal_config(self.config)
+        except Exception:  # noqa: BLE001 — 配置读取异常按缺省启用处理
+            cfg = {"enabled": True, "idle_confirm_seconds": 120}
+        enabled, confirm_seconds = bool(cfg.get("enabled", True)), cfg.get(
+            "idle_confirm_seconds", 120)
+        if not enabled:
+            reason = "disabled"
+        elif req.exists():
+            reason = "in-flight"
+        else:
+            try:
+                from core.fenix_session import supervisor_running
+                supervised = supervisor_running(PROJECT_ROOT)
+            except Exception:
+                supervised = False  # /proc 不可读等：按未托管处理，宁紧勿松
+            if not supervised:
+                reason = "unmanaged"
+
+        if reason is not None:
+            # 阻断 → 清零空闲计时；边沿日志明示原因
+            if reason != self._heal_block_reason:
+                self._heal_block_reason = reason
+                if reason == "disabled":
+                    self.logger.info(
+                        "fenixd",
+                        "陈旧自愈已被配置关闭（stale_code_selfheal.enabled: false），"
+                        "不触发重启（陈旧状态与告警仍保持）",
+                    )
+                elif reason == "unmanaged":
+                    self.logger.info(
+                        "fenixd",
+                        "未受 supervisor 托管，自愈跳过（restart_request 无人消费，"
+                        "陈旧告警维持，等待恢复托管）",
+                    )
+                else:  # in-flight
+                    self.logger.info(
+                        "fenixd",
+                        "restart_request 已在，重启在途，自愈不重复写入",
+                    )
+            self._stale_idle_since = None
+            return
+
+        self._heal_block_reason = None
+        if not self._is_idle():
+            # 任一非空闲信号（活跃 run / admin 在途）出现 → 立即清零计时
+            self._stale_idle_since = None
+            return
+
+        now = time.time()
+        if self._stale_idle_since is None:
+            self._stale_idle_since = now
+            return
+        waited = now - self._stale_idle_since
+        if waited >= confirm_seconds:
+            try:
+                req.parent.mkdir(parents=True, exist_ok=True)
+                req.write_text(
+                    datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
+                self.logger.warning(
+                    "fenixd",
+                    f"陈旧自愈触发：daemon 持旧代码且连续空闲 {waited:.0f}s"
+                    f"（阈值 {confirm_seconds}s），已 touch .fenix/restart_request，"
+                    "supervisor 将执行优雅重启使新代码生效",
+                )
+            except OSError as e:
+                self.logger.error("fenixd", f"restart_request 写入失败: {e}")
+            finally:
+                self._stale_idle_since = None
 
     def _admin_monitor_loop(self):
         """周期运行健康检查（间隔 admin.interval_minutes）。

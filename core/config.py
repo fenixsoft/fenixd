@@ -909,6 +909,46 @@ class ConfigLoader:
             "self_review": cls.get_self_review_config(config),
         }
 
+    # ── 陈旧自愈配置（add-stale-code-selfheal D5）──────────────────────
+    # stale_code_selfheal 节两键缺省：enabled 默认开启（本项目陈旧是常态，默认
+    # 关闭等于把问题留给用户发现；风险由 supervisor 熔断兜底、由开关提供退出
+    # 通道）；idle_confirm_seconds 对齐 restart-daemon-when-idle.py 既有双轮
+    # 确认取值 120s（已在实践中验证过防零活跃窗口竞态）。
+    STALE_CODE_SELFHEAL_ENABLED_DEFAULT = True
+    STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT = 120
+    STALE_CODE_SELFHEAL_MAX_SECONDS = 86400  # 仅建议上界（警告不拒绝），保持读取宽容语义
+
+    @classmethod
+    def get_stale_code_selfheal_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the ``stale_code_selfheal`` 段，缺失/非法值回退缺省。
+
+        - enabled: 布尔，缺省 True（非布尔回退缺省——布尔缺省语义下非法即用缺省）
+        - idle_confirm_seconds: 正整数秒，缺省 120（非整数/负数/0 回退缺省；
+          bool 是 int 子类须显式排除）
+
+        节缺失、键缺失或值非法时不抛异常、不使 daemon 启动失败；读取走既有
+        config 对象，30s 配置热更新自然生效（下一检测周期起采用新值）。
+        """
+        section = config.get("stale_code_selfheal")
+        if not isinstance(section, dict):
+            section = {}
+        enabled = section.get("enabled", cls.STALE_CODE_SELFHEAL_ENABLED_DEFAULT)
+        if not isinstance(enabled, bool):
+            enabled = cls.STALE_CODE_SELFHEAL_ENABLED_DEFAULT
+        seconds = section.get(
+            "idle_confirm_seconds", cls.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT)
+        if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+                or seconds <= 0):
+            seconds = cls.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT
+        seconds = int(seconds)
+        if seconds > cls.STALE_CODE_SELFHEAL_MAX_SECONDS:
+            _logger.warning(
+                "stale_code_selfheal.idle_confirm_seconds 过大 (%ss，建议 ≤ %s)："
+                "自愈将在长时间空闲后才触发（不拒绝，按配置生效）",
+                seconds, cls.STALE_CODE_SELFHEAL_MAX_SECONDS,
+            )
+        return {"enabled": enabled, "idle_confirm_seconds": seconds}
+
     @classmethod
     def get_self_review_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
         """Return the ``admin.self_review.*`` 段，缺失项填默认值。

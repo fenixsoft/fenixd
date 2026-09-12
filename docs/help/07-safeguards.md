@@ -88,6 +88,14 @@ daemon 由 `fenixd_supervisor.py` 托管的完整重启协议是自愈链路的�
 
 **唯一托管启动路径与托管态**：daemon 的唯一合法启动路径是经 supervisor 托管——`/fenix-setup` 第 7 步与 Dashboard 项目页「启动」均在项目唯一 tmux session 内拉起 `fenixd_supervisor.py --project-root <根>`，tmux 仅承担脱离终端，daemon 是 supervisor 的子进程。停止语义为「写 `.fenix/stop` → SIGTERM daemon → supervisor 收口退出」。daemon 运行状态分三态：`managed`（受托管）、`unmanaged`（裸 daemon——进程在跑但无 supervisor，restart_request 无人消费，需经 Dashboard「安装托管」或 `/fenix-setup` 恢复）、`stopped`（未运行）。daemon 启动自检在托管缺失时落 `supervisor_missing` 告警并升级人工。
 
+### 代码陈旧自愈与启动失败熔断
+
+daemon 进程持有的是启动时刻的代码副本（Python import 后不重载磁盘文件），在自我开发场景下「代码陈旧」是常态而非异常。陈旧检测（`fenixd.py` 每 30s 检测点比对 `fenixd.py` + `core/**/*.py` mtime 与启动 baseline）是持续状态而非一次性事件：命中后保持 `self._code_stale` 为真、落一条 `signal_type: stale_code` 的 escalation 告警（未处置去重，运维记录页可见），直到重启刷新 baseline 或磁盘代码回退才解除。
+
+陈旧自愈的触发条件是**同时**满足：陈旧为真、`stale_code_selfheal.enabled` 为真（缺省开启）、项目受 supervisor 托管（`managed`）、`.fenix/restart_request` 不在册。空闲判定口径是**同时**满足：`agent_runner` 无活跃 run（planner / implementer / verifier / judge 全部形态均在 `_active_runs` 内）且 admin 处置 worker 池无在途任务（worker 池未启用时该维度视为空闲），任一非零即判非空闲，倒逼计时清零。连续空闲达到 `stale_code_selfheal.idle_confirm_seconds`（缺省 120s）后 daemon touch `.fenix/restart_request`，supervisor 执行的仍是既有优雅重启协议（restart_request 协议本身不变）。未托管项目（`unmanaged`）不自愈——`restart_request` 无人消费，写了即死信，此时仅维持陈旧告警，交由 Dashboard「安装托管」或 `/fenix-setup` 的安装托管路径处置。
+
+自动重启会把新代码引入运行中的系统：若新代码无法启动，supervisor 的启动失败熔断兜底——daemon 启动后 60 秒内退出计为一次启动失败，连续 3 次失败时停止自动拉起，写熔断标记 `.fenix/supervisor_fused`（独立文件，含时间戳/失败次数/自身 pid，便于手工删除），在 `supervisor.log` 落 critical 记录并经既有告警通道产出 `severity: critical` 的 `supervisor_fused` 告警。人工恢复路径：修复代码 → 删除 `.fenix/supervisor_fused` → 重启 supervisor；或直接重启 supervisor 进程（计数与熔断不被新进程继承）。daemon 存活超过 60 秒重置连续失败计数为 0，容忍偶发的单次启动抖动。配置关停（`stale_code_selfheal.enabled: false`）是另一个退出通道：此时陈旧状态与告警仍产生（正确的长期提醒，因为陈旧确实是持续缺陷），只是不再自动触发重启。
+
 ## 告警系统：自愈无法覆盖时升级人工
 
 前四类机制覆盖了大多数异常，但有些情况无法自动化处理：merge 冲突的根因是 git 历史分歧、SPEC 卡在 `blocked` 状态且自动恢复无效、同一 SPEC 反复失败但每次失败原因不同。这些场景需要人工介入，告警系统就是把框架无法解决的问题升级给人的通道。

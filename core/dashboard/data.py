@@ -3906,7 +3906,10 @@ _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "agents.transient_redispatch_delay_seconds",
                 "agents.transient_break_threshold",
                 "agents.transient_break_window_seconds",
-                "agents.transient_break_cooldown_seconds"]
+                "agents.transient_break_cooldown_seconds",
+                # add-stale-code-selfheal：陈旧自愈配置节两键
+                "stale_code_selfheal.enabled",
+                "stale_code_selfheal.idle_confirm_seconds"]
 
 # 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
 # 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
@@ -3980,6 +3983,13 @@ def _managed_key_sources(raw: dict) -> dict:
     # add-spec-hooks：hooks 段显式定义 → project
     if isinstance(raw.get("hooks"), dict):
         sources["hooks"] = "project"
+    # add-stale-code-selfheal：stale_code_selfheal 节显式定义 → project
+    scs_raw = raw.get("stale_code_selfheal")
+    if isinstance(scs_raw, dict):
+        if "enabled" in scs_raw:
+            sources["stale_code_selfheal.enabled"] = "project"
+        if "idle_confirm_seconds" in scs_raw:
+            sources["stale_code_selfheal.idle_confirm_seconds"] = "project"
     return sources
 
 
@@ -4055,6 +4065,8 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "admin": dict(_ADMIN_DEFAULTS, merge_breaker_threshold=2),
         # add-spec-hooks：两级 hook 订阅配置（缺省空订阅，零行为）
         "hooks": {"global": [], "specs": {}},
+        # add-stale-code-selfheal：陈旧自愈配置节（enabled 缺省 true / idle_confirm_seconds 缺省 120）
+        "stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 120},
         "scope": scope,
         "raw_exists": False,
         "sources": _managed_key_sources({}),
@@ -4156,6 +4168,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
     hooks_raw = raw.get("hooks")
     if isinstance(hooks_raw, dict):
         result["hooks"] = hooks_raw
+    # add-stale-code-selfheal：陈旧自愈节回显（经 ConfigLoader 生效值——非法值
+    # 回退缺省，回显与生效值一致）
+    from core.config import ConfigLoader as _CLSC
+    result["stale_code_selfheal"] = _CLSC.get_stale_code_selfheal_config(raw)
     return result
 
 
@@ -4214,6 +4230,8 @@ def read_effective_config(project_root) -> dict:
         "admin": dict(_ADMIN_DEFAULTS, merge_breaker_threshold=2),
         # add-spec-hooks：两级 hook 订阅配置（缺省空订阅，零行为）
         "hooks": {"global": [], "specs": {}},
+        # add-stale-code-selfheal：陈旧自愈配置节（enabled 缺省 true / idle_confirm_seconds 缺省 120）
+        "stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 120},
         "scope": "project",
         "raw_exists": proj_path.exists(),
         "sources": _managed_key_sources({}),
@@ -4314,6 +4332,9 @@ def read_effective_config(project_root) -> dict:
     hooks_eff = effective.get("hooks")
     if isinstance(hooks_eff, dict):
         result["hooks"] = hooks_eff
+    # add-stale-code-selfheal：陈旧自愈节有效值回显（经生效助手取值——非法值
+    # 回退缺省，设置页回显与生效值一致）
+    result["stale_code_selfheal"] = ConfigLoader.get_stale_code_selfheal_config(effective)
 
     # 提取 project.description → 顶层 description（非 str 或缺失 → ""）
     project_eff = effective.get("project")
@@ -4448,6 +4469,16 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     # add-spec-hooks：hooks 段整体替换（patch 中存在即替换，不存在则保留原段）
     if "hooks" in patch:
         merged["hooks"] = copy.deepcopy(patch["hooks"])
+    # add-stale-code-selfheal：stale_code_selfheal 节两键合并（前置校验已拒绝
+    # 非法值，此处只应用合法值；缺省透传由 get_stale_code_selfheal_config 兜底）
+    if "stale_code_selfheal" in patch and isinstance(patch["stale_code_selfheal"], dict):
+        if not isinstance(merged.get("stale_code_selfheal"), dict):
+            merged["stale_code_selfheal"] = {}
+        scs = patch["stale_code_selfheal"]
+        if "enabled" in scs:
+            merged["stale_code_selfheal"]["enabled"] = scs["enabled"]
+        if "idle_confirm_seconds" in scs:
+            merged["stale_code_selfheal"]["idle_confirm_seconds"] = scs["idle_confirm_seconds"]
 
     return merged
 
@@ -4594,6 +4625,23 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         hooks_err = validate_hooks_config(config_patch)
         if hooks_err:
             return fail(f"hooks 配置非法：{hooks_err}")
+
+    # add-stale-code-selfheal：stale_code_selfheal 两键前置校验（非法值直接拒绝
+    # 400，不静默忽略——与 verify/self_review/admin 同模式，前端类型错误在后端
+    # 权威兜底）。
+    if isinstance(config_patch.get("stale_code_selfheal"), dict):
+        scs = config_patch["stale_code_selfheal"]
+        if "enabled" in scs and scs["enabled"] is not None \
+                and not isinstance(scs["enabled"], bool):
+            return fail(f"stale_code_selfheal.enabled must be a boolean: {scs['enabled']!r}")
+        if "idle_confirm_seconds" in scs and scs["idle_confirm_seconds"] is not None:
+            _scs_v = scs["idle_confirm_seconds"]
+            if isinstance(_scs_v, bool) or not isinstance(_scs_v, (int, float)) \
+                    or _scs_v <= 0:
+                return fail(
+                    f"stale_code_selfheal.idle_confirm_seconds must be a positive "
+                    f"integer: {_scs_v!r}"
+                )
 
     # 2. 合并受管键
     merged = _deep_merge_managed(raw, config_patch)
@@ -4797,6 +4845,22 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             _err = _validate_hooks(merged)
             if _err:
                 raise ValueError(f"hooks 配置非法：{_err}")
+        # add-stale-code-selfheal：merged 视图校验（兜底防绕过前置校验的直连调用，
+        # 与 hooks 同模式）
+        scs_m = merged.get("stale_code_selfheal")
+        if isinstance(scs_m, dict):
+            if "enabled" in scs_m and scs_m["enabled"] is not None \
+                    and not isinstance(scs_m["enabled"], bool):
+                raise ValueError(
+                    f"stale_code_selfheal.enabled must be a boolean: {scs_m['enabled']!r}"
+                )
+            if "idle_confirm_seconds" in scs_m and scs_m["idle_confirm_seconds"] is not None:
+                _sv = scs_m["idle_confirm_seconds"]
+                if isinstance(_sv, bool) or not isinstance(_sv, (int, float)) or _sv <= 0:
+                    raise ValueError(
+                        f"stale_code_selfheal.idle_confirm_seconds must be a positive "
+                        f"integer: {_sv!r}"
+                    )
     except ValueError as e:
         return fail(str(e))
 

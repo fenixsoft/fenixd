@@ -1889,27 +1889,33 @@ class TestCodeStalenessDetection:
         assert _fenixd_mod.code_files_changed_since(baseline, files) is False
 
     def test_warn_stale_once_emits_and_dedups(self, tmp_path):
-        """_warn_stale_code_once：更新后提示一次，同进程内不重复。"""
-        _fenixd_mod._CODE_STALE_WARNED = False
-        try:
-            proot, files, baseline = _mk_code_proj(tmp_path)
-            daemon = _fenixd_mod.FenixDaemon.__new__(_fenixd_mod.FenixDaemon)
-            daemon._code_files = files
-            daemon._code_baseline_ns = baseline
-            daemon.logger = _RecordingLogger()
-            # 无变更 → 不提示
-            daemon._warn_stale_code_once()
-            assert daemon.logger.warnings == []
-            # core 文件更新 → 提示一次
-            os.utime(proot / "core" / "a.py", ns=(baseline + 5 * 10 ** 9, baseline + 5 * 10 ** 9))
-            daemon._warn_stale_code_once()
-            assert len(daemon.logger.warnings) == 1
-            assert "建议重启" in daemon.logger.warnings[0][1]
-            # 再次调用 → 去重静默
-            daemon._warn_stale_code_once()
-            assert len(daemon.logger.warnings) == 1
-        finally:
-            _fenixd_mod._CODE_STALE_WARNED = False
+        """_update_stale_code_state：更新后提示一次 WARNING，持续为真期间不重复。
+
+        add-stale-code-selfheal 1.1/1.2：一次性旗标升级为持续状态——状态由假转真
+        落一次 WARNING（告警写入在此测试中跳过：admin_store=None），状态保持为真
+        期间不重复刷日志。
+        """
+        proot, files, baseline = _mk_code_proj(tmp_path)
+        daemon = _fenixd_mod.FenixDaemon.__new__(_fenixd_mod.FenixDaemon)
+        daemon._code_files = files
+        daemon._code_baseline_ns = baseline
+        daemon._code_stale = False
+        daemon.admin_store = None
+        daemon.logger = _RecordingLogger()
+        # 无变更 → 状态为假、不提示
+        daemon._update_stale_code_state()
+        assert daemon._code_stale is False
+        assert daemon.logger.warnings == []
+        # core 文件更新 → 状态转真、提示一次
+        os.utime(proot / "core" / "a.py", ns=(baseline + 5 * 10 ** 9, baseline + 5 * 10 ** 9))
+        daemon._update_stale_code_state()
+        assert daemon._code_stale is True
+        assert len(daemon.logger.warnings) == 1
+        assert "建议重启" in daemon.logger.warnings[0][1]
+        # 持续为真期间再次调用 → 不重复刷 WARNING
+        daemon._update_stale_code_state()
+        daemon._update_stale_code_state()
+        assert len(daemon.logger.warnings) == 1
 
 
 # ── improve-hot-reload-robustness：任务 5 验证（事故场景模拟 + 升级时序） ──
@@ -1952,7 +1958,8 @@ class TestAccidentScenarioSimulation:
         baseline = _fenixd_mod.max_code_mtime_ns(files)
         daemon._code_files = files
         daemon._code_baseline_ns = baseline
-        _fenixd_mod._CODE_STALE_WARNED = False
+        daemon._code_stale = False
+        daemon.admin_store = None
         _CL.reset_stuck_threshold_state()  # 清未知键去重集合，确保首告警可见
 
         # 配置校验降级告警走 Python logging（fenixd.config logger），挂 handler 捕获
@@ -1983,7 +1990,8 @@ class TestAccidentScenarioSimulation:
             # 同一未知键不重复刷屏（去重生效）
             deg2 = [m for m in cfg_records if "未知 agent 类型键" in m]
             assert len(deg2) == 1
-            # 陈旧检测 WARNING 出现且每进程一次
+            # 陈旧检测 WARNING：状态由假转真边沿出现一次，持续为真期间不重复
+            # （add-stale-code-selfheal：一次性旗标 → 持续状态边沿语义）
             stale = [w for w in daemon.logger.warnings if "建议重启" in w[1]]
             assert len(stale) == 1
             daemon._maybe_reload_config()

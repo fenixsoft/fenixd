@@ -200,6 +200,23 @@ supervisor 每次启动时原子覆写 `.fenix/supervisor_runtime.json`，供 da
 
 文件读取失败（缺字段/非 JSON）按「旧版 supervisor 进程」处理——打 WARNING，不中断 daemon 主流程。
 
+### stale_code_selfheal（代码陈旧自愈）
+
+本项目是自我开发的，daemon 进程持有的是启动时刻的代码副本——代码落地后进程内逻辑不自动更新，「代码陈旧」是常态而非异常。本配置节控制陈旧状态下的空闲感知自动重启：
+
+| 键 | 默认值 | 范围 | 生效方式 |
+|----|--------|------|---------|
+| enabled | `true` | bool | 热更新（下一检测周期生效） |
+| idle_confirm_seconds | `120` | 正整数秒（建议 ≤ 86400，过大仅警告不拒绝） | 热更新（下一检测周期生效） |
+
+```yaml
+stale_code_selfheal:
+  enabled: true        # 关闭后不再自动触发重启，但陈旧状态与告警仍产生
+  idle_confirm_seconds: 120
+```
+
+语义：daemon 每 30s 检测点比对 `fenixd.py` + `core/**/*.py` 的 mtime 与进程启动 baseline，命中即置「陈旧」持续状态，除日志 WARNING 外写一条 `signal_type: stale_code` 的 escalation 告警（同类型未处置去重，运维记录页可见）。当 陈旧为真 + `enabled: true` + 项目受 supervisor 托管 + 连续空闲达到 `idle_confirm_seconds`（空闲 = 无活跃 agent run 且无 admin 处置在途任务）时，daemon touch `.fenix/restart_request`，supervisor 执行优雅重启使新代码生效；重启后新 baseline 刷新，陈旧状态自然解除。任一活跃信号出现立即清零空闲计时。未受托管的项目（`unmanaged`）不自愈——`restart_request` 无人消费，写它只会制造死信，此时仅维持陈旧告警，等待经 Dashboard「安装托管」或 `/fenix-setup` 恢复托管。自动重启引入的新代码若无法启动，supervisor 会在连续 3 次启动后 60 秒内崩溃时熔断停止拉起并落 critical 告警，不会无限重启（见[保障机制](07-safeguards.md#代码陈旧自愈与启动失败熔断)）。
+
 ### pm.dispatch.aging / pm.family
 
 | 键 | 默认值 | 生效方式 |
@@ -328,6 +345,7 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 | 提示词管理 | agents/ 通用层 + .fenix/agents/ 项目级 |
 | 系统 | admin.enabled / admin.interval_minutes / admin.escalation_cooldown_minutes / admin.merge_breaker_threshold / admin.shutdown_drain_seconds |
 | 系统·瞬断治理 | agents.transient_backoff_schedule / agents.transient_redispatch_delay_seconds / agents.transient_break_threshold / agents.transient_break_window_seconds / agents.transient_break_cooldown_seconds |
+| 自愈 | stale_code_selfheal.enabled / stale_code_selfheal.idle_confirm_seconds |
 | Hook | hooks.global / hooks.specs.<spec 名>（两级订阅，见 [hooks](#hooks)） |
 
 ## 相关文档

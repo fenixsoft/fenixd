@@ -820,6 +820,15 @@ export interface AdminConfig {
   bug_repair_mode?: 'inplace' | 'derive';
 }
 
+// add-stale-code-selfheal：代码陈旧自愈配置节（enabled 缺省 true /
+// idle_confirm_seconds 缺省 120）
+export interface StaleCodeSelfhealConfig {
+  /** 陈旧自愈总开关（缺省 true）：陈旧 + 配置启用 + 托管 + 连续空闲达阈值 → 触发重启 */
+  enabled?: boolean;
+  /** 连续空闲确认秒数（缺省 120）：陈旧状态 + 启用 + 托管 + 空闲持续达到该时长后 touch restart_request */
+  idle_confirm_seconds?: number;
+}
+
 // ── SPEC 状态事件 hook 订阅（add-spec-hooks，存 .fenix/config.yaml hooks 段） ──
 
 export type HookAction =
@@ -889,6 +898,8 @@ export interface ConfigData {
   admin?: AdminConfig;
   /** add-spec-hooks：两级 hook 订阅配置（global + specs） */
   hooks?: HooksConfig;
+  /** add-stale-code-selfheal：代码陈旧自愈（enabled / idle_confirm_seconds） */
+  stale_code_selfheal?: StaleCodeSelfhealConfig;
   scope: 'user' | 'project';
   raw_exists: boolean;
   sources: Record<string, string>;

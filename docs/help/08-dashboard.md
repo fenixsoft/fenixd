@@ -52,7 +52,7 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 
 ### 设置页（/settings）
 
-设置页承担配置管理职责：分项目读写受管配置键（llm / agents.models / gates.approve_mode）；查看与编辑 verify.yaml 验证契约；查看/调整 token 预算与消耗；以及管理提示词：查看通用层 agents/ 提示词、编辑项目级附加提示词。「Hook」面板管理当前项目的全局 hooks（对所有 SPEC 生效），表单结构同 SPEC 详情页的 Hook 页签，并展示跨 SPEC 的最近执行记录。
+设置页承担配置管理职责：分项目读写受管配置键（llm / agents.models / gates.approve_mode）；查看与编辑 verify.yaml 验证契约；查看/调整 token 预算与消耗；以及管理提示词：查看通用层 agents/ 提示词、编辑项目级附加提示词。「Hook」面板管理当前项目的全局 hooks（对所有 SPEC 生效），表单结构同 SPEC 详情页的 Hook 页签，并展示跨 SPEC 的最近执行记录。「自愈」面板管理代码陈旧自愈（`stale_code_selfheal` 节）：`enabled` 开关（缺省开启）与 `idle_confirm_seconds` 连续空闲确认秒数（缺省 120），附语义说明——陈旧状态 + 启用 + 托管 + 连续空闲达到阈值后 daemon touch `.fenix/restart_request` 触发优雅重启；未托管项目不自愈、仅维持陈旧告警。保存走既有配置写回路径，非法值（非布尔 / 非正整数秒数）被后端拒绝返回可读错误。
 
 ### 运维记录页（/activities）
 
