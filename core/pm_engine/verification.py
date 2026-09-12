@@ -698,6 +698,15 @@ class VerificationPipeline:
                 continue
             srv = entry.get("server") if isinstance(entry, dict) else entry
             if srv is not None and getattr(srv, "base_url", ""):
+                # verify-process-lifecycle D6 配套：缓存实例可能已被
+                # serving_registry 周期清扫收割（spec 轮间回 implementing 时
+                # 「无在飞 spec」即杀进程）——对已死实例不得当作现存可达
+                # 实例返回，否则契约轻量自证/探针探死端口永久失败，
+                # 环境死循环（fix-dashboard-fault-isolation 实证）。
+                # StaticVerifyServer 无 ok 属性（线程驻留），getattr 默认
+                # True 保持原行为；CommandVerifyServer.ok 含进程 liveness。
+                if not getattr(srv, "ok", True):
+                    continue
                 return srv.base_url
         # 兜底 spawn（commands.start，无契约）：serving 登记里的端口
         try:

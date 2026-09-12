@@ -1103,6 +1103,38 @@ class TestServingRegistry(unittest.TestCase):
             proc.kill()
             proc.wait()
 
+    def test_current_instance_base_url_skips_harvested_server(self):
+        """收割后已死实例不得返回 base_url（fix-dashboard-fault-isolation 实证）。
+
+        serving_registry 周期清扫会在 spec 轮间回 implementing 时收割
+        「无在飞 spec」的命令实例（杀进程+移除登记），但 daemon 内存缓存
+        _contract_static_servers 仍持有该实例——_current_instance_base_url
+        若不检查 liveness 会把已死 URL 供给契约轻量自证/探针，导致
+        永久 Connection refused 的 env_block 死循环。
+        """
+        proc = self._spawn_sleep(30)
+        try:
+            fake = self.FakeCommandServer(proc)
+            fake.base_url = "http://127.0.0.1:18886"
+            fake.ok = False  # 模拟已收割：进程已死 / 已 stop
+            cache = self.engine._verification.__dict__.setdefault(
+                "_contract_static_servers", {})
+            cache["spec-harvested"] = {
+                "server": fake, "wt_path": "/w/verify-spec-harvested",
+                "head": "h", "mode": "command",
+            }
+            url = self.engine._verification._current_instance_base_url(
+                "spec-harvested")
+            assert url == "", "已死实例不得作为现存可达实例返回"
+            # 对照：存活实例正常返回
+            fake.ok = True
+            url = self.engine._verification._current_instance_base_url(
+                "spec-harvested")
+            assert url == fake.base_url
+        finally:
+            proc.kill()
+            proc.wait()
+
 
 # ═══════════════════════════════════════════════════════════════════
 # fix-verified-gate-evidence-race：per-spec 快照 + 门禁证据源 + fail-closed
