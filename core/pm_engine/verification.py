@@ -3261,8 +3261,8 @@ class VerificationPipeline:
             cost_note = (f"\n\n> 🪙 重新出题成本参考：{planner_cost}"
                          if planner_cost else "")
             error_msg = (
-                f"用户指令冻结（{title}连续 {rounds} 轮，admin 处置未奏效，"
-                f"转人工）：{'；'.join(violations[:3])}"
+                f"{FREEZE_ERROR_PREFIX}{title}连续 {rounds} 轮，"
+                f"admin 处置未奏效，转人工 — {'；'.join(violations[:3])}"
                 f"{cost_note}"
                 if frozen else
                 f"{title}（第 {rounds} 轮）：{'；'.join(violations[:3])}"

@@ -5,7 +5,11 @@ STATE.md（design D3 规则 3），本组件不持有实例状态。
 
 """
 
-from core.state_machine import BUDGET_EXEMPT_ALERTED_FIELD, BUDGET_EXEMPT_RUNS_FIELD
+from core.state_machine import (
+    BUDGET_EXEMPT_ALERTED_FIELD,
+    BUDGET_EXEMPT_RUNS_FIELD,
+    FROZEN_FIELD,
+)
 from pathlib import Path
 import json
 import re
@@ -290,8 +294,17 @@ class ImplBudget:
         """派发新一轮实现器前校验预算。
 
         已累计使用 ``_impl_run_budget_used >= agents.impl_run_budget`` 时触发闸门：
-        spec 置 blocked + human-escalation-alerts 告警（signal_type=impl_budget_exhausted，
-        含 spec、已耗次数、最近失败摘要），不再自动重派。返回 True 表示已冻结。
+        spec 置 blocked + 结构化 frozen 标记 + human-escalation-alerts 告警
+        （signal_type=impl_budget_exhausted，含 spec、已耗次数、最近失败摘要），
+        不再自动重派。返回 True 表示已冻结。
+
+        ``frozen`` 标记不可省（scheduling-showcase 夹具回归）：admin_monitor 的
+        blocked_stuck 豁免只看 ``frozen`` 字段 / error 前缀 ``frozen:`` / error 含
+        「用户指令」三者，本闸门自有文案一条都不占——缺标记时冻结满
+        ``admin.escalation_cooldown_minutes``（默认 60 分钟）即自动召唤一次
+        Administrator agent run（夹具实证：admin-c-sched-set-1789106554 309KB，
+        09-11 预算耗尽冻结 ~05:02Z → admin 唤起 ~06:13Z）。标记同时使
+        StateMachine 的冻结保护剥离自动链路对 status 的改写，等待人工裁决。
 
         已启动的 run（计数已计入、正在跑）不受此影响，照常跑完 merge——
         本方法只在「即将开启新一轮」时调用。幂等：已是 blocked 时直接返回 True
@@ -316,6 +329,7 @@ class ImplBudget:
             )
         self._pm.state_machine.update_spec(spec_name, {
             "status": "blocked",
+            FROZEN_FIELD: True,
             "error": (
                 f"实现尝试预算耗尽（{used}/{budget}）：已停止自动重派，"
                 f"需人工裁决。最近失败：{recent_error}"

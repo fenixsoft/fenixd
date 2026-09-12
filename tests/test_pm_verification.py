@@ -447,6 +447,32 @@ class TestUnreachableFailFast(unittest.TestCase):
         self.assertEqual(entry["status"], "blocked")
         self.assertIn("prepare 失败", str(entry.get("error")))
 
+    def test_env_block_frozen_error_matches_freeze_prefix(self):
+        """第 2 轮 env 阻塞 → frozen 冻结，error 须以 FREEZE_ERROR_PREFIX 开头。
+
+        回归：此前文案写作「用户指令冻结（…」——全角括号，与常量
+        「用户指令冻结：」不匹配，实测 ``startswith`` 为 False，导致按文本契约
+        判定冻结态的消费方（dashboard spec 冻结态/解冻入口）全部漏判；结构化
+        frozen 字段虽已写入，但文本契约断裂本身是陷阱。
+        """
+        from core.state_machine import FREEZE_ERROR_PREFIX, FROZEN_FIELD
+        # 上一轮 env 阻塞已累计 1 轮 → 本轮（rounds=2）达冻结阈值
+        self.sm.update_spec("demo-spec", {"_env_block_rounds": 1})
+        self.engine._ensure_app_reachable = MagicMock(
+            return_value=(False, False, "就绪探针超时（120s）: http://127.0.0.1:1 — timed out"))
+        runs = []
+        self._run_pipeline(self._tracking_engine(runs))
+
+        entry = self.sm.read_one("demo-spec")
+        self.assertEqual(entry["status"], "blocked")
+        self.assertIs(entry[FROZEN_FIELD], True)
+        self.assertEqual(entry["_env_block_rounds"], "2")
+        self.assertTrue(
+            str(entry["error"]).startswith(FREEZE_ERROR_PREFIX),
+            f"env 阻塞冻结 error 须与 FREEZE_ERROR_PREFIX 对齐，实际={entry['error']!r}",
+        )
+        self.assertIn("验证环境阻塞（应用不可达）", str(entry["error"]))
+
     def test_reachable_pass_through_no_short_circuit(self):
         """可达放行：短路点不触发，VerifyEngine 照常运行，行为与现状一致。"""
         self.engine._ensure_app_reachable = MagicMock(

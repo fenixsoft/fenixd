@@ -20,6 +20,7 @@ from core.state_machine import (
     SpecStatus,
     StateMachine,
 )
+from core.state_machine import FREEZE_ERROR_PREFIX
 from core.pm_engine.verification import (
     ENV_BLOCK_SIGNAL_TYPES,
     ENV_BLOCK_MERGE_CHECK_TIMEOUT_SECONDS,
@@ -261,7 +262,11 @@ class TestEnvBlockRoundsLifecycle:
             frozen = rounds >= 2
             sm.update_spec("demo", {
                 ENV_BLOCK_ROUNDS_FIELD: rounds,
-                "error": f"env 阻塞（第 {rounds} 轮）" if not frozen else f"用户指令冻结（连续 {rounds} 轮）",
+                # 文案形状与 verification._escalate_env_blocked 保持同源：冻结
+                # 一律以 FREEZE_ERROR_PREFIX 开头（模拟段曾写「用户指令冻结（…」
+                # 全角括号，与常量不匹配——照抄即复现该文本契约断裂）。
+                "error": f"env 阻塞（第 {rounds} 轮）" if not frozen
+                         else f"{FREEZE_ERROR_PREFIX}env 阻塞连续 {rounds} 轮，转人工",
             })
             if frozen:
                 sm.update_spec("demo", {"frozen": True})

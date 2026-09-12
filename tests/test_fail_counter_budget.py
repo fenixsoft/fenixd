@@ -15,12 +15,15 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from core.admin_monitor import AdminMonitor
 from core.admin_store import AdminStore, ESCALATION
 from core.state_machine import StateMachine
 
@@ -104,6 +107,10 @@ class TestImplBudgetExhaustion(_Base):
         entry = self.sm.read_one("demo-spec")
         self.assertEqual(entry["status"], "blocked")
         self.assertIn("实现尝试预算耗尽（6/6）", entry["error"])
+        self.assertIs(entry.get("frozen"), True,
+                      "预算耗尽冻结必须写 frozen: True —— admin_monitor 的 "
+                      "blocked_stuck 豁免只看 frozen 字段/error 前缀/「用户指令」"
+                      "子串，缺标记即每 60 分钟空探一次 Administrator")
         alerts = [a for a in AdminStore(self.project_root, self.logger).read_all()
                   if a.get("signal_type") == "impl_budget_exhausted"
                   and a.get("spec") == "demo-spec"]
@@ -132,6 +139,57 @@ class TestImplBudgetExhaustion(_Base):
         alerts_after = [a for a in AdminStore(self.project_root, self.logger).read_all()
                         if a.get("signal_type") == "impl_budget_exhausted"]
         self.assertEqual(len(alerts_before), len(alerts_after))
+
+
+class TestImplBudgetFreezeFlag(_Base):
+    """预算耗尽冻结须带结构化 frozen 标记（scheduling-showcase 夹具回归）。
+
+    与内容完整性闸门同型缺口：只写 {status: blocked, error: 预算耗尽…} 时
+    admin_monitor 的 blocked_stuck 豁免三条件全不命中 → 冻结满
+    ``admin.escalation_cooldown_minutes``（默认 60 分钟）自动召唤一次
+    Administrator agent run。夹具实证：.fenix/runs/admin-c-sched-set-1789106554
+    即由本路径唤起（09-11 预算耗尽冻结 ~05:02Z → admin 唤起 ~06:13Z）。
+    """
+
+    def _exhaust(self, name="demo-spec"):
+        self._make_buggy_spec(name)
+        for _ in range(6):
+            self.engine._budget._increment_impl_run_budget_used(name)
+        self.assertTrue(self.engine._budget._check_impl_budget_exhausted(name))
+        return self.sm.read_one(name)
+
+    def test_exhausted_entry_exempt_from_blocked_stuck(self):
+        """端到端意图：预算冻结的 entry 超阈值也不再产生 blocked_stuck 信号。"""
+        entry = dict(self._exhaust())
+        entry["updated"] = (
+            datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+
+        mon = AdminMonitor.__new__(AdminMonitor)
+        mon.admin_cfg = {"escalation_cooldown_minutes": 15}
+        mon.logger = MagicMock()
+
+        signals = mon._detect_blocked_stuck({"demo-spec": entry}, time.time())
+        self.assertEqual(
+            [s for s in signals if s["spec"] == "demo-spec"], [],
+            "预算耗尽冻结的 spec 不得触发 blocked_stuck（自动召唤 Administrator 的根因）",
+        )
+
+    def test_freeze_protects_automatic_status_rewrite(self):
+        """冻结保护生效：自动链路对 status 的改写被剥离，等待人工裁决。"""
+        self._exhaust()
+        self.sm.update_spec("demo-spec", {"status": "ready"})
+        entry = self.sm.read_one("demo-spec")
+        self.assertEqual(entry["status"], "blocked")
+        self.assertIs(entry.get("frozen"), True)
+
+    def test_human_unfreeze_restores_ready(self):
+        """人工解冻（提升预算覆盖后恢复调度）是唯一出路。"""
+        self._exhaust()
+        self.sm.unfreeze_spec("demo-spec", status="ready")
+        entry = self.sm.read_one("demo-spec")
+        self.assertFalse(entry.get("frozen"))
+        self.assertEqual(entry["status"], "ready")
+        self.assertIsNone(entry["error"])
 
 
 class TestConfigHotReload(_Base):
