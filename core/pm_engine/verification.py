@@ -2883,7 +2883,21 @@ class VerificationPipeline:
             report = self._pm._read_verify_report(spec_name)
             if self._pm._handle_env_blocked_inconclusive(spec_name, report):
                 return
-            run_result_path = self._pm.project_root / ".fenix" / ".fenix-run-result.json"
+            # fix-verdict-read-failclosed D5（legacy 同门）：结果文件读取优先
+            # verify-progress/<spec>/.fenix-run-result.json（旧版 verifier 的
+            # 确定性产物路径），回退主树共享 .fenix/.fenix-run-result.json（兼容
+            # 旧行为：verifier 把结果写到 worktree 根、由 _execute_agent 复制到
+            # 主树的情况）。主树共享文件会被 implementer 成功时残留
+            # status=success/error 污染，读侧直接读它会把 implementer 残留当
+            # 验证裁决（admin 处置根因，add-web-ui blocked_stuck 实证）——
+            # 与 _read_planner_result 同源修正。
+            run_result_path = (
+                self._pm.project_root / ".fenix" / "verify-progress"
+                / spec_name / ".fenix-run-result.json"
+            )
+            if not run_result_path.exists():
+                run_result_path = (
+                    self._pm.project_root / ".fenix" / ".fenix-run-result.json")
             verifier_result = self._pm._read_verifier_result(run_result_path)
             verifier_status = (
                 verifier_result.status if verifier_result.ok else None)
