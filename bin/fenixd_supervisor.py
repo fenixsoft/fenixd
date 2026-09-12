@@ -16,6 +16,7 @@ fenixd_supervisor.py — fenixd 外部看门狗（fix-admin-self-heal / fix-supe
 """
 
 import argparse
+import json
 import os
 import signal
 import subprocess
@@ -58,6 +59,116 @@ DEFAULT_SIGKILL_WAIT_SECONDS = 60
 # 相对 admin.shutdown_drain_seconds 的固定余量（与 fenixd.py 的
 # SUPERVISOR_KILL_MARGIN_SECONDS 同值，保证 daemon 排水期不被 supervisor 截断）。
 DRAIN_MARGIN_SECONDS = 120
+
+# ── 启动失败熔断（add-stale-code-selfheal D4）──────────────────────────
+# 自动重启（陈旧自愈）会把新代码引入运行中的系统——若新代码无法启动则形成
+# 「拉起→秒退→拉起」循环。daemon 启动后窗口内退出计为一次启动失败，连续失败
+# 达阈值停止自动拉起：写熔断标记（.fenix/supervisor_fused）+ critical 告警，
+# 人工修复代码后清除标记（或重启 supervisor 进程）恢复。阈值语义与停止路径的
+# SIGKILL/排水常数相反（那些约束「停止」的宽限，这里判定「启动是否成功」），
+# 刻意不共用同一常数。
+SUPERVISOR_STARTUP_FAIL_WINDOW_SECONDS = 60
+SUPERVISOR_STARTUP_FAIL_THRESHOLD = 3
+
+
+def _fuse_marker() -> Path:
+    """熔断标记路径（调用时经 FENIX_DIR 解析，供测试注入 FENIX_DIR 后随动）。"""
+    return FENIX_DIR / "supervisor_fused"
+
+
+def _compute_startup_outcome(alive_seconds: float, fail_count: int) -> int:
+    """纯函数：存活 < 窗口计一次启动失败；≥ 窗口重置计数为 0。
+
+    供熔断判定与单测隔离：alive ≥ SUPERVISOR_STARTUP_FAIL_WINDOW_SECONDS 时
+    返回 0（本次启动成功，连续失败计数清零）。
+    """
+    if alive_seconds < SUPERVISOR_STARTUP_FAIL_WINDOW_SECONDS:
+        return fail_count + 1
+    return 0
+
+
+def _fuse_blocked() -> bool:
+    """熔断标记判定：标记存在且 pid 等于当前 supervisor 进程 → 熔断生效。
+
+    新 supervisor 进程（pid 不同）不继承旧熔断——「重启 supervisor 进程」即
+    天然清除熔断状态（与「人工删除标记文件」均为恢复路径）；旧标记按无效处理
+    （顺带清理，避免误读残留）。
+    """
+    marker = _fuse_marker()
+    try:
+        if not marker.is_file():
+            return False
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if isinstance(data, dict) and data.get("pid") == os.getpid():
+        return True
+    # 标记来自其它 supervisor 进程（或格式损坏）→ 无效，清理后不熔断
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return False
+
+
+def _write_fuse_marker(fail_count: int) -> None:
+    """原子写入熔断标记（.fenix/supervisor_fused，含时间戳/失败次数/pid）。"""
+    data = {"pid": os.getpid(), "failures": fail_count, "created": _now_iso()}
+    target = _fuse_marker()
+    try:
+        FENIX_DIR.mkdir(parents=True, exist_ok=True)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            prefix=".supervisor_fused.", suffix=".tmp", dir=str(FENIX_DIR),
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, str(target))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        log(f"fuse marker written: {target} (failures={fail_count})")
+    except OSError as e:
+        log(f"fuse marker write failed (non-blocking): {e}")
+
+
+def _write_fuse_alert() -> None:
+    """熔断触发时经既有告警通道（AdminStore）产出 critical 告警。
+
+    supervisor 是独立进程，写告警需把框架根加入 sys.path 并实例化 AdminStore；
+    import/写入失败降级为日志（熔断标记与 supervisor.log critical 记录已落盘，
+    告警是增强通道）。测试可用替身注入替换。
+    """
+    try:
+        if str(FENIX_DIR) not in sys.path:
+            sys.path.insert(0, str(FENIX_DIR))
+        from core.admin_store import AdminStore, ESCALATION
+        store = AdminStore(PROJECT_ROOT)
+        store.append({
+            "kind": ESCALATION,
+            "signal_type": "supervisor_fused",
+            "spec": None,
+            "severity": "critical",
+            "description": "daemon 连续启动失败，已停止自动拉起"
+                           "（熔断标记 .fenix/supervisor_fused）",
+            "evidence": (
+                f"连续 {SUPERVISOR_STARTUP_FAIL_THRESHOLD} 次启动后 "
+                f"{SUPERVISOR_STARTUP_FAIL_WINDOW_SECONDS}s 内退出"
+            ),
+            "action_taken": "supervisor 熔断：停止自动拉起，升级人工",
+            "recommended_action": (
+                "修复 daemon 启动失败根因（多为陈旧自愈刚引入的新代码）→ 删除 "
+                ".fenix/supervisor_fused 熔断标记 → 重启 supervisor（或直接重启 "
+                "supervisor 进程，其不继承旧熔断）"
+            ),
+        })
+    except Exception as e:  # noqa: BLE001 — 告警通道非关键路径，失败降级日志
+        log(f"fuse alert write failed (non-blocking): {e}")
 
 
 def _now_iso() -> str:
@@ -212,12 +323,27 @@ def main():
     # daemon 启动一致性自检将读取该文件，缺失/不一致 → WARNING 提示重启 supervisor。
     _write_supervisor_runtime()
 
+    # 连续启动失败计数（add-stale-code-selfheal D4）：仅「意外退出」累计，
+    # 优雅重启（restart_request）/ 显式停止不计；存活 ≥ 60s 清零。
+    fail_count = 0
+
     while True:
         if STOP_FLAG.exists():
             log("stop flag present — supervisor exiting")
             break
 
+        # 熔断判定：存在属于当前 supervisor 进程的熔断标记 → 不再拉起。
+        # 恢复路径：修复代码后删除标记，或重启 supervisor 进程（不继承旧熔断）。
+        if _fuse_blocked():
+            log(
+                "fuse marker present (pid-matched) — supervisor stops starting daemon. "
+                "Fix the startup failure, delete .fenix/supervisor_fused, and restart "
+                "supervisor."
+            )
+            break
+
         proc = start_daemon()
+        started_ts = time.time()
         log(f"daemon started (pid {proc.pid})")
 
         # 监视循环：daemon 存活期间检测停止/重启请求
@@ -276,7 +402,11 @@ def main():
         if rc is None:
             # 监视循环内已处理退出，兜底再等
             rc = proc.wait()
-        log(f"daemon exited (rc={rc}, restart={'yes' if restart else 'auto'})")
+        alive_seconds = time.time() - started_ts
+        log(
+            f"daemon exited (rc={rc}, restart={'yes' if restart else 'auto'}, "
+            f"alive={alive_seconds:.0f}s)"
+        )
 
         # 清除重启请求（无论是否因重启请求退出）
         try:
@@ -287,6 +417,23 @@ def main():
         if STOP_FLAG.exists():
             log("stop flag present — supervisor exiting")
             break
+
+        # 启动失败熔断：仅意外退出（非优雅重启）计入；存活 < 60s 累加，≥ 60s 清零。
+        if not restart:
+            fail_count = _compute_startup_outcome(alive_seconds, fail_count)
+            if fail_count >= SUPERVISOR_STARTUP_FAIL_THRESHOLD:
+                log(
+                    f"CRITICAL: daemon 连续 {fail_count} 次启动后 "
+                    f"{SUPERVISOR_STARTUP_FAIL_WINDOW_SECONDS}s 内退出——"
+                    f"停止自动拉起。修复启动失败根因后删除 .fenix/supervisor_fused "
+                    f"或重启 supervisor 恢复。"
+                )
+                _write_fuse_marker(fail_count)
+                _write_fuse_alert()
+                break
+        else:
+            # 优雅重启（supervisor 主动 SIGTERM）不计启动失败、清零连续计数
+            fail_count = 0
 
         # 退避后自动拉起（自愈）
         time.sleep(3)

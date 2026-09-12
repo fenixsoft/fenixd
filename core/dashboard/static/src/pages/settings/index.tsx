@@ -16,6 +16,7 @@ import PromptsPanel from './components/PromptsPanel';
 import SystemPanel from './components/SystemPanel';
 import SelfReviewPanel from './components/SelfReviewPanel';
 import HooksPanel from './components/HooksPanel';
+import StaleCodeSelfhealPanel from './components/StaleCodeSelfhealPanel';
 
 const { Text } = Typography;
 
@@ -29,6 +30,7 @@ const BASE_MENU_ITEMS = [
   { key: 'approval', label: '审批' },
   { key: 'misc', label: '归档' },
   { key: 'system', label: '系统' },
+  { key: 'selfheal', label: '自愈' },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -260,6 +262,13 @@ export default function SettingsPage() {
                 )}
                 {activeKey === 'self-review' && (
                   <SelfReviewPanel
+                    config={config}
+                    onSave={handleSave}
+                    project={scope === 'project' ? project : undefined}
+                  />
+                )}
+                {activeKey === 'selfheal' && (
+                  <StaleCodeSelfhealPanel
                     config={config}
                     onSave={handleSave}
                     project={scope === 'project' ? project : undefined}
