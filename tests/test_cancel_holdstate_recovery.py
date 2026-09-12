@@ -82,9 +82,29 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
         ("core/pm_engine/verification.py", 2611, "legacy-verifier"),
     ]
 
-    def _load(self, rel: str) -> list:
+    @staticmethod
+    def _load(rel: str) -> list:
         text = (Path(__file__).resolve().parent.parent / rel).read_text("utf-8")
         return text.splitlines()
+
+    @staticmethod
+    def _locate(rel: str, anchor: str, label: str) -> int:
+        """以锚点串在 rel 中动态定位写点行；未命中/多命中即抛红。
+
+        失配报错内含 rel、label、锚点串原文与当前命中情况，定位即诊断：
+        锚点注释被改写/删除 → 0 次命中；锚点串被复用 → >1 次命中需改精确串。
+        """
+        hits = [i for i, ln in enumerate(
+            CancelFinalizeMarkerContract._load(rel), 1) if anchor in ln]
+        if not hits:
+            raise AssertionError(
+                f"{rel} ({label}) 锚点串未命中：{anchor!r}"
+                "（注释被改写/删除？）")
+        if len(hits) > 1:
+            raise AssertionError(
+                f"{rel} ({label}) 锚点串命中 {len(hits)} 次：{anchor!r}"
+                "（不唯一，请改用更精确串）")
+        return hits[0]
 
     def test_six_holdstate_write_points_carry_marker(self):
         for rel, line_no, label in self.WRITE_POINTS:
