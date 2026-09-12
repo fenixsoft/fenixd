@@ -44,6 +44,8 @@ server.py — Fenix Web Dashboard 服务器（dashboard-server）。
 """
 
 import gzip
+import contextlib
+import fcntl
 import json
 import logging
 import mimetypes
@@ -177,6 +179,50 @@ def find_free_port(start: int, max_attempts: int = 50) -> int:
             except OSError:
                 continue
     raise RuntimeError(f"无法找到空闲端口（{start}~{start + max_attempts - 1} 均被占用）")
+
+
+@contextlib.contextmanager
+def _project_lifecycle_lock(proot: str, timeout: float = 25.0):
+    """同一项目启停操作跨请求串行化（fix-supervisor-hosting-chain 验证修复）。
+
+    并发 install-hosting/stop/start 对同一项目并发时，后到请求（HTTP 线程）等待
+    前一个完成——杜绝「一路 stop_daemon 超时兜底把另一路刚经 start_daemon 拉起的
+    supervisor 误杀」这类互踩（验证实证：install 端点残留执行与下一场景 stop
+    并发，后者 SIGKILL 误杀前者新 supervisor）。锁文件 .fenix/lifecycle.lock
+    （运行时状态，不进 git；flock 跨进程互斥）。
+
+    超过 timeout 仍未获取到锁 → acquired=False，调用方返回可读错误（避免 HTTP
+    挂死逼近客户端 30s 超时线）。获取失败（目录不可写等）同样 acquired=False，
+    不阻断操作本身（锁是尽力而为的串行化，不是权限门）。
+    """
+    lock_dir = Path(proot) / ".fenix"
+    lock_path = lock_dir / "lifecycle.lock"
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    except OSError:
+        yield False
+        return
+    acquired = False
+    try:
+        deadline = time.time() + max(0.0, timeout)
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError:
+                if time.time() > deadline:
+                    break
+                time.sleep(0.2)
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+        os.close(fd)
 
 
 class DashboardHTTPServer(ThreadingHTTPServer):
@@ -1599,11 +1645,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
         supervisor 启动」转入 managed；对 managed 幂等返回已托管（不重启）；
         对 stopped 等价于启动。复用 stop_daemon/start_daemon，不绕过它们
         直接操作进程或 tmux。
+
+        并发串行（fix-supervisor-hosting-chain 验证修复 BUG-01）：同一项目的
+        全部生命周期动作经 .fenix/lifecycle.lock 串行——验证实证并发的
+        install/stop 互踩会让一路的 SIGKILL 兜底误杀另一路刚拉起的 supervisor，
+        致托管永远无法成立。锁超时返回可读错误，不挂死 HTTP 线程。
         """
         project = self._resolve_project_or_400(path, "/api/projects/")
         if project is None:
             self._error(400, "项目不存在或未监控")
             return
+        with _project_lifecycle_lock(project["path"]) as _acquired:
+            if not _acquired:
+                self._json({"ok": False,
+                            "error": "该项目正有另一启停操作进行中，请稍后重试"})
+                return
+            self._run_project_lifecycle_locked(action, project, path)
+
+    def _run_project_lifecycle_locked(self, action: str, project: dict, path: str):
+        """_api_project_lifecycle 的锁内实现（调用方已持有项目生命周期锁）。"""
         try:
             if action == "start":
                 result = start_daemon(project["path"])
@@ -1688,15 +1748,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if project is None:
             self._error(400, "项目不存在或未监控")
             return
-        errors = []
-        # 1) 停止 daemon（幂等，未运行不报错；缺失项目目录已不存在，跳过）
+        # 与启停动作共享生命周期锁：delete 内含 stop_daemon，并发 install/stop
+        # 时不得绕过串行（fix-supervisor-hosting-chain 验证修复）
         if project.get("exists"):
-            try:
-                stop_result = stop_daemon(project["path"])
-                if not stop_result.get("ok"):
-                    errors.append(stop_result.get("error", "停止 daemon 失败"))
-            except Exception as e:
-                errors.append(f"停止 daemon 失败: {e}")
+            with _project_lifecycle_lock(project["path"]) as _acquired:
+                if not _acquired:
+                    self._json({"ok": False,
+                                "error": "该项目正有另一启停操作进行中，请稍后重试"})
+                    return
+                errors = []
+                try:
+                    stop_result = stop_daemon(project["path"])
+                    if not stop_result.get("ok"):
+                        errors.append(stop_result.get("error", "停止 daemon 失败"))
+                except Exception as e:
+                    errors.append(f"停止 daemon 失败: {e}")
+                if errors:
+                    self._json({"ok": False, "error": "；".join(errors)})
+                    return
+        else:
+            errors = []
         # 2) 停止显式注册项 + 写入忽略列表（忽略优先：即便再次显式注册也被忽略）
         try:
             self.server.registry.remove_project(project["path"])

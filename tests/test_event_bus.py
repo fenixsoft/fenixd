@@ -17,6 +17,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.state_machine import StateMachine
+from core import fenix_session  # noqa: E402 —— 供 restart-daemon hook 成功路径 mock
 
 
 class TestEventBus(unittest.TestCase):
@@ -135,6 +136,7 @@ class TestEventBusHookDispatch(unittest.TestCase):
     def test_hook_dispatched_on_status_diff(self):
         from core.event_bus import EventBus
         from core.hook_engine import HookEngine
+        from core import fenix_session
         config = {"project": {"name": "t"},
                   "hooks": {"global": [{"id": "h1", "enabled": True,
                                         "events": ["blocked"], "action": "restart-daemon"}]}}
@@ -142,7 +144,10 @@ class TestEventBusHookDispatch(unittest.TestCase):
         bus = self._bus(eng.dispatch)
         bus._update_known_state()
         self.sm.update_spec("s1", {"status": "blocked"})
-        bus._dispatch_changes(self.sm.read_all())
+        # restart-daemon hook 写请求前校验 supervisor_running（fix-supervisor-hosting-chain D4）；
+        # 测试 tmpdir 假项目无 supervisor，须 mock 为托管状态使 hook 走成功路径。
+        with patch.object(fenix_session, "supervisor_running", return_value=True):
+            bus._dispatch_changes(self.sm.read_all())
         time.sleep(0.8)
         self.assertTrue((Path(self.tmpdir) / ".fenix" / "restart_request").exists())
         # 审计记录写了一条 success

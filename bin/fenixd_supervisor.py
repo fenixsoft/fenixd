@@ -220,9 +220,35 @@ def main():
         proc = start_daemon()
         log(f"daemon started (pid {proc.pid})")
 
-        # 监视循环：daemon 存活期间检测重启请求
+        # 监视循环：daemon 存活期间检测停止/重启请求
         restart = False
         while proc.poll() is None:
+            if STOP_FLAG.exists():
+                # 停止协作（fix-supervisor-hosting-chain 验证修复 BUG-01）：
+                # stop_daemon 写 stop 后 SIGTERM 可能因竞态落在旧 daemon pid 上
+                # （supervisor 正处 3s 退避、尚未拉起新 daemon），或 daemon 被外部
+                # 重启换了 pid。监视循环内见 stop 即主动 SIGTERM 当前 daemon 并
+                # 退出监视——收口不再依赖「daemon 自己先死」这一前提。
+                log("stop flag detected during watch — SIGTERM daemon for stop")
+                restart = False
+                sigkill_wait = _sigkill_wait_seconds()
+                try:
+                    proc.send_signal(signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    proc.wait(timeout=sigkill_wait)
+                except subprocess.TimeoutExpired:
+                    log(
+                        f"daemon did not exit within {sigkill_wait}s after "
+                        f"SIGTERM — SIGKILL"
+                    )
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    proc.wait(timeout=5)
+                break
             if RESTART_REQUEST.exists():
                 log("restart_request detected — SIGTERM daemon for restart")
                 restart = True
