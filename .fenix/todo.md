@@ -1,52 +1,35 @@
-## 2026-09-12
+
+## 2026-09-13
 
 ### 浪费
-- **探针超时仍跑整轮验证首轮作废**
-  - 影响：add-spec-approve-push-modal 首轮验证在就绪探针 120s 超时（应用不可达）后仍整轮执行 14 场景，产出 6 通过/1 警告/7 环境伪失败，连带 judge 50 turns 后将 spec 原地打回重新实现（69 turns），该 spec 全流程成本 $39.12 居窗口之首；复发敞口=每次 spawn 后探针失败均整轮空转。
-  - 证据：fenixd.log 2026-09-11 02:03:21 UTC「应用可达性: 不可达 — … 就绪探针超时（120s）: http://127.0.0.1:50555/api/projects — timed out」，同秒 02:03:21.953「🚀 开始验证 14 个场景」；02:04:14「阶段2 完成: 14场景, 6通过, 1警告, 7失败」；02:41:40「原地打回第 1 轮」注入修复段。
-  - 调查评估：已核实 verification.py 阶段2.5（约 1795 行）：_ensure_app_reachable 结果仅记日志，自愈失败由执行后门禁兜底、不 fail-fast 中止本轮，故探针超时后仍整轮执行。根因=可达性失败未短路本轮验证。与窗口内在飞 add-verify-preflight-gate（12:29 立 spec、20:41 合并，D1 入口存在性预检 / D3 boot.log 兜底取证）互补但未覆盖：preflight 管 spawn 前预检与取证，本缺口在 spawn 后探针失败路径。结论=残余缺口成立，值得立项或并入该 spec 后续轮次。
-  - 建议：扩展 add-verify-preflight-gate：就绪探针超时即本轮 env fail-fast 中止（保留半日志与 boot.log 取证落盘），避免整轮场景空转与洗白门禁→升级 admin 的人工链路。
+- **import-shadow 三次超时空转**
+  - 影响：同一 spec 的实现 run 三次 12600s 超时（每次 3.5h，合计 10.5h 空转），第三次已跑满 91 rounds 仍被 extension budget 2/2 耗尽即杀；另 a3 被 daemon 关闭打断。spec 从 09-12 09:51（本地）首跑折腾至 09-13 01:00 才成功合并，横跨约 15h，期间 token 消耗不可观测（usage unobserved 提示 real consumption likely non-zero）。
+  - 证据：fenixd.log 05:22:04/08:52:15/14:58:19 三次 "Timeout after 12600s — extension budget exhausted (2/2)"，run_id 分别为 impl-fix-root-init-import-shadow-1789177903-a1/a2/1789212482-a1；14:58:19 上下文中 1789212482-a1 报 91 rounds, median 13.2s, p90 33.7s, max 153.9s, stalls>60s=4 (4%)；10:57Z a3 被 SIGTERM（Exit 143）。
+  - 调查评估：已核实：三次超时 log 与 runs/ 目录 jsonl 末尾 error 行一致（Timeout after 12600s — extension budget exhausted (2/2)），a3 被 daemon 10:57:25Z 关闭连带杀（4866 行 Sent SIGTERM）。根因：fix-root-init-import-shadow 属 import 遮蔽修复，任务面较大，fast-track 单次 3.5h 硬限内无法完成，触发 extension 2/2 即杀；且 a1/a2 处于 run-latency 转录盲区（0 rounds 无 timestamp 样本），观测不到是真卡死还是慢功。与存量 SPEC 关系：fix-run-latency-toolresult-parser（fa298deb 09-12 14:03 merge）已修转录盲区；add-impl-wip-checkpoint 的 WIP 保全在本案生效——1789212482-a1 超时后 WIP collapse 保全、a2 仅 87s 即收尾成功（15:00Z merge），说明保全链有效但超时判定牺牲了 3.5h。结论：属已验证功能的触发成本，次生（时间+不可观测 token）浪费成立，残余在「超时前自动保全」与「规模预检」两处。
+  - 建议：给 fast-track 长任务加规模预检（任务数/预估轮次超阈时自动降级 full 或预留更多 extension），并在 extension #2 用尽前自动触发一次 WIP checkpoint 保全，避免已完成的 91 轮工作全部随超时作废。
 
-- **fast-track 结果文件缺失连发重派**
-  - 影响：两起成功 fast-track 因「结果文件未产出」被整体作废重派：add-turn-limit-anchor-c run1 $8.83（181 turns、19 次 Edit，无提交无结果文件）、add-main-tree-deps-provision run1 $8.91（已全量提交 5 个 commit 仍判死亡）；两 spec 各重置 ready、预算豁免 1/6、自动重派 run2（分别 +$4.49 / +$0.92），直接损失约 $5.4 + 2 次状态回退；复发敞口≈$8.8/次（run1 成本实测）。
-  - 证据：fenixd.log 07:06:03.850「Ignoring stale result file /root/fenixd/.fenix/.fenix-run-result.json: spec='add-tasksmd-relint-gate' != 'add-turn-limit-anchor-c'」→ 07:06:03.968「预算豁免（死亡 run）… reason=fast-track no run-result… 状态回退 ready + 自动重试 1/3」；同型 13:48:37 主树残留 spec='add-spec-content-integrity-gate' 触发 add-main-tree-deps-provision 重派；另有 planner-plan artifact gate 同型（10:26:01「exit 0 但结果文件缺失」→ r1 原地重试）。
-  - 调查评估：已核实 engine.py _read_implementer_result（725 行）：先读 worktree 内 .fenix-run-result.json，缺位后读主树共享文件，spec stamp 不符即 ignore 返回 None→误判 run 死亡。根因=结果文件契约脆弱：当前 run 未写入正确位置，残留前 spec 文件反而拦截成功收口。与 35706f95（零变更哨交付物守卫：分支零提交⟺已并入主树）同族——main-tree run1 全量已提交却仍重派，恰是该守卫语义未覆盖结果文件缺位路径。worktree 复用（Kept worktree for reuse）部分挽回 turn-limit 损失（run2 62 turns 完成全部 6 任务为证），但状态回退与重派轮成本已发生。结论=系统性契约缺口，值得立项。
-  - 建议：将「结果文件缺失→重派」升级为「结果文件缺失 且 分支零提交→重派」（复用 35706f95 交付物守卫语义），分支有提交即按成功收口；daemon 消费主树共享 .fenix-run-result.json 后即时删除，消除跨 spec 残留误拦。
+- **两轮 implementer 零提交白跑 $24**
+  - 影响：两起 [terminal-no-commit] 拦截各消耗一整轮 try：fix-run-latency-toolresult-parser（$12.05，worktree 1 个未提交产物）与 add-stale-code-selfheal（$12.13，worktree 11 个未提交产物），均回退 ready + 退避后重新派发，合计约 $24 白跑并延迟两 spec 完成。
+  - 证据：fenixd.log 3992/4445 行 'Agent run exception: [terminal-no-commit] 归因:未提交即收工'（03:25:54Z 与 07:04:28Z）；runs/impl-fix-run-latency-toolresult-parser-1789176437-a1 与 impl-add-stale-code-selfheal-1789194797-a1 的 total_cost_usd 分别为 12.052304 与 12.1257625；配套 WARNING 显示两 spec 均被 Rolled back implementing → ready。
+  - 调查评估：已核实：两条 ERROR 与对应 run 成本从 runs/ jsonl 直接读到，目标 spec 与回退动作在 3994/4447 行 state_machine 更新中吻合。根因：implementer 在 fast-track 下终止时未提交产物（归因 '未提交即收工'），gate 拦截成功避免污染主树，但消耗了一轮 try 的 token。与存量 SPEC 关系：add-impl-terminal-nocommit-gate、add-impl-wip-checkpoint 正在飞（后者 verification-report 已生成），本案即该防线的触发记录，属 gate 生效后的预期内损耗；残余缺口在投射侧引导而非拦截侧。结论：单次约 $12 的重复 try 成本，复发敞口明确，建议从发生概率（implementer 收工提示）侧再削减。
+  - 建议：在 implementer system prompt / 收工契约中强化「有产出必须 git commit」的强制步骤（如收工前 lint 清单包含提交检查），把 terminal-no-commit 从『拦截后重试』前移为『投射时预防』，降低每次 $12 级白跑概率。
 
 ### 失误
-- **重启排水强杀实现 run 整轮作废**
-  - 影响：impl-add-blocked-reverify-lane-1789107185 在 planned restart 排水窗 1800s 后被 SIGTERM 作废（14:13→16:21 本地运行 128 分钟、0 提交残留），成为窗口唯一 failed run（1/30），尝试预算 1→2/6，自动重派 run2 152 turns 才完成。
-  - 证据：supervisor.log 07:51:01 UTC「restart_request detected — SIGTERM daemon for restart」；fenixd.log 08:21:12「Drain finished after 1800s, remaining runs: ['impl-add-blocked-reverify-lane-1789107185-a1']」+「Preserving interrupted run … branch 'none', ahead=0」+ SIGTERM +「implementer failed … Exit code: 143」；08:51:24 Retry 1/3 重派，10:05:22 成功（152 turns）。
-  - 调查评估：已核实事件链：框架代码窗口内高频更新（91 commits）使运行中 daemon 规则过期，触发 restart_request 热重载，排水 30 分钟未等 run 自然收口即强杀。被杀 run 无 commit/worktree 登记（branch='none', ahead=0），add-impl-terminal-nocommit-gate 的 stash 留档通道（1.3/2.2 已实现）在此场景未生效。根因=重启策略未对长活实现 run 自适应。结论=执行层可改进项，非系统缺陷。
-  - 建议：planned restart 触发时若存在活跃实现 run，排水窗按运行时长自适应（>60min run 给足 3600s）或强杀前先 stash create 留档（复用 add-impl-terminal-nocommit-gate 留档通道），保证中断不丢工作。
-
-- **sed 误转义破坏 tasks.md 勾选行**
-  - 影响：add-impl-terminal-nocommit-gate 的 tasks.md 勾选行因 sed replacement 误转义 \^ 丢失前导符，dashboard 任务清单解析为空，需 2ef1938d 一版 12 行修复提交；复发敞口=任何用 raw sed 改 checklist 行均可能重演。
-  - 证据：2ef1938d（09-11 10:47 +0800）「修复 tasks.md 勾选行的 ^- 前缀（sed replacement 误转义 \^ 导致 dashboard 任务清单解析为空）」，改动 spec/changes/add-impl-terminal-nocommit-gate/tasks.md 12 行。
-  - 调查评估：已核实 commit 内容与时间：落后该 spec fast-track 成功（09:41 本地）约 1 小时，属事后纠偏直接入主树。根因=以 sed -i 文本替换任务行时 \^ 转义失当。窗口内 13:27 已合并 add-tasksmd-relint-gate 的 lint（分组/解析结构校验）但不校验任务行前导符完形，未拦截此类回归。结论=一次性脚本失误，可被 lint 覆盖闭合。
-  - 建议：给 add-tasksmd-relint-gate 追加一条 lint：任务行必须以 ^- 前缀（或标准 checklist 前缀）开头，缺前缀即违规报错，使 sed 误转义在实现阶段即被拦。
-
-- **start_after 未到期误报滞留**
-  - 影响：add-main-tree-deps-provision 设 start_after 16:00 UTC 定时拾取，未到期期间被假就绪巡检误报 dispatch_stalled：signal 1 条 + 处置记录 3 条（07:29:01 信号、07:33:54/07:56:18 两次处置），召唤 Administrator 占人工注意力；且每 30 分钟被误标 orphan ready 重触发产生噪音事件。
-  - 证据：admin_alerts.json 窗口内 dispatch_stalled signal（07:29:01, add-main-tree-deps-provision, severity=major）+ 07:33:54/07:56:18 两条 disposition；修复提交 08a8628a（15:48）自述「每 30 分钟被误标孤儿 ready 重触发一次」「30 分钟即误判滞留并呼叫 Administrator」。
-  - 调查评估：已核实告警与修复双向对应：BLOCKER CHECK 假就绪巡检与 event_bus _recover_ready 均未豁免 start_after_pending（与退避/活子进程豁免同语义缺漏）。根因=巡检豁免清单不全。窗口内 15:48 已修复（engine.py + event_bus.py + 2 条回归测试），属已闭环失误。结论=按历史失误记录，防回归即可。
-  - 建议：已修复（08a8628a）；保留其 2 条回归测试，后续巡检类豁免改造时显式引用 start_after_pending 场景防再次遗漏。
+- **探针连死实例阻塞两 Spec 95min**
+  - 影响：契约轻量自证/就绪探针持续 120s 超时 Connection refused，verify_env_blocked 死循环：fix-dashboard-fault-isolation 阻塞 96min、fix-supervisor-hosting-chain 阻塞 94min，期间触发 8 个 admin 处置 run、其中已记账成本 $13.76+$3.51=$17.27（另 2 个被 kill/取消未记账），blocked_stuck critical 告警 3 次；修复提交（a49c741e 10:00:49Z）到 daemon 重启生效存在约 57min 部署空窗。
+  - 证据：admin_alerts.json：09-42:13Z / 09-44:14Z 两起 '就绪探针超时（120s）Connection refused'；10:05:21Z disposition 明确根因 'serving_registry 周期清扫收割轮间实例后，daemon 内存缓存 _contract_static_servers 仍持有已死实例，_current_instance_base_url 不检查 liveness'；11:19Z/11:32Z blocked_stuck '超过 96/94 分钟未处理'；a49c741e 提交说明（liveness 守卫 getattr(srv,'ok',True)）与 80aec3ed（探针换 /api/alerts）均 git show 核实；10:57:38Z disposition 'daemon 运行 pre-a49c741e 旧代码'，10:57:25Z daemon Shutting down planned=False 连带杀 impl-fix-root-init-import-shadow-a3、admin-1789207935、repair-1789209877 三个在跑 run（4866-4868 行）。
+  - 调查评估：核实链完整：首警 09:42（UTC）→ 根因归位 10:05 → 修复提交 10:00:49Z / 探针换端点 11:28Z → daemon 10:57Z 重启后生效 → 两 spec 11:37Z 前后解除（supervisor 已 pushed、dashboard c4c6f555 19:53 本地 merge）。根因双层：① verify-serving 实例缓存不查 liveness，把已收割死实例 base_url 供给自证/探针；② 探针原用 /api/projects（冷启动 7.58s > probe_ready 3s，见 10:12Z disposition）。修复本身正确且当日闭环；失误点在部署链路——修复 10:00 提交、daemon 10:57 才重启，近 1h 空窗内探针持续失败且重启采用 planned=False fast 模式无 drain 保护，直接中断 3 个在跑 run（1 个修复 run 白跑、a3 中断、1 个 admin 被杀）。与存量：该缺陷是验证 harness 基础设施问题，由 fix-dashboard-fault-isolation 的验证环节暴露，非该 spec 本体；已修（a49c741e + 80aec3ed + 回归测试 test_current_instance_base_url_skips_harvested_server）。结论：当日最大事故，影响面两 spec 阻塞 ~1.6h + $17.27 admin 成本 + 3 run 中断，已闭环，残余在修复部署时效与重启保护。
+  - 建议：a49c741e 类基础设施修复落地后自动触发 daemon 重启（或重启前对在跑 run 走 drain 而非 fast 杀），并排查 admin_alerts 处置记录里 'probe_ready 3s' 阈值是否仍会用慢端点误报；探针端点统一走 /api/alerts 后补一条验证自检确认无回归。
 
 ### 可改进
-- **静态行号锚点三连漂移修复**
-  - 影响：窗口内 3 次写点/锚点漂移修复提交（14380774、2e98e052、762b4aee），每次手工重钉 3-4 个行号；2e98e052 说明 relint-gate 合并插入 154 行后 test_cancel_holdstate_recovery 4/6 子用例红灯（回归暴露）；复发敞口=每个并行分支合并周期（窗口 91 commits/24h）。
-  - 证据：14380774「verification.py 插入降档读写后，_cancelled_hold 写点行号整体后移（1431/1742/2515 → 1451/1781/2560）」；2e98e052「relint-gate 合并…在 dispatch.py 三处挂点、verification.py 尾部一处挂点共插入 154 行…（1005/1841/2299/2560 → 1028/1912/2391/2611）…4/6 子用例红灯」；762b4aee「内容闸门…各插入 14/13 行…后移 27 行（1028/1912/2391 → 1055/1939/2418）」。
-  - 调查评估：已核实三 commit 均为 WRITE_POINTS/行号静态钉点的行号重钉、无语义改动，且 2e98e052 还带出真实红灯回归。根因=测试断言与被测代码以绝对行号耦合，在高频并行合并下必然失配，每次靠人工重钉。检索 spec/changes 与 spec/archive 未见行号锚点专项 → 新立项方向。结论=系统性缺口，值得 SPEC 立项。
-  - 建议：立项将取消/写点断言改为语义锚点（函数名/最近唯一模式串 + 相对偏移），并在 post-merge 增加锚点自检（合并后自动重算、失配即红测试提示），消除手工行号对齐。
+- **冻结场景 schema 失配验收卡壳**
+  - 影响：复发敞口：冻结场景文件 test_scenarios.json 以旧 schema 生成（run 步骤 value→command、output_match 断言 value→expected 字段重命名未迁移），load_scenarios 抛异常判 corrupt → 验收失败且冻结场景不自动重出题，须 admin 裁决——单次代价 2 个 admin run $7.28 + 处置后 blocked_stuck 再卡 17min；另暴露『admin 修复后 spec 状态未复位』第二缺陷（非 env 阻塞族不触发自动复位）。
+  - 证据：admin_alerts.json 15:00:04Z 升级告警 '冻结场景文件损坏或验收失败'；15:13:12Z disposition 'run 步骤 value→command，output_match 断言 value→expected，load_scenarios 抛异常返回 corrupt'；15:33:09Z disposition '第一次 Administrator 处置成功修复场景文件后未复位 spec 状态——blocked_stuck 非 env 阻塞族，框架不触发自动复位'；admin-fix-root-init-import-shadow-1789225205/1789226281 两 run 成本 4.0078615+3.273667；当前 .fenix/verify-progress/fix-root-init-import-shadow/test_scenarios.json 已是新 schema（step0 键 action/command）且留有 .bak-corrupt 备份。
+  - 调查评估：已核实：schema 漂移事实、两 admin run 成本、当前文件已修复均可直接查看；场景冻结机制（跨轮一致不自动重出题）在本案按设计触发，但把 schema 演进缺口交给了人工。根因：冻结文件无 schema 版本标记，字段重命名（value→command）未做读侧迁移/容错，load_scenarios 直接抛异常；且处置后状态复位仅覆盖 env 阻塞族，blocked_stuck 需人工再触发。与存量 SPEC 关系：fix-frozen-scenario-orphan-reservoir 在飞，7aedb932（09-12 23:08 本地）已补『内容闸门冻结补结构化 frozen 标记』，方向一致但未覆盖 schema 版本迁移。结论：系统性缺口成立，可独立起草 SPEC，低成本修复（读侧兼容 + 版本标记）。
+  - 建议：立项：冻结场景文件读侧加旧 schema 兼容迁移（value→command / output_match→expected）或写入时打 schema 版本并在 load 失败时报具体字段差异而非笼统 corrupt；admin 处置成功修复后统一复位 spec 状态，消除 blocked_stuck 二次空转。
 
-- **run 延迟观测全盲 30 连发**
-  - 影响：窗口内全部 30 个 run 完成时 latency_rounds=0 / latency_stalls=0 / latency_p90=null，依赖该口径的秒挂/停滞检测与 add-turn-limit-anchor-c 锚点 C 的 unobserved 续期判定基于空数据运行；复发敞口=每次 run 均无延迟证据，秒挂=0 与超时=0 统计可信度存疑。
-  - 证据：fenixd.log 每条 run 完成均报「0 rounds（无 timestamp 样本，旧转录跳过）」（如 3373 行 run impl-add-main-tree-deps-provision-1789132993 latency_p90=null）；但同 run 转录 .fenix/runs/impl-add-turn-limit-anchor-c-1789107200-a1.jsonl 实际 181/288 条 assistant 行含 ISO timestamp（如 2026-09-11T06:13:50.042Z）。
-  - 调查评估：已核实转录含 timestamp 而解析器报无样本，判定延迟解析器与当前 stream-json 转录格式失配（「旧转录跳过」）。根因=转录格式更新后解析器未同步。add-turn-limit-anchor-c 的 ANCHOR_TURN_LIMIT / 续期矩阵 / unobserved 口径直接消费该观测 → 护栏失效波及锚点判定。窗口内未见修复。结论=观测基础设施空缺，值得小 SPEC 修复并加自检。
-  - 建议：修复 run 延迟解析器对当前转录 timestamp 的兼容（重建 rounds/timestamp 映射），并加「latency_rounds>0」观测自检：若持续为 0 则显式告警，避免静默盲区。
-
-- **两簇存量测试失败拖累回归**
-  - 影响：修复前，5 例 daemon_lifecycle + 18 例 verify 系失败属存量（import fenixd 包截胡可溯源 08-16 迁移遗留，已 26 天），期间任何全量回归须先甄别 23 个非当前改动失败才能判新回归，污染每轮解释；15:19 修复后全量 2651 passed。
-  - 证据：d4978dbf（09-11 15:19）「修复全量回归两簇存量失败（import fenixd 包截胡 + verify_engine reload 换类污染）…全量 2651 passed」；正文列根因：仓库根 __init__.py（08-16 迁移遗留 51B 纯注释）使 pytest 执行期 import fenixd 撞包；test_planready_artifact_gate 未 patch importlib.reload 触发 TestScenario 类热换。
-  - 调查评估：已核实 commit 内容：两簇根因均为测试基座缺陷而非产品缺陷，窗口内已修复并 2651 passed 验证。根因=测试基础设施无自洽清理（import 守卫缺失）+ reload 副作用未隔离，且存量失败长期无独立追踪渠道（未见 known-failures 清单）。与在飞 SPEC 无重叠。结论=一次性清理完成，建议补回归锚点防回退。
-  - 建议：新增两条回归锚点：① 仓库根 __init__.py 保持空或禁包，import fenixd 用 sys.modules 断言守卫；② test_planready_artifact_gate 补 importlib.reload patch，避免同簇失败 26 天后再现。
+- **fast-track 长任务缺规模预检**
+  - 影响：复发敞口：单 spec 三次 12600s 超时合计 10.5h 空转，若加规模预检可在首个 run 前拦截（单次代价 3.5h run 时长 × 3 + 不可观测 token 消耗）；add-verify-preflight-gate 已覆盖入口存在性预检，但未覆盖任务规模维度。
+  - 证据：fenixd.log 4163/4733/5278-5279 三次 fast-track Timeout after 12600s（run impl-fix-root-init-import-shadow-1789177903-a1/a2/1789212482-a1），其中第三次已 91 rounds 才被杀；对照同窗口内较小 spec（fix-dispatch-wakeup-gap 1789214098 等）均单轮成功，规模差异显著。
+  - 调查评估：已核实：三次超时均为同一 spec 且最后一次已完成 91 轮工作，说明是『硬限内跑不完』而非卡死；对照组小 spec 单轮成功，规模相关性明显。根因：fast-track 模式按统一 3.5h/6 次预算派发，无任务规模预估，大 spec 被同规格对待。与存量 SPEC 关系：add-verify-preflight-gate 的 resolve_entry_path 预检（09-11 merge）解决入口存在性；add-turn-limit-anchor-c 解决轮数锚点；均未覆盖『任务规模 → 预算档位』映射。结论：可独立成 SPEC 或并入 preflight 扩展，价值点是用一次轻量静态预估（tasks.md 条目数/变更面）换掉 3×3.5h 空转。
+  - 建议：起草 SPEC：fast-track 派发前按 tasks.md 任务数、预估轮次做规模分档，超阈自动降级 full 模式或提高 extension 预算；并在 extension #2 用尽前触发自动 checkpoint 保全已完成的轮次工作。
