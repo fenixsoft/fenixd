@@ -445,6 +445,12 @@ class TestRecoveryWatch(RecoveryWatchFixture):
         self.assertEqual(raised, [])
 
     def test_watch_fails_when_still_fake_ready(self):
+        """滞留 ready 且就地派发未成立 → dispatch_stalled 信号（不得静默关闭）。
+
+        post-recovery-patrol D4：观察窗口到达、spec 仍 ready 且无活跃派发时
+        先就地重新派发；派发被闸门拦下（本用例内容完整性闸门命中——tmpdir
+        无 spec 目录）→ 关闭观察项 + dispatch_stalled。
+        """
         self.make_ready_spec("s1")
         self.engine.register_recovery_watch("s1", "test")
         self.watch_due()
@@ -455,6 +461,71 @@ class TestRecoveryWatch(RecoveryWatchFixture):
         stalled = [r for r in recs if r.get("signal_type") == "dispatch_stalled"]
         self.assertEqual(len(stalled), 1)
         self.assertIn("recovery", stalled[0].get("evidence"))
+        # 观察项已关闭（不再是挂起复查，交给 signal 通道处置）
+        self.assertNotIn("s1", self.engine._recovery._recovery_watch)
+
+    def test_watch_registered_implementing_rolled_back_to_ready_redispatches(self):
+        """登记时 implementing、窗口内回退 ready：判未恢复 → 就地派发成立 → 关闭不告警。
+
+        复现 2026-09-12 fix-root-init-import-shadow 事故形态：旧实现以
+        status != status_at_register（implementing→ready）误判「已恢复推进」并
+        静默关闭观察项。post-recovery-patrol 收紧判据后按声明语义判为尚未恢复
+        推进，先就地重新派发；派发成立 → 关闭观察项且不产生任何告警。
+        """
+        # 登记时 implementing（defer 卡死形态；live child 存活）
+        self.sm.add_spec("s1", {"priority": 5})
+        self.sm.transition("s1", "ready")
+        self.sm.transition("s1", "implementing")
+        self.engine.register_recovery_watch(
+            "s1", "auto-recovery deferred (live child present)")
+        self.assertEqual(
+            self.engine._recovery._recovery_watch["s1"]["status_at_register"],
+            "implementing",
+        )
+        self.watch_due()
+        # 窗口内因中断回退为 ready 且无活跃派发（live child 已死）
+        self.sm.update_spec("s1", {"status": "ready"})
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+        # 让就地派发真正成立：闸门放行（本夹具无 spec 目录，内容闸门默认会拦）
+        self.engine._check_impl_budget_exhausted = MagicMock(return_value=False)
+        self.engine._check_spec_content_missing = MagicMock(return_value=False)
+        # 队列处理 mock 掉，避免 worker 线程异步副作用干扰断言（入队即成立）
+        self.engine._process_queue = MagicMock()
+
+        raised = self.engine.check_recovery_watch()
+        self.assertEqual(raised, [])
+        # 观察项关闭且不产生任何告警
+        self.assertNotIn("s1", self.engine._recovery._recovery_watch)
+        recs = AdminStore(self.project_root, self.logger).read_all()
+        self.assertEqual(
+            [r for r in recs if r.get("signal_type") == "dispatch_stalled"], [])
+        # 就地派发成立：spec 已入队
+        self.assertTrue(any(
+            (e[1], e[2]) == ("s1", "implementer")
+            for e in self.engine._dispatcher._run_queue
+        ))
+
+    def test_watch_inplace_dispatch_blocked_by_budget_signals(self):
+        """就地派发被预算闸门拦下 → 关闭观察项并发出 dispatch_stalled（不得静默关闭）。"""
+        self.make_ready_spec("s1")
+        self.engine.register_recovery_watch("s1", "test")
+        self.watch_due()
+        self.runner.worktree_manager.has_active_worktree.return_value = False
+        self.engine._check_impl_budget_exhausted = MagicMock(return_value=True)
+
+        raised = self.engine.check_recovery_watch()
+        self.assertEqual(raised, ["s1"])
+        self.assertNotIn("s1", self.engine._recovery._recovery_watch)
+        recs = AdminStore(self.project_root, self.logger).read_all()
+        stalled = [r for r in recs if r.get("signal_type") == "dispatch_stalled"]
+        self.assertEqual(len(stalled), 1)
+        # 未被静默丢弃：dispatch_stalled 信号带证据
+        self.assertIn("recovery", stalled[0].get("evidence"))
+        # 预算拦截前提下不得入队
+        self.assertFalse(any(
+            (e[1], e[2]) == ("s1", "implementer")
+            for e in self.engine._dispatcher._run_queue
+        ))
 
 
 class TestReadyStallPatrol(RecoveryWatchFixture):
