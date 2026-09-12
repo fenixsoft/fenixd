@@ -17,6 +17,7 @@ import SystemPanel from './components/SystemPanel';
 import SelfReviewPanel from './components/SelfReviewPanel';
 import HooksPanel from './components/HooksPanel';
 import StaleCodeSelfhealPanel from './components/StaleCodeSelfhealPanel';
+import SuggestedImprovementsPanel from './components/SuggestedImprovementsPanel';
 
 const { Text } = Typography;
 
@@ -30,7 +31,9 @@ const BASE_MENU_ITEMS = [
   { key: 'approval', label: '审批' },
   { key: 'misc', label: '归档' },
   { key: 'system', label: '系统' },
-  { key: 'selfheal', label: '自愈' },
+  // add-framework-self-evolution：页签「自愈」改名「自进化」（内部 key 同步改名，
+  // 默认选中态与其它页签不受影响）
+  { key: 'self-evolution', label: '自进化' },
 ];
 
 // 作用域 Select 的值编码：'user' 或 'project:<name>'
@@ -267,12 +270,22 @@ export default function SettingsPage() {
                     project={scope === 'project' ? project : undefined}
                   />
                 )}
-                {activeKey === 'selfheal' && (
-                  <StaleCodeSelfhealPanel
-                    config={config}
-                    onSave={handleSave}
-                    project={scope === 'project' ? project : undefined}
-                  />
+                {activeKey === 'self-evolution' && (
+                  <>
+                    {/* 第一张卡片：既有「代码陈旧自愈」面板（标题/控件/配置键不变） */}
+                    <StaleCodeSelfhealPanel
+                      config={config}
+                      onSave={handleSave}
+                      project={scope === 'project' ? project : undefined}
+                    />
+                    {/* 第二张卡片：新增「建议改进项」面板（接收 scope 与 project） */}
+                    <SuggestedImprovementsPanel
+                      config={config}
+                      onSave={handleSave}
+                      scope={scope}
+                      project={project}
+                    />
+                  </>
                 )}
                 {activeKey === 'project-profile' && (
                   <ProjectProfilePanel config={config} onSave={handleSave} project={project} />
