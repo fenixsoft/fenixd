@@ -52,7 +52,11 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 
 ### 设置页（/settings）
 
-设置页承担配置管理职责：分项目读写受管配置键（llm / agents.models / gates.approve_mode）；查看与编辑 verify.yaml 验证契约；查看/调整 token 预算与消耗；以及管理提示词：查看通用层 agents/ 提示词、编辑项目级附加提示词。「Hook」面板管理当前项目的全局 hooks（对所有 SPEC 生效），表单结构同 SPEC 详情页的 Hook 页签，并展示跨 SPEC 的最近执行记录。「自愈」面板管理代码陈旧自愈（`stale_code_selfheal` 节）：`enabled` 开关（缺省开启）与 `idle_confirm_seconds` 连续空闲确认秒数（缺省 120），附语义说明——陈旧状态 + 启用 + 托管 + 连续空闲达到阈值后 daemon touch `.fenix/restart_request` 触发优雅重启；未托管项目不自愈、仅维持陈旧告警。保存走既有配置写回路径，非法值（非布尔 / 非正整数秒数）被后端拒绝返回可读错误。
+设置页承担配置管理职责：分项目读写受管配置键（llm / agents.models / gates.approve_mode）；查看与编辑 verify.yaml 验证契约；查看/调整 token 预算与消耗；以及管理提示词：查看通用层 agents/ 提示词、编辑项目级附加提示词。「Hook」面板管理当前项目的全局 hooks（对所有 SPEC 生效），表单结构同 SPEC 详情页的 Hook 页签，并展示跨 SPEC 的最近执行记录。
+
+「自进化」页签（原「自愈」改名，内部 key `self-evolution`）下自上而下两张卡片：
+1. **代码陈旧自愈**（既有 `stale_code_selfheal` 面板，配置键/缺省值/控件全部不变）：`enabled` 开关（缺省开启）与 `idle_confirm_seconds` 连续空闲确认秒数（缺省 120），附语义说明——陈旧状态 + 启用 + 托管 + 连续空闲达到阈值后 daemon touch `.fenix/restart_request` 触发优雅重启；未托管项目不自愈、仅维持陈旧告警。保存走既有配置写回路径，非法值（非布尔 / 非正整数秒数）被后端拒绝返回可读错误。
+2. **建议改进项**（新增 `SuggestedImprovementsPanel`）：卡片顶部为全局配置控件——「允许框架自改进」开关（`self_evolution.auto_accept`，缺省关闭）与「每轮分析条目上限」数字输入（1..200，缺省 20），用户级作用域可保存（写用户级配置）；项目级作用域下两项置只读并提示「全局键，请在用户级作用域修改」。其下为跨项目建议改进项表格，列序：项目 / 日期 / 类别 / 问题 / 评估结论 / 状态 / 操作，默认按入库时间倒序；状态中文映射：待决策 / 不需要立项 / 草稿生成失败 / 已同意 / 已自动接受 / 已拒绝 / 接受失败。操作列「更多」下拉提供查看分析结论 / 查看 SPEC 草稿 / 同意 / 拒绝（拒绝为危险项），同意与拒绝均需二次确认弹窗；「查看分析结论」在抽屉中渲染评估结论全文（含三项判定与证据）；「查看 SPEC 草稿」可切换 proposal / design / tasks / spec 四类文档。移动端表格横向滚动 + 操作列固定右侧（不做卡片式降级）。
 
 ### 运维记录页（/activities）
 

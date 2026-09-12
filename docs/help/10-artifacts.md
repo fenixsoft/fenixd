@@ -21,6 +21,7 @@
       impl-<spec>-*.jsonl       # 实现者 run 事件
       verify-<spec>-*.jsonl     # 验证者 run 事件
       admin-*.jsonl             # Administrator 处置 run
+      evo-*.jsonl               # 框架自进化分析 run 事件（自托管时）
       ...                       # 其它 agent 类型
     logs/              # 框架日志
       fenixd-<year>.log         # daemon 滚动日志
@@ -28,6 +29,11 @@
     hook_audit.jsonl   # hook 触发与执行审计（append-only）
     admin_invoke_request.json   # Admin 唤起请求信号（daemon 拾取后清除）
     todo.md            # 当日待办/自省列表
+    evolution/         # 框架自进化产物（gitignored，非交付物）
+      items.jsonl      # 条目状态机（一行一条，按 id 幂等更新）
+      state.json       # 逐项目分析水位（last_analyzed_at / last_run_id）
+      drafts/<id>/     # 暂存 SPEC 草稿（接受后移出至 spec/changes/）
+      out-<run_id>.json        # 分析 run 契约产物（读取后删除）
     PROJECT_LOG.md     # 项目日志（事件时间线）
   spec/                # SPEC 工作区
     changes/           # 活跃 change
@@ -74,6 +80,19 @@ proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change a
 
 每条 run 对应一个 `<agent>-<spec>-<timestamp>.jsonl` 文件：`impl-` 前缀是实现者（含 fast-track），记录每次 tool_use、消息与结果；`verify-` 前缀是验证者。排查「最近一次 run 在做什么」时，按文件 mtime 排序找到最新的 jsonl，看最后几条事件即可。
 
+## .fenix/evolution/ 自进化产物（gitignored，非交付物）
+
+框架自托管（`PROJECT_ROOT == FRAMEWORK_ROOT`）时，自进化链路（见[配置参考](09-config.md#self_evolution框架自进化)）在 `.fenix/evolution/` 暂存全部中间产物：
+
+| 文件 | 语义 |
+|------|------|
+| `items.jsonl` | 条目状态机：一行一条（`id` / 原始四字段 / `verdict` / `analysis_md` / `spec` / `status` / `decided_*`）。状态流转 `pending`（待决策）→ `accepted` / `auto_accepted`（已同意/已自动接受）/ `rejected`（已拒绝）；`analyzed`（判定不需要立项）；`draft_failed`（草稿生成失败）；`accept_failed`（接受失败可重试）。对同一 `id` 只保留一条记录（更新而非追加），`id` 集合是去重的权威来源 |
+| `state.json` | 逐项目分析水位：`{"<project>": {"last_analyzed_at": "<ISO8601>", "last_run_id": "evo-..."}}`。仅在分析 run 成功落地后推进，且取 run 启动时的快照时刻——只用作检查点触发判据，不承担去重 |
+| `drafts/<id>/` | 暂存 SPEC 草稿（proposal.md / design.md / tasks.md / specs/\<capability\>/spec.md / .spec.yaml）。接受后整目录移出交由 `spec/changes/<evo-*>/`（提交并注册 STATE），拒绝时整目录删除；`draft_failed` 的草稿在 lint 未通过时即被删除 |
+| `out-<run_id>.json` | 分析 run 的契约产物（`items[]` 含判定与草稿文本），框架读取落地后即删除（与 `self_review_out-*.json` 同处理） |
+
+已接受条目的草稿会**移出暂存区**交给 `spec/changes/`（SPEC 名统一 `evo-` 前缀），草稿暂存区只保留未决定条目；`spec/changes/` 下已注册的 `evo-*` SPEC 走既有流水线（见[生命周期](03-lifecycle.md)），不再与 `.fenix/evolution/` 关联。
+
 ## 出问题去哪查对照表
 
 | 现象 | 查哪里 |
@@ -89,6 +108,7 @@ proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change a
 | daemon 日志 | `.fenix/logs/fenixd-<year>.log` |
 | 项目事件时间线 | `.fenix/PROJECT_LOG.md` |
 | 当日待办/自省 | `.fenix/todo.md` |
+| 建议改进项 / 自进化草稿 | `.fenix/evolution/items.jsonl` + `drafts/<id>/`（Dashboard 设置页「自进化」页签） |
 | 任务进度 | `spec/changes/<spec>/tasks.md` 勾选状态 |
 
 ## 相关文档

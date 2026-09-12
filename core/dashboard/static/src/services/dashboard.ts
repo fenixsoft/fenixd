@@ -835,6 +835,91 @@ export interface StaleCodeSelfhealConfig {
   idle_confirm_seconds?: number;
 }
 
+// ── 框架自进化（add-framework-self-evolution）───────────────────────
+
+/** self_evolution 配置节（全局用户级键：auto_accept / max_items_per_run） */
+export interface SelfEvolutionConfig {
+  /** 允许框架自改进（缺省 false）：打开后自动接受全部判定值得立项的条目 */
+  auto_accept?: boolean;
+  /** 每轮分析条目上限（1..200，缺省 20） */
+  max_items_per_run?: number;
+}
+
+/** 建议改进项摘要（GET /api/evolution/items 列表元素） */
+export interface EvolutionItem {
+  id: string;
+  project: string;
+  date_section: string;
+  section: string;
+  title: string;
+  verdict?: {
+    problem_exists: string;
+    suggestion_sound: string;
+    worth_spec: boolean;
+    rationale: string;
+  };
+  status: string;
+  has_draft: boolean;
+  spec_name?: string;
+  created_at: string;
+  decided_at?: string;
+}
+
+/** 条目状态 → 中文文案映射（spec「状态文案映射」） */
+export const EVOLUTION_STATUS_LABELS: Record<string, string> = {
+  pending: '待决策',
+  analyzed: '不需要立项',
+  draft_failed: '草稿生成失败',
+  accepted: '已同意',
+  auto_accepted: '已自动接受',
+  rejected: '已拒绝',
+  accept_failed: '接受失败',
+};
+
+/** 草稿文档白名单（GET /api/evolution/draft 的 doc 参数） */
+export const EVOLUTION_DOCS = ['proposal', 'design', 'tasks', 'spec'] as const;
+export type EvolutionDoc = typeof EVOLUTION_DOCS[number];
+
+export async function getEvolutionItems(project?: string): Promise<{ items: EvolutionItem[] }> {
+  const q = project ? `?project=${encodeURIComponent(project)}` : '';
+  return request<{ items: EvolutionItem[] }>(`/api/evolution/items${q}`);
+}
+
+export async function getEvolutionAnalysis(
+  itemId: string,
+): Promise<{ found: boolean; content: string }> {
+  return request<{ found: boolean; content: string }>(
+    `/api/evolution/analysis?item_id=${encodeURIComponent(itemId)}`,
+  );
+}
+
+export async function getEvolutionDraft(
+  itemId: string,
+  doc: EvolutionDoc,
+): Promise<{ found: boolean; content: string }> {
+  return request<{ found: boolean; content: string }>(
+    `/api/evolution/draft?item_id=${encodeURIComponent(itemId)}&doc=${encodeURIComponent(doc)}`,
+  );
+}
+
+export async function acceptEvolutionItem(
+  itemId: string,
+): Promise<{ ok: boolean; status?: string; spec_name?: string; error?: string }> {
+  return request('/api/evolution/accept', {
+    method: 'POST',
+    data: { item_id: itemId },
+  });
+}
+
+export async function rejectEvolutionItem(
+  itemId: string,
+): Promise<{ ok: boolean; status?: string; error?: string }> {
+  return request('/api/evolution/reject', {
+    method: 'POST',
+    data: { item_id: itemId },
+  });
+}
+
 // ── SPEC 状态事件 hook 订阅（add-spec-hooks，存 .fenix/config.yaml hooks 段） ──
 
 export type HookAction =
@@ -906,6 +991,8 @@ export interface ConfigData {
   hooks?: HooksConfig;
   /** add-stale-code-selfheal：代码陈旧自愈（enabled / idle_confirm_seconds） */
   stale_code_selfheal?: StaleCodeSelfhealConfig;
+  /** add-framework-self-evolution：自进化配置（auto_accept / max_items_per_run） */
+  self_evolution?: SelfEvolutionConfig;
   scope: 'user' | 'project';
   raw_exists: boolean;
   sources: Record<string, string>;

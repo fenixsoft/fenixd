@@ -40,6 +40,13 @@ VALID_BUG_REPAIR_MODES = ("inplace", "derive")
 SELF_REVIEW_DEFAULT_RUN_AT = "02:00"
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
+# ── add-framework-self-evolution：self_evolution 段 ──────────────────
+# auto_accept 缺省 false（纯增量，用户显式开启后才自动接受）。
+# max_items_per_run 缺省 20，上界 200（非法回退缺省，不阻塞 daemon 启动）。
+SELF_EVOLUTION_AUTO_ACCEPT_DEFAULT = False
+SELF_EVOLUTION_MAX_ITEMS_DEFAULT = 20
+SELF_EVOLUTION_MAX_ITEMS_UPPER = 200
+
 # D3：旧键弃用告警 / D5：absolute_max 兜底 ERROR 的生命周期去重标记，
 # 避免 30 分钟扫描热更新时反复刷屏。
 _DEPRECATED_STUCK_WARNED = False
@@ -422,6 +429,35 @@ class ConfigLoader:
                     "archive.auto_threshold 非法（应为非负整数，0=禁用）：%r，"
                     "回落默认 50", at,
                 )
+
+        # add-framework-self-evolution：self_evolution 段护栏（软校验）。
+        # 与 stale_code_selfheal 的处理方式一致：节/键存在但类型非法时不进入硬
+        # 失败路径——只记 ERROR，生效值由 get_self_evolution_config 按 1.1 的
+        # 回退规则兜底。保证 30s 热更新路径（resolve_config_into）不会因该节
+        # 被中断（用户级全局键，项目级写入由 dashboard 前置校验拒绝）。
+        se = config.get("self_evolution")
+        if se is not None and not isinstance(se, dict):
+            _logger.error(
+                "self_evolution 段非法（应为对象）：%r，按缺省值生效",
+                type(se).__name__,
+            )
+        elif isinstance(se, dict):
+            if "auto_accept" in se and se["auto_accept"] is not None \
+                    and not isinstance(se["auto_accept"], bool):
+                _logger.error(
+                    "self_evolution.auto_accept 非法（应为布尔）：%r，"
+                    "回退缺省 %s", se["auto_accept"], SELF_EVOLUTION_AUTO_ACCEPT_DEFAULT,
+                )
+            if "max_items_per_run" in se and se["max_items_per_run"] is not None:
+                mip = se["max_items_per_run"]
+                if (isinstance(mip, bool) or not isinstance(mip, int)
+                        or mip < 1 or mip > SELF_EVOLUTION_MAX_ITEMS_UPPER):
+                    _logger.error(
+                        "self_evolution.max_items_per_run 非法（应为 1..%s 整数）："
+                        "%r，回退缺省 %s",
+                        SELF_EVOLUTION_MAX_ITEMS_UPPER, mip,
+                        SELF_EVOLUTION_MAX_ITEMS_DEFAULT,
+                    )
 
     @classmethod
     def _validate_provider_billing(cls, providers) -> None:
@@ -948,6 +984,35 @@ class ConfigLoader:
                 seconds, cls.STALE_CODE_SELFHEAL_MAX_SECONDS,
             )
         return {"enabled": enabled, "idle_confirm_seconds": seconds}
+
+    @classmethod
+    def get_self_evolution_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the ``self_evolution`` 段，缺失/非法值回退缺省。
+
+        - auto_accept: 布尔，缺省 False（非布尔回退缺省，与 stale_code_selfheal
+          的 bool 处理方式一致；`1`/`"yes"` 等 truthy 非布尔值同样回退缺省）
+        - max_items_per_run: 正整数，缺省 20，上界 200（非整数 / bool / < 1 /
+          > 200 → 回退缺省 20）
+
+        节缺失、键缺失或值非法时不抛异常、不使 daemon 启动失败；读取走既有
+        config 对象，30s 配置热更新自然生效。
+        """
+        section = config.get("self_evolution")
+        if not isinstance(section, dict):
+            section = {}
+        # auto_accept：必须为布尔，显式 True 才生效
+        auto_accept = section.get("auto_accept", SELF_EVOLUTION_AUTO_ACCEPT_DEFAULT)
+        if not isinstance(auto_accept, bool):
+            auto_accept = SELF_EVOLUTION_AUTO_ACCEPT_DEFAULT
+        # max_items_per_run：正整数（严格 int，bool/float/字符串均非法），上界 200
+        max_items = section.get(
+            "max_items_per_run", SELF_EVOLUTION_MAX_ITEMS_DEFAULT)
+        if (isinstance(max_items, bool)
+                or not isinstance(max_items, int)
+                or max_items < 1
+                or max_items > SELF_EVOLUTION_MAX_ITEMS_UPPER):
+            max_items = SELF_EVOLUTION_MAX_ITEMS_DEFAULT
+        return {"auto_accept": auto_accept, "max_items_per_run": int(max_items)}
 
     @classmethod
     def get_self_review_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:

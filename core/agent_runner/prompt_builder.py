@@ -21,6 +21,7 @@ AGENT_PROMPT_DIR = FRAMEWORK_ROOT / "agents"
 # 八类 agent → 提示词文件名（agent-type 白名单的单一来源，Dashboard 端点复用）
 # add-daily-self-review：新增 self-review（每日自省）类型。
 # add-deliverable-declaration-triage：新增 dispute-judge（交付物缺件 LLM 终审）类型。
+# add-framework-self-evolution：新增 evolution（框架自进化复核）类型。
 AGENT_PROMPT_FILES = {
     "implementer": "implementer.md",
     "verifier": "verifier.md",
@@ -30,6 +31,7 @@ AGENT_PROMPT_FILES = {
     "administrator": "administrator.md",
     "self-review": "self-review.md",
     "dispute-judge": "dispute-judge.md",
+    "evolution": "evolution.md",
 }
 
 
@@ -183,6 +185,11 @@ class PromptBuilder:
         # 注入近 24 小时数据摘要与可选 todo.md 全文）。
         if agent_type == "self-review":
             return self._build_self_review_prompt(spec_name, detail or {})
+
+        # add-framework-self-evolution：分析 run prompt 独立构建（无 spec
+        # 维度占位符，注入就绪项目 todo.md 全文与待分析条目清单）。
+        if agent_type == "evolution":
+            return self._build_evolution_prompt(spec_name, detail or {})
 
         template = self._load_agent_template(agent_type)
         prompt = self._fill_placeholders(template, agent_type, spec_name, detail)
@@ -726,6 +733,55 @@ class PromptBuilder:
             "{out_path}",
             str(detail.get("out_path") or (self._pm.project_root / ".fenix"
                                            / "self_review_out.json")))
+        return prompt
+
+    def _build_evolution_prompt(self, spec_name: str, detail: dict) -> str:
+        """构建框架自进化分析 run 的 prompt（add-framework-self-evolution D6）。
+
+        加载 agents/evolution.md（文件化体系，缺失 fail-fast），以 str.replace
+        填充占位符（不用 str.format——正文含大量 {} JSON 示例）：
+        - {todo_sections}: 就绪项目清单，每项目含项目名、项目根与 todo.md 全文
+        - {pending_entries}: 待分析条目清单（含 id、日期节、小节、标题）
+        - {out_path}: 契约产物路径（.fenix/evolution/out-<run_id>.json）
+        - {project_root}: 框架主树（项目根）
+        """
+        template = self._load_agent_template("evolution")
+        prompt = template
+        projects: list = detail.get("ready_projects") or []
+        pending: list = detail.get("pending_entries") or []
+
+        secs = []
+        for proj in projects:
+            if not isinstance(proj, dict):
+                continue
+            name = proj.get("name") or "?"
+            root = proj.get("path") or self._pm.project_root
+            todo = proj.get("todo_md") or "（无 todo.md 内容）"
+            secs.append(
+                f"### 项目：{name}（项目根：{root}）\n"
+                f"```\n{todo}\n```\n"
+            )
+        todo_sections = "\n".join(secs) or "（无就绪项目）"
+
+        lines = []
+        for idx, entry in enumerate(pending, start=1):
+            if not isinstance(entry, dict):
+                continue
+            lines.append(
+                f"- #{idx} [id={entry.get('id') or '?'}] "
+                f"{entry.get('date_section') or '?'} / "
+                f"{entry.get('section') or '?'}：{entry.get('title') or '?'}"
+            )
+        entries_txt = "\n".join(lines) or "（无待分析条目）"
+
+        out_path = detail.get("out_path")
+        if not out_path:
+            out_path = self._pm.project_root / ".fenix" / "evolution" / "out.json"
+        prompt = prompt.replace("{todo_sections}", todo_sections)
+        prompt = prompt.replace("{pending_entries}", entries_txt)
+        prompt = prompt.replace("{out_path}", str(out_path))
+        prompt = prompt.replace(
+            "{project_root}", str(self._pm.project_root))
         return prompt
 
     def _fast_track_reuse_note(self, spec_name: str) -> str:
