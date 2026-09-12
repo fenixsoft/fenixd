@@ -923,6 +923,11 @@ class AdminMonitor:
 
         admin 请求重启后由 supervisor 负责实际重启并清除 restart_request。
         若文件一直存在，说明 supervisor 未运行或重启失败，需人工介入。
+        fix-supervisor-hosting-chain D5：recommended_action 按托管态分支——
+        unmanaged/stopped 时指引经 Dashboard「安装托管」或 /fenix-setup 恢复
+        托管（MUST NOT 出现「手动启动 .fenix/bin/fenixd_supervisor.py」这类
+        会绑定到框架主树的直接命令）；managed 时指引检查 supervisor 进程与
+        daemon 排水状态。
         """
         rr = self.project_root / ".fenix" / "restart_request"
         if not rr.exists():
@@ -935,6 +940,24 @@ class AdminMonitor:
             return []  # 刚请求，窗口内不升级
         if self.store.unhandled_for(None, "restart_failed") is not None:
             return []
+        # 托管态分支（D5）：不直接调 .fenix/bin/fenixd_supervisor.py
+        try:
+            from core.fenix_session import hosting_state
+            state = hosting_state(self.project_root)
+        except Exception:
+            state = "stopped"
+        if state == "managed":
+            rec_action = (
+                "检查 supervisor 进程与 daemon 排水状态：确认 supervisor 存活、"
+                "daemon 未卡在排水（admin.shutdown_drain_seconds 窗口内仍有关闭中"
+                "的 run），必要时重启 supervisor 使配置生效"
+            )
+        else:
+            rec_action = (
+                "本项目未受 supervisor 托管：经 Dashboard 项目页「安装托管」或 "
+                "/fenix-setup 恢复 supervisor 托管，恢复后该 restart_request 会被"
+                "supervisor 消费并重启 daemon"
+            )
         self.store.append({
             "kind": ESCALATION,
             "signal_type": "restart_failed",
@@ -946,10 +969,7 @@ class AdminMonitor:
             ),
             "evidence": f"restart_request mtime={mtime}，supervisor 应清除该文件",
             "action_taken": "AdminMonitor 重启验证：请求未完成自动升级",
-            "recommended_action": (
-                "人工检查 supervisor 是否在运行（tmux/进程），必要时手动启动 "
-                "`.fenix/bin/fenixd_supervisor.py`"
-            ),
+            "recommended_action": rec_action,
         })
         return ["restart_failed"]
 

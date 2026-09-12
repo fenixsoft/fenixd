@@ -470,7 +470,26 @@ class HookEngine:
     # ── 七种动作（D4） ──────────────────────────────────────────────
 
     def _action_restart_daemon(self) -> Tuple[bool, str]:
-        """touch .fenix/restart_request，复用 supervisor 优雅重启协议。"""
+        """touch .fenix/restart_request，复用 supervisor 优雅重启协议。
+
+        fix-supervisor-hosting-chain D4：写请求前先校验该项目 supervisor 存在；
+        不存在时复用 `_alert_failure` 链路走 failure（不再报假成功），detail 含
+        「无 supervisor，重启请求不会被消费」。
+        """
+        try:
+            from core.fenix_session import supervisor_running
+        except ImportError:
+            supervisor_running = None
+        if supervisor_running is not None:
+            try:
+                if not supervisor_running(self.project_root):
+                    return False, (
+                        "本项目无 supervisor，重启请求不会被消费："
+                        ".fenix/restart_request 未写入。经 Dashboard 项目页"
+                        "「安装托管」或 /fenix-setup 恢复 supervisor 托管后重试"
+                    )
+            except Exception:
+                pass  # 判定异常：按旧行为继续写入，不卡死 hook
         req = self.project_root / ".fenix" / "restart_request"
         try:
             req.parent.mkdir(parents=True, exist_ok=True)

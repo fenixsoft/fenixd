@@ -184,6 +184,20 @@ deps_mode 仅对 nodejs 项目生效，供给入口是 package.json/node_modules
 
 `admin.shutdown_drain_seconds` 双侧行为：计划性重启（supervisor 检测到 `.fenix/restart_request`）时，daemon 收到 SIGTERM 后先等，上限为本值（秒），等到期才走 terminate 收口；supervisor 的 SIGKILL 强杀等待 = 本值 + 120s。值为 0 时不排水、秒级退出，在飞任务标记 interrupted、重启后继续做（快速停机 + resume 兜底路径）；配置大值（如 1800）则每次计划性重启等待满排水窗口，1-2 小时级 implementer/planner 在飞场景会明显拖慢重启。设置页「系统」页签可编辑 enabled/interval_minutes/escalation_cooldown_minutes/merge_breaker_threshold/shutdown_drain_seconds 五项；`admin.agent_model` 为 legacy 兜底键（解析链：agents.models.self-review > agents.models.administrator > admin.agent_model > 默认网关，其中 self-review 为每日自省专属分配、未配置时继承 Administrator），设置页不提供编辑，避免与「模型分配」页签的 Administrator / Self-Review 条目双入口。`admin.self_review.*` 见「自省」页签。
 
+### .fenix/supervisor_runtime.json 运行时自报
+
+supervisor 每次启动时原子覆写 `.fenix/supervisor_runtime.json`，供 daemon 启动自检读取：
+
+| 键 | 类型 | 用途 |
+|----|------|------|
+| `sigkill_wait` | int | SIGKILL 等待窗口（秒）= admin.shutdown_drain_seconds + 120s（drain=0 时默认 60s）；daemon 启动时比对本值 ≥ drain+120，不满足则打 WARNING 提示重启 supervisor |
+| `started_at` | str | supervisor 本次启动时间戳（ISO8601 UTC）；daemon 据此判定文件是否残留自此前 supervisor 进程 |
+| `pid` | int | supervisor 进程自身 pid |
+| `script_hash` | str | `bin/fenixd_supervisor.py` 文件内容 sha256；与磁盘版本不一致说明 supervisor 持旧代码，需重启升级 |
+| `project_root` | str | 解析出的绝对项目根（`--project-root` 参数 > `FENIX_PROJECT_ROOT` 环境变量 > `Path.cwd()`）；文件缺失或不一致均提示重启 supervisor |
+
+文件读取失败（缺字段/非 JSON）按「旧版 supervisor 进程」处理——打 WARNING，不中断 daemon 主流程。
+
 ### pm.dispatch.aging / pm.family
 
 | 键 | 默认值 | 生效方式 |

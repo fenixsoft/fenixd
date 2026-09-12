@@ -6,6 +6,7 @@ export interface ProjectSummary {
   name: string;
   path: string;
   daemon: DaemonHealth;
+  hosting: string;
   spec_count: number;
   status_counts: Record<string, number>;
   task_done: number;
@@ -76,6 +77,11 @@ export function stopProject(name: string) {
 export function restartProjectDaemon(name: string) {
   return request<{ ok: boolean; error?: string }>(
     `/api/projects/${encodeURIComponent(name)}/restart`, { method: 'POST' });
+}
+
+/** 安装 supervisor 托管：停止裸 daemon → 经 supervisor 启动 */
+export function installHosting(name: string) {
+  return request(`/api/projects/${encodeURIComponent(name)}/install-hosting`, { method: 'POST' });
 }
 
 /** 同步用户级设置：把用户级 config.yaml 中 page 页签对应的受管键覆盖写入项目级。

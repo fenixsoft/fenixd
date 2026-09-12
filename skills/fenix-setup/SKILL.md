@@ -63,8 +63,8 @@ if [ -z "${SESSION_NAME}" ]; then
     exit 1
 fi
 if python3 .fenix/bin/fenix_session.py running "$(pwd)" 2>/dev/null | grep -q YES; then
-    echo "fenixd is already running for this project (tmux session: ${SESSION_NAME})"
-    echo "To restart: tmux kill-session -t ${SESSION_NAME} && /fenix-setup"
+    echo "fenixd is already running for this project (supervisor-hosted, tmux session: ${SESSION_NAME})"
+    echo "To restart: 经 Dashboard 项目页「停止」→「启动」（或 touch .fenix/restart_request 走 supervisor 优雅重启）"
     exit 0
 fi
 ```
@@ -150,11 +150,16 @@ fi
 
 ### 7. 启动 fenixd
 
+> **托管语义**（fix-supervisor-hosting-chain）：daemon 由 `fenixd_supervisor.py`
+> 看门狗托管启动（而非 tmux 直启 `fenixd.py`）——supervisor 承担唯一的重启职责，
+> 检测 `.fenix/restart_request` 后 SIGTERM daemon 并自动拉起。tmux 仅作为
+> 「脱离终端的承载手段」，daemon 是 supervisor 的子进程。
+
 ```bash
-tmux new-session -d -s "${SESSION_NAME}" "cd $(pwd) && python3 .fenix/fenixd.py 2>&1 | tee .fenix/logs/stdout.log"
+tmux new-session -d -s "${SESSION_NAME}" "cd $(pwd) && python3 .fenix/bin/fenixd_supervisor.py --project-root $(pwd) >> .fenix/logs/supervisor.log 2>&1"
 sleep 2
 if tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
-    echo "fenixd started (tmux session: ${SESSION_NAME})"
+    echo "fenixd started (supervisor-hosted, tmux session: ${SESSION_NAME})"
 else
     echo "Failed to start"
 fi
@@ -163,10 +168,10 @@ fi
 ### 8. 展示启动信息
 
 ```
-  Fenix is running!
+  Fenix is running! (supervisor-hosted)
   tmux session: ${SESSION_NAME}
-  View logs:  tmux attach -t ${SESSION_NAME}
+  View logs:  tmux attach -t ${SESSION_NAME}  # supervisor 日志见 .fenix/logs/supervisor.log
   Status:     /fenix-status
   New SPEC:   /fenix-new "your idea"
-  Stop:       tmux kill-session -t ${SESSION_NAME}
-```
+  Stop:       请经 Dashboard 项目页「停止」按钮（supervisor 收口退出）
+

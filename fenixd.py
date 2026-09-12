@@ -52,7 +52,7 @@ from core.wip_checkpoint import (
     ANCHOR_DRAIN_PRESERVE,
     commit_wip_checkpoint,
 )
-from core.admin_store import AdminStore, DISPOSITION
+from core.admin_store import AdminStore, DISPOSITION, ESCALATION
 from core.admin_monitor import AdminMonitor
 from core.hook_engine import HookEngine
 from core.pm_engine import PMEngine
@@ -1016,20 +1016,62 @@ class FenixDaemon:
         return running
 
     def _check_supervisor_drain_consistency(self) -> None:
-        """启动自检：supervisor SIGKILL 等待窗口与 daemon 排水窗口的一致性。
+        """启动自检：supervisor 存在性 + 排水窗口一致性（fix-supervisor-hosting-chain D4）。
 
-        fix-daemon-lifecycle-races（D2）：排水窗口（shutdown_drain_seconds）
-        必须被 supervisor 的 SIGKILL 等待覆盖，否则排水期被强杀截断、在途 run
-        永久无终态（09-05 实证）。supervisor 每次启动把等待窗口写入
-        `.fenix/supervisor_runtime.json`；此处读取并比对：
-          - 文件缺失 → 旧代码 supervisor 进程未升级（8/26 实证场景）；
-          - sigkill_wait < drain + 120 → supervisor 配置陈旧/计算口径漂移；
-          - started_at 与本次 daemon 启动时间戳（daemon_started）漂移超阈值
-            → runtime 文件残留自此前 supervisor 进程。
-        任一命中 → logger WARNING + 项目日志（提示重启 supervisor）；一致配置
-        静默通过。drain≤0（现行快速停机）时无需比对，直接返回。
+        拆为两项独立判定：
+          A. supervisor 存在性——无条件执行（与 admin.shutdown_drain_seconds
+             取值无关，drain=0 的项目也必须检测）。不存在 → logger WARNING +
+             经 AdminStore 落一条 severity: major 的 supervisor_missing escalation
+             告警（描述含「restart_request 不会被消费」，recommended_action 指引
+             经 Dashboard「安装托管」或 /fenix-setup 恢复托管）；同一未处置告警
+             去重不重复追加。
+          B. drain 一致性——仅 drain > 0 时比对（supervisor 的 SIGKILL 等待窗口
+             必须覆盖排水窗口，否则排水期被强杀截断）。drain <= 0 只跳过该项。
         """
         drain_seconds = self._shutdown_drain_seconds()
+
+        # ── A. supervisor 存在性（无条件） ──────────────────────────────
+        try:
+            from core.fenix_session import supervisor_running
+            supervisor_alive = supervisor_running(PROJECT_ROOT)
+        except Exception:
+            supervisor_alive = False  # /proc 不可读等：按不存在告警，宁紧勿松
+        if not supervisor_alive:
+            warn = (
+                "未受 supervisor 托管：项目根下无活跃 supervisor 进程"
+                "（bin/fenixd_supervisor.py），restart_request 不会被消费"
+            )
+            self.logger.warning("fenixd", warn)
+            try:
+                if self.pm_engine is not None:
+                    self.pm_engine._append_project_log(f"⚠️ {warn}")
+            except Exception:
+                pass
+            try:
+                if self.admin_store is not None:
+                    # 同类型未处置告警去重（不重复追加）
+                    if self.admin_store.unhandled_for(None, "supervisor_missing") is None:
+                        self.admin_store.append({
+                            "kind": ESCALATION,
+                            "signal_type": "supervisor_missing",
+                            "spec": None,
+                            "severity": "major",
+                            "description": (
+                                "本项目 daemon 未受 supervisor 托管，restart_request "
+                                "不会被消费（supervisor 缺失）"
+                            ),
+                            "evidence": "fenixd 启动自检：项目根下无活跃 supervisor 进程",
+                            "action_taken": "fenixd 启动自检发现托管缺失，升级人工",
+                            "recommended_action": (
+                                "经 Dashboard 项目页「安装托管」或 /fenix-setup "
+                                "恢复 supervisor 托管"
+                            ),
+                        })
+            except Exception as e:
+                self.logger.warning(
+                    "fenixd", f"supervisor_missing 告警写入失败（non-blocking）: {e}")
+
+        # ── B. drain 一致性（仅 drain > 0） ─────────────────────────────
         if drain_seconds <= 0:
             return
         runtime_path = PROJECT_ROOT / ".fenix" / "supervisor_runtime.json"

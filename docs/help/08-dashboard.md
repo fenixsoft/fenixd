@@ -28,7 +28,19 @@ Fenix Web Dashboard（`http://localhost:8787`）是跨项目的可视化监控�
 
 ### 项目列表页（/projects）
 
-项目页列出所有已注册项目，每张卡片展示 daemon 健康状态、SPEC 数、状态分布、任务进度、验证场景数与项目简介。项目级操作也集中在这里：启停 daemon（start/stop）、软删除（delete）、重新生成简介。
+项目页列出所有已注册项目，每张卡片展示 daemon 健康状态、SPEC 数、状态分布、任务进度、验证场景数与项目简介。项目级操作也集中在这里：启停 daemon（start/stop）、安装托管（install-hosting）、软删除（delete）、重新生成简介。
+
+#### 托管态徽标与「安装托管」
+
+每张卡片的 daemon 状态徽标按托管态三态渲染（数据字段 `daemon` + `hosting`，来自 `/api/projects` 与 `/api/overview`）：
+
+| 显示 | 托管态（hosting） | 含义 |
+|------|-------------------|------|
+| `运行中` | `managed` | daemon 受 supervisor 托管，restart_request / 审批推送等文件信号有消费方 |
+| `运行中·未托管` | `unmanaged` | 裸 daemon——进程在跑但无 supervisor，文件信号无人消费（存量项目典型状态） |
+| `未运行` | `stopped` | daemon 未运行 |
+
+`unmanaged` 项目的操作菜单会多出「安装托管」项：一键执行「停止裸 daemon → 经 supervisor 启动」，使其转入 `managed`（对已托管项目幂等返回、不重启）。`unmanaged` 项目上的「重启」与「审批推送」操作会被拒绝并提示先安装托管——写文件信号前必须确认有消费者，避免信号永久滞留锁死该项目后续全部审批推送。
 
 ### SPEC 详情页（/projects/:name/:spec）
 

@@ -16,6 +16,7 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest import mock
 from unittest.mock import MagicMock, patch
 
 import sys
@@ -188,7 +189,10 @@ class TestSevenActions(unittest.TestCase):
 
     def test_restart_daemon_creates_file(self):
         eng = self._eng()
-        ok, detail = eng._action_restart_daemon()
+        # fix-supervisor-hosting-chain D4：写 restart_request 前校验 supervisor
+        # 存在；测试环境无真实 supervisor，patch 为在跑以验证写入路径
+        with mock.patch("core.fenix_session.supervisor_running", return_value=True):
+            ok, detail = eng._action_restart_daemon()
         self.assertTrue(ok, detail)
         self.assertIn("restart_request", detail)
         self.assertTrue((self.proot / ".fenix" / "restart_request").exists())
@@ -426,8 +430,11 @@ class TestEndToEndDispatch(unittest.TestCase):
 
     def test_dispatch_fires_all_matches(self):
         eng = HookEngine(self.proot, self.config, logger=MagicMock())
-        eng.dispatch("s1", "verified", "done", {})
-        time.sleep(1.0)
+        # fix-supervisor-hosting-chain D4：restart-daemon 写请求前校验 supervisor
+        # 存在；测试环境无真实 supervisor，patch 为在跑以验证全链成功语义
+        with mock.patch("core.fenix_session.supervisor_running", return_value=True):
+            eng.dispatch("s1", "verified", "done", {})
+            time.sleep(1.0)
         recs = read_hook_audit(self.proot)
         statuses = {r["hook_id"]: r["status"] for r in recs}
         self.assertEqual(statuses["g1"], STATUS_SUCCESS)
@@ -517,10 +524,13 @@ class TestAllDoneEvent(unittest.TestCase):
     def test_fires_when_all_specs_terminal(self):
         self._write_state({"spec-a": "done", "spec-b": "pushed"})
         engine = self._engine()
-        engine.dispatch("spec-b", "testing", "pushed", {})
-        self.assertTrue(self._wait_for(
-            lambda: (self.proot / ".fenix" / "restart_request").exists()),
-            "全部 SPEC 终态后未触发 all-done hook（restart_request 未写入）")
+        # fix-supervisor-hosting-chain D4：restart-daemon 消费方校验——测试环境
+        # 无真实 supervisor，patch 为在跑以验证 all-done 触发成功路径
+        with mock.patch("core.fenix_session.supervisor_running", return_value=True):
+            engine.dispatch("spec-b", "testing", "pushed", {})
+            self.assertTrue(self._wait_for(
+                lambda: (self.proot / ".fenix" / "restart_request").exists()),
+                "全部 SPEC 终态后未触发 all-done hook（restart_request 未写入）")
         audit = [a for a in read_hook_audit(self.proot) if a.get("event") == "all-done"]
         self.assertEqual(len(audit), 1)
         self.assertEqual(audit[0]["status"], STATUS_SUCCESS)
@@ -659,10 +669,13 @@ class TestAllDoneRestartOnce(unittest.TestCase):
 
     def test_fire_writes_cleanup_marker(self):
         eng = self._engine()
-        eng._execute_action(
-            {"id": "h-alldone1", "events": ["all-done"],
-             "action": "restart-daemon"},
-            "global", "*", None, "all-done", {})
+        # fix-supervisor-hosting-chain D4：restart-daemon 消费方校验——测试环境
+        # 无真实 supervisor，patch 为在跑以验证 one-shot 清理标记成功路径
+        with mock.patch("core.fenix_session.supervisor_running", return_value=True):
+            eng._execute_action(
+                {"id": "h-alldone1", "events": ["all-done"],
+                 "action": "restart-daemon"},
+                "global", "*", None, "all-done", {})
         self.assertTrue((self.proot / ".fenix" / "restart_request").exists())
         data = json.loads(self.marker.read_text(encoding="utf-8"))
         self.assertEqual(data["hook_ids"], ["h-alldone1"])

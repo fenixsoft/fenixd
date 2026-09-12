@@ -1,5 +1,6 @@
 """
-fenix_session.py — 为 Fenixd 项目计算唯一 tmux session 名并查询运行状态。
+fenix_session.py — 为 Fenixd 项目计算唯一 tmux session 名并查询运行状态、
+daemon 托管态（fix-supervisor-hosting-chain）。
 
 早期框架用固定 tmux session 名 `fenixd`，同一台机器只能同时运行一个
 fenixd daemon。本模块按「项目根路径」派生确定性、唯一的 session 名
@@ -7,13 +8,20 @@ fenixd daemon。本模块按「项目根路径」派生确定性、唯一的 ses
 互不干扰（日志、STATE.md、config.yaml 本就按项目隔离，唯一冲突点
 就是 session 名）。
 
-纯函数（resolve_root / session_name / is_running）供 bin/fenix_session.py
-（CLI）与 core/dashboard/data.py（daemon 健康检测）共享，避免两处重复实现。
+托管态（supervisor-hosting）：daemon 自 fix-admin-self-heal 起由外部
+supervisor（bin/fenixd_supervisor.py）托管启动；本模块提供 supervisor_running
+与 hosting_state（managed / unmanaged / stopped）判定，供 dashboard、admin、
+hook 区分「进程在跑但无人托管」与「完全未运行」。
+
+纯函数（resolve_root / session_name / is_running / supervisor_running /
+hosting_state）供 bin/fenix_session.py（CLI）与 core/dashboard/data.py
+（daemon 健康检测）共享，避免两处重复实现。
 """
 
 import hashlib
 import os
 import re
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -63,6 +71,35 @@ def _legacy_session_matches(root: Path) -> bool:
     return False
 
 
+def _procs_matching(match) -> list:
+    """扫描 /proc，返回命中 match(cwd: Path, cmdline: str) 的进程 pid 列表。
+
+    fix-supervisor-hosting-chain 2.1：_daemon_procs_under / supervisor_running /
+    _fenix_pids_under 共用同一套 process-cwd+cmdline 探测（读取
+    /proc/<pid>/cwd 与 cmdline），不得复制粘贴出第二套解析。单个进程读取
+    失败（OSError/ValueError，进程已退出/权限不足）跳过；调用方负责兜底
+    整体异常。返回 pid 数字串列表，调用方自取 bool() 或按 pid 操作。
+    """
+    try:
+        pids = os.listdir("/proc")
+    except OSError:
+        return []
+    hits = []
+    for pid in pids:
+        if not pid.isdigit():
+            continue
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+            cwd_resolved = Path(cwd).expanduser().resolve()
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmdline = f.read().decode("utf-8", errors="replace").replace("\x00", " ")
+        except (OSError, ValueError):
+            continue
+        if match(cwd_resolved, cmdline):
+            hits.append(pid)
+    return hits
+
+
 def _daemon_procs_under(root: Path) -> bool:
     """项目根下是否有活跃的 fenixd daemon 进程。
 
@@ -70,20 +107,11 @@ def _daemon_procs_under(root: Path) -> bool:
     tmux session 判定会漏报；以 /proc 的 cwd+cmdline 匹配项目根的
     fenixd.py / fenixd_supervisor.py 进程为准，覆盖 tmux 与直启两种模式。
     """
-    for pid in os.listdir("/proc"):
-        if not pid.isdigit():
-            continue
-        try:
-            cwd = os.readlink(f"/proc/{pid}/cwd")
-            if Path(cwd).expanduser().resolve() != root:
-                continue
-            with open(f"/proc/{pid}/cmdline", "rb") as f:
-                cmdline = f.read().decode("utf-8", errors="replace").replace("\x00", " ")
-        except (OSError, ValueError):
-            continue
-        if ".fenix/fenixd.py" in cmdline or "fenixd_supervisor" in cmdline:
-            return True
-    return False
+    def _match(cwd: Path, cmdline: str) -> bool:
+        if cwd != root:
+            return False
+        return ".fenix/fenixd.py" in cmdline or "fenixd_supervisor" in cmdline
+    return bool(_procs_matching(_match))
 
 
 def _tmux_match(proot: Path) -> bool:
@@ -116,15 +144,123 @@ def is_running(root: str | None = None) -> bool:
     return _tmux_match(proot)
 
 
-def start_daemon(root: str | None = None) -> dict:
-    """启动该项目的 fenixd daemon（复用唯一 tmux session）。
+def _supervisor_argv_project_root(cmdline: str):
+    """从 supervisor 进程 cmdline 提取 --project-root 值（绝对规范化）。
 
-    以与 `fenix-setup` 一致的命令拉起：
-    `tmux new-session -d -s <session> "cd <root> && python3 .fenix/fenixd.py 2>&1 | tee .fenix/logs/stdout.log"`
+    fix-supervisor-hosting-chain 2.1：supervisor 可能经 cwd（默认）或显式
+    --project-root 两种方式锚定项目根；提取参数值用于跨目录判定
+    （如 tmux 会话内 cwd 与项目根一致场景之外的显式参数形式）。
+    匹配 `--project-root <值>` 与 `--project-root=<值>` 两种写法。
+    """
+    m = re.search(r"--project-root(?:=|\s+)(\S+)", cmdline)
+    if not m:
+        return None
+    try:
+        return Path(m.group(1)).expanduser().resolve()
+    except (OSError, ValueError):
+        return None
+
+
+def supervisor_running(root: str | None = None) -> bool:
+    """该项目根是否有活跃 supervisor 进程（bin/fenixd_supervisor.py）。
+
+    fix-supervisor-hosting-chain D3：扫描 /proc，命中条件为 cmdline 含
+    fenixd_supervisor，且该进程 cwd 解析后等于 root，或其 cmdline 的
+    --project-root 值解析后等于 root。/proc 不可读或任何异常返回 False
+    且不抛异常（与 is_running 的容错契约一致）。
+    """
+    proot = resolve_root(root)
+
+    def _match(cwd: Path, cmdline: str) -> bool:
+        if "fenixd_supervisor" not in cmdline:
+            return False
+        if cwd == proot:
+            return True
+        argv_root = _supervisor_argv_project_root(cmdline)
+        return argv_root is not None and argv_root == proot
+
+    try:
+        return bool(_procs_matching(_match))
+    except Exception:
+        return False
+
+
+def _fenix_pids_under(root: Path) -> list:
+    """项目根下活跃的 fenixd daemon/supervisor 进程 pid 列表。
+
+    fix-supervisor-hosting-chain 3.2：供 stop_daemon 定位 SIGTERM/SIGKILL
+    目标。判定口径与 _daemon_procs_under 一致（cwd 等于 root 且 cmdline 含
+    .fenix/fenixd.py 或 fenixd_supervisor），并认 --project-root 显式锚定该
+    root 的 supervisor（跨 cwd 场景）。仅返回按此口径定位的 pid，禁止按
+    cmdline 裸匹配杀进程。
+    """
+    def _match(cwd: Path, cmdline: str) -> bool:
+        if ".fenix/fenixd.py" not in cmdline and "fenixd_supervisor" not in cmdline:
+            return False
+        if cwd == root:
+            return True
+        argv_root = _supervisor_argv_project_root(cmdline)
+        return argv_root is not None and argv_root == root
+
+    try:
+        return _procs_matching(_match)
+    except Exception:
+        return []
+
+
+def _is_daemon_cmdline(pid) -> bool:
+    """pid 的 cmdline 是否含 .fenix/fenixd.py（daemon，而非 supervisor）。
+
+    fix-supervisor-hosting-chain 3.2：stop_daemon 的 SIGTERM 只发给 daemon
+    （supervisor 见 stop flag 后自行退出，无需也不应杀它）。读取失败（进程
+    已退出）返回 False，安全跳过。
+    """
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmdline = f.read().decode("utf-8", errors="replace").replace("\x00", " ")
+    except OSError:
+        return False
+    return ".fenix/fenixd.py" in cmdline
+
+
+def hosting_state(root: str | None = None) -> str:
+    """daemon 托管态三态判定：managed / unmanaged / stopped。
+
+    fix-supervisor-hosting-chain D3：
+    - managed   ：有活跃 supervisor 进程（daemon 受托管，restart_request /
+                  approve_push_request 等文件信号有消费方）
+    - unmanaged ：有活跃 daemon 进程但无 supervisor（裸 daemon——事故回归点，
+                  进程在跑但文件信号无人消费）
+    - stopped   ：两者皆无
+    任一判定异常按 stopped 兜底，不抛异常。
+    """
+    proot = resolve_root(root)
+    try:
+        if supervisor_running(proot):
+            return "managed"
+    except Exception:
+        pass
+    try:
+        if is_running(proot):
+            return "unmanaged"
+    except Exception:
+        pass
+    return "stopped"
+
+
+def start_daemon(root: str | None = None) -> dict:
+    """启动该项目的 fenixd daemon（supervisor 托管，fix-supervisor-hosting-chain）。
+
+    以 supervisor 托管方式拉起：在项目唯一 tmux session 内执行
+    `cd <root> && python3 .fenix/bin/fenixd_supervisor.py --project-root <root> >> .fenix/logs/supervisor.log 2>&1`，
+    daemon 由 supervisor 作为子进程拉起（tmux 仅承担脱离终端，不再是 daemon
+    的父进程）。与 `fenix-setup` 技能第 7 步的命令保持一致。
 
     启动前校验项目根存在 `.fenix`（框架软链接）与 `STATE.md`，缺失返回可读
     错误且不产生 daemon 进程。幂等：已运行则直接返回 already，不重复拉起。
-    启动后轮询 `is_running` 至多约 5 秒，命中再返回成功。
+    启动前清除陈旧 `.fenix/stop`（仅当 daemon 与 supervisor 均未在跑时删除，
+    避免误删一次正在进行的停止操作留下的标记）。启动后轮询 `is_running`
+    至多约 5 秒，命中再返回成功。
 
     返回: {"ok": bool, "error": str|None, "session": str|None, "already": bool}
     任何 subprocess/tmux 异常均返回 ok=False 的错误对象，不抛异常。
@@ -138,10 +274,19 @@ def start_daemon(root: str | None = None) -> dict:
     if is_running(proot):
         return {"ok": True, "error": None, "session": session, "already": True}
 
+    # 陈旧 stop 标记清理（3.3）：is_running 为假（已幂等返回）且 supervisor 也未
+    # 在跑时删除——避免误删一次正在进行的停止操作留下的标记
+    stop_flag = proot / ".fenix" / "stop"
+    try:
+        if stop_flag.exists() and not supervisor_running(proot):
+            stop_flag.unlink()
+    except OSError:
+        pass
+
     try:
         subprocess.run(
             ["tmux", "new-session", "-d", "-s", session,
-             f"cd {proot} && python3 .fenix/fenixd.py 2>&1 | tee .fenix/logs/stdout.log"],
+             f"cd {proot} && python3 .fenix/bin/fenixd_supervisor.py --project-root {proot} >> .fenix/logs/supervisor.log 2>&1"],
             capture_output=True, text=True, timeout=15,
         )
     except Exception as e:
@@ -157,47 +302,78 @@ def start_daemon(root: str | None = None) -> dict:
 
 
 def stop_daemon(root: str | None = None) -> dict:
-    """停止该项目的 fenixd daemon（优雅优先，强制兜底）。
+    """停止该项目的 fenixd daemon 及其 supervisor（fix-supervisor-hosting-chain）。
 
-    先 `tmux send-keys -t <session> C-c` 触发 daemon 的 SIGINT 优雅关闭
-    （fenixd.py 已注册 shutdown handler），轮询 `is_running` 至多约 5 秒；
-    超时仍未退出再 `tmux kill-session -t <session>` 强制终止。
-    幂等：未运行时直接返回成功，不报错。
+    托管语义：supervisor 是 daemon 的父进程，直接 kill daemon 会被 supervisor
+    立即重新拉起；直接 kill session 会连带 SIGHUP 掉两者并丢失优雅清理。停止
+    按序执行：
+      ① 写 `.fenix/stop`（supervisor 见 daemon 退出后不再拉起）
+      ② 经 /proc 定位该项目 daemon 进程并 SIGTERM（快速停机语义，秒级收口，
+         不触发规划性排水；.fenix/restart_request 不在册时不走排水窗口）
+      ③ 轮询等待 daemon 与 supervisor 双双退出（上限约 30 秒）
+      ④ 超时 `tmux kill-session -t <session>` 强制终止，并对残留 daemon/
+         supervisor 进程补发 SIGKILL（确保无孤儿）
+      ⑤ finally 清除 `.fenix/stop`
+    幂等：`is_running` 为假时直接返回 was_running=False，不写 stop 文件。
+
+    SIGTERM/SIGKILL 只作用于 cwd 或 --project-root 等于该项目根的进程
+    （经 _fenix_pids_under 定位），禁止按 cmdline 裸匹配杀进程。
 
     返回: {"ok": bool, "error": str|None, "session": str|None, "was_running": bool}
+    任何 subprocess/信号异常均返回 ok=False 的错误对象，不抛异常。
     """
     proot = resolve_root(root)
     session = session_name(proot)
+    stop_flag = proot / ".fenix" / "stop"
     if not is_running(proot):
         return {"ok": True, "error": None, "session": session, "was_running": False}
 
+    # ① 写 stop（supervisor 主循环开头与 daemon 退出后都会检查）
     try:
-        subprocess.run(
-            ["tmux", "send-keys", "-t", session, "C-c"],
-            capture_output=True, text=True, timeout=5,
-        )
-    except Exception as e:
-        # 优雅关闭信号发送失败：直接尝试强制终止兜底
-        pass
+        stop_flag.parent.mkdir(parents=True, exist_ok=True)
+        stop_flag.touch()
+    except OSError as e:
+        return {"ok": False, "error": f"写 .fenix/stop 失败: {e}", "session": session, "was_running": True}
 
-    # 轮询等待优雅关闭（至多约 5 秒）
-    for _ in range(50):
-        if not is_running(proot):
-            return {"ok": True, "error": None, "session": session, "was_running": True}
-        time.sleep(0.1)
-
-    # 超时：强制 kill session
     try:
-        subprocess.run(
-            ["tmux", "kill-session", "-t", session],
-            capture_output=True, text=True, timeout=5,
-        )
+        # ② SIGTERM 该项目 daemon 进程（仅 cwd/--project-root 锚定且为 daemon 的
+        # 进程——supervisor 见 stop flag 后自行退出，SIGTERM 不发给它）
+        for pid in _fenix_pids_under(proot):
+            if _is_daemon_cmdline(pid):
+                try:
+                    os.kill(int(pid), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        # ③ 轮询等待 daemon 与 supervisor 双双退出（上限约 30 秒）
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if not is_running(proot):
+                break
+            time.sleep(0.5)
+        if is_running(proot):
+            # ④ 超时：kill session 并对残留 daemon/supervisor 补 SIGKILL
+            try:
+                subprocess.run(
+                    ["tmux", "kill-session", "-t", session],
+                    capture_output=True, text=True, timeout=5,
+                )
+            except Exception:
+                pass
+            for pid in _fenix_pids_under(proot):
+                try:
+                    os.kill(int(pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        # ⑤ finally 清除 stop（无论成败）
+        try:
+            stop_flag.unlink()
+        except OSError:
+            pass
+        return {"ok": True, "error": None, "session": session, "was_running": True}
     except Exception as e:
-        return {"ok": False, "error": f"强制终止 daemon 失败: {e}", "session": session, "was_running": True}
-
-    # 再确认一次
-    for _ in range(10):
-        if not is_running(proot):
-            return {"ok": True, "error": None, "session": session, "was_running": True}
-        time.sleep(0.1)
-    return {"ok": True, "error": None, "session": session, "was_running": True}
+        # finally 语义：异常路径也清除 stop，避免项目永久拒绝启动
+        try:
+            stop_flag.unlink()
+        except OSError:
+            pass
+        return {"ok": False, "error": f"停止 daemon 失败: {e}", "session": session, "was_running": True}
