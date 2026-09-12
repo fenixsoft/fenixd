@@ -1,0 +1,19 @@
+{
+  "status": "success",
+  "spec": "fix-supervisor-hosting-chain",
+  "summary": "复核验证报告 5 个失败场景（web-overview-install-hosting-click / cli-verify-showcase-managed-after-install / api-install-hosting-managed-idempotent / api-lifecycle-start-stop-normal / cli-verify-showcase-approve-signal-consumed）：逐条核对断言与产品行为，断言均合理（install 12s 内托管成立与 spec「秒级收口」声明一致），确属产品 BUG-01——stop_daemon 收口过慢（稳态实测 21.1s，逼近端点 30s 超时线）＋并发 install/stop 互踩致超时兜底 SIGKILL 误杀他路刚拉起的 supervisor，托管未成立、approve_push_request.json 无人消费。修复（提交 20c823b7）：① stop_daemon 入口快照停止目标，轮询/SIGKILL/kill-session 兜底只作用于快照 pid、绝不重扫——并发场景不误杀他路新 supervisor；② supervisor 监视循环内见 stop flag 主动 SIGTERM 当前 daemon（停止协作），不再依赖「daemon 自己先死」；daemon shutdown 加幂等 guard 防双重 SIGTERM 重入；③ event_bus.stop() watch/scan 线程 join 与 fenixd admin 线程 join 白等移除（scan/admin 为分钟级长 sleep 线程，旧 join(5) 纯白等），非计划 SIGTERM 快速停机实测由 10.78s 收敛至约 4.3s——install 端到端约 6.3s，撑起 12s「安装托管」等待窗且给 TTL/UI 渲染留余量；④ Dashboard 项目生命周期端点（start/stop/install-hosting/delete）加 .fenix/lifecycle.lock 进程级串行，残留 install 请求与后续场景 stop/install 排队执行、不互踩。验证：tests/test_supervisor_hosting.py 35 用例、test_event_bus.py 12 用例及受影响子集合计 585 用例全绿；真实 showcase 环境实测：裸 daemon 冷启动收口 0.5s、稳态 daemon 单次收口 10.78s（旧 10s+ 实证）、event_bus.stop() 单元实测 2.31s（旧约 10s）。tasks.md 验证修复段「先复核失败有效性」「按复核结论修复」已勾选；「修复后重跑验证确认通过」由框架重跑执行。",
+  "findings": [
+    {
+      "type": "deliverable-dispute",
+      "element": "tests/test_supervisor_hosting.py",
+      "current": "声明清单标注「主树存在，修改/引用目标确认」；实际该文件为本 SPEC 上一轮新增交付物（kind: new），主树 repo 中不存在现成文件",
+      "suggestion": "按声明路径续写/扩展 tests/test_supervisor_hosting.py（本轮新增 stop_daemon 快照防误杀、等 supervisor 退后才清 stop 等回归用例），非笔误"
+    },
+    {
+      "type": "deliverable-dispute",
+      "element": "core/dashboard/static/dist/index.html",
+      "current": "声明为 reference；dist/ 为 gitignored 运行时构建产物，本 SPEC 任务 7.2 明确「不入库」",
+      "suggestion": "应归 reference：npm run build 已在本轮重建成功并验证 test_index_served / test_static_root_fallback_to_dist 通过，不提交"
+    }
+  ]
+}
