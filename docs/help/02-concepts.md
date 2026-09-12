@@ -16,11 +16,13 @@ Fenix 是一个**闭环**开发框架：需求输入后，从设计、实现、�
 ```mermaid
 graph TB
     subgraph DAEMON ["Fenix Daemon"]
-        FW["File Watcher\n（文件监听器）"]
+        FW["File Watcher\n（文件监听器，2 秒轮询）"]
+        SC["Periodic Scan\n（兜底全量扫描，默认 30 分钟）"]
         AM["Admin Monitor\n（告警监视器）"]
         PM["PM Engine\n（调度引擎）"]
         SM["State Machine\n（状态机）"]
         FW -.-> PM
+        SC -.-> PM
         PM --> SM
     end
 
@@ -54,7 +56,9 @@ graph TB
     SR ~~~ API
 ```
 
-从图上可以看出分工：PM Engine 是调度中枢，做派发决策并唤起 Agent Pool 中的各类 Agent；State Machine 维护 SPEC 的状态转移；Admin Monitor 监视困境信号，必要时唤起 Administrator 自愈；File Watcher 监听文件变化反馈给 PM Engine。对外则由 REST API 把状态暴露给 Web UI 展示。
+从图上可以看出分工：PM Engine 是调度中枢，做派发决策并唤起 Agent Pool 中的各类 Agent；State Machine 维护 SPEC 的状态转移；Admin Monitor 监视困境信号，必要时唤起 Administrator 自愈；File Watcher 监听文件变化反馈给 PM Engine，Periodic Scan 则按固定间隔做兜底全量扫描，捞出监听器漏掉的事件与没有事件源的孤儿态。对外则由 REST API 把状态暴露给 Web UI 展示。
+
+两条入边的分工是理解调度的关键：**正常唤醒靠文件监听（2 秒级），兜底扫描只是安全网**。各唤醒源的间隔、成本实测与已知盲区见[调度与治理规则](06-governance.md#调度节拍spec-何时被唤醒)。
 
 ## 七类 Agent 角色
 
