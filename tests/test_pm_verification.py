@@ -1372,6 +1372,95 @@ class TestVerifiedGateEvidenceRace(unittest.TestCase):
         self.assertIn("1.1", entry2.get("error", ""))
 
 
+class TestReadImplementerResultStampGuard(unittest.TestCase):
+    """fix-fasttrack-resultfile-missing-redispatch 3.3：_read_implementer_result
+    stamp 守卫 fail-closed 收紧（spec 字段非严格等于当前 spec 一律 ignore）。
+
+    覆盖 shared-result-file-integrity spec 的「stamp 不符则 ignore /
+    无 stamp 残留同样 ignore（关闭 fail-open 洞）/ stamp 匹配则采信」三态，
+    并验证 worktree 文件同规则收紧。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.logger = MagicMock()
+        self.sm = StateMachine(
+            self.project_root / ".fenix" / "STATE.md", self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, self.project_root, self.logger,
+        )
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_shared(self, payload):
+        path = self.project_root / ".fenix" / ".fenix-run-result.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def test_stamp_mismatch_ignored(self):
+        """stamp=其它 spec（跨 spec 残留）→ ignore 返回 None。"""
+        self._write_shared({"spec": "other-spec", "status": "success"})
+        self.engine.agent_runner.worktree_manager.find_implementer_worktree = (
+            MagicMock(return_value=None))
+        self.assertIsNone(self.engine._read_implementer_result("demo"))
+        self.engine.logger.warning.assert_called()
+
+    def test_stamp_missing_ignored_fail_closed(self):
+        """无 stamp 残留（spec 缺失）→ ignore 返回 None（fail-open 洞关闭）。"""
+        self._write_shared({"status": "success"})
+        self.engine.agent_runner.worktree_manager.find_implementer_worktree = (
+            MagicMock(return_value=None))
+        self.assertIsNone(self.engine._read_implementer_result("demo"))
+
+    def test_stamp_empty_and_non_string_ignored(self):
+        """spec 为空字符串/非字符串 → 一律 ignore（fail-closed）。"""
+        for bad in ("", None, 123, ["demo"]):
+            payload = {"spec": bad, "status": "success"}
+            self._write_shared(payload)
+            self.engine.agent_runner.worktree_manager.find_implementer_worktree = (
+                MagicMock(return_value=None))
+            self.assertIsNone(
+                self.engine._read_implementer_result("demo"),
+                f"spec={bad!r} 应被 fail-closed 拒绝",
+            )
+
+    def test_stamp_match_adopted(self):
+        """spec 严格等于当前 spec → 采信并归一化 status。"""
+        self._write_shared({"spec": "demo", "status": "success"})
+        self.engine.agent_runner.worktree_manager.find_implementer_worktree = (
+            MagicMock(return_value=None))
+        ft = self.engine._read_implementer_result("demo")
+        self.assertIsNotNone(ft)
+        self.assertEqual(ft["status"], "success")
+
+    def test_worktree_file_stamp_missing_ignored(self):
+        """worktree 文件同样 fail-closed：无 stamp → ignore（worktree 复用
+        也可能带旧 spec 残留）。"""
+        wt = self.project_root / "worktree"
+        wt.mkdir(exist_ok=True)
+        (wt / ".fenix-run-result.json").write_text(
+            json.dumps({"status": "success"}), encoding="utf-8")
+        self.engine.agent_runner.worktree_manager.find_implementer_worktree = (
+            MagicMock(return_value=wt))
+        self.assertIsNone(self.engine._read_implementer_result("demo"))
+
+    def test_worktree_file_stamp_match_adopted(self):
+        """worktree 文件 stamp 严格匹配 → 采信。"""
+        wt = self.project_root / "worktree"
+        wt.mkdir(exist_ok=True)
+        (wt / ".fenix-run-result.json").write_text(
+            json.dumps({"spec": "demo", "status": "verified"}),
+            encoding="utf-8")
+        self.engine.agent_runner.worktree_manager.find_implementer_worktree = (
+            MagicMock(return_value=wt))
+        ft = self.engine._read_implementer_result("demo")
+        self.assertIsNotNone(ft)
+        self.assertEqual(ft["status"], "success")  # verified 归一化为 success
+
+
 class TestZeroChangeConfirmationPath(unittest.TestCase):
     """零变更哨放行通道：验证确认型 no-op 不重派，直接进验证（2026-09-11 原地修）。
 
@@ -1508,6 +1597,94 @@ class TestZeroChangeConfirmationPath(unittest.TestCase):
         self.git("branch", "-D", "fenix/demo")
         r = self._result()
         self.assertFalse(self.engine._implementer_zero_change("demo", r))
+
+
+class TestImplementationBranchHasCommits(unittest.TestCase):
+    """fix-fasttrack-resultfile-missing-redispatch 1.3：_implementation_branch_has_commits
+    四态单测（真实 git 仓库，与零变更哨共用 rev-list 判定单一来源）。
+
+    覆盖 design D1 的 conservative fail-open 语义：
+    - 分支有提交 → True；
+    - 分支零提交 / result.branch 为空 / rev-list 失败 → False（一律走重派，不吞风险）。
+    """
+
+    def setUp(self):
+        import subprocess as sp
+        from core.pm_engine import PMEngine
+        self.sp = sp
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.logger = MagicMock()
+        self.sm = StateMachine(
+            self.project_root / ".fenix" / "STATE.md", self.logger)
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, self.project_root, self.logger,
+        )
+
+        def git(*a):
+            r = sp.run(["git", "-C", str(self.project_root), *a],
+                       capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr
+            return r.stdout
+        self.git = git
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "t@t")
+        git("config", "user.name", "t")
+        (self.project_root / "f.txt").write_text("x", encoding="utf-8")
+        git("add", ".")
+        git("commit", "-qm", "init")
+        git("branch", "fenix/demo")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _result(self, branch="fenix/demo"):
+        return SimpleNamespace(success=True, error=None, run_id="r1", branch=branch)
+
+    def test_branch_with_commits_returns_true(self):
+        """分支相对 main 已有提交 → True。"""
+        (self.project_root / "work.txt").write_text("impl", encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-qm", "[fenix] impl")
+        self.git("checkout", "-q", "fenix/demo")
+        (self.project_root / "work.txt").write_text("impl2", encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-qm", "[fenix] impl2")
+        self.git("checkout", "-q", "main")
+        self.assertTrue(self.engine._implementation_branch_has_commits(
+            self._result()))
+
+    def test_branch_zero_commits_returns_false(self):
+        """分支与 main 同点（零新提交）→ False。"""
+        self.assertFalse(self.engine._implementation_branch_has_commits(
+            self._result()))
+
+    def test_empty_branch_returns_false(self):
+        """result.branch 为空（失败/中断 run 不填分支）→ False。"""
+        self.assertFalse(self.engine._implementation_branch_has_commits(
+            self._result(branch=None)))
+        self.assertFalse(self.engine._implementation_branch_has_commits(
+            self._result(branch="")))
+
+    def test_rev_list_failure_returns_false(self):
+        """分支被删除（rev-list 失败）→ False（fail-open，不吞风险）。"""
+        self.git("branch", "-D", "fenix/demo")
+        self.assertFalse(self.engine._implementation_branch_has_commits(
+            self._result()))
+
+    def test_zero_change_reuses_helper_semantics(self):
+        """零变更哨与 helper 共用判定：分支有提交 → 零变更哨判 False。"""
+        (self.project_root / "work.txt").write_text("impl", encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-qm", "[fenix] impl")
+        self.git("checkout", "-q", "fenix/demo")
+        (self.project_root / "work.txt").write_text("impl2", encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-qm", "[fenix] impl2")
+        self.git("checkout", "-q", "main")
+        self.assertFalse(self.engine._implementer_zero_change(
+            "demo", self._result()))
 
 
 if __name__ == "__main__":

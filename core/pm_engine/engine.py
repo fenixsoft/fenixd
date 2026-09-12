@@ -751,16 +751,20 @@ class PMEngine:
         try:
             data = json.loads(result_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
-                # 共享结果文件护栏：文件携带的 spec 与当前 spec 不符时，
-                # 视作其它 spec 的残留（主树 .fenix/.fenix-run-result.json 是共享文件，
-                # 任何 spec 成功都会覆盖写它），避免「CLI 成功退出却被残留文件
-                # 误判为失败 → 无谓重试」（admin 处置 add-spec-context-menu 根因）。
+                # 共享结果文件护栏（fail-closed，fix-fasttrack-resultfile-missing
+                # -redispatch D3）：文件携带的 spec 字段必须**严格**等于当前 spec
+                # 才采信——spec 缺失/为空/非字符串/与当前 spec 不符一律 ignore
+                # 返回 None。主树 .fenix/.fenix-run-result.json 是跨 spec 共享单例，
+                # 任何 spec 成功都会覆盖写它；无 stamp 残留（旧格式/异常）不得被
+                # 误采信为当前 spec 的结果（2026-09-12 事故：无 stamp 残留被
+                # fail-open 采信致死亡判定误判）。worktree 文件同规则收紧
+                #（worktree 复用也可能带旧 spec 残留）。
                 stamped = data.get("spec")
-                if isinstance(stamped, str) and stamped and stamped != spec_name:
+                if stamped != spec_name:
                     self.logger.warning(
                         "pm_engine",
                         f"Ignoring stale result file {result_path}: "
-                        f"spec='{stamped}' != '{spec_name}'",
+                        f"spec={stamped!r} != '{spec_name}' (fail-closed)",
                     )
                     return None
                 # 顶层 status 与 verification.verdict 混淆归一化（add-agent-prompt-files
@@ -811,6 +815,36 @@ class PMEngine:
             self.logger.warning(
                 "pm_engine",
                 f"impl-result 快照写入失败 '{spec_name}'（非阻塞）: {e}",
+            )
+
+    def _cleanup_shared_result_file(self, spec_name: str) -> None:
+        """消费后清理主树共享结果文件（fix-fasttrack-resultfile-missing-redispatch D4）。
+
+        在本次采信消费 + ``_write_impl_result_snapshot`` 落盘 per-spec 快照**之后**
+        调用。仅当共享文件 .fenix/.fenix-run-result.json 的 stamp 严格匹配当前 spec
+        （即本次采信消费的正是该文件）时才删除；stamp 缺失/不符时不动
+        （可能是其它 spec 的在途文件，误删会伤及多读者）。删除失败仅记 WARNING
+        不阻塞主流程（fail-open，残留由 stamp 严格校验在后续读取时拒绝）。
+        """
+        shared = self.project_root / ".fenix" / ".fenix-run-result.json"
+        try:
+            if not shared.exists():
+                return
+            data = json.loads(shared.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or data.get("spec") != spec_name:
+                return  # 非本 spec 的文件（其它 spec 在途残留）→ 不动
+            shared.unlink()
+            self.logger.info(
+                "pm_engine",
+                f"已消费共享结果文件已清理 '{spec_name}'：{shared}",
+            )
+        except (json.JSONDecodeError, OSError) as e:
+            if isinstance(e, json.JSONDecodeError):
+                return  # 损坏/无 stamp 文件由读取侧 fail-closed 拒绝，此处不动
+            self.logger.warning(
+                "pm_engine",
+                f"共享结果文件清理失败 '{spec_name}'（非阻塞，残留由 stamp "
+                f"严格校验兜底）: {e}",
             )
 
     def _read_impl_result_for_gate(self, spec_name: str) -> Optional[dict]:
@@ -2420,6 +2454,9 @@ class PMEngine:
 
     def _implementer_zero_change(self, spec_name: str, result) -> bool:
         return self._verification._implementer_zero_change(spec_name, result)
+
+    def _implementation_branch_has_commits(self, result) -> bool:
+        return self._verification._implementation_branch_has_commits(result)
 
     def _deliverable_gate_missing(self, spec_name: str, result) -> list:
         return self._verification._deliverable_gate_missing(spec_name, result)

@@ -7,6 +7,7 @@ _last_scenario_diff / _last_interaction_contract 随组件同迁（design D3 规
 """
 
 from pathlib import Path
+from typing import Optional
 from datetime import datetime, timezone
 import json
 import os
@@ -2525,15 +2526,18 @@ class VerificationPipeline:
         return False
 
 
-    def _implementer_zero_change(self, spec_name: str, result) -> bool:
-        """实现器零变更成功判定：分支零新提交 且 全程零 Edit/Write 工具调用。
+    def _branch_commit_count(self, result) -> Optional[int]:
+        """实现分支相对 main 的提交数（`git rev-list --count main..<branch>`）。
 
-        分支缺失（result.branch 为空）不判定（保持既有行为，向后兼容）。
+        单一来源（fix-fasttrack-resultfile-missing-redispatch D1）：供
+        ``_implementation_branch_has_commits`` 与 ``_implementer_zero_change``
+        共用。``result.branch`` 为空或 rev-list 失败/超时返回 None
+        （调用方各自按 conservative fail-open 处置，不吞风险）。
         """
         import subprocess as _sp
         branch = getattr(result, "branch", None)
         if not branch:
-            return False
+            return None
         try:
             r = _sp.run(
                 ["git", "rev-list", "--count", f"main..{branch}"],
@@ -2541,11 +2545,34 @@ class VerificationPipeline:
                 cwd=str(self._pm.project_root),
             )
             if r.returncode != 0:
-                return False
-            if int(r.stdout.strip() or "0") > 0:
-                return False  # 有新提交 → 正常成功
+                return None
+            return int(r.stdout.strip() or "0")
         except (OSError, ValueError, _sp.TimeoutExpired):
+            return None
+
+    def _implementation_branch_has_commits(self, result) -> bool:
+        """实现分支相对 main 是否已有提交（`git rev-list --count main..<branch>` > 0）。
+
+        Conservative fail-open：``result.branch`` 为空或 rev-list 失败/超时一律
+        返回 False（→ 调用方走重派，不吞风险）。供 fast-track 死亡路径分流
+        （dispatch._run_fast_track_flow）与 ``_implementer_zero_change`` 共用。
+        """
+        count = self._branch_commit_count(result)
+        return count is not None and count > 0
+
+    def _implementer_zero_change(self, spec_name: str, result) -> bool:
+        """实现器零变更成功判定：分支零新提交 且 全程零 Edit/Write 工具调用。
+
+        分支缺失（result.branch 为空）不判定（保持既有行为，向后兼容）。
+        """
+        branch = getattr(result, "branch", None)
+        if not branch:
             return False
+        count = self._branch_commit_count(result)
+        if count is None:
+            return False  # rev-list 失败/超时 → fail-open 不判零变更（既有语义）
+        if count > 0:
+            return False  # 有新提交 → 正常成功
         # 分支零提交，再看运行产物中是否有编辑类工具调用
         run_file = self._pm.project_root / ".fenix" / "runs" / f"{result.run_id}.jsonl"
         try:

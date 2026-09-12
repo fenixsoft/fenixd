@@ -960,6 +960,68 @@ class TestImplResultSnapshot(unittest.TestCase):
         self.assertFalse(self._snap().exists())
 
 
+class TestSharedResultFileCleanup(unittest.TestCase):
+    """fix-fasttrack-resultfile-missing-redispatch 3.4：主树共享结果文件
+    .fenix/.fenix-run-result.json 消费后清理（快照落盘后删除）+ 删除失败不阻塞。
+
+    覆盖 shared-result-file-integrity spec 的「消费并落盘快照后删除共享文件 /
+    删除失败仅记日志不阻塞」两态。
+    """
+
+    def setUp(self):
+        from core.pm_engine import PMEngine
+        self.tmpdir = tempfile.mkdtemp()
+        self.project_root = Path(self.tmpdir)
+        (self.project_root / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.logger = MagicMock()
+        self.sm = MagicMock()
+        self.sm.read_one = MagicMock(return_value={"status": "implementing"})
+        self.engine = PMEngine(
+            self.sm, MagicMock(), {}, self.project_root, self.logger,
+        )
+        self.engine._enqueue = MagicMock()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _shared(self):
+        return self.project_root / ".fenix" / ".fenix-run-result.json"
+
+    def _write_shared(self, spec="demo"):
+        self._shared().write_text(
+            json.dumps({"spec": spec, "status": "success"}), encoding="utf-8")
+
+    def test_consumed_and_snapshotted_then_deleted(self):
+        """stamp 匹配的文件被消费 + 快照落盘后删除共享文件（后续读取不再命中）。"""
+        self._write_shared("demo")
+        self.engine._write_impl_result_snapshot("demo", {"spec": "demo",
+                                                         "status": "success"})
+        self.engine._cleanup_shared_result_file("demo")
+        self.assertFalse(self._shared().exists())
+        # 快照仍在（per-spec 持久证据不随共享文件删除而蒸发）
+        snap = (self.project_root / ".fenix" / "verify-progress"
+                / "demo" / "impl-result.json")
+        self.assertTrue(snap.exists())
+
+    def test_other_spec_stamp_not_deleted(self):
+        """共享文件 stamp 非本 spec（其它 spec 在途）→ 不误删。"""
+        self._write_shared("other-spec")
+        self.engine._cleanup_shared_result_file("demo")
+        self.assertTrue(self._shared().exists())
+
+    def test_missing_file_noop(self):
+        """共享文件不存在 → no-op 不抛。"""
+        self.engine._cleanup_shared_result_file("demo")
+
+    def test_delete_failure_warns_does_not_block(self):
+        """删除失败（OSError）→ 仅记 WARNING，主流程不阻塞。"""
+        self._write_shared("demo")
+        with patch.object(Path, "unlink", side_effect=OSError("permission")):
+            self.engine._cleanup_shared_result_file("demo")  # 不应抛出
+        self.assertTrue(self.engine.logger.warning.called)
+
+
 class TestDoneDurationPersist(unittest.TestCase):
     """add-done-duration-persist 2.1/2.2：verified→done 时写入 total_duration。"""
 
