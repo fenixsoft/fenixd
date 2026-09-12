@@ -3785,8 +3785,31 @@ def _token_recent_entries(entries: dict, project_name: str) -> list:
     return out
 
 
+def _degraded_project(p: dict, error: str) -> dict:
+    """聚合阶段失败项目的降级摘要（复用既有 error 键 schema）。
+
+    `exists` 语义保持为 True：路径本身可解析（发现层 is_dir 已通过）即
+    exists=True，失败原因只体现在 `error` 字段——避免 UI 把「不可读」误
+    渲染成「项目不存在」（设计 D4）。
+    """
+    return {
+        "name": p.get("name") or (Path(p["path"]).name or p["path"]),
+        "path": p["path"],
+        "discovered": p.get("discovered", False),
+        "exists": True,
+        "daemon": "stopped",
+        "hosting": "stopped",
+        "error": error,
+    }
+
+
 def overview(registry_projects: list) -> dict:
-    """跨项目概览（/api/overview）。registry_projects 为 registry.discover() 结果。"""
+    """跨项目概览（/api/overview）。registry_projects 为 registry.discover() 结果。
+
+    逐项目异常隔离：单个项目的摘要计算或状态解析抛出任何异常时，只影响该
+    项目——该项目摘要携带 `error` 字段、不向 `totals` 累加任何计数，其余
+    项目摘要与 `totals` 照常返回，函数不得抛出（dashboard-server 容错契约）。
+    """
     now = datetime.now().astimezone()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = now - timedelta(days=7)
@@ -3805,24 +3828,27 @@ def overview(registry_projects: list) -> dict:
                 "error": "项目路径不存在",
             })
             continue
-        s = project_summary(p["path"], p["name"], p["path"])
-        s["discovered"] = p.get("discovered", False)
-        s["exists"] = True
-        projects.append(s)
-        totals["spec_count"] += s["spec_count"]
-        totals["task_done"] += s["task_done"]
-        totals["task_total"] += s["task_total"]
-        totals["problems"] += s["problems"]
-        totals["active_runs"] += s["active_runs"]
-        for at, n in (s.get("active_runs_by_type") or {}).items():
-            totals["active_runs_by_type"][at] = totals["active_runs_by_type"].get(at, 0) + n
-        entries = parse_state(p["path"])
-        t_today, t_week = _updated_spec_counts(entries, today_start, week_start)
-        totals["spec_updated_today"] += t_today
-        totals["spec_updated_week"] += t_week
-        token_entries.extend(_token_recent_entries(entries, p["name"]))
-        for st, n in s["status_counts"].items():
-            status_counts[st] = status_counts.get(st, 0) + n
+        try:
+            s = project_summary(p["path"], p["name"], p["path"])
+            s["discovered"] = p.get("discovered", False)
+            s["exists"] = True
+            projects.append(s)
+            totals["spec_count"] += s["spec_count"]
+            totals["task_done"] += s["task_done"]
+            totals["task_total"] += s["task_total"]
+            totals["problems"] += s["problems"]
+            totals["active_runs"] += s["active_runs"]
+            for at, n in (s.get("active_runs_by_type") or {}).items():
+                totals["active_runs_by_type"][at] = totals["active_runs_by_type"].get(at, 0) + n
+            entries = parse_state(p["path"])
+            t_today, t_week = _updated_spec_counts(entries, today_start, week_start)
+            totals["spec_updated_today"] += t_today
+            totals["spec_updated_week"] += t_week
+            token_entries.extend(_token_recent_entries(entries, p["name"]))
+            for st, n in s["status_counts"].items():
+                status_counts[st] = status_counts.get(st, 0) + n
+        except Exception as exc:  # noqa: BLE001 —— 单项目失败降级，不得使整页失败
+            projects.append(_degraded_project(p, f"摘要计算失败: {exc}"))
     totals["status_counts"] = status_counts
     token_entries.sort(key=lambda e: (e["_ts"].timestamp() if e["_ts"] else 0.0), reverse=True)
     for e in token_entries:
