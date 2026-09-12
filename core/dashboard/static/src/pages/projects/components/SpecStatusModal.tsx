@@ -9,9 +9,12 @@
  * 文件信号，daemon 主循环拾取后调 pm_engine.approve_push 执行推送——main 先行+
  * 分支尽力，成功后 SPEC 推进 pushed 终态；失败走既有退避重试，超限升级 push_failed 告警。
  *
- * 冻结态判定：status === 'blocked' && error.startsWith('用户指令冻结：')，
- * 与 list.tsx isFrozen 同源。非冻结 blocked（如预算耗尽冻结）在冻结区显示
- * 「冻结」操作（幂等 no-op）且预算区照常可用——预算耗尽冻结正是本能力的主要场景。
+ * 冻结态判定：status === 'blocked' && （后端 summary.frozen 为真 || error 以
+ * 「用户指令冻结：」开头）。自动冻结（内容完整性闸门 / 预算闸门 / env 阻塞）
+ * 只写结构化 frozen 字段 + 自有文案，故 MUST 以后端字段为准——此前只认文本
+ * 前缀，三种自动冻结在弹窗里一律显示为「未冻结」，而点击「冻结 SPEC」会经
+ * freeze_spec 覆写 error，把预算/环境诊断信息冲掉。预算区块由 nonTerminal
+ * 独立控制，与冻结态无关，照常可用。
  */
 
 import {
@@ -38,6 +41,7 @@ import {
 } from '@/services/dashboard';
 import type { SpecSummary } from '@/services/dashboard';
 
+/** 存量文本契约回退（结构化 frozen 字段缺席时的兼容路径）。 */
 const FREEZE_ERROR_PREFIX = '用户指令冻结：';
 const TERMINAL = new Set(['done', 'pushed']);
 
@@ -50,10 +54,10 @@ interface SpecStatusModalProps {
   onDone: () => void;
 }
 
-/** 判断 spec 是否处于人工冻结态（error 以冻结前缀开头）。 */
+/** 判断 spec 是否处于冻结态（后端单点判定：结构化字段优先，文本前缀回退）。 */
 const isFrozen = (summary: SpecSummary | null) =>
   summary?.status === 'blocked' &&
-  (summary.error || '').startsWith(FREEZE_ERROR_PREFIX);
+  (summary.frozen === true || (summary.error || '').startsWith(FREEZE_ERROR_PREFIX));
 
 /** 终态判定（done/pushed）。 */
 const isTerminal = (summary: SpecSummary | null) =>

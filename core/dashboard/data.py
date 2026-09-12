@@ -278,14 +278,22 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
 # 冻结前缀与「原状态 X」解析单点（add-spec-scheduling-controls D4）：冻结/解冻
 # 统一走 StateMachine 官方通道（freeze_spec/unfreeze_spec），此处只保留展示用
 # 判定常量，文案契约在 state_machine 定义，避免双轨漂移。
-from core.state_machine import FREEZE_ERROR_PREFIX, parse_orig_status
+from core.state_machine import FREEZE_ERROR_PREFIX, FROZEN_FIELD, parse_orig_status
 
 
 def is_spec_frozen(entry: dict) -> bool:
-    """判定 SPEC 是否处于人工冻结态：status=blocked 且 error 以冻结前缀开头。"""
-    return entry.get("status") == "blocked" and (entry.get("error") or "").startswith(
-        FREEZE_ERROR_PREFIX
-    )
+    """判定 SPEC 是否处于冻结态。
+
+    结构化 ``frozen`` 字段优先（state_machine 侧已声明「结构化字段替代 error
+    文本契约」）；文本前缀仅作存量兼容回退。自动冻结（内容完整性闸门 /
+    预算闸门 / env 阻塞）一律写自有文案而非「用户指令冻结：」，只认文本会让
+    它们在 dashboard 里既不显示冻结态也走不了解冻入口。
+    """
+    if entry.get("status") != "blocked":
+        return False
+    if entry.get("frozen") is True:
+        return True
+    return (entry.get("error") or "").startswith(FREEZE_ERROR_PREFIX)
 
 
 def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
@@ -1154,6 +1162,11 @@ def parse_state(project_root) -> dict:
                         val = int(val)
                     except ValueError:
                         val = None
+                elif key == "frozen":
+                    # 冻结标记归一到真布尔（fix：结构化冻结识别）。STATE.md 是
+                    # 文本表，`frozen: False` 不归一即得真值字符串 'False'——
+                    # 用真值判定会把每一条普通 blocked 都误判为冻结态。
+                    val = val.strip().lower() in ("true", "1", "yes")
                 elif val.lower() in ("null", "none", ""):
                     val = None
                 current_entry[key] = val
@@ -2833,6 +2846,9 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         # 定时 Tag/倒计时与冻结模式。
         "start_after": get_spec_start_after(entry),
         "frozen_until": get_frozen_until(entry),
+        # 冻结态（结构化字段优先，回退文本前缀）：前端据此渲染解冻入口。
+        # 自动冻结（内容完整性闸门 / 预算闸门 / env 阻塞）只认文本会漏判。
+        "frozen": is_spec_frozen(entry),
         # add-task-progress-verify-phase：阶段判定单点在后端——仅 testing 切
         # verify（验证引擎运行中），其余一切状态按 impl；fast-track 经
         # _fast_track_advance_to_verified 瞬时连转 testing→verified 不停留，

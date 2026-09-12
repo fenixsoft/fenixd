@@ -194,6 +194,12 @@ export interface SpecSummary {
   start_after?: string | null;
   /** add-spec-scheduling-controls D6：冻结定时解冻目标时间（ISO8601 UTC 或 null，null=永久冻结） */
   frozen_until?: string | null;
+  /**
+   * 冻结态（后端单点判定：结构化 frozen 字段优先，回退「用户指令冻结：」文本前缀）。
+   * 自动冻结（内容完整性闸门 / 预算闸门 / env 阻塞）不带文本前缀，只认 error
+   * 会漏判——前端 MUST 用该字段判定冻结，不得自行 startsWith。
+   */
+  frozen?: boolean;
   /** add-task-progress-verify-phase：任务进度列阶段——"verify" 仅当 status==testing，其余 "impl"（判定单点在后端） */
   progress_phase?: 'verify' | 'impl';
   /** add-task-progress-verify-phase：verify 阶段当前步骤文案（验证引擎 current，非空才渲染） */
