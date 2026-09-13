@@ -145,7 +145,7 @@
 - [x] 7.7 tests/test_config.py：`spec_review_mode` 非枚举拒绝与缺省 auto（patch 双常量隔离用户级配置，防 home 敏感）；`KNOWN_AGENT_TYPES` 含 `spec-review`
 - [x] 7.8 tests/test_dashboard_api.py：重新评审 API 成功、project/spec 404、非评审类 blocked 拒绝、冻结态拒绝、非法状态拒绝
 - [x] 7.9 tests/test_agent_prompt_files.py：`spec-review` 在 `AGENT_PROMPT_FILES` 白名单中且模板可加载；前端 `AGENT_LABELS` / `AGENT_ROLES` key 集合与后端两处常量的一致性断言
-- [ ] 7.10 全量回归：相关测试文件全绿，且既有 pm_engine / dispatch / dashboard 回归无新增失败（以主树基线对照区分存量 flake 与本轮引入）
+- [x] 7.10 全量回归：相关测试文件全绿，且既有 pm_engine / dispatch / dashboard 回归无新增失败（以主树基线对照区分存量 flake 与本轮引入）
 
 ## 验证修复（原地打回第 1 轮）
 
