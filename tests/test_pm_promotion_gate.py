@@ -270,12 +270,47 @@ class TestCLI(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_cli_promote_success(self):
-        """CLI promote：成功晋升退出码 0。"""
+        """CLI promote：成功晋升退出码 0。
+
+        add-spec-review-gate 3.4：cmd_promote 消费 promote_drafted 的
+        next_status 分流结论——无 .spec.yaml 的 spec（mode 缺失）保守
+        取「不跳过评审」，默认 auto 下进入 reviewing。
+        """
         from bin.fenix_cli import _resolve_project_root, cmd_promote
         from argparse import Namespace
         proot, sm, _ = _setup_project(self.tmpdir)
         args = Namespace(spec="myspec", project=str(proot))
         # Monkey-patch _resolve_project_root to return our proot
+        import bin.fenix_cli as cli_mod
+        original_fn = cli_mod._resolve_project_root
+        cli_mod._resolve_project_root = lambda x: proot
+        try:
+            cmd_promote(args)
+        except SystemExit as e:
+            self.assertEqual(e.code, 0)
+        finally:
+            cli_mod._resolve_project_root = original_fn
+        entry = sm.read_one("myspec")
+        self.assertEqual(entry["status"], "reviewing")
+
+    def test_cli_promote_skip_review_goes_ready(self):
+        """CLI promote：命中跳过白名单（fast-track 单能力少交付物非 evo-）
+        时按 next_status=ready 直通。"""
+        from bin.fenix_cli import _resolve_project_root, cmd_promote
+        from argparse import Namespace
+        proot, sm, _ = _setup_project(self.tmpdir)
+        # 构造命中跳过判据的 spec：fast-track + 能力目录 0 + 声明 1 条
+        spec_dir = proot / "spec" / "changes" / "myspec"
+        (proot / "deliverable.txt").write_text("x", encoding="utf-8")
+        (spec_dir / ".spec.yaml").write_text("mode: fast-track\n",
+                                             encoding="utf-8")
+        (spec_dir / "tasks.md").write_text(
+            "## 1. 阶段一\n\n"
+            "## Deliverables\n\n"
+            "```yaml\n- path: deliverable.txt\n  kind: modify\n```\n\n"
+            "- [x] 1.1 任务一\n", encoding="utf-8"
+        )
+        args = Namespace(spec="myspec", project=str(proot))
         import bin.fenix_cli as cli_mod
         original_fn = cli_mod._resolve_project_root
         cli_mod._resolve_project_root = lambda x: proot
@@ -311,7 +346,11 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(entry["status"], "drafted")
 
     def test_cli_promote_external_project(self):
-        """CLI promote：--project 指向外部路径生效。"""
+        """CLI promote：--project 指向外部路径生效。
+
+        add-spec-review-gate 3.4：同默认 auto 分流——无 .spec.yaml 的
+        spec 保守进入 reviewing（与自动通道结论一致）。
+        """
         from bin.fenix_cli import _resolve_project_root, cmd_promote
         from argparse import Namespace
         proot, sm, _ = _setup_project(self.tmpdir)
@@ -326,7 +365,7 @@ class TestCLI(unittest.TestCase):
         finally:
             cli_mod._resolve_project_root = original_fn
         entry = sm.read_one("myspec")
-        self.assertEqual(entry["status"], "ready")
+        self.assertEqual(entry["status"], "reviewing")
 
 
 if __name__ == "__main__":

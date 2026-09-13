@@ -849,7 +849,7 @@ class TestSpecPromoteAPI:
         return proot
 
     def test_promote_success(self, tmp_path):
-        """成功晋升：drafted → ready。"""
+        """成功晋升：drafted → reviewing（default auto 分流，无 .spec.yaml 保守进入评审）。"""
         proot = self._make_drafted_project(tmp_path)
         cfg = tmp_path / "dashboard.yaml"
         reg = Registry(config_path=cfg)
@@ -860,6 +860,29 @@ class TestSpecPromoteAPI:
             status, body = srv.post("/api/spec-promote?project=proj-a&spec=draft-spec")
             assert status == 200
             assert body["ok"] is True
+            assert body["next_status"] == "reviewing"
+            entry = dash_data.parse_state(proot)["draft-spec"]
+            assert entry["status"] == "reviewing"
+        finally:
+            srv.stop()
+
+    def test_promote_never_mode_goes_ready(self, tmp_path):
+        """spec_review_mode: never → 跳过评审直通 ready（全通道恢复旧行为）。"""
+        proot = self._make_drafted_project(tmp_path)
+        # 写入项目配置（never 模式）
+        (proot / ".fenix" / "config.yaml").write_text(
+            "gates:\n  spec_review_mode: never\n", encoding="utf-8"
+        )
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        srv = _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+        try:
+            status, body = srv.post("/api/spec-promote?project=proj-a&spec=draft-spec")
+            assert status == 200
+            assert body["ok"] is True
+            assert body.get("next_status") == "ready"
             entry = dash_data.parse_state(proot)["draft-spec"]
             assert entry["status"] == "ready"
         finally:
