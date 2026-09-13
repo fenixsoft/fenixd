@@ -215,7 +215,7 @@ stale_code_selfheal:
   idle_confirm_seconds: 120
 ```
 
-语义：daemon 每 30s 检测点比对 `fenixd.py` + `core/**/*.py` 的 mtime 与进程启动 baseline，命中即置「陈旧」持续状态，除日志 WARNING 外写一条 `signal_type: stale_code` 的 escalation 告警（同类型未处置去重，运维记录页可见）。当 陈旧为真 + `enabled: true` + 项目受 supervisor 托管 + 连续空闲达到 `idle_confirm_seconds`（空闲 = 无活跃 agent run 且无 admin 处置在途任务）时，daemon touch `.fenix/restart_request`，supervisor 执行优雅重启使新代码生效；重启后新 baseline 刷新，陈旧状态自然解除。任一活跃信号出现立即清零空闲计时。未受托管的项目（`unmanaged`）不自愈——`restart_request` 无人消费，写它只会制造死信，此时仅维持陈旧告警，等待经 Dashboard「安装托管」或 `/fenix-setup` 恢复托管。自动重启引入的新代码若无法启动，supervisor 会在连续 3 次启动后 60 秒内崩溃时熔断停止拉起并落 critical 告警，不会无限重启（见[保障机制](07-safeguards.md#代码陈旧自愈与启动失败熔断)）。
+语义：daemon 每 30s 检测点比对 `fenixd.py` + `core/**/*.py` 的 mtime 与进程启动 baseline，命中即置「陈旧」持续状态，除日志 WARNING 外写一条 `signal_type: stale_code`、`severity: warning` 的 escalation 告警（写入即自动标记已处理，不进人工告警横幅/待处理队列，仅运维记录页可见；状态边沿触发，单周期内不重复堆积）。当 陈旧为真 + `enabled: true` + 项目受 supervisor 托管 + 连续空闲达到 `idle_confirm_seconds`（空闲 = 无活跃 agent run 且无 admin 处置在途任务）时，daemon touch `.fenix/restart_request`，supervisor 执行优雅重启使新代码生效；重启后新 baseline 刷新，陈旧状态自然解除。任一活跃信号出现立即清零空闲计时。未受托管的项目（`unmanaged`）不自愈——`restart_request` 无人消费，写它只会制造死信，此时仅维持陈旧告警，等待经 Dashboard「安装托管」或 `/fenix-setup` 恢复托管。自动重启引入的新代码若无法启动，supervisor 会在连续 3 次启动后 60 秒内崩溃时熔断停止拉起并落 critical 告警，不会无限重启（见[保障机制](07-safeguards.md#代码陈旧自愈与启动失败熔断)）。
 
 ### self_evolution（框架自进化）
 

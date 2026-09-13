@@ -253,7 +253,7 @@ function VerdictPanel({ verdict }: { verdict: NonNullable<SpecDetail['verdict']>
 }
 
 // 告警严重度标签/配色（与 overview AlertBanner 同语义）
-const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', minor: '一般' };
+const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', warning: '警告', minor: '一般' };
 const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', minor: 'blue' };
 
 // Agent 中文名（与设置页 Agent 模型角色中文名对应；implementer 沿用「开发」）。

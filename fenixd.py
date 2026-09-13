@@ -52,7 +52,12 @@ from core.wip_checkpoint import (
     ANCHOR_DRAIN_PRESERVE,
     commit_wip_checkpoint,
 )
-from core.admin_store import AdminStore, DISPOSITION, ESCALATION
+from core.admin_store import (
+    AdminStore,
+    DISPOSITION,
+    ESCALATION,
+    severity_needs_human,
+)
 from core.admin_monitor import AdminMonitor
 from core.hook_engine import HookEngine
 from core.pm_engine import PMEngine
@@ -620,9 +625,11 @@ class FenixDaemon:
         一次性旗标语义，按状态边沿记录：
           - 假→真：落一次 WARNING（保留 improve-hot-reload-robustness D4 文案），
             并经 AdminStore 写入一条 signal_type: stale_code 的 escalation 告警
-            （同类型未处置去重，不重复堆积）——陈旧成为 dashboard 可见的持续状态。
+            ——陈旧成为 dashboard 可见的持续状态。该告警为 warning 级（2026-09-13
+            用户降噪决策）：写入即自动标记已处理，不进人工告警横幅/待处理队列，
+            仅保留历史记录；状态边沿触发写入，单个陈旧周期内不重复堆积。
           - 真→假：记录状态解除（重启后新进程 baseline 刷新，或磁盘代码回退），
-            不产生新告警；既有未处置告警可经既有处置流程关闭。
+            不产生新告警；既有历史告警可经既有处置流程关闭。
         """
         baseline = getattr(self, "_code_baseline_ns", None)
         files = getattr(self, "_code_files", None)
@@ -645,29 +652,34 @@ class FenixDaemon:
             )
             try:
                 if self.admin_store is not None:
-                    # 同类型未处置告警去重（复用 supervisor_missing 告警范式）
-                    if self.admin_store.unhandled_for(None, "stale_code") is None:
-                        self.admin_store.append({
-                            "kind": ESCALATION,
-                            "signal_type": "stale_code",
-                            "spec": None,
-                            "severity": "major",
-                            "description": (
-                                "daemon 进程持旧代码，自愈将在连续空闲后触发重启"
-                                "（stale_code_selfheal 配置启用时）"
-                            ),
-                            "evidence": (
-                                "fenixd 30s 检测点：fenixd.py/core/**/*.py mtime "
-                                "超进程启动 baseline"
-                            ),
-                            "action_taken": "fenixd 陈旧检测命中，升级人工（等待空闲自愈）",
-                            "recommended_action": (
-                                "无需人工干预：连续空闲达到 "
-                                "stale_code_selfheal.idle_confirm_seconds 后自适应重启；"
-                                "如需立即生效可 touch .fenix/restart_request 或手动重启 "
-                                "daemon；关闭自愈见 stale_code_selfheal.enabled"
-                            ),
-                        })
+                    # 降噪（2026-09-13 用户决策）：陈旧是可自愈收敛的持续状态，
+                    # 降为 warning 级——写入即自动标记已处理，不进人工告警横幅/
+                    # 待处理队列（复用 token_budget 同款处置），仅留历史记录。
+                    # 状态边沿（假→真）触发写入，单个陈旧周期内不会重复堆积，
+                    # 故不再依赖「未处置告警去重」。
+                    rec = self.admin_store.append({
+                        "kind": ESCALATION,
+                        "signal_type": "stale_code",
+                        "spec": None,
+                        "severity": "warning",
+                        "description": (
+                            "daemon 进程持旧代码，自愈将在连续空闲后触发重启"
+                            "（stale_code_selfheal 配置启用时）"
+                        ),
+                        "evidence": (
+                            "fenixd 30s 检测点：fenixd.py/core/**/*.py mtime "
+                            "超进程启动 baseline"
+                        ),
+                        "action_taken": "fenixd 陈旧检测命中，标记为警告（等待空闲自愈）",
+                        "recommended_action": (
+                            "无需人工干预：连续空闲达到 "
+                            "stale_code_selfheal.idle_confirm_seconds 后自适应重启；"
+                            "如需立即生效可 touch .fenix/restart_request 或手动重启 "
+                            "daemon；关闭自愈见 stale_code_selfheal.enabled"
+                        ),
+                    })
+                    if not severity_needs_human(rec.get("severity")):
+                        self.admin_store.mark_handled(rec["id"])
             except Exception as e:
                 self.logger.warning(
                     "fenixd", f"stale_code 告警写入失败（non-blocking）: {e}")

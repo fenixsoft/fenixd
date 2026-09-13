@@ -63,7 +63,7 @@ const SIGNAL_LABEL: Record<string, string> = {
   stash_pop_conflict: '合并冲突改动滞留',
 };
 
-const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', minor: '一般' };
+const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', warning: '警告', minor: '一般' };
 const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', minor: 'blue' };
 
 const PRE_WRAP: React.CSSProperties = { whiteSpace: 'pre-wrap' };

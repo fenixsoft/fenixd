@@ -90,7 +90,7 @@ daemon 由 `fenixd_supervisor.py` 托管的完整重启协议是自愈链路的�
 
 ### 代码陈旧自愈与启动失败熔断
 
-daemon 进程持有的是启动时刻的代码副本（Python import 后不重载磁盘文件），在自我开发场景下「代码陈旧」是常态而非异常。陈旧检测（`fenixd.py` 每 30s 检测点比对 `fenixd.py` + `core/**/*.py` mtime 与启动 baseline）是持续状态而非一次性事件：命中后保持 `self._code_stale` 为真、落一条 `signal_type: stale_code` 的 escalation 告警（未处置去重，运维记录页可见），直到重启刷新 baseline 或磁盘代码回退才解除。
+daemon 进程持有的是启动时刻的代码副本（Python import 后不重载磁盘文件），在自我开发场景下「代码陈旧」是常态而非异常。陈旧检测（`fenixd.py` 每 30s 检测点比对 `fenixd.py` + `core/**/*.py` mtime 与启动 baseline）是持续状态而非一次性事件：命中后保持 `self._code_stale` 为真、落一条 `signal_type: stale_code`、`severity: warning` 的 escalation 告警，直到重启刷新 baseline 或磁盘代码回退才解除。该告警为 `warning` 级——陈旧属可经空闲自愈收敛的持续状态，无需人工介入，故写入即自动标记已处理：**不进**人工告警横幅与待处理队列，仅在运维记录页/历史区可见；告警写入由状态边沿（假→真）触发，单个陈旧周期内不重复堆积。
 
 陈旧自愈的触发条件是**同时**满足：陈旧为真、`stale_code_selfheal.enabled` 为真（缺省开启）、项目受 supervisor 托管（`managed`）、`.fenix/restart_request` 不在册。空闲判定口径是**同时**满足：`agent_runner` 无活跃 run（planner / implementer / verifier / judge 全部形态均在 `_active_runs` 内）且 admin 处置 worker 池无在途任务（worker 池未启用时该维度视为空闲），任一非零即判非空闲，倒逼计时清零。连续空闲达到 `stale_code_selfheal.idle_confirm_seconds`（缺省 120s）后 daemon touch `.fenix/restart_request`，supervisor 执行的仍是既有优雅重启协议（restart_request 协议本身不变）。未托管项目（`unmanaged`）不自愈——`restart_request` 无人消费，写了即死信，此时仅维持陈旧告警，交由 Dashboard「安装托管」或 `/fenix-setup` 的安装托管路径处置。
 

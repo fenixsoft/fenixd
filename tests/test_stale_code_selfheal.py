@@ -69,6 +69,14 @@ class _DaemonParts:
                 and r.get("signal_type") == "stale_code"
                 and not r.get("handled")]
 
+    def stale_alerts(self):
+        """全部 stale_code escalation 记录（含已自动标记已处理的）。"""
+        return [r for r in
+                json.loads(self.proot.joinpath(
+                    ".fenix", "admin_alerts.json").read_text(encoding="utf-8"))
+                if r.get("kind") == "escalation"
+                and r.get("signal_type") == "stale_code"]
+
 
 # ── 1.4 陈旧检测持续状态与可见性 ───────────────────────────────────
 
@@ -103,16 +111,21 @@ class TestStaleStatePersistence(unittest.TestCase):
         stale = [s for s in self.parts.esca_signals() if s[0] == "stale_code"]
         assert stale, "陈旧命中后应写 stale_code escalation 告警"
         assert "连续空闲后触发重启" in stale[0][1]
+        # 降噪（2026-09-13）：warning 级 + 写入即自动标记已处理，不进人工队列
+        rec = self.parts.stale_alerts()[0]
+        assert rec["severity"] == "warning"
+        assert rec.get("handled") is True
+        assert self.parts.unhandled_stale() == []
 
     def test_continuous_stale_no_duplicate_alert_no_warning_spam(self):
-        """多周期持续为真：不新增第二条未处置告警，也不重复刷 WARNING。"""
+        """多周期持续为真：不新增第二条告警，也不重复刷 WARNING。"""
         self._touch_future()
         self.d._update_stale_code_state()
-        assert len(self.parts.unhandled_stale()) == 1
+        assert len(self.parts.stale_alerts()) == 1
         warned = len(self.d.logger.warning.call_args_list)
         for _ in range(3):
             self.d._update_stale_code_state()
-        assert len(self.parts.unhandled_stale()) == 1
+        assert len(self.parts.stale_alerts()) == 1
         assert len(self.d.logger.warning.call_args_list) == warned
 
     def test_true_to_false_no_new_alert_and_logged(self):
@@ -120,12 +133,12 @@ class TestStaleStatePersistence(unittest.TestCase):
         日志记录状态解除。"""
         self._touch_future()
         self.d._update_stale_code_state()
-        assert len(self.parts.unhandled_stale()) == 1
+        assert len(self.parts.stale_alerts()) == 1
         os.utime(self.codefile, ns=(
             self.d._code_baseline_ns - 1, self.d._code_baseline_ns - 1))
         self.d._update_stale_code_state()
         assert self.d._code_stale is False
-        assert len(self.parts.unhandled_stale()) == 1
+        assert len(self.parts.stale_alerts()) == 1
         infos = " ".join(str(c) for c in self.d.logger.info.call_args_list)
         assert "陈旧状态解除" in infos
 

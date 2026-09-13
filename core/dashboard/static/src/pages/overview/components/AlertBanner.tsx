@@ -9,7 +9,7 @@ import { clearAllAlerts, getAlerts, markAlertHandled } from '@/services/dashboar
  * antd 组合：Alert banner（条）+ List（待处理项，含标记已处理）+ Collapse（已解决折叠区）。
  * 乐观移除：点击标记后先前端隐藏，后端确认消失后才真正清除（防 3s 收敛窗口内重现）。
  */
-const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', minor: '一般' };
+const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', warning: '警告', minor: '一般' };
 const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', minor: 'blue' };
 const SEV_RANK: Record<string, number> = { critical: 3, major: 2, minor: 1 };
 

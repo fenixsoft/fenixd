@@ -107,3 +107,4 @@ Fenixd 的进程拥有一份**启动时刻的代码副本**（Python import 后�
 - **熔断标记的具体承载形式**：独立文件（如 `.fenix/supervisor_fused`）还是写入既有 `supervisor_runtime.json` 的字段？倾向前者——独立文件便于用户手工删除，语义也更直白，且不污染既有 runtime 自报结构。
 - **`idle_confirm_seconds` 是否需要上界**：用户若配置为极大值（如 86400），自愈将形同虚设。是否需要在配置校验时给出建议上界或警告（不强制拒绝）？倾向给出警告而非拒绝，保持配置读取的宽容语义。
 - **陈旧告警的 `severity` 取值**：参照 `fix-supervisor-hosting-chain` 中 `supervisor_missing` 定为 `major` 的讨论——「陈旧」同样是持续性缺陷而非瞬时故障，需与该 SPEC 落地后的告警降噪口径保持一致，避免自我开发期间告警面板被长期占满。
+  - **已决（2026-09-13，用户降噪决策）**：定为 `warning` 级——`major` 会让告警长期占据人工待处理队列与横幅，而陈旧本就可经空闲自愈收敛、`recommended_action` 亦声明「无需人工干预」。按既有分级语义（`core/admin_store.py` `HUMAN_SEVERITIES`），`warning` 写入即自动标记已处理，不进人工队列，仅留历史记录；告警写入由状态边沿（假→真）触发，单周期内不重复堆积。

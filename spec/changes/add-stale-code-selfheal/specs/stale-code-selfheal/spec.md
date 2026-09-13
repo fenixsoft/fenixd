@@ -2,17 +2,22 @@
 
 ### Requirement: 代码陈旧检测的持续状态与可观测性
 
-daemon MUST 把「进程内运行的代码相对磁盘已更新」（陈旧）从一次性事件升级为**持续状态**：每个检测周期（既有 30s 配置热更新检测点）重新比对 `fenixd.py` 与 `core/**/*.py` 的最大 mtime 与进程启动时记录的 baseline，并维护该状态，MUST NOT 仅在首次命中后永久静默。陈旧状态为真时，除既有 `fenixd.log` WARNING 外，daemon MUST 经 AdminStore 写入一条 `signal_type: stale_code` 的 escalation 告警，描述 MUST 说明「daemon 进程持旧代码，自愈将在连续空闲后触发重启」；同一未处置告警 MUST 去重，不重复堆积。状态转假时 MUST NOT 产生新的陈旧告警，且既有未处置告警 MUST 可经既有处置流程关闭。
+daemon MUST 把「进程内运行的代码相对磁盘已更新」（陈旧）从一次性事件升级为**持续状态**：每个检测周期（既有 30s 配置热更新检测点）重新比对 `fenixd.py` 与 `core/**/*.py` 的最大 mtime 与进程启动时记录的 baseline，并维护该状态，MUST NOT 仅在首次命中后永久静默。陈旧状态为真时，除既有 `fenixd.log` WARNING 外，daemon MUST 经 AdminStore 写入一条 `signal_type: stale_code` 的 escalation 告警，描述 MUST 说明「daemon 进程持旧代码，自愈将在连续空闲后触发重启」。该告警 MUST 为 `warning` 级：写入即自动标记已处理，MUST NOT 进入人工告警横幅/待处理队列，仅作历史记录保留（2026-09-13 用户降噪决策——陈旧属可自愈收敛的持续状态，无需人工介入）。告警写入 MUST 由状态边沿（假→真）触发，单个陈旧周期内 MUST NOT 重复堆积。状态转假时 MUST NOT 产生新的陈旧告警。
 
 #### Scenario: 陈旧命中写入可见告警
 
 - **WHEN** daemon 运行期间 `core/**/*.py` 的 mtime 超过进程启动 baseline
-- **THEN** 日志出现陈旧 WARNING，且 `admin_alerts` 新增一条 `signal_type: stale_code` 的告警，该状态在后续检测周期持续保持为真
+- **THEN** 日志出现陈旧 WARNING，且 `admin_alerts` 新增一条 `signal_type: stale_code`、`severity: warning`、`handled: true` 的告警记录，该状态在后续检测周期持续保持为真
 
-#### Scenario: 未处置陈旧告警去重
+#### Scenario: 告警不进人工待处理队列
 
-- **WHEN** 已存在一条未处置的 `stale_code` 告警，陈旧状态在多个检测周期持续为真
-- **THEN** 不新增第二条同类型未处置告警
+- **WHEN** 陈旧命中写入 `stale_code` 告警
+- **THEN** 该记录 `handled` 为真，MUST NOT 出现在 Dashboard 人工告警横幅与待处理列表中（仅可在历史/已处理区查看）
+
+#### Scenario: 单次陈旧周期不重复堆积
+
+- **WHEN** 陈旧状态在多个检测周期持续为真（尚未转假）
+- **THEN** 不新增第二条 `stale_code` 告警记录
 
 #### Scenario: 重启后陈旧状态解除
 
