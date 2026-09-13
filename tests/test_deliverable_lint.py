@@ -158,12 +158,11 @@ class TestPromotionLintGate(unittest.TestCase):
         self.logger = MagicMock()
         (self.pr / ".fenix").mkdir(parents=True, exist_ok=True)
         self.sm = StateMachine(self.pr / ".fenix" / "STATE.md", self.logger)
-        # 评审门禁隔离（add-spec-review-gate 7.10）：本类验证的是 deliverable
-        # lint 门禁（drafted→ready 拦截/放行），传 spec_review_mode: never 使
-        # 晋升直通 ready——评审分流语义由 test_spec_review_gate.py 独立覆盖
-        self.engine = PMEngine(self.sm, MagicMock(),
-                               {"gates": {"spec_review_mode": "never"}},
-                               self.pr, self.logger)
+        # 测试聚焦晋升 lint 拦截/放行链路；spec_review_mode=never 关闭评审门禁
+        # （与 add-spec-review-gate 适配 test_pm_promotion_gate 同法，保持
+        # 晋升终态仍为 ready，避免落入 reviewing 等评审分支）
+        config = {"gates": {"promote_mode": "auto", "spec_review_mode": "never"}}
+        self.engine = PMEngine(self.sm, MagicMock(), config, self.pr, self.logger)
         self.engine._on_spec_ready = MagicMock()
         self.spec_dir = self.pr / "spec" / "changes" / "demo"
         self.sm.add_spec("demo", {"priority": 5})
