@@ -146,3 +146,9 @@
 - [ ] 7.8 tests/test_dashboard_api.py：重新评审 API 成功、project/spec 404、非评审类 blocked 拒绝、冻结态拒绝、非法状态拒绝
 - [ ] 7.9 tests/test_agent_prompt_files.py：`spec-review` 在 `AGENT_PROMPT_FILES` 白名单中且模板可加载；前端 `AGENT_LABELS` / `AGENT_ROLES` key 集合与后端两处常量的一致性断言
 - [ ] 7.10 全量回归：相关测试文件全绿，且既有 pm_engine / dispatch / dashboard 回归无新增失败（以主树基线对照区分存量 flake 与本轮引入）
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-spec-review-gate/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
