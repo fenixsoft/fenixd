@@ -36,6 +36,20 @@ JUDGE_TIMEOUT_SECONDS = 120
 # 活性快照 last_output 片段截断字符数（D1）
 LIVENESS_SNIPPET_CHARS = 400
 
+# ── 挂起判别常量（fix-run-hang-amplification D1）──────────────────────────
+# 基于 fix-root-init-import-shadow 事故实证：
+# - 后台调用（pytest）输出文件停在 0–22 字节，Agent 轮询数小时；
+# - 同期心跳 349 条 vs 实质结果 130 条，窗口内零实质事件守卫被打穿。
+# HANG_BLOCKED_CALL_SECONDS：单个后台调用被阻塞等待的时长阈值。
+# 事故中 pytest 子进程死循环产出 I/O 44-60GB，阻塞持续 >10 分钟。
+HANG_BLOCKED_CALL_SECONDS = 300
+# HANG_ZERO_GROWTH_WINDOW_SECONDS：输出文件零增长需持续的窗口。
+# 事故中后台任务输出文件数小时零增长（0-22 字节）。
+HANG_ZERO_GROWTH_WINDOW_SECONDS = 300
+# HANG_MIN_TOOL_COMPLETIONS：窗口内工具完成数下限（低于此视为无进展）。
+# 事故窗口内工具完成数低，但心跳大量涌入。取 3 作为最小有效产出阈值。
+HANG_MIN_TOOL_COMPLETIONS = 3
+
 # ── 启动终态补写扫描（fix-daemon-lifecycle-races D1）──────────────────────
 # run jsonl 的终态事件类型（对齐 runner.py _run_was_interrupted 与
 # admin_monitor.py _run_has_interrupted_marker 的判定口径）：
@@ -136,6 +150,13 @@ class LivenessSupervisor:
         # 在飞文件（注册表命中）不入缓存——其终态由 run 线程写入，入缓存会跳过
         # 后续验证。首轮全量建缓存，此后增量。
         self._terminal_verified: set[str] = set()
+
+        # 后台调用输出文件跨采样追踪（fix-run-hang-amplification 1.5）：
+        # {task_id: {"last_size": int|None, "last_change": float|None,
+        #            "started_at": float|None, "output_file": str|None}}。
+        # deadline 多次到点时对同一后台调用的输出文件做增长判定——
+        # 「可观测零产出」短路需要两个采样点间 size 零增长而非单点猜测。
+        self._output_tracking: dict = {}
 
     def sweep_dangling_runs(self) -> list:
         """运行期悬空 run 清扫（add-runtime-run-sweeper 1.3）：daemon 存活期间
@@ -319,15 +340,23 @@ class LivenessSupervisor:
 
     def _liveness_snapshot(self, run_file: Path, window_seconds: float,
                            now: float | None = None) -> dict:
-        """run jsonl 活性快照（D1）：窗口内事件数、tool_use 数、最后事件距今。
+        """run jsonl 活性快照（D1）：窗口内事件数、工具完成数、最后事件距今。
 
-        判定要素（tasks 4.1）：
-        - ``events_in_window``：带可解析时间戳且落在窗口内的事件数；
+        判定要素（fix-run-hang-amplification D1 修订）：
+        - ``events_in_window``：窗口内**实质事件**数（assistant / user 含 tool_result / result）；
+        - ``substantive_events_in_window``：同上（语义别名，供 judge 与日志）；
+        - ``heartbeats_in_window``：窗口内心跳数（tool_progress，MUST NOT 计入进度）；
+        - ``tool_completions_in_window``：窗口内工具完成数（tool_result 事件数）；
         - ``tool_use`` / ``tool_counts``：assistant 消息中的工具调用计数；
         - ``last_event_age``：最后一个事件距今秒数（事件无时间戳时回退文件 mtime）；
         - ``last_output``：最后的 assistant 文本 / result 文本片段（截断）。
 
-        无时间戳的行（stderr 兜底行等）按「文件 mtime 在窗口内即计入」的口径
+        分类规则（对齐 runner.py _entry_is_tool_result 口径）：
+        - 实质事件：type == "assistant" / type == "user" 且 content 含 tool_result / type == "result"
+        - 心跳：type == "tool_progress"
+        - 工具完成：_entry_is_tool_result(entry) 为 True
+
+        无时间戳的行（stderr 兜底行等）按「文件 mtime 在窗口内即计入实质事件」的口径
         处理，保证纯 stderr 流不会被误判为死流。
         """
         now = time.time() if now is None else now
@@ -336,11 +365,15 @@ class LivenessSupervisor:
             "window_seconds": float(window_seconds),
             "total_events": 0,
             "events_in_window": 0,
+            "substantive_events_in_window": 0,
+            "heartbeats_in_window": 0,
+            "tool_completions_in_window": 0,
             "tool_use": 0,
             "tool_counts": {},
             "last_event_age": None,
             "last_output": "",
             "stream_available": True,
+            "background_calls": {},  # task_id -> {"output_file", "started_at"}
         }
         cutoff = now - max(0.0, window_seconds)
         try:
@@ -357,20 +390,37 @@ class LivenessSupervisor:
                         continue
                     snapshot["total_events"] += 1
                     ts = self._pm._parse_event_timestamp(entry)
+                    # 事件分类计数（fix-run-hang-amplification D1）
+                    etype = entry.get("type") or ""
+                    is_heartbeat = etype == "tool_progress"
+                    is_substantive = (
+                        etype == "assistant"
+                        or etype == "result"
+                        or (etype == "user" and self._is_tool_result_event(entry))
+                    )
+                    is_tool_complete = self._is_tool_result_event(entry)
+                    # 事件是否落在判定窗口内（无时间戳回退文件 mtime）
                     if ts is None:
-                        # 无时间戳：只有文件本身仍在窗口内才计入
                         try:
-                            if run_file.stat().st_mtime >= cutoff:
-                                snapshot["events_in_window"] += 1
+                            in_window = run_file.stat().st_mtime >= cutoff
                         except OSError:
-                            pass
+                            in_window = False
                     else:
-                        if ts >= cutoff:
+                        in_window = ts >= cutoff
+                    # 窗口内分类计数：心跳与实质事件分别计数，MUST NOT 混淆
+                    if in_window:
+                        if is_heartbeat:
+                            snapshot["heartbeats_in_window"] += 1
+                        elif is_substantive:
                             snapshot["events_in_window"] += 1
-                        if (snapshot["last_event_age"] is None
-                                or (now - ts) < snapshot["last_event_age"]):
-                            snapshot["last_event_age"] = max(0.0, now - ts)
-                    if entry.get("type") == "assistant":
+                            snapshot["substantive_events_in_window"] += 1
+                        if is_tool_complete:
+                            snapshot["tool_completions_in_window"] += 1
+                    if ts is not None and (snapshot["last_event_age"] is None
+                            or (now - ts) < snapshot["last_event_age"]):
+                        snapshot["last_event_age"] = max(0.0, now - ts)
+                    # 工具调用计数（assistant 消息中的 tool_use）
+                    if etype == "assistant":
                         msg = entry.get("message") or {}
                         for block in (msg.get("content") or []):
                             if not isinstance(block, dict):
@@ -384,10 +434,30 @@ class LivenessSupervisor:
                                 text = str(block.get("text") or "").strip()
                                 if text:
                                     snapshot["last_output"] = text
-                    elif entry.get("type") == "result":
+                    elif etype == "result":
                         text = str(entry.get("result") or "").strip()
                         if text:
                             snapshot["last_output"] = text
+                    # 后台调用事件提取（task_started / TaskOutput，1.5）：
+                    # task_started（含 system subtype=task_started）记录 task_id→output_file；
+                    # TaskOutput（后台任务输出片段）补充关联 task_id 与 started_at。
+                    _is_task_started = (
+                        etype == "task_started"
+                        or (etype == "system" and entry.get("subtype") == "task_started")
+                    )
+                    _is_task_output = etype in ("TaskOutput", "task_output")
+                    if _is_task_started or _is_task_output:
+                        _task_id = entry.get("task_id")
+                        if _task_id:
+                            _calls = snapshot["background_calls"]
+                            _rec = _calls.get(_task_id)
+                            if _rec is None:
+                                _rec = {"output_file": None, "started_at": None}
+                                _calls[_task_id] = _rec
+                            if _is_task_started and entry.get("output_file"):
+                                _rec["output_file"] = str(entry["output_file"])
+                            if ts is not None and _rec.get("started_at") is None:
+                                _rec["started_at"] = ts
         except OSError:
             snapshot["stream_available"] = False
             return snapshot
@@ -401,15 +471,39 @@ class LivenessSupervisor:
         snapshot["last_output"] = snapshot["last_output"][:LIVENESS_SNIPPET_CHARS]
         return snapshot
 
+    @staticmethod
+    def _is_tool_result_event(entry: dict) -> bool:
+        """识别工具完成事件（对齐 runner.py _entry_is_tool_result 口径）。
+
+        真实 stream-json 转录以 user 事件包裹 tool_result content block 承载；
+        兼容顶层 tool_result 事件（存量合成测试）。
+        """
+        if entry.get("type") == "tool_result":
+            return True
+        if entry.get("type") == "user":
+            content = entry.get("message", {}).get("content")
+            if isinstance(content, list):
+                for b in content:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        return True
+        return False
+
 
     @staticmethod
     def _summarize_snapshot(snapshot: dict) -> str:
-        """活性快照的证据摘要（供终止证据与日志，短小可读）。"""
+        """活性快照的证据摘要（供终止证据与日志，短小可读）。
+
+        fix-run-hang-amplification D1：同时呈现实质事件数、工具完成数与心跳数，
+        MUST NOT 只给一个混合的「事件数」——复盘可直接读出真进展 vs 心跳。
+        """
         tools = snapshot.get("tool_counts") or {}
         tool_str = ",".join(f"{k}x{v}" for k, v in sorted(tools.items())) or "none"
         age = snapshot.get("last_event_age")
         return (
             f"events_in_window={snapshot.get('events_in_window')}, "
+            f"substantive_events_in_window={snapshot.get('substantive_events_in_window')}, "
+            f"tool_completions_in_window={snapshot.get('tool_completions_in_window')}, "
+            f"heartbeats_in_window={snapshot.get('heartbeats_in_window')}, "
             f"total_events={snapshot.get('total_events')}, "
             f"tool_use={snapshot.get('tool_use')} ({tool_str}), "
             f"last_event_age={'n/a' if age is None else f'{age:.0f}s'}, "
@@ -438,8 +532,12 @@ class LivenessSupervisor:
             f"{json.dumps(snapshot, ensure_ascii=False)}\n\n"
             "只输出一个 JSON 对象，不要其它文字：\n"
             '{"verdict": "advancing|stagnant", "evidence": "简短判定依据（<=200字）"}\n'
-            "判定口径：窗口内有新事件且工具调用在推进/产出新内容 → advancing；"
-            "零事件、同参数工具调用反复失败、长时间无新输出 → stagnant。"
+            "判定口径（fix-run-hang-amplification D1 修订）：\n"
+            "1. 窗口内有持续的新工具调用与工具结果（实质事件）且在推进/产出新内容 → advancing；\n"
+            "2. 窗口内无实质事件（substantive_events_in_window == 0）→ stagnant；\n"
+            "3. 心跳（heartbeats_in_window）与 I/O 增长 MUST NOT 单独构成 advancing 的"
+            "充分依据——持续产出心跳事件仅表明进程仍存活，不代表任务推进；\n"
+            "4. 同参数工具调用反复失败、长时间无新输出 → stagnant。"
         )
         try:
             cmd = ["claude", "-p", prompt, "--output-format", "json"]
@@ -538,6 +636,92 @@ class LivenessSupervisor:
         return cfg
 
 
+    def _output_zero_growth_seconds(self, task_id: str, size, now: float,
+                                    mtime) -> float | None:
+        """跨采样记忆输出文件 size，返回已零增长秒数（1.5）。
+
+        - size/mtime 不可观测（无行路径/不可读）→ 返回 None 并移除追踪
+          （「不可观测」情形 MUST NOT 短路，调用方据此走 LLM 路径）；
+        - 首次观测：以文件 mtime（最后一次写入时刻）作为已知最后变化时点；
+        - 后续采样：size 未变 → 零增长从上次已确认的变化时点继续；size 变化
+          → 刚发生过产出，零增长重置为本采样时刻；
+        - 若 mtime 晚于 know 的最后变化时点（文件被 touch 但 size 未变），
+          以 mtime 为准（文件被写过即视为有产出信号）。
+        """
+        if size is None or mtime is None:
+            self._output_tracking.pop(task_id, None)
+            return None
+        prev = self._output_tracking.get(task_id)
+        zero_since = mtime
+        if prev is not None:
+            if prev.get("last_size") == size and prev.get("last_change") is not None:
+                zero_since = prev["last_change"]
+            elif prev.get("last_size") != size:
+                zero_since = now  # size 变化 → 产出刚发生，重置零增长起点
+            if mtime > zero_since:
+                zero_since = mtime
+        self._output_tracking[task_id] = {
+            "last_size": size,
+            "last_change": zero_since,
+        }
+        return max(0.0, now - zero_since)
+
+    def _zero_output_assessment(self, run_file: Path, snapshot: dict,
+                                window_seconds: float,
+                                now: float | None = None) -> "str | None":
+        """「可观测零产出」确定性短路判定（fix-run-hang-amplification 1.4/1.5）。
+
+        仅当以下三者**同时**成立时返回判定证据文本（调用方直接 kill、MUST NOT
+        调用 judge LLM）：
+          1. 窗口内被阻塞等待的后台调用时长 ≥ ``HANG_BLOCKED_CALL_SECONDS``；
+          2. 该后台调用关联的输出文件**可观测**且大小零增长 ≥
+             ``HANG_ZERO_GROWTH_WINDOW_SECONDS``（跨采样记忆判定）；
+          3. 窗口内 ``tool_completions_in_window`` < ``HANG_MIN_TOOL_COMPLETIONS``。
+
+        任一条件不成立（尤其输出文件不可观测）→ 返回 None（走既有 LLM 判定路径）。
+        本判定基于「被等待的子进程」的可观测信号，不依赖转录形态——纯转录启发式
+        分不清「挂起」与「合法慢」（design Context 方法论结论）。
+        """
+        now = time.time() if now is None else now
+        if snapshot.get("tool_completions_in_window", 0) >= HANG_MIN_TOOL_COMPLETIONS:
+            return None
+        calls = snapshot.get("background_calls") or {}
+        if not calls:
+            return None
+        for task_id, call in calls.items():
+            output_file = call.get("output_file")
+            started_at = call.get("started_at")
+            if not output_file or started_at is None:
+                continue  # 找不到关联输出文件 → 不可观测，不得短路
+            try:
+                blocked_seconds = now - float(started_at)
+            except (TypeError, ValueError):
+                continue
+            if blocked_seconds < HANG_BLOCKED_CALL_SECONDS:
+                continue
+            path = Path(output_file)
+            size = None
+            mtime = None
+            try:
+                if path.is_file():
+                    st = path.stat()
+                    size = st.st_size
+                    mtime = st.st_mtime
+            except OSError:
+                size = None
+            zero_growth = self._output_zero_growth_seconds(
+                task_id, size, now, mtime)
+            if zero_growth is None or zero_growth < HANG_ZERO_GROWTH_WINDOW_SECONDS:
+                continue
+            return (
+                f"heuristic zero-output: blocked task '{task_id}' "
+                f"{int(blocked_seconds)}s watching '{output_file}' "
+                f"(size={size}B), zero growth >= {int(zero_growth)}s, "
+                f"tool_completions_in_window={snapshot.get('tool_completions_in_window')}"
+            )
+        return None
+
+
     def _supervision_deadline_action(self, run_file: Path, spec_name: str | None,
                                      run_id: str, started_at: float,
                                      extensions_used: int,
@@ -623,14 +807,39 @@ class LivenessSupervisor:
         window = max(30.0, float(sup["judge_window"]))
         snapshot = self._liveness_snapshot(run_file, window)
         evidence = self._summarize_snapshot(snapshot)
+        # 1.2 fix-run-hang-amplification：零事件守卫按**实质事件**判定——
+        # ``events_in_window`` 现只计数实质事件（assistant/user 含 tool_result/result），
+        # 心跳（tool_progress）不再计入进度证据，守卫不再被心跳恒久打穿。
         if (not snapshot.get("stream_available")
                 or snapshot.get("last_event_age") is None
                 or snapshot["last_event_age"] > window
                 or snapshot.get("events_in_window", 0) == 0):
             return {
                 "action": "kill",
-                "reason": "stagnant: zero run events within judge window",
+                "reason": "stagnant: zero substantive run events within judge window",
                 "evidence": evidence,
+                "settings": sup,
+            }
+        # 1.4/1.5/1.7「可观测零产出」确定性短路：三条件同时成立 → 直接 kill，
+        # MUST NOT 调用 judge LLM。证据标注为启发式「零产出」判定（含输出文件
+        # 路径与零增长区间），并写入被监督 run 的 jsonl 供审计。
+        zero_output = self._zero_output_assessment(run_file, snapshot, window, now)
+        if zero_output:
+            append_run_line(run_file, {
+                "type": "liveness_shortcut",
+                "kind": "zero_output_heuristic",
+                "evidence": zero_output,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            self._pm.logger.warning(
+                "agent_runner",
+                f"Liveness shortcut (heuristic zero-output) for {spec_name or 'unknown'} "
+                f"({run_id}): {zero_output}",
+            )
+            return {
+                "action": "kill",
+                "reason": f"stagnant: {zero_output}",
+                "evidence": evidence + " | " + zero_output,
                 "settings": sup,
             }
         verdict = (judge or self._judge_liveness)(snapshot, spec_name, run_id)

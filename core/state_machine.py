@@ -173,6 +173,14 @@ DEFAULT_VERIFY_REDO_BUDGET = 3
 # 冻结阈值（rounds >= 2）判定在 pm_engine.verification 升级通道。
 ENV_BLOCK_ROUNDS_FIELD = "_env_block_rounds"
 
+# ── spec 级结构化诊断（fix-run-hang-amplification 2.3）──────────────
+# _impl_diagnosis：run 终结时写入的结构化诊断摘要（终态类型 + 归因 +
+# 已定性结论 + 已提交进度），重派 attempt 经 PromptBuilder 注入（诊断继承）。
+# 值存 JSON 字符串（STATE.md 行内可往返解析，避免裸 dict 序列化后语义漂移）。
+# 序列化：`_` 前缀字段由 serialize 自动透传（含本字段），解析端按字符串读回，
+# 无需类型转换登记——此处定义常量作为单一事实源供写侧/注入侧共用。
+IMPL_DIAGNOSIS_FIELD = "_impl_diagnosis"
+
 
 # ── STATE.md Parser ─────────────────────────────────────────────────
 

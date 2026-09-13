@@ -650,7 +650,13 @@ class TestTimeoutOverrideSupervision(unittest.TestCase):
         runner = make_runner_with_config(self.root, cfg, logger=self.logger)
         self.assertEqual(runner._supervision_judge_timeout(), 240)
         judge = MagicMock(return_value={"verdict": "advancing", "evidence": "ok"})
-        # 走到 judge 判定需要扩展预算未耗尽且窗口有事件：模拟近 started_at
+        # 走到 judge 判定需要扩展预算未耗尽且窗口有实质事件：模拟近 started_at
+        # 添加实质事件（assistant 类型）以通过零事件守卫
+        import json
+        from datetime import datetime, timezone
+        with self.run_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "assistant", "timestamp": datetime.now(timezone.utc).isoformat(),
+                               "message": {"content": [{"type": "tool_use", "name": "test"}]}}) + "\n")
         action = runner._supervision_deadline_action(
             self.run_file, "spec", "run-1",
             started_at=time.time() - 1000, extensions_used=0,

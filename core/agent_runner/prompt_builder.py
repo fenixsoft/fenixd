@@ -203,6 +203,9 @@ class PromptBuilder:
             # 上轮 error 上下文注入（add-implementer-deliverable-gate D4）+
             # 恢复重派遗产上下文（add-recovery-legacy-check 2.1/2.2）。
             prompt += self._prev_error_section(spec_name)
+            # 上轮结构化诊断注入（fix-run-hang-amplification 2.4）：重派 attempt
+            # 继承终态类型/归因/结论/进度，无诊断时零注入。
+            prompt += self._impl_diagnosis_section(spec_name)
             prompt += self._build_legacy_section(spec_name)
             # 中断恢复保留续做注记（interrupt-recovery-preserve 2.3）：本轮 dispatch
             # 在保留分支的 worktree 内 resume 续做时注入继承说明。
@@ -264,6 +267,8 @@ class PromptBuilder:
                 / spec_name / "test_scenarios.json"
             )
             prompt += self._prev_error_section(spec_name)
+            # 上轮结构化诊断注入（fix-run-hang-amplification 2.4，与 implementer 分支共用）。
+            prompt += self._impl_diagnosis_section(spec_name)
             prompt += self._fast_track_reuse_note(spec_name)
         # administrator 无条件动态段：困境信号经占位符注入
         if agent_type == "administrator":
@@ -484,6 +489,41 @@ class PromptBuilder:
             f"若沿用上一轮场景文件原样重写，验收将再次拒绝并消耗重排预算。\n"
         )
 
+    def _impl_diagnosis_section(self, spec_name: str) -> str:
+        """上轮结构化诊断注入段（fix-run-hang-amplification 2.4）。
+
+        implementer 与 fast-track 共用：重派 attempt 注入上轮 run 的结构化诊断摘要
+        （终态类型 + 归因 + 已定性结论 + 已提交进度），新 run 据此直接调整策略而非
+        从零重复探测同一阻塞（run-budget-continuity 要求）。无诊断时返回空串
+        （prompt 与现状逐字节一致）。
+        """
+        import json as _json
+        diag_raw = ""
+        try:
+            entry = self._pm.state_machine.read_one(spec_name) or {}
+            diag_raw = entry.get("_impl_diagnosis") or "" if isinstance(entry, dict) else ""
+        except Exception:
+            return ""
+        if not isinstance(diag_raw, str) or not diag_raw.strip():
+            return ""
+        try:
+            diag = _json.loads(diag_raw)
+        except (ValueError, TypeError):
+            return ""
+        if not isinstance(diag, dict) or not diag.get("terminal"):
+            return ""
+        branch = diag.get("progress", {}).get("branch") or "unknown"
+        tasks = diag.get("progress", {}).get("tasks_checked")
+        return (
+            f"\n\n## Previous run diagnosis (structured, inherited by this attempt)\n"
+            f"Use this diagnosis to adjust your strategy — do NOT repeat the same detection:\n\n"
+            f"- terminal: {diag.get('terminal')}\n"
+            f"- attribution: {diag.get('attribution') or ''}\n"
+            f"- conclusion: {diag.get('conclusion') or ''}\n"
+            f"- progress: branch={branch}, tasks_checked={tasks}\n"
+        )
+
+
     def _prev_error_section(self, spec_name: str) -> str:
         """上轮 error 上下文注入段（add-implementer-deliverable-gate D4）。
 
@@ -621,6 +661,12 @@ class PromptBuilder:
             f"TaskCreate 结果返回的任务编号（1 基创建序，形如 \"Task #1 created\"）。\n"
             f"- 收尾时逐项 Edit tasks.md，把每条已完成任务 `- [ ]` 改为 `- [x]`，"
             f"与全部 TaskCreate/TaskUpdate 记录一一对应，不留半勾。\n"
+            f"\n## 有界全量套件入口（fix-run-hang-amplification 3.3，强制）\n"
+            f"全量回归（``pytest tests/ -q``）**必须**通过 ``python3 bin/run_full_suite.py "
+            f"--timeout 3600`` 执行，MUST NOT 裸调 ``pytest`` 无限等待。"
+            f"有界入口以硬超时运行套件并启用 faulthandler，挂起时中止并输出挂起测试标识"
+            f"（栈顶用例）；超时/挂起时的失败可按 ``--baseline <ref>`` 归类存量/引入"
+            f"（见设计文档）。裸调 ``pytest`` 无限等待在存量挂起时可烧穿全部预算（14.5h 事故实证）。\n"
         )
 
     def _designed_ids_line(self, scenarios_path) -> str:

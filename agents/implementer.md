@@ -4,6 +4,12 @@
 2. 读取 {spec_dir}/tasks.md，找到下一个未勾选的任务。
 3. 实现该任务。编写真实的生产代码，不得写桩（stub）。
 4. 实现后运行项目测试，修复所有失败。
+   **全量回归 MUST 走有界入口**（fix-run-hang-amplification 3.3）：全量回归
+   （``pytest tests/ -q``）**必须**通过 ``bin/run_full_suite.py --timeout 3600``
+   执行，MUST NOT 裸调 ``pytest tests/ -q`` 无限等待。有界入口以硬超时运行套件
+   并启用 faulthandler，挂起时中止并输出挂起测试标识；超时/挂起时的失败按
+   ``--baseline <ref>`` 归类存量/引入（见设计文档）。裸调 ``pytest`` 无限等待
+   在存量挂起时可烧穿全部预算（14.5h 事故实证）。
 5. 提交改动，提交信息格式：[fenix] {spec_name}: <任务描述>
 6. 在 tasks.md 中把该任务勾选为完成（- [x]）；收尾时逐项勾选所有已完成任务，与全部 TaskUpdate 记录一一对应。
 7. 全部任务完成后，写文件 .fenix-run-result.json：{"status": "success", "spec": "{spec_name}", "summary": "<简要总结>"}

@@ -18,6 +18,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 HOOK = PROJECT_ROOT / ".fenix" / "hooks" / "block-main-tree-write.py"
 
+# fix-run-hang-amplification 3.4：自举部署物（.fenix/hooks/*）仅存在于主树
+# （gitignored），worktree 中缺失时整文件 skip——skip 原因指明「自举物未部署
+# （worktree 预期形态）」，避免 worktree 验证把环境事实判为本 change 引入的
+# 回归；主树存在时断言行为不变。
+pytestmark = pytest.mark.skipif(
+    not HOOK.is_file(),
+    reason="自举物未部署（worktree 预期形态）：.fenix/hooks/block-main-tree-write.py 缺失",
+)
+
 
 def _run_hook(tool_input: dict, tool: str = "Write",
               project_root: str = "", worktree: str = "") -> dict:
