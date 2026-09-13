@@ -57,7 +57,10 @@ class SpecReviewManager:
             self.logger.info("spec_review", f"已有在飞评审 run: {spec_name}")
             return False
         # 检查评审尝试次数
-        attempts = entry.get("_review_attempts") or 0
+        try:
+            attempts = int(entry.get("_review_attempts", 0) or 0)
+        except (TypeError, ValueError):
+            attempts = 0
         if attempts >= MAX_REVIEW_ATTEMPTS:
             self.logger.warning("spec_review", f"评审尝试已达上限: {spec_name}")
             return False
@@ -290,9 +293,8 @@ class SpecReviewManager:
             path = repair.get("path", "")
             if not path.startswith(SPEC_CHANGES_PREFIX):
                 return f"repairs 路径越界: {path}"
-            # 检查是否确实存在于 SPEC 目录内
-            rel = path[len(SPEC_CHANGES_PREFIX):]
-            if not (spec_dir / rel).exists():
+            # 检查是否确实存在于 SPEC 目录内（path 为项目根相对路径）
+            if not (self.project_root / path).exists():
                 return f"repairs 路径不存在: {path}"
 
         # 2. 快照比对（需要从临时文件加载派发前快照）
@@ -322,7 +324,10 @@ class SpecReviewManager:
         entry = self.state_machine.read_one(spec_name)
         if not entry:
             return
-        attempts = entry.get("_review_attempts") or 0
+        try:
+            attempts = int(entry.get("_review_attempts", 0) or 0)
+        except (TypeError, ValueError):
+            attempts = 0
         if attempts < MAX_REVIEW_ATTEMPTS:
             # 重试：保持 reviewing 状态，清除 reviewer_run
             self.state_machine.update_spec(spec_name, {
@@ -365,10 +370,12 @@ class SpecReviewManager:
         if not success:
             return False, "状态转移失败"
 
-        # 派发新评审
-        dispatch_ok = self.dispatch_review(spec_name)
-        if not dispatch_ok:
-            return False, "评审派发失败"
+        # 派发新评审（agent_runner 为 None 的 CLI 场景跳过派发，
+        # 由 daemon full_scan recovery 的 reviewing 分支拾取）
+        if self.agent_runner is not None:
+            dispatch_ok = self.dispatch_review(spec_name)
+            if not dispatch_ok:
+                return False, "评审派发失败"
 
         return True, "重新评审已触发"
 

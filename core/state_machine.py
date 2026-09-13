@@ -258,7 +258,7 @@ class StateParser:
                     value = value.lower() in ("true", "1", "yes")
                 elif key in ("implementer_run", "tester_run", "branch", "error",
                              "total_duration", START_AFTER_FIELD, FROZEN_UNTIL_FIELD,
-                             "_verify_parallel_override"):
+                             "_verify_parallel_override", "reviewer_run"):
                     if value.lower() in ("null", "none", ""):
                         value = None
 

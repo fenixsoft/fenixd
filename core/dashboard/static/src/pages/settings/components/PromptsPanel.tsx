@@ -10,7 +10,7 @@ import type { PromptsData } from '@/services/dashboard';
 const { Text, Title } = Typography;
 const { TextArea } = Input;
 
-// key 集合与后端 AGENT_PROMPT_FILES 严格一致（9 个 agent，勿增删）
+// key 集合与后端 AGENT_PROMPT_FILES 严格一致（10 个 agent，勿增删）
 const AGENT_LABELS: Record<string, string> = {
   implementer: 'Implementer（实现）',
   verifier: 'Verifier（验证）',
@@ -21,6 +21,7 @@ const AGENT_LABELS: Record<string, string> = {
   'self-review': 'Self-Review（自省）',
   'dispute-judge': 'Dispute Judge（交付物终审）',
   evolution: 'Evolution（自改进）',
+  'spec-review': 'Spec Review（方案评审）',
 };
 
 interface PromptsPanelProps {
