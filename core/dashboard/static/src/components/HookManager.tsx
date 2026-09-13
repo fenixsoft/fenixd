@@ -24,13 +24,15 @@ import type { HookAction, HookAuditRecord, HookConfig } from '@/services/dashboa
 const { Text, Title } = Typography;
 
 const ALL_EVENTS: string[] = [
-  'drafted', 'ready', 'implementing', 'implemented',
+  'drafted', 'ready', 'reviewing', 'implementing', 'implemented',
   'testing', 'verified', 'bug-found', 'blocked', 'done', 'pushed',
 ];
 
 const EVENT_LABELS: Record<string, string> = {
   drafted: '草稿',
   ready: '就绪',
+  // add-spec-review-gate D1：reviewing 状态可被 hook 订阅（状态 diff 驱动）
+  reviewing: '评审中',
   implementing: '实现中',
   implemented: '已实现',
   testing: '验证中',
