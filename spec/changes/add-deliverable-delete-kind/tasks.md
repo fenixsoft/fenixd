@@ -64,4 +64,4 @@
 - [x] 7.3 `tests/test_deliverable_delete_kind.py`：覆盖防洗白三处——`classify_unsatisfiable`/`soften_*` 不改写 delete；守卫预分类不软化 delete；judge 对 delete 给出 `reference` 时被机械改写为 `unclear` 且声明段未被改写。
 - [x] 7.4 `tests/test_deliverable_delete_kind.py`：覆盖派发前处方对 delete 的两种形态（主树存在 → 删除目标确认；主树不存在 → 无可删 + 候选）。
 - [x] 7.5 `tests/test_deliverable_gate.py`：既有用例适配 `list[dict]` 返回结构（断言改为从条目取 path/kind/violation），行为预期不变。
-- [ ] 7.6 运行全量测试 `python3 -m pytest tests/ -q`，修复因返回结构变更或 kind 词表扩展引入的回归，至零失败。
+- [x] 7.6 运行全量测试 `python3 -m pytest tests/ -q`，修复因返回结构变更或 kind 词表扩展引入的回归，至零失败。
