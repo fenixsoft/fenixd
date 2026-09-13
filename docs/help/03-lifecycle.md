@@ -70,6 +70,17 @@ planner-judge 门禁判定通过后 SPEC 进入 `verified`，随即自动推进�
 
 > **门禁逃生门**：`verified → testing` 仅允许由门禁拦截触发的自动回退调用（`_on_spec_verified` 门禁发现应用不可达或证据不足时自动回退），人工路径无法直接执行该转移，无法绕过验证门禁。
 
+### verified 滞留与回炉路径（task-gap）
+
+`verified → done` 推进前会过任务完成度门禁（`_task_completion_blocker`）：若该 SPEC 的 `tasks.md` 存在**未勾选的数字任务**（且实现者没有 TaskUpdate 完成记录），门禁会以 `task-gap:` 前缀的错误把 SPEC 拦截在 `verified`——error 形如 `task-gap:未完成任务：4.5、5.1`。这是**结构性形态**而非故障：文档 / Dashboard UI / 补充测试类任务天然没有验证场景，验证 23/23 全绿与任务书 17 项未完成可以并存；实现者收工时刻的产物硬门（见[调度与治理规则](06-governance.md#实现者任务书完成度硬门)）已在源头拦截「没做完却报 success」，但存量/边界情况仍可能滞留 verified。
+
+**人工回炉入口**（消除「改 STATE.md 手工作业」）：
+
+1. **Dashboard 修改状态弹窗**：对状态为 `verified` 且 error 以 `task-gap:` 开头的 SPEC，「修改状态」弹窗渲染**回炉区块**，列出缺口任务 id 清单与后果说明；点击回炉并确认（明示「将重新派发实现」）后调用回炉 API，SPEC 复位为 `ready`、错误清空。
+2. **CLI 命令**：`python3 bin/fenix_cli.py reflow <spec> [--project <path>]`（缺省当前目录）。成功输出复位提示并以退出码 0 结束；被拒绝（非 verified / error 非 task-gap 前缀 / 冻结态 / 幂等重复）时 stderr 输出明确拒绝原因并以非零退出码结束。CLI 与 API 共用同一实现点，判定与执行语义完全一致。
+
+**回炉条件**（全部满足才允许）：SPEC 存在于 STATE.md ∧ `status == verified` ∧ `error` 以 `task-gap:` 开头 ∧ 未冻结。回炉执行 `status = "ready"` 与 `error = null` 原子写回，**不触碰**实现尝试预算计数、`frozen` / `frozen_until` / `start_after`，不绕过 daemon 的后续派发闸门；缺口任务仍为未完成状态，daemon 随后按既有逻辑重新派发实现者承接剩余任务（重跑成本由实现尝试预算如实记账）。每次回炉在 `.fenix/PROJECT_LOG.md` 追加可追溯记录（SPEC 名、原状态、缺口任务清单、动作来源）。
+
 ### bug-found（发现缺陷）
 
 验证发现缺陷且验证报告闸门放行后，SPEC 进入 `bug-found`，开始修复循环：修复重派时回到 `implementing`（走 fix 分支）；fix 完成后则直接回到 `implemented` 重新验证。

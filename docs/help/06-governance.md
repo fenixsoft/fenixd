@@ -4,6 +4,26 @@ Fenix daemon 自动调度 SPEC 时受一组预算、重试与熔断规则约束�
 
 本章承接[保障机制](07-safeguards.md)：上一章回答「框架靠什么机制保证不出事」（目的/原理/控制点），本章给出这些机制背后的数值口径：预算多少、退避几秒、告警几级流向谁。第一节先交代**调度节拍**——SPEC 靠哪些事件源被唤醒、兜底扫描为什么是 30 分钟——后面各节讨论的预算、退避与熔断，都作用在这套节拍之上。
 
+## 实现者任务书完成度硬门
+
+实现者（implementer）与快速通道（fast-track）的 run 在进程 exit 0 之外，还必须通过**结果产物硬门**（`_check_agent_result_artifact` 的 implementer/fast-track 分支）才会被标记 succeeded。校验对象是**本轮 run 的 worktree 根目录**下的 `.fenix-run-result.json`（不读主树拷回副本——主树共享文件跨 spec，读它会把上一轮/其它 spec 残留与本轮产物混为一谈）。
+
+**硬门判据**（依次校验，任一不满足 → 抛 `AgentArtifactGateError`，run 不计 succeeded）：
+
+1. **存在性**：文件存在、非空、合法 JSON、顶层为对象；
+2. **status 白名单**：顶层 `status` ∈ `{"success", "error", "partial"}`（白名单外取值如 planner 词汇一律判失败）；
+3. **success 完成度**：`tasks.md` 无未勾选数字任务（口径与 verified→done 门禁 `_task_completion_blocker` **同源**，`^- \[(x| )\] (\d+\.\d+)`），且结果文件顶层 `completed_tasks` 数组与已勾选 id 集合**完全相等**（缺项/多项/含非数字 id 判失败）；
+4. **partial 申报一致性**：`completed_tasks` == 已勾选集合、`unfinished` == 未勾选集合、两集合互斥且并集 == 全部数字任务 id（防止 partial 成为绕过 success 判据的缺口）；
+5. **能力探测下的 TaskUpdate 核对**（条件化）：仅当本轮 run 的 `init.tools` 含 `TaskCreate` 时，额外强制 `done_ids` 覆盖全部已勾选 id；不含（或 init 事件不可得）时**跳过**该项并写入 `impl-task-crosscheck-skipped` 审计事件——无条件强制会让硬门在 Task 家族工具不可用的派发路由上永远无法通过，形成「拒绝 → resume → 再拒绝」的预算烧穿循环。
+
+`status == "error"` 时不施加任何完成度类判据（agent 自报失败即按失败处理）。
+
+**失败处置 = 原地续做而非废轮**：硬门失败复用 `AgentArtifactGateError` 既有通道——保留 worktree 与 run 现场、按既有退避序列原地重试、以同一 worktree 与 `--resume` 会话续做，MUST NOT 清理 worktree、MUST NOT 把该轮判为「零成果需整轮重做」。续做轮 prompt 注入硬门归因（缺口任务 id 清单与失败类别），agent 无需重新推导剩余范围。连续失败由既有 provider-transient 退避与实现尝试预算机制收口（不新增独立重试计数）。
+
+**partial 诚实上报语义**：实现者做不完时 MUST 以 `status: "partial"` 收工并如实登记 `unfinished` 数组，MUST NOT 用 success 掩盖未完成项。`partial` 是**非成功**终态：不进 `implemented`、走失败/重派通道并**消耗实现尝试预算**（不得走硬门失败的不消耗预算续做通道，否则形成「申报 partial → 无限续做」的预算绕行）；连续 partial 由既有预算上限收口并转 blocked 交人工。partial 轮之后 `verified → done` 门禁 fail-closed 拦截（不会带未完成任务推进 done）。
+
+**残余风险（如实说明）**：`completed_tasks` 与 `tasks.md` 的集合相等校验只能保证「申报自洽」（agent 说做完了、勾选与申报一致、任务书已勾齐），**抓不住蓄意「先勾后做」**（先勾选再假收工）。在过程性工具（TaskUpdate）不可用的路由上，框架能观测到的只有「文件改了、提交了、自报做完了」。本硬门至少把**显式空跑**（agent 主动收工自报 success 却留 17 项未勾）从「可发生」变成「不可能」；真正的防线是验证场景覆盖任务面（另行评估）。
+
 ## 调度节拍：SPEC 何时被唤醒
 
 在讨论预算与退避之前，先回答一个更前置的问题：**一个 SPEC 什么时候会被唤醒去派发？** 答案不是单一轮询，而是「事件驱动为主 + 多层定时兜底」。
