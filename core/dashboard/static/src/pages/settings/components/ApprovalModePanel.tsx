@@ -22,16 +22,21 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
     form.setFieldsValue({
       promote_mode: config.gates.promote_mode || 'auto',
       approve_mode: config.gates.approve_mode || 'manual',
+      spec_review_mode: config.gates.spec_review_mode || 'auto',
     });
-  }, [config.gates.approve_mode, config.gates.promote_mode, form]);
+  }, [config.gates.approve_mode, config.gates.promote_mode, config.gates.spec_review_mode, form]);
 
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
+      // add-spec-review-gate（task 5.2）：保存载荷 MUST 同时提交新键与既有
+      // approve_mode/promote_mode——后端按 patch 整段合并，缺键会被 _deep_merge_managed
+      // 视作「未提交」保留原值，但并发/双轨写入时整段覆盖有丢失既有设置的风险。
       await onSave({
         gates: {
           promote_mode: values.promote_mode,
           approve_mode: values.approve_mode,
+          spec_review_mode: values.spec_review_mode,
         },
       });
     } catch (error) {
@@ -51,6 +56,7 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
           initialValues={{
             promote_mode: config.gates.promote_mode || 'auto',
             approve_mode: config.gates.approve_mode || 'manual',
+            spec_review_mode: config.gates.spec_review_mode || 'auto',
           }}
           layout="vertical"
         >
@@ -81,6 +87,40 @@ export default function ApprovalModePanel({ config, onSave, project, onConfigSyn
                   <div>
                     <Text type="secondary">
                       SPEC 注册为草稿后立即自动晋升 ready 并进入调度。
+                    </Text>
+                  </div>
+                </Radio>
+              </div>
+            </Radio.Group>
+          </Form.Item>
+          {/* SPEC 方案评审（add-spec-review-gate D2/D3/D11，置于草稿晋升相邻位置） */}
+          <Form.Item
+            name="spec_review_mode"
+            label={
+              <>
+                SPEC 方案评审<span className="label-note">（gates.spec_review_mode）</span>
+              </>
+            }
+            rules={[{ required: true, message: '请选择 SPEC 方案评审模式' }]}
+          >
+            <Radio.Group>
+              <div style={{ display: 'block', marginBottom: 16 }}>
+                <Radio value="auto">
+                  <strong>auto</strong> — 默认全量评审
+                  <div>
+                    <Text type="secondary">
+                      草稿晋升时默认全部进入方案评审；仅当 fast-track、能力目录 ≤ 1、
+                      交付物声明 ≤ 3 且非 evo- 前缀时才跳过评审直通 ready。
+                    </Text>
+                  </div>
+                </Radio>
+              </div>
+              <div style={{ display: 'block' }}>
+                <Radio value="never">
+                  <strong>never</strong> — 完全关闭
+                  <div>
+                    <Text type="secondary">
+                      跳过方案评审门禁，drafted 晋升直接进入 ready 并调度（整体逃生门）。
                     </Text>
                   </div>
                 </Radio>

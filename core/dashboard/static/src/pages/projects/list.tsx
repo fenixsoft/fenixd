@@ -38,6 +38,7 @@ import { getSpecDetail, getSpecs } from '@/services/dashboard';
 import {
   clearSpecError,
   deleteSpec,
+  reReviewSpec,
   setSpecPriority,
   setSpecStartAfter,
   statusMeta,
@@ -623,6 +624,34 @@ export default function SpecListPage() {
     });
   };
 
+  const handleReReview = (record: SpecSummary) => {
+    // add-spec-review-gate D8：重新评审入口——仅 error 前缀 spec-review-* 的
+    // blocked SPEC 显示本入口；后端仍会复核开放条件（非 blocked/冻结/前缀不
+    // 符任一拒绝），失败时展示后端返回的拒绝原因。
+    Modal.confirm({
+      title: '重新评审 SPEC',
+      content: (
+        <div style={{ whiteSpace: 'pre-wrap' }}>
+          {`确认重新评审 SPEC「${record.name}」？\n\n`}
+          将把 SPEC 从 blocked 移回 reviewing，并由评审 Agent 重新执行方案评审。
+          {'\n'}（仅评审相关 blocked 可重新评审；冻结 SPEC 与担责放行请走「修改状态」）
+        </div>
+      ),
+      okText: '重新评审',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const result = await reReviewSpec(name, record.name);
+          message.success(`SPEC「${record.name}」已重新进入评审`);
+          void load();
+        } catch (err) {
+          // 后端拒绝（非 blocked / 冻结 / 前缀不符等）→ 展示明确拒绝原因
+          message.error(`重新评审失败：${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+    });
+  };
+
   const handlePriorityOk = async () => {
     if (!priorityEdit) return;
     try {
@@ -673,8 +702,17 @@ export default function SpecListPage() {
     // 冻结管理/归档）全部并入「修改状态」弹窗，保留 admin/priority/pickup-time/delete。
     // 终态置灰仅作用于 priority/pickup-time（现状语义）；「修改状态」终态仍可点
     // （归档区块可用）。
+    // add-spec-scheduling-controls：非终态 spec 可设置定时拾取（start_after）
+    const reviewBlocked =
+      (record.status === 'blocked' &&
+        (record.error || '').startsWith('spec-review-rejected:')) ||
+      (record.status === 'blocked' &&
+        (record.error || '').startsWith('spec-review-incomplete:'));
     return [
       { key: 'status', label: '修改状态' },
+      // add-spec-review-gate D8：评审相关 blocked（error 前缀 spec-review-*）
+      // 增「重新评审」入口（非评审类 blocked 不显示）
+      ...(reviewBlocked ? [{ key: 're-review', label: '重新评审' }] : []),
       { key: 'admin', label: '呼叫 Admin 介入' },
       { key: 'priority', label: '调整优先级', disabled: terminal },
       // add-spec-scheduling-controls：非终态 spec 可设置定时拾取（start_after）
@@ -695,6 +733,8 @@ export default function SpecListPage() {
       openStartAfterModal(record);
     } else if (key === 'delete') {
       handleDeleteSpec(record);
+    } else if (key === 're-review') {
+      handleReReview(record);
     }
   };
 
@@ -941,7 +981,7 @@ export default function SpecListPage() {
             onChange={setStatusList}
             style={{ minWidth: 200, maxWidth: 300 }}
             options={[
-              'drafted', 'ready', 'implementing', 'implemented', 'testing',
+              'drafted', 'ready', 'reviewing', 'implementing', 'implemented', 'testing',
               'verified', 'bug-found', 'blocked', 'done', 'pushed',
             ].map((k) => ({ value: k, label: statusMeta(k).label }))}
           />

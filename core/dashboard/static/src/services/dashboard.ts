@@ -295,6 +295,23 @@ export function promoteSpec(project: string, spec: string) {
   );
 }
 
+// ── SPEC 重新评审（add-spec-review-gate D8） ──
+
+export interface ReReviewResult {
+  ok: boolean;
+  project?: string;
+  spec?: string;
+  error?: string;
+}
+
+/** 重新评审 blocked SPEC（评审相关 blocked → reviewing，开放条件后端校验） */
+export function reReviewSpec(project: string, spec: string) {
+  return request<ReReviewResult>(
+    `/api/spec-re-review?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    { method: 'POST' },
+  );
+}
+
 // ── SPEC 审批推送（add-spec-approve-push-modal） ──
 
 export interface ApprovePushResult {
@@ -704,6 +721,8 @@ export const STATUS_META: Record<string, { label: string; tone: StatusTone }> = 
   blocked: { label: '阻塞', tone: 'critical' },
   done: { label: '完成', tone: 'good' },
   pushed: { label: '已推送', tone: 'good' },
+  // add-spec-review-gate D1：方案评审中（dedicated tone 独立于其他 info 暖色）
+  reviewing: { label: '评审中', tone: 'aqua' },
 };
 
 export function statusMeta(status: string): { label: string; tone: StatusTone } {

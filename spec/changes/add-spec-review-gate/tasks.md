@@ -113,18 +113,18 @@
 - [x] 4.1 core/pm_engine/spec_review.py（或 core/pm_engine/engine.py，位置二选一并在 design 结论中说明）：实现三种 `status` 的机械收口——`approved`/`repaired` → `transition ready` + 直调 `_on_spec_ready`；`rejected` → `transition blocked` + error 前缀 `spec-review-rejected:` 并含 blocking 条目的 aspect/detail/evidence 摘要
 - [x] 4.2 core/pm_engine/spec_review.py：实现故障重试——本轮未完成时递增 `_review_attempts` 并重试，累计尝试上限 3 次（首次 + 最多 2 次重试，常量常量名自解释）；耗尽后 `transition blocked` + error 前缀 `spec-review-incomplete:`；失败原因 MUST 具体可辨（非零退出 / 文件缺失或空 / JSON 非法 / status 越白名单 / mtime 陈旧 / repairs 路径越界 / SPEC 目录外越界写入 / status 与改动不一致）；重试成功后重置 `_review_attempts`
 - [x] 4.3 core/pm_engine/spec_review.py：实现重新评审入口的开放条件校验——状态 MUST 为 `blocked`、error MUST 以 `spec-review-rejected:` 或 `spec-review-incomplete:` 开头、MUST NOT 带 `frozen: true`；任一不满足则拒绝并返回明确原因，STATE 零变更；幂等防御（第二次调用因状态已非 blocked 被拒）
-- [ ] 4.4 core/dashboard/data.py：受管配置键白名单扩展 `gates.spec_review_mode`（读侧 sources 标注与写侧提取**两处**，data.py 配置读写段）；新增重新评审动作构造函数（复用 4.3 的条件校验）；`get_specs` 输出确认 `reviewing` 状态与 `reviewer_run` 字段可被前端消费
-- [ ] 4.5 core/dashboard/server.py：新增重新评审 API 路由——project/spec 不存在 404；不符合开放条件返回明确原因（非 200/ok:true）；成功返回 ok:true；对齐既有 unfreeze / spec-promote 路由的错误语义
+- [x] 4.4 core/dashboard/data.py：受管配置键白名单扩展 `gates.spec_review_mode`（读侧 sources 标注与写侧提取**两处**，data.py 配置读写段）；新增重新评审动作构造函数（复用 4.3 的条件校验）；`get_specs` 输出确认 `reviewing` 状态与 `reviewer_run` 字段可被前端消费
+- [x] 4.5 core/dashboard/server.py：新增重新评审 API 路由——project/spec 不存在 404；不符合开放条件返回明确原因（非 200/ok:true）；成功返回 ok:true；对齐既有 unfreeze / spec-promote 路由的错误语义
 - [x] 4.6 bin/fenix_cli.py：新增 `review <spec> [--project <path>]` 子命令（--project 挂子解析器，非主解析器——历史踩坑点）；复用 4.3 的校验与动作；成功/拒绝原因打印终端，失败非零退出码
 
 ## 5. Dashboard 界面
 
-- [ ] 5.1 core/dashboard/static/src/services/dashboard.ts：`statusMeta` 增 `reviewing` 条目（label 与 tone）；新增重新评审 API client（对齐既有 freezeSpec / unfreezeSpec / promoteSpec 模式）
-- [ ] 5.2 ApprovalModePanel.tsx：新增「SPEC 方案评审」单选（`auto` / `never`），与既有草稿晋升模式同构并置于其相邻位置；附说明文字（默认全量评审、`fast-track` 且单能力少交付物且非 `evo-` 才跳过、`never` 完全关闭）；保存载荷 MUST 同时提交新键与既有 `approve_mode`/`gates.promote_mode`（防整段覆盖丢失既有设置）
+- [x] 5.1 core/dashboard/static/src/services/dashboard.ts：`statusMeta` 增 `reviewing` 条目（label 与 tone）；新增重新评审 API client（对齐既有 freezeSpec / unfreezeSpec / promoteSpec 模式）
+- [x] 5.2 ApprovalModePanel.tsx：新增「SPEC 方案评审」单选（`auto` / `never`），与既有草稿晋升模式同构并置于其相邻位置；附说明文字（默认全量评审、`fast-track` 且单能力少交付物且非 `evo-` 才跳过、`never` 完全关闭）；保存载荷 MUST 同时提交新键与既有 `approve_mode`/`gates.promote_mode`（防整段覆盖丢失既有设置）
 - [x] 5.3 PromptsPanel.tsx：`AGENT_LABELS` 增 `spec-review`（**该 key 集合与后端 `AGENT_PROMPT_FILES` 严格一致**，两处必须同步）；同步更新文件头的「9 个 agent」注释计数
 - [x] 5.4 AgentModelPanel.tsx：`AGENT_ROLES` 增 `spec-review`；同步更新文件头的「7 个角色」注释计数与后端 `KNOWN_AGENT_TYPES` 保持一致
-- [ ] 5.5 list.tsx：状态筛选下拉选项增 `reviewing`；为评审相关 blocked（error 前缀 `spec-review-*`）的行新增「重新评审」操作入口（带确认，非评审类 blocked 不显示）；失败时 message.error 展示后端返回的拒绝原因
-- [ ] 5.6 前端构建验证：core/dashboard/static 下构建通过（dist 产物不入库，仅本地验证）
+- [x] 5.5 list.tsx：状态筛选下拉选项增 `reviewing`；为评审相关 blocked（error 前缀 `spec-review-*`）的行新增「重新评审」操作入口（带确认，非评审类 blocked 不显示）；失败时 message.error 展示后端返回的拒绝原因
+- [x] 5.6 前端构建验证：core/dashboard/static 下构建通过（dist 产物不入库，仅本地验证）
 
 ## 6. 文档同步
 
