@@ -379,3 +379,41 @@ class TestDependencyWakeupIdempotency(unittest.TestCase):
         bus._dispatch_changes(self.sm.read_all())
         entries = [(e[1], e[2]) for e in self.engine._run_queue]
         self.assertIn(("A", "implementer"), entries)
+
+
+class TestEventBusSpecReviewGate(unittest.TestCase):
+    """add-spec-review-gate 7.2：reviewing → spec_reviewing 事件映射与 recovery。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        from core.event_bus import EventBus
+        self.pm = MagicMock()
+        self.bus = EventBus(self.state_path, self.sm, self.pm, {}, self.logger)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_status_to_event_maps_reviewing(self):
+        """_status_to_event 映射 reviewing → spec_reviewing。"""
+        from core.event_bus import EventBus
+        self.assertEqual(EventBus._status_to_event("reviewing"), "spec_reviewing")
+
+    def test_recover_one_reviewing_branch(self):
+        """_recover_one 对 reviewing 走评审恢复分支（spec_reviewing 事件，
+        MUST NOT 复用 drafted 分支的晋升链调用）。"""
+        ok = self.bus._recover_one("spec-x", {"status": "reviewing"})
+        self.assertTrue(ok)
+        self.pm.handle_event.assert_called_once_with(
+            "spec_reviewing", "spec-x", {"status": "reviewing"})
+
+    def test_recover_one_drafted_still_promotes(self):
+        """drafted 分支语义不受影响（仍触发 spec_drafted 晋升链）。"""
+        ok = self.bus._recover_one("spec-d", {"status": "drafted"})
+        self.assertTrue(ok)
+        self.pm.handle_event.assert_called_once_with(
+            "spec_drafted", "spec-d", {"status": "drafted"})

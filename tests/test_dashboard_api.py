@@ -964,6 +964,123 @@ class TestSpecPromoteAPI:
             srv.stop()
 
 
+# ── SPEC 重新评审 API（add-spec-review-gate 4.5 / 7.8） ──────────────
+
+class TestSpecReReviewAPI:
+    """POST /api/spec-re-review：评审相关 blocked → reviewing 重新评审。"""
+
+    def _make_blocked_project(self, tmp_path, spec_name="blocked-spec",
+                              error="spec-review-rejected: 方向性风险"):
+        """构造含评审相关 blocked spec 的项目。"""
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        from core.state_machine import StateMachine
+        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm.add_spec(spec_name, {"status": "blocked", "error": error})
+        return proot
+
+    def _server(self, tmp_path, proot):
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        return _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+
+    def test_re_review_success(self, tmp_path):
+        """评审相关 blocked → 重新评审成功（blocked → reviewing）。"""
+        proot = self._make_blocked_project(tmp_path)
+        srv = self._server(tmp_path, proot)
+        try:
+            status, body = srv.post("/api/spec-re-review?project=proj-a&spec=blocked-spec")
+            assert status == 200
+            assert body["ok"] is True
+            entry = dash_data.parse_state(proot)["blocked-spec"]
+            assert entry["status"] == "reviewing"
+        finally:
+            srv.stop()
+
+    def test_re_review_spec_not_found(self, tmp_path):
+        """spec 不存在 → 404。"""
+        proot = self._make_blocked_project(tmp_path)
+        srv = self._server(tmp_path, proot)
+        try:
+            status, _ = srv.post("/api/spec-re-review?project=proj-a&spec=ghost")
+            assert status == 404
+        finally:
+            srv.stop()
+
+    def test_re_review_project_not_found(self, tmp_path):
+        """project 不存在 → 404。"""
+        proot = self._make_blocked_project(tmp_path)
+        srv = self._server(tmp_path, proot)
+        try:
+            status, _ = srv.post("/api/spec-re-review?project=ghost&spec=blocked-spec")
+            assert status == 404
+        finally:
+            srv.stop()
+
+    def test_re_review_non_review_blocked_rejected(self, tmp_path):
+        """非评审前缀 blocked（如熔断）→ 400 + 明确原因，状态不变。"""
+        proot = self._make_blocked_project(tmp_path, error="merge-breaker: 熔断")
+        srv = self._server(tmp_path, proot)
+        try:
+            status, body = srv.post("/api/spec-re-review?project=proj-a&spec=blocked-spec")
+            assert status == 400
+            assert "评审" in body["error"]
+            entry = dash_data.parse_state(proot)["blocked-spec"]
+            assert entry["status"] == "blocked"
+        finally:
+            srv.stop()
+
+    def test_re_review_frozen_rejected(self, tmp_path):
+        """冻结态 blocked → 400 拒绝（冻结保护双层之一）。"""
+        proot = self._make_blocked_project(tmp_path)
+        from core.state_machine import StateMachine
+        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm.update_spec("blocked-spec", {"frozen": True})
+        srv = self._server(tmp_path, proot)
+        try:
+            status, body = srv.post("/api/spec-re-review?project=proj-a&spec=blocked-spec")
+            assert status == 400
+            assert "冻结" in body["error"]
+            entry = dash_data.parse_state(proot)["blocked-spec"]
+            assert entry["frozen"] is True
+            assert entry["status"] == "blocked"
+        finally:
+            srv.stop()
+
+    def test_re_review_incomplete_prefix_allowed(self, tmp_path):
+        """spec-review-incomplete: 前缀同样可重新评审（两类 blocked 均开放）。"""
+        proot = self._make_blocked_project(tmp_path,
+                                            error="spec-review-incomplete: 结果文件缺失")
+        srv = self._server(tmp_path, proot)
+        try:
+            status, body = srv.post("/api/spec-re-review?project=proj-a&spec=blocked-spec")
+            assert status == 200
+            assert body["ok"] is True
+            entry = dash_data.parse_state(proot)["blocked-spec"]
+            assert entry["status"] == "reviewing"
+        finally:
+            srv.stop()
+
+    def test_re_review_non_blocked_state_rejected(self, tmp_path):
+        """非 blocked 状态（ready/drafted）→ 400 拒绝（开放条件要求状态为 blocked）。
+        代办：Agent 场景按状态枚举全表列置——评审开放条件四类拒绝（非 blocked /
+        非评审前缀 / 冻结 / 幂等重复调用）在 TestReReviewConditions 已覆盖单元层，
+        此处验证 HTTP 层对非 blocked 的拒绝语义。"""
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        from core.state_machine import StateMachine
+        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm.add_spec("ready-spec", {"status": "ready"})
+        srv = self._server(tmp_path, proot)
+        try:
+            status, body = srv.post("/api/spec-re-review?project=proj-a&spec=ready-spec")
+            assert status == 400
+            assert body["error"]
+            assert dash_data.parse_state(proot)["ready-spec"]["status"] == "ready"
+        finally:
+            srv.stop()
+
+
 # ── SPEC 审批推送 API（add-spec-approve-push-modal Task 5.2/5.3） ────
 
 class TestSpecApprovePushAPI:

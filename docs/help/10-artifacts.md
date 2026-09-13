@@ -52,17 +52,19 @@
 
 ```markdown
 ### <spec-name>
-- status: ready            # 生命周期状态（10 个之一）
+- status: ready            # 生命周期状态（11 个之一）
 - priority: 5              # 优先级 1-9（P1 最高）
 - created: <ISO 8601>      # 创建时间
 - updated: <ISO 8601>      # 最近更新时间
 - implementer_run: <run-id|null>   # 最近实现者 run ID
 - tester_run: <run-id|null>        # 最近验证者 run ID
+- reviewer_run: <run-id|null>      # 最近方案评审 run ID（reviewing 态必有值）
 - branch: <branch|null>    # 当前/最近 worktree 分支
 - error: <msg|null>        # 错误信息（阻塞原因/冻结原因）
 - depends_on: <null>       # 依赖的其它 spec
 - total_duration: <null>   # 累计时长
 - frozen: <true|false>     # 是否人工冻结
+- _review_attempts: N      # 方案评审尝试计数（内部字段，上限 3 次含首次）
 - _impl_run_budget_used: N # 实现尝试预算已使用次数（内部字段）
 - _retry_count: N          # 重试计数（内部字段）
 - _merge_streak: N         # 连续 merge 失败计数（内部字段）
@@ -93,6 +95,17 @@ proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change a
 
 已接受条目的草稿会**移出暂存区**交给 `spec/changes/`（SPEC 名统一 `evo-` 前缀），草稿暂存区只保留未决定条目；`spec/changes/` 下已注册的 `evo-*` SPEC 走既有流水线（见[生命周期](03-lifecycle.md)），不再与 `.fenix/evolution/` 关联。
 
+## .fenix/spec-review/ 评审运行产物（gitignored，非交付物）
+
+方案评审门禁（见[治理规则](06-governance.md#spec-方案评审门禁)）的评审 run 产物落在 `.fenix/spec-review/<spec>/`：
+
+| 文件 | 语义 |
+|------|------|
+| `.fenix-run-result.json` | 评审结果契约：`status`（`approved` / `repaired` / `rejected`）+ `findings[]`（每个含 aspect / detail / evidence，`rejected` 必有 `blocking`）+ `repairs[]`（评审者就地修补清单）+ `confidence` |
+| `snapshot.json` | 评审派发前的写入边界快照（SPEC 目录文件哈希 + 工作区脏文件哈希），收工后据此做越界检测 |
+
+评审 run_id 前缀 `spec-review-`，流转录在 `.fenix/runs/spec-review-<spec>-<timestamp>.jsonl`。评审相关 blocked（error 前缀 `spec-review-rejected:` / `spec-review-incomplete:`）的重新评审入口见[治理规则](06-governance.md#spec-方案评审门禁)。
+
 ## 出问题去哪查对照表
 
 | 现象 | 查哪里 |
@@ -100,6 +113,8 @@ proposal.md、design.md、tasks.md 与 specs/ 是 spec-driven 流程的 change a
 | SPEC 状态/优先级 | `.fenix/STATE.md` 该 spec 条目 |
 | SPEC 卡在 ready 不派发 | `.fenix/logs/fenixd-<year>.log` 的 dispatch 记录 |
 | 实现进展 | `.fenix/runs/impl-<spec>-*.jsonl` 尾部事件 |
+| SPEC 卡在 reviewing | `.fenix/runs/spec-review-<spec>-*.jsonl` 尾部事件 + `.fenix/spec-review/<spec>/.fenix-run-result.json`（评审结果契约）；仍在评审中则看评审 run 是否在跑 |
+| SPEC 因评审进 blocked | `.fenix/STATE.md` 该 spec 条目 error 字段（前缀 `spec-review-rejected:` 需人工裁决方案；`spec-review-incomplete:` 需看评审器为什么没跑成）|
 | 验证结果 | `.fenix/verify-progress/<spec>/report.json` + verification-report.md |
 | 场景失败截图 | `.fenix/verify-progress/<spec>/screenshots/` |
 | 告警与自动处置 | `.fenix/admin_alerts.json` |

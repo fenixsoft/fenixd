@@ -939,6 +939,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._json(result)
 
+    def _api_spec_re_review(self, query) -> dict:
+        """POST /api/spec-re-review?project=<name>&spec=<name>
+
+        重新评审 blocked SPEC：复核开放条件后执行 blocked → reviewing 并派发新评审
+        （add-spec-review-gate D8：重新评审入口仅对 error 前缀 spec-review-* 且
+        未冻结的 blocked SPEC 开放；不符合条件 STATE 零变更）。
+        - project 不存在 → 404；spec 不在项目 STATE.md → 404
+        - 不符合开放条件（非 blocked / 非评审前缀 / 冻结 / 转移失败）→ 400
+          + {ok: false, error: 明确原因}
+        - 成功 → 200 + {ok: true, project, spec}
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        proot = Path(project["path"])
+        try:
+            result = dashboard_data.re_review_spec(proot, spec)
+        except Exception as e:  # noqa: BLE001 兜底：重新评审异常不崩溃进程
+            self._error(500, f"re-review spec failed: {e}")
+            return
+        if not result.get("found"):
+            self._error(404, result.get("error") or f"spec not found: {spec}")
+            return
+        if not result.get("ok"):
+            self._error(400, result.get("error") or "重新评审条件不满足")
+            return
+        self._json({"ok": True, "project": project["name"], "spec": spec})
+
     def _api_spec_approve_push(self, query):
         """POST /api/spec-approve-push?project=<name>&spec=<name>
 
@@ -1968,6 +2004,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_spec_archive(query)
         elif path == "/api/spec-promote":
             self._api_spec_promote(query)
+        elif path == "/api/spec-re-review":
+            self._api_spec_re_review(query)
         elif path == "/api/spec-approve-push":
             self._api_spec_approve_push(query)
         elif path == "/api/alerts/clear":
