@@ -3285,9 +3285,16 @@ class VerificationPipeline:
             # 读取异常一律视为无数据（门禁不制造新的失败模式）
             try:
                 ft = self._pm._read_implementer_result(spec_name) or {}
-                verification = ft.get("verification")
-                if isinstance(verification, dict):
-                    scenarios = verification.get("scenarios") or []
+                # fix-impl-tasks-completion-gate D6：partial 是「诚实申报未完成」
+                # 的合法终态——其 verification 段是未完成形态，不得当作 verified
+                # 洗白门禁的场景证据采信（partial 轮不会走到 verified 推进，此处
+                # 为 fail-safe 兜底：按无数据处理，交既有闸门拦截）。
+                if ft.get("status") == "partial":
+                    scenarios = []
+                else:
+                    verification = ft.get("verification")
+                    if isinstance(verification, dict):
+                        scenarios = verification.get("scenarios") or []
             except Exception:
                 scenarios = []
         if not scenarios:

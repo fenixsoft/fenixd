@@ -823,6 +823,43 @@ class PMEngine:
             pass
         return None
 
+    def _partial_attribution(self, spec_name: str, impl_result: dict,
+                             result=None) -> str:
+        """partial 结果的失败归因构造（fix-impl-tasks-completion-gate D6）。
+
+        partial 是「诚实申报未完成」的合法终态，其失败归因 MUST 非空且由
+        ``unfinished`` 清单与 tasks.md 缺口 id 构成——MUST NOT 沿用为 None 的
+        ``result.error``（成功进程的 error 为 None，沿用会产出「失败但无归因」
+        的空壳处置，违背 admin 处置非空壳约定）。归因同时是重派 prompt 的
+        缺口注入来源。
+
+        Args:
+            spec_name: spec 名（tasks.md 缺口兜底用）。
+            impl_result: 实现者结果 dict（顶层含 status/unfinished/completed_tasks）。
+            result: 可选 AgentRunResult（优先取 result.error 作为前缀上下文）。
+
+        Returns:
+            非空归因文案。
+        """
+        unfinished = impl_result.get("unfinished")
+        if isinstance(unfinished, list) and unfinished:
+            gap = [str(t) for t in unfinished]
+        else:
+            # 防御：unfinished 缺失/非数组时回退 tasks.md 未勾 id（硬门已校验
+            # 申报一致性，正常到不了这里；兜底不产出空壳归因）。
+            try:
+                from core.run_task_track import parse_tasks_md
+                all_ids, checked_ids = parse_tasks_md(self.project_root, spec_name)
+                gap = [t for t in all_ids if t not in checked_ids]
+            except Exception:
+                gap = []
+        if gap:
+            shown = "、".join(gap[:20])
+            if len(gap) > 20:
+                shown += f" 等共 {len(gap)} 项"
+            return f"实现者申报未完成（status=partial）：{shown}"
+        return "实现者申报未完成（status=partial）"
+
     def _write_impl_result_snapshot(self, spec_name: str, result_dict: dict) -> None:
         """把 implementer 成功结果 dict 原子快照到 .fenix/verify-progress/<spec>/impl-result.json。
 
@@ -1131,6 +1168,22 @@ class PMEngine:
 
         # 证据存在 → 检查 impl_status
         impl_status = result.get("status")
+        if impl_status == "partial":
+            # fix-impl-tasks-completion-gate D6：partial 轮之后 MUST NOT 放行到
+            # done——partial 自带 unfinished 缺口证据（快照/共享文件残留 partial
+            # 时把带未完成任务的 spec 静默推进 done 正是本 SPEC 消除的事故形态）。
+            # fail-closed：归因带 TASK_GAP_ERROR_PREFIX，与人工回炉入口
+            # （task-reflow）同语义可处置。unfinished 缺失时回退任务书未勾 id。
+            unfinished = result.get("unfinished")
+            gap = [str(t) for t in unfinished] if isinstance(unfinished, list) else []
+            if not gap:
+                _all_ids, checked_ids = parse_tasks_md(self.project_root, spec_name)
+                gap = [t for t in _all_ids if t not in checked_ids]
+            return (
+                TASK_GAP_ERROR_PREFIX + "实现者申报未完成（partial）："
+                + "、".join(gap[:20])
+                + (f" 等共 {len(gap)} 项" if len(gap) > 20 else "")
+            )
         if impl_status != "success":
             return None  # 非 success（error/其它）→ 放行（现状不变）
 

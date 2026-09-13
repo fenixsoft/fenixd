@@ -733,6 +733,15 @@ class Dispatcher:
                     impl_status = impl_result.get("status")
                     if impl_status == "error":
                         impl_error = impl_result.get("error") or result.error
+                    elif impl_status == "partial":
+                        # fix-impl-tasks-completion-gate D6：partial 是「诚实申报未完成」
+                        # 的合法终态——is_success 为假、MUST NOT 进入 implemented。
+                        # 失败归因 MUST 非空且由 unfinished 清单与缺口 id 构成，MUST NOT
+                        # 沿用为 None 的 result.error（成功进程 error=None，沿用会产出
+                        # 「失败但无归因」的空壳处置，违背 admin 处置非空壳约定）。
+                        # 归因文案同时是重派 prompt 的缺口注入来源。
+                        impl_error = self._pm._partial_attribution(
+                            spec_name, impl_result, result)
                     elif impl_status != "success":
                         impl_error = result.error
                 is_success = result.success and (
@@ -1312,6 +1321,10 @@ class Dispatcher:
         elif impl_status_success := bool(
                 impl_result and impl_result.get("status") == "success"):
             terminal = "result"
+        elif (impl_result or {}).get("status") == "partial":
+            # fix-impl-tasks-completion-gate D6：partial 是诚实申报未完成的合法
+            # 终态——诊断终态单列 partial，不落入默认 error 也不落入 result。
+            terminal = "partial"
         conclusion = ""
         if impl_result:
             try:
@@ -2251,16 +2264,26 @@ class Dispatcher:
         if not result.success or ft_result.get("status") != "success":
             self._keep_fast_track_worktree(spec_name, result)
             if result.success:
-                # run 正常收工但结果文件顶层 status 非法：error 写明实际值与修法
-                # 处方——不用无信息量兜底文案（add-agent-prompt-files 事故：
-                # status 被写成 'verified'，兜底文案 'fast-track run failed' 让
-                # 重派 run 不知错在哪，可能原样再犯）。
                 status_val = ft_result.get("status")
-                final_error = (
-                    f"结果文件 status={status_val!r} 非法——顶层合同唯一合法值为 "
-                    f"'success'（verified/bug-found 属于 verification.verdict）。"
-                    f"修复：重写 .fenix-run-result.json 顶层 status 为 'success'"
-                )
+                if status_val == "partial":
+                    # fix-impl-tasks-completion-gate D6：fast-track partial 同
+                    # implementer 语义——is_success 为假、不进 implemented；
+                    # 失败归因 MUST 非空（unfinished 清单与缺口 id 构成，不得
+                    # 沿用为 None 的 result.error）。partial 走 _handle_fast_track_
+                    # failure 的失败/预算消耗通道（连续 partial 由预算上限收口）。
+                    final_error = self._pm._partial_attribution(
+                        spec_name, ft_result, result)
+                else:
+                    # run 正常收工但结果文件顶层 status 非法：error 写明实际值与修法
+                    # 处方——不用无信息量兜底文案（add-agent-prompt-files 事故：
+                    # status 被写成 'verified'，兜底文案 'fast-track run failed' 让
+                    # 重派 run 不知错在哪，可能原样再犯）。
+                    final_error = (
+                        f"结果文件 status={status_val!r} 非法——顶层合同唯一合法值为 "
+                        f"'success'（verified/bug-found 属于 verification.verdict；"
+                        f"partial 用于申报未完成）。"
+                        f"修复：重写 .fenix-run-result.json 顶层 status"
+                    )
             else:
                 final_error = (
                     ft_result.get("error") or result.error or "fast-track run failed"

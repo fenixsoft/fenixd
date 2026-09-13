@@ -60,25 +60,25 @@
 
 ## 1. 解析与进度载体下沉
 
-- [ ] 1.1 新建 `core/run_task_track.py`：提供 tasks.md 数字任务解析纯函数（逐行匹配 `^- \[(x| )\] (\d+\.\d+)`，返回全部 id 与已勾选 id 集合；文件缺失/不含数字任务返回空集），供 `_task_completion_blocker`、新硬门、`parse_run_task_done` 调用方共用
-- [ ] 1.2 新建 `core/run_task_track.py`：把 `core/dashboard/data.py` 的 `parse_run_task_done` 及其 memo 缓存（`_RUN_TASK_CACHE`）逐字下沉到本模块，语义与返回结构（`done_ids`/`created_count`/`flat_done`/`in_progress_ids`）保持不变
-- [ ] 1.3 `core/dashboard/data.py`：改为从 `core.run_task_track` 再导出 `parse_run_task_done`，并保留既有兼容别名 `_parse_run_task_done`、`_find_impl_run_file`；确认既有全部调用点（`engine.py:961/1166`、`data.py:1406/1470`）零改动仍可用
-- [ ] 1.4 `core/pm_engine/engine.py`：`_task_completion_blocker` 的内联 tasks.md 解析（约 1149-1160 行）改用 1.1 的共用函数，判定口径与行为保持逐字不变（含"文件缺失/无数字任务 → 放行"分支）
+- [x] 1.1 新建 `core/run_task_track.py`：提供 tasks.md 数字任务解析纯函数（逐行匹配 `^- \[(x| )\] (\d+\.\d+)`，返回全部 id 与已勾选 id 集合；文件缺失/不含数字任务返回空集），供 `_task_completion_blocker`、新硬门、`parse_run_task_done` 调用方共用
+- [x] 1.2 新建 `core/run_task_track.py`：把 `core/dashboard/data.py` 的 `parse_run_task_done` 及其 memo 缓存（`_RUN_TASK_CACHE`）逐字下沉到本模块，语义与返回结构（`done_ids`/`created_count`/`flat_done`/`in_progress_ids`）保持不变
+- [x] 1.3 `core/dashboard/data.py`：改为从 `core.run_task_track` 再导出 `parse_run_task_done`，并保留既有兼容别名 `_parse_run_task_done`、`_find_impl_run_file`；确认既有全部调用点（`engine.py:961/1166`、`data.py:1406/1470`）零改动仍可用
+- [x] 1.4 `core/pm_engine/engine.py`：`_task_completion_blocker` 的内联 tasks.md 解析（约 1149-1160 行）改用 1.1 的共用函数，判定口径与行为保持逐字不变（含"文件缺失/无数字任务 → 放行"分支）
 
 ## 2. 实现者与快速通道结果产物硬门
 
-- [ ] 2.1 `core/agent_runner/runner.py`：`_check_agent_result_artifact` 增加 `wt_path` 形参（调用点约 2688 行传入），并在 `agent_type in {"implementer", "fast-track"}` 分支读取 `wt_path / ".fenix-run-result.json"`（不读主树拷回副本）
-- [ ] 2.2 `core/agent_runner/runner.py`：implementer/fast-track 分支的基础校验——文件存在、非空、合法 JSON、顶层为对象、顶层 `status ∈ {"success", "error", "partial"}`；任一不满足返回失败归因文案
-- [ ] 2.3 `core/agent_runner/runner.py`：`status == "success"` 的完成度判据——以 worktree 内 `spec/changes/<spec>/tasks.md` 为对象，未勾数字任务必须为零（复用 1.1 解析），且结果文件 `completed_tasks` 集合必须与已勾选 id 集合完全相等（缺项/多项/非数字 id 均判失败）
-- [ ] 2.4 `core/agent_runner/runner.py`：`status == "partial"` 的申报一致性判据——`completed_tasks` 等于已勾选集合、`unfinished` 等于未勾选集合、两集合互斥且并集等于全部数字任务 id
-- [ ] 2.5 `core/agent_runner/runner.py`：能力探测——读本轮 run 产物中 `type=="system" && subtype=="init"` 的 `tools` 数组；含 `"TaskCreate"` 时额外强制 `parse_run_task_done(run_file)["done_ids"]` 覆盖全部已勾选 id；不含或 `init` 不可得时跳过并向 run 产物追加 `type=="impl-task-crosscheck-skipped"` 审计事件（含 spec/run_id/reason）
-- [ ] 2.6 `core/agent_runner/runner.py`：`status == "error"` 时不施加任何完成度类判据
-- [ ] 2.7 `core/agent_runner/runner.py`：硬门归因文案覆盖全部失败类别（缺失/为空/非法 JSON/顶层非对象/status 白名单外/未完成任务/完成清单不一致/申报不一致/TaskUpdate 不一致），含真实 status 取值与缺口任务 id 清单（超 20 项截断并标注总数），不得以 `None` 替代真实值
+- [x] 2.1 `core/agent_runner/runner.py`：`_check_agent_result_artifact` 增加 `wt_path` 形参（调用点约 2688 行传入），并在 `agent_type in {"implementer", "fast-track"}` 分支读取 `wt_path / ".fenix-run-result.json"`（不读主树拷回副本）
+- [x] 2.2 `core/agent_runner/runner.py`：implementer/fast-track 分支的基础校验——文件存在、非空、合法 JSON、顶层为对象、顶层 `status ∈ {"success", "error", "partial"}`；任一不满足返回失败归因文案
+- [x] 2.3 `core/agent_runner/runner.py`：`status == "success"` 的完成度判据——以 worktree 内 `spec/changes/<spec>/tasks.md` 为对象，未勾数字任务必须为零（复用 1.1 解析），且结果文件 `completed_tasks` 集合必须与已勾选 id 集合完全相等（缺项/多项/非数字 id 均判失败）
+- [x] 2.4 `core/agent_runner/runner.py`：`status == "partial"` 的申报一致性判据——`completed_tasks` 等于已勾选集合、`unfinished` 等于未勾选集合、两集合互斥且并集等于全部数字任务 id
+- [x] 2.5 `core/agent_runner/runner.py`：能力探测——读本轮 run 产物中 `type=="system" && subtype=="init"` 的 `tools` 数组；含 `"TaskCreate"` 时额外强制 `parse_run_task_done(run_file)["done_ids"]` 覆盖全部已勾选 id；不含或 `init` 不可得时跳过并向 run 产物追加 `type=="impl-task-crosscheck-skipped"` 审计事件（含 spec/run_id/reason）
+- [x] 2.6 `core/agent_runner/runner.py`：`status == "error"` 时不施加任何完成度类判据
+- [x] 2.7 `core/agent_runner/runner.py`：硬门归因文案覆盖全部失败类别（缺失/为空/非法 JSON/顶层非对象/status 白名单外/未完成任务/完成清单不一致/申报不一致/TaskUpdate 不一致），含真实 status 取值与缺口任务 id 清单（超 20 项截断并标注总数），不得以 `None` 替代真实值
 
 ## 3. 硬门失败的原地续做
 
-- [ ] 3.1 `core/agent_runner/runner.py`：确认硬门失败仍走既有 `AgentArtifactGateError` 通道（保 worktree、原地退避、同 worktree 同 session `--resume` 续做），不清理 worktree、不判整轮作废、不消耗实现尝试预算
-- [ ] 3.2 `core/agent_runner/prompt_builder.py`：续做轮 prompt 注入硬门归因段（失败类别 + 缺口任务 id 清单），与 `add-impl-terminal-nocommit-gate` 的续做注入同构，使 agent 无需重新推导剩余范围
+- [x] 3.1 `core/agent_runner/runner.py`：确认硬门失败仍走既有 `AgentArtifactGateError` 通道（保 worktree、原地退避、同 worktree 同 session `--resume` 续做），不清理 worktree、不判整轮作废、不消耗实现尝试预算
+- [x] 3.2 `core/agent_runner/prompt_builder.py`：续做轮 prompt 注入硬门归因段（失败类别 + 缺口任务 id 清单），与 `add-impl-terminal-nocommit-gate` 的续做注入同构，使 agent 无需重新推导剩余范围
 
 ## 4. partial 状态的消费点一致性
 
