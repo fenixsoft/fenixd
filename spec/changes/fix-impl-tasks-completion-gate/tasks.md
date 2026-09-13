@@ -120,4 +120,4 @@
 - [x] 9.4 `tests/test_dashboard_api.py`：回炉路由成功、project/spec 404、四类拒绝的状态码与错误语义
 - [x] 9.5 `tests/test_pm_verification.py`：`partial` 不放行到 implemented、失败归因非空且含缺口 id、计入实现尝试预算、partial 轮之后 `_task_completion_blocker` 不放行到 done
 - [x] 9.6 `tests/test_agent_prompt_files.py`：两分支（implementer / fast-track）契约段同源断言；工具不可用分支的 prompt 不含 TaskCreate 强制语句
-- [ ] 9.7 全量回归：经 `bin/run_full_suite.py --timeout 3600 --baseline HEAD` 有界入口执行，新增用例全绿且既有 pm_engine / dispatch / runner / dashboard 回归无新增失败（以主树基线对照区分存量 flake 与本轮引入）
+- [x] 9.7 全量回归：经 `bin/run_full_suite.py --timeout 3600 --baseline HEAD` 有界入口执行，新增用例全绿且既有 pm_engine / dispatch / runner / dashboard 回归无新增失败（以主树基线对照区分存量 flake 与本轮引入）
