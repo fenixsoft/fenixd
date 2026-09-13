@@ -571,6 +571,22 @@ class LivenessSupervisor:
         # 值语义（见 effective_stuck_threshold_seconds，不随覆盖变化）。
         run_timeout = float(self._pm._effective_run_timeout(agent_type))
         max_extensions = max(0, int(sup["max_extensions"]))
+        # ── 规模预检 higher 档 extension 上限调整（add-fast-track-scale-precheck）──
+        # fast-track spec 标记 _fast_track_scale_tier == "higher" 时，extension
+        # 预算提高 2 次（默认 max_extensions 2 -> 4），使大任务面 spec 获得
+        # 更充足超时预算（9000 + 4×1800 = 16200s = 4.5h）。
+        if agent_type == "fast-track" and spec_name:
+            try:
+                entry = self._pm.state_machine.read_one(spec_name) or {}
+                if entry.get("_fast_track_scale_tier") == "higher":
+                    max_extensions += 2
+                    self._pm.logger.info(
+                        "agent_runner",
+                        f"fast-track higher tier: max_extensions "
+                        f"increased to {max_extensions} for '{spec_name}'",
+                    )
+            except Exception:
+                pass
         extension_seconds = max(1.0, float(sup["extension_seconds"]))
         # absolute_max 是总墙钟上限；配置偏小时抬到 run_timeout + 续期总额，
         # 否则续期预算会被总上限截断（语义矛盾）。

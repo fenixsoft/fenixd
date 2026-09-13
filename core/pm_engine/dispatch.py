@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, start_after_pending
+from core.fast_track_result import estimate_spec_scale, budget_tier_for_scale
 
 
 # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）────────────────────
@@ -643,6 +644,28 @@ class Dispatcher:
                 # ── fast-track 单 run 全包：实现 → 场景设计 → 验证 → 判定 ──
                 # 预算与 worktree 语义与 implementer 一致（impl- run_id/分支前缀），
                 # 结果处理走 _run_fast_track_worker（守卫 + 硬校验 + 状态推进）。
+                # ── 派发前规模预检（add-fast-track-scale-precheck）──────────
+                # 大任务面 spec（tasks.md 任务条数/文件面超阈）不再按统一 3.5h
+                # 档派发：full 档降级完整模式（implementer 车道），higher 档
+                # 写入规模档位标记供 runner 超时监督提高 extension 上限。预检
+                # 失败保守低档放行（design D2，不阻断派发）。
+                scale, tier = self._fast_track_scale_precheck(spec_name)
+                if tier == "full":
+                    # 降级完整模式：改写 .spec.yaml mode → full + 状态回滚 ready
+                    # + 重新入队 implementer；本次不启动 fast-track run、不递增预算。
+                    self._downgrade_fast_track_scale(spec_name, scale)
+                    return
+                if tier == "higher":
+                    # higher 档：写 spec 标记，runner 超时监督据此提高 extension
+                    # 上限（liveness._supervision_deadline_action 读取）。
+                    try:
+                        self._pm.state_machine.update_spec(
+                            spec_name, {"_fast_track_scale_tier": tier})
+                    except Exception as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"fast-track 规模档位标记写入失败 '{spec_name}'（非阻塞）: {e}",
+                        )
                 self._pm._increment_impl_run_budget_used(spec_name)
                 self._run_fast_track_worker(spec_name)
 
@@ -1173,6 +1196,66 @@ class Dispatcher:
             return float(until) > datetime.now(timezone.utc).timestamp()
         except (TypeError, ValueError):
             return False
+
+
+    # ── fast-track 派发前规模预检（add-fast-track-scale-precheck）───────────
+
+    def _fast_track_scale_precheck(self, spec_name: str) -> tuple:
+        """fast-track 派发前规模预估：返回 (scale, tier)，含预留日志。
+
+        - scale = estimate_spec_scale(spec_dir)：tasks.md 未勾选任务条数加权
+          + spec 目录源码文件数；
+        - tier = budget_tier_for_scale(scale)：normal / higher / full；
+        - 预检异常（tasks.md 缺失/IO 失败/路径非法）保守低档放行（design D2，
+          不阻断派发），WARNING 留痕；异常不扩散（不抛）。
+        - 日志含 spec、规模分、档位（任务 2.1「预留日志」）。
+        """
+        spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
+        scale = 0
+        tier = "normal"
+        try:
+            scale = int(estimate_spec_scale(spec_dir))
+            tier = budget_tier_for_scale(scale)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track 规模预检异常 '{spec_name}'（低档放行）: {e}",
+            )
+        self._pm.logger.info(
+            "pm_engine",
+            f"fast-track 规模预检 '{spec_name}': scale={scale} tier={tier}",
+        )
+        return scale, tier
+
+    def _downgrade_fast_track_scale(self, spec_name: str, scale: int) -> None:
+        """full 档规模降级：fast-track 大任务面改走完整模式（design D1）。
+
+        - 改写 .spec.yaml mode → full（复用既有升级路径的改写语义）；
+        - spec 状态回滚 ready（error 写明降级原因与规模分），重新入队
+          implementer（完整模式车道，预算闸门/内容完整性闸门同层生效）；
+        - 本次不启动 fast-track run、不递增实现预算（_run_agent_worker 调用
+          点先于 _increment_impl_run_budget_used）；
+        - 改写失败仅 WARNING（非阻塞，下轮派发仍按 fast-track 原档重试）。
+        """
+        try:
+            self._rewrite_fast_track_to_full(spec_name)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track 规模降级 .spec.yaml 改写失败 '{spec_name}'（非阻塞）: {e}",
+            )
+        self._pm.state_machine.update_spec(spec_name, {
+            "status": "ready",
+            "error": (
+                f"fast-track 规模预检降级完整模式（scale={scale}，任务面超阈）"
+            ),
+        })
+        self._pm._enqueue(spec_name, "implementer")
+        self._pm.logger.warning(
+            "pm_engine",
+            f"fast-track 规模预检降级 '{spec_name}'：scale={scale} 超阈，"
+            f"改走完整模式 implementer 车道（不再按 3.5h 统一档）",
+        )
 
 
     def _rollback_failed_dispatch(self, spec_name: str, agent_type: str, exc: Exception):

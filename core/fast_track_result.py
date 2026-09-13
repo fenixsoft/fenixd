@@ -23,6 +23,7 @@ fast-track run 复用现有 ``.fenix-run-result.json`` 机制，在其中增加�
 """
 
 from typing import Optional
+from pathlib import Path
 
 # 验证段顶层键
 VERIFICATION_KEY = "verification"
@@ -104,3 +105,83 @@ def parse_fast_track_verification(result: dict) -> Optional[dict]:
 def is_verified(verification: dict) -> bool:
     """验证段最终判定是否为通过（配合 parse 结果使用）。"""
     return verification is not None and verification.get(VERDICT_KEY) == VERDICT_VERIFIED
+
+
+# ── fast-track 规模预估（add-fast-track-scale-precheck）─────────────────────
+# 阈值常量（design D1 固化，注释样本依据）：
+# - NORMAL_THRESHOLD: tasks.md 未勾选任务条数阈值（样本：fix-root-init-import-shadow 8+ 任务 vs fix-dispatch-wakeup-gap 1 任务）
+# - HIGHER_THRESHOLD: tasks.md 未勾选任务条数阈值（大任务面）
+# - SOURCE_FILE_WEIGHT: 源码文件数权重（.py/.ts/.tsx 文件）
+# - TASK_WEIGHT: 任务条数权重
+NORMAL_THRESHOLD = 3
+HIGHER_THRESHOLD = 6
+TASK_WEIGHT = 10
+SOURCE_FILE_WEIGHT = 1
+
+
+def estimate_spec_scale(spec_dir: Path) -> int:
+    """按 tasks.md 未勾选任务条数 + spec 目录源码文件数加权返回规模分。
+
+    tasks.md 缺失或读取失败记 WARNING 返回低档分（保守放行，design D2）。
+
+    Args:
+        spec_dir: spec 目录路径（如 spec/changes/<spec_name>）
+
+    Returns:
+        规模分（int），值越大任务越重。
+    """
+    import logging as _log
+    import re as _re
+    from pathlib import Path as _Path
+
+    spec_path = _Path(spec_dir)
+    if not spec_path.is_dir():
+        return 0
+
+    logger = _log.getLogger("fast_track_scale")
+
+    # 1. 统计 tasks.md 未勾选任务条数
+    tasks_path = spec_path / "tasks.md"
+    unchecked_count = 0
+    if tasks_path.is_file():
+        try:
+            text = tasks_path.read_text(encoding="utf-8")
+            # 匹配 "- [ ]" 开头的任务行
+            unchecked_count = len(_re.findall(r"^- \[ \] ", text, _re.MULTILINE))
+        except (OSError, UnicodeDecodeError) as e:
+            logger.warning(
+                f"fast-track 规模预估读取 {tasks_path} 失败（低档放行）: {e}"
+            )
+            unchecked_count = 0
+    else:
+        logger.warning(
+            f"fast-track 规模预估 tasks.md 缺失（低档放行）: {tasks_path}"
+        )
+
+    # 2. 统计 spec 目录源码文件数（.py/.ts/.tsx）
+    source_count = 0
+    for ext in ("*.py", "*.ts", "*.tsx"):
+        source_count += len(list(spec_path.rglob(ext)))
+
+    # 3. 加权计算规模分
+    scale = unchecked_count * TASK_WEIGHT + source_count * SOURCE_FILE_WEIGHT
+    return scale
+
+
+def budget_tier_for_scale(scale: int) -> str:
+    """按 design D1 阈值返回档位（normal / higher / full）。
+
+    阈值常量固化并注释样本依据（见模块级常量）。
+
+    Args:
+        scale: 规模分（estimate_spec_scale 的返回值）
+
+    Returns:
+        档位字符串："normal" / "higher" / "full"
+    """
+    if scale >= HIGHER_THRESHOLD * TASK_WEIGHT:
+        return "full"
+    elif scale >= NORMAL_THRESHOLD * TASK_WEIGHT:
+        return "higher"
+    else:
+        return "normal"
