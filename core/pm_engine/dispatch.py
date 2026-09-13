@@ -1508,11 +1508,18 @@ class Dispatcher:
     # ── 缺件 LLM 终审与裁决机械执行（add-deliverable-declaration-triage D3/D4）──
 
     def _build_dispute_judge_input(self, spec_name: str, impl_result,
-                                   missing: list) -> dict:
-        """组装 dispute-judge 输入（4.1）：缺件 + basename 候选 + spec 语境 + findings。
+                                   missing: list,
+                                   kind_by_path: "dict | None" = None) -> dict:
+        """组装 dispute-judge 输入（4.1/4.5）：缺件 + kind + basename 候选 + 语境。
+
+        ``missing`` 兼容两种形态：路径列表（``list[str]``）或守卫返回的
+        结构化条目（``list[dict]``，每项含 ``path``/``kind``/``violation``）。
+        ``kind_by_path`` 可选：声明段 path→kind 映射，供 judge 看到「该路径应被
+        删除」而非仅看到缺件路径（add-deliverable-delete-kind 4.5）——条目级
+        kind 优先于映射，映射优先于默认 ``"new"``。
 
         Returns:
-            dict：``{"spec", "missing": [{"path", "candidates"}],
+            dict：``{"spec", "missing": [{"path", "kind", "candidates"}],
             "spec_context": {"excerpts", "declared_entries"},
             "findings": [...]}``。任一部件读取失败静默降级（fail-open）。
         """
@@ -1520,12 +1527,26 @@ class Dispatcher:
 
         missing_entries = []
         for m in missing:
+            if isinstance(m, dict):
+                m_path = str(m.get("path") or "")
+                m_kind = str(m.get("kind") or "")
+            else:
+                m_path = str(m)
+                m_kind = ""
+            if not m_path:
+                continue
             candidates = []
             try:
-                candidates = match_basename_in_tree(self._pm.project_root, m)
+                candidates = match_basename_in_tree(self._pm.project_root, m_path)
             except Exception:
                 candidates = []
-            missing_entries.append({"path": m, "candidates": candidates})
+            if not m_kind and kind_by_path:
+                m_kind = kind_by_path.get(m_path, "new")
+            missing_entries.append({
+                "path": m_path,
+                "kind": m_kind or "new",
+                "candidates": candidates,
+            })
 
         findings = []
         if isinstance(impl_result, dict):
@@ -1534,7 +1555,9 @@ class Dispatcher:
         return {
             "spec": spec_name,
             "missing": missing_entries,
-            "spec_context": self._dispute_spec_context(spec_name, missing),
+            "spec_context": self._dispute_spec_context(spec_name,
+                                                       [m["path"] for m in
+                                                        missing_entries]),
             "findings": findings,
         }
 
@@ -1675,11 +1698,24 @@ class Dispatcher:
             if isinstance(e, dict) and e.get("path"):
                 entry_by_path[e["path"]] = e
 
+        # 缺件入参兼容两种形态：守卫返回 list[dict]（path/kind/violation）与
+        # 既有调用/测试的 list[str]。统一规范化为路径列表（匹配逻辑只认路径）。
+        missing_paths = [
+            m["path"] if isinstance(m, dict) else str(m)
+            for m in missing
+        ]
+
         # 分类：确定性命中 → deterministic；声明段无该条目或不命中 → 留在 remaining
         deterministic: list = []
         remaining: list = []
-        for m in missing:
+        for m in missing_paths:
             entry = entry_by_path.get(m)
+            # add-deliverable-delete-kind D4：kind: delete 条目 MUST NOT 参与软化
+            # （classify_unsatisfiable 已恒 False，此处显式排除 + 审计留痕防将来
+            # 新增软化路径时无声破防）；delete 条目保留在待处置清单进入后继流程。
+            if entry and entry.get("kind") == "delete":
+                remaining.append(m)
+                continue
             if entry and classify_unsatisfiable(entry, self._pm.project_root):
                 deterministic.append(m)
             else:
@@ -1811,16 +1847,31 @@ class Dispatcher:
         # remaining 是预分类后仍存在的缺件清单；若预分类全清则 proceed，
         # 否则剩余项带入后续 judge 流程（judge 输入只含剩余项）。
         remaining = preclassify_result.get("remaining", missing)
-        # judge 输入快照：typo_fixed_paths 构造需基于 judge 的输入清单
-        # （后续 remaining 会被守卫重跑结果覆盖，不可再作 judge 输入引用）。
-        judge_input_paths = list(remaining)
+        # 将 remaining 规范化为路径列表（兼容 list[str] 与 list[dict]）
+        remaining_paths = [
+            r["path"] if isinstance(r, dict) else str(r)
+            for r in remaining
+        ]
+        # kind 映射：供 judge 输入携带 kind（4.5）及 delete 防洗白（4.3）。
+        # 从声明段条目提取，缺省 "new"（正则回退路径无 kind 概念）。
+        kind_by_path: dict = {}
+        try:
+            from core.deliverables import extract_declared_entries as _ede
+            _spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
+            for e in (_ede(_spec_dir) or []):
+                if isinstance(e, dict) and e.get("path") and e.get("kind"):
+                    kind_by_path[e["path"]] = e["kind"]
+        except Exception:
+            pass
+        # judge 输入快照：需基于 judge 的输入清单（路径列表）
+        judge_input_paths = list(remaining_paths)
 
         judge_run_id = f"dispute-judge-{spec_name}-{int(time.time())}"
         # 1. 终审期间 spec 置 blocked（error 含 run id），阻断重派竞态
         self._pm.state_machine.update_spec(spec_name, {
             "status": "blocked",
             "tester_run": None,
-            "error": (f"交付物守卫缺件 [{', '.join(remaining)}] — LLM 终审进行中"
+            "error": (f"交付物守卫缺件 [{', '.join(remaining_paths)}] — LLM 终审进行中"
                       f"（judge run {judge_run_id}）"),
         })
         self._pm.logger.warning(
@@ -1829,7 +1880,8 @@ class Dispatcher:
         )
 
         # 2. 组装输入并派单轮 dispute-judge run（仅含预分类后剩余项）
-        judge_input = self._build_dispute_judge_input(spec_name, impl_result, remaining)
+        judge_input = self._build_dispute_judge_input(
+            spec_name, impl_result, remaining, kind_by_path=kind_by_path)
         judge_result = None
         try:
             judge_result = self._pm.agent_runner.run_dispute_judge(
@@ -1860,9 +1912,10 @@ class Dispatcher:
         # 4. 裁决机械执行：typo 修正 / reference 软化（逐条，失败等价 unclear）
         executed_verdicts: list = []
         diff_by_element: dict = {}
-        for m in remaining:
+        for m in remaining_paths:
             v = _verdict_of(m)
             verdict = v.get("verdict")
+            kind_m = kind_by_path.get(m, "new")
             try:
                 if verdict == "typo":
                     actual_path = str(v.get("actual_path") or "").strip()
@@ -1879,6 +1932,27 @@ class Dispatcher:
                         "pm_engine",
                         f"dispute judge 裁决 typo '{spec_name}': "
                         f"{m} → {actual_path}（声明段已修正）",
+                    )
+                elif verdict == "reference" and kind_m == "delete":
+                    # 4.3 防洗白：delete 条目的 reference 归宿被机械拒绝——
+                    # 改写为 unclear（转人工），不软化声明段（软化 = 删除要求
+                    # 静默消失）；审计记录保留 judge 原始 verdict 与改写事实。
+                    verdict_by_element[m] = {
+                        "verdict": "unclear",
+                        "judge_original": "reference",
+                        "rewrite_reason": "delete-kind-reference-rejected",
+                    }
+                    executed_verdicts.append({
+                        "element": m,
+                        "verdict": "unclear",
+                        "judge_original": "reference",
+                        "rewrite_reason": "delete-kind-reference-rejected",
+                    })
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"dispute judge 裁决 reference 被拒 '{spec_name}': "
+                        f"{m} 是 kind: delete——reference 归宿不可用"
+                        f"（防洗白 D4），改写为 unclear 转人工",
                     )
                 elif verdict == "reference":
                     from core.deliverables import soften_declared_kind
@@ -1935,6 +2009,12 @@ class Dispatcher:
             })
             return {"action": "proceed"}
 
+        # 规范化 remaining（list[dict]）为路径列表 + 保留条目供下游
+        remaining_paths = [
+            r["path"] if isinstance(r, dict) else str(r)
+            for r in remaining
+        ]
+
         # 仍有缺件：分类 remaining 的归宿。remaining 可能含 typo 修正后的
         # actual_path（非原 element）——凡能追溯到「已执行 typo 修正」或
         # 「missing 裁决」的路径按既有打回路径处置（防洗白：修正声明 ≠ 放行
@@ -1947,7 +2027,7 @@ class Dispatcher:
                 if ap:
                     typo_fixed_paths.add(ap)
         unclear_remaining = []
-        for p in remaining:
+        for p in remaining_paths:
             # typo 修正后的 actual_path：修正声明后文件仍不存在 = 防洗白 → 打回
             if p in typo_fixed_paths:
                 continue
@@ -1987,6 +2067,10 @@ class Dispatcher:
         注册分支遗产（供后继 run 收编）→ 重试计数 → 重派 implementer；
         连续 ``agents.max_retries`` 次封顶 blocked。自 judge 终审进入的调用
         同样走此路径——judge 不放行不存在的文件（防洗白，D4）。
+
+        Args:
+            missing_list: 守卫返回的差异条目列表（``list[dict]``，每项含
+                ``path``/``kind``/``violation``）。
         """
         _wm = self._pm.agent_runner.worktree_manager
         _branch = getattr(result, "branch", None)
@@ -1999,8 +2083,13 @@ class Dispatcher:
             prev_retries = 0
         retries = prev_retries + 1
         max_r = self._pm._get_config("agents.max_retries", 3)
-        missing_q = "、".join(missing_list)
-        err_note = (f"交付物守卫：缺件 [{missing_q}] — 不合并不推进，"
+        # 按 kind 分化话术：undeleted 用「未删除」语义、missing 保持「缺件」语义
+        missing_q = "、".join(
+            f"{m.get('path', '?')}（{m.get('violation', 'missing')}）"
+            if isinstance(m, dict) else str(m)
+            for m in missing_list
+        )
+        err_note = (f"交付物守卫：违规 [{missing_q}] — 不合并不推进，"
                     f"重派实现补齐（第 {retries} 次）")
         updates: dict = {
             "status": "ready",
@@ -3115,8 +3204,13 @@ class Dispatcher:
         except (TypeError, ValueError):
             retries = 1
         max_r = self._pm._get_config("agents.max_retries", 3)
-        missing_q = "、".join(missing)
-        err_note = f"fast-track 交付物守卫：缺件 [{missing_q}] — 重派补齐（第 {retries} 次）"
+        # 按 kind 分化话术：undeleted 用「未删除」语义、missing 保持「缺件」语义
+        missing_q = "、".join(
+            f"{m.get('path', '?')}（{m.get('violation', 'missing')}）"
+            if isinstance(m, dict) else str(m)
+            for m in missing
+        )
+        err_note = f"fast-track 交付物守卫：违规 [{missing_q}] — 重派补齐（第 {retries} 次）"
         updates: dict = {
             "status": "ready", "error": err_note, "_retry_count": retries,
         }

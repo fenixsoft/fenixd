@@ -143,29 +143,40 @@ python3 .fenix/bin/fenix_spec.py status --change <name>
        kind: modify
      - path: core/xxx/new_module.py
        kind: new
+     - path: core/xxx/obsolete.py
+       kind: delete   # 让该路径在合并后不存在（仅限入库文件，守卫反判存在性）
      - path: .fenix/config.yaml
        kind: reference   # 运行时写入目标/既有引用，非本仓库交付物
      ```
      ````
 
-     kind 语义：`new`=本仓库新建文件；`modify`=修改既有文件；`reference`=运行时
-     写入目标/既有引用（如被管项目的 `.fenix/config.yaml`、第三方清单、纯示例路径——
-     **不是**本仓库交付物，缺失不拦截）。守卫对 new/modify 硬校验实现分支存在性，
-     reference 仅审计；无声明段的存量 spec 回退正则提取（保守易误拦，新 spec 一律写声明段）。
+     kind 语义：`new`=本仓库新建文件；`modify`=修改既有文件；`delete`=让该
+     路径在合并后不存在（仅限**入库文件**——gitignored 路径上的 `delete` 会被
+     晋升 lint 拒绝；守卫反判实现分支存在性：仍在即违规「未删除」）；
+     `reference`=运行时写入目标/既有引用（如被管项目的 `.fenix/config.yaml`、
+     第三方清单、纯示例路径——**不是**本仓库交付物，缺失不拦截）。守卫对
+     new/modify 硬校验实现分支存在性，delete 反判存在性，reference 仅审计；
+     无声明段的存量 spec 回退正则提取（保守易误拦，新 spec 一律写声明段）。
 
      **不可交付路径模式（declaration-premechanize，daemon 会机械校验并软化）：**
 
      以下四类路径在声明段中有特殊约束。daemon 在 spec 晋升（drafted → ready）
      时会对命中条目自动软化 `kind → reference` 并审计留痕（reasoning 前缀
      `promotion-soften`），守卫缺件判定时同样会预分类软化（reasoning 前缀
-     `guard-preclassify`）：
+     `guard-preclassify`）。**注：`kind: delete` 不参与软化**（软化会把「该删」
+     降级为「仅审计」，删除要求静默消失），delete 的不可交付形态在晋升 lint
+     处直接拒绝：
 
      | 模式 | 示例 | 正确 kind | 说明 |
      |------|------|-----------|------|
      | dist/构建产物目录 | `dist/index.html`、`build/output.js` | `reference` | 构建产物运行时重建，非 git 交付物；声明 `reference` 即可 |
-     | gitignored 路径 | `.fenix/config.yaml`、`dist/...` | `reference` | `git check-ignore` 命中的路径不可作为 `new/modify`；改为 `reference` 或移除 |
-     | `~/`/仓库外路径 | `~/configs/app.yaml`、`../outside.md` | `reference` | `~` 展开后或 `..` 越界后不在仓库内的路径不可作为 `new/modify` |
+     | gitignored 路径 | `.fenix/config.yaml`、`dist/...` | `reference` | `git check-ignore` 命中的路径不可作为 `new/modify/delete`；改为 `reference` 或移除 |
+     | `~/`/仓库外路径 | `~/configs/app.yaml`、`../outside.md` | `reference` | `~` 展开后或 `..` 越界后不在仓库内的路径不可作为 `new/modify/delete` |
      | `.fenix/` 运行时文件 | `.fenix/dispute_audits.jsonl` | `reference` | `.fenix/` 下的文件是框架运行时产物，非交付物 |
+
+     **`.fenix/` 等 gitignored 运行时文件的删除不能由 SPEC 交付**
+     （worktree 内不可达 + 主树只读）：这类删除不进 Deliverables 段，
+     由人工在主树执行。
 
      **path 必须是具体文件，禁止写目录**（强制，drafted→ready 晋升 lint 会拒绝）：
      构建产物目录写其确定性锚点文件——如前端产物写 `core/dashboard/static/dist/index.html`

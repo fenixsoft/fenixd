@@ -69,6 +69,15 @@ def _union_paths(spec_dir) -> list:
     return ordered
 
 
+def _paths_of(entries) -> list:
+    """从守卫返回的 list[dict] 条目提取路径列表（兼容 list[str]）。
+
+    add-deliverable-delete-kind D3 起守卫返回结构化条目
+    ``{"path", "kind", "violation"}``；既有断言从条目取 path，行为预期不变。
+    """
+    return [e["path"] if isinstance(e, dict) else str(e) for e in entries]
+
+
 class TestExtractPathRules(unittest.TestCase):
     def test_extract_from_real_v2_config_page_fixture(self):
         """从真实事故现场文档提取出 config.json 等预期路径。"""
@@ -322,7 +331,8 @@ class TestDeliverableGate(_GateFixture):
         self.wm.file_exists_on_branch.return_value = False
 
         missing = self.engine._deliverable_gate_missing("s1", self.make_result())
-        self.assertEqual(missing, ["core/foo.py"])
+        self.assertEqual(missing, [{"path": "core/foo.py", "kind": "new",
+                                    "violation": "missing"}])
 
         # 复刻成功分支守卫处置：更新 STATE 并重派
         spec_entry = self.sm.read_one("s1") or {}
@@ -363,7 +373,7 @@ class TestDeliverableGate(_GateFixture):
 
         for i in range(1, max_r + 1):
             missing = self.engine._deliverable_gate_missing("s1", self.make_result())
-            self.assertEqual(missing, ["core/foo.py"])
+            self.assertEqual(_paths_of(missing), ["core/foo.py"])
             spec_entry = self.sm.read_one("s1") or {}
             retries = int(spec_entry.get("_retry_count", 0) or 0) + 1
             updates = {"status": "ready", "_retry_count": retries,
@@ -391,7 +401,8 @@ class TestDeliverableGate(_GateFixture):
         with mock.patch.object(self.engine, "_read_implementer_result", return_value=None), \
              mock.patch("core.pm_engine.subprocess.run", side_effect=AssertionError("unexpected subprocess")):
             missing = self.engine._deliverable_gate_missing("s1", self.make_result())
-        self.assertEqual(set(missing), {"core/foo.py", "tests/t.py"})
+        self.assertEqual(sorted(_paths_of(missing)),
+                         sorted(["core/foo.py", "tests/t.py"]))
         # 恰好为每个声明路径调用一次存在性检查
         self.assertEqual(self.wm.file_exists_on_branch.call_count, 2)
 
@@ -456,7 +467,7 @@ class TestDeliverableGateTyped(_GateFixture):
             "s1",
             _REFERENCE_ONLY_TASKS + "- [ ] 1.2 写 `core/foo.py`\n")
         self.wm.file_exists_on_branch.return_value = False
-        self.assertEqual(self.run_gate(), ["core/foo.py"])
+        self.assertEqual(_paths_of(self.run_gate()), ["core/foo.py"])
 
     def test_fenix_prefix_normalize_recheck(self):
         """.fenix 路径字面校验（归一化已退役）：`.fenix/x` 缺失不得被根路径 `x` 假放行。"""
@@ -489,7 +500,7 @@ class TestDeliverableGateTyped(_GateFixture):
                 "s1", "- [ ] 1.1 扩展 `.fenix/core/agent_runner.py`\n")
             self.runner.worktree_manager = real_wm
             # 声明 .fenix/x 而分支只有根路径 x：缺件（历史归一化会假放行）
-            self.assertEqual(self.run_gate(branch=branch),
+            self.assertEqual(_paths_of(self.run_gate(branch=branch)),
                              [".fenix/core/agent_runner.py"])
         finally:
             shutil.rmtree(repo, ignore_errors=True)
@@ -517,7 +528,7 @@ class TestDeliverableGateTyped(_GateFixture):
         self.runner.worktree_manager = real_wm
         # 历史归一化会经根路径孪生放行；字面校验下必须报缺件
         self.assertEqual(
-            self.run_gate(branch=INTERACTION_CONTRACT_BRANCH),
+            _paths_of(self.run_gate(branch=INTERACTION_CONTRACT_BRANCH)),
             [".fenix/core/agent_runner.py"])
 
 
@@ -639,7 +650,7 @@ class TestGateDeclaredOverride(_GateFixture):
             "- path: core/new_mod.py\n  kind: new\n```\n"
             "## 1. 分组\n\n- [ ] 1.1 新建 `core/new_mod.py`\n")
         self.wm.file_exists_on_branch.return_value = False
-        self.assertEqual(self.run_gate(), ["core/new_mod.py"])
+        self.assertEqual(_paths_of(self.run_gate()), ["core/new_mod.py"])
 
 
 class TestDisputedDeliverables(_GateFixture):

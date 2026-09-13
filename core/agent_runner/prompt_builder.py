@@ -570,11 +570,15 @@ class PromptBuilder:
 
         仅对有 ``## Deliverables`` 声明段的 SPEC 干跑：以
         ``extract_declared_entries`` 取原始条目（path+kind），对每个
-        new/modify 路径做主树存在性检查与 basename 匹配，产出快照：
+        new/modify/delete 路径做主树存在性检查与 basename 匹配，产出快照：
 
         ``{"entries": [{"path", "kind", "exists", "candidates"}]}``
 
-        reference 条目仅保留 kind/exists（软校验，不做候选匹配）。无声明段、
+        reference 条目仅保留 kind/exists（软校验，不做候选匹配）；delete 条目
+        保留 kind 与 exists（其主树存在性语义不同——存在即删除目标确认、不存在
+        即无可删疑似笔误，见 ``_declared_reality_section``），主树不存在时同样
+        纳入 basename 候选匹配（add-deliverable-delete-kind 5.1：候选条件与
+        new/modify 同源，供「无可删+候选」处方出词）。无声明段、
         spec 目录读取失败或任何干跑异常 → ``None``（fail-open，跳过注入，
         派发照常——2.3）。
 
@@ -604,7 +608,7 @@ class PromptBuilder:
                 "exists": bool((self._pm.project_root / path).exists()),
                 "candidates": [],
             }
-            if kind in ("new", "modify") and not item["exists"]:
+            if kind in ("new", "modify", "delete") and not item["exists"]:
                 try:
                     item["candidates"] = match_basename_in_tree(
                         self._pm.project_root, path)
@@ -618,7 +622,10 @@ class PromptBuilder:
 
         快照存在（有声明段 SPEC）时把「声明清单 × 仓库现实」注入 implementer
         提示词：存在的 modify 路径标注为修改目标；不存在的 new/modify 路径标注
-        并列出全部 basename 命中候选（若有）。文案约定：判断声明路径系笔误时
+        并列出全部 basename 命中候选（若有）。delete 条目按其特有语义出词
+        （add-deliverable-delete-kind 5.2）：主树存在 → 「删除目标确认」；
+        主树不存在 → 「无可删，疑似声明笔误」+ 候选；MUST NOT 复用 modify 的
+        「修改目标确认」表述。文案约定：判断声明路径系笔误时
         以实际正确路径实现，并在 ``.fenix-run-result.json`` 的 ``findings`` 登记
         ``deliverable-dispute``（element/current/suggestion），MUST NOT 静默改变
         交付落点。无声明段或干跑异常（快照为 None）→ 返回空串（fail-open，
@@ -644,14 +651,23 @@ class PromptBuilder:
             kind = item["kind"]
             cands = item.get("candidates") or []
             if item["exists"]:
-                lines.append(f"- `{path}`（kind: {kind}）——主树存在，修改/引用目标确认。")
+                if kind == "delete":
+                    lines.append(
+                        f"- `{path}`（kind: {kind}）——主树存在，删除目标确认。")
+                else:
+                    lines.append(f"- `{path}`（kind: {kind}）——主树存在，修改/引用目标确认。")
             else:
                 note = ""
                 if cands:
                     note = f"；basename 命中候选：{'、'.join(cands)}"
-                lines.append(
-                    f"- `{path}`（kind: {kind}）——主树不存在，疑似声明笔误"
-                    f"{note}。")
+                if kind == "delete":
+                    lines.append(
+                        f"- `{path}`（kind: {kind}）——主树不存在，无可删，"
+                        f"疑似声明笔误{note}。")
+                else:
+                    lines.append(
+                        f"- `{path}`（kind: {kind}）——主树不存在，疑似声明笔误"
+                        f"{note}。")
         lines += [
             "",
             "**处方**：若你判断声明路径系笔误（候选命中与 spec 语境等价），"
