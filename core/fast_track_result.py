@@ -22,108 +22,8 @@ fast-track run 复用现有 ``.fenix-run-result.json`` 机制，在其中增加�
 纯函数模块，无外部依赖；verdict_check 硬校验器与 pm_engine 派发分支共用。
 """
 
-from pathlib import Path
-from pathlib import Path
 from typing import Optional
-
-# ── fast-track 派发前规模预估（evo-add-fast-track-scale-precheck D1）───────────
-# tasks.md 未勾选任务条数 + spec 目录源码文件数作为轻量静态预估（零成本、
-# 确定性、可单测）；对照样本验证可区分：
-#   - fix-dispatch-wakeup-gap（单任务、小文件面）→ 低分 → normal
-#   - fix-root-init-import-shadow（多任务、大文件面）→ 高分 → full
-#
-# 加权规则（模块级常量，非配置键——内部治理参数，参照 TURN_EXTENSION_MAX 先例）：
-# - 每条未勾选任务（tasks.md `- [ ]` 行）：SCALE_TASK_WEIGHT 分
-# - 每个源码文件（.py/.ts/.tsx，递归）：SCALE_FILE_WEIGHT 分
-
-SCALE_TASK_WEIGHT = 10   # 每条未勾选任务的权重（任务数是首要规模信号）
-SCALE_FILE_WEIGHT = 3    # 每个源码文件的权重（文件面是次级规模信号）
-
-# 源码文件后缀（与 design D1 一致：.py/.ts/.tsx）
-SOURCE_FILE_SUFFIXES = {".py", ".ts", ".tsx"}
-
-# 分档阈值（模块级常量）
-SCALE_TIER_NORMAL = "normal"
-SCALE_TIER_HIGHER = "higher"
-SCALE_TIER_FULL = "full"
-
-SCALE_HIGHER_THRESHOLD = 30   # scale ≥ 30 → higher（约 3 条任务或 10 个文件）
-SCALE_FULL_THRESHOLD = 80     # scale ≥ 80 → full（约 8 条任务或 26 个文件）
-
-
-def estimate_spec_scale(spec_dir: Path, logger=None) -> int:
-    """按 spec 的 tasks.md 未勾选任务条数 + spec 目录源码文件数加权返回规模分。
-
-    ``tasks.md`` 缺失或读取失败时：记 WARNING（若 logger 非 None）并返回低档分（0）；
-    不阻断调用方（与 design D2 预检失败保守放行一致）。
-
-    Args:
-        spec_dir: SPEC 目录路径（spec/changes/<spec_name>/）
-        logger: 可选 Logger 实例；为 None 时 WARNING 降级为静默（纯函数可单测）
-
-    Returns:
-        规模分（int ≥ 0）。分数含义：
-          0-29：small spec
-          30-79：medium spec（higher tier）
-          80+：large spec（full tier）
-    """
-    # ── tasks.md 未勾选任务条数 ──
-    tasks_path = spec_dir / "tasks.md"
-    if not tasks_path.is_file():
-        # design D2：tasks.md 缺失 → 记 WARNING（若 logger）并返回低档分
-        #（不因预检失败阻断合法派发）
-        if logger is not None:
-            logger.warning(
-                "fast_track_result",
-                f"estimate_spec_scale: tasks.md 缺失 '{spec_dir}'，"
-                f"返回低档分（保守放行）",
-            )
-        return 0
-    unchecked_tasks = 0
-    try:
-        content = tasks_path.read_text(encoding="utf-8")
-        for line in content.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("- [ ]") or stripped.startswith("- [x]"):
-                if stripped.startswith("- [ ]"):
-                    unchecked_tasks += 1
-    except (OSError, UnicodeDecodeError) as e:
-        # design D2：tasks.md 读取失败 → 记 WARNING 并返回低档分
-        if logger is not None:
-            logger.warning(
-                "fast_track_result",
-                f"estimate_spec_scale: tasks.md 读取失败 '{spec_dir}': {e}，"
-                f"返回低档分（保守放行）",
-            )
-        return 0
-
-    # ── spec 目录源码文件数（递归） ──
-    source_files = 0
-    try:
-        for f in spec_dir.rglob("*"):
-            if f.is_file() and f.suffix in SOURCE_FILE_SUFFIXES:
-                source_files += 1
-    except OSError:
-        pass  # glob 异常 → 源码文件数 0（保守降级）
-
-    scale = unchecked_tasks * SCALE_TASK_WEIGHT + source_files * SCALE_FILE_WEIGHT
-    return max(0, scale)
-
-
-def budget_tier_for_scale(scale: int) -> str:
-    """按 design D1 阈值返回规模档位（normal / higher / full）。
-
-    阈值固化在模块级常量（不进 config.yaml，参照 AGENT_TERMINATE_GRACE_SECONDS 先例）；
-    分档含义：
-      - normal：原有 fast-track 预算不变（extension_seconds=1800, max_extensions=2）
-      - higher：延长 extension 预算（max_extensions +1，总预算 +extension_seconds）
-      - full：降级为完整模式（implementer + verifier 分离流水线）
-    """
-    if scale >= SCALE_FULL_THRESHOLD:
-        return SCALE_TIER_FULL
-    if scale >= SCALE_HIGHER_THRESHOLD:
-        return SCALE_TIER_HIGHER
-    return SCALE_TIER_NORMAL
+from pathlib import Path
 
 # 验证段顶层键
 VERIFICATION_KEY = "verification"
@@ -205,3 +105,83 @@ def parse_fast_track_verification(result: dict) -> Optional[dict]:
 def is_verified(verification: dict) -> bool:
     """验证段最终判定是否为通过（配合 parse 结果使用）。"""
     return verification is not None and verification.get(VERDICT_KEY) == VERDICT_VERIFIED
+
+
+# ── fast-track 规模预估（add-fast-track-scale-precheck）─────────────────────
+# 阈值常量（design D1 固化，注释样本依据）：
+# - NORMAL_THRESHOLD: tasks.md 未勾选任务条数阈值（样本：fix-root-init-import-shadow 8+ 任务 vs fix-dispatch-wakeup-gap 1 任务）
+# - HIGHER_THRESHOLD: tasks.md 未勾选任务条数阈值（大任务面）
+# - SOURCE_FILE_WEIGHT: 源码文件数权重（.py/.ts/.tsx 文件）
+# - TASK_WEIGHT: 任务条数权重
+NORMAL_THRESHOLD = 3
+HIGHER_THRESHOLD = 6
+TASK_WEIGHT = 10
+SOURCE_FILE_WEIGHT = 1
+
+
+def estimate_spec_scale(spec_dir: Path) -> int:
+    """按 tasks.md 未勾选任务条数 + spec 目录源码文件数加权返回规模分。
+
+    tasks.md 缺失或读取失败记 WARNING 返回低档分（保守放行，design D2）。
+
+    Args:
+        spec_dir: spec 目录路径（如 spec/changes/<spec_name>）
+
+    Returns:
+        规模分（int），值越大任务越重。
+    """
+    import logging as _log
+    import re as _re
+    from pathlib import Path as _Path
+
+    spec_path = _Path(spec_dir)
+    if not spec_path.is_dir():
+        return 0
+
+    logger = _log.getLogger("fast_track_scale")
+
+    # 1. 统计 tasks.md 未勾选任务条数
+    tasks_path = spec_path / "tasks.md"
+    unchecked_count = 0
+    if tasks_path.is_file():
+        try:
+            text = tasks_path.read_text(encoding="utf-8")
+            # 匹配 "- [ ]" 开头的任务行
+            unchecked_count = len(_re.findall(r"^- \[ \] ", text, _re.MULTILINE))
+        except (OSError, UnicodeDecodeError) as e:
+            logger.warning(
+                f"fast-track 规模预估读取 {tasks_path} 失败（低档放行）: {e}"
+            )
+            unchecked_count = 0
+    else:
+        logger.warning(
+            f"fast-track 规模预估 tasks.md 缺失（低档放行）: {tasks_path}"
+        )
+
+    # 2. 统计 spec 目录源码文件数（.py/.ts/.tsx）
+    source_count = 0
+    for ext in ("*.py", "*.ts", "*.tsx"):
+        source_count += len(list(spec_path.rglob(ext)))
+
+    # 3. 加权计算规模分
+    scale = unchecked_count * TASK_WEIGHT + source_count * SOURCE_FILE_WEIGHT
+    return scale
+
+
+def budget_tier_for_scale(scale: int) -> str:
+    """按 design D1 阈值返回档位（normal / higher / full）。
+
+    阈值常量固化并注释样本依据（见模块级常量）。
+
+    Args:
+        scale: 规模分（estimate_spec_scale 的返回值）
+
+    Returns:
+        档位字符串："normal" / "higher" / "full"
+    """
+    if scale >= HIGHER_THRESHOLD * TASK_WEIGHT:
+        return "full"
+    elif scale >= NORMAL_THRESHOLD * TASK_WEIGHT:
+        return "higher"
+    else:
+        return "normal"

@@ -461,13 +461,16 @@ TURN_EXTENSION_STEP_FRACTION = 0.25
 TURN_EXTENSION_MAX = 2
 TURN_EXTENSION_WINDOW_SECONDS = 60.0
 
-# ── extension 末位自动 WIP 保全（evo-add-fast-track-scale-precheck 3.1）──────
-# 超时预算进入末尾（extension 用尽前）的自动保全提前量：剩余时间 < 该秒数即
-# 视为进入末位窗口，在终止收口前先触发一次 WIP checkpoint（anchor=extension-tail）。
-# 取 30min = 与 SUPERVISION_DEFAULTS.extension_seconds（1800s）同量级（proposal
-# 「如剩余时间窗口 <30min」），给 git 操作留出余量；每 run 至多触发一次（幂等
-# 标记 _extension_tail_checkpointed）。
-EXTENSION_TAIL_LEAD_SECONDS = 1800
+# ── extension 末位自动保全（add-fast-track-scale-precheck D3）────────────────
+# fast-track 超时预算用尽前（extension #2 收尾前）自动触发一次 WIP checkpoint
+# 保全：已完成轮次的工作不随超时无保全作废。触发条件为『extension 末位窗口』
+# ——run 剩余时间进入该提前量（supervision deadline - now < 该值）判定进入末位，
+# 先调 commit_wip_checkpoint（消息契约 fenix(wip): checkpoint extension-tail <spec>）
+# 再走既有超时收口。提前量取值 30min：与 SUPERVISION_DEFAULTS 的单次续期
+# extension_seconds=1800 对齐（proposal「如剩余时间窗口 <30min」），末位窗口恰好
+# 覆盖最后一个 extension 的收尾段。配置常量落模块级（不进 config.yaml，参照
+# TURN_EXTENSION_WINDOW_SECONDS 先例——框架生命周期内部治理参数）。
+EXTENSION_TAIL_WINDOW_SECONDS = 1800.0
 
 
 def iter_events(entries):
@@ -1964,25 +1967,25 @@ class AgentRunner:
                 f"{e} — non-blocking",
             )
 
-    def _wip_checkpoint_extension_tail(self, spec_name: str, wt_path) -> None:
-        """锚点 extension-tail（evo-add-fast-track-scale-precheck 3.1/3.2）。
+    def _wip_checkpoint_on_extension_tail(self, spec_name: str, wt_path) -> None:
+        """extension 末位窗口保全（add-fast-track-scale-precheck D3）。
 
-        fast-track 超时预算进入末位窗口（extension 用尽前，剩余时间 <
-        EXTENSION_TAIL_LEAD_SECONDS）时自动触发一次 WIP checkpoint 保全，
-        消息契约 ``fenix(wip): checkpoint extension-tail <spec>``——已完成的
-        轮次工作不随超时无保全作废（fix-root-init-import-shadow 事故：
-        91 轮成果随 extension 预算耗尽即杀丢失）。
+        fast-track run 剩余时间进入末位窗口（remaining <
+        ``EXTENSION_TAIL_WINDOW_SECONDS``）时调用：先 commit_wip_checkpoint
+        （消息契约 ``fenix(wip): checkpoint extension-tail <spec>``）保全已
+        完成轮次工作，run 继续轮询；超时到点后走既有收口，已完成工作不随
+        超时无保全作废。
 
         无 worktree 载体或路径失效时跳过（与锚点 A/B/C 同语义，幂等）。
-        失败由 helper 内部 WARNING 降级（git 超时/失败不阻断既有超时收口，
-        与 add-impl-wip-checkpoint D6 降级语义一致）。
+        失败由 helper 内部 WARNING 降级（git 超时/失败不阻断轮询与收口，
+        任务 3.2：保全失败仅 WARNING，既有超时收口照常执行）。
         """
         if wt_path is None:
             return
         if not self._worktree_path_valid(wt_path):
             self.logger.debug(
                 "agent_runner",
-                f"WIP checkpoint ({ANCHOR_EXTENSION_TAIL}) skip: worktree "
+                f"WIP checkpoint (extension-tail) skip: worktree "
                 f"{wt_path} not a valid git worktree for '{spec_name}'",
             )
             return
@@ -1990,11 +1993,11 @@ class AgentRunner:
             commit_wip_checkpoint(
                 wt_path, spec_name, ANCHOR_EXTENSION_TAIL, self.logger)
         except Exception as e:
-            # 兜底：helper 理论上不抛，防御性捕获保证超时收口不被阻断
+            # 兜底：helper 理论上不抛，防御性捕获保证轮询/收口不被阻断
             self.logger.warning(
                 "agent_runner",
-                f"WIP checkpoint ({ANCHOR_EXTENSION_TAIL}) failed for "
-                f"'{spec_name}': {e} — non-blocking",
+                f"WIP checkpoint (extension-tail) failed for '{spec_name}': "
+                f"{e} — non-blocking",
             )
 
     def _turn_limit_action(self, run_file: Path, spec_name: str | None,
@@ -3345,12 +3348,6 @@ class AgentRunner:
         started_at = time.time()
         deadline = started_at + timeout
         extensions_used = 0  # 本 run 已续期次数（D3 封闭矩阵）
-        # evo-add-fast-track-scale-precheck 3.1：extension 末位窗口判定的预算上限
-        #（一次读取，供轮询环每轮复用；supervision 关闭时 max_extensions 恒 0，
-        # 末位窗口永不触发，纯墙钟终止语义不变）。higher 档的 +1 调整由
-        # _effective_max_extensions（liveness.py）统一应用，此处保证末位窗口
-        # 判定与 supervision 决策的 max_extensions 口径一致。
-        sup_max_extensions = self._liveness._effective_max_extensions(spec_name)
         # add-turn-limit-anchor-c（design D2/D3）：轮次续期独立计数与当前上限。
         # current_turn_cap 初始 = max_turns，extend 后累加步长；两套续期计数
         # （extensions_used / turn_extensions_used）各自封顶、互不读写。
@@ -3364,6 +3361,10 @@ class AgentRunner:
         # 在 finally（读线程 join 后）计算并打日志；失败/取消路径把摘要拼入
         # error 上下文（卡死 vs 慢可判）。
         latency_summary_text = ""
+        # add-fast-track-scale-precheck D3：extension 末位自动保全幂等标记。
+        # 每个 run 至多触发一次（耗尽预算的最后一个 extension 内），防止
+        # remaining < 窗口的每轮轮询重复触发。
+        extension_tail_triggered = False
         try:
             while True:
                 # ── 取消旗标检查（add-run-cancel D1/D3）──
@@ -3396,24 +3397,18 @@ class AgentRunner:
                     break
 
                 remaining = deadline - time.time()
-                # ── extension 末位窗口自动 WIP 保全（evo-add-fast-track-scale-
-                # precheck 3.1）──
-                # 超时预算进入末尾（剩余时间 < EXTENSION_TAIL_LEAD_SECONDS 且
-                # extension 预算已用满）时，在终止收口前自动触发一次 WIP
-                # checkpoint 保全（消息契约 fenix(wip): checkpoint extension-tail
-                # <spec>）——已完成的轮次工作不随超时无保全作废。每 run 至多
-                # 触发一次（_extension_tail_checkpointed 幂等标记）；保全失败由
-                # helper 降级 WARNING，不阻断既有超时收口（3.2）。成功收工的 run
-                # 同样可能经过本窗口——提前保全属尽力而为保险，多余 WIP 提交由
-                # merge-back 前塌缩（collapse_wip_commits）收编，无害。
-                # _extension_tail_checkpointed 惰性初始化（防重放/旧实例缺属性）
-                if not hasattr(self, "_extension_tail_checkpointed"):
-                    self._extension_tail_checkpointed = set()
-                if (extensions_used >= sup_max_extensions
-                        and remaining <= EXTENSION_TAIL_LEAD_SECONDS
-                        and run_id not in self._extension_tail_checkpointed):
-                    self._wip_checkpoint_extension_tail(spec_name, cwd)
-                    self._extension_tail_checkpointed.add(run_id)
+                # ── extension 末位窗口自动保全（add-fast-track-scale-precheck D3）──
+                # 剩余时间进入末位窗口（< EXTENSION_TAIL_WINDOW_SECONDS 且 >0）
+                # 且该 run 尚未触发过保全时，先执行一次 WIP checkpoint
+                #（fenix(wip): checkpoint extension-tail <spec>），保全已完成
+                # 轮次工作；随后继续轮询——超时到点仍走既有 _supervision
+                # deadline_action 收口。幂等：extension_tail_triggered 标记保证
+                # 每 run 至多一次。fast-track 专有行为（非 fast-track 零影响）。
+                if (not extension_tail_triggered
+                        and agent_type == "fast-track"
+                        and 0 < remaining < EXTENSION_TAIL_WINDOW_SECONDS):
+                    extension_tail_triggered = True
+                    self._wip_checkpoint_on_extension_tail(spec_name, cwd)
                 if remaining <= 0:
                     # 超时活性监督（improve-run-lifecycle-governance D3）：到点不
                     # 立即杀——按封闭决策矩阵判定（硬上限 → 次数上限 → 活性）。
