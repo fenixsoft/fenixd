@@ -21,9 +21,9 @@
 
 ## 1. 声明 schema 扩展
 
-- [ ] 1.1 `core/deliverables.py`：`_DECLARED_KINDS` 由 `("new", "modify", "reference")` 扩为 `("new", "modify", "delete", "reference")`，更新紧邻的语义注释（`delete`=让该路径在合并后不存在，仅限入库文件，守卫反判存在性）。
-- [ ] 1.2 `core/deliverables.py::extract_declared`：归类键由 `kind in ("new", "modify")` 改为 `kind in ("new", "modify", "delete")` → `deliverables`；`reference` → `references`。同步更新函数 docstring 与模块头部的 two-bucket 说明。
-- [ ] 1.3 `core/deliverables.py::extract_declared_entries`：docstring 中 `kind ∈ new/modify/reference` 的枚举声明同步为四值。
+- [x] 1.1 `core/deliverables.py`：`_DECLARED_KINDS` 由 `("new", "modify", "reference")` 扩为 `("new", "modify", "delete", "reference")`，更新紧邻的语义注释（`delete`=让该路径在合并后不存在，仅限入库文件，守卫反判存在性）。
+- [x] 1.2 `core/deliverables.py::extract_declared`：归类键由 `kind in ("new", "modify")` 改为 `kind in ("new", "modify", "delete")` → `deliverables`；`reference` → `references`。同步更新函数 docstring 与模块头部的 two-bucket 说明。
+- [x] 1.3 `core/deliverables.py::extract_declared_entries`：docstring 中 `kind ∈ new/modify/reference` 的枚举声明同步为四值。
 
 ## 2. 晋升 lint 新规则与软化排除
 

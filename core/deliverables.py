@@ -25,6 +25,11 @@
   中的路径是示例而非交付声明——本变更自身即曾因场景示例
   ``.fenix/x``/``core/foo.py`` 被误判缺件）。
 
+声明段（``extract_declared``，tasks.md ``## Deliverables`` 段）按 kind 归类为
+同一两桶结构：``new``/``modify``/``delete`` 归 ``deliverables``（硬校验——
+``delete`` 为反判：合并后必须不存在）；``reference`` 归 ``references``
+（软校验）。两桶语义在声明段与正则提取两条路径上保持一致。
+
 无法判定时保守归 ``deliverables``（宁误拦不漏放——误拦有 3 次封顶 +
 引用软校验兜底，漏放则假成功）；proposal.md 例外：仅「交付/新增」
 语境归 deliverables，叙述性段落归 references（proposal 是叙事文档，
@@ -95,8 +100,9 @@ _DECLARED_HEADING_RE = re.compile(r"^##\s+Deliverables\s*$", re.IGNORECASE)
 _BASENAME_EXCLUDE_DIRS = (".git", "node_modules", "dist", ".fenix", "__pycache__")
 
 # 声明段合法 kind：new=本仓库新建文件（硬校验）；modify=修改既有文件（硬校验）；
+# delete=让该路径在合并后不存在（仅限入库文件，守卫反判存在性）；
 # reference=运行时写入目标/既有引用（软校验，仅审计，不参与缺件判定）。
-_DECLARED_KINDS = ("new", "modify", "reference")
+_DECLARED_KINDS = ("new", "modify", "delete", "reference")
 
 
 def _is_deliverable_path(token: str) -> bool:
@@ -287,7 +293,7 @@ def extract_declared_entries(spec_dir) -> "list | None":
 
     ``extract_declared`` 与派发处方快照（add-deliverable-declaration-triage
     PR2 2.1）共用的条目级解析：返回过滤后的 ``[{"path": ..., "kind": ...}]``
-    列表（kind ∈ new/modify/reference）；无声明段、无有效围栏块、yaml 解析
+    列表（kind ∈ new/modify/delete/reference）；无声明段、无有效围栏块、yaml 解析
     失败或全部条目非法 → ``None``。``extract_declared`` 按 kind 归类复用本函数，
     快照按条目级做存在性检查与 basename 匹配（kind 语义不可从归类结果反推）。
     """
@@ -359,9 +365,9 @@ def extract_declared(spec_dir) -> "dict | None":
           kind: reference   # 运行时写入目标，非本仓库交付物
         ```
 
-    kind 语义见 ``_DECLARED_KINDS``：new/modify → deliverables（硬校验）；
-    reference → references（软校验）。声明段不受 ``_DELIVERABLE_PREFIXES``
-    限制（skills/ 等前缀同样可声明为交付物）。
+    kind 语义见 ``_DECLARED_KINDS``：new/modify/delete → deliverables（硬校验，
+    delete 为反判——合并后必须不存在）；reference → references（软校验）。声明段
+    不受 ``_DELIVERABLE_PREFIXES`` 限制（skills/ 等前缀同样可声明为交付物）。
 
     Returns:
         ``{"deliverables": [...], "references": [...]}``；无声明段、无有效围栏块、
@@ -376,7 +382,7 @@ def extract_declared(spec_dir) -> "dict | None":
         path, kind = e["path"], e["kind"]
         if path in typed["deliverables"] or path in typed["references"]:
             continue
-        key = "deliverables" if kind in ("new", "modify") else "references"
+        key = "deliverables" if kind in ("new", "modify", "delete") else "references"
         typed[key].append(path)
     if not typed["deliverables"] and not typed["references"]:
         return None
