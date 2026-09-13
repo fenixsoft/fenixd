@@ -72,13 +72,19 @@ def _legacy_session_matches(root: Path) -> bool:
 
 
 def _procs_matching(match) -> list:
-    """扫描 /proc，返回命中 match(cwd: Path, cmdline: str) 的进程 pid 列表。
+    """扫描 /proc，返回命中 match(cwd: Path, argv: list) 的进程 pid 列表。
 
     fix-supervisor-hosting-chain 2.1：_daemon_procs_under / supervisor_running /
     _fenix_pids_under 共用同一套 process-cwd+cmdline 探测（读取
     /proc/<pid>/cwd 与 cmdline），不得复制粘贴出第二套解析。单个进程读取
     失败（OSError/ValueError，进程已退出/权限不足）跳过；调用方负责兜底
     整体异常。返回 pid 数字串列表，调用方自取 bool() 或按 pid 操作。
+
+    子串假阳性事故（2026-09-13）后改为传 **argv token 列表**而非空格拼接的
+    cmdline：拼接串只能做子串匹配，任何「命令行里提到 .fenix/fenixd.py 或
+    fenixd_supervisor」的进程都会被误认成 daemon（sha256sum 该脚本、grep 该
+    路径、agent 的 prompt 文本皆可触发）。token 化后判据可以要求「该 token
+    就是被执行的脚本」。
     """
     try:
         pids = os.listdir("/proc")
@@ -92,25 +98,84 @@ def _procs_matching(match) -> list:
             cwd = os.readlink(f"/proc/{pid}/cwd")
             cwd_resolved = Path(cwd).expanduser().resolve()
             with open(f"/proc/{pid}/cmdline", "rb") as f:
-                cmdline = f.read().decode("utf-8", errors="replace").replace("\x00", " ")
+                raw = f.read().decode("utf-8", errors="replace")
         except (OSError, ValueError):
             continue
-        if match(cwd_resolved, cmdline):
+        argv = [token for token in raw.split("\x00") if token]
+        if match(cwd_resolved, argv):
             hits.append(pid)
     return hits
+
+
+def _normalize(path: Path) -> str:
+    """路径词法归一化——**不跟随软链**。
+
+    项目内 `.fenix/` 是指向框架主树的软链，`resolve()` 会把子项目的脚本路径
+    牵回主树（fix-supervisor-hosting-chain 踩过的坑）；身份比对只需词法一致。
+    """
+    return os.path.normpath(str(path))
+
+
+def _is_python_argv(argv) -> bool:
+    """argv[0] 是否 Python 解释器（python / python3 / python3.10 / /usr/bin/python3）。"""
+    if not argv:
+        return False
+    return Path(argv[0]).name.startswith("python")
+
+
+def _argv_script_token(argv):
+    """返回 argv 里「被执行的脚本」token；不是脚本调用时返回 None。
+
+    `python3 <script> [args]` / `python3 -u <script>` → 返回首个非选项 token；
+    出现 -c（代码串）/ -m（模块，本函数不支持 "-m xxx" 形式）时返回 None——
+    否则 `python3 -c "...; time.sleep(30)" fenixd_supervisor` 这种「命令行里
+    提到脚本名」的进程会被误判成正在执行该脚本（子串假阳性事故）。
+    """
+    for token in argv[1:]:
+        if token in ("-c", "-m"):
+            return None
+        if token.startswith("-"):
+            continue
+        return token
+    return None
+
+
+def _is_daemon_proc(cwd: Path, argv, root: Path) -> bool:
+    """该进程是否正在执行 root/.fenix/fenixd.py（daemon）。"""
+    if not _is_python_argv(argv):
+        return False
+    script = _argv_script_token(argv)
+    if script is None:
+        return False
+    return _normalize(cwd / script) == _normalize(root / ".fenix" / "fenixd.py")
+
+
+def _is_supervisor_proc(cwd: Path, argv, root: Path) -> bool:
+    """该进程是否正在执行 supervisor 脚本并锚定 root。
+
+    两条路径：脚本位于 root/.fenix/bin/（cwd 内相对调用或绝对路径调用），
+    或脚本是别处副本但以 `--project-root <root>` 显式锚定本项目。
+    """
+    if not _is_python_argv(argv):
+        return False
+    script = _argv_script_token(argv)
+    if script is None or Path(script).name != "fenixd_supervisor.py":
+        return False
+    if _normalize(cwd / script) == _normalize(root / ".fenix" / "bin" / "fenixd_supervisor.py"):
+        return True
+    argv_root = _argv_option_root(argv)
+    return argv_root is not None and argv_root == root
 
 
 def _daemon_procs_under(root: Path) -> bool:
     """项目根下是否有活跃的 fenixd daemon 进程。
 
     daemon 自 fix-admin-self-heal 起由 supervisor 直启（不在 tmux 内），
-    tmux session 判定会漏报；以 /proc 的 cwd+cmdline 匹配项目根的
+    tmux session 判定会漏报；以 /proc 的 cwd+argv 匹配项目根的
     fenixd.py / fenixd_supervisor.py 进程为准，覆盖 tmux 与直启两种模式。
     """
-    def _match(cwd: Path, cmdline: str) -> bool:
-        if cwd != root:
-            return False
-        return ".fenix/fenixd.py" in cmdline or "fenixd_supervisor" in cmdline
+    def _match(cwd: Path, argv) -> bool:
+        return _is_daemon_proc(cwd, argv, root) or _is_supervisor_proc(cwd, argv, root)
     return bool(_procs_matching(_match))
 
 
@@ -144,40 +209,40 @@ def is_running(root: str | None = None) -> bool:
     return _tmux_match(proot)
 
 
-def _supervisor_argv_project_root(cmdline: str):
-    """从 supervisor 进程 cmdline 提取 --project-root 值（绝对规范化）。
+def _argv_option_root(argv):
+    """从 argv token 列表提取 `--project-root` 的值（绝对规范化）。
 
     fix-supervisor-hosting-chain 2.1：supervisor 可能经 cwd（默认）或显式
-    --project-root 两种方式锚定项目根；提取参数值用于跨目录判定
-    （如 tmux 会话内 cwd 与项目根一致场景之外的显式参数形式）。
+    --project-root 两种方式锚定项目根；提取参数值用于跨目录判定。
     匹配 `--project-root <值>` 与 `--project-root=<值>` 两种写法。
     """
-    m = re.search(r"--project-root(?:=|\s+)(\S+)", cmdline)
-    if not m:
-        return None
-    try:
-        return Path(m.group(1)).expanduser().resolve()
-    except (OSError, ValueError):
-        return None
+    for i, token in enumerate(argv):
+        value = None
+        if token == "--project-root" and i + 1 < len(argv):
+            value = argv[i + 1]
+        elif token.startswith("--project-root="):
+            value = token.split("=", 1)[1]
+        if value is None:
+            continue
+        try:
+            return Path(value).expanduser().resolve()
+        except (OSError, ValueError):
+            return None
+    return None
 
 
 def supervisor_running(root: str | None = None) -> bool:
     """该项目根是否有活跃 supervisor 进程（bin/fenixd_supervisor.py）。
 
-    fix-supervisor-hosting-chain D3：扫描 /proc，命中条件为 cmdline 含
-    fenixd_supervisor，且该进程 cwd 解析后等于 root，或其 cmdline 的
-    --project-root 值解析后等于 root。/proc 不可读或任何异常返回 False
-    且不抛异常（与 is_running 的容错契约一致）。
+    fix-supervisor-hosting-chain D3：扫描 /proc，命中条件为**正在执行**
+    supervisor 脚本（Python 解释器 + 脚本 token，见 _is_supervisor_proc），
+    且该脚本位于 root/.fenix/bin/ 或其 `--project-root` 值等于 root。
+    /proc 不可读或任何异常返回 False 且不抛异常（与 is_running 的容错契约一致）。
     """
     proot = resolve_root(root)
 
-    def _match(cwd: Path, cmdline: str) -> bool:
-        if "fenixd_supervisor" not in cmdline:
-            return False
-        if cwd == proot:
-            return True
-        argv_root = _supervisor_argv_project_root(cmdline)
-        return argv_root is not None and argv_root == proot
+    def _match(cwd: Path, argv) -> bool:
+        return _is_supervisor_proc(cwd, argv, proot)
 
     try:
         return bool(_procs_matching(_match))
@@ -189,18 +254,12 @@ def _fenix_pids_under(root: Path) -> list:
     """项目根下活跃的 fenixd daemon/supervisor 进程 pid 列表。
 
     fix-supervisor-hosting-chain 3.2：供 stop_daemon 定位 SIGTERM/SIGKILL
-    目标。判定口径与 _daemon_procs_under 一致（cwd 等于 root 且 cmdline 含
-    .fenix/fenixd.py 或 fenixd_supervisor），并认 --project-root 显式锚定该
-    root 的 supervisor（跨 cwd 场景）。仅返回按此口径定位的 pid，禁止按
-    cmdline 裸匹配杀进程。
+    目标。判定口径与 _daemon_procs_under 一致（见 _is_daemon_proc /
+    _is_supervisor_proc：**正在执行**该脚本，而非命令行里提到该路径）。
+    仅返回按此口径定位的 pid，禁止按 cmdline 裸匹配杀进程。
     """
-    def _match(cwd: Path, cmdline: str) -> bool:
-        if ".fenix/fenixd.py" not in cmdline and "fenixd_supervisor" not in cmdline:
-            return False
-        if cwd == root:
-            return True
-        argv_root = _supervisor_argv_project_root(cmdline)
-        return argv_root is not None and argv_root == root
+    def _match(cwd: Path, argv) -> bool:
+        return _is_daemon_proc(cwd, argv, root) or _is_supervisor_proc(cwd, argv, root)
 
     try:
         return _procs_matching(_match)
@@ -209,18 +268,27 @@ def _fenix_pids_under(root: Path) -> list:
 
 
 def _is_daemon_cmdline(pid) -> bool:
-    """pid 的 cmdline 是否含 .fenix/fenixd.py（daemon，而非 supervisor）。
+    """pid 是否**正在执行** .fenix/fenixd.py（daemon，而非 supervisor）。
 
     fix-supervisor-hosting-chain 3.2：stop_daemon 的 SIGTERM 只发给 daemon
-    （supervisor 见 stop flag 后自行退出，无需也不应杀它）。读取失败（进程
-    已退出）返回 False，安全跳过。
+    （supervisor 见 stop flag 后自行退出，无需也不应杀它）。子串假阳性事故
+    （2026-09-13）后判据同 _is_daemon_proc：Python 解释器 + 脚本 token 解析
+    到该进程自己 cwd 下的 .fenix/fenixd.py——仅「命令行里提到该路径」的
+    进程（grep/cat/sha256sum）不再满足。读取失败（进程已退出）返回 False。
     """
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
-            cmdline = f.read().decode("utf-8", errors="replace").replace("\x00", " ")
-    except OSError:
+            raw = f.read().decode("utf-8", errors="replace")
+        cwd = Path(os.readlink(f"/proc/{pid}/cwd")).expanduser().resolve()
+    except (OSError, ValueError):
         return False
-    return ".fenix/fenixd.py" in cmdline
+    argv = [token for token in raw.split("\x00") if token]
+    if not _is_python_argv(argv):
+        return False
+    script = _argv_script_token(argv)
+    if script is None or Path(script).name != "fenixd.py":
+        return False
+    return _normalize(cwd / script) == _normalize(cwd / ".fenix" / "fenixd.py")
 
 
 def hosting_state(root: str | None = None) -> str:

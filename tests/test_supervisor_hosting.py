@@ -624,3 +624,143 @@ class TestDashboardHostingExposure:
         assert body["error"] == "daemon 未运行，请先启动 daemon"
         assert "未受 supervisor 托管" not in body["error"]
         assert not (ps / ".fenix" / "approve_push_request.json").exists()
+
+
+# ── 进程身份判定（子串假阳性事故回归）────────────────────────────────
+#
+# 事故（2026-09-13）：判据原为「cwd == 项目根 且 argv 文本含 .fenix/fenixd.py
+# 或 fenixd_supervisor」。任何在项目根目录下、命令行里**提到**这两个字符串的
+# 无关进程（sha256sum 该脚本、grep 该路径、agent 的 prompt 文本）都被认成
+# daemon/supervisor：start_daemon 因此静默返回 already、hosting_state 误报
+# managed、stop_daemon 兜底 SIGKILL 可能打中无关进程。
+#
+# 本组用例刻意不 mock /proc 匹配（既有用例全部 mock 掉 _fenix_pids_under，
+# 真实匹配零覆盖——正是漏网原因）：真起进程，断言「命令行提到」不算、
+# 「正在执行该脚本」才算。
+
+
+class TestProcessIdentityNotSubstring:
+    """进程身份 = 正在执行该脚本，而非命令行里提到该路径。"""
+
+    @staticmethod
+    def _make_root(tmp_path) -> Path:
+        root = (tmp_path / "proj").resolve()
+        (root / ".fenix").mkdir(parents=True)
+        (root / ".fenix" / "STATE.md").write_text("# state\n", encoding="utf-8")
+        return root
+
+    @staticmethod
+    def _write_sleeper(path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+
+    @staticmethod
+    def _spawn(argv, cwd) -> subprocess.Popen:
+        proc = subprocess.Popen(
+            argv, cwd=str(cwd),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        time.sleep(0.5)  # 等 /proc 的 cwd/cmdline 可读
+        return proc
+
+    # ── 假阳性方向 ────────────────────────────────────────────────
+
+    def test_argv_mentioning_supervisor_is_not_a_daemon(self, tmp_path):
+        """argv 提到 fenixd_supervisor（如 sha256sum/grep 该脚本）不算 daemon。"""
+        root = self._make_root(tmp_path)
+        decoy = self._spawn(
+            ["python3", "-c", "import time; time.sleep(30)", "fenixd_supervisor"], root,
+        )
+        try:
+            assert fenix_session.is_running(str(root)) is False
+            assert fenix_session._fenix_pids_under(root) == []
+        finally:
+            decoy.kill()
+            decoy.wait()
+
+    def test_argv_mentioning_daemon_script_path_is_not_a_daemon(self, tmp_path):
+        """argv 提到 .fenix/fenixd.py 字面量（未执行它）不算 daemon。"""
+        root = self._make_root(tmp_path)
+        decoy = self._spawn(
+            ["python3", "-c", "import time; time.sleep(30)",
+             str(root / ".fenix" / "fenixd.py")],
+            root,
+        )
+        try:
+            assert fenix_session.is_running(str(root)) is False
+            assert fenix_session._fenix_pids_under(root) == []
+        finally:
+            decoy.kill()
+            decoy.wait()
+
+    def test_shell_mentioning_daemon_script_path_is_not_a_daemon(self, tmp_path):
+        """shell 命令里带该路径（如 cat/grep）不算 daemon。"""
+        root = self._make_root(tmp_path)
+        decoy = self._spawn(
+            ["sh", "-c", "sleep 30; :", str(root / ".fenix" / "fenixd.py")], root,
+        )
+        try:
+            assert fenix_session.is_running(str(root)) is False
+            assert fenix_session.hosting_state(str(root)) == "stopped"
+        finally:
+            decoy.kill()
+            decoy.wait()
+
+    def test_argv_mentioning_supervisor_is_not_supervisor(self, tmp_path):
+        """argv 提到 fenixd_supervisor 不算 supervisor（不得误报 managed）。"""
+        root = self._make_root(tmp_path)
+        decoy = self._spawn(
+            ["python3", "-c", "import time; time.sleep(30)", "fenixd_supervisor"], root,
+        )
+        try:
+            assert fenix_session.supervisor_running(str(root)) is False
+            assert fenix_session.hosting_state(str(root)) == "stopped"
+        finally:
+            decoy.kill()
+            decoy.wait()
+
+    # ── 真阳性方向（不得因收紧判据而漏报）────────────────────────
+
+    def test_process_executing_daemon_script_is_detected(self, tmp_path):
+        """真的在跑 .fenix/fenixd.py（cwd 相对路径）→ 判为 running。"""
+        root = self._make_root(tmp_path)
+        self._write_sleeper(root / ".fenix" / "fenixd.py")
+        proc = self._spawn(["python3", ".fenix/fenixd.py"], root)
+        try:
+            assert fenix_session.is_running(str(root)) is True
+            assert fenix_session._fenix_pids_under(root) == [str(proc.pid)]
+        finally:
+            proc.kill()
+            proc.wait()
+        assert fenix_session.is_running(str(root)) is False
+
+    def test_process_executing_supervisor_script_is_detected(self, tmp_path):
+        """真的在跑 .fenix/bin/fenixd_supervisor.py（cwd 内）→ supervisor_running。"""
+        root = self._make_root(tmp_path)
+        self._write_sleeper(root / ".fenix" / "bin" / "fenixd_supervisor.py")
+        proc = self._spawn(
+            ["python3", ".fenix/bin/fenixd_supervisor.py", "--project-root", str(root)],
+            root,
+        )
+        try:
+            assert fenix_session.supervisor_running(str(root)) is True
+            assert fenix_session.hosting_state(str(root)) == "managed"
+        finally:
+            proc.kill()
+            proc.wait()
+
+    def test_supervisor_script_absolute_path_from_other_cwd_is_detected(self, tmp_path):
+        """跨 cwd：绝对路径执行 supervisor 脚本 + --project-root 锚定 → 仍判 managed。"""
+        root = self._make_root(tmp_path)
+        script = root / ".fenix" / "bin" / "fenixd_supervisor.py"
+        self._write_sleeper(script)
+        elsewhere = (tmp_path / "elsewhere").resolve()
+        elsewhere.mkdir()
+        proc = self._spawn(
+            ["python3", str(script), "--project-root", str(root)], elsewhere,
+        )
+        try:
+            assert fenix_session.supervisor_running(str(root)) is True
+        finally:
+            proc.kill()
+            proc.wait()
