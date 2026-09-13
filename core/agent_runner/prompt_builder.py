@@ -135,6 +135,11 @@ class PromptBuilder:
             "{scenarios_path}": str(planner_result_path(root, spec_name, "planner-plan")),
             "{result_path}": str(planner_result_path(root, spec_name, "planner-judge")),
             "{report_path}": str(vp_dir / "report.json"),
+            # add-judge-incremental-attribution：judge 归因产物逐场景条目文件。
+            # 与 core/verify_engine/judge_files.py 的 JUDGE_ATTRIBUTION_FILENAME
+            # 同源（注入侧路径 = 读侧路径，防双实现漂移）。
+            "{judge_attribution_path}": str(
+                vp_dir / "judge_attribution.json"),
         }
         if agent_type == "verifier":
             values["{progress_path}"] = str(
@@ -229,6 +234,9 @@ class PromptBuilder:
             # 拒绝时框架写 dedup_resynthesis_directive.json——注入被拒场景清单 +
             # 差异化素材 + 归因文本契约；非拒绝轮文件缺失零注入。
             prompt += self._resynthesis_directive_section(spec_name)
+            # 回炉清单注入（add-judge-incremental-attribution 2.2）：requeue
+            # 子集驱动下轮 judge 只重做该子集，文件缺失零注入。
+            prompt += self._requeue_manifest_section(spec_name)
             # 场景静态缺陷情报段（add-scenario-defect-triage-gate D5）：在
             # verdict 缓存之后、硬门契约之前——先给情报（修复属 judge 职责、
             # 先修已知缺陷再裁决）后给结果文件硬门，情报不改变硬门契约语义。
@@ -1199,6 +1207,41 @@ class PromptBuilder:
                 f"禁止与其它场景共享逐字相同的归因文本\n"
             )
         return "".join(lines)
+
+    def _requeue_manifest_section(self, spec_name: str) -> str:
+        """回炉清单注入段（add-judge-incremental-attribution 2.2 / design D2）。
+
+        场景级查重拒绝时框架写 ``requeue_manifest.json``（requeue 子集清单）；
+        存在时注入：本轮 judge MUST 只重做 requeue 子集场景的归因文本字段，
+        其余（accept）场景归因原样保留复用——MUST NOT 重写非回炉场景。
+        文件缺失/损坏 → 返回空串（普通裁决轮零注入，prompt 与现状逐字节一致）。
+        """
+        manifest_path = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / "requeue_manifest.json"
+        )
+        if not manifest_path.exists():
+            return ""
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        requeue_ids = [str(s) for s in (data.get("requeue_scenario_ids") or [])]
+        if not requeue_ids:
+            return ""
+        return (
+            "\n\n## 🔄 场景级回炉清单（add-judge-incremental-attribution，强制）\n"
+            "- 本轮是 **requeue 子集回炉**：只重做下列被拒场景的归因文本字段"
+            "（`first_failed_step` 与断言 triage 的 `evidence`），MUST NOT "
+            "调查/复现/改写判定。\n"
+            f"- 回炉场景清单：{'、'.join(requeue_ids)}\n"
+            "- 清单外场景归因已通过查重（accept）——**原样保留复用，MUST NOT "
+            "重写/复现/改动任何字段**；回炉完成后框架会对整轮再做一次查重校验。\n"
+            "- 归因文本契约同「批量归因查重重合成指令」：MUST 逐场景引用本场景"
+            "局部数据（步骤序号/断言 label/完整 error），MUST NOT 套用共享模板串。\n"
+        )
 
     def _result_gate_section(self, spec_name: str) -> str:
         """planner 产物硬门契约注入段（add-judge-artifact-gate D2）。
