@@ -3903,6 +3903,8 @@ _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "gates.approve_mode",
                 # add-draft-promotion-gate：草稿晋升模式
                 "gates.promote_mode",
+                # add-spec-review-gate：方案评审模式
+                "gates.spec_review_mode",
                 # add-daily-self-review：admin.self_review 三键
                 "admin.self_review",
                 # add-settings-system-tab：admin.* 受管键（5 键）
