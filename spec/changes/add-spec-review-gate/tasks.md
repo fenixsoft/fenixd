@@ -136,15 +136,15 @@
 
 ## 7. 回归验证
 
-- [ ] 7.1 tests/test_state_machine.py：新状态与四条新转移边（含非法边拒绝、状态全集计数 11、中断态回退清空 `reviewer_run` 与 `_review_attempts`）
-- [ ] 7.2 tests/test_event_bus.py：`_status_to_event` 映射 `reviewing → spec_reviewing`；`_recover_one` 对 `reviewing` 走评审恢复分支
+- [x] 7.1 tests/test_state_machine.py：新状态与四条新转移边（含非法边拒绝、状态全集计数 11、中断态回退清空 `reviewer_run` 与 `_review_attempts`）
+- [x] 7.2 tests/test_event_bus.py：`_status_to_event` 映射 `reviewing → spec_reviewing`；`_recover_one` 对 `reviewing` 走评审恢复分支
 - [x] 7.3 tests/test_spec_review_gate.py（新建）：跳过白名单判定的全部场景（四项全中跳过、`evo-` 硬否决、非 fast-track 不跳过、能力数超阈值不跳过、声明段缺失保守评审、mode 缺失保守评审）；`never` 模式全通道直通；四条触发路径分流一致性；并发满排队不跳过
 - [x] 7.4 tests/test_spec_review_agent.py（新建）：结果硬门各失败形态（exit 非零 / 文件缺失 / JSON 非法 / status 越白名单 / mtime 陈旧）均判未完成；写入边界校验三类失败（repairs 路径越界 / SPEC 目录外改动 / approved 伴随改动）均判未完成；快照能检出「已脏文件又被改动」；不自动回滚断言
 - [x] 7.5 tests/test_pm_promotion_gate.py：`promote_drafted` 返回 `next_status` 的分流分支；`manual` 闸口语义未被改动（仍停留 drafted、无 error、无派发）
-- [ ] 7.6 tests/test_spec_review_agent.py 或独立用例：三种 status 的机械收口（approved/repaired → ready + 派发实现；rejected → blocked + 前缀）；故障重试计数与耗尽转 blocked；重试成功重置计数；重新评审开放条件四类拒绝（非 blocked / 非评审前缀 / 冻结 / 幂等重复调用）
-- [ ] 7.7 tests/test_config.py：`spec_review_mode` 非枚举拒绝与缺省 auto（patch 双常量隔离用户级配置，防 home 敏感）；`KNOWN_AGENT_TYPES` 含 `spec-review`
-- [ ] 7.8 tests/test_dashboard_api.py：重新评审 API 成功、project/spec 404、非评审类 blocked 拒绝、冻结态拒绝、非法状态拒绝
-- [ ] 7.9 tests/test_agent_prompt_files.py：`spec-review` 在 `AGENT_PROMPT_FILES` 白名单中且模板可加载；前端 `AGENT_LABELS` / `AGENT_ROLES` key 集合与后端两处常量的一致性断言
+- [x] 7.6 tests/test_spec_review_agent.py 或独立用例：三种 status 的机械收口（approved/repaired → ready + 派发实现；rejected → blocked + 前缀）；故障重试计数与耗尽转 blocked；重试成功重置计数；重新评审开放条件四类拒绝（非 blocked / 非评审前缀 / 冻结 / 幂等重复调用）
+- [x] 7.7 tests/test_config.py：`spec_review_mode` 非枚举拒绝与缺省 auto（patch 双常量隔离用户级配置，防 home 敏感）；`KNOWN_AGENT_TYPES` 含 `spec-review`
+- [x] 7.8 tests/test_dashboard_api.py：重新评审 API 成功、project/spec 404、非评审类 blocked 拒绝、冻结态拒绝、非法状态拒绝
+- [x] 7.9 tests/test_agent_prompt_files.py：`spec-review` 在 `AGENT_PROMPT_FILES` 白名单中且模板可加载；前端 `AGENT_LABELS` / `AGENT_ROLES` key 集合与后端两处常量的一致性断言
 - [ ] 7.10 全量回归：相关测试文件全绿，且既有 pm_engine / dispatch / dashboard 回归无新增失败（以主树基线对照区分存量 flake 与本轮引入）
 
 ## 验证修复（原地打回第 1 轮）
