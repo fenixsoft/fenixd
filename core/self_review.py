@@ -107,11 +107,19 @@ def _iso_to_local_dt(iso_str: Optional[str]) -> Optional[datetime]:
     return dt
 
 
-def _in_window(dt: Optional[datetime], window_start: datetime) -> bool:
-    """naive 本地 datetime 是否落在 [window_start, now] 窗口内。"""
+def _in_window(dt: Optional[datetime], window_start: datetime, window_end: Optional[datetime] = None) -> bool:
+    """naive 本地 datetime 是否落在 [window_start, window_end] 窗口内。
+
+    Args:
+        dt: 待判定的 datetime
+        window_start: 窗口下界
+        window_end: 窗口上界；None 时为实时 datetime.now()（兼容既有调用方）
+    """
     if dt is None:
         return False
-    return window_start <= dt <= datetime.now()
+    if window_end is None:
+        window_end = datetime.now()
+    return window_start <= dt <= window_end
 
 
 def _parse_run_at(run_at: str, today) -> datetime:
@@ -181,9 +189,14 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
     """近 24 小时窗口 runs 统计（成功/失败/秒挂/超时/丢弃/在跑），排除
     self-review run 自身。
 
-    窗口 = [window_start, now]，按 run_id 内嵌开始时间戳判定归属（缺失回退
-    文件 mtime），与 get_runs 的解析口径一致。产物文件只读，不触发任何写操作。
+    窗口 = [window_start, window_end]，其中 window_end 为函数入口时冻结的
+    datetime.now() 快照值，聚合执行期间不再调用实时时钟判定窗口归属。按 run_id
+    内嵌开始时间戳判定归属（缺失回退文件 mtime），与 get_runs 的解析口径一致。
+    产物文件只读，不触发任何写操作。
     """
+    # 快照化：聚合启动时冻结窗口上界
+    window_end = datetime.now()
+
     counts = {"total": 0, "succeeded": 0, "failed": 0, "instant_hang": 0,
               "timeout": 0, "dropped": 0, "running": 0}
     runs_dir = Path(project_root) / ".fenix" / "runs"
@@ -203,7 +216,7 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
             continue
         start_ts = _run_start_ts(run_id)
         ts = start_ts if start_ts is not None else int(stat.st_mtime)
-        if not _in_window(datetime.fromtimestamp(ts), window_start):
+        if not _in_window(datetime.fromtimestamp(ts), window_start, window_end):
             continue
         category, _detail = _classify_run(run_id, _read_run_tail(p, 3))
         counts["total"] += 1
@@ -215,6 +228,9 @@ def collect_log_errors(project_root, window_start: datetime,
                        limit: int = 20) -> Dict[str, Any]:
     """近 24 小时窗口 fenixd.log ERROR 聚合：总数 + 最近 limit 条样本
     （含时间戳/组件/消息）。"""
+    # 快照化：聚合启动时冻结窗口上界
+    window_end = datetime.now()
+
     log_path = Path(project_root) / ".fenix" / "logs" / "fenixd.log"
     errors: List[dict] = []
     if log_path.is_file():
@@ -230,7 +246,7 @@ def collect_log_errors(project_root, window_start: datetime,
                     if entry.get("level") != "ERROR":
                         continue
                     if not _in_window(_iso_to_local_dt(entry.get("timestamp")),
-                                      window_start):
+                                      window_start, window_end):
                         continue
                     errors.append(entry)
         except OSError:
@@ -445,14 +461,18 @@ class SelfReviewScheduler:
         """聚合窗口数据摘要：STATE 终态 / runs 统计 / admin 告警与处置 /
         日志 ERROR / 近 3 日 git 提交五源。
 
-        窗口 = [window_start, now]（调度器传上次执行时刻，增量窗口）。输出
+        窗口 = [window_start, window_end]，其中 window_end 为函数入口时冻结的
+        datetime.now() 快照值，聚合执行期间不再调用实时时钟判定窗口归属。输出
         markdown 文本块，作为自省 prompt 的「数据摘要」注入（与人工复盘同
         源）。任一源读取失败降级为空段（不阻断自省）。
         """
+        # 快照化：聚合启动时冻结窗口上界
+        window_end = datetime.now()
+
         lines = [
             "# 数据摘要",
             f"窗口: {window_start:%Y-%m-%d %H:%M} ~ "
-            f"{datetime.now():%Y-%m-%d %H:%M}（本地时间，自上次自省以来）",
+            f"{window_end:%Y-%m-%d %H:%M}（本地时间，自上次自省以来）",
             "",
         ]
 
@@ -480,7 +500,7 @@ class SelfReviewScheduler:
 
         # 3. admin 告警与处置记录
         lines.append("## 3. admin 告警与处置记录（窗口内）")
-        lines.extend(self._collect_admin_summary(window_start))
+        lines.extend(self._collect_admin_summary(window_start, window_end))
         lines.append("")
 
         # 4. 日志 ERROR 聚合
@@ -515,14 +535,23 @@ class SelfReviewScheduler:
             dist[status] = dist.get(status, 0) + 1
         return dist
 
-    def _collect_admin_summary(self, window_start: datetime) -> List[str]:
+    def _collect_admin_summary(self, window_start: datetime, window_end: Optional[datetime] = None) -> List[str]:
+        """聚合 admin 记录。
+
+        Args:
+            window_start: 窗口下界
+            window_end: 窗口上界；None 时为实时 datetime.now()
+        """
+        if window_end is None:
+            window_end = datetime.now()
+
         try:
             records = self.store.read_all()
         except Exception:
             return ["- （admin store 读取失败）"]
         window_records = [
             r for r in records
-            if _in_window(_iso_to_local_dt(r.get("created")), window_start)
+            if _in_window(_iso_to_local_dt(r.get("created")), window_start, window_end)
         ]
         signals = [r for r in window_records if r.get("kind") == "signal"]
         escalations = [r for r in window_records if r.get("kind") == "escalation"]
