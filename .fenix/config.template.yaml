@@ -112,7 +112,8 @@ agents:
   transient_break_cooldown_seconds: 600
 
   # 按 Agent 角色分配模型（可选）。未列出的角色使用默认模型。
-  # 角色可选: implementer | planner-plan | planner-judge | verifier | administrator
+  # 角色可选: implementer | planner-plan | planner-judge | verifier | administrator | self-review | fast-track
+  # self-review 为每日自省与框架自进化（evolution）共用的分配。
   #
   # provider 支持三种形态（逐字节向后兼容）：
   #   形态 1（字符串）：单值链，角色级 model 或 provider 条目 model 作为缺省。

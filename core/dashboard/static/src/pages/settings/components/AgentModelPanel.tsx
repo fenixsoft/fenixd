@@ -19,7 +19,9 @@ const AGENT_ROLES = [
   { key: 'planner-judge', label: 'Planner Judge（判定结果）' },
   { key: 'verifier', label: 'Verifier（验证）' },
   { key: 'administrator', label: 'Administrator（运维）' },
-  { key: 'self-review', label: 'Self-Review（每日自省）' },
+  // evolution（框架自进化）复用本条模型链（agents.models.self-review → 回退 administrator），
+  // 后端不设 agents.models.evolution 键，故不单独成 card
+  { key: 'self-review', label: 'Self-Review（自省）/ Evolution（自改进）' },
   { key: 'fast-track', label: 'Fast-Track（快速通道）' },
 ];
 
