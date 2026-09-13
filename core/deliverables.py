@@ -461,6 +461,11 @@ def soften_declared_kind(spec_dir, element: str) -> dict:
     软校验（不再参与守卫缺件判定）。条目不存在/无 kind 行/改写失败上抛（调用方
     等价 ``unclear`` 转人工）。
 
+    ``kind: delete`` 条目拒绝软化（add-deliverable-delete-kind D4 防御性防线）：
+    软化 = 把「该删」降级为「仅审计」，删除要求静默消失——lint 规则 7-10 已在
+    晋升期拒绝 delete 的不可交付形态，走到软化说明声明有问题，应升级人工而非
+    自动降级。命中 delete 上抛（调用方等价 ``unclear`` 转人工，不静默改写）。
+
     Returns:
         {"element", "before": <声明段原文>, "after": <声明段新文>}。
     """
@@ -494,7 +499,7 @@ def soften_declared_kind(spec_dir, element: str) -> dict:
     kind_match = None
     for i in range(path_idx + 1, min(end, path_idx + 3)):
         m = re.match(
-            r"^(\s*)kind\s*:\s*(new|modify|reference)(\s*(#.*)?)$",
+            r"^(\s*)kind\s*:\s*(new|modify|delete|reference)(\s*(#.*)?)$",
             lines[i],
         )
         if m:
@@ -503,6 +508,13 @@ def soften_declared_kind(spec_dir, element: str) -> dict:
             break
     if kind_idx is None or kind_match is None:
         raise ValueError(f"条目 {element} 无 kind 行可软化")
+    if kind_match.group(2) == "delete":
+        # 防洗白：delete 的软化在语义上就是错的（降级为仅审计 = 删除要求静默
+        # 消失），lint 规则 7-10 已拒绝其不可交付形态；此处防御性拒绝并上抛
+        # （调用方等价 unclear 转人工，不静默改写声明段）。
+        raise ValueError(
+            f"条目 {element} 是 kind: delete——delete 不参与软化（防洗白，"
+            f"add-deliverable-delete-kind D4），请人工处置")
 
     lines[kind_idx] = f"{kind_match.group(1)}kind: reference{kind_match.group(3)}"
     after = "\n".join(lines[start:end])
@@ -642,8 +654,12 @@ def classify_unsatisfiable(entry, project_root) -> bool:
 
     ``kind ∈ {new, modify}`` 且（``_path_is_gitignored`` 或
     ``_path_is_outside_root`` 命中）→ True。``reference`` 恒 False（它就是软化
-    终点）；entry 缺 path/kind、path/kind 非法或判定异常均返回 False（fail-open，
-    交由后续 lint 照常拒绝兜底）。
+    终点）；``delete`` 恒 False（add-deliverable-delete-kind D4：soften 的语义
+    是降级为仅审计 reference 软校验，对 delete 即等于删除要求静默消失——复刻
+    本 SPEC 要消灭的形态，故 delete 的不可交付形态已在 lint 阶段（规则 7-10）
+    拒绝，走到软化说明声明本身有问题，应升级人工而非自动降级）；entry 缺
+    path/kind、path/kind 非法或判定异常均返回 False（fail-open，交由后续 lint
+    照常拒绝兜底）。
 
     排除规则 1-4 形态（design D1：这四种不软化，维持既有拒绝语义——需 path
     修正非 kind 修正）：
@@ -669,7 +685,9 @@ def classify_unsatisfiable(entry, project_root) -> bool:
     if not path or kind not in _DECLARED_KINDS:
         return False
     if kind not in ("new", "modify"):
-        return False  # reference 恒 False（软化终点，无需求再软化）
+        # reference 恒 False（软化终点，无需求再软化）；delete 恒 False
+        # （软化即删除要求静默消失，D4 防洗白——见本函数 docstring）
+        return False
     # ── 排除规则 1-4 形态（不软化，维持既有拒绝语义）──
     # 规则 1：占位符路径（软化会掩盖声明格式问题）
     if "<" in path or ">" in path:
@@ -699,6 +717,10 @@ def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
     逐条 ``classify_unsatisfiable``，命中即 ``soften_declared_kind``
     （kind → reference 确定性文本改写）；单条改写异常（并发改写/格式漂移）
     跳过该条记 warning 不中断（fail-safe，交由后续 lint 拒绝兜底）。
+    ``kind: delete`` 条目显式跳过（add-deliverable-delete-kind D4 防御性防线：
+    即使上游 classify 已拦，软化入口也须拒绝把「该删」降级为「仅审计」——
+    否则 lint 规则 7-10 之外的未来软化路径会静默复刻原缺口；审计 warning
+    留痕说明跳过原因）。
     无声明段（``extract_declared_entries`` 返回 None）早退返回 []。
 
     Returns:
@@ -712,6 +734,13 @@ def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
     softened: list = []
     for e in entries:
         path = e["path"]
+        if e.get("kind") == "delete":
+            # 防洗白：delete 的软化在语义上就是错的（降级为仅审计 = 删除要求
+            # 静默消失），lint 规则 7-10 已拒绝其不可交付形态；此处防御性跳过
+            # 并留痕，防止未来新增软化路径时无声破防。
+            print(f"WARNING: 软化跳过 delete 声明 {path}（防洗白：delete 不参与"
+                  f"软化，见 add-deliverable-delete-kind D4）")
+            continue
         if not classify_unsatisfiable(e, project_root):
             continue
         # 判定 reason（供审计 reasoning 区分 gitignored / outside-root）
@@ -774,6 +803,20 @@ def lint_declared(spec_dir, project_root) -> List[str]:
        规则 5 的 gitignore 机制覆盖不到仓库外，该声明任何分支不可交付。```
        ``kind: reference`` 不受限：仓库外引用（``~/.claude/settings.json`` 等）
        本就是非交付物语义，合法放行。
+    7. ``kind: delete`` 的路径被 .gitignore 排除（add-deliverable-delete-kind
+       D1）——delete 语义即「合并后该路径不存在」，仅限入库文件；gitignored
+       路径不属于任何分支，守卫反判（分支 HEAD 存在即违规）恒判通过 → 静默
+       空跑（add-stale-code-selfheal 事故同型），必须在立项当下拒绝；处方：
+       gitignored 运行时文件的删除不进 Deliverables 段，由人工在主树执行。
+    8. ``kind: delete`` 的路径在主树不存在——delete 语义即删除既有入库文件，
+       主树不存在即无可删（声明 vs 现实的确定性矛盾，零误拦），应核对声明
+       路径（新建文件请用 kind: new）。
+    9. ``kind: delete`` 的路径在主树是目录——delete 是文件删除语义，目录删除
+       无法按 blob 对账（守卫按文件存在性校验），应改为目录下确定性锚点文件
+       或从声明中移除。
+    10. ``kind: delete`` 的路径在仓库外——delete 要求删除仓库内已入库文件，
+        仓库外路径超出守卫 git 对账范围（规则 7 同型：守卫反判无从成立），
+        任何分支不可交付，应改为仓库内路径。
 
     lint 自身故障一律 fail-open（返回空清单放行晋升），不因 lint 阻塞流水线。
 
@@ -888,6 +931,50 @@ def lint_declared(spec_dir, project_root) -> List[str]:
                 violations.append(
                     f"[{path}] 在主树不存在——{kind} 声明路径必须在主树存在"
                     f"（必须存在，指向既有文件），请核对声明路径"
+                    f"（新建文件请用 kind: new）"
+                )
+            continue
+        # 规则 7-10（add-deliverable-delete-kind D1）：kind: delete 四类拒绝。
+        # delete 语义即「合并后该路径不存在」，仅限入库文件，守卫反判存在性
+        # （分支 HEAD 仍有该 blob 即 undeleted）。守卫判定基准是实现分支 blob，
+        # gitignored 路径不属于任何分支 → 反判恒通过 → 静默空跑（add-stale-code-
+        # selfheal 事故同型），故以下四类确定性不可交付形态在立项当下拒绝：
+        #  7  gitignored 排除（不可入 git，删除无法落库）——处方明示运行时文件
+        #     删除不进 Deliverables 段、由人工在主树执行；
+        #  8  主树不存在（无可删，声明 vs 现实确定性矛盾）；
+        #  9  是目录（删除语义针对具体文件，tree 无法按 blob 反判）；
+        #  10 仓库外（超出守卫 git 对账范围，反判无从成立）。
+        if kind == "delete":
+            # 规则 7：gitignored——与规则 5 并列共存、相互独立，可叠加违规
+            if _path_is_gitignored(project_root, candidates):
+                violations.append(
+                    f"[{path}] 被 .gitignore 排除——delete 声明要求删除已入库"
+                    f"文件，gitignored 路径不属于任何分支，守卫反判恒通过即"
+                    f"静默空跑（add-stale-code-selfheal 事故同型）；运行时文件"
+                    f"的删除不进 Deliverables 段，由人工在主树执行"
+                )
+            # 规则 10：仓库外——与规则 7 并列共存、相互独立，可叠加违规
+            if _path_is_outside_root(project_root, candidates):
+                violations.append(
+                    f"[{path}] 是仓库外路径——delete 声明要求删除仓库内已入库"
+                    f"文件，仓库外路径超出守卫 git 对账范围（反判无从成立），"
+                    f"请改为仓库内路径或从声明中移除"
+                )
+            # 规则 9：目录——目录删除无法按 blob 反判，先于存在性判定
+            is_dir = any((project_root / c).is_dir() for c in candidates)
+            if is_dir:
+                violations.append(
+                    f"[{path}] 是目录——delete 是文件删除语义（tree 无法按 "
+                    f"blob 反判存在），请改为目录下确定性锚点文件"
+                    f"（如 dist/index.html）或从声明中移除"
+                )
+                # 目录在主树存在：不落入下方存在性校验（避免重复违规）
+                continue
+            # 规则 8：主树不存在（无可删）——零误拦确定性矛盾
+            if not any((project_root / c).exists() for c in candidates):
+                violations.append(
+                    f"[{path}] 在主树不存在——无可删（delete 声明路径必须在"
+                    f"主树存在，指向既有入库文件），请核对声明路径"
                     f"（新建文件请用 kind: new）"
                 )
             continue

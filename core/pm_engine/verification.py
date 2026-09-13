@@ -2619,7 +2619,7 @@ class VerificationPipeline:
 
 
     def _deliverable_gate_missing(self, spec_name: str, result) -> list:
-        """交付物守卫：返回 SPEC 声明但实现分支中缺失的交付路径清单。
+        """交付物守卫：返回 SPEC 声明与实现分支现实的差异条目清单。
 
         纯文件存在性检查（add-implementer-deliverable-gate D3）：从 SPEC 目录
         提取声明路径，逐一在 ``result.branch`` 的 HEAD 提交中校验 blob 存在。
@@ -2632,10 +2632,19 @@ class VerificationPipeline:
         ``.fenix`` 自引用符号链接设计废弃后为实体目录，历史的前缀归一化
         会在根路径同名文件存在时把 ``.fenix/x`` 缺件假放行）。
 
+        结构化返回（add-deliverable-delete-kind D3）：返回类型为
+        ``list[dict]``，每项 ``{"path": str, "kind": str,
+        "violation": "missing"|"undeleted"}``。``violation`` 语义由 ``kind``
+        决定——``new``/``modify``：分支 HEAD 无该 blob → ``missing``；
+        ``delete``：分支 HEAD 仍有该 blob → ``undeleted``（反判）。kind 来自
+        声明段 ``extract_declared_entries``；正则回退路径无 kind 概念，统一
+        按 non-delete 语义（缺失即 ``missing``）。
+
         Returns:
-            缺失路径列表（相对项目根）；空列表表示放行（含无路径 SPEC 跳过场景）。
+            差异条目列表；空列表表示放行（含无路径 SPEC 跳过场景）。
         """
-        from core.deliverables import extract_declared, extract_paths_typed
+        from core.deliverables import extract_declared, \
+            extract_declared_entries, extract_paths_typed
 
         spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
         if not spec_dir.is_dir():
@@ -2652,6 +2661,12 @@ class VerificationPipeline:
         if not declared and not references:
             # 无路径 SPEC：跳过守卫，行为退化到守卫上线前（向后兼容）
             return []
+        # kind 映射：声明段条目提供 path→kind（供反判 delete）；
+        # 正则回退无 kind 概念，全部按 non-delete 语义（缺失即 missing）。
+        kind_by_path: dict = {}
+        if decl_source == "declared":
+            for e in (extract_declared_entries(spec_dir) or []):
+                kind_by_path[e["path"]] = e["kind"]
         wm = self._pm.agent_runner.worktree_manager
         branch = getattr(result, "branch", None)
         if not branch:
@@ -2663,8 +2678,21 @@ class VerificationPipeline:
             # 字面路径校验（.fenix 前缀归一化已退役，见本方法 docstring）
             return wm.file_exists_on_branch(branch, path)
 
-        # 交付物（硬校验）：缺件 → 不合并不推进，重派实现补齐
-        missing = [p for p in declared if not _exists_on_branch(p)]
+        # 交付物（硬校验）：按 kind 区分违规类别——
+        #   new/modify 缺失 → missing（既有一致行为）；
+        #   delete 仍存在 → undeleted（反判，D3 结构化返回）。
+        violations: list = []
+        for p in declared:
+            kind = kind_by_path.get(p, "new")
+            if kind == "delete":
+                if _exists_on_branch(p):
+                    violations.append(
+                        {"path": p, "kind": "delete", "violation": "undeleted"})
+            else:
+                if not _exists_on_branch(p):
+                    violations.append(
+                        {"path": p, "kind": kind, "violation": "missing"})
+        violations.sort(key=lambda v: v["path"])
 
         # 引用（软校验，D4）：缺失仅审计留痕——引用错误不该阻断实现
         missing_refs = [p for p in references if not _exists_on_branch(p)]
@@ -2677,7 +2705,7 @@ class VerificationPipeline:
                          "source": decl_source,
                          "missing_references": missing_refs},
             )
-        return missing
+        return violations
 
     def _tasks_md_relint_from_branch(self, spec_name: str, branch) -> list:
         """full 车道 tasks.md 收口复检：读实现分支 HEAD 版本并判定违规。
@@ -2739,7 +2767,16 @@ class VerificationPipeline:
         由调用方转人工/裁决。
 
         element 与缺件路径按字面匹配（``normalize_check_path`` 已退役为
-        恒等映射）。Returns: 命中异议的缺件路径子集（保序）。
+        恒等映射）。返回值为 dispute 命中路径列表（``list[str]``），供调用方
+        按路径拼接 error 话术，不因 kind 区分。
+
+        Args:
+            impl_result: 实现 run 结果 dict（含 findings）。
+            missing: 守卫返回的差异条目列表（``list[dict]``，每项含
+                ``path``/``kind``/``violation``）。
+
+        Returns:
+            命中异议的缺件路径子集（保序）。
         """
         if not impl_result or not missing:
             return []
@@ -2752,8 +2789,11 @@ class VerificationPipeline:
             if not el:
                 continue
             for m in missing:
-                if m not in disputed and m == el:
-                    disputed.append(m)
+                # missing 现在是 list[dict]，按路径匹配（D5：dispute 按路径匹配，
+                # 不因 kind 失效）
+                m_path = m.get("path") if isinstance(m, dict) else str(m)
+                if m_path == el and m_path not in disputed:
+                    disputed.append(m_path)
         return disputed
 
 
