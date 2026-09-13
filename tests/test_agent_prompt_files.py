@@ -532,6 +532,68 @@ class TestJudgeRoutingGuidanceRegression:
         assert AGENT_PROMPT_FILES["planner-judge"] == "planner-judge.md"
 
 
+# ── 实现者任务进度契约段（fix-impl-tasks-completion-gate D5/6.3/9.6）────
+
+
+class TestTaskProgressContractDualBranch:
+    """Scenario「契约载体覆盖」与「收工自检契约同源」（spec implementer-task-protocol）。
+
+    两分支（implementer / fast-track）契约段同源生成（同一构造函数产出，内容
+    逐字一致）；工具不可用分支（无 run 产物 → init.tools 不可得）prompt 不含
+    TaskCreate 强制语句，以 completed_tasks 为进度载体。
+    """
+
+    def _prompt(self, tmp_path, agent_type, run_tools=None):
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        if run_tools is not None:
+            runs = proot / ".fenix" / "runs"
+            runs.mkdir(parents=True, exist_ok=True)
+            (runs / "impl-demo-1780000000.jsonl").write_text(
+                json.dumps({"type": "system", "subtype": "init",
+                            "tools": run_tools}) + "\n", encoding="utf-8")
+        runner = make_runner(proot)
+        return runner._prompt_builder._build_prompt("demo", agent_type)
+
+    def test_dual_branch_contract_same_source(self, tmp_path):
+        """两分支契约段同源：同一实现点产出、内容逐字一致。"""
+        full = self._prompt(tmp_path, "implementer")
+        fast = self._prompt(tmp_path, "fast-track")
+        seg = "## 任务进度契约（task-progress-contract"
+        end = "一一对应，不留半勾。\n"
+        full_seg = full[full.index(seg):full.index(end) + len(end)]
+        fast_seg = fast[fast.index(seg):fast.index(end) + len(end)]
+        assert full_seg == fast_seg
+        assert "completed_tasks" in full_seg
+        assert "unfinished" in full_seg
+        assert "禁止「先勾后做」" in full_seg
+
+    def test_dual_branch_contract_requires_completed_tasks(self, tmp_path):
+        """两个 prompt 文本都包含以 completed_tasks/unfinished 为进度载体的契约段。"""
+        for agent_type in ("implementer", "fast-track"):
+            prompt = self._prompt(tmp_path, agent_type)
+            assert "completed_tasks" in prompt
+            assert "unfinished" in prompt
+            assert "一一对应" in prompt
+
+    def test_tools_unavailable_no_taskcreate_force(self, tmp_path):
+        """工具不可用分支：prompt 不含 TaskCreate/TaskUpdate 强制要求。"""
+        for agent_type in ("implementer", "fast-track"):
+            prompt = self._prompt(tmp_path, agent_type)
+            assert "MUST NOT 尝试创建任务" in prompt
+            assert "只能由一个 TaskCreate 对应" not in prompt
+            assert "TaskUpdate status=completed" not in prompt
+
+    def test_tools_available_injects_taskcreate_mapping(self, tmp_path):
+        """工具可用分支：init.tools 暴露 TaskCreate 时注入任务粒度映射契约。"""
+        tools = ["Task", "TaskCreate", "TaskUpdate", "Bash", "Read", "Write"]
+        for agent_type in ("implementer", "fast-track"):
+            prompt = self._prompt(tmp_path, agent_type, run_tools=tools)
+            assert "只能由一个 TaskCreate 对应" in prompt
+            assert "TaskUpdate status=completed" in prompt
+            assert "MUST NOT 尝试创建任务" not in prompt
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

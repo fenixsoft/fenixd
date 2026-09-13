@@ -132,7 +132,7 @@ def _extract_gap_tasks(error: str) -> list:
     if not error:
         return []
     ids = []
-    for part in re.split(r"[、,，;\n]+", error[len(TASK_GAP_ERROR_PREFIX):]):
+    for part in re.split(r"[、,，;；:：\n]+", error[len(TASK_GAP_ERROR_PREFIX):]):
         part = part.strip()
         if re.fullmatch(r"\d+\.\d+", part):
             ids.append(part)

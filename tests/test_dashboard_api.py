@@ -966,6 +966,132 @@ class TestSpecPromoteAPI:
 
 # ── SPEC 审批推送 API（add-spec-approve-push-modal Task 5.2/5.3） ────
 
+class TestSpecTaskReflowAPI:
+    """POST /api/spec-task-reflow：task-gap 滞留 verified SPEC 回炉的 HTTP 语义。
+
+    fix-impl-tasks-completion-gate D8/7.2：错误语义对齐 spec-error-clear /
+    spec-freeze-config 家族（project/spec 404、拒绝返回明确原因、成功 ok:true）。
+    """
+
+    def _make_verified_taskgap_project(self, tmp_path, spec_name="stuck-spec"):
+        """构造含 verified + task-gap error 的 spec 项目。"""
+        proot = make_project(tmp_path, name="proj-a", otherspec=False)
+        from core.state_machine import StateMachine
+        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm.add_spec(spec_name, {
+            "status": "verified",
+            "error": "task-gap:未完成任务：4.5、5.1",
+        })
+        return proot
+
+    def _server(self, tmp_path, proot):
+        cfg = tmp_path / "dashboard.yaml"
+        reg = Registry(config_path=cfg)
+        reg.save({"port": 8787, "projects": [{"name": "proj-a", "path": str(proot)}],
+                  "scan_dirs": [str(tmp_path / "scan-empty")]})
+        return _TestServer(reg, Path(__file__).resolve().parents[1] / "core" / "dashboard" / "static")
+
+    def test_reflow_success(self, tmp_path):
+        """合规形态（verified + task-gap 前缀 + 未冻结）→ ok:true、status=ready。"""
+        proot = self._make_verified_taskgap_project(tmp_path)
+        srv = self._server(tmp_path, proot)
+        try:
+            status, body = srv.post("/api/spec-task-reflow?project=proj-a&spec=stuck-spec")
+            assert status == 200
+            assert body["ok"] is True
+            assert body["status"] == "ready"
+            entry = dash_data.parse_state(proot)["stuck-spec"]
+            assert entry["status"] == "ready"
+            assert entry["error"] in (None, "")
+        finally:
+            srv.stop()
+
+    def test_reflow_project_404(self, tmp_path):
+        """project 不存在 → 404。"""
+        proot = self._make_verified_taskgap_project(tmp_path)
+        srv = self._server(tmp_path, proot)
+        try:
+            status, body = srv.post("/api/spec-task-reflow?project=nope&spec=stuck-spec")
+            assert status == 404
+        finally:
+            srv.stop()
+
+    def test_reflow_spec_404(self, tmp_path):
+        """spec 不存在 → 404（不产生状态写入）。"""
+        proot = self._make_verified_taskgap_project(tmp_path)
+        srv = self._server(tmp_path, proot)
+        try:
+            status, body = srv.post("/api/spec-task-reflow?project=proj-a&spec=ghost")
+            assert status == 404
+            assert "not found" in body.get("error", "").lower() or \
+                "not found" in body.get("message", "").lower()
+        finally:
+            srv.stop()
+
+    def test_reflow_non_verified_rejected(self, tmp_path):
+        """非 verified 状态 → 明确拒绝原因（status 不变）。"""
+        proot = self._make_verified_taskgap_project(tmp_path)
+        from core.state_machine import StateMachine
+        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm.update_spec("stuck-spec", {"status": "ready"})
+        srv = self._server(tmp_path, proot)
+        try:
+            status, body = srv.post("/api/spec-task-reflow?project=proj-a&spec=stuck-spec")
+            assert status == 200
+            assert body["ok"] is False
+            assert "当前状态为 'ready'" in body["reason"]
+            assert dash_data.parse_state(proot)["stuck-spec"]["status"] == "ready"
+        finally:
+            srv.stop()
+
+    def test_reflow_error_not_task_gap_rejected(self, tmp_path):
+        """verified 但 error 非 task-gap 前缀 → 明确拒绝原因。"""
+        proot = self._make_verified_taskgap_project(tmp_path)
+        from core.state_machine import StateMachine
+        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm.update_spec("stuck-spec", {"error": "spec-review-rejected: x"})
+        srv = self._server(tmp_path, proot)
+        try:
+            status, body = srv.post("/api/spec-task-reflow?project=proj-a&spec=stuck-spec")
+            assert status == 200
+            assert body["ok"] is False
+            assert "task-gap" in body["reason"]
+        finally:
+            srv.stop()
+
+    def test_reflow_frozen_rejected(self, tmp_path):
+        """冻结态 → 明确拒绝原因。"""
+        proot = self._make_verified_taskgap_project(tmp_path)
+        from core.state_machine import StateMachine
+        sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+        sm.update_spec("stuck-spec", {"frozen": True})
+        srv = self._server(tmp_path, proot)
+        try:
+            status, body = srv.post("/api/spec-task-reflow?project=proj-a&spec=stuck-spec")
+            assert status == 200
+            assert body["ok"] is False
+            assert "冻结" in body["reason"]
+        finally:
+            srv.stop()
+
+    def test_reflow_idempotent_second_call_rejected(self, tmp_path):
+        """幂等重复调用：第二次（已复位 ready）→ 拒绝且无重复日志。"""
+        proot = self._make_verified_taskgap_project(tmp_path)
+        srv = self._server(tmp_path, proot)
+        try:
+            status, body = srv.post("/api/spec-task-reflow?project=proj-a&spec=stuck-spec")
+            assert status == 200 and body["ok"] is True
+            log_path = proot / ".fenix" / "PROJECT_LOG.md"
+            log_before = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+            status2, body2 = srv.post("/api/spec-task-reflow?project=proj-a&spec=stuck-spec")
+            assert status2 == 200
+            assert body2["ok"] is False
+            log_after = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+            assert log_after == log_before
+        finally:
+            srv.stop()
+
+
 class TestSpecApprovePushAPI:
     """POST /api/spec-approve-push：done SPEC 审批推送的 HTTP 全分支语义。"""
 

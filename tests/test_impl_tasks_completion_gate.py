@@ -1,0 +1,304 @@
+"""implementer/fast-track 结果产物硬门测试（fix-impl-tasks-completion-gate）。
+
+覆盖 spec「结果产物硬门」全部 Scenario：
+- 结果文件缺失 / 为空 / 非法 JSON / 顶层非对象 / status 白名单外 → 拦截；
+- 健康轮次（success + 完成度判据通过）→ 放行；
+- success 未勾任务残留（事故回归）→ 拦截且归因含缺口 id；
+- completed_tasks 缺项/多项/缺失 → 拦截；
+- partial 申报不一致 → 拦截；申报一致 → 放行；
+- error 不施加完成度类判据；
+- 无数字任务 SPEC → 放行；
+- 能力探测：init.tools 含 TaskCreate 且 done_ids 不覆盖 → 拦截；
+  init.tools 不含 → 放行且写 impl-task-crosscheck-skipped 审计事件；init 不可得 → 放行。
+"""
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from test_agent_runner import make_runner
+
+
+def _mk_worktree(proot: Path, spec: str, *, tasks_text: str) -> Path:
+    """构造实现者 worktree（含 spec/changes/<spec>/tasks.md）。"""
+    wt = proot / "wt"
+    (wt / "spec" / "changes" / spec).mkdir(parents=True, exist_ok=True)
+    (wt / "spec" / "changes" / spec / "tasks.md").write_text(
+        tasks_text, encoding="utf-8")
+    return wt
+
+
+def _write_result(wt: Path, payload: dict | str) -> None:
+    if isinstance(payload, str):
+        (wt / ".fenix-run-result.json").write_text(payload, encoding="utf-8")
+    else:
+        (wt / ".fenix-run-result.json").write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _mk_run_file(proot: Path, spec: str, *, tools=None) -> None:
+    """写 impl run 产物（能力探测的 init.tools 数据源）。"""
+    runs = proot / ".fenix" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    lines = [{"type": "system", "subtype": "init", "tools": tools or []}]
+    (runs / f"impl-{spec}-1780000000.jsonl").write_text(
+        "\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n",
+        encoding="utf-8")
+
+
+ALL_DONE_TASKS = "## 1. 阶段一\n\n- [x] 1.1 任务一\n- [x] 1.2 任务二\n"
+PARTIAL_TASKS = "## 1. 阶段一\n\n- [x] 1.1 任务一\n- [ ] 1.2 任务二\n"
+NO_NUMERIC_TASKS = "## 1. 阶段一\n\n- [ ] 功能清单完善\n"
+
+
+class TestImplResultGate(unittest.TestCase):
+    """结果产物硬门：基础校验各失败形态与放行。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir)
+        self.runner = make_runner(self.proot)
+        self.spec = "demo"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _gate(self, tasks_text=ALL_DONE_TASKS, payload=None, spec=None):
+        wt = _mk_worktree(self.proot, spec or self.spec, tasks_text=tasks_text)
+        if payload is not None:
+            _write_result(wt, payload)
+        return self.runner._check_impl_result_artifact(
+            spec or self.spec, None, wt)
+
+    # ── 基础校验 ─────────────────────────────────────────────
+
+    def test_missing_result_file_blocked(self):
+        """结果文件缺失 → 拦截（含 worktree 路径）。"""
+        err = self._gate(payload=None)
+        assert err is not None
+        assert "结果文件缺失" in err
+        assert ".fenix-run-result.json" in err
+
+    def test_empty_result_file_blocked(self):
+        err = self._gate(payload="")
+        assert err is not None
+        assert "结果文件为空" in err
+
+    def test_invalid_json_blocked(self):
+        err = self._gate(payload="not-json{{{")
+        assert err is not None
+        assert "非法 JSON" in err
+
+    def test_top_level_array_blocked(self):
+        """顶层为数组 → 顶层非对象类别拦截。"""
+        err = self._gate(payload='["a", "b"]')
+        assert err is not None
+        assert "顶层非对象" in err
+
+    def test_status_outside_whitelist_blocked(self):
+        """status 白名单外（如 plan-ready/verified）→ 拦截且归因含真实 status。"""
+        err = self._gate(payload={"status": "plan-ready", "spec": self.spec})
+        assert err is not None
+        assert "status='plan-ready'" in err
+        assert "不在白名单" in err
+
+    def test_status_present_failure(self):
+        """status=error → 不施加任何完成度类判据（带未勾任务也放行）。"""
+        err = self._gate(
+            tasks_text=PARTIAL_TASKS,
+            payload={"status": "error", "spec": self.spec, "error": "bug"},
+        )
+        assert err is None
+
+    def test_no_numeric_tasks_spec_passes(self):
+        """无数字任务的 SPEC：勾选清零通过、completed_tasks 空/缺失均通过。"""
+        assert self._gate(
+            tasks_text=NO_NUMERIC_TASKS,
+            payload={"status": "success", "spec": self.spec},
+        ) is None
+        assert self._gate(
+            tasks_text=NO_NUMERIC_TASKS,
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": []},
+        ) is None
+
+    # ── success 完成度判据 ───────────────────────────────────
+
+    def test_success_unchecked_tasks_blocked(self):
+        """事故回归：status=success 但 tasks.md 有未勾任务 → 拦截且含缺口 id。"""
+        err = self._gate(
+            tasks_text=PARTIAL_TASKS,
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1"]},
+        )
+        assert err is not None
+        assert "未勾选数字任务" in err
+        assert "1.2" in err
+
+    def test_success_missing_completed_tasks_blocked(self):
+        """status=success、tasks.md 全勾但无 completed_tasks 键 → 拦截。"""
+        err = self._gate(payload={"status": "success", "spec": self.spec})
+        assert err is not None
+        assert "completed_tasks" in err
+
+    def test_success_extra_completed_tasks_blocked(self):
+        """completed_tasks 含未勾任务（多项）→ 拦截含 id。"""
+        err = self._gate(
+            tasks_text=ALL_DONE_TASKS,
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2", "9.9"]},
+        )
+        assert err is not None
+        assert "多项" in err
+        assert "9.9" in err
+
+    def test_success_missing_checked_task_blocked(self):
+        """completed_tasks 缺列已勾任务（缺项）→ 拦截含缺口 id。"""
+        err = self._gate(
+            tasks_text=ALL_DONE_TASKS,
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1"]},
+        )
+        assert err is not None
+        assert "缺项" in err
+        assert "1.2" in err
+
+    def test_success_non_numeric_id_blocked(self):
+        """completed_tasks 含非数字 id → 拦截。"""
+        err = self._gate(
+            tasks_text=ALL_DONE_TASKS,
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2", "abc"]},
+        )
+        assert err is not None
+        assert "非数字" in err
+
+    def test_healthy_success_passes(self):
+        """健康轮次：tasks.md 全勾 + completed_tasks 集合相等 → 放行。"""
+        assert self._gate(
+            tasks_text=ALL_DONE_TASKS,
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2"]},
+        ) is None
+
+    # ── partial 申报一致性判据 ───────────────────────────────
+
+    def test_partial_consistent_passes(self):
+        """partial 申报一致（completed/unfinished 与勾选状态严格对应）→ 放行。"""
+        assert self._gate(
+            tasks_text=PARTIAL_TASKS,
+            payload={"status": "partial", "spec": self.spec,
+                     "completed_tasks": ["1.1"], "unfinished": ["1.2"]},
+        ) is None
+
+    def test_partial_missing_unfinished_blocked(self):
+        """partial 缺 unfinished 数组 → 拦截。"""
+        err = self._gate(
+            tasks_text=PARTIAL_TASKS,
+            payload={"status": "partial", "spec": self.spec,
+                     "completed_tasks": ["1.1"]},
+        )
+        assert err is not None
+        assert "partial" in err
+
+    def test_partial_gap_underreported_blocked(self):
+        """partial：unfinished 漏列未勾任务 → 拦截（缺口 id）。"""
+        err = self._gate(
+            tasks_text=PARTIAL_TASKS,
+            payload={"status": "partial", "spec": self.spec,
+                     "completed_tasks": ["1.1"],
+                     "unfinished": []},
+        )
+        assert err is not None
+        assert "不一致" in err or "unfinished" in err
+
+    def test_partial_completed_overreported_blocked(self):
+        """partial：completed_tasks 含未勾任务 → 拦截。"""
+        err = self._gate(
+            tasks_text=PARTIAL_TASKS,
+            payload={"status": "partial", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2"],
+                     "unfinished": []},
+        )
+        assert err is not None
+
+    # ── 能力探测（D4）───────────────────────────────────────
+
+    def test_taskcreate_available_done_ids_missing_blocked(self):
+        """init.tools 含 TaskCreate 且 done_ids 不覆盖已勾 → 拦截。"""
+        _mk_run_file(self.proot, self.spec,
+                     tools=["Task", "TaskCreate", "TaskUpdate", "Bash"])
+        err = self._gate(
+            tasks_text=ALL_DONE_TASKS,
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2"]},
+        )
+        assert err is not None
+        assert "TaskUpdate 记录不一致" in err
+        assert "1.1" in err
+
+    def test_taskcreate_available_done_ids_cover_passes(self):
+        """init.tools 含 TaskCreate 且 done_ids 覆盖全部已勾 → 放行。"""
+        runs = self.proot / ".fenix" / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        run_file = runs / f"impl-{self.spec}-1780000000.jsonl"
+        lines = [
+            {"type": "system", "subtype": "init",
+             "tools": ["Task", "TaskCreate", "TaskUpdate"]},
+            {"type": "assistant",
+             "message": {"content": [
+                 {"type": "tool_use", "name": "TaskCreate",
+                  "input": {"subject": "Task 1.1: 任务一"}},
+                 {"type": "tool_use", "name": "TaskCreate",
+                  "input": {"subject": "Task 1.2: 任务二"}},
+                 {"type": "tool_use", "name": "TaskUpdate",
+                  "input": {"taskId": 1, "status": "completed"}},
+                 {"type": "tool_use", "name": "TaskUpdate",
+                  "input": {"taskId": 2, "status": "completed"}},
+             ]}},
+        ]
+        run_file.write_text(
+            "\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n",
+            encoding="utf-8")
+        assert self._gate(
+            tasks_text=ALL_DONE_TASKS,
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2"]},
+        ) is None
+
+    def test_taskcreate_unavailable_skips_and_audits(self):
+        """init.tools 不含 TaskCreate → 放行且写 impl-task-crosscheck-skipped 审计。"""
+        _mk_run_file(self.proot, self.spec, tools=["Bash", "Read", "Write"])
+        assert self._gate(
+            tasks_text=ALL_DONE_TASKS,
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2"]},
+        ) is None
+        run_file = self.proot / ".fenix" / "runs" / f"impl-{self.spec}-1780000000.jsonl"
+        audit = [
+            json.loads(line) for line in
+            run_file.read_text(encoding="utf-8").splitlines()
+            if json.loads(line).get("type") == "impl-task-crosscheck-skipped"
+        ]
+        assert len(audit) == 1
+        assert audit[0]["spec"] == self.spec
+        assert audit[0]["reason"]
+        assert audit[0]["run_id"]
+
+    def test_init_event_unavailable_skips(self):
+        """init 事件不可得（run 文件缺失）→ 按工具不可用处理：放行（fail-open）。"""
+        # 不写 run 文件 → find_impl_run_file 返回 None → 跳过交叉核对
+        assert self._gate(
+            tasks_text=ALL_DONE_TASKS,
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2"]},
+        ) is None
+
+
+if __name__ == "__main__":
+    unittest.main()
