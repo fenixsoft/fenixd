@@ -69,7 +69,11 @@ class PromotionTestMixin(unittest.TestCase):
         from unittest.mock import MagicMock
         self.logger = MagicMock()
         self.sm = StateMachine(self.pr / ".fenix" / "STATE.md", self.logger)
-        self.engine = PMEngine(self.sm, MagicMock(), {}, self.pr, self.logger)
+        # 测试聚焦晋升软化链路；spec_review_mode=never 关闭评审门禁
+        # （与 add-spec-review-gate 适配 test_pm_promotion_gate 同法，保持
+        # 晋升终态仍为 ready，避免落入 reviewing 等评审分支）
+        config = {"gates": {"promote_mode": "auto", "spec_review_mode": "never"}}
+        self.engine = PMEngine(self.sm, MagicMock(), config, self.pr, self.logger)
         self.engine._on_spec_ready = MagicMock()
         self.spec_dir = self.pr / "spec" / "changes" / "demo"
         self.sm.add_spec("demo", {"priority": 5})
