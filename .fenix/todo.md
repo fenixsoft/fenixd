@@ -3,7 +3,7 @@
 
 ### 浪费
 - **import-shadow 三次超时空转**
-  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：同一 spec 的实现 run 三次 12600s 超时（每次 3.5h，合计 10.5h 空转），第三次已跑满 91 rounds 仍被 extension budget 2/2 耗尽即杀；另 a3 被 daemon 关闭打断。spec 从 09-12 09:51（本地）首跑折腾至 09-13 01:00 才成功合并，横跨约 15h，期间 token 消耗不可观测（usage unobserved 提示 real consumption likely non-zero）。
   - 证据：fenixd.log 05:22:04/08:52:15/14:58:19 三次 "Timeout after 12600s — extension budget exhausted (2/2)"，run_id 分别为 impl-fix-root-init-import-shadow-1789177903-a1/a2/1789212482-a1；14:58:19 上下文中 1789212482-a1 报 91 rounds, median 13.2s, p90 33.7s, max 153.9s, stalls>60s=4 (4%)；10:57Z a3 被 SIGTERM（Exit 143）。
   - 调查评估：已核实：三次超时 log 与 runs/ 目录 jsonl 末尾 error 行一致（Timeout after 12600s — extension budget exhausted (2/2)），a3 被 daemon 10:57:25Z 关闭连带杀（4866 行 Sent SIGTERM）。根因：fix-root-init-import-shadow 属 import 遮蔽修复，任务面较大，fast-track 单次 3.5h 硬限内无法完成，触发 extension 2/2 即杀；且 a1/a2 处于 run-latency 转录盲区（0 rounds 无 timestamp 样本），观测不到是真卡死还是慢功。与存量 SPEC 关系：fix-run-latency-toolresult-parser（fa298deb 09-12 14:03 merge）已修转录盲区；add-impl-wip-checkpoint 的 WIP 保全在本案生效——1789212482-a1 超时后 WIP collapse 保全、a2 仅 87s 即收尾成功（15:00Z merge），说明保全链有效但超时判定牺牲了 3.5h。结论：属已验证功能的触发成本，次生（时间+不可观测 token）浪费成立，残余在「超时前自动保全」与「规模预检」两处。
@@ -26,14 +26,14 @@
 
 ### 可改进
 - **冻结场景 schema 失配验收卡壳**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：复发敞口：冻结场景文件 test_scenarios.json 以旧 schema 生成（run 步骤 value→command、output_match 断言 value→expected 字段重命名未迁移），load_scenarios 抛异常判 corrupt → 验收失败且冻结场景不自动重出题，须 admin 裁决——单次代价 2 个 admin run $7.28 + 处置后 blocked_stuck 再卡 17min；另暴露『admin 修复后 spec 状态未复位』第二缺陷（非 env 阻塞族不触发自动复位）。
   - 证据：admin_alerts.json 15:00:04Z 升级告警 '冻结场景文件损坏或验收失败'；15:13:12Z disposition 'run 步骤 value→command，output_match 断言 value→expected，load_scenarios 抛异常返回 corrupt'；15:33:09Z disposition '第一次 Administrator 处置成功修复场景文件后未复位 spec 状态——blocked_stuck 非 env 阻塞族，框架不触发自动复位'；admin-fix-root-init-import-shadow-1789225205/1789226281 两 run 成本 4.0078615+3.273667；当前 .fenix/verify-progress/fix-root-init-import-shadow/test_scenarios.json 已是新 schema（step0 键 action/command）且留有 .bak-corrupt 备份。
   - 调查评估：已核实：schema 漂移事实、两 admin run 成本、当前文件已修复均可直接查看；场景冻结机制（跨轮一致不自动重出题）在本案按设计触发，但把 schema 演进缺口交给了人工。根因：冻结文件无 schema 版本标记，字段重命名（value→command）未做读侧迁移/容错，load_scenarios 直接抛异常；且处置后状态复位仅覆盖 env 阻塞族，blocked_stuck 需人工再触发。与存量 SPEC 关系：fix-frozen-scenario-orphan-reservoir 在飞，7aedb932（09-12 23:08 本地）已补『内容闸门冻结补结构化 frozen 标记』，方向一致但未覆盖 schema 版本迁移。结论：系统性缺口成立，可独立起草 SPEC，低成本修复（读侧兼容 + 版本标记）。
   - 建议：立项：冻结场景文件读侧加旧 schema 兼容迁移（value→command / output_match→expected）或写入时打 schema 版本并在 load 失败时报具体字段差异而非笼统 corrupt；admin 处置成功修复后统一复位 spec 状态，消除 blocked_stuck 二次空转。
 
 - **fast-track 长任务缺规模预检**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
   - 影响：复发敞口：单 spec 三次 12600s 超时合计 10.5h 空转，若加规模预检可在首个 run 前拦截（单次代价 3.5h run 时长 × 3 + 不可观测 token 消耗）；add-verify-preflight-gate 已覆盖入口存在性预检，但未覆盖任务规模维度。
   - 证据：fenixd.log 4163/4733/5278-5279 三次 fast-track Timeout after 12600s（run impl-fix-root-init-import-shadow-1789177903-a1/a2/1789212482-a1），其中第三次已 91 rounds 才被杀；对照同窗口内较小 spec（fix-dispatch-wakeup-gap 1789214098 等）均单轮成功，规模差异显著。
   - 调查评估：已核实：三次超时均为同一 spec 且最后一次已完成 91 轮工作，说明是『硬限内跑不完』而非卡死；对照组小 spec 单轮成功，规模相关性明显。根因：fast-track 模式按统一 3.5h/6 次预算派发，无任务规模预估，大 spec 被同规格对待。与存量 SPEC 关系：add-verify-preflight-gate 的 resolve_entry_path 预检（09-11 merge）解决入口存在性；add-turn-limit-anchor-c 解决轮数锚点；均未覆盖『任务规模 → 预算档位』映射。结论：可独立成 SPEC 或并入 preflight 扩展，价值点是用一次轻量静态预估（tasks.md 条目数/变更面）换掉 3×3.5h 空转。
