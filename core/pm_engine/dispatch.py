@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, start_after_pending
+from core.fast_track_result import SCALE_TIER_FULL, SCALE_TIER_HIGHER
 
 
 # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）────────────────────
@@ -613,6 +614,34 @@ class Dispatcher:
                 cur_status = (self._pm.state_machine.read_one(spec_name) or {}).get("status")
                 if cur_status != "implementing":
                     self._pm.state_machine.transition(spec_name, "implementing")
+                # ── 派发前规模预检（evo-add-fast-track-scale-precheck 2.1）──
+                # 大任务面 spec 首次派发即按规模分档，不再统一按 3.5h 硬限处理：
+                #   - full 档：改写 .spec.yaml mode → full，本派发改按 implementer
+                #     走分离流水线（降级 full 模式）；
+                #   - higher 档：持久化 _ft_scale_tier 标记，runner 超时监督据此
+                #     提高 extension 预算；
+                #   - normal 档：零行为变化（原样 fast-track 预算派发）。
+                # 预检失败保守按 normal 放行（design D2，不因预检失败阻断派发）。
+                # 日志含 spec、规模分、档位（_fast_track_scale_precheck 内打点）。
+                tier = self._fast_track_scale_precheck(spec_name)
+                if tier == SCALE_TIER_FULL:
+                    self._rewrite_fast_track_to_full(spec_name)
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"fast-track scale precheck '{spec_name}': tier=full — "
+                        f"mode → full, 本派发降级 implementer 分离流水线",
+                    )
+                    agent_type = "implementer"
+                elif tier == SCALE_TIER_HIGHER:
+                    try:
+                        self._pm.state_machine.update_spec(
+                            spec_name, {"_ft_scale_tier": SCALE_TIER_HIGHER})
+                    except Exception as e:
+                        self._pm.logger.warning(
+                            "pm_engine",
+                            f"fast-track scale precheck higher 标记写回失败 "
+                            f"'{spec_name}'（非阻塞）: {e}",
+                        )
             elif agent_type == "verifier":
                 self._pm.state_machine.transition(spec_name, "testing")
 
@@ -630,6 +659,32 @@ class Dispatcher:
             )
             t.start()
 
+
+    def _fast_track_scale_precheck(self, spec_name: str) -> str:
+        """fast-track 派发前规模预检（evo-add-fast-track-scale-precheck 2.1）。
+
+        读 spec 的 tasks.md 任务条数 + 源码文件面作轻量静态预估，按档位返回：
+          - normal：按既有 fast-track 预算派发（行为零变化）；
+          - higher：延长 extension 预算（持久化 _ft_scale_tier 标记供 runner 读取）；
+          - full：降级完整模式（mode → full，本派发改按 implementer）。
+
+        预检失败（tasks.md 缺失/读取失败）→ 保守按 normal 放行并记 WARNING，
+        不阻断派发（design D2，与 add-spec-content-integrity-gate IO 异常同理由）。
+        日志包含 spec、规模分、档位。
+        """
+        from core.fast_track_result import (
+            budget_tier_for_scale,
+            estimate_spec_scale,
+        )
+        spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
+        scale = estimate_spec_scale(spec_dir, logger=self._pm.logger)
+        tier = budget_tier_for_scale(scale)
+        self._pm.logger.info(
+            "pm_engine",
+            f"fast-track scale precheck '{spec_name}': scale={scale}, tier={tier} "
+            f"(evo-add-fast-track-scale-precheck)",
+        )
+        return tier
 
     def _run_agent_worker(self, spec_name: str, agent_type: str, priority: int):
         """Worker thread body: run the agent and handle result.

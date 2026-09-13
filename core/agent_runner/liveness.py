@@ -538,6 +538,28 @@ class LivenessSupervisor:
         return cfg
 
 
+    def _effective_max_extensions(self, spec_name: str | None = None) -> int:
+        """extension 预算上限（evo-add-fast-track-scale-precheck 2.1）。
+
+        基准 = supervision settings 的 ``max_extensions``；spec 的持久化
+        ``_ft_scale_tier == "higher"`` 标记（派发前规模预检写入）额外 +1——
+        大任务面 fast-track spec 按更高一档 extension 预算派发，不再统一按
+        3.5h 硬限处理。spec entry 读取失败/无标记 → 基准不变（normal 档
+        零变化）。supervision 关闭时 max_extensions 恒 0，末位窗口永不触发。
+
+        消费方：``_supervision_deadline_action`` 与 runner 末位窗口判定共用本
+        helper，保证「预算上限」两处口径一致。
+        """
+        max_ext = max(0, int(self._supervision_settings()["max_extensions"]))
+        if spec_name:
+            try:
+                entry = self._pm.state_machine.read_one(spec_name) or {}
+            except Exception:
+                entry = {}
+            if entry.get("_ft_scale_tier") == "higher":
+                max_ext += 1
+        return max_ext
+
     def _supervision_deadline_action(self, run_file: Path, spec_name: str | None,
                                      run_id: str, started_at: float,
                                      extensions_used: int,
@@ -570,7 +592,7 @@ class LivenessSupervisor:
         # 护栏按该 agent type 的生效超时派生（覆盖值参与），stuck 阈值派生保持全局默认
         # 值语义（见 effective_stuck_threshold_seconds，不随覆盖变化）。
         run_timeout = float(self._pm._effective_run_timeout(agent_type))
-        max_extensions = max(0, int(sup["max_extensions"]))
+        max_extensions = self._effective_max_extensions(spec_name)
         extension_seconds = max(1.0, float(sup["extension_seconds"]))
         # absolute_max 是总墙钟上限；配置偏小时抬到 run_timeout + 续期总额，
         # 否则续期预算会被总上限截断（语义矛盾）。
