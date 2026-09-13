@@ -47,10 +47,6 @@ const STATUS_SORT_ORDER: Record<string, number> = {
   rejected: 6,
 };
 
-// add-evolution-item-management：默认只看待决策条目（可操作的那批），
-// 状态选择器可清空以查看全部
-const DEFAULT_STATUS_FILTER = 'pending';
-
 /** 类别列 Tag 配色（参考 SPEC 列表页「模式」列的 Tag 写法）。 */
 const SECTION_TAG_COLORS: Record<string, string> = {
   浪费: 'red',
@@ -290,23 +286,31 @@ const SuggestedImprovementsPanel = forwardRef<
   //
   // 两个下拉的选项从当前数据现算 distinct 值，避免出现「选了必然 0 条」的死选项；
   // 日期按 date_section（todo.md 小节日期，ISO 串，字典序即时间序）做闭区间。
-  // 状态默认「待决策」——打开页签先看待决策那批（可操作项），选择器可清空看全部。
+  // 三个条件缺省全空 = 不做任何过滤，表格展示全部条目。
 
-  const [filterStatus, setFilterStatus] = useState<string | undefined>(DEFAULT_STATUS_FILTER);
+  // 缺省不做任何过滤：打开页签先看到全部条目（含已决策/不需要立项的）
+  const [filterStatus, setFilterStatus] = useState<string | undefined>();
   const [filterProject, setFilterProject] = useState<string | undefined>();
   const [filterDateRange, setFilterDateRange] = useState<[Dayjs, Dayjs] | null>(null);
 
   const projectOptions = useMemo(() => distinctOptions(items, (i) => i.project), [items]);
-  const statusOptions = useMemo(
-    () => distinctOptions(items, (i) => i.status, (s) => EVOLUTION_STATUS_LABELS[s] || s),
-    [items],
-  );
+  const statusOptions = useMemo(() => {
+    const opts = distinctOptions(items, (i) => i.status, (s) => EVOLUTION_STATUS_LABELS[s] || s);
+    // 当前选中值必须始终在选项里：否则「缺省待决策但一条待决策都没有」时，
+    // antd 找不到匹配项会直接把原始值（pending）当标签渲染出来
+    if (filterStatus && !opts.some((o) => o.value === filterStatus)) {
+      opts.unshift({
+        value: filterStatus,
+        label: EVOLUTION_STATUS_LABELS[filterStatus] || filterStatus,
+      });
+    }
+    return opts;
+  }, [items, filterStatus]);
 
-  // 状态处于默认值时不算「已过滤」（否则重置按钮恒亮）
-  const hasFilter = Boolean(filterProject || filterDateRange) || filterStatus !== DEFAULT_STATUS_FILTER;
+  const hasFilter = Boolean(filterStatus || filterProject || filterDateRange);
 
   const resetFilters = () => {
-    setFilterStatus(DEFAULT_STATUS_FILTER);
+    setFilterStatus(undefined);
     setFilterProject(undefined);
     setFilterDateRange(null);
   };
@@ -698,10 +702,10 @@ const SuggestedImprovementsPanel = forwardRef<
   return (
     <div data-testid="suggested-improvements-panel">
       {/* 标题与功能注解提到卡片外（与上方「代码陈旧自愈」卡片同构） */}
-      <h3>建议改进项</h3>
+      <h3>可改进项</h3>
       <Text type="secondary">
         每日自省后，框架汇总各项目 todo.md「浪费 / 失误 / 可改进」小节中的候选条目，
-        交由分析 run 逐条复核（问题是否成立、建议是否合理、是否值得立项）：值得立项的
+        交由分析 Agent 逐条复核（问题是否成立、建议是否合理、是否值得立项）。值得立项的
         生成 SPEC 草稿进入下方条目列表，由你在此处同意或拒绝，也可开启自动接受。
       </Text>
 
@@ -743,7 +747,7 @@ const SuggestedImprovementsPanel = forwardRef<
             <InputNumber min={1} max={MAX_ITEMS_UPPER} precision={0} style={{ width: 160 }} addonAfter="条" />
           </Form.Item>
           <Text type="secondary">
-            缺省 20（1-200）。单轮分析 run 最多复核的条目数：超出部分保持待决策，
+            缺省 20（1-200）。单轮分析 run 最多复核的条目数。超出部分保持待决策，
             由下一轮的增量水位继续处理，用来给每轮的 LLM 成本封顶。
           </Text>
         </Form>
@@ -751,17 +755,27 @@ const SuggestedImprovementsPanel = forwardRef<
 
       {/* 7.3: 表格（移出卡片：小节标题与表格直接置于页签流内，与上方「建议改进项」
           标题同构；仍保留移动端横向滚动 + 操作列 fixed right） */}
-      <h3 style={{ marginTop: 20 }}>条目列表</h3>
+      <h3 style={{ marginTop: 20 }}>
+        条目列表
+        {/* 已选计数放标题行：工具栏那一行宽度吃紧，按钮文案随计数变长会把
+            第三个按钮挤到下一行（实测 800px 可用宽放不下「批量同意(18)」×3） */}
+        {selectedRowKeys.length > 0 && (
+          <Text type="secondary" style={{ fontSize: 13, fontWeight: 400, marginLeft: 8 }}>
+            已选 {selectedRowKeys.length} 条
+          </Text>
+        )}
+      </h3>
 
-      {/* 7.6: 过滤条（第一行）+ 批量操作（第二行，右对齐）
-          刻意分两行：过滤控件与三个批量按钮同排时总宽超出面板可用宽度，
-          会把「批量同意」挤出可视区（实测被裁） */}
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+      {/* 7.6: 过滤条（左）+ 批量操作（右），同一行
+          宽度预算：面板可用宽约 848px——状态 96 + 项目 96 + 日期 200 +
+          重置 60 + 三个批量按钮 324（含计数，固定宽度）+ 间距 ≈ 816 一行放得下。
+          批量按钮 MUST 定宽：文案带计数时（批量同意(18)）若随内容变宽会把第三个
+          按钮挤到下一行。窗口更窄时由 flexWrap 兜底换行（不裁切）。 */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 12 }}>
         <Select
           placeholder="状态"
           allowClear
-          style={{ width: 140 }}
+          style={{ width: 96 }}
           value={filterStatus}
           onChange={setFilterStatus}
           options={statusOptions}
@@ -770,7 +784,7 @@ const SuggestedImprovementsPanel = forwardRef<
         <Select
           placeholder="项目"
           allowClear
-          style={{ width: 140 }}
+          style={{ width: 96 }}
           value={filterProject}
           onChange={setFilterProject}
           options={projectOptions}
@@ -780,6 +794,7 @@ const SuggestedImprovementsPanel = forwardRef<
           value={filterDateRange}
           onChange={(range) => setFilterDateRange(range as [Dayjs, Dayjs] | null)}
           placeholder={['起始日期', '结束日期']}
+          style={{ width: 200 }}
           data-testid="evolution-filter-date"
         />
         {hasFilter && (
@@ -787,33 +802,34 @@ const SuggestedImprovementsPanel = forwardRef<
             重置
           </Button>
         )}
-        </div>
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <span style={{ flex: 1 }} />
         <Button
           disabled={selectedRowKeys.length === 0 || batchRunning}
           loading={batchRunning}
           onClick={() => runBatch('accept')}
+          style={{ minWidth: 96 }}
           data-testid="evolution-batch-accept"
         >
-          批量同意{selectedRowKeys.length > 0 ? `(${selectedRowKeys.length})` : ''}
+          批量同意
         </Button>
         <Button
           danger
           disabled={selectedRowKeys.length === 0 || batchRunning}
           onClick={() => runBatch('reject')}
+          style={{ minWidth: 96 }}
           data-testid="evolution-batch-reject"
         >
-          批量拒绝{selectedRowKeys.length > 0 ? `(${selectedRowKeys.length})` : ''}
+          批量拒绝
         </Button>
         <Button
           danger
           disabled={selectedRowKeys.length === 0 || batchRunning}
           onClick={() => runBatch('delete')}
+          style={{ minWidth: 96 }}
           data-testid="evolution-batch-delete"
         >
-          批量删除{selectedRowKeys.length > 0 ? `(${selectedRowKeys.length})` : ''}
+          批量删除
         </Button>
-        </div>
       </div>
 
       {error && <div style={{ marginBottom: 12, color: '#ff4d4f' }}>加载失败：{error}</div>}
@@ -830,7 +846,7 @@ const SuggestedImprovementsPanel = forwardRef<
         }}
         scroll={{ x: 800 }}
         pagination={filteredItems.length > 20 ? { pageSize: 20, showSizeChanger: false } : false}
-        locale={{ emptyText: hasFilter ? '没有符合过滤条件的条目' : '暂无建议改进项' }}
+        locale={{ emptyText: items.length > 0 ? '没有符合过滤条件的条目' : '暂无建议改进项' }}
       />
 
       {/* 7.5: 查看分析结论弹窗（形态对齐 SPEC 列表页「文档」弹窗） */}
