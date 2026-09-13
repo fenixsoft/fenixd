@@ -82,42 +82,42 @@
 
 ## 4. partial 状态的消费点一致性
 
-- [ ] 4.1 `core/pm_engine/dispatch.py`：实现者结果消费主路径（约 729-741 行）显式处理 `partial`——`is_success` 为假、MUST NOT 进入 `implemented`，且失败归因 MUST 非空（由 `unfinished` 清单与缺口 id 构成，不得沿用为 `None` 的 `result.error`）
-- [ ] 4.2 `core/pm_engine/dispatch.py`：逐点核对并处理 `partial`——约 1313 行、约 2225 行、约 3130 行（fast-track 路径），确认均不落入"未知状态按成功/放行"的默认分支
-- [ ] 4.3 `core/pm_engine/verification.py`：约 3287 行的 fast-track 结果消费点显式处理 `partial`
-- [ ] 4.4 `core/pm_engine/engine.py`:769 `_read_implementer_result` 读取器及其调用方核对 `partial` 语义；确认 `_task_completion_blocker` 在 partial 轮之后不会放行到 done
-- [ ] 4.5 `core/pm_engine/dispatch.py`：确认 `partial` 走消耗实现尝试预算的失败/重派通道（不得走 `AgentArtifactGateError` 的不消耗预算续做通道），连续 partial 由既有预算上限收口转 blocked
+- [x] 4.1 `core/pm_engine/dispatch.py`：实现者结果消费主路径（约 729-741 行）显式处理 `partial`——`is_success` 为假、MUST NOT 进入 `implemented`，且失败归因 MUST 非空（由 `unfinished` 清单与缺口 id 构成，不得沿用为 `None` 的 `result.error`）
+- [x] 4.2 `core/pm_engine/dispatch.py`：逐点核对并处理 `partial`——约 1313 行、约 2225 行、约 3130 行（fast-track 路径），确认均不落入"未知状态按成功/放行"的默认分支
+- [x] 4.3 `core/pm_engine/verification.py`：约 3287 行的 fast-track 结果消费点显式处理 `partial`
+- [x] 4.4 `core/pm_engine/engine.py`:769 `_read_implementer_result` 读取器及其调用方核对 `partial` 语义；确认 `_task_completion_blocker` 在 partial 轮之后不会放行到 done
+- [x] 4.5 `core/pm_engine/dispatch.py`：确认 `partial` 走消耗实现尝试预算的失败/重派通道（不得走 `AgentArtifactGateError` 的不消耗预算续做通道），连续 partial 由既有预算上限收口转 blocked
 
 ## 5. fast-track 通道叠加
 
-- [ ] 5.1 `core/pm_engine/dispatch.py`：在 `_hard_check_fast_track` 既有校验之上叠加与 implementer 同源的完成度判据（复用同一解析函数与同一归因构造），不另起一套判定
-- [ ] 5.2 `core/pm_engine/verification.py`：确认 fast-track 结果文件顶层 `status == "success"`（verdict 承载在 `verification` 段）的既有契约与新硬门白名单兼容，不产生误拦
+- [x] 5.1 `core/pm_engine/dispatch.py`：在 `_hard_check_fast_track` 既有校验之上叠加与 implementer 同源的完成度判据（复用同一解析函数与同一归因构造），不另起一套判定
+- [x] 5.2 `core/pm_engine/verification.py`：确认 fast-track 结果文件顶层 `status == "success"`（verdict 承载在 `verification` 段）的既有契约与新硬门白名单兼容，不产生误拦
 
 ## 6. 提示词契约可执行化
 
-- [ ] 6.1 `agents/implementer.md`：收工契约改写为可执行形态——`status: "success"` 必须附 `completed_tasks` 且与 tasks.md 勾选一一对应；做不完时 MUST 以 `status: "partial"` 收工并如实登记 `unfinished`，MUST NOT 用 success 掩盖未完成项；禁止「先勾后做」
-- [ ] 6.2 `agents/fast-track.md`：同 6.1，且契约段与 implementer 分支由同一实现点产出（内容逐字一致）
-- [ ] 6.3 `core/agent_runner/prompt_builder.py`：契约段改为条件生成——`init.tools` 含 `TaskCreate` 时保留 `Task <id>: ` 前缀与 `TaskUpdate status=completed` 立即汇报要求；不含时 MUST NOT 要求 TaskCreate/TaskUpdate，改以 `completed_tasks` 清单为进度载体
+- [x] 6.1 `agents/implementer.md`：收工契约改写为可执行形态——`status: "success"` 必须附 `completed_tasks` 且与 tasks.md 勾选一一对应；做不完时 MUST 以 `status: "partial"` 收工并如实登记 `unfinished`，MUST NOT 用 success 掩盖未完成项；禁止「先勾后做」
+- [x] 6.2 `agents/fast-track.md`：同 6.1，且契约段与 implementer 分支由同一实现点产出（内容逐字一致）
+- [x] 6.3 `core/agent_runner/prompt_builder.py`：契约段改为条件生成——`init.tools` 含 `TaskCreate` 时保留 `Task <id>: ` 前缀与 `TaskUpdate status=completed` 立即汇报要求；不含时 MUST NOT 要求 TaskCreate/TaskUpdate，改以 `completed_tasks` 清单为进度载体
 
 ## 7. task-gap 滞留 SPEC 的人工回炉入口
 
-- [ ] 7.1 新建 `core/pm_engine/task_reflow.py`：回炉动作的判定与执行单一实现点——开放条件（SPEC 存在 ∧ status == verified ∧ error 以 `TASK_GAP_ERROR_PREFIX` 开头 ∧ 未冻结）与四类拒绝原因；执行经 `StateMachine.update_spec` 原子写 `{"status": "ready", "error": None}`；MUST NOT 触碰 `_impl_run_budget_used`/`frozen`/`frozen_until`/`start_after`；成功后向 `.fenix/PROJECT_LOG.md` 追加可追溯记录（SPEC 名、原状态、缺口任务清单、动作来源）
-- [ ] 7.2 `core/dashboard/server.py`：新增 `POST /api/spec-task-reflow?project=<name>&spec=<name>` 路由，错误语义对齐 `spec-error-clear`/`spec-freeze-config`/`spec-budget` 家族（404 / 非 200 明确拒绝原因 / `ok:true`）
-- [ ] 7.3 `bin/fenix_cli.py`：新增 `reflow <spec> [--project <path>]` 子命令，判定与执行调用 7.1 的同一实现点；成功输出含新状态的提示并退出码 0，被拒绝时 stderr 输出原因并退出码非 0；`--project` 缺 `.fenix/STATE.md` 时报错退出
-- [ ] 7.4 `core/dashboard/static/src/services/dashboard.ts`：新增回炉 API client（对齐既有 `freezeSpec`/`unfreezeSpec`/`promoteSpec` 模式）
-- [ ] 7.5 `core/dashboard/static/src/pages/projects/components/SpecStatusModal.tsx`：新增回炉区块——status 为 `verified` 且 error 以 `task-gap:` 开头时渲染，含缺口任务清单与「将重新派发实现」说明；点击弹确认后调用回炉 API，成功提示已复位 ready 并刷新列表，被拒绝时以 message.error 展示后端原因；非 task-gap 形态不渲染该区块
+- [x] 7.1 新建 `core/pm_engine/task_reflow.py`：回炉动作的判定与执行单一实现点——开放条件（SPEC 存在 ∧ status == verified ∧ error 以 `TASK_GAP_ERROR_PREFIX` 开头 ∧ 未冻结）与四类拒绝原因；执行经 `StateMachine.update_spec` 原子写 `{"status": "ready", "error": None}`；MUST NOT 触碰 `_impl_run_budget_used`/`frozen`/`frozen_until`/`start_after`；成功后向 `.fenix/PROJECT_LOG.md` 追加可追溯记录（SPEC 名、原状态、缺口任务清单、动作来源）
+- [x] 7.2 `core/dashboard/server.py`：新增 `POST /api/spec-task-reflow?project=<name>&spec=<name>` 路由，错误语义对齐 `spec-error-clear`/`spec-freeze-config`/`spec-budget` 家族（404 / 非 200 明确拒绝原因 / `ok:true`）
+- [x] 7.3 `bin/fenix_cli.py`：新增 `reflow <spec> [--project <path>]` 子命令，判定与执行调用 7.1 的同一实现点；成功输出含新状态的提示并退出码 0，被拒绝时 stderr 输出原因并退出码非 0；`--project` 缺 `.fenix/STATE.md` 时报错退出
+- [x] 7.4 `core/dashboard/static/src/services/dashboard.ts`：新增回炉 API client（对齐既有 `freezeSpec`/`unfreezeSpec`/`promoteSpec` 模式）
+- [x] 7.5 `core/dashboard/static/src/pages/projects/components/SpecStatusModal.tsx`：新增回炉区块——status 为 `verified` 且 error 以 `task-gap:` 开头时渲染，含缺口任务清单与「将重新派发实现」说明；点击弹确认后调用回炉 API，成功提示已复位 ready 并刷新列表，被拒绝时以 message.error 展示后端原因；非 task-gap 形态不渲染该区块
 
 ## 8. 文档同步
 
-- [ ] 8.1 `docs/help/06-governance.md`：新增「实现者任务书完成度硬门」章节——硬门判据（存在性/status 白名单/success 完成度/partial 申报一致性/能力探测下的 TaskUpdate 核对）、失败走原地续做而非废轮、`partial` 诚实上报语义与预算计入方式、残余风险（无法检出蓄意先勾后做）如实说明
-- [ ] 8.2 `docs/help/03-lifecycle.md`：补充「verified 滞留与回炉路径」——`task-gap` 拦截的成因与 `error` 形态、Dashboard 修改状态弹窗与 CLI `reflow` 的人工回炉入口、回炉后由 daemon 重派实现者承接剩余任务
+- [x] 8.1 `docs/help/06-governance.md`：新增「实现者任务书完成度硬门」章节——硬门判据（存在性/status 白名单/success 完成度/partial 申报一致性/能力探测下的 TaskUpdate 核对）、失败走原地续做而非废轮、`partial` 诚实上报语义与预算计入方式、残余风险（无法检出蓄意先勾后做）如实说明
+- [x] 8.2 `docs/help/03-lifecycle.md`：补充「verified 滞留与回炉路径」——`task-gap` 拦截的成因与 `error` 形态、Dashboard 修改状态弹窗与 CLI `reflow` 的人工回炉入口、回炉后由 daemon 重派实现者承接剩余任务
 
 ## 9. 测试与回归
 
-- [ ] 9.1 新建 `tests/test_impl_tasks_completion_gate.py`：硬门各失败形态（文件缺失/为空/非法 JSON/顶层非对象/status 白名单外/未完成任务/completed_tasks 缺项或多项/partial 申报不一致）；成功形态放行；error 不施加判据；无数字任务 SPEC 放行
-- [ ] 9.2 `tests/test_impl_tasks_completion_gate.py`：能力探测两分支——`init.tools` 含 `TaskCreate` 且 done_ids 不覆盖已勾选项 → 拦截；不含 → 放行且写入 `impl-task-crosscheck-skipped` 审计事件；`init` 不可得 → 按工具不可用处理
-- [ ] 9.3 新建 `tests/test_spec_task_reflow.py`：四类拒绝（非 verified / error 非 task-gap 前缀 / 冻结 / 幂等重复调用）+ 合规复位成功 + 不触碰预算与冻结计数器 + PROJECT_LOG 留痕
-- [ ] 9.4 `tests/test_dashboard_api.py`：回炉路由成功、project/spec 404、四类拒绝的状态码与错误语义
-- [ ] 9.5 `tests/test_pm_verification.py`：`partial` 不放行到 implemented、失败归因非空且含缺口 id、计入实现尝试预算、partial 轮之后 `_task_completion_blocker` 不放行到 done
-- [ ] 9.6 `tests/test_agent_prompt_files.py`：两分支（implementer / fast-track）契约段同源断言；工具不可用分支的 prompt 不含 TaskCreate 强制语句
+- [x] 9.1 新建 `tests/test_impl_tasks_completion_gate.py`：硬门各失败形态（文件缺失/为空/非法 JSON/顶层非对象/status 白名单外/未完成任务/completed_tasks 缺项或多项/partial 申报不一致）；成功形态放行；error 不施加判据；无数字任务 SPEC 放行
+- [x] 9.2 `tests/test_impl_tasks_completion_gate.py`：能力探测两分支——`init.tools` 含 `TaskCreate` 且 done_ids 不覆盖已勾选项 → 拦截；不含 → 放行且写入 `impl-task-crosscheck-skipped` 审计事件；`init` 不可得 → 按工具不可用处理
+- [x] 9.3 新建 `tests/test_spec_task_reflow.py`：四类拒绝（非 verified / error 非 task-gap 前缀 / 冻结 / 幂等重复调用）+ 合规复位成功 + 不触碰预算与冻结计数器 + PROJECT_LOG 留痕
+- [x] 9.4 `tests/test_dashboard_api.py`：回炉路由成功、project/spec 404、四类拒绝的状态码与错误语义
+- [x] 9.5 `tests/test_pm_verification.py`：`partial` 不放行到 implemented、失败归因非空且含缺口 id、计入实现尝试预算、partial 轮之后 `_task_completion_blocker` 不放行到 done
+- [x] 9.6 `tests/test_agent_prompt_files.py`：两分支（implementer / fast-track）契约段同源断言；工具不可用分支的 prompt 不含 TaskCreate 强制语句
 - [ ] 9.7 全量回归：经 `bin/run_full_suite.py --timeout 3600 --baseline HEAD` 有界入口执行，新增用例全绿且既有 pm_engine / dispatch / runner / dashboard 回归无新增失败（以主树基线对照区分存量 flake 与本轮引入）
