@@ -64,6 +64,26 @@ _INSTANT_FAIL_PATTERNS = (
     "unrecognized_model",
 )
 
+# 业务失败标记清单（D1 固化）：result 文本命中即判 failed。
+_BUSINESS_FAIL_PATTERNS = (
+    "SPEC 内容缺失",
+    "spec 内容缺失",
+    "无法实现",
+    "预算耗尽",
+    "预算已耗尽",
+    "零交付",
+    "零产出",
+)
+
+# 结构性信号词汇（事件行命中即视为失败信号凭据，result 未命中标记时兜底）。
+_BUSINESS_FAIL_SIGNALS = (
+    "budget-exhausted",
+    "spec_content_missing",
+    "impl_budget_exhausted",
+    "budget exhausted",
+    "预算耗尽",
+)
+
 # run_id 内嵌开始时间戳（int(time.time())）的匹配模式（与 data.get_runs 同口径）。
 _RUN_TS_RE = re.compile(r"-(\d{9,10})(?:-a\d+)?$")
 
@@ -156,14 +176,63 @@ def _read_run_tail(path: Path, max_lines: int = 3) -> list:
     return lines
 
 
+def _business_fail_marker(text: str) -> Optional[str]:
+    """result 文本是否命中业务失败标记：返回命中短语；未命中返回 None。
+
+    归一化短语清单见 ``_BUSINESS_FAIL_PATTERNS``（D1 固化）。只做子串
+    匹配、不做 NLP 语义理解——清单覆盖实证 run 的失败声明形态。
+    """
+    for pat in _BUSINESS_FAIL_PATTERNS:
+        if pat in text:
+            return pat
+    return None
+
+
+def _signal_evidence(lines: list) -> Optional[str]:
+    """事件序列中是否含 budget-exhausted / spec-missing 类结构性信号。
+
+    返回首个命中信号词汇（``_BUSINESS_FAIL_SIGNALS``）作为凭据摘要；
+    未命中返回 None。判定只读 run 产物事件行（D2），不接运行时对象。
+    """
+    for line in lines:
+        if not isinstance(line, dict):
+            continue
+        text = json.dumps(line, ensure_ascii=False)
+        for sig in _BUSINESS_FAIL_SIGNALS:
+            if sig in text:
+                return f"signal={sig}"
+    return None
+
+
+def _scan_run_signals(path: Path) -> Optional[str]:
+    """全文件扫描 run 产物找结构性失败信号（预算耗尽/spec 缺失类）。
+
+    只做逐行子串匹配（不完整 JSON 解析），命中首个信号词即返回凭据摘要；
+    未命中返回 None。供 result 终态未命中标记时兜底——信号事件可能落在
+    文件中部（agent 输出/告警内容），尾部行不足以覆盖。
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                for sig in _BUSINESS_FAIL_SIGNALS:
+                    if sig in line:
+                        return f"signal={sig}"
+    except OSError:
+        return None
+    return None
+
+
 def _classify_run(run_id: str, lines: list) -> tuple:
     """按产物终态分类一条 run：返回 (category, detail)。
 
     category ∈ {succeeded, failed, instant_hang, timeout, dropped, running}。
-    - succeeded: 终态 result
+    - succeeded: 终态 result 且文本无业务失败标记/信号
+    - failed:    业务失败（result 文本命中标记或事件序列含失败信号）或
+                 终态 error 且非超时/秒挂
     - timeout:   终态 error 且文本含超时信号
     - instant_hang: 终态 error 且文本命中秒挂签名
-    - failed:    其余终态 error
     - dropped:   空文件 / 无任何事件
     - running:   有事件但无终态（在跑或异常残留）
     """
@@ -174,6 +243,14 @@ def _classify_run(run_id: str, lines: list) -> tuple:
         return "running", "no-terminal"
     t = last.get("type")
     if t == "result":
+        # 业务失败语义（D1 双源交叉）：result 文本命中标记 → failed；未命中
+        # 但有结构性失败信号（预算耗尽/spec 缺失）→ failed（护栏）；否则 succeeded。
+        marker = _business_fail_marker(str(last.get("result") or ""))
+        if marker is not None:
+            return "failed", f"marker={marker}"
+        signal = _signal_evidence(lines)
+        if signal is not None:
+            return "failed", signal
         return "succeeded", ""
     if t != "error":
         return "running", "no-terminal"
@@ -219,9 +296,57 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
         if not _in_window(datetime.fromtimestamp(ts), window_start, window_end):
             continue
         category, _detail = _classify_run(run_id, _read_run_tail(p, 3))
+        # 业务失败语义兜底（2.2）：result 终态但无标记/信号时补充全文件
+        # 信号扫描——信号事件可能在文件中部，尾部行不覆盖。
+        if category == "succeeded":
+            sig = _scan_run_signals(p)
+            if sig:
+                category = "failed"
         counts["total"] += 1
         counts[category] += 1
     return counts
+
+
+def collect_failed_run_samples(project_root, window_start: datetime,
+                               limit: int = 10) -> List[Dict[str, str]]:
+    """收集窗口内业务失败 run 样本（run_id + 失败依据摘要），用于可追溯输出。
+
+    返回 ``[{run_id, detail}]``：detail 为命中的业务失败标记（marker=...）或
+    结构性失败信号（signal=...）摘要；仅分类为 failed 的 run 入选。
+    窗口快照化（同 collect_runs_stats），按 run_id 内嵌时间戳判定归属。
+    """
+    window_end = datetime.now()
+    samples: List[Dict[str, str]] = []
+    runs_dir = Path(project_root) / ".fenix" / "runs"
+    if not runs_dir.is_dir():
+        return samples
+    try:
+        files = list(runs_dir.glob("*.jsonl"))
+    except OSError:
+        return samples
+    for p in files:
+        run_id = p.stem
+        if run_id.startswith("review-"):
+            continue
+        try:
+            stat = p.stat()
+        except OSError:
+            continue
+        start_ts = _run_start_ts(run_id)
+        ts = start_ts if start_ts is not None else int(stat.st_mtime)
+        if not _in_window(datetime.fromtimestamp(ts), window_start, window_end):
+            continue
+        category, detail = _classify_run(run_id, _read_run_tail(p, 3))
+        # 业务失败语义兜底：result 终态且无标记时全文件信号扫描。
+        if category == "succeeded":
+            sig = _scan_run_signals(p)
+            if sig:
+                category, detail = "failed", sig
+        if category == "failed" and detail:
+            samples.append({"run_id": run_id, "detail": detail})
+    # 按时间排序（最新 run 排前）；limit 截断
+    samples.sort(key=lambda s: s["run_id"], reverse=True)
+    return samples[:limit]
 
 
 def collect_log_errors(project_root, window_start: datetime,
@@ -496,6 +621,13 @@ class SelfReviewScheduler:
         lines.append(f"- 超时: {stats['timeout']}")
         lines.append(f"- 丢弃/空: {stats['dropped']}")
         lines.append(f"- 在跑/无终态: {stats['running']}")
+        if stats["failed"]:
+            # 失败样本可追溯：run_id + 命中标记/信号摘要（spec 可追溯要求）
+            samples = collect_failed_run_samples(self.project_root, window_start)
+            if samples:
+                lines.append("- 失败样本:")
+                for s in samples:
+                    lines.append(f"  - {s['run_id']}: {s['detail']}")
         lines.append("")
 
         # 3. admin 告警与处置记录
