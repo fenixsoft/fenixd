@@ -57,13 +57,10 @@ const StaleCodeSelfhealPanel = forwardRef<
   return (
     <div data-testid="stale-code-selfheal-panel">
       <Form form={form} initialValues={initialValues} layout="vertical">
-        <h3>代码陈旧自愈</h3>
+        <h3>新代码自动装载</h3>
         <Text type="secondary">
-          本项目是自我开发的——daemon 进程持有的是启动时刻的代码副本，代码落地后
-          进程内逻辑不自动更新。本机制把「检测到代码陈旧」接到「空闲时自动重启」上：
-          陈旧状态持续可见（运维记录页产生 stale_code 告警），且当连续空闲达到
-          阈值后由 daemon 写 <code>.fenix/restart_request</code>，supervisor 执行
-          优雅重启使新代码生效。
+          本项目是可自我改进的。daemon 进程持有的是启动时刻的代码副本，本机制把「检测到代码陈旧」接到「空闲时自动重启」上。当连续空闲达到
+          阈值后由 daemon 写 <code>.fenix/restart_request</code>，supervisor 执行优雅重启使新代码生效。
         </Text>
         <Card style={{ marginTop: 12 }}>
           <div className="switch-inline-row">

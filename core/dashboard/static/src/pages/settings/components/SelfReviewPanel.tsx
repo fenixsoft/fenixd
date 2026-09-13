@@ -161,9 +161,8 @@ export default function SelfReviewPanel({ config, onSave, project }: SelfReviewP
           <Card style={{ marginTop: 16 }} data-testid="todo-section">
             <h3 style={{ marginTop: 0 }}>todo.md</h3>
             <Text type="secondary">
-              项目 <code>.fenix/todo.md</code>——自省 Agent 每晚追加写入工作回顾。
-              编辑后经本页签右下角「保存」按钮与自省设置一并保存（整文件覆写）；
-              注意与 daemon 夜间追加的时序（建议日间编辑）。
+              自省 Agent 每晚追加写入工作回顾。编辑后经本页签右下角「保存」按钮与自省设置一并保存（整文件覆写）；
+              注意与 daemon 夜间追加的时序。
             </Text>
             {!todoExists && !todoLoading && (
               <Alert
