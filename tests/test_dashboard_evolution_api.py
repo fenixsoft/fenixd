@@ -260,6 +260,46 @@ class TestEvolutionAcceptRejectAPI:
         assert data["ok"] is False
 
 
+class TestEvolutionDeleteAPI:
+    """POST /api/evolution/delete —— 硬删条目（任意状态可删）。"""
+
+    def test_delete_removes_record_and_draft(self, server_fx_with_fw):
+        proot, srv, ev = server_fx_with_fw
+        assert (ev["evo"] / "drafts" / "item-a").exists()
+        status, data = srv.post_json(
+            "/api/evolution/delete", {"item_id": "item-a"})
+        assert status == 200
+        assert data["ok"] is True
+        # 记录移出 items.jsonl，其它条目不受影响
+        _st, listing = srv.get("/api/evolution/items")
+        ids = [i["id"] for i in listing["items"]]
+        assert "item-a" not in ids
+        assert "item-b" in ids
+        # 草稿目录一并清理
+        assert not (ev["evo"] / "drafts" / "item-a").exists()
+
+    def test_delete_analyzed_item_allowed(self, server_fx_with_fw):
+        """不需要立项（analyzed，无草稿）同样可删。"""
+        proot, srv, ev = server_fx_with_fw
+        status, data = srv.post_json(
+            "/api/evolution/delete", {"item_id": "item-b"})
+        assert status == 200
+        assert data["ok"] is True
+        _st, listing = srv.get("/api/evolution/items")
+        assert [i["id"] for i in listing["items"]] == ["item-a"]
+
+    def test_delete_missing_item_id_400(self, server_fx_with_fw):
+        proot, srv, ev = server_fx_with_fw
+        status, data = srv.post_json("/api/evolution/delete", {})
+        assert status == 400
+
+    def test_delete_unknown_item_404(self, server_fx_with_fw):
+        proot, srv, ev = server_fx_with_fw
+        status, data = srv.post_json(
+            "/api/evolution/delete", {"item_id": "nope"})
+        assert status == 404
+
+
 class TestEvolutionConfigAPI:
     """self_evolution 配置读写（用户级往返 / 非法值 400 / 项目级拒绝）。"""
 

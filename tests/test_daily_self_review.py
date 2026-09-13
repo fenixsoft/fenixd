@@ -489,6 +489,26 @@ class TestTodoAppend:
         assert "### 浪费" in content and "### 失误" in content and "### 可改进" in content
         assert content.count("（当日无）") == 3
 
+    def test_append_preserves_evolution_marker(self, proot):
+        """追加新分节 MUST NOT 抹掉既有条目的自进化处理标记。
+
+        todo.md 有两个写入者（自省追加 与 core.evolution.write_todo_marker），
+        两者都在读-改-写：自省侧必须保留读到的既有内容（含标记行），否则下一轮
+        分析会把已处理条目当成新条目重新分析。
+        """
+        todo = proot / ".fenix" / "todo.md"
+        marker = ("  - 自进化：问题成立 / 建议合理 / ✓ 值得立项"
+                  " · 处理：接受 · 删除：否\n")
+        todo.write_text(
+            "## 2026-09-03\n\n### 浪费\n- **旧条目**\n" + marker + "  - 影响：i\n",
+            encoding="utf-8")
+        sched = make_scheduler(proot)
+        sched._append_todo(
+            "2026-09-04", FakeReviewResult(waste=["新浪费"], mistakes=[], improvements=[]))
+        content = todo.read_text(encoding="utf-8")
+        assert marker.strip() in content
+        assert "## 2026-09-04" in content
+
     def test_run_summary_injects_daily_summary(self, proot, monkeypatch):
         """数据摘要五源注入：STATE 终态 / runs / admin / ERROR（增量窗口）。"""
         _freeze_time(monkeypatch, datetime(2026, 9, 4, 22, 30))

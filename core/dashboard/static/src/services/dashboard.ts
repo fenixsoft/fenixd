@@ -924,6 +924,18 @@ export async function rejectEvolutionItem(
   });
 }
 
+export async function deleteEvolutionItem(
+  itemId: string,
+): Promise<{ ok: boolean; status?: string; error?: string }> {
+  // 硬删：条目移出 items.jsonl 且不写墓碑，todo.md 中同名记录可能在下一轮
+  // 分析 run 重新入库（UI 确认弹窗须明示）。
+  return request('/api/evolution/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ item_id: itemId }),
+  });
+}
+
 // ── SPEC 状态事件 hook 订阅（add-spec-hooks，存 .fenix/config.yaml hooks 段） ──
 
 export type HookAction =

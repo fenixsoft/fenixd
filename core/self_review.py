@@ -802,16 +802,26 @@ class SelfReviewScheduler:
         block = "\n".join(sections).rstrip()
         content = f"## {date_str}\n\n{block}\n"
 
-        existing = ""
-        if todo.is_file():
-            try:
-                existing = todo.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                existing = ""
-        if existing and existing.strip():
-            content = "\n\n" + content
-        todo.parent.mkdir(parents=True, exist_ok=True)
-        todo.write_text(existing + content, encoding="utf-8")
+        # 读-改-写整段置于 todo.md 同一把 flock 内：自进化标记回写
+        # （core.evolution.write_todo_marker）是 todo.md 的第二个写入者，
+        # 不加锁时先读后写会用陈旧副本覆盖掉刚落下的处理标记。
+        from core.evolution import _with_lock  # noqa: PLC0415 —— 共用同一把锁
+
+        def _do() -> None:
+            existing = ""
+            if todo.is_file():
+                try:
+                    existing = todo.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    existing = ""
+            if existing and existing.strip():
+                body = "\n\n" + content
+            else:
+                body = content
+            todo.parent.mkdir(parents=True, exist_ok=True)
+            todo.write_text(existing + body, encoding="utf-8")
+
+        _with_lock(todo, _do)
         return todo
 
     def _commit_todo(self, date_str: str) -> bool:

@@ -1904,6 +1904,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._json(result)
 
+    def _api_evolution_delete(self):
+        """POST /api/evolution/delete — body {item_id} → 删除该条目（硬删）。
+
+        成功返回 200 + {ok, status}；缺参 400；未知条目 404。
+        硬删语义：记录移出 items.jsonl 且不写墓碑，todo.md 中同名记录会在下一轮
+        分析 run 重新入库（前端确认弹窗已向用户明示）。
+        """
+        body = self._read_json_body()
+        if body is None:
+            return
+        item_id = body.get("item_id")
+        if not isinstance(item_id, str) or not item_id:
+            self._error(400, "缺少 item_id 参数")
+            return
+        from core.evolution import delete_item
+        try:
+            result = delete_item(item_id, FRAMEWORK_ROOT)
+        except Exception as e:  # noqa: BLE001
+            self._error(500, f"删除失败: {e}")
+            return
+        if result.get("status") is None and result.get("error"):
+            self._error(404, result["error"])
+            return
+        self._json(result)
+
     # ── POST API ────────────────────────────────────────────
 
     def _handle_api_post(self, path: str, query: dict):
@@ -1951,6 +1976,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_evolution_accept()
         elif path == "/api/evolution/reject":
             self._api_evolution_reject()
+        elif path == "/api/evolution/delete":
+            self._api_evolution_delete()
         elif path.startswith("/api/alerts/") and path.endswith("/handled"):
             alert_id = urllib.parse.unquote(path[len("/api/alerts/"):-len("/handled")])
             self._api_alert_handled(alert_id, query)

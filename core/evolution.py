@@ -46,6 +46,14 @@ _TODO_ENTRY_RE = re.compile(r"^-\s+\*\*(.+?)\*\*\s*$")
 # 空小节占位（core/self_review.py 写入），解析时跳过
 _EMPTY_MARKER = "（当日无）"
 
+# 处理标记行（自进化回写）：写在条目标题行正下方的一行人可读记录——
+#   - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否
+# 「— 不需要」的条目只写前三段（无处理/删除段）。带该行的条目视为已处理：
+# 解析时整条跳过，且分析 run 拿到的 todo 文本里也不含它们（避免重复处理）。
+TODO_MARKER_KEY = "自进化"
+_TODO_MARKER_RE = re.compile(r"^ {2,}-\s*" + TODO_MARKER_KEY + "：")
+_TODO_MARKER_INDENT = "  - "
+
 # 条目四字段标签（与 core/self_review.py:_render_entry_lines 的渲染标签对齐）
 _FIELD_LABELS = (("影响", "impact"), ("证据", "evidence"),
                  ("调查评估", "analysis"), ("建议", "suggestion"))
@@ -418,7 +426,14 @@ def scan_ready_projects(registry_projects, project_root) -> List[dict]:
         if not todo_text.strip():
             _logger.debug("evolution: 项目 %s 的 todo.md 为空，不就绪", name)
             continue
-        ready.append({"name": name, "path": str(proot), "todo_md": todo_text})
+        # 剥离已处理条目（带处理标记）：分析 run 的输入不含它们，避免重复处理；
+        # 剥完一条不剩则本项目不就绪，直接省掉整轮分析
+        usable_text = strip_processed_entries(todo_text)
+        if not parse_todo_entries(usable_text):
+            _logger.debug(
+                "evolution: 项目 %s 无未处理的 todo 条目（全部已标记），不就绪", name)
+            continue
+        ready.append({"name": name, "path": str(proot), "todo_md": usable_text})
     return ready
 
 
@@ -447,9 +462,11 @@ def parse_todo_entries(text: str) -> List[dict]:
     def _flush_entry() -> None:
         nonlocal current_entry, current_fields
         if current_entry is not None:
-            # 小节名不在三值枚举内的条目 MUST 跳过（含未知小节置空的条目）
+            # 小节名不在三值枚举内的条目 MUST 跳过（含未知小节置空的条目）；
+            # 带处理标记的条目（已被自进化处理过）同样 MUST 跳过，避免重复处理
             if current_entry.get("section") in TODO_SECTIONS \
-                    and current_entry.get("title"):
+                    and current_entry.get("title") \
+                    and not current_entry.get("_processed"):
                 current_entry.update(current_fields)
                 entries.append(current_entry)
         current_entry = None
@@ -504,6 +521,11 @@ def parse_todo_entries(text: str) -> List[dict]:
             # 无法归类（可能在条目块外）→ 跳过
             continue
 
+        # 处理标记行：整条标记为已处理（flush 时丢弃）
+        if _TODO_MARKER_RE.match(line):
+            current_entry["_processed"] = True
+            continue
+
         # 四字段嵌套行：  - 影响：…
         m = _FIELD_RE.match(line)
         if m and m.group(1).strip() in {label for label, _k in _FIELD_LABELS}:
@@ -525,6 +547,172 @@ def parse_todo_entries(text: str) -> List[dict]:
 
     _flush_entry()
     return entries
+
+
+# ── todo.md 处理标记（回写与跳过）────────────────────────────────────
+#
+# 条目被自进化处理过（分析 run 落地、或用户接受/拒绝/删除）后，在其标题行正
+# 下方写入一行标记。标记同时是「已处理」的权威信号：解析跳过它、分析 run 的
+# 输入文本里也剥离它，从而避免同一 todo 条目被反复分析。
+
+def _verdict_segment(verdict: dict) -> str:
+    """AI 结论三段式（措辞与前端 verdictSummary 一致）。"""
+    def _tri(value, yes: str, partial: str, no: str) -> str:
+        return yes if value == "yes" else partial if value == "partial" else no
+    return " / ".join([
+        "问题" + _tri(verdict.get("problem_exists"), "成立", "部分成立", "不成立"),
+        "建议" + _tri(verdict.get("suggestion_sound"), "合理", "部分合理", "不合理"),
+        "✓ 值得立项" if verdict.get("worth_spec") else "— 不需要",
+    ])
+
+
+def _disposition_from_status(status) -> str:
+    """条目状态 → 人类处理意见文案。"""
+    if status in ("accepted", "auto_accepted"):
+        return "接受"
+    if status == "rejected":
+        return "拒绝"
+    return "待处理"
+
+
+def render_todo_marker(item: dict, disposition: Optional[str] = None,
+                       deleted: bool = False) -> str:
+    """生成标记行（含缩进）。不需要立项的条目只有 AI 结论，无处理/删除段。"""
+    verdict = item.get("verdict") if isinstance(item.get("verdict"), dict) else {}
+    line = f"{TODO_MARKER_KEY}：{_verdict_segment(verdict)}"
+    if verdict.get("worth_spec"):
+        line += (f" · 处理：{disposition or '待处理'}"
+                 f" · 删除：{'是' if deleted else '否'}")
+    return _TODO_MARKER_INDENT + line
+
+
+def apply_marker_to_lines(lines: List[str], item: dict, marker: str):
+    """在 lines 里定位该条目并写入/更新标记行；找不到返回 None（不改动）。
+
+    定位口径与 item_id 同源：``## <date_section>`` → ``### <section>`` →
+    ``- **<title>**``，三者缺一不可。已有标记行则原地替换（幂等），否则插到
+    标题行正下方。
+    """
+    date_section = str(item.get("date_section") or "")
+    section = str(item.get("section") or "")
+    title = str(item.get("title") or "")
+    if not (date_section and section and title):
+        return None
+    in_date = False
+    in_section = False
+    for i, line in enumerate(lines):
+        m = _TODO_DATE_RE.match(line)
+        if m:
+            in_date = m.group(1) == date_section
+            in_section = False
+            continue
+        m = _TODO_SECTION_RE.match(line)
+        if m:
+            in_section = in_date and m.group(1).strip() == section
+            continue
+        if not (in_date and in_section):
+            continue
+        m = _TODO_ENTRY_RE.match(line)
+        if not m or m.group(1).strip() != title:
+            continue
+        out = list(lines)
+        if i + 1 < len(out) and _TODO_MARKER_RE.match(out[i + 1]):
+            out[i + 1] = marker
+        else:
+            out.insert(i + 1, marker)
+        return out
+    return None
+
+
+def strip_processed_entries(text: str) -> str:
+    """剥离带处理标记的条目整块（标题 + 其缩进行），供分析 run 的输入使用。"""
+    out: List[str] = []
+    block: List[str] = []
+
+    def _flush() -> None:
+        if block and not any(_TODO_MARKER_RE.match(l) for l in block):
+            out.extend(block)
+        block.clear()
+
+    for line in text.splitlines():
+        if _TODO_DATE_RE.match(line) or _TODO_SECTION_RE.match(line) \
+                or _TODO_ENTRY_RE.match(line):
+            _flush()
+            if _TODO_ENTRY_RE.match(line):
+                block.append(line)
+            else:
+                out.append(line)
+            continue
+        if block:
+            block.append(line)
+        else:
+            out.append(line)
+    _flush()
+    return "\n".join(out) + "\n"
+
+
+def _resolve_project_path_by_name(project_name: str) -> Optional[Path]:
+    """项目名 → 项目根路径（经 dashboard registry 解析，best effort）。
+
+    解析失败（未注册、registry 不可用）返回 None——调用方按「跳过回写」处理，
+    MUST NOT 因此影响分析/接受/删除主流程。懒导入避免 core.evolution 与
+    core.dashboard 的模块级循环依赖。
+    """
+    if not project_name:
+        return None
+    try:
+        from core.dashboard.registry import Registry
+        for proj in Registry().discover() or []:
+            if not isinstance(proj, dict):
+                continue
+            if (proj.get("name") or "") != project_name:
+                continue
+            path = proj.get("path")
+            return Path(path) if path else None
+    except Exception as e:  # noqa: BLE001 —— 解析失败不影响主流程
+        _logger.debug("evolution: 项目 %s 路径解析失败: %s", project_name, e)
+    return None
+
+
+def write_todo_marker(item: dict, disposition: Optional[str] = None,
+                      deleted: bool = False,
+                      project_path=None) -> bool:
+    """把该条目的处理标记写入其项目 ``.fenix/todo.md``。
+
+    幂等：已有标记行则原地更新，不追加第二行。定位不到条目（用户改过标题 /
+    删过条目）、项目路径解析失败、todo.md 不可读一律返回 False 并记 WARNING，
+    MUST NOT 抛异常——回写是附带的记录动作，失败不得影响分析/处置主流程。
+    """
+    proot = Path(project_path) if project_path else \
+        _resolve_project_path_by_name(str(item.get("project") or ""))
+    if proot is None:
+        _logger.warning("evolution: 条目标记回写跳过——项目路径未解析: %s",
+                        item.get("project"))
+        return False
+    todo = Path(proot) / ".fenix" / "todo.md"
+    marker = render_todo_marker(item, disposition, deleted)
+    outcome = {"ok": False}
+
+    def _do() -> None:
+        try:
+            text = todo.read_text(encoding="utf-8")
+        except OSError as e:
+            _logger.warning("evolution: todo.md 不可读，标记回写跳过: %s", e)
+            return
+        lines = apply_marker_to_lines(text.splitlines(), item, marker)
+        if lines is None:
+            _logger.warning("evolution: todo.md 中未找到条目 %r（%s/%s），"
+                            "标记回写跳过", item.get("title"),
+                            item.get("date_section"), item.get("section"))
+            return
+        _atomic_write(todo, "\n".join(lines) + "\n")
+        outcome["ok"] = True
+
+    try:
+        _with_lock(todo, _do)
+    except Exception as e:  # noqa: BLE001 —— 回写失败不穿透
+        _logger.warning("evolution: 标记回写异常（已跳过）: %s", e)
+    return outcome["ok"]
 
 
 # ── 任务 2.6：增量筛选 ──────────────────────────────────────────────
@@ -700,6 +888,7 @@ def ingest_item(item: dict, project_root) -> str:
     if not worth_spec:
         base["status"] = "analyzed"
         upsert_item(project_root, base)
+        write_todo_marker(base)
         return "analyzed"
 
     d, reason = materialize_draft(base, project_root)
@@ -708,6 +897,7 @@ def ingest_item(item: dict, project_root) -> str:
         base["draft_failed_reason"] = reason
         _logger.warning("evolution: 条目 %s 草稿落盘失败: %s", eid, reason)
         upsert_item(project_root, base)
+        write_todo_marker(base)
         return "draft_failed"
 
     violations = lint_draft(d, project_root)
@@ -720,10 +910,12 @@ def ingest_item(item: dict, project_root) -> str:
             "evolution: 条目 %s 草稿 lint 未通过（已删除草稿）: %s",
             eid, base["draft_failed_reason"])
         upsert_item(project_root, base)
+        write_todo_marker(base)
         return "draft_failed"
 
     base["status"] = "pending"
     upsert_item(project_root, base)
+    write_todo_marker(base)
     return "pending"
 
 
@@ -933,6 +1125,7 @@ def accept_item(item_id_: str, project_root, state_machine,
     rec["decided_at"] = now
     rec["spec_name"] = name
     upsert_item(project_root, rec)
+    write_todo_marker(rec, disposition=_disposition_from_status(rec["status"]))
     return {"ok": True, "status": rec["status"], "spec_name": name,
             "error": None}
 
@@ -993,7 +1186,71 @@ def reject_item(item_id_: str, project_root) -> dict:
     rec["status"] = "rejected"
     rec["decided_at"] = now
     upsert_item(project_root, rec)
+    write_todo_marker(rec, disposition="拒绝")
     return {"ok": True, "status": "rejected", "error": None}
+
+
+def delete_item(item_id_: str, project_root) -> dict:
+    """删除路径：把条目记录移出 ``items.jsonl`` 并清理其草稿目录（硬删）。
+
+    语义（用户确认）：
+    - **任意状态均可删**（不设状态门，`accepted` / `auto_accepted` 亦允许）；
+    - **硬删**：记录从 items.jsonl 移除，不写墓碑。已知后果——该 id 不再出现在
+      ``known_ids()`` 中，todo.md 里同名记录会在下一轮分析 run 重新入库；
+      前端确认弹窗须向用户明示此后果。
+    - 草稿目录存在则一并删除（路径经 ``_safe_draft_dir`` 校验；符号链接越界
+      拒绝并保持记录不动），避免留下无主目录。
+
+    读-改-写在同一把 flock 内完成（与 ``upsert_item`` 同范式），避免与 daemon
+    侧写入交错。返回 ``{"ok", "status", "error"}``；``status`` 为删除前状态。
+    """
+    path = items_path(project_root)
+    outcome: Dict[str, Any] = {}
+
+    def _do() -> None:
+        current = _read_items_unlocked(path)
+        rec = current.get(item_id_)
+        if rec is None:
+            outcome.update({"ok": False, "status": None,
+                            "error": f"条目不存在: {item_id_}"})
+            return
+        status = rec.get("status")
+
+        target = _safe_draft_dir(project_root, item_id_)
+        if target is None:
+            outcome.update({"ok": False, "status": status,
+                            "error": "草稿目录路径非法或越界，拒绝删除"})
+            return
+        if target.is_dir():
+            try:
+                resolved = target.resolve()
+                base = (evolution_dir(project_root) / "drafts").resolve()
+                if not resolved.is_relative_to(base):
+                    outcome.update({"ok": False, "status": status,
+                                    "error": "草稿目录符号链接越界，拒绝删除"})
+                    return
+                shutil.rmtree(target)
+            except OSError as e:
+                outcome.update({"ok": False, "status": status,
+                                "error": f"草稿删除失败: {e}"})
+                return
+
+        current.pop(item_id_, None)
+        content = "".join(
+            json.dumps(current[k], ensure_ascii=False) + "\n"
+            for k in sorted(current)
+        )
+        _atomic_write(path, content)
+        # 删除成功后回写标记（保留删除前的处理意见 + 删除：是）；回写失败不影响删除
+        write_todo_marker(rec, disposition=_disposition_from_status(status),
+                          deleted=True)
+        outcome.update({"ok": True, "status": status, "error": None})
+
+    try:
+        _with_lock(path, _do)
+    except Exception as e:  # noqa: BLE001 —— 存储异常收敛为错误对象，不抛穿
+        return {"ok": False, "status": None, "error": f"条目删除失败: {e}"}
+    return outcome
 
 
 # ── 任务 3.7：自动接受 ─────────────────────────────────────────────

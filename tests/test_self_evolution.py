@@ -415,10 +415,164 @@ from core.evolution import (
     evolution_dir,
     accept_item,
     reject_item,
+    delete_item,
     auto_accept_pending,
     resolve_spec_name,
     upsert_item,
+    write_todo_marker,
+    strip_processed_entries,
 )
+
+import core.evolution as evolution_mod  # noqa: E402 —— 供用例替换项目名→路径解析
+
+
+class TestEvolutionTodoMarker(unittest.TestCase):
+    """todo.md 处理标记：回写 AI 结论 / 处理意见 / 删除标志；带标记条目跳过。"""
+
+    SAMPLE = (
+        "## 2026-09-13\n\n"
+        "### 浪费\n"
+        "- **问题甲**\n"
+        "  - 影响：i1\n"
+        "  - 证据：e1\n"
+        "  - 调查评估：a1\n"
+        "  - 建议：s1\n\n"
+        "### 可改进\n"
+        "- **问题乙**\n"
+        "  - 影响：i2\n"
+        "  - 证据：e2\n"
+        "  - 调查评估：a2\n"
+        "  - 建议：s2\n"
+    )
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir) / "proj"
+        self.proot.mkdir(parents=True)
+        _make_git_repo(self.proot)
+        self.todo = self.proot / ".fenix" / "todo.md"
+        self.todo.parent.mkdir(parents=True, exist_ok=True)
+        self.todo.write_text(self.SAMPLE, encoding="utf-8")
+        self._orig_resolver = evolution_mod._resolve_project_path_by_name
+        evolution_mod._resolve_project_path_by_name = lambda name: self.proot
+
+    def tearDown(self):
+        evolution_mod._resolve_project_path_by_name = self._orig_resolver
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    # ── 辅助 ──────────────────────────────────────────────────
+    def _lines(self):
+        return self.todo.read_text(encoding="utf-8").splitlines()
+
+    def _marker_for(self, title):
+        lines = self._lines()
+        idx = next(i for i, l in enumerate(lines)
+                   if l.strip() == f"- **{title}**")
+        return lines[idx + 1].strip()
+
+    def _item(self, title="问题甲", section="浪费", **verdict):
+        base = {"problem_exists": "yes", "suggestion_sound": "yes",
+                "worth_spec": True, "rationale": "r"}
+        base.update(verdict)
+        return {
+            "project": "proj", "date_section": "2026-09-13", "section": section,
+            "title": title, "impact": "i", "evidence": "e", "analysis": "a",
+            "suggestion": "s", "verdict": base, "analysis_md": "md",
+            "spec": {"name": "add-evo-x", "capability": "evo-x",
+                     "proposal_md": "# P", "design_md": "# D", "spec_md": "# S",
+                     "tasks_md": "## Deliverables\n\n- path: a.txt\n  kind: new\n"},
+        }
+
+    def _seed_record(self, eid="a1b2c3d4e5f6", title="问题甲", status="pending"):
+        upsert_item(self.proot, {
+            "id": eid, "project": "proj", "date_section": "2026-09-13",
+            "section": "浪费", "title": title, "impact": "i", "evidence": "e",
+            "analysis": "a", "suggestion": "s",
+            "verdict": {"worth_spec": True, "problem_exists": "yes",
+                        "suggestion_sound": "yes", "rationale": "r"},
+            "analysis_md": "md",
+            "spec": {"name": "add-evo-x", "capability": "evo-x",
+                     "proposal_md": "# P", "design_md": "# D", "spec_md": "# S",
+                     "tasks_md": "## Deliverables\n\n- path: a.txt\n  kind: new\n"},
+            "spec_summary": "", "degraded": None,
+            "created_at": "2026-09-13T00:00:00Z", "decided_at": None,
+            "decided_by": None, "spec_name": None,
+            "violations": None, "draft_failed_reason": None, "status": status,
+        })
+
+    # ── 写入 ──────────────────────────────────────────────────
+    def test_ingest_writes_marker_right_after_title(self):
+        """落地后标记行紧跟在标题行下方，含 AI 结论 + 处理：待处理。"""
+        evolution_mod.ingest_item(self._item(), self.proot)
+        lines = self._lines()
+        idx = next(i for i, l in enumerate(lines) if l.strip() == "- **问题甲**")
+        self.assertEqual(
+            lines[idx + 1].strip(),
+            "- 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：待处理 · 删除：否")
+
+    def test_analyzed_marker_has_no_disposition(self):
+        """不需要立项的条目只写 AI 结论，不出现处理/删除段。"""
+        evolution_mod.ingest_item(
+            self._item(suggestion_sound="partial", worth_spec=False), self.proot)
+        self.assertEqual(
+            self._marker_for("问题甲"),
+            "- 自进化：问题成立 / 建议部分合理 / — 不需要")
+
+    def test_accept_updates_marker_to_accepted(self):
+        self._seed_record()
+        d = draft_dir(self.proot, "a1b2c3d4e5f6")
+        d.mkdir(parents=True)
+        for name in ("proposal.md", "design.md", "tasks.md", ".spec.yaml"):
+            (d / name).write_text("x", encoding="utf-8")
+        (d / "specs" / "evo-x").mkdir(parents=True)
+        (d / "specs" / "evo-x" / "spec.md").write_text("x", encoding="utf-8")
+        result = accept_item("a1b2c3d4e5f6", self.proot, _StateMachineFixture(self.proot).sm)
+        self.assertTrue(result["ok"])
+        self.assertIn("· 处理：接受 · 删除：否", self._marker_for("问题甲"))
+
+    def test_reject_updates_marker_to_rejected(self):
+        self._seed_record()
+        evolution_mod.reject_item("a1b2c3d4e5f6", self.proot)
+        self.assertIn("· 处理：拒绝 · 删除：否", self._marker_for("问题甲"))
+
+    def test_delete_sets_deleted_flag(self):
+        self._seed_record()
+        delete_item("a1b2c3d4e5f6", self.proot)
+        self.assertIn("· 处理：待处理 · 删除：是", self._marker_for("问题甲"))
+
+    def test_marker_write_is_idempotent(self):
+        """重复落地只更新那一行，不追加第二行。"""
+        evolution_mod.ingest_item(self._item(), self.proot)
+        evolution_mod.ingest_item(self._item(), self.proot)
+        markers = [l for l in self._lines() if "自进化：" in l]
+        self.assertEqual(len(markers), 1)
+
+    def test_missing_entry_is_noop(self):
+        """todo.md 里没有该条目（用户改过标题/删过）→ 不写、不抛、原文件不变。"""
+        before = self.todo.read_text(encoding="utf-8")
+        ok = write_todo_marker(self._item(title="不存在的条目"), project_path=self.proot)
+        self.assertFalse(ok)
+        self.assertEqual(self.todo.read_text(encoding="utf-8"), before)
+
+    # ── 跳过 ──────────────────────────────────────────────────
+    def test_parse_skips_marked_entry(self):
+        """带标记行的条目 MUST NOT 进入待分析集合。"""
+        write_todo_marker(self._item(), project_path=self.proot)
+        entries = parse_todo_entries(self.todo.read_text(encoding="utf-8"))
+        titles = [e["title"] for e in entries]
+        self.assertEqual(titles, ["问题乙"])
+
+    def test_strip_processed_entries_removes_marked_block(self):
+        """剥离后的文本不含已处理条目（含其四字段）。"""
+        write_todo_marker(self._item(), project_path=self.proot)
+        stripped = strip_processed_entries(self.todo.read_text(encoding="utf-8"))
+        self.assertNotIn("问题甲", stripped)
+        self.assertNotIn("i1", stripped)
+        self.assertIn("问题乙", stripped)
+        self.assertIn("i2", stripped)
+        # 剥离前后未标记条目的解析结果一致
+        self.assertEqual(
+            [e["title"] for e in parse_todo_entries(stripped)], ["问题乙"])
 
 
 class TestEvolutionMaterializeDraft(unittest.TestCase):
@@ -874,6 +1028,81 @@ class TestEvolutionRejectPath(unittest.TestCase):
         self.assertEqual(items["a1b2c3d4e5f6"]["status"], "pending")
 
 
+class TestEvolutionDeletePath(unittest.TestCase):
+    """删除路径（硬删）：任意状态可删，记录移出 items.jsonl，草稿目录一并清理。
+
+    硬删的已知后果：该 id 不再出现在 known_ids() 中，todo.md 里同名记录会在
+    下一轮分析 run 重新入库（用户已确认接受）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir) / "proj"
+        self.proot.mkdir(parents=True)
+        _make_git_repo(self.proot)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _delta_record(self, eid, status="pending"):
+        rec = {
+            "id": eid, "project": "proj", "date_section": "2026-09-12",
+            "section": "可改进", "title": "问题", "verdict": {"worth_spec": True},
+            "analysis_md": "md", "status": status,
+            "created_at": "2026-09-12T00:00:00Z",
+            "decided_at": None, "decided_by": None, "spec_name": None,
+            "impact": "", "evidence": "", "analysis": "", "suggestion": "",
+            "spec_summary": "", "degraded": None, "violations": None,
+            "draft_failed_reason": None, "spec": None,
+        }
+        upsert_item(self.proot, rec)
+
+    def test_delete_removes_record_and_draft_dir(self):
+        self._delta_record("a1b2c3d4e5f6")
+        d = draft_dir(self.proot, "a1b2c3d4e5f6")
+        d.mkdir(parents=True)
+        (d / "proposal.md").write_text("p", encoding="utf-8")
+        result = delete_item("a1b2c3d4e5f6", self.proot)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("a1b2c3d4e5f6", read_items(self.proot))
+        self.assertFalse(d.exists())
+
+    def test_delete_keeps_other_records(self):
+        self._delta_record("a1b2c3d4e5f6")
+        self._delta_record("ffffffffffff")
+        result = delete_item("a1b2c3d4e5f6", self.proot)
+        self.assertTrue(result["ok"])
+        items = read_items(self.proot)
+        self.assertNotIn("a1b2c3d4e5f6", items)
+        self.assertIn("ffffffffffff", items)
+
+    def test_delete_accepted_allowed(self):
+        """全部状态可删：已同意条目同样允许删除（不设状态门）。"""
+        self._delta_record("a1b2c3d4e5f6", status="accepted")
+        result = delete_item("a1b2c3d4e5f6", self.proot)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("a1b2c3d4e5f6", read_items(self.proot))
+
+    def test_delete_unknown_id(self):
+        result = delete_item("nonexistent", self.proot)
+        self.assertFalse(result["ok"])
+        self.assertIsNotNone(result["error"])
+
+    def test_delete_symlink_escape_keeps_record(self):
+        """草稿目录为指向外部的软链 → 拒绝删除，记录保持不动。"""
+        self._delta_record("a1b2c3d4e5f6")
+        d = draft_dir(self.proot, "a1b2c3d4e5f6")
+        outside = self.proot.parent / "outside"
+        outside.mkdir(exist_ok=True)
+        (outside / "payload.txt").write_text("keep", encoding="utf-8")
+        d.parent.mkdir(parents=True, exist_ok=True)
+        d.symlink_to(outside, target_is_directory=True)
+        result = delete_item("a1b2c3d4e5f6", self.proot)
+        self.assertFalse(result["ok"])
+        self.assertTrue((outside / "payload.txt").exists())
+        self.assertIn("a1b2c3d4e5f6", read_items(self.proot))
+
+
 class TestEvolutionAutoAccept(unittest.TestCase):
     """任务 3.7 / 9.4：自动接受。"""
 
@@ -1265,6 +1494,27 @@ class TestEvolutionScanReady(unittest.TestCase):
                                      "   \n  \n")
         ready = scan_ready_projects([proj], self.framework)
         self.assertEqual(len(ready), 0)
+
+    def test_all_entries_marked_not_ready(self):
+        """条目全部带处理标记 → 无未处理条目，不就绪（省掉一整轮分析 run）。"""
+        proj = _make_managed_project(
+            self.managed, "p1", "2026-09-12T03:00:00+00:00",
+            "## 2026-09-12\n\n### 浪费\n\n- **t**\n"
+            "  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否\n")
+        ready = scan_ready_projects([proj], self.framework)
+        self.assertEqual(len(ready), 0)
+
+    def test_ready_todo_md_has_processed_entries_stripped(self):
+        """部分标记 → 仍就绪，但返回的 todo_md 已剥离已处理条目。"""
+        proj = _make_managed_project(
+            self.managed, "p1", "2026-09-12T03:00:00+00:00",
+            "## 2026-09-12\n\n### 浪费\n\n- **已处理项**\n"
+            "  - 自进化：问题成立 / 建议合理 / — 不需要\n\n"
+            "- **待分析项**\n  - 影响：i\n")
+        ready = scan_ready_projects([proj], self.framework)
+        self.assertEqual(len(ready), 1)
+        self.assertNotIn("已处理项", ready[0]["todo_md"])
+        self.assertIn("待分析项", ready[0]["todo_md"])
 
     def test_ready_project(self):
         """全条件满足 → 就绪（含 todo_md 全文）。"""

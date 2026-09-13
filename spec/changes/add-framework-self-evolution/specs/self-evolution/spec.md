@@ -261,6 +261,34 @@
 - **WHEN** 草稿目录被替换为指向外部的符号链接
 - **THEN** 拒绝操作报错并 MUST NOT 删除该目标
 
+### Requirement: 删除路径
+
+删除 MUST 对**任意状态**的条目生效（含 `accepted` / `auto_accepted`，MUST NOT 设状态门）。
+
+删除为**硬删**：条目记录 MUST 从 `.fenix/evolution/items.jsonl` 移除，MUST NOT 写墓碑或保留占位记录；草稿目录存在时 MUST 一并删除（删除前同样 MUST 校验解析后的路径位于草稿基目录内，符号链接越界一律拒绝删除并保持记录不动）。读-改-写 MUST 在同一把 flock 内完成，MUST NOT 与 daemon 侧写入交错。
+
+删除未设防的已知后果（MUST 在 UI 确认弹窗向用户明示）：该 id 不再出现在 `known_ids()` 中，todo.md 里同名记录会在下一轮分析 run 被重新入库。
+
+#### Scenario: 删除移除记录与草稿
+
+- **WHEN** 对某 `pending` 条目执行删除
+- **THEN** 该条目不再出现在 `items.jsonl` 中，其草稿目录被删除，其它条目记录不受影响
+
+#### Scenario: 任意状态可删
+
+- **WHEN** 对状态为 `accepted` 的条目执行删除
+- **THEN** 删除成功（MUST NOT 返回状态不允许的错误），记录被移除
+
+#### Scenario: 未知条目报错
+
+- **WHEN** 对不存在的 `item_id` 执行删除
+- **THEN** 返回错误且 `items.jsonl` 不变
+
+#### Scenario: 越界路径不被删除且记录保留
+
+- **WHEN** 草稿目录被替换为指向外部的符号链接
+- **THEN** 删除操作报错、MUST NOT 删除该目标，且条目记录 MUST 保持不动
+
 ### Requirement: 自动接受开关
 
 当 `self_evolution.auto_accept` 为真时，框架 MUST 在分析 run 落地完成后（同一检查点内）对本轮全部 `pending` 条目逐个走「接受路径」（`decided_by: auto`，状态 `auto_accepted`），MUST NOT 要求任何前端交互。单个条目的接受失败 MUST NOT 影响其余条目（逐条独立、失败者置 `accept_failed` 并保留草稿）。自动接受 MUST NOT 作用于 `analyzed` 与 `draft_failed` 条目，MUST NOT 改动已决定条目。开关为假时（含配置缺失）MUST 保持 `pending` 等待用户决定。

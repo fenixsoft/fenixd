@@ -4,10 +4,10 @@
 
 ### Requirement: 设置页「自进化」页签与卡片布局
 
-Dashboard 设置页 MUST 把既有页签文案「自愈」改为「自进化」，并在该页签下自上而下渲染两张卡片：
+Dashboard 设置页 MUST 把既有页签文案「自愈」改为「自进化」，并在该页签下自上而下渲染两个面板：
 
 1. 既有「代码陈旧自愈」面板（`StaleCodeSelfhealPanel`，标题、开关/输入控件、控件 `data-testid` 与绑定配置键全部不变；其原有卡片内保存按钮 MUST 上提到页签底部，见下条）；
-2. 新增「建议改进项」面板（`SuggestedImprovementsPanel`）——标题「建议改进项」MUST 置于卡片**外**（与第一张卡片同构），标题下 MUST 有该卡片的功能注解文字；配置卡片内 MUST NOT 再重复标题、MUST NOT 自带保存按钮。
+2. 新增「建议改进项」面板（`SuggestedImprovementsPanel`）——标题「建议改进项」MUST 置于卡片**外**（与第一张面板同构），标题下 MUST 有该面板的功能注解文字；其配置卡片内 MUST NOT 再重复标题、MUST NOT 自带保存按钮；面板下半部的「条目列表」小节标题与表格同样 MUST 置于卡片**外**（见「建议改进项表格」）。
 
 页签底部 MUST 只有**唯一一个**「保存」按钮，置于页签内容最下方、右对齐（与其它页签的保存位置一致）。点击该按钮 MUST 同时校验并收集两张卡片各自的配置节，合并为**一次** `POST /api/config` 请求提交；任一张卡片校验失败 MUST 中止提交且 MUST NOT 发出请求。
 
@@ -77,21 +77,34 @@ Dashboard 设置页 MUST 把既有页签文案「自愈」改为「自进化」�
 
 ### Requirement: 建议改进项表格
 
-卡片 MUST 以表格展示跨项目的建议改进项，数据来自 `GET /api/evolution/items`。列 MUST 依次为：项目、日期、类别、问题、评估结论、状态、操作。
+表格 MUST 直接置于页签内容流内（MUST NOT 包在卡片里），小节标题「条目列表」以与「建议改进项」同级的标题形式置于表格上方。数据来自 `GET /api/evolution/items`。列 MUST 依次为：**复选框、项目、日期、类别、问题、评估结论、状态、操作**。
 
-- 类别列 MUST 显示 todo.md 的小节名（浪费 / 失误 / 可改进）；
+- 首列 MUST 为行选择复选框（表头全选框随当前过滤结果全选/半选）；
+- 类别列 MUST 显示 todo.md 的小节名（浪费 / 失误 / 可改进），并以 `Tag` 渲染（写法参照 SPEC 列表页「模式」列）；
 - 问题列 MUST 显示条目标题；
 - 评估结论列 MUST 汇总三项判定（问题是否成立 / 建议是否合理 / 是否值得立项），未超过一屏时可截断但 MUST 可经「查看分析结论」看到全文；
 - 状态列 MUST 显示中文文案映射：待决策 / 不需要立项 / 草稿生成失败 / 已同意 / 已自动接受 / 已拒绝 / 接受失败；
 - 默认按入库时间倒序；列表为空时 MUST 显示空态文案（如「暂无建议改进项」）而非空白；
 - 接口失败时 MUST 显示可读错误且页面其它区块不受影响。
 
+表头 MUST 支持排序：项目 / 日期 / 类别 / 问题 / 状态五列可排序，评估结论与操作列 MUST NOT 排序。日期按 `date_section`（ISO 串，字典序即时间序）排序；状态 MUST 按**语义次序**排序（待人工处理的在前、终态在后），MUST NOT 用标签文本的字母序。
+
 移动端 MUST 以横向滚动展示表格并把操作列固定在右侧；本 SPEC 不要求卡片式降级布局。
 
 #### Scenario: 表格列与顺序
 
 - **WHEN** `/api/evolution/items` 返回若干条目
-- **THEN** 表格按「项目 / 日期 / 类别 / 问题 / 评估结论 / 状态 / 操作」顺序渲染，且默认按入库时间倒序
+- **THEN** 表格按「复选框 / 项目 / 日期 / 类别 / 问题 / 评估结论 / 状态 / 操作」顺序渲染，且默认按入库时间倒序
+
+#### Scenario: 表头排序
+
+- **WHEN** 用户点击「日期」表头
+- **THEN** 表格按 `date_section` 升序重排；再点一次转为降序；点击「状态」表头时按语义次序（待决策等未决状态在前）而非标签字母序
+
+#### Scenario: 类别列以 Tag 渲染
+
+- **WHEN** 条目类别为「浪费 / 失误 / 可改进」
+- **THEN** 该列以 `Tag` 组件渲染（非纯文本），未知类别以默认色 Tag 兜底
 
 #### Scenario: 状态文案映射
 
@@ -108,36 +121,97 @@ Dashboard 设置页 MUST 把既有页签文案「自愈」改为「自进化」�
 - **WHEN** 在窄屏（移动端断点）下查看表格
 - **THEN** 表格可横向滚动，操作列始终可见（固定在右侧）
 
+### Requirement: 过滤条
+
+表格上方 MUST 有过滤条，控件依次为：**状态（下拉，缺省选中「待决策」）、项目（下拉）、日期区间（RangePicker）、「重置」**。
+
+- 状态与项目下拉的选项 MUST 从当前数据现算 distinct 值（MUST NOT 出现选了必然 0 条的选项）；
+- 日期区间 MUST 按 `date_section` 做闭区间过滤；
+- 过滤 MUST 在前端完成（对已加载列表过滤，MUST NOT 因过滤重复请求接口）；
+- 「重置」MUST 仅在存在非缺省过滤条件时出现，点击后状态回到缺省「待决策」、清空项目与日期；
+- 过滤无结果时 MUST 显示区别于「暂无任何条目」的空态文案。
+
+#### Scenario: 缺省只展示待决策
+
+- **WHEN** 用户首次打开「自进化」页签
+- **THEN** 表格只展示状态为 `pending` 的条目，状态下拉显示「待决策」；清空该下拉后展示全部状态的条目
+
+#### Scenario: 按项目与日期过滤
+
+- **WHEN** 用户选择某项目并选择一段日期区间
+- **THEN** 表格只展示该项目且 `date_section` 落在该区间内（含端点）的条目；「重置」出现，点击后回到缺省过滤
+
+#### Scenario: 过滤不触发额外请求
+
+- **WHEN** 用户切换任一过滤条件
+- **THEN** MUST NOT 产生新的 `/api/evolution/items` 请求（纯前端过滤）
+
+### Requirement: 多选与批量操作
+
+表格上方 MUST 提供「批量同意 / 批量拒绝 / 批量删除」三个按钮，作用于当前勾选的条目；未勾选任何条目时 MUST 禁用。
+
+- 批量 MUST 逐个调用既有单条接口（后端无批量端点），MUST **串行**执行（并发写 `items.jsonl` 与逐条 git commit 会互相冲突）；
+- 执行前 MUST 有二次确认弹窗，预告「将执行 N 条」；对状态不允许该操作的条目 MUST 在前端筛掉并在弹窗中预告「跳过 M 条」及其原因分组（如「已决策 2 条、不需要立项 1 条」）；全部被跳过时 MUST NOT 发起请求；
+- 执行后 MUST 汇报「成功 X 条 / 跳过 Y 条 / 失败 Z 条」，失败明细 MUST 逐条列出条目名与后端错误；
+- 执行后 MUST 刷新列表并清空勾选；
+- 过滤条件变化时 MUST 清空勾选（MUST NOT 让批量作用到当前不可见的行上）。
+
+#### Scenario: 勾选后批量同意
+
+- **WHEN** 用户勾选若干待决策条目并点击「批量同意」
+- **THEN** 出现确认弹窗预告将处理的条数；确认后逐条调用接受接口，完成后提示成功条数并刷新列表，勾选被清空
+
+#### Scenario: 不可执行条目被跳过并预告
+
+- **WHEN** 勾选中混有 `analyzed`（不需要立项）或已决定状态的条目
+- **THEN** 确认弹窗 MUST 预告跳过的条数与原因分组，且 MUST NOT 对这些条目发起请求
+
+#### Scenario: 执行中禁止重复提交
+
+- **WHEN** 批量正在执行
+- **THEN** 三个批量按钮 MUST 处于禁用/加载态，重复点击 MUST NOT 产生第二轮请求
+
+#### Scenario: 改过滤清空勾选
+
+- **WHEN** 用户已勾选若干行，随后改动任一过滤条件
+- **THEN** 勾选被清空，批量按钮回到禁用态
+
 ### Requirement: 操作列「更多」下拉
 
-操作列 MUST 使用与 SPEC 列表页「更多」按钮一致的交互形态（antd `Dropdown` + `MoreOutlined` 图标 + `Button type="link" size="small"`），菜单项 MUST 依次为：查看分析结论、查看 SPEC 草稿、同意、拒绝（拒绝为危险项）。
+操作列 MUST 使用与 SPEC 列表页「更多」按钮一致的交互形态（antd `Dropdown` + `MoreOutlined` 图标 + `Button type="link" size="small"`），菜单项 MUST 依次为：查看分析结论、查看 SPEC 草稿、同意、拒绝（危险项）、删除（危险项）。
 
 禁用规则：
 
 - 无草稿的条目（状态 `analyzed` / `draft_failed`）：「查看 SPEC 草稿」与「同意」MUST 禁用，「查看分析结论」与「拒绝」保持可用（`analyzed` 的「拒绝」MUST 禁用，改为仅可查看结论）；
-- 已决定条目（`accepted` / `auto_accepted` / `rejected`）：「同意」与「拒绝」MUST 禁用，查看类项保持可用。
+- 已决定条目（`accepted` / `auto_accepted` / `rejected`）：「同意」与「拒绝」MUST 禁用，查看类项保持可用；
+- 「删除」MUST NOT 设状态门——任意状态（含 `accepted` / `auto_accepted`）均可删除。
 
-「同意」与「拒绝」MUST 经二次确认弹窗后才发起请求，MUST NOT 单击即执行。
+「同意」「拒绝」「删除」MUST 经二次确认弹窗后才发起请求，MUST NOT 单击即执行。删除的确认弹窗 MUST 明示后果：条目将从列表移除、草稿一并删除，且其 todo.md 记录仍存在、可能在下一轮分析 run 中重新入库。
 
-#### Scenario: 菜单四项与顺序
+#### Scenario: 菜单五项与顺序
 
 - **WHEN** 用户点击某条 `pending` 条目的操作按钮
-- **THEN** 弹出菜单，依次为「查看分析结论 / 查看 SPEC 草稿 / 同意 / 拒绝」
+- **THEN** 弹出菜单，依次为「查看分析结论 / 查看 SPEC 草稿 / 同意 / 拒绝 / 删除」
 
 #### Scenario: 无草稿条目的禁用规则
 
 - **WHEN** 某条目状态为 `analyzed`（判定不需要立项）
-- **THEN** 「查看 SPEC 草稿」「同意」「拒绝」均禁用（置灰不可点），仅「查看分析结论」可点
+- **THEN** 「查看 SPEC 草稿」「同意」「拒绝」均禁用（置灰不可点），仅「查看分析结论」与「删除」可点
 
 #### Scenario: 已决定条目的禁用规则
 
 - **WHEN** 某条目状态为 `accepted`
-- **THEN** 「同意」「拒绝」禁用，仍可查看分析结论与 SPEC 草稿（草稿已随接受删除时「查看 SPEC 草稿」按空态处理）
+- **THEN** 「同意」「拒绝」禁用，仍可查看分析结论与 SPEC 草稿（草稿已随接受删除时「查看 SPEC 草稿」按空态处理），且「删除」保持可用
 
 #### Scenario: 同意需二次确认
 
 - **WHEN** 用户点击「同意」
 - **THEN** 先弹出确认弹窗；确认后才发起接受请求，取消则不发请求
+
+#### Scenario: 删除需二次确认且明示重入库
+
+- **WHEN** 用户点击「删除」
+- **THEN** 先弹出确认弹窗，文案含「条目将从列表移除」与「todo.md 记录仍存在、可能在下一轮分析 run 中重新入库」；确认后才发起删除请求，取消则不发请求
 
 ### Requirement: 查看分析结论
 
@@ -204,6 +278,7 @@ Dashboard 后端 MUST 提供以下端点（沿用既有 `/api/*` 路由分发与
 | `/api/evolution/draft` | GET | `item_id`, `doc` | 返回草稿文档 `{found, content}`；`doc` 非白名单 400，条目不存在 404，草稿缺失 200 + `found: false` |
 | `/api/evolution/accept` | POST | body `{item_id}` | 执行接受路径，成功返回新 SPEC 名与状态 |
 | `/api/evolution/reject` | POST | body `{item_id}` | 执行拒绝路径，成功返回新状态 |
+| `/api/evolution/delete` | POST | body `{item_id}` | 删除条目（硬删：记录移出 `items.jsonl` 并清理其草稿目录），不设状态门 |
 
 参数缺失 / 非法 MUST 返回 400 且不触碰任何文件；`item_id` 未知 MUST 返回 404。端点 MUST NOT 接受任意文件路径参数（读取范围固定为 `.fenix/evolution/` 下由条目 id 推导出的路径）。每个条目摘要 MUST 至少含 `id`、`project`、`date_section`、`section`、`title`、三项判定、`status`、`has_draft`、`spec_name`、`created_at`、`decided_at`。
 
@@ -221,3 +296,8 @@ Dashboard 后端 MUST 提供以下端点（沿用既有 `/api/*` 路由分发与
 
 - **WHEN** 请求携带 `path=/etc/passwd` 之类的任意路径参数
 - **THEN** 该参数被忽略，读取范围仍限于由 `item_id` 推导出的 `.fenix/evolution/` 路径
+
+#### Scenario: 删除端点移除记录与草稿
+
+- **WHEN** 对某条目请求 `POST /api/evolution/delete`
+- **THEN** 返回 200 + `{ok: true}`，该条目不再出现在 `GET /api/evolution/items` 结果中，其草稿目录被一并清理；缺参返回 400，未知条目返回 404
