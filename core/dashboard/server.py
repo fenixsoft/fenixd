@@ -939,6 +939,44 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._json(result)
 
+    def _api_spec_task_reflow(self, query) -> dict:
+        """POST /api/spec-task-reflow?project=<name>&spec=<name>
+
+        task-gap 滞留 verified SPEC 的人工回炉：把因 verified→done 任务完成度
+        门禁（_task_completion_blocker）拦截而停在 verified 的 SPEC 复位为 ready，
+        供 daemon 重新派发实现者承接剩余任务（fix-impl-tasks-completion-gate P1′/D8）。
+
+        判定与执行收敛到 core/pm_engine/task_reflow.reflow_spec 单一实现点——
+        本路由只做参数解析与结果呈现（CLI reflow 子命令同源，MUST NOT 复写判定）。
+
+        错误语义对齐 spec-error-clear / spec-freeze-config / spec-budget 家族：
+        - project 不存在 → 404；spec 不在 STATE.md → 404
+        - 不满足开放条件（非 verified / error 非 task-gap 前缀 / 冻结态 / 幂等重复）
+          → 200 + {ok: false, reason: <明确拒绝原因>}
+        - 成功 → 200 + {ok: true, spec, status: "ready"}
+        """
+        spec = query.get("spec", [None])[0]
+        project = self._project_from_query(query)
+        if project is None:
+            self._error(404, "unknown project")
+            return
+        if not project.get("exists"):
+            self._error(404, "project not found")
+            return
+        if not spec:
+            self._error(404, "spec required")
+            return
+        proot = Path(project["path"])
+        try:
+            result = dashboard_data.reflow_spec(proot, spec)
+        except Exception as e:  # noqa: BLE001 兜底：回炉异常不崩溃进程
+            self._error(500, f"spec task reflow failed: {e}")
+            return
+        if not result.get("found"):
+            self._error(404, result.get("reason") or f"spec not found: {spec}")
+            return
+        self._json(result)
+
     def _api_spec_approve_push(self, query):
         """POST /api/spec-approve-push?project=<name>&spec=<name>
 
@@ -1968,6 +2006,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_spec_archive(query)
         elif path == "/api/spec-promote":
             self._api_spec_promote(query)
+        elif path == "/api/spec-task-reflow":
+            self._api_spec_task_reflow(query)
         elif path == "/api/spec-approve-push":
             self._api_spec_approve_push(query)
         elif path == "/api/alerts/clear":

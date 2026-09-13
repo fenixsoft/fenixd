@@ -313,6 +313,25 @@ export function approveSpecPush(project: string, spec: string) {
   );
 }
 
+// ── SPEC 任务缺口人工回炉（fix-impl-tasks-completion-gate P1′/D8） ──
+
+export interface TaskReflowResult {
+  ok: boolean;
+  spec?: string;
+  status?: string;
+  gap_tasks?: string[];
+  reason?: string;
+  error?: string;
+}
+
+/** 把 task-gap 拦截滞留 verified 的 SPEC 复位为 ready（daemon 重新派发实现者） */
+export function reflowSpec(project: string, spec: string) {
+  return request<TaskReflowResult>(
+    `/api/spec-task-reflow?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    { method: 'POST' },
+  );
+}
+
 // ── SPEC 定时拾取 / 冻结管理（add-spec-scheduling-controls D5/D6） ──
 
 export interface StartAfterResult {

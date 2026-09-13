@@ -8,6 +8,7 @@ fenix_cli.py — Fenix CLI 工具集（add-draft-promotion-gate D6）。
 用法:
     python3 bin/fenix_cli.py promote <spec> [--project <path>]
     python3 bin/fenix_cli.py review <spec> [--project <path>]
+    python3 bin/fenix_cli.py reflow <spec> [--project <path>]
 """
 
 import argparse
@@ -98,6 +99,37 @@ def cmd_review(args):
         sys.exit(1)
 
 
+def cmd_reflow(args):
+    """task-gap 滞留 verified SPEC 的人工回炉（verified → ready）。
+
+    判定与执行收敛到 core/pm_engine/task_reflow.reflow_spec 单一实现点
+    （fix-impl-tasks-completion-gate D8）——CLI 与 Dashboard API 共用同一开放
+    条件、同一执行语义、同一日志留痕，MUST NOT 在 CLI 侧复写一套判定逻辑
+    （add-spec-review-gate 的 CLI 绕过评审分流教训）。
+    """
+    from core.pm_engine.task_reflow import reflow_spec
+    from core.state_machine import StateMachine
+    from core.logger import Logger
+
+    proot = _resolve_project_root(args.project)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    logger = Logger(proot)
+
+    result = reflow_spec(proot, args.spec, state_machine=sm, logger=logger,
+                         source="cli")
+    if result.get("ok"):
+        gap = result.get("gap_tasks") or []
+        gap_note = f"（缺口 {len(gap)} 项）" if gap else ""
+        print(
+            f"✓ SPEC「{args.spec}」已回炉复位为 ready{gap_note}，"
+            f"daemon 将重新派发实现者承接剩余任务"
+        )
+        sys.exit(0)
+    else:
+        print(f"✗ 回炉被拒绝：{result.get('reason') or '未知原因'}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Fenix CLI 工具集（人工操作子命令）",
@@ -126,12 +158,25 @@ def main():
         help="项目根目录（默认当前目录，挂在 review 子解析器下）",
     )
 
+    p_reflow = subparsers.add_parser(
+        "reflow",
+        help="task-gap 滞留 verified SPEC 人工回炉（verified → ready，重派实现者）",
+    )
+    p_reflow.add_argument("spec", help="要回炉的 SPEC 名称")
+    p_reflow.add_argument(
+        "--project", "-p",
+        default=None,
+        help="项目根目录（默认当前目录）",
+    )
+
     args = parser.parse_args()
 
     if args.command == "promote":
         cmd_promote(args)
     elif args.command == "review":
         cmd_review(args)
+    elif args.command == "reflow":
+        cmd_reflow(args)
     else:
         print(f"未知命令：{args.command}", file=sys.stderr)
         sys.exit(1)

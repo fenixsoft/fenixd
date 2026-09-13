@@ -388,6 +388,34 @@ def promote_spec(project_root, spec_name: str) -> dict:
             "error": f"晋升 lint 未通过：{'; '.join(result['violations'])}"}
 
 
+def reflow_spec(project_root, spec_name: str) -> dict:
+    """task-gap 滞留 verified SPEC 的人工回炉（fix-impl-tasks-completion-gate P1′/D8）。
+
+    判定与执行收敛到 core/pm_engine/task_reflow.reflow_spec 单一实现点——
+    本包装只做 StateMachine/Logger 装配与结果归一化（与 promote_spec 同型，
+    Dashboard 路由与 CLI reflow 子命令共用，MUST NOT 在两侧复写判定逻辑）。
+
+    - spec 不存在 → {ok: False, found: False, reason: ...}
+    - 不满足开放条件（非 verified / error 非 task-gap 前缀 / 冻结态 / 幂等重复）
+      → {ok: False, found: True, reason: <明确拒绝原因>}
+    - 成功 → {ok: True, found: True, spec, status: "ready"}
+    """
+    specs = parse_state(project_root)
+    if spec_name not in specs:
+        return {"ok": False, "found": False,
+                "reason": f"spec not found: {spec_name}"}
+    from core.pm_engine.task_reflow import reflow_spec as _reflow
+    from core.state_machine import StateMachine
+    from core.logger import Logger
+    proot = Path(project_root)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    logger = Logger(proot)
+    result = _reflow(proot, spec_name, state_machine=sm, logger=logger,
+                     source="api")
+    result.setdefault("found", True)
+    return result
+
+
 # ── SPEC 定时拾取 start_after（add-spec-scheduling-controls D5） ───────
 
 # daemon 主循环轮询的「清空定时拾取即派发」请求信号文件名（与 fenixd.py 约定一致）

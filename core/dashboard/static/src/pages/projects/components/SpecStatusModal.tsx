@@ -36,6 +36,7 @@ import {
   archiveSpec,
   freezeSpec,
   promoteSpec,
+  reflowSpec,
   setSpecBudget,
   setSpecFreezeConfig,
 } from '@/services/dashboard';
@@ -63,6 +64,14 @@ const isFrozen = (summary: SpecSummary | null) =>
 const isTerminal = (summary: SpecSummary | null) =>
   TERMINAL.has(summary?.status || '');
 
+/** task-gap 缺口结论前缀（fix-impl-tasks-completion-gate P1′：回炉区块的渲染判据）。 */
+const TASK_GAP_ERROR_PREFIX = 'task-gap:';
+
+/** task-gap 拦截滞留判定：status=verified 且 error 以 task-gap: 开头。 */
+const isTaskGapStuck = (summary: SpecSummary | null) =>
+  summary?.status === 'verified' &&
+  (summary.error || '').startsWith(TASK_GAP_ERROR_PREFIX);
+
 export default function SpecStatusModal({
   project,
   spec,
@@ -85,6 +94,8 @@ export default function SpecStatusModal({
   const done = summary?.status === 'done' || summary?.status === 'pushed';
   const drafted = summary?.status === 'drafted';
   const nonTerminal = summary && !terminal;
+  // fix-impl-tasks-completion-gate P1′：task-gap 拦截滞留 verified 的可回炉判定
+  const taskGapStuck = isTaskGapStuck(summary);
 
   // 打开时初始化预算覆盖值
   useEffect(() => {
@@ -274,6 +285,54 @@ export default function SpecStatusModal({
     });
   }, [project, spec, summary, onDone, message, appModal]);
 
+  // ── 回炉（verified + task-gap 错误，fix-impl-tasks-completion-gate P1′） ──
+  // task-gap 拦截（verified→done 任务完成度门禁检出未完成任务）滞留 verified 的
+  // SPEC 的唯一闭环动作：确认后调用 /api/spec-task-reflow 把 SPEC 复位为 ready，
+  // 由 daemon 重新派发实现者承接剩余任务。危险操作（等于用新预算重跑同一件事），
+  // 确认文案必须明示「将重新派发实现」。被拒绝（非 task-gap 形态/冻结/幂等重复）
+  // 时展示后端返回的拒绝原因，SPEC 状态保持不变。
+  const handleReflow = useCallback(() => {
+    if (!summary) return;
+    const err = summary.error || '';
+    const gapNote = err.startsWith(TASK_GAP_ERROR_PREFIX)
+      ? `（${err.slice(TASK_GAP_ERROR_PREFIX.length)}）`
+      : '';
+    appModal.confirm({
+      title: '回炉 SPEC（重新派发实现）',
+      content: (
+        <div style={{ whiteSpace: 'pre-wrap' }}>
+          {`确认将 SPEC「${summary.name}」复位为 ready？\n\n`}
+          该 SPEC 因任务书未完成被 task-gap 门禁拦截停留在 verified，剩余任务
+          仍为未完成状态{gapNote}。
+          {'\n'}
+          回炉会把 SPEC 复位为 ready 并清空错误，随后 daemon 将重新派发实现者
+          承接剩余任务（消耗新的实现尝试预算）。
+        </div>
+      ),
+      okText: '回炉',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        setLoading(true);
+        try {
+          const result = await reflowSpec(project, spec);
+          if (result.ok) {
+            message.success(`SPEC「${spec}」已复位 ready，等待重新派发实现`);
+            onDone();
+          } else {
+            // 被后端拒绝（非 task-gap 形态/冻结/幂等重复等）：展示明确拒绝原因
+            const reason = result.reason || result.error || '回炉被拒绝';
+            message.error(`回炉被拒绝：${reason}`);
+          }
+        } catch (err) {
+          message.error(`回炉失败：${err instanceof Error ? err.message : String(err)}`);
+        } finally {
+          setLoading(false);
+        }
+      },
+    });
+  }, [project, spec, summary, onDone, message, appModal]);
+
   // ── 预算保存（setSpecBudget） ──────────────────────
   const handleBudgetSave = useCallback(async () => {
     setLoading(true);
@@ -334,6 +393,26 @@ export default function SpecStatusModal({
               loading={loading}
             >
               审批推送
+            </Button>
+          </div>
+        )}
+
+        {/* ── 回炉区块（verified + task-gap 错误；fix-impl-tasks-completion-gate P1′） ── */}
+        {taskGapStuck && (
+          <div style={{ marginBottom: 16 }}>
+            <Typography.Text strong style={{ fontSize: 14 }}>回炉（重新派发实现）</Typography.Text>
+            <Typography.Paragraph type="secondary" style={{ margin: '4px 0 8px' }}>
+              该 SPEC 因任务书存在未完成任务被 task-gap 门禁拦截，停留在 verified
+              无法自动推进。回炉将复位为 ready 并由 daemon 重新派发实现者承接剩余
+              任务（缺口任务仍为未完成状态，将消耗新的实现尝试预算）。
+            </Typography.Paragraph>
+            {summary.error && (
+              <Typography.Paragraph type="secondary" style={{ margin: '0 0 8px', fontSize: 12 }}>
+                缺口结论：{summary.error}
+              </Typography.Paragraph>
+            )}
+            <Button danger onClick={handleReflow} loading={loading}>
+              回炉并重新派发实现
             </Button>
           </div>
         )}
