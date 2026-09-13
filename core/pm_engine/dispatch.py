@@ -2972,11 +2972,51 @@ class Dispatcher:
     def _hard_check_fast_track(self, spec_name: str, ft_result: dict):
         """对 fast-track 结果做框架侧硬校验；失败记原因并按失败重派。
 
+        fix-impl-tasks-completion-gate D9/5.1：在既有校验（verification 段结构 +
+        场景 ID 覆盖 + verdict 证据）之上叠加与 implementer **同源**的完成度判据
+        ——复用 runner 产物硬门的同一实现点（`_check_impl_result_artifact`，同一
+        解析函数与同一归因构造），不另起一套判定。fast-track 结果文件顶层 status
+        契约本就是 "success"（verdict 承载在 verification 段），与硬门白名单
+        {"success","error","partial"} 兼容（5.2）；status != success 的形态已在
+        调用点（2251 行）拦截，到本方法时必为 success。
+
+        叠加判据以 worktree 内 tasks.md 为对象（runner 硬门同款）。worktree 不可得
+        或结果文件已随收口清理 → fail-open（记录 warning 不误拦——runner 产物硬门
+        已在本轮 run 结束时于源头校验过同一判据，此处是 merge 前双保险兜底）。
+
         Returns:
             规整后的验证段 dict（含 verdict/bugs/scenarios），校验失败返回 None。
         """
         from core.fast_track_result import parse_fast_track_verification
         from core.verdict_check import validate_fast_track_result
+
+        # ── 完成度叠加判据（fix-impl-tasks-completion-gate 5.1）──
+        try:
+            wt_path = self._pm._find_implementer_worktree(spec_name)
+            if wt_path is not None and (wt_path / ".fenix-run-result.json").exists():
+                gate_err = self._pm.agent_runner._check_impl_result_artifact(
+                    spec_name, None, wt_path)
+                # 仅返回字符串归因才是判据失败（兼容单测 mock 环境：MagicMock
+                # 非 None 非 str，按通过处理——产品环境恒返回 str|None）。
+                if isinstance(gate_err, str):
+                    err = f"fast-track 完成度判据未通过：{gate_err}"
+                    self._pm.state_machine.update_spec(spec_name, {"error": err})
+                    self._pm._enqueue_front(spec_name, "fast-track")
+                    self._pm.logger.error(
+                        "pm_engine", f"fast-track 完成度判据拦截 '{spec_name}': {err}",
+                    )
+                    return None
+            elif wt_path is None:
+                self._pm.logger.debug(
+                    "pm_engine",
+                    f"fast-track 完成度判据跳过（worktree 不可得，runner 硬门已"
+                    f"源头校验）'{spec_name}'",
+                )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"fast-track 完成度判据执行异常（fail-open 防误拦）'{spec_name}': {e}",
+            )
 
         verification = parse_fast_track_verification(ft_result or {})
         if verification is None:
