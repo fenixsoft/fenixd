@@ -2,7 +2,7 @@
 state_machine.py — SPEC lifecycle state machine and STATE.md I/O.
 
 Manages the finite state machine for SPECs:
-  drafted → ready → implementing → implemented → testing → verified → done → pushed
+  drafted → [reviewing →] ready → implementing → implemented → testing → verified → done → pushed
                                                        ↘ bug-found → implementing
 
 Handles atomic reads/writes of STATE.md with file locking.
@@ -32,10 +32,11 @@ class SpecStatus:
     BLOCKED = "blocked"
     DONE = "done"
     PUSHED = "pushed"
+    REVIEWING = "reviewing"
 
     ALL = [
         DRAFTED, READY, IMPLEMENTING, IMPLEMENTED,
-        TESTING, VERIFIED, BUG_FOUND, BLOCKED, DONE, PUSHED,
+        TESTING, VERIFIED, BUG_FOUND, BLOCKED, DONE, PUSHED, REVIEWING,
     ]
 
 
@@ -118,13 +119,14 @@ def parse_orig_status(error) -> str:
 
 # Valid state transitions: from → [to, ...]
 VALID_TRANSITIONS: Dict[str, List[str]] = {
-    SpecStatus.DRAFTED:      [SpecStatus.READY],
+    SpecStatus.DRAFTED:      [SpecStatus.READY, SpecStatus.REVIEWING],
     SpecStatus.READY:        [SpecStatus.IMPLEMENTING],
     SpecStatus.IMPLEMENTING: [SpecStatus.IMPLEMENTED, SpecStatus.READY, SpecStatus.BLOCKED],  # ready=retry, blocked=熔断
     SpecStatus.IMPLEMENTED:  [SpecStatus.TESTING],
     SpecStatus.TESTING:      [SpecStatus.VERIFIED, SpecStatus.BUG_FOUND],
     SpecStatus.BUG_FOUND:    [SpecStatus.IMPLEMENTING, SpecStatus.IMPLEMENTED],  # implemented=fix 完成后重新验证
-    SpecStatus.BLOCKED:      [SpecStatus.READY],  # 人工确认后恢复
+    SpecStatus.REVIEWING:    [SpecStatus.READY, SpecStatus.BLOCKED],
+    SpecStatus.BLOCKED:      [SpecStatus.READY, SpecStatus.REVIEWING],  # 人工确认后恢复 / 重新评审
     SpecStatus.VERIFIED:     [SpecStatus.DONE],
     SpecStatus.DONE:         [SpecStatus.PUSHED],
     SpecStatus.PUSHED:       [],  # terminal state
@@ -141,7 +143,7 @@ GATE_TRANSITIONS: Dict[str, List[str]] = {
 }
 
 # States that are considered "interrupted" on daemon restart (revert to ready)
-INTERRUPTED_STATES = {SpecStatus.IMPLEMENTING, SpecStatus.TESTING}
+INTERRUPTED_STATES = {SpecStatus.IMPLEMENTING, SpecStatus.TESTING, SpecStatus.REVIEWING}
 
 # ── 实现尝试预算计数（fix-budget-counting-semantics D2）──────────────
 # 字段名单点定义（pm_engine 与 state_machine 共用，避免两处漂移）：
@@ -297,7 +299,7 @@ class StateParser:
                          "implementer_run", "tester_run", "branch", "error",
                          "depends_on", "total_duration", FROZEN_FIELD,
                          START_AFTER_FIELD, FROZEN_UNTIL_FIELD,
-                         IMPL_RUN_BUDGET_OVERRIDE_FIELD]:
+                         IMPL_RUN_BUDGET_OVERRIDE_FIELD, "reviewer_run"]:
                 val = entry.get(key, "null")
                 if val is None:
                     val = "null"
@@ -618,6 +620,8 @@ class StateMachine:
         entry.setdefault("branch", None)
         entry.setdefault("error", None)
         entry.setdefault("depends_on", None)
+        entry.setdefault("reviewer_run", None)
+        entry.setdefault("_review_attempts", 0)
 
         specs[spec_name] = entry
         self.write_all(specs)
@@ -838,6 +842,18 @@ class StateMachine:
                         "_retry_count": 0,
                         "_merge_fp": None,
                         "_merge_streak": 0,
+                    })
+                    recovered.append(name)
+                    continue
+                elif status == SpecStatus.REVIEWING:
+                    # 评审中断恢复：回退 drafted，清空评审 run 引用与尝试计数，
+                    # 使其重新进入晋升链（软化与两道 lint 幂等，分流重新判定）。
+                    # 评审者对 SPEC 目录的修补被保留（不还原）。
+                    self.update_spec(name, {
+                        "status": SpecStatus.DRAFTED,
+                        "error": f"Recovered from interrupted state: {status}",
+                        "reviewer_run": None,
+                        "_review_attempts": 0,
                     })
                     recovered.append(name)
                     continue

@@ -392,7 +392,7 @@ class TestSpecStatus(unittest.TestCase):
     """Test status constants and transition definitions."""
 
     def test_all_statuses_defined(self):
-        self.assertEqual(len(SpecStatus.ALL), 10)
+        self.assertEqual(len(SpecStatus.ALL), 11)
 
     def test_valid_transitions_cover_all_states(self):
         for status in SpecStatus.ALL:

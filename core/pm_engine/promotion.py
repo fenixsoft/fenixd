@@ -14,6 +14,7 @@ def promote_drafted(
     *,
     state_machine,
     logger,
+    config: dict = None,
 ) -> dict:
     """共享晋升函数：软化 + lint + 判定。
 
@@ -114,8 +115,14 @@ def promote_drafted(
         state_machine.update_spec(spec_name, {"error": err})
         return {"ok": False, "violations": violations + tasks_violations}
 
-    # 5. 全部通过，返回可晋升
-    return {"ok": True, "violations": []}
+    # 5. 全部通过，返回可晋升，并确定 next_status
+    next_status = "ready"
+    if config is not None:
+        # 跳过评审判定
+        skip = should_skip_review(project_root, spec_name, config, logger)
+        if not skip:
+            next_status = "reviewing"
+    return {"ok": True, "violations": [], "next_status": next_status}
 
 
 def _lint_deliverable_declarations(
@@ -154,3 +161,72 @@ def _lint_tasks_parseable(
             f"tasks.md 可解析性 lint 异常 '{spec_name}'（非阻塞放行）: {e}",
         )
         return []
+
+
+def should_skip_review(project_root: Path, spec_name: str, config: dict, logger) -> bool:
+    """评审跳过判定：四项全部命中才跳过。
+
+    1. `.spec.yaml` 的 `mode` 为 `fast-track`
+    2. `specs/` 下的能力目录数 ≤ 1
+    3. `tasks.md` 的 Deliverables 声明段条目数 ≤ 3
+    4. SPEC 名 MUST NOT 以 `evo-` 开头
+
+    字段缺失时保守取「不跳过」。gates.spec_review_mode: never 时恒返回跳过。
+    """
+    from core.config import ConfigLoader
+    # gates.spec_review_mode: never 时直接跳过
+    mode = ConfigLoader.get_spec_review_mode(config)
+    if mode == "never":
+        return True
+
+    spec_dir = project_root / "spec" / "changes" / spec_name
+    if not spec_dir.is_dir():
+        return False
+
+    # 1. 检查 mode
+    spec_yaml = spec_dir / ".spec.yaml"
+    if not spec_yaml.exists():
+        return False
+    try:
+        import yaml
+        with spec_yaml.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return False
+    if data.get("mode") != "fast-track":
+        return False
+
+    # 2. 能力目录数 ≤ 1
+    specs_dir = spec_dir / "specs"
+    if specs_dir.is_dir():
+        cap_dirs = [d for d in specs_dir.iterdir() if d.is_dir()]
+        if len(cap_dirs) > 1:
+            return False
+    else:
+        # 没有 specs 目录，视为 0 个能力目录，满足条件
+        pass
+
+    # 3. Deliverables 声明段条目数 ≤ 3
+    tasks_path = spec_dir / "tasks.md"
+    if not tasks_path.exists():
+        return False
+    try:
+        content = tasks_path.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    # 简单解析 Deliverables 段：寻找 ```yaml 代码块
+    import re
+    m = re.search(r"```yaml\n(.*?)\n```", content, re.DOTALL)
+    if not m:
+        return False
+    yaml_block = m.group(1)
+    # 统计以 - path: 开头的行数
+    entries = [line for line in yaml_block.splitlines() if line.strip().startswith("- path:")]
+    if len(entries) > 3:
+        return False
+
+    # 4. SPEC 名不以 evo- 开头
+    if spec_name.startswith("evo-"):
+        return False
+
+    return True

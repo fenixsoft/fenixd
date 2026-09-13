@@ -149,6 +149,9 @@ class EventBus:
             if status == "drafted":
                 self.logger.info("event_bus", f"Recovery: re-triggering promote for '{name}'")
                 self.pm_engine.handle_event("spec_drafted", name, entry)
+            elif status == "reviewing":
+                self.logger.info("event_bus", f"Recovery: re-triggering spec_reviewing for '{name}'")
+                self.pm_engine.handle_event("spec_reviewing", name, entry)
             elif status == "implemented":
                 # Skip if already had a tester run (already verified, avoid re-trigger loop)
                 if entry.get("tester_run"):
@@ -486,6 +489,7 @@ class EventBus:
             "verified": "spec_verified",
             "bug-found": "spec_bug_found",
             "done": "spec_done",
+            "reviewing": "spec_reviewing",
         }
         return mapping.get(status, "")
 

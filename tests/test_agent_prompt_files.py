@@ -73,7 +73,11 @@ class TestFileLoadAndPlaceholders:
         if "{scenarios_path}" in template:
             assert str(vp / "test_scenarios.json") in prompt
         if "{result_path}" in template:
-            assert str(vp / ".fenix-run-result.json") in prompt
+            if agent_type == "spec-review":
+                # spec-review 的结果路径在 .fenix/spec-review/ 下
+                assert str(proot / ".fenix" / "spec-review" / "demo" / ".fenix-run-result.json") in prompt
+            else:
+                assert str(vp / ".fenix-run-result.json") in prompt
         if "{report_path}" in template:
             assert str(vp / "report.json") in prompt
         if "{progress_path}" in template:

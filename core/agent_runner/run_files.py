@@ -43,7 +43,7 @@ def run_spec_part(run_id: str) -> str:
     子串前缀（planner-）必须排在更长前缀（planner-judge-/planner-plan-）之后。
     """
     spec_part = run_id
-    for prefix in ("admin-", "dispute-judge-", "planner-judge-", "planner-plan-",
+    for prefix in ("admin-", "dispute-judge-", "spec-review-", "planner-judge-", "planner-plan-",
                    "planner-", "impl-", "verify-", "test-"):
         if run_id.startswith(prefix):
             spec_part = run_id[len(prefix):]

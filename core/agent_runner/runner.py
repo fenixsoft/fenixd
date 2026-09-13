@@ -22,6 +22,8 @@ from core.agent_runner.prompt_builder import (
     PromptBuilder,
     planner_result_path,
     planner_result_status_whitelist,
+    spec_review_result_path,
+    spec_review_result_status_whitelist,
 )
 
 # fix-verdict-read-failclosed D2（新鲜度宽限，秒）：planner 产物硬门 mtime 新鲜度
@@ -1019,6 +1021,91 @@ class AgentRunner:
             )
             return AgentRunResult(
                 run_id, spec_name, "dispute-judge",
+                success=False, duration_seconds=time.time() - start_time,
+                error=str(e),
+                provider_used=provider_name, model_used=model_override,
+            )
+
+    def run_spec_review(self, spec_name: str, run_id: str | None = None) -> AgentRunResult:
+        """Run the Spec Review Agent for a SPEC (add-spec-review-gate).
+
+        方案评审门禁：drafted → reviewing 晋升后由 PM Engine 派发。
+        与 run_dispute_judge 同属判官范式：不创建 worktree，cwd=主树，--add-dir 主树。
+
+        - run_id 前缀 ``spec-review-<spec>-<ts>``（_RUN_PREFIXES 同步扩展）；
+        - 评审者直接读取 SPEC 目录下的文档，无需额外输入 JSON；
+        - 输出契约：``.fenix/spec-review/<spec>/.fenix-run-result.json``
+          顶层 ``status`` 三取一（approved/repaired/rejected）+ findings/repairs 等；
+        - 结果硬门复用 _check_agent_result_artifact。
+
+        Args:
+            spec_name: SPEC 名。
+            run_id: 预生成 run id；省略则生成 ``spec-review-<spec>-<ts>``。
+
+        Returns:
+            AgentRunResult（success 仅表示 run 正常收工；评审语义合法性由调用方
+            读取结果文件校验）。
+        """
+        run_id = run_id or f"spec-review-{spec_name}-{int(time.time())}"
+        result_path = spec_review_result_path(self.project_root, spec_name)
+        # 确保结果目录存在
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            prompt = self._build_prompt(
+                spec_name, "spec-review",
+                detail={"result_path": str(result_path)},
+            )
+        except Exception as e:
+            return AgentRunResult(
+                run_id, spec_name, "spec-review",
+                success=False, duration_seconds=0.0,
+                error=f"spec review prompt 构建失败: {e}",
+            )
+
+        # 模型路由：复用 agents.models.spec-review（未分配走默认网关）
+        assignment = self._get_agent_model_assignment("spec-review")
+        env_overrides: Dict[str, str] = {}
+        provider_name = None
+        if assignment:
+            provider, model_override = assignment[0]
+            provider_name = provider["name"]
+            env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
+            env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
+            env_overrides["ANTHROPIC_MODEL"] = model_override
+            env_overrides["CLAUDE_CONFIG_DIR"] = str(
+                self._ensure_agent_config_dir(provider["name"])
+            )
+            for k, v in (provider.get("env") or {}).items():
+                env_overrides[k] = v
+            self._write_provider_marker(
+                run_id, spec_name, "spec-review",
+                provider["name"], model_override, 0, 1,
+            )
+        else:
+            model_override = DEFAULT_GATEWAY_MODEL
+
+        start_time = time.time()
+        try:
+            output, turns, _session_id, _usage = self._run_claude(
+                prompt, self.project_root, run_id, model_override, env_overrides,
+                max_turns=self._get_config("agents.max_turns", 300),
+                spec_name=spec_name,
+                agent_type="spec-review",
+            )
+            return AgentRunResult(
+                run_id, spec_name, "spec-review",
+                success=True, duration_seconds=time.time() - start_time,
+                turns_used=turns, output=output or "",
+                provider_used=provider_name, model_used=model_override,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "agent_runner",
+                f"spec review run 失败 '{spec_name}': {e}",
+            )
+            return AgentRunResult(
+                run_id, spec_name, "spec-review",
                 success=False, duration_seconds=time.time() - start_time,
                 error=str(e),
                 provider_used=provider_name, model_used=model_override,

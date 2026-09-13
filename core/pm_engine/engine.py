@@ -164,6 +164,7 @@ class PMEngine:
                 "spec_verified": self._on_spec_verified,
                 "spec_bug_found": self._on_spec_bug_found,
                 "spec_done": self._on_spec_done,
+                "spec_reviewing": self._on_spec_reviewing,
             }
 
             handler = handlers.get(event_kind)
@@ -200,16 +201,26 @@ class PMEngine:
             spec_name,
             state_machine=self.state_machine,
             logger=self.logger,
+            config=self.config,
         )
         if not result["ok"]:
             # lint 违规或非 drafted 拒绝：error 已由 promote_drafted 写入 STATE（lint 违规），
             # 或返回拒绝原因（非 drafted）。两种情况都不派发。
             return
-        # 全部通过：transition drafted → ready + 直接排队实现
-        self.logger.info("pm_engine", f"Auto-promoting '{spec_name}': drafted → ready")
-        self.state_machine.transition(spec_name, "ready")
-        # 直接调用 _on_spec_ready 排队实现，不依赖事件循环
-        self._on_spec_ready(spec_name)
+        # 全部通过：根据 next_status 分流
+        next_status = result.get("next_status", "ready")
+        if next_status == "ready":
+            self.logger.info("pm_engine", f"Auto-promoting '{spec_name}': drafted → ready")
+            self.state_machine.transition(spec_name, "ready")
+            # 直接调用 _on_spec_ready 排队实现，不依赖事件循环
+            self._on_spec_ready(spec_name)
+        elif next_status == "reviewing":
+            self.logger.info("pm_engine", f"Auto-promoting '{spec_name}': drafted → reviewing")
+            self.state_machine.transition(spec_name, "reviewing")
+            # 派发评审 run
+            self._on_spec_reviewing(spec_name)
+        else:
+            self.logger.error("pm_engine", f"未知 next_status: {next_status}")
 
     def _lint_deliverable_declarations(self, spec_name: str) -> list:
         """Deliverables 声明形态 lint（晋升前拦截，fail-open）。"""
@@ -242,6 +253,27 @@ class PMEngine:
                 f"tasks.md 可解析性 lint 异常 '{spec_name}'（非阻塞放行）: {e}",
             )
             return []
+
+    def _on_spec_reviewing(self, spec_name: str):
+        """处理 spec_reviewing 事件：派发评审 run。"""
+        from core.pm_engine.spec_review import SpecReviewManager
+        review_manager = SpecReviewManager(
+            self.project_root,
+            self.state_machine,
+            self.agent_runner,
+            self,
+            self.config,
+            self.logger,
+        )
+        # 检查是否已有在飞评审 run（防重派）
+        entry = self.state_machine.read_one(spec_name)
+        if entry and entry.get("reviewer_run"):
+            self.logger.info("pm_engine", f"已有在飞评审 run: {spec_name}")
+            return
+        # 派发评审
+        success = review_manager.dispatch_review(spec_name)
+        if not success:
+            self.logger.error("pm_engine", f"评审派发失败: {spec_name}")
 
     def _on_spec_ready(self, spec_name: str):
         """Schedule implementer for ready SPEC (if dependencies are satisfied)."""

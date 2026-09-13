@@ -151,7 +151,7 @@ STORED_SIGNAL_TYPES = (
 # ⚠️ 与 core/agent_runner/run_files.py:run_spec_part 前缀元组同源互指，新增 run
 # 前缀（如 add-deliverable-declaration-triage 的 dispute-judge-）两处必须同步。
 _RUN_PREFIXES = ("impl-", "verify-", "planner-plan-", "planner-judge-",
-                 "dispute-judge-", "admin-")
+                 "dispute-judge-", "spec-review-", "admin-")
 
 # ── daemon-error-escalation D6：错误指纹归一化（保守集）────────────
 # 只归一化四类：ISO-8601 时间戳→@、UUID→~、≥16 位 hex→~、纯数字序列→#。
