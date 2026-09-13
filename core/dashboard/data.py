@@ -605,9 +605,11 @@ def request_spec_approve_push(project_root, spec: str) -> dict:
     - spec 不在项目 STATE.md → {ok: False, found: False}
     - status 非 done → {ok: False, terminal: True}（error 区分 pushed 幂等
       文案与其它非 done 状态文案）
-    - daemon 未运行（复用 core.fenix_session.is_running 进程探测）→
-      {ok: False, daemon_down: True}——信号无人消费会静默滞留，比明确报错
-      更糟（design D2），前置 409 拦截
+    - daemon 未受 supervisor 托管（`core.fenix_session.hosting_state(proot)`
+      非 "managed"）→ {ok: False, daemon_down: True}（stopped）或
+      {ok: False, unmanaged: True}（进程在跑但无 supervisor）——信号无人
+      消费会静默滞留，比明确报错更糟（design D2 + fix-supervisor-hosting-chain
+      D8），前置拦截
     - 已存在未消费信号 → {ok: False, conflict: True}（对齐 request_run_cancel
       冲突语义，读既有 created 供返回）
     通过校验后原子写（tmp+rename + fsync，与 request_admin_invoke 同构）

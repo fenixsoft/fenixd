@@ -67,6 +67,19 @@ def _make_pushed_project(tmp_path, spec_name="pushed-spec"):
     return proot, sm
 
 
+def _patch_hosting(monkeypatch, state):
+    """patch 消费方判据（fix-supervisor-hosting-chain D8）。
+
+    `request_spec_approve_push` 的放行条件已从「daemon 进程存活」（
+    `dash_data._is_running`）升级为「受 supervisor 托管的活跃 daemon」
+    （`core.fenix_session.hosting_state(proot) == "managed"`）——测试环境的
+    临时项目没有任何 supervisor，不 patch 则恒判 stopped。函数内 import，
+    须 patch 模块属性本身（与 test_dashboard_api.py 同款处方）。
+    """
+    monkeypatch.setattr("core.fenix_session.hosting_state",
+                        lambda root=None, _state=state: _state)
+
+
 # ── request_spec_approve_push 全分支 ──────────────────────────────
 
 class TestRequestSpecApprovePush:
@@ -100,18 +113,34 @@ class TestRequestSpecApprovePush:
         assert "已推送" in result["error"]
 
     def test_daemon_down_returns_409(self, tmp_path, monkeypatch):
-        """daemon 未运行 → {ok: False, daemon_down: True}，信号文件不写入。"""
+        """daemon 未受托管（stopped）→ {ok: False, daemon_down: True}，信号文件不写入。"""
         proot, _ = _make_done_project(tmp_path)
-        monkeypatch.setattr(dash_data, "_is_running", lambda p: False)
+        _patch_hosting(monkeypatch, "stopped")
         result = dash_data.request_spec_approve_push(proot, "done-spec")
         assert result["ok"] is False
         assert result["daemon_down"] is True
+        assert result["unmanaged"] is False
+        assert not (proot / dash_data.APPROVE_PUSH_REQUEST).exists()
+
+    def test_unmanaged_returns_409_with_install_hint(self, tmp_path, monkeypatch):
+        """daemon 在跑但无 supervisor（unmanaged）→ unmanaged 拒绝，信号不写入。
+
+        fix-supervisor-hosting-chain D8 事故面：进程存活 ≠ 有人消费文件信号，
+        放行会写出一条永久滞留、锁死该项目后续审批推送的信号。
+        """
+        proot, _ = _make_done_project(tmp_path)
+        _patch_hosting(monkeypatch, "unmanaged")
+        result = dash_data.request_spec_approve_push(proot, "done-spec")
+        assert result["ok"] is False
+        assert result["unmanaged"] is True
+        assert result["daemon_down"] is False
+        assert "未受 supervisor 托管" in result["error"]
         assert not (proot / dash_data.APPROVE_PUSH_REQUEST).exists()
 
     def test_conflict_returns_existing_created(self, tmp_path, monkeypatch):
         """已有未消费信号 → conflict，读既有 created 供返回。"""
         proot, _ = _make_done_project(tmp_path)
-        monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
+        _patch_hosting(monkeypatch, "managed")
         # 先写一条合法信号
         first_result = dash_data.request_spec_approve_push(proot, "done-spec")
         assert first_result["ok"] is True
@@ -125,7 +154,7 @@ class TestRequestSpecApprovePush:
     def test_success_writes_payload_with_three_keys(self, tmp_path, monkeypatch):
         """校验通过 → 原子写入信号，payload 含 spec/source/created 三键，无 tmp 残留。"""
         proot, _ = _make_done_project(tmp_path)
-        monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
+        _patch_hosting(monkeypatch, "managed")
         result = dash_data.request_spec_approve_push(proot, "done-spec")
         assert result["ok"] is True
         assert result["found"] is True
@@ -251,7 +280,7 @@ class TestApprovePushIdempotency:
     def test_two_requests_without_consumption_second_conflict(self, tmp_path, monkeypatch):
         """连续两次调用（中间不消费）→ 第二次 conflict。"""
         proot, _ = _make_done_project(tmp_path)
-        monkeypatch.setattr(dash_data, "_is_running", lambda p: True)
+        _patch_hosting(monkeypatch, "managed")
         r1 = dash_data.request_spec_approve_push(proot, "done-spec")
         assert r1["ok"] is True
         r2 = dash_data.request_spec_approve_push(proot, "done-spec")
