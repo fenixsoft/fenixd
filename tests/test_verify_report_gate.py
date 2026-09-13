@@ -238,6 +238,114 @@ class TestSynthesizedReportParsable(_GateTestBase):
         self.assertEqual(verdict["summary"]["passed"], "10")
 
 
+class TestGateSupersedesStaleReport(_GateTestBase):
+    """陈旧报告：上一轮合成的结论不得继续代表本轮裁决（fix-stale-report-supersede）。
+
+    事故（2026-09-12 add-framework-self-evolution）：第 1 轮 bug-found 时闸门合成
+    ❌ 报告；打回后第 2 轮 42/42 全绿走「全绿快道」（跳过 judge、不产 md），闸门
+    见文件已存在即放行 → spec pushed 后仪表盘仍显示「❌ 未通过 39/42」。
+    """
+
+    def _seed_round(self, *, verdict, passed, failed, total, ts,
+                    spec=SPEC, summary="本轮裁决摘要"):
+        """摆放一轮的结构化数据（report.json 带 timestamp 供指纹比对）。"""
+        progress = self.project_root / ".fenix" / "verify-progress" / spec
+        progress.mkdir(parents=True, exist_ok=True)
+        report = {
+            "spec": spec, "timestamp": ts,
+            "summary": {"total": total, "passed": passed, "warnings": 0,
+                        "failed": failed, "errors": 0, "blocked_env": 0},
+            "scenarios": [],
+        }
+        run_result = {"status": verdict, "spec": spec, "bugs": [],
+                      "summary": summary}
+        (progress / "report.json").write_text(
+            json.dumps(report, ensure_ascii=False), encoding="utf-8")
+        (progress / ".fenix-run-result.json").write_text(
+            json.dumps(run_result, ensure_ascii=False), encoding="utf-8")
+
+    def test_stale_synthesized_report_regenerated_on_new_round(self):
+        """第 1 轮 ❌ → 闸门合成；第 2 轮 ✅ → 闸门必须重新合成覆盖。"""
+        from core.verify_report import ensure_verification_report
+        self._seed_round(verdict="bug-found", passed=39, failed=3, total=42,
+                         ts="2026-09-12T22:58:53.000000+00:00")
+        self.assertIsNone(
+            self.engine._verification._ensure_verification_report(SPEC))
+        first = self._report_path().read_text(encoding="utf-8")
+        self.assertIn("## 结论：❌ 未通过（Bug Found）", first)
+
+        # 第 2 轮：全绿快道机械 verified（judge 未写 md）
+        self._seed_round(verdict="verified", passed=42, failed=0, total=42,
+                         ts="2026-09-12T23:25:33.520781+00:00")
+        result = ensure_verification_report(self.project_root, SPEC,
+                                            logger=self.logger)
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(result.get("action"), "resynthesized")
+
+        second = self._report_path().read_text(encoding="utf-8")
+        self.assertIn("## 结论：✅ 通过（verified）", second)
+        self.assertNotIn("❌ 未通过", second)
+        self.assertIn("| 通过 | 42 |", second)
+        # 仪表盘读侧（parse_verdict）随之翻绿
+        from core.dashboard.data import parse_verdict
+        self.assertIn("✅", parse_verdict(self.project_root, SPEC)["status"])
+
+    def test_same_round_report_not_rewritten(self):
+        """同一轮重复放行：内容与 mtime 均不变（幂等）。"""
+        self._seed_round(verdict="verified", passed=10, failed=0, total=10,
+                         ts="2026-09-13T01:00:00.000000+00:00")
+        self.assertIsNone(
+            self.engine._verification._ensure_verification_report(SPEC))
+        path = self._report_path()
+        content = path.read_text(encoding="utf-8")
+        mtime_ns = path.stat().st_mtime_ns
+
+        self.assertIsNone(
+            self.engine._verification._ensure_verification_report(SPEC))
+
+        self.assertEqual(path.read_text(encoding="utf-8"), content)
+        self.assertEqual(path.stat().st_mtime_ns, mtime_ns)
+
+    def test_legacy_report_without_fingerprint_contradiction_regenerated(self):
+        """存量 md（无指纹）结论与当前结构化数据矛盾 → 同样重新合成。"""
+        path = self._report_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "# 验证报告：v2-shell-hash-router\n\n"
+            "## 结论：❌ 未通过（Bug Found）\n\n"
+            "**状态：bug-found — 39/42 场景通过，3 失败，0 错误**\n\n"
+            "| 指标 | 数量 |\n| --- | --- |\n| 通过 | 39 |\n| 失败 | 3 |\n",
+            encoding="utf-8",
+        )
+        self._seed_round(verdict="verified", passed=42, failed=0, total=42,
+                         ts="2026-09-13T02:00:00.000000+00:00")
+
+        self.assertIsNone(
+            self.engine._verification._ensure_verification_report(SPEC))
+
+        content = path.read_text(encoding="utf-8")
+        self.assertIn("## 结论：✅ 通过（verified）", content)
+        self.assertNotIn("❌ 未通过", content)
+
+    def test_agent_report_with_agreeing_verdict_preserved(self):
+        """Agent 报告与当前裁决一致 → 原样保留（Agent 报告优先策略不回归）。"""
+        path = self._report_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        original = (
+            "# 验证报告：v2-shell-hash-router\n\n"
+            "## 结论：✅ 通过（verified）\n\n"
+            "Agent 手写叙述：全部场景通过，无产品缺陷。\n"
+        )
+        path.write_text(original, encoding="utf-8")
+        self._seed_round(verdict="verified", passed=10, failed=0, total=10,
+                         ts="2026-09-13T03:00:00.000000+00:00")
+
+        self.assertIsNone(
+            self.engine._verification._ensure_verification_report(SPEC))
+
+        self.assertEqual(path.read_text(encoding="utf-8"), original)
+
+
 class TestFastTrackScenarioSourcing(_GateTestBase):
     """任务 1.1/1.2：合成报告场景表的数据源回退（fix-verify-report-fasttrack-scenarios）。
 

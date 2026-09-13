@@ -3,12 +3,15 @@
 保障 ``spec/changes/<spec>/verification-report.md`` 在验证裁决放行时
 必然存在于磁盘：
 
-  - 裁决 Agent 主动写入的报告优先——文件已存在时闸门直接放行，
-    MUST NOT 覆盖或改写（含 mtime）。
+  - 裁决 Agent 主动写入的报告优先——文件已存在且**与本轮裁决一致**时闸门直接
+    放行，MUST NOT 覆盖或改写（含 mtime）。
   - 文件缺失时由框架从结构化数据（``.fenix/verify-progress/<spec>/report.json``
     与 ``.fenix-run-result.json``）确定性合成——纯本地渲染，零 LLM 成本。
     （judge 效率治理 2026-09-06：judge prompt 已删「写 md」步骤，合成由此
     转正为常规路径；裁决 Agent 主动写入仍优先兼容。）
+  - 文件存在但属**上一轮残留**时重新合成覆盖——报告是「每轮裁决产物」，
+    陈旧报告会让仪表盘与下游修复引用读到已失效的结论（见
+    ``_report_is_superseded``）。
   - 结构化数据也不可用时 fail-closed：不写空报告、阻断状态推进，
     并发 human-escalation-alerts 告警（此时才代表真异常）。
 
@@ -22,6 +25,7 @@
 """
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +35,18 @@ SIGNAL_MISSING = "verify_report_missing"
 # 升级告警写入节流（分钟）：同 spec 同类信号冷却期内不重复落库，
 # 防止多轮重验反复刷屏。与 admin.escalation_cooldown_minutes 同源。
 _ALERT_COOLDOWN_MINUTES = 15
+
+# 合成报告携带的「合成源轮次指纹」标记：报告属哪一轮裁决的机器可读留痕。
+# 人读行内标记，取值为无空格无标点的 token（见 current_round_fingerprint）。
+_FINGERPRINT_MARKER = "合成源轮次指纹："
+_FINGERPRINT_RE = re.compile(
+    re.escape(_FINGERPRINT_MARKER) + r"([^\s，。）|]+)")
+
+# 存量报告无指纹时的兜底判据：解析 md 声明的结论行与汇总计数（与
+# dashboard.data.parse_verdict 同款语法，两处必须同源演进）。
+_MD_CONCLUSION_RE = re.compile(
+    r"^#{2,4}\s*(?:判定)?结论\s*(?:摘要)?\s*[：:]?\s*(.*)$", re.M)
+_MD_COUNT_RE = re.compile(r"^\|\s*(通过|失败|错误)\s*\|\s*([^|]+?)\s*\|", re.M)
 
 
 # ── 结构化数据读取 ────────────────────────────────────────────────
@@ -209,6 +225,111 @@ def _summary_counts(report):
     return _num("passed"), _num("failed"), _num("errors"), _num("total")
 
 
+# ── 报告时效（陈旧报告识别）────────────────────────────────────────
+
+def current_round_fingerprint(project_root, spec_name):
+    """当前轮结构化数据的指纹（轮次身份）。无结构化数据时返回 None。
+
+    report.json 的 ``timestamp`` 由验证引擎每轮重写，是轮次身份的第一来源；
+    字段缺失时退化为文件 mtime（同样每轮重写即变化）。两路皆不可得返回 None
+    ——此时无从判定新旧，闸门维持「既有报告不改动」的保守行为。
+    """
+    report_path = (
+        Path(project_root) / ".fenix" / "verify-progress"
+        / spec_name / "report.json"
+    )
+    run_result_path = (
+        Path(project_root) / ".fenix" / "verify-progress"
+        / spec_name / ".fenix-run-result.json"
+    )
+    report = _load_report_json(project_root, spec_name)
+    if isinstance(report, dict):
+        ts = report.get("timestamp")
+        if isinstance(ts, str) and ts.strip():
+            return f"report.json@{ts.strip()}"
+        try:
+            return f"report.json@mtime{report_path.stat().st_mtime_ns}"
+        except OSError:
+            pass
+    try:
+        if run_result_path.is_file():
+            return f"run-result@mtime{run_result_path.stat().st_mtime_ns}"
+    except OSError:
+        pass
+    return None
+
+
+def _report_fingerprint(content):
+    """既有报告记录的合成源轮次指纹；Agent 手写/存量报告无标记时返回 None。"""
+    m = _FINGERPRINT_RE.search(content or "")
+    return m.group(1) if m else None
+
+
+def _md_declared_verdict(content):
+    """解析 md 自己声明的 (verdict, failed, errors)；解析不出为 None。
+
+    与 ``core/dashboard/data.py`` 的 ``parse_verdict`` 同款语法：结论标题行
+    「## 结论：…」+ 汇总表格行「| 失败 | N |」。Agent 自由叙述（无结论标题、
+    无汇总表）→ 全部为 None，视作「不可判定」而非「矛盾」。
+    """
+    verdict = None
+    m = _MD_CONCLUSION_RE.search(content or "")
+    if m:
+        head = m.group(1)
+        # 顺序敏感：「未通过」含「通过」子串，必须先判不通
+        if "未通过" in head or "❌" in head or "bug-found" in head:
+            verdict = "bug-found"
+        elif "通过" in head or "✅" in head or "verified" in head:
+            verdict = "verified"
+    counts = {}
+    for label, raw in _MD_COUNT_RE.findall(content or ""):
+        try:
+            counts[label] = int(raw)
+        except (TypeError, ValueError):
+            continue
+    return verdict, counts.get("失败"), counts.get("错误")
+
+
+def _report_is_superseded(project_root, spec_name, content) -> bool:
+    """既有报告是否为上一轮残留（须重新合成）。
+
+    事故背景（2026-09-12 add-framework-self-evolution）：第 1 轮 bug-found 时
+    闸门合成 ❌ 报告；打回后第 2 轮走「全绿快道」（跳过 judge、不产 md），闸门
+    见文件已存在即放行 → spec 已 pushed 而报告仍是上一轮的 ❌。
+
+    判据一（精确，框架合成报告）：报告携带的合成源轮次指纹 ≠ 当前轮指纹。
+    判据二（兜底，存量 md 无指纹）：md 声明的裁决结论与当前结构化数据矛盾
+    （状态不一致，或失败/错误计数不一致）。
+
+    Agent 手写叙述、无结论行、或结论与本轮一致的报告一律维持原样——「Agent
+    报告优先、不覆盖」的原策略不回归。
+    """
+    current = current_round_fingerprint(project_root, spec_name)
+    declared_fp = _report_fingerprint(content)
+    if current and declared_fp:
+        return declared_fp != current
+
+    run_result = _load_run_result(project_root, spec_name)
+    report = _load_report_json(project_root, spec_name)
+    if run_result is None and report is None:
+        return False  # 无结构化数据可比对：交给合成路径自身 fail-closed
+    declared_verdict, declared_failed, declared_errors = _md_declared_verdict(content)
+    if declared_verdict is None and declared_failed is None \
+            and declared_errors is None:
+        return False  # 解析不出结论（Agent 自由叙述）→ 不判矛盾
+    if declared_verdict is not None \
+            and declared_verdict != _derive_status(run_result, report):
+        return True
+    _passed, failed, errors, _total = _summary_counts(report)
+    if declared_failed is not None and failed is not None \
+            and declared_failed != failed:
+        return True
+    if declared_errors is not None and errors is not None \
+            and declared_errors != errors:
+        return True
+    return False
+
+
 def _failed_assertion_count(scenario) -> str:
     """场景失败断言数「x/y」，无断言数据返回 '-'。"""
     ars = scenario.get("assertion_results")
@@ -356,7 +477,8 @@ def _render_scenarios_table(report) -> list:
 
 
 def render_verification_report(spec_name, run_result, report, now=None,
-                              project_root=None, degrade_annotation=None) -> str:
+                              project_root=None, degrade_annotation=None,
+                              source_fingerprint=None) -> str:
     """把结构化数据渲染为人读报告 Markdown。
 
     纯函数：不做 IO、不写文件，便于测试与下游复用。project_root 用于读取验证链
@@ -366,6 +488,9 @@ def render_verification_report(spec_name, run_result, report, now=None,
     （reason/run_id/duration_seconds/cost_usd/degraded_at，源自 degrade_context.json），
     存在时在报告头部追加「⚠️ 降级说明」引用块；缺省 None 时零渲染（正常报告
     不含该标注，与无降级时逐字节一致）。
+
+    source_fingerprint：本轮结构化数据的轮次指纹（``current_round_fingerprint``），
+    非空时写入头部「合成源轮次指纹：」标记，供闸门判定报告是否属上一轮。
     """
     status = _derive_status(run_result, report)
     passed, failed, errors, total = _summary_counts(report)
@@ -382,6 +507,11 @@ def render_verification_report(spec_name, run_result, report, now=None,
         f"（裁决 Agent 未写报告，已由框架合成），"
         f"内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。"
     )
+    if isinstance(source_fingerprint, str) and source_fingerprint.strip():
+        lines.append(
+            f"> 报告时效标记（判定本报告是否属上一轮）："
+            f"{_FINGERPRINT_MARKER}{source_fingerprint.strip()}"
+        )
     lines.append("")
 
     # ── 降级说明引用块（add-planready-artifact-gate D4，G3 留痕）──
@@ -551,7 +681,8 @@ def synthesize_verification_report(project_root, spec_name, now=None) -> dict:
 
     content = render_verification_report(
         spec_name, run_result, report, now=now, project_root=project_root,
-        degrade_annotation=degrade_annotation)
+        degrade_annotation=degrade_annotation,
+        source_fingerprint=current_round_fingerprint(project_root, spec_name))
     out_path = (
         Path(project_root) / "spec" / "changes"
         / spec_name / "verification-report.md"
@@ -596,16 +727,37 @@ def _append_alert(project_root, spec_name, signal_type, severity,
 def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
     """验证报告产物闸门：裁决放行前调用。
 
-    返回 {"ok": True, "action": "present"|"synthesized"} 表示放行；
+    返回 {"ok": True, "action": "present"|"synthesized"|"resynthesized"} 表示放行；
     返回 {"ok": False, "error": <文案>} 表示 MUST 阻止状态推进（fail-closed）。
+
+    action=resynthesized：既有报告属上一轮残留（``_report_is_superseded``），
+    已用本轮结构化数据重新合成覆盖。
     """
     out_path = (
         Path(project_root) / "spec" / "changes"
         / spec_name / "verification-report.md"
     )
     if out_path.exists():
-        # Agent 已写报告：原样保留，不覆盖、不改 mtime
-        return {"ok": True, "action": "present"}
+        try:
+            existing = out_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            existing = ""
+        if not _report_is_superseded(project_root, spec_name, existing):
+            # Agent 已写报告且与本轮裁决一致：原样保留，不覆盖、不改 mtime
+            return {"ok": True, "action": "present"}
+        result = synthesize_verification_report(project_root, spec_name)
+        if result.get("ok"):
+            if logger is not None:
+                logger.warning(
+                    "verify_report",
+                    f"验证报告闸门：'{spec_name}' 报告属上一轮残留"
+                    f"（本轮裁决已变更），已重新合成覆盖",
+                )
+            return {"ok": True, "action": "resynthesized"}
+        return {
+            "ok": False,
+            "error": result.get("error") or "验证报告缺失且无法合成",
+        }
 
     result = synthesize_verification_report(project_root, spec_name)
     if result.get("ok"):

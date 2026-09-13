@@ -1,34 +1,22 @@
 # 验证报告：fix-supervisor-hosting-chain
 
-> ⚠️ 本报告由框架于 2026-09-12T08:22:26Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> ⚠️ 本报告由框架于 2026-09-13T10:53:07Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-12T11:21:50.424474+00:00
 
-## 结论：❌ 未通过（Bug Found）
+## 结论：✅ 通过（verified）
 
-**状态：bug-found — 35/40 场景通过，5 失败，0 错误（1 个真实产品 Bug）**
+**状态：verified — 40/40 场景通过，0 失败，0 错误（全部场景通过）**
 
-40 场景：35 通过、5 失败，聚合为 1 个 major 产品 Bug（托管链：stop/install 端点阻塞逼近 30s 超时 + 并发 stop_daemon 的 SIGKILL 兜底误杀新 supervisor，致托管未成立、approve 信号无人消费）。上轮 verdict_cache 的选择器缺陷本轮已修复（click 成功），失败形态与上轮不同，非场景文件问题。
+全绿快道: 40/40 场景通过、0 失败 0 警告——无分类对象，跳过 judge 机械 verified
 
 | 指标 | 数量 |
 | --- | --- |
-| 通过 | 35 |
-| 失败 | 5 |
+| 通过 | 40 |
+| 失败 | 0 |
 | 错误 | 0 |
-| 产品 Bug | 1 |
+| 产品 Bug | 0 |
 | 本链增量 Token（输入） | 28.49M |
 | 本链增量 Token（输出） | 0.28M |
-
-
-## 真实产品 Bug
-
-### BUG-01（severity=major）· element_not_exist / json_output / status_code
-
-- 关联场景：web-overview-install-hosting-click、cli-verify-showcase-managed-after-install、api-install-hosting-managed-idempotent、api-lifecycle-start-stop-normal、cli-verify-showcase-approve-signal-consumed
-- 描述：安装托管后 supervisor 进程未存活、托管未成立：install-hosting/stop 端点处理阻塞逼近 30s 超时线，并发 stop_daemon 的 SIGKILL 兜底杀死新拉起的 supervisor，daemon 死亡致 approve 信号无人消费
-- 根因：stop_daemon 收口过慢（写 .fenix/stop→SIGTERM daemon→轮询上限 30s；daemon 侧 wait_for_running_agents 默认 grace 窗口收口实测约 10-21s）逼近客户端 30s 超时线；上一场景 install 的 stop_daemon 与下一场景 stop 的 stop_daemon 并发互踩，后者超时走 kill-session + SIGKILL 兜底时杀死前者刚拉起的 supervisor（supervisor.log 两次启动均无退出日志即消失）；托管未成立后 daemon 死亡，approve_push_request.json 无人消费
-- 证据（场景 web-overview-install-hosting-click 结构化证据，引用）：
-  - failed_assertions: [{"type": "element_not_exist", "selector": ".ant-list-item:has-text(\"scheduling-showcase\") >> :has-text(\"运行中·未托管\")", "expected": "安装托管后未托管角标不存在", "actual": "元素仍存在：点击「安装托管」并等待 12s 后项目卡片仍显示「运行中·未托管」"}]
-  - screenshots: ["/root/fenixd/.fenix/verify-progress/fix-supervisor-hosting-chain/screenshots/web-overview-install-hosting-click_assert_fail.png"]
-  - first_failed_step: 步骤5（点击「安装托管」后等待 12s）→ 断言 element_not_exist 失败：install-hosting 端点（server 端 stop_daemon 收口约 10-21s，逼近 30s 超时线）未在 12s 等待窗口内完成托管转入，UI 仍显示未托管
 
 
 ## 场景结果
@@ -69,23 +57,16 @@
 | web-overview-unmanaged-badge-menu | 概览项目卡片托管态三态显示与「安装托管」菜单（project-lifecycle-control UI / supervisor-hosting R9 事故回归）：navigate 到 dashboard 概览页（hash 路由出处 core/dashboard/static/config/config.ts:15 history.type=hash；概览页路由 core/dashboard/static/config/routes.ts:10-12 /overview），scheduling-showcase 处于 unmanaged 时其 DaemonBadge MUST 渲染「运行中·未托管」警示样式（ProjectCards.tsx:24-43），项目操作菜单 MUST 含「安装托管」项（ProjectCards.tsx:118-133，仅 hosting===unmanaged 渲染）。 | pass | 0/5 | - |
 | cli-approve-push-unmanaged-no-signal-file | 审批推送被拒后无信号残留（supervisor-hosting R10）：409 拒绝后 .fenix/approve_push_request.json MUST NOT 存在（信号不会永久滞留锁死后续审批推送）。功能出处：core/dashboard/data.py:651-657（unmanaged 分支不写文件）。 | pass | 0/2 | - |
 | cli-restart-rejected-no-signal-file | restart 被拒后无 restart_request 残留（project-lifecycle-control R3）：unmanaged 拒绝后 .fenix/restart_request MUST NOT 被写入（不会被当作成功重启）。功能出处：core/dashboard/server.py:1605-1611（unmanaged 分支提前返回，不 touch 文件）。 | pass | 0/2 | - |
-| web-overview-install-hosting-click | 概览页点击「安装托管」把裸 daemon 项目转入托管（supervisor-hosting R9 事故回归 UI 流 / project-lifecycle-control UI）：在 scheduling-showcase 项目菜单点击「安装托管」（ProjectCards.tsx:126-128 菜单项、:76-98 runAction 调用 installHosting、services/dashboard.ts:83-85），接口成功后 runAction 触发概览刷新；等待安装托管完成（停止裸 daemon → 经 supervisor 启动，见 server.py:1639-1662）后，该卡片托管态徽标 MUST 从「运行中·未托管」变为「运行中」。 | failed（已修正） | 1/4 | product-bug |
-| cli-verify-showcase-managed-after-install | 安装托管后项目转入 managed（supervisor-hosting R9 事故回归，跨形态状态验证）：经概览「安装托管」操作后，scheduling-showcase 的 hosting_state MUST 为 managed、supervisor_running MUST 为真，且 .fenix/supervisor_runtime.json MUST 存在并含 pid/script_hash/project_root（project_root 等于该项目根，证明 supervisor 未被软链劫持到主树）。功能出处：core/fenix_session.py:226-248（hosting_state）、bin/fenixd_supervisor.py:141-181（自报五字段）。 | failed（已修正） | 2/7 | product-bug |
-| api-install-hosting-managed-idempotent | 已托管项目安装托管幂等（supervisor-hosting R9 / project-lifecycle-control R3）：scheduling-showcase 已 managed 时 再调用 POST /api/projects/scheduling-showcase/install-hosting MUST 返回成功且 already=true（不重启 daemon， 不复用 stop/start）。功能出处：core/dashboard/server.py:1639-1662（_api_project_install_hosting managed 分支 :1653-1654 幂等返回）。 | failed（已修正） | - | product-bug |
-| api-lifecycle-start-stop-normal | 概览管理 API 端点 start/stop 正常返回（project-lifecycle-control R3 / R1/R2 端点层）：对已托管项目依次调用 POST /api/projects/scheduling-showcase/stop 与 /start——stop MUST 返回 ok=true + was_running=true（优雅收口， supervisor 见 stop flag 退出），start MUST 返回 ok=true（经 supervisor 托管拉起）。功能出处：core/dashboard/server.py:1755-1763（POST 路由）、:1572-1637（_api_project_lifecycle start/stop 分支）。 | failed（已修正） | - | product-bug |
+| web-overview-install-hosting-click | 概览页点击「安装托管」把裸 daemon 项目转入托管（supervisor-hosting R9 事故回归 UI 流 / project-lifecycle-control UI）：在 scheduling-showcase 项目菜单点击「安装托管」（ProjectCards.tsx:126-128 菜单项、:76-98 runAction 调用 installHosting、services/dashboard.ts:83-85），接口成功后 runAction 触发概览刷新；等待安装托管完成（停止裸 daemon → 经 supervisor 启动，见 server.py:1639-1662）后，该卡片托管态徽标 MUST 从「运行中·未托管」变为「运行中」。 | pass | 0/4 | - |
+| cli-verify-showcase-managed-after-install | 安装托管后项目转入 managed（supervisor-hosting R9 事故回归，跨形态状态验证）：经概览「安装托管」操作后，scheduling-showcase 的 hosting_state MUST 为 managed、supervisor_running MUST 为真，且 .fenix/supervisor_runtime.json MUST 存在并含 pid/script_hash/project_root（project_root 等于该项目根，证明 supervisor 未被软链劫持到主树）。功能出处：core/fenix_session.py:226-248（hosting_state）、bin/fenixd_supervisor.py:141-181（自报五字段）。 | pass | 0/7 | - |
+| api-install-hosting-managed-idempotent | 已托管项目安装托管幂等（supervisor-hosting R9 / project-lifecycle-control R3）：scheduling-showcase 已 managed 时 再调用 POST /api/projects/scheduling-showcase/install-hosting MUST 返回成功且 already=true（不重启 daemon， 不复用 stop/start）。功能出处：core/dashboard/server.py:1639-1662（_api_project_install_hosting managed 分支 :1653-1654 幂等返回）。 | pass | 0/3 | - |
+| api-lifecycle-start-stop-normal | 概览管理 API 端点 start/stop 正常返回（project-lifecycle-control R3 / R1/R2 端点层）：对已托管项目依次调用 POST /api/projects/scheduling-showcase/stop 与 /start——stop MUST 返回 ok=true + was_running=true（优雅收口， supervisor 见 stop flag 退出），start MUST 返回 ok=true（经 supervisor 托管拉起）。功能出处：core/dashboard/server.py:1755-1763（POST 路由）、:1572-1637（_api_project_lifecycle start/stop 分支）。 | pass | 0/5 | - |
 | api-approve-push-managed-success | managed 项目审批推送正常通过（supervisor-hosting R10）：scheduling-showcase 已 managed 时对 done SPEC c-sched-done 发起审批推送，POST /api/spec-approve-push MUST 返回 200 + ok=true，信号写入后由受托管 daemon 主循环消费（消费验证见 cli-verify-showcase-approve-signal-consumed）。功能出处：core/dashboard/server.py:904-919（managed 放行）、core/dashboard/data.py:665-699（写信号路径）。 | pass | 0/4 | - |
-| cli-verify-showcase-approve-signal-consumed | 受托管 daemon 消费审批推送信号（supervisor-hosting R10 后端闭环）：managed 项目信号写入后，daemon 主循环 MUST 在约 2s 粒度拾取并删除 approve_push_request.json（_check_approve_push_requests），并在 fenixd.log 落「消费审批推送信号」日志。功能出处：fenixd.py:796-830（主循环消费）。 | failed（已修正） | 1/3 | product-bug |
-
-
-## 断言级豁免清单
-
-以下失败断言被归类为非产品缺陷（不记产品 Bug），逐条列出供人工复核豁免是否掩盖真实缺陷（场景级一句话归因不足以复核）。
-
-无非 product-bug 的被豁免失败断言。
+| cli-verify-showcase-approve-signal-consumed | 受托管 daemon 消费审批推送信号（supervisor-hosting R10 后端闭环）：managed 项目信号写入后，daemon 主循环 MUST 在约 2s 粒度拾取并删除 approve_push_request.json（_check_approve_push_requests），并在 fenixd.log 落「消费审批推送信号」日志。功能出处：fenixd.py:796-830（主循环消费）。 | pass | 0/3 | - |
 
 ## 本轮场景集变更
 
-当前稳定场景集共 10 个（第 1 轮）。
+当前稳定场景集共 40 个（第 1 轮）。
 
-- 首轮写入 10 个场景
+首轮写入 40 个场景
 

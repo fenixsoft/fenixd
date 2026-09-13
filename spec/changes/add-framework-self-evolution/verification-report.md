@@ -1,44 +1,22 @@
 # 验证报告：add-framework-self-evolution
 
-> ⚠️ 本报告由框架于 2026-09-12T22:58:53Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> ⚠️ 本报告由框架于 2026-09-13T10:53:07Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-12T23:25:33.520781+00:00
 
-## 结论：❌ 未通过（Bug Found）
+## 结论：✅ 通过（verified）
 
-**状态：bug-found — 39/42 场景通过，3 失败，0 错误（2 个真实产品 Bug）**
+**状态：verified — 42/42 场景通过，0 失败，0 错误（全部场景通过）**
 
-42 场景：39 pass / 3 fail。3 个 fail 场景均判 product-bug（跨轮已裁决沿用，指纹一致）：(1) web-evolution-accept-flow + web-evolution-reject-flow 同一根因聚合为系统性问题——前端 accept/reject 以 axios 风格 data 传参给原生 fetch，请求体为空致服务端 400「Empty request body」，同意/拒绝全链 Web 端不可用（major）；(2) web-evolution-mobile-scroll-fixed——移动端菜单溢出页签折叠不可达（major）。静态情报 web-settings-self-evolution-tab 核实为误报：antd v6.6.0 autoInsertSpace 仅作用于 Button（es/menu 无该机制，grep 证实），菜单项「自愈」不会渲染为「自 愈」；且源码 BASE_MENU_ITEMS 已改「自进化」，10 项无一含「自愈」子串，element_not_exist 断言（actual_count=0）检验的是真实不变式，未空转，故不改场景文件。
+全绿快道: 42/42 场景通过、0 失败 0 警告——无分类对象，跳过 judge 机械 verified
 
 | 指标 | 数量 |
 | --- | --- |
-| 通过 | 39 |
-| 失败 | 3 |
+| 通过 | 42 |
+| 失败 | 0 |
 | 错误 | 0 |
-| 产品 Bug | 2 |
+| 产品 Bug | 0 |
 | 本链增量 Token（输入） | 32.33M |
 | 本链增量 Token（输出） | 0.32M |
-
-
-## 真实产品 Bug
-
-### BUG-01（severity=major）· text_match/no_console_error（B、C 行状态标签未变更 + 控制台 400）
-
-- 关联场景：web-evolution-accept-flow、web-evolution-reject-flow
-- 描述：设置页「建议改进项」同意/拒绝完整流在 Web 端不可用：二次确认后 POST /api/evolution/accept 与 /api/evolution/reject 均被服务端以 400 拒绝，无成功提示，表格行状态停留在「待决策」（未变「已同意/已拒绝」）——frontend fetch 请求体为空所致（产品缺陷，system-wide：accept 与 reject 两处同一模式）。
-- 根因：services/dashboard.ts:908-915 acceptEvolutionItem 与 :917-924 rejectEvolutionItem 均以 axios 风格传 data:{item_id} 给项目原生 fetch request 助手，但该助手直传 init 参数、不做 data→body 转换，POST 请求体为空；服务端 server._read_json_body 因 Content-Length=0 返回 400「Empty request body」。
-- 证据（场景 web-evolution-accept-flow 结构化证据，引用）：
-  - failed_assertions: [{"type": "text_contains", "text": "已立项", "expected": "成功提示含已立项", "actual": "无成功提示（POST 400）"}, {"type": "text_match", "selector": "tr[data-row-key='089a9f483228'] .ant-tag", "expected": "已同意", "actual": "待决策"}, {"type": "no_console_error", "expected": "无控制台错误", "actual": "[error] Failed to load resource: 400 (Bad Request)"}]
-  - screenshots: ["/root/fenixd/.fenix/verify-progress/add-framework-self-evolution/screenshots/web-evolution-accept-flow_assert_fail.png"]
-  - first_failed_step: 步骤10-11：点击二次确认弹窗「同意」后，POST /api/evolution/accept 返回 400，无成功提示，B 行状态仍为待决策
-
-### BUG-02（severity=major）· step_click（element_not_found_or_not_actionable）
-
-- 关联场景：web-evolution-mobile-scroll-fixed
-- 描述：390×844 移动端下设置页横向菜单将溢出页签折叠为不可达：点击「自进化」页签失败（Locator 超时，元素 aria-hidden=true 且 opacity:0/height:0/pointer-events:none），且无 .ant-menu-overflow-item-rest 溢出指示器——溢出页签无任何可达路径。
-- 根因：settings/index.tsx 移动端 rc-menu 横向布局对 10 个菜单项执行 overflow 折叠，但未配置可展开溢出指示器（prefixCls 溢出项计数为 0），超出容量的 7 个页签（并行/预算/验证/审批/归档/系统/自进化）被 aria-hidden 但仍存在于 DOM；预期横排可滚动，实际折叠不可达。
-- 证据（场景 web-evolution-mobile-scroll-fixed 结构化证据，引用）：
-  - failed_assertions: [{"type": "step_click", "selector": ".ant-menu-item:has-text('自进化')", "expected": "可点击切到自进化页签", "actual": "Locator 超时：元素 aria-hidden=true 隐藏（element_not_found_or_not_actionable）"}]
-  - screenshots: []
-  - first_failed_step: 步骤3：点击「自进化」页签失败——390×844 移动端下设置页 rc-menu 将后 7 个页签折叠为 aria-hidden/opacity:0/height:0/pointer-events:none，且无 .ant-menu-overflow-item-rest 溢出指示器，页签不可达
 
 
 ## 场景结果
@@ -77,8 +55,8 @@
 | web-evolution-drawer-draft-view | 查看 SPEC 草稿·Proposal（suggested-improvements-ui spec「切换查看四类草稿文档」前半）：pending 条目 B 的操作列「更多」→「查看 SPEC 草稿」→ Drawer 打开并默认渲染 proposal.md 内容。出处：SuggestedImprovementsPanel.tsx:211-220 openDraft（默认 doc=proposal）、:403-436 Drawer。 | pass | 0/3 | - |
 | web-evolution-drawer-draft-switch | 查看 SPEC 草稿·四文档切换（suggested-improvements-ui spec「切换查看四类草稿文档」）：打开条目 B 草稿 Drawer 后依次点击 Design/Tasks/Spec 切换按钮，切换不报错且最终渲染 spec.md 内容（四文档内容正确性另由 api-evolution-draft-four-docs 覆盖）。出处：SuggestedImprovementsPanel.tsx:403-436（extra 内四文档 Button、EVOLUTION_DOCS services/dashboard.ts:880）。 | pass | 0/3 | - |
 | web-evolution-more-menu-items-order | 操作列「更多」链接按钮交互与菜单四项顺序（suggested-improvements-ui spec「菜单四项与顺序」）：点击 pending 条目 B 的操作列「更多」按钮（antd Dropdown 触发器，Button type="link"），下拉打开并依次渲染「查看分析结论 / 查看 SPEC 草稿 / 同意 / 拒绝」四项。covers 登记 link=tasks.md:100 的 Button type="link"。出处：SuggestedImprovementsPanel.tsx:330-331（Dropdown + Button type="link">更多</Button>）、:58-61（ACTIONS 数组顺序 analysis/draft/accept/reject）、:9 行 Table rowKey="id"→tr[data-row-key]；导航出处 core/dashboard/static/src/app.tsx:111（/settings 路由，hash 路由）。 | pass | 0/7 | - |
-| web-evolution-accept-flow | 同意立项完整流（suggested-improvements-ui spec「同意需二次确认」「同意成功刷新与提示」）：pending 条目 B 操作列「更多」→「同意」→ 弹出二次确认 Modal.confirm（标题「同意立项」）→ 点确认（.ant-modal-confirm-btns .ant-btn-primary）→ 真实调用 POST /api/evolution/accept 完成落地（草稿复制 spec/changes/evo-fixture-settings-maxhint + 仅 add 该目录提交 + add_spec drafted/priority=5）→ 成功提示「已立项：evo-fixture-settings-maxhint」且表格刷新后该行状态「已同意」。出处：SuggestedImprovementsPanel.tsx:224-244 handleAccept、:270-285 menuItems；services/dashboard.ts:908-915 acceptEvolutionItem。 | failed（已修正） | 3/4 | product-bug |
-| web-evolution-reject-flow | 拒绝完整流（suggested-improvements-ui spec「拒绝成功刷新与提示」）：pending 条目 C 操作列「更多」→「拒绝」→ 二次确认 Modal.confirm → 点确认（danger 按钮）→ 真实调用 POST /api/evolution/reject 删除草稿并置 rejected → 成功提示「已拒绝」且表格刷新后该行状态「已拒绝」。出处：SuggestedImprovementsPanel.tsx:246-267 handleReject（okButtonProps danger）、:270-285 menuItems；services/dashboard.ts:917-924 rejectEvolutionItem。 | failed（已修正） | 2/4 | product-bug |
+| web-evolution-accept-flow | 同意立项完整流（suggested-improvements-ui spec「同意需二次确认」「同意成功刷新与提示」）：pending 条目 B 操作列「更多」→「同意」→ 弹出二次确认 Modal.confirm（标题「同意立项」）→ 点确认（.ant-modal-confirm-btns .ant-btn-primary）→ 真实调用 POST /api/evolution/accept 完成落地（草稿复制 spec/changes/evo-fixture-settings-maxhint + 仅 add 该目录提交 + add_spec drafted/priority=5）→ 成功提示「已立项：evo-fixture-settings-maxhint」且表格刷新后该行状态「已同意」。出处：SuggestedImprovementsPanel.tsx:224-244 handleAccept、:270-285 menuItems；services/dashboard.ts:908-915 acceptEvolutionItem。 | pass | 0/4 | - |
+| web-evolution-reject-flow | 拒绝完整流（suggested-improvements-ui spec「拒绝成功刷新与提示」）：pending 条目 C 操作列「更多」→「拒绝」→ 二次确认 Modal.confirm → 点确认（danger 按钮）→ 真实调用 POST /api/evolution/reject 删除草稿并置 rejected → 成功提示「已拒绝」且表格刷新后该行状态「已拒绝」。出处：SuggestedImprovementsPanel.tsx:246-267 handleReject（okButtonProps danger）、:270-285 menuItems；services/dashboard.ts:917-924 rejectEvolutionItem。 | pass | 0/4 | - |
 | web-evolution-disabled-analyzed | 无草稿条目禁用规则（suggested-improvements-ui spec「无草稿条目的禁用规则」）：analyzed 条目 E 的「更多」菜单——「查看 SPEC 草稿」「同意」「拒绝」均置灰禁用（ant-dropdown-menu-item-disabled），仅「查看分析结论」可点。出处：SuggestedImprovementsPanel.tsx:64-78 getActionDisabled。 | pass | 0/5 | - |
 | web-evolution-disabled-decided | 已决定条目禁用规则（suggested-improvements-ui spec「已决定条目的禁用规则」）：accepted 条目 G 的「更多」菜单——「同意」「拒绝」禁用，查看类（分析结论/SPEC 草稿）保持可用。出处：SuggestedImprovementsPanel.tsx:64-78 getActionDisabled。 | pass | 0/5 | - |
 | web-evolution-disabled-draft-failed | 草稿生成失败条目禁用规则（suggested-improvements-ui spec「无草稿条目的禁用规则」扩展）：draft_failed 条目 F 的「更多」菜单——「查看 SPEC 草稿」「同意」禁用，「拒绝」保持可用（可放弃并删除）。出处：SuggestedImprovementsPanel.tsx:64-78 getActionDisabled。 | pass | 0/5 | - |
@@ -86,16 +64,11 @@
 | web-suggested-config-user-scope-save | 用户级作用域配置保存往返（suggested-improvements-ui spec「用户级作用域读写往返」前半）：用户级作用域把「每轮分析条目上限」改为 25 保存 → POST /api/config（不带 project，写用户级）→ 成功提示「保存成功」→ 表单回显 25。出处：SuggestedImprovementsPanel.tsx:102-112 handleSaveConfig（onSave 不带 project）、:352-365；settings/index.tsx:99-113 handleSave 保存后重读配置回显。 | pass | 0/4 | - |
 | web-suggested-config-user-scope-restore | 用户级配置还原（配套恢复场景，避免污染运行时配置）：把「每轮分析条目上限」改回缺省 20 保存 → 回显 20，机器配置恢复缺省。出处：同 user-scope-save。 | pass | 0/4 | - |
 | web-suggested-config-project-scope-readonly | 项目级作用域只读提示（suggested-improvements-ui spec「项目级作用域只读提示」）：切到项目级作用域（scheduling-showcase）后，「建议改进项」卡片顶部开关与上限输入置为只读（ant-switch-disabled），显示「全局键…请在用户级作用域修改」提示，且不再渲染保存按钮（MUST NOT 允许在此作用域提交 self_evolution）。出处：SuggestedImprovementsPanel.tsx:340-365（isUserScope 分支 + Form disabled）。 | pass | 0/5 | - |
-| web-evolution-mobile-scroll-fixed | 移动端横向滚动 + 操作列固定（suggested-improvements-ui spec「移动端可横向滚动且操作列固定」）：390×844 视口下设置页以移动布局渲染（横向菜单），「建议改进项」表格列超出容器宽度可横向滚动，操作列以 fixed right 渲染（th.ant-table-cell-fix-right 存在）。出处：SuggestedImprovementsPanel.tsx:320-333（fixed: 'right'）、:378（scroll x:800）；settings/index.tsx:146-171 移动端菜单横排。 | failed（已修正） | - | product-bug |
-
-
-## 断言级豁免清单
-
-以下失败断言被归类为非产品缺陷（不记产品 Bug），逐条列出供人工复核豁免是否掩盖真实缺陷（场景级一句话归因不足以复核）。
-
-无非 product-bug 的被豁免失败断言。
+| web-evolution-mobile-scroll-fixed | 移动端横向滚动 + 操作列固定（suggested-improvements-ui spec「移动端可横向滚动且操作列固定」）：390×844 视口下设置页以移动布局渲染（横向菜单），「建议改进项」表格列超出容器宽度可横向滚动，操作列以 fixed right 渲染（th.ant-table-cell-fix-end 存在）。出处：SuggestedImprovementsPanel.tsx:320-333（fixed: 'right'）、:378（scroll x:800）；settings/index.tsx:146-171 移动端菜单横排。 | pass | 0/4 | - |
 
 ## 本轮场景集变更
 
-场景集与持久化集一致，无变更。
+当前稳定场景集共 42 个（第 1 轮）。
+
+首轮写入 42 个场景
 
