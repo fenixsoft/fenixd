@@ -33,20 +33,32 @@ def _resolve_project_root(args_project: str | None) -> Path:
 
 
 def cmd_promote(args):
-    """晋升 drafted SPEC → ready。"""
+    """晋升 drafted SPEC → ready / reviewing（按评审判定分流）。"""
     from core.pm_engine.promotion import promote_drafted
     from core.state_machine import StateMachine
     from core.logger import Logger
+    from core.config import ConfigLoader
 
     proot = _resolve_project_root(args.project)
     sm = StateMachine(proot / ".fenix" / "STATE.md", None)
     logger = Logger(proot)
 
-    result = promote_drafted(proot, args.spec, state_machine=sm, logger=logger)
+    # 解析项目有效配置（用户级 + 项目级深合并），使评审分流判定与 daemon
+    # 同源——不传 config 时 promote_drafted 无法评估跳过白名单，恒直通 ready。
+    config = ConfigLoader.resolve_config(proot)
+
+    result = promote_drafted(proot, args.spec, state_machine=sm, logger=logger,
+                             config=config)
     if result["ok"]:
-        # transition drafted → ready（由 watcher/full_scan 感知派发）
-        sm.transition(args.spec, "ready")
-        print(f"✓ SPEC「{args.spec}」已晋升 ready，等待调度")
+        # 依 promote_drafted 的分流结论执行转移（add-spec-review-gate 3.4）：
+        # 命中跳过白名单 → ready；否则 → reviewing 待方案评审。与 _on_spec_drafted
+        # 收尾语义一致，MUST NOT 硬编码 ready（否则 CLI 通道绕过评审门禁）。
+        next_status = result.get("next_status", "ready")
+        sm.transition(args.spec, next_status)
+        if next_status == "reviewing":
+            print(f"✓ SPEC「{args.spec}」已晋升 reviewing（待方案评审），等待评审 run")
+        else:
+            print(f"✓ SPEC「{args.spec}」已晋升 ready，等待调度")
         sys.exit(0)
     else:
         if "reason" in result:

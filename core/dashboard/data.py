@@ -362,14 +362,22 @@ def promote_spec(project_root, spec_name: str) -> dict:
     from core.pm_engine.promotion import promote_drafted
     from core.state_machine import StateMachine
     from core.logger import Logger
+    from core.config import ConfigLoader
     proot = Path(project_root)
     sm = StateMachine(proot / ".fenix" / "STATE.md", None)
     logger = Logger(proot)
-    result = promote_drafted(proot, spec_name, state_machine=sm, logger=logger)
+    # 解析项目有效配置传给 promote_drafted，使评审分流判定与 daemon 同源
+    # （add-spec-review-gate 3.4/3.5：不传 config 无法评估跳过白名单，恒直通 ready）
+    config = ConfigLoader.resolve_config(proot)
+    result = promote_drafted(proot, spec_name, state_machine=sm, logger=logger,
+                             config=config)
     if result["ok"]:
-        # 成功：transition drafted → ready（由 watcher/full_scan 感知派发）
-        sm.transition(spec_name, "ready")
-        return {"ok": True, "found": True, "violations": []}
+        # 依分流结论转移：命中跳过白名单 → ready；否则 → reviewing 待方案评审。
+        # 与 _on_spec_drafted 收尾语义一致，MUST NOT 硬编码 ready（全通道覆盖）。
+        next_status = result.get("next_status", "ready")
+        sm.transition(spec_name, next_status)
+        return {"ok": True, "found": True, "violations": [],
+                "next_status": next_status}
     # 失败
     if "reason" in result:
         # 非 drafted 或不存在
