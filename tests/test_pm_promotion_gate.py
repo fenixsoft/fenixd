@@ -124,7 +124,7 @@ class TestGateOpen(unittest.TestCase):
         from core.pm_engine import PMEngine
         proot, sm, _ = _setup_project(self.tmpdir)
         logger = MagicMock()
-        config = {"gates": {"promote_mode": "auto"}}
+        config = {"gates": {"promote_mode": "auto", "spec_review_mode": "never"}}
         engine = PMEngine(sm, MagicMock(), config, proot, logger)
         # Patch _on_spec_ready to prevent actual dispatch
         engine._on_spec_ready = MagicMock()
@@ -138,7 +138,7 @@ class TestGateOpen(unittest.TestCase):
         from core.pm_engine import PMEngine
         proot, sm, _ = _setup_project(self.tmpdir)
         logger = MagicMock()
-        config = {"gates": {"promote_mode": "auto"}}
+        config = {"gates": {"promote_mode": "auto", "spec_review_mode": "never"}}
         engine = PMEngine(sm, MagicMock(), config, proot, logger)
         engine._on_spec_ready = MagicMock()
         # Patch promote_drafted's internal lint to return violations
@@ -176,7 +176,7 @@ class TestGateReEnable(unittest.TestCase):
         self.assertEqual(sm.read_one("myspec")["status"], "drafted")
 
         # Re-enable gate
-        config_open = {"gates": {"promote_mode": "auto"}}
+        config_open = {"gates": {"promote_mode": "auto", "spec_review_mode": "never"}}
         engine.config = config_open
         # Simulate full_scan recovery triggering _on_spec_drafted
         engine._on_spec_drafted("myspec")
