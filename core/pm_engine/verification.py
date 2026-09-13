@@ -3625,6 +3625,18 @@ class VerificationPipeline:
         except OSError:
             pass
 
+    def _clear_requeue_manifest(self, spec_name: str) -> None:
+        """合规采纳后清除回炉清单（add-judge-incremental-attribution 2.2）。
+
+        场景级回炉闭环完成（整轮查重校验通过）后清理，防下轮误注入；写失败
+        静默（manifest 缺失只导致下轮零注入，不影响裁决正确性）。
+        """
+        try:
+            from core.verify_engine.judge_files import clear_requeue_manifest
+            clear_requeue_manifest(self._pm.project_root, spec_name)
+        except OSError:
+            pass
+
     def _resynthesis_directive_scenarios(self, report: dict,
                                          violations: list) -> list:
         """提取被拒场景的差异化素材（重合成指令输入）。
@@ -3882,7 +3894,7 @@ class VerificationPipeline:
             from core.verdict_check import (
                 validate_attribution_levels,
                 enforce_blank_screenshot_direction,
-                check_batch_attribution_dedup,
+                check_batch_attribution_dedup_scenario,
                 load_verdict_cache,
                 tag_cached_attributions,
             )
@@ -3901,7 +3913,7 @@ class VerificationPipeline:
                         f"{sc.get('scenario_id')}: classification "
                         f"'{old_cls}' → '{new_cls}'（blank_screenshot 标签强制 env 方向）",
                     )
-            dedup2 = check_batch_attribution_dedup(report2)
+            dedup2 = check_batch_attribution_dedup_scenario(report2)
             if not dedup2["ok"]:
                 for v in dedup2["violations"]:
                     self._pm.logger.error(
@@ -3909,9 +3921,9 @@ class VerificationPipeline:
                         f"批量归因查重拒绝采纳（重合成轮）'{spec_name}': "
                         f"{v.get('reason')}",
                     )
-                # 重合成产物再拒 → 递归进入下一轮（或达上限升级）
-                return self._handle_attr_dedup_rejection(
-                    spec_name, report2, dedup2["violations"])
+                # 重合成产物再拒 → 递归进入下一轮场景级回炉（或达上限升级）
+                return self._handle_scenario_requeue(
+                    spec_name, report2, dedup2)
             cache = load_verdict_cache(self._pm.project_root, spec_name)
             tagged = tag_cached_attributions(report2, cache, spec_name)
             if tagged:
@@ -3927,9 +3939,11 @@ class VerificationPipeline:
                 f"（不阻断裁决）: {type(e).__name__}: {e}",
             )
 
-        # 5) 合规采纳：清 violations + 清 directive + 状态映射重写 + 裁决缓存
+        # 5) 合规采纳：清 violations + 清 directive + 清回炉清单 + 状态映射
+        #    重写 + 裁决缓存
         self._pm._clear_verdict_violations(spec_name)
         self._clear_resynthesis_directive(spec_name)
+        self._clear_requeue_manifest(spec_name)
         self._persist_verdict_cache(spec_name, report2)
         mapping2 = enforce_status_mapping(report2)
         try:
@@ -3951,6 +3965,115 @@ class VerificationPipeline:
         )
         return {"ok": True, "cause": "pass", "violations": [], "dispatch_error": ""}
 
+    def _handle_scenario_requeue(self, spec_name: str, report: dict,
+                                 dedup: dict) -> dict:
+        """场景级归因查重拒绝统一收口（add-judge-incremental-attribution 2.2 / D2-D3）。
+
+        ``_verify_verdict_evidence`` 的查重拒绝处（首轮 + 重试轮 + 重合成轮）全部
+        经此闭环。与 ``_handle_attr_dedup_rejection``（整批重合成）同构，但判定
+        粒度降为场景（D2）：命中重复的归因置 ``requeue``，非重复置 ``accept``
+        保留——MUST NOT 因子集重复废弃整轮已写盘归因。
+
+        流程：
+          1. 逐场景条目落盘（judge_attribution.json：id/attribution/status
+             accept|requeue/timestamp）+ 回炉清单（requeue_manifest.json：
+             requeue 子集清单）——已 accept 场景归因保留复用（design D2）；
+          2. 回炉子集 = 全量（100% 重复，模板化硬编码）→ 记录全量回炉语境，
+             escalation 告警沿既有预算路径照发（design D3：查重防御不弱化）；
+          3. 部分重复 → 静默回炉子集：委托 ``_handle_attr_dedup_rejection``
+             落盘违规清单 + 重合成指令（只含 requeue 子集差异化素材）→ 派发
+             轻量重合成 judge run（只重做 requeue 子集）→ 回灌完整校验链；
+             仍重复 → 预算内递归，达上限 blocked + admin 升级（MUST NOT 无限重试）。
+
+        Returns:
+            {"ok", "cause", "violations", "dispatch_error"}（与
+            ``_verify_verdict_evidence`` 同契约）。
+        """
+        from core.verify_engine.judge_files import (
+            save_attribution, build_requeue_manifest,
+            ATTRIBUTION_STATUS_ACCEPT, ATTRIBUTION_STATUS_REQUEUE,
+        )
+        from core.verdict_check import scenario_attribution_summary
+        requeue_ids = [str(s) for s in (dedup.get("requeue_ids") or [])]
+        accept_ids = [str(s) for s in (dedup.get("accept_ids") or [])]
+        counts = dedup.get("counts") or {}
+        violations_entries = [{
+            "scenario_ids": [str(s) for s in (v.get("scenario_ids") or [])],
+            "reason": str(v.get("reason") or ""),
+        } for v in (dedup.get("violations") or [])]
+
+        # 1) 逐场景条目落盘：从 report 非 PASS 场景提取归因摘要，按查重结果
+        #    置 accept/requeue（写失败静默降级——judge_attribution.json 是
+        #    审计/回炉状态文件，不阻断既有重合成闭环）。
+        try:
+            entries = []
+            requeue_set = set(requeue_ids)
+            for sc in report.get("scenarios") or []:
+                if not isinstance(sc, dict):
+                    continue
+                if sc.get("status") in ("pass", "passed"):
+                    continue
+                sid = str(sc.get("scenario_id") or sc.get("id") or "")
+                if not sid:
+                    continue
+                entries.append({
+                    "id": sid,
+                    "attribution": scenario_attribution_summary(sc),
+                    "status": (ATTRIBUTION_STATUS_REQUEUE
+                               if sid in requeue_set
+                               else ATTRIBUTION_STATUS_ACCEPT),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+            if entries:
+                save_attribution(self._pm.project_root, spec_name, entries)
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"judge_attribution.json 逐场景条目落盘失败 '{spec_name}'"
+                f"（不阻断回炉闭环）: {type(e).__name__}: {e}",
+            )
+
+        # 2) 回炉清单落盘（requeue 子集驱动下轮 judge 只重做该子集）
+        prior = self._read_resynthesis_directive(spec_name)
+        rejection_round = int(prior.get("rejection_round") or 0) \
+            if isinstance(prior, dict) else 0
+        try:
+            build_requeue_manifest(
+                self._pm.project_root, spec_name,
+                rejection_round=rejection_round + 1,
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"回炉清单落盘失败 '{spec_name}'（不阻断回炉闭环）: "
+                f"{type(e).__name__}: {e}",
+            )
+
+        # 3) 全量重复（回炉子集 = 全量，模板化硬编码）→ 记录全量回炉语境，
+        #    escalation 沿既有预算路径照发（design D3，防御语义不弱化；与
+        #    整批拒绝 escalation 同源，预算耗尽时触发 _escalate_dedup_resynthesis）。
+        is_full = counts.get("total") and counts.get("requeue") \
+            and counts.get("requeue") >= counts.get("total")
+        if is_full:
+            self._pm.logger.error(
+                "pm_engine",
+                f"批量归因查重拒绝采纳 '{spec_name}'（第 {rejection_round + 1} 次，"
+                f"回炉子集=全量 {counts.get('requeue')}/{counts.get('total')} "
+                f"100% 重复，模板化硬编码形态）— escalation 沿既有预算路径照发，"
+                f"不静默回炉",
+            )
+        else:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"批量归因查重拒绝采纳 '{spec_name}'（第 {rejection_round + 1} 次，"
+                f"回炉子集 {counts.get('requeue')}/{counts.get('total')}）— "
+                f"已 accept 场景归因保留复用，派发轻量重合成只重做 requeue 子集",
+            )
+
+        # 4) 委托既有重合成闭环（违规清单 + directive + 重合成 judge + 回灌
+        #    校验 + 预算升级全部免费继承；重合成轮再拒经场景级递归回此方法）
+        return self._handle_attr_dedup_rejection(
+            spec_name, report, violations_entries)
 
     def _verify_verdict_evidence(self, spec_name: str, retry_judge: bool = False) -> dict:
         """确定性校验裁决 report.json 的分类/证据合规，并按映射强制重写 status。
@@ -3994,7 +4117,7 @@ class VerificationPipeline:
                 from core.verdict_check import (
                     validate_attribution_levels,
                     enforce_blank_screenshot_direction,
-                    check_batch_attribution_dedup,
+                    check_batch_attribution_dedup_scenario,
                     load_verdict_cache,
                     tag_cached_attributions,
                 )
@@ -4014,8 +4137,10 @@ class VerificationPipeline:
                             f"{sc.get('scenario_id')}: classification "
                             f"'{old_cls}' → '{new_cls}'（blank_screenshot 标签强制 env 方向）",
                         )
-                # 批量归因查重：≥3 场景逐字相同 → 拒绝采纳 → 重合成闭环
-                dedup = check_batch_attribution_dedup(report)
+                # 批量归因查重：≥3 场景逐字相同 → 场景级判定（add-judge-
+                # incremental-attribution 2.1：命中重复的归因置 requeue 待回炉，
+                # 非重复置 accept 保留；MUST NOT 因子集重复废弃整轮归因）。
+                dedup = check_batch_attribution_dedup_scenario(report)
                 if not dedup["ok"]:
                     for v in dedup["violations"]:
                         sids = v.get("scenario_ids") or []
@@ -4023,10 +4148,11 @@ class VerificationPipeline:
                             "pm_engine",
                             f"批量归因查重拒绝采纳 '{spec_name}': {v.get('reason')}",
                         )
-                    # 统一收口：落盘违规 + 派发重合成 + 回灌校验（fix-verdict-
+                    # 场景级回炉闭环：标记 requeue/accept 状态 + 回炉清单 →
+                    # 派发重合成（仅重做 requeue 子集）→ 回灌校验（fix-verdict-
                     # dedup-resynthesis D1/D2；返回 cause=pass 已闭环采纳）
-                    return self._handle_attr_dedup_rejection(
-                        spec_name, report, dedup["violations"])
+                    return self._handle_scenario_requeue(
+                        spec_name, report, dedup)
                 # 跨轮缓存归因打标（design D3 / Task 3.1）
                 cache = load_verdict_cache(self._pm.project_root, spec_name)
                 tagged = tag_cached_attributions(report, cache, spec_name)
@@ -4046,6 +4172,7 @@ class VerificationPipeline:
                 )
             # 合规：清掉历史驳回清单（若有）后强制重写 status 映射（D3）写回
             self._pm._clear_verdict_violations(spec_name)
+            self._clear_requeue_manifest(spec_name)
             self._persist_verdict_cache(spec_name, report)
             mapping = enforce_status_mapping(report)
             if mapping["corrected"]:
@@ -4139,7 +4266,7 @@ class VerificationPipeline:
                     from core.verdict_check import (
                         validate_attribution_levels,
                         enforce_blank_screenshot_direction,
-                        check_batch_attribution_dedup,
+                        check_batch_attribution_dedup_scenario,
                         load_verdict_cache,
                         tag_cached_attributions,
                     )
@@ -4158,7 +4285,7 @@ class VerificationPipeline:
                                 f"{sc.get('scenario_id')}: classification "
                                 f"'{old_cls}' → '{new_cls}'（blank_screenshot 标签强制 env 方向）",
                             )
-                    dedup = check_batch_attribution_dedup(report2)
+                    dedup = check_batch_attribution_dedup_scenario(report2)
                     if not dedup["ok"]:
                         for v in dedup["violations"]:
                             self._pm.logger.error(
@@ -4166,9 +4293,9 @@ class VerificationPipeline:
                                 f"批量归因查重拒绝采纳（重试轮）'{spec_name}': "
                                 f"{v.get('reason')}",
                             )
-                        # 统一收口：重试轮查重拒绝同样进重合成闭环
-                        return self._handle_attr_dedup_rejection(
-                            spec_name, report2, dedup["violations"])
+                        # 统一收口：场景级回炉闭环
+                        return self._handle_scenario_requeue(
+                            spec_name, report2, dedup)
                     cache = load_verdict_cache(self._pm.project_root, spec_name)
                     tagged = tag_cached_attributions(report2, cache, spec_name)
                     if tagged:
@@ -4184,6 +4311,7 @@ class VerificationPipeline:
                         f"（不阻断裁决）: {type(e).__name__}: {e}",
                     )
                 self._pm._clear_verdict_violations(spec_name)
+                self._clear_requeue_manifest(spec_name)
                 self._persist_verdict_cache(spec_name, report2)
                 mapping2 = enforce_status_mapping(report2)
                 try:

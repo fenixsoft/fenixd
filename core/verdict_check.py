@@ -719,6 +719,43 @@ def _prefix_similarity(a, b) -> float:
     return lcp / min(len(a), len(b))
 
 
+def scenario_attribution_summary(sc: dict) -> str:
+    """场景归因摘要（judge_attribution.json 条目 attribution 字段）。
+
+    提取 classification + first_failed_step 关键片段 + 首条失败断言 label，
+    拼接为 ≤200 字摘要，供逐场景条目落盘与场景级查重判定审计。字段缺失时
+    返回空串（调用方按缺归因处理）。
+    """
+    parts = []
+    cls = sc.get("classification")
+    if isinstance(cls, str) and cls:
+        parts.append(f"classification={cls}")
+    evidence = sc.get("evidence")
+    if isinstance(evidence, dict):
+        ffs = evidence.get("first_failed_step")
+        if isinstance(ffs, str) and ffs.strip():
+            ffs_short = _normalize_whitespace(ffs)
+            if len(ffs_short) > 80:
+                ffs_short = ffs_short[:80] + "…"
+            parts.append(f"first_failed_step={ffs_short}")
+    triage = sc.get("assertion_triage")
+    if isinstance(triage, list):
+        for t in triage:
+            if not isinstance(t, dict):
+                continue
+            assertion = str(t.get("assertion") or "").strip()
+            if assertion:
+                assertion_short = _normalize_whitespace(assertion)
+                if len(assertion_short) > 60:
+                    assertion_short = assertion_short[:60] + "…"
+                parts.append(f"assertion={assertion_short}")
+                break
+    summary = "；".join(parts)
+    if len(summary) > 200:
+        summary = summary[:200] + "…"
+    return summary
+
+
 def _scenario_attribution_signature(sc: dict) -> dict:
     """场景归因的结构化签名（级联豁免判定用，区别于归一化指纹）。
 
@@ -828,6 +865,33 @@ def check_batch_attribution_dedup(report: dict) -> dict:
     Returns:
         {"ok": bool, "violations": [{"scenario_ids": [...], "reason": str}]}
     """
+    return _batch_attribution_dedup_common(report, scenario_level=False)
+
+
+def check_batch_attribution_dedup_scenario(report: dict) -> dict:
+    """批量归因查重场景级判定（add-judge-incremental-attribution 2.1 / D2）。
+
+    与 ``check_batch_attribution_dedup`` 同源归一化与级联豁免，但判定粒度
+    从整批降为场景：命中重复（≥3 场景归一化后逐字相同且非级联豁免）的
+    场景归因置 ``requeue``（待回炉），其余非重复场景置 ``accept``（保留
+    复用）——**MUST NOT 因子集重复废弃整轮已写盘归因**。
+
+    Returns:
+        {"ok": bool, "violations": [{"scenario_ids": [...], "reason": str}],
+         "requeue_ids": [str],      # 命中重复、待回炉的场景 id
+         "accept_ids": [str],       # 非重复、保留复用的场景 id
+         "counts": {"total": int, "requeue": int, "accept": int}}
+    """
+    return _batch_attribution_dedup_common(report, scenario_level=True)
+
+
+def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
+    """批量归因查重的公共实现（整批 / 场景级两态共享）。
+
+    scenario_level=False → 沿袭整批判定（仅返回 violations，拒绝由调用方
+    按整批语义处置）；scenario_level=True → 追加 requeue_ids / accept_ids
+    场景级粒度（调用方按设计 D2 驱动子集回炉）。
+    """
     if not isinstance(report, dict):
         return {"ok": True, "violations": []}
     scenarios = report.get("scenarios")
@@ -850,12 +914,16 @@ def check_batch_attribution_dedup(report: dict) -> dict:
         grp["signatures"].append(_scenario_attribution_signature(sc))
 
     violations = []
+    requeue_ids: List[str] = []
+    accept_ids: List[str] = []
     for norm_text, grp in groups.items():
         sids = grp["scenario_ids"]
         if len(sids) < 3:
+            accept_ids.extend(sids)
             continue
         if _cascade_root_exemption(grp["signatures"]):
             # 级联豁免：真共享根因但场景局部证据各异 → 合法，不计违规
+            accept_ids.extend(sids)
             continue
         violations.append({
             "scenario_ids": sids,
@@ -866,7 +934,34 @@ def check_batch_attribution_dedup(report: dict) -> dict:
                 f"重复文本=[{norm_text[:200]}]"
             ),
         })
-    return {"ok": len(violations) == 0, "violations": violations}
+        if scenario_level:
+            requeue_ids.extend(sids)
+
+    if not scenario_level:
+        return {"ok": len(violations) == 0, "violations": violations}
+
+    # 场景级：全部参与判定的 id（含无归因文本场景——无归因不参与查重，视为保留）
+    participating = set(accept_ids) | set(requeue_ids)
+    for sc in scenarios:
+        if not isinstance(sc, dict):
+            continue
+        if sc.get("status") in ("pass", "passed"):
+            continue
+        sid = str(sc.get("scenario_id") or sc.get("id") or "?")
+        if sid not in participating:
+            accept_ids.append(sid)  # 无归因文本：不参与查重，保留
+    counts = {
+        "total": len(accept_ids) + len(requeue_ids),
+        "requeue": len(requeue_ids),
+        "accept": len(accept_ids),
+    }
+    return {
+        "ok": len(requeue_ids) == 0,
+        "violations": violations,
+        "requeue_ids": requeue_ids,
+        "accept_ids": accept_ids,
+        "counts": counts,
+    }
 
 
 def tag_cached_attributions(report: dict, cache: dict, spec_name: str = "") -> list:

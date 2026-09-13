@@ -108,6 +108,15 @@
   - 禁止把 error 截断成同一段（如 `error[:120]` 批量套用）导致多场景同文，禁止套用共享模板串——批量查重门（≥3 场景归一化后逐字相同）会拒绝采纳并触发轻量重合成/升级。
   - 逐场景引用局部数据代价为零：步骤序号/断言 label/完整 error 都在 report.json 与 assertion_results 里，直接引用即可。
 
+- 归因逐场景增量落盘（add-judge-incremental-attribution，强制）
+  - 每归类完一个非 PASS 场景，MUST 立即将该场景归因条目写入 {judge_attribution_path}（格式见下方 JSON 示例）。**逐场景 checkpoint**：每处理完一个就原子覆盖写盘一次（temp + rename），流截断时不丢失已归因场景。
+  - 格式：`{"format_version": "1.0", "scenarios": [{"id": "<场景ID>", "attribution": "<归因文本摘要（≤200字）>", "status": "accept", "timestamp": "<ISO UTC 时间>"}]}`
+  - `attribution` = 归因文本摘要，包含 classification + first_failed_step 关键片段 + 首条失败断言 label（≤200 字），用于场景级查重判定。
+  - `status` = `"accept"`（初始全部 accept；框架侧查重命中重复场景后置为 `"requeue"`，由框架管理，你只写 accept）。
+  - `timestamp` = 当前场景归类完成时的 UTC ISO 时间戳（如 `2026-09-13T12:00:00Z`），用于审计。
+  - **旧格式兼容**：文件不存在时创建新文件；已存在时读取 scenarios 列表，更新/追加当前场景条目后整体写回。
+  - **跨轮复用**：若注入了「跨轮已裁决场景」段——命中场景按既有归因直接写回条目（MUST NOT 重新归因），其余新场景按完整流程归因后写入。
+
 - .fenix-run-result.json 格式
   ```json
   {
