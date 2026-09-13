@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.state_machine import StateMachine, StateParser, SpecStatus, VALID_TRANSITIONS
+from core.state_machine import StateMachine, StateParser, SpecStatus, VALID_TRANSITIONS, GATE_TRANSITIONS
 
 
 class TestStateParser(unittest.TestCase):
@@ -403,6 +403,92 @@ class TestSpecStatus(unittest.TestCase):
 
     def test_implementing_can_revert(self):
         self.assertIn("ready", VALID_TRANSITIONS["implementing"])
+
+
+class TestSpecReviewGateStateMachine(unittest.TestCase):
+    """add-spec-review-gate 7.1：reviewing 状态、四条新转移边与中断回退。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_reviewing_in_status_enum_and_all(self):
+        """REVIEWING 是第 11 个状态且纳入 ALL（枚举总数 11）。"""
+        self.assertEqual(SpecStatus.REVIEWING, "reviewing")
+        self.assertIn(SpecStatus.REVIEWING, SpecStatus.ALL)
+        self.assertEqual(len(SpecStatus.ALL), 11)
+
+    def test_four_new_transition_edges_valid(self):
+        """四条新转移边合法：drafted→reviewing、reviewing→ready、
+        reviewing→blocked、blocked→reviewing。"""
+        self.assertTrue(self.sm.is_valid_transition("drafted", "reviewing"))
+        self.assertTrue(self.sm.is_valid_transition("reviewing", "ready"))
+        self.assertTrue(self.sm.is_valid_transition("reviewing", "blocked"))
+        self.assertTrue(self.sm.is_valid_transition("blocked", "reviewing"))
+        # 既有边保留：drafted→ready、blocked→ready
+        self.assertTrue(self.sm.is_valid_transition("drafted", "ready"))
+        self.assertTrue(self.sm.is_valid_transition("blocked", "ready"))
+
+    def test_illegal_reviewing_edges_rejected(self):
+        """非法边拒绝：reviewing 不可直通 implementing/verified，ready 不可
+        反向回 reviewing（评审门只在 drafted→ready 之间存在）。"""
+        self.assertFalse(self.sm.is_valid_transition("reviewing", "implementing"))
+        self.assertFalse(self.sm.is_valid_transition("reviewing", "verified"))
+        self.assertFalse(self.sm.is_valid_transition("ready", "reviewing"))
+        self.assertFalse(self.sm.is_valid_transition("implementing", "reviewing"))
+
+    def test_gate_transitions_exclude_reviewing(self):
+        """GATE_TRANSITIONS（门禁逃生门）MUST NOT 纳入 reviewing——
+        人工恢复路径不得走门禁边。"""
+        self.assertNotIn("reviewing", GATE_TRANSITIONS)
+        # reviewing 的出边仅走 VALID_TRANSITIONS（ready/blocked），
+        # 不享有 verified→testing / blocked→testing 的门禁逃生边
+        self.assertFalse(self.sm.is_valid_transition("reviewing", "testing"))
+        self.assertNotIn("reviewing", VALID_TRANSITIONS["testing"])
+
+    def test_reviewing_interrupted_reverts_to_drafted(self):
+        """reviewing 为中断态：recover_interrupted 回退 drafted、清空
+        reviewer_run 与 _review_attempts，重走晋升链。"""
+        self.sm.add_spec("in-review", {
+            "status": "reviewing",
+            "reviewer_run": "spec-review-demo-abc123",
+            "_review_attempts": 1,
+        })
+        recovered = self.sm.recover_interrupted()
+        self.assertIn("in-review", recovered)
+        entry = self.sm.read_one("in-review")
+        self.assertEqual(entry["status"], "drafted")
+        self.assertIsNone(entry["reviewer_run"])
+        self.assertEqual(str(entry["_review_attempts"]), "0")
+
+    def test_reviewing_not_reverted_to_ready(self):
+        """reviewing 不得被当作 implementing 回退 ready（评审门在 drafted 链
+        上，回退必须回到链首 drafted）。"""
+        self.sm.add_spec("in-review", {
+            "status": "reviewing",
+            "reviewer_run": "spec-review-demo-abc123",
+        })
+        self.sm.recover_interrupted()
+        self.assertEqual(self.sm.read_one("in-review")["status"], "drafted")
+
+    def test_reviewer_run_serialized_in_whitelist(self):
+        """reviewer_run 字段纳入序列化白名单：update_spec 写入后可读回。"""
+        self.sm.add_spec("demo", {"status": "reviewing"})
+        self.assertTrue(self.sm.update_spec("demo", {"reviewer_run": "spec-review-demo-x"}))
+        self.assertEqual(self.sm.read_one("demo")["reviewer_run"], "spec-review-demo-x")
+
+    def test_frozen_reviewing_blocked_protected(self):
+        """冻结保护对评审状态同样生效：冻结期剥离对 status 的改写（任务 1.3）。"""
+        self.sm.add_spec("frozen-review", {"status": "blocked", "frozen": True})
+        # 冻结期 update_spec 携带 status 的改写被剥离（status 保持 blocked）
+        self.sm.update_spec("frozen-review", {"status": "reviewing"})
+        self.assertEqual(self.sm.read_one("frozen-review")["status"], "blocked")
 
 
 class TestVerifiedTestingEscapeHatch(unittest.TestCase):

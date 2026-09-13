@@ -597,3 +597,71 @@ class TestTaskProgressContractDualBranch:
 if __name__ == "__main__":
     import unittest
     unittest.main()
+
+
+# ── add-spec-review-gate 7.9：白名单注册与前端 key 集合一致性 ────────
+
+
+class TestSpecReviewPromptRegistration:
+    """spec-review 在 AGENT_PROMPT_FILES 白名单中且模板可加载；前端
+    AGENT_LABELS / AGENT_ROLES key 集合与后端两处常量严格一致。"""
+
+    def test_spec_review_in_whitelist(self):
+        assert "spec-review" in AGENT_PROMPT_FILES
+        assert AGENT_PROMPT_FILES["spec-review"] == "spec-review.md"
+
+    def test_spec_review_template_loadable(self, tmp_path):
+        """模板文件存在、非空且可经 PromptBuilder 加载（fail-fast 不触发）。"""
+        template_path = AGENT_PROMPT_DIR / AGENT_PROMPT_FILES["spec-review"]
+        assert template_path.is_file(), f"缺少模板文件: {template_path}"
+        content = template_path.read_text(encoding="utf-8").strip()
+        assert content, "spec-review.md 为空"
+
+        proot = tmp_path / "proj"
+        (proot / "spec" / "changes" / "demo").mkdir(parents=True, exist_ok=True)
+        runner = make_runner(proot)
+        prompt = runner._prompt_builder._build_prompt("demo", "spec-review")
+        assert prompt
+        assert "demo" in prompt
+
+    def test_prompts_panel_labels_keys_match_prompt_files(self):
+        """前端 AGENT_LABELS key 集合与后端 AGENT_PROMPT_FILES 严格一致
+        （两处必须同步，缺失占位符会 fail-fast）。"""
+        ts_path = (Path(__file__).resolve().parents[1]
+                   / "core" / "dashboard" / "static" / "src" / "pages" / "settings"
+                   / "components" / "PromptsPanel.tsx")
+        src = ts_path.read_text(encoding="utf-8")
+        # 提取 AGENT_LABELS 对象字面量的键（单引号字符串键 + 冒号）
+        block = src.split("const AGENT_LABELS")[1].split("};")[0]
+        import re as _re
+        keys = set()
+        for line in block.splitlines():
+            line = line.strip()
+            m = _re.match(r"^[\'\"]?([\w-]+)[\'\"]?\s*:", line)
+            if m:
+                keys.add(m.group(1))
+        assert keys == set(AGENT_PROMPT_FILES.keys()), (
+            f"AGENT_LABELS 与 AGENT_PROMPT_FILES 不一致: "
+            f"{keys ^ set(AGENT_PROMPT_FILES.keys())}"
+        )
+
+    def test_agent_model_panel_roles_match_known_agent_types(self):
+        """前端 AGENT_ROLES key 集合与后端 KNOWN_AGENT_TYPES 严格一致
+        （agent model 分配面板与模型白名单必须同步）。"""
+        from core.config import ConfigLoader
+        ts_path = (Path(__file__).resolve().parents[1]
+                   / "core" / "dashboard" / "static" / "src" / "pages" / "settings"
+                   / "components" / "AgentModelPanel.tsx")
+        src = ts_path.read_text(encoding="utf-8")
+        block = src.split("const AGENT_ROLES")[1].split("];")[0]
+        keys = set()
+        for line in block.splitlines():
+            line = line.strip()
+            if line.startswith("{ key:") and "label:" in line:
+                key = line.split("key:")[1].split(",")[0].strip().strip("'").strip('"')
+                if key:
+                    keys.add(key)
+        assert keys == set(ConfigLoader.KNOWN_AGENT_TYPES), (
+            f"AGENT_ROLES 与 KNOWN_AGENT_TYPES 不一致: "
+            f"{keys ^ set(ConfigLoader.KNOWN_AGENT_TYPES)}"
+        )

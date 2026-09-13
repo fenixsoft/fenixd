@@ -7,7 +7,7 @@
 Fenix 是一个**闭环**开发框架：需求输入后，从设计、实现、验证到发布全程自动化，仅在最终推送时需要人工审批。支撑这个闭环的是四个核心设计：
 
 1. **SPEC 驱动**：一切工作围绕 SPEC（软件需求规格说明书）展开，每个 SPEC 对应一个 `spec/changes/<name>/` 目录
-2. **状态机管控**：SPEC 生命周期由有限状态机（10 个状态、明确转移规则）驱动，杜绝模糊中间态
+2. **状态机管控**：SPEC 生命周期由有限状态机（11 个状态、明确转移规则）驱动，杜绝模糊中间态
 3. **闭环验证**：实现后自动启动被测实例、执行场景、判定通过/失败，失败自动打回修复
 4. **唯一人工门禁**：`/fenix-approve` 推送审批是全流程中唯一需要人工参与的环节
 
@@ -26,7 +26,7 @@ graph TB
         PM --> SM
     end
 
-    subgraph POOL ["Agent Pool（七类 Agent）"]
+    subgraph POOL ["Agent Pool（十类 Agent）"]
         IMP["Implementer\n（实现者）"]
         VER["Verifier\n（验证者）"]
         PP["Planner-Plan\n（规划器）"]
@@ -34,11 +34,16 @@ graph TB
         FT["Fast-Track\n（轻量实现）"]
         ADM["Administrator\n（自愈运维）"]
         SR["Self-Review\n（自省）"]
+        DJ["Dispute-Judge\n（争议法官）"]
+        EV["Evolution\n（自进化）"]
+        REV["Spec-Review\n（方案评审）"]
         IMP ~~~ PP
         PP ~~~ FT
         VER ~~~ PJ
         PJ ~~~ ADM
         ADM ~~~ SR
+        SR ~~~ EV
+        DJ ~~~ REV
     end
 
     subgraph DASH ["Dashboard"]
@@ -60,7 +65,7 @@ graph TB
 
 两条入边的分工是理解调度的关键：**正常唤醒靠文件监听（2 秒级），兜底扫描只是安全网**。各唤醒源的间隔、成本实测与已知盲区见[调度与治理规则](06-governance.md#调度节拍spec-何时被唤醒)。
 
-## 七类 Agent 角色
+## 十类 Agent 角色
 
 | Agent 类型 | 职责 | 触发时机 |
 |-----------|------|---------|
@@ -71,6 +76,9 @@ graph TB
 | **fast-track**（轻量实现） | 合并 implementer + verifier 为单次调用，减少 token 消耗 | 满足 fast-track 条件时 |
 | **administrator**（自愈运维） | 检测困境信号、诊断根因、尝试自动修复 | Admin Monitor 唤起 |
 | **self-review**（自省） | 每日自动审查实现质量、配置一致性 | 定时触发 |
+| **dispute-judge**（争议法官） | 对实现者/验证者的声明争议做只读裁决 | 争议仲裁触发 |
+| **evolution**（自进化） | 从自省报告提炼需求、批量产出 evo-* SPEC | 定时触发 |
+| **spec-review**（方案评审） | 阅读 SPEC 三文档做方案级评审（goal-fit/hole/regression），结论 approved/repaired/rejected | `drafted → reviewing` 晋升门禁 |
 
 ## full 模式 vs fast-track 模式
 

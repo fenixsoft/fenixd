@@ -838,3 +838,78 @@ class TestPromoteMode(unittest.TestCase):
         result = ConfigLoader.get_promote_mode({"gates": {"promote_mode": "yes"}})
         self.assertEqual(result, "auto")
 
+
+
+class TestSpecReviewConfig(unittest.TestCase):
+    """add-spec-review-gate 7.7：gates.spec_review_mode 校验/缺省与角色白名单。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.config_path = Path(self.tmpdir) / "config.yaml"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_config(self, config_dict):
+        import yaml
+        with open(self.config_path, "w") as f:
+            yaml.dump(config_dict, f)
+
+    def _write_valid(self, **overrides):
+        """写一份最小合法配置，可按点路径覆盖单键。"""
+        cfg = _valid_cfg()
+        for dotted, value in overrides.items():
+            _cfg_set(cfg, dotted, value)
+        self._write_config(cfg)
+
+    def test_spec_review_mode_invalid_rejected(self):
+        """非枚举值（strict 路径）加载报错并指明合法取值。"""
+        self._write_valid(gates__spec_review_mode="sometimes")
+        with self.assertRaises(ValueError) as cm:
+            ConfigLoader.load(self.config_path)
+        self.assertIn("spec_review_mode", str(cm.exception))
+        self.assertIn("auto", str(cm.exception))
+        self.assertIn("never", str(cm.exception))
+
+    def test_spec_review_mode_valid_values_accepted(self):
+        """auto/never 均为合法取值。"""
+        for mode in ("auto", "never"):
+            self._write_valid(gates__spec_review_mode=mode)
+            config = ConfigLoader.load(self.config_path)
+            self.assertEqual(config["gates"]["spec_review_mode"], mode)
+
+    def test_spec_review_mode_default_auto(self):
+        """未配置时 get_spec_review_mode 缺省 auto。"""
+        self.assertEqual(ConfigLoader.get_spec_review_mode({}), "auto")
+
+    def test_spec_review_mode_resolve_config_project_value(self):
+        """resolve_config 路径（patch USER_CONFIG_DIR 隔离用户级配置，防 home
+        敏感——测试不得读取真实 ~/.fenix/config.yaml）：项目级 spec_review_mode
+        生效。"""
+        proot = Path(self.tmpdir) / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix" / "config.yaml").write_text(
+            "project:\n  name: proj\ngates:\n  spec_review_mode: never\n",
+            encoding="utf-8",
+        )
+        with patch("core.config.USER_CONFIG_DIR", Path(self.tmpdir) / "user"):
+            config = ConfigLoader.resolve_config(proot)
+        self.assertEqual(config["gates"]["spec_review_mode"], "never")
+        self.assertEqual(ConfigLoader.get_spec_review_mode(config), "never")
+
+    def test_spec_review_mode_resolve_config_default(self):
+        """resolve_config 未配置 spec_review_mode → getter 缺省 auto。"""
+        proot = Path(self.tmpdir) / "proj"
+        (proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        (proot / ".fenix" / "config.yaml").write_text(
+            "project:\n  name: proj\n",
+            encoding="utf-8",
+        )
+        with patch("core.config.USER_CONFIG_DIR", Path(self.tmpdir) / "user"):
+            config = ConfigLoader.resolve_config(proot)
+        self.assertEqual(ConfigLoader.get_spec_review_mode(config), "auto")
+
+    def test_known_agent_types_contains_spec_review(self):
+        """KNOWN_AGENT_TYPES 白名单含 spec-review（agents.models 可分配）。"""
+        self.assertIn("spec-review", ConfigLoader.KNOWN_AGENT_TYPES)

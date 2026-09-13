@@ -125,6 +125,34 @@ daemon 重启时，处于 `implementing`/`testing` 中断状态的 SPEC 自动�
 
 **闸口切回后的存量处理**：把 `promote_mode` 从 `manual` 改回 `auto` 后，下一次 full_scan recovery 会自动晋升停留 drafted 的存量 SPEC，无需逐个手动操作。
 
+## SPEC 方案评审门禁
+
+在草稿晋升链（软化 + lint）之后、进入 `ready` 之前，还有一道**方案级评审**：由一个独立的 `spec-review` Agent 阅读 SPEC 的 proposal.md、design.md 与 tasks.md，对方案的**目的适配性（goal-fit）**、**漏洞（hole）**、**回归风险（regression）** 三个维度做单轮只读判断，把方向性风险挡在实现之前。机械 lint 只管「声明路径长什么样」，方案评审管「这条路走不走得通」。
+
+**评审触发条件**：默认（`gates.spec_review_mode: auto`）全部 SPEC 在草稿晋升时进入评审；仅当**四项全部命中**时才跳过评审直通 `ready`：
+
+1. `mode == fast-track`（.spec.yaml 执行模式）
+2. 能力目录数 ≤ 1
+3. 交付物声明条目数 ≤ 3
+4. **名称非 `evo-` 前缀**
+
+`evo-` 前缀是**硬否决项**：自进化批量产出的 SPEC 即使同时满足前三项也必须评审（无人工方案背书，是本特性最主要的目标受众）。字段缺失（无 `mode`、无声明段）时保守取「不跳过」——判据判错时偏向多评审而非漏审。`gates.spec_review_mode: never` 时跳过全部评审（整体逃生门，见[配置参考](09-config.md#gates))。
+
+**三种评审结论**：
+
+- `approved`（方案可行且无改动）→ `ready`
+- `repaired`（方案可行且评审者已就地修补可修补漏洞）→ `ready`（改动留在 git 工作区，可经 `git diff` 审计）
+- `rejected`（存在方向性风险/致命漏洞）→ `blocked`，error 前缀 `spec-review-rejected:`
+
+**故障与否决严格区分**：评审 run 未通过结果硬门或写入边界校验（非零退出 / 结果文件缺失或空 / JSON 非法 / status 越白名单 / mtime 陈旧 / repairs 路径越界 / SPEC 目录外越界写入 / status 与改动不一致）**不计入否决**，重试（累计上限 3 次：首次 + 最多 2 次重试），耗尽后转 `blocked`，error 前缀 `spec-review-incomplete:`。两类 blocked 在 Dashboard 上一眼可分：`rejected` 需要人工读方案并裁决，`incomplete` 需要人工看评审器为什么没跑成。
+
+**人工恢复双路径**（`blocked` 状态的评审相关 SPEC）：
+
+- **`blocked → reviewing`（重新评审）**：仅对 error 前缀为 `spec-review-*` **且未冻结**（无 `frozen: true`）的 blocked SPEC 开放；入口在 Dashboard 项目页「重新评审」菜单项与 CLI `review` 命令。其余 blocked（熔断/合并失败/人工冻结）不开放，以免一次误操作把因熔断停下的 SPEC 重新推入自动链。
+- **`blocked → ready`（担责放行）**：保留既有语义，人工裁决后直接放行进入调度。
+
+评审期间 SPEC 处于 `reviewing` 中断态，daemon 重启自动回退 `drafted` 重走晋升链（软化与 lint 幂等，分流重判；评审者已修补的内容会被基于改进后的方案再评一次）。
+
 ## merge 修复通道与熔断
 
 合并失败按指数退避重试（`pm.push.retry_backoff_seconds` 默认 `[300, 900]`）；连续失败达到 `merge_breaker_threshold`（复用 `agents.merge_breaker_threshold`，默认 2）后，自动 merge 被阻断并转人工处置，产生 critical 级的 `merge_streak` 困境信号。落到体感上：同一 SPEC 连续 merge 失败几次就会停止自动重试并发出红脸告警，提示你去检查 git 冲突根因，而不是让框架继续盲目重试。

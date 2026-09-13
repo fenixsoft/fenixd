@@ -217,6 +217,8 @@ export interface SpecSummary {
   total_duration: number;
   latest_run: string | null;
   latest_run_status: string | null;
+  /** add-spec-review-gate D10：最近方案评审 run ID（reviewing 态必有值，评审相关 blocked 亦可回看） */
+  reviewer_run?: string | null;
   /** add-spec-status-modal-budget D3：实现尝试预算已用次数（_impl_run_budget_used，缺省 0） */
   budget_used?: number;
   /** add-spec-status-modal-budget D3：per-spec 覆盖值（1-10 整数或 null=跟随全局） */
@@ -291,6 +293,23 @@ export interface PromoteResult {
 export function promoteSpec(project: string, spec: string) {
   return request<PromoteResult>(
     `/api/spec-promote?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
+    { method: 'POST' },
+  );
+}
+
+// ── SPEC 重新评审（add-spec-review-gate D8） ──
+
+export interface ReReviewResult {
+  ok: boolean;
+  project?: string;
+  spec?: string;
+  error?: string;
+}
+
+/** 重新评审 blocked SPEC（评审相关 blocked → reviewing，开放条件后端校验） */
+export function reReviewSpec(project: string, spec: string) {
+  return request<ReReviewResult>(
+    `/api/spec-re-review?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
     { method: 'POST' },
   );
 }
@@ -723,6 +742,8 @@ export const STATUS_META: Record<string, { label: string; tone: StatusTone }> = 
   blocked: { label: '阻塞', tone: 'critical' },
   done: { label: '完成', tone: 'good' },
   pushed: { label: '已推送', tone: 'good' },
+  // add-spec-review-gate D1：方案评审中（dedicated tone 独立于其他 info 暖色）
+  reviewing: { label: '评审中', tone: 'aqua' },
 };
 
 export function statusMeta(status: string): { label: string; tone: StatusTone } {

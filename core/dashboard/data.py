@@ -416,6 +416,39 @@ def reflow_spec(project_root, spec_name: str) -> dict:
     return result
 
 
+# ── SPEC 重新评审 blocked → reviewing（add-spec-review-gate D8） ──────
+
+def re_review_spec(project_root, spec_name: str) -> dict:
+    """重新评审 blocked SPEC：复核开放条件后执行 blocked → reviewing 并派发新评审。
+
+    条件校验复用 core/pm_engine/spec_review.py:SpecReviewManager.re_review
+    （状态 MUST 为 blocked、error MUST 为 spec-review-* 前缀、MUST NOT 冻结）；
+    不符合条件 STATE 零变更。
+    - spec 不存在 → {"ok": False, "found": False, "error": ...}（路由 → 404）
+    - 不符合开放条件 / 转移失败 / 派发失败 → {"ok": False, "found": True,
+      "error": 明确原因}（路由非 200）
+    - 成功 → {"ok": True, "found": True, "error": None}
+    """
+    specs = parse_state(project_root)
+    if spec_name not in specs:
+        return {"ok": False, "found": False,
+                "error": f"spec not found: {spec_name}"}
+    from core.pm_engine.spec_review import SpecReviewManager
+    from core.state_machine import StateMachine
+    from core.logger import Logger
+    proot = Path(project_root)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    logger = Logger(proot)
+    # agent_runner=None：跳过同步派发，由 daemon 全扫 recovery 的 reviewing
+    # 分支拾取派发（与 CLI cmd_review 同构）；Dashboard 侧请求发往常驻 daemon
+    # 管理的进程，状态先落盘、派发由既有调度链接力。
+    review_manager = SpecReviewManager(proot, sm, None, None, {}, logger)
+    ok, msg = review_manager.re_review(spec_name)
+    if ok:
+        return {"ok": True, "found": True, "error": None}
+    return {"ok": False, "found": True, "error": msg}
+
+
 # ── SPEC 定时拾取 start_after（add-spec-scheduling-controls D5） ───────
 
 # daemon 主循环轮询的「清空定时拾取即派发」请求信号文件名（与 fenixd.py 约定一致）
@@ -2771,6 +2804,9 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         "created": entry.get("created"),
         "updated": entry.get("updated"),
         "error": entry.get("error"),
+        # add-spec-review-gate D10：评审 run 引用（reviewing 态必有值，
+        # 前端据此展示在飞评审 run_id）
+        "reviewer_run": entry.get("reviewer_run"),
         # add-spec-scheduling-controls D6：定时拾取（start_after）与定时解冻
         # （frozen_until）规范值（ISO8601 UTC 或 null），前端列表据此渲染
         # 定时 Tag/倒计时与冻结模式。
@@ -3912,6 +3948,9 @@ def _managed_key_sources(raw: dict) -> dict:
     # add-draft-promotion-gate：草稿晋升模式显式定义 → project
     if isinstance(gates_raw, dict) and "promote_mode" in gates_raw:
         sources["gates.promote_mode"] = "project"
+    # add-spec-review-gate：方案评审模式显式定义 → project
+    if isinstance(gates_raw, dict) and "spec_review_mode" in gates_raw:
+        sources["gates.spec_review_mode"] = "project"
     verify_src = raw.get("verify")
     if isinstance(verify_src, dict):
         if "static_scope" in verify_src:
@@ -4100,6 +4139,11 @@ def read_config(scope_root, scope: str = "project") -> dict:
         if "gates" not in result:
             result["gates"] = {}
         result["gates"]["promote_mode"] = gates_raw["promote_mode"]
+    # add-spec-review-gate：spec_review_mode 提取（合法枚举才回显，非法留空由读侧缺省兜底）
+    if isinstance(gates_raw, dict) and gates_raw.get("spec_review_mode") in ("auto", "never"):
+        if "gates" not in result:
+            result["gates"] = {}
+        result["gates"]["spec_review_mode"] = gates_raw["spec_review_mode"]
     verify_raw = raw.get("verify")
     if isinstance(verify_raw, dict):
         if verify_raw.get("static_scope") in ("main", "worktree"):
@@ -4276,6 +4320,11 @@ def read_effective_config(project_root) -> dict:
         result["gates"] = {"promote_mode": "auto"}
     elif "promote_mode" not in result.get("gates", {}):
         result["gates"]["promote_mode"] = "auto"
+    # add-spec-review-gate：方案评审模式回显（经 get_spec_review_mode 生效值，
+    # 非法值/缺失回退缺省 auto——与 ConfigLoader 单点同源，回显与生效值一致）
+    if "gates" not in result:
+        result["gates"] = {}
+    result["gates"]["spec_review_mode"] = ConfigLoader.get_spec_review_mode(effective)
     verify_eff = effective.get("verify")
     if isinstance(verify_eff, dict):
         if verify_eff.get("static_scope") in ("main", "worktree"):
@@ -4365,7 +4414,8 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
                 merged["agents"][_tk] = patch["agents"][_tk]
 
     if "gates" in patch and isinstance(patch["gates"], dict):
-        if "approve_mode" in patch["gates"] or "promote_mode" in patch["gates"]:
+        if "approve_mode" in patch["gates"] or "promote_mode" in patch["gates"] \
+                or "spec_review_mode" in patch["gates"]:
             if not isinstance(merged.get("gates"), dict):
                 merged["gates"] = {}
         if "approve_mode" in patch["gates"]:
@@ -4374,6 +4424,11 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         # promote_mode 在 merge 阶段被静默丢弃（枚举合法性已由 write_config 前置校验把关）
         if "promote_mode" in patch["gates"]:
             merged["gates"]["promote_mode"] = patch["gates"]["promote_mode"]
+        # add-spec-review-gate：spec_review_mode 合并分支（缺合并分支会导致设置页
+        # 保存的 spec_review_mode 在 merge 阶段被静默丢弃；枚举合法性已由
+        # write_config 前置校验把关）
+        if "spec_review_mode" in patch["gates"]:
+            merged["gates"]["spec_review_mode"] = patch["gates"]["spec_review_mode"]
 
     if "runs" in patch and isinstance(patch["runs"], dict):
         keep = patch["runs"].get("keep")
@@ -4597,6 +4652,13 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 and g_patch["promote_mode"] not in ("auto", "manual"):
             return fail(
                 f"gates.promote_mode must be one of ['auto', 'manual']: {g_patch['promote_mode']!r}"
+            )
+        # add-spec-review-gate：gates.spec_review_mode 前置校验（枚举拒绝，
+        # 与 promote_mode 同模式；None 视为「未提交」，不校验）
+        if "spec_review_mode" in g_patch and g_patch["spec_review_mode"] is not None \
+                and g_patch["spec_review_mode"] not in ("auto", "never"):
+            return fail(
+                f"gates.spec_review_mode must be one of ['auto', 'never']: {g_patch['spec_review_mode']!r}"
             )
 
     # add-spec-hooks D7：hooks 段前置校验（非法值直接拒绝 400 且不写入——规则：

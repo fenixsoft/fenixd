@@ -113,39 +113,39 @@
 - [x] 4.1 core/pm_engine/spec_review.py（或 core/pm_engine/engine.py，位置二选一并在 design 结论中说明）：实现三种 `status` 的机械收口——`approved`/`repaired` → `transition ready` + 直调 `_on_spec_ready`；`rejected` → `transition blocked` + error 前缀 `spec-review-rejected:` 并含 blocking 条目的 aspect/detail/evidence 摘要
 - [x] 4.2 core/pm_engine/spec_review.py：实现故障重试——本轮未完成时递增 `_review_attempts` 并重试，累计尝试上限 3 次（首次 + 最多 2 次重试，常量常量名自解释）；耗尽后 `transition blocked` + error 前缀 `spec-review-incomplete:`；失败原因 MUST 具体可辨（非零退出 / 文件缺失或空 / JSON 非法 / status 越白名单 / mtime 陈旧 / repairs 路径越界 / SPEC 目录外越界写入 / status 与改动不一致）；重试成功后重置 `_review_attempts`
 - [x] 4.3 core/pm_engine/spec_review.py：实现重新评审入口的开放条件校验——状态 MUST 为 `blocked`、error MUST 以 `spec-review-rejected:` 或 `spec-review-incomplete:` 开头、MUST NOT 带 `frozen: true`；任一不满足则拒绝并返回明确原因，STATE 零变更；幂等防御（第二次调用因状态已非 blocked 被拒）
-- [ ] 4.4 core/dashboard/data.py：受管配置键白名单扩展 `gates.spec_review_mode`（读侧 sources 标注与写侧提取**两处**，data.py 配置读写段）；新增重新评审动作构造函数（复用 4.3 的条件校验）；`get_specs` 输出确认 `reviewing` 状态与 `reviewer_run` 字段可被前端消费
-- [ ] 4.5 core/dashboard/server.py：新增重新评审 API 路由——project/spec 不存在 404；不符合开放条件返回明确原因（非 200/ok:true）；成功返回 ok:true；对齐既有 unfreeze / spec-promote 路由的错误语义
+- [x] 4.4 core/dashboard/data.py：受管配置键白名单扩展 `gates.spec_review_mode`（读侧 sources 标注与写侧提取**两处**，data.py 配置读写段）；新增重新评审动作构造函数（复用 4.3 的条件校验）；`get_specs` 输出确认 `reviewing` 状态与 `reviewer_run` 字段可被前端消费
+- [x] 4.5 core/dashboard/server.py：新增重新评审 API 路由——project/spec 不存在 404；不符合开放条件返回明确原因（非 200/ok:true）；成功返回 ok:true；对齐既有 unfreeze / spec-promote 路由的错误语义
 - [x] 4.6 bin/fenix_cli.py：新增 `review <spec> [--project <path>]` 子命令（--project 挂子解析器，非主解析器——历史踩坑点）；复用 4.3 的校验与动作；成功/拒绝原因打印终端，失败非零退出码
 
 ## 5. Dashboard 界面
 
-- [ ] 5.1 core/dashboard/static/src/services/dashboard.ts：`statusMeta` 增 `reviewing` 条目（label 与 tone）；新增重新评审 API client（对齐既有 freezeSpec / unfreezeSpec / promoteSpec 模式）
-- [ ] 5.2 ApprovalModePanel.tsx：新增「SPEC 方案评审」单选（`auto` / `never`），与既有草稿晋升模式同构并置于其相邻位置；附说明文字（默认全量评审、`fast-track` 且单能力少交付物且非 `evo-` 才跳过、`never` 完全关闭）；保存载荷 MUST 同时提交新键与既有 `approve_mode`/`gates.promote_mode`（防整段覆盖丢失既有设置）
+- [x] 5.1 core/dashboard/static/src/services/dashboard.ts：`statusMeta` 增 `reviewing` 条目（label 与 tone）；新增重新评审 API client（对齐既有 freezeSpec / unfreezeSpec / promoteSpec 模式）
+- [x] 5.2 ApprovalModePanel.tsx：新增「SPEC 方案评审」单选（`auto` / `never`），与既有草稿晋升模式同构并置于其相邻位置；附说明文字（默认全量评审、`fast-track` 且单能力少交付物且非 `evo-` 才跳过、`never` 完全关闭）；保存载荷 MUST 同时提交新键与既有 `approve_mode`/`gates.promote_mode`（防整段覆盖丢失既有设置）
 - [x] 5.3 PromptsPanel.tsx：`AGENT_LABELS` 增 `spec-review`（**该 key 集合与后端 `AGENT_PROMPT_FILES` 严格一致**，两处必须同步）；同步更新文件头的「9 个 agent」注释计数
 - [x] 5.4 AgentModelPanel.tsx：`AGENT_ROLES` 增 `spec-review`；同步更新文件头的「7 个角色」注释计数与后端 `KNOWN_AGENT_TYPES` 保持一致
-- [ ] 5.5 list.tsx：状态筛选下拉选项增 `reviewing`；为评审相关 blocked（error 前缀 `spec-review-*`）的行新增「重新评审」操作入口（带确认，非评审类 blocked 不显示）；失败时 message.error 展示后端返回的拒绝原因
-- [ ] 5.6 前端构建验证：core/dashboard/static 下构建通过（dist 产物不入库，仅本地验证）
+- [x] 5.5 list.tsx：状态筛选下拉选项增 `reviewing`；为评审相关 blocked（error 前缀 `spec-review-*`）的行新增「重新评审」操作入口（带确认，非评审类 blocked 不显示）；失败时 message.error 展示后端返回的拒绝原因
+- [x] 5.6 前端构建验证：core/dashboard/static 下构建通过（dist 产物不入库，仅本地验证）
 
 ## 6. 文档同步
 
 - [x] 6.1 docs/help/03-lifecycle.md：状态全景 mermaid 图增 `reviewing` 与三条新边；「各状态详解」增 `reviewing` 小节（语义、进入条件、三种出去方式）；「完整合法转移表」增 `reviewing` 行并更新 `drafted`/`blocked` 行
-- [ ] 6.2 docs/help/02-concepts.md：「七类 Agent 角色」表增 `spec-review` 行（触发时机 `drafted → reviewing` 晋升门禁），并**修正过时的计数**（该表实际已含 9 个角色，需一并核正标题与正文计数）
-- [ ] 6.3 docs/help/06-governance.md：增补「SPEC 方案评审门禁」说明——评审触发条件、跳过白名单（含 `evo-` 硬否决）、三种评审结论、故障重试与两类 blocked 的区分、人工恢复双路径、重新评审入口的开放条件；与既有「草稿人工放行」章节交叉引用
-- [ ] 6.4 docs/help/09-config.md：gates 配置表增补 `spec_review_mode` 行（枚举 auto/never、缺省 auto、热更新属性，对齐既有 `promote_mode` 行格式）；agents.models 说明补 `spec-review` 角色
-- [ ] 6.5 docs/help/10-artifacts.md：增补 `.fenix/spec-review/<spec>/` 目录说明（评审结果文件位置与用途）；STATE.md 字段说明补 `reviewer_run`；出错排查指引补「SPEC 卡在 reviewing」/「SPEC 因评审进 blocked」
+- [x] 6.2 docs/help/02-concepts.md：「七类 Agent 角色」表增 `spec-review` 行（触发时机 `drafted → reviewing` 晋升门禁），并**修正过时的计数**（该表实际已含 9 个角色，需一并核正标题与正文计数）
+- [x] 6.3 docs/help/06-governance.md：增补「SPEC 方案评审门禁」说明——评审触发条件、跳过白名单（含 `evo-` 硬否决）、三种评审结论、故障重试与两类 blocked 的区分、人工恢复双路径、重新评审入口的开放条件；与既有「草稿人工放行」章节交叉引用
+- [x] 6.4 docs/help/09-config.md：gates 配置表增补 `spec_review_mode` 行（枚举 auto/never、缺省 auto、热更新属性，对齐既有 `promote_mode` 行格式）；agents.models 说明补 `spec-review` 角色
+- [x] 6.5 docs/help/10-artifacts.md：增补 `.fenix/spec-review/<spec>/` 目录说明（评审结果文件位置与用途）；STATE.md 字段说明补 `reviewer_run`；出错排查指引补「SPEC 卡在 reviewing」/「SPEC 因评审进 blocked」
 
 ## 7. 回归验证
 
-- [ ] 7.1 tests/test_state_machine.py：新状态与四条新转移边（含非法边拒绝、状态全集计数 11、中断态回退清空 `reviewer_run` 与 `_review_attempts`）
-- [ ] 7.2 tests/test_event_bus.py：`_status_to_event` 映射 `reviewing → spec_reviewing`；`_recover_one` 对 `reviewing` 走评审恢复分支
+- [x] 7.1 tests/test_state_machine.py：新状态与四条新转移边（含非法边拒绝、状态全集计数 11、中断态回退清空 `reviewer_run` 与 `_review_attempts`）
+- [x] 7.2 tests/test_event_bus.py：`_status_to_event` 映射 `reviewing → spec_reviewing`；`_recover_one` 对 `reviewing` 走评审恢复分支
 - [x] 7.3 tests/test_spec_review_gate.py（新建）：跳过白名单判定的全部场景（四项全中跳过、`evo-` 硬否决、非 fast-track 不跳过、能力数超阈值不跳过、声明段缺失保守评审、mode 缺失保守评审）；`never` 模式全通道直通；四条触发路径分流一致性；并发满排队不跳过
 - [x] 7.4 tests/test_spec_review_agent.py（新建）：结果硬门各失败形态（exit 非零 / 文件缺失 / JSON 非法 / status 越白名单 / mtime 陈旧）均判未完成；写入边界校验三类失败（repairs 路径越界 / SPEC 目录外改动 / approved 伴随改动）均判未完成；快照能检出「已脏文件又被改动」；不自动回滚断言
 - [x] 7.5 tests/test_pm_promotion_gate.py：`promote_drafted` 返回 `next_status` 的分流分支；`manual` 闸口语义未被改动（仍停留 drafted、无 error、无派发）
-- [ ] 7.6 tests/test_spec_review_agent.py 或独立用例：三种 status 的机械收口（approved/repaired → ready + 派发实现；rejected → blocked + 前缀）；故障重试计数与耗尽转 blocked；重试成功重置计数；重新评审开放条件四类拒绝（非 blocked / 非评审前缀 / 冻结 / 幂等重复调用）
-- [ ] 7.7 tests/test_config.py：`spec_review_mode` 非枚举拒绝与缺省 auto（patch 双常量隔离用户级配置，防 home 敏感）；`KNOWN_AGENT_TYPES` 含 `spec-review`
-- [ ] 7.8 tests/test_dashboard_api.py：重新评审 API 成功、project/spec 404、非评审类 blocked 拒绝、冻结态拒绝、非法状态拒绝
-- [ ] 7.9 tests/test_agent_prompt_files.py：`spec-review` 在 `AGENT_PROMPT_FILES` 白名单中且模板可加载；前端 `AGENT_LABELS` / `AGENT_ROLES` key 集合与后端两处常量的一致性断言
-- [ ] 7.10 全量回归：相关测试文件全绿，且既有 pm_engine / dispatch / dashboard 回归无新增失败（以主树基线对照区分存量 flake 与本轮引入）
+- [x] 7.6 tests/test_spec_review_agent.py 或独立用例：三种 status 的机械收口（approved/repaired → ready + 派发实现；rejected → blocked + 前缀）；故障重试计数与耗尽转 blocked；重试成功重置计数；重新评审开放条件四类拒绝（非 blocked / 非评审前缀 / 冻结 / 幂等重复调用）
+- [x] 7.7 tests/test_config.py：`spec_review_mode` 非枚举拒绝与缺省 auto（patch 双常量隔离用户级配置，防 home 敏感）；`KNOWN_AGENT_TYPES` 含 `spec-review`
+- [x] 7.8 tests/test_dashboard_api.py：重新评审 API 成功、project/spec 404、非评审类 blocked 拒绝、冻结态拒绝、非法状态拒绝
+- [x] 7.9 tests/test_agent_prompt_files.py：`spec-review` 在 `AGENT_PROMPT_FILES` 白名单中且模板可加载；前端 `AGENT_LABELS` / `AGENT_ROLES` key 集合与后端两处常量的一致性断言
+- [x] 7.10 全量回归：相关测试文件全绿，且既有 pm_engine / dispatch / dashboard 回归无新增失败（以主树基线对照区分存量 flake 与本轮引入）
 
 ## 验证修复（原地打回第 1 轮）
 
