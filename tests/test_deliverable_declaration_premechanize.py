@@ -69,7 +69,12 @@ class PromotionTestMixin(unittest.TestCase):
         from unittest.mock import MagicMock
         self.logger = MagicMock()
         self.sm = StateMachine(self.pr / ".fenix" / "STATE.md", self.logger)
-        self.engine = PMEngine(self.sm, MagicMock(), {}, self.pr, self.logger)
+        # 评审门禁隔离（add-spec-review-gate 7.10）：本 Mixin 验证的是软化+lint
+        # 门禁（宣传放行晋升），传 spec_review_mode: never 使晋升直通 ready——
+        # 评审分流语义由 test_spec_review_gate.py 独立覆盖，不在此线性耦合
+        self.engine = PMEngine(self.sm, MagicMock(),
+                               {"gates": {"spec_review_mode": "never"}},
+                               self.pr, self.logger)
         self.engine._on_spec_ready = MagicMock()
         self.spec_dir = self.pr / "spec" / "changes" / "demo"
         self.sm.add_spec("demo", {"priority": 5})
