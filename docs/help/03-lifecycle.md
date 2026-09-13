@@ -1,6 +1,6 @@
 # SPEC 生命周期与状态机
 
-Fenix 将 SPEC 从提出到发布的完整生命周期建模为**10 个状态**的有限状态机。本章覆盖全部状态、合法转移、打回与修复循环、冻结机制与门禁逃生门。
+Fenix 将 SPEC 从提出到发布的完整生命周期建模为**11 个状态**的有限状态机。本章覆盖全部状态、合法转移、打回与修复循环、冻结机制与门禁逃生门。
 
 ## 状态全景
 
@@ -8,7 +8,10 @@ Fenix 将 SPEC 从提出到发布的完整生命周期建模为**10 个状态**�
 stateDiagram-v2
     state "bug-found" as bugfound
     [*] --> drafted: /fenix-new 创建 SPEC
-    drafted --> ready: 设计+任务书完成
+    drafted --> ready: 设计+任务书完成（跳过评审）
+    drafted --> reviewing: 方案评审门禁
+    reviewing --> ready: 评审通过
+    reviewing --> blocked: 评审否决/未完成
     ready --> implementing: 调度派发 implementer
     implementing --> implemented: 实现完成
     implementing --> ready: 重试
@@ -21,6 +24,7 @@ stateDiagram-v2
     verified --> done: 自动推进（等待审批）
     done --> pushed: /fenix-approve 推送
     blocked --> ready: 人工恢复/解冻
+    blocked --> reviewing: 人工重新评审
     pushed --> [*]
 ```
 
@@ -28,9 +32,21 @@ stateDiagram-v2
 
 ### drafted（草稿）
 
-`/fenix-new` 创建 SPEC 后即进入 `drafted`。此时 SPEC 还停留在设计阶段，proposal、design 与 tasks.md 正在生成或等待确认；一旦设计文档与任务书完成，SPEC 便转入 `ready`。
+`/fenix-new` 创建 SPEC 后即进入 `drafted`。此时 SPEC 还停留在设计阶段，proposal、design 与 tasks.md 正在生成或等待确认；一旦设计文档与任务书完成并经晋升链校验通过，SPEC 便转入 `ready` 或 `reviewing`（依评审门禁判定分流，见下一节）。
 
 **框架自动生成的改进 SPEC**：当 `self_evolution` 自进化链路（仅自托管 daemon 启用，见[配置参考](09-config.md#self_evolution框架自进化)）判定某条目值得立项并经人工「同意」或开关打开后自动接受时，SPEC 统一使用 `evo-` 前缀（`evo-<slug>`，重名追加条目 id 短后缀）进入 `spec/changes/`，以 `drafted`（priority 5）注册 STATE——与人工 `/fenix-new` 生成的 SPEC **完全同源**：由既有 `gates.promote_mode`（本机 auto）自动晋升 → `ready` → 实现 → 验证 → `done`，终点 `pushed` 仍需人工审批（推送审批门 `gates.require_push_approval` 保持不变）。接受过程「先提交后注册」（仅 add 该 spec 目录并提交后再注册），失败时不产生「已提交未注册 / 已注册未提交」半成品，条目标 `accept_failed` 可重试（见[建议改进项面板](08-dashboard.md#设置页settings)）。
+
+### reviewing（方案评审中）
+
+`drafted` 经晋升链校验通过后进入 `reviewing`（当评审门禁未跳过时）。评审 Agent 阅读 SPEC 的 proposal.md、design.md、tasks.md，对方案的**目的适配性（goal-fit）**、**漏洞（hole）**、**回归风险（regression）** 三个维度做单轮只读评审。评审结论分三种：
+
+- **approved**：方案可行 → `ready` → 实现调度
+- **repaired**：方案可行且评审者已就地修补 → `ready` → 实现调度
+- **rejected**：方案存在方向性风险 → `blocked` → 人工裁决
+
+评审 run 未通过结果硬门或写入边界校验时，计为「未完成」，累计尝试上限 3 次（含首次），达上限后 `blocked`（error 前缀 `spec-review-incomplete:`），与否决的 `spec-review-rejected:` 前缀严格区分。`blocked → reviewing`（重新评审）仅对评审相关 blocked（error 前缀 `spec-review-*`）且未冻结的 SPEC 开放。
+
+> **跳过白名单**：仅当四项**全部命中**时跳过评审直通 `ready`——`mode == fast-track` 且能力目录数 ≤ 1 且 Deliverables 声明条目数 ≤ 3 且名称**非 `evo-` 前缀**（`evo-` 为硬否决项）。`gates.spec_review_mode: never` 时完全关闭评审，所有 SPEC 走 `drafted → ready` 直通。
 
 ### ready（就绪）
 
@@ -74,13 +90,14 @@ planner-judge 门禁判定通过后 SPEC 进入 `verified`，随即自动推进�
 
 | 当前状态 | 可转移目标 |
 |---------|-----------|
-| drafted | ready |
+| drafted | ready, reviewing |
+| reviewing | ready, blocked |
 | ready | implementing |
 | implementing | implemented, ready（重试）, blocked（熔断） |
 | implemented | testing |
 | testing | verified, bug-found |
 | bug-found | implementing（修复）, implemented（fix 后重验） |
-| blocked | ready |
+| blocked | ready, reviewing |
 | verified | done |
 | done | pushed |
 | pushed | （无，终态） |
