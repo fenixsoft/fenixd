@@ -30,6 +30,7 @@ WIP_TIMEOUT_SECONDS = 15
 ANCHOR_DRAIN_PRESERVE = "drain-preserve"
 ANCHOR_TRANSIENT_BACKOFF = "transient-backoff"
 ANCHOR_TURN_LIMIT = "turn-limit"
+ANCHOR_EXTENSION_TAIL = "extension-tail"
 
 
 # ── 锚点提交（锚点 A / B 共用，D5/D6）───────────────────────────────────────
