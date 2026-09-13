@@ -65,3 +65,9 @@
 - [x] 7.4 `tests/test_deliverable_delete_kind.py`：覆盖派发前处方对 delete 的两种形态（主树存在 → 删除目标确认；主树不存在 → 无可删 + 候选）。
 - [x] 7.5 `tests/test_deliverable_gate.py`：既有用例适配 `list[dict]` 返回结构（断言改为从条目取 path/kind/violation），行为预期不变。
 - [x] 7.6 运行全量测试 `python3 -m pytest tests/ -q`，修复因返回结构变更或 kind 词表扩展引入的回归，至零失败。
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/add-deliverable-delete-kind/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
