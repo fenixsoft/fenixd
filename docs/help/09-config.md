@@ -99,7 +99,7 @@ Agent 可用的模型通道（Provider）注册表。未配置 = 空注册表，
 
 ### agents.models
 
-按 Agent 角色声明模型通道，键取七角色：`implementer` / `fast-track` / `planner-plan` / `planner-judge` / `verifier` / `administrator` / `self-review`。未知角色键降级跳过并 ERROR 告警（新角色键需重启 daemon 使白名单生效）；未分配的角色走默认网关。
+按 Agent 角色声明模型通道，键取八角色：`implementer` / `fast-track` / `planner-plan` / `planner-judge` / `verifier` / `administrator` / `self-review` / `spec-review`。未知角色键降级跳过并 ERROR 告警（新角色键需重启 daemon 使白名单生效）；未分配的角色走默认网关。
 
 ```yaml
 agents:
@@ -115,7 +115,7 @@ agents:
       model: "deepseek-v4-pro"      # 链元素未带 model 时的角色级兜底
 ```
 
-**候选链与 failover**：`provider` 支持字符串 / 字符串数组 / 对象数组（`{provider, model?}`）及混合。attempt 级派发角色（implementer / verifier / planner / fast-track）按链序选择首个未熔断、未处于切换冷却的候选；切换类错误（模型拒绝 / 5xx / 瞬断原地退避耗尽，见[瞬断治理](#agents瞬断治理provider-网关瞬时故障的退避与熔断)）失败后该 Provider 进入短冷却，同 run 下一次 attempt 自动前进到下一候选。administrator / self-review / dispute-judge 只取链首选，不接 attempt 级 failover。
+**候选链与 failover**：`provider` 支持字符串 / 字符串数组 / 对象数组（`{provider, model?}`）及混合。attempt 级派发角色（implementer / verifier / planner / fast-track）按链序选择首个未熔断、未处于切换冷却的候选；切换类错误（模型拒绝 / 5xx / 瞬断原地退避耗尽，见[瞬断治理](#agents瞬断治理provider-网关瞬时故障的退避与熔断)）失败后该 Provider 进入短冷却，同 run 下一次 attempt 自动前进到下一候选。administrator / self-review / dispute-judge / spec-review 只取链首选，不接 attempt 级 failover。
 
 **模型名解析顺序**：链元素自带 model > 角色级 model > Provider 条目的 `model`；三者皆空的候选运行期跳过。模型名经 `--model` 直接发给网关，须填该网关支持的名字。`unrecognized_model` 报错先核对网关支持列表，多为网关瞬时故障，勿盲目改配置。
 
@@ -136,6 +136,13 @@ agents:
 | require_push_approval | true | bool | 热更新 |
 | approve_mode | `manual` | manual/auto | 热更新 |
 | promote_mode | `auto` | auto/manual | 热更新 |
+| spec_review_mode | `auto` | auto/never | 热更新 |
+
+`gates.spec_review_mode`（方案评审门禁，add-spec-review-gate D2/D11）：
+- `auto`（默认）：草稿晋升时全部 SPEC 进入方案评审；仅当 `mode == fast-track` 且能力目录数 ≤ 1 且交付物声明条目 ≤ 3 且非 `evo-` 前缀时跳过评审直通 `ready`。`evo-` 前缀为硬否决项（永不跳过）。
+- `never`：跳过方案评审门禁，drafted 晋升直接进入 ready 并调度（整体逃生门，行为回到无评审时代）。
+
+设置页「审批」页签可调（与草稿晋升模式相邻）。评审流程与人工恢复路径见[治理规则](06-governance.md#spec-方案评审门禁)。
 
 ### verify
 
@@ -358,7 +365,7 @@ hook 分发与动作执行在 daemon 后台线程进行，不阻塞状态机写�
 
 | 设置页面板 | 对应配置键 |
 |-----------|-----------|
-| 配置管理 | llm.providers / agents.models / gates.approve_mode / gates.promote_mode |
+| 配置管理 | llm.providers / agents.models / gates.approve_mode / gates.promote_mode / gates.spec_review_mode |
 | Token 预算面板 | agents.token_budget_millions |
 | 验证 | verify.static_scope / verify.deps_mode（存于 config.yaml；`.fenix/verify.yaml` 契约手工编辑，不经设置页改写） |
 | 提示词管理 | agents/ 通用层 + .fenix/agents/ 项目级 |

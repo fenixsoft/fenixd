@@ -129,10 +129,10 @@
 ## 6. 文档同步
 
 - [x] 6.1 docs/help/03-lifecycle.md：状态全景 mermaid 图增 `reviewing` 与三条新边；「各状态详解」增 `reviewing` 小节（语义、进入条件、三种出去方式）；「完整合法转移表」增 `reviewing` 行并更新 `drafted`/`blocked` 行
-- [ ] 6.2 docs/help/02-concepts.md：「七类 Agent 角色」表增 `spec-review` 行（触发时机 `drafted → reviewing` 晋升门禁），并**修正过时的计数**（该表实际已含 9 个角色，需一并核正标题与正文计数）
-- [ ] 6.3 docs/help/06-governance.md：增补「SPEC 方案评审门禁」说明——评审触发条件、跳过白名单（含 `evo-` 硬否决）、三种评审结论、故障重试与两类 blocked 的区分、人工恢复双路径、重新评审入口的开放条件；与既有「草稿人工放行」章节交叉引用
-- [ ] 6.4 docs/help/09-config.md：gates 配置表增补 `spec_review_mode` 行（枚举 auto/never、缺省 auto、热更新属性，对齐既有 `promote_mode` 行格式）；agents.models 说明补 `spec-review` 角色
-- [ ] 6.5 docs/help/10-artifacts.md：增补 `.fenix/spec-review/<spec>/` 目录说明（评审结果文件位置与用途）；STATE.md 字段说明补 `reviewer_run`；出错排查指引补「SPEC 卡在 reviewing」/「SPEC 因评审进 blocked」
+- [x] 6.2 docs/help/02-concepts.md：「七类 Agent 角色」表增 `spec-review` 行（触发时机 `drafted → reviewing` 晋升门禁），并**修正过时的计数**（该表实际已含 9 个角色，需一并核正标题与正文计数）
+- [x] 6.3 docs/help/06-governance.md：增补「SPEC 方案评审门禁」说明——评审触发条件、跳过白名单（含 `evo-` 硬否决）、三种评审结论、故障重试与两类 blocked 的区分、人工恢复双路径、重新评审入口的开放条件；与既有「草稿人工放行」章节交叉引用
+- [x] 6.4 docs/help/09-config.md：gates 配置表增补 `spec_review_mode` 行（枚举 auto/never、缺省 auto、热更新属性，对齐既有 `promote_mode` 行格式）；agents.models 说明补 `spec-review` 角色
+- [x] 6.5 docs/help/10-artifacts.md：增补 `.fenix/spec-review/<spec>/` 目录说明（评审结果文件位置与用途）；STATE.md 字段说明补 `reviewer_run`；出错排查指引补「SPEC 卡在 reviewing」/「SPEC 因评审进 blocked」
 
 ## 7. 回归验证
 
