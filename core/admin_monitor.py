@@ -34,6 +34,15 @@ from core.pm_engine.verification import (
     resolve_env_blocked_reset_path,
 )
 
+# frozen-scenario-schema-migration D3：处置后自动复位集合。
+# blocked_stuck 与 env 阻塞族同语义加入自动复位：admin 处置成功
+# （result=resolved/partially-resolved）且根因已修复 → 复用
+# resolve_env_blocked_reset_path 既有复位路径（实现分支已合并→testing
+# 直通重验，否则→ready），消除 blocked_stuck 处置成功后二次空转。
+# MUST NOT 恢复任何错误业务判定——只复位阻塞态，复位守卫（frozen/
+# 非 blocked）由 resolve_env_blocked_reset_path 判定。
+DISPOSITION_AUTO_RESET_SIGNAL_TYPES = ENV_BLOCK_SIGNAL_TYPES + ("blocked_stuck",)
+
 # 默认阈值（design D2）
 REPEAT_FAILURE_WINDOW_MINUTES = 30
 REPEAT_FAILURE_THRESHOLD = 3
@@ -1057,15 +1066,16 @@ class AdminMonitor:
         # 文本动作（放行 / _family_waiver / waive）兜底，兼容自由文本处置。
         self._apply_family_waiver(signal, disp)
 
-        # env 阻塞处置收尾复位（add-blocked-reverify-lane D2/D3）：result 为
-        # resolved/partially-resolved 且信号属 env 族时，框架机械判定复位路径——
-        # 实现分支已合并 → transition_gate(testing) 直通道重验（跳过全量重实现）；
-        # 否则 → 既有 transition(ready)。两条路径均保留 _env_block_rounds（不清零，
-        # 生命周期累计语义），仅清 error。escalated 表示 admin 升级人工，不触发
-        # 自动复位（人工处置是唯一出路）。
+        # env 阻塞 / blocked_stuck 处置收尾复位（add-blocked-reverify-lane D2 +
+        # frozen-scenario-schema-migration D3）：result 为 resolved/
+        # partially-resolved 且信号属复位集合（env 族 + blocked_stuck）时，
+        # 框架机械判定复位路径——实现分支已合并 → transition_gate(testing)
+        # 直通道重验（跳过全量重实现）；否则 → 既有 transition(ready)。
+        # 两条路径均保留阻塞轮次（不清零，生命周期累计语义），仅清 error。
+        # escalated 表示 admin 升级人工，不触发自动复位（人工处置是唯一出路）。
         if disp.result in ("resolved", "partially-resolved"):
             sig_type = signal.get("signal_type")
-            if sig_type in ENV_BLOCK_SIGNAL_TYPES:
+            if sig_type in DISPOSITION_AUTO_RESET_SIGNAL_TYPES:
                 self._reset_env_blocked_after_disposition(signal, disp)
 
         # fix-stale-escalation-close：run 有最终结果即关闭其名下旧 escalation
@@ -1114,12 +1124,19 @@ class AdminMonitor:
     # ── 辅助 ────────────────────────────────────────────────────
 
     def _reset_env_blocked_after_disposition(self, signal: dict, disp) -> None:
-        """env 阻塞处置收尾自动复位（add-blocked-reverify-lane D2）。
+        """阻塞处置收尾自动复位（add-blocked-reverify-lane D2 +
+        frozen-scenario-schema-migration D3）。
 
-        result=resolved/partially-resolved + signal_type∈env 族 → 框架机械判定：
-        branch 已合并 → transition_gate(testing) 直通道 + verifier 入队重验；
-        未合并/无 branch → transition(ready) + implementer 重派。两条路径均保留
-        _env_block_rounds（不清零，生命周期累计语义），仅清 error。
+        result=resolved/partially-resolved + signal_type∈自动复位集合
+        （env 族 + blocked_stuck）→ 框架机械判定：branch 已合并 →
+        transition_gate(testing) 直通道 + verifier 入队重验；未合并/无
+        branch → transition(ready) + implementer 重派。两条路径均保留
+        阻塞轮次（不清零，生命周期累计语义），仅清 error。
+
+        blocked_stuck 复用同一路径（D3）：处置根因修复后状态悬置是纯闭环
+        缺口，无独立语义——复位守卫由 resolve_env_blocked_reset_path 判定
+        （人工冻结/非 blocked 不触发），只复位阻塞态，MUST NOT 恢复任何
+        错误业务判定（merge-breaker 计数等业务侧车字段一律不清零）。
 
         自身异常不得阻塞处置落痕（右关联设计：处置记录永远先落盘）。
         """

@@ -10,6 +10,101 @@ from typing import Optional
 import re
 
 
+# ── schema 版本标记（frozen-scenario-schema-migration D2）──────────
+# 当前场景文件 schema 版本号。写入端恒定写入；读侧按版本路由迁移：
+# 无版本=旧 schema 走迁移，当前版本直通，未知版本走迁移尝试+字段差异报错。
+SCHEMA_VERSION = 1
+
+
+# ── 旧 schema 字段迁移（frozen-scenario-schema-migration D1/D2）────
+# 冻结文件（frozen test_scenarios.json）可能以旧字段形态生成：
+#   - cli run 步骤：value → command
+#   - output_match 断言：value → expected
+# 迁移仅对「目标字段缺失且旧字段存在」生效（新 schema 字段存在时零干扰）；
+# 迁移后经既有校验；无法迁移（字段整体缺失）时在校验报错中附具体字段差异清单。
+
+def migrate_scenario_schema(raw: list) -> list:
+    """旧 schema 场景 dict 列表迁移（读侧预校验步骤）。
+
+    识别旧字段形态并映射到新字段（仅当目标字段缺失时迁移，新字段存在零干扰）：
+      - run 步骤（cli 场景，action == 'run'）：value → command
+      - output_match 断言（type == 'output_match'）：value → expected
+
+    返回迁移后的新列表（浅拷贝，原列表与各 dict 不变——读无副作用）。
+    """
+    migrated = []
+    for item in raw:
+        if isinstance(item, dict):
+            migrated.append(_migrate_scenario_dict(item))
+        else:
+            migrated.append(item)
+    return migrated
+
+
+def _migrate_scenario_dict(d: dict) -> dict:
+    """单条场景 dict 迁移：按需把旧字段映射到新字段（浅拷贝，原 dict 不变）。"""
+    out = dict(d)
+    steps = out.get("steps")
+    if isinstance(steps, list):
+        new_steps = []
+        for s in steps:
+            if isinstance(s, dict) and s.get("action") == "run":
+                # cli run 旧字段：value → command（仅当 command 缺失时迁移）
+                if "value" in s and "command" not in s:
+                    s = {**s, "command": s["value"]}
+            new_steps.append(s)
+        out["steps"] = new_steps
+    assertions = out.get("assertions")
+    if isinstance(assertions, list):
+        new_asserts = []
+        for a in assertions:
+            # output_match 断言旧字段：value → expected（仅当 expected 缺失时迁移）
+            if (isinstance(a, dict)
+                    and a.get("type") == "output_match"
+                    and "value" in a
+                    and "expected" not in a):
+                a = {**a, "expected": a["value"]}
+            new_asserts.append(a)
+        out["assertions"] = new_asserts
+    return out
+
+
+def _schema_version_notes(raw: list) -> list[str]:
+    """未知 schema_version 条目的路由说明（D2：未知版本走迁移尝试+差异报错）。
+
+    返回人类可读注释列表（供 load_scenarios 在校验报错时附加版本上下文）。
+    """
+    notes = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        ver = item.get("schema_version")
+        if ver is None:
+            continue
+        if ver != SCHEMA_VERSION:
+            sid = item.get("id") or f"[{i}]"
+            notes.append(
+                f"场景'{sid}'声明未知 schema_version={ver!r}，已按旧 schema "
+                f"迁移尝试，仍失败则以下为字段差异清单"
+            )
+    return notes
+
+
+def prepare_scenarios_for_write(raw: list) -> list:
+    """写端归一化（frozen-scenario-schema-migration 2.1）。
+
+    场景补齐写回 / ``_scenarios_full.json`` 备份更新等写盘路径共用：
+    旧 schema 字段先迁移（与读侧同源，``migrate_scenario_schema``），
+    再恒定写入 ``schema_version`` 标记——写盘文件始终为当前 schema
+    形态，读侧版本路由直通，不残留「旧字段 + 新版本号」的不一致组合。
+    """
+    return [
+        {**d, "schema_version": SCHEMA_VERSION}
+        if isinstance(d, dict) else d
+        for d in migrate_scenario_schema(raw)
+    ]
+
+
 # ── 常量 ──────────────────────────────────────────────────────────
 #
 # 多形态验证（add-verify-multi-kind-runner）：场景 kind ∈ web/cli/api，
@@ -343,6 +438,9 @@ class TestScenario:
             "id": self.id,
             "description": self.description,
             "kind": self.kind,
+            # frozen-scenario-schema-migration D2：写入端恒定写 schema 版本标记，
+            # 读侧按版本路由迁移（无版本=旧 schema 走迁移，当前版本直通）。
+            "schema_version": SCHEMA_VERSION,
             "steps": [s.to_dict() for s in self.steps],
             "assertions": [a.to_dict() for a in self.assertions],
         }
@@ -607,6 +705,10 @@ def validate_scenario_dicts(raw: list) -> list[str]:
     ``validate()`` 校验，返回逐条错误清单。空列表表示全部合法；本函数
     不抛异常，拒绝/剔除策略由调用方决定。
 
+    frozen-scenario-schema-migration D1：校验前先做读侧旧 schema 迁移
+    （value→command / value→expected，仅目标字段缺失时生效），与
+    ``load_scenarios`` 版本路由后的形态一致——迁移零干扰新 schema 路径。
+
     Args:
         raw: 场景 dict 列表。
 
@@ -615,6 +717,9 @@ def validate_scenario_dicts(raw: list) -> list[str]:
     """
     if not isinstance(raw, list):
         return [f"场景数据格式错误: 期望数组，实际为 {type(raw).__name__}"]
+    # 旧 schema 前置迁移（读侧同样靠本函数做最终校验，迁移须先于校验执行；
+    # 迁移为幂等操作，load_scenarios 已迁移时此处零干扰）
+    raw = migrate_scenario_schema(raw)
     all_errors: list[str] = []
     for i, item in enumerate(raw):
         try:
@@ -652,14 +757,26 @@ def load_scenarios(filepath) -> list[TestScenario]:
     if not isinstance(raw, list):
         raise ValueError(f"场景文件格式错误: 期望JSON数组，实际为 {type(raw).__name__}")
 
+    # ── schema 版本路由迁移（frozen-scenario-schema-migration D2）──
+    # 无版本字段 → 旧 schema 走迁移（value→command / value→expected）；
+    # 当前版本 → 迁移天然零干扰（目标字段已存在，直通语义）；
+    # 未知版本 → 仍走迁移尝试，校验失败时附版本上下文与字段差异清单。
+    version_notes = _schema_version_notes(raw)
+    raw = migrate_scenario_schema(raw)
+
     # 读端校验与写端 schema 门同源（fix-frozen-scenario-orphan-reservoir D1）：
     # 校验逻辑提取为 validate_scenario_dicts 独立可调用，此处调用它（行为零变化，
     # 报错格式「场景文件包含 N 个错误」不变）。
     all_errors = validate_scenario_dicts(raw)
     if all_errors:
+        # 迁移后仍失败 → 报字段级差异清单（场景 id/下标/缺失字段），不吞为
+        # 笼统 corrupt：admin 处置（frozen-scenario-schema-migration 1.2）
+        # 可凭差异清单精准修复冻结文件。
+        detail = "\n".join(f"  - {e}" for e in all_errors)
+        if version_notes:
+            detail += "\n" + "\n".join(f"  # {n}" for n in version_notes)
         raise ValueError(
-            f"场景文件包含 {len(all_errors)} 个错误:\n" +
-            "\n".join(f"  - {e}" for e in all_errors)
+            f"场景文件包含 {len(all_errors)} 个错误:\n" + detail
         )
 
     return [TestScenario.from_dict(item) for item in raw]

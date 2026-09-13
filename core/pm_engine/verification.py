@@ -1199,7 +1199,7 @@ class VerificationPipeline:
         from core.verify_scenarios import (
             load_scenario_set, diff_planner_output, save_scenario_set,
         )
-        from core.verify_engine.scenarios import validate_scenario_dicts
+        from core.verify_engine.scenarios import validate_scenario_dicts, prepare_scenarios_for_write
         verify_dir = (
             self._pm.project_root / ".fenix" / "verify-progress" / spec_name
         )
@@ -1272,8 +1272,13 @@ class VerificationPipeline:
             else:
                 full_backup = verify_dir / "_scenarios_full.json"
                 try:
+                    # frozen-scenario-schema-migration 2.1：写端恒定写入
+                    # schema_version 标记（旧字段先迁移再落盘，读侧直通）
                     full_backup.write_text(
-                        json.dumps(valid_planner, ensure_ascii=False, indent=2),
+                        json.dumps(
+                            prepare_scenarios_for_write(valid_planner),
+                            ensure_ascii=False, indent=2,
+                        ),
                         encoding="utf-8",
                     )
                 except OSError:
@@ -1348,8 +1353,13 @@ class VerificationPipeline:
                     f"{'、'.join(write_rejected)}"
                 )
             try:
+                # frozen-scenario-schema-migration 2.1：补齐写回同样恒定写入
+                # schema_version（备份取回条目可能为旧 schema，先迁移再落盘）
                 scenarios_path.write_text(
-                    json.dumps(write_valid, ensure_ascii=False, indent=2),
+                    json.dumps(
+                        prepare_scenarios_for_write(write_valid),
+                        ensure_ascii=False, indent=2,
+                    ),
                     encoding="utf-8",
                 )
             except OSError as e:
@@ -1550,17 +1560,22 @@ class VerificationPipeline:
         # 冻集变更的唯一通道：admin 裁决（扩展/豁免）或人工删除冻结文件批准
         # 重新出题。首次进入（无冻结文件）走下方 planner 设计闭环。
         frozen = self._load_frozen_scenarios(verify_dir)
-        if frozen == "corrupt":
+        if isinstance(frozen, tuple) and frozen[0] == "corrupt":
             self._pm.logger.error(
                 "pm_engine",
                 f"冻结场景文件验收失败 '{spec_name}' — 场景一经冻结跨轮一致，"
                 f"变更须 admin 裁决，不自动重新出题",
             )
+            # frozen-scenario-schema-migration 1.2：升级告警附字段级差异清单
+            # （场景 id/下标/缺失字段），admin 可凭差异精准修复冻结文件，
+            # 不再给笼统 corrupt 盲修。
+            detail = frozen[1] if len(frozen) > 1 else ""
             self._escalate_env_blocked(
                 spec_name,
                 ["冻结场景文件损坏或验收失败。处置选项：① 确认场景集已过时 → "
                  f"删除 .fenix/verify-progress/{spec_name}/test_scenarios.json "
-                 "批准重新出题；② 文件可修复 → 修复后保持冻结。"],
+                 "批准重新出题；② 文件可修复 → 修复后保持冻结。",
+                 f"验收差异清单：{detail[:600]}" if detail else "验收差异清单：无"],
                 title="场景计划争议",
             )
             return
@@ -3187,11 +3202,16 @@ class VerificationPipeline:
     def _load_frozen_scenarios(verify_dir: Path):
         """读取冻结场景集（scenario-reuse-on-reenter）。
 
+        frozen-scenario-schema-migration：损坏判定携带字段级差异清单
+        （load_scenarios ValueError 已含场景 id/下标/缺失字段），升级告警
+        可凭差异精准修复，不再吞为笼统 corrupt。
+
         Returns:
             list[TestScenario]：冻结集有效（验收通过的原班场景）；
             None：无冻结文件（首次出题，走 planner 设计流程）；
-            "corrupt"：文件存在但验收失败（损坏/结构非法/为空）——场景一经
-            冻结跨轮一致，变更须 admin 裁决，绝不静默重新出题。
+            tuple ('corrupt', <差异清单文本>)：文件存在但验收失败（损坏/
+            结构非法/为空）——场景一经冻结跨轮一致，变更须 admin 裁决，
+            绝不静默重新出题。
         """
         from core.verify_engine.scenarios import load_scenarios
         path = verify_dir / "test_scenarios.json"
@@ -3199,9 +3219,13 @@ class VerificationPipeline:
             return None
         try:
             scenarios = load_scenarios(path)
-        except Exception:
-            return "corrupt"
-        return scenarios if scenarios else "corrupt"
+        except ValueError as e:
+            return ("corrupt", str(e))
+        except Exception as e:
+            return ("corrupt", f"load_scenarios 非验收路径异常: {type(e).__name__}: {e}")
+        if not scenarios:
+            return ("corrupt", "冻结场景文件为空（无任何场景）")
+        return scenarios
 
     def _env_whitewash_gate(self, spec_name: str) -> bool:
         """verified 推进前的洗白不变量门禁（help-center 0/15 verified 事故防线）。
