@@ -7,7 +7,8 @@ I/O 涨至 44-60GB（fix-root-init-import-shadow 事故）。框架能否给出�
 
 本入口：
 - 以硬超时运行全量套件，启用 faulthandler（``-p faulthandler
-  --faulthandler-timeout=<N>``），挂起时打印各线程栈；
+  -o faulthandler_timeout=<N>``，pytest 9 起 CLI 参数 ``--faulthandler-timeout``
+  已移除、改为 ini 配置项），挂起时打印各线程栈；
 - 超时/挂起时中止子进程并输出**挂起测试标识**（faulthandler 栈顶用例）；
 - 正常结束返回 pytest 完整输出与退出码；
 - ``--baseline <ref>``：在基线 ref 的临时 worktree 跑同一套件，输出两侧失败集合
@@ -40,6 +41,8 @@ if str(FRAMEWORK_ROOT) not in sys.path:
 # 默认硬超时：1 小时（对齐历史事故「等待超过 1 小时」的上界，避免再次无限期占用预算）。
 DEFAULT_TIMEOUT_SECONDS = 3600
 # faulthandler 栈打印超时：子进程被等待超过该秒数时打印各线程栈（比硬超时更早定位）。
+# pytest 9 起已废弃 CLI 参数 --faulthandler-timeout，改用 ini 配置项
+# faulthandler_timeout（经 ``-o`` 注入），详见 docstring。
 FAULTHANDLER_TIMEOUT_SECONDS = 300
 # 主机级互斥锁文件（相对项目根，.fenix/ fcntl 锁范式）。
 LOCK_FILE_REL = ".fenix/full-suite.lock"
@@ -50,7 +53,7 @@ BASELINE_TIMEOUT_SECONDS = 7200
 
 PYTEST_BASE_ARGS = ["pytest", "tests/", "-q",
                     "-p", "faulthandler",
-                    f"--faulthandler-timeout={FAULTHANDLER_TIMEOUT_SECONDS}"]
+                    "-o", f"faulthandler_timeout={FAULTHANDLER_TIMEOUT_SECONDS}"]
 
 
 # ── 端口段派生（concurrent-suite-isolation 4.2）──────────────────────────
