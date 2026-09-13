@@ -24,6 +24,7 @@ from core.dashboard.data import (
     parse_run_task_done,
     record_project_event,
 )
+from core.run_task_track import parse_tasks_md
 from core.pm_engine.family import FamilyGovernor
 from core.pm_engine.budget import ImplBudget
 from core.pm_engine.spec_integrity import SpecIntegrityGate
@@ -1115,20 +1116,12 @@ class PMEngine:
                 # legacy / 手工 spec：无 run 记录 → 放行（现状不变）
                 return None
             # implementer_run 在场 → 检查 tasks.md 是否有未勾数字任务
-            tasks_path = (
-                self.project_root / "spec" / "changes" / spec_name / "tasks.md"
+            # fix-impl-tasks-completion-gate D2：与产物硬门共用同一解析实现点
+            # （core.run_task_track.parse_tasks_md），禁止第二套正则漂移。
+            all_ids, checked_ids = parse_tasks_md(self.project_root, spec_name)
+            has_unchecked_numeric = any(
+                tid not in checked_ids for tid in all_ids
             )
-            if not tasks_path.exists():
-                return None
-            has_unchecked_numeric = False
-            try:
-                for line in tasks_path.read_text(encoding="utf-8").split("\n"):
-                    m = re.match(r"^- \[(x| )\] (\d+\.\d+)", line)
-                    if m and m.group(1) != "x":
-                        has_unchecked_numeric = True
-                        break
-            except (OSError, UnicodeDecodeError):
-                return None
             if not has_unchecked_numeric:
                 return None  # 全勾 / 无数字任务 → 无缺口可拦
             return (
@@ -1145,19 +1138,8 @@ class PMEngine:
         if not tasks_path.exists():
             return None
 
-        # 解析 tasks.md 的勾选状态与全部任务 id
-        checked_ids: set = set()
-        all_ids: list = []
-        try:
-            for line in tasks_path.read_text(encoding="utf-8").split("\n"):
-                m = re.match(r"^- \[(x| )\] (\d+\.\d+)", line)
-                if m:
-                    tid = m.group(2)
-                    all_ids.append(tid)
-                    if m.group(1) == "x":
-                        checked_ids.add(tid)
-        except (OSError, UnicodeDecodeError):
-            return None
+        # 解析 tasks.md 的勾选状态与全部任务 id（D2 共用实现点）
+        all_ids, checked_ids = parse_tasks_md(self.project_root, spec_name)
 
         # 解析 run 记录的完成任务 id
         run_file = find_impl_run_file(self.project_root, spec_name)
