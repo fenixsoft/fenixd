@@ -217,6 +217,8 @@ export interface SpecSummary {
   total_duration: number;
   latest_run: string | null;
   latest_run_status: string | null;
+  /** add-spec-review-gate D10：最近方案评审 run ID（reviewing 态必有值，评审相关 blocked 亦可回看） */
+  reviewer_run?: string | null;
   /** add-spec-status-modal-budget D3：实现尝试预算已用次数（_impl_run_budget_used，缺省 0） */
   budget_used?: number;
   /** add-spec-status-modal-budget D3：per-spec 覆盖值（1-10 整数或 null=跟随全局） */
