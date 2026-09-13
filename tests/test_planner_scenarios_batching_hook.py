@@ -20,6 +20,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 HOOK_SCRIPT = REPO_ROOT / ".fenix" / "hooks" / "planner-scenario-batching.py"
 AGENT_SETTINGS = REPO_ROOT / ".fenix" / "agent-settings.json"
 
+# fix-run-hang-amplification 3.4：自举部署物（.fenix/hooks/*、.fenix/agent-settings.json）
+# 仅存在于主树（gitignored），worktree 中缺失时整类 skip——skip 原因指明「自举物
+# 未部署（worktree 预期形态）」，避免 worktree 验证把环境事实判为本 change 引入的
+# 回归；主树存在时断言行为不变（_run_hook 的 AssertionError 兜底保留）。
+_HOOK_BOOTSTRAP_MISSING = not (HOOK_SCRIPT.is_file() and AGENT_SETTINGS.is_file())
+
 SCENARIOS_FILENAME = "test_scenarios.json"
 
 
@@ -62,6 +68,11 @@ def _run_hook(payload: dict, cwd: Path) -> str:
     return proc.stdout.strip()
 
 
+@unittest.skipIf(
+    _HOOK_BOOTSTRAP_MISSING,
+    "自举物未部署（worktree 预期形态）：.fenix/hooks/planner-scenario-batching.py "
+    "或 .fenix/agent-settings.json 缺失",
+)
 class TestPlannerScenariosBatchingHook(unittest.TestCase):
     """PreToolUse/Write：test_scenarios.json 首次落盘必须是骨架。"""
 

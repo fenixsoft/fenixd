@@ -4,12 +4,15 @@
 上移共用的无状态判定函数，避免模块间循环依赖：
 
 - ``is_claude_process``：进程 argv[0] 是否为 claude agent（存活判定与清扫豁免锚点）；
-- ``find_free_port``：向系统申请一个临时空闲端口（bind 0 + getsockname）。
+- ``find_free_port``：向系统申请一个临时空闲端口（bind 0 + getsockname）；
+- ``find_bound_socket``：保留已绑定 socket 的 contextmanager（消除 TOCTOU 竞态窗口，
+  concurrent-suite-isolation 4.1），绑定失败时按可重试策略重取。
 
 两函数均只依赖 stdlib，任何 core 模块均可安全导入。
 """
 
 import os
+import time
 
 
 def is_claude_process(pid_str: str) -> bool:
@@ -30,8 +33,53 @@ def is_claude_process(pid_str: str) -> bool:
 
 
 def find_free_port() -> int:
-    """向系统申请一个临时空闲端口（OS 分配，立即释放）。"""
+    """向系统申请一个临时空闲端口（探测即释放，向后兼容现有调用方）。"""
     from socket import socket as _socket
     with _socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+def _bind_retry(host: str = "127.0.0.1", retries: int = 3) -> "socket":
+    """尝试 bind 0 端口（OS 分配），绑定失败时重试（消除 TOCTOU）。"""
+    from socket import socket as _socket
+    last_err = None
+    for _ in range(max(1, retries)):
+        try:
+            s = _socket()
+            s.bind((host, 0))
+            return s
+        except OSError as e:
+            last_err = e
+            time.sleep(0.05)
+    raise last_err  # type: ignore[misc]
+
+
+from contextlib import contextmanager
+
+@contextmanager
+def find_bound_socket(host: str = "127.0.0.1", retries: int = 3):
+    """保留已绑定 socket 的 contextmanager（concurrent-suite-isolation 4.1）。
+
+    退出时释放 socket（无条件关闭）。绑定失败时按可重试策略重取（最多 retries
+    次，间隔 50ms），彻底消除「探测到的端口被他人抢占」的 TOCTOU 窗口。
+
+    Usage::
+
+        with find_bound_socket() as s:
+            port = s.getsockname()[1]
+            # port 在 contextmanager 存活期间被持有
+            run_server(port)
+        # 退出时 socket 被释放
+
+    既有的 ``find_free_port()`` API 不变（返回 int，立即释放）；新调用方
+    （run_full_suite.py / 测试入口）改用本函数获取已绑定端口并传递给子进程。
+    """
+    s = _bind_retry(host, retries)
+    try:
+        yield s
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass

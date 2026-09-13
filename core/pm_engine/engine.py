@@ -2216,10 +2216,20 @@ class PMEngine:
                     # 死亡 run 豁免（fix-budget-counting-semantics D1）：恢复链路在此
                     # 确认 run 异常死亡（滞留 implementing 超阈值且无存活子进程＝无收工
                     # 结果产出），回退本次启动的预算计数并递增豁免侧车。
+                    # fix-run-hang-amplification D2：run_reason 传入豁免判据，
+                    # 此路径为基础设施性死亡（无存活子进程/无 run-result），应豁免。
                     self._exempt_dead_run_budget(
                         spec_name,
                         f"auto-recovery: stuck implementing "
                         f"{b['elapsed_minutes']}m, no live child (no run-result)",
+                        run_reason=f"auto-recovery: stuck implementing "
+                                   f"{b['elapsed_minutes']}m",
+                    )
+                    self.logger.info(
+                        "pm_engine",
+                        f"budget_exempt_audit: spec={spec_name}, "
+                        f"auto-recovery stuck implementing, "
+                        f"elapsed_minutes={b['elapsed_minutes']}",
                     )
                     self.state_machine.update_spec(spec_name, {
                         "status": "ready",
@@ -2439,8 +2449,9 @@ class PMEngine:
     def _budget_exempt_alert_threshold(self) -> int:
         return self._budget._budget_exempt_alert_threshold()
 
-    def _exempt_dead_run_budget(self, spec_name: str, reason: str) -> None:
-        return self._budget._exempt_dead_run_budget(spec_name, reason)
+    def _exempt_dead_run_budget(self, spec_name: str, reason: str,
+                                   run_reason: str | None = None) -> None:
+        return self._budget._exempt_dead_run_budget(spec_name, reason, run_reason)
 
     def _alert_budget_exempt_loop(self, spec_name: str, exempt: int) -> None:
         return self._budget._alert_budget_exempt_loop(spec_name, exempt)

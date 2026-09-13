@@ -813,7 +813,7 @@ class TestLivenessSnapshot(unittest.TestCase):
         ]
         p = make_run_file(self.tmpdir, "impl-s1-2-a1", lines)
         snap = self.runner._liveness._liveness_snapshot(p, 600)
-        self.assertEqual(snap["events_in_window"], 3)
+        self.assertEqual(snap["events_in_window"], 2)
         self.assertEqual(snap["tool_use"], 2)
         self.assertEqual(snap["tool_counts"], {"Edit": 1, "Bash": 1})
         self.assertLessEqual(snap["last_event_age"], 6)
@@ -837,7 +837,7 @@ class TestLivenessSnapshot(unittest.TestCase):
         snap = self.runner._liveness._liveness_snapshot(p, 600)
         self.assertIsNotNone(snap["last_event_age"])
         self.assertLess(snap["last_event_age"], 600)
-        self.assertEqual(snap["events_in_window"], 1)
+        self.assertEqual(snap["events_in_window"], 0)
 
     def test_missing_stream_reports_unavailable(self):
         snap = self.runner._liveness._liveness_snapshot(
@@ -963,7 +963,7 @@ class TestSupervisionDeadlineAction(unittest.TestCase):
         judge = MagicMock(side_effect=AssertionError("judge must not be called"))
         d = self.decision(extensions=0, started_ago=3700, judge=judge)
         self.assertEqual(d["action"], "kill")
-        self.assertIn("zero run events", d["reason"])
+        self.assertIn("zero substantive run events", d["reason"])
         judge.assert_not_called()
 
     def test_advancing_verdict_extends(self):

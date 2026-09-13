@@ -114,7 +114,8 @@ class ImplBudget:
         return max(1, val)
 
 
-    def _exempt_dead_run_budget(self, spec_name: str, reason: str) -> None:
+    def _exempt_dead_run_budget(self, spec_name: str, reason: str,
+                                   run_reason: str | None = None) -> None:
         """死亡 run 豁免：回退本次启动的计数增量 + 侧车递增 + 审计日志。
 
         fix-budget-counting-semantics D1：run 异常死亡（进程消失/零输出/
@@ -122,7 +123,24 @@ class ImplBudget:
         （used -= 1，下限 0），避免故障密集日把预算烧在无效 run 上
         （interaction-contract 复盘：4/4 中 2 次网关死亡 + 2 次守卫误伤，
         真正有产出的 run 反被冻结）。正常失败收工（有收工结果产出）不豁免。
+
+        fix-run-hang-amplification D2：豁免仅适用于基础设施性死亡（daemon
+        shutdown/interrupted、网关链路耗尽/provider circuit open）；监督超时/
+        被判停滞而杀（reason 含 "extension budget exhausted" 或 "stagnant"）
+        MUST NOT 豁免——它确实消耗了整份预算。
+
+        Args:
+            run_reason: 终态 reason 文本（run的 error/reason 字段），供豁免判定
+                        关键词检查；None/空时按旧语义豁免。
         """
+        if run_reason and not self._is_exemptable_reason(run_reason):
+            # 监督超时/被判停滞而杀：不豁免，保持计数
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预算豁免被拒（非基础设施性死亡）: '{spec_name}' reason={reason}, "
+                f"run_reason={run_reason[:80] if run_reason else ''}",
+            )
+            return
         used = self._pm.state_machine.bump_impl_budget(spec_name, -1)
         exempt = self._pm.state_machine.bump_budget_exempt_runs(spec_name)
         self._pm.logger.warning(
@@ -133,6 +151,22 @@ class ImplBudget:
         )
         if exempt >= self._budget_exempt_alert_threshold():
             self._alert_budget_exempt_loop(spec_name, exempt)
+
+    @staticmethod
+    def _is_exemptable_reason(run_reason: str) -> bool:
+        """判定 run终态 reason 是否属于基础设施性死亡（可豁免）。
+
+        不可豁免（监督超时/被判停滞而杀）：reason 含
+          "extension budget exhausted"（监督超时续期用尽）或 "stagnant"（被判停滞）。
+        其他情况视为基础设施性死亡（进程消失/无结果/daemon shutdown/interrupted/
+        网关链路耗尽/provider circuit open 等）。
+        """
+        r = str(run_reason).lower()
+        if "extension budget exhausted" in r:
+            return False
+        if "stagnant" in r:
+            return False
+        return True
 
 
     def _alert_budget_exempt_loop(self, spec_name: str, exempt: int) -> None:

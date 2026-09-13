@@ -878,7 +878,7 @@ class TestDispatchWorkerTransientBranch:
             def _increment_impl_run_budget_used(self, spec_name):
                 self._increment_calls += 1
 
-            def _exempt_dead_run_budget(self, spec_name, reason):
+            def _exempt_dead_run_budget(self, spec_name, reason, run_reason=None):
                 self.exempted.append((spec_name, reason))
 
             def _implementer_zero_change(self, spec_name, result):
@@ -970,7 +970,7 @@ class TestDispatchWorkerTransientBranch:
             def _increment_impl_run_budget_used(self, spec_name):
                 pass
 
-            def _exempt_dead_run_budget(self, spec_name, reason):
+            def _exempt_dead_run_budget(self, spec_name, reason, run_reason=None):
                 pass
 
             def _implementer_zero_change(self, spec_name, result):

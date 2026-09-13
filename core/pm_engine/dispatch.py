@@ -740,6 +740,19 @@ class Dispatcher:
                 )
                 final_error = impl_error or result.error
 
+                # ── 结构化诊断写入（fix-run-hang-amplification 2.3）──
+                # run 终结时把终态类型 + 归因 + 已定性结论 + 已提交进度写入
+                # spec 级 _impl_diagnosis 字段，供重派 attempt 继承（不再从零
+                # 重复探测同一阻塞）。任何异常不阻塞主流程（诊断是附加物）。
+                try:
+                    self._record_impl_diagnosis(
+                        spec_name, result, impl_result, final_error)
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"记录实现诊断失败 '{spec_name}'（非阻塞）: {e}",
+                    )
+
                 # ── 零变更成功哨（2026-08-28）─────────────────────────
                 # 实现器宣称成功但分支零新提交且全程零 Edit/Write 工具调用
                 # ＝ 疑似输出截断/空转（CLI 把截断包装成 result/success + exit 0，
@@ -1088,10 +1101,21 @@ class Dispatcher:
                     # 死亡（进程消失/零输出/网关链路耗尽）：回退本次启动的计数。
                     # 有收工结果的正常失败（impl_status=error）不豁免——既有
                     # 「正常失败仍计数」语义不变。
+                    # fix-run-hang-amplification D2：run_reason 传入豁免判据，
+                    # 监督超时/被判停滞而杀（extension budget exhausted / stagnant）
+                    # 不豁免——确实消耗了整份预算。
                     if impl_status is None:
                         self._pm._exempt_dead_run_budget(
                             spec_name,
                             f"no run-result file (error={str(final_error)[:80]})",
+                            run_reason=str(final_error) if final_error else None,
+                        )
+                        # 审计日志：可审计豁免判定（spec、终态、原因、是否豁免）
+                        self._pm.logger.info(
+                            "pm_engine",
+                            f"budget_exempt_audit: spec={spec_name}, "
+                            f"impl_status=None, final_error={str(final_error)[:120]}, "
+                            f"run_reason={str(final_error)[:80] if final_error else ''}",
                         )
                     # ── provider 熔断拦截（fix-stashpop-deadlock：provider-fault-fuse） ──
                     # 熔断期派发失败（error 含 "provider circuit open"）属「provider 故障」，
@@ -1258,6 +1282,74 @@ class Dispatcher:
         )
 
 
+    def _record_impl_diagnosis(self, spec_name: str, result, impl_result,
+                               final_error: str | None) -> None:
+        """run 终结时写入 spec 级结构化诊断字段 ``_impl_diagnosis``。
+
+        fix-run-hang-amplification 2.3：诊断摘要 = 终态类型 + 归因 + 已定性
+        结论 + 已提交进度（分支 + 已勾选任务数）。重派 attempt 经
+        PromptBuilder 注入该字段，使新 run 继承上一轮结论而非从零再探测。
+
+        结构（存 JSON 字符串，STATE.md 行内可往返解析）：
+        {"terminal": "...", "attribution": "...", "conclusion": "...",
+         "progress": {"branch": "...", "tasks_checked": n}}。
+
+        任何无法分类/读取失败时字段落最小可用值，不抛异常（诊断是附加物）。
+        """
+        terminal = "error"
+        if getattr(result, "cancelled", False):
+            terminal = "cancelled"
+        elif final_error:
+            low = str(final_error).lower()
+            if "timeout after" in low and "extension budget exhausted" in low:
+                terminal = "timeout_budget_exhausted"
+            elif "stagnant" in low:
+                terminal = "stagnant"
+            elif "interrupted" in low:
+                terminal = "interrupted"
+            else:
+                terminal = "error"
+        elif impl_status_success := bool(
+                impl_result and impl_result.get("status") == "success"):
+            terminal = "result"
+        conclusion = ""
+        if impl_result:
+            try:
+                summary = impl_result.get("summary")
+                if isinstance(summary, str) and summary.strip():
+                    conclusion = summary.strip()[:500]
+            except Exception:
+                conclusion = ""
+        branch = getattr(result, "branch", None) or None
+        tasks_checked = None
+        # 已提交进度：从主树 spec 目录 tasks.md 数已勾选任务（_sync_task_progress
+        # 在成功路径已把 worktree 勾选同步回主树，失败路径读主树现状即可）。
+        try:
+            spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
+            tasks_path = spec_dir / "tasks.md"
+            if tasks_path.is_file():
+                tasks_checked = sum(
+                    1 for line in tasks_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip().startswith("- [x]"))
+        except Exception:
+            tasks_checked = None
+        diagnosis = {
+            "terminal": terminal,
+            "attribution": str(final_error or "")[:500],
+            "conclusion": conclusion,
+            "progress": {
+                "branch": branch,
+                "tasks_checked": tasks_checked,
+            },
+        }
+        self._pm.state_machine.update_spec(
+            spec_name, {"_impl_diagnosis": json.dumps(diagnosis, ensure_ascii=False)})
+        self._pm.logger.info(
+            "pm_engine",
+            f"实现诊断已记录 '{spec_name}': terminal={terminal}, "
+            f"branch={branch}, tasks_checked={tasks_checked}",
+        )
+
     def _rollback_failed_dispatch(self, spec_name: str, agent_type: str, exc: Exception):
         """派发/执行异常时回滚滞留中间态的 spec 到可重试态（fix: 伪 bug 卡死）。
 
@@ -1289,9 +1381,21 @@ class Dispatcher:
                 # 死亡 run 豁免（fix-budget-counting-semantics D1）：异常路径＝
                 # run 无收工结果产出（进程消失/零输出/网关链路耗尽），回退本次
                 # 启动的预算计数。计数在 worker 启动处先行递增，此处补偿回退。
+                # run_reason 传入 exc 信息（派发异常不属监督超时/停滞，应豁免）。
                 self._pm._exempt_dead_run_budget(
-                    spec_name, f"dispatch exception: {str(exc)[:80]}"
+                    spec_name,
+                    f"dispatch exception: {str(exc)[:80]}",
+                    run_reason=str(exc) if exc else None,
                 )
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"budget_exempt_audit: spec={spec_name}, "
+                    f"dispatch_exception, exc={str(exc)[:120]}, "
+                    f"run_reason={str(exc)[:80] if exc else ''}",
+                )
+                # fix-run-hang-amplification 2.5：update_spec 增量更新——此处只清
+                # error 与 run 字段，_impl_diagnosis 结构化诊断 MUST NOT 被清除
+                # （重派 attempt 需继承上轮诊断）。
                 self._pm.state_machine.update_spec(spec_name, {
                     "status": "ready",
                     "implementer_run": None,
