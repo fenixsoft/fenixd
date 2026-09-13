@@ -137,10 +137,20 @@ class TestArtifactGate:
         assert "产物硬门" in err
 
     def test_gate_check_ignores_other_agent_types(self, tmp_path):
-        """非 planner 类型无产物契约 → 零拦截。"""
+        """非 planner/implementer/fast-track 类型无产物契约 → 零拦截。
+
+        fix-impl-tasks-completion-gate P0：implementer/fast-track 已纳入产物硬门
+        （见 tests/test_impl_tasks_completion_gate.py），此处改以 verifier 等
+        无契约类型断言「零拦截」；implementer 无 worktree 时返回失败归因（fail-closed）。
+        """
         runner = _make_runner(tmp_path)
-        assert runner._check_agent_result_artifact("spec-x", "implementer") is None
-        assert runner._check_agent_result_artifact("spec-x", "fast-track") is None
+        assert runner._check_agent_result_artifact("spec-x", "verifier") is None
+        assert runner._check_agent_result_artifact("spec-x", "self-review") is None
+        # implementer 分支已有产物契约：wt_path 缺位 → 拦截（fail-closed）
+        err = runner._check_agent_result_artifact("spec-x", "implementer")
+        assert err is not None
+        assert "worktree 路径不可得" in err
+        assert "产物硬门" in err
 
     # ── _execute_agent 集成：exit 0 无产物 → 瞬态重试 ──────────────────
 

@@ -69,6 +69,11 @@ from core.agent_runner.run_files import (
 )
 from core.agent_runner.token_budget import TokenAccountant
 from core.agent_runner.v2_server import V2ServerManager
+from core.run_task_track import (
+    find_impl_run_file,
+    parse_run_task_done,
+    parse_tasks_md,
+)
 from core.v2_dev_server import (
     V2DevServerError,
     start as v2_start_dev_server,
@@ -2686,7 +2691,8 @@ class AgentRunner:
                     # （复用 fix-provider-transient-backoff，不消耗 validate_report
                     # 的「裁决重试一次」预算）。
                     gate_err = self._check_agent_result_artifact(
-                        spec_name, agent_type, run_started_at=attempt_started_at)
+                        spec_name, agent_type, run_started_at=attempt_started_at,
+                        wt_path=wt_path)
                     if gate_err:
                         raise AgentArtifactGateError(gate_err)
                     success = True
@@ -4156,8 +4162,9 @@ class AgentRunner:
 
     def _check_agent_result_artifact(self, spec_name: str,
                                      agent_type: str,
-                                     run_started_at: float | None = None) -> str | None:
-        """planner 产物存在性硬门校验（fail-closed）。
+                                     run_started_at: float | None = None,
+                                     wt_path: Path | None = None) -> str | None:
+        """planner/implementer 产物存在性硬门（fail-closed）。
 
         成功判定从「进程 exit 0」升级为「exit 0 **且**结果文件落盘且可解析」：
         - planner-judge 结果文件 = planner_result_path(..., "planner-judge")
@@ -4165,6 +4172,10 @@ class AgentRunner:
         - planner-plan  结果文件 = planner_result_path(..., "planner-plan")
           （test_scenarios.json）**叠加** planner_result_path(..., "planner-judge")
           （.fenix-run-result.json，status='plan-ready'）
+        - implementer / fast-track 结果文件 = 本轮 run 的 **worktree** 根目录
+          .fenix-run-result.json（fix-impl-tasks-completion-gate P0 / D1，不读
+          主树拷回副本——主树共享文件跨 spec，读它会把上一轮/其它 spec 残留与
+          本轮产物混为一谈）
         路径与 prompt_builder 注入的 {result_path}/{scenarios_path} 同源计算，
         防双实现漂移。文件缺失 / 为空 / 非法 JSON 一律视为缺失（fail-closed）。
 
@@ -4174,6 +4185,14 @@ class AgentRunner:
         ("plan-ready",)）——planner 忘写结果文件（2026-09-09 白烧事故）不再被
         "succeeded" 放行。结果文件路径经 planner_result_path(..., "planner-judge")
         计算（与 pm_engine 读侧 primary 同源），不落盘到 worktree 相对路径。
+
+        fix-impl-tasks-completion-gate（P0，2026-09-13 add-spec-review-gate 事故
+        回归）：implementer / fast-track 分支的完成度判据见
+        ``_check_impl_result_artifact``——tasks.md 未勾数字任务 / completed_tasks
+        与勾选集合不一致 / partial 申报不一致 / TaskUpdate 交叉核对不一致均在
+        源头拦截（此前唯一探测器 _task_completion_blocker 位于 verified→done
+        末端，实现/验证/合并走完才发现缺口）。失败复用 AgentArtifactGateError
+        通道 = 保 worktree + 原地退避 + 同 worktree --resume 续做，不判整轮失败。
 
         fix-verdict-read-failclosed D2（新鲜度）：``run_started_at`` 为本轮 attempt
         启动时刻（attempt 循环内的 attempt_started_at）；结果文件 mtime 早于
@@ -4186,14 +4205,20 @@ class AgentRunner:
 
         Args:
             spec_name: spec 名（决定 verify-progress 子目录）。
-            agent_type: 仅 planner-judge / planner-plan 有产物契约；其余返回 None。
+            agent_type: planner-judge / planner-plan / implementer / fast-track
+                有产物契约；其余返回 None。
             run_started_at: 本轮 attempt 启动 epoch 秒；为 None 时跳过新鲜度校验
                 （兼容无 attempt 上下文的单测直调）。
+            wt_path: 本轮 run 的 worktree 根路径（implementer / fast-track 结果
+                文件落点）；planner 分支不使用该参数。
 
         Returns:
             None = 通过；否则返回失败归因文案（含「结果文件缺失」语义，
             供 error 直用）。
         """
+        if agent_type in ("implementer", "fast-track"):
+            return self._check_impl_result_artifact(
+                spec_name, run_started_at, wt_path)
         if agent_type not in ("planner-judge", "planner-plan"):
             return None
         if agent_type == "planner-plan":
@@ -4241,6 +4266,295 @@ class AgentRunner:
                 f"（{agent_type} 产物硬门）: {path}"
             )
         return None
+
+    # ── implementer/fast-track 结果产物硬门（fix-impl-tasks-completion-gate P0）──
+
+    # 结果文件顶层 status 白名单（P0 / spec「结果产物硬门」）。success = 全部任务
+    # 完成；partial = 诚实申报未完成；error = 失败（不施加完成度判据）。白名单外
+    # 取值（如 planner 词汇 verified/plan-ready）一律判失败——语义错位 status 被
+    # 读侧放行即历史 fail-open 事故形态（add-verify-contract-autodraft）。
+    _IMPL_RESULT_STATUSES = ("success", "error", "partial")
+
+    def _check_impl_result_artifact(self, spec_name: str,
+                                    run_started_at: float | None,
+                                    wt_path: Path | None) -> str | None:
+        """implementer / fast-track 结果产物硬门（fix-impl-tasks-completion-gate P0）。
+
+        成功判定从「进程 exit 0」升级为「exit 0 **且**本轮 run 的 worktree 内
+        ``.fenix-run-result.json`` 落盘、可解析且完成度判据通过」：
+
+        - **校验对象** = ``wt_path / ".fenix-run-result.json"``（D1：不读主树拷回
+          副本——runner.py:2672-2681 的拷贝是无条件覆盖，且主树路径跨 spec 共享，
+          读主树副本会把「本轮产物」与「上一轮/其它 spec 残留」混为一谈）；
+        - **基础校验**（fail-closed）：文件存在 / 非空 / 合法 JSON / 顶层为对象 /
+          顶层 ``status`` ∈ {"success", "error", "partial"}；
+        - ``status == "success"`` → **任务书完成度判据**（spec「success 的完成度
+          判据」）：tasks.md 无未勾数字任务（D2 与 ``_task_completion_blocker``
+          同源解析，禁止第二套正则）+ 顶层 ``completed_tasks`` 集合与已勾选集合
+          完全相等（缺项/多项/非数字 id 判失败）；
+        - ``status == "partial"`` → **申报一致性判据**：``completed_tasks`` 集合
+          == 已勾选集合、``unfinished`` 集合 == 未勾选集合、两集合互斥且并集 ==
+          全部数字任务 id（防止 partial 成为绕过 success 判据的缺口）；
+        - ``status == "error"`` → 不施加任何完成度类判据；
+        - **能力探测**（D4，条件化）：读本轮 run 产物 init 事件的 ``tools`` 数组，
+          含 ``"TaskCreate"`` 时额外强制 ``parse_run_task_done`` 的 ``done_ids``
+          覆盖全部已勾选 id；不含或 init 不可得 → fail-open 跳过并追加
+          ``impl-task-crosscheck-skipped`` 审计事件——无条件强制在 Task 家族工具
+          不可用的派发路由上不可满足，会形成「拒绝 → resume → 再拒绝」的预算
+          烧穿循环（141/141 runner 派发 run 实测无 TaskCreate）。
+
+        Args:
+            spec_name: spec 名（tasks.md 定位）。
+            run_started_at: 本轮 attempt 启动 epoch 秒（新鲜度校验，语义同
+                planner 分支）；None 跳过。
+            wt_path: 本轮 run 的 worktree 根路径（结果文件落点）。
+
+        Returns:
+            None = 通过；否则返回失败归因文案（含具体文件路径与失败类别，供
+            续做 prompt 直接注入）。
+        """
+        agent_type = "implementer"  # 归因文案类别；fast-track 同判据同文案
+        if wt_path is None:
+            return (
+                f"exit 0 但 worktree 路径不可得（{agent_type} 产物硬门），"
+                f"无法定位结果文件: {spec_name}"
+            )
+        result_path = wt_path / ".fenix-run-result.json"
+        err, data = self._check_artifact_json_file(
+            result_path, agent_type, run_started_at)
+        if err is not None:
+            return err
+        if not isinstance(data, dict):
+            return (
+                f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {result_path}"
+            )
+        status = data.get("status", "")
+        if status not in self._IMPL_RESULT_STATUSES:
+            return (
+                f"exit 0 但结果文件 status='{status}' 不在白名单"
+                f"（{agent_type} 产物硬门）: {result_path}"
+            )
+        if status == "error":
+            # 2.6：error 不施加任何完成度类判据（agent 自报失败即按失败处理）。
+            return None
+
+        # status ∈ {success, partial} → 以 worktree 内 tasks.md 为对象的判据
+        tasks_path = wt_path / "spec" / "changes" / spec_name / "tasks.md"
+        all_ids, checked_ids = parse_tasks_md(wt_path, spec_name)
+        if status == "success":
+            gate_err = self._check_success_completion(
+                spec_name, result_path, data, all_ids, checked_ids)
+        else:
+            gate_err = self._check_partial_consistency(
+                spec_name, result_path, data, all_ids, checked_ids)
+        if gate_err is not None:
+            return gate_err
+
+        # ── 能力探测（D4）：TaskCreate 可用才强制交叉核对，否则 fail-open + 审计 ──
+        return self._check_taskupdate_crosscheck(spec_name, checked_ids)
+
+    @staticmethod
+    def _format_gap_list(gap: list, limit: int = 20) -> str:
+        """缺口任务 id 清单格式化（2.7 归因可诊断）：超 limit 项截断并标注总数。"""
+        if not gap:
+            return ""
+        if len(gap) <= limit:
+            return "、".join(sorted(gap))
+        return "、".join(sorted(gap)[:limit]) + f" 等共 {len(gap)} 项"
+
+    @staticmethod
+    def _invalid_completed_ids(items) -> list:
+        """completed_tasks / unfinished 中的非数字 id（形如 x.y 之外的取值）。"""
+        bad = []
+        for it in items:
+            if not isinstance(it, str) or not re.fullmatch(r"\d+\.\d+", it):
+                bad.append(it)
+        return bad
+
+    def _check_success_completion(self, spec_name: str, result_path: Path,
+                                  data: dict, all_ids: list,
+                                  checked_ids: set) -> str | None:
+        """status == "success" 的任务书完成度判据（spec「success 的完成度判据」）。
+
+        1. 勾选清零：tasks.md 无未勾数字任务（D2 与 _task_completion_blocker 同源；
+           tasks.md 缺失/无数字任务 → 通过）；
+        2. 完成清单对账：completed_tasks 集合 == 已勾选集合（缺项/多项/非数字 id
+           判失败；无数字任务时以空集为基准，空数组或缺失均视为通过）。
+        """
+        agent_type = "implementer"
+        unchecked = [tid for tid in all_ids if tid not in checked_ids]
+        if unchecked:
+            return (
+                f"exit 0 但 tasks.md 尚有未勾选数字任务（{agent_type} 产物硬门）: "
+                f"{result_path.parent / 'spec' / 'changes' / spec_name / 'tasks.md'} "
+                f"缺口: {self._format_gap_list(unchecked)}"
+            )
+        raw_ct = data.get("completed_tasks")
+        if raw_ct is None:
+            if not all_ids:
+                return None  # 无数字任务 → 缺失/空数组均视为通过
+            return (
+                f"exit 0 但结果文件缺 completed_tasks 清单（{agent_type} 产物硬门）: "
+                f"{result_path}"
+            )
+        if not isinstance(raw_ct, list):
+            return (
+                f"exit 0 但结果文件 completed_tasks 非数组（{agent_type} 产物硬门）: "
+                f"{result_path}"
+            )
+        bad = self._invalid_completed_ids(raw_ct)
+        if bad:
+            return (
+                f"exit 0 但结果文件 completed_tasks 含非数字 id"
+                f"（{agent_type} 产物硬门）: {result_path} {self._format_gap_list(bad)}"
+            )
+        ct_set = set(raw_ct)
+        missing = sorted(checked_ids - ct_set)
+        extra = sorted(ct_set - checked_ids)
+        if missing or extra:
+            parts = []
+            if missing:
+                parts.append("缺项: " + self._format_gap_list(missing))
+            if extra:
+                parts.append("多项: " + self._format_gap_list(extra))
+            return (
+                f"exit 0 但 completed_tasks 与 tasks.md 勾选集合不一致"
+                f"（{agent_type} 产物硬门）: {result_path} {'；'.join(parts)}"
+            )
+        return None
+
+    def _check_partial_consistency(self, spec_name: str, result_path: Path,
+                                   data: dict, all_ids: list,
+                                   checked_ids: set) -> str | None:
+        """status == "partial" 的申报一致性判据（spec「partial 的申报一致性判据」）。
+
+        completed_tasks 集合 == 已勾选集合；unfinished 集合 == 未勾选集合；两集合
+        互斥且并集 == 全部数字任务 id。任一不满足返回失败归因（防 partial 成为
+        绕过 success 判据的缺口）。
+        """
+        agent_type = "implementer"
+        raw_ct = data.get("completed_tasks")
+        raw_un = data.get("unfinished")
+        if not isinstance(raw_ct, list) or not isinstance(raw_un, list):
+            return (
+                f"exit 0 但结果文件 partial 缺 completed_tasks/unfinished 数组"
+                f"（{agent_type} 产物硬门）: {result_path}"
+            )
+        bad = self._invalid_completed_ids(raw_ct) + self._invalid_completed_ids(raw_un)
+        if bad:
+            return (
+                f"exit 0 但结果文件 partial 清单含非数字 id"
+                f"（{agent_type} 产物硬门）: {result_path} {self._format_gap_list(bad)}"
+            )
+        ct_set, un_set = set(raw_ct), set(raw_un)
+        expected_un = set(all_ids) - checked_ids
+        missing_ct = sorted(checked_ids - ct_set)
+        extra_ct = sorted(ct_set - checked_ids)
+        missing_un = sorted(expected_un - un_set)
+        extra_un = sorted(un_set - expected_un)
+        overlap = sorted(ct_set & un_set)
+        parts = []
+        if missing_ct or extra_ct:
+            parts.append("completed_tasks 与勾选集合不一致")
+        if missing_un or extra_un:
+            parts.append("unfinished 与未勾选集合不一致")
+        if overlap:
+            parts.append(f"completed_tasks/unfinished 交集非空: {self._format_gap_list(overlap)}")
+        if (ct_set | un_set) != set(all_ids):
+            parts.append("并集不等于全部数字任务 id")
+        if parts:
+            return (
+                f"exit 0 但结果文件 partial 申报一致性判据未通过"
+                f"（{agent_type} 产物硬门）: {result_path} {'；'.join(parts)}"
+            )
+        return None
+
+    def _check_taskupdate_crosscheck(self, spec_name: str,
+                                     checked_ids: set) -> str | None:
+        """能力探测（D4）：init.tools 含 TaskCreate 才强制 TaskUpdate 交叉核对。
+
+        读本轮 run 产物（find_impl_run_file 按 mtime 取最新 impl run）中
+        ``type == "system" && subtype == "init"`` 事件的 tools 数组：
+        - 含 "TaskCreate" → ``parse_run_task_done(run_file)["done_ids"]`` MUST 覆盖
+          tasks.md 的全部已勾选数字任务 id；不满足判失败（归因注明「已完成任务与
+          TaskUpdate 记录不一致」）；
+        - 不含 / init 事件不可得 → **跳过**该项核对并放行，同时向 run 产物追加
+          ``impl-task-crosscheck-skipped`` 审计事件（含 spec/run_id/reason）。
+          无条件强制会让硬门在 Task 家族工具不可用的派发路由上永远无法通过，
+          形成「拒绝 → resume → 再拒绝」的预算烧穿循环（141/141 实测）。
+        """
+        agent_type = "implementer"
+        run_file = find_impl_run_file(self.project_root, spec_name)
+        tools = self._read_init_tools(run_file)
+        if tools is None or "TaskCreate" not in tools:
+            reason = "init 事件不可得" if tools is None else "init.tools 不含 TaskCreate"
+            self._append_crosscheck_skipped(spec_name, run_file, reason)
+            return None
+        if not checked_ids:
+            return None  # 无已勾选任务 → 无覆盖义务
+        rd = parse_run_task_done(run_file) if run_file is not None else {}
+        done_ids = (rd or {}).get("done_ids") or set()
+        missing = sorted(checked_ids - set(done_ids))
+        if missing:
+            return (
+                f"exit 0 但已完成任务与 TaskUpdate 记录不一致（{agent_type} 产物硬门）: "
+                f"done_ids 未覆盖已勾选任务 {self._format_gap_list(missing)}"
+            )
+        return None
+
+    @staticmethod
+    def _read_init_tools(run_file) -> list | None:
+        """读 run 产物 init 事件的 tools 数组（D4 能力探测）。
+
+        Returns:
+            tools 列表（可为空）；run 文件缺失 / 不可读 / 无 init 事件 /
+            tools 非数组 → None（按「工具不可用」处理，fail-open）。
+        """
+        if run_file is None:
+            return None
+        try:
+            with run_file.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if (isinstance(entry, dict)
+                            and entry.get("type") == "system"
+                            and entry.get("subtype") == "init"):
+                        tools = entry.get("tools")
+                        if isinstance(tools, list):
+                            return tools
+                        return None
+        except OSError:
+            return None
+        return None
+
+    def _append_crosscheck_skipped(self, spec_name: str, run_file,
+                                   reason: str) -> None:
+        """向 run 产物追加 impl-task-crosscheck-skipped 审计事件（D4 fail-open 留痕）。
+
+        写失败仅记 warning（审计是附加物，不阻塞主流程）。
+        """
+        if run_file is None:
+            return
+        try:
+            append_run_line(run_file, {
+                "type": "impl-task-crosscheck-skipped",
+                "spec": spec_name,
+                "run_id": Path(run_file).stem,
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+        except OSError as e:
+            self.logger.warning(
+                "agent_runner",
+                f"impl-task-crosscheck-skipped 审计事件写入失败"
+                f"（非阻塞）: {e}",
+            )
 
     def _build_legacy_section(self, spec_name: str) -> str:
         return self._prompt_builder._build_legacy_section(spec_name)
