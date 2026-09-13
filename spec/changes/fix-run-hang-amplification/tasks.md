@@ -35,12 +35,14 @@
 
 ## 1. 挂起判别（hang-discrimination）
 
-- [ ] 1.1 `core/agent_runner/liveness.py` `_liveness_snapshot`：为窗口内工具调用计算指纹（`工具名 + json.dumps(入参, sort_keys=True)`），产出 `repeat_ratio`（最大同指纹簇调用数 / 窗口内工具调用总数）、`top_fingerprint`（`<tool>(<args 摘要>) ×N`）、`tool_calls_in_window`（样本数）
-- [ ] 1.2 同文件常量区新增 `HANG_REPEAT_RATIO_THRESHOLD = 0.75` 与 `HANG_MIN_TOOL_CALLS = 12`，注释标注样本依据（本案 run `impl-fix-root-init-import-shadow-*` 窗口内同参数 `TaskOutput` 轮询占绝对多数；小样本下限防偶发重复误判）
-- [ ] 1.3 `_supervision_deadline_action`：在「judge_window 内零事件直接判停滞」之后、「LLM 判定」之前插入确定性短路——`tool_calls_in_window >= HANG_MIN_TOOL_CALLS 且 repeat_ratio >= HANG_REPEAT_RATIO_THRESHOLD` → 直接返回 `kill`，reason 形如 `stagnant: repeated identical tool calls (ratio=0.xx, top=...)`，MUST NOT 调用 judge
-- [ ] 1.4 `_judge_liveness` prompt 口径修订：输入补 `repeat_ratio`/`top_fingerprint`；口径显式写明「事件数与 I/O 增长 MUST NOT 单独构成 advancing」与「高重复占比 → stagnant」
-- [ ] 1.5 短路判定 MUST 写入被监督 run 的 jsonl 与 daemon 日志，证据含 `top_fingerprint` 构成；与「LLM 判定为停滞」在证据文案上可区分
-- [ ] 1.6 快照新增 `background_stall` 证据字段（窗口内后台任务其 `output_file` 大小在监督器相邻采样间零增长），供 LLM 判定输入；不做确定性短路
+- [ ] 1.1 `core/agent_runner/liveness.py` `_liveness_snapshot`：事件按类分离计数——`substantive_events_in_window`（`assistant` / 带 tool_result 的 `user` / `result`）、`heartbeats_in_window`（`tool_progress`）、`tool_completions_in_window`（tool_result 数）；`events_in_window` 的**进度语义只取实质事件**，心跳 MUST NOT 计入进度证据
+- [ ] 1.2 `_supervision_deadline_action`：「judge_window 内零事件 → 直接判停滞」守卫改按 `substantive_events_in_window == 0` 判定（现口径被心跳恒久打穿）
+- [ ] 1.3 同文件常量区新增 `HANG_BLOCKED_CALL_SECONDS = 300`、`HANG_ZERO_GROWTH_WINDOW_SECONDS = 300`、`HANG_MIN_TOOL_COMPLETIONS = 3`，注释标注样本依据（本案后台调用输出文件停在 0–22 字节/轮询数小时）
+- [ ] 1.4 「可观测零产出」确定性短路：窗口内阻塞等待的后台调用时长 ≥ 阈值 且 其 `output_file` 可观测且大小零增长 ≥ 窗口 且 `tool_completions_in_window < HANG_MIN_TOOL_COMPLETIONS` → 直接返回 `kill`，MUST NOT 调用 judge；任一条件不成立（尤其输出文件不可观测）走既有 LLM 路径
+- [ ] 1.5 后台调用输出文件追踪：从 `task_started`/`TaskOutput` 事件提取 `output_file`，在监督器跨采样记忆其大小以判定零增长；不可读时按「不可观测」处理（不得短路）
+- [ ] 1.6 `_judge_liveness` prompt 口径修订：输入补 `substantive_events_in_window` / `tool_completions_in_window` / `heartbeats_in_window`；显式写明「心跳与 I/O 增长 MUST NOT 单独构成 advancing」「窗口内无实质事件 → stagnant」
+- [ ] 1.7 短路判定 MUST 写入被监督 run 的 jsonl 与 daemon 日志，证据标注为**启发式「零产出」判定**并含输出文件路径与零增长区间；与「LLM 判定为停滞」「零实质事件判定」在文案上可区分
+- [ ] 1.8 负向约束：实现中 MUST NOT 存在以「重复相同工具调用占比」或「结果文本重复度」为判据的代码路径（实测不判别，见 design Context 表）
 
 ## 2. 预算与诊断连续性（run-budget-continuity）
 
@@ -65,13 +67,14 @@
 
 ## 5. 测试
 
-- [ ] 5.1 `tests/test_liveness_hang_discrimination.py`：构造同参数重复工具调用序列 → 断言确定性短路返回 kill 且未调用 judge；构造多样化调用 → 断言不短路；小样本（< `HANG_MIN_TOOL_CALLS`）不短路
-- [ ] 5.2 同文件：断言短路判定的 run jsonl 与日志证据含 `top_fingerprint`，且文案可与 LLM 判定区分
-- [ ] 5.3 `tests/test_run_budget_continuity.py`：监督超时杀死 run → 断言预算计数**不**回退；`interrupted` 终态 → 断言回退（既有语义保留）
-- [ ] 5.4 同文件：断言重派 attempt 的 prompt 含结构化诊断段；无诊断时 prompt 与现状逐字节一致；`_rollback_failed_dispatch` 后诊断字段仍在
-- [ ] 5.5 `tests/test_full_suite_runner.py`：模拟挂起套件 → 断言有界入口在超时内中止并报出挂起测试标识；`--baseline` 归类在「存量-only / 引入-only / 混合」三态正确
-- [ ] 5.6 `tests/test_port_allocation.py`：并发多进程取端口均能独占绑定成功；绑定被抢占时重试成功
-- [ ] 5.7 两 hooks 依赖测试在 `.fenix/hooks/*` 缺失时结果为 skip（非 fail）
+- [ ] 5.1 `tests/test_liveness_hang_discrimination.py`：**心跳/实质事件分离**——构造「大量心跳 + 零实质事件」窗口 → 断言不得判 advancing 且走零事件停滞路径；构造「有持续实质事件」窗口 → 断言可判 advancing
+- [ ] 5.2 同文件：**零产出短路**——三条件同时成立 → 断言短路返回 kill 且未调用 judge；输出文件不可观测 → 断言不短路、走 LLM 路径；仅有重复调用形态（无零产出）→ 断言不短路。断言证据标注为启发式零产出且含输出文件路径
+- [ ] 5.3 同文件：**负向**——断言无任何以「重复调用占比/结果重复度」为判据的分支（如常量 `HANG_REPEAT_RATIO_THRESHOLD` 不存在于实现）
+- [ ] 5.4 `tests/test_run_budget_continuity.py`：监督超时杀死 run → 断言预算计数**不**回退；`interrupted` 终态 → 断言回退（既有语义保留）
+- [ ] 5.5 同文件：断言重派 attempt 的 prompt 含结构化诊断段；无诊断时 prompt 与现状逐字节一致；`_rollback_failed_dispatch` 后诊断字段仍在
+- [ ] 5.6 `tests/test_full_suite_runner.py`：模拟挂起套件 → 断言有界入口在超时内中止并报出挂起测试标识；`--baseline` 归类在「存量-only / 引入-only / 混合」三态正确
+- [ ] 5.7 `tests/test_port_allocation.py`：并发多进程取端口均能独占绑定成功；绑定被抢占时重试成功
+- [ ] 5.8 两 hooks 依赖测试在 `.fenix/hooks/*` 缺失时结果为 skip（非 fail）
 
 ## 6. 全量验证与边界复核
 
