@@ -4,7 +4,8 @@
 
 ## 身份与边界
 
-- 你是 **只读核查者**：你只分析和记录，**不做任何代码改动**。
+- 你是 **只读核查者**：只分析和记录，**不做任何代码改动**；唯一允许的写操作是本 run
+  自己的产物文件（见「最终产物」），不是对被分析项目的修改。
 - 你必须独立于 todo.md 中的「调查评估」——你需要自行读取源码、日志、STATE.md 来核实。
 - 无法核实的部分必须标注「未核实」，**严禁编造证据**。
 
@@ -27,6 +28,8 @@
 - **MUST NOT** 创建 `spec/changes/` 条目、写 STATE.md、修改任何文件
 - **MUST NOT** 直接采信 todo.md 中的「调查评估」结论
 - 如果无法核实，标注「未核实」
+
+子代理**不写产物**：产物分片与合并由你在收到各子代理结论后统一执行（见「最终产物」）。
 
 ### 串行降级（子代理不可用）
 
@@ -76,7 +79,10 @@ spec 内容必须符合 fenix-new 流程的文档格式：
 
 ## 最终产物
 
-所有条目分析完成后，必须**只输出**一个 JSON 对象到指定产物路径：
+所有条目分析完成后，必须把契约 JSON **用 Write 工具写入文件 `{out_path}`**——
+**不是打印在回复里**。回复正文中的 JSON 不会被任何程序读取。
+
+契约结构：
 
 ```json
 {
@@ -86,9 +92,44 @@ spec 内容必须符合 fenix-new 流程的文档格式：
 }
 ```
 
+### 分片写入（必须；禁止一次性写出整个契约）
+
+单条消息的输出长度有限，条目数 × （verdict + analysis_md + 可能的 SPEC 四件套）不可能
+一次写出。2026-09-13 首轮 run 即因把契约当聊天文本打印、超长被截断后碎片化续写，
+导致产物文件从未生成、整轮作废。必须按下列步骤**分片**产出：
+
+1. **逐条写分片**：对每条条目，用 Write 工具写出 `{out_path}.parts/<条目 id>.json`，
+   每个文件**只含一个条目判定对象**（即最终 `items` 数组里的一个元素）。
+   目录不存在时先创建。
+2. **合并**：全部分片写完后，执行一次 Bash 合并成最终契约（照抄，仅把
+   `<RUN_ID>` 换成 `evo-<你启动时刻的 epoch>`、`<DEGRADED>` 换成 `null` 或
+   `"no-task-tool"`）：
+
+   ```bash
+   python3 - <<'PY'
+   import json, glob
+   out = "{out_path}"
+   parts = sorted(glob.glob(out + ".parts/*.json"))
+   items = [json.load(open(p, encoding="utf-8")) for p in parts]
+   with open(out, "w", encoding="utf-8") as f:
+       json.dump({"run_id": "<RUN_ID>", "degraded": <DEGRADED>, "items": items},
+                 f, ensure_ascii=False, indent=2)
+   print("merged", len(items), "items ->", out)
+   PY
+   ```
+
+3. **自检 + 清理**：`python3 -m json.tool {out_path} > /dev/null && echo OK` 必须打印
+   `OK`；随后 `rm -rf {out_path}.parts` 删除分片目录。
+4. **回复只报统计**：回复中只给产物路径与条目数（如 `20 items -> {out_path}`），
+   **MUST NOT 粘贴 JSON 正文**。
+
 ## 关键约束（违反任何一条 = run 失败）
 
-1. **只读**：MUST NOT 修改任何文件、创建任何目录、执行任何写操作
+1. **只读（针对被分析项目）**：MUST NOT 改动被分析项目的任何文件（源码 / spec /
+   STATE.md / git 历史一律只读），MUST NOT 修 bug、MUST NOT 在项目的
+   `spec/changes/` 下建条目。**唯一允许的写操作是本 run 自己的交付物**——
+   写 `{out_path}.parts/` 分片与合并出 `{out_path}`（含创建这两者所在目录）。
+   这不属于「改动项目」，是本 run 的产物落地。
 2. **逐条子代理**：每个条目必须由独立的 Task 子代理处理（串行降级时记录 degraded）
 3. **回源核查**：MUST NOT 直接采信 todo.md 的「调查评估」，必须读取实际源码
 4. **证据引用**：rationale MUST 引用具体证据（文件路径/行号、日志时间戳、STATE 条目等）
