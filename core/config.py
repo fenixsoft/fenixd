@@ -948,8 +948,9 @@ class ConfigLoader:
     # ── 陈旧自愈配置（add-stale-code-selfheal D5）──────────────────────
     # stale_code_selfheal 节两键缺省：enabled 默认开启（本项目陈旧是常态，默认
     # 关闭等于把问题留给用户发现；风险由 supervisor 熔断兜底、由开关提供退出
-    # 通道）；idle_confirm_seconds 对齐 restart-daemon-when-idle.py 既有双轮
-    # 确认取值 120s（已在实践中验证过防零活跃窗口竞态）。
+    # 通道）；idle_confirm_seconds 取 120s 作为连续空闲确认窗（触发实现在
+    # fenixd.py 主循环 _maybe_stale_selfheal_tick），该取值沿自 daemon 内建化
+    # 之前的实践，已验证足以防零活跃窗口竞态。
     STALE_CODE_SELFHEAL_ENABLED_DEFAULT = True
     STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT = 120
     STALE_CODE_SELFHEAL_MAX_SECONDS = 86400  # 仅建议上界（警告不拒绝），保持读取宽容语义
