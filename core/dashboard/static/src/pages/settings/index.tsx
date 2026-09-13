@@ -1,6 +1,6 @@
 import { PageContainer } from '@ant-design/pro-components';
-import { Card, Menu, Select, Space, Typography, message } from 'antd';
-import { useEffect, useState } from 'react';
+import { Button, Card, Menu, Select, Space, Typography, message } from 'antd';
+import { useEffect, useRef, useState } from 'react';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { getConfig, getOverview, saveConfig } from '@/services/dashboard';
 import type { ConfigData, OverviewData } from '@/services/dashboard';
@@ -18,6 +18,7 @@ import SelfReviewPanel from './components/SelfReviewPanel';
 import HooksPanel from './components/HooksPanel';
 import StaleCodeSelfhealPanel from './components/StaleCodeSelfhealPanel';
 import SuggestedImprovementsPanel from './components/SuggestedImprovementsPanel';
+import type { SelfEvolutionSectionHandle } from './components/selfEvolutionSection';
 
 const { Text } = Typography;
 
@@ -54,6 +55,9 @@ export default function SettingsPage() {
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [projects, setProjects] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  // 自进化页签：两张配置卡片各自暴露的收集句柄，供页签底部唯一「保存」按钮触发
+  const staleSelfhealRef = useRef<SelfEvolutionSectionHandle>(null);
+  const suggestionsRef = useRef<SelfEvolutionSectionHandle>(null);
 
   // 加载项目列表
   useEffect(() => {
@@ -110,6 +114,23 @@ export default function SettingsPage() {
       console.error('Failed to save config:', error);
       return false;
     }
+  };
+
+  // 自进化页签唯一保存入口：两张卡片各自校验并收集本节配置，合并后一次提交
+  // （任一卡片校验失败即中止；项目级作用域下建议改进项为只读、返回空补丁，
+  // 故只提交在当前作用域可写的陈旧自愈节）。
+  const handleSelfEvolutionSave = async () => {
+    const parts = await Promise.all([
+      staleSelfhealRef.current?.collect(),
+      suggestionsRef.current?.collect(),
+    ]);
+    if (parts.some((p) => p === null)) return;
+    const merged = parts.reduce<Partial<ConfigData>>(
+      (acc, p) => ({ ...acc, ...(p ?? {}) }),
+      {},
+    );
+    if (Object.keys(merged).length === 0) return;
+    await handleSave(merged);
   };
 
   // 运行时构造菜单：自省与项目简介均为项目级页签，随项目级作用域出现；
@@ -281,18 +302,24 @@ export default function SettingsPage() {
                 {activeKey === 'self-evolution' && (
                   <>
                     {/* 第一张卡片：既有「代码陈旧自愈」面板（标题/控件/配置键不变） */}
-                    <StaleCodeSelfhealPanel
-                      config={config}
-                      onSave={handleSave}
-                      project={scope === 'project' ? project : undefined}
-                    />
+                    <StaleCodeSelfhealPanel ref={staleSelfhealRef} config={config} />
                     {/* 第二张卡片：新增「建议改进项」面板（接收 scope 与 project） */}
                     <SuggestedImprovementsPanel
+                      ref={suggestionsRef}
                       config={config}
-                      onSave={handleSave}
                       scope={scope}
                       project={project}
                     />
+                    {/* 页签唯一「保存」按钮：置于页面最下方、右对齐（与其它页签一致） */}
+                    <div style={{ textAlign: 'right', marginTop: 24 }}>
+                      <Button
+                        type="primary"
+                        onClick={handleSelfEvolutionSave}
+                        data-testid="settings-save"
+                      >
+                        保存
+                      </Button>
+                    </div>
                   </>
                 )}
                 {activeKey === 'project-profile' && (

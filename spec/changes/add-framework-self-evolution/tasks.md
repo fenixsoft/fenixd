@@ -21,6 +21,10 @@
   kind: modify
 - path: core/dashboard/static/src/pages/settings/components/SuggestedImprovementsPanel.tsx
   kind: new
+- path: core/dashboard/static/src/pages/settings/components/StaleCodeSelfhealPanel.tsx
+  kind: modify
+- path: core/dashboard/static/src/pages/settings/components/selfEvolutionSection.ts
+  kind: new
 - path: core/dashboard/static/src/services/dashboard.ts
   kind: modify
 - path: tests/test_self_evolution.py
@@ -94,8 +98,8 @@
 
 ## 7. Dashboard 前端
 
-- [x] 7.1 `core/dashboard/static/src/pages/settings/index.tsx`：页签文案由「自愈」改为「自进化」（内部 key 同步改名，须保持默认选中态与既有页签不受影响），并在该页签下按序渲染既有 `StaleCodeSelfhealPanel` 与新增 `SuggestedImprovementsPanel`（面板接收 `scope` 与 `project`）。
-- [x] 7.2 `core/dashboard/static/src/pages/settings/components/SuggestedImprovementsPanel.tsx`（新建）：卡片标题「建议改进项」，顶部为「允许框架自改进」开关（`self_evolution.auto_accept`）+「每轮分析条目上限」数字输入（1..200，缺省 20）+ 保存按钮；用户级作用域可写（保存 MUST NOT 带 `project` 参数），项目级作用域两项置只读并显示「全局键，请在用户级作用域修改」；错误时展示后端文案且不改本地值；面板根元素提供稳定 `data-testid`。
+- [x] 7.1 `core/dashboard/static/src/pages/settings/index.tsx`：页签文案由「自愈」改为「自进化」（内部 key 同步改名，须保持默认选中态与既有页签不受影响），并在该页签下按序渲染既有 `StaleCodeSelfhealPanel` 与新增 `SuggestedImprovementsPanel`（面板接收 `scope` 与 `project`）；两张卡片经 `forwardRef` 暴露 `collect()` 收集句柄，页签内容最下方渲染**唯一**右对齐「保存」按钮（`data-testid="settings-save"`），点击后合并两节配置为一次 `POST /api/config`（校验失败则不发请求）。
+- [x] 7.2 `core/dashboard/static/src/pages/settings/components/SuggestedImprovementsPanel.tsx`（新建）：标题「建议改进项」置于**卡片外**（`<h3>` + 功能注解，与第一张卡片同构），配置卡片内为「允许框架自改进」开关（`self_evolution.auto_accept`，开关行——控件在前、名称同行不换行 + 键名注解 + 功能注解）+「每轮分析条目上限」数字输入（1..200，缺省 20，**独占一行**，输入框后缀单位「条」+ 功能注解）；卡片内 MUST NOT 自带保存按钮（保存经页签底部唯一按钮，且 MUST NOT 带 `project` 参数）；用户级作用域可写，项目级作用域两项置只读并显示「全局键，请在用户级作用域修改」且 `collect()` 不返回 `self_evolution`；错误时展示后端文案且不改本地值；面板根元素提供稳定 `data-testid`。
 - [x] 7.3 同上文件：表格（列序：项目 / 日期 / 类别 / 问题 / 评估结论 / 状态 / 操作）——评估结论列汇总三项判定、状态列按 `pending|analyzed|draft_failed|accepted|auto_accepted|rejected|accept_failed` 映射中文文案（待决策 / 不需要立项 / 草稿生成失败 / 已同意 / 已自动接受 / 已拒绝 / 接受失败）、空态文案、接口失败展示可读错误；移动端横向滚动 + 操作列固定右侧（不做卡片式降级）。
 - [x] 7.4 同上文件：操作列使用与 SPEC 列表页「更多」一致的形态（antd `Dropdown` + `MoreOutlined` + `Button type="link" size="small"`），菜单四项依次为「查看分析结论 / 查看 SPEC 草稿 / 同意 / 拒绝（danger）」；禁用规则——`analyzed` 与 `draft_failed` 禁用「查看 SPEC 草稿」与「同意」（`analyzed` 另禁用「拒绝」），`accepted`/`auto_accepted`/`rejected` 禁用「同意」与「拒绝」；「同意」「拒绝」MUST 经二次确认弹窗后才发请求。
 - [x] 7.5 同上文件：查看类交互——「查看分析结论」在 Drawer/Modal 中渲染 `analysis_md`（含加载态、404 可读错误、空态）；「查看 SPEC 草稿」可切换 `proposal` / `design` / `tasks` / `spec` 四类文档，`found: false` 显示空态；接受/拒绝成功后刷新表格并提示（接受提示含新 SPEC 名），失败时展示错误并刷新回真实状态。
@@ -122,3 +126,10 @@
 - [x] 先复核失败有效性：逐条核对 `spec/changes/add-framework-self-evolution/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
 - [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
 - [x] 修复后重跑验证确认通过
+
+## 布局修订（用户反馈，2026-09-13）
+
+- [x] 10.1 `SuggestedImprovementsPanel.tsx`：卡片标题「建议改进项」提到卡片**外**（`<h3>` + 功能注解，与「代码陈旧自愈」同构）；「允许框架自改进」改为同行开关行（`.switch-inline-row`，开关在前、名称不换行）+ 功能注解；「每轮分析条目上限」改为**独占一行** + 输入框后缀单位「条」+ 功能注解。
+- [x] 10.2 新增 `selfEvolutionSection.ts`（`SelfEvolutionSectionHandle` 收集句柄类型）：两张卡片改为 `forwardRef` 暴露 `collect()`——校验并收集本节配置，校验失败返回 `null`，项目级只读卡片返回空补丁；移除各自卡片内的保存按钮（含 `data-testid="stale-code-selfheal-save-btn"`）。
+- [x] 10.3 `settings/index.tsx`：页签内容最下方渲染唯一右对齐「保存」按钮（`data-testid="settings-save"`），`handleSelfEvolutionSave` 合并两节配置为**一次** `POST /api/config`（`stale_code_selfheal` + 用户级作用域下的 `self_evolution`；任一卡片校验失败即中止）。
+- [x] 10.4 重跑 `npm run build` 并 playwright 实测：用户级/项目级两作用域布局与卡片外标题、开关行不换行、「条」单位、全页唯一保存按钮；用户级保存为单次 `POST /api/config`（200）并回显，项目级两项只读且载荷不含 `self_evolution`。

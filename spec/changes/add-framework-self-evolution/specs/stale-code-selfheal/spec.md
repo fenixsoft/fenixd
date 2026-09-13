@@ -6,7 +6,7 @@
 
 系统 MUST 支持 `stale_code_selfheal` 配置节，含 `enabled`（布尔，缺省 `true`）与 `idle_confirm_seconds`（整数秒，缺省 `120`）。配置缺失或键非法时 MUST 回退缺省值且不使 daemon 启动失败。配置 MUST 走既有 30s 配置热更新，改动 MUST 在下一检测周期生效而无需重启 daemon。
 
-Dashboard 设置页 MUST 提供该节的可读写界面（遵循「新增配置项必须带界面」的既有约束），展示项 MUST 与配置文件键一一对应。该界面 MUST 位于设置页**「自进化」页签**（原「自愈」页签改名，见 `suggested-improvements-ui`）下的**第一张卡片**，标题为「代码陈旧自愈」；同一页签下的第二张卡片为「建议改进项」，两者互不影响。改名 MUST NOT 改变本节的配置键、缺省值、语义与面板控件（开关 + 连续空闲秒数输入）。
+Dashboard 设置页 MUST 提供该节的可读写界面（遵循「新增配置项必须带界面」的既有约束），展示项 MUST 与配置文件键一一对应。该界面 MUST 位于设置页**「自进化」页签**（原「自愈」页签改名，见 `suggested-improvements-ui`）下的**第一张卡片**，标题为「代码陈旧自愈」；同一页签下的第二张卡片为「建议改进项」，两者互不影响。改名 MUST NOT 改变本节的配置键、缺省值、语义与面板控件（开关 + 连续空闲秒数输入）。本卡片 MUST NOT 自带保存按钮——其保存入口与第二张卡片合并为「自进化」页签底部**唯一**的右对齐保存按钮（见 `suggested-improvements-ui`），点击后一次提交同时覆盖本节的 `enabled` 与 `idle_confirm_seconds`。
 
 #### Scenario: 缺省值生效
 

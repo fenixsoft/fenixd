@@ -78,7 +78,7 @@ SPEC 名 `evo-<slug>`（用户决策的前缀；slug 由 agent 给出并校验 `
 
 ### D9 新配置项必须带界面（既有约束）
 
-`self_evolution` 的两键都必须在「建议改进项」卡片顶部有可见控件（开关 + 数字输入）——这是仓库既有约束（`fenix-new-config-needs-dashboard-ui`），也是新增配置键与 UI 同步落地的验收点。
+`self_evolution` 的两键都必须在「建议改进项」卡片内有可见控件（开关 + 数字输入），保存经「自进化」页签底部唯一保存按钮提交——这是仓库既有约束（`fenix-new-config-needs-dashboard-ui`），也是新增配置键与 UI 同步落地的验收点。
 
 ## Risks / Trade-offs
 

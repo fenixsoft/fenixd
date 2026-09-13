@@ -13,8 +13,9 @@ import { Button, Card, Dropdown, Drawer, Form, InputNumber, message, Modal, Spac
 import { MoreOutlined } from '@ant-design/icons';
 import Markdown from 'react-markdown';
 import type { MenuProps } from 'antd';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { ConfigData, EvolutionItem, EvolutionDoc } from '@/services/dashboard';
+import type { SelfEvolutionSectionHandle } from './selfEvolutionSection';
 import {
   EVOLUTION_STATUS_LABELS,
   EVOLUTION_DOCS,
@@ -31,7 +32,6 @@ const { Text } = Typography;
 
 interface SuggestedImprovementsPanelProps {
   config: ConfigData;
-  onSave: (values: Partial<ConfigData>) => Promise<boolean>;
   scope: 'user' | 'project';
   project?: string;
 }
@@ -79,12 +79,12 @@ function getActionDisabled(status: string): Record<string, boolean> {
 
 // ── 组件 ─────────────────────────────────────────────────────────────
 
-export default function SuggestedImprovementsPanel({
-  config,
-  onSave,
-  scope,
-  project,
-}: SuggestedImprovementsPanelProps) {
+// 保存按钮已上提到自进化页签底部（全页唯一），本卡片经 ref 暴露 collect()，
+// 由父页签在唯一点击事件里与「代码陈旧自愈」卡片一起校验并合并提交。
+const SuggestedImprovementsPanel = forwardRef<
+  SelfEvolutionSectionHandle,
+  SuggestedImprovementsPanelProps
+>(function SuggestedImprovementsPanel({ config, scope, project }, ref) {
   const [form] = Form.useForm();
   const se = config.self_evolution;
   const isUserScope = scope === 'user';
@@ -99,17 +99,28 @@ export default function SuggestedImprovementsPanel({
     form.setFieldsValue(initialValues);
   }, [initialValues, form]);
 
-  const handleSaveConfig = async () => {
-    try {
-      const values = await form.validateFields();
-      const success = await onSave({ self_evolution: values });
-      if (!success) {
-        // 保存失败：错误消息由 handleSave 展示，界面值不动
-      }
-    } catch {
-      // antd 表单校验失败已在表单内渲染
-    }
-  };
+  useImperativeHandle(
+    ref,
+    () => ({
+      collect: async () => {
+        // 项目级作用域下两键为只读全局键：不收集（父页签仅提交陈旧自愈节）
+        if (!isUserScope) return {};
+        try {
+          const values = await form.validateFields();
+          return {
+            self_evolution: {
+              auto_accept: values.auto_accept,
+              max_items_per_run: values.max_items_per_run,
+            },
+          };
+        } catch {
+          // antd 表单校验失败已在表单内渲染
+          return null;
+        }
+      },
+    }),
+    [form, isUserScope],
+  );
 
   // ── 表格数据（7.3）──────────────────────────────────────────────
 
@@ -335,35 +346,55 @@ export default function SuggestedImprovementsPanel({
 
   return (
     <div data-testid="suggested-improvements-panel">
+      {/* 标题与功能注解提到卡片外（与上方「代码陈旧自愈」卡片同构） */}
+      <h3>建议改进项</h3>
+      <Text type="secondary">
+        每日自省后，框架汇总各项目 todo.md「浪费 / 失误 / 可改进」小节中的候选条目，
+        交由分析 run 逐条复核（问题是否成立、建议是否合理、是否值得立项）：值得立项的
+        生成 SPEC 草稿进入下方条目列表，由你在此处同意或拒绝，也可开启自动接受。
+      </Text>
+
       {/* 7.2: 配置卡片 */}
-      <Card title="建议改进项" style={{ marginBottom: 16 }}>
+      <Card style={{ marginTop: 12, marginBottom: 16 }}>
         <Form form={form} initialValues={initialValues} layout="vertical" disabled={!isUserScope}>
           {!isUserScope && (
             <Text type="secondary" style={{ display: 'block', marginBottom: 12 }}>
               全局键（auto_accept / max_items_per_run），请在用户级作用域修改。
             </Text>
           )}
-          <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            <Form.Item name="auto_accept" valuePropName="checked"
-              style={{ marginBottom: 0 }}
-              label={<span>允许框架自改进<span className="label-note">（self_evolution.auto_accept）</span></span>}>
-              <Switch />
+          <div className="switch-inline-row">
+            <Form.Item name="auto_accept" valuePropName="checked" noStyle>
+              <Switch data-testid="self-evolution-control-auto-accept" />
             </Form.Item>
-            <Form.Item name="max_items_per_run"
-              style={{ marginBottom: 0, minWidth: 200 }}
-              label={<span>每轮分析条目上限<span className="label-note">（self_evolution.max_items_per_run）</span></span>}
-              rules={[{
-                type: 'number', min: 1, max: MAX_ITEMS_UPPER,
-                message: `须为 1-${MAX_ITEMS_UPPER} 的整数`,
-              }]}>
-              <InputNumber min={1} max={MAX_ITEMS_UPPER} precision={0} style={{ width: 140 }} />
-            </Form.Item>
-            {isUserScope && (
-              <Form.Item style={{ marginBottom: 0, alignSelf: 'flex-end' }}>
-                <Button type="primary" onClick={handleSaveConfig}>保存</Button>
-              </Form.Item>
-            )}
+            <span className="switch-inline-label">
+              允许框架自改进<span className="label-note">（self_evolution.auto_accept）</span>
+            </span>
           </div>
+          <Text type="secondary">
+            缺省关闭。开启后分析 run 落地即对全部待决策且值得立项的条目自动走接受路径
+            （记为自动接受），框架自行立项并进入开发；关闭时草稿停留在下表等待人工
+            「同意」。项目级作用域下本项只读。
+          </Text>
+
+          <Form.Item
+            name="max_items_per_run"
+            label={
+              <>
+                每轮分析条目上限<span className="label-note">（self_evolution.max_items_per_run）</span>
+              </>
+            }
+            style={{ marginTop: 24 }}
+            rules={[{
+              type: 'number', min: 1, max: MAX_ITEMS_UPPER,
+              message: `须为 1-${MAX_ITEMS_UPPER} 的整数`,
+            }]}
+          >
+            <InputNumber min={1} max={MAX_ITEMS_UPPER} precision={0} style={{ width: 160 }} addonAfter="条" />
+          </Form.Item>
+          <Text type="secondary">
+            缺省 20（1-200）。单轮分析 run 最多复核的条目数：超出部分保持待决策，
+            由下一轮的增量水位继续处理，用来给每轮的 LLM 成本封顶。
+          </Text>
         </Form>
       </Card>
 
@@ -436,4 +467,6 @@ export default function SuggestedImprovementsPanel({
       </Drawer>
     </div>
   );
-}
+});
+
+export default SuggestedImprovementsPanel;

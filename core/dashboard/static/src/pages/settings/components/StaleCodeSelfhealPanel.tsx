@@ -1,6 +1,7 @@
-import { Button, Card, Form, InputNumber, Switch, Typography } from 'antd';
-import { useEffect } from 'react';
+import { Card, Form, InputNumber, Switch, Typography } from 'antd';
+import { forwardRef, useEffect, useImperativeHandle } from 'react';
 import type { ConfigData } from '@/services/dashboard';
+import type { SelfEvolutionSectionHandle } from './selfEvolutionSection';
 
 const { Text } = Typography;
 
@@ -11,17 +12,14 @@ const MAX_IDLE_SECONDS = 86400;
 
 interface StaleCodeSelfhealPanelProps {
   config: ConfigData;
-  /** 返回保存是否成功：false 时前端不重载配置 */
-  onSave: (values: Partial<ConfigData>) => Promise<boolean>;
-  /** 项目名；undefined = 用户级作用域（本项目为框架自研场景，两级均可用） */
-  project?: string;
 }
 
-export default function StaleCodeSelfhealPanel({
-  config,
-  onSave,
-  project,
-}: StaleCodeSelfhealPanelProps) {
+// 保存按钮已上提到自进化页签底部（全页唯一），本卡片经 ref 暴露 collect()，
+// 由父页签在唯一点击事件里与「建议改进项」卡片一起校验并合并提交。
+const StaleCodeSelfhealPanel = forwardRef<
+  SelfEvolutionSectionHandle,
+  StaleCodeSelfhealPanelProps
+>(function StaleCodeSelfhealPanel({ config }, ref) {
   const [form] = Form.useForm();
   const scs = config.stale_code_selfheal;
 
@@ -35,20 +33,26 @@ export default function StaleCodeSelfhealPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.stale_code_selfheal, form]);
 
-  const handleSave = async () => {
-    try {
-      const values = await form.validateFields();
-      await onSave({
-        stale_code_selfheal: {
-          enabled: values.enabled,
-          idle_confirm_seconds: values.idle_confirm_seconds,
-        },
-      });
-    } catch {
-      // 校验失败：antd 已在表单内渲染 explain-error 提示
-      return;
-    }
-  };
+  useImperativeHandle(
+    ref,
+    () => ({
+      collect: async () => {
+        try {
+          const values = await form.validateFields();
+          return {
+            stale_code_selfheal: {
+              enabled: values.enabled,
+              idle_confirm_seconds: values.idle_confirm_seconds,
+            },
+          };
+        } catch {
+          // 校验失败：antd 已在表单内渲染 explain-error 提示
+          return null;
+        }
+      },
+    }),
+    [form],
+  );
 
   return (
     <div data-testid="stale-code-selfheal-panel">
@@ -113,11 +117,8 @@ export default function StaleCodeSelfhealPanel({
           </Text>
         </Card>
       </Form>
-      <div style={{ textAlign: 'right', marginTop: 24 }}>
-        <Button type="primary" onClick={handleSave} data-testid="stale-code-selfheal-save-btn">
-          保存
-        </Button>
-      </div>
     </div>
   );
-}
+});
+
+export default StaleCodeSelfhealPanel;
