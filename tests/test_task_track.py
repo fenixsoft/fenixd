@@ -177,7 +177,7 @@ class TestPromotionLintTasks(unittest.TestCase):
         self.logger = MagicMock()
         (self.pr / ".fenix").mkdir(parents=True, exist_ok=True)
         self.sm = StateMachine(self.pr / ".fenix" / "STATE.md", self.logger)
-        self.engine = PMEngine(self.sm, MagicMock(), {}, self.pr, self.logger)
+        self.engine = PMEngine(self.sm, MagicMock(), {"gates": {"promote_mode": "auto", "spec_review_mode": "never"}}, self.pr, self.logger)
         self.engine._on_spec_ready = MagicMock()
         self.spec_dir = self.pr / "spec" / "changes" / "demo"
         self.sm.add_spec("demo", {"priority": 5})

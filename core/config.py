@@ -85,7 +85,7 @@ class ConfigLoader:
     # Known agent types for model assignment（fast-track 与 implementer 同为派发角色，
     # 未纳入时 agents.models 配置它会被 _validate_agent_models 拒绝，fast-track 派发
     # 恒走默认网关——任务进度契约在其会话中成为死信的根因之一）
-    KNOWN_AGENT_TYPES = ["implementer", "fast-track", "planner-plan", "planner-judge", "verifier", "administrator", "self-review"]
+    KNOWN_AGENT_TYPES = ["implementer", "fast-track", "planner-plan", "planner-judge", "verifier", "administrator", "self-review", "spec-review"]
 
     # ── run_timeout 按 agent_type 覆盖（per-agent-timeout-override）──────
     # agents.timeout_overrides.<agent_type> 覆盖全局 run_timeout_seconds。
@@ -103,6 +103,9 @@ class ConfigLoader:
 
     # Valid draft promote modes（add-draft-promotion-gate：值语义与 approve_mode 对齐）
     VALID_PROMOTE_MODES = ["auto", "manual"]
+
+    # Valid spec review modes（add-spec-review-gate：auto=默认全量评审，never=完全关闭）
+    VALID_SPEC_REVIEW_MODES = ["auto", "never"]
 
     # ── 瞬断治理配置（fix-provider-transient-backoff D6 / transient-controls-ui）──
     # 五键缺省值（design D6 表）。消费方（runner/provider_circuit/dispatch）经
@@ -358,6 +361,14 @@ class ConfigLoader:
             if mode not in cls.VALID_PROMOTE_MODES:
                 raise ValueError(
                     f"gates.promote_mode must be one of {cls.VALID_PROMOTE_MODES}: {mode}"
+                )
+
+        # Validate gates.spec_review_mode (optional — defaults to auto)
+        if "spec_review_mode" in gates and gates["spec_review_mode"] is not None:
+            mode = gates["spec_review_mode"]
+            if mode not in cls.VALID_SPEC_REVIEW_MODES:
+                raise ValueError(
+                    f"gates.spec_review_mode must be one of {cls.VALID_SPEC_REVIEW_MODES}: {mode}"
                 )
 
         # D5：timeout_supervision.absolute_max_seconds 联动护栏，启动/热更新时校验；
@@ -897,6 +908,19 @@ class ConfigLoader:
         gates = config.get("gates") or {}
         mode = gates.get("promote_mode")
         if mode not in cls.VALID_PROMOTE_MODES:
+            return "auto"
+        return mode
+
+    @classmethod
+    def get_spec_review_mode(cls, config: Dict[str, Any]) -> str:
+        """Return the spec review mode, defaulting to 'auto'.
+
+        'auto' (default): all SPECs go through review unless they meet skip criteria.
+        'never': skip review entirely, behave as before add-spec-review-gate.
+        """
+        gates = config.get("gates") or {}
+        mode = gates.get("spec_review_mode")
+        if mode not in cls.VALID_SPEC_REVIEW_MODES:
             return "auto"
         return mode
 

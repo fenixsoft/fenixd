@@ -18,10 +18,11 @@ from pathlib import Path
 FRAMEWORK_ROOT = Path(__file__).resolve().parents[2]
 AGENT_PROMPT_DIR = FRAMEWORK_ROOT / "agents"
 
-# 八类 agent → 提示词文件名（agent-type 白名单的单一来源，Dashboard 端点复用）
+# 九类 agent → 提示词文件名（agent-type 白名单的单一来源，Dashboard 端点复用）
 # add-daily-self-review：新增 self-review（每日自省）类型。
 # add-deliverable-declaration-triage：新增 dispute-judge（交付物缺件 LLM 终审）类型。
 # add-framework-self-evolution：新增 evolution（框架自进化复核）类型。
+# add-spec-review-gate：新增 spec-review（SPEC 方案评审）类型。
 AGENT_PROMPT_FILES = {
     "implementer": "implementer.md",
     "verifier": "verifier.md",
@@ -32,6 +33,7 @@ AGENT_PROMPT_FILES = {
     "self-review": "self-review.md",
     "dispute-judge": "dispute-judge.md",
     "evolution": "evolution.md",
+    "spec-review": "spec-review.md",
 }
 
 
@@ -66,6 +68,20 @@ planner_result_status_whitelist = (
     "plan-ready",
     "scenario-repaired",
 )
+
+# 评审结果 status 白名单（add-spec-review-gate）
+spec_review_result_status_whitelist = (
+    "approved",
+    "repaired",
+    "rejected",
+)
+
+def spec_review_result_path(project_root, spec_name: str) -> Path:
+    """评审结果文件路径（add-spec-review-gate）。
+
+    返回 <项目根>/.fenix/spec-review/<spec_name>/.fenix-run-result.json
+    """
+    return Path(project_root) / ".fenix" / "spec-review" / spec_name / ".fenix-run-result.json"
 
 
 def project_agents_dir(proot) -> Path | None:
@@ -153,6 +169,10 @@ class PromptBuilder:
             values["{dispute_input_path}"] = str(vp_dir / "dispute_judge_input.json")
             values["{dispute_result_path}"] = str(
                 vp_dir / "dispute_judge_result.json")
+        elif agent_type == "spec-review":
+            # SPEC 方案评审（add-spec-review-gate）
+            values["{result_path}"] = str(spec_review_result_path(root, spec_name))
+            values["{state_path}"] = str(root / ".fenix" / "STATE.md")
         values.update({
             "{sig_type}": sig.get("signal_type") or "unknown",
             "{sig_spec}": sig.get("spec") or spec_name,

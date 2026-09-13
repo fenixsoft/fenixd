@@ -12,7 +12,7 @@ import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserBu
 
 const { Text } = Typography;
 
-// 与后端 KNOWN_AGENT_TYPES 严格一致（7 个角色，勿增删）
+// 与后端 KNOWN_AGENT_TYPES 严格一致（8 个角色，勿增删）
 const AGENT_ROLES = [
   { key: 'implementer', label: 'Implementer（执行）' },
   { key: 'planner-plan', label: 'Planner Plan（生成场景）' },
@@ -23,6 +23,7 @@ const AGENT_ROLES = [
   // 后端不设 agents.models.evolution 键，故不单独成 card
   { key: 'self-review', label: 'Self-Review（自省）/ Evolution（自改进）' },
   { key: 'fast-track', label: 'Fast-Track（快速通道）' },
+  { key: 'spec-review', label: 'Spec Review（方案评审）' },
 ];
 
 interface ChainRow {

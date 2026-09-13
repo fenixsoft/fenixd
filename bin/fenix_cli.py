@@ -2,11 +2,12 @@
 """
 fenix_cli.py — Fenix CLI 工具集（add-draft-promotion-gate D6）。
 
-提供人工操作子命令（promote 等），与 Dashboard API 共享同一晋升语义。
+提供人工操作子命令（promote、review 等），与 Dashboard API 共享同一晋升语义。
 不挂载 fenixd.py（误执行会拉起 daemon），独立入口。
 
 用法:
     python3 bin/fenix_cli.py promote <spec> [--project <path>]
+    python3 bin/fenix_cli.py review <spec> [--project <path>]
 """
 
 import argparse
@@ -51,11 +52,37 @@ def cmd_promote(args):
         if "reason" in result:
             print(f"✗ 晋升被拒绝：{result['reason']}", file=sys.stderr)
         elif "violations" in result and result["violations"]:
-            print(f"✗ 晋升 lint 未通过：", file=sys.stderr)
+            print("✗ 晋升 lint 未通过：", file=sys.stderr)
             for v in result["violations"]:
                 print(f"  - {v}", file=sys.stderr)
         else:
-            print(f"✗ 晋升失败", file=sys.stderr)
+            print("✗ 晋升失败", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_review(args):
+    """重新评审 blocked SPEC（评审相关 blocked → reviewing）。"""
+    from core.state_machine import StateMachine, FROZEN_FIELD
+    from core.logger import Logger
+
+    proot = _resolve_project_root(args.project)
+    sm = StateMachine(proot / ".fenix" / "STATE.md", None)
+    logger = Logger(proot)
+
+    entry = sm.read_one(args.spec)
+    if not entry:
+        print(f"✗ SPEC「{args.spec}」不存在于 STATE.md", file=sys.stderr)
+        sys.exit(1)
+
+    # 沿用 SpecReviewManager.re_review 的开放条件校验
+    from core.pm_engine.spec_review import SpecReviewManager
+    review_manager = SpecReviewManager(proot, sm, None, None, {}, logger)
+    ok, msg = review_manager.re_review(args.spec)
+    if ok:
+        print(f"✓ SPEC「{args.spec}」已重新进入评审（reviewing），等待评审 run")
+        sys.exit(0)
+    else:
+        print(f"✗ 重新评审被拒绝：{msg}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -76,10 +103,23 @@ def main():
         help="项目根目录（默认当前目录）",
     )
 
+    p_review = subparsers.add_parser(
+        "review",
+        help="重新评审 blocked SPEC（评审相关 blocked → reviewing）",
+    )
+    p_review.add_argument("spec", help="要重新评审的 SPEC 名称")
+    p_review.add_argument(
+        "--project", "-p",
+        default=None,
+        help="项目根目录（默认当前目录，挂在 review 子解析器下）",
+    )
+
     args = parser.parse_args()
 
     if args.command == "promote":
         cmd_promote(args)
+    elif args.command == "review":
+        cmd_review(args)
     else:
         print(f"未知命令：{args.command}", file=sys.stderr)
         sys.exit(1)
