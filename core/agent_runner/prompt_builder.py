@@ -233,7 +233,7 @@ class PromptBuilder:
             # 任务进度契约段（fix-implementer-task-progress D1）：full/fast-track
             # 两个 implementer 分支共用同一文本，保证 harness TaskCreate/TaskUpdate
             # 行为与 tasks.md 编号对齐（进度可见性断链的根治点）。
-            prompt += self._task_progress_contract_section()
+            prompt += self._task_progress_contract_section(spec_name)
             # 派发前声明现实处方（add-deliverable-declaration-triage D2）：有声明段
             # SPEC 把「声明清单 × 仓库现实」快照注入，实现者开工前即知候选矛盾。
             prompt += self._declared_reality_section(spec_name)
@@ -277,7 +277,7 @@ class PromptBuilder:
         elif agent_type == "fast-track":
             # 任务进度契约段（fix-implementer-task-progress D1，与 full 分支共用
             # 同一文本；fast-track 的 PHASE 1 主体已迁移 agents/fast-track.md）。
-            prompt += self._task_progress_contract_section()
+            prompt += self._task_progress_contract_section(spec_name)
             # 之前只有 implementer 分支注入 prev_error，fast-track 打回后新 run
             # 完全不知道上次为何失败（fix-implementer-task-progress 三连打回）。
             prompt += self._scenario_freeze_section(spec_name)
@@ -679,24 +679,67 @@ class PromptBuilder:
         ]
         return "\n".join(lines)
 
-    def _task_progress_contract_section(self) -> str:
-        """任务进度契约段（fix-implementer-task-progress D1）。
+    def _task_progress_contract_section(self, spec_name: str) -> str:
+        """任务进度契约段（fix-impl-tasks-completion-gate D5/6.3，条件生成）。
 
-        full 与 fast-track 两个 implementer 分支共用同一文本：TaskCreate subject
-        带 tasks.md 编号、一任务一 TaskCreate、完成即 TaskUpdate、收尾逐项勾选，
-        使侧写叠加 / 写侧回写 / run 层展示三端全部对齐。
+        full 与 fast-track 两个 implementer 分支共用同一文本（同源生成，内容
+        逐字一致）。契约载体：
+
+        - **必选（无条件生效）**：``.fenix-run-result.json`` 顶层 MUST 携带
+          ``completed_tasks`` 数组（已完成任务的 tasks.md id），可选 ``unfinished``
+          数组（未完成 id）；清单与 tasks.md 勾选状态一一对应（每个 ``- [x]``
+          数字任务在 completed_tasks 恰出现一次，每个 ``- [ ]`` 数字任务在
+          partial 收工时于 unfinished 恰出现一次）。禁止把多条任务归并、禁止把
+          分组标题当任务登记。
+        - **工具可用时的附加契约（条件生效）**：当且仅当派发路由的 ``init.tools``
+          暴露 ``TaskCreate`` 时，附加任务粒度映射——每条任务一个 TaskCreate、
+          subject 以 ``Task <tasks.md id>: <标题>`` 开头、完成瞬间对同一 taskId
+          发 ``TaskUpdate status=completed`` 不得攒批。
+        - **工具不可用**（``init.tools`` 不含 TaskCreate / init 事件不可得 / 无
+          历史 run）：MUST NOT 要求 TaskCreate/TaskUpdate，显式说明进度以
+          ``completed_tasks`` 清单为准——禁止强制要求本路由不提供的工具
+          （141/141 runner 派发 run 实测无 TaskCreate，强制即不可执行契约）。
         """
+        from core.run_task_track import find_impl_run_file, read_init_tools
+        tools_available = False
+        try:
+            run_file = find_impl_run_file(self._pm.project_root, spec_name)
+            tools = read_init_tools(run_file)
+            tools_available = bool(tools) and "TaskCreate" in tools
+        except Exception:
+            tools_available = False
+        if tools_available:
+            task_lines = (
+                f"- 每一条 tasks.md 任务（如 \"1.3 配置解析签名缓存\"）只能由一个 "
+                f"TaskCreate 对应，TaskCreate 的 subject MUST 以 \"Task <id>: "
+                f"<标题>\" 开头，id 直取 tasks.md 的\"分组号.任务号\"（如 \"Task "
+                f"1.3: 配置解析签名缓存\"），禁止把多条任务归并为一条 TaskCreate，"
+                f"也禁止把分组（## 标题）当任务创建。\n"
+                f"- 开始实现某任务时创建其 TaskCreate；该任务完成的瞬间立刻对同一"
+                f"taskId 发 TaskUpdate status=completed，不得攒批到收尾。TaskUpdate "
+                f"的 taskId 取 TaskCreate 结果返回的任务编号（1 基创建序，形如 "
+                f"\"Task #1 created\"）。\n"
+            )
+        else:
+            task_lines = (
+                f"- 本派发路由不暴露 TaskCreate/TaskUpdate 工具（init.tools 不含 "
+                f"TaskCreate）——MUST NOT 尝试创建任务，任务粒度实时汇报不可用；"
+                f"进度以 .fenix-run-result.json 的 completed_tasks 清单为准。\n"
+            )
         return (
-            f"\n## 任务进度契约（task-progress-contract，强制，fix-implementer-task-progress）\n"
-            f"- 每一条 tasks.md 任务（如 \"1.3 配置解析签名缓存\"）只能由一个 TaskCreate 对应，"
-            f"TaskCreate 的 subject MUST 以 \"Task <id>: <标题>\" 开头，id 直取 tasks.md 的"
-            f"\"分组号.任务号\"（如 \"Task 1.3: 配置解析签名缓存\"），禁止把多条任务归并为一条"
-            f"TaskCreate，也禁止把分组（## 标题）当任务创建。\n"
-            f"- 开始实现某任务时创建其 TaskCreate；该任务完成的瞬间立刻对同一 taskId 发"
-            f"TaskUpdate status=completed，不得攒批到收尾。TaskUpdate 的 taskId 取"
-            f"TaskCreate 结果返回的任务编号（1 基创建序，形如 \"Task #1 created\"）。\n"
+            f"\n## 任务进度契约（task-progress-contract，强制，fix-impl-tasks-completion-gate）\n"
+            f"- 每条 tasks.md 任务（如 \"1.3 配置解析签名缓存\"）完成时逐项把 "
+            f"`- [ ]` 改为 `- [x]`；收尾时逐项勾选所有已完成任务。\n"
+            f"- .fenix-run-result.json 顶层 MUST 携带 `completed_tasks` 数组（已完成"
+            f"任务的 tasks.md id，如 [\"1.1\", \"2.3\"]），与 tasks.md 勾选状态一一"
+            f"对应——每个 `- [x]` 数字任务在 completed_tasks 中恰出现一次；做不完时"
+            f"MUST 以 `status: \"partial\"` 收工并如实登记 `unfinished` 数组（未完成"
+            f"任务 id，每个 `- [ ]` 数字任务恰出现一次），MUST NOT 用 success 掩盖"
+            f"未完成项，禁止「先勾后做」。禁止把多条任务归并为一个条目，禁止把分组"
+            f"（## 标题）当任务登记。\n"
+            f"{task_lines}"
             f"- 收尾时逐项 Edit tasks.md，把每条已完成任务 `- [ ]` 改为 `- [x]`，"
-            f"与全部 TaskCreate/TaskUpdate 记录一一对应，不留半勾。\n"
+            f"与 completed_tasks 清单一一对应，不留半勾。\n"
             f"\n## 有界全量套件入口（fix-run-hang-amplification 3.3，强制）\n"
             f"全量回归（``pytest tests/ -q``）**必须**通过 ``python3 bin/run_full_suite.py "
             f"--timeout 3600`` 执行，MUST NOT 裸调 ``pytest`` 无限等待。"

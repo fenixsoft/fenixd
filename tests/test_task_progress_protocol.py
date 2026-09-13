@@ -46,22 +46,29 @@ class TestTaskProgressContractPrompt(unittest.TestCase):
 
     def test_prompt_contains_task_progress_contract(self):
         """双分支 prompt 均含任务编号契约段（契约段文本两分支共用，见
-        test_contract_text_shared_between_branches 的逐字节一致锁定）。"""
+        test_contract_text_shared_between_branches 的逐字节一致锁定）。
+
+        fix-impl-tasks-completion-gate D5/6.3：契约条件生成——本测试环境无 impl
+        run 产物（init.tools 不可得）→ 路由判定为「工具不可用」，prompt 以
+        completed_tasks 为进度载体、MUST NOT 要求 TaskCreate。
+        """
         for agent_type in ("implementer", "fast-track"):
             with self.subTest(agent_type=agent_type):
                 prompt = self._prompt(agent_type)
                 assert "任务进度契约" in prompt
                 assert "task-progress-contract" in prompt
-                # subject 格式示例断言（id 直取 tasks.md 分组号.任务号）
-                assert "Task <id>: <标题>" in prompt
-                assert "Task 1.3: 配置解析签名缓存" in prompt
-                # 禁止归并 / 分组标题当任务
-                assert "归并为一条" in prompt
-                assert "分组（## 标题）当任务创建" in prompt
-                # 完成即汇报，不得攒批
-                assert "不得攒批到收尾" in prompt
-                # 收尾逐项勾选与 TaskCreate/TaskUpdate 一一对应
+                # 必选载体：completed_tasks / unfinished 与 tasks.md 勾选一一对应
+                assert "completed_tasks" in prompt
+                assert "unfinished" in prompt
+                # 禁止归并 / 分组标题当任务 / 先勾后做
+                assert "归并" in prompt
+                assert "分组（## 标题）当任务登记" in prompt
+                assert "先勾后做" in prompt
+                # 收尾逐项勾选与 completed_tasks 清单一一对应
                 assert "一一对应，不留半勾" in prompt
+                # 工具不可用分支 MUST NOT 要求 TaskCreate（9.6 断言）
+                assert "MUST NOT 尝试创建任务" in prompt
+                assert "TaskUpdate status=completed" not in prompt
 
     def test_contract_text_shared_between_branches(self):
         """文本复用：两分支注入的契约段逐字节一致（独立构建路径各自注入）。"""
@@ -78,14 +85,43 @@ class TestTaskProgressContractPrompt(unittest.TestCase):
         self.assertEqual(extract(full), extract(fast))
 
     def test_full_implementer_wrapup_step_strengthened(self):
-        # implementer.md 已随 7958e50 中文化，断言跟随中文表述
+        # fix-impl-tasks-completion-gate 6.1：接口收尾以 completed_tasks 清单为
+        # 进度载体（TaskCreate 工具可用性由条件契约段声明），文案断言跟随新契约。
         prompt = self._prompt("implementer")
-        assert "与全部 TaskUpdate 记录一一对应" in prompt
+        assert "像 \"1.3 配置解析签名缓存\"" in prompt or "completed_tasks" in prompt
 
     def test_fast_track_wrapup_step_strengthened(self):
-        # fast-track.md 已随 7958e50 中文化，断言跟随中文表述
         prompt = self._prompt("fast-track")
-        assert "与全部 TaskUpdate 记录一一对应" in prompt
+        assert "completed_tasks" in prompt
+
+    def test_task_tools_unavailable_no_taskcreate_force(self):
+        """9.6：工具不可用分支（无 run 产物）prompt 不含 TaskCreate 强制语句。"""
+        for agent_type in ("implementer", "fast-track"):
+            with self.subTest(agent_type=agent_type):
+                prompt = self._prompt(agent_type)
+                # 契约段不得要求创建 TaskCreate / 不得出现一任务一 TaskCreate 指令
+                assert "只能由一个 TaskCreate 对应" not in prompt
+                assert "TaskUpdate status=completed" not in prompt
+
+    def test_task_tools_available_injects_taskcreate_contract(self):
+        """6.3：init.tools 含 TaskCreate 时契约段附加任务粒度映射（条件生效）。"""
+        runs_dir = self.proot / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        (runs_dir / "impl-demo-1780000000.jsonl").write_text(
+            json.dumps({"type": "system", "subtype": "init",
+                        "tools": ["Task", "TaskCreate", "TaskUpdate", "Bash"]},
+                       ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        for agent_type in ("implementer", "fast-track"):
+            with self.subTest(agent_type=agent_type):
+                prompt = self._prompt(agent_type)
+                assert "只能由一个 TaskCreate 对应" in prompt
+                assert "TaskUpdate status=completed" in prompt
+                assert "不得攒批到收尾" in prompt
+                assert "Task <id>: <标题>" in prompt
+                # 工具可用时不再注入「MUST NOT 尝试创建任务」
+                assert "MUST NOT 尝试创建任务" not in prompt
 
 
 class TestTaskProgressSyncFallback(unittest.TestCase):

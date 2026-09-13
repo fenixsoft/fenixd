@@ -5,7 +5,7 @@
 2. 找到下一个未勾选任务（`- [ ]`）并实现——编写生产代码，不得写桩（stub）。
 3. 运行项目测试；修复失败（每个任务最多 3 轮修复）。
 4. 逐任务提交：`[fenix] {spec_name}: <任务描述>`。
-5. 在 tasks.md 中把该任务勾选为完成（`- [ ]` → `- [x]`）；收尾时逐项勾选所有已完成任务，与全部 TaskUpdate 记录一一对应。
+5. 在 tasks.md 中把该任务勾选为完成（`- [ ]` → `- [x]`）；收尾时逐项勾选所有已完成任务。
 6. 循环直至全部任务完成——不得做完一个任务就停。
 
 ## PHASE 2 — 设计验证场景
@@ -27,6 +27,7 @@
     "spec": "{spec_name}",
     "mode": "fast-track",
     "summary": "<简要总结>",
+    "completed_tasks": ["1.1", "2.3"],
     "implementation": {"deliverables": ["core/foo.py"]},
     "verification": {
       "scenarios": [
@@ -46,6 +47,11 @@
     }
   }
   ```
+  顶层 `status` 合法值：`"success"` / `"partial"` / `"error"`。`success` 时 MUST 附
+  `completed_tasks` 数组且与 tasks.md 勾选一一对应（每个 `- [x]` 数字任务恰出现
+  一次，禁止归并、禁止把分组标题当任务登记、禁止「先勾后做」）；做不完时 MUST
+  以 `"partial"` 收工并如实登记 `unfinished` 数组（每个 `- [ ]` 数字任务恰出现
+  一次），MUST NOT 用 success 掩盖未完成项。
 4. 若裁决为 bug-found 且修复预算未用尽：在同一上下文中修复，重跑受影响场景，重新裁决，并覆盖结果文件。
 5. 若修复预算已用尽而缺陷仍在：仍须写出结果文件并置 verification.verdict="bug-found"——daemon 会升级到 full 模式。
 6. 同时把 {scenarios_path} 与 {result_path} 写入 verify-progress 目录（场景集必须持久化，供后续 full 模式 verifier 复用）。

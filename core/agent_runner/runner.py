@@ -4506,32 +4506,15 @@ class AgentRunner:
     def _read_init_tools(run_file) -> list | None:
         """读 run 产物 init 事件的 tools 数组（D4 能力探测）。
 
+        fix-impl-tasks-completion-gate：实现下沉至中性模块 core.run_task_track
+        （与 prompt_builder 契约段条件生成共用同一实现，避免两份漂移）。
+
         Returns:
             tools 列表（可为空）；run 文件缺失 / 不可读 / 无 init 事件 /
             tools 非数组 → None（按「工具不可用」处理，fail-open）。
         """
-        if run_file is None:
-            return None
-        try:
-            with run_file.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if (isinstance(entry, dict)
-                            and entry.get("type") == "system"
-                            and entry.get("subtype") == "init"):
-                        tools = entry.get("tools")
-                        if isinstance(tools, list):
-                            return tools
-                        return None
-        except OSError:
-            return None
-        return None
+        from core.run_task_track import read_init_tools as _read_tools
+        return _read_tools(run_file)
 
     def _append_crosscheck_skipped(self, spec_name: str, run_file,
                                    reason: str) -> None:

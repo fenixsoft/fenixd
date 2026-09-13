@@ -11,9 +11,20 @@
    ``--baseline <ref>`` 归类存量/引入（见设计文档）。裸调 ``pytest`` 无限等待
    在存量挂起时可烧穿全部预算（14.5h 事故实证）。
 5. 提交改动，提交信息格式：[fenix] {spec_name}: <任务描述>
-6. 在 tasks.md 中把该任务勾选为完成（- [x]）；收尾时逐项勾选所有已完成任务，与全部 TaskUpdate 记录一一对应。
-7. 全部任务完成后，写文件 .fenix-run-result.json：{"status": "success", "spec": "{spec_name}", "summary": "<简要总结>"}
-8. 若某错误尝试 3 次仍无法修复，写文件 .fenix-run-result.json：{"status": "error", "spec": "{spec_name}", "error": "<错误描述>"}
+6. 在 tasks.md 中把该任务勾选为完成（- [x]）；收尾时逐项勾选所有已完成任务。
+7. 全部任务完成后，写文件 .fenix-run-result.json：
+   {"status": "success", "spec": "{spec_name}", "summary": "<简要总结>",
+    "completed_tasks": ["1.1", "2.3", "..."]}
+   `completed_tasks` 数组 MUST 与 tasks.md 勾选一一对应：每个 `- [x]` 数字任务
+   恰出现一次，禁止把多条任务归并为一个条目，禁止把分组（## 标题）当任务登记，
+   禁止「先勾后做」。
+8. 若做不完（预算/环境原因），MUST 以 `status: "partial"` 收工并如实登记
+   `unfinished` 数组（未完成任务 id，每个 `- [ ]` 数字任务恰出现一次），
+   MUST NOT 用 success 掩盖未完成项：
+   {"status": "partial", "spec": "{spec_name}", "summary": "<简要总结>",
+    "completed_tasks": ["1.1"], "unfinished": ["4.5", "5.1"]}
+   若某错误尝试 3 次仍无法修复，写文件 .fenix-run-result.json：
+   {"status": "error", "spec": "{spec_name}", "error": "<错误描述>"}
 
 ## 工作目录（worktree 隔离，强制）
 - 你的当前工作目录就是本次 run 的专属 worktree，**一切文件读写一律使用相对路径**（相对当前目录），不要拼绝对路径。

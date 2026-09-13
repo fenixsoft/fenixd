@@ -176,3 +176,38 @@ def parse_run_task_done(run_file: Path) -> dict:
 # 向后兼容别名：旧调用点（tests / 历史引用）仍可用下划线前缀名。
 _parse_run_task_done = parse_run_task_done
 _find_impl_run_file = find_impl_run_file
+
+
+def read_init_tools(run_file) -> list | None:
+    """读 run 产物 init 事件的 tools 数组（fix-impl-tasks-completion-gate D4 能力探测）。
+
+    runner 产物硬门（TaskUpdate 交叉核对的条件化判定）与 prompt_builder（契约段
+    条件生成）共用此中性实现——工具可用性由网关/环境决定、跨 run 稳定
+    （141/141 runner 派发 run 实测无 TaskCreate），读历史 run 即可判定路由能力。
+
+    Returns:
+        tools 列表（可为空）；run 文件缺失 / 不可读 / 无 init 事件 /
+        tools 非数组 → None（按「工具不可用」处理，fail-open）。
+    """
+    if run_file is None:
+        return None
+    try:
+        with Path(run_file).open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (isinstance(entry, dict)
+                        and entry.get("type") == "system"
+                        and entry.get("subtype") == "init"):
+                    tools = entry.get("tools")
+                    if isinstance(tools, list):
+                        return tools
+                    return None
+    except OSError:
+        return None
+    return None
