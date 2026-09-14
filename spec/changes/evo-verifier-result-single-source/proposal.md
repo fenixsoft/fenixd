@@ -14,5 +14,5 @@
 
 ## 验收
 - 单测：implementer 残留 status=success 污染主树共享文件时，任何读取路径不将其当验证裁决。
-- 主树共享文件被写入时带 role 字段（implementer/verifier）与 spec 戳。
-- 回归：重放 add-web-ui 事件链不再产生 unknown-status 误判。
+- 主树共享文件被写入时带 role 字段（implementer/verifier/planner/judge/repair）与 spec 戳。
+- 回归：重放 add-web-ui 事件链（含 run_id 不可解析的残留）不再产生 unknown-status 误判。
