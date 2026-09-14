@@ -61,6 +61,7 @@ const SIGNAL_LABEL: Record<string, string> = {
   family_explosion: 'SPEC 族爆炸',
   daemon_errors: '守护进程异常',
   stash_pop_conflict: '合并冲突改动滞留',
+  verify_uniform_failure: '全场景同因失败',
 };
 
 const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高', warning: '警告', minor: '一般' };

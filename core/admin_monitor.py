@@ -108,6 +108,10 @@ SIGNAL_SEVERITY = {
     # fix-mergeback-stashpop-silent-loss D1：pop 冲突自愈丢弃的用户改动，
     # 内容找回需人工核对（stash 栈 + 逐文件 git show），major 级。
     "stash_pop_conflict": "major",
+    # fix-verify-uniform-failure-consumer：全场景同因失败（pass=0 且失败签名
+    # 一致）——既可能是验证环境/夹具问题，也可能是场景本身缺陷；admin 需判类
+    # 后走对应处置路径，不直接判 bug-found（同因哨有意不派生 fix）。
+    "verify_uniform_failure": "major",
 }
 SIGNAL_RECOMMENDATION = {
     "repeated_failures": "检查重复失败的根因（如构建/测试命令错误），必要时重置 spec 状态或修复框架配置",
@@ -132,6 +136,9 @@ SIGNAL_RECOMMENDATION = {
     # 处置范围限于环境修复，result 写入后框架自动判定复位路径（实现分支已合并→
     # 直通道 testing 重验，否则→ready），无需手动 reset spec 状态。
     "verify_env_blocked": "验证环境阻塞（依赖/服务/端口问题）：Administrator 仅需修复环境；处置完成写 result 后框架自动判定复位路径（实现分支已合并→直通道 testing 重验；否则→ready 重实现），无需手动 reset spec 状态",
+    # fix-verify-uniform-failure-consumer：全场景同因失败的分诊指引——先判失败
+    # 类别再处置，勿直接当产品缺陷打回实现（同因哨有意不派生 fix）。
+    "verify_uniform_failure": "全场景同因失败（pass=0 且失败签名一致），先判类别：① 验证夹具/环境缺失（如场景引用的辅助脚本/依赖在验证树不可达）→ 补齐验证基础设施后复位重验；② 场景本身缺陷（断言写错误、字段/协议不对）→ 修正场景文件 test_scenarios.json 与 scenarios.json 后复位重验；③ 确为产品缺陷（多场景同根因）→ 转人工决策是否打回实现。证据见本信号 evidence 的签名与 failed 计数，逐场景细节见 .fenix/verify-progress/<spec>/report.json",
 }
 
 # pm_engine 直接写入 store、由本监视器摄取唤起的信号类型（写入即待唤起型）。
@@ -145,6 +152,14 @@ STORED_SIGNAL_TYPES = (
     # pm_engine 写入、本监视器摄取唤起（写入即待唤起型，recovery 尊重暂停
     # 标记，人工处置是唯一出路）。
     "inconclusive_loop",
+    # 2026-09-14 原地修复（未走 SPEC）：全场景同因失败哨
+    # （verification.py `_detect_uniform_verify_failure`）在 pass=0 且失败签名
+    # 一致时写入本信号，文案自称「已呼叫 admin 介入判断」——但此前本表不含该
+    # 类型，记录落 store 后无人摄取，信号石沉大海。事故实证：evo-planner-
+    # scenario-schema-alignment 09-14 两轮 13/13 同因失败（验证夹具随 worktree
+    # 清理丢失，写端非产品缺陷），两条信号 handled=False 悬置十余小时，夹具
+    # 从未恢复，直到人工介入。补入本表后由 _detect_family_explosion 摄取唤起。
+    "verify_uniform_failure",
 )
 
 # run_id 前缀 → 计入"失败 run"的 agent 类型

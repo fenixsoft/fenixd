@@ -283,3 +283,66 @@ class TestAdminMonitorIngestion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestVerifyUniformFailureIngestion(unittest.TestCase):
+    """Scenario: admin_monitor 摄取 verify_uniform_failure SIGNAL 后唤起 Administrator。
+
+    fix-verify-uniform-failure-consumer 回归：全场景同因失败哨写入的
+    verify_uniform_failure 此前不在 STORED_SIGNAL_TYPES 白名单，记录落 store
+    后无人摄取——文案自称「已呼叫 admin 介入判断」却从不唤起（2026-09-14
+    evo-planner-scenario-schema-alignment 两轮 13/13 同因失败悬置十余小时实证）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
+        self.proot = Path(self.tmpdir) / "proj"
+        self.proot.mkdir(parents=True, exist_ok=True)
+        (self.proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.store = _MinimalStore()
+        self.sm = _MonitorSM({"s1": "testing"})
+        self.logger = _FakeLogger()
+        self.store.append({
+            "kind": SIGNAL, "signal_type": "verify_uniform_failure", "spec": "s1",
+            "severity": "major",
+            "description": "全场景同因失败（13/13，签名一致: \"\"）——疑似环境或场景问题",
+            "evidence": "signature=; failed=13",
+            "recommended_action": "判断失败类别",
+        })
+        self.mon = AdminMonitor(
+            {}, self.sm, self.proot, self.logger,
+            store=self.store,
+            agent_runner=mock.MagicMock(),
+        )
+
+    def test_uniform_failure_in_stored_types(self):
+        self.assertIn("verify_uniform_failure", STORED_SIGNAL_TYPES)
+
+    def test_detect_ingests_uniform_failure_and_invokes(self):
+        with mock.patch.object(self.mon, "_invoke_administrator",
+                               return_value=None) as mock_invoke:
+            raw = self.mon._detect_family_explosion()
+            self.assertEqual(len(raw), 1, "应摄取到 verify_uniform_failure 信号")
+            self.assertEqual(raw[0]["signal_type"], "verify_uniform_failure")
+            self.assertEqual(raw[0]["spec"], "s1")
+            self.assertEqual(len(self.store.escalated), 1)
+            self.assertEqual(mock_invoke.call_count, 1)
+        # 二次摄取不重复（已 escalated）
+        again = self.mon._detect_family_explosion()
+        self.assertEqual(len(again), 0)
+
+    def test_severity_and_suggestion_registered(self):
+        from core.admin_monitor import SIGNAL_SEVERITY, SIGNAL_RECOMMENDATION
+        self.assertEqual(SIGNAL_SEVERITY.get("verify_uniform_failure"), "major")
+        rec = SIGNAL_RECOMMENDATION.get("verify_uniform_failure", "")
+        self.assertIn("判类别", rec)
+        self.assertIn("report.json", rec)
+
+    def test_terminal_spec_skips_invocation(self):
+        """终态 spec（done/pushed）不唤起——同因失败困境实质已消失。"""
+        self.sm.statuses["s1"] = "pushed"
+        with mock.patch.object(self.mon, "_invoke_administrator",
+                               return_value=None) as mock_invoke:
+            raw = self.mon._detect_family_explosion()
+            self.assertEqual(raw, [])
+            self.assertEqual(mock_invoke.call_count, 0)
