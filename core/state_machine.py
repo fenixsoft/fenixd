@@ -257,12 +257,15 @@ class StateParser:
                         value = int(value)
                     except ValueError:
                         value = None
-                elif key in (FROZEN_FIELD, "_recovery_resume", "_cancelled_hold"):
+                elif key in (FROZEN_FIELD, "_recovery_resume", "_cancelled_hold",
+                             "_repair_awaiting_remerge"):
                     # 布尔字段显式转换：字符串 "False" 也是 truthy，不转会把
                     # 解冻后的 spec 永久误判为冻结（fix-restart-dual-dispatch S4）；
                     # _recovery_resume（interrupt-recovery-preserve）同型处理。
                     # _cancelled_hold（fix-cancel-holdstate-recovery D1）：取消保持
                     # 标记随 STATE.md 往返，False 不转会被误判为保持态。
+                    # _repair_awaiting_remerge（fix-recovery-branch-anchor D3）：
+                    # 「待 re-merge-back」标记，False 不转会被误判为恒待合并。
                     value = value.lower() in ("true", "1", "yes")
                 elif key in ("implementer_run", "tester_run", "branch", "error",
                              "total_duration", START_AFTER_FIELD, FROZEN_UNTIL_FIELD,
@@ -776,7 +779,8 @@ class StateMachine:
     # ── Recovery ───────────────────────────────────────────────────
 
     def recover_interrupted(self, project_root=None, worktree_manager=None,
-                            verify_redo_budget: int = DEFAULT_VERIFY_REDO_BUDGET) -> List[str]:
+                            verify_redo_budget: int = DEFAULT_VERIFY_REDO_BUDGET,
+                            remerge_callback=None) -> List[str]:
         """
         On daemon restart, revert any SPECs stuck in interrupted states.
         Uses update_spec directly (bypasses transition validation for recovery).
@@ -789,6 +793,12 @@ class StateMachine:
           （dispatch 层在保留分支上续做而非从零重派）；仅零提交/分支缺失才走
           现行清空路径（逐字节兼容）。project_root/worktree_manager 缺省时行为
           与旧版完全一致（脚本/测试场景零变化）。
+        - implementing + ``_repair_awaiting_remerge``（fix-recovery-branch-anchor
+          D3/D4）：实现分支已含 main 的合并与冲突解决、仅剩重新合并进主树 →
+          直接 re-merge-back 完成合并（不经由 event_bus 排队，避免 ready 窗口
+          被 full_scan 误派 implementer）；成功推进 implemented；失败清除标记
+          后回落既有保留续做路径。恢复期主树无其他在飞 run（fenixd 调用点
+          在 cleanup_stale_worktrees 与 full_scan 之前），是最干净的执行时机。
         - testing（验证中断）→ implemented 重派 verifier——实现已合并/落分支，
           重置 ready 会误派 implementer 从头实现已合并代码并劫持 branch 字段
           （pushed 记录被写成 rogue 分支）；配合场景冻结复用，重验代价极小。
@@ -802,6 +812,11 @@ class StateMachine:
             worktree_manager: worktree 三态单源查询器（保留续做用）。
             verify_redo_budget: 重启重验预算阈值（agents.verify_redo_budget
                 配置值，缺省 DEFAULT_VERIFY_REDO_BUDGET=3）。
+            remerge_callback: 恢复期 re-merge-back 成功后的收口回调
+                （``callable(spec_name) -> None``），由 fenixd 注入 PMEngine
+                侧副作用实现（_clear_dispatch_conflict/_sync_task_progress/
+                _reconcile_impl_budget/consume_legacy 等）。缺省 None 时
+                行为与旧版逐字节一致（脚本/测试场景零变化）。
         """
         recovered = []
         for status in INTERRUPTED_STATES:
@@ -865,6 +880,17 @@ class StateMachine:
                     })
                     recovered.append(name)
                     continue
+                # ── 待 re-merge-back 标记消费（fix-recovery-branch-anchor D3/D4）──
+                # repair 成功待合并的 implementing spec（_repair_awaiting_remerge
+                # =True）：直接 re-merge-back 完成合并、推进 implemented，
+                # 不派发 implementer（tasks 4.1）。失败已清除标记，回落下方
+                # 保留续做路径（tasks 4.3，spec 不滞留 implementing）。
+                if entry.get("_repair_awaiting_remerge"):
+                    remerged = self._recovery_remerge_pending(
+                        name, entry, project_root, worktree_manager, remerge_callback)
+                    if remerged:
+                        recovered.append(name)
+                        continue
                 # ── 中断恢复保留续做（interrupt-recovery-preserve D4）──
                 # 有提交分支 → 保留 branch/implementer_run 并按 resume 续做；
                 # 三态载体处置（在场/重建/降级）经 worktree_manager 单源查询
@@ -874,6 +900,18 @@ class StateMachine:
                 if preserved:
                     recovered.append(name)
                     continue
+                # 锚点不可得强制留痕（fix-recovery-branch-anchor E/7.2）：
+                # 清空重建路径在写出清空状态时打 WARNING——三处锚点（STATE
+                # branch / 在册 worktree / 分支命名空间枚举）均不可得时，
+                # 权限内无任何可保留载体，本次恢复将清空重派（零留痕的静默
+                # 早退正是本 SPEC 事故环 4 的根因之一）。
+                self.logger.warning(
+                    "state_machine",
+                    f"Recovery clear-and-rebuild '{name}': 三处锚点均不可得 "
+                    f"（STATE.branch 缺失、在册 worktree 无命中、分支命名空间"
+                    f"枚举无候选）——清空状态走全新派发（零提交/分支缺失"
+                    f"形态，任务书既有豁免）",
+                )
                 # 清空陈旧的 run 字段，否则 full_scan 的恢复派发会因
                 # implementer_run 非空而跳过重新调度（fix-fenix-token-waste）
                 self.update_spec(name, {
@@ -882,12 +920,108 @@ class StateMachine:
                     "implementer_run": None,
                     "tester_run": None,
                     "branch": None,
+                    # 一并清除待 re-merge 标记（fix-recovery-branch-anchor 3.4）：
+                    # 清空重建路径不得残留标记，避免污染下一轮
+                    "_repair_awaiting_remerge": False,
                     "_retry_count": 0,
                     "_merge_fp": None,
                     "_merge_streak": 0,
                 })
                 recovered.append(name)
         return recovered
+
+    def _recovery_remerge_pending(self, name: str, entry: dict,
+                                  project_root=None, worktree_manager=None,
+                                  remerge_callback=None) -> bool:
+        """恢复期 re-merge-back（fix-recovery-branch-anchor D4）。
+
+        带 ``_repair_awaiting_remerge`` 标记的 implementing spec：实现分支已含
+        main 的合并与冲突解决，仅剩重新合并进主树。直接调用既有
+        ``merge_back_from_branch`` 完成合并并推进 implemented，不派发
+        implementer、不经由 event_bus 排队（避免 ready 窗口被 full_scan
+        误派）。
+
+        成功收口字段与副作用对齐 repair re-merge 成功路径
+        （dispatch.py:_run_repair_worker remerge_ok 分支）：
+        - ``update_spec``：status=implemented、error=None、保留
+          branch/implementer_run、_merge_fp/_merge_streak/_repair_round/
+          _repair_merge_error 清零、_repair_awaiting_remerge=False；
+        - 收口副作用（依赖接线，tasks 4.2）：``remerge_callback(spec_name)``
+          由 fenixd 注入 PMEngine 侧实现（_clear_dispatch_conflict /
+          _sync_task_progress / _reconcile_impl_budget / consume_legacy），
+          缺省 None 时行为与旧版逐字节一致。verifier 派发由 boot 的
+          event_bus.full_scan() 兜底，不在此复刻 _enqueue_front。
+
+        Returns: True 表示 re-merge 成功并已推进 implemented；False 表示
+        re-merge 失败（调用方清除标记后回落保留续做路径，spec 不滞留
+        implementing）。
+        """
+        branch = entry.get("branch")
+        if not branch:
+            self.logger.warning(
+                "state_machine",
+                f"待 re-merge 标记但 branch 缺失 '{name}' — 清除标记回落保留续做",
+            )
+            return False
+        if project_root is None or worktree_manager is None:
+            return False
+        try:
+            merge_info = worktree_manager.merge_back_from_branch(branch)
+            remerge_ok, remerge_error = merge_info
+        except Exception as e:
+            self.logger.warning(
+                "state_machine",
+                f"恢复期 re-merge-back 异常 '{name}'（branch '{branch}'）: {e}",
+            )
+            return False
+        if not remerge_ok:
+            # re-merge 失败：清除标记后回落既有保留续做路径（tasks 4.3）——
+            # 保留 branch/implementer_run + _recovery_resume，spec 落 ready，
+            # 由下一轮 run 的正常 merge-back 经 _should_enter_repair 进入
+            # 既有 repair/熔断通道。MUST NOT 静默清空该 spec 状态。
+            self.update_spec(name, {"_repair_awaiting_remerge": False})
+            self.logger.warning(
+                "state_machine",
+                f"恢复期 re-merge-back 失败 '{name}'（branch '{branch}'）: "
+                f"{remerge_error} — 清除待 re-merge 标记，回落保留续做",
+            )
+            return False
+        # re-merge 成功：推进 implemented，收口字段对齐 repair re-merge 路径
+        self.update_spec(name, {
+            "status": SpecStatus.IMPLEMENTED,
+            "error": None,
+            "implementer_run": entry.get("implementer_run"),
+            "branch": branch,
+            "_retry_count": 0,
+            "_merge_fp": None,
+            "_merge_streak": 0,
+            "_repair_round": 0,
+            "_repair_merge_error": None,
+            "_repair_awaiting_remerge": False,
+        })
+        # 收口副作用回调（PMEngine 侧注入；tasks 4.2 依赖接线）
+        if remerge_callback is not None:
+            try:
+                remerge_callback(name)
+            except Exception as e:
+                self.logger.warning(
+                    "state_machine",
+                    f"恢复期 re-merge 收口回调失败 '{name}'（非阻塞）: {e}",
+                )
+        # consume_legacy 属 worktree_manager 既有形参，不在此列（tasks 4.2）
+        try:
+            if worktree_manager is not None:
+                worktree_manager.consume_legacy(name)
+        except Exception as e:
+            self.logger.warning(
+                "state_machine",
+                f"恢复期 re-merge consume_legacy 失败 '{name}'（非阻塞）: {e}",
+            )
+        self.logger.info(
+            "state_machine",
+            f"恢复期 re-merge-back 成功 '{name}'（branch '{branch}'）→ implemented",
+        )
+        return True
 
     def _recovery_preserve_spec(self, name: str, entry: dict,
                                 project_root=None, worktree_manager=None) -> bool:
@@ -898,11 +1032,22 @@ class StateMachine:
         单源查询（is_available）：在场原地登记（受清理豁免）；缺失在既有分支
         上重建 worktree；不可用降级清空重建并 WARNING。
 
+        branch 解析链三层（fix-recovery-branch-anchor D2，tasks 2.4）：
+        1. STATE.branch；
+        2. ``find_worktree_by_spec``（在册 worktree 事实查询）；
+        3. ``find_branches_by_spec``（git 分支命名空间枚举，worktree 已清
+           只剩分支时命中；候选经「已含 main」优先排序，零提交候选已剔除）。
+        第三层命中时走既有 rev-list 非空闸门与 resolve_resume_site 载体处置。
+
+        留痕（E，tasks 7.1-7.4）：锚点缺失早退、第三层命中、载体不可用降级
+        均打 WARNING 附候选/原因。
+
         Returns: True 表示已保留并写入恢复续做标记（调用方计入 recovered）。
         """
         if project_root is None or worktree_manager is None:
             return False
         branch = entry.get("branch")
+        ns_candidates: list = []
         if not branch and worktree_manager is not None:
             # 首轮在飞 run（STATE branch 未写，run 未到终态即被强杀）→ 回落
             # worktree_manager 的 spec → worktree 事实查询（git 真相，不依赖
@@ -915,7 +1060,29 @@ class StateMachine:
                     f"Recovery preserve: STATE branch 缺失，经 git 事实查询回落 "
                     f"spec '{name}' 在册 worktree → branch '{branch}'",
                 )
+        if not branch and worktree_manager is not None:
+            # 第三层：git 分支命名空间枚举（worktree 已清只剩分支的窗口）。
+            # 候选已按「已含 main」优先排序、零提交候选剔除（D2/tasks 2.5）。
+            ns_candidates = worktree_manager.find_branches_by_spec(name)
+            if ns_candidates:
+                best = ns_candidates[0]
+                branch = best["branch"]
+                cand_names = [c["branch"] for c in ns_candidates]
+                self.logger.warning(
+                    "state_machine",
+                    f"Recovery preserve: STATE 与在册 worktree 双缺失，"
+                    f"经分支命名空间枚举回落 spec '{name}' → 选中 "
+                    f"branch '{branch}'（候选: {cand_names}）",
+                )
         if not branch:
+            # 锚点不可得早退：强制留痕（tasks 7.1）
+            self.logger.warning(
+                "state_machine",
+                f"Recovery preserve: spec '{name}' 三处锚点均不可得——"
+                f"STATE.branch 缺失、在册 worktree 无命中、"
+                f"分支命名空间枚举："
+                f"{'无候选' if not ns_candidates else [c['branch'] for c in ns_candidates]}",
+            )
             return False
         try:
             # 分支可解析 + 相对 main 有未合并提交（rev-list --count > 0）。

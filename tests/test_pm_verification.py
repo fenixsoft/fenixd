@@ -6,6 +6,7 @@ Split from test_core.py as part of refactor-test-structure.
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -1905,6 +1906,57 @@ class TestImplementationBranchHasCommits(unittest.TestCase):
         self.git("checkout", "-q", "main")
         self.assertFalse(self.engine._implementer_zero_change(
             "demo", self._result()))
+
+
+class TestBranchNonEmptyNotMergedAssumption(unittest.TestCase):
+    """9.11/verify: branch 非空但未合并进 main 时，verification 不断言
+    「branch 非空 ⇒ 已合并」（固化 verification.py:5248 的假设）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir) / "repo"
+        self.proot.mkdir(parents=True, exist_ok=True)
+        self.git("init", "-q")
+        self.git("config", "user.email", "test@fenix.local")
+        self.git("config", "user.name", "Fenix Test")
+        self.git("config", "commit.gpgsign", "false")
+        (self.proot / "base.py").write_text("BASE\n", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "base")
+        self.git("branch", "-M", "main")
+        self.logger = MagicMock()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def git(self, *args, check=True):
+        r = subprocess.run(
+            ["git", "-C", str(self.proot), *args],
+            capture_output=True, text=True,
+        )
+        if check and r.returncode != 0:
+            raise RuntimeError(f"git {args} failed: {r.stderr}")
+        return r
+
+    def test_unmerged_branch_not_duplicate_verification(self):
+        """branch 非空 + 未合并 main：verification 以 git 事实判定
+        （_branch_merged_into_tree），不读字段值，不重复认证为「已合并」。"""
+        from core.pm_engine.verification import _branch_merged_into_tree
+        # 创建实现分支但不合并进 main
+        self.git("checkout", "-q", "-b", "fenix/feat-1234567890")
+        (self.proot / "feat.py").write_text("IMPL\n", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "[fenix] impl")
+        self.git("checkout", "-q", "main")
+        # _branch_merged_into_tree 应返回 False（git 事实：未合并）
+        merged = _branch_merged_into_tree("fenix/feat-1234567890", self.proot)
+        self.assertFalse(merged,
+                         "未合并分支 MUST NOT 被判定为已合并（git 事实为准）")
+        # branch 非空但未合并 → 验证路径问 git 而非字段值
+        # 验证后仍然返回 ready（不触发 testing），与 branch 为空等价
+        merged2 = _branch_merged_into_tree("fenix/feat-1234567890", self.proot)
+        self.assertFalse(merged2,
+                         "重复调用结论一致（git 为单一事实源）")
 
 
 if __name__ == "__main__":

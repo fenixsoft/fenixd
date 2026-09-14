@@ -56,6 +56,10 @@ stateDiagram-v2
 
 PM 派出 implementer 后 SPEC 进入 `implementing`，实现者此时正在 worktree 中编写代码。它有三种离开方式：实现完成转入 `implemented`；实现被工作流打回则回到 `ready` 重试；若达到 `impl_run_budget` 触发熔断、或被人工冻结，则进入 `blocked`。
 
+**`branch` 字段语义**：`branch` 记录本轮实现分支（`fenix/<spec>-<timestamp>`），写入时机早于 merge-back——实现/repair run 终态成功后即落盘，使 daemon 重启恢复在「已实现未合并」窗口内可命中本轮分支。
+
+**锚点回落链（daemon 重启恢复）**：恢复路径查找 `branch` 按三层回落：（1）STATE `branch`；（2）`find_worktree_by_spec` 在册 worktree（`git worktree list` 事实查询）；（3）`find_branches_by_spec` git 分支命名空间枚举（`refs/heads/fenix/<spec>-*`，候选经「完整 spec 名 + 分隔符边界」全等比较 + 「已含 main 合并」优先排序）。三层均无命中时走清空重建路径并打 WARNING 留痕。
+
 ### implemented（已实现）
 
 实现完成后 SPEC 进入 `implemented`，此时代码已合并，等待验证流水线启动。流水线一旦启动，SPEC 即转入 `testing`。
@@ -131,6 +135,10 @@ planner-judge 门禁判定通过后 SPEC 进入 `verified`，随即自动推进�
 ## Daemon 重启中断恢复
 
 SPEC 处于 `implementing`/`testing` 这类中断状态时，daemon 重启会自动把它回退到 `ready`，同时清空陈旧 run 字段并重置重试计数，重新进入调度池。这是设计行为而非数据丢失。
+
+**保留续做 vs 清空重建**：`implementing` 中断时，若发现可保留的分支（相对 main 有未合并提交，经上述三层锚点回落链解析），则保留 `branch`/`implementer_run` 并打 `_recovery_resume` 标记，由 dispatch 层在保留分支的 worktree 内 `claude --resume` 续做而非从零重派；仅零提交/分支缺失/载体不可用才走清空重建（零留痕的静默早退是本框架治理重点，锚点缺失一律打 WARNING 附候选清单）。
+
+**repair 待 re-merge-back 标记**：repair 通道运行期 `status` 保持 `implementing`，修复成功后会在 `merge_back_from_branch` 之前写入 `_repair_awaiting_remerge: true` 标记并落盘 `branch`——该标记使「repair 成功、仅剩重新合并进主树」成为 STATE 可观察的事实。daemon 重启恢复见到 `implementing + 该标记` 时，直接调用 `merge_back_from_branch` 完成合并并推进 `implemented`（不派发 implementer、不经过 `ready` 窗口）；re-merge 失败则清除标记后回落保留续做路径（`_recovery_resume`），由下一轮 run 的正常 merge-back 进入 repair/熔断通道。re-merge 成功后标记即清除，`implemented` 及之后状态上该标记恒为假。
 
 ## 门禁系统：两步判定
 

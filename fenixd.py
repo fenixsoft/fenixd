@@ -225,7 +225,17 @@ class FenixDaemon:
 
         # 4. Initialize WorktreeManager
         wt_base = PROJECT_ROOT / self.config.get("worktree.base_dir", ".claude/worktrees")
-        self.worktree_manager = WorktreeManager(wt_base, PROJECT_ROOT, self.logger)
+        # 分支枚举前缀（fix-recovery-branch-anchor D2）：与分支创建端同源取
+        # 并集；配置值仅作推送侧前缀，非创建端事实源（非 fenix 配置下创建端
+        # 仍产出 fenix/<spec>-<ts>，须并集枚举才不扫空命名空间）。
+        _impl_prefix = self.config.get("worktree.implement_branch_prefix", "fenix")
+        self.worktree_manager = WorktreeManager(
+            wt_base, PROJECT_ROOT, self.logger,
+            implement_branch_prefix=str(_impl_prefix) if _impl_prefix else "fenix",
+            # 分支在飞引用保护（D6）：注入 STATE 读取器——stale 清扫删分支前
+            # 检查在飞/待收口 spec 的分支引用（宁可多留分支不可误删成果）。
+            state_reader=self.state_machine.read_all,
+        )
         self.logger.info("fenixd", "WorktreeManager initialized")
 
         # 5. Initialize AgentRunner
@@ -378,8 +388,22 @@ class FenixDaemon:
         # verify_redo_budget（fix-daemon-lifecycle-races D3）：重启恢复重验的
         # 预算阈值，缺省 3；恢复路径据此决定重验派发或冻结等待人工裁决。
         _redo_budget = int(ConfigLoader.get(self.config, "agents.verify_redo_budget", 3) or 3)
+        # 恢复期 re-merge-back 收口回调（fix-recovery-branch-anchor D4/4.2）：
+        # recover_interrupted 内 re-merge 成功后的 PMEngine 侧副作用
+        #（_clear_dispatch_conflict / _sync_task_progress / _reconcile_impl_budget
+        # / consume_legacy）由 fenixd 注入——state_machine 无 pm_engine 引用，
+        # 缺省 None 时行为与旧版逐字节一致。
+        remerge_cb = None
+        try:
+            remerge_cb = self._build_remerge_callback()
+        except Exception as e:
+            self.logger.warning(
+                "fenixd",
+                f"remerge 收口回调构造失败（按无回调恢复，非阻塞）: {e}",
+            )
         self.state_machine.recover_interrupted(
-            PROJECT_ROOT, self.worktree_manager, verify_redo_budget=_redo_budget)
+            PROJECT_ROOT, self.worktree_manager, verify_redo_budget=_redo_budget,
+            remerge_callback=remerge_cb)
         # 消费后的保全 sidecar 清除（幂等；中断全部由 recovery 接管）
         _clear_preserve_sidecar()
 
@@ -1584,6 +1608,142 @@ class FenixDaemon:
             )
         return sorted(seen_wt)
 
+    def _build_remerge_callback(self):
+        """恢复期 re-merge-back 收口回调（fix-recovery-branch-anchor D4/4.2 接线）。
+
+        返回 ``callable(spec_name) -> None``：对成功 re-merge 的 spec 执行
+        PMEngine 侧收口副作用（对齐 dispatch repair re-merge 成功路径）——
+        ``_clear_dispatch_conflict`` / ``_sync_task_progress`` /
+        ``_reconcile_impl_budget`` / ``consume_legacy``。state_machine 无
+        pm_engine 引用（仅注释提及模块名），故由 fenixd 注入。
+        """
+        def _cb(spec_name: str) -> None:
+            # 锁冲突计数清零（recovery 侧无锁操作，零值写回即可）
+            try:
+                self.pm_engine._clear_dispatch_conflict(spec_name)
+            except Exception as e:
+                self.logger.warning(
+                    "fenixd",
+                    f"remerge 收口 _clear_dispatch_conflict 失败 '{spec_name}'"
+                    f"（非阻塞）: {e}",
+                )
+            try:
+                self.pm_engine._sync_task_progress(spec_name)
+            except Exception as e:
+                self.logger.warning(
+                    "fenixd",
+                    f"remerge 收口 _sync_task_progress 失败 '{spec_name}'"
+                    f"（非阻塞）: {e}",
+                )
+            try:
+                self.pm_engine._reconcile_impl_budget(spec_name)
+            except Exception as e:
+                self.logger.warning(
+                    "fenixd",
+                    f"remerge 收口 _reconcile_impl_budget 失败 '{spec_name}'"
+                    f"（非阻塞）: {e}",
+                )
+            try:
+                if self.worktree_manager:
+                    self.worktree_manager.consume_legacy(spec_name)
+            except Exception as e:
+                self.logger.warning(
+                    "fenixd",
+                    f"remerge 收口 consume_legacy 失败 '{spec_name}'（非阻塞）: {e}",
+                )
+        return _cb
+
+    def _preserve_implementing_specs(self, reason: str) -> list:
+        """按 STATE 中 ``implementing`` spec 驱动的保全（fix-recovery-branch-anchor D5/5.2）。
+
+        与 ``_preserve_interrupted_runs``（run_id 驱动）互补：后者只在排水超时
+        （``remaining`` 非空）时触发；本方法在排水结束后只要仍存在收口未完成的
+        ``implementing`` spec 即保全——事故形态（``remaining == []`` 但 repair
+        worktree 仍在册）下旧调用点永不执行、sidecar 从未写、保护集退化为空集。
+
+        - spec 集来源：STATE 全部 ``implementing`` spec（``get_by_status``）；
+        - ``run_id`` 取该 spec 的 STATE ``implementer_run``（D1 落地后 run 成功
+          即非空），缺失时留空串——无生产消费者（WIP checkpoint 与保护集
+          构造只读 spec/worktree），空值无副作用；MUST NOT 回退
+          ``_spec_from_run_id`` 反查（会把「STATE 无 implementer_run」的形态
+          重新排除在外）；
+        - worktree 取在册记录（``find_worktrees_by_spec`` 全量，不因歧义丢失）；
+        - 条目并入既有 sidecar（不覆盖，先读后写）。
+
+        Returns: 新增保全条目的 worktree 路径列表（供保护集 / WIP checkpoint）。
+        """
+        entries = list(_read_preserve_sidecar())
+        seen_wt = {e.get("worktree") for e in entries if e.get("worktree")}
+        added_wt: list = []
+        try:
+            implementing = self.state_machine.get_by_status("implementing")
+        except Exception as e:
+            self.logger.warning(
+                "fenixd",
+                f"Preserve (spec-driven): STATE 读取失败——降级仅既有保全 "
+                f"（非阻塞）: {e}",
+            )
+            return []
+        for spec, entry in implementing:
+            run_id = entry.get("implementer_run") or ""
+            branch = entry.get("branch") or ""
+            worktrees: list = []
+            try:
+                if self.worktree_manager:
+                    worktrees = self.worktree_manager.find_worktrees_by_spec(spec)
+            except Exception as e:
+                self.logger.warning(
+                    "fenixd",
+                    f"Preserve (spec-driven): 在册 worktree 查询失败 "
+                    f"'{spec}'（非阻塞）: {e}",
+                )
+                worktrees = []
+            if not worktrees and branch and self.worktree_manager:
+                wt = self.worktree_manager.find_worktree_path(branch)
+                if wt:
+                    worktrees = [str(wt)]
+            ahead = 0
+            if branch:
+                try:
+                    res = subprocess.run(
+                        ["git", "-C", str(PROJECT_ROOT), "rev-list", "--count",
+                         f"main..{branch}"],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if res.returncode == 0:
+                        try:
+                            ahead = int(res.stdout.strip() or "0")
+                        except ValueError:
+                            ahead = 0
+                except (subprocess.TimeoutExpired, OSError):
+                    ahead = 0
+            worktree = worktrees[0] if worktrees else ""
+            if worktree and worktree not in seen_wt:
+                seen_wt.add(worktree)
+                added_wt.append(worktree)
+            entries.append({
+                "spec": spec,
+                "run_id": run_id,
+                "branch": branch,
+                "worktree": worktree,
+                "ahead_commits": ahead,
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            self.logger.warning(
+                "fenixd",
+                f"Preserving implementing spec '{spec}' (branch "
+                f"'{branch or 'none'}', worktree '{worktree or 'none'}', "
+                f"ahead={ahead})",
+            )
+        if not _write_preserve_sidecar(entries):
+            self.logger.warning(
+                "fenixd",
+                f"Preserve sidecar write failed (non-blocking) — "
+                f"{len(entries)} entry/ies not persisted",
+            )
+        return sorted(added_wt)
+
     def _wip_checkpoint_preserved_worktrees(self, preserved_wts: list) -> None:
         """锚点 A（add-impl-wip-checkpoint D2）：排水超时收口静默窗口的 WIP 提交。
 
@@ -1719,6 +1879,16 @@ class FenixDaemon:
                 # 排水超时：先保全再 terminate（sidecar 先于 terminate）
                 preserved_wts = self._preserve_interrupted_runs(
                     remaining, "drain timeout")
+            # ── sidecar 触发条件放宽（fix-recovery-branch-anchor D5/5.2）──
+            # 排水结束后仍存在收口未完成的 implementing spec 时同样保全
+            #（run_id 驱动的 drain timeout 路径只覆盖「remaining 非空」，
+            # 事故形态 remaining==[] 时旧调用点永不执行，repair worktree
+            # 仍在 git worktree list 注册中却被 cleanup_orphans 误删）。
+            # spec 驱动独立于 run_id，run_id 取该 spec 的 STATE implementer_run
+            #（D1 落地后 run 成功即非空），缺失时留空串（无生产消费者）。
+            spec_preserved = self._preserve_implementing_specs(
+                "drain finished, spec-driven preserve")
+            preserved_wts.extend(spec_preserved)
         else:
             self.logger.debug(
                 "fenixd",
@@ -1751,17 +1921,57 @@ class FenixDaemon:
             # 为空串（首轮在飞 run 的旧保全条目）时，以该 spec 的事实查询回落补入
             # 在册 worktree —— 保护集 MUST NOT 因 sidecar 字段为空而放行清理
             # （宁可多保不删：下轮 orphan 清理仍会重新评估）。
+            # 来源 (c)（fix-recovery-branch-anchor D5/5.1）：STATE 全部
+            # implementing spec 的**全部**在册 worktree——不依赖 sidecar 是否
+            # 写入（事故形态 sidecar 从未写、保护集退化为空集）。
             protected = set(preserved_wts)
+            src_b_count = 0
             try:
                 for e in _read_preserve_sidecar():
                     if e.get("worktree"):
                         protected.add(str(e["worktree"]))
+                        src_b_count += 1
                     elif e.get("spec"):
                         resolved = self.worktree_manager.find_worktree_by_spec(e["spec"])
                         if resolved is not None:
                             protected.add(str(resolved[0]))
+                            src_b_count += 1
             except Exception:
                 pass  # 保护集构造失败按「仅 preserved_wts」处理，不阻塞停机
+            src_c_count = 0
+            try:
+                implementing = self.state_machine.get_by_status("implementing")
+                for spec, _entry in implementing:
+                    # 全量在册 worktree（find_worktrees_by_spec，不因歧义返回
+                    # None）——同一 spec 存在多个在册 worktree 时全部加入保护集
+                    try:
+                        wt_paths = self.worktree_manager.find_worktrees_by_spec(spec)
+                    except Exception:
+                        wt_paths = []
+                    if not wt_paths:
+                        # 兜底：单值查询（历史形态）
+                        resolved = self.worktree_manager.find_worktree_by_spec(spec)
+                        if resolved is not None:
+                            wt_paths = [str(resolved[0])]
+                    for wp in wt_paths:
+                        if wp not in protected:
+                            protected.add(wp)
+                            src_c_count += 1
+            except Exception as e:
+                # 来源 (c) 构造失败：WARNING 且至少保留 sidecar 来源，
+                # MUST NOT 使保护集静默退化为空集（tasks 5.3）
+                self.logger.warning(
+                    "fenixd",
+                    f"来源 (c) 保护集构造失败——保留 sidecar 来源（非阻塞）: {e}",
+                )
+            # 保护集构成日志（tasks 5.4）：各来源条目数可事后归因
+            self.logger.info(
+                "fenixd",
+                f"cleanup_orphans 保护集构成：来源 (a) drain 保全 "
+                f"{len(preserved_wts)} 项；来源 (b) sidecar {src_b_count} 项；"
+                f"来源 (c) implementing spec {src_c_count} 项；保护集合计 "
+                f"{len(protected)} 个 worktree",
+            )
             self.worktree_manager.cleanup_orphans(protected=protected)
 
         self.logger.info("fenixd", "fenixd stopped")

@@ -667,6 +667,26 @@ class Dispatcher:
                             f"fast-track 规模档位标记写入失败 '{spec_name}'（非阻塞）: {e}",
                         )
                 self._pm._increment_impl_run_budget_used(spec_name)
+                # ── 新轮次派发前清除旧锚点（fix-recovery-branch-anchor D1）──
+                # fast-track 车道同 implementer 语义：spec 可能经 repair lane
+                #（_run_repair_worker 为 fast-track spec 同样写 branch/标记）
+                # 或 fallback 留下陈旧 branch/implementer_run，新一轮在飞期间
+                # 不得被恢复链当作可保留锚点。
+                try:
+                    _ft_entry = self._pm.state_machine.read_one(spec_name) or {}
+                    if _ft_entry.get("branch") or _ft_entry.get("implementer_run") \
+                            or _ft_entry.get("_repair_awaiting_remerge"):
+                        self._pm.state_machine.update_spec(spec_name, {
+                            "branch": None,
+                            "implementer_run": None,
+                            "_repair_awaiting_remerge": False,
+                        })
+                except Exception as e:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"fast-track 新轮次清除旧锚点失败 '{spec_name}'"
+                        f"（非阻塞）: {e}",
+                    )
                 self._run_fast_track_worker(spec_name)
 
             elif agent_type == "implementer":
@@ -718,6 +738,29 @@ class Dispatcher:
                             "pm_engine",
                             f"mark_reused for resume '{spec_name}' failed（非阻塞）: {e}",
                         )
+                # ── 新轮次派发前清除上一轮锚点（fix-recovery-branch-anchor D1）──
+                # 非 _recovery_resume 续做的全新派发：旧的 branch/implementer_run
+                # 锚点来自上一轮已放弃的 run，若不清除，_recovery_preserve_spec
+                # 第一层（STATE.branch）会在下一轮在飞期间压过本轮载体，导致
+                # daemon 重启时保留并续做陈旧分支、整轮丢弃当前在飞成果。
+                if resume_wt is None:
+                    old_branch = dispatch_entry.get("branch")
+                    old_impl_run = dispatch_entry.get("implementer_run")
+                    if old_branch or old_impl_run:
+                        self._pm.state_machine.update_spec(
+                            spec_name, {"branch": None, "implementer_run": None})
+                        self._pm.logger.info(
+                            "pm_engine",
+                            f"新轮次派发清除旧锚点 '{spec_name}': "
+                            f"branch={old_branch}, "
+                            f"implementer_run={old_impl_run}",
+                        )
+                    # 陈旧「待 re-merge」标记同步失效（fix-recovery-branch-anchor
+                    # D3）：上一轮失败链若曾写 _repair_awaiting_remerge，新一轮
+                    # 在飞期间重启不得对尚未完工的新分支执行 re-merge。
+                    if dispatch_entry.get("_repair_awaiting_remerge"):
+                        self._pm.state_machine.update_spec(
+                            spec_name, {"_repair_awaiting_remerge": False})
                 # 主树 stash 已收拢进 merge_back_from_branch 的 guard 原子段
                 # （fix-autostash-orphans）：锁内 stash→merge→pop，不再依赖
                 # 派发前 stash + 成功路径 pop 的长窗口配对（曾致 7 次改动滞留 stash）。
@@ -934,6 +977,32 @@ class Dispatcher:
                     # 计数对账（fix-budget-counting-semantics D3）：守卫放行/merge
                     # 收工后回读 used 与正常收工 run 数比对，偏差记 WARNING。
                     self._pm._reconcile_impl_budget(spec_name)
+                    # ── 锚点提前落盘（fix-recovery-branch-anchor D1）─────────
+                    # implementer run 终态成功后、merge 预演与 merge-back 之前，
+                    # 把 branch/implementer_run 写入 STATE——使恢复链在「已实现未合并」
+                    # 窗口内可命中本轮分支，避免 daemon 重启后清空重写。
+                    # 写入点定序在全部 merge 前置闸门之后（零变更哨/交付物守卫/
+                    # tasks.md 收口复检），确保只有真正通过所有闸门的成功 run 才
+                    # 留下锚点；早退路径（status: ready/blocked）进入下一轮全新
+                    # 派发，不残留本轮锚点。
+                    # ── 锚点清除见 _run_agent_worker 入口（tasks 1.5）──────
+                    if result.branch:
+                        try:
+                            self._pm.state_machine.update_spec(spec_name, {
+                                "branch": result.branch,
+                                "implementer_run": result.run_id,
+                            })
+                            self._pm.logger.info(
+                                "pm_engine",
+                                f"锚点已提前落盘 '{spec_name}': "
+                                f"branch={result.branch}, "
+                                f"implementer_run={result.run_id}",
+                            )
+                        except Exception as e:
+                            self._pm.logger.warning(
+                                "pm_engine",
+                                f"锚点写入失败 '{spec_name}'（非阻塞）: {e}",
+                            )
                     # Merge worktree branch back into main tree before advancing state.
                     # worktree 已被 agent_runner 清理，但分支仍保留（success 路径不删分支），
                     # 所以用分支名直接 merge。
@@ -2640,6 +2709,9 @@ class Dispatcher:
                 "_repair_round": round_no,
                 "_repair_merge_error": getattr(merge_info, "error", "") or "",
                 "_repair_merge_fp": fp,
+                # 进入下一轮 repair：上一轮若曾写入「待 re-merge」标记则一并清除
+                # （fix-recovery-branch-anchor D3 清除点 2/4）。
+                "_repair_awaiting_remerge": False,
             })
         except Exception as e:
             self._pm.logger.warning(
@@ -2755,11 +2827,43 @@ class Dispatcher:
 
             # repair 成功：对分支重新执行 merge-back（分支已含 main 历史）
             self._pm._reconcile_impl_budget(spec_name)
+            # ── 锚点提前落盘（fix-recovery-branch-anchor D1）─────────
+            # repair run 终态成功后、re-merge-back 之前写入 branch/implementer_run，
+            # 使恢复链在「repair 成功待 re-merge」窗口内可命中实现分支。
+            # 同时写入 _repair_awaiting_remerge 标记（D3），标识「仅剩合并」。
+            self._pm.state_machine.update_spec(spec_name, {
+                "branch": branch,
+                "implementer_run": getattr(r, "run_id", None) or None,
+                "_repair_awaiting_remerge": True,
+            })
+            self._pm.logger.info(
+                "pm_engine",
+                f"锚点已提前落盘（repair）'{spec_name}': "
+                f"branch={branch}, _repair_awaiting_remerge=True",
+            )
             remerge_info = wm.merge_back_from_branch(branch)
             remerge_ok, remerge_error = remerge_info
 
             if remerge_ok:
                 # 链成功：回收 repair worktree，推进 implemented
+                # ── 顺序修复（fix-recovery-branch-anchor D1 1.4）───────
+                # update_spec(branch=...) MUST 先于 wm.cleanup 执行
+                # （先写锚点载体、后删 worktree，happy path 上不留窗口）。
+                self._pm.state_machine.transition(spec_name, "implemented")
+                self._pm.state_machine.update_spec(spec_name, {
+                    "implementer_run": getattr(r, "run_id", None) or None,
+                    "branch": branch,
+                    "error": None,
+                    "_retry_count": 0,
+                    "_merge_fp": None,
+                    "_merge_streak": 0,
+                    "_repair_round": 0,
+                    "_repair_merge_error": None,
+                    "_repair_awaiting_remerge": False,
+                    **self._pm._clear_dispatch_conflict(spec_name),
+                })
+                # 锚点已落盘（branch/implementer_run 已写入 STATE），此时才清理
+                # repair worktree 载体（1.4 顺序修复：先写锚点、后删载体）。
                 try:
                     self._pm.agent_runner._v2_stop_for_worktree(wt_path)
                 except Exception:
@@ -2771,18 +2875,6 @@ class Dispatcher:
                         "pm_engine",
                         f"repair worktree 清理失败 '{spec_name}'（非阻塞）: {e}",
                     )
-                self._pm.state_machine.transition(spec_name, "implemented")
-                self._pm.state_machine.update_spec(spec_name, {
-                    "implementer_run": getattr(r, "run_id", None) or None,
-                    "branch": branch,
-                    "error": None,
-                    "_retry_count": 0,
-                    "_merge_fp": None,
-                    "_merge_streak": 0,
-                    "_repair_round": 0,
-                    "_repair_merge_error": None,
-                    **self._pm._clear_dispatch_conflict(spec_name),
-                })
                 try:
                     self._pm._sync_task_progress(spec_name)
                 except Exception as e:
@@ -2852,6 +2944,10 @@ class Dispatcher:
             self._pm.state_machine.update_spec(spec_name, {
                 "error": final_error,
                 "_merge_fp": fp, "_merge_streak": streak, "_retry_count": 0,
+                # 熔断封顶时一并清除「待 re-merge」标记（D3）：blocked
+                # 状态下无论 admin 如何处置（unfreeze/重置），该标记不应
+                # 残留导致后续启动误走 re-merge 路径。
+                "_repair_awaiting_remerge": False,
             })
             self._pm.logger.error(
                 "pm_engine",
@@ -2922,6 +3018,9 @@ class Dispatcher:
             "error": full_error,
             "_repair_round": 0,
             "_repair_merge_error": None,
+            # 清除待 re-merge 标记（fix-recovery-branch-anchor D3）：fallback
+            # 重派后由新 implementer 正常收口，不得再被恢复链当「待 re-merge」处理。
+            "_repair_awaiting_remerge": False,
             "_retry_count": retries,
         }
         if retries >= max_r:
