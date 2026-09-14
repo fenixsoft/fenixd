@@ -246,6 +246,9 @@ class PromptBuilder:
             prompt += self._triage_recheck_section(spec_name)
             # add-judge-artifact-gate D2：产物硬门契约注入（结果文件缺失=run失败）
             prompt += self._result_gate_section(spec_name)
+            # evo-planner-scenario-schema-alignment 2.1：断言/操作 schema 单源注入
+            # （planner-plan 是第一条会重写 test_scenarios.json 断言/操作结构的车道）
+            prompt += self._scenario_schema_section()
         elif agent_type == "planner-judge":
             prompt += self._scenario_freeze_section(spec_name)
             prompt += self._triage_recheck_section(spec_name)
@@ -274,6 +277,10 @@ class PromptBuilder:
             prompt += self._checkpoint_recovery_section(spec_name)
             # add-judge-artifact-gate D2：产物硬门契约注入（结果文件缺失=run失败）
             prompt += self._result_gate_section(spec_name)
+            # evo-planner-scenario-schema-alignment 2.4：第三条写入车道——judge
+            # 原地修复协议要求其直接改写 {scenarios_path} 的步骤与断言
+            # （agents/planner-judge.md 原地修复协议），同样注入 schema 单源段。
+            prompt += self._scenario_schema_section()
         elif agent_type == "fast-track":
             # 任务进度契约段（fix-implementer-task-progress D1，与 full 分支共用
             # 同一文本；fast-track 的 PHASE 1 主体已迁移 agents/fast-track.md）。
@@ -290,6 +297,10 @@ class PromptBuilder:
             # 上轮结构化诊断注入（fix-run-hang-amplification 2.4，与 implementer 分支共用）。
             prompt += self._impl_diagnosis_section(spec_name)
             prompt += self._fast_track_reuse_note(spec_name)
+            # evo-planner-scenario-schema-alignment 2.1/2.3：fast-track 的 PHASE 2
+            # 自行生成并写入 test_scenarios.json（第二条写入车道），注入同一 schema
+            # 单源段；agents/fast-track.md 内联的第二份枚举已收敛到本段。
+            prompt += self._scenario_schema_section()
         # administrator 无条件动态段：困境信号经占位符注入
         if agent_type == "administrator":
             # fix-frozen-scenario-orphan-reservoir D6：admin 处置场景文件时的
@@ -301,6 +312,11 @@ class PromptBuilder:
             # 职责含修正验证契约（judge 不修契约故不注入 judge）——serve 入口
             # 路径/端口注入类偏差在处置时可直接定位修正。findings 缺失零注入。
             prompt += self._contract_findings_section(spec_name)
+            # evo-planner-scenario-schema-alignment 2.4 边界（显式保持）：admin
+            # 修复通道**不注入** schema 段——其约束段已机械告知「写回必过
+            # validate_scenario_dicts 门 + 按框架回传的逐条错误清单重修」，走
+            # 门+错误清单自纠闭环，不依赖先验 schema 知识；此边界为有意选择，
+            # 不得顺手给 admin 也加注入段。
 
         # 项目级附加提示词（D2）：附加在完整 prompt（通用主体 + 动态段）之后
         prompt += self._project_extra_section(agent_type, spec_name, wt_path)
@@ -1174,6 +1190,84 @@ class PromptBuilder:
         ]
         return "\n".join(lines)
 
+
+    def _scenario_schema_section(self) -> str:
+        """断言/操作必填字段 schema 注入段（evo-planner-scenario-schema-alignment 2.1）。
+
+        三条会重写 ``test_scenarios.json`` 断言/操作结构的 agent 分支共用：
+        planner-plan（出题）、fast-track（PHASE 2 自行写入场景集）、planner-judge
+        （原地修复协议直接改写步骤与断言）。**administrator 修复通道不注入**——
+        其约束段（``_admin_scenario_fix_constraints``）已机械告知「写回必过
+        validate_scenario_dicts 门 + 按框架回传的逐条错误清单重修」，走
+        「门 + 错误清单」自纠闭环而非生成侧盲写（2.4 边界，显式保持）。
+
+        内容由 ``core/verify_engine/scenarios.py`` 的 ASSERTION_REQUIRED_FIELDS /
+        ACTION_REQUIRED_FIELDS 单源表运行时渲染（每类型必填字段说明 + 合法 JSON
+        样例）——与写端校验天然同源，改单源表即在此处生效，MUST NOT 手改任何
+        prompt 文件（4.1/4.4 一致性回归锁定：改常量 → 注入文本随之变化）。
+        """
+        from core.verify_engine.scenarios import (
+            ASSERTION_REQUIRED_FIELDS, ACTION_REQUIRED_FIELDS,
+            CLI_ASSERTIONS, API_ASSERTIONS,
+        )
+        lines = [
+            "",
+            "## 场景断言/操作必填字段（schema 单源，运行时渲染，强制）",
+            "",
+            "以下必填字段规则由 `core/verify_engine/scenarios.py` 的单源表"
+            "（ASSERTION_REQUIRED_FIELDS / ACTION_REQUIRED_FIELDS）运行时渲染，"
+            "与写端结构校验（validate_scenario_dicts）天然同源——缺必填字段的"
+            "断言/操作会被写端校验剔除并触发退回重排（2026-09-13 两批 100% 剔除"
+            "事故根因：生成侧只列类型名、未说明必填字段）。生成或修复场景时"
+            "MUST 按下列字段填写完整，MUST NOT 仅写断言/操作类型名。",
+            "",
+            "### cli 断言必填字段",
+            "",
+        ]
+        for atype in sorted(CLI_ASSERTIONS):
+            lines.append(self._render_schema_type_line(
+                atype, ASSERTION_REQUIRED_FIELDS, "type"))
+        lines += ["", "### api 断言必填字段", ""]
+        for atype in sorted(API_ASSERTIONS):
+            lines.append(self._render_schema_type_line(
+                atype, ASSERTION_REQUIRED_FIELDS, "type"))
+        lines += ["", "### 操作必填字段（cli/api）", ""]
+        for (kind, action), _specs in sorted(ACTION_REQUIRED_FIELDS.items()):
+            lines.append(self._render_schema_type_line(
+                action, {action: _specs}, "action", kind=kind))
+        lines.append("")
+        return "\n".join(lines)
+
+    def _render_schema_type_line(self, name: str, table: dict,
+                                 type_key: str, kind: str = "") -> str:
+        """渲染单源表条目为 prompt 行：必填字段说明 + 合法 JSON 样例。
+
+        ``type_key``：样例的首键名（断言为 ``"type"``、操作为 ``"action"``）。
+        样例的 JSON 形态 = 字段键放顶层（extra 键在 dict 形态即为顶层键，
+        Assertion.from_dict 将其吸收进 extra）——样例即合法可复制结构。
+        """
+        specs = table.get(name) or ()
+        field_bits = []
+        for spec in specs:
+            short = spec.get("short") or spec.get("key", "?")
+            if spec.get("help"):
+                field_bits.append(f"`{short}`（{spec['help']}）")
+            else:
+                field_bits.append(f"`{short}`")
+        head = f"- `{name}`"
+        if kind:
+            head += f"（kind: {kind}）"
+        if not specs:
+            return f"{head}：无必填字段"
+        sample_parts = [f'{{"{type_key}": "{name}"']
+        for spec in specs:
+            key = (spec.get("key") or "").replace("extra.", "")
+            sample_parts.append(f', "{key}": {spec.get("example", "...")}')
+        sample_parts.append("}")
+        return (
+            f"{head}：必填 {'、'.join(field_bits)}。"
+            f"样例：`{''.join(sample_parts)}`"
+        )
 
     def _triage_recheck_section(self, spec_name: str) -> str:
         """构建优先复核注入段（add-verdict-evidence-taxonomy D5）。

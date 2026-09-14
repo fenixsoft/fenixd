@@ -1193,13 +1193,46 @@ class VerificationPipeline:
           剔除清单，不再写 ``{"id","description"}`` 非法占位，验证以剩余
           场景继续；备份有完整定义时维持既有补回行为（Task 3.2）。
 
+        写前客户端预校验（evo-planner-scenario-schema-alignment 3.1-3.10）：
+        - planner 产出进入阶段2 前逐条过与写端一致的校验器
+          （``validate_scenario_dicts``，与读端同源且含旧 schema 迁移），
+          非法条目剔除留痕（场景 id + 缺失字段），合法部分照常进入执行，
+          MUST NOT 等整批落盘后整批剔除（09-13 两批 100% 剔除 → 阶段2
+          整轮失败退回的既有路径）。
+        - 3.3 移除声明豁免：携带 ``remove_reason`` 的声明条目不过滤
+          （纯移除声明过不了 validate_scenario_dicts——缺 navigate 步骤等），
+          令 diff 仍看到移除声明、仅对「实际写入集」过滤——否则理由丢失、
+          planner 显式移除被静默反转为保留。
+        - 3.2 主路径写回（MUST）：过滤得合法集后，于主路径把合法子集整体
+          重写回 test_scenarios.json（事故实证条件——第 1 轮 / persisted 为空 /
+          无理由缺失 0——永不进补齐分支，若只把写回挂补齐分支，非法条目仍留
+          在文件、阶段2 仍旧整轮失败）；与补齐分支写回互斥（补齐分支已写即
+          不再写），两处写回内容均为过滤后集合。
+        - 3.5/3.8 空集显式兜底：过滤后无合法场景 → 不写空 test_scenarios.json、
+          不 save_scenario_set（防止持久化集被写成空集——load_scenario_set 对
+          ``scenarios: []`` 返回非 None、下一轮 diff 从首轮全量口径退化增量
+          口径），以结构化返回值 ``{'aborted': 'no_valid_scenarios', ...}``
+          承载信号，由调用点消费（阶段1 主路径退回 plan / 重排预算耗尽显式
+          结束；judge 重入路径拒绝重入）——MUST NOT 依赖加载报错通道
+          （写回合法子集后该报错不再触发，0 场景报告会被洗白门 fail-open
+          放行判 verified）。
+        - 3.9 剔除比例口径：超本轮 20% 的 ERROR 升级以写回前最终合法集为
+          基准统计（两遍剔除——过滤 pass 与补齐 pass——合并）。
+        - 3.10 剔除留痕：剔除条目 id 与 covers 存实例属性，紧随其后的
+          ``_apply_interaction_contract`` 据此把「条目非法剔除」与「设计漏项」
+          缺口区分开，避免「重排-剔除」循环。
+
         Returns:
-            dict：{'diff': <DiffResult>, 'path': <写入路径>}，便于报告渲染复用。
+            dict：{'diff': <DiffResult>, 'path': <写入路径>}，便于报告渲染复用；
+            空集显式兜底时返回 {'aborted': 'no_valid_scenarios', 'rejected':
+            [<逐条剔除描述>], 'total': <原始总数>, 'path': <场景文件路径>}。
         """
         from core.verify_scenarios import (
             load_scenario_set, diff_planner_output, save_scenario_set,
         )
-        from core.verify_engine.scenarios import validate_scenario_dicts, prepare_scenarios_for_write
+        from core.verify_engine.scenarios import (
+            validate_scenario_dicts, prepare_scenarios_for_write,
+        )
         verify_dir = (
             self._pm.project_root / ".fenix" / "verify-progress" / spec_name
         )
@@ -1216,25 +1249,68 @@ class VerificationPipeline:
         entry = self._pm.state_machine.read_one(spec_name) or {}
         current_round = self._pm._current_verify_round(spec_name)
 
-        diff = diff_planner_output(
-            self._pm.project_root, spec_name, entry, planner_scenarios, current_round)
-
-        # ── 写端 schema 门（D1/D2）：planner 产物收编写回前置校验 ──
-        # 与读端 load_scenarios 同源（validate_scenario_dicts，单一来源）。
-        # 非法条目剔除留痕（id 清单），合法部分照常落盘，不整批拒绝。
-        # 剔除数超本轮 20% → ERROR 升级（场景数骤降可见性兜底，design Risk）。
+        # ── 写前客户端预校验（3.1/3.3）：逐条过与写端一致的校验器 ──
+        # 过滤出「实际写入集」（valid_planner）与「diff 输入集」（diff_input ＝
+        # 合法集 + 携带 remove_reason 的移除声明，3.3 移除声明豁免）。
         valid_planner: list = []
         rejected: list[str] = []
+        rejected_ids: list[str] = []
+        diff_input: list = []
         for idx, item in enumerate(planner_scenarios):
             if not isinstance(item, dict):
                 rejected.append(f"[{idx}]非对象({type(item).__name__})")
                 continue
             item_id = item.get("id") or f"[{idx}]"
+            if isinstance(item.get("remove_reason"), str) and item["remove_reason"]:
+                # 3.3：纯移除声明条目保留进 diff 输入（移除理由照常生效），
+                # 不参与写回（其形态本就不是可执行场景）。
+                diff_input.append(item)
+                continue
             errs = validate_scenario_dicts([item])
             if errs:
                 rejected.append(f"{item_id}（{'；'.join(errs[:2])}）")
+                rejected_ids.append(str(item_id))
                 continue
             valid_planner.append(item)
+            diff_input.append(item)
+
+        # 3.10：剔除条目 id 与 covers 留痕（交互契约消费——被剔除场景覆盖的
+        # 候选不属「设计漏项」缺口，避免「重排-剔除」循环）。
+        self._last_freeze_rejected = list(rejected_ids)
+        rejected_covers: set = set()
+        rejected_set = set(rejected_ids)
+        for item in planner_scenarios:
+            if not isinstance(item, dict):
+                continue
+            if item.get("id") in rejected_set:
+                covers = item.get("covers")
+                if isinstance(covers, list):
+                    rejected_covers.update(str(c) for c in covers if c)
+        self._last_freeze_rejected_covers = rejected_covers
+
+        # ── 空集显式兜底（3.5/3.8）：全部条目非法 → 不写空文件、不持久化 ──
+        # 写回合法子集后「全部非法」不再触发阶段2 load_scenarios 报错（既有
+        # 退回路径依赖的正是该报错），必须在此显式判定；0 场景经 engine.run([])
+        # 产出无 env_error 的全绿报告、会被洗白门 fail-open 放行判 verified，
+        # 故空集 MUST NOT 以 0 场景继续进入阶段2。空集判定先于 save_scenario_set
+        # （3.8）：持久化集保持不变，下一轮 diff 维持首轮全量口径。
+        if not valid_planner:
+            if rejected:
+                reject_note = "、".join(rejected)
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"场景写前预校验整批拒绝 '{spec_name}'（{len(rejected)}/"
+                    f"{len(planner_scenarios)} 条全部非法），无合法场景可执行 "
+                    f"— 不写空文件/不持久化，退回 plan 重排: {reject_note}",
+                )
+            return {
+                "aborted": "no_valid_scenarios",
+                "rejected": rejected,
+                "total": len(planner_scenarios),
+                "path": str(scenarios_path),
+            }
+
+        # ── 剔除留痕（第一遍，3.4 既有语义：超本轮 20% ERROR 升级）──
         if rejected:
             reject_note = "、".join(rejected)
             total = len(planner_scenarios) or 1
@@ -1243,12 +1319,17 @@ class VerificationPipeline:
                       else self._pm.logger.warning)
             log_fn(
                 "pm_engine",
-                f"场景写端校验剔除 {len(rejected)}/{len(planner_scenarios)} 条"
-                f"非法条目（{'超本轮20%' if ratio > 0.2 else '未超20%'}），"
-                f"合法部分照常落盘: {reject_note}",
+                f"场景写前预校验剔除 {len(rejected)}/{len(planner_scenarios)} "
+                f"条非法条目（{'超本轮20%' if ratio > 0.2 else '未超20%'}），"
+                f"合法部分照常执行: {reject_note}",
             )
+
+        diff = diff_planner_output(
+            self._pm.project_root, spec_name, entry, diff_input, current_round)
+        if rejected:
+            reject_note = "、".join(rejected)
             diff.change_lines.append(
-                f"- 写端校验剔除 {len(rejected)} 条非法条目（未落盘）：{reject_note}"
+                f"- 写前预校验剔除 {len(rejected)} 条非法条目（未落盘）：{reject_note}"
             )
 
         # 写回 scenarios.json（原子写；首轮写入 / 合并追加 / 补齐后稳定集）
@@ -1290,10 +1371,17 @@ class VerificationPipeline:
             f"有理由移除 {len(diff.removed)}，无理由缺失 {len(diff.unreasoned_missing)}",
         )
 
-        # 无理由缺场景 → 以持久化集补齐 test_scenarios.json（不中断验证，design D2）：
-        # planner 实际执行的场景文件必须含全部既有场景，否则回归面丢失。优先从
-        # 上一轮全量备份 _scenarios_full.json 取回被丢弃场景的原始定义。
+        # ── 写回 test_scenarios.json 的合法子集（3.2/3.6/3.9）──
+        # 两处写点互斥 3.2：补齐分支（无理由缺场景时以持久化集补齐后写回）与
+        # 主路径写回；两处内容均为过滤后集合。第二遍剔除（write_rejected，补齐
+        # pass 对备份取回条目再剔一批）与第一遍合并统计 3.9。
+        write_rejected: list[str] = []
+        final_valid: list = []
         if not diff.ok and diff.unreasoned_missing:
+            # 无理由缺场景 → 以持久化集补齐 test_scenarios.json（不中断验证，
+            # design D2）：planner 实际执行的场景文件必须含全部既有场景，否则
+            # 回归面丢失。优先从上一轮全量备份 _scenarios_full.json 取回被丢弃
+            # 场景的原始定义。
             missing_ids = {e.id for e in diff.unreasoned_missing}
             reconciled = [s for s in valid_planner
                           if isinstance(s, dict) and s.get("id")
@@ -1327,11 +1415,10 @@ class VerificationPipeline:
                     f"- 无理由缺失且备份缺定义的场景 {len(unrecoverable)} 个"
                     f"定义不可恢复，已剔除：{'、'.join(unrecoverable)}"
                 )
-            # ── 收编写回 schema 门（D1/D2）──
+            # ── 收编写回 schema 门（D1/D2 / 3.1 同校验收敛）──
             # 备份取回条目与合法 planner 产出再次整体过结构校验：坏条目剔除留痕，
             # 合法部分照常落盘，不整批拒绝。
             write_valid: list = []
-            write_rejected: list[str] = []
             for idx, item in enumerate(reconciled):
                 if not isinstance(item, dict):
                     write_rejected.append(f"[{idx}]非对象({type(item).__name__})")
@@ -1363,8 +1450,56 @@ class VerificationPipeline:
                     encoding="utf-8",
                 )
             except OSError as e:
-                self._pm.logger.warning(
-                    "pm_engine", f"补齐场景写回失败 '{spec_name}': {e}")
+                # 3.6：写回相关异常须 ERROR 留痕（外层 except 仅记 WARNING）
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"补齐场景写回失败 '{spec_name}'（spec 可能仍以未过滤文件"
+                    f"进入阶段2）: {e}",
+                )
+            final_valid = write_valid
+        else:
+            # ── 3.2 主路径写回（MUST，否则本修复对本次事故空转）──
+            # 事故实证条件（第 1 轮 / persisted 为空 / 无理由缺失 0）永不进入
+            # 上方补齐分支（verification.py:1296），而补齐分支是既有唯一写点；
+            # 若只把写回挂补齐分支，非法条目仍留在 planner 写的文件、阶段2
+            # 仍旧整轮失败。故在主路径写回过滤后合法子集，覆盖首轮/无缺失轮。
+            try:
+                scenarios_path.write_text(
+                    json.dumps(
+                        prepare_scenarios_for_write(valid_planner),
+                        ensure_ascii=False, indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError as e:
+                # 3.6：写回成为主路径，异常以 ERROR 留痕（不得只留 WARNING 旁证）
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"场景合法子集主路径写回失败 '{spec_name}'（spec 将仍以 "
+                    f"planner 原文件进入阶段2，非法条目可能致整批失败）: {e}",
+                )
+            final_valid = valid_planner
+
+        # ── 3.9 剔除比例合并统计（以写回前最终合法集为基准）──
+        # 既有实现只统计第一遍 rejected（过滤 pass）；补齐 pass 的剔除
+        # （write_rejected，含从备份取回的既有场景）现仅 WARNING、无比例升级，
+        # 会静默缩小回归面。两遍合并后统一按「写回前最终合法集」基准升级。
+        if rejected or write_rejected:
+            total_rejected = len(rejected) + len(write_rejected)
+            base = len(final_valid) or 1  # 写回前最终合法集为基准（3.9 口径）
+            ratio = total_rejected / base
+            if ratio > 0.2:
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"场景剔除合计超本轮 20%（{total_rejected} 条剔除 / 写回前"
+                    f"最终合法集 {len(final_valid)} 条，比例 {ratio:.0%}）"
+                    f"'{spec_name}' — 可见性兜底升级（非退回触发器）",
+                )
+                diff.change_lines.append(
+                    f"- 场景剔除合计 {total_rejected} 条（过滤 pass "
+                    f"{len(rejected)} + 补齐 pass {len(write_rejected)}），"
+                    f"超写回前最终合法集 20%"
+                )
 
         self._last_scenario_diff = diff  # 供报告渲染（2.3）读取
         return {"diff": diff, "path": str(path)}
@@ -1397,6 +1532,31 @@ class VerificationPipeline:
             persisted = load_scenario_set(self._pm.project_root, spec_name)
             result = validate_interaction_coverage(
                 self._pm.project_root, spec_name, planner_scenarios, persisted)
+            # evo-planner-scenario-schema-alignment 3.10：被 schema 预校验剔除的
+            # 场景覆盖的候选不属「设计漏项」缺口——剔除已在该场景自身暴露结构
+            # 问题并单独留痕（3.1 剔除 + 3.4/3.9 比例升级），覆盖校验将其从
+            # uncovered 移除，避免「重排-剔除」循环（剔除改变文件 → 覆盖校验
+            # 误判缺口 → 退回重排 → planner 再生成同类非法场景）。本去噪仅对
+            # 覆盖登记（covers 字段）生效；未登记 covers 的文本命中式覆盖无法
+            # 从剔除侧反推，按既有「设计漏项」判定（3.10 至少区分两类缺口）。
+            rejected_covers = getattr(self, "_last_freeze_rejected_covers", None) or set()
+            if rejected_covers and not result.ok and result.uncovered:
+                remaining = [k for k in result.uncovered if k not in rejected_covers]
+                removed = [k for k in result.uncovered if k in rejected_covers]
+                if removed:
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"交互契约覆盖校验 '{spec_name}'：{len(removed)} 个候选"
+                        f"原由被 schema 预校验剔除的场景覆盖"
+                        f"（{sorted(removed)}）— 归为「条目非法剔除」缺口，"
+                        f"不计入设计漏项，不触发退回",
+                    )
+                    result.uncovered = remaining
+                    result.ok = not remaining
+                    result.change_lines.append(
+                        f"- 元素 {'、'.join(sorted(removed))} 原由被 schema "
+                        f"预校验剔除的场景覆盖（剔除已单独留痕），不属设计漏项"
+                    )
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine", f"交互契约校验跳过 '{spec_name}'（不阻断）: {e}")
@@ -1729,13 +1889,57 @@ class VerificationPipeline:
                 # 在场景执行前应用：以持久化集约束 planner 产出，缺场景补齐后继续验证。
                 # （冻结复用路径不经过此处——冻结集即原班场景，无需再约束产出。）
                 try:
-                    self._pm._apply_scenario_freeze(spec_name)
+                    freeze_result = self._pm._apply_scenario_freeze(spec_name)
                 except Exception as e:
                     # 冻结逻辑属辅助治理，绝不阻断验证主流程
                     self._pm.logger.warning(
                         "pm_engine",
                         f"场景集冻结处理跳过 '{spec_name}'（异常不阻断验证）: {e}",
                     )
+                    freeze_result = None
+                if isinstance(freeze_result, dict) and freeze_result.get("aborted"):
+                    # ── 空集显式兜底（evo-planner-scenario-schema-alignment 3.5/3.7）──
+                    # 写回合法子集后「全部非法」不再触发阶段2 load_scenarios 报错
+                    # （既有退回路径依赖的正是该报错），空集信号经结构化返回值承载：
+                    # 0 场景经 engine.run([]) 产出无 env_error 的全绿报告，会被洗白
+                    # 门 fail-open 放行判 verified——MUST NOT 以 0 场景进入阶段2。
+                    reject_detail = "、".join(freeze_result.get("rejected") or [])
+                    fb_text = (
+                        f"场景写前预校验整批拒绝：本轮 planner 产出全部非法"
+                        f"（写盘前逐条预检，未生成任何可执行场景），共 "
+                        f"{freeze_result.get('total', 0)} 条。逐条原因："
+                        f"{reject_detail[:600]}。请按 prompt 注入段「场景断言/"
+                        f"操作必填字段」的必填字段与合法样例修正后重新输出全部场景。"
+                    )
+                    if replan_left > 0:
+                        replan_feedback = fb_text
+                        replan_left -= 1
+                        self._pm.logger.error(
+                            "pm_engine",
+                            f"场景集为空（写前预校验整批拒绝）'{spec_name}' — "
+                            f"退回 plan 阶段（剩余重排 {replan_left} 次）: "
+                            f"{reject_detail[:200]}",
+                        )
+                        continue
+                    # 3.7 预算耗尽分支：MUST NOT 落入下方「预算耗尽即继续验证」
+                    # fall-through（对空集即等于携 0 场景进入阶段2 执行与裁决）。
+                    # 比照 env_error 退回的预算耗尽分支（verification.py:1929-1943）：
+                    # 置 implemented + error 显式结束本轮，ERROR 留痕。
+                    self._pm.state_machine.update_spec(spec_name, {
+                        "status": "implemented",
+                        "tester_run": None,
+                        "error": (
+                            f"场景写前预校验整批拒绝且重排预算耗尽（{replan_left} "
+                            f"次用尽）: {reject_detail[:280]}"
+                        ),
+                    })
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"场景集为空且重排预算耗尽 '{spec_name}' — 显式结束本轮"
+                        f"（保持 implemented 等待人工），0 场景不进入阶段2: "
+                        f"{reject_detail[:200]}",
+                    )
+                    return
 
                 # ── 交互契约覆盖校验（add-interaction-contract-and-per-assert-triage 1.3）──
                 # 可交互元素既无场景覆盖又无纯展示声明 → 写反馈退回 plan 补齐
@@ -2356,13 +2560,33 @@ class VerificationPipeline:
                 )
                 return
             try:
-                self._pm._apply_scenario_freeze(spec_name)
+                freeze_result = self._pm._apply_scenario_freeze(spec_name)
             except Exception as e:
                 # 冻结记账属辅助治理，异常不阻断修复重入
                 self._pm.logger.warning(
                     "pm_engine",
                     f"修复轮场景冻结记账跳过 '{spec_name}'（异常不阻断）: {e}",
                 )
+                freeze_result = None
+            if isinstance(freeze_result, dict) and freeze_result.get("aborted"):
+                # ── 空集显式兜底（evo-planner-scenario-schema-alignment 3.7）──
+                # judge 原地修复后场景集为空（写前预校验整批拒绝）：MUST 拒绝
+                # 本次重入、保持原状并留痕，MUST NOT 以空集或未过滤文件继续
+                # 进入阶段2（0 场景报告会被洗白门 fail-open 放行判 verified）。
+                reject_detail = "、".join(freeze_result.get("rejected") or [])[:400]
+                self._pm.state_machine.update_spec(spec_name, {
+                    "error": (
+                        f"judge 原地修复后场景集为空（写前预校验整批拒绝，共 "
+                        f"{freeze_result.get('total', 0)} 条）— 拒绝本次重入，"
+                        f"保持 testing 待人工/下轮处置: {reject_detail}"
+                    ),
+                })
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"judge 场景修复后无合法场景 '{spec_name}' — 拒绝重入，"
+                    f"0 场景不进入阶段2: {reject_detail}",
+                )
+                return
             self._pm.logger.info(
                 "pm_engine",
                 f"[阶段3+] judge 场景原地修复采纳 '{spec_name}' — 重入执行"
@@ -4670,12 +4894,31 @@ class VerificationPipeline:
         if reroute_read.ok and reroute_read.status == "scenario-repaired":
             # 改道后 scenario-repaired：沿用既有通道（冻结 diff 记账 → 重入）
             try:
-                self._pm._apply_scenario_freeze(spec_name)
+                freeze_result = self._pm._apply_scenario_freeze(spec_name)
             except Exception as e:
                 self._pm.logger.warning(
                     "pm_engine",
                     f"改道后场景冻结记账跳过 '{spec_name}'（异常不阻断）: {e}",
                 )
+                freeze_result = None
+            if isinstance(freeze_result, dict) and freeze_result.get("aborted"):
+                # ── 空集显式兜底（evo-planner-scenario-schema-alignment 3.7）──
+                # 改道重入路径与 judge 重入同语义：修复后场景集为空 → 拒绝
+                # 本次重入、保持原状并留痕，MUST NOT 以空集/未过滤文件进入阶段2。
+                reject_detail = "、".join(freeze_result.get("rejected") or [])[:400]
+                self._pm.state_machine.update_spec(spec_name, {
+                    "error": (
+                        f"改道重派 judge 修复后场景集为空（写前预校验整批拒绝，"
+                        f"共 {freeze_result.get('total', 0)} 条）— 拒绝本次重入，"
+                        f"保持 testing 待人工/下轮处置: {reject_detail}"
+                    ),
+                })
+                self._pm.logger.error(
+                    "pm_engine",
+                    f"改道重派后无合法场景 '{spec_name}' — 拒绝重入，0 场景不进入"
+                    f"阶段2: {reject_detail}",
+                )
+                return True
             self._pm.logger.info(
                 "pm_engine",
                 f"[改道] judge 原地修复采纳 '{spec_name}' — 重入执行"

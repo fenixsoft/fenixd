@@ -91,8 +91,9 @@
 ### 各 kind 词表摘要（权威源见上）
 
 - **web**（现状）：断言 `element_visible, element_count, element_not_exist, element_focused, element_enabled, no_click_interception, no_overlap, in_viewport, z_index_order, text_match, text_contains, attribute_match, no_console_error, no_network_error, no_auth_error, dom_structure, no_overflow, alignment`；操作 `navigate, click, type, clear, select, scroll, wait, dialog, seed, mock_api`
-- **cli**：断言 `exit_code, file_exists, output_match, file_content, json_output, dir_contains`；操作仅 `run`（`command` 必填：字符串=经 shell 执行、列表=argv 直接执行；可选 `cwd` 相对验证树根 / `env` 值支持 `{env:VAR}` 插值 / `stdin` / `timeout` / `as` 命名结果供断言引用）
-- **api**：断言 `status_code, json_path, response_header, body_contains, json_schema, latency_under, sse_event_matches, sse_event_count`；操作 `http_request`（`method`/`url` 必填，`url` 写绝对地址——origin 会被框架改写、路径保留；可选 `headers` 值支持 `{env:VAR}` 插值 / `body`+`body_type` / `timeout` / `as` 命名响应）与 `sse_connect`（`url`/`duration`/`as`）
+- **cli**：断言 `exit_code, file_exists, output_match, file_content, json_output, dir_contains`；操作仅 `run`
+- **api**：断言 `status_code, json_path, response_header, body_contains, json_schema, latency_under, sse_event_matches, sse_event_count`；操作 `http_request`、`sse_connect`
+- **每种断言/操作的必填字段清单与合法 JSON 样例由文末「场景断言/操作必填字段」注入段唯一承载**（运行时由 `core/verify_engine/scenarios.py` 单源表渲染，与写端校验同源）——本文件不维护第二份可漂移枚举；可选字段（cli 的 `cwd`/`env`/`stdin`/`timeout`/`as`、api 的 `headers`/`body`+`body_type`/`duration` 等）语义见下节特异规则
 
 ### 各 kind 特异规则
 

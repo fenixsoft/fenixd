@@ -93,9 +93,8 @@
 ]
 ```
 
-支持的断言类型: `element_visible, element_count, element_not_exist, element_focused, element_enabled, no_click_interception, no_overlap, in_viewport, z_index_order, text_match, text_contains, attribute_match, no_console_error, no_network_error, no_auth_error, dom_structure, no_overflow, alignment`
-支持的操作类型: `navigate, click, type, clear, select, scroll, wait, dialog, seed, mock_api`
-（多形态验证：场景可在顶层声明 `"kind": "cli" | "api"`，使用对应词表——见 `agents/planner-plan.md`「多形态验证」一节；词表权威源为 `core/verify_engine/scenarios.py` 常量）
+- **每种断言/操作的必填字段清单与合法 JSON 样例由本 prompt 的注入段「场景断言/操作必填字段」唯一承载**（运行时由 `core/verify_engine/scenarios.py` 单源表渲染，与写端校验同源）——本文件不维护第二份可漂移枚举。
+- 多形态验证：场景可在顶层声明 `"kind": "cli" | "api"`，使用对应词表——见 `agents/planner-plan.md`「多形态验证」一节（判定树）与注入段「场景断言/操作必填字段」（cli/api 断言与操作必填字段及样例）；词表权威源为 `core/verify_engine/scenarios.py` 常量。
 **铁律：禁止 mock 本 SPEC 交付物包含的 API 端点**（mock_api 仅限辅助/壳层接口，如 /api/overview）——被测端点必须打真实实例，mock 掉被测对象＝后端契约零覆盖（假阴性放大器）。
 
 IMPORTANT: 禁止读取图片文件。禁止修改 .fenix/STATE.md。
