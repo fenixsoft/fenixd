@@ -213,6 +213,144 @@ ASSERTIONS_REQUIRING_SELECTOR = VALID_ASSERTIONS - {
 ACTIONS_REQUIRING_TARGET = {"click", "type", "clear", "select", "scroll", "drag", "contextmenu", "seed", "mock_api"}
 
 
+# ── 断言/操作必填字段单源表（evo-planner-scenario-schema-alignment D1）────
+# 各类断言与操作的必填字段规则唯一权威表：写端校验（下方 _validate_cli /
+# _validate_api 的必填字段分支）与生成侧 prompt 注入（prompt_builder
+# _scenario_schema_section 运行时渲染）共用本表。扩展必填字段先改本表，
+# 生成侧与校验侧同时生效——消除 2026-09-13 两批 100% 被写端剔除事故
+# （agents/planner-plan.md 手写枚举与代码规则手工脱节）的根因。
+#
+# 条目结构:
+#   key:     字段键。顶层键（如 "expected"），或 extra dict 键（前缀
+#            "extra."，如 "extra.step" / "extra.path"）。
+#   short:   字段短名（校验错误消息与 prompt 渲染共用）。
+#   help:    人类可读补充说明（可选，无说明为空串）。
+#   example: 合法 JSON 示例片段（prompt 样例渲染用，须为合法 JSON 值片段）。
+#   mode:    判空语义（4.3 锁定既有校验细节，行为零变化）：
+#              "post" = 缺失/空串/None 均非法（`not v`）；
+#              "include_zero" = 仅缺失/空串/None 非法，0 类零值合法
+#                （`v in ("", None)`，如 status_code 的 expected=0 是合法码）。
+#
+ASSERTION_REQUIRED_FIELDS: dict = {
+    # ── cli 断言 ──
+    "exit_code": (),
+    "file_exists": (
+        {"key": "extra.path", "short": "path", "help": "",
+         "example": '"data/output.txt"', "mode": "post"},
+    ),
+    "dir_contains": (
+        {"key": "extra.glob", "short": "glob", "help": "",
+         "example": '"*.report"', "mode": "post"},
+    ),
+    "output_match": (
+        {"key": "expected", "short": "expected", "help": "",
+         "example": '"期望的输出内容"', "mode": "post"},
+    ),
+    "file_content": (
+        {"key": "extra.path", "short": "path", "help": "",
+         "example": '"data/output.txt"', "mode": "post"},
+        {"key": "expected", "short": "expected", "help": "",
+         "example": '"期望的文件内容"', "mode": "post"},
+    ),
+    "json_output": (
+        {"key": "extra.step", "short": "step", "help": "指定解析哪个命名结果的 stdout",
+         "example": '"<run 步骤的 as 命名>"', "mode": "post"},
+        {"key": "extra.path", "short": "path", "help": "",
+         "example": '"data.items.0.name"', "mode": "post"},
+    ),
+    # ── api 断言 ──
+    "status_code": (
+        {"key": "expected", "short": "expected", "help": "",
+         "example": "200", "mode": "include_zero"},
+    ),
+    "sse_event_count": (
+        {"key": "extra.min", "short": "min", "help": "下限",
+         "example": "1", "mode": "include_zero"},
+    ),
+    "json_path": (
+        {"key": "extra.path", "short": "path", "help": "",
+         "example": '"data.items.0"', "mode": "post"},
+    ),
+    "response_header": (
+        {"key": "extra.header", "short": "header", "help": "",
+         "example": '"Content-Type"', "mode": "post"},
+    ),
+    "body_contains": (
+        {"key": "expected", "short": "expected", "help": "",
+         "example": '"期望响应体包含的文本"', "mode": "post"},
+    ),
+    "json_schema": (
+        {"key": "extra.schema", "short": "schema", "help": "",
+         "example": '{"type": "object"}', "mode": "post"},
+    ),
+    "sse_event_matches": (
+        {"key": "expected", "short": "expected", "help": "",
+         "example": '"匹配事件内容模式"', "mode": "post"},
+    ),
+    "latency_under": (
+        {"key": "expected", "short": "expected", "help": "毫秒上限",
+         "example": "500", "mode": "include_zero"},
+    ),
+}
+
+# 操作必填字段单源表（键 = (kind, action)）。cli 仅 run；api 有
+# http_request / sse_connect。web 操作必填字段（target 等）沿用
+# ACTIONS_REQUIRING_TARGET 语义，不在此表重复。
+ACTION_REQUIRED_FIELDS: dict = {
+    ("cli", "run"): (
+        {"key": "command", "short": "command",
+         "help": "字符串=经 shell 执行；列表=argv 直接执行",
+         "example": '"python3 script.py --flag"', "mode": "post"},
+    ),
+    ("api", "http_request"): (
+        {"key": "method", "short": "method", "help": "",
+         "example": '"GET"', "mode": "post"},
+        {"key": "url", "short": "url", "help": "绝对 URL，origin 由框架改写",
+         "example": '"https://<host>:<port>/api/data"', "mode": "post"},
+    ),
+    ("api", "sse_connect"): (
+        {"key": "url", "short": "url", "help": "SSE 事件流绝对 URL",
+         "example": '"https://<host>:<port>/events"', "mode": "post"},
+    ),
+}
+
+
+def _field_missing(value, mode: str) -> bool:
+    """必填字段判空语义（单源表锁定，4.3 等价性回归逐字段对齐）。"""
+    if mode == "include_zero":
+        return value in ("", None)
+    return not value
+
+
+def _assert_lookup_value(assertion, key: str):
+    """断言对象按单源表字段键取值：'expected' → assertion.expected；
+    'extra.<k>' → assertion.extra.get(k)。"""
+    if key == "expected":
+        return assertion.expected
+    if key.startswith("extra."):
+        return assertion.extra.get(key[len("extra."):])
+    return None
+
+
+def _step_lookup_value(step, key: str):
+    """步骤对象按单源表字段键取值（operation 字段均为顶层键）。"""
+    return getattr(step, key, None)
+
+
+def _append_required_field_errors(errors: list, scenario_id: str, prefix: str,
+                                  specs: tuple, lookup) -> list[str]:
+    """按单源表校验必填字段并追加错误消息（消息文本由 short/help 派生，
+    与单源表改前逐字一致——行为零变化，4.3）。"""
+    for spec in specs:
+        value = lookup(spec["key"])
+        if _field_missing(value, spec.get("mode", "post")):
+            msg = f"场景'{scenario_id}'{prefix}: {spec['short']}"
+            if spec.get("help"):
+                msg += f"（{spec['help']}）"
+            errors.append(msg)
+    return errors
+
+
 # ── 数据类 ────────────────────────────────────────────────────────
 
 @dataclass
@@ -547,7 +685,9 @@ def _validate_cli(scenario: TestScenario) -> list[str]:
 
     run 步骤必填 command（字符串=shell/列表=argv）；cwd 相对验证树根、
     env 值支持 {env:VAR} 插值、stdin/timeout/as 可选。断言必填字段见
-    spec multi-kind-scenario-model「CLI 词表与执行语义」。
+    spec multi-kind-scenario-model「CLI 词表与执行语义」；必填字段规则
+    单源表 ASSERTION_REQUIRED_FIELDS / ACTION_REQUIRED_FIELDS（1.2 改读
+    单源，行为零变化）。
     """
     errors: list[str] = []
 
@@ -558,11 +698,10 @@ def _validate_cli(scenario: TestScenario) -> list[str]:
                 f"支持: {_supported_actions('cli')}"
             )
             continue
-        if not step.command:
-            errors.append(
-                f"场景'{scenario.id}'步骤{i}: run 步骤必须提供 command"
-                f"（字符串=经 shell 执行；列表=argv 直接执行）"
-            )
+        specs = ACTION_REQUIRED_FIELDS.get(("cli", step.action), ())
+        _append_required_field_errors(
+            errors, scenario.id, f"步骤{i}",
+            specs, lambda key, s=step: _step_lookup_value(s, key))
 
     for i, a in enumerate(scenario.assertions):
         if a.type not in CLI_ASSERTIONS:
@@ -571,31 +710,10 @@ def _validate_cli(scenario: TestScenario) -> list[str]:
                 f"支持: {_supported_assertions('cli')}"
             )
             continue
-        if a.type in ("file_exists", "file_content", "json_output",
-                      "dir_contains"):
-            if a.type == "dir_contains":
-                path_or_glob = a.extra.get("glob")
-            else:
-                path_or_glob = a.extra.get("path")
-            if not path_or_glob:
-                field = "path" if a.type != "dir_contains" else "glob"
-                errors.append(
-                    f"场景'{scenario.id}'断言{i}: 类型 '{a.type}' 需要 {field}"
-                )
-        if a.type in ("output_match", "file_content") and not a.expected:
-            errors.append(
-                f"场景'{scenario.id}'断言{i}: {a.type} 需要 expected"
-            )
-        if a.type == "json_output":
-            if not a.extra.get("step"):
-                errors.append(
-                    f"场景'{scenario.id}'断言{i}: json_output 需要 step"
-                    f"（指定解析哪个命名结果的 stdout）"
-                )
-            if not a.extra.get("path"):
-                errors.append(
-                    f"场景'{scenario.id}'断言{i}: json_output 需要 path"
-                )
+        specs = ASSERTION_REQUIRED_FIELDS.get(a.type, ())
+        _append_required_field_errors(
+            errors, scenario.id, f"断言{i}: {a.type} 需要",
+            specs, lambda key, a=a: _assert_lookup_value(a, key))
     return errors
 
 
@@ -603,7 +721,9 @@ def _validate_api(scenario: TestScenario) -> list[str]:
     """api 词表校验：http_request/sse_connect 步骤 + API 断言必填字段。
 
     http_request 必填 method/url（绝对 URL，origin 由框架改写）；断言必填
-    字段见 spec multi-kind-scenario-model「API 词表与响应捕获」。
+    字段见 spec multi-kind-scenario-model「API 词表与响应捕获」。必填字段
+    规则单源表 ASSERTION_REQUIRED_FIELDS / ACTION_REQUIRED_FIELDS
+    （1.2 改读单源，行为零变化）。
     """
     errors: list[str] = []
 
@@ -614,21 +734,10 @@ def _validate_api(scenario: TestScenario) -> list[str]:
                 f"支持: {_supported_actions('api')}"
             )
             continue
-        if step.action == "http_request":
-            if not step.method:
-                errors.append(
-                    f"场景'{scenario.id}'步骤{i}: http_request 必须提供 method"
-                )
-            if not step.url:
-                errors.append(
-                    f"场景'{scenario.id}'步骤{i}: http_request 必须提供 url"
-                    f"（绝对 URL，origin 由框架改写）"
-                )
-        elif step.action == "sse_connect":
-            if not step.url:
-                errors.append(
-                    f"场景'{scenario.id}'步骤{i}: sse_connect 必须提供 url"
-                )
+        specs = ACTION_REQUIRED_FIELDS.get(("api", step.action), ())
+        _append_required_field_errors(
+            errors, scenario.id, f"步骤{i}",
+            specs, lambda key, s=step: _step_lookup_value(s, key))
 
     for i, a in enumerate(scenario.assertions):
         if a.type not in API_ASSERTIONS:
@@ -637,39 +746,10 @@ def _validate_api(scenario: TestScenario) -> list[str]:
                 f"支持: {_supported_assertions('api')}"
             )
             continue
-        if a.type == "status_code" and a.expected in ("", None):
-            errors.append(
-                f"场景'{scenario.id}'断言{i}: status_code 需要 expected"
-            )
-        if a.type == "json_path" and not a.extra.get("path"):
-            errors.append(
-                f"场景'{scenario.id}'断言{i}: json_path 需要 path"
-            )
-        if a.type == "response_header" and not a.extra.get("header"):
-            errors.append(
-                f"场景'{scenario.id}'断言{i}: response_header 需要 header"
-            )
-        if a.type == "body_contains" and not a.expected:
-            errors.append(
-                f"场景'{scenario.id}'断言{i}: body_contains 需要 expected"
-            )
-        if a.type == "json_schema" and not a.extra.get("schema"):
-            errors.append(
-                f"场景'{scenario.id}'断言{i}: json_schema 需要 schema"
-            )
-        if a.type == "latency_under" and a.expected in ("", None):
-            errors.append(
-                f"场景'{scenario.id}'断言{i}: latency_under 需要 expected"
-                f"（毫秒上限）"
-            )
-        if a.type == "sse_event_count" and a.extra.get("min") is None:
-            errors.append(
-                f"场景'{scenario.id}'断言{i}: sse_event_count 需要 min（下限）"
-            )
-        if a.type == "sse_event_matches" and not a.expected:
-            errors.append(
-                f"场景'{scenario.id}'断言{i}: sse_event_matches 需要 expected"
-            )
+        specs = ASSERTION_REQUIRED_FIELDS.get(a.type, ())
+        _append_required_field_errors(
+            errors, scenario.id, f"断言{i}: {a.type} 需要",
+            specs, lambda key, a=a: _assert_lookup_value(a, key))
     return errors
 
 
