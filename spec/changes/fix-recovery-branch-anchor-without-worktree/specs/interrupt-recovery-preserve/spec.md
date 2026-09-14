@@ -8,7 +8,7 @@ boot recovery（recover_interrupted）对 interrupted 的 implementing spec MUST
 
 保留判定的分支取值 MUST 同样支持事实查询回落：STATE `branch` 为空但该 spec 的在册 worktree（经 `git worktree list` 与命名约定解析）归属分支相对 main 有未合并提交时，MUST 判定为「保留并续做」，MUST NOT 因 STATE 字段为空而直接走清空路径。
 
-分支取值的回落链 MUST 延伸至 **git 分支命名空间**（`recovery-branch-anchor` 能力的「锚点的 git 分支命名空间回落」）：STATE 缺失 **且** 无在册 worktree 时，MUST 按 `<prefix>/<spec>-*` 枚举候选分支（前缀取配置 `worktree.implement_branch_prefix`，缺省 `fenix`）并按其排序规则选定。MUST NOT 因「worktree 已不在册」而认定该 spec 无分支锚点——实现 run 成功收口会清理其 worktree，此时分支仅以 refs 形式存在。
+分支取值的回落链 MUST 延伸至 **git 分支命名空间**（`recovery-branch-anchor` 能力的「锚点的 git 分支命名空间回落」）：STATE 缺失 **且** 无在册 worktree 时，MUST 按 `<prefix>/<spec>-*` 枚举候选分支（`<prefix>` 与分支**创建端同源**：创建端硬编码 `fenix/`，见 `core/worktree_manager.py:223/226`，故取 `fenix/` 或「配置 `worktree.implement_branch_prefix` ∪ `fenix/`」并集；MUST NOT 仅凭配置值取前缀）并按其排序规则选定；候选 MUST 经「完整 spec 名 + 分隔符边界」全等比较过滤（口径见 `recovery-branch-anchor`），MUST NOT 把前缀 glob 命中集合直接当候选。MUST NOT 因「worktree 已不在册」而认定该 spec 无分支锚点——实现 run 成功收口会清理其 worktree，此时分支仅以 refs 形式存在。
 
 判定为「保留并续做」时，STATE 保留的 `branch` MUST 为回落链解析出的分支名（而非仅限 STATE 原值），并在 `_recovery_resume` 标记下按既有 resume 语义派发。
 
@@ -106,6 +106,8 @@ sidecar 的写入条件 MUST NOT 仅覆盖「排水超时」：排水窗口结�
 
 `recover_interrupted` 处理 status 为 `implementing` 的 spec 时，若该 spec 存在「待 re-merge-back」标记（见 `mergeback-inplace-repair` 的「repair 成功的待合并状态持久化」），MUST 走 **re-merge-back 路径**：把已含 main 合并的实现分支重新合并进主树，成功后转入 `implemented`；失败时按既有冲突处理路径与熔断计数处理。MUST NOT 重派 implementer——该分支的实现已终态成功，重派只会重复已完成的实现。
 
+失败回落（re-merge-back 执行失败）MUST 清除该标记并回落到下述保留续做路径（保留 branch/implementer_run + 恢复续做标记），由该 spec 下一轮 run 的正常 merge-back 走既有冲突处理路径；MUST NOT 让 spec 停留在 `implementing`——周期恢复不处理 `implementing`（仅 boot 一次性扫描处理），停留即死锁到下次重启。「MUST NOT 重派 implementer」约束的是标记命中的成功路径，不禁止失败回落后的保留续做。
+
 该标记缺失时（历史数据、异常未落盘）MUST 回落到既有的保留续做路径，行为与现状兼容，MUST NOT 因标记缺失而报错或阻塞恢复。
 
 #### Scenario: 待合并标记命中时不重派 implementer
@@ -121,4 +123,4 @@ sidecar 的写入条件 MUST NOT 仅覆盖「排水超时」：排水窗口结�
 #### Scenario: kick 合并失败不吞掉失败链
 
 - **WHEN** 待合并标记命中的 re-merge-back 因主树前进产生新冲突而失败
-- **THEN** 按既有冲突处理路径进入 repair 或熔断计数，MUST NOT 静默清空该 spec 的状态
+- **THEN** 标记被清除、spec 回落既有保留续做路径（保留 branch/implementer_run），由下一轮 run 的正常 merge-back 进入既有 repair 或熔断计数；MUST NOT 静默清空该 spec 的状态，MUST NOT 让 spec 停留在 `implementing`

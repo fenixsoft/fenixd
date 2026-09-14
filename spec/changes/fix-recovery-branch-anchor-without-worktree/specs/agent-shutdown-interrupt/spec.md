@@ -4,7 +4,7 @@
 
 ### Requirement: 关闭期分支的在飞引用保护
 
-`cleanup_stale_worktrees` 在执行 `git branch -D` 删除分支之前，MUST 检查该分支是否被在飞或待收口的 spec 引用：若该分支名等于 STATE 中任一 `implementing` / `implemented` / `testing` spec 的 `branch` 字段值，或匹配任一 `implementing` spec 的 `<prefix>/<spec>-*` 命名空间，则 MUST 保留该分支（可照常删除 worktree 目录），MUST NOT 连带删分支。
+`cleanup_stale_worktrees` 在执行 `git branch -D` 删除分支之前，MUST 检查该分支是否被在飞或待收口的 spec 引用：若该分支名等于 STATE 中任一 `implementing` / `implemented` / `testing` spec 的 `branch` 字段值，或等于任一带 `_recovery_resume` 标记的 spec 的 `branch` 值（恢复保留续做后的形态其 status 为 `ready`，该 `branch` 正是被保留待续做的载体——保护义务 MUST NOT 因该 spec 不在 `implementing` 而失效），或按「**完整 spec 名 + 分隔符边界**」全等比较（口径同 `recovery-branch-anchor`：去掉 `<prefix>/` 后末段为纯数字时间戳、其前段与该 spec 名全等）匹配任一 `implementing` / 带 `_recovery_resume` 标记的 spec 的实现分支（MUST NOT 以 `<prefix>/<spec>-*` 前缀 glob 命中集合为判据——spec 名互为前缀时会把他人分支报成本 spec 的分支，误导人工归因；本方向虽只致过度保留、不损成果，口径仍 MUST 与 `recovery-branch-anchor` 一致），则 MUST 保留该分支（可照常删除 worktree 目录），MUST NOT 连带删分支。
 
 现状缺口：`cleanup_stale_worktrees` 的删分支动作无条件执行。一旦某在飞 spec 的分支锚点尚未落盘、其 worktree 目录又侥幸存活到下一次 boot，该分支会被直接删除——此时连人工 `git merge --ff-only` 都无法救回成果。
 
@@ -14,6 +14,11 @@
 
 - **WHEN** `cleanup_stale_worktrees` 处理一个 stale worktree，其分支正是某个 `implementing` spec 的实现分支
 - **THEN** worktree 目录被清理，但该分支 MUST 保留
+
+#### Scenario: 恢复保留续做的 ready spec 分支不被清扫
+
+- **WHEN** 某 spec 经恢复保留续做落为 `ready`（带 `_recovery_resume` 标记与保留的 `branch`），其原先的工作目录已不在活动集而被判为 stale
+- **THEN** `cleanup_stale_worktrees` MUST 保留该分支，MUST NOT 因该 spec 的 status 不是 `implementing` 而放行删除
 
 #### Scenario: 无引用分支照常删除
 
@@ -38,6 +43,11 @@
 - **WHEN** 排水窗口内所有 agent 自行退出、sidecar 未写，STATE 中仍有 `implementing` spec 且其 worktree 在册
 - **THEN** 该 worktree MUST 进入保护集并跳过清理
 
+#### Scenario: 同一 spec 多个在册载体全部受保护
+
+- **WHEN** 某 `implementing` spec 存在多个在册 worktree（如 impl- 与 repair- 并存）
+- **THEN** 全部候选 worktree MUST 进入保护集，MUST NOT 因单值事实查询（`find_worktree_by_spec`）对歧义返回 None 而漏保护
+
 #### Scenario: 保护集构成留痕
 
 - **WHEN** 停机路径执行 cleanup_orphans
@@ -54,7 +64,7 @@
 
 被框架终止的 run MUST 在 run 文件中写入 `interrupted` 标记（含原因），使重启后的恢复与该 run 的失败归因可区分「框架主动终止」与「agent 自身失败」。
 
-该标记的写入时机 MUST 早于或等于保全动作（sidecar 落盘），MUST NOT 因排水正常完成（无残留 run）而跳过对**已自行退出但收口未完成**的 run 的标记——此类 run 的进程退出不代表其收口序列已完成。
+该标记的写入时机 MUST 早于或等于保全动作（sidecar 落盘）。适用对象 MUST 限定为**尾部无终态事件的 run**（与既有 `sweep_runs_without_terminal_state`（`core/agent_runner/liveness.py:99-130`）同判据——该方法对 `_file_has_terminal_event` 命中的文件直接 `continue`）：`interrupted` 本身即 `RUN_TERMINAL_EVENT_TYPES`（`core/agent_runner/liveness.py:58-60`）成员，该口径明载「任一类型出现即视为 run 已终结」，故对已含 `result` 终态的自完成 run 追加该标记会注入**第二个终态事件**、污染失败归因，MUST NOT 如此。**排水窗口内已自行退出、后置收口未落盘**的 run 不依赖本标记识别——其进程已产出 `result` 终态，收口未完成由 spec 级「待 re-merge-back」标记承载（见 `mergeback-inplace-repair` 的「repair 成功的待合并状态持久化」）与保全 sidecar 承载；本要求 MUST NOT 被读作「须为自完成 run 追加 `interrupted`」。
 
 #### Scenario: 标记追加到 run 文件
 

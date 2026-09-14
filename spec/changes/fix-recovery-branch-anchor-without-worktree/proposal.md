@@ -19,8 +19,8 @@
 
 ## What Changes
 
-- **A｜锚点提前落盘（治本）**：implement / repair run 到达**终态成功**时，在 merge-back 之前把 `branch` 与 `implementer_run` 写入 STATE。`branch` 语义由「已合并分支」变为「**本轮实现分支**」；消费点普查结论：唯一按「是否已合并」分支的消费点 `core/pm_engine/verification.py:5248-5253` 问的是 git（`_branch_merged_into_tree`）而非字段值，无需改动。
-- **B｜回落源扩容（兜底）**：保留判据在「STATE.branch 缺失 ∧ 无在册 worktree」时再回落一层 **git 分支命名空间**——按 `worktree.implement_branch_prefix`（缺省 `fenix`）枚举 `refs/heads/<prefix>/<spec>-*`，优先取 `main` 为其祖先者（正好识别「repair 已把 main 合入分支」形态），其次取 `rev-list --count main..<branch>` 最大者。
+- **A｜锚点提前落盘（治本）**：implement / repair run 到达**终态成功**时，在 merge-back 之前把 `branch` 与 `implementer_run` 写入 STATE。`branch` 语义由「已合并分支」变为「**本轮实现分支**」；消费点普查结论：唯一按「是否已合并」分支的消费点 `core/pm_engine/verification.py:5248-5253` 问的是 git（`_branch_merged_into_tree`）而非字段值，无需改动。**锚点随轮次失效**：该锚点只在本轮区间内有效，新一轮全新派发（非 `_recovery_resume` 续做）前 MUST 失效上一轮锚点，否则解析链第一层（STATE.branch）会在新一轮在飞时压过本轮载体（见 design Risks 首条与 tasks 1.5）。失效位置 MUST 落在**全新实现派发的唯一入口**（使全部重派出口机械覆盖，而非按 `ready` 写点逐点枚举）；且写入点 MUST 定序在零变更哨/交付物守卫/tasks 收口复检等 merge 前置早退**之后**（见 tasks 1.1、design D1）。
+- **B｜回落源扩容（兜底）**：保留判据在「STATE.branch 缺失 ∧ 无在册 worktree」时再回落一层 **git 分支命名空间**——枚举前缀与分支**创建端同源**（创建端硬编码 `fenix/`，见 `core/worktree_manager.py:223/226`；取值 `fenix/` 或「配置 `worktree.implement_branch_prefix` ∪ `fenix/`」并集，MUST NOT 仅凭配置值取前缀，否则非 `fenix` 配置下扫空命名空间、本层静默失效），按 `refs/heads/<prefix>/<spec>-*` 枚举（候选按「完整 spec 名 + 分隔符边界」全等比较过滤，防 spec 名互为前缀时跨 spec 误配），优先取 `main` 为其祖先者（正好识别「repair 已把 main 合入分支」形态），其次取 `rev-list --count main..<branch>` 最大者。
 - **C｜「已修复待合并」显式可表达**：repair run 成功时（re-merge-back 之前）写入持久标记；恢复路径见到 `implementing + 该标记` → 走 re-merge-back 而非重派 implementer。消除「无任何字段能区分『还在飞』与『run 已成功只剩合并』」的现状。
 - **D｜关闭期载体保护**：保护集构造增加一路来源（STATE 中 `implementing` spec 的在册 worktree），不再只依赖 sidecar；sidecar 触发条件从「排水超时」放宽到「排水结束后仍存在收口未完成的 implementing spec」；`cleanup_stale_worktrees` 的 `git branch -D` 前置检查在飞 spec 的分支引用。
 - **E｜锚点缺失必须出声**：保留判据的早退路径与清空重派路径 MUST 打 WARNING，并附分支命名空间命中的候选清单。
@@ -53,6 +53,6 @@
 
 **行为**：daemon 重启恢复的保留命中率提升（覆盖「已实现未合并」窗口）；`branch` 字段在 spec 生命周期内更早可见（Dashboard 与 `bin/fenix_process.py` 展示会提前显示分支名，属预期变化）。
 
-**兼容性**：`branch` 取值不变；既有 STATE 数据零迁移；无新增配置键（复用 `worktree.implement_branch_prefix`）。
+**兼容性**：`branch` 取值不变；既有 STATE 数据零迁移；无新增配置键（枚举前缀与分支创建端同源，复用创建端口径 `fenix/`；若取并集方亦只复用既有 `worktree.implement_branch_prefix`，不新增键）。
 
 **非目标**：不改变排水窗口时长与快速停机语义；不改变 repair 轮次上限与熔断阈值；不引入「长活 run 自适应延长排水」；不改动 `interrupt-recovery-preserve` 既有的「零提交分支走清空」兼容分支。
