@@ -324,7 +324,7 @@ class _FakePmEngine:
     def __init__(self):
         self.handle_event_calls = []
 
-    def handle_event(self, event_kind, spec_name, **kwargs):
+    def handle_event(self, event_kind, spec_name, spec_entry):
         self.handle_event_calls.append((event_kind, spec_name))
 
 

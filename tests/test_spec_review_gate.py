@@ -182,7 +182,8 @@ class _FakeRunner:
         self.gate_err = gate_err
         self.success = success
 
-    def _check_agent_result_artifact(self, *a, **kw):
+    def _check_agent_result_artifact(self, spec_name, agent_type,
+                                     run_started_at=None, wt_path=None):
         return self.gate_err
 
     def run_spec_review(self, spec_name, run_id=None):

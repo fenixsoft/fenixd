@@ -1346,7 +1346,12 @@ class AdminMonitor:
                 # pm_engine 缺失时仅靠 daemon recovery 的 implemented 分支兜底
                 # （testing 态在 INTERRUPTED_STATES 中，重启回退 ready 重新检测）
                 if self.pm_engine is not None:
-                    self.pm_engine.handle_event("spec_implemented", spec)
+                    # 事故根因修复（add-control-plane-silent-failure-guards 3.4）：
+                    # 生产签名 handle_event(event_kind, spec_name, spec_entry) 要求
+                    # 3 必填位参——旧调用 `handle_event("spec_implemented", spec)`
+                    # 缺 spec_entry 必然 TypeError，verifier 入队静默丢失（spec 卡
+                    # 在 testing 无人驱动）。spec_entry 复用上文 read_one 结果。
+                    self.pm_engine.handle_event("spec_implemented", spec, spec_entry)
                 self.logger.info(
                     "admin_monitor",
                     f"env 阻塞处置复位（直通道）：'{spec}' transition_gate(testing)"

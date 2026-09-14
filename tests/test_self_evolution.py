@@ -1290,7 +1290,7 @@ class _FakeEvolutionRunner(AgentRunner):
 
     def _run_claude(self, prompt, cwd, run_id, model_override=None,
                     env_overrides=None, resume_session_id=None,
-                    max_turns=None, spec_name=None, **_kw):
+                    max_turns=None, spec_name=None, agent_type=None):
         # 模拟写入契约产物（success 路径）
         self.calls.append({
             "cwd": str(cwd), "run_id": run_id, "model": model_override,

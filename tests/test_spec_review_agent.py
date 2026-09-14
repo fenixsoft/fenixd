@@ -47,7 +47,8 @@ class _FakeRunner:
     def __init__(self, gate_err=None):
         self.gate_err = gate_err
 
-    def _check_agent_result_artifact(self, *a, **kw):
+    def _check_agent_result_artifact(self, spec_name, agent_type,
+                                     run_started_at=None, wt_path=None):
         return self.gate_err
 
     def run_spec_review(self, spec_name, run_id=None):
@@ -252,7 +253,8 @@ class _RecordingRunner:
         self.run_id_seen = None
         self.reviewer_run_at_start = None
 
-    def _check_agent_result_artifact(self, *a, **kw):
+    def _check_agent_result_artifact(self, spec_name, agent_type,
+                                     run_started_at=None, wt_path=None):
         return self.gate_err
 
     def run_spec_review(self, spec_name, run_id=None):
