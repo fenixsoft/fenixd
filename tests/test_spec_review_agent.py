@@ -97,7 +97,13 @@ class TestConsumeReviewResult(unittest.TestCase):
         mgr.consume_review_result("spec")
         entry = sm.read_one("spec")
         self.assertEqual(entry["status"], "blocked")
-        self.assertTrue(str(entry.get("error", "")).startswith("spec-review-rejected:"))
+        # fix-blocked-freeze-classification 2.1：否决路径改走「冻结转人工」——
+        # frozen=True + 原状态 reviewing 内嵌（解冻恢复 reviewing 自动重派评审），
+        # spec-review-rejected 前缀保留在 error 内供人工恢复入口识别
+        self.assertIs(entry.get("frozen"), True)
+        err = str(entry.get("error", ""))
+        self.assertIn("spec-review-rejected:", err)
+        self.assertIn("原状态 reviewing", err)
 
     def test_gate_failure_retries_not_blocked(self):
         """Gate failure → attempt counted, spec stays reviewing, not blocked yet."""
@@ -119,7 +125,11 @@ class TestConsumeReviewResult(unittest.TestCase):
         mgr.consume_review_result("spec")
         entry = sm.read_one("spec")
         self.assertEqual(entry["status"], "blocked")
-        self.assertTrue(str(entry.get("error", "")).startswith("spec-review-incomplete:"))
+        # fix-blocked-freeze-classification 2.2：耗尽路径改走冻结转人工
+        self.assertIs(entry.get("frozen"), True)
+        err = str(entry.get("error", ""))
+        self.assertIn("spec-review-incomplete:", err)
+        self.assertIn("原状态 reviewing", err)
 
     def test_recheck_clears_attempts_on_success(self):
         _mk_project(self.tmpdir)
@@ -321,7 +331,11 @@ class TestDispatchAnchorAndConsume(unittest.TestCase):
         self.assertTrue(mgr.dispatch_review("spec"))
         entry = sm.read_one("spec")
         self.assertEqual(entry["status"], "blocked")
-        self.assertTrue(str(entry.get("error", "")).startswith("spec-review-rejected:"))
+        # fix-blocked-freeze-classification 2.1：冻结转人工（frozen=True + 原状态）
+        self.assertIs(entry.get("frozen"), True)
+        err = str(entry.get("error", ""))
+        self.assertIn("spec-review-rejected:", err)
+        self.assertIn("原状态 reviewing", err)
 
     def test_run_failure_clears_anchor_and_counts_attempt(self):
         """run 执行失败：锚点清空、保持 reviewing、尝试计数递增（可重试）。"""
@@ -343,7 +357,11 @@ class TestDispatchAnchorAndConsume(unittest.TestCase):
         self.assertFalse(mgr.dispatch_review("spec"))
         entry = sm.read_one("spec")
         self.assertEqual(entry["status"], "blocked")
-        self.assertTrue(str(entry.get("error", "")).startswith("spec-review-incomplete:"))
+        # fix-blocked-freeze-classification 2.2：冻结转人工
+        self.assertIs(entry.get("frozen"), True)
+        err = str(entry.get("error", ""))
+        self.assertIn("spec-review-incomplete:", err)
+        self.assertIn("原状态 reviewing", err)
 
 
 if __name__ == "__main__":

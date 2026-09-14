@@ -587,6 +587,89 @@ class StateMachine:
             "error": error,
         })
 
+    def freeze_for_human(
+        self,
+        spec_name: str,
+        *,
+        error: str,
+        signal_type: str,
+        severity: str,
+        description: str,
+        evidence: str,
+        recommended_action: str,
+        alert_callback=None,
+        extra_updates: Optional[dict] = None,
+    ) -> bool:
+        """「冻结转人工」单一入口（fix-blocked-freeze-classification D2）。
+
+        blocked 二分类契约的机械化写入口：一次调用完成 ``status=blocked`` +
+        ``frozen=True`` + 各站点保留的 error 文案（显式传入，不强制统一前缀，
+        评审路径须内嵌「原状态 <冻结前状态>」子串供 parse_orig_status 解析
+        解冻目标），**并且**经注入的告警回调发送人工升级告警——frozen 与 alert
+        成对、不可分离，从结构上消除「打了 frozen 标记但无人被通知」的静默冻结
+        （历史事故：:849 重启重验超限曾只有 frozen 无告警）。
+
+        alert 发送者以回调注入（最小依赖倒置）：StateMachine 不持有 pm_engine
+        引用，发送由调用方传入可调用（生产传 ``pm_engine._send_human_escalation_alert``；
+        None 仅允许单测场景——静默冻结时必须记 ERROR 审计日志，MUST NOT 无痕）。
+
+        Args:
+            error: frozen spec 的 error 文案（各站点既有文案原样传入；评审路径
+                须内嵌「原状态 <冻结前状态>」子串，供 parse_orig_status 解析
+                解冻目标——评审 frozen spec 解冻后恢复 reviewing → daemon 自动
+                重派评审）。
+            extra_updates: 并入同一原子写的额外字段（如评审收口的 reviewer_run
+                /_review_attempts 清理），MUST NOT 携带 error 键（会覆盖冻结 error）。
+            alert_callback: 人工升级告警发送回调（接受 spec_name/signal_type/
+                severity/description/evidence/recommended_action 关键字参数）。
+                生产接线点：recover_interrupted 的 human_alert_callback、
+                spec_review/budget/spec_integrity 的 pm_engine
+                ._send_human_escalation_alert。None 仅允许单测场景。
+
+        Returns: True 表示状态已更新。
+        """
+        updates: dict = {
+            "status": SpecStatus.BLOCKED,
+            FROZEN_FIELD: True,
+            "error": error,
+        }
+        if extra_updates:
+            # 防误用：extra_updates 不得覆盖冻结 error（评审收口若传入 error
+            # 键会用非冻结前缀文案覆盖冻结 error → parse_orig_status 失效）
+            safe_extra = {k: v for k, v in extra_updates.items() if k != "error"}
+            updates.update(safe_extra)
+        ok = self.update_spec(spec_name, updates)
+        if alert_callback is None:
+            # 无告警回调=静默冻结：必须有审计痕迹（None 仅允许单测；生产
+            # 通过 fenixd._build_human_alert_callback / pm_engine
+            # ._send_human_escalation_alert 注入非 None 回调，缺省
+            # 回调使 helper 退回静默冻结违反「冻结必告警」不变式）
+            self.logger.error(
+                "state_machine",
+                f"FREEZE WITHOUT ALERT: '{spec_name}' frozen for human "
+                f"(signal_type={signal_type}) but no alert_callback supplied — "
+                f"静默冻结（仅单测允许，生产 MUST 提供非 None 回调）",
+            )
+            return ok
+        try:
+            alert_callback(
+                spec_name=spec_name,
+                signal_type=signal_type,
+                severity=severity,
+                description=description,
+                evidence=evidence,
+                recommended_action=recommended_action,
+            )
+        except Exception as e:
+            # 告警失败不得回滚冻结本身（冻结状态已落盘）——记录审计后
+            # 静默继续（与既有人工升级告警写入的 try/except 容错一致）
+            self.logger.warning(
+                "state_machine",
+                f"冻结人工升级告警发送失败 '{spec_name}'（signal_type="
+                f"{signal_type}，非阻塞）: {e}",
+            )
+        return ok
+
     def unfreeze_spec(self, spec_name: str, status: str = None) -> bool:
         """解除人工冻结。status 给定时同时恢复到该状态（绕过冻结保护）。
 
@@ -782,7 +865,7 @@ class StateMachine:
 
     def recover_interrupted(self, project_root=None, worktree_manager=None,
                             verify_redo_budget: int = DEFAULT_VERIFY_REDO_BUDGET,
-                            remerge_callback=None) -> List[str]:
+                            remerge_callback=None, human_alert_callback=None) -> List[str]:
         """
         On daemon restart, revert any SPECs stuck in interrupted states.
         Uses update_spec directly (bypasses transition validation for recovery).
@@ -805,9 +888,12 @@ class StateMachine:
           重置 ready 会误派 implementer 从头实现已合并代码并劫持 branch 字段
           （pushed 记录被写成 rogue 分支）；配合场景冻结复用，重验代价极小。
           fix-daemon-lifecycle-races（D3）：恢复重验递增 ``_verify_redo_count``
-          并持久化，累计达 ``verify_redo_budget`` 阈值即结构化冻结（blocked +
-          frozen）等待人工裁决，本次启动不再派发 verifier——毒 spec 无法借反复
-          重启无限重验。
+          并持久化，累计达 ``verify_redo_budget`` 阈值即经 freeze_for_human
+          「冻结 + 告警」成对入口（fix-blocked-freeze-classification D4）转为
+          blocked 等待人工裁决——修复此前「打了 frozen 却不告警」的静默冻结
+          缺陷；本启动不再派发 verifier——毒 spec 无法借反复重启无限重验。
+          signal_type=verify_redo_exhausted，severity=major，逐 SPEC 触发
+          不聚合丢失。
 
         Args:
             project_root: 项目根（interrupt-recovery-preserve 保留判定用）。
@@ -819,6 +905,13 @@ class StateMachine:
                 侧副作用实现（_clear_dispatch_conflict/_sync_task_progress/
                 _reconcile_impl_budget/consume_legacy 等）。缺省 None 时
                 行为与旧版逐字节一致（脚本/测试场景零变化）。
+            human_alert_callback: 恢复期冻结人工升级告警回调（fix-blocked-
+                freeze-classification D4/1.2 接线）。``callable(
+                spec_name, signal_type, severity, description, evidence,
+                recommended_action) -> None``，由 fenixd 注入
+                PMEngine._send_human_escalation_alert 实现。缺省 None 时
+                冻结退回静默——helper 内打审计 ERROR（违反「冻结必告警」不变式，
+                仅允许单测；生产接线 MUST 非 None）。
         """
         recovered = []
         for status in INTERRUPTED_STATES:
@@ -848,8 +941,31 @@ class StateMachine:
                         # 超限冻结：blocked + frozen + 规范 error 前缀，本次启动
                         # 不再重派 verifier（冻结期间自动链路的 status 改写被
                         # update_spec 剥离），唯一出路是人工 unfreeze_spec。
-                        self.freeze_spec(
-                            name, reason="重启重验超限，等待人工裁决")
+                        # fix-blocked-freeze-classification D4：改走 freeze_for_human
+                        # 「冻结 + 告警」成对入口——恢复路径首次补齐人工升级告警
+                        # （逐 SPEC 触发不聚合；signal_type=verify_redo_exhausted），
+                        # 反复重启仍无法收敛的毒 spec 必须有人被告知。
+                        self.freeze_for_human(
+                            name,
+                            error=f"{FREEZE_ERROR_PREFIX}重启重验超限，等待人工裁决",
+                            signal_type="verify_redo_exhausted",
+                            severity="major",
+                            description=(
+                                f"'{name}' 重启重验计数达预算上限 "
+                                f"({redo_count}/{verify_redo_budget})，已冻结"
+                                f"等待人工裁决"
+                            ),
+                            evidence=(
+                                f"spec={name}; verify_redo_count={redo_count}; "
+                                f"verify_redo_budget={verify_redo_budget}"
+                            ),
+                            recommended_action=(
+                                "人工排查反复重启仍无法收敛的根因（验证环境/依赖/"
+                                "测试挂起）；处置后 unfreeze_spec 解冻（自动清零重启"
+                                "重验计数）重验"
+                            ),
+                            alert_callback=human_alert_callback,
+                        )
                         self.logger.error(
                             "state_machine",
                             f"SPEC '{name}' 重启重验已达预算上限 "

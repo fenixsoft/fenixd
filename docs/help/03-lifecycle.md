@@ -44,7 +44,7 @@ stateDiagram-v2
 - **repaired**：方案可行且评审者已就地修补 → `ready` → 实现调度
 - **rejected**：方案存在方向性风险 → `blocked` → 人工裁决
 
-评审 run 未通过结果硬门或写入边界校验时，计为「未完成」，累计尝试上限 3 次（含首次），达上限后 `blocked`（error 前缀 `spec-review-incomplete:`），与否决的 `spec-review-rejected:` 前缀严格区分。`blocked → reviewing`（重新评审）仅对评审相关 blocked（error 前缀 `spec-review-*`）且未冻结的 SPEC 开放。
+评审 run 未通过结果硬门或写入边界校验时，计为「未完成」，累计尝试上限 3 次（含首次），达上限后冻结转人工（`frozen: true`，error 内嵌 `spec-review-incomplete:` 标识供人工识别），与否决的 `frozen: true` + `spec-review-rejected:` 严格区分（判据详见[blocked 的两种语义](#blocked-的两种语义冻结-vs-阻塞)）。冻结评审 blocked 的恢复路径为解冻（`unfreeze` 解冻后恢复 `reviewing`，daemon 自动重派评审），`blocked → reviewing`（`re_review` 重新评审入口）仅对**未冻结**的历史评审 blocked 条目开放。
 
 > **跳过白名单**：仅当四项**全部命中**时跳过评审直通 `ready`——`mode == fast-track` 且能力目录数 ≤ 1 且 Deliverables 声明条目数 ≤ 3 且名称**非 `evo-` 前缀**（`evo-` 为硬否决项）。`gates.spec_review_mode: never` 时完全关闭评审，所有 SPEC 走 `drafted → ready` 直通。
 
@@ -91,7 +91,7 @@ planner-judge 门禁判定通过后 SPEC 进入 `verified`，随即自动推进�
 
 ### blocked（阻塞）
 
-三种情形会把 SPEC 送入 `blocked`：达到 `impl_run_budget` 实现尝试预算上限（熔断）、连续合并失败达到阈值、或人工冻结。进入此状态后自动链已停止，唯一出路是人工恢复/解冻，SPEC 回到 `ready` 重新排队。
+`blocked` 是唯一「等人工」态，承载两种语义不同的停摆：**冻结转人工**（`frozen: true` + 人工升级告警，需人在场决策）与**阻塞待 admin**（不写 frozen，admin 巡检介入）——分类判据与各消费者见[blocked 的两种语义：冻结 vs 阻塞](#blocked-的两种语义冻结-vs-阻塞)。进入此状态后自动链已停止，唯一出路是人工处置（解冻/复位），SPEC 回到冻结前状态或 `ready` 重新排队。
 
 ### done（完成）
 
@@ -131,6 +131,30 @@ planner-judge 门禁判定通过后 SPEC 进入 `verified`，随即自动推进�
 ## 冻结与解冻
 
 冻结通过 `/fenix-freeze` 或 Dashboard 冻结操作触发：状态写入 blocked，附带结构化 `frozen: true` 标记与规范前缀 error。冻结期间所有自动链路对状态的改写都会被剥离，唯一出路是解冻。解冻（`/fenix-unfreeze`）恢复冻结前的状态并清空 error；对未冻结的 SPEC 执行解冻是幂等 no-op，可以放心调用。
+
+## blocked 的两种语义：冻结 vs 阻塞
+
+`blocked` 是唯一「等人工」态，但它承载着两种语义完全不同的停摆。每次写入 `status=blocked` 时，框架 MUST 将停摆显式归入下列两类之一，MUST NOT 产生「两者皆无」的裸 blocked：
+
+| 分类 | 标记 | 判据（admin 是否有操作杠杆） | 消费者 |
+|------|------|------------------------------|--------|
+| **冻结转人工** | `frozen: true` + 人工升级告警 | 无杠杆：需人在场决策（改方案、撤案、判是否值得再跑、改配置） | `admin_monitor` 的 blocked_stuck **豁免**（`:387` 对 frozen 直接跳过，不唤起 Administrator）；Dashboard 渲染「冻结」标签；人工升级告警通知人 |
+| **阻塞待 admin** | 不写 frozen | 有杠杆：admin 可自动修复（改环境、起草契约、清 git 状态） | `admin_monitor` 超时巡检**唤起** Administrator agent 介入；Dashboard 渲染「阻塞」标签 |
+
+**判据是唯一的**：对某类停摆问一句「admin agent 对它有可操作杠杆吗？」——无 → 冻结转人工（`frozen=true` **且** 发人工升级告警，二者成对、不可分离）；有 → 阻塞待 admin（不写 frozen）。判据不依赖文案，只看杠杆归属。
+
+**机械化写入口**：冻结转人工统一经 `StateMachine.freeze_for_human(...)` 单一入口（一次调用完成 `status=blocked` + `frozen=true` + error 文案 + 经注入回调发送人工升级告警）——frozen 与 alert 成对、不可分离，从结构上消除「打了 frozen 标记但无人被通知」的静默冻结（历史事故：重启重验超限曾只有 frozen 无告警）。阻塞类站点（merge-back 熔断、契约缺失、env 阻塞、交付物守卫终审）不写 frozen、保持由 admin 巡检介入。
+
+**本轮归类清单**（新增 blocked 写入点按判据自行归类）：
+
+- → **冻结转人工**：评审否决（`spec-review-rejected`）、评审尝试耗尽（`spec-review-incomplete`）、预算耗尽（`impl_budget_exhausted`）、内容缺失（`spec_content_missing`）、env 阻塞 ≥2 轮（`_escalate_env_blocked`）、重启重验超限（`verify_redo_exhausted`）。
+- → **阻塞待 admin**：merge-back 熔断、契约缺失、env 单轮、交付物守卫终审。
+
+### 评审类冻结的恢复：解冻而非 re_review
+
+评审否决/耗尽冻结的 SPEC（error 内嵌「原状态 reviewing」）人工恢复路径为：**修订方案后解冻**——Dashboard/CLI 解冻经 `parse_orig_status` 解析「原状态 reviewing」→ `unfreeze_spec(status=reviewing)` → daemon 事件链（`reviewing → spec_reviewing` → `_on_spec_reviewing` → `dispatch_review`）自动重派评审，评审收口字段（`reviewer_run`/`_review_attempts`）已在冻结时清空，重派无残留。注意 **`re_review`（重新评审入口）对 frozen spec 保持拒绝**（既有冻结保护契约，见 `test_dashboard_api.py` 的 `test_re_review_frozen_rejected`）——评审类冻结的恢复走解冻而非 re_review；未冻结的历史评审 blocked（旧版裸 blocked 条目）仍可走 `re_review`。
+
+> 告警的存放、分级与自动闭环见[保障机制](07-safeguards.md#告警系统自愈无法覆盖时升级人工)：冻结转人工的告警（severity major 及以上）进人工待处理队列，spec 解冻离开 blocked 即自动闭环。
 
 ## Daemon 重启中断恢复
 

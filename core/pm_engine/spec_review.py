@@ -73,16 +73,36 @@ class SpecReviewManager:
         except (TypeError, ValueError):
             attempts = 0
         if attempts >= MAX_REVIEW_ATTEMPTS:
-            # 耗尽即转 blocked，不得停在 reviewing 空转（否则锚点已清、状态失效，
-            # 既不再派发也不进人工处置——另一个「卡死态」）。前缀与
-            # _handle_review_failure 的耗尽分支同源，保证人工恢复入口可识别。
-            self.logger.warning("spec_review", f"评审尝试已达上限，转 blocked: {spec_name}")
-            self.state_machine.transition(spec_name, "blocked")
-            self.state_machine.update_spec(spec_name, {
-                "reviewer_run": None,
-                "_review_attempts": 0,
-                "error": f"spec-review-incomplete: 评审尝试已达上限（{MAX_REVIEW_ATTEMPTS}）",
-            })
+            # 耗尽即转冻结转人工（fix-blocked-freeze-classification 2.2）：
+            # 改走 freeze_for_human「冻结 + 告警」成对入口——admin 对
+            # 「评审器连续失败」无杠杆（模型链/配置问题）；冻结后
+            # admin_monitor 的 blocked_stuck 豁免生效。
+            error_msg = (
+                f"{FREEZE_ERROR_PREFIX}原状态 reviewing · "
+                f"spec-review-incomplete: 评审尝试已达上限"
+                f"（{MAX_REVIEW_ATTEMPTS}）"
+            )
+            self.state_machine.freeze_for_human(
+                spec_name,
+                error=error_msg,
+                signal_type="spec-review-incomplete",
+                severity="major",
+                description=(
+                    f"'{spec_name}' 评审尝试已达上限（{MAX_REVIEW_ATTEMPTS}），"
+                    "评审器连续失败，需人工排查（模型链/配置问题）"
+                ),
+                evidence=(
+                    f"spec={spec_name}; run_id={entry.get('reviewer_run') or '无'}; "
+                    f"attempts={MAX_REVIEW_ATTEMPTS}"
+                ),
+                recommended_action=(
+                    "人工排查评审链路（模型链/配置/结果硬门）；排查后经 "
+                    "dashboard/CLI 解冻——解冻恢复原状态 reviewing，daemon "
+                    "自动重派评审；或直接撤销该 spec"
+                ),
+                alert_callback=self.pm_engine._send_human_escalation_alert,
+                extra_updates={"reviewer_run": None, "_review_attempts": 0},
+            )
             return False
 
         # ① 锚点先落盘：预生成 run_id，保证 STATE 里的 reviewer_run 与实际 run 一致
@@ -177,19 +197,43 @@ class SpecReviewManager:
             self.logger.info("spec_review", f"评审通过: {spec_name} status={status}")
             return True
         elif status == "rejected":
-            # 转 blocked 并写入 error
+            # 评审否决 → 冻结转人工（fix-blocked-freeze-classification D3）：
+            # admin 对「方案被否」无操作杠杆（2026-09-14 事故：17 分钟 admin
+            # run 结论「无需介入」把原样 spec 弹回 reviewing → 下轮评审再次否决，
+            # 整轮纯烧 token），故不打裸 blocked 而是 frozen=True + 人工升级
+            # 告警，使 admin_monitor 的 blocked_stuck 豁免生效。
             findings = data.get("findings") or []
             blocking = [f for f in findings if f.get("severity") == "blocking"]
-            error_msg = "spec-review-rejected: " + "; ".join(
+            blocked_summary = "; ".join(
                 f.get("detail", "") for f in blocking
-            ) if blocking else "spec-review-rejected: 无详情"
-            self.state_machine.transition(spec_name, "blocked")
-            self.state_machine.update_spec(spec_name, {
-                "reviewer_run": None,
-                "_review_attempts": 0,
-                "error": error_msg,
-            })
-            self.logger.info("spec_review", f"评审否决: {spec_name}")
+            ) if blocking else "无详情"
+            error_msg = (
+                f"{FREEZE_ERROR_PREFIX}原状态 reviewing · "
+                f"spec-review-rejected: {blocked_summary}"
+            )
+            self.state_machine.freeze_for_human(
+                spec_name,
+                error=error_msg,
+                signal_type="spec-review-rejected",
+                severity="major",
+                description=(
+                    f"'{spec_name}' 方案被评审否决，需人工修订方案或撤销"
+                    f"（blocking findings: {blocked_summary}; "
+                    f"评审 run={run_id}）"
+                ),
+                evidence=(
+                    f"spec={spec_name}; run_id={run_id}; "
+                    f"findings={blocked_summary}"
+                ),
+                recommended_action=(
+                    "人工修订 spec 方案（proposal.md/design.md）后经 dashboard/"
+                    "CLI 解冻——解冻恢复原状态 reviewing，daemon 自动重派评审；"
+                    "或直接撤销该 spec"
+                ),
+                alert_callback=self.pm_engine._send_human_escalation_alert,
+                extra_updates={"reviewer_run": None, "_review_attempts": 0},
+            )
+            self.logger.info("spec_review", f"评审否决已冻结转人工: {spec_name}")
             return True
         else:
             # 理论上不会到这里
@@ -364,14 +408,35 @@ class SpecReviewManager:
             })
             self.logger.info("spec_review", f"评审失败重试: {spec_name} attempt={attempts+1}")
         else:
-            # 达上限转 blocked
-            error_msg = f"spec-review-incomplete: {reason}"
-            self.state_machine.transition(spec_name, "blocked")
-            self.state_machine.update_spec(spec_name, {
-                "reviewer_run": None,
-                "_review_attempts": 0,
-                "error": error_msg,
-            })
+            # 达上限转冻结转人工（fix-blocked-freeze-classification 2.2）：
+            # admin 对「评审器连续失败」无操作杠杆（模型链/配置问题），
+            # 改走 freeze_for_human「冻结 + 告警」成对入口，使 admin_monitor
+            # 的 blocked_stuck 豁免生效。
+            r_id = entry.get("reviewer_run")
+            error_msg = (
+                f"{FREEZE_ERROR_PREFIX}原状态 reviewing · "
+                f"spec-review-incomplete: {reason}"
+            )
+            self.state_machine.freeze_for_human(
+                spec_name,
+                error=error_msg,
+                signal_type="spec-review-incomplete",
+                severity="major",
+                description=(
+                    f"'{spec_name}' 评审器连续失败（模型链/配置问题）至"
+                    f"尝试上限（{MAX_REVIEW_ATTEMPTS}），需人工排查"
+                ),
+                evidence=(
+                    f"spec={spec_name}; run_id={r_id or '无'}; reason={reason}"
+                ),
+                recommended_action=(
+                    "人工排查评审链路根因（模型链/配置/结果硬门/写入边界）；"
+                    "排查后经 dashboard/CLI 解冻——解冻恢复原状态 reviewing，"
+                    "daemon 自动重派评审；或直接撤销该 spec"
+                ),
+                alert_callback=self.pm_engine._send_human_escalation_alert,
+                extra_updates={"reviewer_run": None, "_review_attempts": 0},
+            )
             self.logger.warning("spec_review", f"评审失败达上限: {spec_name}")
 
     # ── 人工恢复入口 ────────────────────────────────────────────

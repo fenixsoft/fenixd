@@ -30,8 +30,6 @@ c-sched-clear 两条空占位 spec 各盲跑 6 个 run。本模块在派发前�
 import logging
 from pathlib import Path
 
-from core.state_machine import FROZEN_FIELD
-
 
 def spec_has_content(project_root, spec_name: str) -> bool:
     """判定 spec 目录是否含实质内容（纯函数，design D2）。
@@ -97,21 +95,16 @@ class SpecIntegrityGate:
             # 已冻结（可能由本闸门或其它闸门触发）：不重复告警，但仍阻止重派
             return True
 
-        self._pm.state_machine.update_spec(spec_name, {
-            "status": "blocked",
-            FROZEN_FIELD: True,
-            "error": (
+        # fix-blocked-freeze-classification 3.1：收敛到 freeze_for_human 单一
+        # 入口（frozen + 人工升级告警成对写入），消除「各站点各自记得成对」
+        # 的漂移面。error 文案原样保留（长文案，不强制统一前缀）。
+        self._pm.state_machine.freeze_for_human(
+            spec_name,
+            error=(
                 f"SPEC 内容缺失：spec/changes/{spec_name}/ 目录不含 "
                 f"proposal.md/design.md/tasks.md/specs/**/*.md 任一实质内容，"
                 f"已中止派发并冻结，需人工补全 spec 内容后解冻"
             ),
-        })
-        self._pm.logger.error(
-            "pm_engine",
-            f"内容完整性闸门命中：'{spec_name}' 空 spec，冻结为 blocked",
-        )
-        self._pm._send_human_escalation_alert(
-            spec_name=spec_name,
             signal_type="spec_content_missing",
             severity="major",
             description=(
@@ -127,5 +120,10 @@ class SpecIntegrityGate:
                 "tasks.md/specs/*.md 任一即可）后解冻 spec；补内容后该告警将"
                 "被自动闭环（spec_content_missing → spec_terminal_or_unblocked）"
             ),
+            alert_callback=self._pm._send_human_escalation_alert,
+        )
+        self._pm.logger.error(
+            "pm_engine",
+            f"内容完整性闸门命中：'{spec_name}' 空 spec，冻结为 blocked",
         )
         return True
