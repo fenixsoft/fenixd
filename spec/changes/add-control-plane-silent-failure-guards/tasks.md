@@ -43,11 +43,11 @@
 
 ## 3. 防线三：复位路径编程错误升级
 
-- [ ] 3.1 `core/admin_monitor.py:_reset_env_blocked_after_disposition` 前置 `except (TypeError, AttributeError, NameError)` → 调用新增 `_escalate_reset_programming_error`；其余异常保持既有 WARNING。
-- [ ] 3.2 新增 `_escalate_reset_programming_error`：落 `kind=escalation`、`signal_type=admin_reset_programming_error`、`severity=critical` 告警（经 `attach_trigger`），含 `reset_path`、异常类型/消息、`core/` 内最深栈帧调用点（`文件:行 (函数名)`）；同类未处理告警存在时 `unhandled_for` 去重；绝不重抛，自身失败只记日志。
-- [ ] 3.3 `SIGNAL_SEVERITY` 增 `admin_reset_programming_error: critical`；`SIGNAL_RECOMMENDATION` 增处置指引（代码缺陷、Administrator 无法修复、须工程侧定位、勿派子 fix 重跑）。
+- [x] 3.1 `core/admin_monitor.py:_reset_env_blocked_after_disposition` 前置 `except (TypeError, AttributeError, NameError)` → 调用新增 `_escalate_reset_programming_error`；其余异常保持既有 WARNING。
+- [x] 3.2 新增 `_escalate_reset_programming_error`：落 `kind=escalation`、`signal_type=admin_reset_programming_error`、`severity=critical` 告警（经 `attach_trigger`），含 `reset_path`、异常类型/消息、`core/` 内最深栈帧调用点（`文件:行 (函数名)`）；同类未处理告警存在时 `unhandled_for` 去重；绝不重抛，自身失败只记日志。
+- [x] 3.3 `SIGNAL_SEVERITY` 增 `admin_reset_programming_error: critical`；`SIGNAL_RECOMMENDATION` 增处置指引（代码缺陷、Administrator 无法修复、须工程侧定位、勿派子 fix 重跑）。
 - [x] 3.4 修正事故根因调用点：`handle_event("spec_implemented", spec, spec_entry)`（实参数量与生产签名一致）。
-- [ ] 3.5 在 `tests/test_blocked_reverify_gate.py` 加 `TestResetProgrammingErrorEscalation`：`TypeError` 注入 → 恰好 1 条 critical 升级告警；`OSError` 注入 → 0 条升级告警；拔牙验证（移除分层 except → 失败）。
+- [x] 3.5 在 `tests/test_blocked_reverify_gate.py` 加 `TestResetProgrammingErrorEscalation`：`TypeError` 注入 → 恰好 1 条 critical 升级告警；`OSError` 注入 → 0 条升级告警；拔牙验证（移除分层 except → 失败）。
 
 ## 4. 防线四：状态无驱动探测与恢复
 
