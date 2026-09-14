@@ -52,7 +52,17 @@ from core.agent_runner.prompt_builder import planner_result_status_whitelist
 from core.agent_runner.runner import FROZEN_TERMINATED_ERROR_PREFIX
 # add-blocked-reverify-lane D3：env 阻塞轮次计数清零点收敛后与 state_machine
 # 共用同一字段常量（防字符串漂移；唯一清零点=verified 落定与 unfreeze_spec）。
-from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, FREEZE_ERROR_PREFIX
+from core.state_machine import (
+    ENV_BLOCK_ROUNDS_FIELD,
+    FREEZE_ERROR_PREFIX,
+    INFRA_FAILURE_COUNT_FIELD,
+    VERIFY_INFRA_ROUNDS_FIELD,
+    INFRA_REFUNDED_RUN_IDS_FIELD,
+)
+
+# evo-infra-failure-budget-exempt R3：回拨审计留痕的信号类型与幂等键前缀
+# （admin_store DISPOSITION 记录按 reclassify_key 去重，重复回拨不二次扣减）。
+RECLASSIFY_SIGNAL_TYPE = "infra_reclassify"
 
 
 class VerdictReadResult:
@@ -1910,6 +1920,13 @@ class VerificationPipeline:
                         self._pm.state_machine.update_spec(spec_name, {
                             "error": plan_result.error,
                         })
+                        # evo-infra-failure-budget-exempt R2：provider 熔断属 infra，
+                        # 在归因入口前早退的既有 infra 判定点挂预算退款与记账
+                        #（否则 provider infra 轮仍耗实现预算，与目标 2 不符）。
+                        self._record_infra_failure(
+                            spec_name, plan_result.error,
+                            run_id=getattr(plan_result, "run_id", "") or "",
+                        )
                         self._pm.logger.warning(
                             "pm_engine",
                             f"Provider circuit open — planner suppressed for '{spec_name}', "
@@ -2357,6 +2374,12 @@ class VerificationPipeline:
                 self._pm.state_machine.update_spec(spec_name, {
                     "error": judge_result.error,
                 })
+                # evo-infra-failure-budget-exempt R2：judge 熔断同属 infra，
+                # 归因入口前早退点挂预算退款与记账（与阶段1 circuit-open 同款）。
+                self._record_infra_failure(
+                    spec_name, judge_result.error,
+                    run_id=getattr(judge_result, "run_id", "") or "",
+                )
                 self._pm.logger.warning(
                     "pm_engine",
                     f"Provider circuit open — planner judge suppressed for "
@@ -2765,7 +2788,36 @@ class VerificationPipeline:
                         "error": "修复由在飞重实现承载，跳过派生子 fix",
                     })
                     return
-            self._pm._on_spec_bug_found(spec_name)
+            # ── 统一失败归因入口（evo-infra-failure-budget-exempt R1/R3）──
+            # 归因入口处调用 enrich_failure_class：三态分类后，product/unknown
+            # 照常流转 bug-found（unknown 按 product 保守处置，照常累计
+            # _verify_fail_rounds）；infra 兜底拦截（既有 infra 判定点已早退，
+            # 此处为防御性兜底——如误入则按 infra 记账、不派生 fix）。
+            failure_class = self.enrich_failure_class(
+                spec_name,
+                error_text=getattr(judge_result, "error", "") or "",
+            )
+            if failure_class == "infra":
+                # 防御性兜底：归因入口误判 infra（不应发生，既有 infra 判定点
+                # 已早退）——按 infra 记账（预算退款 + _verify_infra_rounds +
+                # _infra_failure_count + 台账），不流转 bug-found、不派生 fix。
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"归因入口兜底：'{spec_name}' 判定 infra（误入 bug-found "
+                    f"分支），按 infra 记账处理不派生 fix",
+                )
+                self._record_infra_failure(
+                    spec_name, "infra at attribution entry (fallback)",
+                    run_id=getattr(judge_result, "run_id", "") or "",
+                )
+                return
+            # 到达 bug-found 归因（全部门禁已过、非 infra）＝ product 类——
+            # unknown 按 product 保守处置，台账 failure_class 记 product。
+            self._pm._on_spec_bug_found(
+                spec_name,
+                failure_class="product",
+                run_id=getattr(judge_result, "run_id", "") or "",
+            )
         else:
             # D6: testing→verified 前置进度核对：done>=total 才晋级
             vblocker = self._pm._check_verification_gate(spec_name)
@@ -2808,6 +2860,10 @@ class VerificationPipeline:
                 # 的唯一归零点——跨修复周期累计的失败计数在此清零并持久化，
                 # 打回重派/修复收工等中间转换不再归零（见 _do_spec_bug_found）。
                 "_verify_fail_rounds": 0,
+                # evo-infra-failure-budget-exempt R3：_verify_infra_rounds 与
+                # _verify_fail_rounds 同生命周期——验证 PASS 唯一归零点两处同写，
+                # 避免跨周期累计导致 dashboard 展示失真。
+                VERIFY_INFRA_ROUNDS_FIELD: 0,
                 # fix-daemon-lifecycle-races D3：验证自然通过（verified 落定）是
                 # _verify_redo_count（重启恢复重验计数）的清零点，与
                 # _verify_fail_rounds 清零点对齐；人工 unfreeze_spec 亦清零。
@@ -2843,6 +2899,119 @@ class VerificationPipeline:
         except Exception:
             return False
 
+    # ── evo-infra-failure-budget-exempt R1：统一失败归因接口 ───────────
+
+    _INFRA_DEGRADE_MARKERS = (
+        "worktree", "git worktree add", "worktree lock",
+        "worktree already exists", "merge conflict", "tree dirty",
+    )
+
+    def enrich_failure_class(self, spec_name: str, error_text: str = "",
+                             result=None,
+                             result_path: Path | None = None) -> str:
+        """统一失败归因接口：返回 ``infra`` | ``product`` | ``unknown``（evo-infra-failure-budget-exempt R1）。
+
+        复用 ``_verifier_error_is_infra`` 的 bool 判定（MUST 保持签名不变），
+        在其上扩展三态分类。**兼容性**：legacy 路径 verification.py:3283 与
+        engine.py:2613 委托均按 bool 消费 ``_verifier_error_is_infra``，三态
+        分类另立本函数——禁止原地改签名（否则 ``if self._pm._verifier_error_is_infra(...)``
+        在字符串返回值下永远 truthy，legacy infra 门全线失效）。
+
+        覆盖（验证实现以各条目为独立生效分支）：
+
+        - provider 熔断 / 链耗尽 / 网关切换：``_verifier_error_is_infra(error_text)`` → infra。
+        - 陈旧 / 异 spec 归属结果文件（复用 ``_verifier_result_is_stale``）：传入
+          ``result`` + ``result_path`` → infra；result_path 未给或判定异常时跳过。
+        - worktree 冲突 / 降级触发本身：error_text 含 ``_INFRA_DEGRADE_MARKERS``
+          任一子串 → infra。
+        - prepare/serve env blocked：不经过本归因入口（env 分支早退），其 infra
+          记账由 ``_escalate_env_blocked`` 挂钩点直接处理。
+
+        **明确排除**：结果文件缺失 / 非法 JSON 的 unreadable（fix-verdict-read-failclosed
+        D4/D5）维持 fail-closed（blocked + critical），不在本分类器问题域内。
+
+        **unknown 处置（保守原则）**：无清单命中、无法归类 → 返回 ``unknown``
+        按 product 保守处置——不豁免预算、照常累计 ``_verify_fail_rounds``；
+        宁可少豁免，不可误豁免（误豁免会绕过预算闸门并掩盖真实失败计数）。
+        """
+        # ── Provider 熔断 / 链耗尽 / 网关切换（已有 bool 通道，签名不变）──
+        if self._verifier_error_is_infra(error_text):
+            return "infra"
+
+        # ── 陈旧 / 异 spec 归属结果文件（复用 _verifier_result_is_stale）──
+        if result is not None and result_path is not None:
+            try:
+                if self._verifier_result_is_stale(result, result_path, spec_name):
+                    return "infra"
+            except Exception:
+                # 判定异常保守放行（unknown → product 保守处置），不误豁免
+                pass
+
+        # ── worktree 冲突 / 降级触发本身（收窄：仅命中 infra 清单才判 infra）──
+        err_lower = str(error_text).lower() if error_text else ""
+        if any(marker in err_lower for marker in self._INFRA_DEGRADE_MARKERS):
+            return "infra"
+
+        # unknown → product 保守处置（不豁免、照常累计 fail_rounds）
+        return "unknown"
+
+    # ── evo-infra-failure-budget-exempt R2：infra 失败统一记账 ─────────
+
+    def _record_infra_failure(self, spec_name: str, reason: str,
+                              run_id: str = "") -> None:
+        """infra 失败统一记账（evo-infra-failure-budget-exempt R2/R3）。
+
+        在 infra 判定命中时调用：预算事后补偿（delegate budget.py
+        ``_exempt_infra_run_budget``，幂等）+ _verify_infra_rounds +
+        失败历史台账 failure_class=infra（回拨参考）。
+
+        幂等锚点=当前实现 run id（``implementer_run``，由调用方经 ``run_id``
+        传入或缺失时内部读取）；同一实现 run 的多次 infra 判定仅首次退款，
+        后续只补计数与台账（预算侧独立记账由 budget.py 保证）。
+
+        本身异常不得抛穿调用方（记账属侧车，不阻断主流程）。
+        """
+        try:
+            # ── 幂等锚点：优先取给入 run_id，否则回读当前实现 run ──
+            refund_key = run_id
+            if not refund_key:
+                entry0 = self._pm.state_machine.read_one(spec_name) or {}
+                refund_key = str(entry0.get("implementer_run") or "")
+
+            # ── 预算事后补偿（退款 + _infra_failure_count，幂等）──
+            # 核心实现收敛在 budget.py（对齐 _exempt_dead_run_budget），
+            # 对账豁免（_budget_reconcile_has_exemption）同侧维护。
+            try:
+                self._pm._exempt_infra_run_budget(
+                    spec_name, reason, refund_key=refund_key)
+            except Exception:
+                pass  # 预算侧车异常不阻断下游记账
+
+            # ── _verify_infra_rounds 轮次记账（纯观测，不参与冻结判定）──
+            rounds = self._pm.state_machine.bump_verify_infra_rounds(spec_name, +1)
+
+            # ── 失败历史台账 failure_class=infra（R3 回拨参考）──
+            # 记录点在统一归因入口：infra 轮不进 bug-found 分支，
+            # 仅在 _append_fail_history 扩展会致台账永远无 infra 轮，
+            # 验收「台账含 2 条 infra 轮」与 design R3 落空。
+            try:
+                self._append_fail_history(
+                    spec_name, "infra", [],
+                    failure_class="infra",
+                    run_id=refund_key,
+                )
+            except Exception:
+                pass
+
+            self._pm.logger.info(
+                "pm_engine",
+                f"infra 记账完成 '{spec_name}': _verify_infra_rounds={rounds}",
+            )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"infra 记账异常（不阻断主流程）'{spec_name}': {e}",
+            )
 
     def _verifier_result_is_stale(self, result, result_path: Path, spec_name: str) -> bool:
         """verifier 结果文件是否不可信（陈旧重放 / 异 spec 残留 / 缺失）。
@@ -3304,6 +3473,14 @@ class VerificationPipeline:
             self._pm.state_machine.update_spec(spec_name, {
                 "error": result.error,
             })
+            # evo-infra-failure-budget-exempt R2：legacy provider 熔断门是
+            # 归因入口前的既有 infra 判定点，必须同挂预算退款与记账（否则
+            # provider infra 轮仍耗实现预算，与「基础设施失败不消耗实现预算」
+            # 目标不符）。
+            self._record_infra_failure(
+                spec_name, result.error,
+                run_id=getattr(result, "run_id", "") or "",
+            )
             self._pm.logger.warning(
                 "pm_engine",
                 f"Verifier infra failure — holding '{spec_name}' state, "
@@ -3384,6 +3561,14 @@ class VerificationPipeline:
                                 "stale/foreign verifier result replayed"
                                 " — re-dispatching fresh verify"),
                         })
+                        # evo-infra-failure-budget-exempt R2：结果文件「读错文件」
+                        # （陈旧/异 spec 归属）属 infra，沿用既有 re-dispatch，
+                        # 同挂预算退款与记账。
+                        self._record_infra_failure(
+                            spec_name,
+                            "stale/foreign verifier result replayed",
+                            run_id=getattr(result, "run_id", "") or "",
+                        )
                         self._pm.logger.warning(
                             "pm_engine",
                             f"Stale/foreign verifier result for '{spec_name}' — "
@@ -3477,6 +3662,13 @@ class VerificationPipeline:
                     "tester_run": None,
                     "error": "stale/foreign verifier result replayed — re-dispatching fresh verify",
                 })
+                # evo-infra-failure-budget-exempt R2：陈旧/异 spec 归属结果文件
+                # 属 infra（沿用既有 re-dispatch），同挂预算退款与记账。
+                self._record_infra_failure(
+                    spec_name,
+                    "stale/foreign verifier result replayed",
+                    run_id=getattr(result, "run_id", "") or "",
+                )
                 self._pm.logger.warning(
                     "pm_engine",
                     f"Stale/foreign verifier result for '{spec_name}' — "
@@ -3553,7 +3745,31 @@ class VerificationPipeline:
                             "error": "修复由在飞重实现承载，跳过派生子 fix",
                         })
                         return
-                self._pm._on_spec_bug_found(spec_name)
+                # ── 统一失败归因入口（legacy 同门，evo-infra-failure-budget-exempt R1/R3）──
+                failure_class = self.enrich_failure_class(
+                    spec_name,
+                    error_text=getattr(result, "error", "") or "",
+                )
+                if failure_class == "infra":
+                    # 防御性兜底：归因入口误判 infra（既有 infra 判定点已早退）——
+                    # 按 infra 记账，不流转 bug-found、不派生 fix。
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"归因入口兜底（legacy）：'{spec_name}' 判定 infra，"
+                        f"按 infra 记账处理不派生 fix",
+                    )
+                    self._record_infra_failure(
+                        spec_name, "infra at attribution entry (legacy fallback)",
+                        run_id=getattr(result, "run_id", "") or "",
+                    )
+                    return
+                # 到达 bug-found 归因（全部门禁已过、非 infra）＝ product 类——
+                # unknown 按 product 保守处置，台账 failure_class 记 product。
+                self._pm._on_spec_bug_found(
+                    spec_name,
+                    failure_class="product",
+                    run_id=getattr(result, "run_id", "") or "",
+                )
             else:
                 # D6: legacy 路径同样前置进度核对：done>=total 才晋级
                 vblocker = self._pm._check_verification_gate(spec_name)
@@ -3609,6 +3825,9 @@ class VerificationPipeline:
                     "_verify_parallel_override": None,
                     # add-fail-counter-budget D1：PASS 唯一归零点（legacy 路径同语义）。
                     "_verify_fail_rounds": 0,
+                    # evo-infra-failure-budget-exempt R3：_verify_infra_rounds
+                    # 与 _verify_fail_rounds 同清零点（legacy 路径同语义）。
+                    VERIFY_INFRA_ROUNDS_FIELD: 0,
                     # fix-daemon-lifecycle-races D3：验证自然通过清零点（legacy 同语义）。
                     "_verify_redo_count": 0,
                     # add-blocked-reverify-lane D3：env 阻塞轮次清零点（legacy 同语义）。
@@ -3719,6 +3938,19 @@ class VerificationPipeline:
         """
         try:
             spec = self._pm.state_machine.read_one(spec_name) or {}
+            # ── evo-infra-failure-budget-exempt R2：env 阻塞属 infra ──
+            # prepare/serve 失败（构建命令退出、端口不可达、自动启动失败）走
+            # _escalate_env_blocked → blocked + admin（阈值 2 轮冻结转人工）；
+            # infra 归类**只在其上补预算退款与 _verify_infra_rounds 记账**，
+            # MUST 保持 env 通道 blocked 语义——「env 失败绝不放行」是既有刻意设计。
+            # 归类挂钩点在 env 判定处（env 分支早退，归因入口不可达）。
+            try:
+                self._record_infra_failure(
+                    spec_name,
+                    f"env blocked: {'; '.join(str(v) for v in (violations or [])[:3])}",
+                )
+            except Exception:
+                pass  # 记账侧车，不阻断升级通道
             rounds = int(spec.get(ENV_BLOCK_ROUNDS_FIELD) or 0) + 1
             frozen = rounds >= 2  # 阈值：连续 2 轮阻塞 → 冻结转人工
             planner_cost = (self._last_planner_run_cost(spec_name)
@@ -5024,10 +5256,21 @@ class VerificationPipeline:
             return []
 
     def _append_fail_history(self, spec_name: str, cause_type: str,
-                             failed_scenarios: list) -> None:
-        """原子追加一轮裁决采纳失败记录 {round, cause_type, failed_scenarios}。
+                             failed_scenarios: list,
+                             failure_class: str = "",
+                             run_id: str = "") -> None:
+        """原子追加一轮失败记录 {round, cause_type, failed_scenarios, failure_class, run_id}。
 
-        ``cause_type`` ∈ evidence-invalid（证据校验不合规） / real-bugs（真缺陷）。
+        ``cause_type`` ∈ evidence-invalid（证据校验不合规） / real-bugs（真缺陷）
+        / infra（基础设施失败，evo-infra-failure-budget-exempt R3）。
+
+        ``failure_class`` ∈ infra / product / unknown（三态归因；缺省补 unknown）。
+        **记录点须在统一归因入口**：infra 轮不进入 bug-found 分支，其台账条目由
+        ``_record_infra_failure`` 在归因入口判定处写入——仅在 family.py:488 扩展
+        则台账永远不含 infra 轮，验收「台账含 2 条 infra 轮」与 design R3 落空。
+
+        ``run_id``：本轮验证 run id（回拨参考台账按 run 定位）。
+
         写盘失败（含读损坏）静默降级：仅 warning 留痕，不阻断调用方流程。
         """
         try:
@@ -5039,6 +5282,8 @@ class VerificationPipeline:
                 "round": next_round,
                 "cause_type": cause_type,
                 "failed_scenarios": [str(s) for s in (failed_scenarios or [])],
+                "failure_class": failure_class or "unknown",
+                "run_id": run_id or "",
             })
             path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp_path = tempfile.mkstemp(
@@ -5934,3 +6179,118 @@ def _branch_merged_into_tree(branch: str, project_root) -> bool:
         return result.returncode == 0
     except Exception:
         return False
+
+
+# ── evo-infra-failure-budget-exempt R3：admin 回拨入口 ──────────────
+
+def reclassify_infra_rounds(project_root, state_machine, logger,
+                            spec_name: str, n: int,
+                            audit_reason: str,
+                            actor: str = "admin") -> dict:
+    """从 ``_verify_fail_rounds`` 减回实为 infra 却误计入的历史轮次（evo-infra-failure-budget-exempt R3）。
+
+    admin 声明「实为 infra 的历史轮次」后执行：原子改写
+    ``_verify_fail_rounds = max(0, 当前值 - n)`` + 解冻 + 审计留痕。
+
+    **幂等**（admin_store DISPOSITION 记录按 reclassify_key 去重，重复回拨
+    不二次扣减）：同一 ``(spec, n, audit_reason)`` 组合只应用一次。
+
+    **回拨方向**（只做减法）：product→infra 方向（实为 infra 却计入
+    fail_rounds）；env→product-bug 属相反方向（补计），不在此入口。
+
+    Args:
+        project_root: 主树根目录（git 合并判定 + AdminStore 路径）。
+        state_machine: StateMachine 实例（读写 STATE.md）。
+        logger: Logger 实例。
+        spec_name: 目标 spec 名称。
+        n: 减回轮次（>0，取 max(0, current-n)）。
+        audit_reason: 人工审核原因文本（审计留痕，入 admin_store DISPOSITION）。
+        actor: 回拨发起者标识（"admin" / "dashboard" / "cli"）。
+
+    Returns:
+        dict：{ok, fail_rounds, status, applied}。
+        ok=True 表示已应用；applied=实际减回轮次（受 current 上限约束）；
+        ok=False 时 fail_rounds 为当前值（未变化），由调用方按需展示 reason。
+    """
+    if n <= 0:
+        return {"ok": False, "reason": "n must be > 0", "fail_rounds": 0, "applied": 0}
+
+    # ── 幂等：按 reclassify_key 去重 ──
+    import hashlib as _hash
+    reclassify_key = _hash.sha256(
+        f"{spec_name}|{n}|{audit_reason}".encode("utf-8", "replace")
+    ).hexdigest()[:16]
+
+    from core.admin_store import AdminStore, DISPOSITION
+    store = AdminStore(project_root, logger)
+    try:
+        existing = store._read_locked()
+    except Exception:
+        existing = []
+    already_applied = any(
+        rec.get("kind") == DISPOSITION
+        and rec.get("signal_type") == RECLASSIFY_SIGNAL_TYPE
+        and rec.get("spec") == spec_name
+        and rec.get("reclassify_key") == reclassify_key
+        for rec in existing
+    )
+    if already_applied:
+        entry = state_machine.read_one(spec_name) or {}
+        return {
+            "ok": True,
+            "applied": 0,
+            "fail_rounds": int(entry.get("_verify_fail_rounds", 0) or 0),
+            "status": entry.get("status", ""),
+            "note": "already applied (idempotent)",
+        }
+
+    # ── 读当前值 ──
+    entry = state_machine.read_one(spec_name) or {}
+    current = int(entry.get("_verify_fail_rounds", 0) or 0)
+    applied = min(n, current)
+    new_fail_rounds = current - applied
+
+    # ── 目标状态判定（复用 resolve_env_blocked_reset_path 语义）──
+    if entry.get("status") == "blocked" and not entry.get("frozen"):
+        reset_path = resolve_env_blocked_reset_path(entry, project_root)
+        target_status = reset_path or "ready"
+    else:
+        target_status = None
+
+    # ── 原子写入 ──
+    updates = {"_verify_fail_rounds": new_fail_rounds}
+    if target_status is not None:
+        # unfreeze_spec 清零相关计数器 + 恢复 status
+        state_machine.unfreeze_spec(spec_name, status=target_status)
+    state_machine.update_spec(spec_name, updates)
+    if logger is not None:
+        logger.warning(
+            "pm_engine",
+            f"infra 回拨: '{spec_name}' _verify_fail_rounds {current}→{new_fail_rounds}"
+            f"（减回 {applied} 轮，audit={audit_reason[:120]}）",
+        )
+
+    # ── 审计留痕（admin_store DISPOSITION，幂等由 reclassify_key 去重）──
+    store.append({
+        "kind": DISPOSITION,
+        "signal_type": RECLASSIFY_SIGNAL_TYPE,
+        "spec": spec_name,
+        "severity": "major",
+        "description": f"infra 回拨 {applied} 轮（{audit_reason[:300]}）",
+        "action_taken": (
+            f"_verify_fail_rounds: {current}→{new_fail_rounds}（减 {applied}），"
+            f"status → {target_status or 'unchanged'}"
+        ),
+        "result": "resolved",
+        "recommended_action": "",
+        "summary": f"reclassify {applied} infra rounds, actor={actor}",
+        "admin_run_id": f"reclassify:{reclassify_key}",
+        "reclassify_key": reclassify_key,
+    })
+
+    return {
+        "ok": True,
+        "fail_rounds": new_fail_rounds,
+        "status": (state_machine.read_one(spec_name) or {}).get("status", ""),
+        "applied": applied,
+    }

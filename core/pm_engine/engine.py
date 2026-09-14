@@ -633,7 +633,8 @@ class PMEngine:
         finally:
             self._handling_events.discard(event_key)
 
-    def _on_spec_bug_found(self, spec_name: str):
+    def _on_spec_bug_found(self, spec_name: str, failure_class: str = "product",
+                           run_id: str = ""):
         """Create or reset a fix SPEC for the bug and immediately schedule it."""
         # 防重入：使用独立 key，避免与 handle_event 的 ("spec_bug_found", spec_name)
         # 冲突（handle_event 在调用 handler 前已 add 该 key，若共用会导致本方法被跳过）
@@ -643,7 +644,8 @@ class PMEngine:
             return
         self._handling_events.add(event_key)
         try:
-            self._do_spec_bug_found(spec_name)
+            self._do_spec_bug_found(spec_name, failure_class=failure_class,
+                                    run_id=run_id)
         finally:
             self._handling_events.discard(event_key)
 
@@ -2506,8 +2508,10 @@ class PMEngine:
     def _signal_family_explosion(self, parent_name: str, child_name: str, detail: str):
         return self._family._signal_family_explosion(parent_name, child_name, detail)
 
-    def _do_spec_bug_found(self, spec_name: str):
-        return self._family._do_spec_bug_found(spec_name)
+    def _do_spec_bug_found(self, spec_name: str, failure_class: str = "product",
+                           run_id: str = ""):
+        return self._family._do_spec_bug_found(
+            spec_name, failure_class=failure_class, run_id=run_id)
 
     def _do_legacy_fix_spec_bug_found(self, spec_name: str):
         return self._family._do_legacy_fix_spec_bug_found(spec_name)
@@ -2535,6 +2539,33 @@ class PMEngine:
     def _exempt_dead_run_budget(self, spec_name: str, reason: str,
                                    run_reason: str | None = None) -> None:
         return self._budget._exempt_dead_run_budget(spec_name, reason, run_reason)
+
+    def _exempt_infra_run_budget(self, spec_name: str, reason: str,
+                                 refund_key: str = "") -> bool:
+        """infra 失败预算事后补偿（evo-infra-failure-budget-exempt R2）。
+
+        与 _exempt_dead_run_budget 同范式：回退本次实现 run 增量（下限 0）+
+        独立写 _infra_failure_count（生命周期累计，不归零）。幂等（按
+        refund_key 去重，同一实现 run 只退款一次）。预算退款纳入
+        _budget_reconcile_has_exemption，防 reconcile 回写冲掉退款。
+        """
+        return self._budget._exempt_infra_run_budget(
+            spec_name, reason, refund_key=refund_key)
+
+    def reclassify_infra_rounds(self, spec_name: str, n: int,
+                                audit_reason: str,
+                                actor: str = "admin") -> dict:
+        """admin 回拨 infra 误计入轮次（evo-infra-failure-budget-exempt R3）。
+
+        核心实现见 verification.reclassify_infra_rounds（原子改写
+        _verify_fail_rounds = max(0, current-n) + 解冻 + 审计留痕，幂等）。
+        dashboard/CLI/admin_monitor 入口统一委托本方法。
+        """
+        from core.pm_engine.verification import reclassify_infra_rounds as _recl
+        return _recl(
+            self.project_root, self.state_machine, self.logger,
+            spec_name, n, audit_reason, actor=actor,
+        )
 
     def _alert_budget_exempt_loop(self, spec_name: str, exempt: int) -> None:
         return self._budget._alert_budget_exempt_loop(spec_name, exempt)
@@ -2613,6 +2644,17 @@ class PMEngine:
     def _verifier_error_is_infra(self, error_text: str) -> bool:
         return self._verification._verifier_error_is_infra(error_text)
 
+    def enrich_failure_class(self, spec_name: str, error_text: str = "",
+                             result=None,
+                             result_path: Path | None = None) -> str:
+        """统一失败归因接口（evo-infra-failure-budget-exempt R1）。
+
+        返回 infra | product | unknown；保持 ``_verifier_error_is_infra``
+        bool 签名不变（三态另立本新函数）。
+        """
+        return self._verification.enrich_failure_class(
+            spec_name, error_text, result=result, result_path=result_path)
+
     def _verifier_result_is_stale(self, result, result_path: Path, spec_name: str) -> bool:
         return self._verification._verifier_result_is_stale(result, result_path, spec_name)
 
@@ -2660,8 +2702,16 @@ class PMEngine:
     def _env_whitewash_gate(self, spec_name: str) -> bool:
         return self._verification._env_whitewash_gate(spec_name)
 
-    def _escalate_env_blocked(self, spec_name: str, violations: list) -> None:
-        return self._verification._escalate_env_blocked(spec_name, violations)
+    def _escalate_env_blocked(self, spec_name: str, violations: list,
+                              title: str = "验证环境阻塞") -> None:
+        return self._verification._escalate_env_blocked(
+            spec_name, violations, title=title)
+
+    def _record_infra_failure(self, spec_name: str, reason: str,
+                              run_id: str = "") -> None:
+        """infra 失败统一记账（evo-infra-failure-budget-exempt R2/R3）。"""
+        return self._verification._record_infra_failure(
+            spec_name, reason, run_id=run_id)
 
     def _update_warning_streaks(self, spec_name: str) -> list:
         return self._verification._update_warning_streaks(spec_name)
@@ -2705,14 +2755,17 @@ class PMEngine:
     def _clear_verdict_violations(self, spec_name: str) -> None:
         return self._verification._clear_verdict_violations(spec_name)
 
-    # ── 失败历史侧车门面（fix-verdict-retry-misattribution D6）──
+    # ── 失败历史侧车门面（fix-verdict-retry-misattribution D6 + R3）──
     def _read_fail_history(self, spec_name: str) -> list:
         return self._verification._read_fail_history(spec_name)
 
     def _append_fail_history(self, spec_name: str, cause_type: str,
-                             failed_scenarios: list) -> None:
+                             failed_scenarios: list,
+                             failure_class: str = "",
+                             run_id: str = "") -> None:
         return self._verification._append_fail_history(
-            spec_name, cause_type, failed_scenarios)
+            spec_name, cause_type, failed_scenarios,
+            failure_class=failure_class, run_id=run_id)
 
     def _clear_fail_history(self, spec_name: str) -> None:
         return self._verification._clear_fail_history(spec_name)
