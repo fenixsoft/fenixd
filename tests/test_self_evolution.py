@@ -1822,5 +1822,157 @@ class TestEvolutionWorkerFailureSemantics(unittest.TestCase):
                     self.daemon._check_evolution_checkpoint()
 
 
+# ── evo-item-retention-doc-tracking 任务 1.7：检查点接入点回归 ──────
+
+from core.evolution import (
+    draft_dir as _draft_dir,
+    items_path as _items_path,
+    prune_items as _prune_items,
+    read_items as _read_items,
+    write_items as _write_items,
+)
+from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+
+class TestEvolutionCheckpointPrune(unittest.TestCase):
+    """任务 1.7：检查点清理接入点回归（D4——清理不因在途跳过、非托管不清理）。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir)
+        (self.proot / ".fenix" / "evolution").mkdir(parents=True, exist_ok=True)
+        import fenixd
+        self.daemon = fenixd.FenixDaemon.__new__(fenixd.FenixDaemon)
+        self.daemon._evolution_in_flight = False
+        self.daemon._evolution_host_guard_logged = False
+        self.daemon.config = {}
+        self.daemon.state_machine = None
+        self.daemon.admin_store = None
+        self.daemon.agent_runner = None
+        self.daemon.pm_engine = None
+        self.daemon._evolution_warn = lambda *a, **k: None
+        self.daemon.logger = type("S", (), {
+            "error": lambda *a, **k: None, "info": lambda *a, **k: None,
+            "warning": lambda *a, **k: None,
+        })()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _seed_old_and_new(self, status="pending"):
+        """写入 100 条 recent + 1 条 30 天前的受害条目 + 1 条今天的条目。
+
+        受害条目必须落在「最近 7 天 ∪ 最近 100 条」之外才会被清理——仅 2 条
+        时全部都在 top 100 内，永不删除。
+        """
+        now = _dt.now(_tz.utc)
+        from core.evolution import upsert_item as _upsert
+        for i in range(100):
+            _upsert(self.proot, {
+                "id": f"fill-{i:03d}", "project": "proj", "status": status,
+                "date_section": "2026-09-12", "section": "浪费",
+                "title": f"fill {i}", "verdict": {"worth_spec": False},
+                "analysis_md": "md",
+                "created_at": (now - _td(hours=i)).isoformat(),
+            })
+        old = {
+            "id": "oldvictim123", "project": "proj", "status": status,
+            "date_section": "2026-09-12", "section": "浪费", "title": "old",
+            "verdict": {"worth_spec": False}, "analysis_md": "md",
+            "created_at": (now - _td(days=30)).isoformat(),
+        }
+        new = {
+            "id": "newkeeper456", "project": "proj", "status": "pending",
+            "date_section": "2026-09-12", "section": "浪费", "title": "new",
+            "verdict": {"worth_spec": True}, "analysis_md": "md",
+            "created_at": now.isoformat(),
+        }
+        _upsert(self.proot, old)
+        _upsert(self.proot, new)
+
+    def _seed_draft_for_victim(self):
+        d = _draft_dir(self.proot, "oldvictim123")
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "proposal.md").write_text("x", encoding="utf-8")
+
+    def test_prune_runs_despite_in_flight(self):
+        """(a) _evolution_in_flight=True 时检查点仍清理过期受害条目。
+
+        对齐 spec「清理不因分析 run 在途而跳过」：单飞判定在清理之后，
+        在途只影响派发，不影响已执行的保留清理。
+        """
+        from unittest import mock
+        import fenixd
+        self._seed_old_and_new()
+        self._seed_draft_for_victim()
+        self.daemon._evolution_in_flight = True
+
+        with mock.patch.object(
+                self.daemon, "_evolution_framework_root",
+                return_value=self.proot):
+            with mock.patch("fenixd.PROJECT_ROOT", self.proot):
+                with mock.patch(
+                        "core.evolution.read_watermarks",
+                        return_value={}):
+                    # 阻断派发后续（无 ready 项目）：直接走到清理后即返回
+                    with mock.patch(
+                            "core.dashboard.registry.Registry.discover",
+                            return_value=[]):
+                        self.daemon._check_evolution_checkpoint()
+
+        items = _read_items(self.proot)
+        self.assertNotIn("oldvictim123", items, "过期受害条目应已被清理")
+        self.assertIn("newkeeper456", items)
+        self.assertFalse(
+            _draft_dir(self.proot, "oldvictim123").exists(),
+            "受害条目草稿目录应已被清理")
+
+    def test_prune_despite_in_flight_even_with_ready_guard(self):
+        """在途时检查点不派发（早于就绪扫描），清理仍发生。"""
+        from unittest import mock
+        import fenixd
+        self._seed_old_and_new()
+        self.daemon._evolution_in_flight = True
+        pruned_calls = []
+
+        with mock.patch.object(
+                self.daemon, "_evolution_framework_root",
+                return_value=self.proot):
+            with mock.patch("fenixd.PROJECT_ROOT", self.proot):
+                with mock.patch(
+                        "core.evolution.prune_items",
+                        side_effect=lambda *a, **k: pruned_calls.append(a)
+                        or {"total": 0, "kept": 0, "deleted": 0,
+                            "failed": 0, "details": []}):
+                    self.daemon._check_evolution_checkpoint()
+
+        self.assertEqual(len(pruned_calls), 1, "清理应恰好执行一次")
+
+    def test_non_self_hosted_no_prune(self):
+        """(b) PROJECT_ROOT != FRAMEWORK_ROOT → 检查点不触发任何清理。"""
+        from unittest import mock
+        import fenixd
+        self._seed_old_and_new()
+        self._seed_draft_for_victim()
+
+        # FRAMEWORK_ROOT 指向 self.proot，而 PROJECT_ROOT patch 为他的子目录
+        other_root = self.proot / "other_root"
+        other_root.mkdir(exist_ok=True)
+        pruned_calls = []
+
+        with mock.patch.object(
+                self.daemon, "_evolution_framework_root",
+                return_value=self.proot):
+            with mock.patch("fenixd.PROJECT_ROOT", other_root):
+                with mock.patch(
+                        "core.evolution.prune_items",
+                        side_effect=lambda *a, **k: pruned_calls.append(a)
+                        or {"total": 0, "kept": 0, "deleted": 0,
+                            "failed": 0, "details": []}):
+                    self.daemon._check_evolution_checkpoint()
+
+        self.assertEqual(pruned_calls, [], "非自托管部署 MUST NOT 触发清理")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -108,7 +108,8 @@ class TestEvolutionItemsAPI:
         # 字段完整性
         for it in items:
             for key in ("id", "project", "date_section", "section", "title",
-                        "status", "has_draft", "spec_name", "created_at"):
+                        "status", "has_draft", "spec_name", "created_at",
+                        "doc_source"):
                 assert key in it
         # 三项判定在 verdict 中
         va = next(i for i in items if i["id"] == "item-a")
@@ -116,6 +117,42 @@ class TestEvolutionItemsAPI:
         assert va["has_draft"] is True
         vb = next(i for i in items if i["id"] == "item-b")
         assert vb["has_draft"] is False
+
+    def test_doc_source_reflects_source(self, server_fx_with_fw):
+        """doc_source：有草稿 → draft；无草稿无 spec → null；仅 SPEC → spec。"""
+        proot, srv, ev = server_fx_with_fw
+        fw = ev["fw"]
+        from core.evolution import upsert_item
+        # item-a（pending，有草稿）→ draft；item-b（analyzed，无 spec_name）→ null
+        status, data = srv.get("/api/evolution/items")
+        assert status == 200
+        va = next(i for i in data["items"] if i["id"] == "item-a")
+        assert va["doc_source"] == "draft"
+        vb = next(i for i in data["items"] if i["id"] == "item-b")
+        assert vb["doc_source"] is None
+        # 已接受条目（草稿已删，spec/changes 就位）→ spec
+        upsert_item(fw, {
+            "id": "item-spec", "project": "proj-a", "date_section": "2026-09-12",
+            "section": "浪费", "title": "已接受",
+            "verdict": {"worth_spec": True}, "status": "accepted",
+            "analysis_md": "md",
+            "spec": {"name": "evo-doc-src", "capability": "cap-src",
+                     "proposal_md": "# P", "design_md": "# D", "spec_md": "# S",
+                     "tasks_md": "T"},
+            "spec_name": "evo-doc-src",
+            "created_at": "2026-09-15T00:00:00Z",
+            "decided_at": "2026-09-15T01:00:00Z", "decided_by": "manual",
+            "impact": "", "evidence": "", "analysis": "", "suggestion": "",
+            "spec_summary": "", "degraded": None,
+            "violations": None, "draft_failed_reason": None,
+        })
+        spec_dir = fw / "spec" / "changes" / "evo-doc-src"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "proposal.md").write_text("# P", encoding="utf-8")
+        _st, data2 = srv.get("/api/evolution/items")
+        vspec = next(i for i in data2["items"] if i["id"] == "item-spec")
+        assert vspec["has_draft"] is False
+        assert vspec["doc_source"] == "spec"
 
     def test_list_project_filter(self, server_fx_with_fw):
         proot, srv, ev = server_fx_with_fw
@@ -201,6 +238,180 @@ class TestEvolutionDraftAPI:
             "/api/evolution/draft?item_id=item-a&doc=proposal&path=/etc/passwd")
         assert status == 200
         assert data["content"] == "# P"
+
+
+class TestEvolutionDraftSpecFallback:
+    """草稿优先、SPEC 位置回退（evo-item-retention-doc-tracking 2.4）。
+
+    覆盖：接受成功后草稿被删但 spec/changes 存在 → 四 doc 均 found:true；
+    归档三形态（YYYY-MM-DD-<name> / YYYY-MM-DD-<name>-<n> / <name>-<epoch>）
+    均能命中；互为前缀的 spec 名不相混；既无草稿又无 SPEC → found:false。
+    """
+
+    def _seed_accepted(self, fw, eid="item-accepted", spec_name="evo-accept-x",
+                       capability="cap-x"):
+        """构造已接受条目：spec_name 已写、无草稿目录。"""
+        from core.evolution import upsert_item
+        upsert_item(fw, {
+            "id": eid, "project": "proj-a", "date_section": "2026-09-12",
+            "section": "浪费", "title": "已接受问题",
+            "verdict": {"worth_spec": True}, "status": "accepted",
+            "analysis_md": "md",
+            "spec": {"name": spec_name, "capability": capability,
+                     "proposal_md": "# P", "design_md": "# D", "spec_md": "# S",
+                     "tasks_md": "T"},
+            "spec_name": spec_name,
+            "created_at": "2026-09-12T00:00:00Z",
+            "decided_at": "2026-09-12T01:00:00Z", "decided_by": "manual",
+            "impact": "", "evidence": "", "analysis": "", "suggestion": "",
+            "spec_summary": "", "degraded": None,
+            "violations": None, "draft_failed_reason": None,
+        })
+
+    def _write_spec_dir(self, fw, spec_dir: Path, capability="cap-x"):
+        """在 SPEC 目录落全套文档。"""
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "proposal.md").write_text("# P-active", encoding="utf-8")
+        (spec_dir / "design.md").write_text("# D-active", encoding="utf-8")
+        (spec_dir / "tasks.md").write_text("T-active", encoding="utf-8")
+        (spec_dir / "specs" / capability).mkdir(parents=True, exist_ok=True)
+        (spec_dir / "specs" / capability / "spec.md").write_text(
+            "# S-active", encoding="utf-8")
+
+    def _assert_four_docs(self, srv, eid, expect_prefix):
+        """四个 doc 均 found:true 且内容带 expect 前缀。"""
+        for doc in ("proposal", "design", "tasks", "spec"):
+            status, data = srv.get(
+                f"/api/evolution/draft?item_id={eid}&doc={doc}")
+            assert status == 200
+            assert data["found"] is True, f"{doc} 应命中 SPEC 位置"
+            assert data["content"].startswith(expect_prefix[doc]), doc
+
+    def test_accepted_draft_deleted_reads_from_changes(self, server_fx_with_fw):
+        """接受成功后草稿被删但 spec/changes/<name>/ 存在 → 四 doc 取自 SPEC。"""
+        proot, srv, ev = server_fx_with_fw
+        fw = ev["fw"]
+        self._seed_accepted(fw)
+        spec_dir = fw / "spec" / "changes" / "evo-accept-x"
+        self._write_spec_dir(fw, spec_dir)
+        # 条目无草稿目录
+        assert not (ev["evo"] / "drafts" / "item-accepted").exists()
+        self._assert_four_docs(srv, "item-accepted", {
+            "proposal": "# P-active", "design": "# D-active",
+            "tasks": "T-active", "spec": "# S-active"})
+
+    def test_archived_standard_date_prefix_form(self, server_fx_with_fw):
+        """归档形态 YYYY-MM-DD-<name> 能命中。"""
+        proot, srv, ev = server_fx_with_fw
+        fw = ev["fw"]
+        self._seed_accepted(fw)
+        arch = fw / "spec" / "archive" / "2026-09-15-evo-accept-x"
+        self._write_spec_dir(fw, arch)
+        self._assert_four_docs(srv, "item-accepted", {
+            "proposal": "# P-active", "design": "# D-active",
+            "tasks": "T-active", "spec": "# S-active"})
+
+    def test_archived_date_prefix_with_conflict_suffix(self, server_fx_with_fw):
+        """归档形态 YYYY-MM-DD-<name>-<n>（冲突后缀）能命中。"""
+        proot, srv, ev = server_fx_with_fw
+        fw = ev["fw"]
+        self._seed_accepted(fw)
+        arch = fw / "spec" / "archive" / "2026-09-15-evo-accept-x-2"
+        self._write_spec_dir(fw, arch)
+        self._assert_four_docs(srv, "item-accepted", {
+            "proposal": "# P-active", "design": "# D-active",
+            "tasks": "T-active", "spec": "# S-active"})
+
+    def test_archived_epoch_suffix_form(self, server_fx_with_fw):
+        """归档形态 <name>-<epoch>（非标准/软删除移动形态）能命中。"""
+        proot, srv, ev = server_fx_with_fw
+        fw = ev["fw"]
+        self._seed_accepted(fw)
+        arch = fw / "spec" / "archive" / "evo-accept-x-1789359846"
+        self._write_spec_dir(fw, arch)
+        self._assert_four_docs(srv, "item-accepted", {
+            "proposal": "# P-active", "design": "# D-active",
+            "tasks": "T-active", "spec": "# S-active"})
+
+    def test_archive_multiple_hits_sorted_last(self, server_fx_with_fw):
+        """归一化后全等命中多个 → 取 sorted()[-1]（字典序最大目录）。"""
+        proot, srv, ev = server_fx_with_fw
+        fw = ev["fw"]
+        self._seed_accepted(fw)
+        # 两个目录归一化后都等于 evo-accept-x
+        a1 = fw / "spec" / "archive" / "2026-09-10-evo-accept-x"
+        a2 = fw / "spec" / "archive" / "2026-09-20-evo-accept-x"
+        self._write_spec_dir(fw, a1, capability="cap-x")
+        (a1 / "proposal.md").write_text("# P-early", encoding="utf-8")
+        self._write_spec_dir(fw, a2, capability="cap-x")
+        (a2 / "proposal.md").write_text("# P-late", encoding="utf-8")
+        # 2026-09-20-evo-accept-x > 2026-09-10-evo-accept-x
+        status, data = srv.get(
+            "/api/evolution/draft?item_id=item-accepted&doc=proposal")
+        assert status == 200
+        assert data["found"] is True
+        assert data["content"] == "# P-late"
+
+    def test_prefix_spec_name_not_mixed(self, server_fx_with_fw):
+        """互为前缀的 spec 名不相混：前缀目录 MUST NOT 命中较长 spec_name。"""
+        proot, srv, ev = server_fx_with_fw
+        fw = ev["fw"]
+        # 长 spec_name：evo-add-fast-track-scale-precheck-4afdbe
+        self._seed_accepted(fw, eid="item-long",
+                            spec_name="evo-add-fast-track-scale-precheck-4afdbe")
+        # 归档只有短名前缀形态（无日期前缀、非数字后缀）
+        arch = fw / "spec" / "archive" / "evo-add-fast-track-scale-precheck"
+        self._write_spec_dir(fw, arch)
+        status, data = srv.get(
+            "/api/evolution/draft?item_id=item-long&doc=proposal")
+        assert status == 200
+        assert data["found"] is False
+
+    def test_short_spec_name_not_mixed_with_long_archive(self, server_fx_with_fw):
+        """反向：短 spec_name 不得命中含较长名字的归档目录。"""
+        proot, srv, ev = server_fx_with_fw
+        fw = ev["fw"]
+        self._seed_accepted(fw, eid="item-short",
+                            spec_name="evo-add-fast-track-scale-precheck")
+        arch = fw / "spec" / "archive" / "evo-add-fast-track-scale-precheck-4afdbe"
+        self._write_spec_dir(fw, arch)
+        status, data = srv.get(
+            "/api/evolution/draft?item_id=item-short&doc=proposal")
+        assert status == 200
+        assert data["found"] is False
+
+    def test_no_draft_no_spec_found_false(self, server_fx_with_fw):
+        """既无草稿又无可解析 SPEC → found:false。"""
+        proot, srv, ev = server_fx_with_fw
+        fw = ev["fw"]
+        # spec_name 合法但目录不存在
+        self._seed_accepted(fw, eid="item-none", spec_name="evo-ghost-spec")
+        status, data = srv.get(
+            "/api/evolution/draft?item_id=item-none&doc=proposal")
+        assert status == 200
+        assert data["found"] is False
+
+    def test_accept_end_to_end_spec_fallback(self, server_fx_with_fw):
+        """端到端：真实接受后（草稿删、spec/changes 落目录）四 doc 可读回。"""
+        proot, srv, ev = server_fx_with_fw
+        fw = ev["fw"]
+        # item-a 已有草稿；接受后草稿被删、spec/changes/evo-add-evo-a 就位
+        status, data = srv.post_json(
+            "/api/evolution/accept", {"item_id": "item-a"})
+        assert status == 200 and data["ok"] is True
+        assert data["spec_name"] == "evo-add-evo-a"
+        assert not (ev["evo"] / "drafts" / "item-a").exists()
+        # 四 doc 从 spec/changes 读回（内容与 seed 中的 spec 内容一致）
+        for doc, key in (("proposal", "# P"), ("design", "# D"),
+                         ("spec", "# S")):
+            _st, d = srv.get(f"/api/evolution/draft?item_id=item-a&doc={doc}")
+            assert _st == 200
+            assert d["found"] is True, f"{doc} 应经 SPEC 回退读回"
+            assert d["content"].startswith(key)
+        _st, d = srv.get("/api/evolution/draft?item_id=item-a&doc=tasks")
+        assert _st == 200
+        assert d["found"] is True
+        assert "Deliverables" in d["content"]
 
 
 class TestEvolutionAcceptRejectAPI:

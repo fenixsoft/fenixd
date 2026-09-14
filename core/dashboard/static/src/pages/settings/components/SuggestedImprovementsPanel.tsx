@@ -59,7 +59,9 @@ type BatchAction = 'accept' | 'reject' | 'delete';
 /** 条目在当前状态下被禁用的原因（无禁用返回 null），供批量跳过汇报使用。 */
 function actionDisabledReason(status: string, action: BatchAction): string | null {
   if (action === 'delete') return null; // 删除不设状态门：任意状态可删
-  const dis = getActionDisabled(status);
+  // 构造最小 Pick 供 getActionDisabled（draft 动作在 BatchAction 里不会出现，
+  // has_draft / doc_source 不影响 accept/reject 判定）
+  const dis = getActionDisabled({ status, has_draft: false, doc_source: null });
   if (!dis[action]) return null;
   if (status === 'analyzed') return '不需要立项（无草稿）';
   if (status === 'draft_failed') return '草稿生成失败';
@@ -189,18 +191,26 @@ const ACTIONS = [
   { key: 'delete', label: '删除', danger: true },
 ] as const;
 
-function getActionDisabled(status: string): Record<string, boolean> {
+function getActionDisabled(item: Pick<EvolutionItem, 'status' | 'has_draft' | 'doc_source'>): Record<string, boolean> {
+  const status = item.status;
   // analyzed / draft_failed：禁用「查看 SPEC 草稿」与「同意」；
   // analyzed 另禁用「拒绝」（仅可查看结论）；
   // accepted / auto_accepted / rejected：禁用「同意」与「拒绝」；
   // pending / accept_failed：全部可用（accept_failed 可重试同意、可拒绝）。
   // delete 不设状态门（任意状态可删），恒可用。
+  //
+  // 文档页签渲染条件（evo-item-retention-doc-tracking 3.3）：由 status 判定
+  // 改为数据驱动——has_draft 为真（草稿目录在）或 doc_source 非 null/undefined
+  // （doc_source === 'spec'：草稿已删但可从 SPEC 位置读回）时同样渲染文档页签；
+  // 两者皆无（analyzed / 无 spec_name 的已拒绝等）→ 禁用。
+  const hasDoc = item.has_draft
+    || (item.doc_source !== null && item.doc_source !== undefined);
   const analyzed = status === 'analyzed';
   const draftFailed = status === 'draft_failed';
   const decided = status === 'accepted' || status === 'auto_accepted' || status === 'rejected';
   return {
     analysis: false,
-    draft: analyzed || draftFailed,
+    draft: !hasDoc,
     accept: analyzed || draftFailed || decided,
     reject: analyzed || decided,
     delete: false,
@@ -608,7 +618,7 @@ const SuggestedImprovementsPanel = forwardRef<
   // ── 操作菜单（7.4：Dropdown + MoreOutlined + Button type="link"）────────
 
   const menuItems = (item: EvolutionItem): MenuProps['items'] => {
-    const dis = getActionDisabled(item.status);
+    const dis = getActionDisabled(item);
     return ACTIONS.map((a) => ({
       key: a.key,
       label: a.label,
@@ -896,7 +906,13 @@ const SuggestedImprovementsPanel = forwardRef<
           <MarkdownBody
             loading={draftLoading}
             error={draftError}
-            emptyText={draftFound ? '（空）' : '草稿文档不存在或已被接受删除。'}
+            emptyText={
+              draftFound
+                ? '（空）'
+                : draftItem?.doc_source === 'spec'
+                  ? '文档读自 SPEC 位置，对应文档不存在。'
+                  : '草稿文档不存在或已被接受删除。'
+            }
             content={draftContent}
             onRetry={() => draftItem && loadDraft(draftItem, draftDoc)}
           />

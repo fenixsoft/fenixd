@@ -901,6 +901,8 @@ export interface EvolutionItem {
   status: string;
   has_draft: boolean;
   spec_name?: string;
+  /** 文档来源：'draft'（草稿目录存在）/ 'spec'（草稿不存在但可从 SPEC 目录读回）/ null（两者皆无） */
+  doc_source?: 'draft' | 'spec' | null;
   created_at: string;
   decided_at?: string;
 }
