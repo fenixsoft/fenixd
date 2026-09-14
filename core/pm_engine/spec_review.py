@@ -44,11 +44,22 @@ class SpecReviewManager:
     # ── 评审派发 ────────────────────────────────────────────────
 
     def dispatch_review(self, spec_name: str) -> bool:
-        """为指定 SPEC 派发一次评审 run。
+        """为指定 SPEC 派发一次评审 run，并在其收工后机械收口。
 
-        Returns: True 表示派发成功（run 已启动），False 表示派发失败。
+        本方法是评审的**唯一派发收口点**，「锚点落盘 → 快照 → 阻塞执行 → 消费结果」
+        四步全在此闭合（评审门禁接线修复）：
+
+        - **锚点（``reviewer_run``）在 run 启动之前写入**。``run_spec_review`` 为同步
+          阻塞（分钟级）；若沿用「run 收工后才写锚点」的旧序，阻塞期间第二条派发通道
+          （event_bus 轮询与 ``_on_spec_drafted`` 直调各一）读到锚点为空会再派一次，
+          两个评审 Agent 并发改写同一 SPEC 目录（并发写者事故）。
+        - **run 收工后立即 ``consume_review_result`` 收口**（approved/repaired → ready、
+          rejected → blocked）。此前该消费点在全部生产路径上零调用——评审结果写盘后
+          无人读，SPEC 永久停在 reviewing，随 daemon 重启被反复重派。
+
+        Returns: True 表示评审 run 已执行收工；False 表示被拒或 run 执行失败。
         """
-        # 检查是否已有在飞评审 run（防重派）
+        # 防重派：锚点在 run 启动前写入，故「在飞」与「已落锚点待消费」都表现为非空。
         entry = self.state_machine.read_one(spec_name)
         if not entry:
             self.logger.warning("spec_review", f"SPEC 不存在: {spec_name}")
@@ -62,10 +73,23 @@ class SpecReviewManager:
         except (TypeError, ValueError):
             attempts = 0
         if attempts >= MAX_REVIEW_ATTEMPTS:
-            self.logger.warning("spec_review", f"评审尝试已达上限: {spec_name}")
+            # 耗尽即转 blocked，不得停在 reviewing 空转（否则锚点已清、状态失效，
+            # 既不再派发也不进人工处置——另一个「卡死态」）。前缀与
+            # _handle_review_failure 的耗尽分支同源，保证人工恢复入口可识别。
+            self.logger.warning("spec_review", f"评审尝试已达上限，转 blocked: {spec_name}")
+            self.state_machine.transition(spec_name, "blocked")
+            self.state_machine.update_spec(spec_name, {
+                "reviewer_run": None,
+                "_review_attempts": 0,
+                "error": f"spec-review-incomplete: 评审尝试已达上限（{MAX_REVIEW_ATTEMPTS}）",
+            })
             return False
 
-        # 派发前快照
+        # ① 锚点先落盘：预生成 run_id，保证 STATE 里的 reviewer_run 与实际 run 一致
+        run_id = f"spec-review-{spec_name}-{int(time.time())}"
+        self.state_machine.update_spec(spec_name, {"reviewer_run": run_id})
+
+        # ② 派发前快照（写入边界校验的基线）
         snapshot = self._take_snapshot(spec_name)
         snapshot_dir = self.project_root / ".fenix" / "spec-review" / spec_name
         snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -78,18 +102,21 @@ class SpecReviewManager:
         except OSError as e:
             self.logger.warning("spec_review", f"快照保存失败: {spec_name}: {e}")
 
-        # 派发评审 run
-        run_id = self.agent_runner.run_spec_review(spec_name)
-        if not run_id.success:
-            self.logger.error("spec_review", f"评审 run 派发失败: {spec_name}")
+        # ③ 阻塞执行评审 run（正常收工或异常后返回）
+        try:
+            result = self.agent_runner.run_spec_review(spec_name, run_id=run_id)
+            run_ok = bool(getattr(result, "success", False))
+            run_err = getattr(result, "error", None)
+        except Exception as e:  # noqa: BLE001 — 派发异常须收口锚点，不得留残余
+            run_ok, run_err = False, str(e)
+        if not run_ok:
+            self.logger.error("spec_review", f"评审 run 执行失败: {spec_name}: {run_err}")
+            self._handle_review_failure(spec_name, f"评审 run 执行失败: {run_err}")
             return False
+        self.logger.info("spec_review", f"评审 run 已收工: {spec_name} run_id={run_id}")
 
-        # 更新 STATE.md
-        self.state_machine.update_spec(spec_name, {
-            "reviewer_run": run_id.run_id,
-            "_review_attempts": attempts + 1,
-        })
-        self.logger.info("spec_review", f"评审 run 已派发: {spec_name} run_id={run_id.run_id}")
+        # ④ 机械收口：结果缺失/越界由 _handle_review_failure 重试（保持既有语义）
+        self.consume_review_result(spec_name)
         return True
 
     # ── 评审结果消费 ────────────────────────────────────────────

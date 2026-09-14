@@ -116,6 +116,11 @@ class PMEngine:
         # 派发单飞守卫（fix-startup-double-dispatch）：跟踪正在派发中的 spec，
         # 防止启动扫描与事件回放对同一 spec 的重复派发
         self._pending_dispatches: set = set()
+        # 评审单飞守卫（评审门禁接线修复）：spec-review 的派发是**同步阻塞**
+        # （评审 run 分钟级），两条触发通道（event_bus 轮询 + _on_spec_drafted
+        # 直调）会在守卫释放前各自进入。STATE 侧锚点虽已在 run 启动前落盘，仍留
+        # 毫秒级「读-占位」窗口；本集合覆盖整个阻塞期，封死残余并发派发。
+        self._review_dispatches: set = set()
         # 派发冷却登记（双派发穿透原地修 2026-09-06）：spec -> 上次成功派发时刻。
         # 单飞键只覆盖「同时在飞」——dispatch 流程 <50ms 返回后标记即释放，而锁要等
         # run 线程执行 create() 才可见：full_scan 与 STATE 监听/spec_ready 双通道在
@@ -256,25 +261,36 @@ class PMEngine:
             return []
 
     def _on_spec_reviewing(self, spec_name: str):
-        """处理 spec_reviewing 事件：派发评审 run。"""
-        from core.pm_engine.spec_review import SpecReviewManager
-        review_manager = SpecReviewManager(
-            self.project_root,
-            self.state_machine,
-            self.agent_runner,
-            self,
-            self.config,
-            self.logger,
-        )
-        # 检查是否已有在飞评审 run（防重派）
-        entry = self.state_machine.read_one(spec_name)
-        if entry and entry.get("reviewer_run"):
-            self.logger.info("pm_engine", f"已有在飞评审 run: {spec_name}")
+        """处理 spec_reviewing 事件：派发评审 run（派发 → 阻塞等待 → 收口）。"""
+        # 评审单飞守卫：同一 spec 的并发 spec_reviewing 只放行一个。dispatch_review
+        # 同步阻塞（评审 run 分钟级），守卫须覆盖整个阻塞期——否则第二条触发通道
+        # （event_bus 轮询与 _on_spec_drafted 直调）会重复派发同一 spec。
+        if spec_name in self._review_dispatches:
+            self.logger.debug(
+                "pm_engine", f"Skipping duplicate review dispatch: '{spec_name}'")
             return
-        # 派发评审
-        success = review_manager.dispatch_review(spec_name)
-        if not success:
-            self.logger.error("pm_engine", f"评审派发失败: {spec_name}")
+        self._review_dispatches.add(spec_name)
+        try:
+            from core.pm_engine.spec_review import SpecReviewManager
+            review_manager = SpecReviewManager(
+                self.project_root,
+                self.state_machine,
+                self.agent_runner,
+                self,
+                self.config,
+                self.logger,
+            )
+            # 检查是否已有在飞评审 run（防重派，与 dispatch_review 内部检查同源）
+            entry = self.state_machine.read_one(spec_name)
+            if entry and entry.get("reviewer_run"):
+                self.logger.info("pm_engine", f"已有在飞评审 run: {spec_name}")
+                return
+            # 派发评审（内部含「锚点先落盘 → 阻塞执行 → 机械收口」全链）
+            success = review_manager.dispatch_review(spec_name)
+            if not success:
+                self.logger.error("pm_engine", f"评审派发失败: {spec_name}")
+        finally:
+            self._review_dispatches.discard(spec_name)
 
     def _on_spec_ready(self, spec_name: str):
         """Schedule implementer for ready SPEC (if dependencies are satisfied)."""

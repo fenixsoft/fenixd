@@ -226,5 +226,125 @@ class TestWriteBoundary(unittest.TestCase):
         self.assertIn("repaired", err)
 
 
+class _RecordingRunner:
+    """FakeRunner：记录 run 启动那一刻的 STATE，并可选写结果文件 / 触达回调。
+
+    用于回归「锚点在 run 启动前落盘」与「run 收工后机械收口」两处契约。
+    """
+
+    def __init__(self, sm, tmpdir, result=None, gate_err=None, success=True, on_run=None):
+        self.sm = sm
+        self.tmpdir = tmpdir
+        self.result = result
+        self.gate_err = gate_err
+        self.success = success
+        self.on_run = on_run
+        self.run_id_seen = None
+        self.reviewer_run_at_start = None
+
+    def _check_agent_result_artifact(self, *a, **kw):
+        return self.gate_err
+
+    def run_spec_review(self, spec_name, run_id=None):
+        # run 启动那一刻的 STATE 快照——锚点必须在此时已落盘
+        self.run_id_seen = run_id
+        self.reviewer_run_at_start = (self.sm.read_one(spec_name) or {}).get("reviewer_run")
+        if self.on_run is not None:
+            self.on_run()
+        if self.result is not None:
+            _write_result(self.tmpdir, spec_name, self.result)
+        return MagicMock(success=self.success, run_id=run_id,
+                         error=None if self.success else "boom")
+
+
+class TestDispatchAnchorAndConsume(unittest.TestCase):
+    """dispatch_review 接线回归：锚点先落盘（防重派窗口）+ run 收工后机械收口。"""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _fresh(self):
+        sm = _mk_project(self.tmpdir)
+        sm.update_spec("spec", {"reviewer_run": None})
+        return sm
+
+    def test_anchor_written_before_run_starts(self):
+        """回归（双派发）：run 启动那一刻 reviewer_run 必须已非空且等于本 run。"""
+        sm = self._fresh()
+        runner = _RecordingRunner(sm, self.tmpdir, result={"status": "approved", "repairs": []})
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        self.assertTrue(mgr.dispatch_review("spec"))
+        self.assertIsNotNone(runner.reviewer_run_at_start)
+        self.assertEqual(runner.reviewer_run_at_start, runner.run_id_seen)
+
+    def test_second_dispatch_rejected_while_inflight(self):
+        """回归（双派发）：run 在飞期间（锚点已落）第二条派发通道必须被拒。"""
+        sm = self._fresh()
+        seen = {}
+        holder = {}
+
+        def during():
+            seen["second"] = holder["mgr"].dispatch_review("spec")
+
+        runner = _RecordingRunner(sm, self.tmpdir,
+                                  result={"status": "approved", "repairs": []}, on_run=during)
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        holder["mgr"] = mgr
+        self.assertTrue(mgr.dispatch_review("spec"))
+        self.assertFalse(seen["second"])
+
+    def test_repaired_result_consumed_to_ready(self):
+        """根因回归：run 收工后结果必须被消费（repaired → ready + 派发实现）。"""
+        sm = self._fresh()
+        engine = MagicMock()
+        runner = _RecordingRunner(sm, self.tmpdir, result={
+            "status": "repaired",
+            "repairs": [{"path": "spec/changes/spec/tasks.md", "summary": "x"}]})
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, engine, {}, MagicMock())
+        self.assertTrue(mgr.dispatch_review("spec"))
+        entry = sm.read_one("spec")
+        self.assertEqual(entry["status"], "ready")
+        self.assertIsNone(entry.get("reviewer_run"))
+        engine._on_spec_ready.assert_called_once_with("spec")
+
+    def test_rejected_result_consumed_to_blocked(self):
+        """根因回归：rejected 结果必须被消费（→ blocked + 规范前缀）。"""
+        sm = self._fresh()
+        engine = MagicMock()
+        runner = _RecordingRunner(sm, self.tmpdir, result={
+            "status": "rejected",
+            "findings": [{"severity": "blocking", "aspect": "hole", "detail": "x"}]})
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, engine, {}, MagicMock())
+        self.assertTrue(mgr.dispatch_review("spec"))
+        entry = sm.read_one("spec")
+        self.assertEqual(entry["status"], "blocked")
+        self.assertTrue(str(entry.get("error", "")).startswith("spec-review-rejected:"))
+
+    def test_run_failure_clears_anchor_and_counts_attempt(self):
+        """run 执行失败：锚点清空、保持 reviewing、尝试计数递增（可重试）。"""
+        sm = self._fresh()
+        runner = _RecordingRunner(sm, self.tmpdir, success=False)
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        self.assertFalse(mgr.dispatch_review("spec"))
+        entry = sm.read_one("spec")
+        self.assertIsNone(entry.get("reviewer_run"))
+        self.assertEqual(entry["status"], "reviewing")
+        self.assertEqual(int(entry.get("_review_attempts", 0)), 1)
+
+    def test_exhausted_attempts_blocks_not_stranded(self):
+        """尝试耗尽：不得停在 reviewing 空转，须转 blocked（规范前缀）。"""
+        sm = self._fresh()
+        sm.update_spec("spec", {"_review_attempts": MAX_REVIEW_ATTEMPTS})
+        runner = _RecordingRunner(sm, self.tmpdir, result={"status": "approved", "repairs": []})
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        self.assertFalse(mgr.dispatch_review("spec"))
+        entry = sm.read_one("spec")
+        self.assertEqual(entry["status"], "blocked")
+        self.assertTrue(str(entry.get("error", "")).startswith("spec-review-incomplete:"))
+
+
 if __name__ == "__main__":
     unittest.main()
