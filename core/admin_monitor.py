@@ -1265,12 +1265,17 @@ class AdminMonitor:
 
         如 impl-myspec-1735... → myspec；planner-plan-myspec-1735... → myspec。
         无法识别返回 None。
+
+        后缀兼容 attempt（-a<n>）与瞬态重试（-r<n>，fix-provider-transient-backoff
+        引入的 in-place retry run_id，形如 <base>-a1-r1）：两者都不影响 spec 名
+        还原，若漏剥 -r<n> 将解析失败返回 None，导致 _has_recent_progress 匹配
+        不到活跃 run 而误报 stuck（evo-verifier-result-single-source 事故实证）。
         """
         for prefix in _RUN_PREFIXES:
             if not run_id.startswith(prefix):
                 continue
             rest = run_id[len(prefix):]
-            m = re.match(r"^(.*)-\d{9,10}(-a\d+)?$", rest)
+            m = re.match(r"^(.*)-\d{9,10}(-(?:a|r)\d+)*$", rest)
             if m:
                 return m.group(1)
         return None

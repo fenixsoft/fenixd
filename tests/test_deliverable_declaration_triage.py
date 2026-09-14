@@ -427,6 +427,24 @@ class TestDisputeJudgeRunPrefixOwnership(unittest.TestCase):
         self.assertEqual(
             AdminMonitor._spec_from_run_id(f"dispute-judge-myspec-{ts}"), "myspec")
 
+    def test_spec_from_run_id_retry_suffix(self):
+        """瞬态重试后缀 -r<n>（fix-provider-transient-backoff）不得破坏 spec 名还原。
+
+        回归：<base>-a1-r1 类 run_id 解析不得返回 None；否则 _has_recent_progress
+        匹配不到活跃 run 文件，误报 stuck（evo-verifier-result-single-source 事故）。
+        """
+        from core.admin_monitor import AdminMonitor
+        cases = {
+            "impl-evo-verifier-result-single-source-1789398956-a1": "evo-verifier-result-single-source",
+            "impl-evo-verifier-result-single-source-1789398956-a1-r1": "evo-verifier-result-single-source",
+            "impl-evo-item-retention-doc-tracking-1789381457-a2-r3": "evo-item-retention-doc-tracking",
+            "admin-evo-verifier-result-single-source-1789408572": "evo-verifier-result-single-source",
+            "planner-plan-fix-command-main-serve-scope-1789400038-a1": "fix-command-main-serve-scope",
+        }
+        for run_id, expect in cases.items():
+            self.assertEqual(AdminMonitor._spec_from_run_id(run_id), expect,
+                             f"run_id {run_id} 还原失败")
+
     def test_prefixes_same_source_sync(self):
         """两处前缀表同源互指：新前缀不能只加一方。"""
         from core.admin_monitor import _RUN_PREFIXES
