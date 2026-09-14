@@ -206,6 +206,98 @@ class TestPromotionLintGate(unittest.TestCase):
         self.assertEqual(entry["status"], "ready")
 
 
+class TestDeliverableSectionShape(unittest.TestCase):
+    """规则 0：声明段形态不可解析即违规（2026-09-14 自进化草稿格式事故）。
+
+    事故原形：草稿把 Deliverables 写成平铺 Markdown 列表 + 缩进 path/kind 子项、
+    kind 用 feature/test/chore 自造词——旧实现五处静默放行（return [] / continue），
+    失败信息只剩任务分组规则，指向不到真问题。无声明段的存量 spec 必须继续放行。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.pr = Path(self.tmpdir)
+        self.spec_dir = self.pr / "spec" / "changes" / "demo"
+        self.spec_dir.mkdir(parents=True, exist_ok=True)
+        (self.pr / "core").mkdir(parents=True, exist_ok=True)
+        (self.pr / "core" / "data.py").write_text("x", encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _raw(self, text: str) -> None:
+        (self.spec_dir / "tasks.md").write_text(text, encoding="utf-8")
+
+    def test_section_without_fence_is_violation(self):
+        """事故原形：平铺列表 + 缩进子项（无 yaml 围栏）→ 违规且处方点名围栏。"""
+        self._raw(
+            "# 任务\n\n## Deliverables\n\n"
+            "- [ ] 任务 1：实现读写\n"
+            "  - path: core/data.py\n"
+            "  - kind: feature\n\n"
+            "## 1. 阶段一\n\n- [ ] 1.1 do it\n"
+        )
+        violations = lint_declared(self.spec_dir, self.pr)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("fenced yaml", violations[0])
+
+    def test_yaml_syntax_error_is_violation(self):
+        self._raw(
+            "# 任务\n\n## Deliverables\n\n```yaml\n"
+            "- path: core/data.py\n  kind: modify\n  :\n[[[\n```\n\n"
+            "## 1. 阶段一\n\n- [ ] 1.1 do it\n"
+        )
+        violations = lint_declared(self.spec_dir, self.pr)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("yaml 语法错误", violations[0])
+
+    def test_non_list_toplevel_is_violation(self):
+        self._raw(
+            "# 任务\n\n## Deliverables\n\n```yaml\n"
+            "path: core/data.py\nkind: modify\n```\n\n"
+            "## 1. 阶段一\n\n- [ ] 1.1 do it\n"
+        )
+        violations = lint_declared(self.spec_dir, self.pr)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("顶层必须是列表", violations[0])
+
+    def test_entry_missing_path_is_violation(self):
+        self._raw(
+            "# 任务\n\n## Deliverables\n\n```yaml\n"
+            "- kind: modify\n```\n\n## 1. 阶段一\n\n- [ ] 1.1 do it\n"
+        )
+        violations = lint_declared(self.spec_dir, self.pr)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("缺 path", violations[0])
+
+    def test_invalid_kind_is_violation(self):
+        """kind 自造词（feature）→ 违规且消息点名合法枚举与自造词。"""
+        self._raw(
+            "# 任务\n\n## Deliverables\n\n```yaml\n"
+            "- path: core/data.py\n  kind: feature\n```\n\n"
+            "## 1. 阶段一\n\n- [ ] 1.1 do it\n"
+        )
+        violations = lint_declared(self.spec_dir, self.pr)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("kind 非法", violations[0])
+        self.assertIn("feature", violations[0])
+        self.assertIn("reference", violations[0])  # 合法枚举在处方里
+
+    def test_no_section_still_passes(self):
+        """回归护栏：无 `## Deliverables` 段的存量 spec 不得被规则 0 拦截。"""
+        self._raw("# 任务\n\n## 1. 阶段一\n\n- [ ] 1.1 do it\n")
+        self.assertEqual(lint_declared(self.spec_dir, self.pr), [])
+
+    def test_entry_non_mapping_is_violation(self):
+        self._raw(
+            "# 任务\n\n## Deliverables\n\n```yaml\n"
+            "- core/data.py\n```\n\n## 1. 阶段一\n\n- [ ] 1.1 do it\n"
+        )
+        violations = lint_declared(self.spec_dir, self.pr)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("必须是映射", violations[0])
+
+
 class TestFileExistsOnBranchAcceptsTree(unittest.TestCase):
     """A 层：守卫存在性检查接受 blob 或非空 tree（git 不追踪空目录）。"""
 

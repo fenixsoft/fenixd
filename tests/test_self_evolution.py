@@ -592,7 +592,9 @@ class TestEvolutionMaterializeDraft(unittest.TestCase):
             "proposal_md": "# Proposal",
             "design_md": "# Design",
             "spec_md": "# Spec",
-            "tasks_md": "## Deliverables\n\n- path: a.txt\n  kind: new\n",
+            "tasks_md": ("## Deliverables\n\n```yaml\n"
+                         "- path: a.txt\n  kind: new\n```\n\n"
+                         "## 1. 实现\n\n- [ ] 1.1 落地功能\n"),
         }
 
     def test_materialize_draft_success(self):
@@ -1624,10 +1626,10 @@ class TestEvolutionIngestDraftFailed(unittest.TestCase):
             "name": "add-evo-x", "capability": "evo-cap",
             "proposal_md": "# P", "design_md": "# D", "spec_md": "# S",
             "tasks_md": (
-                "## 1. 实现\n\n"
-                "- [ ] 1.1 落地功能\n\n"
                 "## Deliverables\n\n"
-                "- path: a.txt\n  kind: new\n"),
+                "```yaml\n- path: a.txt\n  kind: new\n```\n\n"
+                "## 1. 实现\n\n"
+                "- [ ] 1.1 落地功能\n"),
         }
 
     def test_worth_spec_false_analyzed_no_draft(self):

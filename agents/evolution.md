@@ -63,7 +63,7 @@
     "proposal_md": "proposal.md 内容",
     "spec_md": "specs/<capability>/spec.md 内容",
     "design_md": "design.md 内容",
-    "tasks_md": "tasks.md 内容（必须包含 ## Deliverables 段，path 为具体文件，kind 语义正确）"
+    "tasks_md": "tasks.md 内容（两段硬性结构：首个 ## Deliverables 段 fenced yaml 声明 + `## <编号>. <标题>` 分组任务）"
   }
 }
 ```
@@ -74,8 +74,44 @@
 
 spec 内容必须符合 fenix-new 流程的文档格式：
 - name 和 capability 必须为 kebab-case（`^[a-z0-9][a-z0-9-]*$`）
-- tasks_md 必须包含 `## Deliverables` 段，且 path 为具体文件（不是目录）
 - 所有文档内容为纯文本（Markdown），不包含转义字符
+
+**tasks_md 有两段硬性结构，缺任一即整条作废**——框架落盘后会跑与晋升同源的 lint
+（`core/deliverables.py`），不通过即该条目置 `draft_failed`、草稿被删、整轮白跑：
+
+1. **`## Deliverables` 声明段（必须是第一个 `## ` 分组）**：内容写在 ```yaml 围栏内，
+   逐条两行 `- path: <具体文件>` + `  kind: <new|modify|delete|reference>`。
+   - `path` 必须是具体文件（目录、含 `<...>` 占位符一律无效）；
+   - `kind` 只能是 `new` / `modify` / `delete` / `reference` 四值之一——自造词
+     （`feature` / `test` / `chore` 等）等同未声明；
+   - `kind: modify` / `reference` 的路径**必须先在项目主树核实存在**（用 ls/grep
+     查过再写，禁止凭印象）；新建文件用 `new`。
+2. **编号分组任务列表**：每组 `## <阿拉伯数字>. <标题>`（如 `## 1. 落地校验`），
+   组内任务行 `- [ ] <组号>.<序号> <任务>`（如 `- [ ] 1.1 ...`）。
+   **只有 Deliverables 段、没有编号分组 = 下游解析不出任务，草稿整条作废**。
+
+tasks_md 骨架（照此形状改写内容，两个 `## ` 段都要有）：
+
+````markdown
+## Deliverables
+
+```yaml
+- path: core/xxx/yyy.py
+  kind: modify
+- path: tests/test_xxx.py
+  kind: new
+```
+
+## 1. 落地校验
+
+- [ ] 1.1 core/xxx/yyy.py：做某事（把要改的点写清）
+- [ ] 1.2 ...
+
+## 2. 测试
+
+- [ ] 2.1 tests/test_xxx.py：覆盖 ...
+````
+
 
 ## 最终产物
 
@@ -101,26 +137,57 @@ spec 内容必须符合 fenix-new 流程的文档格式：
 1. **逐条写分片**：对每条条目，用 Write 工具写出 `{out_path}.parts/<条目 id>.json`，
    每个文件**只含一个条目判定对象**（即最终 `items` 数组里的一个元素）。
    目录不存在时先创建。
-2. **合并**：全部分片写完后，执行一次 Bash 合并成最终契约（照抄，仅把
+2. **SPEC 格式自检（必须；不过就改到过再合并）**：对含 `spec` 的分片，逐条跑与框架
+   落盘同源的 lint（同一个 `core/deliverables.py`），任一条违规即该草稿会被框架判
+   `draft_failed` 作废——**必须就地修正该分片的 `tasks_md` 后重跑，直到打印 `SPEC_OK`**。
+   下面脚本按行首顶格照抄执行（缩进会致 `IndentationError`）：
+
+```bash
+python3 - <<'PY'
+import glob, json, pathlib, sys, tempfile
+sys.path.insert(0, ".fenix")
+from core.deliverables import lint_declared, lint_tasks_parseable
+root = pathlib.Path(".")
+bad = []
+for p in sorted(glob.glob("{out_path}.parts/*.json")):
+    it = json.load(open(p, encoding="utf-8"))
+    t = ((it.get("spec") or {}).get("tasks_md") or "")
+    if not str(t).strip():
+        continue
+    d = pathlib.Path(tempfile.mkdtemp())
+    (d / "tasks.md").write_text(t, encoding="utf-8")
+    v = lint_declared(d, root) + lint_tasks_parseable(d, root)
+    if v:
+        bad.append((it.get("id"), v))
+for item_id, v in bad:
+    print("[" + str(item_id) + "] " + "；".join(v))
+print("SPEC_BAD " + str(len(bad)) if bad else "SPEC_OK")
+PY
+```
+
+违规消息即处方：`## <编号>. 标题` 分组缺失 → 按上文结构补编号分组；声明段报错 →
+按消息修正 path / kind。**未打印 `SPEC_OK` 就合并 = 明知故犯空跑一轮**。
+
+3. **合并**：全部分片写完后，执行一次 Bash 合并成最终契约（照抄、顶格，仅把
    `<RUN_ID>` 换成 `evo-<你启动时刻的 epoch>`、`<DEGRADED>` 换成 `null` 或
    `"no-task-tool"`）：
 
-   ```bash
-   python3 - <<'PY'
-   import json, glob
-   out = "{out_path}"
-   parts = sorted(glob.glob(out + ".parts/*.json"))
-   items = [json.load(open(p, encoding="utf-8")) for p in parts]
-   with open(out, "w", encoding="utf-8") as f:
-       json.dump({"run_id": "<RUN_ID>", "degraded": <DEGRADED>, "items": items},
-                 f, ensure_ascii=False, indent=2)
-   print("merged", len(items), "items ->", out)
-   PY
-   ```
+```bash
+python3 - <<'PY'
+import json, glob
+out = "{out_path}"
+parts = sorted(glob.glob(out + ".parts/*.json"))
+items = [json.load(open(p, encoding="utf-8")) for p in parts]
+with open(out, "w", encoding="utf-8") as f:
+    json.dump({"run_id": "<RUN_ID>", "degraded": <DEGRADED>, "items": items},
+              f, ensure_ascii=False, indent=2)
+print("merged", len(items), "items ->", out)
+PY
+```
 
-3. **自检 + 清理**：`python3 -m json.tool {out_path} > /dev/null && echo OK` 必须打印
+4. **自检 + 清理**：`python3 -m json.tool {out_path} > /dev/null && echo OK` 必须打印
    `OK`；随后 `rm -rf {out_path}.parts` 删除分片目录。
-4. **回复只报统计**：回复中只给产物路径与条目数（如 `20 items -> {out_path}`），
+5. **回复只报统计**：回复中只给产物路径与条目数（如 `20 items -> {out_path}`），
    **MUST NOT 粘贴 JSON 正文**。
 
 ## 关键约束（违反任何一条 = run 失败）
@@ -130,9 +197,15 @@ spec 内容必须符合 fenix-new 流程的文档格式：
    `spec/changes/` 下建条目。**唯一允许的写操作是本 run 自己的交付物**——
    写 `{out_path}.parts/` 分片与合并出 `{out_path}`（含创建这两者所在目录）。
    这不属于「改动项目」，是本 run 的产物落地。
-2. **逐条子代理**：每个条目必须由独立的 Task 子代理处理（串行降级时记录 degraded）
+2. **逐条子代理**：每个条目必须由独立的 Task 子代理处理（串行降级时记录 degraded）。
+   若把 SPEC 起草也交给子代理，**子代理 prompt 里 MUST 原文带上「SPEC 文本格式要求」
+   整节（Deliverables fenced yaml + `## <编号>. <标题>` 分组 + 骨架），MUST NOT 简写成
+   「含 ## Deliverables 段」**——2026-09-13 的 7 条草稿全灭即源于此：下放时格式要求被
+   简化为一条，子代理据此产出无编号分组的 tasks.md，落盘 lint 全拦。
 3. **回源核查**：MUST NOT 直接采信 todo.md 的「调查评估」，必须读取实际源码
 4. **证据引用**：rationale MUST 引用具体证据（文件路径/行号、日志时间戳、STATE 条目等）
 5. **诚实标注**：无法核实的部分标注「未核实」，MUST NOT 编造
 6. **产物完整**：每条条目必须包含完整的 verdict + analysis_md，worth_spec=true 时 spec 字段齐全
-7. **格式合规**：JSON 格式正确，name/capability 为 kebab-case，tasks.md 包含 Deliverables 段
+7. **格式合规**：JSON 格式正确，name/capability 为 kebab-case，tasks.md 两段结构齐全
+   （首个 `## Deliverables` fenced yaml 段 + `## <编号>. <标题>` 分组任务），
+   且已跑过第 2 步自检脚本并打印 `SPEC_OK`

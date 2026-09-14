@@ -184,7 +184,7 @@
 
 ### Requirement: 草稿生成与同源 lint 校验
 
-对 `verdict.worth_spec` 为真且 `spec` 内容齐全的条目，框架 MUST 按 fenix-new 流程把 SPEC 全套写入 `.fenix/evolution/drafts/<id>/`：`proposal.md`、`specs/<capability>/spec.md`、`design.md`、`tasks.md`（含 `## Deliverables` 声明段，path 为具体文件、kind 语义正确）、`.spec.yaml`（`schema: spec-driven` + `created: <YYYY-MM-DD>` + `mode: full`）。
+对 `verdict.worth_spec` 为真且 `spec` 内容齐全的条目，框架 MUST 按 fenix-new 流程把 SPEC 全套写入 `.fenix/evolution/drafts/<id>/`：`proposal.md`、`specs/<capability>/spec.md`、`design.md`、`tasks.md` 两段结构齐全——首个 `## Deliverables` 段（fenced yaml，path 为具体文件、kind 取 new/modify/delete/reference 四值，modify/reference 路径须在主树存在） + `## <编号>. <标题>` 分组任务行 `- [ ] <组号>.<序号> <任务>`（只写 Deliverables 段而无编号分组即视为格式违规，与 daemon 晋升 lint 同源判定）、`.spec.yaml`（`schema: spec-driven` + `created: <YYYY-MM-DD>` + `mode: full`）。
 
 落盘后框架 MUST 执行与 daemon 晋升**同源**的 lint 预检（`sys.path` 指向 `.fenix/`，即 `core.deliverables.lint_declared(draft_dir, project_root)` 与 `lint_tasks_parseable(draft_dir, project_root)`）：
 

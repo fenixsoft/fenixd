@@ -779,6 +779,15 @@ def lint_declared(spec_dir, project_root) -> List[str]:
     死锁事故 2026-09-03）。
 
     规则（零误拦取向，只拦确定性无效形态）：
+    0. 声明段形态本身不可解析（2026-09-14 自进化草稿格式事故）：
+       ``## Deliverables`` 标题存在但段内无 fenced yaml 块 / yaml 语法错 /
+       顶层非列表 / 条目缺 path / kind 非法值——五种形态下声明等于不存在，
+       下游 ``extract_declared_entries`` 一律返回 ``None`` 并静默回退守卫的
+       正则语境猜测（声明机制要消灭的正是这套猜测），故必须在此拦下。无
+       ``## Deliverables`` 标题的存量 spec 仍返回空清单（不在 lint 职责内）。
+       事故原形：自进化草稿把 Deliverables 写成平铺 Markdown 列表 + 缩进
+       path/kind 子项、kind 用 ``feature``/``test``/``chore`` 自造词，lint 全
+       部静默放行，只剩任务分组规则报错，失败信息指向不到真问题；
     1. 路径含 ``<``/``>`` 模板占位符——守卫的 ``_is_deliverable_path`` 会静默
        跳过该条目，声明形同虚设（fix-admin-run-blocks-mainloop 同族坑）；
     2. ``kind: modify`` 的路径在主树是目录——目录声明与守卫判定形态不匹配
@@ -819,6 +828,7 @@ def lint_declared(spec_dir, project_root) -> List[str]:
         任何分支不可交付，应改为仓库内路径。
 
     lint 自身故障一律 fail-open（返回空清单放行晋升），不因 lint 阻塞流水线。
+    规则 0 的形态违规属「内容确定性无效」而非 lint 故障，照常返回违规。
 
     Args:
         spec_dir: SPEC 目录（spec/changes/<spec>/）。
@@ -856,21 +866,54 @@ def lint_declared(spec_dir, project_root) -> List[str]:
         if in_fence:
             block.append(line)
     if not block:
-        return []
+        return [
+            "Deliverables 声明段存在但未解析出 fenced yaml 块——声明条目必须写在"
+            "```yaml 围栏内（每条 `- path: <具体文件>` + `  kind: <new|modify|"
+            "delete|reference>` 两行），平铺的 Markdown 列表或缩进子项不会被"
+            "下游解析器识别，等同未声明（守卫会回退正则语境猜测）；"
+            "请改为 fenced yaml 块后重试晋升"
+        ]
     try:
         entries = _yaml.safe_load("\n".join(block))
-    except Exception:
-        return []  # yaml 解析失败由守卫的回退语义处理，lint 不重复报
+    except Exception as e:
+        return [
+            f"Deliverables 声明段 yaml 语法错误（{e}）——声明条目必须能被 "
+            f"yaml.safe_load 解析为列表，当前解析失败等同未声明；"
+            f"请修正该 fenced yaml 块语法后重试晋升"
+        ]
     if not isinstance(entries, list):
-        return []
+        return [
+            f"Deliverables 声明段顶层必须是列表——当前 yaml 解析为 "
+            f"{type(entries).__name__}，声明条目须为 `- path: ...` 序列；"
+            f"请修正后重试晋升"
+        ]
 
     violations: List[str] = []
     for e in entries:
         if not isinstance(e, dict):
+            violations.append(
+                f"Deliverables 声明条目必须是映射——当前为 "
+                f"{type(e).__name__}（{e!r}），条目形态为 "
+                f"`- path: <具体文件>` + `  kind: <kind>`；"
+                f"该条目等同未声明，请修正后重试晋升"
+            )
             continue
         path = str(e.get("path") or "").strip()
         kind = str(e.get("kind") or "").strip().lower()
-        if not path or kind not in _DECLARED_KINDS:
+        if not path:
+            violations.append(
+                f"Deliverables 声明条目缺 path——条目 {e!r} 无法对账，"
+                f"请补 path（具体文件路径）后重试晋升"
+            )
+            continue
+        if kind not in _DECLARED_KINDS:
+            violations.append(
+                f"[{path}] kind 非法: {kind or '（缺 kind）'}——合法值仅 "
+                f"{'/'.join(_DECLARED_KINDS)}（语义：new 产出入库 / modify 改"
+                f"既有入库文件 / delete 删除既有入库文件 / reference 既有引用"
+                f"仅审计留痕）；自造词（feature/test/chore 等）等同未声明，"
+                f"请改写为合法 kind 后重试晋升"
+            )
             continue
         if "<" in path or ">" in path:
             violations.append(
