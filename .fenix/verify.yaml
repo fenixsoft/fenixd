@@ -55,6 +55,10 @@ prepare:
   # spec），但 serve.cmd 只启动 dashboard、无夹具供给——夹具缺失即 api 场景
   # 404 unknown project、web 场景无行可点。本步每轮验证前幂等重建/复位夹具
   # 并确保注册表登记（场景会真实改写夹具 STATE.md，跨轮持久故须复位）。
+  # 2026-09-14 夹具入库：稳定骨架（scheduling_showcase 包/tests/pyproject）
+  # 入库于 tests/fixtures/scheduling-showcase/，本步从骨架 provision 到运行时
+  # /root/scheduling-showcase（仓外——运行时会被 seed 与夹具 daemon 写入，不能
+  # 落 fenixd 跟踪路径）；夹具原独立 git 已丢历史，reset 时 git init 新建。
   # 主路径 = worktree 内 git 跟踪的 bin/ 脚本；fallback = .fenix/bin 运行态
   # 副本（覆盖 worktree 落在旧提交、尚无该脚本的窗口）。
   - run: python3 bin/fixture_scheduling_showcase.py --reset || python3 .fenix/bin/fixture_scheduling_showcase.py --reset

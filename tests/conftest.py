@@ -1,6 +1,15 @@
 import sys
 from pathlib import Path
 
+# ── 夹具骨架排除（fixture 项目自带测试不属 fenixd 回归）────────────────────
+# tests/fixtures/scheduling-showcase/ 是验证夹具骨架（见其 README），内含夹具
+# 项目自己的 tests/test_schedset.py，依赖 scheduling_showcase 包（不在 fenixd
+# sys.path 上）。被 pytest tests/ 收集会在收集期 ModuleNotFoundError 中断整轮
+# 回归。该目录内放 conftest.py 不行——与根 tests/conftest.py 同名，pytest 按
+# basename 导入会撞名（ImportError: cannot import name ... from 'conftest'）。
+# 故在此集中排除。
+collect_ignore_glob = ["fixtures/scheduling-showcase/tests/*"]
+
 # Add project root to sys.path for test discovery
 # This ensures that 'core' module can be imported from test files
 project_root = Path(__file__).resolve().parent.parent
