@@ -477,6 +477,45 @@ class TestRepairWorker(unittest.TestCase):
         # repair worktree 已回收
         self.assertIsNone(self.wm.find_worktree_path(branch))
 
+    def test_repair_success_writes_mark_and_branch(self):
+        """repair 成功后的状态形态（fix-recovery-branch-anchor 9.8）：
+        re-merge-back 成功路径中 _repair_awaiting_remerge 与 branch 同时
+        写入、且 implemented 后标记为假（防字符串 "False" truthy）。"""
+        branch = self._conflicted_branch()
+        info = self.wm.merge_back_from_branch(branch)
+        self.assertFalse(info.success)
+        wt, resolved_branch = self.wm.resolve_repair_site(self.spec, branch)
+        self._simulate_repair_agent(wt, branch)
+        self.engine.agent_runner.run_repair = MagicMock(return_value=self._success_result())
+        self.engine._run_repair_worker(self.spec, wt, resolved_branch, info)
+        entry = self.sm.read_one(self.spec)
+        self.assertEqual(entry["status"], "implemented")
+        self.assertEqual(entry["branch"], branch)
+        self.assertIs(entry.get("_repair_awaiting_remerge"), False,
+                      "implemented 后 _repair_awaiting_remerge MUST 为假")
+        # STATE.md 往返：标记为 False（不是字符串 "False"）
+        parsed = self.sm.read_one(self.spec)
+        self.assertIs(parsed.get("_repair_awaiting_remerge"), False)
+
+    def test_repair_run_inflight_no_mark(self):
+        """repair run 运行期间 MUST NOT 写该标记（9.8）：只有终态成功才写。"""
+        branch = self._conflicted_branch()
+        info = self.wm.merge_back_from_branch(branch)
+        self.assertFalse(info.success)
+        wt, resolved_branch = self.wm.resolve_repair_site(self.spec, branch)
+        # repair agent 运行中（未写结果文件）→ 视为未终态成功
+        from core.agent_runner import AgentRunResult
+        running_result = AgentRunResult(
+            run_id="repair-demo-1", spec_name=self.spec, agent_type="repair",
+            success=False, duration_seconds=1.0, branch=branch,
+        )
+        self.engine.agent_runner.run_repair = MagicMock(return_value=running_result)
+        # 未写 .fenix-run-result.json（运行中被杀）→ 修复失败 → fallback
+        self.engine._run_repair_worker(self.spec, wt, resolved_branch, info)
+        entry = self.sm.read_one(self.spec)
+        self.assertIs(entry.get("_repair_awaiting_remerge"), False,
+                      "运行期/失败路径不得写入 _repair_awaiting_remerge")
+
     def test_repair_failure_falls_back(self):
         """repair agent 显式失败 → 回退 fallback（status ready + prompt 错误上下文）。"""
         branch = self._conflicted_branch()

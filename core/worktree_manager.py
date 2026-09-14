@@ -131,13 +131,26 @@ class WorktreeManager:
     _rehearsal_probe_done = False
     _rehearsal_supported = False
 
-    def __init__(self, base_dir: Path, project_root: Path, logger, process_scanner=None):
+    def __init__(self, base_dir: Path, project_root: Path, logger,
+                 process_scanner=None, implement_branch_prefix: str = None,
+                 state_reader=None):
         self.base_dir = Path(base_dir)
         self.project_root = Path(project_root)
         self.logger = logger
         self._active_worktrees: Set[str] = set()
         self._wt_branches: Dict[str, str] = {}  # wt_path -> branch name
         self._spec_locks: Set[str] = set()  # SPECs currently being worked on
+        # 分支创建端口径前缀（fix-recovery-branch-anchor D2）：
+        # 分支创建端硬编码 `fenix/`（create() 第 223/226 行），此参数用于
+        # `find_branches_by_spec` 枚举前缀——取配置值与创建端口径的并集，
+        # 确保非 fenix 配置下仍命中 fenix 创建的分支（若配置值为 fenix，
+        # 只枚举一次，无重复扫描）。
+        self._implement_branch_prefix = implement_branch_prefix or "fenix"
+        # STATE 读取器（fix-recovery-branch-anchor D6 分支在飞引用保护）：
+        # 注入 `() -> Dict[spec_name, entry]`；缺省 None 时按 project_root
+        # 就地解析 `.fenix/STATE.md`（StateParser 无循环依赖）。读取失败
+        # MUST 保守处理（不清分支），不阻塞 boot 路径。
+        self._state_reader = state_reader
         # 锁龄登记（双派发穿透原地修 2026-09-06）：key -> 拿锁时刻。run 流文件由
         # attempt 子进程启动后才创建，而锁在 create() 内即持有（worktree add + seed +
         # node_modules 供给实测可达十几秒）——「无进程且无流文件」无法区分 create
@@ -1881,16 +1894,117 @@ class WorktreeManager:
                 if res.returncode != 0:
                     shutil.rmtree(str(wt_dir), ignore_errors=True)
                 if branch and branch != "HEAD":
-                    subprocess.run(
-                        ["git", "-C", str(self.project_root), "branch", "-D", branch],
-                        capture_output=True, timeout=10,
-                    )
+                    # ── 分支在飞引用保护（fix-recovery-branch-anchor D6）──
+                    # 删分支前检查该分支是否被 STATE 中在飞/待收口 spec 引用
+                    #（implementing/implemented/testing/带 _recovery_resume 的
+                    # ready），或按「完整 spec 名 + 分隔符边界」匹配任一
+                    # implementing spec 的实现分支（覆盖锚点尚未落盘的场合）。
+                    # 命中则保留分支（worktree 目录照常已删）并打 WARNING；
+                    # STATE 不可解析时保守处理（保留分支 + WARNING），
+                    # MUST NOT 按「无引用」放行删除。
+                    kept, reason = self._branch_protected_by_state(branch)
+                    if kept:
+                        self.logger.warning(
+                            "worktree_manager",
+                            f"分支在飞引用保护：保留分支 '{branch}'（{reason}）— "
+                            f"worktree 目录已清理，分支留待恢复/后继 run 收编",
+                        )
+                    else:
+                        subprocess.run(
+                            ["git", "-C", str(self.project_root), "branch", "-D", branch],
+                            capture_output=True, timeout=10,
+                        )
             except Exception as e:
                 self.logger.warning("worktree_manager", f"Stale worktree cleanup failed: {e}")
         subprocess.run(
             ["git", "-C", str(self.project_root), "worktree", "prune"],
             capture_output=True, timeout=10,
         )
+
+    def _read_state_entries(self) -> Optional[dict]:
+        """读取 STATE 全部 spec 条目（fix-recovery-branch-anchor D6）。
+
+        经构造注入的 ``state_reader``（调用点 fenixd.py 传入 state_machine
+        读取器）或就地解析 ``.fenix/STATE.md``（StateParser 无循环依赖）。
+        读取/解析失败返回 None（区别于「无引用」的空 dict）——调用方据此
+        保守处理（不清分支），MUST NOT 按「无引用」放行删除（tasks 6.3）。
+        """
+        if self._state_reader is not None:
+            try:
+                data = self._state_reader()
+                if data is None:
+                    return None
+                if not isinstance(data, dict):
+                    return {}
+                return data
+            except Exception as e:
+                self.logger.warning(
+                    "worktree_manager",
+                    f"state_reader 读取失败（保守不清分支）: {e}",
+                )
+                return None
+        state_path = self.project_root / ".fenix" / "STATE.md"
+        try:
+            if not state_path.exists():
+                return {}
+            from core.state_machine import StateParser
+            return StateParser.parse(state_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"STATE.md 解析失败（保守不清分支）: {e}",
+            )
+            return None
+
+    def _branch_protected_by_state(self, branch: str) -> tuple:
+        """分支是否被 STATE 在飞/待收口 spec 引用（fix-recovery-branch-anchor D6）。
+
+        判据（D6）：
+        (a) 分支等于任一 ``implementing``/``implemented``/``testing`` spec 的
+            ``branch`` 字段值；或带 ``_recovery_resume`` 标记的 ``ready`` spec
+            （§4.3 失败回落形态）的 ``branch`` 字段值；
+        (b) 分支按「完整 spec 名 + 分隔符边界」全等匹配任一 ``implementing``
+            spec 的实现分支（``<prefix>/<spec>-<ts>``，口径同 D2/find_branches
+            _by_spec：去前缀后末段纯数字时间戳、其前段与 spec 名全等）——
+            覆盖锚点尚未落盘的场合。
+
+        Returns: ``(kept: bool, reason: str)``；STATE 不可解析时 ``(True, ...)``
+        保守保留。
+        """
+        if not branch:
+            return False, ""
+        states = self._read_state_entries()
+        if states is None:
+            return True, "STATE 不可解析，保守保留"
+        # (a) 字段值直接命中
+        for sname, entry in states.items():
+            status = entry.get("status", "")
+            if status in ("implementing", "implemented", "testing", "ready"):
+                if entry.get("branch") == branch:
+                    # ready 仅当带 _recovery_resume 标记才算在飞引用
+                    if status != "ready" or entry.get("_recovery_resume"):
+                        return True, f"STATE 字段引用（{sname}: {status}）"
+        # (b) 命名空间口径：任一 implementing spec 的 <prefix>/<spec>-<ts>
+        for sname, entry in states.items():
+            if entry.get("status") != "implementing":
+                continue
+            if not sname:
+                continue
+            rest = None
+            for prefix in ("fenix", self._implement_branch_prefix or "fenix"):
+                if prefix and branch.startswith(f"{prefix}/"):
+                    rest = branch[len(prefix) + 1:]
+                    break
+            if rest is None:
+                continue
+            if rest.startswith("verify-"):
+                continue
+            segs = rest.rsplit("-", 1)
+            if len(segs) != 2 or not segs[0] or not segs[1].isdigit():
+                continue
+            if segs[0] == sname:
+                return True, f"命名空间匹配 implementing spec '{sname}'"
+        return False, ""
 
     def get_branch_name(self, wt_path: Path) -> Optional[str]:
         """Return the branch name for an active worktree, or None if unknown."""
@@ -3196,6 +3310,186 @@ class WorktreeManager:
         if valid:
             return valid[0]
         return None
+
+    def find_worktrees_by_spec(self, spec_name: str) -> list:
+        """按 spec 名列出**全部**在册 worktree 路径（fix-recovery-branch-anchor D5）。
+
+        与 ``find_worktree_by_spec`` 同源（``git worktree list --porcelain``
+        真相 + 完整 spec 名 + 分隔符边界口径），但**不**做三态校验、**不**
+        因歧义返回 None——停机保护集构造需要「同一 spec 的多个在册 worktree」
+        的全部路径（「impl 已清只剩 repair」之外的常见形态：同一 spec 有
+        impl- 与 repair- 两个在册 worktree）。
+
+        算法：解析所有在册 worktree 的目录名，凡 ``_wt_name_matches_spec``
+        命中即加入返回（目录名口径天然覆盖 impl/verify/repair 三种前缀）。
+
+        防御口径与 ``find_worktree_by_spec`` 同款：命令超时/非零退出/异常
+        降级返回空清单，MUST NOT 阻塞调用路径。
+
+        Returns: 在册 worktree 路径列表（str）；无匹配/git 失败返回 []。
+        """
+        if not spec_name:
+            return []
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "worktree", "list", "--porcelain"],
+                capture_output=True, text=True, timeout=15,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"find_worktrees_by_spec('{spec_name}') 异常降级空清单: {e}",
+            )
+            return []
+        if res.returncode != 0:
+            self.logger.warning(
+                "worktree_manager",
+                f"find_worktrees_by_spec('{spec_name}'): 非零退出→空清单 "
+                f"(rc={res.returncode})",
+            )
+            return []
+        paths: list = []
+        current_path: Optional[str] = None
+        for line in res.stdout.splitlines():
+            if line.startswith("worktree "):
+                current_path = line[len("worktree "):].strip()
+                if current_path and self._wt_name_matches_spec(
+                        Path(current_path).name, spec_name):
+                    paths.append(current_path)
+        return paths
+
+    def find_branches_by_spec(self, spec_name: str) -> list:
+        """按 spec 枚举候选实现分支（fix-recovery-branch-anchor D2/B，第三层回落）。
+
+        事实源为 git refs（``git for-each-ref``），与 worktree 是否在册无关——
+        覆盖「run 已成功、worktree 已清、branch 未落盘」窗口（本 SPEC 事故环 4）。
+
+        - 枚举前缀与分支**创建端同源**：创建端硬编码 ``fenix/``（``create()``
+          :223/:226），配置 ``worktree.implement_branch_prefix`` 仅推送侧读取、
+          非创建端事实源——本层取「配置值 ∪ 创建端 ``fenix/``」并集枚举，
+          MUST NOT 仅凭配置值取前缀（非 fenix 配置下创建端仍产出
+          ``fenix/<spec>-<ts>``，仅按配置枚举会扫空命名空间、本层静默失效）；
+        - 候选口径为「完整 spec 名 + 分隔符边界」全等比较（与
+          ``_wt_name_matches_spec`` / ``engine._resolve_push_branch`` 同口径）：
+          去掉 ``<prefix>/`` 后按最后一个 ``-`` 分段，末段 MUST 为纯数字
+          时间戳、其前段 MUST 与该 spec 名全等——spec 名互为前缀
+          （``fix-x`` / ``fix-x-y``）时 glob 命中集合 MUST NOT 直接当候选；
+          ``<prefix>/verify-<spec>-*`` 验证分支 MUST NOT 进入候选清单；
+        - 排序（D2）：先取 ``git merge-base --is-ancestor main <branch>``
+          成立者（repair 已把 main 合入分支的形态），按 committerdate 最新；
+          无「已含 main」候选时取 ``git rev-list --count main..<branch>``
+          最大者；**零提交候选（``main..branch`` 为空）自候选清单剔除、
+          不参与排序**（闸门先于排序，见 tasks 2.5）；
+        - 防御口径（2.3）：命令超时/非零退出/异常降级 WARNING 返回空清单，
+          MUST NOT 阻塞 boot 路径；MUST NOT 依赖 ``_active_worktrees`` /
+          ``_wt_branches`` 内存表。
+
+        Returns: 候选清单，每项 dict:
+            ``{"branch": str, "ahead": int, "main_is_ancestor": bool,
+              "committerdate": int}``
+            按排序规则降序（最优在前）；无候选/失败返回 []。
+        """
+        if not spec_name:
+            return []
+        # 枚举前缀并集：创建端口径 fenix + 配置值（若不同）。MUST NOT 仅凭配置。
+        prefixes = {"fenix", self._implement_branch_prefix or "fenix"}
+        candidates: list = []  # {branch, ahead, main_is_ancestor, committerdate}
+        try:
+            for prefix in prefixes:
+                pattern = f"refs/heads/{prefix}/{spec_name}-*"
+                res = subprocess.run(
+                    ["git", "-C", str(self.project_root), "for-each-ref",
+                     "--format=%(refname:short)|%(committerdate:unix)",
+                     "--sort=-committerdate", pattern],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if res.returncode != 0:
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"find_branches_by_spec('{spec_name}'): 枚举 "
+                        f"'{pattern}' 非零退出（rc={res.returncode}）——降级空清单",
+                    )
+                    continue
+                for line in res.stdout.splitlines():
+                    parts = line.split("|")
+                    if not parts:
+                        continue
+                    name = parts[0].strip()
+                    try:
+                        cdate = int(parts[1].strip()) if len(parts) > 1 else 0
+                    except ValueError:
+                        cdate = 0
+                    # 完整 spec 名 + 分隔符边界全等比较：去前缀后按最后一个
+                    # `-` 分段，末段纯数字时间戳、其前段与 spec 名全等。
+                    rest = name[len(prefix) + 1:] if name.startswith(f"{prefix}/") else name
+                    segs = rest.rsplit("-", 1)
+                    if len(segs) != 2 or not segs[0] or not segs[1].isdigit():
+                        continue
+                    if segs[0] != spec_name:
+                        # spec 名互为前缀（fix-x / fix-x-y）：非全等命中直接剔除
+                        continue
+                    # verify 验证分支 MUST NOT 进入候选清单
+                    if rest.startswith("verify-"):
+                        continue
+                    candidates.append({
+                        "branch": name,
+                        "ahead": 0,
+                        "main_is_ancestor": False,
+                        "committerdate": cdate,
+                    })
+            if not candidates:
+                return []
+            # 逐候选计算 ahead 与「main 是否为祖先」；零提交候选剔除
+            valid: list = []
+            for cand in candidates:
+                branch = cand["branch"]
+                try:
+                    anc = subprocess.run(
+                        ["git", "-C", str(self.project_root), "merge-base",
+                         "--is-ancestor", "main", branch],
+                        capture_output=True, timeout=15,
+                    )
+                    cand["main_is_ancestor"] = anc.returncode == 0
+                except (subprocess.TimeoutExpired, OSError):
+                    cand["main_is_ancestor"] = False
+                try:
+                    ahead = subprocess.run(
+                        ["git", "-C", str(self.project_root), "rev-list",
+                         "--count", f"main..{branch}"],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if ahead.returncode != 0:
+                        continue  # 分支不可解析（已删）→ 剔除
+                    try:
+                        cand["ahead"] = int(ahead.stdout.strip() or "0")
+                    except ValueError:
+                        continue
+                except (subprocess.TimeoutExpired, OSError):
+                    continue
+                if cand["ahead"] <= 0:
+                    # 零提交候选（tip 与 main 同点）MUST NOT 为可保留锚点：
+                    # 自候选清单剔除、不参与排序（tasks 2.5 闸门先于排序）
+                    self.logger.warning(
+                        "worktree_manager",
+                        f"find_branches_by_spec('{spec_name}'): 零提交候选 "
+                        f"'{branch}'（main..branch 为空）剔除，不参与排序",
+                    )
+                    continue
+                valid.append(cand)
+            if not valid:
+                return []
+            # 排序：先「已含 main」优先（committerdate 最新），其次 ahead 最大
+            valid.sort(key=lambda c: (
+                not c["main_is_ancestor"], -c["committerdate"], -c["ahead"],
+            ))
+            return valid
+        except (subprocess.TimeoutExpired, OSError) as e:
+            self.logger.warning(
+                "worktree_manager",
+                f"find_branches_by_spec('{spec_name}') 异常降级空清单: {e}",
+            )
+            return []
 
     @staticmethod
     def _wt_name_matches_spec(wt_name: str, spec_name: str) -> bool:

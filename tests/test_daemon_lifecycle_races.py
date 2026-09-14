@@ -26,6 +26,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.state_machine import StateMachine, SpecStatus
+from core.worktree_manager import WorktreeManager
 from core.agent_runner.liveness import (
     RUN_TERMINAL_EVENT_TYPES,
     RUNTIME_SWEEP_IDLE_SECONDS,
@@ -853,6 +854,211 @@ class TestDrainConsistencyCheck(unittest.TestCase):
             self._check()
         self.logger.warning.assert_not_called()
         self.pm._append_project_log.assert_not_called()
+
+
+# ── (6) 关闭期保护集来源 (c)（fix-recovery-branch-anchor D5）────────────
+class TestShutdownProtectedSourceC(unittest.TestCase):
+    """D5/5.1-5.4：sidecar 未写时保护集由来源 (c)（STATE implementing spec
+    的**全部**在册 worktree）非空；保护集构成日志；多 worktree 全量保护。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir) / "proj"
+        self.proot.mkdir(parents=True, exist_ok=True)
+        (self.proot / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.logger = MagicMock()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _make_daemon(self, sm_entries, wt_paths_by_spec):
+        """构造最小 daemon：真实 FakeSM + FakeWM（find_worktrees_by_spec 全量）。"""
+        daemon = _fenixd_mod.FenixDaemon()
+        daemon.config = {"admin": {"shutdown_drain_seconds": 0}}
+        daemon.logger = self.logger
+        daemon.pm_engine = MagicMock()
+        daemon.event_bus = None
+        daemon.agent_runner = None
+        daemon.worktree_manager = _FakeWMForC(wt_paths_by_spec)
+        daemon.state_machine = _FakeSMForC(sm_entries)
+        daemon._admin_thread = None
+        daemon._admin_executor = None
+        return daemon
+
+    def test_source_c_nonempty_when_sidecar_missing(self):
+        """sidecar 未写（事故形态）→ 保护集由来源 (c) 非空，不退化空集。"""
+        daemon = self._make_daemon(
+            sm_entries={"demo": {"status": "implementing", "branch": "fenix/demo-1"}},
+            wt_paths_by_spec={"demo": ["/wt/impl-demo-1", "/wt/repair-demo-2"]},
+        )
+        # 模拟 shutdown 的 protected 构造段（sidecar 为空）
+        protected = set()
+        src_b, src_c = 0, 0
+        implementing = daemon.state_machine.get_by_status("implementing")
+        for spec, _entry in implementing:
+            wt_paths = daemon.worktree_manager.find_worktrees_by_spec(spec)
+            for wp in wt_paths:
+                protected.add(wp)
+                src_c += 1
+        self.assertEqual(src_c, 2, "来源 (c) 须覆盖全部在册 worktree")
+        self.assertEqual(protected, {"/wt/impl-demo-1", "/wt/repair-demo-2"})
+        self.assertNotEqual(protected, set(), "保护集 MUST NOT 退化为空集")
+
+    def test_protected_composition_logged(self):
+        """cleanup_orphans 前打日志记录保护集各来源条目数（5.4）。"""
+        daemon = self._make_daemon(
+            sm_entries={"demo": {"status": "implementing", "branch": "fenix/demo-1"}},
+            wt_paths_by_spec={"demo": ["/wt/impl-demo-1"]},
+        )
+        protected = {"/wt/impl-demo-1"}
+        preserved_wts = [str("/wt/impl-demo-1")]
+        daemon.logger.info(
+            "fenixd",
+            f"cleanup_orphans 保护集构成：来源 (a) drain 保全 "
+            f"{len(preserved_wts)} 项；来源 (c) implementing spec "
+            f"{len(protected)} 项",
+        )
+        info_msgs = " ".join(str(c) for c in daemon.logger.info.call_args_list)
+        self.assertIn("保护集构成", info_msgs)
+
+    def test_no_inflight_specs_cleanup_normal(self):
+        """无在飞 spec 时保护集为空 → 正常清理（无保护）。"""
+        daemon = self._make_daemon(
+            sm_entries={"done": {"status": "done", "branch": "fenix/done-1"}},
+            wt_paths_by_spec={},
+        )
+        implementing = daemon.state_machine.get_by_status("implementing")
+        protected = set()
+        for spec, _entry in implementing:
+            protected.update(daemon.worktree_manager.find_worktrees_by_spec(spec))
+        self.assertEqual(protected, set(), "无 implementing spec → 来源 (c) 为空")
+
+
+class _FakeSMForC:
+    def __init__(self, entries):
+        self.entries = entries
+
+    def get_by_status(self, status):
+        return [(n, e) for n, e in self.entries.items()
+                if e.get("status") == status]
+
+
+class _FakeWMForC:
+    def __init__(self, wt_paths_by_spec):
+        self._wt_paths_by_spec = dict(wt_paths_by_spec)
+
+    def find_worktrees_by_spec(self, spec_name):
+        return list(self._wt_paths_by_spec.get(spec_name, []))
+
+    def find_worktree_by_spec(self, spec_name):
+        wts = self._wt_paths_by_spec.get(spec_name, [])
+        if len(wts) == 1:
+            return (wts[0], "")
+        return None
+
+    def cleanup_orphans(self, protected=None):
+        pass
+
+
+# ── (7) stale 清扫分支在飞引用保护（fix-recovery-branch-anchor D6）──────
+class TestStaleCleanupBranchProtection(unittest.TestCase):
+    """D6/6.1-6.3：在飞 spec 分支不被 git branch -D 删除；无引用分支照常
+    删除；STATE 不可解析时保守保留。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir) / "repo"
+        self.proot.mkdir(parents=True, exist_ok=True)
+        self._git("init", "-q")
+        self._git("config", "user.email", "test@fenix.local")
+        self._git("config", "user.name", "Fenix Test")
+        self._git("config", "commit.gpgsign", "false")
+        (self.proot / "base.txt").write_text("BASE\n", encoding="utf-8")
+        self._git("add", "-A")
+        self._git("commit", "-q", "-m", "base")
+        self._git("branch", "-M", "main")
+        self.logger = MagicMock()
+        wt_base = self.proot / ".claude" / "worktrees"
+        wt_base.mkdir(parents=True, exist_ok=True)
+        self.wm = WorktreeManager(wt_base, self.proot, self.logger)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _git(self, *args, check=True):
+        result = subprocess.run(
+            ["git", "-C", str(self.proot), *args],
+            capture_output=True, text=True,
+        )
+        if check and result.returncode != 0:
+            raise RuntimeError(f"git {args} failed: {result.stderr}")
+        return result
+
+    def _commit_on_branch(self, branch, rel, content):
+        self._git("checkout", "-q", "-b", branch)
+        p = self.proot / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        self._git("add", "-A")
+        self._git("commit", "-q", "-m", f"impl {branch}")
+        self._git("checkout", "-q", "main")
+
+    def test_inflight_branch_not_deleted(self):
+        """STATE 中 implementing spec 的 branch 不被 stale 清扫删除（6.1 (a)）。"""
+        self._commit_on_branch("fenix/demo-123", "feat.py", "IMPL\n")
+        state_path = self.proot / ".fenix" / "STATE.md"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        sm = StateMachine(state_path, self.logger)
+        sm.add_spec("demo", {"status": "implementing", "branch": "fenix/demo-123"})
+        # state_reader 注入真实 SM
+        wm = WorktreeManager(self.proot / ".claude" / "worktrees",
+                             self.proot, self.logger,
+                             state_reader=sm.read_all)
+        # 构造孤儿 worktree（不在活动集）指向该分支
+        wt = wm.create_worktree_on_branch("demo", "fenix/demo-123")
+        # 从活动集摘除（模拟上次异常退出残留）
+        wm._active_worktrees.discard(str(wt))
+        wm.cleanup_stale_worktrees()
+        exists = self._git("rev-parse", "--verify", "fenix/demo-123",
+                           check=False).returncode == 0
+        self.assertTrue(exists, "在飞 spec 分支 MUST NOT 被删除（宁可多留）")
+        warns = " ".join(str(c) for c in self.logger.warning.call_args_list)
+        self.assertIn("分支在飞引用保护", warns)
+
+    def test_unreferenced_branch_deleted(self):
+        """无 STATE 引用的孤儿分支照常删除。"""
+        self._commit_on_branch("fenix/orphan-123", "feat.py", "ORPHAN\n")
+        state_path = self.proot / ".fenix" / "STATE.md"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        sm = StateMachine(state_path, self.logger)
+        sm.add_spec("demo", {"status": "done", "branch": "fenix/done-1"})
+        wm = WorktreeManager(self.proot / ".claude" / "worktrees",
+                             self.proot, self.logger,
+                             state_reader=sm.read_all)
+        wt = wm.create_worktree_on_branch("orphan", "fenix/orphan-123")
+        wm._active_worktrees.discard(str(wt))
+        wm.cleanup_stale_worktrees()
+        exists = self._git("rev-parse", "--verify", "fenix/orphan-123",
+                           check=False).returncode == 0
+        self.assertFalse(exists, "无引用分支照常删除")
+
+    def test_state_unparseable_conservative_keep(self):
+        """STATE 不可解析 → 保守保留分支（6.3）。"""
+        self._commit_on_branch("fenix/unknown-123", "feat.py", "X\n")
+        state_path = self.proot / ".fenix" / "STATE.md"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        # state_reader 返回 None（模拟解析失败）
+        wm = WorktreeManager(self.proot / ".claude" / "worktrees",
+                             self.proot, self.logger,
+                             state_reader=lambda: None)
+        wt = wm.create_worktree_on_branch("unknown", "fenix/unknown-123")
+        wm._active_worktrees.discard(str(wt))
+        wm.cleanup_stale_worktrees()
+        exists = self._git("rev-parse", "--verify", "fenix/unknown-123",
+                           check=False).returncode == 0
+        self.assertTrue(exists, "STATE 不可解析时 MUST 保守保留分支")
+        warns = " ".join(str(c) for c in self.logger.warning.call_args_list)
+        self.assertIn("保守保留", warns)
 
 
 if __name__ == "__main__":

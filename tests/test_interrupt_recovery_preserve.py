@@ -372,6 +372,83 @@ class TestRecoveryPreserve:
         assert entry["tester_run"] is None
 
 
+# ── 2.4/4.4: 三层回落链向后兼容 + 标记缺失回落 ─────────────────────────────────
+
+
+class TestThreeLayerFallbackBackwardCompat:
+    """9.7: 三层回落链向后兼容（STATE branch 在册时不触发第三层）、
+    标记缺失时回落保留续做；零提交分支仍走现行清空。"""
+
+    def test_state_branch_present_no_third_layer(self, tmp_path):
+        """STATE branch 在册 → 不触发第三层（命名空间枚举）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        git(root, "checkout", "-q", "-b", "fenix/demo-123")
+        add_commit(root, "feat.py", "IMPL\n", "[fenix] impl")
+        git(root, "checkout", "-q", "main")
+        sm = make_state_machine(root, {
+            "demo": {"status": "implementing", "branch": "fenix/demo-123",
+                     "implementer_run": "impl-demo-111"},
+        })
+        recovered = sm.recover_interrupted(project_root=root,
+                                           worktree_manager=make_wm(root))
+        assert "demo" in recovered
+        entry = sm.read_one("demo")
+        assert entry["status"] == "ready"
+        assert entry["branch"] == "fenix/demo-123"
+        assert entry.get("_recovery_resume") is True
+
+    def test_mark_missing_falls_to_preserve(self, tmp_path):
+        """_repair_awaiting_remerge 缺失时回落保留续做路径（逐字节兼容）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        git(root, "checkout", "-q", "-b", "fenix/demo-123")
+        add_commit(root, "feat.py", "IMPL\n", "[fenix] impl")
+        git(root, "checkout", "-q", "main")
+        sm = make_state_machine(root, {
+            "demo": {"status": "implementing", "branch": "fenix/demo-123",
+                     "implementer_run": "impl-demo-111"},
+        })
+        recovered = sm.recover_interrupted(project_root=root,
+                                           worktree_manager=make_wm(root))
+        entry = sm.read_one("demo")
+        assert entry["status"] == "ready"
+        assert entry["branch"] == "fenix/demo-123"
+        assert entry.get("_recovery_resume") is True
+
+    def test_zero_commit_still_clears(self, tmp_path):
+        """零提交分支（main..branch 为空）仍走现行清空路径（逐字节兼容）。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        git(root, "branch", "fenix/demo-123")  # 零提交
+        sm = make_state_machine(root, {
+            "demo": {"status": "implementing", "branch": "fenix/demo-123",
+                     "implementer_run": "impl-demo-111"},
+        })
+        recovered = sm.recover_interrupted(project_root=root,
+                                           worktree_manager=make_wm(root))
+        entry = sm.read_one("demo")
+        assert entry["status"] == "ready"
+        assert entry["branch"] is None
+        assert entry.get("_recovery_resume") is None
+
+    def test_layer3_remark_zero_commit_still_clears(self, tmp_path):
+        """第三层（命名空间枚举）命中零提交候选 → 不判为可保留，走清空。"""
+        root = tmp_path / "repo"
+        init_repo(root)
+        git(root, "branch", "fenix/demo-999")  # 零提交
+        sm = make_state_machine(root, {
+            "demo": {"status": "implementing", "branch": None,
+                     "implementer_run": None},
+        })
+        recovered = sm.recover_interrupted(project_root=root,
+                                           worktree_manager=make_wm(root))
+        entry = sm.read_one("demo")
+        # 零提交候选被剔除 → 无可用载体 → 清空
+        assert entry["status"] == "ready"
+        assert entry["branch"] is None
+
+
 # ── 3. 清理协调：保全 worktree 不被误删 ─────────────────────────────────────
 
 
