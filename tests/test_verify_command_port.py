@@ -8,8 +8,10 @@
 """
 
 import json
+import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -17,8 +19,9 @@ import unittest
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+from core.serving_registry import ServingRegistry
 from core.verify_contract import _find_free_port, load_verify_contract
 
 
@@ -262,6 +265,142 @@ class TestCommandPortInjection(unittest.TestCase):
             self.assertTrue(_probe(f"http://127.0.0.1:{pb}/"))
         finally:
             self._stop_servers(engine, "spec-a", "spec-b")
+
+    def test_command_main_placeholder_port_injection(self):
+        """command + static_scope=main：走 _serve_command_in_main 契约实例路径。
+
+        fix-command-main-serve-scope 主场景：默认 scope=main 的 command 契约
+        不再静默降级 legacy——{port} 注入 + rewrite_scenarios_origin 全量改写
+        + 就绪探针放行；commands.start/_rewrite_scenario_port（legacy 标识）
+        均不得触发。
+        """
+        from core.verify_contract import rewrite_scenarios_origin
+        self._init_repo_with_site()
+        self._contract_yaml("python3 -m http.server {port} --bind 127.0.0.1")
+        self._scenarios()
+        engine = self._mk_engine(
+            config={"verify": {"static_scope": "main"}})
+        # legacy 标识：逐端口改写仅在 legacy 兜底链被调用，patch 以断言未触发
+        engine._verification._pm._rewrite_scenario_port = MagicMock()
+        try:
+            with patch(
+                "core.pm_engine.verification.rewrite_scenarios_origin",
+                    wraps=rewrite_scenarios_origin) as m:
+                reachable, blocked, note = (
+                    engine._verification._ensure_app_reachable("spec-a"))
+            self.assertTrue(reachable, note)
+            m.assert_called_once()
+            url = self._rewritten_url()
+            self.assertNotIn("localhost:59999", url, "origin 应被改写到注入端口")
+            port = int(re.search(r":(\d+)/", url).group(1))
+            self.assertTrue(_probe(f"http://127.0.0.1:{port}/"),
+                            "注入端口实例应真实可达")
+            # 缓存键为 spec_name 且 mode=command（契约实例语义），
+            # 不得污染 static 主树共享键 "main"
+            cache = engine._verification.__dict__.get(
+                "_contract_static_servers", {})
+            entry = cache.get("spec-a")
+            self.assertIsNotNone(entry, "command+main 实例应登记入缓存")
+            self.assertEqual(entry["mode"], "command")
+            self.assertNotIn("main", cache, "主树 command 实例禁用缓存键 main")
+            # legacy 未触发
+            engine._verification._pm._rewrite_scenario_port.assert_not_called()
+        finally:
+            self._stop_servers(engine, "spec-a")
+
+    def test_command_main_unreferenced_port_ownership_discovery(self):
+        """command + main 且 serve.cmd 未引用 {port}：进程归属发现自主端口。
+
+        （未迁移契约）实例自绑应用声明的默认端口，框架经进程归属发现定位
+        真实端口，场景 origin 全量改写到该端口。
+        """
+        self._init_repo_with_site()
+        fixed = _find_free_port()
+        self._contract_yaml(
+            f"python3 -m http.server {fixed} --bind 127.0.0.1")
+        self._scenarios()
+        engine = self._mk_engine(
+            config={"verify": {"static_scope": "main"}})
+        try:
+            reachable, blocked, note = (
+                engine._verification._ensure_app_reachable("spec-a"))
+            self.assertTrue(reachable, note)
+            url = self._rewritten_url()
+            self.assertNotIn("localhost:59999", url, "origin 应被改写")
+            port = int(re.search(r":(\d+)/", url).group(1))
+            self.assertEqual(port, fixed, "应经进程归属发现自主端口")
+            self.assertTrue(_probe(f"http://127.0.0.1:{port}/"))
+        finally:
+            self._stop_servers(engine, "spec-a")
+
+
+class TestLegacyRewriteLogNeutral(unittest.TestCase):
+    """无契约 legacy 兜底链的端口改写日志措辞（fix-command-main-serve-scope 2.1/3.3）。
+
+    事故归因修正：框架侧现象（场景声明端口 ≠ 框架分配端口）不得归咎 planner，
+    端口改写日志必须使用中性对齐措辞（不含「planner 臆测」）。
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        (self.tmp / ".fenix").mkdir()
+        self.logger = MagicMock()
+
+    def _kill_legacy_spawn(self, engine):
+        """清理 legacy spawn 的实例（不在 _contract_static_servers 中）。"""
+        reg = ServingRegistry(self.tmp, self.logger)
+        for e in reg.entries() or []:
+            if isinstance(e, dict) and e.get("spec") == "spec-a" and e.get("pid"):
+                try:
+                    os.killpg(os.getpgid(e["pid"]), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                try:
+                    os.waitpid(e["pid"], 0)
+                except (ChildProcessError, OSError):
+                    pass
+
+    def test_legacy_port_rewrite_log_no_planner_blame(self):
+        """无契约 legacy 兜底链：端口改写日志不含「planner 臆测」措辞。
+
+        路径：contract=None → legacy → {port} 注入 spawn → 30s 探活超时（场景
+        URL 59999 不可达）→ base_port 可达 + foreign_ports 非空 → 改写 → 返回。
+        改写 note 与 logger 调用参数中必须不含「planner」「臆测」等误导归因。
+        """
+        from test_inplace_bug_repair import _mk_engine
+        from core.state_machine import StateMachine
+        sm = StateMachine(self.tmp / ".fenix" / "STATE.md", self.logger)
+        engine, _ = _mk_engine(self.tmp, self.logger, {
+            "verify": {"static_scope": "main"},
+            "commands": {
+                "start": "python3 -m http.server {port} --bind 127.0.0.1",
+            },
+        })
+        p = (self.tmp / ".fenix" / "verify-progress" / "spec-a"
+             / "test_scenarios.json")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps([
+            {"steps": [{"action": "navigate",
+                        "value": "http://localhost:59999/"}]},
+        ]), encoding="utf-8")
+        try:
+            reachable, blocked, note = (
+                engine._verification._ensure_app_reachable("spec-a"))
+            self.assertTrue(reachable, note)
+            self.assertNotIn("planner", note,
+                             "note 不得含 planner 归因")
+            self.assertNotIn("臆测", note,
+                             "note 不得含臆测措辞")
+            # 检查所有 logger 调用参数（日志与 warning）
+            for c in self.logger.call_args_list:
+                txt = str(c)
+                self.assertNotIn("planner", txt,
+                                 "logger 调用参数不得含 planner")
+                self.assertNotIn("臆测", txt,
+                                 "logger 调用参数不得含臆测")
+        finally:
+            self._kill_legacy_spawn(engine)
 
 
 class TestMigrationWarning(unittest.TestCase):

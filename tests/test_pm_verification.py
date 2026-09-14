@@ -175,8 +175,8 @@ class TestScenarioReloadAfterReachabilityHeal(unittest.TestCase):
     """可达性自愈改写场景端口后，引擎必须拿到改写后的场景。
 
     2026-08-31 add-v3-spec-detail-page 实证：load_scenarios 先于
-    _ensure_app_reachable 执行，自愈把 test_scenarios.json 的 planner
-    臆测端口 8000 → 8787 只落了文件，传入引擎的内存场景仍是 8000 →
+    _ensure_app_reachable 执行，自愈把 test_scenarios.json 的场景声明
+    端口 8000 → 8787 只落了文件，传入引擎的内存场景仍是 8000 →
     24 场景对失联端口 navigate 整轮伪失败（0.9 秒全灭 ERR_CONNECTION_REFUSED）。
     """
 
@@ -237,7 +237,7 @@ class TestScenarioReloadAfterReachabilityHeal(unittest.TestCase):
         content = self.scenarios_path.read_text(encoding="utf-8")
         self.scenarios_path.write_text(content.replace(":8000", ":8787"), encoding="utf-8")
         return True, False, (
-            "场景 URL 端口 ['8000'] 与应用实际端口 8787 不符（planner 臆测），"
+            "场景声明端口 ['8000'] 与框架分配端口 8787 不符，"
             "已改写场景端口并确认可达"
         )
 
