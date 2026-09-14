@@ -67,7 +67,8 @@ class TestVerifierStaleResultGuard(unittest.TestCase):
         self.engine._run_legacy_verification("quick-links-folders")
 
     def _write_result(self, spec, status, mtime_epoch=None):
-        self.result_path.write_text(json.dumps({"spec": spec, "status": status}))
+        self.result_path.write_text(
+            json.dumps({"spec": spec, "status": status, "role": "verifier"}))
         if mtime_epoch:
             import os
             os.utime(self.result_path, (mtime_epoch, mtime_epoch))
@@ -364,7 +365,8 @@ class TestUnreachableFailFast(unittest.TestCase):
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })
         self.engine._update_warning_streaks = MagicMock(return_value=[])
-        self.engine._read_planner_result = MagicMock(
+        # evo-verifier-result-single-source：三阶段裁决读取统一走 _read_verdict
+        self.engine._read_verdict = MagicMock(
             return_value=VerdictReadResult.success("verified"))
         # verified 采纳尾段（短路轮不消费，可达轮照常消费）
         self.engine._check_verification_gate = MagicMock(return_value=None)
@@ -583,7 +585,7 @@ class TestJudgeScenarioRepair(unittest.TestCase):
         """scenario-repaired → 冻结记账 + 重入执行；预算耗尽写 error 停止重入。"""
         from core.pm_engine.verification import _SCENARIO_REPAIR_MAX_ROUNDS
         runs = []
-        self.engine._read_planner_result = MagicMock(
+        self.engine._read_verdict = MagicMock(
             return_value=VerdictReadResult.success("scenario-repaired"))
         self._run_with_report(lambda: runs.append(1))
         # 1 次初始 + 2 次修复重入 = 3 轮执行；每次修复采纳先冻结记账
@@ -598,7 +600,7 @@ class TestJudgeScenarioRepair(unittest.TestCase):
 
     def test_repair_then_verified(self):
         """修复一轮后 judge 判 verified → 正常晋级，冻结记账恰一次。"""
-        self.engine._read_planner_result = MagicMock(
+        self.engine._read_verdict = MagicMock(
             side_effect=[VerdictReadResult.success("scenario-repaired"),
                         VerdictReadResult.success("verified")])
         self.engine._check_verification_gate = MagicMock(return_value=None)
@@ -913,7 +915,7 @@ class TestUniformVerifyFailure(unittest.TestCase):
                 success=True, error=None, run_id="verify-demo-spec-2-a1"))
         run_result_path = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
         run_result_path.write_text(json.dumps({
-            "spec": "demo-spec", "status": "bug-found",
+            "spec": "demo-spec", "status": "bug-found", "role": "verifier",
         }), encoding="utf-8")
         import os
         os.utime(run_result_path, (time.time(), time.time()))
@@ -954,7 +956,7 @@ class TestUniformVerifyFailure(unittest.TestCase):
                 success=True, error=None, run_id="verify-demo-spec-4-a1"))
         run_result_path = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
         run_result_path.write_text(json.dumps({
-            "spec": "demo-spec", "status": "verified",
+            "spec": "demo-spec", "status": "verified", "role": "verifier",
         }), encoding="utf-8")
         import os
         os.utime(run_result_path, (time.time(), time.time()))

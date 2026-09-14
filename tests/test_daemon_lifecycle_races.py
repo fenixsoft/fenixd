@@ -650,7 +650,8 @@ class TestStaleVerdictGuard(unittest.TestCase):
         _push_spec_to(self.sm, name, "testing")
 
     def _write_result(self, spec, status):
-        self.result_path.write_text(json.dumps({"spec": spec, "status": status}))
+        self.result_path.write_text(
+            json.dumps({"spec": spec, "status": status, "role": "verifier"}))
 
     def test_legacy_entry_guard_discards_when_not_testing(self):
         """spec 入口已非 testing（拨回 implemented）→ 不跑 verifier、零派发。"""

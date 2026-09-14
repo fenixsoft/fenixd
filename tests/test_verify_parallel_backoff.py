@@ -281,7 +281,7 @@ class TestParallelBackoffClearPoints(unittest.TestCase):
         self.engine._check_verification_gate = mock.MagicMock(return_value=None)
         self.engine._render_scenario_change_section_to_report = mock.MagicMock()
         self.engine._on_spec_verified = mock.MagicMock()
-        self.engine._read_planner_result = mock.MagicMock(
+        self.engine._read_verdict = mock.MagicMock(
             return_value=VerdictReadResult.success("verified"))
 
         runs = []
@@ -361,7 +361,7 @@ class TestParallelBackoffRead(unittest.TestCase):
         """spec attrs 含 _verify_parallel_override 时引擎有效并行度被覆盖。"""
         from core.pm_engine.verification import VerdictReadResult
         self.sm.update_spec("demo-spec", {"_verify_parallel_override": 2})
-        self.engine._read_planner_result = mock.MagicMock(
+        self.engine._read_verdict = mock.MagicMock(
             return_value=VerdictReadResult.success("verified"))
 
         captured = {}
@@ -395,7 +395,7 @@ class TestParallelBackoffRead(unittest.TestCase):
     def test_no_override_keeps_configured_parallel(self):
         """无 override 时引擎保持配置并行度，且不打降档标记。"""
         from core.pm_engine.verification import VerdictReadResult
-        self.engine._read_planner_result = mock.MagicMock(
+        self.engine._read_verdict = mock.MagicMock(
             return_value=VerdictReadResult.success("verified"))
 
         captured = {}
