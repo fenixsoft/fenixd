@@ -32,6 +32,21 @@ DEFAULT_SIGNAL_COOLDOWN_MINUTES = 30
 #（worktree 持锁）覆盖；无活跃派发的 implementing 属卡死形态，应告警。
 RECOVERY_PROGRESS_STATUSES = ("implemented", "testing", "verified", "done", "pushed")
 
+# ── 过渡窗口豁免（evo-recovery-watch-transition-guard D1/D2）─────────────
+# implementer 成功收工后：worktree 先清理（cleanup）→ merge-back 稍后完成，
+# 窗口内 spec 状态仍为 implementing 且无活跃派发——recovery watch 若在此时
+# 复查会把过渡窗口误判为 stale，dispatch_stalled 唤起无效 admin run
+# （2026-09-12 21:13:57Z 复查误报事故：21:13:33 清理 → 21:14:02 merge，仅差
+# 5 秒）。故判定 stale 前增加过渡窗口检查：存在归属该 spec 的待合并分支
+#（pending merge，D1）或 succeed 痕迹落在缓冲窗口内（D2）时顺延本次判定。
+# 缓冲秒数缺省 60：覆盖实测的 21:13:33→21:14:02（29s）窗口并留余量。
+DEFAULT_TRANSITION_BUFFER_SECONDS = 60
+# 待合并豁免上限（分钟，D1 有界性）：自「年龄起点」起算超过该值仍未合并
+# 时回落既有 stale 判定，避免「分支永挂 → 永不告警」把真实卡死洗成健康。
+# 缺省 5 分钟，且 MUST < followup_check_minutes（缺省 15），使回落可在
+# 下一次复查即可观测（原「与缓冲同量级」在单位上自相矛盾，评审固化此值）。
+DEFAULT_TRANSITION_GRACE_MINUTES = 5
+
 
 class RecoveryWatch:
     """恢复闭环复查注册组件（门面 PMEngine 的组合组件）。"""
@@ -120,6 +135,19 @@ class RecoveryWatch:
           （被预算/内容完整性/依赖闸门拦下、冻结，或存在活跃派发）→ 关闭
           观察项并以 dispatch_stalled 信号唤起 Administrator 处置（既有兜底）。
 
+        过渡窗口豁免（evo-recovery-watch-transition-guard D1/D2）：判定 stale
+        前检查过渡窗口——该 spec 存在归属其实现分支的待合并提交（
+        ``has_pending_merge``，D1）或 implementer 成功收工痕迹落在缓冲窗口
+        内（D2 判据 (a)）时，**顺延**本次判定（保留观察项、推进 due），不升级
+        为 dispatch_stalled。顺延落点（D2 顺延落点）：检查施加于 ``pop``
+        **之前**（观察项弹出前已判定豁免 → 保留观察项、推进 due），MUST NOT
+        以裸 ``continue`` 静默丢弃观察项（丢弃 = 真实卡死从此无人告警），
+        MUST NOT 以「视为已恢复」关闭观察项。顺延推进量（D2 顺延推进量）：
+        ``due`` 推进 ``transition_buffer_seconds``（缺省 60s，daemon 主循环
+        每 60s 调用一次），且推进后 ``due`` MUST NOT 晚于待合并信号的 grace
+        截止（起点 + ``transition_grace_minutes``，缺省 5min），否则有界性
+        回落的告警会被推后到更晚复查。
+
         Returns: 本次发出的信号 spec 列表（审计/测试用）。
         """
         raised = []
@@ -127,6 +155,22 @@ class RecoveryWatch:
         for spec_name, item in list(self._recovery_watch.items()):
             if now < float(item.get("due") or 0):
                 continue
+
+            # ── 过渡窗口豁免（D1/D2 顺延落点：pop 之前检查）──
+            # 该 spec 存在待合并分支（未并入 main 的提交）或 succeed 痕迹
+            # 在缓冲窗内 → 顺延本次判定（保留观察项、推进 due），
+            # MUST NOT 静默丢弃观察项或关闭它。
+            deferred_due = self._transition_defer_due(spec_name, now)
+            if deferred_due is not None:
+                item["due"] = deferred_due
+                self._pm._save_recovery_watch()
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"Recovery watch deferred for '{spec_name}' "
+                    f"(transition window active, due={deferred_due:.0f})",
+                )
+                continue
+
             self._recovery_watch.pop(spec_name, None)
             self._pm._save_recovery_watch()
             entry = self._pm.state_machine.read_one(spec_name)
@@ -174,6 +218,157 @@ class RecoveryWatch:
             self._pm._signal_dispatch_stalled(spec_name, evidence)
             raised.append(spec_name)
         return raised
+
+    # ── 过渡窗口豁免（evo-recovery-watch-transition-guard D1/D2）────────────
+    # implementer 成功收工后 → worktree 清理 → merge-back 完成的窗口内，spec
+    # 状态仍为 implementing 且无活跃派发；此时复查会把过渡窗口误判为 stale，
+    # dispatch_stalled 唤起无效 admin run（2026-09-12 21:13:57Z 事故：21:13:33
+    # 清理 → 21:14:02 merge，仅差 5 秒）。判定 stale 前检查过渡窗口：存在
+    # 归属该 spec 的待合并分支（D1）或 succeed 痕迹落在缓冲窗口内（D2）时
+    # 顺延本次判定（保留观察项、推进 due），而不是关闭观察项或升级信号。
+
+    def _transition_buffer_seconds(self) -> float:
+        """过渡缓冲窗口（秒）：pm.recovery.transition_buffer_seconds（缺省 60）。
+
+        覆盖实测的 21:13:33→21:14:02（29s）窗口并留余量（design D2 缓冲秒数
+        固化）。daemon 主循环每 60s 调一次 check_recovery_watch（fenixd.py:483）
+        ，顺延推进量直接复用此值，使下一次复查恰好落在窗口边界。
+        """
+        try:
+            return max(0.0, float(self._pm._get_config(
+                "pm.recovery.transition_buffer_seconds",
+                DEFAULT_TRANSITION_BUFFER_SECONDS)))
+        except (TypeError, ValueError):
+            return float(DEFAULT_TRANSITION_BUFFER_SECONDS)
+
+    def _transition_grace_minutes(self) -> float:
+        """待合并豁免上限（分钟）：pm.recovery.transition_grace_minutes（缺省 5）。
+
+        不变量（D1 有界性）：grace MUST < followup_check_minutes（缺省 15），
+        使「回落」在下一次复查即可观测。配置违反不变量（>= followup）时按
+        followup 钳制（下沉到 followup - 1，下限 0——极端配置下直接不豁免，
+        有界性优先，绝不把真实卡死洗成健康）。
+        """
+        try:
+            grace = max(0.0, float(self._pm._get_config(
+                "pm.recovery.transition_grace_minutes",
+                DEFAULT_TRANSITION_GRACE_MINUTES)))
+        except (TypeError, ValueError):
+            grace = float(DEFAULT_TRANSITION_GRACE_MINUTES)
+        try:
+            followup = max(0.0, float(self._pm._get_config(
+                "pm.recovery.followup_check_minutes",
+                DEFAULT_FOLLOWUP_CHECK_MINUTES)))
+        except (TypeError, ValueError):
+            followup = float(DEFAULT_FOLLOWUP_CHECK_MINUTES)
+        if grace >= followup:
+            grace = max(0.0, followup - 1)
+        return grace
+
+    def _spec_recent_impl_stream_mtime(self, spec_name: str):
+        """该 spec 最近一次 impl run 流的 mtime（D2 判据 (a) 事实源），或 None。
+
+        implementer 成功收工的可见痕迹：STATE 的 ``branch``/``implementer_run``
+        只在 merge-back 成功之后才写（dispatch.py:1042-1045），过渡窗口内恒为
+        null；而 impl run 流 ``.fenix/runs/impl-<spec>-<ts>.jsonl`` 在 run
+        生命周期内持续写入，其 mtime 是过渡窗口可复用的可观测源（与
+        ``engine._spec_has_recent_run_activity`` 同源代理，engine.py:1956）。
+
+        归属精确（D2 判据 (a) 归属须精确）：MUST NOT 仅凭
+        ``f"impl-{spec_name}-*.jsonl"`` glob 命中即算活动——spec 名互为前缀会
+        误命中他 spec 的运行流（spec ``a-b`` 命中 ``impl-a-b-c-<ts>.jsonl``，
+        凭空制造「近期活动」→ 豁免真 stale）；须对 glob 命中的每个候选再用
+        ``run_spec_part``（core/agent_runner/run_files.py 既有单一来源解析器，
+        与 dashboard 读侧同口径，不另造）解析出完整 spec 名精确比较。
+
+        Returns: 最新 impl 流的 mtime（float）；无流/目录缺失/io 失败返回 None。
+        """
+        from core.agent_runner.run_files import run_spec_part
+        runs_dir = self._pm.project_root / ".fenix" / "runs"
+        if not runs_dir.is_dir():
+            return None
+        latest = None
+        try:
+            for p in runs_dir.glob(f"impl-{spec_name}-*.jsonl"):
+                if run_spec_part(p.stem) != spec_name:
+                    continue  # 精确归属守卫：他 spec 的前缀命中全部排除
+                try:
+                    mtime = p.stat().st_mtime
+                except OSError:
+                    continue
+                if latest is None or mtime > latest:
+                    latest = mtime
+        except OSError:
+            return None
+        return latest
+
+    def _transition_defer_due(self, spec_name: str, now: float):
+        """过渡窗口内的顺延 due（绝对时间戳）；不在过渡窗口返回 None。
+
+        由 check_recovery_watch 在 ``pop`` **之前**调用（D2 顺延落点）：命中时
+        保留观察项并推进 due，MUST NOT 静默丢弃观察项（丢失 = 真实卡死从此
+        无人告警）或视为已恢复关闭。双重判据，任一命中即顺延：
+
+        - **D2 判据 (a)（succeed 缓冲窗口）**：该 spec 最近 impl run 流 mtime
+          落在 ``transition_buffer_seconds``（缺省 60）内——implementer 成功
+          收工痕迹。窗口自限（60s 后 mtime 越过窗口自然过期），无额外上限。
+        - **D1 待合并信号**：``worktree_manager.has_pending_merge(spec) is True``
+          （归属该 spec 的实现分支存在未并入 main 的提交）。受**有界性**约束：
+          年龄起点 = max(分支最新未合并提交时间 [``pending_merge_since``],
+          succeed 痕迹时间)——超过 ``transition_grace_minutes``（缺省 5）仍未
+          合并时回落（返回 None），避免「分支永挂 → 永不告警」（缺省 81 条约
+          48 个 spec 的存量未并入分支不致洗成健康）。
+
+        调用点严格判定（D2 mock 替身回归）：``has_pending_merge`` 用 ``is True``、
+        ``pending_merge_since`` 用 ``isinstance(ts, (int, float))``——既有
+        recovery-watch 夹具的 ``worktree_manager`` 为 MagicMock
+        （``bool(MagicMock()) is True``），裸真值 / ``is not None`` 会把替身
+        误判为待合并、误豁免而转红既有用例。
+
+        顺延推进量（D2 顺延推进量）：``now + buffer_seconds``（缺省 60s，
+        与 daemon 每 60s 复查一次对齐），且 MUST NOT 晚于待合并信号的 grace
+        截止（年龄起点 + ``transition_grace_minutes``）——否则有界性回落的
+        告警被推后到更晚复查、甚至越过下一次复查才可观测。
+
+        Returns: 顺延后的绝对 due（float）；不在过渡窗口返回 None（走既有
+        stale 判定）。
+        """
+        buffer_seconds = self._transition_buffer_seconds()
+        grace_minutes = self._transition_grace_minutes()
+        succeed_ts = self._spec_recent_impl_stream_mtime(spec_name)
+
+        # ── D2 判据 (a)：succeed 痕迹在缓冲窗口内 → 顺延（窗口自限，无 grace）──
+        if succeed_ts is not None and (now - succeed_ts) <= buffer_seconds:
+            return now + buffer_seconds
+
+        # ── D1 待合并信号（严格判定，mock 替身回归）──
+        pending = False
+        pending_since = None
+        try:
+            wm = self._pm.agent_runner.worktree_manager
+            if getattr(wm, "has_pending_merge", None) is not None \
+                    and wm.has_pending_merge(spec_name) is True:
+                pending = True
+                raw_since = wm.pending_merge_since(spec_name)
+                if isinstance(raw_since, (int, float)):
+                    pending_since = float(raw_since)
+        except Exception:
+            pending = False
+        if not pending:
+            return None
+        if pending_since is None:
+            # has_pending_merge 为真而年龄不可度量（异常替身组合）：无法兑现
+            # 有界性（D1），保守不豁免（宁可多报 stale，不把真实卡死洗成健康）。
+            return None
+        # 年龄起点 = max(分支最新未合并提交时间, succeed 痕迹时间)（D1 年龄起点）
+        age_start = pending_since
+        if succeed_ts is not None and succeed_ts > age_start:
+            age_start = succeed_ts
+        grace_cutoff = age_start + grace_minutes * 60
+        if now >= grace_cutoff:
+            return None  # 年龄超过 grace → 回落既有 stale 判定（1.4 有界性）
+        deferred = now + buffer_seconds
+        return min(deferred, grace_cutoff)
 
     def _redispatch_stalled_ready(self, spec_name: str) -> bool:
         """就地重新派发滞留 ready 的 spec（post-recovery-patrol D4/2.2/2.3）。
