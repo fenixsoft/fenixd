@@ -30,6 +30,7 @@
 
 - 去掉 `_ensure_serving_worktree(...)` 调用，cwd 用 `str(self._pm.project_root)`；
 - 其余（端口注入、预检、CommandVerifyServer、`_register_serving_instance`、`_finalize_static`）保持一致。
+- **缓存策略：不复用、每验证新建实例**——worktree 版的 head 缓存复用段（`verification.py:535-542`）依赖「HEAD 未变 ⇒ 产物未变」这一 worktree 专属不变量，主树工作区状态比 HEAD 变化更频繁（未提交改动 + prepare 重建产物），照搬该段会测得旧产物，违背 BASE_URL 新鲜性铁律。主树版删除复用判断，但**仍以 `spec_name` 为键写入 `_contract_static_servers`**（server/mode 元数据），使 `_evict_spec_serving`（`verification.py:655-678`）在 spec 终局时能 pop 回收实例（注意不可用键 `"main"`——该键为 static 主树共享实例专属，多 spec 共享、终局豁免回收）。实例累积由既有 servers.json 登记 + daemon 周期清扫兜底（verify-process-lifecycle D6）。
 
 **为何不在分派点内联**：保持与 `_serve_static_in_main` / `_serve_command_in_worktree` 对称的四方法结构，可读性与测试定位一致。**为何不参数化合并两方法**：worktree 版带 worktree 生命周期（重建/清理/HEAD 缓存），合并会引入条件分支增加回归面——对称复制更安全（改动面已知、逐行可对）。
 
