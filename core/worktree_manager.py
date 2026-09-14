@@ -3510,6 +3510,138 @@ class WorktreeManager:
                 return False
         return False
 
+    # ── 待合并分支信号（evo-recovery-watch-transition-guard D1）──────────────
+    # recovery watch 判定 stale 前的过渡窗口豁免依据：「该 spec 存在未并入
+    # main 的实现分支」= 过渡窗口内（implementer 成功收工 → merge-back 完成）。
+    # 判据 = 归属该 spec 的实现分支存在未并入 main 的提交（rev-list > 0），
+    # **不是**分支存在性——仓库 1014 条 fenix/* 历史分支中 933 条已并入 main，
+    # 存在性判据会把已合并分支也算作待合并，永久抑制真实 stale 检出。
+    # 前缀硬编码 "fenix/" 与分支创建端同源（create() :223/:226），不读配置——
+    # worktree.implement_branch_prefix 仅 engine._resolve_push_branch 读取、
+    # 非创建端事实源（design D1「前缀来源」，非 fenix 配置下按配置枚举会
+    # 扫空命名空间、豁免静默失效）。
+    PENDING_MERGE_BRANCH_PREFIX = "fenix/"
+
+    def has_pending_merge(self, spec_name: str) -> bool:
+        """该 spec 是否存在待合并实现分支（未并入 main 的提交）。
+
+        evo-recovery-watch-transition-guard D1：recovery watch 判定 stale 前
+        的过渡窗口豁免判据之一。判定标准：
+
+          - 枚举 ``refs/heads/fenix/``（前缀与创建端同源，见类常量注释）；
+          - 候选分支按「完整 spec 名 + 分隔符边界」全等解析（去 ``fenix/``
+            后按最后一个 ``-`` 分段、末段 MUST 为纯数字、其前段与该 spec 名
+            全等；口径同 :meth:`_wt_name_matches_spec`），``fenix/verify-*``
+            验证分支 MUST NOT 进入候选（归属解析见
+            ``_impl_branch_owned_by_spec``，MUST NOT 复用 ``_spec_from_branch``
+            ——它剥 ``verify-`` 前缀且硬编码 ``fenix/``）；
+          - ``git rev-list --count main..<branch>`` > 0（有未并入 main 的提交）。
+
+        查询失败（git 超时/非零退出/异常）一律返回 False（fail-closed：不
+        豁免 → 调用方走既有 stale 判定，不把真实卡死洗成健康）。
+
+        Returns: 存在待合并分支 True；无/查询失败 False。
+        """
+        return self.pending_merge_since(spec_name) is not None
+
+    def pending_merge_since(self, spec_name: str):
+        """该 spec 待合并分支的产生时间（epoch 秒），无待合并返回 None。
+
+        evo-recovery-watch-transition-guard D1（年龄来源）：供**有界性**回落
+        ——自「未并入 main 的最新 committer date」起算，超过
+        ``pm.recovery.transition_grace_minutes`` 仍未合并时回落既有 stale
+        判定，避免「分支永挂 → 永不告警」把真实卡死洗成健康。
+
+        取值口径：枚举归属该 spec 的实现分支（同 :meth:`has_pending_merge`
+        的归属解析），对每个有未并入 main 提交的候选分支取
+        ``git log -1 --format=%ct main..<branch>``（该分支未并入 main 最新
+        提交的 committer date，epoch 秒）；返回所有候选中的**最大值**（最近
+        一次产生未合并提交的时刻——与实现分支自带的 ``-<ts>`` 时间戳同语义，
+        均为「最近的实现/失败活动」，供调用方与 succeed 痕迹取 max 作年龄起点）。
+
+        Returns: epoch 秒（int）；无待合并分支/git 失败返回 None（调用方
+        MUST 以 ``isinstance(ts, (int, float))`` 判定，勿依赖 ``is not None``
+        ——测试夹具替身 MagicMock 为真值）。
+        """
+        prefix = self.PENDING_MERGE_BRANCH_PREFIX
+        try:
+            res = subprocess.run(
+                ["git", "-C", str(self.project_root), "for-each-ref",
+                 "--format=%(refname:short)", f"refs/heads/{prefix}"],
+                capture_output=True, text=True, timeout=15,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if res.returncode != 0:
+            return None
+        latest: Optional[int] = None
+        for cand in res.stdout.splitlines():
+            cand = cand.strip()
+            if not self._impl_branch_owned_by_spec(cand, spec_name):
+                continue
+            try:
+                ahead = subprocess.run(
+                    ["git", "-C", str(self.project_root), "rev-list",
+                     "--count", f"main..{cand}"],
+                    capture_output=True, text=True, timeout=15,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+            if ahead.returncode != 0:
+                continue
+            try:
+                count = int(ahead.stdout.strip() or "0")
+            except ValueError:
+                continue
+            if count <= 0:
+                continue  # 已并入 main：不算待合并（design D1 反例：933/1014 已合并）
+            try:
+                ts = subprocess.run(
+                    ["git", "-C", str(self.project_root), "log", "-1",
+                     "--format=%ct", f"main..{cand}"],
+                    capture_output=True, text=True, timeout=15,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+            if ts.returncode != 0:
+                continue
+            try:
+                since = int(ts.stdout.strip())
+            except ValueError:
+                continue
+            if latest is None or since > latest:
+                latest = since
+        return latest
+
+    @staticmethod
+    def _impl_branch_owned_by_spec(branch: str, spec_name: str) -> bool:
+        """分支（``fenix/<spec>-<ts>``）是否精确归属该 spec（完整名 + 分隔符边界）。
+
+        evo-recovery-watch-transition-guard D1 归属精确性：MUST NOT 复用
+        ``_spec_from_branch``（它硬编码 ``fenix/`` 且剥 ``verify-`` 前缀，会把
+        ``fenix/verify-<spec>-<ts>`` 验证分支误算作本 spec 的实现分支）；MUST
+        走与 :meth:`_wt_name_matches_spec` 同口径的边界守卫——分支名去
+        ``fenix/`` 后按最后一个 ``-`` 分段、末段 MUST 为纯数字、其前段与该
+        spec 名**全等**；``fenix/verify-*`` 显式排除。
+
+        实锤（design D1 归属精确性）：`fenix/evo-add-fast-track-scale-precheck-*`
+        命中 5 条分支，其中 ``...-4afdbe-<ts>``（2 条）属**另一 spec**
+        ``evo-add-fast-track-scale-precheck-4afdbe``——前缀匹配会把别的 spec 的
+        未合并提交算到本 spec 头上。本守卫对 spec ``evo-add-fast-track-scale-precheck``
+        解析 ``...-4afdbe-1789277250`` 得前段 ``...-4afdbe`` ≠ spec → 不命中。
+        """
+        if not branch or not spec_name:
+            return False
+        if not branch.startswith("fenix/"):
+            return False
+        rest = branch[len("fenix/"):]
+        if rest.startswith("verify-"):
+            return False  # 验证分支（fenix/verify-<spec>-<ts>）MUST NOT 进入候选
+        parts = rest.rsplit("-", 1)
+        if len(parts) == 2 and parts[0] and parts[1].isdigit():
+            return parts[0] == spec_name
+        return False
+
     def branch_exists(self, branch: str) -> bool:
         """分支是否存在（``git rev-parse --verify``）。repair 三态判定基准。"""
         if not branch:
