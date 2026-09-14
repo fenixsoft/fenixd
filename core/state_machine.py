@@ -258,7 +258,7 @@ class StateParser:
                     except ValueError:
                         value = None
                 elif key in (FROZEN_FIELD, "_recovery_resume", "_cancelled_hold",
-                             "_repair_awaiting_remerge"):
+                             "_repair_awaiting_remerge", "_judge_cap_frozen"):
                     # 布尔字段显式转换：字符串 "False" 也是 truthy，不转会把
                     # 解冻后的 spec 永久误判为冻结（fix-restart-dual-dispatch S4）；
                     # _recovery_resume（interrupt-recovery-preserve）同型处理。
@@ -266,6 +266,8 @@ class StateParser:
                     # 标记随 STATE.md 往返，False 不转会被误判为保持态。
                     # _repair_awaiting_remerge（fix-recovery-branch-anchor D3）：
                     # 「待 re-merge-back」标记，False 不转会被误判为恒待合并。
+                    # _judge_cap_frozen（judge-rerun-stability R1）：judge 重跑
+                    # hard cap 冻结标记，False 不转会被误判为恒冻结。
                     value = value.lower() in ("true", "1", "yes")
                 elif key in ("implementer_run", "tester_run", "branch", "error",
                              "total_duration", START_AFTER_FIELD, FROZEN_UNTIL_FIELD,
