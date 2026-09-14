@@ -779,3 +779,221 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
     if logger is not None:
         logger.error("verify_report", f"验证报告闸门阻断 '{spec_name}': {error}")
     return {"ok": False, "error": error}
+
+
+# ── verdict 稳定性缓存（judge-rerun-stability R1）────────────────────────
+# 持久化最近两轮 verdict（status + 失败场景 id 集 + spec 戳 + report.json mtime），
+# 供 judge 派发前置守卫判定：连续两轮 verdict 一致时复用上次结果，不重派 judge。
+# 文件名为 verdict_stability.json，**不得复用 verdict_cache.json**（后者已被
+# core/verdict_check.py 的场景级指纹缓存占用，同路径写入会互相覆盖并破坏
+# prompt_builder 的场景指纹注入）。
+#
+# judge_rerun_count（单 spec judge 重跑计数）为 STATE.md 字段（_judge_rerun_count，
+# 与 _verify_fail_rounds 正交），不在本文件重复记账——本文件只持久化 verdict 轮次。
+#
+# schema:
+# {
+#   "stamp": "<sha256(spec content)[:16]>",
+#   "report_mtime_ns": <int>,
+#   "rounds": [
+#     {"status": "...", "failed_ids": [...], "at": "..."},
+#     ...
+#   ],
+#   "updated_at": "..."
+# }
+
+VERDICT_STABILITY_FILENAME = "verdict_stability.json"
+# 连续两轮一致的最小轮数要求（<=此值即视为可复用）
+_STABILITY_MIN_ROUNDS = 2
+
+
+def _verdict_stability_path(project_root, spec_name) -> Path:
+    """verdict_stability.json 路径（verify-progress/<spec>/）。"""
+    return (
+        Path(project_root) / ".fenix" / "verify-progress"
+        / spec_name / VERDICT_STABILITY_FILENAME
+    )
+
+
+def compute_spec_stamp(project_root, spec_name) -> str | None:
+    """spec 戳：spec 内容与场景集内容的 sha256 前 16 位（同 scenario_fingerprint 风格）。
+
+    组成：
+      - ``spec/changes/<spec>/specs/**/spec.md`` 全部内容（按路径排序，若有多个
+        capability spec 文件则拼接后一次性哈希）；
+      - ``.fenix/verify-progress/<spec>/scenarios.json`` 内容（场景集冻结文件，
+        _apply_scenario_freeze 每轮重写）。
+
+    两路任一不可读返回 None（调用方按「无法判定」保守不复用）。场景集变更或
+    spec.md 修改即改变 spec 戳 → 缓存失效重新验证。
+    """
+    import hashlib as _hashlib
+    parts: list[bytes] = []
+
+    # 1) spec.md 全部内容（多 capability 按路径排序保证确定性）
+    changes_dir = Path(project_root) / "spec" / "changes" / spec_name
+    spec_files = sorted(changes_dir.glob("specs/**/spec.md"))
+    for p in spec_files:
+        try:
+            parts.append(p.read_bytes())
+        except (OSError, UnicodeDecodeError):
+            pass
+
+    # 2) scenarios.json 内容
+    scenarios_path = (
+        Path(project_root) / ".fenix" / "verify-progress"
+        / spec_name / "scenarios.json"
+    )
+    try:
+        parts.append(scenarios_path.read_bytes())
+    except (OSError, UnicodeDecodeError):
+        pass
+
+    if not parts:
+        return None
+    digest = _hashlib.sha256(b"\x00".join(parts)).hexdigest()[:16]
+    return digest
+
+
+def report_mtime_ns(project_root, spec_name) -> int | None:
+    """report.json mtime 纳秒；缺失返回 None（用于稳定性缓存判据）。"""
+    report_path = (
+        Path(project_root) / ".fenix" / "verify-progress"
+        / spec_name / "report.json"
+    )
+    try:
+        return report_path.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def verdict_failed_ids(report) -> list:
+    """从 report.json 提取失败场景 id 集（status 非 pass/passed），排序去重。
+
+    返回排序后的列表（方便跨轮一致比较）；report 为 None 或无场景时返回 []。
+    """
+    scenarios = (report or {}).get("scenarios") or []
+    ids: set = set()
+    for sc in scenarios:
+        if not isinstance(sc, dict):
+            continue
+        st = str(sc.get("status") or "")
+        if st not in ("pass", "passed"):
+            sid = sc.get("scenario_id") or sc.get("id")
+            if sid is not None:
+                ids.add(str(sid))
+    return sorted(ids)
+
+
+def read_verdict_stability(project_root, spec_name) -> dict | None:
+    """读取 verdict_stability.json；缺失/损坏返回 None（fail-open）。
+
+    返回顶层 dict（含 stamp / report_mtime_ns / rounds / updated_at）。
+    """
+    p = _verdict_stability_path(project_root, spec_name)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def write_verdict_stability(project_root, spec_name, data) -> None:
+    """原子写 verdict_stability.json（失败静默：缓存缺失只导致下轮重裁）。"""
+    p = _verdict_stability_path(project_root, spec_name)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(
+            json.dumps(data, ensure_ascii=False, indent=1, default=str),
+            encoding="utf-8")
+        tmp.replace(p)
+    except OSError:
+        pass
+
+
+def record_verdict_round(project_root, spec_name, status, failed_ids,
+                         stamp: str | None = None,
+                         report_mtime: int | None = None) -> dict:
+    """追加一轮裁决到 verdict_stability.json（保留最近两轮）；返回更新后数据。
+
+    stamp / report_mtime 为 None 时自动从当前状态推导。
+    首轮写入 rounds=[round]；第二轮起保留最近两轮用于一致比较。
+    """
+    if stamp is None:
+        stamp = compute_spec_stamp(project_root, spec_name)
+    if report_mtime is None:
+        report_mtime = report_mtime_ns(project_root, spec_name)
+
+    now = datetime.now(timezone.utc).isoformat()
+    current_round = {
+        "status": status or "unknown",
+        "failed_ids": list(failed_ids or []),
+        "at": now,
+    }
+
+    data = read_verdict_stability(project_root, spec_name) or {}
+    rounds = data.get("rounds") or []
+    if not isinstance(rounds, list):
+        rounds = []
+
+    rounds.append(current_round)
+    # 保留最近两轮（_STABILITY_MIN_ROUNDS），更早的轮次出清
+    if len(rounds) > _STABILITY_MIN_ROUNDS:
+        rounds = rounds[-_STABILITY_MIN_ROUNDS:]
+
+    data["stamp"] = stamp
+    data["report_mtime_ns"] = report_mtime
+    data["rounds"] = rounds
+    data["updated_at"] = now
+
+    write_verdict_stability(project_root, spec_name, data)
+    return data
+
+
+def is_verdict_stable(project_root, spec_name) -> bool:
+    """复用判据：spec 戳未变 && report.json mtime 未变 && 最近两轮 verdict 一致。
+
+    无缓存/单轮/两轮不一致/任一关键输入不可得 → False（保守不复用）。
+    符合复用条件时 judge 派发前置守卫可跳过 run_planner。
+    """
+    data = read_verdict_stability(project_root, spec_name)
+    if data is None:
+        return False
+
+    # 两轮以上一致性检查
+    rounds = data.get("rounds") or []
+    if len(rounds) < _STABILITY_MIN_ROUNDS:
+        return False
+
+    last_two = rounds[-_STABILITY_MIN_ROUNDS:]
+    prev = last_two[0]
+    curr = last_two[1]
+    if not isinstance(prev, dict) or not isinstance(curr, dict):
+        return False
+
+    # verdict 一致性（status + failed_ids）
+    if prev.get("status") != curr.get("status"):
+        return False
+    if sorted(prev.get("failed_ids") or []) != sorted(curr.get("failed_ids") or []):
+        return False
+
+    # spec 戳未变
+    current_stamp = compute_spec_stamp(project_root, spec_name)
+    if current_stamp is None:
+        return False
+    if current_stamp != data.get("stamp"):
+        return False
+
+    # report.json mtime 未变
+    current_mtime = report_mtime_ns(project_root, spec_name)
+    if current_mtime is None:
+        return False
+    if current_mtime != data.get("report_mtime_ns"):
+        return False
+
+    return True

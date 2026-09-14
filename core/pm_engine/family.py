@@ -475,6 +475,16 @@ class FamilyGovernor:
         # ── inplace 模式（含未配置缺省）：原地打回（inplace-bug-repair D1-D3）──
         # 对任何 SPEC 生效，包括名称带 fix- 前缀的 SPEC（名称前缀分流已退役）。
         entry = self._pm.state_machine.read_one(spec_name) or {}
+        # judge-rerun-stability R1：judge 重跑 hard cap 触发（_judge_cap_frozen）
+        # 时 _verify_fail_rounds 一并冻结——不再递增（spec 已 blocked 等待人工，
+        # 计数器保持冻结值，防止解冻后从旧值继续误累积）。
+        if entry.get("_judge_cap_frozen"):
+            self._pm.logger.warning(
+                "pm_engine",
+                f"judge hard cap 冻结期间 '{spec_name}' 的 _verify_fail_rounds "
+                f"冻结递增（保持 {entry.get('_verify_fail_rounds', 0)}）",
+            )
+            return
         fail_rounds = 0
         try:
             fail_rounds = int(entry.get("_verify_fail_rounds", 0) or 0)

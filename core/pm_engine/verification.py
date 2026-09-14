@@ -25,6 +25,11 @@ from core.proc_utils import find_free_port
 # 后重执行，不再「env 伪失败→原样重验」空转；上限与阶段1 replan_left 对齐。
 _SCENARIO_REPAIR_MAX_ROUNDS = 2
 
+# judge-rerun-stability R1：单 spec judge 重跑硬上限（judge run 总数）。
+# 超过此值即 blocked + 人工升级告警（计数器与 _verify_fail_rounds 正交，
+# hard cap 触发时两者一并冻结——blocked 状态天然停止自动链路递增）。
+_MAX_JUDGE_RERUNS = 5
+
 from core.verify_contract import (
     CommandVerifyServer,
     ensure_main_tree_deps,
@@ -2236,7 +2241,17 @@ class VerificationPipeline:
         if judge_result is None:
             # ── 阶段3: Planner 判定结果 ──
             self._pm.logger.info("pm_engine", f"[阶段3] Planner 判定: {spec_name}")
-            judge_result = self._pm.agent_runner.run_planner(spec_name, "judge")
+            # ── judge-rerun-stability R1：稳定性复用 + 重跑上限前置守卫 ──
+            # 连续两轮 verdict 一致且 spec 戳/report.json 未变 → 复用上次结果
+            # 不新起 judge run（叫停 add-web-ui 类 11 次空转重派）；judge run
+            # 总数超上限（_MAX_JUDGE_RERUNS=5）→ blocked 转人工裁决。
+            gate = self._judge_dispatch_gate(spec_name)
+            if gate is False:
+                return  # 硬上限：已 blocked 等待人工裁决
+            if gate is None:
+                judge_result = self._pm.agent_runner.run_planner(spec_name, "judge")
+            else:
+                judge_result = gate  # 稳定性复用合成结果
 
         if not judge_result.success:
             # ── 人工取消 hold-state（add-run-cancel D4，judge 同语义）──
@@ -2630,6 +2645,13 @@ class VerificationPipeline:
                     f"验证报告闸门: '{spec_name}' 阻止推进 bug-found — {report_blocker}",
                 )
                 return
+            # ── verified 一次性放行门（judge-rerun-stability R2）──
+            # 已 verified 且场景集未变 → 拒绝降级为 bug-found（人工 reset
+            # 回 testing 后 legacy/planner 误判防护；与 D6 stale-result 防护
+            # 正交共存——D6 处理非 testing 的 stale 丢弃，R2 处理 testing 内的
+            # 历史 verified 防降级）。
+            if self._verified_gate_refuses(spec_name, "bug-found"):
+                return
             self._pm.state_machine.transition(spec_name, "bug-found")
             self._pm.state_machine.update_spec(spec_name, {
                 "tester_run": judge_result.run_id,
@@ -2640,6 +2662,8 @@ class VerificationPipeline:
                 # 判定（非 inconclusive），降档并行度同轮复位。
                 "_verify_parallel_override": None,
             })
+            # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）
+            self._record_verdict_adoption(spec_name, "bug-found", report)
             # 本轮场景集变更小节追加到验证报告（spec 需求 2.3）
             self._pm._render_scenario_change_section_to_report(spec_name)
             self._pm.logger.warning(
@@ -2713,6 +2737,8 @@ class VerificationPipeline:
                 # 恢复/fix 链等中间转换不清零。
                 ENV_BLOCK_ROUNDS_FIELD: 0,
             })
+            # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）
+            self._record_verdict_adoption(spec_name, "verified", report)
             # 失败历史侧车随 verified 终态清空（fix-verdict-retry-misattribution D6）
             self._pm._clear_fail_history(spec_name)
             # 本轮场景集变更小节追加到验证报告（spec 需求 2.3）
@@ -3243,6 +3269,14 @@ class VerificationPipeline:
                         )
                         return
                     # 文件属当前 spec 且 mtime 新鲜，但 status 白名单外 → blocked
+                    # ── verified 一次性放行门（judge-rerun-stability R2）──
+                    # 「legacy unknown-status 不得改判」：已 verified 且场景集
+                    # 未变时，白名单外 status（implementer 残留 success 等）不
+                    # 得把 verified 覆盖为 blocked——verified 门读自有
+                    # verdict_stability.json（已 verified），共享文件 status 残留
+                    # 只是污染不是裁决，放行门继续拒绝降级。
+                    if self._verified_gate_refuses(spec_name, "blocked"):
+                        return
                     self._pm.logger.error(
                         "pm_engine",
                         f"Verifier (legacy) status 白名单外 '{spec_name}' — "
@@ -3362,7 +3396,13 @@ class VerificationPipeline:
                 # ── 归因分级门禁（legacy 路径同门禁，add-verdict-credibility-gate / D2）──
                 if self._pm._speculative_bug_found_gate(spec_name):
                     return
-
+                # ── verified 一次性放行门（judge-rerun-stability R2）──
+                # 已 verified 且场景集未变 → 拒绝降级为 bug-found（legacy 路径
+                # 同门禁；复用自有 verdict_stability.json 而非共享 .fenix-run-
+                # result.json——后者会被 implementer status=success 残留污染，
+                # 读它会错误判为「非 verified」而漏拦）。
+                if self._verified_gate_refuses(spec_name, "bug-found"):
+                    return
                 self._pm.state_machine.transition(spec_name, "bug-found")
                 self._pm.state_machine.update_spec(spec_name, {
                     "tester_run": result.run_id,
@@ -3372,6 +3412,8 @@ class VerificationPipeline:
                     # 降档并行度同轮复位（legacy 路径同语义）。
                     "_verify_parallel_override": None,
                 })
+                # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）
+                self._record_verdict_adoption(spec_name, "bug-found", report)
                 self._pm.logger.warning(
                     "pm_engine",
                     f"Verifier (legacy) found bugs in '{spec_name}'",
@@ -3450,11 +3492,17 @@ class VerificationPipeline:
                     # add-blocked-reverify-lane D3：env 阻塞轮次清零点（legacy 同语义）。
                     ENV_BLOCK_ROUNDS_FIELD: 0,
                 })
+                # 裁决采纳后落盘 verdict 稳定性轮次（judge-rerun-stability R1）
+                self._record_verdict_adoption(spec_name, "verified", report)
                 # 失败历史侧车随 verified 终态清空（legacy 同语义，
                 # fix-verdict-retry-misattribution D6）
                 self._pm._clear_fail_history(spec_name)
                 self._pm._on_spec_verified(spec_name)
         else:
+            # ── verified 一次性放行门（judge-rerun-stability R2）──
+            # verifier agent 进程失败的降级同样不得覆盖已 verified 结论。
+            if self._verified_gate_refuses(spec_name, "bug-found"):
+                return
             self._pm.state_machine.transition(spec_name, "bug-found")
             self._pm.state_machine.update_spec(spec_name, {
                 "tester_run": result.run_id,
@@ -3830,6 +3878,190 @@ class VerificationPipeline:
             run_id="mechanical-all-green", spec_name=spec_name,
             agent_type="planner-judge", success=True, duration_seconds=0.0,
             output=text)
+
+    # ── judge-rerun-stability：计数/稳定性复用/verified 放行门 ────────────
+
+    def _judge_rerun_count(self, spec_name: str, delta: int = 0) -> int:
+        """STATE.md 读取/增量 ``_judge_rerun_count``（判据与 _verify_fail_rounds 正交）。
+
+        judge 派发决策（含被稳定性复用跳过但未实际派发的判定次数）在派发处
+        delta=+1 递增；读到 ``_judge_cap_frozen`` 冻结标记时强制不再递增
+        （hard cap 触发后 judge 侧计数器冻结，与 _verify_fail_rounds 一并冻结）。
+        """
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        if delta and entry.get("_judge_cap_frozen"):
+            return int(entry.get("_judge_rerun_count", 0) or 0)
+        count = 0
+        try:
+            count = int(entry.get("_judge_rerun_count", 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if delta:
+            count = max(0, count + delta)
+            self._pm.state_machine.update_spec(
+                spec_name, {"_judge_rerun_count": count})
+        return count
+
+    def _judge_dispatch_gate(self, spec_name: str):
+        """judge 派发前置守卫（judge-rerun-stability R1）。
+
+        调用点在阶段3 judge 派发处（三阶段主路径 + 全绿快道回退）：
+          - judge_rerun_count +1（含被稳定性复用跳过但未实际派发的判定次数）；
+          - 总数超上限（_MAX_JUDGE_RERUNS=5）→ blocked + 人工升级告警，hard cap
+            触发时 judge_rerun_count 与 _verify_fail_rounds 一并冻结
+            （_judge_cap_frozen 标记，两者的自动递增全部失效）；
+          - verdict 稳定（spec 戳未变 && report.json mtime 未变 && 连续两轮
+            一致）→ 返回合成复用结果（不新起 judge run，叫停连发重派）。
+
+        Returns:
+          - None：正常派发 judge；
+          - AgentRunResult：verdict 稳定复用的合成结果（调用方直接采纳）；
+          - False：硬上限已 blocked，调用方应 return。
+        """
+        from core.verify_report import is_verdict_stable, read_verdict_stability
+        count = self._judge_rerun_count(spec_name, delta=1)
+        if count > _MAX_JUDGE_RERUNS:
+            self._judge_hard_cap_freeze(spec_name, count)
+            return False
+        if not is_verdict_stable(self._pm.project_root, spec_name):
+            return None
+        # 稳定性复用：返回合成结果，下游采纳尾段继续（_read_planner_result
+        # 读到上次 judge 落盘的 .fenix-run-result.json，verdict 一致即等价）。
+        data = read_verdict_stability(self._pm.project_root, spec_name) or {}
+        rounds = data.get("rounds") or []
+        latest = rounds[-1] if rounds else {}
+        status = latest.get("status") if isinstance(latest, dict) else "unknown"
+        text = (
+            f"verdict 稳定复用（连续两轮一致，status={status}，spec 戳与"
+            f"report.json 未变）— 跳过 judge 派发"
+        )
+        self._pm.logger.info(
+            "pm_engine", f"[阶段3] verdict 稳定复用 '{spec_name}' — {text}")
+        from core.agent_runner.runner import AgentRunResult
+        return AgentRunResult(
+            run_id="verdict-stable-reuse", spec_name=spec_name,
+            agent_type="planner-judge", success=True, duration_seconds=0.0,
+            output=text)
+
+    def _judge_hard_cap_freeze(self, spec_name: str, count: int) -> None:
+        """judge 重跑硬上限处置：blocked + 人工升级告警，计数器一并冻结（R1）。
+
+        judge_rerun_count 与 _verify_fail_rounds 正交；hard cap 触发时两者一并
+        冻结（_judge_cap_frozen 标记使两侧自动递增全部失效），与 fail-closed
+        同语义需人工裁决放行。
+        """
+        self._pm.state_machine.update_spec(spec_name, {
+            "status": "blocked",
+            "error": (
+                f"judge 重跑超上限（{count}/{_MAX_JUDGE_RERUNS} 轮）— 已冻结"
+                f"等待人工裁决。详见 `spec/changes/{spec_name}/verification-report.md`"
+            ),
+            "_judge_cap_frozen": True,
+        })
+        self._pm.logger.error(
+            "pm_engine",
+            f"judge 重跑硬上限 '{spec_name}'（{count} 轮）— "
+            f"冻结为 blocked，等待人工裁决",
+        )
+        self._pm._send_human_escalation_alert(
+            spec_name=spec_name,
+            signal_type="judge_rerun_cap",
+            severity="major",
+            description=(
+                f"'{spec_name}' judge 重跑超上限"
+                f"（{count}/{_MAX_JUDGE_RERUNS} 轮），已冻结等待人工裁决"
+            ),
+            evidence=f"spec={spec_name}; judge_rerun_count={count}",
+            recommended_action=(
+                "检查验证为何反复重跑 judge（场景集冻结是否生效/失败是否复现一致）；"
+                "人工裁决后重置验证，计数器随 verified 落定清零点恢复"
+            ),
+        )
+
+    def _verified_verdict_persisted(self, spec_name: str) -> bool:
+        """该 spec 是否已落盘 verified 且场景集未变（verified 门判据，R2）。
+
+        数据源 = ``.fenix/verify-progress/<spec>/verdict_stability.json``
+        （框架自有裁决持久化，**不被主树共享 .fenix-run-result.json 的
+        implementer status=success 残留污染**——共享文件读侧会把残留当验证
+        裁决，verified 门必须依赖自有缓存而非共享文件）：
+
+        最近一轮裁决为 verified 且当前 spec 戳（spec.md+scenarios.json 哈希）
+        与落盘戳一致（场景集未变）→ True。
+        """
+        from core.verify_report import (
+            read_verdict_stability, compute_spec_stamp,
+        )
+        data = read_verdict_stability(self._pm.project_root, spec_name)
+        if not isinstance(data, dict):
+            return False
+        rounds = data.get("rounds")
+        if not isinstance(rounds, list) or not rounds:
+            return False
+        latest = rounds[-1]
+        if not isinstance(latest, dict) or latest.get("status") != "verified":
+            return False
+        current_stamp = compute_spec_stamp(self._pm.project_root, spec_name)
+        if not current_stamp:
+            return False
+        return current_stamp == data.get("stamp")
+
+    def _verified_gate_refuses(self, spec_name: str, target: str) -> bool:
+        """verified 一次性放行门：已 verified 且场景集未变 → 拒绝降级为 target。
+
+        在裁决应用出口（bug-found 打回 / blocked 升级前）调用。返回 True =
+        已拒绝（调用方应 return，不推进降级迁移）；返回 False = 无 verified
+        缓存或场景集已变，正常流程。
+        """
+        if not self._verified_verdict_persisted(spec_name):
+            return False
+        self._pm.logger.warning(
+            "pm_engine",
+            f"verified 放行门: '{spec_name}' 已 verified 且场景集未变，"
+            f"拒绝被覆盖为 {target}（judge-rerun-stability R2，一次性放行）",
+        )
+        return True
+
+    def _record_verdict_adoption(self, spec_name: str, status: str,
+                                 report=None) -> None:
+        """裁决采纳后落盘 verdict 稳定性轮次 + STATE.md 增量时间线记账（R1/R3）。
+
+        report 为 None 时按空失败集记录；成功时同步 STATE.md 的
+        judge_rerun_count 镜像与本次验证链 token 增量（token 源复用
+        verify_report._sum_verify_chain_tokens / tokens.json）。
+        """
+        from core.verify_report import (
+            record_verdict_round, verdict_failed_ids, _sum_verify_chain_tokens,
+        )
+        failed_ids = (
+            verdict_failed_ids(report) if isinstance(report, dict) else [])
+        record_verdict_round(
+            self._pm.project_root, spec_name, status, failed_ids)
+        # STATE.md 增量时间线：本次 token 增量（累计 - 上次基线）
+        entry = self._pm.state_machine.read_one(spec_name) or {}
+        prev_raw = entry.get("_judge_token_baseline")
+        try:
+            prev = json.loads(prev_raw) if prev_raw else None
+        except (TypeError, ValueError):
+            prev = None
+        cur = _sum_verify_chain_tokens(self._pm.project_root, spec_name)
+        if cur:
+            delta = {
+                "input": max(0, cur["input"] - int((prev or {}).get("input", 0) or 0)),
+                "output": max(0, cur["output"] - int((prev or {}).get("output", 0) or 0)),
+            }
+            self._pm.state_machine.update_spec(spec_name, {
+                "_judge_token_delta": json.dumps(delta, ensure_ascii=False),
+                "_judge_token_baseline": json.dumps(cur, ensure_ascii=False),
+            })
+        # verified 落定 = judge 重跑窗口关闭：judge_rerun_count 归零并解除
+        # hard cap 冻结标记（与 _verify_fail_rounds 的清零点对齐，D1 同语义）；
+        # 打回轮（bug-found）不清零——失败链中计数跨轮累计直至上限。
+        if status == "verified":
+            self._pm.state_machine.update_spec(spec_name, {
+                "_judge_rerun_count": 0,
+                "_judge_cap_frozen": False,
+            })
 
     def _persist_verdict_cache(self, spec_name: str, report: dict) -> None:
         """采纳成功后持久化跨轮裁决缓存（judge 效率治理 E，2026-09-06）。
