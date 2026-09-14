@@ -530,3 +530,199 @@ class TestVerifiedTestingEscapeHatch(unittest.TestCase):
         self.sm.update_spec("demo", {"status": "done"})
         self.assertFalse(self.sm.transition_gate("demo", "testing"))
         self.assertEqual(self.sm.read_one("demo")["status"], "done")
+
+
+class TestVerifyRedoFreezeAlerts(unittest.TestCase):
+    """fix-blocked-freeze-classification 5.2：重启重验超限冻结伴随人工升级告警。
+
+    回归背景：:849 恢复路径曾只有 frozen 无告警（静默冻结）——反复重启仍无法
+    收敛的毒 spec 冻结后无人被告知。本测试断言经 freeze_for_human 成对入口
+    冻结时必然发出告警（signal_type=verify_redo_exhausted，severity=major）。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _mk_testing_spec(self, name="stuck-test", redo_count=2):
+        self.sm.add_spec(name, {"status": "testing",
+                                "branch": "fenix/impl-branch",
+                                "tester_run": "verify-1",
+                                "_verify_redo_count": redo_count})
+
+    def test_redo_exhausted_freezes_with_alert(self):
+        """重启重验超限 → blocked + frozen + verify_redo_exhausted 告警（不再静默）。"""
+        self._mk_testing_spec(redo_count=3)
+        budget = 3
+        sent = {}
+        def alert_cb(**kw):
+            sent.update(kw)
+        self.sm.recover_interrupted(verify_redo_budget=budget,
+                                    human_alert_callback=alert_cb)
+        entry = self.sm.read_one("stuck-test")
+        self.assertEqual(entry["status"], "blocked")
+        self.assertIs(entry.get("frozen"), True)
+        self.assertIn("重启重验超限", entry.get("error", ""))
+        self.assertEqual(sent.get("signal_type"), "verify_redo_exhausted")
+        self.assertEqual(sent.get("severity"), "major")
+        self.assertEqual(sent.get("spec_name"), "stuck-test")
+        self.assertIn("verify_redo_count", sent.get("evidence", ""))
+
+    def test_redo_under_budget_no_alert(self):
+        """未超限不冻结不告警（恢复重验照常推进 implemented）。"""
+        self._mk_testing_spec(redo_count=1)
+        budget = 3
+        sent = {}
+        def alert_cb(**kw):
+            sent.update(kw)
+        self.sm.recover_interrupted(verify_redo_budget=budget,
+                                    human_alert_callback=alert_cb)
+        entry = self.sm.read_one("stuck-test")
+        self.assertEqual(entry["status"], "implemented")
+        self.assertFalse(sent, "未超限不得发出冻结告警")
+
+    def test_redo_exhausted_no_callback_logs_audit_error(self):
+        """缺省回调（None，仅单测场景）时冻结仍发生且记审计 ERROR，不得无痕。"""
+        self._mk_testing_spec(redo_count=3)
+        self.sm.recover_interrupted(verify_redo_budget=3,
+                                    human_alert_callback=None)
+        entry = self.sm.read_one("stuck-test")
+        self.assertEqual(entry["status"], "blocked")
+        self.assertIs(entry.get("frozen"), True)
+        audit = [str(c.args) for c in self.logger.error.call_args_list]
+        self.assertTrue(
+            any("FREEZE WITHOUT ALERT" in a for a in audit),
+            "缺省回调的静默冻结必须留下审计 ERROR 痕迹",
+        )
+
+    def test_alert_landed_in_admin_store(self):
+        """端到端：告警经真实 PMEngine._send_human_escalation_alert 落 AdminStore。"""
+        from core.pm_engine import PMEngine
+        engine = PMEngine(self.sm, MagicMock(), {}, Path(self.tmpdir), MagicMock())
+        self._mk_testing_spec(redo_count=3)
+        self.sm.recover_interrupted(
+            verify_redo_budget=3,
+            human_alert_callback=engine._send_human_escalation_alert)
+        from core.admin_store import AdminStore, ESCALATION
+        alerts = [a for a in AdminStore(Path(self.tmpdir), MagicMock()).read_all()
+                  if a.get("signal_type") == "verify_redo_exhausted"
+                  and a.get("spec") == "stuck-test"]
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["kind"], ESCALATION)
+        self.assertEqual(alerts[0]["severity"], "major")
+
+
+class TestFreezeForHumanPairing(unittest.TestCase):
+    """fix-blocked-freeze-classification 5.3：freeze_for_human 成对不变式。
+
+    frozen=True 必然伴随一次告警发送；helper 调用后不存在无告警的冻结。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        (Path(self.tmpdir) / ".fenix").mkdir(parents=True, exist_ok=True)
+        self.state_path = Path(self.tmpdir) / ".fenix" / "STATE.md"
+        self.logger = MagicMock()
+        self.sm = StateMachine(self.state_path, self.logger)
+        self.sm.add_spec("demo", {"status": "reviewing",
+                                  "reviewer_run": "spec-review-demo-1",
+                                  "_review_attempts": 2})
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _alert_cb(self):
+        sent = []
+        def cb(**kw):
+            sent.append(kw)
+        return sent, cb
+
+    def test_freeze_implies_alert_and_state(self):
+        """helper 一次调用：blocked + frozen + 一次告警（成对、单一入口）。"""
+        sent, cb = self._alert_cb()
+        ok = self.sm.freeze_for_human(
+            "demo",
+            error="用户指令冻结：原状态 reviewing · spec-review-rejected: 缺路径",
+            signal_type="spec-review-rejected",
+            severity="major",
+            description="demo 方案被否决",
+            evidence="spec=demo; run_id=spec-review-demo-1",
+            recommended_action="修订方案后解冻",
+            alert_callback=cb,
+            extra_updates={"reviewer_run": None, "_review_attempts": 0},
+        )
+        self.assertTrue(ok)
+        entry = self.sm.read_one("demo")
+        self.assertEqual(entry["status"], "blocked")
+        self.assertIs(entry["frozen"], True)
+        self.assertEqual(len(sent), 1, "一次冻结恰伴随一次告警发送")
+        self.assertEqual(sent[0]["signal_type"], "spec-review-rejected")
+        self.assertEqual(sent[0]["spec_name"], "demo")
+        self.assertEqual(sent[0]["severity"], "major")
+        # 收口字段并入同一原子写；error 保持冻结文案（extra_updates 不得覆盖）
+        self.assertIsNone(entry.get("reviewer_run"))
+        self.assertEqual(str(entry.get("_review_attempts")), "0")
+        self.assertIn("原状态 reviewing", entry["error"])
+
+    def test_error_not_overridden_by_extra_updates(self):
+        """extra_updates 携带 error 键时被剥离，冻结 error 不被覆盖。"""
+        sent, cb = self._alert_cb()
+        self.sm.freeze_for_human(
+            "demo",
+            error="用户指令冻结：原状态 reviewing · spec-review-incomplete: x",
+            signal_type="spec-review-incomplete",
+            severity="major",
+            description="d",
+            evidence="e",
+            recommended_action="r",
+            alert_callback=cb,
+            extra_updates={"error": "BAD-OVERRIDE", "reviewer_run": None},
+        )
+        entry = self.sm.read_one("demo")
+        self.assertIn("spec-review-incomplete", entry["error"])
+        self.assertNotIn("BAD-OVERRIDE", entry["error"])
+        self.assertEqual(len(sent), 1)
+
+    def test_no_callback_still_freezes_with_audit(self):
+        """无回调（None，仅单测）时冻结仍写 frozen=True 且留审计 ERROR 痕迹。"""
+        self.sm.freeze_for_human(
+            "demo",
+            error="用户指令冻结：原状态 reviewing · spec-review-rejected: x",
+            signal_type="spec-review-rejected",
+            severity="major",
+            description="d",
+            evidence="e",
+            recommended_action="r",
+            alert_callback=None,
+        )
+        entry = self.sm.read_one("demo")
+        self.assertIs(entry["frozen"], True)
+        audit = [str(c.args) for c in self.logger.error.call_args_list]
+        self.assertTrue(
+            any("FREEZE WITHOUT ALERT" in a for a in audit),
+            "无回调的冻结必须记审计 ERROR（否则静默）",
+        )
+
+    def test_unfreeze_restores_orig_status_from_error(self):
+        """parse_orig_status 共享读函数对 helper 写入的 error 解析正确。"""
+        from core.state_machine import parse_orig_status
+        self.sm.freeze_for_human(
+            "demo",
+            error="用户指令冻结：原状态 reviewing · spec-review-rejected: x",
+            signal_type="spec-review-rejected",
+            severity="major",
+            description="d",
+            evidence="e",
+            recommended_action="r",
+            alert_callback=lambda **kw: None,
+        )
+        self.assertEqual(parse_orig_status(self.sm.read_one("demo")["error"]),
+                         "reviewing")

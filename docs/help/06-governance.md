@@ -142,13 +142,14 @@ daemon 重启时，处于 `implementing`/`testing` 中断状态的 SPEC 自动�
 
 - `approved`（方案可行且无改动）→ `ready`
 - `repaired`（方案可行且评审者已就地修补可修补漏洞）→ `ready`（改动留在 git 工作区，可经 `git diff` 审计）
-- `rejected`（存在方向性风险/致命漏洞）→ `blocked`，error 前缀 `spec-review-rejected:`
+- `rejected`（存在方向性风险/致命漏洞）→ 冻结转人工（`frozen: true` + 人工升级告警），error 内嵌 `spec-review-rejected:` 标识（完整文案 `用户指令冻结：原状态 reviewing · spec-review-rejected: …`，见[生命周期](03-lifecycle.md#blocked-的两种语义冻结-vs-阻塞)）
 
-**故障与否决严格区分**：评审 run 未通过结果硬门或写入边界校验（非零退出 / 结果文件缺失或空 / JSON 非法 / status 越白名单 / mtime 陈旧 / repairs 路径越界 / SPEC 目录外越界写入 / status 与改动不一致）**不计入否决**，重试（累计上限 3 次：首次 + 最多 2 次重试），耗尽后转 `blocked`，error 前缀 `spec-review-incomplete:`。两类 blocked 在 Dashboard 上一眼可分：`rejected` 需要人工读方案并裁决，`incomplete` 需要人工看评审器为什么没跑成。
+**故障与否决严格区分**：评审 run 未通过结果硬门或写入边界校验（非零退出 / 结果文件缺失或空 / JSON 非法 / status 越白名单 / mtime 陈旧 / repairs 路径越界 / SPEC 目录外越界写入 / status 与改动不一致）**不计入否决**，重试（累计上限 3 次：首次 + 最多 2 次重试），耗尽后冻结转人工（`frozen: true` + 告警），error 内嵌 `spec-review-incomplete:` 标识。两类冻结在 Dashboard 上一眼可分：`rejected` 需要人工读方案并裁决，`incomplete` 需要人工看评审器为什么没跑成。
 
-**人工恢复双路径**（`blocked` 状态的评审相关 SPEC）：
+**人工恢复双路径**（评审相关冻结）：
 
-- **`blocked → reviewing`（重新评审）**：仅对 error 前缀为 `spec-review-*` **且未冻结**（无 `frozen: true`）的 blocked SPEC 开放；入口在 Dashboard 项目页「重新评审」菜单项与 CLI `review` 命令。其余 blocked（熔断/合并失败/人工冻结）不开放，以免一次误操作把因熔断停下的 SPEC 重新推入自动链。
+- **解冻**（冻结评审 blocked 的唯一恢复路径）：Dashboard/CLI 解冻经 `parse_orig_status` 解析「原状态 reviewing」→ 恢复 `reviewing` → daemon 自动重派评审（评审收口字段已在冻结时清空）。
+- **`blocked → reviewing`（重新评审）**：仅对 error 前缀为 `spec-review-*` **且未冻结**（无 `frozen: true`）的历史 blocked 条目开放；入口在 Dashboard 项目页「重新评审」菜单项与 CLI `review` 命令。冻结条目在此路径被拒（`SPEC 已冻结`，见[生命周期](03-lifecycle.md#评审类冻结的恢复解冻而非-re_review)）。其余 blocked（熔断/合并失败/人工冻结）不开放，以免一次误操作把因熔断停下的 SPEC 重新推入自动链。
 - **`blocked → ready`（担责放行）**：保留既有语义，人工裁决后直接放行进入调度。
 
 评审期间 SPEC 处于 `reviewing` 中断态，daemon 重启自动回退 `drafted` 重走晋升链（软化与 lint 幂等，分流重判；评审者已修补的内容会被基于改进后的方案再评一次）。

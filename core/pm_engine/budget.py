@@ -8,7 +8,6 @@ STATE.md（design D3 规则 3），本组件不持有实例状态。
 from core.state_machine import (
     BUDGET_EXEMPT_ALERTED_FIELD,
     BUDGET_EXEMPT_RUNS_FIELD,
-    FROZEN_FIELD,
 )
 from pathlib import Path
 import json
@@ -361,20 +360,15 @@ class ImplBudget:
                 f"最近实现 run={entry.get('implementer_run') or '未知'}，"
                 f"验证 run={entry.get('tester_run') or '未知'}"
             )
-        self._pm.state_machine.update_spec(spec_name, {
-            "status": "blocked",
-            FROZEN_FIELD: True,
-            "error": (
+        # fix-blocked-freeze-classification 3.1：收敛到 freeze_for_human 单一
+        # 入口（frozen + 人工升级告警成对写入），消除「各站点各自记得成对」
+        # 的漂移面。error 文案原样保留（长文案，不强制统一前缀）。
+        self._pm.state_machine.freeze_for_human(
+            spec_name,
+            error=(
                 f"实现尝试预算耗尽（{used}/{budget}）：已停止自动重派，"
                 f"需人工裁决。最近失败：{recent_error}"
             ),
-        })
-        self._pm.logger.error(
-            "pm_engine",
-            f"实现尝试预算耗尽：'{spec_name}' used={used}/{budget}，冻结为 blocked",
-        )
-        self._pm._send_human_escalation_alert(
-            spec_name=spec_name,
             signal_type="impl_budget_exhausted",
             severity="major",
             description=(
@@ -388,5 +382,10 @@ class ImplBudget:
                 "检查实现/验证报告定位根因；人工可调大 agents.impl_run_budget 后解冻，"
                 "或直接推进状态。人工重置计数器即重新获得自动修复机会"
             ),
+            alert_callback=self._pm._send_human_escalation_alert,
+        )
+        self._pm.logger.error(
+            "pm_engine",
+            f"实现尝试预算耗尽：'{spec_name}' used={used}/{budget}，冻结为 blocked",
         )
         return True

@@ -401,9 +401,13 @@ class FenixDaemon:
                 "fenixd",
                 f"remerge 收口回调构造失败（按无回调恢复，非阻塞）: {e}",
             )
+        # fix-blocked-freeze-classification D4/1.2 接线：恢复期冻结人工升级告警
+        # 回调（非 None——缺省 None 会使恢复路径退回静默冻结，违反「冻结必告警」
+        # 不变式；helper 内对 None 打审计 ERROR 兜底）
+        human_alert_cb = self._build_human_alert_callback()
         self.state_machine.recover_interrupted(
             PROJECT_ROOT, self.worktree_manager, verify_redo_budget=_redo_budget,
-            remerge_callback=remerge_cb)
+            remerge_callback=remerge_cb, human_alert_callback=human_alert_cb)
         # 消费后的保全 sidecar 清除（幂等；中断全部由 recovery 接管）
         _clear_preserve_sidecar()
 
@@ -1675,6 +1679,45 @@ class FenixDaemon:
                 self.logger.warning(
                     "fenixd",
                     f"remerge 收口 consume_legacy 失败 '{spec_name}'（非阻塞）: {e}",
+                )
+        return _cb
+
+    def _build_human_alert_callback(self):
+        """恢复期冻结人工升级告警回调（fix-blocked-freeze-classification D4/1.2 接线）。
+
+        返回 ``callable(spec_name, signal_type, severity, description, evidence,
+        recommended_action) -> None``：经 ``pm_engine._send_human_escalation_alert``
+        写入 human-escalation-alerts store。``state_machine`` 无 ``pm_engine``
+        引用，发送由 fenixd 注入（与 ``_build_remerge_callback`` 同型注入模式）。
+
+        ``pm_engine`` 未就绪时回退 ``None``——恢复路径退回静默冻结并打审计
+        ERROR（helper 内），MUST NOT 掩盖。
+        """
+        pm = getattr(self, "pm_engine", None)
+        if pm is None:
+            self.logger.warning(
+                "fenixd",
+                "人工升级告警回调构造跳过：pm_engine 未就绪（恢复路径将"
+                "退回静默冻结，helper 内记审计 ERROR）",
+            )
+            return None
+
+        def _cb(spec_name: str, signal_type: str, severity: str,
+                description: str, evidence: str, recommended_action: str) -> None:
+            try:
+                self.pm_engine._send_human_escalation_alert(
+                    spec_name=spec_name,
+                    signal_type=signal_type,
+                    severity=severity,
+                    description=description,
+                    evidence=evidence,
+                    recommended_action=recommended_action,
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "fenixd",
+                    f"恢复期冻结人工升级告警发送失败 '{spec_name}'"
+                    f"（signal_type={signal_type}，非阻塞）: {e}",
                 )
         return _cb
 
