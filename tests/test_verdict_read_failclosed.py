@@ -16,7 +16,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -183,7 +183,10 @@ class TestThreeStageRetryThenBlock(_FailClosedTestBase):
         self._run_three_stage()
         entry = self.sm.read_one("demo-spec")
         self.assertIn(entry["status"], ("bug-found", "implemented"))
-        self.engine._on_spec_bug_found.assert_called_once_with("demo-spec")
+        # evo-infra-failure-budget-exempt R1/R3：归因入口以三态分类调用
+        # _on_spec_bug_found（failure_class + run_id 新参数），断言同步签名。
+        self.engine._on_spec_bug_found.assert_called_once_with(
+            "demo-spec", failure_class="product", run_id=ANY)
         self.engine._on_spec_verified.assert_not_called()
 
 
