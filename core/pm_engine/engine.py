@@ -2681,6 +2681,15 @@ class PMEngine:
     def _read_planner_result(self, spec_name: str) -> "VerdictReadResult":
         return self._verification._read_planner_result(spec_name)
 
+    def _read_verdict(self, spec_name: str) -> "VerdictReadResult":
+        """统一裁决读取入口（evo-verifier-result-single-source R1）。
+
+        legacy 与 planner 裁决应用处统一走此入口读取验证裁决；主树共享文件
+        回退须过 role/spec 戳校验（role≠verifier/缺 role 一律不采信），
+        不依赖 run_id 可解析（修复 _verifier_result_is_stale fail-open）。
+        """
+        return self._verification._read_verdict(spec_name)
+
     def _judge_bugs_declare_env(self, spec_name: str) -> bool:
         return self._verification._judge_bugs_declare_env(spec_name)
 

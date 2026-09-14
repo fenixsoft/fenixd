@@ -29,8 +29,9 @@ from core.state_machine import StateMachine
 CORRUPT_RESULT = '{"status": "bug-found", "summary": "line1\\nline2"}'
 # 裸换行（复刻 add-verify-contract-autodraft 事故签名，JSON 非法）
 CORRUPT_NEWLINE_RESULT = '{"status": "bug-found", "summary": "line1\nline2"}'
-# 非法 status（verdict 语义错位，如 implementer 共享残留 "success"）
-UNKNOWN_STATUS_RESULT = '{"status": "success", "summary": "impl ok"}'
+# 非法 status（verdict 语义错位，如 verifier 写入非白名单 status）
+UNKNOWN_STATUS_RESULT = (
+    '{"status": "success", "summary": "impl ok", "role": "verifier"}')
 
 
 class _FailClosedTestBase(unittest.TestCase):
@@ -131,7 +132,7 @@ class TestThreeStageRetryThenBlock(_FailClosedTestBase):
 
     def test_corrupt_json_retry_then_block(self):
         """裸换行非法 JSON（事故签名）→ 重试 → 仍坏 → blocked + 告警。"""
-        self.engine._read_planner_result = MagicMock(side_effect=[
+        self.engine._read_verdict = MagicMock(side_effect=[
             # 阶段1 已冻结复用跳过，不读 plan；下方为阶段3 reads：
             VerdictReadResult.failure(
                 "parse",
@@ -163,7 +164,7 @@ class TestThreeStageRetryThenBlock(_FailClosedTestBase):
 
     def test_unknown_status_retry_then_block(self):
         """status='success' 白名单外 → 重试 → 仍坏 → blocked。"""
-        self.engine._read_planner_result = MagicMock(side_effect=[
+        self.engine._read_verdict = MagicMock(side_effect=[
             VerdictReadResult.failure("unknown-status", "status='success'"),
             VerdictReadResult.failure("unknown-status", "status='success'"),
         ])
@@ -175,7 +176,7 @@ class TestThreeStageRetryThenBlock(_FailClosedTestBase):
 
     def test_retry_then_success_fix_chain(self):
         """首次 unreadable → 重试后合法 bug-found → 正常走 fix 链。"""
-        self.engine._read_planner_result = MagicMock(side_effect=[
+        self.engine._read_verdict = MagicMock(side_effect=[
             VerdictReadResult.failure("parse", "bad json"),
             VerdictReadResult.success("bug-found"),
         ])
@@ -191,7 +192,7 @@ class TestThreeStageValidRoutes(_FailClosedTestBase):
 
     def test_verified_route(self):
         """合法 verified → verified → done。"""
-        self.engine._read_planner_result = MagicMock(
+        self.engine._read_verdict = MagicMock(
             return_value=VerdictReadResult.success("verified"))
         self._run_three_stage()
         entry = self.sm.read_one("demo-spec")
@@ -200,7 +201,7 @@ class TestThreeStageValidRoutes(_FailClosedTestBase):
 
     def test_scenario_repaired_route(self):
         """合法 scenario-repaired → 冻结记账 + 重入，随后 verified 收敛。"""
-        self.engine._read_planner_result = MagicMock(
+        self.engine._read_verdict = MagicMock(
             side_effect=[
                 VerdictReadResult.success("scenario-repaired"),
                 VerdictReadResult.success("verified"),
@@ -213,9 +214,9 @@ class TestThreeStageValidRoutes(_FailClosedTestBase):
 
     def test_all_green_fast_path_verified(self):
         """全绿快道机械写回 → 读侧 ok → verified 不回归。"""
-        # 不 mock _read_planner_result（setUp 未 mock）— 让真实读取走文件路径
+        # 不 mock _read_verdict（setUp 未 mock）— 让真实读取走文件路径
         # 阶段1 冻结复用跳过 planner-plan 读；阶段3 由 _all_green_fast_path
-        # 机械写入 primary → _read_planner_result 真实读取 → verified。
+        # 机械写入 primary → _read_verdict 真实读取 → verified。
 
         class AllGreenEngine:
             def __init__(self, spec_name, project_root, logger=None,
@@ -319,11 +320,11 @@ class TestLegacyReadFailClosed(unittest.TestCase):
         self.engine._send_human_escalation_alert.assert_called_once()
 
     def test_valid_bug_found_still_works(self):
-        """legacy 合法 bug-found → 正常流转 bug-found，不回归。"""
+        """legacy 合法 bug-found（role=verifier）→ 正常流转 bug-found，不回归。"""
         run_result_path = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
         run_result_path.write_text(
             json.dumps({"spec": "demo-spec", "status": "bug-found",
-                         "bugs": []}),
+                         "bugs": [], "role": "verifier"}),
             encoding="utf-8")
         self._run_legacy()
         entry = self.sm.read_one("demo-spec")

@@ -27,7 +27,7 @@ from core.pm_engine.verification import (
 
 def _mk_pm(tmpdir, spec="demo-spec"):
     """构造最小 PM 桩：project_root/logger/state_machine/agent_runner/
-    _read_planner_result/_apply_scenario_freeze/_send_human_escalation_alert。
+    _read_verdict/_apply_scenario_freeze/_send_human_escalation_alert。
     """
     pm = SimpleNamespace()
     pm.project_root = Path(tmpdir)
@@ -44,7 +44,7 @@ def _mk_pm(tmpdir, spec="demo-spec"):
             )
         ),
     )
-    pm._read_planner_result = MagicMock()
+    pm._read_verdict = MagicMock()
     pm._apply_scenario_freeze = MagicMock(return_value={})
     pm._send_human_escalation_alert = MagicMock()
     return pm
@@ -157,7 +157,7 @@ class TestRerouteGate(unittest.TestCase):
             _scenario("s1", classification="test-defect"),
             _scenario("s2", classification="flaky"),
         ])
-        self.pm._read_planner_result.return_value = (
+        self.pm._read_verdict.return_value = (
             VerdictReadResult.success("scenario-repaired"))
         handled = self.pipe._scenario_defect_reroute_gate(
             "demo-spec", _repair_depth=0, judge_result=self.judge_result)
@@ -177,7 +177,7 @@ class TestRerouteGate(unittest.TestCase):
         _seed_report(self.tmpdir, "demo-spec", [
             _scenario("s1", classification="test-defect"),
         ])
-        self.pm._read_planner_result.return_value = (
+        self.pm._read_verdict.return_value = (
             VerdictReadResult.success("scenario-repaired"))
         self.pipe._scenario_defect_reroute_gate(
             "demo-spec", _repair_depth=0, judge_result=self.judge_result)
@@ -211,7 +211,7 @@ class TestRerouteGate(unittest.TestCase):
         _seed_report(self.tmpdir, "demo-spec", [
             _scenario("s1", classification="test-defect"),
         ])
-        self.pm._read_planner_result.return_value = (
+        self.pm._read_verdict.return_value = (
             VerdictReadResult.success("scenario-repaired"))
         self.pipe._run_three_stage_verification = MagicMock()
         handled = self.pipe._scenario_defect_reroute_gate(
@@ -225,7 +225,7 @@ class TestRerouteGate(unittest.TestCase):
         _seed_report(self.tmpdir, "demo-spec", [
             _scenario("s1", classification="test-defect"),
         ])
-        self.pm._read_planner_result.return_value = (
+        self.pm._read_verdict.return_value = (
             VerdictReadResult.success("bug-found"))
         # 重派后 report 被 judge 更新为含 product-bug
         _seed_report(self.tmpdir, "demo-spec", [
@@ -256,7 +256,7 @@ class TestRerouteGate(unittest.TestCase):
         _seed_report(self.tmpdir, "demo-spec", [
             _scenario("s1", classification="test-defect"),
         ])
-        self.pm._read_planner_result.return_value = (
+        self.pm._read_verdict.return_value = (
             VerdictReadResult.success("bug-found"))
         # 重派后仍全 test-defect（judge 未修）
         _seed_report(self.tmpdir, "demo-spec", [
@@ -297,7 +297,7 @@ class TestRerouteGate(unittest.TestCase):
         _seed_report(self.tmpdir, "demo-spec", [
             _scenario("s1", classification="test-defect"),
         ])
-        self.pm._read_planner_result.return_value = VerdictReadResult.failure(
+        self.pm._read_verdict.return_value = VerdictReadResult.failure(
             "missing", "no file")
         handled = self.pipe._scenario_defect_reroute_gate(
             "demo-spec", _repair_depth=0, judge_result=self.judge_result)
@@ -310,7 +310,7 @@ class TestRerouteGate(unittest.TestCase):
         _seed_report(self.tmpdir, "demo-spec", [
             _scenario("s1", classification="test-defect"),
         ])
-        self.pm._read_planner_result.return_value = (
+        self.pm._read_verdict.return_value = (
             VerdictReadResult.success("scenario-repaired"))
         self.pipe._scenario_defect_reroute_gate(
             "demo-spec", _repair_depth=0, judge_result=self.judge_result)

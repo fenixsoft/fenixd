@@ -2481,8 +2481,10 @@ class VerificationPipeline:
                 f"warning_streaks 更新跳过（异常不阻断采纳）'{spec_name}': {e}",
             )
 
-        # 读取判定结果（fix-verdict-read-failclosed：结构化三态）
-        verifier_result = self._pm._read_planner_result(spec_name)
+        # 读取判定结果（fix-verdict-read-failclosed：结构化三态；
+        # evo-verifier-result-single-source R1：统一走 _read_verdict 入口，
+        # 主树共享回退须过 role/spec 戳校验——implementer 残留不采信）
+        verifier_result = self._pm._read_verdict(spec_name)
         verifier_status = verifier_result.status if verifier_result.ok else None
         # ── 结果状态判据（fix-daemon-lifecycle-races D6，结果应用处最终核对）──
         # 前道守卫之后的取证校验/重试窗口内 spec 亦可能漂移，此处兜底：非 testing
@@ -2518,7 +2520,7 @@ class VerificationPipeline:
                 )
                 retry_judge = self._pm.agent_runner.run_planner(spec_name, "judge")
                 if retry_judge.success:
-                    verifier_result = self._pm._read_planner_result(spec_name)
+                    verifier_result = self._pm._read_verdict(spec_name)
                     verifier_status = (
                         verifier_result.status if verifier_result.ok else None)
             if not verifier_result.ok:
@@ -2768,19 +2770,18 @@ class VerificationPipeline:
         """verifier 结果文件是否不可信（陈旧重放 / 异 spec 残留 / 缺失）。
 
         判据（任一命中即陈旧）：
-        - run_id 内嵌 epoch 早于文件 mtime 之前 5 秒以上 → 本轮验证器未曾写回；
+        - 文件含 role 字段且 ≠ verifier，或 role 缺失（旧格式遗留 /
+          implementer 残留）→ 来源不明一律不采信（evo-verifier-result-single-
+          source R1：消除 run_id fail-open——旧行为在 run_id 不匹配
+          ``-\\d{10,}-a\\d+$`` 时直接返回 False 不判陈旧，导致 implementer
+          残留 status=success 仍被采信判 blocked）；
+        - run_id 内嵌 epoch 早于文件 mtime 之前 5 秒以上 → 本轮验证器
+          未曾写回；
         - 文件缺失却宣称成功 → 判定来源不明；
         - 文件 spec 戳与当前 spec 不符 → 其它 spec 的残留。
-        无法解析 run_id 时不判定（维持既有行为，向后兼容）。
+        role/spec 戳先行校验，不依赖 run_id 可解析（向后兼容）。
         """
         import re
-        try:
-            m = re.search(r"-(\d{10,})-a\d+$", getattr(result, "run_id", "") or "")
-            if not m:
-                return False
-            run_start = int(m.group(1))
-        except (TypeError, ValueError):
-            return False
         if not result_path.exists():
             return True
         try:
@@ -2789,9 +2790,24 @@ class VerificationPipeline:
             return True
         if not isinstance(data, dict):
             return True
+        # ── role/spec 戳先行（evo-verifier-result-single-source R1）──
+        # 消除 run_id fail-open：旧行为在 run_id 不匹配 -\d{10,}-a\d+$
+        # 时直接 return False 跳过所有后续校验，implementer 残留 status=success
+        # 被错误采信。新版先查 role 与 spec 戳（不依赖 run_id），role≠verifier
+        # 或 role 缺失一律返回 True（不采信）。
+        role = data.get("role")
+        if role is None or role != "verifier":
+            return True
         stamped = data.get("spec")
         if isinstance(stamped, str) and stamped and stamped != spec_name:
             return True
+        try:
+            m = re.search(r"-(\d{10,})-a\d+$", getattr(result, "run_id", "") or "")
+            if not m:
+                return False  # 无法解析 run_id：维持既有行为（mtime 无法判定）
+            run_start = int(m.group(1))
+        except (TypeError, ValueError):
+            return False
         try:
             if result_path.stat().st_mtime < run_start - 5:
                 return True
@@ -3224,14 +3240,20 @@ class VerificationPipeline:
             report = self._pm._read_verify_report(spec_name)
             if self._pm._handle_env_blocked_inconclusive(spec_name, report):
                 return
-            # fix-verdict-read-failclosed D5（legacy 同门）：结果文件读取优先
-            # verify-progress/<spec>/.fenix-run-result.json（旧版 verifier 的
-            # 确定性产物路径），回退主树共享 .fenix/.fenix-run-result.json（兼容
-            # 旧行为：verifier 把结果写到 worktree 根、由 _execute_agent 复制到
-            # 主树的情况）。主树共享文件会被 implementer 成功时残留
-            # status=success/error 污染，读侧直接读它会把 implementer 残留当
-            # 验证裁决（admin 处置根因，add-web-ui blocked_stuck 实证）——
-            # 与 _read_planner_result 同源修正。
+            # evo-verifier-result-single-source R1（legacy 同门）：结果文件
+            # 读取统一走 _read_verdict 入口——verify-progress/<spec>/
+            # .fenix-run-result.json 优先（旧版 verifier 的确定性产物路径），
+            # 回退主树共享 .fenix/.fenix-run-result.json 且须先过 role/spec 戳
+            # 校验：role≠verifier/缺 role 的主树共享文件一律不采信（implementer
+            # 残留 status=success/error / 旧格式遗留），修复 _verifier_result_is_stale
+            # 的 run_id fail-open（run_id 不匹配 ``-\d{10,}-a\d+$`` 时旧行为
+            # 不判陈旧，残留仍落 blocked 分支——add-web-ui 误判链实证）。
+            verifier_result = self._pm._read_verdict(spec_name)
+            verifier_status = (
+                verifier_result.status if verifier_result.ok else None)
+            # 陈旧/归属护栏所需路径（与 _read_verdict 同源解析：primary
+            # 优先，缺失回退共享文件——_verifier_result_is_stale 据此检测
+            # mtime 陈旧/spec 戳不符）。
             run_result_path = (
                 self._pm.project_root / ".fenix" / "verify-progress"
                 / spec_name / ".fenix-run-result.json"
@@ -3239,9 +3261,6 @@ class VerificationPipeline:
             if not run_result_path.exists():
                 run_result_path = (
                     self._pm.project_root / ".fenix" / ".fenix-run-result.json")
-            verifier_result = self._pm._read_verifier_result(run_result_path)
-            verifier_status = (
-                verifier_result.status if verifier_result.ok else None)
             # fix-verdict-read-failclosed D5（legacy 同门）：旧版 verifier 结果不可读
             # （缺失/非法 JSON/白名单外）→ blocked + critical 告警，绝不晋级
             # verified。legacy 是降级通道（三阶段两连败才进），结果不可读说明结构性
@@ -3249,6 +3268,31 @@ class VerificationPipeline:
             # 名单外（如 implementer 共享残留的 "success"）文件本身可读，须先走既有
             # 陈旧/归属护栏（foreign-spec 残留 → re-dispatch）再决定 blocked。
             if not verifier_result.ok:
+                if verifier_result.reason in ("foreign-role", "foreign-stamp"):
+                    # _read_verdict 已定性：主树共享文件 role≠verifier/缺 role
+                    #（implementer 残留 status=success 等）或 spec 戳不符——
+                    # 文件可读但归属不明，一律不采信为验证裁决，走 stale/foreign
+                    # 护栏 re-dispatch 不 blocked（修复 _verifier_result_is_stale
+                    # 的 run_id fail-open：run_id 不匹配 -\d{10,}-a\d+$ 时旧行为
+                    # 不判陈旧，残留 status=success 仍落 blocked——add-web-ui
+                    # 误判链实证）。已 verified 且场景集未变时放行门继续拒绝
+                    # 覆盖（裁决仍以 verdict_stability.json 为准）。
+                    if self._verified_gate_refuses(spec_name, "implemented"):
+                        return
+                    self._pm.state_machine.update_spec(spec_name, {
+                        "status": "implemented",
+                        "tester_run": None,
+                        "error": (
+                            "stale/foreign verifier result replayed"
+                            " — re-dispatching fresh verify"),
+                    })
+                    self._pm.logger.warning(
+                        "pm_engine",
+                        f"Stale/foreign verifier result for '{spec_name}'"
+                        f"（reason={verifier_result.reason}）— "
+                        f"re-dispatching fresh verification",
+                    )
+                    return
                 if verifier_result.reason == "unknown-status":
                     # 白名单外 status：文件可读，可能是共享文件中的其它 spec 残留
                     # 或 implementer 残留——走既有陈旧/归属护栏（检测 spec stamp
@@ -5121,8 +5165,9 @@ class VerificationPipeline:
                 })
             return True
 
-        # 重派结果判定
-        reroute_read = self._pm._read_planner_result(spec_name)
+        # 重派结果判定（evo-verifier-result-single-source R1：统一走
+        # _read_verdict 入口，主树共享回退须过 role/spec 戳校验）
+        reroute_read = self._pm._read_verdict(spec_name)
         if reroute_read.ok and reroute_read.status == "scenario-repaired":
             # 改道后 scenario-repaired：沿用既有通道（冻结 diff 记账 → 重入）
             try:
@@ -5535,6 +5580,70 @@ class VerificationPipeline:
                 return VerdictReadResult.failure(
                     "foreign-stamp", f"{fallback}: spec='{stamped}'")
         return self._pm._read_verifier_result(fallback)
+
+
+    def _read_verdict(self, spec_name: str) -> VerdictReadResult:
+        """统一裁决读取入口（evo-verifier-result-single-source R1）。
+
+        裁决读取仅以 verify-progress/<spec>/.fenix-run-result.json 为单一来源；
+        主树共享 .fenix/.fenix-run-result.json 仅作兼容回退，且回退必须先过
+        role/spec 戳校验（再交由调用方的陈旧护栏/状态机判据处置）。
+
+        - 优先 verify-progress/<spec>/.fenix-run-result.json（per-spec 隔离的
+          确定性产物路径，judge/verifier 新式写入落点，直接采信）；
+        - 缺失时回退主树共享文件——但仅当 role=verifier（legacy verifier 的
+          唯一采信角色）且 spec 戳匹配才继续读取；role≠verifier 或缺 role 的
+          共享文件一律不采信（implementer 残留 status=success / 旧格式遗留），
+          返回 failure("foreign-role")。该 role 校验**不依赖 run_id 可解析**，
+          修复 _verifier_result_is_stale 的 run_id fail-open：旧实现在 run_id
+          不匹配 ``-\\d{10,}-a\\d+$`` 时直接返回 False 不判陈旧，导致
+          implementer 残留 status=success 仍落入 blocked 分支（add-web-ui
+          误判链，两次复发）；
+        - 仍无结果文件则返回 failure("missing")（unreadable 语义）。
+
+        不可读（missing/parse/unknown-status/foreign-role/foreign-stamp）一律
+        返回 ok=False 的 VerdictReadResult，**绝不**以 None 等价放行（fail-closed）。
+        """
+        primary = (
+            self._pm.project_root / ".fenix" / "verify-progress"
+            / spec_name / ".fenix-run-result.json"
+        )
+        if primary.exists():
+            return self._pm._read_verifier_result(primary)
+
+        shared = self._pm.project_root / ".fenix" / ".fenix-run-result.json"
+        if not shared.exists():
+            return VerdictReadResult.failure("missing", f"{shared}")
+        try:
+            data = json.loads(shared.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            return VerdictReadResult.failure("parse", f"{shared}: {e}")
+        if not isinstance(data, dict):
+            return VerdictReadResult.failure("parse", f"{shared}: 顶层非对象")
+
+        # ── role/spec 戳双校验（本 SPEC 相对已落地 D5 的真实增量）──
+        # 主树共享文件只认 role=verifier 的 legacy verifier 写入；role 缺失
+        # 视为旧格式遗留、role≠verifier 视为其它 agent 残留（如 implementer
+        # 的 status=success），一律不作为验证裁决。
+        role = data.get("role")
+        if role != "verifier":
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Ignoring shared result file {shared}: role={role!r} != "
+                f"'verifier'（implementer 残留/旧格式遗留，不作为验证裁决）",
+            )
+            return VerdictReadResult.failure(
+                "foreign-role", f"{shared}: role={role!r}")
+        stamped = data.get("spec")
+        if isinstance(stamped, str) and stamped and stamped != spec_name:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"Ignoring shared result file {shared}: "
+                f"spec='{stamped}' != '{spec_name}'",
+            )
+            return VerdictReadResult.failure(
+                "foreign-stamp", f"{shared}: spec='{stamped}'")
+        return self._pm._read_verifier_result(shared)
 
 
     def _judge_bugs_declare_env(self, spec_name: str) -> bool:

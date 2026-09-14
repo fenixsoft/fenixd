@@ -134,6 +134,22 @@ EXPECTED_SPEC_STATUS_BY_AGENT = {
     "verifier": "testing",
 }
 
+# evo-verifier-result-single-source：agent_type → 主树共享文件 role 戳映射。
+# _execute_agent 拷回 worktree 根 .fenix-run-result.json 到主树共享
+# .fenix/.fenix-run-result.json 时按此注入 role 与 spec 戳，供裁决读侧
+# （pm_engine._read_verdict）隔离 implementer 残留（role≠verifier 一律不
+# 采信）；未列出的 agent_type（无结果文件契约，如 dispute-judge）不注入
+# role 兜底。role 取值 = 实际写者全集：implementer | verifier | planner |
+# judge | repair（fast-track 属 implementer 变体，语义同 implementer）。
+AGENT_TYPE_TO_ROLE = {
+    "implementer": "implementer",
+    "fast-track": "implementer",
+    "verifier": "verifier",
+    "planner-plan": "planner",
+    "planner-judge": "judge",
+    "repair": "repair",
+}
+
 # ── planner 生成节流（add-planner-efficiency：planner-generation-throttle）──
 # 配置键 `verify.planner_max_concurrent`：0/缺省=不节流（现状）；正整数=跨
 # verify 管线的 planner 阶段级并发上限。信号量在 `run_planner` 入口（design
@@ -2674,14 +2690,34 @@ class AgentRunner:
                     # 语义：主树缺失或 worktree 版本 mtime 较新才拷贝（mtime 守卫与
                     # 原「成功时拷回」块相同，防止 worktree 复用继承的陈旧产物回灌覆盖
                     # 主树较新的冻结场景集）；目录不存在零动作。拷回幂等、前置无副作用。
+                    # evo-verifier-result-single-source R2（写入隔离）：主树共享文件是
+                    # 跨 agent 共享单例，拷回时按 agent_type 注入 role 与 spec 戳——
+                    # 裁决读侧只认 role=verifier 的共享文件，implementer/planner/judge/
+                    # repair 的残留（含旧格式无 role）一律不采信为验证裁决。JSON 无法
+                    # 解析时维持原始字节拷回（不注入，避免破坏字节；下游产物硬门会
+                    # 拦截非法 JSON，读侧按 parse 归因）。
                     wt_result = wt_path / ".fenix-run-result.json"
                     root_result = self.project_root / ".fenix" / ".fenix-run-result.json"
                     if wt_result.exists():
                         try:
-                            root_result.write_text(
-                                wt_result.read_text(encoding="utf-8"),
-                                encoding="utf-8",
-                            )
+                            raw = wt_result.read_text(encoding="utf-8")
+                            role = AGENT_TYPE_TO_ROLE.get(agent_type)
+                            if role is not None:
+                                try:
+                                    payload = json.loads(raw)
+                                    if isinstance(payload, dict):
+                                        payload["role"] = role
+                                        payload["spec"] = spec_name
+                                        root_result.write_text(
+                                            json.dumps(
+                                                payload, ensure_ascii=False, indent=2),
+                                            encoding="utf-8",
+                                        )
+                                        raw = None  # 已注入写盘，跳过原始拷回
+                                except (json.JSONDecodeError, ValueError):
+                                    pass  # 非法 JSON：fall through 原始字节拷回
+                            if raw is not None:
+                                root_result.write_text(raw, encoding="utf-8")
                         except OSError:
                             pass
                     self._copyback_verify_progress(wt_path, spec_name)
