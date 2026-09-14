@@ -32,5 +32,5 @@
 - `core/dashboard/data.py`：`read_evolution_draft` 增加 SPEC 位置回退；`read_evolution_items` 增加 `doc_source` 字段。
 - `core/dashboard/static/src/services/dashboard.ts`：`EvolutionItem` 接口补 `doc_source`。
 - `core/dashboard/static/src/pages/settings/components/SuggestedImprovementsPanel.tsx`：文档页签渲染条件与空态文案改用 `doc_source`。
-- 测试：新增 `tests/test_evolution_prune.py`；扩展 `tests/test_dashboard_evolution_api.py`。
+- 测试：新增 `tests/test_evolution_prune.py`；扩展 `tests/test_dashboard_evolution_api.py` 与 `tests/test_self_evolution.py`。
 - 前端构建产物 `core/dashboard/static/dist/`（gitignored）需重新 `npm run build`，不随仓库交付。
