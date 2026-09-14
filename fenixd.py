@@ -1097,10 +1097,13 @@ class FenixDaemon:
         return FRAMEWORK_ROOT
 
     def _check_evolution_checkpoint(self) -> None:
-        """自进化检查点（5.1-5.4）：就绪扫描 → 单飞判定 → 派发分析 run。
+        """自进化检查点（5.1-5.4）：周期保留清理 → 就绪扫描 → 单飞判定 → 派发。
 
         节拍由主循环计时器驱动（复用 admin.interval_minutes，缺省 5 分钟）。
         流程：
+        0. 周期保留清理（evo-item-retention-doc-tracking D4）：通过宿主守卫
+           后、单飞判定前执行 prune_items——清理不因分析 run 在途而跳过，
+           独立 try/except（异常仅记日志，不影响后续派发与主循环）；
         1. 宿主守卫（5.2）：PROJECT_ROOT.resolve() != FRAMEWORK_ROOT → 整套
            不启用，仅首次判定记一条 INFO 日志（不刷屏）；
         2. 单飞：_evolution_in_flight 或 _running_agents 中已有 evo- run →
@@ -1125,6 +1128,28 @@ class FenixDaemon:
                         f"（{PROJECT_ROOT} != {self._evolution_framework_root()}）",
                     )
                 return
+
+            # 第 0 步：周期保留清理（D4——在宿主守卫之后、单飞判定之前执行，
+            # 清理不因分析 run 在途而跳过；独立 try/except 隔离失败）
+            try:
+                from core.evolution import prune_items
+                pruned = prune_items(PROJECT_ROOT)
+                if pruned.get("deleted", 0) > 0 or pruned.get("failed", 0) > 0:
+                    detail_tail = ""
+                    if pruned.get("details"):
+                        detail_tail = "；详情: " + " | ".join(
+                            f"{d.get('id')}: {d.get('error')}"
+                            for d in pruned["details"])
+                    self.logger.info(
+                        "fenixd",
+                        f"自进化条目保留清理：total {pruned.get('total')}，"
+                        f"kept {pruned.get('kept')}，deleted {pruned.get('deleted')}，"
+                        f"failed {pruned.get('failed')}"
+                        + detail_tail,
+                    )
+            except Exception as e:
+                self.logger.error(
+                    "fenixd", f"自进化条目保留清理失败（不影响后续派发）: {e}")
 
             # 单飞判定（spec「分析 run 在途的判定基于 daemon 内部活跃 run 状态」）
             if self._evolution_in_flight:

@@ -27,7 +27,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -71,6 +71,11 @@ DRAFT_FILES = ("proposal.md", "design.md", "tasks.md", ".spec.yaml")
 
 # .spec.yaml 模板（内容 schema/created/mode 三行）
 SPEC_YAML_TEMPLATE = "schema: spec-driven\ncreated: {created}\nmode: full\n"
+
+# 条目保留策略常量（保留最近 N 天 ∪ 最近 M 条，取较多数者）
+# 超出并集部分硬删（由 daemon 周期执行）
+ITEM_RETENTION_DAYS = 7   # 保留创建时间在最近 7 天内的条目
+ITEM_RETENTION_MIN = 100  # 保留按创建时间倒序的前 100 条
 
 
 # ── 任务 2.1：条目身份键 ─────────────────────────────────────────────
@@ -1251,6 +1256,164 @@ def delete_item(item_id_: str, project_root) -> dict:
     except Exception as e:  # noqa: BLE001 —— 存储异常收敛为错误对象，不抛穿
         return {"ok": False, "status": None, "error": f"条目删除失败: {e}"}
     return outcome
+
+
+# ── 条目保留与自动清理（evo-item-retention-doc-tracking D1-D3）─────
+
+def prune_items(project_root, now: Optional[datetime] = None) -> dict:
+    """按保留策略清理 items.jsonl：保留最近 N 天 ∪ 最近 M 条并集，其余硬删。
+
+    保留判据（design D1）：删除条件为「不在最近 ITEM_RETENTION_DAYS 天窗口
+    内」AND「不在按创建时间倒序的前 ITEM_RETENTION_MIN 名内」——保留两者
+    并集（数量较多者）。排序键 ``(created_at or "", id)`` 倒序，``id`` 作
+    确定性兜底（等时条目在多次运行间稳定）。创建时间缺失或无法解析 MUST 判
+    为保留（fail-open，D3：年龄不可知不得误删新条目）。清理不设状态门：未决
+    条目（pending/analyzed 等）同样受保留策略约束。
+
+    删除复用既有 ``delete_item``（D2：记录移出 items.jsonl + 草稿目录删除含
+    越界校验 + todo.md 标记幂等回写，读-改-写在 flock 内），逐条 try/except
+    ——单条异常计入 failed 不中断其余（spec「单条删除失败不中断其余清理」）。
+
+    计数口径：``delete_item`` 以返回值（非异常）表达预期失败——ok=False（条目
+    已被并发删除 / 草稿路径越界 / 草稿删除 OSError）时该记录 MUST NOT 计入
+    deleted，MUST 计入 failed 与 details，且 MUST NOT 从 kept 中移除（记录
+    仍在 items.jsonl；kept = total - deleted 天然满足）。
+
+    Returns: ``{"total", "kept", "deleted", "failed", "details"}``。无受害者
+    时 MUST 直接返回、不触发任何写。``now`` 为时区感知 datetime，缺省
+    ``datetime.now(timezone.utc)``。
+    """
+    items = read_items(project_root)
+    if not items:
+        return {"total": 0, "kept": 0, "deleted": 0, "failed": 0, "details": []}
+    if now is None:
+        now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=ITEM_RETENTION_DAYS)
+
+    # 确定性次序：创建时间倒序 + id 兜底
+    ordered = sorted(
+        items.values(),
+        key=lambda r: (str(r.get("created_at") or ""), str(r.get("id") or "")),
+        reverse=True,
+    )
+
+    # 保留集 = 前 ITEM_RETENTION_MIN 名 ∪ 最近 ITEM_RETENTION_DAYS 天 ∪
+    # 创建时间缺失/非法（年龄不可知 → 保留侧）
+    keep_ids = {r["id"] for r in ordered[:ITEM_RETENTION_MIN]}
+    for r in ordered:
+        if r["id"] in keep_ids:
+            continue
+        created = _parse_iso(r.get("created_at"))
+        if created is None or created >= cutoff:
+            keep_ids.add(r["id"])
+
+    victims = [r for r in ordered if r["id"] not in keep_ids]
+    if not victims:
+        return {"total": len(items), "kept": len(items), "deleted": 0,
+                "failed": 0, "details": []}
+
+    deleted = 0
+    failed = 0
+    details: List[dict] = []
+    for rec in victims:
+        eid = rec.get("id")
+        try:
+            result = delete_item(eid, project_root)
+        except Exception as e:  # noqa: BLE001 —— 单条异常不中断其余清理
+            failed += 1
+            details.append({"id": eid, "ok": False, "error": str(e)})
+            continue
+        if result.get("ok"):
+            deleted += 1
+        else:
+            # 预期失败（并发删除/越界/OSError）：记录仍在 items.jsonl
+            failed += 1
+            details.append({
+                "id": eid, "ok": False,
+                "status": result.get("status"), "error": result.get("error"),
+            })
+    return {"total": len(items), "kept": len(items) - deleted,
+            "deleted": deleted, "failed": failed, "details": details}
+
+
+# ── SPEC 位置解析（evo-item-retention-doc-tracking D5）────────────────
+
+# 日期前缀正则：YYYY-MM-DD-<name>
+_DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
+# 数字后缀正则：<name>-<digits>
+_NUM_SUFFIX_RE = re.compile(r"-\d+$")
+
+
+def _archive_name_candidates(dirname: str) -> List[str]:
+    """对归档目录名生成全部归一化候选集（含原样）。
+
+    覆盖三类归档命名：
+    - ``YYYY-MM-DD-<name>``（标准归档，剥前缀）
+    - ``YYYY-MM-DD-<name>-<n>``（冲突后缀，剥前缀+剥后缀）
+    - ``<name>-<epoch>``（非标准形态，剥后缀）
+    归一化 = 依次剥掉可选日期前缀与可选数字后缀后的若干候选形态（含原样），
+    供全等比较。
+    """
+    candidates = {dirname}
+    stripped_prefix = _DATE_PREFIX_RE.sub("", dirname, count=1)
+    if stripped_prefix != dirname:
+        candidates.add(stripped_prefix)
+    stripped_suffix = _NUM_SUFFIX_RE.sub("", dirname, count=1)
+    if stripped_suffix != dirname:
+        candidates.add(stripped_suffix)
+    stripped_both = _DATE_PREFIX_RE.sub(
+        "", _NUM_SUFFIX_RE.sub("", dirname, count=1), count=1)
+    if stripped_both != dirname:
+        candidates.add(stripped_both)
+    return list(candidates)
+
+
+def resolve_accepted_spec_dir(project_root, spec_name: str) -> Optional[Path]:
+    """以条目记录中 ``spec_name`` 为权威名解析 SPEC 当前位置（D5）。
+
+    1. ``spec_name`` 不满足 ``_KEBAB_RE``（含 ``..``/``/`` 穿越）→ 返回
+       ``None``；
+    2. ``spec/changes/<spec_name>/`` 是目录 → 返回（活跃优先）；
+    3. 否则遍历 ``spec/archive/``，对每个目录名生成归一化候选集并判定
+       ``spec_name`` **全等**比较，命中多个取 ``sorted()[-1]``；
+    4. 无命中返回 ``None``。
+
+    **MUST NOT 使用前缀匹配**：本仓库存在互为前缀的 spec 名
+    （``evo-add-fast-track-scale-precheck`` 与
+    ``evo-add-fast-track-scale-precheck-4afdbe``），前缀匹配会把后者的
+    目录误归属给前者。
+
+    不改动既有 ``resolve_spec_dir`` 语义：该函数按设计排除无日期前缀的
+    软删除命名（服务于 STATE.md 无条目的场景），与本函数的 ``spec_name``
+    权威入口前提不同。
+    """
+    if not isinstance(spec_name, str) or not _KEBAB_RE.match(spec_name):
+        return None
+    proot = Path(project_root)
+
+    # 2. 活跃目录优先
+    active = proot / "spec" / "changes" / spec_name
+    if active.is_dir():
+        return active
+
+    # 3. spec/archive/ 遍历（全等比较，多个取 sorted 最后）
+    archive_root = proot / "spec" / "archive"
+    if not archive_root.is_dir():
+        return None
+    hits: List[Path] = []
+    try:
+        for child in archive_root.iterdir():
+            if not child.is_dir():
+                continue
+            candidates = _archive_name_candidates(child.name)
+            if spec_name in candidates:
+                hits.append(child)
+    except OSError:
+        return None
+    if not hits:
+        return None
+    # 全等命中多个取 sorted()[-1]（目录名字典序）
+    return sorted(hits)[-1]
 
 
 # ── 任务 3.7：自动接受 ─────────────────────────────────────────────
