@@ -595,6 +595,79 @@ class VerificationPipeline:
         return self._finalize_static(
             srv, contract, scenarios_path, "命令 worktree")
 
+    def _serve_command_in_main(self, spec_name, contract, scenarios_path) -> tuple:
+        """命令型被测实例的主树路径（serve.kind=command + static_scope=main）。
+
+        与 ``_serve_command_in_worktree`` 同构，仅 cwd 换为主树项目根（主树
+        prepare 已在其上游完成构建）：``{port}`` 替换 + FENIX_VERIFY_PORT
+        注入、CommandVerifyServer 三段式端口发现、serving 实例登记、
+        ``_finalize_static``（BASE_URL 全量改写 + 就绪探针）收尾。
+
+        **不复用缓存、每验证新建实例**：worktree 版的 HEAD 缓存复用依赖
+        「HEAD 未变 ⇒ 产物未变」这一 worktree 专属不变量，主树工作区状态比
+        HEAD 变化更频繁（未提交改动 + prepare 重建产物），照搬会测得旧产物、
+        违 BASE_URL 新鲜性铁律。但仍以 ``spec_name`` 为键写入
+        ``_contract_static_servers``（server/mode 元数据），供
+        ``_evict_spec_serving`` 终局回收——禁用键 ``"main"``（该键为 static
+        主树共享实例专属、多 spec 共享、终局豁免）。实例累积由既有
+        servers.json 登记 + daemon 周期清扫兜底（verify-process-lifecycle D6）。
+        """
+        cache = self.__dict__.setdefault("_contract_static_servers", {})
+        port = find_free_port()
+        # legacy 兜底参数：邻近扫描基准（serve.port 或 cmd 内端口数字）与
+        # 启动前监听快照（跳过既有实例端口）；cmd 引用 {port} 后两者皆不需要
+        import re as _re
+        m = _re.search(r"(?:--port|-p)\s+(\d+)", contract.serve.cmd or "")
+        legacy_hint = contract.serve.port or (int(m.group(1)) if m else None)
+        pre = ({p for p in range(legacy_hint, legacy_hint + 51)
+                if self._port_responds(p)} if legacy_hint else set())
+        # 入口存在性预检（design D1）：{port} 替换前的原 cmd 检查（{port} 不在
+        # 路径段）；入口文件不存在 → fail-fast，不 spawn、不跑场景，场景执行数=0。
+        orig_cmd = contract.serve.cmd or ""
+        preflight_err = entry_preflight_error(orig_cmd, self._pm.project_root)
+        if preflight_err:
+            self._write_verify_contract_missing(
+                spec_name,
+                f"{preflight_err}（入口存在性预检失败，spawn 前 fail-fast）",
+                f"serve.cmd 原文={orig_cmd!r}; cwd={self._pm.project_root}",
+                recommended_action=(
+                    "Administrator 修正 .fenix/verify.yaml serve.cmd 入口路径："
+                    "按错误信息中「候选」提示修正，或确认构建产物已生成后重验"),
+            )
+            return False, False, preflight_err
+        cmd_str = orig_cmd.replace("{port}", str(port))
+        env = {**os.environ, "FENIX_VERIFY_PORT": str(port)}
+        # design D3：主树路径同样落盘 boot.log（非 DEVNULL 吞掉），
+        # 启动即死错误证据经 CommandVerifyServer 句柄关闭前可读。
+        boot_log = self._open_boot_log(spec_name)
+        try:
+            proc = subprocess.Popen(
+                cmd_str, shell=True, cwd=str(self._pm.project_root),
+                stdout=boot_log, stderr=boot_log,
+                start_new_session=True, env=env,
+            )
+        except Exception as e:
+            boot_log.close()
+            return False, False, f"验证命令实例启动失败: {e}"
+        srv = CommandVerifyServer(
+            proc, port, timeout=contract.ready.timeout or 60,
+            legacy_hint=legacy_hint, legacy_pre=pre, boot_log=boot_log)
+        if not srv.ok:
+            # 启动即死：boot.log 尾部附入失败描述（Cannot find module 等）
+            boot_tail = self._read_boot_log_tail(spec_name, boot_log)
+            srv.stop()
+            return False, False, (
+                (srv.failure_note or "验证命令实例未就绪（注入端口未被消费）")
+                + boot_tail)
+        cache[spec_name] = {
+            "server": srv, "mode": "command",
+        }
+        # verify-process-lifecycle D6：command 型实例创建时登记
+        # （pid/port/spec），终局/周期清扫按 liveness 收割。
+        self._register_serving_instance(spec_name, srv)
+        return self._finalize_static(
+            srv, contract, scenarios_path, "命令主树")
+
     def _finalize_static(self, srv, contract, scenarios_path, scope_label) -> tuple:
         """BASE_URL 注入 + 就绪探针：static 两类 scope 的共同收尾。
 
@@ -798,8 +871,6 @@ class VerificationPipeline:
         # 即跳过」捷径对构建型应用＝陈旧产物陷阱，契约 static 模式禁用）→ ready
         # 探针放行。契约缺失时维持 commands.start 旧行为（存量项目零迁移）。
         contract = load_verify_contract(self._pm.project_root, self._pm.logger)
-        start_cmd_override = ""
-        serve_port_hint = None
         if contract is not None:
             serve = contract.serve
             scope = str(self._pm._get_config("verify.static_scope", "main")
@@ -833,8 +904,11 @@ class VerificationPipeline:
                 if wt_scope:
                     return self._serve_command_in_worktree(
                         spec_name, contract, scenarios_path)
-                start_cmd_override = serve.cmd
-                serve_port_hint = serve.port
+                # command + main：主树项目根为 cwd 的契约实例路径（D2），
+                # 不再穿透 legacy（start_cmd_override/serve_port_hint 仅供
+                # legacy 链消费，此处已无浆可流）。
+                return self._serve_command_in_main(
+                    spec_name, contract, scenarios_path)
 
         def _probe(u: str, timeout: float = 2.0) -> bool:
             try:
@@ -849,8 +923,9 @@ class VerificationPipeline:
         if all(_probe(u) for u in urls):
             return True, False, ""
 
-        # 2) 自愈：验证契约 serve.cmd 优先，回退 commands.start（旧行为）
-        start_cmd = start_cmd_override or str(
+        # 2) 自愈：无契约路径（契约 command 分支已在上方 return），
+        # 直接回退 commands.start（旧行为）
+        start_cmd = str(
             self._pm._get_config("commands.start", "") or "").strip()
         if not start_cmd or start_cmd in ("echo 'No start command configured yet'",):
             kind_label = "、".join(sorted(kinds))
@@ -894,14 +969,16 @@ class VerificationPipeline:
             return False, False, note
 
         # 端口注入（与 worktree 路径同机制）：cmd 引用 {port} 时分配空闲
-        # 端口替换并导出 FENIX_VERIFY_PORT——主树兜底自启同样不撞既有实例
-        base_port = serve_port_hint
+        # 端口替换并导出 FENIX_VERIFY_PORT——主树兜底自启同样不撞既有实例。
+        # 无契约路径无 serve.port 提示，base_port 仅来自 {port} 注入或
+        # cmd 内 --port|-p 数字（commands.start 形态）。
+        base_port = None
         injected_port = None
         if "{port}" in start_cmd:
             injected_port = find_free_port()
             start_cmd = start_cmd.replace("{port}", str(injected_port))
             base_port = injected_port
-        elif base_port is None:
+        else:
             pm = re.search(r"(?:--port|-p)\s+(\d+)", start_cmd)
             if pm:
                 base_port = int(pm.group(1))
@@ -921,7 +998,7 @@ class VerificationPipeline:
                 spec_name,
                 f"{preflight_err}（入口存在性预检失败，spawn 前 fail-fast）",
                 (f"start_cmd 原文={start_cmd!r}; cwd={self._pm.project_root}; "
-                 f"来源={'契约 serve.cmd' if start_cmd_override else 'config commands.start 兜底'}"),
+                 f"来源=config commands.start 兜底"),
                 recommended_action=(
                     "Administrator 修正入口路径：按错误信息中「候选」提示修正 "
                     ".fenix/verify.yaml serve.cmd（或 commands.start），确认构建"
@@ -960,11 +1037,12 @@ class VerificationPipeline:
                 boot_log.close()
                 return True, False, "已自动启动应用服务"
 
-        # 场景 URL 端口 ≠ commands.start 端口（planner 臆测端口，如 3000 vs 8787）：
-        # 应用已在 base_port 可达时，错的是场景端口而非应用——改写场景端口为
-        # 实际端口后重探。原逻辑只改写 base_port 的出现处（base_port → 扫描到的
-        # 邻近端口），对「场景写了别的端口」完全无能为力，导致应用明明已启动
-        # 却被判不可达、spec 永久卡死在 testing（fix-fix-improve-verify-adjudication）。
+        # 场景 URL 端口 ≠ commands.start 端口（场景声明端口与框架分配端口不一致，
+        # 如 3000 vs 8787）：应用已在 base_port 可达时，错的是场景端口而非应用——
+        # 改写场景端口为实际端口后重探。原逻辑只改写 base_port 的出现处
+        # （base_port → 扫描到的邻近端口），对「场景写了别的端口」完全无能为力，
+        # 导致应用明明已启动却被判不可达、spec 永久卡死在 testing
+        # （fix-fix-improve-verify-adjudication）。
         if base_port and _probe(f"http://127.0.0.1:{base_port}/"):
             foreign_ports = {
                 m.group(1)
@@ -984,8 +1062,8 @@ class VerificationPipeline:
                 if all(_probe(u) for u in urls_new):
                     boot_log.close()
                     return True, False, (
-                        f"场景 URL 端口 {sorted(foreign_ports, key=int)} 与应用实际端口 "
-                        f"{base_port} 不符（planner 臆测），已改写场景端口并确认可达"
+                        f"场景声明端口 {sorted(foreign_ports, key=int)} 与框架分配端口 "
+                        f"{base_port} 不符，已改写场景端口并确认可达"
                     )
 
         # 端口自动递增场景（如 --port 被占用时服务上探到邻近端口）：
@@ -2044,8 +2122,8 @@ class VerificationPipeline:
                     )
                     return
 
-                # 自愈可能改写场景文件端口（planner 臆测端口 → 应用实际端口）：
-                # 上方 load 先于自愈，内存场景仍持臆测端口，改写只落文件、对本次
+                # 自愈可能改写场景文件端口（场景声明端口 → 框架分配端口）：
+                # 上方 load 先于自愈，内存场景仍持声明端口，改写只落文件、对本次
                 # 执行无效 → 全场景对失联端口 navigate 整轮伪失败
                 # （add-v3-spec-detail-page：24 场景导航 localhost:8000 全灭）。
                 # 故自愈后必须重读场景文件再执行。
