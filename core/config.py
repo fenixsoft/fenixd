@@ -379,7 +379,8 @@ class ConfigLoader:
         admin = config.get("admin") or {}
         if "enabled" in admin and not isinstance(admin["enabled"], bool):
             raise ValueError(f"admin.enabled must be a boolean: {admin['enabled']}")
-        for field in ("interval_minutes", "escalation_cooldown_minutes"):
+        for field in ("interval_minutes", "escalation_cooldown_minutes",
+                      "orphaned_state_threshold_minutes"):
             if field in admin and admin[field] is not None:
                 val = admin[field]
                 if not isinstance(val, (int, float)) or val <= 0:
@@ -958,6 +959,13 @@ class ConfigLoader:
                 admin.get("escalation_cooldown_minutes", 60)
             ),
             "stuck_threshold_minutes": stuck_seconds / 60.0,
+            # add-control-plane-silent-failure-guards D5：孤儿状态（状态无驱动）
+            # 探测阈值——缺省 15 分钟（= 3 个 interval_minutes(5) 巡检周期，
+            # 与巡检周期整数倍对齐避免漏检），远短于 stuck（run_timeout+600s，
+            # 当前约 160 分钟），使「状态无驱动」分钟级可发现。与 stuck 阈值
+            # 互不影响（独立键，stuck 仍由 run_timeout 单源派生）。
+            "orphaned_state_threshold_minutes": float(
+                admin.get("orphaned_state_threshold_minutes", 15)),
             "merge_breaker_threshold": int(breaker),
             # interrupt-recovery-preserve D1：规划性重启排水窗口（秒）；0 = 现行
             # 快速停机。缺省 1800（半小时量级，用户已确认方向）。

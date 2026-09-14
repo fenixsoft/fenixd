@@ -213,6 +213,10 @@ admin:
   agent_model: "claude-sonnet-5"
   # 同 spec 同类困境信号的唤起冷却（分钟），避免反复唤起烧钱
   escalation_cooldown_minutes: 60
+  # 状态无驱动（implementing/testing 无活动 run/无存活子进程/无待派发）探测阈值
+  # （分钟）：远短于 stuck（run_timeout+600s，当前约 160 分钟），使「状态无驱动」
+  # 分钟级可发现、早于 stuck 触发；与 stuck 阈值互不影响。
+  orphaned_state_threshold_minutes: 15
   # 注：admin.stuck_threshold_minutes 已弃用。stuck 阈值现由 agents.run_timeout_seconds
   # 单源派生（run_timeout + 600s 宽限），此处不再保留该配置行。
   # merge 熔断阈值（复用 agents.merge_breaker_threshold 默认 2）

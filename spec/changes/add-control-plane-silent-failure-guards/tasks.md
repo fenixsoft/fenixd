@@ -51,11 +51,11 @@
 
 ## 4. 防线四：状态无驱动探测与恢复
 
-- [ ] 4.1 `core/admin_monitor.py` 新增 `_detect_orphaned_state`（或等价）：`status ∈ {implementing, testing}` 且 无活动 run 文件 + 无存活 agent 子进程 + 无待派发（backoff 未到期 / `_cancelled_hold` / `start_after` 未到）三者同时成立且超短阈值 → `orphaned_state` 信号；接入 `_detect` 列表。
-- [ ] 4.2 `SIGNAL_SEVERITY` / `SIGNAL_RECOMMENDATION` 登记 `orphaned_state`；阈值独立配置键落点为 `core/config.py` admin 段（`get_admin_config` 新增 `admin.orphaned_state_threshold_minutes`，缺省 15 分钟，与 `admin.interval_minutes` 整数倍对齐），admin_monitor 从 `self.admin_cfg` 读取，与 `stuck` 阈值互不影响。
-- [ ] 4.3 `core/event_bus.py:_recover_one` 补 `testing` 态无驱动出口（发现则触发重派或联动 `orphaned_state`），不破坏 `implementing` 既有语义；若选择自动重派，MUST 复用 `implemented` 分支的 `tester_run` 与 `_inconclusive_attempts` 防重入守卫（event_bus.py:158-175），避免对已验证/暂停中的 spec 造成重验风暴；若选择联动 `orphaned_state`，须与 admin_monitor 检测复用同一"无驱动"判定口径，防止双路径重复触发。
-- [ ] 4.4 新建 `tests/test_orphaned_state_signal.py`：状态悬置 + 无 run + 无进程 → 产生信号；长 run 在跑 → 不产生；有意等待（`_cancelled_hold`/backoff/`start_after`）→ 不产生；`testing` 无驱动能被 recovery 发现；节流生效。
-- [ ] 4.5 回归：本事故场景（复位失败致 spec 悬置 `testing` 无 verifier）在新阈值内被 `orphaned_state` 捕获，早于 `stuck`。
+- [x] 4.1 `core/admin_monitor.py` 新增 `_detect_orphaned_state`（或等价）：`status ∈ {implementing, testing}` 且 无活动 run 文件 + 无存活 agent 子进程 + 无待派发（backoff 未到期 / `_cancelled_hold` / `start_after` 未到）三者同时成立且超短阈值 → `orphaned_state` 信号；接入 `_detect` 列表。
+- [x] 4.2 `SIGNAL_SEVERITY` / `SIGNAL_RECOMMENDATION` 登记 `orphaned_state`；阈值独立配置键落点为 `core/config.py` admin 段（`get_admin_config` 新增 `admin.orphaned_state_threshold_minutes`，缺省 15 分钟，与 `admin.interval_minutes` 整数倍对齐），admin_monitor 从 `self.admin_cfg` 读取，与 `stuck` 阈值互不影响。
+- [x] 4.3 `core/event_bus.py:_recover_one` 补 `testing` 态无驱动出口（发现则触发重派或联动 `orphaned_state`），不破坏 `implementing` 既有语义；若选择自动重派，MUST 复用 `implemented` 分支的 `tester_run` 与 `_inconclusive_attempts` 防重入守卫（event_bus.py:158-175），避免对已验证/暂停中的 spec 造成重验风暴；若选择联动 `orphaned_state`，须与 admin_monitor 检测复用同一"无驱动"判定口径，防止双路径重复触发。
+- [x] 4.4 新建 `tests/test_orphaned_state_signal.py`：状态悬置 + 无 run + 无进程 → 产生信号；长 run 在跑 → 不产生；有意等待（`_cancelled_hold`/backoff/`start_after`）→ 不产生；`testing` 无驱动能被 recovery 发现；节流生效。
+- [x] 4.5 回归：本事故场景（复位失败致 spec 悬置 `testing` 无 verifier）在新阈值内被 `orphaned_state` 捕获，早于 `stuck`。
 
 ## 5. 构建与验收
 

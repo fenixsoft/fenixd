@@ -21,6 +21,7 @@ daemon 内独立线程周期性读取本地数据（STATE.md、.fenix/runs/ 转�
 import hashlib
 import json
 import re
+import subprocess
 import tempfile
 import time
 import traceback
@@ -71,6 +72,15 @@ RESTART_REQUEST_TIMEOUT_MINUTES = 10  # restart_request 超时未清除 → 重�
 # 悬置时长口径 = now − spec.updated（spec 保持同一 blocked 状态的时长），
 # 不是信号记录 first_seen（后者含 max(cooldown,15) 阈值延迟，会晚一小时余才触发）。
 STALLED_ESCALATION_MINUTES = 120
+
+# ── 孤儿状态探测（add-control-plane-silent-failure-guards D5）──────────
+# 无驱动判定中「run 文件 mtime 距现在小于此值视为有活动」的宽限窗：120s 与
+# event_bus._ready_has_live_child 的 120s 存活探测口径一致——长 run 一定在
+# 持续写 run 文件（有进度），mtime 超宽限 + 无存活子进程才是真无驱动。
+ORPHANED_RUN_GRACE_SECONDS = 120
+# 阈值缺省：15 分钟 = 3 个 admin.interval_minutes(5) 巡检周期（design D5，
+# 与巡检周期整数倍对齐避免漏检），远短于 stuck（run_timeout+600s ≈ 160 分钟）。
+DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES = 15
 
 # family_explosion 放行文本兜底：仅当处置文本表达「显式放行」语义时才写豁免位。
 # 2026-08-28 实证（fix-fix-fix-add-spec-context-menu）：旧的「包含 _family_waiver/
@@ -131,6 +141,11 @@ SIGNAL_SEVERITY = {
     # 未定义名），重试无意义，Administrator 无法修复（非环境问题），须工程侧
     # 定位修正调用点/签名后人工处置闭环。
     "admin_reset_programming_error": "critical",
+    # add-control-plane-silent-failure-guards D5：状态无驱动（implementing/
+    # testing 无活动 run + 无存活子进程 + 无待派发超短阈值）——控制平面某条
+    # 路径把 spec 留在运行态却没人驱动（本 SPEC 事故悬置 1h12m 正是此类），
+    # 分钟级可发现、早于 stuck（160 分钟）。
+    "orphaned_state": "major",
 }
 SIGNAL_RECOMMENDATION = {
     "repeated_failures": "检查重复失败的根因（如构建/测试命令错误），必要时重置 spec 状态或修复框架配置",
@@ -161,6 +176,11 @@ SIGNAL_RECOMMENDATION = {
     # add-control-plane-silent-failure-guards D3：代码缺陷处置指引——明确
     # Administrator 无法修复、勿派子 fix 反复重跑（缺陷在框架工程侧）。
     "admin_reset_programming_error": "代码缺陷（TypeError/AttributeError/NameError，调用点见 evidence）：Administrator 无法修复，勿派子 fix 反复重跑；须工程侧定位修正复位路径的调用点/签名后，由人工处置闭环该告警",
+    # add-control-plane-silent-failure-guards D5：孤儿处置指引——经既有
+    # Administrator 通道唤起；处置完成（resolved）后框架自动走复位直通道
+    # （testing→verifier 重验入队 / implementing→ready 重实现），无需手动
+    # reset spec 状态。
+    "orphaned_state": "状态无驱动（implementing/testing 无活动 run/无存活子进程/无待派发）：Administrator 核查驱动链路（派发/recovery 是否空转）并确认是否人工干预；处置完成写 result 后框架自动走复位直通道（testing→verifier 重验入队；implementing→ready 重实现），无需手动 reset spec 状态",
 }
 
 # pm_engine 直接写入 store、由本监视器摄取唤起的信号类型（写入即待唤起型）。
@@ -230,6 +250,98 @@ def _error_fingerprint(component: str, message: str) -> str:
 
 # 尾部读上限：日志增长后每轮巡检只 seek 最近 256KB（3.5），避免全量 read_text
 _TAIL_ERROR_READ_BYTES = 256 * 1024
+
+
+# ── 无驱动判定（orphaned-state-signal R1 共用口径）──────────────────────
+# admin_monitor._detect_orphaned_state 与 event_bus._recover_one 的 testing
+# 恢复出口共用同一「无驱动」判定，防止双路径重复触发/口径漂移（design D6）。
+
+def _pgrep_live_worktree(spec_name: str) -> bool:
+    """pgrep 匹配 ``.claude/worktrees/{impl,verify}-<spec>-*`` 的 claude 进程。
+
+    与 event_bus.EventBus._pgrep_live_worktree 同语义（fix-dispatch-orphan
+    D4 存活探测）；抽为模块级供 admin 检测与 event_bus 恢复共用同一口径。
+    """
+    try:
+        for prefix in ("impl", "verify"):
+            pattern = f"{prefix}-{spec_name}-"
+            res = subprocess.run(
+                ["pgrep", "-f", pattern],
+                capture_output=True, text=True, timeout=5,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return True
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return False
+
+
+def _has_recent_spec_run(project_root, spec: str, now: float, window: float) -> bool:
+    """该 spec 是否存在窗口内有写活动的 run 文件（有进度）——任意 run 前缀。
+
+    与 AdminMonitor._has_recent_progress 同语义（impl/verify/planner 等全部
+    前缀经 _spec_from_run_id 归一），模块级供 _detect_orphaned_state 与
+    event_bus 恢复共用。
+    """
+    if project_root is None:
+        return False
+    runs_dir = Path(project_root) / ".fenix" / "runs"
+    if not runs_dir.is_dir():
+        return False
+    try:
+        files = list(runs_dir.glob("*.jsonl"))
+    except OSError:
+        return False
+    for p in files:
+        if AdminMonitor._spec_from_run_id(p.stem) != spec:
+            continue
+        try:
+            if now - p.stat().st_mtime < window:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def spec_is_undriven(project_root, spec_name: str, entry: dict, *,
+                     run_grace_seconds: float = ORPHANED_RUN_GRACE_SECONDS) -> bool:
+    """「无驱动」判定（orphaned-state-signal R1 三条件，同一判定口径）。
+
+    返回 True 当且仅当三者同时成立：
+      ① 无活动 run 文件：该 spec 的 run 文件 mtime 均超出 run_grace_seconds；
+      ② 无存活 agent 子进程：不存在 impl-<spec>- / verify-<spec>- 模式进程；
+      ③ 无待派发：无 _cancelled_hold / start_after 未到 / 派发退避
+         （_dispatch_backoff_until）未到期。
+    任一不成立（长 run 仍在跑 / 进程仍存活 / 有意等待中）→ False——避免把
+    正常长 run 或有意等待误判为孤儿（proposal.md 风险与回退）。
+
+    admin_monitor 检测在此之上叠加「状态停留超短阈值」；event_bus 恢复在此
+    之上叠加 _inconclusive_attempts 暂停守卫。二者共用本函数 → 同一判定口径。
+    """
+    if not isinstance(entry, dict):
+        return False
+    # ③ 有意等待族：人工取消保持 / start_after 定时 / 派发退避
+    if entry.get("_cancelled_hold"):
+        return False
+    try:
+        from core.state_machine import start_after_pending
+        if start_after_pending(entry):
+            return False
+    except Exception:
+        pass  # 判定失败不阻塞（fail-open，与既有恢复路径同容错）
+    try:
+        from core.pm_engine.dispatch import Dispatcher
+        if Dispatcher._dispatch_backoffed(entry):
+            return False
+    except Exception:
+        pass  # 同上 fail-open
+    # ② 无存活 agent 子进程
+    if _pgrep_live_worktree(spec_name):
+        return False
+    # ① 无活动 run 文件
+    if _has_recent_spec_run(project_root, spec_name, time.time(), run_grace_seconds):
+        return False
+    return True
 
 
 class AdminMonitor:
@@ -409,6 +521,7 @@ class AdminMonitor:
         signals.extend(self._detect_stuck(specs, now))
         signals.extend(self._detect_merge_streak(specs))
         signals.extend(self._detect_blocked_stuck(specs, now))
+        signals.extend(self._detect_orphaned_state(specs, now))
         signals.extend(self._detect_daemon_errors(now))
         return signals
 
@@ -665,6 +778,57 @@ class AdminMonitor:
                 "merge_streak", name,
                 f"'{name}' merge-back 连续失败 {streak} 次已达熔断阈值仍滞留（{status}）",
                 f"_merge_streak={streak}，指纹={fp}",
+            ))
+        return signals
+
+    def _detect_orphaned_state(self, specs: dict, now: float) -> list:
+        """implementing/testing 状态无驱动探测（add-control-plane-silent-failure-guards 4.1）。
+
+        三条件（无活动 run 文件 + 无存活 agent 子进程 + 无待派发）由模块级
+        ``spec_is_undriven`` 判定（与 event_bus 恢复出口共用同一口径）；本方法
+        在其上叠加「状态停留时长 > admin.orphaned_state_threshold_minutes」
+        （缺省 15 分钟，远短于 stuck 的 160 分钟）——状态悬置必须持续超过
+        短阈值才判无驱动，避免把刚 reset 的 spec 误报。
+
+        人工冻结（frozen）是有意等待态，与 blocked_stuck 同豁免。
+        """
+        signals = []
+        threshold_minutes = float(self.admin_cfg.get(
+            "orphaned_state_threshold_minutes",
+            DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES))
+        for name, entry in specs.items():
+            status = entry.get("status")
+            if status not in ("implementing", "testing"):
+                continue
+            # 人工冻结豁免：冻结即「等待人工」的显式表达（与 blocked_stuck 同款）
+            if entry.get("frozen"):
+                continue
+            updated_str = entry.get("updated") or entry.get("created") or ""
+            try:
+                updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            elapsed_minutes = (now - updated.timestamp()) / 60
+            if elapsed_minutes <= threshold_minutes:
+                continue
+            # 与 stuck 的交接点（hand-off）：stuck 阈值远高于本信号短阈值，
+            # 本信号只覆盖 (orphaned_threshold, stuck_threshold] 的早发现窗口——
+            # 超过 stuck 阈值后既有 stuck 检测已覆盖该 spec（repeated 检测表里
+            # 它也在），再补发 orphaned_state 只产生双信号/双唤起（实证：
+            # 200 分钟无 run 悬置同时命中 stuck 与孤儿两路）。≤ stuck_threshold
+            # 时的 orphaned 先于 stuck 触发（4.5 回归场景）。
+            stuck_threshold = float(self.admin_cfg.get("stuck_threshold_minutes", 0) or 0)
+            if stuck_threshold > 0 and elapsed_minutes > stuck_threshold:
+                continue
+            if not spec_is_undriven(self.project_root, name, entry):
+                continue
+            signals.append(self._make_signal(
+                "orphaned_state", name,
+                f"'{name}' 处于 {status} 超过 {int(elapsed_minutes)} 分钟无驱动"
+                "（无活动 run / 无存活子进程 / 无待派发）",
+                f"updated={updated_str}，阈值 {int(threshold_minutes)} 分钟"
+                f"（stuck 阈值 {int(self.admin_cfg.get('stuck_threshold_minutes', 0))}"
+                " 分钟远高于此，本信号先于 stuck 捕获）",
             ))
         return signals
 
@@ -1266,6 +1430,12 @@ class AdminMonitor:
             sig_type = signal.get("signal_type")
             if sig_type in DISPOSITION_AUTO_RESET_SIGNAL_TYPES:
                 self._reset_env_blocked_after_disposition(signal, disp)
+            elif sig_type == "orphaned_state":
+                # 孤儿状态复位（orphaned-state-signal R3）：独立复位路径
+                # （非 env 阻塞族）——testing→verifier 重验入队；implementing
+                # →ready 重实现。resolve_env_blocked_reset_path 入口守卫要求
+                # blocked 状态，孤儿 spec 处于 implementing/testing 不适用。
+                self._reset_orphaned_after_disposition(signal)
 
         # fix-stale-escalation-close：run 有最终结果即关闭其名下旧 escalation
         # （孤儿看护在处置进行中误判 pending 超时的残留）。不关闭则 dashboard
@@ -1455,6 +1625,64 @@ class AdminMonitor:
             self.logger.error(
                 "admin_monitor",
                 f"admin_reset_programming_error 升级落盘失败: {e}",
+            )
+
+    def _reset_orphaned_after_disposition(self, signal: dict) -> None:
+        """孤儿状态处置收尾复位（orphaned-state-signal R3）。
+
+        orphaned_state 信号唤起 Administrator，处置成功（result=resolved/
+        partially-resolved，已由调用方前置检查）后框架机械复位，无需 admin
+        手动 reset spec 状态：
+        - testing：transition_gate(testing) 幂等（already testing）+ verifier
+          入队重验（spec_implemented 重派），复用 env 阻塞直通道语义；
+        - implementing：transition(ready) 清 error 重实现（VALID_TRANSITIONS
+          允许 IMPLEMENTING→READY）。
+
+        自身异常只记日志（右关联：处置记录永远先落盘，复位失败不得回滚）。
+        """
+        spec = signal.get("spec")
+        if not spec:
+            return
+        sm = self.state_machine
+        if not hasattr(sm, "read_one") or not hasattr(sm, "update_spec"):
+            return
+        spec_entry = sm.read_one(spec)
+        if not spec_entry:
+            return
+        status = spec_entry.get("status")
+        if status == "testing":
+            try:
+                sm.transition_gate(spec, "testing")  # 幂等（already testing）
+                sm.update_spec(spec, {"error": None})
+                if self.pm_engine is not None:
+                    self.pm_engine.handle_event("spec_implemented", spec, spec_entry)
+                self.logger.info(
+                    "admin_monitor",
+                    f"孤儿 testing 复位：'{spec}' transition_gate(testing)幂等"
+                    " + verifier 入队重验",
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "admin_monitor",
+                    f"孤儿 testing 复位失败 '{spec}': {e}",
+                )
+        elif status == "implementing":
+            try:
+                sm.transition(spec, "ready")
+                sm.update_spec(spec, {"error": None})
+                self.logger.info(
+                    "admin_monitor",
+                    f"孤儿 implementing 复位：'{spec}' → ready 重实现",
+                )
+            except Exception as e:
+                self.logger.warning(
+                    "admin_monitor",
+                    f"孤儿 implementing 复位失败 '{spec}': {e}",
+                )
+        else:
+            self.logger.debug(
+                "admin_monitor",
+                f"孤儿信号但 spec '{spec}' 状态 {status} 无需复位（可能已被处置）",
             )
 
     def _apply_family_waiver(self, signal: dict, disp) -> None:
