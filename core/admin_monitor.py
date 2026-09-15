@@ -49,6 +49,20 @@ from core.pm_engine.verification import (
 # 非 blocked）由 resolve_env_blocked_reset_path 判定。
 DISPOSITION_AUTO_RESET_SIGNAL_TYPES = ENV_BLOCK_SIGNAL_TYPES + ("blocked_stuck",)
 
+# admin-dispatch-failure-escalation D1：派发期编程错误异常类型集合——
+# TypeError/AttributeError/NameError/ValueError 是代码缺陷的典型签名
+# （实参不符/属性缺失/未定义名/参数构造错误），Administrator 无法修复，
+# 落专用信号 admin_dispatch_programming_error（critical）供归类统计。
+# ValueError 子类（JSONDecodeError/UnicodeDecodeError 等数据类瞬时问题）
+# 会被归为编程错误——保守可见方向（升级总比静默原类型好），evidence 保留
+# 完整异常消息供甄别。
+_PROGRAMMING_ERROR_TYPES = (TypeError, AttributeError, NameError, ValueError)
+
+# admin-dispatch-failure-escalation D2：派发失败自动重试上限（模块常量不入
+# config，对齐本模块既有常量做法）。既有升级记录 retry_count 单调递增至该
+# 上限后 _retry_due_dispatch_failures 不再选中，不无限重试。
+DISPATCH_RETRY_MAX = 1
+
 # admin-signal-consolidation D2：悬置强制升级的信号族（blocked_stuck + ENV 阻塞族）。
 # 悬置类信号 = spec 保持 blocked 状态过久、自动处置通道已被冷却压制——此时
 # 强制升级真人（突破 latest_signal 冷却）。其他信号类型（stuck/flapping/
@@ -165,6 +179,12 @@ SIGNAL_SEVERITY = {
     # 路径把 spec 留在运行态却没人驱动（本 SPEC 事故悬置 1h12m 正是此类），
     # 分钟级可发现、早于 stuck（160 分钟）。
     "orphaned_state": "major",
+    # admin-dispatch-failure-escalation D1：Administrator 派发期编程错误——
+    # 提示词构造/序列化/参数错误（TypeError/AttributeError/NameError/
+    # ValueError）是框架代码缺陷（2026-09-14 20:26 stash_pop_conflict dict
+    # evidence 穿透 str.replace 实证：prompt_builder.py:204），Administrator
+    # 无法修复、重试无意义，须工程侧定位修正派发链后人工处置闭环。
+    "admin_dispatch_programming_error": "critical",
 }
 SIGNAL_RECOMMENDATION = {
     "repeated_failures": "检查重复失败的根因（如构建/测试命令错误），必要时重置 spec 状态或修复框架配置",
@@ -200,6 +220,10 @@ SIGNAL_RECOMMENDATION = {
     # （testing→verifier 重验入队 / implementing→ready 重实现），无需手动
     # reset spec 状态。
     "orphaned_state": "状态无驱动（implementing/testing 无活动 run/无存活子进程/无待派发）：Administrator 核查驱动链路（派发/recovery 是否空转）并确认是否人工干预；处置完成写 result 后框架自动走复位直通道（testing→verifier 重验入队；implementing→ready 重实现），无需手动 reset spec 状态",
+    # admin-dispatch-failure-escalation D1：派发期编程错误处置指引——沿用
+    # add-control-plane-silent-failure-guards 3.3 的文案模式：代码缺陷须
+    # 工程侧定位、Administrator 无法修复、勿派子 fix 反复重跑。
+    "admin_dispatch_programming_error": "代码缺陷（TypeError/AttributeError/NameError/ValueError，调用点与异常消息见 evidence）：Administrator 无法修复，勿派子 fix 反复重跑；须工程侧定位修正派发链（prompt_builder 提示词构造/序列化/参数）后，由人工处置闭环该告警",
 }
 
 # pm_engine 直接写入 store、由本监视器摄取唤起的信号类型（写入即待唤起型）。
@@ -451,6 +475,14 @@ class AdminMonitor:
         # admin-signal-consolidation D2：blocked 悬置 ≥2h 强制升级真人
         # （突破节流、受未处理告警约束；不重新唤起 Administrator）
         self._force_escalate_stalled(specs, now)
+
+        # admin-dispatch-failure-escalation D2：派发失败升级记录到期重试巡检
+        # （挂在既有巡检循环，不新增线程/定时器；任何异常只记日志不阻断巡检）
+        try:
+            self._retry_due_dispatch_failures(now)
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor", f"Dispatch-failure retry scan failed: {e}")
 
         # add-alert-auto-resolve D1：告警自动闭环扫描内联本巡检执行（不新增
         # 线程/定时器），复用当轮已读取的 STATE.md 状态表（design D3）
@@ -1238,6 +1270,75 @@ class AdminMonitor:
                 earliest = created
         return earliest
 
+    # ── 派发失败重试巡检（admin-dispatch-failure-escalation D2） ──
+
+    def _retry_due_dispatch_failures(self, now: float) -> int:
+        """派发失败升级记录到期重试巡检（admin-dispatch-failure-escalation D2）。
+
+        扫描 kind=escalation ∧ next_retry_at ≤ now ∧ retry_count < 1 ∧
+        未 handled 的派发失败记录 → 重建原信号 → 直接调 _invoke_administrator
+        重试派发一次（带 _dispatch_retry_id 标记）。
+
+        MUST NOT 经 _handle_signal：节流（latest_signal/unhandled_for，
+        admin_monitor.py:890-896）命中刚写的升级记录把重试吞掉；重试直接
+        走派发链本身，等价于把「冷却后重试一次原信号」落在派发时刻。frozen
+        spec 跳过（同 _handle_signal 冻结语义，人工等待态不自动重试）。
+        manual 派发记录不带 next_retry_at，天然不在扫描范围。
+
+        重试失败由 _invoke_administrator 内部 bump 既有记录 retry_count
+        （上限 DISPATCH_RETRY_MAX，不追加新记录）；重试成功由
+        _invoke_administrator 内部闭环该 spec 的派发失败记录。
+
+        挂 run_once 巡检（_force_escalate_stalled 之后、_run_alert_lifecycle
+        之前），不新增线程/定时器。返回本次重试派发的记录数（供审计）。
+        """
+        retried = 0
+        for rec in self.store.read_all():
+            if rec.get("kind") != ESCALATION or rec.get("handled"):
+                continue
+            try:
+                retry_count = int(rec.get("retry_count") or 0)
+            except (TypeError, ValueError):
+                retry_count = 0
+            if retry_count >= DISPATCH_RETRY_MAX:
+                continue
+            next_retry_at = rec.get("next_retry_at")
+            if not next_retry_at:
+                continue
+            try:
+                due = datetime.fromisoformat(
+                    str(next_retry_at).replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            if due.timestamp() > now:
+                continue
+            # frozen spec 跳过（重试尊重人工冻结语义）
+            spec = rec.get("spec")
+            if spec:
+                try:
+                    entry = self.state_machine.read_one(spec) or {}
+                except Exception:
+                    entry = {}
+                if entry.get("frozen"):
+                    self.logger.info(
+                        "admin_monitor",
+                        f"Skipping dispatch retry for frozen SPEC '{spec}'",
+                    )
+                    continue
+            signal = self._rebuild_dispatch_signal(rec)
+            if signal is None:
+                continue
+            signal["_dispatch_retry_id"] = rec.get("id")
+            self.logger.warning(
+                "admin_monitor",
+                f"Dispatch failure retry due: re-invoking Administrator for "
+                f"original signal {signal.get('signal_type')} on "
+                f"'{spec or 'daemon'}' (escalation {rec.get('id')})",
+            )
+            self._invoke_administrator(signal, rec)
+            retried += 1
+        return retried
+
     # ── 兜底升级（fix-admin-self-heal） ──────────────────────────
 
     def _recover_orphaned_dispositions(self):
@@ -1439,6 +1540,19 @@ class AdminMonitor:
     def _invoke_administrator(self, signal: dict, signal_rec: dict):
         """唤起 Administrator 处置；失败或升级时落升级告警。"""
         if self.agent_runner is None:
+            # admin-dispatch-failure-escalation D2：重试派发遇 agent_runner 不
+            # 可用 → bump 既有记录 retry_count 后结束，不重复落盘；非重试时
+            # 保持原逻辑落「Administrator 不可用」升级（不带 next_retry_at，
+            # 不参与自动重试）。
+            if signal.get("_dispatch_retry_id"):
+                self.store.bump_dispatch_retry(
+                    signal["_dispatch_retry_id"], DISPATCH_RETRY_MAX)
+                self.logger.warning(
+                    "admin_monitor",
+                    f"Dispatch retry aborted (no agent_runner): "
+                    f"bumped retry_count for {signal.get('_dispatch_retry_id')}",
+                )
+                return
             self.logger.warning(
                 "admin_monitor",
                 "No agent_runner available, cannot invoke Administrator; escalating to human",
@@ -1463,17 +1577,14 @@ class AdminMonitor:
                 f"Administrator invocation failed: {e}",
                 {"signal": signal},
             )
-            self.store.append(attach_trigger({
-                "kind": ESCALATION,
-                "signal_type": signal.get("signal_type"),
-                "spec": signal.get("spec"),
-                "severity": signal.get("severity"),
-                "description": signal.get("description"),
-                "evidence": signal.get("evidence"),
-                "action_taken": f"Administrator 唤起失败: {e}",
-                "recommended_action": signal.get("recommended_action"),
-            }))
+            # admin-dispatch-failure-escalation D1/D2：按异常类型分流升级
+            self._escalate_dispatch_failure(signal, signal_rec, e)
             return
+
+        # admin-dispatch-failure-escalation D2：dispatch 成功（run_administrator
+        # 正常返回）→ 关闭该 spec 未处理的派发失败升级记录；闭环发生在
+        # dispatch 时刻，不扩 alert_lifecycle._SIGNAL_CONDITIONS。
+        self._close_dispatch_failures_on_success(signal)
 
         # 处置记录（任何情况下都留痕）；落盘失败不能丢 final 判定（否则该 run
         # 的 pending 会变孤儿触发人工升级），记日志后继续
@@ -1572,6 +1683,228 @@ class AdminMonitor:
                 f"Administrator escalated to human: {signal.get('signal_type')} "
                 f"for '{signal.get('spec') or 'daemon'}'",
             )
+
+    # ── admin-dispatch-failure-escalation D1/D2 ──────────────────
+
+    def _escalate_dispatch_failure(self, signal: dict, signal_rec: dict,
+                                   exc: Exception) -> None:
+        """Administrator 派发失败升级分流（admin-dispatch-failure-escalation D1）。
+
+        按异常类型分流：
+        - 重试派发失败（signal 带 _dispatch_retry_id）→ bump 既有记录
+          retry_count，不追加新记录（D2：重试失败不重复落盘）；
+        - 编程错误（TypeError/AttributeError/NameError/ValueError）→
+          signal_type=admin_dispatch_programming_error、severity=critical
+          记录（evidence 含异常类型/消息/core/ 内最深调用点/原信号）；
+        - 其余异常（OSError/超时/provider 类）→ 维持原 signal_type 升级
+          记录。
+        两条分流路径均带 next_retry_at/retry_count（自动巡检来源，
+        signal_rec 非 None）；manual 派发（signal_rec=None）失败只落
+        升级不重试（不带 next_retry_at）。
+        """
+        # 重试派发失败：bump 既有记录后结束，不重复落盘（D2）
+        retry_id = signal.get("_dispatch_retry_id")
+        if retry_id:
+            self.store.bump_dispatch_retry(retry_id, DISPATCH_RETRY_MAX)
+            self.logger.error(
+                "admin_monitor",
+                f"Dispatch retry failed for record {retry_id}, "
+                f"bumped retry_count to max {DISPATCH_RETRY_MAX}",
+            )
+            return
+        # 按异常类型分流
+        if isinstance(exc, _PROGRAMMING_ERROR_TYPES):
+            self._escalate_dispatch_programming_error(signal, signal_rec, exc)
+        else:
+            self._escalate_dispatch_failure_original(signal, signal_rec, exc)
+
+    def _escalate_dispatch_programming_error(self, signal: dict,
+                                             signal_rec: dict,
+                                             exc: Exception) -> None:
+        """派发期编程错误升级落盘（admin-dispatch-failure-escalation D1）。
+
+        signal_type=admin_dispatch_programming_error、severity=critical 记录，
+        evidence 含异常类型/消息/core/ 内最深调用点/原信号 signal_type/spec/
+        severity。同类未处理告警存在时按 unhandled_for 跳过（同
+        _escalate_reset_programming_error R3 去重模式，防每轮巡检重复落盘）。
+        重试失败走 _escalate_dispatch_failure 入口 bump，不重复落盘。
+        """
+        spec = signal.get("spec")
+        if self.store.unhandled_for(spec, "admin_dispatch_programming_error") is not None:
+            return  # 同类未处理告警已存在：跳过去重
+        callsite = self._deepest_core_callsite(exc)
+        original_signal = {
+            "signal_type": signal.get("signal_type"),
+            "spec": spec,
+            "severity": signal.get("severity"),
+        }
+        evidence = {
+            "exception_type": type(exc).__name__,
+            "message": str(exc),
+            "original_signal": original_signal,
+        }
+        if callsite:
+            evidence["callsite"] = callsite
+        entry = {
+            "kind": ESCALATION,
+            "signal_type": "admin_dispatch_programming_error",
+            "spec": spec,
+            "severity": "critical",
+            "description": (
+                f"Administrator 派发期编程错误（{type(exc).__name__}: {exc}）："
+                f"spec '{spec}' 信号 {signal.get('signal_type')} 唤起 "
+                "Administrator 时提示词构造/序列化失败，Administrator 无法修复"
+                "（非环境问题）"
+            ),
+            "evidence": evidence,
+            "original_signal": original_signal,
+            "recommended_action": SIGNAL_RECOMMENDATION.get(
+                "admin_dispatch_programming_error", ""),
+        }
+        self._attach_dispatch_retry_fields(entry, signal_rec)
+        try:
+            self.store.append(attach_trigger(entry))
+            self.logger.error(
+                "admin_monitor",
+                f"派发期编程错误已升级（admin_dispatch_programming_error）"
+                f"spec='{spec}' signal_type={signal.get('signal_type')} "
+                f"异常={type(exc).__name__}: {exc}"
+                + (f" 调用点={callsite}" if callsite else ""),
+            )
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor",
+                f"admin_dispatch_programming_error 升级落盘失败: {e}",
+            )
+
+    def _escalate_dispatch_failure_original(self, signal: dict,
+                                            signal_rec: dict,
+                                            exc: Exception) -> None:
+        """派发失败运维异常（OSError/超时/provider 类）→ 维持原 signal_type 升级记录
+        （admin-dispatch-failure-escalation D1）。
+
+        同样附带 next_retry_at/retry_count 参与 D2 重试（瞬态失败恰是重试
+        高价值场景——proposal 目标③针对派发链本身，不限于编程错误）。
+        evidence 统一携带 original_signal 供重试重建原信号。
+        """
+        spec = signal.get("spec")
+        original_signal = {
+            "signal_type": signal.get("signal_type"),
+            "spec": spec,
+            "severity": signal.get("severity"),
+        }
+        entry = {
+            "kind": ESCALATION,
+            "signal_type": signal.get("signal_type"),
+            "spec": spec,
+            "severity": signal.get("severity"),
+            "description": signal.get("description"),
+            "evidence": signal.get("evidence"),
+            "action_taken": f"Administrator 唤起失败: {exc}",
+            "recommended_action": signal.get("recommended_action"),
+            "original_signal": original_signal,
+        }
+        self._attach_dispatch_retry_fields(entry, signal_rec)
+        try:
+            self.store.append(attach_trigger(entry))
+            self.logger.error(
+                "admin_monitor",
+                f"Administrator 派发失败（运维异常，原类型升级）"
+                f"spec='{spec}' signal_type={signal.get('signal_type')} "
+                f"异常={type(exc).__name__}: {exc}",
+            )
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor",
+                f"派发失败运维异常升级落盘失败: {e}",
+            )
+
+    def _attach_dispatch_retry_fields(self, entry: dict,
+                                      signal_rec: dict) -> None:
+        """附加重试语义字段（admin-dispatch-failure-escalation D2）。
+
+        自动巡检来源（signal_rec 非 None）→ 可重试：entry 附带
+        next_retry_at（now + escalation_cooldown_minutes）与 retry_count=0；
+        manual 派发（signal_rec=None）→ 不重试（不带 next_retry_at），
+        保持原语义：手动呼叫 Administrator 失败只升级人工、不自动重试。
+        """
+        if signal_rec is None:
+            return
+        next_retry = time.time() + self.cooldown_minutes * 60
+        entry["next_retry_at"] = datetime.fromtimestamp(
+            next_retry, tz=timezone.utc).isoformat()
+        entry["retry_count"] = 0
+
+    def _close_dispatch_failures_on_success(self, signal: dict) -> None:
+        """dispatch 成功（run_administrator 正常返回）→ 关闭该 spec 未处理的
+        派发失败升级记录（admin-dispatch-failure-escalation D2）。
+
+        仅关闭带 next_retry_at 字段的未处理 kind=escalation 记录（两条分流
+        路径：admin_dispatch_programming_error 与原类型记录均带该字段；手动
+        唤起的记录不带，天然不关）；其他升级记录（人工处置中/其他原因）不受
+        影响。闭环发生在 dispatch 时刻，不扩 alert_lifecycle._SIGNAL_CONDITIONS。
+        """
+        spec = signal.get("spec")
+        if not spec:
+            return
+        try:
+            closed = self.store.close_dispatch_failure_alerts(
+                spec, "后续派发成功")
+            if closed:
+                self.logger.info(
+                    "admin_monitor",
+                    f"Dispatch succeeded for '{spec}', closed {closed} "
+                    f"dispatch-failure escalation(s)",
+                )
+        except Exception as e:
+            self.logger.error(
+                "admin_monitor",
+                f"Failed to close dispatch-failure escalations for '{spec}': {e}",
+            )
+
+    def _rebuild_dispatch_signal(self, rec: dict) -> Optional[dict]:
+        """从派发失败升级记录重建原信号（admin-dispatch-failure-escalation D2）。
+
+        优先读记录顶层 original_signal 字段（结构化 dict，不被 store 归一）；
+        回退解析 evidence（编程错误记录 evidence 为 JSON 串，内含
+        original_signal）；字段缺失时从记录顶层补齐（description/
+        recommended_action）。原信号 signal_type 必须存在（否则判定
+        解析失败返回 None，跳过该条记录）。
+        """
+        original = rec.get("original_signal")
+        if isinstance(original, str):
+            try:
+                original = json.loads(original)
+            except (ValueError, TypeError):
+                original = None
+        if not isinstance(original, dict):
+            original = None
+        # 回退：解析 evidence JSON 串
+        if original is None:
+            evidence = rec.get("evidence")
+            if isinstance(evidence, str):
+                try:
+                    parsed = json.loads(evidence)
+                except (ValueError, TypeError):
+                    parsed = None
+                if isinstance(parsed, dict):
+                    original = parsed.get("original_signal")
+                    if isinstance(original, str):
+                        try:
+                            original = json.loads(original)
+                        except (ValueError, TypeError):
+                            original = None
+        if not isinstance(original, dict):
+            original = {}
+        signal = dict(original)
+        signal.setdefault("signal_type", rec.get("signal_type"))
+        signal.setdefault("spec", rec.get("spec"))
+        signal.setdefault("severity", rec.get("severity"))
+        signal.setdefault("description", rec.get("description"))
+        signal.setdefault("recommended_action", rec.get("recommended_action"))
+        if not signal.get("signal_type"):
+            return None
+        return signal
 
     # ── 辅助 ────────────────────────────────────────────────────
 

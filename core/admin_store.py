@@ -456,6 +456,64 @@ class AdminStore:
             return rec
         return None
 
+    # ── admin-dispatch-failure-escalation D2 ──────────────────────
+
+    def close_dispatch_failure_alerts(self, spec: str, resolve_note: str) -> int:
+        """关闭某 spec 名下未处理的派发失败升级告警。
+
+        admin-dispatch-failure-escalation D2：dispatch 成功（run_administrator
+        正常返回）时调用——仅关闭「派发失败」产生的记录（带 next_retry_at
+        字段的 kind=escalation 未处理记录，含 admin_dispatch_programming_error
+        与原类型两条分流路径）；其他升级记录（人工处置中/其他原因，不带
+        next_retry_at）不受影响。resolve_note 恒为「后续派发成功」。
+        已处理条目不可覆盖（人工记录不可覆盖）。返回关闭数量。
+        """
+        if not spec:
+            return 0
+        resolved_at = _utcnow_iso()
+
+        def mutate(records):
+            changed = 0
+            for rec in records:
+                if rec.get("kind") != ESCALATION or rec.get("handled"):
+                    continue
+                if rec.get("spec") != spec:
+                    continue
+                if not rec.get("next_retry_at"):
+                    continue  # 非派发失败记录不关
+                rec["handled"] = True
+                rec["handled_by"] = AUTO_RESOLVE_BY
+                rec["handled_at"] = resolved_at
+                rec["resolve_note"] = resolve_note
+                changed += 1
+            return changed
+        return self._mutate(mutate, skip_unchanged=True)
+
+    def bump_dispatch_retry(self, alert_id: str, max_retries: int = 1) -> bool:
+        """派发重试仍失败 → 既有升级记录 retry_count 递增（上限 max_retries）。
+
+        admin-dispatch-failure-escalation D2：重试不追加新记录，只 bump
+        既有记录的 retry_count，达到上限后 _retry_due_dispatch_failures
+        不再选中该记录。返回是否找到并更新（id 不匹配或非 escalation 时
+        返回 False）。
+        """
+        def mutate(records):
+            changed = False
+            for rec in records:
+                if rec.get("id") != alert_id:
+                    continue
+                if rec.get("kind") != ESCALATION:
+                    continue
+                cur = 0
+                try:
+                    cur = int(rec.get("retry_count") or 0)
+                except (TypeError, ValueError):
+                    cur = 0
+                rec["retry_count"] = min(cur + 1, max_retries)
+                changed = True
+            return changed
+        return self._mutate(mutate)
+
 
 class DisputeAuditStore:
     """dispute 裁决审计（add-deliverable-declaration-triage D6 / 4.5）。

@@ -128,6 +128,32 @@ class TestFileLoadAndPlaceholders:
             "demo", "administrator", detail=signal)
         assert "conflict_files" in prompt and "core/a.py" in prompt
 
+    def test_dispatch_chain_structured_evidence_and_recommendation(self, tmp_path):
+        """派发链中 evidence/recommended_action 同时为 dict/list 时提示词正常构建。
+
+        admin-dispatch-failure-escalation 2.2：_str_field 统一兜底
+        dict→JSON、list→JSON；{recommendation} 同理。不抛 TypeError
+        （replace() argument 2 must be str）。
+        """
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        signal = {
+            "signal_type": "stuck",
+            "spec": "spec-dispatch",
+            "severity": "critical",
+            "description": "派发链测试",
+            "evidence": {"items": ["a.py", "b.py"], "nested": {"k": 1}},
+            "recommended_action": {"action": "rebuild", "scope": ["build", "test"]},
+            "disposition_path": str(proot / ".fenix" / "admin_disposition-x.json"),
+        }
+        prompt = runner._prompt_builder._build_prompt(
+            "demo", "administrator", detail=signal)
+        # evidence dict 被序列化进提示词，关键键/值可辨识
+        assert "items" in prompt and "a.py" in prompt
+        # recommended_action dict 被序列化进提示词
+        assert "rebuild" in prompt
+
     def test_unknown_agent_type_rejected(self, tmp_path):
         proot = tmp_path / "proj"
         _mk_spec_dir(proot, "demo")
