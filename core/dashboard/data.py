@@ -1490,6 +1490,38 @@ def run_task_progress(project_root, spec_name) -> dict:
     }
 
 
+def run_activity(project_root, spec_name, *, now: float | None = None) -> dict:
+    """最新 impl run 的存活心跳（不依赖 TaskCreate/TaskUpdate 的实时兜底）。
+
+    run_task_progress（fix-implementer-task-progress D3）依赖 run 产物中的
+    TaskCreate/TaskUpdate 事件（parse_run_task_done）。但派发路由实际不暴露
+    任务清单工具（2026-09-15 实测 308/308 impl+run 的 ``init.tools`` 不含
+    TaskCreate），该信号在实现期间恒为 0/0/[]——任务进度列静止在 0/N，用户
+    无法分辨「卡死」与「正在实现但细粒度进度不可用」。本函数改用与任务工具
+    无关的线索：**产物文件是否仍在写**。
+
+    - ``active``：最新 impl run 末行非终态（running/empty）且产物 mtime 未超
+      ``_RUN_STALE_SECONDS``（复用 get_runs 的停更判据，两处同一阈值——已死
+      断尾/弃置尸体不会外显为活跃）；
+    - ``last_event_seconds_ago``：产物 mtime 距现在的秒数（无 run → None）。
+
+    无 run / 解析失败 → ``{"active": False, "last_event_seconds_ago": None}``。
+    纯读侧观测，不写入任何状态；``now`` 仅测试注入。
+    """
+    run_file = find_impl_run_file(project_root, spec_name)
+    if run_file is None:
+        return {"active": False, "last_event_seconds_ago": None}
+    try:
+        mtime = run_file.stat().st_mtime
+    except OSError:
+        return {"active": False, "last_event_seconds_ago": None}
+    now = time.time() if now is None else now
+    age = max(0, int(now - mtime))
+    status = classify_run(_read_run_lines(run_file, max_lines=3))
+    active = status in ("running", "empty") and age <= _RUN_STALE_SECONDS
+    return {"active": active, "last_event_seconds_ago": age}
+
+
 def count_scenarios(project_root, spec_name) -> int:
     """统计 SPEC 各 spec.md 中 Scenario 数量。"""
     specs_dir = Path(project_root) / "spec" / "changes" / spec_name / "specs"
@@ -2870,6 +2902,10 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         # run 层实时进度（fix-implementer-task-progress D3）：tasks.md 快照失效
         # （subject 无编号 / agent 不勾 tasks.md）时仍能看到 run 推进。
         "run_progress": run_task_progress(project_root, spec_name),
+        # 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/TaskUpdate，
+        # 而派发路由实测不含该工具族 → 实现期间恒 0/N。run_activity 以「产物是否
+        # 仍在写」提供不依赖任务工具的存活线索，前端据此在进度单元显示「进行中」。
+        "run_activity": run_activity(project_root, spec_name),
         "verify_done": vp.get("done", 0),
         "verify_total": vp.get("total", 0),
         "verify_error": vp.get("error"),
@@ -3716,6 +3752,7 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         "tasks": parse_tasks(project_root, spec_name, spec_status),
         "tasks_note": tasks_note(project_root, spec_name, spec_status),
         "run_progress": run_task_progress(project_root, spec_name),
+        "run_activity": run_activity(project_root, spec_name),
         "verify_progress": parse_verify_progress(project_root, spec_name),
         # verification-phase-progress：出题进度（生成阶段 verify_progress 为空态，
         # 详情页验证进度卡片据此展示「出题 N/M」而非「暂无验证进度」）

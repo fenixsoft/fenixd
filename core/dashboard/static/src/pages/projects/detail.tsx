@@ -1636,6 +1636,19 @@ export default function SpecDetailPage() {
                 run 进行中 {detail.run_progress.current.join('、')}
               </Typography.Text>
             ) : null}
+            {/* 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/
+                TaskUpdate，派发路由实测不含该工具族 → 实现期间恒 0/N。run_activity
+                用「产物是否仍在写」提供不依赖任务工具的存活线索，仅在无更细粒度
+                线索（current）时兜底显示，避免误读成「卡死」。 */}
+            {!detail?.run_progress?.current?.length && detail?.run_activity?.active ? (
+              <Typography.Text
+                type="warning"
+                data-testid="run-activity-active"
+                style={{ display: 'block', marginTop: 6, fontSize: 12 }}
+              >
+                run 进行中（实现进行中，任务级进度不可用）
+              </Typography.Text>
+            ) : null}
             {proposalWhy ? (
               <div
                 style={{

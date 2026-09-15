@@ -3430,6 +3430,17 @@ class AgentRunner:
             str(cwd) if str(cwd) != str(self.project_root) else ""
         )
 
+        # 任务清单工具显式启用（2026-09-15 原地修复）。claude CLI 2.1.272 起把
+        # TaskCreate/TaskUpdate/TaskGet/TaskList 收窄为「仅第一方模型默认提供」，
+        # 网关模型（deepseek-v4-flash / claude-sonnet-5 等）不再默认注入——需
+        # CLAUDE_CODE_ENABLE_TODO_TOOLS=1 显式 opt-in（CLI changelog 原文 + 本地
+        # 实测：默认 22 工具无 TaskCreate；置 1 后 26 工具有）。整套 run-progress
+        # 链路（parse_run_task_done / run_task_progress / dashboard 叠加 /
+        # _sync_task_progress 回写 / prompt_builder 条件契约段）全部依赖该工具族，
+        # 默认关闭会让实现期间任务进度恒 0/N（无法分辨卡死与正常推进）。此处统一
+        # 注入对该族工具「不适用」的第一方模型无副作用（本就默认提供）。
+        env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] = "1"
+
         # Progress dir for verifier to write incremental progress
         progress_dir = self.project_root / ".fenix" / "verify-progress"
         progress_dir.mkdir(parents=True, exist_ok=True)

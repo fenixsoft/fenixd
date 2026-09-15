@@ -446,5 +446,97 @@ class TestRunProgressObservability(unittest.TestCase):
                 self.assertEqual(rp, {"done": 0, "total": 2, "current": []})
 
 
+class TestRunActivity(unittest.TestCase):
+    """存活心跳（2026-09-15 原地补充 run_activity）：不依赖 TaskCreate/TaskUpdate。
+
+    派发路由实测不含任务清单工具（308/308 impl run 无 TaskCreate），
+    run_task_progress 在实现期间恒 0/N；run_activity 以「产物是否仍在写」提供
+    与任务工具无关的存活线索，供前端分辨「卡死」与「正在实现但细粒度不可用」。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.proot = Path(self.tmpdir)
+        (self.proot / ".fenix" / "runs").mkdir(parents=True)
+        _mk_spec_dir(self.proot, "demo")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_run(self, lines, mtime=None):
+        p = self.proot / ".fenix" / "runs" / "impl-demo-1789001000.jsonl"
+        p.write_text("\n".join(json.dumps(x) for x in lines), encoding="utf-8")
+        if mtime is not None:
+            import os
+            os.utime(p, (mtime, mtime))
+        return p
+
+    def test_no_run_inactive(self):
+        """无 impl run → active=False、last_event_seconds_ago=None，不报错。"""
+        from core.dashboard.data import run_activity
+        self.assertEqual(run_activity(self.proot, "demo"),
+                         {"active": False, "last_event_seconds_ago": None})
+
+    def test_fresh_nonterminal_run_active(self):
+        """末行非终态 + 产物刚写 → active=True（真实在跑的 run）。"""
+        from core.dashboard.data import run_activity
+        import time
+        self._write_run([{"type": "assistant", "message": {"content": []}}],
+                        mtime=time.time() - 3)
+        ra = run_activity(self.proot, "demo")
+        self.assertTrue(ra["active"])
+        self.assertLessEqual(ra["last_event_seconds_ago"], 5)
+
+    def test_stale_nonterminal_run_inactive(self):
+        """末行非终态但产物停更超 _RUN_STALE_SECONDS → active=False（断尾/弃置尸体）。"""
+        from core.dashboard.data import run_activity, _RUN_STALE_SECONDS
+        import time
+        self._write_run([{"type": "assistant", "message": {"content": []}}],
+                        mtime=time.time() - (_RUN_STALE_SECONDS + 60))
+        self.assertFalse(run_activity(self.proot, "demo")["active"])
+
+    def test_terminal_run_inactive(self):
+        """终态 run（result/error/interrupted/cancelled）→ active=False，
+        即便文件刚刚被写（终态行抬高 mtime 也不得外显为活跃）。"""
+        from core.dashboard.data import run_activity
+        import time
+        for terminal in ({"type": "result", "result": "ok"},
+                         {"type": "error", "error": "boom"},
+                         {"type": "interrupted", "reason": "sweep"},
+                         {"type": "cancelled", "reason": "user"}):
+            with self.subTest(terminal=terminal["type"]):
+                self._write_run([{"type": "assistant", "message": {"content": []}},
+                                 terminal], mtime=time.time() - 1)
+                self.assertFalse(run_activity(self.proot, "demo")["active"])
+
+    def test_run_activity_ignores_task_tools(self):
+        """核心属性：即便 run 产物无任何 TaskCreate/TaskUpdate（真实链路），
+        只要产物仍在写，run_activity 仍判活跃——这正是对 run_task_progress
+        恒 0/N 的兜底意义。"""
+        from core.dashboard.data import run_activity, run_task_progress
+        import time
+        # 只有 Bash 事件、无任务清单工具事件（复刻真实 run）
+        self._write_run([
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash",
+                 "input": {"command": "python3 -m pytest tests/ -q"}}]}},
+        ], mtime=time.time() - 2)
+        self.assertEqual(run_task_progress(self.proot, "demo"),
+                         {"done": 0, "total": 0, "current": []})
+        self.assertTrue(run_activity(self.proot, "demo")["active"])
+
+    def test_spec_summary_and_detail_carry_run_activity(self):
+        """spec_summary / spec_detail 均透传 run_activity（列表与详情页数据源）。"""
+        from core.dashboard.data import spec_summary, spec_detail
+        import time
+        self._write_run([{"type": "assistant", "message": {"content": []}}],
+                        mtime=time.time() - 2)
+        summary = spec_summary(self.proot, "demo", {"status": "implementing"})
+        self.assertTrue(summary["run_activity"]["active"])
+        detail = spec_detail(self.proot, "demo", {"status": "implementing"})
+        self.assertTrue(detail["run_activity"]["active"])
+
+
 if __name__ == "__main__":
     unittest.main()

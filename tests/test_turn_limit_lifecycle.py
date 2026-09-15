@@ -194,6 +194,32 @@ def _patch_popen(monkeypatch, proc):
     return ns
 
 
+def _patch_popen_capture(monkeypatch, proc):
+    """把 runner 模块 subprocess.Popen 换成替身，并记录每次调用的 (args, kwargs)。
+
+    用于断言 _run_claude 构造子进程时注入的环境变量（如任务清单工具开关）。
+    不依赖轮询环终止：捕获后即返回，由调用方在 _run_claude 的后续流程中
+    自行处理（环境变量在 Popen 之前已构造完成）。
+    """
+    import subprocess as real_subprocess
+    import core.agent_runner.runner as rmod
+    calls: list = []
+
+    def _fake_popen(*a, **k):
+        calls.append((a, k))
+        return proc
+
+    ns = SimpleNamespace(
+        Popen=_fake_popen,
+        PIPE=real_subprocess.PIPE,
+        TimeoutExpired=real_subprocess.TimeoutExpired,
+        SubprocessError=real_subprocess.SubprocessError,
+        run=real_subprocess.run,
+    )
+    monkeypatch.setattr(rmod, "subprocess", ns)
+    return calls
+
+
 def _run_file_lines(proot: Path, run_id: str) -> list:
     run_file = proot / ".fenix" / "runs" / f"{run_id}.jsonl"
     try:
@@ -639,3 +665,56 @@ class TestUsageUnobserved:
         entry = sm.read_one("spec-m")
         assert int(entry["_tokens_in"]) == 8  # 0 + 7 + 1（cache_creation）
         assert int(entry["_tokens_out"]) == 2
+
+# ── 派发环境注入：任务清单工具显式启用（2026-09-15 原地修复） ─────────────────
+
+
+class TestTodoToolsEnvInjection:
+    """claude CLI 2.1.272 起把 TaskCreate/TaskUpdate/TaskGet/TaskList 收窄为
+    「仅第一方模型默认提供」，网关模型不再默认注入。整套 run-progress 链路
+    （parse_run_task_done / run_task_progress / dashboard 叠加 / _sync_task_progress
+    回写 / prompt_builder 条件契约段）依赖该工具族，必须由 _run_claude 统一注入
+    CLAUDE_CODE_ENABLE_TODO_TOOLS=1 显式 opt-in。
+
+    断言点在 Popen 调用参数（env 在 Popen 之前构造完成），无需等轮询环终止；
+    Popen 替身返回后立即 kill 子进程替身解除 _run_claude 的等待。
+    """
+
+    def _capture_env(self, monkeypatch, proot, run_id, **run_kwargs):
+        runner = make_turn_runner(proot)
+        events = [_evt("assistant", None), _evt("result", None)]
+        proc = _BurstFakeProc(events)
+        proc.kill()  # 让 Popen 返回后轮询环立即看到非 None returncode 退出
+        calls = _patch_popen_capture(monkeypatch, proc)
+        try:
+            runner._run_claude(
+                "prompt", proot, run_id,
+                max_turns=None, spec_name="demo", agent_type="implementer",
+                **run_kwargs)
+        except Exception:
+            pass
+        assert calls, "Popen 应被调用一次"
+        return calls[0][1].get("env") or {}
+
+    def test_run_claude_injects_todo_tools_env(self, monkeypatch, tmp_path):
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        env = self._capture_env(monkeypatch, proot, "impl-demo-7-a1")
+        assert env.get("CLAUDE_CODE_ENABLE_TODO_TOOLS") == "1"
+        # 既有 worktree 隔离注入不受影响
+        assert env.get("FENIX_RUN_PROJECT_ROOT") == str(proot)
+
+    def test_todo_tools_env_injected_with_provider_overrides(self, monkeypatch, tmp_path):
+        """provider 覆盖路径（env_overrides 非空）同样注入——该路径是实际
+        implementer 派发路径；且 API_KEY 路径清除 AUTH_TOKEN 的既有语义不变。"""
+        proot = tmp_path / "proj"
+        proot.mkdir()
+        env = self._capture_env(
+            monkeypatch, proot, "impl-demo-8-a1",
+            env_overrides={
+                "ANTHROPIC_BASE_URL": "https://gw.example",
+                "ANTHROPIC_API_KEY": "sk-test",
+            })
+        assert env.get("CLAUDE_CODE_ENABLE_TODO_TOOLS") == "1"
+        assert env.get("ANTHROPIC_BASE_URL") == "https://gw.example"
+        assert "ANTHROPIC_AUTH_TOKEN" not in env
