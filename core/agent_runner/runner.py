@@ -4512,10 +4512,17 @@ class AgentRunner:
 
     @staticmethod
     def _invalid_completed_ids(items) -> list:
-        """completed_tasks / unfinished 中的非数字 id（形如 x.y 之外的取值）。"""
+        """completed_tasks / unfinished 中的非法任务 id（形如 x.y 之外的取值）。
+
+        合法性判定与 parse_tasks_md 同源（core.run_task_track.is_task_id）：
+        任务 id 语法为 ``<组号>.<任务号>[可选小写字母后缀]``（``1.1`` / ``1.2b``）。
+        字母后缀是 planner 产出补充任务时的正常形态，判为非法会让实现者
+        如实上报被硬门拒绝（2026-09-15 事故，见 run_task_track 模块 docstring）。
+        """
+        from core.run_task_track import is_task_id
         bad = []
         for it in items:
-            if not isinstance(it, str) or not re.fullmatch(r"\d+\.\d+", it):
+            if not is_task_id(it):
                 bad.append(it)
         return bad
 
@@ -4553,7 +4560,7 @@ class AgentRunner:
         bad = self._invalid_completed_ids(raw_ct)
         if bad:
             return (
-                f"exit 0 但结果文件 completed_tasks 含非数字 id"
+                f"exit 0 但结果文件 completed_tasks 含非法任务 id"
                 f"（{agent_type} 产物硬门）: {result_path} {self._format_gap_list(bad)}"
             )
         ct_set = set(raw_ct)
@@ -4591,7 +4598,7 @@ class AgentRunner:
         bad = self._invalid_completed_ids(raw_ct) + self._invalid_completed_ids(raw_un)
         if bad:
             return (
-                f"exit 0 但结果文件 partial 清单含非数字 id"
+                f"exit 0 但结果文件 partial 清单含非法任务 id"
                 f"（{agent_type} 产物硬门）: {result_path} {self._format_gap_list(bad)}"
             )
         ct_set, un_set = set(raw_ct), set(raw_un)

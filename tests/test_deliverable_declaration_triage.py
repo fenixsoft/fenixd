@@ -909,5 +909,63 @@ class TestTriageChainSelfCheck(_AdjudicationFixture):
                          ("s1", "verifier"))
 
 
+class TestSoftenedDeclarationIsCommitted(_AdjudicationFixture):
+    """软化/修正声明段后 MUST 立即提交主树 tasks.md（2026-09-15 merge-back 死锁回归）。
+
+    事故链：dispute judge 把 ``core/dashboard/data/_legacy.py`` 软化为 reference
+    并改写主树 tasks.md，但软化内容留在工作区未提交；merge-back 的 autostash
+    显式排除 ``spec/changes`` → 该文件以 dirty 状态进 merge，而实现分支同样改了
+    该文件 → git 拒绝合并 → 合并永久失败、spec 被 merge 指纹熔断冻结。
+    """
+
+    tasks_with_legacy = (
+        "# Tasks\n\n## Deliverables\n\n```yaml\n"
+        "- path: .fenix/config.yaml\n  kind: new\n```\n"
+        "## 1. 分组\n\n- [ ] 1.1 写 `.fenix/config.yaml`\n"
+    )
+
+    def test_reference_soften_commits_tasks_md(self):
+        """软化执行点调用 _git_commit 固化主树 tasks.md（路径与提交信息可核查）。"""
+        self.write_spec_dir(self.tasks_with_legacy)
+        self.write_judge_result([
+            {"element": ".fenix/config.yaml", "verdict": "reference",
+             "actual_path": None,
+             "reasoning": "运行时写入目标（被管项目配置）", "confidence": "high"},
+        ])
+        self.stub_judge_run()
+        self.wm.file_exists_on_branch.return_value = False
+        self.engine._git_commit = mock.MagicMock(return_value=(True, ""))
+
+        outcome = self.engine._adjudicate_deliverable_missing(
+            "s1", self.make_result(), None, [".fenix/config.yaml"])
+
+        self.assertEqual(outcome["action"], "proceed")
+        calls = [c for c in self.engine._git_commit.call_args_list
+                 if c.args and c.args[0] == ["spec/changes/s1/tasks.md"]]
+        self.assertTrue(calls, "软化后必须以 tasks.md 为路径调用 _git_commit")
+        self.assertIn("s1", calls[0].args[1])
+
+    def test_commit_failure_does_not_break_adjudication(self):
+        """提交失败仅 WARNING：软化内容仍在工作区，裁决流程不中断。"""
+        self.write_spec_dir(self.tasks_with_legacy)
+        self.write_judge_result([
+            {"element": ".fenix/config.yaml", "verdict": "reference",
+             "actual_path": None,
+             "reasoning": "运行时写入目标", "confidence": "high"},
+        ])
+        self.stub_judge_run()
+        self.wm.file_exists_on_branch.return_value = False
+        self.engine._git_commit = mock.MagicMock(
+            return_value=(False, "fatal: not a git repository"))
+
+        outcome = self.engine._adjudicate_deliverable_missing(
+            "s1", self.make_result(), None, [".fenix/config.yaml"])
+
+        self.assertEqual(outcome["action"], "proceed")
+        tasks_text = (self.project_root / "spec" / "changes" / "s1"
+                      / "tasks.md").read_text(encoding="utf-8")
+        self.assertIn("kind: reference", tasks_text)  # 软化内容未丢失
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

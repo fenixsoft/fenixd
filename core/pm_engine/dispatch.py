@@ -1740,6 +1740,45 @@ class Dispatcher:
             return None
         return data
 
+    def _commit_softened_declaration(self, spec_name: str, element: str) -> None:
+        """软化/修正声明段后立即提交 tasks.md（fix-merge-back-deadlock 同类修复）。
+
+        ``soften_declared_kind`` / ``replace_declared_path`` 直接改写主树
+        ``spec/changes/<spec>/tasks.md`` 但不提交，使 merge-back 陷入死锁：
+        ``ensure_clean_tree`` 的 autostash 显式 ``:(exclude)spec/changes``
+        （fix-comment：spec 文件是框架运行必需，不得被卷走），于是该文件永远
+        以 dirty 状态进 merge，而实现分支同样改了该文件 → git 拒绝
+        「Your local changes to the following files would be overwritten by
+        merge」→ 合并永久失败（2026-09-15 事故：dispute judge 软化
+        ``data/_legacy.py → reference`` 后 merge-back 失败，spec 被 merge
+        指纹熔断冻结 blocked）。
+
+        提交动作与软化写盘同事务语义：软化已写盘、此处立即固化，主树恢复
+        干净 → 下一次 merge-back 的 autostash 不再命中该文件。提交失败仅
+        WARNING（软化内容仍在工作区，不静默丢失；下一次派发前的
+        ``ensure_spec_committed`` 会兜底提交）。
+        """
+        rel = f"spec/changes/{spec_name}/tasks.md"
+        try:
+            ok, err = self._pm._git_commit(
+                [rel], f"[fenix] {spec_name}: 声明段修正（{element}）")
+            if ok:
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"声明段软化已提交 '{spec_name}': {element}",
+                )
+            else:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"声明段软化提交失败 '{spec_name}'（{element}，非阻塞，"
+                    f"派发前 ensure_spec_committed 兜底）: {err}",
+                )
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"声明段软化提交异常 '{spec_name}'（{element}，非阻塞）: {e}",
+            )
+
     def _preclassify_missing(self, spec_name: str, result,
                              missing: list) -> dict:
         """守卫缺件确定性预分类（add-declaration-premechanize D4，Task 4.1-4.3）。
@@ -1815,6 +1854,7 @@ class Dispatcher:
                 from core.deliverables import soften_declared_kind
                 diff = soften_declared_kind(spec_dir, m)
                 diff_by_element[m] = diff
+                self._commit_softened_declaration(spec_name, m)
             except Exception as exc:
                 # 单条软化异常：留在 remaining 清单（异常不阻塞其余）
                 remaining.append(m)
@@ -2015,6 +2055,8 @@ class Dispatcher:
                         f"dispute judge 裁决 typo '{spec_name}': "
                         f"{m} → {actual_path}（声明段已修正）",
                     )
+                    self._commit_softened_declaration(
+                        spec_name, f"{m} → {actual_path}（typo 修正）")
                 elif verdict == "reference" and kind_m == "delete":
                     # 4.3 防洗白：delete 条目的 reference 归宿被机械拒绝——
                     # 改写为 unclear（转人工），不软化声明段（软化 = 删除要求
@@ -2047,6 +2089,7 @@ class Dispatcher:
                         f"dispute judge 裁决 reference '{spec_name}': "
                         f"{m} 已软化为 reference（转软校验）",
                     )
+                    self._commit_softened_declaration(spec_name, m)
             except Exception as e:
                 # 声明段修正失败（并发改写/格式漂移）→ 该条等价 unclear（D6）
                 verdict_by_element[m] = {"verdict": "unclear"}

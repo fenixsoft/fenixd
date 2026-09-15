@@ -123,17 +123,23 @@ def reflow_spec(project_root, spec_name: str, *, state_machine, logger,
 
 
 def _extract_gap_tasks(error: str) -> list:
-    """从 task-gap: 错误文案提取缺口任务 id 清单（"、"/"，"/空白 分隔的 x.y 形 id）。
+    """从 task-gap: 错误文案提取缺口任务 id 清单（"、"/"，"/空白 分隔的任务 id）。
 
     提取失败/无 id → 空清单（留痕退化为引用 error 原文，不伪造）。
+    任务 id 合法性判定与 parse_tasks_md 同源（core.run_task_track.is_task_id）：
+    形如 ``1.1`` / ``1.2b``（字母后缀为合法补充任务形态）。
     """
     import re
+
+    from core.run_task_track import is_task_id
 
     if not error:
         return []
     ids = []
     for part in re.split(r"[、,，;；:：\n]+", error[len(TASK_GAP_ERROR_PREFIX):]):
         part = part.strip()
-        if re.fullmatch(r"\d+\.\d+", part):
+        # 容错：文案里的 id 可能带尾部标点（如 "1.2b。"），剥离后判定
+        part = part.rstrip("。.；;")
+        if is_task_id(part):
             ids.append(part)
     return ids

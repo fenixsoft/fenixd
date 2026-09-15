@@ -126,7 +126,8 @@ def parse_tasks(spec_name: str, status: str = "") -> dict:
 
     try:
         for line in tasks_path.read_text(encoding="utf-8").split("\n"):
-            m = re.match(r"^- \[(x| )\] (\d+\.\d+) (.+)$", line)
+            # 任务 id 接受字母后缀（如 1.2b），与 core/run_task_track.py 同源
+            m = re.match(r"^- \[(x| )\] (\d+\.\d+[a-z]?) (.+)$", line)
             if m:
                 total += 1
                 is_done = m.group(1) == "x"

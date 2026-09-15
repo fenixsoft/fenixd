@@ -1009,7 +1009,7 @@ class PMEngine:
     # implementer run 成功后，从 run 产物确定性解析已完成任务集，把主树
     # tasks.md 对应 id 的 `- [ ]` 改成 `- [x]`，不撤销任何既有勾选（只增不减）。
 
-    _TASK_LINE_RE = re.compile(r"^(\s*-\s+)\[(\s|x)\](\s+)(\d+\.\d+)(.*)$")
+    _TASK_LINE_RE = re.compile(r"^(\s*-\s+)\[(\s|x)\](\s+)(\d+\.\d+[a-z]?)(.*)$")
 
     def _sync_task_progress(self, spec_name: str):
         """把已成功完成的任务勾选确定性回写进主树 tasks.md 并 commit。

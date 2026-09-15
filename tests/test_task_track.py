@@ -6,6 +6,7 @@ R3 解析端显式提示：CLI 警告行 + dashboard tasks_note 字段
 附带：存量 spec tasks.md 零误拔回归（spec/changes/ 含 archive 全量枚举）。
 """
 
+import json
 import shutil
 import subprocess
 import sys
@@ -30,6 +31,89 @@ def _mk_change(root: Path, name: str) -> Path:
 def _write_tasks(spec_dir: Path, text: str) -> None:
     spec_dir.mkdir(parents=True, exist_ok=True)
     (spec_dir / "tasks.md").write_text(text, encoding="utf-8")
+
+
+# ── R0 任务 id 语法（字母后缀为正形态）─────────────────────────────────
+
+
+class TestTaskIdSyntax(unittest.TestCase):
+    """任务 id 语法 = ``<组号>.<任务号>[可选小写字母后缀]``。
+
+    2026-09-15 事故回归：只认 ``x.y`` 的解析/判定口径会把 planner 合法产出的
+    ``1.2b`` / ``4.6b`` 判为「非数字 id」——勾选行被正则截断成 ``1.2``，产物
+    硬门又整体拒绝 ``1.2b``，实现者如实上报反被拒（一轮完整成功的交付被误拦，
+    并误标 provider-transient 原地重试烧穿预算）。本组锁定三处同源口径。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.pr = Path(self.tmpdir)
+        self.spec = "demo"
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _tasks(self, text: str):
+        from core.run_task_track import parse_tasks_md
+        _write_tasks(self.pr / "spec" / "changes" / self.spec, text)
+        return parse_tasks_md(self.pr, self.spec)
+
+    def test_suffix_not_truncated_in_ids(self):
+        """字母后缀必须整体纳入 id（不得截断成 1.2）。"""
+        all_ids, checked = self._tasks(
+            "## 1. 阶段\n\n- [x] 1.1 a\n- [x] 1.2b b\n- [ ] 2.1c c\n")
+        self.assertEqual(all_ids, ["1.1", "1.2b", "2.1c"])
+        self.assertEqual(checked, {"1.1", "1.2b"})
+
+    def test_is_task_id_accepts_suffixed(self):
+        """is_task_id 与解析口径同源：接受后缀、拒绝非法形态。"""
+        from core.run_task_track import is_task_id
+        for ok in ("1.1", "1.2b", "4.6b", "12.34z"):
+            self.assertTrue(is_task_id(ok), ok)
+        for bad in ("abc", "1.2b3", "1.2B", "1", "1.2.3", "", None, 12, "1."):
+            self.assertFalse(is_task_id(bad), bad)
+
+    def test_task_create_subject_id_keeps_suffix(self):
+        """run 产物 TaskCreate subject 的 id 提取同样保留字母后缀。"""
+        from core.run_task_track import parse_run_task_done
+        runs = self.pr / ".fenix" / "runs"
+        runs.mkdir(parents=True, exist_ok=True)
+        lines = [
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "TaskCreate",
+                 "input": {"subject": "Task 1.2b: 补 patch 语义锁定测试"}},
+                {"type": "tool_use", "name": "TaskCreate",
+                 "input": {"subject": "Task 4.6b: D8 patch 语义落地"}},
+                {"type": "tool_use", "name": "TaskUpdate",
+                 "input": {"taskId": 1, "status": "completed"}},
+                {"type": "tool_use", "name": "TaskUpdate",
+                 "input": {"taskId": 2, "status": "completed"}},
+            ]}},
+        ]
+        run_file = runs / "impl-demo-1780000000.jsonl"
+        run_file.write_text(
+            "\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n",
+            encoding="utf-8")
+        rd = parse_run_task_done(run_file)
+        self.assertEqual(rd["done_ids"], {"1.2b", "4.6b"})
+
+    def test_task_gap_extraction_keeps_suffix(self):
+        """task-gap 文案的缺口 id 反解保留字母后缀（人工回炉清单不丢条目）。"""
+        from core.pm_engine.task_reflow import _extract_gap_tasks
+        self.assertEqual(
+            _extract_gap_tasks("task-gap:未完成任务：1.2b、4.6、5.1a。"),
+            ["1.2b", "4.6", "5.1a"],
+        )
+
+    def test_writeback_checks_suffixed_lines(self):
+        """任务进度回写按 done_ids 精确对齐时认字母后缀行（不误当无关行）。"""
+        from core.pm_engine.engine import PMEngine
+        self.assertIsNotNone(
+            PMEngine._TASK_LINE_RE.match("- [ ] 1.2b 补测试"),
+            "回写行正则必须匹配字母后缀任务行",
+        )
+        m = PMEngine._TASK_LINE_RE.match("- [ ] 1.2b 补测试")
+        self.assertEqual(m.group(4), "1.2b")
 
 
 # ── R1 写入端格式契约 ──────────────────────────────────────────────────

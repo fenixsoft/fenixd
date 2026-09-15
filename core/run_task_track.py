@@ -7,10 +7,16 @@ parse_run_task_done）下沉到本中性模块，供三处共用：
 - core/agent_runner/runner.py 产物硬门（implementer/fast-track 完成度判据）；
 - core/dashboard/data.py（dashboard 读侧，原处保留再导出，既有调用点零改动）。
 
-口径（D2，必须与现状逐字一致）：逐行匹配 ``^- \[(x| )\] (\d+\.\d+)``，
-x 记已勾选，空格记未勾选；tasks.md 缺失或不含数字任务 → 视为「无缺口概念」，
-判据通过。禁止在本文件之外再造第二套正则——两套正则一旦漂移，会产出
-「硬门放行、门禁拦截」或反之的矛盾结论。
+口径（D2）：逐行匹配 ``^- \[(x| )\] (\d+\.\d+[a-z]?)``，x 记已勾选，
+空格记未勾选；tasks.md 缺失或不含数字任务 → 视为「无缺口概念」，判据通过。
+禁止在本文件之外再造第二套正则——两套正则一旦漂移，会产出「硬门放行、
+门禁拦截」或反之的矛盾结论。
+
+任务 id 语法为 ``<组号>.<任务号>[可选小写字母后缀]``（如 ``1.1``、``1.2b``、
+``4.6b``）。字母后缀用于在既有编号后原地插入补充任务而不重排后续编号——
+planner 实质会产出该形态（本仓 5 个在飞 spec 中 4 个含字母后缀 id），
+只认 ``x.y`` 会把合法任务判为「非数字 id」，使实现者如实上报被硬门拒绝
+（2026-09-15 事故：一轮完整成功的重构交付被误拦 + 误标 provider-transient）。
 """
 
 import json
@@ -19,11 +25,28 @@ from pathlib import Path
 
 # tasks.md 数字任务勾选行的单一正则（D2）。engine._task_completion_blocker
 # 既内联逻辑与本模块共用此映射，禁止两套实现。
-_TASK_CHECKBOX_RE = re.compile(r"^- \[(x| )\] (\d+\.\d+)")
+# 字母后缀（[a-z]?）为任务 id 合法形态，见模块 docstring。
+_TASK_CHECKBOX_RE = re.compile(r"^- \[(x| )\] (\d+\.\d+[a-z]?)")
 
 # run 产物中 TaskCreate subject 内嵌 tasks.md id 的提取正则
-# （自 core/dashboard/data.py 随 parse_run_task_done 一并下沉，语义保持不变）。
-_TASK_ID_RE = re.compile(r"Task\s+#?\s*(\d+\.\d+)")
+# （自 core/dashboard/data.py 随 parse_run_task_done 一并下沉；与勾选行正则
+# 同步接受字母后缀，参数 id 覆盖率比对依赖两处口径一致）。
+_TASK_ID_RE = re.compile(r"Task\s+#?\s*(\d+\.\d+[a-z]?)")
+
+# 任务 id 的**整体**形态（用于「某字符串是不是合法任务 id」的判定点：
+# 产物硬门的 completed_tasks/unfinished 合法性、回写行的 id 提取、task-gap
+# 文案的缺口 id 反解）。与 _TASK_CHECKBOX_RE / _TASK_ID_RE 同源同语法——
+# 三处口径必须一致，否则「解析得出、判定判非法」的互斥结论会再次出现
+# （2026-09-15 事故形态：勾选行正则截断出 "1.2"，整体判定又拒绝 "1.2b"）。
+_TASK_ID_FULL_RE = re.compile(r"\d+\.\d+[a-z]?")
+
+
+def is_task_id(value) -> bool:
+    """value 是否为合法 tasks.md 任务 id（``x.y`` 或 ``x.y<小写字母>``）。
+
+    非字符串（None/数字等）恒 False。判定口径与 parse_tasks_md 同源。
+    """
+    return isinstance(value, str) and _TASK_ID_FULL_RE.fullmatch(value) is not None
 
 # parse_run_task_done 的 memo 缓存：run 文件 O_APPEND 只增，mtime/size 不变即命中。
 # 上限 64 项，超出整体清空，防止 append-only 文件每次追加换键导致无界增长。
@@ -33,11 +56,11 @@ _RUN_TASK_CACHE: dict = {}
 def parse_tasks_md(project_root, spec_name) -> "tuple[list, set]":
     """解析 tasks.md 数字任务的勾选状态（D2 单一实现点，中性模块）。
 
-    逐行匹配 ``^- \[(x| )\] (\d+\.\d+)``：``[x]`` 记已勾选，``[ ]`` 记未勾选。
+    逐行匹配 ``^- \[(x| )\] (\d+\.\d+[a-z]?)``：``[x]`` 记已勾选，``[ ]`` 记未勾选。
 
     Returns:
         (all_ids, checked_ids)：
-        - all_ids: 按文档顺序的全部数字任务 id（形如 "1.1"、"2.3"）；
+        - all_ids: 按文档顺序的全部数字任务 id（形如 "1.1"、"1.2b"）；
         - checked_ids: 已勾选（``- [x]``）的 id 集合。
     文件缺失/不可读/不含任何数字任务 → ([]， set())——「无缺口概念」，
     调用方判据通过（与既有 _task_completion_blocker 语义一致）。

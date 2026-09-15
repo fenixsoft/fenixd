@@ -169,14 +169,43 @@ class TestImplResultGate(unittest.TestCase):
         assert "1.2" in err
 
     def test_success_non_numeric_id_blocked(self):
-        """completed_tasks 含非数字 id → 拦截。"""
+        """completed_tasks 含非法任务 id → 拦截且归因点名该 id。"""
         err = self._gate(
             tasks_text=ALL_DONE_TASKS,
             payload={"status": "success", "spec": self.spec,
                      "completed_tasks": ["1.1", "1.2", "abc"]},
         )
         assert err is not None
-        assert "非数字" in err
+        assert "非法任务 id" in err
+        assert "abc" in err
+
+    def test_success_letter_suffixed_ids_pass(self):
+        """字母后缀任务是合法 id（1.2b/4.6b）→ 放行（2026-09-15 事故回归）。
+
+        任务 id 语法为 ``<组号>.<任务号>[可选小写字母后缀]``；硬门只认 ``x.y``
+        时会把实现者如实上报的 ``1.2b`` 判为「非数字 id」，使一轮完整成功的
+        交付被误拦（并误标 provider-transient 反复原地重试烧穿预算）。
+        """
+        tasks_text = (
+            "## 1. 阶段一\n\n- [x] 1.1 任务一\n- [x] 1.2b 任务一补充\n"
+            "## 2. 阶段二\n\n- [x] 2.1 任务二\n- [x] 2.1a 任务二补充\n"
+        )
+        assert self._gate(
+            tasks_text=tasks_text,
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2b", "2.1", "2.1a"]},
+        ) is None
+
+    def test_partial_letter_suffixed_ids_pass(self):
+        """partial 申报含字母后缀 id（已完成与未完成两侧）→ 放行。"""
+        tasks_text = (
+            "## 1. 阶段一\n\n- [x] 1.1 任务一\n- [ ] 1.2b 任务一补充\n"
+        )
+        assert self._gate(
+            tasks_text=tasks_text,
+            payload={"status": "partial", "spec": self.spec,
+                     "completed_tasks": ["1.1"], "unfinished": ["1.2b"]},
+        ) is None
 
     def test_healthy_success_passes(self):
         """健康轮次：tasks.md 全勾 + completed_tasks 集合相等 → 放行。"""
