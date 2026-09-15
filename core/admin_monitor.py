@@ -11,6 +11,9 @@ daemon 内独立线程周期性读取本地数据（STATE.md、.fenix/runs/ 转�
   - stuck              implementing/testing 超 stuck_threshold_minutes 且无 run 进度
   - merge_streak       _merge_streak 已达熔断阈值仍滞留（merge-back 反复失败）
   - daemon_errors    10 分钟窗口内同指纹 ERROR 复现 ≥2 次且最近两次间隔 ≤5 分钟
+  - orphaned_state    implementing/testing 无活动 run + 无存活子进程 + 无待派发
+                       超 orphaned_state_threshold_minutes（缺省 15 分钟，远短于
+                       stuck 的 ~160 分钟）；与 stuck 在 stuck 阈值处交接（hand-off）
 
 节流（D2）：同 spec 同类信号在 admin.escalation_cooldown_minutes 内只唤起一次，
 依据 .fenix/admin_alerts.json 中的 signal 记录与未处理升级告警。
