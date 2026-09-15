@@ -7,6 +7,12 @@ Covers (evo-run-failure-artifact-first):
 - 2.3 回放 1789368468 场景（402 + approved 产物）→ 不再抛掉结论
 - 1.3 _classify_run_failure infra 指纹识别（402/403/429/quota/budget/余额/
       rate limit → infra；None/空 → content）
+
+注：`_classify_run_failure` 的三分 "artifact"|"infra"|"content" 与 infra 侧
+**不递增 _review_attempts**（改走链路级熔断）由
+evo-run-failure-classification-circuitbreaker 承接并覆盖本 SPEC 的临时二分实现
+（其 tasks 1.3 明示「不递增语义由 run-failure-classification-circuitbreaker
+承接，勿提前实现」）。本文件相应断言已对齐三分签名与熔断语义。
 """
 
 import json
@@ -225,9 +231,8 @@ class TestClassifyRunFailure(unittest.TestCase):
             "Rate Limit reached",              # rate limit（大小写不敏感）
         ]
         for reason in cases:
-            category, fingerprint = mgr._classify_run_failure(reason)
-            self.assertEqual(category, "infra", f"reason={reason!r}")
-            self.assertTrue(fingerprint, f"reason={reason!r} 应有指纹")
+            self.assertEqual(mgr._classify_run_failure(reason), "infra",
+                             f"reason={reason!r}")
 
     def test_content_fingerprints(self):
         """content：无 infra 指纹 / None / 空串 → content。"""
@@ -235,24 +240,33 @@ class TestClassifyRunFailure(unittest.TestCase):
         cases = [None, "", "结果文件缺失", "评审 run 执行失败: 转录截断",
                  "写文件失败: /tmp/x"]
         for reason in cases:
-            category, _ = mgr._classify_run_failure(reason)
-            self.assertEqual(category, "content", f"reason={reason!r}")
+            self.assertEqual(mgr._classify_run_failure(reason), "content",
+                             f"reason={reason!r}")
 
-    def test_infra_suffix_written_to_error_and_evidence(self):
-        """1.3：infra 标记以 [infra: <指纹>] 后缀透出，spec-review-incomplete: 前缀保留。"""
+    def test_infra_failure_not_increment_and_breaker(self):
+        """1.3 覆盖：infra 失败透出 spec-review-incomplete: 前缀，
+        且按 run-failure-classification-circuitbreaker 语义不递增 _review_attempts、
+        改走链路级熔断计数（error 留 infra 归因文本）。"""
         sm = _mk_project(self.tmpdir)
         sm.update_spec("spec", {"reviewer_run": None})
         runner = _FailingRunner(self.tmpdir, error="API Error: 402 余额不足")
-        mgr = SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        pm = MagicMock()
+        from core.pm_engine.infra_breaker import InfraCircuitBreaker
+        pm.infra_breaker = InfraCircuitBreaker(
+            self.tmpdir,
+            {"admin": {"run_infra_breaker": {"threshold": 3, "cooldown_minutes": 30}}})
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, pm, {}, MagicMock())
         self.assertFalse(mgr.dispatch_review("spec"))
         entry = sm.read_one("spec")
         err = str(entry.get("error", ""))
         self.assertTrue(err.startswith("spec-review-incomplete:"), err)
-        self.assertIn("[infra: ", err)
+        self.assertIn("infra", err)
         self.assertIn("402", err)
+        self.assertEqual(int(entry.get("_review_attempts", 0)), 0)
+        self.assertEqual(pm.infra_breaker.get_state("spec-review")["count"], 1)
 
-    def test_content_failure_no_infra_suffix(self):
-        """content 失败：error 无 [infra: ...] 后缀，前缀保留。"""
+    def test_content_failure_increments_without_infra_marker(self):
+        """content 失败：error 无 infra 归因文本，前缀保留、attempt 递增。"""
         sm = _mk_project(self.tmpdir)
         sm.update_spec("spec", {"reviewer_run": None})
         runner = _FailingRunner(self.tmpdir, error="结果文件缺失")
@@ -261,22 +275,25 @@ class TestClassifyRunFailure(unittest.TestCase):
         entry = sm.read_one("spec")
         err = str(entry.get("error", ""))
         self.assertTrue(err.startswith("spec-review-incomplete:"), err)
-        self.assertNotIn("[infra:", err)
+        self.assertNotIn("infra", err)
+        self.assertEqual(int(entry.get("_review_attempts", 0)), 1)
 
-    def test_infra_freeze_evidence_includes_fingerprint(self):
-        """infra 达上限冻结：evidence 透出 infra_fingerprint。"""
+    def test_infra_failure_does_not_freeze_at_attempt_limit(self):
+        """infra 失败即使 _review_attempts 已达上限也不冻结转人工
+        （infra 属链路级问题，走熔断冷却自动恢复而非 freeze）。"""
         sm = _mk_project(self.tmpdir)
         sm.update_spec("spec", {"reviewer_run": None, "_review_attempts": MAX_REVIEW_ATTEMPTS})
         runner = _FailingRunner(self.tmpdir, error="API Error: 402 余额不足")
-        mgr = SpecReviewManager(self.tmpdir, sm, runner, MagicMock(), {}, MagicMock())
+        pm = MagicMock()
+        from core.pm_engine.infra_breaker import InfraCircuitBreaker
+        pm.infra_breaker = InfraCircuitBreaker(self.tmpdir, {"admin": {}})
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, pm, {}, MagicMock())
         with unittest.mock.patch.object(mgr.state_machine, "freeze_for_human") as freeze:
             mgr._handle_review_failure("spec", "API Error: 402 余额不足")
-        freeze.assert_called_once()
-        err = str(freeze.call_args.kwargs["error"])
-        self.assertIn("[infra: ", err)
-        self.assertIn("402", err)
-        evidence = freeze.call_args.kwargs["evidence"]
-        self.assertIn("infra_fingerprint=", evidence)
+        freeze.assert_not_called()
+        entry = sm.read_one("spec")
+        self.assertIsNone(entry.get("reviewer_run"))
+        self.assertEqual(int(entry.get("_review_attempts", 0)), MAX_REVIEW_ATTEMPTS)
 
 
 if __name__ == "__main__":

@@ -29,6 +29,20 @@ MAX_REVIEW_ATTEMPTS = 3
 # 写入边界校验：SPEC 目录相对路径前缀
 SPEC_CHANGES_PREFIX = "spec/changes/"
 
+# ── infra 失败指纹（evo-run-failure-classification-circuitbreaker D1）──────
+# 评审 API 批量失败（403 网关拒绝 / 402 余额不足 / 429 限流 / quota/budget 耗尽 /
+# rate limit / provider 侧熔断信号 / CLI 进程级崩溃）同属 infra——链路级问题，
+# 非 spec 内容问题。指纹匹配大小写不敏感；"Exit code: 1" 不得一律判 infra
+# （评审器内容失败同样 exit 1），仅当退出码非 0/1（进程级崩溃）才归 infra。
+_INFRA_FINGERPRINTS = (
+    "403", "402", "429",
+    "quota", "budget", "余额", "insufficient balance", "rate limit",
+    "provider circuit open", "provider chain exhausted",
+    "model_chain_preflight_failed",
+)
+# CLI 进程级崩溃：error 含 "Exit code: <N>" 且 N 非 0/1
+_CLI_EXIT_CODE_RE = re.compile(r"Exit code:\s*(-?\d+)")
+
 
 class SpecReviewManager:
     """评审管理器：负责评审 run 的派发、结果消费、边界校验、重试与恢复。"""
@@ -60,6 +74,21 @@ class SpecReviewManager:
 
         Returns: True 表示评审 run 已执行收工；False 表示被拒或 run 执行失败。
         """
+        # 链路级熔断短路（evo-run-failure-classification-circuitbreaker D2）：
+        # spec-review 链路熔断窗口内直接返回不派发；冷却到期自动恢复重试。
+        breaker = getattr(self.pm_engine, "infra_breaker", None)
+        if breaker is not None:
+            cond = breaker.condition("spec-review")
+            if cond == "broken":
+                remaining = breaker.cooldown_remaining("spec-review")
+                self.logger.info(
+                    "spec_review",
+                    f"评审派发熔断短路: {spec_name}，冷却剩余 {remaining}s")
+                return False
+            if cond == "recovered":
+                # 冷却到期自动恢复：落恢复 SIGNAL 记录（D3）
+                self.pm_engine._emit_infra_breaker_event(
+                    "recovered", spec_name, "", breaker.get_state("spec-review"))
         # 防重派：锚点在 run 启动前写入，故「在飞」与「已落锚点待消费」都表现为非空。
         entry = self.state_machine.read_one(spec_name)
         if not entry:
@@ -539,53 +568,101 @@ class SpecReviewManager:
         except (OSError, AttributeError):
             return (False, None)
 
-    def _classify_run_failure(self, reason: str | None) -> Tuple[str, str]:
-        """分类 run 失败原因：infra（基础设施）或 content（内容质量）。
+    def _classify_run_failure(self, reason: str | None,
+                              spec_name: str | None = None) -> str:
+        """三类失败分类（evo-run-failure-classification-circuitbreaker D1）。
 
-        匹配以下 infra 指纹（大小写不敏感）：
-        - HTTP 状态码：402, 403, 429
-        - 配额/预算相关：quota, budget, 余额, insufficient balance, rate limit
+        扩展 evo-run-failure-artifact-first 的同名 `_classify_run_failure`（沿用同名，
+        勿另开 `_classify_failure`）为三分 "artifact" | "infra" | "content"：
 
-        Returns:
-            (category, fingerprint)：
-            - category: "infra" 或 "content"
-            - fingerprint: 匹配到的 infra 指纹文本（infra 分类时），或空串
+        - artifact：产物已落盘合法（调用 `_artifact_landed_valid`）；优先级最高；
+        - infra：指纹匹配（403/402/429/quota/budget/余额/insufficient balance/
+          rate limit / 既有 provider 熔断信号 "provider circuit open" /
+          "provider chain exhausted"——runner.py:2458/2473，供侧熔断同属 infra）
+          或 CLI 进程级崩溃（error 含 "Exit code: N" 且 N 非 0/1——"Exit code: 1"
+          不得一律判 infra，评审器内容失败同样 exit 1）；或 probe 标记
+          model_chain_preflight_failed；
+        - content：其余（含空白轮次）。
 
-        设计依据（D2 infra 识别与标记）：本 SPEC 阶段 infra 仍按既有上限递增
-        _review_attempts（不递增语义由 run-failure-classification-circuitbreaker
-        承接，勿提前实现）。
+        Args:
+            reason: run 失败原因文本（可为 None）。
+            spec_name: 可选；给出时前置校验产物是否已合法落盘，命中则判 artifact。
+
+        Returns: "artifact" | "infra" | "content"。
         """
-        if not reason:
-            return ("content", "")
-        # 402/403/429 作为独立词匹配；其余为子串匹配
-        patterns = [
-            r"\b402\b", r"\b403\b", r"\b429\b",
-            r"quota", r"budget", r"余额",
-            r"insufficient\s*balance", r"rate\s*limit",
-        ]
-        lower = reason.lower()
-        for pat in patterns:
-            if re.search(pat, lower):
-                m = re.search(pat, lower)
-                return ("infra", m.group(0))
-        return ("content", "")
+        # artifact 分支优先级最高：产物已落盘合法 → 判别失败，直接消费不重试。
+        if spec_name:
+            try:
+                landed = self._artifact_landed_valid(spec_name)
+            except (AttributeError, TypeError, ValueError):
+                landed = False
+            # _artifact_landed_valid 返回 (bool, data) 元组；兼容测试替身返回裸 bool。
+            artifact_ok = landed[0] if isinstance(landed, tuple) else bool(landed)
+            if artifact_ok:
+                return "artifact"
+        low = (reason or "").lower()
+        for fp in _INFRA_FINGERPRINTS:
+            if fp in low:
+                return "infra"
+        # CLI 进程级崩溃：exit code 非 0/1（0 正常 / 1 内容失败）
+        m = _CLI_EXIT_CODE_RE.search(reason or "")
+        if m:
+            try:
+                code = int(m.group(1))
+            except ValueError:
+                code = None
+            if code not in (None, 0, 1):
+                return "infra"
+        return "content"
 
     def _handle_review_failure(self, spec_name: str, reason: str):
-        """处理评审失败：递增尝试次数，达到上限转 blocked。
+        """处理评审失败：按失败分类落点（D1/D2）。
 
-        集成 infra 分类标记（D2）：对 reason 进行 infra 指纹识别，分类结果以
-        ``[infra: <指纹>]`` 后缀写入 error 上下文与告警 evidence，提示上层走
-        infra 处置；error 保留 ``spec-review-incomplete:`` 前缀不变（复用
-        re_review 的 startswith 契约）。
+        - artifact：产物已落盘合法 → 直接消费（不重试，run-failure-artifact-first
+          承接；`_artifact_landed_valid` 缺失时回退 content）；
+        - infra：熔断计数 + 升级告警；清 reviewer_run、**不递增 _review_attempts**
+          （熔断前与冷却期均不计入——infra 属链路级问题而非 spec 内容问题；若递增，
+          第 3 次 infra 会同时触 MAX_REVIEW_ATTEMPTS=3 freeze 破坏「冷却后自动
+          恢复」；若不清锚点，冷却到期后 dispatch_review 见 reviewer_run 非空拒派
+          （spec_review.py:67-69），spec 永久卡 reviewing）；
+        - content：维持既有重试语义（递增 _review_attempts，达上限转冻结转人工）。
+
+        error 保留 ``spec-review-incomplete:`` 前缀不变（复用 re_review 的
+        startswith 契约）。
         """
+        failure_type = self._classify_run_failure(reason, spec_name)
+
+        if failure_type == "artifact":
+            # 判别失败：产物已落盘合法 → 直接消费收口，不重试。
+            self.logger.info(
+                "spec_review",
+                f"判别失败（产物已落盘）→ 直接消费: {spec_name}")
+            self.consume_review_result(spec_name)
+            return
+
+        if failure_type == "infra":
+            # infra 失败：熔断计数 + 升级告警（触发熔断时恰好落一条 critical）。
+            breaker = getattr(self.pm_engine, "infra_breaker", None)
+            if breaker is not None:
+                triggered = breaker.record_failure("spec-review")
+                if triggered:
+                    self.pm_engine._emit_infra_breaker_event(
+                        "triggered", spec_name, reason,
+                        breaker.get_state("spec-review"))
+            # 清 reviewer_run、不递增 _review_attempts（保持原值）
+            self.state_machine.update_spec(spec_name, {
+                "reviewer_run": None,
+                "error": f"spec-review-incomplete: infra failure: {reason}",
+            })
+            self.logger.warning(
+                "spec_review",
+                f"评审 infra 失败（熔断计数，不递增尝试）: {spec_name}: {reason}")
+            return
+
+        # ── content 分支：既有重试语义 ──
         entry = self.state_machine.read_one(spec_name)
         if not entry:
             return
-
-        # infra 分类（D2）：识别 402/403/429/quota/budget 等基础设施失败指纹
-        category, fingerprint = self._classify_run_failure(reason)
-        infra_suffix = f" [infra: {fingerprint}]" if category == "infra" else ""
-
         try:
             attempts = int(entry.get("_review_attempts", 0) or 0)
         except (TypeError, ValueError):
@@ -595,14 +672,9 @@ class SpecReviewManager:
             self.state_machine.update_spec(spec_name, {
                 "reviewer_run": None,
                 "_review_attempts": attempts + 1,
-                "error": f"spec-review-incomplete: {reason}{infra_suffix}",
+                "error": f"spec-review-incomplete: {reason}",
             })
             self.logger.info("spec_review", f"评审失败重试: {spec_name} attempt={attempts+1}")
-            if category == "infra":
-                self.logger.warning(
-                    "spec_review",
-                    f"评审失败归因 infra（{fingerprint}）: {spec_name}"
-                )
         else:
             # 达上限转冻结转人工（fix-blocked-freeze-classification 2.2）：
             # admin 对「评审器连续失败」无操作杠杆（模型链/配置问题），
@@ -611,11 +683,8 @@ class SpecReviewManager:
             r_id = entry.get("reviewer_run")
             error_msg = (
                 f"{FREEZE_ERROR_PREFIX}原状态 reviewing · "
-                f"spec-review-incomplete: {reason}{infra_suffix}"
+                f"spec-review-incomplete: {reason}"
             )
-            evidence_detail = f"reason={reason}"
-            if category == "infra":
-                evidence_detail += f"; infra_fingerprint={fingerprint}"
             self.state_machine.freeze_for_human(
                 spec_name,
                 error=error_msg,
@@ -626,7 +695,7 @@ class SpecReviewManager:
                     f"尝试上限（{MAX_REVIEW_ATTEMPTS}），需人工排查"
                 ),
                 evidence=(
-                    f"spec={spec_name}; run_id={r_id or '无'}; {evidence_detail}"
+                    f"spec={spec_name}; run_id={r_id or '无'}; reason={reason}"
                 ),
                 recommended_action=(
                     "人工排查评审链路根因（模型链/配置/结果硬门/写入边界）；"
@@ -637,11 +706,6 @@ class SpecReviewManager:
                 extra_updates={"reviewer_run": None, "_review_attempts": 0},
             )
             self.logger.warning("spec_review", f"评审失败达上限: {spec_name}")
-            if category == "infra":
-                self.logger.warning(
-                    "spec_review",
-                    f"评审失败归因 infra（{fingerprint}）且达到上限: {spec_name}"
-                )
 
     # ── 人工恢复入口 ────────────────────────────────────────────
 

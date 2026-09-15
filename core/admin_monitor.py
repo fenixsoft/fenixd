@@ -179,6 +179,10 @@ SIGNAL_SEVERITY = {
     # 路径把 spec 留在运行态却没人驱动（本 SPEC 事故悬置 1h12m 正是此类），
     # 分钟级可发现、早于 stuck（160 分钟）。
     "orphaned_state": "major",
+    # evo-run-failure-classification-circuitbreaker D3：评审链路连续 infra 失败
+    # （403/402/429/quota/budget/余额/rate limit/provider 熔断/CLI 进程级崩溃）
+    # 触发链路熔断——停止派发 + 冷却，critical 级（批量失败 = 全链路瘫痪窗口）。
+    "run_infra_failure": "critical",
     # admin-dispatch-failure-escalation D1：Administrator 派发期编程错误——
     # 提示词构造/序列化/参数错误（TypeError/AttributeError/NameError/
     # ValueError）是框架代码缺陷（2026-09-14 20:26 stash_pop_conflict dict
@@ -220,6 +224,11 @@ SIGNAL_RECOMMENDATION = {
     # （testing→verifier 重验入队 / implementing→ready 重实现），无需手动
     # reset spec 状态。
     "orphaned_state": "状态无驱动（implementing/testing 无活动 run/无存活子进程/无待派发）：Administrator 核查驱动链路（派发/recovery 是否空转）并确认是否人工干预；处置完成写 result 后框架自动走复位直通道（testing→verifier 重验入队；implementing→ready 重实现），无需手动 reset spec 状态",
+    # evo-run-failure-classification-circuitbreaker D3：评审链路 infra 熔断处置指引。
+    # 熔断是链路级自动保护（停止派发 + 冷却 + 冷却后自动恢复），Administrator 对
+    # provider 配额/余额无操作杠杆，不唤起（design D3）；本表仅登记严重度/建议供
+    # 审计与 Dashboard 展示。
+    "run_infra_failure": "spec-review 链路连续 infra 失败触发熔断（403/402/429/quota/budget/余额/rate limit/provider 熔断/CLI 进程级崩溃）：冷却（默认 30 分钟）到期自动恢复重试；若反复熔断请检查 provider 配额/余额、模型链配置与 CLI 环境。Administrator 无操作杠杆，本信号不唤起",
     # admin-dispatch-failure-escalation D1：派发期编程错误处置指引——沿用
     # add-control-plane-silent-failure-guards 3.3 的文案模式：代码缺陷须
     # 工程侧定位、Administrator 无法修复、勿派子 fix 反复重跑。
