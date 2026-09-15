@@ -3950,6 +3950,8 @@ _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 "admin.merge_breaker_threshold", "admin.shutdown_drain_seconds",
                 # add-bug-repair-mode-config：bug-found 修复方式（inplace/derive）
                 "admin.bug_repair_mode",
+                # stuck-signal-hygiene D4：stuck 处置后静默期（分钟）
+                "admin.stuck_silence_minutes",
                 # 验证契约键（verify.*：静态服务范围 / worktree 依赖供给模式）
                 "verify.static_scope", "verify.deps_mode",
                 # add-planner-efficiency：planner 生成节流上限
@@ -4039,7 +4041,7 @@ def _managed_key_sources(raw: dict) -> dict:
     if isinstance(admin_raw, dict):
         for _k in ("enabled", "interval_minutes", "escalation_cooldown_minutes",
                    "merge_breaker_threshold", "shutdown_drain_seconds",
-                   "bug_repair_mode"):
+                   "bug_repair_mode", "stuck_silence_minutes"):
             if _k in admin_raw:
                 sources[f"admin.{_k}"] = "project"
     # add-spec-hooks：hooks 段显式定义 → project
@@ -4075,6 +4077,9 @@ _ADMIN_DEFAULTS = {
     "escalation_cooldown_minutes": 60,
     "shutdown_drain_seconds": 1800,
     "bug_repair_mode": "inplace",
+    # stuck-signal-hygiene D4：stuck 处置后静默期（分钟，缺省 120，
+    # 与 ConfigLoader.get_admin_config 缺省一致）
+    "stuck_silence_minutes": 120,
 }
 
 
@@ -4559,7 +4564,7 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["admin"] = {}
         for ak in ("enabled", "interval_minutes", "escalation_cooldown_minutes",
                    "merge_breaker_threshold", "shutdown_drain_seconds",
-                   "bug_repair_mode"):
+                   "bug_repair_mode", "stuck_silence_minutes"):
             if ak in patch["admin"] and patch["admin"][ak] is not None:
                 merged["admin"][ak] = patch["admin"][ak]
     # description 分支：patch 顶层 description（str）写入 merged["project"]["description"]
@@ -4701,6 +4706,15 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             if not isinstance(ec, (int, float)) or isinstance(ec, bool) or ec < 0:
                 return fail(
                     f"admin.escalation_cooldown_minutes must be a non-negative number: {ec!r}"
+                )
+        # stuck-signal-hygiene D4：stuck 处置后静默期——非负数值（同
+        # escalation_cooldown_minutes；0 = 不静默），非法值直接拒绝。
+        if "stuck_silence_minutes" in adm \
+                and adm["stuck_silence_minutes"] is not None:
+            ssm = adm["stuck_silence_minutes"]
+            if not isinstance(ssm, (int, float)) or isinstance(ssm, bool) or ssm < 0:
+                return fail(
+                    f"admin.stuck_silence_minutes must be a non-negative number: {ssm!r}"
                 )
         if "merge_breaker_threshold" in adm \
                 and adm["merge_breaker_threshold"] is not None:
@@ -4993,6 +5007,8 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
              and not isinstance(v, bool) and v >= 1),
             ("shutdown_drain_seconds", lambda v: isinstance(v, int)
              and not isinstance(v, bool) and v >= 0),
+            ("stuck_silence_minutes", lambda v: isinstance(v, (int, float))
+             and not isinstance(v, bool) and v >= 0),
         ):
             if _k in admin_m and admin_m[_k] is not None and not _rule(admin_m[_k]):
                 raise ValueError(f"admin.{_k} 非法：{admin_m[_k]!r}（保存被拒绝，请修正后重试）")
@@ -5071,7 +5087,7 @@ _SYNC_PAGE_KEYS = {
     "system": {
         "admin": ["enabled", "interval_minutes", "escalation_cooldown_minutes",
                   "merge_breaker_threshold", "shutdown_drain_seconds",
-                  "bug_repair_mode"],
+                  "bug_repair_mode", "stuck_silence_minutes"],
         "agents": ["transient_backoff_schedule", "transient_redispatch_delay_seconds",
                    "transient_break_threshold", "transient_break_window_seconds",
                    "transient_break_cooldown_seconds"],

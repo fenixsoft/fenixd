@@ -907,11 +907,18 @@ class TestSignalConsolidation:
         assert records[0]["last_seen"] >= last_seen_1       # 同状态续报仅刷 last_seen
 
     def test_state_change_creates_new_record(self, tmp_path):
-        """spec 状态（error 字段并入 status_hash）变化 → 新建记录。"""
+        """spec 状态（error 字段并入 status_hash）变化 → 新建记录。
+
+        显式钉 stuck_silence_minutes=0 禁用静默：第 1 轮处置 result=resolved
+        会触发 D3 静默期（默认 120min），第 2 轮 stuck 信号被抑制；本测试
+        目标是验证状态变更时 status_hash 不同 → 新记录，故禁用静默。
+        """
         runner = FakeRunner()
         proot, mon = make_monitor(tmp_path, {
             "spec-a": {"status": "implementing", "updated": iso_ago(200)},
-        }, runner=runner, config={"admin": {"escalation_cooldown_minutes": 15}})
+        }, runner=runner,
+           config={"admin": {"escalation_cooldown_minutes": 15,
+                              "stuck_silence_minutes": 0}})
         mon.run_once()
         # error 变化改变 status_hash（stuck 检测不依赖 error 字段，仍会触发）
         mon.state_machine._specs["spec-a"]["error"] = "changed root cause"
