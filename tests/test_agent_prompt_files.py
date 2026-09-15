@@ -64,7 +64,8 @@ class TestFileLoadAndPlaceholders:
         # 占位符已替换：无残留花括号占位符 token
         for token in ("{spec_name}", "{spec_dir}", "{scenarios_path}",
                       "{result_path}", "{report_path}", "{progress_path}",
-                      "{sig_type}", "{sig_spec}", "{disp_path}", "{dash_script}"):
+                      "{sig_type}", "{sig_spec}", "{disp_path}", "{dash_script}",
+                      "{prev_review_rejection}"):
             assert token not in prompt, f"{agent_type} 残留占位符 {token}"
         # 该文件引用的占位符替换为该项目实际路径
         vp = proot / ".fenix" / "verify-progress" / "demo"

@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.state_machine import StateMachine
-from core.pm_engine.spec_review import SpecReviewManager, MAX_REVIEW_ATTEMPTS
+from core.pm_engine.spec_review import SpecReviewManager, MAX_REVIEW_ATTEMPTS, MAX_REJECT_REDO
 
 
 def _mk_project(tmpdir: Path, spec_name="spec"):
@@ -91,12 +91,16 @@ class TestConsumeReviewResult(unittest.TestCase):
         self.assertEqual(sm.read_one("spec")["status"], "ready")
 
     def test_rejected_goes_blocked_with_prefix(self):
+        # 2026-09-15 评审误判事故：首次 rejected 走「自动复评」（→ reviewing），
+        # 仅当连续达 MAX_REJECT_REDO 次仍 rejected 才冻结转人工。故此处预置
+        # 计数到上限前一步，使本次否决为「达上限」的那一次，可直接断言冻结语义。
+        mgr, sm, engine = self._manager()
+        sm.update_spec("spec", {"_review_rejections": MAX_REJECT_REDO - 1})
         _write_result(self.tmpdir, "spec", {"status": "rejected",
                                             "findings": [{"severity": "blocking",
                                                           "aspect": "hole",
                                                           "detail": "缺关键路径",
                                                           "evidence": "proposal.md"}]})
-        mgr, sm, engine = self._manager()
         mgr.consume_review_result("spec")
         entry = sm.read_one("spec")
         self.assertEqual(entry["status"], "blocked")
@@ -107,6 +111,42 @@ class TestConsumeReviewResult(unittest.TestCase):
         err = str(entry.get("error", ""))
         self.assertIn("spec-review-rejected:", err)
         self.assertIn("原状态 reviewing", err)
+
+    def test_first_rejection_triggers_redo_not_freeze(self):
+        """首次 rejected → 不冻结，回 reviewing 自动复评（防误判转人工）。
+
+        2026-09-15 评审误判事故：`blocking` 由 LLM 自分类，存在把「文档内部
+        矛盾/遗漏」误判为「方向不成立」的残差。首次否决 MUST NOT 冻结，而应
+        回 reviewing 并记 `_review_rejections=1`，由复评纠正误判。
+        """
+        mgr, sm, engine = self._manager()
+        mgr.dispatch_review = MagicMock(return_value=True)  # 隔离派发副作用
+        _write_result(self.tmpdir, "spec", {"status": "rejected",
+                                            "findings": [{"severity": "blocking",
+                                                          "aspect": "hole",
+                                                          "detail": "阈值不可达",
+                                                          "evidence": "design.md"}]})
+        ok = mgr.consume_review_result("spec")
+        self.assertTrue(ok)
+        entry = sm.read_one("spec")
+        self.assertEqual(entry["status"], "reviewing",
+                         "首次否决不得冻结，须回 reviewing 复评")
+        self.assertIsNot(entry.get("frozen"), True, "首次否决不得置 frozen")
+        self.assertEqual(int(entry.get("_review_rejections", 0)), 1)
+        self.assertIsNone(entry.get("reviewer_run"))
+        err = str(entry.get("error") or "")
+        self.assertIn("spec-review-rejected: 阈值不可达", err,
+                      "否决摘要须留在 error 供复评注入")
+        mgr.dispatch_review.assert_called_once_with("spec")
+
+    def test_rejection_counter_cleared_on_pass(self):
+        """通过（approved/repaired）即清零否决计数，下次评审从零起算。"""
+        mgr, sm, engine = self._manager()
+        sm.update_spec("spec", {"_review_rejections": 1})
+        _write_result(self.tmpdir, "spec", {"status": "approved", "repairs": [],
+                                            "findings": [], "summary": "ok"})
+        mgr.consume_review_result("spec")
+        self.assertEqual(int(sm.read_one("spec").get("_review_rejections", 0)), 0)
 
     def test_gate_failure_retries_not_blocked(self):
         """Gate failure → attempt counted, spec stays reviewing, not blocked yet."""

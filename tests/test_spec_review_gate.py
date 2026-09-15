@@ -24,7 +24,7 @@ from core.state_machine import (
     FROZEN_FIELD, parse_orig_status,
 )
 from core.pm_engine.promotion import should_skip_review
-from core.pm_engine.spec_review import SpecReviewManager, MAX_REVIEW_ATTEMPTS
+from core.pm_engine.spec_review import SpecReviewManager, MAX_REVIEW_ATTEMPTS, MAX_REJECT_REDO
 from core.agent_runner.prompt_builder import spec_review_result_path
 from core.admin_monitor import AdminMonitor
 from core.admin_store import AdminStore, ESCALATION
@@ -244,18 +244,24 @@ class TestReviewFreezeClassification(unittest.TestCase):
     # ── 否决路径 ────────────────────────────────────────────────
 
     def test_rejected_frozen_with_alert(self):
-        """评审否决 → frozen=True + spec-review-rejected 人工升级告警。"""
+        """达上限的评审否决 → frozen=True + spec-review-rejected 人工升级告警。
+
+        2026-09-15 评审误判事故：首次 rejected 走自动复评（→ reviewing），仅当
+        连续达 MAX_REJECT_REDO 次才冻结转人工。故此处预置计数到上一次，使本次
+        否决为「达上限」的那一次。
+        """
+        mgr, sm, _ = self._manager()
+        sm.update_spec("spec", {"_review_rejections": MAX_REJECT_REDO - 1})
         self._write_result("spec", {"status": "rejected",
                                     "findings": [{"severity": "blocking",
                                                   "aspect": "hole",
                                                   "detail": "缺关键路径",
                                                   "evidence": "proposal.md"}]})
-        mgr, sm, _ = self._manager()
         self.assertTrue(mgr.consume_review_result("spec"))
         entry = sm.read_one("spec")
         self.assertEqual(entry["status"], "blocked")
         self.assertIs(entry.get(FROZEN_FIELD), True,
-                      "评审否决必须写 frozen=True（否则 admin_monitor 不豁免）")
+                      "达上限的评审否决必须写 frozen=True（否则 admin_monitor 不豁免）")
         err = str(entry.get("error") or "")
         self.assertIn("原状态 reviewing", err,
                       "冻结 error 必须内嵌「原状态 reviewing」（解冻恢复目标）")
@@ -268,13 +274,31 @@ class TestReviewFreezeClassification(unittest.TestCase):
         self.assertEqual(alerts[0]["kind"], ESCALATION)
         self.assertEqual(alerts[0]["severity"], "major")
         self.assertIn("缺关键路径", alerts[0]["description"])
-        self.assertIn("spec-review-spec-123", alerts[0]["evidence"],
-                      "告警 evidence 必须含评审 run id")
+        self.assertIn("run_id=spec-review-spec-", alerts[0]["evidence"],
+                      "告警 evidence 必须含本轮评审 run id")
+
+    def test_first_rejection_redoes_not_freeze(self):
+        """首次否决 → 不冻结不告警，回 reviewing 记计数（自动复评）。"""
+        mgr, sm, _ = self._manager()
+        mgr.dispatch_review = MagicMock(return_value=True)
+        self._write_result("spec", {"status": "rejected",
+                                    "findings": [{"severity": "blocking",
+                                                  "detail": "阈值不可达"}]})
+        self.assertTrue(mgr.consume_review_result("spec"))
+        entry = sm.read_one("spec")
+        self.assertEqual(entry["status"], "reviewing",
+                         "首次否决不得冻结，须回 reviewing 复评")
+        self.assertIsNot(entry.get(FROZEN_FIELD), True)
+        self.assertEqual(int(entry.get("_review_rejections", 0)), 1)
+        self.assertEqual(self._alerts("spec-review-rejected", "spec"), [],
+                         "自动复评阶段不得发人工升级告警")
+        mgr.dispatch_review.assert_called_once_with("spec")
 
     def test_rejected_blocked_stuck_exempt(self):
-        """冻结豁免：评审否决冻结的 spec 不再触发 admin_monitor 的 blocked_stuck。"""
-        self._write_result("spec", {"status": "rejected", "findings": []})
+        """冻结豁免：达上限冻结的评审否决 spec 不再触发 admin_monitor 的 blocked_stuck。"""
         mgr, sm, _ = self._manager()
+        sm.update_spec("spec", {"_review_rejections": MAX_REJECT_REDO - 1})
+        self._write_result("spec", {"status": "rejected", "findings": []})
         mgr.consume_review_result("spec")
         entry = dict(sm.read_one("spec"))
         # 回拨 updated 至阈值外，模拟「长期无人处置」（若豁免失效此时必唤起）
@@ -292,10 +316,11 @@ class TestReviewFreezeClassification(unittest.TestCase):
     def test_rejected_unfreeze_restores_reviewing_loop(self):
         """恢复闭环：parse_orig_status 解析「原状态 reviewing」→ 解冻恢复
         reviewing → _on_spec_reviewing 可重新派发评审（评审收口字段已清空）。"""
+        mgr, sm, engine = self._manager()
+        sm.update_spec("spec", {"_review_rejections": MAX_REJECT_REDO - 1})
         self._write_result("spec", {"status": "rejected",
                                     "findings": [{"severity": "blocking",
                                                   "detail": "方向性错误"}]})
-        mgr, sm, engine = self._manager()
         mgr.consume_review_result("spec")
         entry = sm.read_one("spec")
         # dashboard 解冻语义：parse_orig_status → unfreeze_spec(status=orig)

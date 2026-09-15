@@ -26,6 +26,12 @@ _logger = logging.getLogger("fenixd.pm_engine.spec_review")
 # 评审尝试上限（首次 + 最多 2 次重试，常量名自解释）
 MAX_REVIEW_ATTEMPTS = 3
 
+# 评审否决自动复评上限（2026-09-15 评审误判事故）：`blocking` 由 LLM 自分类，
+# 存在把「文档内部矛盾/遗漏」误判为「方向不成立」的残差。首次 rejected 不直接
+# 冻结转人工，而是回 reviewing 自动复评；连续达该次数仍 rejected 才认定方向
+# 确不成立、冻结转人工。取 2 = 「初次否决 + 1 次复评确认」。
+MAX_REJECT_REDO = 2
+
 # 写入边界校验：SPEC 目录相对路径前缀
 SPEC_CHANGES_PREFIX = "spec/changes/"
 
@@ -261,6 +267,8 @@ class SpecReviewManager:
             self.state_machine.update_spec(spec_name, {
                 "reviewer_run": None,
                 "_review_attempts": 0,
+                # 通过即清零否决计数（含自动复评后通过）：下一次评审从零起算
+                "_review_rejections": 0,
                 "error": None,
             })
             # 触发实现调度
@@ -273,11 +281,55 @@ class SpecReviewManager:
             # run 结论「无需介入」把原样 spec 弹回 reviewing → 下轮评审再次否决，
             # 整轮纯烧 token），故不打裸 blocked 而是 frozen=True + 人工升级
             # 告警，使 admin_monitor 的 blocked_stuck 豁免生效。
+            #
+            # 有界自动复评（2026-09-15 评审误判事故）：`blocking` 由 LLM 自分类，
+            # 存在把「文档内部矛盾/遗漏」误判为「方向不成立」的残差（实证：
+            # refactor-agent-runner-module 一轮 rejected→人工修补→复评 repaired）。
+            # 故首次 rejected MUST NOT 立刻冻结转人工——改回 reviewing 并重派一次
+            # 复评（带上一轮 blocking 摘要），把误判自愈在体系内；连续
+            # MAX_REJECT_REDO 次（含首次）仍 rejected 才认定方向确不成立，冻结转人工。
+            # 计数存 `_review_rejections`（`_` 前缀随 STATE 往返持久化）；任何一次
+            # approved/repaired 收口即清零（见上一分支的 update_spec）。
             findings = data.get("findings") or []
             blocking = [f for f in findings if f.get("severity") == "blocking"]
             blocked_summary = "; ".join(
                 f.get("detail", "") for f in blocking
             ) if blocking else "无详情"
+
+            entry_now = self.state_machine.read_one(spec_name) or {}
+            try:
+                rejections = int(entry_now.get("_review_rejections", 0) or 0)
+            except (TypeError, ValueError):
+                rejections = 0
+            rejections += 1
+
+            if rejections < MAX_REJECT_REDO:
+                # 未达上限：不冻结，回 reviewing 触发复评
+                self.state_machine.update_spec(spec_name, {
+                    "reviewer_run": None,
+                    "_review_attempts": 0,
+                    "_review_rejections": rejections,
+                    "error": (
+                        f"spec-review-rejected: {blocked_summary}"
+                    ),
+                })
+                self.state_machine.transition(spec_name, "reviewing")
+                self.logger.warning(
+                    "spec_review",
+                    f"评审否决（第 {rejections}/{MAX_REJECT_REDO} 次）→ 自动复评"
+                    f"（未冻结，避免误判转人工）: {spec_name}；"
+                    f"blocking: {blocked_summary[:200]}",
+                )
+                # 复评派发：复用本类唯一派发收口点（与 re_review 同款）；
+                # agent_runner 为 None 的 CLI 场景跳过，由 daemon recovery 的
+                # reviewing 分支拾取。上轮 blocking 摘要已写入 error，经
+                # _prev_error_section 注入复评 prompt（复评者据此区分
+                # 「前提证伪」与「文档不一致」）。
+                if self.agent_runner is not None:
+                    self.dispatch_review(spec_name)
+                return True
+
+            # 达上限：方向确不成立，冻结转人工（原语义）
             error_msg = (
                 f"{FREEZE_ERROR_PREFIX}原状态 reviewing · "
                 f"spec-review-rejected: {blocked_summary}"
@@ -288,13 +340,14 @@ class SpecReviewManager:
                 signal_type="spec-review-rejected",
                 severity="major",
                 description=(
-                    f"'{spec_name}' 方案被评审否决，需人工修订方案或撤销"
-                    f"（blocking findings: {blocked_summary}; "
+                    f"'{spec_name}' 方案连续 {rejections} 次被评审否决"
+                    f"（已自动复评 {rejections - 1} 次仍不成立），需人工修订方案"
+                    f"或撤销（blocking findings: {blocked_summary}; "
                     f"评审 run={run_id}）"
                 ),
                 evidence=(
                     f"spec={spec_name}; run_id={run_id}; "
-                    f"findings={blocked_summary}"
+                    f"rejections={rejections}; findings={blocked_summary}"
                 ),
                 recommended_action=(
                     "人工修订 spec 方案（proposal.md/design.md）后经 dashboard/"
@@ -302,9 +355,16 @@ class SpecReviewManager:
                     "或直接撤销该 spec"
                 ),
                 alert_callback=self.pm_engine._send_human_escalation_alert,
-                extra_updates={"reviewer_run": None, "_review_attempts": 0},
+                extra_updates={
+                    "reviewer_run": None,
+                    "_review_attempts": 0,
+                    "_review_rejections": 0,
+                },
             )
-            self.logger.info("spec_review", f"评审否决已冻结转人工: {spec_name}")
+            self.logger.info(
+                "spec_review",
+                f"评审否决（第 {rejections}/{MAX_REJECT_REDO} 次，达上限）"
+                f"已冻结转人工: {spec_name}")
             return True
         else:
             # 理论上不会到这里
@@ -484,6 +544,12 @@ class SpecReviewManager:
             return "approved 状态伴随文件改动"
         if status == "repaired" and not repairs:
             return "repaired 状态无修补清单"
+        # rejected 必须无修补清单：既判「前提/方向不成立」又改了文档属自相矛盾。
+        # 判据依据（2026-09-15 评审误判事故）：能落在 SPEC 目录内修复的问题
+        # 一律属 repairable（agent prompt 的「severity 判定标准」已固化该口径）；
+        # 若评审确实改了文档使方案成立，正确结论是 repaired 而非 rejected。
+        if status == "rejected" and repairs:
+            return "rejected 状态伴随文件改动"
 
         return None
 

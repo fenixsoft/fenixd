@@ -188,6 +188,19 @@ class PromptBuilder:
             # SPEC 方案评审（add-spec-review-gate）
             values["{result_path}"] = str(spec_review_result_path(root, spec_name))
             values["{state_path}"] = str(root / ".fenix" / "STATE.md")
+            # 自动复评上下文（2026-09-15 评审误判事故）：上一轮被否决时 STATE 的
+            # error 内携带 blocking 摘要，注入复评 prompt 的「上轮否决结论」段。
+            # 复评者据此逐条回答「是前提被证伪（判 blocking）还是文档内部不一致
+            # （判 repairable 并就地修）」——把误判自愈在体系内的关键输入。
+            # 非复评场景（首次评审）该键为空串，prompt 段指示「首次评审」。
+            _prev_rej = ""
+            try:
+                _err = (self._pm.state_machine.read_one(spec_name) or {}).get("error") or ""
+                if _err.startswith("spec-review-rejected:"):
+                    _prev_rej = _err[len("spec-review-rejected:"):].strip()
+            except Exception:  # noqa: BLE001 — 注入失败不得阻断派发
+                _prev_rej = ""
+            values["{prev_review_rejection}"] = _prev_rej
         values.update({
             "{sig_type}": sig.get("signal_type") or "unknown",
             "{sig_spec}": sig.get("spec") or spec_name,
