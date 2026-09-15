@@ -140,6 +140,14 @@ class PMEngine:
         # 此处触发加载（.fenix/recovery_watch.json → 组件内存态）。
         self._recovery._load_recovery_watch()
 
+        # 链路级 infra 熔断器（evo-run-failure-classification-circuitbreaker D2）：
+        # 连续 infra 失败达阈值 → 熔断评审链路停止派发，冷却后自动恢复。状态持久化
+        # .fenix/admin_infra_breaker.json（daemon 重启后恢复）；懒加载在 __init__
+        # 尾部创建，供 _on_spec_reviewing 短路与 SpecReviewManager 计数共用。
+        from core.pm_engine.infra_breaker import InfraCircuitBreaker
+        self.infra_breaker = InfraCircuitBreaker(
+            self.project_root, self.config, self.logger)
+
     # ── Event Handlers ─────────────────────────────────────────────
 
     def handle_event(self, event_kind: str, spec_name: str, spec_entry: dict):
@@ -269,6 +277,19 @@ class PMEngine:
             self.logger.debug(
                 "pm_engine", f"Skipping duplicate review dispatch: '{spec_name}'")
             return
+        # 链路级熔断短路（evo-run-failure-classification-circuitbreaker D2）：
+        # spec-review 链路熔断窗口内直接返回不派发；冷却到期自动恢复重试。
+        cond = self.infra_breaker.condition("spec-review")
+        if cond == "broken":
+            remaining = self.infra_breaker.cooldown_remaining("spec-review")
+            self.logger.info(
+                "pm_engine",
+                f"评审派发熔断短路: '{spec_name}'，冷却剩余 {remaining}s")
+            return
+        if cond == "recovered":
+            # 冷却到期自动恢复：落恢复 SIGNAL 记录（D3，恰好一条）
+            self._emit_infra_breaker_event(
+                "recovered", spec_name, "", self.infra_breaker.get_state("spec-review"))
         self._review_dispatches.add(spec_name)
         try:
             from core.pm_engine.spec_review import SpecReviewManager
@@ -2525,6 +2546,80 @@ class PMEngine:
         trigger: Optional[dict] = None,
     ):
         return self._family._send_human_escalation_alert(spec_name, signal_type, severity, description, evidence, recommended_action, trigger)
+
+    # ── infra 熔断告警（evo-run-failure-classification-circuitbreaker D3）──────────
+    def _emit_infra_breaker_event(
+        self, event: str, spec_name: str, reason: str, state: dict,
+        remaining: int = 0,
+    ):
+        """落 run_infra_failure 告警记录（evo-run-failure-classification-circuitbreaker D3）。
+
+        event:
+          - "triggered"：熔断触发 → kind=ESCALATION（critical，attach_trigger，
+            不唤起 Administrator——评审链路 infra 对 admin 无杠杆，唤起即烧 token
+            空转），**恰好落一条**（触发由 record_failure 返回 True 门控）。
+          - "recovered"：冷却到期自动恢复 → kind=SIGNAL（供审计；spec=None
+            为链路级恢复，不绑定特定 spec）。
+
+        evidence 含链路/指纹/次数/时间窗（汇总口径）。
+        """
+        from core.admin_store import AdminStore, ESCALATION, SIGNAL
+        from core.alert_lifecycle import attach_trigger
+
+        store = AdminStore(self.project_root, self.logger)
+        count = int(state.get("count", 0)) if state else 0
+        until = state.get("until") or 0.0
+        # 冷却总时长（秒→分钟，取整）
+        cooldown_minutes = int(self._get_config(
+            "admin.run_infra_breaker.cooldown_minutes", 30))
+        now_epoch = time.time()
+        window_str = f"{count} 次连续 infra 失败；冷却 {cooldown_minutes} 分钟"
+        evidence = (
+            f"link=spec-review; count={count}; cooldown={cooldown_minutes}min; "
+            f"{window_str}"
+        )
+        if event == "triggered":
+            entry = {
+                "kind": ESCALATION,
+                "signal_type": "run_infra_failure",
+                "spec": spec_name,
+                "severity": "critical",
+                "description": (
+                    f"spec-review 链路连续 infra 失败 {count} 次（阈值 {self._get_config('admin.run_infra_breaker.threshold', 3)}），"
+                    f"已触发熔断（冷却 {cooldown_minutes} 分钟）。"
+                    f"原因：{reason}"
+                ),
+                "evidence": evidence,
+                "recommended_action": (
+                    "冷却到期后自动恢复重试。若持续失败请检查 provider 配额/余额、"
+                    "模型链配置与 run_timeout 设置"
+                ),
+            }
+            attach_trigger(entry)
+            store.append(entry)
+            self.logger.warning(
+                "pm_engine",
+                f"run_infra_failure triggered: spec={spec_name} count={count}",
+            )
+        else:
+            # recovered：落 SIGNAL 档（链路级恢复，不绑定 spec）
+            entry = {
+                "kind": SIGNAL,
+                "signal_type": "run_infra_failure",
+                "spec": None,
+                "severity": "critical",
+                "description": (
+                    f"spec-review 链路 infra 熔断冷却到期，已自动恢复重试"
+                    f"（冷却前连续失败 {count} 次）"
+                ),
+                "evidence": evidence,
+                "recommended_action": "后续若再次连续 infra 失败将重新熔断",
+            }
+            store.append(entry)
+            self.logger.info(
+                "pm_engine",
+                f"run_infra_failure recovered: link=spec-review count={count}",
+            )
 
     # ── 实现尝试总预算（add-fail-counter-budget D2/D4 / add-spec-status-modal-budget D3）──────────────
     def _impl_run_budget(self, spec_name: str | None = None) -> int:

@@ -989,6 +989,9 @@ class ConfigLoader:
             "bug_repair_mode": brm,
             # add-daily-self-review：自省配置段（enabled 缺省 false）
             "self_review": cls.get_self_review_config(config),
+            # evo-run-failure-classification-circuitbreaker D5：infra 熔断配置
+            # 段（阈值/冷却分钟，缺省 3/30）
+            "run_infra_breaker": cls.get_run_infra_breaker_config(admin),
         }
 
     # ── 陈旧自愈配置（add-stale-code-selfheal D5）──────────────────────
@@ -1091,6 +1094,33 @@ class ConfigLoader:
             "enabled": bool(sr.get("enabled", False)),
             "run_at": cls._validated_run_at(sr.get("run_at")),
             "read_todo": bool(sr.get("read_todo", False)),
+        }
+
+    @classmethod
+    def get_run_infra_breaker_config(cls, admin: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        """Return the ``admin.run_infra_breaker.*`` 段，缺失项填默认值（D5）。
+
+        默认值：
+        - threshold: 3（连续 infra 失败触发熔断）
+        - cooldown_minutes: 30（熔断冷却时长，分钟）
+
+        非法值（非正数/类型错误）回退缺省（config D5 读取宽容语义）。
+        """
+        if not isinstance(admin, dict):
+            admin = {}
+        ib = admin.get("run_infra_breaker")
+        if not isinstance(ib, dict):
+            ib = {}
+        threshold = ib.get("threshold", 3)
+        cooldown = ib.get("cooldown_minutes", 30)
+        # 校验：必须为正数
+        if not isinstance(threshold, (int, float)) or threshold <= 0:
+            threshold = 3
+        if not isinstance(cooldown, (int, float)) or cooldown <= 0:
+            cooldown = 30
+        return {
+            "threshold": int(threshold),
+            "cooldown_minutes": float(cooldown),
         }
 
     @staticmethod
