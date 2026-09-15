@@ -324,8 +324,8 @@ class _FakePmEngine:
     def __init__(self):
         self.handle_event_calls = []
 
-    def handle_event(self, event_kind, spec_name, **kwargs):
-        self.handle_event_calls.append((event_kind, spec_name))
+    def handle_event(self, event_kind, spec_name, spec_entry):
+        self.handle_event_calls.append((event_kind, spec_name, spec_entry))
 
 
 class TestDispositionResetIntegration:
@@ -403,7 +403,9 @@ class TestDispositionResetIntegration:
             assert entry["status"] == "testing"
             assert entry.get("error") is None
             assert int(entry.get(ENV_BLOCK_ROUNDS_FIELD) or 0) == 1  # 不清零
-            assert pm.handle_event_calls == [("spec_implemented", "demo")]
+            assert pm.handle_event_calls == [
+                ("spec_implemented", "demo", sm.read_one("demo"))
+            ]
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -500,5 +502,102 @@ class TestDispositionResetIntegration:
                     if sig_type in ENV_BLOCK_SIGNAL_TYPES:
                         monitor._reset_env_blocked_after_disposition(signal, disp)
                 mock_reset.assert_not_called()
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class _BoomPmEngine:
+    """handle_event 抛 TypeError 的 pm_engine 替身——模拟 2026-09-14
+    evo-item-retention 事故：复位直通道调用实参数量不符（代码缺陷）。"""
+
+    def handle_event(self, event_kind, spec_name, spec_entry):
+        raise TypeError(
+            "PMEngine.handle_event() missing 1 required positional argument: "
+            "'spec_entry'"
+        )
+
+
+class TestResetProgrammingErrorEscalation:
+    """fix-admin-reset-programming-error-escalation：复位路径编程错误必须升级。
+
+    2026-09-14 事故：`_reset_env_blocked_after_disposition` 的 handle_event
+    调用少传实参抛 TypeError，被宽 except 静默降为 WARNING，spec 悬置 testing
+    1h12m 无人知。本组测试钉住：编程错误（TypeError/AttributeError/NameError）
+    必须落 ESCALATION 升级告警（critical），普通运维异常仍只 WARNING 不升级。
+    """
+
+    def test_typeerror_from_reset_raises_escalation(self):
+        from core.admin_monitor import AdminMonitor
+
+        tmp = tempfile.mkdtemp()
+        try:
+            sm = _FakeSmWithTransitionGate({
+                "demo": {"status": "blocked", "branch": "fenix/x",
+                         "error": "env 阻塞", "frozen": False,
+                         ENV_BLOCK_ROUNDS_FIELD: 1, "implementer_run": "impl-1"},
+            })
+            make = TestDispositionResetIntegration()._make_admin_monitor
+            monitor = make(Path(tmp), sm, pm_engine=_BoomPmEngine())
+
+            signal = {
+                "signal_type": "verify_env_blocked",
+                "spec": "demo",
+                "severity": "warning",
+                "description": "env 阻塞",
+                "evidence": "test",
+            }
+            disp = TestDispositionResetIntegration()._make_admin_disposition(
+                result="resolved", spec="demo")
+
+            with mock.patch("core.pm_engine.verification.subprocess.run",
+                            side_effect=_fake_subprocess_run_mergereturncode(0)):
+                # 不得重抛——处置记录先落盘的右关联设计
+                monitor._reset_env_blocked_after_disposition(signal, disp)
+
+            escs = [r for r in monitor.store.read_all()
+                    if r.get("kind") == "escalation"
+                    and r.get("signal_type") == "admin_reset_programming_error"]
+            assert len(escs) == 1, f"应有 1 条编程错误升级告警，实得 {len(escs)}"
+            assert escs[0]["severity"] == "critical"
+            assert escs[0]["spec"] == "demo"
+            assert "TypeError" in escs[0]["description"]
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_ordinary_exception_does_not_escalate(self):
+        """普通运维异常（如 OSError）仍只 WARNING，不升级——避免噪音。"""
+        from core.admin_monitor import AdminMonitor
+
+        class _BoomIoPm:
+            def handle_event(self, event_kind, spec_name, spec_entry):
+                raise OSError("network down")
+
+        tmp = tempfile.mkdtemp()
+        try:
+            sm = _FakeSmWithTransitionGate({
+                "demo": {"status": "blocked", "branch": "fenix/x",
+                         "error": "env 阻塞", "frozen": False,
+                         ENV_BLOCK_ROUNDS_FIELD: 1, "implementer_run": "impl-1"},
+            })
+            make = TestDispositionResetIntegration()._make_admin_monitor
+            monitor = make(Path(tmp), sm, pm_engine=_BoomIoPm())
+
+            signal = {
+                "signal_type": "verify_env_blocked",
+                "spec": "demo",
+                "severity": "warning",
+                "description": "env 阻塞",
+                "evidence": "test",
+            }
+            disp = TestDispositionResetIntegration()._make_admin_disposition(
+                result="resolved", spec="demo")
+
+            with mock.patch("core.pm_engine.verification.subprocess.run",
+                            side_effect=_fake_subprocess_run_mergereturncode(0)):
+                monitor._reset_env_blocked_after_disposition(signal, disp)
+
+            escs = [r for r in monitor.store.read_all()
+                    if r.get("signal_type") == "admin_reset_programming_error"]
+            assert escs == [], "OSError 属运维异常，不应升级为编程错误告警"
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

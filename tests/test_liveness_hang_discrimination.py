@@ -57,7 +57,9 @@ class FakePM:
     def _effective_run_timeout(self, agent_type=None):
         return 3600
 
-    def _send_human_escalation_alert(self, **kwargs):
+    def _send_human_escalation_alert(self, spec_name, signal_type, severity,
+                                     description, evidence, recommended_action,
+                                     trigger=None):
         pass
 
 
