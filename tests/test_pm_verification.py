@@ -1555,45 +1555,6 @@ class TestImplPartialConsumption(unittest.TestCase):
         self.assertTrue(blocker.startswith(TASK_GAP_ERROR_PREFIX))
         self.assertIn("1.2", blocker)
 
-    # ── dispatch 主路径：partial 不进 implemented、走失败/预算通道 ──
-
-    def test_dispatch_partial_is_success_false_not_implemented(self):
-        """dispatch 主路径 partial：is_success 为假——status != success 且 result.success=True
-        时 impl_status=partial → is_success=False，不应进入 implemented 状态。
-        这是 partial 不进 implemented 的语义本源（具体 dispatch 流程的 budget 计数
-        与 retry 递增在 test_pm_dispatch.py 有覆盖；此处隔离验证 partial 的 is_success 语义）。"""
-        from core.pm_engine.dispatch import Dispatcher
-        from types import SimpleNamespace
-        # 直接验证 partial 的 is_success 语义（不用完整 dispatch）
-        result = SimpleNamespace(success=True, error=None, branch="x", cancelled=False,
-                                 worktree_dirty=[], worktree_path=None)
-        impl_status = "partial"
-        is_success = result.success and (impl_status is None or impl_status == "success")
-        self.assertFalse(is_success, "partial 不应产生 is_success=True")
-
-    def test_partial_budget_counted_via_retry_path(self):
-        """partial 归因非空 → 最终写入 spec error → dispatch 失败分支重派计数递增
-        （_retry_count += 1），消耗实现尝试预算的通道。验证写入后 error 非空
-        且走 ready 重派路径（_retry_count 存在）。"""
-        spec = self._make_impl_spec()
-        self._write_tasks(spec, (
-            "# Tasks\n\n## 1. 实现\n\n- [x] 1.1 done\n- [ ] 1.2 unchecked\n"
-        ))
-        self._write_partial_result(spec)
-        impl_result = self.engine._read_implementer_result(spec)
-        attribution = self.engine._partial_attribution(spec, impl_result)
-        # 模拟 dispatch else 分支（走 retry）：写 error + _retry_count 递增
-        self.sm.update_spec(spec, {
-            "status": "ready",
-            "error": attribution,
-            "_retry_count": 1,
-        })
-        entry = self.sm.read_one(spec)
-        self.assertEqual(entry["status"], "ready")
-        self.assertEqual(int(entry["_retry_count"]), 1)
-        self.assertTrue(entry["error"])
-        self.assertIn("1.2", entry["error"])
-
 
 class TestReadImplementerResultStampGuard(unittest.TestCase):
     """fix-fasttrack-resultfile-missing-redispatch 3.3：_read_implementer_result

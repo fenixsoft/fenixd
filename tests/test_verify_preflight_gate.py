@@ -9,6 +9,7 @@
 """
 
 import json
+import os
 import sys
 import tempfile
 import time
@@ -29,6 +30,13 @@ def _write(root: Path, rel: str, content: str):
     p = root / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
+
+
+def _bump_mtime(path: Path, ns: int = 1_000_000):
+    """显式把文件 mtime 前进若干纳秒（替代 time.sleep 等真实时钟）。"""
+    st = path.stat()
+    path.touch()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + ns))
 
 
 class TestResolveEntryPath(unittest.TestCase):
@@ -176,8 +184,10 @@ class TestSelfcheckContractLight(unittest.TestCase):
         self._mk_contract("serve:\n  kind: static\n  root: static\n")
         self.assertIsNone(selfcheck_contract_light(self.tmp))
         old_mtime = (self.tmp / ".fenix" / "verify.yaml").stat().st_mtime_ns
-        time.sleep(0.01)
         self._mk_contract("serve:\n  kind: static\n  root: missing_dir\n")
+        # 写后显式把 mtime 推到明显不同于快照的值（os.utime，不真实 sleep；
+        # 内核 mtime 粒度可能把两次紧邻写入折到同一 tick，故必须写在 _mk_contract 之后）
+        _bump_mtime(self.tmp / ".fenix" / "verify.yaml", ns=1_000_000_000)
         err = selfcheck_contract_light(self.tmp)
         self.assertIsNotNone(err)
         self.assertIn("serve.root 不存在", err)
@@ -214,11 +224,11 @@ class TestSelfcheckContractLight(unittest.TestCase):
             "ready:\n  url: /\n  expect: 200\n  timeout: 1\n")
         # 无实例地址 → 跳过 ready 自检（不起实例）
         self.assertIsNone(selfcheck_contract_light(self.tmp))
-        # 更新契约 mtime 强制重新自证
-        time.sleep(0.01)
+        # 更新契约内容并把 mtime 推到明显不同于快照的值以强制重新自证
         self._mk_contract(
             "serve:\n  kind: static\n  root: site\n"
             "ready:\n  url: /\n  expect: 200\n  timeout: 1\n")
+        _bump_mtime(self.tmp / ".fenix" / "verify.yaml", ns=1_000_000_000)
         # 有实例地址但探针失败 → 自证失败（不写快照）
         err = selfcheck_contract_light(self.tmp, base_url="http://127.0.0.1:1")
         self.assertIsNotNone(err)

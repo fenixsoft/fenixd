@@ -531,6 +531,64 @@ class TestGetRunsAgentType(unittest.TestCase):
         for rid, at in expected.items():
             self.assertEqual(runs[rid], at, f"{rid} should infer {at}")
 
+    def test_review_and_dispute_prefixes_do_not_degrade_to_generic_agent(self):
+        """spec-review-/dispute-judge- 前缀必须识别出类型与 spec。
+
+        回归：前缀表曾是 data.py 内的漂移副本，漏了这两个前缀 →
+        时间线把评审 Agent 显示为泛型 "agent"，且 spec 字段残留整个 run_id。
+        """
+        from core.dashboard.data import get_runs
+        ts = int(time.time())
+        expected = {
+            f"spec-review-my-spec-{ts}": "spec-review",
+            f"dispute-judge-my-spec-{ts}": "dispute-judge",
+        }
+        for rid in expected:
+            self._write_run(rid)
+        runs = {r["run_id"]: r for r in get_runs(self.tmpdir)}
+        for rid, at in expected.items():
+            self.assertEqual(runs[rid]["agent_type"], at, f"{rid} should infer {at}")
+            self.assertEqual(runs[rid]["spec"], "my-spec",
+                             f"{rid} 应剥离前缀与时间戳后归属 my-spec")
+
+
+class TestRunIdPrefixSingleSource(unittest.TestCase):
+    """run_id 前缀表唯一真源：dashboard/admin_monitor 的推断不得与 run_files 漂移。"""
+
+    def test_dashboard_inference_matches_canonical_prefixes(self):
+        from core.agent_runner.run_files import (RUN_ID_AGENT_PREFIXES,
+                                                 infer_run_agent_type,
+                                                 run_spec_part)
+        from core.dashboard.data import get_runs
+        tmpdir = tempfile.mkdtemp()
+        try:
+            runs_dir = Path(tmpdir) / ".fenix" / "runs"
+            runs_dir.mkdir(parents=True)
+            ts = int(time.time())
+            expected = {}
+            for prefix, agent_type in RUN_ID_AGENT_PREFIXES:
+                rid = f"{prefix}my-spec-{ts}"
+                (runs_dir / f"{rid}.jsonl").write_text(
+                    '{"type": "result"}\n', encoding="utf-8")
+                expected[rid] = agent_type
+            runs = {r["run_id"]: r["agent_type"] for r in get_runs(tmpdir)}
+            for rid, at in expected.items():
+                self.assertEqual(runs[rid], at, f"{rid} should infer {at}")
+                # infer 只剥前缀，时间戳剥离归 run_spec_part（两段拼接 = 完整 spec）
+                self.assertEqual(infer_run_agent_type(rid),
+                                 (at, f"my-spec-{ts}"))
+                self.assertEqual(run_spec_part(rid), "my-spec")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_admin_monitor_prefixes_subset_of_canonical(self):
+        """admin_monitor 的失败计数前缀必须仍是真源的子集（可少不可多）。"""
+        from core.admin_monitor import _RUN_PREFIXES
+        from core.agent_runner.run_files import RUN_ID_AGENT_PREFIXES
+        canonical = {p for p, _ in RUN_ID_AGENT_PREFIXES}
+        unknown = set(_RUN_PREFIXES) - canonical
+        self.assertFalse(unknown, f"admin_monitor 前缀未同步到真源: {sorted(unknown)}")
+
 
 class TestDashboardDescriptionConfig(unittest.TestCase):
     """Dashboard description 配置：description 分支必须正确工作。"""

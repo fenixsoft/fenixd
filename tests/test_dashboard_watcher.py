@@ -150,7 +150,12 @@ class TestFileWatcher:
         w.scan_once()  # 建立基线
         hub.events.clear()
         w.start()
-        time.sleep(0.15)
+        # 轮询等待心跳广播（interval=0.01/heartbeat=0.02 → 通常一两轮即达），
+        # 替代固定 sleep(0.15)。
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not any(
+                e["type"] == "refresh" for e, _ in hub.events):
+            time.sleep(0.01)
         w.stop()
         refreshes = [e for e, _ in hub.events if e["type"] == "refresh"]
         assert refreshes, "周期性心跳应广播 refresh 事件"

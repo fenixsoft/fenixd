@@ -1247,7 +1247,8 @@ class FenixDaemon:
                 if se_cfg["auto_accept"]:
                     try:
                         summary = auto_accept_pending(
-                            PROJECT_ROOT, self.state_machine)
+                            PROJECT_ROOT, self.state_machine,
+                            spec_run_at=se_cfg.get("spec_run_at"))
                         accepted = summary.get("accepted", 0)
                     except Exception as e:
                         self.logger.error(
@@ -1415,22 +1416,25 @@ class FenixDaemon:
             except OSError:
                 continue
 
-    def _shutdown_drain_seconds(self) -> int:
+    def _shutdown_drain_seconds(self) -> float:
         """规划性重启排水窗口（admin.shutdown_drain_seconds，缺省 1800，0=现行快速停机）。
 
         interrupt-recovery-preserve D1：非法值（负/非数字）回退缺省；0 显式回退
-        现行快速停机（不排水、不保全）。
+        现行快速停机（不排水、不保全）。接受整值/浮点（测试以小数值构造排水超时
+        路径，避免真等整秒；生产配置仍为整数秒）。
         """
         raw = ConfigLoader.get(self.config, "admin.shutdown_drain_seconds", 1800)
         try:
-            value = int(raw)
+            value = float(raw)
         except (TypeError, ValueError):
             self.logger.error(
                 "fenixd",
-                f"admin.shutdown_drain_seconds 非法（应为非负整数）: {raw!r}，回退 1800",
+                f"admin.shutdown_drain_seconds 非法（应为非负数值）: {raw!r}，回退 1800",
             )
             return 1800
-        return max(0, value)
+        if value < 0:
+            return 1800
+        return value
 
     def _drain_log_waiting(self) -> list:
         """排水开始日志 + 等待的 run 清单（interrupt-recovery-preserve 4.3）。"""

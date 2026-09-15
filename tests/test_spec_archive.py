@@ -430,7 +430,7 @@ class _TestServer:
         self.port = find_free_port(20300)
         self.httpd = DashboardHTTPServer(("127.0.0.1", self.port), registry, static_dir)
         import threading
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=lambda: self.httpd.serve_forever(poll_interval=0.05), daemon=True)
         self.thread.start()
 
     def _req(self, method, path):

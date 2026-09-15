@@ -105,7 +105,15 @@ class VerdictReadResult:
 
 # 探针通过后的静置秒数（_finalize_static）：吸收冷实例后端收尾/前端首帧的
 # 长尾，再放行开跑场景（add-spec-hooks 白屏 env 事故第三道纵深，2026-09-06）。
+# 测试可用 monkeypatch 覆写该模块常量置 0，避免每个走 _finalize_static 的用例
+# 白等 10s（该静置是生产纵深语义，仅在测试进程内降级）。
 POST_READY_SETTLE_SECONDS = 10
+
+# legacy 兜底自启（无契约 commands.start）探活轮询：次数 × 步长（秒）。
+# 模块常量而非字面量，供测试注入小值避免真等几十秒（既有 test_verify_command_port
+# 的 legacy 措辞用例走满该超时路径，单测曾 30s）。
+LEGACY_START_PROBE_ATTEMPTS = 30
+LEGACY_START_PROBE_INTERVAL_SECONDS = 1
 
 
 class VerificationPipeline:
@@ -1046,8 +1054,8 @@ class VerificationPipeline:
         # （pid/spec/worktree 空、端口先按 hint，实际可达端口由探测修正）
         self._register_serving_instance(spec_name, proc, hint_port=base_port)
 
-        for _ in range(30):
-            time.sleep(1)
+        for _ in range(LEGACY_START_PROBE_ATTEMPTS):
+            time.sleep(LEGACY_START_PROBE_INTERVAL_SECONDS)
             if all(_probe(u) for u in urls):
                 boot_log.close()
                 return True, False, "已自动启动应用服务"

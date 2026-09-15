@@ -68,6 +68,27 @@ def _disable_verify_engine_reload():
         yield
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _zero_post_ready_settle():
+    """测试进程把探针通过后的静置秒数降为 0。
+
+    ``_finalize_static`` 在生产中于就绪探针通过后固定静置
+    ``POST_READY_SETTLE_SECONDS``（10s，白屏 env 事故第三道纵深）。该静置是
+    真实墙钟等待，凡走 ``_ensure_app_reachable`` 的用例（9 个文件）各自白等
+    10s；测试进程内无「冷实例后端收尾」长尾，静置无语义价值，故会话级置 0。
+    静置行为本身由 test_verdict_evidence_taxonomy.TestPostReadySettle 用
+    ``patch.object`` 断言原值（该用例自带 patch，不受本 fixture 影响）。
+    """
+    from core.pm_engine import verification as _vmod
+
+    saved = _vmod.POST_READY_SETTLE_SECONDS
+    _vmod.POST_READY_SETTLE_SECONDS = 0
+    try:
+        yield
+    finally:
+        _vmod.POST_READY_SETTLE_SECONDS = saved
+
+
 def make_project(tmp_path: Path, name: str = "proj-a", otherspec: bool = True) -> Path:
     """构造一个可用的 Fenixd 项目目录。
 
@@ -164,7 +185,7 @@ class _TestServer:
     def __init__(self, registry: Registry, static_dir: Path):
         self.port = find_free_port(20000)
         self.httpd = DashboardHTTPServer(("127.0.0.1", self.port), registry, static_dir)
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=lambda: self.httpd.serve_forever(poll_interval=0.05), daemon=True)
         self.thread.start()
 
     def get(self, path: str, raw: bool = False):

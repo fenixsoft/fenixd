@@ -218,9 +218,10 @@ class TestAdminStore:
 
     def test_read_all_newest_first(self, tmp_path):
         store = AdminStore(tmp_path, FakeLogger())
-        store.append({"kind": SIGNAL, "signal_type": "stuck", "description": "first"})
-        time.sleep(0.01)
-        store.append({"kind": ESCALATION, "signal_type": "stuck", "description": "second"})
+        store.append({"kind": SIGNAL, "signal_type": "stuck", "description": "first",
+                      "created": "2026-01-01T00:00:00+00:00"})
+        store.append({"kind": ESCALATION, "signal_type": "stuck", "description": "second",
+                      "created": "2026-01-02T00:00:00+00:00"})
         recs = store.read_all()
         assert len(recs) == 2
         assert recs[0]["description"] == "second"  # 最新的在前
@@ -560,6 +561,44 @@ class TestAdminMonitorDetection:
         ])
         signals = mon.run_once()
         assert all(s["signal_type"] != "repeated_failures" for s in signals)
+
+    def test_make_signal_normalizes_structured_evidence(self, tmp_path):
+        """_make_signal 把结构化 evidence（dict）归一为字符串。
+
+        回归 fix-alert-evidence-render-crash：evidence 契约是字符串（进 prompt
+        的 str.replace、进前端 React 子节点）。_make_signal 是信号构造的唯一
+        出口，在此兜底归一，防任何调用点传入 dict → TypeError
+        （"replace() argument 2 must be str, not dict"）。
+        """
+        _, mon = make_monitor(tmp_path, {})
+        sig = mon._make_signal("stash_pop_conflict", "evo-x", "d",
+                               {"conflict_files": ["core/a.py"]})
+        assert isinstance(sig["evidence"], str)
+        assert "core/a.py" in sig["evidence"]
+        # 字符串证据原样保留
+        sig2 = mon._make_signal("blocked_stuck", "s", "d", "纯文本")
+        assert sig2["evidence"] == "纯文本"
+
+    def test_structured_evidence_normalized_on_ingest(self, tmp_path):
+        """store 直发的结构化 evidence 记录被摄取时，信号与落库都归一为字符串。
+
+        回归 fix-alert-evidence-render-crash：stash_pop_conflict 记录带 dict
+        evidence，摄取转信号后喂 prompt 的 str.replace → TypeError，
+        Administrator 唤起失败并升级人工。
+        """
+        proot, mon = make_monitor(tmp_path, {
+            "evo-x": {"status": "implementing", "updated": utcnow_iso()},
+        }, config={"admin": {"escalation_cooldown_minutes": 15}})
+        mon.store.append({
+            "kind": SIGNAL, "signal_type": "stash_pop_conflict", "spec": "evo-x",
+            "escalated": False,
+            "evidence": {"conflict_files": ["core/a.py"], "stash_kept": True},
+        })
+        signals = mon.run_once()
+        sig = next((s for s in signals if s["signal_type"] == "stash_pop_conflict"), None)
+        assert sig is not None, "store 直发信号应被摄取为 signal"
+        assert isinstance(sig["evidence"], str), "signal.evidence 应为字符串"
+        assert "core/a.py" in sig["evidence"]
 
     def test_flapping(self, tmp_path):
         proot, mon = make_monitor(tmp_path, {
@@ -1527,7 +1566,7 @@ class TestRunAdministrator:
         threads = [threading.Thread(target=run_once, args=(i,)) for i in (1, 2)]
         for t in threads:
             t.start()
-        time.sleep(0.2)
+        # Barrier 已保证两线程同时在场（各自 started.wait），无需 sleep 垫窗口
         release.set()
         for t in threads:
             t.join(timeout=10)
@@ -1548,7 +1587,7 @@ class _AlertTestServer:
     def __init__(self, reg, static_dir):
         self.port = find_free_port(30000)
         self.httpd = DashboardHTTPServer(("127.0.0.1", self.port), reg, static_dir)
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=lambda: self.httpd.serve_forever(poll_interval=0.05), daemon=True)
         self.thread.start()
 
     def get(self, path):
@@ -1654,6 +1693,31 @@ class TestDashboardAlertsAPI:
         assert len(data["alerts"]) == 2
         assert all("project" in a for a in data["alerts"])
         assert any(a["project"] == "proj-alerts" for a in data["alerts"])
+
+    def test_api_alerts_evidence_always_string(self, alerts_fx):
+        """API 下发的 evidence 恒为字符串或 None —— 前端直接当 React 子节点渲染。
+
+        回归 fix-alert-evidence-render-crash：首页横幅把 evidence 直接渲染，
+        若为 dict 则整页白屏（"Objects are not valid as a React child"）。
+        写入口已归一，但存量文件可能残留 dict，故在真实文件层预置一条
+        结构化 evidence 记录，走完整读路径验证 API 输出形状。
+        """
+        proot, store, srv = alerts_fx
+        apath = proot / ".fenix" / "admin_alerts.json"
+        records = json.loads(apath.read_text(encoding="utf-8"))
+        records.append({
+            "kind": ESCALATION, "id": "legacy-dict", "handled": False,
+            "signal_type": "stash_pop_conflict", "spec": "spec-a",
+            "severity": "major", "description": "冲突自愈",
+            "evidence": {"conflict_files": ["core/a.py"], "stash_kept": True},
+        })
+        apath.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+
+        status, data = srv.get("/api/alerts")
+        assert status == 200
+        for a in data["alerts"] + data.get("resolved", []):
+            assert a.get("evidence") is None or isinstance(a["evidence"], str), \
+                f"{a.get('id')} 的 evidence 应为字符串: {a.get('evidence')!r}"
 
     def test_api_alerts_mark_handled(self, alerts_fx):
         proot, store, srv = alerts_fx

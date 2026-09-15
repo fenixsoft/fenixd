@@ -197,7 +197,7 @@ class TestAnchorA:
 
         # 真实 WM 驱动 shutdown 排水超时路径（sidecar 保全 + WIP 提交 + 保护集）
         daemon = make_daemon(
-            monkeypatch, tmp_path, restart_request=True, drain_seconds=1,
+            monkeypatch, tmp_path, restart_request=True, drain_seconds=0.05,
             running={"impl-demo-111-a1": FakeProc()},
             sm_entries={"demo": {"branch": branch}},
             wm=wm,
@@ -235,7 +235,7 @@ class TestAnchorA:
         assert ahead_count(root, branch) == 0
 
         daemon = make_daemon(
-            monkeypatch, tmp_path, restart_request=True, drain_seconds=1,
+            monkeypatch, tmp_path, restart_request=True, drain_seconds=0.05,
             running={"impl-demo-111-a1": FakeProc()},
             sm_entries={"demo": {"branch": branch}},
             wm=wm,
@@ -265,7 +265,7 @@ class TestAnchorA:
 
         monkeypatch.setattr(wc_mod, "commit_wip_checkpoint", _boom)
         daemon = make_daemon(
-            monkeypatch, tmp_path, restart_request=True, drain_seconds=1,
+            monkeypatch, tmp_path, restart_request=True, drain_seconds=0.05,
             running={"impl-demo-111-a1": FakeProc()},
             sm_entries={"demo": {"branch": branch}},
             wm=wm,
@@ -293,7 +293,7 @@ class TestAnchorA:
 
         monkeypatch.setattr(wm, "cleanup_orphans", _spy_cleanup)
         daemon = make_daemon(
-            monkeypatch, tmp_path, restart_request=True, drain_seconds=1,
+            monkeypatch, tmp_path, restart_request=True, drain_seconds=0.05,
             running={"impl-demo-111-a1": FakeProc()},
             sm_entries={"demo": {"branch": branch}},
             wm=wm,

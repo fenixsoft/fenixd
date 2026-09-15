@@ -679,6 +679,45 @@ def _resolve_project_path_by_name(project_name: str) -> Optional[Path]:
     return None
 
 
+def clear_todo(project_path) -> dict:
+    """把项目 ``.fenix/todo.md`` 截断为空（自省内容清理，保留文件本体）。
+
+    截断而非删除：todo.md 被各项目 git 追踪，删除会在工作区显示为 deletion
+    且要等下一轮自省才重建；空文件对 ``parse_todo_entries`` 等价于无条目，
+    diff 也更干净。MUST NOT 触碰 ``.fenix/evolution/`` 下的 items.jsonl /
+    草稿 / 水位——清空范围仅限 todo.md 这一个上游输入。
+
+    - 项目无 ``.fenix/`` 目录或 todo.md 本就不存在 → ``existed: False``
+      且不创建任何目录（MUST NOT 替无 todo 的项目凭空 mkdir）；
+    - 与每日自省追加（``self_review._append_todo``）及自进化标记回写
+      （``write_todo_marker``）共用同一把 flock，避免读-改-写交错；
+    - 失败收敛进返回值，MUST NOT 抛异常（调用方为 dashboard 端点，
+      多项目逐个清理时单个失败不应中断其余）。
+
+    Returns: ``{ok, path, existed, error}``。
+    """
+    todo = Path(project_path) / ".fenix" / "todo.md"
+    outcome: Dict[str, Any] = {
+        "ok": False, "path": str(todo), "existed": False, "error": None,
+    }
+    if not todo.is_file():
+        # 非错误：无 todo.md 的项目本就无需清理
+        outcome["ok"] = True
+        return outcome
+    outcome["existed"] = True
+
+    def _do() -> None:
+        _atomic_write(todo, "")
+        outcome["ok"] = True
+
+    try:
+        _with_lock(todo, _do)
+    except Exception as e:  # noqa: BLE001 —— 单个项目失败不穿透
+        outcome["error"] = str(e)
+        _logger.warning("evolution: 清空 todo.md 失败 %s: %s", todo, e)
+    return outcome
+
+
 def write_todo_marker(item: dict, disposition: Optional[str] = None,
                       deleted: bool = False,
                       project_path=None) -> bool:
@@ -1015,16 +1054,47 @@ def _write_admin_warning(project_root, message: str) -> None:
         _logger.warning("evolution: admin 告警写入失败（降级）: %s", e)
 
 
+def next_spec_run_at(run_at, now=None) -> Optional[str]:
+    """每日执行时刻 → 下一次到期的 UTC ISO8601（``self_evolution.spec_run_at``）。
+
+    ``run_at`` 为 ``"HH:mm"``（按**本地时区**解释，与 ``admin.self_review.run_at``
+    同一口径），返回该时刻下一次到达的 UTC ISO——STATE.md 的 ``start_after`` 全链
+    UTC，转换在此一次完成，消费方（``start_after_pending``）不做时区判断。
+
+    规则：取本地当日该时刻；已过或恰好等于 now 则取次日。``run_at`` 为
+    None/非法（非字符串、格式不符、越界）返回 None = 不设门（立项后立即执行），
+    脏值 fail-open 与 ``start_after_pending`` 的容错同型。合法性判定复用
+    ``ConfigLoader.is_valid_hhmm``——HH:mm 规则不在本模块另立一份。
+    """
+    from core.config import ConfigLoader  # 局部导入：避免 core.config ↔ 本模块的导入顺序耦合
+    if not ConfigLoader.is_valid_hhmm(run_at):
+        return None
+    hh, mm = (int(x) for x in run_at.split(":"))
+    # naive 视为本地时间（datetime.astimezone 的既有语义），aware 则换算到本地：
+    # 两种情况下一行收敛，调用方传 UTC 或本地 now 都得到同一结果
+    now_local = (now if now is not None else datetime.now()).astimezone()
+    target = now_local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if target <= now_local:
+        target += timedelta(days=1)
+    return target.astimezone(timezone.utc).isoformat()
+
+
 def accept_item(item_id_: str, project_root, state_machine,
-                decided_by: str = "manual") -> dict:
+                decided_by: str = "manual",
+                start_after: Optional[str] = None) -> dict:
     """接受路径（人工同意与自动接受共用实现，design D6；3.5）。
 
     顺序固定：前置状态校验 → resolve_spec_name → 复制到 spec/changes →
-    仅 add 该目录并提交 → add_spec(drafted, priority=5) → 删暂存草稿 →
-    标 accepted/auto_accepted。失败分支：
+    仅 add 该目录并提交 → add_spec(drafted, priority=5[, start_after]) →
+    删暂存草稿 → 标 accepted/auto_accepted。失败分支：
     - 提交失败 → 删除 spec/changes 副本（避免主树未跟踪文件）、保留暂存
       草稿、置 accept_failed + 告警；
     - 注册失败 → 保留暂存草稿、置 accept_failed + 告警。
+
+    ``start_after``：UTC ISO8601，非空则写进新 SPEC 的 STATE 条目，dispatch
+    在到点前静默跳过（定时拾取，add-spec-scheduling-controls D2）；None 表示
+    立项后立即进入调度（缺省，原行为）。调用方负责把 ``spec_run_at`` 配置经
+    ``next_spec_run_at`` 换算成本参数。
 
     Returns: ``{"ok", "status", "spec_name", "error"}``；非 pending /
     accept_failed 状态幂等返回现状（不重复提交或注册）。
@@ -1098,12 +1168,15 @@ def accept_item(item_id_: str, project_root, state_machine,
         return {"ok": False, "status": "accept_failed",
                 "spec_name": name, "error": err}
 
-    # 提交成功 → 注册（MUST NOT 写 start_after，drafted 立即进入调度）
+    # 提交成功 → 注册；start_after 非空 = 定时拾取（到点前 dispatch 门控跳过），
+    # 为空则 drafted 立即进入调度（原行为）
     registered = False
+    entry = {"status": "drafted", "priority": 5}
+    if start_after:
+        entry["start_after"] = start_after
     try:
         if state_machine is not None:
-            registered = state_machine.add_spec(
-                name, {"status": "drafted", "priority": 5})
+            registered = state_machine.add_spec(name, entry)
         else:
             registered = True  # state_machine 缺失（如纯路径测试）视为注册成功
     except Exception as e:
@@ -1418,23 +1491,29 @@ def resolve_accepted_spec_dir(project_root, spec_name: str) -> Optional[Path]:
 
 # ── 任务 3.7：自动接受 ─────────────────────────────────────────────
 
-def auto_accept_pending(project_root, state_machine) -> dict:
+def auto_accept_pending(project_root, state_machine, spec_run_at=None) -> dict:
     """对全部 ``pending`` 条目逐个走接受路径（``decided_by="auto"``，3.7）。
 
     逐条独立捕获异常：单条失败置 ``accept_failed`` 并写告警，不影响其余。
     MUST NOT 触碰 ``analyzed`` / ``draft_failed`` / 已决定条目。
+
+    ``spec_run_at``：``self_evolution.spec_run_at`` 配置原值（"HH:mm" 或 None），
+    经 ``next_spec_run_at`` 换算为 UTC ISO 的 ``start_after``。同一批条目共用
+    一次换算结果——它们是同一次巡检同时立项的，排到同一时刻才对得上「每日该
+    时刻执行」的语义。None = 立项后立即执行。
 
     Returns: 汇总 ``{"total", "accepted", "failed", "details"}``。
     """
     items = read_items(project_root)
     pending = [rec for rec in items.values()
                if rec.get("status") == "pending"]
+    start_after = next_spec_run_at(spec_run_at)
     summary = {"total": len(pending), "accepted": 0, "failed": 0,
                "details": []}
     for rec in pending:
         try:
             result = accept_item(rec["id"], project_root, state_machine,
-                                 decided_by="auto")
+                                 decided_by="auto", start_after=start_after)
         except Exception as e:
             _logger.error("evolution: 自动接受条目 %s 异常: %s", rec["id"], e)
             _write_admin_warning(

@@ -299,7 +299,8 @@ class TestMonitorScanIntegration:
         make_escalation(mon.store, spec="v2-x", trigger=triggered("v2-x"))
         path = proot / ".fenix" / "admin_alerts.json"
         mtime = path.stat().st_mtime_ns
-        time.sleep(0.01)
+        # skip_unchanged 保证零写回；无需用 sleep 制造 mtime 窗口（相等断言
+        # 在无 sleep 时更强：任何写回都会改 mtime_ns）。
         mon.run_once()
         assert path.stat().st_mtime_ns == mtime
         assert all(not r["handled"] for r in mon.store.read_all())

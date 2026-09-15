@@ -119,9 +119,14 @@ class TestSSEConnectionLimit:
         assert s1 is not None and s2 is not None
         # 断开 1 条 → 计数回落 → 新连接可建立
         s1.close()
-        import time
-        time.sleep(0.1)
-        s3, hello3 = _open_sse(srv_fx.port)
+        # 释放（服务端读到 EOF）是异步的：重试建立新连接而非固定 sleep
+        s3 = hello3 = None
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            s3, hello3 = _open_sse(srv_fx.port)
+            if s3 is not None and hello3 is not None:
+                break
+            time.sleep(0.02)
         try:
             assert s3 is not None and hello3 is not None, "释放后应恢复接受新连接"
         finally:
@@ -150,9 +155,13 @@ class TestHTTPThreadLimit:
         s1, _ = _open_sse(srv_fx.port)
         assert s1 is not None
         s1.close()
-        import time
-        time.sleep(0.1)
-        status, payload = _http_get(srv_fx.port, "/api/projects")
+        deadline = time.monotonic() + 3.0
+        status = payload = None
+        while time.monotonic() < deadline:
+            status, payload = _http_get(srv_fx.port, "/api/projects")
+            if status == 200:
+                break
+            time.sleep(0.02)
         assert status == 200
         assert "projects" in payload
 

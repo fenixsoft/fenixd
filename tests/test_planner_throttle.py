@@ -75,9 +75,15 @@ class TestThrottleLimit:
             t.start()
             threads.append(t)
 
-        # 第一个 planner 进入后，第二个必须仍在等待（未进入）
+        # 第一个 planner 进入后，第二个必须仍在等待（未进入）。
+        # 若第二个线程已打过「节流排队中」日志即证明它已到 acquire 前，
+        # 此时信号量仍被占（_value == 0）→ 无需 sleep 赌时序。
         assert gate.wait(timeout=5)
-        time.sleep(0.3)
+        sem = runner_module._PLANNER_SEMAPHORE
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and sem._value != 0:
+            time.sleep(0.01)
+        assert sem._value == 0, "首个 planner 持槽期间信号量应被占用"
         assert len(entered) == 1, "上限 1 时第二个 planner 不应并发进入"
         release_first.set()
         for t in threads:
@@ -211,12 +217,12 @@ class TestThrottleObservability:
         ]
         for t in threads:
             t.start()
-        # 等待第二个 planner 进入排队并打日志
-        deadline = time.time() + 5
-        while time.time() < deadline:
+        # 轮询等待第二个 planner 进入排队并打日志（宽限期 8s，仅快机瞬时返回）
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
             if any("节流排队中" in "".join(map(str, a)) for a in logger.infos):
                 break
-            time.sleep(0.05)
+            time.sleep(0.02)
         release_first.set()
         for t in threads:
             t.join(timeout=5)

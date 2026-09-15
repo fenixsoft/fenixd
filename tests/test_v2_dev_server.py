@@ -143,16 +143,22 @@ class TestSOReuseAddr:
         conn.close()
         srv.close()
         client.close()
-        time.sleep(0.2)
 
-        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            raw.bind(("127.0.0.1", port))
-            raw_blocked = False
-        except OSError:
-            raw_blocked = True
-        finally:
-            raw.close()
+        # 轮询到 TIME_WAIT 生效（裸 bind 被拒），替代固定 sleep(0.2)
+        deadline = time.monotonic() + 3.0
+        raw_blocked = False
+        while time.monotonic() < deadline:
+            raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                raw.bind(("127.0.0.1", port))
+                raw_blocked = False
+            except OSError:
+                raw_blocked = True
+            finally:
+                raw.close()
+            if raw_blocked:
+                break
+            time.sleep(0.01)
         assert raw_blocked, "前置条件：无 SO_REUSEADDR 裸 bind 应被 TIME_WAIT 拒绝"
         assert _port_in_use(port) is False, "SO_REUSEADDR 应消除 TIME_WAIT 假性占用"
         # 可立即 rebind
@@ -210,7 +216,7 @@ class TestDevServerLifecycle:
                     os.kill(child_pid, 0)
                 except OSError:
                     return  # 孙进程已终止
-                time.sleep(0.1)
+                time.sleep(0.02)
             pytest.fail("killpg 未终止孙进程（只杀了直接子进程）")
         finally:
             if parent.poll() is None:
@@ -359,7 +365,7 @@ class TestPpidSelfTerminate:
             while time.time() < deadline:
                 if not os.path.exists(f"/proc/{child_pid}"):
                     return  # ppid 绑定轮询触发自灭成功
-                time.sleep(0.2)
+                time.sleep(0.02)
             pytest.fail("孤儿 dev-server 未在 ppid 轮询间隔内自灭")
         finally:
             if intermediate.poll() is None:

@@ -177,22 +177,6 @@ class TestDeepMerge(unittest.TestCase):
         self.assertEqual(result["e"], 4)
 
 
-class TestLogger(unittest.TestCase):
-    """测试日志器：Logger 必须正确工作。"""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_logger_creation(self):
-        from core.logger import Logger
-        logger = Logger(Path(self.tmpdir) / "logs")
-        self.assertIsNotNone(logger)
-
-
 class TestDaemonSingletonFlock(unittest.TestCase):
     """daemon-singleton：fenixd._acquire_singleton_lock 真实路径
     （第二个实例打印提示并 sys.exit(1)，释放后可重新获取）。
@@ -482,11 +466,6 @@ class TestFenixSessionIsRunning(unittest.TestCase):
 
     def test_stale_session_without_process_stopped(self):
         """残留 tmux session 但无存活 daemon 进程（verify-tmp 场景）→ stopped。"""
-        from core.fenix_session import is_running
-        with patch("core.fenix_session._daemon_procs_under", return_value=False):
-            self.assertFalse(is_running(self.tmpdir))
-
-    def test_miss_stopped(self):
         from core.fenix_session import is_running
         with patch("core.fenix_session._daemon_procs_under", return_value=False):
             self.assertFalse(is_running(self.tmpdir))
@@ -913,3 +892,11 @@ class TestSpecReviewConfig(unittest.TestCase):
     def test_known_agent_types_contains_spec_review(self):
         """KNOWN_AGENT_TYPES 白名单含 spec-review（agents.models 可分配）。"""
         self.assertIn("spec-review", ConfigLoader.KNOWN_AGENT_TYPES)
+
+    def test_known_agent_types_contains_dispute_judge(self):
+        """KNOWN_AGENT_TYPES 白名单含 dispute-judge（agents.models 可分配）。
+
+        dispute-judge 此前不在白名单，只能走默认网关回退，模型随 cc-switch 当前
+        provider 漂移（网关欠费时该 run 秒挂）。本用例锁定其已纳入可分配角色。
+        """
+        self.assertIn("dispute-judge", ConfigLoader.KNOWN_AGENT_TYPES)

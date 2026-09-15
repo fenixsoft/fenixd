@@ -13,6 +13,9 @@ interface UseMaximizeModalOptions {
   extraBodyStyle?: CSSProperties;
   // 还原态是否垂直居中（最大化后始终贴顶）
   centered?: boolean;
+  // 弹窗自带底部操作区时的 footer 高度（默认 0 = 无 footer）。
+  // 仅参与最大化态的 body 高度扣减：还原态的 defaultBodyHeight 由调用方自行算好。
+  footerHeight?: number;
 }
 
 export function useMaximizeModal({
@@ -20,6 +23,7 @@ export function useMaximizeModal({
   defaultBodyHeight,
   extraBodyStyle,
   centered,
+  footerHeight = 0,
 }: UseMaximizeModalOptions) {
   const [maximized, setMaximized] = useState(false);
   const toggle = useCallback(() => setMaximized((v) => !v), []);
@@ -31,7 +35,8 @@ export function useMaximizeModal({
         style: { top: 0, maxWidth: '100vw', paddingBottom: 0 } as CSSProperties | undefined,
         styles: {
           body: {
-            height: 'calc(100vh - 80px)',
+            // 80px = 标题栏 + 留白；带 footer 的弹窗再扣掉操作区，否则整窗超出视口
+            height: `calc(100vh - ${80 + footerHeight}px)`,
             ...extraBodyStyle,
           },
         },

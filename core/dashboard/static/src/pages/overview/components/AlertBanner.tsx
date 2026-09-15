@@ -3,6 +3,7 @@ import dayjs from 'dayjs';
 import { useCallback, useEffect, useState } from 'react';
 import type { AlertItem, AlertsData } from '@/services/dashboard';
 import { clearAllAlerts, getAlerts, markAlertHandled } from '@/services/dashboard';
+import { fmtEvidence } from '@/utils/evidence';
 
 /**
  * 人工升级告警横幅（对齐 v1：/api/alerts + SSE alerts 事件驱动刷新）。
@@ -25,11 +26,12 @@ function fmtDate(iso?: string) {
 
 function AlertLines({ item }: { item: AlertItem }) {
   // pre-wrap 保留字段内的 \n / \t 格式（JSON 存储层未丢失，HTML 默认会折叠成空格）
+  const evidenceText = fmtEvidence(item.evidence);
   return (
     <div style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>
       <div>{item.spec ? `📌 ${item.spec} ` : ''}{item.description}</div>
-      {item.evidence ? (
-        <Typography.Text type="secondary">证据：{item.evidence}</Typography.Text>
+      {evidenceText ? (
+        <Typography.Text type="secondary">证据：{evidenceText}</Typography.Text>
       ) : null}
       {item.action_taken ? (
         <div>

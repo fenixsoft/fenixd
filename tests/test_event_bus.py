@@ -34,12 +34,6 @@ class TestEventBus(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def test_event_bus_creation(self):
-        from core.event_bus import EventBus
-        # EventBus requires: state_path, state_machine, pm_engine, config, logger
-        bus = EventBus(self.state_path, self.sm, MagicMock(), {}, self.logger)
-        self.assertIsNotNone(bus)
-
     def test_event_bus_accepts_hook_dispatcher(self):
         """构造参数新增可选 hook_dispatcher（add-spec-hooks 3.1），旧调用不受影响。"""
         from core.event_bus import EventBus
@@ -148,8 +142,12 @@ class TestEventBusHookDispatch(unittest.TestCase):
         # 测试 tmpdir 假项目无 supervisor，须 mock 为托管状态使 hook 走成功路径。
         with patch.object(fenix_session, "supervisor_running", return_value=True):
             bus._dispatch_changes(self.sm.read_all())
-        time.sleep(0.8)
-        self.assertTrue((Path(self.tmpdir) / ".fenix" / "restart_request").exists())
+        # hook 在守护线程内执行：轮询等待而非固定 sleep
+        deadline = time.monotonic() + 3.0
+        req = Path(self.tmpdir) / ".fenix" / "restart_request"
+        while time.monotonic() < deadline and not req.exists():
+            time.sleep(0.02)
+        self.assertTrue(req.exists())
         # 审计记录写了一条 success
         from core.hook_engine import read_hook_audit
         recs = read_hook_audit(self.tmpdir)

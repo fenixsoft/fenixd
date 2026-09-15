@@ -686,12 +686,13 @@ class TestTaskProgressSync(unittest.TestCase):
                                  ["Task 1.1: already done by agent", "Task 1.2: not in run"],
                                  [(1, "completed")])
         engine = self._make_engine()
+        before = self._head()
         engine._sync_task_progress("demo")
         text = (self.project_root / "spec" / "changes" / "demo" / "tasks.md").read_text()
         self.assertIn("- [x] 1.1 already done by agent", text)
         self.assertIn("- [ ] 1.2 not in run", text)
-        # 无新勾选 → 不 commit（HEAD 不变）
-        self.assertEqual(self._head(), self._head())
+        # 无新勾选 → 不 commit（HEAD 不变；与 sync 前快照比较，非自比）
+        self.assertEqual(before, self._head())
 
     def test_sync_skips_when_no_run_file(self):
         """无 run 产物时不动作、不 commit。"""
@@ -699,8 +700,9 @@ class TestTaskProgressSync(unittest.TestCase):
         self._write_spec_tasks("demo", tasks)
         self._commit_spec("demo")
         engine = self._make_engine()
+        before = self._head()
         engine._sync_task_progress("demo")
-        self.assertEqual(self._head(), self._head())
+        self.assertEqual(before, self._head())
 
     def test_sync_skips_when_dirty_tree(self):
         """工作树不干净时跳过回写（非阻塞），不 commit。"""
@@ -710,9 +712,10 @@ class TestTaskProgressSync(unittest.TestCase):
         _write_impl_run_for_spec(self.project_root, "demo", 1789000000,
                                  ["Task 1.1: x"], [(1, "completed")])
         engine = self._make_engine()
+        before = self._head()
         with patch.object(engine, "_worktree_is_dirty", return_value=True):
             engine._sync_task_progress("demo")
-        self.assertEqual(self._head(), self._head())
+        self.assertEqual(before, self._head())
 
 
 class TestTaskCompletionGate(unittest.TestCase):

@@ -30,6 +30,7 @@ import type {
   ProjectActivities,
 } from '@/services/dashboard';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { fmtEvidence } from '@/utils/evidence';
 
 const REFRESH_THROTTLE_MS = 500;
 
@@ -255,12 +256,13 @@ function AlertTitle({ item, resolved }: { item: AlertItem; resolved?: boolean })
 }
 
 function AlertLines({ item }: { item: AlertItem }) {
+  const evidenceText = fmtEvidence(item.evidence);
   return (
     <div style={{ fontSize: 12, ...PRE_WRAP }}>
       {item.description ? <div>{item.description}</div> : null}
-      {item.evidence ? (
+      {evidenceText ? (
         <div>
-          <Typography.Text type="secondary">证据：{item.evidence}</Typography.Text>
+          <Typography.Text type="secondary">证据：{evidenceText}</Typography.Text>
         </div>
       ) : null}
       {item.action_taken ? (

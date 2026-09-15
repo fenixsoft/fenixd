@@ -37,6 +37,21 @@ AGENT_PROMPT_FILES = {
 }
 
 
+def _str_field(value) -> str:
+    """占位符填充前的字符串归一：dict/list 序列化为 JSON 串。
+
+    占位符填充走 ``str.replace``，非字符串值会抛
+    ``TypeError: replace() argument 2 must be str, not dict``。信号字段
+    （尤其 ``evidence``）来自多条路径，历史/直发记录可能是结构化值。
+    """
+    if value is None or isinstance(value, str):
+        return value or ""
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def planner_result_path(project_root, spec_name: str, agent_type: str) -> Path:
     """planner 阶段产物结果文件路径（add-judge-artifact-gate D1，注入/校验同源）。
 
@@ -178,8 +193,8 @@ class PromptBuilder:
             "{sig_spec}": sig.get("spec") or spec_name,
             "{severity}": sig.get("severity") or "major",
             "{description}": sig.get("description") or "",
-            "{evidence}": sig.get("evidence") or "",
-            "{recommendation}": sig.get("recommended_action") or "",
+            "{evidence}": _str_field(sig.get("evidence")),
+            "{recommendation}": _str_field(sig.get("recommended_action")),
             "{disp_path}": str(sig.get("disposition_path")
                                or (root / ".fenix" / "admin_disposition.json")),
             "{dash_script}": f"{root}/.fenix/bin/fenix_dashboard.py",
@@ -301,6 +316,13 @@ class PromptBuilder:
             # 自行生成并写入 test_scenarios.json（第二条写入车道），注入同一 schema
             # 单源段；agents/fast-track.md 内联的第二份枚举已收敛到本段。
             prompt += self._scenario_schema_section()
+        elif agent_type == "spec-review":
+            # 结果文件硬门契约段（2026-09-15 事故修复）：此前评审车道缺本段，
+            # 模型把结果 JSON 当正文输出、结果文件从未落盘 → 整轮白烧重试。
+            prompt += self._result_gate_section(spec_name, "spec-review")
+            # 重试上下文：上轮失败死因注入（同 implementer/fast-track 的
+            # _prev_error_section）。缺本段时评审重试是盲重试，不知道为什么被重派。
+            prompt += self._prev_error_section(spec_name)
         # administrator 无条件动态段：困境信号经占位符注入
         if agent_type == "administrator":
             # fix-frozen-scenario-orphan-reservoir D6：admin 处置场景文件时的
@@ -1462,14 +1484,37 @@ class PromptBuilder:
             "局部数据（步骤序号/断言 label/完整 error），MUST NOT 套用共享模板串。\n"
         )
 
-    def _result_gate_section(self, spec_name: str) -> str:
-        """planner 产物硬门契约注入段（add-judge-artifact-gate D2）。
+    def _result_gate_section(self, spec_name: str,
+                             agent_type: str = "planner-judge") -> str:
+        """产物硬门契约注入段（add-judge-artifact-gate D2）。
 
         告知 planner-judge/planner-plan：run 成功判定 = 进程正常退出 **且** 结果
         文件落盘且为可解析非空 JSON；收工不写/写空/非法 JSON → 判失败并自动原地
         退避重试（不进裁决重试预算）。路径经 planner_result_path 与 runner 硬门
         同源计算。纯静态文本，零 IO、零状态条件。
+
+        spec-review（2026-09-15 事故修复）：评审车道此前没有本段，模型把结果
+        JSON 当正文 fenced 代码块吐出、end_turn 自然收工，结果文件从未落盘。
+        评审段额外强调「正文里的 JSON 不算交付，框架只读文件」并把路径经
+        spec_review_result_path 同源计算。
         """
+        if agent_type == "spec-review":
+            result_path = spec_review_result_path(
+                self._pm.project_root, spec_name)
+            return (
+                "\n\n## 结果文件硬门（强制）\n"
+                "- 框架对本次评审的成功判定 = 进程正常退出 **且** 结果文件已落盘"
+                "且为可解析的非空 JSON。\n"
+                f"  - 评审结果文件（**唯一交付落点**）：{result_path}\n"
+                "- **只把 JSON 写在回复正文里不算交付**：框架不解析正文，只读文件。"
+                "正文里的 JSON 会被当作「结果文件缺失」→ 本次评审判**失败**并整轮"
+                "重派（浪费一轮 token）。\n"
+                "- MUST 用 Write 工具写入上方路径；收工前未写 / 文件为空 / 非法 "
+                "JSON → 判**失败**并原地重试（fail-closed）。\n"
+                "- 结果文件 MUST 为合法 JSON——字符串内换行/引号/控制字符必须转义。\n"
+                "- **先落盘再深入**：先完成最小必要结果落盘，再做深入调查/复现——"
+                "深入调查不会为产物缺失兜底。\n"
+            )
         result_path = planner_result_path(
             self._pm.project_root, spec_name, "planner-judge")
         scenarios_path = planner_result_path(

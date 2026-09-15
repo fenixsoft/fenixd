@@ -99,7 +99,7 @@ Agent 可用的模型通道（Provider）注册表。未配置 = 空注册表，
 
 ### agents.models
 
-按 Agent 角色声明模型通道，键取八角色：`implementer` / `fast-track` / `planner-plan` / `planner-judge` / `verifier` / `administrator` / `self-review` / `spec-review`。未知角色键降级跳过并 ERROR 告警（新角色键需重启 daemon 使白名单生效）；未分配的角色走默认网关。
+按 Agent 角色声明模型通道，键取九角色：`implementer` / `fast-track` / `planner-plan` / `planner-judge` / `verifier` / `administrator` / `self-review` / `spec-review` / `dispute-judge`。未知角色键降级跳过并 ERROR 告警（新角色键需重启 daemon 使白名单生效）；未分配的角色走默认网关。
 
 ```yaml
 agents:

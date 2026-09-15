@@ -516,15 +516,18 @@ class TestShutdownDrain:
         """排水等待在跑 run 自然终态：全部完成后 drain_wait 返回空。"""
         runner = FakeRunner(running={"impl-demo-111-a1": FakeProc()})
 
-        def _finish_after_delay():
-            def poll():
-                time.sleep(0.2)
-                return 0
-            return poll
+        # 前若干次 poll 返回 None（仍在跑），之后 0（自然终态）——用计数替代
+        # sleep 模拟「稍后完成」，避免真实墙钟等待。
+        state = {"n": 0}
 
-        runner._running_agents["impl-demo-111-a1"].poll = _finish_after_delay()
+        def _poll():
+            state["n"] += 1
+            return None if state["n"] < 3 else 0
+
+        runner._running_agents["impl-demo-111-a1"].poll = _poll
         remaining = runner.drain_wait(timeout=5)
         assert remaining == []
+        assert state["n"] >= 3
 
     def test_drain_timeout_returns_remaining(self):
         """排水窗口到期仍残留：drain_wait 返回残留 run_id，不无限等待。"""
@@ -570,7 +573,7 @@ class TestShutdownDrain:
         fake_wt = tmp_path / "proj" / ".claude" / "worktrees" / "impl-demo-111"
         fake_wt.parent.mkdir(parents=True, exist_ok=True)
         daemon, runner, wm = make_daemon(
-            monkeypatch, tmp_path, restart_request=True, drain_seconds=1,
+            monkeypatch, tmp_path, restart_request=True, drain_seconds=0.05,
             running={"impl-demo-111-a1": FakeProc()},
             sm_entries={"demo": {"branch": "fenix/demo-123"}},
             wt_by_branch={"fenix/demo-123": fake_wt},
@@ -596,7 +599,7 @@ class TestShutdownDrain:
         import os
         os.chmod(str(ro_dir), 0o555)
         daemon, runner, wm = make_daemon(
-            monkeypatch, tmp_path, restart_request=True, drain_seconds=1,
+            monkeypatch, tmp_path, restart_request=True, drain_seconds=0.05,
             running={"impl-demo-111-a1": FakeProc()},
             sm_entries={"demo": {"branch": "fenix/demo-123"}},
             wt_by_branch={},
@@ -612,7 +615,7 @@ class TestShutdownDrain:
         fake_wt = tmp_path / "proj" / ".claude" / "worktrees" / "impl-demo-111"
         fake_wt.parent.mkdir(parents=True, exist_ok=True)
         daemon, runner, wm = make_daemon(
-            monkeypatch, tmp_path, restart_request=True, drain_seconds=1,
+            monkeypatch, tmp_path, restart_request=True, drain_seconds=0.05,
             running={"impl-demo-111-a1": FakeProc()},
             sm_entries={"demo": {"branch": "fenix/demo-123"}},
             wt_by_branch={"fenix/demo-123": fake_wt},
@@ -801,7 +804,7 @@ class TestFirstRoundPreserve:
         fake_wt = tmp_path / "proj" / ".claude" / "worktrees" / "impl-demo-1750000000"
         fake_wt.parent.mkdir(parents=True, exist_ok=True)
         daemon, runner, wm = make_daemon(
-            monkeypatch, tmp_path, restart_request=True, drain_seconds=1,
+            monkeypatch, tmp_path, restart_request=True, drain_seconds=0.05,
             running={"impl-demo-1750000000-a1": FakeProc()},
             sm_entries={"demo": {}},  # STATE branch 未写入（run 未到终态）
             spec_to_wt={"demo": (fake_wt, "fenix/demo-1750000000")},
@@ -821,7 +824,7 @@ class TestFirstRoundPreserve:
         fake_wt = tmp_path / "proj" / ".claude" / "worktrees" / "impl-demo-1750000000"
         fake_wt.parent.mkdir(parents=True, exist_ok=True)
         daemon, runner, wm = make_daemon(
-            monkeypatch, tmp_path, restart_request=True, drain_seconds=1,
+            monkeypatch, tmp_path, restart_request=True, drain_seconds=0.05,
             running={"impl-demo-1750000000-a1": FakeProc()},
             sm_entries={"demo": {}},
             spec_to_wt={"demo": (fake_wt, "fenix/demo-1750000000")},
@@ -844,7 +847,7 @@ class TestFirstRoundPreserve:
              "timestamp": "2026-09-12T00:00:00+00:00"},
         ]), encoding="utf-8")
         daemon, runner, wm = make_daemon(
-            monkeypatch, tmp_path, restart_request=True, drain_seconds=1,
+            monkeypatch, tmp_path, restart_request=True, drain_seconds=0.05,
             running={}, sm_entries={},
             spec_to_wt={"demo": (fake_wt, "fenix/demo-1750000000")},
         )

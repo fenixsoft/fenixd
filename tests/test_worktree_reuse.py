@@ -87,8 +87,9 @@ class TestWorktreeReuse:
         assert not wt2.exists()
         assert wm.get_reuse_record("demo") is None
 
-    def test_invalid_reuse_record_falls_back_to_fresh(self, tmp_path):
+    def test_invalid_reuse_record_falls_back_to_fresh(self, tmp_path, monkeypatch):
         """复用遗产已失效（目录被回收）→ 丢弃记录、回退全新创建。"""
+        import core.worktree_manager as _wm_mod
         root = tmp_path / "repo"
         init_repo(root)
         wm = make_wm(root)
@@ -101,7 +102,10 @@ class TestWorktreeReuse:
                         str(wt1)], capture_output=True)
         git(root, "branch", "-D", branch1)
 
-        time.sleep(1.1)  # worktree 目录名含秒级时间戳，跨秒避免撞名干扰断言
+        # worktree 目录名含秒级时间戳：注入推进 5s 的时钟保证新建目录名不同于
+        # wt1（原实现 sleep(1.1) 等真实跨秒，慢且脆）。
+        future = time.time() + 5
+        monkeypatch.setattr(_wm_mod.time, "time", lambda: future)
         wt2 = wm.create("demo", "fast-track")
         assert wt2 is not None and Path(wt2) != Path(wt1), "失效遗产应回退新建"
         assert wm.get_reuse_record("demo") is None or \

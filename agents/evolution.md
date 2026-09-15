@@ -56,7 +56,7 @@
     "worth_spec": true 或 false,
     "rationale": "结论依据，必须引用具体证据（文件:行号、日志时间戳、run id、STATE 条目名等至少一项）"
   },
-  "analysis_md": "独立的 Markdown 分析报告，包含结论、核查过程、证据、与存量 SPEC 的关系",
+  "analysis_md": "Markdown 分析报告，**固定两段结构**：第一段回显 todo.md 原始条目，第二段是核查报告（结论、核查过程、证据、与存量 SPEC 的关系）。逐字格式见下文「analysis_md 硬性结构」",
   "spec": null 或 {
     "name": "kebab-case 规格名称（不含 evo- 前缀）",
     "capability": "kebab-case 能力名称",
@@ -69,6 +69,34 @@
 ```
 
 **verdict.worth_spec** 为 true 时 **spec 字段必填**；否则必须为 null。
+
+## analysis_md 硬性结构
+
+`analysis_md` 是用户在大盘弹窗里**唯一能看到的报告**——弹窗不带 todo.md 上下文，
+读者必须能先看到「这条是关于什么的」再读核查。因此 **MUST** 为下列两段结构，
+顺序固定：
+
+````markdown
+# todo.md 原始条目（<项目名> · <date_section> · <浪费|失误|可改进>）
+
+- **<条目标题>**
+  - 影响：<todo.md 原文>
+  - 证据：<todo.md 原文>
+  - 调查评估：<todo.md 原文>
+  - 建议：<todo.md 原文>
+
+---
+
+# 核查报告：<条目标题>（id=<条目 id>）
+
+（此处为核查正文：结论 / 核查过程与证据 / 与存量 SPEC 的关系 / 未核实）
+````
+
+- 第一段四字段 **MUST** 与 todo.md 原文**逐字一致**（从 `{todo_sections}` 里该条目的
+  原文复制，**MUST NOT** 转述、缩写、改写或补全）；todo.md 中该字段为空则整行省略，
+  标题以外的四行全部为空时只保留 `- **<条目标题>**` 一行。
+- 两段之间 **MUST** 有一行 `---` 分隔线。
+- `analysis_md` **MUST NOT** 以核查正文开头——缺第一段即视为产物不合格。
 
 ## SPEC 文本格式要求（worth_spec=true 时）
 
@@ -205,7 +233,8 @@ PY
 3. **回源核查**：MUST NOT 直接采信 todo.md 的「调查评估」，必须读取实际源码
 4. **证据引用**：rationale MUST 引用具体证据（文件路径/行号、日志时间戳、STATE 条目等）
 5. **诚实标注**：无法核实的部分标注「未核实」，MUST NOT 编造
-6. **产物完整**：每条条目必须包含完整的 verdict + analysis_md，worth_spec=true 时 spec 字段齐全
+6. **产物完整**：每条条目必须包含完整的 verdict + analysis_md（两段结构齐全：todo.md
+   原始条目回显 + `---` + 核查报告），worth_spec=true 时 spec 字段齐全
 7. **格式合规**：JSON 格式正确，name/capability 为 kebab-case，tasks.md 两段结构齐全
    （首个 `## Deliverables` fenced yaml 段 + `## <编号>. <标题>` 分组任务），
    且已跑过第 2 步自检脚本并打印 `SPEC_OK`

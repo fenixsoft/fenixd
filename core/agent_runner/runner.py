@@ -2007,6 +2007,80 @@ class AgentRunner:
             return "格式回退截断"
         return "未提交即收工"
 
+    # ── spec-review 结果捞回（2026-09-15 事故修复）──────────────────────
+    # 评审 run 正常收工但从未调用 Write，把结果 JSON 当正文 fenced 代码块吐出
+    # （与 _classify_terminal_no_commit 同族的「假工具调用」死法）。框架代写：
+    # 从转录末轮 assistant text 抽最后一个 fenced JSON，status 在白名单内即落盘
+    # ——把「整轮白烧重试」降为「零成本回收」。抽不出/status 非法/文件已存在
+    # 一律不动，交由硬门与读侧按既有语义处理。
+
+    _FENCED_JSON_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n```", re.DOTALL)
+
+    def _salvage_spec_review_result(self, spec_name: str,
+                                    run_id: str | None) -> bool:
+        """尝试从评审 run 转录捞回结果并落盘。
+
+        Returns: True 表示已代写落盘；False 表示无可用 JSON / status 非法 /
+            文件已存在（不覆盖既有产物）。
+        """
+        path = spec_review_result_path(self.project_root, spec_name)
+        if path.exists():
+            return False
+        if not run_id:
+            return False
+        run_file = self.project_root / ".fenix" / "runs" / f"{run_id}.jsonl"
+        last_text = ""
+        try:
+            with run_file.open(encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if d.get("type") != "assistant":
+                        continue
+                    for c in (d.get("message") or {}).get("content") or []:
+                        if isinstance(c, dict) and c.get("type") == "text":
+                            last_text = c.get("text") or ""
+        except OSError:
+            return False
+        if not last_text:
+            return False
+        matches = self._FENCED_JSON_RE.findall(last_text)
+        if not matches:
+            return False
+        payload = None
+        for block in reversed(matches):
+            try:
+                candidate = json.loads(block)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict) and candidate.get(
+                    "status") in spec_review_result_status_whitelist:
+                payload = candidate
+                break
+        if payload is None:
+            return False
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+        except OSError as e:
+            self.logger.warning(
+                "agent_runner",
+                f"spec-review 结果捞回写盘失败 '{spec_name}': {e}")
+            return False
+        self.logger.warning(
+            "agent_runner",
+            f"spec-review 结果捞回：run 未写结果文件，已从转录末轮 fenced JSON "
+            f"代写落盘 '{spec_name}' run_id={run_id} "
+            f"status={payload.get('status')}")
+        return True
+
     def _wip_checkpoint_before_backoff(self, spec_name: str, wt_path) -> None:
         """锚点 B（add-impl-wip-checkpoint D3）：transient 原地退避前的 WIP 提交。
 
@@ -4208,6 +4282,10 @@ class AgentRunner:
         - planner-plan  结果文件 = planner_result_path(..., "planner-plan")
           （test_scenarios.json）**叠加** planner_result_path(..., "planner-judge")
           （.fenix-run-result.json，status='plan-ready'）
+        - spec-review 结果文件 = spec_review_result_path(..., spec_name)
+          （.fenix-run-result.json，status ∈ approved/repaired/rejected）；
+          2026-09-15 事故修复前本类型直接 return None（空阀），评审「结果文件
+          缺失」靠下游 read_text() FileNotFoundError 兜底。
         - implementer / fast-track 结果文件 = 本轮 run 的 **worktree** 根目录
           .fenix-run-result.json（fix-impl-tasks-completion-gate P0 / D1，不读
           主树拷回副本——主树共享文件跨 spec，读它会把上一轮/其它 spec 残留与
@@ -4255,6 +4333,29 @@ class AgentRunner:
         if agent_type in ("implementer", "fast-track"):
             return self._check_impl_result_artifact(
                 spec_name, run_started_at, wt_path)
+        if agent_type == "spec-review":
+            # 评审结果硬门（2026-09-15 事故修复）：add-spec-review-gate D10 声称
+            # 「复用 _check_agent_result_artifact」，但本函数此前在下一行的
+            # 类型判断处对 spec-review 直接 return None——门禁从未接线，真正
+            # 兜底的是下游 spec_review.consume_review_result 的 read_text()
+            # FileNotFoundError。接线后「结果文件缺失」在明确命名的失败点被拦，
+            # 且 mtime 新鲜度守卫生效（防陈旧合法文件替本轮 no-op 放行）。
+            path = spec_review_result_path(self.project_root, spec_name)
+            err, data = self._check_artifact_json_file(
+                path, agent_type, run_started_at)
+            if err is not None:
+                return err
+            if not isinstance(data, dict):
+                return (
+                    f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {path}"
+                )
+            status = data.get("status", "")
+            if status not in spec_review_result_status_whitelist:
+                return (
+                    f"exit 0 但结果文件 status='{status}' 不在白名单"
+                    f"（{agent_type} 产物硬门）: {path}"
+                )
+            return None
         if agent_type not in ("planner-judge", "planner-plan"):
             return None
         if agent_type == "planner-plan":

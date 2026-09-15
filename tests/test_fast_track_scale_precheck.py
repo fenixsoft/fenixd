@@ -500,6 +500,12 @@ class TestExtensionTailPollLoop:
 
         runner = _make_turn_runner(tmp_path)
         runner.worktree_manager = wm
+        # 活性判定器 stub：超时收口路径会调用 _judge_liveness，未 stub 时会真起
+        # `claude -p` 子进程（单测挂 6-11s 且对外部 CLI 有隐式依赖）。
+        monkeypatch.setattr(
+            "core.agent_runner.liveness.LivenessSupervisor._judge_liveness",
+            lambda self, snapshot, spec_name, run_id: {
+                "verdict": "stagnant", "evidence": "stubbed"})
 
         # 构造 burst 事件（一个 assistant 事件）
         proc = _BurstFakeProc([_evt("assistant", None)])
@@ -551,6 +557,11 @@ class TestExtensionTailPollLoop:
 
         runner = _make_turn_runner(tmp_path)
         runner.worktree_manager = wm
+        # 活性判定器 stub（同上）：避免真起 `claude -p`。
+        monkeypatch.setattr(
+            "core.agent_runner.liveness.LivenessSupervisor._judge_liveness",
+            lambda self, snapshot, spec_name, run_id: {
+                "verdict": "stagnant", "evidence": "stubbed"})
 
         proc = _BurstFakeProc([_evt("assistant", None)])
         _patch_popen(monkeypatch, proc)

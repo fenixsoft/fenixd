@@ -23,7 +23,8 @@ from pathlib import Path
 
 import yaml
 
-from core.agent_runner.run_files import archive_spec_runs, run_spec_part
+from core.agent_runner.run_files import (archive_spec_runs,
+                                         infer_run_agent_type, run_spec_part)
 from core.archive_commit import commit_archive_move
 from core.fenix_session import is_running as _is_running
 
@@ -2508,20 +2509,10 @@ def get_runs(project_root, spec_name: str | None = None,
             stat = p.stat()
         except OSError:
             continue
-        # 从 run_id 推断 agent 类型与 spec：admin-/impl-/verify-/planner-plan-/planner-judge-
-        agent_type = "agent"
-        spec_part = run_id
-        for prefix, at in (("admin-", "administrator"),
-                           ("planner-judge-", "planner-judge"),
-                           ("planner-plan-", "planner-plan"),
-                           ("planner-", "planner"),
-                           ("impl-", "implementer"),
-                           ("verify-", "verifier"),
-                           ("test-", "tester")):
-            if run_id.startswith(prefix):
-                agent_type = at
-                spec_part = run_id[len(prefix):]
-                break
+        # 从 run_id 推断 agent 类型与 spec（前缀表 = run_files 唯一真源；
+        # 此前是本地漂移副本，漏了 spec-review-/dispute-judge- → 评审 Agent
+        # 在时间线上退化为泛型 "agent"，且 spec 残留整个 run_id）。
+        agent_type, spec_part = infer_run_agent_type(run_id)
         # 去掉 attempt 段（-a<n>，每个 attempt 追加的后缀），再剥末尾时间戳（-<ts>）。
         # 先剥 -a<n> 再剥时间戳，使 spec_part 不残留时间戳/尝试段。
         spec_part = re.sub(r"-a\d+$", "", spec_part)
@@ -3974,9 +3965,10 @@ _SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
                 # add-stale-code-selfheal：陈旧自愈配置节两键
                 "stale_code_selfheal.enabled",
                 "stale_code_selfheal.idle_confirm_seconds",
-                # add-framework-self-evolution：self_evolution 全局（用户级）两键
+                # add-framework-self-evolution：self_evolution 全局（用户级）三键
                 "self_evolution.auto_accept",
-                "self_evolution.max_items_per_run"]
+                "self_evolution.max_items_per_run",
+                "self_evolution.spec_run_at"]
 
 # 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
 # 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
@@ -4068,6 +4060,8 @@ def _managed_key_sources(raw: dict) -> dict:
             sources["self_evolution.auto_accept"] = "project"
         if "max_items_per_run" in se_raw:
             sources["self_evolution.max_items_per_run"] = "project"
+        if "spec_run_at" in se_raw:
+            sources["self_evolution.spec_run_at"] = "project"
     return sources
 
 
@@ -4145,8 +4139,10 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "hooks": {"global": [], "specs": {}},
         # add-stale-code-selfheal：陈旧自愈配置节（enabled 缺省 true / idle_confirm_seconds 缺省 120）
         "stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 120},
-        # add-framework-self-evolution：self_evolution 两键（缺省 auto_accept=false / max_items_per_run=20）
-        "self_evolution": {"auto_accept": False, "max_items_per_run": 20},
+        # add-framework-self-evolution：self_evolution 三键（缺省 auto_accept=false /
+        # max_items_per_run=20 / spec_run_at=null 立即执行）
+        "self_evolution": {"auto_accept": False, "max_items_per_run": 20,
+                           "spec_run_at": None},
         "scope": scope,
         "raw_exists": False,
         "sources": _managed_key_sources({}),
@@ -4584,7 +4580,7 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["stale_code_selfheal"]["enabled"] = scs["enabled"]
         if "idle_confirm_seconds" in scs:
             merged["stale_code_selfheal"]["idle_confirm_seconds"] = scs["idle_confirm_seconds"]
-    # add-framework-self-evolution：self_evolution 两键合并（项目级作用域写入已
+    # add-framework-self-evolution：self_evolution 三键合并（项目级作用域写入已
     # 被 write_config 前置校验拒绝，此处仅处理用户级合法值；缺省透传由
     # get_self_evolution_config 兜底）
     if "self_evolution" in patch and isinstance(patch["self_evolution"], dict):
@@ -4595,6 +4591,10 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["self_evolution"]["auto_accept"] = se_p["auto_accept"]
         if "max_items_per_run" in se_p:
             merged["self_evolution"]["max_items_per_run"] = se_p["max_items_per_run"]
+        if "spec_run_at" in se_p:
+            # null 显式写回 null（= 取消定时，回到立即执行）：不能因「假值不可写」
+            # 而保留旧时刻，否则 UI 上关不掉定时
+            merged["self_evolution"]["spec_run_at"] = se_p["spec_run_at"]
 
     return merged
 
@@ -4766,14 +4766,14 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                     f"integer: {_scs_v!r}"
                 )
 
-    # add-framework-self-evolution：self_evolution 两键前置校验 + 项目级作用域拒绝。
-    # 两键为全局（用户级）键：项目级作用域提交含 self_evolution → 400 且不写盘
+    # add-framework-self-evolution：self_evolution 三键前置校验 + 项目级作用域拒绝。
+    # 三键为全局（用户级）键：项目级作用域提交含 self_evolution → 400 且不写盘
     #（spec「项目级写入被拒」）；用户级提交的非法值直接拒绝 400，不静默忽略。
     if "self_evolution" in config_patch:
         if scope != "user":
             return fail(
-                "self_evolution 为全局用户级键（auto_accept / max_items_per_run），"
-                "请在用户级作用域修改"
+                "self_evolution 为全局用户级键（auto_accept / max_items_per_run / "
+                "spec_run_at），请在用户级作用域修改"
             )
         se_patch = config_patch["self_evolution"]
         if not isinstance(se_patch, dict):
@@ -4792,6 +4792,13 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 return fail(
                     f"self_evolution.max_items_per_run must be an integer in "
                     f"[1, 200]: {_se_v!r}"
+                )
+        # spec_run_at：null（立即执行）或合法 HH:MM；25:00 之类直接拒绝 400
+        if "spec_run_at" in se_patch and se_patch["spec_run_at"] is not None:
+            if not ConfigLoader.is_valid_hhmm(se_patch["spec_run_at"]):
+                return fail(
+                    f"self_evolution.spec_run_at must be null or HH:MM "
+                    f"(00:00-23:59): {se_patch['spec_run_at']!r}"
                 )
 
     # 2. 合并受管键

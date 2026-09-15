@@ -7,8 +7,10 @@ Covers:
 - Write-boundary validation classes
 """
 
+import hashlib
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -235,6 +237,44 @@ class TestWriteBoundary(unittest.TestCase):
         err = mgr._check_write_boundary("spec", data)
         self.assertIsNotNone(err)
         self.assertIn("repaired", err)
+
+    # ── 非归因信号不得判越界（2026-09-14 三连评审事故回归）────────────
+    #
+    # 评审 run 阻塞数分钟，期间主树的并发写者（人工编辑 / 其他会话）会改动
+    # 既存脏文件、新建文件。快照比对若把这类变动当越界，评审结果被整轮丢弃，
+    # 且 daemon 反复重派直到尝试耗尽——evo-item-retention-doc-tracking 三份
+    # 结果（约 $25）全部因此作废。可归因的硬门只剩「SPEC 目录内文件被删除」、
+    # 「repairs 路径非法」与「status 与改动不一致」。
+
+    def test_preexisting_dirty_file_modified_not_flagged(self):
+        """评审窗口内既存脏文件被并发改动 → 放行。"""
+        mgr, _ = self._manager()
+        dirty = self.tmpdir / "core" / "dirty.py"
+        dirty.parent.mkdir(parents=True, exist_ok=True)
+        dirty.write_text("v1\n", encoding="utf-8")
+        snapshot = {"spec_files": {},
+                    "dirty_files": {"core/dirty.py":
+                                    hashlib.md5(dirty.read_bytes()).hexdigest()}}
+        dirty.write_text("v2\n", encoding="utf-8")   # 并发写者
+        self.assertIsNone(mgr._verify_snapshot("spec", snapshot))
+
+    def test_new_untracked_file_outside_spec_not_flagged(self):
+        """评审窗口内主树新建未跟踪文件 → 放行。"""
+        mgr, _ = self._manager()
+        subprocess.run(["git", "init", "-q"], cwd=self.tmpdir, check=True)
+        snapshot = {"spec_files": {}, "dirty_files": {}}
+        (self.tmpdir / "core").mkdir(parents=True, exist_ok=True)
+        (self.tmpdir / "core" / "brand_new.py").write_text("x\n", encoding="utf-8")
+        self.assertIsNone(mgr._verify_snapshot("spec", snapshot))
+
+    def test_spec_file_deleted_still_flagged(self):
+        """SPEC 目录内文件被删除仍为硬门（评审者只可修补、不可删除）。"""
+        mgr, _ = self._manager()
+        snapshot = {"spec_files": {"spec/changes/spec/design.md": "deadbeef"},
+                    "dirty_files": {}}
+        err = mgr._verify_snapshot("spec", snapshot)
+        self.assertIsNotNone(err)
+        self.assertIn("被删除", err)
 
 
 class _RecordingRunner:

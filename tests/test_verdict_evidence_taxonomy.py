@@ -619,15 +619,18 @@ class TestPostReadySettle(unittest.TestCase):
         srv.base_url = "http://127.0.0.1:1"
         contract = VerifyContract(ready=ReadyProbe(url="/", expect=200, timeout=1))
 
+        # conftest 会话级把该常量置 0（避免各用例白等 10s），此处显式 patch
+        # 一个非零哨兵值，保证「按该常量静置」这一接线断言仍然有齿。
         with patch.object(_vmod, "probe_ready",
                           return_value=(True, "就绪探针通过")), \
+                patch.object(_vmod, "POST_READY_SETTLE_SECONDS", 7), \
                 patch.object(_vmod.time, "sleep") as sleep_mock:
             ok, blocked, note = pipeline._finalize_static(
                 srv, contract, scenarios, "主树")
 
         self.assertTrue(ok)
         self.assertFalse(blocked)
-        sleep_mock.assert_called_once_with(_vmod.POST_READY_SETTLE_SECONDS)
+        sleep_mock.assert_called_once_with(7)
         self.assertIn("静置", note)
 
     def test_probe_fail_returns_without_settle(self):
@@ -655,7 +658,13 @@ class TestPostReadySettle(unittest.TestCase):
                 srv, contract, scenarios, "主树")
 
         self.assertFalse(ok)
-        sleep_mock.assert_not_called()
+        # 探针失败不应发生「静置」等待。patch 的是全局 time.sleep，可能被同进程
+        # 其他后台线程调用，故断言「无任一 sleep 达到静置量级（≥1s）」而非
+        # assert_not_called（原断言在全量并发下会被无关线程的短 sleep 击穿）。
+        self.assertFalse(
+            [c for c in sleep_mock.call_args_list
+             if c.args and isinstance(c.args[0], (int, float)) and c.args[0] >= 1],
+            "探针失败不得触发秒级静置等待")
         self.assertIn("就绪探针超时", note)
 
 

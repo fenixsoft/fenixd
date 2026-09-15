@@ -19,6 +19,7 @@ from core.config import (
     SELF_EVOLUTION_AUTO_ACCEPT_DEFAULT,
     SELF_EVOLUTION_MAX_ITEMS_DEFAULT,
     SELF_EVOLUTION_MAX_ITEMS_UPPER,
+    SELF_EVOLUTION_SPEC_RUN_AT_DEFAULT,
 )
 
 
@@ -29,11 +30,12 @@ class TestSelfEvolutionConfig(unittest.TestCase):
         return ConfigLoader.get_self_evolution_config(config)
 
     def test_defaults_when_section_missing(self):
-        """节缺失 → auto_accept=False / max_items_per_run=20。"""
+        """节缺失 → auto_accept=False / max_items_per_run=20 / spec_run_at=None。"""
         out = self._get({})
         self.assertEqual(out, {
             "auto_accept": SELF_EVOLUTION_AUTO_ACCEPT_DEFAULT,
             "max_items_per_run": SELF_EVOLUTION_MAX_ITEMS_DEFAULT,
+            "spec_run_at": SELF_EVOLUTION_SPEC_RUN_AT_DEFAULT,
         })
 
     def test_defaults_when_section_empty(self):
@@ -52,9 +54,26 @@ class TestSelfEvolutionConfig(unittest.TestCase):
     def test_valid_values_passthrough(self):
         """合法值原样生效。"""
         out = self._get({"self_evolution": {"auto_accept": True, "max_items_per_run": 7}})
-        self.assertEqual(out, {"auto_accept": True, "max_items_per_run": 7})
+        self.assertEqual(out, {"auto_accept": True, "max_items_per_run": 7,
+                               "spec_run_at": None})
         out = self._get({"self_evolution": {"auto_accept": False, "max_items_per_run": 200}})
-        self.assertEqual(out, {"auto_accept": False, "max_items_per_run": 200})
+        self.assertEqual(out["auto_accept"], False)
+        self.assertEqual(out["max_items_per_run"], 200)
+
+    def test_spec_run_at_passthrough_and_fallback(self):
+        """spec_run_at：合法 HH:mm 生效；缺失/非法（含越界与类型错）回退 None。"""
+        self.assertEqual(
+            self._get({"self_evolution": {"spec_run_at": "02:00"}})["spec_run_at"],
+            "02:00")
+        self.assertEqual(
+            self._get({"self_evolution": {"spec_run_at": "23:59"}})["spec_run_at"],
+            "23:59")
+        for bad in ("25:00", "2:00", "02:60", "abc", "", 2, True, [], {}, 2.5):
+            out = self._get({"self_evolution": {"spec_run_at": bad}})
+            self.assertIsNone(out["spec_run_at"], f"应回退 None: {bad!r}")
+        # 显式 null 即「立即执行」，是合法值而非非法
+        self.assertIsNone(
+            self._get({"self_evolution": {"spec_run_at": None}})["spec_run_at"])
 
     def test_auto_accept_invalid_types_fallback(self):
         """auto_accept 非布尔（1 / "yes" / "true" / 0 / None）→ 回退缺省 False。"""
@@ -78,7 +97,8 @@ class TestSelfEvolutionConfig(unittest.TestCase):
         out = self._get({
             "self_evolution": {"auto_accept": "yes", "max_items_per_run": 5},
         })
-        self.assertEqual(out, {"auto_accept": False, "max_items_per_run": 5})
+        self.assertEqual(out, {"auto_accept": False, "max_items_per_run": 5,
+                               "spec_run_at": None})
 
     def test_no_exception_on_daemon_start_path(self):
         """resolve_config 宽松校验路径（热更新/启动）不会被 self_evolution 破坏。"""
@@ -110,6 +130,58 @@ class TestSelfEvolutionConfig(unittest.TestCase):
         self.assertFalse(SELF_EVOLUTION_AUTO_ACCEPT_DEFAULT)
         self.assertEqual(SELF_EVOLUTION_MAX_ITEMS_DEFAULT, 20)
         self.assertEqual(SELF_EVOLUTION_MAX_ITEMS_UPPER, 200)
+        self.assertIsNone(SELF_EVOLUTION_SPEC_RUN_AT_DEFAULT)
+
+
+class TestNextSpecRunAt(unittest.TestCase):
+    """``next_spec_run_at``：每日时刻 → 下一次到期的 UTC ISO。
+
+    now 一律传 naive 本地时间，期望值用同一进程的 ``astimezone`` 推算——用例
+    不依赖跑测试的机器时区。
+    """
+
+    @staticmethod
+    def _want(y, mo, d, h, mi):
+        from datetime import datetime as _dt, timezone as _tz
+        return _dt(y, mo, d, h, mi).astimezone(_tz.utc).isoformat()
+
+    def test_today_when_time_not_yet_reached(self):
+        """本地 09:44 且目标 23:00 未到 → 当日 23:00。"""
+        from datetime import datetime as _dt
+        got = next_spec_run_at("23:00", now=_dt(2026, 9, 14, 9, 44))
+        self.assertEqual(got, self._want(2026, 9, 14, 23, 0))
+
+    def test_tomorrow_when_time_already_passed(self):
+        """本地 23:30 且目标 23:00 已过 → 次日 23:00。"""
+        from datetime import datetime as _dt
+        got = next_spec_run_at("23:00", now=_dt(2026, 9, 14, 23, 30))
+        self.assertEqual(got, self._want(2026, 9, 15, 23, 0))
+
+    def test_tomorrow_when_time_exactly_now(self):
+        """恰好等于 now 也算已过 → 次日（保证 start_after 严格晚于当前时刻）。"""
+        from datetime import datetime as _dt
+        got = next_spec_run_at("23:00", now=_dt(2026, 9, 14, 23, 0))
+        self.assertEqual(got, self._want(2026, 9, 15, 23, 0))
+
+    def test_seconds_zeroed(self):
+        """秒/微秒归零：start_after 落到整分，不受调用时刻的秒数影响。"""
+        from datetime import datetime as _dt
+        got = next_spec_run_at("23:00", now=_dt(2026, 9, 14, 9, 44, 37, 12345))
+        self.assertEqual(got, self._want(2026, 9, 14, 23, 0))
+
+    def test_invalid_returns_none(self):
+        """None / 非字符串 / 格式错 / 越界 → None（不设门，fail-open）。"""
+        from datetime import datetime as _dt
+        now = _dt(2026, 9, 14, 9, 44)
+        for bad in (None, "", "abc", "2:00", "25:00", "09:60", "-1:00",
+                    5, 5.5, True, [], {}):
+            self.assertIsNone(next_spec_run_at(bad, now=now), f"应为 None: {bad!r}")
+
+    def test_result_is_utc_iso(self):
+        """返回值带 UTC 偏移（STATE.start_after 全链 UTC 的契约）。"""
+        from datetime import datetime as _dt
+        got = next_spec_run_at("23:00", now=_dt(2026, 9, 14, 9, 44))
+        self.assertTrue(got.endswith("+00:00"), got)
 
 
 # ── 任务 9.1（身份键 / items.jsonl / 水位 / todo.md 解析 / 增量筛选）──
@@ -417,6 +489,7 @@ from core.evolution import (
     reject_item,
     delete_item,
     auto_accept_pending,
+    next_spec_run_at,
     resolve_spec_name,
     upsert_item,
     write_todo_marker,
@@ -885,6 +958,30 @@ class TestEvolutionAcceptPath(unittest.TestCase):
             ["git", "-C", str(self.proot), "log", "--oneline"],
             capture_output=True, text=True, timeout=30)
         self.assertEqual(log.stdout.strip().count("[fenix] spec:"), 1)
+
+    def test_accept_with_start_after_registers_scheduled_spec(self):
+        """带 start_after 的接受：新 SPEC 的 STATE 条目落该字段（定时拾取生效）。"""
+        self._materialize_draft()
+        sa = "2026-09-15T18:00:00+00:00"
+        result = accept_item("a1b2c3d4e5f6", self.proot, self.sm,
+                             start_after=sa)
+        self.assertTrue(result["ok"])
+        entry = self.sm.read_all().get("evo-add-evo-test")
+        self.assertEqual(entry.get("start_after"), sa)
+
+    def test_accept_without_start_after_keeps_field_null(self):
+        """不带 start_after（缺省）：字段为 None，drafted 立即进入调度（原行为）。"""
+        self._materialize_draft()
+        accept_item("a1b2c3d4e5f6", self.proot, self.sm)
+        entry = self.sm.read_all().get("evo-add-evo-test")
+        self.assertIsNone(entry.get("start_after"))
+
+    def test_accept_with_empty_start_after_is_immediate(self):
+        """start_after 为空串 = 立即执行（假值不写字段），不是「排队到 1970 年」。"""
+        self._materialize_draft()
+        accept_item("a1b2c3d4e5f6", self.proot, self.sm, start_after="")
+        entry = self.sm.read_all().get("evo-add-evo-test")
+        self.assertIsNone(entry.get("start_after"))
         # STATE 仅一条
         self.assertEqual(len(self.sm.read_all()), 1)
 
@@ -1162,6 +1259,34 @@ class TestEvolutionAutoAccept(unittest.TestCase):
             self.assertEqual(items[eid]["status"], "auto_accepted")
             self.assertEqual(items[eid]["decided_by"], "auto")
             self.assertTrue(items[eid]["spec_name"].startswith("evo-"))
+
+    def test_auto_accept_applies_spec_run_at(self):
+        """spec_run_at 配置生效：批量立项的 SPEC 都排到「下一个该时刻」。"""
+        self._seed_with_drafts(["a1a1a1a1a1a1", "b2b2b2b2b2b2"])
+        summary = auto_accept_pending(self.proot, self.sm, spec_run_at="23:00")
+        self.assertEqual(summary["accepted"], 2)
+        # 期望值按同一进程的本地时区推算（用例不依赖机器时区）
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now()
+        want = now.replace(hour=23, minute=0, second=0, microsecond=0)
+        if want <= now:
+            want += timedelta(days=1)
+        want_iso = want.astimezone(timezone.utc).isoformat()
+        specs = self.sm.read_all()
+        for eid in ("a1a1a1a1a1a1", "b2b2b2b2b2b2"):
+            entry = next((e for name, e in specs.items() if name.endswith(eid)), None)
+            self.assertIsNotNone(entry, f"{eid} 未注册")
+            # 同批共用一次换算结果：两条排到同一时刻
+            self.assertEqual(entry.get("start_after"), want_iso)
+
+    def test_auto_accept_without_spec_run_at_is_immediate(self):
+        """未配 spec_run_at：立项后立即执行，start_after 缺省为 None。"""
+        self._seed_with_drafts(["a1a1a1a1a1a1"])
+        auto_accept_pending(self.proot, self.sm)
+        entry = next((e for name, e in self.sm.read_all().items()
+                      if name.endswith("a1a1a1a1a1a1")), None)
+        self.assertIsNotNone(entry)
+        self.assertIsNone(entry.get("start_after"))
 
     def test_auto_accept_ignores_non_pending(self):
         """analyzed 与 draft_failed 条目不受影响。"""

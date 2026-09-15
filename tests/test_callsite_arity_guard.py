@@ -17,7 +17,7 @@ AST 扫描 core/**/*.py（排除 node_modules vendored 代码）与 fenixd.py �
 - `ast.Starred`（*args 展开）与 `keyword.arg is None`（**kwargs 展开）调用
   不判定（实参数量静态不可知）。
 - 关键字补足：关键字名命中该签名位参名时计入已提供。
-- 误报白名单：最小粒度 (相对路径, 行号, 方法名)。
+- 误报白名单：最小粒度 `(相对路径, 方法名, 接收者表达式)`（语义键，不含行号）。
 """
 
 import ast
@@ -55,21 +55,38 @@ def _rel(path: Path) -> str:
 
 
 # ── 误报白名单 ─────────────────────────────────────────────────────────
-# 最小粒度 (相对路径, 行号, 方法名) 豁免确有其事的同名误报。实测当前
-# core/ + fenixd.py 仅两族：
-# 1. core/evolution.py SPEC_YAML_TEMPLATE.format(...) 是 str.format（关键字
+# 最小粒度 `(相对路径, 方法名, 接收者表达式)` 豁免确有其事的同名误报。
+# 语义键**不含行号**——2026-09-15 回归：以行号为键时 core/evolution.py 于
+# 文件前部插入 39 行（clear_todo 等）后 SPEC_YAML_TEMPLATE.format 由 803
+# 漂到 842，豁免失配 → 守卫误报红灯。核验接收者仍保证「非文件级/全局通配」：
+# 只有该文件的该接收者的该调用被豁免，同文件别处的同名调用仍判定。
+# 实测当前 core/ + fenixd.py 仅两族：
+# 1. core/evolution.py `SPEC_YAML_TEMPLATE.format(...)` 是 str.format（关键字
 #    展开），与 core/logger.py 的 Formatter.format(self, record) 同名——
 #    string 方法签名不匹配 Formatter 契约，属真实误报。
-# 2. Playwright 的 page.screenshot(path=..., full_page=...)（0 位参，
+# 2. Playwright 的 `page.screenshot(path=..., full_page=...)`（0 位参，
 #    全关键字）与 core/verify_engine/browser.py 自家
 #    screenshot(self, page, name, output_dir) 同名——Playwright API 在
-#    core 之外无签名可考，不能按 3 必填位参判定，逐行豁免。
+#    core 之外无签名可考，不能按 3 必填位参判定，逐接收者豁免。
 ARITY_WHITELIST = [
-    ("core/evolution.py", 803, "format"),
-    ("core/verify_engine/browser.py", 861, "screenshot"),
-    ("core/verify_engine/visual_diff.py", 172, "screenshot"),
-    ("core/verify_engine/visual_diff.py", 246, "screenshot"),
+    ("core/evolution.py", "format", "SPEC_YAML_TEMPLATE"),
+    ("core/verify_engine/browser.py", "screenshot", "page"),
+    ("core/verify_engine/visual_diff.py", "screenshot", "page"),
 ]
+
+
+def _receiver_src(call: ast.Call) -> str:
+    """调用接收者表达式的源码文本（白名单语义键的组成部分）。
+
+    误报白名单以 `(相对路径, 方法名, 接收者表达式)` 为键，不含行号：豁免
+    随代码行漂移，不再因上方插入而行号失配（2026-09-15 回归）。求值失败
+    （如极端嵌套表达式）返回空串——退化为「接收者不可识别」，该调用不被
+    任何接收者豁免（宁可多报不漏报）。
+    """
+    try:
+        return ast.unparse(call.func.value)
+    except Exception:  # noqa: BLE001 —— 反解析失败不穿透扫描
+        return ""
 
 
 def scan_arity(prod_files, seams, whitelist) -> list:
@@ -105,7 +122,7 @@ def scan_arity(prod_files, seams, whitelist) -> list:
                     provided += 1
             if provided >= req:
                 continue
-            if (rel, node.lineno, method) in whitelist:
+            if (rel, method, _receiver_src(node)) in whitelist:
                 continue
             cname = _enclosing_class_name(tree, node)
             violations.append(
@@ -231,20 +248,47 @@ class TestCallsiteArityGuard(unittest.TestCase):
             "    def go(self):\n"
             "        pm.handle_event('spec_implemented', 'demo')  # L1\n"
             "    def go2(self):\n"
-            "        pm.handle_event('spec_implemented', 'demo2')  # L2\n")
+            "        svc.handle_event('spec_implemented', 'demo2')  # L2\n")
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             seam_file = _write_temp_py(root, "core/_seams.py", SEAM_SOURCE)
             call_file = _write_temp_py(root, "core/_calls.py", call_source)
             sigs = index_method_signatures([seam_file])
             seams = unique_seams(sigs)
-            # L1 在第 5 行：白名单豁免；L2 在第 7 行：仍报
-            whitelist = [(_rel(call_file), 5, "handle_event")]
+            # 语义键（接收者 pm）：L1 豁免；不同接收者 svc 的 L2 仍报
+            whitelist = [(_rel(call_file), "handle_event", "pm")]
             violations = scan_arity([seam_file, call_file], seams, whitelist)
         self.assertEqual(len(violations), 1)
-        self.assertIn(":7 ", violations[0])
-        # 白名单外同名调用仍正常判定（非文件级/全局豁免）
         self.assertIn("handle_event 调用给 2 个 / 要求 3 个", violations[0])
+        # 白名单外同名调用仍正常判定（非文件级/全局豁免）
+        self.assertIn("Consumer.handle_event", violations[0])
+
+    def test_whitelist_semantic_key_immune_to_line_drift(self):
+        """语义键（接收者+方法名）豁免免疫行号漂移。
+
+        回归（2026-09-15）：白名单曾以 `(相对路径, 行号, 方法名)` 为键，
+        core/evolution.py 在文件前部插入 39 行后 SPEC_YAML_TEMPLATE.format
+        由 803 漂到 842，豁免失配 → 守卫误报红灯（fix-writepoint-anchor-drift
+        记录的绝对行号反模式）。语义键下于调用点上方插入任意多无关行，
+        豁免照常命中。
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            seam_file = _write_temp_py(root, "core/_seams.py", SEAM_SOURCE)
+            # 同一调用点，上方垫 40 行无关代码（制造行号漂移）
+            padded = (
+                "# pad\n" * 40
+                + "from core._seams import PMEngine\n"
+                + "pm = PMEngine()\n"
+                + "class Consumer:\n"
+                + "    def go(self):\n"
+                + "        pm.handle_event('spec_implemented', 'demo')\n")
+            call_file = _write_temp_py(root, "core/_calls.py", padded)
+            sigs = index_method_signatures([seam_file])
+            seams = unique_seams(sigs)
+            whitelist = [(_rel(call_file), "handle_event", "pm")]
+            violations = scan_arity([seam_file, call_file], seams, whitelist)
+        self.assertEqual(violations, [])
 
 
 class TestArityGuardTeeth(unittest.TestCase):

@@ -28,6 +28,11 @@ from pathlib import Path
 
 LEGACY_SESSION = "fenixd"
 
+# start_daemon 启动后轮询等待进程立起来的次数 × 步长（秒）。模块常量而非
+# 字面量，供测试注入小值（is_running 被 mock 为假时否则真等 5s）。
+START_DAEMON_PROBE_ATTEMPTS = 50
+START_DAEMON_PROBE_INTERVAL_SECONDS = 0.1
+
 
 def resolve_root(root: str | None = None) -> Path:
     """规范化项目根路径（展开 ~ 与软链接）。"""
@@ -361,10 +366,10 @@ def start_daemon(root: str | None = None) -> dict:
         return {"ok": False, "error": f"无法启动 daemon（tmux 不可用？）: {e}", "session": session, "already": False}
 
     # 轮询等待进程真正起来（is_running 主判定为 /proc 进程检测）
-    for _ in range(50):
+    for _ in range(START_DAEMON_PROBE_ATTEMPTS):
         if is_running(proot):
             return {"ok": True, "error": None, "session": session, "already": False}
-        time.sleep(0.1)
+        time.sleep(START_DAEMON_PROBE_INTERVAL_SECONDS)
     # 即便 is_running 因环境不可判（/proc 不可读）未命中，session 也已创建成功
     return {"ok": True, "error": None, "session": session, "already": False}
 

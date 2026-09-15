@@ -45,7 +45,7 @@ def _dummy_http(port: int, directory: Path):
     handler = lambda *a, **kw: _QuietHandler(  # noqa: E731
         *a, directory=str(directory), **kw)
     srv = ThreadingHTTPServer(("127.0.0.1", port), handler)
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t = threading.Thread(target=lambda: srv.serve_forever(poll_interval=0.05), daemon=True)
     t.start()
     return srv
 
@@ -370,6 +370,7 @@ class TestLegacyRewriteLogNeutral(unittest.TestCase):
         """
         from test_inplace_bug_repair import _mk_engine
         from core.state_machine import StateMachine
+        from core.pm_engine import verification as _vmod
         sm = StateMachine(self.tmp / ".fenix" / "STATE.md", self.logger)
         engine, _ = _mk_engine(self.tmp, self.logger, {
             "verify": {"static_scope": "main"},
@@ -377,6 +378,16 @@ class TestLegacyRewriteLogNeutral(unittest.TestCase):
                 "start": "python3 -m http.server {port} --bind 127.0.0.1",
             },
         })
+        # 该用例走 legacy 兜底链的 30s 探活超时分支（场景 URL 59999 不可达）。
+        # 轮询次数/步长是可注入模块常量，测试注入 1×0.01s，避免白等 30s。
+        import unittest.mock as _mock
+        _patch = _mock.patch.object(_vmod, "LEGACY_START_PROBE_ATTEMPTS", 30)
+        _patch.start()
+        self.addCleanup(_patch.stop)
+        _patch2 = _mock.patch.object(
+            _vmod, "LEGACY_START_PROBE_INTERVAL_SECONDS", 0.05)
+        _patch2.start()
+        self.addCleanup(_patch2.stop)
         p = (self.tmp / ".fenix" / "verify-progress" / "spec-a"
              / "test_scenarios.json")
         p.parent.mkdir(parents=True, exist_ok=True)

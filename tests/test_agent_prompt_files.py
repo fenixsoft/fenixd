@@ -104,6 +104,30 @@ class TestFileLoadAndPlaceholders:
         assert "人工呼叫：检查 SPEC stuck-spec" in prompt
         assert str(proot / ".fenix" / "admin_disposition-x.json") in prompt
 
+    def test_administrator_structured_evidence_rendered(self, tmp_path):
+        """遗留的结构化 evidence 不再让占位符填充崩溃（回归）。
+
+        占位符填充走 str.replace，若 detail.evidence 是 dict 会抛
+        "replace() argument 2 must be str, not dict"，Administrator run 起不来
+        （实证：stash_pop_conflict 直发 dict evidence → 唤起失败升级人工）。
+        _fill_placeholders 在填充点兜底归一，任何深度传入都不崩。
+        """
+        proot = tmp_path / "proj"
+        _mk_spec_dir(proot, "demo")
+        runner = make_runner(proot)
+        signal = {
+            "signal_type": "stash_pop_conflict",
+            "spec": "evo-x",
+            "severity": "major",
+            "description": "pop 冲突已自愈",
+            "evidence": {"conflict_files": ["core/a.py"], "stash_kept": True},
+            "recommended_action": "核对 stash",
+            "disposition_path": str(proot / ".fenix" / "admin_disposition-x.json"),
+        }
+        prompt = runner._prompt_builder._build_prompt(
+            "demo", "administrator", detail=signal)
+        assert "conflict_files" in prompt and "core/a.py" in prompt
+
     def test_unknown_agent_type_rejected(self, tmp_path):
         proot = tmp_path / "proj"
         _mk_spec_dir(proot, "demo")

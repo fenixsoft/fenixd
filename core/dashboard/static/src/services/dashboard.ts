@@ -877,12 +877,18 @@ export interface StaleCodeSelfhealConfig {
 
 // ── 框架自进化（add-framework-self-evolution）───────────────────────
 
-/** self_evolution 配置节（全局用户级键：auto_accept / max_items_per_run） */
+/** self_evolution 配置节（全局用户级键：auto_accept / max_items_per_run / spec_run_at） */
 export interface SelfEvolutionConfig {
   /** 允许框架自改进（缺省 false）：打开后自动接受全部判定值得立项的条目 */
   auto_accept?: boolean;
   /** 每轮分析条目上限（1..200，缺省 20） */
   max_items_per_run?: number;
+  /**
+   * 立项后的 SPEC 执行时刻（缺省 null = 立即执行）。
+   * "HH:mm" 表示「每日该时刻执行」——本地时区解释，立项时把新 SPEC 排到下一个
+   * 该时刻（STATE.start_after），到点前不派发。
+   */
+  spec_run_at?: string | null;
 }
 
 /** 建议改进项摘要（GET /api/evolution/items 列表元素） */
@@ -946,13 +952,18 @@ export async function getEvolutionDraft(
 
 export async function acceptEvolutionItem(
   itemId: string,
+  startAfter?: string | null,
 ): Promise<{ ok: boolean; status?: string; spec_name?: string; error?: string }> {
   // request() 直传 RequestInit 给 fetch，须以 body 字段携带 JSON 请求体
   // （与既有 POST 封装同形态，勿用 axios 风格 data 键——fetch 不识别）
+  //
+  // start_after：新 SPEC 的定时拾取时刻（UTC ISO）。null/缺省 = 立项后立即执行。
+  // 「立即」必须显式传 null（而非省略），才能与「未指定」区分——设置页的
+  // spec_run_at 可能配着定时，用户却在弹窗里选了立即。
   return request('/api/evolution/accept', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ item_id: itemId }),
+    body: JSON.stringify({ item_id: itemId, start_after: startAfter ?? null }),
   });
 }
 
@@ -975,6 +986,21 @@ export async function deleteEvolutionItem(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ item_id: itemId }),
+  });
+}
+
+export async function clearAllEvolutionTodo(): Promise<{
+  ok: boolean;
+  cleared: string[];
+  skipped: { project: string; reason: string }[];
+  failed: { project: string; error: string }[];
+}> {
+  // 全局动作：清空所有项目的 .fenix/todo.md（不传项目参数）。
+  // 仅清 todo.md 上游文件，不触碰 items.jsonl，故条目列表不受影响。
+  return request('/api/evolution/clear-todo', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
   });
 }
 

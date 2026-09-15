@@ -1,35 +1,22 @@
 # 验证报告：evo-admin-signal-consolidation
 
-> ⚠️ 本报告由框架于 2026-09-15T00:37:26Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
-> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-15T00:30:04.328723+00:00
+> ⚠️ 本报告由框架于 2026-09-15T02:13:18Z 自动合成（裁决 Agent 未写报告，已由框架合成），内容为结构化验证产物（report.json / .fenix-run-result.json）的忠实渲染。
+> 报告时效标记（判定本报告是否属上一轮）：合成源轮次指纹：report.json@2026-09-15T02:13:18.466303+00:00
 
-## 结论：❌ 未通过（Bug Found）
+## 结论：✅ 通过（verified）
 
-**状态：bug-found — 17/18 场景通过，1 失败，0 错误（1 个真实产品 Bug）**
+**状态：verified — 18/18 场景通过，0 失败，0 错误（全部场景通过）**
 
-回归组 1/36 失败：test_append_serializes_non_string_evidence。AdminStore.append 写入口未将 dict/list evidence 序列化为 JSON 串，rec["evidence"] 保留为 dict，违反 evidence 字符串契约（回归 fix-alert-evidence-render-crash）。其余 17 场景 35 断言全过。
+全绿快道: 18/18 场景通过、0 失败 0 警告——无分类对象，跳过 judge 机械 verified
 
 | 指标 | 数量 |
 | --- | --- |
-| 通过 | 17 |
-| 失败 | 1 |
+| 通过 | 18 |
+| 失败 | 0 |
 | 错误 | 0 |
-| 产品 Bug | 1 |
-| 本链增量 Token（输入） | 6.21M |
+| 产品 Bug | 0 |
+| 本链增量 Token（输入） | 6.56M |
 | 本链增量 Token（输出） | 0.07M |
-
-
-## 真实产品 Bug
-
-### BUG-01（severity=major）· exit_code / output_match
-
-- 关联场景：reg-admin-store-throttle-disposition-suite
-- 描述：AdminStore.append 不序列化非字符串 evidence：dict/list 类型 evidence 直传落盘与读出，违反 evidence 恒为 str 契约，读侧（Dashboard API / prompt 注入）将收到对象类型，可能复现 fix-alert-evidence-render-crash 的白屏崩溃（该回归测试在 main 工作树存在且失败）。
-- 根因：core/admin_store.py _normalize_entry 仅 setdefault("evidence", None)，append/merge_signal 写路径无 json.dumps 序列化非字符串 evidence 的分支
-- 证据（场景 reg-admin-store-throttle-disposition-suite 结构化证据，引用）：
-  - failed_assertions: [{"type": "exit_code", "expected": 0, "actual": 1, "message": "pytest 退出码 1"}, {"type": "output_match", "mode": "contains", "expected": "36 passed", "actual": ".F.F................................... [100%] FAILURES"}, {"type": "output_match", "mode": "negate FAILED", "expected": "不包含 FAILED", "actual": "FAILED tests/test_admin.py::TestAdminStore::test_append_serializes_non_string_evidence"}]
-  - screenshots: []
-  - first_failed_step: 步骤1: python3 -m pytest tests/test_admin.py::TestAdminStore ... 退出码 1，test_append_serializes_non_string_evidence 失败
 
 
 ## 场景结果
@@ -53,18 +40,9 @@
 | static-handle-signal-merge-routing | 静态保真·_handle_signal 两处落库（节流分支/唤起分支）均经 merge_signal 沉淀、无直接 append 残留——「同状态不逐轮新增记录」在实现层成立（core/admin_monitor.py:833-888） | pass | 0/3 | - |
 | static-stalled-escalation-module-constant | 静态保真·R2 阈值 2h 为模块常量 STALLED_ESCALATION_MINUTES=120（core/admin_monitor.py:72）、不进 config（core/config.py:928-958 get_admin_config 无相关键——规避「新增配置项必须带 Dashboard UI」约束） | pass | 0/3 | - |
 | static-r3-observability-no-new-endpoint | 静态保真·R3 可观测不新增 dashboard 聚合端点：自省报告 admin 摘要「信号 N 条」仍由 store.read_all 按 kind=signal 计数（core/self_review.py:683-695）、core/dashboard/server.py 无新增 signal 列表端点（无信号消费端即死代码，design.md R3 非目标） | pass | 0/3 | - |
-| reg-admin-store-throttle-disposition-suite | 回归·admin store/节流/处置闭环相邻测试 36 条全通过：TestAdminStore 全组（含 latest_signal 4 外部调用点）、TestAdminMonitorThrottle 冷却节流与未处理抑制、TestEscalationClosedOnFinalDisposition 孤儿 escalation 闭环均不受沉淀改动影响（tests/test_admin.py） | failed（已修正） | 3/3 | product-bug |
-
-
-## 断言级豁免清单
-
-以下失败断言被归类为非产品缺陷（不记产品 Bug），逐条列出供人工复核豁免是否掩盖真实缺陷（场景级一句话归因不足以复核）。
-
-无非 product-bug 的被豁免失败断言。
+| reg-admin-store-throttle-disposition-suite | 回归·admin store/节流/处置闭环相邻测试 39 条全通过：TestAdminStore 全组（含 latest_signal 4 外部调用点）、TestAdminMonitorThrottle 冷却节流与未处理抑制、TestEscalationClosedOnFinalDisposition 孤儿 escalation 闭环均不受沉淀改动影响（tests/test_admin.py） | pass | 0/3 | - |
 
 ## 本轮场景集变更
 
-当前稳定场景集共 18 个（第 1 轮）。
-
-- 首轮写入 18 个场景
+场景集与持久化集一致，无变更。
 

@@ -17,6 +17,7 @@ import RunCancelModal from './components/RunCancelModal';
 import { ClaudeOutputPane } from '@/components/claude-msg';
 import { OutlinedTag } from '@/components/StatusTag';
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { fmtEvidence } from '@/utils/evidence';
 import { fetchProposalWhy } from '@/utils/proposalWhy';
 import { fmtInputTokens, fmtMillions } from '@/utils/tokens';
 
@@ -257,30 +258,42 @@ const SEV_LABEL: Record<string, string> = { critical: '严重', major: '较高',
 const SEV_COLOR: Record<string, string> = { critical: 'red', major: 'orange', minor: 'blue' };
 
 // Agent 中文名（与设置页 Agent 模型角色中文名对应；implementer 沿用「开发」）。
-// agent_type 为泛型 'agent' 或缺失时，按 run_id 前缀（admin-/impl-/test-/verify-）判别。
+// agent_type 为泛型 'agent' 或缺失时，按 run_id 前缀（RUN_ID_PREFIX_LABEL）判别。
 const AGENT_LABEL: Record<string, string> = {
   implementer: '开发 Agent',
   planner: '规划 Agent',
   'planner-plan': '生成场景 Agent',
   'planner-judge': '判定结果 Agent',
+  'spec-review': '需求评审 Agent',
+  'dispute-judge': '争议裁决 Agent',
   verifier: '验证 Agent',
   tester: '测试 Agent',
   administrator: '运维 Agent',
 };
 
-const RUN_ID_PREFIX_LABEL: Record<string, string> = {
-  impl: '开发 Agent',
-  admin: '运维 Agent',
-  test: '测试 Agent',
-  verify: '验证 Agent',
-};
+// run_id 前缀兜底。⚠️ 必须按完整前缀匹配（不能用 split('-')[0]）：spec-review- /
+// dispute-judge- / planner-plan- 等是多段前缀，首段 'spec'/'dispute'/'planner'
+// 无法唯一归属；长的排前面，首个命中即止。
+const RUN_ID_PREFIX_LABEL: [prefix: string, label: string][] = [
+  ['planner-judge-', '判定结果 Agent'],
+  ['planner-plan-', '生成场景 Agent'],
+  ['dispute-judge-', '争议裁决 Agent'],
+  ['spec-review-', '需求评审 Agent'],
+  ['impl-', '开发 Agent'],
+  ['admin-', '运维 Agent'],
+  ['test-', '测试 Agent'],
+  ['verify-', '验证 Agent'],
+];
 
 function agentLabel(item: { agent_type?: string; run_id?: string }): string {
   const t = (item.agent_type || '').toLowerCase();
-  if (t && AGENT_LABEL[t]) return AGENT_LABEL[t];
-  const prefix = (item.run_id || '').toLowerCase().split('-')[0];
-  if (prefix && RUN_ID_PREFIX_LABEL[prefix]) return RUN_ID_PREFIX_LABEL[prefix];
-  return t || '未知 Agent';
+  // 泛型 'agent' 视同缺失（后端未识别出类型），继续走 run_id 前缀判别
+  if (t && t !== 'agent' && AGENT_LABEL[t]) return AGENT_LABEL[t];
+  const rid = (item.run_id || '').toLowerCase();
+  for (const [prefix, label] of RUN_ID_PREFIX_LABEL) {
+    if (rid.startsWith(prefix)) return label;
+  }
+  return AGENT_LABEL[t] || '未知 Agent';
 }
 
 // 回退原因含「verification report」时渲染为链接（点击打开验证报告弹窗）
@@ -1529,7 +1542,8 @@ export default function SpecDetailPage() {
       {(detail?.error || specAlerts.length > 0) && (
         <div style={{ marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {specAlerts.map((a) => {
-            const hasContent = !!(a.recommended_action || a.evidence);
+            const evidenceText = fmtEvidence(a.evidence);
+            const hasContent = !!(a.recommended_action || evidenceText);
             const expanded = expandedAlerts.has(a.id);
             return (
               <Alert
@@ -1558,9 +1572,9 @@ export default function SpecDetailPage() {
                           <Typography.Text type="secondary">建议：{a.recommended_action}</Typography.Text>
                         </div>
                       )}
-                      {a.evidence && (
+                      {evidenceText && (
                         <div>
-                          <Typography.Text type="secondary">证据：{a.evidence}</Typography.Text>
+                          <Typography.Text type="secondary">证据：{evidenceText}</Typography.Text>
                         </div>
                       )}
                     </div>

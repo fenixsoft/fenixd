@@ -101,11 +101,11 @@ function TaskProgressTile({ totals }: { totals: OverviewTotals }) {
   );
 }
 
-// 活跃 Agent 类型展示分类（planner 家族合并为「规划」，评审独立；administrator 为运维；未知类型归「其它」）
+// 活跃 Agent 类型展示分类（planner 家族合并为「规划」，评审独立（含需求评审）；administrator 为运维；未知类型归「其它」）
 const AGENT_CATS: [keys: string[], label: string][] = [
   [['implementer'], '实现'],
   [['planner', 'planner-plan'], '规划'],
-  [['planner-judge'], '评审'],
+  [['planner-judge', 'spec-review', 'dispute-judge'], '评审'],
   [['verifier'], '验证'],
   [['tester'], '测试'],
   [['administrator'], '运维'],

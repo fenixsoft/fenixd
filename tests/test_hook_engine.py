@@ -29,6 +29,17 @@ from core.hook_engine import (
 )
 
 
+def _audit_has(proot, hook_id, status=None, timeout=3.0):
+    """轮询 hook 审计直到出现该 hook（可选 status）或超时。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for r in read_hook_audit(proot):
+            if r.get("hook_id") == hook_id and (status is None or r.get("status") == status):
+                return True
+        time.sleep(0.05)
+    return False
+
+
 def _make_repo(tmpdir: Path) -> Path:
     """创建临时 git 仓库并做一次初始提交，返回项目根。"""
     proot = tmpdir / "proj"
@@ -274,7 +285,7 @@ class TestSevenActions(unittest.TestCase):
             def log_message(self, *a): pass
         srv = HTTPServer(("127.0.0.1", 0), H)
         port = srv.server_address[1]
-        t = threading.Thread(target=srv.serve_forever, daemon=True); t.start()
+        t = threading.Thread(target=lambda: srv.serve_forever(poll_interval=0.05), daemon=True); t.start()
         try:
             eng = self._eng()
             cfg = {"events": ["done"], "action": "webhook", "url": f"http://127.0.0.1:{port}/cb"}
@@ -296,7 +307,7 @@ class TestSevenActions(unittest.TestCase):
             def log_message(self, *a): pass
         srv = HTTPServer(("127.0.0.1", 0), H)
         port = srv.server_address[1]
-        t = threading.Thread(target=srv.serve_forever, daemon=True); t.start()
+        t = threading.Thread(target=lambda: srv.serve_forever(poll_interval=0.05), daemon=True); t.start()
         try:
             eng = self._eng()
             cfg = {"events": ["done"], "action": "webhook", "url": f"http://127.0.0.1:{port}/cb"}
@@ -434,7 +445,8 @@ class TestEndToEndDispatch(unittest.TestCase):
         # 存在；测试环境无真实 supervisor，patch 为在跑以验证全链成功语义
         with mock.patch("core.fenix_session.supervisor_running", return_value=True):
             eng.dispatch("s1", "verified", "done", {})
-            time.sleep(1.0)
+            self.assertTrue(_audit_has(self.proot, "g1"))
+            self.assertTrue(_audit_has(self.proot, "s1a"))
         recs = read_hook_audit(self.proot)
         statuses = {r["hook_id"]: r["status"] for r in recs}
         self.assertEqual(statuses["g1"], STATUS_SUCCESS)
@@ -447,7 +459,10 @@ class TestEndToEndDispatch(unittest.TestCase):
              "url": "http://127.0.0.1:19999/x", "timeout_seconds": 1})
         eng = HookEngine(self.proot, self.config, logger=MagicMock())
         eng.dispatch("s1", "verified", "done", {})
-        time.sleep(1.5)
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not (
+                self.proot / ".fenix" / "admin_alerts.json").exists():
+            time.sleep(0.05)
         alerts = json.loads((self.proot / ".fenix" / "admin_alerts.json").read_text())
         hook_fail = [a for a in alerts if a.get("signal_type") == "hook_failure"]
         self.assertTrue(hook_fail)
@@ -457,13 +472,8 @@ class TestEndToEndDispatch(unittest.TestCase):
         cfg = {"project": {"name": "t"}, "hooks": {"global": [], "specs": {}}}
         eng = HookEngine(self.proot, cfg, logger=MagicMock())
         eng.dispatch("s1", "verified", "testing", {})
-        time.sleep(0.5)
         audit_file = self.proot / ".fenix" / "hook_audit.jsonl"
         self.assertFalse(audit_file.exists())
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TestAllDoneEvent(unittest.TestCase):
@@ -540,7 +550,7 @@ class TestAllDoneEvent(unittest.TestCase):
         self._write_state({"spec-a": "implementing", "spec-b": "pushed"})
         engine = self._engine()
         engine.dispatch("spec-b", "testing", "pushed", {})
-        time.sleep(0.3)
+        # 非全员终态 → 不评估 all-done，dispatch 内无并发线程，同步断言即可
         self.assertFalse((self.proot / ".fenix" / "restart_request").exists(),
                          "仍有进行中 spec 时不应触发 all-done")
         self.assertEqual([a for a in read_hook_audit(self.proot)
@@ -550,7 +560,6 @@ class TestAllDoneEvent(unittest.TestCase):
         self._write_state({"spec-a": "blocked", "spec-b": "pushed"})
         engine = self._engine()
         engine.dispatch("spec-b", "testing", "pushed", {})
-        time.sleep(0.3)
         self.assertFalse((self.proot / ".fenix" / "restart_request").exists())
 
     def test_fires_once_until_spec_leaves_terminal(self):
@@ -568,13 +577,13 @@ class TestAllDoneEvent(unittest.TestCase):
              if a.get("event") == "all-done"]) == 1))
         # ② spec-b: done → pushed（STATE 已是 pushed，a/b 均终态）→ 去重不发
         engine.dispatch("spec-b", "done", "pushed", {})
-        time.sleep(0.3)
+        # 去重路径不派发线程，同步断言
         self.assertEqual(len([a for a in read_hook_audit(self.proot)
                               if a.get("event") == "all-done"]), 1)
         # ③ 打回：spec-b pushed → implementing → 复位去重标志
         self._write_state({"spec-a": "done", "spec-b": "implementing"})
         engine.dispatch("spec-b", "pushed", "implementing", {})
-        time.sleep(0.3)
+        # 复位路径（非终态迁移）不派发线程，同步断言
         self.assertEqual(len([a for a in read_hook_audit(self.proot)
                               if a.get("event") == "all-done"]), 1)
         # ④ 再收口：spec-b implementing → pushed → 再发
@@ -742,3 +751,7 @@ class TestAllDoneRestartOnce(unittest.TestCase):
         self.assertFalse(self.marker.exists())
         self.assertIn("h-alldone1", self.proj_cfg.read_text(encoding="utf-8"))
         self.assertIn("h-alldone1", [h["id"] for h in eng.config["hooks"]["global"]])
+
+
+if __name__ == "__main__":
+    unittest.main()

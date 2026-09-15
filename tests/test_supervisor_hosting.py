@@ -210,6 +210,9 @@ class TestStartStopHosted:
         monkeypatch.setattr(fenix_session, "is_running", lambda root=None: False)
         monkeypatch.setattr(fenix_session, "supervisor_running", lambda root=None: False)
         monkeypatch.setattr(fenix_session.subprocess, "run", _fake_tmux_run)
+        # is_running 恒假 → 走满轮询等待；注入小步长避免真等 5s。
+        monkeypatch.setattr(fenix_session, "START_DAEMON_PROBE_ATTEMPTS", 1)
+        monkeypatch.setattr(fenix_session, "START_DAEMON_PROBE_INTERVAL_SECONDS", 0.01)
         result = fenix_session.start_daemon(str(proot))
         assert result["ok"] is True
         assert not stop_flag.exists()
@@ -222,6 +225,8 @@ class TestStartStopHosted:
         monkeypatch.setattr(fenix_session, "is_running", lambda root=None: False)
         monkeypatch.setattr(fenix_session, "supervisor_running", lambda root=None: True)
         monkeypatch.setattr(fenix_session.subprocess, "run", _fake_tmux_run)
+        monkeypatch.setattr(fenix_session, "START_DAEMON_PROBE_ATTEMPTS", 1)
+        monkeypatch.setattr(fenix_session, "START_DAEMON_PROBE_INTERVAL_SECONDS", 0.01)
         fenix_session.start_daemon(str(proot))
         assert stop_flag.exists()
 
@@ -655,12 +660,21 @@ class TestProcessIdentityNotSubstring:
         path.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
 
     @staticmethod
-    def _spawn(argv, cwd) -> subprocess.Popen:
+    def _spawn(argv, cwd, timeout: float = 5.0) -> subprocess.Popen:
         proc = subprocess.Popen(
             argv, cwd=str(cwd),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        time.sleep(0.5)  # 等 /proc 的 cwd/cmdline 可读
+        # 轮询等 /proc/<pid>/cmdline 可读，而非固定 sleep(0.5)
+        cmdline = Path("/proc") / str(proc.pid) / "cmdline"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                if cmdline.read_bytes():
+                    break
+            except OSError:
+                pass
+            time.sleep(0.01)
         return proc
 
     # ── 假阳性方向 ────────────────────────────────────────────────

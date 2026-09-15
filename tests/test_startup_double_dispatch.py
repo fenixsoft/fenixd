@@ -54,11 +54,16 @@ class TestSingleFlightGuard(unittest.TestCase):
         enqueue_calls = []
         original_enqueue = self.engine._dispatcher._enqueue
 
-        # Create a slow enqueue that simulates concurrent dispatch
+        # Create a slow enqueue that holds the critical section until thread2
+        # has actually entered, instead of racing on time.sleep ordering.
+        first_entered = threading.Event()
+        second_started = threading.Event()
+
         def slow_enqueue(spec_name, agent_type):
             enqueue_calls.append((spec_name, agent_type))
-            # Simulate some work before returning
-            time.sleep(0.1)
+            if not first_entered.is_set():
+                first_entered.set()          # thread1 已进入临界区
+                second_started.wait(timeout=5)  # 等 thread2 已启动再放行
             original_enqueue(spec_name, agent_type)
 
         self.engine._dispatcher._enqueue = slow_enqueue
@@ -73,12 +78,12 @@ class TestSingleFlightGuard(unittest.TestCase):
         thread2 = threading.Thread(target=dispatch_worker)
 
         thread1.start()
-        # Small delay to ensure thread1 starts first
-        time.sleep(0.01)
-        thread2.start()
+        self.assertTrue(first_entered.wait(timeout=5), "thread1 未进入临界区")
+        thread2.start()          # 事件同步，替代 sleep(0.01) 赌先后
+        second_started.set()
 
-        thread1.join()
-        thread2.join()
+        thread1.join(timeout=10)
+        thread2.join(timeout=10)
 
         # Only one dispatch should have proceeded (the first one)
         # The second should have been blocked by the single-flight guard

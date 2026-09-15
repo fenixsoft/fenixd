@@ -43,9 +43,14 @@ _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 # ── add-framework-self-evolution：self_evolution 段 ──────────────────
 # auto_accept 缺省 false（纯增量，用户显式开启后才自动接受）。
 # max_items_per_run 缺省 20，上界 200（非法回退缺省，不阻塞 daemon 启动）。
+# spec_run_at 缺省 None = 立项后立即执行（存量配置无此键即保持现状）；值为
+# "HH:mm" 时表示「每日该时刻执行」——立项时把新 SPEC 的 start_after 排到下一个
+# 该时刻，到点前 dispatch 静默跳过。时区口径与 admin.self_review.run_at 一致
+# （本地时区；落盘 start_after 仍为 UTC ISO）。
 SELF_EVOLUTION_AUTO_ACCEPT_DEFAULT = False
 SELF_EVOLUTION_MAX_ITEMS_DEFAULT = 20
 SELF_EVOLUTION_MAX_ITEMS_UPPER = 200
+SELF_EVOLUTION_SPEC_RUN_AT_DEFAULT = None
 
 # D3：旧键弃用告警 / D5：absolute_max 兜底 ERROR 的生命周期去重标记，
 # 避免 30 分钟扫描热更新时反复刷屏。
@@ -84,8 +89,9 @@ class ConfigLoader:
 
     # Known agent types for model assignment（fast-track 与 implementer 同为派发角色，
     # 未纳入时 agents.models 配置它会被 _validate_agent_models 拒绝，fast-track 派发
-    # 恒走默认网关——任务进度契约在其会话中成为死信的根因之一）
-    KNOWN_AGENT_TYPES = ["implementer", "fast-track", "planner-plan", "planner-judge", "verifier", "administrator", "self-review", "spec-review"]
+    # 恒走默认网关——任务进度契约在其会话中成为死信的根因之一。dispute-judge 同样：
+    # 未纳入时无法分配专属模型，只能随网关当前 provider 漂移，且网关欠费时秒挂）
+    KNOWN_AGENT_TYPES = ["implementer", "fast-track", "planner-plan", "planner-judge", "verifier", "administrator", "self-review", "spec-review", "dispute-judge"]
 
     # ── run_timeout 按 agent_type 覆盖（per-agent-timeout-override）──────
     # agents.timeout_overrides.<agent_type> 覆盖全局 run_timeout_seconds。
@@ -469,6 +475,14 @@ class ConfigLoader:
                         "%r，回退缺省 %s",
                         SELF_EVOLUTION_MAX_ITEMS_UPPER, mip,
                         SELF_EVOLUTION_MAX_ITEMS_DEFAULT,
+                    )
+            # spec_run_at 合法域 = None（立即执行）或 "HH:mm"；其余回退 None
+            if "spec_run_at" in se and se["spec_run_at"] is not None:
+                sra = se["spec_run_at"]
+                if not (isinstance(sra, str) and _HHMM_RE.match(sra)):
+                    _logger.error(
+                        "self_evolution.spec_run_at 非法（应为 null 或 HH:mm，"
+                        "如 02:00）：%r，回退缺省（立项后立即执行）", sra,
                     )
 
     @classmethod
@@ -1026,6 +1040,9 @@ class ConfigLoader:
           的 bool 处理方式一致；`1`/`"yes"` 等 truthy 非布尔值同样回退缺省）
         - max_items_per_run: 正整数，缺省 20，上界 200（非整数 / bool / < 1 /
           > 200 → 回退缺省 20）
+        - spec_run_at: 缺省 None（立项后立即执行）；合法值域为 None 或 "HH:mm"
+          （每日该时刻执行）。非 None 且非合法 HH:mm 字符串 → ERROR 后回退
+          None（与 max_items_per_run 同款软回退，不让脏值卡住立项）
 
         节缺失、键缺失或值非法时不抛异常、不使 daemon 启动失败；读取走既有
         config 对象，30s 配置热更新自然生效。
@@ -1045,7 +1062,14 @@ class ConfigLoader:
                 or max_items < 1
                 or max_items > SELF_EVOLUTION_MAX_ITEMS_UPPER):
             max_items = SELF_EVOLUTION_MAX_ITEMS_DEFAULT
-        return {"auto_accept": auto_accept, "max_items_per_run": int(max_items)}
+        # spec_run_at：None 或 HH:mm
+        spec_run_at = section.get("spec_run_at")
+        if spec_run_at is not None and not (
+                isinstance(spec_run_at, str) and _HHMM_RE.match(spec_run_at)):
+            spec_run_at = SELF_EVOLUTION_SPEC_RUN_AT_DEFAULT
+        return {"auto_accept": auto_accept,
+                "max_items_per_run": int(max_items),
+                "spec_run_at": spec_run_at}
 
     @classmethod
     def get_self_review_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:

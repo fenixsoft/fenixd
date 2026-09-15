@@ -416,7 +416,7 @@ class TestProbeVacuityCheck(unittest.TestCase):
 
     def _serve(self, handler_cls) -> str:
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05), daemon=True)
         thread.start()
         self.addCleanup(server.shutdown)
         self.addCleanup(server.server_close)

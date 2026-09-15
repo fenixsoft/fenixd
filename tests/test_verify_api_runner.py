@@ -90,7 +90,7 @@ class _LocalServer:
         self._httpd = HTTPServer(("127.0.0.1", 0), _Handler)
         self.port = self._httpd.server_address[1]
         self.base_url = f"http://127.0.0.1:{self.port}"
-        self._t = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+        self._t = threading.Thread(target=lambda: self._httpd.serve_forever(poll_interval=0.05), daemon=True)
         self._t.start()
 
     def close(self):

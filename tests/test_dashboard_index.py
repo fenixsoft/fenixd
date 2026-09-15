@@ -104,8 +104,8 @@ class TestSummaryIndex:
             return orig(proot_, spec_name_, entry_)
 
         tasks = proot / "spec" / "changes" / "myspec" / "tasks.md"
-        # 等长改写：强制推进 mtime，避免同长度写入落在同一 mtime_ns 粒度内
-        time.sleep(0.01)
+        # 等长改写：显式推进 mtime，避免同长度写入落在同一 mtime_ns 粒度内
+        # （os.utime 已保证 mtime 前进，无需真实 sleep 等待时钟）
         os.utime(tasks, ns=(tasks.stat().st_atime_ns, tasks.stat().st_mtime_ns + 1_000_000))
         tasks.write_text(
             tasks.read_text(encoding="utf-8").replace("- [ ] 1.2 任务二", "- [x] 1.2 任务二"),

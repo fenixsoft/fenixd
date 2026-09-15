@@ -297,8 +297,20 @@ class TestSiblingRepairActiveFcfs(unittest.TestCase):
         self.project_root = Path(self.tmpdir)
         self.logger = MagicMock()
         self.engine, self.sm = _mk_engine(self.project_root, self.logger)
+        # 入队时刻来自 time.time()；真实调度下两次 _enqueue 可能落在同一
+        # mtime 粒度内，导致先到先得裁决不稳定。注入确定性递增时钟替代
+        # 测试内 time.sleep(0.01) 分隔（sleep 既是慢又是 flaky 源）。
+        import core.pm_engine.dispatch as _dispatch_mod
+        clock = {"t": 1_000_000.0}
+        def _tick():
+            clock["t"] += 1.0
+            return clock["t"]
+        self._clock_patch = patch.object(
+            _dispatch_mod.time, "time", _tick)
+        self._clock_patch.start()
 
     def tearDown(self):
+        self._clock_patch.stop()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def _entry_ts(self, spec_name):
@@ -314,7 +326,6 @@ class TestSiblingRepairActiveFcfs(unittest.TestCase):
         self.sm.add_spec("fix-x", {"status": "ready"})
         self.sm.add_spec("fix-fix-x", {"status": "ready"})
         self.engine._dispatcher._enqueue("fix-fix-x", "implementer")
-        time.sleep(0.01)
         self.engine._dispatcher._enqueue("fix-x", "implementer")
         carrier = self.engine._sibling_repair_active(
             "fix-x", my_enqueued_at=self._entry_ts("fix-x")
@@ -326,7 +337,6 @@ class TestSiblingRepairActiveFcfs(unittest.TestCase):
         self.sm.add_spec("fix-x", {"status": "ready"})
         self.sm.add_spec("fix-fix-x", {"status": "ready"})
         self.engine._dispatcher._enqueue("fix-x", "implementer")
-        time.sleep(0.01)
         self.engine._dispatcher._enqueue("fix-fix-x", "implementer")
         with patch.object(self.engine, "_sibling_has_live_agent", return_value=False):
             carrier = self.engine._sibling_repair_active(
@@ -339,7 +349,6 @@ class TestSiblingRepairActiveFcfs(unittest.TestCase):
         self.sm.add_spec("fix-x", {"status": "ready"})
         self.sm.add_spec("fix-fix-x", {"status": "ready"})
         self.engine._dispatcher._enqueue("fix-fix-x", "implementer")
-        time.sleep(0.01)
         self.engine._dispatcher._enqueue("fix-x", "implementer")
         carrier = self.engine._family._sibling_repair_active("fix-x")
         self.assertEqual(carrier, "fix-fix-x")

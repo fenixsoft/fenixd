@@ -1925,11 +1925,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._json(result)
 
     def _api_evolution_accept(self):
-        """POST /api/evolution/accept — body {item_id} → 执行接受路径。
+        """POST /api/evolution/accept — body {item_id, start_after?} → 执行接受路径。
 
         成功返回 200 + {ok, status, spec_name}；缺参 400；未知条目 404。
         人工「同意」= accept_item(decided_by="manual")（自动接受是 daemon
         检查点经 3.7 的另一条路径，二者共用同一实现，design D6）。
+
+        ``start_after``（可选，UTC ISO8601）：非空则新 SPEC 排到该时刻由调度
+        定时拾取，到点前 dispatch 静默跳过；null/缺失 = 立项后立即执行（原行为）。
+        本次执行时刻由调用方（设置页弹窗，按 ``self_evolution.spec_run_at`` 配置
+        预填并可临时改）决定，端点不做配置解释；格式非法 400。
         """
         body = self._read_json_body()
         if body is None:
@@ -1938,11 +1943,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not isinstance(item_id, str) or not item_id:
             self._error(400, "缺少 item_id 参数")
             return
+        raw_start_after = body.get("start_after")
+        start_after = None
+        if raw_start_after not in (None, ""):
+            from core.state_machine import parse_utc  # 时间解析单点（design D6）
+            if not isinstance(raw_start_after, str) or \
+                    parse_utc(raw_start_after) is None:
+                self._error(400, f"start_after 非法（应为 UTC ISO8601）: {raw_start_after!r}")
+                return
+            start_after = raw_start_after
         from core.evolution import accept_item
         try:
             result = accept_item(
                 item_id, FRAMEWORK_ROOT, self._evolution_state_machine(),
-                decided_by="manual")
+                decided_by="manual", start_after=start_after)
         except Exception as e:  # noqa: BLE001 —— 端点不因内部异常 500 崩溃
             self._error(500, f"接受失败: {e}")
             return
@@ -2003,6 +2017,44 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._json(result)
 
+    def _api_evolution_clear_todo(self):
+        """POST /api/evolution/clear-todo — 清空**所有项目**的 .fenix/todo.md。
+
+        全局动作，不接受 project 参数（逐个清理所有 discover 到且存在的项目）。
+        清空范围仅限 todo.md：MUST NOT 触碰 items.jsonl / 草稿 / 水位，故下方
+        条目列表不受影响。不代提交 git（各项目 todo.md 的提交由每日自省负责）。
+
+        逐项目结果分三类返回，单个项目失败 MUST NOT 中断其余：
+        ``{ok, cleared: [项目名], skipped: [{project, reason}], failed: [{project, error}]}``。
+        ``ok`` 表示「没有任何项目失败」（全部跳过亦为 True）。
+        """
+        from core.evolution import clear_todo
+
+        cleared: list = []
+        skipped: list = []
+        failed: list = []
+        for proj in self.server.registry.discover() or []:
+            if not isinstance(proj, dict) or not proj.get("exists"):
+                continue
+            name = proj.get("name") or proj.get("path") or "?"
+            path = proj.get("path")
+            if not path:
+                skipped.append({"project": name, "reason": "项目路径缺失"})
+                continue
+            result = clear_todo(path)
+            if result.get("error"):
+                failed.append({"project": name, "error": result["error"]})
+            elif not result.get("existed"):
+                skipped.append({"project": name, "reason": "无 todo.md"})
+            else:
+                cleared.append(name)
+        self._json({
+            "ok": not failed,
+            "cleared": cleared,
+            "skipped": skipped,
+            "failed": failed,
+        })
+
     # ── POST API ────────────────────────────────────────────
 
     def _handle_api_post(self, path: str, query: dict):
@@ -2056,6 +2108,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._api_evolution_reject()
         elif path == "/api/evolution/delete":
             self._api_evolution_delete()
+        elif path == "/api/evolution/clear-todo":
+            self._api_evolution_clear_todo()
         elif path.startswith("/api/alerts/") and path.endswith("/handled"):
             alert_id = urllib.parse.unquote(path[len("/api/alerts/"):-len("/handled")])
             self._api_alert_handled(alert_id, query)

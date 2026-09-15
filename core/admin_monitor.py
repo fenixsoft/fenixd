@@ -224,8 +224,8 @@ STORED_SIGNAL_TYPES = (
 )
 
 # run_id 前缀 → 计入"失败 run"的 agent 类型
-# ⚠️ 与 core/agent_runner/run_files.py:run_spec_part 前缀元组同源互指，新增 run
-# 前缀（如 add-deliverable-declaration-triage 的 dispute-judge-）两处必须同步。
+# ⚠️ 真源 = core/agent_runner/run_files.py:RUN_ID_AGENT_PREFIXES（新增 run 前缀
+# 只改那里）；本表是它的**子集**——只列计入失败统计的前缀（planner-/test- 不计）。
 _RUN_PREFIXES = ("impl-", "verify-", "planner-plan-", "planner-judge-",
                  "dispute-judge-", "spec-review-", "admin-")
 
@@ -672,7 +672,15 @@ class AdminMonitor:
             self._invoke_administrator(signal, rec)
         return signals
 
-    def _make_signal(self, signal_type: str, spec, description: str, evidence: str) -> dict:
+    def _make_signal(self, signal_type: str, spec, description: str, evidence) -> dict:
+        # 归一：多路径复用 _make_signal 注入 evidence，结构化值（dict/list）会在
+        # 此处直接进 prompt（str.replace）→ TypeError，故在信号构造点先序列化为
+        # JSON 串（与 admin_store._coerce_evidence 同口径，双保险）。
+        if evidence is not None and not isinstance(evidence, str):
+            try:
+                evidence = json.dumps(evidence, ensure_ascii=False)
+            except (TypeError, ValueError):
+                evidence = str(evidence)
         return {
             "signal_type": signal_type,
             "spec": spec,

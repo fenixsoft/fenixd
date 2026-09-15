@@ -17,8 +17,8 @@ run_spec_review 步骤 3 not run_ok 分支前置调用 _artifact_landed_valid(sp
 
 ## D2 infra 错误识别与标记
 
-- 新增 _classify_run_failure(reason) → "infra" | "content"：文本匹配 402/403/429/quota/budget/余额/insufficient balance/rate limit → infra。
-- infra 标记写入 _handle_review_failure 的 error 上下文（error 前缀 spec-review-infra-）与告警 evidence；仍先按既有重试上限兜底（完整熔断由 run-failure-classification-circuitbreaker 承接）。
+- 新增 _classify_run_failure(reason) → "infra" | "content"：文本匹配 402/403/429/quota/budget/余额/insufficient balance/rate limit → infra（大小写不敏感；reason 为 None/空时视为 content）。
+- infra 标记写入 _handle_review_failure 的 error 上下文与告警 evidence，**error 保留 spec-review-incomplete: 前缀不变**（spec_review.py:485 re_review 的 startswith 契约依赖该前缀，改前缀将破坏「blocked 因评审进入」判定）；分类以 error 内后缀 `[infra: <匹配指纹>]` 透出，供日志与 freeze 告警 evidence（reason 含指纹文本）复盘；仍先按既有重试上限兜底（infra 不递增 _review_attempts 的语义由 run-failure-classification-circuitbreaker 承接，本 SPEC 阶段保持既有递增行为）。
 
 ## D3 幂等与防重入
 

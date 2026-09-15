@@ -123,6 +123,7 @@ class SpecReviewManager:
             self.logger.warning("spec_review", f"快照保存失败: {spec_name}: {e}")
 
         # ③ 阻塞执行评审 run（正常收工或异常后返回）
+        attempt_started_at = time.time()
         try:
             result = self.agent_runner.run_spec_review(spec_name, run_id=run_id)
             run_ok = bool(getattr(result, "success", False))
@@ -135,14 +136,30 @@ class SpecReviewManager:
             return False
         self.logger.info("spec_review", f"评审 run 已收工: {spec_name} run_id={run_id}")
 
+        # ③b 结果捞回（2026-09-15 事故修复）：评审 run 正常收工但从未调用 Write，
+        # 把结果 JSON 当正文 fenced 代码块吐出。此处从转录代写落盘，避免整轮白烧
+        # 重试。抽不出/已存在时不动作，交下方硬门按既有语义处理。
+        salvage = getattr(self.agent_runner, "_salvage_spec_review_result", None)
+        if callable(salvage):
+            try:
+                salvage(spec_name, run_id)
+            except Exception as e:  # noqa: BLE001 — 捞回失败不得阻断收口
+                self.logger.warning("spec_review", f"结果捞回异常: {spec_name}: {e}")
+
         # ④ 机械收口：结果缺失/越界由 _handle_review_failure 重试（保持既有语义）
-        self.consume_review_result(spec_name)
+        self.consume_review_result(spec_name, run_started_at=attempt_started_at)
         return True
 
     # ── 评审结果消费 ────────────────────────────────────────────
 
-    def consume_review_result(self, spec_name: str) -> bool:
+    def consume_review_result(self, spec_name: str,
+                              run_started_at: float | None = None) -> bool:
         """消费评审结果：校验结果硬门与写入边界，按 status 机械收口。
+
+        Args:
+            run_started_at: 本轮 attempt 的启动 epoch 秒（供结果文件 mtime 新鲜度
+                校验，防上轮残留合法文件替本轮放行——fix-verdict-read-failclosed
+                D2 同款）。None 时跳过新鲜度校验（直调/测试兼容）。
 
         Returns: True 表示消费成功（状态已变更），False 表示消费失败（需重试）。
         """
@@ -153,9 +170,10 @@ class SpecReviewManager:
         if not run_id:
             return False
 
-        # 结果硬门校验（复用 _check_agent_result_artifact）
+        # 结果硬门校验（复用 _check_agent_result_artifact，spec-review 分支
+        # 2026-09-15 已真接线：缺失/空/非白名单 status/陈旧 mtime 均由此拦截）
         err = self.agent_runner._check_agent_result_artifact(
-            spec_name, "spec-review", run_started_at=None)  # 新鲜度校验暂时跳过
+            spec_name, "spec-review", run_started_at=run_started_at)
         if err is not None:
             self.logger.warning("spec_review", f"结果硬门校验失败: {spec_name}: {err}")
             self._handle_review_failure(spec_name, err)
@@ -246,8 +264,9 @@ class SpecReviewManager:
         """派发前对 SPEC 目录与工作区脏文件记录快照。
 
         返回快照 dict，包含：
-        - spec_files: {相对路径: 内容哈希}
+        - spec_files: {相对路径: 内容哈希}——SPEC 目录完整性硬门依据（删除即越界）
         - dirty_files: {相对路径: 内容哈希}（仅 git status --porcelain 列出的脏文件）
+          ——仅供 `_verify_snapshot` 记 WARNING 留痕与「新增文件」去重，不作硬门
         """
         spec_dir = self.project_root / "spec" / "changes" / spec_name
         snapshot = {"spec_files": {}, "dirty_files": {}}
@@ -295,6 +314,17 @@ class SpecReviewManager:
         """收工后比对快照，检出越界写入。
 
         Returns: None 表示通过，否则返回错误信息。
+
+        **只对可归因信号开硬门**（该变动有且仅有「评审者越界」一种解释）：
+
+        - SPEC 目录内文件被删除——评审者只被授权就地修补，删除必为越界。
+
+        工作区扫描（既存脏文件被改动、SPEC 目录外新增未跟踪文件）**不作为硬门**：
+        评审 run 同步阻塞数分钟且 cwd = 主树，期间任何并发写者（人工编辑、其他
+        会话、其他 run）触碰主树都会命中，两者都无法与评审者越界区分。2026-09-14
+        evo-item-retention-doc-tracking 因此连丢三份评审结果（约 $25）并空转至尝试
+        耗尽。现改为记 WARNING 留痕、放行——评审者的真实写入边界由 repairs 路径
+        合法性（`_check_write_boundary` 步骤 1）与结果契约共同钉死。
         """
         spec_dir = self.project_root / "spec" / "changes" / spec_name
         if not spec_dir.is_dir():
@@ -314,7 +344,8 @@ class SpecReviewManager:
             except OSError:
                 return f"无法读取文件: {rel}"
 
-        # 检查工作区脏文件是否变化
+        # 工作区脏文件变动：非归因，仅留痕
+        changed_dirty = []
         for rel, old_hash in snapshot.get("dirty_files", {}).items():
             full = self.project_root / rel
             if not full.exists():
@@ -323,12 +354,18 @@ class SpecReviewManager:
                 content = full.read_bytes()
                 new_hash = hashlib.md5(content).hexdigest()
                 if new_hash != old_hash:
-                    return f"工作区脏文件被修改: {rel}"
+                    changed_dirty.append(rel)
             except OSError:
                 pass
+        if changed_dirty:
+            self.logger.warning(
+                "spec_review",
+                f"评审期间工作区脏文件被改动（非归因，放行）: {spec_name}: "
+                f"{', '.join(sorted(changed_dirty))}",
+            )
 
-        # 检查是否有新增文件（SPEC 目录外）
-        # 简化：只检查 SPEC 目录外是否有新增文件，通过 git status
+        # SPEC 目录外新增未跟踪文件：非归因（并发写者新建文件同样命中），仅留痕
+        added_untracked = []
         try:
             result = subprocess.run(
                 ["git", "-C", str(self.project_root), "status", "--porcelain"],
@@ -343,14 +380,23 @@ class SpecReviewManager:
                             if not path.startswith(SPEC_CHANGES_PREFIX):
                                 # 检查是否在快照中已存在
                                 if path not in snapshot.get("dirty_files", {}):
-                                    return f"新增文件在 SPEC 目录外: {path}"
+                                    added_untracked.append(path)
         except (subprocess.SubprocessError, OSError):
             pass
+        if added_untracked:
+            self.logger.warning(
+                "spec_review",
+                f"评审期间 SPEC 目录外新增未跟踪文件（非归因，放行）: {spec_name}: "
+                f"{', '.join(sorted(added_untracked))}",
+            )
 
         return None
 
     def _check_write_boundary(self, spec_name: str, review_data: dict) -> Optional[str]:
-        """校验评审 run 的写入边界：repairs 路径合法性、SPEC 目录外无新增改动、status 与改动一致。
+        """校验评审 run 的写入边界：repairs 路径合法性、SPEC 目录完整性、status 与改动一致。
+
+        工作区扫描（脏文件变动 / 目录外新增文件）只留痕不拦截——非归因信号，
+        见 `_verify_snapshot`。
 
         Returns: None 表示通过，否则返回错误信息。
         """

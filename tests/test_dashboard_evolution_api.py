@@ -442,6 +442,44 @@ class TestEvolutionAcceptRejectAPI:
             "/api/evolution/accept", {"item_id": "nope"})
         assert status == 404
 
+    def test_accept_with_start_after_schedules_spec(self, server_fx_with_fw):
+        """start_after 透传到 STATE：新 SPEC 条目落定时拾取时刻。"""
+        proot, srv, ev = server_fx_with_fw
+        sa = "2026-09-15T18:00:00+00:00"
+        status, data = srv.post_json(
+            "/api/evolution/accept", {"item_id": "item-a", "start_after": sa})
+        assert status == 200
+        assert data["ok"] is True
+        from core.state_machine import StateMachine
+        sm = StateMachine(ev["fw"] / ".fenix" / "STATE.md", None)
+        entry = sm.read_one("evo-add-evo-a")
+        assert entry is not None
+        assert entry.get("start_after") == sa
+
+    def test_accept_explicit_null_start_after_is_immediate(self, server_fx_with_fw):
+        """start_after 显式 null = 立即执行（设置页配了定时也能单条改回立即）。"""
+        proot, srv, ev = server_fx_with_fw
+        status, data = srv.post_json(
+            "/api/evolution/accept", {"item_id": "item-a", "start_after": None})
+        assert status == 200
+        from core.state_machine import StateMachine
+        sm = StateMachine(ev["fw"] / ".fenix" / "STATE.md", None)
+        assert sm.read_one("evo-add-evo-a").get("start_after") is None
+
+    def test_accept_invalid_start_after_400(self, server_fx_with_fw):
+        """非法 start_after（非 ISO 字符串 / 非字符串）→ 400 且不立项。"""
+        proot, srv, ev = server_fx_with_fw
+        for bad in ("not-a-date", "2026-13-45T99:99:99Z", 12345, [1], {"a": 1}):
+            status, data = srv.post_json(
+                "/api/evolution/accept",
+                {"item_id": "item-a", "start_after": bad})
+            assert status == 400, f"应拒绝: {bad!r}"
+        # 未立项：草稿目录仍在、STATE 无条目
+        assert (ev["evo"] / "drafts" / "item-a").exists()
+        from core.state_machine import StateMachine
+        sm = StateMachine(ev["fw"] / ".fenix" / "STATE.md", None)
+        assert sm.read_one("evo-add-evo-a") is None
+
     def test_reject_success(self, server_fx_with_fw):
         proot, srv, ev = server_fx_with_fw
         # 新增一条 pending 且无草稿目录的条目（拒绝无需删文件）
@@ -563,6 +601,34 @@ class TestEvolutionConfigAPI:
         if cfg.exists():
             assert "self_evolution" not in cfg.read_text(encoding="utf-8")
 
+    def test_spec_run_at_roundtrip_and_invalid_400(self, server_fx_with_fw,
+                                                   monkeypatch, tmp_path):
+        """spec_run_at：HH:mm 往返、显式 null 能取消定时、非法值 400。"""
+        proot, srv, ev = server_fx_with_fw
+        user_dir = tmp_path / "userhome"
+        user_dir.mkdir(parents=True)
+        monkeypatch.setattr("core.dashboard.data.USER_CONFIG_PATH",
+                            user_dir / "config.yaml")
+        status, data = srv.post_json(
+            "/api/config?scope=user",
+            {"self_evolution": {"spec_run_at": "02:00"}})
+        assert status == 200
+        status, data = srv.get("/api/config?scope=user")
+        assert data["self_evolution"]["spec_run_at"] == "02:00"
+        # 显式 null 覆盖已有的定时（UI 上「改回立即执行」必须写得掉）
+        status, data = srv.post_json(
+            "/api/config?scope=user",
+            {"self_evolution": {"spec_run_at": None}})
+        assert status == 200
+        status, data = srv.get("/api/config?scope=user")
+        assert data["self_evolution"]["spec_run_at"] is None
+        # 非法 HH:mm
+        for bad in ("25:00", "2:00", "02:60", "abc", 2, True):
+            status, data = srv.post_json(
+                "/api/config?scope=user",
+                {"self_evolution": {"spec_run_at": bad}})
+            assert status == 400, f"应拒绝: {bad!r}"
+
     def test_project_scope_rejected_and_not_written(self, server_fx_with_fw,
                                                     monkeypatch, tmp_path):
         proot, srv, ev = server_fx_with_fw
@@ -577,3 +643,41 @@ class TestEvolutionConfigAPI:
         proj_cfg = proot / ".fenix" / "config.yaml"
         if proj_cfg.exists():
             assert "self_evolution" not in proj_cfg.read_text(encoding="utf-8")
+
+class TestEvolutionClearTodoAPI:
+    """POST /api/evolution/clear-todo — 清空所有项目的 .fenix/todo.md。"""
+
+    def test_clears_todo_but_leaves_items(self, server_fx_with_fw):
+        proot, srv, ev = server_fx_with_fw
+        todo = proot / ".fenix" / "todo.md"
+        todo.write_text("## 2026-09-14\n\n### 浪费\n- **问题 A**\n",
+                        encoding="utf-8")
+        status, data = srv.post_json("/api/evolution/clear-todo", {})
+        assert status == 200
+        assert data["ok"] is True
+        assert data["cleared"] == ["proj-a"]
+        assert data["failed"] == []
+        # 文件保留但内容为空
+        assert todo.is_file()
+        assert todo.read_text(encoding="utf-8") == ""
+        # 清空范围仅限 todo.md：条目列表（items.jsonl）不受影响
+        _, items = srv.get("/api/evolution/items")
+        assert len(items["items"]) == 2
+
+    def test_project_without_todo_is_skipped(self, server_fx_with_fw):
+        proot, srv, ev = server_fx_with_fw
+        assert not (proot / ".fenix" / "todo.md").exists()
+        status, data = srv.post_json("/api/evolution/clear-todo", {})
+        assert status == 200
+        assert data["ok"] is True  # 全跳过亦为 ok（无失败项）
+        assert data["cleared"] == []
+        assert data["skipped"] == [{"project": "proj-a", "reason": "无 todo.md"}]
+        assert data["failed"] == []
+
+    def test_no_project_param_accepted(self, server_fx_with_fw):
+        """全局动作：带 project 查询参数不改变行为（端点不接受项目参数）。"""
+        proot, srv, ev = server_fx_with_fw
+        (proot / ".fenix" / "todo.md").write_text("x\n", encoding="utf-8")
+        status, data = srv.post_json("/api/evolution/clear-todo?project=proj-a", {})
+        assert status == 200
+        assert data["cleared"] == ["proj-a"]

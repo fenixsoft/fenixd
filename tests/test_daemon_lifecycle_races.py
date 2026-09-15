@@ -555,15 +555,24 @@ class TestApprovePushSingleFlight(unittest.TestCase):
         from concurrent.futures import ThreadPoolExecutor
         self._make_done_spec()
         push_calls = []
+        # 事件同步（替代 sleep 放大临界区）：第二个流「即将进入 approve_push」
+        # 前 set，第一个流的 push 等它——保证第二流确实撞在锁上，不靠时间赌。
+        second_ready = threading.Event()
 
         def fake_git_push(ref, *a, **k):
             push_calls.append(ref)
-            time.sleep(0.3)  # 放大临界区窗口，强制并发第二流撞锁
+            second_ready.wait(timeout=5)
             return True, ""
 
         self.engine._git_push_ref = fake_git_push
+
+        def _enter(idx):
+            if idx == 1:
+                second_ready.set()
+            return self.engine.approve_push("spec-a")
+
         with ThreadPoolExecutor(max_workers=2) as ex:
-            futs = [ex.submit(self.engine.approve_push, "spec-a") for _ in range(2)]
+            futs = [ex.submit(_enter, i) for i in (0, 1)]
             results = [f.result() for f in futs]
 
         self.assertTrue(all(results), "两个并发流都应返回 True（第二流幂等跳过）")
@@ -588,17 +597,25 @@ class TestApprovePushSingleFlight(unittest.TestCase):
         for name in ("spec-a", "spec-b"):
             self.sm.add_spec(name, {"status": "done", "branch": f"fenix/{name}"})
         push_calls = []
+        second_ready = threading.Event()
 
         def fake_git_push(ref, *a, **k):
             push_calls.append((ref,))
-            time.sleep(0.3)
+            second_ready.wait(timeout=5)
             return True, ""
 
         self.engine._git_push_ref = fake_git_push
         self.engine._resolve_push_branch = MagicMock(
             side_effect=lambda name, spec: f"fenix/{name}")
+
+        def _enter(name, idx):
+            if idx == 1:
+                second_ready.set()
+            return self.engine.approve_push(name)
+
         with ThreadPoolExecutor(max_workers=2) as ex:
-            futs = [ex.submit(self.engine.approve_push, n) for n in ("spec-a", "spec-b")]
+            futs = [ex.submit(_enter, n, i)
+                    for i, n in enumerate(("spec-a", "spec-b"))]
             self.assertTrue(all(f.result() for f in futs))
         # 每个 spec 各一次 main push，两 spec 共 2 次（串行非重入）
         main_calls = [r[0] for r in push_calls if r[0] == "main"]
