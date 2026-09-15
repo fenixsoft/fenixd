@@ -1,21 +1,6 @@
 ## 2026-09-15
 
-### 浪费
-- **评审 402 判败 $8.54 作废**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
-  - 影响：两次评审已产出合格结论却被判失败：单次耗 $6.24（2.9M input tokens/50 rounds）与 $2.30（1.03M/31 rounds），合计 $8.54 消耗作废；evo-item-retention-doc-tracking 的 approved 评审结论（无阻断缺陷）未消费，spec 15:45 重立后评审重来
-  - 证据：run spec-review-evo-item-retention-doc-tracking-1789368468 转录尾部「API Error: 402 余额不足」+ error: Exit code 1，result 记录 total_cost_usd=6.239、input_tokens=2904252；run spec-review-evo-infra-failure-budget-exempt-1789368783 total_cost_usd=2.304、input_tokens=1027650；.fenix/spec-review/evo-item-retention-doc-tracking/.fenix-run-result.json 于 09-14 14:56 落盘 status=approved、5 findings 全 note（非阻断）
-  - 调查评估：已核实（读两个 run 转录尾部 + 结果文件 + STATE 更新记录）。根因：框架以「CLI exit code」一票判定 run 成败，402 余额类错误穿透为 Exit 1；而评审主体已完成并落盘 approved 结论，判败后结果不消费、_review_attempts 递增至 3 次重试（重试同样失败），属「产物已具备却被退出码一票否决」的判定缺陷而非内容质量问题。与窗口末 04:36 merge 的 evo-verifier-result-single-source（d87c5401）聚焦 verifier 结果单源，未覆盖评审结果在异常退出码下的保留，无重复。结论：值得立项「run 失败判定先查已落盘产物、余额类错误不入内容重试」，复发敞口为单次 402 即抛掉整轮已付费评审。
-  - 建议：评审/验证/实现 run 判定失败前先校验 .fenix-run-result.json 是否合法落盘（已落盘则按产物消费、退出码仅降级告警）；402/403/配额类 infra 错误单独分类，不计入 _review_attempts 内容重试
-
 ### 失误
-- **spec-review 403 评审批量失败风暴**
-  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：拒绝 · 删除：否
-  - 影响：3 个 09-14 14:30 前后创建的 evo-* SPEC 评审 run 从 14:46 至 16:27 批量失败（含 0 rounds 快速失败十余次与 2 次 31/50 rounds 高消耗失败），评审阻塞 2-9.5 小时：evo-planner-port-alignment 19:34 被撤回（假归因）、evo-judge-rerun-stability 18:30 重立、evo-infra-failure-budget-exempt 23:53 重立，进程与 token 双重浪费
-  - 证据：fenixd.log ERROR 样本 06:56:39Z-08:27:11Z（local 14:46-16:27）连续 10+ 条 spec_review/pm_engine 评审失败；admin_disposition-evo-planner-port-alignment-1789378552.json 根因写明「provider=xianyu model=deepseek-flash 被网关 403 拒绝，config 链首模型名与 xianyu 网关允许的 glm-5.3-flash 不符」；config.yaml mtime 2026-09-14 16:27:18 +0800 且 08:27:47Z hot-reload（修复点）；77bfee34 19:34「撤 evo-planner-port-alignment 假归因 SPEC」
-  - 调查评估：已核实（admin 处置记录 + config mtime + hot-reload 日志 + 撤回/重立 commits）。属配置失误：spec-review 模型链首被设为网关不允许的模型组合，派发即 403；config.yaml 在 .gitignore 内无法 git 溯源引入者，且 1h40m 内无任何机制发现（见 improvements 熔断条目）。166min 期间 3 SPEC × 5 轮重试（30min 间隔）全数空转，直至 16:27 人工修正 config + 16:54 重启 daemon 后才恢复（16:57 sibling 35 rounds 全通实证）。另外这批 evo-* SPEC 由 planner 生成，evo-planner-port-alignment 最终被证假归因（77bfee34 撤回），SPEC 源头质量亦是诱因之一。结论：配置失误为主、无快速验证手段放大之；需要模型链派发前探活 + SPEC 假归因早期识别
-  - 建议：为 spec-review 链增加派发前探活（provider/model 组合可测性自检）；对 planner 生成的 evo-* SPEC 评审失败做根因归集，403 失败不入内容重试而是直接标 infra 级并升级告警
-
 - **stash pop 冲突再发 1 文件被丢弃**
   - 自进化：问题部分成立 / 建议部分合理 / ✓ 值得立项 · 处理：拒绝 · 删除：否
   - 影响：evo-item-retention-doc-tracking merge-back 时 1 个未提交文件（SuggestedImprovementsPanel.tsx）改动被丢弃（stash 保留可找回）；同信号 20:26 派发 Administrator 时触发 replace() 报错，自动处置失效；WIP 重叠预检命中 7 文件暴露主树残留并发改动
@@ -23,24 +8,56 @@
   - 调查评估：已核实（告警记录 + 代码现场：prompt_builder.py:204 _fill_placeholders 中 {evidence} 值为 dict 未经序列化，_str_field 的 json.dumps 兜底直到 66f815db 09-15 04:36 才合入，故 20:26 报错时保护尚不存在）。双层问题：其一 merge-back 前主树有 7 个文件 in-flight 改动与分支重叠，stashpop 冲突机制（自愈+预检，fix-mergeback-stashpop-silent-loss 落地）能告警保留但无法避免丢弃，属该修复的残余缺口；其二 admin 派发链对该故障信号的处理因序列化 bug 挂掉，仅记 ERROR 无升级。两者均已达成事实修复（stash 保留可找回、（str_field 04:36 合入），但本次损失已发生。结论：merge-back 主树 WIP 残留是冲突源，需前置阻塞或自动收纳
   - 建议：merge-back 前对主树未提交改动做 WIP 扫描：与分支改动重叠时先阻塞并告警（或自动 stash + 标记待回收），从源头避免 pop 冲突；并排查故障信号派发失败为何未升级告警（见 improvements 对应条目）
 
+
+## 2026-09-16
+
+### 浪费
+- **失败统计误报 10 连发全为成功**
+  - 影响：数据摘要「失败 20」中列出的 10 个失败样本逐一核查全部实际成功（result 终态、结果落盘、cost 有值：1.55-11.82），真实失败集中在 impl 链；失败统计失真使每日回顾/todo.md 条目误导人工判断方向，每次自省均需人工纠偏。
+  - 证据：10 个样本转录尾部均为 result 成功：spec-review-* 六条 status=repaired、repair-* 三条 conflict resolved/status=success、planner 一条 plan-ready；python 复现 self_review.py：10/10 样本 _classify_run 返回 succeeded 但 _scan_run_signals 全文件扫描命中信号词——spec-review-evo-run-failure-classification-circuitbreaker 正文讨论「预算耗尽」主题、spec-review-refactor-verification-module 转录含 _check_spec_content_missing 源码引用，即被误判 failed。
+  - 调查评估：已核实（逐 run 读转录尾部 + 复现 _classify_run/_scan_run_signals）。根因：self_review.py 对 result 成功的 run 仍做全文件信号词子串扫描兜底，而评审/修复/规划任务正文必然讨论「预算耗尽/spec_content_missing/budget exhausted」等失败主题（本次 SPEC 主题恰是失败分类与预算熔断），信号词与任务主题高度重合，成功 run 必误报。属聚合器判定缺陷而非内容质量。与 evo-run-failure-artifact-first（9dd9fd08 已合入，评审结果以落盘文件为准）思路互补，不重复——该 SPEC 未覆盖自省聚合的失败统计层。结论：值得修，收益为失败统计/日小结恢复可信。
+  - 建议：自省聚合以 .fenix-run-result.json 落盘 status（approved/repaired/plan-ready/success）判定成功；信号扫描仅对无结果文件或 error 终态的 run 启用；或对 spec-review/repair/planner 类 run 跳过预算词扫描。
+
+- **add-control-plane 六连失败 6h 才收敛**
+  - 影响：该 SPEC 从 09-14 20:53 首派到 09-15 02:55 成功约 6 小时、6+ 次派发：a1 停滞超时 9007s（约 2.5h 空转）+ a2/a1-r1/a1-r3 三连 Exit 143，最终 1789437665-a1 成功（cost 2.70），期间失败 run 消耗大量 token 与墙钟。
+  - 证据：run 文件：impl-add-control-plane-silent-failure-guards-1789419210-a1 error=Timeout after 9007s judged stagnant（09-14 20:53 开始 23:24 失败）；-a2 Exit 143；1789431431-a1/-a1-r1/-a1-r3 三连 143（00:17-01:21）；1789437665-a1 成功（02:55）；fenixd.log 11271 行标 [provider-transient]。
+  - 调查评估：已核实（run 文件 + fenixd.log）。根因：agent 在「等待监控空转态」225 次心跳零实质推进，停滞判定 9007s 才触发（窗口过宽）；随后 claude CLI 多次被 SIGTERM（Exit 143）且仅归 provider-transient 无限 in-place 重试，直至 frozen 终止、人工 resume 才成功。属执行层中断 + 判定参数偏宽的复合，非内容质量。事件发生在 evo-run-failure-classification-circuitbreaker 合入（17:47）之前，熔断生效后该模式已被覆盖，但停滞 9007s 窗口与 143 无根因记录仍存。
+  - 建议：停滞判定窗口从 9007s 缩短并计入心跳推进；排查 Exit 143 SIGTERM 来源；143 类 provider-transient 连续失败应触发熔断冷却而非无限重试。
+
+- **dashboard impl 单 run 42 美元**
+  - 影响：impl-refactor-dashboard-data-module-1789476918-a2 单 run 成本 42.22 美元（窗口内成本峰值），a1-r1 因 Max turns (900) reached 失败（exit -9）；该 SPEC 窗口内共 7 个 impl run，收尾阶段 a2-r1/r2/r3 三次「核查收工」重复派发。
+  - 证据：impl-refactor-dashboard-data-module-1789476918-a2 转录尾部 total_cost_usd=42.2213；-a1-r1 error=Max turns (900) reached — turn extension budget exhausted (2/2)；窗口内 7 个 impl-refactor-dashboard-data-module-*.jsonl（a1/a2/a3 + a1-r1 + a2-r1/r2/r3）。
+  - 调查评估：已核实（run 文件）。根因：dashboard data 模块体量大、实现轮反复「核查收工」派发（a2-r1/r2/r3 三次才收敛），单 run 冲到 900 轮 turn 上限耗尽；42 美元单 run 是窗口内最高成本。与 supervision 兜底 18600s（见 M2）相关——监督上限高于 4h 使长 run 无截停。属大重构任务拆分不足 + 收尾核查幂等缺失。
+  - 建议：大体量重构 SPEC 拆更小交付单元；impl run turn 上限 900 评估下调；收尾核查 run 幂等去重（已确认交付则不重派）。
+
+### 失误
+- **stash pop 冲突再发 1 文件丢弃**
+  - 影响：00:09:44Z（本地 08:09）evo-admin-signal-consolidation merge-back 时 core/admin_store.py 1 个未提交改动被丢弃（stash 保留可找回），wip_overlap 预检命中 3 文件；同日 09:56 aa4a3f6f 修复的 AdminStore 序列化缺陷恰在被丢弃文件中，说明丢弃的可能包含必要改动。
+  - 证据：admin_alerts.json 8742ae7357f9（00:09:44Z stash_pop_conflict，conflict_files=[core/admin_store.py]，stash_kept=true，wip_overlap 3 文件）+ aa406224349b（00:10:55Z Administrator 唤起失败: replace() 2 must be str, not dict）；昨日 todo 失误#2 同型事件。
+  - 调查评估：已核实（告警记录 + 代码现场）。根因：merge-back 前主树仍有 3 个文件 in-flight 改动与分支重叠，stash pop 冲突自愈丢弃 1 文件；昨日建议「merge-back 前主树 WIP 扫描前置阻塞」未落地（09-15 处置为拒绝），本次复发证明该缺口仍开放。且处置链又被 replace() 序列化 bug 卡死（修复 431f714c 17:43 合入前最后一例）。结论：昨日失误#2 未闭环，需重提前置阻塞立项；被丢弃改动需 git stash 找回核对。
+  - 建议：落地 merge-back 前主树 WIP 重叠前置阻塞/自动 stash 收纳；对本次 core/admin_store.py 被丢弃改动执行 git stash show 核对落回。
+
+- **supervision 上限低于生效超时**
+  - 影响：implementer 生效超时 15000s + 续期 2×1800s = 18600s（5h10m）> supervision absolute_max 14400s（4h），按 18600s 兜底生效——supervision 无法在 4h 截停，与 900 轮 turn 耗尽、9007s 停滞空转（见 W2/W3）直接相关，窗口内 2 条 ERROR。
+  - 证据：fenixd.log 2026-09-15T15:49:54.498628Z 与 16:19:54.518657Z 两条同文案：supervision absolute_max_seconds(14400s) 低于 生效超时 15000s + 续期总额 2×1800s = 18600s，按 18600s 兜底生效（agent_type=implementer）。
+  - 调查评估：已核实（ERROR 样本）。根因：implementer 生效超时配置（15000s）与 supervision absolute_max（14400s）配置不一致，兜底取 18600s 使监督上限形同虚设。属框架配置漂移/未对齐，非代码 bug 但长期放大长 run 失控风险。结论：配置对齐类失误，易修高收益。
+  - 建议：统一配置派生：supervision absolute_max_seconds ≥ 生效超时+续期总额，或生效超时下调至 supervision 上限内；增加启动时一致性校验，不一致即告警而非静默兜底。
+
+- **orphaned_state 三连发处置 Exit 1**
+  - 影响：新防线四 orphaned_state 探测（c07475ff 合入）对 evo-run-failure-classification-circuitbreaker 在 4 分钟内连发 3 条 major 告警（09:45:52Z×2 + 09:49:23Z），派发的 Administrator 处置 run admin-evo-run-failure-classification-circuitbreaker-1789465552 以 Exit code 1 失败，处置中断。
+  - 证据：admin_alerts.json 793eba911996/7117157adf3e/1ffa07c51200（09:45-09:49Z orphaned_state，same spec）；run 文件 admin-evo-run-failure-classification-circuitbreaker-1789465552 尾部 error=Exit code: 1 无 cost；repair-evo-run-failure-classification-circuitbreaker-1789464612-a1 09:30 开始 09:46 完成（repair 活跃期间即告警）。
+  - 调查评估：已核实（告警 + run 文件 + repair 时间线）。根因：orphaned_state 三条件（无活动 run/无存活子进程/无待派发）在 repair run 活跃推进期间误触发（09:45 判定无驱动，但 repair 09:46 才完成），疑似探测与 repair 交接竞态；且同 spec 4 分钟 3 连发无去重/静默期。admin run Exit 1 失败原因无日志。结论：新探测上线首日即暴露误报 + 重复告警 + 处置失败三问题，需校准。
+  - 建议：orphaned_state 判定叠加 run 文件活跃度（转录 mtime 近期增长即非孤儿）；同 spec 短时间重复告警去重；admin 处置 run Exit 1 失败补错误日志定位。
+
 ### 可改进
-- **评审失败无熔断空转 1h40m**
-  - 自进化：问题成立 / 建议合理 / ✓ 值得立项 · 处理：接受 · 删除：否
-  - 影响：本次 14:46-16:27 同型 infra 级失败（403 网关拒绝 + 402 余额不足 + 评审 budget exhausted）在 3 SPEC 上重复重试 5 轮约 15 个 run 全失败；窗口内另有 6 次评审 run 预算耗尽（含 spec-review-fix-recovery-branch-anchor-without-worktree-1789349356、spec-review-fix-blocked-freeze-classification-1789386350/1789388657 等）同型空转；41 条告警中无一指出「评审 API 批量失败」。复发敞口：每次同类 infra 失败以 10+ 空转 run 计
-  - 证据：失败 run 清单（1789369017/9026/9028、1789370821/0823/0825、1789374079、1789374428、1789386350、1789388657 等）+ 30 分钟间隔重试模式（06:57→07:27→07:57→08:21→08:27Z 五轮）；admin_alerts.json 41 条信号中无评审失败类；修复仅靠 16:27 人工改 config
-  - 调查评估：已核实（失败 run 时间轴 + 告警归类 + 修复动作归属人工）。根因：评审 run 失败既不做原因分级（内容质量 vs 基础设施）也不做熔断冷却，统一按 _review_attempts 机械重试直至 blocked。与进行中的 add-control-plane-silent-failure-guards（e01f6a39，专注 arity 静态守卫/测试替身保真/复位路径编程错误升级/orphaned-state）互补而非重复——该 SPEC 未覆盖「run 失败类型分级与熔断」。结论：立项价值高，收益为把 1h40m 级盲转压缩为分钟级告警。
-  - 建议：为 run 执行失败增加三级落点：内容失败（含空白轮次正常重试）、infra 失败（403/402/预算耗尽/CLI 进程级——连续 ≥3 次即熔断该链路并落升级告警 + 冷却，恢复后自动重试）、判别失败（产物已落盘——直接消费，见 waste 条目）；失败分类进入 ADMIN 信号体系
+- **自省失败判定以结果文件为准**
+  - 影响：每日自省「失败 N」统计失真（本次 20 个失败里 10 个为误报），todo.md 条目与人工判断被系统性地误导；复发敞口：任何以「预算耗尽/内容缺失/熔断」为主题的 SPEC 评审轮都会触发误报。
+  - 证据：10/10 失败样本 _classify_run 返回 succeeded、_scan_run_signals 命中主题词；spec-review-evo-run-failure-classification-circuitbreaker 正文必然含「预算耗尽」、spec-review-refactor-verification-module 转录引用 _check_spec_content_missing 源码。
+  - 调查评估：已核实（python 复现聚合逻辑）。根因：自省聚合对成功 run 仍做全文件信号词扫描兜底，信号词与评审/修复任务主题高度重合。与 in-flight evo-run-failure-artifact-first（结果文件硬门，已合入）互补——该 SPEC 未覆盖自省统计层。结论：可起草 SPEC 立项，低风险高收益。
+  - 建议：自省判定以 .fenix-run-result.json 落盘 status 为准；信号扫描仅用于 error 终态或结果缺失兜底；对 spec-review/repair/planner 类 run 移除预算词扫描。
 
-- **stuck 判定误报 5 连发待去重**
-  - 自进化：问题成立 / 建议部分合理 / ✓ 值得立项 · 处理：接受 · 删除：否
-  - 影响：fix-command-main-serve-scope 在 implementer 活跃期间于 15:11-15:31 连发 5 条 stuck 升级告警（major、全程 unhandled、噪音持续 20 分钟）；同日 evo-verifier-result-single-source 17:56 再触发 stuck 升级，admin 三步骤只读诊断确认「implementer 活跃正常收尾」纯误报（诊断耗时约 2h40m 的 run 资源）。复发敞口每例约 3-5 条告警 + 一次 admin run 处置
-  - 证据：admin_alerts.json 5 条 fix-command-main-serve-scope stuck（id 51c737591057/9cd17fb52ba8/c3d747c8dbc0/8edf5f0d6aa9/e892bd9e39cc，created 15:11-15:31 local）；4e907587a129 disposition 记录「实际 implementer (a1-r1) 一直活跃运行并已正常收尾…信号为 admin_monitor 解析缺陷导致的误报」；8e510a87 09-15 02:22 已修 _spec_from_run_id -r<n> 瞬态重试后缀误报根因
-  - 调查评估：已核实（告警记录 + disposition 文本 + 修复 commit）。根因：stuck 判定基于 STATE updated 时间戳 + run 进度，长任务（全量回归等）期间 updated 不刷新即误报；同 spec 已处置后未抑制后续重复告警（5 连发同一 updated 值）；8e510a87 只修了 run_id 后缀解析一个根因，时间戳盲区仍在。与 stuck baseline reset 机制（10509 行 extension 记录）部分互补但未覆盖处置后去重。结论：残余缺口明确，低成本高收益
-  - 建议：stuck 判定叠加进程存活与 run 文件活跃度检查（对应 implementer PID 存活或 run 文件近期增长即非 stuck）；对同一 (spec, signal_type) 在处置 resolved 后静默期去重；将 a1/a2 人工只读诊断所依赖的信号（进程树/转录 mtime）收编为内置预检字段，减少人工诊断 run
-
-- **admin 派发失败无升级告警**
-  - 自进化：问题部分成立 / 建议部分合理 / ✓ 值得立项 · 处理：接受 · 删除：否
-  - 影响：20:26 stash_pop_conflict 信号（含 1 文件改动丢弃与 7 文件 WIP 冲突的善后指引）因提示词构造 replace() 报错无法派发 Administrator，自动处置缺失、仅落一行 ERROR；同类「派发期编程错误」在 add-control-plane-silent-failure-guards 覆盖前无升级通道。复发敞口：任一结构化信号字段（evidence dict 等）都可能复现
-  - 证据：fenixd.log 9802 行 ERROR「Administrator invocation failed: replace() argument 2 must be str, not dict」（context.signal=stash_pop_conflict/evo-item-retention-doc-tracking）；prompt_builder.py:204 out.replace(key, val) 现场 + _str_field（json.dumps 兜底）直至 66f815db 04:36 才合入
-  - 调查评估：已核实（报错日志 + 代码路径 + _str_field 引入 commit）。根因：_fill_placeholders 的 {evidence}/{recommendation} 注入依赖调用侧保证 str，stash_pop_conflict 等结构化 evidence dict 直接穿透到 str.replace；且 admin_monitor 的派发路径捕获异常后仅 logger.error，不升级告警。与 add-control-plane-silent-failure-guards 的 admin_reset_programming_error（3.1-3.5：只覆盖 _reset_env_blocked_after_disposition 复位路径编程错误升级）同源但覆盖点不同——派发路径是空白。结论：修复已随 66f815db 合入（事件后约 8h），但「派发失败升级告警」的机制缺口仍在
-  - 建议：将 admin 派发失败纳入升级告警体系（沿用 add-control-plane-silent-failure-guards 的编程错误升级模式，覆盖派发链）；对 admin 提示词注入字段统一走 _str_field 序列化并加单测防回退
+- **Exit 143 无根因记录反复重试**
+  - 影响：窗口内 5+ 个 impl run 以 Exit 143 被终止（add-control-plane 系列三连），日志仅标 [provider-transient]，无 SIGTERM 来源记录，导致 in-place 重试空转数小时才 frozen。
+  - 证据：fenixd.log 11271 行 [provider-transient] claude CLI failed: Exit code: 143；run 文件 -a2/-a1-r1/-a1-r3 三连 143；11272 行 frozen 终止重试链。
+  - 调查评估：已核实（日志 + run 文件）。根因：agent_runner 捕获 CLI 子进程非零退出即归 provider-transient，未区分 SIGTERM 来源（daemon 重启 drain？外部 kill？资源回收？），无告警无升级，靠重试撞运气。与 evo-run-failure-classification-circuitbreaker 三级分类互补但需接入 SIGTERM 归类。结论：可并入 circuitbreaker 后续迭代，记录信号来源并冷却。
+  - 建议：记录 SIGTERM 来源（父进程/信号者）；143 连续出现触发熔断冷却而非无限重试；daemon drain/重启对 in-flight run 打 shutdown 标记避免误归 provider-transient。
