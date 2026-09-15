@@ -391,6 +391,14 @@ class ConfigLoader:
                 val = admin[field]
                 if not isinstance(val, (int, float)) or val <= 0:
                     raise ValueError(f"admin.{field} must be positive: {val}")
+        # stuck-signal-hygiene D4：stuck 处置后静默期——非负护栏（0 = 不静默），
+        # 与 escalation_cooldown_minutes 同型（负数/非法类型拒绝）。
+        if "stuck_silence_minutes" in admin and admin["stuck_silence_minutes"] is not None:
+            _ssm = admin["stuck_silence_minutes"]
+            if not isinstance(_ssm, (int, float)) or isinstance(_ssm, bool) or _ssm < 0:
+                raise ValueError(
+                    f"admin.stuck_silence_minutes must be a non-negative number: {_ssm}"
+                )
         # fix-admin-run-blocks-mainloop D6：后台 worker 池大小；0 表示不启用后台池
         # （回退主循环内同步执行）。负数与非法类型拒绝。
         if "workers" in admin and admin["workers"] is not None:
@@ -954,6 +962,8 @@ class ConfigLoader:
         - merge_breaker_threshold: 复用 agents.merge_breaker_threshold（默认 2）
         - shutdown_drain_seconds: 1800（0 = 快速停机）
         - bug_repair_mode: "inplace"（原地打回；derive = 派生 fix-* 子 SPEC）
+        - stuck_silence_minutes: 120（stuck 处置后静默期：result=resolved/
+          partially-resolved 处置后同 (spec, signal_type) 在窗口内不产信号）
         """
         admin = config.get("admin") or {}
         # D2：stuck 阈值单源派生，旧键不再作为生效输入（告警在助手内节流）。
@@ -987,6 +997,12 @@ class ConfigLoader:
                 0, int(admin.get("shutdown_drain_seconds", 1800) or 1800)),
             # add-bug-repair-mode-config：bug-found 修复方式（未配置缺省 inplace）
             "bug_repair_mode": brm,
+            # stuck-signal-hygiene D3/D4：stuck 处置后静默期（分钟）——
+            # (spec, signal_type) 最近一次 result∈{resolved, partially-resolved}
+            # 处置后，窗口内不产生 stuck 信号（非负护栏，0=不静默）。
+            "stuck_silence_minutes": float(
+                admin.get("stuck_silence_minutes", 120)
+            ),
             # add-daily-self-review：自省配置段（enabled 缺省 false）
             "self_review": cls.get_self_review_config(config),
             # evo-run-failure-classification-circuitbreaker D5：infra 熔断配置

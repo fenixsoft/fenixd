@@ -763,11 +763,37 @@ class AdminMonitor:
         return signals
 
     def _detect_stuck(self, specs: dict, now: float) -> list:
-        """implementing/testing 超阈值无 run 进度。"""
+        """implementing/testing 超阈值无 run 进度。
+
+        stuck-signal-hygiene：在既有「文件 mtime 判据」上叠加两道反证——
+          D1 进程存活反证：该 spec 存在登记在跑且进程存活的 run
+            （AgentRunner.running_run_ids()，进程表为真相）→ 直接跳过。
+            转录文件停止增长（mtime 超出宽限）但 agent 子进程仍存活的边界
+            场景不再误报；hang 场景（进程存活但无输出）由 run_timeout_seconds
+            超时兜底，不判 stuck。
+          D3 处置后静默期：最近一条 result∈{resolved, partially-resolved}
+            处置距 now < stuck_silence_minutes → 跳过（处置成功后的短期
+            复发不产信号）；result=escalated 不静默（人工处置是唯一出路）。
+        """
         signals = []
         threshold_minutes = self.admin_cfg["stuck_threshold_minutes"]
         grace_minutes = max(STUCK_GRACE_MINUTES, self.interval_minutes * 2)
+        silence_minutes = float(self.admin_cfg.get("stuck_silence_minutes", 120))
         runs_dir = self.project_root / ".fenix" / "runs"
+        # D1：进程存活反证数据源——agent_runner 存在时取「进程仍存活」的
+        # run_id 集（_running_agents 进程表为真相）；None（CLI/测试态）→
+        # 跳过本检查、退回文件活跃度判据。延迟获取：轮内只算一次。
+        running_ids = None
+        if self.agent_runner is not None:
+            try:
+                running_ids = set(self.agent_runner.running_run_ids() or [])
+            except Exception as e:
+                # 进程表读取异常不阻断巡检：退回文件判据（与其余检测路径同容错）
+                self.logger.warning(
+                    "admin_monitor",
+                    f"running_run_ids() 读取失败，退回文件判据: {e}",
+                )
+                running_ids = None
         for name, entry in specs.items():
             status = entry.get("status")
             if status not in ("implementing", "testing"):
@@ -786,8 +812,43 @@ class AdminMonitor:
             elapsed_minutes = (now - updated.timestamp()) / 60
             if elapsed_minutes <= threshold_minutes:
                 continue
+            # D1 进程存活反证：run_id → spec 归属必须用 _spec_from_run_id
+            #（本模块既有方法，正则 -(?:a|r)\d+ 同时覆盖 attempt 与 -r<n> 瞬态
+            # 重试后缀）。禁止 run_spec_part（run_files.py:66）：它只剥离 -a\d+，
+            # 对 <base>-a1-r1 返回 <base>-a1-r1 归属失败——正是 8e510a87 修复的
+            # -r<n> 根因形态，沿用会让「进程存活反证」在瞬态重试期间重新失效。
+            if running_ids is not None and any(
+                self._spec_from_run_id(rid) == name for rid in running_ids
+            ):
+                self.logger.debug(
+                    "admin_monitor",
+                    f"Skipping stuck for '{name}': alive run process(es) registered",
+                )
+                continue
             if self._has_recent_progress(name, runs_dir, now, grace_minutes * 60):
                 continue
+            # D3 处置后静默期：最近一条成功处置距 now < silence 窗口 → 跳过。
+            # result=escalated（升级人工）不匹配 resolved/partially-resolved，
+            # 天然不触发静默——人工处置是唯一出路，不得被静默吞掉。
+            if silence_minutes > 0:
+                disp = self.store.latest_resolved_disposition(name, "stuck")
+                if disp is not None:
+                    disp_created_str = disp.get("created") or ""
+                    try:
+                        disp_created = datetime.fromisoformat(
+                            disp_created_str.replace("Z", "+00:00"))
+                        disp_age_minutes = (now - disp_created.timestamp()) / 60
+                    except (ValueError, TypeError):
+                        disp_age_minutes = None
+                    if disp_age_minutes is not None \
+                            and disp_age_minutes < silence_minutes:
+                        self.logger.debug(
+                            "admin_monitor",
+                            f"Skipping stuck for '{name}': resolved disposition "
+                            f"{int(disp_age_minutes)}m ago < silence "
+                            f"{int(silence_minutes)}m",
+                        )
+                        continue
             signals.append(self._make_signal(
                 "stuck", name,
                 f"'{name}' 卡在 {status} 超过 {int(elapsed_minutes)} 分钟且无 run 进度",

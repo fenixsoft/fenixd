@@ -402,6 +402,42 @@ class AdminStore:
             best.pop("_anchor", None)
         return best
 
+    def latest_resolved_disposition(self, spec: str, signal_type: str,
+                                    ) -> Optional[dict]:
+        """返回（spec, signal_type）最近一条「成功处置」记录或 None。
+
+        stuck-signal-hygiene D3：仅匹配 kind=DISPOSITION 且 result∈
+        {resolved, partially-resolved}——处置成功（根因已修复）后，同信号
+        在静默窗口内不复发。
+
+        不复用 latest_signal（fix-latest-resolved-disposition-scope）：后者
+        匹配 kind∈{SIGNAL, ESCALATION, DISPOSITION} 且不按 result 过滤，会把
+        failed/pending disposition 误当成功处置；且其窗口语义（created 停在
+        首次触发）用于静默期会把首见时间误当处置时刻，静默窗口大幅错位。
+        本查询返回最近一条匹配记录的**原始 created**（处置时刻 = 记录写入时），
+        不计算 last_seen——处置记录不带 last_seen（merge_signal 不作用于
+        disposition），created 即处置时刻。
+
+        Args:
+            spec: spec 名（必须有值；处置记录恒带 spec，不做 daemon 级匹配）
+            signal_type: 信号类型（如 stuck）
+
+        Returns: 匹配记录 dict（含 created，供静默窗口计算）；无匹配返回 None。
+        """
+        best = None
+        for rec in self.read_all():
+            if rec.get("kind") != DISPOSITION:
+                continue
+            if rec.get("signal_type") != signal_type:
+                continue
+            if rec.get("spec") != spec:
+                continue
+            if rec.get("result") not in ("resolved", "partially-resolved"):
+                continue
+            if best is None or (rec.get("created") or "") > (best.get("created") or ""):
+                best = rec
+        return best
+
     def unhandled_for(self, spec: Optional[str], signal_type: str) -> Optional[dict]:
         """返回（spec, signal_type）对应的未处理升级告警（若有）。
 

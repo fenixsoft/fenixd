@@ -162,6 +162,29 @@ class SpecReviewManager:
             run_ok, run_err = False, str(e)
         if not run_ok:
             self.logger.error("spec_review", f"评审 run 执行失败: {spec_name}: {run_err}")
+
+            # ① 结果捞回（run 失败时尝试从转录代写落盘，避免白烧重试）
+            salvage = getattr(self.agent_runner, "_salvage_spec_review_result", None)
+            if callable(salvage):
+                try:
+                    salvage(spec_name, run_id)
+                except Exception as e:  # noqa: BLE001 — 捞回失败不得阻断判定
+                    self.logger.warning("spec_review", f"结果捞回异常: {spec_name}: {e}")
+
+            # ② 产物优先判定（D1）：产物已合法落盘 → 按产物消费，exit code 失败仅
+            #    降级 warning 日志留痕，不递增 _review_attempts、不重派
+            artifact_ok, artifact_data = self._artifact_landed_valid(
+                spec_name, run_started_at=attempt_started_at)
+            if artifact_ok:
+                self.logger.warning(
+                    "spec_review",
+                    f"评审 run exit code 失败但产物已落盘，优先按产物消费"
+                    f"（exit code={run_err}）: {spec_name}"
+                )
+                self.consume_review_result(spec_name, run_started_at=attempt_started_at)
+                return True
+
+            # ③ 产物不合法 → 走既有重试语义（attempt 递增）
             self._handle_review_failure(spec_name, f"评审 run 执行失败: {run_err}")
             return False
         self.logger.info("spec_review", f"评审 run 已收工: {spec_name} run_id={run_id}")
@@ -466,12 +489,91 @@ class SpecReviewManager:
 
     # ── 故障重试 ────────────────────────────────────────────────
 
-    def _classify_run_failure(self, reason: str, spec_name: str) -> str:
+    def _artifact_landed_valid(self, spec_name: str,
+                                run_started_at: float | None = None) -> Tuple[bool, Optional[dict]]:
+        """校验评审 run 产物是否已合法落盘（任务 1.1）。
+
+        判定「合法」的条件：
+        1. 结果文件存在、非空、可解析为 JSON 对象
+        2. status ∈ {approved, repaired}
+        3. mtime ≥ 锚点写入时刻（防上轮残留合法文件替本轮放行）
+        4. 快照 spec 一致性校验通过（复用 _verify_snapshot）
+
+        Returns:
+            (True, data) 如果产物合法，data 为解析后的结果对象。
+            (False, None) 如果产物不合法。
+
+        设计依据（D1 产物优先判定）：run 成败由 CLI exit code 一票判定时，
+        产物是否已合法落盘不作为判败前置条件——「产物已具备却被退出码一票否决」。
+        本方法在 run 失败时前置校验，合法产物优先消费，exit code 失败仅降级
+        为 warning 日志并留痕。
+
+        锚点 = 解析 entry.reviewer_run 内嵌 epoch 时间戳（dispatch_review
+        步骤①写入 run_id 的时刻，run_id 形如 ``spec-review-<spec>-<ts>``），
+        与 consume 内跳过的新鲜度校验语义同向。
+        """
+        result_path = spec_review_result_path(self.project_root, spec_name)
+
+        # 锚点解析：reviewer_run 内嵌 epoch 时间戳（run_id 尾部段）
+        anchor_ts = run_started_at
+        try:
+            entry = self.state_machine.read_one(spec_name) or {}
+            run_id = entry.get("reviewer_run") or ""
+            if run_id:
+                tail = str(run_id).rsplit("-", 1)[-1]
+                if tail.isdigit():
+                    anchor_ts = float(tail)
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            if not result_path.is_file():
+                return (False, None)
+            if result_path.stat().st_size == 0:
+                return (False, None)
+
+            # mtime 新鲜度校验：mtime 早于锚点（宽限 1s 吸收 fs 写入滞后）
+            if anchor_ts is not None:
+                mtime = result_path.stat().st_mtime
+                if mtime < anchor_ts - 1.0:
+                    return (False, None)
+
+            # JSON 解析
+            try:
+                data = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return (False, None)
+
+            if not isinstance(data, dict):
+                return (False, None)
+
+            # status 白名单校验（仅 approved/repaired 视为合法产物）
+            status = data.get("status")
+            if status not in ("approved", "repaired"):
+                return (False, None)
+
+            # 快照 spec 一致性校验（复用 _verify_snapshot）
+            snapshot_path = self.project_root / ".fenix" / "spec-review" / spec_name / "snapshot.json"
+            if snapshot_path.exists():
+                try:
+                    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                    snapshot_err = self._verify_snapshot(spec_name, snapshot)
+                    if snapshot_err:
+                        return (False, None)
+                except (OSError, json.JSONDecodeError):
+                    pass  # 快照读取失败，跳过比对（保守放行）
+
+            return (True, data)
+
+        except (OSError, AttributeError):
+            return (False, None)
+
+    def _classify_run_failure(self, reason: str | None,
+                              spec_name: str | None = None) -> str:
         """三类失败分类（evo-run-failure-classification-circuitbreaker D1）。
 
-        扩展 evo-run-failure-artifact-first 的 `_classify_run_failure(reason)`（沿用
-        同名，勿另开 `_classify_failure`；该 SPEC 未落位时在本 SPEC 以同名新建）为
-        三分 "artifact" | "infra" | "content"：
+        扩展 evo-run-failure-artifact-first 的同名 `_classify_run_failure`（沿用同名，
+        勿另开 `_classify_failure`）为三分 "artifact" | "infra" | "content"：
 
         - artifact：产物已落盘合法（调用 `_artifact_landed_valid`）；优先级最高；
         - infra：指纹匹配（403/402/429/quota/budget/余额/insufficient balance/
@@ -482,11 +584,22 @@ class SpecReviewManager:
           model_chain_preflight_failed；
         - content：其余（含空白轮次）。
 
+        Args:
+            reason: run 失败原因文本（可为 None）。
+            spec_name: 可选；给出时前置校验产物是否已合法落盘，命中则判 artifact。
+
         Returns: "artifact" | "infra" | "content"。
         """
         # artifact 分支优先级最高：产物已落盘合法 → 判别失败，直接消费不重试。
-        if spec_name and self._artifact_landed_valid(spec_name):
-            return "artifact"
+        if spec_name:
+            try:
+                landed = self._artifact_landed_valid(spec_name)
+            except (AttributeError, TypeError, ValueError):
+                landed = False
+            # _artifact_landed_valid 返回 (bool, data) 元组；兼容测试替身返回裸 bool。
+            artifact_ok = landed[0] if isinstance(landed, tuple) else bool(landed)
+            if artifact_ok:
+                return "artifact"
         low = (reason or "").lower()
         for fp in _INFRA_FINGERPRINTS:
             if fp in low:
@@ -502,24 +615,6 @@ class SpecReviewManager:
                 return "infra"
         return "content"
 
-    def _artifact_landed_valid(self, spec_name: str) -> bool:
-        """产物是否已合法落盘（evo-run-failure-artifact-first 的 `_artifact_landed_valid`）。
-
-        评审 run 的产物 = `.fenix/spec-review/<spec>/.fenix-run-result.json`：
-        存在、非空、JSON 可解析且 status 在白名单内 → 合法产物。
-        该 SPEC（run-failure-artifact-first）未实现时此处按同语义回退 content。
-        """
-        result_path = spec_review_result_path(self.project_root, spec_name)
-        try:
-            if not result_path.exists() or result_path.stat().st_size == 0:
-                return False
-            data = json.loads(result_path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                return False
-            return data.get("status") in spec_review_result_status_whitelist
-        except (OSError, json.JSONDecodeError):
-            return False
-
     def _handle_review_failure(self, spec_name: str, reason: str):
         """处理评审失败：按失败分类落点（D1/D2）。
 
@@ -531,6 +626,9 @@ class SpecReviewManager:
           恢复」；若不清锚点，冷却到期后 dispatch_review 见 reviewer_run 非空拒派
           （spec_review.py:67-69），spec 永久卡 reviewing）；
         - content：维持既有重试语义（递增 _review_attempts，达上限转冻结转人工）。
+
+        error 保留 ``spec-review-incomplete:`` 前缀不变（复用 re_review 的
+        startswith 契约）。
         """
         failure_type = self._classify_run_failure(reason, spec_name)
 
