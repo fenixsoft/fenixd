@@ -3656,6 +3656,72 @@ class WorktreeManager:
         except subprocess.TimeoutExpired:
             return False
 
+    def branch_tip(self, branch: str) -> Optional[str]:
+        """分支 tip SHA（``git rev-parse --verify``），异常/不存在返回 None。
+
+        fix-repair-commit-enforcement D2：repair git 事实复核的「分支 tip 前进」
+        判定基准——repair 派发前记录基准 tip，repair 后与当前 tip 比较。只读
+        查询，不产生任何 worktree 写操作；超时/异常以 None 保守降级（调用侧
+        据此跳过 tip 前进校验，不抛穿）。
+        """
+        if not branch:
+            return None
+        try:
+            rev = subprocess.run(
+                ["git", "-C", str(self.project_root),
+                 "rev-parse", "--verify", branch],
+                capture_output=True, text=True, timeout=10,
+            )
+            if rev.returncode != 0:
+                return None
+            sha = rev.stdout.strip()
+            return sha or None
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+
+    def repair_site_facts(self, wt_path) -> dict:
+        """repair 现场 git 事实（只读）：未解决冲突清单 + 是否残留未完成 merge。
+
+        fix-repair-commit-enforcement D2：复核「冲突残留 + MERGE_HEAD」两项
+        硬事实——
+        - ``unmerged``：``git ls-files -u`` 输出的未合并路径清单（stage 1/2/3
+          每冲突文件 1~3 行，按路径去重）；
+        - ``merge_head``：worktree 内 ``git rev-parse -q --verify MERGE_HEAD``
+          是否成功（MERGE_HEAD 是 worktree 级 git 文件，须以 wt_path 为 -C 目标）。
+
+        查询异常时以保守值降级不抛穿（``unmerged=[]``、``merge_head=False``，
+        与现状一致放行，不引入新假阴性硬门）。
+        """
+        facts = {"unmerged": [], "merge_head": False}
+        if wt_path is None:
+            return facts
+        try:
+            ls = subprocess.run(
+                ["git", "-C", str(wt_path), "ls-files", "-u"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if ls.returncode == 0:
+                paths = []
+                for line in ls.stdout.splitlines():
+                    # 行格式：<mode> <sha> <stage>\t<path>
+                    if "\t" in line:
+                        path = line.split("\t", 1)[1].strip()
+                        if path and path not in paths:
+                            paths.append(path)
+                facts["unmerged"] = paths
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        try:
+            mh = subprocess.run(
+                ["git", "-C", str(wt_path),
+                 "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                capture_output=True, text=True, timeout=10,
+            )
+            facts["merge_head"] = mh.returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        return facts
+
     def resolve_repair_site(self, spec_name: str, branch: str):
         """解析 repair/恢复续做 分支载体三态（共用 is_available 单源查询，D5）。
 

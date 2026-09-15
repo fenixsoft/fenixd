@@ -2704,11 +2704,17 @@ class Dispatcher:
         # 轮次递增（D5/D6）：repair 轮计入该 spec 的实现预算（token 记名下）；
         # 连续计数 _merge_fp/_merge_streak 不被 repair 轮清零（熔断协同）。
         round_no = repair_round + 1
+        # ── 基准 tip 记录（fix-repair-commit-enforcement D2）─────────────
+        # repair 派发前记录分支 tip，repair 后 worker 复核「tip 是否前进」。
+        # 与 _repair_round/_repair_merge_fp 同处一次 update_spec 落盘，
+        # 语义一致（统一 repair 轮次元数据）。
+        base_tip = wm.branch_tip(resolved_branch)
         try:
             self._pm.state_machine.update_spec(spec_name, {
                 "_repair_round": round_no,
                 "_repair_merge_error": getattr(merge_info, "error", "") or "",
                 "_repair_merge_fp": fp,
+                "_repair_base_tip": base_tip,
                 # 进入下一轮 repair：上一轮若曾写入「待 re-merge」标记则一并清除
                 # （fix-recovery-branch-anchor D3 清除点 2/4）。
                 "_repair_awaiting_remerge": False,
@@ -2816,6 +2822,23 @@ class Dispatcher:
                 })
                 return
 
+            # ── repair git 事实复核（fix-repair-commit-enforcement D1/D2）──
+            # repair agent 声明 success 只是「声明」，worker 在此以分支 git 事实
+            # 独立验证「repair 确实被落地」：① 分支 tip 相对派发前基准前进（至少
+            # 一个新提交）；② worktree 内无未解决冲突；③ 不处于未完成 merge。
+            # 任一不满足即判 repair 未完成，repair_error 携带具体事实注入
+            # fallback 重派上下文（不再以笼统「merge-back failed」重派）。
+            if repair_ok:
+                facts_ok, fact_err = self._pm._check_repair_commit_facts(
+                    spec_name, wt_path, branch)
+                if not facts_ok:
+                    repair_ok = False
+                    repair_error = fact_err
+                    self._pm.logger.error(
+                        "pm_engine",
+                        f"repair git 事实复核未通过 '{spec_name}'：{fact_err}",
+                    )
+
             if not repair_ok:
                 # repair 失败/超时/显式失败 → 回退 fallback 全新重派（原分支按既有
                 # 清扫策略处理：登记遗产供后继 run 参考）
@@ -2859,6 +2882,9 @@ class Dispatcher:
                     "_merge_streak": 0,
                     "_repair_round": 0,
                     "_repair_merge_error": None,
+                    # repair 链成功收口：基准 tip 随 _repair_round 一并清零
+                    # （fix-repair-commit-enforcement 1.4），避免 stale 基准残留。
+                    "_repair_base_tip": None,
                     "_repair_awaiting_remerge": False,
                     **self._pm._clear_dispatch_conflict(spec_name),
                 })
@@ -2920,6 +2946,85 @@ class Dispatcher:
             except Exception:
                 pass
             self._pm._process_queue()
+
+    # ── repair git 事实复核（fix-repair-commit-enforcement D1/D2/D5）──────
+    def _check_repair_commit_facts(self, spec_name: str, wt_path,
+                                   branch: str) -> tuple[bool, str]:
+        """repair git 事实复核：分支 tip 前进 + 无冲突残留 + 无未完成 merge。
+
+        repair agent 的 success 是「声明」，worker 在此以分支 git 事实独立验证
+        「repair 确实被落地」。复核逻辑为**可测试的纯组合判定**（D5）：只读
+        查询委托 worktree_manager（``branch_tip`` / ``repair_site_facts``），
+        组合判定在此方法内完成——单测可注入 mock worktree_manager 覆盖四态
+        （tip 未前进 / 有未合并条目 / 有 MERGE_HEAD / 全 ok），沿用
+        ``test_mergeback_repair_lane.py`` 的临时仓库夹具风格。
+
+        判定规则（任一不满足 → 判未完成）：
+        - ``repair_site_facts.unmerged`` 非空 → 未解决冲突残留；
+        - ``repair_site_facts.merge_head`` 为 True → 仍处于未完成 merge；
+        - 基准 ``_repair_base_tip`` 可判时，``branch_tip(branch) != base_tip``
+          → 分支 tip 未前进（可能只暂存未提交）。
+        ``_repair_base_tip`` 缺失（老状态迁移或查询失败）时跳过 tip 前进
+        校验，仅查冲突残留 + MERGE_HEAD（保守放行，与现状一致，不引入新
+        假阴性硬门——修复后只读层的失败也按同样保守原则处理）。
+
+        Returns:
+            ``(ok, error_text)``：ok=True 表示复核通过；ok=False 时
+            error_text 携带可诊断事实（如 tip SHA、未合并条目计数、MERGE_HEAD
+            有无），供 ``_fallback_after_repair`` 注入下一轮重派上下文。
+        """
+        wm = self._pm.agent_runner.worktree_manager
+        # ── 查询侧（D2：只读，不新增 worktree 写操作）──
+        try:
+            facts = wm.repair_site_facts(wt_path)
+        except Exception as e:
+            facts = {}
+            self._pm.logger.warning(
+                "pm_engine",
+                f"repair git 事实查询异常（fail-open 防误拦）'{spec_name}': {e}",
+            )
+        unmerged = list(facts.get("unmerged") or [])
+        merge_head = bool(facts.get("merge_head"))
+        # ── 冲突残留 / MERGE_HEAD 是硬事实，任一出问题即判未完成 ──
+        if unmerged or merge_head:
+            parts = []
+            if unmerged:
+                shown = ", ".join(unmerged[:3])
+                tail = "…" if len(unmerged) > 3 else ""
+                parts.append(
+                    f"未解决冲突残留 {len(unmerged)} 个文件"
+                    f"（{shown}{tail}）"
+                )
+            if merge_head:
+                parts.append("存在未完成 merge（MERGE_HEAD）")
+            return False, f"repair git 事实复核未通过：{'; '.join(parts)}"
+        # ── tip 前进校验（基准可判时，D2）──
+        try:
+            base_tip = (
+                (self._pm.state_machine.read_one(spec_name) or {})
+                .get("_repair_base_tip")
+            )
+        except Exception:
+            base_tip = None
+        if base_tip:
+            now_tip = None
+            try:
+                now_tip = wm.branch_tip(branch)
+            except Exception as e:
+                self._pm.logger.warning(
+                    "pm_engine",
+                    f"repair 分支 tip 查询异常（按未前进判未完成，保守）"
+                    f"'{spec_name}': {e}",
+                )
+            if not now_tip or now_tip == base_tip:
+                base_short = base_tip[:12] if base_tip else "N/A"
+                now_short = now_tip[:12] if now_tip else "N/A"
+                return False, (
+                    f"repair git 事实复核未通过：分支 tip 未前进"
+                    f"（base={base_short}, now={now_short}）"
+                    f"——repair 声称成功但分支无新提交，可能只暂存未提交"
+                )
+        return True, ""
 
     def _handle_remerge_failure(self, spec_name: str, remerge_info, branch: str) -> None:
         """repair 后的 re-merge-back 失败：熔断 → repair 下一轮 → fallback。
@@ -3018,6 +3123,11 @@ class Dispatcher:
             "error": full_error,
             "_repair_round": 0,
             "_repair_merge_error": None,
+            # 基准 tip 随 fallback 一并清零（fix-repair-commit-enforcement 2.2）：
+            # 复核失败 / remerge 再失败 / worker 异常三条 fallback 路径都不再续
+            # repair 链，清空避免 STATE 残留 stale 基准 tip 孤儿字段（新 implementer
+            # 的 merge 失败开启新链，与 _repair_round 归零同族）。
+            "_repair_base_tip": None,
             # 清除待 re-merge 标记（fix-recovery-branch-anchor D3）：fallback
             # 重派后由新 implementer 正常收口，不得再被恢复链当「待 re-merge」处理。
             "_repair_awaiting_remerge": False,
