@@ -4630,13 +4630,23 @@ class AgentRunner:
 
         读本轮 run 产物（find_impl_run_file 按 mtime 取最新 impl run）中
         ``type == "system" && subtype == "init"`` 事件的 tools 数组：
-        - 含 "TaskCreate" → ``parse_run_task_done(run_file)["done_ids"]`` MUST 覆盖
-          tasks.md 的全部已勾选数字任务 id；不满足判失败（归因注明「已完成任务与
-          TaskUpdate 记录不一致」）；
+        - 含 "TaskCreate" → 按**跨轮累积**的 Task 记录核对：读该 spec 全部
+          impl run（含 a1/a2/a3 与 -rN 重试），任务 id 取族内全局序，
+          ``done_ids`` 为各「已创建且已 completed」id 的并集；
         - 不含 / init 事件不可得 → **跳过**该项核对并放行，同时向 run 产物追加
           ``impl-task-crosscheck-skipped`` 审计事件（含 spec/run_id/reason）。
           无条件强制会让硬门在 Task 家族工具不可用的派发路由上永远无法通过，
           形成「拒绝 → resume → 再拒绝」的预算烧穿循环（141/141 实测）。
+
+        判据（2026-09-15 事故修正，两处）：
+        1. **跨轮累积**（而非只读 mtime 最新单 run）：修复/续做轮只改文档、
+           不调 TaskCreate，其 ``done_ids`` 为空；只读最新一轮必然误拦。
+           ``taskId`` 是会话级全局序，须按「派发 epoch 家族」串起全部 run 再映射
+           （见 ``parse_run_task_done_cumulative``）。
+        2. **只对 tracked 任务要求覆盖**：要求集 = ``checked_ids ∩ tracked_ids``
+           （tracked = 曾出现过 TaskCreate 的 id）。任务在 tasks.md 里被勾选
+           不等于实现者建过对应 Task——planner 中途插入、未单独建 Task 的
+           任务（如 "1.2b"）不应因缺 TaskUpdate 记录被拦。
         """
         agent_type = "implementer"
         run_file = find_impl_run_file(self.project_root, spec_name)
@@ -4647,9 +4657,13 @@ class AgentRunner:
             return None
         if not checked_ids:
             return None  # 无已勾选任务 → 无覆盖义务
-        rd = parse_run_task_done(run_file) if run_file is not None else {}
-        done_ids = (rd or {}).get("done_ids") or set()
-        missing = sorted(checked_ids - set(done_ids))
+        from core.run_task_track import parse_run_task_done_cumulative
+        rd = parse_run_task_done_cumulative(self.project_root, spec_name)
+        done_ids = set(rd.get("done_ids") or ())
+        tracked_ids = set(rd.get("tracked_ids") or ())
+        # 只对「实现者确实声明过（建过 Task）」的任务要求完成覆盖
+        requirement = set(checked_ids) & tracked_ids
+        missing = sorted(requirement - done_ids)
         if missing:
             return (
                 f"exit 0 但已完成任务与 TaskUpdate 记录不一致（{agent_type} 产物硬门）: "
