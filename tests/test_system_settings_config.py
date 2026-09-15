@@ -32,7 +32,7 @@ class TestSystemAdminReadBack(unittest.TestCase):
             yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
 
     def test_read_config_admin_defaults_filled(self):
-        """缺省填充：无 admin 段时返回 6 键各自缺省值（含 bug_repair_mode=inplace）。"""
+        """缺省填充：无 admin 段时返回各键缺省值（含 bug_repair_mode=inplace）。"""
         from core.dashboard.data import read_config
 
         echoed = read_config(self.tmpdir)
@@ -45,6 +45,8 @@ class TestSystemAdminReadBack(unittest.TestCase):
                 "merge_breaker_threshold": 2,
                 "shutdown_drain_seconds": 1800,
                 "bug_repair_mode": "inplace",
+                # evo-stuck-signal-hygiene D4：stuck 处置后静默期默认 120 分钟
+                "stuck_silence_minutes": 120,
             },
         )
         # 缺省来源标注为 user（未在本文件定义）
@@ -105,7 +107,8 @@ class TestSystemAdminReadBack(unittest.TestCase):
         self.assertEqual(
             set(echoed["admin"].keys()),
             {"enabled", "interval_minutes", "escalation_cooldown_minutes",
-             "merge_breaker_threshold", "shutdown_drain_seconds", "bug_repair_mode"},
+             "merge_breaker_threshold", "shutdown_drain_seconds", "bug_repair_mode",
+             "stuck_silence_minutes"},
         )
         self.assertNotIn("self_review", echoed["admin"])
 

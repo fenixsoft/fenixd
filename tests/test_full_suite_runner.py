@@ -126,8 +126,15 @@ class TestRunSuite:
 # ── 5.6.6 suite_port_base ────────────────────────────────────────────
 
 class TestSuitePortBase:
-    def test_pid_based_default(self):
-        """默认基于 pid 派生端口段。"""
+    def test_pid_based_default(self, monkeypatch):
+        """默认基于 pid 派生端口段（未设 FENIX_SUITE_PORT_BASE 时）。
+
+        必须显式清除 FENIX_SUITE_PORT_BASE：全量套件入口 run_full_suite.py
+        的 _suite_env() 会用 setdefault 向子进程注入该变量（父进程 pid 派生），
+        残留时 suite_port_base() 走覆盖分支、与本测试的「自身 pid 派生」断言
+        语义冲突（套件内必挂、单跑必过的假信号）。
+        """
+        monkeypatch.delenv("FENIX_SUITE_PORT_BASE", raising=False)
         base = suite_port_base()
         assert 31000 <= base < 32000
         assert (base - 31000) == (sys.modules['os'].getpid() % 1000)

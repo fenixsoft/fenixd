@@ -2,11 +2,14 @@ import { Button, Card, Col, Form, Input, Row, Select, Space, Typography, message
 import {
   ArrowDownOutlined,
   ArrowUpOutlined,
+  CopyOutlined,
   MinusCircleOutlined,
   PlusOutlined,
+  SnippetsOutlined,
 } from '@ant-design/icons';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { AgentModelAssignment, AgentsModels, ConfigData } from '@/services/dashboard';
+import { cloneRoleValue, type RoleValue } from '@/utils/agentModels';
 
 import SyncFromUserButton, { SETTINGS_ACTIONS_ROW_STYLE } from './SyncFromUserButton';
 
@@ -26,16 +29,6 @@ const AGENT_ROLES = [
   { key: 'spec-review', label: 'Spec Review（方案评审）' },
   { key: 'dispute-judge', label: 'Dispute Judge（交付物终审）' },
 ];
-
-interface ChainRow {
-  provider: string;
-  model: string;
-}
-
-interface RoleValue {
-  roleModel: string;
-  rows: ChainRow[];
-}
 
 // 后端 normalize_agent_models 输出 → 编辑器行（str / 对象 / 混合数组统一为 {provider, model}）
 function toRoleList(models: AgentsModels = {}): RoleValue[] {
@@ -87,6 +80,10 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
   const [form] = Form.useForm();
   const providers = config.llm.providers || [];
 
+  // 「复制/粘贴」临时剪贴板：存放某个角色当前的分配（角色级默认模型 + Provider 行链）。
+  // 仅存活于本组件生命周期（刷新即失效），用于把一份配置快速套用到其他角色。
+  const [clipboard, setClipboard] = useState<{ label: string; value: RoleValue } | null>(null);
+
   const initialValues = { roleList: toRoleList(config.agents.models) };
 
   useEffect(() => {
@@ -116,6 +113,20 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
     if (!def) return;
     const next = rows.map((r, i) => (i === rowIndex ? { ...r, model: def } : r));
     form.setFieldValue(['roleList', roleIndex, 'rows'], next);
+  };
+
+  // 复制某角色的当前分配到剪贴板（深拷贝，之后编辑该卡片不影响副本）
+  const handleCopy = (index: number) => {
+    const cur = form.getFieldValue(['roleList', index]) as RoleValue | undefined;
+    setClipboard({ label: AGENT_ROLES[index].label, value: cloneRoleValue(cur) });
+    message.success(`已复制「${AGENT_ROLES[index].label}」的模型分配`);
+  };
+
+  // 把剪贴板内容覆盖到某角色（角色级默认模型与全部 Provider 行一起替换）
+  const handlePaste = (index: number) => {
+    if (!clipboard) return;
+    form.setFieldValue(['roleList', index], cloneRoleValue(clipboard.value));
+    message.success(`已粘贴「${clipboard.label}」的模型分配到「${AGENT_ROLES[index].label}」`);
   };
 
   const handleSave = async () => {
@@ -173,7 +184,34 @@ export default function AgentModelPanel({ config, onSave, project, onConfigSynce
                 const rv = watchList[index];
                 const roleModel = (rv?.roleModel || '').trim();
                 return (
-                  <Card key={field.key} style={{ marginBottom: 16 }} title={role.label}>
+                  <Card
+                    key={field.key}
+                    style={{ marginBottom: 16 }}
+                    title={role.label}
+                    extra={
+                      <Space size={0}>
+                        <Button
+                          type="text"
+                          icon={<CopyOutlined />}
+                          title="复制本角色的模型分配"
+                          aria-label="复制本角色的模型分配"
+                          onClick={() => handleCopy(index)}
+                        />
+                        <Button
+                          type="text"
+                          icon={<SnippetsOutlined />}
+                          title={
+                            clipboard
+                              ? `粘贴「${clipboard.label}」的模型分配`
+                              : '剪贴板为空，请先复制某个角色的模型分配'
+                          }
+                          aria-label="粘贴模型分配"
+                          disabled={!clipboard}
+                          onClick={() => handlePaste(index)}
+                        />
+                      </Space>
+                    }
+                  >
                     <Form.Item
                       name={[field.name, 'roleModel']}
                       label={
