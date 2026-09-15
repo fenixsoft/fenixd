@@ -438,7 +438,8 @@ class FamilyGovernor:
             )
         return "; ".join(parts)
 
-    def _do_spec_bug_found(self, spec_name: str):
+    def _do_spec_bug_found(self, spec_name: str, failure_class: str = "product",
+                           run_id: str = ""):
         """实际执行 bug-found 处理逻辑。
 
         分流依据（add-bug-repair-mode-config D2）：`admin.bug_repair_mode` 有效值
@@ -448,7 +449,25 @@ class FamilyGovernor:
         - inplace（含未配置缺省）：对任何 SPEC（含 fix-* 名字）原地打回重修；
         - derive：派生 fix-* 子 SPEC（守卫一、族谱收敛 governor、_resolve_fix_spec_name
           逐级命名、done→父重验闭环全部保留生效）。
+
+        evo-infra-failure-budget-exempt R3：``failure_class`` 三态归因——
+        仅 product（unknown 按 product 保守处置）累加 ``_verify_fail_rounds``；
+        infra 轮**不进本分支**（防御性守卫，正常由归因入口改走
+        ``_record_infra_failure`` 记账，不递增闸门计数、不冻结、不派生 fix）。
         """
+        # ── infra 防御性守卫（evo-infra-failure-budget-exempt R3）──
+        # 调用方应在统一归因入口（enrich_failure_class 判定处）拦截 infra：
+        # 记 _verify_infra_rounds + 预算退款 + 台账 failure_class=infra，
+        # 不调用本函数。此处兜底：即使误入也绝不递增 _verify_fail_rounds
+        # （infra 轮与 product 轮同计会虚增冻结计数，验收「闸门不累加」落空）。
+        if failure_class == "infra":
+            self._pm.logger.warning(
+                "pm_engine",
+                f"infra 归因误入 bug-found 分支 '{spec_name}' — 抑制闸门递增"
+                f"（本分支仅 product/unknown 类）",
+            )
+            return
+
         from core.config import ConfigLoader
         mode = ConfigLoader.get_admin_config(self._pm.config).get(
             "bug_repair_mode", "inplace"
@@ -492,11 +511,13 @@ class FamilyGovernor:
             fail_rounds = 0
         fail_rounds += 1
 
-        # ── 失败历史侧车（fix-verdict-retry-misattribution D6）──
+        # ── 失败历史侧车（fix-verdict-retry-misattribution D6 + R3）──
         # 本轮 bug-found 采纳 = 真缺陷失败轮（cause_type=real-bugs），记入侧车供
         # 升级闸门分型与轮间 diff。写盘失败静默降级（分型 unknown，不阻断闸门）。
+        # failure_class=product（或 unknown）随 R3 回拨参考台账记入。
         self._pm._append_fail_history(
-            spec_name, "real-bugs", self._pm._failed_scenario_ids(spec_name))
+            spec_name, "real-bugs", self._pm._failed_scenario_ids(spec_name),
+            failure_class=failure_class, run_id=run_id)
 
         if fail_rounds >= MAX_VERIFY_FAIL_ROUNDS:
             # ── 升级闸门：冻结为 blocked + human-escalation-alerts 告警 ──

@@ -8,6 +8,9 @@ STATE.md（design D3 规则 3），本组件不持有实例状态。
 from core.state_machine import (
     BUDGET_EXEMPT_ALERTED_FIELD,
     BUDGET_EXEMPT_RUNS_FIELD,
+    INFRA_FAILURE_COUNT_FIELD,
+    INFRA_REFUNDED_RUN_IDS_FIELD,
+    VERIFY_INFRA_ROUNDS_FIELD,
 )
 from pathlib import Path
 import json
@@ -151,6 +154,68 @@ class ImplBudget:
         if exempt >= self._budget_exempt_alert_threshold():
             self._alert_budget_exempt_loop(spec_name, exempt)
 
+    def _exempt_infra_run_budget(self, spec_name: str, reason: str,
+                                 refund_key: str = "") -> bool:
+        """infra 失败预算事后补偿（evo-infra-failure-budget-exempt R2）。
+
+        与 ``_exempt_dead_run_budget`` 同范式（事后补偿、不做计数时点感知）：
+        infra 判定命中时回退本次实现 run 启动时 +1 的 used（下限 0），
+        独立写 ``_infra_failure_count``（生命周期累计观测值，不归零）。
+
+        **幂等**（退款一次/轮、避免同一实现 run 重复扣减）：
+        幂等锚点 = 实现 run id（``refund_key``）；已退款的 run id 记录在
+        ``_infra_refunded_run_ids`` 侧车（JSON 字符串数组，STATE.md ``_``
+        前缀自动透传）。同一实现 run 的多次 infra 判定仅首次退款。无锚点
+        （空串）时仍退款（调用方保证单轮单次）。
+
+        Returns:
+            True 表示本次实际执行了退款（含幂等跳过视为已退款）；
+            False 表示异常降级未退款（调用方继续记账不抛穿）。
+        """
+        try:
+            entry0 = self._pm.state_machine.read_one(spec_name) or {}
+            anchor = refund_key or str(entry0.get("implementer_run") or "")
+            refunded_raw = entry0.get(INFRA_REFUNDED_RUN_IDS_FIELD) or "[]"
+            try:
+                refunded: list = json.loads(
+                    refunded_raw) if isinstance(refunded_raw, str) else []
+            except (json.JSONDecodeError, TypeError, ValueError):
+                refunded = []
+            if anchor and anchor in refunded:
+                # 同一实现 run 已退款——幂等跳过
+                self._pm.logger.info(
+                    "pm_engine",
+                    f"infra 预算退款幂等跳过 '{spec_name}' run={anchor}"
+                    f"（该实现 run 已退款）",
+                )
+                return True
+            used = self._pm.state_machine.bump_impl_budget(spec_name, -1)
+            count = self._pm.state_machine.bump_infra_failure_count(spec_name)
+            if anchor:
+                refunded.append(anchor)
+                try:
+                    self._pm.state_machine.update_spec(
+                        spec_name,
+                        {INFRA_REFUNDED_RUN_IDS_FIELD:
+                         json.dumps(refunded, ensure_ascii=False)},
+                    )
+                except Exception:
+                    pass
+            self._pm.logger.warning(
+                "pm_engine",
+                f"预算豁免（infra 失败）: '{spec_name}' used 回退至 "
+                f"{used}/{self._impl_run_budget(spec_name)}，"
+                f"_infra_failure_count={count}，"
+                f"run_id={anchor or '(无锚点)'}，reason={reason}",
+            )
+            return True
+        except Exception as e:
+            self._pm.logger.warning(
+                "pm_engine",
+                f"infra 预算补偿异常跳过 '{spec_name}'（不阻断主流程）: {e}",
+            )
+            return False
+
     @staticmethod
     def _is_exemptable_reason(run_reason: str) -> bool:
         """判定 run终态 reason 是否属于基础设施性死亡（可豁免）。
@@ -240,10 +305,12 @@ class ImplBudget:
         )
 
     def _budget_reconcile_has_exemption(self, spec_name: str) -> bool:
-        """对账校正的豁免因素判定（lifecycle-hygiene 4.3 / design D5）。
+        """对账校正的豁免因素判定（lifecycle-hygiene 4.3 / design D5 + R2）。
 
         任一命中即有豁免因素，不自动改数：
         - 死亡 run 豁免发生过（_budget_exempt_runs > 0）：used 已回退，改数破坏豁免；
+        - infra 失败预算退款发生过（_infra_failure_count > 0）：used 已回退
+          （evo-infra-failure-budget-exempt R2），改数会把退款冲掉，豁免失效；
         - runs 产物被归档/保留上限（.fenix/runs/archive/ 下存在该 spec 的 impl 产物）：
           顶层计数不完整，改数会把 used 错误压到已归档前的值。
         """
@@ -253,6 +320,13 @@ class ImplBudget:
         except (TypeError, ValueError):
             exempt = 0
         if exempt > 0:
+            return True
+        # ── infra 失败预算退款（R2）：有退款则改数会冲掉退款，豁免 ──
+        try:
+            infra_count = int(entry.get(INFRA_FAILURE_COUNT_FIELD, 0) or 0)
+        except (TypeError, ValueError):
+            infra_count = 0
+        if infra_count > 0:
             return True
         runs_dir = self._pm.project_root / ".fenix" / "runs"
         if runs_dir.is_dir():

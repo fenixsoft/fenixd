@@ -278,7 +278,13 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
 # 冻结前缀与「原状态 X」解析单点（add-spec-scheduling-controls D4）：冻结/解冻
 # 统一走 StateMachine 官方通道（freeze_spec/unfreeze_spec），此处只保留展示用
 # 判定常量，文案契约在 state_machine 定义，避免双轨漂移。
-from core.state_machine import FREEZE_ERROR_PREFIX, FROZEN_FIELD, parse_orig_status
+from core.state_machine import (
+    FREEZE_ERROR_PREFIX,
+    FROZEN_FIELD,
+    parse_orig_status,
+    INFRA_FAILURE_COUNT_FIELD,
+    VERIFY_INFRA_ROUNDS_FIELD,
+)
 
 
 def is_spec_frozen(entry: dict) -> bool:
@@ -343,6 +349,53 @@ def unfreeze_spec(project_root, spec_name: str) -> dict:
     sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
     sm.unfreeze_spec(spec_name, status=orig)
     return {"ok": True, "found": True, "frozen": False, "error": None}
+
+
+# ── infra 失败回拨手动入口（evo-infra-failure-budget-exempt R3）─────────
+
+def reclassify_infra_rounds(project_root, spec_name: str, n: int,
+                            audit_reason: str, actor: str = "dashboard") -> dict:
+    """admin/dashboard 手动回拨 infra 误计入轮次（_verify_fail_rounds 减回 + 解冻）。
+
+    委托 verification.reclassify_infra_rounds 核心实现（原子改写
+    ``_verify_fail_rounds = max(0, current - n)`` + 解冻 + admin_store
+    DISPOSITION 审计留痕，按 reclassify_key 幂等去重——重复回拨不二次扣减）。
+
+    Args:
+        project_root: 主树根目录。
+        spec_name: 目标 spec。
+        n: 减回轮次（>0）。
+        audit_reason: 人工审核原因文本（审计留痕必须携带）。
+        actor: 发起者标识（dashboard / cli）。
+
+    Returns:
+        dict：{ok, fail_rounds, status, applied, error?}。
+        spec 不存在 → {ok: False, found: False, error}.
+    """
+    from core.state_machine import StateMachine
+    from core.pm_engine.verification import reclassify_infra_rounds as _recl
+
+    specs = parse_state(project_root)
+    if spec_name not in specs:
+        return {"ok": False, "found": False, "error": f"spec not found: {spec_name}"}
+    if not str(audit_reason or "").strip():
+        return {"ok": False, "found": True, "error": "audit_reason 必填（审计留痕要求）"}
+    sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
+    try:
+        result = _recl(
+            project_root, sm, None, spec_name, int(n),
+            str(audit_reason), actor=actor,
+        )
+    except (TypeError, ValueError) as e:
+        return {"ok": False, "found": True, "error": f"invalid n: {e}"}
+    return {
+        "ok": result.get("ok", False),
+        "found": True,
+        "fail_rounds": result.get("fail_rounds", 0),
+        "status": result.get("status", ""),
+        "applied": result.get("applied", 0),
+        "error": result.get("reason"),
+    }
 
 
 # ── SPEC 人工晋升 drafted → ready（add-draft-promotion-gate D4） ──────
@@ -2840,6 +2893,14 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         "budget_used": budget_used,
         "budget_override": budget_override,
         "budget_effective": budget_effective,
+        # evo-infra-failure-budget-exempt R3：infra 与 product 失败构成分离——
+        # _verify_infra_rounds 为本轮验证周期 infra 轮次（纯观测，不参与
+        # MAX_VERIFY_FAIL_ROUNDS 冻结；验证 PASS 归零）；_infra_failure_count
+        # 为生命周期累计观测值（不归零，同 _budget_exempt_runs 范式）。
+        "verify_infra_rounds": int(
+            entry.get("_verify_infra_rounds", 0) or 0) if entry else 0,
+        "infra_failure_count": int(
+            entry.get("_infra_failure_count", 0) or 0) if entry else 0,
     }
 
 
@@ -3695,6 +3756,17 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         # add-cost-observability（D2）：治理区展示的累计 token 与成本可用性标记。
         # _cost_usd 仅在网关真实回传时存在（不伪造金额，spec「金额展示不伪造」）。
         "token_usage": _token_usage_view(entry),
+        # evo-infra-failure-budget-exempt R3：infra 与 product 失败构成分离——
+        # verify_infra_rounds 本轮验证周期 infra 轮次（观测，不参与冻结）；
+        # infra_failure_count 生命周期累计（不归零）；fail_rounds product 轮次。
+        # dashboard 据此渲染「infra vs product」失败构成。
+        "failure_composition": {
+            "verify_infra_rounds": int(
+                entry.get(VERIFY_INFRA_ROUNDS_FIELD, 0) or 0),
+            "infra_failure_count": int(
+                entry.get(INFRA_FAILURE_COUNT_FIELD, 0) or 0),
+            "verify_fail_rounds": int(entry.get("_verify_fail_rounds", 0) or 0),
+        },
     }
 
 

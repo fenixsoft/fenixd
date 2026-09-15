@@ -111,6 +111,22 @@ _WAIVER_GRANT_PATTERNS = (
 # 防止叙述中对字段名/其他族谱豁免状态的提及被误判为本次处置的放行动作。
 _WAIVER_ASSIGN_RE = re.compile(r"_family_waiver['\"]?\s*[=:：]\s*['\"]?true")
 
+# ── infra 回拨文本识别（evo-infra-failure-budget-exempt R3）──────────
+# Administrator 处置文本显式声明「回拨 N 轮」（实为 infra 却计入 _verify_fail_rounds
+# 的历史轮次减回 + 解冻）。与 _apply_family_waiver 同范式：结构字段
+# disp.infra_reclassify_rounds 优先级最高，文本模式兜底。
+# 匹配组 (?P<n>\d+) 给出减回轮次。
+_RECLASSIFY_GRANT_PATTERNS = (
+    r"回拨\s*(?P<n>\d+)\s*轮",
+    r"reclassify\s*(?P<n>\d+)\s*(?:infra)?\s*rounds?",
+    r"infra\s*回拨\s*(?P<n>\d+)\s*轮",
+)
+# 否定短语（保守方向：命中即不触发回拨，宁可漏回拨不可误扣 fail_rounds）
+_RECLASSIFY_NEGATION_PHRASES = (
+    "不回拨", "不应回拨", "不能回拨", "不予回拨",
+    "not reclassify", "不适用回拨",
+)
+
 # 「写入即待唤起」信号的终态守卫：spec 已达这些状态时不再唤起 Administrator
 # （done/pushed 之后族谱不可能再派生，困境实质已消失）。
 _TERMINAL_SPEC_STATUSES = ("done", "pushed")
@@ -1422,6 +1438,11 @@ class AdminMonitor:
         # 文本动作（放行 / _family_waiver / waive）兜底，兼容自由文本处置。
         self._apply_family_waiver(signal, disp)
 
+        # infra 回拨处置（evo-infra-failure-budget-exempt R3）：Administrator
+        # 文本显式声明「回拨 N 轮」→ 从 _verify_fail_rounds 减回误计入的
+        # infra 轮次并解冻（幂等，审计留痕 admin_store DISPOSITION）。
+        self._apply_infra_reclassification(signal, disp)
+
         # env 阻塞 / blocked_stuck 处置收尾复位（add-blocked-reverify-lane D2 +
         # frozen-scenario-schema-migration D3）：result 为 resolved/
         # partially-resolved 且信号属复位集合（env 族 + blocked_stuck）时，
@@ -1745,6 +1766,83 @@ class AdminMonitor:
             )
         except Exception as e:
             self.logger.warning("admin_monitor", f"family_explosion 豁免位设置失败: {e}")
+
+    def _apply_infra_reclassification(self, signal: dict, disp) -> None:
+        """infra 回拨处置（evo-infra-failure-budget-exempt R3）：从 _verify_fail_rounds 减回误计入的 infra 轮次并解冻。
+
+        Administrator 处置文本显式声明「回拨 N 轮」（实为 infra 却计入
+        _verify_fail_rounds 的历史轮次，策略生效前已误计入）→ 调
+        ``pm_engine.reclassify_infra_rounds``：原子改写
+        ``_verify_fail_rounds = max(0, current - n)`` + 解冻 + 审计留痕
+        （admin_store DISPOSITION 记录，幂等按 reclassify_key 去重）。
+
+        判定（对齐 ``_apply_family_waiver`` 文本识别范式，admin_monitor.py:1189）：
+          - 结构字段 ``disp.infra_reclassify_rounds`` > 0 优先级最高；
+          - 否则文本兜底：actions_taken / summary / recommended_action 含
+            「回拨 N 轮」/「reclassify N rounds」等显式回拨语义，且不含否定短语。
+          仅 result=resolved/partially-resolved 时触发（处置未成功不执行）。
+
+        **方向**：只做减法（product→infra 方向）。env→product-bug 属相反方向
+        （补计），不在此入口。
+        """
+        if getattr(disp, "result", None) not in ("resolved", "partially-resolved"):
+            return
+        spec = signal.get("spec") or getattr(disp, "spec", None)
+        if not spec:
+            return
+
+        # ── 结构字段优先 ──
+        n = 0
+        try:
+            n = int(getattr(disp, "infra_reclassify_rounds", 0) or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if n <= 0:
+            # ── 文本模式兜底 ──
+            text = (
+                f"{(disp.actions_taken or '')}\n{(getattr(disp, 'summary', '') or '')}\n"
+                f"{(disp.recommended_action or '')}\n{(getattr(disp, 'problem', '') or '')}"
+            )
+            if any(neg in text for neg in _RECLASSIFY_NEGATION_PHRASES):
+                self.logger.info(
+                    "admin_monitor",
+                    f"infra 回拨被否定短语拦截 '{spec}'（保守不触发回拨）",
+                )
+                return
+            for pattern in _RECLASSIFY_GRANT_PATTERNS:
+                m = re.search(pattern, text)
+                if m:
+                    try:
+                        n = int(m.groupdict().get("n") or 0)
+                    except (TypeError, ValueError):
+                        n = 0
+                    if n > 0:
+                        break
+        if n <= 0:
+            return
+
+        # ── 委托 pm_engine.reclassify_infra_rounds（核心 API 在 verification）──
+        if self.pm_engine is None or not hasattr(self.pm_engine, "reclassify_infra_rounds"):
+            self.logger.warning(
+                "admin_monitor",
+                f"infra 回拨但 pm_engine 不可用（spec={spec}）— 无法执行回拨",
+            )
+            return
+        try:
+            result = self.pm_engine.reclassify_infra_rounds(
+                spec, n, f"admin disposition: {getattr(disp, 'run_id', '')}",
+                actor="admin",
+            )
+            self.logger.warning(
+                "admin_monitor",
+                f"infra 回拨: '{spec}' fail_rounds → {result.get('fail_rounds')} "
+                f"（减回 {result.get('applied', 0)} 轮，status={result.get('status')}）",
+            )
+        except Exception as e:
+            self.logger.warning(
+                "admin_monitor",
+                f"infra 回拨执行失败 '{spec}'（不阻断处置落痕）: {e}",
+            )
 
     @staticmethod
     def _spec_from_run_id(run_id: str):

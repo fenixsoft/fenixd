@@ -175,6 +175,22 @@ DEFAULT_VERIFY_REDO_BUDGET = 3
 # 冻结阈值（rounds >= 2）判定在 pm_engine.verification 升级通道。
 ENV_BLOCK_ROUNDS_FIELD = "_env_block_rounds"
 
+# ── 基础设施失败预算豁免侧车（evo-infra-failure-budget-exempt R2/R3）──
+# 字段名单点定义（pm_engine 与 state_machine 共用，避免两处漂移）：
+#
+# - _infra_failure_count：生命周期累计的 infra 失败次数（观测值，不归零，
+#   与 _budget_exempt_runs 同范式）。用于对账豁免判定与 dashboard 可观测。
+#
+# - _verify_infra_rounds：本轮验证周期内 infra 失败轮次（纯观测，
+#   **不参与** MAX_VERIFY_FAIL_ROUNDS 冻结判定；与 _verify_fail_rounds
+#   同生命周期，验证 PASS 唯一归零点清零）。
+#
+# - _infra_refunded_run_ids：JSON 字符串数组（已退款验证 run_id）；
+#   infra 预算退款幂等锚点，避免同一验证轮重复扣减（退款一次/轮）。
+INFRA_FAILURE_COUNT_FIELD = "_infra_failure_count"
+VERIFY_INFRA_ROUNDS_FIELD = "_verify_infra_rounds"
+INFRA_REFUNDED_RUN_IDS_FIELD = "_infra_refunded_run_ids"
+
 # ── spec 级结构化诊断（fix-run-hang-amplification 2.3）──────────────
 # _impl_diagnosis：run 终结时写入的结构化诊断摘要（终态类型 + 归因 +
 # 已定性结论 + 已提交进度），重派 attempt 经 PromptBuilder 注入（诊断继承）。
@@ -522,6 +538,23 @@ class StateMachine:
         Returns: 递增后的豁免次数。
         """
         return self._bump_counter(spec_name, BUDGET_EXEMPT_RUNS_FIELD, 1)
+
+    def bump_infra_failure_count(self, spec_name: str) -> int:
+        """infra 失败累计观测值原子递增（``_infra_failure_count``）。
+
+        生命周期累计、不归零（与 _budget_exempt_runs 同范式）；仅由
+        infra 判定记账路径调用。返回递增后的累计值。
+        """
+        return self._bump_counter(spec_name, INFRA_FAILURE_COUNT_FIELD, 1)
+
+    def bump_verify_infra_rounds(self, spec_name: str, delta: int = 1) -> int:
+        """infra 失败轮次原子增减（``_verify_infra_rounds``）。
+
+        纯观测计数（不参与 MAX_VERIFY_FAIL_ROUNDS 冻结判定）；与
+        _verify_fail_rounds 同生命周期——验证 PASS 经 update_spec 与
+        _verify_fail_rounds 同点清零（唯一归零点）。返回增减后的值。
+        """
+        return self._bump_counter(spec_name, VERIFY_INFRA_ROUNDS_FIELD, delta)
 
     def bump_verify_redo_count(self, spec_name: str, delta: int = 1) -> int:
         """重启重验计数原子增减（``_verify_redo_count``）。
