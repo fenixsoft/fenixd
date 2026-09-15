@@ -864,6 +864,9 @@ export interface AdminConfig {
   /** 验证失败（bug-found）修复方式（add-bug-repair-mode-config，缺省 inplace）：
    * inplace=原地打回（缺省）；derive=派生 fix-* 子 SPEC */
   bug_repair_mode?: 'inplace' | 'derive';
+  /** stuck 处置后静默期（分钟，缺省 120）：result=resolved/partially-resolved
+   *  处置后同 (spec, signal_type) 在窗口内不产信号（0=不静默） */
+  stuck_silence_minutes?: number;
 }
 
 // add-stale-code-selfheal：代码陈旧自愈配置节（enabled 缺省 true /

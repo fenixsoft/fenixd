@@ -45,6 +45,15 @@ const ADMIN_ANNOTATIONS: {
     }],
   },
   {
+    key: 'stuck_silence_minutes',
+    label: 'stuck 处置后静默期（分钟）',
+    note: 'stuck 信号成功处置（resolved / partially-resolved）后的静默窗口：窗口内同 SPEC stuck 信号不复发，避免处置成功后短期反复触发。0=不静默。',
+    rule: [{
+      validator: (_: unknown, v: number | undefined | null) =>
+        v != null && v >= 0 ? Promise.resolve() : Promise.reject(new Error('须为非负数')),
+    }],
+  },
+  {
     key: 'merge_breaker_threshold',
     label: 'merge 熔断阈值',
     note: 'merge 熔断阈值：同一 SPEC merge-back 连续失败达该次数仍滞留时触发熔断信号（缺省沿用 agents 同名键=2）。',
@@ -189,6 +198,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
     merge_breaker_threshold: admin.merge_breaker_threshold ?? 2,
     shutdown_drain_seconds: admin.shutdown_drain_seconds ?? 1800,
     bug_repair_mode: admin.bug_repair_mode ?? 'inplace',
+    stuck_silence_minutes: admin.stuck_silence_minutes ?? 120,
     transient_backoff_schedule: transient.transient_backoff_schedule ?? '30,60,120',
     transient_redispatch_delay_seconds: transient.transient_redispatch_delay_seconds ?? 600,
     transient_break_threshold: transient.transient_break_threshold ?? 3,
@@ -212,6 +222,7 @@ export default function SystemPanel({ config, onSave, project, onConfigSynced }:
           merge_breaker_threshold: values.merge_breaker_threshold,
           shutdown_drain_seconds: values.shutdown_drain_seconds,
           bug_repair_mode: values.bug_repair_mode,
+          stuck_silence_minutes: values.stuck_silence_minutes,
         },
         agents: {
           transient_backoff_schedule:
