@@ -50,6 +50,25 @@ def _mk_run_file(proot: Path, spec: str, *, tools=None) -> None:
         encoding="utf-8")
 
 
+def _mk_run(proot: Path, spec: str, *, name: str, tools=None,
+            events=None) -> None:
+    """写一个具名 impl run 产物（epoch 家族由 name 决定）。
+
+    Args:
+        name: run 文件名（如 ``impl-demo-1780000001-a1.jsonl``）。
+        tools: init 事件 tools 数组。
+        events: assistant 事件的 content block 列表（如 TaskCreate/TaskUpdate）。
+    """
+    runs = proot / ".fenix" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    lines = [{"type": "system", "subtype": "init", "tools": tools or []}]
+    if events:
+        lines.append({"type": "assistant", "message": {"content": events}})
+    (runs / name).write_text(
+        "\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n",
+        encoding="utf-8")
+
+
 ALL_DONE_TASKS = "## 1. 阶段一\n\n- [x] 1.1 任务一\n- [x] 1.2 任务二\n"
 PARTIAL_TASKS = "## 1. 阶段一\n\n- [x] 1.1 任务一\n- [ ] 1.2 任务二\n"
 NO_NUMERIC_TASKS = "## 1. 阶段一\n\n- [ ] 功能清单完善\n"
@@ -258,18 +277,21 @@ class TestImplResultGate(unittest.TestCase):
 
     # ── 能力探测（D4）───────────────────────────────────────
 
-    def test_taskcreate_available_done_ids_missing_blocked(self):
-        """init.tools 含 TaskCreate 且 done_ids 不覆盖已勾 → 拦截。"""
+    def test_taskcreate_available_but_no_task_tracked_passes(self):
+        """init.tools 含 TaskCreate 但全程未建任何 Task → 放行（无证据可核对）。
+
+        2026-09-15 语义修正：要求集 = checked ∩ tracked。若实现者从未调用
+        TaskCreate（tracked 为空），则无从核对——与「工具不可用」同办，
+        fail-open。旧行为（要求 checked_ids 全覆盖）会把「未用工具」误判为
+        「记录不一致」。
+        """
         _mk_run_file(self.proot, self.spec,
                      tools=["Task", "TaskCreate", "TaskUpdate", "Bash"])
-        err = self._gate(
+        assert self._gate(
             tasks_text=ALL_DONE_TASKS,
             payload={"status": "success", "spec": self.spec,
                      "completed_tasks": ["1.1", "1.2"]},
-        )
-        assert err is not None
-        assert "TaskUpdate 记录不一致" in err
-        assert "1.1" in err
+        ) is None
 
     def test_taskcreate_available_done_ids_cover_passes(self):
         """init.tools 含 TaskCreate 且 done_ids 覆盖全部已勾 → 放行。"""
@@ -299,6 +321,113 @@ class TestImplResultGate(unittest.TestCase):
             payload={"status": "success", "spec": self.spec,
                      "completed_tasks": ["1.1", "1.2"]},
         ) is None
+
+    # ── 跨轮累积与 tracked 判据（2026-09-15 事故修正回归）──────
+
+    def test_cross_round_cumulative_passes(self):
+        """首轮建 Task、次轮（修复轮）不建 → 跨轮累积后仍放行。
+
+        事故形态：done_ids 只读 mtime 最新单 run（修复轮为空）→ 误拦。
+        这里首轮创建 1.1/1.2 并完成，次轮不动 Task；门须查全部历史 run。
+        """
+        base = ["Task", "TaskCreate", "TaskUpdate"]
+        # 首轮：创建 1.1/1.2 并完成（taskId 1/2）
+        _mk_run(self.proot, self.spec, name=f"impl-{self.spec}-1780000001-a1.jsonl",
+                tools=base, events=[
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.1: 任务一"}},
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.2: 任务二"}},
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 1, "status": "completed"}},
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 2, "status": "completed"}},
+                ])
+        # 修复轮（mtime 更新 → 成为 find_impl_run_file 的最新）：不建任何 Task
+        _mk_run(self.proot, self.spec, name=f"impl-{self.spec}-1780000002-a1.jsonl",
+                tools=base, events=[
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 1, "status": "completed"}},
+                ])
+        assert self._gate(
+            tasks_text=ALL_DONE_TASKS,
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2"]},
+        ) is None
+
+    def test_taskid_global_order_across_resume(self):
+        """resume 续做轮：taskId 为会话级全局序，跨 a1/a2 映射须正确。
+
+        a1 创建 2 个任务（taskId 1/2）；a2 续建第 3 个（taskId 3）。
+        若按单 run 局部序映射，a2 的 taskId=3 会越界丢失 → 误判 1.3 未完成。
+        """
+        base = ["Task", "TaskCreate", "TaskUpdate"]
+        _mk_run(self.proot, self.spec, name=f"impl-{self.spec}-1780000001-a1.jsonl",
+                tools=base, events=[
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.1: 任务一"}},
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.2: 任务二"}},
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 1, "status": "completed"}},
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 2, "status": "completed"}},
+                ])
+        _mk_run(self.proot, self.spec, name=f"impl-{self.spec}-1780000001-a2.jsonl",
+                tools=base, events=[
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.3: 任务三"}},
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 3, "status": "completed"}},
+                ])
+        assert self._gate(
+            tasks_text="## 1. 阶段一\n\n- [x] 1.1 任务一\n- [x] 1.2 任务二\n- [x] 1.3 任务三\n",
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2", "1.3"]},
+        ) is None
+
+    def test_untracked_checked_id_not_required(self):
+        """已勾选但从未建过 Task 的任务（如 1.2b）不要求 done_ids 覆盖。
+
+        事故形态：planner 中途插入 1.2b，实现者未单独建 Task 却勾选；
+        门若要求 checked_ids 全覆盖会误拦。要求集须为 checked ∩ tracked。
+        """
+        _mk_run(self.proot, self.spec, name=f"impl-{self.spec}-1780000001-a1.jsonl",
+                tools=["Task", "TaskCreate", "TaskUpdate"], events=[
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.1: 任务一"}},
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.2: 任务二"}},
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 1, "status": "completed"}},
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 2, "status": "completed"}},
+                ])
+        assert self._gate(
+            tasks_text="## 1. 阶段一\n\n- [x] 1.1 任务一\n- [x] 1.2 任务二\n- [x] 1.2b 补充任务\n",
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2", "1.2b"]},
+        ) is None
+
+    def test_tracked_checked_id_still_blocked_when_missing(self):
+        """tracked 任务（建过 Task）未完成仍拦截——不能因放宽容忍真缺口。"""
+        _mk_run(self.proot, self.spec, name=f"impl-{self.spec}-1780000001-a1.jsonl",
+                tools=["Task", "TaskCreate", "TaskUpdate"], events=[
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.1: 任务一"}},
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.2: 任务二"}},
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 1, "status": "completed"}},
+                    # 1.2（taskId 2）未 completed
+                ])
+        err = self._gate(
+            tasks_text=ALL_DONE_TASKS,
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2"]},
+        )
+        assert err is not None
+        assert "1.2" in err
 
     def test_taskcreate_unavailable_skips_and_audits(self):
         """init.tools 不含 TaskCreate → 放行且写 impl-task-crosscheck-skipped 审计。"""

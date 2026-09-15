@@ -196,6 +196,119 @@ def parse_run_task_done(run_file: Path) -> dict:
     return result
 
 
+# impl run 文件名中的派发 epoch（同一 dispatch 链的 a1/a2/a3、-rN 重试共享）。
+# 例：impl-<spec>-1789476918-a1-r1.jsonl → "1789476918"。
+_RUN_EPOCH_RE = re.compile(r"-(\d+)-a\d+(?:-r\d+)?\.jsonl$")
+
+
+def _run_epoch(run_file: Path) -> str:
+    """从 impl run 文件名提取派发 epoch（族键）；无 -aN 形态时以整名兜底。"""
+    m = _RUN_EPOCH_RE.search(run_file.name)
+    return m.group(1) if m else run_file.name
+
+
+def _scan_task_create_update(run_file: Path) -> "tuple[list, set]":
+    """扫描单 run 产物的 TaskCreate/TaskUpdate 调用（parse_run_task_done 的原料）。
+
+    Returns:
+        (created_ordered, completed_idx)：
+        - created_ordered: 按出现序的 tasks.md id（subject 无编号记 None）；
+        - completed_idx: TaskUpdate ``status=completed`` 的 ``taskId - 1`` 集合。
+    """
+    created_ordered: list = []
+    completed_idx: set = set()
+    try:
+        with run_file.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict) or entry.get("type") != "assistant":
+                    continue
+                for c in (entry.get("message") or {}).get("content") or []:
+                    if not isinstance(c, dict) or c.get("type") != "tool_use":
+                        continue
+                    if c.get("name") == "TaskCreate":
+                        m = _TASK_ID_RE.search(str((c.get("input") or {}).get("subject") or ""))
+                        created_ordered.append(m.group(1) if m else None)
+                    elif c.get("name") == "TaskUpdate":
+                        inp = c.get("input") or {}
+                        try:
+                            n = int(str(inp.get("taskId")))  # 兼容 str/int
+                        except (TypeError, ValueError):
+                            continue
+                        if inp.get("status") == "completed":
+                            completed_idx.add(n - 1)
+    except OSError:
+        return [], set()
+    return created_ordered, completed_idx
+
+
+def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
+    """跨轮累积 impl run 的 Task 跟踪状态（D4 交叉核对的正确数据源）。
+
+    修复 2026-09-15 事故：原门只读 mtime 最新**单个** run 的 ``done_ids``，在
+    「已完工 worktree 复用做修复轮」时必然误拦——修复轮只改文档、不调
+    TaskCreate，``done_ids`` 为空，而门要求覆盖**全部**已勾选任务。
+
+    两处修正：
+
+    1. **跨轮累积**：Task 工具的 ``taskId`` 是**会话级全局序**（跨 resume
+       连续递增），单 run 内按「本 run 创建序」映射会错位。按「派发 epoch
+       家族」分族（同族含 a1/a2/a3 与 -rN 重试）：族内按 mtime 串起全部
+       run，维护累积创建序列表，``TaskUpdate`` 的 ``taskId`` 作全局索引；
+       跨族取 ``done_ids`` 并集（不同家族各自从 1 起序，不可混在一个序里）。
+    2. **tracked_ids**：全部家族中「出现过 TaskCreate」的任务 id 并集——
+       供调用方「只对确实声明过的任务要求完成」：planner 中途插入、实现者
+       从未单独建 Task 的任务（如 ``1.2b``）不在此列，不应要求其 TaskUpdate。
+
+    Returns:
+        {"done_ids": set[str],      # 各家族中「已创建且已 completed」的 id 并集
+         "tracked_ids": set[str],   # 各家族中「出现过 TaskCreate」的 id 并集
+         "created_count": int}      # 单族最大 TaskCreate 次数（展示用）
+    """
+    runs_dir = Path(project_root) / ".fenix" / "runs"
+    empty = {"done_ids": set(), "tracked_ids": set(), "created_count": 0}
+    if not runs_dir.is_dir():
+        return empty
+    files: list = []
+    try:
+        for p in runs_dir.glob(f"impl-{spec_name}-*.jsonl"):
+            try:
+                files.append((p.stat().st_mtime, p))
+            except OSError:
+                pass
+    except OSError:
+        return empty
+    files.sort()
+
+    families: dict = {}
+    for _mt, p in files:
+        families.setdefault(_run_epoch(p), []).append(p)
+
+    all_done: set = set()
+    all_tracked: set = set()
+    max_created = 0
+    for _ep, fam_files in families.items():
+        created_ordered: list = []
+        for p in fam_files:
+            creates, completed_idx = _scan_task_create_update(p)
+            created_ordered.extend(creates)  # 该 run 创建并入族内全局序
+            for idx in completed_idx:        # taskId 即族内全局序下标
+                if 0 <= idx < len(created_ordered) and created_ordered[idx]:
+                    all_done.add(created_ordered[idx])
+        for cid in created_ordered:
+            if cid:
+                all_tracked.add(cid)
+        max_created = max(max_created, len(created_ordered))
+    return {"done_ids": all_done, "tracked_ids": all_tracked,
+            "created_count": max_created}
+
+
 # 向后兼容别名：旧调用点（tests / 历史引用）仍可用下划线前缀名。
 _parse_run_task_done = parse_run_task_done
 _find_impl_run_file = find_impl_run_file
