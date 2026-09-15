@@ -1,0 +1,1 @@
+{"reason": "refactor-dashboard-data-module: core/dashboard/data.py 已拆分为 core/dashboard/data/ 包（13 职责子模块 + 薄门面 re-export 全部 177 个顶层名，外部 API 零变化）+ D8 patch 语义保持，需重启 daemon 加载新模块布局", "origin": "spec/changes/refactor-dashboard-data-module 阶段 5 交付物", "date": "2026-09-15"}
