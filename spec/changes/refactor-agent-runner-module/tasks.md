@@ -50,11 +50,11 @@
 
 ## 1. 阶段 0：测试基线加固
 
-- [ ] 1.1 静态清点：提取 `runner.py` 的**全部顶层名字**（模块级函数、常量、导入名）与 `AgentRunner` 的方法名清单，落盘 `contract-inventory.md`；MUST 覆盖 design D6 的补丁缝隙清单（`subprocess` / `commit_wip_checkpoint` / `LATENCY_STALL_SECONDS` / `_PLANNER_SEMAPHORE` / `_PLANNER_SEMAPHORE_LIMIT` / 五个结果与异常类）
-- [ ] 1.2 补 characterization tests（`tests/test_characterization_agent_runner.py`）：锁定 `AgentRunResult` / `AdminDisposition` / `SelfReviewResult` / `EvolutionResult` 的构造与 `to_dict` 字段；锁定 `_check_artifact_json_file` / `_check_agent_result_artifact` / `_check_impl_result_artifact` / `_check_success_completion` / `_check_partial_consistency` 的判定行为
-- [ ] 1.3 建立疑点清单（`agent-runner-findings.md`），持续维护只记录不修
-- [ ] 1.4 运行 `bin/run_full_suite.py` 记录重构前基线失败集合（重点 `test_agent_runner*`、`test_fast_track_scale_precheck`、`test_turn_limit_lifecycle`、`test_run_cancel`、`test_run_latency_stats`）
-- [ ] 1.5 记录 D6 补丁缝隙的三个 patch 调用点为「不得失效」基线：`tests/test_fast_track_scale_precheck.py:459-470`、`tests/test_turn_limit_lifecycle.py:182-217`、`tests/test_run_cancel.py` 的 `runner_module.subprocess.Popen` 替换
+- [x] 1.1 静态清点：提取 `runner.py` 的**全部顶层名字**（模块级函数、常量、导入名）与 `AgentRunner` 的方法名清单，落盘 `contract-inventory.md`；MUST 覆盖 design D6 的补丁缝隙清单（`subprocess` / `commit_wip_checkpoint` / `LATENCY_STALL_SECONDS` / `_PLANNER_SEMAPHORE` / `_PLANNER_SEMAPHORE_LIMIT` / 五个结果与异常类）
+- [x] 1.2 补 characterization tests（`tests/test_characterization_agent_runner.py`）：锁定 `AgentRunResult` / `AdminDisposition` / `SelfReviewResult` / `EvolutionResult` 的构造与 `to_dict` 字段；锁定 `_check_artifact_json_file` / `_check_agent_result_artifact` / `_check_impl_result_artifact` / `_check_success_completion` / `_check_partial_consistency` 的判定行为
+- [x] 1.3 建立疑点清单（`agent-runner-findings.md`），持续维护只记录不修
+- [x] 1.4 运行 `bin/run_full_suite.py` 记录重构前基线失败集合（重点 `test_agent_runner*`、`test_fast_track_scale_precheck`、`test_turn_limit_lifecycle`、`test_run_cancel`、`test_run_latency_stats`）
+- [x] 1.5 记录 D6 补丁缝隙的三个 patch 调用点为「不得失效」基线：`tests/test_fast_track_scale_precheck.py:459-470`、`tests/test_turn_limit_lifecycle.py:182-217`、`tests/test_run_cancel.py` 的 `runner_module.subprocess.Popen` 替换
 
 ## 2. 阶段 1：提取无状态模块
 
