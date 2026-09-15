@@ -182,6 +182,12 @@ def _exec_runner(proot: Path):
     wm.create.return_value = proot / "wt-fresh"
     wm.get_branch_name.return_value = "fenix/fresh"
     runner.worktree_manager = wm
+    # implementer 产物硬门 stub：本文件覆盖 worktree 复用/失效回退语义，与实现
+    # 产物完成度正交。fix-impl-tasks-completion-gate（2026-09-14 df8dd94c）给
+    # implementer 加了 worktree 内 .fenix-run-result.json 硬门，而这里 _run_claude
+    # mock 不落结果文件 → 硬门判失败 → AgentArtifactGateError 退避重试，重试途中
+    # 写 .fenix/runs/ 产物又因夹具未建该目录 FileNotFoundError（本测试的既有红灯）。
+    runner._check_agent_result_artifact = MagicMock(return_value=None)
     runner._run_claude = MagicMock(return_value=(
         "ok", 1, "sess-1",
         {"input_tokens": 0, "output_tokens": 0,

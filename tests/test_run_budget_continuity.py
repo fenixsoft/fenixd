@@ -36,7 +36,9 @@ class FakePM:
     def _get_config(self, key, default=None):
         return default
 
-    def _send_human_escalation_alert(self, **kwargs):
+    def _send_human_escalation_alert(self, spec_name, signal_type, severity,
+                                     description, evidence, recommended_action,
+                                     trigger=None):
         pass
 
     def _exempt_dead_run_budget(self, spec_name, reason, run_reason=None):

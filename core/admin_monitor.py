@@ -141,6 +141,10 @@ SIGNAL_SEVERITY = {
     # 一致）——既可能是验证环境/夹具问题，也可能是场景本身缺陷；admin 需判类
     # 后走对应处置路径，不直接判 bug-found（同因哨有意不派生 fix）。
     "verify_uniform_failure": "major",
+    # fix-admin-reset-programming-error-escalation：处置收尾复位路径撞上
+    # 代码缺陷（TypeError/AttributeError/NameError 等编程错误）——不是运维
+    # 失败，重试无用，必须让人看到（其他异常仍只记 WARNING 不升级）。
+    "admin_reset_programming_error": "critical",
 }
 SIGNAL_RECOMMENDATION = {
     "repeated_failures": "检查重复失败的根因（如构建/测试命令错误），必要时重置 spec 状态或修复框架配置",
@@ -168,6 +172,9 @@ SIGNAL_RECOMMENDATION = {
     # fix-verify-uniform-failure-consumer：全场景同因失败的分诊指引——先判失败
     # 类别再处置，勿直接当产品缺陷打回实现（同因哨有意不派生 fix）。
     "verify_uniform_failure": "全场景同因失败（pass=0 且失败签名一致），先判类别：① 验证夹具/环境缺失（如场景引用的辅助脚本/依赖在验证树不可达）→ 补齐验证基础设施后复位重验；② 场景本身缺陷（断言写错误、字段/协议不对）→ 修正场景文件 test_scenarios.json 与 scenarios.json 后复位重验；③ 确为产品缺陷（多场景同根因）→ 转人工决策是否打回实现。证据见本信号 evidence 的签名与 failed 计数，逐场景细节见 .fenix/verify-progress/<spec>/report.json",
+    # fix-admin-reset-programming-error-escalation：编程错误处置指引——这不是
+    # 环境问题，Administrator 无法修复，须由工程侧定位并修正代码。
+    "admin_reset_programming_error": "框架代码缺陷（非环境问题）：处置收尾复位路径调用抛出了 TypeError/AttributeError 等编程错误，spec 状态可能未按预期复位。请定位并修正 core/ 中对应调用点（信号 evidence 含异常类型与调用点），修正后复位该 spec 状态重新调度；此类异常重试无用，勿派子 fix SPEC 反复重跑",
 }
 
 # pm_engine 直接写入 store、由本监视器摄取唤起的信号类型（写入即待唤起型）。
@@ -1367,7 +1374,9 @@ class AdminMonitor:
                 # pm_engine 缺失时仅靠 daemon recovery 的 implemented 分支兜底
                 # （testing 态在 INTERRUPTED_STATES 中，重启回退 ready 重新检测）
                 if self.pm_engine is not None:
-                    self.pm_engine.handle_event("spec_implemented", spec)
+                    self.pm_engine.handle_event(
+                        "spec_implemented", spec, spec_entry
+                    )
                 self.logger.info(
                     "admin_monitor",
                     f"env 阻塞处置复位（直通道）：'{spec}' transition_gate(testing)"
@@ -1381,10 +1390,76 @@ class AdminMonitor:
                     "admin_monitor",
                     f"env 阻塞处置复位：'{spec}' → ready（实现阶段熔断/未合并）",
                 )
+        except (TypeError, AttributeError, NameError) as e:
+            # 编程错误（fix-admin-reset-programming-error-escalation）：复位路径
+            # 撞上代码缺陷（缺实参/属性缺失/未定义名）不是运维失败，重试无用且
+            # 会被静默降级——必须落 ESCALATION 让人看到。2026-09-14
+            # evo-item-retention 事故：此处 handle_event 少传实参抛 TypeError，
+            # 被下面宽 except 降为 WARNING，spec 悬置 testing 1h12m 无人知。
+            self._escalate_reset_programming_error(signal, reset_path, e)
         except Exception as e:
             self.logger.warning(
                 "admin_monitor",
                 f"env 阻塞处置复位失败 '{spec}'（reset_path={reset_path}）: {e}",
+            )
+
+    def _escalate_reset_programming_error(self, signal: dict, reset_path,
+                                          exc: BaseException) -> None:
+        """复位路径编程错误 → 落 critical 升级告警（含调用点，供工程侧定位）。
+
+        绝不重抛：处置记录先落盘（右关联设计），升级信号本身失败也只记日志。
+        同类未处理告警存在时跳过（unhandled_for 去重，防每轮巡检重复落盘）。
+        """
+        import traceback
+        spec = signal.get("spec")
+        try:
+            if self.store.unhandled_for(spec, "admin_reset_programming_error"):
+                self.logger.warning(
+                    "admin_monitor",
+                    f"env 阻塞处置复位编程错误 '{spec}'（已有未处理告警，不重复落盘）: "
+                    f"{type(exc).__name__}: {exc}",
+                )
+                return
+        except Exception:
+            pass
+        # 提取最深栈帧的调用点（core/ 内文件:行），供工程侧直接定位
+        call_site = "?"
+        try:
+            frames = traceback.extract_tb(exc.__traceback__)
+            core_frames = [f for f in frames if "/core/" in f.filename]
+            if core_frames:
+                f = core_frames[-1]
+                call_site = f"{Path(f.filename).name}:{f.lineno} ({f.name})"
+        except Exception:
+            pass
+        msg = f"{type(exc).__name__}: {exc}"
+        self.logger.error(
+            "admin_monitor",
+            f"env 阻塞处置复位编程错误 '{spec}'（reset_path={reset_path}）"
+            f"@ {call_site}: {msg}",
+        )
+        try:
+            self.store.append(attach_trigger({
+                "kind": ESCALATION,
+                "signal_type": "admin_reset_programming_error",
+                "spec": spec,
+                "severity": "critical",
+                "description": (
+                    f"处置收尾复位路径抛出编程错误（非环境问题），spec 状态可能"
+                    f"未按预期复位：{msg}"
+                ),
+                "evidence": (
+                    f"reset_path={reset_path}; 调用点={call_site}; "
+                    f"signal_type={signal.get('signal_type')}"
+                ),
+                "action_taken": "AdminMonitor 检测到复位路径代码缺陷，升级工程侧修正",
+                "recommended_action": SIGNAL_RECOMMENDATION.get(
+                    "admin_reset_programming_error"),
+            }))
+        except Exception as e2:
+            self.logger.warning(
+                "admin_monitor",
+                f"复位编程错误升级告警落盘失败 '{spec}': {e2}",
             )
 
     def _apply_family_waiver(self, signal: dict, disp) -> None:

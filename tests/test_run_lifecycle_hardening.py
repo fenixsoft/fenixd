@@ -735,6 +735,11 @@ class TestFrozenStopsRetryChain(unittest.TestCase):
         runner._v2_launch_for_worktree = MagicMock()
         runner._v2_inject_env = MagicMock(return_value={})
         runner._v2_stop_for_worktree = MagicMock()
+        # implementer 产物硬门 stub：本组关注 frozen 对重试链的终止语义，与实现
+        # 产物完成度正交。fix-impl-tasks-completion-gate（2026-09-14）给 implementer
+        # 加了 worktree 内 .fenix-run-result.json 硬门，而 _run_claude mock 不落
+        # 结果文件 → 硬门判失败 → attempt 退避 time.sleep(10)，单测试挂起 10-15s。
+        runner._check_agent_result_artifact = MagicMock(return_value=None)
         return runner
 
     def test_frozen_terminates_before_any_attempt(self):
@@ -784,7 +789,8 @@ class TestFrozenStopsRetryChain(unittest.TestCase):
 
         runner._run_claude = fake_claude
         with patch.object(runner, "_record_instant_fail",
-                          return_value=None) as rif:
+                          return_value=None) as rif, \
+                patch("time.sleep", lambda _s: None):
             result = runner.run_implementer("spec-x")
         # a1 已执行；a2 启动前被冻结 → 不再第二次调用 _run_claude
         self.assertEqual(attempt["n"], 1)

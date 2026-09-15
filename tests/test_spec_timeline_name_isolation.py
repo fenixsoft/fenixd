@@ -225,5 +225,76 @@ class TestBackwardFieldAndReasonSemantics(unittest.TestCase):
         self.assertTrue(back[0]["backward"])
 
 
+class TestReviewGateDirection(unittest.TestCase):
+    """评审门（reviewing）方向判定：drafted→reviewing→ready 为正常推进，非回退。
+
+    add-spec-review-gate 新增 reviewing 状态时漏登记进 _LIFECYCLE_ORDER；
+    .get(s, 9) 的哨兵 9 高于 pushed(7)，reviewing→ready 被误算 backward=True
+    并落「状态回退」兜底文案（2026-09-15 evo-admin-dispatch-failure-escalation
+    实测）。状态机文档明确 reviewing 位于 drafted 与 ready 之间。
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        logs_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write(self, lines):
+        logs_dir = Path(self.tmpdir) / ".fenix" / "logs"
+        (logs_dir / "fenixd.log").write_text("\n".join(lines) + "\n",
+                                             encoding="utf-8")
+
+    def test_reviewing_to_ready_is_forward(self):
+        """评审通过：drafted→reviewing→ready 全程前向，无回退徽标/兜底文案。"""
+        from core.dashboard.data import get_spec_timeline
+        self._write([
+            _line("2026-09-15T01:29:41.481119Z",
+                  "Transition: spec-x drafted → reviewing"),
+            _line("2026-09-15T01:36:24.038674Z",
+                  "Transition: spec-x reviewing → ready"),
+        ])
+        timeline = get_spec_timeline(self.tmpdir, "spec-x")
+        states = [e for e in timeline if e["kind"] == "state"]
+        for e in states:
+            self.assertFalse(e["backward"], f"评审门正常推进被误判回退: {e}")
+            self.assertEqual(e["reason"], "", f"前向节点不应带兜底文案: {e}")
+        # 连续前向节点折叠为一条链，链中含 reviewing（途经状态不省略）
+        ready = [e for e in states if e["to"] == "ready"]
+        self.assertEqual(len(ready), 1, f"ready 节点缺失: {states}")
+        self.assertIn("reviewing",
+                      ready[0].get("chain", []) + [ready[0]["from"]])
+
+    def test_reviewing_entries_not_backward(self):
+        """进入评审（drafted→reviewing）与评审中阻塞（reviewing→blocked）均非回退。"""
+        from core.dashboard.data import get_spec_timeline
+        self._write([
+            _line("2026-09-15T01:00:00.000000Z",
+                  "Transition: spec-x drafted → reviewing"),
+            _line("2026-09-15T01:10:00.000000Z",
+                  "Transition: spec-x reviewing → blocked"),
+        ])
+        timeline = get_spec_timeline(self.tmpdir, "spec-x")
+        for e in [x for x in timeline if x["kind"] == "state"]:
+            self.assertFalse(e["backward"], f"评审进入/阻塞被误判回退: {e}")
+
+    def test_blocked_to_ready_still_backward(self):
+        """回归：blocked→ready（人工担责放行）仍判回退，方向判定不误伤存量行为。"""
+        from core.dashboard.data import get_spec_timeline
+        self._write([
+            _line("2026-09-15T01:00:00.000000Z",
+                  "Transition: spec-x implementing → blocked"),
+            _line("2026-09-15T01:20:00.000000Z",
+                  "Transition: spec-x blocked → ready"),
+        ])
+        timeline = get_spec_timeline(self.tmpdir, "spec-x")
+        back = [e for e in timeline if e["kind"] == "state"
+                and e["from"] == "blocked" and e["to"] == "ready"]
+        self.assertEqual(len(back), 1, f"blocked→ready 节点缺失: {timeline}")
+        self.assertTrue(back[0]["backward"])
+
+
 if __name__ == "__main__":
     unittest.main()

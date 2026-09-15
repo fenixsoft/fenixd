@@ -167,6 +167,55 @@ class TestAdminStore:
         assert rec["severity"] == "major"
         assert rec["spec"] is None
 
+    def test_append_serializes_non_string_evidence(self, tmp_path):
+        """evidence 契约是字符串：写入口把 dict/list 序列化为 JSON 串。
+
+        回归 fix-alert-evidence-render-crash：stash_pop_conflict 直发结构化
+        evidence dict，前端 React 直接渲染对象崩溃（首页白屏）。
+        序列化落在存储边界，读侧（Dashboard API / prompt 注入 / 冷却去重）拿到的
+        evidence 恒为 str 或 None。
+        """
+        store = AdminStore(tmp_path, FakeLogger())
+        rec = store.append({
+            "kind": SIGNAL, "signal_type": "stash_pop_conflict",
+            "evidence": {"conflict_files": ["core/a.py"], "stash_kept": False},
+        })
+        assert isinstance(rec["evidence"], str), "写入口应把 dict evidence 序列化"
+        assert "core/a.py" in rec["evidence"]
+        # 落地文件（读侧权威源）同样为字符串
+        on_disk = json.loads(
+            (tmp_path / ".fenix" / "admin_alerts.json").read_text(encoding="utf-8"))
+        assert isinstance(on_disk[0]["evidence"], str)
+
+    def test_append_preserves_string_and_missing_evidence(self, tmp_path):
+        """字符串 evidence 原样保留；缺省 evidence 仍为 None（不序列化为 "null"）。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        rec_str = store.append({"kind": SIGNAL, "evidence": "纯文本证据"})
+        assert rec_str["evidence"] == "纯文本证据"
+        rec_none = store.append({"kind": SIGNAL})
+        assert rec_none["evidence"] is None
+
+    def test_read_all_heals_legacy_dict_evidence(self, tmp_path):
+        """存量（修复前落盘）的结构化 evidence 在读侧被归一为字符串。
+
+        写入口修复只能挡住新写入；已在 admin_alerts.json 里的 dict evidence
+        仍会让 Dashboard API 下发对象、前端首页白屏，故读侧同样归一，
+        存量记录一次读即自愈。
+        """
+        apath = tmp_path / ".fenix" / "admin_alerts.json"
+        apath.parent.mkdir(parents=True, exist_ok=True)
+        apath.write_text(json.dumps([{
+            "kind": ESCALATION, "id": "legacy1", "handled": False,
+            "signal_type": "stash_pop_conflict",
+            "evidence": {"conflict_files": ["core/x.py"], "stash_kept": True},
+        }]), encoding="utf-8")
+        store = AdminStore(tmp_path, FakeLogger())
+        recs = store.read_all()
+        assert isinstance(recs[0]["evidence"], str), "读侧应归一存量 dict evidence"
+        assert "core/x.py" in recs[0]["evidence"]
+        # unhandled() 走同一读路径，同样归一
+        assert isinstance(store.unhandled()[0]["evidence"], str)
+
     def test_read_all_newest_first(self, tmp_path):
         store = AdminStore(tmp_path, FakeLogger())
         store.append({"kind": SIGNAL, "signal_type": "stuck", "description": "first"})
