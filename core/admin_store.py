@@ -76,7 +76,16 @@ class AdminStore:
             return []
         if not isinstance(data, list):
             return []
-        return [e for e in data if isinstance(e, dict)]
+        recs = [e for e in data if isinstance(e, dict)]
+        # 存量（修复前落盘）dict/list evidence 读侧归一为字符串，一次读即自愈
+        # （回归 fix-alert-evidence-render-crash）：写入口修复只能挡住新写入，
+        # 已在 admin_alerts.json 里的结构化 evidence 仍会让 Dashboard API
+        # 下发对象、前端白屏，读侧统一归一保证消费端恒拿 str 或 None。
+        for e in recs:
+            ev = e.get("evidence")
+            if ev is not None and not isinstance(ev, str):
+                e["evidence"] = json.dumps(ev, ensure_ascii=False)
+        return recs
 
     def _read_locked(self) -> list:
         with self._lock() as lf:
@@ -152,6 +161,13 @@ class AdminStore:
         rec.setdefault("action_taken", None)
         rec.setdefault("result", None)
         rec.setdefault("recommended_action", None)
+        # evidence 契约恒为字符串（回归 fix-alert-evidence-render-crash）：
+        # 写入口把 dict/list 结构化 evidence 序列化为 JSON 串，读侧（Dashboard
+        # API / prompt 注入 / 冷却去重）拿到的 evidence 恒为 str 或 None，避免
+        # 前端直接渲染对象白屏。字符串原样保留，缺省 None 不序列化为 "null"。
+        evidence = rec.get("evidence")
+        if evidence is not None and not isinstance(evidence, str):
+            rec["evidence"] = json.dumps(evidence, ensure_ascii=False)
         return rec
 
     def append(self, entry: dict) -> dict:
