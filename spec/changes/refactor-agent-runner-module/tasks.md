@@ -73,9 +73,9 @@
 
 ## 4. 阶段 3：测试缝转发属性收敛
 
-- [ ] 4.1 删除 8 组转发属性的 setter/deleter（`provider_circuits` / `_daily_provider_attempts` / `_daily_provider_warned` / `_daily_reset_date` / `_v2_servers` / `_v2_used_ports` / `_v2_run_seq` / `_extension_baselines`），保留 getter 且保持「组合对象缺失时惰性创建」；**同步改写生产内部写点 `runner.py:3917`**（`_check_daily_limit` 内 `self._daily_reset_date = today` → `self._provider_circuit._daily_reset_date = today`），否则主链路派发（`runner.py:2505`）在 setter 删除后抛 `AttributeError`
-- [ ] 4.2 改写 D5 的 11 个测试文件中的赋值点（`runner.<名> = v` → 替换组合对象属性）；逐一确认对应测试仍通过
-- [ ] 4.3 全量 pytest（重点 `test_daemon_lifecycle_races`、`test_provider_circuit`、`test_provider_failover`、`test_run_lifecycle_hardening`）+ 独立 commit
+- [x] 4.1 删除 8 组转发属性的 setter/deleter（`provider_circuits` / `_daily_provider_attempts` / `_daily_provider_warned` / `_daily_reset_date` / `_v2_servers` / `_v2_used_ports` / `_v2_run_seq` / `_extension_baselines`），保留 getter 且保持「组合对象缺失时惰性创建」；**同步改写生产内部写点 `runner.py:3917`**（`_check_daily_limit` 内 `self._daily_reset_date = today` → `self._provider_circuit._daily_reset_date = today`），否则主链路派发（`runner.py:2505`）在 setter 删除后抛 `AttributeError`
+- [x] 4.2 改写 D5 的 11 个测试文件中的赋值点（`runner.<名> = v` → 替换组合对象属性）；逐一确认对应测试仍通过
+- [x] 4.3 全量 pytest（重点 `test_daemon_lifecycle_races`、`test_provider_circuit`、`test_provider_failover`、`test_run_lifecycle_hardening`）+ 独立 commit
 
 ## 5. 阶段 4：runner 收尾、docstring 修复与契约核对
 

@@ -3170,7 +3170,8 @@ class AgentRunner:
         today = datetime.now(timezone.utc).date()
         if today != self._daily_reset_date:
             self._daily_run_count = 0
-            self._daily_reset_date = today
+            # D5：直接写组合对象（转发 setter 已删；AgentRunner 不另行持有第二份）。
+            self._provider_circuit._daily_reset_date = today
 
         limit = self._get_config("agents.daily_run_limit", 50)
         if limit > 0 and self._daily_run_count >= limit:
@@ -3744,85 +3745,29 @@ class AgentRunner:
     def provider_circuits(self):
         return self._provider_circuit.provider_circuits
 
-    @provider_circuits.setter
-    def provider_circuits(self, value):
-        self._provider_circuit.provider_circuits = value
-
-    @provider_circuits.deleter
-    def provider_circuits(self):
-        del self._provider_circuit.provider_circuits
-
     @property
     def _daily_provider_attempts(self):
         return self._provider_circuit._daily_provider_attempts
-
-    @_daily_provider_attempts.setter
-    def _daily_provider_attempts(self, value):
-        self._provider_circuit._daily_provider_attempts = value
-
-    @_daily_provider_attempts.deleter
-    def _daily_provider_attempts(self):
-        del self._provider_circuit._daily_provider_attempts
 
     @property
     def _daily_provider_warned(self):
         return self._provider_circuit._daily_provider_warned
 
-    @_daily_provider_warned.setter
-    def _daily_provider_warned(self, value):
-        self._provider_circuit._daily_provider_warned = value
-
-    @_daily_provider_warned.deleter
-    def _daily_provider_warned(self):
-        del self._provider_circuit._daily_provider_warned
-
     @property
     def _daily_reset_date(self):
         return self._provider_circuit._daily_reset_date
-
-    @_daily_reset_date.setter
-    def _daily_reset_date(self, value):
-        self._provider_circuit._daily_reset_date = value
-
-    @_daily_reset_date.deleter
-    def _daily_reset_date(self):
-        del self._provider_circuit._daily_reset_date
 
     @property
     def _v2_servers(self):
         return self._v2_server._v2_servers
 
-    @_v2_servers.setter
-    def _v2_servers(self, value):
-        self._v2_server._v2_servers = value
-
-    @_v2_servers.deleter
-    def _v2_servers(self):
-        del self._v2_server._v2_servers
-
     @property
     def _v2_used_ports(self):
         return self._v2_server._v2_used_ports
 
-    @_v2_used_ports.setter
-    def _v2_used_ports(self, value):
-        self._v2_server._v2_used_ports = value
-
-    @_v2_used_ports.deleter
-    def _v2_used_ports(self):
-        del self._v2_server._v2_used_ports
-
     @property
     def _v2_run_seq(self):
         return self._v2_server._v2_run_seq
-
-    @_v2_run_seq.setter
-    def _v2_run_seq(self, value):
-        self._v2_server._v2_run_seq = value
-
-    @_v2_run_seq.deleter
-    def _v2_run_seq(self):
-        del self._v2_server._v2_run_seq
 
     # ── 组合组件（refactor-core-packages 阶段 3）────────────────────────
 
@@ -3960,12 +3905,4 @@ class AgentRunner:
     @property
     def _extension_baselines(self):
         return self._liveness._extension_baselines
-
-    @_extension_baselines.setter
-    def _extension_baselines(self, value):
-        self._liveness._extension_baselines = value
-
-    @_extension_baselines.deleter
-    def _extension_baselines(self):
-        del self._liveness._extension_baselines
 
