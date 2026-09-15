@@ -406,5 +406,60 @@ class TestDispatchAnchorAndConsume(unittest.TestCase):
         self.assertIn("原状态 reviewing", err)
 
 
+class TestArtifactFirstNoReentry(unittest.TestCase):
+    """防回退（evo-run-failure-artifact-first 2.4）：
+    产物优先分支 consume 后不得重派、不得重复消费。"""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _fresh(self):
+        sm = _mk_project(self.tmpdir)
+        sm.update_spec("spec", {"reviewer_run": None})
+        return sm
+
+    def test_artifact_first_no_redispatch_after_consume(self):
+        """产物优先分支 consume 后不得重派：run 只执行一次、状态 ready。"""
+        sm = self._fresh()
+        calls = []
+
+        def during():
+            calls.append("run")
+
+        runner = _RecordingRunner(
+            sm, self.tmpdir,
+            result={"status": "approved", "repairs": [], "findings": []},
+            success=False, on_run=during)
+        engine = MagicMock()
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, engine, {}, MagicMock())
+        self.assertTrue(mgr.dispatch_review("spec"))
+        # run 只执行一次：消费后不得再次派发
+        self.assertEqual(len(calls), 1)
+        entry = sm.read_one("spec")
+        self.assertEqual(entry["status"], "ready")
+        self.assertIsNone(entry.get("reviewer_run"))
+        engine._on_spec_ready.assert_called_once_with("spec")
+
+    def test_artifact_first_consume_idempotent(self):
+        """产物优先分支消费幂等：reviewer_run 清空后重复 consume 不再动作。"""
+        sm = self._fresh()
+        runner = _RecordingRunner(
+            sm, self.tmpdir,
+            result={"status": "approved", "repairs": [], "findings": []},
+            success=False)
+        engine = MagicMock()
+        mgr = SpecReviewManager(self.tmpdir, sm, runner, engine, {}, MagicMock())
+        self.assertTrue(mgr.dispatch_review("spec"))
+        self.assertEqual(sm.read_one("spec")["status"], "ready")
+        # 第二次 consume：reviewer_run 已清空 → 返回 False，状态不变、不重派
+        ok2 = mgr.consume_review_result("spec")
+        self.assertFalse(ok2)
+        self.assertEqual(sm.read_one("spec")["status"], "ready")
+        engine._on_spec_ready.assert_called_once_with("spec")
+
+
 if __name__ == "__main__":
     unittest.main()
