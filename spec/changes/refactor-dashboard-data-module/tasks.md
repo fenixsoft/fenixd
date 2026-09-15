@@ -32,7 +32,7 @@
 - path: core/dashboard/data/evolution_items.py
   kind: new
 - path: core/dashboard/data/_legacy.py
-  kind: new  # 阶段 1 由 core/dashboard/data.py `git mv` 改名而来（D7 过渡载体），阶段 4 删除
+  kind: reference  # 阶段 1 由 core/dashboard/data.py `git mv` 改名而来（D7 过渡载体），阶段 4 删除
 - path: core/dashboard/data.py
   kind: delete
 - path: tests/test_characterization_dashboard_data.py
