@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -251,7 +251,8 @@ class TestLegacyContamination(_ContaminationBase, unittest.TestCase):
         self._run_legacy()
         entry = self.sm.read_one("demo-spec")
         self.assertEqual(entry["status"], "bug-found")
-        self.engine._on_spec_bug_found.assert_called_once_with("demo-spec")
+        self.engine._on_spec_bug_found.assert_called_once_with(
+            "demo-spec", failure_class="product", run_id=ANY)
 
     def test_verified_gate_protects_against_redispatch(self):
         """已 verified + 共享残留 → 放行门拒绝 re-dispatch（不覆盖 verified）。"""
