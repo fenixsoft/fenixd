@@ -21,7 +21,8 @@
 
 ## 2. 回退上下文注入具体事实（A 收口）
 
-- [ ] 2.1 `git 事实复核未通过` 的 `repair_error` 携带可诊断文本（base/now SHA、未合并条目计数、MERGE_HEAD 有无），并作为 `merge_error` 一并传入 `_fallback_after_repair`
+- [ ] 2.1 `git 事实复核未通过` 时，把 `repair_error` 写成携带可诊断事实的文本（base/now SHA、未合并条目计数、MERGE_HEAD 有无），并作为 `_fallback_after_repair(spec_name, branch, repair_error, merge_error=...)` 的 **error 参数**传入——`_fallback_after_repair` 会拼出 `repair 失败（<事实>）→ 回退全新重派` 的 full_error 注入下一轮重派上下文（dispatch.py:3008-3012）；`merge_error` 参数保持「原 merge 失败上下文」语义（dispatch.py:3007），不得把事实塞进 `merge_error` 覆盖其默认值
+- [ ] 2.2 `_fallback_after_repair` 的 fallback 清零清单（dispatch.py:3016-3025，随 `_repair_round` 归零的 updates dict）一并清零 `_repair_base_tip`：复核失败 / remerge 再失败 / worker 异常三条 fallback 路径都不再续 repair 链时，避免 STATE 残留 stale 基准 tip 孤儿字段
 
 ## 3. repair prompt 契约强化（B）
 
