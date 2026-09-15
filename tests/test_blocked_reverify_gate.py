@@ -325,7 +325,7 @@ class _FakePmEngine:
         self.handle_event_calls = []
 
     def handle_event(self, event_kind, spec_name, spec_entry):
-        self.handle_event_calls.append((event_kind, spec_name))
+        self.handle_event_calls.append((event_kind, spec_name, spec_entry))
 
 
 class TestDispositionResetIntegration:
