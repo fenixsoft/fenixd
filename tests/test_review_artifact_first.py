@@ -203,7 +203,7 @@ class TestArtifactFirstRetryFallback(unittest.TestCase):
         self.assertEqual(int(entry.get("_review_attempts", 0)), 1)
 
 
-class TestClassifyRunFailure:
+class TestClassifyRunFailure(unittest.TestCase):
     """1.3：_classify_run_failure infra 指纹识别。"""
 
     def setUp(self):
