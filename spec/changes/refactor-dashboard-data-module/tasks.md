@@ -51,19 +51,19 @@
   - 注意：**只扫 AST 顶层 `def`/`class` 会漏**（兼容别名块 `_parse_run_task_done`/`_find_impl_run_file` 与 32 个模块级常量都不是 `def`）。清点必须覆盖四类：函数、类、顶层赋值/别名、`import ... as` 绑定。
   - 清点结果 MUST 与 design.md D3 分组表逐名对齐，列出「表中未出现但存在于 data.py 的名字」，不得留下未归属项（当前实测：118 个 function/class + 32 个常量/别名 = 150 个顶层名字，其中 `_is_running`、`USER_CONFIG_PATH` 留在门面，其余随组迁移）。
 - [x] 1.2 为将被搬移且当前无测试覆盖的函数补 characterization tests（新增 `tests/test_characterization_dashboard_data.py`，不改现有测试文件）
-- [x] 1.2b 为 D8 两处 **patch 语义** 补锁定测试：`patch("core.dashboard.data._is_running")` 必须影响 `daemon_health` 的行为、`patch("core.dashboard.data.USER_CONFIG_PATH")` 必须影响配置读取路径（复用 `tests/test_config.py:397-432`、`tests/test_dashboard_data.py:721` 的既有断言形态）
+- [x] 1.2b 为 D8 两处 **patch 语义** 补锁定测试：`patch("core.dashboard.data._is_running")` 必须影响 `daemon_health` 的行为、`patch("core.dashboard.data.USER_CONFIG_PATH")` 必须影响配置读取路径（复用 `tests/test_config.py` 中 `TestDaemonHealthPatch`（`test_running_when_is_running_true` / `test_stopped_when_is_running_false` 等）、`tests/test_dashboard_data.py` 中 `test_read_effective_config_planner_max_concurrent_echo` 的既有断言形态）
 - [x] 1.3 建立疑点清单文件（如 `findings.md`），自本阶段起持续维护：拆分中发现的 bug/死代码/循环依赖只记录不修
 - [x] 1.4 运行 `bin/run_full_suite.py` 记录重构前基线失败集合
 
 ## 2. 阶段 1：叶子组搬移
 
 - [x] 2.1 **改名入包（MUST 先做，见 design D7）**：`git mv core/dashboard/data.py core/dashboard/data/_legacy.py`；新建 `core/dashboard/data/__init__.py`，逐条 `from ._legacy import <name>` 显式 re-export `_legacy` 的**全部**名字（函数 + 类 + 下划线名 + 32 个模块级常量 + `_is_running` / `USER_CONFIG_PATH`；禁用 `import *`）。本步骤完成后立即全量 pytest，确认与阶段 0 基线一致
-  - 原因：Python 解析同名「包」优先于「模块」（`importlib/_bootstrap_external.py:1557-1564`），`data/__init__.py` 一旦存在，`data.py` 即不可达。若按「先建空包」执行，未搬移的约 100 个函数会当场消失，阶段 1 起全量 pytest 必红、D4 的分阶段全绿与回滚粒度失效。
+  - 原因：Python 解析同名「包」优先于「模块」（CPython `importlib` 的 `_bootstrap_external` 中包/模块同名时的解析顺序），`data/__init__.py` 一旦存在，`data.py` 即不可达。若按「先建空包」执行，未搬移的约 100 个函数会当场消失，阶段 1 起全量 pytest 必红、D4 的分阶段全绿与回滚粒度失效。
   - `_is_running` / `USER_CONFIG_PATH` 在本步骤即固定为**门面绑定**（D2/D8），此后各阶段 MUST NOT 将它们迁入子模块。
 - [x] 2.2 搬移 `state` 组：`parse_state` → `core/dashboard/data/state.py`
 - [x] 2.3 搬移 `evolution_items` 组：`read_evolution_items` / `read_evolution_analysis` / `read_evolution_draft` / `EVOLUTION_DOC_WHITELIST` → `evolution_items.py`
 - [x] 2.4 搬移 `log_index` 组：`_log_index_path` / `_build_log_block_index` / `_write_log_index` / `_update_log_block_index` / `_load_log_index` / `_read_log_tail_window` / `_iter_tail_log_entries` / `_norm_utc_iso` / `_read_log_window_from` / `get_recent_events` / `record_project_event` / `LOG_INDEX_BLOCK` / `LOG_INDEX_TAIL_WINDOW` / `_LOG_INDEX_REBUILDS` → `log_index.py`
-- [x] 2.5 搬移 `tasks` 组：`parse_tasks` / `task_progress` / `tasks_note` / `run_task_progress` / `_should_overlay` / `_LIVE_OVERLAY_STATUSES` / `find_implementer_worktree` / `_parse_run_task_done` / `_find_impl_run_file` → `tasks.py`（兼容别名块 MUST 一并迁移并在门面保持同名绑定，spec 的「私有别名可访问」场景依赖它；复核调用点 `run_task_progress` 与 `core/run_task_track.py:91` 的引用）
+- [x] 2.5 搬移 `tasks` 组：`parse_tasks` / `task_progress` / `tasks_note` / `run_task_progress` / `_should_overlay` / `_LIVE_OVERLAY_STATUSES` / `find_implementer_worktree` / `_parse_run_task_done` / `_find_impl_run_file` → `tasks.py`（兼容别名块 MUST 一并迁移并在门面保持同名绑定，spec 的「私有别名可访问」场景依赖它；复核调用点 `run_task_progress` 与 `core/run_task_track.py` 的 `find_impl_run_file` 定义处的引用）
 - [x] 2.6 门面 re-export 本阶段全部符号（改为从新子模块 re-export 已摘出组，其余仍从 `_legacy`）；运行全量 pytest 与 import 校验，独立 commit
 
 ## 3. 阶段 2：中层组搬移
@@ -101,6 +101,6 @@
 
 ## 验证修复（原地打回第 1 轮）
 
-- [ ] 先复核失败有效性：逐条核对 `spec/changes/refactor-dashboard-data-module/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
-- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
-- [ ] 修复后重跑验证确认通过
+- [x] 先复核失败有效性：逐条核对 `spec/changes/refactor-dashboard-data-module/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [x] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [x] 修复后重跑验证确认通过
