@@ -177,6 +177,8 @@ class EventBus:
                     return True
                 self.logger.info("event_bus", f"Recovery: re-triggering verify for '{name}'")
                 self.pm_engine.handle_event("spec_implemented", name, entry)
+            elif status == "testing":
+                self._recover_testing(name, entry)
             elif status == "ready":
                 self._recover_ready(name, entry)
             elif status == "bug-found":
@@ -198,6 +200,54 @@ class EventBus:
                 f"Recovery failed for spec '{name}': {type(e).__name__}: {e}",
             )
             return False
+
+    def _recover_testing(self, name: str, entry: dict):
+        """testing 无驱动恢复出口（add-control-plane-silent-failure-guards 4.3）。
+
+        事故根因（proposal.md §Why）：spec 落入 testing 后 verifier 入队静默
+        丢失（handle_event 实参不符 TypeError），运行期无人驱动、只能等 daemon
+        重启回退 ready——testing 态在 recovery 分支中无任何出口。本方法补齐：
+
+        - 复用 implemented 分支（158-175）的防重入守卫：`_inconclusive_attempts
+          > 0`（暂停自动重验）跳过；`tester_run` 的重验风暴防护由无驱动判定的
+          「run 文件活跃度 + 存活子进程」检查吸收——verifier 在跑 = 该 spec
+          有近期写活动的 run 文件/存活子进程 → 非无驱动 → 跳过（等效于
+          implemented 分支「已有 tester run 即跳过」）。注意不可按 implemented
+          分支原样查 tester_run 硬挡：env 阻塞会写入 tester_run="blocked:app-
+          unreachable" 标记，硬挡会让事故形态（复位后 testing 无驱动）永不恢复。
+        - 无驱动判定与 admin_monitor._detect_orphaned_state 共用
+          `spec_is_undriven` 同一口径（R1 三条件），防止双路径重复触发。
+        """
+        try:
+            attempts = int(entry.get("_inconclusive_attempts", 0) or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+        if attempts > 0:
+            self.logger.info(
+                "event_bus",
+                f"Skipping recovery for '{name}': inconclusive 暂停自动重验中"
+                f"（_inconclusive_attempts={attempts}），等待人工处置",
+            )
+            return
+        project_root = getattr(self.pm_engine, "project_root", None)
+        if project_root is None:
+            self.logger.debug(
+                "event_bus",
+                f"Skipping recovery for '{name}': 无 project_root，无法判定无驱动",
+            )
+            return
+        from core.admin_monitor import spec_is_undriven
+        if not spec_is_undriven(project_root, name, entry):
+            self.logger.debug(
+                "event_bus",
+                f"Skipping recovery for '{name}': testing 有驱动/有意等待中",
+            )
+            return
+        self.logger.info(
+            "event_bus",
+            f"Recovery: re-triggering verify for undriven testing '{name}'",
+        )
+        self.pm_engine.handle_event("spec_implemented", name, entry)
 
     def _recover_ready(self, name: str, entry: dict):
         """recovery 的 ready 分支（fix-dispatch-orphan D4 白名单）。

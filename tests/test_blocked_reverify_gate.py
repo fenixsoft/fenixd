@@ -506,98 +506,170 @@ class TestDispositionResetIntegration:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-class _BoomPmEngine:
-    """handle_event 抛 TypeError 的 pm_engine 替身——模拟 2026-09-14
-    evo-item-retention 事故：复位直通道调用实参数量不符（代码缺陷）。"""
+# ═══════════════════════════════════════════════════════════════════════
+# add-control-plane-silent-failure-guards 3.5：复位路径编程错误升级
+# ═══════════════════════════════════════════════════════════════════════
+
+class _TypeErrorPmEngine:
+    """handle_event 抛出 TypeError——模拟复位路径调用点实参数量不符的代码缺陷。"""
 
     def handle_event(self, event_kind, spec_name, spec_entry):
         raise TypeError(
-            "PMEngine.handle_event() missing 1 required positional argument: "
-            "'spec_entry'"
-        )
+            f"handle_event() missing 1 required positional argument: 'spec_entry'")
+
+
+class _OSErrorPmEngine:
+    """handle_event 抛出 OSError——模拟运维失败（端口占用/网络），不升级。"""
+
+    def handle_event(self, event_kind, spec_name, spec_entry):
+        raise OSError("port 8787 already in use")
 
 
 class TestResetProgrammingErrorEscalation:
-    """fix-admin-reset-programming-error-escalation：复位路径编程错误必须升级。
+    """admin-reset-error-escalation R1/R2/R3：复位路径编程错误分层升级。
 
-    2026-09-14 事故：`_reset_env_blocked_after_disposition` 的 handle_event
-    调用少传实参抛 TypeError，被宽 except 静默降为 WARNING，spec 悬置 testing
-    1h12m 无人知。本组测试钉住：编程错误（TypeError/AttributeError/NameError）
-    必须落 ESCALATION 升级告警（critical），普通运维异常仍只 WARNING 不升级。
+    拔牙属性：若把 `_reset_env_blocked_after_disposition` 的
+    `except (TypeError, AttributeError, NameError)` 分层移除（退回单一
+    `except Exception`），TypeError 会被静默降级为 WARNING——
+    TypeError 注入用例断言 0 条 critical 升级告警，测试即失败。
     """
 
-    def test_typeerror_from_reset_raises_escalation(self):
+    def _make_monitor(self, tmp_path, sm, pm_engine):
         from core.admin_monitor import AdminMonitor
+        from core.admin_store import AdminStore
+        proot = tmp_path / "proj"
+        proot.mkdir(parents=True, exist_ok=True)
+        store = AdminStore(proot, _FakeLogger())
+        monitor = AdminMonitor.__new__(AdminMonitor)
+        monitor.config = {}
+        monitor.admin_cfg = {"enabled": False, "interval_minutes": 30,
+                             "cooldown_minutes": 5}
+        monitor.state_machine = sm
+        monitor.project_root = proot
+        monitor.logger = _FakeLogger()
+        monitor.store = store
+        monitor.agent_runner = None
+        monitor.pm_engine = pm_engine
+        return monitor, proot
 
+    def _setup(self, tmp_path, pm_engine):
+        sm = _FakeSmWithTransitionGate({
+            "demo": {"status": "blocked", "branch": "fenix/x",
+                     "error": "env 阻塞", "frozen": False,
+                     ENV_BLOCK_ROUNDS_FIELD: 1, "implementer_run": "impl-1"},
+        })
+        monitor, proot = self._make_monitor(tmp_path, sm, pm_engine)
+        from core.admin_store import ESCALATION
+        signal = {
+            "signal_type": "verify_env_blocked",
+            "spec": "demo",
+            "severity": "warning",
+            "description": "env 阻塞",
+            "evidence": "test",
+            "recommended_action": "修复环境",
+        }
+        disp = TestDispositionResetIntegration()._make_admin_disposition(
+            result="resolved", spec="demo")
+        return monitor, proot, sm, signal, disp, ESCALATION
+
+    def test_typeerror_escalates_critical(self):
+        """TypeError 注入 → 恰好 1 条 admin_reset_programming_error critical 告警。"""
         tmp = tempfile.mkdtemp()
         try:
-            sm = _FakeSmWithTransitionGate({
-                "demo": {"status": "blocked", "branch": "fenix/x",
-                         "error": "env 阻塞", "frozen": False,
-                         ENV_BLOCK_ROUNDS_FIELD: 1, "implementer_run": "impl-1"},
-            })
-            make = TestDispositionResetIntegration()._make_admin_monitor
-            monitor = make(Path(tmp), sm, pm_engine=_BoomPmEngine())
-
-            signal = {
-                "signal_type": "verify_env_blocked",
-                "spec": "demo",
-                "severity": "warning",
-                "description": "env 阻塞",
-                "evidence": "test",
-            }
-            disp = TestDispositionResetIntegration()._make_admin_disposition(
-                result="resolved", spec="demo")
-
+            monitor, proot, sm, signal, disp, _ESC = self._setup(
+                Path(tmp), _TypeErrorPmEngine())
             with mock.patch("core.pm_engine.verification.subprocess.run",
                             side_effect=_fake_subprocess_run_mergereturncode(0)):
-                # 不得重抛——处置记录先落盘的右关联设计
                 monitor._reset_env_blocked_after_disposition(signal, disp)
-
-            escs = [r for r in monitor.store.read_all()
-                    if r.get("kind") == "escalation"
-                    and r.get("signal_type") == "admin_reset_programming_error"]
-            assert len(escs) == 1, f"应有 1 条编程错误升级告警，实得 {len(escs)}"
-            assert escs[0]["severity"] == "critical"
-            assert escs[0]["spec"] == "demo"
-            assert "TypeError" in escs[0]["description"]
+            # 复位到 testing 完成了（异常发生在 verifier 入队步），处置记录语义完整
+            assert sm.read_one("demo")["status"] == "testing"
+            alerts = [r for r in monitor.store.read_all()
+                      if r.get("kind") == "escalation"
+                      and r.get("signal_type") == "admin_reset_programming_error"]
+            assert len(alerts) == 1, f"期望恰好 1 条升级告警，实际 {len(alerts)}"
+            alert = alerts[0]
+            assert alert.get("severity") == "critical"
+            assert "TypeError" in alert.get("evidence")
+            assert "调用点=" in alert.get("evidence")
+            assert alert.get("recommended_action")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    def test_ordinary_exception_does_not_escalate(self):
-        """普通运维异常（如 OSError）仍只 WARNING，不升级——避免噪音。"""
-        from core.admin_monitor import AdminMonitor
-
-        class _BoomIoPm:
-            def handle_event(self, event_kind, spec_name, spec_entry):
-                raise OSError("network down")
-
+    def test_oserror_stays_warning(self):
+        """OSError 注入 → 0 条升级告警（保持既有 WARNING 语义）。"""
         tmp = tempfile.mkdtemp()
         try:
-            sm = _FakeSmWithTransitionGate({
-                "demo": {"status": "blocked", "branch": "fenix/x",
-                         "error": "env 阻塞", "frozen": False,
-                         ENV_BLOCK_ROUNDS_FIELD: 1, "implementer_run": "impl-1"},
-            })
-            make = TestDispositionResetIntegration()._make_admin_monitor
-            monitor = make(Path(tmp), sm, pm_engine=_BoomIoPm())
-
-            signal = {
-                "signal_type": "verify_env_blocked",
-                "spec": "demo",
-                "severity": "warning",
-                "description": "env 阻塞",
-                "evidence": "test",
-            }
-            disp = TestDispositionResetIntegration()._make_admin_disposition(
-                result="resolved", spec="demo")
-
+            monitor, proot, sm, signal, disp, _ESC = self._setup(
+                Path(tmp), _OSErrorPmEngine())
             with mock.patch("core.pm_engine.verification.subprocess.run",
                             side_effect=_fake_subprocess_run_mergereturncode(0)):
                 monitor._reset_env_blocked_after_disposition(signal, disp)
+            alerts = [r for r in monitor.store.read_all()
+                      if r.get("kind") == "escalation"
+                      and r.get("signal_type") == "admin_reset_programming_error"]
+            assert alerts == [], f"OSError 不应升级，实际 {len(alerts)} 条"
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
-            escs = [r for r in monitor.store.read_all()
-                    if r.get("signal_type") == "admin_reset_programming_error"]
-            assert escs == [], "OSError 属运维异常，不应升级为编程错误告警"
+    def test_duplicate_escalation_deduped(self):
+        """R3 去重：同一 spec 连续两轮触发同类编程错误 → 仅 1 条未处理告警。"""
+        tmp = tempfile.mkdtemp()
+        try:
+            monitor, proot, sm, signal, disp, _ESC = self._setup(
+                Path(tmp), _TypeErrorPmEngine())
+            with mock.patch("core.pm_engine.verification.subprocess.run",
+                            side_effect=_fake_subprocess_run_mergereturncode(0)):
+                monitor._reset_env_blocked_after_disposition(signal, disp)  # 第一轮
+            with mock.patch("core.pm_engine.verification.subprocess.run",
+                            side_effect=_fake_subprocess_run_mergereturncode(0)):
+                monitor._reset_env_blocked_after_disposition(signal, disp)  # 第二轮
+            unhandled = [r for r in monitor.store.read_all()
+                         if r.get("kind") == "escalation"
+                         and r.get("signal_type") == "admin_reset_programming_error"
+                         and not r.get("handled")]
+            assert len(unhandled) == 1, f"应去重为 1 条未处理告警，实际 {len(unhandled)}"
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_callsite_points_into_core(self):
+        """R2 调用点：evidence 中调用点指向 core/ 内帧（非测试外层）。"""
+        tmp = tempfile.mkdtemp()
+        try:
+            monitor, proot, sm, signal, disp, _ESC = self._setup(
+                Path(tmp), _TypeErrorPmEngine())
+            with mock.patch("core.pm_engine.verification.subprocess.run",
+                            side_effect=_fake_subprocess_run_mergereturncode(0)):
+                monitor._reset_env_blocked_after_disposition(signal, disp)
+            alert = next(r for r in monitor.store.read_all()
+                         if r.get("signal_type") == "admin_reset_programming_error")
+            callsite = alert["evidence"].split("调用点=")[-1]
+            # 最深 core/ 帧落在 admin_monitor.py（调用链在 core 内），
+            # 而非 tests/ 注入点
+            assert "admin_monitor.py" in callsite, callsite
+            assert "test_blocked_reverify_gate" not in callsite, callsite
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_recommendation_points_to_code_defect(self):
+        """R4 处置指引到位：SIGNAL_RECOMMENDATION 登记 admin_reset_programming_error
+        且指明为代码缺陷（Administrator 无法修复、勿派子 fix 反复重跑），
+        落盘告警携带该指引（而非环境修复话术）。"""
+        from core.admin_monitor import SIGNAL_RECOMMENDATION
+        rec = SIGNAL_RECOMMENDATION.get("admin_reset_programming_error", "")
+        assert rec, "admin_reset_programming_error 必须登记处置指引"
+        assert "代码缺陷" in rec, f"指引应指明代码缺陷: {rec}"
+        assert "Administrator 无法修复" in rec, f"指引应指明非 Administrator 可修: {rec}"
+        assert "勿派子 fix" in rec, f"指引应劝阻子 fix 反复重跑: {rec}"
+        tmp = tempfile.mkdtemp()
+        try:
+            monitor, proot, sm, signal, disp, _ESC = self._setup(
+                Path(tmp), _TypeErrorPmEngine())
+            with mock.patch("core.pm_engine.verification.subprocess.run",
+                            side_effect=_fake_subprocess_run_mergereturncode(0)):
+                monitor._reset_env_blocked_after_disposition(signal, disp)
+            alert = next(r for r in monitor.store.read_all()
+                         if r.get("signal_type") == "admin_reset_programming_error")
+            assert alert.get("recommended_action") == rec, (
+                f"告警 recommended_action 应为登记指引: {alert.get('recommended_action')}")
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
