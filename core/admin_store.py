@@ -136,11 +136,9 @@ class AdminStore:
 
     # ── 公开 API ─────────────────────────────────────────────────
 
-    def append(self, entry: dict) -> dict:
-        """追加一条记录，补齐 id/created/handled 等默认字段，返回落地后的记录。
-
-        记录顺序：新记录追加到数组末尾（最近在后）。读侧按倒序返回。
-        """
+    @staticmethod
+    def _normalize_entry(entry: dict) -> dict:
+        """补齐 id/created/handled 等默认字段（append / merge_signal 共用）。"""
         rec = dict(entry)
         rec.setdefault("id", uuid.uuid4().hex[:12])
         rec.setdefault("created", _utcnow_iso())
@@ -154,9 +152,67 @@ class AdminStore:
         rec.setdefault("action_taken", None)
         rec.setdefault("result", None)
         rec.setdefault("recommended_action", None)
+        return rec
 
+    def append(self, entry: dict) -> dict:
+        """追加一条记录，补齐 id/created/handled 等默认字段，返回落地后的记录。
+
+        记录顺序：新记录追加到数组末尾（最近在后）。读侧按倒序返回。
+        """
+        rec = self._normalize_entry(entry)
         self._mutate(lambda records: records.append(rec))
         return rec
+
+    def merge_signal(self, entry: dict, status_hash: str):
+        """沉淀式写入 per-spec 检测信号（admin-signal-consolidation D1）。
+
+        同一 (spec, signal_type, status_hash) 视为「状态未变」：不新增记录、
+        仅刷新 last_seen（合并），返回既有记录与 (record, is_new=False)；
+        状态变化 / 首见时创建新记录并携带 status_hash / last_seen，
+        返回 (record, is_new=True)。
+
+        ONLY 作用于 kind=signal 的 per-spec 检测记录：
+          - 「写入即待唤起」型记录（STORED_SIGNAL_TYPES 由 pm_engine 直接
+            append 写入、按 id 摄取 mark_escalated）不参与合并——其 id 是
+            mark_escalated 的锚点，被合并/替换会触发该记录被反复摄取；
+            且此类记录无 status_hash 字段，天然不会命中合并。
+          - kind=escalation / disposition 记录永不参与合并（id 是
+            mark_handled / auto_resolve 的闭环锚点，跨事件合并破坏语义）。
+
+        合并仅改写 last_seen：不动 id / created（即 first_seen）/ handled；
+        escalated 只允许单调升级（False→True，与 mark_escalated 同方向）——
+        节流分支沉淀不会把已唤起过的记录回退为「未唤起」，唤起分支的合并
+        会把仅节流沉淀过的记录升级为「已唤起」，绝不在 True→False 方向改写。
+
+        不修改 append 的全局语义：既有消费方（pm_engine / dashboard UI /
+        verify_report 等直接 append 写入）行为完全不变。
+        """
+        rec = self._normalize_entry(entry)
+        rec["status_hash"] = status_hash
+        rec.setdefault("last_seen", rec["created"])
+
+        def mutate(records):
+            spec = rec.get("spec")
+            signal_type = rec.get("signal_type")
+            # 倒序找（最新在后，合并目标为最近一条同 hash 记录）
+            for existing in reversed(records):
+                if existing.get("kind") != SIGNAL:
+                    continue
+                if existing.get("spec") != spec:
+                    continue
+                if existing.get("signal_type") != signal_type:
+                    continue
+                if existing.get("status_hash") != status_hash:
+                    continue
+                # 状态未变：仅刷 last_seen（first_seen=created 语义保留）
+                existing["last_seen"] = _utcnow_iso()
+                if rec.get("escalated") and not existing.get("escalated"):
+                    existing["escalated"] = True  # 单调升级，绝不回退
+                return existing, False
+            records.append(rec)
+            return rec, True
+
+        return self._mutate(mutate)
 
     def read_all(self) -> list:
         """读取全部记录（最新的在前）。损坏/缺失返回空列表。"""
@@ -280,6 +336,15 @@ class AdminStore:
 
         within_minutes 内存在 → 返回该记录；否则返回 None。
         spec 为 None 时匹配所有 spec（用于 daemon 级信号）。
+
+        窗口锚点 = max(created, last_seen)（admin-signal-consolidation D1）：
+        状态沉淀后 created 停在首次触发、同状态续报只刷 last_seen——若仍按
+        created 判定窗口，一旦超过 cooldown 便不再命中、节流失效、每轮巡检
+        重新唤起 Administrator（比现状更烧钱）。无 last_seen 的历史记录
+        （本特性前写入）仍按 created 判定。该 API 有 4 处外部调用点
+        （dispatch_stalled / instant_fail_storm / transient_break_storm /
+        verify 告警），其窗口语义不变：escalation/disposition 记录不带
+        last_seen，仍按 created 判定。
         """
         if within_minutes <= 0:
             return None
@@ -302,13 +367,23 @@ class AdminStore:
                 )
             except (ValueError, TypeError):
                 continue
-            if created.timestamp() < cutoff:
+            anchor = created
+            last_seen_str = rec.get("last_seen")
+            if last_seen_str:
+                try:
+                    last_seen = datetime.fromisoformat(
+                        str(last_seen_str).replace("Z", "+00:00")
+                    )
+                    anchor = max(created, last_seen)  # 防御：异常数据下取更大者
+                except (ValueError, TypeError):
+                    pass  # last_seen 不可解析时回退 created
+            if anchor.timestamp() < cutoff:
                 continue
-            if best is None or created > best["_created"]:
-                rec["_created"] = created
+            if best is None or anchor > best["_anchor"]:
+                rec["_anchor"] = anchor
                 best = rec
         if best is not None:
-            best.pop("_created", None)
+            best.pop("_anchor", None)
         return best
 
     def unhandled_for(self, spec: Optional[str], signal_type: str) -> Optional[dict]:

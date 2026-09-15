@@ -326,6 +326,9 @@ class TestBlockedStuckFrozenExemption(unittest.TestCase):
         mon.state_machine.read_one.return_value = {"status": "blocked"}
         mon.store.latest_signal.return_value = None
         mon.store.unhandled_for.return_value = None
+        # admin-signal-consolidation：唤起分支经 merge_signal 沉淀记录
+        # （(record, is_new) 二元组），MagicMock store 需配置其返回值
+        mon.store.merge_signal.return_value = (MagicMock(), True)
         disp = MagicMock()
         disp.spec = "sp-plain"
         mon.agent_runner.run_administrator.return_value = disp
