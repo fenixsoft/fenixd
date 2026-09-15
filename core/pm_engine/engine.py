@@ -2962,6 +2962,14 @@ class PMEngine:
         """repair worker：派发 repair agent → re-merge-back → 状态推进。"""
         return self._dispatcher._run_repair_worker(spec_name, wt_path, branch, merge_info)
 
+    def _check_repair_commit_facts(self, spec_name: str, wt_path, branch: str):
+        """repair git 事实复核（fix-repair-commit-enforcement D1/D2/D5）。
+
+        以分支 git 事实（tip 前进 / 无未解决冲突 / 无未完成 merge）独立验证
+        repair agent 的 success 声明；失败返回携带具体事实的 (False, error)。
+        """
+        return self._dispatcher._check_repair_commit_facts(spec_name, wt_path, branch)
+
     def _handle_remerge_failure(self, spec_name: str, remerge_info, branch: str) -> None:
         """repair 后 re-merge-back 失败处理（熔断连续累计 + 下一轮 repair/fallback）。"""
         return self._dispatcher._handle_remerge_failure(spec_name, remerge_info, branch)
