@@ -403,7 +403,9 @@ class TestDispositionResetIntegration:
             assert entry["status"] == "testing"
             assert entry.get("error") is None
             assert int(entry.get(ENV_BLOCK_ROUNDS_FIELD) or 0) == 1  # 不清零
-            assert pm.handle_event_calls == [("spec_implemented", "demo")]
+            assert pm.handle_event_calls == [
+                ("spec_implemented", "demo", sm.read_one("demo"))
+            ]
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

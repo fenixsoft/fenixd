@@ -42,6 +42,12 @@ def patch_runner_for_exec(runner: AgentRunner, proot: Path, claude_side_effect=N
     wm = MagicMock()
     wm.create.return_value = proot / "wt"
     runner.worktree_manager = wm
+    # implementer 产物硬门 stub：本文件关注熔断/半开探针状态机，与实现产物
+    # 完成度正交。fix-impl-tasks-completion-gate（2026-09-14）给 implementer 加了
+    # worktree 内 .fenix-run-result.json 硬门，而这里的 _run_claude mock 只返回
+    # 成功元组、不落结果文件 → 硬门判失败 → 落入 attempt 退避 time.sleep(10)，
+    # 单测试实测挂起 15s（test_probe_success_closes_circuit）。
+    runner._check_agent_result_artifact = MagicMock(return_value=None)
     if claude_side_effect is not None:
         runner._run_claude = MagicMock(side_effect=claude_side_effect)
     else:
@@ -233,6 +239,7 @@ class TestCircuitHalfOpenRecovery:
             raise RuntimeError("claude CLI failed: HTTP 404 unrecognized_model")
 
         patch_runner_for_exec(runner, tmp_path, claude_side_effect=fake_run_claude)
+        monkeypatch.setattr("time.sleep", lambda _s: None)  # 吞掉 attempt 间退避
         runner.run_implementer("test-spec")
         st = runner._provider_circuit.provider_circuits[p]
         assert st["cooldown_until"] >= probe_time

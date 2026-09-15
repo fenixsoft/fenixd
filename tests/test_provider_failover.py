@@ -12,6 +12,7 @@
 
 import json
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -48,6 +49,18 @@ class FakeLogger:
         return any(text in m for m in self.messages())
 
 
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch):
+    """吞掉 runner 的重试 sleep（与 test_agent_runner_gate 等同一处方）。
+
+    run_implementer 失败后每 attempt 有 ``time.sleep(10)``（runner.py:3116），
+    provider 失败场景常走满 2 次重试 → 每测试 +20s；本文件 8 个测试曾因此
+    累计 161s。sleep 不是被测行为（退避时长有独立覆盖），stub 掉即恢复
+    测试的原始耗时。
+    """
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+
+
 def make_runner(proot: Path, config: dict | None = None) -> AgentRunner:
     """构造最小 AgentRunner 实例（绕过真实 __init__ 的 worktree/state_machine 依赖）。"""
     runner = AgentRunner.__new__(AgentRunner)
@@ -62,6 +75,15 @@ def make_runner(proot: Path, config: dict | None = None) -> AgentRunner:
     runner._daily_provider_attempts = {}
     runner._daily_provider_warned = {}
     runner.provider_circuits = {}
+    # 产物硬门 stub（test_provider_failover 关注 provider 切换，与 implementer
+    # 产物完成度正交）：fix-impl-tasks-completion-gate（2026-09-14 df8dd94c）
+    # 给 implementer/fast-track 加了「worktree 内 .fenix-run-result.json 存在 +
+    # status 白名单 + tasks.md 完成度对账」硬门，而本文件各测试的 fake
+    # _run_claude 只返回成功元组、从不写结果文件 → 硬门判失败 → 落入瞬态退避
+    # 通道 time.sleep(30/60/120)，单测试实测挂起 210s+（全文件 8 failed/161s，
+    # 也是 run_full_suite 卡死的根因）。这些测试不关心产物完成度，stub 掉硬门
+    # 即恢复其原始语义（09-14 之前该硬门对 implementer 直接 return None）。
+    runner._check_agent_result_artifact = MagicMock(return_value=None)
     return runner
 
 

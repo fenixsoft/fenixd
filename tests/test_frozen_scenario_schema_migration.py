@@ -383,7 +383,9 @@ class TestBlockedStuckDispositionReset:
         assert entry["status"] == "testing"
         assert entry.get("error") is None
         assert sm.transition_gate_calls == [("demo", "testing")]
-        assert pm.handle_event_calls == [("spec_implemented", "demo")]
+        assert pm.handle_event_calls == [
+            ("spec_implemented", "demo", sm.read_one("demo"))
+        ]
 
     def test_resolved_branch_not_merged_to_ready(self, tmp_path: Path):
         """result=resolved + blocked_stuck + branch 未合并 → transition(ready)。"""

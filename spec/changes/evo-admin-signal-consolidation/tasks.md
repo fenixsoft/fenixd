@@ -20,3 +20,9 @@
 - [x] 2.1 core/admin_monitor.py：计算 status_hash 判定状态未变；相同则调用沉淀方法，不新增记录、不打重复日志。
 - [x] 2.2 core/admin_monitor.py：对悬置类信号（blocked_stuck + ENV 阻塞族），`now − spec.updated ≥ 2h`（模块常量，不入 config）且 `unhandled_for(spec, signal_type)` 为空时，直接写 `kind=escalation`（severity critical，含悬置时长与 first_seen），不重新唤起 Administrator；绕过 cooldown 但受未处理告警约束。
 - [x] 2.3 写测试覆盖：9.5h 悬置重放 ≤2 条记录且 Administration 不重复唤起；跨 cooldown 窗口不重复唤起；未处理升级存在时不新增；人工 handled 后仍悬置可再升级；非悬置类信号 >2h 不触发强制升级。
+
+## 验证修复（原地打回第 1 轮）
+
+- [ ] 先复核失败有效性：逐条核对 `spec/changes/evo-admin-signal-consolidation/verification-report.md` 中失败场景的期望断言（状态字面量/选择器/前置数据）与产品实际行为是否相符——断言与产品不符属场景缺陷，修场景文件；确属产品行为不符才修产品代码
+- [ ] 按复核结论修复：场景缺陷改场景文件，真实产品 Bug 改产品代码
+- [ ] 修复后重跑验证确认通过
