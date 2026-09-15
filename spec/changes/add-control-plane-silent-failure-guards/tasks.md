@@ -59,6 +59,6 @@
 
 ## 5. 构建与验收
 
-- [ ] 5.1 跑 `python3 bin/run_full_suite.py --timeout 3600` 全量回归，确认无引入失败（按 `--baseline` 区分存量）。
-- [ ] 5.2 落地实证：对当前 `core/` 跑 arity 守卫违规 = 0；对 `tests/` 跑替身保真守卫违规 = 0。
-- [ ] 5.3 逐条核对四个能力 spec 的 Scenario 均有对应测试覆盖。
+- [x] 5.1 跑 `python3 bin/run_full_suite.py --timeout 3600` 全量回归，确认无引入失败（按 `--baseline` 区分存量）。
+- [x] 5.2 落地实证：对当前 `core/` 跑 arity 守卫违规 = 0；对 `tests/` 跑替身保真守卫违规 = 0。
+- [x] 5.3 逐条核对四个能力 spec 的 Scenario 均有对应测试覆盖。
