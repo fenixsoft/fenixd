@@ -58,12 +58,12 @@
 
 ## 2. 阶段 1：提取无状态模块
 
-- [ ] 2.1 提取 `core/agent_runner/result_gate.py`：迁四个结果类、`AgentArtifactGateError`、`RunCancelledError`，以及 `_check_artifact_json_file` / `_check_agent_result_artifact` / `_check_impl_result_artifact` / `_check_success_completion` / `_check_partial_consistency` / `_check_taskupdate_crosscheck` / `_format_gap_list` / `_invalid_completed_ids` / `_read_init_tools` / `_append_crosscheck_skipped`
-- [ ] 2.2 提取 `core/agent_runner/latency.py`：迁 `iter_events` / `_entry_is_tool_result` / `latency_samples_from_events` / `latency_stats` / `_percentile` / `format_latency_summary`，**并一并迁移 `LATENCY_STALL_SECONDS`**（防循环 import）；`_default_ts_parser` 按 design D4 修订版处理——`latency.py` 自带等价实现（MUST NOT 回引 `runner`），`runner.py` 保留同名模块级函数并一行委托，`AgentRunner._parse_event_timestamp` 留在原位
-- [ ] 2.3 `runner.py` 对上述符号保留 re-export（含 `LATENCY_STALL_SECONDS` 与四个 latency 函数——`bin/analyze_run_latency.py:33-35` 亦从 `runner` 导入），`core/agent_runner/__init__.py` 补齐导出；MUST NOT 改动 `_run_claude` 及其同域辅助
+- [x] 2.1 提取 `core/agent_runner/result_gate.py`：迁四个结果类、`AgentArtifactGateError`、`RunCancelledError`，以及 `_check_artifact_json_file` / `_check_agent_result_artifact` / `_check_impl_result_artifact` / `_check_success_completion` / `_check_partial_consistency` / `_check_taskupdate_crosscheck` / `_format_gap_list` / `_invalid_completed_ids` / `_read_init_tools` / `_append_crosscheck_skipped`
+- [x] 2.2 提取 `core/agent_runner/latency.py`：迁 `iter_events` / `_entry_is_tool_result` / `latency_samples_from_events` / `latency_stats` / `_percentile` / `format_latency_summary`，**并一并迁移 `LATENCY_STALL_SECONDS`**（防循环 import）；`_default_ts_parser` 按 design D4 修订版处理——`latency.py` 自带等价实现（MUST NOT 回引 `runner`），`runner.py` 保留同名模块级函数并一行委托，`AgentRunner._parse_event_timestamp` 留在原位
+- [x] 2.3 `runner.py` 对上述符号保留 re-export（含 `LATENCY_STALL_SECONDS` 与四个 latency 函数——`bin/analyze_run_latency.py:33-35` 亦从 `runner` 导入），`core/agent_runner/__init__.py` 补齐导出；MUST NOT 改动 `_run_claude` 及其同域辅助
 - [ ] 2.3b 按 design D2b 规则 1/3 注入门面依赖并同迁常量：产物门函数以 `runner` 参数接收 `logger` / `project_root` / `_IMPL_RESULT_STATUSES`；`_ARTIFACT_FRESHNESS_GRACE_SECONDS` / `_PLANREADY_STATUSES` 随迁 `result_gate.py` 并由 `runner.py` re-export；`DEFAULT_GATEWAY_MODEL` / `admin_disposition_path` 随迁 `maintenance_runs.py` 并由 `runner.py` re-export；提取模块 MUST NOT `import runner`
-- [ ] 2.3c 内部调用点 MUST 继续经委托调用：`runner.py:2803` / `:4345` / `:4493` / `:4502` / `:4639` 等处的 `self.<方法名>(...)` MUST NOT 改写为直呼新模块函数（否则实例属性打桩静默失效：`tests/test_worktree_reuse.py:194`、`test_provider_circuit.py:50`、`test_review_circuit_breaker.py:360`、`test_run_lifecycle_hardening.py:742`、`test_provider_failover.py:86`）
-- [ ] 2.4 全量 pytest + import 校验（含反向导入校验：单独 `import core.agent_runner.result_gate` / `latency` 不触发循环），独立 commit
+- [x] 2.3c 内部调用点 MUST 继续经委托调用：`runner.py:2803` / `:4345` / `:4493` / `:4502` / `:4639` 等处的 `self.<方法名>(...)` MUST NOT 改写为直呼新模块函数（否则实例属性打桩静默失效：`tests/test_worktree_reuse.py:194`、`test_provider_circuit.py:50`、`test_review_circuit_breaker.py:360`、`test_run_lifecycle_hardening.py:742`、`test_provider_failover.py:86`）
+- [x] 2.4 全量 pytest + import 校验（含反向导入校验：单独 `import core.agent_runner.result_gate` / `latency` 不触发循环），独立 commit
 
 ## 3. 阶段 2：提取维护型 run
 
