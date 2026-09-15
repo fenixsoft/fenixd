@@ -647,3 +647,27 @@ class TestResetProgrammingErrorEscalation:
             assert "test_blocked_reverify_gate" not in callsite, callsite
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_recommendation_points_to_code_defect(self):
+        """R4 处置指引到位：SIGNAL_RECOMMENDATION 登记 admin_reset_programming_error
+        且指明为代码缺陷（Administrator 无法修复、勿派子 fix 反复重跑），
+        落盘告警携带该指引（而非环境修复话术）。"""
+        from core.admin_monitor import SIGNAL_RECOMMENDATION
+        rec = SIGNAL_RECOMMENDATION.get("admin_reset_programming_error", "")
+        assert rec, "admin_reset_programming_error 必须登记处置指引"
+        assert "代码缺陷" in rec, f"指引应指明代码缺陷: {rec}"
+        assert "Administrator 无法修复" in rec, f"指引应指明非 Administrator 可修: {rec}"
+        assert "勿派子 fix" in rec, f"指引应劝阻子 fix 反复重跑: {rec}"
+        tmp = tempfile.mkdtemp()
+        try:
+            monitor, proot, sm, signal, disp, _ESC = self._setup(
+                Path(tmp), _TypeErrorPmEngine())
+            with mock.patch("core.pm_engine.verification.subprocess.run",
+                            side_effect=_fake_subprocess_run_mergereturncode(0)):
+                monitor._reset_env_blocked_after_disposition(signal, disp)
+            alert = next(r for r in monitor.store.read_all()
+                         if r.get("signal_type") == "admin_reset_programming_error")
+            assert alert.get("recommended_action") == rec, (
+                f"告警 recommended_action 应为登记指引: {alert.get('recommended_action')}")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

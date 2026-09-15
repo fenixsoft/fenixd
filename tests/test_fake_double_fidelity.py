@@ -200,6 +200,34 @@ class TestFakeDoubleFidelity(unittest.TestCase):
         self.assertIn("_FakeB.handle_event", violations[0])
         self.assertNotIn("_FakeA.handle_event", violations[0])
 
+    def test_broad_name_excluded_from_judgment(self):
+        """宽泛名不参与：seam 中 `get` 唯一签名 + 替身放宽为 **kwargs——
+        黑名单排除后不判违规；解除黑名单（宽泛名参与）时才报出。
+        证明黑名单是防跨类同名误报的闸门（spec R2 场景「宽泛名不参与」）。"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            seam_file = _write_temp_py(
+                root, "core/_seams.py",
+                "class _PM:\n"
+                "    def get(self, key, default=None):\n"
+                "        pass\n")
+            test_file = _write_temp_py(
+                root, "tests/_fake.py",
+                "class _FakePM:\n"
+                "    def get(self, **kwargs):\n"
+                "        pass\n")
+            index = index_method_signatures([seam_file])
+            with_blacklist = scan_fake_fidelity(
+                [test_file],
+                unique_seams(index, blacklist=BROAD_NAME_BLACKLIST),
+                [])
+            without_blacklist = scan_fake_fidelity(
+                [test_file], unique_seams(index), [])
+        self.assertEqual(with_blacklist, [],
+                         "宽泛名 get 被黑名单排除 → 不参与比对，放宽替身不应被报")
+        self.assertEqual(len(without_blacklist), 1,
+                         "解除黑名单后同一放宽替身应被报出（黑名单确有约束力）")
+
 
 class TestFakeDoubleFidelityTeeth(unittest.TestCase):
     """R4 有牙自检：候选 seam 集规模高于下限，防止规则退化后永远绿。"""
