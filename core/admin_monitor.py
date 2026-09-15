@@ -25,6 +25,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from .admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION
 from .alert_lifecycle import attach_trigger, find_resolvable
@@ -43,6 +44,12 @@ from core.pm_engine.verification import (
 # 非 blocked）由 resolve_env_blocked_reset_path 判定。
 DISPOSITION_AUTO_RESET_SIGNAL_TYPES = ENV_BLOCK_SIGNAL_TYPES + ("blocked_stuck",)
 
+# admin-signal-consolidation D2：悬置强制升级的信号族（blocked_stuck + ENV 阻塞族）。
+# 悬置类信号 = spec 保持 blocked 状态过久、自动处置通道已被冷却压制——此时
+# 强制升级真人（突破 latest_signal 冷却）。其他信号类型（stuck/flapping/
+# repeated_failures/daemon_errors…）维持既有 cooldown 节流，不得外溢。
+STALLED_ESCALATION_SIGNAL_TYPES = DISPOSITION_AUTO_RESET_SIGNAL_TYPES
+
 # 默认阈值（design D2）
 REPEAT_FAILURE_WINDOW_MINUTES = 30
 REPEAT_FAILURE_THRESHOLD = 3
@@ -57,6 +64,12 @@ DAEMON_ERROR_WINDOW_MINUTES = 10
 DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES = 5
 STUCK_GRACE_MINUTES = 10  # run 文件 mtime 距现在小于此值视为"有进度"，不算卡死
 RESTART_REQUEST_TIMEOUT_MINUTES = 10  # restart_request 超时未清除 → 重启失败 → 升级
+
+# admin-signal-consolidation D2：blocked 悬置强制升级阈值（模块常量不入 config，
+# 对齐本模块既有常量做法，规避"新增配置项必须带 Dashboard UI"约束）。
+# 悬置时长口径 = now − spec.updated（spec 保持同一 blocked 状态的时长），
+# 不是信号记录 first_seen（后者含 max(cooldown,15) 阈值延迟，会晚一小时余才触发）。
+STALLED_ESCALATION_MINUTES = 120
 
 # family_explosion 放行文本兜底：仅当处置文本表达「显式放行」语义时才写豁免位。
 # 2026-08-28 实证（fix-fix-fix-add-spec-context-menu）：旧的「包含 _family_waiver/
@@ -294,6 +307,10 @@ class AdminMonitor:
         # fix-admin-self-heal：孤儿处置与重启失败的兜底升级（非 per-spec 信号）
         self._recover_orphaned_dispositions()
         self._detect_restart_failure(now)
+
+        # admin-signal-consolidation D2：blocked 悬置 ≥2h 强制升级真人
+        # （突破节流、受未处理告警约束；不重新唤起 Administrator）
+        self._force_escalate_stalled(specs, now)
 
         # add-alert-auto-resolve D1：告警自动闭环扫描内联本巡检执行（不新增
         # 线程/定时器），复用当轮已读取的 STATE.md 状态表（design D3）
@@ -676,7 +693,7 @@ class AdminMonitor:
                 if last_ts else "无可用时间戳"
             )
             missing_ts = sum(1 for t in in_window if t is None)
-            signals.append(self._make_signal(
+            sig = self._make_signal(
                 "daemon_errors", None,
                 f"fenixd 日志同错误（指纹 {fp[:8]}）在 {DAEMON_ERROR_WINDOW_MINUTES} 分钟"
                 f"窗口内复现 {count} 次，建议检查根因并重启 daemon",
@@ -684,7 +701,12 @@ class AdminMonitor:
                 + (f"；{missing_ts} 条缺时间戳按窗口内计入" if missing_ts else "")
                 + f"）；升级条件：同指纹 ≥{DAEMON_ERROR_THRESHOLD} 次且最近两次间隔"
                 f" ≤{DAEMON_ERROR_RECURRENCE_MAX_GAP_MINUTES} 分钟",
-            ))
+            )
+            # admin-signal-consolidation D1：daemon 级信号（spec=None）的
+            # status_hash 回退判据 = 稳定错误指纹（_signal_status_hash 消费，
+            # 不落库——signal 字典仅作本次检测的传递载体）。
+            sig["_fp"] = fp
+            signals.append(sig)
         return signals
 
     @staticmethod
@@ -741,31 +763,85 @@ class AdminMonitor:
             entries.append(parsed)
         return entries
 
-    # ── 信号处理：记录 + 节流 + 唤起 ────────────────────────────
+    # ── 信号处理：记录（状态沉淀）+ 节流 + 唤起 ────────────────
+
+    def _signal_status_hash(self, signal: dict) -> str:
+        """计算信号的 status_hash（admin-signal-consolidation D1）。
+
+        spec 信号：sha1(spec + status + error + updated)——spec 状态/内容均未变
+        即判定「状态未变」→ 沉淀合并；spec 状态/内容变化 → 新 hash → 新建记录。
+        spec=None 的 daemon 级信号无 spec 状态可判，status_hash 回退为
+        daemon 级判据：sha1("daemon:" + signal_type + 错误指纹)。指纹取自
+        _detect_daemon_errors 在信号上携带的稳定 `_fp`（同一错误骨架复现
+        指纹稳定）；无 _fp 时回退归一化 evidence/description（仅换行/数字
+        /时间戳差异不破坏稳定性）。「显式声明」：daemon 级信号纳入沉淀，
+        不以时间桶切割——同 (None, signal_type, 指纹) 仅维护一条记录，
+        first_seen 跨多次复发保留首次语义、last_seen 每轮刷新。
+        """
+        spec = signal.get("spec")
+        if spec:
+            try:
+                entry = self.state_machine.read_one(spec) or {}
+            except Exception:  # noqa: BLE001 — 状态读取失败按无状态计算
+                entry = {}
+            raw = "{}\x00{}\x00{}\x00{}".format(
+                spec,
+                entry.get("status") or "",
+                entry.get("error") or "",
+                entry.get("updated") or entry.get("created") or "",
+            )
+        else:
+            fp = signal.get("_fp")
+            if not fp:
+                fp = _normalize_error_message(
+                    signal.get("evidence") or signal.get("description") or ""
+                )
+            raw = "daemon:{}\x00{}".format(
+                signal.get("signal_type") or "", fp
+            )
+        return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()
+
+    @staticmethod
+    def _signal_record(signal: dict, escalated: bool) -> dict:
+        """构造待落库的 signal 记录（_handle_signal 两处 append 共用的字段集）。"""
+        return {
+            "kind": SIGNAL,
+            "signal_type": signal.get("signal_type"),
+            "spec": signal.get("spec"),
+            "severity": signal.get("severity"),
+            "description": signal.get("description"),
+            "evidence": signal.get("evidence"),
+            "recommended_action": signal.get("recommended_action"),
+            "escalated": escalated,
+        }
 
     def _handle_signal(self, signal: dict):
-        """处理单条信号：记录审计 + 节流判定 + 唤起 Administrator。"""
+        """处理单条信号：状态沉淀记录 + 节流判定 + 唤起 Administrator。"""
         spec = signal.get("spec")
         signal_type = signal.get("signal_type")
+        status_hash = self._signal_status_hash(signal)
 
         # 节流：冷却窗口内同 spec 同类信号已唤起过 / 已有未处理升级告警 → 跳过唤起
         if self._throttled(spec, signal_type):
-            self.logger.info(
-                "admin_monitor",
-                f"Signal throttled: {signal_type} for '{spec or 'daemon'}' "
-                f"(cooldown {int(self.cooldown_minutes)}m)",
-                {"signal": signal},
-            )
-            self.store.append({
-                "kind": SIGNAL,
-                "signal_type": signal_type,
-                "spec": spec,
-                "severity": signal.get("severity"),
-                "description": signal.get("description"),
-                "evidence": signal.get("evidence"),
-                "recommended_action": signal.get("recommended_action"),
-                "escalated": False,
-            })
+            record, is_new = self.store.merge_signal(
+                self._signal_record(signal, escalated=False), status_hash)
+            if is_new:
+                # 新记录：状态变化后首次节流（冷却期内重触发），保留既有文案
+                self.logger.info(
+                    "admin_monitor",
+                    f"Signal throttled: {signal_type} for '{spec or 'daemon'}' "
+                    f"(cooldown {int(self.cooldown_minutes)}m)",
+                    {"signal": signal},
+                )
+            else:
+                # 状态未变：仅刷 last_seen，不新增记录、不重复刷 info 日志
+                # （admin-signal-consolidation D1：替代逐轮「Signal throttled」刷屏）
+                self.logger.debug(
+                    "admin_monitor",
+                    f"Signal consolidated: {signal_type} for '{spec or 'daemon'}' "
+                    f"(first_seen={record.get('created')}, "
+                    f"last_seen={record.get('last_seen')})",
+                )
             return
 
         # 人工冻结复查（fix-restart-dual-dispatch S4）：frozen spec 不产生自动
@@ -787,16 +863,8 @@ class AdminMonitor:
                 return
 
         # 节流通过：先记录 signal（作为本次唤起的冷却锚点），再唤起
-        signal_rec = self.store.append({
-            "kind": SIGNAL,
-            "signal_type": signal_type,
-            "spec": spec,
-            "severity": signal.get("severity"),
-            "description": signal.get("description"),
-            "evidence": signal.get("evidence"),
-            "recommended_action": signal.get("recommended_action"),
-            "escalated": True,
-        })
+        signal_rec, _ = self.store.merge_signal(
+            self._signal_record(signal, escalated=True), status_hash)
         self.logger.warning(
             "admin_monitor",
             f"Distress detected, invoking Administrator: {signal_type} for '{spec or 'daemon'}'",
@@ -811,6 +879,103 @@ class AdminMonitor:
         if self.store.unhandled_for(spec, signal_type) is not None:
             return True
         return False
+
+    # ── 悬置强制升级（admin-signal-consolidation D2） ──────────
+
+    def _force_escalate_stalled(self, specs: dict, now: float) -> list:
+        """blocked 悬置 ≥ STALLED_ESCALATION_MINUTES → 强制升级真人（突破节流）。
+
+        范围仅限悬置类信号（STALLED_ESCALATION_SIGNAL_TYPES = blocked_stuck +
+        ENV 阻塞族）：spec 保持 blocked 状态过久、自动处置通道已被冷却压制——
+        冷却意味着「同类信号不重复升级」，完全相同的 blocked 状态在数小时内无
+        任何实质处置推进（add-web-ui 悬置 9.5h 事故实证）。其他信号类型维持
+        既有 cooldown 节流，不得外溢。
+
+        触发动作 = 直接写一条 kind=escalation（severity critical，注明悬置
+        时长与信号首见时间），**不重新唤起 Administrator**（重唤起即重复烧钱，
+        正是 cooldown 要防的）。绕过 latest_signal 冷却，但 MUST 仍受
+        unhandled_for 约束：同 spec 已有任一悬置类信号类型的**未处理**人工
+        告警时不再重复写，否则每轮巡检新增一条 ESCALATION = 升级风暴。人工
+        把告警标 handled 后、状态仍悬置且 ≥2h → 可再次升级（每次人工处理后
+        至多一条）。
+
+        悬置时长口径 = now − spec.updated（spec 保持同一 blocked 状态的时长，
+        对齐 proposal「blocked 悬置 9.5h」），**不是**信号记录 first_seen
+        （后者含 max(cooldown,15) 阈值延迟）。冻结/用户指令暂停豁免与
+        _detect_blocked_stuck 同判据（有意等待态不反复催办）。
+
+        返回本次强制升级的 spec 列表（供审计；巡检不消费）。
+        """
+        escalated_specs = []
+        for name, entry in specs.items():
+            if entry.get("status") != "blocked":
+                continue
+            err = str(entry.get("error") or "")
+            if entry.get("frozen") or err.startswith("frozen:") or "用户指令" in err:
+                continue
+            updated_str = entry.get("updated") or entry.get("created") or ""
+            try:
+                updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            stalled_minutes = (now - updated.timestamp()) / 60
+            if stalled_minutes < STALLED_ESCALATION_MINUTES:
+                continue
+            # 未处理约束：同 spec 已有任一悬置类信号类型的未处理人工告警 → 跳过
+            if any(
+                self.store.unhandled_for(name, st) is not None
+                for st in STALLED_ESCALATION_SIGNAL_TYPES
+            ):
+                continue
+            first_seen = self._first_signal_time(name) or updated_str
+            self.store.append(attach_trigger({
+                "kind": ESCALATION,
+                "signal_type": "blocked_stuck",
+                "spec": name,
+                "severity": "critical",
+                "description": (
+                    f"'{name}' 已 blocked 悬置 {int(stalled_minutes)} 分钟"
+                    f"（≥{STALLED_ESCALATION_MINUTES} 分钟）未处置，自动通道已被"
+                    f"冷却压制，强制升级人工介入"
+                ),
+                "evidence": (
+                    f"updated={updated_str}；悬置时长 {int(stalled_minutes)} 分钟；"
+                    f"信号首见 {first_seen}；阈值 {STALLED_ESCALATION_MINUTES} 分钟"
+                ),
+                "action_taken": (
+                    "AdminMonitor 强制升级：blocked 悬置超阈值自动转人工"
+                    "（突破 cooldown 节流，受未处理告警约束）"
+                ),
+                "recommended_action": (
+                    "人工检查该 spec 的 blocked 原因：误置假 spec 则清理/重置；"
+                    "确需人工决策则处置后复位或手动更新状态"
+                ),
+            }))
+            self.logger.warning(
+                "admin_monitor",
+                f"Stalled block force-escalated to human: '{name}' "
+                f"(stalled {int(stalled_minutes)}m ≥ {STALLED_ESCALATION_MINUTES}m)",
+            )
+            escalated_specs.append(name)
+        return escalated_specs
+
+    def _first_signal_time(self, spec: str) -> Optional[str]:
+        """返回 spec 最早的悬置类信号记录 created（首见时间），无则 None。
+
+        状态沉淀后 created 保留首次语义（first_seen），多轮续报只刷 last_seen
+        ——取最早一条即「信号首见」；跨状态变化的多个记录中取最早的仍能反映
+        「该 spec 最早因悬置被监视器关注」的时间。
+        """
+        earliest = None
+        for rec in self.store.read_all():
+            if (rec.get("kind") != SIGNAL
+                    or rec.get("spec") != spec
+                    or rec.get("signal_type") not in STALLED_ESCALATION_SIGNAL_TYPES):
+                continue
+            created = rec.get("created")
+            if created and (earliest is None or created < earliest):
+                earliest = created
+        return earliest
 
     # ── 兜底升级（fix-admin-self-heal） ──────────────────────────
 

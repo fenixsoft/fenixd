@@ -37,6 +37,9 @@ class FakeSM:
     def read_all(self):
         return self._specs
 
+    def read_one(self, name):
+        return self._specs.get(name)
+
 
 class FakeRunner:
     def __init__(self):
@@ -306,6 +309,178 @@ class TestAdminStore:
         for i in range(20):
             store.append({"kind": SIGNAL, "description": f"#{i}"})
         assert len(store.read_all()) == 20
+
+    # ── admin-signal-consolidation D1：merge_signal 状态沉淀 ──────
+
+    def test_merge_signal_creates_record_with_hash_and_last_seen(self, tmp_path):
+        """首见：merge_signal 创建带 status_hash/last_seen 的记录（return is_new）。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        rec, is_new = store.merge_signal({
+            "kind": SIGNAL, "signal_type": "blocked_stuck", "spec": "s1",
+            "severity": "critical", "escalated": True,
+        }, "hash-1")
+        assert is_new is True
+        assert rec["status_hash"] == "hash-1"
+        assert rec["last_seen"] == rec["created"]  # 首见 last_seen == first_seen
+        assert rec["escalated"] is True
+        records = store.read_all()
+        assert len(records) == 1
+        assert records[0]["status_hash"] == "hash-1"
+
+    def test_merge_signal_unchanged_state_updates_last_seen_only(self, tmp_path):
+        """状态未变：同 (spec, signal_type, status_hash) 仅刷 last_seen，保留
+        id/created(=first_seen)/escalated，不新增记录。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        rec1, _ = store.merge_signal({
+            "kind": SIGNAL, "signal_type": "blocked_stuck", "spec": "s1",
+            "escalated": True,
+        }, "hash-1")
+        rec2, is_new = store.merge_signal({
+            "kind": SIGNAL, "signal_type": "blocked_stuck", "spec": "s1",
+            "escalated": True,
+        }, "hash-1")
+        assert is_new is False
+        assert rec2["id"] == rec1["id"]                    # 不改写 id
+        assert rec2["created"] == rec1["created"]          # created=first_seen 保留
+        assert rec2["escalated"] is True                   # escalated 保留/升级
+        assert rec2["last_seen"] >= rec1["last_seen"]      # last_seen 刷新
+        records = store.read_all()
+        assert len(records) == 1
+
+    def test_merge_signal_state_change_creates_new_record(self, tmp_path):
+        """状态变化（status_hash 不同）→ 新建记录。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        store.merge_signal({"kind": SIGNAL, "signal_type": "stuck", "spec": "s1"}, "hash-1")
+        rec2, is_new = store.merge_signal(
+            {"kind": SIGNAL, "signal_type": "stuck", "spec": "s1"}, "hash-2")
+        assert is_new is True
+        assert rec2["status_hash"] == "hash-2"
+        assert len(store.read_all()) == 2
+
+    def test_merge_signal_different_spec_or_type_creates_new(self, tmp_path):
+        """不同 spec 或 signal_type 不合并。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        store.merge_signal({"kind": SIGNAL, "signal_type": "stuck", "spec": "s1"}, "hash-1")
+        store.merge_signal({"kind": SIGNAL, "signal_type": "stuck", "spec": "s2"}, "hash-1")
+        store.merge_signal({"kind": SIGNAL, "signal_type": "flapping", "spec": "s1"}, "hash-1")
+        assert len(store.read_all()) == 3
+
+    def test_merge_signal_never_merges_escalation_or_disposition(self, tmp_path):
+        """kind=escalation / disposition 不参与合并（id 是闭环锚点）。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        esc = store.append({
+            "kind": ESCALATION, "signal_type": "stuck", "spec": "s1"})
+        disp = store.append({
+            "kind": DISPOSITION, "signal_type": "stuck", "spec": "s1"})
+        rec, is_new = store.merge_signal(
+            {"kind": SIGNAL, "signal_type": "stuck", "spec": "s1"}, "hash-1")
+        assert is_new is True
+        assert rec["id"] != esc["id"]
+        records = store.read_all()
+        assert len(records) == 3
+        # escalation/disposition 未被改写（无 status_hash/last_seen 追加）
+        esc_now = next(r for r in records if r["kind"] == ESCALATION)
+        disp_now = next(r for r in records if r["kind"] == DISPOSITION)
+        assert "status_hash" not in esc_now and "last_seen" not in esc_now
+        assert "status_hash" not in disp_now and "last_seen" not in disp_now
+
+    def test_merge_signal_never_merges_stored_signal_types(self, tmp_path):
+        """「写入即待唤起」记录（pm_engine 直接 append、按 id 摄取 mark_escalated）
+        不参与合并：无 status_hash 天然不命中，即使 (spec, signal_type) 相同。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        stored = store.append({
+            "kind": SIGNAL, "signal_type": "family_explosion", "spec": "s1",
+            "escalated": False,
+        })
+        rec, is_new = store.merge_signal(
+            {"kind": SIGNAL, "signal_type": "family_explosion", "spec": "s1"},
+            "hash-1")
+        assert is_new is True
+        assert rec["id"] != stored["id"]
+        records = store.read_all()
+        assert len(records) == 2
+        stored_now = next(r for r in records if r["id"] == stored["id"])
+        assert stored_now["escalated"] is False           # 未被合并改写
+        assert "last_seen" not in stored_now
+
+    def test_merge_signal_escalated_monotonic_upgrade(self, tmp_path):
+        """escalated 只允许单调升级（False→True，绝不 True→False）。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        # 节流沉淀创建 escalated=False 记录 → 唤起分支合并升级为 True
+        rec1, _ = store.merge_signal({
+            "kind": SIGNAL, "signal_type": "stuck", "spec": "s1", "escalated": False}, "h")
+        rec2, is_new = store.merge_signal({
+            "kind": SIGNAL, "signal_type": "stuck", "spec": "s1", "escalated": True}, "h")
+        assert is_new is False
+        assert rec2["escalated"] is True
+        # 已 escalated=True 的记录不被节流分支（incoming False）回退
+        rec3, is_new = store.merge_signal({
+            "kind": SIGNAL, "signal_type": "stuck", "spec": "s1", "escalated": False}, "h")
+        assert is_new is False
+        assert rec3["escalated"] is True
+        assert len(store.read_all()) == 1
+
+    def test_merge_signal_spec_none_daemon_consolidates(self, tmp_path):
+        """spec=None daemon 级信号按声明口径沉淀：同 (None, signal_type, hash)
+        仅一条记录（spec.md R1「回退判据或显式排除二者择一」——实现采用回退判据）。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        rec1, _ = store.merge_signal({
+            "kind": SIGNAL, "signal_type": "daemon_errors", "spec": None}, "daemon-hash")
+        rec2, is_new = store.merge_signal({
+            "kind": SIGNAL, "signal_type": "daemon_errors", "spec": None}, "daemon-hash")
+        assert is_new is False
+        assert rec2["id"] == rec1["id"]
+        assert len(store.read_all()) == 1
+
+    # ── admin-signal-consolidation：latest_signal 窗口锚点 max(created,last_seen) ──
+
+    def test_latest_signal_anchor_covers_last_seen(self, tmp_path):
+        """沉淀后 created 停在首次、last_seen 持续刷新：跨越 cooldown 窗口仍命中节流。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        # 首见 60 分钟前（以显式 created 模拟历史记录），随后同状态合并刷 last_seen
+        store.append({
+            "kind": SIGNAL, "signal_type": "blocked_stuck", "spec": "s1",
+            "created": iso_ago(60), "last_seen": iso_ago(60),
+            "status_hash": "h",
+        })
+        rec, is_new = store.merge_signal({
+            "kind": SIGNAL, "signal_type": "blocked_stuck", "spec": "s1"}, "h")
+        assert is_new is False
+        hit = store.latest_signal("s1", "blocked_stuck", 15)
+        assert hit is not None                  # created 60m 前但 last_seen 在窗口内
+        assert hit["id"] == rec["id"]
+
+    def test_latest_signal_no_last_seen_uses_created(self, tmp_path):
+        """无 last_seen 的历史记录仍按 created 判定（本特性前写入 / escalation 等）。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        store.append({
+            "kind": SIGNAL, "signal_type": "stuck", "spec": "s1",
+            "created": iso_ago(60)})            # 无 last_seen
+        assert store.latest_signal("s1", "stuck", 15) is None
+        assert store.latest_signal("s1", "stuck", 61) is not None
+
+    @pytest.mark.parametrize(
+        "signal_type,spec,window",
+        [
+            pytest.param("dispatch_stalled", "s1", 60,
+                         id="dispatch_stalled"),
+            pytest.param("instant_fail_storm", "s1", 15,
+                         id="instant_fail_storm"),
+            pytest.param("transient_break_storm", "global-transient", 60,
+                         id="transient_break_storm"),
+            pytest.param("verify_fail_escalation", "s1", 60,
+                         id="verify-alert"),
+        ],
+    )
+    def test_latest_signal_external_call_sites_semantics(
+            self, tmp_path, signal_type, spec, window):
+        """既有外部调用点（dispatch_stalled / instant_fail_storm /
+        transient_break_storm / verify 告警）语义不变：escalation 记录无
+        last_seen 字段，窗口判定维持按 created——窗口内命中、窗口外不命中。"""
+        store = AdminStore(tmp_path, FakeLogger())
+        store.append({"kind": ESCALATION, "signal_type": signal_type, "spec": spec})
+        assert store.latest_signal(spec, signal_type, window) is not None
+        assert store.latest_signal(spec, signal_type, 0) is None
 
 
 # ── 4.1 admin_monitor 检测规则 ──────────────────────────
@@ -609,6 +784,163 @@ class TestAdminMonitorThrottle:
         mon.run_once()
         disp = next(r for r in mon.store.read_all() if r["kind"] == DISPOSITION)
         assert disp["summary"] == "诊断结论：测试困境；处置时间线：测试处置；结果：已解决。"
+
+
+# ── admin-signal-consolidation：状态沉淀 + 悬置 ≥2h 强制升级 ──
+
+class TestSignalConsolidation:
+    """同 (spec, signal_type) 同 status_hash 状态沉淀；blocked 悬置 ≥2h 强制升级。
+
+    对应 spec/changes/evo-admin-signal-consolidation tasks 1.3 / 2.1 / 2.2 / 2.3。
+    """
+
+    def _signal_records(self, mon):
+        return [r for r in mon.store.read_all() if r.get("kind") == SIGNAL]
+
+    def _escalation_records(self, mon):
+        return [r for r in mon.store.read_all() if r.get("kind") == ESCALATION]
+
+    def test_unchanged_state_single_record_no_reinvoke(self, tmp_path):
+        """状态未变且持续多轮巡检：不新增记录、不重复唤起 Administrator
+        （重叠验收场景「状态未变且持续多轮巡检、跨越 cooldown 窗口后不重复唤起」）。
+        """
+        runner = FakeRunner()
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": iso_ago(200)},
+        }, runner=runner, config={"admin": {"escalation_cooldown_minutes": 15}})
+        mon.run_once()
+        last_seen_1 = self._signal_records(mon)[0]["last_seen"]
+        mon.run_once()
+        mon.run_once()
+        assert len(runner.calls) == 1                       # 只唤起一次
+        records = self._signal_records(mon)
+        assert len(records) == 1                            # 只沉淀一条记录
+        assert records[0]["status_hash"]
+        assert records[0]["last_seen"] >= last_seen_1       # 同状态续报仅刷 last_seen
+
+    def test_state_change_creates_new_record(self, tmp_path):
+        """spec 状态（error 字段并入 status_hash）变化 → 新建记录。"""
+        runner = FakeRunner()
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": iso_ago(200)},
+        }, runner=runner, config={"admin": {"escalation_cooldown_minutes": 15}})
+        mon.run_once()
+        # error 变化改变 status_hash（stuck 检测不依赖 error 字段，仍会触发）
+        mon.state_machine._specs["spec-a"]["error"] = "changed root cause"
+        mon.run_once()
+        assert len(runner.calls) == 1                       # 冷却内节流不重唤起
+        sig_hashes = {r["status_hash"] for r in self._signal_records(mon)}
+        assert len(sig_hashes) == 2                         # 两个不同状态各一条
+        assert len(self._signal_records(mon)) == 2
+
+    def test_daemon_spec_none_signal_consolidates_by_fingerprint(self, tmp_path):
+        """spec=None daemon 级信号（daemon_errors）按声明口径沉淀：同指纹仅一条
+        记录、不重复唤起；不同指纹 → 不同 status_hash → 新记录。"""
+        runner = FakeRunner()
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": utcnow_iso()},
+        }, runner=runner, config={"admin": {"escalation_cooldown_minutes": 15}})
+        log_dir = proot / ".fenix" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "fenixd.log"
+
+        def esp(msg):
+            return json.dumps({"level": "ERROR", "component": "fenixd",
+                               "message": msg}) + "\n"
+
+        log_file.write_text(esp("boom") + esp("boom"), encoding="utf-8")
+        mon.run_once()
+        log_file.write_text(esp("boom") + esp("boom"), encoding="utf-8")
+        mon.run_once()
+        records = self._signal_records(mon)
+        assert len(records) == 1                            # 同指纹合并为一条
+        assert records[0]["spec"] is None
+        assert len(runner.calls) == 1                       # 不重复唤起
+
+        # 不同错误指纹 → 新记录（但冷却内不重唤起）
+        log_file.write_text(esp("different boom") + esp("different boom"),
+                            encoding="utf-8")
+        mon.run_once()
+        assert len(self._signal_records(mon)) == 2
+        assert len(runner.calls) == 1
+
+    def test_9_5h_stalled_replay_two_records_single_invoke(self, tmp_path):
+        """add-web-ui 事故重放：blocked 悬置 9.5h 重放 → 信号记录 ≤2 条
+        （初次 + 强制升级）、不重复唤起 Administrator、不产生升级风暴。"""
+        runner = FakeRunner()
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "blocked", "updated": iso_ago(9.5 * 60)},
+            "spec-b": {"status": "implementing", "updated": utcnow_iso()},
+        }, runner=runner, config={"admin": {"escalation_cooldown_minutes": 15}})
+        for _ in range(5):                                  # 每分钟巡检 × 5 轮重放
+            mon.run_once()
+        assert len(runner.calls) == 1                       # Administration 只唤起一次
+        assert len(self._signal_records(mon)) == 1          # 信号沉淀为一条（last_seen 续刷）
+        escalations = self._escalation_records(mon)
+        assert len(escalations) == 1                        # 强制升级恰一条（受未处理约束）
+        esc = escalations[0]
+        assert esc["severity"] == "critical"
+        assert "570" in str(esc.get("evidence"))            # 注明悬置时长（分钟）
+        assert esc["signal_type"] == "blocked_stuck"
+        # 升级记录注明悬置时长与首次触发时间（evidence 含 updated 与信号首见）
+        assert "updated=" in str(esc.get("evidence"))
+        assert "信号首见" in str(esc.get("evidence"))
+
+    def test_blocked_under_2h_no_forced_escalation(self, tmp_path):
+        """blocked 悬置 <2h：不触发强制升级（仅正常唤起一次）。"""
+        runner = FakeRunner()
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "blocked", "updated": iso_ago(90)},
+            "spec-b": {"status": "implementing", "updated": utcnow_iso()},
+        }, runner=runner, config={"admin": {"escalation_cooldown_minutes": 15}})
+        mon.run_once()
+        assert len(runner.calls) == 1
+        assert self._escalation_records(mon) == []
+
+    def test_unhandled_escalation_suppresses_forced(self, tmp_path):
+        """未处理升级存在时不新增（防升级风暴）。"""
+        runner = FakeRunner()
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "blocked", "updated": iso_ago(600)},
+            "spec-b": {"status": "implementing", "updated": utcnow_iso()},
+        }, runner=runner, config={"admin": {"escalation_cooldown_minutes": 15}})
+        mon.store.append({"kind": ESCALATION, "signal_type": "blocked_stuck",
+                          "spec": "spec-a", "severity": "critical"})
+        for _ in range(3):
+            mon.run_once()
+        assert len(runner.calls) == 0                       # 未处理升级压制唤起
+        assert len(self._escalation_records(mon)) == 1      # 不新增强制升级
+
+    def test_handled_then_reescalate_when_still_stalled(self, tmp_path):
+        """人工 handled 后状态仍悬置且 ≥2h → 可再次升级（每次人工处理后至多一条）。"""
+        runner = FakeRunner()
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "blocked", "updated": iso_ago(600)},
+            "spec-b": {"status": "implementing", "updated": utcnow_iso()},
+        }, runner=runner, config={"admin": {"escalation_cooldown_minutes": 15}})
+        mon.run_once()
+        assert len(self._escalation_records(mon)) == 1      # 首轮强制升级
+        mon.run_once()                                      # 未处理 → 不新增
+        assert len(self._escalation_records(mon)) == 1
+        # 人工处理首条升级
+        esc_id = self._escalation_records(mon)[0]["id"]
+        assert mon.store.mark_handled(esc_id) is True
+        mon.run_once()                                      # 仍悬置 ≥2h → 再次升级
+        assert len(self._escalation_records(mon)) == 2
+        assert len(runner.calls) == 1                       # 始终不重复唤起 Administrator
+
+    def test_non_stalled_signal_no_forced_escalation(self, tmp_path):
+        """非悬置类信号（stuck）悬置 >2h 不触发强制升级（范围不外溢）。"""
+        runner = FakeRunner()
+        proot, mon = make_monitor(tmp_path, {
+            "spec-a": {"status": "implementing", "updated": iso_ago(9 * 60)},
+        }, runner=runner, config={"admin": {"escalation_cooldown_minutes": 15}})
+        mon.run_once()
+        mon.run_once()
+        # stuck 走正常唤起 + 冷却沉淀路径，绝无强制升级写入口
+        assert len(runner.calls) == 1
+        assert self._escalation_records(mon) == []
+        assert len(self._signal_records(mon)) == 1
 
 
 class TestEscalationClosedOnFinalDisposition:
