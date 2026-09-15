@@ -3002,8 +3002,16 @@ class SummaryIndex:
 
 # ── SPEC 生命周期时间轴 ──────────────────────────────────────────
 
-_LIFECYCLE_ORDER = {"drafted": 0, "ready": 1, "implementing": 2, "bug-found": 2.5,
-                    "implemented": 3, "testing": 4, "verified": 5, "done": 6, "pushed": 7}
+# 生命周期线性序（状态机文档 drafted → [reviewing →] ready → … 一致）。
+# 未登记的键走 .get(s, 9) 哨兵 9（高于 pushed=7）——add-spec-review-gate 新增
+# reviewing 态时漏登记，reviewing→ready 被算成 1<9 的假回退并落「状态回退」
+# 兜底文案（2026-09-15 evo-admin-dispatch-failure-escalation 实测：草稿→评审中
+# →就绪的正常推进被挂回退徽标）。reviewing 为评审门，位于 drafted 与 ready 之间。
+# blocked 有意不登记（哨兵）：进入 blocked 为前向（如 implementing→blocked），
+# 离开 blocked（blocked→ready / blocked→testing / blocked→reviewing）判回退。
+_LIFECYCLE_ORDER = {"drafted": 0, "reviewing": 0.5, "ready": 1, "implementing": 2,
+                    "bug-found": 2.5, "implemented": 3, "testing": 4, "verified": 5,
+                    "done": 6, "pushed": 7}
 
 
 def _backtrack_reason(frm: str, to: str) -> str:
