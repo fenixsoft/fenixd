@@ -10,6 +10,8 @@
 - 无数字任务 SPEC → 放行；
 - 能力探测：init.tools 含 TaskCreate 且 done_ids 不覆盖 → 拦截；
   init.tools 不含 → 放行且写 impl-task-crosscheck-skipped 审计事件；init 不可得 → 放行。
+- 新鲜度（fix-artifact-freshness-resume）：新建 worktree 首轮 mtime 早于本轮 → 拦截；
+  复用 worktree（is_resumed_worktree）→ 跳过 mtime 硬拦、交内容判据（2026-09-15/16 修复轮秒退事故回归）。
 """
 
 import json
@@ -68,12 +70,14 @@ class TestImplResultGate(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
-    def _gate(self, tasks_text=ALL_DONE_TASKS, payload=None, spec=None):
+    def _gate(self, tasks_text=ALL_DONE_TASKS, payload=None, spec=None,
+              *, run_started_at=None, is_resumed_worktree=False):
         wt = _mk_worktree(self.proot, spec or self.spec, tasks_text=tasks_text)
         if payload is not None:
             _write_result(wt, payload)
         return self.runner._check_impl_result_artifact(
-            spec or self.spec, None, wt)
+            spec or self.spec, run_started_at, wt,
+            is_resumed_worktree=is_resumed_worktree)
 
     # ── 基础校验 ─────────────────────────────────────────────
 
@@ -83,6 +87,38 @@ class TestImplResultGate(unittest.TestCase):
         assert err is not None
         assert "结果文件缺失" in err
         assert ".fenix-run-result.json" in err
+
+    # ── 新鲜度：新建 worktree 首轮硬拦 vs 复用 worktree 放行 ────
+    # 2026-09-15/16 事故：已完工 worktree 复用做修复轮，agent 判定「无需动作」
+    # 不重写结果文件 → mtime 停在上一轮 → 旧实现对所有轮硬拦 → 秒退死循环。
+
+    def _stale_gate(self, *, is_resumed_worktree):
+        import os
+        import time as _time
+        from test_agent_runner import make_runner  # noqa: F401
+        wt = _mk_worktree(self.proot, self.spec, tasks_text=ALL_DONE_TASKS)
+        _write_result(wt, {"status": "success", "spec": self.spec,
+                           "completed_tasks": ["1.1", "1.2"]})
+        old = _time.time() - 3600  # 结果文件 mtime 远早于本轮启动
+        os.utime(wt / ".fenix-run-result.json", (old, old))
+        return self.runner._check_impl_result_artifact(
+            self.spec, _time.time(), wt,
+            is_resumed_worktree=is_resumed_worktree)
+
+    def test_fresh_worktree_stale_artifact_blocked(self):
+        """新建 worktree 首轮 + 陈旧结果文件 → 仍拦截（防旧文件冒充本轮）。"""
+        err = self._stale_gate(is_resumed_worktree=False)
+        assert err is not None
+        assert "早于本轮启动" in err
+
+    def test_resumed_worktree_stale_artifact_passes(self):
+        """复用 worktree（resume/修复轮）+ 陈旧结果文件 → 放行（交内容判据）。
+
+        回归：worktree 复用做修复轮时结果文件本就早于本轮；跳过 mtime 硬拦，
+        内容判据（success + completed_tasks 与 tasks.md 全勾一致）自然通过。
+        """
+        err = self._stale_gate(is_resumed_worktree=True)
+        assert err is None
 
     def test_empty_result_file_blocked(self):
         err = self._gate(payload="")

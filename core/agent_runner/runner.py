@@ -2802,7 +2802,7 @@ class AgentRunner:
                     # 的「裁决重试一次」预算）。
                     gate_err = self._check_agent_result_artifact(
                         spec_name, agent_type, run_started_at=attempt_started_at,
-                        wt_path=wt_path)
+                        wt_path=wt_path, is_resumed_worktree=reuse_worktree)
                     if gate_err:
                         raise AgentArtifactGateError(gate_err)
                     success = True
@@ -4249,12 +4249,25 @@ class AgentRunner:
     # ── planner 产物硬门（add-judge-artifact-gate D1）────────────────────
 
     def _check_artifact_json_file(self, path: Path, agent_type: str,
-                                  run_started_at: float | None) -> tuple:
+                                  run_started_at: float | None,
+                                  is_resumed_worktree: bool = False) -> tuple:
         """单产物文件基础校验（存在/非空/mtime 新鲜/可解析 JSON）。
 
         多个产物文件共用同一套基础校验（add-planready-artifact-gate：planner-plan
         双产物叠加校验）。新鲜度守卫（fix-verdict-read-failclosed D2）与既有
         test_scenarios.json 同规则。
+
+        is_resumed_worktree（2026-09-16 事故修正）：本轮 attempt 复用的 worktree
+        是否承载**上一轮遗留产物**。复用 worktree 做续做/修复轮时，worktree 内本
+        就存在前轮的 ``.fenix-run-result.json``（mtime 早于本轮启动），这是设计
+        预期而非异常——此时**跳过 mtime 新鲜度硬拦**，正确性交内容判据保证
+        （success 需 completed_tasks 与 tasks.md 全勾一致、partial 需申报一致）。
+        仅「新建 worktree 的首轮」做 mtime 硬拦（防上一轮/其它 spec 残留冒充本轮）。
+
+        背景：旧实现对**所有**轮做 mtime 硬拦，导致「已完工 worktree 复用做修复轮」
+        秒退死循环——agent 判定「无需动作」不重写结果文件，mtime 停在上一轮，被
+        误判陈旧（2026-09-15 refactor-dashboard-data-module / 09-16
+        refactor-agent-runner-module 两起实测）。
 
         Returns:
             (err, data)：err 非 None = 失败归因文案（含具体文件路径与原因类别，
@@ -4265,7 +4278,7 @@ class AgentRunner:
                 return (f"exit 0 但结果文件缺失（{agent_type} 产物硬门）: {path}", None)
             if path.stat().st_size == 0:
                 return (f"exit 0 但结果文件为空（{agent_type} 产物硬门）: {path}", None)
-            if run_started_at is not None:
+            if run_started_at is not None and not is_resumed_worktree:
                 mtime = path.stat().st_mtime
                 if mtime < run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS:
                     return (
@@ -4284,7 +4297,8 @@ class AgentRunner:
     def _check_agent_result_artifact(self, spec_name: str,
                                      agent_type: str,
                                      run_started_at: float | None = None,
-                                     wt_path: Path | None = None) -> str | None:
+                                     wt_path: Path | None = None,
+                                     is_resumed_worktree: bool = False) -> str | None:
         """planner/implementer 产物存在性硬门（fail-closed）。
 
         成功判定从「进程 exit 0」升级为「exit 0 **且**结果文件落盘且可解析」：
@@ -4336,6 +4350,9 @@ class AgentRunner:
                 （兼容无 attempt 上下文的单测直调）。
             wt_path: 本轮 run 的 worktree 根路径（implementer / fast-track 结果
                 文件落点）；planner 分支不使用该参数。
+            is_resumed_worktree: 本轮复用的 worktree 是否承载上一轮遗留产物
+                （resume/续做/修复轮）；True 时 implementer/fast-track 分支对结果
+                文件跳过 mtime 新鲜度硬拦（正确性交内容判据）。
 
         Returns:
             None = 通过；否则返回失败归因文案（含「结果文件缺失」语义，
@@ -4343,7 +4360,8 @@ class AgentRunner:
         """
         if agent_type in ("implementer", "fast-track"):
             return self._check_impl_result_artifact(
-                spec_name, run_started_at, wt_path)
+                spec_name, run_started_at, wt_path,
+                is_resumed_worktree=is_resumed_worktree)
         if agent_type == "spec-review":
             # 评审结果硬门（2026-09-15 事故修复）：add-spec-review-gate D10 声称
             # 「复用 _check_agent_result_artifact」，但本函数此前在下一行的
@@ -4425,7 +4443,8 @@ class AgentRunner:
 
     def _check_impl_result_artifact(self, spec_name: str,
                                     run_started_at: float | None,
-                                    wt_path: Path | None) -> str | None:
+                                    wt_path: Path | None,
+                                    is_resumed_worktree: bool = False) -> str | None:
         """implementer / fast-track 结果产物硬门（fix-impl-tasks-completion-gate P0）。
 
         成功判定从「进程 exit 0」升级为「exit 0 **且**本轮 run 的 worktree 内
@@ -4456,6 +4475,8 @@ class AgentRunner:
             run_started_at: 本轮 attempt 启动 epoch 秒（新鲜度校验，语义同
                 planner 分支）；None 跳过。
             wt_path: 本轮 run 的 worktree 根路径（结果文件落点）。
+            is_resumed_worktree: 复用 worktree（承载上一轮遗留产物）时为 True →
+                结果文件跳过 mtime 新鲜度硬拦（见 ``_check_artifact_json_file``）。
 
         Returns:
             None = 通过；否则返回失败归因文案（含具体文件路径与失败类别，供
@@ -4469,7 +4490,8 @@ class AgentRunner:
             )
         result_path = wt_path / ".fenix-run-result.json"
         err, data = self._check_artifact_json_file(
-            result_path, agent_type, run_started_at)
+            result_path, agent_type, run_started_at,
+            is_resumed_worktree=is_resumed_worktree)
         if err is not None:
             return err
         if not isinstance(data, dict):
