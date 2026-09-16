@@ -593,3 +593,164 @@ def run_activity(project_root, spec_name, *, now: float | None = None, files=Non
     status = classify_run(_read_run_lines(run_file, max_lines=3))
     active = status in ("running", "empty") and age <= _RUN_STALE_SECONDS
     return {"active": active, "last_event_seconds_ago": age}
+
+
+# ── runs 保留周期清理（fix-dashboard-read-path-performance D4） ────────────
+# daemon 周期任务挂载点（fenixd.py 主循环，300s 节拍对齐 auto_archive_check）：
+# 终态 run 移入归档 + 按 runs.keep 上限清理归档。
+# 上限语义（5.1a）：runs.keep 约束的是**归档目录条目数**；活跃 runs 目录的
+# 有界性由「终态即移出」保证。清理 MUST 记录日志（删除数量 + 文件名可追溯）、
+# MUST NOT 静默大批量删除——缺省上限 50、归档实测 343 条目时首次执行会一次
+# 删除约 293 个文件，属需可观测的破坏性动作，故每周期删除量设批次上限。
+# 被删除的归档 run 会影响 spec_summary 耗时回退 / spec 时间轴 / 运行历史
+# （data.py 原 2824/3416/3686、engine.py:621 的 done 时刻耗时快照）；终态 spec
+# 有 STATE 固化 total_duration 不受影响，非终态 spec 的历史视图会缩水——
+# proposal Non-Goals 只保证响应契约不变、内容会变，此取舍经 5.1b 确认接受。
+_RETENTION_MOVE_PER_CYCLE_MAX = 100  # 每周期最多移入归档数（单轮 I/O 尖峰抑制）
+_RETENTION_DELETE_PER_CYCLE_MAX = 100  # 每周期最多删除数（5.1a：分批清理）
+_RETENTION_KEEP_DEFAULT = 50  # 缺省上限（与 Dashboard 设置页 runs.keep 缺省同源）
+# 可归档状态：终态（result/error/interrupted/cancelled/superseded）+ stale 断尾
+# 尸体（末行非终态且 mtime 停更超 _RUN_STALE_SECONDS——进程被杀无终态补写，
+# 不可复活，留活跃目录只会让有界性落空）。
+_RETENTION_ARCHIVABLE_STATUSES = frozenset(_RUN_TERMINAL_STATUS_MAP.values()) | {"stale"}
+
+
+def _resolve_runs_keep(proot: Path, config: dict | None = None) -> int:
+    """解析 runs.keep 有效值（缺省 50；缺失/非法回退缺省，与设置页回显同源）。"""
+    from core.config import ConfigLoader
+
+    if config is None:
+        config = ConfigLoader.resolve_config(proot)
+    raw = ConfigLoader.get(config, "runs.keep", _RETENTION_KEEP_DEFAULT)
+    try:
+        keep = int(raw)
+    except (TypeError, ValueError):
+        keep = _RETENTION_KEEP_DEFAULT
+    if keep < 1:
+        keep = _RETENTION_KEEP_DEFAULT
+    return keep
+
+
+def _is_run_archivable(p: Path) -> bool:
+    """判定 run 产物是否可归档（终态或 stale 断尾；running/empty 且停更未超时 → False）。
+
+    状态判定复用 get_runs 的 memo（(path, mtime_ns, size)，含 stale 动态判定），
+    周期清理不重复读文件。
+    """
+    try:
+        stat = p.stat()
+    except OSError:
+        return False
+    status = _run_meta_cached(p, stat, time.time())["status"]
+    return status in _RETENTION_ARCHIVABLE_STATUSES
+
+
+def _retention_log(logger, level: str, msg: str) -> None:
+    """统一清理日志出口：logger 实例优先（fenixd Logger），缺省打印 stderr。"""
+    if logger is not None:
+        try:
+            getattr(logger, level)("fenixd", msg)
+        except Exception:
+            pass
+    else:
+        import sys
+
+        print(f"[fenixd] {msg}", file=sys.stderr)
+
+
+def runs_retention_check(project_root, config: dict | None = None, logger=None) -> dict:
+    """daemon 周期 runs 保留清理（fix-dashboard-read-path-performance D4）。
+
+    两步（各自独立失败互不阻断，异常记日志不抛）：
+    1. 终态（done/error/interrupted/cancelled/superseded，及 stale 断尾）run
+       从活跃 runs/ 移入 archive/——活跃目录有界性由「终态即移出」保证。
+    2. 归档目录按 ``runs.keep`` 上限清理：超过上限时按 mtime 升序（最旧优先）
+       删除直至 ≤ 上限；逐条记日志（文件名可追溯）、每周期删除量有批次上限
+       （_RETENTION_DELETE_PER_CYCLE_MAX），不静默大批量删除（5.1a）。
+
+    Args:
+        project_root: 项目根目录
+        config: 有效配置 dict（ConfigLoader.resolve_config 产物）；缺省 None
+            时内部解析一次（独立调用/测试友好）。
+        logger: Logger 实例（可选；缺省经 logging 模块 stderr 记录）
+
+    Returns:
+        {"moved": int, "deleted": int, "keep": int, "archive_total": int,
+         "deleted_names": [str, ...], "error": str | None}
+    """
+    proot = Path(project_root)
+    keep = _resolve_runs_keep(proot, config)
+    runs_dir = proot / ".fenix" / "runs"
+    if not runs_dir.is_dir():
+        return {
+            "moved": 0,
+            "deleted": 0,
+            "keep": keep,
+            "archive_total": 0,
+            "deleted_names": [],
+            "error": None,
+        }
+
+    # 1. 终态 run 移入归档
+    moved = 0
+    try:
+        for p in runs_dir.glob("*.jsonl"):
+            if moved >= _RETENTION_MOVE_PER_CYCLE_MAX:
+                break
+            if not _is_run_archivable(p):
+                continue
+            archive_dir = runs_dir / "archive"
+            try:
+                archive_dir.mkdir(parents=True, exist_ok=True)
+                dest = archive_dir / p.name
+                if dest.exists():
+                    p.unlink()  # 同 run_id 归档副本已存在：删顶层副本（内容同源）
+                else:
+                    p.replace(dest)
+                moved += 1
+                _retention_log(logger, "info", f"runs 保留: 终态 run 移入归档 {p.name}")
+            except OSError as e:
+                _retention_log(logger, "warning", f"runs 保留: 移入归档失败 {p.name}: {e}")
+    except OSError as e:
+        _retention_log(logger, "warning", f"runs 保留: 活跃目录扫描失败: {e}")
+
+    # 2. 归档目录按 runs.keep 上限清理
+    deleted = 0
+    deleted_names: list = []
+    archive_total = 0
+    archive_dir = runs_dir / "archive"
+    try:
+        if archive_dir.is_dir():
+            archive_files = sorted(
+                (p for p in archive_dir.glob("*.jsonl")),
+                key=lambda p: p.stat().st_mtime,
+            )
+            archive_total = len(archive_files)
+            excess = archive_total - keep
+            if excess > 0:
+                victims = archive_files[: min(excess, _RETENTION_DELETE_PER_CYCLE_MAX)]
+                for victim in victims:
+                    try:
+                        victim.unlink()
+                        deleted += 1
+                        deleted_names.append(victim.name)
+                        _retention_log(
+                            logger,
+                            "warning",
+                            f"runs 保留: 删除归档产物 {victim.name}（runs.keep={keep}）",
+                        )
+                    except OSError as e:
+                        _retention_log(
+                            logger, "warning", f"runs 保留: 删除失败 {victim.name}: {e}"
+                        )
+    except OSError as e:
+        _retention_log(logger, "warning", f"runs 保留: 归档目录扫描失败: {e}")
+
+    return {
+        "moved": moved,
+        "deleted": deleted,
+        "keep": keep,
+        "archive_total": archive_total,
+        "deleted_names": deleted_names,
+        "error": None,
+    }

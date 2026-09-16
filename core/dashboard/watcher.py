@@ -29,7 +29,9 @@ daemon 侧 event_bus.py 的 checksum 轮询一致。
   再与上次广播基线 diff，specs 只列新增/变更/删除。这覆盖目录级签名对
   write_text 纯净内容改写不敏感的场景（Linux 上 write_text 不更新父目录 mtime，
   但 pm_engine/verify 报告写入与 STATE.md 原子替换会更新目录签名）。
-- run/logs 属小集合（runs 保留 ≤50、日志数只 1~3 个），逐文件 stat 成本恒定；
+- run/logs 属小集合（活跃 runs 有界性由「终态即移出」保证——daemon 周期保留
+  清理移入归档、归档受 runs.keep 上限约束缺省 50；日志数只 1~3 个），逐文件
+  stat 成本恒定；
   spec 树才是 10000 规模下 stat 的大头。
 """
 
@@ -228,7 +230,9 @@ class FileWatcher:
     def _scan_runs(self, proot: Path) -> set:
         """run 产物：沿用既有 size 基线机制，返回应触发 _handle_run_change 的 run_id。
 
-        run 文件按保留上限有界（≤50），逐文件 stat 成本恒定。
+        活跃 runs 目录有界性由「终态即移出」保证（daemon 周期保留清理把终态
+        移入归档），归档目录受 runs.keep 上限约束（缺省 50）——逐文件 stat
+        成本恒定。
         """
         runs_dir = proot / ".fenix" / "runs"
         if not runs_dir.is_dir():

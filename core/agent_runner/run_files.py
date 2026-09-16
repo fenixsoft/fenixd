@@ -4,9 +4,11 @@
 archive_spec_runs。门面 runner.py 转导这些名字，`from core.agent_runner
 import run_spec_part` 等外部 import 路径保持可用。
 
-产物保留语义（remove-auto-run-cleanup）：顶层产物只增不减，不设任何
-按数量/时间的自动清理；文件从顶层移入 archive/ 的唯一入口是所属 SPEC
-被归档（archive_spec_runs，由 bin/fenix_archive.py 调用）。
+产物保留语义（fix-dashboard-read-path-performance D4）：活跃 runs 目录的
+有界性由「终态即移出」保证——daemon 周期保留清理（core/dashboard/data/runs.py
+runs_retention_check）把终态 run 移入 archive/，归档目录再按 runs.keep 上限
+清理。file 从顶层移入 archive/ 的另一入口是所属 SPEC 被归档
+（archive_spec_runs，由 bin/fenix_archive.py 与 SPEC 归档路径调用）。
 """
 
 from pathlib import Path
