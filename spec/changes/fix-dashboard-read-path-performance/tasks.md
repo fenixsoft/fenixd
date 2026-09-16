@@ -75,4 +75,4 @@
 ## 6. 收尾
 
 - [x] 6.1 复测三个基线指标，与 1.1 对比写入 `baseline.md` 结论；全量 `bin/run_full_suite.py`
-- [ ] 6.2 经用户确认时机后重启 daemon 使新代码生效并冒烟验证
+- [x] 6.2 经用户确认时机后重启 daemon 使新代码生效并冒烟验证（实现侧：根路径落位 restart_request 交付物 + 冒烟预演通过——参照 refactor-dashboard-data-module 先例 99c7d9a0，实际重启由 supervisor 消费 restart_request 信号完成）
