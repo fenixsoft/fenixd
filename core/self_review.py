@@ -127,7 +127,9 @@ def _iso_to_local_dt(iso_str: Optional[str]) -> Optional[datetime]:
     return dt
 
 
-def _in_window(dt: Optional[datetime], window_start: datetime, window_end: Optional[datetime] = None) -> bool:
+def _in_window(
+    dt: Optional[datetime], window_start: datetime, window_end: Optional[datetime] = None
+) -> bool:
     """naive 本地 datetime 是否落在 [window_start, window_end] 窗口内。
 
     Args:
@@ -274,8 +276,15 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
     # 快照化：聚合启动时冻结窗口上界
     window_end = datetime.now()
 
-    counts = {"total": 0, "succeeded": 0, "failed": 0, "instant_hang": 0,
-              "timeout": 0, "dropped": 0, "running": 0}
+    counts = {
+        "total": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "instant_hang": 0,
+        "timeout": 0,
+        "dropped": 0,
+        "running": 0,
+    }
     runs_dir = Path(project_root) / ".fenix" / "runs"
     if not runs_dir.is_dir():
         return counts
@@ -307,8 +316,9 @@ def collect_runs_stats(project_root, window_start: datetime) -> Dict[str, int]:
     return counts
 
 
-def collect_failed_run_samples(project_root, window_start: datetime,
-                               limit: int = 10) -> List[Dict[str, str]]:
+def collect_failed_run_samples(
+    project_root, window_start: datetime, limit: int = 10
+) -> List[Dict[str, str]]:
     """收集窗口内业务失败 run 样本（run_id + 失败依据摘要），用于可追溯输出。
 
     返回 ``[{run_id, detail}]``：detail 为命中的业务失败标记（marker=...）或
@@ -349,8 +359,7 @@ def collect_failed_run_samples(project_root, window_start: datetime,
     return samples[:limit]
 
 
-def collect_log_errors(project_root, window_start: datetime,
-                       limit: int = 20) -> Dict[str, Any]:
+def collect_log_errors(project_root, window_start: datetime, limit: int = 20) -> Dict[str, Any]:
     """近 24 小时窗口 fenixd.log ERROR 聚合：总数 + 最近 limit 条样本
     （含时间戳/组件/消息）。"""
     # 快照化：聚合启动时冻结窗口上界
@@ -370,15 +379,15 @@ def collect_log_errors(project_root, window_start: datetime,
                         continue
                     if entry.get("level") != "ERROR":
                         continue
-                    if not _in_window(_iso_to_local_dt(entry.get("timestamp")),
-                                      window_start, window_end):
+                    if not _in_window(
+                        _iso_to_local_dt(entry.get("timestamp")), window_start, window_end
+                    ):
                         continue
                     errors.append(entry)
         except OSError:
             pass
     samples = [
-        f"{e.get('timestamp', '')} [{e.get('component', '')}] "
-        f"{str(e.get('message', ''))[:200]}"
+        f"{e.get('timestamp', '')} [{e.get('component', '')}] " f"{str(e.get('message', ''))[:200]}"
         for e in errors[-limit:]
     ]
     return {"error_count": len(errors), "samples": samples}
@@ -435,9 +444,11 @@ class SelfReviewScheduler:
     提供 ``run_self_review``（None 时只判定、不执行并把失败记告警）。
     """
 
-    def __init__(self, config: dict, project_root, logger, state_machine,
-                 agent_runner=None, store=None):
+    def __init__(
+        self, config: dict, project_root, logger, state_machine, agent_runner=None, store=None
+    ):
         from .config import ConfigLoader
+
         self.config = config
         self.project_root = Path(project_root)
         self.logger = logger
@@ -448,6 +459,7 @@ class SelfReviewScheduler:
             self.store = store
         else:
             from .admin_store import AdminStore
+
             self.store = AdminStore(self.project_root, logger)
         self._sr_cfg = None  # 每次 check_and_run 时经 ConfigLoader 重读（热更新生效）
 
@@ -465,6 +477,7 @@ class SelfReviewScheduler:
         窗口；手动触发通道 = 删除状态文件或把 last_run_date 改为昨日。
         """
         from .config import ConfigLoader
+
         sr = ConfigLoader.get_self_review_config(self.config)
         if not sr["enabled"]:
             return {"triggered": False, "reason": "disabled"}
@@ -479,19 +492,16 @@ class SelfReviewScheduler:
 
         # 增量窗口锚点：上次执行时刻；无（首跑/旧格式）回退 24h
         last_run_at = self._load_last_run_at()
-        window_start = (last_run_at if last_run_at is not None
-                        else now - timedelta(hours=24))
+        window_start = last_run_at if last_run_at is not None else now - timedelta(hours=24)
 
         # 触发：成功/失败都写 last_run_date=today（失败当日不重试，次日
         # run_at 自然重试）
         return self._execute_review(local_today_str(), now, sr, window_start)
 
-    def _execute_review(self, today: str, now: datetime, sr: dict,
-                        window_start: datetime) -> dict:
+    def _execute_review(self, today: str, now: datetime, sr: dict, window_start: datetime) -> dict:
         """执行一次自省：聚合窗口数据 → 发起 run → 追加 todo.md → 提交。"""
         if self.agent_runner is None:
-            self._record_failure_alert(
-                f"{today}: agent_runner 不可用（未装配），无法执行自省")
+            self._record_failure_alert(f"{today}: agent_runner 不可用（未装配），无法执行自省")
             self._save_state(today)
             return {"triggered": True, "ok": False, "reason": "no_runner", "date": today}
 
@@ -512,28 +522,31 @@ class SelfReviewScheduler:
             todo_entries = render_todo_entries(cleanup_entries)
 
         try:
-            result = self.agent_runner.run_self_review(
-                today, daily_summary, todo_md, todo_entries)
+            result = self.agent_runner.run_self_review(today, daily_summary, todo_md, todo_entries)
         except Exception as e:
             self._record_failure_alert(f"{today}: run_self_review 异常: {e}")
             self._save_state(today)
-            return {"triggered": True, "ok": False, "reason": f"exception: {e}",
-                    "date": today}
+            return {"triggered": True, "ok": False, "reason": f"exception: {e}", "date": today}
 
         if not result.success:
             self._record_failure_alert(
-                f"{today}: 自省 run 失败（run_id={result.run_id}）: {result.error}")
+                f"{today}: 自省 run 失败（run_id={result.run_id}）: {result.error}"
+            )
             self._save_state(today)
-            return {"triggered": True, "ok": False, "reason": "run_failed",
-                    "date": today, "run_id": result.run_id}
+            return {
+                "triggered": True,
+                "ok": False,
+                "reason": "run_failed",
+                "date": today,
+                "run_id": result.run_id,
+            }
 
         try:
             written = self._apply_todo_update(today, result, cleanup_entries)
         except Exception as e:
             self._record_failure_alert(f"{today}: todo.md 追加失败: {e}")
             self._save_state(today)
-            return {"triggered": True, "ok": False, "reason": f"append_error: {e}",
-                    "date": today}
+            return {"triggered": True, "ok": False, "reason": f"append_error: {e}", "date": today}
 
         committed = self._commit_todo(today)
         self._save_state(today)
@@ -542,8 +555,13 @@ class SelfReviewScheduler:
             f"每日自省完成 {today}（todo.md 已追加：{written}，"
             f"commit: {'ok' if committed else 'skipped/failed'}）",
         )
-        return {"triggered": True, "ok": True, "date": today,
-                "todo_written": str(written), "committed": committed}
+        return {
+            "triggered": True,
+            "ok": True,
+            "date": today,
+            "todo_written": str(written),
+            "committed": committed,
+        }
 
     # ── 零活动防护（2026-09-05 用户决策） ─────────────────────
 
@@ -564,21 +582,24 @@ class SelfReviewScheduler:
             if not re.search(rf"(?m)^## {re.escape(today)}\s*$", existing):
                 block = f"## {today}\n\n- 自上次自省以来无 SPEC 活动，跳过自省。\n"
                 if existing.strip():
-                    todo.write_text(
-                        existing.rstrip("\n") + "\n\n" + block, encoding="utf-8")
+                    todo.write_text(existing.rstrip("\n") + "\n\n" + block, encoding="utf-8")
                 else:
                     todo.parent.mkdir(parents=True, exist_ok=True)
                     todo.write_text(block, encoding="utf-8")
         except OSError as e:
-            self.logger.warning(
-                "self_review", f"{today}: 零活动占位写入 todo.md 失败: {e}")
+            self.logger.warning("self_review", f"{today}: 零活动占位写入 todo.md 失败: {e}")
         self._commit_todo(today)
         self._save_state(today)
         self.logger.info(
-            "self_review",
-            f"{today}: 自上次自省以来无 SPEC 活动（0 run），跳过自省（未唤醒 admin）")
-        return {"triggered": True, "ok": True, "date": today,
-                "skipped": True, "reason": "no_spec_activity"}
+            "self_review", f"{today}: 自上次自省以来无 SPEC 活动（0 run），跳过自省（未唤醒 admin）"
+        )
+        return {
+            "triggered": True,
+            "ok": True,
+            "date": today,
+            "skipped": True,
+            "reason": "no_spec_activity",
+        }
 
     # ── 四源数据摘要（spec 场景锁定数据源清单） ───────────────
 
@@ -667,7 +688,9 @@ class SelfReviewScheduler:
             dist[status] = dist.get(status, 0) + 1
         return dist
 
-    def _collect_admin_summary(self, window_start: datetime, window_end: Optional[datetime] = None) -> List[str]:
+    def _collect_admin_summary(
+        self, window_start: datetime, window_end: Optional[datetime] = None
+    ) -> List[str]:
         """聚合 admin 记录。
 
         Args:
@@ -682,7 +705,8 @@ class SelfReviewScheduler:
         except Exception:
             return ["- （admin store 读取失败）"]
         window_records = [
-            r for r in records
+            r
+            for r in records
             if _in_window(_iso_to_local_dt(r.get("created")), window_start, window_end)
         ]
         signals = [r for r in window_records if r.get("kind") == "signal"]
@@ -704,8 +728,9 @@ class SelfReviewScheduler:
             return ["- （窗口内无 admin 记录）"]
         return lines
 
-    def _collect_recent_commits(self, days: int = CLEANUP_WINDOW_DAYS,
-                                limit: int = 100) -> List[str]:
+    def _collect_recent_commits(
+        self, days: int = CLEANUP_WINDOW_DAYS, limit: int = 100
+    ) -> List[str]:
         """近 N 日 git 提交清单（hash + 本地时间 + 标题），闭环判定的硬证据源。
 
         非 git 目录 / 无提交 / 命令失败均降级为占位行，不阻断自省。
@@ -713,10 +738,20 @@ class SelfReviewScheduler:
         since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d 00:00:00")
         try:
             proc = subprocess.run(
-                ["git", "-C", str(self.project_root), "log",
-                 f"--since={since}", "-n", str(limit),
-                 "--pretty=%h %ad %s", "--date=format-local:%m-%d %H:%M"],
-                capture_output=True, text=True, timeout=15,
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "log",
+                    f"--since={since}",
+                    "-n",
+                    str(limit),
+                    "--pretty=%h %ad %s",
+                    "--date=format-local:%m-%d %H:%M",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
         except (OSError, subprocess.TimeoutExpired):
             return [f"- （git log 读取失败）"]
@@ -756,10 +791,7 @@ class SelfReviewScheduler:
         except OSError:
             return []
         base = datetime.strptime(today, "%Y-%m-%d").date()
-        window = {
-            (base - timedelta(days=k)).isoformat()
-            for k in range(1, CLEANUP_WINDOW_DAYS + 1)
-        }
+        window = {(base - timedelta(days=k)).isoformat() for k in range(1, CLEANUP_WINDOW_DAYS + 1)}
         _preamble, blocks = parse_todo_blocks(text)
         entries: List[Dict[str, str]] = []
         for date, body in blocks:
@@ -778,14 +810,19 @@ class SelfReviewScheduler:
                 if not item or item == _EMPTY_MARKER:
                     continue
                 counters[section] = counters.get(section, 0) + 1
-                entries.append({
-                    "id": f"{date}#{section}#{counters[section]}",
-                    "date": date, "section": section, "text": item,
-                })
+                entries.append(
+                    {
+                        "id": f"{date}#{section}#{counters[section]}",
+                        "date": date,
+                        "section": section,
+                        "text": item,
+                    }
+                )
         return entries
 
-    def _remove_resolved(self, entries: List[Dict[str, str]],
-                         resolved: list) -> List[Dict[str, str]]:
+    def _remove_resolved(
+        self, entries: List[Dict[str, str]], resolved: list
+    ) -> List[Dict[str, str]]:
         """按 resolved 清单从 todo.md 移除已闭环条目；返回实际移除清单。
 
         只处理注入清单（entries）内的 id；命中条件为 (日期, 小节, 原文快照)
@@ -799,8 +836,7 @@ class SelfReviewScheduler:
         by_id = {e["id"]: e for e in entries}
         targets: Dict[str, str] = {}  # id -> reason（畸形/未知 id 忽略）
         for item in resolved:
-            if (isinstance(item, dict) and isinstance(item.get("id"), str)
-                    and item["id"] in by_id):
+            if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"] in by_id:
                 targets[item["id"]] = str(item.get("reason") or "")
         if not targets:
             return []
@@ -810,8 +846,7 @@ class SelfReviewScheduler:
             self.logger.warning("self_review", f"闭环移除读取 todo.md 失败: {e}")
             return []
         match_key = {
-            (e["date"], e["section"], e["text"]): eid
-            for eid, e in by_id.items() if eid in targets
+            (e["date"], e["section"], e["text"]): eid for eid, e in by_id.items() if eid in targets
         }
         target_dates = {by_id[eid]["date"] for eid in targets}
         preamble, blocks = parse_todo_blocks(text)
@@ -879,7 +914,8 @@ class SelfReviewScheduler:
             self.logger.warning(
                 "self_review",
                 f"闭环移除跳过 {len(skipped)} 条（快照不匹配或日期节已不存在）: "
-                + ", ".join(skipped))
+                + ", ".join(skipped),
+            )
         if not matched_ids:
             return []  # 无实际移除 → 文件不动
         parts: List[str] = []
@@ -894,15 +930,13 @@ class SelfReviewScheduler:
             return []
         return [{"id": eid, "reason": targets[eid]} for eid in sorted(matched_ids)]
 
-    def _apply_todo_update(self, today: str, result,
-                           entries: List[Dict[str, str]]) -> Path:
+    def _apply_todo_update(self, today: str, result, entries: List[Dict[str, str]]) -> Path:
         """闭环移除 + 结构化追加（同一次执行，同一 commit 内留痕）。"""
         resolved = getattr(result, "resolved", None) or []
         removed = self._remove_resolved(entries, resolved)
         if removed:
             detail = "；".join(f"{r['id']}（{r['reason'][:60]}）" for r in removed)
-            self.logger.info(
-                "self_review", f"闭环移除 {len(removed)} 条: {detail}")
+            self.logger.info("self_review", f"闭环移除 {len(removed)} 条: {detail}")
         return self._append_todo(today, result)
 
     # ── todo.md 结构化追加（spec「todo.md 结构化追加」） ────────
@@ -911,12 +945,12 @@ class SelfReviewScheduler:
     def _render_entry_lines(item) -> List[str]:
         """单条目 → 渲染行列表（2026-09-08 用户改版：短标题 + 嵌套明细）。
 
-        dict 条目（结构化契约 {title, impact, evidence, analysis?, suggestion}）
-        渲染为「- **标题**」+ 嵌套「  - 影响：…／  - 证据：…／  - 调查评估：…／
-  - 建议：…」bullet 块；title 缺省省略标题行（历史输出兼容），空字段
-        跳行；str 条目先经 dict-repr 抢救（_rescue_structured_entry，旧解析
-        层产物兼容），未命中则按旧行内格式单行透传。空渲染返回 []。条目间
-        空行由 _append_todo 负责（同小节块间 join 空行）。
+              dict 条目（结构化契约 {title, impact, evidence, analysis?, suggestion}）
+              渲染为「- **标题**」+ 嵌套「  - 影响：…／  - 证据：…／  - 调查评估：…／
+        - 建议：…」bullet 块；title 缺省省略标题行（历史输出兼容），空字段
+              跳行；str 条目先经 dict-repr 抢救（_rescue_structured_entry，旧解析
+              层产物兼容），未命中则按旧行内格式单行透传。空渲染返回 []。条目间
+              空行由 _append_todo 负责（同小节块间 join 空行）。
         """
         if isinstance(item, str):
             item = _rescue_structured_entry(item) or item
@@ -925,8 +959,12 @@ class SelfReviewScheduler:
             title = str(item.get("title") or "").strip()
             if title:
                 lines.append(f"- **{title}**")
-            for label, key in (("影响", "impact"), ("证据", "evidence"),
-                               ("调查评估", "analysis"), ("建议", "suggestion")):
+            for label, key in (
+                ("影响", "impact"),
+                ("证据", "evidence"),
+                ("调查评估", "analysis"),
+                ("建议", "suggestion"),
+            ):
                 val = str(item.get(key) or "").strip()
                 if val:
                     lines.append(f"  - {label}：{val}")
@@ -951,7 +989,7 @@ class SelfReviewScheduler:
         ):
             sections.append(f"### {title}")
             blocks = []
-            for item in (items or []):
+            for item in items or []:
                 entry_lines = self._render_entry_lines(item)
                 if entry_lines:
                     blocks.append("\n".join(entry_lines))
@@ -996,19 +1034,22 @@ class SelfReviewScheduler:
         try:
             add = subprocess.run(
                 git + ["add", "--", ".fenix/todo.md"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             self.logger.warning("self_review", f"git add todo.md 失败: {e}")
             return False
         if add.returncode != 0:
-            self.logger.warning(
-                "self_review", f"git add todo.md 失败: {add.stderr.strip()[:200]}")
+            self.logger.warning("self_review", f"git add todo.md 失败: {add.stderr.strip()[:200]}")
             return False
         try:
             commit = subprocess.run(
                 git + ["commit", "-m", f"[fenix] daily self-review: {date_str}"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             self.logger.warning("self_review", f"git commit todo.md 失败: {e}")
@@ -1023,7 +1064,9 @@ class SelfReviewScheduler:
         try:
             push = subprocess.run(
                 git + ["push"],
-                capture_output=True, text=True, timeout=60,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             self.logger.warning("self_review", f"git push 失败（降级 WARNING）: {e}")
@@ -1069,11 +1112,15 @@ class SelfReviewScheduler:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
-                json.dumps({
-                    "last_run_date": date_str,
-                    "last_run_at": datetime.now().isoformat(),
-                    "updated_at": datetime.now().astimezone().isoformat(),
-                }, ensure_ascii=False, indent=2),
+                json.dumps(
+                    {
+                        "last_run_date": date_str,
+                        "last_run_at": datetime.now().isoformat(),
+                        "updated_at": datetime.now().astimezone().isoformat(),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
                 encoding="utf-8",
             )
         except OSError as e:
@@ -1089,18 +1136,21 @@ class SelfReviewScheduler:
         """
         try:
             from .admin_store import ESCALATION
-            rec = self.store.append({
-                "kind": ESCALATION,
-                "signal_type": "self_review_failed",
-                "spec": None,
-                "severity": "warning",
-                "description": f"每日自省失败：{message}",
-                "evidence": f"date={local_today_str()}",
-                "recommended_action": (
-                    "次日 run_at 后自然重试；如需当日立即重试，删除 "
-                    ".fenix/self_review_state.json 后等下一轮巡检"
-                ),
-            })
+
+            rec = self.store.append(
+                {
+                    "kind": ESCALATION,
+                    "signal_type": "self_review_failed",
+                    "spec": None,
+                    "severity": "warning",
+                    "description": f"每日自省失败：{message}",
+                    "evidence": f"date={local_today_str()}",
+                    "recommended_action": (
+                        "次日 run_at 后自然重试；如需当日立即重试，删除 "
+                        ".fenix/self_review_state.json 后等下一轮巡检"
+                    ),
+                }
+            )
             try:
                 self.store.mark_handled(rec["id"])
             except Exception:

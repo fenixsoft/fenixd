@@ -160,8 +160,8 @@ class TestLegacyUnknownStatusNotOverridingVerified(_VerifiedGateBase):
         from types import SimpleNamespace as _NS
         self.engine._on_spec_verified = MagicMock()
         self.engine._on_spec_bug_found = MagicMock()
-        self.engine._ensure_verification_report = MagicMock(return_value=None)
-        self.engine._env_whitewash_gate = MagicMock(return_value=True)
+        self.engine._verification._ensure_verification_report = MagicMock(return_value=None)
+        self.engine._verification._env_whitewash_gate = MagicMock(return_value=True)
         self.engine.agent_runner.run_verifier = MagicMock(
             return_value=_NS(success=True, error=None,
                              run_id="verify-my-spec-1-a1"))

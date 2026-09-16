@@ -23,9 +23,13 @@ import re
 from typing import Any
 
 ASSERTION_LAYERS = {
-    "status_code": 1, "sse_event_count": 1,
-    "json_path": 3, "response_header": 3, "body_contains": 3,
-    "json_schema": 3, "sse_event_matches": 3,
+    "status_code": 1,
+    "sse_event_count": 1,
+    "json_path": 3,
+    "response_header": 3,
+    "body_contains": 3,
+    "json_schema": 3,
+    "sse_event_matches": 3,
     "latency_under": 4,
 }
 
@@ -39,6 +43,7 @@ def json_schema_available() -> bool:
     if _JSONSCHEMA_OK is None:
         try:
             import jsonschema  # noqa: F401
+
             _JSONSCHEMA_OK = True
         except ImportError:
             _JSONSCHEMA_OK = False
@@ -74,7 +79,7 @@ def evaluate_json_path(data: Any, path: str) -> Any:
                     cur = cur[key]
                 else:
                     return None
-                token = token[len(key):]
+                token = token[len(key) :]
             else:
                 idx_s = m.group(2)
                 if idx_s.startswith(("'", '"')):
@@ -83,7 +88,7 @@ def evaluate_json_path(data: Any, path: str) -> Any:
                         cur = cur[key]
                     else:
                         return None
-                    token = token[len(m.group(0)):]
+                    token = token[len(m.group(0)) :]
                 else:
                     try:
                         idx = int(idx_s)
@@ -93,7 +98,7 @@ def evaluate_json_path(data: Any, path: str) -> Any:
                         cur = cur[idx]
                     else:
                         return None
-                    token = token[len(m.group(0)):]
+                    token = token[len(m.group(0)) :]
     return cur
 
 
@@ -121,23 +126,27 @@ class ApiAssertionRunner:
             a_type = assertion.get("type", "")
             handler = getattr(self, f"_assert_{a_type}", None)
             if handler is None:
-                results.append({
-                    "type": a_type,
-                    "layer": ASSERTION_LAYERS.get(a_type, 0),
-                    "pass": False,
-                    "error": f"未知断言类型: {a_type}",
-                })
+                results.append(
+                    {
+                        "type": a_type,
+                        "layer": ASSERTION_LAYERS.get(a_type, 0),
+                        "pass": False,
+                        "error": f"未知断言类型: {a_type}",
+                    }
+                )
                 continue
             resp = self._resolve_response(captures, assertion)
             if resp is None:
                 ref = assertion.get("response") or "_latest"
-                results.append({
-                    "type": a_type,
-                    "layer": ASSERTION_LAYERS.get(a_type, 0),
-                    "pass": False,
-                    "error": f"断言引用的响应 '{ref}' 不存在"
-                             f"（response 字段指向命名捕获，缺省=最近一次）",
-                })
+                results.append(
+                    {
+                        "type": a_type,
+                        "layer": ASSERTION_LAYERS.get(a_type, 0),
+                        "pass": False,
+                        "error": f"断言引用的响应 '{ref}' 不存在"
+                        f"（response 字段指向命名捕获，缺省=最近一次）",
+                    }
+                )
                 continue
             try:
                 result = await handler(resp, assertion)
@@ -145,12 +154,14 @@ class ApiAssertionRunner:
                 result.setdefault("layer", ASSERTION_LAYERS.get(a_type, 0))
                 results.append(result)
             except Exception as e:
-                results.append({
-                    "type": a_type,
-                    "layer": ASSERTION_LAYERS.get(a_type, 0),
-                    "pass": False,
-                    "error": f"断言执行异常: {e}",
-                })
+                results.append(
+                    {
+                        "type": a_type,
+                        "layer": ASSERTION_LAYERS.get(a_type, 0),
+                        "pass": False,
+                        "error": f"断言执行异常: {e}",
+                    }
+                )
         return results
 
     def _resolve_response(self, captures: dict, assertion: dict) -> Any:
@@ -167,8 +178,10 @@ class ApiAssertionRunner:
         expected = a.get("expected")
         actual = resp.get("status")
         return {
-            "type": "status_code", "layer": 1,
-            "expected": expected, "actual": actual,
+            "type": "status_code",
+            "layer": 1,
+            "expected": expected,
+            "actual": actual,
             "pass": actual == expected,
         }
 
@@ -177,8 +190,10 @@ class ApiAssertionRunner:
         events = resp.get("events") or []
         minimum = int(a.get("min", 1))
         return {
-            "type": "sse_event_count", "layer": 1,
-            "min": minimum, "actual": len(events),
+            "type": "sse_event_count",
+            "layer": 1,
+            "min": minimum,
+            "actual": len(events),
             "pass": len(events) >= minimum,
         }
 
@@ -204,8 +219,11 @@ class ApiAssertionRunner:
             except re.error:
                 passed = False
         return {
-            "type": "json_path", "layer": 3,
-            "path": path, "expected": expected, "actual": actual,
+            "type": "json_path",
+            "layer": 3,
+            "path": path,
+            "expected": expected,
+            "actual": actual,
             "pass": passed,
         }
 
@@ -231,8 +249,11 @@ class ApiAssertionRunner:
                 except re.error:
                     passed = False
         return {
-            "type": "response_header", "layer": 3,
-            "header": header, "expected": expected, "actual": actual,
+            "type": "response_header",
+            "layer": 3,
+            "header": header,
+            "expected": expected,
+            "actual": actual,
             "pass": passed,
         }
 
@@ -252,8 +273,10 @@ class ApiAssertionRunner:
             except re.error:
                 passed = False
         return {
-            "type": "body_contains", "layer": 3,
-            "expected": expected, "mode": mode,
+            "type": "body_contains",
+            "layer": 3,
+            "expected": expected,
+            "mode": mode,
             "pass": passed,
             "actual_snippet": str(body)[:200] if not passed and body else "",
         }
@@ -262,16 +285,19 @@ class ApiAssertionRunner:
         """断言响应体 JSON 符合 schema（jsonschema 库；验收期已查依赖）。"""
         if not json_schema_available():
             return {
-                "type": "json_schema", "layer": 3,
+                "type": "json_schema",
+                "layer": 3,
                 "pass": False,
                 "error": "json_schema 断言需要 jsonschema 库（验收期已打回，此处不应到达）",
             }
         import jsonschema
+
         schema = a.get("schema")
         payload = resp.get("json")
         if payload is None:
             return {
-                "type": "json_schema", "layer": 3,
+                "type": "json_schema",
+                "layer": 3,
                 "pass": False,
                 "error": "响应体非合法 JSON，无法做 schema 校验",
             }
@@ -280,7 +306,8 @@ class ApiAssertionRunner:
             return {"type": "json_schema", "layer": 3, "pass": True}
         except jsonschema.ValidationError as e:
             return {
-                "type": "json_schema", "layer": 3,
+                "type": "json_schema",
+                "layer": 3,
                 "pass": False,
                 "error": f"schema 校验失败: {e.message}（{e.json_path}）",
             }
@@ -307,9 +334,12 @@ class ApiAssertionRunner:
             if matched:
                 hits.append(data)
         return {
-            "type": "sse_event_matches", "layer": 3,
-            "expected": expected, "mode": mode,
-            "actual_hits": hits[:5], "hit_count": len(hits),
+            "type": "sse_event_matches",
+            "layer": 3,
+            "expected": expected,
+            "mode": mode,
+            "actual_hits": hits[:5],
+            "hit_count": len(hits),
             "pass": len(hits) > 0,
         }
 
@@ -322,7 +352,9 @@ class ApiAssertionRunner:
         expected = a.get("expected")
         actual = resp.get("latency_ms")
         return {
-            "type": "latency_under", "layer": 4,
-            "expected": expected, "actual": actual,
+            "type": "latency_under",
+            "layer": 4,
+            "expected": expected,
+            "actual": actual,
             "pass": actual is not None and actual < int(expected),
         }

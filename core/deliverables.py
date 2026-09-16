@@ -59,9 +59,7 @@ _DELIVERABLE_PREFIXES = ("core/", "tests/", ".fenix/", "scripts/")
 _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 
 # 「路径：」/「路径:」前缀行（中文/英文冒号，前后允许空白与装饰）。
-_PATH_LABEL_RE = re.compile(
-    r"^\s*[·•\-*•]?\s*路径\s*[:：]\s*(?P<rest>.+?)\s*$"
-)
+_PATH_LABEL_RE = re.compile(r"^\s*[·•\-*•]?\s*路径\s*[:：]\s*(?P<rest>.+?)\s*$")
 
 # 反引号包裹的单条路径（去除行内其它字符，仅取反引号内 token）。
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
@@ -75,8 +73,16 @@ _DIRECTORY_RE = re.compile(r"/$")
 
 # 引用语境关键词：出现即视为「既有文件引用」语境（软校验，不参与缺件判定）。
 _REFERENCE_KEYWORDS = (
-    "实现依据", "挂钩点", "插入点", "真实夹具", "上游依赖",
-    "现状代码", "既有", "复用", "源自", "参考",
+    "实现依据",
+    "挂钩点",
+    "插入点",
+    "真实夹具",
+    "上游依赖",
+    "现状代码",
+    "既有",
+    "复用",
+    "源自",
+    "参考",
 )
 
 # 交付语境动词：出现即视为「新建交付物」语境（参与缺件判定）。
@@ -189,8 +195,7 @@ def normalize_check_path(p: str) -> str:
     return (p or "").strip()
 
 
-def _classify_line(line: str, doc_kind: str, in_tasks_header: bool,
-                   in_scenario: bool) -> str:
+def _classify_line(line: str, doc_kind: str, in_tasks_header: bool, in_scenario: bool) -> str:
     """对单行做语境分类，返回 ``"deliverables"`` 或 ``"references"``。
 
     优先级（D1 规则表）：
@@ -231,8 +236,7 @@ def extract_paths_typed(spec_dir) -> dict:
     seen: set[str] = set()
 
     for doc in _iter_spec_documents(root):
-        rel = doc.relative_to(root).as_posix() if doc.is_relative_to(root) \
-            else doc.name
+        rel = doc.relative_to(root).as_posix() if doc.is_relative_to(root) else doc.name
         if rel == "tasks.md":
             doc_kind = "tasks"
         elif rel == "proposal.md":
@@ -246,8 +250,8 @@ def extract_paths_typed(spec_dir) -> dict:
             continue
 
         in_fence = False
-        in_tasks_header = True   # 第一个 `## ` 标题之前为头部说明段
-        in_scenario = False      # 能力 spec 的 Scenario 小节
+        in_tasks_header = True  # 第一个 `## ` 标题之前为头部说明段
+        in_scenario = False  # 能力 spec 的 Scenario 小节
         line_ctx = "references" if doc_kind != "tasks" else "deliverables"
 
         for raw_line in text.splitlines():
@@ -265,19 +269,14 @@ def extract_paths_typed(spec_dir) -> dict:
             if in_fence:
                 ctx = line_ctx
             else:
-                ctx = _classify_line(raw_line, doc_kind, in_tasks_header,
-                                     in_scenario)
+                ctx = _classify_line(raw_line, doc_kind, in_tasks_header, in_scenario)
                 line_ctx = ctx
 
             if in_fence:
                 # 代码块内逐 token（按空白/常见分隔符切分）
-                tokens = [
-                    _normalize_token(t)
-                    for t in re.split(r"\s+", raw_line.strip())
-                ]
+                tokens = [_normalize_token(t) for t in re.split(r"\s+", raw_line.strip())]
             else:
-                tokens = [_normalize_token(t)
-                          for t in _candidates_from_line(raw_line)]
+                tokens = [_normalize_token(t) for t in _candidates_from_line(raw_line)]
 
             for cand in tokens:
                 if not _is_deliverable_path(cand) or cand in seen:
@@ -340,8 +339,7 @@ def extract_declared_entries(spec_dir) -> "list | None":
         kind = str(e.get("kind") or "").strip().lower()
         if not path or kind not in _DECLARED_KINDS:
             continue
-        if (_ABSOLUTE_RE.match(path) or _WILDCARD_RE.search(path)
-                or _DIRECTORY_RE.search(path)):
+        if _ABSOLUTE_RE.match(path) or _WILDCARD_RE.search(path) or _DIRECTORY_RE.search(path):
             continue
         out.append({"path": path, "kind": kind})
     return out if out else None
@@ -419,9 +417,7 @@ def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
             break
 
     def _path_line_re(p: str):
-        return re.compile(
-            rf"^(\s*-\s*path\s*:\s*){re.escape(p)}(\s*(#.*)?)$"
-        )
+        return re.compile(rf"^(\s*-\s*path\s*:\s*){re.escape(p)}(\s*(#.*)?)$")
 
     elem_idx = None
     for i in range(start, end):
@@ -450,8 +446,7 @@ def replace_declared_path(spec_dir, element: str, actual_path: str) -> dict:
     after = "\n".join(lines[start:end])
 
     tasks.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return {"element": element, "actual_path": actual_path,
-            "before": before, "after": after}
+    return {"element": element, "actual_path": actual_path, "before": before, "after": after}
 
 
 def soften_declared_kind(spec_dir, element: str) -> dict:
@@ -487,8 +482,7 @@ def soften_declared_kind(spec_dir, element: str) -> dict:
 
     path_idx = None
     for i in range(start, end):
-        if re.match(rf"^\s*-\s*path\s*:\s*{re.escape(element)}\s*(#.*)?$",
-                    lines[i]):
+        if re.match(rf"^\s*-\s*path\s*:\s*{re.escape(element)}\s*(#.*)?$", lines[i]):
             path_idx = i
             break
     if path_idx is None:
@@ -514,7 +508,8 @@ def soften_declared_kind(spec_dir, element: str) -> dict:
         # （调用方等价 unclear 转人工，不静默改写声明段）。
         raise ValueError(
             f"条目 {element} 是 kind: delete——delete 不参与软化（防洗白，"
-            f"add-deliverable-delete-kind D4），请人工处置")
+            f"add-deliverable-delete-kind D4），请人工处置"
+        )
 
     lines[kind_idx] = f"{kind_match.group(1)}kind: reference{kind_match.group(3)}"
     after = "\n".join(lines[start:end])
@@ -606,7 +601,9 @@ def _path_is_gitignored(project_root, candidates: List[str]) -> bool:
         try:
             r = subprocess.run(
                 ["git", "-c", "core.fsmonitor=", "check-ignore", "-q", "--", cand],
-                cwd=str(project_root), capture_output=True, timeout=10,
+                cwd=str(project_root),
+                capture_output=True,
+                timeout=10,
             )
         except (OSError, subprocess.SubprocessError):
             return False
@@ -738,8 +735,10 @@ def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
             # 防洗白：delete 的软化在语义上就是错的（降级为仅审计 = 删除要求
             # 静默消失），lint 规则 7-10 已拒绝其不可交付形态；此处防御性跳过
             # 并留痕，防止未来新增软化路径时无声破防。
-            print(f"WARNING: 软化跳过 delete 声明 {path}（防洗白：delete 不参与"
-                  f"软化，见 add-deliverable-delete-kind D4）")
+            print(
+                f"WARNING: 软化跳过 delete 声明 {path}（防洗白：delete 不参与"
+                f"软化，见 add-deliverable-delete-kind D4）"
+            )
             continue
         if not classify_unsatisfiable(e, project_root):
             continue
@@ -761,12 +760,14 @@ def soften_unsatisfiable_declarations(spec_dir, project_root) -> list:
             # 单条改写失败：跳过该条记 warning，交由后续 lint 照常拒绝兜底
             print(f"WARNING: 软化声明 {path} 失败（跳过，lint 兜底）: {exc}")
             continue
-        softened.append({
-            "element": path,
-            "kind_before": e["kind"],
-            "kind_after": "reference",
-            "reason": reason,
-        })
+        softened.append(
+            {
+                "element": path,
+                "kind_before": e["kind"],
+                "kind_after": "reference",
+                "reason": reason,
+            }
+        )
     return softened
 
 
@@ -942,8 +943,7 @@ def lint_declared(spec_dir, project_root) -> List[str]:
         # 不在项目根内）；kind: new/modify 语义均以文件在仓库内为前提，仓库外
         # 路径任何分支不可交付。reference 放行（reference 本就是非交付物语义，
         # 仓库外引用合法）。与规则 5 并列共存、相互独立，可叠加违规。
-        if kind in ("modify", "new") and _path_is_outside_root(
-                project_root, candidates):
+        if kind in ("modify", "new") and _path_is_outside_root(project_root, candidates):
             violations.append(
                 f"[{path}] 是仓库外路径——{kind} 声明要求文件在仓库内"
                 f"（{'修改既有仓库文件' if kind == 'modify' else '产出入库'}），"
@@ -968,8 +968,7 @@ def lint_declared(spec_dir, project_root) -> List[str]:
         if kind in ("modify", "reference"):
             if not any((project_root / c).exists() for c in candidates):
                 # reference 仓库外放行（design D3）
-                if kind == "reference" and _path_is_outside_root(
-                        project_root, candidates):
+                if kind == "reference" and _path_is_outside_root(project_root, candidates):
                     continue
                 violations.append(
                     f"[{path}] 在主树不存在——{kind} 声明路径必须在主树存在"

@@ -361,7 +361,7 @@ class TestAntiWhitewashDelete(unittest.TestCase):
             {"path": "dist/index.html", "kind": "modify", "violation": "missing"},
         ]
         # 守卫重跑：软化 dist 后 delete 条目仍在（未删除）→ 仍有剩余
-        self.engine._deliverable_gate_missing = mock.MagicMock(return_value=[
+        self.engine._verification._deliverable_gate_missing = mock.MagicMock(return_value=[
             {"path": "core/old.py", "kind": "delete", "violation": "undeleted"},
         ])
         outcome = self.engine._dispatcher._preclassify_missing("s1", result, missing)

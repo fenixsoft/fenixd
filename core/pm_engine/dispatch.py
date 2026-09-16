@@ -15,7 +15,6 @@ from pathlib import Path
 from core.state_machine import ENV_BLOCK_ROUNDS_FIELD, start_after_pending
 from core.fast_track_result import estimate_spec_scale, budget_tier_for_scale
 
-
 # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）────────────────────
 # 派发 implementer 遇「worktree already active」时不再硬试三连发：按此序列指数
 # 退避安排下一次尝试，期间不消耗 _retry_count、不写 retries exhausted（attempt
@@ -75,7 +74,6 @@ class Dispatcher:
                 continue
         return out or list(DEFAULT_DISPATCH_BACKOFF_SCHEDULE)
 
-
     def _handle_dispatch_lock_conflict(self, spec_name: str) -> None:
         """派发遇 worktree 锁冲突：按退避序列安排下次尝试（design D5）。
 
@@ -99,15 +97,19 @@ class Dispatcher:
         delay = schedule[-1] if exhausted else schedule[count]
         until = int(now + delay)
         from datetime import datetime as _dt, timezone as _tz
+
         until_iso = _dt.fromtimestamp(until, _tz.utc).isoformat()
 
         # 不翻转状态：spec 保持 ready，仅记录退避元数据
-        self._pm.state_machine.update_spec(spec_name, {
-            "error": f"worktree already active (lock conflict); backoff until {until_iso}",
-            "_lock_conflict_count": count + 1,
-            "_dispatch_backoff_until": until,
-            "_last_lock_conflict_at": _dt.now(_tz.utc).isoformat(),
-        })
+        self._pm.state_machine.update_spec(
+            spec_name,
+            {
+                "error": f"worktree already active (lock conflict); backoff until {until_iso}",
+                "_lock_conflict_count": count + 1,
+                "_dispatch_backoff_until": until,
+                "_last_lock_conflict_at": _dt.now(_tz.utc).isoformat(),
+            },
+        )
 
         if exhausted:
             evidence = (
@@ -131,7 +133,6 @@ class Dispatcher:
         )
         self._pm._schedule_backoff_retry(spec_name, delay)
 
-
     def _schedule_backoff_retry(self, spec_name: str, delay: float) -> None:
         """退避到期后重入 ``_on_spec_ready``（daemon 线程；关闭期间自然失效）。"""
         timer = threading.Timer(
@@ -141,15 +142,11 @@ class Dispatcher:
         )
         timer.daemon = True
         with self._queue_lock:
-            self._backoff_timers = [
-                t for t in getattr(self, "_backoff_timers", []) if t.is_alive()
-            ]
+            self._backoff_timers = [t for t in getattr(self, "_backoff_timers", []) if t.is_alive()]
             self._backoff_timers.append(timer)
         timer.start()
 
-
-    def _schedule_instant_fail_recovery(self, spec_name: str,
-                                        lock_held: bool = False) -> None:
+    def _schedule_instant_fail_recovery(self, spec_name: str, lock_held: bool = False) -> None:
         """冷却到期后重入 ``_on_spec_ready``（cli-retry-backoff 2.2）。
 
         幂等：已为该 spec 排程恢复定时器则不再重复（``_instant_fail_timers`` 集合
@@ -174,7 +171,9 @@ class Dispatcher:
             return
         delay = max(0.5, float(until) - time.monotonic())
         timer = threading.Timer(
-            delay, self._on_instant_fail_recovery, args=(spec_name,),
+            delay,
+            self._on_instant_fail_recovery,
+            args=(spec_name,),
         )
         timer.daemon = True
         self._instant_fail_timers.add(spec_name)
@@ -198,8 +197,7 @@ class Dispatcher:
     # `agents.transient_redispatch_delay_seconds`（缺省 600s）延迟重入
     # `_on_spec_ready` + `_process_queue`。与 _retry_count 正交——不清零、不递增。
 
-    def _schedule_transient_recovery(self, spec_name: str,
-                                    lock_held: bool = False) -> None:
+    def _schedule_transient_recovery(self, spec_name: str, lock_held: bool = False) -> None:
         """瞬断终态后排程等待，到期重新触发派发（fix-provider-transient-backoff D4）。
 
         幂等：已为该 spec 排程恢复定时器则不再重复（``_transient_timers`` 集合
@@ -218,11 +216,12 @@ class Dispatcher:
         """锁内实现（fix-provider-transient-backoff）排程 transient 恢复定时器。"""
         if spec_name in self._transient_timers:
             return
-        delay = float(self._pm._get_config(
-            "agents.transient_redispatch_delay_seconds", 600))
+        delay = float(self._pm._get_config("agents.transient_redispatch_delay_seconds", 600))
         delay = max(10.0, delay)  # 最小等待 10s，避免零值/负值
         timer = threading.Timer(
-            delay, self._on_transient_recovery, args=(spec_name,),
+            delay,
+            self._on_transient_recovery,
+            args=(spec_name,),
         )
         timer.daemon = True
         self._transient_timers.add(spec_name)
@@ -254,7 +253,6 @@ class Dispatcher:
             return spec["priority"]
         return 5
 
-
     def _enqueue(self, spec_name: str, agent_type: str):
         """Add a run request to the queue (thread-safe).
 
@@ -269,10 +267,8 @@ class Dispatcher:
             if not any(e[1] == spec_name and e[2] == agent_type for e in self._run_queue):
                 self._run_queue.append(entry)
                 self._pm.logger.debug(
-                    "pm_engine",
-                    f"Queued: {spec_name} ({agent_type}, P{priority})"
+                    "pm_engine", f"Queued: {spec_name} ({agent_type}, P{priority})"
                 )
-
 
     def _enqueue_front(self, spec_name: str, agent_type: str):
         """Insert a run request at the front of its priority bucket (thread-safe).
@@ -285,8 +281,7 @@ class Dispatcher:
         with self._queue_lock:
             # Remove existing duplicate (ignoring priority)
             self._run_queue = [
-                e for e in self._run_queue
-                if not (e[1] == spec_name and e[2] == agent_type)
+                e for e in self._run_queue if not (e[1] == spec_name and e[2] == agent_type)
             ]
             # 插入到同优先级档的最前面（保持同一档内的顺序）
             insert_idx = 0
@@ -300,10 +295,8 @@ class Dispatcher:
                 insert_idx = i + 1
             self._run_queue.insert(insert_idx, entry)
             self._pm.logger.debug(
-                "pm_engine",
-                f"Queued at front of P{priority}: {spec_name} ({agent_type})"
+                "pm_engine", f"Queued at front of P{priority}: {spec_name} ({agent_type})"
             )
-
 
     def _aging_bonus(self, enqueued_at: float, now: float) -> int:
         """队列等待老化收益：条目等待越久，参与比较的优先级档越高。
@@ -323,6 +316,7 @@ class Dispatcher:
               仍天然低于新到的 P1，高优家族先占）。
         """
         from core.config import ConfigLoader
+
         cfg = self._pm.config or {}
         a = dict(ConfigLoader.get(cfg, "pm.dispatch.aging", {}) or {})
         enabled = a.get("enabled", False)
@@ -342,11 +336,9 @@ class Dispatcher:
         steps = int((elapsed - initial_wait) // step_down)
         return min(floor_levels, max(0, steps))
 
-
     def _effective_priority(self, base: int, enqueued_at: float, now: float) -> int:
         """条目参与优先级判定时的有效档位（activity 追踪仍用 base，活动任务不老化）。"""
         return max(0, base - self._pm._aging_bonus(enqueued_at, now))
-
 
     def _process_queue(self):
         """Process the run queue — relaxed-priority parallel scheduling.
@@ -417,14 +409,14 @@ class Dispatcher:
                         continue
                     if atype == "fast-track" and status not in ("ready", "implementing"):
                         # fast-track：ready 正常派发；implementing 允许 = 失败打回后的修复重派
-                        #（入队点均在 run 终止后，与 implementer 同语义，无双派）。
+                        # （入队点均在 run 终止后，与 implementer 同语义，无双派）。
                         continue
                     if atype == "verifier" and status != "implemented":
                         continue
                     if self._pm._dispatch_backoffed(spec):
                         continue
                     # add-spec-scheduling-controls D2：start_after 未到期静默跳过
-                    #（不写 error 不翻状态，对齐退避门控的防自触发设计）；到期后由
+                    # （不写 error 不翻状态，对齐退避门控的防自触发设计）；到期后由
                     # 60s 定时唤起 / full_scan 兜底恢复调度。
                     if start_after_pending(spec):
                         self._pm.logger.debug(
@@ -434,8 +426,11 @@ class Dispatcher:
                         continue
                     # cli-retry-backoff 2.2：秒挂冷却期内跳过 implementer/fast-track/
                     # repair 派发（不耗预算、不起进程），并排程到期自动恢复。
-                    if atype in ("implementer", "fast-track", "repair") \
-                            and self._pm._instant_fail_cooled(sname):
+                    if atype in (
+                        "implementer",
+                        "fast-track",
+                        "repair",
+                    ) and self._pm._instant_fail_cooled(sname):
                         self._pm.logger.debug(
                             "pm_engine",
                             f"秒挂冷却中，跳过 {atype} 派发 '{sname}'",
@@ -480,14 +475,14 @@ class Dispatcher:
                         continue
                     if atype == "fast-track" and status not in ("ready", "implementing"):
                         # fast-track：ready 正常派发；implementing 允许 = 失败打回后的修复重派
-                        #（入队点均在 run 终止后，与 implementer 同语义，无双派）。
+                        # （入队点均在 run 终止后，与 implementer 同语义，无双派）。
                         continue
                     if atype == "verifier" and status != "implemented":
                         continue
                     if self._pm._dispatch_backoffed(spec):
                         continue
                     # add-spec-scheduling-controls D2：start_after 未到期静默跳过
-                    #（不写 error 不翻状态，对齐退避门控的防自触发设计）；到期后由
+                    # （不写 error 不翻状态，对齐退避门控的防自触发设计）；到期后由
                     # 60s 定时唤起 / full_scan 兜底恢复调度。
                     if start_after_pending(spec):
                         self._pm.logger.debug(
@@ -497,8 +492,11 @@ class Dispatcher:
                         continue
                     # cli-retry-backoff 2.2：秒挂冷却期内跳过派发（与 best_valid_prio
                     # 扫描同判定，保证队列继续扫描后续条目不被冷却 spec 阻塞）。
-                    if atype in ("implementer", "fast-track", "repair") \
-                            and self._pm._instant_fail_cooled(sname):
+                    if atype in (
+                        "implementer",
+                        "fast-track",
+                        "repair",
+                    ) and self._pm._instant_fail_cooled(sname):
                         self._schedule_instant_fail_recovery(sname, lock_held=True)
                         continue
                     dispatch_idx = i
@@ -527,9 +525,7 @@ class Dispatcher:
             # 存在则回滚 entry 到队列、跳过本轮派发（先到先得，后到抑制）。
             # 被抑制条目记入 suppressed 后继续扫描后队：抑制自己 ≠ 阻塞他人。
             if agent_type == "implementer" and self._pm._is_fix_spec(spec_name):
-                carrier = self._pm._sibling_repair_active(
-                    spec_name, my_enqueued_at=my_enqueued_at
-                )
+                carrier = self._pm._sibling_repair_active(spec_name, my_enqueued_at=my_enqueued_at)
                 if carrier:
                     # 回滚：把已 pop 的 entry 放回队列
                     with self._queue_lock:
@@ -631,7 +627,6 @@ class Dispatcher:
             )
             t.start()
 
-
     def _run_agent_worker(self, spec_name: str, agent_type: str, priority: int):
         """Worker thread body: run the agent and handle result.
 
@@ -660,7 +655,8 @@ class Dispatcher:
                     # 上限（liveness._supervision_deadline_action 读取）。
                     try:
                         self._pm.state_machine.update_spec(
-                            spec_name, {"_fast_track_scale_tier": tier})
+                            spec_name, {"_fast_track_scale_tier": tier}
+                        )
                     except Exception as e:
                         self._pm.logger.warning(
                             "pm_engine",
@@ -669,23 +665,28 @@ class Dispatcher:
                 self._pm._increment_impl_run_budget_used(spec_name)
                 # ── 新轮次派发前清除旧锚点（fix-recovery-branch-anchor D1）──
                 # fast-track 车道同 implementer 语义：spec 可能经 repair lane
-                #（_run_repair_worker 为 fast-track spec 同样写 branch/标记）
+                # （_run_repair_worker 为 fast-track spec 同样写 branch/标记）
                 # 或 fallback 留下陈旧 branch/implementer_run，新一轮在飞期间
                 # 不得被恢复链当作可保留锚点。
                 try:
                     _ft_entry = self._pm.state_machine.read_one(spec_name) or {}
-                    if _ft_entry.get("branch") or _ft_entry.get("implementer_run") \
-                            or _ft_entry.get("_repair_awaiting_remerge"):
-                        self._pm.state_machine.update_spec(spec_name, {
-                            "branch": None,
-                            "implementer_run": None,
-                            "_repair_awaiting_remerge": False,
-                        })
+                    if (
+                        _ft_entry.get("branch")
+                        or _ft_entry.get("implementer_run")
+                        or _ft_entry.get("_repair_awaiting_remerge")
+                    ):
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "branch": None,
+                                "implementer_run": None,
+                                "_repair_awaiting_remerge": False,
+                            },
+                        )
                 except Exception as e:
                     self._pm.logger.warning(
                         "pm_engine",
-                        f"fast-track 新轮次清除旧锚点失败 '{spec_name}'"
-                        f"（非阻塞）: {e}",
+                        f"fast-track 新轮次清除旧锚点失败 '{spec_name}'" f"（非阻塞）: {e}",
                     )
                 self._run_fast_track_worker(spec_name)
 
@@ -702,14 +703,13 @@ class Dispatcher:
                 # recovery 保留的 spec（_recovery_resume 标记 + 保留分支）：在既有
                 # 分支的 worktree 内 resume 续做（claude --resume 断点续跑），
                 # 而非从零新建分支。载体三态经 wm.resolve_resume_site
-                #（is_available 单源）解析：在场原地 / 缺失重建 / 不可用降级
+                # （is_available 单源）解析：在场原地 / 缺失重建 / 不可用降级
                 # 为普通全新派发。标记一次性消费：派发后清空，防后续 full_scan
                 # 反复尝试续做。
                 resume_wt = None
                 dispatch_entry = self._pm.state_machine.read_one(spec_name) or {}
                 resume_branch = (
-                    dispatch_entry.get("branch")
-                    if dispatch_entry.get("_recovery_resume") else None
+                    dispatch_entry.get("branch") if dispatch_entry.get("_recovery_resume") else None
                 )
                 if resume_branch:
                     site = wm.resolve_resume_site(spec_name, resume_branch)
@@ -722,8 +722,7 @@ class Dispatcher:
                             f"(branch '{resume_branch}') — degrade to fresh dispatch",
                         )
                 if dispatch_entry.get("_recovery_resume"):
-                    self._pm.state_machine.update_spec(
-                        spec_name, {"_recovery_resume": None})
+                    self._pm.state_machine.update_spec(spec_name, {"_recovery_resume": None})
                 if resume_wt is not None:
                     self._pm.logger.info(
                         "pm_engine",
@@ -748,7 +747,8 @@ class Dispatcher:
                     old_impl_run = dispatch_entry.get("implementer_run")
                     if old_branch or old_impl_run:
                         self._pm.state_machine.update_spec(
-                            spec_name, {"branch": None, "implementer_run": None})
+                            spec_name, {"branch": None, "implementer_run": None}
+                        )
                         self._pm.logger.info(
                             "pm_engine",
                             f"新轮次派发清除旧锚点 '{spec_name}': "
@@ -760,19 +760,20 @@ class Dispatcher:
                     # 在飞期间重启不得对尚未完工的新分支执行 re-merge。
                     if dispatch_entry.get("_repair_awaiting_remerge"):
                         self._pm.state_machine.update_spec(
-                            spec_name, {"_repair_awaiting_remerge": False})
+                            spec_name, {"_repair_awaiting_remerge": False}
+                        )
                     # 全新派发清零 task-gate 拒绝计数（改进①）：只卡第一次的计数
                     # 只应反映「同一轮被连续拒回」；全新 implementing 轮次（含
                     # 上轮已降级放行后的再派发）从零开始，避免陈旧计数误降级。
                     from core.state_machine import TASK_GATE_REJECTIONS_FIELD
                     if int(dispatch_entry.get(TASK_GATE_REJECTIONS_FIELD, 0) or 0) > 0:
                         self._pm.state_machine.update_spec(
-                            spec_name, {TASK_GATE_REJECTIONS_FIELD: 0})
+                            spec_name, {TASK_GATE_REJECTIONS_FIELD: 0}
+                        )
                 # 主树 stash 已收拢进 merge_back_from_branch 的 guard 原子段
                 # （fix-autostash-orphans）：锁内 stash→merge→pop，不再依赖
                 # 派发前 stash + 成功路径 pop 的长窗口配对（曾致 7 次改动滞留 stash）。
-                result = self._pm.agent_runner.run_implementer(
-                    spec_name, pre_wt_path=resume_wt)
+                result = self._pm.agent_runner.run_implementer(spec_name, pre_wt_path=resume_wt)
                 # Read .fenix-run-result.json (worktree first, project root fallback)
                 # to determine true status — file is more authoritative than
                 # process exit code for semantic success/error.
@@ -790,13 +791,10 @@ class Dispatcher:
                         # 沿用为 None 的 result.error（成功进程 error=None，沿用会产出
                         # 「失败但无归因」的空壳处置，违背 admin 处置非空壳约定）。
                         # 归因文案同时是重派 prompt 的缺口注入来源。
-                        impl_error = self._pm._partial_attribution(
-                            spec_name, impl_result, result)
+                        impl_error = self._pm._partial_attribution(spec_name, impl_result, result)
                     elif impl_status != "success":
                         impl_error = result.error
-                is_success = result.success and (
-                    impl_status is None or impl_status == "success"
-                )
+                is_success = result.success and (impl_status is None or impl_status == "success")
                 final_error = impl_error or result.error
 
                 # ── 结构化诊断写入（fix-run-hang-amplification 2.3）──
@@ -804,8 +802,7 @@ class Dispatcher:
                 # spec 级 _impl_diagnosis 字段，供重派 attempt 继承（不再从零
                 # 重复探测同一阻塞）。任何异常不阻塞主流程（诊断是附加物）。
                 try:
-                    self._record_impl_diagnosis(
-                        spec_name, result, impl_result, final_error)
+                    self._record_impl_diagnosis(spec_name, result, impl_result, final_error)
                 except Exception as e:
                     self._pm.logger.warning(
                         "pm_engine",
@@ -835,11 +832,14 @@ class Dispatcher:
                             f"run={result.run_id}",
                         )
                         self._pm.state_machine.transition(spec_name, "implemented")
-                        self._pm.state_machine.update_spec(spec_name, {
-                            "implementer_run": result.run_id,
-                            "error": None,
-                            "_zero_change_attempts": 0,
-                        })
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "implementer_run": result.run_id,
+                                "error": None,
+                                "_zero_change_attempts": 0,
+                            },
+                        )
                         self._pm._enqueue_front(spec_name, "verifier")
                         return
                     attempts = 0
@@ -854,16 +854,19 @@ class Dispatcher:
                     # 重派文案须指导 commit，避免把真实工作当空转误报。
                     dirty = list(getattr(result, "worktree_dirty", None) or [])
                     if dirty:
-                        err_note = (f"实现器报成功但分支零提交，worktree 有 "
-                                    f"{len(dirty)} 个未提交修改（清单见日志）——不是空转；"
-                                    f"重派时务必用 git commit 提交改动后再报完成")
+                        err_note = (
+                            f"实现器报成功但分支零提交，worktree 有 "
+                            f"{len(dirty)} 个未提交修改（清单见日志）——不是空转；"
+                            f"重派时务必用 git commit 提交改动后再报完成"
+                        )
                         self._pm.logger.warning(
                             "pm_engine",
                             f"零变更哨·未提交工作 '{spec_name}': {dirty[:10]}",
                         )
                     else:
-                        err_note = ("实现器零变更报成功（疑似输出截断/空转）— "
-                                    "不合并不推进，重派实现")
+                        err_note = (
+                            "实现器零变更报成功（疑似输出截断/空转）— " "不合并不推进，重派实现"
+                        )
                     updates: dict = {
                         "status": "ready",
                         "error": err_note + f"（第 {attempts} 次）",
@@ -872,8 +875,10 @@ class Dispatcher:
                     if attempts >= 3:
                         updates["status"] = "blocked"
                         updates["tester_run"] = None
-                        updates["error"] = ("实现器连续 3 次零变更报成功 — 已 blocked，"
-                                            "需人工检查任务书/上下文/网关稳定性")
+                        updates["error"] = (
+                            "实现器连续 3 次零变更报成功 — 已 blocked，"
+                            "需人工检查任务书/上下文/网关稳定性"
+                        )
                     self._pm.state_machine.update_spec(spec_name, updates)
                     self._pm.logger.error(
                         "pm_engine",
@@ -897,8 +902,7 @@ class Dispatcher:
                         # 实现 run 对缺件提出 deliverable-dispute 异议时不自动重派
                         # （误判场景重派必然同因失败，纯烧钱），blocked 交人工裁决。
                         # 质疑不得自动放行（防 agent 绕守卫），必须第三方裁决。
-                        disputed = self._pm._disputed_deliverables(
-                            impl_result, missing)
+                        disputed = self._pm._disputed_deliverables(impl_result, missing)
                         if disputed:
                             disp_q = "、".join(disputed)
                             updates: dict = {
@@ -929,7 +933,8 @@ class Dispatcher:
                         #   missing → 既有打回/重派路径（带精准缺件清单）；
                         #   unclear → 既有 deliverable-dispute blocked 人工裁决话术。
                         adjudication = self._pm._adjudicate_deliverable_missing(
-                            spec_name, result, impl_result, missing)
+                            spec_name, result, impl_result, missing
+                        )
                         if adjudication.get("action") != "proceed":
                             return
 
@@ -943,7 +948,8 @@ class Dispatcher:
                 if is_success:
                     try:
                         relint = self._pm._tasks_md_relint_from_branch(
-                            spec_name, getattr(result, "branch", None))
+                            spec_name, getattr(result, "branch", None)
+                        )
                     except Exception as e:
                         self._pm.logger.warning(
                             "pm_engine",
@@ -952,8 +958,8 @@ class Dispatcher:
                         relint = []
                     if relint:
                         self._redispatch_tasks_relint(
-                            spec_name, relint,
-                            run_id=getattr(result, "run_id", "") or "")
+                            spec_name, relint, run_id=getattr(result, "run_id", "") or ""
+                        )
                         return
 
                 if is_success:
@@ -995,10 +1001,13 @@ class Dispatcher:
                     # ── 锚点清除见 _run_agent_worker 入口（tasks 1.5）──────
                     if result.branch:
                         try:
-                            self._pm.state_machine.update_spec(spec_name, {
-                                "branch": result.branch,
-                                "implementer_run": result.run_id,
-                            })
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "branch": result.branch,
+                                    "implementer_run": result.run_id,
+                                },
+                            )
                             self._pm.logger.info(
                                 "pm_engine",
                                 f"锚点已提前落盘 '{spec_name}': "
@@ -1032,7 +1041,8 @@ class Dispatcher:
                         # 轮次上限（_repair_round）超限时回退现行 fallback 重派兜底。
                         if getattr(merge_info, "rehearsed", False):
                             self._direct_rehearsed_to_repair(
-                                spec_name, merge_info, result.branch, merge_error)
+                                spec_name, merge_info, result.branch, merge_error
+                            )
                             return
                         # merge 失败：指纹熔断（fix-fenix-token-waste）。
                         # 同一错误指纹连续失败 ≥ 阈值 → spec 进入 blocked 停止自动重试，
@@ -1062,36 +1072,48 @@ class Dispatcher:
                                 f"— not downgrading to ready, conflict logged",
                             )
                             # 记录冲突但不降级状态，保持 testing/implemented
-                            self._pm.state_machine.update_spec(spec_name, {
-                                "error": final_error,
-                                "_merge_fp": fp,
-                                "_merge_streak": streak,
-                            })
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "error": final_error,
+                                    "_merge_fp": fp,
+                                    "_merge_streak": streak,
+                                },
+                            )
                             return
 
-                        breaker_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
+                        breaker_threshold = self._pm._get_config(
+                            "agents.merge_breaker_threshold", 2
+                        )
                         if streak >= breaker_threshold:
                             # 熔断触发：blocked 后 repair 通道一并停止
                             # （spec-merge-circuit-breaker：repair 不绕过熔断）。
                             self._pm.state_machine.transition(spec_name, "blocked")
-                            self._pm.state_machine.update_spec(spec_name, {
-                                "error": final_error,
-                                "_merge_fp": fp,
-                                "_merge_streak": streak,
-                                "_retry_count": 0,
-                            })
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "error": final_error,
+                                    "_merge_fp": fp,
+                                    "_merge_streak": streak,
+                                    "_retry_count": 0,
+                                },
+                            )
                             self._pm.logger.error(
                                 "pm_engine",
                                 f"Circuit breaker tripped for '{spec_name}' (fp={fp}) — spec blocked",
                             )
                         elif self._pm._should_enter_repair(
-                                spec_name, merge_info, streak, breaker_threshold):
+                            spec_name, merge_info, streak, breaker_threshold
+                        ):
                             # ── repair 通道（add-merge-back-repair-lane）──
                             # 语义冲突失败且熔断未触发：派 repair agent 原地修复
-                            #（把 main 合入分支解决冲突），而非 abort 后全新重派。
+                            # （把 main 合入分支解决冲突），而非 abort 后全新重派。
                             self._pm._dispatch_repair_lane(
-                                spec_name, merge_info, result.branch,
-                                fp=fp, streak=streak,
+                                spec_name,
+                                merge_info,
+                                result.branch,
+                                fp=fp,
+                                streak=streak,
                             )
                         else:
                             try:
@@ -1099,13 +1121,16 @@ class Dispatcher:
                             except (TypeError, ValueError):
                                 prev_retries = 0
                             retries = prev_retries + 1
-                            self._pm.state_machine.update_spec(spec_name, {
-                                "status": "ready",
-                                "error": final_error,
-                                "_merge_fp": fp,
-                                "_merge_streak": streak,
-                                "_retry_count": retries,
-                            })
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "status": "ready",
+                                    "error": final_error,
+                                    "_merge_fp": fp,
+                                    "_merge_streak": streak,
+                                    "_retry_count": retries,
+                                },
+                            )
                             self._pm.logger.warning(
                                 "pm_engine",
                                 f"Retry {retries}/{max_r} for '{spec_name}' (merge-back failed)",
@@ -1114,25 +1139,29 @@ class Dispatcher:
                         # stash 恢复已在 merge_back_from_branch 的 guard 段内完成
                         # （fix-autostash-orphans），此处只推进状态。
                         self._pm.state_machine.transition(spec_name, "implemented")
-                        self._pm.state_machine.update_spec(spec_name, {
-                            "implementer_run": result.run_id,
-                            # 记录真实实现分支（带时间戳后缀）：push 时按此分支推送，
-                            # 否则回退 fenix/<spec> 不存在导致 auto-push 全部失败。
-                            "branch": getattr(result, "branch", None) or None,
-                            "error": None,
-                            "_retry_count": 0,
-                            "_merge_fp": None,
-                            "_merge_streak": 0,
-                            # 派发成功即清零锁冲突计数（improve-run-lifecycle-governance D5）
-                            **self._pm._clear_dispatch_conflict(spec_name),
-                        })
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "implementer_run": result.run_id,
+                                # 记录真实实现分支（带时间戳后缀）：push 时按此分支推送，
+                                # 否则回退 fenix/<spec> 不存在导致 auto-push 全部失败。
+                                "branch": getattr(result, "branch", None) or None,
+                                "error": None,
+                                "_retry_count": 0,
+                                "_merge_fp": None,
+                                "_merge_streak": 0,
+                                # 派发成功即清零锁冲突计数（improve-run-lifecycle-governance D5）
+                                **self._pm._clear_dispatch_conflict(spec_name),
+                            },
+                        )
                         # pop 冲突自愈后：被丢弃的 stash 改动文件清单写入 error 字段，
                         # 触发 admin 告警（stash 条目保留、可 git stash show 找回，
                         # 不阻塞 merge-back 与状态推进）。须放在上面 update_spec(error=None)
                         # 之后，避免被清空。见 fix-stashpop-deadlock。
                         if conflict_files:
                             self._pm._report_stash_pop_conflict(
-                                spec_name, conflict_files, merge_info=merge_info)
+                                spec_name, conflict_files, merge_info=merge_info
+                            )
                         # 写侧确定性回写：把已完成的任务勾选同步进主树 tasks.md
                         # （add-task-progress-sync）。任何异常都不阻塞 run 终态主流程。
                         try:
@@ -1156,7 +1185,9 @@ class Dispatcher:
                             )
                         # Immediately queue verifier at FRONT so it runs next
                         self._pm._enqueue_front(spec_name, "verifier")
-                        self._pm.logger.info("pm_engine", f"Implement done, verifier queued for '{spec_name}'")
+                        self._pm.logger.info(
+                            "pm_engine", f"Implement done, verifier queued for '{spec_name}'"
+                        )
                 else:
                     # ── 人工取消 hold-state（add-run-cancel D4）──────
                     # 被取消的 run（cancelled=True）：只更新 error 字段（含
@@ -1166,20 +1197,22 @@ class Dispatcher:
                     # 管理员人工操作（freeze 等）。
                     if getattr(result, "cancelled", False):
                         cancelled_err = (
-                            f"run 被人工取消：{final_error}"
-                            if final_error else "run 被人工取消"
+                            f"run 被人工取消：{final_error}" if final_error else "run 被人工取消"
                         )
                         self._pm.logger.warning(
                             "pm_engine",
                             f"run 被人工取消 '{spec_name}' — hold-state，"
                             f"不重试/不重派: {cancelled_err}",
                         )
-                        self._pm.state_machine.update_spec(spec_name, {
-                            "error": cancelled_err,
-                            # 取消保持持久标记（fix-cancel-holdstate-recovery D1）：
-                            # 随 STATE.md 存活，重启恢复/监测链路据此跳过该 spec。
-                            "_cancelled_hold": True,
-                        })
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "error": cancelled_err,
+                                # 取消保持持久标记（fix-cancel-holdstate-recovery D1）：
+                                # 随 STATE.md 存活，重启恢复/监测链路据此跳过该 spec。
+                                "_cancelled_hold": True,
+                            },
+                        )
                         return
                     # ── 死亡 run 豁免（fix-budget-counting-semantics D1）──────
                     # 无收工结果产出（.fenix-run-result.json 缺失）＝ run 异常
@@ -1215,9 +1248,12 @@ class Dispatcher:
                             f"no retry/state flip: {final_error}",
                         )
                         # 写入 error 供 dashboard/admin 可见，但不翻转状态、不增 retry
-                        self._pm.state_machine.update_spec(spec_name, {
-                            "error": final_error,
-                        })
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "error": final_error,
+                            },
+                        )
                     elif final_error and "[provider-transient]" in final_error:
                         # fix-provider-transient-backoff（D4）：transient 终态——不走
                         # _retry_count 递增/清零路径，改排程等待后重派（复用
@@ -1229,9 +1265,12 @@ class Dispatcher:
                             f"delayed redispatch, no retry/state flip: {final_error}",
                         )
                         # 写入 error 供 dashboard 可见，但不翻转状态
-                        self._pm.state_machine.update_spec(spec_name, {
-                            "error": final_error,
-                        })
+                        self._pm.state_machine.update_spec(
+                            spec_name,
+                            {
+                                "error": final_error,
+                            },
+                        )
                         self._schedule_transient_recovery(spec_name)
                     else:
                         # Retry or mark error
@@ -1243,11 +1282,14 @@ class Dispatcher:
                         retries = prev_retries + 1
                         max_r = self._pm._get_config("agents.max_retries", 3)
                         if retries >= max_r:
-                            self._pm.state_machine.update_spec(spec_name, {
-                                "status": "ready",
-                                "error": final_error,
-                                "_retry_count": 0,
-                            })
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "status": "ready",
+                                    "error": final_error,
+                                    "_retry_count": 0,
+                                },
+                            )
                             self._pm.logger.error(
                                 "pm_engine",
                                 f"All retries exhausted for '{spec_name}'",
@@ -1257,11 +1299,14 @@ class Dispatcher:
                             # 轮询节流），立即重新排队实现器，避免滞留为孤儿。
                             self._pm._enqueue(spec_name, "implementer")
                         else:
-                            self._pm.state_machine.update_spec(spec_name, {
-                                "status": "ready",
-                                "error": final_error,
-                                "_retry_count": retries,
-                            })
+                            self._pm.state_machine.update_spec(
+                                spec_name,
+                                {
+                                    "status": "ready",
+                                    "error": final_error,
+                                    "_retry_count": retries,
+                                },
+                            )
                             self._pm.logger.warning(
                                 "pm_engine",
                                 f"Retry {retries}/{max_r} for '{spec_name}'",
@@ -1290,7 +1335,6 @@ class Dispatcher:
                     self._active_priority_counts[priority] = cnt
             self._pm._process_queue()
 
-
     @staticmethod
     def _dispatch_backoffed(spec: dict) -> bool:
         """判断 spec 是否处于派发退避期（派发基础设施失败后防振荡）。
@@ -1305,7 +1349,6 @@ class Dispatcher:
             return float(until) > datetime.now(timezone.utc).timestamp()
         except (TypeError, ValueError):
             return False
-
 
     # ── fast-track 派发前规模预检（add-fast-track-scale-precheck）───────────
 
@@ -1353,12 +1396,13 @@ class Dispatcher:
                 "pm_engine",
                 f"fast-track 规模降级 .spec.yaml 改写失败 '{spec_name}'（非阻塞）: {e}",
             )
-        self._pm.state_machine.update_spec(spec_name, {
-            "status": "ready",
-            "error": (
-                f"fast-track 规模预检降级完整模式（scale={scale}，任务面超阈）"
-            ),
-        })
+        self._pm.state_machine.update_spec(
+            spec_name,
+            {
+                "status": "ready",
+                "error": (f"fast-track 规模预检降级完整模式（scale={scale}，任务面超阈）"),
+            },
+        )
         self._pm._enqueue(spec_name, "implementer")
         self._pm.logger.warning(
             "pm_engine",
@@ -1366,9 +1410,9 @@ class Dispatcher:
             f"改走完整模式 implementer 车道（不再按 3.5h 统一档）",
         )
 
-
-    def _record_impl_diagnosis(self, spec_name: str, result, impl_result,
-                               final_error: str | None) -> None:
+    def _record_impl_diagnosis(
+        self, spec_name: str, result, impl_result, final_error: str | None
+    ) -> None:
         """run 终结时写入 spec 级结构化诊断字段 ``_impl_diagnosis``。
 
         fix-run-hang-amplification 2.3：诊断摘要 = 终态类型 + 归因 + 已定性
@@ -1394,8 +1438,7 @@ class Dispatcher:
                 terminal = "interrupted"
             else:
                 terminal = "error"
-        elif impl_status_success := bool(
-                impl_result and impl_result.get("status") == "success"):
+        elif impl_status_success := bool(impl_result and impl_result.get("status") == "success"):
             terminal = "result"
         elif (impl_result or {}).get("status") == "partial":
             # fix-impl-tasks-completion-gate D6：partial 是诚实申报未完成的合法
@@ -1418,8 +1461,10 @@ class Dispatcher:
             tasks_path = spec_dir / "tasks.md"
             if tasks_path.is_file():
                 tasks_checked = sum(
-                    1 for line in tasks_path.read_text(encoding="utf-8").splitlines()
-                    if line.strip().startswith("- [x]"))
+                    1
+                    for line in tasks_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip().startswith("- [x]")
+                )
         except Exception:
             tasks_checked = None
         diagnosis = {
@@ -1432,7 +1477,8 @@ class Dispatcher:
             },
         }
         self._pm.state_machine.update_spec(
-            spec_name, {"_impl_diagnosis": json.dumps(diagnosis, ensure_ascii=False)})
+            spec_name, {"_impl_diagnosis": json.dumps(diagnosis, ensure_ascii=False)}
+        )
         self._pm.logger.info(
             "pm_engine",
             f"实现诊断已记录 '{spec_name}': terminal={terminal}, "
@@ -1455,12 +1501,15 @@ class Dispatcher:
             status = spec_entry.get("status")
             backoff_until = int(datetime.now(timezone.utc).timestamp()) + 300
             if agent_type == "verifier" and status == "testing":
-                self._pm.state_machine.update_spec(spec_name, {
-                    "status": "implemented",
-                    "tester_run": None,
-                    "error": f"Verification infrastructure failure (retryable): {exc}",
-                    "_dispatch_backoff_until": backoff_until,
-                })
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "status": "implemented",
+                        "tester_run": None,
+                        "error": f"Verification infrastructure failure (retryable): {exc}",
+                        "_dispatch_backoff_until": backoff_until,
+                    },
+                )
                 self._pm.logger.warning(
                     "pm_engine",
                     f"Rolled back '{spec_name}' testing → implemented (verifier never started): {exc}",
@@ -1485,15 +1534,18 @@ class Dispatcher:
                 # fix-run-hang-amplification 2.5：update_spec 增量更新——此处只清
                 # error 与 run 字段，_impl_diagnosis 结构化诊断 MUST NOT 被清除
                 # （重派 attempt 需继承上轮诊断）。
-                self._pm.state_machine.update_spec(spec_name, {
-                    "status": "ready",
-                    "implementer_run": None,
-                    "tester_run": None,
-                    "branch": None,
-                    "error": None,
-                    "_last_dispatch_error": f"Implementation dispatch failed (retryable): {exc}",
-                    "_dispatch_backoff_until": backoff_until,
-                })
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "status": "ready",
+                        "implementer_run": None,
+                        "tester_run": None,
+                        "branch": None,
+                        "error": None,
+                        "_last_dispatch_error": f"Implementation dispatch failed (retryable): {exc}",
+                        "_dispatch_backoff_until": backoff_until,
+                    },
+                )
                 self._pm.logger.warning(
                     "pm_engine",
                     f"Rolled back '{spec_name}' implementing → ready "
@@ -1503,9 +1555,9 @@ class Dispatcher:
         except Exception as e2:
             self._pm.logger.error("pm_engine", f"State rollback failed for '{spec_name}': {e2}")
 
-
-    def _report_stash_pop_conflict(self, spec_name: str, conflict_files: list,
-                                   merge_info=None) -> None:
+    def _report_stash_pop_conflict(
+        self, spec_name: str, conflict_files: list, merge_info=None
+    ) -> None:
         """pop 冲突自愈后上报被丢弃的 stash 改动文件清单（fix-stashpop-deadlock）。
 
         主树已通过 checkout HEAD + reset 自愈回到干净可写状态，merge 结果不丢失、
@@ -1536,6 +1588,7 @@ class Dispatcher:
         # 无风暴风险，不加节流。任何异常都不阻塞 merge-back 主流程。
         try:
             from core.admin_store import AdminStore, SIGNAL
+
             # 条目去向从 worktree_manager 读（dispatch 层不持锁，读实例属性足够——
             # guard 段已结束、无并发写者）。
             try:
@@ -1546,22 +1599,28 @@ class Dispatcher:
             short_sha = sha[:12] if sha else ""
             if fate.get("kept"):
                 fate_desc = (
-                    f"stash 条目保留在栈中（栈顶 sha {short_sha}，"
-                    f"git stash list 可见）" if short_sha else "stash 条目保留在栈中"
+                    f"stash 条目保留在栈中（栈顶 sha {short_sha}，" f"git stash list 可见）"
+                    if short_sha
+                    else "stash 条目保留在栈中"
                 )
             else:
                 fate_desc = (
                     f"stash 版已被合并结果完全取代，条目已自动 drop"
                     f"（commit {short_sha}，gc 前可按 sha 找回）"
-                    if short_sha else "stash 条目已被自动 drop"
+                    if short_sha
+                    else "stash 条目已被自动 drop"
                 )
-            recover_cmds = "; ".join(
-                f"git show {sha}:{f}" for f in conflict_files
-            ) if sha else "git stash show / git stash list 人工核对"
+            recover_cmds = (
+                "; ".join(f"git show {sha}:{f}" for f in conflict_files)
+                if sha
+                else "git stash show / git stash list 人工核对"
+            )
             overlap = list(getattr(merge_info, "wip_overlap", []) or [])
             overlap_desc = (
                 f"；merge-back 前 WIP 重叠预检命中 {len(overlap)} 文件"
-                f"（可能与本次丢弃相关）：{overlap}" if overlap else ""
+                f"（可能与本次丢弃相关）：{overlap}"
+                if overlap
+                else ""
             )
             description = (
                 f"SPEC '{spec_name}' merge-back stash pop 冲突已自愈："
@@ -1570,20 +1629,26 @@ class Dispatcher:
                 f"逐文件找回：{recover_cmds}"
             )
             store = AdminStore(self._pm.project_root, self._pm.logger)
-            store.append({
-                "kind": SIGNAL,
-                "signal_type": "stash_pop_conflict",
-                "spec": spec_name,
-                "severity": "major",
-                "description": description,
-                "evidence": {"conflict_files": list(conflict_files),
-                             "stash_kept": bool(fate.get("kept")),
-                             "stash_sha": sha, "wip_overlap": overlap},
-                "recommended_action": (
-                    "git stash list 查条目去向；按逐文件 git show <sha>:<file> 命令"
-                    "核对内容，仍需要的改动手动落回工作区；确认零独有内容后 "
-                    "git stash drop 清理"),
-            })
+            store.append(
+                {
+                    "kind": SIGNAL,
+                    "signal_type": "stash_pop_conflict",
+                    "spec": spec_name,
+                    "severity": "major",
+                    "description": description,
+                    "evidence": {
+                        "conflict_files": list(conflict_files),
+                        "stash_kept": bool(fate.get("kept")),
+                        "stash_sha": sha,
+                        "wip_overlap": overlap,
+                    },
+                    "recommended_action": (
+                        "git stash list 查条目去向；按逐文件 git show <sha>:<file> 命令"
+                        "核对内容，仍需要的改动手动落回工作区；确认零独有内容后 "
+                        "git stash drop 清理"
+                    ),
+                }
+            )
             self._pm.logger.info(
                 "pm_engine",
                 f"stash_pop_conflict 告警已写入 admin store: '{spec_name}'",
@@ -1596,9 +1661,9 @@ class Dispatcher:
 
     # ── 缺件 LLM 终审与裁决机械执行（add-deliverable-declaration-triage D3/D4）──
 
-    def _build_dispute_judge_input(self, spec_name: str, impl_result,
-                                   missing: list,
-                                   kind_by_path: "dict | None" = None) -> dict:
+    def _build_dispute_judge_input(
+        self, spec_name: str, impl_result, missing: list, kind_by_path: "dict | None" = None
+    ) -> dict:
         """组装 dispute-judge 输入（4.1/4.5）：缺件 + kind + basename 候选 + 语境。
 
         ``missing`` 兼容两种形态：路径列表（``list[str]``）或守卫返回的
@@ -1631,11 +1696,13 @@ class Dispatcher:
                 candidates = []
             if not m_kind and kind_by_path:
                 m_kind = kind_by_path.get(m_path, "new")
-            missing_entries.append({
-                "path": m_path,
-                "kind": m_kind or "new",
-                "candidates": candidates,
-            })
+            missing_entries.append(
+                {
+                    "path": m_path,
+                    "kind": m_kind or "new",
+                    "candidates": candidates,
+                }
+            )
 
         findings = []
         if isinstance(impl_result, dict):
@@ -1644,9 +1711,9 @@ class Dispatcher:
         return {
             "spec": spec_name,
             "missing": missing_entries,
-            "spec_context": self._dispute_spec_context(spec_name,
-                                                       [m["path"] for m in
-                                                        missing_entries]),
+            "spec_context": self._dispute_spec_context(
+                spec_name, [m["path"] for m in missing_entries]
+            ),
             "findings": findings,
         }
 
@@ -1695,6 +1762,7 @@ class Dispatcher:
         context: dict = {"excerpts": excerpts}
         try:
             from core.deliverables import extract_declared_entries
+
             entries = extract_declared_entries(spec_dir)
             if entries:
                 context["declared_entries"] = entries
@@ -1702,8 +1770,9 @@ class Dispatcher:
             pass
         return context
 
-    def _read_dispute_verdicts(self, spec_name: str, judge_run_id: str,
-                               judge_result) -> "dict | None":
+    def _read_dispute_verdicts(
+        self, spec_name: str, judge_run_id: str, judge_result
+    ) -> "dict | None":
         """读取 dispute-judge 裁决 JSON（4.2 结果消费）。
 
         判据：run 未成功收工 / 结果文件缺失或 JSON 不合法 / 顶层 status 非
@@ -1714,8 +1783,11 @@ class Dispatcher:
             合法裁决 JSON dict 或 None。
         """
         result_path = (
-            self._pm.project_root / ".fenix" / "verify-progress"
-            / spec_name / "dispute_judge_result.json"
+            self._pm.project_root
+            / ".fenix"
+            / "verify-progress"
+            / spec_name
+            / "dispute_judge_result.json"
         )
         if judge_result is None or not getattr(judge_result, "success", False):
             self._pm.logger.warning(
@@ -1767,8 +1839,7 @@ class Dispatcher:
         """
         rel = f"spec/changes/{spec_name}/tasks.md"
         try:
-            ok, err = self._pm._git_commit(
-                [rel], f"[fenix] {spec_name}: 声明段修正（{element}）")
+            ok, err = self._pm._git_commit([rel], f"[fenix] {spec_name}: 声明段修正（{element}）")
             if ok:
                 self._pm.logger.info(
                     "pm_engine",
@@ -1786,8 +1857,7 @@ class Dispatcher:
                 f"声明段软化提交异常 '{spec_name}'（{element}，非阻塞）: {e}",
             )
 
-    def _preclassify_missing(self, spec_name: str, result,
-                             missing: list) -> dict:
+    def _preclassify_missing(self, spec_name: str, result, missing: list) -> dict:
         """守卫缺件确定性预分类（add-declaration-premechanize D4，Task 4.1-4.3）。
 
         在组装 judge 输入之前，对缺件清单做确定性分类：命中不可交付模式
@@ -1828,10 +1898,7 @@ class Dispatcher:
 
         # 缺件入参兼容两种形态：守卫返回 list[dict]（path/kind/violation）与
         # 既有调用/测试的 list[str]。统一规范化为路径列表（匹配逻辑只认路径）。
-        missing_paths = [
-            m["path"] if isinstance(m, dict) else str(m)
-            for m in missing
-        ]
+        missing_paths = [m["path"] if isinstance(m, dict) else str(m) for m in missing]
 
         # 分类：确定性命中 → deterministic；声明段无该条目或不命中 → 留在 remaining
         deterministic: list = []
@@ -1859,6 +1926,7 @@ class Dispatcher:
             entry = entry_by_path[m]
             try:
                 from core.deliverables import soften_declared_kind
+
                 diff = soften_declared_kind(spec_dir, m)
                 diff_by_element[m] = diff
                 self._commit_softened_declaration(spec_name, m)
@@ -1878,27 +1946,30 @@ class Dispatcher:
         # 审计留痕（reasoning 前缀 guard-preclassify）
         try:
             from core.admin_store import DisputeAuditStore
+
             # after 已是软化后文本（soften_declared_kind 已写盘）
             after_text = ""
             if tasks_path.exists():
                 after_text = tasks_path.read_text(encoding="utf-8")
-            DisputeAuditStore(self._pm.project_root, self._pm.logger).append({
-                "spec": spec_name,
-                "trigger_run_id": "",
-                "judge_run_id": "",
-                "verdicts": [
-                    {
-                        "element": m,
-                        "verdict": "reference",
-                        "reasoning": "guard-preclassify: gitignored/outside-root",
-                    }
-                    for m in deterministic
-                ],
-                "diff": {
-                    "before": before_text,
-                    "after": after_text,
-                },
-            })
+            DisputeAuditStore(self._pm.project_root, self._pm.logger).append(
+                {
+                    "spec": spec_name,
+                    "trigger_run_id": "",
+                    "judge_run_id": "",
+                    "verdicts": [
+                        {
+                            "element": m,
+                            "verdict": "reference",
+                            "reasoning": "guard-preclassify: gitignored/outside-root",
+                        }
+                        for m in deterministic
+                    ],
+                    "diff": {
+                        "before": before_text,
+                        "after": after_text,
+                    },
+                }
+            )
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
@@ -1923,17 +1994,21 @@ class Dispatcher:
                 "pm_engine",
                 f"预分类缺件全清 '{spec_name}' — 守卫重跑通过，放行 merge",
             )
-            self._pm.state_machine.update_spec(spec_name, {
-                "status": "implementing",
-                "error": None,
-            })
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "implementing",
+                    "error": None,
+                },
+            )
             return {"action": "proceed"}
 
         # 仍有剩余 → remaining 带入 judge
         return {"action": "continue", "remaining": remaining}
 
-    def _adjudicate_deliverable_missing(self, spec_name: str, result,
-                                        impl_result, missing: list) -> dict:
+    def _adjudicate_deliverable_missing(
+        self, spec_name: str, result, impl_result, missing: list
+    ) -> dict:
         """缺件 LLM 终审 + 裁决机械执行（D3/D4，Tasks 4.1-4.4）。
 
         在既有 dispute 异议通道之后调用（实现 run 已对缺件提出 deliverable-dispute
@@ -1977,17 +2052,15 @@ class Dispatcher:
         # 否则剩余项带入后续 judge 流程（judge 输入只含剩余项）。
         remaining = preclassify_result.get("remaining", missing)
         # 将 remaining 规范化为路径列表（兼容 list[str] 与 list[dict]）
-        remaining_paths = [
-            r["path"] if isinstance(r, dict) else str(r)
-            for r in remaining
-        ]
+        remaining_paths = [r["path"] if isinstance(r, dict) else str(r) for r in remaining]
         # kind 映射：供 judge 输入携带 kind（4.5）及 delete 防洗白（4.3）。
         # 从声明段条目提取，缺省 "new"（正则回退路径无 kind 概念）。
         kind_by_path: dict = {}
         try:
             from core.deliverables import extract_declared_entries as _ede
+
             _spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
-            for e in (_ede(_spec_dir) or []):
+            for e in _ede(_spec_dir) or []:
                 if isinstance(e, dict) and e.get("path") and e.get("kind"):
                     kind_by_path[e["path"]] = e["kind"]
         except Exception:
@@ -1997,12 +2070,17 @@ class Dispatcher:
 
         judge_run_id = f"dispute-judge-{spec_name}-{int(time.time())}"
         # 1. 终审期间 spec 置 blocked（error 含 run id），阻断重派竞态
-        self._pm.state_machine.update_spec(spec_name, {
-            "status": "blocked",
-            "tester_run": None,
-            "error": (f"交付物守卫缺件 [{', '.join(remaining_paths)}] — LLM 终审进行中"
-                      f"（judge run {judge_run_id}）"),
-        })
+        self._pm.state_machine.update_spec(
+            spec_name,
+            {
+                "status": "blocked",
+                "tester_run": None,
+                "error": (
+                    f"交付物守卫缺件 [{', '.join(remaining_paths)}] — LLM 终审进行中"
+                    f"（judge run {judge_run_id}）"
+                ),
+            },
+        )
         self._pm.logger.warning(
             "pm_engine",
             f"交付物守卫缺件 '{spec_name}' 进入 LLM 终审（{judge_run_id}）",
@@ -2010,11 +2088,13 @@ class Dispatcher:
 
         # 2. 组装输入并派单轮 dispute-judge run（仅含预分类后剩余项）
         judge_input = self._build_dispute_judge_input(
-            spec_name, impl_result, remaining, kind_by_path=kind_by_path)
+            spec_name, impl_result, remaining, kind_by_path=kind_by_path
+        )
         judge_result = None
         try:
             judge_result = self._pm.agent_runner.run_dispute_judge(
-                spec_name, judge_input, run_id=judge_run_id)
+                spec_name, judge_input, run_id=judge_run_id
+            )
         except Exception as e:
             self._pm.logger.error(
                 "pm_engine",
@@ -2023,8 +2103,7 @@ class Dispatcher:
             judge_result = None
 
         # 3. 结果消费：非法裁决 → 全部待裁缺件等价 unclear
-        verdict_data = self._read_dispute_verdicts(spec_name, judge_run_id,
-                                                   judge_result)
+        verdict_data = self._read_dispute_verdicts(spec_name, judge_run_id, judge_result)
         verdict_by_element = {}
         if verdict_data is not None:
             for v in verdict_data.get("verdicts") or []:
@@ -2034,7 +2113,11 @@ class Dispatcher:
         def _verdict_of(path: str) -> dict:
             v = verdict_by_element.get(path)
             if isinstance(v, dict) and v.get("verdict") in (
-                    "typo", "reference", "missing", "unclear"):
+                "typo",
+                "reference",
+                "missing",
+                "unclear",
+            ):
                 return v
             return {"verdict": "unclear"}
 
@@ -2052,9 +2135,10 @@ class Dispatcher:
                         verdict_by_element[m] = {"verdict": "unclear"}
                         continue
                     from core.deliverables import replace_declared_path
+
                     diff = replace_declared_path(
-                        self._pm.project_root / "spec" / "changes" / spec_name,
-                        m, actual_path)
+                        self._pm.project_root / "spec" / "changes" / spec_name, m, actual_path
+                    )
                     diff_by_element[m] = diff
                     executed_verdicts.append({"element": m, **v})
                     self._pm.logger.warning(
@@ -2063,7 +2147,8 @@ class Dispatcher:
                         f"{m} → {actual_path}（声明段已修正）",
                     )
                     self._commit_softened_declaration(
-                        spec_name, f"{m} → {actual_path}（typo 修正）")
+                        spec_name, f"{m} → {actual_path}（typo 修正）"
+                    )
                 elif verdict == "reference" and kind_m == "delete":
                     # 4.3 防洗白：delete 条目的 reference 归宿被机械拒绝——
                     # 改写为 unclear（转人工），不软化声明段（软化 = 删除要求
@@ -2073,12 +2158,14 @@ class Dispatcher:
                         "judge_original": "reference",
                         "rewrite_reason": "delete-kind-reference-rejected",
                     }
-                    executed_verdicts.append({
-                        "element": m,
-                        "verdict": "unclear",
-                        "judge_original": "reference",
-                        "rewrite_reason": "delete-kind-reference-rejected",
-                    })
+                    executed_verdicts.append(
+                        {
+                            "element": m,
+                            "verdict": "unclear",
+                            "judge_original": "reference",
+                            "rewrite_reason": "delete-kind-reference-rejected",
+                        }
+                    )
                     self._pm.logger.warning(
                         "pm_engine",
                         f"dispute judge 裁决 reference 被拒 '{spec_name}': "
@@ -2087,8 +2174,10 @@ class Dispatcher:
                     )
                 elif verdict == "reference":
                     from core.deliverables import soften_declared_kind
+
                     diff = soften_declared_kind(
-                        self._pm.project_root / "spec" / "changes" / spec_name, m)
+                        self._pm.project_root / "spec" / "changes" / spec_name, m
+                    )
                     diff_by_element[m] = diff
                     executed_verdicts.append({"element": m, **v})
                     self._pm.logger.warning(
@@ -2109,20 +2198,25 @@ class Dispatcher:
         if executed_verdicts:
             try:
                 from core.admin_store import DisputeAuditStore
-                DisputeAuditStore(self._pm.project_root, self._pm.logger).append({
-                    "spec": spec_name,
-                    "trigger_run_id": getattr(result, "run_id", "") or "",
-                    "judge_run_id": judge_run_id,
-                    "verdicts": verdict_data.get("verdicts")
-                    if verdict_data else executed_verdicts,
-                    "diff": {
-                        k: {"before": d.get("before"), "after": d.get("after")}
-                        for k, d in diff_by_element.items()
-                    },
-                })
+
+                DisputeAuditStore(self._pm.project_root, self._pm.logger).append(
+                    {
+                        "spec": spec_name,
+                        "trigger_run_id": getattr(result, "run_id", "") or "",
+                        "judge_run_id": judge_run_id,
+                        "verdicts": (
+                            verdict_data.get("verdicts") if verdict_data else executed_verdicts
+                        ),
+                        "diff": {
+                            k: {"before": d.get("before"), "after": d.get("after")}
+                            for k, d in diff_by_element.items()
+                        },
+                    }
+                )
             except Exception as e:
                 self._pm.logger.warning(
-                    "pm_engine", f"dispute 审计写盘失败 '{spec_name}'（非阻塞）: {e}",
+                    "pm_engine",
+                    f"dispute 审计写盘失败 '{spec_name}'（非阻塞）: {e}",
                 )
 
         # 6. 防洗白闸门（4.4）：修正后重跑守卫对账——actual_path 在实现分支
@@ -2135,17 +2229,17 @@ class Dispatcher:
             )
             # 终审期间置 blocked 属临时态：恢复 in-flight（implementing），
             # worker 合并路径的 implementing → implemented 转换才合法
-            self._pm.state_machine.update_spec(spec_name, {
-                "status": "implementing",
-                "error": None,
-            })
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "implementing",
+                    "error": None,
+                },
+            )
             return {"action": "proceed"}
 
         # 规范化 remaining（list[dict]）为路径列表 + 保留条目供下游
-        remaining_paths = [
-            r["path"] if isinstance(r, dict) else str(r)
-            for r in remaining
-        ]
+        remaining_paths = [r["path"] if isinstance(r, dict) else str(r) for r in remaining]
 
         # 仍有缺件：分类 remaining 的归宿。remaining 可能含 typo 修正后的
         # actual_path（非原 element）——凡能追溯到「已执行 typo 修正」或
@@ -2175,14 +2269,17 @@ class Dispatcher:
             unclear_remaining.append(p)
         if unclear_remaining:
             u_q = "、".join(unclear_remaining)
-            self._pm.state_machine.update_spec(spec_name, {
-                "status": "blocked",
-                "tester_run": None,
-                "error": (
-                    f"交付物守卫缺件 [{u_q}] LLM 终审裁决 unclear/不可信 — "
-                    f"已 blocked 待人工裁决，不自动重派（judge run {judge_run_id}）"
-                ),
-            })
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "blocked",
+                    "tester_run": None,
+                    "error": (
+                        f"交付物守卫缺件 [{u_q}] LLM 终审裁决 unclear/不可信 — "
+                        f"已 blocked 待人工裁决，不自动重派（judge run {judge_run_id}）"
+                    ),
+                },
+            )
             self._pm.logger.error(
                 "pm_engine",
                 f"交付物守卫缺件终审 unclear '{spec_name}'（{u_q}）— blocked 待人工",
@@ -2217,12 +2314,16 @@ class Dispatcher:
         max_r = self._pm._get_config("agents.max_retries", 3)
         # 按 kind 分化话术：undeleted 用「未删除」语义、missing 保持「缺件」语义
         missing_q = "、".join(
-            f"{m.get('path', '?')}（{m.get('violation', 'missing')}）"
-            if isinstance(m, dict) else str(m)
+            (
+                f"{m.get('path', '?')}（{m.get('violation', 'missing')}）"
+                if isinstance(m, dict)
+                else str(m)
+            )
             for m in missing_list
         )
-        err_note = (f"交付物守卫：违规 [{missing_q}] — 不合并不推进，"
-                    f"重派实现补齐（第 {retries} 次）")
+        err_note = (
+            f"交付物守卫：违规 [{missing_q}] — 不合并不推进，" f"重派实现补齐（第 {retries} 次）"
+        )
         updates: dict = {
             "status": "ready",
             "error": err_note,
@@ -2249,9 +2350,9 @@ class Dispatcher:
     # _tasks_md_relint_from_worktree（经 PMEngine 门面 com 组件委托访问，
     # design D3 规则 3）；本处仅处置违规（重派/计数），不重复实现判定。
 
-    def _redispatch_tasks_relint(self, spec_name: str, relint: list,
-                                 *, agent_type: str = "implementer",
-                                 run_id: str = "") -> None:
+    def _redispatch_tasks_relint(
+        self, spec_name: str, relint: list, *, agent_type: str = "implementer", run_id: str = ""
+    ) -> None:
         """tasks.md 收口复检违规处置：不合并、不推进，按失败重派。
 
         error 写违规明细（逐条）与修正处方；连续计数沿用既有重派语义
@@ -2286,8 +2387,7 @@ class Dispatcher:
         self._pm.state_machine.update_spec(spec_name, updates)
         self._pm.logger.error(
             "pm_engine",
-            f"tasks.md relint 触发 '{spec_name}'（第 {retries} 次）— "
-            f"run={run_id or 'n/a'}",
+            f"tasks.md relint 触发 '{spec_name}'（第 {retries} 次）— " f"run={run_id or 'n/a'}",
         )
         if updates["status"] != "blocked":
             self._pm._enqueue_front(spec_name, agent_type)
@@ -2338,19 +2438,20 @@ class Dispatcher:
         # 保留语义不变（_keep_fast_track_worktree 幂等，runner 已在取消路径保留）。
         if getattr(result, "cancelled", False):
             ft_err = getattr(result, "error", None) or ""
-            cancelled_err = (
-                f"run 被人工取消：{ft_err}" if ft_err else "run 被人工取消"
-            )
+            cancelled_err = f"run 被人工取消：{ft_err}" if ft_err else "run 被人工取消"
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track run 被人工取消 '{spec_name}' — hold-state，"
                 f"不重试/不重派: {cancelled_err}",
             )
-            self._pm.state_machine.update_spec(spec_name, {
-                "error": cancelled_err,
-                # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
-                "_cancelled_hold": True,
-            })
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": cancelled_err,
+                    # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
+                    "_cancelled_hold": True,
+                },
+            )
             return
 
         # ── 读取结果文件（fast-track 结果文件是强制的，缺文件 = 失败） ──
@@ -2367,8 +2468,9 @@ class Dispatcher:
             # result.success 门：runner 仅在 success 时填 branch（runner.py:2644），
             # 失败/中断 run 的 branch 为空——显式保留该前置，对齐 spec WHEN 子句
             # 「正常收工（exit 0，result.success 为真、result.branch 非空）」。
-            if (getattr(result, "success", False)
-                    and self._pm._implementation_branch_has_commits(result)):
+            if getattr(result, "success", False) and self._pm._implementation_branch_has_commits(
+                result
+            ):
                 self._handle_fast_track_missing_result_merge(spec_name, result)
                 return
             self._keep_fast_track_worktree(spec_name, result)
@@ -2376,7 +2478,8 @@ class Dispatcher:
             # _handle_fast_track_failure 按实际计数追加）。"fail-closed 不推进"
             # 类状态机术语曾让用户误读为 spec 被阻塞（2026-09-04 反馈）。
             self._handle_fast_track_failure(
-                spec_name, result,
+                spec_name,
+                result,
                 "本轮实现中断：fast-track 结果文件未产出（run 异常结束），将自动重试",
             )
             return
@@ -2390,8 +2493,7 @@ class Dispatcher:
                     # 失败归因 MUST 非空（unfinished 清单与缺口 id 构成，不得
                     # 沿用为 None 的 result.error）。partial 走 _handle_fast_track_
                     # failure 的失败/预算消耗通道（连续 partial 由预算上限收口）。
-                    final_error = self._pm._partial_attribution(
-                        spec_name, ft_result, result)
+                    final_error = self._pm._partial_attribution(spec_name, ft_result, result)
                 else:
                     # run 正常收工但结果文件顶层 status 非法：error 写明实际值与修法
                     # 处方——不用无信息量兜底文案（add-agent-prompt-files 事故：
@@ -2404,9 +2506,7 @@ class Dispatcher:
                         f"修复：重写 .fenix-run-result.json 顶层 status"
                     )
             else:
-                final_error = (
-                    ft_result.get("error") or result.error or "fast-track run failed"
-                )
+                final_error = ft_result.get("error") or result.error or "fast-track run failed"
             self._handle_fast_track_failure(spec_name, result, final_error)
             return
 
@@ -2430,7 +2530,8 @@ class Dispatcher:
         # 读取失败/无 path/异常 → fail-open 不拦（lint 既有 fail-open 语义）。
         try:
             relint = self._pm._tasks_md_relint_from_worktree(
-                spec_name, getattr(result, "worktree_path", None))
+                spec_name, getattr(result, "worktree_path", None)
+            )
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
@@ -2440,8 +2541,11 @@ class Dispatcher:
         if relint:
             self._keep_fast_track_worktree(spec_name, result)
             self._redispatch_tasks_relint(
-                spec_name, relint, agent_type="fast-track",
-                run_id=getattr(result, "run_id", "") or "")
+                spec_name,
+                relint,
+                agent_type="fast-track",
+                run_id=getattr(result, "run_id", "") or "",
+            )
             return
 
         # ── 硬校验（merge 前执行，失败则不合并、按失败重派） ──
@@ -2502,13 +2606,14 @@ class Dispatcher:
             self._pm.agent_runner._v2_stop_for_worktree(Path(wt))
         except Exception as e:
             self._pm.logger.warning(
-                "pm_engine", f"fast-track 兜底收割 V2 stop 失败 '{spec_name}': {e}")
+                "pm_engine", f"fast-track 兜底收割 V2 stop 失败 '{spec_name}': {e}"
+            )
         try:
-            self._pm.agent_runner.worktree_manager._kill_worktree_strays(
-                Path(wt).name)
+            self._pm.agent_runner.worktree_manager._kill_worktree_strays(Path(wt).name)
         except Exception as e:
             self._pm.logger.warning(
-                "pm_engine", f"fast-track 兜底收割 strays 失败 '{spec_name}': {e}")
+                "pm_engine", f"fast-track 兜底收割 strays 失败 '{spec_name}': {e}"
+            )
 
     def _keep_fast_track_worktree(self, spec_name: str, result) -> None:
         """fast-track 打回/失败：保留 worktree 供重派继承（worktree-reuse）。
@@ -2560,8 +2665,7 @@ class Dispatcher:
                 # 记账与 ready 降级，spec 保持 in-flight 直通 repair（轮次兜底在
                 # _direct_rehearsed_to_repair 内）。
                 if getattr(merge_info, "rehearsed", False):
-                    self._direct_rehearsed_to_repair(
-                        spec_name, merge_info, branch, merge_error)
+                    self._direct_rehearsed_to_repair(spec_name, merge_info, branch, merge_error)
                     return False
                 spec_entry = self._pm.state_machine.read_one(spec_name) or {}
                 max_r = self._pm._get_config("agents.max_retries", 3)
@@ -2572,36 +2676,49 @@ class Dispatcher:
                 except (TypeError, ValueError):
                     prev_streak = 0
                 streak = prev_streak + 1 if prev_fp == fp else 1
-                breaker_threshold = self._pm._get_config(
-                    "agents.merge_breaker_threshold", 2)
+                breaker_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
                 final_error = f"Merge-back failed (fp={fp}): {merge_error}"
                 if streak >= breaker_threshold:
                     self._pm.state_machine.transition(spec_name, "blocked")
-                    self._pm.state_machine.update_spec(spec_name, {
-                        "error": final_error,
-                        "_merge_fp": fp, "_merge_streak": streak, "_retry_count": 0,
-                    })
+                    self._pm.state_machine.update_spec(
+                        spec_name,
+                        {
+                            "error": final_error,
+                            "_merge_fp": fp,
+                            "_merge_streak": streak,
+                            "_retry_count": 0,
+                        },
+                    )
                 elif self._pm._should_enter_repair(
-                        spec_name, merge_info, streak, breaker_threshold):
+                    spec_name, merge_info, streak, breaker_threshold
+                ):
                     # ── repair 通道（add-merge-back-repair-lane；fast-track 接入）──
                     # 语义冲突失败且熔断未触发：派 repair agent 在实现分支上把
                     # main 合入原地修复，而非 ready+重派废弃整轮成果
-                    #（2026-09-04 task-track 事故：112 turns 因混合冲突整单废弃）。
+                    # （2026-09-04 task-track 事故：112 turns 因混合冲突整单废弃）。
                     # 与 implementer 路径同序：熔断优先，repair 次之，普通重试兜底。
                     self._pm._dispatch_repair_lane(
-                        spec_name, merge_info, branch,
-                        fp=fp, streak=streak,
+                        spec_name,
+                        merge_info,
+                        branch,
+                        fp=fp,
+                        streak=streak,
                     )
                 else:
                     try:
                         retries = int(spec_entry.get("_retry_count", 0) or 0) + 1
                     except (TypeError, ValueError):
                         retries = 1
-                    self._pm.state_machine.update_spec(spec_name, {
-                        "status": "ready", "error": final_error,
-                        "_merge_fp": fp, "_merge_streak": streak,
-                        "_retry_count": retries,
-                    })
+                    self._pm.state_machine.update_spec(
+                        spec_name,
+                        {
+                            "status": "ready",
+                            "error": final_error,
+                            "_merge_fp": fp,
+                            "_merge_streak": streak,
+                            "_retry_count": retries,
+                        },
+                    )
                     self._pm._enqueue_front(spec_name, "fast-track")
                 self._pm.logger.error(
                     "pm_engine",
@@ -2611,12 +2728,18 @@ class Dispatcher:
         # merge 成功：回收 runner 延迟保留的 fast-track worktree（worktree-reuse）
         self._release_fast_track_worktree(spec_name, result)
         self._pm.state_machine.transition(spec_name, "implemented")
-        self._pm.state_machine.update_spec(spec_name, {
-            "implementer_run": result.run_id,
-            "branch": result.branch, "error": None,
-            "_retry_count": 0, "_merge_fp": None, "_merge_streak": 0,
-            **self._pm._clear_dispatch_conflict(spec_name),
-        })
+        self._pm.state_machine.update_spec(
+            spec_name,
+            {
+                "implementer_run": result.run_id,
+                "branch": result.branch,
+                "error": None,
+                "_retry_count": 0,
+                "_merge_fp": None,
+                "_merge_streak": 0,
+                **self._pm._clear_dispatch_conflict(spec_name),
+            },
+        )
         # 任务进度回写（与 implementer 成功路径一致，非阻塞）
         try:
             self._pm._sync_task_progress(spec_name)
@@ -2637,8 +2760,9 @@ class Dispatcher:
     # 计数**在本层决策。修复方向反转（D2）：repair agent 在实现分支一侧把 main
     # 合入分支并解决冲突，主树在派发前已 abort 保持干净。
 
-    def _direct_rehearsed_to_repair(self, spec_name: str, merge_info, branch: str,
-                                    merge_error: str) -> None:
+    def _direct_rehearsed_to_repair(
+        self, spec_name: str, merge_info, branch: str, merge_error: str
+    ) -> None:
         """预演语义冲突直通 repair（add-merge-tree-rehearsal D2/D5）。
 
         implementer 与 fast-track 失败分支共用：merge-tree 预演已在主树零污染点
@@ -2670,8 +2794,9 @@ class Dispatcher:
             )
             self._pm._fallback_after_repair(spec_name, branch, merge_error)
 
-    def _should_enter_repair(self, spec_name: str, merge_info, streak: int,
-                             breaker_threshold: int) -> bool:
+    def _should_enter_repair(
+        self, spec_name: str, merge_info, streak: int, breaker_threshold: int
+    ) -> bool:
         """merge-back 失败后是否进入 repair 通道（语义冲突 + 熔断未触发 + 未超轮次）。
 
         判定依据（spec-mergeback-inplace-repair）：
@@ -2700,8 +2825,9 @@ class Dispatcher:
             repair_round = 0
         return repair_round < MAX_REPAIR_ROUNDS_PER_FAILURE
 
-    def _dispatch_repair_lane(self, spec_name: str, merge_info, branch: str,
-                              fp: str | None = None, streak: int = 0) -> None:
+    def _dispatch_repair_lane(
+        self, spec_name: str, merge_info, branch: str, fp: str | None = None, streak: int = 0
+    ) -> None:
         """进入 repair 通道：三态解析载体 → 认领现场 → 派发 repair worker。
 
         载体三态（design D3，以 git 事实为判定基准）：
@@ -2735,7 +2861,9 @@ class Dispatcher:
                 f"repair 载体分支 '{branch}' 不存在 — 回退 fallback 全新重派",
             )
             self._pm._fallback_after_repair(
-                spec_name, None, getattr(merge_info, "error", "") or "",
+                spec_name,
+                None,
+                getattr(merge_info, "error", "") or "",
             )
             return
         # 三态解析：原地 / 换壳
@@ -2746,7 +2874,9 @@ class Dispatcher:
                 f"repair 载体解析失败（分支 '{branch}' 不可用）— 回退 fallback",
             )
             self._pm._fallback_after_repair(
-                spec_name, branch, getattr(merge_info, "error", "") or "",
+                spec_name,
+                branch,
+                getattr(merge_info, "error", "") or "",
             )
             return
         # 认领现场（D4）：_legacy take 摘出 + _spec_locks 注册，防 sweeper 宽限期回收
@@ -2760,15 +2890,18 @@ class Dispatcher:
         # 语义一致（统一 repair 轮次元数据）。
         base_tip = wm.branch_tip(resolved_branch)
         try:
-            self._pm.state_machine.update_spec(spec_name, {
-                "_repair_round": round_no,
-                "_repair_merge_error": getattr(merge_info, "error", "") or "",
-                "_repair_merge_fp": fp,
-                "_repair_base_tip": base_tip,
-                # 进入下一轮 repair：上一轮若曾写入「待 re-merge」标记则一并清除
-                # （fix-recovery-branch-anchor D3 清除点 2/4）。
-                "_repair_awaiting_remerge": False,
-            })
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "_repair_round": round_no,
+                    "_repair_merge_error": getattr(merge_info, "error", "") or "",
+                    "_repair_merge_fp": fp,
+                    "_repair_base_tip": base_tip,
+                    # 进入下一轮 repair：上一轮若曾写入「待 re-merge」标记则一并清除
+                    # （fix-recovery-branch-anchor D3 清除点 2/4）。
+                    "_repair_awaiting_remerge": False,
+                },
+            )
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
@@ -2806,8 +2939,7 @@ class Dispatcher:
         if branch:
             wm._wt_branches[str(wt_path)] = branch
 
-    def _run_repair_worker(self, spec_name: str, wt_path, branch: str,
-                           merge_info) -> None:
+    def _run_repair_worker(self, spec_name: str, wt_path, branch: str, merge_info) -> None:
         """repair worker：派发 repair agent → re-merge-back → 状态推进。
 
         在守护线程内同步执行（与 implementer worker 同线程语义）。repair agent
@@ -2824,7 +2956,8 @@ class Dispatcher:
             r = None
             try:
                 r = self._pm.agent_runner.run_repair(
-                    spec_name, wt_path,
+                    spec_name,
+                    wt_path,
                     conflict_summary=self._repair_conflict_summary(spec_name, merge_info),
                 )
                 # 读取 repair 结果文件（repair agent 在 worktree 写 .fenix-run-result.json）
@@ -2857,19 +2990,20 @@ class Dispatcher:
             # 不动 _retry_count/_merge_fp/_merge_streak、不入队重派。
             if getattr(r, "cancelled", False):
                 r_err = getattr(r, "error", None) or repair_error or ""
-                cancelled_err = (
-                    f"run 被人工取消：{r_err}" if r_err else "run 被人工取消"
-                )
+                cancelled_err = f"run 被人工取消：{r_err}" if r_err else "run 被人工取消"
                 self._pm.logger.warning(
                     "pm_engine",
                     f"repair run 被人工取消 — hold-state '{spec_name}'"
                     f"（保持原状）: {cancelled_err}",
                 )
-                self._pm.state_machine.update_spec(spec_name, {
-                    "error": cancelled_err,
-                    # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
-                    "_cancelled_hold": True,
-                })
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": cancelled_err,
+                        # 取消保持持久标记（fix-cancel-holdstate-recovery D1）。
+                        "_cancelled_hold": True,
+                    },
+                )
                 return
 
             # ── repair git 事实复核（fix-repair-commit-enforcement D1/D2）──
@@ -2879,8 +3013,7 @@ class Dispatcher:
             # 任一不满足即判 repair 未完成，repair_error 携带具体事实注入
             # fallback 重派上下文（不再以笼统「merge-back failed」重派）。
             if repair_ok:
-                facts_ok, fact_err = self._pm._check_repair_commit_facts(
-                    spec_name, wt_path, branch)
+                facts_ok, fact_err = self._pm._check_repair_commit_facts(spec_name, wt_path, branch)
                 if not facts_ok:
                     repair_ok = False
                     repair_error = fact_err
@@ -2893,7 +3026,9 @@ class Dispatcher:
                 # repair 失败/超时/显式失败 → 回退 fallback 全新重派（原分支按既有
                 # 清扫策略处理：登记遗产供后继 run 参考）
                 self._pm._fallback_after_repair(
-                    spec_name, branch, repair_error,
+                    spec_name,
+                    branch,
+                    repair_error,
                     merge_error=getattr(merge_info, "error", "") or "",
                 )
                 return
@@ -2904,11 +3039,14 @@ class Dispatcher:
             # repair run 终态成功后、re-merge-back 之前写入 branch/implementer_run，
             # 使恢复链在「repair 成功待 re-merge」窗口内可命中实现分支。
             # 同时写入 _repair_awaiting_remerge 标记（D3），标识「仅剩合并」。
-            self._pm.state_machine.update_spec(spec_name, {
-                "branch": branch,
-                "implementer_run": getattr(r, "run_id", None) or None,
-                "_repair_awaiting_remerge": True,
-            })
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "branch": branch,
+                    "implementer_run": getattr(r, "run_id", None) or None,
+                    "_repair_awaiting_remerge": True,
+                },
+            )
             self._pm.logger.info(
                 "pm_engine",
                 f"锚点已提前落盘（repair）'{spec_name}': "
@@ -2923,21 +3061,24 @@ class Dispatcher:
                 # update_spec(branch=...) MUST 先于 wm.cleanup 执行
                 # （先写锚点载体、后删 worktree，happy path 上不留窗口）。
                 self._pm.state_machine.transition(spec_name, "implemented")
-                self._pm.state_machine.update_spec(spec_name, {
-                    "implementer_run": getattr(r, "run_id", None) or None,
-                    "branch": branch,
-                    "error": None,
-                    "_retry_count": 0,
-                    "_merge_fp": None,
-                    "_merge_streak": 0,
-                    "_repair_round": 0,
-                    "_repair_merge_error": None,
-                    # repair 链成功收口：基准 tip 随 _repair_round 一并清零
-                    # （fix-repair-commit-enforcement 1.4），避免 stale 基准残留。
-                    "_repair_base_tip": None,
-                    "_repair_awaiting_remerge": False,
-                    **self._pm._clear_dispatch_conflict(spec_name),
-                })
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "implementer_run": getattr(r, "run_id", None) or None,
+                        "branch": branch,
+                        "error": None,
+                        "_retry_count": 0,
+                        "_merge_fp": None,
+                        "_merge_streak": 0,
+                        "_repair_round": 0,
+                        "_repair_merge_error": None,
+                        # repair 链成功收口：基准 tip 随 _repair_round 一并清零
+                        # （fix-repair-commit-enforcement 1.4），避免 stale 基准残留。
+                        "_repair_base_tip": None,
+                        "_repair_awaiting_remerge": False,
+                        **self._pm._clear_dispatch_conflict(spec_name),
+                    },
+                )
                 # 锚点已落盘（branch/implementer_run 已写入 STATE），此时才清理
                 # repair worktree 载体（1.4 顺序修复：先写锚点、后删载体）。
                 try:
@@ -2986,7 +3127,9 @@ class Dispatcher:
             except Exception:
                 pass
             self._pm._fallback_after_repair(
-                spec_name, branch, str(e),
+                spec_name,
+                branch,
+                str(e),
                 merge_error=getattr(merge_info, "error", "") or "",
             )
         finally:
@@ -2998,8 +3141,7 @@ class Dispatcher:
             self._pm._process_queue()
 
     # ── repair git 事实复核（fix-repair-commit-enforcement D1/D2/D5）──────
-    def _check_repair_commit_facts(self, spec_name: str, wt_path,
-                                   branch: str) -> tuple[bool, str]:
+    def _check_repair_commit_facts(self, spec_name: str, wt_path, branch: str) -> tuple[bool, str]:
         """repair git 事实复核：分支 tip 前进 + 无冲突残留 + 无未完成 merge。
 
         repair agent 的 success 是「声明」，worker 在此以分支 git 事实独立验证
@@ -3041,19 +3183,13 @@ class Dispatcher:
             if unmerged:
                 shown = ", ".join(unmerged[:3])
                 tail = "…" if len(unmerged) > 3 else ""
-                parts.append(
-                    f"未解决冲突残留 {len(unmerged)} 个文件"
-                    f"（{shown}{tail}）"
-                )
+                parts.append(f"未解决冲突残留 {len(unmerged)} 个文件" f"（{shown}{tail}）")
             if merge_head:
                 parts.append("存在未完成 merge（MERGE_HEAD）")
             return False, f"repair git 事实复核未通过：{'; '.join(parts)}"
         # ── tip 前进校验（基准可判时，D2）──
         try:
-            base_tip = (
-                (self._pm.state_machine.read_one(spec_name) or {})
-                .get("_repair_base_tip")
-            )
+            base_tip = (self._pm.state_machine.read_one(spec_name) or {}).get("_repair_base_tip")
         except Exception:
             base_tip = None
         if base_tip:
@@ -3063,8 +3199,7 @@ class Dispatcher:
             except Exception as e:
                 self._pm.logger.warning(
                     "pm_engine",
-                    f"repair 分支 tip 查询异常（按未前进判未完成，保守）"
-                    f"'{spec_name}': {e}",
+                    f"repair 分支 tip 查询异常（按未前进判未完成，保守）" f"'{spec_name}': {e}",
                 )
             if not now_tip or now_tip == base_tip:
                 base_short = base_tip[:12] if base_tip else "N/A"
@@ -3096,14 +3231,19 @@ class Dispatcher:
         breaker_threshold = self._pm._get_config("agents.merge_breaker_threshold", 2)
         if streak >= breaker_threshold:
             self._pm.state_machine.transition(spec_name, "blocked")
-            self._pm.state_machine.update_spec(spec_name, {
-                "error": final_error,
-                "_merge_fp": fp, "_merge_streak": streak, "_retry_count": 0,
-                # 熔断封顶时一并清除「待 re-merge」标记（D3）：blocked
-                # 状态下无论 admin 如何处置（unfreeze/重置），该标记不应
-                # 残留导致后续启动误走 re-merge 路径。
-                "_repair_awaiting_remerge": False,
-            })
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "error": final_error,
+                    "_merge_fp": fp,
+                    "_merge_streak": streak,
+                    "_retry_count": 0,
+                    # 熔断封顶时一并清除「待 re-merge」标记（D3）：blocked
+                    # 状态下无论 admin 如何处置（unfreeze/重置），该标记不应
+                    # 残留导致后续启动误走 re-merge 路径。
+                    "_repair_awaiting_remerge": False,
+                },
+            )
             self._pm.logger.error(
                 "pm_engine",
                 f"Circuit breaker tripped after repair for '{spec_name}' (fp={fp}) "
@@ -3112,14 +3252,19 @@ class Dispatcher:
             return
         if self._pm._should_enter_repair(spec_name, remerge_info, streak, breaker_threshold):
             self._pm._dispatch_repair_lane(
-                spec_name, remerge_info, branch, fp=fp, streak=streak,
+                spec_name,
+                remerge_info,
+                branch,
+                fp=fp,
+                streak=streak,
             )
             return
         # 未触发熔断且不可 repair → fallback 全新重派
         self._pm._fallback_after_repair(spec_name, branch, merge_error)
 
-    def _fallback_after_repair(self, spec_name: str, branch: str | None,
-                               repair_error: str, merge_error: str = "") -> None:
+    def _fallback_after_repair(
+        self, spec_name: str, branch: str | None, repair_error: str, merge_error: str = ""
+    ) -> None:
         """repair 链失败回退：全新重派 implementer，prompt 注入 merge 失败上下文。
 
         - 清理 repair worktree（保留分支：按既有清扫策略登记遗产，供后继 run 参考）；
@@ -3199,6 +3344,7 @@ class Dispatcher:
             # fast-track spec 的 repair 失败回 fast-track 重派，不硬派 implementer
             try:
                 from core.spec_mode import read_spec_mode
+
                 channel = (
                     "fast-track"
                     if read_spec_mode(self._pm.project_root, spec_name) == "fast-track"
@@ -3223,8 +3369,7 @@ class Dispatcher:
             "spec": spec_name,
             "merge_error": getattr(merge_info, "error", "") or "",
             "conflict_paths": list(getattr(merge_info, "conflict_paths", []) or []),
-            "has_semantic_conflict": bool(
-                getattr(merge_info, "has_semantic_conflict", False)),
+            "has_semantic_conflict": bool(getattr(merge_info, "has_semantic_conflict", False)),
             "repair_round": repair_round,
         }
 
@@ -3254,7 +3399,8 @@ class Dispatcher:
             wt_path = self._pm._find_implementer_worktree(spec_name)
             if wt_path is not None and (wt_path / ".fenix-run-result.json").exists():
                 gate_err = self._pm.agent_runner._check_impl_result_artifact(
-                    spec_name, None, wt_path)
+                    spec_name, None, wt_path
+                )
                 # 仅返回字符串归因才是判据失败（兼容单测 mock 环境：MagicMock
                 # 非 None 非 str，按通过处理——产品环境恒返回 str|None）。
                 if isinstance(gate_err, str):
@@ -3262,7 +3408,8 @@ class Dispatcher:
                     self._pm.state_machine.update_spec(spec_name, {"error": err})
                     self._pm._enqueue_front(spec_name, "fast-track")
                     self._pm.logger.error(
-                        "pm_engine", f"fast-track 完成度判据拦截 '{spec_name}': {err}",
+                        "pm_engine",
+                        f"fast-track 完成度判据拦截 '{spec_name}': {err}",
                     )
                     return None
             elif wt_path is None:
@@ -3283,14 +3430,14 @@ class Dispatcher:
             self._pm.state_machine.update_spec(spec_name, {"error": err})
             self._pm._enqueue_front(spec_name, "fast-track")
             self._pm.logger.error(
-                "pm_engine", f"fast-track 硬校验失败 '{spec_name}': {err}",
+                "pm_engine",
+                f"fast-track 硬校验失败 '{spec_name}': {err}",
             )
             return None
 
         # 加载设计场景 ID（Phase 2 写入的 test_scenarios.json）
         scenarios_path = (
-            self._pm.project_root / ".fenix" / "verify-progress"
-            / spec_name / "test_scenarios.json"
+            self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "test_scenarios.json"
         )
         designed_ids: list = []
         if scenarios_path.exists():
@@ -3298,9 +3445,7 @@ class Dispatcher:
                 sc_data = json.loads(scenarios_path.read_text(encoding="utf-8"))
                 if isinstance(sc_data, list):
                     designed_ids = [
-                        s.get("id")
-                        for s in sc_data
-                        if isinstance(s, dict) and s.get("id")
+                        s.get("id") for s in sc_data if isinstance(s, dict) and s.get("id")
                     ]
             except (OSError, json.JSONDecodeError):
                 pass
@@ -3327,20 +3472,23 @@ class Dispatcher:
             return
         self._pm.state_machine.transition(spec_name, "testing")
         self._pm.state_machine.transition(spec_name, "verified")
-        self._pm.state_machine.update_spec(spec_name, {
-            "tester_run": result.run_id,
-            "error": None,
-            "_inconclusive_attempts": 0,
-            # add-verify-parallel-backoff / design D2：fast-track verified 是
-            # 既有清零点，降档并行度同轮复位（与 _inconclusive_attempts 同生命周期）。
-            "_verify_parallel_override": None,
-            "_verify_fail_rounds": 0,
-            # fix-daemon-lifecycle-races D3：验证自然通过清零点（fast-track 同语义）。
-            "_verify_redo_count": 0,
-            # add-blocked-reverify-lane D3：env 阻塞轮次清零点（fast-track verified
-            # 属「验证通过」唯一自动清零点语义，与全模式 verified 落定同款）。
-            ENV_BLOCK_ROUNDS_FIELD: 0,
-        })
+        self._pm.state_machine.update_spec(
+            spec_name,
+            {
+                "tester_run": result.run_id,
+                "error": None,
+                "_inconclusive_attempts": 0,
+                # add-verify-parallel-backoff / design D2：fast-track verified 是
+                # 既有清零点，降档并行度同轮复位（与 _inconclusive_attempts 同生命周期）。
+                "_verify_parallel_override": None,
+                "_verify_fail_rounds": 0,
+                # fix-daemon-lifecycle-races D3：验证自然通过清零点（fast-track 同语义）。
+                "_verify_redo_count": 0,
+                # add-blocked-reverify-lane D3：env 阻塞轮次清零点（fast-track verified
+                # 属「验证通过」唯一自动清零点语义，与全模式 verified 落定同款）。
+                ENV_BLOCK_ROUNDS_FIELD: 0,
+            },
+        )
         self._pm.logger.info(
             "pm_engine",
             f"fast-track verified: '{spec_name}' → 推进 verified",
@@ -3356,25 +3504,21 @@ class Dispatcher:
         车道语义处置）。
         """
         import yaml as _yaml
+
         # 1. .spec.yaml 写 mode: full
-        yaml_path = (
-            self._pm.project_root / "spec" / "changes"
-            / spec_name / ".spec.yaml"
-        )
+        yaml_path = self._pm.project_root / "spec" / "changes" / spec_name / ".spec.yaml"
         try:
             if yaml_path.is_file():
                 data = _yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict) and data.get("mode") == "fast-track":
                     data["mode"] = "full"
                     yaml_path.write_text(
-                        _yaml.safe_dump(data, default_flow_style=False,
-                                        sort_keys=False),
+                        _yaml.safe_dump(data, default_flow_style=False, sort_keys=False),
                         encoding="utf-8",
                     )
                     self._pm.logger.info(
                         "pm_engine",
-                        f"fast-track 升级: .spec.yaml mode → full "
-                        f"for '{spec_name}'",
+                        f"fast-track 升级: .spec.yaml mode → full " f"for '{spec_name}'",
                     )
         except Exception as e:
             self._pm.logger.warning(
@@ -3383,7 +3527,10 @@ class Dispatcher:
             )
 
     def _escalate_to_full_mode(
-        self, spec_name: str, result, verification: dict,
+        self,
+        spec_name: str,
+        result,
+        verification: dict,
     ) -> None:
         """fast-track verdict=bug-found 时升级为完整模式（add-fast-track-mode D5）。
 
@@ -3395,14 +3542,20 @@ class Dispatcher:
         # 1. .spec.yaml 写 mode: full
         self._rewrite_fast_track_to_full(spec_name)
         # 2. 记录升级原因
-        bugs_summary = "; ".join(
-            b.get("description", "")[:80]
-            for b in (verification.get("bugs") or [])
-            if isinstance(b, dict)
-        ) or "fast-track 判定 bug-found"
-        self._pm.state_machine.update_spec(spec_name, {
-            "error": f"fast-track 升级完整模式：{bugs_summary[:200]}",
-        })
+        bugs_summary = (
+            "; ".join(
+                b.get("description", "")[:80]
+                for b in (verification.get("bugs") or [])
+                if isinstance(b, dict)
+            )
+            or "fast-track 判定 bug-found"
+        )
+        self._pm.state_machine.update_spec(
+            spec_name,
+            {
+                "error": f"fast-track 升级完整模式：{bugs_summary[:200]}",
+            },
+        )
         # 3. 派发完整模式 verifier 流水线
         self._pm._enqueue(spec_name, "verifier")
         self._pm.logger.warning(
@@ -3412,7 +3565,9 @@ class Dispatcher:
         )
 
     def _handle_fast_track_missing_result_merge(
-        self, spec_name: str, result,
+        self,
+        spec_name: str,
+        result,
     ) -> None:
         """结果文件缺失但实现分支已有提交：merge + 升级完整模式补验证（D2）。
 
@@ -3431,9 +3586,12 @@ class Dispatcher:
         # 改写 mode=full + enqueue 完整模式 verifier（复用升级语义，触发因不同）
         self._rewrite_fast_track_to_full(spec_name)
         # 原因写入 spec entry（供人工审计：为何从 fast-track 转完整模式）
-        self._pm.state_machine.update_spec(spec_name, {
-            "error": "结果文件缺失，分支已提交，升级补验证",
-        })
+        self._pm.state_machine.update_spec(
+            spec_name,
+            {
+                "error": "结果文件缺失，分支已提交，升级补验证",
+            },
+        )
         self._pm._enqueue(spec_name, "verifier")
         self._pm.logger.warning(
             "pm_engine",
@@ -3443,7 +3601,10 @@ class Dispatcher:
         )
 
     def _handle_fast_track_failure(
-        self, spec_name: str, result, final_error: str,
+        self,
+        spec_name: str,
+        result,
+        final_error: str,
     ) -> None:
         """fast-track run 失败处理：与 implementer 同语义（重派/重试计数/blocked）。"""
         # 死亡 run 豁免（无收工结果 = run 异常死亡）
@@ -3471,20 +3632,28 @@ class Dispatcher:
         retries = prev_retries + 1
         max_r = self._pm._get_config("agents.max_retries", 3)
         if retries >= max_r:
-            self._pm.state_machine.update_spec(spec_name, {
-                "status": "ready", "error": f"{final_error}｜重试 {max_r}/{max_r} 已耗尽，重新排队",
-                "_retry_count": 0,
-            })
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "ready",
+                    "error": f"{final_error}｜重试 {max_r}/{max_r} 已耗尽，重新排队",
+                    "_retry_count": 0,
+                },
+            )
             self._pm.logger.error(
-                "pm_engine", f"fast-track all retries exhausted '{spec_name}'",
+                "pm_engine",
+                f"fast-track all retries exhausted '{spec_name}'",
             )
             self._pm._enqueue(spec_name, "fast-track")
         else:
-            self._pm.state_machine.update_spec(spec_name, {
-                "status": "ready",
-                "error": f"{final_error}｜自动重试 {retries}/{max_r}",
-                "_retry_count": retries,
-            })
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "status": "ready",
+                    "error": f"{final_error}｜自动重试 {retries}/{max_r}",
+                    "_retry_count": retries,
+                },
+            )
             self._pm.logger.warning(
                 "pm_engine",
                 f"fast-track retry {retries}/{max_r} '{spec_name}'",
@@ -3500,24 +3669,29 @@ class Dispatcher:
             attempts = 1
         dirty = list(getattr(result, "worktree_dirty", None) or [])
         if dirty:
-            err_note = (f"fast-track 宣称成功但零提交，worktree 有 "
-                        f"{len(dirty)} 个未提交修改——重派时务必 commit 后再报完成")
+            err_note = (
+                f"fast-track 宣称成功但零提交，worktree 有 "
+                f"{len(dirty)} 个未提交修改——重派时务必 commit 后再报完成"
+            )
         else:
-            err_note = ("fast-track 零变更报成功（疑似空转）— "
-                        "不合并不推进，重派")
+            err_note = "fast-track 零变更报成功（疑似空转）— " "不合并不推进，重派"
         updates: dict = {
-            "status": "ready", "error": err_note + f"（第 {attempts} 次）",
+            "status": "ready",
+            "error": err_note + f"（第 {attempts} 次）",
             "_zero_change_attempts": attempts,
         }
         if attempts >= 3:
             updates["status"] = "blocked"
-            updates["error"] = ("fast-track 连续 3 次零变更报成功 — blocked，需人工检查")
+            updates["error"] = "fast-track 连续 3 次零变更报成功 — blocked，需人工检查"
         self._pm.state_machine.update_spec(spec_name, updates)
         if attempts < 3:
             self._pm._enqueue_front(spec_name, "fast-track")
 
     def _handle_fast_track_deliverable_gate(
-        self, spec_name: str, result, missing: list,
+        self,
+        spec_name: str,
+        result,
+        missing: list,
     ) -> None:
         """fast-track 交付物守卫触发：缺件重派，3 次封顶。"""
         spec_entry = self._pm.state_machine.read_one(spec_name) or {}
@@ -3528,19 +3702,22 @@ class Dispatcher:
         max_r = self._pm._get_config("agents.max_retries", 3)
         # 按 kind 分化话术：undeleted 用「未删除」语义、missing 保持「缺件」语义
         missing_q = "、".join(
-            f"{m.get('path', '?')}（{m.get('violation', 'missing')}）"
-            if isinstance(m, dict) else str(m)
+            (
+                f"{m.get('path', '?')}（{m.get('violation', 'missing')}）"
+                if isinstance(m, dict)
+                else str(m)
+            )
             for m in missing
         )
         err_note = f"fast-track 交付物守卫：违规 [{missing_q}] — 重派补齐（第 {retries} 次）"
         updates: dict = {
-            "status": "ready", "error": err_note, "_retry_count": retries,
+            "status": "ready",
+            "error": err_note,
+            "_retry_count": retries,
         }
         if retries >= max_r:
             updates["status"] = "blocked"
-            updates["error"] = (
-                f"fast-track 交付物守卫连续 {max_r} 次缺件 [{missing_q}] — blocked"
-            )
+            updates["error"] = f"fast-track 交付物守卫连续 {max_r} 次缺件 [{missing_q}] — blocked"
         self._pm.state_machine.update_spec(spec_name, updates)
         if updates["status"] != "blocked":
             self._pm._enqueue_front(spec_name, "fast-track")

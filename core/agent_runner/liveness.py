@@ -11,7 +11,6 @@ import json
 import subprocess
 import time
 
-
 # 优雅退出时对每个在跑 agent 的 SIGTERM 缓冲窗口（秒）。daemon 收到关闭信号后对所有
 # 在跑 agent 发 SIGTERM，等此窗口让其收尾（关会话/flush 输出）；窗口结束仍未退出的
 # 用 SIGKILL 兜底。取 claude 收尾所需量级，模块级常量便于测试注入短值。
@@ -55,9 +54,14 @@ HANG_MIN_TOOL_COMPLETIONS = 3
 # admin_monitor.py _run_has_interrupted_marker 的判定口径）：
 # result=自然完成, interrupted=daemon shutdown, error=进程异常终止,
 # cancelled=人工取消。任一类型出现即视为 run 已终结。
-RUN_TERMINAL_EVENT_TYPES = frozenset({
-    "result", "interrupted", "error", "cancelled",
-})
+RUN_TERMINAL_EVENT_TYPES = frozenset(
+    {
+        "result",
+        "interrupted",
+        "error",
+        "cancelled",
+    }
+)
 
 # ── 运行期悬空 run 清扫（add-runtime-run-sweeper D2）──────────────────────
 # 三重判据之流停阈值：run jsonl mtime 停更 ≥ 该秒数且不在在飞注册表、尾部
@@ -88,8 +92,7 @@ def _file_has_terminal_event(run_file: Path) -> bool:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if (isinstance(entry, dict)
-                        and entry.get("type") in RUN_TERMINAL_EVENT_TYPES):
+                if isinstance(entry, dict) and entry.get("type") in RUN_TERMINAL_EVENT_TYPES:
                     return True
     except OSError:
         return False
@@ -119,11 +122,14 @@ def sweep_runs_without_terminal_state(runs_dir: Path) -> list:
             continue
         # 无终态事件——追加 interrupted 终态（O_APPEND 单行原子追加）
         try:
-            append_run_line(run_file, {
-                "type": "interrupted",
-                "reason": "startup terminal-state sweep",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            append_run_line(
+                run_file,
+                {
+                    "type": "interrupted",
+                    "reason": "startup terminal-state sweep",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
             patched.append((run_file.stem, run_file))
         except OSError:
             pass
@@ -209,12 +215,15 @@ class LivenessSupervisor:
                 continue
             # 三重判据全中——补写 interrupted 终态（O_APPEND 单行原子追加）
             try:
-                append_run_line(run_file, {
-                    "type": "interrupted",
-                    "reason": "runtime terminal-state sweep",
-                    "idle_seconds": max(0, idle_seconds),
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
+                append_run_line(
+                    run_file,
+                    {
+                        "type": "interrupted",
+                        "reason": "runtime terminal-state sweep",
+                        "idle_seconds": max(0, idle_seconds),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
             except OSError:
                 continue
             self._terminal_verified.add(stem)
@@ -224,8 +233,7 @@ class LivenessSupervisor:
             self._pm.logger.warning(
                 "agent_runner",
                 f"Runtime terminal-state sweep: 补写 {len(patched)} 个悬空 "
-                f"无终态 run 的 interrupted 终态: "
-                + ", ".join(run_id for run_id, _ in patched),
+                f"无终态 run 的 interrupted 终态: " + ", ".join(run_id for run_id, _ in patched),
             )
         return patched
 
@@ -253,7 +261,6 @@ class LivenessSupervisor:
             )
         return self._stream_recent(spec_name, LIVE_ATTEMPT_STREAM_WINDOW_SECONDS)
 
-
     def _pgrep_live_attempt(self, spec_name: str) -> bool:
         """pgrep 匹配 cmdline 含该 spec worktree 目录字面量的进程。
 
@@ -264,14 +271,15 @@ class LivenessSupervisor:
             try:
                 res = subprocess.run(
                     ["pgrep", "-f", pattern],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
             except (subprocess.SubprocessError, OSError):
                 return False
             if res.returncode == 0 and res.stdout.strip():
                 return True
         return False
-
 
     def _stream_recent(self, spec_name: str, seconds: int) -> bool:
         """该 spec 最新 run 流文件的 mtime 是否在 seconds 内（不可用 → False）。"""
@@ -292,9 +300,9 @@ class LivenessSupervisor:
                     continue
         return False
 
-
-    def note_run_extension(self, spec_name: str, run_id: str,
-                           extension_index: int, new_deadline: float) -> None:
+    def note_run_extension(
+        self, spec_name: str, run_id: str, extension_index: int, new_deadline: float
+    ) -> None:
         """超时续期时登记该 spec 的新 stuck 检测基准（续期时刻）。
 
         pm_engine.check_blockers 的 stuck 计算通过 ``get_extension_baseline``
@@ -313,7 +321,6 @@ class LivenessSupervisor:
             f"stuck baseline reset, new deadline "
             f"{datetime.fromtimestamp(new_deadline, timezone.utc).isoformat()}",
         )
-
 
     def get_extension_baseline(self, spec_name: str) -> float | None:
         """返回该 spec 的续期基准（epoch 秒）；无条目或 run 已结束返回 None。
@@ -337,9 +344,9 @@ class LivenessSupervisor:
             return None
         return float(entry.get("baseline") or 0.0)
 
-
-    def _liveness_snapshot(self, run_file: Path, window_seconds: float,
-                           now: float | None = None) -> dict:
+    def _liveness_snapshot(
+        self, run_file: Path, window_seconds: float, now: float | None = None
+    ) -> dict:
         """run jsonl 活性快照（D1）：窗口内事件数、工具完成数、最后事件距今。
 
         判定要素（fix-run-hang-amplification D1 修订）：
@@ -416,20 +423,23 @@ class LivenessSupervisor:
                             snapshot["substantive_events_in_window"] += 1
                         if is_tool_complete:
                             snapshot["tool_completions_in_window"] += 1
-                    if ts is not None and (snapshot["last_event_age"] is None
-                            or (now - ts) < snapshot["last_event_age"]):
+                    if ts is not None and (
+                        snapshot["last_event_age"] is None
+                        or (now - ts) < snapshot["last_event_age"]
+                    ):
                         snapshot["last_event_age"] = max(0.0, now - ts)
                     # 工具调用计数（assistant 消息中的 tool_use）
                     if etype == "assistant":
                         msg = entry.get("message") or {}
-                        for block in (msg.get("content") or []):
+                        for block in msg.get("content") or []:
                             if not isinstance(block, dict):
                                 continue
                             if block.get("type") == "tool_use":
                                 snapshot["tool_use"] += 1
                                 name = str(block.get("name") or "unknown")
                                 snapshot["tool_counts"][name] = (
-                                    snapshot["tool_counts"].get(name, 0) + 1)
+                                    snapshot["tool_counts"].get(name, 0) + 1
+                                )
                             elif block.get("type") == "text":
                                 text = str(block.get("text") or "").strip()
                                 if text:
@@ -441,9 +451,8 @@ class LivenessSupervisor:
                     # 后台调用事件提取（task_started / TaskOutput，1.5）：
                     # task_started（含 system subtype=task_started）记录 task_id→output_file；
                     # TaskOutput（后台任务输出片段）补充关联 task_id 与 started_at。
-                    _is_task_started = (
-                        etype == "task_started"
-                        or (etype == "system" and entry.get("subtype") == "task_started")
+                    _is_task_started = etype == "task_started" or (
+                        etype == "system" and entry.get("subtype") == "task_started"
                     )
                     _is_task_output = etype in ("TaskOutput", "task_output")
                     if _is_task_started or _is_task_output:
@@ -488,7 +497,6 @@ class LivenessSupervisor:
                         return True
         return False
 
-
     @staticmethod
     def _summarize_snapshot(snapshot: dict) -> str:
         """活性快照的证据摘要（供终止证据与日志，短小可读）。
@@ -510,9 +518,7 @@ class LivenessSupervisor:
             f"last_output={(snapshot.get('last_output') or '')[:160]}"
         )
 
-
-    def _judge_liveness(self, snapshot: dict, spec_name: str | None,
-                        run_id: str) -> dict:
+    def _judge_liveness(self, snapshot: dict, spec_name: str | None, run_id: str) -> dict:
         """轻量 LLM 活性判定（D2）：单轮调用，输出 {verdict, evidence}。
 
         模型路由复用 Administrator 的兜底通道（DEFAULT_GATEWAY_MODEL），不落
@@ -545,8 +551,11 @@ class LivenessSupervisor:
             if model:
                 cmd += ["--model", model]
             res = subprocess.run(
-                cmd, capture_output=True, text=True,
-                timeout=timeout, cwd=str(self._pm.project_root),
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(self._pm.project_root),
             )
             text = res.stdout or ""
             try:
@@ -563,12 +572,13 @@ class LivenessSupervisor:
                 }
             return {
                 "verdict": "stagnant",
-                "evidence": (f"liveness judge unavailable: unparseable output "
-                             f"(rc={res.returncode}) {(res.stderr or '')[:160]}"),
+                "evidence": (
+                    f"liveness judge unavailable: unparseable output "
+                    f"(rc={res.returncode}) {(res.stderr or '')[:160]}"
+                ),
             }
         except Exception as e:
             return {"verdict": "stagnant", "evidence": f"liveness judge unavailable: {e}"}
-
 
     @staticmethod
     def _parse_verdict_json(text: str) -> dict | None:
@@ -586,16 +596,17 @@ class LivenessSupervisor:
                     depth -= 1
                     if depth == 0:
                         try:
-                            obj = json.loads(text[start:i + 1])
+                            obj = json.loads(text[start : i + 1])
                         except json.JSONDecodeError:
                             break
-                        if (isinstance(obj, dict)
-                                and obj.get("verdict") in ("advancing", "stagnant")):
+                        if isinstance(obj, dict) and obj.get("verdict") in (
+                            "advancing",
+                            "stagnant",
+                        ):
                             return obj
                         break
             start = text.find("{", start + 1)
         return None
-
 
     def _supervision_judge_timeout(self) -> float:
         """活性判定 judge 子进程超时（per-agent-timeout-override 3.3）。
@@ -604,6 +615,7 @@ class LivenessSupervisor:
         该值不参与 absolute_max 派生。
         """
         from core.config import ConfigLoader
+
         return ConfigLoader.judge_timeout_seconds(self._pm.config)
 
     def _supervision_settings(self) -> dict:
@@ -630,14 +642,11 @@ class LivenessSupervisor:
             except (TypeError, ValueError):
                 self._pm.logger.warning(
                     "agent_runner",
-                    f"Invalid timeout_supervision.{key}={value!r} — keeping default "
-                    f"{default}",
+                    f"Invalid timeout_supervision.{key}={value!r} — keeping default " f"{default}",
                 )
         return cfg
 
-
-    def _output_zero_growth_seconds(self, task_id: str, size, now: float,
-                                    mtime) -> float | None:
+    def _output_zero_growth_seconds(self, task_id: str, size, now: float, mtime) -> float | None:
         """跨采样记忆输出文件 size，返回已零增长秒数（1.5）。
 
         - size/mtime 不可观测（无行路径/不可读）→ 返回 None 并移除追踪
@@ -666,9 +675,9 @@ class LivenessSupervisor:
         }
         return max(0.0, now - zero_since)
 
-    def _zero_output_assessment(self, run_file: Path, snapshot: dict,
-                                window_seconds: float,
-                                now: float | None = None) -> "str | None":
+    def _zero_output_assessment(
+        self, run_file: Path, snapshot: dict, window_seconds: float, now: float | None = None
+    ) -> "str | None":
         """「可观测零产出」确定性短路判定（fix-run-hang-amplification 1.4/1.5）。
 
         仅当以下三者**同时**成立时返回判定证据文本（调用方直接 kill、MUST NOT
@@ -709,8 +718,7 @@ class LivenessSupervisor:
                     mtime = st.st_mtime
             except OSError:
                 size = None
-            zero_growth = self._output_zero_growth_seconds(
-                task_id, size, now, mtime)
+            zero_growth = self._output_zero_growth_seconds(task_id, size, now, mtime)
             if zero_growth is None or zero_growth < HANG_ZERO_GROWTH_WINDOW_SECONDS:
                 continue
             return (
@@ -721,12 +729,16 @@ class LivenessSupervisor:
             )
         return None
 
-
-    def _supervision_deadline_action(self, run_file: Path, spec_name: str | None,
-                                     run_id: str, started_at: float,
-                                     extensions_used: int,
-                                     judge=None,
-                                     agent_type: str | None = None) -> dict:
+    def _supervision_deadline_action(
+        self,
+        run_file: Path,
+        spec_name: str | None,
+        run_id: str,
+        started_at: float,
+        extensions_used: int,
+        judge=None,
+        agent_type: str | None = None,
+    ) -> dict:
         """deadline 到点后的监督决策（D3）：续期 or 终止，封闭矩阵。
 
         判定顺序（先硬上限后活性）：
@@ -791,16 +803,17 @@ class LivenessSupervisor:
         if now - started_at >= absolute_max:
             return {
                 "action": "kill",
-                "reason": (f"absolute_max_seconds cap reached ({int(absolute_max)}s, "
-                           f"extensions_used={extensions_used})"),
+                "reason": (
+                    f"absolute_max_seconds cap reached ({int(absolute_max)}s, "
+                    f"extensions_used={extensions_used})"
+                ),
                 "evidence": evidence,
                 "settings": sup,
             }
         if extensions_used >= max_extensions:
             return {
                 "action": "kill",
-                "reason": (f"extension budget exhausted "
-                           f"({extensions_used}/{max_extensions})"),
+                "reason": (f"extension budget exhausted " f"({extensions_used}/{max_extensions})"),
                 "evidence": evidence,
                 "settings": sup,
             }
@@ -810,10 +823,12 @@ class LivenessSupervisor:
         # 1.2 fix-run-hang-amplification：零事件守卫按**实质事件**判定——
         # ``events_in_window`` 现只计数实质事件（assistant/user 含 tool_result/result），
         # 心跳（tool_progress）不再计入进度证据，守卫不再被心跳恒久打穿。
-        if (not snapshot.get("stream_available")
-                or snapshot.get("last_event_age") is None
-                or snapshot["last_event_age"] > window
-                or snapshot.get("events_in_window", 0) == 0):
+        if (
+            not snapshot.get("stream_available")
+            or snapshot.get("last_event_age") is None
+            or snapshot["last_event_age"] > window
+            or snapshot.get("events_in_window", 0) == 0
+        ):
             return {
                 "action": "kill",
                 "reason": "stagnant: zero substantive run events within judge window",
@@ -825,12 +840,15 @@ class LivenessSupervisor:
         # 路径与零增长区间），并写入被监督 run 的 jsonl 供审计。
         zero_output = self._zero_output_assessment(run_file, snapshot, window, now)
         if zero_output:
-            append_run_line(run_file, {
-                "type": "liveness_shortcut",
-                "kind": "zero_output_heuristic",
-                "evidence": zero_output,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            append_run_line(
+                run_file,
+                {
+                    "type": "liveness_shortcut",
+                    "kind": "zero_output_heuristic",
+                    "evidence": zero_output,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
             self._pm.logger.warning(
                 "agent_runner",
                 f"Liveness shortcut (heuristic zero-output) for {spec_name or 'unknown'} "
@@ -858,7 +876,6 @@ class LivenessSupervisor:
             "evidence": str(verdict.get("evidence") or "")[:400],
             "settings": sup,
         }
-
 
     def wait_for_running_agents(self, timeout: int = AGENT_TERMINATE_GRACE_SECONDS):
         """优雅退出时终止全部在跑 agent（terminate 流程），不再逐 agent 等待完成。
@@ -904,11 +921,14 @@ class LivenessSupervisor:
         for name, proc in running:
             run_file = runs_dir / f"{name}.jsonl"
             try:
-                append_run_line(run_file, {
-                    "type": "interrupted",
-                    "reason": "daemon shutdown",
-                    "by": "agent_runner",
-                })
+                append_run_line(
+                    run_file,
+                    {
+                        "type": "interrupted",
+                        "reason": "daemon shutdown",
+                        "by": "agent_runner",
+                    },
+                )
             except Exception as e:  # pragma: no cover - run 文件写入失败不影响退出
                 self._pm.logger.warning(
                     "agent_runner", f"Failed to write interrupted marker for {name}: {e}"

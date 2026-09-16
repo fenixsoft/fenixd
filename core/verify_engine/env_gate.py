@@ -135,10 +135,7 @@ def is_blank_render_candidate(scenario_result: dict) -> bool:
     step_results = scenario_result.get("step_results")
     if not isinstance(step_results, list):
         return False
-    return any(
-        isinstance(s, dict) and s.get("first_frame_ok") is False
-        for s in step_results
-    )
+    return any(isinstance(s, dict) and s.get("first_frame_ok") is False for s in step_results)
 
 
 def finalize_scenario_status(scenario_result: dict, probe_healthy: bool) -> str:
@@ -220,6 +217,7 @@ async def probe_push_health(
     便于在无浏览器环境下用假 loader 单测两分支。
     """
     try:
+
         async def _navigate() -> bool:
             if hasattr(page_loader, "navigate"):
                 return await page_loader.navigate()

@@ -78,6 +78,7 @@ def expand_globs(paths) -> list:
             continue
         # 尝试 glob（含递归）
         import glob
+
         matched = sorted(Path(m) for m in glob.glob(str(p)))
         out.extend(matched)
     # 去重保序
@@ -93,8 +94,9 @@ def expand_globs(paths) -> list:
 def main() -> int:
     parser = argparse.ArgumentParser(description="历史 run 转录批量延迟分析")
     parser.add_argument("files", nargs="+", help="run jsonl 路径或 glob")
-    parser.add_argument("--sort", choices=["p90", "name"], default="p90",
-                        help="排序键（默认 p90 降序）")
+    parser.add_argument(
+        "--sort", choices=["p90", "name"], default="p90", help="排序键（默认 p90 降序）"
+    )
     args = parser.parse_args()
 
     files = expand_globs(args.files)

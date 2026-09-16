@@ -915,8 +915,8 @@ class TestImplResultSnapshot(unittest.TestCase):
             worktree_dirty=[], cancelled=False,
         )
         # 零变更哨 / 交付物守卫返回无缺口，merge-back 成功
-        self.engine._implementer_zero_change = MagicMock(return_value=False)
-        self.engine._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._verification._implementer_zero_change = MagicMock(return_value=False)
+        self.engine._verification._deliverable_gate_missing = MagicMock(return_value=[])
         self.engine._reconcile_impl_budget = MagicMock()
         wm = MagicMock()
         wm.find_implementer_worktree = MagicMock(return_value=None)
@@ -1112,8 +1112,8 @@ class TestFastTrackImplResultSnapshot(unittest.TestCase):
             MagicMock(return_value=None)
         # 守卫/校验/merge 全放行（_hard_check/_reconcile/_advance 是 Dispatcher
         # 自身方法，须 mock 在 dispatcher 上；守卫两件在 engine 上）
-        self.engine._implementer_zero_change = MagicMock(return_value=False)
-        self.engine._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._verification._implementer_zero_change = MagicMock(return_value=False)
+        self.engine._verification._deliverable_gate_missing = MagicMock(return_value=[])
         self.engine._dispatcher._hard_check_fast_track = MagicMock(
             return_value={"verdict": "verified", "bugs": []})
         self.engine._dispatcher._reconcile_and_merge = MagicMock(

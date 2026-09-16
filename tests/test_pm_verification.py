@@ -225,10 +225,10 @@ class TestScenarioReloadAfterReachabilityHeal(unittest.TestCase):
         self.engine.agent_runner.run_planner = MagicMock(
             return_value=SimpleNamespace(success=True, error=None, run_id="planner-plan-demo-spec-1-a1")
         )
-        self.engine._read_planner_result = MagicMock(
+        self.engine._verification._read_planner_result = MagicMock(
             return_value=VerdictReadResult.success("plan-ready"))
-        self.engine._apply_scenario_freeze = MagicMock(return_value={})
-        self.engine._apply_interaction_contract = MagicMock(return_value=None)
+        self.engine._verification._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -262,7 +262,7 @@ class TestScenarioReloadAfterReachabilityHeal(unittest.TestCase):
                     "scenarios": [],
                 }
 
-        self.engine._ensure_app_reachable = self._fake_reachable
+        self.engine._verification._ensure_app_reachable = self._fake_reachable
         # pipeline 开头 importlib.reload 验证引擎模块（常驻进程热更新），
         # 会重建类对象并使模块属性 patch 失效 → 测试内冻结 reload。
         with patch("importlib.reload", lambda m: m), \
@@ -301,7 +301,7 @@ class TestScenarioReloadAfterReachabilityHeal(unittest.TestCase):
                     "scenarios": [],
                 }
 
-        self.engine._ensure_app_reachable = self._fake_reachable
+        self.engine._verification._ensure_app_reachable = self._fake_reachable
         with patch("importlib.reload", lambda m: m), \
                 patch("core.verify_engine.VerifyEngine", FakeEngine):
             self.engine._run_three_stage_verification("demo-spec")
@@ -359,20 +359,20 @@ class TestUnreachableFailFast(unittest.TestCase):
             return_value=SimpleNamespace(
                 success=True, error=None, run_id="planner-judge-demo-spec-1-a1")
         )
-        self.engine._apply_scenario_freeze = MagicMock(return_value={})
-        self.engine._apply_interaction_contract = MagicMock(return_value=None)
-        self.engine._verify_verdict_evidence = MagicMock(return_value={
+        self.engine._verification._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
+        self.engine._verification._verify_verdict_evidence = MagicMock(return_value={
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })
-        self.engine._update_warning_streaks = MagicMock(return_value=[])
+        self.engine._verification._update_warning_streaks = MagicMock(return_value=[])
         # evo-verifier-result-single-source：三阶段裁决读取统一走 _read_verdict
-        self.engine._read_verdict = MagicMock(
+        self.engine._verification._read_verdict = MagicMock(
             return_value=VerdictReadResult.success("verified"))
         # verified 采纳尾段（短路轮不消费，可达轮照常消费）
-        self.engine._check_verification_gate = MagicMock(return_value=None)
-        self.engine._ensure_verification_report = MagicMock(return_value=None)
-        self.engine._env_whitewash_gate = MagicMock(return_value=True)
-        self.engine._render_scenario_change_section_to_report = MagicMock()
+        self.engine._verification._check_verification_gate = MagicMock(return_value=None)
+        self.engine._verification._ensure_verification_report = MagicMock(return_value=None)
+        self.engine._verification._env_whitewash_gate = MagicMock(return_value=True)
+        self.engine._verification._render_scenario_change_section_to_report = MagicMock()
         self.engine._on_spec_verified = MagicMock()
         # human 升级告警 mock 掉，避免真实 AdminStore IO；短路链其余副作用保留
         self.engine._send_human_escalation_alert = MagicMock()
@@ -409,7 +409,7 @@ class TestUnreachableFailFast(unittest.TestCase):
         reach_note = (
             "就绪探针超时（120s）: http://127.0.0.1:50555/api/projects — timed out"
         )
-        self.engine._ensure_app_reachable = MagicMock(
+        self.engine._verification._ensure_app_reachable = MagicMock(
             return_value=(False, False, reach_note))
         # 短路不得追加 verify_contract_missing 信号（契约缺失子案的信号仍由
         # _ensure_app_reachable 内部唯一写入，本短路只补 _escalate_env_blocked）
@@ -441,7 +441,7 @@ class TestUnreachableFailFast(unittest.TestCase):
 
     def test_prepare_failure_also_short_circuits(self):
         """契约 prepare 失败（同 (False, False, note)）→ 与探针超时同款短路。"""
-        self.engine._ensure_app_reachable = MagicMock(
+        self.engine._verification._ensure_app_reachable = MagicMock(
             return_value=(False, False, "验证契约 prepare 失败: npm ERR! exit 1"))
         runs = []
         self._run_pipeline(self._tracking_engine(runs))
@@ -461,7 +461,7 @@ class TestUnreachableFailFast(unittest.TestCase):
         from core.state_machine import FREEZE_ERROR_PREFIX, FROZEN_FIELD
         # 上一轮 env 阻塞已累计 1 轮 → 本轮（rounds=2）达冻结阈值
         self.sm.update_spec("demo-spec", {"_env_block_rounds": 1})
-        self.engine._ensure_app_reachable = MagicMock(
+        self.engine._verification._ensure_app_reachable = MagicMock(
             return_value=(False, False, "就绪探针超时（120s）: http://127.0.0.1:1 — timed out"))
         runs = []
         self._run_pipeline(self._tracking_engine(runs))
@@ -478,7 +478,7 @@ class TestUnreachableFailFast(unittest.TestCase):
 
     def test_reachable_pass_through_no_short_circuit(self):
         """可达放行：短路点不触发，VerifyEngine 照常运行，行为与现状一致。"""
-        self.engine._ensure_app_reachable = MagicMock(
+        self.engine._verification._ensure_app_reachable = MagicMock(
             return_value=(True, False, "已自动启动应用服务"))
         runs = []
         self._run_pipeline(self._tracking_engine(runs))
@@ -490,7 +490,7 @@ class TestUnreachableFailFast(unittest.TestCase):
 
     def test_user_blocked_guard_does_not_short_circuit(self):
         """user_blocked=True（需用户参与预留判定位）→ 守卫放行：不短路、不落 blocked。"""
-        self.engine._ensure_app_reachable = MagicMock(
+        self.engine._verification._ensure_app_reachable = MagicMock(
             return_value=(False, True, "需用户登录后重试"))
         runs = []
         self._run_pipeline(self._tracking_engine(runs))
@@ -546,13 +546,13 @@ class TestJudgeScenarioRepair(unittest.TestCase):
             return_value=SimpleNamespace(
                 success=True, error=None, run_id="planner-judge-demo-spec-1-a1")
         )
-        self.engine._apply_scenario_freeze = MagicMock(return_value={})
-        self.engine._apply_interaction_contract = MagicMock(return_value=None)
-        self.engine._verify_verdict_evidence = MagicMock(return_value={
+        self.engine._verification._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
+        self.engine._verification._verify_verdict_evidence = MagicMock(return_value={
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })
-        self.engine._update_warning_streaks = MagicMock(return_value=[])
-        self.engine._ensure_app_reachable = MagicMock(return_value=(True, False, ""))
+        self.engine._verification._update_warning_streaks = MagicMock(return_value=[])
+        self.engine._verification._ensure_app_reachable = MagicMock(return_value=(True, False, ""))
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -585,13 +585,13 @@ class TestJudgeScenarioRepair(unittest.TestCase):
         """scenario-repaired → 冻结记账 + 重入执行；预算耗尽写 error 停止重入。"""
         from core.pm_engine.verification import _SCENARIO_REPAIR_MAX_ROUNDS
         runs = []
-        self.engine._read_verdict = MagicMock(
+        self.engine._verification._read_verdict = MagicMock(
             return_value=VerdictReadResult.success("scenario-repaired"))
         self._run_with_report(lambda: runs.append(1))
         # 1 次初始 + 2 次修复重入 = 3 轮执行；每次修复采纳先冻结记账
         self.assertEqual(len(runs), 1 + _SCENARIO_REPAIR_MAX_ROUNDS)
         self.assertEqual(
-            self.engine._apply_scenario_freeze.call_count,
+            self.engine._verification._apply_scenario_freeze.call_count,
             _SCENARIO_REPAIR_MAX_ROUNDS)
         entry = self.sm.read_one("demo-spec")
         self.assertIn("预算耗尽", str(entry.get("error")))
@@ -600,18 +600,18 @@ class TestJudgeScenarioRepair(unittest.TestCase):
 
     def test_repair_then_verified(self):
         """修复一轮后 judge 判 verified → 正常晋级，冻结记账恰一次。"""
-        self.engine._read_verdict = MagicMock(
+        self.engine._verification._read_verdict = MagicMock(
             side_effect=[VerdictReadResult.success("scenario-repaired"),
                         VerdictReadResult.success("verified")])
-        self.engine._check_verification_gate = MagicMock(return_value=None)
-        self.engine._ensure_verification_report = MagicMock(return_value=None)
-        self.engine._env_whitewash_gate = MagicMock(return_value=True)
-        self.engine._render_scenario_change_section_to_report = MagicMock()
+        self.engine._verification._check_verification_gate = MagicMock(return_value=None)
+        self.engine._verification._ensure_verification_report = MagicMock(return_value=None)
+        self.engine._verification._env_whitewash_gate = MagicMock(return_value=True)
+        self.engine._verification._render_scenario_change_section_to_report = MagicMock()
         self.engine._on_spec_verified = MagicMock()
         runs = []
         self._run_with_report(lambda: runs.append(1))
         self.assertEqual(len(runs), 2)
-        self.assertEqual(self.engine._apply_scenario_freeze.call_count, 1)
+        self.assertEqual(self.engine._verification._apply_scenario_freeze.call_count, 1)
         self.assertEqual(self.sm.read_one("demo-spec")["status"], "verified")
 
 
@@ -766,10 +766,10 @@ class TestVerifierCircuitOpenHoldsState(unittest.TestCase):
                 success=False, error=circuit_err,
                 run_id="planner-plan-demo-spec-1-a1", cancelled=False,
             ))
-        self.engine._read_planner_result = MagicMock(
+        self.engine._verification._read_planner_result = MagicMock(
             return_value=VerdictReadResult.success("plan-ready"))
-        self.engine._apply_scenario_freeze = MagicMock(return_value={})
-        self.engine._apply_interaction_contract = MagicMock(return_value=None)
+        self.engine._verification._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
 
         with patch("importlib.reload", lambda m: m):
             self.engine._run_three_stage_verification("demo-spec")
@@ -789,10 +789,10 @@ class TestVerifierCircuitOpenHoldsState(unittest.TestCase):
                 success=False, error=circuit_err,
                 run_id="planner-plan-demo-spec-2-a1", cancelled=False,
             ))
-        self.engine._read_planner_result = MagicMock(
+        self.engine._verification._read_planner_result = MagicMock(
             return_value=VerdictReadResult.success("plan-ready"))
-        self.engine._apply_scenario_freeze = MagicMock(return_value={})
-        self.engine._apply_interaction_contract = MagicMock(return_value=None)
+        self.engine._verification._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
 
         with patch("importlib.reload", lambda m: m):
             self.engine._run_three_stage_verification("demo-spec")
@@ -810,10 +810,10 @@ class TestVerifierCircuitOpenHoldsState(unittest.TestCase):
                 success=False, error=circuit_err,
                 run_id="planner-plan-demo-spec-3-a1", cancelled=False,
             ))
-        self.engine._read_planner_result = MagicMock(
+        self.engine._verification._read_planner_result = MagicMock(
             return_value=VerdictReadResult.success("plan-ready"))
-        self.engine._apply_scenario_freeze = MagicMock(return_value={})
-        self.engine._apply_interaction_contract = MagicMock(return_value=None)
+        self.engine._verification._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
 
         with patch("importlib.reload", lambda m: m):
             self.engine._run_three_stage_verification("demo-spec")
@@ -859,9 +859,9 @@ class TestUniformVerifyFailure(unittest.TestCase):
         self.engine._enqueue = MagicMock()
         self.engine._on_spec_verified = MagicMock()
         self.engine._task_completion_blocker = MagicMock(return_value=None)
-        self.engine._ensure_verification_report = MagicMock(return_value=None)
-        self.engine._env_whitewash_gate = MagicMock(return_value=True)
-        self.engine._check_verification_gate = MagicMock(return_value=None)
+        self.engine._verification._ensure_verification_report = MagicMock(return_value=None)
+        self.engine._verification._env_whitewash_gate = MagicMock(return_value=True)
+        self.engine._verification._check_verification_gate = MagicMock(return_value=None)
         # 修复任务注入依赖 tasks.md（存在即可，_inject_verify_fix_task 幂等追加）
         spec_dir = Path(self.tmpdir) / "spec" / "changes" / "demo-spec"
         spec_dir.mkdir(parents=True, exist_ok=True)
@@ -981,7 +981,7 @@ class TestServingRegistry(unittest.TestCase):
             self.sm, MagicMock(), {}, Path(self.tmpdir), self.logger,
         )
         self.engine._task_completion_blocker = MagicMock(return_value=None)
-        self.engine._check_verification_gate = MagicMock(return_value=None)
+        self.engine._verification._check_verification_gate = MagicMock(return_value=None)
         from core.serving_registry import ServingRegistry
         self.reg = ServingRegistry(Path(self.tmpdir), self.logger)
 
@@ -1192,7 +1192,7 @@ class TestVerifiedGateEvidenceRace(unittest.TestCase):
         )
         self.engine._enqueue = MagicMock()
         self.engine._on_spec_done = MagicMock()
-        self.engine._check_verification_gate = MagicMock(return_value=None)
+        self.engine._verification._check_verification_gate = MagicMock(return_value=None)
         # Mock worktree 查找让 _read_implementer_result 走主树根回退
         self.engine.agent_runner.worktree_manager.find_implementer_worktree = (
             MagicMock(return_value=None)
@@ -1457,7 +1457,7 @@ class TestImplPartialConsumption(unittest.TestCase):
         self.engine._enqueue = MagicMock()
         self.engine._enqueue_front = MagicMock()
         self.engine._on_spec_done = MagicMock()
-        self.engine._check_verification_gate = MagicMock(return_value=None)
+        self.engine._verification._check_verification_gate = MagicMock(return_value=None)
         self.engine.agent_runner.worktree_manager.find_implementer_worktree = (
             MagicMock(return_value=None)
         )

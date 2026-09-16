@@ -67,9 +67,7 @@ def planner_result_path(project_root, spec_name: str, agent_type: str) -> Path:
         return vp_dir / ".fenix-run-result.json"
     if agent_type == "planner-plan":
         return vp_dir / "test_scenarios.json"
-    raise ValueError(
-        f"planner_result_path 仅支持 planner-judge/planner-plan，收到 '{agent_type}'"
-    )
+    raise ValueError(f"planner_result_path 仅支持 planner-judge/planner-plan，收到 '{agent_type}'")
 
 
 # planner 裁决结果文件顶层 status 白名单（fix-verdict-read-failclosed D3）。
@@ -90,6 +88,7 @@ spec_review_result_status_whitelist = (
     "repaired",
     "rejected",
 )
+
 
 def spec_review_result_path(project_root, spec_name: str) -> Path:
     """评审结果文件路径（add-spec-review-gate）。
@@ -145,8 +144,9 @@ class PromptBuilder:
             )
         return path.read_text(encoding="utf-8")
 
-    def _fill_placeholders(self, template: str, agent_type: str,
-                           spec_name: str, detail: dict | None) -> str:
+    def _fill_placeholders(
+        self, template: str, agent_type: str, spec_name: str, detail: dict | None
+    ) -> str:
         """占位符填充：逐键 str.replace（正文含大量 {} JSON 示例，禁用 str.format）。
 
         progress_path 语义按 agent 现行为保持：verifier 写
@@ -169,12 +169,12 @@ class PromptBuilder:
             # add-judge-incremental-attribution：judge 归因产物逐场景条目文件。
             # 与 core/verify_engine/judge_files.py 的 JUDGE_ATTRIBUTION_FILENAME
             # 同源（注入侧路径 = 读侧路径，防双实现漂移）。
-            "{judge_attribution_path}": str(
-                vp_dir / "judge_attribution.json"),
+            "{judge_attribution_path}": str(vp_dir / "judge_attribution.json"),
         }
         if agent_type == "verifier":
             values["{progress_path}"] = str(
-                root / ".fenix" / "verify-progress" / f"{spec_name}.json")
+                root / ".fenix" / "verify-progress" / f"{spec_name}.json"
+            )
         elif agent_type == "fast-track":
             values["{progress_path}"] = str(vp_dir / f"{spec_name}.json")
         elif agent_type == "dispute-judge":
@@ -182,8 +182,7 @@ class PromptBuilder:
             # 输入（缺件清单 + spec 语境 + findings + basename 候选）由 dispatch
             # 层落盘，结果契约由 judge 写回（与 planner 结果文件并置、独立命名）。
             values["{dispute_input_path}"] = str(vp_dir / "dispute_judge_input.json")
-            values["{dispute_result_path}"] = str(
-                vp_dir / "dispute_judge_result.json")
+            values["{dispute_result_path}"] = str(vp_dir / "dispute_judge_result.json")
         elif agent_type == "spec-review":
             # SPEC 方案评审（add-spec-review-gate）
             values["{result_path}"] = str(spec_review_result_path(root, spec_name))
@@ -197,28 +196,36 @@ class PromptBuilder:
             try:
                 _err = (self._pm.state_machine.read_one(spec_name) or {}).get("error") or ""
                 if _err.startswith("spec-review-rejected:"):
-                    _prev_rej = _err[len("spec-review-rejected:"):].strip()
+                    _prev_rej = _err[len("spec-review-rejected:") :].strip()
             except Exception:  # noqa: BLE001 — 注入失败不得阻断派发
                 _prev_rej = ""
             values["{prev_review_rejection}"] = _prev_rej
-        values.update({
-            "{sig_type}": sig.get("signal_type") or "unknown",
-            "{sig_spec}": sig.get("spec") or spec_name,
-            "{severity}": sig.get("severity") or "major",
-            "{description}": sig.get("description") or "",
-            "{evidence}": _str_field(sig.get("evidence")),
-            "{recommendation}": _str_field(sig.get("recommended_action")),
-            "{disp_path}": str(sig.get("disposition_path")
-                               or (root / ".fenix" / "admin_disposition.json")),
-            "{dash_script}": f"{root}/.fenix/bin/fenix_dashboard.py",
-        })
+        values.update(
+            {
+                "{sig_type}": sig.get("signal_type") or "unknown",
+                "{sig_spec}": sig.get("spec") or spec_name,
+                "{severity}": sig.get("severity") or "major",
+                "{description}": sig.get("description") or "",
+                "{evidence}": _str_field(sig.get("evidence")),
+                "{recommendation}": _str_field(sig.get("recommended_action")),
+                "{disp_path}": str(
+                    sig.get("disposition_path") or (root / ".fenix" / "admin_disposition.json")
+                ),
+                "{dash_script}": f"{root}/.fenix/bin/fenix_dashboard.py",
+            }
+        )
         out = template
         for key, val in values.items():
             out = out.replace(key, val)
         return out
 
-    def _build_prompt(self, spec_name: str, agent_type: str, detail: dict | None = None,
-                      wt_path: Path | None = None) -> str:
+    def _build_prompt(
+        self,
+        spec_name: str,
+        agent_type: str,
+        detail: dict | None = None,
+        wt_path: Path | None = None,
+    ) -> str:
         """构建 claude CLI prompt：文件主体 + 占位符填充 + 动态段按状态追加。
 
         detail: 可选。administrator 分支接收困境信号 dict；
@@ -318,8 +325,11 @@ class PromptBuilder:
             prompt += self._scenario_freeze_section(spec_name)
             prompt += self._interaction_contract_section(spec_name)
             prompt += self._designed_ids_line(
-                self._pm.project_root / ".fenix" / "verify-progress"
-                / spec_name / "test_scenarios.json"
+                self._pm.project_root
+                / ".fenix"
+                / "verify-progress"
+                / spec_name
+                / "test_scenarios.json"
             )
             prompt += self._prev_error_section(spec_name)
             # 上轮结构化诊断注入（fix-run-hang-amplification 2.4，与 implementer 分支共用）。
@@ -391,8 +401,11 @@ class PromptBuilder:
         返回空串（零注入，prompt 与现状逐字节一致）。
         """
         path = (
-            self._pm.project_root / ".fenix" / "verify-progress"
-            / spec_name / "contract_findings.json"
+            self._pm.project_root
+            / ".fenix"
+            / "verify-progress"
+            / spec_name
+            / "contract_findings.json"
         )
         if not path.exists():
             return ""
@@ -416,10 +429,7 @@ class PromptBuilder:
             sev = f.get("severity") or "?"
             msg = f.get("message") or ""
             ev = f.get("evidence") or ""
-            lines.append(
-                f"- `{rid}` [{sev}]: {msg}"
-                + (f"\n  evidence: {ev}" if ev else "")
-            )
+            lines.append(f"- `{rid}` [{sev}]: {msg}" + (f"\n  evidence: {ev}" if ev else ""))
         lines += [
             "",
             "处置要求：",
@@ -431,8 +441,9 @@ class PromptBuilder:
         ]
         return "\n".join(lines)
 
-    def _project_extra_section(self, agent_type: str, spec_name: str = "",
-                               wt_path: Path | None = None) -> str:
+    def _project_extra_section(
+        self, agent_type: str, spec_name: str = "", wt_path: Path | None = None
+    ) -> str:
         """项目级附加提示词段（add-agent-prompt-files D2 / 任务 2.1）。
 
         <项目根>/.fenix/agents/<agent-type>.md 存在则读入，以
@@ -474,6 +485,7 @@ class PromptBuilder:
             prompt 段字符串（含导航信息时）或空串（fail-open / 无地图）。
         """
         from core.agent_runner.runner import ROUTE_MAP_REL
+
         project_root = self._pm.project_root
         map_path: Path | None = None
         # 1. worktree 生成地图（planner 阶段在 prompt 组装前已生成）
@@ -544,8 +556,7 @@ class PromptBuilder:
         缺失 / 读取失败 → 返回空串（不注入）。
         """
         replan_fb_path = (
-            self._pm.project_root / ".fenix" / "verify-progress"
-            / spec_name / "REPLAN_FEEDBACK.md"
+            self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "REPLAN_FEEDBACK.md"
         )
         if not replan_fb_path.exists():
             return ""
@@ -569,6 +580,7 @@ class PromptBuilder:
         （prompt 与现状逐字节一致）。
         """
         import json as _json
+
         diag_raw = ""
         try:
             entry = self._pm.state_machine.read_one(spec_name) or {}
@@ -593,7 +605,6 @@ class PromptBuilder:
             f"- conclusion: {diag.get('conclusion') or ''}\n"
             f"- progress: branch={branch}, tasks_checked={tasks}\n"
         )
-
 
     def _prev_error_section(self, spec_name: str) -> str:
         """上轮 error 上下文注入段（add-implementer-deliverable-gate D4）。
@@ -636,8 +647,7 @@ class PromptBuilder:
         Returns:
             快照 dict 或 None。
         """
-        from core.deliverables import extract_declared_entries, \
-            match_basename_in_tree
+        from core.deliverables import extract_declared_entries, match_basename_in_tree
 
         spec_dir = self._pm.project_root / "spec" / "changes" / spec_name
         if not spec_dir.is_dir():
@@ -661,8 +671,7 @@ class PromptBuilder:
             }
             if kind in ("new", "modify", "delete") and not item["exists"]:
                 try:
-                    item["candidates"] = match_basename_in_tree(
-                        self._pm.project_root, path)
+                    item["candidates"] = match_basename_in_tree(self._pm.project_root, path)
                 except Exception:
                     item["candidates"] = []
             snap.append(item)
@@ -703,8 +712,7 @@ class PromptBuilder:
             cands = item.get("candidates") or []
             if item["exists"]:
                 if kind == "delete":
-                    lines.append(
-                        f"- `{path}`（kind: {kind}）——主树存在，删除目标确认。")
+                    lines.append(f"- `{path}`（kind: {kind}）——主树存在，删除目标确认。")
                 else:
                     lines.append(f"- `{path}`（kind: {kind}）——主树存在，修改/引用目标确认。")
             else:
@@ -713,12 +721,12 @@ class PromptBuilder:
                     note = f"；basename 命中候选：{'、'.join(cands)}"
                 if kind == "delete":
                     lines.append(
-                        f"- `{path}`（kind: {kind}）——主树不存在，无可删，"
-                        f"疑似声明笔误{note}。")
+                        f"- `{path}`（kind: {kind}）——主树不存在，无可删，" f"疑似声明笔误{note}。"
+                    )
                 else:
                     lines.append(
-                        f"- `{path}`（kind: {kind}）——主树不存在，疑似声明笔误"
-                        f"{note}。")
+                        f"- `{path}`（kind: {kind}）——主树不存在，疑似声明笔误" f"{note}。"
+                    )
         lines += [
             "",
             "**处方**：若你判断声明路径系笔误（候选命中与 spec 语境等价），"
@@ -752,6 +760,7 @@ class PromptBuilder:
           （141/141 runner 派发 run 实测无 TaskCreate，强制即不可执行契约）。
         """
         from core.run_task_track import find_impl_run_file, read_init_tools
+
         tools_available = False
         try:
             run_file = find_impl_run_file(self._pm.project_root, spec_name)
@@ -761,16 +770,16 @@ class PromptBuilder:
             tools_available = False
         if tools_available:
             task_lines = (
-                f"- 每一条 tasks.md 任务（如 \"1.3 配置解析签名缓存\"）只能由一个 "
-                f"TaskCreate 对应，TaskCreate 的 subject MUST 以 \"Task <id>: "
-                f"<标题>\" 开头，id **逐字照抄 tasks.md 的\"分组号.任务号\"**（含"
-                f"小写字母后缀，如 \"Task 1.2b: ...\"、\"Task 4.6b: ...\"；后缀"
+                f'- 每一条 tasks.md 任务（如 "1.3 配置解析签名缓存"）只能由一个 '
+                f'TaskCreate 对应，TaskCreate 的 subject MUST 以 "Task <id>: '
+                f'<标题>" 开头，id **逐字照抄 tasks.md 的"分组号.任务号"**（含'
+                f'小写字母后缀，如 "Task 1.2b: ..."、"Task 4.6b: ..."；后缀'
                 f"不是笔误），禁止把多条任务归并为一条 TaskCreate，也禁止把分组"
                 f"（## 标题）当任务创建。\n"
                 f"- 开始实现某任务时创建其 TaskCreate；该任务完成的瞬间立刻对同一"
                 f"taskId 发 TaskUpdate status=completed，不得攒批到收尾。TaskUpdate "
                 f"的 taskId 取 TaskCreate 结果返回的任务编号（1 基创建序，形如 "
-                f"\"Task #1 created\"）。\n"
+                f'"Task #1 created"）。\n'
             )
         else:
             task_lines = (
@@ -780,13 +789,13 @@ class PromptBuilder:
             )
         return (
             f"\n## 任务进度契约（task-progress-contract，强制，fix-impl-tasks-completion-gate）\n"
-            f"- 每条 tasks.md 任务（如 \"1.3 配置解析签名缓存\"）完成时逐项把 "
+            f'- 每条 tasks.md 任务（如 "1.3 配置解析签名缓存"）完成时逐项把 '
             f"`- [ ]` 改为 `- [x]`；收尾时逐项勾选所有已完成任务。\n"
             f"- .fenix-run-result.json 顶层 MUST 携带 `completed_tasks` 数组（已完成"
-            f"任务的 tasks.md id，如 [\"1.1\", \"2.3\"]，**含字母后缀的 id 逐字照抄**"
-            f"如 [\"1.2b\", \"4.6b\"]），与 tasks.md 勾选状态一一"
+            f'任务的 tasks.md id，如 ["1.1", "2.3"]，**含字母后缀的 id 逐字照抄**'
+            f'如 ["1.2b", "4.6b"]），与 tasks.md 勾选状态一一'
             f"对应——每个 `- [x]` 数字任务在 completed_tasks 中恰出现一次；做不完时"
-            f"MUST 以 `status: \"partial\"` 收工并如实登记 `unfinished` 数组（未完成"
+            f'MUST 以 `status: "partial"` 收工并如实登记 `unfinished` 数组（未完成'
             f"任务 id，每个 `- [ ]` 数字任务恰出现一次），MUST NOT 用 success 掩盖"
             f"未完成项，禁止「先勾后做」。禁止把多条任务归并为一个条目，禁止把分组"
             f"（## 标题）当任务登记。\n"
@@ -817,8 +826,7 @@ class PromptBuilder:
                 data = json.loads(scenarios_path.read_text(encoding="utf-8"))
                 if isinstance(data, list):
                     designed_ids = [
-                        str(s.get("id")) for s in data
-                        if isinstance(s, dict) and s.get("id")
+                        str(s.get("id")) for s in data if isinstance(s, dict) and s.get("id")
                     ]
         except Exception:
             designed_ids = []
@@ -862,8 +870,7 @@ class PromptBuilder:
             )
         else:
             conflict_section = (
-                f"\n## 冲突文件清单\n"
-                f"请自行通过 `git status --porcelain` 检查当前冲突文件。\n"
+                f"\n## 冲突文件清单\n" f"请自行通过 `git status --porcelain` 检查当前冲突文件。\n"
             )
 
         prompt = (
@@ -885,7 +892,7 @@ class PromptBuilder:
             f"3. 把 main 合进当前分支：`git merge main`（此时会遇到冲突）\n"
             f"4. 解决冲突：对每个冲突文件，读取两边版本，保留正确的实现内容\n"
             f"5. **提交冲突解决（强制终点，先于测试）**：\n"
-            f"   `git commit -m \"[fenix] {spec_name}: resolve merge conflicts\"`\n"
+            f'   `git commit -m "[fenix] {spec_name}: resolve merge conflicts"`\n'
             f"   提交是本轮 repair 的强制终点，必须在运行任何测试之前完成；禁止"
             f"「跑完测试再决定是否提交」，禁止因测试未跑完而不提交\n"
             f"6. 定向回归（提交之后）：对本次合并触及文件的定向回归 + 有界超时，例如\n"
@@ -927,18 +934,21 @@ class PromptBuilder:
         template = self._load_agent_template("self-review")
         prompt = template
         prompt = prompt.replace("{review_date}", date_str)
-        prompt = prompt.replace(
-            "{daily_summary}", (detail.get("daily_summary") or "（无数据）"))
+        prompt = prompt.replace("{daily_summary}", (detail.get("daily_summary") or "（无数据）"))
         prompt = prompt.replace(
             "{todo_md_content}",
-            (detail.get("todo_md") or "（read_todo 关闭或 todo.md 不存在，不注入）"))
+            (detail.get("todo_md") or "（read_todo 关闭或 todo.md 不存在，不注入）"),
+        )
         prompt = prompt.replace(
-            "{todo_entries}",
-            (detail.get("todo_entries") or "（近3日窗口内无既有条目）"))
+            "{todo_entries}", (detail.get("todo_entries") or "（近3日窗口内无既有条目）")
+        )
         prompt = prompt.replace(
             "{out_path}",
-            str(detail.get("out_path") or (self._pm.project_root / ".fenix"
-                                           / "self_review_out.json")))
+            str(
+                detail.get("out_path")
+                or (self._pm.project_root / ".fenix" / "self_review_out.json")
+            ),
+        )
         return prompt
 
     def _build_evolution_prompt(self, spec_name: str, detail: dict) -> str:
@@ -963,10 +973,7 @@ class PromptBuilder:
             name = proj.get("name") or "?"
             root = proj.get("path") or self._pm.project_root
             todo = proj.get("todo_md") or "（无 todo.md 内容）"
-            secs.append(
-                f"### 项目：{name}（项目根：{root}）\n"
-                f"```\n{todo}\n```\n"
-            )
+            secs.append(f"### 项目：{name}（项目根：{root}）\n" f"```\n{todo}\n```\n")
         todo_sections = "\n".join(secs) or "（无就绪项目）"
 
         lines = []
@@ -986,8 +993,7 @@ class PromptBuilder:
         prompt = prompt.replace("{todo_sections}", todo_sections)
         prompt = prompt.replace("{pending_entries}", entries_txt)
         prompt = prompt.replace("{out_path}", str(out_path))
-        prompt = prompt.replace(
-            "{project_root}", str(self._pm.project_root))
+        prompt = prompt.replace("{project_root}", str(self._pm.project_root))
         return prompt
 
     def _fast_track_reuse_note(self, spec_name: str) -> str:
@@ -1114,11 +1120,21 @@ class PromptBuilder:
         采集失败（分支不存在等）返回降级提示串，不抛出异常。
         """
         import subprocess as _sp
+
         try:
             res = _sp.run(
-                ["git", "-C", str(self._pm.project_root),
-                 "log", "--oneline", "-10", f"main..{branch}"],
-                capture_output=True, text=True, timeout=10,
+                [
+                    "git",
+                    "-C",
+                    str(self._pm.project_root),
+                    "log",
+                    "--oneline",
+                    "-10",
+                    f"main..{branch}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
         except Exception as e:
             return f"（快照采集失败: {e}）"
@@ -1129,17 +1145,19 @@ class PromptBuilder:
             return "（分支相对 main 无独立提交）"
         return out[:2000]
 
-
     def _legacy_dirty_snapshot(self, wt_path: str) -> str:
         """现场采集遗产 worktree 的 ``git status --short`` 脏文件清单，截断 50 行。
 
         采集失败（worktree 已不存在等）返回降级提示串，不抛出异常。
         """
         import subprocess as _sp
+
         try:
             res = _sp.run(
                 ["git", "-C", str(wt_path), "status", "--short"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
         except Exception:
             return "（无法读取遗产快照）"
@@ -1152,7 +1170,6 @@ class PromptBuilder:
             lines = lines[:50] + [f"... 其余 {len(lines) - 50} 个文件省略"]
         return "\n".join(lines)
 
-
     def _scenario_freeze_section(self, spec_name: str) -> str:
         """构建场景集冻结约束段（add-verify-scenario-freeze / design D1-D2）。
 
@@ -1163,8 +1180,10 @@ class PromptBuilder:
         """
         try:
             from core.verify_scenarios import (
-                load_scenario_set, is_repair_round,
-                read_verify_fix_section, declares_new_delivery,
+                load_scenario_set,
+                is_repair_round,
+                read_verify_fix_section,
+                declares_new_delivery,
             )
         except Exception:
             return ""
@@ -1208,7 +1227,6 @@ class PromptBuilder:
         lines.append("")
         return "\n".join(lines)
 
-
     def _interaction_contract_section(self, spec_name: str) -> str:
         """构建交互契约约束段（add-interaction-contract-and-per-assert-triage 1.2）。
 
@@ -1218,6 +1236,7 @@ class PromptBuilder:
         """
         try:
             from core.interaction_contract import collect_spec_candidates
+
             candidates = collect_spec_candidates(self._pm.project_root, spec_name)
         except Exception:
             return ""
@@ -1237,16 +1256,15 @@ class PromptBuilder:
             lines.append(f"  - `{c.raw}`（{c.source}:{c.line}）{note}")
         lines += [
             "- 产出场景时，在场景对象上用 ``covers`` 字段登记该场景覆盖的元素标识"
-            "（如 \"covers\": [\"card-link\"]）。",
+            '（如 "covers": ["card-link"]）。',
             "- 无法生成交互场景的元素（纯展示），在任一场景对象上用 "
-            "``declared_display`` 登记（如 \"declared_display\": [\"btn-x\"]）。",
+            '``declared_display`` 登记（如 "declared_display": ["btn-x"]）。',
             "- 契约校验器会确定性 diff 候选集与场景集：既无覆盖又无声明的元素会"
             "导致场景验收失败并退回重排（含链接样式卡片——v2-overview-page 事故的"
             "复发点）。",
             "",
         ]
         return "\n".join(lines)
-
 
     def _scenario_schema_section(self) -> str:
         """断言/操作必填字段 schema 注入段（evo-planner-scenario-schema-alignment 2.1）。
@@ -1264,9 +1282,12 @@ class PromptBuilder:
         prompt 文件（4.1/4.4 一致性回归锁定：改常量 → 注入文本随之变化）。
         """
         from core.verify_engine.scenarios import (
-            ASSERTION_REQUIRED_FIELDS, ACTION_REQUIRED_FIELDS,
-            CLI_ASSERTIONS, API_ASSERTIONS,
+            ASSERTION_REQUIRED_FIELDS,
+            ACTION_REQUIRED_FIELDS,
+            CLI_ASSERTIONS,
+            API_ASSERTIONS,
         )
+
         lines = [
             "",
             "## 场景断言/操作必填字段（schema 单源，运行时渲染，强制）",
@@ -1282,21 +1303,21 @@ class PromptBuilder:
             "",
         ]
         for atype in sorted(CLI_ASSERTIONS):
-            lines.append(self._render_schema_type_line(
-                atype, ASSERTION_REQUIRED_FIELDS, "type"))
+            lines.append(self._render_schema_type_line(atype, ASSERTION_REQUIRED_FIELDS, "type"))
         lines += ["", "### api 断言必填字段", ""]
         for atype in sorted(API_ASSERTIONS):
-            lines.append(self._render_schema_type_line(
-                atype, ASSERTION_REQUIRED_FIELDS, "type"))
+            lines.append(self._render_schema_type_line(atype, ASSERTION_REQUIRED_FIELDS, "type"))
         lines += ["", "### 操作必填字段（cli/api）", ""]
         for (kind, action), _specs in sorted(ACTION_REQUIRED_FIELDS.items()):
-            lines.append(self._render_schema_type_line(
-                action, {action: _specs}, "action", kind=kind))
+            lines.append(
+                self._render_schema_type_line(action, {action: _specs}, "action", kind=kind)
+            )
         lines.append("")
         return "\n".join(lines)
 
-    def _render_schema_type_line(self, name: str, table: dict,
-                                 type_key: str, kind: str = "") -> str:
+    def _render_schema_type_line(
+        self, name: str, table: dict, type_key: str, kind: str = ""
+    ) -> str:
         """渲染单源表条目为 prompt 行：必填字段说明 + 合法 JSON 样例。
 
         ``type_key``：样例的首键名（断言为 ``"type"``、操作为 ``"action"``）。
@@ -1321,10 +1342,7 @@ class PromptBuilder:
             key = (spec.get("key") or "").replace("extra.", "")
             sample_parts.append(f', "{key}": {spec.get("example", "...")}')
         sample_parts.append("}")
-        return (
-            f"{head}：必填 {'、'.join(field_bits)}。"
-            f"样例：`{''.join(sample_parts)}`"
-        )
+        return f"{head}：必填 {'、'.join(field_bits)}。" f"样例：`{''.join(sample_parts)}`"
 
     def _triage_recheck_section(self, spec_name: str) -> str:
         """构建优先复核注入段（add-verdict-evidence-taxonomy D5）。
@@ -1335,8 +1353,7 @@ class PromptBuilder:
         文件缺失 / 为空 → 返回空串（不约束）。
         """
         recheck_path = (
-            self._pm.project_root / ".fenix" / "verify-progress"
-            / spec_name / "triage_recheck.json"
+            self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "triage_recheck.json"
         )
         if not recheck_path.exists():
             return ""
@@ -1357,7 +1374,6 @@ class PromptBuilder:
             "- 切勿继续无限悬置为 warning；若确为产品缺陷，必须在本次裁决中如实分类并 failed。\n"
         )
 
-
     def _verdict_rejection_section(self, spec_name: str) -> str:
         """构建裁决驳回注入段（verdict-rejection-retry：重试幂等陷阱修复）。
 
@@ -1372,8 +1388,11 @@ class PromptBuilder:
         原样保留，禁止复现/调查/改判定。
         """
         rejection_path = (
-            self._pm.project_root / ".fenix" / "verify-progress"
-            / spec_name / "verdict_violations.json"
+            self._pm.project_root
+            / ".fenix"
+            / "verify-progress"
+            / spec_name
+            / "verdict_violations.json"
         )
         if not rejection_path.exists():
             return ""
@@ -1397,9 +1416,7 @@ class PromptBuilder:
                 # scenario_id，场景集在 scenario_ids 列表
                 is_dedup = True
                 sids = "、".join(str(s) for s in v["scenario_ids"] if s)
-                lines.append(
-                    f"  - 批量归因查重违规（场景：{sids}）：{v.get('reason')}\n"
-                )
+                lines.append(f"  - 批量归因查重违规（场景：{sids}）：{v.get('reason')}\n")
             else:
                 lines.append(
                     f"  - 场景 `{v.get('scenario_id')}`（status={v.get('status')}）："
@@ -1434,8 +1451,11 @@ class PromptBuilder:
         文件缺失/损坏 → 返回空串（普通裁决轮零注入，prompt 与现状逐字节一致）。
         """
         directive_path = (
-            self._pm.project_root / ".fenix" / "verify-progress"
-            / spec_name / "dedup_resynthesis_directive.json"
+            self._pm.project_root
+            / ".fenix"
+            / "verify-progress"
+            / spec_name
+            / "dedup_resynthesis_directive.json"
         )
         if not directive_path.exists():
             return ""
@@ -1493,8 +1513,11 @@ class PromptBuilder:
         文件缺失/损坏 → 返回空串（普通裁决轮零注入，prompt 与现状逐字节一致）。
         """
         manifest_path = (
-            self._pm.project_root / ".fenix" / "verify-progress"
-            / spec_name / "requeue_manifest.json"
+            self._pm.project_root
+            / ".fenix"
+            / "verify-progress"
+            / spec_name
+            / "requeue_manifest.json"
         )
         if not manifest_path.exists():
             return ""
@@ -1519,8 +1542,7 @@ class PromptBuilder:
             "局部数据（步骤序号/断言 label/完整 error），MUST NOT 套用共享模板串。\n"
         )
 
-    def _result_gate_section(self, spec_name: str,
-                             agent_type: str = "planner-judge") -> str:
+    def _result_gate_section(self, spec_name: str, agent_type: str = "planner-judge") -> str:
         """产物硬门契约注入段（add-judge-artifact-gate D2）。
 
         告知 planner-judge/planner-plan：run 成功判定 = 进程正常退出 **且** 结果
@@ -1534,8 +1556,7 @@ class PromptBuilder:
         spec_review_result_path 同源计算。
         """
         if agent_type == "spec-review":
-            result_path = spec_review_result_path(
-                self._pm.project_root, spec_name)
+            result_path = spec_review_result_path(self._pm.project_root, spec_name)
             return (
                 "\n\n## 结果文件硬门（强制）\n"
                 "- 框架对本次评审的成功判定 = 进程正常退出 **且** 结果文件已落盘"
@@ -1550,10 +1571,8 @@ class PromptBuilder:
                 "- **先落盘再深入**：先完成最小必要结果落盘，再做深入调查/复现——"
                 "深入调查不会为产物缺失兜底。\n"
             )
-        result_path = planner_result_path(
-            self._pm.project_root, spec_name, "planner-judge")
-        scenarios_path = planner_result_path(
-            self._pm.project_root, spec_name, "planner-plan")
+        result_path = planner_result_path(self._pm.project_root, spec_name, "planner-judge")
+        scenarios_path = planner_result_path(self._pm.project_root, spec_name, "planner-plan")
         return (
             "\n\n## 结果文件硬门（add-judge-artifact-gate，强制）\n"
             "- 框架对本次 run 的成功判定 = 进程正常退出 **且** 结果文件已落盘"
@@ -1601,8 +1620,7 @@ class PromptBuilder:
         报告文件缺失/损坏/无遗留 → 返回空串（零注入，首轮 judge 不注入）。
         """
         report_path = (
-            self._pm.project_root / ".fenix" / "verify-progress"
-            / spec_name / "report.json"
+            self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "report.json"
         )
         try:
             data = json.loads(report_path.read_text(encoding="utf-8"))
@@ -1644,9 +1662,9 @@ class PromptBuilder:
         不可省）。无缓存/零命中/读取异常 → 返回空串（零注入，prompt 回退）。
         """
         from core.verdict_check import load_verdict_cache, scenario_fingerprint
+
         report_path = (
-            self._pm.project_root / ".fenix" / "verify-progress"
-            / spec_name / "report.json"
+            self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "report.json"
         )
         try:
             report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -1684,7 +1702,6 @@ class PromptBuilder:
             )
         return "".join(lines)
 
-
     def _scenario_static_findings_section(self, spec_name: str) -> str:
         """场景静态缺陷情报段（add-scenario-defect-triage-gate D5）。
 
@@ -1695,6 +1712,7 @@ class PromptBuilder:
         逐字节一致）。
         """
         from core.verify_engine.scenario_static_check import load_findings
+
         findings = load_findings(self._pm.project_root, spec_name)
         if not findings:
             return ""
@@ -1723,7 +1741,6 @@ class PromptBuilder:
         ]
         return "\n".join(lines)
 
-
     def _scenario_reroute_directive_section(self, spec_name: str) -> str:
         """场景缺陷改道指令段（add-scenario-defect-triage-gate D2）。
 
@@ -1738,8 +1755,11 @@ class PromptBuilder:
         文件缺失/损坏 → 返回空串（零注入，非改道轮 prompt 与现状逐字节一致）。
         """
         directive_path = (
-            self._pm.project_root / ".fenix" / "verify-progress"
-            / spec_name / "scenario_reroute_directive.json"
+            self._pm.project_root
+            / ".fenix"
+            / "verify-progress"
+            / spec_name
+            / "scenario_reroute_directive.json"
         )
         if not directive_path.exists():
             return ""
@@ -1754,8 +1774,9 @@ class PromptBuilder:
         if not failed_ids:
             return ""
         id_line = "、".join(str(s) for s in failed_ids)
-        counts_txt = "、".join(
-            f"{k}={v}" for k, v in counts.items()) if counts else "全 test-defect"
+        counts_txt = (
+            "、".join(f"{k}={v}" for k, v in counts.items()) if counts else "全 test-defect"
+        )
         return (
             "\n\n## ⚠️ 场景缺陷改道（MANDATORY：按原地修复协议申报 scenario-repaired）\n"
             "\n"

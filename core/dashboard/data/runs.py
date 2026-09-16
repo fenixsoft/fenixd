@@ -92,6 +92,7 @@ def _first_run_event_ts(path: Path) -> "str | None":
                 ts = ev.get("timestamp") if isinstance(ev, dict) else None
                 # 跨组引用（timeline 组的 _parse_iso_ts）经门面延迟解析（D4）
                 import core.dashboard.data as _facade
+
                 if ts and _facade._parse_iso_ts(str(ts)) is not None:
                     return str(ts)
     except OSError:
@@ -99,8 +100,7 @@ def _first_run_event_ts(path: Path) -> "str | None":
     return None
 
 
-def get_runs(project_root, spec_name: str | None = None,
-             include_archive: bool = False) -> list:
+def get_runs(project_root, spec_name: str | None = None, include_archive: bool = False) -> list:
     """列出项目的运行记录（.fenix/runs/*.jsonl）。
 
     spec_name 省略时返回全部；否则仅返回 run_id 包含该 spec 的记录。
@@ -154,6 +154,7 @@ def get_runs(project_root, spec_name: str | None = None,
         real_start = _first_run_event_ts(p)
         # 跨组引用（timeline 组的 _parse_iso_ts）经门面延迟解析（D4）
         import core.dashboard.data as _facade
+
         real_dt = _facade._parse_iso_ts(real_start) if real_start else None
         if real_dt is not None:
             started = real_dt.astimezone(timezone.utc).isoformat()
@@ -173,15 +174,17 @@ def get_runs(project_root, spec_name: str | None = None,
         # 无终态断尾），stale 不进 _RUN_TERMINAL_STATUS_MAP（非事件类型）。
         if status in ("running", "empty") and (now - stat.st_mtime) > _RUN_STALE_SECONDS:
             status = "stale"
-        out.append({
-            "run_id": run_id,
-            "agent_type": agent_type,
-            "spec": spec_part,
-            "status": status,
-            "duration_seconds": duration_seconds,
-            "started": started,
-            "file_size": stat.st_size,
-        })
+        out.append(
+            {
+                "run_id": run_id,
+                "agent_type": agent_type,
+                "spec": spec_part,
+                "status": status,
+                "duration_seconds": duration_seconds,
+                "started": started,
+                "file_size": stat.st_size,
+            }
+        )
     return out
 
 
@@ -236,8 +239,14 @@ def get_run_events(project_root, run_id: str, tail: int = 300) -> dict:
     """
     run_file = _resolve_run_file(project_root, run_id)
     if not run_file.exists():
-        return {"run_id": run_id, "exists": False, "status": "missing",
-                "events": [], "total_events": 0, "error": None}
+        return {
+            "run_id": run_id,
+            "exists": False,
+            "status": "missing",
+            "events": [],
+            "total_events": 0,
+            "error": None,
+        }
     events = []
     error = None
     try:
@@ -247,8 +256,14 @@ def get_run_events(project_root, run_id: str, tail: int = 300) -> dict:
                 if entry.get("type") == "error":
                     error = entry
     except OSError:
-        return {"run_id": run_id, "exists": True, "status": "error",
-                "events": [], "total_events": 0, "error": {"error": "unreadable"}}
+        return {
+            "run_id": run_id,
+            "exists": True,
+            "status": "error",
+            "events": [],
+            "total_events": 0,
+            "error": {"error": "unreadable"},
+        }
     return {
         "run_id": run_id,
         "exists": True,
@@ -278,13 +293,15 @@ def read_run_events_between(project_root, run_id: str, start_offset: int) -> lis
 
 # ── 聚合视图（供 Web API / 概览 / 详情） ──────────────────────────
 
+
 def active_run_count(project_root) -> int:
     """统计处于 running / empty（可能正在增长）状态的运行数。"""
     return sum(1 for r in get_runs(project_root) if r["status"] in ("running", "empty"))
 
 
-def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
-                       marker_scan_cap: int = 4 << 20) -> dict:
+def _run_tail_insights(
+    run_file: Path, tail_bytes: int = 65536, marker_scan_cap: int = 4 << 20
+) -> dict:
     """读取 run 产物尾部：ClaudeCode 最后一条总结 + 实际驱动的 LLM + usage 四分项 + 终态原因。
 
     summary 优先取 result 事件的 result 字段（run 最终总结，markdown 文本，
@@ -341,8 +358,11 @@ def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
                 if isinstance(c, str) and c.strip():
                     last_asst = c.strip()
                 elif isinstance(c, list):
-                    texts = [b.get("text", "") for b in c
-                             if isinstance(b, dict) and b.get("type") == "text"]
+                    texts = [
+                        b.get("text", "")
+                        for b in c
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    ]
                     joined = "\n".join(t for t in texts if t.strip())
                     if joined.strip():
                         last_asst = joined.strip()
@@ -367,9 +387,9 @@ def _run_tail_insights(run_file: Path, tail_bytes: int = 65536,
     return {"summary": summary, "llm": llm, "usage": usage, "reason": reason}
 
 
-def compute_run_cost(usage: "dict | None", model_used: str,
-                     provider_used: str,
-                     billing_table: "dict | None") -> "float | None":
+def compute_run_cost(
+    usage: "dict | None", model_used: str, provider_used: str, billing_table: "dict | None"
+) -> "float | None":
     """按「provider 卡片开关 + 行 model 匹配」计算单 run 成本（design D2）。
 
     成本 = input/1M×输入价 + output/1M×输出价 + cache_read/1M×缓存读价
@@ -451,6 +471,7 @@ def run_activity(project_root, spec_name, *, now: float | None = None) -> dict:
     """
     # D8/D4：find_impl_run_file 已迁至 tasks.py，经门面解析
     import core.dashboard.data as _facade
+
     run_file = _facade.find_impl_run_file(project_root, spec_name)
     if run_file is None:
         return {"active": False, "last_event_seconds_ago": None}

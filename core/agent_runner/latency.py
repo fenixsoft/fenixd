@@ -73,8 +73,8 @@ def _entry_is_tool_result(entry: dict) -> bool:
     if entry.get("type") == "user":
         content = entry.get("message", {}).get("content")
         return isinstance(content, list) and any(
-            isinstance(b, dict) and b.get("type") == "tool_result"
-            for b in content)
+            isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+        )
     return False
 
 
@@ -124,8 +124,7 @@ def latency_stats(samples) -> dict:
         >60s 长尾样本数；stall_ratio = stalls/rounds（0 样本为 0）。
     """
     n = len(samples)
-    base = {"rounds": n, "median": None, "p90": None, "max": None,
-            "stalls": 0, "stall_ratio": 0.0}
+    base = {"rounds": n, "median": None, "p90": None, "max": None, "stalls": 0, "stall_ratio": 0.0}
     if n == 0:
         return base
     ordered = sorted(samples)

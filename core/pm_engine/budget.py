@@ -16,7 +16,6 @@ from pathlib import Path
 import json
 import re
 
-
 # ── 实现尝试总预算缺省值（add-fail-counter-budget D2/D3）──────────
 # 每 spec 跨修复周期的实现 run 启动次数上限（含首次实现与每轮修复重派、
 # 含单次派发的重试 attempt）；达到预算 → blocked + 人工裁决。
@@ -62,6 +61,7 @@ def effective_impl_budget_max(config: dict) -> int:
     与同一配置键），保证「界面可设范围」与「闸门夹紧范围」永远一致。
     """
     from core.config import ConfigLoader
+
     raw = ConfigLoader.get(config, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT)
     return resolve_impl_run_budget_max(raw)
 
@@ -85,6 +85,8 @@ def clamp_impl_run_budget(raw, max_value: int = IMPL_RUN_BUDGET_MAX_DEFAULT) -> 
     if val > max_value:
         val = max_value
     return val
+
+
 # 持久化字段名：当前 spec 已累计启动的实现 run 次数。
 IMPL_RUN_BUDGET_USED_FIELD = "_impl_run_budget_used"
 # ── 死亡 run 豁免（fix-budget-counting-semantics D1）──────────────
@@ -127,13 +129,11 @@ class ImplBudget:
         max_value = self._impl_budget_max()
         if spec_name:
             entry = self._pm.state_machine.read_one(spec_name) or {}
-            override = clamp_impl_run_budget(
-                entry.get(IMPL_RUN_BUDGET_OVERRIDE_FIELD), max_value)
+            override = clamp_impl_run_budget(entry.get(IMPL_RUN_BUDGET_OVERRIDE_FIELD), max_value)
             if override is not None:
                 return override
         raw = self._pm._get_config("agents.impl_run_budget", DEFAULT_IMPL_RUN_BUDGET)
         return clamp_impl_run_budget(raw, max_value) or DEFAULT_IMPL_RUN_BUDGET
-
 
     def _increment_impl_run_budget_used(self, spec_name: str) -> int:
         """实现 run 启动时递增并持久化 ``_impl_run_budget_used``。
@@ -150,7 +150,6 @@ class ImplBudget:
         )
         return used
 
-
     def _budget_exempt_alert_threshold(self) -> int:
         """死亡豁免侧车告警阈值（pm.budget_exempt_alert_threshold，缺省 6）。"""
         try:
@@ -164,9 +163,9 @@ class ImplBudget:
             val = BUDGET_EXEMPT_ALERT_THRESHOLD
         return max(1, val)
 
-
-    def _exempt_dead_run_budget(self, spec_name: str, reason: str,
-                                   run_reason: str | None = None) -> None:
+    def _exempt_dead_run_budget(
+        self, spec_name: str, reason: str, run_reason: str | None = None
+    ) -> None:
         """死亡 run 豁免：回退本次启动的计数增量 + 侧车递增 + 审计日志。
 
         fix-budget-counting-semantics D1：run 异常死亡（进程消失/零输出/
@@ -203,8 +202,7 @@ class ImplBudget:
         if exempt >= self._budget_exempt_alert_threshold():
             self._alert_budget_exempt_loop(spec_name, exempt)
 
-    def _exempt_infra_run_budget(self, spec_name: str, reason: str,
-                                 refund_key: str = "") -> bool:
+    def _exempt_infra_run_budget(self, spec_name: str, reason: str, refund_key: str = "") -> bool:
         """infra 失败预算事后补偿（evo-infra-failure-budget-exempt R2）。
 
         与 ``_exempt_dead_run_budget`` 同范式（事后补偿、不做计数时点感知）：
@@ -226,16 +224,14 @@ class ImplBudget:
             anchor = refund_key or str(entry0.get("implementer_run") or "")
             refunded_raw = entry0.get(INFRA_REFUNDED_RUN_IDS_FIELD) or "[]"
             try:
-                refunded: list = json.loads(
-                    refunded_raw) if isinstance(refunded_raw, str) else []
+                refunded: list = json.loads(refunded_raw) if isinstance(refunded_raw, str) else []
             except (json.JSONDecodeError, TypeError, ValueError):
                 refunded = []
             if anchor and anchor in refunded:
                 # 同一实现 run 已退款——幂等跳过
                 self._pm.logger.info(
                     "pm_engine",
-                    f"infra 预算退款幂等跳过 '{spec_name}' run={anchor}"
-                    f"（该实现 run 已退款）",
+                    f"infra 预算退款幂等跳过 '{spec_name}' run={anchor}" f"（该实现 run 已退款）",
                 )
                 return True
             used = self._pm.state_machine.bump_impl_budget(spec_name, -1)
@@ -245,8 +241,7 @@ class ImplBudget:
                 try:
                     self._pm.state_machine.update_spec(
                         spec_name,
-                        {INFRA_REFUNDED_RUN_IDS_FIELD:
-                         json.dumps(refunded, ensure_ascii=False)},
+                        {INFRA_REFUNDED_RUN_IDS_FIELD: json.dumps(refunded, ensure_ascii=False)},
                     )
                 except Exception:
                     pass
@@ -281,7 +276,6 @@ class ImplBudget:
             return False
         return True
 
-
     def _alert_budget_exempt_loop(self, spec_name: str, exempt: int) -> None:
         """死亡豁免侧车达阈值 → 一次性提醒级告警（幂等标记 ``_exempt_alerted``）。
 
@@ -291,9 +285,7 @@ class ImplBudget:
         entry = self._pm.state_machine.read_one(spec_name) or {}
         if entry.get(BUDGET_EXEMPT_ALERTED_FIELD):
             return
-        self._pm.state_machine.update_spec(
-            spec_name, {BUDGET_EXEMPT_ALERTED_FIELD: True}
-        )
+        self._pm.state_machine.update_spec(spec_name, {BUDGET_EXEMPT_ALERTED_FIELD: True})
         threshold = self._budget_exempt_alert_threshold()
         self._pm._send_human_escalation_alert(
             spec_name=spec_name,
@@ -313,7 +305,6 @@ class ImplBudget:
                 "_budget_exempt_runs 侧车即可解除告警条件"
             ),
         )
-
 
     def _reconcile_impl_budget(self, spec_name: str) -> None:
         """merge 成功/守卫放行后回读 used 与正常收工 run 数比对。
@@ -339,8 +330,7 @@ class ImplBudget:
             return
         # 纯漂移（无豁免因素）：以 runs 实际计数为准改写 used（design D5）
         try:
-            self._pm.state_machine.update_spec(
-                spec_name, {IMPL_RUN_BUDGET_USED_FIELD: completed})
+            self._pm.state_machine.update_spec(spec_name, {IMPL_RUN_BUDGET_USED_FIELD: completed})
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
@@ -381,13 +371,11 @@ class ImplBudget:
         if runs_dir.is_dir():
             archive_dir = runs_dir / "archive"
             try:
-                if archive_dir.is_dir() and list(
-                        archive_dir.glob(f"impl-{spec_name}-*.jsonl")):
+                if archive_dir.is_dir() and list(archive_dir.glob(f"impl-{spec_name}-*.jsonl")):
                     return True
             except OSError:
                 pass
         return False
-
 
     def _count_normal_completed_impl_runs(self, spec_name: str) -> int:
         """从 .fenix/runs/ 侧车统计本 spec 正常收工的实现 run 数。
@@ -416,7 +404,6 @@ class ImplBudget:
                 count += 1
         return count
 
-
     @staticmethod
     def _run_file_died(path: Path) -> bool:
         """实现 run 产物是否以 error 终态行收尾（死亡 run 判据，容错解析）。"""
@@ -437,14 +424,12 @@ class ImplBudget:
             return True
         return isinstance(last, dict) and last.get("type") == "error"
 
-
     def _impl_run_budget_used(self, spec_name: str) -> int:
         entry = self._pm.state_machine.read_one(spec_name) or {}
         try:
             return int(entry.get(IMPL_RUN_BUDGET_USED_FIELD, 0) or 0)
         except (TypeError, ValueError):
             return 0
-
 
     def _check_impl_budget_exhausted(self, spec_name: str) -> bool:
         """派发新一轮实现器前校验预算。
@@ -494,12 +479,9 @@ class ImplBudget:
             ),
             signal_type="impl_budget_exhausted",
             severity="major",
-            description=(
-                f"'{spec_name}' 实现尝试预算耗尽（{used}/{budget}），已冻结等待人工裁决"
-            ),
+            description=(f"'{spec_name}' 实现尝试预算耗尽（{used}/{budget}），已冻结等待人工裁决"),
             evidence=(
-                f"spec={spec_name}; used={used}; budget={budget}; "
-                f"recent_failure={recent_error}"
+                f"spec={spec_name}; used={used}; budget={budget}; " f"recent_failure={recent_error}"
             ),
             recommended_action=(
                 "检查实现/验证报告定位根因；人工可调大 agents.impl_run_budget 后解冻，"

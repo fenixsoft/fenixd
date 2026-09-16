@@ -29,10 +29,17 @@ from typing import Optional
 class _NullLogger:
     """空日志器，当未提供logger时的默认实现。"""
 
-    def info(self, *args, **kwargs): pass
-    def debug(self, *args, **kwargs): pass
-    def warning(self, *args, **kwargs): pass
-    def error(self, *args, **kwargs): pass
+    def info(self, *args, **kwargs):
+        pass
+
+    def debug(self, *args, **kwargs):
+        pass
+
+    def warning(self, *args, **kwargs):
+        pass
+
+    def error(self, *args, **kwargs):
+        pass
 
 
 class VerifyRunner:

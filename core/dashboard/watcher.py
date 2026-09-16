@@ -39,8 +39,8 @@ from pathlib import Path
 
 from . import data as dashboard_data
 
-SCAN_INTERVAL = 1.0       # 数据源文件轮询周期（秒）
-REFRESH_HEARTBEAT = 2.0   # 周期性刷新心跳（秒）：daemon 状态/新项目发现不产生文件变更，需周期推送
+SCAN_INTERVAL = 1.0  # 数据源文件轮询周期（秒）
+REFRESH_HEARTBEAT = 2.0  # 周期性刷新心跳（秒）：daemon 状态/新项目发现不产生文件变更，需周期推送
 
 
 def _dir_sig(p: Path):
@@ -62,8 +62,14 @@ def _file_sig(p: Path):
 
 
 class FileWatcher:
-    def __init__(self, projects_fn, hub, interval: float = SCAN_INTERVAL,
-                 heartbeat: float | None = None, summary_index=None):
+    def __init__(
+        self,
+        projects_fn,
+        hub,
+        interval: float = SCAN_INTERVAL,
+        heartbeat: float | None = None,
+        summary_index=None,
+    ):
         """projects_fn: 无参可调用，返回 [{"name", "path", "exists", ...}]。
         summary_index: 可选，共享的 SummaryIndex（与 server 同实例）；缺省自建。
         """
@@ -75,19 +81,20 @@ class FileWatcher:
 
         self._running = False
         self._thread = None
-        self._top_sigs = {}        # project -> {kind: sig}（state/vp/admin）
-        self._spec_dirs = {}       # project -> {spec_name: 目录签名}
-        self._states = {}          # project -> parse_state() 快照（用于 STATE.md diff）
+        self._top_sigs = {}  # project -> {kind: sig}（state/vp/admin）
+        self._spec_dirs = {}  # project -> {spec_name: 目录签名}
+        self._states = {}  # project -> parse_state() 快照（用于 STATE.md diff）
         self._last_summaries = {}  # project -> {spec_name: summary dict}（增量 diff 基线）
-        self._run_base = {}        # (project, run_id) -> {"size": int, "status": str}
-        self._log_sigs = {}        # project -> {log_path: (mtime_ns, size)}
+        self._run_base = {}  # (project, run_id) -> {"size": int, "status": str}
+        self._log_sigs = {}  # project -> {log_path: (mtime_ns, size)}
 
     # ── 生命周期 ─────────────────────────────────────────────
 
     def start(self):
         self._running = True
-        self._thread = threading.Thread(target=self._loop, name="fenixd-dashboard-watcher",
-                                        daemon=True)
+        self._thread = threading.Thread(
+            target=self._loop, name="fenixd-dashboard-watcher", daemon=True
+        )
         self._thread.start()
 
     def stop(self):
@@ -162,10 +169,15 @@ class FileWatcher:
             self._handle_state_change(name, proot, removed=spec_removed)
         #   仅日志变化 → 轻量空增量（前端不刷新列表；跑马灯等靠心跳校准）
         elif logs_changed:
-            self.hub.broadcast({
-                "project": name, "type": "state",
-                "specs": [], "details": {}, "overview": None,
-            })
+            self.hub.broadcast(
+                {
+                    "project": name,
+                    "type": "state",
+                    "specs": [],
+                    "details": {},
+                    "overview": None,
+                }
+            )
         # spec 目录变化额外推详情（列表摘要归 state 事件；详情供详情弹窗刷新）
         for spec in spec_dir_changed:
             self._handle_spec_change(name, proot, spec)
@@ -285,8 +297,7 @@ class FileWatcher:
         try:
             summaries = self.summary_index.get(proot, cur, state_sig=state_sig)
         except Exception:
-            summaries = [dashboard_data.spec_summary(proot, s, e)
-                         for s, e in cur.items()]
+            summaries = [dashboard_data.spec_summary(proot, s, e) for s, e in cur.items()]
         new_map = {s.get("name"): s for s in summaries}
         prev_map = self._last_summaries.get(name, {})
 
@@ -314,13 +325,15 @@ class FileWatcher:
             specs_out.append({"spec": spec, "summary": None})
 
         self._last_summaries[name] = new_map
-        self.hub.broadcast({
-            "project": name,
-            "type": "state",
-            "specs": specs_out,
-            "details": details,
-            "overview": None,
-        })
+        self.hub.broadcast(
+            {
+                "project": name,
+                "type": "state",
+                "specs": specs_out,
+                "details": details,
+                "overview": None,
+            }
+        )
 
     def _handle_spec_change(self, name: str, proot: Path, spec: str):
         """单个 SPEC 自己的文件变化：推送该 SPEC 详情（detail 事件）。"""
@@ -357,10 +370,15 @@ class FileWatcher:
             status = self._classify(run_file)
             self._run_base[key] = {"size": size, "status": status}
             if self.hub.is_watched(run_id):
-                self.hub.broadcast({
-                    "project": name, "type": "run_events", "run_id": run_id,
-                    "status": status, "reset": True,
-                })
+                self.hub.broadcast(
+                    {
+                        "project": name,
+                        "type": "run_events",
+                        "run_id": run_id,
+                        "status": status,
+                        "reset": True,
+                    }
+                )
             return
 
         # 正常增长：读取新增字节
@@ -369,15 +387,25 @@ class FileWatcher:
         self._run_base[key] = {"size": size, "status": status}
 
         if new_events and self.hub.is_watched(run_id):
-            self.hub.broadcast({
-                "project": name, "type": "run_events", "run_id": run_id,
-                "status": status, "events": new_events,
-            })
+            self.hub.broadcast(
+                {
+                    "project": name,
+                    "type": "run_events",
+                    "run_id": run_id,
+                    "status": status,
+                    "events": new_events,
+                }
+            )
         if status != prev["status"]:
             # 状态转换（running→done/error）：run 元数据/时间轴需刷新
-            self.hub.broadcast({
-                "project": name, "type": "run_meta", "run_id": run_id, "status": status,
-            })
+            self.hub.broadcast(
+                {
+                    "project": name,
+                    "type": "run_meta",
+                    "run_id": run_id,
+                    "status": status,
+                }
+            )
 
     def _handle_admin_change(self, name: str):
         """admin_alerts.json 变化（add-admin-invoke-dialog）：广播轻量通知。"""

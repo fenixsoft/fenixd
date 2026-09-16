@@ -35,10 +35,10 @@ logger = logging.getLogger("verify_engine.scenario_static_check")
 # 'FENIX_VERIFY_PORT', '57905')`` 兜底），以 PORT 标记 + 邻近数字字面量捕捉。
 _URL_PORT_RE = re.compile(r"(?:https?://[^/\s\"]*:)(\d{2,5})")
 _HOST_PORT_RE = re.compile(
-    r"(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|[a-zA-Z][a-zA-Z0-9\-]*):(\d{2,5})")
+    r"(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|localhost|[a-zA-Z][a-zA-Z0-9\-]*):(\d{2,5})"
+)
 _FLAG_PORT_RE = re.compile(r"(?:--port|-p|--port=|-p=)(?:\s|=)?(\d{2,5})")
-_PORT_VAR_RE = re.compile(
-    r"PORT[^\w]*(?:[\"']?\s*,\s*[\"']?|[\"']?)[^\w]{0,6}(\d{2,5})")
+_PORT_VAR_RE = re.compile(r"PORT[^\w]*(?:[\"']?\s*,\s*[\"']?|[\"']?)[^\w]{0,6}(\d{2,5})")
 _PORT_PATTERNS = (_URL_PORT_RE, _HOST_PORT_RE, _FLAG_PORT_RE, _PORT_VAR_RE)
 
 # ── 双汉字文本选择器模式（antd autoInsertSpace：二字按钮渲染为「X X」）──
@@ -59,7 +59,7 @@ class StaticFinding:
 
     scenario_id: str
     rule_id: str
-    location: str    # 如 "steps[0].command" / "assertions[1].selector"
+    location: str  # 如 "steps[0].command" / "assertions[1].selector"
     message: str
 
     def to_dict(self) -> dict:
@@ -137,8 +137,7 @@ def _flagged_2han_literals(text: str) -> list[str]:
     return out
 
 
-def _rule_stale_literal_port(scenario: dict,
-                             serving_port: str | None) -> list[StaticFinding]:
+def _rule_stale_literal_port(scenario: dict, serving_port: str | None) -> list[StaticFinding]:
     """① cli/api 场景 command/stdin/http_request url 字面端口 ≠ serving 端口。
 
     本次事故根因：跨轮 replan 原样写回已裁决场景，seed stdign 内嵌上一轮
@@ -161,17 +160,19 @@ def _rule_stale_literal_port(scenario: dict,
                 for port in _matching_ports(text):
                     if serving_port and port == str(serving_port):
                         continue
-                    findings.append(StaticFinding(
-                        scenario_id=sid,
-                        rule_id="stale_literal_port",
-                        location=f"steps[{i}].{field}",
-                        message=(
-                            f"场景 {field} 内嵌字面端口 {port} ≠ 本轮 serving 端口 "
-                            f"{serving_port or '未知'}（跨轮端口残留）。cli 步骤应以 "
-                            f"FENIX_VERIFY_PORT/FENIX_VERIFY_BASE_URL 环境变量取本轮"
-                            f"端口，勿硬编码字面端口——否则夹具/seed 实际未往本轮实例建。"
-                        ),
-                    ))
+                    findings.append(
+                        StaticFinding(
+                            scenario_id=sid,
+                            rule_id="stale_literal_port",
+                            location=f"steps[{i}].{field}",
+                            message=(
+                                f"场景 {field} 内嵌字面端口 {port} ≠ 本轮 serving 端口 "
+                                f"{serving_port or '未知'}（跨轮端口残留）。cli 步骤应以 "
+                                f"FENIX_VERIFY_PORT/FENIX_VERIFY_BASE_URL 环境变量取本轮"
+                                f"端口，勿硬编码字面端口——否则夹具/seed 实际未往本轮实例建。"
+                            ),
+                        )
+                    )
     elif kind == "api":
         for i, step in enumerate(steps):
             if not isinstance(step, dict):
@@ -184,21 +185,22 @@ def _rule_stale_literal_port(scenario: dict,
             for port in _matching_ports(url):
                 if serving_port and port == str(serving_port):
                     continue
-                findings.append(StaticFinding(
-                    scenario_id=sid,
-                    rule_id="stale_literal_port",
-                    location=f"steps[{i}].url",
-                    message=(
-                        f"api 步骤 url 字面端口 {port} ≠ 本轮 serving 端口 "
-                        f"{serving_port or '未知'}（跨轮端口残留）。api 场景应打"
-                        f"本轮实例地址（FENIX_VERIFY_PORT），勿硬编码字面端口。"
-                    ),
-                ))
+                findings.append(
+                    StaticFinding(
+                        scenario_id=sid,
+                        rule_id="stale_literal_port",
+                        location=f"steps[{i}].url",
+                        message=(
+                            f"api 步骤 url 字面端口 {port} ≠ 本轮 serving 端口 "
+                            f"{serving_port or '未知'}（跨轮端口残留）。api 场景应打"
+                            f"本轮实例地址（FENIX_VERIFY_PORT），勿硬编码字面端口。"
+                        ),
+                    )
+                )
     return findings
 
 
-def _rule_stale_navigate_port(scenario: dict,
-                              serving_port: str | None) -> list[StaticFinding]:
+def _rule_stale_navigate_port(scenario: dict, serving_port: str | None) -> list[StaticFinding]:
     """② web navigate URL 字面端口 ≠ serving 端口（误导性情报级）。
 
     web_runner 执行时以契约 base_url 为准，navigate 字面端口仅作回退考古——
@@ -218,21 +220,22 @@ def _rule_stale_navigate_port(scenario: dict,
         for port in _matching_ports(url):
             if serving_port and port == str(serving_port):
                 continue
-            findings.append(StaticFinding(
-                scenario_id=sid,
-                rule_id="stale_navigate_port",
-                location=f"steps[{i}].value",
-                message=(
-                    f"navigate URL 字面端口 {port} ≠ 本轮 serving 端口 "
-                    f"{serving_port or '未知'}。web 执行以契约 base_url 为准、"
-                    f"字面端口仅回退考古——误导性情报，建议按本轮端口改写以利取证。"
-                ),
-            ))
+            findings.append(
+                StaticFinding(
+                    scenario_id=sid,
+                    rule_id="stale_navigate_port",
+                    location=f"steps[{i}].value",
+                    message=(
+                        f"navigate URL 字面端口 {port} ≠ 本轮 serving 端口 "
+                        f"{serving_port or '未知'}。web 执行以契约 base_url 为准、"
+                        f"字面端口仅回退考古——误导性情报，建议按本轮端口改写以利取证。"
+                    ),
+                )
+            )
     return findings
 
 
-def _rule_double_han_text_selector(scenario: dict,
-                                   serving_port: str | None) -> list[StaticFinding]:
+def _rule_double_han_text_selector(scenario: dict, serving_port: str | None) -> list[StaticFinding]:
     """③ 双汉字文本选择器（antd autoInsertSpace：二字按钮渲染为「X X」）。
 
     扫描 web 场景断言 selector/text/expected 与步骤 target/value 中候选
@@ -253,17 +256,19 @@ def _rule_double_han_text_selector(scenario: dict,
             if not isinstance(text, str) or not text:
                 continue
             for lit in _flagged_2han_literals(text):
-                findings.append(StaticFinding(
-                    scenario_id=sid,
-                    rule_id="double_han_text_selector",
-                    location=f"assertions[{i}].{field}",
-                    message=(
-                        f"断言 {field} 含恰 2 汉字文本选择器 "
-                        f"`{lit}`——antd autoInsertSpace 会把二字文本渲染为「X X」"
-                        f"（如「确定」→「确 定」），按原文匹配必失配。建议改用 "
-                        f"data-testid 或含非汉字/更长文本的选择器。"
-                    ),
-                ))
+                findings.append(
+                    StaticFinding(
+                        scenario_id=sid,
+                        rule_id="double_han_text_selector",
+                        location=f"assertions[{i}].{field}",
+                        message=(
+                            f"断言 {field} 含恰 2 汉字文本选择器 "
+                            f"`{lit}`——antd autoInsertSpace 会把二字文本渲染为「X X」"
+                            f"（如「确定」→「确 定」），按原文匹配必失配。建议改用 "
+                            f"data-testid 或含非汉字/更长文本的选择器。"
+                        ),
+                    )
+                )
     for i, step in enumerate(scenario.get("steps") or []):
         if not isinstance(step, dict):
             continue
@@ -272,17 +277,19 @@ def _rule_double_han_text_selector(scenario: dict,
             if not isinstance(text, str) or not text:
                 continue
             for lit in _flagged_2han_literals(text):
-                findings.append(StaticFinding(
-                    scenario_id=sid,
-                    rule_id="double_han_text_selector",
-                    location=f"steps[{i}].{field}",
-                    message=(
-                        f"步骤 {field} 含恰 2 汉字文本选择器 "
-                        f"`{lit}`——antd autoInsertSpace 会把二字文本渲染为「X X」"
-                        f"（如「确定」→「确 定」），点击/断言必失配。建议改用 "
-                        f"data-testid 或含非汉字/更长文本的选择器。"
-                    ),
-                ))
+                findings.append(
+                    StaticFinding(
+                        scenario_id=sid,
+                        rule_id="double_han_text_selector",
+                        location=f"steps[{i}].{field}",
+                        message=(
+                            f"步骤 {field} 含恰 2 汉字文本选择器 "
+                            f"`{lit}`——antd autoInsertSpace 会把二字文本渲染为「X X」"
+                            f"（如「确定」→「确 定」），点击/断言必失配。建议改用 "
+                            f"data-testid 或含非汉字/更长文本的选择器。"
+                        ),
+                    )
+                )
     return findings
 
 
@@ -310,8 +317,9 @@ PATTERN_TABLE: list[dict] = [
 ]
 
 
-def scan_scenarios(scenarios: Sequence[Any],
-                   serving_port: str | int | None = None) -> list[StaticFinding]:
+def scan_scenarios(
+    scenarios: Sequence[Any], serving_port: str | int | None = None
+) -> list[StaticFinding]:
     """模式表驱动扫描场景集（fail-open：任何异常记 WARNING 返回空 findings）。
 
     Args:
@@ -347,22 +355,23 @@ def scan_scenarios(scenarios: Sequence[Any],
     except Exception as e:  # noqa: BLE001 — fail-open 设计
         logger.warning(
             "scenario_static_check",
-            f"静态扫描整体异常（fail-open，返回空 findings）: "
-            f"{type(e).__name__}: {e}",
+            f"静态扫描整体异常（fail-open，返回空 findings）: " f"{type(e).__name__}: {e}",
         )
         return []
     return findings
 
 
-def write_findings(project_root: Path, spec_name: str,
-                   findings: Sequence[StaticFinding]) -> None:
+def write_findings(project_root: Path, spec_name: str, findings: Sequence[StaticFinding]) -> None:
     """findings 覆盖写 ``.fenix/verify-progress/<spec>/scenario_static_findings.json``。
 
     写失败仅 WARNING，不阻断验证（fail-open）。
     """
     target = (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / "scenario_static_findings.json"
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / spec_name
+        / "scenario_static_findings.json"
     )
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -385,8 +394,11 @@ def load_findings(project_root: Path, spec_name: str) -> list[dict]:
     文件缺失/损坏/非 list → 返回空列表（零注入，fail-open）。
     """
     path = (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / "scenario_static_findings.json"
+        Path(project_root)
+        / ".fenix"
+        / "verify-progress"
+        / spec_name
+        / "scenario_static_findings.json"
     )
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -412,8 +424,7 @@ def _package_start_entry(project_root: Path) -> str | None:
     对象形态（platform 分派）/缺失/损坏返回 None（跳过该规则比对）。
     """
     try:
-        pkg = json.loads((Path(project_root) / "package.json").read_text(
-            encoding="utf-8"))
+        pkg = json.loads((Path(project_root) / "package.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(pkg, dict):
@@ -448,6 +459,7 @@ def scan_contract(project_root: Path) -> list[dict]:
             load_verify_contract,
             resolve_entry_path,
         )
+
         project_root = Path(project_root)
         contract = load_verify_contract(project_root)
         serve = contract.serve if contract is not None else None
@@ -459,67 +471,72 @@ def scan_contract(project_root: Path) -> list[dict]:
         if entry is not None and not Path(entry).is_file():
             # 与预检同款候选提示（entry_preflight_error 的判定+提示逻辑）
             preflight = entry_preflight_error(cmd, project_root)
-            evidence = (preflight if preflight
-                        else f"cmd={cmd!r}; cwd={project_root}")
-            findings.append(dict(
-                rule_id="serve_entry_missing",
-                severity="high",
-                message=(
-                    f"serve.cmd 入口不存在: {entry}（cmd={cmd!r}）——场景执行将在"
-                    f"spawn 前被入口存在性预检 fail-fast 拦截，建议先修正入口路径"
-                    f"或确认构建产物已生成"),
-                evidence=evidence,
-            ))
+            evidence = preflight if preflight else f"cmd={cmd!r}; cwd={project_root}"
+            findings.append(
+                dict(
+                    rule_id="serve_entry_missing",
+                    severity="high",
+                    message=(
+                        f"serve.cmd 入口不存在: {entry}（cmd={cmd!r}）——场景执行将在"
+                        f"spawn 前被入口存在性预检 fail-fast 拦截，建议先修正入口路径"
+                        f"或确认构建产物已生成"
+                    ),
+                    evidence=evidence,
+                )
+            )
         # ② serve.cmd 入口 vs package.json start script 入口
         start_cmd = _package_start_entry(project_root)
-        start_entry = (resolve_entry_path(start_cmd, project_root)
-                       if start_cmd else None)
-        if (entry is not None and start_entry is not None
-                and Path(entry) != Path(start_entry)):
-            findings.append(dict(
-                rule_id="serve_entry_vs_start_mismatch",
-                severity="info",
-                message=(
-                    f"serve.cmd 入口 {entry} ≠ package.json start script 入口 "
-                    f"{start_entry}——两者可能是合法设计（start 为 dev 形态、serve "
-                    f"为构建产物形态），仅提示；若本意一致建议对齐"),
-                evidence=(
-                    f"serve.cmd={cmd!r}; package.json start={start_cmd!r}; "
-                    f"pkg 入口={start_entry}"),
-            ))
+        start_entry = resolve_entry_path(start_cmd, project_root) if start_cmd else None
+        if entry is not None and start_entry is not None and Path(entry) != Path(start_entry):
+            findings.append(
+                dict(
+                    rule_id="serve_entry_vs_start_mismatch",
+                    severity="info",
+                    message=(
+                        f"serve.cmd 入口 {entry} ≠ package.json start script 入口 "
+                        f"{start_entry}——两者可能是合法设计（start 为 dev 形态、serve "
+                        f"为构建产物形态），仅提示；若本意一致建议对齐"
+                    ),
+                    evidence=(
+                        f"serve.cmd={cmd!r}; package.json start={start_cmd!r}; "
+                        f"pkg 入口={start_entry}"
+                    ),
+                )
+            )
         # ③ 端口注入缺失（与 load 侧 warning 同判据，落盘让 admin 可见）
         if "{port}" not in cmd and "$FENIX_VERIFY_PORT" not in cmd:
-            findings.append(dict(
-                rule_id="serve_entry_no_port_injection",
-                severity="info",
-                message=(
-                    "serve.cmd 未引用端口注入（{port} 占位符或 $FENIX_VERIFY_PORT "
-                    "环境变量）——验证实例将与既有实例争抢固定端口（dashboard 端口"
-                    "独占语义下 = 杀占用者接管）。建议迁移：cmd 中的端口写作 {port}"),
-                evidence=(
-                    f"cmd={cmd!r}; 缺 '{{port}}' 与 '$FENIX_VERIFY_PORT' "
-                    f"（与 load 侧 warning 同判据）"),
-            ))
+            findings.append(
+                dict(
+                    rule_id="serve_entry_no_port_injection",
+                    severity="info",
+                    message=(
+                        "serve.cmd 未引用端口注入（{port} 占位符或 $FENIX_VERIFY_PORT "
+                        "环境变量）——验证实例将与既有实例争抢固定端口（dashboard 端口"
+                        "独占语义下 = 杀占用者接管）。建议迁移：cmd 中的端口写作 {port}"
+                    ),
+                    evidence=(
+                        f"cmd={cmd!r}; 缺 '{{port}}' 与 '$FENIX_VERIFY_PORT' "
+                        f"（与 load 侧 warning 同判据）"
+                    ),
+                )
+            )
     except Exception as e:  # noqa: BLE001 — fail-open 设计
         logger.warning(
             "scenario_static_check",
-            f"契约静态检查异常（fail-open，返回空 findings）: "
-            f"{type(e).__name__}: {e}",
+            f"契约静态检查异常（fail-open，返回空 findings）: " f"{type(e).__name__}: {e}",
         )
         return []
     return findings
 
 
-def write_contract_findings(project_root: Path, spec_name: str,
-                            findings: Sequence[dict]) -> None:
+def write_contract_findings(project_root: Path, spec_name: str, findings: Sequence[dict]) -> None:
     """findings 覆盖写 ``.fenix/verify-progress/<spec>/contract_findings.json``。
 
     与 scenario 静态 findings 文件名分离（design D4：命名空间隔离比混表干净，
     注入段各自独立）。写失败仅 WARNING，不阻断出题（fail-open）。
     """
     target = (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / CONTRACT_FINDINGS_FILENAME
+        Path(project_root) / ".fenix" / "verify-progress" / spec_name / CONTRACT_FINDINGS_FILENAME
     )
     try:
         target.parent.mkdir(parents=True, exist_ok=True)

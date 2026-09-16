@@ -235,10 +235,10 @@ class _AdoptionBase(unittest.TestCase):
         for to in ("ready", "implementing", "implemented", "testing"):
             self.sm.transition("demo-spec", to)
         self.engine._enqueue = MagicMock()
-        self.engine._apply_scenario_freeze = MagicMock(return_value={})
-        self.engine._apply_interaction_contract = MagicMock(return_value=None)
-        self.engine._update_warning_streaks = MagicMock(return_value=[])
-        self.engine._ensure_app_reachable = MagicMock(
+        self.engine._verification._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
+        self.engine._verification._update_warning_streaks = MagicMock(return_value=[])
+        self.engine._verification._ensure_app_reachable = MagicMock(
             return_value=(True, False, ""))
 
     def tearDown(self):
@@ -255,7 +255,7 @@ class _AdoptionBase(unittest.TestCase):
             return judge_result
 
         self.engine.agent_runner.run_planner = MagicMock(side_effect=_run_planner)
-        self.engine._verify_verdict_evidence = MagicMock(
+        self.engine._verification._verify_verdict_evidence = MagicMock(
             return_value=verdict_ret)
 
         class FakeEngine:
@@ -401,7 +401,7 @@ class TestFirstRoundJudgeFrozen(_AdoptionBase):
             return frozen
 
         self.engine.agent_runner.run_planner = MagicMock(side_effect=_run_planner)
-        self.engine._verify_verdict_evidence = MagicMock(
+        self.engine._verification._verify_verdict_evidence = MagicMock(
             return_value={"ok": True, "cause": "pass",
                           "violations": [], "dispatch_error": ""})
 
@@ -424,7 +424,7 @@ class TestFirstRoundJudgeFrozen(_AdoptionBase):
         entry = self.sm.read_one("demo-spec")
         self.assertEqual(entry["status"], "testing")
         self.engine.agent_runner.run_planner.assert_called_once()
-        self.engine._verify_verdict_evidence.assert_not_called()
+        self.engine._verification._verify_verdict_evidence.assert_not_called()
 
 
 if __name__ == "__main__":

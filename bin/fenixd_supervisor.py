@@ -118,7 +118,9 @@ def _write_fuse_marker(fail_count: int) -> None:
     try:
         FENIX_DIR.mkdir(parents=True, exist_ok=True)
         tmp_fd, tmp_path = tempfile.mkstemp(
-            prefix=".supervisor_fused.", suffix=".tmp", dir=str(FENIX_DIR),
+            prefix=".supervisor_fused.",
+            suffix=".tmp",
+            dir=str(FENIX_DIR),
         )
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
@@ -148,25 +150,28 @@ def _write_fuse_alert() -> None:
         if str(FENIX_DIR) not in sys.path:
             sys.path.insert(0, str(FENIX_DIR))
         from core.admin_store import AdminStore, ESCALATION
+
         store = AdminStore(PROJECT_ROOT)
-        store.append({
-            "kind": ESCALATION,
-            "signal_type": "supervisor_fused",
-            "spec": None,
-            "severity": "critical",
-            "description": "daemon 连续启动失败，已停止自动拉起"
-                           "（熔断标记 .fenix/supervisor_fused）",
-            "evidence": (
-                f"连续 {SUPERVISOR_STARTUP_FAIL_THRESHOLD} 次启动后 "
-                f"{SUPERVISOR_STARTUP_FAIL_WINDOW_SECONDS}s 内退出"
-            ),
-            "action_taken": "supervisor 熔断：停止自动拉起，升级人工",
-            "recommended_action": (
-                "修复 daemon 启动失败根因（多为陈旧自愈刚引入的新代码）→ 删除 "
-                ".fenix/supervisor_fused 熔断标记 → 重启 supervisor（或直接重启 "
-                "supervisor 进程，其不继承旧熔断）"
-            ),
-        })
+        store.append(
+            {
+                "kind": ESCALATION,
+                "signal_type": "supervisor_fused",
+                "spec": None,
+                "severity": "critical",
+                "description": "daemon 连续启动失败，已停止自动拉起"
+                "（熔断标记 .fenix/supervisor_fused）",
+                "evidence": (
+                    f"连续 {SUPERVISOR_STARTUP_FAIL_THRESHOLD} 次启动后 "
+                    f"{SUPERVISOR_STARTUP_FAIL_WINDOW_SECONDS}s 内退出"
+                ),
+                "action_taken": "supervisor 熔断：停止自动拉起，升级人工",
+                "recommended_action": (
+                    "修复 daemon 启动失败根因（多为陈旧自愈刚引入的新代码）→ 删除 "
+                    ".fenix/supervisor_fused 熔断标记 → 重启 supervisor（或直接重启 "
+                    "supervisor 进程，其不继承旧熔断）"
+                ),
+            }
+        )
     except Exception as e:  # noqa: BLE001 — 告警通道非关键路径，失败降级日志
         log(f"fuse alert write failed (non-blocking): {e}")
 
@@ -242,9 +247,8 @@ def _script_hash() -> str:
     """supervisor 脚本内容 sha256（读取失败返回空串，调用方省略该键）。"""
     try:
         import hashlib
-        return hashlib.sha256(
-            Path(__file__).absolute().read_bytes()
-        ).hexdigest()
+
+        return hashlib.sha256(Path(__file__).absolute().read_bytes()).hexdigest()
     except OSError:
         return ""
 
@@ -266,11 +270,14 @@ def _write_supervisor_runtime() -> None:
     if script_hash:
         data["script_hash"] = script_hash
     import json
+
     FENIX_DIR.mkdir(parents=True, exist_ok=True)
     target = _supervisor_runtime_file()
     try:
         tmp_fd, tmp_path = tempfile.mkstemp(
-            prefix=".supervisor_runtime.", suffix=".tmp", dir=str(FENIX_DIR),
+            prefix=".supervisor_runtime.",
+            suffix=".tmp",
+            dir=str(FENIX_DIR),
         )
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
@@ -365,10 +372,7 @@ def main():
                 try:
                     proc.wait(timeout=sigkill_wait)
                 except subprocess.TimeoutExpired:
-                    log(
-                        f"daemon did not exit within {sigkill_wait}s after "
-                        f"SIGTERM — SIGKILL"
-                    )
+                    log(f"daemon did not exit within {sigkill_wait}s after " f"SIGTERM — SIGKILL")
                     try:
                         proc.kill()
                     except ProcessLookupError:
@@ -386,10 +390,7 @@ def main():
                 try:
                     proc.wait(timeout=sigkill_wait)
                 except subprocess.TimeoutExpired:
-                    log(
-                        f"daemon did not exit within {sigkill_wait}s after "
-                        f"SIGTERM — SIGKILL"
-                    )
+                    log(f"daemon did not exit within {sigkill_wait}s after " f"SIGTERM — SIGKILL")
                     try:
                         proc.kill()
                     except ProcessLookupError:

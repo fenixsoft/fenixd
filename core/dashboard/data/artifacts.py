@@ -12,6 +12,7 @@ from pathlib import Path
 
 # ── 验证产物（容错解析） ──────────────────────────────────────────
 
+
 def parse_verify_progress(project_root, spec_name) -> dict:
     """解析 .fenix/verify-progress/<spec>.json；损坏/非对象以 error 字段标记。
 
@@ -116,7 +117,12 @@ def parse_run_result_scenarios(project_root, spec_name) -> list:
         if not isinstance(data, dict):
             continue
         # 项目根为共享文件：携带的 spec 与当前 spec 不符时视为其它 spec 残留忽略
-        if idx == 1 and isinstance(data.get("spec"), str) and data["spec"] and data["spec"] != spec_name:
+        if (
+            idx == 1
+            and isinstance(data.get("spec"), str)
+            and data["spec"]
+            and data["spec"] != spec_name
+        ):
             continue
         scenarios = data.get("scenarios")
         if not isinstance(scenarios, list) or not scenarios:
@@ -131,7 +137,8 @@ def parse_run_result_scenarios(project_root, spec_name) -> list:
                 continue
             norm = dict(sc)
             norm["screenshots"] = [
-                os.path.basename(s) for s in sc.get("screenshots", [])
+                os.path.basename(s)
+                for s in sc.get("screenshots", [])
                 if isinstance(s, str) and s.strip()
             ]
             out.append(norm)
@@ -142,13 +149,14 @@ def parse_run_result_scenarios(project_root, spec_name) -> list:
             kind_by_id = {}
             try:
                 ts_path = (
-                    Path(project_root) / ".fenix" / "verify-progress"
-                    / spec_name / "test_scenarios.json"
+                    Path(project_root)
+                    / ".fenix"
+                    / "verify-progress"
+                    / spec_name
+                    / "test_scenarios.json"
                 )
                 ts_data = json.loads(ts_path.read_text(encoding="utf-8"))
-                ts_scenarios = (
-                    ts_data.get("scenarios") if isinstance(ts_data, dict) else ts_data
-                )
+                ts_scenarios = ts_data.get("scenarios") if isinstance(ts_data, dict) else ts_data
                 if isinstance(ts_scenarios, list):
                     kind_by_id = {
                         str(s.get("id") or s.get("scenario_id")): s.get("kind")
@@ -176,11 +184,15 @@ def list_screenshots(project_root, spec_name) -> list:
     try:
         for p in sorted(ss_dir.iterdir()):
             if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
-                out.append({
-                    "file": p.name,
-                    "size": p.stat().st_size,
-                    "mtime": datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc).isoformat(),
-                })
+                out.append(
+                    {
+                        "file": p.name,
+                        "size": p.stat().st_size,
+                        "mtime": datetime.fromtimestamp(
+                            p.stat().st_mtime, tz=timezone.utc
+                        ).isoformat(),
+                    }
+                )
     except OSError:
         pass
     return out
@@ -230,7 +242,12 @@ def _load_run_result(project_root, spec_name) -> dict | None:
             continue
         if not isinstance(data, dict):
             continue
-        if idx == 1 and isinstance(data.get("spec"), str) and data["spec"] and data["spec"] != spec_name:
+        if (
+            idx == 1
+            and isinstance(data.get("spec"), str)
+            and data["spec"]
+            and data["spec"] != spec_name
+        ):
             continue
         return data
     return None
@@ -265,12 +282,20 @@ def _verdict_from_run_result(project_root, spec_name) -> dict:
     if data is not None:
         verdict_value, _bugs = _run_result_verdict_and_bugs(data)
         if verdict_value:
-            scenarios = data.get("verification", {}).get("scenarios") \
-                if isinstance(data.get("verification"), dict) else None
+            scenarios = (
+                data.get("verification", {}).get("scenarios")
+                if isinstance(data.get("verification"), dict)
+                else None
+            )
             if not isinstance(scenarios, list):
                 scenarios = data.get("scenarios")
-            summary = {"passed": 0, "failed": 0, "errors": 0,
-                       "product_bugs": len(_bugs), "env_issues": None}
+            summary = {
+                "passed": 0,
+                "failed": 0,
+                "errors": 0,
+                "product_bugs": len(_bugs),
+                "env_issues": None,
+            }
             if isinstance(scenarios, list):
                 for sc in scenarios:
                     status = sc.get("status") if isinstance(sc, dict) else None
@@ -283,8 +308,11 @@ def _verdict_from_run_result(project_root, spec_name) -> dict:
                     # warning/exempt 豁免类不入三桶（与裁决链豁免语义一致）
             return {
                 "exists": True,
-                "status": ("✅ 验证通过（verified）" if verdict_value == "verified"
-                           else "❌ 未通过（Bug Found）"),
+                "status": (
+                    "✅ 验证通过（verified）"
+                    if verdict_value == "verified"
+                    else "❌ 未通过（Bug Found）"
+                ),
                 "status_detail": f"裁决: {verdict_value}",
                 "conclusion": "",
                 "summary": summary,
@@ -313,8 +341,13 @@ def parse_verdict(project_root, spec_name) -> dict:
     except Exception:
         content = ""
 
-    summary = {"passed": None, "failed": None, "errors": None,
-               "product_bugs": None, "env_issues": None}
+    summary = {
+        "passed": None,
+        "failed": None,
+        "errors": None,
+        "product_bugs": None,
+        "env_issues": None,
+    }
     status = ""
     status_detail = ""
     conclusion = ""
@@ -356,8 +389,13 @@ def parse_verdict(project_root, spec_name) -> dict:
 
     # 兜底：全文搜索计数（处理 "通过：0 | 失败：0 | 错误：10" 行内连写）
     if any(v is None for v in summary.values()):
-        for pat, field in [("通过", "passed"), ("失败", "failed"), ("错误", "errors"),
-                           (r"产品\s*Bug", "product_bugs"), ("环境问题", "env_issues")]:
+        for pat, field in [
+            ("通过", "passed"),
+            ("失败", "failed"),
+            ("错误", "errors"),
+            (r"产品\s*Bug", "product_bugs"),
+            ("环境问题", "env_issues"),
+        ]:
             if summary[field] is not None:
                 continue
             mm = re.search(r"%s\s*[：:]\s*([\dN/A\-＋+]+)" % pat, content, re.I)
@@ -402,6 +440,7 @@ def parse_bugs(project_root, spec_name) -> list:
     「关联场景」「断言类型」两行因此从未渲染过）。
     """
     from core.verdict_check import VERDICT_CLASSES
+
     non_product_classes = tuple(c for c in VERDICT_CLASSES if c != "product-bug")
     bugs = []
     report = parse_report(project_root, spec_name)
@@ -414,8 +453,14 @@ def parse_bugs(project_root, spec_name) -> list:
         # severity 归一：fast-track.md 模板是 critical|major|minor，verifier 自由
         # 产出实测漂移为 high|medium|low（agents/verifier.md 步骤 8 未定义条目
         # schema）——读取端统一映射到前端三档色系，未知值原样透传由前端兜底。
-        severity_map = {"critical": "critical", "high": "major", "major": "major",
-                        "medium": "major", "minor": "minor", "low": "minor"}
+        severity_map = {
+            "critical": "critical",
+            "high": "major",
+            "major": "major",
+            "medium": "major",
+            "minor": "minor",
+            "low": "minor",
+        }
         for bug in rt_bugs:
             if not isinstance(bug, dict):
                 continue
@@ -429,25 +474,27 @@ def parse_bugs(project_root, spec_name) -> list:
                 scenario_ids = []
             assertion_type = bug.get("assertion_type") or ""
             raw_severity = bug.get("severity") or ""
-            bugs.append({
-                "source": "run-result",
-                "severity": severity_map.get(raw_severity, raw_severity) or "major",
-                "scenario_ids": scenario_ids,
-                "assertion_type": assertion_type,
-                "description": bug.get("description") or bug.get("title") or "",
-                "evidence": ev or (bug.get("root_cause") or ""),
-                "root_cause": bug.get("root_cause") or "",
-                "classification": None,
-                "status_corrected": False,
-                "screenshots": [],
-                # verifier 自由 schema 透传（id/title/location），fast-track 无则缺省
-                "id": bug.get("id") or "",
-                "title": bug.get("title") or "",
-                "location": bug.get("location") or "",
-                # 前端卡片渲染兼容字段（bug.scenario / bug.assertion）
-                "scenario": ", ".join(str(s) for s in scenario_ids),
-                "assertion": assertion_type,
-            })
+            bugs.append(
+                {
+                    "source": "run-result",
+                    "severity": severity_map.get(raw_severity, raw_severity) or "major",
+                    "scenario_ids": scenario_ids,
+                    "assertion_type": assertion_type,
+                    "description": bug.get("description") or bug.get("title") or "",
+                    "evidence": ev or (bug.get("root_cause") or ""),
+                    "root_cause": bug.get("root_cause") or "",
+                    "classification": None,
+                    "status_corrected": False,
+                    "screenshots": [],
+                    # verifier 自由 schema 透传（id/title/location），fast-track 无则缺省
+                    "id": bug.get("id") or "",
+                    "title": bug.get("title") or "",
+                    "location": bug.get("location") or "",
+                    # 前端卡片渲染兼容字段（bug.scenario / bug.assertion）
+                    "scenario": ", ".join(str(s) for s in scenario_ids),
+                    "assertion": assertion_type,
+                }
+            )
         return bugs
     for sc in report.get("scenarios", []):
         if not isinstance(sc, dict):
@@ -459,12 +506,17 @@ def parse_bugs(project_root, spec_name) -> list:
         if classification in non_product_classes:
             continue
         failed_assertions = [
-            a for a in sc.get("assertion_results", [])
+            a
+            for a in sc.get("assertion_results", [])
             if isinstance(a, dict) and not a.get("pass", True)
         ]
         # 截图路径归一化为文件名：report.json 存的是服务器本地绝对路径，
         # 前端需拼 /screenshots/<project>/<spec>/<file>，只取 basename
-        screenshots = [os.path.basename(s) for s in sc.get("screenshots", []) if isinstance(s, str) and s.strip()]
+        screenshots = [
+            os.path.basename(s)
+            for s in sc.get("screenshots", [])
+            if isinstance(s, str) and s.strip()
+        ]
         # 裁决分类与证据（add-verdict-evidence-taxonomy 3.1）：从场景条目摘取；
         # 旧格式 report.json 无 classification/evidence 字段时为空/缺省，向后兼容。
         # 结构化证据优先取场景 evidence 字段（judge 增强产出）；
@@ -475,23 +527,24 @@ def parse_bugs(project_root, spec_name) -> list:
         elif not isinstance(sc_evidence, str):
             sc_evidence = ""
         for a in failed_assertions or [{}]:
-            bugs.append({
-                "source": "report",
-                "severity": "major" if status in ("fail", "failed") else "critical",
-                "scenario_ids": [sc.get("scenario_id", "?")],
-                "assertion_type": a.get("type", "step"),
-                "description": sc.get("description", "未命名场景"),
-                "evidence": (
-                    a.get("message") or a.get("detail") or a.get("actual") or ""
-                ) or sc_evidence,
-                "classification": classification,
-                "status_corrected": sc.get("status_corrected", False),
-                "screenshots": screenshots,
-                "scenario_status": status,
-                # 前端卡片渲染兼容字段（bug.scenario / bug.assertion，类型单复数漂移）
-                "scenario": str(sc.get("scenario_id", "?")),
-                "assertion": a.get("type", "step"),
-            })
+            bugs.append(
+                {
+                    "source": "report",
+                    "severity": "major" if status in ("fail", "failed") else "critical",
+                    "scenario_ids": [sc.get("scenario_id", "?")],
+                    "assertion_type": a.get("type", "step"),
+                    "description": sc.get("description", "未命名场景"),
+                    "evidence": (a.get("message") or a.get("detail") or a.get("actual") or "")
+                    or sc_evidence,
+                    "classification": classification,
+                    "status_corrected": sc.get("status_corrected", False),
+                    "screenshots": screenshots,
+                    "scenario_status": status,
+                    # 前端卡片渲染兼容字段（bug.scenario / bug.assertion，类型单复数漂移）
+                    "scenario": str(sc.get("scenario_id", "?")),
+                    "assertion": a.get("type", "step"),
+                }
+            )
     return bugs
 
 
@@ -511,6 +564,7 @@ def parse_filtered_failures(project_root, spec_name) -> list:
     空串；缺字段不抛错。
     """
     from core.verdict_check import VERDICT_CLASSES
+
     non_product_classes = tuple(c for c in VERDICT_CLASSES if c != "product-bug")
     out = []
     report = parse_report(project_root, spec_name)
@@ -541,14 +595,19 @@ def parse_filtered_failures(project_root, spec_name) -> list:
                         if isinstance(actual, str) and actual.strip():
                             evidence_summary = actual
         # 截图路径归一化为文件名（与 parse_bugs 同一口径，前端拼 /screenshots/ 路由）
-        screenshots = [os.path.basename(s) for s in sc.get("screenshots", [])
-                       if isinstance(s, str) and s.strip()]
-        out.append({
-            "scenario_id": sc.get("scenario_id", "?"),
-            "classification": classification,
-            "evidence_summary": evidence_summary,
-            "screenshots": screenshots,
-            "status_corrected": sc.get("status_corrected", False),
-            "status": status,
-        })
+        screenshots = [
+            os.path.basename(s)
+            for s in sc.get("screenshots", [])
+            if isinstance(s, str) and s.strip()
+        ]
+        out.append(
+            {
+                "scenario_id": sc.get("scenario_id", "?"),
+                "classification": classification,
+                "evidence_summary": evidence_summary,
+                "screenshots": screenshots,
+                "status_corrected": sc.get("status_corrected", False),
+                "status": status,
+            }
+        )
     return out

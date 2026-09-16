@@ -9,7 +9,6 @@ from typing import Optional
 import json
 import re
 
-
 # ── 原地打回升级阈值（inplace-bug-repair D2）────────────────────
 # _verify_fail_rounds 达到此值时冻结为 blocked，停止自动修复，等待人工裁决。
 # 模块常量，不进 config（避免触发「配置项必须带 Dashboard 界面」约束）。
@@ -48,7 +47,6 @@ class FamilyGovernor:
                 continue
             # 可重置状态（drafted/ready/implemented/bug-found），复用
             return candidate
-
 
     def _ensure_fix_spec_files(self, fix_spec_name: str, parent_spec_name: str):
         """为自动生成的 fix SPEC 写入 proposal.md 与 tasks.md。
@@ -95,7 +93,6 @@ class FamilyGovernor:
         (spec_dir / "tasks.md").write_text(tasks, encoding="utf-8")
         self._pm.logger.info("pm_engine", f"Ensured fix SPEC files: {fix_spec_name}")
 
-
     @staticmethod
     def _fix_prefix_depth(name: str) -> int:
         """深度：规范名中连续 `fix-` 前缀层数（name 为子 SPEC 名）。
@@ -106,15 +103,15 @@ class FamilyGovernor:
         s = name
         while s.startswith("fix-"):
             depth += 1
-            s = s[len("fix-"):]
+            s = s[len("fix-") :]
         return depth
-
 
     @staticmethod
     def _fix_strip_all(name: str) -> str:
         """剥除全部连续 `fix-` 前缀，得到家族根名（fix-fix-x → x）。"""
-        return name[4 * FamilyGovernor._fix_prefix_depth(name):] if name.startswith("fix-") else name
-
+        return (
+            name[4 * FamilyGovernor._fix_prefix_depth(name) :] if name.startswith("fix-") else name
+        )
 
     def _family_width(self, child_name: str) -> int:
         """宽度：同根（剥除全部 fix- 前缀后同名）且未完成（非 done/pushed）的 fix 子代数量。
@@ -136,13 +133,11 @@ class FamilyGovernor:
             count += 1
         return count
 
-
     def _family_waiver_set(self, spec_name: str) -> bool:
         """父 SPEC 是否持有放行豁免位 `_family_waiver=true`（单次）。"""
         spec = self._pm.state_machine.read_one(spec_name) or {}
         raw = str(spec.get("_family_waiver") or "").strip().lower()
         return raw in ("true", "1", "yes")
-
 
     def _consume_family_waiver(self, spec_name: str) -> bool:
         """消费豁免位：若存在则复位为 False，返回原值。"""
@@ -150,7 +145,6 @@ class FamilyGovernor:
         if had:
             self._pm.state_machine.update_spec(spec_name, {"_family_waiver": False})
         return had
-
 
     def _family_gate_blocked(self, parent_name: str, child_name: str) -> bool:
         """越界判定：候选子 SPEC 的深度/宽度是否超过 pm.family 上限。
@@ -168,12 +162,10 @@ class FamilyGovernor:
         width = self._family_width(child_name)
         return width >= max_width
 
-
     @staticmethod
     def _is_fix_spec(name: str) -> bool:
         """判定 name 是否为 fix SPEC（连续 `fix-` 前缀命名）。"""
         return isinstance(name, str) and name.startswith("fix-")
-
 
     @staticmethod
     def _same_root(name_a: str, name_b: str) -> bool:
@@ -184,7 +176,6 @@ class FamilyGovernor:
         if not (FamilyGovernor._is_fix_spec(name_a) and FamilyGovernor._is_fix_spec(name_b)):
             return False
         return FamilyGovernor._fix_strip_all(name_a) == FamilyGovernor._fix_strip_all(name_b)
-
 
     def _same_root_siblings(self, spec_name: str) -> list:
         """返回 spec_name 的同根非终态兄弟列表（排除自身，design 守卫一/三）。
@@ -210,7 +201,6 @@ class FamilyGovernor:
             siblings.append(name)
         return siblings
 
-
     def _sibling_repair_active(self, spec_name: str, my_enqueued_at: float = None) -> str:
         """判定同根兄弟是否存在 actionable 修复活动，返回承载方 spec 名或空串（design D3）。
 
@@ -234,8 +224,7 @@ class FamilyGovernor:
                 # 仅当队列含该兄弟的实现器条目时才视为 actionable
                 with self._pm._queue_lock:
                     sib_entry = next(
-                        (e for e in self._pm._run_queue
-                         if e[1] == sib and e[2] == "implementer"),
+                        (e for e in self._pm._run_queue if e[1] == sib and e[2] == "implementer"),
                         None,
                     )
                 if sib_entry is not None:
@@ -252,7 +241,6 @@ class FamilyGovernor:
             if self._pm._sibling_has_live_agent(sib):
                 return sib
         return ""
-
 
     def _sibling_has_live_agent(self, spec_name: str) -> bool:
         """探测 spec 是否仍有存活的 agent 子进程（worktree 存活探测，复用孤儿白名单逻辑）。
@@ -278,6 +266,7 @@ class FamilyGovernor:
         # 回退：pgrep 探测 worktrees 目录下的 claude 进程（与 event_bus 同语义）
         try:
             import subprocess as _sp
+
             wt_root = self._pm.project_root / ".claude" / "worktrees"
             if not wt_root.is_dir():
                 return False
@@ -288,14 +277,15 @@ class FamilyGovernor:
                 if spec_name in d.name:
                     r = _sp.run(
                         ["pgrep", "-f", f"worktrees/{d.name}"],
-                        capture_output=True, text=True, timeout=10,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
                     )
                     if r.returncode == 0 and r.stdout.strip():
                         return True
         except Exception:
             return False
         return False
-
 
     def _has_non_terminal_child_fix(self, spec_name: str) -> str:
         """判定 spec 是否已存在同根非终态子 fix（守卫一/二共用，design D4 子终态解封）。
@@ -337,7 +327,6 @@ class FamilyGovernor:
             break
         return best
 
-
     def _signal_family_explosion(self, parent_name: str, child_name: str, detail: str):
         """越界派生请求转 family_explosion 困境信号（severity=major）写入 admin store。
 
@@ -345,19 +334,26 @@ class FamilyGovernor:
         admin_monitor 唤起链（Administrator 处置 → 可对父 SPEC 放行一次）。
         """
         from core.admin_store import AdminStore, SIGNAL
+
         store = AdminStore(self._pm.project_root, self._pm.logger)
         try:
-            store.append({
-                "kind": SIGNAL,
-                "signal_type": "family_explosion",
-                "spec": parent_name,
-                "severity": "major",
-                "description": (f"fix 族谱爆炸：'{parent_name}' 派生 {child_name} 被"
-                                f"深度/宽度上限拦截（{detail}），自动创建已中止"),
-                "evidence": f"candidate={child_name}; {detail}",
-                "recommended_action": ("人工检修根因环境；若确认放行一次，对该父 SPEC "
-                                       "设置 _family_waiver=true（下轮允许再创建一个子 SPEC）"),
-            })
+            store.append(
+                {
+                    "kind": SIGNAL,
+                    "signal_type": "family_explosion",
+                    "spec": parent_name,
+                    "severity": "major",
+                    "description": (
+                        f"fix 族谱爆炸：'{parent_name}' 派生 {child_name} 被"
+                        f"深度/宽度上限拦截（{detail}），自动创建已中止"
+                    ),
+                    "evidence": f"candidate={child_name}; {detail}",
+                    "recommended_action": (
+                        "人工检修根因环境；若确认放行一次，对该父 SPEC "
+                        "设置 _family_waiver=true（下轮允许再创建一个子 SPEC）"
+                    ),
+                }
+            )
             self._pm.logger.error(
                 "pm_engine",
                 f"fix 族谱收敛拦截: '{parent_name}' → {child_name} 自动创建中止（{detail}）"
@@ -368,7 +364,6 @@ class FamilyGovernor:
                 "pm_engine",
                 f"family_explosion 信号写入 admin store 失败: {e}",
             )
-
 
     # ── 失败历史分类与证据（fix-verdict-retry-misattribution D6）─────────
     @staticmethod
@@ -399,13 +394,15 @@ class FamilyGovernor:
                     "removed": sorted(prev_set - cur_set),
                     "persisted": sorted(cur_set & prev_set),
                 }
-            out.append({
-                "round": r.get("round"),
-                "type": ftype,
-                "cause_type": r.get("cause_type"),
-                "scenarios": sorted(cur_set),
-                "diff_vs_prev": diff,
-            })
+            out.append(
+                {
+                    "round": r.get("round"),
+                    "type": ftype,
+                    "cause_type": r.get("cause_type"),
+                    "scenarios": sorted(cur_set),
+                    "diff_vs_prev": diff,
+                }
+            )
             prev_set = cur_set
         return out
 
@@ -438,8 +435,7 @@ class FamilyGovernor:
             )
         return "; ".join(parts)
 
-    def _do_spec_bug_found(self, spec_name: str, failure_class: str = "product",
-                           run_id: str = ""):
+    def _do_spec_bug_found(self, spec_name: str, failure_class: str = "product", run_id: str = ""):
         """实际执行 bug-found 处理逻辑。
 
         分流依据（add-bug-repair-mode-config D2）：`admin.bug_repair_mode` 有效值
@@ -469,9 +465,8 @@ class FamilyGovernor:
             return
 
         from core.config import ConfigLoader
-        mode = ConfigLoader.get_admin_config(self._pm.config).get(
-            "bug_repair_mode", "inplace"
-        )
+
+        mode = ConfigLoader.get_admin_config(self._pm.config).get("bug_repair_mode", "inplace")
 
         if mode == "derive":
             # ── derive 模式：派生 fix-* 子 SPEC（可配置保留的 legacy 派生闭环）──
@@ -483,9 +478,12 @@ class FamilyGovernor:
                     f"守卫一：'{spec_name}' 为 fix spec 且已有非终态子 fix "
                     f"'{carrier}' 承载修复——抑制 reset，保持 bug-found",
                 )
-                self._pm.state_machine.update_spec(spec_name, {
-                    "error": f"修复由子 fix '{carrier}' 承载，抑制重实现重置",
-                })
+                self._pm.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": f"修复由子 fix '{carrier}' 承载，抑制重实现重置",
+                    },
+                )
                 return
             # 派生闭环（守卫一 + 族谱 governor + _resolve_fix_spec_name 在函数内生效）
             self._do_legacy_fix_spec_bug_found(spec_name)
@@ -516,21 +514,28 @@ class FamilyGovernor:
         # 升级闸门分型与轮间 diff。写盘失败静默降级（分型 unknown，不阻断闸门）。
         # failure_class=product（或 unknown）随 R3 回拨参考台账记入。
         self._pm._append_fail_history(
-            spec_name, "real-bugs", self._pm._failed_scenario_ids(spec_name),
-            failure_class=failure_class, run_id=run_id)
+            spec_name,
+            "real-bugs",
+            self._pm._failed_scenario_ids(spec_name),
+            failure_class=failure_class,
+            run_id=run_id,
+        )
 
         if fail_rounds >= MAX_VERIFY_FAIL_ROUNDS:
             # ── 升级闸门：冻结为 blocked + human-escalation-alerts 告警 ──
             history = self._pm._read_fail_history(spec_name)
             classified = self._classify_fail_history(history)
-            self._pm.state_machine.update_spec(spec_name, {
-                "_verify_fail_rounds": fail_rounds,
-                "status": "blocked",
-                "error": (
-                    f"升级闸门连续失败第 {fail_rounds} 轮，已冻结等待人工裁决。"
-                    f"详见 `spec/changes/{spec_name}/verification-report.md`"
-                ),
-            })
+            self._pm.state_machine.update_spec(
+                spec_name,
+                {
+                    "_verify_fail_rounds": fail_rounds,
+                    "status": "blocked",
+                    "error": (
+                        f"升级闸门连续失败第 {fail_rounds} 轮，已冻结等待人工裁决。"
+                        f"详见 `spec/changes/{spec_name}/verification-report.md`"
+                    ),
+                },
+            )
             self._pm.logger.error(
                 "pm_engine",
                 f"升级闸门：'{spec_name}' 升级闸门连续失败第 {fail_rounds} 轮，"
@@ -541,8 +546,7 @@ class FamilyGovernor:
                 signal_type="verify_fail_escalation",
                 severity="major",
                 description=(
-                    f"'{spec_name}' 升级闸门连续失败第 {fail_rounds} 轮，"
-                    f"已冻结等待人工裁决"
+                    f"'{spec_name}' 升级闸门连续失败第 {fail_rounds} 轮，" f"已冻结等待人工裁决"
                 ),
                 evidence=(
                     f"spec={spec_name}; "
@@ -559,13 +563,14 @@ class FamilyGovernor:
             return
 
         # ── 正常打回：递增计数 + 重置 implementing + 注入修复任务 ──
-        self._pm.state_machine.update_spec(spec_name, {
-            "_verify_fail_rounds": fail_rounds,
-            "status": "implementing",
-            "error": (
-                f"验证失败（原地打回第 {fail_rounds} 轮），重修中"
-            ),
-        })
+        self._pm.state_machine.update_spec(
+            spec_name,
+            {
+                "_verify_fail_rounds": fail_rounds,
+                "status": "implementing",
+                "error": (f"验证失败（原地打回第 {fail_rounds} 轮），重修中"),
+            },
+        )
         self._pm.logger.warning(
             "pm_engine",
             f"原地打回第 {fail_rounds} 轮：'{spec_name}' 验证失败，"
@@ -578,7 +583,6 @@ class FamilyGovernor:
         )
         # 排队实现器
         self._pm._enqueue(spec_name, "implementer")
-
 
     def _do_legacy_fix_spec_bug_found(self, spec_name: str):
         """存量 fix-* SPEC 的 legacy 闭环（design D4：自然终态耗尽）。
@@ -607,8 +611,10 @@ class FamilyGovernor:
                         f"继续创建 {fix_spec_name}",
                     )
                 else:
-                    detail = (f"深度={self._fix_prefix_depth(fix_spec_name)}, "
-                              f"宽度={self._family_width(fix_spec_name)}")
+                    detail = (
+                        f"深度={self._fix_prefix_depth(fix_spec_name)}, "
+                        f"宽度={self._family_width(fix_spec_name)}"
+                    )
                     self._signal_family_explosion(spec_name, fix_spec_name, detail)
                     return
             elif self._family_waiver_set(spec_name):
@@ -620,8 +626,12 @@ class FamilyGovernor:
         if existing_fix:
             guard_status = existing_fix.get("status", "")
             if guard_status in (
-                "implementing", "testing", "implemented",
-                "verified", "done", "pushed",
+                "implementing",
+                "testing",
+                "implemented",
+                "verified",
+                "done",
+                "pushed",
                 "blocked",
             ):
                 self._pm.logger.info(
@@ -646,19 +656,21 @@ class FamilyGovernor:
                 self._pm.state_machine.update_spec(fix_spec_name, reset_fields)
                 self._pm._on_spec_ready(fix_spec_name)
         else:
-            self._pm.state_machine.add_spec(fix_spec_name, {
-                "status": "ready",
-                "priority": min(parent_prio + 1, 10),
-                "branch": None,
-                "error": f"Auto-created from bug found in {spec_name}",
-            })
+            self._pm.state_machine.add_spec(
+                fix_spec_name,
+                {
+                    "status": "ready",
+                    "priority": min(parent_prio + 1, 10),
+                    "branch": None,
+                    "error": f"Auto-created from bug found in {spec_name}",
+                },
+            )
             self._pm.logger.info("pm_engine", f"Created fix SPEC: {fix_spec_name}")
 
         self._pm._append_project_log(
             f"🐛 Bug found in **{spec_name}** → scheduling legacy **{fix_spec_name}**"
         )
         self._pm._enqueue(fix_spec_name, "implementer")
-
 
     def _read_prev_impl_conclusions(self, spec_name: str) -> str:
         """读取上一轮 implementer 的收工结论，作为修复段的「上轮实现结论」小节。
@@ -682,8 +694,7 @@ class FamilyGovernor:
         if not isinstance(data, dict) or data.get("spec") != spec_name:
             return ""
         try:
-            snap_dir = (self._pm.project_root / ".fenix" / "verify-progress"
-                        / spec_name)
+            snap_dir = self._pm.project_root / ".fenix" / "verify-progress" / spec_name
             snap_dir.mkdir(parents=True, exist_ok=True)
             (snap_dir / "prev-impl-result.json").write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -752,10 +763,10 @@ class FamilyGovernor:
             # 找到段的起始位置（含前一个 \n\n），到段尾
             start = m.start()
             # 向前找到段落分隔
-            while start > 0 and text[start - 1] == '\n':
+            while start > 0 and text[start - 1] == "\n":
                 start -= 1
             # 向后找到下一个段落标题或文件末尾
-            after = text[m.end():]
+            after = text[m.end() :]
             next_heading = re.search(r"\n## [^验]", after)
             if next_heading:
                 end = m.end() + next_heading.start() + 1  # 包含 \n
@@ -772,10 +783,14 @@ class FamilyGovernor:
             f"验证修复段已{'更新' if m else '注入'}：{spec_name}（原地打回第 {fail_rounds} 轮）",
         )
 
-
     def _send_human_escalation_alert(
-        self, spec_name: str, signal_type: str, severity: str,
-        description: str, evidence: str, recommended_action: str,
+        self,
+        spec_name: str,
+        signal_type: str,
+        severity: str,
+        description: str,
+        evidence: str,
+        recommended_action: str,
         trigger: Optional[dict] = None,
     ):
         """发送 human-escalation-alerts 告警（escalation 种类）写入 admin store。
@@ -790,6 +805,7 @@ class FamilyGovernor:
         """
         from core.admin_store import AdminStore, ESCALATION, severity_needs_human
         from core.alert_lifecycle import build_trigger
+
         store = AdminStore(self._pm.project_root, self._pm.logger)
         if trigger is None:
             trigger = build_trigger(signal_type, spec_name)

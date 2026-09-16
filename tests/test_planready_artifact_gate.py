@@ -484,19 +484,19 @@ class TestPmEngineDegradeContext:
             sm.transition(spec, s)
         # 阶段1 之后路径的组件 mock（聚焦降级判定点）
         engine._enqueue = MM()
-        engine._apply_scenario_freeze = MM(return_value={})
-        engine._apply_interaction_contract = MM(return_value=None)
+        engine._verification._apply_scenario_freeze = MM(return_value={})
+        engine._verification._apply_interaction_contract = MM(return_value=None)
         engine._on_spec_verified = MM()
         engine._on_spec_bug_found = MM()
-        engine._ensure_app_reachable = MM(return_value=(True, False, ""))
-        engine._ensure_verification_report = MM(return_value=None)
-        engine._check_verification_gate = MM(return_value=None)
-        engine._env_whitewash_gate = MM(return_value=True)
+        engine._verification._ensure_app_reachable = MM(return_value=(True, False, ""))
+        engine._verification._ensure_verification_report = MM(return_value=None)
+        engine._verification._check_verification_gate = MM(return_value=None)
+        engine._verification._env_whitewash_gate = MM(return_value=True)
         engine._task_completion_blocker = MM(return_value=None)
-        engine._verify_verdict_evidence = MM(return_value={
+        engine._verification._verify_verdict_evidence = MM(return_value={
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })
-        engine._update_warning_streaks = MM(return_value=[])
+        engine._verification._update_warning_streaks = MM(return_value=[])
         engine._send_human_escalation_alert = MM()
         return engine, sm
 
@@ -514,7 +514,7 @@ class TestPmEngineDegradeContext:
             run_id="planner-plan-spec-a-1-a1",
             duration_seconds=429.0,
         ))
-        engine._read_planner_result = MagicMock(
+        engine._verification._read_planner_result = MagicMock(
             return_value=VerdictReadResult.failure("missing", "file-not-found"))
 
         import pytest
@@ -541,7 +541,7 @@ class TestPmEngineDegradeContext:
             run_id="planner-plan-spec-b-1-a1",
             duration_seconds=120.0,
         ))
-        engine._read_planner_result = MagicMock(
+        engine._verification._read_planner_result = MagicMock(
             return_value=VerdictReadResult.success("plan-ready"))
 
         # 陈旧 degrade_context.json 预置（上一轮降级残留）

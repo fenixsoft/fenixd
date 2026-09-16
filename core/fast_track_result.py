@@ -149,14 +149,10 @@ def estimate_spec_scale(spec_dir: Path) -> int:
             # 匹配 "- [ ]" 开头的任务行
             unchecked_count = len(_re.findall(r"^- \[ \] ", text, _re.MULTILINE))
         except (OSError, UnicodeDecodeError) as e:
-            logger.warning(
-                f"fast-track 规模预估读取 {tasks_path} 失败（低档放行）: {e}"
-            )
+            logger.warning(f"fast-track 规模预估读取 {tasks_path} 失败（低档放行）: {e}")
             unchecked_count = 0
     else:
-        logger.warning(
-            f"fast-track 规模预估 tasks.md 缺失（低档放行）: {tasks_path}"
-        )
+        logger.warning(f"fast-track 规模预估 tasks.md 缺失（低档放行）: {tasks_path}")
 
     # 2. 统计 spec 目录源码文件数（.py/.ts/.tsx）
     source_count = 0

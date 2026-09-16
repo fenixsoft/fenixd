@@ -6,7 +6,13 @@
 
 from typing import Optional, Dict, Any
 from pathlib import Path
-from core.v2_dev_server import V2DevServerError, start as v2_start_dev_server, stop as v2_stop_dev_server, base_url as v2_base_url, cleanup_orphans as v2_cleanup_orphans
+from core.v2_dev_server import (
+    V2DevServerError,
+    start as v2_start_dev_server,
+    stop as v2_stop_dev_server,
+    base_url as v2_base_url,
+    cleanup_orphans as v2_cleanup_orphans,
+)
 
 
 class V2ServerManager:
@@ -35,7 +41,6 @@ class V2ServerManager:
         if not hasattr(self, "_v2_run_seq"):
             self._v2_run_seq = 0
 
-
     def _v2_launch_for_worktree(self, wt_path: Path) -> None:
         """为某 worktree 启动专属 dev-server 并登记（D2 派发前启动）。
 
@@ -59,15 +64,14 @@ class V2ServerManager:
         try:
             self._v2_run_seq += 1
             port, proc = v2_start_dev_server(
-                wt_path, self._v2_run_seq, self._v2_used_ports, self._pm.logger)
+                wt_path, self._v2_run_seq, self._v2_used_ports, self._pm.logger
+            )
             self._v2_servers[str(wt_path)] = (port, proc)
         except V2DevServerError as e:
             self._pm.logger.warning(
                 "agent_runner",
-                f"V2 dev-server launch failed for {wt_path} (tests fall back to "
-                f"8787): {e}",
+                f"V2 dev-server launch failed for {wt_path} (tests fall back to " f"8787): {e}",
             )
-
 
     def _v2_inject_env(self, wt_path: Path) -> Dict[str, str]:
         """返回该 worktree 的 V2_BASE_URL 注入片段（D1 注入运行环境）。
@@ -80,7 +84,6 @@ class V2ServerManager:
             return {}
         return {"V2_BASE_URL": v2_base_url(entry[0])}
 
-
     def _v2_stop_for_worktree(self, wt_path: Path) -> None:
         """回收某 worktree 的 dev-server（D2 终态回收）。"""
         self._v2_ensure_state()
@@ -91,9 +94,7 @@ class V2ServerManager:
         try:
             v2_stop_dev_server(proc, port, self._v2_used_ports, self._pm.logger)
         except Exception as e:  # 回收失败不阻断主流程
-            self._pm.logger.warning(
-                "agent_runner", f"V2 dev-server stop failed for {wt_path}: {e}")
-
+            self._pm.logger.warning("agent_runner", f"V2 dev-server stop failed for {wt_path}: {e}")
 
     def _v2_stop_all(self) -> None:
         """daemon 关闭 / 异常恢复时回收全部在册 dev-server（D2）。"""

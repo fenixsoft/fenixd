@@ -51,8 +51,10 @@ _NEW_DELIVERY_RE = re.compile(
 
 # ── 数据结构 ────────────────────────────────────────────────────────
 
+
 def _now_iso() -> str:
     from datetime import datetime, timezone
+
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -67,8 +69,14 @@ class ScenarioEntry:
 
     __slots__ = ("id", "description", "added_in_round", "covers", "kind")
 
-    def __init__(self, id: str, description: str = "", added_in_round: int = 1,
-                 covers: Optional[list] = None, kind: str = "web"):
+    def __init__(
+        self,
+        id: str,
+        description: str = "",
+        added_in_round: int = 1,
+        covers: Optional[list] = None,
+        kind: str = "web",
+    ):
         self.id = id
         self.description = description
         self.added_in_round = added_in_round
@@ -76,8 +84,7 @@ class ScenarioEntry:
         self.kind = str(kind or "web")
 
     def to_dict(self) -> dict:
-        d = {"id": self.id, "description": self.description,
-             "added_in_round": self.added_in_round}
+        d = {"id": self.id, "description": self.description, "added_in_round": self.added_in_round}
         if self.covers:
             d["covers"] = list(self.covers)
         # fix-frozen-scenario-orphan-reservoir D1/D4：kind 恒定写入——写端 schema
@@ -104,9 +111,13 @@ class ScenarioSet:
     ``display_declarations``：交互契约纯展示声明登记（元素标识列表，D2 可审计）。
     """
 
-    def __init__(self, spec: str, round_: int = 1,
-                 scenarios: Optional[list] = None,
-                 display_declarations: Optional[list] = None):
+    def __init__(
+        self,
+        spec: str,
+        round_: int = 1,
+        scenarios: Optional[list] = None,
+        display_declarations: Optional[list] = None,
+    ):
         self.spec = spec
         self.round = round_
         self.scenarios: list[ScenarioEntry] = list(scenarios or [])
@@ -142,12 +153,10 @@ class ScenarioSet:
 
 # ── 路径与读写 ──────────────────────────────────────────────────────
 
+
 def scenarios_path_for(project_root, spec_name: str) -> Path:
     """返回 ``.fenix/verify-progress/<spec>/scenarios.json`` 绝对路径。"""
-    return (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / "scenarios.json"
-    )
+    return Path(project_root) / ".fenix" / "verify-progress" / spec_name / "scenarios.json"
 
 
 def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
@@ -180,10 +189,12 @@ def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
             kept.append(item)
         if rejected:
             import logging
+
             logging.getLogger("pm_engine").warning(
                 "持久化集加载净化剔除 %d 条缺 kind 孤儿条目"
                 "（scenarios.json 文件不改写，仅内存集合净化）: %s",
-                len(rejected), "、".join(rejected),
+                len(rejected),
+                "、".join(rejected),
             )
             data = {**data, "scenarios": kept}
     return ScenarioSet.from_dict(data)
@@ -192,8 +203,7 @@ def load_scenario_set(project_root, spec_name: str) -> Optional[ScenarioSet]:
 def _atomic_write(path: Path, data: dict) -> None:
     """原子写：临时文件写好后 rename 覆盖，避免半写文件（design D1 原子写）。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent), suffix=".tmp", prefix=".scenarios-")
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".scenarios-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -210,6 +220,7 @@ def _atomic_write(path: Path, data: dict) -> None:
 
 # ── 持久化集条目结构校验（fix-frozen-scenario-orphan-reservoir D1/D4）────
 
+
 def validate_scenario_entries(entry_dicts: list) -> list[str]:
     """持久化集条目（'scenarios.json' 的 dict 列表）结构校验。
 
@@ -224,8 +235,7 @@ def validate_scenario_entries(entry_dicts: list) -> list[str]:
         return [f"场景集数据格式错误: 期望数组，实际为 {type(entry_dicts).__name__}"]
     for i, item in enumerate(entry_dicts):
         if not isinstance(item, dict):
-            errors.append(f"场景集条目[{i}]解析失败: 期望对象，"
-                          f"实际为 {type(item).__name__}")
+            errors.append(f"场景集条目[{i}]解析失败: 期望对象，" f"实际为 {type(item).__name__}")
             continue
         sid = item.get("id") or f"[{i}]"
         kind = item.get("kind")
@@ -245,12 +255,17 @@ def save_scenario_set(project_root, scenario_set: ScenarioSet) -> Path:
     合法部分照常落盘——不整批拒绝（避免单条坏数据放大成整轮验证无法进行）。
     """
     import logging
+
     clean_entries: list[ScenarioEntry] = []
     rejected: list[str] = []
     for e in scenario_set.scenarios:
         if isinstance(e, ScenarioEntry):
-            d = {"id": e.id, "kind": e.kind,
-                 "description": e.description, "added_in_round": e.added_in_round}
+            d = {
+                "id": e.id,
+                "kind": e.kind,
+                "description": e.description,
+                "added_in_round": e.added_in_round,
+            }
         else:
             d = dict(e)
         errs = validate_scenario_entries([d])
@@ -262,7 +277,8 @@ def save_scenario_set(project_root, scenario_set: ScenarioSet) -> Path:
     if rejected:
         logging.getLogger("pm_engine").warning(
             "场景集写端校验剔除 %d 个非法条目（scenarios.json 不落盘）: %s",
-            len(rejected), "、".join(rejected),
+            len(rejected),
+            "、".join(rejected),
         )
     scenario_set.scenarios = clean_entries
     path = scenarios_path_for(project_root, scenario_set.spec)
@@ -272,11 +288,10 @@ def save_scenario_set(project_root, scenario_set: ScenarioSet) -> Path:
 
 # ── 修复段解析（design D2：新增交付范围判定）────────────────────────
 
+
 def read_verify_fix_section(project_root, spec_name: str) -> Optional[str]:
     """读取 tasks.md 的「## 验证修复」段全文；不存在返回 None。"""
-    tasks_path = (
-        Path(project_root) / "spec" / "changes" / spec_name / "tasks.md"
-    )
+    tasks_path = Path(project_root) / "spec" / "changes" / spec_name / "tasks.md"
     if not tasks_path.exists():
         return None
     try:
@@ -286,10 +301,10 @@ def read_verify_fix_section(project_root, spec_name: str) -> Optional[str]:
     m = _VERIFY_FIX_SECTION_RE.search(text)
     if not m:
         return None
-    after = text[m.end():]
+    after = text[m.end() :]
     nxt = re.search(r"\n## [^\n]", after)
     end = m.end() + nxt.start() if nxt else len(text)
-    return text[m.start():end]
+    return text[m.start() : end]
 
 
 def declares_new_delivery(fix_section: Optional[str]) -> bool:
@@ -306,8 +321,8 @@ def declares_new_delivery(fix_section: Optional[str]) -> bool:
 
 # ── 修复轮判定（design D1）─────────────────────────────────────────
 
-def is_repair_round(project_root, spec_name: str,
-                    state: Optional[dict]) -> bool:
+
+def is_repair_round(project_root, spec_name: str, state: Optional[dict]) -> bool:
     """判定是否为修复轮。
 
     D1 信号（与原地打回机制同源，不引入新状态）：
@@ -325,6 +340,7 @@ def is_repair_round(project_root, spec_name: str,
 
 
 # ── 确定性 diff 校验器（design D3：planner 不可绕过）─────────────────
+
 
 class DiffResult:
     """planner 产出 vs 持久化集的 diff 结论。
@@ -386,11 +402,13 @@ def _kind_of(scenario: dict) -> str:
 def _display_declarations_of(planner_scenarios: list) -> list:
     """planner 产出中登记的纯展示声明（D2：declared-display 登记进元数据）。"""
     from core.interaction_contract import collect_display_declarations
+
     return collect_display_declarations(planner_scenarios)
 
 
-def diff_planner_output(project_root, spec_name: str, state: Optional[dict],
-                        planner_scenarios: list, current_round: int) -> DiffResult:
+def diff_planner_output(
+    project_root, spec_name: str, state: Optional[dict], planner_scenarios: list, current_round: int
+) -> DiffResult:
     """确定性 diff 校验：planner 产出 vs 持久化集。
 
     Args:
@@ -413,16 +431,22 @@ def diff_planner_output(project_root, spec_name: str, state: Optional[dict],
     # ── 首轮 / 无持久化集：直接采用 planner 产出，全量写回 ──
     if persisted is None:
         entries = [
-            ScenarioEntry(id=str(s["id"]), description=str(s.get("description", "")),
-                          added_in_round=current_round,
-                          covers=_covers_of(s),
-                          kind=_kind_of(s))
+            ScenarioEntry(
+                id=str(s["id"]),
+                description=str(s.get("description", "")),
+                added_in_round=current_round,
+                covers=_covers_of(s),
+                kind=_kind_of(s),
+            )
             for s in planner_scenarios
             if isinstance(s, dict) and s.get("id")
         ]
         result.scenario_set = ScenarioSet(
-            spec_name, current_round, entries,
-            display_declarations=_display_declarations_of(planner_scenarios))
+            spec_name,
+            current_round,
+            entries,
+            display_declarations=_display_declarations_of(planner_scenarios),
+        )
         result.added = list(entries)
         result.change_lines = [
             f"- 首轮写入 {len(entries)} 个场景",
@@ -470,10 +494,15 @@ def diff_planner_output(project_root, spec_name: str, state: Optional[dict],
         if sid in persisted_ids:
             continue
         s = planner_by_id[sid]
-        new_entries.append(ScenarioEntry(
-            id=sid, description=str(s.get("description", "")),
-            added_in_round=current_round, covers=_covers_of(s),
-            kind=_kind_of(s)))
+        new_entries.append(
+            ScenarioEntry(
+                id=sid,
+                description=str(s.get("description", "")),
+                added_in_round=current_round,
+                covers=_covers_of(s),
+                kind=_kind_of(s),
+            )
+        )
 
     # ── 受控增量约束（design D2）──
     # 修复轮且未声明新增交付：任何新增均属「超发」，必须拦截（spec：修复轮不扩容）。
@@ -491,8 +520,11 @@ def diff_planner_output(project_root, spec_name: str, state: Optional[dict],
 
     final_entries = added + new_entries
     result.scenario_set = ScenarioSet(
-        spec_name, current_round, final_entries,
-        display_declarations=_display_declarations_of(planner_scenarios))
+        spec_name,
+        current_round,
+        final_entries,
+        display_declarations=_display_declarations_of(planner_scenarios),
+    )
     result.added = new_entries
 
     # ── 无理由缺场景 → 校验失败，以持久化集补齐后继续（不中断验证）──
@@ -509,21 +541,18 @@ def diff_planner_output(project_root, spec_name: str, state: Optional[dict],
 
     # ── 有理由删减留痕 ──
     for e, reason in reasoned:
-        result.change_lines.append(
-            f"- 移除场景 {e.id}（理由：{reason}）"
-        )
+        result.change_lines.append(f"- 移除场景 {e.id}（理由：{reason}）")
 
     # ── 合法新增记录 ──
     for e in new_entries:
         scope = "新增范围" if result.extended else "重新规划"
-        result.change_lines.append(
-            f"- 新增场景 {e.id}（{scope}，第 {current_round} 轮）"
-        )
+        result.change_lines.append(f"- 新增场景 {e.id}（{scope}，第 {current_round} 轮）")
 
     return result
 
 
 # ── 报告渲染（spec 需求 2.3：本轮场景集变更小节）────────────────────
+
 
 def render_change_section(diff: DiffResult) -> str:
     """把 diff 结论渲染为验证报告的「本轮场景集变更」小节（Markdown）。"""

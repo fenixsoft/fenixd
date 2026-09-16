@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 import re
 
-
 # ── schema 版本标记（frozen-scenario-schema-migration D2）──────────
 # 当前场景文件 schema 版本号。写入端恒定写入；读侧按版本路由迁移：
 # 无版本=旧 schema 走迁移，当前版本直通，未知版本走迁移尝试+字段差异报错。
@@ -22,6 +21,7 @@ SCHEMA_VERSION = 1
 #   - output_match 断言：value → expected
 # 迁移仅对「目标字段缺失且旧字段存在」生效（新 schema 字段存在时零干扰）；
 # 迁移后经既有校验；无法迁移（字段整体缺失）时在校验报错中附具体字段差异清单。
+
 
 def migrate_scenario_schema(raw: list) -> list:
     """旧 schema 场景 dict 列表迁移（读侧预校验步骤）。
@@ -59,10 +59,12 @@ def _migrate_scenario_dict(d: dict) -> dict:
         new_asserts = []
         for a in assertions:
             # output_match 断言旧字段：value → expected（仅当 expected 缺失时迁移）
-            if (isinstance(a, dict)
-                    and a.get("type") == "output_match"
-                    and "value" in a
-                    and "expected" not in a):
+            if (
+                isinstance(a, dict)
+                and a.get("type") == "output_match"
+                and "value" in a
+                and "expected" not in a
+            ):
                 a = {**a, "expected": a["value"]}
             new_asserts.append(a)
         out["assertions"] = new_asserts
@@ -99,8 +101,7 @@ def prepare_scenarios_for_write(raw: list) -> list:
     形态，读侧版本路由直通，不残留「旧字段 + 新版本号」的不一致组合。
     """
     return [
-        {**d, "schema_version": SCHEMA_VERSION}
-        if isinstance(d, dict) else d
+        {**d, "schema_version": SCHEMA_VERSION} if isinstance(d, dict) else d
         for d in migrate_scenario_schema(raw)
     ]
 
@@ -117,30 +118,65 @@ VALID_KINDS = {"web", "cli", "api"}
 # ── web 词表（存量内容，行为不变）────────────────────────────
 
 WEB_ACTIONS = {
-    "click", "type", "clear", "select", "scroll", "hover", "wait",
-    "navigate", "drag", "contextmenu", "seed", "dialog", "mock_api",
+    "click",
+    "type",
+    "clear",
+    "select",
+    "scroll",
+    "hover",
+    "wait",
+    "navigate",
+    "drag",
+    "contextmenu",
+    "seed",
+    "dialog",
+    "mock_api",
 }
 
 WEB_ASSERTIONS = {
     # 第1层：元素存在性（确定性，0误判）
-    "element_visible", "element_count", "element_not_exist",
-    "element_focused", "element_enabled",
+    "element_visible",
+    "element_count",
+    "element_not_exist",
+    "element_focused",
+    "element_enabled",
     # 第2层：交互可用性（确定性，0误判）
-    "no_click_interception", "no_overlap", "in_viewport", "z_index_order",
+    "no_click_interception",
+    "no_overlap",
+    "in_viewport",
+    "z_index_order",
     # 第3层：内容正确性（确定性，0误判）
-    "text_match", "text_contains", "attribute_match",
-    "no_console_error", "no_network_error", "no_auth_error", "dom_structure",
+    "text_match",
+    "text_contains",
+    "attribute_match",
+    "no_console_error",
+    "no_network_error",
+    "no_auth_error",
+    "dom_structure",
     # 第4层：布局完整性（启发式，需阈值）
-    "no_overflow", "alignment",
+    "no_overflow",
+    "alignment",
 }
 
 WEB_ASSERTION_LAYERS = {
-    "element_visible": 1, "element_count": 1, "element_not_exist": 1,
-    "element_focused": 1, "element_enabled": 1,
-    "no_click_interception": 2, "no_overlap": 2, "in_viewport": 2, "z_index_order": 2,
-    "text_match": 3, "text_contains": 3, "attribute_match": 3,
-    "no_console_error": 3, "no_network_error": 3, "no_auth_error": 3, "dom_structure": 3,
-    "no_overflow": 4, "alignment": 4,
+    "element_visible": 1,
+    "element_count": 1,
+    "element_not_exist": 1,
+    "element_focused": 1,
+    "element_enabled": 1,
+    "no_click_interception": 2,
+    "no_overlap": 2,
+    "in_viewport": 2,
+    "z_index_order": 2,
+    "text_match": 3,
+    "text_contains": 3,
+    "attribute_match": 3,
+    "no_console_error": 3,
+    "no_network_error": 3,
+    "no_auth_error": 3,
+    "dom_structure": 3,
+    "no_overflow": 4,
+    "alignment": 4,
 }
 
 # ── cli 词表（spec multi-kind-scenario-model：CLI 词表与执行语义）────────
@@ -150,14 +186,22 @@ CLI_ACTIONS = {"run"}
 
 CLI_ASSERTIONS = {
     # 第1层：存在性/状态（确定性，0误判）
-    "exit_code", "file_exists", "dir_contains",
+    "exit_code",
+    "file_exists",
+    "dir_contains",
     # 第3层：内容正确性（确定性，0误判）
-    "output_match", "file_content", "json_output",
+    "output_match",
+    "file_content",
+    "json_output",
 }
 
 CLI_ASSERTION_LAYERS = {
-    "exit_code": 1, "file_exists": 1, "dir_contains": 1,
-    "output_match": 3, "file_content": 3, "json_output": 3,
+    "exit_code": 1,
+    "file_exists": 1,
+    "dir_contains": 1,
+    "output_match": 3,
+    "file_content": 3,
+    "json_output": 3,
 }
 
 # ── api 词表（spec multi-kind-scenario-model：API 词表与响应捕获）──────
@@ -168,18 +212,26 @@ API_ACTIONS = {"http_request", "sse_connect"}
 
 API_ASSERTIONS = {
     # 第1层：存在性/状态（确定性，0误判）
-    "status_code", "sse_event_count",
+    "status_code",
+    "sse_event_count",
     # 第3层：内容正确性（确定性，0误判）
-    "json_path", "response_header", "body_contains", "json_schema",
+    "json_path",
+    "response_header",
+    "body_contains",
+    "json_schema",
     "sse_event_matches",
     # 第4层：启发式阈值（失败=warning，需上下文判定）
     "latency_under",
 }
 
 API_ASSERTION_LAYERS = {
-    "status_code": 1, "sse_event_count": 1,
-    "json_path": 3, "response_header": 3, "body_contains": 3,
-    "json_schema": 3, "sse_event_matches": 3,
+    "status_code": 1,
+    "sse_event_count": 1,
+    "json_path": 3,
+    "response_header": 3,
+    "body_contains": 3,
+    "json_schema": 3,
+    "sse_event_matches": 3,
     "latency_under": 4,
 }
 
@@ -201,16 +253,31 @@ VALID_ACTIONS = WEB_ACTIONS
 VALID_ASSERTIONS = WEB_ASSERTIONS
 
 ASSERTION_LAYERS = {
-    **WEB_ASSERTION_LAYERS, **CLI_ASSERTION_LAYERS, **API_ASSERTION_LAYERS,
+    **WEB_ASSERTION_LAYERS,
+    **CLI_ASSERTION_LAYERS,
+    **API_ASSERTION_LAYERS,
 }
 
 # 需要选择器的断言类型（web 语义；CLI/API 断言不含 selector 概念）
 ASSERTIONS_REQUIRING_SELECTOR = VALID_ASSERTIONS - {
-    "text_contains", "no_console_error", "no_network_error", "no_auth_error",
+    "text_contains",
+    "no_console_error",
+    "no_network_error",
+    "no_auth_error",
 }
 
 # 需要target选择器的操作（web 语义；mock_api 的 target 为 URL 模式，seed 为 localStorage 键）
-ACTIONS_REQUIRING_TARGET = {"click", "type", "clear", "select", "scroll", "drag", "contextmenu", "seed", "mock_api"}
+ACTIONS_REQUIRING_TARGET = {
+    "click",
+    "type",
+    "clear",
+    "select",
+    "scroll",
+    "drag",
+    "contextmenu",
+    "seed",
+    "mock_api",
+}
 
 
 # ── 断言/操作必填字段单源表（evo-planner-scenario-schema-alignment D1）────
@@ -235,61 +302,130 @@ ASSERTION_REQUIRED_FIELDS: dict = {
     # ── cli 断言 ──
     "exit_code": (),
     "file_exists": (
-        {"key": "extra.path", "short": "path", "help": "",
-         "example": '"data/output.txt"', "mode": "post"},
+        {
+            "key": "extra.path",
+            "short": "path",
+            "help": "",
+            "example": '"data/output.txt"',
+            "mode": "post",
+        },
     ),
     "dir_contains": (
-        {"key": "extra.glob", "short": "glob", "help": "",
-         "example": '"*.report"', "mode": "post"},
+        {"key": "extra.glob", "short": "glob", "help": "", "example": '"*.report"', "mode": "post"},
     ),
     "output_match": (
-        {"key": "expected", "short": "expected", "help": "",
-         "example": '"期望的输出内容"', "mode": "post"},
+        {
+            "key": "expected",
+            "short": "expected",
+            "help": "",
+            "example": '"期望的输出内容"',
+            "mode": "post",
+        },
     ),
     "file_content": (
-        {"key": "extra.path", "short": "path", "help": "",
-         "example": '"data/output.txt"', "mode": "post"},
-        {"key": "expected", "short": "expected", "help": "",
-         "example": '"期望的文件内容"', "mode": "post"},
+        {
+            "key": "extra.path",
+            "short": "path",
+            "help": "",
+            "example": '"data/output.txt"',
+            "mode": "post",
+        },
+        {
+            "key": "expected",
+            "short": "expected",
+            "help": "",
+            "example": '"期望的文件内容"',
+            "mode": "post",
+        },
     ),
     "json_output": (
-        {"key": "extra.step", "short": "step", "help": "指定解析哪个命名结果的 stdout",
-         "example": '"<run 步骤的 as 命名>"', "mode": "post"},
-        {"key": "extra.path", "short": "path", "help": "",
-         "example": '"data.items.0.name"', "mode": "post"},
+        {
+            "key": "extra.step",
+            "short": "step",
+            "help": "指定解析哪个命名结果的 stdout",
+            "example": '"<run 步骤的 as 命名>"',
+            "mode": "post",
+        },
+        {
+            "key": "extra.path",
+            "short": "path",
+            "help": "",
+            "example": '"data.items.0.name"',
+            "mode": "post",
+        },
     ),
     # ── api 断言 ──
     "status_code": (
-        {"key": "expected", "short": "expected", "help": "",
-         "example": "200", "mode": "include_zero"},
+        {
+            "key": "expected",
+            "short": "expected",
+            "help": "",
+            "example": "200",
+            "mode": "include_zero",
+        },
     ),
     "sse_event_count": (
-        {"key": "extra.min", "short": "min", "help": "下限",
-         "example": "1", "mode": "include_zero"},
+        {
+            "key": "extra.min",
+            "short": "min",
+            "help": "下限",
+            "example": "1",
+            "mode": "include_zero",
+        },
     ),
     "json_path": (
-        {"key": "extra.path", "short": "path", "help": "",
-         "example": '"data.items.0"', "mode": "post"},
+        {
+            "key": "extra.path",
+            "short": "path",
+            "help": "",
+            "example": '"data.items.0"',
+            "mode": "post",
+        },
     ),
     "response_header": (
-        {"key": "extra.header", "short": "header", "help": "",
-         "example": '"Content-Type"', "mode": "post"},
+        {
+            "key": "extra.header",
+            "short": "header",
+            "help": "",
+            "example": '"Content-Type"',
+            "mode": "post",
+        },
     ),
     "body_contains": (
-        {"key": "expected", "short": "expected", "help": "",
-         "example": '"期望响应体包含的文本"', "mode": "post"},
+        {
+            "key": "expected",
+            "short": "expected",
+            "help": "",
+            "example": '"期望响应体包含的文本"',
+            "mode": "post",
+        },
     ),
     "json_schema": (
-        {"key": "extra.schema", "short": "schema", "help": "",
-         "example": '{"type": "object"}', "mode": "post"},
+        {
+            "key": "extra.schema",
+            "short": "schema",
+            "help": "",
+            "example": '{"type": "object"}',
+            "mode": "post",
+        },
     ),
     "sse_event_matches": (
-        {"key": "expected", "short": "expected", "help": "",
-         "example": '"匹配事件内容模式"', "mode": "post"},
+        {
+            "key": "expected",
+            "short": "expected",
+            "help": "",
+            "example": '"匹配事件内容模式"',
+            "mode": "post",
+        },
     ),
     "latency_under": (
-        {"key": "expected", "short": "expected", "help": "毫秒上限",
-         "example": "500", "mode": "include_zero"},
+        {
+            "key": "expected",
+            "short": "expected",
+            "help": "毫秒上限",
+            "example": "500",
+            "mode": "include_zero",
+        },
     ),
 }
 
@@ -298,19 +434,32 @@ ASSERTION_REQUIRED_FIELDS: dict = {
 # ACTIONS_REQUIRING_TARGET 语义，不在此表重复。
 ACTION_REQUIRED_FIELDS: dict = {
     ("cli", "run"): (
-        {"key": "command", "short": "command",
-         "help": "字符串=经 shell 执行；列表=argv 直接执行",
-         "example": '"python3 script.py --flag"', "mode": "post"},
+        {
+            "key": "command",
+            "short": "command",
+            "help": "字符串=经 shell 执行；列表=argv 直接执行",
+            "example": '"python3 script.py --flag"',
+            "mode": "post",
+        },
     ),
     ("api", "http_request"): (
-        {"key": "method", "short": "method", "help": "",
-         "example": '"GET"', "mode": "post"},
-        {"key": "url", "short": "url", "help": "绝对 URL，origin 由框架改写",
-         "example": '"https://<host>:<port>/api/data"', "mode": "post"},
+        {"key": "method", "short": "method", "help": "", "example": '"GET"', "mode": "post"},
+        {
+            "key": "url",
+            "short": "url",
+            "help": "绝对 URL，origin 由框架改写",
+            "example": '"https://<host>:<port>/api/data"',
+            "mode": "post",
+        },
     ),
     ("api", "sse_connect"): (
-        {"key": "url", "short": "url", "help": "SSE 事件流绝对 URL",
-         "example": '"https://<host>:<port>/events"', "mode": "post"},
+        {
+            "key": "url",
+            "short": "url",
+            "help": "SSE 事件流绝对 URL",
+            "example": '"https://<host>:<port>/events"',
+            "mode": "post",
+        },
     ),
 }
 
@@ -328,7 +477,7 @@ def _assert_lookup_value(assertion, key: str):
     if key == "expected":
         return assertion.expected
     if key.startswith("extra."):
-        return assertion.extra.get(key[len("extra."):])
+        return assertion.extra.get(key[len("extra.") :])
     return None
 
 
@@ -337,8 +486,9 @@ def _step_lookup_value(step, key: str):
     return getattr(step, key, None)
 
 
-def _append_required_field_errors(errors: list, scenario_id: str, prefix: str,
-                                  specs: tuple, lookup) -> list[str]:
+def _append_required_field_errors(
+    errors: list, scenario_id: str, prefix: str, specs: tuple, lookup
+) -> list[str]:
     """按单源表校验必填字段并追加错误消息（消息文本由 short/help 派生，
     与单源表改前逐字一致——行为零变化，4.3）。"""
     for spec in specs:
@@ -352,6 +502,7 @@ def _append_required_field_errors(errors: list, scenario_id: str, prefix: str,
 
 
 # ── 数据类 ────────────────────────────────────────────────────────
+
 
 @dataclass
 class TestStep:
@@ -383,6 +534,7 @@ class TestStep:
         body_type: 请求体类型（json/text）
         duration: sse_connect 收集窗口秒数
     """
+
     action: str
     target: str = ""
     value: str = ""
@@ -490,6 +642,7 @@ class Assertion:
         layer: 断言层级（1-4），自动从 type 推导
         extra: 额外参数（如 compare_selector / operator / axis 等）
     """
+
     type: str
     selector: str = ""
     label: str = ""
@@ -544,6 +697,7 @@ class TestScenario:
             no_console_error 断言将过滤 net::ERR_ 等网络层错误（视为环境因素），
             其余控制台错误（含签名/认证类）仍严格失败。
     """
+
     id: str
     description: str = ""
     steps: list[TestStep] = field(default_factory=list)
@@ -646,9 +800,7 @@ def _validate_web(scenario: TestScenario) -> list[str]:
                 f"支持: {_supported_actions('web')}"
             )
         if step.action in ACTIONS_REQUIRING_TARGET and not step.target:
-            errors.append(
-                f"场景'{scenario.id}'步骤{i}: 操作 '{step.action}' 需要 target 选择器"
-            )
+            errors.append(f"场景'{scenario.id}'步骤{i}: 操作 '{step.action}' 需要 target 选择器")
 
     for i, a in enumerate(scenario.assertions):
         if a.type not in WEB_ASSERTIONS:
@@ -657,16 +809,13 @@ def _validate_web(scenario: TestScenario) -> list[str]:
                 f"支持: {_supported_assertions('web')}"
             )
         if a.type in ASSERTIONS_REQUIRING_SELECTOR and not a.selector:
-            errors.append(
-                f"场景'{scenario.id}'断言{i}: 类型 '{a.type}' 需要 selector"
-            )
+            errors.append(f"场景'{scenario.id}'断言{i}: 类型 '{a.type}' 需要 selector")
 
     # navigate URL 验收（2026-08-28：相对路径导致浏览器白屏、整轮断言全灭）
     nav_steps = [s for s in scenario.steps if s.action == "navigate"]
     if not nav_steps:
         errors.append(
-            f"场景'{scenario.id}'缺少 navigate 步骤"
-            f"（web 场景必须以绝对 URL 打开被测页面）"
+            f"场景'{scenario.id}'缺少 navigate 步骤" f"（web 场景必须以绝对 URL 打开被测页面）"
         )
     for i, step in enumerate(scenario.steps):
         if step.action == "navigate" and not re.match(
@@ -700,8 +849,8 @@ def _validate_cli(scenario: TestScenario) -> list[str]:
             continue
         specs = ACTION_REQUIRED_FIELDS.get(("cli", step.action), ())
         _append_required_field_errors(
-            errors, scenario.id, f"步骤{i}",
-            specs, lambda key, s=step: _step_lookup_value(s, key))
+            errors, scenario.id, f"步骤{i}", specs, lambda key, s=step: _step_lookup_value(s, key)
+        )
 
     for i, a in enumerate(scenario.assertions):
         if a.type not in CLI_ASSERTIONS:
@@ -712,8 +861,12 @@ def _validate_cli(scenario: TestScenario) -> list[str]:
             continue
         specs = ASSERTION_REQUIRED_FIELDS.get(a.type, ())
         _append_required_field_errors(
-            errors, scenario.id, f"断言{i}: {a.type} 需要",
-            specs, lambda key, a=a: _assert_lookup_value(a, key))
+            errors,
+            scenario.id,
+            f"断言{i}: {a.type} 需要",
+            specs,
+            lambda key, a=a: _assert_lookup_value(a, key),
+        )
     return errors
 
 
@@ -736,8 +889,8 @@ def _validate_api(scenario: TestScenario) -> list[str]:
             continue
         specs = ACTION_REQUIRED_FIELDS.get(("api", step.action), ())
         _append_required_field_errors(
-            errors, scenario.id, f"步骤{i}",
-            specs, lambda key, s=step: _step_lookup_value(s, key))
+            errors, scenario.id, f"步骤{i}", specs, lambda key, s=step: _step_lookup_value(s, key)
+        )
 
     for i, a in enumerate(scenario.assertions):
         if a.type not in API_ASSERTIONS:
@@ -748,8 +901,12 @@ def _validate_api(scenario: TestScenario) -> list[str]:
             continue
         specs = ASSERTION_REQUIRED_FIELDS.get(a.type, ())
         _append_required_field_errors(
-            errors, scenario.id, f"断言{i}: {a.type} 需要",
-            specs, lambda key, a=a: _assert_lookup_value(a, key))
+            errors,
+            scenario.id,
+            f"断言{i}: {a.type} 需要",
+            specs,
+            lambda key, a=a: _assert_lookup_value(a, key),
+        )
     return errors
 
 
@@ -775,6 +932,7 @@ def validate_scenario(scenario: TestScenario) -> list[str]:
 
 
 # ── 场景加载 ──────────────────────────────────────────────────────
+
 
 def validate_scenario_dicts(raw: list) -> list[str]:
     """结构校验场景 dict 列表（scenario-write-schema-gate 单一来源）。
@@ -855,9 +1013,7 @@ def load_scenarios(filepath) -> list[TestScenario]:
         detail = "\n".join(f"  - {e}" for e in all_errors)
         if version_notes:
             detail += "\n" + "\n".join(f"  # {n}" for n in version_notes)
-        raise ValueError(
-            f"场景文件包含 {len(all_errors)} 个错误:\n" + detail
-        )
+        raise ValueError(f"场景文件包含 {len(all_errors)} 个错误:\n" + detail)
 
     return [TestScenario.from_dict(item) for item in raw]
 

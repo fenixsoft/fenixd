@@ -59,7 +59,8 @@ def spec_has_content(project_root, spec_name: str) -> bool:
     except OSError:
         # 读目录异常保守放行：权限/临时不可达下宁可放行让预算闸门兜底
         logging.getLogger("pm_engine").warning(
-            "读取 spec 目录失败（保守放行）: %s", spec_dir,
+            "读取 spec 目录失败（保守放行）: %s",
+            spec_dir,
         )
         return True
 

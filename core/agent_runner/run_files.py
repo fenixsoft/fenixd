@@ -43,7 +43,7 @@ def infer_run_agent_type(run_id: str) -> tuple[str, str]:
     """
     for prefix, agent_type in RUN_ID_AGENT_PREFIXES:
         if run_id.startswith(prefix):
-            return agent_type, run_id[len(prefix):]
+            return agent_type, run_id[len(prefix) :]
     return "agent", run_id
 
 
@@ -94,10 +94,7 @@ def archive_spec_runs(runs_dir: Path, spec_name: str) -> int:
     if not runs_dir.is_dir():
         return 0
     try:
-        candidates = [
-            p for p in runs_dir.glob("*.jsonl")
-            if run_spec_part(p.stem) == spec_name
-        ]
+        candidates = [p for p in runs_dir.glob("*.jsonl") if run_spec_part(p.stem) == spec_name]
     except OSError:
         return 0
     moved = 0

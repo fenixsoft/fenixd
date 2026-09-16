@@ -94,7 +94,10 @@ class Registry:
         errno_code = errno.errorcode.get(exc.errno, "?")
         logger.warning(
             "发现层跳过不可读路径 %s（%s, errno=%s）: %s",
-            path, errno_code, exc.errno, exc,
+            path,
+            errno_code,
+            exc.errno,
+            exc,
         )
         return Registry._PROBE_UNREADABLE
 
@@ -163,12 +166,14 @@ class Registry:
                 continue
             seen.add(key)
             name = p.get("name") or (rp.name or key)
-            projects.append({
-                "name": name,
-                "path": key,
-                "discovered": False,
-                "exists": rp.is_dir(),
-            })
+            projects.append(
+                {
+                    "name": name,
+                    "path": key,
+                    "discovered": False,
+                    "exists": rp.is_dir(),
+                }
+            )
 
         # 扫描根：显式配置 scan_dirs 时沿用该配置（覆盖默认）；未配置（或为空）
         # 时默认以用户主目录 ~ 为唯一扫描根，遍历其一级子目录做自动发现。
@@ -200,12 +205,14 @@ class Registry:
                 if self.probe_child(child) != self._PROBE_PRESENT:
                     continue
                 seen.add(key)
-                projects.append({
-                    "name": child.name or key,
-                    "path": key,
-                    "discovered": True,
-                    "exists": True,
-                })
+                projects.append(
+                    {
+                        "name": child.name or key,
+                        "path": key,
+                        "discovered": True,
+                        "exists": True,
+                    }
+                )
 
         return projects
 
@@ -236,10 +243,12 @@ class Registry:
         if not (rp / ".fenix" / "STATE.md").is_file():
             return False, f"目录不是 Fenixd 项目（缺少 STATE.md）: {key}"
 
-        data.setdefault("projects", []).append({
-            "name": name or (rp.name or key),
-            "path": key,
-        })
+        data.setdefault("projects", []).append(
+            {
+                "name": name or (rp.name or key),
+                "path": key,
+            }
+        )
         self.save(data)
         return True, f"已注册项目: {key}"
 
@@ -318,8 +327,10 @@ class Registry:
         for p in data.get("projects", []):
             if not isinstance(p, dict):
                 continue
-            out.append({
-                "name": p.get("name"),
-                "path": p.get("path"),
-            })
+            out.append(
+                {
+                    "name": p.get("name"),
+                    "path": p.get("path"),
+                }
+            )
         return out

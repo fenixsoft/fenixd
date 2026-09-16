@@ -298,12 +298,14 @@ class HookEngine:
         except Exception as e:
             self._log_warning(
                 f"one-shot 重启 hook 清扫失败（hook 保留，下次启动重试）: "
-                f"{type(e).__name__}: {e}")
+                f"{type(e).__name__}: {e}"
+            )
 
     # ── 事件分发（EventBus diff 处调用，只投递不阻塞）────────────────
 
-    def dispatch(self, spec: str, from_status: Optional[str],
-                 to_status: str, entry: Optional[dict]) -> None:
+    def dispatch(
+        self, spec: str, from_status: Optional[str], to_status: str, entry: Optional[dict]
+    ) -> None:
         """(spec, from, to, entry) 事件分发：匹配 + 每命中 hook 一个线程并发执行。
 
         分发阶段任何异常只记日志，不向调用方抛（状态机写入路径不被 hook 阻塞）。
@@ -311,8 +313,7 @@ class HookEngine:
         try:
             matches = match_hooks(self.config, spec, to_status)
         except Exception as e:
-            self._log_error(
-                f"hook 匹配失败 spec={spec} event={to_status}: {type(e).__name__}: {e}")
+            self._log_error(f"hook 匹配失败 spec={spec} event={to_status}: {type(e).__name__}: {e}")
             return
         for cfg, scope in matches:
             hook_id = cfg.get("id") if isinstance(cfg, dict) else None
@@ -346,15 +347,13 @@ class HookEngine:
           webhook/shell 溯源。
         """
         try:
-            entries = StateParser.parse(
-                self.project_root / ".fenix" / "STATE.md")
+            entries = StateParser.parse(self.project_root / ".fenix" / "STATE.md")
         except Exception as e:
             self._log_warning(f"all-done 评估失败（跳过）: {e}")
             return
         if not entries:
             return
-        if any(e.get("status") not in SPEC_SUCCESS_TERMINAL
-               for e in entries.values()):
+        if any(e.get("status") not in SPEC_SUCCESS_TERMINAL for e in entries.values()):
             return
         with self._all_done_lock:
             if self._all_done_fired:
@@ -364,8 +363,14 @@ class HookEngine:
             hook_id = cfg.get("id") if isinstance(cfg, dict) else None
             th = threading.Thread(
                 target=self._execute_one,
-                args=(hook_id, scope, "*", None, HOOK_EVENT_ALL_DONE,
-                      {"trigger_spec": trigger_spec}),
+                args=(
+                    hook_id,
+                    scope,
+                    "*",
+                    None,
+                    HOOK_EVENT_ALL_DONE,
+                    {"trigger_spec": trigger_spec},
+                ),
                 name=f"hook-{hook_id or 'anon'}-all-done",
                 daemon=True,
             )
@@ -391,9 +396,15 @@ class HookEngine:
                 return h
         return None
 
-    def _execute_one(self, hook_id, scope: str, spec: str,
-                     from_status: Optional[str], to_status: str,
-                     entry: dict) -> None:
+    def _execute_one(
+        self,
+        hook_id,
+        scope: str,
+        spec: str,
+        from_status: Optional[str],
+        to_status: str,
+        entry: dict,
+    ) -> None:
         """单条 hook 的执行线程：实时重读配置、enabled 判 skip、执行、审计。
 
         单 hook 异常互不影响（线程级 try 全包裹，失败走 failure 审计+告警）。
@@ -403,30 +414,64 @@ class HookEngine:
             if cfg is None:
                 return
             if not cfg.get("enabled", True):
-                self._audit(spec, to_status, from_status, to_status, hook_id,
-                            cfg.get("action"), scope, STATUS_SKIPPED,
-                            "enabled=false，已跳过", 0.0)
+                self._audit(
+                    spec,
+                    to_status,
+                    from_status,
+                    to_status,
+                    hook_id,
+                    cfg.get("action"),
+                    scope,
+                    STATUS_SKIPPED,
+                    "enabled=false，已跳过",
+                    0.0,
+                )
                 return
             err = validate_hook_entry(cfg)
             if err:
                 # 配置被手工改坏：记 failure 但不告警（配置层错误，审计暴露）
-                self._audit(spec, to_status, from_status, to_status, hook_id,
-                            cfg.get("action"), scope, STATUS_FAILURE,
-                            f"hook 配置非法（不执行）: {err}", 0.0)
+                self._audit(
+                    spec,
+                    to_status,
+                    from_status,
+                    to_status,
+                    hook_id,
+                    cfg.get("action"),
+                    scope,
+                    STATUS_FAILURE,
+                    f"hook 配置非法（不执行）: {err}",
+                    0.0,
+                )
                 return
             self._execute_action(cfg, scope, spec, from_status, to_status, entry)
         except Exception as e:
             detail = f"hook 执行异常: {type(e).__name__}: {e}"
             try:
-                self._audit(spec, to_status, from_status, to_status, hook_id,
-                            "?", scope, STATUS_FAILURE, detail, 0.0)
+                self._audit(
+                    spec,
+                    to_status,
+                    from_status,
+                    to_status,
+                    hook_id,
+                    "?",
+                    scope,
+                    STATUS_FAILURE,
+                    detail,
+                    0.0,
+                )
                 self._alert_failure(spec, to_status, "?", scope, detail)
             except Exception:
                 pass
 
-    def _execute_action(self, cfg: dict, scope: str, spec: str,
-                        from_status: Optional[str], to_status: str,
-                        entry: dict) -> None:
+    def _execute_action(
+        self,
+        cfg: dict,
+        scope: str,
+        spec: str,
+        from_status: Optional[str],
+        to_status: str,
+        entry: dict,
+    ) -> None:
         """按动作类型执行并统一写审计；失败再发站内告警（D5，不重试）。"""
         action = cfg["action"]
         hook_id = cfg.get("id")
@@ -442,8 +487,8 @@ class HookEngine:
                 mark_err = self._mark_restart_cleanup(hook_id)
                 detail = (
                     f"{detail}；清理标记写入失败（hook 保留）: {mark_err}"
-                    if mark_err else
-                    f"{detail}（one-shot：重启后本 hook 将自动清理）"
+                    if mark_err
+                    else f"{detail}（one-shot：重启后本 hook 将自动清理）"
                 )
         elif action == "commit":
             status, detail = self._action_commit(cfg, spec, to_status)
@@ -462,8 +507,18 @@ class HookEngine:
             status, detail = STATUS_FAILURE, f"未知动作: {action}"
 
         duration = time.monotonic() - started
-        self._audit(spec, to_status, from_status, to_status, hook_id,
-                    action, scope, status, detail, duration)
+        self._audit(
+            spec,
+            to_status,
+            from_status,
+            to_status,
+            hook_id,
+            action,
+            scope,
+            status,
+            detail,
+            duration,
+        )
         if status == STATUS_FAILURE:
             self._alert_failure(spec, to_status, action, scope, detail)
 
@@ -527,8 +582,7 @@ class HookEngine:
                         ids.append(hid)
                     payload = {"ts": _utcnow_iso(), "hook_ids": ids}
                     tmp = path.with_suffix(".json.tmp")
-                    tmp.write_text(
-                        json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
                     tmp.replace(path)
                 finally:
                     fcntl.flock(lf, fcntl.LOCK_UN)
@@ -560,7 +614,8 @@ class HookEngine:
             self._remove_hook_ids_from_memory(hook_ids)
             self._log_warning(
                 f"one-shot 重启 hook 清扫: 已从配置摘除 {sorted(hook_ids)}"
-                f"（改动 {changed} 个配置文件）")
+                f"（改动 {changed} 个配置文件）"
+            )
         else:
             self._log_warning("hook 清理标记为空，按 noop 消费")
         try:
@@ -573,6 +628,7 @@ class HookEngine:
         paths: List[Path] = []
         try:
             from .config import USER_CONFIG_DIR
+
             paths.append(USER_CONFIG_DIR / "config.yaml")
         except Exception:
             pass
@@ -593,6 +649,7 @@ class HookEngine:
     def _remove_hook_ids_from_config_files(self, hook_ids: set) -> int:
         """从两级 config.yaml 的 hooks 段按 id 摘除条目，返回实际改写文件数。"""
         import yaml
+
         changed = 0
         for cfg_path in self._hook_config_paths():
             try:
@@ -606,8 +663,7 @@ class HookEngine:
                 dirty = False
                 g = hooks.get("global")
                 if isinstance(g, list):
-                    kept = [h for h in g
-                            if not (isinstance(h, dict) and h.get("id") in hook_ids)]
+                    kept = [h for h in g if not (isinstance(h, dict) and h.get("id") in hook_ids)]
                     if kept != g:
                         hooks["global"] = kept
                         dirty = True
@@ -616,8 +672,9 @@ class HookEngine:
                     for name, lst in list(specs.items()):
                         if not isinstance(lst, list):
                             continue
-                        kept = [h for h in lst
-                                if not (isinstance(h, dict) and h.get("id") in hook_ids)]
+                        kept = [
+                            h for h in lst if not (isinstance(h, dict) and h.get("id") in hook_ids)
+                        ]
                         if kept != lst:
                             specs[name] = kept
                             dirty = True
@@ -626,9 +683,11 @@ class HookEngine:
                 tmp = cfg_path.with_suffix(".yaml.tmp")
                 tmp.write_text(
                     self._split_yaml_header(raw)
-                    + yaml.safe_dump(data, allow_unicode=True,
-                                     default_flow_style=False, sort_keys=False),
-                    encoding="utf-8")
+                    + yaml.safe_dump(
+                        data, allow_unicode=True, default_flow_style=False, sort_keys=False
+                    ),
+                    encoding="utf-8",
+                )
                 tmp.replace(cfg_path)
                 changed += 1
             except (OSError, yaml.YAMLError) as e:
@@ -642,14 +701,16 @@ class HookEngine:
             return
         g = hooks.get("global")
         if isinstance(g, list):
-            hooks["global"] = [h for h in g
-                               if not (isinstance(h, dict) and h.get("id") in hook_ids)]
+            hooks["global"] = [
+                h for h in g if not (isinstance(h, dict) and h.get("id") in hook_ids)
+            ]
         specs = hooks.get("specs")
         if isinstance(specs, dict):
             for name, lst in list(specs.items()):
                 if isinstance(lst, list):
-                    specs[name] = [h for h in lst
-                                   if not (isinstance(h, dict) and h.get("id") in hook_ids)]
+                    specs[name] = [
+                        h for h in lst if not (isinstance(h, dict) and h.get("id") in hook_ids)
+                    ]
 
     def _action_commit(self, cfg: dict, spec: str, event: str) -> Tuple[str, str]:
         """git add -A + git commit -m <模板渲染>；无变更 → noop 成功。"""
@@ -706,8 +767,9 @@ class HookEngine:
         """
         target = (cfg.get("target") or "").strip() or DEFAULT_DASHBOARD_SESSION
         try:
-            has = subprocess.run(["tmux", "has-session", "-t", target],
-                                 capture_output=True, text=True, timeout=10)
+            has = subprocess.run(
+                ["tmux", "has-session", "-t", target], capture_output=True, text=True, timeout=10
+            )
         except (subprocess.SubprocessError, OSError) as e:
             return False, f"tmux has-session 失败: {e}"
         if has.returncode != 0:
@@ -722,21 +784,30 @@ class HookEngine:
         try:
             respawn = subprocess.run(
                 ["tmux", "respawn-window", "-k", "-t", target, shell_cmd],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
         except (subprocess.SubprocessError, OSError) as e:
             return False, f"tmux respawn-window 失败: {e}"
         if respawn.returncode != 0:
-            return False, f"tmux respawn-window 失败: {_tail_combined(respawn.stdout, respawn.stderr)}"
+            return (
+                False,
+                f"tmux respawn-window 失败: {_tail_combined(respawn.stdout, respawn.stderr)}",
+            )
         port = self._dashboard_port()
         if not self._probe_dashboard(port):
-            return False, f"dashboard 已 respawn，但 {port} 端口 {DASHBOARD_PROBE_ATTEMPTS * DASHBOARD_PROBE_INTERVAL:.0f}s 内未恢复 HTTP 可服务"
+            return (
+                False,
+                f"dashboard 已 respawn，但 {port} 端口 {DASHBOARD_PROBE_ATTEMPTS * DASHBOARD_PROBE_INTERVAL:.0f}s 内未恢复 HTTP 可服务",
+            )
         return True, f"dashboard 会话 {target} 已重启（端口 {port} 恢复可服务）"
 
     def _dashboard_port(self) -> int:
         """dashboard 服务端口：config dashboard.port 合法则用之，否则 8787。"""
         try:
             from .config import ConfigLoader
+
             port = ConfigLoader.get(self.config, "dashboard.port", DEFAULT_DASHBOARD_PORT)
             port = int(port)
             if 0 < port < 65536:
@@ -760,8 +831,9 @@ class HookEngine:
                 time.sleep(DASHBOARD_PROBE_INTERVAL)
         return False
 
-    def _action_webhook(self, cfg: dict, spec: str, from_status: Optional[str],
-                        to_status: str, entry: dict) -> Tuple[str, str]:
+    def _action_webhook(
+        self, cfg: dict, spec: str, from_status: Optional[str], to_status: str, entry: dict
+    ) -> Tuple[str, str]:
         """POST JSON 通知（含审计）；2xx = 成功，响应体截断 2KB 记审计。"""
         url = (cfg.get("url") or "").strip()
         payload = {
@@ -779,7 +851,9 @@ class HookEngine:
         timeout = _num(cfg.get("timeout_seconds"), DEFAULT_WEBHOOK_TIMEOUT_SECONDS)
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
-            url, data=data, method="POST",
+            url,
+            data=data,
+            method="POST",
             headers={"Content-Type": "application/json"},
         )
         try:
@@ -792,11 +866,16 @@ class HookEngine:
             return STATUS_FAILURE, f"webhook 请求失败: {e}"
         if not (200 <= code < 300):
             return STATUS_FAILURE, f"webhook 非 2xx: HTTP {code}"
-        detail = _truncate(body.decode("utf-8", errors="replace")) if body else "webhook 已送达（空响应）"
+        detail = (
+            _truncate(body.decode("utf-8", errors="replace"))
+            if body
+            else "webhook 已送达（空响应）"
+        )
         return STATUS_SUCCESS, detail
 
-    def _action_shell(self, cfg: dict, spec: str, from_status: Optional[str],
-                      to_status: str, entry: dict) -> Tuple[str, str]:
+    def _action_shell(
+        self, cfg: dict, spec: str, from_status: Optional[str], to_status: str, entry: dict
+    ) -> Tuple[str, str]:
         """bash -c <command>，注入事件环境变量，超时强杀。"""
         command = (cfg.get("command") or "").strip()
         timeout = _num(cfg.get("timeout_seconds"), DEFAULT_SHELL_TIMEOUT_SECONDS)
@@ -831,9 +910,19 @@ class HookEngine:
 
     # ── 审计与告警（D5/D6） ─────────────────────────────────────────
 
-    def _audit(self, spec: str, event: str, from_status: Optional[str],
-               to_status: Optional[str], hook_id, action, scope: str,
-               status: str, detail: str, duration_s: float) -> None:
+    def _audit(
+        self,
+        spec: str,
+        event: str,
+        from_status: Optional[str],
+        to_status: Optional[str],
+        hook_id,
+        action,
+        scope: str,
+        status: str,
+        detail: str,
+        duration_s: float,
+    ) -> None:
         """带锁追加一条审计记录到 .fenix/hook_audit.jsonl。"""
         rec = {
             "ts": _utcnow_iso(),
@@ -867,27 +956,31 @@ class HookEngine:
         except OSError as e:
             self._log_error(f"审计写入失败: {e}")
 
-    def _alert_failure(self, spec: str, event: str, action: str,
-                       scope: str, detail: str) -> None:
+    def _alert_failure(self, spec: str, event: str, action: str, scope: str, detail: str) -> None:
         """动作失败 → 站内告警（D5，signal_type=hook_failure，severity major）。"""
         try:
-            store = self.admin_store if self.admin_store is not None else AdminStore(self.project_root)
-            store.append({
-                "kind": ESCALATION,
-                "signal_type": "hook_failure",
-                "severity": "major",
-                "spec": spec,
-                "description": (
-                    f"hook 动作失败：spec={spec} event={event} "
-                    f"action={action} scope={scope}"
-                ),
-                "evidence": _truncate(detail),
-                "recommended_action": (
-                    "查看 .fenix/hook_audit.jsonl 与本条告警溯因；hook 动作失败不会自动重试"
-                ),
-            })
+            store = (
+                self.admin_store if self.admin_store is not None else AdminStore(self.project_root)
+            )
+            store.append(
+                {
+                    "kind": ESCALATION,
+                    "signal_type": "hook_failure",
+                    "severity": "major",
+                    "spec": spec,
+                    "description": (
+                        f"hook 动作失败：spec={spec} event={event} "
+                        f"action={action} scope={scope}"
+                    ),
+                    "evidence": _truncate(detail),
+                    "recommended_action": (
+                        "查看 .fenix/hook_audit.jsonl 与本条告警溯因；hook 动作失败不会自动重试"
+                    ),
+                }
+            )
             self._log_warning(
-                f"hook_failure: action={action} spec={spec} event={event} scope={scope}")
+                f"hook_failure: action={action} spec={spec} event={event} scope={scope}"
+            )
         except Exception as e:
             self._log_error(f"hook 失败告警写入失败: {type(e).__name__}: {e}")
 

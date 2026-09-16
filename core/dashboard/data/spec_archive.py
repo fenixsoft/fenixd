@@ -11,6 +11,7 @@ from pathlib import Path
 
 # 跨组引用（D4：叶子→中枢，直接导入无环——spec_archive 不被中枢反向 import）
 from core.archive_commit import commit_archive_move
+
 # state 组（叶子组已搬移，直接导入无环）
 from .state import parse_state
 
@@ -44,14 +45,14 @@ def soft_delete_spec(project_root, spec: str) -> dict:
             for p in runs_dir.glob(f"*{spec}*.jsonl"):
                 try:
                     if now - p.stat().st_mtime < protect_window:
-                        return {"found": True, "running": True,
-                                "error": "spec 有进行中的运行"}
+                        return {"found": True, "running": True, "error": "spec 有进行中的运行"}
                 except OSError:
                     continue
         except OSError:
             pass
 
     from core.state_machine import StateMachine
+
     sm = StateMachine(proot / ".fenix" / "STATE.md")
 
     # 1. 先移动目录（若失败，STATE.md 尚未改动，天然一致）
@@ -69,6 +70,7 @@ def soft_delete_spec(project_root, spec: str) -> dict:
         # 同名冲突：追加毫秒后缀重试，避免 shutil.move 覆盖丢失数据
         if dest.exists():
             import datetime as _dt
+
             ms = _dt.datetime.now().strftime("%f")
             dest = archive_root / f"{base_name}-{ms}"
             # 极端极端情况仍冲突，再用递增序号兜底
@@ -82,8 +84,13 @@ def soft_delete_spec(project_root, spec: str) -> dict:
 
     # 2. 再原子剔除 STATE.md 条目
     sm.remove_spec(spec)
-    result = {"found": True, "running": False, "archived": archived,
-              "archive_path": archive_path, "error": None}
+    result = {
+        "found": True,
+        "running": False,
+        "archived": archived,
+        "archive_path": archive_path,
+        "error": None,
+    }
     # 归档自动提交：目录确实移动成功才提交（fail-open，见 core/archive_commit.py）
     if archived:
         cr = commit_archive_move(proot, spec, archive_path)
@@ -122,35 +129,57 @@ def archive_spec(project_root, spec_name: str) -> dict:
     proot = Path(project_root)
     specs = parse_state(proot)
     if spec_name not in specs:
-        return {"ok": False, "found": False, "from": None, "to": None,
-                "error": f"spec not found: {spec_name}"}
+        return {
+            "ok": False,
+            "found": False,
+            "from": None,
+            "to": None,
+            "error": f"spec not found: {spec_name}",
+        }
     status = specs[spec_name].get("status")
     if status not in ("done", "pushed"):
-        return {"ok": False, "found": True, "from": None, "to": None,
-                "error": f"仅终态 spec（done/pushed）可归档，当前状态: {status}"}
+        return {
+            "ok": False,
+            "found": True,
+            "from": None,
+            "to": None,
+            "error": f"仅终态 spec（done/pushed）可归档，当前状态: {status}",
+        }
 
     change_dir = proot / "spec" / "changes" / spec_name
     if not change_dir.is_dir():
-        return {"ok": False, "found": True, "from": None, "to": None,
-                "error": f"Spec '{spec_name}' 活跃目录已不存在（可能已归档）"}
+        return {
+            "ok": False,
+            "found": True,
+            "from": None,
+            "to": None,
+            "error": f"Spec '{spec_name}' 活跃目录已不存在（可能已归档）",
+        }
 
     from datetime import date
-    target = (
-        proot / "spec" / "archive"
-        / f"{date.today().isoformat()}-{spec_name}"
-    )
+
+    target = proot / "spec" / "archive" / f"{date.today().isoformat()}-{spec_name}"
     if target.exists():
-        return {"ok": False, "found": True, "from": str(change_dir), "to": str(target),
-                "error": f"归档目标已存在: {target} — 请改名或改日再归档，原目录不会被覆盖"}
+        return {
+            "ok": False,
+            "found": True,
+            "from": str(change_dir),
+            "to": str(target),
+            "error": f"归档目标已存在: {target} — 请改名或改日再归档，原目录不会被覆盖",
+        }
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         moved = Path(shutil.move(str(change_dir), str(target)))
     except OSError as e:
-        return {"ok": False, "found": True, "from": str(change_dir), "to": str(target),
-                "error": f"归档移动失败: {e}"}
-    result = {"ok": True, "found": True, "from": str(change_dir), "to": str(moved),
-              "error": None}
+        return {
+            "ok": False,
+            "found": True,
+            "from": str(change_dir),
+            "to": str(target),
+            "error": f"归档移动失败: {e}",
+        }
+    result = {"ok": True, "found": True, "from": str(change_dir), "to": str(moved), "error": None}
     # remove-auto-run-cleanup：run 产物归档的唯一入口 = SPEC 归档。change 目录
     # 移动成功后，把 .fenix/runs/ 顶层属于该 spec 的产物移入 archive/（不删除
     # 任何文件）。与 bin/fenix_archive.py::archive_change 同源同步——本函数是
@@ -160,10 +189,9 @@ def archive_spec(project_root, spec_name: str) -> dict:
     # fail-open：runs 归档失败仅在返回 dict 追加告警字段，不阻断 change 归档主流程。
     # D8：经门面延迟解析（tests 以 patch.object(dash_data, "archive_spec_runs") 替换）
     import core.dashboard.data as _facade
+
     try:
-        result["runs_archived"] = _facade.archive_spec_runs(
-            proot / ".fenix" / "runs", spec_name
-        )
+        result["runs_archived"] = _facade.archive_spec_runs(proot / ".fenix" / "runs", spec_name)
     except OSError as e:
         result["runs_archive_warning"] = str(e)
     # 归档自动提交：移动成功立即入库（fail-open，见 core/archive_commit.py）
@@ -174,8 +202,7 @@ def archive_spec(project_root, spec_name: str) -> dict:
     return result
 
 
-def auto_archive_check(project_root, config: dict,
-                       logger=None) -> dict:
+def auto_archive_check(project_root, config: dict, logger=None) -> dict:
     """daemon 周期自动归档检查（D4）：遍历终态未归档 SPEC，超阈值按 updated 升序归档。
 
     设计 D4/D5：主循环每 300s 调用一次；threshold=0 或缺失时跳过。
@@ -193,10 +220,16 @@ def auto_archive_check(project_root, config: dict,
          "threshold": int, "total_terminal_unarchived": int}
     """
     from core.config import ConfigLoader
+
     threshold = ConfigLoader.effective_auto_archive_threshold(config)
     if threshold <= 0:
-        return {"archived": 0, "skipped": 0, "target_count": 0,
-                "threshold": threshold, "total_terminal_unarchived": 0}
+        return {
+            "archived": 0,
+            "skipped": 0,
+            "target_count": 0,
+            "threshold": threshold,
+            "total_terminal_unarchived": 0,
+        }
 
     proot = Path(project_root)
     specs = parse_state(proot)
@@ -213,8 +246,13 @@ def auto_archive_check(project_root, config: dict,
 
     total = len(candidates)
     if total <= threshold:
-        return {"archived": 0, "skipped": 0, "target_count": 0,
-                "threshold": threshold, "total_terminal_unarchived": total}
+        return {
+            "archived": 0,
+            "skipped": 0,
+            "target_count": 0,
+            "threshold": threshold,
+            "total_terminal_unarchived": total,
+        }
 
     # 按 updated 升序（最久完成的先归档）
     def _sort_key(item):
@@ -223,6 +261,7 @@ def auto_archive_check(project_root, config: dict,
             return updated  # ISO8601 字符串排序即时间排序
         except Exception:
             return ""
+
     candidates.sort(key=_sort_key)
 
     to_archive = total - threshold
@@ -240,6 +279,7 @@ def auto_archive_check(project_root, config: dict,
                     pass
             else:
                 import sys
+
                 print(f"[fenixd] {msg}", file=sys.stderr)
         else:
             skipped_count += 1
@@ -251,6 +291,7 @@ def auto_archive_check(project_root, config: dict,
                     pass
             else:
                 import sys
+
                 print(f"[fenixd] {msg}", file=sys.stderr)
 
     return {

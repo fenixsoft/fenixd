@@ -52,16 +52,13 @@ class WebRunner(VerifyRunner):
 
     kind = "web"
 
-    def __init__(self, spec_name, project_root=None, logger=None,
-                 config: dict = None, **kwargs):
+    def __init__(self, spec_name, project_root=None, logger=None, config: dict = None, **kwargs):
         super().__init__(spec_name, project_root, logger, config, **kwargs)
-        self.browser = BrowserManager(project_root=project_root,
-                                      logger=self.logger)
+        self.browser = BrowserManager(project_root=project_root, logger=self.logger)
         self.asserter = AssertionRunner()
         # 视觉对比器持有配置（settle 上限 / 重拍次数，verify_engine 段，
         # 缺省回退），见 visual_diff.py D6 配置读取。
-        self.differ = VisualDiffer(spec_name, project_root,
-                                   config=config, logger=self.logger)
+        self.differ = VisualDiffer(spec_name, project_root, config=config, logger=self.logger)
         # 契约统一供给的 base_url（引擎注入；优先级高于 navigate 文本考古）。
         # 无实例形态（纯 CLI 轮次）下为空字符串，改写/探针为无害空操作。
         self.base_url = ""
@@ -119,16 +116,14 @@ class WebRunner(VerifyRunner):
                 "description": scenario.description,
                 "status": "error",
                 "error": "应用页面加载失败：.fenix-dashboard 元素不存在，"
-                         "请确认 dist/ 构建产物完整",
+                "请确认 dist/ 构建产物完整",
                 "step_results": [],
                 "assertion_results": [],
                 "visual_results": [],
                 "screenshots": [],
                 "screenshot_labels": {},
             }
-        context = await self.browser.new_context(
-            viewport=getattr(scenario, "viewport", None)
-        )
+        context = await self.browser.new_context(viewport=getattr(scenario, "viewport", None))
         page = await context.new_page()
         # 扩展项目：确保页面已加载应用内容（不依赖场景的 navigate 步骤）
         # 非扩展项目由场景自身的 navigate 步骤负责
@@ -214,8 +209,7 @@ class WebRunner(VerifyRunner):
         screenshots: list[str] = []
         screenshot_labels: dict[str, dict] = {}
         screenshot_dir = (
-            self.project_root / ".fenix" / "verify-progress"
-            / self.spec_name / "screenshots"
+            self.project_root / ".fenix" / "verify-progress" / self.spec_name / "screenshots"
         )
 
         # ── 执行操作步骤 ──
@@ -242,8 +236,7 @@ class WebRunner(VerifyRunner):
                     path, labels = self._extract_screenshot_result(ss)
                     screenshots.append(path)
                     if labels:
-                        screenshot_labels.setdefault(
-                            path, {}).update(labels)
+                        screenshot_labels.setdefault(path, {}).update(labels)
                 except Exception:
                     pass
 
@@ -272,8 +265,7 @@ class WebRunner(VerifyRunner):
                     path, labels = self._extract_screenshot_result(ss)
                     screenshots.append(path)
                     if labels:
-                        screenshot_labels.setdefault(
-                            path, {}).update(labels)
+                        screenshot_labels.setdefault(path, {}).update(labels)
                 except Exception:
                     pass
 
@@ -286,7 +278,9 @@ class WebRunner(VerifyRunner):
                 # （fix-visual-baseline-settle D3）；污染基线侦测据此判定
                 # 「diff_detected 是否伴随 DOM 全过」。
                 visual_results = await self.differ.compare(
-                    page, scenario.visual_baseline, scenario.id,
+                    page,
+                    scenario.visual_baseline,
+                    scenario.id,
                     scenario_context={
                         "steps_failed": steps_failed,
                         "step_results": step_results,
@@ -294,18 +288,18 @@ class WebRunner(VerifyRunner):
                     },
                 )
             except Exception as e:
-                visual_results = [{
-                    "baseline": scenario.visual_baseline,
-                    "status": "error",
-                    "ssim": None,
-                    "pass": False,
-                    "error": str(e),
-                }]
+                visual_results = [
+                    {
+                        "baseline": scenario.visual_baseline,
+                        "status": "error",
+                        "ssim": None,
+                        "pass": False,
+                        "error": str(e),
+                    }
+                ]
 
         # ── 判定场景状态 ──
-        status = determine_scenario_status(
-            step_results, assertion_results, visual_results
-        )
+        status = determine_scenario_status(step_results, assertion_results, visual_results)
 
         return {
             "scenario_id": scenario.id,
@@ -327,8 +321,10 @@ class WebRunner(VerifyRunner):
     async def probe_env(self, candidates: list[dict]) -> dict:
         """环境健全性探针：连通 + 推流检查（web 语义，委托模块探针函数）。"""
         return await probe_web_environment(
-            self.browser, candidates,
-            project_root=self.project_root, logger=self.logger,
+            self.browser,
+            candidates,
+            project_root=self.project_root,
+            logger=self.logger,
             base_url=self.base_url,
         )
 
@@ -347,8 +343,7 @@ async def _probe_web_push(browser) -> bool:
             return False
         try:
             await page.wait_for_selector(
-                ".fenix-dashboard [data-live], .fenix-dashboard [data-state], "
-                "#root [data-live]",
+                ".fenix-dashboard [data-live], .fenix-dashboard [data-state], " "#root [data-live]",
                 timeout=3000,
             )
             return True
@@ -358,8 +353,9 @@ async def _probe_web_push(browser) -> bool:
         await context.close()
 
 
-async def probe_web_environment(browser, candidates, project_root=None,
-                                logger=None, base_url: str = "") -> dict:
+async def probe_web_environment(
+    browser, candidates, project_root=None, logger=None, base_url: str = ""
+) -> dict:
     """环境健全性探针：连通 + 推流检查（与旧 engine._run_environment_probe
     同行为）。WebRunner.probe_env 与引擎回退路径共用。
 

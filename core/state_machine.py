@@ -18,8 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-
 # ── State definitions ──────────────────────────────────────────────
+
 
 class SpecStatus:
     DRAFTED = "drafted"
@@ -35,8 +35,17 @@ class SpecStatus:
     REVIEWING = "reviewing"
 
     ALL = [
-        DRAFTED, READY, IMPLEMENTING, IMPLEMENTED,
-        TESTING, VERIFIED, BUG_FOUND, BLOCKED, DONE, PUSHED, REVIEWING,
+        DRAFTED,
+        READY,
+        IMPLEMENTING,
+        IMPLEMENTED,
+        TESTING,
+        VERIFIED,
+        BUG_FOUND,
+        BLOCKED,
+        DONE,
+        PUSHED,
+        REVIEWING,
     ]
 
 
@@ -119,17 +128,24 @@ def parse_orig_status(error) -> str:
 
 # Valid state transitions: from → [to, ...]
 VALID_TRANSITIONS: Dict[str, List[str]] = {
-    SpecStatus.DRAFTED:      [SpecStatus.READY, SpecStatus.REVIEWING],
-    SpecStatus.READY:        [SpecStatus.IMPLEMENTING],
-    SpecStatus.IMPLEMENTING: [SpecStatus.IMPLEMENTED, SpecStatus.READY, SpecStatus.BLOCKED],  # ready=retry, blocked=熔断
-    SpecStatus.IMPLEMENTED:  [SpecStatus.TESTING],
-    SpecStatus.TESTING:      [SpecStatus.VERIFIED, SpecStatus.BUG_FOUND],
-    SpecStatus.BUG_FOUND:    [SpecStatus.IMPLEMENTING, SpecStatus.IMPLEMENTED],  # implemented=fix 完成后重新验证
-    SpecStatus.REVIEWING:    [SpecStatus.READY, SpecStatus.BLOCKED],
-    SpecStatus.BLOCKED:      [SpecStatus.READY, SpecStatus.REVIEWING],  # 人工确认后恢复 / 重新评审
-    SpecStatus.VERIFIED:     [SpecStatus.DONE],
-    SpecStatus.DONE:         [SpecStatus.PUSHED],
-    SpecStatus.PUSHED:       [],  # terminal state
+    SpecStatus.DRAFTED: [SpecStatus.READY, SpecStatus.REVIEWING],
+    SpecStatus.READY: [SpecStatus.IMPLEMENTING],
+    SpecStatus.IMPLEMENTING: [
+        SpecStatus.IMPLEMENTED,
+        SpecStatus.READY,
+        SpecStatus.BLOCKED,
+    ],  # ready=retry, blocked=熔断
+    SpecStatus.IMPLEMENTED: [SpecStatus.TESTING],
+    SpecStatus.TESTING: [SpecStatus.VERIFIED, SpecStatus.BUG_FOUND],
+    SpecStatus.BUG_FOUND: [
+        SpecStatus.IMPLEMENTING,
+        SpecStatus.IMPLEMENTED,
+    ],  # implemented=fix 完成后重新验证
+    SpecStatus.REVIEWING: [SpecStatus.READY, SpecStatus.BLOCKED],
+    SpecStatus.BLOCKED: [SpecStatus.READY, SpecStatus.REVIEWING],  # 人工确认后恢复 / 重新评审
+    SpecStatus.VERIFIED: [SpecStatus.DONE],
+    SpecStatus.DONE: [SpecStatus.PUSHED],
+    SpecStatus.PUSHED: [],  # terminal state
 }
 
 # 门禁自动路径额外允许的「逃生门」转换（verifier-judgment-integrity D7 + add-blocked-reverify-lane）：
@@ -211,6 +227,7 @@ IMPL_DIAGNOSIS_FIELD = "_impl_diagnosis"
 
 # ── STATE.md Parser ─────────────────────────────────────────────────
 
+
 class StateParser:
     """Parse and serialize STATE.md entries."""
 
@@ -282,8 +299,13 @@ class StateParser:
                         value = int(value)
                     except ValueError:
                         value = None
-                elif key in (FROZEN_FIELD, "_recovery_resume", "_cancelled_hold",
-                             "_repair_awaiting_remerge", "_judge_cap_frozen"):
+                elif key in (
+                    FROZEN_FIELD,
+                    "_recovery_resume",
+                    "_cancelled_hold",
+                    "_repair_awaiting_remerge",
+                    "_judge_cap_frozen",
+                ):
                     # 布尔字段显式转换：字符串 "False" 也是 truthy，不转会把
                     # 解冻后的 spec 永久误判为冻结（fix-restart-dual-dispatch S4）；
                     # _recovery_resume（interrupt-recovery-preserve）同型处理。
@@ -294,10 +316,19 @@ class StateParser:
                     # _judge_cap_frozen（judge-rerun-stability R1）：judge 重跑
                     # hard cap 冻结标记，False 不转会被误判为恒冻结。
                     value = value.lower() in ("true", "1", "yes")
-                elif key in ("implementer_run", "tester_run", "branch", "error",
-                             "total_duration", START_AFTER_FIELD, FROZEN_UNTIL_FIELD,
-                             "_verify_parallel_override", "reviewer_run",
-                             "_repair_base_tip", "_repair_merge_error"):
+                elif key in (
+                    "implementer_run",
+                    "tester_run",
+                    "branch",
+                    "error",
+                    "total_duration",
+                    START_AFTER_FIELD,
+                    FROZEN_UNTIL_FIELD,
+                    "_verify_parallel_override",
+                    "reviewer_run",
+                    "_repair_base_tip",
+                    "_repair_merge_error",
+                ):
                     if value.lower() in ("null", "none", ""):
                         value = None
 
@@ -334,11 +365,23 @@ class StateParser:
 
         for name, entry in sorted_specs:
             lines.append(f"### {name}")
-            for key in ["status", "priority", "created", "updated",
-                         "implementer_run", "tester_run", "branch", "error",
-                         "depends_on", "total_duration", FROZEN_FIELD,
-                         START_AFTER_FIELD, FROZEN_UNTIL_FIELD,
-                         IMPL_RUN_BUDGET_OVERRIDE_FIELD, "reviewer_run"]:
+            for key in [
+                "status",
+                "priority",
+                "created",
+                "updated",
+                "implementer_run",
+                "tester_run",
+                "branch",
+                "error",
+                "depends_on",
+                "total_duration",
+                FROZEN_FIELD,
+                START_AFTER_FIELD,
+                FROZEN_UNTIL_FIELD,
+                IMPL_RUN_BUDGET_OVERRIDE_FIELD,
+                "reviewer_run",
+            ]:
                 val = entry.get(key, "null")
                 if val is None:
                     val = "null"
@@ -356,6 +399,7 @@ class StateParser:
 
 
 # ── State Machine ───────────────────────────────────────────────────
+
 
 class _NullLogger:
     """静默日志器：logger 为 None 时兜底，避免各方法无条件调用 self.logger 崩溃。
@@ -517,9 +561,7 @@ class StateMachine:
                     specs[spec_name]["updated"] = datetime.now(timezone.utc).isoformat()
                     self._write_all_locked(specs)
                     # 回读校验：确认增量真正落盘（防并发写覆盖丢增量）
-                    verify = int(
-                        (self.read_all().get(spec_name) or {}).get(field, 0) or 0
-                    )
+                    verify = int((self.read_all().get(spec_name) or {}).get(field, 0) or 0)
                 finally:
                     fcntl.flock(lock_f, fcntl.LOCK_UN)
             if verify == new_value:
@@ -599,8 +641,7 @@ class StateMachine:
         # 更新自带 frozen 键视为冻结/解冻操作本身，原样放行。
         entry = specs[spec_name]
         updates = dict(updates)
-        if entry.get(FROZEN_FIELD) and FROZEN_FIELD not in updates \
-                and "status" in updates:
+        if entry.get(FROZEN_FIELD) and FROZEN_FIELD not in updates and "status" in updates:
             stripped = updates.pop("status")
             self.logger.warning(
                 "state_machine",
@@ -634,11 +675,14 @@ class StateMachine:
         （重派/恢复/Retry/admin 唤起）全部失效，唯一出路是 unfreeze_spec。
         """
         error = f"{FREEZE_ERROR_PREFIX}{reason}" if reason else FREEZE_ERROR_PREFIX.rstrip("：:")
-        return self.update_spec(spec_name, {
-            "status": SpecStatus.BLOCKED,
-            FROZEN_FIELD: True,
-            "error": error,
-        })
+        return self.update_spec(
+            spec_name,
+            {
+                "status": SpecStatus.BLOCKED,
+                FROZEN_FIELD: True,
+                "error": error,
+            },
+        )
 
     def freeze_for_human(
         self,
@@ -851,7 +895,9 @@ class StateMachine:
         """
         spec = self.read_one(spec_name)
         if not spec:
-            self.logger.warning("state_machine", f"Cannot gate-transition nonexistent SPEC: {spec_name}")
+            self.logger.warning(
+                "state_machine", f"Cannot gate-transition nonexistent SPEC: {spec_name}"
+            )
             return False
 
         old_status = spec.get("status", SpecStatus.DRAFTED)
@@ -885,9 +931,7 @@ class StateMachine:
         """Get all SPECs with the given status, sorted by priority."""
         all_specs = self.read_all()
         matching = [
-            (name, entry)
-            for name, entry in all_specs.items()
-            if entry.get("status") == status
+            (name, entry) for name, entry in all_specs.items() if entry.get("status") == status
         ]
         return self._sort_by_priority(matching)
 
@@ -916,9 +960,14 @@ class StateMachine:
 
     # ── Recovery ───────────────────────────────────────────────────
 
-    def recover_interrupted(self, project_root=None, worktree_manager=None,
-                            verify_redo_budget: int = DEFAULT_VERIFY_REDO_BUDGET,
-                            remerge_callback=None, human_alert_callback=None) -> List[str]:
+    def recover_interrupted(
+        self,
+        project_root=None,
+        worktree_manager=None,
+        verify_redo_budget: int = DEFAULT_VERIFY_REDO_BUDGET,
+        remerge_callback=None,
+        human_alert_callback=None,
+    ) -> List[str]:
         """
         On daemon restart, revert any SPECs stuck in interrupted states.
         Uses update_spec directly (bypasses transition validation for recovery).
@@ -1029,26 +1078,32 @@ class StateMachine:
                         continue
                     # 清 tester_run 让验证流水线全新重入；branch/implementer_run
                     # 保留（实现的身份事实，验证不重做实现）
-                    self.update_spec(name, {
-                        "status": SpecStatus.IMPLEMENTED,
-                        "error": f"Recovered from interrupted state: {status}",
-                        "tester_run": None,
-                        "_retry_count": 0,
-                        "_merge_fp": None,
-                        "_merge_streak": 0,
-                    })
+                    self.update_spec(
+                        name,
+                        {
+                            "status": SpecStatus.IMPLEMENTED,
+                            "error": f"Recovered from interrupted state: {status}",
+                            "tester_run": None,
+                            "_retry_count": 0,
+                            "_merge_fp": None,
+                            "_merge_streak": 0,
+                        },
+                    )
                     recovered.append(name)
                     continue
                 elif status == SpecStatus.REVIEWING:
                     # 评审中断恢复：回退 drafted，清空评审 run 引用与尝试计数，
                     # 使其重新进入晋升链（软化与两道 lint 幂等，分流重新判定）。
                     # 评审者对 SPEC 目录的修补被保留（不还原）。
-                    self.update_spec(name, {
-                        "status": SpecStatus.DRAFTED,
-                        "error": f"Recovered from interrupted state: {status}",
-                        "reviewer_run": None,
-                        "_review_attempts": 0,
-                    })
+                    self.update_spec(
+                        name,
+                        {
+                            "status": SpecStatus.DRAFTED,
+                            "error": f"Recovered from interrupted state: {status}",
+                            "reviewer_run": None,
+                            "_review_attempts": 0,
+                        },
+                    )
                     recovered.append(name)
                     continue
                 # ── 待 re-merge-back 标记消费（fix-recovery-branch-anchor D3/D4）──
@@ -1058,16 +1113,18 @@ class StateMachine:
                 # 保留续做路径（tasks 4.3，spec 不滞留 implementing）。
                 if entry.get("_repair_awaiting_remerge"):
                     remerged = self._recovery_remerge_pending(
-                        name, entry, project_root, worktree_manager, remerge_callback)
+                        name, entry, project_root, worktree_manager, remerge_callback
+                    )
                     if remerged:
                         recovered.append(name)
                         continue
                 # ── 中断恢复保留续做（interrupt-recovery-preserve D4）──
                 # 有提交分支 → 保留 branch/implementer_run 并按 resume 续做；
                 # 三态载体处置（在场/重建/降级）经 worktree_manager 单源查询
-                #（is_available）。零提交/分支缺失/载体不可用 → 现行清空路径。
+                # （is_available）。零提交/分支缺失/载体不可用 → 现行清空路径。
                 preserved = self._recovery_preserve_spec(
-                    name, entry, project_root, worktree_manager)
+                    name, entry, project_root, worktree_manager
+                )
                 if preserved:
                     recovered.append(name)
                     continue
@@ -1085,25 +1142,33 @@ class StateMachine:
                 )
                 # 清空陈旧的 run 字段，否则 full_scan 的恢复派发会因
                 # implementer_run 非空而跳过重新调度（fix-fenix-token-waste）
-                self.update_spec(name, {
-                    "status": SpecStatus.READY,
-                    "error": f"Recovered from interrupted state: {status}",
-                    "implementer_run": None,
-                    "tester_run": None,
-                    "branch": None,
-                    # 一并清除待 re-merge 标记（fix-recovery-branch-anchor 3.4）：
-                    # 清空重建路径不得残留标记，避免污染下一轮
-                    "_repair_awaiting_remerge": False,
-                    "_retry_count": 0,
-                    "_merge_fp": None,
-                    "_merge_streak": 0,
-                })
+                self.update_spec(
+                    name,
+                    {
+                        "status": SpecStatus.READY,
+                        "error": f"Recovered from interrupted state: {status}",
+                        "implementer_run": None,
+                        "tester_run": None,
+                        "branch": None,
+                        # 一并清除待 re-merge 标记（fix-recovery-branch-anchor 3.4）：
+                        # 清空重建路径不得残留标记，避免污染下一轮
+                        "_repair_awaiting_remerge": False,
+                        "_retry_count": 0,
+                        "_merge_fp": None,
+                        "_merge_streak": 0,
+                    },
+                )
                 recovered.append(name)
         return recovered
 
-    def _recovery_remerge_pending(self, name: str, entry: dict,
-                                  project_root=None, worktree_manager=None,
-                                  remerge_callback=None) -> bool:
+    def _recovery_remerge_pending(
+        self,
+        name: str,
+        entry: dict,
+        project_root=None,
+        worktree_manager=None,
+        remerge_callback=None,
+    ) -> bool:
         """恢复期 re-merge-back（fix-recovery-branch-anchor D4）。
 
         带 ``_repair_awaiting_remerge`` 标记的 implementing spec：实现分支已含
@@ -1158,18 +1223,21 @@ class StateMachine:
             )
             return False
         # re-merge 成功：推进 implemented，收口字段对齐 repair re-merge 路径
-        self.update_spec(name, {
-            "status": SpecStatus.IMPLEMENTED,
-            "error": None,
-            "implementer_run": entry.get("implementer_run"),
-            "branch": branch,
-            "_retry_count": 0,
-            "_merge_fp": None,
-            "_merge_streak": 0,
-            "_repair_round": 0,
-            "_repair_merge_error": None,
-            "_repair_awaiting_remerge": False,
-        })
+        self.update_spec(
+            name,
+            {
+                "status": SpecStatus.IMPLEMENTED,
+                "error": None,
+                "implementer_run": entry.get("implementer_run"),
+                "branch": branch,
+                "_retry_count": 0,
+                "_merge_fp": None,
+                "_merge_streak": 0,
+                "_repair_round": 0,
+                "_repair_merge_error": None,
+                "_repair_awaiting_remerge": False,
+            },
+        )
         # 收口副作用回调（PMEngine 侧注入；tasks 4.2 依赖接线）
         if remerge_callback is not None:
             try:
@@ -1194,8 +1262,9 @@ class StateMachine:
         )
         return True
 
-    def _recovery_preserve_spec(self, name: str, entry: dict,
-                                project_root=None, worktree_manager=None) -> bool:
+    def _recovery_preserve_spec(
+        self, name: str, entry: dict, project_root=None, worktree_manager=None
+    ) -> bool:
         """实现中断的恢复保留判定与三态载体处置（interrupt-recovery-preserve D4/D5）。
 
         判定：branch 在册、分支可解析、且 ``git rev-parse main..branch`` 非空
@@ -1259,9 +1328,10 @@ class StateMachine:
             # 分支可解析 + 相对 main 有未合并提交（rev-list --count > 0）。
             # 分支不存在时 rev-list 非零退出 → 走现行清空路径。
             ahead = subprocess.run(
-                ["git", "-C", str(project_root), "rev-list", "--count",
-                 f"main..{branch}"],
-                capture_output=True, text=True, timeout=15,
+                ["git", "-C", str(project_root), "rev-list", "--count", f"main..{branch}"],
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
             if ahead.returncode != 0:
                 return False
@@ -1288,18 +1358,21 @@ class StateMachine:
             f"'{resolved_branch}' (ahead of main) — resume continuation, "
             f"worktree={wt}",
         )
-        self.update_spec(name, {
-            "status": SpecStatus.READY,
-            "error": f"Recovered from interrupted state: implementing "
-                     f"(resume preserved branch)",
-            "implementer_run": entry.get("implementer_run"),
-            "tester_run": None,
-            "branch": resolved_branch,
-            # dispatch 层据此识别「恢复续做」路径：在保留分支的 worktree 内
-            # resume（claude --resume + 继承注记），而非从零新建分支。
-            "_recovery_resume": True,
-            "_retry_count": 0,
-            "_merge_fp": None,
-            "_merge_streak": 0,
-        })
+        self.update_spec(
+            name,
+            {
+                "status": SpecStatus.READY,
+                "error": f"Recovered from interrupted state: implementing "
+                f"(resume preserved branch)",
+                "implementer_run": entry.get("implementer_run"),
+                "tester_run": None,
+                "branch": resolved_branch,
+                # dispatch 层据此识别「恢复续做」路径：在保留分支的 worktree 内
+                # resume（claude --resume + 继承注记），而非从零新建分支。
+                "_recovery_resume": True,
+                "_retry_count": 0,
+                "_merge_fp": None,
+                "_merge_streak": 0,
+            },
+        )
         return True

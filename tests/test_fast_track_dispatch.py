@@ -109,8 +109,8 @@ class TestFastTrackVerified(_Base):
             encoding="utf-8",
         )
         self.engine._read_implementer_result = MagicMock(return_value=_fast_result("verified"))
-        self.engine._implementer_zero_change = MagicMock(return_value=False)
-        self.engine._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._verification._implementer_zero_change = MagicMock(return_value=False)
+        self.engine._verification._deliverable_gate_missing = MagicMock(return_value=[])
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
         self.engine._sync_task_progress = MagicMock()
@@ -131,7 +131,7 @@ class TestFastTrackZeroChange(_Base):
             branch="fenix/demo-1", worktree_dirty=[],
         )
         self.engine._read_implementer_result = MagicMock(return_value=_fast_result("verified"))
-        self.engine._implementer_zero_change = MagicMock(return_value=True)
+        self.engine._verification._implementer_zero_change = MagicMock(return_value=True)
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
         self.sm.transition("demo", "implementing")
@@ -149,8 +149,8 @@ class TestFastTrackIllegalResult(_Base):
             "impl-demo-1", "demo", "fast-track", True, 10.0, branch="fenix/demo-1",
         )
         self.engine._read_implementer_result = MagicMock(return_value=None)
-        self.engine._implementer_zero_change = MagicMock(return_value=False)
-        self.engine._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._verification._implementer_zero_change = MagicMock(return_value=False)
+        self.engine._verification._deliverable_gate_missing = MagicMock(return_value=[])
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
         self.sm.transition("demo", "implementing")
@@ -169,8 +169,8 @@ class TestFastTrackBugFoundEscalates(_Base):
         )
         ft_res = _fast_result("bug-found")
         self.engine._read_implementer_result = MagicMock(return_value=ft_res)
-        self.engine._implementer_zero_change = MagicMock(return_value=False)
-        self.engine._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._verification._implementer_zero_change = MagicMock(return_value=False)
+        self.engine._verification._deliverable_gate_missing = MagicMock(return_value=[])
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
         self.engine._enqueue = MagicMock()
@@ -196,8 +196,8 @@ class TestFastTrackWorktreeReuse(_Base):
             branch="fenix/demo-1",
             worktree_path=worktree_path, worktree_kept=worktree_kept,
         )
-        self.engine._implementer_zero_change = MagicMock(return_value=False)
-        self.engine._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._verification._implementer_zero_change = MagicMock(return_value=False)
+        self.engine._verification._deliverable_gate_missing = MagicMock(return_value=[])
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
         self.engine._sync_task_progress = MagicMock()
@@ -350,7 +350,7 @@ class TestFastTrackMissingResultMerge(_Base):
         # 结果文件缺失
         self.engine._read_implementer_result = MagicMock(return_value=None)
         # 分支有提交（helper）
-        self.engine._implementation_branch_has_commits = MagicMock(return_value=True)
+        self.engine._verification._implementation_branch_has_commits = MagicMock(return_value=True)
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
         self.engine._sync_task_progress = MagicMock()
@@ -385,7 +385,7 @@ class TestFastTrackMissingResultMerge(_Base):
         )
         self.engine._read_implementer_result = MagicMock(return_value=None)
         # 分支零提交
-        self.engine._implementation_branch_has_commits = MagicMock(return_value=False)
+        self.engine._verification._implementation_branch_has_commits = MagicMock(return_value=False)
         # mock budget exemption 用于断言死亡豁免
         self.engine._exempt_dead_run_budget = MagicMock()
         self.engine._reconcile_impl_budget = MagicMock()
@@ -412,7 +412,7 @@ class TestFastTrackMissingResultMerge(_Base):
             branch="fenix/demo-1",
         )
         self.engine._read_implementer_result = MagicMock(return_value=None)
-        self.engine._implementation_branch_has_commits = MagicMock(return_value=True)
+        self.engine._verification._implementation_branch_has_commits = MagicMock(return_value=True)
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
         self.engine._enqueue = MagicMock()

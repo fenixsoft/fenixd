@@ -89,8 +89,8 @@ class _FullBase(unittest.TestCase):
         wm.find_implementer_worktree.return_value = None
         self.engine.agent_runner.worktree_manager = wm
         # mock required methods
-        self.engine._implementer_zero_change = MagicMock(return_value=False)
-        self.engine._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._verification._implementer_zero_change = MagicMock(return_value=False)
+        self.engine._verification._deliverable_gate_missing = MagicMock(return_value=[])
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._write_impl_result_snapshot = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
@@ -133,7 +133,7 @@ class TestFullLaneRelintGate(_FullBase):
         """分支 tasks.md 带损伤前缀 → 不 merge、状态回 ready、error 含违规明细。"""
         self._mk()
         # patch _tasks_md_relint_from_branch to return violations
-        self.engine._tasks_md_relint_from_branch = MagicMock(return_value=[
+        self.engine._verification._tasks_md_relint_from_branch = MagicMock(return_value=[
             "tasks.md 存在任务分组（2 个），但未解析出任何任务行——任务行必须为 "
             "`- [ ] <编号>. <任务>` / `- [x] <编号>. <任务>` 行首形态"
         ])
@@ -149,7 +149,7 @@ class TestFullLaneRelintGate(_FullBase):
     def test_damaged_tasks_md_error_has_prescription(self):
         """违规 error 须含 `- [ ]`/`- [x]` 修正处方和 `^-` 损伤特征。"""
         self._mk()
-        self.engine._tasks_md_relint_from_branch = MagicMock(return_value=[
+        self.engine._verification._tasks_md_relint_from_branch = MagicMock(return_value=[
             "tasks.md 存在任务分组（2 个），但未解析出任何任务行"
         ])
         self._run_implementer_success()
@@ -161,7 +161,7 @@ class TestFullLaneRelintGate(_FullBase):
     def test_normal_tasks_md_proceeds_to_merge(self):
         """分支 tasks.md 正常 → 复检放行，正常 merge 执行。"""
         self._mk()
-        self.engine._tasks_md_relint_from_branch = MagicMock(return_value=[])
+        self.engine._verification._tasks_md_relint_from_branch = MagicMock(return_value=[])
         self._run_implementer_success()
         wm = self.engine.agent_runner.worktree_manager
         wm.merge_back_from_branch.assert_called_once_with("fenix/demo-1")
@@ -171,7 +171,7 @@ class TestFullLaneRelintGate(_FullBase):
     def test_no_tasks_md_fail_open(self):
         """分支无 tasks.md → fail-open 放行。"""
         self._mk()
-        self.engine._tasks_md_relint_from_branch = MagicMock(return_value=[])
+        self.engine._verification._tasks_md_relint_from_branch = MagicMock(return_value=[])
         self._run_implementer_success()
         wm = self.engine.agent_runner.worktree_manager
         wm.merge_back_from_branch.assert_called_once()
@@ -180,12 +180,12 @@ class TestFullLaneRelintGate(_FullBase):
         """git show 失败 → fail-open 放行 + WARNING。"""
         self._mk()
         # simulate git show failure returning empty list
-        self.engine._tasks_md_relint_from_branch = MagicMock(return_value=[])
+        self.engine._verification._tasks_md_relint_from_branch = MagicMock(return_value=[])
         self._run_implementer_success()
         # verify merge proceeds (fail-open)
         wm = self.engine.agent_runner.worktree_manager
         wm.merge_back_from_branch.assert_called_once()
-        self.assertTrue(self.engine._tasks_md_relint_from_branch.called)
+        self.assertTrue(self.engine._verification._tasks_md_relint_from_branch.called)
 
 
 class TestFullLaneRelintGitShow(unittest.TestCase):
@@ -348,8 +348,8 @@ class TestFastTrackLaneRelintGate(_Base):
             branch="fenix/demo-1",
             worktree_path=worktree_path, worktree_kept=worktree_kept,
         )
-        self.engine._implementer_zero_change = MagicMock(return_value=False)
-        self.engine._deliverable_gate_missing = MagicMock(return_value=[])
+        self.engine._verification._implementer_zero_change = MagicMock(return_value=False)
+        self.engine._verification._deliverable_gate_missing = MagicMock(return_value=[])
         self.engine._reconcile_impl_budget = MagicMock()
         self.engine._clear_dispatch_conflict = MagicMock(return_value={})
         self.engine._sync_task_progress = MagicMock()
@@ -371,7 +371,7 @@ class TestFastTrackLaneRelintGate(_Base):
         self._write_designed(["s1"])
         self.engine._read_implementer_result = MagicMock(
             return_value=_fast_result("verified"))
-        self.engine._tasks_md_relint_from_worktree = MagicMock(return_value=[
+        self.engine._verification._tasks_md_relint_from_worktree = MagicMock(return_value=[
             "tasks.md 存在任务分组（2 个），但未解析出任何任务行"
         ])
 
@@ -394,7 +394,7 @@ class TestFastTrackLaneRelintGate(_Base):
         self._write_designed(["s1"])
         self.engine._read_implementer_result = MagicMock(
             return_value=_fast_result("verified"))
-        self.engine._tasks_md_relint_from_worktree = MagicMock(return_value=[])
+        self.engine._verification._tasks_md_relint_from_worktree = MagicMock(return_value=[])
         self.engine._on_spec_verified = MagicMock()
 
         self.engine._run_fast_track_worker("demo")
@@ -413,7 +413,7 @@ class TestFastTrackLaneRelintGate(_Base):
         self._write_designed(["s1"])
         self.engine._read_implementer_result = MagicMock(
             return_value=_fast_result("verified"))
-        self.engine._tasks_md_relint_from_worktree = MagicMock(return_value=[])
+        self.engine._verification._tasks_md_relint_from_worktree = MagicMock(return_value=[])
         self.engine._on_spec_verified = MagicMock()
 
         self.engine._run_fast_track_worker("demo")
@@ -431,7 +431,7 @@ class TestFastTrackLaneRelintGate(_Base):
         self._write_designed(["s1"])
         self.engine._read_implementer_result = MagicMock(
             return_value=_fast_result("verified"))
-        self.engine._tasks_md_relint_from_worktree = MagicMock(
+        self.engine._verification._tasks_md_relint_from_worktree = MagicMock(
             side_effect=OSError("disk gone"))
         self.engine._on_spec_verified = MagicMock()
 

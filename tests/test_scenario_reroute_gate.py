@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from core.pm_engine.verification import (
     VerificationPipeline,
@@ -157,16 +157,20 @@ class TestRerouteGate(unittest.TestCase):
             _scenario("s1", classification="test-defect"),
             _scenario("s2", classification="flaky"),
         ])
-        self.pm._read_verdict.return_value = (
-            VerdictReadResult.success("scenario-repaired"))
-        handled = self.pipe._scenario_defect_reroute_gate(
-            "demo-spec", _repair_depth=0, judge_result=self.judge_result)
-        # 改道处置完成（不再打回 implementer）
-        assert handled is True
-        self.pm.agent_runner.run_planner.assert_called_once_with(
-            "demo-spec", "judge")
-        # 改道后 scenario-repaired → 冻结记账 + 重入
-        self.pm._apply_scenario_freeze.assert_called_once()
+        # 直连形态：mock 面在 pipeline 实例层（refactor-verification-module
+        # D10 组件间直连，不再经 pm 绕行）
+        with patch.object(self.pipe, "_read_verdict",
+                          return_value=VerdictReadResult.success("scenario-repaired")), \
+                patch.object(self.pipe, "_apply_scenario_freeze",
+                             return_value={}) as mock_freeze:
+            handled = self.pipe._scenario_defect_reroute_gate(
+                "demo-spec", _repair_depth=0, judge_result=self.judge_result)
+            # 改道处置完成（不再打回 implementer）
+            assert handled is True
+            self.pm.agent_runner.run_planner.assert_called_once_with(
+                "demo-spec", "judge")
+            # 改道后 scenario-repaired → 冻结记账 + 重入
+            mock_freeze.assert_called_once()
         # 不改状态为 bug-found / 不 increment impl budget
         entry = _STATE["demo-spec"]
         assert entry.get("status") != "bug-found"
@@ -177,10 +181,10 @@ class TestRerouteGate(unittest.TestCase):
         _seed_report(self.tmpdir, "demo-spec", [
             _scenario("s1", classification="test-defect"),
         ])
-        self.pm._read_verdict.return_value = (
-            VerdictReadResult.success("scenario-repaired"))
-        self.pipe._scenario_defect_reroute_gate(
-            "demo-spec", _repair_depth=0, judge_result=self.judge_result)
+        with patch.object(self.pipe, "_read_verdict",
+                          return_value=VerdictReadResult.success("scenario-repaired")):
+            self.pipe._scenario_defect_reroute_gate(
+                "demo-spec", _repair_depth=0, judge_result=self.judge_result)
         # PM 桩没有 _increment_impl_run_budget_used 调用方——run_planner 是
         # judge 派发，天然不进实现预算；此处断言没有把 impl 计数注入 STATE。
         assert "_impl_run_budget_used" not in _STATE["demo-spec"]
@@ -211,22 +215,22 @@ class TestRerouteGate(unittest.TestCase):
         _seed_report(self.tmpdir, "demo-spec", [
             _scenario("s1", classification="test-defect"),
         ])
-        self.pm._read_verdict.return_value = (
-            VerdictReadResult.success("scenario-repaired"))
-        self.pipe._run_three_stage_verification = MagicMock()
-        handled = self.pipe._scenario_defect_reroute_gate(
-            "demo-spec", _repair_depth=0, judge_result=self.judge_result)
-        assert handled is True
-        self.pipe._run_three_stage_verification.assert_called_once_with(
-            "demo-spec", _repair_depth=1)
+        with patch.object(self.pipe, "_read_verdict",
+                          return_value=VerdictReadResult.success("scenario-repaired")):
+            self.pipe._run_three_stage_verification = MagicMock()
+            handled = self.pipe._scenario_defect_reroute_gate(
+                "demo-spec", _repair_depth=0, judge_result=self.judge_result)
+            assert handled is True
+            self.pipe._run_three_stage_verification.assert_called_once_with(
+                "demo-spec", _repair_depth=1)
 
     def test_reroute_then_bug_found_with_product_bug_dispatches(self):
         # 改道后 judge 仍 bug-found 但改判含 product-bug → 正常派发（打回 implementer）
         _seed_report(self.tmpdir, "demo-spec", [
             _scenario("s1", classification="test-defect"),
         ])
-        self.pm._read_verdict.return_value = (
-            VerdictReadResult.success("bug-found"))
+        self.pipe._read_verdict = MagicMock(
+            return_value=VerdictReadResult.success("bug-found"))
         # 重派后 report 被 judge 更新为含 product-bug
         _seed_report(self.tmpdir, "demo-spec", [
             _scenario("s1", classification="product-bug"),
@@ -256,18 +260,18 @@ class TestRerouteGate(unittest.TestCase):
         _seed_report(self.tmpdir, "demo-spec", [
             _scenario("s1", classification="test-defect"),
         ])
-        self.pm._read_verdict.return_value = (
-            VerdictReadResult.success("bug-found"))
-        # 重派后仍全 test-defect（judge 未修）
-        _seed_report(self.tmpdir, "demo-spec", [
-            _scenario("s1", classification="test-defect"),
-        ])
-        handled = self.pipe._scenario_defect_reroute_gate(
-            "demo-spec", _repair_depth=_SCENARIO_REPAIR_MAX_ROUNDS - 1,
-            judge_result=self.judge_result)
-        assert handled is True
-        self.pm._send_human_escalation_alert.assert_called_once()
-        assert _STATE["demo-spec"]["status"] == "testing"
+        with patch.object(self.pipe, "_read_verdict",
+                          return_value=VerdictReadResult.success("bug-found")):
+            # 重派后仍全 test-defect（judge 未修）
+            _seed_report(self.tmpdir, "demo-spec", [
+                _scenario("s1", classification="test-defect"),
+            ])
+            handled = self.pipe._scenario_defect_reroute_gate(
+                "demo-spec", _repair_depth=_SCENARIO_REPAIR_MAX_ROUNDS - 1,
+                judge_result=self.judge_result)
+            assert handled is True
+            self.pm._send_human_escalation_alert.assert_called_once()
+            assert _STATE["demo-spec"]["status"] == "testing"
 
     def test_reroute_judge_dispatch_failure_holds_testing(self):
         # 改道重派派发失败 → 保持 testing 不升级人工（温和处置）
@@ -297,8 +301,8 @@ class TestRerouteGate(unittest.TestCase):
         _seed_report(self.tmpdir, "demo-spec", [
             _scenario("s1", classification="test-defect"),
         ])
-        self.pm._read_verdict.return_value = VerdictReadResult.failure(
-            "missing", "no file")
+        self.pipe._read_verdict = MagicMock(
+            return_value=VerdictReadResult.failure("missing", "no file"))
         handled = self.pipe._scenario_defect_reroute_gate(
             "demo-spec", _repair_depth=0, judge_result=self.judge_result)
         assert handled is True
@@ -310,8 +314,8 @@ class TestRerouteGate(unittest.TestCase):
         _seed_report(self.tmpdir, "demo-spec", [
             _scenario("s1", classification="test-defect"),
         ])
-        self.pm._read_verdict.return_value = (
-            VerdictReadResult.success("scenario-repaired"))
+        self.pipe._read_verdict = MagicMock(
+            return_value=VerdictReadResult.success("scenario-repaired"))
         self.pipe._scenario_defect_reroute_gate(
             "demo-spec", _repair_depth=0, judge_result=self.judge_result)
         dpath = (Path(self.tmpdir) / ".fenix" / "verify-progress"

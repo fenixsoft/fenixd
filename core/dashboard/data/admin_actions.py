@@ -22,9 +22,9 @@ from core.state_machine import (
     INFRA_FAILURE_COUNT_FIELD,
     VERIFY_INFRA_ROUNDS_FIELD,
 )
+
 # 跨组引用（D4：叶子→中枢，直接导入无环）
 from .state import parse_state
-
 
 ADMIN_INVOKE_REQUEST = ".fenix/admin_invoke_request.json"
 
@@ -49,15 +49,25 @@ def request_admin_invoke(project_root, spec: str, prompt: str | None = None) -> 
     proot = Path(project_root)
     specs = parse_state(proot)
     if spec not in specs:
-        return {"ok": False, "found": False, "conflict": False,
-                "file": None, "created": None,
-                "error": f"spec not found: {spec}"}
+        return {
+            "ok": False,
+            "found": False,
+            "conflict": False,
+            "file": None,
+            "created": None,
+            "error": f"spec not found: {spec}",
+        }
 
     req_path = proot / ADMIN_INVOKE_REQUEST
     if req_path.exists():
-        return {"ok": False, "found": True, "conflict": True,
-                "file": str(req_path), "created": None,
-                "error": "已有进行中的 Admin 处置"}
+        return {
+            "ok": False,
+            "found": True,
+            "conflict": True,
+            "file": str(req_path),
+            "created": None,
+            "error": "已有进行中的 Admin 处置",
+        }
 
     created = datetime.now(timezone.utc).isoformat()
     payload = {"spec": spec, "source": "manual", "created": created}
@@ -65,7 +75,8 @@ def request_admin_invoke(project_root, spec: str, prompt: str | None = None) -> 
         payload["prompt"] = prompt.strip()
     req_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
-        dir=str(req_path.parent), prefix=".admin_invoke_request.", suffix=".tmp")
+        dir=str(req_path.parent), prefix=".admin_invoke_request.", suffix=".tmp"
+    )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -78,8 +89,14 @@ def request_admin_invoke(project_root, spec: str, prompt: str | None = None) -> 
         except OSError:
             pass
         raise
-    return {"ok": True, "found": True, "conflict": False,
-            "file": str(req_path), "created": created, "error": None}
+    return {
+        "ok": True,
+        "found": True,
+        "conflict": False,
+        "file": str(req_path),
+        "created": created,
+        "error": None,
+    }
 
 
 CANCEL_RUN_REQUEST = ".fenix/cancel_run_request.json"
@@ -101,9 +118,14 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
          "file": str|null, "created": str|null, "error": str|null}
     """
     if not run_id or not run_id.strip():
-        return {"ok": False, "conflict": False, "missing_run_id": True,
-                "file": None, "created": None,
-                "error": "run_id is required"}
+        return {
+            "ok": False,
+            "conflict": False,
+            "missing_run_id": True,
+            "file": None,
+            "created": None,
+            "error": "run_id is required",
+        }
 
     proot = Path(project_root)
     req_path = proot / CANCEL_RUN_REQUEST
@@ -115,16 +137,26 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
             existing_created = existing.get("created") if isinstance(existing, dict) else None
         except (OSError, json.JSONDecodeError):
             existing_created = None
-        return {"ok": False, "conflict": True, "missing_run_id": False,
-                "file": str(req_path), "created": existing_created,
-                "error": "已有进行中的取消请求"}
+        return {
+            "ok": False,
+            "conflict": True,
+            "missing_run_id": False,
+            "file": str(req_path),
+            "created": existing_created,
+            "error": "已有进行中的取消请求",
+        }
 
     created = datetime.now(timezone.utc).isoformat()
-    payload = {"run_id": run_id.strip(), "reason": reason or "",
-               "source": "dashboard", "created": created}
+    payload = {
+        "run_id": run_id.strip(),
+        "reason": reason or "",
+        "source": "dashboard",
+        "created": created,
+    }
     req_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
-        dir=str(req_path.parent), prefix=".cancel_run_request.", suffix=".tmp")
+        dir=str(req_path.parent), prefix=".cancel_run_request.", suffix=".tmp"
+    )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -137,8 +169,14 @@ def request_run_cancel(project_root, run_id: str, reason: str = "") -> dict:
         except OSError:
             pass
         raise
-    return {"ok": True, "conflict": False, "missing_run_id": False,
-            "file": str(req_path), "created": created, "error": None}
+    return {
+        "ok": True,
+        "conflict": False,
+        "missing_run_id": False,
+        "file": str(req_path),
+        "created": created,
+        "error": None,
+    }
 
 
 def is_spec_frozen(entry: dict) -> bool:
@@ -168,17 +206,26 @@ def freeze_spec(project_root, spec_name: str, reason: str = "") -> dict:
     """
     specs = parse_state(project_root)
     if spec_name not in specs:
-        return {"ok": False, "found": False, "frozen": False,
-                "error": f"spec not found: {spec_name}"}
+        return {
+            "ok": False,
+            "found": False,
+            "frozen": False,
+            "error": f"spec not found: {spec_name}",
+        }
     entry = specs[spec_name]
     if is_spec_frozen(entry):
         return {"ok": True, "found": True, "frozen": True, "error": None}
     if entry.get("status") in ("done", "pushed"):
-        return {"ok": True, "found": True, "frozen": False,
-                "error": f"终态 spec（{entry.get('status')}）不可冻结"}
+        return {
+            "ok": True,
+            "found": True,
+            "frozen": False,
+            "error": f"终态 spec（{entry.get('status')}）不可冻结",
+        }
     orig = entry.get("status") or "ready"
     note = f"原状态 {orig}" + (f" · {reason}" if reason else "")
     from core.state_machine import StateMachine
+
     sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
     sm.freeze_spec(spec_name, reason=note)
     return {"ok": True, "found": True, "frozen": True, "error": None}
@@ -193,20 +240,26 @@ def unfreeze_spec(project_root, spec_name: str) -> dict:
     """
     specs = parse_state(project_root)
     if spec_name not in specs:
-        return {"ok": False, "found": False, "frozen": False,
-                "error": f"spec not found: {spec_name}"}
+        return {
+            "ok": False,
+            "found": False,
+            "frozen": False,
+            "error": f"spec not found: {spec_name}",
+        }
     entry = specs[spec_name]
     if not is_spec_frozen(entry):
         return {"ok": True, "found": True, "frozen": False, "error": None}
     orig = parse_orig_status(entry.get("error"))
     from core.state_machine import StateMachine
+
     sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
     sm.unfreeze_spec(spec_name, status=orig)
     return {"ok": True, "found": True, "frozen": False, "error": None}
 
 
-def reclassify_infra_rounds(project_root, spec_name: str, n: int,
-                            audit_reason: str, actor: str = "dashboard") -> dict:
+def reclassify_infra_rounds(
+    project_root, spec_name: str, n: int, audit_reason: str, actor: str = "dashboard"
+) -> dict:
     """admin/dashboard 手动回拨 infra 误计入轮次（_verify_fail_rounds 减回 + 解冻）。
 
     委托 verification.reclassify_infra_rounds 核心实现（原子改写
@@ -235,8 +288,13 @@ def reclassify_infra_rounds(project_root, spec_name: str, n: int,
     sm = StateMachine(Path(project_root) / ".fenix" / "STATE.md", None)
     try:
         result = _recl(
-            project_root, sm, None, spec_name, int(n),
-            str(audit_reason), actor=actor,
+            project_root,
+            sm,
+            None,
+            spec_name,
+            int(n),
+            str(audit_reason),
+            actor=actor,
         )
     except (TypeError, ValueError) as e:
         return {"ok": False, "found": True, "error": f"invalid n: {e}"}
@@ -260,35 +318,36 @@ def promote_spec(project_root, spec_name: str) -> dict:
     """
     specs = parse_state(project_root)
     if spec_name not in specs:
-        return {"ok": False, "found": False,
-                "error": f"spec not found: {spec_name}"}
+        return {"ok": False, "found": False, "error": f"spec not found: {spec_name}"}
     from core.pm_engine.promotion import promote_drafted
     from core.state_machine import StateMachine
     from core.logger import Logger
     from core.config import ConfigLoader
+
     proot = Path(project_root)
     sm = StateMachine(proot / ".fenix" / "STATE.md", None)
     logger = Logger(proot)
     # 解析项目有效配置传给 promote_drafted，使评审分流判定与 daemon 同源
     # （add-spec-review-gate 3.4/3.5：不传 config 无法评估跳过白名单，恒直通 ready）
     config = ConfigLoader.resolve_config(proot)
-    result = promote_drafted(proot, spec_name, state_machine=sm, logger=logger,
-                             config=config)
+    result = promote_drafted(proot, spec_name, state_machine=sm, logger=logger, config=config)
     if result["ok"]:
         # 依分流结论转移：命中跳过白名单 → ready；否则 → reviewing 待方案评审。
         # 与 _on_spec_drafted 收尾语义一致，MUST NOT 硬编码 ready（全通道覆盖）。
         next_status = result.get("next_status", "ready")
         sm.transition(spec_name, next_status)
-        return {"ok": True, "found": True, "violations": [],
-                "next_status": next_status}
+        return {"ok": True, "found": True, "violations": [], "next_status": next_status}
     # 失败
     if "reason" in result:
         # 非 drafted 或不存在
-        return {"ok": False, "found": True, "reason": result["reason"],
-                "error": result["reason"]}
+        return {"ok": False, "found": True, "reason": result["reason"], "error": result["reason"]}
     # lint 违规（STATE error 已由 promote_drafted 写入）
-    return {"ok": False, "found": True, "violations": result["violations"],
-            "error": f"晋升 lint 未通过：{'; '.join(result['violations'])}"}
+    return {
+        "ok": False,
+        "found": True,
+        "violations": result["violations"],
+        "error": f"晋升 lint 未通过：{'; '.join(result['violations'])}",
+    }
 
 
 def reflow_spec(project_root, spec_name: str) -> dict:
@@ -305,16 +364,15 @@ def reflow_spec(project_root, spec_name: str) -> dict:
     """
     specs = parse_state(project_root)
     if spec_name not in specs:
-        return {"ok": False, "found": False,
-                "reason": f"spec not found: {spec_name}"}
+        return {"ok": False, "found": False, "reason": f"spec not found: {spec_name}"}
     from core.pm_engine.task_reflow import reflow_spec as _reflow
     from core.state_machine import StateMachine
     from core.logger import Logger
+
     proot = Path(project_root)
     sm = StateMachine(proot / ".fenix" / "STATE.md", None)
     logger = Logger(proot)
-    result = _reflow(proot, spec_name, state_machine=sm, logger=logger,
-                     source="api")
+    result = _reflow(proot, spec_name, state_machine=sm, logger=logger, source="api")
     result.setdefault("found", True)
     return result
 
@@ -332,11 +390,11 @@ def re_review_spec(project_root, spec_name: str) -> dict:
     """
     specs = parse_state(project_root)
     if spec_name not in specs:
-        return {"ok": False, "found": False,
-                "error": f"spec not found: {spec_name}"}
+        return {"ok": False, "found": False, "error": f"spec not found: {spec_name}"}
     from core.pm_engine.spec_review import SpecReviewManager
     from core.state_machine import StateMachine
     from core.logger import Logger
+
     proot = Path(project_root)
     sm = StateMachine(proot / ".fenix" / "STATE.md", None)
     logger = Logger(proot)
@@ -370,7 +428,8 @@ def _write_scheduling_kick_signal(project_root, spec: str) -> dict:
     }
     req_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
-        dir=str(req_path.parent), prefix=".scheduling_kick_request.", suffix=".tmp")
+        dir=str(req_path.parent), prefix=".scheduling_kick_request.", suffix=".tmp"
+    )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -433,15 +492,23 @@ def set_spec_start_after(project_root, spec: str, value) -> dict:
         return {"ok": False, "found": False, "error": f"spec not found: {spec}"}
     entry = specs[spec]
     if entry.get("status") in ("done", "pushed"):
-        return {"ok": False, "found": True, "terminal": True,
-                "error": f"终态 spec（{entry.get('status')}）不可设置定时拾取"}
+        return {
+            "ok": False,
+            "found": True,
+            "terminal": True,
+            "error": f"终态 spec（{entry.get('status')}）不可设置定时拾取",
+        }
     if value is None or (isinstance(value, str) and not value.strip()):
         normalized = None
     else:
         dt = parse_utc(value)
         if dt is None:
-            return {"ok": False, "found": True, "invalid": True,
-                    "error": f"start_after 非法 ISO8601: {value!r}"}
+            return {
+                "ok": False,
+                "found": True,
+                "invalid": True,
+                "error": f"start_after 非法 ISO8601: {value!r}",
+            }
         normalized = dt.isoformat()
     sm = StateMachine(proot / ".fenix" / "STATE.md", None)
     sm.update_spec(spec, {"start_after": normalized})
@@ -477,15 +544,20 @@ def set_spec_budget(project_root, spec: str, budget) -> dict:
     proot = Path(project_root)
     specs = parse_state(proot)
     if spec not in specs:
-        return {"ok": False, "found": False, "budget": None,
-                "error": f"spec not found: {spec}"}
+        return {"ok": False, "found": False, "budget": None, "error": f"spec not found: {spec}"}
     entry = specs[spec]
     if entry.get("status") in ("done", "pushed"):
-        return {"ok": False, "found": True, "terminal": True, "budget": None,
-                "error": f"终态 spec（{entry.get('status')}）不可设置预算覆盖"}
+        return {
+            "ok": False,
+            "found": True,
+            "terminal": True,
+            "budget": None,
+            "error": f"终态 spec（{entry.get('status')}）不可设置预算覆盖",
+        }
     # null 清除
     if budget is None:
         from core.state_machine import StateMachine
+
         sm = StateMachine(proot / ".fenix" / "STATE.md", None)
         sm.update_spec(spec, {"impl_run_budget_override": None})
         return {"ok": True, "found": True, "budget": None}
@@ -493,19 +565,35 @@ def set_spec_budget(project_root, spec: str, budget) -> dict:
     # open-impl-budget-ceiling：上限 = agents.impl_run_budget_max（缺省 100），
     # 与闸门/Dashboard 摘要同源解析，保证「界面可设范围」与「闸门夹紧范围」一致。
     from core.pm_engine.budget import (
-        resolve_impl_run_budget_max, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT,
+        resolve_impl_run_budget_max,
+        IMPL_RUN_BUDGET_MAX_KEY,
+        IMPL_RUN_BUDGET_MAX_DEFAULT,
     )
     from core.config import ConfigLoader
+
     budget_max = resolve_impl_run_budget_max(
-        ConfigLoader.get(ConfigLoader.resolve_config(proot),
-                         IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT))
+        ConfigLoader.get(
+            ConfigLoader.resolve_config(proot), IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT
+        )
+    )
     if isinstance(budget, bool) or not isinstance(budget, int):
-        return {"ok": False, "found": True, "budget": None, "invalid": True,
-                "error": f"budget must be an integer between 1 and {budget_max} (or null to clear)"}
+        return {
+            "ok": False,
+            "found": True,
+            "budget": None,
+            "invalid": True,
+            "error": f"budget must be an integer between 1 and {budget_max} (or null to clear)",
+        }
     if budget < 1 or budget > budget_max:
-        return {"ok": False, "found": True, "budget": None, "invalid": True,
-                "error": f"budget must be an integer between 1 and {budget_max} (or null to clear)"}
+        return {
+            "ok": False,
+            "found": True,
+            "budget": None,
+            "invalid": True,
+            "error": f"budget must be an integer between 1 and {budget_max} (or null to clear)",
+        }
     from core.state_machine import StateMachine
+
     sm = StateMachine(proot / ".fenix" / "STATE.md", None)
     sm.update_spec(spec, {"impl_run_budget_override": budget})
     return {"ok": True, "found": True, "budget": budget}
@@ -533,35 +621,49 @@ def configure_spec_freeze(project_root, spec: str, mode: str, until=None) -> dic
         return {"ok": False, "found": False, "error": f"spec not found: {spec}"}
     entry = specs[spec]
     if not is_spec_frozen(entry):
-        return {"ok": False, "found": True,
-                "error": "spec 未处于冻结态（冻结管理仅对冻结 spec 生效）"}
+        return {
+            "ok": False,
+            "found": True,
+            "error": "spec 未处于冻结态（冻结管理仅对冻结 spec 生效）",
+        }
     sm = StateMachine(proot / ".fenix" / "STATE.md", None)
     if mode == "unfreeze":
         orig = parse_orig_status(entry.get("error"))
         sm.unfreeze_spec(spec, status=orig)
-        return {"ok": True, "found": True, "mode": "unfreeze",
-                "unfrozen": True, "frozen_until": None}
+        return {
+            "ok": True,
+            "found": True,
+            "mode": "unfreeze",
+            "unfrozen": True,
+            "frozen_until": None,
+        }
     if mode == "permanent":
         sm.update_spec(spec, {"frozen_until": None})
-        return {"ok": True, "found": True, "mode": "permanent",
-                "frozen_until": None}
+        return {"ok": True, "found": True, "mode": "permanent", "frozen_until": None}
     if mode == "scheduled":
         dt = parse_utc(until)
         if dt is None:
-            return {"ok": False, "found": True, "invalid": True,
-                    "error": f"frozen_until 非法 ISO8601: {until!r}"}
+            return {
+                "ok": False,
+                "found": True,
+                "invalid": True,
+                "error": f"frozen_until 非法 ISO8601: {until!r}",
+            }
         normalized = dt.isoformat()
         if dt <= datetime.now(timezone.utc):
             # 已过去 → 立即解冻（等价到期，不留待下一轮 tick/扫描）
             orig = parse_orig_status(entry.get("error"))
             sm.unfreeze_spec(spec, status=orig)
-            return {"ok": True, "found": True, "mode": "scheduled",
-                    "unfrozen": True, "frozen_until": normalized}
+            return {
+                "ok": True,
+                "found": True,
+                "mode": "scheduled",
+                "unfrozen": True,
+                "frozen_until": normalized,
+            }
         sm.update_spec(spec, {"frozen_until": normalized})
-        return {"ok": True, "found": True, "mode": "scheduled",
-                "frozen_until": normalized}
-    return {"ok": False, "found": True, "invalid": True,
-            "error": f"未知冻结模式: {mode!r}"}
+        return {"ok": True, "found": True, "mode": "scheduled", "frozen_until": normalized}
+    return {"ok": False, "found": True, "invalid": True, "error": f"未知冻结模式: {mode!r}"}
 
 
 APPROVE_PUSH_REQUEST = ".fenix/approve_push_request.json"
@@ -603,10 +705,17 @@ def request_spec_approve_push(project_root, spec: str) -> dict:
     proot = Path(project_root)
     specs = parse_state(proot)
     if spec not in specs:
-        return {"ok": False, "found": False, "terminal": False,
-                "daemon_down": False, "unmanaged": False, "conflict": False,
-                "file": None, "created": None,
-                "error": f"spec not found: {spec}"}
+        return {
+            "ok": False,
+            "found": False,
+            "terminal": False,
+            "daemon_down": False,
+            "unmanaged": False,
+            "conflict": False,
+            "file": None,
+            "created": None,
+            "error": f"spec not found: {spec}",
+        }
 
     entry = specs[spec]
     status = entry.get("status")
@@ -616,30 +725,55 @@ def request_spec_approve_push(project_root, spec: str) -> dict:
             msg = "SPEC 已推送（pushed），无需审批"
         else:
             msg = f"仅 done 状态可审批推送（当前 {status}）"
-        return {"ok": False, "found": True, "terminal": True,
-                "daemon_down": False, "unmanaged": False, "conflict": False,
-                "file": None, "created": None, "error": msg}
+        return {
+            "ok": False,
+            "found": True,
+            "terminal": True,
+            "daemon_down": False,
+            "unmanaged": False,
+            "conflict": False,
+            "file": None,
+            "created": None,
+            "error": msg,
+        }
 
     # 消费方判据（D8）：托管态为准——unmanaged 拒绝（信号无人消费）、
     # stopped 维持既有 daemon_down 文案、managed 放行。
     from core.fenix_session import hosting_state as _hosting_state
+
     try:
         state = _hosting_state(proot)
     except Exception:
         state = "stopped"  # 判定异常按未运行兜底，宁拒勿假放行
     if state == "unmanaged":
-        return {"ok": False, "found": True, "terminal": False,
-                "daemon_down": False, "unmanaged": True, "conflict": False,
-                "file": None, "created": None,
-                "error": ("本项目 daemon 未受 supervisor 托管，审批推送信号"
-                          "不会被消费。经 Dashboard 项目页「安装托管」或 "
-                          "/fenix-setup 恢复 supervisor 托管后重试")}
+        return {
+            "ok": False,
+            "found": True,
+            "terminal": False,
+            "daemon_down": False,
+            "unmanaged": True,
+            "conflict": False,
+            "file": None,
+            "created": None,
+            "error": (
+                "本项目 daemon 未受 supervisor 托管，审批推送信号"
+                "不会被消费。经 Dashboard 项目页「安装托管」或 "
+                "/fenix-setup 恢复 supervisor 托管后重试"
+            ),
+        }
     if state != "managed":
         # stopped（或判定异常兜底）：维持既有 daemon_down 文案逐字不变
-        return {"ok": False, "found": True, "terminal": False,
-                "daemon_down": True, "unmanaged": False, "conflict": False,
-                "file": None, "created": None,
-                "error": "daemon 未运行，请先启动 daemon"}
+        return {
+            "ok": False,
+            "found": True,
+            "terminal": False,
+            "daemon_down": True,
+            "unmanaged": False,
+            "conflict": False,
+            "file": None,
+            "created": None,
+            "error": "daemon 未运行，请先启动 daemon",
+        }
 
     req_path = proot / APPROVE_PUSH_REQUEST
     if req_path.exists():
@@ -651,16 +785,24 @@ def request_spec_approve_push(project_root, spec: str) -> dict:
                 existing_created = existing.get("created")
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             pass
-        return {"ok": False, "found": True, "terminal": False,
-                "daemon_down": False, "unmanaged": False, "conflict": True,
-                "file": str(req_path), "created": existing_created,
-                "error": "已有进行中的审批推送请求"}
+        return {
+            "ok": False,
+            "found": True,
+            "terminal": False,
+            "daemon_down": False,
+            "unmanaged": False,
+            "conflict": True,
+            "file": str(req_path),
+            "created": existing_created,
+            "error": "已有进行中的审批推送请求",
+        }
 
     created = datetime.now(timezone.utc).isoformat()
     payload = {"spec": spec, "source": "dashboard", "created": created}
     req_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
-        dir=str(req_path.parent), prefix=".approve_push_request.", suffix=".tmp")
+        dir=str(req_path.parent), prefix=".approve_push_request.", suffix=".tmp"
+    )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -673,9 +815,17 @@ def request_spec_approve_push(project_root, spec: str) -> dict:
         except OSError:
             pass
         raise
-    return {"ok": True, "found": True, "terminal": False,
-            "daemon_down": False, "unmanaged": False, "conflict": False,
-            "file": str(req_path), "created": created, "error": None}
+    return {
+        "ok": True,
+        "found": True,
+        "terminal": False,
+        "daemon_down": False,
+        "unmanaged": False,
+        "conflict": False,
+        "file": str(req_path),
+        "created": created,
+        "error": None,
+    }
 
 
 def clear_spec_error(project_root, spec: str) -> dict:
@@ -698,6 +848,7 @@ def clear_spec_error(project_root, spec: str) -> dict:
     if spec not in specs:
         return {"found": False}
     from core.state_machine import StateMachine
+
     sm = StateMachine(proot / ".fenix" / "STATE.md")
     sm.update_spec(spec, {"error": None})
     return {"found": True}
@@ -730,6 +881,7 @@ def set_spec_priority(project_root, spec: str, priority) -> dict:
         return {"found": False}
 
     from core.state_machine import StateMachine
+
     sm = StateMachine(proot / ".fenix" / "STATE.md")
     sm.update_spec(spec, {"priority": p})
     return {"found": True, "priority": p}

@@ -26,8 +26,9 @@ class EventBus:
     (with optional inotify support on Linux).
     """
 
-    def __init__(self, state_path: Path, state_machine, pm_engine, config, logger,
-                 hook_dispatcher=None):
+    def __init__(
+        self, state_path: Path, state_machine, pm_engine, config, logger, hook_dispatcher=None
+    ):
         self.state_path = Path(state_path)
         self.state_machine = state_machine
         self.pm_engine = pm_engine
@@ -150,12 +151,16 @@ class EventBus:
                 self.logger.info("event_bus", f"Recovery: re-triggering promote for '{name}'")
                 self.pm_engine.handle_event("spec_drafted", name, entry)
             elif status == "reviewing":
-                self.logger.info("event_bus", f"Recovery: re-triggering spec_reviewing for '{name}'")
+                self.logger.info(
+                    "event_bus", f"Recovery: re-triggering spec_reviewing for '{name}'"
+                )
                 self.pm_engine.handle_event("spec_reviewing", name, entry)
             elif status == "implemented":
                 # Skip if already had a tester run (already verified, avoid re-trigger loop)
                 if entry.get("tester_run"):
-                    self.logger.debug("event_bus", f"Skipping recovery for '{name}': already verified")
+                    self.logger.debug(
+                        "event_bus", f"Skipping recovery for '{name}': already verified"
+                    )
                     return True
                 # B6（fenixd-registry-ignored-false-attribution-loop 后续）：
                 # inconclusive 暂停期（_handle_env_blocked_inconclusive /
@@ -237,6 +242,7 @@ class EventBus:
             )
             return
         from core.admin_monitor import spec_is_undriven
+
         if not spec_is_undriven(project_root, name, entry):
             self.logger.debug(
                 "event_bus",
@@ -262,6 +268,7 @@ class EventBus:
         # 30 分钟被误标孤儿 ready 重触发一次）。未到期直接跳过，到期后自然拾取。
         try:
             from core.state_machine import start_after_pending
+
             if start_after_pending(entry):
                 self.logger.info(
                     "event_bus",
@@ -341,7 +348,9 @@ class EventBus:
                 pattern = f"{prefix}-{spec_name}-"
                 res = subprocess.run(
                     ["pgrep", "-f", pattern],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
                 if res.returncode == 0 and res.stdout.strip():
                     return True
@@ -353,6 +362,7 @@ class EventBus:
         """STATE.md implementer_run 指向的最新 run 文件（复用 dashboard 解析）。"""
         try:
             from core.dashboard.data import find_impl_run_file
+
             project_root = getattr(self.pm_engine, "project_root", None)
             if project_root is None:
                 return None
@@ -429,10 +439,7 @@ class EventBus:
     def _update_known_state(self):
         """Update internal snapshot of known SPEC states."""
         specs = self.state_machine.read_all()
-        self._known_specs = {
-            name: entry.get("status", "drafted")
-            for name, entry in specs.items()
-        }
+        self._known_specs = {name: entry.get("status", "drafted") for name, entry in specs.items()}
 
     def _dispatch_changes(self, current_specs: dict):
         """Compare current state against known state and dispatch events."""
@@ -469,8 +476,7 @@ class EventBus:
 
         # Update known state
         self._known_specs = {
-            name: entry.get("status", "drafted")
-            for name, entry in current_specs.items()
+            name: entry.get("status", "drafted") for name, entry in current_specs.items()
         }
 
         # Dispatch events to PM Engine
@@ -501,8 +507,7 @@ class EventBus:
                 # 其他事件派发（full-scan-resilience 同口径）。
                 self.logger.warning(
                     "event_bus",
-                    f"Dependency wakeup skipped for '{accepted_name}': "
-                    f"{type(e).__name__}: {e}",
+                    f"Dependency wakeup skipped for '{accepted_name}': " f"{type(e).__name__}: {e}",
                 )
 
     @staticmethod
@@ -543,8 +548,7 @@ class EventBus:
         }
         return mapping.get(status, "")
 
-    def _dispatch_hook(self, spec_name: str, old_status, new_status: str,
-                       entry: dict) -> None:
+    def _dispatch_hook(self, spec_name: str, old_status, new_status: str, entry: dict) -> None:
         """状态 diff → hook 分发（add-spec-hooks D1）。
 
         与 PM Engine 事件并列的独立通道：hook 订阅任意状态（含 PM Engine

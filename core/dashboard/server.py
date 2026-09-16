@@ -87,8 +87,8 @@ HELP_DOCS_DIR = FRAMEWORK_ROOT / "docs" / "help"
 HELP_DOC_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+\.md$")
 
 # 连接上限（dashboard-connection-limit D6，模块常量供测试 monkeypatch）
-MAX_SSE_CONNECTIONS = 32    # SSE 活跃连接上限，超出拒绝新连接（客户端退化为轮询）
-MAX_SERVER_THREADS = 64     # ThreadingHTTPServer 并发处理线程上限，超限 503
+MAX_SSE_CONNECTIONS = 32  # SSE 活跃连接上限，超出拒绝新连接（客户端退化为轮询）
+MAX_SERVER_THREADS = 64  # ThreadingHTTPServer 并发处理线程上限，超限 503
 # SSE 客户端断开探测轮询间隔（秒）：队列空时每次等待该时长后探测 FIN。
 # 心跳仍按 25s 发送；该间隔仅决定「释放连接槽位」的响应速度。
 SSE_CLIENT_POLL_INTERVAL = 1.0
@@ -122,7 +122,7 @@ class SSEHub:
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._conns = {}   # cid -> SSEConnection
+        self._conns = {}  # cid -> SSEConnection
         self._seq = 0
 
     def register(self) -> SSEConnection | None:
@@ -376,10 +376,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/specs":
             self._json(self._api_specs(query))
         elif path.startswith("/api/specs/"):
-            spec = urllib.parse.unquote(path[len("/api/specs/"):])
+            spec = urllib.parse.unquote(path[len("/api/specs/") :])
             self._json(self._api_spec_detail(spec, query))
         elif path.startswith("/api/runs/"):
-            rest = urllib.parse.unquote(path[len("/api/runs/"):])
+            rest = urllib.parse.unquote(path[len("/api/runs/") :])
             if rest.endswith("/watch"):
                 self._json(self._api_run_watch(rest[: -len("/watch")], query, watch=True))
             else:
@@ -423,12 +423,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         projects = []
         for p in self.server.projects():
             if not p.get("exists"):
-                projects.append({
-                    "name": p["name"], "path": p["path"],
-                    "discovered": p.get("discovered", False),
-                    "exists": False, "daemon": "stopped", "hosting": "stopped",
-                    "error": "项目路径不存在",
-                })
+                projects.append(
+                    {
+                        "name": p["name"],
+                        "path": p["path"],
+                        "discovered": p.get("discovered", False),
+                        "exists": False,
+                        "daemon": "stopped",
+                        "hosting": "stopped",
+                        "error": "项目路径不存在",
+                    }
+                )
                 continue
             try:
                 s = dashboard_data.project_summary(p["path"], p["name"], p["path"])
@@ -530,8 +535,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not help_dir.is_dir():
             return {"docs": []}
         try:
-            files = sorted(p for p in help_dir.iterdir()
-                           if p.is_file() and HELP_DOC_NAME_RE.match(p.name))
+            files = sorted(
+                p for p in help_dir.iterdir() if p.is_file() and HELP_DOC_NAME_RE.match(p.name)
+            )
         except OSError:
             return {"docs": []}
         docs = []
@@ -539,8 +545,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             for f in files:
                 title = ""
                 try:
-                    title = self._help_doc_title(
-                        f.read_text(encoding="utf-8", errors="replace"))
+                    title = self._help_doc_title(f.read_text(encoding="utf-8", errors="replace"))
                 except OSError:
                     title = ""
                 docs.append({"name": f.name, "title": title or f.name[:-3]})
@@ -576,11 +581,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except OSError:
             self._error(404, "help doc not found")
             return
-        self._json({
-            "name": name,
-            "title": self._help_doc_title(content) or name[:-3],
-            "content": content,
-        })
+        self._json(
+            {
+                "name": name,
+                "title": self._help_doc_title(content) or name[:-3],
+                "content": content,
+            }
+        )
 
     def _api_spec_error_clear(self, query) -> dict:
         """POST /api/spec-error-clear?project=<name>&spec=<name>
@@ -651,8 +658,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not result.get("found"):
             self._error(404, f"spec not found: {spec}")
             return
-        self._json({"ok": True, "project": project["name"], "spec": spec,
-                    "priority": result["priority"]})
+        self._json(
+            {"ok": True, "project": project["name"], "spec": spec, "priority": result["priority"]}
+        )
 
     def _api_spec_freeze(self, query) -> dict:
         """POST /api/spec-freeze?project=<name>&spec=<name>
@@ -744,8 +752,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if result.get("invalid"):
             self._error(400, result.get("error") or "start_after 非法 ISO8601")
             return
-        self._json({"ok": True, "project": project["name"], "spec": spec,
-                    "start_after": result.get("start_after")})
+        self._json(
+            {
+                "ok": True,
+                "project": project["name"],
+                "spec": spec,
+                "start_after": result.get("start_after"),
+            }
+        )
 
     def _api_spec_freeze_config(self, query) -> dict:
         """POST /api/spec-freeze-config?project=<name>&spec=<name>
@@ -777,7 +791,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         proot = Path(project["path"])
         try:
             result = dashboard_data.configure_spec_freeze(
-                proot, spec, body["mode"], body.get("until"))
+                proot, spec, body["mode"], body.get("until")
+            )
         except Exception as e:  # noqa: BLE001 兜底：写回异常不崩溃进程
             self._error(500, f"configure spec freeze failed: {e}")
             return
@@ -790,12 +805,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if result.get("error") and not result.get("ok"):
             self._error(409, result.get("error"))
             return
-        self._json({
-            "ok": True, "project": project["name"], "spec": spec,
-            "mode": result.get("mode"),
-            "frozen_until": result.get("frozen_until"),
-            "unfrozen": result.get("unfrozen", False),
-        })
+        self._json(
+            {
+                "ok": True,
+                "project": project["name"],
+                "spec": spec,
+                "mode": result.get("mode"),
+                "frozen_until": result.get("frozen_until"),
+                "unfrozen": result.get("unfrozen", False),
+            }
+        )
 
     def _api_spec_budget(self, query) -> dict:
         """POST /api/spec-budget?project=<name>&spec=<name>
@@ -832,9 +851,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         budget = body["budget"]
         proot = Path(project["path"])
         # 非整数（含 bool、浮点、字符串数字）拒绝——null 合法（清除覆盖）
-        if budget is not None and (
-            isinstance(budget, bool) or not isinstance(budget, int)
-        ):
+        if budget is not None and (isinstance(budget, bool) or not isinstance(budget, int)):
             self._error(400, "budget must be an integer >= 1 (or null to clear)")
             return
         try:
@@ -851,8 +868,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if result.get("invalid"):
             self._error(400, result.get("error") or "budget out of range")
             return
-        self._json({"ok": True, "project": project["name"], "spec": spec,
-                    "budget": result.get("budget")})
+        self._json(
+            {"ok": True, "project": project["name"], "spec": spec, "budget": result.get("budget")}
+        )
 
     def _api_spec_archive(self, query) -> dict:
         """POST /api/spec-archive?project=<name>&spec=<name>
@@ -888,7 +906,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if not result.get("ok"):
             # 已归档或目标冲突 → 409，非终态拒绝也走这里（调用方可识别具体 error）
-            code = 409 if "已存在" in (result.get("error") or "") or "已归档" in (result.get("error") or "") else 403
+            code = (
+                409
+                if "已存在" in (result.get("error") or "")
+                or "已归档" in (result.get("error") or "")
+                else 403
+            )
             self._error(code, result.get("error") or "归档失败")
             return
         # 归档成功 → 记录项目活动事件（归档动作 from→to，供活动页/概览展示）
@@ -901,9 +924,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
         except Exception:
             pass  # 写日志失败不阻断归档响应
-        resp = {"ok": True, "project": project["name"], "spec": spec,
-                "from": result["from"], "to": result["to"],
-                "committed": result.get("committed", False)}
+        resp = {
+            "ok": True,
+            "project": project["name"],
+            "spec": spec,
+            "from": result["from"],
+            "to": result["to"],
+            "committed": result.get("committed", False),
+        }
         if result.get("commit_warning"):
             resp["commit_warning"] = result["commit_warning"]
         self._json(resp)
@@ -1058,8 +1086,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if result.get("terminal"):
             self._error(403, result.get("error") or "仅 done 状态可审批推送")
             return
-        self._json({"ok": True, "project": project["name"], "spec": spec,
-                    "created": result.get("created")})
+        self._json(
+            {"ok": True, "project": project["name"], "spec": spec, "created": result.get("created")}
+        )
 
     def _api_spec_delete(self, query):
         """POST /api/spec-delete?project=<name>&spec=<name>
@@ -1093,9 +1122,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if result.get("running"):
             self._error(409, result.get("error") or "spec 有进行中的运行")
             return
-        self._json({"ok": True, "project": project["name"], "spec": spec,
-                    "archived": result.get("archived", False),
-                    "archive_path": result.get("archive_path")})
+        self._json(
+            {
+                "ok": True,
+                "project": project["name"],
+                "spec": spec,
+                "archived": result.get("archived", False),
+                "archive_path": result.get("archive_path"),
+            }
+        )
 
     def _api_spec_admin_invoke(self, query):
         """POST /api/spec-admin-invoke?project=<name>&spec=<name>
@@ -1140,8 +1175,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if result.get("conflict"):
             self._error(409, result.get("error") or "已有进行中的 Admin 处置")
             return
-        self._json({"ok": True, "project": project["name"], "spec": spec,
-                    "created": result.get("created")})
+        self._json(
+            {"ok": True, "project": project["name"], "spec": spec, "created": result.get("created")}
+        )
 
     def _api_run_cancel(self, query):
         """POST /api/run-cancel?project=<name>&run_id=<id>（可选 reason）
@@ -1185,8 +1221,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if result.get("conflict"):
             self._error(409, result.get("error") or "已有进行中的取消请求")
             return
-        self._json({"requested": True, "project": project["name"],
-                    "run_id": run_id, "created": result.get("created")})
+        self._json(
+            {
+                "requested": True,
+                "project": project["name"],
+                "run_id": run_id,
+                "created": result.get("created"),
+            }
+        )
 
     def _api_run(self, run_id: str, query) -> dict:
         project = self._project_from_query(query)
@@ -1248,6 +1290,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         - 读取 .fenix/hook_audit.jsonl 尾部，时间倒序（read_hook_audit 纯函数）
         """
         from core.hook_engine import read_hook_audit
+
         project = self._project_from_query(query)
         if project is None or not project.get("exists"):
             return {"project": None, "audit": []}
@@ -1256,9 +1299,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             limit = max(1, min(200, int(query.get("limit", ["20"])[0])))
         except (TypeError, ValueError):
             limit = 20
-        records = read_hook_audit(
-            Path(project["path"]), spec=(spec or None), limit=limit
-        )
+        records = read_hook_audit(Path(project["path"]), spec=(spec or None), limit=limit)
         return {"project": project["name"], "audit": records}
 
     # ── agent 提示词（add-agent-prompt-files 任务 3.1）────────────────
@@ -1289,8 +1330,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "path": project["path"],
             # 所有项目一视同仁（含 fenixd 自身）；仅废弃软链布局 extras 为空串
             "extras": {
-                atype: self._read_project_extra(proot, atype)
-                for atype in AGENT_PROMPT_FILES
+                atype: self._read_project_extra(proot, atype) for atype in AGENT_PROMPT_FILES
             },
         }
         return out
@@ -1383,8 +1423,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except OSError as e:
             self._error(500, f"todo.md 读取失败: {e}")
             return
-        self._json({"project": project["name"], "path": str(target),
-                    "exists": exists, "content": content})
+        self._json(
+            {"project": project["name"], "path": str(target), "exists": exists, "content": content}
+        )
 
     def _api_todo_post(self, query):
         """POST /api/todo?project=<name> — 保存项目 todo.md（整文件覆写）。
@@ -1431,8 +1472,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except OSError as e:
             self._error(500, f"verify.yaml 读取失败: {e}")
             return
-        self._json({"project": project["name"], "path": str(target),
-                    "exists": exists, "content": content})
+        self._json(
+            {"project": project["name"], "path": str(target), "exists": exists, "content": content}
+        )
 
     def _api_verify_yaml_post(self, query):
         """POST /api/verify-yaml?project=<name> — 保存验证契约（整文件覆写）。
@@ -1456,12 +1498,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             data = yaml.safe_load(content)
         except yaml.YAMLError as e:
-            self._error(400, f"YAML 语法错误，拒绝保存（坏契约会被框架按「无契约」"
-                             f"静默回退）: {e}")
+            self._error(
+                400, f"YAML 语法错误，拒绝保存（坏契约会被框架按「无契约」" f"静默回退）: {e}"
+            )
             return
         if data is not None and not isinstance(data, dict):
-            self._error(400, f"verify.yaml 顶层必须是字段映射（prepare/serve/ready），"
-                             f"当前为 {type(data).__name__}——非映射契约会被框架静默失效")
+            self._error(
+                400,
+                f"verify.yaml 顶层必须是字段映射（prepare/serve/ready），"
+                f"当前为 {type(data).__name__}——非映射契约会被框架静默失效",
+            )
             return
         proot = Path(project["path"])
         target = proot / ".fenix" / "verify.yaml"
@@ -1479,8 +1525,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         模板单一来源 = core/verify_contract_template.yaml（fenix-init 生成、
         setup skill 复制均引用同一文件）；全部配置行注释 = 惰性 YAML。
         """
-        template = (Path(__file__).resolve().parent.parent
-                    / "verify_contract_template.yaml")
+        template = Path(__file__).resolve().parent.parent / "verify_contract_template.yaml"
         try:
             content = template.read_text(encoding="utf-8")
         except OSError as e:
@@ -1510,16 +1555,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         proot = Path(project["path"])
         from core.verify_contract import load_verify_contract
+
         contract = load_verify_contract(proot, logger=None)
         overwrite = bool(body.get("overwrite"))
         if contract is not None and not overwrite:
             # 有效契约且无覆盖确认 → skipped
-            self._json({
-                "ok": True,
-                "project": project["name"],
-                "status": "skipped",
-                "message": "契约已有效，无需自动起草。如需覆盖，请确认覆盖意图后重试。",
-            })
+            self._json(
+                {
+                    "ok": True,
+                    "project": project["name"],
+                    "status": "skipped",
+                    "message": "契约已有效，无需自动起草。如需覆盖，请确认覆盖意图后重试。",
+                }
+            )
             return
         # 契约缺失/解析失败 → verify_contract_missing；契约有效且带覆盖确认 → verify_contract_redraft
         signal_type = "verify_contract_missing" if contract is None else "verify_contract_redraft"
@@ -1531,37 +1579,44 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # 异类型互不抑制（missing 在途不挡 redraft——契约被修正后确认覆盖是新意图）；
         # 已 handled 的历史信号不抑制（用户可再次请求）。
         inflight = [
-            r for r in store.read_all()
+            r
+            for r in store.read_all()
             if r.get("kind") == SIGNAL
             and r.get("signal_type") == signal_type
             and not r.get("handled")
             and f"项目名={project['name']}" in (r.get("evidence") or "")
         ]
         if inflight:
-            self._json({
+            self._json(
+                {
+                    "ok": True,
+                    "project": project["name"],
+                    "status": "dispatched",
+                    "message": "已有在途的验证契约处理请求，无需重复触发；Administrator 将在下一轮巡检拾取（数分钟内），结果见运维记录。",
+                }
+            )
+            return
+        store.append(
+            {
+                "kind": SIGNAL,
+                "signal_type": signal_type,
+                "spec": None,
+                "severity": "major",
+                "description": "AI 起草验证契约请求（UI 手动触发）",
+                "evidence": evidence_detail,
+                "source": "ui-manual",
+                "overwrite": overwrite,
+                "recommended_action": "Administrator 将在下一轮巡检拾取（数分钟内），结果见运维记录；完成后可点重新加载查看新契约。",
+            }
+        )
+        self._json(
+            {
                 "ok": True,
                 "project": project["name"],
                 "status": "dispatched",
-                "message": "已有在途的验证契约处理请求，无需重复触发；Administrator 将在下一轮巡检拾取（数分钟内），结果见运维记录。",
-            })
-            return
-        store.append({
-            "kind": SIGNAL,
-            "signal_type": signal_type,
-            "spec": None,
-            "severity": "major",
-            "description": "AI 起草验证契约请求（UI 手动触发）",
-            "evidence": evidence_detail,
-            "source": "ui-manual",
-            "overwrite": overwrite,
-            "recommended_action": "Administrator 将在下一轮巡检拾取（数分钟内），结果见运维记录；完成后可点重新加载查看新契约。",
-        })
-        self._json({
-            "ok": True,
-            "project": project["name"],
-            "status": "dispatched",
-            "message": "已提交 AI 起草请求，Administrator 将在下一轮巡检拾取（数分钟内），结果见运维记录；完成后可点重新加载查看新契约。",
-        })
+                "message": "已提交 AI 起草请求，Administrator 将在下一轮巡检拾取（数分钟内），结果见运维记录；完成后可点重新加载查看新契约。",
+            }
+        )
 
     def _api_alerts(self, query) -> dict:
         """读取 Administrator 告警。
@@ -1604,9 +1659,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 item["project"] = p["name"]
                 all_resolved.append(item)
         all_unhandled.sort(key=lambda a: a.get("created", ""), reverse=True)
-        all_resolved.sort(
-            key=lambda a: a.get("handled_at") or a.get("created") or "",
-            reverse=True)
+        all_resolved.sort(key=lambda a: a.get("handled_at") or a.get("created") or "", reverse=True)
         return {
             "total_unhandled": total,
             "projects": projects_out,
@@ -1631,16 +1684,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return {
                 "project": project["name"],
                 "spec": spec_name or "",
-                "activities": dashboard_data.get_admin_activities(
-                    proot, spec=spec_name),
+                "activities": dashboard_data.get_admin_activities(proot, spec=spec_name),
             }
 
         projects_out = []
         for p in self.server.projects():
             if not p.get("exists"):
                 continue
-            acts = dashboard_data.get_admin_activities(
-                Path(p["path"]), spec=spec_name)
+            acts = dashboard_data.get_admin_activities(Path(p["path"]), spec=spec_name)
             for a in acts:
                 a["project"] = p["name"]
             projects_out.append({"name": p["name"], "activities": acts})
@@ -1662,10 +1713,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._error(404, "alert not found or already handled")
             return
         try:
-            self.server.sse_hub.broadcast({
-                "project": project["name"], "type": "alerts",
-                "summary": dashboard_data.alerts_summary(Path(project["path"])),
-            })
+            self.server.sse_hub.broadcast(
+                {
+                    "project": project["name"],
+                    "type": "alerts",
+                    "summary": dashboard_data.alerts_summary(Path(project["path"])),
+                }
+            )
         except Exception:
             pass
         self._json({"ok": True, "id": alert_id})
@@ -1679,10 +1733,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             proot = Path(p["path"])
             cleared += dashboard_data.mark_all_alerts_handled(proot)
             try:
-                self.server.sse_hub.broadcast({
-                    "project": p["name"], "type": "alerts",
-                    "summary": dashboard_data.alerts_summary(proot),
-                })
+                self.server.sse_hub.broadcast(
+                    {
+                        "project": p["name"],
+                        "type": "alerts",
+                        "summary": dashboard_data.alerts_summary(proot),
+                    }
+                )
             except Exception:
                 pass
         self._json({"ok": True, "cleared": cleared})
@@ -1699,7 +1756,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """
         if not path.startswith(prefix):
             return None
-        name = urllib.parse.unquote(path[len(prefix):])
+        name = urllib.parse.unquote(path[len(prefix) :])
         # 剥离可能的动作后缀（/start、/stop、/restart、/install-hosting）
         for suffix in ("/start", "/stop", "/restart", "/install-hosting"):
             if name.endswith(suffix):
@@ -1737,8 +1794,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         with _project_lifecycle_lock(project["path"]) as _acquired:
             if not _acquired:
-                self._json({"ok": False,
-                            "error": "该项目正有另一启停操作进行中，请稍后重试"})
+                self._json({"ok": False, "error": "该项目正有另一启停操作进行中，请稍后重试"})
                 return
             self._run_project_lifecycle_locked(action, project, path)
 
@@ -1756,23 +1812,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 # restart_request 无人消费；拒绝而非写信号后静默滞留
                 try:
                     from core.fenix_session import hosting_state as _hosting_state
+
                     hosting = _hosting_state(project["path"])
                 except Exception:
                     hosting = "stopped"
                 if hosting == "unmanaged":
                     result = {
                         "ok": False,
-                        "error": ("本项目 daemon 未受 supervisor 托管，重启请求"
-                                  "不会被消费。经 Dashboard 项目页「安装托管」"
-                                  "或 /fenix-setup 恢复 supervisor 托管后重试"),
+                        "error": (
+                            "本项目 daemon 未受 supervisor 托管，重启请求"
+                            "不会被消费。经 Dashboard 项目页「安装托管」"
+                            "或 /fenix-setup 恢复 supervisor 托管后重试"
+                        ),
                     }
                 else:
                     req_path = Path(project["path"]) / ".fenix" / "restart_request"
                     try:
                         req_path.parent.mkdir(parents=True, exist_ok=True)
                         req_path.touch()
-                        result = {"ok": True, "error": None,
-                                  "requested": True, "session": None}
+                        result = {"ok": True, "error": None, "requested": True, "session": None}
                     except OSError as e:
                         result = {"ok": False, "error": f"写入 restart_request 失败: {e}"}
         except Exception as e:  # 环境异常（tmux 不可用等）→ 返回错误对象，不 500
@@ -1786,12 +1844,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.server.sse_hub.broadcast({"type": "refresh"})
         except Exception:
             pass
-        self._json({
-            "ok": True,
-            "session": result.get("session"),
-            "already": result.get("already", False),
-            "was_running": result.get("was_running", False),
-        })
+        self._json(
+            {
+                "ok": True,
+                "session": result.get("session"),
+                "already": result.get("already", False),
+                "was_running": result.get("was_running", False),
+            }
+        )
 
     def _api_project_install_hosting(self, project: dict) -> dict:
         """安装 supervisor 托管：停止裸 daemon → 经 supervisor 启动。
@@ -1804,6 +1864,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """
         try:
             from core.fenix_session import hosting_state as _hosting_state
+
             hosting = _hosting_state(project["path"])
         except Exception:
             hosting = "stopped"
@@ -1833,8 +1894,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if project.get("exists"):
             with _project_lifecycle_lock(project["path"]) as _acquired:
                 if not _acquired:
-                    self._json({"ok": False,
-                                "error": "该项目正有另一启停操作进行中，请稍后重试"})
+                    self._json({"ok": False, "error": "该项目正有另一启停操作进行中，请稍后重试"})
                     return
                 errors = []
                 try:
@@ -1875,15 +1935,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _evolution_state_machine():
         """框架根 StateMachine（accept_item 注册用；惰性构造，无缓存需求）。"""
         from core.state_machine import StateMachine
+
         return StateMachine(FRAMEWORK_ROOT / ".fenix" / "STATE.md", None)
 
     def _api_evolution_items(self, query):
         """GET /api/evolution/items?project=<可选> — 建议改进项摘要列表（倒序）。"""
         project = (query.get("project") or [None])[0] or None
-        self._json({
-            "items": dashboard_data.read_evolution_items(
-                FRAMEWORK_ROOT, project_filter=project),
-        })
+        self._json(
+            {
+                "items": dashboard_data.read_evolution_items(
+                    FRAMEWORK_ROOT, project_filter=project
+                ),
+            }
+        )
 
     def _api_evolution_analysis(self, query):
         """GET /api/evolution/analysis?item_id=<id> — 返回分析结论全文。
@@ -1947,16 +2011,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         start_after = None
         if raw_start_after not in (None, ""):
             from core.state_machine import parse_utc  # 时间解析单点（design D6）
-            if not isinstance(raw_start_after, str) or \
-                    parse_utc(raw_start_after) is None:
+
+            if not isinstance(raw_start_after, str) or parse_utc(raw_start_after) is None:
                 self._error(400, f"start_after 非法（应为 UTC ISO8601）: {raw_start_after!r}")
                 return
             start_after = raw_start_after
         from core.evolution import accept_item
+
         try:
             result = accept_item(
-                item_id, FRAMEWORK_ROOT, self._evolution_state_machine(),
-                decided_by="manual", start_after=start_after)
+                item_id,
+                FRAMEWORK_ROOT,
+                self._evolution_state_machine(),
+                decided_by="manual",
+                start_after=start_after,
+            )
         except Exception as e:  # noqa: BLE001 —— 端点不因内部异常 500 崩溃
             self._error(500, f"接受失败: {e}")
             return
@@ -1982,6 +2051,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._error(400, "缺少 item_id 参数")
             return
         from core.evolution import reject_item
+
         try:
             result = reject_item(item_id, FRAMEWORK_ROOT)
         except Exception as e:  # noqa: BLE001
@@ -2007,6 +2077,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._error(400, "缺少 item_id 参数")
             return
         from core.evolution import delete_item
+
         try:
             result = delete_item(item_id, FRAMEWORK_ROOT)
         except Exception as e:  # noqa: BLE001
@@ -2048,12 +2119,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 skipped.append({"project": name, "reason": "无 todo.md"})
             else:
                 cleared.append(name)
-        self._json({
-            "ok": not failed,
-            "cleared": cleared,
-            "skipped": skipped,
-            "failed": failed,
-        })
+        self._json(
+            {
+                "ok": not failed,
+                "cleared": cleared,
+                "skipped": skipped,
+                "failed": failed,
+            }
+        )
 
     # ── POST API ────────────────────────────────────────────
 
@@ -2111,10 +2184,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/evolution/clear-todo":
             self._api_evolution_clear_todo()
         elif path.startswith("/api/alerts/") and path.endswith("/handled"):
-            alert_id = urllib.parse.unquote(path[len("/api/alerts/"):-len("/handled")])
+            alert_id = urllib.parse.unquote(path[len("/api/alerts/") : -len("/handled")])
             self._api_alert_handled(alert_id, query)
         elif path.startswith("/api/runs/") and path.endswith("/watch"):
-            rest = urllib.parse.unquote(path[len("/api/runs/"):-len("/watch")])
+            rest = urllib.parse.unquote(path[len("/api/runs/") : -len("/watch")])
             self._json(self._api_run_watch(rest, query, watch=True))
         elif path == "/api/project/describe":
             self._api_project_describe(query)
@@ -2135,7 +2208,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _handle_api_delete(self, path: str, query: dict):
         if path.startswith("/api/runs/") and path.endswith("/watch"):
-            rest = urllib.parse.unquote(path[len("/api/runs/"):-len("/watch")])
+            rest = urllib.parse.unquote(path[len("/api/runs/") : -len("/watch")])
             self._json(self._api_run_watch(rest, query, watch=False))
         elif path.startswith("/api/projects/") and len(path) > len("/api/projects/"):
             # DELETE /api/projects/<name> —— 软删除项目（停止 + 忽略列表）
@@ -2283,6 +2356,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # 调用 headless claude CLI
         import subprocess
+
         try:
             result = subprocess.run(
                 ["claude", "-p", prompt],
@@ -2290,7 +2364,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 timeout=120,
                 shell=False,
                 capture_output=True,
-                text=True
+                text=True,
             )
         except subprocess.TimeoutExpired:
             self._json({"error": "生成超时"})
@@ -2377,6 +2451,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         避免误读浏览器可能发送的其它字节。
         """
         import select
+
         try:
             r, _, _ = select.select([self.connection], [], [], 0)
         except (OSError, ValueError):
@@ -2585,7 +2660,7 @@ def _proc_starttime(pid: int) -> int | None:
     try:
         data = Path(f"/proc/{pid}/stat").read_text()
         # comm 字段可能含空格：从最后一个 ')' 之后取字段（其后首字段=state=第 3 字段）
-        fields = data[data.rindex(")") + 2:].split()
+        fields = data[data.rindex(")") + 2 :].split()
         return int(fields[19])  # 22 - 3 = 19
     except (OSError, ValueError, IndexError):
         return None
@@ -2622,12 +2697,16 @@ def _start_claude_watchdog(env=None) -> bool:
     def _terminate():
         sys.stderr.write(
             "dashboard serve 检测到拉起它的 claude 进程已退出（CLAUDE_PID="
-            f"{pid}）——agent run 已结束，本实例自杀以避免孤儿泄漏。\n")
+            f"{pid}）——agent run 已结束，本实例自杀以避免孤儿泄漏。\n"
+        )
         os.kill(os.getpid(), signal.SIGTERM)
 
     threading.Thread(
-        target=_claude_watchdog_loop, args=(pid, starttime),
-        kwargs={"on_death": _terminate}, daemon=True, name="claude-watchdog",
+        target=_claude_watchdog_loop,
+        args=(pid, starttime),
+        kwargs={"on_death": _terminate},
+        daemon=True,
+        name="claude-watchdog",
     ).start()
     return True
 
@@ -2656,6 +2735,7 @@ def _bind_parent_lifecycle() -> None:
         return
     try:
         import ctypes
+
         libc = ctypes.CDLL("libc.so.6", use_errno=True)
         # PR_SET_PDEATHSIG = 1（linux/sched.h）；SIGTERM = 15
         if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:
@@ -2663,12 +2743,14 @@ def _bind_parent_lifecycle() -> None:
     except Exception as e:  # 非 Linux / libc 不可用：仅告警不阻断启动
         sys.stderr.write(
             f"dashboard serve 无法设置 PDEATHSIG（{e}）；"
-            "父进程退出后本实例不会自动终止，请注意。\n")
+            "父进程退出后本实例不会自动终止，请注意。\n"
+        )
     if os.getppid() == 1:
         sys.stderr.write(
             "dashboard serve 检测到父进程已退出（PPID=1，孤儿启动）——拒绝启动。\n"
             "长驻/后台运行请使用 fenix_dashboard.py --serve 入口，"
-            "或显式设置 FENIX_DASHBOARD_DETACH=1。\n")
+            "或显式设置 FENIX_DASHBOARD_DETACH=1。\n"
+        )
         sys.exit(1)
 
 
@@ -2689,7 +2771,8 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
     actual = port
     try:
         httpd = DashboardHTTPServer(
-            ("127.0.0.1", actual), registry,
+            ("127.0.0.1", actual),
+            registry,
             static_dir or STATIC_DIR,
         )
     except OSError as e:
@@ -2712,12 +2795,12 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
             # 重新绑定一次
             try:
                 httpd = DashboardHTTPServer(
-                    ("127.0.0.1", actual), registry,
+                    ("127.0.0.1", actual),
+                    registry,
                     static_dir or STATIC_DIR,
                 )
             except OSError as e2:
-                sys.stderr.write(
-                    f"端口 {actual} 接管旧 dashboard 实例后仍无法绑定：{e2}\n")
+                sys.stderr.write(f"端口 {actual} 接管旧 dashboard 实例后仍无法绑定：{e2}\n")
                 sys.exit(1)
         else:
             # 占用者为非 dashboard 进程（或无法判定）→ 明确报错非 0 退出
@@ -2726,11 +2809,13 @@ def serve(registry: Registry, port: int = 8787, static_dir=None):
             sys.stderr.write(
                 f"端口 {actual} 已被占用（PID {pid}，cmdline: {info}）；\n"
                 f"该占用者不是 fenix_dashboard.py --serve 实例，恕不接管。\n"
-                f"请释放该端口后重试，或使用其它 --port。\n")
+                f"请释放该端口后重试，或使用其它 --port。\n"
+            )
             sys.exit(1)
 
-    watcher = FileWatcher(lambda: httpd.projects(), httpd.sse_hub,
-                         summary_index=httpd.summary_index)
+    watcher = FileWatcher(
+        lambda: httpd.projects(), httpd.sse_hub, summary_index=httpd.summary_index
+    )
     httpd.watcher = watcher
     watcher.start()
     url = f"http://localhost:{actual}"

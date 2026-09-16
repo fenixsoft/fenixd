@@ -40,34 +40,56 @@ PROJECT_ROOT = _FENIX_DIR.parent if _FENIX_DIR.name == ".fenix" else _FENIX_DIR
 if str(_FENIX_DIR) not in sys.path:
     sys.path.insert(0, str(_FENIX_DIR))
 
-from core.dashboard import data as dash_data           # noqa: E402
+from core.dashboard import data as dash_data  # noqa: E402
 from core.dashboard.registry import Registry, DEFAULT_PORT  # noqa: E402
-from core.dashboard.server import serve, STATIC_DIR   # noqa: E402
+from core.dashboard.server import serve, STATIC_DIR  # noqa: E402
 
 STATE_PATH = PROJECT_ROOT / ".fenix" / "STATE.md"
 LOGS_DIR = PROJECT_ROOT / ".fenix" / "logs"
 PROGRESS_DIR = PROJECT_ROOT / ".fenix" / "verify-progress"
 
 # ANSI 颜色
-GREEN = "\033[32m"; YELLOW = "\033[33m"; CYAN = "\033[36m"
-RED = "\033[31m"; GRAY = "\033[90m"; BLUE = "\033[34m"
-MAGENTA = "\033[35m"; WHITE = "\033[97m"
-BOLD = "\033[1m"; DIM = "\033[2m"; RESET = "\033[0m"
-BG_GREEN = "\033[42m"; BG_RED = "\033[41m"; BG_BLUE = "\033[44m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+CYAN = "\033[36m"
+RED = "\033[31m"
+GRAY = "\033[90m"
+BLUE = "\033[34m"
+MAGENTA = "\033[35m"
+WHITE = "\033[97m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+RESET = "\033[0m"
+BG_GREEN = "\033[42m"
+BG_RED = "\033[41m"
+BG_BLUE = "\033[44m"
 
 STATUS_ICONS = {
-    "drafted": "📝", "ready": "📌", "implementing": "🔨",
-    "implemented": "🧪", "testing": "🔍", "verified": "✅",
-    "bug-found": "🐛", "done": "🎯", "pushed": "🚀",
+    "drafted": "📝",
+    "ready": "📌",
+    "implementing": "🔨",
+    "implemented": "🧪",
+    "testing": "🔍",
+    "verified": "✅",
+    "bug-found": "🐛",
+    "done": "🎯",
+    "pushed": "🚀",
 }
 STATUS_COLORS = {
-    "implementing": YELLOW, "testing": CYAN, "verified": GREEN,
-    "done": GREEN, "pushed": GREEN, "bug-found": RED,
-    "drafted": GRAY, "ready": BLUE, "implemented": MAGENTA,
+    "implementing": YELLOW,
+    "testing": CYAN,
+    "verified": GREEN,
+    "done": GREEN,
+    "pushed": GREEN,
+    "bug-found": RED,
+    "drafted": GRAY,
+    "ready": BLUE,
+    "implemented": MAGENTA,
 }
 
 
 # ── 项目注册子命令 ──────────────────────────────────────────────
+
 
 def cmd_add_project(path: str) -> int:
     reg = Registry()
@@ -99,27 +121,30 @@ def cmd_list_projects() -> int:
 
 # ── TUI 渲染（原终端仪表盘，保留） ───────────────────────────────
 
+
 def get_active_agents():
     """获取活跃的 claude agent 进程"""
     try:
-        r = subprocess.run(
-            ["ps", "aux"], capture_output=True, text=True, timeout=3
-        )
+        r = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=3)
         agents = []
         for line in r.stdout.split("\n"):
             if "claude " not in line or "grep" in line:
                 continue
             parts = line.split()
-            if len(parts) < 11: continue
+            if len(parts) < 11:
+                continue
             pid = parts[1]
             cpu = parts[2]
             mem = parts[3]
             cmd = " ".join(parts[10:])
             # 提取 agent 角色
             role = "agent"
-            if "Implementer" in cmd: role = "🔨 implementer"
-            elif "Verifier" in cmd: role = "🔍 verifier"
-            elif "Tester" in cmd: role = "🧪 tester"
+            if "Implementer" in cmd:
+                role = "🔨 implementer"
+            elif "Verifier" in cmd:
+                role = "🔍 verifier"
+            elif "Tester" in cmd:
+                role = "🧪 tester"
             # 提取 SPEC 名
             spec = ""
             for part in parts:
@@ -127,15 +152,20 @@ def get_active_agents():
                     spec = part.split("impl-")[-1].split("verify-")[-1].split("test-")[-1]
                     spec = spec.split("-178")[0]  # 去掉 run id
                     break
-            agents.append({"pid": pid, "cpu": cpu, "mem": mem, "role": role, "spec": spec, "cmd": cmd[:200]})
+            agents.append(
+                {"pid": pid, "cpu": cpu, "mem": mem, "role": role, "spec": spec, "cmd": cmd[:200]}
+            )
         return agents
-    except: return []
+    except:
+        return []
 
 
 def get_worktrees():
     """获取活跃的 git worktree"""
     try:
-        r = subprocess.run(["git", "worktree", "list"], capture_output=True, text=True, timeout=3, cwd=PROJECT_ROOT)
+        r = subprocess.run(
+            ["git", "worktree", "list"], capture_output=True, text=True, timeout=3, cwd=PROJECT_ROOT
+        )
         trees = []
         for line in r.stdout.strip().split("\n"):
             parts = line.split()
@@ -144,21 +174,25 @@ def get_worktrees():
                 branch = parts[2].strip("[]") if len(parts) >= 3 else ""
                 trees.append({"path": path, "branch": branch})
         return trees
-    except: return []
+    except:
+        return []
 
 
 def get_verify_progress():
     """获取验证进度（复用共享解析，损坏条目跳过）"""
-    if not PROGRESS_DIR.exists(): return []
+    if not PROGRESS_DIR.exists():
+        return []
     results = []
     for pf in sorted(PROGRESS_DIR.glob("*.json")):
         data = dash_data.parse_verify_progress(PROJECT_ROOT, pf.stem)
-        results.append({
-            "spec": pf.stem,
-            "total": data.get("total", 0),
-            "done": data.get("done", 0),
-            "current": data.get("current", ""),
-        })
+        results.append(
+            {
+                "spec": pf.stem,
+                "total": data.get("total", 0),
+                "done": data.get("done", 0),
+                "current": data.get("current", ""),
+            }
+        )
     return results
 
 
@@ -192,7 +226,9 @@ def render_overview(specs, daemon_ok):
     implementing = status_counts.get("implementing", 0)
     testing = status_counts.get("testing", 0)
     verified = status_counts.get("verified", 0)
-    has_error = sum(1 for e in specs.values() if e.get("error") and e.get("status") not in ("done", "pushed"))
+    has_error = sum(
+        1 for e in specs.values() if e.get("error") and e.get("status") not in ("done", "pushed")
+    )
 
     # 计算总体实现进度
     grand_total = grand_done = 0
@@ -240,14 +276,16 @@ def render_overview(specs, daemon_ok):
 def render_active_specs(specs):
     """渲染活跃 SPEC 详情"""
     active = [
-        (name, entry) for name, entry in specs.items()
+        (name, entry)
+        for name, entry in specs.items()
         if entry.get("status") in ("implementing", "testing", "implemented")
     ]
     active.sort(key=lambda x: x[1].get("priority", 999))
 
     if not active:
         pending = [
-            (name, entry) for name, entry in specs.items()
+            (name, entry)
+            for name, entry in specs.items()
             if entry.get("status") in ("drafted", "ready")
         ]
         if pending:
@@ -298,7 +336,9 @@ def render_active_specs(specs):
             for v in verify:
                 if v["spec"] == name or name in v["spec"]:
                     v_pct = int(v["done"] / v["total"] * 100) if v["total"] > 0 else 0
-                    lines.append(f"     {DIM}🔍 验证: {bar(v_pct, 10, 'thin')} {v['done']}/{v['total']} {v['current'][:40]}{RESET}")
+                    lines.append(
+                        f"     {DIM}🔍 验证: {bar(v_pct, 10, 'thin')} {v['done']}/{v['total']} {v['current'][:40]}{RESET}"
+                    )
 
         # 行 3: 错误
         if error:
@@ -315,7 +355,9 @@ def _local_ts(iso_str, fmt="%H:%M:%S"):
     日志层统一写 UTC（core/logger.py），展示层负责转本地时区显示。
     """
     try:
-        return datetime.fromisoformat(str(iso_str).replace("Z", "+00:00")).astimezone().strftime(fmt)
+        return (
+            datetime.fromisoformat(str(iso_str).replace("Z", "+00:00")).astimezone().strftime(fmt)
+        )
     except Exception:
         return str(iso_str)[:19]
 
@@ -330,8 +372,11 @@ def render_event_feed(specs):
 
     lines = []
     component_icons = {
-        "state_machine": "📦", "pm_engine": "🧠", "agent_runner": "🤖",
-        "event_bus": "📡", "worktree_manager": "🌲",
+        "state_machine": "📦",
+        "pm_engine": "🧠",
+        "agent_runner": "🤖",
+        "event_bus": "📡",
+        "worktree_manager": "🌲",
     }
 
     for ev in events[-12:]:
@@ -345,7 +390,9 @@ def render_event_feed(specs):
         # 高亮活跃 SPEC
         spec_in_msg = ""
         for n in active_names:
-            if n in msg: spec_in_msg = n; break
+            if n in msg:
+                spec_in_msg = n
+                break
 
         if spec_in_msg:
             msg_display = msg.replace(spec_in_msg, f"{YELLOW}{spec_in_msg}{RESET}")
@@ -366,7 +413,17 @@ def render_stats_panel(specs):
         by_status[st] = by_status.get(st, 0) + 1
 
     lines = []
-    order = ["implementing", "testing", "implemented", "verified", "done", "pushed", "ready", "drafted", "bug-found"]
+    order = [
+        "implementing",
+        "testing",
+        "implemented",
+        "verified",
+        "done",
+        "pushed",
+        "ready",
+        "drafted",
+        "bug-found",
+    ]
     for st in order:
         count = by_status.get(st, 0)
         if count > 0:
@@ -392,7 +449,8 @@ def check_daemon():
         helper = _THIS_DIR / "fenix_session.py"
         r = subprocess.run(
             ["python3", str(helper), "running", str(PROJECT_ROOT)],
-            capture_output=True, timeout=2,
+            capture_output=True,
+            timeout=2,
         )
         return r.stdout.strip() == "YES"
     except Exception:
@@ -432,7 +490,9 @@ def run_tui(interval=3):
             total = len(specs)
             pushed = sum(1 for e in specs.values() if e.get("status") == "pushed")
             done = sum(1 for e in specs.values() if e.get("status") == "done")
-            active = sum(1 for e in specs.values() if e.get("status") in ("implementing", "testing"))
+            active = sum(
+                1 for e in specs.values() if e.get("status") in ("implementing", "testing")
+            )
             pending_push = done  # done status means pending push
 
             agents = get_active_agents()
@@ -451,6 +511,7 @@ def run_tui(interval=3):
 
 # ── Web 模式 ────────────────────────────────────────────────────
 
+
 def run_serve(port_override=None):
     """启动 Web Dashboard（跨项目）。端口优先级：--port > 用户配置(registry) > 项目 dashboard.port > 8787。
 
@@ -468,6 +529,7 @@ def run_serve(port_override=None):
         # （config.template.yaml 已含模板字段；跨项目场景下用户级配置优先级最高）
         try:
             from core.config import ConfigLoader
+
             pconf = ConfigLoader.load(PROJECT_ROOT / ".fenix" / "config.yaml")
             pport = ConfigLoader.get(pconf, "dashboard.port", None)
             if pport is not None:
@@ -483,24 +545,24 @@ def run_serve(port_override=None):
 
 # ── 入口 ────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Fenix Dashboard — Web / TUI / 项目注册",
     )
-    parser.add_argument("--serve", action="store_true",
-                        help="启动 Web Dashboard（默认，跨项目监控）")
-    parser.add_argument("--tui", action="store_true",
-                        help="启动终端仪表盘（原 TUI）")
-    parser.add_argument("--add-project", metavar="PATH",
-                        help="注册项目到监控列表（按路径去重）")
-    parser.add_argument("--remove-project", metavar="PATH",
-                        help="从监控列表移除已注册项目（未注册时不报错）")
-    parser.add_argument("--list-projects", action="store_true",
-                        help="列出已注册监控项目")
-    parser.add_argument("--port", type=int,
-                        help="Web 端口（默认取配置，或 8787；被占用时按端口接管语义处理）")
-    parser.add_argument("--interval", type=int, default=3,
-                        help="TUI 刷新间隔（秒）")
+    parser.add_argument(
+        "--serve", action="store_true", help="启动 Web Dashboard（默认，跨项目监控）"
+    )
+    parser.add_argument("--tui", action="store_true", help="启动终端仪表盘（原 TUI）")
+    parser.add_argument("--add-project", metavar="PATH", help="注册项目到监控列表（按路径去重）")
+    parser.add_argument(
+        "--remove-project", metavar="PATH", help="从监控列表移除已注册项目（未注册时不报错）"
+    )
+    parser.add_argument("--list-projects", action="store_true", help="列出已注册监控项目")
+    parser.add_argument(
+        "--port", type=int, help="Web 端口（默认取配置，或 8787；被占用时按端口接管语义处理）"
+    )
+    parser.add_argument("--interval", type=int, default=3, help="TUI 刷新间隔（秒）")
     args = parser.parse_args()
 
     if args.add_project:

@@ -49,46 +49,56 @@ class CliAssertionRunner:
             a_type = assertion.get("type", "")
             handler = getattr(self, f"_assert_{a_type}", None)
             if handler is None:
-                results.append({
-                    "type": a_type,
-                    "layer": 0,
-                    "pass": False,
-                    "error": f"未知断言类型: {a_type}",
-                })
+                results.append(
+                    {
+                        "type": a_type,
+                        "layer": 0,
+                        "pass": False,
+                        "error": f"未知断言类型: {a_type}",
+                    }
+                )
                 continue
             if a_type in ("exit_code", "output_match", "json_output"):
                 step = self._resolve_step(named_results, assertion)
                 if step is None:
                     ref = assertion.get("step") or "_latest"
-                    results.append({
-                        "type": a_type,
-                        "layer": 1 if a_type == "exit_code" else 3,
-                        "pass": False,
-                        "error": f"断言引用的 run 结果 '{ref}' 不存在"
-                                 f"（step 字段对应 run 步骤 as 命名，缺省=最近一次）",
-                    })
+                    results.append(
+                        {
+                            "type": a_type,
+                            "layer": 1 if a_type == "exit_code" else 3,
+                            "pass": False,
+                            "error": f"断言引用的 run 结果 '{ref}' 不存在"
+                            f"（step 字段对应 run 步骤 as 命名，缺省=最近一次）",
+                        }
+                    )
                     continue
                 try:
                     result = await handler(step, assertion)
                     results.append(result)
                     continue
                 except Exception as e:
-                    results.append({
-                        "type": a_type,
-                        "layer": 1 if a_type == "exit_code" else 3,
-                        "pass": False,
-                        "error": f"断言执行异常: {e}",
-                    })
+                    results.append(
+                        {
+                            "type": a_type,
+                            "layer": 1 if a_type == "exit_code" else 3,
+                            "pass": False,
+                            "error": f"断言执行异常: {e}",
+                        }
+                    )
                     continue
             # 文件系统断言（不依赖命名结果）
             try:
                 result = await handler(assertion)
                 results.append(result)
             except Exception as e:
-                results.append({
-                    "type": a_type, "layer": 1, "pass": False,
-                    "error": f"断言执行异常: {e}",
-                })
+                results.append(
+                    {
+                        "type": a_type,
+                        "layer": 1,
+                        "pass": False,
+                        "error": f"断言执行异常: {e}",
+                    }
+                )
         return results
 
     def _resolve_step(self, named_results: dict, assertion: dict):
@@ -126,8 +136,10 @@ class CliAssertionRunner:
             expected = 0
         actual = step.get("exit_code")
         return {
-            "type": "exit_code", "layer": 1,
-            "expected": expected, "actual": actual,
+            "type": "exit_code",
+            "layer": 1,
+            "expected": expected,
+            "actual": actual,
             "pass": actual == expected,
         }
 
@@ -137,8 +149,10 @@ class CliAssertionRunner:
         exists = path.exists()
         want = bool(a.get("exists", True))
         return {
-            "type": "file_exists", "layer": 1,
-            "path": str(path), "exists": exists,
+            "type": "file_exists",
+            "layer": 1,
+            "path": str(path),
+            "exists": exists,
             "pass": exists == want,
         }
 
@@ -153,8 +167,10 @@ class CliAssertionRunner:
         ok_max = maximum is None or count <= int(maximum)
         passed = ok_min and ok_max
         result = {
-            "type": "dir_contains", "layer": 1,
-            "glob": glob, "count": count,
+            "type": "dir_contains",
+            "layer": 1,
+            "glob": glob,
+            "count": count,
             "pass": passed,
         }
         if minimum is not None:
@@ -162,8 +178,7 @@ class CliAssertionRunner:
         if maximum is not None:
             result["max"] = int(maximum)
         if not passed:
-            result["matches"] = [str(p.relative_to(self.project_root))
-                                 for p in paths[:10]]
+            result["matches"] = [str(p.relative_to(self.project_root)) for p in paths[:10]]
         return result
 
     # ═══════════════════════════════════════════════════════════════
@@ -190,13 +205,16 @@ class CliAssertionRunner:
         if not passed and expected:
             idx = actual.find(str(expected))
             if idx >= 0:
-                snippet = actual[max(0, idx - 80): idx + len(str(expected)) + 80]
+                snippet = actual[max(0, idx - 80) : idx + len(str(expected)) + 80]
             else:
                 snippet = actual[:160]
         return {
-            "type": "output_match", "layer": 3,
-            "stream": stream, "mode": mode,
-            "expected": expected, "negate": negate,
+            "type": "output_match",
+            "layer": 3,
+            "stream": stream,
+            "mode": mode,
+            "expected": expected,
+            "negate": negate,
             "pass": passed,
             "actual_snippet": snippet,
         }
@@ -206,8 +224,10 @@ class CliAssertionRunner:
         path = (self.project_root / str(a.get("path", ""))).resolve()
         if not path.is_file():
             return {
-                "type": "file_content", "layer": 3,
-                "path": str(path), "pass": False,
+                "type": "file_content",
+                "layer": 3,
+                "path": str(path),
+                "pass": False,
                 "error": f"文件不存在: {path}",
             }
         content = path.read_text(encoding="utf-8", errors="replace")
@@ -216,9 +236,12 @@ class CliAssertionRunner:
         negate = bool(a.get("negate", False))
         passed = self._match(content, expected, mode, negate)
         return {
-            "type": "file_content", "layer": 3,
-            "path": str(path), "mode": mode,
-            "expected": expected, "negate": negate,
+            "type": "file_content",
+            "layer": 3,
+            "path": str(path),
+            "mode": mode,
+            "expected": expected,
+            "negate": negate,
             "pass": passed,
             "actual_snippet": content[:200] if not passed else "",
         }
@@ -230,8 +253,10 @@ class CliAssertionRunner:
             data = json.loads(stdout)
         except json.JSONDecodeError:
             return {
-                "type": "json_output", "layer": 3,
-                "step": a.get("step"), "path": a.get("path"),
+                "type": "json_output",
+                "layer": 3,
+                "step": a.get("step"),
+                "path": a.get("path"),
                 "pass": False,
                 "error": f"stdout 非合法 JSON: {stdout[:120]}",
             }
@@ -253,8 +278,12 @@ class CliAssertionRunner:
         if negate:
             passed = not passed
         return {
-            "type": "json_output", "layer": 3,
-            "step": a.get("step"), "path": path,
-            "expected": expected, "actual": actual, "mode": mode,
+            "type": "json_output",
+            "layer": 3,
+            "step": a.get("step"),
+            "path": path,
+            "expected": expected,
+            "actual": actual,
+            "mode": mode,
             "pass": passed,
         }

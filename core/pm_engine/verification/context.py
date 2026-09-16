@@ -1,0 +1,158 @@
+"""PipelineContext：VerificationPipeline 显式依赖注入容器（design D1/D10）。
+
+VerificationPipeline 及其子组件通过 context 访问外部依赖，MUST NOT 直接回引
+门面 `self._pm._<private>`——彻底消除门面封装破坏（phase 1 的核心目标）。
+
+构造方式：`PipelineContext(pm)` 由 engine.py 的 `_verification` property
+注入，也可在测试中手动构造（只需提供 D1 六成员 + D10 补充成员）。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Optional, Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.state_machine import StateMachine
+
+
+class _Logger(Protocol):
+    """最小 logger 接口（engine.Logger 或 MagicMock 均满足）。"""
+
+    def debug(self, *a: Any, **kw: Any) -> None: ...
+    def info(self, *a: Any, **kw: Any) -> None: ...
+    def warning(self, *a: Any, **kw: Any) -> None: ...
+    def error(self, *a: Any, **kw: Any) -> None: ...
+
+
+@dataclass(frozen=False)
+class PipelineContext:
+    """VerificationPipeline 显式依赖注入容器。
+
+    D1 核心成员（高频只读 / 跨域调用）：
+        logger                直接引用 pm.logger
+        project_root          直接引用 pm.project_root（Path）
+        state_machine         直接引用 pm.state_machine
+        config_reader         委托 pm._get_config(key, default)
+        escalation_notifier   委托 pm._send_human_escalation_alert(...)
+        enqueue               委托 pm._enqueue(spec_name, agent_type)
+
+    D10 补充成员（6 个 PMEngine 私有目标，必须由 context 承载才能满足
+    `grep -c 'self._pm._' == 0` 的数学可达性）：
+        is_fix_spec           委托 pm._is_fix_spec(spec_name) → bool
+        on_spec_verified      委托 pm._on_spec_verified(spec_name)
+        on_spec_bug_found     委托 pm._on_spec_bug_found(spec_name,
+                              failure_class="product", run_id="")
+        read_implementer_result  委托 pm._read_implementer_result(spec_name)
+        exempt_infra_run_budget  委托 pm._exempt_infra_run_budget(spec_name,
+                                reason, refund_key="")
+        env_infra_markers     只读 tuple，来自 pm._ENV_INFRA_MARKERS
+    """
+
+    # ── D1 核心成员 ─────────────────────────────────────────────────────────
+    logger: _Logger
+    project_root: Path
+    state_machine: "StateMachine"
+
+    config_reader: Callable[..., Any] = field(repr=False)
+    escalation_notifier: Callable[..., None] = field(repr=False)
+    enqueue: Callable[[str, str], None] = field(repr=False)
+
+    # ── D10 补充成员（PMEngine 私有 → context 成员）─────────────────────────
+    is_fix_spec: Callable[[str], bool] = field(repr=False)
+    on_spec_verified: Callable[[str], None] = field(repr=False)
+    on_spec_bug_found: Callable[..., None] = field(repr=False)
+    read_implementer_result: Callable[[str], Optional[dict]] = field(repr=False)
+    exempt_infra_run_budget: Callable[..., bool] = field(repr=False)
+    env_infra_markers: tuple[str, ...] = field(default=(), repr=True)
+
+    # ── 便捷构造（从 PMEngine 实例一键创建）─────────────────────────────────
+
+    @classmethod
+    def from_pm(cls, pm: Any) -> "PipelineContext":
+        """从 PMEngine 实例构造 PipelineContext。
+
+        委托成员以**关键字参数转发**的包装函数绑定 pm 对应私有方法：
+        - 调用方传入的关键字参数原样透传给 pm 方法，与重构前
+          `self._pm._<method>(...)` 的调用签名逐字节一致（既有测试以关键字
+          参数断言 mock 调用，位置化转发会丢失 kwargs 语义）；
+        - 属性访问**推迟到真正调用时**而非构造时——`SimpleNamespace` 式
+          pm 桩只声明部分私有属性（如 test_scenario_reroute_gate 的 _mk_pm），
+          构造时读取全部属性会 AttributeError。
+        """
+
+        def _config_reader(key: str, default: Any = None) -> Any:
+            return pm._get_config(key, default)
+
+        def _escalation_notifier(
+            spec_name: str,
+            signal_type: str,
+            severity: str,
+            description: str,
+            evidence: str,
+            recommended_action: str,
+            trigger: dict | None = None,
+        ) -> None:
+            # 与既有调用点/测试断言逐字节一致：关键字转发；trigger 缺省时
+            # 不显式下传（原调用点未传 trigger 时 mock 断言不含该键）。
+            if trigger is None:
+                pm._send_human_escalation_alert(
+                    spec_name=spec_name,
+                    signal_type=signal_type,
+                    severity=severity,
+                    description=description,
+                    evidence=evidence,
+                    recommended_action=recommended_action,
+                )
+            else:
+                pm._send_human_escalation_alert(
+                    spec_name=spec_name,
+                    signal_type=signal_type,
+                    severity=severity,
+                    description=description,
+                    evidence=evidence,
+                    recommended_action=recommended_action,
+                    trigger=trigger,
+                )
+
+        def _enqueue(spec_name: str, agent_type: str) -> None:
+            return pm._enqueue(spec_name, agent_type)
+
+        def _is_fix_spec(spec_name: str) -> bool:
+            return pm._is_fix_spec(spec_name)
+
+        def _on_spec_verified(spec_name: str) -> None:
+            return pm._on_spec_verified(spec_name)
+
+        def _on_spec_bug_found(
+            spec_name: str,
+            failure_class: str = "product",
+            run_id: str = "",
+        ) -> None:
+            return pm._on_spec_bug_found(spec_name, failure_class=failure_class, run_id=run_id)
+
+        def _read_implementer_result(spec_name: str) -> Optional[dict]:
+            return pm._read_implementer_result(spec_name)
+
+        def _exempt_infra_run_budget(
+            spec_name: str,
+            reason: str,
+            refund_key: str = "",
+        ) -> bool:
+            return pm._exempt_infra_run_budget(spec_name, reason, refund_key=refund_key)
+
+        return cls(
+            logger=pm.logger,
+            project_root=pm.project_root,
+            state_machine=pm.state_machine,
+            config_reader=_config_reader,
+            escalation_notifier=_escalation_notifier,
+            enqueue=_enqueue,
+            is_fix_spec=_is_fix_spec,
+            on_spec_verified=_on_spec_verified,
+            on_spec_bug_found=_on_spec_bug_found,
+            read_implementer_result=_read_implementer_result,
+            exempt_infra_run_budget=_exempt_infra_run_budget,
+            env_infra_markers=getattr(pm, "_ENV_INFRA_MARKERS", ()),
+        )

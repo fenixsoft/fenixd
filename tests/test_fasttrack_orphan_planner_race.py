@@ -100,7 +100,7 @@ class TestStage1StatusRecheckBeforePlanner(_OrphanRaceTestBase):
         plan_result.success = True
         plan_result.duration_seconds = 120.0
         self.agent_runner.run_planner.return_value = plan_result
-        self.engine._read_planner_result = MagicMock(
+        self.engine._verification._read_planner_result = MagicMock(
             return_value=VerdictReadResult.failure(
                 "unknown-status", "status='plan-invalid'"))
 
@@ -123,7 +123,7 @@ class TestStage1StatusRecheckBeforePlanner(_OrphanRaceTestBase):
         plan_result.success = True
         plan_result.duration_seconds = 120.0
         self.agent_runner.run_planner.return_value = plan_result
-        self.engine._read_planner_result = MagicMock(
+        self.engine._verification._read_planner_result = MagicMock(
             return_value=VerdictReadResult.failure(
                 "unknown-status", "status='plan-invalid'"))
 

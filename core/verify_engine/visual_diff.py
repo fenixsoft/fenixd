@@ -48,8 +48,8 @@ class VisualDiffer:
     """
 
     # 阈值常量
-    SSIM_PASS = 0.95       # >= 此值视为通过
-    SSIM_WARN = 0.85       # >= 此值视为警告，< 此值视为失败
+    SSIM_PASS = 0.95  # >= 此值视为通过
+    SSIM_WARN = 0.85  # >= 此值视为警告，< 此值视为失败
     PIXEL_DIFF_PASS = 0.01  # 像素差异 < 1% 视为通过
     PIXEL_DIFF_WARN = 0.05  # 像素差异 < 5% 视为警告
 
@@ -60,15 +60,14 @@ class VisualDiffer:
     # 污染基线告警阈值（连续 ≥3 轮 diff_detected 且 DOM 全过）
     SUSPICIOUS_STREAK_THRESHOLD = 3
 
-    def __init__(self, spec_name: str, project_root: Path,
-                 config: Optional[dict] = None, logger=None):
+    def __init__(
+        self, spec_name: str, project_root: Path, config: Optional[dict] = None, logger=None
+    ):
         self.spec_name = spec_name
         self.project_root = Path(project_root)
         self.config = config if isinstance(config, dict) else {}
         self.logger = logger
-        self.base_dir = (
-            self.project_root / ".fenix" / "verify-progress" / spec_name
-        )
+        self.base_dir = self.project_root / ".fenix" / "verify-progress" / spec_name
 
     # ── 配置读取（verify_engine 段，向后兼容缺省）────────────────
 
@@ -80,8 +79,11 @@ class VisualDiffer:
     def _settle_timeout_ms(self) -> int:
         """settle 等待上限（毫秒）；0/负值=禁用（行为与现状一致）。"""
         try:
-            val = int(self._verify_config().get(
-                "visual_settle_timeout_ms", self.DEFAULT_SETTLE_TIMEOUT_MS))
+            val = int(
+                self._verify_config().get(
+                    "visual_settle_timeout_ms", self.DEFAULT_SETTLE_TIMEOUT_MS
+                )
+            )
         except (TypeError, ValueError):
             val = self.DEFAULT_SETTLE_TIMEOUT_MS
         return max(val, 0)
@@ -89,8 +91,7 @@ class VisualDiffer:
     def _retake_max(self) -> int:
         """SSIM 低分重拍次数上限。"""
         try:
-            val = int(self._verify_config().get(
-                "visual_retake_max", self.DEFAULT_RETAKE_MAX))
+            val = int(self._verify_config().get("visual_retake_max", self.DEFAULT_RETAKE_MAX))
         except (TypeError, ValueError):
             val = self.DEFAULT_RETAKE_MAX
         return max(val, 0)
@@ -112,7 +113,10 @@ class VisualDiffer:
         return True
 
     async def compare(
-        self, page, baseline_name: str, scenario_id: str,
+        self,
+        page,
+        baseline_name: str,
+        scenario_id: str,
         scenario_context: Optional[dict] = None,
     ) -> list[dict]:
         """对当前页面与基线进行视觉对比。
@@ -158,12 +162,18 @@ class VisualDiffer:
             """单次对比（SSIM，skimage 不可用时降级像素对比）。"""
             try:
                 return self._ssim_compare(
-                    baseline_path, current_path, baseline_name, scenario_id,
+                    baseline_path,
+                    current_path,
+                    baseline_name,
+                    scenario_id,
                     screenshots_dir,
                 )
             except ImportError:
                 return self._pixel_fallback_compare(
-                    baseline_path, current_path, baseline_name, scenario_id,
+                    baseline_path,
+                    current_path,
+                    baseline_name,
+                    scenario_id,
                 )
 
         # 截取当前页面（截图前动画静置——opacity 渐变动画只有 getAnimations
@@ -178,23 +188,25 @@ class VisualDiffer:
         # 截图干净时正常建立，不扩大失败。
         if not baseline_path.exists():
             labels = classify_screenshot(str(current_path))
-            has_pollution = (
-                labels.get("blank_screenshot") or labels.get("low_contrast")
-            )
+            has_pollution = labels.get("blank_screenshot") or labels.get("low_contrast")
             if has_pollution:
-                return [_evidence_fields({
-                    "baseline": baseline_name,
-                    "status": "baseline_rejected",
-                    "ssim": None,
-                    "pass": False,
-                    "note": (
-                        "首次运行，截图健全性判定不通过"
-                        f"（{'blank_screenshot' if labels.get('blank_screenshot') else 'low_contrast'}），"
-                        "拒绝固化为基线——环境性伪画面不得固化，"
-                        "后续轮次截图干净时正常建立基线"
-                    ),
-                    "screenshot_labels": labels,
-                })]
+                return [
+                    _evidence_fields(
+                        {
+                            "baseline": baseline_name,
+                            "status": "baseline_rejected",
+                            "ssim": None,
+                            "pass": False,
+                            "note": (
+                                "首次运行，截图健全性判定不通过"
+                                f"（{'blank_screenshot' if labels.get('blank_screenshot') else 'low_contrast'}），"
+                                "拒绝固化为基线——环境性伪画面不得固化，"
+                                "后续轮次截图干净时正常建立基线"
+                            ),
+                            "screenshot_labels": labels,
+                        }
+                    )
+                ]
 
             # ── 基线固化门（fix-visual-baseline-settle D3）──
             # 健全性判定在前（拒绝污染画面），通过性门在后（拒绝失败场景固化）
@@ -204,29 +216,37 @@ class VisualDiffer:
             # 与断言态不一致，固化即污染（取证定案：antd Modal 首轮 fade
             # 未完成 → 污染基线恒比恒低）。
             if not self._scenario_passed(scenario_context):
-                return [_evidence_fields({
-                    "baseline": baseline_name,
-                    "status": "baseline_deferred",
-                    "ssim": None,
-                    "pass": False,
-                    "note": (
-                        "首次运行且存在步骤/断言失败，基线固化前置条件不满足"
-                        "（步骤全成功 + 断言全通过才固化），本轮不固化，"
-                        "顺延至场景干净轮次"
-                    ),
-                })]
+                return [
+                    _evidence_fields(
+                        {
+                            "baseline": baseline_name,
+                            "status": "baseline_deferred",
+                            "ssim": None,
+                            "pass": False,
+                            "note": (
+                                "首次运行且存在步骤/断言失败，基线固化前置条件不满足"
+                                "（步骤全成功 + 断言全通过才固化），本轮不固化，"
+                                "顺延至场景干净轮次"
+                            ),
+                        }
+                    )
+                ]
 
         # 首次运行：建立基线（正常画面 + 通过性门通过）
         if not baseline_path.exists():
             baseline_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(str(current_path), str(baseline_path))
-            return [_evidence_fields({
-                "baseline": baseline_name,
-                "status": "baseline_created",
-                "ssim": None,
-                "pass": True,
-                "note": "首次运行，已自动建立基线",
-            })]
+            return [
+                _evidence_fields(
+                    {
+                        "baseline": baseline_name,
+                        "status": "baseline_created",
+                        "ssim": None,
+                        "pass": True,
+                        "note": "首次运行，已自动建立基线",
+                    }
+                )
+            ]
 
         # 执行对比（首次）
         results = _compare_once()
@@ -255,8 +275,7 @@ class VisualDiffer:
         # 同场景连续 diff_detected 且同期 DOM 全过 → 累计；达 3 轮标记基线
         # suspicious + admin 人工告警。基线只标记不处置（重建交人工确认，
         # 自动覆盖会洗白「基线对、当前版本真回归」镜像场景）。
-        self._update_baseline_streaks(scenario_id, baseline_name,
-                                      scenario_context, final)
+        self._update_baseline_streaks(scenario_id, baseline_name, scenario_context, final)
 
         return [final]
 
@@ -299,8 +318,8 @@ class VisualDiffer:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp_path = tempfile.mkstemp(
-                dir=str(path.parent), prefix=".baseline_streaks.",
-                suffix=".json.tmp")
+                dir=str(path.parent), prefix=".baseline_streaks.", suffix=".json.tmp"
+            )
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(streaks, f, ensure_ascii=False, indent=2)
@@ -322,13 +341,20 @@ class VisualDiffer:
         try:
             marker = self._suspicious_marker_path(baseline_name)
             marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.write_text(json.dumps({
-                "baseline": baseline_name,
-                "scenario_id": scenario_id,
-                "suspicious": True,
-                "note": "连续多轮 diff_detected 且 DOM 断言全过，基线疑似污染；"
+            marker.write_text(
+                json.dumps(
+                    {
+                        "baseline": baseline_name,
+                        "scenario_id": scenario_id,
+                        "suspicious": True,
+                        "note": "连续多轮 diff_detected 且 DOM 断言全过，基线疑似污染；"
                         "重建需人工确认（框架不会自动覆盖/删除基线）",
-            }, ensure_ascii=False, indent=2), encoding="utf-8")
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
         except OSError as e:
             self._log_warning(f"suspicious 标记写失败: {e}")
 
@@ -339,8 +365,9 @@ class VisualDiffer:
         except OSError:
             pass
 
-    def _alert_suspicious(self, scenario_id: str, baseline_name: str,
-                          count: int, ssims: list) -> None:
+    def _alert_suspicious(
+        self, scenario_id: str, baseline_name: str, count: int, ssims: list
+    ) -> None:
         """连续 ≥3 轮 diff_detected + DOM 全过 → admin 人工告警（D5）。
 
         复用既有 admin 告警通道（AdminStore，.fenix/admin_alerts.json），
@@ -349,9 +376,9 @@ class VisualDiffer:
         """
         try:
             from core.admin_store import AdminStore, ESCALATION
+
             baseline_path = self.base_dir / "baselines" / f"{baseline_name}.png"
-            ssim_text = ", ".join(
-                str(s) if s is not None else "-" for s in (ssims or []))
+            ssim_text = ", ".join(str(s) if s is not None else "-" for s in (ssims or []))
             store = AdminStore(self.project_root, self.logger)
             entry = {
                 "kind": ESCALATION,
@@ -362,9 +389,7 @@ class VisualDiffer:
                     f"视觉基线疑似污染：场景 {scenario_id}（基线 {baseline_name}）"
                     f"连续 {count} 轮 SSIM 恒 diff_detected 且 DOM 断言全过"
                 ),
-                "evidence": (
-                    f"各轮 SSIM: {ssim_text}；基线文件: {baseline_path}"
-                ),
+                "evidence": (f"各轮 SSIM: {ssim_text}；基线文件: {baseline_path}"),
                 "recommended_action": (
                     "人工核实基线画面与断言态是否一致（如首轮 antd Modal fade "
                     "未完成固化的污染基线）；确认为污染后删除基线文件，下一轮"
@@ -372,6 +397,7 @@ class VisualDiffer:
                 ),
             }
             from core.alert_lifecycle import build_trigger
+
             trigger = build_trigger("visual_baseline_suspicious", self.spec_name)
             if trigger:
                 entry["trigger"] = trigger
@@ -379,9 +405,9 @@ class VisualDiffer:
         except Exception as e:
             self._log_warning(f"suspicious 告警发送失败: {type(e).__name__}: {e}")
 
-    def _update_baseline_streaks(self, scenario_id: str, baseline_name: str,
-                                 scenario_context: Optional[dict],
-                                 result: dict) -> None:
+    def _update_baseline_streaks(
+        self, scenario_id: str, baseline_name: str, scenario_context: Optional[dict], result: dict
+    ) -> None:
         """连续异常计数侧车更新（D5，仅对已存在基线的对比轮）。
 
         - diff_detected + DOM 全过 → 计数 +1（达 3 标记 suspicious + 告警）
@@ -400,18 +426,17 @@ class VisualDiffer:
                 entry["count"] = int(entry.get("count", 0)) + 1
                 ssim = result.get("ssim")
                 entry.setdefault("ssims", []).append(
-                    round(float(ssim), 4)
-                    if isinstance(ssim, (int, float)) else None)
-                newly_suspicious = (
-                    entry["count"] >= self.SUSPICIOUS_STREAK_THRESHOLD
-                    and not entry.get("suspicious")
+                    round(float(ssim), 4) if isinstance(ssim, (int, float)) else None
                 )
+                newly_suspicious = entry[
+                    "count"
+                ] >= self.SUSPICIOUS_STREAK_THRESHOLD and not entry.get("suspicious")
                 if newly_suspicious:
                     entry["suspicious"] = True
                     self._mark_suspicious(baseline_name, scenario_id)
                     self._alert_suspicious(
-                        scenario_id, baseline_name, entry["count"],
-                        entry.get("ssims") or [])
+                        scenario_id, baseline_name, entry["count"], entry.get("ssims") or []
+                    )
                 streaks[scenario_id] = entry
             else:
                 # DOM 有真实失败：该轮不累计，计数清零；已标记的 suspicious
@@ -419,8 +444,7 @@ class VisualDiffer:
                 prev = streaks.get(scenario_id)
                 streaks[scenario_id] = {
                     "count": 0,
-                    "suspicious": bool(isinstance(prev, dict)
-                                       and prev.get("suspicious")),
+                    "suspicious": bool(isinstance(prev, dict) and prev.get("suspicious")),
                     "ssims": [],
                 }
         elif status in ("pass", "warning"):
@@ -448,8 +472,12 @@ class VisualDiffer:
     # ── SSIM 对比 ──────────────────────────────────────────────
 
     def _ssim_compare(
-        self, baseline_path: Path, current_path: Path,
-        baseline_name: str, scenario_id: str, output_dir: Path,
+        self,
+        baseline_path: Path,
+        current_path: Path,
+        baseline_name: str,
+        scenario_id: str,
+        output_dir: Path,
     ) -> list[dict]:
         """使用 scikit-image 的 SSIM 进行感知对比。"""
         from skimage.metrics import structural_similarity as ssim
@@ -461,24 +489,30 @@ class VisualDiffer:
 
         # 尺寸不匹配
         if baseline_img.shape != current_img.shape:
-            return [{
-                "baseline": baseline_name,
-                "status": "size_mismatch",
-                "ssim": None,
-                "pass": False,
-                "detail": (
-                    f"尺寸不匹配: "
-                    f"baseline={baseline_img.shape[1]}x{baseline_img.shape[0]}, "
-                    f"current={current_img.shape[1]}x{current_img.shape[0]}"
-                ),
-                "scenario_id": scenario_id,
-            }]
+            return [
+                {
+                    "baseline": baseline_name,
+                    "status": "size_mismatch",
+                    "ssim": None,
+                    "pass": False,
+                    "detail": (
+                        f"尺寸不匹配: "
+                        f"baseline={baseline_img.shape[1]}x{baseline_img.shape[0]}, "
+                        f"current={current_img.shape[1]}x{current_img.shape[0]}"
+                    ),
+                    "scenario_id": scenario_id,
+                }
+            ]
 
         # 计算 channel-by-channel SSIM
-        score = float(ssim(
-            baseline_img, current_img,
-            channel_axis=2, data_range=1.0,
-        ))
+        score = float(
+            ssim(
+                baseline_img,
+                current_img,
+                channel_axis=2,
+                data_range=1.0,
+            )
+        )
 
         # 生成差异图
         diff_path = output_dir / f"{scenario_id}_diff.png"
@@ -493,24 +527,29 @@ class VisualDiffer:
         else:
             status = "diff_detected"
 
-        return [{
-            "baseline": baseline_name,
-            "status": status,
-            "ssim": score,
-            "pass": status == "pass",
-            "threshold_pass": self.SSIM_PASS,
-            "threshold_warn": self.SSIM_WARN,
-            "diff_image": str(diff_path),
-            "current_image": str(current_path),
-            "baseline_image": str(baseline_path),
-            "scenario_id": scenario_id,
-        }]
+        return [
+            {
+                "baseline": baseline_name,
+                "status": status,
+                "ssim": score,
+                "pass": status == "pass",
+                "threshold_pass": self.SSIM_PASS,
+                "threshold_warn": self.SSIM_WARN,
+                "diff_image": str(diff_path),
+                "current_image": str(current_path),
+                "baseline_image": str(baseline_path),
+                "scenario_id": scenario_id,
+            }
+        ]
 
     # ── 降级方案：像素对比 ──────────────────────────────────────
 
     def _pixel_fallback_compare(
-        self, baseline_path: Path, current_path: Path,
-        baseline_name: str, scenario_id: str,
+        self,
+        baseline_path: Path,
+        current_path: Path,
+        baseline_name: str,
+        scenario_id: str,
     ) -> list[dict]:
         """降级方案：简单的像素百分比差异。
 
@@ -523,28 +562,32 @@ class VisualDiffer:
             baseline = Image.open(baseline_path).convert("RGB")
             current = Image.open(current_path).convert("RGB")
         except ImportError:
-            return [{
-                "baseline": baseline_name,
-                "status": "skipped",
-                "ssim": None,
-                "pass": True,
-                "error": "PIL 不可用，无法进行像素对比，跳过",
-                "scenario_id": scenario_id,
-            }]
+            return [
+                {
+                    "baseline": baseline_name,
+                    "status": "skipped",
+                    "ssim": None,
+                    "pass": True,
+                    "error": "PIL 不可用，无法进行像素对比，跳过",
+                    "scenario_id": scenario_id,
+                }
+            ]
 
         if baseline.size != current.size:
-            return [{
-                "baseline": baseline_name,
-                "status": "size_mismatch",
-                "ssim": None,
-                "pass": False,
-                "detail": (
-                    f"尺寸不匹配: "
-                    f"baseline={baseline.size[0]}x{baseline.size[1]}, "
-                    f"current={current.size[0]}x{current.size[1]}"
-                ),
-                "scenario_id": scenario_id,
-            }]
+            return [
+                {
+                    "baseline": baseline_name,
+                    "status": "size_mismatch",
+                    "ssim": None,
+                    "pass": False,
+                    "detail": (
+                        f"尺寸不匹配: "
+                        f"baseline={baseline.size[0]}x{baseline.size[1]}, "
+                        f"current={current.size[0]}x{current.size[1]}"
+                    ),
+                    "scenario_id": scenario_id,
+                }
+            ]
 
         b_arr = np.array(baseline)
         c_arr = np.array(current)
@@ -568,18 +611,20 @@ class VisualDiffer:
         else:
             status = "diff_detected"
 
-        return [{
-            "baseline": baseline_name,
-            "status": status,
-            "pixel_diff_ratio": diff_ratio,
-            "diff_pixels": diff_pixels,
-            "total_pixels": total_pixels,
-            "pass": status == "pass",
-            "threshold_pass": self.PIXEL_DIFF_PASS,
-            "threshold_warn": self.PIXEL_DIFF_WARN,
-            "diff_image": str(diff_path),
-            "current_image": str(current_path),
-            "baseline_image": str(baseline_path),
-            "scenario_id": scenario_id,
-            "note": "使用像素对比降级方案（安装 scikit-image 可获得更准确的SSIM对比）",
-        }]
+        return [
+            {
+                "baseline": baseline_name,
+                "status": status,
+                "pixel_diff_ratio": diff_ratio,
+                "diff_pixels": diff_pixels,
+                "total_pixels": total_pixels,
+                "pass": status == "pass",
+                "threshold_pass": self.PIXEL_DIFF_PASS,
+                "threshold_warn": self.PIXEL_DIFF_WARN,
+                "diff_image": str(diff_path),
+                "current_image": str(current_path),
+                "baseline_image": str(baseline_path),
+                "scenario_id": scenario_id,
+                "note": "使用像素对比降级方案（安装 scikit-image 可获得更准确的SSIM对比）",
+            }
+        ]

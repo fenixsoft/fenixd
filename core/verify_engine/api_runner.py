@@ -74,8 +74,7 @@ class ApiRunner(VerifyRunner):
 
     kind = "api"
 
-    def __init__(self, spec_name, project_root=None, logger=None,
-                 config: dict = None, **kwargs):
+    def __init__(self, spec_name, project_root=None, logger=None, config: dict = None, **kwargs):
         super().__init__(spec_name, project_root, logger, config, **kwargs)
         # 契约统一供给的实例 base_url（引擎注入；http_request/sse_connect
         # URL origin 全量改写依据）。无实例形态为空字符串（无害空操作）。
@@ -89,8 +88,10 @@ class ApiRunner(VerifyRunner):
         errors = validate_scenario(scenario)
         if errors:
             return errors
-        if (any(a.type == "json_schema" for a in scenario.assertions)
-                and not json_schema_available()):
+        if (
+            any(a.type == "json_schema" for a in scenario.assertions)
+            and not json_schema_available()
+        ):
             errors.append(
                 f"场景'{scenario.id}'包含 json_schema 断言但 jsonschema 库不可用"
                 f"——请安装（pip3 install jsonschema）后重试，不静默跳过"
@@ -104,9 +105,7 @@ class ApiRunner(VerifyRunner):
         try:
             import httpx  # noqa: F401
         except ImportError as e:
-            raise RuntimeError(
-                f"ApiRunner 需要 httpx 库（pip3 install httpx）: {e}"
-            ) from e
+            raise RuntimeError(f"ApiRunner 需要 httpx 库（pip3 install httpx）: {e}") from e
 
     async def teardown(self):
         # client 按场景独立创建/关闭（execute 内 async with），无共享连接池
@@ -142,8 +141,7 @@ class ApiRunner(VerifyRunner):
             assertion_defs = [a.to_dict() for a in scenario.assertions]
             assertion_results = await self.asserter.run(captures, assertion_defs)
 
-        status = determine_scenario_status(
-            step_results, assertion_results, [])
+        status = determine_scenario_status(step_results, assertion_results, [])
 
         return {
             "scenario_id": scenario.id,
@@ -164,12 +162,12 @@ class ApiRunner(VerifyRunner):
         if action == "sse_connect":
             return await self._execute_sse_connect(client, step, captures)
         return {
-            "success": False, "action": action,
+            "success": False,
+            "action": action,
             "error": f"api 词表不支持的操作: {action}",
         }
 
-    async def _execute_http_request(self, client, step: dict,
-                                    captures: dict) -> dict:
+    async def _execute_http_request(self, client, step: dict, captures: dict) -> dict:
         """http_request：构建 httpx 请求并捕获命名响应。"""
         import httpx
 
@@ -191,8 +189,10 @@ class ApiRunner(VerifyRunner):
                     json_body = json.loads(body)
                 except json.JSONDecodeError:
                     return {
-                        "success": False, "action": "http_request",
-                        "method": method, "url": url,
+                        "success": False,
+                        "action": "http_request",
+                        "method": method,
+                        "url": url,
                         "error": f"body 非合法 JSON: {body[:100]}",
                     }
             else:
@@ -201,27 +201,38 @@ class ApiRunner(VerifyRunner):
         try:
             t0 = time.monotonic()
             resp = await client.request(
-                method, url, headers=headers, content=content, json=json_body,
-                timeout=timeout, follow_redirects=True,
+                method,
+                url,
+                headers=headers,
+                content=content,
+                json=json_body,
+                timeout=timeout,
+                follow_redirects=True,
             )
             latency_ms = int((time.monotonic() - t0) * 1000)
         except httpx.ConnectError as e:
             return {
-                "success": False, "action": "http_request",
-                "method": method, "url": url,
+                "success": False,
+                "action": "http_request",
+                "method": method,
+                "url": url,
                 "error_type": "connection_failed",
                 "error": f"连接失败（实例失联或不可达，环境候选）: {e}",
             }
         except httpx.TimeoutException as e:
             return {
-                "success": False, "action": "http_request",
-                "method": method, "url": url,
+                "success": False,
+                "action": "http_request",
+                "method": method,
+                "url": url,
                 "error": f"请求超时（{timeout}s）: {e}",
             }
         except Exception as e:
             return {
-                "success": False, "action": "http_request",
-                "method": method, "url": url,
+                "success": False,
+                "action": "http_request",
+                "method": method,
+                "url": url,
                 "error": f"请求异常: {type(e).__name__}: {e}",
             }
 
@@ -245,15 +256,17 @@ class ApiRunner(VerifyRunner):
         captures["_latest"] = capture
 
         return {
-            "success": True, "action": "http_request",
-            "method": method, "url": url,
-            "status": resp.status_code, "latency_ms": latency_ms,
+            "success": True,
+            "action": "http_request",
+            "method": method,
+            "url": url,
+            "status": resp.status_code,
+            "latency_ms": latency_ms,
             "detail": f"{method} {url} → {resp.status_code}"
-                      + ("（响应体已截断 64KB）" if truncated else ""),
+            + ("（响应体已截断 64KB）" if truncated else ""),
         }
 
-    async def _execute_sse_connect(self, client, step: dict,
-                                   captures: dict) -> dict:
+    async def _execute_sse_connect(self, client, step: dict, captures: dict) -> dict:
         """sse_connect：流式收集窗口内事件列表（SSE 步骤，fast-follow 可降级）。"""
         import httpx
 
@@ -263,14 +276,18 @@ class ApiRunner(VerifyRunner):
 
         try:
             async with client.stream(
-                "GET", url,
-                timeout=httpx.Timeout(connect=5.0, read=max(10.0, duration + 10.0),
-                                      write=5.0, pool=5.0),
+                "GET",
+                url,
+                timeout=httpx.Timeout(
+                    connect=5.0, read=max(10.0, duration + 10.0), write=5.0, pool=5.0
+                ),
                 follow_redirects=True,
             ) as resp:
                 if resp.status_code >= 400:
                     return {
-                        "success": False, "action": "sse_connect", "url": url,
+                        "success": False,
+                        "action": "sse_connect",
+                        "url": url,
                         "error": f"SSE 连接失败: HTTP {resp.status_code}",
                     }
                 deadline = time.monotonic() + duration
@@ -285,22 +302,28 @@ class ApiRunner(VerifyRunner):
                         event["event"] = line[6:].strip()
                     elif line == "":
                         if event["data"].strip():
-                            events.append({
-                                "data": event["data"].rstrip("\n"),
-                                "event": event["event"],
-                            })
+                            events.append(
+                                {
+                                    "data": event["data"].rstrip("\n"),
+                                    "event": event["event"],
+                                }
+                            )
                         event = {"data": "", "event": ""}
                         if len(events) >= 100:
                             break
         except httpx.ConnectError as e:
             return {
-                "success": False, "action": "sse_connect", "url": url,
+                "success": False,
+                "action": "sse_connect",
+                "url": url,
                 "error_type": "connection_failed",
                 "error": f"连接失败（实例失联或不可达，环境候选）: {e}",
             }
         except Exception as e:
             return {
-                "success": False, "action": "sse_connect", "url": url,
+                "success": False,
+                "action": "sse_connect",
+                "url": url,
                 "error": f"SSE 收集异常: {type(e).__name__}: {e}",
             }
 
@@ -311,7 +334,9 @@ class ApiRunner(VerifyRunner):
         captures["_latest"] = capture
 
         return {
-            "success": True, "action": "sse_connect", "url": url,
+            "success": True,
+            "action": "sse_connect",
+            "url": url,
             "events": len(events),
             "detail": f"SSE 收集 {len(events)} 个事件（{duration}s 窗口）",
         }
@@ -319,6 +344,7 @@ class ApiRunner(VerifyRunner):
     def config_env(self) -> dict:
         """{env:VAR} 插值的取值环境：本进程环境（框架注入变量经 os.environ）。"""
         import os
+
         return dict(os.environ)
 
     # ── 环境探针（环境门委托）─────────────────────────────────
@@ -334,6 +360,5 @@ class ApiRunner(VerifyRunner):
         healthy = probe_http_health(self.base_url, timeout=2.0)
         return {
             "healthy": healthy,
-            "detail": f"契约就绪探针 {self.base_url}: "
-                      f"{'连通' if healthy else '失联'}",
+            "detail": f"契约就绪探针 {self.base_url}: " f"{'连通' if healthy else '失联'}",
         }

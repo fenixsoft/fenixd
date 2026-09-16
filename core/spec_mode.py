@@ -38,9 +38,7 @@ def read_spec_mode(project_root, spec_name: str) -> str:
         ``"fast-track"`` 或 ``"full"``。文件缺失 / 无 mode 字段 / 值非法 /
         解析失败均返回 ``"full"``（读侧容错，不抛异常）。
     """
-    yaml_path = (
-        Path(project_root) / "spec" / "changes" / spec_name / ".spec.yaml"
-    )
+    yaml_path = Path(project_root) / "spec" / "changes" / spec_name / ".spec.yaml"
     try:
         st = yaml_path.stat()
         key = (str(yaml_path.resolve()), st.st_mtime_ns, st.st_size)

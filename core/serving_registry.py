@@ -62,7 +62,8 @@ class ServingRegistry:
         """原子写（临时文件 + replace），调用方须已持有文件排他锁。"""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path_str = tempfile.mkstemp(
-            prefix=".servers.", suffix=".tmp", dir=str(self.path.parent))
+            prefix=".servers.", suffix=".tmp", dir=str(self.path.parent)
+        )
         tmp_path = Path(tmp_path_str)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -104,24 +105,27 @@ class ServingRegistry:
 
         Returns: 是否发生写入（False = 已存在，幂等跳过）。
         """
+
         def _fn(records):
             for r in records:
                 if r.get("pid") == pid and r.get("spec") == spec:
                     return False
-            records.append({
-                "pid": pid,
-                "port": port,
-                "spec": spec,
-                "worktree": str(worktree) if worktree else "",
-                "registered_at": int(time.time()),
-            })
+            records.append(
+                {
+                    "pid": pid,
+                    "port": port,
+                    "spec": spec,
+                    "worktree": str(worktree) if worktree else "",
+                    "registered_at": int(time.time()),
+                }
+            )
             return True
+
         try:
             return bool(self._mutate(_fn))
         except OSError:
             if self.logger:
-                self.logger.warning(
-                    "serving_registry", f"登记写盘失败（非阻塞）: {self.path}")
+                self.logger.warning("serving_registry", f"登记写盘失败（非阻塞）: {self.path}")
             return False
 
     def remove(self, pid: int, spec: str = "") -> bool:
@@ -129,14 +133,17 @@ class ServingRegistry:
 
         Returns: 是否实际移除（False = 无匹配条目）。
         """
+
         def _fn(records):
             before = len(records)
             if spec:
-                records[:] = [r for r in records
-                              if not (r.get("pid") == pid and r.get("spec") == spec)]
+                records[:] = [
+                    r for r in records if not (r.get("pid") == pid and r.get("spec") == spec)
+                ]
             else:
                 records[:] = [r for r in records if r.get("pid") != pid]
             return len(records) != before
+
         try:
             return bool(self._mutate(_fn))
         except OSError:
@@ -154,6 +161,7 @@ class ServingRegistry:
 
 
 # ── 进程存活与收割助手（/proc liveness）──────────────────────────────
+
 
 def pid_alive(pid: int) -> bool:
     """/proc 探针：kill(pid, 0) 成功即存活（忽略僵尸判定差异，够用）。"""
@@ -223,7 +231,6 @@ def sweep(project_root, logger=None, is_spec_in_flight=None) -> int:
     if harvested and logger:
         logger.warning(
             "serving_registry",
-            f"harvested {harvested} registered serving instance(s) "
-            f"without in-flight spec",
+            f"harvested {harvested} registered serving instance(s) " f"without in-flight spec",
         )
     return harvested

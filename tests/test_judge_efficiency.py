@@ -98,7 +98,8 @@ class TestAllGreenFastPath(unittest.TestCase):
         self.pr = Path(self.tmp)
         self.pipeline = VerificationPipeline.__new__(VerificationPipeline)
         self.pipeline._pm = SimpleNamespace(
-            project_root=self.pr, logger=MagicMock())
+            project_root=self.pr, logger=MagicMock(),
+            state_machine=MagicMock())
 
     def _report(self, passed, warnings, total):
         return {"summary": {"passed": passed, "warnings": warnings,

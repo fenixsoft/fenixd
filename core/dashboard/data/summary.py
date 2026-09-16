@@ -19,8 +19,8 @@ from core.state_machine import (
 
 # ── daemon 健康检测（D4：TTL memo 避免高频轮询重复 spawn tmux） ──────
 
-_DAEMON_HEALTH_TTL = 5.0   # 秒；结果在 TTL 内复用
-_DAEMON_HEALTH_CACHE: dict = {}   # key=规范化项目根, value=(状态, 时间戳)
+_DAEMON_HEALTH_TTL = 5.0  # 秒；结果在 TTL 内复用
+_DAEMON_HEALTH_CACHE: dict = {}  # key=规范化项目根, value=(状态, 时间戳)
 
 
 def daemon_health(project_root) -> str:
@@ -39,6 +39,7 @@ def daemon_health(project_root) -> str:
     try:
         # D8：经门面延迟解析（_facade 替换时 patch("core.dashboard.data._is_running") 生效）
         import core.dashboard.data as _facade
+
         status = "running" if _facade._is_running(key) else "stopped"
     except Exception:
         status = "stopped"
@@ -50,8 +51,8 @@ def daemon_health(project_root) -> str:
 
 # ── 托管态检测（fix-supervisor-hosting-chain D3：managed/unmanaged/stopped）──
 
-_HOSTING_STATE_TTL = 5.0   # 秒；结果在 TTL 内复用（与 daemon_health 同窗口）
-_HOSTING_STATE_CACHE: dict = {}   # key=规范化项目根, value=(状态, 时间戳)
+_HOSTING_STATE_TTL = 5.0  # 秒；结果在 TTL 内复用（与 daemon_health 同窗口）
+_HOSTING_STATE_CACHE: dict = {}  # key=规范化项目根, value=(状态, 时间戳)
 
 
 def hosting_state(project_root) -> str:
@@ -69,6 +70,7 @@ def hosting_state(project_root) -> str:
         return cached[0]
     try:
         from core.fenix_session import hosting_state as _fs_hosting_state
+
         state = _fs_hosting_state(key)
     except Exception:
         state = "stopped"
@@ -83,6 +85,7 @@ def project_summary(project_root, name: str, path: str) -> dict:
     proot = Path(path)
     # D8：parse_state 经门面解析（tests patch 门面同名，与 overview 内 parse_state 一致）
     import core.dashboard.data as _facade
+
     specs = _facade.parse_state(proot)
     status_counts = {}
     for e in specs.values():
@@ -112,6 +115,7 @@ def project_summary(project_root, name: str, path: str) -> dict:
 
     # D8：daemon_health/hosting_state 经门面解析（tests patch 门面同名）
     import core.dashboard.data as _facade
+
     return {
         "name": name,
         "path": str(path),
@@ -125,7 +129,11 @@ def project_summary(project_root, name: str, path: str) -> dict:
         "active_runs": active,
         "active_runs_by_type": active_by_type,
         "scenario_count": sum(_facade.count_scenarios(proot, s) for s in specs),
-        "updated": (Path(path) / ".fenix" / "STATE.md").stat().st_mtime if (Path(path) / ".fenix" / "STATE.md").exists() else 0,
+        "updated": (
+            (Path(path) / ".fenix" / "STATE.md").stat().st_mtime
+            if (Path(path) / ".fenix" / "STATE.md").exists()
+            else 0
+        ),
         "description": description,
     }
 
@@ -165,12 +173,15 @@ def _resolve_global_impl_run_budget(project_root) -> int:
     ConfigLoader.get 读合并配置 → 按有效上限夹紧 → fallback DEFAULT。
     """
     from core.pm_engine.budget import (
-        clamp_impl_run_budget, DEFAULT_IMPL_RUN_BUDGET,
-        resolve_impl_run_budget_max, IMPL_RUN_BUDGET_MAX_KEY,
+        clamp_impl_run_budget,
+        DEFAULT_IMPL_RUN_BUDGET,
+        resolve_impl_run_budget_max,
+        IMPL_RUN_BUDGET_MAX_KEY,
         IMPL_RUN_BUDGET_MAX_DEFAULT,
     )
     from core.config import ConfigLoader
     import core.dashboard.data as _facade
+
     proot = Path(project_root)
     cfg_path = proot / ".fenix" / "config.yaml"
     sig = _facade._config_file_sig(cfg_path)
@@ -180,7 +191,8 @@ def _resolve_global_impl_run_budget(project_root) -> int:
         return cached
     cfg = ConfigLoader.resolve_config(proot)
     max_value = resolve_impl_run_budget_max(
-        ConfigLoader.get(cfg, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT))
+        ConfigLoader.get(cfg, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT)
+    )
     raw = ConfigLoader.get(cfg, "agents.impl_run_budget")
     budget = clamp_impl_run_budget(raw, max_value) or DEFAULT_IMPL_RUN_BUDGET
     if len(_GLOBAL_BUDGET_CACHE) > _GLOBAL_BUDGET_CACHE_MAX:
@@ -196,9 +208,12 @@ def _impl_budget_max(project_root) -> int:
     同源：同一 resolve_impl_run_budget_max 纯函数 + 同一配置键）。
     """
     from core.pm_engine.budget import (
-        resolve_impl_run_budget_max, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT,
+        resolve_impl_run_budget_max,
+        IMPL_RUN_BUDGET_MAX_KEY,
+        IMPL_RUN_BUDGET_MAX_DEFAULT,
     )
     from core.config import ConfigLoader
+
     cfg = ConfigLoader.resolve_config(Path(project_root))
     raw = ConfigLoader.get(cfg, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT)
     return resolve_impl_run_budget_max(raw)
@@ -207,6 +222,7 @@ def _impl_budget_max(project_root) -> int:
 def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
     """单个 SPEC 的摘要（/api/specs 列表项）。"""
     import core.dashboard.data as _facade
+
     done, total = _facade.task_progress(project_root, spec_name, entry.get("status", ""))
     vp = _facade.parse_verify_progress(project_root, spec_name)
     # 含归档：run 产物被清理后列表页耗时统计不缩水
@@ -214,13 +230,17 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
     total_duration = _spec_total_duration(project_root, spec_name, entry, runs)
     # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
     from core.spec_mode import read_spec_mode
+
     mode = read_spec_mode(project_root, spec_name)
     # add-spec-status-modal-budget D3：per-spec 预算字段
     # 三字段读取与预算闸门同源（clamp_impl_run_budget 单点），前端不重复实现解析。
     # open-impl-budget-ceiling：夹紧上限改由可配置键解析，前端界面范围与此同源。
     from core.pm_engine.budget import (
-        clamp_impl_run_budget, IMPL_RUN_BUDGET_OVERRIDE_FIELD, DEFAULT_IMPL_RUN_BUDGET,
+        clamp_impl_run_budget,
+        IMPL_RUN_BUDGET_OVERRIDE_FIELD,
+        DEFAULT_IMPL_RUN_BUDGET,
     )
+
     budget_max = _impl_budget_max(project_root)
     budget_override_raw = entry.get(IMPL_RUN_BUDGET_OVERRIDE_FIELD) if entry else None
     budget_override = clamp_impl_run_budget(budget_override_raw, budget_max)
@@ -277,7 +297,7 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         "latest_run": runs[0]["run_id"] if runs else None,
         "latest_run_status": runs[0]["status"] if runs else None,
         # add-spec-status-modal-budget D3：per-spec 预算覆盖三字段
-        #（used 容错读；override 非法视为 null；effective 与闸门同源解析）
+        # （used 容错读；override 非法视为 null；effective 与闸门同源解析）
         "budget_used": budget_used,
         "budget_override": budget_override,
         "budget_effective": budget_effective,
@@ -287,14 +307,13 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         # _verify_infra_rounds 为本轮验证周期 infra 轮次（纯观测，不参与
         # MAX_VERIFY_FAIL_ROUNDS 冻结；验证 PASS 归零）；_infra_failure_count
         # 为生命周期累计观测值（不归零，同 _budget_exempt_runs 范式）。
-        "verify_infra_rounds": int(
-            entry.get("_verify_infra_rounds", 0) or 0) if entry else 0,
-        "infra_failure_count": int(
-            entry.get("_infra_failure_count", 0) or 0) if entry else 0,
+        "verify_infra_rounds": int(entry.get("_verify_infra_rounds", 0) or 0) if entry else 0,
+        "infra_failure_count": int(entry.get("_infra_failure_count", 0) or 0) if entry else 0,
     }
 
 
 # ── spec 摘要索引（dashboard-spec-summary-index D1） ─────────────
+
 
 def _stat_sig(path: Path):
     """文件签名 (mtime_ns, size)；缺失/不可 stat 返回 None。"""
@@ -312,6 +331,7 @@ def _runs_by_spec_sigs(proot: Path) -> dict:
     避免每 spec 各自 glob 的 O(N²) 放大（add-dashboard-incremental-data D1）。
     """
     from core.agent_runner.run_files import run_spec_part
+
     runs_dir = proot / ".fenix" / "runs"
     if not runs_dir.is_dir():
         return {}
@@ -334,8 +354,7 @@ def _runs_by_spec_sigs(proot: Path) -> dict:
     return out
 
 
-def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict,
-                   runs_sigs: dict) -> dict:
+def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) -> dict:
     """单个 spec 摘要的依赖文件签名集合（对齐 spec_summary 实际读路径）。
 
     覆盖 tasks.md（implementing 时含实现 worktree 副本）/ specs/ 目录整体 /
@@ -372,7 +391,7 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict,
     add(vp_dir / "report.json")
     add(vp_dir / "test_scenarios.json")
     # add-spec-status-modal-budget D3：budget_effective 依赖全局 config
-    #（agents.impl_run_budget 覆盖优先解析的兜底来源），项目级与用户级
+    # （agents.impl_run_budget 覆盖优先解析的兜底来源），项目级与用户级
     # config.yaml 变化须触发摘要失效（宁多勿漏原则）。
     add(proot / ".fenix" / "config.yaml")
     for p, sig in (runs_sigs.get(spec_name) or {}).items():
@@ -413,6 +432,7 @@ class SummaryIndex:
         key = str(Path(proot).resolve())
         # 跨组引用经门面延迟解析（D4/D8）
         import core.dashboard.data as _facade
+
         with self._lock:
             if state_sig is None:
                 state_sig = _stat_sig(proot / ".fenix" / "STATE.md")
@@ -442,6 +462,7 @@ class SummaryIndex:
                     continue
                 # D8：经门面延迟解析（tests 以 dash_data.spec_summary=... 替换）
                 import core.dashboard.data as _facade
+
                 summary = _facade.spec_summary(proot, spec_name, entry)
                 idx[spec_name] = {"summary": summary, "sigs": sigs}
                 out.append(summary)
@@ -469,24 +490,29 @@ class SummaryIndex:
 # 离开 blocked（blocked→ready / blocked→testing / blocked→reviewing）判回退。
 
 
-
-
-
-
-
-
-
-
 def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     """单个 SPEC 的完整详情（/api/specs/<spec>）。"""
     import core.dashboard.data as _facade
+
     report = _facade.parse_report(project_root, spec_name)
     bugs = _facade.parse_bugs(project_root, spec_name)
-    scenarios = report.get("scenarios", []) if report.get("exists") and not report.get("error") else []
+    scenarios = (
+        report.get("scenarios", []) if report.get("exists") and not report.get("error") else []
+    )
     # 场景内截图同样归一化为文件名（report.json 存的是服务器本地绝对路径）
     scenarios = [
-        {**sc, "screenshots": [os.path.basename(s) for s in sc.get("screenshots", []) if isinstance(s, str) and s.strip()]}
-        if isinstance(sc, dict) else sc
+        (
+            {
+                **sc,
+                "screenshots": [
+                    os.path.basename(s)
+                    for s in sc.get("screenshots", [])
+                    if isinstance(s, str) and s.strip()
+                ],
+            }
+            if isinstance(sc, dict)
+            else sc
+        )
         for sc in scenarios
     ]
     # 合成报告（report.json 缺失/无 scenarios）时，从 .fenix-run-result.json 兜底取
@@ -501,14 +527,18 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
     spec_status = entry.get("status", "")
     # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
     from core.spec_mode import read_spec_mode
+
     mode = read_spec_mode(project_root, spec_name)
     # 时间轴（含运行节点 cost_usd；计费开关关闭时 get_spec_timeline 不下发）；
     # created 锚定读取窗口：STATE 条目的 created 使早期事件不被日志尾窗截断
     # 跨组引用（timeline 组的 get_spec_timeline/_timeline_with_retry）经门面延迟解析（D4）
     import core.dashboard.data as _facade
+
     timeline = _facade._timeline_with_retry(
         _facade.get_spec_timeline(project_root, spec_name, entry.get("created") or ""),
-        project_root, entry)
+        project_root,
+        entry,
+    )
     # improve-provider-billing-config（D2）：SPEC 级成本合计——计价表非空
     # （有任一声明 billing 的卡片）时进入计价分支；单 run 计价由匹配函数自行
     # 判定未开启卡片 → None（未开启卡片 run 不计入 priced_runs）。
@@ -568,10 +598,8 @@ def spec_detail(project_root, spec_name: str, entry: dict) -> dict:
         # infra_failure_count 生命周期累计（不归零）；fail_rounds product 轮次。
         # dashboard 据此渲染「infra vs product」失败构成。
         "failure_composition": {
-            "verify_infra_rounds": int(
-                entry.get(VERIFY_INFRA_ROUNDS_FIELD, 0) or 0),
-            "infra_failure_count": int(
-                entry.get(INFRA_FAILURE_COUNT_FIELD, 0) or 0),
+            "verify_infra_rounds": int(entry.get(VERIFY_INFRA_ROUNDS_FIELD, 0) or 0),
+            "infra_failure_count": int(entry.get(INFRA_FAILURE_COUNT_FIELD, 0) or 0),
             "verify_fail_rounds": int(entry.get("_verify_fail_rounds", 0) or 0),
         },
     }
@@ -657,13 +685,15 @@ def _token_recent_entries(entries: dict, project_name: str) -> list:
         tokens = int(entry.get("_tokens_in", 0) or 0) + int(entry.get("_tokens_out", 0) or 0)
         if tokens <= 0:
             continue
-        out.append({
-            "project": project_name,
-            "spec": name,
-            "tokens": tokens,
-            "updated": entry.get("updated") or "",
-            "_ts": _parse_spec_ts(entry.get("updated")),
-        })
+        out.append(
+            {
+                "project": project_name,
+                "spec": name,
+                "tokens": tokens,
+                "updated": entry.get("updated") or "",
+                "_ts": _parse_spec_ts(entry.get("updated")),
+            }
+        )
     return out
 
 
@@ -696,23 +726,36 @@ def overview(registry_projects: list) -> dict:
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = now - timedelta(days=7)
     projects = []
-    totals = {"spec_count": 0, "task_done": 0, "task_total": 0,
-              "problems": 0, "active_runs": 0,
-              "spec_updated_today": 0, "spec_updated_week": 0,
-              "active_runs_by_type": {}}
+    totals = {
+        "spec_count": 0,
+        "task_done": 0,
+        "task_total": 0,
+        "problems": 0,
+        "active_runs": 0,
+        "spec_updated_today": 0,
+        "spec_updated_week": 0,
+        "active_runs_by_type": {},
+    }
     status_counts = {}
     token_entries = []
     for p in registry_projects:
         if not p.get("exists"):
-            projects.append({
-                "name": p["name"], "path": p["path"], "discovered": p.get("discovered", False),
-                "exists": False, "daemon": "stopped", "hosting": "stopped",
-                "error": "项目路径不存在",
-            })
+            projects.append(
+                {
+                    "name": p["name"],
+                    "path": p["path"],
+                    "discovered": p.get("discovered", False),
+                    "exists": False,
+                    "daemon": "stopped",
+                    "hosting": "stopped",
+                    "error": "项目路径不存在",
+                }
+            )
             continue
         try:
             # D8：project_summary 经门面解析（tests monkeypatch 门面同名）
             import core.dashboard.data as _facade
+
             s = _facade.project_summary(p["path"], p["name"], p["path"])
             s["discovered"] = p.get("discovered", False)
             s["exists"] = True
@@ -726,6 +769,7 @@ def overview(registry_projects: list) -> dict:
                 totals["active_runs_by_type"][at] = totals["active_runs_by_type"].get(at, 0) + n
             # D8：parse_state 经门面解析（tests patch 门面同名）
             import core.dashboard.data as _facade
+
             entries = _facade.parse_state(p["path"])
             t_today, t_week = _updated_spec_counts(entries, today_start, week_start)
             totals["spec_updated_today"] += t_today
@@ -739,5 +783,4 @@ def overview(registry_projects: list) -> dict:
     token_entries.sort(key=lambda e: (e["_ts"].timestamp() if e["_ts"] else 0.0), reverse=True)
     for e in token_entries:
         e.pop("_ts", None)
-    return {"projects": projects, "totals": totals,
-            "token_usage": {"recent": token_entries[:20]}}
+    return {"projects": projects, "totals": totals, "token_usage": {"recent": token_entries[:20]}}

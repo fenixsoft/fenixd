@@ -57,16 +57,16 @@ class _FailClosedTestBase(unittest.TestCase):
         self.engine._on_spec_verified = MagicMock()
         self.engine._on_spec_bug_found = MagicMock()
         self.engine._task_completion_blocker = MagicMock(return_value=None)
-        self.engine._ensure_verification_report = MagicMock(return_value=None)
-        self.engine._env_whitewash_gate = MagicMock(return_value=True)
-        self.engine._check_verification_gate = MagicMock(return_value=None)
-        self.engine._apply_scenario_freeze = MagicMock(return_value={})
-        self.engine._apply_interaction_contract = MagicMock(return_value=None)
-        self.engine._verify_verdict_evidence = MagicMock(return_value={
+        self.engine._verification._ensure_verification_report = MagicMock(return_value=None)
+        self.engine._verification._env_whitewash_gate = MagicMock(return_value=True)
+        self.engine._verification._check_verification_gate = MagicMock(return_value=None)
+        self.engine._verification._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
+        self.engine._verification._verify_verdict_evidence = MagicMock(return_value={
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })
-        self.engine._update_warning_streaks = MagicMock(return_value=[])
-        self.engine._ensure_app_reachable = MagicMock(return_value=(True, False, ""))
+        self.engine._verification._update_warning_streaks = MagicMock(return_value=[])
+        self.engine._verification._ensure_app_reachable = MagicMock(return_value=(True, False, ""))
         self.engine._send_human_escalation_alert = MagicMock()
 
         # ── planner-plan 始终成功（不关注 plan 成本）──
@@ -132,7 +132,7 @@ class TestThreeStageRetryThenBlock(_FailClosedTestBase):
 
     def test_corrupt_json_retry_then_block(self):
         """裸换行非法 JSON（事故签名）→ 重试 → 仍坏 → blocked + 告警。"""
-        self.engine._read_verdict = MagicMock(side_effect=[
+        self.engine._verification._read_verdict = MagicMock(side_effect=[
             # 阶段1 已冻结复用跳过，不读 plan；下方为阶段3 reads：
             VerdictReadResult.failure(
                 "parse",
@@ -164,7 +164,7 @@ class TestThreeStageRetryThenBlock(_FailClosedTestBase):
 
     def test_unknown_status_retry_then_block(self):
         """status='success' 白名单外 → 重试 → 仍坏 → blocked。"""
-        self.engine._read_verdict = MagicMock(side_effect=[
+        self.engine._verification._read_verdict = MagicMock(side_effect=[
             VerdictReadResult.failure("unknown-status", "status='success'"),
             VerdictReadResult.failure("unknown-status", "status='success'"),
         ])
@@ -176,7 +176,7 @@ class TestThreeStageRetryThenBlock(_FailClosedTestBase):
 
     def test_retry_then_success_fix_chain(self):
         """首次 unreadable → 重试后合法 bug-found → 正常走 fix 链。"""
-        self.engine._read_verdict = MagicMock(side_effect=[
+        self.engine._verification._read_verdict = MagicMock(side_effect=[
             VerdictReadResult.failure("parse", "bad json"),
             VerdictReadResult.success("bug-found"),
         ])
@@ -195,7 +195,7 @@ class TestThreeStageValidRoutes(_FailClosedTestBase):
 
     def test_verified_route(self):
         """合法 verified → verified → done。"""
-        self.engine._read_verdict = MagicMock(
+        self.engine._verification._read_verdict = MagicMock(
             return_value=VerdictReadResult.success("verified"))
         self._run_three_stage()
         entry = self.sm.read_one("demo-spec")
@@ -204,14 +204,14 @@ class TestThreeStageValidRoutes(_FailClosedTestBase):
 
     def test_scenario_repaired_route(self):
         """合法 scenario-repaired → 冻结记账 + 重入，随后 verified 收敛。"""
-        self.engine._read_verdict = MagicMock(
+        self.engine._verification._read_verdict = MagicMock(
             side_effect=[
                 VerdictReadResult.success("scenario-repaired"),
                 VerdictReadResult.success("verified"),
             ])
         self._run_three_stage()
         # 修复轮冻结记账恰一次
-        self.assertEqual(self.engine._apply_scenario_freeze.call_count, 1)
+        self.assertEqual(self.engine._verification._apply_scenario_freeze.call_count, 1)
         entry = self.sm.read_one("demo-spec")
         self.assertIn(entry["status"], ("verified", "done"))
 
@@ -269,9 +269,9 @@ class TestLegacyReadFailClosed(unittest.TestCase):
         self.engine._on_spec_verified = MagicMock()
         self.engine._on_spec_bug_found = MagicMock()
         self.engine._task_completion_blocker = MagicMock(return_value=None)
-        self.engine._env_whitewash_gate = MagicMock(return_value=True)
-        self.engine._ensure_verification_report = MagicMock(return_value=None)
-        self.engine._check_verification_gate = MagicMock(return_value=None)
+        self.engine._verification._env_whitewash_gate = MagicMock(return_value=True)
+        self.engine._verification._ensure_verification_report = MagicMock(return_value=None)
+        self.engine._verification._check_verification_gate = MagicMock(return_value=None)
         self.engine._send_human_escalation_alert = MagicMock()
         self.engine.agent_runner.run_verifier = MagicMock(
             return_value=SimpleNamespace(

@@ -228,7 +228,7 @@ class TestParallelBackoffClearPoints(unittest.TestCase):
 
     def test_fast_track_verified_clears_override(self):
         """fast-track verified：清零点同步清 _verify_parallel_override。"""
-        self.engine._env_whitewash_gate = mock.MagicMock(return_value=True)
+        self.engine._verification._env_whitewash_gate = mock.MagicMock(return_value=True)
         self.engine._on_spec_verified = mock.MagicMock()
         self.engine.state_machine.transition("s1", "testing")
         self.sm.update_spec("s1", {"_inconclusive_attempts": 2,
@@ -269,19 +269,19 @@ class TestParallelBackoffClearPoints(unittest.TestCase):
         self.engine.agent_runner.run_planner = mock.MagicMock(
             return_value=SimpleNamespace(success=True, error=None,
                                          run_id="planner-judge-1"))
-        self.engine._apply_scenario_freeze = mock.MagicMock(return_value={})
-        self.engine._apply_interaction_contract = mock.MagicMock(return_value=None)
-        self.engine._verify_verdict_evidence = mock.MagicMock(return_value={
+        self.engine._verification._apply_scenario_freeze = mock.MagicMock(return_value={})
+        self.engine._verification._apply_interaction_contract = mock.MagicMock(return_value=None)
+        self.engine._verification._verify_verdict_evidence = mock.MagicMock(return_value={
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })
-        self.engine._update_warning_streaks = mock.MagicMock(return_value=[])
-        self.engine._ensure_app_reachable = mock.MagicMock(return_value=(True, False, ""))
-        self.engine._env_whitewash_gate = mock.MagicMock(return_value=True)
-        self.engine._ensure_verification_report = mock.MagicMock(return_value=None)
-        self.engine._check_verification_gate = mock.MagicMock(return_value=None)
-        self.engine._render_scenario_change_section_to_report = mock.MagicMock()
+        self.engine._verification._update_warning_streaks = mock.MagicMock(return_value=[])
+        self.engine._verification._ensure_app_reachable = mock.MagicMock(return_value=(True, False, ""))
+        self.engine._verification._env_whitewash_gate = mock.MagicMock(return_value=True)
+        self.engine._verification._ensure_verification_report = mock.MagicMock(return_value=None)
+        self.engine._verification._check_verification_gate = mock.MagicMock(return_value=None)
+        self.engine._verification._render_scenario_change_section_to_report = mock.MagicMock()
         self.engine._on_spec_verified = mock.MagicMock()
-        self.engine._read_verdict = mock.MagicMock(
+        self.engine._verification._read_verdict = mock.MagicMock(
             return_value=VerdictReadResult.success("verified"))
 
         runs = []
@@ -341,17 +341,17 @@ class TestParallelBackoffRead(unittest.TestCase):
         self.engine.agent_runner.run_planner = mock.MagicMock(
             return_value=SimpleNamespace(success=True, error=None,
                                          run_id="planner-judge-1"))
-        self.engine._apply_scenario_freeze = mock.MagicMock(return_value={})
-        self.engine._apply_interaction_contract = mock.MagicMock(return_value=None)
-        self.engine._verify_verdict_evidence = mock.MagicMock(return_value={
+        self.engine._verification._apply_scenario_freeze = mock.MagicMock(return_value={})
+        self.engine._verification._apply_interaction_contract = mock.MagicMock(return_value=None)
+        self.engine._verification._verify_verdict_evidence = mock.MagicMock(return_value={
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })
-        self.engine._update_warning_streaks = mock.MagicMock(return_value=[])
-        self.engine._ensure_app_reachable = mock.MagicMock(return_value=(True, False, ""))
-        self.engine._env_whitewash_gate = mock.MagicMock(return_value=True)
-        self.engine._ensure_verification_report = mock.MagicMock(return_value=None)
-        self.engine._check_verification_gate = mock.MagicMock(return_value=None)
-        self.engine._render_scenario_change_section_to_report = mock.MagicMock()
+        self.engine._verification._update_warning_streaks = mock.MagicMock(return_value=[])
+        self.engine._verification._ensure_app_reachable = mock.MagicMock(return_value=(True, False, ""))
+        self.engine._verification._env_whitewash_gate = mock.MagicMock(return_value=True)
+        self.engine._verification._ensure_verification_report = mock.MagicMock(return_value=None)
+        self.engine._verification._check_verification_gate = mock.MagicMock(return_value=None)
+        self.engine._verification._render_scenario_change_section_to_report = mock.MagicMock()
         self.engine._on_spec_verified = mock.MagicMock()
 
     def tearDown(self):
@@ -361,7 +361,7 @@ class TestParallelBackoffRead(unittest.TestCase):
         """spec attrs 含 _verify_parallel_override 时引擎有效并行度被覆盖。"""
         from core.pm_engine.verification import VerdictReadResult
         self.sm.update_spec("demo-spec", {"_verify_parallel_override": 2})
-        self.engine._read_verdict = mock.MagicMock(
+        self.engine._verification._read_verdict = mock.MagicMock(
             return_value=VerdictReadResult.success("verified"))
 
         captured = {}
@@ -395,7 +395,7 @@ class TestParallelBackoffRead(unittest.TestCase):
     def test_no_override_keeps_configured_parallel(self):
         """无 override 时引擎保持配置并行度，且不打降档标记。"""
         from core.pm_engine.verification import VerdictReadResult
-        self.engine._read_verdict = mock.MagicMock(
+        self.engine._verification._read_verdict = mock.MagicMock(
             return_value=VerdictReadResult.success("verified"))
 
         captured = {}

@@ -630,11 +630,11 @@ class TestEmptyAbortCallerConsumption(unittest.TestCase):
         self.engine.agent_runner.run_planner = MagicMock(
             return_value=SimpleNamespace(success=True, error=None,
                                          run_id="planner-plan-demo-spec-1-a1"))
-        self.engine._read_planner_result = MagicMock(
+        self.engine._verification._read_planner_result = MagicMock(
             return_value=VerdictReadResult.success("plan-ready"))
-        self.engine._apply_interaction_contract = MagicMock(return_value=None)
+        self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
         # 首轮出题前无冻结文件（避免 _load_frozen_scenarios corrupt 升级）
-        self.engine._load_frozen_scenarios = MagicMock(return_value=None)
+        self.engine._verification._load_frozen_scenarios = MagicMock(return_value=None)
 
         def _write_invalid_planner(spec_name, agent_type):
             # planner 出题：写入全部非法条目（web 场景缺 navigate 步骤）

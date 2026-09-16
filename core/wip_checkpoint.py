@@ -57,7 +57,9 @@ def commit_wip_checkpoint(
     try:
         st = subprocess.run(
             ["git", "-C", path, "status", "--porcelain"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         if st.returncode != 0:
             logger.warning(
@@ -71,7 +73,9 @@ def commit_wip_checkpoint(
             return False  # 空变更：幂等跳过
         add = subprocess.run(
             ["git", "-C", path, "add", "-A"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         if add.returncode != 0:
             logger.warning(
@@ -84,7 +88,9 @@ def commit_wip_checkpoint(
         message = f"{WIP_COMMIT_PREFIX} checkpoint {anchor} {spec}"
         cm = subprocess.run(
             ["git", "-C", path, "commit", "-m", message],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         if cm.returncode != 0:
             logger.warning(
@@ -135,17 +141,19 @@ def _collapse_message(project_root, commits, logger, timeout=WIP_TIMEOUT_SECONDS
     if final_subject.startswith(WIP_COMMIT_PREFIX):
         # 仅 WIP 无最终提交：以最新 WIP 的完整消息改写前缀生成塌缩消息。
         body = subprocess.run(
-            ["git", "-C", str(project_root), "log", "-1", "--format=%B",
-             final_hash],
-            capture_output=True, text=True, timeout=timeout,
+            ["git", "-C", str(project_root), "log", "-1", "--format=%B", final_hash],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         if body.returncode == 0 and body.stdout.strip():
             return body.stdout.replace(WIP_COMMIT_PREFIX, "[fenix]", 1), True
         return final_subject.replace(WIP_COMMIT_PREFIX, "[fenix]", 1), True
     body = subprocess.run(
-        ["git", "-C", str(project_root), "log", "-1", "--format=%B",
-         final_hash],
-        capture_output=True, text=True, timeout=timeout,
+        ["git", "-C", str(project_root), "log", "-1", "--format=%B", final_hash],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
     )
     if body.returncode == 0 and body.stdout.strip():
         return body.stdout, True
@@ -175,15 +183,18 @@ def collapse_wip_commits(
     try:
         mb = subprocess.run(
             ["git", "-C", str(project_root), "merge-base", "HEAD", branch],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         if mb.returncode != 0 or not mb.stdout.strip():
             return False
         mb_sha = mb.stdout.strip()
         log = subprocess.run(
-            ["git", "-C", str(project_root), "log",
-             "--format=%H\t%s", f"{mb_sha}..{branch}"],
-            capture_output=True, text=True, timeout=timeout,
+            ["git", "-C", str(project_root), "log", "--format=%H\t%s", f"{mb_sha}..{branch}"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         if log.returncode != 0 or not log.stdout.strip():
             return False
@@ -199,7 +210,9 @@ def collapse_wip_commits(
 
         tree = subprocess.run(
             ["git", "-C", str(project_root), "rev-parse", f"{branch}^{{tree}}"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         if tree.returncode != 0 or not tree.stdout.strip():
             logger.warning(
@@ -208,14 +221,24 @@ def collapse_wip_commits(
                 f"merge-back continues on uncollapsed branch (non-blocking)",
             )
             return False
-        message, ok = _collapse_message(project_root, commits, logger,
-                                        timeout=timeout)
+        message, ok = _collapse_message(project_root, commits, logger, timeout=timeout)
         if not ok:
             return False
         ct = subprocess.run(
-            ["git", "-C", str(project_root), "commit-tree",
-             tree.stdout.strip(), "-p", mb_sha, "-m", message],
-            capture_output=True, text=True, timeout=timeout,
+            [
+                "git",
+                "-C",
+                str(project_root),
+                "commit-tree",
+                tree.stdout.strip(),
+                "-p",
+                mb_sha,
+                "-m",
+                message,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         if ct.returncode != 0 or not ct.stdout.strip():
             logger.warning(
@@ -226,9 +249,17 @@ def collapse_wip_commits(
             )
             return False
         upd = subprocess.run(
-            ["git", "-C", str(project_root), "update-ref",
-             f"refs/heads/{branch}", ct.stdout.strip()],
-            capture_output=True, text=True, timeout=timeout,
+            [
+                "git",
+                "-C",
+                str(project_root),
+                "update-ref",
+                f"refs/heads/{branch}",
+                ct.stdout.strip(),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         if upd.returncode != 0:
             logger.warning(

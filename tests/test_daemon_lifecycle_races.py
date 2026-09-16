@@ -640,14 +640,14 @@ class TestStaleVerdictGuard(unittest.TestCase):
         self.engine._on_spec_bug_found = MagicMock()
         self.engine._on_spec_verified = MagicMock()
         # 隔离与 D6 正交的各闸门
-        self.engine._read_verify_report = MagicMock(return_value={})
-        self.engine._handle_env_blocked_inconclusive = MagicMock(return_value=False)
-        self.engine._verifier_result_is_stale = MagicMock(return_value=False)
-        self.engine._judge_bugs_declare_env = MagicMock(return_value=False)
-        self.engine._ensure_verification_report = MagicMock(return_value=None)
-        self.engine._env_whitewash_gate = MagicMock(return_value=True)
-        self.engine._check_verification_gate = MagicMock(return_value=None)
-        self.engine._verify_verdict_evidence = MagicMock(return_value={
+        self.engine._verification._read_verify_report = MagicMock(return_value={})
+        self.engine._verification._handle_env_blocked_inconclusive = MagicMock(return_value=False)
+        self.engine._verification._verifier_result_is_stale = MagicMock(return_value=False)
+        self.engine._verification._judge_bugs_declare_env = MagicMock(return_value=False)
+        self.engine._verification._ensure_verification_report = MagicMock(return_value=None)
+        self.engine._verification._env_whitewash_gate = MagicMock(return_value=True)
+        self.engine._verification._check_verification_gate = MagicMock(return_value=None)
+        self.engine._verification._verify_verdict_evidence = MagicMock(return_value={
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })
         self.result_path = Path(self.tmpdir) / ".fenix" / ".fenix-run-result.json"
