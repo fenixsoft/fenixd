@@ -207,6 +207,71 @@ def _run_epoch(run_file: Path) -> str:
     return m.group(1) if m else run_file.name
 
 
+def _run_session_id(run_file: Path) -> "str | None":
+    """读 run 产物 init 事件的 ``session_id``（Task 计数器 taskId 的归属会话）。
+
+    Task 工具的 ``taskId`` 是**会话级**计数（每个新会话从 1 起）。``--resume``
+    续做共享同一 ``session_id``、taskId 连续；而 daemon 因超时/瞬断/跨 provider
+    **新建会话**重派时 ``session_id`` 变化、taskId 复位。故跨轮累积 Task 记录
+    MUST 按 ``session_id`` 分族——按派发 epoch 分族会把不同会话的独立 taskId
+    序错误拼成一条全局序，导致映射错位（2026-09-16 refactor-verification-module
+    事故：a1-r1 的 2 个 create 把 a1-r2 的 15 个 create 整体后移，使 a1-r2 真实
+    完成的 4.7/4.8 被映射到 4.5/4.6）。
+
+    无 init 事件 / 无 session_id → ``None``（调用方回退 epoch 家族）。
+    """
+    try:
+        with run_file.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (isinstance(entry, dict)
+                        and entry.get("type") == "system"
+                        and entry.get("subtype") == "init"):
+                    sid = entry.get("session_id")
+                    return str(sid) if sid else None
+    except OSError:
+        return None
+    return None
+
+
+def _run_ended_abnormally(run_file: Path) -> bool:
+    """run 产物是否以异常终态收尾（超时/kill/非 0 退出写入 ``type=="error"``）。
+
+    正常收尾为 ``result`` / ``superseded`` 事件，无 ``error`` 行；``append_run_error``
+    只在超时/信号杀/非 0 退出时追加 ``type=="error"`` 终态行。被硬超时或信号
+    杀死的 run，其 Task 记账**被截断**——「建了 Task 但没来得及 TaskUpdate」
+    不构成实现者漏做的证据，故其 ``TaskCreate`` 不产生完成度义务（2026-09-16
+    refactor-verification-module 事故：a1-r2 撞 18600s 上限被杀，4.9/4.10/4.11
+    只创建未完成，后续轮次从不使用 Task 工具 → 硬门永久拒绝、原地重试死循环）。
+
+    完成记录（``done_ids``）仍取全部 run——已 ``completed`` 是正向证据，不受
+    创建轮死法影响；只对「缺失」这一负向结论要求来源可信。
+    """
+    try:
+        with run_file.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if '"error"' not in line:
+                    continue
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(entry, dict) and entry.get("type") == "error":
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def _scan_task_create_update(run_file: Path) -> "tuple[list, set]":
     """扫描单 run 产物的 TaskCreate/TaskUpdate 调用（parse_run_task_done 的原料）。
 
@@ -255,20 +320,28 @@ def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
     「已完工 worktree 复用做修复轮」时必然误拦——修复轮只改文档、不调
     TaskCreate，``done_ids`` 为空，而门要求覆盖**全部**已勾选任务。
 
-    两处修正：
+    2026-09-16 事故再修（本函数分族键与义务来源）：
 
-    1. **跨轮累积**：Task 工具的 ``taskId`` 是**会话级全局序**（跨 resume
-       连续递增），单 run 内按「本 run 创建序」映射会错位。按「派发 epoch
-       家族」分族（同族含 a1/a2/a3 与 -rN 重试）：族内按 mtime 串起全部
-       run，维护累积创建序列表，``TaskUpdate`` 的 ``taskId`` 作全局索引；
-       跨族取 ``done_ids`` 并集（不同家族各自从 1 起序，不可混在一个序里）。
-    2. **tracked_ids**：全部家族中「出现过 TaskCreate」的任务 id 并集——
-       供调用方「只对确实声明过的任务要求完成」：planner 中途插入、实现者
-       从未单独建 Task 的任务（如 ``1.2b``）不在此列，不应要求其 TaskUpdate。
+    1. **按 ``session_id`` 分族**（非派发 epoch）：Task 工具的 ``taskId`` 是
+       **会话级**计数——``--resume`` 续做共享同一 session、taskId 连续；而
+       daemon 因超时/瞬断/跨 provider **新建会话**重派时 session 变化、taskId
+       复位。同一 epoch 家族内可有多个 session（实测 a1=fa4d5106 /
+       a1-r1=a8e7fbde / a1-r2=327244a4…），若把家族的 create 首尾拼接成一条
+       全局序，后一 session 的 ``taskId-1`` 会被前一 session 的 create 顶偏，
+       造成映射错位（a1-r1 的 2 个 create 把 a1-r2 的 15 个 create 后移 →
+       a1-r2 真实完成的 4.7/4.8 被误映射为 4.5/4.6）。分族内维护累积创建序，
+       ``TaskUpdate`` 的 ``taskId`` 作族内索引；跨族取 ``done_ids`` 并集。
+       无 ``session_id``（无 init 事件）时回退 epoch 家族键。
+    2. **``tracked_ids`` 只收正常收尾 run 的创建**：被超时/信号杀死的 run
+       （``type=="error"`` 终态）Task 记账被截断，「建了 Task 未 TaskUpdate」
+       不是漏做证据。此类 run 的 ``TaskCreate`` MUST NOT 产生完成度义务，
+       否则该任务永久无法满足（agent 无从知道要补 TaskUpdate，重试再多轮也
+       被同一门拒回）。完成记录（``done_ids``）仍取全部 run——已 completed 是
+       正向证据；只对「缺失」这一负向结论要求来源可信。
 
     Returns:
-        {"done_ids": set[str],      # 各家族中「已创建且已 completed」的 id 并集
-         "tracked_ids": set[str],   # 各家族中「出现过 TaskCreate」的 id 并集
+        {"done_ids": set[str],      # 各族中「已创建且已 completed」的 id 并集
+         "tracked_ids": set[str],   # 正常收尾 run 中「出现过 TaskCreate」的 id 并集
          "created_count": int}      # 单族最大 TaskCreate 次数（展示用）
     """
     runs_dir = Path(project_root) / ".fenix" / "runs"
@@ -286,14 +359,18 @@ def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
         return empty
     files.sort()
 
+    # 分族键：session_id 优先（taskId 计数器归属会话），无 init 事件回退 epoch。
     families: dict = {}
     for _mt, p in files:
-        families.setdefault(_run_epoch(p), []).append(p)
+        key = _run_session_id(p)
+        if key is None:
+            key = f"epoch:{_run_epoch(p)}"
+        families.setdefault(key, []).append(p)
 
     all_done: set = set()
     all_tracked: set = set()
     max_created = 0
-    for _ep, fam_files in families.items():
+    for _key, fam_files in families.items():
         created_ordered: list = []
         for p in fam_files:
             creates, completed_idx = _scan_task_create_update(p)
@@ -301,9 +378,12 @@ def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
             for idx in completed_idx:        # taskId 即族内全局序下标
                 if 0 <= idx < len(created_ordered) and created_ordered[idx]:
                     all_done.add(created_ordered[idx])
-        for cid in created_ordered:
-            if cid:
-                all_tracked.add(cid)
+            # 义务来源：仅正常收尾 run 的创建计入 tracked（异常终止 run 的
+            # 记账被截断，不产生完成度义务）。
+            if not _run_ended_abnormally(p):
+                for cid in creates:
+                    if cid:
+                        all_tracked.add(cid)
         max_created = max(max_created, len(created_ordered))
     return {"done_ids": all_done, "tracked_ids": all_tracked,
             "created_count": max_created}

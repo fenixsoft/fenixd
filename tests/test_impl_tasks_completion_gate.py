@@ -53,19 +53,28 @@ def _mk_run_file(proot: Path, spec: str, *, tools=None) -> None:
 
 
 def _mk_run(proot: Path, spec: str, *, name: str, tools=None,
-            events=None) -> None:
+            events=None, session=None, error=None) -> None:
     """写一个具名 impl run 产物（epoch 家族由 name 决定）。
 
     Args:
         name: run 文件名（如 ``impl-demo-1780000001-a1.jsonl``）。
         tools: init 事件 tools 数组。
         events: assistant 事件的 content block 列表（如 TaskCreate/TaskUpdate）。
+        session: init 事件的 ``session_id``（Task 计数器归属会话，2026-09-16
+            事故修复的分族键）；None 则省略（回退 epoch 家族）。
+        error: 若非 None，追加 ``type=="error"`` 终态行（模拟超时/信号杀死的
+            异常收尾 run——其 Task 记账被截断，不产生完成度义务）。
     """
     runs = proot / ".fenix" / "runs"
     runs.mkdir(parents=True, exist_ok=True)
-    lines = [{"type": "system", "subtype": "init", "tools": tools or []}]
+    init = {"type": "system", "subtype": "init", "tools": tools or []}
+    if session is not None:
+        init["session_id"] = session
+    lines = [init]
     if events:
         lines.append({"type": "assistant", "message": {"content": events}})
+    if error is not None:
+        lines.append({"type": "error", "error": error, "exit_code": -9})
     (runs / name).write_text(
         "\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n",
         encoding="utf-8")
@@ -464,6 +473,78 @@ class TestImplResultGate(unittest.TestCase):
         )
         assert err is not None
         assert "1.2" in err
+
+    # ── session 轮换映射 + 异常终止 run 的义务豁免（2026-09-16 事故回归）──
+
+    def test_session_rotation_taskid_not_shifted(self):
+        """同 epoch 家族内 session 轮换：taskId 按会话复位，不得被拼接顶偏。
+
+        事故形态（refactor-verification-module）：a1-r1 新建 session 建了 2 个
+        Task（taskId 1/2）后，a1-r2 又**新建** session（taskId 从 1 起）建 4 个。
+        按 epoch 家族首尾拼接会把这 6 个 create 串成一条序，a1-r2 的 taskId 被
+        a1-r1 的 2 个 create 后移 2 位 → 真实完成的 1.3/1.4 被误映射为 1.1/1.2，
+        done_ids 缺 1.3/1.4 → 误拦。修复：按 session_id 分族，各族内独立索引。
+        """
+        base = ["Task", "TaskCreate", "TaskUpdate"]
+        # a1-r1：独立 session，建 1.1/1.2 并完成（taskId 1/2）
+        _mk_run(self.proot, self.spec, name=f"impl-{self.spec}-1780000001-a1-r1.jsonl",
+                tools=base, session="sess-A", events=[
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.1: 任务一"}},
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.2: 任务二"}},
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 1, "status": "completed"}},
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 2, "status": "completed"}},
+                ])
+        # a1-r2：**新建** session（taskId 复位从 1 起），建 1.3/1.4 并完成
+        _mk_run(self.proot, self.spec, name=f"impl-{self.spec}-1780000001-a1-r2.jsonl",
+                tools=base, session="sess-B", events=[
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.3: 任务三"}},
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.4: 任务四"}},
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 1, "status": "completed"}},
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 2, "status": "completed"}},
+                ])
+        assert self._gate(
+            tasks_text=("## 1. 阶段一\n\n- [x] 1.1 任务一\n- [x] 1.2 任务二\n"
+                        "- [x] 1.3 任务三\n- [x] 1.4 任务四\n"),
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2", "1.3", "1.4"]},
+        ) is None
+
+    def test_abnormally_terminated_run_creates_no_obligation(self):
+        """异常终止 run（超时/信号杀）的 TaskCreate 不产生完成度义务。
+
+        事故形态：某轮建了 Task 1.2 后撞绝对超时被杀（写 type==error 终态），
+        从未 TaskUpdate；后续轮次不再使用 Task 工具。若该 create 计入 tracked，
+        则 1.2 永远无法满足 → 硬门永久拒绝、原地重试死循环。修复：异常终止
+        run 的创建不计入 tracked（记账被截断，非漏做证据）。
+        """
+        base = ["Task", "TaskCreate", "TaskUpdate"]
+        # a1：正常收尾，建 1.1 并完成
+        _mk_run(self.proot, self.spec, name=f"impl-{self.spec}-1780000001-a1.jsonl",
+                tools=base, session="sess-A", events=[
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.1: 任务一"}},
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 1, "status": "completed"}},
+                ])
+        # a2：**异常终止**（超时杀）——建了 1.2 未完成
+        _mk_run(self.proot, self.spec, name=f"impl-{self.spec}-1780000001-a2.jsonl",
+                tools=base, session="sess-A", events=[
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.2: 任务二"}},
+                ], error="Timeout after 18600s")
+        assert self._gate(
+            tasks_text="## 1. 阶段一\n\n- [x] 1.1 任务一\n- [x] 1.2 任务二\n",
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2"]},
+        ) is None
 
     def test_taskcreate_unavailable_skips_and_audits(self):
         """init.tools 不含 TaskCreate → 放行且写 impl-task-crosscheck-skipped 审计。"""
