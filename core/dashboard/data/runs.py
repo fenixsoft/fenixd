@@ -100,6 +100,84 @@ def _first_run_event_ts(path: Path) -> "str | None":
     return None
 
 
+# ── run 元数据 memo（fix-dashboard-read-path-performance D3） ──────────────
+# run 元数据（status_raw/started/duration_seconds/file_size）按
+# (path, mtime_ns, size) 缓存：append-only 产物未变即零读，跳过 _first_run_event_ts
+# （扫描头 200 行 + json.loads）与尾读。读路径把 O(总量) 降为 O(变更量)。
+# 与 _RUN_TASK_CACHE/_GLOBAL_BUDGET_CACHE 同模式（GIL 保护下的最优竞态：并发
+# 双算无害）。缓存存 status_raw——stale 判定依赖当前时刻，每次按 now 重算。
+_RUN_META_CACHE: dict = {}
+_RUN_META_CACHE_MAX = 16384
+
+
+def _run_meta_cached(p: Path, stat, now: float) -> dict:
+    """计算/复用单条 run 元数据（status/started/duration_seconds/file_size）。
+
+    命中（path, mtime_ns, size 全同）即返回缓存；未命中完整计算并写入缓存。
+    耗时/开始时刻/状态推导逻辑与既有 get_runs 逐字等价（见各步注释），
+    仅挪入本函数以便整体 memo。
+    """
+    key = (str(p), stat.st_mtime_ns, stat.st_size)
+    cached = _RUN_META_CACHE.get(key)
+    if cached is not None:
+        status = cached["status_raw"]
+        # fix-retry-orphan-active-runs D3：stale 判定按当前时刻每次重算
+        if status in ("running", "empty") and (now - stat.st_mtime) > _RUN_STALE_SECONDS:
+            status = "stale"
+        return {
+            "status": status,
+            "started": cached["started"],
+            "duration_seconds": cached["duration_seconds"],
+            "file_size": cached["file_size"],
+        }
+    run_id = p.stem
+    # 耗时：run_id 起始时间戳为 attempt 段前的 10 位 unix 秒（int(time.time())），
+    # 文件 mtime 为终止。优先匹配 `-<ts>-a<n>`（含 attempt 后缀的真实格式），
+    # 回退 `-<ts>`（旧格式无 attempt 后缀），再无则退化 mtime（现状兜底）。
+    tm = re.search(r"-(\d{9,10})-a\d+$", run_id) or re.search(r"-(\d{9,10})$", run_id)
+    start_ts = int(tm.group(1)) if tm else stat.st_mtime
+    # started 优先取产物首行事件时间戳（真实启动时刻）：run_id 内嵌时间戳
+    # 是首次派发时刻，多 attempt run（-a2+）复用同一 run_id 基座只加后缀，
+    # 按 run_id 解析会让所有 attempt 显示同一开始时刻、duration 虚增
+    # （含前序 attempt 寿命）。真实起点取产物首个带 timestamp 的事件：
+    # 文件头部是无时间戳的 provider_marker/hook/system 事件（实测 10+ 行），
+    # 故扫描前 200 行、命中即停；全部无样本返回 None（调用方回退 run_id 内嵌
+    # 时间戳）。
+    real_start = _first_run_event_ts(p)
+    # 跨组引用（timeline 组的 _parse_iso_ts）经门面延迟解析（D4）
+    import core.dashboard.data as _facade
+
+    real_dt = _facade._parse_iso_ts(real_start) if real_start else None
+    if real_dt is not None:
+        started = real_dt.astimezone(timezone.utc).isoformat()
+        duration_seconds = max(0, int(stat.st_mtime - real_dt.timestamp()))
+    else:
+        # started 用 run_id 解析出的开始时间戳，而非文件 mtime
+        # （mtime 是运行 *结束* 时间）。duration_seconds = mtime - start_ts 已真实计算，
+        # 若 started 仍取 mtime，则运行列表/时间轴会把每次运行显示为「在结束时刻才开始」，
+        # 与真实耗时自相矛盾（耗时列为真实秒数而开始时间却是结束时刻）。
+        started = datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()
+        duration_seconds = max(0, int(stat.st_mtime - start_ts))
+    status_raw = classify_run(_read_run_lines(p, max_lines=3))
+    status = status_raw
+    # fix-retry-orphan-active-runs D3：末行非终态且文件 mtime 停更超过
+    # _RUN_STALE_SECONDS → 判 stale（原地重试弃置尸体 / 进程被杀无终态断尾），
+    # stale 不进 _RUN_TERMINAL_STATUS_MAP（非事件类型）。
+    if status in ("running", "empty") and (now - stat.st_mtime) > _RUN_STALE_SECONDS:
+        status = "stale"
+    meta = {
+        "status_raw": status_raw,
+        "status": status,
+        "started": started,
+        "duration_seconds": duration_seconds,
+        "file_size": stat.st_size,
+    }
+    if len(_RUN_META_CACHE) > _RUN_META_CACHE_MAX:
+        _RUN_META_CACHE.clear()
+    _RUN_META_CACHE[key] = meta
+    return meta
+
+
 def get_runs(project_root, spec_name: str | None = None, include_archive: bool = False, files: list | None = None) -> list:
     """列出项目的运行记录（.fenix/runs/*.jsonl）。
 
@@ -158,60 +236,44 @@ def get_runs(project_root, spec_name: str | None = None, include_archive: bool =
         m = re.match(r"^(.*)-\d{9,10}$", spec_part)
         if m:
             spec_part = m.group(1)
-        # 耗时：run_id 起始时间戳为 attempt 段前的 10 位 unix 秒（int(time.time())），
-        # 文件 mtime 为终止。优先匹配 `-<ts>-a<n>`（含 attempt 后缀的真实格式），
-        # 回退 `-<ts>`（旧格式无 attempt 后缀），再无则退化 mtime（现状兜底）。
-        tm = re.search(r"-(\d{9,10})-a\d+$", run_id) or re.search(r"-(\d{9,10})$", run_id)
-        start_ts = int(tm.group(1)) if tm else stat.st_mtime
-        # started 优先取产物首行事件时间戳（真实启动时刻）：run_id 内嵌时间戳
-        # 是首次派发时刻，多 attempt run 复用基座会显示同一时刻且 duration 虚增。
-        # mtime 仍是结束时间（started 用派发/启动时刻而非结束时刻的语义不变）。
-        real_start = _first_run_event_ts(p)
-        # 跨组引用（timeline 组的 _parse_iso_ts）经门面延迟解析（D4）
-        import core.dashboard.data as _facade
-
-        real_dt = _facade._parse_iso_ts(real_start) if real_start else None
-        if real_dt is not None:
-            started = real_dt.astimezone(timezone.utc).isoformat()
-            duration_seconds = max(0, int(stat.st_mtime - real_dt.timestamp()))
-        else:
-            # started 用 run_id 解析出的开始时间戳，而非文件 mtime
-            # （mtime 是运行 *结束* 时间）。duration_seconds = mtime - start_ts 已真实计算，
-            # 若 started 仍取 mtime，则运行列表/时间轴会把每次运行显示为「在结束时刻才开始」，
-            # 与真实耗时自相矛盾（耗时列为真实秒数而开始时间却是结束时刻）。
-            started = datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()
-            duration_seconds = max(0, int(stat.st_mtime - start_ts))
-        lines = _read_run_lines(p, max_lines=3)
-        status = classify_run(lines)
-        # fix-retry-orphan-active-runs D3：stale 判定挂在 get_runs 的 status
-        # 组装处（classify_run 保持纯函数不注入 mtime）。末行非终态且文件 mtime
-        # 停更超过 _RUN_STALE_SECONDS → 判 stale（原地重试弃置尸体 / 进程被杀
-        # 无终态断尾），stale 不进 _RUN_TERMINAL_STATUS_MAP（非事件类型）。
-        if status in ("running", "empty") and (now - stat.st_mtime) > _RUN_STALE_SECONDS:
-            status = "stale"
+        # 元数据（status/started/duration/file_size）按 (path, mtime_ns, size) memo
+        meta = _run_meta_cached(p, stat, now)
         out.append(
             {
                 "run_id": run_id,
                 "agent_type": agent_type,
                 "spec": spec_part,
-                "status": status,
-                "duration_seconds": duration_seconds,
-                "started": started,
-                "file_size": stat.st_size,
+                "status": meta["status"],
+                "duration_seconds": meta["duration_seconds"],
+                "started": meta["started"],
+                "file_size": meta["file_size"],
             }
         )
     return out
 
 
-def _read_run_lines(path: Path, max_lines: int = 3) -> list:
-    """读取产物文件最后几行 JSON，逐行容错。
+# 尾读字节窗口（fix-dashboard-read-path-performance D3）：取末 N 行先 seek 尾部
+# 窗口读；窗口内完整行不足 max_lines（单行超窗 / 前导行残段被丢弃）时回退全量
+# 逐行读。64KB 覆盖 result 终结事件行（4KB+）与常规产物尾部；单行超过窗口即回退。
+_READ_RUN_TAIL_WINDOW = 64 * 1024
 
-    逐行流式读取（deque 保留尾部），不用末尾字节窗口 seek：result/error
-    终结事件行可能超长（result 携带完整结果数据，4KB+），字节窗口会把末行
-    从字节中间截断、parse 失败后被包装成伪 stderr 事件排在真实末尾，
-    classify_run 因此把已完成 run 误判为 running（overview 活跃 Agent 数
-    虚高）。run 产物均为 MB 级以下小文件，全量逐行读开销可忽略。
-    """
+
+def _parse_tail_lines(lines: list, max_lines: int) -> list:
+    """把文本行序列容错解析为事件，保留末 max_lines 条（空行跳过）。"""
+    tail = deque(maxlen=max_lines)
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            tail.append(json.loads(line))
+        except json.JSONDecodeError:
+            tail.append({"type": "stderr", "line": line})
+    return list(tail)
+
+
+def _read_run_lines_full(path: Path, max_lines: int) -> list:
+    """全量逐行读取产物尾部（尾读回退分支，与旧实现语义一致）。"""
     tail = deque(maxlen=max_lines)
     try:
         with path.open("rb") as f:
@@ -226,6 +288,38 @@ def _read_run_lines(path: Path, max_lines: int = 3) -> list:
     except OSError:
         pass
     return list(tail)
+
+
+def _read_run_lines(path: Path, max_lines: int = 3) -> list:
+    """读取产物文件最后几行 JSON，逐行容错。
+
+    优先从文件尾部按字节窗口 seek 读取（append-only 场景末 N 行远小于窗口，
+    避免全量逐行读）；窗口内完整行不足 max_lines（单行超窗 / 前导行残段被
+    丢弃）时回退全量逐行读。正确性约束不变：MUST NOT 从行的中间截断导致末行
+    被误解析——result/error 终结事件行可能超长（result 携带完整结果数据，
+    4KB+），若字节窗口把末行从中间截断、parse 失败后被包装成伪 stderr 事件
+    排在真实末尾，classify_run 会把已完成 run 误判为 running（overview 活跃
+    Agent 数虚高事故）。窗口首行是上一行的残段，必须丢弃而非解析。
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    if size <= _READ_RUN_TAIL_WINDOW:
+        return _read_run_lines_full(path, max_lines)
+    try:
+        with path.open("rb") as f:
+            f.seek(-_READ_RUN_TAIL_WINDOW, 2)
+            raw = f.read()
+    except OSError:
+        return []
+    text = raw.decode("utf-8", errors="replace")
+    # 首行是从字节窗口切入的残段（从上一行中间开始），丢弃
+    parsed = _parse_tail_lines(text.split("\n")[1:], max_lines)
+    if len(parsed) >= max_lines:
+        return parsed
+    # 窗口内完整行不足 max_lines（单行超窗等）→ 回退全量逐行读
+    return _read_run_lines_full(path, max_lines)
 
 
 def _parse_run_lines(lines) -> list:
