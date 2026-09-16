@@ -272,7 +272,7 @@ def make_runner_with_config(proot, config, sm=None, logger=None):
     runner._running_agents = {}
     runner._instant_fail = {}
     runner._daily_run_count = 0
-    runner._daily_reset_date = None
+    runner._provider_circuit._daily_reset_date = None
     return runner
 
 
@@ -446,7 +446,7 @@ class TestInstantFailDispatchGate(unittest.TestCase):
     def test_independent_from_provider_circuit(self):
         """秒挂冷却与 provider 熔断互不干扰。"""
         # provider 熔断状态（模拟另一 spec）
-        self.runner.provider_circuits = {"p1": {"cooldown_until": 999999999999.0}}
+        self.runner._provider_circuit.provider_circuits = {"p1": {"cooldown_until": 999999999999.0}}
         self.assertFalse(self.engine._instant_fail_cooled("spec-b"))
         # 冷却清空不影响 provider 熔断
         self._cool_spec("spec-b")

@@ -426,10 +426,10 @@ def _build_runner(tmp_path, config=None):
     runner.logger = FakeLogger()
     runner._running_agents = {}
     runner._daily_run_count = 0
-    runner._daily_reset_date = None
-    runner._daily_provider_attempts = {}
-    runner._daily_provider_warned = {}
-    runner.provider_circuits = {}
+    runner._provider_circuit._daily_reset_date = None
+    runner._provider_circuit._daily_provider_attempts = {}
+    runner._provider_circuit._daily_provider_warned = {}
+    runner._provider_circuit.provider_circuits = {}
     # mock v2_server（避免真实 dev-server 启停）
     runner.__dict__["_v2_server_instance"] = MagicMock()
     runner._v2_server._v2_inject_env.return_value = {}

@@ -13,52 +13,65 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 from core.agent_runner.prompt_builder import (
     PromptBuilder,
-    planner_result_path,
-    planner_result_status_whitelist,
     spec_review_result_path,
     spec_review_result_status_whitelist,
 )
 
-# fix-verdict-read-failclosed D2（新鲜度宽限，秒）：planner 产物硬门 mtime 新鲜度
-# 校验的容差。文件系统 mtime 写入存在滞后（tmpfs 实测 ~6ms），紧邻
-# attempt_started_at 后写入的高速度假 run 会被严格 mtime 校验误标陈旧。宽限远小于
-# 真实轮间间隙（agent 全程分钟级，上一轮残留 mtime 滞差秒以上），真陈旧产物仍被
-# 可靠拦截，仅吸收 mtime 时钟滞后。
-_ARTIFACT_FRESHNESS_GRACE_SECONDS = 1.0
-# add-planready-artifact-gate D2：planner-plan 结果文件 status 合法值收窄至
-# 单值 ("plan-ready",)。planner-plan 的唯一合法终态是 plan-ready；
-# verified/bug-found/scenario-repaired 是 judge/verifier 词汇，出现即语义错位
-# （implementer 残留 "success" 同理）。读侧判定本就是 status != "plan-ready"
-# 即降级——硬门与读侧口径完全一致。不复用四值白名单常量 planner_result_status_whitelist，
-# 防「judge 合法值替 plan 类型放行」。
-_PLANREADY_STATUSES = ("plan-ready",)
+# fix-verdict-read-failclosed D2（新鲜度宽限）与 add-planready-artifact-gate D2
+# （planner-plan status 白名单）的常量定义随消费者迁 core/agent_runner/result_gate.py
+# （D2b 规则 3），此处 re-export 保持既有导入路径与补丁缝隙（D6）。
+from core.agent_runner.result_gate import (  # noqa: F401
+    AgentArtifactGateError,
+    AdminDisposition,
+    AgentRunResult,
+    EvolutionResult,
+    RunCancelledError,
+    SelfReviewResult,
+    _ARTIFACT_FRESHNESS_GRACE_SECONDS,
+    _PLANREADY_STATUSES,
+    _append_crosscheck_skipped,
+    _check_agent_result_artifact,
+    _check_artifact_json_file,
+    _check_impl_result_artifact,
+    _check_partial_consistency,
+    _check_success_completion,
+    _check_taskupdate_crosscheck,
+    _format_gap_list,
+    _invalid_completed_ids,
+    _read_init_tools,
+)
+# run 级 API 延迟统计纯函数与常量迁 core/agent_runner/latency.py（D4），
+# re-export 维持 bin/analyze_run_latency.py / tests/test_run_latency_stats.py 的
+# 既有导入路径（D6）；`_default_ts_parser` 在 runner.py 保留一行委托（见下）。
+from core.agent_runner.latency import (  # noqa: F401
+    LATENCY_STALL_SECONDS,
+    _default_ts_parser as _latency_default_ts_parser,
+    _entry_is_tool_result,
+    _percentile,
+    format_latency_summary,
+    iter_events,
+    latency_samples_from_events,
+    latency_stats,
+)
 from core.agent_runner.liveness import (
     AGENT_TERMINATE_GRACE_SECONDS,
     LIVE_ATTEMPT_STREAM_WINDOW_SECONDS,
-    SUPERVISION_DEFAULTS,
-    JUDGE_TIMEOUT_SECONDS,
-    LIVENESS_SNIPPET_CHARS,
     LivenessSupervisor,
 )
-from core.agent_runner.liveness import LivenessSupervisor
 from core.agent_runner.session import SessionTracker
 from core.agent_runner.provider_circuit import (
     PROVIDER_CIRCUIT_4XX,
     PROVIDER_CIRCUIT_COOLDOWN_SECONDS,
-    PROVIDER_CIRCUIT_PROBE_SUCCESS_CODE,
     PROVIDER_CIRCUIT_THRESHOLD,
     PROVIDER_CIRCUIT_WINDOW_SECONDS,
     PROVIDER_DAILY_ATTEMPTS_WARN,
     PROVIDER_SWITCH_COOLDOWN_SECONDS,
-    SWITCH_ERROR_CONN_PATTERNS,
-    SWITCH_ERROR_TEXT_PATTERNS,
     ProviderCircuit,
 )
 from core.agent_runner.run_files import (
@@ -69,18 +82,6 @@ from core.agent_runner.run_files import (
 )
 from core.agent_runner.token_budget import TokenAccountant
 from core.agent_runner.v2_server import V2ServerManager
-from core.run_task_track import (
-    find_impl_run_file,
-    parse_run_task_done,
-    parse_tasks_md,
-)
-from core.v2_dev_server import (
-    V2DevServerError,
-    start as v2_start_dev_server,
-    stop as v2_stop_dev_server,
-    base_url as v2_base_url,
-    cleanup_orphans as v2_cleanup_orphans,
-)
 from core.wip_checkpoint import (
     ANCHOR_EXTENSION_TAIL,
     ANCHOR_TRANSIENT_BACKOFF,
@@ -89,11 +90,27 @@ from core.wip_checkpoint import (
 )
 
 
-# 无 provider 分配的 agent（含 Administrator）走默认网关（cc-switch）时 --model 用的
-# 官方模型名。provider 已分配的 agent，其 --model 直接取该 agent 分配的网关模型名
-# （model 字段，如 deepseek-v4-flash）——见 fenixd-sdk-model-routing：--model 即实际
-# 发给网关的模型名，ANTHROPIC_MODEL 被 --model 覆盖不生效。本常量只作 fallback。
-DEFAULT_GATEWAY_MODEL = "claude-sonnet-5"
+# DEFAULT_GATEWAY_MODEL 随 _get_admin_model 迁 maintenance_runs.py（D2b 规则 3），
+# re-export 保持内部使用点与既有导入路径；维护型 run 实现同迁，此处一行委托。
+from core.agent_runner.maintenance_runs import (
+    ADMIN_DISPOSITION_GLOB,
+    ADMIN_DISPOSITION_PREFIX,
+    DEFAULT_GATEWAY_MODEL,
+    _accumulate_evolution_tokens,
+    _accumulate_self_review_tokens,
+    _clear_admin_disposition,
+    _clear_self_review_out,
+    _delete_admin_disposition,
+    _delete_evolution_out,
+    _delete_self_review_out,
+    _get_admin_model,
+    _read_admin_disposition,
+    _read_self_review_out,
+    admin_disposition_path,
+    run_administrator,
+    run_evolution,
+    run_self_review,
+)
 
 # ── 路由地图生成（add-planner-efficiency：planner-route-map）─────────────
 # 项目声明生成器协议（design D1）：
@@ -259,216 +276,12 @@ def ensure_route_map(wt_path: Path, project_root: Path, logger,
     )
     return out
 
-# ── Administrator 处置状态实例文件（fix-admin-run-blocks-mainloop D3）─────
-# 处置状态文件按 run 实例分离：每个 admin run 使用独立文件
-# .fenix/admin_disposition-<run_id>.json，并行实例互不覆盖。
-# 旧全局路径 .fenix/admin_disposition.json 不再读写（残留文件由拾取侧清扫）。
-ADMIN_DISPOSITION_PREFIX = "admin_disposition-"
-ADMIN_DISPOSITION_GLOB = "admin_disposition-*.json"
-
-
-def admin_disposition_path(project_root: Path, run_id: str) -> Path:
-    """某次 admin run 的处置状态实例文件路径。"""
-    return Path(project_root) / ".fenix" / f"{ADMIN_DISPOSITION_PREFIX}{run_id}.json"
-
-
 # ── V2 测试服务器（add-worktree-test-server）────────────────────────────
 # per-run 隔离测试服务的端口分配基数，范围 [V2_TEST_PORT_BASE, V2_TEST_PORT_BASE+19]
 # 主服务 8787 排除在外，并发运行（并行度 2，预留余量取 20 个高位端口段）不冲突。
 V2_TEST_PORT_BASE = 19000
 V2_TEST_PORT_RANGE = 20
 V2_DEV_SERVER_MARKER = "fenix-v2-dev-server"
-
-class RunCancelledError(Exception):
-    """run 被 cancel_run 原语人工取消时抛出。
-
-    不走通用 Exception 处理路径——不重试、不计秒挂、不触发 provider 切换。
-    携带 reason（取消原因）与 by（操作人）。
-    """
-
-    def __init__(self, reason: str = "", by: str = "admin"):
-        self.reason = reason
-        self.by = by
-        msg = f"run cancelled by {by}"
-        if reason:
-            msg += f": {reason}"
-        super().__init__(msg)
-
-
-class AgentArtifactGateError(Exception):
-    """planner 产物硬门失败（add-judge-artifact-gate D1。
-
-    add-planready-artifact-gate：plan 类型也含结果文件契约——planner-plan
-    现亦校验 .fenix-run-result.json（status='plan-ready'）。
-
-    进程 exit 0 但结果文件（judge: .fenix-run-result.json / plan:
-    test_scenarios.json + .fenix-run-result.json）缺失、为空、非法 JSON 或
-    status 白名单外时抛出——run 按瞬态失败走既有原地退避重试通道，不进入
-    validate_report 的「裁决重试一次」预算。
-    """
-
-    def __init__(self, message: str = ""):
-        self.artifact_error = message
-        super().__init__(message)
-
-
-class AgentRunResult:
-    """Result of a single Agent run."""
-
-    def __init__(self, run_id: str, spec_name: str, agent_type: str,
-                 success: bool, duration_seconds: float,
-                 turns_used: int = 0, error: str = None, output: str = "",
-                 branch: str | None = None,
-                 provider_used: str | None = None, model_used: str | None = None,
-                 chain_exhausted: bool = False,
-                 worktree_dirty: list | None = None,
-                 worktree_path=None, worktree_kept: bool = False,
-                 cancelled: bool = False):
-        self.run_id = run_id
-        self.spec_name = spec_name
-        self.agent_type = agent_type
-        self.success = success
-        self.duration_seconds = duration_seconds
-        self.turns_used = turns_used
-        self.error = error
-        self.output = output
-        self.branch = branch  # worktree 分支名（成功时由 _execute_agent 填入）
-        # add-provider-failover（design D5 / spec failover-dispatch「切换可观测」）：
-        # 本次 run 实际使用的 provider 名与 model 名（链选择/切换后落盘可查）。
-        self.provider_used = provider_used
-        self.model_used = model_used
-        # chain_exhausted：链上全部候选均处于 switch 冷却期，attempt 直接失败返回
-        # （不启动进程、不计入 spec 重试消耗；design D3 / spec failover-dispatch）。
-        self.chain_exhausted = chain_exhausted
-        # fix-zero-change-blindspot：implementer 成功收工时、worktree cleanup **前**
-        # 取证的 `git status --porcelain` 非空行清单。零变更哨需要「agent 是否真的
-        # 动过文件」的证据；cleanup 后证据即销毁（曾致 Bash 写文件的真实工作被
-        # 误判为空转、2.11h/$10 全丢）。None/空 = 无脏文件或非 implementer。
-        self.worktree_dirty = worktree_dirty
-        # worktree 继承（fast-track 打回重派复用）：worktree_path = 本轮使用的
-        # worktree（fast-track 成功路径延迟清理、由 dispatch 层判定后处置）；
-        # worktree_kept = runner 终态失败时已保留为复用遗产（dispatch 无需重复保留）。
-        self.worktree_path = worktree_path
-        self.worktree_kept = worktree_kept
-        # run 是否被人工取消（cancel_run 旗标命中导致 RunCancelledError）。
-        self.cancelled = cancelled
-
-    def to_dict(self) -> dict:
-        return {
-            "run_id": self.run_id,
-            "spec_name": self.spec_name,
-            "agent_type": self.agent_type,
-            "success": self.success,
-            "duration_seconds": self.duration_seconds,
-            "turns_used": self.turns_used,
-            "error": self.error,
-            "branch": self.branch,
-            "provider_used": self.provider_used,
-            "model_used": self.model_used,
-            "chain_exhausted": self.chain_exhausted,
-            "cancelled": self.cancelled,
-            "output_summary": self.output[-500:] if self.output else "",
-        }
-
-
-class AdminDisposition:
-    """Administrator Agent 一次处置的结果（run_administrator 返回）。"""
-
-    def __init__(self, run_id: str, spec: str | None = None, success: bool = True,
-                 problem: str = "", actions_taken: str = "", result: str = "",
-                 escalate: bool = False, recommended_action: str = "",
-                 summary: str = "", error: str = "", output: str = "",
-                 family_waiver: bool = False):
-        self.run_id = run_id
-        self.spec = spec
-        self.success = success
-        self.problem = problem
-        self.actions_taken = actions_taken
-        self.result = result
-        self.escalate = escalate
-        self.recommended_action = recommended_action
-        self.summary = summary
-        self.error = error
-        self.output = output
-        # family_explosion 处置：Administrator 对该父 SPEC「放行一次」。
-        # 由 admin_monitor 落成 _family_waiver=true（单次豁免，用后复位）。
-        self.family_waiver = family_waiver
-
-    def to_dict(self) -> dict:
-        return {
-            "run_id": self.run_id,
-            "spec": self.spec,
-            "success": self.success,
-            "problem": self.problem,
-            "actions_taken": self.actions_taken,
-            "result": self.result,
-            "escalate": self.escalate,
-            "recommended_action": self.recommended_action,
-            "summary": self.summary,
-            "error": self.error,
-        }
-
-
-class SelfReviewResult:
-    """每日自省 run 的结果（run_self_review 返回，add-daily-self-review）。
-
-    waste/mistakes/improvements 为三个小节条目列表（每条含证据与建议，
-    由 Agent 在回顾 JSON 中产出）；resolved 为闭环判定清单（``[{id,
-    reason}]``，畸形条目在解析时过滤），调度器据此从 todo.md 移除已闭环
-    条目；success=False 时 error 携带失败原因。
-    """
-
-    def __init__(self, run_id: str, date: str = "", success: bool = True,
-                 waste: list | None = None, mistakes: list | None = None,
-                 improvements: list | None = None, summary: str = "",
-                 resolved: list | None = None,
-                 error: str = "", output: str = ""):
-        self.run_id = run_id
-        self.date = date
-        self.success = success
-        self.waste = list(waste or [])
-        self.mistakes = list(mistakes or [])
-        self.improvements = list(improvements or [])
-        self.summary = summary
-        self.resolved = list(resolved or [])
-        self.error = error
-        self.output = output
-
-
-class EvolutionResult:
-    """框架自进化分析 run 的结果（run_evolution 返回，add-framework-self-evolution）。
-
-    - items_ingested: 成功落地到 items.jsonl 的条目数
-    - drafts: 生成草稿（状态 pending）的条目数
-    - accepted: 本轮已接受（accepted/auto_accepted）条目数（daemon 检查点自动
-      接受后由调用方据实更新；run 本身不执行自动接受——那是 5.3 检查点的职责）
-    - degraded: 降级原因（"no-task-tool" 等）；None 表示未降级
-    - error: success=False 时的失败原因
-    """
-
-    def __init__(self, run_id: str = "", success: bool = True,
-                 items_ingested: int = 0, drafts: int = 0,
-                 accepted: int = 0, degraded: str | None = None,
-                 error: str = "", output: str = ""):
-        self.run_id = run_id
-        self.success = success
-        self.items_ingested = items_ingested
-        self.drafts = drafts
-        self.accepted = accepted
-        self.degraded = degraded
-        self.error = error
-        self.output = output
-
-
-# ── run 级 API 延迟统计（add-planner-efficiency：run-latency-observability）──
-# 在线（_run_claude 流式循环旁路）与事后（bin/analyze_run_latency.py）共用
-# 同一套口径函数：对事件序列 `tool_result → 下一个 assistant` 间隔采样为
-# API 往返样本，再计算直方图摘要（轮数/中位/p90/max/长尾>60s 计数与占比）。
-# 纯读侧，不改变流式事件处理时序。timestamp 解析复用 AgentRunner 的
-# _parse_event_timestamp（以惰性解析避免类定义前的默认参数引用）。
-
-LATENCY_STALL_SECONDS = 60.0
-
 
 # ── 轮次上限活性感知续期（add-turn-limit-anchor-c design D2）────────────────
 # 轮询环判定 run 触达 max_turns 上限时，按封闭决策矩阵（分支提交活性 / 尾部
@@ -495,138 +308,9 @@ TURN_EXTENSION_WINDOW_SECONDS = 60.0
 # TURN_EXTENSION_WINDOW_SECONDS 先例——框架生命周期内部治理参数）。
 EXTENSION_TAIL_WINDOW_SECONDS = 1800.0
 
-
-def iter_events(entries):
-    """逐条 yield（兼容既有调用方传 list 或生成器）。"""
-    yield from entries
-
-
 def _default_ts_parser(entry: dict):
-    """默认 timestamp 解析器：委托 AgentRunner._parse_event_timestamp。"""
-    return AgentRunner._parse_event_timestamp(entry)
-
-
-def _entry_is_tool_result(entry: dict) -> bool:
-    """统一识别 stream-json 流转录中的 tool_result 事件（tool-result-stream-detection）。
-
-    真实 ``claude -p --output-format stream-json`` 转录**从不**产生顶层
-    ``type == "tool_result"`` 事件（窗口内 12 条实测转录顶层 tool_result
-    0/12）：工具结果一律以 ``type == "user"`` 事件承载，包裹在
-    ``message.content[]`` 中 ``{"type": "tool_result", ...}`` 的 content
-    block 内。判定语义：
-
-    - ``type == "tool_result"`` → True（**兼容层**：存量合成测试 / 旧形态转录；
-      真实数据不产生该形态，注释留证非死代码）；
-    - ``type == "user"`` 且 ``message.content`` 为列表且含至少一个
-      ``{"type": "tool_result", ...}`` block → True（真实形态）；
-    - 其余（``message.content`` 为字符串、仅含 ``text`` block 的 ``user``
-      事件如 skill 加载消息、``assistant``/``system``/``result``/``stderr``
-      等）→ False，杜绝假样本/假流量。
-
-    本判定为延迟采样（``latency_samples_from_events`` / ``_run_claude`` 内联
-    读侧）与流量活性（``_turn_traffic_active``）三处消费点的**单一真源**——
-    不得在别处再次硬编码事件类型比较（design D1：根因即三处独立发散）。
-    """
-    if entry.get("type") == "tool_result":
-        return True
-    if entry.get("type") == "user":
-        content = entry.get("message", {}).get("content")
-        return isinstance(content, list) and any(
-            isinstance(b, dict) and b.get("type") == "tool_result"
-            for b in content)
-    return False
-
-
-def latency_samples_from_events(entries, parser=None) -> list:
-    """从事件序列提取 API 往返样本（tool_result → 下一个 assistant 间隔）。
-
-    口径（design D3，与 2026-09-05 事故分析一致）：记录最近一个
-    ``tool_result`` 事件（按 ``_entry_is_tool_result`` 统一识别——真实
-    stream-json 转录以 ``user`` 事件包裹 ``tool_result`` content block
-    承载，兼容顶层 ``tool_result`` 事件）的 timestamp，遇到下一个
-    ``assistant`` 事件时两者之差 = 一次 API 往返样本；随后清空待配对的
-    tool_result（一个样本只配对一次）。timestamp 缺失的事件不参与（跳过），
-    样本列表可空。
-
-    Args:
-        entries: 事件 dict 序列（list / 生成器）。
-        parser: timestamp 解析函数（缺省 = AgentRunner._parse_event_timestamp）。
-
-    Returns: float 秒样本列表（含 >60s 长尾；顺序为事件到达序）。
-    """
-    if parser is None:
-        parser = _default_ts_parser
-    samples: list = []
-    last_tool_result_ts: float | None = None
-    for e in iter_events(entries):
-        if not isinstance(e, dict):
-            continue
-        etype = e.get("type")
-        if _entry_is_tool_result(e):
-            ts = parser(e)
-            if ts is not None:
-                last_tool_result_ts = ts
-        elif etype == "assistant":
-            ts = parser(e)
-            if ts is not None and last_tool_result_ts is not None:
-                samples.append(ts - last_tool_result_ts)
-                last_tool_result_ts = None
-    return samples
-
-
-def latency_stats(samples) -> dict:
-    """把 API 往返样本压缩为直方图摘要（空样本安全返回全 0 键）。
-
-    Returns: {"rounds": int, "median": float|None, "p90": float|None,
-              "max": float|None, "stalls": int, "stall_ratio": float}
-        rounds 为样本数（=有 timestamps 的 API 往返轮数）；stalls 为
-        >60s 长尾样本数；stall_ratio = stalls/rounds（0 样本为 0）。
-    """
-    n = len(samples)
-    base = {"rounds": n, "median": None, "p90": None, "max": None,
-            "stalls": 0, "stall_ratio": 0.0}
-    if n == 0:
-        return base
-    ordered = sorted(samples)
-    base["median"] = _percentile(ordered, 0.5)
-    base["p90"] = _percentile(ordered, 0.9)
-    base["max"] = ordered[-1]
-    base["stalls"] = sum(1 for s in samples if s > LATENCY_STALL_SECONDS)
-    base["stall_ratio"] = base["stalls"] / n
-    return base
-
-
-def _percentile(ordered: list, q: float) -> float:
-    """已排序列表的线性插值分位数（q∈[0,1]）。"""
-    if not ordered:
-        return 0.0
-    pos = (len(ordered) - 1) * q
-    lo = int(pos)
-    hi = min(lo + 1, len(ordered) - 1)
-    frac = pos - lo
-    return ordered[lo] + (ordered[hi] - ordered[lo]) * frac
-
-
-def format_latency_summary(run_id: str, stats: dict) -> str:
-    """把摘要渲染为日志行（设计示例同款口径）。
-
-    ``run planner-plan-xxx-a1: 58 rounds, median 3.2s, p90 78s, max 185s,
-    stalls>60s=15 (26%)``。无样本时标注 0 rounds（中性可诊断文案——该 run
-    无 API 往返样本；「真空跑」与「解析器失明」由延迟观测自检 WARNING 区分，
-    这里不得归因于输入文件/旧转录）。
-    """
-    if stats.get("rounds", 0) <= 0:
-        return f"run {run_id}: 0 rounds（无 API 往返样本）"
-    med = stats.get("median") or 0
-    p90 = stats.get("p90") or 0
-    mx = stats.get("max") or 0
-    stalls = stats.get("stalls") or 0
-    ratio = (stats.get("stall_ratio") or 0) * 100
-    return (
-        f"run {run_id}: {stats['rounds']} rounds, "
-        f"median {med:.1f}s, p90 {p90:.1f}s, max {mx:.1f}s, "
-        f"stalls>60s={stalls} ({ratio:.0f}%)"
-    )
+    """默认 timestamp 解析器：委托 core.agent_runner.latency 实现（D4）。"""
+    return _latency_default_ts_parser(entry)
 
 
 class AgentRunner:
@@ -834,12 +518,7 @@ class AgentRunner:
     # ── V2 per-run 隔离测试服务（add-worktree-test-server）─────────────────────
 
 
-
-
-
-
     # ── provider 熔断（fix-stashpop-deadlock：provider-fault-fuse） ──────────────
-
 
 
     def _now(self) -> float:
@@ -868,14 +547,7 @@ class AgentRunner:
         self.__dict__.pop("_instant_fail_state", None)
 
 
-
     # ── provider 切换冷却（add-provider-failover：failover-dispatch） ──────────
-
-
-
-
-
-
 
 
     def run_implementer(self, spec_name: str,
@@ -1282,528 +954,46 @@ class AgentRunner:
         )
 
     def run_administrator(self, signal: dict) -> AdminDisposition:
-        """唤起 Administrator Agent 处置困境信号（administrator-agent spec）。
-
-        与 implementer/verifier 不同：Administrator 是运维角色，直接在 main 树
-        （project_root）操作框架，不创建 worktree（design D4）。产物写入
-        .fenix/runs/admin-<spec>-<ts>.jsonl；处置结果从管理员按 prompt 写入的
-        实例文件 .fenix/admin_disposition-<run_id>.json 读取，由 daemon 落盘到
-        admin_alerts.json。
-
-        fix-admin-run-blocks-mainloop D3：处置状态文件按 run 实例分离——并行
-        多实例（worker 池）各自 clear/write/read 自己的文件，互不覆盖。
-
-        Args:
-            signal: admin_monitor 检测到的困境信号 dict
-                （signal_type/spec/severity/description/evidence/recommended_action）。
-        """
-        spec = signal.get("spec") or "global"
-        run_id = f"admin-{spec}-{int(time.time())}"
-        # 实例路径注入提示词（prompt_builder 把写入指令指向该文件）
-        disp_path = admin_disposition_path(self.project_root, run_id)
-        prompt_detail = dict(signal)
-        prompt_detail["disposition_path"] = str(disp_path)
-        prompt = self._build_prompt(spec, "administrator", detail=prompt_detail)
-
-        # improve-config-ui-tabs：Administrator 运行时解析链（design D4）
-        #   1. agents.models.administrator assignment → 用分配 model 并注入 provider env（直连）
-        #   2. 无 assignment → 沿用旧逻辑 _get_admin_model()（admin.agent_model → 默认网关）
-        assignment = self._get_agent_model_assignment("administrator")
-        env_overrides: Dict[str, str] = {}
-        if assignment:
-            # 取链首选（Administrator 不接入 attempt 级 failover，仅用首选直连）
-            provider, model_override = assignment[0]
-            env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
-            env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
-            env_overrides["ANTHROPIC_MODEL"] = model_override
-            env_overrides["CLAUDE_CONFIG_DIR"] = str(
-                self._ensure_agent_config_dir(provider["name"])
-            )
-            for k, v in (provider.get("env") or {}).items():
-                env_overrides[k] = v
-            # 观测：run jsonl 写 provider_marker，与 dispatch attempt 路径同口径，
-            # 时间轴才能展示 Administrator 实际驱动的 model@provider；
-            # Administrator 不接 failover，链内下标恒 0/1
-            self._write_provider_marker(
-                run_id, spec, "administrator",
-                provider["name"], model_override, 0, 1,
-            )
-        else:
-            model_override = self._get_admin_model()
-
-        # fix-admin-self-heal：唤起前先落 pending disposition，保证即使 admin 被
-        # kill（如 daemon 重启/崩溃）也有记录可回溯；monitor 会检测无最终结果的
-        # pending 并升级人工，避免「admin 死了但没有任何告警」。
-        try:
-            from core.admin_store import AdminStore, DISPOSITION
-            AdminStore(self.project_root, getattr(self, "logger", None)).append({
-                "kind": DISPOSITION,
-                "status": "pending",
-                "signal_type": signal.get("signal_type"),
-                "spec": spec,
-                "admin_run_id": run_id,
-                "description": (f"Administrator 处置中（run {run_id}），尚未完成；"
-                                f"若长时间无最终结果，AdminMonitor 会自动升级人工"),
-                "result": "pending",
-                "recommended_action": signal.get("recommended_action"),
-            })
-        except Exception:
-            pass
-
-        self._clear_admin_disposition(disp_path)
-        try:
-            # _run_claude 返回 4 元组（add-cost-observability D1 加 usage_info）；
-            # admin 不消费 usage，此调用点曾漏改按 3 元组解包——admin run 一启动
-            # 即崩 too many values to unpack（2026-09-05 回检发现）
-            output, turns, _session_id, _usage = self._run_claude(
-                prompt, self.project_root, run_id, model_override, env_overrides,
-                max_turns=self._get_config("agents.max_turns", 300),
-                spec_name=spec,
-                agent_type="administrator",
-            )
-            success = True
-            error = ""
-        except Exception as e:
-            output = ""
-            success = False
-            error = str(e)
-            # fix-admin-disposition-empty-shell：失败不再静默——WARNING 携带 run_id
-            # 与异常文本，保证 `grep "Administrator run"` 可一次检索全部失败。
-            self.logger.warning(
-                "agent_runner",
-                f"Administrator run {run_id} failed: {error}",
-                {"run_id": run_id, "error": error},
-            )
-
-        disp = self._read_admin_disposition(disp_path)
-        # 读取即清理自身实例文件：内容已捕获进 AdminDisposition 返回给调用方落
-        # final 记录，文件不再有读者；不清理会随并行实例累积成垃圾。
-        self._delete_admin_disposition(disp_path)
-        return AdminDisposition(
-            run_id=run_id,
-            spec=disp.get("spec") or signal.get("spec"),
-            success=success,
-            problem=disp.get("problem") or signal.get("description", ""),
-            actions_taken=disp.get("actions_taken") or "",
-            result=disp.get("result") or ("resolved" if success else "failed"),
-            escalate=bool(disp.get("escalate", False)),
-            recommended_action=disp.get("recommended_action") or "",
-            summary=disp.get("summary") or "",
-            error=error,
-            output=output,
-            family_waiver=bool(disp.get("family_waiver", False)),
-        )
+        return run_administrator(self, signal)
 
     def _clear_admin_disposition(self, disp_path: Path):
-        """清空本次 run 的处置状态文件（若残留），避免读到陈旧数据。
-
-        fix-admin-run-blocks-mainloop D3：路径按 run 实例传入，不再使用全局
-        固定文件名——并行实例只清理自己的文件。
-        """
-        try:
-            if disp_path.exists():
-                disp_path.unlink()
-        except OSError:
-            pass
+        _clear_admin_disposition(disp_path)
 
     def _delete_admin_disposition(self, disp_path: Path):
-        """run 结束后删除自己的处置状态实例文件（内容已在内存中/已落 final）。"""
-        try:
-            disp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _delete_admin_disposition(disp_path)
 
     def _read_admin_disposition(self, disp_path: Path) -> dict:
-        """读取管理员按 prompt 写入的处置记录（实例文件，路径按 run 注入）。
-
-        文件缺失/损坏返回空 dict（调用方用信号详情兜底）。
-        """
-        try:
-            data = json.loads(disp_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        if not isinstance(data, dict):
-            return {}
-        at = data.get("actions_taken")
-        if isinstance(at, list):
-            # 列表型动作以换行符连接，每条动作独立一行（design D5）
-            data["actions_taken"] = "\n".join(str(x) for x in at if x)
-        elif at is None:
-            data["actions_taken"] = ""
-        elif not isinstance(at, str):
-            data["actions_taken"] = str(at)
-        sm = data.get("summary")
-        if isinstance(sm, list):
-            # 列表型叙述以换行符连接，每段独立一行
-            data["summary"] = "\n".join(str(x) for x in sm if x)
-        elif sm is None:
-            data["summary"] = ""
-        elif not isinstance(sm, str):
-            data["summary"] = str(sm)
-        return data
-
-    # ── 每日自省 run（add-daily-self-review spec，design D2） ──────────
+        return _read_admin_disposition(disp_path)
 
     def run_self_review(self, date_str: str, daily_summary: str,
                         todo_md: str | None = None,
                         todo_entries: str | None = None) -> SelfReviewResult:
-        """唤起每日自省 run（Administrator 通道，design D2 复用语义）。
-
-        与 implementer/verifier 不同：自省是运维角色，直接在 main 树
-        （project_root）操作，不创建 worktree。特性：
-        - run_id 前缀 ``review-<date>``：独立前缀，不占 spec 维度预算、
-          不计入每日 agent run 计数（不走 _execute_agent）；
-        - token 归账到 cost-observability 独立类目
-          （.fenix/cost/self_review_tokens.json，design D2 二选一），不写
-          STATE（自省链路禁止注册 STATE 条目）；
-        - 超时走 agents.run_timeout_seconds 全局默认（_run_claude 内生效，
-          不设 override）。
-        - 模型解析链：agents.models.self-review 分配优先；未配置回退
-          agents.models.administrator（向后兼容，自省源自运维通道）；
-          再回退 admin.agent_model → 默认网关。
-
-        Agent 按 prompt 把回顾写入实例文件
-        ``.fenix/self_review_out-<run_id>.json``（JSON：
-        date/waste/mistakes/improvements/resolved/summary），run 结束读取
-        并清理。失败（异常/超时/rc!=0）返回 success=False（调度器记告警、
-        24h 内不重试）。
-
-        Args:
-            date_str: 自省归属执行日 YYYY-MM-DD（即 run_id 内嵌日期）。
-            daily_summary: 框架聚合的近 24 小时数据摘要（五源），注入 prompt。
-            todo_md: read_todo=true 时的既有 todo.md 全文；None 不注入。
-            todo_entries: read_todo=true 时 ID 标注的近 3 日条目清单
-                （闭环判定对象）；None 注入占位提示。
-        """
-        run_id = f"review-{date_str}"
-        out_path = self.project_root / ".fenix" / f"self_review_out-{run_id}.json"
-        prompt = self._build_prompt(date_str, "self-review", detail={
-            "review_date": date_str,
-            "daily_summary": daily_summary or "",
-            "todo_md": todo_md or "",
-            "todo_entries": todo_entries or "",
-            "out_path": str(out_path),
-        })
-
-        # 模型解析链：agents.models.self-review > 回退 agents.models.administrator
-        # （向后兼容：自省未单独配置时继承运维通道分配）> admin.agent_model → 默认网关
-        env_overrides: Dict[str, str] = {}
-        assignment = (self._get_agent_model_assignment("self-review")
-                      or self._get_agent_model_assignment("administrator"))
-        if assignment:
-            provider, model_override = assignment[0]
-            env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
-            env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
-            env_overrides["ANTHROPIC_MODEL"] = model_override
-            env_overrides["CLAUDE_CONFIG_DIR"] = str(
-                self._ensure_agent_config_dir(provider["name"])
-            )
-            for k, v in (provider.get("env") or {}).items():
-                env_overrides[k] = v
-        else:
-            model_override = self._get_admin_model()
-
-        self._clear_self_review_out(out_path)
-        try:
-            output, turns, _session_id, usage_info = self._run_claude(
-                prompt, self.project_root, run_id, model_override, env_overrides,
-                max_turns=self._get_config("agents.max_turns", 300),
-                spec_name="self-review",
-            )
-            success = True
-            error = ""
-        except Exception as e:
-            output = ""
-            success = False
-            error = str(e)
-            usage_info = self._extract_usage_info(None)
-
-        # token 归账到独立类目（不写 STATE，硬约束）
-        self._accumulate_self_review_tokens(date_str, usage_info)
-
-        data = self._read_self_review_out(out_path)
-        self._delete_self_review_out(out_path)
-        # resolved 闭环判定清单归一化：非 dict / 缺 id / 空 id / 非 str id 过滤
-        resolved = []
-        for item in (data.get("resolved") or []):
-            if (isinstance(item, dict) and isinstance(item.get("id"), str)
-                    and item["id"]):
-                resolved.append({
-                    "id": item["id"],
-                    "reason": str(item.get("reason") or ""),
-                })
-        return SelfReviewResult(
-            run_id=run_id,
-            date=date_str,
-            success=success,
-            waste=data.get("waste") or [],
-            mistakes=data.get("mistakes") or [],
-            improvements=data.get("improvements") or [],
-            summary=data.get("summary") or "",
-            resolved=resolved,
-            error=error,
-            output=output,
-        )
+        return run_self_review(self, date_str, daily_summary, todo_md, todo_entries)
 
     def _clear_self_review_out(self, out_path: Path):
-        """清空本次自省 run 的输出文件（若残留），避免读到陈旧数据。"""
-        try:
-            if out_path.exists():
-                out_path.unlink()
-        except OSError:
-            pass
+        _clear_self_review_out(out_path)
 
     def _delete_self_review_out(self, out_path: Path):
-        """run 结束后删除自己的 self_review 输出实例文件。"""
-        try:
-            out_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _delete_self_review_out(out_path)
 
     def _read_self_review_out(self, out_path: Path) -> dict:
-        """读取自省 run 的回顾 JSON；缺失/损坏返回空 dict（调用方兜底）。"""
-        try:
-            data = json.loads(out_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        if not isinstance(data, dict):
-            return {}
-        for field in ("waste", "mistakes", "improvements"):
-            val = data.get(field)
-            if not isinstance(val, list):
-                data[field] = []
-            else:
-                # 结构化条目（dict，{impact, evidence, analysis?, suggestion}）
-                # 保持原形直达渲染层，仅非 dict/str 标量兜底 str——无差别
-                # str() 会把合规 dict 打成 dict-repr 字符串，渲染层四行格式
-                # 失效退化为机器形态（09-08 事故）。
-                data[field] = [x if isinstance(x, (dict, str)) else str(x)
-                               for x in val if x]
-        sm = data.get("summary")
-        if sm is None:
-            data["summary"] = ""
-        elif not isinstance(sm, str):
-            data["summary"] = str(sm)
-        return data
+        return _read_self_review_out(out_path)
 
     def _accumulate_self_review_tokens(self, date_str: str, usage_info: dict) -> None:
-        """add-daily-self-review：自省 token 归账到 cost-observability 独立类目。
-
-        design D2 二选一（独立 self-review 类目）：追加到
-        ``.fenix/cost/self_review_tokens.json`` 的 runs 数组（与
-        verify-progress tokens.json 同结构），供成本对账口径一致；不写
-        STATE（禁止注册 STATE 条目硬约束）。写失败静默降级（观测增强，
-        不阻断自省主流程）。
-        """
-        if not isinstance(usage_info, dict):
-            usage_info = {}
-        cost_dir = self.project_root / ".fenix" / "cost"
-        tokens_json = cost_dir / "self_review_tokens.json"
-        try:
-            tokens_json.parent.mkdir(parents=True, exist_ok=True)
-            data = {}
-            if tokens_json.is_file():
-                try:
-                    loaded = json.loads(tokens_json.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    loaded = {}
-                if isinstance(loaded, dict):
-                    data = loaded
-            runs = data.get("runs")
-            if not isinstance(runs, list):
-                runs = []
-            runs.append({
-                "agent_type": "self-review",
-                "date": date_str,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
-                + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
-                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
-                "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
-                "cost_usd": usage_info.get("cost_usd"),
-            })
-            data["runs"] = runs
-            tokens_json.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        except (OSError, json.JSONDecodeError):
-            pass
-
-    # ── 框架自进化 run（add-framework-self-evolution spec，design D2） ──
+        _accumulate_self_review_tokens(self, date_str, usage_info)
 
     def run_evolution(self, ready_projects: list,
                       pending_entries: list | None = None) -> EvolutionResult:
-        """唤起框架自进化分析 run（Administrator 通道语义，design D2 复用）。
-
-        与 implementer/verifier 不同：自进化是运维角色，直接在 main 树
-        （project_root）操作，**不创建 worktree**（与 run_self_review 同形态）。
-        特性：
-        - run_id 前缀 ``evo-<epoch>``：独立前缀，不占 spec 维度预算、
-          不计入每日 agent run 计数（不走 _execute_agent）；
-        - token 归账沿用 _accumulate_self_review_tokens 的既有类目（cost
-          独立类目，不写 STATE）；
-        - 超时走 agents.run_timeout_seconds 全局默认（_run_claude 内生效）；
-        - 模型解析链：agents.models.self-review 分配优先；未配置回退
-          agents.models.administrator；再回退 _get_admin_model → 默认网关
-          （MUST NOT 引入新的 agents.models.* 配置键）。
-        - max_turns / 超时 / 预算 / 告警 / provider 熔断全部走既有
-          _run_claude（spec「分析 run 的角色、模型链与执行形态」）。
-
-        产物路径 ``.fenix/evolution/out-<run_id>.json``（契约 JSON：
-        items[] 含 verdict/analysis_md/spec），run 结束读取并清理（4.4）。
-        产物缺失或解析失败返回 success=False 并带原因，MUST NOT 抛异常
-        穿透到调用方。落地（ingest_item）由本方法执行，自动接受是
-        5.3 检查点的职责（本方法不触碰配置开关）。
-
-        Args:
-            ready_projects: 就绪项目 [{name, path, todo_md}]（scan_ready_projects
-                的返回，同一 run 拿到多份 todo.md）。
-            pending_entries: 待分析条目（含 id），None 由调用方传入。
-        """
-        import time as _time
-        run_id = f"evo-{int(_time.time())}"
-        out_path = self.project_root / ".fenix" / "evolution" / f"out-{run_id}.json"
-        prompt = self._build_prompt(run_id, "evolution", detail={
-            "ready_projects": ready_projects or [],
-            "pending_entries": pending_entries or [],
-            "out_path": str(out_path),
-        })
-
-        # 模型解析链：agents.models.self-review > 回退 agents.models.administrator
-        # > _get_admin_model（与自省 agent 完全同源，spec「模型链与自省同源」）。
-        env_overrides: Dict[str, str] = {}
-        assignment = (self._get_agent_model_assignment("self-review")
-                      or self._get_agent_model_assignment("administrator"))
-        if assignment:
-            provider, model_override = assignment[0]
-            env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
-            env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
-            env_overrides["ANTHROPIC_MODEL"] = model_override
-            env_overrides["CLAUDE_CONFIG_DIR"] = str(
-                self._ensure_agent_config_dir(provider["name"])
-            )
-            for k, v in (provider.get("env") or {}).items():
-                env_overrides[k] = v
-        else:
-            model_override = self._get_admin_model()
-
-        try:
-            output, turns, _session_id, usage_info = self._run_claude(
-                prompt, self.project_root, run_id, model_override, env_overrides,
-                max_turns=self._get_config("agents.max_turns", 300),
-                spec_name="evolution",
-            )
-            run_ok = True
-            error = ""
-        except Exception as e:
-            output = ""
-            run_ok = False
-            error = str(e)
-            usage_info = self._extract_usage_info(None)
-
-        # token 归账到独立类目（不写 STATE，与自省同一约束）
-        self._accumulate_evolution_tokens(run_id, usage_info)
-
-        # 读取契约产物并落地（4.4：产物缺失/解析失败 → success=False 带原因）
-        degraded = None
-        items_ingested = 0
-        drafts = 0
-        if run_ok:
-            try:
-                from core.evolution import (
-                    ContractError, read_contract, ingest_item)
-                try:
-                    contract = read_contract(out_path)
-                    self._delete_evolution_out(out_path)
-                except ContractError as e:
-                    run_ok = False
-                    error = str(e)
-                    contract = None
-            except Exception as e:
-                # 落地异常不应穿透（检查点统一捕获）；整轮视为失败带原因
-                run_ok = False
-                error = f"分析落地异常: {e}"
-                contract = None
-            if run_ok and contract:
-                degraded = contract.get("degraded")
-                for item in contract.get("items") or []:
-                    try:
-                        status = ingest_item(item, self.project_root)
-                    except Exception as e:
-                        # 单条落地失败不使整轮失败（幂等去重保证下轮重试）
-                        _log = getattr(self, "logger", None)
-                        if _log is not None:
-                            _log.warning(
-                                "self-evolution",
-                                f"条目落地异常（跳过）: "
-                                f"{item.get('title')}: {e}")
-                        continue
-                    items_ingested += 1
-                    if status == "pending":
-                        drafts += 1
-
-        return EvolutionResult(
-            run_id=run_id,
-            success=run_ok,
-            items_ingested=items_ingested,
-            drafts=drafts,
-            degraded=degraded,
-            error=error,
-            output=output,
-        )
+        return run_evolution(self, ready_projects, pending_entries)
 
     def _delete_evolution_out(self, out_path: Path):
-        """run 结束后删除自己的 evolution 输出实例文件（与 self_review 同处理）。"""
-        try:
-            out_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _delete_evolution_out(out_path)
 
     def _accumulate_evolution_tokens(self, run_id: str, usage_info: dict) -> None:
-        """自进化 token 归账（沿用 self_review 的独立类目文件与结构）。
-
-        design D2 二选一：追加到 ``.fenix/cost/self_review_tokens.json`` 的
-        runs 数组（与 verify-progress tokens.json 同结构），agent_type 标注
-        ``evolution`` 以便成本对账区分。写失败静默降级（观测增强，不阻断）。
-        """
-        if not isinstance(usage_info, dict):
-            usage_info = {}
-        cost_dir = self.project_root / ".fenix" / "cost"
-        tokens_json = cost_dir / "self_review_tokens.json"
-        try:
-            tokens_json.parent.mkdir(parents=True, exist_ok=True)
-            data = {}
-            if tokens_json.is_file():
-                try:
-                    loaded = json.loads(tokens_json.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    loaded = {}
-                if isinstance(loaded, dict):
-                    data = loaded
-            runs = data.get("runs")
-            if not isinstance(runs, list):
-                runs = []
-            runs.append({
-                "agent_type": "evolution",
-                "date": run_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
-                + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
-                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
-                "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
-                "cost_usd": usage_info.get("cost_usd"),
-            })
-            data["runs"] = runs
-            tokens_json.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        except (OSError, json.JSONDecodeError):
-            pass
+        _accumulate_evolution_tokens(self, run_id, usage_info)
 
     def _get_admin_model(self) -> str:
-        """Administrator 模型名：admin.agent_model > 默认网关 fallback 常量。"""
-        admin_model = self._get_config("admin.agent_model", None)
-        if admin_model:
-            return admin_model
-        return DEFAULT_GATEWAY_MODEL
+        return _get_admin_model(self)
 
     def _build_isolated_settings(self) -> dict:
         """构造隔离 settings.json：enabledPlugins / hooks（spec D2/D3）。
@@ -3341,17 +2531,6 @@ class AgentRunner:
                 )
 
 
-
-
-
-
-
-
-
-
-
-
-
     def _run_claude(self, prompt: str, cwd: Path, run_id: str,
                     model_override: str | None = None,
                     env_overrides: Dict[str, str] | None = None,
@@ -3359,7 +2538,6 @@ class AgentRunner:
                     max_turns: int | None = None,
                     spec_name: str | None = None,
                     agent_type: str | None = None) -> tuple:
-        from core.config import ConfigLoader
         """
         Execute claude CLI with the given prompt, streaming events to disk.
 
@@ -3399,6 +2577,7 @@ class AgentRunner:
         # per-agent-timeout-override 3.2：run 生效超时按 agent_type 覆盖值查询
         #（override → 全局 run_timeout_seconds → 3600 回退）。
         timeout = self._effective_run_timeout(agent_type)
+        from core.config import ConfigLoader
         # fix-stuck-threshold-unify D5：supervision 激活路径读取 absolute_max 兜底值，
         # 不直接读原始配置（防止与 run 超时脱钩）。返回 None 表示未启用 supervision。
         sup_abs_max = ConfigLoader.effective_supervision_absolute_max_seconds(self.config)
@@ -3865,15 +3044,10 @@ class AgentRunner:
         return result if result else DEFAULT_SCHEDULE
 
 
-
-
     # ── attempt 存活探测（improve-run-lifecycle-governance D4）────────────────
 
 
-
-
     # ── 超时续期基准（improve-run-lifecycle-governance 3.2 / D3）──────────────
-
 
 
     # ── 超时活性监督（improve-run-lifecycle-governance 4.1–4.3 / D1–D3）────────
@@ -3902,19 +3076,13 @@ class AgentRunner:
         return _entry_is_tool_result(entry)
 
 
-
-
-
-
-
-
-
     def _check_daily_limit(self):
         """Check and reset daily run counter."""
         today = datetime.now(timezone.utc).date()
         if today != self._daily_reset_date:
             self._daily_run_count = 0
-            self._daily_reset_date = today
+            # D5：直接写组合对象（转发 setter 已删；AgentRunner 不另行持有第二份）。
+            self._provider_circuit._daily_reset_date = today
 
         limit = self._get_config("agents.daily_run_limit", 50)
         if limit > 0 and self._daily_run_count >= limit:
@@ -4246,489 +3414,54 @@ class AgentRunner:
         return self._prompt_builder._build_prompt(
             spec_name, agent_type, detail, wt_path=wt_path)
 
-    # ── planner 产物硬门（add-judge-artifact-gate D1）────────────────────
-
     def _check_artifact_json_file(self, path: Path, agent_type: str,
-                                  run_started_at: float | None,
-                                  is_resumed_worktree: bool = False) -> tuple:
-        """单产物文件基础校验（存在/非空/mtime 新鲜/可解析 JSON）。
+                                  run_started_at: float | None, is_resumed_worktree: bool = False) -> tuple:
+        return _check_artifact_json_file(path, agent_type, run_started_at, is_resumed_worktree)
 
-        多个产物文件共用同一套基础校验（add-planready-artifact-gate：planner-plan
-        双产物叠加校验）。新鲜度守卫（fix-verdict-read-failclosed D2）与既有
-        test_scenarios.json 同规则。
-
-        is_resumed_worktree（2026-09-16 事故修正）：本轮 attempt 复用的 worktree
-        是否承载**上一轮遗留产物**。复用 worktree 做续做/修复轮时，worktree 内本
-        就存在前轮的 ``.fenix-run-result.json``（mtime 早于本轮启动），这是设计
-        预期而非异常——此时**跳过 mtime 新鲜度硬拦**，正确性交内容判据保证
-        （success 需 completed_tasks 与 tasks.md 全勾一致、partial 需申报一致）。
-        仅「新建 worktree 的首轮」做 mtime 硬拦（防上一轮/其它 spec 残留冒充本轮）。
-
-        背景：旧实现对**所有**轮做 mtime 硬拦，导致「已完工 worktree 复用做修复轮」
-        秒退死循环——agent 判定「无需动作」不重写结果文件，mtime 停在上一轮，被
-        误判陈旧（2026-09-15 refactor-dashboard-data-module / 09-16
-        refactor-agent-runner-module 两起实测）。
-
-        Returns:
-            (err, data)：err 非 None = 失败归因文案（含具体文件路径与原因类别，
-            供 error 直用）；否则 data 为解析出的 JSON 值（可为任意类型）。
-        """
-        try:
-            if not path.is_file():
-                return (f"exit 0 但结果文件缺失（{agent_type} 产物硬门）: {path}", None)
-            if path.stat().st_size == 0:
-                return (f"exit 0 但结果文件为空（{agent_type} 产物硬门）: {path}", None)
-            if run_started_at is not None and not is_resumed_worktree:
-                mtime = path.stat().st_mtime
-                if mtime < run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS:
-                    return (
-                        f"exit 0 但结果文件早于本轮启动（陈旧残留，{agent_type} "
-                        f"产物硬门）: {path} (mtime={mtime:.1f} < "
-                        f"run_started_at - grace={run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS:.1f})",
-                        None,
-                    )
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError) as e:
-            return (f"exit 0 但结果文件不可读（{agent_type} 产物硬门）: {path} ({e})", None)
-        except json.JSONDecodeError as e:
-            return (f"exit 0 但结果文件非法 JSON（{agent_type} 产物硬门）: {path} ({e})", None)
-        return (None, data)
-
-    def _check_agent_result_artifact(self, spec_name: str,
-                                     agent_type: str,
+    def _check_agent_result_artifact(self, spec_name: str, agent_type: str,
                                      run_started_at: float | None = None,
                                      wt_path: Path | None = None,
                                      is_resumed_worktree: bool = False) -> str | None:
-        """planner/implementer 产物存在性硬门（fail-closed）。
+        return _check_agent_result_artifact(self, spec_name, agent_type, run_started_at, wt_path, is_resumed_worktree)
 
-        成功判定从「进程 exit 0」升级为「exit 0 **且**结果文件落盘且可解析」：
-        - planner-judge 结果文件 = planner_result_path(..., "planner-judge")
-          （.fenix-run-result.json）
-        - planner-plan  结果文件 = planner_result_path(..., "planner-plan")
-          （test_scenarios.json）**叠加** planner_result_path(..., "planner-judge")
-          （.fenix-run-result.json，status='plan-ready'）
-        - spec-review 结果文件 = spec_review_result_path(..., spec_name)
-          （.fenix-run-result.json，status ∈ approved/repaired/rejected）；
-          2026-09-15 事故修复前本类型直接 return None（空阀），评审「结果文件
-          缺失」靠下游 read_text() FileNotFoundError 兜底。
-        - implementer / fast-track 结果文件 = 本轮 run 的 **worktree** 根目录
-          .fenix-run-result.json（fix-impl-tasks-completion-gate P0 / D1，不读
-          主树拷回副本——主树共享文件跨 spec，读它会把上一轮/其它 spec 残留与
-          本轮产物混为一谈）
-        路径与 prompt_builder 注入的 {result_path}/{scenarios_path} 同源计算，
-        防双实现漂移。文件缺失 / 为空 / 非法 JSON 一律视为缺失（fail-closed）。
-
-        add-planready-artifact-gate：planner-plan 分支在既有 test_scenarios.json
-        校验（存在/非空/mtime 新鲜/合法 JSON）之上叠加 .fenix-run-result.json
-        plan-ready 契约校验（存在/非空/合法 JSON/顶层对象/status ∈
-        ("plan-ready",)）——planner 忘写结果文件（2026-09-09 白烧事故）不再被
-        "succeeded" 放行。结果文件路径经 planner_result_path(..., "planner-judge")
-        计算（与 pm_engine 读侧 primary 同源），不落盘到 worktree 相对路径。
-
-        fix-impl-tasks-completion-gate（P0，2026-09-13 add-spec-review-gate 事故
-        回归）：implementer / fast-track 分支的完成度判据见
-        ``_check_impl_result_artifact``——tasks.md 未勾数字任务 / completed_tasks
-        与勾选集合不一致 / partial 申报不一致 / TaskUpdate 交叉核对不一致均在
-        源头拦截（此前唯一探测器 _task_completion_blocker 位于 verified→done
-        末端，实现/验证/合并走完才发现缺口）。失败复用 AgentArtifactGateError
-        通道 = 保 worktree + 原地退避 + 同 worktree --resume 续做，不判整轮失败。
-
-        fix-verdict-read-failclosed D2（新鲜度）：``run_started_at`` 为本轮 attempt
-        启动时刻（attempt 循环内的 attempt_started_at）；结果文件 mtime 早于
-        ``run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS`` 按「本轮零产物
-        （陈旧残留）」处理——上一轮残留的旧合法文件不得替本轮放行
-        （add-verify-contract-autodraft 事故：门验到旧合法文件而放行，随后拷回
-        非法 JSON 落主树 → 读侧 fail-open 放行）。宽限 1s 仅吸收文件系统 mtime
-        写入滞后（tmpfs 实测 ~6ms），真实轮间间隙（分钟级）远大于此，真陈旧仍
-        被可靠拦截。
-
-        Args:
-            spec_name: spec 名（决定 verify-progress 子目录）。
-            agent_type: planner-judge / planner-plan / implementer / fast-track
-                有产物契约；其余返回 None。
-            run_started_at: 本轮 attempt 启动 epoch 秒；为 None 时跳过新鲜度校验
-                （兼容无 attempt 上下文的单测直调）。
-            wt_path: 本轮 run 的 worktree 根路径（implementer / fast-track 结果
-                文件落点）；planner 分支不使用该参数。
-            is_resumed_worktree: 本轮复用的 worktree 是否承载上一轮遗留产物
-                （resume/续做/修复轮）；True 时 implementer/fast-track 分支对结果
-                文件跳过 mtime 新鲜度硬拦（正确性交内容判据）。
-
-        Returns:
-            None = 通过；否则返回失败归因文案（含「结果文件缺失」语义，
-            供 error 直用）。
-        """
-        if agent_type in ("implementer", "fast-track"):
-            return self._check_impl_result_artifact(
-                spec_name, run_started_at, wt_path,
-                is_resumed_worktree=is_resumed_worktree)
-        if agent_type == "spec-review":
-            # 评审结果硬门（2026-09-15 事故修复）：add-spec-review-gate D10 声称
-            # 「复用 _check_agent_result_artifact」，但本函数此前在下一行的
-            # 类型判断处对 spec-review 直接 return None——门禁从未接线，真正
-            # 兜底的是下游 spec_review.consume_review_result 的 read_text()
-            # FileNotFoundError。接线后「结果文件缺失」在明确命名的失败点被拦，
-            # 且 mtime 新鲜度守卫生效（防陈旧合法文件替本轮 no-op 放行）。
-            path = spec_review_result_path(self.project_root, spec_name)
-            err, data = self._check_artifact_json_file(
-                path, agent_type, run_started_at)
-            if err is not None:
-                return err
-            if not isinstance(data, dict):
-                return (
-                    f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {path}"
-                )
-            status = data.get("status", "")
-            if status not in spec_review_result_status_whitelist:
-                return (
-                    f"exit 0 但结果文件 status='{status}' 不在白名单"
-                    f"（{agent_type} 产物硬门）: {path}"
-                )
-            return None
-        if agent_type not in ("planner-judge", "planner-plan"):
-            return None
-        if agent_type == "planner-plan":
-            # 双产物叠加校验：test_scenarios.json（既有，保持不变）+
-            # .fenix-run-result.json（add-planready-artifact-gate，新增）。
-            scenarios_path = planner_result_path(
-                self.project_root, spec_name, "planner-plan")
-            result_path = planner_result_path(
-                self.project_root, spec_name, "planner-judge")
-            err, _data = self._check_artifact_json_file(
-                scenarios_path, agent_type, run_started_at)
-            if err is not None:
-                return err
-            err, data = self._check_artifact_json_file(
-                result_path, agent_type, run_started_at)
-            if err is not None:
-                return err
-            if not isinstance(data, dict):
-                return (
-                    f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {result_path}"
-                )
-            status = data.get("status", "")
-            if status not in _PLANREADY_STATUSES:
-                return (
-                    f"exit 0 但结果文件 status='{status}' 不在白名单"
-                    f"（{agent_type} 产物硬门）: {result_path}"
-                )
-            return None
-        path = planner_result_path(self.project_root, spec_name, agent_type)
-        err, data = self._check_artifact_json_file(
-            path, agent_type, run_started_at)
-        if err is not None:
-            return err
-        # fix-verdict-read-failclosed D3：judge 裁决文件（.fenix-run-result.json）
-        # 顶层 status 须在白名单内（语义错位取值如 implementer 共享残留的
-        # success 不得流入读侧被「unknown status 视为 verified」）。
-        if not isinstance(data, dict):
-            return (
-                f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {path}"
-            )
-        status = data.get("status", "")
-        if status not in planner_result_status_whitelist:
-            return (
-                f"exit 0 但结果文件 status='{status}' 不在白名单"
-                f"（{agent_type} 产物硬门）: {path}"
-            )
-        return None
-
-    # ── implementer/fast-track 结果产物硬门（fix-impl-tasks-completion-gate P0）──
-
-    # 结果文件顶层 status 白名单（P0 / spec「结果产物硬门」）。success = 全部任务
-    # 完成；partial = 诚实申报未完成；error = 失败（不施加完成度判据）。白名单外
-    # 取值（如 planner 词汇 verified/plan-ready）一律判失败——语义错位 status 被
-    # 读侧放行即历史 fail-open 事故形态（add-verify-contract-autodraft）。
+    # 结果文件顶层 status 白名单（P0 / spec「结果产物硬门」）：success=全部任务完成；
+    # partial=诚实申报未完成；error=失败不施加完成度判据。白名单外取值判失败（防
+    # fail-open 事故形态）；判据实现在 result_gate.py（D2b 规则 1 经 runner 注入）。
     _IMPL_RESULT_STATUSES = ("success", "error", "partial")
 
-    def _check_impl_result_artifact(self, spec_name: str,
-                                    run_started_at: float | None,
-                                    wt_path: Path | None,
+    def _check_impl_result_artifact(self, spec_name: str, run_started_at: float | None, wt_path: Path | None,
                                     is_resumed_worktree: bool = False) -> str | None:
-        """implementer / fast-track 结果产物硬门（fix-impl-tasks-completion-gate P0）。
-
-        成功判定从「进程 exit 0」升级为「exit 0 **且**本轮 run 的 worktree 内
-        ``.fenix-run-result.json`` 落盘、可解析且完成度判据通过」：
-
-        - **校验对象** = ``wt_path / ".fenix-run-result.json"``（D1：不读主树拷回
-          副本——runner.py:2672-2681 的拷贝是无条件覆盖，且主树路径跨 spec 共享，
-          读主树副本会把「本轮产物」与「上一轮/其它 spec 残留」混为一谈）；
-        - **基础校验**（fail-closed）：文件存在 / 非空 / 合法 JSON / 顶层为对象 /
-          顶层 ``status`` ∈ {"success", "error", "partial"}；
-        - ``status == "success"`` → **任务书完成度判据**（spec「success 的完成度
-          判据」）：tasks.md 无未勾数字任务（D2 与 ``_task_completion_blocker``
-          同源解析，禁止第二套正则）+ 顶层 ``completed_tasks`` 集合与已勾选集合
-          完全相等（缺项/多项/非数字 id 判失败）；
-        - ``status == "partial"`` → **申报一致性判据**：``completed_tasks`` 集合
-          == 已勾选集合、``unfinished`` 集合 == 未勾选集合、两集合互斥且并集 ==
-          全部数字任务 id（防止 partial 成为绕过 success 判据的缺口）；
-        - ``status == "error"`` → 不施加任何完成度类判据；
-        - **能力探测**（D4，条件化）：读本轮 run 产物 init 事件的 ``tools`` 数组，
-          含 ``"TaskCreate"`` 时额外强制 ``parse_run_task_done`` 的 ``done_ids``
-          覆盖全部已勾选 id；不含或 init 不可得 → fail-open 跳过并追加
-          ``impl-task-crosscheck-skipped`` 审计事件——无条件强制在 Task 家族工具
-          不可用的派发路由上不可满足，会形成「拒绝 → resume → 再拒绝」的预算
-          烧穿循环（141/141 runner 派发 run 实测无 TaskCreate）。
-
-        Args:
-            spec_name: spec 名（tasks.md 定位）。
-            run_started_at: 本轮 attempt 启动 epoch 秒（新鲜度校验，语义同
-                planner 分支）；None 跳过。
-            wt_path: 本轮 run 的 worktree 根路径（结果文件落点）。
-            is_resumed_worktree: 复用 worktree（承载上一轮遗留产物）时为 True →
-                结果文件跳过 mtime 新鲜度硬拦（见 ``_check_artifact_json_file``）。
-
-        Returns:
-            None = 通过；否则返回失败归因文案（含具体文件路径与失败类别，供
-            续做 prompt 直接注入）。
-        """
-        agent_type = "implementer"  # 归因文案类别；fast-track 同判据同文案
-        if wt_path is None:
-            return (
-                f"exit 0 但 worktree 路径不可得（{agent_type} 产物硬门），"
-                f"无法定位结果文件: {spec_name}"
-            )
-        result_path = wt_path / ".fenix-run-result.json"
-        err, data = self._check_artifact_json_file(
-            result_path, agent_type, run_started_at,
-            is_resumed_worktree=is_resumed_worktree)
-        if err is not None:
-            return err
-        if not isinstance(data, dict):
-            return (
-                f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {result_path}"
-            )
-        status = data.get("status", "")
-        if status not in self._IMPL_RESULT_STATUSES:
-            return (
-                f"exit 0 但结果文件 status='{status}' 不在白名单"
-                f"（{agent_type} 产物硬门）: {result_path}"
-            )
-        if status == "error":
-            # 2.6：error 不施加任何完成度类判据（agent 自报失败即按失败处理）。
-            return None
-
-        # status ∈ {success, partial} → 以 worktree 内 tasks.md 为对象的判据
-        tasks_path = wt_path / "spec" / "changes" / spec_name / "tasks.md"
-        all_ids, checked_ids = parse_tasks_md(wt_path, spec_name)
-        if status == "success":
-            gate_err = self._check_success_completion(
-                spec_name, result_path, data, all_ids, checked_ids)
-        else:
-            gate_err = self._check_partial_consistency(
-                spec_name, result_path, data, all_ids, checked_ids)
-        if gate_err is not None:
-            return gate_err
-
-        # ── 能力探测（D4）：TaskCreate 可用才强制交叉核对，否则 fail-open + 审计 ──
-        return self._check_taskupdate_crosscheck(spec_name, checked_ids)
+        return _check_impl_result_artifact(self, spec_name, run_started_at, wt_path, is_resumed_worktree)
 
     @staticmethod
     def _format_gap_list(gap: list, limit: int = 20) -> str:
-        """缺口任务 id 清单格式化（2.7 归因可诊断）：超 limit 项截断并标注总数。"""
-        if not gap:
-            return ""
-        if len(gap) <= limit:
-            return "、".join(sorted(gap))
-        return "、".join(sorted(gap)[:limit]) + f" 等共 {len(gap)} 项"
+        return _format_gap_list(gap, limit)
 
     @staticmethod
     def _invalid_completed_ids(items) -> list:
-        """completed_tasks / unfinished 中的非法任务 id（形如 x.y 之外的取值）。
-
-        合法性判定与 parse_tasks_md 同源（core.run_task_track.is_task_id）：
-        任务 id 语法为 ``<组号>.<任务号>[可选小写字母后缀]``（``1.1`` / ``1.2b``）。
-        字母后缀是 planner 产出补充任务时的正常形态，判为非法会让实现者
-        如实上报被硬门拒绝（2026-09-15 事故，见 run_task_track 模块 docstring）。
-        """
-        from core.run_task_track import is_task_id
-        bad = []
-        for it in items:
-            if not is_task_id(it):
-                bad.append(it)
-        return bad
+        return _invalid_completed_ids(items)
 
     def _check_success_completion(self, spec_name: str, result_path: Path,
                                   data: dict, all_ids: list,
                                   checked_ids: set) -> str | None:
-        """status == "success" 的任务书完成度判据（spec「success 的完成度判据」）。
-
-        1. 勾选清零：tasks.md 无未勾数字任务（D2 与 _task_completion_blocker 同源；
-           tasks.md 缺失/无数字任务 → 通过）；
-        2. 完成清单对账：completed_tasks 集合 == 已勾选集合（缺项/多项/非数字 id
-           判失败；无数字任务时以空集为基准，空数组或缺失均视为通过）。
-        """
-        agent_type = "implementer"
-        unchecked = [tid for tid in all_ids if tid not in checked_ids]
-        if unchecked:
-            return (
-                f"exit 0 但 tasks.md 尚有未勾选数字任务（{agent_type} 产物硬门）: "
-                f"{result_path.parent / 'spec' / 'changes' / spec_name / 'tasks.md'} "
-                f"缺口: {self._format_gap_list(unchecked)}"
-            )
-        raw_ct = data.get("completed_tasks")
-        if raw_ct is None:
-            if not all_ids:
-                return None  # 无数字任务 → 缺失/空数组均视为通过
-            return (
-                f"exit 0 但结果文件缺 completed_tasks 清单（{agent_type} 产物硬门）: "
-                f"{result_path}"
-            )
-        if not isinstance(raw_ct, list):
-            return (
-                f"exit 0 但结果文件 completed_tasks 非数组（{agent_type} 产物硬门）: "
-                f"{result_path}"
-            )
-        bad = self._invalid_completed_ids(raw_ct)
-        if bad:
-            return (
-                f"exit 0 但结果文件 completed_tasks 含非法任务 id"
-                f"（{agent_type} 产物硬门）: {result_path} {self._format_gap_list(bad)}"
-            )
-        ct_set = set(raw_ct)
-        missing = sorted(checked_ids - ct_set)
-        extra = sorted(ct_set - checked_ids)
-        if missing or extra:
-            parts = []
-            if missing:
-                parts.append("缺项: " + self._format_gap_list(missing))
-            if extra:
-                parts.append("多项: " + self._format_gap_list(extra))
-            return (
-                f"exit 0 但 completed_tasks 与 tasks.md 勾选集合不一致"
-                f"（{agent_type} 产物硬门）: {result_path} {'；'.join(parts)}"
-            )
-        return None
+        return _check_success_completion(self, spec_name, result_path, data, all_ids, checked_ids)
 
     def _check_partial_consistency(self, spec_name: str, result_path: Path,
                                    data: dict, all_ids: list,
                                    checked_ids: set) -> str | None:
-        """status == "partial" 的申报一致性判据（spec「partial 的申报一致性判据」）。
-
-        completed_tasks 集合 == 已勾选集合；unfinished 集合 == 未勾选集合；两集合
-        互斥且并集 == 全部数字任务 id。任一不满足返回失败归因（防 partial 成为
-        绕过 success 判据的缺口）。
-        """
-        agent_type = "implementer"
-        raw_ct = data.get("completed_tasks")
-        raw_un = data.get("unfinished")
-        if not isinstance(raw_ct, list) or not isinstance(raw_un, list):
-            return (
-                f"exit 0 但结果文件 partial 缺 completed_tasks/unfinished 数组"
-                f"（{agent_type} 产物硬门）: {result_path}"
-            )
-        bad = self._invalid_completed_ids(raw_ct) + self._invalid_completed_ids(raw_un)
-        if bad:
-            return (
-                f"exit 0 但结果文件 partial 清单含非法任务 id"
-                f"（{agent_type} 产物硬门）: {result_path} {self._format_gap_list(bad)}"
-            )
-        ct_set, un_set = set(raw_ct), set(raw_un)
-        expected_un = set(all_ids) - checked_ids
-        missing_ct = sorted(checked_ids - ct_set)
-        extra_ct = sorted(ct_set - checked_ids)
-        missing_un = sorted(expected_un - un_set)
-        extra_un = sorted(un_set - expected_un)
-        overlap = sorted(ct_set & un_set)
-        parts = []
-        if missing_ct or extra_ct:
-            parts.append("completed_tasks 与勾选集合不一致")
-        if missing_un or extra_un:
-            parts.append("unfinished 与未勾选集合不一致")
-        if overlap:
-            parts.append(f"completed_tasks/unfinished 交集非空: {self._format_gap_list(overlap)}")
-        if (ct_set | un_set) != set(all_ids):
-            parts.append("并集不等于全部数字任务 id")
-        if parts:
-            return (
-                f"exit 0 但结果文件 partial 申报一致性判据未通过"
-                f"（{agent_type} 产物硬门）: {result_path} {'；'.join(parts)}"
-            )
-        return None
+        return _check_partial_consistency(self, spec_name, result_path, data, all_ids, checked_ids)
 
     def _check_taskupdate_crosscheck(self, spec_name: str,
                                      checked_ids: set) -> str | None:
-        """能力探测（D4）：init.tools 含 TaskCreate 才强制 TaskUpdate 交叉核对。
-
-        读本轮 run 产物（find_impl_run_file 按 mtime 取最新 impl run）中
-        ``type == "system" && subtype == "init"`` 事件的 tools 数组：
-        - 含 "TaskCreate" → 按**跨轮累积**的 Task 记录核对：读该 spec 全部
-          impl run（含 a1/a2/a3 与 -rN 重试），任务 id 取族内全局序，
-          ``done_ids`` 为各「已创建且已 completed」id 的并集；
-        - 不含 / init 事件不可得 → **跳过**该项核对并放行，同时向 run 产物追加
-          ``impl-task-crosscheck-skipped`` 审计事件（含 spec/run_id/reason）。
-          无条件强制会让硬门在 Task 家族工具不可用的派发路由上永远无法通过，
-          形成「拒绝 → resume → 再拒绝」的预算烧穿循环（141/141 实测）。
-
-        判据（2026-09-15 事故修正，两处）：
-        1. **跨轮累积**（而非只读 mtime 最新单 run）：修复/续做轮只改文档、
-           不调 TaskCreate，其 ``done_ids`` 为空；只读最新一轮必然误拦。
-           ``taskId`` 是会话级全局序，须按「派发 epoch 家族」串起全部 run 再映射
-           （见 ``parse_run_task_done_cumulative``）。
-        2. **只对 tracked 任务要求覆盖**：要求集 = ``checked_ids ∩ tracked_ids``
-           （tracked = 曾出现过 TaskCreate 的 id）。任务在 tasks.md 里被勾选
-           不等于实现者建过对应 Task——planner 中途插入、未单独建 Task 的
-           任务（如 "1.2b"）不应因缺 TaskUpdate 记录被拦。
-        """
-        agent_type = "implementer"
-        run_file = find_impl_run_file(self.project_root, spec_name)
-        tools = self._read_init_tools(run_file)
-        if tools is None or "TaskCreate" not in tools:
-            reason = "init 事件不可得" if tools is None else "init.tools 不含 TaskCreate"
-            self._append_crosscheck_skipped(spec_name, run_file, reason)
-            return None
-        if not checked_ids:
-            return None  # 无已勾选任务 → 无覆盖义务
-        from core.run_task_track import parse_run_task_done_cumulative
-        rd = parse_run_task_done_cumulative(self.project_root, spec_name)
-        done_ids = set(rd.get("done_ids") or ())
-        tracked_ids = set(rd.get("tracked_ids") or ())
-        # 只对「实现者确实声明过（建过 Task）」的任务要求完成覆盖
-        requirement = set(checked_ids) & tracked_ids
-        missing = sorted(requirement - done_ids)
-        if missing:
-            return (
-                f"exit 0 但已完成任务与 TaskUpdate 记录不一致（{agent_type} 产物硬门）: "
-                f"done_ids 未覆盖已勾选任务 {self._format_gap_list(missing)}"
-            )
-        return None
+        return _check_taskupdate_crosscheck(self, spec_name, checked_ids)
 
     @staticmethod
     def _read_init_tools(run_file) -> list | None:
-        """读 run 产物 init 事件的 tools 数组（D4 能力探测）。
-
-        fix-impl-tasks-completion-gate：实现下沉至中性模块 core.run_task_track
-        （与 prompt_builder 契约段条件生成共用同一实现，避免两份漂移）。
-
-        Returns:
-            tools 列表（可为空）；run 文件缺失 / 不可读 / 无 init 事件 /
-            tools 非数组 → None（按「工具不可用」处理，fail-open）。
-        """
-        from core.run_task_track import read_init_tools as _read_tools
-        return _read_tools(run_file)
+        return _read_init_tools(run_file)
 
     def _append_crosscheck_skipped(self, spec_name: str, run_file,
                                    reason: str) -> None:
-        """向 run 产物追加 impl-task-crosscheck-skipped 审计事件（D4 fail-open 留痕）。
-
-        写失败仅记 warning（审计是附加物，不阻塞主流程）。
-        """
-        if run_file is None:
-            return
-        try:
-            append_run_line(run_file, {
-                "type": "impl-task-crosscheck-skipped",
-                "spec": spec_name,
-                "run_id": Path(run_file).stem,
-                "reason": reason,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-        except OSError as e:
-            self.logger.warning(
-                "agent_runner",
-                f"impl-task-crosscheck-skipped 审计事件写入失败"
-                f"（非阻塞）: {e}",
-            )
+        _append_crosscheck_skipped(self, spec_name, run_file, reason)
 
     def _build_legacy_section(self, spec_name: str) -> str:
         return self._prompt_builder._build_legacy_section(spec_name)
@@ -4903,85 +3636,29 @@ class AgentRunner:
     def provider_circuits(self):
         return self._provider_circuit.provider_circuits
 
-    @provider_circuits.setter
-    def provider_circuits(self, value):
-        self._provider_circuit.provider_circuits = value
-
-    @provider_circuits.deleter
-    def provider_circuits(self):
-        del self._provider_circuit.provider_circuits
-
     @property
     def _daily_provider_attempts(self):
         return self._provider_circuit._daily_provider_attempts
-
-    @_daily_provider_attempts.setter
-    def _daily_provider_attempts(self, value):
-        self._provider_circuit._daily_provider_attempts = value
-
-    @_daily_provider_attempts.deleter
-    def _daily_provider_attempts(self):
-        del self._provider_circuit._daily_provider_attempts
 
     @property
     def _daily_provider_warned(self):
         return self._provider_circuit._daily_provider_warned
 
-    @_daily_provider_warned.setter
-    def _daily_provider_warned(self, value):
-        self._provider_circuit._daily_provider_warned = value
-
-    @_daily_provider_warned.deleter
-    def _daily_provider_warned(self):
-        del self._provider_circuit._daily_provider_warned
-
     @property
     def _daily_reset_date(self):
         return self._provider_circuit._daily_reset_date
-
-    @_daily_reset_date.setter
-    def _daily_reset_date(self, value):
-        self._provider_circuit._daily_reset_date = value
-
-    @_daily_reset_date.deleter
-    def _daily_reset_date(self):
-        del self._provider_circuit._daily_reset_date
 
     @property
     def _v2_servers(self):
         return self._v2_server._v2_servers
 
-    @_v2_servers.setter
-    def _v2_servers(self, value):
-        self._v2_server._v2_servers = value
-
-    @_v2_servers.deleter
-    def _v2_servers(self):
-        del self._v2_server._v2_servers
-
     @property
     def _v2_used_ports(self):
         return self._v2_server._v2_used_ports
 
-    @_v2_used_ports.setter
-    def _v2_used_ports(self, value):
-        self._v2_server._v2_used_ports = value
-
-    @_v2_used_ports.deleter
-    def _v2_used_ports(self):
-        del self._v2_server._v2_used_ports
-
     @property
     def _v2_run_seq(self):
         return self._v2_server._v2_run_seq
-
-    @_v2_run_seq.setter
-    def _v2_run_seq(self, value):
-        self._v2_server._v2_run_seq = value
-
-    @_v2_run_seq.deleter
-    def _v2_run_seq(self):
-        del self._v2_server._v2_run_seq
 
     # ── 组合组件（refactor-core-packages 阶段 3）────────────────────────
 
@@ -5119,12 +3796,4 @@ class AgentRunner:
     @property
     def _extension_baselines(self):
         return self._liveness._extension_baselines
-
-    @_extension_baselines.setter
-    def _extension_baselines(self, value):
-        self._liveness._extension_baselines = value
-
-    @_extension_baselines.deleter
-    def _extension_baselines(self):
-        del self._liveness._extension_baselines
 

@@ -71,10 +71,10 @@ def make_runner(proot: Path, config: dict | None = None) -> AgentRunner:
     runner.logger = FakeLogger()
     runner._running_agents = {}
     runner._daily_run_count = 0
-    runner._daily_reset_date = None
-    runner._daily_provider_attempts = {}
-    runner._daily_provider_warned = {}
-    runner.provider_circuits = {}
+    runner._provider_circuit._daily_reset_date = None
+    runner._provider_circuit._daily_provider_attempts = {}
+    runner._provider_circuit._daily_provider_warned = {}
+    runner._provider_circuit.provider_circuits = {}
     # 产物硬门 stub（test_provider_failover 关注 provider 切换，与 implementer
     # 产物完成度正交）：fix-impl-tasks-completion-gate（2026-09-14 df8dd94c）
     # 给 implementer/fast-track 加了「worktree 内 .fenix-run-result.json 存在 +
