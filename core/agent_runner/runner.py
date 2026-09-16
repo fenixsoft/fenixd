@@ -1992,7 +1992,7 @@ class AgentRunner:
                     # 的「裁决重试一次」预算）。
                     gate_err = self._check_agent_result_artifact(
                         spec_name, agent_type, run_started_at=attempt_started_at,
-                        wt_path=wt_path)
+                        wt_path=wt_path, is_resumed_worktree=reuse_worktree)
                     if gate_err:
                         raise AgentArtifactGateError(gate_err)
                     success = True
@@ -3415,14 +3415,20 @@ class AgentRunner:
             spec_name, agent_type, detail, wt_path=wt_path)
 
     def _check_artifact_json_file(self, path: Path, agent_type: str,
-                                  run_started_at: float | None) -> tuple:
-        return _check_artifact_json_file(path, agent_type, run_started_at)
+                                  run_started_at: float | None,
+                                  is_resumed_worktree: bool = False) -> tuple:
+        return _check_artifact_json_file(
+            path, agent_type, run_started_at,
+            is_resumed_worktree=is_resumed_worktree)
 
     def _check_agent_result_artifact(self, spec_name: str,
                                      agent_type: str,
                                      run_started_at: float | None = None,
-                                     wt_path: Path | None = None) -> str | None:
-        return _check_agent_result_artifact(self, spec_name, agent_type, run_started_at, wt_path)
+                                     wt_path: Path | None = None,
+                                     is_resumed_worktree: bool = False) -> str | None:
+        return _check_agent_result_artifact(
+            self, spec_name, agent_type, run_started_at, wt_path,
+            is_resumed_worktree=is_resumed_worktree)
 
     # 结果文件顶层 status 白名单（P0 / spec「结果产物硬门」）：success=全部任务完成；
     # partial=诚实申报未完成；error=失败不施加完成度判据。白名单外取值判失败（防
@@ -3431,8 +3437,11 @@ class AgentRunner:
 
     def _check_impl_result_artifact(self, spec_name: str,
                                     run_started_at: float | None,
-                                    wt_path: Path | None) -> str | None:
-        return _check_impl_result_artifact(self, spec_name, run_started_at, wt_path)
+                                    wt_path: Path | None,
+                                    is_resumed_worktree: bool = False) -> str | None:
+        return _check_impl_result_artifact(
+            self, spec_name, run_started_at, wt_path,
+            is_resumed_worktree=is_resumed_worktree)
 
     @staticmethod
     def _format_gap_list(gap: list, limit: int = 20) -> str:

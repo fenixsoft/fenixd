@@ -29,11 +29,48 @@ DEFAULT_IMPL_RUN_BUDGET = 6
 # 框架私有字段 _impl_run_budget_used 等）。null/缺失 = 跟随全局 agents.impl_run_budget。
 IMPL_RUN_BUDGET_OVERRIDE_FIELD = "impl_run_budget_override"
 
+# ── 预算上限键（open-impl-budget-ceiling）──────────────────────────
+# 历史上「实现尝试预算」被硬编码夹紧到 [1, 10]（add-spec-status-modal-budget
+# D3 界面同口径）。10 的天花板对长链条 spec 过紧：一旦机制摩擦（merge 冲突重试、
+# 恢复误派、修复轮）吃掉大部分预算，真修复轮次归零并提前冻结（2026-09-15
+# refactor-dashboard-data-module 事故：机制摩擦吞掉 9 次后无法再派修复轮）。
+# 现改为可配置上限：``agents.impl_run_budget_max``（缺省 100），per-spec 覆盖值
+# 与全局 ``agents.impl_run_budget`` 均按该上限夹紧；上限键自身再受一个硬天花板
+# 约束（防极端配置使闸门事实上失效）。
+IMPL_RUN_BUDGET_MAX_KEY = "agents.impl_run_budget_max"
+IMPL_RUN_BUDGET_MAX_DEFAULT = 100
+# 上限键自身的硬天花板：即便把 impl_run_budget_max 配成极大值，也不超过此值。
+IMPL_RUN_BUDGET_MAX_CEILING = 1000
 
-def clamp_impl_run_budget(raw) -> int | None:
+
+def resolve_impl_run_budget_max(raw) -> int:
+    """上限键 ``agents.impl_run_budget_max`` 的归一化（正整数，≤ 硬天花板）。
+
+    非正整数（bool/浮点/字符串/None/越界）→ 回退 ``IMPL_RUN_BUDGET_MAX_DEFAULT``；
+    超出 ``IMPL_RUN_BUDGET_MAX_CEILING`` → 夹紧到天花板。与 clamp 同族纯函数，
+    供闸门 / Dashboard 摘要 / API 校验同源共用。
+    """
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        return IMPL_RUN_BUDGET_MAX_DEFAULT
+    return min(raw, IMPL_RUN_BUDGET_MAX_CEILING)
+
+
+def effective_impl_budget_max(config: dict) -> int:
+    """从（已 resolve 的）config 字典解析有效上限，供 dashboard 读/写侧共用。
+
+    与闸门 ImplBudget._impl_budget_max 同源（同一 resolve_impl_run_budget_max
+    与同一配置键），保证「界面可设范围」与「闸门夹紧范围」永远一致。
+    """
+    from core.config import ConfigLoader
+    raw = ConfigLoader.get(config, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT)
+    return resolve_impl_run_budget_max(raw)
+
+
+def clamp_impl_run_budget(raw, max_value: int = IMPL_RUN_BUDGET_MAX_DEFAULT) -> int | None:
     """预算值归一化纯函数（模块级导出，闸门与 Dashboard 同源，防口径漂移）。
 
-    - 整数（非 bool）→ 夹紧到 1-10 返回；
+    - 整数（非 bool）→ 夹紧到 ``[1, max_value]`` 返回（``max_value`` 缺省为上限键
+      缺省 ``IMPL_RUN_BUDGET_MAX_DEFAULT``，调用方可传入解析后的有效上限）；
     - None / 非整数（字符串数字、浮点、bool 等）→ 返回 None（调用方回退下一优先级）。
 
     覆盖值与全局配置共用此函数，保证越界夹紧口径完全一致（design D3 / risk 单点）。
@@ -45,8 +82,8 @@ def clamp_impl_run_budget(raw) -> int | None:
     val = raw
     if val < 1:
         val = 1
-    if val > 10:
-        val = 10
+    if val > max_value:
+        val = max_value
     return val
 # 持久化字段名：当前 spec 已累计启动的实现 run 次数。
 IMPL_RUN_BUDGET_USED_FIELD = "_impl_run_budget_used"
@@ -63,27 +100,39 @@ class ImplBudget:
     def __init__(self, pm):
         self._pm = pm  # 门面回引（design D3 规则 3：组件 → 门面 单向）
 
-    # ── 实现尝试总预算（add-fail-counter-budget D2/D4 / add-spec-status-modal-budget D3）──────────────
+    # ── 实现尝试总预算（add-fail-counter-budget D2/D4 / add-spec-status-modal-budget D3 / open-impl-budget-ceiling）──────────────
+    def _impl_budget_max(self) -> int:
+        """读取可配置上限 ``agents.impl_run_budget_max``（缺省 100，≤ 硬天花板）。
+
+        上限键缺失/非法 → ``IMPL_RUN_BUDGET_MAX_DEFAULT``；供 override 与全局
+        配置的夹紧共用（口径单点，防闸门与 Dashboard 漂移）。
+        """
+        raw = self._pm._get_config(IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT)
+        return resolve_impl_run_budget_max(raw)
+
     def _impl_run_budget(self, spec_name: str | None = None) -> int:
         """读取实现尝试有效预算，缺省 DEFAULT_IMPL_RUN_BUDGET。
 
         add-spec-status-modal-budget D3 覆盖优先解析：
         1. spec_name 非空且 STATE 条目 ``impl_run_budget_override`` 存在且可解析为
-           整数 → 同口径夹紧 1-10 使用（per-spec 覆盖）；
+           整数 → 同口径夹紧 [1, max] 使用（per-spec 覆盖）；
         2. 否则回退全局配置 ``agents.impl_run_budget``（现状逻辑）；
         3. 全局缺失/非法 → DEFAULT_IMPL_RUN_BUDGET。
 
-        范围约束 1-10（D3 界面校验同口径）；配置越界时夹紧到合法区间，避免
-        极端配置使闸门失效或永远触发。夹紧逻辑收敛到模块级纯函数
-        clamp_impl_run_budget（与 dashboard 摘要同源，防口径漂移）。
+        范围约束 [1, max]（``agents.impl_run_budget_max``，缺省 100，
+        open-impl-budget-ceiling）；配置越界时夹紧到合法区间，避免极端配置使
+        闸门失效或永远触发。夹紧逻辑收敛到模块级纯函数 clamp_impl_run_budget
+        （与 dashboard 摘要同源，防口径漂移）。
         """
+        max_value = self._impl_budget_max()
         if spec_name:
             entry = self._pm.state_machine.read_one(spec_name) or {}
-            override = clamp_impl_run_budget(entry.get(IMPL_RUN_BUDGET_OVERRIDE_FIELD))
+            override = clamp_impl_run_budget(
+                entry.get(IMPL_RUN_BUDGET_OVERRIDE_FIELD), max_value)
             if override is not None:
                 return override
         raw = self._pm._get_config("agents.impl_run_budget", DEFAULT_IMPL_RUN_BUDGET)
-        return clamp_impl_run_budget(raw) or DEFAULT_IMPL_RUN_BUDGET
+        return clamp_impl_run_budget(raw, max_value) or DEFAULT_IMPL_RUN_BUDGET
 
 
     def _increment_impl_run_budget_used(self, spec_name: str) -> int:

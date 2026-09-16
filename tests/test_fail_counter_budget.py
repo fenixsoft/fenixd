@@ -84,13 +84,18 @@ class TestImplRunBudgetUsed(_Base):
         engine, _ = _mk_engine(self.project_root, self.logger,
                                {"agents": {"impl_run_budget": 7}})
         self.assertEqual(engine._budget._impl_run_budget(), 7)
-        # 越界夹紧（界面校验 1-10，引擎兜底防脏配置）
+        # 越界夹紧（引擎兜底防脏配置；open-impl-budget-ceiling 缺省上限 100）
         engine_bad, _ = _mk_engine(self.project_root, self.logger,
-                                   {"agents": {"impl_run_budget": 99}})
-        self.assertEqual(engine_bad._impl_run_budget(), 10)
+                                   {"agents": {"impl_run_budget": 50000}})
+        self.assertEqual(engine_bad._impl_run_budget(), 100)
         engine_neg, _ = _mk_engine(self.project_root, self.logger,
                                    {"agents": {"impl_run_budget": -3}})
         self.assertEqual(engine_neg._impl_run_budget(), 1)
+        # 上限可配置：agents.impl_run_budget_max=20 → 夹到 20
+        engine_cap, _ = _mk_engine(self.project_root, self.logger,
+                                   {"agents": {"impl_run_budget": 50,
+                                               "impl_run_budget_max": 20}})
+        self.assertEqual(engine_cap._impl_run_budget(), 20)
 
 
 class TestImplBudgetExhaustion(_Base):

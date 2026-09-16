@@ -45,8 +45,13 @@ agents:
   # 实现尝试总预算（add-fail-counter-budget D2/D3）：每 spec 跨修复周期的实现
   # run 启动次数上限（含首次实现与每轮修复重派、含单次派发的重试 attempt）。
   # 达到预算 → 状态 blocked + 人工裁决告警，不再自动重派，需人工处置。
-  # 合法范围 1-10；留空/注释即采用缺省值 4。修改后约 30s 配置热更新生效。
+  # 合法范围 1 至 agents.impl_run_budget_max（缺省 100）。留空/注释即采用缺省值 4。
+  # 修改后约 30s 配置热更新生效。
   impl_run_budget: 4
+  # 实现尝试预算的可配置上限（open-impl-budget-ceiling）：per-spec 覆盖值与
+  # agents.impl_run_budget 均按此上限夹紧。旧实现硬编码 1-10，对长链条 spec 过紧
+  #（机制摩擦吃满预算后真修复轮次归零）。缺省 100；硬天花板 1000。
+  impl_run_budget_max: 100
   # 单 spec 累计 input token 预算（add-cost-observability D5，单位：百万）。
   # 收工累计达到 80% 发提醒级告警、100% 发升级级告警（不自动冻结，由人工决定处置）。
   # 合法范围 0-1000；设为 0 表示关闭预算检查。留空即采用缺省值 50。

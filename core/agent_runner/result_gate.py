@@ -236,12 +236,25 @@ class EvolutionResult:
 
 
 def _check_artifact_json_file(path: Path, agent_type: str,
-                              run_started_at: float | None) -> tuple:
+                              run_started_at: float | None,
+                              is_resumed_worktree: bool = False) -> tuple:
     """单产物文件基础校验（存在/非空/mtime 新鲜/可解析 JSON）。
 
     多个产物文件共用同一套基础校验（add-planready-artifact-gate：planner-plan
     双产物叠加校验）。新鲜度守卫（fix-verdict-read-failclosed D2）与既有
     test_scenarios.json 同规则。
+
+    is_resumed_worktree（2026-09-16 事故修正）：本轮 attempt 复用的 worktree
+    是否承载**上一轮遗留产物**。复用 worktree 做续做/修复轮时，worktree 内本
+    就存在前轮的 ``.fenix-run-result.json``（mtime 早于本轮启动），这是设计
+    预期而非异常——此时**跳过 mtime 新鲜度硬拦**，正确性交内容判据保证
+    （success 需 completed_tasks 与 tasks.md 全勾一致、partial 需申报一致）。
+    仅「新建 worktree 的首轮」做 mtime 硬拦（防上一轮/其它 spec 残留冒充本轮）。
+
+    背景：旧实现对**所有**轮做 mtime 硬拦，导致「已完工 worktree 复用做修复轮」
+    秒退死循环——agent 判定「无需动作」不重写结果文件，mtime 停在上一轮，被
+    误判陈旧（2026-09-15 refactor-dashboard-data-module / 09-16
+    refactor-agent-runner-module 两起实测）。
 
     Returns:
         (err, data)：err 非 None = 失败归因文案（含具体文件路径与原因类别，
@@ -252,7 +265,7 @@ def _check_artifact_json_file(path: Path, agent_type: str,
             return (f"exit 0 但结果文件缺失（{agent_type} 产物硬门）: {path}", None)
         if path.stat().st_size == 0:
             return (f"exit 0 但结果文件为空（{agent_type} 产物硬门）: {path}", None)
-        if run_started_at is not None:
+        if run_started_at is not None and not is_resumed_worktree:
             mtime = path.stat().st_mtime
             if mtime < run_started_at - _ARTIFACT_FRESHNESS_GRACE_SECONDS:
                 return (
@@ -272,15 +285,21 @@ def _check_artifact_json_file(path: Path, agent_type: str,
 def _check_agent_result_artifact(runner, spec_name: str,
                                  agent_type: str,
                                  run_started_at: float | None = None,
-                                 wt_path: Path | None = None) -> str | None:
+                                 wt_path: Path | None = None,
+                                 is_resumed_worktree: bool = False) -> str | None:
     """planner/implementer 产物存在性硬门（fail-closed）。
 
     fixtures: 从富集注释迁移时保持与拆分前完全一致的判定语义与失败归因文案。
     `runner` 为 AgentRunner 实例（project_root / 兄弟门函数经实例访问）。
+
+    is_resumed_worktree：见 ``_check_artifact_json_file``——仅 implementer /
+    fast-track 分支透传（本轮复用 worktree 承载上一轮遗留产物时跳过 mtime
+    新鲜度硬拦）；planner / spec-review 分支不做该豁免。
     """
     if agent_type in ("implementer", "fast-track"):
         return runner._check_impl_result_artifact(
-            spec_name, run_started_at, wt_path)
+            spec_name, run_started_at, wt_path,
+            is_resumed_worktree=is_resumed_worktree)
     if agent_type == "spec-review":
         path = spec_review_result_path(runner.project_root, spec_name)
         err, data = runner._check_artifact_json_file(
@@ -349,13 +368,17 @@ def _check_agent_result_artifact(runner, spec_name: str,
 
 def _check_impl_result_artifact(runner, spec_name: str,
                                 run_started_at: float | None,
-                                wt_path: Path | None) -> str | None:
+                                wt_path: Path | None,
+                                is_resumed_worktree: bool = False) -> str | None:
     """implementer / fast-track 结果产物硬门（fix-impl-tasks-completion-gate P0）。
 
     `runner` 为 AgentRunner 实例：`_IMPL_RESULT_STATUSES`（类属性）与兄弟门
     函数（_check_artifact_json_file / _check_success_completion /
     _check_partial_consistency / _check_taskupdate_crosscheck）经实例访问，
     保证实例属性打桩不被绕过。
+
+    is_resumed_worktree：本轮复用的 worktree 承载上一轮遗留产物时为 True →
+    结果文件跳过 mtime 新鲜度硬拦（见 ``_check_artifact_json_file``）。
     """
     agent_type = "implementer"  # 归因文案类别；fast-track 同判据同文案
     if wt_path is None:
@@ -365,7 +388,8 @@ def _check_impl_result_artifact(runner, spec_name: str,
         )
     result_path = wt_path / ".fenix-run-result.json"
     err, data = runner._check_artifact_json_file(
-        result_path, agent_type, run_started_at)
+        result_path, agent_type, run_started_at,
+        is_resumed_worktree=is_resumed_worktree)
     if err is not None:
         return err
     if not isinstance(data, dict):
@@ -529,13 +553,23 @@ def _check_taskupdate_crosscheck(runner, spec_name: str,
 
     读本轮 run 产物（find_impl_run_file 按 mtime 取最新 impl run）中
     ``type == "system" && subtype == "init"`` 事件的 tools 数组：
-    - 含 "TaskCreate" → ``parse_run_task_done(run_file)["done_ids"]`` MUST 覆盖
-      tasks.md 的全部已勾选数字任务 id；不满足判失败（归因注明「已完成任务与
-      TaskUpdate 记录不一致」）；
+    - 含 "TaskCreate" → 按**跨轮累积**的 Task 记录核对：读该 spec 全部
+      impl run（含 a1/a2/a3 与 -rN 重试），任务 id 取族内全局序，
+      ``done_ids`` 为各「已创建且已 completed」id 的并集；
     - 不含 / init 事件不可得 → **跳过**该项核对并放行，同时向 run 产物追加
       ``impl-task-crosscheck-skipped`` 审计事件（含 spec/run_id/reason）。
       无条件强制会让硬门在 Task 家族工具不可用的派发路由上永远无法通过，
       形成「拒绝 → resume → 再拒绝」的预算烧穿循环（141/141 实测）。
+
+    判据（2026-09-15 事故修正，两处）：
+    1. **跨轮累积**（而非只读 mtime 最新单 run）：修复/续做轮只改文档、
+       不调 TaskCreate，其 ``done_ids`` 为空；只读最新一轮必然误拦。
+       ``taskId`` 是会话级全局序，须按「派发 epoch 家族」串起全部 run 再映射
+       （见 ``parse_run_task_done_cumulative``）。
+    2. **只对 tracked 任务要求覆盖**：要求集 = ``checked_ids ∩ tracked_ids``
+       （tracked = 曾出现过 TaskCreate 的 id）。任务在 tasks.md 里被勾选
+       不等于实现者建过对应 Task——planner 中途插入、未单独建 Task 的
+       任务（如 "1.2b"）不应因缺 TaskUpdate 记录被拦。
     """
     agent_type = "implementer"
     run_file = find_impl_run_file(runner.project_root, spec_name)
@@ -546,9 +580,13 @@ def _check_taskupdate_crosscheck(runner, spec_name: str,
         return None
     if not checked_ids:
         return None  # 无已勾选任务 → 无覆盖义务
-    rd = parse_run_task_done(run_file) if run_file is not None else {}
-    done_ids = (rd or {}).get("done_ids") or set()
-    missing = sorted(checked_ids - set(done_ids))
+    from core.run_task_track import parse_run_task_done_cumulative
+    rd = parse_run_task_done_cumulative(runner.project_root, spec_name)
+    done_ids = set(rd.get("done_ids") or ())
+    tracked_ids = set(rd.get("tracked_ids") or ())
+    # 只对「实现者确实声明过（建过 Task）」的任务要求完成覆盖
+    requirement = set(checked_ids) & tracked_ids
+    missing = sorted(requirement - done_ids)
     if missing:
         return (
             f"exit 0 但已完成任务与 TaskUpdate 记录不一致（{agent_type} 产物硬门）: "

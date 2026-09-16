@@ -227,10 +227,12 @@ export interface SpecSummary {
   reviewer_run?: string | null;
   /** add-spec-status-modal-budget D3：实现尝试预算已用次数（_impl_run_budget_used，缺省 0） */
   budget_used?: number;
-  /** add-spec-status-modal-budget D3：per-spec 覆盖值（1-10 整数或 null=跟随全局） */
+  /** add-spec-status-modal-budget D3：per-spec 覆盖值（正整数或 null=跟随全局） */
   budget_override?: number | null;
   /** add-spec-status-modal-budget D3：有效预算（覆盖 > 全局 > 缺省，与闸门同源解析，前端不重复实现） */
   budget_effective?: number;
+  /** open-impl-budget-ceiling：有效上限（agents.impl_run_budget_max，前端输入框 max 与此同源） */
+  budget_max?: number;
 }
 
 export async function getSpecs(project: string): Promise<{ project: string; specs: SpecSummary[] }> {
@@ -427,7 +429,7 @@ export interface SpecBudgetResult {
   error?: string;
 }
 
-/** 设置/清除 SPEC 的实现尝试预算覆盖（budget=1-10 整数写入；null 清除，恢复跟随全局） */
+/** 设置/清除 SPEC 的实现尝试预算覆盖（budget=正整数写入，上限 agents.impl_run_budget_max；null 清除，恢复跟随全局） */
 export function setSpecBudget(project: string, spec: string, budget: number | null) {
   return request<SpecBudgetResult>(
     `/api/spec-budget?project=${encodeURIComponent(project)}&spec=${encodeURIComponent(spec)}`,
@@ -819,6 +821,8 @@ export interface AgentsConfig {
   daily_run_limit?: number;
   token_budget_millions?: number;
   impl_run_budget?: number;
+  /** open-impl-budget-ceiling：实现尝试预算的可配置上限（agents.impl_run_budget_max，缺省 100，硬天花板 1000） */
+  impl_run_budget_max?: number;
   /** 重启重验预算（agents.verify_redo_budget，缺省 3）：daemon 重启恢复路径累计重验次数上限 */
   verify_redo_budget?: number;
   /** 瞬断治理（fix-provider-transient-backoff D6）：原地退避秒序列（逗号分隔，缺省 30,60,120） */
