@@ -3415,33 +3415,23 @@ class AgentRunner:
             spec_name, agent_type, detail, wt_path=wt_path)
 
     def _check_artifact_json_file(self, path: Path, agent_type: str,
-                                  run_started_at: float | None,
-                                  is_resumed_worktree: bool = False) -> tuple:
-        return _check_artifact_json_file(
-            path, agent_type, run_started_at,
-            is_resumed_worktree=is_resumed_worktree)
+                                  run_started_at: float | None, is_resumed_worktree: bool = False) -> tuple:
+        return _check_artifact_json_file(path, agent_type, run_started_at, is_resumed_worktree)
 
-    def _check_agent_result_artifact(self, spec_name: str,
-                                     agent_type: str,
+    def _check_agent_result_artifact(self, spec_name: str, agent_type: str,
                                      run_started_at: float | None = None,
                                      wt_path: Path | None = None,
                                      is_resumed_worktree: bool = False) -> str | None:
-        return _check_agent_result_artifact(
-            self, spec_name, agent_type, run_started_at, wt_path,
-            is_resumed_worktree=is_resumed_worktree)
+        return _check_agent_result_artifact(self, spec_name, agent_type, run_started_at, wt_path, is_resumed_worktree)
 
     # 结果文件顶层 status 白名单（P0 / spec「结果产物硬门」）：success=全部任务完成；
     # partial=诚实申报未完成；error=失败不施加完成度判据。白名单外取值判失败（防
     # fail-open 事故形态）；判据实现在 result_gate.py（D2b 规则 1 经 runner 注入）。
     _IMPL_RESULT_STATUSES = ("success", "error", "partial")
 
-    def _check_impl_result_artifact(self, spec_name: str,
-                                    run_started_at: float | None,
-                                    wt_path: Path | None,
+    def _check_impl_result_artifact(self, spec_name: str, run_started_at: float | None, wt_path: Path | None,
                                     is_resumed_worktree: bool = False) -> str | None:
-        return _check_impl_result_artifact(
-            self, spec_name, run_started_at, wt_path,
-            is_resumed_worktree=is_resumed_worktree)
+        return _check_impl_result_artifact(self, spec_name, run_started_at, wt_path, is_resumed_worktree)
 
     @staticmethod
     def _format_gap_list(gap: list, limit: int = 20) -> str:
