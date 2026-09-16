@@ -24,7 +24,7 @@ from core.dashboard.data import (
     parse_run_task_done,
     record_project_event,
 )
-from core.run_task_track import parse_tasks_md
+from core.run_task_track import parse_tasks_md, parse_unattainable as _parse_unattainable
 from core.pm_engine.family import FamilyGovernor
 from core.pm_engine.budget import ImplBudget
 from core.pm_engine.spec_integrity import SpecIntegrityGate
@@ -1213,11 +1213,23 @@ class PMEngine:
             # 时把带未完成任务的 spec 静默推进 done 正是本 SPEC 消除的事故形态）。
             # fail-closed：归因带 TASK_GAP_ERROR_PREFIX，与人工回炉入口
             # （task-reflow）同语义可处置。unfinished 缺失时回退任务书未勾 id。
+            #
+            # ── 诚实退出豁免（2026-09-16 改进②）──
+            # 若缺口全部 ⊆ 结果文件的 ``unattainable`` 申报（实现者机械声明
+            # 「确实无法由 agent 完成」，如人工运维门控任务），不再拦截：放行到
+            # done，并把申报内容落一条可见的人工待办告警。部分未申报的仍按
+            # fail-closed 拦截。
             unfinished = result.get("unfinished")
             gap = [str(t) for t in unfinished] if isinstance(unfinished, list) else []
             if not gap:
                 _all_ids, checked_ids = parse_tasks_md(self.project_root, spec_name)
                 gap = [t for t in _all_ids if t not in checked_ids]
+            unattainable_ids, _invalid = _parse_unattainable(result)
+            unclaimed = [t for t in gap if t not in unattainable_ids]
+            if gap and not unclaimed:
+                self._note_unattainable_todos(spec_name, result, gap)
+                self._clear_task_gap_error(spec_name)
+                return None  # 缺口全部已诚实申报 → 放行
             return (
                 TASK_GAP_ERROR_PREFIX + "实现者申报未完成（partial）："
                 + "、".join(gap[:20])
@@ -1265,6 +1277,49 @@ class PMEngine:
             self.logger.info(
                 "pm_engine",
                 f"task-gap 已补勾，清除 error：'{spec_name}'",
+            )
+
+    def _note_unattainable_todos(self, spec_name: str, result: dict,
+                                 gap: "list | None" = None) -> None:
+        """诚实退出（改进②）：把 unattainable 申报落一条可见的人工待办告警。
+
+        门禁放行「缺口全部已申报」的 partial 时调用——不静默放行：写 admin
+        escalation 告警（含任务 id 与 reason），使 /fenix-approve 环节可见
+        「哪些任务交给了人工」。告警写失败仅 debug 不阻断放行。
+        """
+        try:
+            ids, _invalid = _parse_unattainable(result)
+            items = result.get("unattainable") or []
+            detail = []
+            for it in items:
+                if isinstance(it, dict) and it.get("task") in ids:
+                    detail.append(f"{it.get('task')}: {str(it.get('reason'))[:120]}")
+            from core.admin_store import AdminStore, ESCALATION
+            store = AdminStore(self.project_root, self.logger)
+            store.append({
+                "kind": ESCALATION,
+                "signal_type": "impl_unattainable_tasks",
+                "spec": spec_name,
+                "severity": "warning",
+                "description": (
+                    f"实现者诚实申报 {len(ids)} 个任务无法由 agent 完成，"
+                    f"门禁已放行——这些任务需人工完成/确认"
+                ),
+                "evidence": "；".join(detail)[:600],
+                "recommended_action": (
+                    "在 /fenix-approve 前确认这些任务所需的人工动作（如重启 daemon、"
+                    "审批、外部资源），完成后再推送"
+                ),
+            })
+            self.logger.warning(
+                "pm_engine",
+                f"诚实退出放行 '{spec_name}'：unattainable={sorted(ids)} "
+                f"（已写人工待办告警）",
+            )
+        except Exception as e:
+            self.logger.debug(
+                "pm_engine",
+                f"unattainable 待办告警写入失败（不阻断放行）: {e}",
             )
 
 

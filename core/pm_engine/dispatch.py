@@ -761,6 +761,13 @@ class Dispatcher:
                     if dispatch_entry.get("_repair_awaiting_remerge"):
                         self._pm.state_machine.update_spec(
                             spec_name, {"_repair_awaiting_remerge": False})
+                    # 全新派发清零 task-gate 拒绝计数（改进①）：只卡第一次的计数
+                    # 只应反映「同一轮被连续拒回」；全新 implementing 轮次（含
+                    # 上轮已降级放行后的再派发）从零开始，避免陈旧计数误降级。
+                    from core.state_machine import TASK_GATE_REJECTIONS_FIELD
+                    if int(dispatch_entry.get(TASK_GATE_REJECTIONS_FIELD, 0) or 0) > 0:
+                        self._pm.state_machine.update_spec(
+                            spec_name, {TASK_GATE_REJECTIONS_FIELD: 0})
                 # 主树 stash 已收拢进 merge_back_from_branch 的 guard 原子段
                 # （fix-autostash-orphans）：锁内 stash→merge→pop，不再依赖
                 # 派发前 stash + 成功路径 pop 的长窗口配对（曾致 7 次改动滞留 stash）。

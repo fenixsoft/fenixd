@@ -48,6 +48,43 @@ def is_task_id(value) -> bool:
     """
     return isinstance(value, str) and _TASK_ID_FULL_RE.fullmatch(value) is not None
 
+
+def parse_unattainable(data: dict) -> "tuple[set, list]":
+    """解析结果文件顶层 ``unattainable`` 申报（诚实退出机制，2026-09-16）。
+
+    ``unattainable`` 是结果文件（``.fenix-run-result.json``）顶层可选数组，
+    实现者用它申报「已完成全部可做工作、但某任务客观上无法由 agent 完成」
+    （如 7.3 人工运维门控：需用户亲手 touch 重启文件，agent 执行会自杀式
+    SIGTERM 杀本 run）。语义与 ``findings`` 不同——``findings`` 是「待裁决
+    争议」，本字段是**机械可读的豁免清单**，供产物硬门与 verified→done 门禁
+    从「未完成」缺口里扣除。
+
+    每项形如 ``{"task": "7.3", "reason": "<为何无法完成>", "evidence": "<依据>"}``。
+
+    Returns:
+        (ids, invalid)：``ids`` 为合法任务 id 集合（去重，忽略非法项）；
+        ``invalid`` 为非法项（非 dict / task 非合法 id / 缺 reason）——调用方
+        MUST 对非空 ``invalid`` 判失败（防伪造豁免绕过缺口判据）。
+    """
+    raw = (data or {}).get("unattainable")
+    if raw is None:
+        return set(), []
+    if not isinstance(raw, list):
+        return set(), [raw]
+    ids: set = set()
+    invalid: list = []
+    for item in raw:
+        if not isinstance(item, dict):
+            invalid.append(item)
+            continue
+        tid = item.get("task")
+        reason = item.get("reason")
+        if not is_task_id(tid) or not (isinstance(reason, str) and reason.strip()):
+            invalid.append(item)
+            continue
+        ids.add(tid)
+    return ids, invalid
+
 # parse_run_task_done 的 memo 缓存：run 文件 O_APPEND 只增，mtime/size 不变即命中。
 # 上限 64 项，超出整体清空，防止 append-only 文件每次追加换键导致无界增长。
 _RUN_TASK_CACHE: dict = {}

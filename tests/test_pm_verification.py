@@ -1555,6 +1555,49 @@ class TestImplPartialConsumption(unittest.TestCase):
         self.assertTrue(blocker.startswith(TASK_GAP_ERROR_PREFIX))
         self.assertIn("1.2", blocker)
 
+    # ── 诚实退出：缺口全部 unattainable 申报 → 放行到 done（改进②）──
+
+    def test_task_completion_blocker_partial_all_unattainable_passes(self):
+        """partial 的缺口**全部** ⊆ unattainable 申报 → 放行（不再 task-gap 拦截）。
+
+        2026-09-16 改进②：实现者机械声明「确实无法由 agent 完成」的任务
+        （如 7.3 人工运维门控）不再把 spec 永久卡在 verified。
+        """
+        spec = self._make_impl_spec()
+        for st in ("implemented", "testing", "verified"):
+            self.sm.transition(spec, st)
+        self._write_tasks(spec, (
+            "# Tasks\n\n## 1. 实现\n\n- [x] 1.1 done\n- [ ] 7.3 人工重启\n"
+        ))
+        path = self.project_root / ".fenix" / ".fenix-run-result.json"
+        path.write_text(json.dumps({
+            "spec": spec, "status": "partial", "completed_tasks": ["1.1"],
+            "unfinished": ["7.3"],
+            "unattainable": [{"task": "7.3",
+                              "reason": "人工运维门控：需用户手动重启 daemon"}],
+        }, ensure_ascii=False), encoding="utf-8")
+        self.assertIsNone(self.engine._task_completion_blocker(spec))
+
+    def test_task_completion_blocker_partial_partially_unattainable_blocks(self):
+        """仅部分缺口申报 unattainable → 仍按 fail-closed 拦截（未申报的仍算缺口）。"""
+        from core.pm_engine import TASK_GAP_ERROR_PREFIX
+        spec = self._make_impl_spec()
+        for st in ("implemented", "testing", "verified"):
+            self.sm.transition(spec, st)
+        self._write_tasks(spec, (
+            "# Tasks\n\n## 1. 实现\n\n- [x] 1.1 done\n- [ ] 1.2 todo\n- [ ] 7.3 人工\n"
+        ))
+        path = self.project_root / ".fenix" / ".fenix-run-result.json"
+        path.write_text(json.dumps({
+            "spec": spec, "status": "partial", "completed_tasks": ["1.1"],
+            "unfinished": ["1.2", "7.3"],
+            "unattainable": [{"task": "7.3", "reason": "人工门控"}],
+        }, ensure_ascii=False), encoding="utf-8")
+        blocker = self.engine._task_completion_blocker(spec)
+        self.assertIsNotNone(blocker)
+        self.assertTrue(blocker.startswith(TASK_GAP_ERROR_PREFIX))
+        self.assertIn("1.2", blocker)
+
 
 class TestReadImplementerResultStampGuard(unittest.TestCase):
     """fix-fasttrack-resultfile-missing-redispatch 3.3：_read_implementer_result

@@ -30,7 +30,27 @@ from core.run_task_track import (
     find_impl_run_file,
     parse_run_task_done,
     parse_tasks_md,
+    parse_unattainable,
 )
+from core.state_machine import TASK_GATE_REJECTIONS_FIELD
+
+# 任务完成度类硬门失败前缀（2026-09-16 改进②/① 的机械识别标记）。
+#
+# 与 [terminal-no-commit] / [provider-transient] 同款「错误文本前缀即语义标签」
+# 约定：产物从「根本没交产物」的**结构类**失败（文件缺失/为空/非法 JSON/顶层
+# 非对象/status 白名单外）与「交了产物但任务清单对不上」的**任务完成度类**失败
+# 中区分出后者。两处消费：
+# - runner 捕获 AgentArtifactGateError 时：仅 task 类失败参与「只卡第一次」
+#   跨轮计数降级（结构类一律照现状硬拦）；
+# - 诚实退出（unattainable 申报）只从 task 类缺口里扣除。
+TASK_GATE_ERROR_PREFIX = "[task-gate]"
+
+# 任务完成度类产物硬门的跨轮拒绝计数阈值（2026-09-16 改进①「只卡第一次」）。
+# 每次以 TASK_GATE_ERROR_PREFIX 开头的原因被拒即累积（跨 dispatch，非仅同
+# attempt）；累积到该阈值后，task 类失败降级为 WARNING 放行，避免实现者已
+# 诚实说明「确实无法满足」时被同一门无限拒回原地重试。结构类失败（缺文件/
+# 非法 JSON 等）不计数、不降级。计数在门禁干净通过时或全新派发时清零。
+TASK_GATE_DEGRADE_THRESHOLD = 2
 
 # fix-verdict-read-failclosed D2（新鲜度宽限，秒）：planner 产物硬门 mtime 新鲜度
 # 校验的容差。文件系统 mtime 写入存在滞后（tmpfs 实测 ~6ms），紧邻
@@ -409,17 +429,57 @@ def _check_impl_result_artifact(runner, spec_name: str,
     # status ∈ {success, partial} → 以 worktree 内 tasks.md 为对象的判据
     tasks_path = wt_path / "spec" / "changes" / spec_name / "tasks.md"
     all_ids, checked_ids = parse_tasks_md(wt_path, spec_name)
+
+    # 诚实退出申报（2026-09-16 改进②）：顶层 unattainable 数组 → 机械豁免清单。
+    # 非法项 MUST 判失败（防伪造豁免绕过缺口判据）；合法项从「未完成」义务中扣除。
+    unattainable_ids, invalid_unat = parse_unattainable(data)
+    if invalid_unat:
+        return (
+            f"exit 0 但结果文件 unattainable 申报非法"
+            f"（每项须为含合法 task id 与非空 reason 的对象，{agent_type} 产物硬门）: "
+            f"{result_path} 非法项 {len(invalid_unat)} 个"
+        )
+    unchecked_ids = {tid for tid in all_ids if tid not in checked_ids}
+    bogus = sorted(unattainable_ids - unchecked_ids)
+    if bogus:
+        return (
+            f"exit 0 但结果文件 unattainable 申报了非未完成任务"
+            f"（只能申报确实无法完成的未勾任务，{agent_type} 产物硬门）: "
+            f"{result_path} {runner._format_gap_list(bogus)}"
+        )
+
     if status == "success":
+        # 诚实退出（改进②）：无法完成的已申报任务从「全部任务」基准里扣除，
+        # 使「未勾选硬缺口」不含它们，同时 completed_tasks 仍须 == 已勾选集合。
+        effective_all = [t for t in all_ids if t not in unattainable_ids]
         gate_err = runner._check_success_completion(
-            spec_name, result_path, data, all_ids, checked_ids)
+            spec_name, result_path, data, effective_all, checked_ids)
     else:
         gate_err = runner._check_partial_consistency(
             spec_name, result_path, data, all_ids, checked_ids)
-    if gate_err is not None:
+    if gate_err is None:
+        # ── 能力探测（D4）：TaskCreate 可用才强制交叉核对，否则 fail-open + 审计。
+        # 已申报 unattainable 的任务不产生 TaskUpdate 覆盖义务（诚实退出，改进②）。
+        gate_err = runner._check_taskupdate_crosscheck(
+            spec_name, checked_ids - unattainable_ids)
+
+    if gate_err is not None and gate_err.startswith(TASK_GATE_ERROR_PREFIX):
+        # ── 改进①「只卡第一次」（2026-09-16）：任务完成度类失败跨轮计数，达阈值
+        # 降级为 WARNING 放行（返回 None）。避免实现者已诚实说明「确实无法满足」
+        # 时被同一门无限拒回原地重试。结构类失败（无此前缀）不计数、不降级。
+        if _register_task_gate_rejection(runner, spec_name, gate_err):
+            runner.logger.warning(
+                "agent_runner",
+                f"Artifact gate '{spec_name}' task 类失败已达阈值 —— 降级为警告"
+                f"放行（只卡第一次）: {gate_err}",
+            )
+            return None
         return gate_err
 
-    # ── 能力探测（D4）：TaskCreate 可用才强制交叉核对，否则 fail-open + 审计 ──
-    return runner._check_taskupdate_crosscheck(spec_name, checked_ids)
+    if gate_err is None:
+        # 门禁干净通过 → 清零任务完成度类拒绝计数（防陈旧计数日久误降级）。
+        _clear_task_gate_rejections(runner, spec_name)
+    return gate_err
 
 
 def _format_gap_list(gap: list, limit: int = 20) -> str:
@@ -456,12 +516,17 @@ def _check_success_completion(runner, spec_name: str, result_path: Path,
        tasks.md 缺失/无数字任务 → 通过）；
     2. 完成清单对账：completed_tasks 集合 == 已勾选集合（缺项/多项/非数字 id
        判失败；无数字任务时以空集为基准，空数组或缺失均视为通过）。
+
+    诚实退出（2026-09-16 改进②）：不可完成任务的扣除在调用方
+    ``_check_impl_result_artifact`` 完成——它把已申报 unattainable 的 id 从
+    ``all_ids`` 里剔除后传入，故本函数无需感知该字段。
     """
     agent_type = "implementer"
     unchecked = [tid for tid in all_ids if tid not in checked_ids]
     if unchecked:
         return (
-            f"exit 0 但 tasks.md 尚有未勾选数字任务（{agent_type} 产物硬门）: "
+            f"{TASK_GATE_ERROR_PREFIX} exit 0 但 tasks.md 尚有未勾选数字任务"
+            f"（{agent_type} 产物硬门）: "
             f"{result_path.parent / 'spec' / 'changes' / spec_name / 'tasks.md'} "
             f"缺口: {runner._format_gap_list(unchecked)}"
         )
@@ -470,18 +535,18 @@ def _check_success_completion(runner, spec_name: str, result_path: Path,
         if not all_ids:
             return None  # 无数字任务 → 缺失/空数组均视为通过
         return (
-            f"exit 0 但结果文件缺 completed_tasks 清单（{agent_type} 产物硬门）: "
-            f"{result_path}"
+            f"{TASK_GATE_ERROR_PREFIX} exit 0 但结果文件缺 completed_tasks 清单"
+            f"（{agent_type} 产物硬门）: {result_path}"
         )
     if not isinstance(raw_ct, list):
         return (
-            f"exit 0 但结果文件 completed_tasks 非数组（{agent_type} 产物硬门）: "
-            f"{result_path}"
+            f"{TASK_GATE_ERROR_PREFIX} exit 0 但结果文件 completed_tasks 非数组"
+            f"（{agent_type} 产物硬门）: {result_path}"
         )
     bad = runner._invalid_completed_ids(raw_ct)
     if bad:
         return (
-            f"exit 0 但结果文件 completed_tasks 含非法任务 id"
+            f"{TASK_GATE_ERROR_PREFIX} exit 0 但结果文件 completed_tasks 含非法任务 id"
             f"（{agent_type} 产物硬门）: {result_path} {runner._format_gap_list(bad)}"
         )
     ct_set = set(raw_ct)
@@ -494,7 +559,7 @@ def _check_success_completion(runner, spec_name: str, result_path: Path,
         if extra:
             parts.append("多项: " + runner._format_gap_list(extra))
         return (
-            f"exit 0 但 completed_tasks 与 tasks.md 勾选集合不一致"
+            f"{TASK_GATE_ERROR_PREFIX} exit 0 但 completed_tasks 与 tasks.md 勾选集合不一致"
             f"（{agent_type} 产物硬门）: {result_path} {'；'.join(parts)}"
         )
     return None
@@ -541,7 +606,7 @@ def _check_partial_consistency(runner, spec_name: str, result_path: Path,
         parts.append("并集不等于全部数字任务 id")
     if parts:
         return (
-            f"exit 0 但结果文件 partial 申报一致性判据未通过"
+            f"{TASK_GATE_ERROR_PREFIX} exit 0 但结果文件 partial 申报一致性判据未通过"
             f"（{agent_type} 产物硬门）: {result_path} {'；'.join(parts)}"
         )
     return None
@@ -584,12 +649,14 @@ def _check_taskupdate_crosscheck(runner, spec_name: str,
     rd = parse_run_task_done_cumulative(runner.project_root, spec_name)
     done_ids = set(rd.get("done_ids") or ())
     tracked_ids = set(rd.get("tracked_ids") or ())
-    # 只对「实现者确实声明过（建过 Task）」的任务要求完成覆盖
+    # 只对「实现者确实声明过（建过 Task）」的任务要求完成覆盖（调用方已把
+    # 已申报 unattainable 的 id 从 checked_ids 扣除）。
     requirement = set(checked_ids) & tracked_ids
     missing = sorted(requirement - done_ids)
     if missing:
         return (
-            f"exit 0 但已完成任务与 TaskUpdate 记录不一致（{agent_type} 产物硬门）: "
+            f"{TASK_GATE_ERROR_PREFIX} exit 0 但已完成任务与 TaskUpdate 记录不一致"
+            f"（{agent_type} 产物硬门）: "
             f"done_ids 未覆盖已勾选任务 {runner._format_gap_list(missing)}"
         )
     return None
@@ -631,3 +698,80 @@ def _append_crosscheck_skipped(runner, spec_name: str, run_file,
             f"impl-task-crosscheck-skipped 审计事件写入失败"
             f"（非阻塞）: {e}",
         )
+
+def _bump_task_gate_rejections(runner, spec_name: str, delta: int = 1) -> int:
+    """任务完成度类产物硬门拒绝计数原子增减（改进①「只卡第一次」）。
+
+    state_machine 缺失/异常 fail-open（返回 0 → 调用方视为首次，维持硬拦；
+    判定故障不放大为「静默放行」）。
+    """
+    try:
+        if runner.state_machine is None:
+            return 0
+        return runner.state_machine.bump_task_gate_rejections(spec_name, delta)
+    except Exception as e:
+        runner.logger.warning(
+            "agent_runner",
+            f"task-gate 拒绝计数更新失败 '{spec_name}'（fail-open）: {e}",
+        )
+        return 0
+
+
+def _alert_task_gate_degraded(runner, spec_name: str, rejections: int,
+                              error: str) -> None:
+    """task 类产物硬门降级放行时发人工告警（改进①，去重节流）。
+
+    与 _alert_transient_break 同构：AdminStore.latest_signal 按 (spec, signal_type)
+    窗口内查重。告警写失败仅记 debug 不阻断。
+    """
+    try:
+        from core.admin_store import AdminStore, ESCALATION
+        store = AdminStore(runner.project_root, runner.logger)
+        if store.latest_signal(
+                spec_name, "artifact_gate_task_degraded", 30) is not None:
+            return
+        store.append({
+            "kind": ESCALATION,
+            "signal_type": "artifact_gate_task_degraded",
+            "spec": spec_name,
+            "severity": "warning",
+            "description": (
+                f"任务完成度类产物硬门连续 {rejections} 次拒绝后已降级放行——"
+                f"可能存在实现者确实无法完成的任务，或门禁判据与实际不符"
+            ),
+            "evidence": f"rejections={rejections}; last_error={error[:300]}",
+            "recommended_action": (
+                "检查 tasks.md 未勾任务是否为人工运维门控（如重启/审批），"
+                "必要时在结果文件用 unattainable 申报诚实退出；"
+                "或核对门禁判据是否误拦正当收工"
+            ),
+        })
+    except Exception as e:
+        runner.logger.debug(
+            "agent_runner", f"task-gate 降级告警写入失败（不阻断）: {e}")
+
+
+def _register_task_gate_rejection(runner, spec_name: str, error: str) -> bool:
+    """登记一次 task 类拒绝并判定是否降级放行（改进①「只卡第一次」）。
+
+    返回 True = 已达阈值，调用方放行（不再原地重试）；False = 未达阈值，
+    照常退避重试。仅对 [task-gate] 前缀的失败计数（结构类失败不参与）。
+    """
+    rej = _bump_task_gate_rejections(runner, spec_name, 1)
+    if rej >= TASK_GATE_DEGRADE_THRESHOLD:
+        _alert_task_gate_degraded(runner, spec_name, rej, error)
+        return True
+    return False
+
+
+def _clear_task_gate_rejections(runner, spec_name: str) -> None:
+    """门禁干净通过时清零 task-gate 拒绝计数（改进①，防陈旧计数误降级）。"""
+    if runner.state_machine is None:
+        return
+    try:
+        entry = runner.state_machine.read_one(spec_name) or {}
+        if int(entry.get(TASK_GATE_REJECTIONS_FIELD, 0) or 0) > 0:
+            runner.state_machine.update_spec(
+                spec_name, {TASK_GATE_REJECTIONS_FIELD: 0})
+    except Exception:
+        pass

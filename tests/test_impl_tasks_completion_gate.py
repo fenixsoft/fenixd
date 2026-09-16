@@ -574,6 +574,136 @@ class TestImplResultGate(unittest.TestCase):
                      "completed_tasks": ["1.1", "1.2"]},
         ) is None
 
+    # ── 诚实退出：unattainable 申报（2026-09-16 改进②）──────────────
+
+    def test_unattainable_exempts_unchecked_success(self):
+        """success 但某任务申报 unattainable → 从未勾缺口扣除、放行。
+
+        即便 tasks.md 仍留 `- [ ] 7.3`，只要结果文件申报 7.3 unattainable，
+        门禁不再把它当未完成硬缺口（其余任务仍须完成）。
+        """
+        err = self._gate(
+            tasks_text="## 1. 阶段一\n\n- [x] 1.1 任务一\n- [ ] 7.3 人工重启\n",
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1"],
+                     "unattainable": [{"task": "7.3",
+                                       "reason": "人工运维门控，需用户手动重启"}]},
+        )
+        assert err is None
+
+    def test_unattainable_partial_consistency_unchanged(self):
+        """partial 申报一致性判据不受 unattainable 影响（unfinished 仍须含未勾项）。"""
+        err = self._gate(
+            tasks_text="## 1. 阶段一\n\n- [x] 1.1 任务一\n- [ ] 7.3 人工重启\n",
+            payload={"status": "partial", "spec": self.spec,
+                     "completed_tasks": ["1.1"], "unfinished": ["7.3"],
+                     "unattainable": [{"task": "7.3", "reason": "人工门控"}]},
+        )
+        assert err is None
+
+    def test_unattainable_invalid_entry_blocked(self):
+        """unattainable 项非法（task 非合法 id / 缺 reason）→ 判失败（防伪造）。"""
+        err = self._gate(
+            tasks_text="## 1. 阶段一\n\n- [x] 1.1 任务一\n- [ ] 7.3 人工重启\n",
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1"],
+                     "unattainable": [{"task": "not-an-id", "reason": "x"}]},
+        )
+        assert err is not None
+        assert "unattainable" in err
+
+    def test_unattainable_bogus_checked_id_blocked(self):
+        """unattainable 申报了已完成/非未勾任务 → 判失败（不能拿它洗白）。"""
+        err = self._gate(
+            tasks_text=ALL_DONE_TASKS,
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1", "1.2"],
+                     "unattainable": [{"task": "1.1", "reason": "假申报"}]},
+        )
+        assert err is not None
+        assert "非未完成任务" in err
+
+    def test_unattainable_taskupdate_crosscheck_exempt(self):
+        """unattainable 任务不产生 TaskUpdate 覆盖义务（诚实退出豁免）。"""
+        base = ["Task", "TaskCreate", "TaskUpdate"]
+        _mk_run(self.proot, self.spec, name=f"impl-{self.spec}-1780000001-a1.jsonl",
+                tools=base, session="sess-A", events=[
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.1: 任务一"}},
+                    {"type": "tool_use", "name": "TaskUpdate",
+                     "input": {"taskId": 1, "status": "completed"}},
+                ])
+        # 1.2 建了 Task 但从未完成；申报 unattainable 后不应被交叉核对拦。
+        _mk_run(self.proot, self.spec, name=f"impl-{self.spec}-1780000001-a2.jsonl",
+                tools=base, session="sess-A", events=[
+                    {"type": "tool_use", "name": "TaskCreate",
+                     "input": {"subject": "Task 1.2: 任务二"}},
+                ])
+        err = self._gate(
+            tasks_text="## 1. 阶段一\n\n- [x] 1.1 任务一\n- [ ] 1.2 任务二\n",
+            payload={"status": "success", "spec": self.spec,
+                     "completed_tasks": ["1.1"],
+                     "unattainable": [{"task": "1.2", "reason": "人工门控"}]},
+        )
+        assert err is None
+
+    # ── 改进①「只卡第一次」：task 类失败跨轮计数降级（2026-09-16）──
+
+    def _runner_with_state(self, spec="demo"):
+        from core.state_machine import StateMachine
+        sm_path = self.proot / ".fenix" / "STATE.md"
+        sm_path.parent.mkdir(parents=True, exist_ok=True)
+        sm = StateMachine(sm_path, self.runner.logger)
+        sm.add_spec(spec, {"status": "implementing", "priority": 1})
+        r = make_runner(self.proot)
+        r.state_machine = sm
+        return r, sm
+
+    def test_task_gate_rejections_accumulate_and_degrade(self):
+        """task 类失败跨轮累积计数：第 1 次拦、第 2 次起放行（阈值 2）。"""
+        from core.agent_runner import result_gate
+        r, sm = self._runner_with_state()
+        wt = _mk_worktree(self.proot, "demo",
+                          tasks_text="## 1. 阶段一\n\n- [x] 1.1 任务一\n- [ ] 1.2 任务二\n")
+        _write_result(wt, {"status": "success", "spec": "demo",
+                           "completed_tasks": ["1.1"]})
+        err1 = r._check_impl_result_artifact("demo", None, wt)
+        assert err1 is not None
+        assert err1.startswith(result_gate.TASK_GATE_ERROR_PREFIX)
+        assert int(sm.read_one("demo")["_impl_gate_task_rejections"]) == 1
+        # 第 2 次：达阈值 → 降级放行（返回 None）
+        err2 = r._check_impl_result_artifact("demo", None, wt)
+        assert err2 is None
+
+    def test_clean_pass_clears_rejections(self):
+        """门禁干净通过 → 计数清零（下一轮从 0 起，仍只卡第一次）。"""
+        from core.agent_runner import result_gate
+        r, sm = self._runner_with_state()
+        # 先制造一次 task 类拒绝
+        wt_bad = _mk_worktree(self.proot, "demo",
+                              tasks_text="## 1. 阶段一\n\n- [x] 1.1 任务一\n- [ ] 1.2 任务二\n")
+        _write_result(wt_bad, {"status": "success", "spec": "demo",
+                               "completed_tasks": ["1.1"]})
+        err = r._check_impl_result_artifact("demo", None, wt_bad)
+        assert err is not None and err.startswith(result_gate.TASK_GATE_ERROR_PREFIX)
+        assert int(sm.read_one("demo")["_impl_gate_task_rejections"]) == 1
+        # 换成干净产物（任务书全勾 + 清单一致）→ 放行且清零
+        wt_ok = _mk_worktree(self.proot, "demo", tasks_text=ALL_DONE_TASKS)
+        _write_result(wt_ok, {"status": "success", "spec": "demo",
+                              "completed_tasks": ["1.1", "1.2"]})
+        assert r._check_impl_result_artifact("demo", None, wt_ok) is None
+        assert int(sm.read_one("demo").get("_impl_gate_task_rejections", 0) or 0) == 0
+
+    def test_structural_failure_not_counted(self):
+        """结构类失败（缺文件）不计数、不降级——多少轮都硬拦。"""
+        r, sm = self._runner_with_state()
+        wt = _mk_worktree(self.proot, "demo", tasks_text=ALL_DONE_TASKS)
+        for _ in range(3):
+            err = r._check_impl_result_artifact("demo", None, wt)
+            assert err is not None
+            assert "结果文件缺失" in err
+        assert int(sm.read_one("demo").get("_impl_gate_task_rejections", 0) or 0) == 0
+
 
 if __name__ == "__main__":
     unittest.main()

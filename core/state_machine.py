@@ -192,6 +192,14 @@ INFRA_FAILURE_COUNT_FIELD = "_infra_failure_count"
 VERIFY_INFRA_ROUNDS_FIELD = "_verify_infra_rounds"
 INFRA_REFUNDED_RUN_IDS_FIELD = "_infra_refunded_run_ids"
 
+# ── 任务完成度类产物硬门跨轮拒绝计数（2026-09-16 改进①「只卡第一次」）──
+# _impl_gate_task_rejections：实现 run 的产物硬门以 [task-gate] 前缀（未勾任务
+# / completed_tasks 不一致 / TaskUpdate 交叉核对 / partial 申报不一致）拒绝的
+# 累计次数，跨 dispatch 持久化。达阈值后 runner 降级为警告放行，避免实现者已
+# 诚实说明「确实无法满足」时被同一门无限拒回原地重试（a2/a3 × 3 重试死循环）。
+# 门禁干净通过或全新派发时清零。结构类失败不计数。
+TASK_GATE_REJECTIONS_FIELD = "_impl_gate_task_rejections"
+
 # ── spec 级结构化诊断（fix-run-hang-amplification 2.3）──────────────
 # _impl_diagnosis：run 终结时写入的结构化诊断摘要（终态类型 + 归因 +
 # 已定性结论 + 已提交进度），重派 attempt 经 PromptBuilder 注入（诊断继承）。
@@ -533,6 +541,16 @@ class StateMachine:
         Returns: 递增/回退后的使用次数（跨重启持久化）。
         """
         return self._bump_counter(spec_name, IMPL_RUN_BUDGET_USED_FIELD, delta)
+
+    def bump_task_gate_rejections(self, spec_name: str, delta: int = 1) -> int:
+        """任务完成度类产物硬门拒绝计数原子增减（``_impl_gate_task_rejections``）。
+
+        改进①「只卡第一次」：每次 [task-gate] 类失败 +1，达阈值后 runner 降级
+        放行；门禁干净通过或全新派发时以 delta=-1*current 清零（下限 0）。
+
+        Returns: 增减后的累计值（跨重启持久化）。
+        """
+        return self._bump_counter(spec_name, TASK_GATE_REJECTIONS_FIELD, delta)
 
     def bump_budget_exempt_runs(self, spec_name: str) -> int:
         """死亡豁免侧车计数原子递增（``_budget_exempt_runs``）。
