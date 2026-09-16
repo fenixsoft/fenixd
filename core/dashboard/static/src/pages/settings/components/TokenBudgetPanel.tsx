@@ -21,6 +21,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
     token_budget_millions: config.agents.token_budget_millions ?? 50,
     daily_run_limit: config.agents.daily_run_limit ?? 50,
     impl_run_budget: config.agents.impl_run_budget ?? 6,
+    impl_run_budget_max: config.agents.impl_run_budget_max ?? 100,
     verify_redo_budget: config.agents.verify_redo_budget ?? 3,
   };
 
@@ -29,6 +30,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
       token_budget_millions: config.agents.token_budget_millions ?? 50,
       daily_run_limit: config.agents.daily_run_limit ?? 50,
       impl_run_budget: config.agents.impl_run_budget ?? 6,
+      impl_run_budget_max: config.agents.impl_run_budget_max ?? 100,
       verify_redo_budget: config.agents.verify_redo_budget ?? 3,
     });
   }, [config.agents, form]);
@@ -41,6 +43,7 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
           token_budget_millions: values.token_budget_millions,
           daily_run_limit: values.daily_run_limit,
           impl_run_budget: values.impl_run_budget,
+          impl_run_budget_max: values.impl_run_budget_max,
           verify_redo_budget: values.verify_redo_budget,
         },
       });
@@ -90,16 +93,32 @@ export default function TokenBudgetPanel({ config, onSave, project, onConfigSync
             name="impl_run_budget"
             label={
               <>
-                实现尝试预算<span className="label-note">（agents.impl_run_budget，1-10）</span>
+                实现尝试预算<span className="label-note">（agents.impl_run_budget）</span>
               </>
             }
             rules={[{ required: true, message: '请输入实现尝试预算' }]}
             style={{ marginTop: 24 }}
           >
-            <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} />
+            <InputNumber min={1} max={1000} step={1} style={{ width: '100%' }} />
           </Form.Item>
           <Text type="secondary">
-            默认 4。每 SPEC 跨修复周期的实现 run 启动次数上限（含首次实现与每轮修复重派）。达到上限即冻结该 SPEC 并交人工裁决，需人工调大预算或推进状态。合法范围 1-10。
+            默认 4。每 SPEC 跨修复周期的实现 run 启动次数上限（含首次实现与每轮修复重派）。达到上限即冻结该 SPEC 并交人工裁决，需人工调大预算或推进状态。合法范围 1 至「实现尝试预算上限」（下方可配，缺省 100，硬天花板 1000）。
+          </Text>
+
+          <Form.Item
+            name="impl_run_budget_max"
+            label={
+              <>
+                实现尝试预算上限<span className="label-note">（agents.impl_run_budget_max，1-1000）</span>
+              </>
+            }
+            rules={[{ required: true, message: '请输入实现尝试预算上限' }]}
+            style={{ marginTop: 24 }}
+          >
+            <InputNumber min={1} max={1000} step={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Text type="secondary">
+            默认 100。per-spec 预算覆盖值与上面的全局实现尝试预算均按此上限夹紧；上限键自身硬天花板 1000。调大它可让长链条 SPEC 在机制摩擦后仍有修复轮次余额。
           </Text>
 
           <Form.Item

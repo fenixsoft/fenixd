@@ -51,7 +51,7 @@ class TestSpecBudgetAPI:
 
     @pytest.mark.parametrize("payload", [
         {"budget": 0},
-        {"budget": 11},
+        {"budget": 101},  # 超缺省上限 100（open-impl-budget-ceiling）
         {"budget": -1},
         {"budget": "5"},
         {"budget": True},
@@ -67,6 +67,14 @@ class TestSpecBudgetAPI:
         # STATE.md 不发生任何变化
         entry = dash_data.parse_state(proot)["myspec"]
         assert "impl_run_budget_override" not in entry
+
+    def test_budget_11_now_accepted(self, server_fx):
+        """open-impl-budget-ceiling：11 在旧上限(10)外，现缺省上限 100 内 → 接受。"""
+        proot, srv = server_fx
+        status, body = srv.post_json(
+            "/api/spec-budget?project=proj-a&spec=myspec", {"budget": 11})
+        assert status == 200
+        assert body["budget"] == 11
 
     def test_spec_not_found_404(self, server_fx):
         _, srv = server_fx
