@@ -79,9 +79,9 @@ class TestSummaryIndex:
         calls = {"n": 0}
         orig = dash_data.spec_summary
 
-        def counting(proot_, spec_name_, entry_):
+        def counting(proot_, spec_name_, entry_, **kw):
             calls["n"] += 1
-            return orig(proot_, spec_name_, entry_)
+            return orig(proot_, spec_name_, entry_, **kw)
 
         dash_data.spec_summary = counting
         try:
@@ -99,9 +99,9 @@ class TestSummaryIndex:
         calls = []
         orig = dash_data.spec_summary
 
-        def tracking(proot_, spec_name_, entry_):
+        def tracking(proot_, spec_name_, entry_, **kw):
             calls.append(spec_name_)
-            return orig(proot_, spec_name_, entry_)
+            return orig(proot_, spec_name_, entry_, **kw)
 
         tasks = proot / "spec" / "changes" / "myspec" / "tasks.md"
         # 等长改写：显式推进 mtime，避免同长度写入落在同一 mtime_ns 粒度内
@@ -130,9 +130,9 @@ class TestSummaryIndex:
         calls = []
         orig = dash_data.spec_summary
 
-        def tracking(proot_, spec_name_, entry_):
+        def tracking(proot_, spec_name_, entry_, **kw):
             calls.append(spec_name_)
-            return orig(proot_, spec_name_, entry_)
+            return orig(proot_, spec_name_, entry_, **kw)
 
         # STATE.md 新增一个 spec 条目
         state_path = proot / ".fenix" / "STATE.md"
@@ -163,9 +163,9 @@ class TestSummaryIndex:
         calls = []
         orig = dash_data.spec_summary
 
-        def tracking(proot_, spec_name_, entry_):
+        def tracking(proot_, spec_name_, entry_, **kw):
             calls.append(spec_name_)
-            return orig(proot_, spec_name_, entry_)
+            return orig(proot_, spec_name_, entry_, **kw)
 
         state_path = proot / ".fenix" / "STATE.md"
         state_path.write_text(
@@ -196,9 +196,9 @@ class TestSummaryIndex:
         calls = []
         orig = dash_data.spec_summary
 
-        def tracking(proot_, spec_name_, entry_):
+        def tracking(proot_, spec_name_, entry_, **kw):
             calls.append(spec_name_)
-            return orig(proot_, spec_name_, entry_)
+            return orig(proot_, spec_name_, entry_, **kw)
 
         dash_data.spec_summary = tracking
         try:

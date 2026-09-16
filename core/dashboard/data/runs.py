@@ -100,27 +100,42 @@ def _first_run_event_ts(path: Path) -> "str | None":
     return None
 
 
-def get_runs(project_root, spec_name: str | None = None, include_archive: bool = False) -> list:
+def get_runs(project_root, spec_name: str | None = None, include_archive: bool = False, files: list | None = None) -> list:
     """列出项目的运行记录（.fenix/runs/*.jsonl）。
 
     spec_name 省略时返回全部；否则仅返回 run_id 包含该 spec 的记录。
     include_archive=True 时并入 runs/archive/ 的归档产物（同 run_id 以活跃
     副本优先），供时间轴/运行历史/耗时统计回看已归档的旧 run。
+    files: 调用方预扫描的产物路径集（如 SummaryIndex._runs_by_spec_sigs 的
+        分组结果）；提供时跳过目录 glob（D2：目录 glob 次数降为常数）。
+        与 glob 路径同样按 run_id 前缀过滤、同样以活跃副本优先去重。
     每条: {run_id, agent_type, spec, status, started, file_size, events}
     """
     runs_dir = Path(project_root) / ".fenix" / "runs"
     if not runs_dir.is_dir():
         return []
     out = []
+    if files is None:
+        try:
+            files = list(runs_dir.glob("*.jsonl"))
+            if include_archive:
+                archive_dir = runs_dir / "archive"
+                if archive_dir.is_dir():
+                    files.extend(archive_dir.glob("*.jsonl"))
+        except OSError:
+            return []
+    else:
+        files = list(files)
+        if not include_archive:
+            files = [p for p in files if p.parent.name != "archive"]
+    # 同 run_id 以活跃副本优先去重（预选集可能同时含 live+archive 同名产物，
+    # 与 glob 路径语义一致），再按 mtime 降序（latest_run 取 files[0]）。
     try:
-        files = list(runs_dir.glob("*.jsonl"))
-        if include_archive:
-            archive_dir = runs_dir / "archive"
-            if archive_dir.is_dir():
-                seen = {p.stem for p in files}
-                for p in archive_dir.glob("*.jsonl"):
-                    if p.stem not in seen:
-                        files.append(p)
+        live, archived = [], []
+        for p in files:
+            (archived if p.parent.name == "archive" else live).append(p)
+        seen = {p.stem for p in live}
+        files = live + [p for p in archived if p.stem not in seen]
         files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:
         return []
@@ -451,7 +466,7 @@ def _split_llm_marker(llm: str) -> tuple:
     return llm, ""
 
 
-def run_activity(project_root, spec_name, *, now: float | None = None) -> dict:
+def run_activity(project_root, spec_name, *, now: float | None = None, files=None) -> dict:
     """最新 impl run 的存活心跳（不依赖 TaskCreate/TaskUpdate 的实时兜底）。
 
     run_task_progress（fix-implementer-task-progress D3）依赖 run 产物中的
@@ -472,7 +487,7 @@ def run_activity(project_root, spec_name, *, now: float | None = None) -> dict:
     # D8/D4：find_impl_run_file 已迁至 tasks.py，经门面解析
     import core.dashboard.data as _facade
 
-    run_file = _facade.find_impl_run_file(project_root, spec_name)
+    run_file = _facade.find_impl_run_file(project_root, spec_name, files=files)
     if run_file is None:
         return {"active": False, "last_event_seconds_ago": None}
     try:

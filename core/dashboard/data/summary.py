@@ -248,14 +248,22 @@ def _impl_budget_max(project_root) -> int:
     return budget
 
 
-def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
-    """单个 SPEC 的摘要（/api/specs 列表项）。"""
+def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | None = None) -> dict:
+    """单个 SPEC 的摘要（/api/specs 列表项）。
+
+    runs_files: 调用方预扫描的本 spec run 产物路径集（SummaryIndex 每轮经
+        _runs_by_spec_sigs 预扫一次后传入）；提供时 get_runs/任务进度/存活
+        心跳全部复用该文件集，不再各自 glob 整个 runs 目录（D2：目录 glob
+        次数为常数）。缺省 None 时内部自行 glob（详情页等非索引路径）。
+    """
     import core.dashboard.data as _facade
 
-    done, total = _facade.task_progress(project_root, spec_name, entry.get("status", ""))
+    done, total = _facade.task_progress(
+        project_root, spec_name, entry.get("status", ""), files=runs_files
+    )
     vp = _facade.parse_verify_progress(project_root, spec_name)
     # 含归档：run 产物被清理后列表页耗时统计不缩水
-    runs = _facade.get_runs(project_root, spec_name, include_archive=True)
+    runs = _facade.get_runs(project_root, spec_name, include_archive=True, files=runs_files)
     total_duration = _spec_total_duration(project_root, spec_name, entry, runs)
     # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
     from core.spec_mode import read_spec_mode
@@ -311,11 +319,11 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         "task_total": total,
         # run 层实时进度（fix-implementer-task-progress D3）：tasks.md 快照失效
         # （subject 无编号 / agent 不勾 tasks.md）时仍能看到 run 推进。
-        "run_progress": _facade.run_task_progress(project_root, spec_name),
+        "run_progress": _facade.run_task_progress(project_root, spec_name, files=runs_files),
         # 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/TaskUpdate，
         # 而派发路由实测不含该工具族 → 实现期间恒 0/N。run_activity 以「产物是否
         # 仍在写」提供不依赖任务工具的存活线索，前端据此在进度单元显示「进行中」。
-        "run_activity": _facade.run_activity(project_root, spec_name),
+        "run_activity": _facade.run_activity(project_root, spec_name, files=runs_files),
         "verify_done": vp.get("done", 0),
         "verify_total": vp.get("total", 0),
         "verify_error": vp.get("error"),
@@ -543,7 +551,10 @@ class SummaryIndex:
                 # D8：经门面延迟解析（tests 以 dash_data.spec_summary=... 替换）
                 import core.dashboard.data as _facade
 
-                summary = _facade.spec_summary(proot, spec_name, entry)
+                # D2：复用本轮预扫描的 runs_sigs 分组结果，spec_summary 不再
+                # 自行 glob runs/archive 目录（目录 glob 次数为常数）。
+                spec_files = [Path(p) for p in (runs_sigs.get(spec_name) or {})]
+                summary = _facade.spec_summary(proot, spec_name, entry, runs_files=spec_files)
                 idx[spec_name] = {"summary": summary, "sigs": sigs}
                 out.append(summary)
 

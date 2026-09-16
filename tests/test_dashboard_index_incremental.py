@@ -90,9 +90,9 @@ class TestIncrementalIndex:
         calls = []
         orig = dash_data.spec_summary
 
-        def tracking(proot_, spec_name_, entry_):
+        def tracking(proot_, spec_name_, entry_, **kw):
             calls.append(spec_name_)
-            return orig(proot_, spec_name_, entry_)
+            return orig(proot_, spec_name_, entry_, **kw)
 
         tasks = proot / "spec" / "changes" / "myspec" / "tasks.md"
         _bump_mtime(tasks)
@@ -126,9 +126,9 @@ class TestIncrementalIndex:
         calls = []
         orig = dash_data.spec_summary
 
-        def tracking(proot_, spec_name_, entry_):
+        def tracking(proot_, spec_name_, entry_, **kw):
             calls.append(spec_name_)
-            return orig(proot_, spec_name_, entry_)
+            return orig(proot_, spec_name_, entry_, **kw)
 
         dash_data.spec_summary = tracking
         try:
@@ -158,9 +158,9 @@ class TestIncrementalIndex:
         calls = []
         orig = dash_data.spec_summary
 
-        def tracking(proot_, spec_name_, entry_):
+        def tracking(proot_, spec_name_, entry_, **kw):
             calls.append(spec_name_)
-            return orig(proot_, spec_name_, entry_)
+            return orig(proot_, spec_name_, entry_, **kw)
 
         dash_data.spec_summary = tracking
         try:
@@ -185,9 +185,9 @@ class TestIncrementalIndex:
         calls = []
         orig = dash_data.spec_summary
 
-        def tracking(proot_, spec_name_, entry_):
+        def tracking(proot_, spec_name_, entry_, **kw):
             calls.append(spec_name_)
-            return orig(proot_, spec_name_, entry_)
+            return orig(proot_, spec_name_, entry_, **kw)
 
         dash_data.spec_summary = tracking
         try:
@@ -220,3 +220,75 @@ class TestIncrementalIndex:
         assert set(inc_by_name) == set(full_by_name)
         for name in full_by_name:
             assert inc_by_name[name] == full_by_name[name], f"{name} 摘要增量与全量重建不一致"
+
+    def test_get_runs_preselected_equals_glob(self, tmp_path):
+        """3.1：get_runs 预选文件集路径与 glob 路径产出等价（含同 run_id 活跃优先去重）。"""
+        from core.dashboard.data import _runs_by_spec_sigs, get_runs
+
+        proot = make_project(tmp_path)
+        runs_dir = proot / ".fenix" / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        archive = runs_dir / "archive"
+        archive.mkdir(parents=True, exist_ok=True)
+        # live 与 archive 同 run_id（活跃优先）+ archive 独有旧 run
+        (runs_dir / "impl-myspec-1788000000.jsonl").write_text(
+            '{"type": "result", "result": "live"}\n', encoding="utf-8"
+        )
+        (archive / "impl-myspec-1788000000.jsonl").write_text(
+            '{"type": "result", "result": "archived-dup"}\n', encoding="utf-8"
+        )
+        (archive / "impl-myspec-1787000000.jsonl").write_text(
+            '{"type": "result", "result": "archived-old"}\n', encoding="utf-8"
+        )
+
+        runs_sigs = _runs_by_spec_sigs(proot)
+        spec_files = [Path(p) for p in (runs_sigs.get("myspec") or {})]
+        a = get_runs(proot, "myspec", include_archive=True, files=spec_files)
+        b = get_runs(proot, "myspec", include_archive=True)
+        assert [r["run_id"] for r in a] == [r["run_id"] for r in b]
+        assert len(a) == 2, "同 run_id 活跃优先去重后应为 2 条（活跃 + 归档独有）"
+
+    def test_runs_dir_glob_count_constant(self, tmp_path, monkeypatch):
+        """3.2：单轮 runs 目录 glob 次数为常数（不随 spec 数量增长）。
+
+        变化触发一轮 get()：预扫描（_runs_by_spec_sigs）glob 2 次（runs 根 +
+        archive），其余 spec 摘要计算（get_runs/任务进度/存活心跳）全部复用
+        预扫描文件集，不再各自 glob。
+        """
+        import pathlib
+
+        proot = make_project(tmp_path)
+        idx = SummaryIndex()
+        idx.get(proot)  # 冷构建（不计数）
+
+        # 归档目录存在 → 预扫描 glob 2 次（runs 根 + archive）
+        archive = proot / ".fenix" / "runs" / "archive"
+        archive.mkdir(parents=True, exist_ok=True)
+        (archive / "impl-otherspec-1789000000.jsonl").write_text(
+            '{"type": "result", "result": "archived"}\n', encoding="utf-8"
+        )
+
+        real_glob = pathlib.Path.glob
+        counts = {"n": 0, "calls": []}
+
+        def counting_glob(self, pattern):
+            # 只统计 .fenix/runs 目录（含 archive 子目录）上的 glob
+            if ".fenix/runs" in str(self):
+                counts["n"] += 1
+                counts["calls"].append((str(self), pattern))
+            return real_glob(self, pattern)
+
+        tasks = proot / "spec" / "changes" / "myspec" / "tasks.md"
+        _bump_mtime(tasks)
+        tasks.write_text(
+            tasks.read_text(encoding="utf-8").replace("- [ ] 1.2 任务二", "- [x] 1.2 任务二"),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(pathlib.Path, "glob", counting_glob)
+        try:
+            idx.get(proot)
+        finally:
+            monkeypatch.undo()
+        assert counts["n"] == 2, (
+            f"单轮目录 glob 应为常数 2（仅预扫描），实际 {counts['n']}: {counts['calls']}"
+        )
