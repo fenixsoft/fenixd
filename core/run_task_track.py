@@ -19,6 +19,7 @@ planner 实质会产出该形态（本仓 5 个在飞 spec 中 4 个含字母后
 （2026-09-15 事故：一轮完整成功的重构交付被误拦 + 误标 provider-transient）。
 """
 
+import fnmatch
 import json
 import re
 from pathlib import Path
@@ -121,22 +122,38 @@ def parse_tasks_md(project_root, spec_name) -> "tuple[list, set]":
     return all_ids, checked_ids
 
 
-def find_impl_run_file(project_root, spec_name) -> Path | None:
+def find_impl_run_file(project_root, spec_name, files=None) -> Path | None:
     """最新一次 impl-<spec>-*.jsonl 运行产物，或 None。
 
     运行中 STATE.md 的 implementer_run 字段为空，不能用它定位；
     按 mtime 取最新与 worktree 选择（find_implementer_worktree）一致。
+    files: 调用方预扫描文件集（dashboard 侧 _runs_by_spec_sigs 分组结果）；
+        提供时按同名 glob 语义（fnmatch ``impl-<spec>-*.jsonl``、仅活跃目录）
+        从中过滤，避免每 spec 重新 glob 整个 runs 目录（fix-dashboard-read-path-
+        performance D2：摘要读路径目录 glob 次数为常数）。缺省 None 走 glob。
     """
     runs_dir = Path(project_root) / ".fenix" / "runs"
     if not runs_dir.is_dir():
         return None
     candidates = []
+    pattern = f"impl-{spec_name}-*.jsonl"
     try:
-        for p in runs_dir.glob(f"impl-{spec_name}-*.jsonl"):
-            try:
-                candidates.append((p.stat().st_mtime, p))
-            except OSError:
-                pass
+        if files is None:
+            for p in runs_dir.glob(pattern):
+                try:
+                    candidates.append((p.stat().st_mtime, p))
+                except OSError:
+                    pass
+        else:
+            for p in files:
+                if p.parent.name == "archive":
+                    continue  # 只认活跃目录（与 glob 路径一致）
+                if not fnmatch.fnmatch(p.name, pattern):
+                    continue
+                try:
+                    candidates.append((p.stat().st_mtime, p))
+                except OSError:
+                    pass
     except OSError:
         return None
     if not candidates:

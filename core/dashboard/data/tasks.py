@@ -67,11 +67,13 @@ def _should_overlay(spec_status: str, has_uncompleted: bool) -> bool:
     return spec_status in ("done", "pushed") and has_uncompleted
 
 
-def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = True) -> list:
+def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = True, files=None) -> list:
     """解析 tasks.md 为分组任务结构：[{title, tasks:[{id,desc,done}], done, total}]。
 
     For implementing SPECs, reads from the active implementer worktree first.
     live=True 时按 _should_overlay 叠加最新 impl run 的实时完成状态（并集）。
+    files: 预扫描 run 文件集（fix-dashboard-read-path-performance D2），透传
+        给叠加用 find_impl_run_file，避免每 spec 重新 glob runs 目录。
     """
     # 跨组引用经门面延迟解析（D4：叶子组引用中层 spec_docs 的 resolve_spec_dir）
     import core.dashboard.data as _facade
@@ -122,7 +124,7 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
     if live and _should_overlay(
         spec_status, any(not t["done"] for g in groups for t in g["tasks"])
     ):
-        run_file = _find_impl_run_file(project_root, spec_name)
+        run_file = _find_impl_run_file(project_root, spec_name, files=files)
         if run_file is not None:
             rd = _parse_run_task_done(run_file)
             overlaid = False
@@ -148,9 +150,9 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
     return groups
 
 
-def task_progress(project_root, spec_name, spec_status: str = ""):
-    """返回 (done, total)，无任务时为 (0, 0)。"""
-    groups = parse_tasks(project_root, spec_name, spec_status)
+def task_progress(project_root, spec_name, spec_status: str = "", files=None):
+    """返回 (done, total)，无任务时为 (0, 0)。files 透传 parse_tasks（预扫描 run 文件集）。"""
+    groups = parse_tasks(project_root, spec_name, spec_status, files=files)
     done = sum(g["done"] for g in groups)
     total = sum(g["total"] for g in groups)
     return done, total
@@ -176,7 +178,7 @@ def tasks_note(project_root, spec_name, spec_status: str = ""):
     return "tasks.md 存在但未解析出任务分组（分组格式不匹配或文件为空）"
 
 
-def run_task_progress(project_root, spec_name) -> dict:
+def run_task_progress(project_root, spec_name, files=None) -> dict:
     """最新 impl run 的 harness 任务完成度（run-progress-observability D3）。
 
     从最新 impl run 产物用 parse_run_task_done 解析：done = TaskUpdate completed
@@ -185,8 +187,10 @@ def run_task_progress(project_root, spec_name) -> dict:
     恒空——终态 run 没有「进行中」，残留状态不得外显）。**不依赖 TaskCreate
     subject 是否内嵌 tasks.md 编号**——这正是它作为 tasks.md 快照失效时兜底
     展示的资本。无 run / 解析失败为 {"done": 0, "total": 0, "current": []}。
+    files: 预扫描 run 文件集（fix-dashboard-read-path-performance D2），透传
+        给 find_impl_run_file，避免每 spec 重新 glob runs 目录。
     """
-    run_file = find_impl_run_file(project_root, spec_name)
+    run_file = find_impl_run_file(project_root, spec_name, files=files)
     if run_file is None:
         return {"done": 0, "total": 0, "current": []}
     rd = parse_run_task_done(run_file)

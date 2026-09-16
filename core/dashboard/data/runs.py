@@ -100,27 +100,120 @@ def _first_run_event_ts(path: Path) -> "str | None":
     return None
 
 
-def get_runs(project_root, spec_name: str | None = None, include_archive: bool = False) -> list:
+# ── run 元数据 memo（fix-dashboard-read-path-performance D3） ──────────────
+# run 元数据（status_raw/started/duration_seconds/file_size）按
+# (path, mtime_ns, size) 缓存：append-only 产物未变即零读，跳过 _first_run_event_ts
+# （扫描头 200 行 + json.loads）与尾读。读路径把 O(总量) 降为 O(变更量)。
+# 与 _RUN_TASK_CACHE/_GLOBAL_BUDGET_CACHE 同模式（GIL 保护下的最优竞态：并发
+# 双算无害）。缓存存 status_raw——stale 判定依赖当前时刻，每次按 now 重算。
+_RUN_META_CACHE: dict = {}
+_RUN_META_CACHE_MAX = 16384
+
+
+def _run_meta_cached(p: Path, stat, now: float) -> dict:
+    """计算/复用单条 run 元数据（status/started/duration_seconds/file_size）。
+
+    命中（path, mtime_ns, size 全同）即返回缓存；未命中完整计算并写入缓存。
+    耗时/开始时刻/状态推导逻辑与既有 get_runs 逐字等价（见各步注释），
+    仅挪入本函数以便整体 memo。
+    """
+    key = (str(p), stat.st_mtime_ns, stat.st_size)
+    cached = _RUN_META_CACHE.get(key)
+    if cached is not None:
+        status = cached["status_raw"]
+        # fix-retry-orphan-active-runs D3：stale 判定按当前时刻每次重算
+        if status in ("running", "empty") and (now - stat.st_mtime) > _RUN_STALE_SECONDS:
+            status = "stale"
+        return {
+            "status": status,
+            "started": cached["started"],
+            "duration_seconds": cached["duration_seconds"],
+            "file_size": cached["file_size"],
+        }
+    run_id = p.stem
+    # 耗时：run_id 起始时间戳为 attempt 段前的 10 位 unix 秒（int(time.time())），
+    # 文件 mtime 为终止。优先匹配 `-<ts>-a<n>`（含 attempt 后缀的真实格式），
+    # 回退 `-<ts>`（旧格式无 attempt 后缀），再无则退化 mtime（现状兜底）。
+    tm = re.search(r"-(\d{9,10})-a\d+$", run_id) or re.search(r"-(\d{9,10})$", run_id)
+    start_ts = int(tm.group(1)) if tm else stat.st_mtime
+    # started 优先取产物首行事件时间戳（真实启动时刻）：run_id 内嵌时间戳
+    # 是首次派发时刻，多 attempt run（-a2+）复用同一 run_id 基座只加后缀，
+    # 按 run_id 解析会让所有 attempt 显示同一开始时刻、duration 虚增
+    # （含前序 attempt 寿命）。真实起点取产物首个带 timestamp 的事件：
+    # 文件头部是无时间戳的 provider_marker/hook/system 事件（实测 10+ 行），
+    # 故扫描前 200 行、命中即停；全部无样本返回 None（调用方回退 run_id 内嵌
+    # 时间戳）。
+    real_start = _first_run_event_ts(p)
+    # 跨组引用（timeline 组的 _parse_iso_ts）经门面延迟解析（D4）
+    import core.dashboard.data as _facade
+
+    real_dt = _facade._parse_iso_ts(real_start) if real_start else None
+    if real_dt is not None:
+        started = real_dt.astimezone(timezone.utc).isoformat()
+        duration_seconds = max(0, int(stat.st_mtime - real_dt.timestamp()))
+    else:
+        # started 用 run_id 解析出的开始时间戳，而非文件 mtime
+        # （mtime 是运行 *结束* 时间）。duration_seconds = mtime - start_ts 已真实计算，
+        # 若 started 仍取 mtime，则运行列表/时间轴会把每次运行显示为「在结束时刻才开始」，
+        # 与真实耗时自相矛盾（耗时列为真实秒数而开始时间却是结束时刻）。
+        started = datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()
+        duration_seconds = max(0, int(stat.st_mtime - start_ts))
+    status_raw = classify_run(_read_run_lines(p, max_lines=3))
+    status = status_raw
+    # fix-retry-orphan-active-runs D3：末行非终态且文件 mtime 停更超过
+    # _RUN_STALE_SECONDS → 判 stale（原地重试弃置尸体 / 进程被杀无终态断尾），
+    # stale 不进 _RUN_TERMINAL_STATUS_MAP（非事件类型）。
+    if status in ("running", "empty") and (now - stat.st_mtime) > _RUN_STALE_SECONDS:
+        status = "stale"
+    meta = {
+        "status_raw": status_raw,
+        "status": status,
+        "started": started,
+        "duration_seconds": duration_seconds,
+        "file_size": stat.st_size,
+    }
+    if len(_RUN_META_CACHE) > _RUN_META_CACHE_MAX:
+        _RUN_META_CACHE.clear()
+    _RUN_META_CACHE[key] = meta
+    return meta
+
+
+def get_runs(project_root, spec_name: str | None = None, include_archive: bool = False, files: list | None = None) -> list:
     """列出项目的运行记录（.fenix/runs/*.jsonl）。
 
     spec_name 省略时返回全部；否则仅返回 run_id 包含该 spec 的记录。
     include_archive=True 时并入 runs/archive/ 的归档产物（同 run_id 以活跃
     副本优先），供时间轴/运行历史/耗时统计回看已归档的旧 run。
+    files: 调用方预扫描的产物路径集（如 SummaryIndex._runs_by_spec_sigs 的
+        分组结果）；提供时跳过目录 glob（D2：目录 glob 次数降为常数）。
+        与 glob 路径同样按 run_id 前缀过滤、同样以活跃副本优先去重。
     每条: {run_id, agent_type, spec, status, started, file_size, events}
     """
     runs_dir = Path(project_root) / ".fenix" / "runs"
     if not runs_dir.is_dir():
         return []
     out = []
+    if files is None:
+        try:
+            files = list(runs_dir.glob("*.jsonl"))
+            if include_archive:
+                archive_dir = runs_dir / "archive"
+                if archive_dir.is_dir():
+                    files.extend(archive_dir.glob("*.jsonl"))
+        except OSError:
+            return []
+    else:
+        files = list(files)
+        if not include_archive:
+            files = [p for p in files if p.parent.name != "archive"]
+    # 同 run_id 以活跃副本优先去重（预选集可能同时含 live+archive 同名产物，
+    # 与 glob 路径语义一致），再按 mtime 降序（latest_run 取 files[0]）。
     try:
-        files = list(runs_dir.glob("*.jsonl"))
-        if include_archive:
-            archive_dir = runs_dir / "archive"
-            if archive_dir.is_dir():
-                seen = {p.stem for p in files}
-                for p in archive_dir.glob("*.jsonl"):
-                    if p.stem not in seen:
-                        files.append(p)
+        live, archived = [], []
+        for p in files:
+            (archived if p.parent.name == "archive" else live).append(p)
+        seen = {p.stem for p in live}
+        files = live + [p for p in archived if p.stem not in seen]
         files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:
         return []
@@ -143,60 +236,44 @@ def get_runs(project_root, spec_name: str | None = None, include_archive: bool =
         m = re.match(r"^(.*)-\d{9,10}$", spec_part)
         if m:
             spec_part = m.group(1)
-        # 耗时：run_id 起始时间戳为 attempt 段前的 10 位 unix 秒（int(time.time())），
-        # 文件 mtime 为终止。优先匹配 `-<ts>-a<n>`（含 attempt 后缀的真实格式），
-        # 回退 `-<ts>`（旧格式无 attempt 后缀），再无则退化 mtime（现状兜底）。
-        tm = re.search(r"-(\d{9,10})-a\d+$", run_id) or re.search(r"-(\d{9,10})$", run_id)
-        start_ts = int(tm.group(1)) if tm else stat.st_mtime
-        # started 优先取产物首行事件时间戳（真实启动时刻）：run_id 内嵌时间戳
-        # 是首次派发时刻，多 attempt run 复用基座会显示同一时刻且 duration 虚增。
-        # mtime 仍是结束时间（started 用派发/启动时刻而非结束时刻的语义不变）。
-        real_start = _first_run_event_ts(p)
-        # 跨组引用（timeline 组的 _parse_iso_ts）经门面延迟解析（D4）
-        import core.dashboard.data as _facade
-
-        real_dt = _facade._parse_iso_ts(real_start) if real_start else None
-        if real_dt is not None:
-            started = real_dt.astimezone(timezone.utc).isoformat()
-            duration_seconds = max(0, int(stat.st_mtime - real_dt.timestamp()))
-        else:
-            # started 用 run_id 解析出的开始时间戳，而非文件 mtime
-            # （mtime 是运行 *结束* 时间）。duration_seconds = mtime - start_ts 已真实计算，
-            # 若 started 仍取 mtime，则运行列表/时间轴会把每次运行显示为「在结束时刻才开始」，
-            # 与真实耗时自相矛盾（耗时列为真实秒数而开始时间却是结束时刻）。
-            started = datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()
-            duration_seconds = max(0, int(stat.st_mtime - start_ts))
-        lines = _read_run_lines(p, max_lines=3)
-        status = classify_run(lines)
-        # fix-retry-orphan-active-runs D3：stale 判定挂在 get_runs 的 status
-        # 组装处（classify_run 保持纯函数不注入 mtime）。末行非终态且文件 mtime
-        # 停更超过 _RUN_STALE_SECONDS → 判 stale（原地重试弃置尸体 / 进程被杀
-        # 无终态断尾），stale 不进 _RUN_TERMINAL_STATUS_MAP（非事件类型）。
-        if status in ("running", "empty") and (now - stat.st_mtime) > _RUN_STALE_SECONDS:
-            status = "stale"
+        # 元数据（status/started/duration/file_size）按 (path, mtime_ns, size) memo
+        meta = _run_meta_cached(p, stat, now)
         out.append(
             {
                 "run_id": run_id,
                 "agent_type": agent_type,
                 "spec": spec_part,
-                "status": status,
-                "duration_seconds": duration_seconds,
-                "started": started,
-                "file_size": stat.st_size,
+                "status": meta["status"],
+                "duration_seconds": meta["duration_seconds"],
+                "started": meta["started"],
+                "file_size": meta["file_size"],
             }
         )
     return out
 
 
-def _read_run_lines(path: Path, max_lines: int = 3) -> list:
-    """读取产物文件最后几行 JSON，逐行容错。
+# 尾读字节窗口（fix-dashboard-read-path-performance D3）：取末 N 行先 seek 尾部
+# 窗口读；窗口内完整行不足 max_lines（单行超窗 / 前导行残段被丢弃）时回退全量
+# 逐行读。64KB 覆盖 result 终结事件行（4KB+）与常规产物尾部；单行超过窗口即回退。
+_READ_RUN_TAIL_WINDOW = 64 * 1024
 
-    逐行流式读取（deque 保留尾部），不用末尾字节窗口 seek：result/error
-    终结事件行可能超长（result 携带完整结果数据，4KB+），字节窗口会把末行
-    从字节中间截断、parse 失败后被包装成伪 stderr 事件排在真实末尾，
-    classify_run 因此把已完成 run 误判为 running（overview 活跃 Agent 数
-    虚高）。run 产物均为 MB 级以下小文件，全量逐行读开销可忽略。
-    """
+
+def _parse_tail_lines(lines: list, max_lines: int) -> list:
+    """把文本行序列容错解析为事件，保留末 max_lines 条（空行跳过）。"""
+    tail = deque(maxlen=max_lines)
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            tail.append(json.loads(line))
+        except json.JSONDecodeError:
+            tail.append({"type": "stderr", "line": line})
+    return list(tail)
+
+
+def _read_run_lines_full(path: Path, max_lines: int) -> list:
+    """全量逐行读取产物尾部（尾读回退分支，与旧实现语义一致）。"""
     tail = deque(maxlen=max_lines)
     try:
         with path.open("rb") as f:
@@ -211,6 +288,38 @@ def _read_run_lines(path: Path, max_lines: int = 3) -> list:
     except OSError:
         pass
     return list(tail)
+
+
+def _read_run_lines(path: Path, max_lines: int = 3) -> list:
+    """读取产物文件最后几行 JSON，逐行容错。
+
+    优先从文件尾部按字节窗口 seek 读取（append-only 场景末 N 行远小于窗口，
+    避免全量逐行读）；窗口内完整行不足 max_lines（单行超窗 / 前导行残段被
+    丢弃）时回退全量逐行读。正确性约束不变：MUST NOT 从行的中间截断导致末行
+    被误解析——result/error 终结事件行可能超长（result 携带完整结果数据，
+    4KB+），若字节窗口把末行从中间截断、parse 失败后被包装成伪 stderr 事件
+    排在真实末尾，classify_run 会把已完成 run 误判为 running（overview 活跃
+    Agent 数虚高事故）。窗口首行是上一行的残段，必须丢弃而非解析。
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    if size <= _READ_RUN_TAIL_WINDOW:
+        return _read_run_lines_full(path, max_lines)
+    try:
+        with path.open("rb") as f:
+            f.seek(-_READ_RUN_TAIL_WINDOW, 2)
+            raw = f.read()
+    except OSError:
+        return []
+    text = raw.decode("utf-8", errors="replace")
+    # 首行是从字节窗口切入的残段（从上一行中间开始），丢弃
+    parsed = _parse_tail_lines(text.split("\n")[1:], max_lines)
+    if len(parsed) >= max_lines:
+        return parsed
+    # 窗口内完整行不足 max_lines（单行超窗等）→ 回退全量逐行读
+    return _read_run_lines_full(path, max_lines)
 
 
 def _parse_run_lines(lines) -> list:
@@ -451,7 +560,7 @@ def _split_llm_marker(llm: str) -> tuple:
     return llm, ""
 
 
-def run_activity(project_root, spec_name, *, now: float | None = None) -> dict:
+def run_activity(project_root, spec_name, *, now: float | None = None, files=None) -> dict:
     """最新 impl run 的存活心跳（不依赖 TaskCreate/TaskUpdate 的实时兜底）。
 
     run_task_progress（fix-implementer-task-progress D3）依赖 run 产物中的
@@ -472,7 +581,7 @@ def run_activity(project_root, spec_name, *, now: float | None = None) -> dict:
     # D8/D4：find_impl_run_file 已迁至 tasks.py，经门面解析
     import core.dashboard.data as _facade
 
-    run_file = _facade.find_impl_run_file(project_root, spec_name)
+    run_file = _facade.find_impl_run_file(project_root, spec_name, files=files)
     if run_file is None:
         return {"active": False, "last_event_seconds_ago": None}
     try:
@@ -484,3 +593,164 @@ def run_activity(project_root, spec_name, *, now: float | None = None) -> dict:
     status = classify_run(_read_run_lines(run_file, max_lines=3))
     active = status in ("running", "empty") and age <= _RUN_STALE_SECONDS
     return {"active": active, "last_event_seconds_ago": age}
+
+
+# ── runs 保留周期清理（fix-dashboard-read-path-performance D4） ────────────
+# daemon 周期任务挂载点（fenixd.py 主循环，300s 节拍对齐 auto_archive_check）：
+# 终态 run 移入归档 + 按 runs.keep 上限清理归档。
+# 上限语义（5.1a）：runs.keep 约束的是**归档目录条目数**；活跃 runs 目录的
+# 有界性由「终态即移出」保证。清理 MUST 记录日志（删除数量 + 文件名可追溯）、
+# MUST NOT 静默大批量删除——缺省上限 50、归档实测 343 条目时首次执行会一次
+# 删除约 293 个文件，属需可观测的破坏性动作，故每周期删除量设批次上限。
+# 被删除的归档 run 会影响 spec_summary 耗时回退 / spec 时间轴 / 运行历史
+# （data.py 原 2824/3416/3686、engine.py:621 的 done 时刻耗时快照）；终态 spec
+# 有 STATE 固化 total_duration 不受影响，非终态 spec 的历史视图会缩水——
+# proposal Non-Goals 只保证响应契约不变、内容会变，此取舍经 5.1b 确认接受。
+_RETENTION_MOVE_PER_CYCLE_MAX = 100  # 每周期最多移入归档数（单轮 I/O 尖峰抑制）
+_RETENTION_DELETE_PER_CYCLE_MAX = 100  # 每周期最多删除数（5.1a：分批清理）
+_RETENTION_KEEP_DEFAULT = 50  # 缺省上限（与 Dashboard 设置页 runs.keep 缺省同源）
+# 可归档状态：终态（result/error/interrupted/cancelled/superseded）+ stale 断尾
+# 尸体（末行非终态且 mtime 停更超 _RUN_STALE_SECONDS——进程被杀无终态补写，
+# 不可复活，留活跃目录只会让有界性落空）。
+_RETENTION_ARCHIVABLE_STATUSES = frozenset(_RUN_TERMINAL_STATUS_MAP.values()) | {"stale"}
+
+
+def _resolve_runs_keep(proot: Path, config: dict | None = None) -> int:
+    """解析 runs.keep 有效值（缺省 50；缺失/非法回退缺省，与设置页回显同源）。"""
+    from core.config import ConfigLoader
+
+    if config is None:
+        config = ConfigLoader.resolve_config(proot)
+    raw = ConfigLoader.get(config, "runs.keep", _RETENTION_KEEP_DEFAULT)
+    try:
+        keep = int(raw)
+    except (TypeError, ValueError):
+        keep = _RETENTION_KEEP_DEFAULT
+    if keep < 1:
+        keep = _RETENTION_KEEP_DEFAULT
+    return keep
+
+
+def _is_run_archivable(p: Path) -> bool:
+    """判定 run 产物是否可归档（终态或 stale 断尾；running/empty 且停更未超时 → False）。
+
+    状态判定复用 get_runs 的 memo（(path, mtime_ns, size)，含 stale 动态判定），
+    周期清理不重复读文件。
+    """
+    try:
+        stat = p.stat()
+    except OSError:
+        return False
+    status = _run_meta_cached(p, stat, time.time())["status"]
+    return status in _RETENTION_ARCHIVABLE_STATUSES
+
+
+def _retention_log(logger, level: str, msg: str) -> None:
+    """统一清理日志出口：logger 实例优先（fenixd Logger），缺省打印 stderr。"""
+    if logger is not None:
+        try:
+            getattr(logger, level)("fenixd", msg)
+        except Exception:
+            pass
+    else:
+        import sys
+
+        print(f"[fenixd] {msg}", file=sys.stderr)
+
+
+def runs_retention_check(project_root, config: dict | None = None, logger=None) -> dict:
+    """daemon 周期 runs 保留清理（fix-dashboard-read-path-performance D4）。
+
+    两步（各自独立失败互不阻断，异常记日志不抛）：
+    1. 终态（done/error/interrupted/cancelled/superseded，及 stale 断尾）run
+       从活跃 runs/ 移入 archive/——活跃目录有界性由「终态即移出」保证。
+    2. 归档目录按 ``runs.keep`` 上限清理：超过上限时按 mtime 升序（最旧优先）
+       删除直至 ≤ 上限；逐条记日志（文件名可追溯）、每周期删除量有批次上限
+       （_RETENTION_DELETE_PER_CYCLE_MAX），不静默大批量删除（5.1a）。
+
+    Args:
+        project_root: 项目根目录
+        config: 有效配置 dict（ConfigLoader.resolve_config 产物）；缺省 None
+            时内部解析一次（独立调用/测试友好）。
+        logger: Logger 实例（可选；缺省经 logging 模块 stderr 记录）
+
+    Returns:
+        {"moved": int, "deleted": int, "keep": int, "archive_total": int,
+         "deleted_names": [str, ...], "error": str | None}
+    """
+    proot = Path(project_root)
+    keep = _resolve_runs_keep(proot, config)
+    runs_dir = proot / ".fenix" / "runs"
+    if not runs_dir.is_dir():
+        return {
+            "moved": 0,
+            "deleted": 0,
+            "keep": keep,
+            "archive_total": 0,
+            "deleted_names": [],
+            "error": None,
+        }
+
+    # 1. 终态 run 移入归档
+    moved = 0
+    try:
+        for p in runs_dir.glob("*.jsonl"):
+            if moved >= _RETENTION_MOVE_PER_CYCLE_MAX:
+                break
+            if not _is_run_archivable(p):
+                continue
+            archive_dir = runs_dir / "archive"
+            try:
+                archive_dir.mkdir(parents=True, exist_ok=True)
+                dest = archive_dir / p.name
+                if dest.exists():
+                    p.unlink()  # 同 run_id 归档副本已存在：删顶层副本（内容同源）
+                else:
+                    p.replace(dest)
+                moved += 1
+                _retention_log(logger, "info", f"runs 保留: 终态 run 移入归档 {p.name}")
+            except OSError as e:
+                _retention_log(logger, "warning", f"runs 保留: 移入归档失败 {p.name}: {e}")
+    except OSError as e:
+        _retention_log(logger, "warning", f"runs 保留: 活跃目录扫描失败: {e}")
+
+    # 2. 归档目录按 runs.keep 上限清理
+    deleted = 0
+    deleted_names: list = []
+    archive_total = 0
+    archive_dir = runs_dir / "archive"
+    try:
+        if archive_dir.is_dir():
+            archive_files = sorted(
+                (p for p in archive_dir.glob("*.jsonl")),
+                key=lambda p: p.stat().st_mtime,
+            )
+            archive_total = len(archive_files)
+            excess = archive_total - keep
+            if excess > 0:
+                victims = archive_files[: min(excess, _RETENTION_DELETE_PER_CYCLE_MAX)]
+                for victim in victims:
+                    try:
+                        victim.unlink()
+                        deleted += 1
+                        deleted_names.append(victim.name)
+                        _retention_log(
+                            logger,
+                            "warning",
+                            f"runs 保留: 删除归档产物 {victim.name}（runs.keep={keep}）",
+                        )
+                    except OSError as e:
+                        _retention_log(
+                            logger, "warning", f"runs 保留: 删除失败 {victim.name}: {e}"
+                        )
+    except OSError as e:
+        _retention_log(logger, "warning", f"runs 保留: 归档目录扫描失败: {e}")
+
+    return {
+        "moved": moved,
+        "deleted": deleted,
+        "keep": keep,
+        "archive_total": archive_total,
+        "deleted_names": deleted_names,
+        "error": None,
+    }

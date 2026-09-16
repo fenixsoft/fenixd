@@ -5,6 +5,7 @@ daemon/托管态检测、项目与 SPEC 摘要、摘要索引、概览。
 """
 
 import copy
+import json
 import os
 import threading
 import time
@@ -15,6 +16,9 @@ from pathlib import Path
 from core.state_machine import (
     INFRA_FAILURE_COUNT_FIELD,
     VERIFY_INFRA_ROUNDS_FIELD,
+    # 2.1a 条目指纹的预算覆盖字段（budget.py 同源常量，经 state_machine 顶层
+    # 导入可避开 pm_engine 包循环：pm_engine/__init__ → engine → dashboard.data）
+    IMPL_RUN_BUDGET_OVERRIDE_FIELD,
 )
 
 # ── daemon 健康检测（D4：TTL memo 避免高频轮询重复 spawn tmux） ──────
@@ -201,12 +205,33 @@ def _resolve_global_impl_run_budget(project_root) -> int:
     return budget
 
 
+# ── per-spec 预算上限缓存（fix-dashboard-read-path-performance D1）───────────
+# _impl_budget_max 每 spec_summary 调用都 resolve_config（O(YAML) × N spec，
+# 实测冷重建 5.6s/220 spec），以项目 config.yaml 签名键缓存一次解析结果。
+# 与 _GLOBAL_BUDGET_CACHE/_EFFECTIVE_CONFIG_CACHE 同模式；.fenix/config.yaml
+# 已入 _spec_dep_sigs，config 变化会触发摘要重算并自然刷新本缓存。
+_IMPL_BUDGET_MAX_CACHE: dict = {}
+_IMPL_BUDGET_MAX_CACHE_MAX = 64
+
+
 def _impl_budget_max(project_root) -> int:
     """读取有效预算上限 ``agents.impl_run_budget_max``（缺省 100）。
 
     供 spec_summary 夹紧 override 与 API 校验共用（与闸门 ImplBudget._impl_budget_max
     同源：同一 resolve_impl_run_budget_max 纯函数 + 同一配置键）。
+    结果按项目 config.yaml 签名缓存（配置变化自动失效），避免每 spec 重复
+    resolve_config（fix-dashboard-read-path-performance：读路径冷重建最大单项成本）。
     """
+    import core.dashboard.data as _facade
+
+    proot = Path(project_root)
+    cfg_path = proot / ".fenix" / "config.yaml"
+    sig = _facade._config_file_sig(cfg_path)
+    cache_key = (str(proot.resolve()), sig)
+    cached = _IMPL_BUDGET_MAX_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    # budget 为 pm_engine 叶子模块：函数内导入避开 pm_engine 包循环
     from core.pm_engine.budget import (
         resolve_impl_run_budget_max,
         IMPL_RUN_BUDGET_MAX_KEY,
@@ -214,19 +239,31 @@ def _impl_budget_max(project_root) -> int:
     )
     from core.config import ConfigLoader
 
-    cfg = ConfigLoader.resolve_config(Path(project_root))
+    cfg = ConfigLoader.resolve_config(proot)
     raw = ConfigLoader.get(cfg, IMPL_RUN_BUDGET_MAX_KEY, IMPL_RUN_BUDGET_MAX_DEFAULT)
-    return resolve_impl_run_budget_max(raw)
+    budget = resolve_impl_run_budget_max(raw)
+    if len(_IMPL_BUDGET_MAX_CACHE) > _IMPL_BUDGET_MAX_CACHE_MAX:
+        _IMPL_BUDGET_MAX_CACHE.clear()
+    _IMPL_BUDGET_MAX_CACHE[cache_key] = budget
+    return budget
 
 
-def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
-    """单个 SPEC 的摘要（/api/specs 列表项）。"""
+def spec_summary(project_root, spec_name: str, entry: dict, runs_files: list | None = None) -> dict:
+    """单个 SPEC 的摘要（/api/specs 列表项）。
+
+    runs_files: 调用方预扫描的本 spec run 产物路径集（SummaryIndex 每轮经
+        _runs_by_spec_sigs 预扫一次后传入）；提供时 get_runs/任务进度/存活
+        心跳全部复用该文件集，不再各自 glob 整个 runs 目录（D2：目录 glob
+        次数为常数）。缺省 None 时内部自行 glob（详情页等非索引路径）。
+    """
     import core.dashboard.data as _facade
 
-    done, total = _facade.task_progress(project_root, spec_name, entry.get("status", ""))
+    done, total = _facade.task_progress(
+        project_root, spec_name, entry.get("status", ""), files=runs_files
+    )
     vp = _facade.parse_verify_progress(project_root, spec_name)
     # 含归档：run 产物被清理后列表页耗时统计不缩水
-    runs = _facade.get_runs(project_root, spec_name, include_archive=True)
+    runs = _facade.get_runs(project_root, spec_name, include_archive=True, files=runs_files)
     total_duration = _spec_total_duration(project_root, spec_name, entry, runs)
     # add-fast-track-mode（task 7.1）：执行模式（读 .spec.yaml，缺省 full）
     from core.spec_mode import read_spec_mode
@@ -282,11 +319,11 @@ def spec_summary(project_root, spec_name: str, entry: dict) -> dict:
         "task_total": total,
         # run 层实时进度（fix-implementer-task-progress D3）：tasks.md 快照失效
         # （subject 无编号 / agent 不勾 tasks.md）时仍能看到 run 推进。
-        "run_progress": _facade.run_task_progress(project_root, spec_name),
+        "run_progress": _facade.run_task_progress(project_root, spec_name, files=runs_files),
         # 存活心跳（2026-09-15 原地补充）：run_progress 依赖 TaskCreate/TaskUpdate，
         # 而派发路由实测不含该工具族 → 实现期间恒 0/N。run_activity 以「产物是否
         # 仍在写」提供不依赖任务工具的存活线索，前端据此在进度单元显示「进行中」。
-        "run_activity": _facade.run_activity(project_root, spec_name),
+        "run_activity": _facade.run_activity(project_root, spec_name, files=runs_files),
         "verify_done": vp.get("done", 0),
         "verify_total": vp.get("total", 0),
         "verify_error": vp.get("error"),
@@ -354,13 +391,56 @@ def _runs_by_spec_sigs(proot: Path) -> dict:
     return out
 
 
+# ── 2.1a：STATE 条目指纹（fix-dashboard-read-path-performance D1） ──────────
+# spec_summary 输出大量直接由 STATE 条目字段决定（status/priority/created/
+# updated/error/reviewer_run/start_after/frozen_until/frozen/预算覆盖/_ 前缀
+# 计数，以及经 status 派生的 progress_phase/出题进度/任务进度）。只比依赖文件
+# 签名会让「条目字段变化但依赖文件未变」的 spec 永远返回陈旧摘要（spec 被预算/
+# env 闸门置 blocked、或自动冻结时，tasks.md/.spec.yaml/specs/run 产物均未变；
+# 现状由 state_changed → idx={} 全量重建掩盖）。宁多勿漏：与 spec_summary
+# 实际读 entry 的字段一一对应。
+_ENTRY_SIG_KEYS = (
+    "status",
+    "priority",
+    "created",
+    "updated",
+    "error",
+    "reviewer_run",
+    "start_after",
+    "frozen_until",
+    "frozen",
+    IMPL_RUN_BUDGET_OVERRIDE_FIELD,
+    "_impl_run_budget_used",
+    "_verify_infra_rounds",
+    "_infra_failure_count",
+)
+
+
+def _entry_fingerprint(entry: dict) -> str:
+    """把 spec 的 STATE 条目关键字段序列化为稳定指纹（并入 _spec_dep_sigs）。
+
+    仅收集 _ENTRY_SIG_KEYS 白名单字段（非整个 entry：_tokens_in 等高频变化但
+    不影响 spec_summary 输出的字段不参与，避免无谓重算）。None 与缺失同义；
+    值统一经 json.dumps(default=str) 归一，保证跨类型稳定比较。
+    """
+    if not entry:
+        return ""
+    return json.dumps(
+        {k: entry.get(k) for k in _ENTRY_SIG_KEYS},
+        sort_keys=True,
+        default=str,
+        ensure_ascii=False,
+    )
+
+
 def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) -> dict:
-    """单个 spec 摘要的依赖文件签名集合（对齐 spec_summary 实际读路径）。
+    """单个 spec 摘要的依赖签名集合（对齐 spec_summary 实际读路径）。
 
     覆盖 tasks.md（implementing 时含实现 worktree 副本）/ specs/ 目录整体 /
     .spec.yaml / verification-report.md / verify-progress 相关文件 /
-    该 spec 的 run 产物（由调用方预扫描 runs_sigs 传入）。宁多勿漏：把
-    specs/ 目录整体入签名，依赖文件集合单向全覆盖。
+    该 spec 的 run 产物（由调用方预扫描 runs_sigs 传入）以及 STATE 条目指纹
+    （2.1a：条目字段变化但依赖文件未变时也必须失效）。宁多勿漏：把 specs/
+    目录整体入签名，依赖文件集合单向全覆盖。
     """
     sigs: dict = {}
     changes = proot / "spec" / "changes" / spec_name
@@ -396,6 +476,8 @@ def _spec_dep_sigs(proot: Path, spec_name: str, entry: dict, runs_sigs: dict) ->
     add(proot / ".fenix" / "config.yaml")
     for p, sig in (runs_sigs.get(spec_name) or {}).items():
         sigs[p] = sig
+    # 2.1a：STATE 条目字段并入失效签名（键带哨兵前缀避免与路径键冲突）
+    sigs["__entry__"] = _entry_fingerprint(entry)
     return sigs
 
 
@@ -406,9 +488,11 @@ class SummaryIndex:
 
     - 惰性构建：首次 get() 触发；watcher 与 server 共享同一实例（单写者 watcher
       线程，读者 HTTP 线程，经 RLock 保护——读多写少场景足够）。
-    - 失效策略：每 spec 先比对依赖文件签名，未变直返缓存；变化只重算该 spec。
-    - STATE.md 签名变化 → 该项目全量重建（新增/删除 spec 只有 parse_state 全量
-      才能发现，触发频率低）。
+    - 失效策略：每 spec 先比对依赖签名（文件签名 + STATE 条目指纹），未变直返
+      缓存；变化只重算该 spec。
+    - STATE.md 签名变化 → 重新解析 STATE.md 快照，但保留既有 idx：新增 spec
+      自然不在 idx 中（重算）、删除 spec 由清理步骤剔除、其余 spec 逐条比对
+      签名（fix-dashboard-read-path-performance D1：增量失效，不再全量重建）。
     - 有界性：摘要 dict 常驻内存（10000 spec ≈ 数十 MB，可接受）；签名只对存在
       路径记录，删除的 spec 目录从索引剔除。
     """
@@ -426,8 +510,8 @@ class SummaryIndex:
             proot: 项目根路径
             specs: parse_state 快照 {spec_name: entry}；省略时复用索引内缓存快照
                 （STATE.md 签名未变则直接复用，避免每请求全量解析 STATE.md）。
-            state_sig: STATE.md 的 (mtime_ns, size) 签名；变化时触发全量重建
-                并重新解析 STATE.md 快照。
+            state_sig: STATE.md 的 (mtime_ns, size) 签名；变化时重新解析
+                STATE.md 快照并按 spec 增量失效（保留未变 spec 的缓存摘要）。
         """
         key = str(Path(proot).resolve())
         # 跨组引用经门面延迟解析（D4/D8）
@@ -437,8 +521,8 @@ class SummaryIndex:
             if state_sig is None:
                 state_sig = _stat_sig(proot / ".fenix" / "STATE.md")
 
-            # STATE.md 签名变化 → 全量重建索引 + 重新解析快照（新增/删除 spec
-            # 只有 parse_state 全量才能发现；触发频率低，仅 STATE.md 变更时）。
+            # STATE.md 签名变化 → 重新解析快照（新增/删除 spec 只有 parse_state
+            # 才能发现；idx 保留，仅增量重算签名变化的 spec——见下方循环）。
             state_changed = state_sig is not None and self._state_sigs.get(key) != state_sig
             if specs is None:
                 if not state_changed:
@@ -448,7 +532,11 @@ class SummaryIndex:
                     self._state_snapshot[key] = specs
 
             idx = self._idx.get(key)
-            if idx is None or state_changed:
+            # state_changed 时保留既有 idx（增量失效：只对新增/删除/签名
+            # 变化的 spec 重算）；全量重建仅用于首次构建（idx is None）或
+            # 索引损坏（entry cache 中 summary/sigs 缺失，由 per-spec sig
+            # 比对自然触发重建）。
+            if idx is None:
                 idx = {}
 
             runs_sigs = _runs_by_spec_sigs(proot)
@@ -463,7 +551,10 @@ class SummaryIndex:
                 # D8：经门面延迟解析（tests 以 dash_data.spec_summary=... 替换）
                 import core.dashboard.data as _facade
 
-                summary = _facade.spec_summary(proot, spec_name, entry)
+                # D2：复用本轮预扫描的 runs_sigs 分组结果，spec_summary 不再
+                # 自行 glob runs/archive 目录（目录 glob 次数为常数）。
+                spec_files = [Path(p) for p in (runs_sigs.get(spec_name) or {})]
+                summary = _facade.spec_summary(proot, spec_name, entry, runs_files=spec_files)
                 idx[spec_name] = {"summary": summary, "sigs": sigs}
                 out.append(summary)
 
