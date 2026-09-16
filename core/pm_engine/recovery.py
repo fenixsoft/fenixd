@@ -11,7 +11,6 @@ import hashlib
 import json
 import time
 
-
 # dispatch_stalled 信号的建议处置（与 admin_monitor.SIGNAL_RECOMMENDATION 同义；
 # pm_engine 不反向依赖 admin_monitor，这里单独常量避免循环导入）
 SIGNAL_RECOMMENDATION_DISPATCH_STALLED = (
@@ -29,7 +28,7 @@ DEFAULT_SIGNAL_COOLDOWN_MINUTES = 30
 # 恢复复查「已恢复推进」的后续态集合（post-recovery-patrol D4）：观察窗口
 # 到达时 spec 已进入 ready 之后的这些状态之一 → 视为已真实恢复推进，关闭
 # 观察项且不告警。implementing 不在其中——实施中的 spec 由「已有活跃派发」
-#（worktree 持锁）覆盖；无活跃派发的 implementing 属卡死形态，应告警。
+# （worktree 持锁）覆盖；无活跃派发的 implementing 属卡死形态，应告警。
 RECOVERY_PROGRESS_STATUSES = ("implemented", "testing", "verified", "done", "pushed")
 
 # ── 过渡窗口豁免（evo-recovery-watch-transition-guard D1/D2）─────────────
@@ -38,7 +37,7 @@ RECOVERY_PROGRESS_STATUSES = ("implemented", "testing", "verified", "done", "pus
 # 复查会把过渡窗口误判为 stale，dispatch_stalled 唤起无效 admin run
 # （2026-09-12 21:13:57Z 复查误报事故：21:13:33 清理 → 21:14:02 merge，仅差
 # 5 秒）。故判定 stale 前增加过渡窗口检查：存在归属该 spec 的待合并分支
-#（pending merge，D1）或 succeed 痕迹落在缓冲窗口内（D2）时顺延本次判定。
+# （pending merge，D1）或 succeed 痕迹落在缓冲窗口内（D2）时顺延本次判定。
 # 缓冲秒数缺省 60：覆盖实测的 21:13:33→21:14:02（29s）窗口并留余量。
 DEFAULT_TRANSITION_BUFFER_SECONDS = 60
 # 待合并豁免上限（分钟，D1 有界性）：自「年龄起点」起算超过该值仍未合并
@@ -64,7 +63,6 @@ class RecoveryWatch:
     def _recovery_watch_path(self) -> Path:
         return self._pm.project_root / ".fenix" / RECOVERY_WATCH_FILE
 
-
     def _load_recovery_watch(self) -> None:
         """重启后从 .fenix/recovery_watch.json 续查观察项（损坏/缺失按空兜底）。"""
         try:
@@ -72,10 +70,7 @@ class RecoveryWatch:
         except (OSError, json.JSONDecodeError):
             return
         if isinstance(data, dict):
-            self._recovery_watch = {
-                k: v for k, v in data.items() if isinstance(v, dict)
-            }
-
+            self._recovery_watch = {k: v for k, v in data.items() if isinstance(v, dict)}
 
     def _save_recovery_watch(self) -> None:
         try:
@@ -87,9 +82,9 @@ class RecoveryWatch:
             )
         except OSError as e:
             self._pm.logger.warning(
-                "pm_engine", f"Failed to persist recovery watch: {e}",
+                "pm_engine",
+                f"Failed to persist recovery watch: {e}",
             )
-
 
     def register_recovery_watch(self, spec_name: str, reason: str) -> None:
         """登记恢复观察项：followup_check_minutes 后复查 spec 是否真实恢复推进。
@@ -97,9 +92,12 @@ class RecoveryWatch:
         auto-recovery 与 recovery deferred（存活子进程仍在）都会登记——后者防止
         「defer → 下轮仍卡死 → 再 defer」无限循环（tasks 3.1）。
         """
-        minutes = float(self._pm._get_config(
-            "pm.recovery.followup_check_minutes", DEFAULT_FOLLOWUP_CHECK_MINUTES) or
-            DEFAULT_FOLLOWUP_CHECK_MINUTES)
+        minutes = float(
+            self._pm._get_config(
+                "pm.recovery.followup_check_minutes", DEFAULT_FOLLOWUP_CHECK_MINUTES
+            )
+            or DEFAULT_FOLLOWUP_CHECK_MINUTES
+        )
         entry = self._pm.state_machine.read_one(spec_name) or {}
         self._recovery_watch[spec_name] = {
             "fingerprint": self._pm._spec_fingerprint(entry),
@@ -117,7 +115,6 @@ class RecoveryWatch:
             f"Recovery watch registered for '{spec_name}' "
             f"(recheck in {minutes:.0f}m): {reason}",
         )
-
 
     def check_recovery_watch(self) -> list:
         """到期复查观察项（daemon 周期调用 + BLOCKER CHECK 内调用）。
@@ -180,7 +177,8 @@ class RecoveryWatch:
             active_dispatch = False
             try:
                 active_dispatch = bool(
-                    self._pm.agent_runner.worktree_manager.has_active_worktree(spec_name))
+                    self._pm.agent_runner.worktree_manager.has_active_worktree(spec_name)
+                )
             except Exception:
                 active_dispatch = False
             # 2.1：已恢复推进 = 已进入 ready 之后的后续态，或已有活跃派发
@@ -235,9 +233,14 @@ class RecoveryWatch:
         ，顺延推进量直接复用此值，使下一次复查恰好落在窗口边界。
         """
         try:
-            return max(0.0, float(self._pm._get_config(
-                "pm.recovery.transition_buffer_seconds",
-                DEFAULT_TRANSITION_BUFFER_SECONDS)))
+            return max(
+                0.0,
+                float(
+                    self._pm._get_config(
+                        "pm.recovery.transition_buffer_seconds", DEFAULT_TRANSITION_BUFFER_SECONDS
+                    )
+                ),
+            )
         except (TypeError, ValueError):
             return float(DEFAULT_TRANSITION_BUFFER_SECONDS)
 
@@ -250,15 +253,25 @@ class RecoveryWatch:
         有界性优先，绝不把真实卡死洗成健康）。
         """
         try:
-            grace = max(0.0, float(self._pm._get_config(
-                "pm.recovery.transition_grace_minutes",
-                DEFAULT_TRANSITION_GRACE_MINUTES)))
+            grace = max(
+                0.0,
+                float(
+                    self._pm._get_config(
+                        "pm.recovery.transition_grace_minutes", DEFAULT_TRANSITION_GRACE_MINUTES
+                    )
+                ),
+            )
         except (TypeError, ValueError):
             grace = float(DEFAULT_TRANSITION_GRACE_MINUTES)
         try:
-            followup = max(0.0, float(self._pm._get_config(
-                "pm.recovery.followup_check_minutes",
-                DEFAULT_FOLLOWUP_CHECK_MINUTES)))
+            followup = max(
+                0.0,
+                float(
+                    self._pm._get_config(
+                        "pm.recovery.followup_check_minutes", DEFAULT_FOLLOWUP_CHECK_MINUTES
+                    )
+                ),
+            )
         except (TypeError, ValueError):
             followup = float(DEFAULT_FOLLOWUP_CHECK_MINUTES)
         if grace >= followup:
@@ -284,6 +297,7 @@ class RecoveryWatch:
         Returns: 最新 impl 流的 mtime（float）；无流/目录缺失/io 失败返回 None。
         """
         from core.agent_runner.run_files import run_spec_part
+
         runs_dir = self._pm.project_root / ".fenix" / "runs"
         if not runs_dir.is_dir():
             return None
@@ -346,8 +360,10 @@ class RecoveryWatch:
         pending_since = None
         try:
             wm = self._pm.agent_runner.worktree_manager
-            if getattr(wm, "has_pending_merge", None) is not None \
-                    and wm.has_pending_merge(spec_name) is True:
+            if (
+                getattr(wm, "has_pending_merge", None) is not None
+                and wm.has_pending_merge(spec_name) is True
+            ):
                 pending = True
                 raw_since = wm.pending_merge_since(spec_name)
                 if isinstance(raw_since, (int, float)):
@@ -384,8 +400,7 @@ class RecoveryWatch:
         """
         try:
             # 冻结态（frozen 标记或 blocked+冻结 error）不可派发 → 未成立
-            if self._pm._frozen_state(
-                    self._pm.state_machine.read_one(spec_name) or {}):
+            if self._pm._frozen_state(self._pm.state_machine.read_one(spec_name) or {}):
                 self._pm.logger.info(
                     "pm_engine",
                     f"In-place redispatch skipped for '{spec_name}': frozen",
@@ -395,16 +410,14 @@ class RecoveryWatch:
             if self._pm._check_impl_budget_exhausted(spec_name):
                 self._pm.logger.info(
                     "pm_engine",
-                    f"In-place redispatch skipped for '{spec_name}': "
-                    f"impl budget exhausted",
+                    f"In-place redispatch skipped for '{spec_name}': " f"impl budget exhausted",
                 )
                 return False
             # 内容完整性闸门（发前判定，复用既有 _check_spec_content_missing）
             if self._pm._check_spec_content_missing(spec_name):
                 self._pm.logger.info(
                     "pm_engine",
-                    f"In-place redispatch skipped for '{spec_name}': "
-                    f"spec content missing",
+                    f"In-place redispatch skipped for '{spec_name}': " f"spec content missing",
                 )
                 return False
             # 依赖闸门（复用既有 _dependencies_satisfied，同一接受态集合）
@@ -434,11 +447,9 @@ class RecoveryWatch:
         except Exception as e:
             self._pm.logger.warning(
                 "pm_engine",
-                f"In-place redispatch failed for '{spec_name}': "
-                f"{type(e).__name__}: {e}",
+                f"In-place redispatch failed for '{spec_name}': " f"{type(e).__name__}: {e}",
             )
             return False
-
 
     @staticmethod
     def _spec_fingerprint(entry: dict) -> str:
@@ -446,9 +457,9 @@ class RecoveryWatch:
         basis = f"{entry.get('status')}|{str(entry.get('error') or '')[:120]}"
         return hashlib.sha1(basis.encode("utf-8", "replace")).hexdigest()[:12]
 
-
-    def _signal_dispatch_stalled(self, spec_name: str, evidence: str,
-                                 fingerprint: str | None = None) -> None:
+    def _signal_dispatch_stalled(
+        self, spec_name: str, evidence: str, fingerprint: str | None = None
+    ) -> None:
         """退避耗尽仍持锁 / 恢复复查未通过 / 假就绪滞留 → dispatch_stalled 信号（D5/D6）。
 
         写入 admin store（kind=SIGNAL, severity major），由 AdminMonitor 摄取唤起
@@ -459,11 +470,18 @@ class RecoveryWatch:
           - admin_alerts 去重：store 内冷却期内已有同类信号时同样抑制。
         """
         from core.admin_store import AdminStore, SIGNAL
+
         entry = self._pm.state_machine.read_one(spec_name) or {}
         fp = fingerprint or self._pm._spec_fingerprint(entry)
-        cooldown = float(self._pm._get_config(
-            "pm.recovery.signal_cooldown_minutes", DEFAULT_SIGNAL_COOLDOWN_MINUTES) or
-            DEFAULT_SIGNAL_COOLDOWN_MINUTES) * 60
+        cooldown = (
+            float(
+                self._pm._get_config(
+                    "pm.recovery.signal_cooldown_minutes", DEFAULT_SIGNAL_COOLDOWN_MINUTES
+                )
+                or DEFAULT_SIGNAL_COOLDOWN_MINUTES
+            )
+            * 60
+        )
         prev = self._signal_fingerprints.get(spec_name)
         now = time.time()
         if prev and prev[0] == fp and (now - prev[1]) < cooldown:
@@ -478,8 +496,10 @@ class RecoveryWatch:
         # 同源路径（family.py bug_repair_mode 先例）：get_admin_config 缺省填充，
         # 旁路 _get_config + 硬编码 fallback 会与权威缺省漂移（缺省现为 60 分钟）
         from core.config import ConfigLoader
-        store_cooldown = float(ConfigLoader.get_admin_config(
-            self._pm.config)["escalation_cooldown_minutes"])
+
+        store_cooldown = float(
+            ConfigLoader.get_admin_config(self._pm.config)["escalation_cooldown_minutes"]
+        )
         store = AdminStore(self._pm.project_root, self._pm.logger)
         try:
             if store.latest_signal(spec_name, "dispatch_stalled", store_cooldown) is not None:
@@ -495,18 +515,19 @@ class RecoveryWatch:
                 f"dispatch_stalled dedup check failed '{spec_name}' (proceeding): {e}",
             )
         try:
-            store.append({
-                "kind": SIGNAL,
-                "signal_type": "dispatch_stalled",
-                "spec": spec_name,
-                "severity": "major",
-                "description": (
-                    f"'{spec_name}' 派发长期被 worktree 锁冲突滞留，"
-                    f"退避计划耗尽仍未获得锁"
-                ),
-                "evidence": evidence,
-                "recommended_action": SIGNAL_RECOMMENDATION_DISPATCH_STALLED,
-            })
+            store.append(
+                {
+                    "kind": SIGNAL,
+                    "signal_type": "dispatch_stalled",
+                    "spec": spec_name,
+                    "severity": "major",
+                    "description": (
+                        f"'{spec_name}' 派发长期被 worktree 锁冲突滞留，" f"退避计划耗尽仍未获得锁"
+                    ),
+                    "evidence": evidence,
+                    "recommended_action": SIGNAL_RECOMMENDATION_DISPATCH_STALLED,
+                }
+            )
             self._pm.logger.warning(
                 "pm_engine",
                 f"dispatch_stalled signal recorded for '{spec_name}'",
@@ -516,7 +537,6 @@ class RecoveryWatch:
                 "pm_engine",
                 f"Failed to record dispatch_stalled for '{spec_name}': {e}",
             )
-
 
     def _clear_dispatch_conflict(self, spec_name: str) -> dict:
         """派发成功后清零锁冲突计数与退避窗口（返回 update 字段供合并写入）。"""

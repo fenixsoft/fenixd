@@ -116,10 +116,10 @@ class TestInfraBudgetExempt(unittest.TestCase):
                 success=False, error=circuit_err,
                 run_id="planner-plan-demo-spec-1-a1", cancelled=False,
             ))
-        self.engine._read_planner_result = MagicMock(
+        self.engine._verification._read_planner_result = MagicMock(
             return_value=VerdictReadResult.success("plan-ready"))
-        self.engine._apply_scenario_freeze = MagicMock(return_value={})
-        self.engine._apply_interaction_contract = MagicMock(return_value=None)
+        self.engine._verification._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
 
         with patch("importlib.reload", lambda m: m):
             self.engine._run_three_stage_verification("demo-spec")

@@ -74,7 +74,7 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
     # 核验恰好命中 1 次，唯一性由 _locate 与全库扫描双重自证）。
     # 锚点行 → 写点行偏移：implementer +20 / fast-track +17 / repair
     # +16（dispatch.py），planner-plan +11 / planner-judge +10 /
-    # legacy-verifier +10（verification.py），全部落在
+    # legacy-verifier +10（verification/_legacy.py），全部落在
     # [anchor_line, anchor_line+25) 窗口内（最大偏移 +20，留 5 行余量）。
     WRITE_POINTS = [
         ("core/pm_engine/dispatch.py",
@@ -86,13 +86,13 @@ class CancelFinalizeMarkerContract(unittest.TestCase):
         ("core/pm_engine/dispatch.py",
          "人工取消 hold-state（add-run-cancel D4，repair worker）",
          "repair"),
-        ("core/pm_engine/verification.py",
+        ("core/pm_engine/verification/pipeline.py",
          "人工取消 hold-state（add-run-cancel D4）",
          "planner-plan"),
-        ("core/pm_engine/verification.py",
+        ("core/pm_engine/verification/pipeline.py",
          "人工取消 hold-state（add-run-cancel D4，judge 同语义）",
          "planner-judge"),
-        ("core/pm_engine/verification.py",
+        ("core/pm_engine/verification/legacy.py",
          "人工取消 hold-state（add-run-cancel D4，legacy verifier）",
          "legacy-verifier"),
     ]

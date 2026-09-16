@@ -11,6 +11,7 @@
 - 只 commit 不 push：push 仍由人工门禁（fenix-approve）与 push 流程负责；
   pm_engine push 尾部的归档收口保留为兜底（有残留才动作）。
 """
+
 import subprocess
 from pathlib import Path
 
@@ -43,13 +44,15 @@ def commit_archive_move(project_root, spec_name: str, archive_dir) -> dict:
     try:
         probe = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=str(proot), capture_output=True, text=True, timeout=_PROBE_TIMEOUT,
+            cwd=str(proot),
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
         )
         if probe.returncode != 0 or probe.stdout.strip() != "true":
             return _fail(
                 "非 git 仓库，跳过归档提交: "
-                + (probe.stderr.strip() or probe.stdout.strip()
-                   or f"exit {probe.returncode}")
+                + (probe.stderr.strip() or probe.stdout.strip() or f"exit {probe.returncode}")
             )
     except (OSError, subprocess.TimeoutExpired) as e:
         return _fail(f"git 探测失败，跳过归档提交: {e}")
@@ -70,21 +73,28 @@ def commit_archive_move(project_root, spec_name: str, archive_dir) -> dict:
     try:
         add = subprocess.run(
             ["git", "add", "--"] + paths,
-            cwd=str(proot), capture_output=True, text=True, timeout=_ADD_TIMEOUT,
+            cwd=str(proot),
+            capture_output=True,
+            text=True,
+            timeout=_ADD_TIMEOUT,
         )
         if add.returncode != 0:
             return _fail(f"git add 失败: {add.stderr.strip() or f'exit {add.returncode}'}")
         commit = subprocess.run(
             ["git", "commit", "-m", commit_msg, "--"] + paths,
-            cwd=str(proot), capture_output=True, text=True, timeout=_COMMIT_TIMEOUT,
+            cwd=str(proot),
+            capture_output=True,
+            text=True,
+            timeout=_COMMIT_TIMEOUT,
         )
         if commit.returncode != 0:
-            return _fail(
-                f"git commit 失败: {commit.stderr.strip() or f'exit {commit.returncode}'}"
-            )
+            return _fail(f"git commit 失败: {commit.stderr.strip() or f'exit {commit.returncode}'}")
         rev = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=str(proot), capture_output=True, text=True, timeout=_PROBE_TIMEOUT,
+            cwd=str(proot),
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
         )
         result["committed"] = True
         result["commit"] = rev.stdout.strip() if rev.returncode == 0 else None
@@ -98,7 +108,10 @@ def _has_tracked_files(proot: Path, pathspec: str) -> bool:
     try:
         r = subprocess.run(
             ["git", "ls-files", "--", pathspec],
-            cwd=str(proot), capture_output=True, text=True, timeout=_PROBE_TIMEOUT,
+            cwd=str(proot),
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
         )
         return r.returncode == 0 and bool(r.stdout.strip())
     except (OSError, subprocess.TimeoutExpired):

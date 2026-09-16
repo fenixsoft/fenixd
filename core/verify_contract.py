@@ -186,8 +186,7 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
         # （help-center 洗白事故的根因形态）。大声告警而非吞掉，仍按无契约回退。
         if logger:
             root_yaml = Path(project_root) / CONTRACT_FILENAME
-            if (root_yaml.is_file()
-                    and not (Path(project_root) / ".fenix").is_symlink()):
+            if root_yaml.is_file() and not (Path(project_root) / ".fenix").is_symlink():
                 logger.warning(
                     "verify_contract",
                     f"检测到旧布局：{CONTRACT_FILENAME} 位于项目根而 .fenix 为"
@@ -230,14 +229,20 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
     # 争抢固定端口（dashboard 端口独占语义下 = 杀掉占用者接管，2026-09-05
     # 验证实例顺带杀主树 dashboard 事故的根源），由未消费注入的兜底发现
     # 链路续命。存量为零迁移原则只告警、不拒绝。
-    if (serve is not None and serve.kind == "command" and serve.cmd
-            and "{port}" not in serve.cmd
-            and "$FENIX_VERIFY_PORT" not in serve.cmd and logger):
+    if (
+        serve is not None
+        and serve.kind == "command"
+        and serve.cmd
+        and "{port}" not in serve.cmd
+        and "$FENIX_VERIFY_PORT" not in serve.cmd
+        and logger
+    ):
         logger.warning(
             "verify_contract",
             "serve.cmd 未引用端口注入（{port} 占位符或 $FENIX_VERIFY_PORT "
             "环境变量），验证实例将与既有实例争抢固定端口；建议迁移：cmd 中"
-            "的端口写作 {port}，框架自动分配空闲端口注入")
+            "的端口写作 {port}，框架自动分配空闲端口注入",
+        )
     deps_mode = ""
     if data.get("deps_mode") is not None:
         if data["deps_mode"] in DEPS_MODES:
@@ -246,9 +251,9 @@ def load_verify_contract(project_root: Path, logger=None) -> Optional[VerifyCont
             logger.warning(
                 "verify_contract",
                 f"verify.yaml deps_mode 非法（忽略，可用值 {list(DEPS_MODES)}）: "
-                f"{data['deps_mode']}")
-    return VerifyContract(prepare=prepare, serve=serve, ready=ready,
-                          deps_mode=deps_mode)
+                f"{data['deps_mode']}",
+            )
+    return VerifyContract(prepare=prepare, serve=serve, ready=ready, deps_mode=deps_mode)
 
 
 @dataclass
@@ -259,6 +264,7 @@ class ValidateResult:
     static/command 且对应必填字段非空）。Administrator 据此判定：valid →
     「契约有效、无需起草」结案；invalid → 修正路径。
     """
+
     valid: bool  # YAML 可解析 + serve 段合法（D4 权限边界判定）
     prepare_ok: bool
     prepare_error: str
@@ -306,9 +312,12 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
     except Exception as e:
         return ValidateResult(
             valid=False,
-            prepare_ok=False, prepare_error=f"契约解析失败: {e}",
-            serve_ok=False, serve_error="",
-            ready_ok=False, ready_error="",
+            prepare_ok=False,
+            prepare_error=f"契约解析失败: {e}",
+            serve_ok=False,
+            serve_error="",
+            ready_ok=False,
+            ready_error="",
         )
 
     if contract is None:
@@ -316,16 +325,22 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
         if not contract_path.is_file():
             return ValidateResult(
                 valid=False,
-                prepare_ok=False, prepare_error=f"契约文件不存在: {contract_path}",
-                serve_ok=False, serve_error="",
-                ready_ok=False, ready_error="",
+                prepare_ok=False,
+                prepare_error=f"契约文件不存在: {contract_path}",
+                serve_ok=False,
+                serve_error="",
+                ready_ok=False,
+                ready_error="",
             )
         else:
             return ValidateResult(
                 valid=False,
-                prepare_ok=False, prepare_error="契约 YAML 解析失败",
-                serve_ok=False, serve_error="",
-                ready_ok=False, ready_error="",
+                prepare_ok=False,
+                prepare_error="契约 YAML 解析失败",
+                serve_ok=False,
+                serve_error="",
+                ready_ok=False,
+                ready_error="",
             )
 
     # 2. valid 判定（D4：YAML 可解析 + serve 段合法）
@@ -401,6 +416,7 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                 # srv 声明提前到此处，由 finally 统一 stop（先探 ready 再停）
                 srv = None
                 from core.proc_utils import find_free_port as _ffp
+
                 injected_port = _ffp()
                 cmd_str = contract.serve.cmd
                 if "{port}" in cmd_str:
@@ -408,9 +424,13 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                 env = {**os.environ, "FENIX_VERIFY_PORT": str(injected_port)}
                 try:
                     proc = subprocess.Popen(
-                        cmd_str, shell=True, cwd=str(project_root),
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                        start_new_session=True, env=env,
+                        cmd_str,
+                        shell=True,
+                        cwd=str(project_root),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                        env=env,
                     )
                 except Exception as e:
                     serve_ok = False
@@ -420,14 +440,14 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
                     # 使用 CommandVerifyServer 进行端口发现（注入端口精确探 +
                     # 进程归属发现 + 邻近扫描）
                     srv = CommandVerifyServer(
-                        proc, injected_port,
+                        proc,
+                        injected_port,
                         timeout=contract.ready.timeout or 60,
-                        legacy_hint=contract.serve.port)
+                        legacy_hint=contract.serve.port,
+                    )
                     if not srv.ok:
                         serve_ok = False
-                        serve_error = (
-                            srv.failure_note
-                            or "serve 命令未就绪（注入端口未被消费）")
+                        serve_error = srv.failure_note or "serve 命令未就绪（注入端口未被消费）"
                         # serve 命令未就绪是运行时问题，不是契约格式问题——契约结构有效
                     else:
                         base_url = srv.base_url
@@ -464,12 +484,17 @@ def validate_contract(project_root: Path, logger=None) -> ValidateResult:
 
     return ValidateResult(
         valid=valid,
-        prepare_ok=prepare_ok, prepare_error=prepare_error,
-        serve_ok=serve_ok, serve_error=serve_error,
-        ready_ok=ready_ok, ready_error=ready_error,
+        prepare_ok=prepare_ok,
+        prepare_error=prepare_error,
+        serve_ok=serve_ok,
+        serve_error=serve_error,
+        ready_ok=ready_ok,
+        ready_error=ready_error,
         prepare_steps_run=prepare_steps_run,
-        serve_kind=serve_kind, serve_port=serve_port,
-        ready_url=ready_url, ready_expect=ready_expect,
+        serve_kind=serve_kind,
+        serve_port=serve_port,
+        ready_url=ready_url,
+        ready_expect=ready_expect,
     )
 
 
@@ -512,8 +537,12 @@ def run_prepare_steps(contract: VerifyContract, project_root: Path) -> Optional[
         use_shell = not isinstance(step.run, list)
         try:
             r = subprocess.run(
-                cmd, shell=use_shell, cwd=str(cwd),
-                capture_output=True, text=True, timeout=PREPARE_STEP_TIMEOUT,
+                cmd,
+                shell=use_shell,
+                cwd=str(cwd),
+                capture_output=True,
+                text=True,
+                timeout=PREPARE_STEP_TIMEOUT,
             )
         except subprocess.TimeoutExpired:
             return f"第 {i} 步超时（>{PREPARE_STEP_TIMEOUT}s）: {cmd}"
@@ -527,7 +556,7 @@ def run_prepare_steps(contract: VerifyContract, project_root: Path) -> Optional[
 
 def _find_free_port() -> int:
     # 兼容引用（verify-process-lifecycle D5）：实为共用助手 core.proc_utils.find_free_port
-    #（v2_dev_server 端口分配路径与静态/命令实例同源）。
+    # （v2_dev_server 端口分配路径与静态/命令实例同源）。
     return find_free_port()
 
 
@@ -542,11 +571,11 @@ class StaticVerifyServer:
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
         handler = lambda *args, **kw: SimpleHTTPRequestHandler(  # noqa: E731
-            *args, directory=str(self.root), **kw)
+            *args, directory=str(self.root), **kw
+        )
         self._port = _find_free_port()
         self._httpd = ThreadingHTTPServer(("127.0.0.1", self._port), handler)
-        self._thread = threading.Thread(
-            target=self._httpd.serve_forever, daemon=True)
+        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
 
     @property
@@ -583,21 +612,26 @@ class CommandVerifyServer:
     失败时 ``failure_note`` 记人类可读原因（区分启动即退出/未消费注入）。
     """
 
-    def __init__(self, proc: subprocess.Popen, injected_port: Optional[int],
-                 timeout: int = 60, legacy_hint: Optional[int] = None,
-                 legacy_pre: Optional[set] = None,
-                 boot_log: Optional[object] = None):
+    def __init__(
+        self,
+        proc: subprocess.Popen,
+        injected_port: Optional[int],
+        timeout: int = 60,
+        legacy_hint: Optional[int] = None,
+        legacy_pre: Optional[set] = None,
+        boot_log: Optional[object] = None,
+    ):
         self._proc = proc
         self.failure_note = ""
         self._boot_log = boot_log
-        self._port = self._discover_port(
-            injected_port, timeout, legacy_hint, legacy_pre or set())
+        self._port = self._discover_port(injected_port, timeout, legacy_hint, legacy_pre or set())
 
     @staticmethod
     def _probe(url: str, timeout: float = 1.0) -> bool:
         try:
-            with urlopen(Request(url, headers={"User-Agent": "fenix-verify-probe"}),
-                         timeout=timeout):
+            with urlopen(
+                Request(url, headers={"User-Agent": "fenix-verify-probe"}), timeout=timeout
+            ):
                 return True
         except Exception:
             return False
@@ -613,8 +647,7 @@ class CommandVerifyServer:
         if pgid is None:
             return []
         try:
-            r = subprocess.run(["ss", "-tlnp"], capture_output=True,
-                               text=True, timeout=5)
+            r = subprocess.run(["ss", "-tlnp"], capture_output=True, text=True, timeout=5)
         except Exception:
             return []
         ports = []
@@ -635,8 +668,9 @@ class CommandVerifyServer:
                     continue
         return ports
 
-    def _discover_port(self, injected: Optional[int], timeout: int,
-                       legacy_hint: Optional[int], legacy_pre: set) -> Optional[int]:
+    def _discover_port(
+        self, injected: Optional[int], timeout: int, legacy_hint: Optional[int], legacy_pre: set
+    ) -> Optional[int]:
         deadline = time.monotonic() + max(timeout, 5)
         try:
             pgid = os.getpgid(self._proc.pid)
@@ -661,13 +695,15 @@ class CommandVerifyServer:
                 self.failure_note = (
                     f"验证命令实例启动即退出（exit={self._proc.returncode}）"
                     "——检查 serve.cmd 可执行性及端口注入引用"
-                    "（{port} 占位符 / $FENIX_VERIFY_PORT 环境变量）")
+                    "（{port} 占位符 / $FENIX_VERIFY_PORT 环境变量）"
+                )
                 return None
             time.sleep(1)
         self.failure_note = (
             f"验证命令实例未就绪：注入端口 {injected} 未被消费，进程归属与"
             "邻近扫描亦未发现 HTTP 监听——检查 serve.cmd 是否引用 {port} "
-            "占位符或 $FENIX_VERIFY_PORT 环境变量")
+            "占位符或 $FENIX_VERIFY_PORT 环境变量"
+        )
         return None
 
     @property
@@ -710,9 +746,13 @@ class CommandVerifyServer:
                 pass
 
 
-def provision_worktree_node_modules(worktree_root: Path, project_root: Path,
-                                    sub_dirs: list, mode: str = DEFAULT_DEPS_MODE,
-                                    logger=None) -> list:
+def provision_worktree_node_modules(
+    worktree_root: Path,
+    project_root: Path,
+    sub_dirs: list,
+    mode: str = DEFAULT_DEPS_MODE,
+    logger=None,
+) -> list:
     """worktree 构建环境供给：按 deps_mode 两种方式把依赖装进 worktree。
 
     git worktree 不含 gitignore 的 node_modules，worktree 内 ``npm run build``
@@ -748,8 +788,10 @@ def provision_worktree_node_modules(worktree_root: Path, project_root: Path,
             if main_nm.is_dir():
                 try:
                     shutil.copytree(
-                        main_nm, wt_dir / "node_modules",
-                        copy_function=os.link, symlinks=True,
+                        main_nm,
+                        wt_dir / "node_modules",
+                        copy_function=os.link,
+                        symlinks=True,
                         ignore_dangling_symlinks=True,
                     )
                     done.append(str(sub))
@@ -758,18 +800,23 @@ def provision_worktree_node_modules(worktree_root: Path, project_root: Path,
                     if logger:
                         logger.warning(
                             "verify_contract",
-                            f"hardlink 供给失败（{sub}），降级 prefer-offline: {e}")
+                            f"hardlink 供给失败（{sub}），降级 prefer-offline: {e}",
+                        )
         if not provisioned:
             try:
                 r = subprocess.run(
                     ["npm", "ci", "--prefer-offline", "--no-audit", "--no-fund"],
-                    cwd=str(wt_dir), capture_output=True, text=True, timeout=900,
+                    cwd=str(wt_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=900,
                 )
                 if r.returncode != 0:
                     r = subprocess.run(
-                        ["npm", "install", "--prefer-offline", "--no-audit",
-                         "--no-fund"],
-                        cwd=str(wt_dir), capture_output=True, text=True,
+                        ["npm", "install", "--prefer-offline", "--no-audit", "--no-fund"],
+                        cwd=str(wt_dir),
+                        capture_output=True,
+                        text=True,
                         timeout=900,
                     )
                 if r.returncode == 0:
@@ -778,16 +825,17 @@ def provision_worktree_node_modules(worktree_root: Path, project_root: Path,
                     logger.warning(
                         "verify_contract",
                         f"node_modules 供给失败（{sub}）: "
-                        f"{(r.stderr or r.stdout or '').strip()[-200:]}")
+                        f"{(r.stderr or r.stdout or '').strip()[-200:]}",
+                    )
             except (subprocess.SubprocessError, OSError) as e:
                 if logger:
-                    logger.warning(
-                        "verify_contract", f"node_modules 供给异常（{sub}）: {e}")
+                    logger.warning("verify_contract", f"node_modules 供给异常（{sub}）: {e}")
     return done
 
 
-def ensure_main_tree_deps(project_root: Path, sub_dirs: list,
-                          mode: str = DEFAULT_DEPS_MODE, logger=None) -> list:
+def ensure_main_tree_deps(
+    project_root: Path, sub_dirs: list, mode: str = DEFAULT_DEPS_MODE, logger=None
+) -> list:
     """主树 prepare 前依赖预检与预装（main-tree-deps-provision D1）。
 
     git 不携带 node_modules，被管项目主树只被 merge-back 写入、无人手工
@@ -825,13 +873,17 @@ def ensure_main_tree_deps(project_root: Path, sub_dirs: list,
         try:
             r = subprocess.run(
                 ["npm", "ci", "--prefer-offline", "--no-audit", "--no-fund"],
-                cwd=str(target), capture_output=True, text=True, timeout=900,
+                cwd=str(target),
+                capture_output=True,
+                text=True,
+                timeout=900,
             )
             if r.returncode != 0:
                 r = subprocess.run(
-                    ["npm", "install", "--prefer-offline", "--no-audit",
-                     "--no-fund"],
-                    cwd=str(target), capture_output=True, text=True,
+                    ["npm", "install", "--prefer-offline", "--no-audit", "--no-fund"],
+                    cwd=str(target),
+                    capture_output=True,
+                    text=True,
                     timeout=900,
                 )
             if r.returncode == 0:
@@ -839,18 +891,16 @@ def ensure_main_tree_deps(project_root: Path, sub_dirs: list,
                 if logger:
                     logger.info(
                         "verify_contract",
-                        f"主树依赖预装完成（{sub}，deps_mode={mode}）: "
-                        "npm ci --prefer-offline",
+                        f"主树依赖预装完成（{sub}，deps_mode={mode}）: " "npm ci --prefer-offline",
                     )
             elif logger:
                 logger.warning(
                     "verify_contract",
-                    f"主树依赖预装失败（{sub}）: "
-                    f"{(r.stderr or r.stdout or '').strip()[-200:]}")
+                    f"主树依赖预装失败（{sub}）: " f"{(r.stderr or r.stdout or '').strip()[-200:]}",
+                )
         except (subprocess.SubprocessError, OSError) as e:
             if logger:
-                logger.warning(
-                    "verify_contract", f"主树依赖预装异常（{sub}）: {e}")
+                logger.warning("verify_contract", f"主树依赖预装异常（{sub}）: {e}")
     return done
 
 
@@ -870,8 +920,11 @@ def _probe_vacuity_note(base_url: str, ready: ReadyProbe, probe_body: bytes) -> 
     """
     rand_path = f"/__fenix_probe_{uuid.uuid4().hex[:12]}"
     try:
-        req = Request(f"{base_url.rstrip('/')}{rand_path}", method="GET",
-                      headers={"User-Agent": "fenix-verify-contract"})
+        req = Request(
+            f"{base_url.rstrip('/')}{rand_path}",
+            method="GET",
+            headers={"User-Agent": "fenix-verify-contract"},
+        )
         with urlopen(req, timeout=3) as resp:
             if resp.status != ready.expect:
                 return ""
@@ -902,8 +955,7 @@ def probe_ready(base_url: str, ready: ReadyProbe) -> tuple:
     last_err = ""
     while time.time() < deadline:
         try:
-            req = Request(url, method="GET",
-                          headers={"User-Agent": "fenix-verify-contract"})
+            req = Request(url, method="GET", headers={"User-Agent": "fenix-verify-contract"})
             with urlopen(req, timeout=3) as resp:
                 if resp.status == ready.expect:
                     body = resp.read(4096)
@@ -1051,8 +1103,7 @@ def entry_preflight_error(cmd: str, cwd: Path) -> Optional[str]:
 SELFCHECK_FILENAME = "contract_selfcheck.json"
 
 
-def selfcheck_contract_light(project_root: Path, logger=None,
-                             base_url: str = "") -> Optional[str]:
+def selfcheck_contract_light(project_root: Path, logger=None, base_url: str = "") -> Optional[str]:
     """契约消费期轻量自证：mtime 快照门 + serve 段合法性 + ready 鉴别力自检。
 
     与 ``validate_contract`` 三段自证的关键差异：**不执行 prepare、不起实例**
@@ -1081,8 +1132,7 @@ def selfcheck_contract_light(project_root: Path, logger=None,
     except OSError as e:
         return f"契约 mtime 读取失败: {e}"
     # 1. mtime 快照门
-    selfcheck_path = (project_root / ".fenix" / "verify-serving"
-                      / SELFCHECK_FILENAME)
+    selfcheck_path = project_root / ".fenix" / "verify-serving" / SELFCHECK_FILENAME
     try:
         if selfcheck_path.is_file():
             snap = json.loads(selfcheck_path.read_text(encoding="utf-8"))
@@ -1121,8 +1171,7 @@ def selfcheck_contract_light(project_root: Path, logger=None,
             return "轻量自证失败（serve 段）: serve.root 为空（kind=static 必填）"
         root_dir = project_root / serve.root
         if not root_dir.is_dir():
-            return (f"轻量自证失败（serve 段）: serve.root 不存在: "
-                    f"{serve.root}（{root_dir}）")
+            return f"轻量自证失败（serve 段）: serve.root 不存在: " f"{serve.root}（{root_dir}）"
     elif serve.kind == "command":
         if not serve.cmd:
             return "轻量自证失败（serve 段）: serve.cmd 为空（kind=command 必填）"
@@ -1135,12 +1184,9 @@ def selfcheck_contract_light(project_root: Path, logger=None,
 
     # 4. 通过 → 写 mtime 快照
     try:
-        (project_root / ".fenix" / "verify-serving").mkdir(parents=True,
-                                                           exist_ok=True)
-        selfcheck_path.write_text(json.dumps({"mtime_ns": mtime_ns}),
-                                  encoding="utf-8")
+        (project_root / ".fenix" / "verify-serving").mkdir(parents=True, exist_ok=True)
+        selfcheck_path.write_text(json.dumps({"mtime_ns": mtime_ns}), encoding="utf-8")
     except OSError as e:
         if logger:
-            logger.warning("verify_contract",
-                           f"契约自证快照写入失败（下轮重证）: {e}")
+            logger.warning("verify_contract", f"契约自证快照写入失败（下轮重证）: {e}")
     return None

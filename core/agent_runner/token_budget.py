@@ -93,7 +93,6 @@ class TokenAccountant:
         # 预算阈值检查（D4）：80% / 100% 均为警告级，不自动冻结
         self._check_token_budget(spec_name, new_in)
 
-
     def _check_token_budget(self, spec_name: str, tokens_in: int) -> None:
         """预算阈值告警（add-cost-observability D4）：80% / 100% 均为警告级，幂等不重复。
 
@@ -120,23 +119,21 @@ class TokenAccountant:
         alert_flag = bool(entry.get("_token_alert_100", False))
 
         if ratio >= 1.0 and not alert_flag:
-            self._send_token_alert(spec_name, tokens_in, budget, "warning",
-                                   "预算 100% 警告")
+            self._send_token_alert(spec_name, tokens_in, budget, "warning", "预算 100% 警告")
             try:
                 self._pm.state_machine.update_spec(spec_name, {"_token_alert_100": True})
             except Exception:
                 pass
         elif ratio >= 0.8 and not warn_flag:
-            self._send_token_alert(spec_name, tokens_in, budget, "warning",
-                                   "预算 80% 提醒告警")
+            self._send_token_alert(spec_name, tokens_in, budget, "warning", "预算 80% 提醒告警")
             try:
                 self._pm.state_machine.update_spec(spec_name, {"_token_warn_80": True})
             except Exception:
                 pass
 
-
-    def _send_token_alert(self, spec_name: str, tokens_in: int, budget: float,
-                          severity: str, title: str) -> None:
+    def _send_token_alert(
+        self, spec_name: str, tokens_in: int, budget: float, severity: str, title: str
+    ) -> None:
         """写一条 token 预算 human-escalation-alert（复用 AdminStore，与 pm_engine 同管道）。
 
         severity 统一为 warning（80%/100% 两档均为警告级，2026-09-01 用户降噪决策）。
@@ -145,26 +142,28 @@ class TokenAccountant:
         """
         try:
             from core.admin_store import AdminStore, ESCALATION, severity_needs_human
+
             store = AdminStore(self._pm.project_root, self._pm.logger)
-            pct = (tokens_in / (float(budget) * 1_000_000) * 100.0)
-            rec = store.append({
-                "kind": ESCALATION,
-                "signal_type": "token_budget",
-                "spec": spec_name,
-                "severity": severity,
-                "description": (
-                    f"{title}：spec '{spec_name}' 累计 input token 已用 "
-                    f"{tokens_in / 1_000_000:.2f}M / 预算 {budget:.0f}M（{pct:.0f}%）"
-                ),
-                "evidence": (
-                    f"_tokens_in={tokens_in}; budget_millions={budget}; "
-                    f"ratio={pct:.1f}%"
-                ),
-                "recommended_action": (
-                    "检查是否失控烧钱；如需冻结请在 Dashboard / STATE.md 人工处置"
-                    "（本告警不自动冻结 spec）"
-                ),
-            })
+            pct = tokens_in / (float(budget) * 1_000_000) * 100.0
+            rec = store.append(
+                {
+                    "kind": ESCALATION,
+                    "signal_type": "token_budget",
+                    "spec": spec_name,
+                    "severity": severity,
+                    "description": (
+                        f"{title}：spec '{spec_name}' 累计 input token 已用 "
+                        f"{tokens_in / 1_000_000:.2f}M / 预算 {budget:.0f}M（{pct:.0f}%）"
+                    ),
+                    "evidence": (
+                        f"_tokens_in={tokens_in}; budget_millions={budget}; " f"ratio={pct:.1f}%"
+                    ),
+                    "recommended_action": (
+                        "检查是否失控烧钱；如需冻结请在 Dashboard / STATE.md 人工处置"
+                        "（本告警不自动冻结 spec）"
+                    ),
+                }
+            )
             if not severity_needs_human(severity):
                 store.mark_handled(rec["id"])
             self._pm.logger.warning(
@@ -178,9 +177,9 @@ class TokenAccountant:
                 f"Failed to send token budget alert for '{spec_name}': {e}",
             )
 
-
-    def _record_verify_progress_tokens(self, spec_name: str, agent_type: str,
-                                         usage_info: dict) -> None:
+    def _record_verify_progress_tokens(
+        self, spec_name: str, agent_type: str, usage_info: dict
+    ) -> None:
         """验证链侧车：把 planner/judge run 的 usage 逐轮追加到 tokens.json（D3）。
 
         路径 ``.fenix/verify-progress/<spec>/tokens.json``，结构：
@@ -196,8 +195,7 @@ class TokenAccountant:
         if not isinstance(usage_info, dict):
             usage_info = {}
         tokens_json = (
-            self._pm.project_root / ".fenix" / "verify-progress"
-            / spec_name / "tokens.json"
+            self._pm.project_root / ".fenix" / "verify-progress" / spec_name / "tokens.json"
         )
         try:
             tokens_json.parent.mkdir(parents=True, exist_ok=True)
@@ -212,17 +210,18 @@ class TokenAccountant:
             runs = data.get("runs")
             if not isinstance(runs, list):
                 runs = []
-            runs.append({
-                "agent_type": agent_type,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
-                + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
-                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
-                "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
-                "cost_usd": usage_info.get("cost_usd"),
-            })
+            runs.append(
+                {
+                    "agent_type": agent_type,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
+                    + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
+                    + int(usage_info.get("cache_read_input_tokens", 0) or 0),
+                    "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
+                    "cost_usd": usage_info.get("cost_usd"),
+                }
+            )
             data["runs"] = runs
-            tokens_json.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tokens_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         except (OSError, json.JSONDecodeError):
             pass

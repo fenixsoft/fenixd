@@ -47,8 +47,7 @@ class ReportBuilder:
             "pushed": "🚀",
         }
 
-        for name, entry in sorted(all_specs.items(),
-                                   key=lambda x: x[1].get("priority", 999)):
+        for name, entry in sorted(all_specs.items(), key=lambda x: x[1].get("priority", 999)):
             status = entry.get("status", "unknown")
             icon = status_icons.get(status, "❓")
             priority = entry.get("priority", "?")
@@ -63,7 +62,6 @@ class ReportBuilder:
 
         return "\n".join(lines)
 
-
     def generate_daily_report(self):
         """Generate daily report and append to PROJECT_LOG.md（.fenix/ 下）."""
         report = self._pm.generate_report()
@@ -74,11 +72,9 @@ class ReportBuilder:
 
         self._pm.logger.info("pm_engine", "Daily report generated")
 
-
     def get_pushable_specs(self):
         """Get all done SPECs awaiting push approval."""
         return self._pm.state_machine.get_by_status("done")
-
 
     @staticmethod
     def _is_push_backoffed(spec: dict) -> bool:
@@ -95,7 +91,6 @@ class ReportBuilder:
             return float(m.group(1)) > datetime.now(timezone.utc).timestamp()
         except (TypeError, ValueError):
             return False
-
 
     @staticmethod
     def _get_push_retry_count(spec: dict) -> int:

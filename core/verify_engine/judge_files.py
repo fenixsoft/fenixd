@@ -37,18 +37,12 @@ REQUEUE_MANIFEST_FILENAME = "requeue_manifest.json"
 
 def _attribution_path(project_root: Path, spec_name: str) -> Path:
     """judge 归因产物文件路径。"""
-    return (
-        project_root / ".fenix" / "verify-progress"
-        / spec_name / JUDGE_ATTRIBUTION_FILENAME
-    )
+    return project_root / ".fenix" / "verify-progress" / spec_name / JUDGE_ATTRIBUTION_FILENAME
 
 
 def _requeue_manifest_path(project_root: Path, spec_name: str) -> Path:
     """回炉清单文件路径。"""
-    return (
-        project_root / ".fenix" / "verify-progress"
-        / spec_name / REQUEUE_MANIFEST_FILENAME
-    )
+    return project_root / ".fenix" / "verify-progress" / spec_name / REQUEUE_MANIFEST_FILENAME
 
 
 def load_attribution(project_root: Path, spec_name: str) -> Optional[Dict[str, Any]]:
@@ -114,24 +108,28 @@ def _migrate_legacy_attribution(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
             status = sc.get("status") or ATTRIBUTION_STATUS_ACCEPT
             if status not in ATTRIBUTION_STATUSES:
                 status = ATTRIBUTION_STATUS_ACCEPT
-            scenarios.append({
-                "id": sid,
-                "attribution": attribution,
-                "status": status,
-                "timestamp": sc.get("timestamp") or "",
-            })
+            scenarios.append(
+                {
+                    "id": sid,
+                    "attribution": attribution,
+                    "status": status,
+                    "timestamp": sc.get("timestamp") or "",
+                }
+            )
     else:
         # 方式2：整块归因作为单个条目
         attribution = legacy_data.get("attribution") or ""
         classification = legacy_data.get("classification") or ""
         if not attribution and classification:
             attribution = classification
-        scenarios.append({
-            "id": "legacy_0",
-            "attribution": attribution,
-            "status": ATTRIBUTION_STATUS_ACCEPT,
-            "timestamp": legacy_data.get("timestamp") or "",
-        })
+        scenarios.append(
+            {
+                "id": "legacy_0",
+                "attribution": attribution,
+                "status": ATTRIBUTION_STATUS_ACCEPT,
+                "timestamp": legacy_data.get("timestamp") or "",
+            }
+        )
 
     return {
         "format_version": "1.0",
@@ -167,9 +165,7 @@ def save_attribution(
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), prefix=".judge_attr.", suffix=".json.tmp"
-    )
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".judge_attr.", suffix=".json.tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -227,7 +223,8 @@ def get_requeue_scenarios(project_root: Path, spec_name: str) -> List[Dict[str, 
         return []
 
     return [
-        sc for sc in (attr_data.get("scenarios") or [])
+        sc
+        for sc in (attr_data.get("scenarios") or [])
         if isinstance(sc, dict) and sc.get("status") == ATTRIBUTION_STATUS_REQUEUE
     ]
 
@@ -262,9 +259,7 @@ def build_requeue_manifest(
     path = _requeue_manifest_path(project_root, spec_name)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), prefix=".requeue.", suffix=".json.tmp"
-    )
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".requeue.", suffix=".json.tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
@@ -313,18 +308,12 @@ def is_full_requeue(project_root: Path, spec_name: str) -> bool:
         return False
 
     scenarios = attr_data.get("scenarios") or []
-    non_pass = [
-        sc for sc in scenarios
-        if isinstance(sc, dict)
-    ]
+    non_pass = [sc for sc in scenarios if isinstance(sc, dict)]
 
     if not non_pass:
         return False
 
-    return all(
-        sc.get("status") == ATTRIBUTION_STATUS_REQUEUE
-        for sc in non_pass
-    )
+    return all(sc.get("status") == ATTRIBUTION_STATUS_REQUEUE for sc in non_pass)
 
 
 def migrate_legacy_attribution_file(project_root: Path, spec_name: str) -> bool:

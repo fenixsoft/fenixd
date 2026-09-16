@@ -38,8 +38,7 @@ def resolve_spec_dir(project_root, spec) -> Path | None:
     if not archive_root.is_dir():
         return None
     pattern = re.compile(r"^\d{4}-\d{2}-\d{2}-" + re.escape(spec) + r"(-\d+)*$")
-    matches = [d for d in archive_root.iterdir()
-               if d.is_dir() and pattern.match(d.name)]
+    matches = [d for d in archive_root.iterdir() if d.is_dir() and pattern.match(d.name)]
     if not matches:
         return None
     return sorted(matches)[-1]
@@ -157,13 +156,7 @@ def count_generated_scenarios(project_root, spec_name) -> int:
     若按条数计则骨架落盘瞬间出题条 0→N/N 一次跳；数带肉场景使出题条
     随每 1/3 重写真实爬升。
     """
-    pf = (
-        Path(project_root)
-        / ".fenix"
-        / "verify-progress"
-        / spec_name
-        / "test_scenarios.json"
-    )
+    pf = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "test_scenarios.json"
     if not pf.exists():
         return 0
     try:
@@ -175,8 +168,7 @@ def count_generated_scenarios(project_root, spec_name) -> int:
     if not isinstance(data, list):
         return 0
     return sum(
-        1 for sc in data
-        if isinstance(sc, dict) and (sc.get("steps") or sc.get("assertions"))
+        1 for sc in data if isinstance(sc, dict) and (sc.get("steps") or sc.get("assertions"))
     )
 
 
@@ -195,6 +187,7 @@ def spec_generation_progress(project_root, spec_name, entry, vp=None) -> dict | 
     if vp is None:
         # 跨组引用（artifacts 组）经门面延迟解析（D4）
         import core.dashboard.data as _facade
+
         vp = _facade.parse_verify_progress(project_root, spec_name)
     if vp.get("total", 0):
         return None

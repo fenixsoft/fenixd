@@ -39,8 +39,9 @@ from pathlib import Path
 from core.pm_engine import TASK_GAP_ERROR_PREFIX  # noqa: E402
 
 
-def reflow_spec(project_root, spec_name: str, *, state_machine, logger,
-                source: str = "api") -> dict:
+def reflow_spec(
+    project_root, spec_name: str, *, state_machine, logger, source: str = "api"
+) -> dict:
     """task-gap 滞留 verified SPEC 的人工回炉（判定 + 执行 + 留痕 单一实现点）。
 
     Args:
@@ -66,7 +67,8 @@ def reflow_spec(project_root, spec_name: str, *, state_machine, logger,
     status = entry.get("status", "")
     if status != "verified":
         return {
-            "ok": False, "found": True,
+            "ok": False,
+            "found": True,
             "reason": (
                 f"spec '{spec_name}' 当前状态为 '{status}'，不在可回炉形态"
                 f"（仅 verified 且 error 为 task-gap 缺口结论可回炉）"
@@ -75,7 +77,8 @@ def reflow_spec(project_root, spec_name: str, *, state_machine, logger,
     err = entry.get("error") or ""
     if not (isinstance(err, str) and err.startswith(TASK_GAP_ERROR_PREFIX)):
         return {
-            "ok": False, "found": True,
+            "ok": False,
+            "found": True,
             "reason": (
                 f"spec '{spec_name}' 未检出任务缺口结论（error 不以 "
                 f"'{TASK_GAP_ERROR_PREFIX}' 开头）——不做回炉"
@@ -83,7 +86,8 @@ def reflow_spec(project_root, spec_name: str, *, state_machine, logger,
         }
     if entry.get(FROZEN_FIELD):
         return {
-            "ok": False, "found": True,
+            "ok": False,
+            "found": True,
             "reason": f"spec '{spec_name}' 处于冻结态——须先解冻再回炉",
         }
 
@@ -92,7 +96,8 @@ def reflow_spec(project_root, spec_name: str, *, state_machine, logger,
     ok = state_machine.update_spec(spec_name, {"status": "ready", "error": None})
     if not ok:
         return {
-            "ok": False, "found": True,
+            "ok": False,
+            "found": True,
             "reason": f"spec '{spec_name}' 状态写回失败（STATE.md 原子写失败）",
         }
 
@@ -136,7 +141,7 @@ def _extract_gap_tasks(error: str) -> list:
     if not error:
         return []
     ids = []
-    for part in re.split(r"[、,，;；:：\n]+", error[len(TASK_GAP_ERROR_PREFIX):]):
+    for part in re.split(r"[、,，;；:：\n]+", error[len(TASK_GAP_ERROR_PREFIX) :]):
         part = part.strip()
         # 容错：文案里的 id 可能带尾部标点（如 "1.2b。"），剥离后判定
         part = part.rstrip("。.；;")

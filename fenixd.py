@@ -230,7 +230,9 @@ class FenixDaemon:
         # 仍产出 fenix/<spec>-<ts>，须并集枚举才不扫空命名空间）。
         _impl_prefix = self.config.get("worktree.implement_branch_prefix", "fenix")
         self.worktree_manager = WorktreeManager(
-            wt_base, PROJECT_ROOT, self.logger,
+            wt_base,
+            PROJECT_ROOT,
+            self.logger,
             implement_branch_prefix=str(_impl_prefix) if _impl_prefix else "fenix",
             # 分支在飞引用保护（D6）：注入 STATE 读取器——stale 清扫删分支前
             # 检查在飞/待收口 spec 的分支引用（宁可多留分支不可误删成果）。
@@ -351,14 +353,14 @@ class FenixDaemon:
         # 仅启动期执行一次，运行期不重复。异常降级 WARNING，不阻塞 daemon 启动。
         try:
             from core.agent_runner.liveness import sweep_runs_without_terminal_state
+
             _runs_dir = PROJECT_ROOT / ".fenix" / "runs"
             _swept = sweep_runs_without_terminal_state(_runs_dir)
             if _swept:
                 self.logger.warning(
                     "fenixd",
                     f"Startup terminal-state sweep: 补写 {len(_swept)} 个遗留 "
-                    f"无终态 run 的 interrupted 终态: "
-                    + ", ".join(run_id for run_id, _ in _swept),
+                    f"无终态 run 的 interrupted 终态: " + ", ".join(run_id for run_id, _ in _swept),
                 )
         except Exception as e:
             self.logger.warning(
@@ -390,7 +392,7 @@ class FenixDaemon:
         _redo_budget = int(ConfigLoader.get(self.config, "agents.verify_redo_budget", 3) or 3)
         # 恢复期 re-merge-back 收口回调（fix-recovery-branch-anchor D4/4.2）：
         # recover_interrupted 内 re-merge 成功后的 PMEngine 侧副作用
-        #（_clear_dispatch_conflict / _sync_task_progress / _reconcile_impl_budget
+        # （_clear_dispatch_conflict / _sync_task_progress / _reconcile_impl_budget
         # / consume_legacy）由 fenixd 注入——state_machine 无 pm_engine 引用，
         # 缺省 None 时行为与旧版逐字节一致。
         remerge_cb = None
@@ -406,8 +408,12 @@ class FenixDaemon:
         # 不变式；helper 内对 None 打审计 ERROR 兜底）
         human_alert_cb = self._build_human_alert_callback()
         self.state_machine.recover_interrupted(
-            PROJECT_ROOT, self.worktree_manager, verify_redo_budget=_redo_budget,
-            remerge_callback=remerge_cb, human_alert_callback=human_alert_cb)
+            PROJECT_ROOT,
+            self.worktree_manager,
+            verify_redo_budget=_redo_budget,
+            remerge_callback=remerge_cb,
+            human_alert_callback=human_alert_cb,
+        )
         # 消费后的保全 sidecar 清除（幂等；中断全部由 recovery 接管）
         _clear_preserve_sidecar()
 
@@ -513,15 +519,13 @@ class FenixDaemon:
                     try:
                         self.pm_engine.check_recovery_watch()
                     except Exception as e:
-                        self.logger.error(
-                            "fenixd", f"Recovery watch check failed: {e}")
+                        self.logger.error("fenixd", f"Recovery watch check failed: {e}")
                     # 滞留 autostash 兜底回收（fix-autostash-orphans）：主树干净且
                     # 无活跃 run 时，把历史上被派发前 stash 吞掉的用户改动 pop 回来。
                     try:
                         self.pm_engine.reclaim_stale_autostash_if_idle()
                     except Exception as e:
-                        self.logger.error(
-                            "fenixd", f"Autostash reclaim check failed: {e}")
+                        self.logger.error("fenixd", f"Autostash reclaim check failed: {e}")
                 # 自动归档周期检查（add-spec-archive D4）：每 300s 遍历项目内
                 # 终态未归档 SPEC，超阈值按 updated 升序归档直至达标；异常捕获
                 # 记日志不中断主循环。阈值热更新经 effective_auto_archive_threshold
@@ -530,10 +534,10 @@ class FenixDaemon:
                     archive_check_ts = time.time()
                     try:
                         from core.dashboard.data import auto_archive_check
+
                         auto_archive_check(PROJECT_ROOT, self.config, self.logger)
                     except Exception as e:
-                        self.logger.error(
-                            "fenixd", f"Auto-archive check failed: {e}")
+                        self.logger.error("fenixd", f"Auto-archive check failed: {e}")
                 # 定时调度到期检测（add-spec-scheduling-controls D3）：每 60s
                 # 检查 auto 解冻（frozen_until 到期）与定时拾取（start_after
                 # 到期唤起派发）。周期扫描（full_scan）作为兜底，二者先后到达
@@ -543,8 +547,7 @@ class FenixDaemon:
                     try:
                         self.pm_engine.check_scheduling_deadlines()
                     except Exception as e:
-                        self.logger.error(
-                            "fenixd", f"Scheduling deadlines check failed: {e}")
+                        self.logger.error("fenixd", f"Scheduling deadlines check failed: {e}")
                 # verify-process-lifecycle（D4 周期清扫）：孤儿泄漏可见窗口
                 # ≤ 一个周期（600s）。覆盖 dev-server 与 servers.json 登记实例；
                 # 首轮启动清扫已处理存量，此后周期性兜底。
@@ -553,25 +556,23 @@ class FenixDaemon:
                     try:
                         v2_cleanup_orphans(self.logger)
                     except Exception as e:
-                        self.logger.error(
-                            "fenixd", f"Periodic V2 orphan cleanup failed: {e}")
+                        self.logger.error("fenixd", f"Periodic V2 orphan cleanup failed: {e}")
                     try:
                         self._sweep_verify_serving_registry()
                     except Exception as e:
-                        self.logger.error(
-                            "fenixd", f"Periodic serving registry sweep failed: {e}")
+                        self.logger.error("fenixd", f"Periodic serving registry sweep failed: {e}")
                 # add-framework-self-evolution 5.1：自进化检查点（节拍复用
                 # admin.interval_minutes，缺省 5 分钟；异常记 ERROR 不中断主循环，
                 # 就绪即入队、无在途立即启动分析 run）。
-                evo_interval = int(ConfigLoader.get(
-                    self.config, "admin.interval_minutes", 5) or 5) * 60
+                evo_interval = (
+                    int(ConfigLoader.get(self.config, "admin.interval_minutes", 5) or 5) * 60
+                )
                 if time.time() - evolution_check_ts >= evo_interval:
                     evolution_check_ts = time.time()
                     try:
                         self._check_evolution_checkpoint()
                     except Exception as e:
-                        self.logger.error(
-                            "fenixd", f"Evolution checkpoint failed: {e}")
+                        self.logger.error("fenixd", f"Evolution checkpoint failed: {e}")
         except KeyboardInterrupt:
             self.logger.info("fenixd", "Received interrupt signal")
         finally:
@@ -598,13 +599,14 @@ class FenixDaemon:
         spec 状态判定在飞，testing 中的保留）共用同一执行器。
         """
         from core.serving_registry import sweep as serving_sweep
-        kw = ({"is_spec_in_flight": self._is_spec_in_flight}
-              if use_in_flight else {})
+
+        kw = {"is_spec_in_flight": self._is_spec_in_flight} if use_in_flight else {}
         serving_sweep(PROJECT_ROOT, self.logger, **kw)
 
     def _config_mtimes(self):
         """两个配置文件的当前 mtime（不存在计为 None）。"""
         from core.config import USER_CONFIG_DIR
+
         mtimes = []
         for p in (USER_CONFIG_DIR / "config.yaml", PROJECT_ROOT / ".fenix" / "config.yaml"):
             try:
@@ -629,6 +631,7 @@ class FenixDaemon:
         # admin_monitor 的 admin_cfg 是启动快照，同步刷新
         if self.admin_monitor is not None:
             from core.config import ConfigLoader as _CL
+
             self.admin_monitor.admin_cfg = _CL.get_admin_config(self.config)
         # admin.workers 变更不热生效（worker 池在启动时定型）：提示重启后生效
         if self._admin_executor is not None:
@@ -685,32 +688,33 @@ class FenixDaemon:
                     # 待处理队列（复用 token_budget 同款处置），仅留历史记录。
                     # 状态边沿（假→真）触发写入，单个陈旧周期内不会重复堆积，
                     # 故不再依赖「未处置告警去重」。
-                    rec = self.admin_store.append({
-                        "kind": ESCALATION,
-                        "signal_type": "stale_code",
-                        "spec": None,
-                        "severity": "warning",
-                        "description": (
-                            "daemon 进程持旧代码，自愈将在连续空闲后触发重启"
-                            "（stale_code_selfheal 配置启用时）"
-                        ),
-                        "evidence": (
-                            "fenixd 30s 检测点：fenixd.py/core/**/*.py mtime "
-                            "超进程启动 baseline"
-                        ),
-                        "action_taken": "fenixd 陈旧检测命中，标记为警告（等待空闲自愈）",
-                        "recommended_action": (
-                            "无需人工干预：连续空闲达到 "
-                            "stale_code_selfheal.idle_confirm_seconds 后自适应重启；"
-                            "如需立即生效可 touch .fenix/restart_request 或手动重启 "
-                            "daemon；关闭自愈见 stale_code_selfheal.enabled"
-                        ),
-                    })
+                    rec = self.admin_store.append(
+                        {
+                            "kind": ESCALATION,
+                            "signal_type": "stale_code",
+                            "spec": None,
+                            "severity": "warning",
+                            "description": (
+                                "daemon 进程持旧代码，自愈将在连续空闲后触发重启"
+                                "（stale_code_selfheal 配置启用时）"
+                            ),
+                            "evidence": (
+                                "fenixd 30s 检测点：fenixd.py/core/**/*.py mtime "
+                                "超进程启动 baseline"
+                            ),
+                            "action_taken": "fenixd 陈旧检测命中，标记为警告（等待空闲自愈）",
+                            "recommended_action": (
+                                "无需人工干预：连续空闲达到 "
+                                "stale_code_selfheal.idle_confirm_seconds 后自适应重启；"
+                                "如需立即生效可 touch .fenix/restart_request 或手动重启 "
+                                "daemon；关闭自愈见 stale_code_selfheal.enabled"
+                            ),
+                        }
+                    )
                     if not severity_needs_human(rec.get("severity")):
                         self.admin_store.mark_handled(rec["id"])
             except Exception as e:
-                self.logger.warning(
-                    "fenixd", f"stale_code 告警写入失败（non-blocking）: {e}")
+                self.logger.warning("fenixd", f"stale_code 告警写入失败（non-blocking）: {e}")
         else:
             self.logger.info(
                 "fenixd",
@@ -764,7 +768,8 @@ class FenixDaemon:
         except Exception:  # noqa: BLE001 — 配置读取异常按缺省启用处理
             cfg = {"enabled": True, "idle_confirm_seconds": 120}
         enabled, confirm_seconds = bool(cfg.get("enabled", True)), cfg.get(
-            "idle_confirm_seconds", 120)
+            "idle_confirm_seconds", 120
+        )
         if not enabled:
             reason = "disabled"
         elif req.exists():
@@ -772,6 +777,7 @@ class FenixDaemon:
         else:
             try:
                 from core.fenix_session import supervisor_running
+
                 supervised = supervisor_running(PROJECT_ROOT)
             except Exception:
                 supervised = False  # /proc 不可读等：按未托管处理，宁紧勿松
@@ -816,8 +822,7 @@ class FenixDaemon:
         if waited >= confirm_seconds:
             try:
                 req.parent.mkdir(parents=True, exist_ok=True)
-                req.write_text(
-                    datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
+                req.write_text(datetime.now(timezone.utc).isoformat() + "\n", encoding="utf-8")
                 self.logger.warning(
                     "fenixd",
                     f"陈旧自愈触发：daemon 持旧代码且连续空闲 {waited:.0f}s"
@@ -890,8 +895,7 @@ class FenixDaemon:
             "created": payload.get("created"),
             # 用户在 Dashboard 处置弹窗输入的提示词（prompt）优先；缺省用默认文案
             "description": (
-                payload.get("prompt")
-                or f"人工呼叫：检查 SPEC {spec} 出现什么问题并尝试处置"
+                payload.get("prompt") or f"人工呼叫：检查 SPEC {spec} 出现什么问题并尝试处置"
             ),
         }
         self.logger.info(
@@ -1098,6 +1102,7 @@ class FenixDaemon:
     def _evolution_framework_root() -> Path:
         """FRAMEWORK_ROOT，与 prompt_builder 同式推导（design D1）。"""
         from core.agent_runner.prompt_builder import FRAMEWORK_ROOT
+
         return FRAMEWORK_ROOT
 
     def _check_evolution_checkpoint(self) -> None:
@@ -1137,23 +1142,22 @@ class FenixDaemon:
             # 清理不因分析 run 在途而跳过；独立 try/except 隔离失败）
             try:
                 from core.evolution import prune_items
+
                 pruned = prune_items(PROJECT_ROOT)
                 if pruned.get("deleted", 0) > 0 or pruned.get("failed", 0) > 0:
                     detail_tail = ""
                     if pruned.get("details"):
                         detail_tail = "；详情: " + " | ".join(
-                            f"{d.get('id')}: {d.get('error')}"
-                            for d in pruned["details"])
+                            f"{d.get('id')}: {d.get('error')}" for d in pruned["details"]
+                        )
                     self.logger.info(
                         "fenixd",
                         f"自进化条目保留清理：total {pruned.get('total')}，"
                         f"kept {pruned.get('kept')}，deleted {pruned.get('deleted')}，"
-                        f"failed {pruned.get('failed')}"
-                        + detail_tail,
+                        f"failed {pruned.get('failed')}" + detail_tail,
                     )
             except Exception as e:
-                self.logger.error(
-                    "fenixd", f"自进化条目保留清理失败（不影响后续派发）: {e}")
+                self.logger.error("fenixd", f"自进化条目保留清理失败（不影响后续派发）: {e}")
 
             # 单飞判定（spec「分析 run 在途的判定基于 daemon 内部活跃 run 状态」）
             if self._evolution_in_flight:
@@ -1162,14 +1166,16 @@ class FenixDaemon:
             if any(str(rid).startswith("evo-") for rid in running):
                 # 在途 run（含派发-登记窗口未覆盖的情形）→ 留到下一检查点
                 self._evolution_in_flight = True
-                self.logger.info(
-                    "fenixd", "自进化分析 run 在途，就绪项目留待下一检查点")
+                self.logger.info("fenixd", "自进化分析 run 在途，就绪项目留待下一检查点")
                 return
 
             from core.dashboard.registry import Registry
             from core.evolution import (
-                scan_ready_projects, parse_todo_entries,
-                select_pending_entries, known_ids)
+                scan_ready_projects,
+                parse_todo_entries,
+                select_pending_entries,
+                known_ids,
+            )
 
             registry = Registry()
             projects = registry.discover()
@@ -1183,8 +1189,7 @@ class FenixDaemon:
                 entries = parse_todo_entries(proj.get("todo_md") or "")
                 for entry in entries:
                     entry["project"] = proj.get("name") or proj.get("path")
-                batch = select_pending_entries(
-                    entries, known_ids(PROJECT_ROOT), 10 ** 6)
+                batch = select_pending_entries(entries, known_ids(PROJECT_ROOT), 10**6)
                 pending.extend(batch)
             se_cfg = ConfigLoader.get_self_evolution_config(self.config)
             limit = int(se_cfg["max_items_per_run"])
@@ -1198,35 +1203,34 @@ class FenixDaemon:
             snapshot_at = datetime.now(timezone.utc).isoformat()
             try:
                 if self._admin_executor is not None:
-                    self._admin_executor.submit(
-                        self._evolution_worker, ready, pending, snapshot_at)
+                    self._admin_executor.submit(self._evolution_worker, ready, pending, snapshot_at)
                 else:
                     self._evolution_worker(ready, pending, snapshot_at)
             except Exception as e:
                 self._evolution_in_flight = False
-                self.logger.error(
-                    "fenixd", f"自进化分析 run 派发失败: {e}")
+                self.logger.error("fenixd", f"自进化分析 run 派发失败: {e}")
         except Exception as e:
-            self.logger.error(
-                "fenixd", f"Evolution checkpoint failed: {e}")
+            self.logger.error("fenixd", f"Evolution checkpoint failed: {e}")
 
     def _evolution_warn(self, message: str) -> None:
         """写一条自进化 admin WARNING 告警（escalation major 级，不阻塞）。"""
         try:
             if self.admin_store is not None:
-                self.admin_store.append({
-                    "kind": "escalation",
-                    "severity": "major",
-                    "signal_type": "self-evolution",
-                    "spec": None,
-                    "description": message,
-                })
+                self.admin_store.append(
+                    {
+                        "kind": "escalation",
+                        "severity": "major",
+                        "signal_type": "self-evolution",
+                        "spec": None,
+                        "description": message,
+                    }
+                )
         except Exception as e:
-            self.logger.warning(
-                "fenixd", f"自进化 admin 告警写入失败（降级）: {e}")
+            self.logger.warning("fenixd", f"自进化 admin 告警写入失败（降级）: {e}")
 
-    def _evolution_worker(self, ready_projects: list,
-                          pending_entries: list, snapshot_at: str) -> None:
+    def _evolution_worker(
+        self, ready_projects: list, pending_entries: list, snapshot_at: str
+    ) -> None:
         """worker 线程执行分析 run + 落地 + 自动接受 + 水位推进（5.3/5.4）。
 
         - 分析 run 成功落地后：auto_accept 为真 → 5.3 对本轮 pending 自动接受
@@ -1238,22 +1242,20 @@ class FenixDaemon:
         - 每轮成功落地记 INFO（就绪项目、条目数、草稿数、接受数、失败数）。
         """
         try:
-            result = self.agent_runner.run_evolution(
-                ready_projects, pending_entries)
+            result = self.agent_runner.run_evolution(ready_projects, pending_entries)
             if result.success:
                 from core.evolution import auto_accept_pending, advance_watermark
+
                 se_cfg = ConfigLoader.get_self_evolution_config(self.config)
                 accepted = 0
                 if se_cfg["auto_accept"]:
                     try:
                         summary = auto_accept_pending(
-                            PROJECT_ROOT, self.state_machine,
-                            spec_run_at=se_cfg.get("spec_run_at"))
+                            PROJECT_ROOT, self.state_machine, spec_run_at=se_cfg.get("spec_run_at")
+                        )
                         accepted = summary.get("accepted", 0)
                     except Exception as e:
-                        self.logger.error(
-                            "fenixd",
-                            f"自动接受流程异常（条目保持 pending）: {e}")
+                        self.logger.error("fenixd", f"自动接受流程异常（条目保持 pending）: {e}")
                 else:
                     accepted = result.accepted
                 # 水位推进：仅成功落地后，用 run 启动快照时刻
@@ -1261,13 +1263,11 @@ class FenixDaemon:
                 for proj in ready_projects:
                     try:
                         advance_watermark(
-                            PROJECT_ROOT, proj.get("name"), snapshot_at,
-                            result.run_id)
+                            PROJECT_ROOT, proj.get("name"), snapshot_at, result.run_id
+                        )
                     except Exception as e:
                         advance_errors += 1
-                        self.logger.warning(
-                            "fenixd",
-                            f"自进化水位推进失败 {proj.get('name')}: {e}")
+                        self.logger.warning("fenixd", f"自进化水位推进失败 {proj.get('name')}: {e}")
                 self.logger.info(
                     "fenixd",
                     f"自进化分析 run {result.run_id} 落地完成："
@@ -1278,8 +1278,7 @@ class FenixDaemon:
                 )
             else:
                 reason = result.error or "未知原因"
-                self._evolution_warn(
-                    f"自进化分析 run {result.run_id} 失败: {reason}")
+                self._evolution_warn(f"自进化分析 run {result.run_id} 失败: {reason}")
                 self.logger.error(
                     "fenixd",
                     f"自进化分析 run {result.run_id} 失败（水位不推进）: {reason}",
@@ -1376,15 +1375,17 @@ class FenixDaemon:
     def _record_failed_admin_disposition(self, spec, reason: str):
         """落一条 failed disposition（不丢痕，供 admin 活动区/告警可见）。"""
         try:
-            self.admin_store.append({
-                "kind": DISPOSITION,
-                "status": "failed",
-                "signal_type": "manual-intervention",
-                "spec": spec,
-                "admin_run_id": None,
-                "description": f"手动唤起 Administrator 处理 SPEC {spec} 时出错：{reason}",
-                "result": "failed",
-            })
+            self.admin_store.append(
+                {
+                    "kind": DISPOSITION,
+                    "status": "failed",
+                    "signal_type": "manual-intervention",
+                    "spec": spec,
+                    "admin_run_id": None,
+                    "description": f"手动唤起 Administrator 处理 SPEC {spec} 时出错：{reason}",
+                    "result": "failed",
+                }
+            )
         except Exception:  # noqa: BLE001 — 落痕失败不影响主流程
             pass
 
@@ -1468,6 +1469,7 @@ class FenixDaemon:
         # ── A. supervisor 存在性（无条件） ──────────────────────────────
         try:
             from core.fenix_session import supervisor_running
+
             supervisor_alive = supervisor_running(PROJECT_ROOT)
         except Exception:
             supervisor_alive = False  # /proc 不可读等：按不存在告警，宁紧勿松
@@ -1486,25 +1488,28 @@ class FenixDaemon:
                 if self.admin_store is not None:
                     # 同类型未处置告警去重（不重复追加）
                     if self.admin_store.unhandled_for(None, "supervisor_missing") is None:
-                        self.admin_store.append({
-                            "kind": ESCALATION,
-                            "signal_type": "supervisor_missing",
-                            "spec": None,
-                            "severity": "major",
-                            "description": (
-                                "本项目 daemon 未受 supervisor 托管，restart_request "
-                                "不会被消费（supervisor 缺失）"
-                            ),
-                            "evidence": "fenixd 启动自检：项目根下无活跃 supervisor 进程",
-                            "action_taken": "fenixd 启动自检发现托管缺失，升级人工",
-                            "recommended_action": (
-                                "经 Dashboard 项目页「安装托管」或 /fenix-setup "
-                                "恢复 supervisor 托管"
-                            ),
-                        })
+                        self.admin_store.append(
+                            {
+                                "kind": ESCALATION,
+                                "signal_type": "supervisor_missing",
+                                "spec": None,
+                                "severity": "major",
+                                "description": (
+                                    "本项目 daemon 未受 supervisor 托管，restart_request "
+                                    "不会被消费（supervisor 缺失）"
+                                ),
+                                "evidence": "fenixd 启动自检：项目根下无活跃 supervisor 进程",
+                                "action_taken": "fenixd 启动自检发现托管缺失，升级人工",
+                                "recommended_action": (
+                                    "经 Dashboard 项目页「安装托管」或 /fenix-setup "
+                                    "恢复 supervisor 托管"
+                                ),
+                            }
+                        )
             except Exception as e:
                 self.logger.warning(
-                    "fenixd", f"supervisor_missing 告警写入失败（non-blocking）: {e}")
+                    "fenixd", f"supervisor_missing 告警写入失败（non-blocking）: {e}"
+                )
 
         # ── B. drain 一致性（仅 drain > 0） ─────────────────────────────
         if drain_seconds <= 0:
@@ -1542,11 +1547,16 @@ class FenixDaemon:
                 drift_error = None
                 try:
                     runtime_ts = datetime.fromisoformat(
-                        str(data.get("started_at") or "")).timestamp()
+                        str(data.get("started_at") or "")
+                    ).timestamp()
                     daemon_ts = datetime.fromisoformat(
                         daemon_started.read_text(encoding="utf-8").strip()
                     ).timestamp()
-                    if runtime_ts and daemon_ts and daemon_ts - runtime_ts > SUPERVISOR_RUNTIME_DRIFT_SECONDS:
+                    if (
+                        runtime_ts
+                        and daemon_ts
+                        and daemon_ts - runtime_ts > SUPERVISOR_RUNTIME_DRIFT_SECONDS
+                    ):
                         drift_error = (
                             f"supervisor runtime 上报于 {data.get('started_at')}，"
                             f"早于本次 daemon 启动 {SUPERVISOR_RUNTIME_DRIFT_SECONDS}s 以上"
@@ -1607,9 +1617,10 @@ class FenixDaemon:
             if branch:
                 try:
                     res = subprocess.run(
-                        ["git", "-C", str(PROJECT_ROOT), "rev-list", "--count",
-                         f"main..{branch}"],
-                        capture_output=True, text=True, timeout=15,
+                        ["git", "-C", str(PROJECT_ROOT), "rev-list", "--count", f"main..{branch}"],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
                     )
                     if res.returncode == 0:
                         try:
@@ -1618,15 +1629,17 @@ class FenixDaemon:
                             ahead = 0
                 except (subprocess.TimeoutExpired, OSError):
                     ahead = 0
-            entries.append({
-                "spec": spec,
-                "run_id": run_id,
-                "branch": branch or "",
-                "worktree": worktree,
-                "ahead_commits": ahead,
-                "reason": reason,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            entries.append(
+                {
+                    "spec": spec,
+                    "run_id": run_id,
+                    "branch": branch or "",
+                    "worktree": worktree,
+                    "ahead_commits": ahead,
+                    "reason": reason,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
             self.logger.warning(
                 "fenixd",
                 f"Preserving interrupted run '{run_id}' (spec '{spec}', "
@@ -1650,6 +1663,7 @@ class FenixDaemon:
         ``_reconcile_impl_budget`` / ``consume_legacy``。state_machine 无
         pm_engine 引用（仅注释提及模块名），故由 fenixd 注入。
         """
+
         def _cb(spec_name: str) -> None:
             # 锁冲突计数清零（recovery 侧无锁操作，零值写回即可）
             try:
@@ -1657,24 +1671,21 @@ class FenixDaemon:
             except Exception as e:
                 self.logger.warning(
                     "fenixd",
-                    f"remerge 收口 _clear_dispatch_conflict 失败 '{spec_name}'"
-                    f"（非阻塞）: {e}",
+                    f"remerge 收口 _clear_dispatch_conflict 失败 '{spec_name}'" f"（非阻塞）: {e}",
                 )
             try:
                 self.pm_engine._sync_task_progress(spec_name)
             except Exception as e:
                 self.logger.warning(
                     "fenixd",
-                    f"remerge 收口 _sync_task_progress 失败 '{spec_name}'"
-                    f"（非阻塞）: {e}",
+                    f"remerge 收口 _sync_task_progress 失败 '{spec_name}'" f"（非阻塞）: {e}",
                 )
             try:
                 self.pm_engine._reconcile_impl_budget(spec_name)
             except Exception as e:
                 self.logger.warning(
                     "fenixd",
-                    f"remerge 收口 _reconcile_impl_budget 失败 '{spec_name}'"
-                    f"（非阻塞）: {e}",
+                    f"remerge 收口 _reconcile_impl_budget 失败 '{spec_name}'" f"（非阻塞）: {e}",
                 )
             try:
                 if self.worktree_manager:
@@ -1684,6 +1695,7 @@ class FenixDaemon:
                     "fenixd",
                     f"remerge 收口 consume_legacy 失败 '{spec_name}'（非阻塞）: {e}",
                 )
+
         return _cb
 
     def _build_human_alert_callback(self):
@@ -1706,8 +1718,14 @@ class FenixDaemon:
             )
             return None
 
-        def _cb(spec_name: str, signal_type: str, severity: str,
-                description: str, evidence: str, recommended_action: str) -> None:
+        def _cb(
+            spec_name: str,
+            signal_type: str,
+            severity: str,
+            description: str,
+            evidence: str,
+            recommended_action: str,
+        ) -> None:
             try:
                 self.pm_engine._send_human_escalation_alert(
                     spec_name=spec_name,
@@ -1723,6 +1741,7 @@ class FenixDaemon:
                     f"恢复期冻结人工升级告警发送失败 '{spec_name}'"
                     f"（signal_type={signal_type}，非阻塞）: {e}",
                 )
+
         return _cb
 
     def _preserve_implementing_specs(self, reason: str) -> list:
@@ -1752,8 +1771,7 @@ class FenixDaemon:
         except Exception as e:
             self.logger.warning(
                 "fenixd",
-                f"Preserve (spec-driven): STATE 读取失败——降级仅既有保全 "
-                f"（非阻塞）: {e}",
+                f"Preserve (spec-driven): STATE 读取失败——降级仅既有保全 " f"（非阻塞）: {e}",
             )
             return []
         for spec, entry in implementing:
@@ -1766,8 +1784,7 @@ class FenixDaemon:
             except Exception as e:
                 self.logger.warning(
                     "fenixd",
-                    f"Preserve (spec-driven): 在册 worktree 查询失败 "
-                    f"'{spec}'（非阻塞）: {e}",
+                    f"Preserve (spec-driven): 在册 worktree 查询失败 " f"'{spec}'（非阻塞）: {e}",
                 )
                 worktrees = []
             if not worktrees and branch and self.worktree_manager:
@@ -1778,9 +1795,10 @@ class FenixDaemon:
             if branch:
                 try:
                     res = subprocess.run(
-                        ["git", "-C", str(PROJECT_ROOT), "rev-list", "--count",
-                         f"main..{branch}"],
-                        capture_output=True, text=True, timeout=15,
+                        ["git", "-C", str(PROJECT_ROOT), "rev-list", "--count", f"main..{branch}"],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
                     )
                     if res.returncode == 0:
                         try:
@@ -1793,15 +1811,17 @@ class FenixDaemon:
             if worktree and worktree not in seen_wt:
                 seen_wt.add(worktree)
                 added_wt.append(worktree)
-            entries.append({
-                "spec": spec,
-                "run_id": run_id,
-                "branch": branch,
-                "worktree": worktree,
-                "ahead_commits": ahead,
-                "reason": reason,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            entries.append(
+                {
+                    "spec": spec,
+                    "run_id": run_id,
+                    "branch": branch,
+                    "worktree": worktree,
+                    "ahead_commits": ahead,
+                    "reason": reason,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
             self.logger.warning(
                 "fenixd",
                 f"Preserving implementing spec '{spec}' (branch "
@@ -1842,15 +1862,16 @@ class FenixDaemon:
             spec = wt_to_spec.get(str(wt)) or ""
             try:
                 commit_wip_checkpoint(
-                    wt, spec or "unknown", ANCHOR_DRAIN_PRESERVE,
+                    wt,
+                    spec or "unknown",
+                    ANCHOR_DRAIN_PRESERVE,
                     self.logger,
                 )
             except Exception as e:
                 # 兜底：helper 理论上不抛，防御性捕获保证收口序列不被打断
                 self.logger.warning(
                     "fenixd",
-                    f"WIP checkpoint (drain-preserve) failed for '{wt}': "
-                    f"{e} — non-blocking",
+                    f"WIP checkpoint (drain-preserve) failed for '{wt}': " f"{e} — non-blocking",
                 )
 
     @staticmethod
@@ -1865,7 +1886,7 @@ class FenixDaemon:
         rid = run_id
         for prefix in ("impl", "verify", "repair"):
             if rid.startswith(f"{prefix}-"):
-                rest = rid[len(prefix) + 1:]
+                rest = rid[len(prefix) + 1 :]
                 break
         else:
             return None
@@ -1928,7 +1949,7 @@ class FenixDaemon:
         # 模式：禁新派发（shutting_down + admin 池/event_bus 已停）+ 等待在跑 run
         # 自然终态（上限 shutdown_drain_seconds，缺省 1800）；到期仍有在跑 run →
         # 先写 sidecar 保全，再走现行 terminate 收口。非计划 SIGTERM
-        #（restart_request 不在册）或 drain=0 时行为逐字节不变（快速 terminate，
+        # （restart_request 不在册）或 drain=0 时行为逐字节不变（快速 terminate，
         # 无保全）。
         planned_restart = (PROJECT_ROOT / ".fenix" / "restart_request").exists()
         drain_seconds = self._shutdown_drain_seconds()
@@ -1949,17 +1970,17 @@ class FenixDaemon:
             )
             if remaining:
                 # 排水超时：先保全再 terminate（sidecar 先于 terminate）
-                preserved_wts = self._preserve_interrupted_runs(
-                    remaining, "drain timeout")
+                preserved_wts = self._preserve_interrupted_runs(remaining, "drain timeout")
             # ── sidecar 触发条件放宽（fix-recovery-branch-anchor D5/5.2）──
             # 排水结束后仍存在收口未完成的 implementing spec 时同样保全
-            #（run_id 驱动的 drain timeout 路径只覆盖「remaining 非空」，
+            # （run_id 驱动的 drain timeout 路径只覆盖「remaining 非空」，
             # 事故形态 remaining==[] 时旧调用点永不执行，repair worktree
             # 仍在 git worktree list 注册中却被 cleanup_orphans 误删）。
             # spec 驱动独立于 run_id，run_id 取该 spec 的 STATE implementer_run
-            #（D1 落地后 run 成功即非空），缺失时留空串（无生产消费者）。
+            # （D1 落地后 run 成功即非空），缺失时留空串（无生产消费者）。
             spec_preserved = self._preserve_implementing_specs(
-                "drain finished, spec-driven preserve")
+                "drain finished, spec-driven preserve"
+            )
             preserved_wts.extend(spec_preserved)
         else:
             self.logger.debug(

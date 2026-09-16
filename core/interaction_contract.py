@@ -40,9 +40,24 @@ THEME_PREFIXES = ("dark-", "cxd-", "light-", "amis-", "ant-")
 # 无分隔符裸关键词（如 button / cards / href）认可的「元素定义语境」标记：
 # 命中其一才视为元素定义，避免把叙述性散文误报为候选。
 _CODE_CONTEXT_MARKERS = (
-    "`", "class", "classname", "css", "样式", "类名", "字段", "组件",
-    "渲染", "循环", "模板", "template", "map(", "foreach", "each",
-    "卡片", "按钮组", "列表",
+    "`",
+    "class",
+    "classname",
+    "css",
+    "样式",
+    "类名",
+    "字段",
+    "组件",
+    "渲染",
+    "循环",
+    "模板",
+    "template",
+    "map(",
+    "foreach",
+    "each",
+    "卡片",
+    "按钮组",
+    "列表",
 )
 # 说明：首版实现中裸关键词直接视为候选（中文 SPEC 的英文 token 几乎均为
 # 组件/字段标识），此清单保留供后续版本收紧误报时使用。
@@ -76,24 +91,35 @@ KEYWORD_ALIASES: Dict[str, tuple] = {
 
 # ── 数据结构 ────────────────────────────────────────────────────────
 
+
 class InteractiveCandidate:
     """SPEC 文本中识别出的单个可交互候选元素。"""
 
     __slots__ = ("key", "raw", "source", "line", "snippet", "declared_display")
 
-    def __init__(self, key: str, raw: str, source: str, line: int,
-                 snippet: str, declared_display: bool = False):
-        self.key = key                      # 归一化标识（主题前缀已剥离）
-        self.raw = raw                      # 原始 token
-        self.source = source                # 来源文件（相对路径）
-        self.line = line                    # 1-based 行号
-        self.snippet = snippet              # 命中行片段（截断）
+    def __init__(
+        self,
+        key: str,
+        raw: str,
+        source: str,
+        line: int,
+        snippet: str,
+        declared_display: bool = False,
+    ):
+        self.key = key  # 归一化标识（主题前缀已剥离）
+        self.raw = raw  # 原始 token
+        self.source = source  # 来源文件（相对路径）
+        self.line = line  # 1-based 行号
+        self.snippet = snippet  # 命中行片段（截断）
         self.declared_display = declared_display  # 定义处已声明纯展示
 
     def to_dict(self) -> dict:
         return {
-            "id": self.key, "raw": self.raw, "source": self.source,
-            "line": self.line, "snippet": self.snippet,
+            "id": self.key,
+            "raw": self.raw,
+            "source": self.source,
+            "line": self.line,
+            "snippet": self.snippet,
             "declared_display": self.declared_display,
         }
 
@@ -127,6 +153,7 @@ class ContractResult:
 
 # ── 归一化与识别 ────────────────────────────────────────────────────
 
+
 def normalize_token(token: str) -> str:
     """归一化元素标识：小写、剥离主题前缀、折叠分隔符。"""
     t = (token or "").strip().lower()
@@ -135,7 +162,7 @@ def normalize_token(token: str) -> str:
         changed = False
         for prefix in THEME_PREFIXES:
             if t.startswith(prefix):
-                t = t[len(prefix):]
+                t = t[len(prefix) :]
                 changed = True
     t = re.sub(r"--+", "-", t)
     return t.strip("-_")
@@ -193,8 +220,12 @@ def extract_candidates(text: str, source: str = "") -> List[InteractiveCandidate
         if len(snippet) > 120:
             snippet = snippet[:117] + "..."
         found[key] = InteractiveCandidate(
-            key=key, raw=raw, source=source, line=idx + 1,
-            snippet=snippet, declared_display=_has_display_decl(lines, idx),
+            key=key,
+            raw=raw,
+            source=source,
+            line=idx + 1,
+            snippet=snippet,
+            declared_display=_has_display_decl(lines, idx),
         )
         order.append(key)
 
@@ -202,7 +233,7 @@ def extract_candidates(text: str, source: str = "") -> List[InteractiveCandidate
         # 模式 1/2：token 扫描
         for tok in _TOKEN_RE.findall(line):
             low_tok = tok.lower()
-            has_sep = ("-" in tok or "_" in tok)
+            has_sep = "-" in tok or "_" in tok
             if has_sep:
                 _register(tok, idx)
             elif _bare_keyword(low_tok):
@@ -221,9 +252,7 @@ def extract_candidates(text: str, source: str = "") -> List[InteractiveCandidate
 
     # 去重：SPEC 已识别出具体卡片 token（dark-Card--link 等）时，泛化 "cards"
     # 候选与它是同一元素族，不再单列
-    if "cards" in found and any(
-        k != "cards" and _primary_keyword(k) == "card" for k in found
-    ):
+    if "cards" in found and any(k != "cards" and _primary_keyword(k) == "card" for k in found):
         del found["cards"]
         order.remove("cards")
 
@@ -270,6 +299,7 @@ def collect_spec_candidates(project_root, spec_name: str) -> List[InteractiveCan
 
 # ── 场景侧：覆盖与声明 ──────────────────────────────────────────────
 
+
 def scenario_text_blob(scenario: Any) -> str:
     """把场景对象的可检索文本拼为单一小写串（id/description/covers/steps/assertions）。"""
     if not isinstance(scenario, dict):
@@ -290,8 +320,16 @@ def scenario_text_blob(scenario: Any) -> str:
         if isinstance(items, list):
             for it in items:
                 if isinstance(it, dict):
-                    for key in ("target", "selector", "label", "expected",
-                                "actual", "message", "description", "value"):
+                    for key in (
+                        "target",
+                        "selector",
+                        "label",
+                        "expected",
+                        "actual",
+                        "message",
+                        "description",
+                        "value",
+                    ):
                         val = it.get(key)
                         if isinstance(val, str):
                             parts.append(val)
@@ -345,6 +383,7 @@ def collect_display_declarations(planner_scenarios: Any) -> List[str]:
 
 # ── 遗留集判定（design D2：旧场景集不追溯）─────────────────────────
 
+
 def is_legacy_scenario_set(scenario_set: Any) -> bool:
     """持久化场景集是否为「无契约元数据」的遗留集。
 
@@ -366,9 +405,10 @@ def is_legacy_scenario_set(scenario_set: Any) -> bool:
 
 # ── 校验入口（pm_engine 场景执行前调用）────────────────────────────
 
-def validate_interaction_coverage(project_root, spec_name: str,
-                                  planner_scenarios: Any,
-                                  persisted_set: Any = None) -> ContractResult:
+
+def validate_interaction_coverage(
+    project_root, spec_name: str, planner_scenarios: Any, persisted_set: Any = None
+) -> ContractResult:
     """校验场景集对可交互候选的覆盖（design D1/D2）。
 
     Args:
@@ -404,17 +444,13 @@ def validate_interaction_coverage(project_root, spec_name: str,
         if cand.declared_display or cand.key in declared:
             result.declared.append(cand.key)
             result.change_lines.append(
-                f"- 元素 {cand.key}（{cand.source}:{cand.line}）声明纯展示，"
-                f"豁免交互场景"
+                f"- 元素 {cand.key}（{cand.source}:{cand.line}）声明纯展示，" f"豁免交互场景"
             )
             continue
-        covering = [str(s.get("id") or "?") for s in scenarios
-                    if scenario_covers(s, cand)]
+        covering = [str(s.get("id") or "?") for s in scenarios if scenario_covers(s, cand)]
         if covering:
             result.covered.append((cand.key, covering))
-            result.change_lines.append(
-                f"- 元素 {cand.key} 由场景 {'、'.join(covering)} 覆盖"
-            )
+            result.change_lines.append(f"- 元素 {cand.key} 由场景 {'、'.join(covering)} 覆盖")
         else:
             result.uncovered.append(cand.key)
             result.change_lines.append(
@@ -427,6 +463,7 @@ def validate_interaction_coverage(project_root, spec_name: str,
 
 
 # ── 反馈渲染（复用场景验收退回 plan 的反馈机制）────────────────────
+
 
 def build_replan_feedback(result: ContractResult) -> str:
     """把覆盖不完整结论渲染为 REPLAN_FEEDBACK 文本（要求 planner 补齐）。"""
@@ -442,8 +479,8 @@ def build_replan_feedback(result: ContractResult) -> str:
             lines.append(
                 f"- `{cand.raw}`（{cand.source}:{cand.line}）：补一个覆盖该元素"
                 f"交互行为的场景（点击/操作后的可观察结果断言，并在场景对象上"
-                f"用 \"covers\": [\"{cand.raw}\"] 登记）；或确认其纯展示——在场景"
-                f"对象上用 \"declared_display\": [\"{cand.raw}\"] 声明"
+                f'用 "covers": ["{cand.raw}"] 登记）；或确认其纯展示——在场景'
+                f'对象上用 "declared_display": ["{cand.raw}"] 声明'
             )
         else:
             lines.append(f"- `{key}`：补交互场景或声明纯展示")

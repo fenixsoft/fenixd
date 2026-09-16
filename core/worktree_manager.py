@@ -49,7 +49,7 @@ DASHBOARD_STATIC_ROOT = "core/dashboard/static/"
 # is_available 的返回值：以 git 为真相（git worktree list + rev-parse --verify），
 # 不信任内存表（daemon 重启即失）。recovery 保留判定、resume 派发、复用认领
 # 三条链路共用同一查询，禁止各链路自行拼装目录/分支判断。
-WT_AVAILABLE = "available"      # 分支可解析 + 目录在场 + git worktree 注册有效 → 原地可用
+WT_AVAILABLE = "available"  # 分支可解析 + 目录在场 + git worktree 注册有效 → 原地可用
 WT_REBUILDABLE = "rebuildable"  # 分支可解析但目录缺失/未注册 → 可在既有分支上重建
 WT_UNAVAILABLE = "unavailable"  # 分支不可解析（已并入/已清扫/typo）→ 不可用，调用方降级
 
@@ -58,7 +58,7 @@ def _is_build_artifact_path(path: str) -> bool:
     """构建产物路径判定：static 根下任一层级 dist 目录内的文件。"""
     if not path.startswith(DASHBOARD_STATIC_ROOT):
         return False
-    parts = path[len(DASHBOARD_STATIC_ROOT):].split("/")
+    parts = path[len(DASHBOARD_STATIC_ROOT) :].split("/")
     return len(parts) >= 2 and "dist" in parts[:-1]
 
 
@@ -76,18 +76,27 @@ class MergeConflictInfo:
     """
 
     __slots__ = (
-        "success", "error", "conflict_paths",
-        "self_heal_applicable", "self_heal_succeeded", "has_semantic_conflict",
-        "rehearsed", "wip_overlap",
+        "success",
+        "error",
+        "conflict_paths",
+        "self_heal_applicable",
+        "self_heal_succeeded",
+        "has_semantic_conflict",
+        "rehearsed",
+        "wip_overlap",
     )
 
-    def __init__(self, success: bool, error: str,
-                 conflict_paths: list | None = None,
-                 self_heal_applicable: bool = False,
-                 self_heal_succeeded: bool = False,
-                 has_semantic_conflict: bool = False,
-                 rehearsed: bool = False,
-                 wip_overlap: list | None = None):
+    def __init__(
+        self,
+        success: bool,
+        error: str,
+        conflict_paths: list | None = None,
+        self_heal_applicable: bool = False,
+        self_heal_succeeded: bool = False,
+        has_semantic_conflict: bool = False,
+        rehearsed: bool = False,
+        wip_overlap: list | None = None,
+    ):
         self.success = bool(success)
         self.error = error
         self.conflict_paths = list(conflict_paths or [])
@@ -131,9 +140,15 @@ class WorktreeManager:
     _rehearsal_probe_done = False
     _rehearsal_supported = False
 
-    def __init__(self, base_dir: Path, project_root: Path, logger,
-                 process_scanner=None, implement_branch_prefix: str = None,
-                 state_reader=None):
+    def __init__(
+        self,
+        base_dir: Path,
+        project_root: Path,
+        logger,
+        process_scanner=None,
+        implement_branch_prefix: str = None,
+        state_reader=None,
+    ):
         self.base_dir = Path(base_dir)
         self.project_root = Path(project_root)
         self.logger = logger
@@ -199,7 +214,7 @@ class WorktreeManager:
         Returns: Path to the worktree, or None on failure.
         """
         # Prevent duplicate worktrees for the same SPEC+agent_type
-        #（fix-restart-dual-dispatch S2：check-then-add 原子化，见 __init__ 注释）
+        # （fix-restart-dual-dispatch S2：check-then-add 原子化，见 __init__ 注释）
         lock_key = f"{spec_name}:{agent_type}"
         with self._spec_lock_th:
             if lock_key in self._spec_locks:
@@ -214,8 +229,7 @@ class WorktreeManager:
         # worktree 继承（fast-track 打回重派 / fix-provider-transient-backoff D3：
         # transient 终态保留的全 agent_type 遗产）：优先认领上一轮保留的复用遗产，
         # 在同一目录同一分支上继续（继承已提交成果与未提交现场），不再从零新建。
-        if agent_type in ("fast-track", "implementer", "planner-plan",
-                          "planner-judge", "verifier"):
+        if agent_type in ("fast-track", "implementer", "planner-plan", "planner-judge", "verifier"):
             reuse = self._take_reusable_worktree(spec_name)
             if reuse is not None:
                 wt_path, branch = reuse
@@ -254,9 +268,13 @@ class WorktreeManager:
             # Create worktree
             result = subprocess.run(
                 [
-                    "git", "-C", str(self.project_root),
-                    "worktree", "add",
-                    "-b", branch,
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "worktree",
+                    "add",
+                    "-b",
+                    branch,
                     str(wt_path),
                     "HEAD",
                 ],
@@ -285,21 +303,24 @@ class WorktreeManager:
             # git 不携带 node_modules，实现者每轮手工安装是既有摩擦源（fast-track 复盘）
             try:
                 from core.verify_contract import (
-                    load_verify_contract, provision_worktree_node_modules,
-                    read_config_deps_mode, resolve_deps_mode)
+                    load_verify_contract,
+                    provision_worktree_node_modules,
+                    read_config_deps_mode,
+                    resolve_deps_mode,
+                )
+
                 contract = load_verify_contract(self.project_root)
-                sub_dirs = sorted({(s.cwd or ".") for s in contract.prepare}) \
-                    if contract else []
+                sub_dirs = sorted({(s.cwd or ".") for s in contract.prepare}) if contract else []
                 if sub_dirs:
                     provision_worktree_node_modules(
-                        wt_path, self.project_root, sub_dirs,
-                        mode=resolve_deps_mode(
-                            contract, read_config_deps_mode(self.project_root)),
+                        wt_path,
+                        self.project_root,
+                        sub_dirs,
+                        mode=resolve_deps_mode(contract, read_config_deps_mode(self.project_root)),
                         logger=self.logger,
                     )
             except Exception as e:
-                self.logger.warning(
-                    "worktree_manager", f"worktree node_modules 供给跳过: {e}")
+                self.logger.warning("worktree_manager", f"worktree node_modules 供给跳过: {e}")
 
             self.logger.info("worktree_manager", f"Worktree created: {wt_path}")
             return wt_path
@@ -355,7 +376,9 @@ class WorktreeManager:
             # Git add + commit in the worktree
             result = subprocess.run(
                 ["git", "-C", str(wt_path), "add", "spec/changes/"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if result.returncode != 0:
                 self.logger.warning(
@@ -366,10 +389,16 @@ class WorktreeManager:
 
             result = subprocess.run(
                 [
-                    "git", "-C", str(wt_path),
-                    "commit", "-m", f"[fenix] spec: {spec_name}",
+                    "git",
+                    "-C",
+                    str(wt_path),
+                    "commit",
+                    "-m",
+                    f"[fenix] spec: {spec_name}",
                 ],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if result.returncode != 0:
                 self.logger.warning(
@@ -402,7 +431,9 @@ class WorktreeManager:
         try:
             status = subprocess.run(
                 ["git", "-C", str(self.project_root), "status", "--porcelain", "--", rel],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if status.returncode != 0:
                 return False
@@ -411,15 +442,18 @@ class WorktreeManager:
 
             add = subprocess.run(
                 ["git", "-C", str(self.project_root), "add", "--", rel],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if add.returncode != 0:
                 return False
 
             commit = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "commit", "-m", f"[fenix] spec: {spec_name}"],
-                capture_output=True, text=True, timeout=30,
+                ["git", "-C", str(self.project_root), "commit", "-m", f"[fenix] spec: {spec_name}"],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if commit.returncode != 0:
                 self.logger.warning(
@@ -451,9 +485,18 @@ class WorktreeManager:
         """
         try:
             added = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "diff", "--name-only", "--diff-filter=A", f"HEAD...{branch}"],
-                capture_output=True, text=True, timeout=30,
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "diff",
+                    "--name-only",
+                    "--diff-filter=A",
+                    f"HEAD...{branch}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
         except subprocess.TimeoutExpired:
             return None
@@ -470,9 +513,10 @@ class WorktreeManager:
             if not src.exists():
                 continue
             ls = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "ls-files", "--error-unmatch", "--", rel],
-                capture_output=True, text=True, timeout=30,
+                ["git", "-C", str(self.project_root), "ls-files", "--error-unmatch", "--", rel],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if ls.returncode != 0:  # 0 = tracked；非 0 = untracked（含 ignored 以外）
                 rels.append(rel)
@@ -608,7 +652,9 @@ class WorktreeManager:
                 try:
                     br = subprocess.run(
                         ["git", "-C", str(wt_path), "rev-parse", "--abbrev-ref", "HEAD"],
-                        capture_output=True, text=True, timeout=10,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
                     )
                     if br.returncode == 0:
                         branch = br.stdout.strip()
@@ -628,8 +674,12 @@ class WorktreeManager:
 
             # Build command without empty strings
             cmd = [
-                "git", "-C", str(self.project_root),
-                "worktree", "remove", str(wt_path),
+                "git",
+                "-C",
+                str(self.project_root),
+                "worktree",
+                "remove",
+                str(wt_path),
             ]
             if not success:
                 cmd.append("--force")
@@ -661,7 +711,8 @@ class WorktreeManager:
             if not success and branch and branch != "HEAD":
                 subprocess.run(
                     ["git", "-C", str(self.project_root), "branch", "-D", branch],
-                    capture_output=True, timeout=10,
+                    capture_output=True,
+                    timeout=10,
                 )
                 self.logger.info("worktree_manager", f"Deleted branch: {branch}")
 
@@ -674,9 +725,9 @@ class WorktreeManager:
             # Release the spec lock
             # Find and remove the matching lock key
             to_remove = [
-                k for k in self._spec_locks
-                if wt_str.endswith(k.split(":")[0])
-                or k.split(":")[0] in wt_str
+                k
+                for k in self._spec_locks
+                if wt_str.endswith(k.split(":")[0]) or k.split(":")[0] in wt_str
             ]
             for k in to_remove:
                 self._spec_locks.discard(k)
@@ -687,8 +738,7 @@ class WorktreeManager:
                 # worktree 继承：认领痕迹随之清除（防止后续 prompt 误注入继承说明）
                 self._active_reuse.pop(self._lock_spec_name(k), None)
 
-    def _snapshot_dirty_worktree(self, wt_path: Path,
-                                   branch: str | None = None) -> str:
+    def _snapshot_dirty_worktree(self, wt_path: Path, branch: str | None = None) -> str:
         """cleanup rmtree fallback 前对 dirty worktree 做 stash create 快照留档。
 
         add-impl-terminal-nocommit-gate（D4）：用 ``git stash create``（引用式、
@@ -702,14 +752,24 @@ class WorktreeManager:
         try:
             status = subprocess.run(
                 ["git", "-C", str(wt_path), "status", "--porcelain"],
-                capture_output=True, text=True, timeout=15,
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
             if status.returncode != 0 or not status.stdout.strip():
                 return ""  # 干净，无快照价值
             snap = subprocess.run(
-                ["git", "-C", str(wt_path), "stash", "create",
-                 f"fenix: pre-rmtree snapshot {branch or wt_path.name}"],
-                capture_output=True, text=True, timeout=30,
+                [
+                    "git",
+                    "-C",
+                    str(wt_path),
+                    "stash",
+                    "create",
+                    f"fenix: pre-rmtree snapshot {branch or wt_path.name}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if snap.returncode != 0 or not snap.stdout.strip():
                 self.logger.warning(
@@ -729,8 +789,7 @@ class WorktreeManager:
         except (subprocess.TimeoutExpired, OSError) as e:
             self.logger.warning(
                 "worktree_manager",
-                f"Pre-rmtree snapshot failed for {wt_path}: {e} — "
-                f"cleanup proceeds",
+                f"Pre-rmtree snapshot failed for {wt_path}: {e} — " f"cleanup proceeds",
             )
             return ""
 
@@ -765,13 +824,17 @@ class WorktreeManager:
                 self.logger.info("worktree_manager", f"Cleaning up orphan: {wt_dir}")
                 # 硬删前留档（D2）：git worktree remove --force 成功路径同样先
                 # 留快照引用，消灭「先删后查」取证盲区；失败仅 WARNING 不阻塞。
-                self._snapshot_dirty_worktree(
-                    wt_dir, self._wt_branches.get(str(wt_dir)))
+                self._snapshot_dirty_worktree(wt_dir, self._wt_branches.get(str(wt_dir)))
                 try:
                     subprocess.run(
                         [
-                            "git", "-C", str(self.project_root),
-                            "worktree", "remove", str(wt_dir), "--force",
+                            "git",
+                            "-C",
+                            str(self.project_root),
+                            "worktree",
+                            "remove",
+                            str(wt_dir),
+                            "--force",
                         ],
                         capture_output=True,
                         timeout=30,
@@ -866,9 +929,12 @@ class WorktreeManager:
             # 避免被下方 cleanup_stale_worktrees 直接回收。实现死亡主路径在 cleanup()
             # 已注册，此处为补充（幂等：register_legacy 覆盖式更新）。
             self._maybe_register_legacy_for_stale_lock(spec)
-            released.extend(self._release_spec_locks(
-                spec, f"stale lock: no live process, stream idle "
-                      f">{STALE_LOCK_IDLE_SECONDS}s"))
+            released.extend(
+                self._release_spec_locks(
+                    spec,
+                    f"stale lock: no live process, stream idle " f">{STALE_LOCK_IDLE_SECONDS}s",
+                )
+            )
         if released:
             self.logger.warning(
                 "worktree_manager",
@@ -912,8 +978,9 @@ class WorktreeManager:
         self._legacy[spec_name] = {
             "path": wt_str,
             "branch": branch or "",
-            "worktree_name": (wt_str.rstrip("/").split("/")[-1]
-                              if wt_str else f"branch-only:{branch}"),
+            "worktree_name": (
+                wt_str.rstrip("/").split("/")[-1] if wt_str else f"branch-only:{branch}"
+            ),
             "registered_at": time.time(),
             "dirty": bool(wt_str),  # worktree 模式待刷新脏快照；仅分支模式无脏文件
         }
@@ -951,25 +1018,29 @@ class WorktreeManager:
         )
         try:
             from pathlib import Path as _Path
+
             path = rec.get("path", "")
             branch = rec.get("branch", "")
             if path:
                 wt = _Path(path)
                 res = subprocess.run(
-                    ["git", "-C", str(self.project_root), "worktree", "remove",
-                     str(wt), "--force"],
-                    capture_output=True, text=True, timeout=30,
+                    ["git", "-C", str(self.project_root), "worktree", "remove", str(wt), "--force"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 if res.returncode != 0 and wt.exists():
                     shutil.rmtree(str(wt), ignore_errors=True)
             if branch and branch != "HEAD":
                 subprocess.run(
                     ["git", "-C", str(self.project_root), "branch", "-D", branch],
-                    capture_output=True, timeout=10,
+                    capture_output=True,
+                    timeout=10,
                 )
             subprocess.run(
                 ["git", "-C", str(self.project_root), "worktree", "prune"],
-                capture_output=True, timeout=10,
+                capture_output=True,
+                timeout=10,
             )
         except Exception as e:
             self.logger.warning(
@@ -987,8 +1058,7 @@ class WorktreeManager:
     # 复用遗产机制做宽限期回收与清扫豁免），下一轮派发 create() 优先认领同一
     # 目录同一分支继续工作——继承上一轮已提交成果与未提交现场，不再从零重做。
 
-    def keep_for_reuse(self, spec_name: str, wt_path: Path,
-                       agent_type: str = "") -> None:
+    def keep_for_reuse(self, spec_name: str, wt_path: Path, agent_type: str = "") -> None:
         """保留 worktree 目录与分支，登记供下轮重派继承。
 
         底层复用 register_legacy（同一登记表：宽限期回收、清扫器豁免全继承），
@@ -1000,10 +1070,7 @@ class WorktreeManager:
         （fast-track / implementer / transient 其他 agent_type）。
         """
         wt_str = str(wt_path)
-        branch = (
-            self._wt_branches.get(wt_str)
-            or self._guess_branch_from_worktree(wt_path)
-        )
+        branch = self._wt_branches.get(wt_str) or self._guess_branch_from_worktree(wt_path)
         # 收工清扫：agent 已退出，杀掉残留测试子进程（目录保留，进程不留）
         self._kill_worktree_strays(wt_path.name)
         self.register_legacy(spec_name, wt_path, branch)
@@ -1021,8 +1088,7 @@ class WorktreeManager:
         self.logger.info(
             "worktree_manager",
             f"Kept worktree for reuse: {wt_path} (branch {branch}, "
-            f"spec '{spec_name}'" + (f", agent_type '{agent_type}'" if agent_type else "")
-            + ")",
+            f"spec '{spec_name}'" + (f", agent_type '{agent_type}'" if agent_type else "") + ")",
         )
 
     def get_reuse_record(self, spec_name: str) -> Optional[dict]:
@@ -1038,7 +1104,8 @@ class WorktreeManager:
     def mark_reused(self, spec_name: str, wt_path: Path, branch: str) -> None:
         """标记跨 attempt 复用的 worktree（未走 create 认领路径时补记，幂等）。"""
         self._active_reuse[spec_name] = {
-            "path": str(wt_path), "branch": branch or "",
+            "path": str(wt_path),
+            "branch": branch or "",
         }
 
     def _take_reusable_worktree(self, spec_name: str) -> Optional[tuple]:
@@ -1102,7 +1169,9 @@ class WorktreeManager:
         try:
             br = subprocess.run(
                 ["git", "-C", str(wt_path), "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if br.returncode == 0:
                 return br.stdout.strip()
@@ -1123,7 +1192,8 @@ class WorktreeManager:
             return []
         now = time.time() if now is None else now
         expired = [
-            spec for spec, rec in self._legacy.items()
+            spec
+            for spec, rec in self._legacy.items()
             if now - rec.get("registered_at", 0) > LEGACY_GRACE_SECONDS
         ]
         reclaimed: list = []
@@ -1140,19 +1210,30 @@ class WorktreeManager:
             )
             try:
                 from pathlib import Path as _Path
+
                 wt = _Path(path)
                 if path:
                     res = subprocess.run(
-                        ["git", "-C", str(self.project_root), "worktree", "remove",
-                         str(wt), "--force"],
-                        capture_output=True, text=True, timeout=30,
+                        [
+                            "git",
+                            "-C",
+                            str(self.project_root),
+                            "worktree",
+                            "remove",
+                            str(wt),
+                            "--force",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
                     )
                     if res.returncode != 0:
                         shutil.rmtree(str(wt), ignore_errors=True)
                 if branch and branch != "HEAD":
                     subprocess.run(
                         ["git", "-C", str(self.project_root), "branch", "-D", branch],
-                        capture_output=True, timeout=10,
+                        capture_output=True,
+                        timeout=10,
                     )
             except Exception as e:
                 self.logger.warning(
@@ -1163,7 +1244,8 @@ class WorktreeManager:
         if reclaimed:
             subprocess.run(
                 ["git", "-C", str(self.project_root), "worktree", "prune"],
-                capture_output=True, timeout=10,
+                capture_output=True,
+                timeout=10,
             )
         return reclaimed
 
@@ -1224,8 +1306,7 @@ class WorktreeManager:
                 f"Process scan failed for '{spec_name}' (treated as absent): {e}",
             )
             alive = False
-        self._proc_scan_cache[spec_name] = (
-            now + PROCESS_SCAN_CACHE_SECONDS, alive)
+        self._proc_scan_cache[spec_name] = (now + PROCESS_SCAN_CACHE_SECONDS, alive)
         return alive
 
     def _pgrep_spec_process(self, spec_name: str) -> bool:
@@ -1242,7 +1323,9 @@ class WorktreeManager:
             try:
                 res = subprocess.run(
                     ["pgrep", "-f", pattern],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
             except (subprocess.SubprocessError, OSError):
                 return False
@@ -1284,13 +1367,13 @@ class WorktreeManager:
         try:
             res = subprocess.run(
                 ["pgrep", "-f", pattern],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
         except (subprocess.SubprocessError, OSError):
             return False
-        return res.returncode == 0 and any(
-            _is_claude_process(p) for p in res.stdout.split()
-        )
+        return res.returncode == 0 and any(_is_claude_process(p) for p in res.stdout.split())
 
     def _kill_worktree_strays(self, wt_name: str) -> list:
         """杀掉 cmdline 或 cwd 引用该 worktree 的非 agent 残留进程，返回被杀 PID。
@@ -1320,8 +1403,7 @@ class WorktreeManager:
                 # cmdline 匹配（既有判定）
                 try:
                     argv = (proc_dir / "cmdline").read_bytes().split(b"\0")
-                    argv_text = " ".join(
-                        a.decode("utf-8", "replace") for a in argv if a)
+                    argv_text = " ".join(a.decode("utf-8", "replace") for a in argv if a)
                 except OSError:
                     argv_text = ""
                 # cwd readlink 归属匹配（覆盖 argv 无路径的 Bash 包装进程）
@@ -1379,7 +1461,7 @@ class WorktreeManager:
         """
         for prefix in ("impl", "verify"):
             if wt_name.startswith(f"{prefix}-"):
-                rest = wt_name[len(prefix) + 1:]
+                rest = wt_name[len(prefix) + 1 :]
                 parts = rest.rsplit("-", 1)
                 if len(parts) == 2 and parts[0] and parts[1].isdigit():
                     return parts[0]
@@ -1395,9 +1477,9 @@ class WorktreeManager:
         """
         if not branch or not branch.startswith("fenix/"):
             return None
-        rest = branch[len("fenix/"):]
+        rest = branch[len("fenix/") :]
         if rest.startswith("verify-"):
-            rest = rest[len("verify-"):]
+            rest = rest[len("verify-") :]
         parts = rest.rsplit("-", 1)
         if len(parts) == 2 and parts[0] and parts[1].isdigit():
             return parts[0]
@@ -1419,7 +1501,9 @@ class WorktreeManager:
         try:
             result = subprocess.run(
                 ["git", "-C", str(self.project_root), "status", "--porcelain"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError):
             return []
@@ -1462,10 +1546,21 @@ class WorktreeManager:
         if not dirty_tracked:
             return False
         stash = subprocess.run(
-            ["git", "-C", str(self.project_root), "stash", "push",
-             "-m", AUTOSTASH_MSG_PREFIX,
-             "--", ".", ":(exclude)spec/changes"],
-            capture_output=True, text=True, timeout=30,
+            [
+                "git",
+                "-C",
+                str(self.project_root),
+                "stash",
+                "push",
+                "-m",
+                AUTOSTASH_MSG_PREFIX,
+                "--",
+                ".",
+                ":(exclude)spec/changes",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if stash.returncode != 0:
             self.logger.warning(
@@ -1509,16 +1604,19 @@ class WorktreeManager:
         # LIFO，此时栈顶即刚 push 的条目；drop 前以「sha 仍为栈顶」防并发插队。
         pinned_sha = ""
         rev = subprocess.run(
-            ["git", "-C", str(self.project_root), "rev-parse", "--verify",
-             "stash@{0}"],
-            capture_output=True, text=True, timeout=30,
+            ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if rev.returncode == 0:
             pinned_sha = rev.stdout.strip()
 
         result = subprocess.run(
             ["git", "-C", str(self.project_root), "stash", "pop"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if result.returncode == 0:
             self.logger.info("worktree_manager", "Stash popped after merge")
@@ -1555,9 +1653,11 @@ class WorktreeManager:
                     f"subsumed by merge result — entry auto-dropped",
                 )
             else:
-                recover_cmds = " ".join(
-                    f"git show {pinned_sha}:{f}" for f in conflict_files
-                ) if pinned_sha else "git stash show"
+                recover_cmds = (
+                    " ".join(f"git show {pinned_sha}:{f}" for f in conflict_files)
+                    if pinned_sha
+                    else "git stash show"
+                )
                 self.logger.warning(
                     "worktree_manager",
                     f"Stash pop conflict self-healed; discarded stash changes on "
@@ -1596,9 +1696,20 @@ class WorktreeManager:
         for f in conflict_files:
             try:
                 d = subprocess.run(
-                    ["git", "-C", str(self.project_root),
-                     "diff", "--quiet", pinned_sha, "HEAD", "--", f],
-                    capture_output=True, text=True, timeout=30,
+                    [
+                        "git",
+                        "-C",
+                        str(self.project_root),
+                        "diff",
+                        "--quiet",
+                        pinned_sha,
+                        "HEAD",
+                        "--",
+                        f,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
             except (subprocess.TimeoutExpired, OSError):
                 superseded = False
@@ -1610,9 +1721,10 @@ class WorktreeManager:
             return False
         # sha 仍在栈顶才 drop（防并发 autostash 插队误删）
         cur = subprocess.run(
-            ["git", "-C", str(self.project_root), "rev-parse", "--verify",
-             "stash@{0}"],
-            capture_output=True, text=True, timeout=30,
+            ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if cur.returncode != 0 or cur.stdout.strip() != pinned_sha:
             self.logger.warning(
@@ -1623,7 +1735,9 @@ class WorktreeManager:
             return False
         dropped = subprocess.run(
             ["git", "-C", str(self.project_root), "stash", "drop", "stash@{0}"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if dropped.returncode != 0:
             self.logger.warning(
@@ -1663,27 +1777,34 @@ class WorktreeManager:
         """
         status = subprocess.run(
             ["git", "-C", str(self.project_root), "status", "--porcelain"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if status.returncode != 0 or status.stdout.strip():
             return False
         lst = subprocess.run(
             ["git", "-C", str(self.project_root), "stash", "list", "-n", "1"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         # 格式：stash@{0}: On <branch>: fenix: pre-dispatch autostash
         top = lst.stdout.strip() if lst.returncode == 0 else ""
         if AUTOSTASH_MSG_PREFIX not in top:
             return False
         rev = subprocess.run(
-            ["git", "-C", str(self.project_root), "rev-parse", "--verify",
-             "stash@{0}"],
-            capture_output=True, text=True, timeout=30,
+            ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         sha_before = rev.stdout.strip() if rev.returncode == 0 else ""
         pop = subprocess.run(
             ["git", "-C", str(self.project_root), "stash", "pop"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if pop.returncode == 0:
             self.logger.warning(
@@ -1708,15 +1829,17 @@ class WorktreeManager:
             drop_sha = ""
             if sha_before:
                 cur = subprocess.run(
-                    ["git", "-C", str(self.project_root), "rev-parse",
-                     "--verify", "stash@{0}"],
-                    capture_output=True, text=True, timeout=30,
+                    ["git", "-C", str(self.project_root), "rev-parse", "--verify", "stash@{0}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 if cur.returncode == 0 and cur.stdout.strip() == sha_before:
                     dropped = subprocess.run(
-                        ["git", "-C", str(self.project_root), "stash", "drop",
-                         "stash@{0}"],
-                        capture_output=True, text=True, timeout=30,
+                        ["git", "-C", str(self.project_root), "stash", "drop", "stash@{0}"],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
                     )
                     if dropped.returncode == 0:
                         drop_sha = sha_before
@@ -1751,7 +1874,9 @@ class WorktreeManager:
         try:
             ls = subprocess.run(
                 ["git", "-C", str(self.project_root), "ls-files", "-u"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
         except subprocess.TimeoutExpired:
             return []
@@ -1779,7 +1904,9 @@ class WorktreeManager:
         try:
             res = subprocess.run(
                 ["git", "-C", str(self.project_root), "status", "--porcelain"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
         except subprocess.TimeoutExpired:
             return []
@@ -1808,9 +1935,10 @@ class WorktreeManager:
         for f in conflict_files:
             try:
                 subprocess.run(
-                    ["git", "-C", str(self.project_root), "checkout", "-f",
-                     "HEAD", "--", f],
-                    capture_output=True, text=True, timeout=30,
+                    ["git", "-C", str(self.project_root), "checkout", "-f", "HEAD", "--", f],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
             except subprocess.TimeoutExpired:
                 self.logger.warning(
@@ -1821,7 +1949,9 @@ class WorktreeManager:
         try:
             subprocess.run(
                 ["git", "-C", str(self.project_root), "reset"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
         except subprocess.TimeoutExpired:
             self.logger.warning(
@@ -1850,9 +1980,7 @@ class WorktreeManager:
         if not self.base_dir.exists():
             return
         # 在册遗产 worktree 名集合（宽限期内豁免）；实时监控避免与 _reclaim 竞争。
-        legacy_names = {
-            rec.get("worktree_name") for rec in self._legacy.values()
-        }
+        legacy_names = {rec.get("worktree_name") for rec in self._legacy.values()}
         for wt_dir in self.base_dir.iterdir():
             if not wt_dir.is_dir() or str(wt_dir) in self._active_worktrees:
                 continue
@@ -1882,21 +2010,32 @@ class WorktreeManager:
                 branch = None
                 br = subprocess.run(
                     ["git", "-C", str(wt_dir), "rev-parse", "--abbrev-ref", "HEAD"],
-                    capture_output=True, text=True, timeout=10,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
                 if br.returncode == 0:
                     branch = br.stdout.strip()
                 res = subprocess.run(
-                    ["git", "-C", str(self.project_root), "worktree", "remove",
-                     str(wt_dir), "--force"],
-                    capture_output=True, text=True, timeout=30,
+                    [
+                        "git",
+                        "-C",
+                        str(self.project_root),
+                        "worktree",
+                        "remove",
+                        str(wt_dir),
+                        "--force",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 if res.returncode != 0:
                     shutil.rmtree(str(wt_dir), ignore_errors=True)
                 if branch and branch != "HEAD":
                     # ── 分支在飞引用保护（fix-recovery-branch-anchor D6）──
                     # 删分支前检查该分支是否被 STATE 中在飞/待收口 spec 引用
-                    #（implementing/implemented/testing/带 _recovery_resume 的
+                    # （implementing/implemented/testing/带 _recovery_resume 的
                     # ready），或按「完整 spec 名 + 分隔符边界」匹配任一
                     # implementing spec 的实现分支（覆盖锚点尚未落盘的场合）。
                     # 命中则保留分支（worktree 目录照常已删）并打 WARNING；
@@ -1912,13 +2051,15 @@ class WorktreeManager:
                     else:
                         subprocess.run(
                             ["git", "-C", str(self.project_root), "branch", "-D", branch],
-                            capture_output=True, timeout=10,
+                            capture_output=True,
+                            timeout=10,
                         )
             except Exception as e:
                 self.logger.warning("worktree_manager", f"Stale worktree cleanup failed: {e}")
         subprocess.run(
             ["git", "-C", str(self.project_root), "worktree", "prune"],
-            capture_output=True, timeout=10,
+            capture_output=True,
+            timeout=10,
         )
 
     def _read_state_entries(self) -> Optional[dict]:
@@ -1948,6 +2089,7 @@ class WorktreeManager:
             if not state_path.exists():
                 return {}
             from core.state_machine import StateParser
+
             return StateParser.parse(state_path.read_text(encoding="utf-8"))
         except Exception as e:
             self.logger.warning(
@@ -1993,7 +2135,7 @@ class WorktreeManager:
             rest = None
             for prefix in ("fenix", self._implement_branch_prefix or "fenix"):
                 if prefix and branch.startswith(f"{prefix}/"):
-                    rest = branch[len(prefix) + 1:]
+                    rest = branch[len(prefix) + 1 :]
                     break
             if rest is None:
                 continue
@@ -2077,16 +2219,26 @@ class WorktreeManager:
             if not dirty:
                 return []
             mb = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "merge-base", "HEAD", branch],
-                capture_output=True, text=True, timeout=30,
+                ["git", "-C", str(self.project_root), "merge-base", "HEAD", branch],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if mb.returncode != 0 or not mb.stdout.strip():
                 return []
             diff = subprocess.run(
-                ["git", "-C", str(self.project_root), "diff", "--name-only",
-                 mb.stdout.strip(), branch],
-                capture_output=True, text=True, timeout=30,
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "diff",
+                    "--name-only",
+                    mb.stdout.strip(),
+                    branch,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if diff.returncode != 0:
                 return []
@@ -2118,13 +2270,12 @@ class WorktreeManager:
         if not WorktreeManager._rehearsal_probe_done:
             try:
                 res = subprocess.run(
-                    ["git", "-C", str(self.project_root),
-                     "merge-tree", "--write-tree"],
-                    capture_output=True, text=True, timeout=30,
+                    ["git", "-C", str(self.project_root), "merge-tree", "--write-tree"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
-                WorktreeManager._rehearsal_supported = (
-                    "unknown option" not in res.stderr
-                )
+                WorktreeManager._rehearsal_supported = "unknown option" not in res.stderr
             except (subprocess.SubprocessError, OSError):
                 WorktreeManager._rehearsal_supported = False
             WorktreeManager._rehearsal_probe_done = True
@@ -2156,10 +2307,19 @@ class WorktreeManager:
             return None
         try:
             res = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "merge-tree", "--write-tree", "--name-only",
-                 "HEAD", branch],
-                capture_output=True, text=True, timeout=60,
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "merge-tree",
+                    "--write-tree",
+                    "--name-only",
+                    "HEAD",
+                    branch,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
         except (subprocess.TimeoutExpired, OSError):
             return None
@@ -2222,9 +2382,10 @@ class WorktreeManager:
         """
         try:
             chk = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "check-ignore", "-q", "--", path],
-                capture_output=True, text=True, timeout=30,
+                ["git", "-C", str(self.project_root), "check-ignore", "-q", "--", path],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
         except (subprocess.TimeoutExpired, OSError):
             return False
@@ -2240,9 +2401,18 @@ class WorktreeManager:
         try:
             # Idempotency check: is branch already an ancestor of HEAD?
             ancestor = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "merge-base", "--is-ancestor", branch, "HEAD"],
-                capture_output=True, text=True, timeout=30,
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "merge-base",
+                    "--is-ancestor",
+                    branch,
+                    "HEAD",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if ancestor.returncode == 0:
                 self.logger.info(
@@ -2264,36 +2434,68 @@ class WorktreeManager:
             backup = self._backup_untracked_spec_files(branch)
             head_before = subprocess.run(
                 ["git", "-C", str(self.project_root), "rev-parse", "HEAD"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             ).stdout.strip()
 
             # Merge with --no-ff to preserve worktree history
             result = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "merge", "--no-ff", branch,
-                 "-m", f"[fenix] merge implementer branch {branch}"],
-                capture_output=True, text=True, timeout=120,
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "merge",
+                    "--no-ff",
+                    branch,
+                    "-m",
+                    f"[fenix] merge implementer branch {branch}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
             )
             if result.returncode != 0:
-                error = (result.stderr.strip() or result.stdout.strip()
-                         or f"exit code {result.returncode}")
+                error = (
+                    result.stderr.strip()
+                    or result.stdout.strip()
+                    or f"exit code {result.returncode}"
+                )
                 # DRY 自愈（fix-merge-dirty-ignored-draft）：主树被 ignore 的 tracked
                 # 运行时草稿带未提交修改、而 merge 需写该路径时，git 直接拒绝且不进入
                 # 冲突态（_resolve_ignored_modify_delete_conflicts 覆盖不到）。移出后重试。
                 blockers = self._parse_merge_blockers(error)
                 if blockers and self._untrack_ignored_local_changes(blockers):
                     result = subprocess.run(
-                        ["git", "-C", str(self.project_root),
-                         "merge", "--no-ff", branch,
-                         "-m", f"[fenix] merge implementer branch {branch}"],
-                        capture_output=True, text=True, timeout=120,
+                        [
+                            "git",
+                            "-C",
+                            str(self.project_root),
+                            "merge",
+                            "--no-ff",
+                            branch,
+                            "-m",
+                            f"[fenix] merge implementer branch {branch}",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
                     )
                 elif blockers and self._discard_identical_local_changes(blockers, branch):
                     result = subprocess.run(
-                        ["git", "-C", str(self.project_root),
-                         "merge", "--no-ff", branch,
-                         "-m", f"[fenix] merge implementer branch {branch}"],
-                        capture_output=True, text=True, timeout=120,
+                        [
+                            "git",
+                            "-C",
+                            str(self.project_root),
+                            "merge",
+                            "--no-ff",
+                            branch,
+                            "-m",
+                            f"[fenix] merge implementer branch {branch}",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
                     )
             if result.returncode == 0:
                 self._drop_backup(backup)
@@ -2308,7 +2510,9 @@ class WorktreeManager:
                 )
                 return MergeConflictInfo(True, "")
 
-            error = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+            error = (
+                result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+            )
             self.logger.error(
                 "worktree_manager",
                 f"Merge failed for branch '{branch}': {error}",
@@ -2332,7 +2536,10 @@ class WorktreeManager:
                     f"branch) for branch '{branch}'",
                 )
                 return MergeConflictInfo(
-                    True, "", self_heal_applicable=True, self_heal_succeeded=True,
+                    True,
+                    "",
+                    self_heal_applicable=True,
+                    self_heal_succeeded=True,
                 )
             # merge 冲突自愈（fix-merge-modify-delete-ignored）：modify/delete 冲突
             # 且全部冲突路径都是 .gitignore 忽略的运行时草稿时，采纳主树侧的删除。
@@ -2348,7 +2555,10 @@ class WorktreeManager:
                     f"for branch '{branch}'",
                 )
                 return MergeConflictInfo(
-                    True, "", self_heal_applicable=True, self_heal_succeeded=True,
+                    True,
+                    "",
+                    self_heal_applicable=True,
+                    self_heal_succeeded=True,
                 )
             # ── 语义冲突分类收集（add-merge-back-repair-lane D1）────────────
             # 两级自愈均不适用（冲突含非产物语义文件）时，在 abort **之前**采集
@@ -2359,9 +2569,7 @@ class WorktreeManager:
             self_heal_applicable = bool(conflict_paths) and all(
                 _is_build_artifact_path(p) for p in conflict_paths
             )
-            has_semantic_conflict = any(
-                not _is_build_artifact_path(p) for p in conflict_paths
-            )
+            has_semantic_conflict = any(not _is_build_artifact_path(p) for p in conflict_paths)
             if conflict_paths:
                 self.logger.warning(
                     "worktree_manager",
@@ -2372,12 +2580,15 @@ class WorktreeManager:
             # Abort the merge so main tree is left clean for retry
             subprocess.run(
                 ["git", "-C", str(self.project_root), "merge", "--abort"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             # 恢复被移开的 untracked 文件（不丢数据，供下一轮重试）
             self._restore_backup(backup)
             return MergeConflictInfo(
-                False, error,
+                False,
+                error,
                 conflict_paths=conflict_paths,
                 self_heal_applicable=self_heal_applicable,
                 has_semantic_conflict=has_semantic_conflict,
@@ -2413,7 +2624,9 @@ class WorktreeManager:
         try:
             res = subprocess.run(
                 ["git", "-C", str(self.project_root), "status", "--porcelain"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if res.returncode != 0:
                 return False
@@ -2434,8 +2647,7 @@ class WorktreeManager:
             conflict_paths = _collect_unmerged(res.stdout)
             if not conflict_paths:
                 return False
-            artifact_paths = [
-                p for p in conflict_paths if _is_build_artifact_path(p)]
+            artifact_paths = [p for p in conflict_paths if _is_build_artifact_path(p)]
             if not artifact_paths:
                 return False
 
@@ -2444,40 +2656,64 @@ class WorktreeManager:
             for p in artifact_paths:
                 if p in head_artifacts:
                     subprocess.run(
-                        ["git", "-C", str(self.project_root), "checkout",
-                         "HEAD", "--", p],
-                        capture_output=True, text=True, timeout=60,
+                        ["git", "-C", str(self.project_root), "checkout", "HEAD", "--", p],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
                     )
                 else:
                     subprocess.run(
-                        ["git", "-C", str(self.project_root), "rm", "-f",
-                         "--ignore-unmatch", "--", p],
-                        capture_output=True, text=True, timeout=30,
+                        [
+                            "git",
+                            "-C",
+                            str(self.project_root),
+                            "rm",
+                            "-f",
+                            "--ignore-unmatch",
+                            "--",
+                            p,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
                     )
             # 收口：分支侧干净 add 的产物（非冲突新增）不复活——staged 产物中
             # HEAD 没有的一律移除（含旧路径双胞胎、对方重命名后的旧 hash chunk）
             staged = subprocess.run(
-                ["git", "-C", str(self.project_root), "diff", "--cached",
-                 "--name-only", "--diff-filter=A", "--",
-                 DASHBOARD_STATIC_ROOT],
-                capture_output=True, text=True, timeout=30,
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "diff",
+                    "--cached",
+                    "--name-only",
+                    "--diff-filter=A",
+                    "--",
+                    DASHBOARD_STATIC_ROOT,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if staged.returncode == 0:
                 strays = [
-                    line for line in staged.stdout.splitlines()
-                    if _is_build_artifact_path(line)
-                    and line not in head_artifacts
+                    line
+                    for line in staged.stdout.splitlines()
+                    if _is_build_artifact_path(line) and line not in head_artifacts
                 ]
                 for p in strays:
                     subprocess.run(
-                        ["git", "-C", str(self.project_root), "rm", "-q",
-                         "-f", "--", p],
-                        capture_output=True, text=True, timeout=30,
+                        ["git", "-C", str(self.project_root), "rm", "-q", "-f", "--", p],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
                     )
             # 剩余冲突：非产物路径仍冲突 → 语义冲突，交回调用方（不 abort）
             res2 = subprocess.run(
                 ["git", "-C", str(self.project_root), "status", "--porcelain"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             remaining = _collect_unmerged(res2.stdout) if res2.returncode == 0 else []
             if remaining:
@@ -2491,7 +2727,9 @@ class WorktreeManager:
             # 完成原 merge
             commit = subprocess.run(
                 ["git", "-C", str(self.project_root), "commit", "--no-edit"],
-                capture_output=True, text=True, timeout=60,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             if commit.returncode != 0:
                 self.logger.warning(
@@ -2501,7 +2739,9 @@ class WorktreeManager:
                 )
                 subprocess.run(
                     ["git", "-C", str(self.project_root), "merge", "--abort"],
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 return False
             self.logger.warning(
@@ -2519,7 +2759,9 @@ class WorktreeManager:
             try:
                 subprocess.run(
                     ["git", "-C", str(self.project_root), "merge", "--abort"],
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
             except Exception:
                 pass
@@ -2535,8 +2777,13 @@ class WorktreeManager:
         供 merge 后确定性重建使用；测试通过 patch 本方法模拟构建产物/失败。
         """
         from core.verify_contract import (
-            ensure_main_tree_deps, load_verify_contract, read_config_deps_mode,
-            resolve_deps_mode, run_prepare_steps)
+            ensure_main_tree_deps,
+            load_verify_contract,
+            read_config_deps_mode,
+            resolve_deps_mode,
+            run_prepare_steps,
+        )
+
         contract = load_verify_contract(self.project_root, self.logger)
         if contract is not None:
             if not contract.prepare:
@@ -2548,8 +2795,7 @@ class WorktreeManager:
             ensure_main_tree_deps(
                 self.project_root,
                 sorted({(s.cwd or ".") for s in contract.prepare}),
-                mode=resolve_deps_mode(
-                    contract, read_config_deps_mode(self.project_root)),
+                mode=resolve_deps_mode(contract, read_config_deps_mode(self.project_root)),
                 logger=self.logger,
             )
             err = run_prepare_steps(contract, self.project_root)
@@ -2569,8 +2815,11 @@ class WorktreeManager:
             return False
         try:
             r = subprocess.run(
-                ["npm", "run", "build"], cwd=str(static_dir),
-                capture_output=True, text=True, timeout=600,
+                ["npm", "run", "build"],
+                cwd=str(static_dir),
+                capture_output=True,
+                text=True,
+                timeout=600,
             )
             return r.returncode == 0
         except (subprocess.SubprocessError, OSError) as e:
@@ -2595,16 +2844,16 @@ class WorktreeManager:
         """
         try:
             diff = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "diff", "--name-only", "HEAD^1", "HEAD"],
-                capture_output=True, text=True, timeout=30,
+                ["git", "-C", str(self.project_root), "diff", "--name-only", "HEAD^1", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if diff.returncode != 0:
                 return
             changed = [l.strip() for l in diff.stdout.splitlines() if l.strip()]
             src_touched = any(
-                p.startswith(DASHBOARD_STATIC_ROOT)
-                and not _is_build_artifact_path(p)
+                p.startswith(DASHBOARD_STATIC_ROOT) and not _is_build_artifact_path(p)
                 for p in changed
             )
             if not src_touched:
@@ -2618,37 +2867,58 @@ class WorktreeManager:
                 )
                 return
             subprocess.run(
-                ["git", "-C", str(self.project_root), "add", "-A", "--",
-                 DASHBOARD_STATIC_ROOT],
-                capture_output=True, text=True, timeout=60,
+                ["git", "-C", str(self.project_root), "add", "-A", "--", DASHBOARD_STATIC_ROOT],
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             staged = subprocess.run(
-                ["git", "-C", str(self.project_root), "status", "--porcelain",
-                 "--", DASHBOARD_STATIC_ROOT],
-                capture_output=True, text=True, timeout=30,
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "status",
+                    "--porcelain",
+                    "--",
+                    DASHBOARD_STATIC_ROOT,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if not staged.stdout.strip():
                 return  # 重建结果与提交版一致，无需 amend
             amend = subprocess.run(
-                ["git", "-C", str(self.project_root), "commit", "--amend",
-                 "--no-edit"],
-                capture_output=True, text=True, timeout=60,
+                ["git", "-C", str(self.project_root), "commit", "--amend", "--no-edit"],
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             if amend.returncode != 0:
                 # 恢复干净：unstage + dist 回到提交版，不让脏树阻塞后续 merge
                 subprocess.run(
                     ["git", "-C", str(self.project_root), "reset", "-q"],
-                    capture_output=True, text=True, timeout=30,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 subprocess.run(
-                    ["git", "-C", str(self.project_root), "checkout", "HEAD",
-                     "--", DASHBOARD_STATIC_ROOT],
-                    capture_output=True, text=True, timeout=60,
+                    [
+                        "git",
+                        "-C",
+                        str(self.project_root),
+                        "checkout",
+                        "HEAD",
+                        "--",
+                        DASHBOARD_STATIC_ROOT,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
                 )
                 self.logger.error(
                     "worktree_manager",
-                    f"dist rebuild amend failed: "
-                    f"{(amend.stderr or '').strip()[:200]}",
+                    f"dist rebuild amend failed: " f"{(amend.stderr or '').strip()[:200]}",
                 )
                 return
             self.logger.info(
@@ -2664,14 +2934,23 @@ class WorktreeManager:
     def _artifact_paths(self, rev: str) -> set:
         """列出 <rev> 中 static 根下全部构建产物路径（按目录层次容错判定）。"""
         ls = subprocess.run(
-            ["git", "-C", str(self.project_root), "ls-tree", "-r",
-             "--name-only", rev, DASHBOARD_STATIC_ROOT],
-            capture_output=True, text=True, timeout=30,
+            [
+                "git",
+                "-C",
+                str(self.project_root),
+                "ls-tree",
+                "-r",
+                "--name-only",
+                rev,
+                DASHBOARD_STATIC_ROOT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         if ls.returncode != 0:
             return set()
-        return {line for line in ls.stdout.splitlines()
-                if _is_build_artifact_path(line)}
+        return {line for line in ls.stdout.splitlines() if _is_build_artifact_path(line)}
 
     def _parse_merge_blockers(self, error: str) -> list:
         """从 git 的 'local changes would be overwritten by merge' 错误中解析路径。
@@ -2690,7 +2969,7 @@ class WorktreeManager:
         if idx == -1:
             return []
         paths = []
-        for line in error[idx + len(marker):].splitlines():
+        for line in error[idx + len(marker) :].splitlines():
             if not line.strip():
                 if paths:
                     break  # 空行＝路径段结束
@@ -2722,9 +3001,19 @@ class WorktreeManager:
         try:
             for path in paths:
                 chk = subprocess.run(
-                    ["git", "-C", str(self.project_root),
-                     "check-ignore", "--no-index", "-q", "--", path],
-                    capture_output=True, text=True, timeout=30,
+                    [
+                        "git",
+                        "-C",
+                        str(self.project_root),
+                        "check-ignore",
+                        "--no-index",
+                        "-q",
+                        "--",
+                        path,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 if chk.returncode != 0:
                     self.logger.warning(
@@ -2735,9 +3024,10 @@ class WorktreeManager:
                     return False
             for path in paths:
                 rm = subprocess.run(
-                    ["git", "-C", str(self.project_root),
-                     "rm", "-f", "--cached", "--", path],
-                    capture_output=True, text=True, timeout=30,
+                    ["git", "-C", str(self.project_root), "rm", "-f", "--cached", "--", path],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 if rm.returncode != 0:
                     self.logger.warning(
@@ -2747,9 +3037,17 @@ class WorktreeManager:
                     )
                     return False
             commit = subprocess.run(
-                ["git", "-C", str(self.project_root), "commit",
-                 "-m", "[fenix] fix: merge 前移出被误提交的 ignored 运行时草稿"],
-                capture_output=True, text=True, timeout=60,
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "commit",
+                    "-m",
+                    "[fenix] fix: merge 前移出被误提交的 ignored 运行时草稿",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             if commit.returncode != 0:
                 self.logger.warning(
@@ -2793,14 +3091,13 @@ class WorktreeManager:
                 if not wt_file.is_file():
                     self.logger.warning(
                         "worktree_manager",
-                        f"Self-heal (identical) aborted: '{path}' missing in "
-                        f"main tree",
+                        f"Self-heal (identical) aborted: '{path}' missing in " f"main tree",
                     )
                     return False
                 show = subprocess.run(
-                    ["git", "-C", str(self.project_root),
-                     "show", f"{branch}:{path}"],
-                    capture_output=True, timeout=30,
+                    ["git", "-C", str(self.project_root), "show", f"{branch}:{path}"],
+                    capture_output=True,
+                    timeout=30,
                 )
                 if show.returncode != 0:
                     self.logger.warning(
@@ -2817,16 +3114,16 @@ class WorktreeManager:
                     )
                     return False
                 identical.append(path)
-            backup = (self.project_root / ".fenix" / "merge-backup"
-                      / f"identical-{int(time.time())}")
+            backup = self.project_root / ".fenix" / "merge-backup" / f"identical-{int(time.time())}"
             for path in identical:
                 dest = backup / path
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(self.project_root / path, dest)
             co = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "checkout", "HEAD", "--", *identical],
-                capture_output=True, text=True, timeout=30,
+                ["git", "-C", str(self.project_root), "checkout", "HEAD", "--", *identical],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if co.returncode != 0:
                 self.logger.warning(
@@ -2859,25 +3156,45 @@ class WorktreeManager:
         """
         try:
             diff = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "diff", "--name-only", "--diff-filter=A", f"{old_head}..HEAD"],
-                capture_output=True, text=True, timeout=30,
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "diff",
+                    "--name-only",
+                    "--diff-filter=A",
+                    f"{old_head}..HEAD",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if diff.returncode != 0 or not diff.stdout.strip():
                 return
             victims = []
             for rel in [ln.strip() for ln in diff.stdout.splitlines() if ln.strip()]:
                 ls = subprocess.run(
-                    ["git", "-C", str(self.project_root),
-                     "ls-files", "--error-unmatch", "--", rel],
-                    capture_output=True, text=True, timeout=30,
+                    ["git", "-C", str(self.project_root), "ls-files", "--error-unmatch", "--", rel],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 if ls.returncode != 0:
                     continue  # 已不在索引（或不存在）
                 chk = subprocess.run(
-                    ["git", "-C", str(self.project_root),
-                     "check-ignore", "--no-index", "-q", "--", rel],
-                    capture_output=True, text=True, timeout=30,
+                    [
+                        "git",
+                        "-C",
+                        str(self.project_root),
+                        "check-ignore",
+                        "--no-index",
+                        "-q",
+                        "--",
+                        rel,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 if chk.returncode == 0:
                     victims.append(rel)
@@ -2885,14 +3202,23 @@ class WorktreeManager:
                 return
             for rel in victims:
                 subprocess.run(
-                    ["git", "-C", str(self.project_root),
-                     "rm", "-f", "--cached", "--", rel],
-                    capture_output=True, text=True, timeout=30,
+                    ["git", "-C", str(self.project_root), "rm", "-f", "--cached", "--", rel],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
             commit = subprocess.run(
-                ["git", "-C", str(self.project_root), "commit",
-                 "-m", "[fenix] fix: merge 后移出随分支带回的 ignored 运行时草稿"],
-                capture_output=True, text=True, timeout=60,
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "commit",
+                    "-m",
+                    "[fenix] fix: merge 后移出随分支带回的 ignored 运行时草稿",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             if commit.returncode == 0:
                 self.logger.info(
@@ -2926,7 +3252,9 @@ class WorktreeManager:
         try:
             status = subprocess.run(
                 ["git", "-C", str(self.project_root), "status", "--porcelain"],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if status.returncode != 0:
                 return False
@@ -2945,9 +3273,10 @@ class WorktreeManager:
                 return False
             for path in du_paths:
                 rm = subprocess.run(
-                    ["git", "-C", str(self.project_root),
-                     "rm", "-f", "--cached", "--", path],
-                    capture_output=True, text=True, timeout=30,
+                    ["git", "-C", str(self.project_root), "rm", "-f", "--cached", "--", path],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 if rm.returncode != 0:
                     self.logger.warning(
@@ -2958,9 +3287,10 @@ class WorktreeManager:
                     return False
             for path in du_paths:
                 chk = subprocess.run(
-                    ["git", "-C", str(self.project_root),
-                     "check-ignore", "-q", "--", path],
-                    capture_output=True, text=True, timeout=30,
+                    ["git", "-C", str(self.project_root), "check-ignore", "-q", "--", path],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
                 )
                 if chk.returncode != 0:
                     # 未被忽略 → 疑似真实交付物冲突，不自愈，交回 abort 路径
@@ -2971,12 +3301,16 @@ class WorktreeManager:
                     )
                     subprocess.run(
                         ["git", "-C", str(self.project_root), "merge", "--abort"],
-                        capture_output=True, text=True, timeout=30,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
                     )
                     return False
             commit = subprocess.run(
                 ["git", "-C", str(self.project_root), "commit", "--no-edit"],
-                capture_output=True, text=True, timeout=60,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             if commit.returncode != 0:
                 self.logger.warning(
@@ -3000,8 +3334,7 @@ class WorktreeManager:
         wt_str = str(wt_path)
         branch = self._wt_branches.get(wt_str)
         if not branch:
-            return MergeConflictInfo(
-                False, f"Unknown worktree (no branch recorded): {wt_path}")
+            return MergeConflictInfo(False, f"Unknown worktree (no branch recorded): {wt_path}")
         return self.merge_back_from_branch(branch)
 
     def find_implementer_worktree(self, spec_name: str) -> Optional[Path]:
@@ -3045,16 +3378,18 @@ class WorktreeManager:
         try:
             # -e 仅判断对象可达（blob/tree/symlink），不输出内容，零成本。
             result = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "cat-file", "-e", f"{branch}:{rel_path}"],
-                capture_output=True, text=True, timeout=30,
+                ["git", "-C", str(self.project_root), "cat-file", "-e", f"{branch}:{rel_path}"],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if result.returncode != 0:
                 return False
             kind = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "cat-file", "-t", f"{branch}:{rel_path}"],
-                capture_output=True, text=True, timeout=30,
+                ["git", "-C", str(self.project_root), "cat-file", "-t", f"{branch}:{rel_path}"],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if kind.returncode != 0:
                 return False
@@ -3146,9 +3481,10 @@ class WorktreeManager:
         try:
             # 分支必须存在（rev-parse --verify 精确校验，防 typo 分支名）
             verify = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "rev-parse", "--verify", branch],
-                capture_output=True, text=True, timeout=10,
+                ["git", "-C", str(self.project_root), "rev-parse", "--verify", branch],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if verify.returncode != 0:
                 self.logger.warning(
@@ -3163,14 +3499,17 @@ class WorktreeManager:
             try:
                 subprocess.run(
                     ["git", "-C", str(self.project_root), "worktree", "prune"],
-                    capture_output=True, text=True, timeout=10,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
             except (subprocess.TimeoutExpired, OSError):
                 pass
             result = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "worktree", "add", str(wt_path), branch],
-                capture_output=True, text=True, timeout=30,
+                ["git", "-C", str(self.project_root), "worktree", "add", str(wt_path), branch],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if result.returncode != 0:
                 self.logger.error(
@@ -3206,9 +3545,10 @@ class WorktreeManager:
             return None
         try:
             res = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "worktree", "list", "--porcelain"],
-                capture_output=True, text=True, timeout=15,
+                ["git", "-C", str(self.project_root), "worktree", "list", "--porcelain"],
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
         except subprocess.TimeoutExpired:
             return None
@@ -3217,9 +3557,9 @@ class WorktreeManager:
         current_path: Optional[str] = None
         for line in res.stdout.splitlines():
             if line.startswith("worktree "):
-                current_path = line[len("worktree "):].strip()
+                current_path = line[len("worktree ") :].strip()
             elif line.startswith("branch "):
-                listed_branch = line[len("branch "):].strip()
+                listed_branch = line[len("branch ") :].strip()
                 # porcelain 格式：branch refs/heads/<name>；HEAD <sha> 行只是
                 # 头部提交指针，不是 detached 判定——detached worktree 缺失
                 # branch 行（该 section 不会匹配具名分支，下个 worktree 行覆盖）
@@ -3252,9 +3592,10 @@ class WorktreeManager:
             return None
         try:
             res = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "worktree", "list", "--porcelain"],
-                capture_output=True, text=True, timeout=15,
+                ["git", "-C", str(self.project_root), "worktree", "list", "--porcelain"],
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
             self.logger.warning(
@@ -3276,12 +3617,12 @@ class WorktreeManager:
         current_path: Optional[str] = None
         for line in res.stdout.splitlines():
             if line.startswith("worktree "):
-                current_path = line[len("worktree "):].strip()
+                current_path = line[len("worktree ") :].strip()
                 continue
             if line.startswith("branch ") and current_path:
-                listed_branch = line[len("branch "):].strip()
+                listed_branch = line[len("branch ") :].strip()
                 if listed_branch.startswith("refs/heads/"):
-                    listed_branch = listed_branch[len("refs/heads/"):]
+                    listed_branch = listed_branch[len("refs/heads/") :]
                 if self._wt_name_matches_spec(Path(current_path).name, spec_name):
                     candidates.append((current_path, listed_branch))
 
@@ -3332,9 +3673,10 @@ class WorktreeManager:
             return []
         try:
             res = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "worktree", "list", "--porcelain"],
-                capture_output=True, text=True, timeout=15,
+                ["git", "-C", str(self.project_root), "worktree", "list", "--porcelain"],
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
         except (subprocess.TimeoutExpired, OSError) as e:
             self.logger.warning(
@@ -3345,17 +3687,15 @@ class WorktreeManager:
         if res.returncode != 0:
             self.logger.warning(
                 "worktree_manager",
-                f"find_worktrees_by_spec('{spec_name}'): 非零退出→空清单 "
-                f"(rc={res.returncode})",
+                f"find_worktrees_by_spec('{spec_name}'): 非零退出→空清单 " f"(rc={res.returncode})",
             )
             return []
         paths: list = []
         current_path: Optional[str] = None
         for line in res.stdout.splitlines():
             if line.startswith("worktree "):
-                current_path = line[len("worktree "):].strip()
-                if current_path and self._wt_name_matches_spec(
-                        Path(current_path).name, spec_name):
+                current_path = line[len("worktree ") :].strip()
+                if current_path and self._wt_name_matches_spec(Path(current_path).name, spec_name):
                     paths.append(current_path)
         return paths
 
@@ -3399,10 +3739,18 @@ class WorktreeManager:
             for prefix in prefixes:
                 pattern = f"refs/heads/{prefix}/{spec_name}-*"
                 res = subprocess.run(
-                    ["git", "-C", str(self.project_root), "for-each-ref",
-                     "--format=%(refname:short)|%(committerdate:unix)",
-                     "--sort=-committerdate", pattern],
-                    capture_output=True, text=True, timeout=15,
+                    [
+                        "git",
+                        "-C",
+                        str(self.project_root),
+                        "for-each-ref",
+                        "--format=%(refname:short)|%(committerdate:unix)",
+                        "--sort=-committerdate",
+                        pattern,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
                 )
                 if res.returncode != 0:
                     self.logger.warning(
@@ -3422,7 +3770,7 @@ class WorktreeManager:
                         cdate = 0
                     # 完整 spec 名 + 分隔符边界全等比较：去前缀后按最后一个
                     # `-` 分段，末段纯数字时间戳、其前段与 spec 名全等。
-                    rest = name[len(prefix) + 1:] if name.startswith(f"{prefix}/") else name
+                    rest = name[len(prefix) + 1 :] if name.startswith(f"{prefix}/") else name
                     segs = rest.rsplit("-", 1)
                     if len(segs) != 2 or not segs[0] or not segs[1].isdigit():
                         continue
@@ -3432,12 +3780,14 @@ class WorktreeManager:
                     # verify 验证分支 MUST NOT 进入候选清单
                     if rest.startswith("verify-"):
                         continue
-                    candidates.append({
-                        "branch": name,
-                        "ahead": 0,
-                        "main_is_ancestor": False,
-                        "committerdate": cdate,
-                    })
+                    candidates.append(
+                        {
+                            "branch": name,
+                            "ahead": 0,
+                            "main_is_ancestor": False,
+                            "committerdate": cdate,
+                        }
+                    )
             if not candidates:
                 return []
             # 逐候选计算 ahead 与「main 是否为祖先」；零提交候选剔除
@@ -3446,18 +3796,34 @@ class WorktreeManager:
                 branch = cand["branch"]
                 try:
                     anc = subprocess.run(
-                        ["git", "-C", str(self.project_root), "merge-base",
-                         "--is-ancestor", "main", branch],
-                        capture_output=True, timeout=15,
+                        [
+                            "git",
+                            "-C",
+                            str(self.project_root),
+                            "merge-base",
+                            "--is-ancestor",
+                            "main",
+                            branch,
+                        ],
+                        capture_output=True,
+                        timeout=15,
                     )
                     cand["main_is_ancestor"] = anc.returncode == 0
                 except (subprocess.TimeoutExpired, OSError):
                     cand["main_is_ancestor"] = False
                 try:
                     ahead = subprocess.run(
-                        ["git", "-C", str(self.project_root), "rev-list",
-                         "--count", f"main..{branch}"],
-                        capture_output=True, text=True, timeout=15,
+                        [
+                            "git",
+                            "-C",
+                            str(self.project_root),
+                            "rev-list",
+                            "--count",
+                            f"main..{branch}",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
                     )
                     if ahead.returncode != 0:
                         continue  # 分支不可解析（已删）→ 剔除
@@ -3480,9 +3846,13 @@ class WorktreeManager:
             if not valid:
                 return []
             # 排序：先「已含 main」优先（committerdate 最新），其次 ahead 最大
-            valid.sort(key=lambda c: (
-                not c["main_is_ancestor"], -c["committerdate"], -c["ahead"],
-            ))
+            valid.sort(
+                key=lambda c: (
+                    not c["main_is_ancestor"],
+                    -c["committerdate"],
+                    -c["ahead"],
+                )
+            )
             return valid
         except (subprocess.TimeoutExpired, OSError) as e:
             self.logger.warning(
@@ -3503,7 +3873,7 @@ class WorktreeManager:
             return False
         for prefix in ("impl", "verify", "repair"):
             if wt_name.startswith(f"{prefix}-"):
-                rest = wt_name[len(prefix) + 1:]
+                rest = wt_name[len(prefix) + 1 :]
                 parts = rest.rsplit("-", 1)
                 if len(parts) == 2 and parts[0] and parts[1].isdigit():
                     return parts[0] == spec_name
@@ -3566,9 +3936,17 @@ class WorktreeManager:
         prefix = self.PENDING_MERGE_BRANCH_PREFIX
         try:
             res = subprocess.run(
-                ["git", "-C", str(self.project_root), "for-each-ref",
-                 "--format=%(refname:short)", f"refs/heads/{prefix}"],
-                capture_output=True, text=True, timeout=15,
+                [
+                    "git",
+                    "-C",
+                    str(self.project_root),
+                    "for-each-ref",
+                    "--format=%(refname:short)",
+                    f"refs/heads/{prefix}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
         except (subprocess.TimeoutExpired, OSError):
             return None
@@ -3581,9 +3959,10 @@ class WorktreeManager:
                 continue
             try:
                 ahead = subprocess.run(
-                    ["git", "-C", str(self.project_root), "rev-list",
-                     "--count", f"main..{cand}"],
-                    capture_output=True, text=True, timeout=15,
+                    ["git", "-C", str(self.project_root), "rev-list", "--count", f"main..{cand}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
                 )
             except (subprocess.TimeoutExpired, OSError):
                 continue
@@ -3597,9 +3976,18 @@ class WorktreeManager:
                 continue  # 已并入 main：不算待合并（design D1 反例：933/1014 已合并）
             try:
                 ts = subprocess.run(
-                    ["git", "-C", str(self.project_root), "log", "-1",
-                     "--format=%ct", f"main..{cand}"],
-                    capture_output=True, text=True, timeout=15,
+                    [
+                        "git",
+                        "-C",
+                        str(self.project_root),
+                        "log",
+                        "-1",
+                        "--format=%ct",
+                        f"main..{cand}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
                 )
             except (subprocess.TimeoutExpired, OSError):
                 continue
@@ -3634,7 +4022,7 @@ class WorktreeManager:
             return False
         if not branch.startswith("fenix/"):
             return False
-        rest = branch[len("fenix/"):]
+        rest = branch[len("fenix/") :]
         if rest.startswith("verify-"):
             return False  # 验证分支（fenix/verify-<spec>-<ts>）MUST NOT 进入候选
         parts = rest.rsplit("-", 1)
@@ -3648,9 +4036,10 @@ class WorktreeManager:
             return False
         try:
             verify = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "rev-parse", "--verify", branch],
-                capture_output=True, text=True, timeout=10,
+                ["git", "-C", str(self.project_root), "rev-parse", "--verify", branch],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             return verify.returncode == 0
         except subprocess.TimeoutExpired:
@@ -3668,9 +4057,10 @@ class WorktreeManager:
             return None
         try:
             rev = subprocess.run(
-                ["git", "-C", str(self.project_root),
-                 "rev-parse", "--verify", branch],
-                capture_output=True, text=True, timeout=10,
+                ["git", "-C", str(self.project_root), "rev-parse", "--verify", branch],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if rev.returncode != 0:
                 return None
@@ -3698,7 +4088,9 @@ class WorktreeManager:
         try:
             ls = subprocess.run(
                 ["git", "-C", str(wt_path), "ls-files", "-u"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if ls.returncode == 0:
                 paths = []
@@ -3713,9 +4105,10 @@ class WorktreeManager:
             pass
         try:
             mh = subprocess.run(
-                ["git", "-C", str(wt_path),
-                 "rev-parse", "-q", "--verify", "MERGE_HEAD"],
-                capture_output=True, text=True, timeout=10,
+                ["git", "-C", str(wt_path), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             facts["merge_head"] = mh.returncode == 0
         except (subprocess.TimeoutExpired, OSError):

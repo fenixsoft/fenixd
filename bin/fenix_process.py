@@ -23,18 +23,34 @@ sys.path.insert(0, str(PROJECT_ROOT / ".fenix"))
 from core.dashboard import data  # noqa: E402
 
 STATUS_ICONS = {
-    "drafted": "📝", "ready": "📌", "implementing": "🔨",
-    "implemented": "🧪", "testing": "🔍", "verified": "✅",
-    "bug-found": "🐛", "blocked": "🧊", "done": "🎯", "pushed": "🚀",
+    "drafted": "📝",
+    "ready": "📌",
+    "implementing": "🔨",
+    "implemented": "🧪",
+    "testing": "🔍",
+    "verified": "✅",
+    "bug-found": "🐛",
+    "blocked": "🧊",
+    "done": "🎯",
+    "pushed": "🚀",
 }
 RUN_ICONS = {
-    "administrator": "🛡️", "planner": "📋", "planner-plan": "📋",
-    "planner-judge": "⚖️", "implementer": "🔨", "verifier": "🔍",
-    "tester": "🧪", "agent": "🤖",
+    "administrator": "🛡️",
+    "planner": "📋",
+    "planner-plan": "📋",
+    "planner-judge": "⚖️",
+    "implementer": "🔨",
+    "verifier": "🔍",
+    "tester": "🧪",
+    "agent": "🤖",
 }
 RUN_STATUS_DESC = {
-    "done": "完成", "running": "运行中", "empty": "空跑", "error": "出错",
-    "interrupted": "被打断", "cancelled": "已取消",
+    "done": "完成",
+    "running": "运行中",
+    "empty": "空跑",
+    "error": "出错",
+    "interrupted": "被打断",
+    "cancelled": "已取消",
 }
 NEXT_STEPS = {
     "drafted": "等待晋升（promote_mode=manual 时运行 /fenix-ready）",
@@ -57,7 +73,9 @@ def _local_ts(iso_str, fmt="%H:%M:%S"):
     需要日期的调用点显式传 fmt="%m-%d %H:%M"。
     """
     try:
-        return datetime.fromisoformat(str(iso_str).replace("Z", "+00:00")).astimezone().strftime(fmt)
+        return (
+            datetime.fromisoformat(str(iso_str).replace("Z", "+00:00")).astimezone().strftime(fmt)
+        )
     except Exception:
         return str(iso_str)[:19]
 
@@ -129,8 +147,11 @@ def _render_verdict(detail):
         def _cnt(key):
             v = summary.get(key)
             return v if v is not None else "-"
-        lines.append(f"计数: 通过 {_cnt('passed')} / 失败 {_cnt('failed')} / 错误 {_cnt('errors')}"
-                     f" ｜ 产品 Bug {_cnt('product_bugs')} ｜ 环境问题 {_cnt('env_issues')}")
+
+        lines.append(
+            f"计数: 通过 {_cnt('passed')} / 失败 {_cnt('failed')} / 错误 {_cnt('errors')}"
+            f" ｜ 产品 Bug {_cnt('product_bugs')} ｜ 环境问题 {_cnt('env_issues')}"
+        )
         if verdict.get("conclusion"):
             lines.append(f"结论段: {verdict['conclusion'][:200]}")
     if bugs:
@@ -191,7 +212,11 @@ def _check_worktree(proot, spec_name):
         if wt.is_dir() and spec_name in wt.name:
             recent = []
             try:
-                for f in sorted(wt.rglob("*"), key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True):
+                for f in sorted(
+                    wt.rglob("*"),
+                    key=lambda x: x.stat().st_mtime if x.exists() else 0,
+                    reverse=True,
+                ):
                     if f.is_file() and ".git/" not in str(f) and "node_modules" not in str(f):
                         if f.suffix in (".tsx", ".ts", ".css", ".html", ".json", ".py", ".md"):
                             recent.append((str(f.relative_to(wt)), f.stat().st_mtime))
@@ -309,8 +334,10 @@ def render_report(project_root, spec_name: str) -> str:
     if token_usage.get("tokens_in") or token_usage.get("tokens_out") or cost_summary:
         lines.append("")
         lines.append("-- 成本 --")
-        lines.append(f"tokens: 输入 {_fmt_tokens(token_usage.get('tokens_in'))}"
-                     f" / 输出 {_fmt_tokens(token_usage.get('tokens_out'))}")
+        lines.append(
+            f"tokens: 输入 {_fmt_tokens(token_usage.get('tokens_in'))}"
+            f" / 输出 {_fmt_tokens(token_usage.get('tokens_out'))}"
+        )
         if token_usage.get("cost_available"):
             lines.append(f"累计成本: ${token_usage.get('cost_usd'):.2f}")
         elif cost_summary:

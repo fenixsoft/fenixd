@@ -34,6 +34,7 @@ from typing import Optional
 
 from .admin_store import AdminStore, SIGNAL, ESCALATION, DISPOSITION
 from .alert_lifecycle import attach_trigger, find_resolvable
+
 # add-blocked-reverify-lane D2：env 阻塞复位判定与复位路径常量
 from core.pm_engine.verification import (
     ENV_BLOCK_SIGNAL_TYPES,
@@ -112,8 +113,18 @@ DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES = 15
 # 修正：a) 否定清单补完成时/委婉否定；b) 赋值型/动词型模式须与「放行」动词在同句
 # 才算放行（单纯提及字段名/他族谱状态不构成放行）。
 _WAIVER_NEGATION_PHRASES = (
-    "未放行", "不放行", "拒绝放行", "不予放行", "不发放", "未发放",
-    "不启用豁免", "未启用豁免", "不予豁免", "无须放行", "无需放行", "不必放行",
+    "未放行",
+    "不放行",
+    "拒绝放行",
+    "不予放行",
+    "不发放",
+    "未发放",
+    "不启用豁免",
+    "未启用豁免",
+    "不予豁免",
+    "无须放行",
+    "无需放行",
+    "不必放行",
 )
 _WAIVER_GRANT_PATTERNS = (
     r"同意放行",
@@ -137,8 +148,12 @@ _RECLASSIFY_GRANT_PATTERNS = (
 )
 # 否定短语（保守方向：命中即不触发回拨，宁可漏回拨不可误扣 fail_rounds）
 _RECLASSIFY_NEGATION_PHRASES = (
-    "不回拨", "不应回拨", "不能回拨", "不予回拨",
-    "not reclassify", "不适用回拨",
+    "不回拨",
+    "不应回拨",
+    "不能回拨",
+    "不予回拨",
+    "not reclassify",
+    "不适用回拨",
 )
 
 # 「写入即待唤起」信号的终态守卫：spec 已达这些状态时不再唤起 Administrator
@@ -240,8 +255,11 @@ SIGNAL_RECOMMENDATION = {
 # 恢复闭环复查未通过）；stash_pop_conflict 属 merge-back pop 冲突可视治理
 # （fix-mergeback-stashpop-silent-loss D1）。
 STORED_SIGNAL_TYPES = (
-    "family_explosion", "dispatch_stalled", "verify_contract_missing",
-    "stash_pop_conflict", "verify_contract_redraft",
+    "family_explosion",
+    "dispatch_stalled",
+    "verify_contract_missing",
+    "stash_pop_conflict",
+    "verify_contract_redraft",
     # add-verdict-credibility-gate / design D6：连续 blocked-env 达阈值时
     # pm_engine 写入、本监视器摄取唤起（写入即待唤起型，recovery 尊重暂停
     # 标记，人工处置是唯一出路）。
@@ -259,15 +277,20 @@ STORED_SIGNAL_TYPES = (
 # run_id 前缀 → 计入"失败 run"的 agent 类型
 # ⚠️ 真源 = core/agent_runner/run_files.py:RUN_ID_AGENT_PREFIXES（新增 run 前缀
 # 只改那里）；本表是它的**子集**——只列计入失败统计的前缀（planner-/test- 不计）。
-_RUN_PREFIXES = ("impl-", "verify-", "planner-plan-", "planner-judge-",
-                 "dispute-judge-", "spec-review-", "admin-")
+_RUN_PREFIXES = (
+    "impl-",
+    "verify-",
+    "planner-plan-",
+    "planner-judge-",
+    "dispute-judge-",
+    "spec-review-",
+    "admin-",
+)
 
 # ── daemon-error-escalation D6：错误指纹归一化（保守集）────────────
 # 只归一化四类：ISO-8601 时间戳→@、UUID→~、≥16 位 hex→~、纯数字序列→#。
 # 不动路径与文字骨架——过度归一化会把不同错误误聚合，而"≥2 次才升级"已提供缓冲。
-_ISO_TS_RE = re.compile(
-    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?"
-)
+_ISO_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
 _UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
@@ -308,6 +331,7 @@ _TAIL_ERROR_READ_BYTES = 256 * 1024
 # admin_monitor._detect_orphaned_state 与 event_bus._recover_one 的 testing
 # 恢复出口共用同一「无驱动」判定，防止双路径重复触发/口径漂移（design D6）。
 
+
 def _pgrep_live_worktree(spec_name: str) -> bool:
     """pgrep 匹配 ``.claude/worktrees/{impl,verify}-<spec>-*`` 的 claude 进程。
 
@@ -319,7 +343,9 @@ def _pgrep_live_worktree(spec_name: str) -> bool:
             pattern = f"{prefix}-{spec_name}-"
             res = subprocess.run(
                 ["pgrep", "-f", pattern],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if res.returncode == 0 and res.stdout.strip():
                 return True
@@ -355,8 +381,13 @@ def _has_recent_spec_run(project_root, spec: str, now: float, window: float) -> 
     return False
 
 
-def spec_is_undriven(project_root, spec_name: str, entry: dict, *,
-                     run_grace_seconds: float = ORPHANED_RUN_GRACE_SECONDS) -> bool:
+def spec_is_undriven(
+    project_root,
+    spec_name: str,
+    entry: dict,
+    *,
+    run_grace_seconds: float = ORPHANED_RUN_GRACE_SECONDS,
+) -> bool:
     """「无驱动」判定（orphaned-state-signal R1 三条件，同一判定口径）。
 
     返回 True 当且仅当三者同时成立：
@@ -377,12 +408,14 @@ def spec_is_undriven(project_root, spec_name: str, entry: dict, *,
         return False
     try:
         from core.state_machine import start_after_pending
+
         if start_after_pending(entry):
             return False
     except Exception:
         pass  # 判定失败不阻塞（fail-open，与既有恢复路径同容错）
     try:
         from core.pm_engine.dispatch import Dispatcher
+
         if Dispatcher._dispatch_backoffed(entry):
             return False
     except Exception:
@@ -399,9 +432,18 @@ def spec_is_undriven(project_root, spec_name: str, entry: dict, *,
 class AdminMonitor:
     """困境信号检测 + 节流 + 唤起调度。run_once() 为单次检测入口。"""
 
-    def __init__(self, config: dict, state_machine, project_root, logger,
-                 store=None, agent_runner=None, pm_engine=None):
+    def __init__(
+        self,
+        config: dict,
+        state_machine,
+        project_root,
+        logger,
+        store=None,
+        agent_runner=None,
+        pm_engine=None,
+    ):
         from .config import ConfigLoader
+
         self.config = config
         self.admin_cfg = ConfigLoader.get_admin_config(config)
         self.state_machine = state_machine
@@ -434,6 +476,7 @@ class AdminMonitor:
 
     def _get_config(self, key: str, default=None):
         from .config import ConfigLoader
+
         return ConfigLoader.get(self.config, key, default)
 
     # ── 主入口 ──────────────────────────────────────────────────
@@ -490,16 +533,14 @@ class AdminMonitor:
         try:
             self._retry_due_dispatch_failures(now)
         except Exception as e:
-            self.logger.error(
-                "admin_monitor", f"Dispatch-failure retry scan failed: {e}")
+            self.logger.error("admin_monitor", f"Dispatch-failure retry scan failed: {e}")
 
         # add-alert-auto-resolve D1：告警自动闭环扫描内联本巡检执行（不新增
         # 线程/定时器），复用当轮已读取的 STATE.md 状态表（design D3）
         try:
             self._run_alert_lifecycle(specs)
         except Exception as e:
-            self.logger.error(
-                "admin_monitor", f"Alert lifecycle scan failed: {e}")
+            self.logger.error("admin_monitor", f"Alert lifecycle scan failed: {e}")
 
         # add-daily-self-review：每日自省调度检查点（design D1，挂在既有巡检
         # 循环，不新增线程/定时器）。enabled && 本地时间 ≥ run_at && 今日未执行
@@ -507,8 +548,7 @@ class AdminMonitor:
         try:
             self._run_self_review_checkpoint()
         except Exception as e:
-            self.logger.error(
-                "admin_monitor", f"Self-review checkpoint failed: {e}")
+            self.logger.error("admin_monitor", f"Self-review checkpoint failed: {e}")
         return family_signals + regular
 
     def _run_self_review_checkpoint(self) -> dict:
@@ -519,6 +559,7 @@ class AdminMonitor:
         判定与执行。返回调度结果 dict（供测试断言；巡检本身不消费返回值）。
         """
         from .self_review import SelfReviewScheduler
+
         scheduler = SelfReviewScheduler(
             config=self.config,
             project_root=self.project_root,
@@ -543,10 +584,7 @@ class AdminMonitor:
         「存量回填」。
         """
         records = self.store.read_all()
-        pending = [
-            r for r in records
-            if r.get("kind") == ESCALATION and not r.get("handled")
-        ]
+        pending = [r for r in records if r.get("kind") == ESCALATION and not r.get("handled")]
         if not pending:
             self._lifecycle_backfilled = True
             return 0  # 无待闭环告警：零写回
@@ -566,8 +604,7 @@ class AdminMonitor:
             self.logger.warning(
                 "admin_monitor",
                 f"alert lifecycle: auto-resolved {resolved}/{len(resolvable)} "
-                f"stale alert(s)"
-                + ("（存量回填）" if backfill else ""),
+                f"stale alert(s)" + ("（存量回填）" if backfill else ""),
             )
         return resolved
 
@@ -623,11 +660,14 @@ class AdminMonitor:
             elapsed = (now - updated.timestamp()) / 60
             if elapsed <= threshold:
                 continue
-            signals.append(self._make_signal(
-                "blocked_stuck", name,
-                f"'{name}' 处于 blocked 超过 {int(elapsed)} 分钟未处理",
-                f"updated={updated_str}，阈值 {threshold} 分钟",
-            ))
+            signals.append(
+                self._make_signal(
+                    "blocked_stuck",
+                    name,
+                    f"'{name}' 处于 blocked 超过 {int(elapsed)} 分钟未处理",
+                    f"updated={updated_str}，阈值 {threshold} 分钟",
+                )
+            )
         return signals
 
     def _detect_family_explosion(self) -> list:
@@ -685,13 +725,21 @@ class AdminMonitor:
                 )
                 continue
             signal = self._make_signal(
-                stype, spec,
-                rec.get("description") or (
-                    "fix 族谱越界派生被拦截" if stype == "family_explosion"
-                    else "派发长期被 worktree 锁冲突滞留" if stype == "dispatch_stalled"
-                    else "连续多轮验证全部为环境性失联（blocked-env）"
-                        if stype == "inconclusive_loop"
-                    else "AI 起草验证契约请求（UI 手动触发）"
+                stype,
+                spec,
+                rec.get("description")
+                or (
+                    "fix 族谱越界派生被拦截"
+                    if stype == "family_explosion"
+                    else (
+                        "派发长期被 worktree 锁冲突滞留"
+                        if stype == "dispatch_stalled"
+                        else (
+                            "连续多轮验证全部为环境性失联（blocked-env）"
+                            if stype == "inconclusive_loop"
+                            else "AI 起草验证契约请求（UI 手动触发）"
+                        )
+                    )
                 ),
                 rec.get("evidence") or "拦截详情见 pm_engine 日志",
             )
@@ -759,11 +807,14 @@ class AdminMonitor:
 
         for spec, count in per_spec.items():
             if count >= REPEAT_FAILURE_THRESHOLD:
-                signals.append(self._make_signal(
-                    "repeated_failures", spec,
-                    f"'{spec}' 在 {REPEAT_FAILURE_WINDOW_MINUTES} 分钟内出现 {count} 次失败 run",
-                    f"最近失败 run ≥{REPEAT_FAILURE_THRESHOLD}（{count} 次），窗口 {REPEAT_FAILURE_WINDOW_MINUTES} 分钟",
-                ))
+                signals.append(
+                    self._make_signal(
+                        "repeated_failures",
+                        spec,
+                        f"'{spec}' 在 {REPEAT_FAILURE_WINDOW_MINUTES} 分钟内出现 {count} 次失败 run",
+                        f"最近失败 run ≥{REPEAT_FAILURE_THRESHOLD}（{count} 次），窗口 {REPEAT_FAILURE_WINDOW_MINUTES} 分钟",
+                    )
+                )
         return signals
 
     def _detect_flapping(self, specs: dict, now: float) -> list:
@@ -787,11 +838,14 @@ class AdminMonitor:
             transitions = len(in_window) - 1
             if transitions >= FLAPPING_THRESHOLD:
                 seq = " → ".join(c[1] for c in in_window[-FLAPPING_THRESHOLD:])
-                signals.append(self._make_signal(
-                    "flapping", spec,
-                    f"'{spec}' 在 {FLAPPING_WINDOW_MINUTES} 分钟内 ready↔implementing 切换 {transitions} 次",
-                    f"状态序列: {seq}",
-                ))
+                signals.append(
+                    self._make_signal(
+                        "flapping",
+                        spec,
+                        f"'{spec}' 在 {FLAPPING_WINDOW_MINUTES} 分钟内 ready↔implementing 切换 {transitions} 次",
+                        f"状态序列: {seq}",
+                    )
+                )
         return signals
 
     def _detect_stuck(self, specs: dict, now: float) -> list:
@@ -845,7 +899,7 @@ class AdminMonitor:
             if elapsed_minutes <= threshold_minutes:
                 continue
             # D1 进程存活反证：run_id → spec 归属必须用 _spec_from_run_id
-            #（本模块既有方法，正则 -(?:a|r)\d+ 同时覆盖 attempt 与 -r<n> 瞬态
+            # （本模块既有方法，正则 -(?:a|r)\d+ 同时覆盖 attempt 与 -r<n> 瞬态
             # 重试后缀）。禁止 run_spec_part（run_files.py:66）：它只剥离 -a\d+，
             # 对 <base>-a1-r1 返回 <base>-a1-r1 归属失败——正是 8e510a87 修复的
             # -r<n> 根因形态，沿用会让「进程存活反证」在瞬态重试期间重新失效。
@@ -868,12 +922,12 @@ class AdminMonitor:
                     disp_created_str = disp.get("created") or ""
                     try:
                         disp_created = datetime.fromisoformat(
-                            disp_created_str.replace("Z", "+00:00"))
+                            disp_created_str.replace("Z", "+00:00")
+                        )
                         disp_age_minutes = (now - disp_created.timestamp()) / 60
                     except (ValueError, TypeError):
                         disp_age_minutes = None
-                    if disp_age_minutes is not None \
-                            and disp_age_minutes < silence_minutes:
+                    if disp_age_minutes is not None and disp_age_minutes < silence_minutes:
                         self.logger.debug(
                             "admin_monitor",
                             f"Skipping stuck for '{name}': resolved disposition "
@@ -881,11 +935,14 @@ class AdminMonitor:
                             f"{int(silence_minutes)}m",
                         )
                         continue
-            signals.append(self._make_signal(
-                "stuck", name,
-                f"'{name}' 卡在 {status} 超过 {int(elapsed_minutes)} 分钟且无 run 进度",
-                f"updated={updated_str}，阈值 {int(threshold_minutes)} 分钟",
-            ))
+            signals.append(
+                self._make_signal(
+                    "stuck",
+                    name,
+                    f"'{name}' 卡在 {status} 超过 {int(elapsed_minutes)} 分钟且无 run 进度",
+                    f"updated={updated_str}，阈值 {int(threshold_minutes)} 分钟",
+                )
+            )
         return signals
 
     def _detect_merge_streak(self, specs: dict) -> list:
@@ -903,11 +960,14 @@ class AdminMonitor:
             if status not in ("ready", "implementing", "blocked"):
                 continue
             fp = entry.get("_merge_fp") or "unknown"
-            signals.append(self._make_signal(
-                "merge_streak", name,
-                f"'{name}' merge-back 连续失败 {streak} 次已达熔断阈值仍滞留（{status}）",
-                f"_merge_streak={streak}，指纹={fp}",
-            ))
+            signals.append(
+                self._make_signal(
+                    "merge_streak",
+                    name,
+                    f"'{name}' merge-back 连续失败 {streak} 次已达熔断阈值仍滞留（{status}）",
+                    f"_merge_streak={streak}，指纹={fp}",
+                )
+            )
         return signals
 
     def _detect_orphaned_state(self, specs: dict, now: float) -> list:
@@ -922,9 +982,11 @@ class AdminMonitor:
         人工冻结（frozen）是有意等待态，与 blocked_stuck 同豁免。
         """
         signals = []
-        threshold_minutes = float(self.admin_cfg.get(
-            "orphaned_state_threshold_minutes",
-            DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES))
+        threshold_minutes = float(
+            self.admin_cfg.get(
+                "orphaned_state_threshold_minutes", DEFAULT_ORPHANED_STATE_THRESHOLD_MINUTES
+            )
+        )
         for name, entry in specs.items():
             status = entry.get("status")
             if status not in ("implementing", "testing"):
@@ -951,14 +1013,17 @@ class AdminMonitor:
                 continue
             if not spec_is_undriven(self.project_root, name, entry):
                 continue
-            signals.append(self._make_signal(
-                "orphaned_state", name,
-                f"'{name}' 处于 {status} 超过 {int(elapsed_minutes)} 分钟无驱动"
-                "（无活动 run / 无存活子进程 / 无待派发）",
-                f"updated={updated_str}，阈值 {int(threshold_minutes)} 分钟"
-                f"（stuck 阈值 {int(self.admin_cfg.get('stuck_threshold_minutes', 0))}"
-                " 分钟远高于此，本信号先于 stuck 捕获）",
-            ))
+            signals.append(
+                self._make_signal(
+                    "orphaned_state",
+                    name,
+                    f"'{name}' 处于 {status} 超过 {int(elapsed_minutes)} 分钟无驱动"
+                    "（无活动 run / 无存活子进程 / 无待派发）",
+                    f"updated={updated_str}，阈值 {int(threshold_minutes)} 分钟"
+                    f"（stuck 阈值 {int(self.admin_cfg.get('stuck_threshold_minutes', 0))}"
+                    " 分钟远高于此，本信号先于 stuck 捕获）",
+                )
+            )
         return signals
 
     def _detect_daemon_errors(self, now: float) -> list:
@@ -992,11 +1057,13 @@ class AdminMonitor:
             last_ts = ts_ok[-1] if ts_ok else None
             last_str = (
                 datetime.fromtimestamp(last_ts, tz=timezone.utc).isoformat()
-                if last_ts else "无可用时间戳"
+                if last_ts
+                else "无可用时间戳"
             )
             missing_ts = sum(1 for t in in_window if t is None)
             sig = self._make_signal(
-                "daemon_errors", None,
+                "daemon_errors",
+                None,
                 f"fenixd 日志同错误（指纹 {fp[:8]}）在 {DAEMON_ERROR_WINDOW_MINUTES} 分钟"
                 f"窗口内复现 {count} 次，建议检查根因并重启 daemon",
                 f"同指纹 ERROR 复现 {count} 次（最近一次 {last_str}"
@@ -1030,9 +1097,7 @@ class AdminMonitor:
         ts = entry.get("timestamp")
         if ts:
             try:
-                ts_epoch = datetime.fromisoformat(
-                    str(ts).replace("Z", "+00:00")
-                ).timestamp()
+                ts_epoch = datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
             except (ValueError, TypeError):
                 ts_epoch = None
         component = entry.get("component") or "unknown"
@@ -1098,9 +1163,7 @@ class AdminMonitor:
                 fp = _normalize_error_message(
                     signal.get("evidence") or signal.get("description") or ""
                 )
-            raw = "daemon:{}\x00{}".format(
-                signal.get("signal_type") or "", fp
-            )
+            raw = "daemon:{}\x00{}".format(signal.get("signal_type") or "", fp)
         return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()
 
     @staticmethod
@@ -1126,7 +1189,8 @@ class AdminMonitor:
         # 节流：冷却窗口内同 spec 同类信号已唤起过 / 已有未处理升级告警 → 跳过唤起
         if self._throttled(spec, signal_type):
             record, is_new = self.store.merge_signal(
-                self._signal_record(signal, escalated=False), status_hash)
+                self._signal_record(signal, escalated=False), status_hash
+            )
             if is_new:
                 # 新记录：状态变化后首次节流（冷却期内重触发），保留既有文案
                 self.logger.info(
@@ -1166,7 +1230,8 @@ class AdminMonitor:
 
         # 节流通过：先记录 signal（作为本次唤起的冷却锚点），再唤起
         signal_rec, _ = self.store.merge_signal(
-            self._signal_record(signal, escalated=True), status_hash)
+            self._signal_record(signal, escalated=True), status_hash
+        )
         self.logger.warning(
             "admin_monitor",
             f"Distress detected, invoking Administrator: {signal_type} for '{spec or 'daemon'}'",
@@ -1230,29 +1295,33 @@ class AdminMonitor:
             ):
                 continue
             first_seen = self._first_signal_time(name) or updated_str
-            self.store.append(attach_trigger({
-                "kind": ESCALATION,
-                "signal_type": "blocked_stuck",
-                "spec": name,
-                "severity": "critical",
-                "description": (
-                    f"'{name}' 已 blocked 悬置 {int(stalled_minutes)} 分钟"
-                    f"（≥{STALLED_ESCALATION_MINUTES} 分钟）未处置，自动通道已被"
-                    f"冷却压制，强制升级人工介入"
-                ),
-                "evidence": (
-                    f"updated={updated_str}；悬置时长 {int(stalled_minutes)} 分钟；"
-                    f"信号首见 {first_seen}；阈值 {STALLED_ESCALATION_MINUTES} 分钟"
-                ),
-                "action_taken": (
-                    "AdminMonitor 强制升级：blocked 悬置超阈值自动转人工"
-                    "（突破 cooldown 节流，受未处理告警约束）"
-                ),
-                "recommended_action": (
-                    "人工检查该 spec 的 blocked 原因：误置假 spec 则清理/重置；"
-                    "确需人工决策则处置后复位或手动更新状态"
-                ),
-            }))
+            self.store.append(
+                attach_trigger(
+                    {
+                        "kind": ESCALATION,
+                        "signal_type": "blocked_stuck",
+                        "spec": name,
+                        "severity": "critical",
+                        "description": (
+                            f"'{name}' 已 blocked 悬置 {int(stalled_minutes)} 分钟"
+                            f"（≥{STALLED_ESCALATION_MINUTES} 分钟）未处置，自动通道已被"
+                            f"冷却压制，强制升级人工介入"
+                        ),
+                        "evidence": (
+                            f"updated={updated_str}；悬置时长 {int(stalled_minutes)} 分钟；"
+                            f"信号首见 {first_seen}；阈值 {STALLED_ESCALATION_MINUTES} 分钟"
+                        ),
+                        "action_taken": (
+                            "AdminMonitor 强制升级：blocked 悬置超阈值自动转人工"
+                            "（突破 cooldown 节流，受未处理告警约束）"
+                        ),
+                        "recommended_action": (
+                            "人工检查该 spec 的 blocked 原因：误置假 spec 则清理/重置；"
+                            "确需人工决策则处置后复位或手动更新状态"
+                        ),
+                    }
+                )
+            )
             self.logger.warning(
                 "admin_monitor",
                 f"Stalled block force-escalated to human: '{name}' "
@@ -1270,9 +1339,11 @@ class AdminMonitor:
         """
         earliest = None
         for rec in self.store.read_all():
-            if (rec.get("kind") != SIGNAL
-                    or rec.get("spec") != spec
-                    or rec.get("signal_type") not in STALLED_ESCALATION_SIGNAL_TYPES):
+            if (
+                rec.get("kind") != SIGNAL
+                or rec.get("spec") != spec
+                or rec.get("signal_type") not in STALLED_ESCALATION_SIGNAL_TYPES
+            ):
                 continue
             created = rec.get("created")
             if created and (earliest is None or created < earliest):
@@ -1315,8 +1386,7 @@ class AdminMonitor:
             if not next_retry_at:
                 continue
             try:
-                due = datetime.fromisoformat(
-                    str(next_retry_at).replace("Z", "+00:00"))
+                due = datetime.fromisoformat(str(next_retry_at).replace("Z", "+00:00"))
             except (ValueError, TypeError):
                 continue
             if due.timestamp() > now:
@@ -1394,55 +1464,63 @@ class AdminMonitor:
             # 不产生人工升级告警；无标记/文件缺失 → 维持现有"疑似 daemon 崩溃"升级兜底
             # （保守方向：宁可多告警不漏告警，files 被 prune 删除也按无标记处理）。
             if self._run_has_interrupted_marker(rid):
-                self.store.append({
-                    "kind": DISPOSITION,
-                    "status": "interrupted",
-                    "signal_type": sig_type,
-                    "spec": spec,
-                    "admin_run_id": rid,
-                    "result": "interrupted",
-                    "actions_taken": (
-                        "AdminMonitor 孤儿检测：run 文件含 interrupted 标记，"
-                        "判定为 daemon 优雅退出已知中断，终结该 run 且不升级人工"
-                    ),
-                    "description": f"Administrator 处置因 daemon 关闭被中断（run {rid}），已知中断已终结",
-                })
+                self.store.append(
+                    {
+                        "kind": DISPOSITION,
+                        "status": "interrupted",
+                        "signal_type": sig_type,
+                        "spec": spec,
+                        "admin_run_id": rid,
+                        "result": "interrupted",
+                        "actions_taken": (
+                            "AdminMonitor 孤儿检测：run 文件含 interrupted 标记，"
+                            "判定为 daemon 优雅退出已知中断，终结该 run 且不升级人工"
+                        ),
+                        "description": f"Administrator 处置因 daemon 关闭被中断（run {rid}），已知中断已终结",
+                    }
+                )
                 self.logger.info(
                     "admin_monitor",
                     f"Orphaned admin disposition marked interrupted (known shutdown): {rid}",
                 )
                 continue
 
-            self.store.append(attach_trigger({
-                "kind": ESCALATION,
-                "signal_type": sig_type,
-                "spec": spec,
-                "severity": "critical",
-                "description": (
-                    f"Administrator 处置中断（run {rid}）：被唤起后未在 "
-                    f"{int(grace / 60)} 分钟内完成处置，疑似 daemon 重启/崩溃连带杀死 "
-                    f"admin，需人工介入"
-                ),
-                "evidence": f"pending disposition 超时无最终结果（admin_run_id={rid}）",
-                "action_taken": "AdminMonitor 孤儿检测：pending 超时自动升级",
-                "admin_run_id": rid,
-                "recommended_action": (
-                    "人工检查 daemon/AdminMonitor 状态与 .fenix/logs/supervisor.log，"
-                    "确认框架是否健康运行"
-                ),
-            }))
+            self.store.append(
+                attach_trigger(
+                    {
+                        "kind": ESCALATION,
+                        "signal_type": sig_type,
+                        "spec": spec,
+                        "severity": "critical",
+                        "description": (
+                            f"Administrator 处置中断（run {rid}）：被唤起后未在 "
+                            f"{int(grace / 60)} 分钟内完成处置，疑似 daemon 重启/崩溃连带杀死 "
+                            f"admin，需人工介入"
+                        ),
+                        "evidence": f"pending disposition 超时无最终结果（admin_run_id={rid}）",
+                        "action_taken": "AdminMonitor 孤儿检测：pending 超时自动升级",
+                        "admin_run_id": rid,
+                        "recommended_action": (
+                            "人工检查 daemon/AdminMonitor 状态与 .fenix/logs/supervisor.log，"
+                            "确认框架是否健康运行"
+                        ),
+                    }
+                )
+            )
             # 升级即终结：补非 pending 记录，避免 escalation 被 handled 后 unhandled_for
             # 节流失效、同一孤儿在下轮巡检再次升级造成循环告警
-            self.store.append({
-                "kind": DISPOSITION,
-                "status": "escalated",
-                "signal_type": sig_type,
-                "spec": spec,
-                "admin_run_id": rid,
-                "result": "escalated",
-                "actions_taken": "AdminMonitor 孤儿检测：pending 超时升级人工并终结该 run",
-                "description": f"Administrator 处置中断已升级人工（run {rid}），pending 终结",
-            })
+            self.store.append(
+                {
+                    "kind": DISPOSITION,
+                    "status": "escalated",
+                    "signal_type": sig_type,
+                    "spec": spec,
+                    "admin_run_id": rid,
+                    "result": "escalated",
+                    "actions_taken": "AdminMonitor 孤儿检测：pending 超时升级人工并终结该 run",
+                    "description": f"Administrator 处置中断已升级人工（run {rid}），pending 终结",
+                }
+            )
             self.logger.warning(
                 "admin_monitor",
                 f"Orphaned admin disposition escalated to human: {rid}",
@@ -1503,6 +1581,7 @@ class AdminMonitor:
         # 托管态分支（D5）：不直接调 .fenix/bin/fenixd_supervisor.py
         try:
             from core.fenix_session import hosting_state
+
             state = hosting_state(self.project_root)
         except Exception:
             state = "stopped"
@@ -1518,19 +1597,21 @@ class AdminMonitor:
                 "/fenix-setup 恢复 supervisor 托管，恢复后该 restart_request 会被"
                 "supervisor 消费并重启 daemon"
             )
-        self.store.append({
-            "kind": ESCALATION,
-            "signal_type": "restart_failed",
-            "spec": None,
-            "severity": "critical",
-            "description": (
-                "daemon 重启请求未完成：.fenix/restart_request 存在超过 "
-                f"{RESTART_REQUEST_TIMEOUT_MINUTES} 分钟，supervisor 未重启 daemon"
-            ),
-            "evidence": f"restart_request mtime={mtime}，supervisor 应清除该文件",
-            "action_taken": "AdminMonitor 重启验证：请求未完成自动升级",
-            "recommended_action": rec_action,
-        })
+        self.store.append(
+            {
+                "kind": ESCALATION,
+                "signal_type": "restart_failed",
+                "spec": None,
+                "severity": "critical",
+                "description": (
+                    "daemon 重启请求未完成：.fenix/restart_request 存在超过 "
+                    f"{RESTART_REQUEST_TIMEOUT_MINUTES} 分钟，supervisor 未重启 daemon"
+                ),
+                "evidence": f"restart_request mtime={mtime}，supervisor 应清除该文件",
+                "action_taken": "AdminMonitor 重启验证：请求未完成自动升级",
+                "recommended_action": rec_action,
+            }
+        )
         return ["restart_failed"]
 
     def invoke_manual(self, signal: dict):
@@ -1554,8 +1635,7 @@ class AdminMonitor:
             # 保持原逻辑落「Administrator 不可用」升级（不带 next_retry_at，
             # 不参与自动重试）。
             if signal.get("_dispatch_retry_id"):
-                self.store.bump_dispatch_retry(
-                    signal["_dispatch_retry_id"], DISPATCH_RETRY_MAX)
+                self.store.bump_dispatch_retry(signal["_dispatch_retry_id"], DISPATCH_RETRY_MAX)
                 self.logger.warning(
                     "admin_monitor",
                     f"Dispatch retry aborted (no agent_runner): "
@@ -1566,16 +1646,20 @@ class AdminMonitor:
                 "admin_monitor",
                 "No agent_runner available, cannot invoke Administrator; escalating to human",
             )
-            self.store.append(attach_trigger({
-                "kind": ESCALATION,
-                "signal_type": signal.get("signal_type"),
-                "spec": signal.get("spec"),
-                "severity": signal.get("severity"),
-                "description": signal.get("description"),
-                "evidence": signal.get("evidence"),
-                "action_taken": "Administrator 不可用（未配置 agent_runner），未能自动处置",
-                "recommended_action": signal.get("recommended_action"),
-            }))
+            self.store.append(
+                attach_trigger(
+                    {
+                        "kind": ESCALATION,
+                        "signal_type": signal.get("signal_type"),
+                        "spec": signal.get("spec"),
+                        "severity": signal.get("severity"),
+                        "description": signal.get("description"),
+                        "evidence": signal.get("evidence"),
+                        "action_taken": "Administrator 不可用（未配置 agent_runner），未能自动处置",
+                        "recommended_action": signal.get("recommended_action"),
+                    }
+                )
+            )
             return
 
         try:
@@ -1600,22 +1684,26 @@ class AdminMonitor:
         # fix-admin-disposition-empty-shell：失败记录自解释——error 携带 CLI 失败
         # 原因；failed 时 recommended_action 回退到信号侧（disp 空串不再覆盖信号值）。
         try:
-            self.store.append({
-                "kind": DISPOSITION,
-                "signal_type": signal.get("signal_type"),
-                "spec": signal.get("spec") or disp.spec,
-                "severity": signal.get("severity"),
-                "description": disp.problem or signal.get("description"),
-                "action_taken": disp.actions_taken,
-                "result": disp.result,
-                "recommended_action": (
-                    disp.recommended_action or signal.get("recommended_action") or ""
-                ) if disp.result == "failed" else disp.recommended_action,
-                "summary": disp.summary,
-                "admin_run_id": disp.run_id,
-                "escalate": bool(disp.escalate),
-                "error": disp.error or "",
-            })
+            self.store.append(
+                {
+                    "kind": DISPOSITION,
+                    "signal_type": signal.get("signal_type"),
+                    "spec": signal.get("spec") or disp.spec,
+                    "severity": signal.get("severity"),
+                    "description": disp.problem or signal.get("description"),
+                    "action_taken": disp.actions_taken,
+                    "result": disp.result,
+                    "recommended_action": (
+                        (disp.recommended_action or signal.get("recommended_action") or "")
+                        if disp.result == "failed"
+                        else disp.recommended_action
+                    ),
+                    "summary": disp.summary,
+                    "admin_run_id": disp.run_id,
+                    "escalate": bool(disp.escalate),
+                    "error": disp.error or "",
+                }
+            )
         except Exception as e:
             self.logger.error(
                 "admin_monitor",
@@ -1676,17 +1764,22 @@ class AdminMonitor:
 
         if disp.escalate:
             # Administrator 判定无法自主处置 → 升级人工
-            self.store.append(attach_trigger({
-                "kind": ESCALATION,
-                "signal_type": signal.get("signal_type"),
-                "spec": signal.get("spec") or disp.spec,
-                "severity": signal.get("severity"),
-                "description": signal.get("description"),
-                "evidence": signal.get("evidence"),
-                "action_taken": disp.actions_taken,
-                "recommended_action": disp.recommended_action or signal.get("recommended_action"),
-                "admin_run_id": disp.run_id,
-            }))
+            self.store.append(
+                attach_trigger(
+                    {
+                        "kind": ESCALATION,
+                        "signal_type": signal.get("signal_type"),
+                        "spec": signal.get("spec") or disp.spec,
+                        "severity": signal.get("severity"),
+                        "description": signal.get("description"),
+                        "evidence": signal.get("evidence"),
+                        "action_taken": disp.actions_taken,
+                        "recommended_action": disp.recommended_action
+                        or signal.get("recommended_action"),
+                        "admin_run_id": disp.run_id,
+                    }
+                )
+            )
             self.logger.warning(
                 "admin_monitor",
                 f"Administrator escalated to human: {signal.get('signal_type')} "
@@ -1695,8 +1788,7 @@ class AdminMonitor:
 
     # ── admin-dispatch-failure-escalation D1/D2 ──────────────────
 
-    def _escalate_dispatch_failure(self, signal: dict, signal_rec: dict,
-                                   exc: Exception) -> None:
+    def _escalate_dispatch_failure(self, signal: dict, signal_rec: dict, exc: Exception) -> None:
         """Administrator 派发失败升级分流（admin-dispatch-failure-escalation D1）。
 
         按异常类型分流：
@@ -1727,9 +1819,9 @@ class AdminMonitor:
         else:
             self._escalate_dispatch_failure_original(signal, signal_rec, exc)
 
-    def _escalate_dispatch_programming_error(self, signal: dict,
-                                             signal_rec: dict,
-                                             exc: Exception) -> None:
+    def _escalate_dispatch_programming_error(
+        self, signal: dict, signal_rec: dict, exc: Exception
+    ) -> None:
         """派发期编程错误升级落盘（admin-dispatch-failure-escalation D1）。
 
         signal_type=admin_dispatch_programming_error、severity=critical 记录，
@@ -1767,8 +1859,7 @@ class AdminMonitor:
             ),
             "evidence": evidence,
             "original_signal": original_signal,
-            "recommended_action": SIGNAL_RECOMMENDATION.get(
-                "admin_dispatch_programming_error", ""),
+            "recommended_action": SIGNAL_RECOMMENDATION.get("admin_dispatch_programming_error", ""),
         }
         self._attach_dispatch_retry_fields(entry, signal_rec)
         try:
@@ -1777,8 +1868,7 @@ class AdminMonitor:
                 "admin_monitor",
                 f"派发期编程错误已升级（admin_dispatch_programming_error）"
                 f"spec='{spec}' signal_type={signal.get('signal_type')} "
-                f"异常={type(exc).__name__}: {exc}"
-                + (f" 调用点={callsite}" if callsite else ""),
+                f"异常={type(exc).__name__}: {exc}" + (f" 调用点={callsite}" if callsite else ""),
             )
         except Exception as e:
             self.logger.error(
@@ -1786,9 +1876,9 @@ class AdminMonitor:
                 f"admin_dispatch_programming_error 升级落盘失败: {e}",
             )
 
-    def _escalate_dispatch_failure_original(self, signal: dict,
-                                            signal_rec: dict,
-                                            exc: Exception) -> None:
+    def _escalate_dispatch_failure_original(
+        self, signal: dict, signal_rec: dict, exc: Exception
+    ) -> None:
         """派发失败运维异常（OSError/超时/provider 类）→ 维持原 signal_type 升级记录
         （admin-dispatch-failure-escalation D1）。
 
@@ -1828,8 +1918,7 @@ class AdminMonitor:
                 f"派发失败运维异常升级落盘失败: {e}",
             )
 
-    def _attach_dispatch_retry_fields(self, entry: dict,
-                                      signal_rec: dict) -> None:
+    def _attach_dispatch_retry_fields(self, entry: dict, signal_rec: dict) -> None:
         """附加重试语义字段（admin-dispatch-failure-escalation D2）。
 
         自动巡检来源（signal_rec 非 None）→ 可重试：entry 附带
@@ -1840,8 +1929,7 @@ class AdminMonitor:
         if signal_rec is None:
             return
         next_retry = time.time() + self.cooldown_minutes * 60
-        entry["next_retry_at"] = datetime.fromtimestamp(
-            next_retry, tz=timezone.utc).isoformat()
+        entry["next_retry_at"] = datetime.fromtimestamp(next_retry, tz=timezone.utc).isoformat()
         entry["retry_count"] = 0
 
     def _close_dispatch_failures_on_success(self, signal: dict) -> None:
@@ -1857,8 +1945,7 @@ class AdminMonitor:
         if not spec:
             return
         try:
-            closed = self.store.close_dispatch_failure_alerts(
-                spec, "后续派发成功")
+            closed = self.store.close_dispatch_failure_alerts(spec, "后续派发成功")
             if closed:
                 self.logger.info(
                     "admin_monitor",
@@ -2003,9 +2090,7 @@ class AdminMonitor:
         纯测试注入）时回退最外层帧。
         """
         frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
-        core_frames = [
-            fr for fr in frames if "core" in Path(fr.filename).parts
-        ]
+        core_frames = [fr for fr in frames if "core" in Path(fr.filename).parts]
         deepest = core_frames[-1] if core_frames else (frames[-1] if frames else None)
         if deepest is None:
             return None
@@ -2013,11 +2098,12 @@ class AdminMonitor:
         readable = deepest.filename
         if "core" in Path(readable).parts:
             marker = "/core/"
-            readable = readable[readable.rfind(marker) + 1:]
+            readable = readable[readable.rfind(marker) + 1 :]
         return f"{readable}:{deepest.lineno} ({deepest.name})"
 
-    def _escalate_reset_programming_error(self, exc: Exception, signal: dict,
-                                          reset_path: str) -> None:
+    def _escalate_reset_programming_error(
+        self, exc: Exception, signal: dict, reset_path: str
+    ) -> None:
         """复位路径编程错误升级落盘（add-control-plane-silent-failure-guards D3）。
 
         落 kind=escalation、signal_type=admin_reset_programming_error、
@@ -2031,24 +2117,29 @@ class AdminMonitor:
             return  # 同类未处理告警已存在：跳过去重，不重复落盘
         callsite = self._deepest_core_callsite(exc)
         try:
-            self.store.append(attach_trigger({
-                "kind": ESCALATION,
-                "signal_type": "admin_reset_programming_error",
-                "spec": spec,
-                "severity": "critical",
-                "description": (
-                    f"复位路径编程错误（{type(exc).__name__}: {exc}）："
-                    f"spec '{spec}' 阻塞处置收尾触发代码缺陷，Administrator "
-                    "无法修复（非环境问题）"
-                ),
-                "evidence": (
-                    f"signal_type={signal.get('signal_type')}; "
-                    f"reset_path={reset_path}; 异常={type(exc).__name__}: {exc}"
-                    + (f"; 调用点={callsite}" if callsite else "")
-                ),
-                "recommended_action": SIGNAL_RECOMMENDATION.get(
-                    "admin_reset_programming_error", ""),
-            }))
+            self.store.append(
+                attach_trigger(
+                    {
+                        "kind": ESCALATION,
+                        "signal_type": "admin_reset_programming_error",
+                        "spec": spec,
+                        "severity": "critical",
+                        "description": (
+                            f"复位路径编程错误（{type(exc).__name__}: {exc}）："
+                            f"spec '{spec}' 阻塞处置收尾触发代码缺陷，Administrator "
+                            "无法修复（非环境问题）"
+                        ),
+                        "evidence": (
+                            f"signal_type={signal.get('signal_type')}; "
+                            f"reset_path={reset_path}; 异常={type(exc).__name__}: {exc}"
+                            + (f"; 调用点={callsite}" if callsite else "")
+                        ),
+                        "recommended_action": SIGNAL_RECOMMENDATION.get(
+                            "admin_reset_programming_error", ""
+                        ),
+                    }
+                )
+            )
             self.logger.error(
                 "admin_monitor",
                 f"复位路径编程错误已升级（admin_reset_programming_error）"
@@ -2152,9 +2243,7 @@ class AdminMonitor:
             if negated:
                 waived = False
             else:
-                waived = any(
-                    re.search(pattern, text) for pattern in _WAIVER_GRANT_PATTERNS
-                )
+                waived = any(re.search(pattern, text) for pattern in _WAIVER_GRANT_PATTERNS)
                 if not waived:
                     # 赋值型兜底：_family_waiver=true 须与「放行」动词同句才算
                     # 显式放行——叙述中对他族谱豁免状态的提及不构成放行。
@@ -2167,7 +2256,9 @@ class AdminMonitor:
         sm = self.state_machine
         if not hasattr(sm, "update_spec"):
             # 测试替身等最小状态机：仅能检测，无法落位（放行仍判定为本次已放行）
-            self.logger.warning("admin_monitor", f"family_explosion 放行但状态机不支持写豁免位（spec={spec}）")
+            self.logger.warning(
+                "admin_monitor", f"family_explosion 放行但状态机不支持写豁免位（spec={spec}）"
+            )
             return
         try:
             sm.update_spec(spec, {"_family_waiver": "true"})
@@ -2241,7 +2332,9 @@ class AdminMonitor:
             return
         try:
             result = self.pm_engine.reclassify_infra_rounds(
-                spec, n, f"admin disposition: {getattr(disp, 'run_id', '')}",
+                spec,
+                n,
+                f"admin disposition: {getattr(disp, 'run_id', '')}",
                 actor="admin",
             )
             self.logger.warning(
@@ -2270,7 +2363,7 @@ class AdminMonitor:
         for prefix in _RUN_PREFIXES:
             if not run_id.startswith(prefix):
                 continue
-            rest = run_id[len(prefix):]
+            rest = run_id[len(prefix) :]
             m = re.match(r"^(.*)-\d{9,10}(-(?:a|r)\d+)*$", rest)
             if m:
                 return m.group(1)

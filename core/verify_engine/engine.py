@@ -36,6 +36,7 @@ from .env_gate import (
     is_blank_render_candidate,
     probe_http_health,
 )
+
 # 导入 Runner 模块触发注册（web→WebRunner / api→ApiRunner / cli→CliRunner）；
 # 引擎只按注册表分派，新增 kind 仅需在此追加导入。
 from .web_runner import WebRunner, locate_app_base_url  # noqa: F401,E402
@@ -101,8 +102,13 @@ class VerifyEngine:
                     f"场景 kind '{kind}' 未注册 Runner，"
                     f"支持: {', '.join(sorted(RUNNER_REGISTRY))}"
                 )
-            runner = cls(self.spec_name, self.project_root, self.logger,
-                         self.config, scenario_root=self.scenario_root)
+            runner = cls(
+                self.spec_name,
+                self.project_root,
+                self.logger,
+                self.config,
+                scenario_root=self.scenario_root,
+            )
             if self.base_url:
                 runner.base_url = self.base_url
             self._runners[kind] = runner
@@ -174,8 +180,7 @@ class VerifyEngine:
         # `_parallel_override_active`）日志附降档来源标记，时间轴可追溯
         # 「因连续 blocked-env 降档至并行度 N」。
         _backoff_mark = (
-            "（inconclusive 降档）"
-            if getattr(self, "_parallel_override_active", False) else ""
+            "（inconclusive 降档）" if getattr(self, "_parallel_override_active", False) else ""
         )
         self.logger.info(
             "verify_engine",
@@ -215,18 +220,20 @@ class VerifyEngine:
                 try:
                     await self._runners[kind].teardown()
                 except Exception as e:
-                    self.logger.warning("verify_engine",
-                                        f"Runner '{kind}' teardown 异常: {e}")
+                    self.logger.warning("verify_engine", f"Runner '{kind}' teardown 异常: {e}")
 
         report = self._build_report(results)
         self._save_report(report)
 
         # 验证完成，进度更新到 100%
         total = report["summary"]["total"]
-        self._write_progress(total, total,
-                             f"验证完成: {report['summary']['passed']}通过, "
-                             f"{report['summary']['failed']}失败, "
-                             f"{report['summary']['errors']}错误")
+        self._write_progress(
+            total,
+            total,
+            f"验证完成: {report['summary']['passed']}通过, "
+            f"{report['summary']['failed']}失败, "
+            f"{report['summary']['errors']}错误",
+        )
 
         return report
 
@@ -247,10 +254,7 @@ class VerifyEngine:
 
         while remaining:
             # 找出所有依赖已满足的场景
-            ready = [
-                s for s in remaining
-                if all(dep in completed_ids for dep in s.depends_on)
-            ]
+            ready = [s for s in remaining if all(dep in completed_ids for dep in s.depends_on)]
 
             if not ready:
                 # 可能循环依赖或所有场景无依赖，直接全部执行
@@ -274,8 +278,8 @@ class VerifyEngine:
                         # 根因 2）。事件循环单线程，done_count 递增与写文件间无 await。
                         done_count += 1
                         self._write_progress(
-                            done_count, total,
-                            f"已完成 {done_count}/{total}（{scenario.id}）")
+                            done_count, total, f"已完成 {done_count}/{total}（{scenario.id}）"
+                        )
 
             batch_results = await asyncio.gather(
                 *[run_one(s) for s in ready],
@@ -287,12 +291,14 @@ class VerifyEngine:
                 completed_ids.add(sid)
                 if isinstance(r, Exception):
                     self.logger.error("verify_engine", f"场景'{sid}'异常: {r}")
-                    results.append({
-                        "scenario_id": sid,
-                        "kind": ready[i].kind,
-                        "status": "error",
-                        "error": str(r),
-                    })
+                    results.append(
+                        {
+                            "scenario_id": sid,
+                            "kind": ready[i].kind,
+                            "status": "error",
+                            "error": str(r),
+                        }
+                    )
                 else:
                     results.append(r)
 
@@ -311,8 +317,7 @@ class VerifyEngine:
         visual_results: list[dict],
     ) -> str:
         """判定场景整体状态（兼容访问点，委托 runner.determine_scenario_status）。"""
-        return determine_scenario_status(
-            step_results, assertion_results, visual_results)
+        return determine_scenario_status(step_results, assertion_results, visual_results)
 
     # ── 环境健全性门（design D1/D2）───────────────────────────
 
@@ -329,12 +334,20 @@ class VerifyEngine:
         Returns:
             {"probe_healthy": bool, "blocked_env": int, "probe_detail": str}
         """
-        candidates = [r for r in results
-                      if is_env_candidate(r) or is_connection_error_candidate(r)
-                      or is_blank_render_candidate(r)]
+        candidates = [
+            r
+            for r in results
+            if is_env_candidate(r)
+            or is_connection_error_candidate(r)
+            or is_blank_render_candidate(r)
+        ]
         if not candidates:
             self._env_probe = {"healthy": True, "detail": "无候选场景，跳过探针"}
-            return {"probe_healthy": True, "blocked_env": 0, "probe_detail": self._env_probe["detail"]}
+            return {
+                "probe_healthy": True,
+                "blocked_env": 0,
+                "probe_detail": self._env_probe["detail"],
+            }
 
         # 首个候选触达时执行探针（整轮一次）
         if not getattr(self, "_env_probe", None):
@@ -356,8 +369,11 @@ class VerifyEngine:
             f"环境健全性门: 候选={len(candidates)}, 探针={'健康' if healthy else '失联'}, "
             f"blocked-env={blocked_env} — {probe.get('detail', '')}",
         )
-        return {"probe_healthy": healthy, "blocked_env": blocked_env,
-                "probe_detail": probe.get("detail", "")}
+        return {
+            "probe_healthy": healthy,
+            "blocked_env": blocked_env,
+            "probe_detail": probe.get("detail", ""),
+        }
 
     async def _run_environment_probe(self, candidates: list[dict]) -> dict:
         """环境健全性探针：探针本体委托 Runner.probe_env（整轮一次）。
@@ -398,6 +414,7 @@ class VerifyEngine:
         if healthy and self.browser and getattr(self.browser, "is_extension_project", False):
             try:
                 from .web_runner import _probe_web_push
+
                 push_ok = await _probe_web_push(self.browser)
                 healthy = healthy and push_ok
                 detail += f"；推流{'正常' if push_ok else '中断'}"
@@ -449,10 +466,7 @@ class VerifyEngine:
         与旧版 verifier agent 写入的格式兼容：
         {"total": N, "done": D, "current": "描述"}
         """
-        progress_path = (
-            self.project_root / ".fenix" / "verify-progress"
-            / f"{self.spec_name}.json"
-        )
+        progress_path = self.project_root / ".fenix" / "verify-progress" / f"{self.spec_name}.json"
         progress_path.parent.mkdir(parents=True, exist_ok=True)
         progress = {
             "total": total,
@@ -463,14 +477,11 @@ class VerifyEngine:
             with open(progress_path, "w", encoding="utf-8") as f:
                 json.dump(progress, f, ensure_ascii=False)
         except Exception as e:
-            self.logger.debug("verify_engine",
-                              f"进度文件写入失败（非致命）: {e}")
+            self.logger.debug("verify_engine", f"进度文件写入失败（非致命）: {e}")
 
     def _save_report(self, report: dict):
         """将报告写入磁盘。"""
-        report_dir = (
-            self.project_root / ".fenix" / "verify-progress" / self.spec_name
-        )
+        report_dir = self.project_root / ".fenix" / "verify-progress" / self.spec_name
         report_dir.mkdir(parents=True, exist_ok=True)
         report_path = report_dir / "report.json"
         with open(report_path, "w", encoding="utf-8") as f:

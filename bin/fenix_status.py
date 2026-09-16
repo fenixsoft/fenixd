@@ -27,9 +27,16 @@ from core.dashboard import data  # noqa: E402
 
 TERMINAL = ("done", "pushed")
 STATUS_ICONS = {
-    "drafted": "📝", "ready": "📌", "implementing": "🔨",
-    "implemented": "🧪", "testing": "🔍", "verified": "✅",
-    "bug-found": "🐛", "blocked": "🧊", "done": "🎯", "pushed": "🚀",
+    "drafted": "📝",
+    "ready": "📌",
+    "implementing": "🔨",
+    "implemented": "🧪",
+    "testing": "🔍",
+    "verified": "✅",
+    "bug-found": "🐛",
+    "blocked": "🧊",
+    "done": "🎯",
+    "pushed": "🚀",
 }
 SEV_MARK = {"red": "🔴", "warn": "⚠️", "info": "ℹ️"}
 VERIFY_STALL_MINUTES = 30  # 验证进度文件 mtime 停滞阈值（事故校准口径，勿改用 STATE updated）
@@ -38,7 +45,9 @@ VERIFY_STALL_MINUTES = 30  # 验证进度文件 mtime 停滞阈值（事故校�
 def _local_ts(iso_str, fmt="%m-%d %H:%M"):
     """UTC ISO → 本地时区显示（日志层全 UTC 写入，展示层转本地）。"""
     try:
-        return datetime.fromisoformat(str(iso_str).replace("Z", "+00:00")).astimezone().strftime(fmt)
+        return (
+            datetime.fromisoformat(str(iso_str).replace("Z", "+00:00")).astimezone().strftime(fmt)
+        )
     except Exception:
         return str(iso_str)[:19]
 
@@ -71,7 +80,7 @@ def _active_sort_key(item):
 def _load_gates(proot):
     """审批/晋升模式（与 Dashboard 设置页同源 read_effective_config）。"""
     try:
-        gates = (data.read_effective_config(proot).get("gates") or {})
+        gates = data.read_effective_config(proot).get("gates") or {}
         return (gates.get("approve_mode") or "manual", gates.get("promote_mode") or "auto")
     except Exception:
         return "manual", "auto"
@@ -79,8 +88,8 @@ def _load_gates(proot):
 
 def _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode):
     """信号汇总：供 LLM 分诊的问题素材（已知等待单列，不算问题）。"""
-    signals = []   # (level, text)
-    waits = []     # 已知等待（有意暂停，非问题）
+    signals = []  # (level, text)
+    waits = []  # 已知等待（有意暂停，非问题）
     now_ts = datetime.now(timezone.utc).timestamp()
 
     if daemon != "running":
@@ -98,11 +107,14 @@ def _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode)
         desc = str(latest.get("description") or "")[:80]
         spec = latest.get("spec")
         loc = f"（{spec}）" if spec else ""
-        signals.append((level, f"未处理告警 {alerts['unhandled_count']} 条（最高 {sev}）{loc}：{desc}"))
+        signals.append(
+            (level, f"未处理告警 {alerts['unhandled_count']} 条（最高 {sev}）{loc}：{desc}")
+        )
 
     # 豁免集合：存在活跃 fix-<name> 子 SPEC 时，父 SPEC 的停滞/无修复链不算问题
     active_fix_parents = {
-        n[4:] for n, e in entries.items()
+        n[4:]
+        for n, e in entries.items()
         if n.startswith("fix-") and e.get("status") not in TERMINAL
     }
 
@@ -123,7 +135,12 @@ def _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode)
             effective = int(s.get("budget_effective") or 0)
             if effective:
                 if used >= effective:
-                    signals.append(("warn", f"{name}：尝试预算耗尽（{used}/{effective}）— 需人工介入或调高预算"))
+                    signals.append(
+                        (
+                            "warn",
+                            f"{name}：尝试预算耗尽（{used}/{effective}）— 需人工介入或调高预算",
+                        )
+                    )
                 elif effective - used == 1:
                     signals.append(("info", f"{name}：尝试预算剩最后 1 次（{used}/{effective}）"))
         # 验证停滞：仅 testing，进度文件 mtime 口径（fix-parent 豁免）
@@ -133,12 +150,16 @@ def _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode)
                 try:
                     age_min = (now_ts - pf.stat().st_mtime) / 60
                     if age_min > VERIFY_STALL_MINUTES:
-                        signals.append(("warn", f"{name}：验证停滞 {int(age_min)} 分钟（进度文件未更新）"))
+                        signals.append(
+                            ("warn", f"{name}：验证停滞 {int(age_min)} 分钟（进度文件未更新）")
+                        )
                 except OSError:
                     pass
         # bug-found 且无活跃 fix 子 SPEC（fix 自身豁免）
         if st == "bug-found" and not name.startswith("fix-") and name not in active_fix_parents:
-            signals.append(("info", f"{name}：bug-found 且无活跃 fix 子 SPEC — 检查修复链是否已创建"))
+            signals.append(
+                ("info", f"{name}：bug-found 且无活跃 fix 子 SPEC — 检查修复链是否已创建")
+            )
         # 已知等待
         until = data.get_frozen_until(entry)
         if frozen or until:
@@ -154,7 +175,12 @@ def _collect_signals(proot, entries, active, daemon, approve_mode, promote_mode)
         if approve_mode == "manual":
             signals.append(("info", f"{done_pending} 个 SPEC 待推送 — 运行 /fenix-approve"))
         else:
-            signals.append(("warn", f"{done_pending} 个 SPEC 滞留 done（auto 模式推送可能失败）— 可运行 /fenix-approve 人工兜底"))
+            signals.append(
+                (
+                    "warn",
+                    f"{done_pending} 个 SPEC 滞留 done（auto 模式推送可能失败）— 可运行 /fenix-approve 人工兜底",
+                )
+            )
     drafted = sum(1 for e in entries.values() if e.get("status") == "drafted")
     if drafted and promote_mode == "manual":
         signals.append(("info", f"{drafted} 个草稿待晋升 — 运行 /fenix-ready"))
@@ -189,7 +215,12 @@ def render_report(project_root) -> str:
     lines.append(f"守护进程: {daemon_line}")
     try:
         alerts = data.alerts_summary(proot)
-        alert_line = f"未处理 {alerts['unhandled_count']} 条" + (f"（最高 {alerts['max_severity']}）" if alerts.get("max_severity") else "") if alerts.get("unhandled_count") else "无"
+        alert_line = (
+            f"未处理 {alerts['unhandled_count']} 条"
+            + (f"（最高 {alerts['max_severity']}）" if alerts.get("max_severity") else "")
+            if alerts.get("unhandled_count")
+            else "无"
+        )
     except Exception:
         alert_line = "无"
     lines.append(f"告警: {alert_line}")
@@ -200,8 +231,12 @@ def render_report(project_root) -> str:
     for e in entries.values():
         st = e.get("status", "?") or "?"
         status_counts[st] = status_counts.get(st, 0) + 1
-    nonterm_desc = " ".join(f"{st} {c}" for st, c in sorted(status_counts.items()) if st not in TERMINAL)
-    lines.append(f"状态统计: 活跃 {len(active)}｜{nonterm_desc}｜终态: 🎯 done {done_cnt} ｜ 🚀 pushed {pushed_cnt}")
+    nonterm_desc = " ".join(
+        f"{st} {c}" for st, c in sorted(status_counts.items()) if st not in TERMINAL
+    )
+    lines.append(
+        f"状态统计: 活跃 {len(active)}｜{nonterm_desc}｜终态: 🎯 done {done_cnt} ｜ 🚀 pushed {pushed_cnt}"
+    )
 
     # ── 活跃 SPEC 明细 ──
     lines.append("")

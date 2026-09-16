@@ -46,6 +46,7 @@ def _dev_server_script() -> Path:
 def _node_bin() -> str:
     """返回 node 可执行文件路径：优先 PATH 中 node，无则回退常见绝对路径。"""
     import shutil
+
     found = shutil.which("node")
     if found:
         return found
@@ -63,6 +64,7 @@ def _port_in_use(port: int, host: str = "127.0.0.1") -> bool:
     端口误判为被占、确定性端口段在事故后持续空转。
     """
     import socket
+
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(0.3)
     try:
@@ -75,10 +77,12 @@ def _port_in_use(port: int, host: str = "127.0.0.1") -> bool:
         s.close()
 
 
-def allocate_port(run_seq: int,
-                  used_ports: Optional[set] = None,
-                  max_retries: int = V2_TEST_PORT_RANGE,
-                  logger=None) -> int:
+def allocate_port(
+    run_seq: int,
+    used_ports: Optional[set] = None,
+    max_retries: int = V2_TEST_PORT_RANGE,
+    logger=None,
+) -> int:
     """按确定性策略分配一个空闲端口（design D3）。
 
     Args:
@@ -114,9 +118,9 @@ def allocate_port(run_seq: int,
     return fallback
 
 
-def start(wt_path: Path, run_seq: int,
-          used_ports: Optional[set] = None,
-          logger=None) -> Tuple[int, subprocess.Popen]:
+def start(
+    wt_path: Path, run_seq: int, used_ports: Optional[set] = None, logger=None
+) -> Tuple[int, subprocess.Popen]:
     """在 worktree 内启动 dev-server.mjs，返回 (port, proc)。
 
     Args:
@@ -187,20 +191,18 @@ def start(wt_path: Path, run_seq: int,
         # 启动但端口未就绪：视为失败，回收子进程，按端口冲突重试语义上抛。
         _log("error", f"dev-server on port {port} not ready in 5s, killing")
         _kill(proc)
-        raise V2DevServerError(
-            f"dev-server on port {port} failed to become ready"
-        )
+        raise V2DevServerError(f"dev-server on port {port} failed to become ready")
 
     if used_ports is not None:
         used_ports.add(port)
-    _log("info", f"dev-server started pid={proc.pid} port={port} "
-                 f"static={static_root}")
+    _log("info", f"dev-server started pid={proc.pid} port={port} " f"static={static_root}")
     return port, proc
 
 
 def _wait_ready(port: int, timeout: float = 5.0, logger=None) -> bool:
     """轮询端口是否可连接（dev-server 监听成功即返回）。"""
     import socket
+
     deadline = time.time() + timeout
     while time.time() < deadline:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -270,10 +272,12 @@ def _kill(proc: subprocess.Popen) -> None:
             pass
 
 
-def stop(proc: subprocess.Popen,
-         port: Optional[int] = None,
-         used_ports: Optional[set] = None,
-         logger=None) -> None:
+def stop(
+    proc: subprocess.Popen,
+    port: Optional[int] = None,
+    used_ports: Optional[set] = None,
+    logger=None,
+) -> None:
     """回收一个 dev-server 进程并释放端口（D2 终态回收）。"""
     _kill(proc)
     if port is not None and used_ports is not None:
@@ -292,7 +296,9 @@ def _pgrep_dev_servers(pattern: str) -> list:
     try:
         res = subprocess.run(
             ["pgrep", "-f", pattern],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
     except (subprocess.SubprocessError, OSError):
         return []
@@ -346,7 +352,9 @@ def _worktree_has_live_referencing_process(wt_root: Path, exclude_pid: int) -> b
     try:
         res = subprocess.run(
             ["pgrep", "-f", f"worktrees/{wt_root.name}"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
     except (subprocess.SubprocessError, OSError):
         return False

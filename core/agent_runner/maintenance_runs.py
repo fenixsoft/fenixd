@@ -85,17 +85,20 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
         env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
         env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
         env_overrides["ANTHROPIC_MODEL"] = model_override
-        env_overrides["CLAUDE_CONFIG_DIR"] = str(
-            runner._ensure_agent_config_dir(provider["name"])
-        )
+        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"]))
         for k, v in (provider.get("env") or {}).items():
             env_overrides[k] = v
         # 观测：run jsonl 写 provider_marker，与 dispatch attempt 路径同口径，
         # 时间轴才能展示 Administrator 实际驱动的 model@provider；
         # Administrator 不接 failover，链内下标恒 0/1
         runner._write_provider_marker(
-            run_id, spec, "administrator",
-            provider["name"], model_override, 0, 1,
+            run_id,
+            spec,
+            "administrator",
+            provider["name"],
+            model_override,
+            0,
+            1,
         )
     else:
         model_override = runner._get_admin_model()
@@ -105,17 +108,22 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
     # pending 并升级人工，避免「admin 死了但没有任何告警」。
     try:
         from core.admin_store import AdminStore, DISPOSITION
-        AdminStore(runner.project_root, getattr(runner, "logger", None)).append({
-            "kind": DISPOSITION,
-            "status": "pending",
-            "signal_type": signal.get("signal_type"),
-            "spec": spec,
-            "admin_run_id": run_id,
-            "description": (f"Administrator 处置中（run {run_id}），尚未完成；"
-                            f"若长时间无最终结果，AdminMonitor 会自动升级人工"),
-            "result": "pending",
-            "recommended_action": signal.get("recommended_action"),
-        })
+
+        AdminStore(runner.project_root, getattr(runner, "logger", None)).append(
+            {
+                "kind": DISPOSITION,
+                "status": "pending",
+                "signal_type": signal.get("signal_type"),
+                "spec": spec,
+                "admin_run_id": run_id,
+                "description": (
+                    f"Administrator 处置中（run {run_id}），尚未完成；"
+                    f"若长时间无最终结果，AdminMonitor 会自动升级人工"
+                ),
+                "result": "pending",
+                "recommended_action": signal.get("recommended_action"),
+            }
+        )
     except Exception:
         pass
 
@@ -125,7 +133,11 @@ def run_administrator(runner, signal: dict) -> AdminDisposition:
         # admin 不消费 usage，此调用点曾漏改按 3 元组解包——admin run 一启动
         # 即崩 too many values to unpack（2026-09-05 回检发现）
         output, turns, _session_id, _usage = runner._run_claude(
-            prompt, runner.project_root, run_id, model_override, env_overrides,
+            prompt,
+            runner.project_root,
+            run_id,
+            model_override,
+            env_overrides,
             max_turns=runner._get_config("agents.max_turns", 300),
             spec_name=spec,
             agent_type="administrator",
@@ -217,9 +229,14 @@ def _read_admin_disposition(disp_path: Path) -> dict:
 
 # ── 每日自省 run（add-daily-self-review spec，design D2） ──────────
 
-def run_self_review(runner, date_str: str, daily_summary: str,
-                    todo_md: str | None = None,
-                    todo_entries: str | None = None) -> SelfReviewResult:
+
+def run_self_review(
+    runner,
+    date_str: str,
+    daily_summary: str,
+    todo_md: str | None = None,
+    todo_entries: str | None = None,
+) -> SelfReviewResult:
     """唤起每日自省 run（Administrator 通道，design D2 复用语义）。
 
     与 implementer/verifier 不同：自省是运维角色，直接在 main 树
@@ -251,27 +268,30 @@ def run_self_review(runner, date_str: str, daily_summary: str,
     """
     run_id = f"review-{date_str}"
     out_path = runner.project_root / ".fenix" / f"self_review_out-{run_id}.json"
-    prompt = runner._build_prompt(date_str, "self-review", detail={
-        "review_date": date_str,
-        "daily_summary": daily_summary or "",
-        "todo_md": todo_md or "",
-        "todo_entries": todo_entries or "",
-        "out_path": str(out_path),
-    })
+    prompt = runner._build_prompt(
+        date_str,
+        "self-review",
+        detail={
+            "review_date": date_str,
+            "daily_summary": daily_summary or "",
+            "todo_md": todo_md or "",
+            "todo_entries": todo_entries or "",
+            "out_path": str(out_path),
+        },
+    )
 
     # 模型解析链：agents.models.self-review > 回退 agents.models.administrator
     # （向后兼容：自省未单独配置时继承运维通道分配）> admin.agent_model → 默认网关
     env_overrides: Dict[str, str] = {}
-    assignment = (runner._get_agent_model_assignment("self-review")
-                  or runner._get_agent_model_assignment("administrator"))
+    assignment = runner._get_agent_model_assignment(
+        "self-review"
+    ) or runner._get_agent_model_assignment("administrator")
     if assignment:
         provider, model_override = assignment[0]
         env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
         env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
         env_overrides["ANTHROPIC_MODEL"] = model_override
-        env_overrides["CLAUDE_CONFIG_DIR"] = str(
-            runner._ensure_agent_config_dir(provider["name"])
-        )
+        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"]))
         for k, v in (provider.get("env") or {}).items():
             env_overrides[k] = v
     else:
@@ -280,7 +300,11 @@ def run_self_review(runner, date_str: str, daily_summary: str,
     runner._clear_self_review_out(out_path)
     try:
         output, turns, _session_id, usage_info = runner._run_claude(
-            prompt, runner.project_root, run_id, model_override, env_overrides,
+            prompt,
+            runner.project_root,
+            run_id,
+            model_override,
+            env_overrides,
             max_turns=runner._get_config("agents.max_turns", 300),
             spec_name="self-review",
         )
@@ -299,13 +323,14 @@ def run_self_review(runner, date_str: str, daily_summary: str,
     runner._delete_self_review_out(out_path)
     # resolved 闭环判定清单归一化：非 dict / 缺 id / 空 id / 非 str id 过滤
     resolved = []
-    for item in (data.get("resolved") or []):
-        if (isinstance(item, dict) and isinstance(item.get("id"), str)
-                and item["id"]):
-            resolved.append({
-                "id": item["id"],
-                "reason": str(item.get("reason") or ""),
-            })
+    for item in data.get("resolved") or []:
+        if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]:
+            resolved.append(
+                {
+                    "id": item["id"],
+                    "reason": str(item.get("reason") or ""),
+                }
+            )
     return SelfReviewResult(
         run_id=run_id,
         date=date_str,
@@ -354,8 +379,7 @@ def _read_self_review_out(out_path: Path) -> dict:
             # 保持原形直达渲染层，仅非 dict/str 标量兜底 str——无差别
             # str() 会把合规 dict 打成 dict-repr 字符串，渲染层四行格式
             # 失效退化为机器形态（09-08 事故）。
-            data[field] = [x if isinstance(x, (dict, str)) else str(x)
-                           for x in val if x]
+            data[field] = [x if isinstance(x, (dict, str)) else str(x) for x in val if x]
     sm = data.get("summary")
     if sm is None:
         data["summary"] = ""
@@ -390,27 +414,30 @@ def _accumulate_self_review_tokens(runner, date_str: str, usage_info: dict) -> N
         runs = data.get("runs")
         if not isinstance(runs, list):
             runs = []
-        runs.append({
-            "agent_type": "self-review",
-            "date": date_str,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
-            + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
-            + int(usage_info.get("cache_read_input_tokens", 0) or 0),
-            "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
-            "cost_usd": usage_info.get("cost_usd"),
-        })
+        runs.append(
+            {
+                "agent_type": "self-review",
+                "date": date_str,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
+                + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
+                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
+                "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
+                "cost_usd": usage_info.get("cost_usd"),
+            }
+        )
         data["runs"] = runs
-        tokens_json.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tokens_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except (OSError, json.JSONDecodeError):
         pass
 
 
 # ── 框架自进化 run（add-framework-self-evolution spec，design D2） ──
 
-def run_evolution(runner, ready_projects: list,
-                  pending_entries: list | None = None) -> EvolutionResult:
+
+def run_evolution(
+    runner, ready_projects: list, pending_entries: list | None = None
+) -> EvolutionResult:
     """唤起框架自进化分析 run（Administrator 通道语义，design D2 复用）。
 
     与 implementer/verifier 不同：自进化是运维角色，直接在 main 树
@@ -441,25 +468,28 @@ def run_evolution(runner, ready_projects: list,
     """
     run_id = f"evo-{int(time.time())}"
     out_path = runner.project_root / ".fenix" / "evolution" / f"out-{run_id}.json"
-    prompt = runner._build_prompt(run_id, "evolution", detail={
-        "ready_projects": ready_projects or [],
-        "pending_entries": pending_entries or [],
-        "out_path": str(out_path),
-    })
+    prompt = runner._build_prompt(
+        run_id,
+        "evolution",
+        detail={
+            "ready_projects": ready_projects or [],
+            "pending_entries": pending_entries or [],
+            "out_path": str(out_path),
+        },
+    )
 
     # 模型解析链：agents.models.self-review > 回退 agents.models.administrator
     # > _get_admin_model（与自省 agent 完全同源，spec「模型链与自省同源」）。
     env_overrides: Dict[str, str] = {}
-    assignment = (runner._get_agent_model_assignment("self-review")
-                  or runner._get_agent_model_assignment("administrator"))
+    assignment = runner._get_agent_model_assignment(
+        "self-review"
+    ) or runner._get_agent_model_assignment("administrator")
     if assignment:
         provider, model_override = assignment[0]
         env_overrides["ANTHROPIC_BASE_URL"] = provider["baseurl"]
         env_overrides["ANTHROPIC_API_KEY"] = provider["apikey"]
         env_overrides["ANTHROPIC_MODEL"] = model_override
-        env_overrides["CLAUDE_CONFIG_DIR"] = str(
-            runner._ensure_agent_config_dir(provider["name"])
-        )
+        env_overrides["CLAUDE_CONFIG_DIR"] = str(runner._ensure_agent_config_dir(provider["name"]))
         for k, v in (provider.get("env") or {}).items():
             env_overrides[k] = v
     else:
@@ -467,7 +497,11 @@ def run_evolution(runner, ready_projects: list,
 
     try:
         output, turns, _session_id, usage_info = runner._run_claude(
-            prompt, runner.project_root, run_id, model_override, env_overrides,
+            prompt,
+            runner.project_root,
+            run_id,
+            model_override,
+            env_overrides,
             max_turns=runner._get_config("agents.max_turns", 300),
             spec_name="evolution",
         )
@@ -488,8 +522,8 @@ def run_evolution(runner, ready_projects: list,
     drafts = 0
     if run_ok:
         try:
-            from core.evolution import (
-                ContractError, read_contract, ingest_item)
+            from core.evolution import ContractError, read_contract, ingest_item
+
             try:
                 contract = read_contract(out_path)
                 runner._delete_evolution_out(out_path)
@@ -512,9 +546,8 @@ def run_evolution(runner, ready_projects: list,
                     _log = getattr(runner, "logger", None)
                     if _log is not None:
                         _log.warning(
-                            "self-evolution",
-                            f"条目落地异常（跳过）: "
-                            f"{item.get('title')}: {e}")
+                            "self-evolution", f"条目落地异常（跳过）: " f"{item.get('title')}: {e}"
+                        )
                     continue
                 items_ingested += 1
                 if status == "pending":
@@ -563,19 +596,20 @@ def _accumulate_evolution_tokens(runner, run_id: str, usage_info: dict) -> None:
         runs = data.get("runs")
         if not isinstance(runs, list):
             runs = []
-        runs.append({
-            "agent_type": "evolution",
-            "date": run_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
-            + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
-            + int(usage_info.get("cache_read_input_tokens", 0) or 0),
-            "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
-            "cost_usd": usage_info.get("cost_usd"),
-        })
+        runs.append(
+            {
+                "agent_type": "evolution",
+                "date": run_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "input_tokens": int(usage_info.get("input_tokens", 0) or 0)
+                + int(usage_info.get("cache_creation_input_tokens", 0) or 0)
+                + int(usage_info.get("cache_read_input_tokens", 0) or 0),
+                "output_tokens": int(usage_info.get("output_tokens", 0) or 0),
+                "cost_usd": usage_info.get("cost_usd"),
+            }
+        )
         data["runs"] = runs
-        tokens_json.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tokens_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except (OSError, json.JSONDecodeError):
         pass
 

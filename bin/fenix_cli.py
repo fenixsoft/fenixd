@@ -27,8 +27,7 @@ def _resolve_project_root(args_project: str | None) -> Path:
     else:
         proot = Path.cwd()
     if not (proot / ".fenix" / "STATE.md").exists():
-        print(f"错误：{proot} 不是 Fenix 项目目录（缺少 .fenix/STATE.md）",
-              file=sys.stderr)
+        print(f"错误：{proot} 不是 Fenix 项目目录（缺少 .fenix/STATE.md）", file=sys.stderr)
         sys.exit(1)
     return proot
 
@@ -48,8 +47,7 @@ def cmd_promote(args):
     # 同源——不传 config 时 promote_drafted 无法评估跳过白名单，恒直通 ready。
     config = ConfigLoader.resolve_config(proot)
 
-    result = promote_drafted(proot, args.spec, state_machine=sm, logger=logger,
-                             config=config)
+    result = promote_drafted(proot, args.spec, state_machine=sm, logger=logger, config=config)
     if result["ok"]:
         # 依 promote_drafted 的分流结论执行转移（add-spec-review-gate 3.4）：
         # 命中跳过白名单 → ready；否则 → reviewing 待方案评审。与 _on_spec_drafted
@@ -89,6 +87,7 @@ def cmd_review(args):
 
     # 沿用 SpecReviewManager.re_review 的开放条件校验
     from core.pm_engine.spec_review import SpecReviewManager
+
     review_manager = SpecReviewManager(proot, sm, None, None, {}, logger)
     ok, msg = review_manager.re_review(args.spec)
     if ok:
@@ -115,8 +114,7 @@ def cmd_reflow(args):
     sm = StateMachine(proot / ".fenix" / "STATE.md", None)
     logger = Logger(proot)
 
-    result = reflow_spec(proot, args.spec, state_machine=sm, logger=logger,
-                         source="cli")
+    result = reflow_spec(proot, args.spec, state_machine=sm, logger=logger, source="cli")
     if result.get("ok"):
         gap = result.get("gap_tasks") or []
         gap_note = f"（缺口 {len(gap)} 项）" if gap else ""
@@ -142,7 +140,8 @@ def main():
     )
     p_promote.add_argument("spec", help="要晋升的 SPEC 名称")
     p_promote.add_argument(
-        "--project", "-p",
+        "--project",
+        "-p",
         default=None,
         help="项目根目录（默认当前目录）",
     )
@@ -153,7 +152,8 @@ def main():
     )
     p_review.add_argument("spec", help="要重新评审的 SPEC 名称")
     p_review.add_argument(
-        "--project", "-p",
+        "--project",
+        "-p",
         default=None,
         help="项目根目录（默认当前目录，挂在 review 子解析器下）",
     )
@@ -164,7 +164,8 @@ def main():
     )
     p_reflow.add_argument("spec", help="要回炉的 SPEC 名称")
     p_reflow.add_argument(
-        "--project", "-p",
+        "--project",
+        "-p",
         default=None,
         help="项目根目录（默认当前目录）",
     )

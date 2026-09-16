@@ -39,24 +39,20 @@ _ALERT_COOLDOWN_MINUTES = 15
 # 合成报告携带的「合成源轮次指纹」标记：报告属哪一轮裁决的机器可读留痕。
 # 人读行内标记，取值为无空格无标点的 token（见 current_round_fingerprint）。
 _FINGERPRINT_MARKER = "合成源轮次指纹："
-_FINGERPRINT_RE = re.compile(
-    re.escape(_FINGERPRINT_MARKER) + r"([^\s，。）|]+)")
+_FINGERPRINT_RE = re.compile(re.escape(_FINGERPRINT_MARKER) + r"([^\s，。）|]+)")
 
 # 存量报告无指纹时的兜底判据：解析 md 声明的结论行与汇总计数（与
 # dashboard.data.parse_verdict 同款语法，两处必须同源演进）。
-_MD_CONCLUSION_RE = re.compile(
-    r"^#{2,4}\s*(?:判定)?结论\s*(?:摘要)?\s*[：:]?\s*(.*)$", re.M)
+_MD_CONCLUSION_RE = re.compile(r"^#{2,4}\s*(?:判定)?结论\s*(?:摘要)?\s*[：:]?\s*(.*)$", re.M)
 _MD_COUNT_RE = re.compile(r"^\|\s*(通过|失败|错误)\s*\|\s*([^|]+?)\s*\|", re.M)
 
 
 # ── 结构化数据读取 ────────────────────────────────────────────────
 
+
 def _load_report_json(project_root, spec_name):
     """读取验证引擎 report.json；不可用返回 None（不抛出）。"""
-    path = (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / "report.json"
-    )
+    path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
     if not path.exists():
         return None
     try:
@@ -80,10 +76,7 @@ def _sum_verify_chain_tokens(project_root, spec_name):
     """
     if not project_root or not spec_name:
         return None
-    path = (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / "tokens.json"
-    )
+    path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "tokens.json"
     if not path.is_file():
         return None
     try:
@@ -118,8 +111,7 @@ def _load_run_result(project_root, spec_name):
     （与 pm_engine._read_planner_result 同语义）。
     """
     primary = (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / ".fenix-run-result.json"
+        Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json"
     )
     fallback = Path(project_root) / ".fenix" / ".fenix-run-result.json"
     for path, stamped_expected in ((primary, False), (fallback, True)):
@@ -148,10 +140,7 @@ def _load_degrade_context(project_root, spec_name):
     降级标注（G3）。文件缺失/损坏 → 返回 None（零注入零渲染，正常报告不含
     该字段）。
     """
-    path = (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / "degrade_context.json"
-    )
+    path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "degrade_context.json"
     if not path.exists():
         return None
     try:
@@ -172,10 +161,7 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
     报告页/CLI）能还原降级事实与代价。写入失败静默跳过（annotation 是纯观测量，
     不得阻断报告合成主流程）。
     """
-    report_path = (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / "report.json"
-    )
+    report_path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
     try:
         data = {}
         if report_path.is_file():
@@ -187,13 +173,13 @@ def _persist_degrade_annotation(project_root, spec_name, annotation) -> None:
                 data = loaded
         data["degrade_annotation"] = annotation
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        report_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except (OSError, TypeError, ValueError):
         pass
 
 
 # ── 渲染 ─────────────────────────────────────────────────────────
+
 
 def _derive_status(run_result, report) -> str:
     """从结构化数据推导终局判定：'verified' 或 'bug-found'。"""
@@ -204,8 +190,7 @@ def _derive_status(run_result, report) -> str:
     if isinstance(report, dict):
         summary = report.get("summary") or {}
         try:
-            if (int(summary.get("failed", 0) or 0)
-                    + int(summary.get("errors", 0) or 0)) > 0:
+            if (int(summary.get("failed", 0) or 0) + int(summary.get("errors", 0) or 0)) > 0:
                 return "bug-found"
         except (TypeError, ValueError):
             pass
@@ -227,6 +212,7 @@ def _summary_counts(report):
 
 # ── 报告时效（陈旧报告识别）────────────────────────────────────────
 
+
 def current_round_fingerprint(project_root, spec_name):
     """当前轮结构化数据的指纹（轮次身份）。无结构化数据时返回 None。
 
@@ -234,13 +220,9 @@ def current_round_fingerprint(project_root, spec_name):
     字段缺失时退化为文件 mtime（同样每轮重写即变化）。两路皆不可得返回 None
     ——此时无从判定新旧，闸门维持「既有报告不改动」的保守行为。
     """
-    report_path = (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / "report.json"
-    )
+    report_path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
     run_result_path = (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / ".fenix-run-result.json"
+        Path(project_root) / ".fenix" / "verify-progress" / spec_name / ".fenix-run-result.json"
     )
     report = _load_report_json(project_root, spec_name)
     if isinstance(report, dict):
@@ -314,18 +296,14 @@ def _report_is_superseded(project_root, spec_name, content) -> bool:
     if run_result is None and report is None:
         return False  # 无结构化数据可比对：交给合成路径自身 fail-closed
     declared_verdict, declared_failed, declared_errors = _md_declared_verdict(content)
-    if declared_verdict is None and declared_failed is None \
-            and declared_errors is None:
+    if declared_verdict is None and declared_failed is None and declared_errors is None:
         return False  # 解析不出结论（Agent 自由叙述）→ 不判矛盾
-    if declared_verdict is not None \
-            and declared_verdict != _derive_status(run_result, report):
+    if declared_verdict is not None and declared_verdict != _derive_status(run_result, report):
         return True
     _passed, failed, errors, _total = _summary_counts(report)
-    if declared_failed is not None and failed is not None \
-            and declared_failed != failed:
+    if declared_failed is not None and failed is not None and declared_failed != failed:
         return True
-    if declared_errors is not None and errors is not None \
-            and declared_errors != errors:
+    if declared_errors is not None and errors is not None and declared_errors != errors:
         return True
     return False
 
@@ -335,10 +313,7 @@ def _failed_assertion_count(scenario) -> str:
     ars = scenario.get("assertion_results")
     if not isinstance(ars, list) or not ars:
         return "-"
-    failed = sum(
-        1 for a in ars
-        if isinstance(a, dict) and not a.get("pass", True)
-    )
+    failed = sum(1 for a in ars if isinstance(a, dict) and not a.get("pass", True))
     return f"{failed}/{len(ars)}"
 
 
@@ -356,7 +331,8 @@ def _render_evidence(evidence) -> list:
         for item in evidence:
             rendered = (
                 json.dumps(item, ensure_ascii=False)
-                if isinstance(item, (dict, list)) else str(item)
+                if isinstance(item, (dict, list))
+                else str(item)
             )
             lines.append(f"  - {rendered}")
     elif evidence is not None:
@@ -415,14 +391,14 @@ def _render_assertion_exempt_section(report) -> list:
     历史报告无 assertion_triage 字段时小节缺省（design D4，向后兼容）。
     """
     from core.verdict_check import exempted_assertions, triage_entries
+
     if not isinstance(report, dict):
         return []
     scenarios = report.get("scenarios")
     if not isinstance(scenarios, list):
         return []
     # 旧报告：全部场景均无 assertion_triage → 小节缺省（不渲染空壳）
-    if not any(triage_entries(sc) for sc in scenarios
-               if isinstance(sc, dict)):
+    if not any(triage_entries(sc) for sc in scenarios if isinstance(sc, dict)):
         return []
 
     rows = exempted_assertions(report)
@@ -476,9 +452,15 @@ def _render_scenarios_table(report) -> list:
     return lines
 
 
-def render_verification_report(spec_name, run_result, report, now=None,
-                              project_root=None, degrade_annotation=None,
-                              source_fingerprint=None) -> str:
+def render_verification_report(
+    spec_name,
+    run_result,
+    report,
+    now=None,
+    project_root=None,
+    degrade_annotation=None,
+    source_fingerprint=None,
+) -> str:
     """把结构化数据渲染为人读报告 Markdown。
 
     纯函数：不做 IO、不写文件，便于测试与下游复用。project_root 用于读取验证链
@@ -556,9 +538,9 @@ def render_verification_report(spec_name, run_result, report, now=None,
         detail_parts.append(f"{failed} 失败")
     if errors is not None:
         detail_parts.append(f"{errors} 错误")
-    detail = status + (
-        " — " + "，".join(detail_parts) if detail_parts else ""
-    ) + f"（{count_note}）"
+    detail = (
+        status + (" — " + "，".join(detail_parts) if detail_parts else "") + f"（{count_note}）"
+    )
     lines.append(f"**状态：{detail}**")
     lines.append("")
 
@@ -578,8 +560,14 @@ def render_verification_report(spec_name, run_result, report, now=None,
         ("失败", failed if failed is not None else "N/A"),
         ("错误", errors if errors is not None else "N/A"),
         ("产品 Bug", len(bugs)),
-        ("本链增量 Token（输入）", f"{chain_tokens['input'] / 1_000_000:.2f}M" if chain_tokens else "N/A"),
-        ("本链增量 Token（输出）", f"{chain_tokens['output'] / 1_000_000:.2f}M" if chain_tokens else "N/A"),
+        (
+            "本链增量 Token（输入）",
+            f"{chain_tokens['input'] / 1_000_000:.2f}M" if chain_tokens else "N/A",
+        ),
+        (
+            "本链增量 Token（输出）",
+            f"{chain_tokens['output'] / 1_000_000:.2f}M" if chain_tokens else "N/A",
+        ),
     ):
         lines.append(f"| {label} | {val} |")
     lines.append("")
@@ -615,6 +603,7 @@ def render_verification_report(spec_name, run_result, report, now=None,
 
 
 # ── 合成与闸门 ────────────────────────────────────────────────────
+
 
 def _resolve_scenarios(report, run_result):
     """解析场景明细数据源（fix-verify-report-fasttrack-scenarios）。
@@ -680,13 +669,15 @@ def synthesize_verification_report(project_root, spec_name, now=None) -> dict:
         report["degrade_annotation"] = degrade_annotation
 
     content = render_verification_report(
-        spec_name, run_result, report, now=now, project_root=project_root,
+        spec_name,
+        run_result,
+        report,
+        now=now,
+        project_root=project_root,
         degrade_annotation=degrade_annotation,
-        source_fingerprint=current_round_fingerprint(project_root, spec_name))
-    out_path = (
-        Path(project_root) / "spec" / "changes"
-        / spec_name / "verification-report.md"
+        source_fingerprint=current_round_fingerprint(project_root, spec_name),
     )
+    out_path = Path(project_root) / "spec" / "changes" / spec_name / "verification-report.md"
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(content, encoding="utf-8")
@@ -695,27 +686,30 @@ def synthesize_verification_report(project_root, spec_name, now=None) -> dict:
     return {"ok": True, "path": str(out_path)}
 
 
-def _append_alert(project_root, spec_name, signal_type, severity,
-                  description, evidence, logger=None) -> None:
+def _append_alert(
+    project_root, spec_name, signal_type, severity, description, evidence, logger=None
+) -> None:
     """落一条 human-escalation-alerts 告警（节流：同 spec 同类信号冷却期内不重复）。"""
     try:
         from .admin_store import AdminStore, ESCALATION
+
         store = AdminStore(project_root, logger)
-        if store.latest_signal(spec_name, signal_type,
-                               _ALERT_COOLDOWN_MINUTES) is not None:
+        if store.latest_signal(spec_name, signal_type, _ALERT_COOLDOWN_MINUTES) is not None:
             return
-        store.append({
-            "kind": ESCALATION,
-            "signal_type": signal_type,
-            "spec": spec_name,
-            "severity": severity,
-            "description": description,
-            "evidence": evidence,
-            "recommended_action": (
-                "留意验证裁决 Agent 未遵守 prompt 步骤 6（写 verification-report.md）"
-                "的劣化信号；合成报告内容以结构化 JSON 为准，无叙述性分析"
-            ),
-        })
+        store.append(
+            {
+                "kind": ESCALATION,
+                "signal_type": signal_type,
+                "spec": spec_name,
+                "severity": severity,
+                "description": description,
+                "evidence": evidence,
+                "recommended_action": (
+                    "留意验证裁决 Agent 未遵守 prompt 步骤 6（写 verification-report.md）"
+                    "的劣化信号；合成报告内容以结构化 JSON 为准，无叙述性分析"
+                ),
+            }
+        )
     except Exception as e:  # 告警失败不阻断主流程（闸门结论已定）
         if logger is not None:
             logger.warning(
@@ -733,10 +727,7 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
     action=resynthesized：既有报告属上一轮残留（``_report_is_superseded``），
     已用本轮结构化数据重新合成覆盖。
     """
-    out_path = (
-        Path(project_root) / "spec" / "changes"
-        / spec_name / "verification-report.md"
-    )
+    out_path = Path(project_root) / "spec" / "changes" / spec_name / "verification-report.md"
     if out_path.exists():
         try:
             existing = out_path.read_text(encoding="utf-8")
@@ -771,7 +762,10 @@ def ensure_verification_report(project_root, spec_name, logger=None) -> dict:
 
     error = result.get("error") or "验证报告缺失且无法合成"
     _append_alert(
-        project_root, spec_name, SIGNAL_MISSING, "major",
+        project_root,
+        spec_name,
+        SIGNAL_MISSING,
+        "major",
         f"'{spec_name}' 验证报告缺失且无法合成——验证裁决放行被阻断，等待人工裁决",
         error,
         logger=logger,
@@ -810,8 +804,7 @@ _STABILITY_MIN_ROUNDS = 2
 def _verdict_stability_path(project_root, spec_name) -> Path:
     """verdict_stability.json 路径（verify-progress/<spec>/）。"""
     return (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / VERDICT_STABILITY_FILENAME
+        Path(project_root) / ".fenix" / "verify-progress" / spec_name / VERDICT_STABILITY_FILENAME
     )
 
 
@@ -828,6 +821,7 @@ def compute_spec_stamp(project_root, spec_name) -> str | None:
     spec.md 修改即改变 spec 戳 → 缓存失效重新验证。
     """
     import hashlib as _hashlib
+
     parts: list[bytes] = []
 
     # 1) spec.md 全部内容（多 capability 按路径排序保证确定性）
@@ -841,8 +835,7 @@ def compute_spec_stamp(project_root, spec_name) -> str | None:
 
     # 2) scenarios.json 内容
     scenarios_path = (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / "scenarios.json"
+        Path(project_root) / ".fenix" / "verify-progress" / spec_name / "scenarios.json"
     )
     try:
         parts.append(scenarios_path.read_bytes())
@@ -857,10 +850,7 @@ def compute_spec_stamp(project_root, spec_name) -> str | None:
 
 def report_mtime_ns(project_root, spec_name) -> int | None:
     """report.json mtime 纳秒；缺失返回 None（用于稳定性缓存判据）。"""
-    report_path = (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / "report.json"
-    )
+    report_path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
     try:
         return report_path.stat().st_mtime_ns
     except OSError:
@@ -909,16 +899,21 @@ def write_verdict_stability(project_root, spec_name, data) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_name(p.name + ".tmp")
         tmp.write_text(
-            json.dumps(data, ensure_ascii=False, indent=1, default=str),
-            encoding="utf-8")
+            json.dumps(data, ensure_ascii=False, indent=1, default=str), encoding="utf-8"
+        )
         tmp.replace(p)
     except OSError:
         pass
 
 
-def record_verdict_round(project_root, spec_name, status, failed_ids,
-                         stamp: str | None = None,
-                         report_mtime: int | None = None) -> dict:
+def record_verdict_round(
+    project_root,
+    spec_name,
+    status,
+    failed_ids,
+    stamp: str | None = None,
+    report_mtime: int | None = None,
+) -> dict:
     """追加一轮裁决到 verdict_stability.json（保留最近两轮）；返回更新后数据。
 
     stamp / report_mtime 为 None 时自动从当前状态推导。

@@ -101,8 +101,10 @@ class InfraCircuitBreaker:
             raw = json.loads(self._state_path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 self._log(
-                    "warning", "infra_breaker",
-                    f"熔断状态文件格式非法（应为 dict），fail-open 复位: {self._state_path}")
+                    "warning",
+                    "infra_breaker",
+                    f"熔断状态文件格式非法（应为 dict），fail-open 复位: {self._state_path}",
+                )
                 return
             for link, st in raw.items():
                 if isinstance(st, dict):
@@ -113,8 +115,10 @@ class InfraCircuitBreaker:
                     }
         except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
             self._log(
-                "warning", "infra_breaker",
-                f"熔断状态文件损坏，fail-open 复位: {self._state_path}: {e}")
+                "warning",
+                "infra_breaker",
+                f"熔断状态文件损坏，fail-open 复位: {self._state_path}: {e}",
+            )
             self._cache.clear()
 
     def _save_state(self):

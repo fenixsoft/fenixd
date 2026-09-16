@@ -75,12 +75,11 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
     """
     # 跨组引用经门面延迟解析（D4：叶子组引用中层 spec_docs 的 resolve_spec_dir）
     import core.dashboard.data as _facade
+
     # 活跃优先、归档回退（fix-archived-spec-doc-readback D3）；归档 SPEC 的
     # tasks.md 从归档目录读取，详情页任务卡片不再空白
     spec_dir = _facade.resolve_spec_dir(project_root, spec_name)
-    tasks_path = (
-        spec_dir or Path(project_root) / "spec" / "changes" / spec_name
-    ) / "tasks.md"
+    tasks_path = (spec_dir or Path(project_root) / "spec" / "changes" / spec_name) / "tasks.md"
     if spec_status == "implementing":
         wt = find_implementer_worktree(project_root, spec_name)
         if wt:
@@ -104,11 +103,13 @@ def parse_tasks(project_root, spec_name, spec_status: str = "", *, live: bool = 
             m = re.match(r"^- \[(x| )\] (\d+\.\d+) (.+)$", line)
             if m and current_group is not None:
                 is_done = m.group(1) == "x"
-                current_group["tasks"].append({
-                    "done": is_done,
-                    "id": m.group(2),
-                    "desc": m.group(3).strip(),
-                })
+                current_group["tasks"].append(
+                    {
+                        "done": is_done,
+                        "id": m.group(2),
+                        "desc": m.group(3).strip(),
+                    }
+                )
                 if is_done:
                     current_group["done"] += 1
                 current_group["total"] += 1
@@ -165,10 +166,9 @@ def tasks_note(project_root, spec_name, spec_status: str = ""):
     """
     # 跨组引用经门面延迟解析（D4）
     import core.dashboard.data as _facade
+
     spec_dir = _facade.resolve_spec_dir(project_root, spec_name)
-    tasks_path = (
-        spec_dir or Path(project_root) / "spec" / "changes" / spec_name
-    ) / "tasks.md"
+    tasks_path = (spec_dir or Path(project_root) / "spec" / "changes" / spec_name) / "tasks.md"
     if not tasks_path.exists():
         return None
     if parse_tasks(project_root, spec_name, spec_status):
@@ -198,12 +198,14 @@ def run_task_progress(project_root, spec_name) -> dict:
     current = list(rd.get("in_progress_ids") or [])
     # 跨组引用（runs 组的 classify_run/_read_run_lines）经门面解析（D4）
     import core.dashboard.data as _facade
-    if current and _facade.classify_run(_facade._read_run_lines(run_file, max_lines=3)) not in ("running", "empty"):
+
+    if current and _facade.classify_run(_facade._read_run_lines(run_file, max_lines=3)) not in (
+        "running",
+        "empty",
+    ):
         current = []
     return {
         "done": len(rd.get("flat_done") or set()),
         "total": int(rd.get("created_count") or 0),
         "current": current,
     }
-
-

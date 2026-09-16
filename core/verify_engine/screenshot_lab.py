@@ -58,7 +58,10 @@ def classify_screenshot(
     """
     try:
         return _classify_impl(
-            path, blank_std_threshold, blank_dominant_pct, low_contrast_upper,
+            path,
+            blank_std_threshold,
+            blank_dominant_pct,
+            low_contrast_upper,
         )
     except Exception as e:
         logger.warning(
@@ -96,9 +99,11 @@ def _classify_impl(
         flat = flat[indices]
     # 按行 hash 统计唯一值出现次数
     # PIL RGBA→RGB 已确保 3 通道；将 RGB 拼成单个 int 以便 unique
-    color_tokens = (flat[:, 0].astype(np.uint32) << 16
-                    | flat[:, 1].astype(np.uint32) << 8
-                    | flat[:, 2].astype(np.uint32))
+    color_tokens = (
+        flat[:, 0].astype(np.uint32) << 16
+        | flat[:, 1].astype(np.uint32) << 8
+        | flat[:, 2].astype(np.uint32)
+    )
     unique, counts = np.unique(color_tokens, return_counts=True)
     dominant_count = int(counts.max())
     dominant_color_pct = dominant_count / len(color_tokens)

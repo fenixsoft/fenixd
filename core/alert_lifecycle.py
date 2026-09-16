@@ -82,8 +82,7 @@ def _recognized(condition) -> bool:
     return condition in (CONDITION_SPEC_TERMINAL_OR_UNBLOCKED, _CONDITION_ALIAS)
 
 
-def _resolve_note_for_condition(spec_name: str, entry: dict,
-                                backfill: bool) -> str:
+def _resolve_note_for_condition(spec_name: str, entry: dict, backfill: bool) -> str:
     """spec_terminal_or_unblocked 条件下的解除依据描述（spec.md：含 spec 名与终态说明）。"""
     status = str((entry or {}).get("status") or "")
     if status in TERMINAL_SPEC_STATUSES:
@@ -139,8 +138,7 @@ def evaluate_alert(alert: dict, specs: dict, backfill: bool = False):
     return _resolve_note_for_condition(spec_name, entry, backfill=not has_trigger)
 
 
-def find_resolvable(alerts: list, specs: dict,
-                    backfill: bool = False) -> list:
+def find_resolvable(alerts: list, specs: dict, backfill: bool = False) -> list:
     """批量判定：返回可闭环条目列表 [{'id', 'spec', 'resolve_note'}]。
 
     供 AdminStore.auto_resolve 消费（写回在 AdminStore 的排他锁内完成）。
@@ -151,9 +149,11 @@ def find_resolvable(alerts: list, specs: dict,
         note = evaluate_alert(alert, specs, backfill=backfill)
         if note is None:
             continue
-        results.append({
-            "id": alert.get("id"),
-            "spec": alert.get("spec"),
-            "resolve_note": note,
-        })
+        results.append(
+            {
+                "id": alert.get("id"),
+                "spec": alert.get("spec"),
+                "resolve_note": note,
+            }
+        )
     return results

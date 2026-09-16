@@ -85,6 +85,7 @@ def parse_unattainable(data: dict) -> "tuple[set, list]":
         ids.add(tid)
     return ids, invalid
 
+
 # parse_run_task_done 的 memo 缓存：run 文件 O_APPEND 只增，mtime/size 不变即命中。
 # 上限 64 项，超出整体清空，防止 append-only 文件每次追加换键导致无界增长。
 _RUN_TASK_CACHE: dict = {}
@@ -165,8 +166,7 @@ def parse_run_task_done(run_file: Path) -> dict:
         st = run_file.stat()
         key = (str(run_file), st.st_mtime_ns, st.st_size)
     except OSError:
-        return {"done_ids": set(), "created_count": 0, "flat_done": set(),
-                "in_progress_ids": []}
+        return {"done_ids": set(), "created_count": 0, "flat_done": set(), "in_progress_ids": []}
     cached = _RUN_TASK_CACHE.get(key)
     if cached is not None:
         return cached
@@ -204,8 +204,7 @@ def parse_run_task_done(run_file: Path) -> dict:
                         if status == "completed":
                             completed_idx.add(n - 1)
     except OSError:
-        return {"done_ids": set(), "created_count": 0, "flat_done": set(),
-                "in_progress_ids": []}
+        return {"done_ids": set(), "created_count": 0, "flat_done": set(), "in_progress_ids": []}
 
     created_count = len(created_ordered)
     done_ids = set()
@@ -217,7 +216,8 @@ def parse_run_task_done(run_file: Path) -> dict:
     # 进行中任务（run-progress-current）：最近一次 TaskUpdate 仍为 in_progress
     # 且未 completed 的创建序下标 → 展示用 id（subject 无编号时回退 "#创建序"）
     in_progress_idx = {
-        idx for idx, s in last_update_status.items()
+        idx
+        for idx, s in last_update_status.items()
         if s == "in_progress" and 0 <= idx < created_count
     } - completed_idx
     in_progress_ids = [
@@ -225,8 +225,12 @@ def parse_run_task_done(run_file: Path) -> dict:
         for idx in sorted(in_progress_idx)
     ]
 
-    result = {"done_ids": done_ids, "created_count": created_count, "flat_done": flat_done,
-              "in_progress_ids": in_progress_ids}
+    result = {
+        "done_ids": done_ids,
+        "created_count": created_count,
+        "flat_done": flat_done,
+        "in_progress_ids": in_progress_ids,
+    }
     if len(_RUN_TASK_CACHE) > 64:
         _RUN_TASK_CACHE.clear()
     _RUN_TASK_CACHE[key] = result
@@ -412,7 +416,7 @@ def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
         for p in fam_files:
             creates, completed_idx = _scan_task_create_update(p)
             created_ordered.extend(creates)  # 该 run 创建并入族内全局序
-            for idx in completed_idx:        # taskId 即族内全局序下标
+            for idx in completed_idx:  # taskId 即族内全局序下标
                 if 0 <= idx < len(created_ordered) and created_ordered[idx]:
                     all_done.add(created_ordered[idx])
             # 义务来源：仅正常收尾 run 的创建计入 tracked（异常终止 run 的
@@ -422,8 +426,7 @@ def parse_run_task_done_cumulative(project_root, spec_name) -> dict:
                     if cid:
                         all_tracked.add(cid)
         max_created = max(max_created, len(created_ordered))
-    return {"done_ids": all_done, "tracked_ids": all_tracked,
-            "created_count": max_created}
+    return {"done_ids": all_done, "tracked_ids": all_tracked, "created_count": max_created}
 
 
 # 向后兼容别名：旧调用点（tests / 历史引用）仍可用下划线前缀名。
@@ -454,9 +457,11 @@ def read_init_tools(run_file) -> list | None:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if (isinstance(entry, dict)
-                        and entry.get("type") == "system"
-                        and entry.get("subtype") == "init"):
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("type") == "system"
+                    and entry.get("subtype") == "init"
+                ):
                     tools = entry.get("tools")
                     if isinstance(tools, list):
                         return tools

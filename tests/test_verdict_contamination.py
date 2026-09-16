@@ -216,10 +216,10 @@ class TestLegacyContamination(_ContaminationBase, unittest.TestCase):
 
     def _run_legacy(self, verifier_run_id="verify-demo-spec-1750000000"):
         """run_id 不匹配 -\d{10,}-a\d+$（无 -a 后缀）→ 旧 fail-open 红灯场景。"""
-        self.engine._ensure_verification_report = MagicMock(return_value=None)
-        self.engine._env_whitewash_gate = MagicMock(return_value=True)
-        self.engine._check_verification_gate = MagicMock(return_value=None)
-        self.engine._speculative_bug_found_gate = MagicMock(return_value=False)
+        self.engine._verification._ensure_verification_report = MagicMock(return_value=None)
+        self.engine._verification._env_whitewash_gate = MagicMock(return_value=True)
+        self.engine._verification._check_verification_gate = MagicMock(return_value=None)
+        self.engine._verification._speculative_bug_found_gate = MagicMock(return_value=False)
         self.engine.agent_runner.run_verifier = MagicMock(
             return_value=SimpleNamespace(
                 success=True, error=None, run_id=verifier_run_id))
@@ -290,13 +290,13 @@ class _ThreeStageBase(_ContaminationBase):
     def setUp(self):
         super().setUp()
         self.engine._task_completion_blocker = MagicMock(return_value=None)
-        self.engine._apply_scenario_freeze = MagicMock(return_value={})
-        self.engine._apply_interaction_contract = MagicMock(return_value=None)
-        self.engine._verify_verdict_evidence = MagicMock(return_value={
+        self.engine._verification._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
+        self.engine._verification._verify_verdict_evidence = MagicMock(return_value={
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })
-        self.engine._update_warning_streaks = MagicMock(return_value=[])
-        self.engine._ensure_app_reachable = MagicMock(return_value=(True, False, ""))
+        self.engine._verification._update_warning_streaks = MagicMock(return_value=[])
+        self.engine._verification._ensure_app_reachable = MagicMock(return_value=(True, False, ""))
         self.engine.agent_runner.run_planner = MagicMock(
             return_value=SimpleNamespace(
                 success=True, error=None,
@@ -386,15 +386,15 @@ class TestMechanicalAnchors(_ThreeStageBase, unittest.TestCase):
     def test_legacy_path_calls_read_verdict(self):
         """legacy 路径裁决读取必须走 _read_verdict（防空跑）。"""
         self._write_shared(IMPL_RESIDUAL_ROLE)
-        self.engine._ensure_verification_report = MagicMock(return_value=None)
-        self.engine._env_whitewash_gate = MagicMock(return_value=True)
-        self.engine._check_verification_gate = MagicMock(return_value=None)
-        self.engine._speculative_bug_found_gate = MagicMock(return_value=False)
+        self.engine._verification._ensure_verification_report = MagicMock(return_value=None)
+        self.engine._verification._env_whitewash_gate = MagicMock(return_value=True)
+        self.engine._verification._check_verification_gate = MagicMock(return_value=None)
+        self.engine._verification._speculative_bug_found_gate = MagicMock(return_value=False)
         self.engine.agent_runner.run_verifier = MagicMock(
             return_value=SimpleNamespace(
                 success=True, error=None, run_id="verify-demo-spec-1750000000"))
-        with patch.object(self.engine, "_read_verdict",
-                          wraps=self.engine._read_verdict) as mock_rd:
+        with patch.object(self.engine._verification, "_read_verdict",
+                          wraps=self.engine._verification._read_verdict) as mock_rd:
             self.engine._run_legacy_verification("demo-spec")
             mock_rd.assert_called_once_with("demo-spec")
 
@@ -403,8 +403,8 @@ class TestMechanicalAnchors(_ThreeStageBase, unittest.TestCase):
         # primary 已存在：残留不相关，只验证入口被调用
         (self.verify_dir / ".fenix-run-result.json").write_text(
             json.dumps(ALL_GREEN_FAST_PATH_RESULT), encoding="utf-8")
-        with patch.object(self.engine, "_read_verdict",
-                          wraps=self.engine._read_verdict) as mock_rd:
+        with patch.object(self.engine._verification, "_read_verdict",
+                          wraps=self.engine._verification._read_verdict) as mock_rd:
             with patch("importlib.reload", lambda m: m), \
                     patch("core.verify_engine.VerifyEngine",
                           self._make_fake_verify_engine()):

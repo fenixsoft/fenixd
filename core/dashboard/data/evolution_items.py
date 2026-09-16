@@ -27,7 +27,9 @@ def read_evolution_items(project_root, project_filter=None) -> list:
     read_items 容错跳过（MUST NOT 让整个列表 500）。
     """
     from core.evolution import (
-        read_items, draft_dir, resolve_accepted_spec_dir,
+        read_items,
+        draft_dir,
+        resolve_accepted_spec_dir,
     )
 
     items = read_items(project_root)
@@ -41,25 +43,29 @@ def read_evolution_items(project_root, project_filter=None) -> list:
         has_draft = bool(eid) and draft_dir(project_root, str(eid)).is_dir()
         if has_draft:
             doc_source = "draft"
-        elif rec.get("spec_name") and resolve_accepted_spec_dir(
-                project_root, str(rec["spec_name"])) is not None:
+        elif (
+            rec.get("spec_name")
+            and resolve_accepted_spec_dir(project_root, str(rec["spec_name"])) is not None
+        ):
             doc_source = "spec"
         else:
             doc_source = None
-        out.append({
-            "id": eid,
-            "project": rec.get("project"),
-            "date_section": rec.get("date_section"),
-            "section": rec.get("section"),
-            "title": rec.get("title"),
-            "verdict": rec.get("verdict"),
-            "status": rec.get("status"),
-            "has_draft": has_draft,
-            "spec_name": rec.get("spec_name"),
-            "doc_source": doc_source,
-            "created_at": rec.get("created_at"),
-            "decided_at": rec.get("decided_at"),
-        })
+        out.append(
+            {
+                "id": eid,
+                "project": rec.get("project"),
+                "date_section": rec.get("date_section"),
+                "section": rec.get("section"),
+                "title": rec.get("title"),
+                "verdict": rec.get("verdict"),
+                "status": rec.get("status"),
+                "has_draft": has_draft,
+                "spec_name": rec.get("spec_name"),
+                "doc_source": doc_source,
+                "created_at": rec.get("created_at"),
+                "decided_at": rec.get("decided_at"),
+            }
+        )
     out.sort(key=lambda x: (x.get("created_at") or ""), reverse=True)
     return out
 
@@ -99,7 +105,9 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
     校验），越界一律拒绝（返回 ``invalid_doc``），MUST NOT 接受任意路径参数。
     """
     from core.evolution import (
-        read_items, _safe_draft_dir, resolve_accepted_spec_dir,
+        read_items,
+        _safe_draft_dir,
+        resolve_accepted_spec_dir,
     )
 
     if doc not in EVOLUTION_DOC_WHITELIST:
@@ -132,16 +140,14 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
                 capability = spec.get("capability") or ""
             rel = f"specs/{capability}/spec.md"
         else:
-            rel = {"proposal": "proposal.md", "design": "design.md",
-                   "tasks": "tasks.md"}[doc]
+            rel = {"proposal": "proposal.md", "design": "design.md", "tasks": "tasks.md"}[doc]
         result = _read_target(d / rel, d)
         if result.get("found") or result.get("invalid_doc"):
             return result
 
     # 2. SPEC 位置回退：草稿缺失但条目记录含 spec_name
     if rec.get("spec_name"):
-        spec_dir = resolve_accepted_spec_dir(
-            project_root, str(rec["spec_name"]))
+        spec_dir = resolve_accepted_spec_dir(project_root, str(rec["spec_name"]))
         if spec_dir is not None:
             if doc == "spec":
                 # capability 取条目记录 spec.capability；缺失或目录不存在时
@@ -159,15 +165,17 @@ def read_evolution_draft(project_root, item_id_, doc) -> dict:
                 else:
                     rel = None
                 if rel is None:
-                    caps = sorted(p.name for p in (spec_dir / "specs").iterdir()
-                                  if p.is_dir()) if (spec_dir / "specs").is_dir() else []
+                    caps = (
+                        sorted(p.name for p in (spec_dir / "specs").iterdir() if p.is_dir())
+                        if (spec_dir / "specs").is_dir()
+                        else []
+                    )
                     if len(caps) == 1:
                         rel = f"specs/{caps[0]}/spec.md"
                     else:
                         rel = f"specs/{capability}/spec.md" if capability else ""
             else:
-                rel = {"proposal": "proposal.md", "design": "design.md",
-                       "tasks": "tasks.md"}[doc]
+                rel = {"proposal": "proposal.md", "design": "design.md", "tasks": "tasks.md"}[doc]
             result = _read_target(spec_dir / rel, spec_dir)
             if result.get("found") or result.get("invalid_doc"):
                 return result

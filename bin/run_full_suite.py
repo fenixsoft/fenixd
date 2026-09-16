@@ -51,15 +51,22 @@ LOCK_WAIT_TIMEOUT_SECONDS = 600
 # 基线 ref 上运行同一套件时使用较短的硬超时（基线只需复现失败集合，不必等满主套件）。
 BASELINE_TIMEOUT_SECONDS = 7200
 
-PYTEST_BASE_ARGS = ["pytest", "tests/", "-q",
-                    "-p", "faulthandler",
-                    "-o", f"faulthandler_timeout={FAULTHANDLER_TIMEOUT_SECONDS}"]
+PYTEST_BASE_ARGS = [
+    "pytest",
+    "tests/",
+    "-q",
+    "-p",
+    "faulthandler",
+    "-o",
+    f"faulthandler_timeout={FAULTHANDLER_TIMEOUT_SECONDS}",
+]
 
 
 # ── 端口段派生（concurrent-suite-isolation 4.2）──────────────────────────
 # 并发套件从进程/run 派生互不重叠的端口段：默认取 pid 哈希映射到 [31000, 32000)，
 # 可经 FENIX_SUITE_PORT_BASE 环境变量覆盖（显式指定基址）；FENIX_VERIFY_PORT
 # 语义不变（下发给 pytest 子进程，供测试读取）。
+
 
 def suite_port_base() -> int:
     """返回当前套件进程使用的端口段基址（31000-31999）。
@@ -87,6 +94,7 @@ def _suite_env() -> dict:
 
 # ── faulthandler 栈解析 ────────────────────────────────────────────────
 
+
 def extract_hanging_test(stderr: str) -> "str | None":
     """从 faulthandler 栈输出提取挂起测试标识（栈顶用例）。
 
@@ -109,14 +117,19 @@ def extract_hanging_test(stderr: str) -> "str | None":
 
 # ── 命令运行（有界）────────────────────────────────────────────────────
 
+
 def run_command(cmd, timeout, cwd, env=None) -> tuple:
     """运行命令并在超时时中止（SIGKILL 兜底）；返回 (rc, stdout, stderr, timed_out)。
 
     超时 kill 后仍收集已产出的输出（faulthandler 栈对挂起定位是关键证据）。
     """
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, cwd=str(cwd), env=env,
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(cwd),
+        env=env,
     )
     try:
         out, err = proc.communicate(timeout=timeout)
@@ -130,8 +143,9 @@ def run_command(cmd, timeout, cwd, env=None) -> tuple:
         return None, out, err, True
 
 
-def run_suite(project_root, timeout=DEFAULT_TIMEOUT_SECONDS, env=None,
-              cmd_override=None, log=print) -> dict:
+def run_suite(
+    project_root, timeout=DEFAULT_TIMEOUT_SECONDS, env=None, cmd_override=None, log=print
+) -> dict:
     """运行一次全量套件（有界）；返回 summary dict。
 
     summary keys:
@@ -146,8 +160,7 @@ def run_suite(project_root, timeout=DEFAULT_TIMEOUT_SECONDS, env=None,
         cmd = list(cmd_override)
     else:
         cmd = list(PYTEST_BASE_ARGS)
-    rc, out, err, timed_out = run_command(
-        cmd, timeout, cwd=project_root, env=env or _suite_env())
+    rc, out, err, timed_out = run_command(cmd, timeout, cwd=project_root, env=env or _suite_env())
     elapsed = round(time.time() - started, 1)
     hanging = extract_hanging_test(err) if timed_out else None
     # 超时约定退出码 124（与 timeout(1) 惯例一致），正常按 pytest 实际退出码。
@@ -161,15 +174,18 @@ def run_suite(project_root, timeout=DEFAULT_TIMEOUT_SECONDS, env=None,
         "stdout": (out or "")[-2000:],
         "stderr": (err or "")[-3000:],
     }
-    log(f"[run_full_suite] elapsed={elapsed}s rc={rc} "
+    log(
+        f"[run_full_suite] elapsed={elapsed}s rc={rc} "
         f"timed_out={timed_out} hanging_test={hanging or 'nil'} "
-        f"exit_code={exit_code}")
+        f"exit_code={exit_code}"
+    )
     if timed_out:
         log(f"[run_full_suite] 挂起测试标识: {hanging or '（无 faulthandler 栈）'}")
     return summary
 
 
 # ── 失败集合与基线归类 ─────────────────────────────────────────────────
+
 
 def collect_failed_tests(stderr: str, stdout: str = "") -> list:
     """从 pytest 摘要输出收集失败测试标识（FAILED <nodeid> - <reason>）。"""
@@ -217,6 +233,7 @@ def classify_outcome(current_failures, baseline_failures) -> str:
 
 # ── 主机级互斥（concurrent-suite-isolation 4.3）────────────────────────
 
+
 class SuiteLock:
     """主机级全量套件互斥（.fenix/full-suite.lock fcntl 文件锁）。
 
@@ -248,7 +265,8 @@ class SuiteLock:
         else:
             self._log(
                 f"[run_full_suite] 主机级锁等待超时（>{LOCK_WAIT_TIMEOUT_SECONDS}s），"
-                f"继续执行但无串行保证（供复盘）")
+                f"继续执行但无串行保证（供复盘）"
+            )
         return self
 
     def __exit__(self, *exc):
@@ -264,6 +282,7 @@ class SuiteLock:
 
 # ── 基线 worktree 对比（3.2）──────────────────────────────────────────
 
+
 def run_baseline_comparison(project_root, ref, timeout) -> dict:
     """在基线 ref 的临时 worktree 跑同一套件，与当前结果做失败集合差异归类。
 
@@ -271,10 +290,15 @@ def run_baseline_comparison(project_root, ref, timeout) -> dict:
               "baseline_timed_out", "classification", "hanging"}。
     """
     import subprocess as sp
+
     with tempfile.TemporaryDirectory(prefix="fenix-baseline-") as tmp:
         wt = Path(tmp) / "baseline_wt"
-        add = sp.run(["git", "worktree", "add", "--detach", str(wt), ref],
-                     cwd=str(project_root), capture_output=True, text=True)
+        add = sp.run(
+            ["git", "worktree", "add", "--detach", str(wt), ref],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+        )
         if add.returncode != 0:
             return {
                 "ref": ref,
@@ -286,13 +310,11 @@ def run_baseline_comparison(project_root, ref, timeout) -> dict:
         try:
             # 基线 worktree 需要 .fenix 目录（配置模板）才能被 pytest 导入；
             # 按真实运行结果归类（部分测试跳过时不影响失败集合）。
-            baseline = run_suite(
-                wt, timeout=min(BASELINE_TIMEOUT_SECONDS, timeout * 2))
-            failed = collect_failed_tests(
-                baseline.get("stderr", ""), baseline.get("stdout", ""))
-            classification = (classify_outcome([], failed)
-                              if not baseline.get("timed_out")
-                              else "baseline-hang")
+            baseline = run_suite(wt, timeout=min(BASELINE_TIMEOUT_SECONDS, timeout * 2))
+            failed = collect_failed_tests(baseline.get("stderr", ""), baseline.get("stdout", ""))
+            classification = (
+                classify_outcome([], failed) if not baseline.get("timed_out") else "baseline-hang"
+            )
             return {
                 "ref": ref,
                 "baseline_failures": failed,
@@ -302,19 +324,30 @@ def run_baseline_comparison(project_root, ref, timeout) -> dict:
                 "hanging": baseline.get("hanging_test"),
             }
         finally:
-            sp.run(["git", "worktree", "remove", "--force", str(wt)],
-                   cwd=str(project_root), capture_output=True, text=True)
+            sp.run(
+                ["git", "worktree", "remove", "--force", str(wt)],
+                cwd=str(project_root),
+                capture_output=True,
+                text=True,
+            )
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="有界全量套件入口（fix-run-hang-amplification）")
-    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS,
-                        help=f"硬超时秒数（默认 {DEFAULT_TIMEOUT_SECONDS}）")
-    parser.add_argument("--baseline", type=str, default=None,
-                        help="基线 ref（git rev/分支）：在基线临时 worktree 跑同一套件，"
-                             "输出两侧失败集合差异并给出存量/引入归类")
-    parser.add_argument("--json", action="store_true",
-                        help="以 JSON 输出汇总（供脚本消费）")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=f"硬超时秒数（默认 {DEFAULT_TIMEOUT_SECONDS}）",
+    )
+    parser.add_argument(
+        "--baseline",
+        type=str,
+        default=None,
+        help="基线 ref（git rev/分支）：在基线临时 worktree 跑同一套件，"
+        "输出两侧失败集合差异并给出存量/引入归类",
+    )
+    parser.add_argument("--json", action="store_true", help="以 JSON 输出汇总（供脚本消费）")
     args = parser.parse_args(argv)
 
     # 定位项目根：脚本位于 <root>/bin/run_full_suite.py → 框架根即父目录。
@@ -343,8 +376,7 @@ def main(argv=None) -> int:
 
     if args.baseline:
         base = run_baseline_comparison(project_root, args.baseline, args.timeout)
-        current_failed = collect_failed_tests(
-            current.get("stderr", ""), current.get("stdout", ""))
+        current_failed = collect_failed_tests(current.get("stderr", ""), current.get("stdout", ""))
         if current.get("timed_out"):
             classification = "current-hang"
             result["classification"] = "当前套件挂起（无完整失败集合对比）"
@@ -357,8 +389,7 @@ def main(argv=None) -> int:
             # 按 spec：混合情形 MUST 判为存在本次引入回归（分类文案已体现）。
             if classification not in ("pass（全绿）", "存量"):
                 result["verdict"] = "本次引入回归"
-        print(f"\n[run_full_suite] 基线对比 ref={args.baseline} "
-              f"→ {result['classification']}")
+        print(f"\n[run_full_suite] 基线对比 ref={args.baseline} " f"→ {result['classification']}")
         if current_failed:
             print("[run_full_suite] 当前失败清单:")
             for f in current_failed:
@@ -386,6 +417,7 @@ def main(argv=None) -> int:
 
 def json_dumps(data) -> str:
     import json
+
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 

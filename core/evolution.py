@@ -55,16 +55,27 @@ _TODO_MARKER_RE = re.compile(r"^ {2,}-\s*" + TODO_MARKER_KEY + "：")
 _TODO_MARKER_INDENT = "  - "
 
 # 条目四字段标签（与 core/self_review.py:_render_entry_lines 的渲染标签对齐）
-_FIELD_LABELS = (("影响", "impact"), ("证据", "evidence"),
-                 ("调查评估", "analysis"), ("建议", "suggestion"))
+_FIELD_LABELS = (
+    ("影响", "impact"),
+    ("证据", "evidence"),
+    ("调查评估", "analysis"),
+    ("建议", "suggestion"),
+)
 _FIELD_RE = re.compile(r"^ {2,}-\s+([^：]+)：(.*)$")
 
 # SPEC 名 / capability 合法性（fenix-new 同源正则）
 _KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 # 条目状态枚举（items.jsonl 记录 status 字段取值）
-ITEM_STATUSES = ("pending", "analyzed", "draft_failed", "accepted",
-                 "auto_accepted", "rejected", "accept_failed")
+ITEM_STATUSES = (
+    "pending",
+    "analyzed",
+    "draft_failed",
+    "accepted",
+    "auto_accepted",
+    "rejected",
+    "accept_failed",
+)
 
 # 草稿文档文件名（按 fenix-new 流程五件套）
 DRAFT_FILES = ("proposal.md", "design.md", "tasks.md", ".spec.yaml")
@@ -74,11 +85,12 @@ SPEC_YAML_TEMPLATE = "schema: spec-driven\ncreated: {created}\nmode: full\n"
 
 # 条目保留策略常量（保留最近 N 天 ∪ 最近 M 条，取较多数者）
 # 超出并集部分硬删（由 daemon 周期执行）
-ITEM_RETENTION_DAYS = 7   # 保留创建时间在最近 7 天内的条目
+ITEM_RETENTION_DAYS = 7  # 保留创建时间在最近 7 天内的条目
 ITEM_RETENTION_MIN = 100  # 保留按创建时间倒序的前 100 条
 
 
 # ── 任务 2.1：条目身份键 ─────────────────────────────────────────────
+
 
 def item_id(project: str, date_section: str, section: str, title: str) -> str:
     """条目身份键：``sha1(project|date_section|section|title)[:12]``。
@@ -94,6 +106,7 @@ def item_id(project: str, date_section: str, section: str, title: str) -> str:
 
 # ── 原子读写原语（与 StateMachine.write_all 同范式）────────────────
 
+
 def _atomic_write(path: Path, content: str) -> None:
     """tempfile + fsync + os.replace 原子替换（StateMachine._write_all_locked 同式）。
 
@@ -102,8 +115,7 @@ def _atomic_write(path: Path, content: str) -> None:
     """
     parent = path.parent
     parent.mkdir(parents=True, exist_ok=True)
-    tmp_fd, tmp_path_str = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
+    tmp_fd, tmp_path_str = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
     tmp_path = Path(tmp_path_str)
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
@@ -138,6 +150,7 @@ def _with_lock(path: Path, fn):
 
 # ── 任务 2.2：items.jsonl 读写 ──────────────────────────────────────
 
+
 def evolution_dir(project_root) -> Path:
     """框架侧自进化暂存区根目录（gitignored，非交付物）。"""
     root = Path(project_root)
@@ -170,8 +183,7 @@ def read_items(project_root) -> Dict[str, dict]:
         try:
             rec = json.loads(line)
         except json.JSONDecodeError as e:
-            _logger.warning(
-                "evolution: items.jsonl 第 %s 行 JSON 损坏已跳过: %s", lineno, e)
+            _logger.warning("evolution: items.jsonl 第 %s 行 JSON 损坏已跳过: %s", lineno, e)
             continue
         if not isinstance(rec, dict) or not isinstance(rec.get("id"), str):
             continue
@@ -190,10 +202,7 @@ def write_items(project_root, records: Iterable[dict]) -> None:
         if not isinstance(rec, dict) or not isinstance(rec.get("id"), str):
             continue
         recs[rec["id"]] = rec
-    content = "".join(
-        json.dumps(recs[k], ensure_ascii=False) + "\n"
-        for k in sorted(recs)
-    )
+    content = "".join(json.dumps(recs[k], ensure_ascii=False) + "\n" for k in sorted(recs))
 
     path = items_path(project_root)
 
@@ -216,8 +225,7 @@ def upsert_item(project_root, record: dict) -> None:
         current = _read_items_unlocked(path)
         current[rec["id"]] = rec
         content = "".join(
-            json.dumps(current[k], ensure_ascii=False) + "\n"
-            for k in sorted(current)
+            json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
         )
         _atomic_write(path, content)
 
@@ -245,8 +253,7 @@ def _read_items_unlocked(path: Path) -> Dict[str, dict]:
         try:
             rec = json.loads(line)
         except json.JSONDecodeError:
-            _logger.warning(
-                "evolution: items.jsonl 第 %s 行 JSON 损坏已跳过", lineno)
+            _logger.warning("evolution: items.jsonl 第 %s 行 JSON 损坏已跳过", lineno)
             continue
         if isinstance(rec, dict) and isinstance(rec.get("id"), str):
             out[rec["id"]] = rec
@@ -254,6 +261,7 @@ def _read_items_unlocked(path: Path) -> Dict[str, dict]:
 
 
 # ── 任务 2.3：水位 state.json 读写 ──────────────────────────────────
+
 
 def watermarks_path(project_root) -> Path:
     return evolution_dir(project_root) / "state.json"
@@ -283,8 +291,9 @@ def read_watermarks(project_root) -> Dict[str, dict]:
             continue
         out[proj] = {
             "last_analyzed_at": last_at,
-            "last_run_id": (wm.get("last_run_id")
-                            if isinstance(wm.get("last_run_id"), str) else ""),
+            "last_run_id": (
+                wm.get("last_run_id") if isinstance(wm.get("last_run_id"), str) else ""
+            ),
         }
     return out
 
@@ -301,8 +310,9 @@ def write_watermarks(project_root, data: Dict[str, dict]) -> None:
             continue
         cleaned[proj] = {
             "last_analyzed_at": last_at,
-            "last_run_id": (wm.get("last_run_id") if isinstance(
-                wm.get("last_run_id"), str) else ""),
+            "last_run_id": (
+                wm.get("last_run_id") if isinstance(wm.get("last_run_id"), str) else ""
+            ),
         }
     content = json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n"
 
@@ -312,8 +322,7 @@ def write_watermarks(project_root, data: Dict[str, dict]) -> None:
     _with_lock(path, _do)
 
 
-def advance_watermark(project_root, project: str,
-                      snapshot_at: str, run_id: str) -> None:
+def advance_watermark(project_root, project: str, snapshot_at: str, run_id: str) -> None:
     """推进某项目水位（仅分析 run 成功落地后调用；2.3）。
 
     snapshot_at MUST 由调用方传入本轮 run 启动时捕获的快照时刻
@@ -331,8 +340,7 @@ def advance_watermark(project_root, project: str,
                 loaded = {}
             if isinstance(loaded, dict):
                 for proj, wm in loaded.items():
-                    if isinstance(wm, dict) and isinstance(
-                            wm.get("last_analyzed_at"), str):
+                    if isinstance(wm, dict) and isinstance(wm.get("last_analyzed_at"), str):
                         current[proj] = wm
         current[project] = {
             "last_analyzed_at": snapshot_at,
@@ -364,6 +372,7 @@ def _parse_iso(value: str) -> Optional[datetime]:
 
 # ── 任务 2.4：就绪扫描 ──────────────────────────────────────────────
 
+
 def scan_ready_projects(registry_projects, project_root) -> List[dict]:
     """按 registry 项目逐判定就绪，返回就绪项目 [{name, path, todo_md}]。
 
@@ -392,30 +401,27 @@ def scan_ready_projects(registry_projects, project_root) -> List[dict]:
 
         state_file = proot / ".fenix" / "self_review_state.json"
         if not state_file.is_file():
-            _logger.debug(
-                "evolution: 项目 %s 无 self_review_state.json，不就绪", name)
+            _logger.debug("evolution: 项目 %s 无 self_review_state.json，不就绪", name)
             continue
         try:
             state = json.loads(state_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
             _logger.info(
-                "evolution: 项目 %s 的 self_review_state.json 不可读（不就绪）: %s",
-                name, e)
+                "evolution: 项目 %s 的 self_review_state.json 不可读（不就绪）: %s", name, e
+            )
             continue
         if not isinstance(state, dict):
             continue
         last_run_at = _parse_iso(state.get("last_run_at"))
         if last_run_at is None:
-            _logger.debug(
-                "evolution: 项目 %s 的 last_run_at 缺失或不可解析，不就绪", name)
+            _logger.debug("evolution: 项目 %s 的 last_run_at 缺失或不可解析，不就绪", name)
             continue
 
         wm = watermarks.get(name)
         if wm:
             last_analyzed = _parse_iso(wm.get("last_analyzed_at"))
             if last_analyzed is not None and last_run_at <= last_analyzed:
-                _logger.debug(
-                    "evolution: 项目 %s 的 last_run_at 不晚于水位，不就绪", name)
+                _logger.debug("evolution: 项目 %s 的 last_run_at 不晚于水位，不就绪", name)
                 continue
 
         todo = proot / ".fenix" / "todo.md"
@@ -425,8 +431,7 @@ def scan_ready_projects(registry_projects, project_root) -> List[dict]:
         try:
             todo_text = todo.read_text(encoding="utf-8")
         except OSError as e:
-            _logger.info(
-                "evolution: 项目 %s 的 todo.md 不可读（不就绪）: %s", name, e)
+            _logger.info("evolution: 项目 %s 的 todo.md 不可读（不就绪）: %s", name, e)
             continue
         if not todo_text.strip():
             _logger.debug("evolution: 项目 %s 的 todo.md 为空，不就绪", name)
@@ -435,14 +440,14 @@ def scan_ready_projects(registry_projects, project_root) -> List[dict]:
         # 剥完一条不剩则本项目不就绪，直接省掉整轮分析
         usable_text = strip_processed_entries(todo_text)
         if not parse_todo_entries(usable_text):
-            _logger.debug(
-                "evolution: 项目 %s 无未处理的 todo 条目（全部已标记），不就绪", name)
+            _logger.debug("evolution: 项目 %s 无未处理的 todo 条目（全部已标记），不就绪", name)
             continue
         ready.append({"name": name, "path": str(proot), "todo_md": usable_text})
     return ready
 
 
 # ── 任务 2.5：todo.md 条目解析 ──────────────────────────────────────
+
 
 def parse_todo_entries(text: str) -> List[dict]:
     """解析 todo.md 为条目列表（2.5）。
@@ -469,9 +474,11 @@ def parse_todo_entries(text: str) -> List[dict]:
         if current_entry is not None:
             # 小节名不在三值枚举内的条目 MUST 跳过（含未知小节置空的条目）；
             # 带处理标记的条目（已被自进化处理过）同样 MUST 跳过，避免重复处理
-            if current_entry.get("section") in TODO_SECTIONS \
-                    and current_entry.get("title") \
-                    and not current_entry.get("_processed"):
+            if (
+                current_entry.get("section") in TODO_SECTIONS
+                and current_entry.get("title")
+                and not current_entry.get("_processed")
+            ):
                 current_entry.update(current_fields)
                 entries.append(current_entry)
         current_entry = None
@@ -497,8 +504,10 @@ def parse_todo_entries(text: str) -> List[dict]:
             if section_name not in TODO_SECTIONS:
                 if section_name not in _section_warned:
                     _logger.warning(
-                        "evolution: todo.md 小节 %r 不在三值枚举 %s 内，"
-                        "其下条目跳过", section_name, list(TODO_SECTIONS))
+                        "evolution: todo.md 小节 %r 不在三值枚举 %s 内，" "其下条目跳过",
+                        section_name,
+                        list(TODO_SECTIONS),
+                    )
                     _section_warned.add(section_name)
                 current_section = ""
             else:
@@ -560,15 +569,20 @@ def parse_todo_entries(text: str) -> List[dict]:
 # 下方写入一行标记。标记同时是「已处理」的权威信号：解析跳过它、分析 run 的
 # 输入文本里也剥离它，从而避免同一 todo 条目被反复分析。
 
+
 def _verdict_segment(verdict: dict) -> str:
     """AI 结论三段式（措辞与前端 verdictSummary 一致）。"""
+
     def _tri(value, yes: str, partial: str, no: str) -> str:
         return yes if value == "yes" else partial if value == "partial" else no
-    return " / ".join([
-        "问题" + _tri(verdict.get("problem_exists"), "成立", "部分成立", "不成立"),
-        "建议" + _tri(verdict.get("suggestion_sound"), "合理", "部分合理", "不合理"),
-        "✓ 值得立项" if verdict.get("worth_spec") else "— 不需要",
-    ])
+
+    return " / ".join(
+        [
+            "问题" + _tri(verdict.get("problem_exists"), "成立", "部分成立", "不成立"),
+            "建议" + _tri(verdict.get("suggestion_sound"), "合理", "部分合理", "不合理"),
+            "✓ 值得立项" if verdict.get("worth_spec") else "— 不需要",
+        ]
+    )
 
 
 def _disposition_from_status(status) -> str:
@@ -580,14 +594,12 @@ def _disposition_from_status(status) -> str:
     return "待处理"
 
 
-def render_todo_marker(item: dict, disposition: Optional[str] = None,
-                       deleted: bool = False) -> str:
+def render_todo_marker(item: dict, disposition: Optional[str] = None, deleted: bool = False) -> str:
     """生成标记行（含缩进）。不需要立项的条目只有 AI 结论，无处理/删除段。"""
     verdict = item.get("verdict") if isinstance(item.get("verdict"), dict) else {}
     line = f"{TODO_MARKER_KEY}：{_verdict_segment(verdict)}"
     if verdict.get("worth_spec"):
-        line += (f" · 处理：{disposition or '待处理'}"
-                 f" · 删除：{'是' if deleted else '否'}")
+        line += f" · 处理：{disposition or '待处理'}" f" · 删除：{'是' if deleted else '否'}"
     return _TODO_MARKER_INDENT + line
 
 
@@ -640,8 +652,7 @@ def strip_processed_entries(text: str) -> str:
         block.clear()
 
     for line in text.splitlines():
-        if _TODO_DATE_RE.match(line) or _TODO_SECTION_RE.match(line) \
-                or _TODO_ENTRY_RE.match(line):
+        if _TODO_DATE_RE.match(line) or _TODO_SECTION_RE.match(line) or _TODO_ENTRY_RE.match(line):
             _flush()
             if _TODO_ENTRY_RE.match(line):
                 block.append(line)
@@ -667,6 +678,7 @@ def _resolve_project_path_by_name(project_name: str) -> Optional[Path]:
         return None
     try:
         from core.dashboard.registry import Registry
+
         for proj in Registry().discover() or []:
             if not isinstance(proj, dict):
                 continue
@@ -698,7 +710,10 @@ def clear_todo(project_path) -> dict:
     """
     todo = Path(project_path) / ".fenix" / "todo.md"
     outcome: Dict[str, Any] = {
-        "ok": False, "path": str(todo), "existed": False, "error": None,
+        "ok": False,
+        "path": str(todo),
+        "existed": False,
+        "error": None,
     }
     if not todo.is_file():
         # 非错误：无 todo.md 的项目本就无需清理
@@ -718,20 +733,22 @@ def clear_todo(project_path) -> dict:
     return outcome
 
 
-def write_todo_marker(item: dict, disposition: Optional[str] = None,
-                      deleted: bool = False,
-                      project_path=None) -> bool:
+def write_todo_marker(
+    item: dict, disposition: Optional[str] = None, deleted: bool = False, project_path=None
+) -> bool:
     """把该条目的处理标记写入其项目 ``.fenix/todo.md``。
 
     幂等：已有标记行则原地更新，不追加第二行。定位不到条目（用户改过标题 /
     删过条目）、项目路径解析失败、todo.md 不可读一律返回 False 并记 WARNING，
     MUST NOT 抛异常——回写是附带的记录动作，失败不得影响分析/处置主流程。
     """
-    proot = Path(project_path) if project_path else \
-        _resolve_project_path_by_name(str(item.get("project") or ""))
+    proot = (
+        Path(project_path)
+        if project_path
+        else _resolve_project_path_by_name(str(item.get("project") or ""))
+    )
     if proot is None:
-        _logger.warning("evolution: 条目标记回写跳过——项目路径未解析: %s",
-                        item.get("project"))
+        _logger.warning("evolution: 条目标记回写跳过——项目路径未解析: %s", item.get("project"))
         return False
     todo = Path(proot) / ".fenix" / "todo.md"
     marker = render_todo_marker(item, disposition, deleted)
@@ -745,9 +762,12 @@ def write_todo_marker(item: dict, disposition: Optional[str] = None,
             return
         lines = apply_marker_to_lines(text.splitlines(), item, marker)
         if lines is None:
-            _logger.warning("evolution: todo.md 中未找到条目 %r（%s/%s），"
-                            "标记回写跳过", item.get("title"),
-                            item.get("date_section"), item.get("section"))
+            _logger.warning(
+                "evolution: todo.md 中未找到条目 %r（%s/%s），" "标记回写跳过",
+                item.get("title"),
+                item.get("date_section"),
+                item.get("section"),
+            )
             return
         _atomic_write(todo, "\n".join(lines) + "\n")
         outcome["ok"] = True
@@ -760,6 +780,7 @@ def write_todo_marker(item: dict, disposition: Optional[str] = None,
 
 
 # ── 任务 2.6：增量筛选 ──────────────────────────────────────────────
+
 
 def select_pending_entries(entries, known_ids_: set, limit: int) -> List[dict]:
     """过滤已入库条目后按 limit 截断，保持 todo.md 原始顺序（2.6）。
@@ -794,6 +815,7 @@ def select_pending_entries(entries, known_ids_: set, limit: int) -> List[dict]:
 
 # ── 任务 3.1：草稿落盘 ──────────────────────────────────────────────
 
+
 def draft_dir(project_root, item_id_: str) -> Path:
     """单条目草稿根目录（gitignored 暂存区，design D2）。"""
     return evolution_dir(project_root) / "drafts" / item_id_
@@ -819,16 +841,21 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
     if not isinstance(name, str) or not _KEBAB_RE.match(name):
         return None, f"spec.name 非法（应满足 {_KEBAB_RE.pattern}）: {name!r}"
     if not isinstance(capability, str) or not _KEBAB_RE.match(capability):
-        return None, (
-            f"spec.capability 非法（应满足 {_KEBAB_RE.pattern}）: {capability!r}")
-    missing = [doc for doc in ("proposal_md", "design_md", "spec_md", "tasks_md")
-               if not isinstance(spec.get(doc), str) or not spec.get(doc)]
+        return None, (f"spec.capability 非法（应满足 {_KEBAB_RE.pattern}）: {capability!r}")
+    missing = [
+        doc
+        for doc in ("proposal_md", "design_md", "spec_md", "tasks_md")
+        if not isinstance(spec.get(doc), str) or not spec.get(doc)
+    ]
     if missing:
         return None, f"spec 内容缺必备文档: {', '.join(missing)}"
 
     eid = item.get("id") or item_id(
-        str(item.get("project", "")), str(item.get("date_section", "")),
-        str(item.get("section", "")), str(item.get("title", "")))
+        str(item.get("project", "")),
+        str(item.get("date_section", "")),
+        str(item.get("section", "")),
+        str(item.get("title", "")),
+    )
     d = draft_dir(project_root, eid)
     try:
         d.mkdir(parents=True, exist_ok=True)
@@ -839,9 +866,9 @@ def materialize_draft(item: dict, project_root) -> Tuple[Optional[Path], str]:
         (d / "design.md").write_text(spec["design_md"], encoding="utf-8")
         (d / "tasks.md").write_text(spec["tasks_md"], encoding="utf-8")
         (d / ".spec.yaml").write_text(
-            SPEC_YAML_TEMPLATE.format(
-                created=datetime.now(timezone.utc).strftime("%Y-%m-%d")),
-            encoding="utf-8")
+            SPEC_YAML_TEMPLATE.format(created=datetime.now(timezone.utc).strftime("%Y-%m-%d")),
+            encoding="utf-8",
+        )
     except OSError as e:
         shutil.rmtree(d, ignore_errors=True)
         return None, f"草稿落盘失败: {e}"
@@ -852,17 +879,21 @@ def _spec_summary(spec: dict) -> str:
     """agent 原始 spec 内容摘要（供 draft_failed 条目记录，3.3）。"""
     if not isinstance(spec, dict):
         return ""
-    return json.dumps({
-        "name": spec.get("name"),
-        "capability": spec.get("capability"),
-        "proposal_len": len(str(spec.get("proposal_md") or "")),
-        "spec_len": len(str(spec.get("spec_md") or "")),
-        "design_len": len(str(spec.get("design_md") or "")),
-        "tasks_len": len(str(spec.get("tasks_md") or "")),
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "name": spec.get("name"),
+            "capability": spec.get("capability"),
+            "proposal_len": len(str(spec.get("proposal_md") or "")),
+            "spec_len": len(str(spec.get("spec_md") or "")),
+            "design_len": len(str(spec.get("design_md") or "")),
+            "tasks_len": len(str(spec.get("tasks_md") or "")),
+        },
+        ensure_ascii=False,
+    )
 
 
 # ── 任务 3.2：同源 lint 预检 ────────────────────────────────────────
+
 
 def lint_draft(draft_dir_: Path, project_root) -> List[str]:
     """对草稿目录执行与 daemon 晋升同源的 lint 预检（3.2）。
@@ -889,6 +920,7 @@ def lint_draft(draft_dir_: Path, project_root) -> List[str]:
 
 # ── 任务 3.3：落地单条复核结果 ─────────────────────────────────────
 
+
 def ingest_item(item: dict, project_root) -> str:
     """落地单条复核结果到 items.jsonl，返回条目状态（3.3）。
 
@@ -902,8 +934,11 @@ def ingest_item(item: dict, project_root) -> str:
     worth_spec = bool(isinstance(verdict, dict) and verdict.get("worth_spec"))
     title = str(item.get("title", ""))
     eid = item.get("id") or item_id(
-        str(item.get("project", "")), str(item.get("date_section", "")),
-        str(item.get("section", "")), title)
+        str(item.get("project", "")),
+        str(item.get("date_section", "")),
+        str(item.get("section", "")),
+        title,
+    )
 
     base = {
         "id": eid,
@@ -919,7 +954,8 @@ def ingest_item(item: dict, project_root) -> str:
         "analysis_md": item.get("analysis_md") or "",
         "spec": item.get("spec") if isinstance(item.get("spec"), dict) else None,
         "spec_summary": _spec_summary(
-            item.get("spec") if isinstance(item.get("spec"), dict) else None),
+            item.get("spec") if isinstance(item.get("spec"), dict) else None
+        ),
         "degraded": item.get("degraded"),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "decided_at": None,
@@ -952,7 +988,9 @@ def ingest_item(item: dict, project_root) -> str:
         base["draft_failed_reason"] = "；".join(violations)
         _logger.warning(
             "evolution: 条目 %s 草稿 lint 未通过（已删除草稿）: %s",
-            eid, base["draft_failed_reason"])
+            eid,
+            base["draft_failed_reason"],
+        )
         upsert_item(project_root, base)
         write_todo_marker(base)
         return "draft_failed"
@@ -965,8 +1003,8 @@ def ingest_item(item: dict, project_root) -> str:
 
 # ── 任务 3.4：SPEC 名生成与冲突消解 ────────────────────────────────
 
-def resolve_spec_name(name: str, item_id_: str, project_root,
-                      state_machine) -> Optional[str]:
+
+def resolve_spec_name(name: str, item_id_: str, project_root, state_machine) -> Optional[str]:
     """生成并消解接受路径的 SPEC 名（3.4）。
 
     基名 ``evo-<name>``；与 ``spec/changes/<candidate>``、STATE.md 既有条目名、
@@ -993,8 +1031,7 @@ def resolve_spec_name(name: str, item_id_: str, project_root,
                 for archived in arch_root.iterdir():
                     if not archived.is_dir():
                         continue
-                    if archived.name == candidate \
-                            or archived.name.endswith(f"-{candidate}"):
+                    if archived.name == candidate or archived.name.endswith(f"-{candidate}"):
                         return True
             except OSError:
                 pass
@@ -1010,6 +1047,7 @@ def resolve_spec_name(name: str, item_id_: str, project_root,
 
 # ── 任务 3.5：接受路径 ─────────────────────────────────────────────
 
+
 def _git_commit(project_root, draft_copy: Path, spec_name: str) -> Tuple[bool, str]:
     """仅 add 目标 spec 目录后提交（MUST NOT ``git add -A`` / ``git add .``）。
 
@@ -1019,7 +1057,10 @@ def _git_commit(project_root, draft_copy: Path, spec_name: str) -> Tuple[bool, s
     try:
         add = subprocess.run(
             git + ["add", "--", f"spec/changes/{spec_name}"],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, f"git add 失败: {e}"
     if add.returncode != 0:
@@ -1027,7 +1068,10 @@ def _git_commit(project_root, draft_copy: Path, spec_name: str) -> Tuple[bool, s
     try:
         commit = subprocess.run(
             git + ["commit", "-m", f"[fenix] spec: {spec_name}"],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, f"git commit 失败: {e}"
     if commit.returncode != 0:
@@ -1042,14 +1086,17 @@ def _write_admin_warning(project_root, message: str) -> None:
     """
     try:
         from core.admin_store import AdminStore
+
         store = AdminStore(project_root)
-        store.append({
-            "kind": "escalation",
-            "severity": "major",
-            "signal_type": "self-evolution",
-            "spec": None,
-            "description": message,
-        })
+        store.append(
+            {
+                "kind": "escalation",
+                "severity": "major",
+                "signal_type": "self-evolution",
+                "spec": None,
+                "description": message,
+            }
+        )
     except Exception as e:
         _logger.warning("evolution: admin 告警写入失败（降级）: %s", e)
 
@@ -1067,6 +1114,7 @@ def next_spec_run_at(run_at, now=None) -> Optional[str]:
     ``ConfigLoader.is_valid_hhmm``——HH:mm 规则不在本模块另立一份。
     """
     from core.config import ConfigLoader  # 局部导入：避免 core.config ↔ 本模块的导入顺序耦合
+
     if not ConfigLoader.is_valid_hhmm(run_at):
         return None
     hh, mm = (int(x) for x in run_at.split(":"))
@@ -1079,9 +1127,13 @@ def next_spec_run_at(run_at, now=None) -> Optional[str]:
     return target.astimezone(timezone.utc).isoformat()
 
 
-def accept_item(item_id_: str, project_root, state_machine,
-                decided_by: str = "manual",
-                start_after: Optional[str] = None) -> dict:
+def accept_item(
+    item_id_: str,
+    project_root,
+    state_machine,
+    decided_by: str = "manual",
+    start_after: Optional[str] = None,
+) -> dict:
     """接受路径（人工同意与自动接受共用实现，design D6；3.5）。
 
     顺序固定：前置状态校验 → resolve_spec_name → 复制到 spec/changes →
@@ -1103,32 +1155,40 @@ def accept_item(item_id_: str, project_root, state_machine,
     items = read_items(project_root)
     rec = items.get(item_id_)
     if rec is None:
-        return {"ok": False, "status": None, "spec_name": None,
-                "error": f"条目不存在: {item_id_}"}
+        return {"ok": False, "status": None, "spec_name": None, "error": f"条目不存在: {item_id_}"}
     if rec.get("status") not in ("pending", "accept_failed"):
         # 其它状态幂等返回现状（accepted/auto_accepted/rejected/analyzed/
         # draft_failed 均不重复提交或注册）
-        return {"ok": True, "status": rec.get("status"),
-                "spec_name": rec.get("spec_name"), "error": None}
+        return {
+            "ok": True,
+            "status": rec.get("status"),
+            "spec_name": rec.get("spec_name"),
+            "error": None,
+        }
 
     spec = rec.get("spec") if isinstance(rec.get("spec"), dict) else None
     if spec is None:
         rec["status"] = "draft_failed"
         rec["draft_failed_reason"] = "条目无 spec 内容，无法接受"
         upsert_item(project_root, rec)
-        return {"ok": False, "status": "draft_failed",
-                "spec_name": None, "error": rec["draft_failed_reason"]}
-    name = resolve_spec_name(spec.get("name"), item_id_, project_root,
-                             state_machine)
+        return {
+            "ok": False,
+            "status": "draft_failed",
+            "spec_name": None,
+            "error": rec["draft_failed_reason"],
+        }
+    name = resolve_spec_name(spec.get("name"), item_id_, project_root, state_machine)
     if name is None:
         rec["status"] = "draft_failed"
         rec["draft_failed_reason"] = "SPEC 名无法消解冲突"
         upsert_item(project_root, rec)
-        _write_admin_warning(
-            project_root,
-            f"自进化条目 {item_id_} 接受失败：SPEC 名冲突无法消解")
-        return {"ok": False, "status": "draft_failed",
-                "spec_name": None, "error": rec["draft_failed_reason"]}
+        _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败：SPEC 名冲突无法消解")
+        return {
+            "ok": False,
+            "status": "draft_failed",
+            "spec_name": None,
+            "error": rec["draft_failed_reason"],
+        }
 
     src = draft_dir(project_root, item_id_)
     dest = Path(project_root) / "spec" / "changes" / name
@@ -1142,19 +1202,24 @@ def accept_item(item_id_: str, project_root, state_machine,
             rec["status"] = "accept_failed"
             rec["draft_failed_reason"] = "暂存草稿目录缺失"
             upsert_item(project_root, rec)
-            _write_admin_warning(
-                project_root,
-                f"自进化条目 {item_id_} 接受失败：暂存草稿目录缺失")
-            return {"ok": False, "status": "accept_failed",
-                    "spec_name": None, "error": rec["draft_failed_reason"]}
+            _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败：暂存草稿目录缺失")
+            return {
+                "ok": False,
+                "status": "accept_failed",
+                "spec_name": None,
+                "error": rec["draft_failed_reason"],
+            }
     except OSError as e:
         rec["status"] = "accept_failed"
         rec["draft_failed_reason"] = f"草稿复制失败: {e}"
         upsert_item(project_root, rec)
-        _write_admin_warning(
-            project_root, f"自进化条目 {item_id_} 接受失败：{e}")
-        return {"ok": False, "status": "accept_failed",
-                "spec_name": None, "error": rec["draft_failed_reason"]}
+        _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败：{e}")
+        return {
+            "ok": False,
+            "status": "accept_failed",
+            "spec_name": None,
+            "error": rec["draft_failed_reason"],
+        }
 
     ok, err = _git_commit(project_root, dest, name)
     if not ok:
@@ -1163,10 +1228,8 @@ def accept_item(item_id_: str, project_root, state_machine,
         rec["status"] = "accept_failed"
         rec["draft_failed_reason"] = err
         upsert_item(project_root, rec)
-        _write_admin_warning(project_root,
-                             f"自进化条目 {item_id_} 接受失败（提交失败）: {err}")
-        return {"ok": False, "status": "accept_failed",
-                "spec_name": name, "error": err}
+        _write_admin_warning(project_root, f"自进化条目 {item_id_} 接受失败（提交失败）: {err}")
+        return {"ok": False, "status": "accept_failed", "spec_name": name, "error": err}
 
     # 提交成功 → 注册；start_after 非空 = 定时拾取（到点前 dispatch 门控跳过），
     # 为空则 drafted 立即进入调度（原行为）
@@ -1180,8 +1243,7 @@ def accept_item(item_id_: str, project_root, state_machine,
         else:
             registered = True  # state_machine 缺失（如纯路径测试）视为注册成功
     except Exception as e:
-        _logger.warning(
-            "evolution: 条目 %s 注册 %s 失败: %s", item_id_, name, e)
+        _logger.warning("evolution: 条目 %s 注册 %s 失败: %s", item_id_, name, e)
         registered = False
         err = str(e)
 
@@ -1192,9 +1254,14 @@ def accept_item(item_id_: str, project_root, state_machine,
         upsert_item(project_root, rec)
         _write_admin_warning(
             project_root,
-            f"自进化条目 {item_id_} 接受失败（注册失败）: {rec['draft_failed_reason']}")
-        return {"ok": False, "status": "accept_failed",
-                "spec_name": name, "error": rec["draft_failed_reason"]}
+            f"自进化条目 {item_id_} 接受失败（注册失败）: {rec['draft_failed_reason']}",
+        )
+        return {
+            "ok": False,
+            "status": "accept_failed",
+            "spec_name": name,
+            "error": rec["draft_failed_reason"],
+        }
 
     # 注册成功 → 删暂存草稿 + 更新状态
     shutil.rmtree(src, ignore_errors=True)
@@ -1204,11 +1271,11 @@ def accept_item(item_id_: str, project_root, state_machine,
     rec["spec_name"] = name
     upsert_item(project_root, rec)
     write_todo_marker(rec, disposition=_disposition_from_status(rec["status"]))
-    return {"ok": True, "status": rec["status"], "spec_name": name,
-            "error": None}
+    return {"ok": True, "status": rec["status"], "spec_name": name, "error": None}
 
 
 # ── 任务 3.6：拒绝路径 ─────────────────────────────────────────────
+
 
 def _safe_draft_dir(project_root, item_id_: str) -> Optional[Path]:
     """解析草稿目录并校验其位于 drafts 基目录之内（符号链接越界拒绝）。
@@ -1216,8 +1283,13 @@ def _safe_draft_dir(project_root, item_id_: str) -> Optional[Path]:
     item_id 含路径分隔符或 ``..``，或 resolve() 后不在 drafts 基目录内 →
     返回 None（调用方报错且不删除任何文件）。3.6
     """
-    if not item_id_ or item_id_ in (".", "..") \
-            or "/" in item_id_ or "\\" in item_id_ or "\x00" in item_id_:
+    if (
+        not item_id_
+        or item_id_ in (".", "..")
+        or "/" in item_id_
+        or "\\" in item_id_
+        or "\x00" in item_id_
+    ):
         return None
     base = (evolution_dir(project_root) / "drafts").resolve()
     candidate = (base / item_id_).resolve()
@@ -1237,29 +1309,28 @@ def reject_item(item_id_: str, project_root) -> dict:
     items = read_items(project_root)
     rec = items.get(item_id_)
     if rec is None:
-        return {"ok": False, "status": None,
-                "error": f"条目不存在: {item_id_}"}
+        return {"ok": False, "status": None, "error": f"条目不存在: {item_id_}"}
     status = rec.get("status")
     if status not in ("pending", "draft_failed", "accept_failed"):
-        return {"ok": False, "status": status,
-                "error": f"状态 {status} 不可拒绝（已决定条目不可拒绝）"}
+        return {
+            "ok": False,
+            "status": status,
+            "error": f"状态 {status} 不可拒绝（已决定条目不可拒绝）",
+        }
 
     target = _safe_draft_dir(project_root, item_id_)
     if target is None:
-        return {"ok": False, "status": status,
-                "error": "草稿目录路径非法或越界，拒绝删除"}
+        return {"ok": False, "status": status, "error": "草稿目录路径非法或越界，拒绝删除"}
     if target.is_dir():
         try:
             # 符号链接解析后的越界判定：链接目标不在基目录内 → 拒绝删除
             resolved = target.resolve()
             base = (evolution_dir(project_root) / "drafts").resolve()
             if not resolved.is_relative_to(base):
-                return {"ok": False, "status": status,
-                        "error": "草稿目录符号链接越界，拒绝删除"}
+                return {"ok": False, "status": status, "error": "草稿目录符号链接越界，拒绝删除"}
             shutil.rmtree(target)
         except OSError as e:
-            return {"ok": False, "status": status,
-                    "error": f"草稿删除失败: {e}"}
+            return {"ok": False, "status": status, "error": f"草稿删除失败: {e}"}
 
     rec["status"] = "rejected"
     rec["decided_at"] = now
@@ -1289,39 +1360,37 @@ def delete_item(item_id_: str, project_root) -> dict:
         current = _read_items_unlocked(path)
         rec = current.get(item_id_)
         if rec is None:
-            outcome.update({"ok": False, "status": None,
-                            "error": f"条目不存在: {item_id_}"})
+            outcome.update({"ok": False, "status": None, "error": f"条目不存在: {item_id_}"})
             return
         status = rec.get("status")
 
         target = _safe_draft_dir(project_root, item_id_)
         if target is None:
-            outcome.update({"ok": False, "status": status,
-                            "error": "草稿目录路径非法或越界，拒绝删除"})
+            outcome.update(
+                {"ok": False, "status": status, "error": "草稿目录路径非法或越界，拒绝删除"}
+            )
             return
         if target.is_dir():
             try:
                 resolved = target.resolve()
                 base = (evolution_dir(project_root) / "drafts").resolve()
                 if not resolved.is_relative_to(base):
-                    outcome.update({"ok": False, "status": status,
-                                    "error": "草稿目录符号链接越界，拒绝删除"})
+                    outcome.update(
+                        {"ok": False, "status": status, "error": "草稿目录符号链接越界，拒绝删除"}
+                    )
                     return
                 shutil.rmtree(target)
             except OSError as e:
-                outcome.update({"ok": False, "status": status,
-                                "error": f"草稿删除失败: {e}"})
+                outcome.update({"ok": False, "status": status, "error": f"草稿删除失败: {e}"})
                 return
 
         current.pop(item_id_, None)
         content = "".join(
-            json.dumps(current[k], ensure_ascii=False) + "\n"
-            for k in sorted(current)
+            json.dumps(current[k], ensure_ascii=False) + "\n" for k in sorted(current)
         )
         _atomic_write(path, content)
         # 删除成功后回写标记（保留删除前的处理意见 + 删除：是）；回写失败不影响删除
-        write_todo_marker(rec, disposition=_disposition_from_status(status),
-                          deleted=True)
+        write_todo_marker(rec, disposition=_disposition_from_status(status), deleted=True)
         outcome.update({"ok": True, "status": status, "error": None})
 
     try:
@@ -1332,6 +1401,7 @@ def delete_item(item_id_: str, project_root) -> dict:
 
 
 # ── 条目保留与自动清理（evo-item-retention-doc-tracking D1-D3）─────
+
 
 def prune_items(project_root, now: Optional[datetime] = None) -> dict:
     """按保留策略清理 items.jsonl：保留最近 N 天 ∪ 最近 M 条并集，其余硬删。
@@ -1382,8 +1452,7 @@ def prune_items(project_root, now: Optional[datetime] = None) -> dict:
 
     victims = [r for r in ordered if r["id"] not in keep_ids]
     if not victims:
-        return {"total": len(items), "kept": len(items), "deleted": 0,
-                "failed": 0, "details": []}
+        return {"total": len(items), "kept": len(items), "deleted": 0, "failed": 0, "details": []}
 
     deleted = 0
     failed = 0
@@ -1401,12 +1470,21 @@ def prune_items(project_root, now: Optional[datetime] = None) -> dict:
         else:
             # 预期失败（并发删除/越界/OSError）：记录仍在 items.jsonl
             failed += 1
-            details.append({
-                "id": eid, "ok": False,
-                "status": result.get("status"), "error": result.get("error"),
-            })
-    return {"total": len(items), "kept": len(items) - deleted,
-            "deleted": deleted, "failed": failed, "details": details}
+            details.append(
+                {
+                    "id": eid,
+                    "ok": False,
+                    "status": result.get("status"),
+                    "error": result.get("error"),
+                }
+            )
+    return {
+        "total": len(items),
+        "kept": len(items) - deleted,
+        "deleted": deleted,
+        "failed": failed,
+        "details": details,
+    }
 
 
 # ── SPEC 位置解析（evo-item-retention-doc-tracking D5）────────────────
@@ -1434,8 +1512,7 @@ def _archive_name_candidates(dirname: str) -> List[str]:
     stripped_suffix = _NUM_SUFFIX_RE.sub("", dirname, count=1)
     if stripped_suffix != dirname:
         candidates.add(stripped_suffix)
-    stripped_both = _DATE_PREFIX_RE.sub(
-        "", _NUM_SUFFIX_RE.sub("", dirname, count=1), count=1)
+    stripped_both = _DATE_PREFIX_RE.sub("", _NUM_SUFFIX_RE.sub("", dirname, count=1), count=1)
     if stripped_both != dirname:
         candidates.add(stripped_both)
     return list(candidates)
@@ -1491,6 +1568,7 @@ def resolve_accepted_spec_dir(project_root, spec_name: str) -> Optional[Path]:
 
 # ── 任务 3.7：自动接受 ─────────────────────────────────────────────
 
+
 def auto_accept_pending(project_root, state_machine, spec_run_at=None) -> dict:
     """对全部 ``pending`` 条目逐个走接受路径（``decided_by="auto"``，3.7）。
 
@@ -1505,37 +1583,38 @@ def auto_accept_pending(project_root, state_machine, spec_run_at=None) -> dict:
     Returns: 汇总 ``{"total", "accepted", "failed", "details"}``。
     """
     items = read_items(project_root)
-    pending = [rec for rec in items.values()
-               if rec.get("status") == "pending"]
+    pending = [rec for rec in items.values() if rec.get("status") == "pending"]
     start_after = next_spec_run_at(spec_run_at)
-    summary = {"total": len(pending), "accepted": 0, "failed": 0,
-               "details": []}
+    summary = {"total": len(pending), "accepted": 0, "failed": 0, "details": []}
     for rec in pending:
         try:
-            result = accept_item(rec["id"], project_root, state_machine,
-                                 decided_by="auto", start_after=start_after)
+            result = accept_item(
+                rec["id"], project_root, state_machine, decided_by="auto", start_after=start_after
+            )
         except Exception as e:
             _logger.error("evolution: 自动接受条目 %s 异常: %s", rec["id"], e)
-            _write_admin_warning(
-                project_root,
-                f"自进化条目 {rec['id']} 自动接受异常: {e}")
+            _write_admin_warning(project_root, f"自进化条目 {rec['id']} 自动接受异常: {e}")
             summary["failed"] += 1
-            summary["details"].append(
-                {"id": rec["id"], "ok": False, "error": str(e)})
+            summary["details"].append({"id": rec["id"], "ok": False, "error": str(e)})
             continue
         if result.get("ok"):
             summary["accepted"] += 1
         else:
             summary["failed"] += 1
-        summary["details"].append({
-            "id": rec["id"], "ok": result.get("ok"),
-            "status": result.get("status"), "spec_name": result.get("spec_name"),
-            "error": result.get("error"),
-        })
+        summary["details"].append(
+            {
+                "id": rec["id"],
+                "ok": result.get("ok"),
+                "status": result.get("status"),
+                "spec_name": result.get("spec_name"),
+                "error": result.get("error"),
+            }
+        )
     return summary
 
 
 # ── 任务 3.8：契约产物解析 ─────────────────────────────────────────
+
 
 class ContractError(ValueError):
     """分析 run 契约产物不合法（调用方判整轮失败，3.8）。"""
@@ -1568,13 +1647,11 @@ def read_contract(path) -> Dict[str, Any]:
             if not isinstance(item.get(field), str) or not item.get(field):
                 raise ContractError(f"items[{idx}] 缺必填字段 {field}")
         if item.get("section") not in TODO_SECTIONS:
-            raise ContractError(
-                f"items[{idx}].section 不在三值枚举内: {item.get('section')!r}")
+            raise ContractError(f"items[{idx}].section 不在三值枚举内: {item.get('section')!r}")
         verdict = item.get("verdict")
         if not isinstance(verdict, dict):
             raise ContractError(f"items[{idx}] 缺 verdict 对象")
-        if "worth_spec" not in verdict or not isinstance(
-                verdict.get("worth_spec"), bool):
+        if "worth_spec" not in verdict or not isinstance(verdict.get("worth_spec"), bool):
             raise ContractError(f"items[{idx}].verdict.worth_spec 非法")
     return {
         "run_id": data.get("run_id"),

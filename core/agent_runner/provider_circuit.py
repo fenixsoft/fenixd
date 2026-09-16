@@ -11,15 +11,14 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 import re
 
-
 # ── provider 熔断（fix-stashpop-deadlock：provider-fault-fuse） ──────────────
 # 同一 provider 在滚动窗口内累计 HTTP 4xx（400/401/404）达阈值 → circuit_open，
 # 冷却期内不再派发该 provider（直接失败、不启动 claude、不计入 spec 连续失败重试、
 # 不触发状态机回退）。冷却结束后首个派发作半开探针，200 闭合、仍 4xx 重新冷却。
 # 5xx/网络错误不计数（属瞬态，走既有 retry）。常量化便于调参，不落盘（见 design D3）。
-PROVIDER_CIRCUIT_WINDOW_SECONDS = 300      # 滚动窗口 5 分钟
-PROVIDER_CIRCUIT_THRESHOLD = 3             # 窗口内 4xx 达此次数 → 熔断
-PROVIDER_CIRCUIT_COOLDOWN_SECONDS = 1800   # 冷却 30 分钟
+PROVIDER_CIRCUIT_WINDOW_SECONDS = 300  # 滚动窗口 5 分钟
+PROVIDER_CIRCUIT_THRESHOLD = 3  # 窗口内 4xx 达此次数 → 熔断
+PROVIDER_CIRCUIT_COOLDOWN_SECONDS = 1800  # 冷却 30 分钟
 # 计入熔断的 HTTP 4xx 状态码（401 与 400/404 一并计数：余额不足同样要防烧钱；
 # 403 同为鉴权/订阅类——inferaiapi 实测「API Error: 403 No active subscription」
 # 反复原地重试烧链预算，fix-403-auth-failover-blindspot 一并纳入）
@@ -46,7 +45,7 @@ SWITCH_ERROR_CONN_PATTERNS = (
     r"connection.*(refused|reset|error|timeout)",
     r"connect.*(refused|reset|error|timeout)",
     r"failed to connect",
-    r"name or service not known",   # DNS 解析失败
+    r"name or service not known",  # DNS 解析失败
     r"temporarily unavailable",
     r"network is unreachable",
 )
@@ -57,10 +56,10 @@ PROVIDER_DAILY_ATTEMPTS_WARN = 50
 # ── 全局瞬断错误指纹熔断（fix-provider-transient-backoff D4 / transient-dispatch-gating） ──
 # 与 4xx/switch 冷却同构的进程内存态（重启清零）；同错误指纹在窗口内达阈值
 # 触发全局派发冻结。
-TRANSIENT_BREAK_WINDOW_SECONDS = 600       # 窗口时长（秒）
-TRANSIENT_BREAK_THRESHOLD = 3              # 窗口内同指纹次数达此次数 → 触发熔断
-TRANSIENT_BREAK_COOLDOWN_SECONDS = 600     # 触发后全局冻结时长（秒）
-TRANSIENT_BREAK_ALERT_THROTTLE_MINUTES = 15 # major 告警节流（分钟）
+TRANSIENT_BREAK_WINDOW_SECONDS = 600  # 窗口时长（秒）
+TRANSIENT_BREAK_THRESHOLD = 3  # 窗口内同指纹次数达此次数 → 触发熔断
+TRANSIENT_BREAK_COOLDOWN_SECONDS = 600  # 触发后全局冻结时长（秒）
+TRANSIENT_BREAK_ALERT_THROTTLE_MINUTES = 15  # major 告警节流（分钟）
 
 
 class ProviderCircuit:
@@ -113,8 +112,13 @@ class ProviderCircuit:
         # 顺序匹配：HTTP <code> / (404) / status code <code> / code <code> /
         # 「API Error: 403」（claude CLI 经 SDK 包装的鉴权错误实际形态，
         # fix-403-auth-failover-blindspot）
-        for pat in (r"HTTP\s+(\d{3})", r"\((\d{3})\)", r"status\s*code\s*[:=]?\s*(\d{3})",
-                    r"\bcode\s*[:=]?\s*(\d{3})", r"[Ee]rror:?\s*(\d{3})"):
+        for pat in (
+            r"HTTP\s+(\d{3})",
+            r"\((\d{3})\)",
+            r"status\s*code\s*[:=]?\s*(\d{3})",
+            r"\bcode\s*[:=]?\s*(\d{3})",
+            r"[Ee]rror:?\s*(\d{3})",
+        ):
             m = re.search(pat, error_text, re.IGNORECASE)
             if m:
                 try:
@@ -123,7 +127,6 @@ class ProviderCircuit:
                     return None
                 return code
         return None
-
 
     @staticmethod
     def classify_switch_error(error_text: str) -> bool:
@@ -160,10 +163,8 @@ class ProviderCircuit:
                 return True
         return False
 
-
     @staticmethod
-    def classify_transient_error(stderr_lines: list, exit_code: int,
-                                 has_result: bool) -> bool:
+    def classify_transient_error(stderr_lines: list, exit_code: int, has_result: bool) -> bool:
         """瞬断判定（fix-provider-transient-backoff D2，与降噪解耦）。
 
         判定信号（任一命中即瞬断）：
@@ -200,7 +201,6 @@ class ProviderCircuit:
                 return True
         return False
 
-
     def _circuit_state(self, provider_name: str) -> dict:
         """返回（惰性创建）某 provider 的熔断状态 dict。
 
@@ -222,7 +222,6 @@ class ProviderCircuit:
             self.provider_circuits[provider_name] = st
         return st
 
-
     def is_circuit_open(self, provider_name: str, now: float | None = None) -> bool:
         """判断某 provider 当前是否处于熔断拦截态（open 且冷却未到期）。
 
@@ -235,7 +234,6 @@ class ProviderCircuit:
             return False
         now = self._pm._now() if now is None else now
         return st["cooldown_until"] > now
-
 
     def is_switch_cooldown(self, provider_name: str, now: float | None = None) -> bool:
         """判断某 provider 当前是否处于「切换类冷却」态（链路选择跳过）。
@@ -251,7 +249,6 @@ class ProviderCircuit:
         now = self._pm._now() if now is None else now
         return st.get("switch_cooldown_until", 0.0) > now
 
-
     def _record_switch_cooldown(self, provider_name: str, now: float | None = None) -> None:
         """记录一次切换类错误：把该 provider 推进到 switch 短冷却（design D2/D3）。
 
@@ -263,8 +260,9 @@ class ProviderCircuit:
             return
         now = self._pm._now() if now is None else now
         st = self._circuit_state(provider_name)
-        cooldown = self._pm._get_config("pm.failover.switch_cooldown_seconds",
-                                    PROVIDER_SWITCH_COOLDOWN_SECONDS)
+        cooldown = self._pm._get_config(
+            "pm.failover.switch_cooldown_seconds", PROVIDER_SWITCH_COOLDOWN_SECONDS
+        )
         st["switch_cooldown_until"] = now + cooldown
         self._pm.logger.info(
             "agent_runner",
@@ -272,10 +270,16 @@ class ProviderCircuit:
             f"(add-provider-failover) — {int(cooldown)}s, advance chain",
         )
 
-
-    def _write_provider_marker(self, run_id: str, spec_name: str, agent_type: str,
-                               provider_name: str, model: str, chain_index: int,
-                               chain_len: int) -> None:
+    def _write_provider_marker(
+        self,
+        run_id: str,
+        spec_name: str,
+        agent_type: str,
+        provider_name: str,
+        model: str,
+        chain_index: int,
+        chain_len: int,
+    ) -> None:
         """向 run jsonl 写入 provider_marker 行（design D5 / spec failover-dispatch「产物可追溯」）。
 
         在 attempt 启动、进程派发前写入，供 Dashboard / 事后审计确认本次 run 实际使用的
@@ -287,18 +291,20 @@ class ProviderCircuit:
         runs_dir.mkdir(parents=True, exist_ok=True)
         run_file = runs_dir / f"{run_id}.jsonl"
         try:
-            append_run_line(run_file, {
-                "type": "provider_marker",
-                "spec": spec_name,
-                "agent_type": agent_type,
-                "provider": provider_name,
-                "model": model,
-                "chain_index": chain_index,
-                "chain_len": chain_len,
-            })
+            append_run_line(
+                run_file,
+                {
+                    "type": "provider_marker",
+                    "spec": spec_name,
+                    "agent_type": agent_type,
+                    "provider": provider_name,
+                    "model": model,
+                    "chain_index": chain_index,
+                    "chain_len": chain_len,
+                },
+            )
         except OSError:
             pass
-
 
     def _record_daily_provider_attempt(self, provider_name: str) -> None:
         """per-provider 当日 attempt 计数 + 单次 WARNING 告警（design D5 / spec 4.2）。
@@ -316,8 +322,7 @@ class ProviderCircuit:
             self._daily_reset_date = today
         count = self._daily_provider_attempts.get(provider_name, 0) + 1
         self._daily_provider_attempts[provider_name] = count
-        warn = self._pm._get_config("pm.failover.daily_attempts_warn",
-                                PROVIDER_DAILY_ATTEMPTS_WARN)
+        warn = self._pm._get_config("pm.failover.daily_attempts_warn", PROVIDER_DAILY_ATTEMPTS_WARN)
         if warn and count > warn and not self._daily_provider_warned.get(provider_name, False):
             self._daily_provider_warned[provider_name] = True
             self._pm.logger.warning(
@@ -325,7 +330,6 @@ class ProviderCircuit:
                 f"Provider '{provider_name}' daily attempts ({count}) exceeded "
                 f"pm.failover.daily_attempts_warn ({warn}) — check for silent cost",
             )
-
 
     # ── 全局瞬断错误指纹熔断（fix-provider-transient-backoff D4 / transcendent-dispatch-gating）──
     # 全局维度的瞬断错误指纹计数：错误文本归一化（剥离 model 名/时间戳等可变字段）
@@ -366,8 +370,7 @@ class ProviderCircuit:
         text = re.sub(r"[\s:/.,()\"'-]+", " ", text).strip()
         return text
 
-    def record_transient_error(self, error_text: str,
-                               now: float | None = None) -> bool:
+    def record_transient_error(self, error_text: str, now: float | None = None) -> bool:
         """记录一次瞬断错误，窗口内同指纹累计 → 达阈值触发全局熔断。
 
         Returns:
@@ -380,11 +383,16 @@ class ProviderCircuit:
         if self.is_global_transient_break(now=now):
             # 已冻结中：只记账不重复触发/告警（冷却到期由查询侧清零重记）。
             self._transient_break_events.setdefault(fingerprint, []).append(
-                now if now is not None else self._pm._now())
+                now if now is not None else self._pm._now()
+            )
             return False
         now = self._pm._now() if now is None else now
-        window = int(self._pm._get_config(
-            "agents.transient_break_window_seconds", TRANSIENT_BREAK_WINDOW_SECONDS) or 0)
+        window = int(
+            self._pm._get_config(
+                "agents.transient_break_window_seconds", TRANSIENT_BREAK_WINDOW_SECONDS
+            )
+            or 0
+        )
         if window <= 0:
             return False
         events = self._transient_break_events.setdefault(fingerprint, [])
@@ -392,14 +400,18 @@ class ProviderCircuit:
         events = [t for t in events if now - t <= window]
         events.append(now)
         self._transient_break_events[fingerprint] = events
-        threshold = int(self._pm._get_config(
-            "agents.transient_break_threshold", TRANSIENT_BREAK_THRESHOLD) or 0)
+        threshold = int(
+            self._pm._get_config("agents.transient_break_threshold", TRANSIENT_BREAK_THRESHOLD) or 0
+        )
         if threshold <= 0:
             return False
         if len(events) >= threshold:
-            cooldown = int(self._pm._get_config(
-                "agents.transient_break_cooldown_seconds",
-                TRANSIENT_BREAK_COOLDOWN_SECONDS) or 0)
+            cooldown = int(
+                self._pm._get_config(
+                    "agents.transient_break_cooldown_seconds", TRANSIENT_BREAK_COOLDOWN_SECONDS
+                )
+                or 0
+            )
             self._transient_break_until = now + (cooldown or TRANSIENT_BREAK_COOLDOWN_SECONDS)
             self._alert_transient_break(fingerprint, len(events), window)
             self._pm.logger.error(
@@ -427,14 +439,12 @@ class ProviderCircuit:
             self._transient_break_events.clear()
             self._pm.logger.warning(
                 "agent_runner",
-                "Global transient break expired — dispatch resumed, "
-                "fingerprint window reset",
+                "Global transient break expired — dispatch resumed, " "fingerprint window reset",
             )
             return False
         return True
 
-    def _alert_transient_break(self, fingerprint: str, count: int,
-                               window: int) -> None:
+    def _alert_transient_break(self, fingerprint: str, count: int, window: int) -> None:
         """触发全局瞬断熔断时发 major 告警（15 分钟节流去重）。
 
         与 _alert_instant_fail_storm 同构：AdminStore.latest_signal 按
@@ -442,41 +452,48 @@ class ProviderCircuit:
         """
         try:
             from core.admin_store import AdminStore, ESCALATION
+
             store = AdminStore(self._pm.project_root, self._pm.logger)
-            if store.latest_signal(
-                    "global-transient", "transient_break_storm",
-                    TRANSIENT_BREAK_ALERT_THROTTLE_MINUTES) is not None:
+            if (
+                store.latest_signal(
+                    "global-transient",
+                    "transient_break_storm",
+                    TRANSIENT_BREAK_ALERT_THROTTLE_MINUTES,
+                )
+                is not None
+            ):
                 self._pm.logger.debug(
                     "agent_runner",
                     f"transient_break_storm 告警已 throttle "
                     f"({TRANSIENT_BREAK_ALERT_THROTTLE_MINUTES} 分钟内已有)",
                 )
                 return
-            store.append({
-                "kind": ESCALATION,
-                "signal_type": "transient_break_storm",
-                "spec": "global-transient",
-                "severity": "major",
-                "description": (
-                    f"全局瞬断风暴：错误指纹 '{fingerprint}' 在 {int(window)}s 窗口内 "
-                    f"出现 {count} 次 — 已冻结全部新 run 派发，冷却期内不再启动新 run"
-                ),
-                "evidence": (
-                    f"fingerprint={fingerprint}; count={count}; "
-                    f"window_seconds={int(window)}; "
-                    f"cooldown_seconds={int(self._transient_break_until - self._pm._now())}"
-                ),
-                "recommended_action": (
-                    "检查网关/默认 provider 瞬时故障（model 拒绝 / 5xx / 断连）；"
-                    "熔断自动冷却到期后恢复派发，无需人工干预"
-                ),
-            })
+            store.append(
+                {
+                    "kind": ESCALATION,
+                    "signal_type": "transient_break_storm",
+                    "spec": "global-transient",
+                    "severity": "major",
+                    "description": (
+                        f"全局瞬断风暴：错误指纹 '{fingerprint}' 在 {int(window)}s 窗口内 "
+                        f"出现 {count} 次 — 已冻结全部新 run 派发，冷却期内不再启动新 run"
+                    ),
+                    "evidence": (
+                        f"fingerprint={fingerprint}; count={count}; "
+                        f"window_seconds={int(window)}; "
+                        f"cooldown_seconds={int(self._transient_break_until - self._pm._now())}"
+                    ),
+                    "recommended_action": (
+                        "检查网关/默认 provider 瞬时故障（model 拒绝 / 5xx / 断连）；"
+                        "熔断自动冷却到期后恢复派发，无需人工干预"
+                    ),
+                }
+            )
         except Exception as e:
             self._pm.logger.error(
                 "agent_runner",
                 f"transient_break_storm 告警写入失败: {e}",
             )
-
 
     def _circuit_open_error(self, provider_name: str, now: float | None = None) -> str:
         """构造熔断拦截错误信息（design D5 / spec 故障可见性）。
@@ -494,12 +511,11 @@ class ProviderCircuit:
             cooldown_info = f"cooldown {remaining}s remaining"
         else:
             cooldown_info = "cooldown expired (probing)"
-        return (f"provider circuit open: {provider_name} "
-                f"(HTTP {code} x {count}) — {cooldown_info}")
+        return (
+            f"provider circuit open: {provider_name} " f"(HTTP {code} x {count}) — {cooldown_info}"
+        )
 
-
-    def _record_provider_4xx(self, provider_name: str, code: int,
-                             now: float | None = None) -> None:
+    def _record_provider_4xx(self, provider_name: str, code: int, now: float | None = None) -> None:
         """记录一次 provider 网关 4xx，按滚动窗口计数，达阈值置 open。
 
         5xx / 网络错误不调用本方法（design D4）。窗口外的旧事件先滑出。
@@ -508,12 +524,15 @@ class ProviderCircuit:
             return
         now = self._pm._now() if now is None else now
         st = self._circuit_state(provider_name)
-        window = self._pm._get_config("agents.provider_circuit_window_seconds",
-                                  PROVIDER_CIRCUIT_WINDOW_SECONDS)
-        threshold = self._pm._get_config("agents.provider_circuit_threshold",
-                                     PROVIDER_CIRCUIT_THRESHOLD)
-        cooldown = self._pm._get_config("agents.provider_circuit_cooldown_seconds",
-                                    PROVIDER_CIRCUIT_COOLDOWN_SECONDS)
+        window = self._pm._get_config(
+            "agents.provider_circuit_window_seconds", PROVIDER_CIRCUIT_WINDOW_SECONDS
+        )
+        threshold = self._pm._get_config(
+            "agents.provider_circuit_threshold", PROVIDER_CIRCUIT_THRESHOLD
+        )
+        cooldown = self._pm._get_config(
+            "agents.provider_circuit_cooldown_seconds", PROVIDER_CIRCUIT_COOLDOWN_SECONDS
+        )
 
         # 滑出滚动窗口外的旧事件
         st["events"] = [t for t in st["events"] if now - t <= window]
@@ -533,9 +552,9 @@ class ProviderCircuit:
                 f"cooldown {int(cooldown)}s — suppress dispatch until probe recovers",
             )
 
-
-    def _record_provider_probe(self, provider_name: str, success: bool,
-                               now: float | None = None) -> None:
+    def _record_provider_probe(
+        self, provider_name: str, success: bool, now: float | None = None
+    ) -> None:
         """半开探针结果：成功闭合（closed）、失败重新冷却（design D4/D5）。
 
         成功：清空计数、回到 closed。失败：重新进入冷却期（沿用上次 code），不进计数
@@ -547,8 +566,9 @@ class ProviderCircuit:
         if st is None:
             return
         now = self._pm._now() if now is None else now
-        cooldown = self._pm._get_config("agents.provider_circuit_cooldown_seconds",
-                                    PROVIDER_CIRCUIT_COOLDOWN_SECONDS)
+        cooldown = self._pm._get_config(
+            "agents.provider_circuit_cooldown_seconds", PROVIDER_CIRCUIT_COOLDOWN_SECONDS
+        )
         if success:
             self._pm.logger.info(
                 "agent_runner",

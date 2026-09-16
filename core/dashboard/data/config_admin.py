@@ -21,48 +21,69 @@ import yaml
 # Dashboard 管理的配置键子集：写回时只更新这些键，其它键原样保留
 _MANAGED_KEYS = ["llm", "agents", "gates", "runs", "verify", "hooks"]
 # 在 agents 下管理的子键白名单
-_AGENTS_MANAGED_SUBKEYS = ["models", "max_concurrent", "run_timeout_seconds", "max_turns", "daily_run_limit", "token_budget_millions", "impl_run_budget", "impl_run_budget_max", "verify_redo_budget"]
+_AGENTS_MANAGED_SUBKEYS = [
+    "models",
+    "max_concurrent",
+    "run_timeout_seconds",
+    "max_turns",
+    "daily_run_limit",
+    "token_budget_millions",
+    "impl_run_budget",
+    "impl_run_budget_max",
+    "verify_redo_budget",
+]
 
 # 用户级配置文件路径（与项目级同名 `.fenix/config.yaml`，作用域由所在目录决定）
 
 # 受管键的来源标注键（前端用于「继承自用户级」badge）
-_SOURCE_KEYS = ["llm", "agents.models", "agents.max_concurrent",
-                "agents.run_timeout_seconds", "agents.max_turns", "agents.daily_run_limit",
-                "agents.token_budget_millions", "agents.impl_run_budget", "agents.verify_redo_budget",
-                "gates.approve_mode",
-                # add-draft-promotion-gate：草稿晋升模式
-                "gates.promote_mode",
-                # add-spec-review-gate：方案评审模式
-                "gates.spec_review_mode",
-                # add-daily-self-review：admin.self_review 三键
-                "admin.self_review",
-                # add-settings-system-tab：admin.* 受管键（5 键）
-                "admin.enabled", "admin.interval_minutes",
-                "admin.escalation_cooldown_minutes",
-                "admin.merge_breaker_threshold", "admin.shutdown_drain_seconds",
-                # add-bug-repair-mode-config：bug-found 修复方式（inplace/derive）
-                "admin.bug_repair_mode",
-                # stuck-signal-hygiene D4：stuck 处置后静默期（分钟）
-                "admin.stuck_silence_minutes",
-                # 验证契约键（verify.*：静态服务范围 / worktree 依赖供给模式）
-                "verify.static_scope", "verify.deps_mode",
-                # add-planner-efficiency：planner 生成节流上限
-                "verify.planner_max_concurrent",
-                # add-spec-hooks：两级 hook 订阅配置（global + specs）
-                "hooks",
-                # fix-provider-transient-backoff（D6）：瞬断治理五键
-                "agents.transient_backoff_schedule",
-                "agents.transient_redispatch_delay_seconds",
-                "agents.transient_break_threshold",
-                "agents.transient_break_window_seconds",
-                "agents.transient_break_cooldown_seconds",
-                # add-stale-code-selfheal：陈旧自愈配置节两键
-                "stale_code_selfheal.enabled",
-                "stale_code_selfheal.idle_confirm_seconds",
-                # add-framework-self-evolution：self_evolution 全局（用户级）三键
-                "self_evolution.auto_accept",
-                "self_evolution.max_items_per_run",
-                "self_evolution.spec_run_at"]
+_SOURCE_KEYS = [
+    "llm",
+    "agents.models",
+    "agents.max_concurrent",
+    "agents.run_timeout_seconds",
+    "agents.max_turns",
+    "agents.daily_run_limit",
+    "agents.token_budget_millions",
+    "agents.impl_run_budget",
+    "agents.verify_redo_budget",
+    "gates.approve_mode",
+    # add-draft-promotion-gate：草稿晋升模式
+    "gates.promote_mode",
+    # add-spec-review-gate：方案评审模式
+    "gates.spec_review_mode",
+    # add-daily-self-review：admin.self_review 三键
+    "admin.self_review",
+    # add-settings-system-tab：admin.* 受管键（5 键）
+    "admin.enabled",
+    "admin.interval_minutes",
+    "admin.escalation_cooldown_minutes",
+    "admin.merge_breaker_threshold",
+    "admin.shutdown_drain_seconds",
+    # add-bug-repair-mode-config：bug-found 修复方式（inplace/derive）
+    "admin.bug_repair_mode",
+    # stuck-signal-hygiene D4：stuck 处置后静默期（分钟）
+    "admin.stuck_silence_minutes",
+    # 验证契约键（verify.*：静态服务范围 / worktree 依赖供给模式）
+    "verify.static_scope",
+    "verify.deps_mode",
+    # add-planner-efficiency：planner 生成节流上限
+    "verify.planner_max_concurrent",
+    # add-spec-hooks：两级 hook 订阅配置（global + specs）
+    "hooks",
+    # fix-provider-transient-backoff（D6）：瞬断治理五键
+    "agents.transient_backoff_schedule",
+    "agents.transient_redispatch_delay_seconds",
+    "agents.transient_break_threshold",
+    "agents.transient_break_window_seconds",
+    "agents.transient_break_cooldown_seconds",
+    # add-stale-code-selfheal：陈旧自愈配置节两键
+    "stale_code_selfheal.enabled",
+    "stale_code_selfheal.idle_confirm_seconds",
+    # add-framework-self-evolution：self_evolution 全局（用户级）三键
+    "self_evolution.auto_accept",
+    "self_evolution.max_items_per_run",
+    "self_evolution.spec_run_at",
+]
 
 # 受管键的默认回显值（add-daily-self-review；与 ConfigLoader.get_self_review_config
 # 保持一致：enabled/read_todo 缺省 false，run_at 缺省 02:00）
@@ -103,9 +124,13 @@ def _managed_key_sources(raw: dict) -> dict:
         if "verify_redo_budget" in agents_raw:
             sources["agents.verify_redo_budget"] = "project"
         # fix-provider-transient-backoff（D6）：瞬断治理五键显式定义 → project
-        for _tk in ("transient_backoff_schedule", "transient_redispatch_delay_seconds",
-                    "transient_break_threshold", "transient_break_window_seconds",
-                    "transient_break_cooldown_seconds"):
+        for _tk in (
+            "transient_backoff_schedule",
+            "transient_redispatch_delay_seconds",
+            "transient_break_threshold",
+            "transient_break_window_seconds",
+            "transient_break_cooldown_seconds",
+        ):
             if _tk in agents_raw:
                 sources[f"agents.{_tk}"] = "project"
     gates_raw = raw.get("gates")
@@ -131,9 +156,15 @@ def _managed_key_sources(raw: dict) -> dict:
         sources["admin.self_review"] = "project"
     # add-settings-system-tab：admin.* 受管键（5 键）显式定义 → project
     if isinstance(admin_raw, dict):
-        for _k in ("enabled", "interval_minutes", "escalation_cooldown_minutes",
-                   "merge_breaker_threshold", "shutdown_drain_seconds",
-                   "bug_repair_mode", "stuck_silence_minutes"):
+        for _k in (
+            "enabled",
+            "interval_minutes",
+            "escalation_cooldown_minutes",
+            "merge_breaker_threshold",
+            "shutdown_drain_seconds",
+            "bug_repair_mode",
+            "stuck_silence_minutes",
+        ):
             if _k in admin_raw:
                 sources[f"admin.{_k}"] = "project"
     # add-spec-hooks：hooks 段显式定义 → project
@@ -219,10 +250,22 @@ def read_config(scope_root, scope: str = "project") -> dict:
     容错：文件不存在返回空结构 + raw_exists=False；解析失败返回 error。
     """
     import core.dashboard.data as _facade
-    config_path = _facade.USER_CONFIG_PATH if scope == "user" else Path(scope_root) / ".fenix" / "config.yaml"
+
+    config_path = (
+        _facade.USER_CONFIG_PATH if scope == "user" else Path(scope_root) / ".fenix" / "config.yaml"
+    )
     result = {
         "llm": {},
-        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 9000, "max_turns": 400, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4, "verify_redo_budget": 3},
+        "agents": {
+            "models": {},
+            "max_concurrent": 2,
+            "run_timeout_seconds": 9000,
+            "max_turns": 400,
+            "daily_run_limit": 50,
+            "token_budget_millions": 50,
+            "impl_run_budget": 4,
+            "verify_redo_budget": 3,
+        },
         "gates": {"approve_mode": "manual", "promote_mode": "auto"},
         "runs": {"keep": 50},
         # 验证契约键（static_scope 服务范围 / deps_mode worktree 依赖供给模式）
@@ -239,8 +282,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
         "stale_code_selfheal": {"enabled": True, "idle_confirm_seconds": 120},
         # add-framework-self-evolution：self_evolution 三键（缺省 auto_accept=false /
         # max_items_per_run=20 / spec_run_at=null 立即执行）
-        "self_evolution": {"auto_accept": False, "max_items_per_run": 20,
-                           "spec_run_at": None},
+        "self_evolution": {"auto_accept": False, "max_items_per_run": 20, "spec_run_at": None},
         "scope": scope,
         "raw_exists": False,
         "sources": _managed_key_sources({}),
@@ -274,6 +316,7 @@ def read_config(scope_root, scope: str = "project") -> dict:
             # improve-failover-model-mapping-ui（D4）：规范化 models 为 Dashboard
             # 回显视图（str/list/对象统一为对象数组 + resolved model）
             from core.config import ConfigLoader as _CL
+
             llm_providers = raw.get("llm", {}).get("providers") or []
             agents_result["models"] = _CL.normalize_agent_models(
                 agents_raw["models"], llm_providers
@@ -294,12 +337,17 @@ def read_config(scope_root, scope: str = "project") -> dict:
         if isinstance(agents_raw.get("verify_redo_budget"), int):
             agents_result["verify_redo_budget"] = agents_raw["verify_redo_budget"]
         # fix-provider-transient-backoff（D6）：瞬断治理五键回显到 agents 段
-        #（缺省填充，语义与 read_effective_config 的 get_transient_config 一致）
+        # （缺省填充，语义与 read_effective_config 的 get_transient_config 一致）
         from core.config import ConfigLoader as _CLT
+
         _transient = _CLT.get_transient_config(raw)
-        for _tk in ("transient_backoff_schedule", "transient_redispatch_delay_seconds",
-                    "transient_break_threshold", "transient_break_window_seconds",
-                    "transient_break_cooldown_seconds"):
+        for _tk in (
+            "transient_backoff_schedule",
+            "transient_redispatch_delay_seconds",
+            "transient_break_threshold",
+            "transient_break_window_seconds",
+            "transient_break_cooldown_seconds",
+        ):
             agents_result[_tk] = _transient[_tk]
         if agents_result:
             # 只在结果中有受管键时覆盖默认，避免清空默认值
@@ -330,16 +378,22 @@ def read_config(scope_root, scope: str = "project") -> dict:
         if isinstance(pmc, int) and not isinstance(pmc, bool) and pmc >= 0:
             result["verify"]["planner_max_concurrent"] = pmc
     runs_raw = raw.get("runs")
-    if isinstance(runs_raw, dict) and isinstance(runs_raw.get("keep"), int) and runs_raw["keep"] >= 1:
+    if (
+        isinstance(runs_raw, dict)
+        and isinstance(runs_raw.get("keep"), int)
+        and runs_raw["keep"] >= 1
+    ):
         result["runs"] = {"keep": runs_raw["keep"]}
     archive_raw = raw.get("archive")
     if isinstance(archive_raw, dict):
         from core.config import ConfigLoader as _CL
+
         result["archive"] = {"auto_threshold": _CL.effective_auto_archive_threshold(raw)}
     # add-daily-self-review：admin.self_review 三键（经 ConfigLoader 生效值回显）
     admin_raw = raw.get("admin")
     if isinstance(admin_raw, dict):
         from core.config import ConfigLoader as _CL
+
         result["self_review"] = _CL.get_self_review_config(raw)
         # add-settings-system-tab：受管 admin 键提取（5 键 + 缺省填充，不透传未知键）
         result["admin"] = _managed_admin_keys(raw)
@@ -350,10 +404,12 @@ def read_config(scope_root, scope: str = "project") -> dict:
     # add-stale-code-selfheal：陈旧自愈节回显（经 ConfigLoader 生效值——非法值
     # 回退缺省，回显与生效值一致）
     from core.config import ConfigLoader as _CLSC
+
     result["stale_code_selfheal"] = _CLSC.get_stale_code_selfheal_config(raw)
     # add-framework-self-evolution：self_evolution 节回显（经 get_self_evolution_config
     # 生效值——非法值回退缺省，回显与生效值一致；用户级全局键）
     from core.config import ConfigLoader as _CLSE
+
     result["self_evolution"] = _CLSE.get_self_evolution_config(raw)
     return result
 
@@ -394,6 +450,7 @@ def read_effective_config(project_root) -> dict:
     proj_path = proot / ".fenix" / "config.yaml"
 
     import core.dashboard.data as _facade
+
     cache_key = (_config_file_sig(_facade.USER_CONFIG_PATH), _config_file_sig(proj_path))
     cached = _EFFECTIVE_CONFIG_CACHE.get(cache_key)
     if cached is not None:
@@ -401,7 +458,16 @@ def read_effective_config(project_root) -> dict:
 
     result = {
         "llm": {},
-        "agents": {"models": {}, "max_concurrent": 2, "run_timeout_seconds": 9000, "max_turns": 400, "daily_run_limit": 50, "token_budget_millions": 50, "impl_run_budget": 4, "verify_redo_budget": 3},
+        "agents": {
+            "models": {},
+            "max_concurrent": 2,
+            "run_timeout_seconds": 9000,
+            "max_turns": 400,
+            "daily_run_limit": 50,
+            "token_budget_millions": 50,
+            "impl_run_budget": 4,
+            "verify_redo_budget": 3,
+        },
         "gates": {"approve_mode": "manual", "promote_mode": "auto"},
         "runs": {"keep": 50},
         # 验证契约键（static_scope 服务范围 / deps_mode worktree 依赖供给模式）
@@ -454,6 +520,7 @@ def read_effective_config(project_root) -> dict:
             # improve-failover-model-mapping-ui（D4）：规范化 models 为 Dashboard
             # 回显视图（str/list/对象统一为对象数组 + resolved model）
             from core.config import ConfigLoader as _CL
+
             llm_eff = effective.get("llm") or {}
             result["agents"]["models"] = _CL.normalize_agent_models(
                 agents_eff["models"], (llm_eff.get("providers") or [])
@@ -474,11 +541,15 @@ def read_effective_config(project_root) -> dict:
         if isinstance(agents_eff.get("verify_redo_budget"), int):
             result["agents"]["verify_redo_budget"] = agents_eff["verify_redo_budget"]
         # fix-provider-transient-backoff（D6）：瞬断治理五键回显到 agents 段
-        #（缺省填充，语义与 ConfigLoader.get_transient_config 一致——非法值回退缺省）。
+        # （缺省填充，语义与 ConfigLoader.get_transient_config 一致——非法值回退缺省）。
         _transient = ConfigLoader.get_transient_config(effective)
-        for _tk in ("transient_backoff_schedule", "transient_redispatch_delay_seconds",
-                    "transient_break_threshold", "transient_break_window_seconds",
-                    "transient_break_cooldown_seconds"):
+        for _tk in (
+            "transient_backoff_schedule",
+            "transient_redispatch_delay_seconds",
+            "transient_break_threshold",
+            "transient_break_window_seconds",
+            "transient_break_cooldown_seconds",
+        ):
             result["agents"][_tk] = _transient[_tk]
     gates_eff = effective.get("gates")
     if isinstance(gates_eff, dict) and "approve_mode" in gates_eff:
@@ -511,7 +582,11 @@ def read_effective_config(project_root) -> dict:
         if isinstance(pmc, int) and not isinstance(pmc, bool) and pmc >= 0:
             result["verify"]["planner_max_concurrent"] = pmc
     runs_eff = effective.get("runs")
-    if isinstance(runs_eff, dict) and isinstance(runs_eff.get("keep"), int) and runs_eff["keep"] >= 1:
+    if (
+        isinstance(runs_eff, dict)
+        and isinstance(runs_eff.get("keep"), int)
+        and runs_eff["keep"] >= 1
+    ):
         result["runs"] = {"keep": runs_eff["keep"]}
     # add-spec-archive D5：经生效助手取值（非法配置回落默认 50，设置页回显一致）
     result["archive"] = {"auto_threshold": ConfigLoader.effective_auto_archive_threshold(effective)}
@@ -554,6 +629,7 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     - gates.promote_mode: 只替换 promote_mode 子键
     """
     import copy
+
     merged = copy.deepcopy(raw_config)
 
     if "llm" in patch:
@@ -582,15 +658,22 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
             merged["agents"]["verify_redo_budget"] = patch["agents"]["verify_redo_budget"]
         # fix-provider-transient-backoff（D6）：瞬断治理五键合并分支（前置校验
         # 已拒绝非法值，此处只应用合法值；缺省透传由 get_transient_config 兜底）。
-        for _tk in ("transient_backoff_schedule", "transient_redispatch_delay_seconds",
-                    "transient_break_threshold", "transient_break_window_seconds",
-                    "transient_break_cooldown_seconds"):
+        for _tk in (
+            "transient_backoff_schedule",
+            "transient_redispatch_delay_seconds",
+            "transient_break_threshold",
+            "transient_break_window_seconds",
+            "transient_break_cooldown_seconds",
+        ):
             if _tk in patch["agents"]:
                 merged["agents"][_tk] = patch["agents"][_tk]
 
     if "gates" in patch and isinstance(patch["gates"], dict):
-        if "approve_mode" in patch["gates"] or "promote_mode" in patch["gates"] \
-                or "spec_review_mode" in patch["gates"]:
+        if (
+            "approve_mode" in patch["gates"]
+            or "promote_mode" in patch["gates"]
+            or "spec_review_mode" in patch["gates"]
+        ):
             if not isinstance(merged.get("gates"), dict):
                 merged["gates"] = {}
         if "approve_mode" in patch["gates"]:
@@ -618,8 +701,11 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
         if not isinstance(merged.get("verify"), dict):
             merged["verify"] = {}
         for vk in ("static_scope", "deps_mode"):
-            if patch["verify"].get(vk) in ("main", "worktree") if vk == "static_scope" \
-                    else patch["verify"].get(vk) in ("prefer-offline", "hardlink"):
+            if (
+                patch["verify"].get(vk) in ("main", "worktree")
+                if vk == "static_scope"
+                else patch["verify"].get(vk) in ("prefer-offline", "hardlink")
+            ):
                 merged["verify"][vk] = patch["verify"][vk]
         # add-planner-efficiency（planner-generation-throttle 2.3）：
         # planner 生成节流上限——非负整数（0=不节流），非法值静默忽略。
@@ -647,6 +733,7 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
                 sr[field] = patch["self_review"][field]
         run_at = patch["self_review"].get("run_at")
         from core.config import ConfigLoader as _CL
+
         if _CL.is_valid_hhmm(run_at):
             sr["run_at"] = run_at
         merged["admin"]["self_review"] = sr
@@ -656,9 +743,15 @@ def _deep_merge_managed(raw_config: dict, patch: dict) -> dict:
     if "admin" in patch and isinstance(patch["admin"], dict):
         if not isinstance(merged.get("admin"), dict):
             merged["admin"] = {}
-        for ak in ("enabled", "interval_minutes", "escalation_cooldown_minutes",
-                   "merge_breaker_threshold", "shutdown_drain_seconds",
-                   "bug_repair_mode", "stuck_silence_minutes"):
+        for ak in (
+            "enabled",
+            "interval_minutes",
+            "escalation_cooldown_minutes",
+            "merge_breaker_threshold",
+            "shutdown_drain_seconds",
+            "bug_repair_mode",
+            "stuck_silence_minutes",
+        ):
             if ak in patch["admin"] and patch["admin"][ak] is not None:
                 merged["admin"][ak] = patch["admin"][ak]
     # description 分支：patch 顶层 description（str）写入 merged["project"]["description"]
@@ -713,6 +806,7 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
     from core.config import ConfigLoader
 
     import core.dashboard.data as _facade
+
     if scope == "user":
         config_path = _facade.USER_CONFIG_PATH
     else:
@@ -735,7 +829,9 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
     # 序列化为 _validate_agent_models 能消费的 canonical 形态（str / list[str|对象]）。
     # 在合并前序列化，保证校验与写入都使用 canonical 形态；role-level model 空值
     # 不写入，避免空串覆盖配置文件中已有的模型缺省。
-    if isinstance(config_patch.get("agents"), dict) and isinstance(config_patch["agents"].get("models"), dict):
+    if isinstance(config_patch.get("agents"), dict) and isinstance(
+        config_patch["agents"].get("models"), dict
+    ):
         config_patch = dict(config_patch)  # shallow copy, 不改入参
         config_patch["agents"] = dict(config_patch["agents"])
         config_patch["agents"]["models"] = ConfigLoader.serialize_models_patch(
@@ -747,11 +843,12 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
     if isinstance(config_patch.get("self_review"), dict):
         sr_patch = config_patch["self_review"]
         for field in ("enabled", "read_todo"):
-            if field in sr_patch and sr_patch[field] is not None \
-                    and not isinstance(sr_patch[field], bool):
-                return fail(
-                    f"admin.self_review.{field} must be a boolean: {sr_patch[field]}"
-                )
+            if (
+                field in sr_patch
+                and sr_patch[field] is not None
+                and not isinstance(sr_patch[field], bool)
+            ):
+                return fail(f"admin.self_review.{field} must be a boolean: {sr_patch[field]}")
         if "run_at" in sr_patch and sr_patch["run_at"] is not None:
             if not ConfigLoader.is_valid_hhmm(sr_patch["run_at"]):
                 return fail(
@@ -762,21 +859,26 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
     # 只在 merge 层过滤会让 write "成功" 但用户输入被吞）
     if isinstance(config_patch.get("verify"), dict):
         v_patch = config_patch["verify"]
-        if "static_scope" in v_patch and v_patch["static_scope"] is not None \
-                and v_patch["static_scope"] not in ("main", "worktree"):
+        if (
+            "static_scope" in v_patch
+            and v_patch["static_scope"] is not None
+            and v_patch["static_scope"] not in ("main", "worktree")
+        ):
             return fail(
                 f"verify.static_scope must be one of ['main', 'worktree']: "
                 f"{v_patch['static_scope']}"
             )
-        if "deps_mode" in v_patch and v_patch["deps_mode"] is not None \
-                and v_patch["deps_mode"] not in ("prefer-offline", "hardlink"):
+        if (
+            "deps_mode" in v_patch
+            and v_patch["deps_mode"] is not None
+            and v_patch["deps_mode"] not in ("prefer-offline", "hardlink")
+        ):
             return fail(
                 f"verify.deps_mode must be one of ['prefer-offline', 'hardlink']: "
                 f"{v_patch['deps_mode']}"
             )
         # add-planner-efficiency：planner 生成节流上限——非负整数（0=不节流）。
-        if "planner_max_concurrent" in v_patch \
-                and v_patch["planner_max_concurrent"] is not None:
+        if "planner_max_concurrent" in v_patch and v_patch["planner_max_concurrent"] is not None:
             pmc = v_patch["planner_max_concurrent"]
             if not isinstance(pmc, int) or isinstance(pmc, bool) or pmc < 0:
                 return fail(
@@ -788,15 +890,13 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
     # 与 verify/self_review 同模式，前端输入类型错误在后端权威兜底）。
     if isinstance(config_patch.get("admin"), dict):
         adm = config_patch["admin"]
-        if "enabled" in adm and adm["enabled"] is not None \
-                and not isinstance(adm["enabled"], bool):
+        if "enabled" in adm and adm["enabled"] is not None and not isinstance(adm["enabled"], bool):
             return fail(f"admin.enabled must be a boolean: {adm['enabled']!r}")
         if "interval_minutes" in adm and adm["interval_minutes"] is not None:
             im = adm["interval_minutes"]
             if not isinstance(im, (int, float)) or isinstance(im, bool) or im <= 0:
                 return fail(f"admin.interval_minutes must be a positive number: {im!r}")
-        if "escalation_cooldown_minutes" in adm \
-                and adm["escalation_cooldown_minutes"] is not None:
+        if "escalation_cooldown_minutes" in adm and adm["escalation_cooldown_minutes"] is not None:
             ec = adm["escalation_cooldown_minutes"]
             if not isinstance(ec, (int, float)) or isinstance(ec, bool) or ec < 0:
                 return fail(
@@ -804,48 +904,43 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
                 )
         # stuck-signal-hygiene D4：stuck 处置后静默期——非负数值（同
         # escalation_cooldown_minutes；0 = 不静默），非法值直接拒绝。
-        if "stuck_silence_minutes" in adm \
-                and adm["stuck_silence_minutes"] is not None:
+        if "stuck_silence_minutes" in adm and adm["stuck_silence_minutes"] is not None:
             ssm = adm["stuck_silence_minutes"]
             if not isinstance(ssm, (int, float)) or isinstance(ssm, bool) or ssm < 0:
-                return fail(
-                    f"admin.stuck_silence_minutes must be a non-negative number: {ssm!r}"
-                )
-        if "merge_breaker_threshold" in adm \
-                and adm["merge_breaker_threshold"] is not None:
+                return fail(f"admin.stuck_silence_minutes must be a non-negative number: {ssm!r}")
+        if "merge_breaker_threshold" in adm and adm["merge_breaker_threshold"] is not None:
             mb = adm["merge_breaker_threshold"]
             if not isinstance(mb, int) or isinstance(mb, bool) or mb < 1:
-                return fail(
-                    f"admin.merge_breaker_threshold must be a positive integer: {mb!r}"
-                )
-        if "shutdown_drain_seconds" in adm \
-                and adm["shutdown_drain_seconds"] is not None:
+                return fail(f"admin.merge_breaker_threshold must be a positive integer: {mb!r}")
+        if "shutdown_drain_seconds" in adm and adm["shutdown_drain_seconds"] is not None:
             sd = adm["shutdown_drain_seconds"]
             if not isinstance(sd, int) or isinstance(sd, bool) or sd < 0:
-                return fail(
-                    f"admin.shutdown_drain_seconds must be a non-negative integer: {sd!r}"
-                )
+                return fail(f"admin.shutdown_drain_seconds must be a non-negative integer: {sd!r}")
         # add-bug-repair-mode-config：bug_repair_mode 枚举校验（inplace/derive，
         # 非法值直接拒绝——前端类型错误在后端权威兜底，与其它 admin 键同模式）。
         if "bug_repair_mode" in adm and adm["bug_repair_mode"] is not None:
             brm = adm["bug_repair_mode"]
             if brm not in ("inplace", "derive"):
-                return fail(
-                    f"admin.bug_repair_mode must be one of ['inplace', 'derive']: {brm!r}"
-                )
+                return fail(f"admin.bug_repair_mode must be one of ['inplace', 'derive']: {brm!r}")
 
     # add-draft-promotion-gate：gates.promote_mode 前置校验（枚举拒绝，对齐 approve_mode）
     if isinstance(config_patch.get("gates"), dict):
         g_patch = config_patch["gates"]
-        if "promote_mode" in g_patch and g_patch["promote_mode"] is not None \
-                and g_patch["promote_mode"] not in ("auto", "manual"):
+        if (
+            "promote_mode" in g_patch
+            and g_patch["promote_mode"] is not None
+            and g_patch["promote_mode"] not in ("auto", "manual")
+        ):
             return fail(
                 f"gates.promote_mode must be one of ['auto', 'manual']: {g_patch['promote_mode']!r}"
             )
         # add-spec-review-gate：gates.spec_review_mode 前置校验（枚举拒绝，
         # 与 promote_mode 同模式；None 视为「未提交」，不校验）
-        if "spec_review_mode" in g_patch and g_patch["spec_review_mode"] is not None \
-                and g_patch["spec_review_mode"] not in ("auto", "never"):
+        if (
+            "spec_review_mode" in g_patch
+            and g_patch["spec_review_mode"] is not None
+            and g_patch["spec_review_mode"] not in ("auto", "never")
+        ):
             return fail(
                 f"gates.spec_review_mode must be one of ['auto', 'never']: {g_patch['spec_review_mode']!r}"
             )
@@ -854,6 +949,7 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
     # events 非空且合法、action 合法、webhook 必填 url、shell 必填 command）。
     if isinstance(config_patch.get("hooks"), dict):
         from core.hook_engine import validate_hooks_config
+
         hooks_err = validate_hooks_config(config_patch)
         if hooks_err:
             return fail(f"hooks 配置非法：{hooks_err}")
@@ -863,13 +959,11 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
     # 权威兜底）。
     if isinstance(config_patch.get("stale_code_selfheal"), dict):
         scs = config_patch["stale_code_selfheal"]
-        if "enabled" in scs and scs["enabled"] is not None \
-                and not isinstance(scs["enabled"], bool):
+        if "enabled" in scs and scs["enabled"] is not None and not isinstance(scs["enabled"], bool):
             return fail(f"stale_code_selfheal.enabled must be a boolean: {scs['enabled']!r}")
         if "idle_confirm_seconds" in scs and scs["idle_confirm_seconds"] is not None:
             _scs_v = scs["idle_confirm_seconds"]
-            if isinstance(_scs_v, bool) or not isinstance(_scs_v, (int, float)) \
-                    or _scs_v <= 0:
+            if isinstance(_scs_v, bool) or not isinstance(_scs_v, (int, float)) or _scs_v <= 0:
                 return fail(
                     f"stale_code_selfheal.idle_confirm_seconds must be a positive "
                     f"integer: {_scs_v!r}"
@@ -877,7 +971,7 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
 
     # add-framework-self-evolution：self_evolution 三键前置校验 + 项目级作用域拒绝。
     # 三键为全局（用户级）键：项目级作用域提交含 self_evolution → 400 且不写盘
-    #（spec「项目级写入被拒」）；用户级提交的非法值直接拒绝 400，不静默忽略。
+    # （spec「项目级写入被拒」）；用户级提交的非法值直接拒绝 400，不静默忽略。
     if "self_evolution" in config_patch:
         if scope != "user":
             return fail(
@@ -886,18 +980,18 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             )
         se_patch = config_patch["self_evolution"]
         if not isinstance(se_patch, dict):
+            return fail(f"self_evolution must be an object: {se_patch!r}")
+        if (
+            "auto_accept" in se_patch
+            and se_patch["auto_accept"] is not None
+            and not isinstance(se_patch["auto_accept"], bool)
+        ):
             return fail(
-                f"self_evolution must be an object: {se_patch!r}")
-        if "auto_accept" in se_patch and se_patch["auto_accept"] is not None \
-                and not isinstance(se_patch["auto_accept"], bool):
-            return fail(
-                f"self_evolution.auto_accept must be a boolean: "
-                f"{se_patch['auto_accept']!r}")
-        if "max_items_per_run" in se_patch \
-                and se_patch["max_items_per_run"] is not None:
+                f"self_evolution.auto_accept must be a boolean: " f"{se_patch['auto_accept']!r}"
+            )
+        if "max_items_per_run" in se_patch and se_patch["max_items_per_run"] is not None:
             _se_v = se_patch["max_items_per_run"]
-            if isinstance(_se_v, bool) or not isinstance(_se_v, int) \
-                    or _se_v < 1 or _se_v > 200:
+            if isinstance(_se_v, bool) or not isinstance(_se_v, int) or _se_v < 1 or _se_v > 200:
                 return fail(
                     f"self_evolution.max_items_per_run must be an integer in "
                     f"[1, 200]: {_se_v!r}"
@@ -941,7 +1035,11 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             # improve-failover-model-mapping-ui D5：Dashboard 保存时额外要求每行引用的
             # provider 名必须存在于 llm.providers（load-time 校验只打 ERROR 不阻塞，但
             # UI 保存不允许"脏配置"落盘）。
-            model_patch = config_patch.get("agents", {}).get("models", {}) if config_patch.get("agents") else {}
+            model_patch = (
+                config_patch.get("agents", {}).get("models", {})
+                if config_patch.get("agents")
+                else {}
+            )
             if model_patch:
                 provider_names = set()
                 provs = (llm or {}).get("providers") or []
@@ -969,32 +1067,25 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         if "max_concurrent" in agents:
             mc = agents["max_concurrent"]
             if not isinstance(mc, int) or mc <= 0:
-                raise ValueError(
-                    f"agents.max_concurrent must be a positive integer: {mc}"
-                )
+                raise ValueError(f"agents.max_concurrent must be a positive integer: {mc}")
         if "run_timeout_seconds" in agents:
             rt = agents["run_timeout_seconds"]
             if not isinstance(rt, int) or rt <= 0:
-                raise ValueError(
-                    f"agents.run_timeout_seconds must be a positive integer: {rt}"
-                )
+                raise ValueError(f"agents.run_timeout_seconds must be a positive integer: {rt}")
         if "max_turns" in agents:
             mt = agents["max_turns"]
             if not isinstance(mt, int) or mt <= 0:
-                raise ValueError(
-                    f"agents.max_turns must be a positive integer: {mt}"
-                )
+                raise ValueError(f"agents.max_turns must be a positive integer: {mt}")
         if "daily_run_limit" in agents:
             drl = agents["daily_run_limit"]
             if not isinstance(drl, int) or drl < 0:
-                raise ValueError(
-                    f"agents.daily_run_limit must be a non-negative integer: {drl}"
-                )
+                raise ValueError(f"agents.daily_run_limit must be a non-negative integer: {drl}")
         if "impl_run_budget" in agents:
             irb = agents["impl_run_budget"]
             # open-impl-budget-ceiling：上限由 agents.impl_run_budget_max 决定
-            #（缺省 100，硬天花板 1000），不再硬编码 10。
+            # （缺省 100，硬天花板 1000），不再硬编码 10。
             from core.pm_engine.budget import resolve_impl_run_budget_max
+
             budget_max = resolve_impl_run_budget_max(agents.get("impl_run_budget_max"))
             if not isinstance(irb, int) or irb < 1 or irb > budget_max:
                 raise ValueError(
@@ -1003,10 +1094,16 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         if "impl_run_budget_max" in agents:
             ibm = agents["impl_run_budget_max"]
             from core.pm_engine.budget import (
-                resolve_impl_run_budget_max, IMPL_RUN_BUDGET_MAX_CEILING,
+                resolve_impl_run_budget_max,
+                IMPL_RUN_BUDGET_MAX_CEILING,
             )
-            if (not isinstance(ibm, int) or isinstance(ibm, bool)
-                    or ibm < 1 or ibm > IMPL_RUN_BUDGET_MAX_CEILING):
+
+            if (
+                not isinstance(ibm, int)
+                or isinstance(ibm, bool)
+                or ibm < 1
+                or ibm > IMPL_RUN_BUDGET_MAX_CEILING
+            ):
                 raise ValueError(
                     f"agents.impl_run_budget_max must be an integer in "
                     f"[1, {IMPL_RUN_BUDGET_MAX_CEILING}]: {ibm}"
@@ -1014,24 +1111,24 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         if "verify_redo_budget" in agents:
             vrb = agents["verify_redo_budget"]
             if not isinstance(vrb, int) or vrb < 1 or vrb > 10:
-                raise ValueError(
-                    f"agents.verify_redo_budget must be an integer in [1, 10]: {vrb}"
-                )
+                raise ValueError(f"agents.verify_redo_budget must be an integer in [1, 10]: {vrb}")
         # fix-provider-transient-backoff（D6）：瞬断治理四数值键——非负整数校验
-        #（非法值直接拒绝 400，与 verify/self_review/admin 同模式，前端类型错误
+        # （非法值直接拒绝 400，与 verify/self_review/admin 同模式，前端类型错误
         # 由后端权威兜底；缺省回显与回退仍走 get_transient_config）。
-        for _tk in ("transient_redispatch_delay_seconds",
-                    "transient_break_threshold",
-                    "transient_break_window_seconds",
-                    "transient_break_cooldown_seconds"):
+        for _tk in (
+            "transient_redispatch_delay_seconds",
+            "transient_break_threshold",
+            "transient_break_window_seconds",
+            "transient_break_cooldown_seconds",
+        ):
             if _tk in agents and agents[_tk] is not None:
                 _tv = agents[_tk]
                 if isinstance(_tv, bool) or not isinstance(_tv, (int, float)) or _tv < 0:
-                    raise ValueError(
-                        f"agents.{_tk} must be a non-negative integer: {_tv!r}"
-                    )
-        if "transient_backoff_schedule" in agents \
-                and agents["transient_backoff_schedule"] is not None:
+                    raise ValueError(f"agents.{_tk} must be a non-negative integer: {_tv!r}")
+        if (
+            "transient_backoff_schedule" in agents
+            and agents["transient_backoff_schedule"] is not None
+        ):
             _ts = agents["transient_backoff_schedule"]
             if not isinstance(_ts, str):
                 raise ValueError(
@@ -1088,43 +1185,59 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
             sr = admin_m["self_review"]
             for field in ("enabled", "read_todo"):
                 if field in sr and sr[field] is not None and not isinstance(sr[field], bool):
-                    raise ValueError(
-                        f"admin.self_review.{field} must be a boolean: {sr[field]}"
-                    )
+                    raise ValueError(f"admin.self_review.{field} must be a boolean: {sr[field]}")
             if "run_at" in sr and sr["run_at"] is not None:
                 from core.config import ConfigLoader as _CL
+
                 if not _CL.is_valid_hhmm(sr["run_at"]):
                     raise ValueError(
                         f"admin.self_review.run_at must be HH:MM (00:00-23:59): {sr['run_at']}"
                     )
         # add-settings-system-tab：admin.* 六键（merged 视图校验；写路径前置校验
         # 已拒绝非法 patch，此处兜底防绕过前置校验的直连调用）
-        if "enabled" in admin_m and admin_m["enabled"] is not None \
-                and not isinstance(admin_m["enabled"], bool):
+        if (
+            "enabled" in admin_m
+            and admin_m["enabled"] is not None
+            and not isinstance(admin_m["enabled"], bool)
+        ):
             raise ValueError(f"admin.enabled must be a boolean: {admin_m['enabled']!r}")
-        if "bug_repair_mode" in admin_m and admin_m["bug_repair_mode"] is not None \
-                and admin_m["bug_repair_mode"] not in ("inplace", "derive"):
+        if (
+            "bug_repair_mode" in admin_m
+            and admin_m["bug_repair_mode"] is not None
+            and admin_m["bug_repair_mode"] not in ("inplace", "derive")
+        ):
             raise ValueError(
                 f"admin.bug_repair_mode 非法：{admin_m['bug_repair_mode']!r}"
                 f"（保存被拒绝，请修正后重试）"
             )
         for _k, _rule in (
-            ("interval_minutes", lambda v: isinstance(v, (int, float))
-             and not isinstance(v, bool) and v > 0),
-            ("escalation_cooldown_minutes", lambda v: isinstance(v, (int, float))
-             and not isinstance(v, bool) and v >= 0),
-            ("merge_breaker_threshold", lambda v: isinstance(v, int)
-             and not isinstance(v, bool) and v >= 1),
-            ("shutdown_drain_seconds", lambda v: isinstance(v, int)
-             and not isinstance(v, bool) and v >= 0),
-            ("stuck_silence_minutes", lambda v: isinstance(v, (int, float))
-             and not isinstance(v, bool) and v >= 0),
+            (
+                "interval_minutes",
+                lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0,
+            ),
+            (
+                "escalation_cooldown_minutes",
+                lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+            ),
+            (
+                "merge_breaker_threshold",
+                lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 1,
+            ),
+            (
+                "shutdown_drain_seconds",
+                lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0,
+            ),
+            (
+                "stuck_silence_minutes",
+                lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0,
+            ),
         ):
             if _k in admin_m and admin_m[_k] is not None and not _rule(admin_m[_k]):
                 raise ValueError(f"admin.{_k} 非法：{admin_m[_k]!r}（保存被拒绝，请修正后重试）")
         # add-spec-hooks D7：merged 视图 hooks 校验（兜底防绕过前置校验的直连调用；
         # 校验规则同前置，但作用于合并后视图，含项目级手工写入的非受管 hooks 段）
         from core.hook_engine import validate_hooks_config as _validate_hooks
+
         if isinstance(merged.get("hooks"), dict):
             _err = _validate_hooks(merged)
             if _err:
@@ -1133,8 +1246,11 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
         # 与 hooks 同模式）
         scs_m = merged.get("stale_code_selfheal")
         if isinstance(scs_m, dict):
-            if "enabled" in scs_m and scs_m["enabled"] is not None \
-                    and not isinstance(scs_m["enabled"], bool):
+            if (
+                "enabled" in scs_m
+                and scs_m["enabled"] is not None
+                and not isinstance(scs_m["enabled"], bool)
+            ):
                 raise ValueError(
                     f"stale_code_selfheal.enabled must be a boolean: {scs_m['enabled']!r}"
                 )
@@ -1151,14 +1267,13 @@ def write_config(scope_root, config_patch: dict, scope: str = "project") -> dict
     # 4. 原子写回（临时文件 + rename）
     config_dir.mkdir(parents=True, exist_ok=True)
     try:
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(config_dir), prefix=".config-", suffix=".yaml.tmp"
-        )
+        fd, tmp_path = tempfile.mkstemp(dir=str(config_dir), prefix=".config-", suffix=".yaml.tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(_CONFIG_HEADER_COMMENT)
-                yaml.safe_dump(merged, f, allow_unicode=True, default_flow_style=False,
-                               sort_keys=False)
+                yaml.safe_dump(
+                    merged, f, allow_unicode=True, default_flow_style=False, sort_keys=False
+                )
             os.replace(tmp_path, config_path)
         except Exception:
             try:
@@ -1188,19 +1303,33 @@ _SYNC_PAGE_KEYS = {
         "verify": ["planner_max_concurrent"],
     },
     "token": {
-        "agents": ["token_budget_millions", "daily_run_limit",
-                   "impl_run_budget", "verify_redo_budget"],
+        "agents": [
+            "token_budget_millions",
+            "daily_run_limit",
+            "impl_run_budget",
+            "verify_redo_budget",
+        ],
     },
     "verify": {"verify": ["static_scope", "deps_mode"]},
     "approval": {"gates": ["promote_mode", "approve_mode"]},
     "misc": {"archive": ["auto_threshold"]},
     "system": {
-        "admin": ["enabled", "interval_minutes", "escalation_cooldown_minutes",
-                  "merge_breaker_threshold", "shutdown_drain_seconds",
-                  "bug_repair_mode", "stuck_silence_minutes"],
-        "agents": ["transient_backoff_schedule", "transient_redispatch_delay_seconds",
-                   "transient_break_threshold", "transient_break_window_seconds",
-                   "transient_break_cooldown_seconds"],
+        "admin": [
+            "enabled",
+            "interval_minutes",
+            "escalation_cooldown_minutes",
+            "merge_breaker_threshold",
+            "shutdown_drain_seconds",
+            "bug_repair_mode",
+            "stuck_silence_minutes",
+        ],
+        "agents": [
+            "transient_backoff_schedule",
+            "transient_redispatch_delay_seconds",
+            "transient_break_threshold",
+            "transient_break_window_seconds",
+            "transient_break_cooldown_seconds",
+        ],
     },
 }
 
@@ -1223,6 +1352,7 @@ def sync_config_from_user(project_root, page: str) -> dict:
 
     # 读用户级原始文件（raw dict，不做缺省填充）：用户级未显式配置的键不覆盖
     import core.dashboard.data as _facade
+
     user_raw = {}
     if _facade.USER_CONFIG_PATH.exists():
         try:
@@ -1231,8 +1361,12 @@ def sync_config_from_user(project_root, page: str) -> dict:
             if isinstance(loaded, dict):
                 user_raw = loaded
         except (yaml.YAMLError, OSError) as e:
-            return {"ok": False, "error": f"读取用户级配置失败: {e}", "synced": None,
-                    "path": str(_facade.USER_CONFIG_PATH)}
+            return {
+                "ok": False,
+                "error": f"读取用户级配置失败: {e}",
+                "synced": None,
+                "path": str(_facade.USER_CONFIG_PATH),
+            }
 
     section_map = _SYNC_PAGE_KEYS[page]
     patch = {}
@@ -1245,11 +1379,17 @@ def sync_config_from_user(project_root, page: str) -> dict:
             patch[section] = picked
 
     if not patch:
-        return {"ok": False,
-                "error": "用户级配置中该页面没有已设置的值，无可同步内容",
-                "synced": None, "path": str(_facade.USER_CONFIG_PATH)}
+        return {
+            "ok": False,
+            "error": "用户级配置中该页面没有已设置的值，无可同步内容",
+            "synced": None,
+            "path": str(_facade.USER_CONFIG_PATH),
+        }
 
     result = write_config(project_root, patch, scope="project")
-    return {"ok": result["ok"], "error": result.get("error"),
-            "synced": patch if result["ok"] else None,
-            "path": result.get("path")}
+    return {
+        "ok": result["ok"],
+        "error": result.get("error"),
+        "synced": patch if result["ok"] else None,
+        "path": result.get("path"),
+    }

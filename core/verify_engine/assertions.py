@@ -59,19 +59,23 @@ class AssertionRunner:
                     result.setdefault("layer", 0)
                     results.append(result)
                 except Exception as e:
-                    results.append({
+                    results.append(
+                        {
+                            "type": a_type,
+                            "layer": 0,
+                            "pass": False,
+                            "error": f"断言执行异常: {e}",
+                        }
+                    )
+            else:
+                results.append(
+                    {
                         "type": a_type,
                         "layer": 0,
                         "pass": False,
-                        "error": f"断言执行异常: {e}",
-                    })
-            else:
-                results.append({
-                    "type": a_type,
-                    "layer": 0,
-                    "pass": False,
-                    "error": f"未知断言类型: {a_type}",
-                })
+                        "error": f"未知断言类型: {a_type}",
+                    }
+                )
         return results
 
     # ═══════════════════════════════════════════════════════════════
@@ -85,15 +89,20 @@ class AssertionRunner:
             locator = page.locator(selector).first
             await locator.wait_for(state="visible", timeout=3000)
             return {
-                "type": "element_visible", "layer": 1,
-                "selector": selector, "label": a.get("label", ""),
+                "type": "element_visible",
+                "layer": 1,
+                "selector": selector,
+                "label": a.get("label", ""),
                 "pass": True,
             }
         except Exception as e:
             return {
-                "type": "element_visible", "layer": 1,
-                "selector": selector, "label": a.get("label", ""),
-                "pass": False, "error": str(e),
+                "type": "element_visible",
+                "layer": 1,
+                "selector": selector,
+                "label": a.get("label", ""),
+                "pass": False,
+                "error": str(e),
             }
 
     async def _assert_element_count(self, page, a: dict) -> dict:
@@ -111,9 +120,11 @@ class AssertionRunner:
         expected = int(a.get("count", a.get("expected", 1)))
         actual = await page.locator(selector).count()
         return {
-            "type": "element_count", "layer": 1,
+            "type": "element_count",
+            "layer": 1,
             "selector": selector,
-            "expected": expected, "actual": actual,
+            "expected": expected,
+            "actual": actual,
             "pass": actual == expected,
         }
 
@@ -135,19 +146,20 @@ class AssertionRunner:
                 if count == 0:
                     break
         return {
-            "type": "element_not_exist", "layer": 1,
-            "selector": selector, "actual_count": count,
+            "type": "element_not_exist",
+            "layer": 1,
+            "selector": selector,
+            "actual_count": count,
             "pass": count == 0,
         }
 
     async def _assert_element_focused(self, page, a: dict) -> dict:
         """断言元素获得焦点。"""
         selector = a["selector"]
-        focused = await self._safe_evaluate(page, selector,
-            "el => el === document.activeElement"
-        )
+        focused = await self._safe_evaluate(page, selector, "el => el === document.activeElement")
         return {
-            "type": "element_focused", "layer": 1,
+            "type": "element_focused",
+            "layer": 1,
             "selector": selector,
             "pass": focused is True,
         }
@@ -157,14 +169,18 @@ class AssertionRunner:
         selector = a["selector"]
         if not await self._element_exists(page, selector):
             return {
-                "type": "element_enabled", "layer": 1,
-                "selector": selector, "pass": False,
+                "type": "element_enabled",
+                "layer": 1,
+                "selector": selector,
+                "pass": False,
                 "error": "元素不存在",
             }
         enabled = await self._locator(page, selector).is_enabled()
         return {
-            "type": "element_enabled", "layer": 1,
-            "selector": selector, "pass": enabled,
+            "type": "element_enabled",
+            "layer": 1,
+            "selector": selector,
+            "pass": enabled,
         }
 
     # ═══════════════════════════════════════════════════════════════
@@ -182,8 +198,10 @@ class AssertionRunner:
         try:
             await locator.click(trial=True, timeout=3000)
             return {
-                "type": "no_click_interception", "layer": 2,
-                "selector": selector, "label": a.get("label", ""),
+                "type": "no_click_interception",
+                "layer": 2,
+                "selector": selector,
+                "label": a.get("label", ""),
                 "pass": True,
             }
         except Exception as e:
@@ -209,13 +227,17 @@ class AssertionRunner:
                                 };
                             }
                             return null;
-                        }""", selector)
+                        }""",
+                        selector,
+                    )
                 except Exception:
                     pass  # 拦截详情提取失败不阻塞主流程
 
             return {
-                "type": "no_click_interception", "layer": 2,
-                "selector": selector, "label": a.get("label", ""),
+                "type": "no_click_interception",
+                "layer": 2,
+                "selector": selector,
+                "label": a.get("label", ""),
                 "pass": False,
                 "error": error_msg,
                 "intercept_detail": intercept_detail,
@@ -229,7 +251,9 @@ class AssertionRunner:
         selector = a["selector"]
         threshold = a.get("threshold", 0.2)
 
-        overlaps = await self._safe_evaluate(page, selector,
+        overlaps = await self._safe_evaluate(
+            page,
+            selector,
             """(el, threshold) => {
                 const rect = el.getBoundingClientRect();
                 const parent = el.parentElement;
@@ -257,18 +281,24 @@ class AssertionRunner:
                     }
                 }
                 return results;
-            }""", threshold)
+            }""",
+            threshold,
+        )
 
         if overlaps is None:
             return {
-                "type": "no_overlap", "layer": 2,
-                "selector": selector, "threshold": threshold,
+                "type": "no_overlap",
+                "layer": 2,
+                "selector": selector,
+                "threshold": threshold,
                 "pass": False,
                 "error": "元素不存在，无法检测重叠",
             }
         return {
-            "type": "no_overlap", "layer": 2,
-            "selector": selector, "threshold": threshold,
+            "type": "no_overlap",
+            "layer": 2,
+            "selector": selector,
+            "threshold": threshold,
             "pass": len(overlaps) == 0,
             "overlaps": overlaps,
         }
@@ -276,7 +306,10 @@ class AssertionRunner:
     async def _assert_in_viewport(self, page, a: dict) -> dict:
         """断言元素在可视区域内。"""
         selector = a["selector"]
-        in_view = await self._safe_evaluate(page, selector, """el => {
+        in_view = await self._safe_evaluate(
+            page,
+            selector,
+            """el => {
             const rect = el.getBoundingClientRect();
             return (
                 rect.top >= 0 &&
@@ -284,16 +317,21 @@ class AssertionRunner:
                 rect.bottom <= window.innerHeight &&
                 rect.right <= window.innerWidth
             );
-        }""")  # in_viewport evaluate ends
+        }""",
+        )  # in_viewport evaluate ends
         if in_view is None:
             return {
-                "type": "in_viewport", "layer": 2,
-                "selector": selector, "pass": False,
+                "type": "in_viewport",
+                "layer": 2,
+                "selector": selector,
+                "pass": False,
                 "error": "元素不存在",
             }
         return {
-            "type": "in_viewport", "layer": 2,
-            "selector": selector, "pass": in_view,
+            "type": "in_viewport",
+            "layer": 2,
+            "selector": selector,
+            "pass": in_view,
         }
 
     async def _assert_z_index_order(self, page, a: dict) -> dict:
@@ -309,17 +347,20 @@ class AssertionRunner:
 
         if not await self._element_exists(page, selector):
             return {
-                "type": "z_index_order", "layer": 2,
-                "selector": selector, "compare_selector": compare_selector,
-                "operator": op, "pass": False,
+                "type": "z_index_order",
+                "layer": 2,
+                "selector": selector,
+                "compare_selector": compare_selector,
+                "operator": op,
+                "pass": False,
                 "error": f"元素 '{selector}' 不存在",
             }
 
-        z1_result = await self._safe_evaluate(page, selector,
-            "el => parseInt(getComputedStyle(el).zIndex) || 0"
+        z1_result = await self._safe_evaluate(
+            page, selector, "el => parseInt(getComputedStyle(el).zIndex) || 0"
         )
-        z2_result = await self._safe_evaluate(page, compare_selector,
-            "el => parseInt(getComputedStyle(el).zIndex) || 0"
+        z2_result = await self._safe_evaluate(
+            page, compare_selector, "el => parseInt(getComputedStyle(el).zIndex) || 0"
         )
         z1 = z1_result if z1_result is not None else 0
         z2 = z2_result if z2_result is not None else 0
@@ -332,10 +373,14 @@ class AssertionRunner:
             passed = z1 == z2
 
         return {
-            "type": "z_index_order", "layer": 2,
-            "selector": selector, "compare_selector": compare_selector,
-            "z_index_self": z1, "z_index_compare": z2,
-            "operator": op, "pass": passed,
+            "type": "z_index_order",
+            "layer": 2,
+            "selector": selector,
+            "compare_selector": compare_selector,
+            "z_index_self": z1,
+            "z_index_compare": z2,
+            "operator": op,
+            "pass": passed,
         }
 
     # ═══════════════════════════════════════════════════════════════
@@ -397,9 +442,12 @@ class AssertionRunner:
             await page.wait_for_timeout(interval_ms)
 
         return {
-            "type": "text_match", "layer": 3,
-            "selector": selector, "expected": expected,
-            "actual": actual.strip(), "mode": mode,
+            "type": "text_match",
+            "layer": 3,
+            "selector": selector,
+            "expected": expected,
+            "actual": actual.strip(),
+            "mode": mode,
             "pass": passed,
             **({"error": last_error} if not passed and last_error else {}),
         }
@@ -416,9 +464,7 @@ class AssertionRunner:
         if selector:
             # 等待至少一个匹配元素出现（容忍尚未渲染的情况），再检查全部匹配
             try:
-                await page.locator(selector).first.wait_for(
-                    state="attached", timeout=3000
-                )
+                await page.locator(selector).first.wait_for(state="attached", timeout=3000)
             except Exception:
                 pass
             try:
@@ -432,8 +478,10 @@ class AssertionRunner:
             passed = text in content
 
         return {
-            "type": "text_contains", "layer": 3,
-            "text": text, "pass": passed,
+            "type": "text_contains",
+            "layer": 3,
+            "text": text,
+            "pass": passed,
         }
 
     async def _assert_attribute_match(self, page, a: dict) -> dict:
@@ -443,9 +491,12 @@ class AssertionRunner:
         expected = a.get("expected", "")
         actual = await self._locator(page, selector).get_attribute(attr)
         return {
-            "type": "attribute_match", "layer": 3,
-            "selector": selector, "attribute": attr,
-            "expected": expected, "actual": actual,
+            "type": "attribute_match",
+            "layer": 3,
+            "selector": selector,
+            "attribute": attr,
+            "expected": expected,
+            "actual": actual,
             "pass": actual == expected,
         }
 
@@ -480,7 +531,8 @@ class AssertionRunner:
             errors = [e for e in errors if not any(m in e for m in network_markers)]
 
         return {
-            "type": "no_console_error", "layer": 3,
+            "type": "no_console_error",
+            "layer": 3,
             "pass": len(errors) == 0,
             "errors": errors,
             "filtered_network": filtered,
@@ -494,7 +546,8 @@ class AssertionRunner:
         """
         errors = a.get("_network_errors", [])
         return {
-            "type": "no_network_error", "layer": 3,
+            "type": "no_network_error",
+            "layer": 3,
             "pass": len(errors) == 0,
             "errors": errors,
         }
@@ -509,19 +562,24 @@ class AssertionRunner:
         错误提示。
         """
         keywords = [
-            "签名验证失败", "认证失败", "SignatureDoesNotMatch",
-            "InvalidAccessKeyId", "Access Key", "Secret Key",
-            "AccessKey", "SecretKey", "InvalidAccessKey",
+            "签名验证失败",
+            "认证失败",
+            "SignatureDoesNotMatch",
+            "InvalidAccessKeyId",
+            "Access Key",
+            "Secret Key",
+            "AccessKey",
+            "SecretKey",
+            "InvalidAccessKey",
         ]
         try:
-            body_text = await page.evaluate(
-                "() => document.body ? document.body.innerText : ''"
-            )
+            body_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
         except Exception:
             body_text = ""
         matched = [k for k in keywords if k in body_text]
         return {
-            "type": "no_auth_error", "layer": 3,
+            "type": "no_auth_error",
+            "layer": 3,
             "pass": len(matched) == 0,
             "matched": matched,
         }
@@ -543,9 +601,12 @@ class AssertionRunner:
             count = 0
 
         return {
-            "type": "dom_structure", "layer": 3,
-            "parent": parent_sel, "child": child_sel,
-            "relation": relation, "count": count,
+            "type": "dom_structure",
+            "layer": 3,
+            "parent": parent_sel,
+            "child": child_sel,
+            "relation": relation,
+            "count": count,
             "pass": passed,
         }
 
@@ -556,7 +617,10 @@ class AssertionRunner:
     async def _assert_no_overflow(self, page, a: dict) -> dict:
         """断言元素内容不溢出容器边界。"""
         selector = a["selector"]
-        overflow_info = await self._safe_evaluate(page, selector, """el => {
+        overflow_info = await self._safe_evaluate(
+            page,
+            selector,
+            """el => {
             return {
                 has_horizontal_overflow: el.scrollWidth > el.clientWidth + 1,
                 has_vertical_overflow: el.scrollHeight > el.clientHeight + 1,
@@ -565,11 +629,14 @@ class AssertionRunner:
                 scroll_height: el.scrollHeight,
                 client_height: el.clientHeight,
             };
-        }""")
+        }""",
+        )
         if overflow_info is None:
             return {
-                "type": "no_overflow", "layer": 4,
-                "selector": selector, "pass": False,
+                "type": "no_overflow",
+                "layer": 4,
+                "selector": selector,
+                "pass": False,
                 "error": "元素不存在",
             }
         passed = (
@@ -577,8 +644,10 @@ class AssertionRunner:
             and not overflow_info["has_vertical_overflow"]
         )
         return {
-            "type": "no_overflow", "layer": 4,
-            "selector": selector, "pass": passed,
+            "type": "no_overflow",
+            "layer": 4,
+            "selector": selector,
+            "pass": passed,
             "overflow_info": overflow_info,
         }
 
@@ -595,8 +664,10 @@ class AssertionRunner:
 
         if not await self._element_exists(page, selector):
             return {
-                "type": "alignment", "layer": 4,
-                "selector": selector, "pass": False,
+                "type": "alignment",
+                "layer": 4,
+                "selector": selector,
+                "pass": False,
                 "error": "元素不存在",
             }
 
@@ -609,8 +680,10 @@ class AssertionRunner:
 
         if len(positions) < 2:
             return {
-                "type": "alignment", "layer": 4,
-                "selector": selector, "pass": True,
+                "type": "alignment",
+                "layer": 4,
+                "selector": selector,
+                "pass": True,
                 "note": "少于2个元素，跳过对齐检查",
             }
 
@@ -619,8 +692,12 @@ class AssertionRunner:
         passed = max_diff <= tolerance
 
         return {
-            "type": "alignment", "layer": 4,
-            "selector": selector, "axis": axis,
-            "values": values, "max_diff": max_diff,
-            "tolerance": tolerance, "pass": passed,
+            "type": "alignment",
+            "layer": 4,
+            "selector": selector,
+            "axis": axis,
+            "values": values,
+            "max_diff": max_diff,
+            "tolerance": tolerance,
+            "pass": passed,
         }

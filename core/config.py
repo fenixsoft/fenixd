@@ -91,7 +91,17 @@ class ConfigLoader:
     # 未纳入时 agents.models 配置它会被 _validate_agent_models 拒绝，fast-track 派发
     # 恒走默认网关——任务进度契约在其会话中成为死信的根因之一。dispute-judge 同样：
     # 未纳入时无法分配专属模型，只能随网关当前 provider 漂移，且网关欠费时秒挂）
-    KNOWN_AGENT_TYPES = ["implementer", "fast-track", "planner-plan", "planner-judge", "verifier", "administrator", "self-review", "spec-review", "dispute-judge"]
+    KNOWN_AGENT_TYPES = [
+        "implementer",
+        "fast-track",
+        "planner-plan",
+        "planner-judge",
+        "verifier",
+        "administrator",
+        "self-review",
+        "spec-review",
+        "dispute-judge",
+    ]
 
     # ── run_timeout 按 agent_type 覆盖（per-agent-timeout-override）──────
     # agents.timeout_overrides.<agent_type> 覆盖全局 run_timeout_seconds。
@@ -116,11 +126,11 @@ class ConfigLoader:
     # ── 瞬断治理配置（fix-provider-transient-backoff D6 / transient-controls-ui）──
     # 五键缺省值（design D6 表）。消费方（runner/provider_circuit/dispatch）经
     # _get_config 读取，非法值由本类防御式规范化回退缺省。
-    TRANSIENT_BACKOFF_SCHEDULE_DEFAULT = "30,60,120"      # 原地退避秒序列（长度=原地重试上限）
-    TRANSIENT_REDISPATCH_DELAY_DEFAULT = 600              # dispatch 排程等待秒
-    TRANSIENT_BREAK_THRESHOLD_DEFAULT = 3                 # 熔断窗口内同指纹次数
-    TRANSIENT_BREAK_WINDOW_DEFAULT = 600                  # 熔断窗口秒
-    TRANSIENT_BREAK_COOLDOWN_DEFAULT = 600                # 熔断冷却秒
+    TRANSIENT_BACKOFF_SCHEDULE_DEFAULT = "30,60,120"  # 原地退避秒序列（长度=原地重试上限）
+    TRANSIENT_REDISPATCH_DELAY_DEFAULT = 600  # dispatch 排程等待秒
+    TRANSIENT_BREAK_THRESHOLD_DEFAULT = 3  # 熔断窗口内同指纹次数
+    TRANSIENT_BREAK_WINDOW_DEFAULT = 600  # 熔断窗口秒
+    TRANSIENT_BREAK_COOLDOWN_DEFAULT = 600  # 熔断冷却秒
 
     @classmethod
     def normalize_transient_backoff_schedule(cls, raw) -> str:
@@ -180,19 +190,23 @@ class ConfigLoader:
                 agents.get("transient_backoff_schedule")
             ),
             "transient_redispatch_delay_seconds": cls._normalize_transient_seconds(
-                config, "agents.transient_redispatch_delay_seconds",
+                config,
+                "agents.transient_redispatch_delay_seconds",
                 cls.TRANSIENT_REDISPATCH_DELAY_DEFAULT,
             ),
             "transient_break_threshold": cls._normalize_transient_seconds(
-                config, "agents.transient_break_threshold",
+                config,
+                "agents.transient_break_threshold",
                 cls.TRANSIENT_BREAK_THRESHOLD_DEFAULT,
             ),
             "transient_break_window_seconds": cls._normalize_transient_seconds(
-                config, "agents.transient_break_window_seconds",
+                config,
+                "agents.transient_break_window_seconds",
                 cls.TRANSIENT_BREAK_WINDOW_DEFAULT,
             ),
             "transient_break_cooldown_seconds": cls._normalize_transient_seconds(
-                config, "agents.transient_break_cooldown_seconds",
+                config,
+                "agents.transient_break_cooldown_seconds",
                 cls.TRANSIENT_BREAK_COOLDOWN_DEFAULT,
             ),
         }
@@ -312,33 +326,33 @@ class ConfigLoader:
         # 拒绝加载——由 get_transient_config / 消费方回退缺省（Migration Plan 回滚
         # 语义 = 配置键置空），仅对「值类型极端非法以致无法安全解析」打 ERROR。
         # 写法对齐 loads 阶段只拦截明显损坏的类型（字符串数字歧义由规范化兜底）。
-        for field in ("transient_redispatch_delay_seconds",
-                      "transient_break_threshold",
-                      "transient_break_window_seconds",
-                      "transient_break_cooldown_seconds"):
+        for field in (
+            "transient_redispatch_delay_seconds",
+            "transient_break_threshold",
+            "transient_break_window_seconds",
+            "transient_break_cooldown_seconds",
+        ):
             if field in agents and agents[field] is not None:
                 val = agents[field]
-                if (isinstance(val, bool)
-                        or not isinstance(val, (int, float))
-                        or val < 0):
-                    raise ValueError(
-                        f"agents.{field} must be a non-negative number: {val!r}")
-        if "transient_backoff_schedule" in agents \
-                and agents["transient_backoff_schedule"] is not None:
+                if isinstance(val, bool) or not isinstance(val, (int, float)) or val < 0:
+                    raise ValueError(f"agents.{field} must be a non-negative number: {val!r}")
+        if (
+            "transient_backoff_schedule" in agents
+            and agents["transient_backoff_schedule"] is not None
+        ):
             schedule_val = agents["transient_backoff_schedule"]
             if not isinstance(schedule_val, str) and not isinstance(schedule_val, list):
                 raise ValueError(
                     "agents.transient_backoff_schedule must be a comma-separated "
-                    f"seconds string or list: {schedule_val!r}")
+                    f"seconds string or list: {schedule_val!r}"
+                )
 
         # Validate project type — 仅当 project 存在且（严格路径 或 显式提供 type）时校验
         project = config.get("project")
         if isinstance(project, dict) and (require_project or "type" in project):
             ptype = project.get("type", "")
             if ptype not in cls.VALID_PROJECT_TYPES:
-                raise ValueError(
-                    f"project.type must be one of {cls.VALID_PROJECT_TYPES}: {ptype}"
-                )
+                raise ValueError(f"project.type must be one of {cls.VALID_PROJECT_TYPES}: {ptype}")
 
         # Validate llm.providers (optional — absence means empty registry)
         llm = config.get("llm") or {}
@@ -385,8 +399,11 @@ class ConfigLoader:
         admin = config.get("admin") or {}
         if "enabled" in admin and not isinstance(admin["enabled"], bool):
             raise ValueError(f"admin.enabled must be a boolean: {admin['enabled']}")
-        for field in ("interval_minutes", "escalation_cooldown_minutes",
-                      "orphaned_state_threshold_minutes"):
+        for field in (
+            "interval_minutes",
+            "escalation_cooldown_minutes",
+            "orphaned_state_threshold_minutes",
+        ):
             if field in admin and admin[field] is not None:
                 val = admin[field]
                 if not isinstance(val, (int, float)) or val <= 0:
@@ -404,9 +421,7 @@ class ConfigLoader:
         if "workers" in admin and admin["workers"] is not None:
             workers = admin["workers"]
             if not isinstance(workers, int) or isinstance(workers, bool) or workers < 0:
-                raise ValueError(
-                    f"admin.workers must be a non-negative integer: {workers}"
-                )
+                raise ValueError(f"admin.workers must be a non-negative integer: {workers}")
         # interrupt-recovery-preserve D1：规划性重启排水窗口；0 = 不排水、保持现行
         # 快速停机。负数/非法类型拒绝（读取方 _validated_drain 另有回退兜底）。
         if "shutdown_drain_seconds" in admin and admin["shutdown_drain_seconds"] is not None:
@@ -435,11 +450,8 @@ class ConfigLoader:
             if not isinstance(sr, dict):
                 raise ValueError("admin.self_review must be an object")
             for field in ("enabled", "read_todo"):
-                if field in sr and sr[field] is not None \
-                        and not isinstance(sr[field], bool):
-                    raise ValueError(
-                        f"admin.self_review.{field} must be a boolean: {sr[field]}"
-                    )
+                if field in sr and sr[field] is not None and not isinstance(sr[field], bool):
+                    raise ValueError(f"admin.self_review.{field} must be a boolean: {sr[field]}")
             if "run_at" in sr and sr["run_at"] is not None:
                 cls._validated_run_at(sr["run_at"])  # 非法值仅 ERROR+回退，不抛错
 
@@ -452,8 +464,8 @@ class ConfigLoader:
             at = archive["auto_threshold"]
             if not isinstance(at, int) or isinstance(at, bool) or at < 0:
                 _logger.error(
-                    "archive.auto_threshold 非法（应为非负整数，0=禁用）：%r，"
-                    "回落默认 50", at,
+                    "archive.auto_threshold 非法（应为非负整数，0=禁用）：%r，" "回落默认 50",
+                    at,
                 )
 
         # add-framework-self-evolution：self_evolution 段护栏（软校验）。
@@ -468,20 +480,29 @@ class ConfigLoader:
                 type(se).__name__,
             )
         elif isinstance(se, dict):
-            if "auto_accept" in se and se["auto_accept"] is not None \
-                    and not isinstance(se["auto_accept"], bool):
+            if (
+                "auto_accept" in se
+                and se["auto_accept"] is not None
+                and not isinstance(se["auto_accept"], bool)
+            ):
                 _logger.error(
-                    "self_evolution.auto_accept 非法（应为布尔）：%r，"
-                    "回退缺省 %s", se["auto_accept"], SELF_EVOLUTION_AUTO_ACCEPT_DEFAULT,
+                    "self_evolution.auto_accept 非法（应为布尔）：%r，" "回退缺省 %s",
+                    se["auto_accept"],
+                    SELF_EVOLUTION_AUTO_ACCEPT_DEFAULT,
                 )
             if "max_items_per_run" in se and se["max_items_per_run"] is not None:
                 mip = se["max_items_per_run"]
-                if (isinstance(mip, bool) or not isinstance(mip, int)
-                        or mip < 1 or mip > SELF_EVOLUTION_MAX_ITEMS_UPPER):
+                if (
+                    isinstance(mip, bool)
+                    or not isinstance(mip, int)
+                    or mip < 1
+                    or mip > SELF_EVOLUTION_MAX_ITEMS_UPPER
+                ):
                     _logger.error(
                         "self_evolution.max_items_per_run 非法（应为 1..%s 整数）："
                         "%r，回退缺省 %s",
-                        SELF_EVOLUTION_MAX_ITEMS_UPPER, mip,
+                        SELF_EVOLUTION_MAX_ITEMS_UPPER,
+                        mip,
                         SELF_EVOLUTION_MAX_ITEMS_DEFAULT,
                     )
             # spec_run_at 合法域 = None（立即执行）或 "HH:mm"；其余回退 None
@@ -490,7 +511,8 @@ class ConfigLoader:
                 if not (isinstance(sra, str) and _HHMM_RE.match(sra)):
                     _logger.error(
                         "self_evolution.spec_run_at 非法（应为 null 或 HH:mm，"
-                        "如 02:00）：%r，回退缺省（立项后立即执行）", sra,
+                        "如 02:00）：%r，回退缺省（立项后立即执行）",
+                        sra,
                     )
 
     @classmethod
@@ -505,8 +527,12 @@ class ConfigLoader:
           （bool 除外）、行 model 在同一卡片内不重复；
         错误信息含违规行路径（providers[i].billing.prices[j].字段）。
         """
-        _price_fields = ("input_per_million", "output_per_million",
-                         "cache_read_per_million", "cache_creation_per_million")
+        _price_fields = (
+            "input_per_million",
+            "output_per_million",
+            "cache_read_per_million",
+            "cache_creation_per_million",
+        )
         for p_idx, provider in enumerate(providers):
             if not isinstance(provider, dict):
                 continue
@@ -518,17 +544,18 @@ class ConfigLoader:
                     f"llm.providers[{p_idx}].billing must be an object, "
                     f"got: {type(billing).__name__}"
                 )
-            if "enabled" in billing and billing["enabled"] is not None \
-                    and not isinstance(billing["enabled"], bool):
+            if (
+                "enabled" in billing
+                and billing["enabled"] is not None
+                and not isinstance(billing["enabled"], bool)
+            ):
                 raise ValueError(
                     f"llm.providers[{p_idx}].billing.enabled must be a boolean: "
                     f"{billing['enabled']!r}"
                 )
             prices = billing.get("prices")
             if prices is not None and not isinstance(prices, list):
-                raise ValueError(
-                    f"llm.providers[{p_idx}].billing.prices must be a list"
-                )
+                raise ValueError(f"llm.providers[{p_idx}].billing.prices must be a list")
             seen: set = set()
             for r_idx, row in enumerate(prices or []):
                 if not isinstance(row, dict):
@@ -623,23 +650,22 @@ class ConfigLoader:
             elif isinstance(el, dict):
                 name = el.get("provider")
                 if not isinstance(name, str) or not name:
-                    raise ValueError(
-                        f"chain element [{idx}] missing non-empty 'provider' name"
-                    )
+                    raise ValueError(f"chain element [{idx}] missing non-empty 'provider' name")
                 m = el.get("model")
                 if m is not None and not isinstance(m, str):
                     raise ValueError(f"chain element [{idx}].model must be a string")
                 elements.append((name, m if (isinstance(m, str) and m) else None))
             else:
-                raise ValueError(
-                    f"chain element [{idx}] must be a string or object"
-                )
+                raise ValueError(f"chain element [{idx}] must be a string or object")
         return elements
 
     @classmethod
-    def _resolve_element_model(cls, element_model: Optional[str],
-                               role_model: Optional[str],
-                               provider_entry: Optional[Dict[str, Any]]) -> Optional[str]:
+    def _resolve_element_model(
+        cls,
+        element_model: Optional[str],
+        role_model: Optional[str],
+        provider_entry: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
         """按 design D1 解析顺序确定元素最终使用的模型名：元素自带 > 角色级 > provider 条目。
 
         三者皆空返回 None（该元素运行期被跳过并打 ERROR）。
@@ -672,7 +698,8 @@ class ConfigLoader:
             "agents.models 含未知 agent 类型键 %r（本进程已知类型: %s）——已跳过"
             "该键校验、键保留在有效配置中。若该角色是新增派发角色，请重启 daemon "
             "使新白名单生效（touch .fenix/restart_request）",
-            agent_type, sorted(cls.KNOWN_AGENT_TYPES),
+            agent_type,
+            sorted(cls.KNOWN_AGENT_TYPES),
         )
         return True
 
@@ -714,17 +741,13 @@ class ConfigLoader:
             # design D2：角色级 model 不再要求非空，语义降为「全链缺省」；
             # 仅当显式提供且非字符串时报错（bool/数字等非法类型）。
             if role_model is not None and not isinstance(role_model, str):
-                raise ValueError(
-                    f"agents.models.{agent_type}.model must be a string if provided"
-                )
+                raise ValueError(f"agents.models.{agent_type}.model must be a string if provided")
             # design D1：provider 支持 str | list[str|{{provider,model?}}]，规范化为
             # (provider_name, element_model) 二元组列表；形态非法直接拒绝。
             try:
                 chain = cls._normalize_provider_chain(raw_provider)
             except ValueError as e:
-                raise ValueError(
-                    f"agents.models.{agent_type}.provider {e}"
-                )
+                raise ValueError(f"agents.models.{agent_type}.provider {e}")
             if not chain:
                 raise ValueError(
                     f"agents.models.{agent_type}.provider must be a non-empty string or list"
@@ -736,21 +759,21 @@ class ConfigLoader:
             if unknown:
                 _logger.error(
                     "agents.models.%s.provider 引用了不存在的 provider（已跳过，不阻塞加载）: %s",
-                    agent_type, ", ".join(unknown),
+                    agent_type,
+                    ", ".join(unknown),
                 )
             # design D1/D2：逐元素可解析性检查（替换原"角色级 model 必须非空"）。
             # 元素自带 / 角色级 / provider 条目 model 三者皆空 → ERROR 指明元素下标（不阻塞）。
             for idx, (name, element_model) in enumerate(chain):
                 if name not in by_name:
                     continue  # 未知 provider 已打过 ERROR，跳过其模型解析
-                resolved = cls._resolve_element_model(
-                    element_model, role_model, by_name[name]
-                )
+                resolved = cls._resolve_element_model(element_model, role_model, by_name[name])
                 if not resolved:
                     _logger.error(
                         "agents.models.%s.provider[%d] 无法解析出模型名（元素/model、角色级 "
                         "model、provider 条目 model 均为空），运行期将跳过该元素",
-                        agent_type, idx,
+                        agent_type,
+                        idx,
                     )
 
     @classmethod
@@ -807,8 +830,9 @@ class ConfigLoader:
         return result if result else None
 
     @classmethod
-    def normalize_agent_models(cls, models: Dict[str, Any],
-                               llm_providers: Any = None) -> Dict[str, Any]:
+    def normalize_agent_models(
+        cls, models: Dict[str, Any], llm_providers: Any = None
+    ) -> Dict[str, Any]:
         """把 raw `agents.models` 转换为 Dashboard 回显用的规范化视图（design D4）。
 
         每个角色输出：
@@ -837,9 +861,7 @@ class ConfigLoader:
                 chain = []
             rows = []
             for name, element_model in chain:
-                resolved = cls._resolve_element_model(
-                    element_model, role_model, by_name.get(name)
-                )
+                resolved = cls._resolve_element_model(element_model, role_model, by_name.get(name))
                 rows.append({"provider": name, "model": resolved})
             out[agent_type] = {
                 "model": role_model if (isinstance(role_model, str) and role_model) else None,
@@ -896,8 +918,7 @@ class ConfigLoader:
                     provider_out = norm_rows[0][0]
                 else:
                     provider_out = [
-                        (n if m is None else {"provider": n, "model": m})
-                        for (n, m) in norm_rows
+                        (n if m is None else {"provider": n, "model": m}) for (n, m) in norm_rows
                     ] or None
             else:
                 provider_out = None
@@ -979,9 +1000,7 @@ class ConfigLoader:
             "enabled": bool(admin.get("enabled", True)),
             "interval_minutes": float(admin.get("interval_minutes", 5)),
             "agent_model": admin.get("agent_model") or None,
-            "escalation_cooldown_minutes": float(
-                admin.get("escalation_cooldown_minutes", 60)
-            ),
+            "escalation_cooldown_minutes": float(admin.get("escalation_cooldown_minutes", 60)),
             "stuck_threshold_minutes": stuck_seconds / 60.0,
             # add-control-plane-silent-failure-guards D5：孤儿状态（状态无驱动）
             # 探测阈值——缺省 15 分钟（= 3 个 interval_minutes(5) 巡检周期，
@@ -989,20 +1008,20 @@ class ConfigLoader:
             # 当前约 160 分钟），使「状态无驱动」分钟级可发现。与 stuck 阈值
             # 互不影响（独立键，stuck 仍由 run_timeout 单源派生）。
             "orphaned_state_threshold_minutes": float(
-                admin.get("orphaned_state_threshold_minutes", 15)),
+                admin.get("orphaned_state_threshold_minutes", 15)
+            ),
             "merge_breaker_threshold": int(breaker),
             # interrupt-recovery-preserve D1：规划性重启排水窗口（秒）；0 = 现行
             # 快速停机。缺省 1800（半小时量级，用户已确认方向）。
             "shutdown_drain_seconds": max(
-                0, int(admin.get("shutdown_drain_seconds", 1800) or 1800)),
+                0, int(admin.get("shutdown_drain_seconds", 1800) or 1800)
+            ),
             # add-bug-repair-mode-config：bug-found 修复方式（未配置缺省 inplace）
             "bug_repair_mode": brm,
             # stuck-signal-hygiene D3/D4：stuck 处置后静默期（分钟）——
             # (spec, signal_type) 最近一次 result∈{resolved, partially-resolved}
             # 处置后，窗口内不产生 stuck 信号（非负护栏，0=不静默）。
-            "stuck_silence_minutes": float(
-                admin.get("stuck_silence_minutes", 120)
-            ),
+            "stuck_silence_minutes": float(admin.get("stuck_silence_minutes", 120)),
             # add-daily-self-review：自省配置段（enabled 缺省 false）
             "self_review": cls.get_self_review_config(config),
             # evo-run-failure-classification-circuitbreaker D5：infra 熔断配置
@@ -1037,17 +1056,16 @@ class ConfigLoader:
         enabled = section.get("enabled", cls.STALE_CODE_SELFHEAL_ENABLED_DEFAULT)
         if not isinstance(enabled, bool):
             enabled = cls.STALE_CODE_SELFHEAL_ENABLED_DEFAULT
-        seconds = section.get(
-            "idle_confirm_seconds", cls.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT)
-        if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
-                or seconds <= 0):
+        seconds = section.get("idle_confirm_seconds", cls.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT)
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds <= 0:
             seconds = cls.STALE_CODE_SELFHEAL_IDLE_SECONDS_DEFAULT
         seconds = int(seconds)
         if seconds > cls.STALE_CODE_SELFHEAL_MAX_SECONDS:
             _logger.warning(
                 "stale_code_selfheal.idle_confirm_seconds 过大 (%ss，建议 ≤ %s)："
                 "自愈将在长时间空闲后才触发（不拒绝，按配置生效）",
-                seconds, cls.STALE_CODE_SELFHEAL_MAX_SECONDS,
+                seconds,
+                cls.STALE_CODE_SELFHEAL_MAX_SECONDS,
             )
         return {"enabled": enabled, "idle_confirm_seconds": seconds}
 
@@ -1074,21 +1092,25 @@ class ConfigLoader:
         if not isinstance(auto_accept, bool):
             auto_accept = SELF_EVOLUTION_AUTO_ACCEPT_DEFAULT
         # max_items_per_run：正整数（严格 int，bool/float/字符串均非法），上界 200
-        max_items = section.get(
-            "max_items_per_run", SELF_EVOLUTION_MAX_ITEMS_DEFAULT)
-        if (isinstance(max_items, bool)
-                or not isinstance(max_items, int)
-                or max_items < 1
-                or max_items > SELF_EVOLUTION_MAX_ITEMS_UPPER):
+        max_items = section.get("max_items_per_run", SELF_EVOLUTION_MAX_ITEMS_DEFAULT)
+        if (
+            isinstance(max_items, bool)
+            or not isinstance(max_items, int)
+            or max_items < 1
+            or max_items > SELF_EVOLUTION_MAX_ITEMS_UPPER
+        ):
             max_items = SELF_EVOLUTION_MAX_ITEMS_DEFAULT
         # spec_run_at：None 或 HH:mm
         spec_run_at = section.get("spec_run_at")
         if spec_run_at is not None and not (
-                isinstance(spec_run_at, str) and _HHMM_RE.match(spec_run_at)):
+            isinstance(spec_run_at, str) and _HHMM_RE.match(spec_run_at)
+        ):
             spec_run_at = SELF_EVOLUTION_SPEC_RUN_AT_DEFAULT
-        return {"auto_accept": auto_accept,
-                "max_items_per_run": int(max_items),
-                "spec_run_at": spec_run_at}
+        return {
+            "auto_accept": auto_accept,
+            "max_items_per_run": int(max_items),
+            "spec_run_at": spec_run_at,
+        }
 
     @classmethod
     def get_self_review_config(cls, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -1162,8 +1184,9 @@ class ConfigLoader:
         if isinstance(raw, str) and _HHMM_RE.match(raw):
             return raw
         _logger.error(
-            "admin.self_review.run_at 非法（应为 HH:MM，如 22:00）：%r，"
-            "回退缺省 %s", raw, SELF_REVIEW_DEFAULT_RUN_AT,
+            "admin.self_review.run_at 非法（应为 HH:MM，如 22:00）：%r，" "回退缺省 %s",
+            raw,
+            SELF_REVIEW_DEFAULT_RUN_AT,
         )
         return SELF_REVIEW_DEFAULT_RUN_AT
 
@@ -1186,7 +1209,8 @@ class ConfigLoader:
             _logger.warning(
                 "agents.run_timeout_seconds 缺失或 ≤0，stuck 阈值按 %ss 回退生效"
                 "（=9000 默认超时 + %ss 宽限）；建议显式配置 run_timeout_seconds",
-                STUCK_FALLBACK_SECONDS, STUCK_GRACE_SECONDS,
+                STUCK_FALLBACK_SECONDS,
+                STUCK_GRACE_SECONDS,
             )
             return float(STUCK_FALLBACK_SECONDS)
         return float(rt) + STUCK_GRACE_SECONDS
@@ -1241,7 +1265,11 @@ class ConfigLoader:
                 _logger.error(
                     "timeout_supervision.absolute_max_seconds=%s 低于 run_timeout_seconds(%s)"
                     "+ 续期上限(%s)=%s，按 %s 兜底生效（supervision 不会先于墙钟终止运行）",
-                    configured, rt, SUPERVISION_EXTENSION_SECONDS, required, required,
+                    configured,
+                    rt,
+                    SUPERVISION_EXTENSION_SECONDS,
+                    required,
+                    required,
                 )
                 _SUPERVISION_BOUNDS_WARNED = True
             return required
@@ -1270,33 +1298,34 @@ class ConfigLoader:
                 _logger.error(
                     "agents.timeout_overrides 键 %r 非法（应为 %s 之一），"
                     "该键被忽略并回退全局默认",
-                    key, sorted(cls.TIMEOUT_OVERRIDE_KEYS),
+                    key,
+                    sorted(cls.TIMEOUT_OVERRIDE_KEYS),
                 )
                 continue
             if isinstance(val, bool) or not isinstance(val, int):
                 _logger.error(
                     "agents.timeout_overrides.%s=%r 非法（应为整数秒），"
                     "该键被忽略并回退全局默认",
-                    key, val,
+                    key,
+                    val,
                 )
                 continue
-            min_allowed = (
-                1 if key == "supervision-judge"
-                else cls.TIMEOUT_OVERRIDE_MIN_SECONDS
-            )
+            min_allowed = 1 if key == "supervision-judge" else cls.TIMEOUT_OVERRIDE_MIN_SECONDS
             if val < min_allowed:
                 _logger.error(
-                    "agents.timeout_overrides.%s=%s 低于下限 %ss，"
-                    "该键被忽略并回退全局默认",
-                    key, val, min_allowed,
+                    "agents.timeout_overrides.%s=%s 低于下限 %ss，" "该键被忽略并回退全局默认",
+                    key,
+                    val,
+                    min_allowed,
                 )
                 continue
             out[key] = val
         return out
 
     @classmethod
-    def effective_run_timeout_seconds(cls, config: Dict[str, Any],
-                                      agent_type: str | None = None) -> float:
+    def effective_run_timeout_seconds(
+        cls, config: Dict[str, Any], agent_type: str | None = None
+    ) -> float:
         """agent run 的生效超时（per-agent-timeout-override spec 3.1/3.2）。
 
         解析顺序 MUST：``agents.timeout_overrides.<agent_type>`` 存在且合法时取覆盖值，
@@ -1320,8 +1349,7 @@ class ConfigLoader:
         return float(RUN_TIMEOUT_FALLBACK_SECONDS)
 
     @classmethod
-    def judge_timeout_seconds(cls, config: Dict[str, Any],
-                              default: float = 120) -> float:
+    def judge_timeout_seconds(cls, config: Dict[str, Any], default: float = 120) -> float:
         """liveness 活性判定 judge 子进程超时（spec per-agent-timeout-override 3.3）。
 
         读取 ``agents.timeout_overrides.supervision-judge``（缺省回退 120 秒常量）。
@@ -1348,8 +1376,7 @@ class ConfigLoader:
         _UNKNOWN_AGENT_MODEL_KEYS_WARNED.clear()
 
     @classmethod
-    def effective_auto_archive_threshold(cls, config: Dict[str, Any],
-                                         default: int = 50) -> int:
+    def effective_auto_archive_threshold(cls, config: Dict[str, Any], default: int = 50) -> int:
         """archive.auto_threshold 的生效值（非负整数；0 = 禁用）。
 
         D5：非法值（非整数 / 负数 / bool）记日志并回落默认 50，且不阻塞加载。
@@ -1363,7 +1390,8 @@ class ConfigLoader:
         if isinstance(at, bool) or not isinstance(at, int) or at < 0:
             _logger.error(
                 "archive.auto_threshold 非法（应为非负整数，0=禁用）：%r，回落默认 %s",
-                at, default,
+                at,
+                default,
             )
             return default
         return at

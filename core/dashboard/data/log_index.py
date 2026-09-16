@@ -122,8 +122,11 @@ def _load_log_index(proot: Path, log_path: Path) -> dict:
     try:
         if idx_path.exists():
             data = json.loads(idx_path.read_text(encoding="utf-8"))
-            if (isinstance(data, dict) and isinstance(data.get("offsets"), list)
-                    and isinstance(data.get("size"), int)):
+            if (
+                isinstance(data, dict)
+                and isinstance(data.get("offsets"), list)
+                and isinstance(data.get("size"), int)
+            ):
                 idx = data
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         idx = None
@@ -221,8 +224,7 @@ def _read_log_window_from(proot: Path, log_path: Path, start_ts: str) -> bytes:
                 chunk = f.read(LOG_INDEX_BLOCK)
             line = chunk.split(b"\n", 1)[0].decode("utf-8", errors="replace")
             return _norm_utc_iso(json.loads(line).get("timestamp", "")) or None
-        except (OSError, json.JSONDecodeError, ValueError,
-                UnicodeDecodeError, AttributeError):
+        except (OSError, json.JSONDecodeError, ValueError, UnicodeDecodeError, AttributeError):
             return None
 
     ts0 = _first_ts(offsets[0])
@@ -262,8 +264,9 @@ def get_recent_events(project_root, minutes=10, limit=30) -> list:
     return events[-limit:]
 
 
-def record_project_event(project_root, component: str, message: str,
-                         level: str = "INFO", context: dict | None = None) -> None:
+def record_project_event(
+    project_root, component: str, message: str, level: str = "INFO", context: dict | None = None
+) -> None:
     """向项目事件日志追加一条结构化 JSON 事件（dashboard 操作的活动记录）。
 
     与 daemon 的 Logger（core/logger.py) 同构：JSON 行写入 `.fenix/logs/fenixd.log`，

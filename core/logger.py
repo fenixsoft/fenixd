@@ -115,7 +115,7 @@ class Logger:
 
         # Read extra lines to account for level filtering
         result = []
-        for line in all_lines[-(lines * 3):]:
+        for line in all_lines[-(lines * 3) :]:
             try:
                 entry = json.loads(line.strip())
                 if level and entry.get("level") != level.upper():

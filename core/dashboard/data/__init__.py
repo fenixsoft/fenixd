@@ -21,8 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from core.agent_runner.run_files import (archive_spec_runs,
-                                         infer_run_agent_type, run_spec_part)
+from core.agent_runner.run_files import archive_spec_runs, infer_run_agent_type, run_spec_part
 from core.archive_commit import commit_archive_move
 from core.fenix_session import is_running as _is_running
 from core.state_machine import (

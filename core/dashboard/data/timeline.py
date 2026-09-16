@@ -12,9 +12,18 @@ from pathlib import Path
 
 import yaml
 
-_LIFECYCLE_ORDER = {"drafted": 0, "reviewing": 0.5, "ready": 1, "implementing": 2,
-                    "bug-found": 2.5, "implemented": 3, "testing": 4, "verified": 5,
-                    "done": 6, "pushed": 7}
+_LIFECYCLE_ORDER = {
+    "drafted": 0,
+    "reviewing": 0.5,
+    "ready": 1,
+    "implementing": 2,
+    "bug-found": 2.5,
+    "implemented": 3,
+    "testing": 4,
+    "verified": 5,
+    "done": 6,
+    "pushed": 7,
+}
 
 
 def _backtrack_reason(frm: str, to: str) -> str:
@@ -42,6 +51,7 @@ def _load_billing_config(project_root) -> dict:
     try:
         # 跨组引用（config_admin 组的 read_effective_config）经门面延迟解析（D4）
         import core.dashboard.data as _facade
+
         _llm = _facade.read_effective_config(project_root).get("llm") or {}
         providers = _llm.get("providers") or []
     except Exception:
@@ -55,8 +65,11 @@ def _load_billing_config(project_root) -> dict:
         if not isinstance(name, str) or not name or not isinstance(billing, dict):
             continue
         # 形态异常（enabled 非布尔等）容错：跳过该卡片，不计价不崩溃
-        if "enabled" in billing and billing["enabled"] is not None \
-                and not isinstance(billing["enabled"], bool):
+        if (
+            "enabled" in billing
+            and billing["enabled"] is not None
+            and not isinstance(billing["enabled"], bool)
+        ):
             continue
         if not billing.get("enabled"):
             continue
@@ -83,6 +96,7 @@ def _admin_events_for_spec(project_root, spec_name: str) -> list:
     - 读取异常 fail-open 返回空列表，时间轴照常渲染 state/run 两类节点。
     """
     from core.admin_store import AdminStore, DISPOSITION, ESCALATION
+
     try:
         records = AdminStore(project_root).read_all()
     except Exception:
@@ -90,9 +104,9 @@ def _admin_events_for_spec(project_root, spec_name: str) -> list:
     if not records:
         return []
     spec_records = [
-        r for r in records
-        if r.get("kind") in (ESCALATION, DISPOSITION)
-        and r.get("spec") == spec_name
+        r
+        for r in records
+        if r.get("kind") in (ESCALATION, DISPOSITION) and r.get("spec") == spec_name
     ]
     if not spec_records:
         return []
@@ -156,11 +170,11 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
     """
     logs_dir = Path(project_root) / ".fenix" / "logs"
     events: list[dict] = []
-    errors_at: list[tuple] = []   # (timestamp, error) —— Agent 记录的 error，作为回退原因
+    errors_at: list[tuple] = []  # (timestamp, error) —— Agent 记录的 error，作为回退原因
     # (timestamp, new_status, err) —— update_spec 直写的 status 变更（打回路径，
     # 无 Transition 行；add-agent-prompt-files 事故：时间轴上看不到打回与原因）
     status_updates: list[tuple] = []
-    verify_start_ts = ""   # 最近一轮 verify_engine「开始验证」日志时刻（报告只有完成时刻）
+    verify_start_ts = ""  # 最近一轮 verify_engine「开始验证」日志时刻（报告只有完成时刻）
 
     if logs_dir.is_dir():
         try:
@@ -173,8 +187,8 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
                 # 锚点早于文件首行 → 整文件，锚点晚于文件尾 → 仅尾块，量均有限
                 # 跨组引用（log_index 组的 _read_log_window_from）经门面延迟解析（D4）
                 import core.dashboard.data as _facade
-                content = _facade._read_log_window_from(
-                    Path(project_root), lf, created).decode(
+
+                content = _facade._read_log_window_from(Path(project_root), lf, created).decode(
                     "utf-8", errors="replace"
                 )
             except OSError:
@@ -196,8 +210,16 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
                     # 同式），Transition 回退判定复用为该字段来源
                     backward = _LIFECYCLE_ORDER.get(to, 9) < _LIFECYCLE_ORDER.get(frm, 9)
                     reason = _backtrack_reason(frm, to) if backward else ""
-                    events.append({"time": ts, "kind": "state", "from": frm, "to": to,
-                                   "reason": reason, "backward": backward})
+                    events.append(
+                        {
+                            "time": ts,
+                            "kind": "state",
+                            "from": frm,
+                            "to": to,
+                            "reason": reason,
+                            "backward": backward,
+                        }
+                    )
                 # 带引号全匹配（写点唯一于 state_machine.update_spec 的
                 # f"Updated SPEC '{spec_name}'"）：子串匹配会让前缀名 spec
                 # （如 add-foo）吸收姊妹 spec（add-foo-ui）的状态更新
@@ -208,8 +230,7 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
                         errors_at.append((ts, str(err)))
                     new_status = updates.get("status")
                     if new_status:
-                        status_updates.append(
-                            (ts, str(new_status), str(err) if err else ""))
+                        status_updates.append((ts, str(new_status), str(err) if err else ""))
                 if "开始验证" in msg and f"'{spec_name}'" in msg:
                     # verify_engine 每轮开跑的唯一一行（多轮验证取最后一轮，
                     # 与每轮覆盖的 report.json 配对）
@@ -222,14 +243,21 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
     billing_table = _load_billing_config(project_root)
     # 跨组引用（runs 组）经门面延迟解析（D4）
     import core.dashboard.data as _facade
+
     for r in _facade.get_runs(project_root, spec_name, include_archive=True):
         insights = _facade._run_tail_insights(_facade._resolve_run_file(project_root, r["run_id"]))
-        node = {"time": r["started"], "kind": "run", "run_id": r["run_id"],
-                "agent_type": r["agent_type"], "status": r["status"],
-                "spec": r.get("spec"),
-                "duration_seconds": r.get("duration_seconds"),
-                "summary": insights["summary"], "llm": insights["llm"],
-                "reason": insights["reason"]}
+        node = {
+            "time": r["started"],
+            "kind": "run",
+            "run_id": r["run_id"],
+            "agent_type": r["agent_type"],
+            "status": r["status"],
+            "spec": r.get("spec"),
+            "duration_seconds": r.get("duration_seconds"),
+            "summary": insights["summary"],
+            "llm": insights["llm"],
+            "reason": insights["reason"],
+        }
         if billing_table:
             model, provider = _facade._split_llm_marker(insights["llm"])
             cost = _facade.compute_run_cost(insights["usage"], model, provider, billing_table)
@@ -252,7 +280,8 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
         v_time = verify_start_ts or rep_ts
         if v_time:
             v_node: dict = {
-                "time": v_time, "kind": "verify",
+                "time": v_time,
+                "kind": "verify",
                 "total": summary.get("total"),
                 "passed": summary.get("passed"),
                 "failed": summary.get("failed"),
@@ -275,8 +304,7 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
     unmatched: list[tuple] = []
     for ts, new_status, err in status_updates:
         paired = any(
-            (d := _ts_delta(t2["time"], ts)) is not None and d < 2
-            and t2["to"] == new_status
+            (d := _ts_delta(t2["time"], ts)) is not None and d < 2 and t2["to"] == new_status
             for t2 in trans_states
         )
         if not paired:
@@ -303,9 +331,17 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
                 reason = err[:120] if err else _backtrack_reason(frm, to)
             else:
                 reason = err[:120] if err else ""
-            events.append({"time": ts, "kind": "state", "from": frm, "to": to,
-                           "reason": reason, "backward": backward,
-                           "_precise_reason": bool(err)})
+            events.append(
+                {
+                    "time": ts,
+                    "kind": "state",
+                    "from": frm,
+                    "to": to,
+                    "reason": reason,
+                    "backward": backward,
+                    "_precise_reason": bool(err),
+                }
+            )
             current = to
 
     # admin 运维事件节点（escalation + disposition）：与 state/run 节点统一
@@ -325,14 +361,15 @@ def get_spec_timeline(project_root, spec_name: str, created: str = "") -> list:
         for e in events:
             if e.get("kind") != "state" or not e.get("reason") or e.get("_precise_reason"):
                 continue
-            deltas = [(d, err) for (ts, err) in errors_at
-                      if (d := _ts_delta(ts, e["time"])) is not None]
+            deltas = [
+                (d, err) for (ts, err) in errors_at if (d := _ts_delta(ts, e["time"])) is not None
+            ]
             if deltas:
                 d, err = min(deltas, key=lambda x: x[0])
-                if d < 600:   # 10 分钟内匹配到 Agent 记录的 error
+                if d < 600:  # 10 分钟内匹配到 Agent 记录的 error
                     e["reason"] = err[:120]
     for e in events:
-        e.pop("_precise_reason", None)   # 内部标记不外泄
+        e.pop("_precise_reason", None)  # 内部标记不外泄
     return events
 
 
@@ -348,13 +385,16 @@ def _collapse_timeline(events: list) -> list:
     - 回退节点（带 reason，如 testing→bug-found）与运行节点保持独立，并打断合并。
     """
     out: list[dict] = []
-    buf: list[dict] = []   # 待合并的前向状态节点缓冲
+    buf: list[dict] = []  # 待合并的前向状态节点缓冲
 
     def _flush() -> dict:
         # 折叠缓冲按构造只收前向节点（回退节点带 reason 天然打断），backward=false
         node = {
-            "time": buf[0]["time"], "kind": "state",
-            "from": buf[0]["from"], "to": buf[-1]["to"], "reason": "",
+            "time": buf[0]["time"],
+            "kind": "state",
+            "from": buf[0]["from"],
+            "to": buf[-1]["to"],
+            "reason": "",
             "backward": False,
         }
         if len(buf) > 1:
@@ -379,6 +419,7 @@ def _parse_iso_ts(ts: str):
     """解析 ISO 时间戳（兼容 Z 后缀与 +00:00），失败返回 None。"""
     try:
         from datetime import datetime as _dt
+
         return _dt.fromisoformat(str(ts).replace("Z", "+00:00"))
     except Exception:
         return None
@@ -404,6 +445,7 @@ def _timeline_sort_key(e: dict):
     dt = _parse_iso_ts(e.get("time", ""))
     if dt is None:
         from datetime import datetime as _dt, timezone as _tz
+
         return (_dt.max.replace(tzinfo=_tz), 2, str(e.get("time", "")))
     kind_rank = {"state": 0, "verify": 0, "admin": 1, "run": 2}.get(e.get("kind"), 2)
     return (dt.replace(microsecond=0), kind_rank, dt)
@@ -434,10 +476,8 @@ def _timeline_with_retry(timeline: list, project_root, entry: dict) -> list:
         return timeline
     max_r = 3
     try:
-        with (Path(project_root) / ".fenix" / "config.yaml").open(
-                "r", encoding="utf-8") as f:
-            max_r = int(((yaml.safe_load(f) or {}).get("agents") or {})
-                        .get("max_retries") or 3)
+        with (Path(project_root) / ".fenix" / "config.yaml").open("r", encoding="utf-8") as f:
+            max_r = int(((yaml.safe_load(f) or {}).get("agents") or {}).get("max_retries") or 3)
     except (OSError, yaml.YAMLError, TypeError, ValueError):
         pass
     for e in reversed(timeline):

@@ -19,7 +19,10 @@ from core.state_machine import (
     FREEZE_ERROR_PREFIX,
 )
 from core.agent_runner.runner import AgentRunner, AgentRunResult
-from core.agent_runner.prompt_builder import spec_review_result_path, spec_review_result_status_whitelist
+from core.agent_runner.prompt_builder import (
+    spec_review_result_path,
+    spec_review_result_status_whitelist,
+)
 
 _logger = logging.getLogger("fenixd.pm_engine.spec_review")
 
@@ -41,9 +44,16 @@ SPEC_CHANGES_PREFIX = "spec/changes/"
 # 非 spec 内容问题。指纹匹配大小写不敏感；"Exit code: 1" 不得一律判 infra
 # （评审器内容失败同样 exit 1），仅当退出码非 0/1（进程级崩溃）才归 infra。
 _INFRA_FINGERPRINTS = (
-    "403", "402", "429",
-    "quota", "budget", "余额", "insufficient balance", "rate limit",
-    "provider circuit open", "provider chain exhausted",
+    "403",
+    "402",
+    "429",
+    "quota",
+    "budget",
+    "余额",
+    "insufficient balance",
+    "rate limit",
+    "provider circuit open",
+    "provider chain exhausted",
     "model_chain_preflight_failed",
 )
 # CLI 进程级崩溃：error 含 "Exit code: <N>" 且 N 非 0/1
@@ -53,8 +63,15 @@ _CLI_EXIT_CODE_RE = re.compile(r"Exit code:\s*(-?\d+)")
 class SpecReviewManager:
     """评审管理器：负责评审 run 的派发、结果消费、边界校验、重试与恢复。"""
 
-    def __init__(self, project_root: Path, state_machine, agent_runner: AgentRunner,
-                 pm_engine, config: dict, logger=None):
+    def __init__(
+        self,
+        project_root: Path,
+        state_machine,
+        agent_runner: AgentRunner,
+        pm_engine,
+        config: dict,
+        logger=None,
+    ):
         self.project_root = project_root
         self.state_machine = state_machine
         self.agent_runner = agent_runner
@@ -88,13 +105,14 @@ class SpecReviewManager:
             if cond == "broken":
                 remaining = breaker.cooldown_remaining("spec-review")
                 self.logger.info(
-                    "spec_review",
-                    f"评审派发熔断短路: {spec_name}，冷却剩余 {remaining}s")
+                    "spec_review", f"评审派发熔断短路: {spec_name}，冷却剩余 {remaining}s"
+                )
                 return False
             if cond == "recovered":
                 # 冷却到期自动恢复：落恢复 SIGNAL 记录（D3）
                 self.pm_engine._emit_infra_breaker_event(
-                    "recovered", spec_name, "", breaker.get_state("spec-review"))
+                    "recovered", spec_name, "", breaker.get_state("spec-review")
+                )
         # 防重派：锚点在 run 启动前写入，故「在飞」与「已落锚点待消费」都表现为非空。
         entry = self.state_machine.read_one(spec_name)
         if not entry:
@@ -180,12 +198,13 @@ class SpecReviewManager:
             # ② 产物优先判定（D1）：产物已合法落盘 → 按产物消费，exit code 失败仅
             #    降级 warning 日志留痕，不递增 _review_attempts、不重派
             artifact_ok, artifact_data = self._artifact_landed_valid(
-                spec_name, run_started_at=attempt_started_at)
+                spec_name, run_started_at=attempt_started_at
+            )
             if artifact_ok:
                 self.logger.warning(
                     "spec_review",
                     f"评审 run exit code 失败但产物已落盘，优先按产物消费"
-                    f"（exit code={run_err}）: {spec_name}"
+                    f"（exit code={run_err}）: {spec_name}",
                 )
                 self.consume_review_result(spec_name, run_started_at=attempt_started_at)
                 return True
@@ -211,8 +230,7 @@ class SpecReviewManager:
 
     # ── 评审结果消费 ────────────────────────────────────────────
 
-    def consume_review_result(self, spec_name: str,
-                              run_started_at: float | None = None) -> bool:
+    def consume_review_result(self, spec_name: str, run_started_at: float | None = None) -> bool:
         """消费评审结果：校验结果硬门与写入边界，按 status 机械收口。
 
         Args:
@@ -232,7 +250,8 @@ class SpecReviewManager:
         # 结果硬门校验（复用 _check_agent_result_artifact，spec-review 分支
         # 2026-09-15 已真接线：缺失/空/非白名单 status/陈旧 mtime 均由此拦截）
         err = self.agent_runner._check_agent_result_artifact(
-            spec_name, "spec-review", run_started_at=run_started_at)
+            spec_name, "spec-review", run_started_at=run_started_at
+        )
         if err is not None:
             self.logger.warning("spec_review", f"结果硬门校验失败: {spec_name}: {err}")
             self._handle_review_failure(spec_name, err)
@@ -264,13 +283,16 @@ class SpecReviewManager:
         if status in ("approved", "repaired"):
             # 转 ready 并触发实现调度
             self.state_machine.transition(spec_name, "ready")
-            self.state_machine.update_spec(spec_name, {
-                "reviewer_run": None,
-                "_review_attempts": 0,
-                # 通过即清零否决计数（含自动复评后通过）：下一次评审从零起算
-                "_review_rejections": 0,
-                "error": None,
-            })
+            self.state_machine.update_spec(
+                spec_name,
+                {
+                    "reviewer_run": None,
+                    "_review_attempts": 0,
+                    # 通过即清零否决计数（含自动复评后通过）：下一次评审从零起算
+                    "_review_rejections": 0,
+                    "error": None,
+                },
+            )
             # 触发实现调度
             self.pm_engine._on_spec_ready(spec_name)
             self.logger.info("spec_review", f"评审通过: {spec_name} status={status}")
@@ -292,9 +314,9 @@ class SpecReviewManager:
             # approved/repaired 收口即清零（见上一分支的 update_spec）。
             findings = data.get("findings") or []
             blocking = [f for f in findings if f.get("severity") == "blocking"]
-            blocked_summary = "; ".join(
-                f.get("detail", "") for f in blocking
-            ) if blocking else "无详情"
+            blocked_summary = (
+                "; ".join(f.get("detail", "") for f in blocking) if blocking else "无详情"
+            )
 
             entry_now = self.state_machine.read_one(spec_name) or {}
             try:
@@ -305,14 +327,15 @@ class SpecReviewManager:
 
             if rejections < MAX_REJECT_REDO:
                 # 未达上限：不冻结，回 reviewing 触发复评
-                self.state_machine.update_spec(spec_name, {
-                    "reviewer_run": None,
-                    "_review_attempts": 0,
-                    "_review_rejections": rejections,
-                    "error": (
-                        f"spec-review-rejected: {blocked_summary}"
-                    ),
-                })
+                self.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "reviewer_run": None,
+                        "_review_attempts": 0,
+                        "_review_rejections": rejections,
+                        "error": (f"spec-review-rejected: {blocked_summary}"),
+                    },
+                )
                 self.state_machine.transition(spec_name, "reviewing")
                 self.logger.warning(
                     "spec_review",
@@ -364,7 +387,8 @@ class SpecReviewManager:
             self.logger.info(
                 "spec_review",
                 f"评审否决（第 {rejections}/{MAX_REJECT_REDO} 次，达上限）"
-                f"已冻结转人工: {spec_name}")
+                f"已冻结转人工: {spec_name}",
+            )
             return True
         else:
             # 理论上不会到这里
@@ -399,7 +423,9 @@ class SpecReviewManager:
         try:
             result = subprocess.run(
                 ["git", "-C", str(self.project_root), "status", "--porcelain"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if result.returncode == 0:
                 for line in result.stdout.splitlines():
@@ -482,7 +508,9 @@ class SpecReviewManager:
         try:
             result = subprocess.run(
                 ["git", "-C", str(self.project_root), "status", "--porcelain"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if result.returncode == 0:
                 for line in result.stdout.splitlines():
@@ -555,8 +583,9 @@ class SpecReviewManager:
 
     # ── 故障重试 ────────────────────────────────────────────────
 
-    def _artifact_landed_valid(self, spec_name: str,
-                                run_started_at: float | None = None) -> Tuple[bool, Optional[dict]]:
+    def _artifact_landed_valid(
+        self, spec_name: str, run_started_at: float | None = None
+    ) -> Tuple[bool, Optional[dict]]:
         """校验评审 run 产物是否已合法落盘（任务 1.1）。
 
         判定「合法」的条件：
@@ -619,7 +648,9 @@ class SpecReviewManager:
                 return (False, None)
 
             # 快照 spec 一致性校验（复用 _verify_snapshot）
-            snapshot_path = self.project_root / ".fenix" / "spec-review" / spec_name / "snapshot.json"
+            snapshot_path = (
+                self.project_root / ".fenix" / "spec-review" / spec_name / "snapshot.json"
+            )
             if snapshot_path.exists():
                 try:
                     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
@@ -634,8 +665,7 @@ class SpecReviewManager:
         except (OSError, AttributeError):
             return (False, None)
 
-    def _classify_run_failure(self, reason: str | None,
-                              spec_name: str | None = None) -> str:
+    def _classify_run_failure(self, reason: str | None, spec_name: str | None = None) -> str:
         """三类失败分类（evo-run-failure-classification-circuitbreaker D1）。
 
         扩展 evo-run-failure-artifact-first 的同名 `_classify_run_failure`（沿用同名，
@@ -700,9 +730,7 @@ class SpecReviewManager:
 
         if failure_type == "artifact":
             # 判别失败：产物已落盘合法 → 直接消费收口，不重试。
-            self.logger.info(
-                "spec_review",
-                f"判别失败（产物已落盘）→ 直接消费: {spec_name}")
+            self.logger.info("spec_review", f"判别失败（产物已落盘）→ 直接消费: {spec_name}")
             self.consume_review_result(spec_name)
             return
 
@@ -713,16 +741,19 @@ class SpecReviewManager:
                 triggered = breaker.record_failure("spec-review")
                 if triggered:
                     self.pm_engine._emit_infra_breaker_event(
-                        "triggered", spec_name, reason,
-                        breaker.get_state("spec-review"))
+                        "triggered", spec_name, reason, breaker.get_state("spec-review")
+                    )
             # 清 reviewer_run、不递增 _review_attempts（保持原值）
-            self.state_machine.update_spec(spec_name, {
-                "reviewer_run": None,
-                "error": f"spec-review-incomplete: infra failure: {reason}",
-            })
+            self.state_machine.update_spec(
+                spec_name,
+                {
+                    "reviewer_run": None,
+                    "error": f"spec-review-incomplete: infra failure: {reason}",
+                },
+            )
             self.logger.warning(
-                "spec_review",
-                f"评审 infra 失败（熔断计数，不递增尝试）: {spec_name}: {reason}")
+                "spec_review", f"评审 infra 失败（熔断计数，不递增尝试）: {spec_name}: {reason}"
+            )
             return
 
         # ── content 分支：既有重试语义 ──
@@ -735,11 +766,14 @@ class SpecReviewManager:
             attempts = 0
         if attempts < MAX_REVIEW_ATTEMPTS:
             # 重试：保持 reviewing 状态，清除 reviewer_run
-            self.state_machine.update_spec(spec_name, {
-                "reviewer_run": None,
-                "_review_attempts": attempts + 1,
-                "error": f"spec-review-incomplete: {reason}",
-            })
+            self.state_machine.update_spec(
+                spec_name,
+                {
+                    "reviewer_run": None,
+                    "_review_attempts": attempts + 1,
+                    "error": f"spec-review-incomplete: {reason}",
+                },
+            )
             self.logger.info("spec_review", f"评审失败重试: {spec_name} attempt={attempts+1}")
         else:
             # 达上限转冻结转人工（fix-blocked-freeze-classification 2.2）：
@@ -748,8 +782,7 @@ class SpecReviewManager:
             # 的 blocked_stuck 豁免生效。
             r_id = entry.get("reviewer_run")
             error_msg = (
-                f"{FREEZE_ERROR_PREFIX}原状态 reviewing · "
-                f"spec-review-incomplete: {reason}"
+                f"{FREEZE_ERROR_PREFIX}原状态 reviewing · " f"spec-review-incomplete: {reason}"
             )
             self.state_machine.freeze_for_human(
                 spec_name,
@@ -760,9 +793,7 @@ class SpecReviewManager:
                     f"'{spec_name}' 评审器连续失败（模型链/配置问题）至"
                     f"尝试上限（{MAX_REVIEW_ATTEMPTS}），需人工排查"
                 ),
-                evidence=(
-                    f"spec={spec_name}; run_id={r_id or '无'}; reason={reason}"
-                ),
+                evidence=(f"spec={spec_name}; run_id={r_id or '无'}; reason={reason}"),
                 recommended_action=(
                     "人工排查评审链路根因（模型链/配置/结果硬门/写入边界）；"
                     "排查后经 dashboard/CLI 解冻——解冻恢复原状态 reviewing，"
@@ -788,7 +819,9 @@ class SpecReviewManager:
         if entry.get(FROZEN_FIELD):
             return False, "SPEC 已冻结"
         error = entry.get("error") or ""
-        if not (error.startswith("spec-review-rejected:") or error.startswith("spec-review-incomplete:")):
+        if not (
+            error.startswith("spec-review-rejected:") or error.startswith("spec-review-incomplete:")
+        ):
             return False, "SPEC 未因评审进入 blocked"
 
         # 执行 blocked → reviewing
@@ -822,11 +855,14 @@ class SpecReviewManager:
             return False, "状态转移失败"
 
         # 清除评审相关字段
-        self.state_machine.update_spec(spec_name, {
-            "reviewer_run": None,
-            "_review_attempts": 0,
-            "error": None,
-        })
+        self.state_machine.update_spec(
+            spec_name,
+            {
+                "reviewer_run": None,
+                "_review_attempts": 0,
+                "error": None,
+            },
+        )
         # 触发实现调度
         self.pm_engine._on_spec_ready(spec_name)
         return True, "担责放行已触发"

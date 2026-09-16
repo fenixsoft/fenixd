@@ -36,6 +36,7 @@ def _find_free_port() -> int:
 
 class _SingleThreadHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     """单线程 HTTP 服务器，用于提供静态文件服务。"""
+
     daemon_threads = True
     allow_reuse_address = True
 
@@ -54,6 +55,7 @@ class _StaticFileHandler(http.server.SimpleHTTPRequestHandler):
 
 def _make_handler(directory: str):
     """创建绑定到指定目录的处理器类。"""
+
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=directory, **kwargs)
@@ -94,7 +96,8 @@ async def wait_animations_settled(page, timeout_ms: int) -> bool:
     if not timeout_ms or timeout_ms <= 0:
         return True
     try:
-        settled = await page.evaluate("""(timeoutMs) => {
+        settled = await page.evaluate(
+            """(timeoutMs) => {
             if (!timeoutMs || timeoutMs <= 0) return true;
             const deadline = performance.now() + timeoutMs;
             return new Promise((resolve) => {
@@ -119,7 +122,9 @@ async def wait_animations_settled(page, timeout_ms: int) -> bool:
                 };
                 tick();
             });
-        }""", timeout_ms)
+        }""",
+            timeout_ms,
+        )
         return bool(settled)
     except Exception:
         # 注入失败（老内核/异常页面）按超时退化处理，不放大失败
@@ -174,9 +179,7 @@ class BrowserManager:
         self._dev_server_port = _find_free_port()
         self._base_url = f"http://127.0.0.1:{self._dev_server_port}"
 
-        self._dev_server = _SingleThreadHTTPServer(
-            ("127.0.0.1", self._dev_server_port), handler
-        )
+        self._dev_server = _SingleThreadHTTPServer(("127.0.0.1", self._dev_server_port), handler)
 
         thread = threading.Thread(target=self._dev_server.serve_forever, daemon=True)
         thread.start()
@@ -343,14 +346,28 @@ class BrowserManager:
         console_errors: list[str] = []
         network_errors: list[str] = []
 
-        context.on("page", lambda p: p.on("console", lambda msg: (
-            console_errors.append(f"[{msg.type}] {msg.text}")
-            if msg.type == "error" else None
-        )))
-        context.on("page", lambda p: p.on("response", lambda resp: (
-            network_errors.append(f"{resp.status} {resp.url}")
-            if resp.status >= 400 else None
-        )))
+        context.on(
+            "page",
+            lambda p: p.on(
+                "console",
+                lambda msg: (
+                    console_errors.append(f"[{msg.type}] {msg.text}")
+                    if msg.type == "error"
+                    else None
+                ),
+            ),
+        )
+        context.on(
+            "page",
+            lambda p: p.on(
+                "response",
+                lambda resp: (
+                    network_errors.append(f"{resp.status} {resp.url}")
+                    if resp.status >= 400
+                    else None
+                ),
+            ),
+        )
 
         # 将错误收集器挂到 context 上供断言使用
         context._console_errors = console_errors
@@ -411,10 +428,13 @@ class BrowserManager:
         的正向场景（如「调整优先级」直接确认预填 P5）会走取消/校验失败分支，
         场景必须显式携带 prompt_text（admin 修 2026-08-29：族谱爆炸根因之一）。
         """
+
         def _handle(dialog, _mode=mode, _text=prompt_text):
             try:
                 if _mode == "accept":
-                    task = dialog.accept(prompt_text=_text) if _text is not None else dialog.accept()
+                    task = (
+                        dialog.accept(prompt_text=_text) if _text is not None else dialog.accept()
+                    )
                 else:
                     task = dialog.dismiss()
                 asyncio.ensure_future(task)
@@ -478,14 +498,15 @@ class BrowserManager:
                     )
                     target = "verify.html" if self._use_verify_html else "index.html"
                     actual_url = f"{self._base_url}/{target}"
-                elif self._is_extension_project and (value == "about:blank" or value == "" or value.startswith("about:")):
+                elif self._is_extension_project and (
+                    value == "about:blank" or value == "" or value.startswith("about:")
+                ):
                     target = "verify.html" if self._use_verify_html else "index.html"
                     actual_url = f"{self._base_url}/{target}"
 
                 await page.goto(actual_url, wait_until="domcontentloaded", timeout=15000)
                 first_frame_ok = await self._wait_stable(page)
-                result = {"success": True, "action": action,
-                          "detail": f"已导航到 {actual_url}"}
+                result = {"success": True, "action": action, "detail": f"已导航到 {actual_url}"}
                 # B1：仅首帧超时时显式落 False（True 不写键，旧报告/测试兼容）；
                 # env_gate.is_blank_render_candidate 依赖此键把白屏场景降级
                 # blocked-env，不再伪装成「元素不存在」类产品/场景失败
@@ -499,12 +520,14 @@ class BrowserManager:
                     timeout_ms = float(value) if value else 1000
                     await page.wait_for_timeout(timeout_ms)
                     return {
-                        "success": True, "action": action,
+                        "success": True,
+                        "action": action,
                         "detail": f"等待 {timeout_ms}ms",
                     }
                 except Exception as e:
                     return {
-                        "success": False, "action": action,
+                        "success": False,
+                        "action": action,
                         "error": f"wait 超时: {e}",
                     }
 
@@ -514,12 +537,14 @@ class BrowserManager:
                 mode = (value or "accept").lower()
                 if mode not in ("accept", "dismiss"):
                     return {
-                        "success": False, "action": action,
+                        "success": False,
+                        "action": action,
                         "error": f"dialog 模式无效: {value}（应为 accept/dismiss）",
                     }
                 self._register_dialog_handler(page, mode, prompt_text=step.get("prompt_text"))
                 return {
-                    "success": True, "action": action,
+                    "success": True,
+                    "action": action,
                     "detail": f"注册对话框处理器: {mode}",
                 }
 
@@ -591,12 +616,16 @@ class BrowserManager:
                         ),
                     )
                     return {
-                        "success": True, "action": action, "target": target,
+                        "success": True,
+                        "action": action,
+                        "target": target,
                         "detail": f"已 mock API: {target}",
                     }
                 except Exception as e:
                     return {
-                        "success": False, "action": action, "target": target,
+                        "success": False,
+                        "action": action,
+                        "target": target,
                         "error": f"mock_api 失败: {e}",
                     }
 
@@ -614,15 +643,20 @@ class BrowserManager:
                     await page.mouse.wheel(dx, dy)
                     await self._wait_stable(page)
                     return {
-                        "success": True, "action": action, "target": target,
+                        "success": True,
+                        "action": action,
+                        "target": target,
                         "detail": f"窗口滚动 ({dx},{dy})",
                     }
                 # type：值为按键名（如 Escape/Enter）而非文本输入 → 键盘按键
                 if value and not any(ch in value for ch in ("'", '"', "#", ".", "[", " ")):
                     await page.keyboard.press(value)
                     return {
-                        "success": True, "action": action, "target": target,
-                        "value": value, "detail": f"键盘按键: {value}",
+                        "success": True,
+                        "action": action,
+                        "target": target,
+                        "value": value,
+                        "detail": f"键盘按键: {value}",
                     }
 
             # 等待目标元素可交互（.first 避免 strict mode violation）
@@ -637,11 +671,14 @@ class BrowserManager:
                 if dialog_mode:
                     if dialog_mode not in ("accept", "dismiss"):
                         return {
-                            "success": False, "action": action, "target": target,
+                            "success": False,
+                            "action": action,
+                            "target": target,
                             "error": f"dialog 模式无效: {dialog_mode}（应为 accept/dismiss）",
                         }
                     self._register_dialog_handler(
-                        page, dialog_mode, prompt_text=step.get("prompt_text"))
+                        page, dialog_mode, prompt_text=step.get("prompt_text")
+                    )
                 await locator.click(timeout=5000)
                 await self._wait_stable(page)
                 return {"success": True, "action": action, "target": target}
@@ -649,8 +686,10 @@ class BrowserManager:
             elif action == "type":
                 await locator.fill(value)
                 return {
-                    "success": True, "action": action,
-                    "target": target, "value": value,
+                    "success": True,
+                    "action": action,
+                    "target": target,
+                    "value": value,
                 }
 
             elif action == "clear":
@@ -660,8 +699,10 @@ class BrowserManager:
             elif action == "select":
                 await locator.select_option(value)
                 return {
-                    "success": True, "action": action,
-                    "target": target, "value": value,
+                    "success": True,
+                    "action": action,
+                    "target": target,
+                    "value": value,
                 }
 
             elif action == "scroll":
@@ -695,7 +736,11 @@ class BrowserManager:
                     cfg = {"to": value}
                 to_sel = cfg.get("to", "")
                 if not to_sel:
-                    return {"success": False, "action": action, "error": "drag 缺少目标选择器（value 或 value.to）"}
+                    return {
+                        "success": False,
+                        "action": action,
+                        "error": "drag 缺少目标选择器（value 或 value.to）",
+                    }
                 hold = int(cfg.get("hold", 450))
                 dwell = int(cfg.get("dwell", 600))
                 via_sel = cfg.get("via", "")
@@ -708,7 +753,11 @@ class BrowserManager:
                 await to_locator.wait_for(state="visible", timeout=5000)
                 to_box = await to_locator.bounding_box()
                 if not to_box:
-                    return {"success": False, "action": action, "error": f"目标元素不可见: {to_sel}"}
+                    return {
+                        "success": False,
+                        "action": action,
+                        "error": f"目标元素不可见: {to_sel}",
+                    }
 
                 sx = src_box["x"] + src_box["width"] / 2
                 sy = src_box["y"] + src_box["height"] / 2
@@ -737,7 +786,8 @@ class BrowserManager:
 
             else:
                 return {
-                    "success": False, "action": action,
+                    "success": False,
+                    "action": action,
                     "error": f"不支持的操作: {action}",
                 }
 
@@ -860,6 +910,7 @@ class BrowserManager:
         path = output_dir / f"{name}.png"
         await page.screenshot(path=str(path), full_page=False)
         from .screenshot_lab import classify_screenshot
+
         labels = classify_screenshot(str(path))
         return {"path": str(path), "labels": labels}
 

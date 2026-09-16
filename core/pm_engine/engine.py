@@ -79,6 +79,7 @@ DEPENDENCY_ACCEPTED_STATUSES = ("done", "pushed", "implemented", "verified")
 # 分钟级，不受影响。
 DISPATCH_COOLDOWN_SECONDS = 10
 
+
 class PMEngine:
     """
     Project Management Engine — the brain of fenixd.
@@ -94,8 +95,7 @@ class PMEngine:
       - Periodic blocker detection and health reporting
     """
 
-    def __init__(self, state_machine, agent_runner, config: dict,
-                 project_root: Path, logger):
+    def __init__(self, state_machine, agent_runner, config: dict, project_root: Path, logger):
         self.state_machine = state_machine
         self.agent_runner = agent_runner
         self.config = config
@@ -145,8 +145,8 @@ class PMEngine:
         # .fenix/admin_infra_breaker.json（daemon 重启后恢复）；懒加载在 __init__
         # 尾部创建，供 _on_spec_reviewing 短路与 SpecReviewManager 计数共用。
         from core.pm_engine.infra_breaker import InfraCircuitBreaker
-        self.infra_breaker = InfraCircuitBreaker(
-            self.project_root, self.config, self.logger)
+
+        self.infra_breaker = InfraCircuitBreaker(self.project_root, self.config, self.logger)
 
     # ── Event Handlers ─────────────────────────────────────────────
 
@@ -274,25 +274,24 @@ class PMEngine:
         # 同步阻塞（评审 run 分钟级），守卫须覆盖整个阻塞期——否则第二条触发通道
         # （event_bus 轮询与 _on_spec_drafted 直调）会重复派发同一 spec。
         if spec_name in self._review_dispatches:
-            self.logger.debug(
-                "pm_engine", f"Skipping duplicate review dispatch: '{spec_name}'")
+            self.logger.debug("pm_engine", f"Skipping duplicate review dispatch: '{spec_name}'")
             return
         # 链路级熔断短路（evo-run-failure-classification-circuitbreaker D2）：
         # spec-review 链路熔断窗口内直接返回不派发；冷却到期自动恢复重试。
         cond = self.infra_breaker.condition("spec-review")
         if cond == "broken":
             remaining = self.infra_breaker.cooldown_remaining("spec-review")
-            self.logger.info(
-                "pm_engine",
-                f"评审派发熔断短路: '{spec_name}'，冷却剩余 {remaining}s")
+            self.logger.info("pm_engine", f"评审派发熔断短路: '{spec_name}'，冷却剩余 {remaining}s")
             return
         if cond == "recovered":
             # 冷却到期自动恢复：落恢复 SIGNAL 记录（D3，恰好一条）
             self._emit_infra_breaker_event(
-                "recovered", spec_name, "", self.infra_breaker.get_state("spec-review"))
+                "recovered", spec_name, "", self.infra_breaker.get_state("spec-review")
+            )
         self._review_dispatches.add(spec_name)
         try:
             from core.pm_engine.spec_review import SpecReviewManager
+
             review_manager = SpecReviewManager(
                 self.project_root,
                 self.state_machine,
@@ -325,8 +324,7 @@ class PMEngine:
         # STATE（避免「写 error → 触发 spec_ready 事件」的自触发热循环），重派由
         # Retry/full_scan 周期兜底。
         last_dispatch = self._last_dispatch_at.get(spec_name)
-        if last_dispatch is not None \
-                and (time.time() - last_dispatch) < DISPATCH_COOLDOWN_SECONDS:
+        if last_dispatch is not None and (time.time() - last_dispatch) < DISPATCH_COOLDOWN_SECONDS:
             self.logger.debug(
                 "pm_engine",
                 f"Skipping dispatch for '{spec_name}': cooldown window active",
@@ -409,6 +407,7 @@ class PMEngine:
             # add-fast-track-mode（task 3.1）：按 .spec.yaml mode 选择派发类型。
             # fast-track spec 派发 fast-track agent（单 run 全包），其余派 implementer。
             from core.spec_mode import read_spec_mode
+
             agent_type = (
                 "fast-track"
                 if read_spec_mode(self.project_root, spec_name) == "fast-track"
@@ -433,9 +432,8 @@ class PMEngine:
             return False
         if entry.get(FROZEN_FIELD) is True:
             return True
-        return (
-            entry.get("status") == SpecStatus.BLOCKED
-            and (entry.get("error") or "").startswith(FREEZE_ERROR_PREFIX)
+        return entry.get("status") == SpecStatus.BLOCKED and (entry.get("error") or "").startswith(
+            FREEZE_ERROR_PREFIX
         )
 
     def check_scheduling_deadlines(self) -> dict:
@@ -489,10 +487,10 @@ class PMEngine:
                             f"（原状态 {orig}，frozen_until {before} 到期自动恢复）"
                         )
                         record_project_event(
-                            self.project_root, "pm_engine",
+                            self.project_root,
+                            "pm_engine",
                             f"定时解冻 SPEC '{name}'（原状态 {orig}）",
-                            context={"source": "scheduled-unfreeze",
-                                     "frozen_until": before},
+                            context={"source": "scheduled-unfreeze", "frozen_until": before},
                         )
                     except Exception as e:
                         self.logger.warning(
@@ -526,7 +524,7 @@ class PMEngine:
                     f"start_after 到期唤起 '{name}' 失败（非阻塞）: {e}",
                 )
         # 唤起后立即处理派发队列，使「到期精确触发」不依赖后续其它事件驱动
-        #（periodic full_scan 仍为兜底；_process_queue 幂等，空队列直接返回）。
+        # （periodic full_scan 仍为兜底；_process_queue 幂等，空队列直接返回）。
         if signaled:
             try:
                 self._process_queue()
@@ -539,18 +537,7 @@ class PMEngine:
 
     # ── 派发锁冲突退避（improve-run-lifecycle-governance D5）──────────────────
 
-
-
-
     # ── 恢复闭环复查 / 假就绪巡检（improve-run-lifecycle-governance D6）───────
-
-
-
-
-
-
-
-
 
     def _on_spec_implemented(self, spec_name: str):
         """Schedule verifier for implemented SPEC."""
@@ -560,6 +547,7 @@ class PMEngine:
         # run 对已终态 spec 白跑（2026-09-08 fix-verify-cli-cwd-isolation：已 pushed
         # 后场景生成 run 白跑 14min）。读侧容错缺省 full，存量 spec 零影响。
         from core.spec_mode import is_fast_track
+
         if is_fast_track(self.project_root, spec_name):
             self.logger.debug(
                 "pm_engine",
@@ -600,18 +588,24 @@ class PMEngine:
                         f"验证进度不完整 '{spec_name}'，门禁逃生门回退 testing 重新验证: {vblocker}",
                     )
                     # 保留 implementer_run 与既有 progress 断点（D7），仅置 error 摘要
-                    self.state_machine.update_spec(spec_name, {
-                        "error": f"验证进度不完整，回退重新验证: {vblocker}",
-                    })
+                    self.state_machine.update_spec(
+                        spec_name,
+                        {
+                            "error": f"验证进度不完整，回退重新验证: {vblocker}",
+                        },
+                    )
                     self.state_machine.transition_gate(spec_name, "testing")
                     return
                 self.logger.warning(
                     "pm_engine",
                     f"验证放行门禁拦截 '{spec_name}'（保持 verified）: {blocker}",
                 )
-                self.state_machine.update_spec(spec_name, {
-                    "error": blocker,
-                })
+                self.state_machine.update_spec(
+                    spec_name,
+                    {
+                        "error": blocker,
+                    },
+                )
                 return
 
             self.logger.info("pm_engine", f"Verification passed: '{spec_name}' → done")
@@ -638,11 +632,9 @@ class PMEngine:
                 # （done→done 非法转换返回 False）不会重复覆盖。
                 total_duration = sum(
                     int(r.get("duration_seconds") or 0)
-                    for r in get_runs(self.project_root, spec_name,
-                                      include_archive=True)
+                    for r in get_runs(self.project_root, spec_name, include_archive=True)
                 )
-                self.state_machine.update_spec(spec_name,
-                                               {"total_duration": total_duration})
+                self.state_machine.update_spec(spec_name, {"total_duration": total_duration})
             # 同步触发 spec_done 处理（fix done → 自动重新验证父 SPEC）。
             # 背景：daemon 启动时 full_scan 在 EventBus watcher 启动前同步调度，
             # 阻塞完成整个 fix 生命周期，使 verified→done 变化在快照初始化前发生，
@@ -654,8 +646,7 @@ class PMEngine:
         finally:
             self._handling_events.discard(event_key)
 
-    def _on_spec_bug_found(self, spec_name: str, failure_class: str = "product",
-                           run_id: str = ""):
+    def _on_spec_bug_found(self, spec_name: str, failure_class: str = "product", run_id: str = ""):
         """Create or reset a fix SPEC for the bug and immediately schedule it."""
         # 防重入：使用独立 key，避免与 handle_event 的 ("spec_bug_found", spec_name)
         # 冲突（handle_event 在调用 handler 前已 add 该 key，若共用会导致本方法被跳过）
@@ -665,47 +656,17 @@ class PMEngine:
             return
         self._handling_events.add(event_key)
         try:
-            self._do_spec_bug_found(spec_name, failure_class=failure_class,
-                                    run_id=run_id)
+            self._do_spec_bug_found(spec_name, failure_class=failure_class, run_id=run_id)
         finally:
             self._handling_events.discard(event_key)
 
-
-
     # ── fix 族谱收敛治理（fix-family-convergence-governor / design D4）──
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     # ── 原地打回辅助：任务注入与升级告警 ──────────────────────────────
 
     _VERIFY_FIX_SECTION_RE = re.compile(r"^## 验证修复\b.*$", re.MULTILINE)
 
-
-
-
-
-
-
-
     # ── 预算计数对账（fix-budget-counting-semantics D3，日志级）──────
-
-
-
-
-
 
     def _on_spec_done(self, spec_name: str):
         """SPEC is done — log, re-verify parent if this was a fix SPEC.
@@ -733,9 +694,7 @@ class PMEngine:
                 f"SPEC '{spec_name}' is done — awaiting push approval",
             )
 
-            self._append_project_log(
-                f"✅ SPEC completed: **{spec_name}** — awaiting push approval"
-            )
+            self._append_project_log(f"✅ SPEC completed: **{spec_name}** — awaiting push approval")
 
             # 自动审批：approve_mode=auto 且状态为 done 时触发
             # （若已 pushed 则 _auto_approve 内部幂等跳过，不重复推送）
@@ -791,14 +750,17 @@ class PMEngine:
                     )
                     return
                 self.state_machine.transition(original, "implemented")
-                self.state_machine.update_spec(original, {
-                    "error": f"Re-verifying after fix: {spec_name}",
-                })
+                self.state_machine.update_spec(
+                    original,
+                    {
+                        "error": f"Re-verifying after fix: {spec_name}",
+                    },
+                )
                 self._enqueue(original, "verifier")
 
     def _find_implementer_worktree(self, spec_name: str) -> Optional[Path]:
         """Find the active implementer worktree for a SPEC, or None."""
-        wt_mgr = getattr(self.agent_runner, 'worktree_manager', None)
+        wt_mgr = getattr(self.agent_runner, "worktree_manager", None)
         if wt_mgr is None:
             return None
         return wt_mgr.find_implementer_worktree(spec_name)
@@ -840,7 +802,7 @@ class PMEngine:
                 # 任何 spec 成功都会覆盖写它；无 stamp 残留（旧格式/异常）不得被
                 # 误采信为当前 spec 的结果（2026-09-12 事故：无 stamp 残留被
                 # fail-open 采信致死亡判定误判）。worktree 文件同规则收紧
-                #（worktree 复用也可能带旧 spec 残留）。
+                # （worktree 复用也可能带旧 spec 残留）。
                 stamped = data.get("spec")
                 if stamped != spec_name:
                     self.logger.warning(
@@ -862,8 +824,7 @@ class PMEngine:
             pass
         return None
 
-    def _partial_attribution(self, spec_name: str, impl_result: dict,
-                             result=None) -> str:
+    def _partial_attribution(self, spec_name: str, impl_result: dict, result=None) -> str:
         """partial 结果的失败归因构造（fix-impl-tasks-completion-gate D6）。
 
         partial 是「诚实申报未完成」的合法终态，其失败归因 MUST 非空且由
@@ -888,6 +849,7 @@ class PMEngine:
             # 申报一致性，正常到不了这里；兜底不产出空壳归因）。
             try:
                 from core.run_task_track import parse_tasks_md
+
                 all_ids, checked_ids = parse_tasks_md(self.project_root, spec_name)
                 gap = [t for t in all_ids if t not in checked_ids]
             except Exception:
@@ -914,7 +876,8 @@ class PMEngine:
             vp_dir.mkdir(parents=True, exist_ok=True)
             snap_path = vp_dir / "impl-result.json"
             fd, tmp_name = tempfile.mkstemp(
-                prefix=f".impl-result.{spec_name}.", suffix=".tmp",
+                prefix=f".impl-result.{spec_name}.",
+                suffix=".tmp",
                 dir=str(vp_dir),
             )
             tmp_path = Path(tmp_name)
@@ -962,8 +925,7 @@ class PMEngine:
                 return  # 损坏/无 stamp 文件由读取侧 fail-closed 拒绝，此处不动
             self.logger.warning(
                 "pm_engine",
-                f"共享结果文件清理失败 '{spec_name}'（非阻塞，残留由 stamp "
-                f"严格校验兜底）: {e}",
+                f"共享结果文件清理失败 '{spec_name}'（非阻塞，残留由 stamp " f"严格校验兜底）: {e}",
             )
 
     def _read_impl_result_for_gate(self, spec_name: str) -> Optional[dict]:
@@ -980,8 +942,7 @@ class PMEngine:
         """
         # 1) per-spec 快照优先
         snap_path = (
-            self.project_root / ".fenix" / "verify-progress"
-            / spec_name / "impl-result.json"
+            self.project_root / ".fenix" / "verify-progress" / spec_name / "impl-result.json"
         )
         if snap_path.exists():
             try:
@@ -1040,8 +1001,7 @@ class PMEngine:
         flat_done = rd.get("flat_done") or set()
         created_count = int(rd.get("created_count") or 0)
         if not done_ids and not flat_done:
-            self.logger.debug(
-                "pm_engine", f"任务回写跳过（done_ids/flat_done 皆空）：{spec_name}")
+            self.logger.debug("pm_engine", f"任务回写跳过（done_ids/flat_done 皆空）：{spec_name}")
             return
 
         # 工作树不干净时跳过（如 merge-back 冲突恢复期），留待下个调度周期重试
@@ -1054,10 +1014,7 @@ class PMEngine:
         except (OSError, UnicodeDecodeError):
             return
         lines = text.split("\n")
-        task_lines = [
-            (i, self._TASK_LINE_RE.match(ln))
-            for i, ln in enumerate(lines)
-        ]
+        task_lines = [(i, self._TASK_LINE_RE.match(ln)) for i, ln in enumerate(lines)]
         changed = False
 
         if done_ids:
@@ -1071,8 +1028,7 @@ class PMEngine:
             # 第 2 级：flat 回退（subject 无编号 run），弱一致性校验 + 按创建序勾选
             unchecked = [(i, m) for i, m in task_lines if m and m.group(2) != "x"]
             if not unchecked:
-                self.logger.debug(
-                    "pm_engine", f"任务回写跳过（无未完成项）：{spec_name}")
+                self.logger.debug("pm_engine", f"任务回写跳过（无未完成项）：{spec_name}")
                 return
             if len(unchecked) > created_count * 5:
                 self.logger.debug(
@@ -1095,7 +1051,8 @@ class PMEngine:
         # 原子写（临时文件 + replace），异常由调用方捕获不阻塞主流程
         try:
             fd, tmp_name = tempfile.mkstemp(
-                prefix=f".tasks.{spec_name}.", suffix=".tmp",
+                prefix=f".tasks.{spec_name}.",
+                suffix=".tmp",
                 dir=str(tasks_path.parent),
             )
             tmp_path = Path(tmp_name)
@@ -1132,7 +1089,9 @@ class PMEngine:
             result = subprocess.run(
                 ["git", "status", "--porcelain"],
                 cwd=str(self.project_root),
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if result.returncode != 0:
                 return True  # 无法判断时保守视为脏，跳过回写
@@ -1149,14 +1108,18 @@ class PMEngine:
             add = subprocess.run(
                 ["git", "add", "--"] + paths,
                 cwd=str(self.project_root),
-                capture_output=True, text=True, timeout=60,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             if add.returncode != 0:
                 return False, add.stderr.strip() or f"git add exit {add.returncode}"
             commit = subprocess.run(
                 ["git", "commit", "-m", message, "--"] + paths,
                 cwd=str(self.project_root),
-                capture_output=True, text=True, timeout=120,
+                capture_output=True,
+                text=True,
+                timeout=120,
             )
             if commit.returncode != 0:
                 return False, commit.stderr.strip() or f"git commit exit {commit.returncode}"
@@ -1195,15 +1158,10 @@ class PMEngine:
             # fix-impl-tasks-completion-gate D2：与产物硬门共用同一解析实现点
             # （core.run_task_track.parse_tasks_md），禁止第二套正则漂移。
             all_ids, checked_ids = parse_tasks_md(self.project_root, spec_name)
-            has_unchecked_numeric = any(
-                tid not in checked_ids for tid in all_ids
-            )
+            has_unchecked_numeric = any(tid not in checked_ids for tid in all_ids)
             if not has_unchecked_numeric:
                 return None  # 全勾 / 无数字任务 → 无缺口可拦
-            return (
-                TASK_GAP_ERROR_PREFIX
-                + "run 证据缺失（快照与共享文件均无），需人工确认"
-            )
+            return TASK_GAP_ERROR_PREFIX + "run 证据缺失（快照与共享文件均无），需人工确认"
 
         # 证据存在 → 检查 impl_status
         impl_status = result.get("status")
@@ -1231,7 +1189,8 @@ class PMEngine:
                 self._clear_task_gap_error(spec_name)
                 return None  # 缺口全部已诚实申报 → 放行
             return (
-                TASK_GAP_ERROR_PREFIX + "实现者申报未完成（partial）："
+                TASK_GAP_ERROR_PREFIX
+                + "实现者申报未完成（partial）："
                 + "、".join(gap[:20])
                 + (f" 等共 {len(gap)} 项" if len(gap) > 20 else "")
             )
@@ -1322,40 +1281,23 @@ class PMEngine:
                 f"unattainable 待办告警写入失败（不阻断放行）: {e}",
             )
 
-
-
-
-
     # ── judge 自述环境问题守卫（不派生 fix）────────────────────────
 
     _ENV_INFRA_MARKERS = (
-        "环境问题", "环境配置", "环境故障", "测试环境",
-        "非产品", "不是产品", "而非产品",
+        "环境问题",
+        "环境配置",
+        "环境故障",
+        "测试环境",
+        "非产品",
+        "不是产品",
+        "而非产品",
     )
-
-
 
     # ── 裁决证据分类校验 / 采纳（add-verdict-evidence-taxonomy D1-D5）──
 
-
-
-
-
-
-
     # ── Queue Management ───────────────────────────────────────────
 
-
-
-
     # ── 派发队列老化（dispatch-queue-aging / design D3）─────────
-
-
-
-
-
-
-
 
     @staticmethod
     def _merge_fingerprint(error: str) -> str:
@@ -1370,8 +1312,6 @@ class PMEngine:
     # ── Verification Pipeline ─────────────────────────────────────
 
     # ── 环境性失联门禁（verify-environment-sanity-gate）───────────
-
-
 
     def _run_verification_pipeline(self, spec_name: str):
         """执行三步验证流水线。
@@ -1409,51 +1349,39 @@ class PMEngine:
 
     # ── 应用可达性自愈（最终用户验证必选）────────────────────────
 
-
-
     # ── 场景集冻结（add-verify-scenario-freeze）────────────────────────
-
-
 
     # ── 交互契约覆盖（add-interaction-contract-and-per-assert-triage 1.3）──
 
-
-
-
-
-
-
-
-
-
-
     # ── Reporting ──────────────────────────────────────────────────
-
-
 
     # ── Push Gate ──────────────────────────────────────────────────
 
-
     # ── Push backoff helpers (design D3) ───────────────────────────
-
-
 
     def _signal_push_failed(self, spec_name: str, detail: str):
         """推送超限升级为 push_failed 困境信号（severity=major）写入 admin store。"""
         from core.admin_store import AdminStore, SIGNAL
+
         store = AdminStore(self.project_root, self.logger)
         try:
-            store.append({
-                "kind": SIGNAL,
-                "signal_type": "push_failed",
-                "spec": spec_name,
-                "severity": "major",
-                "description": (f"SPEC '{spec_name}' 自动推送连续失败达到上限，"
-                                f"已停止自动重试，需人工介入"),
-                "evidence": detail,
-                "recommended_action": ("检查远端仓库权限与分支状态；"
-                                       "手动 git push origin main 后把 spec 标为 pushed"),
-            })
+            store.append(
+                {
+                    "kind": SIGNAL,
+                    "signal_type": "push_failed",
+                    "spec": spec_name,
+                    "severity": "major",
+                    "description": (
+                        f"SPEC '{spec_name}' 自动推送连续失败达到上限，"
+                        f"已停止自动重试，需人工介入"
+                    ),
+                    "evidence": detail,
+                    "recommended_action": (
+                        "检查远端仓库权限与分支状态；"
+                        "手动 git push origin main 后把 spec 标为 pushed"
+                    ),
+                }
+            )
             self.logger.error(
                 "pm_engine",
                 f"push_failed 信号已写入 admin store: '{spec_name}'",
@@ -1475,7 +1403,9 @@ class PMEngine:
             result = subprocess.run(
                 ["git", "ls-remote", "origin", ref],
                 cwd=str(self.project_root),
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if result.returncode == 0:
                 for line in result.stdout.splitlines():
@@ -1492,7 +1422,9 @@ class PMEngine:
             result = subprocess.run(
                 ["git", "rev-parse", "refs/heads/" + branch],
                 cwd=str(self.project_root),
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             if result.returncode == 0:
                 return result.stdout.strip()
@@ -1509,14 +1441,14 @@ class PMEngine:
             result = subprocess.run(
                 ["git", "push", "origin", ref],
                 cwd=str(self.project_root),
-                capture_output=True, text=True, timeout=120,
+                capture_output=True,
+                text=True,
+                timeout=120,
             )
             if result.returncode == 0:
                 return True, ""
             error = (
-                result.stderr.strip()
-                or result.stdout.strip()
-                or f"exit code {result.returncode}"
+                result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
             )
             return False, error
         except subprocess.TimeoutExpired:
@@ -1544,9 +1476,7 @@ class PMEngine:
         with self._push_lock:
             spec = self.state_machine.read_one(spec_name)
             if not spec:
-                self.logger.warning(
-                    "pm_engine", f"Cannot push '{spec_name}': SPEC not found"
-                )
+                self.logger.warning("pm_engine", f"Cannot push '{spec_name}': SPEC not found")
                 return False
             status = spec.get("status", "")
             if status == "pushed":
@@ -1559,8 +1489,7 @@ class PMEngine:
                 return True
             if status != "done":
                 self.logger.warning(
-                    "pm_engine", f"Cannot push '{spec_name}': not in done state "
-                                 f"(is '{status}')"
+                    "pm_engine", f"Cannot push '{spec_name}': not in done state " f"(is '{status}')"
                 )
                 return False
 
@@ -1573,9 +1502,7 @@ class PMEngine:
                 return False
 
             # ── D1: main 推送（成功判据） ──
-            self.logger.info(
-                "pm_engine", f"Pushing main for '{spec_name}' (main-first)"
-            )
+            self.logger.info("pm_engine", f"Pushing main for '{spec_name}' (main-first)")
             main_ok, main_err = self._git_push_ref("main")
 
             if not main_ok:
@@ -1631,7 +1558,9 @@ class PMEngine:
                 # -uall：未跟踪目录不折叠，逐文件列出，归档新增 spec 名才能解析
                 ["git", "status", "--porcelain", "-uall"],
                 cwd=str(self.project_root),
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
         except Exception as e:
             self.logger.warning(
@@ -1682,7 +1611,7 @@ class PMEngine:
           归档 `YYYY-MM-DD-<spec>`（剥离日期前缀）
         """
         if rel_path.startswith("spec/archive/"):
-            seg = rel_path[len("spec/archive/"):].split("/", 1)[0]
+            seg = rel_path[len("spec/archive/") :].split("/", 1)[0]
             # 软删除命名：<spec>-<Unix秒>[-(ms|-n)]；剥离尾部纯数字段
             m = re.match(r"^(.*?)(?:-\d{10,13}(?:-\d{1,6})*)$", seg)
             if m:
@@ -1691,7 +1620,7 @@ class PMEngine:
             m = re.match(r"^\d{4}-\d{2}-\d{2}-(.+)$", seg)
             return m.group(1) if m else seg
         if rel_path.startswith("spec/changes/"):
-            return rel_path[len("spec/changes/"):].split("/", 1)[0]
+            return rel_path[len("spec/changes/") :].split("/", 1)[0]
         return ""
 
     def _archive_auto_commit(self) -> None:
@@ -1733,13 +1662,9 @@ class PMEngine:
                 "归档收口 push 成功（spec/changes 归档产物已入库）",
             )
 
-    def _handle_push_failure(
-        self, spec_name: str, spec: dict, error_msg: str, ref: str
-    ):
+    def _handle_push_failure(self, spec_name: str, spec: dict, error_msg: str, ref: str):
         """处理推送失败：记录退避/重试状态；超限升级 push_failed 信号（D3）。"""
-        max_retries = int(
-            self._get_config("pm.push.max_retries", 3) or 3
-        )
+        max_retries = int(self._get_config("pm.push.max_retries", 3) or 3)
         backoff_seconds = [300, 900]  # 默认指数退避：5 分钟、15 分钟
         cfg_backoff = self._get_config("pm.push.retry_backoff_seconds")
         if isinstance(cfg_backoff, list) and len(cfg_backoff) >= 2:
@@ -1752,13 +1677,11 @@ class PMEngine:
         if attempts >= max_retries:
             # 超限：发 push_failed 信号，停止自动重试
             detail = (
-                f"连续 {attempts} 次推送失败（{ref}），"
-                f"已达上限 {max_retries}，已停止自动重试"
+                f"连续 {attempts} 次推送失败（{ref}），" f"已达上限 {max_retries}，已停止自动重试"
             )
             self._signal_push_failed(spec_name, detail)
             final_error = (
-                f"{error_base} [push_attempts={attempts}] "
-                f"[push_failed — 已停止自动重试]"
+                f"{error_base} [push_attempts={attempts}] " f"[push_failed — 已停止自动重试]"
             )
             self.state_machine.update_spec(spec_name, {"error": final_error})
             spec["error"] = final_error  # 同步本地引用供后续读取
@@ -1863,9 +1786,7 @@ class PMEngine:
             )
             return False
 
-        self.logger.info(
-            "pm_engine", f"Auto-approving '{spec_name}' (approve_mode=auto)"
-        )
+        self.logger.info("pm_engine", f"Auto-approving '{spec_name}' (approve_mode=auto)")
         return self.approve_push(spec_name)
 
     # ── 残痕回填（design D4）────────────────────────────────────
@@ -1955,16 +1876,23 @@ class PMEngine:
         plain = f"{prefix}/{spec_name}"
         try:
             res = subprocess.run(
-                ["git", "for-each-ref", "--format=%(refname:short)",
-                 "--sort=-committerdate", f"refs/heads/{plain}-*"],
+                [
+                    "git",
+                    "for-each-ref",
+                    "--format=%(refname:short)",
+                    "--sort=-committerdate",
+                    f"refs/heads/{plain}-*",
+                ],
                 cwd=str(self.project_root),
-                capture_output=True, text=True, timeout=30,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             if res.returncode == 0:
                 sep = plain + "-"
                 for cand in res.stdout.splitlines():
                     cand = cand.strip()
-                    if cand.startswith(sep) and cand[len(sep):].isdigit():
+                    if cand.startswith(sep) and cand[len(sep) :].isdigit():
                         return cand
         except Exception:
             pass
@@ -1982,17 +1910,18 @@ class PMEngine:
     def _get_approve_mode(self) -> str:
         """Return the approve_mode, defaulting to 'manual'."""
         from core.config import ConfigLoader
+
         return ConfigLoader.get_approve_mode(self.config)
 
     def _get_config(self, key: str, default=None):
         """Get a nested config value."""
         from core.config import ConfigLoader
+
         return ConfigLoader.get(self.config, key, default)
 
     # ── 恢复一致性辅助（improve-run-lifecycle-governance D4/D6）──────────────
 
-    def _stuck_elapsed_minutes(self, spec_name: str, now: datetime,
-                               updated: datetime) -> float:
+    def _stuck_elapsed_minutes(self, spec_name: str, now: datetime, updated: datetime) -> float:
         """卡死耗时（分钟）：优先读 agent_runner 的续期基准，回退 STATE updated。
 
         超时监督续期（improve-run-lifecycle-governance 3.2 / D3）会通过
@@ -2032,8 +1961,7 @@ class PMEngine:
         except Exception as e:
             self.logger.warning(
                 "pm_engine",
-                f"Live-attempt probe failed for '{spec_name}' "
-                f"(treating as no live child): {e}",
+                f"Live-attempt probe failed for '{spec_name}' " f"(treating as no live child): {e}",
             )
             return False
         return result is True
@@ -2041,9 +1969,15 @@ class PMEngine:
     def _ready_stall_threshold_minutes(self) -> float:
         """假就绪巡检阈值：pm.recovery.ready_stall_threshold_minutes（默认 20）。"""
         try:
-            return max(0.0, float(self._get_config(
-                "pm.recovery.ready_stall_threshold_minutes",
-                DEFAULT_READY_STALL_THRESHOLD_MINUTES)))
+            return max(
+                0.0,
+                float(
+                    self._get_config(
+                        "pm.recovery.ready_stall_threshold_minutes",
+                        DEFAULT_READY_STALL_THRESHOLD_MINUTES,
+                    )
+                ),
+            )
         except (TypeError, ValueError):
             return float(DEFAULT_READY_STALL_THRESHOLD_MINUTES)
 
@@ -2087,7 +2021,9 @@ class PMEngine:
         for dep_name in dep_names:
             dep_spec = self.state_machine.read_one(dep_name)
             if not dep_spec:
-                self.logger.warning("pm_engine", f"Dependency '{dep_name}' not found for '{spec_name}'")
+                self.logger.warning(
+                    "pm_engine", f"Dependency '{dep_name}' not found for '{spec_name}'"
+                )
                 return False
             dep_status = dep_spec.get("status", "")
             if dep_status not in DEPENDENCY_ACCEPTED_STATUSES:
@@ -2172,6 +2108,7 @@ class PMEngine:
         all_specs = self.state_machine.read_all()
 
         from core.config import ConfigLoader
+
         stuck_threshold_minutes = ConfigLoader.effective_stuck_threshold_seconds(self.config) / 60.0
         now = datetime.now(timezone.utc)
 
@@ -2192,15 +2129,14 @@ class PMEngine:
             if status in ("done", "pushed"):
                 continue
 
-                        # Transient state — verified should auto-transition to done;
+                # Transient state — verified should auto-transition to done;
             # if stuck here, flag as blocker
             if status == "verified":
                 # 必须与其余 blocker 构造点同为 dict：此前 append 字符串导致
                 # _write_blocker_report 按 b['spec'] 取值抛 TypeError，
                 # 全量扫描中断、auto-recovery 永不执行。
                 try:
-                    u = datetime.fromisoformat(
-                        (entry.get("updated") or "").replace("Z", "+00:00"))
+                    u = datetime.fromisoformat((entry.get("updated") or "").replace("Z", "+00:00"))
                     v_elapsed = int((now - u).total_seconds() / 60)
                 except (ValueError, TypeError):
                     v_elapsed = 0
@@ -2209,28 +2145,27 @@ class PMEngine:
                 # 为裁决形态并携带缺口摘要（去前缀），供 admin 工作台直接定位；
                 # 不得按「瞬态」语义改述（下方案例 4.4 断言依赖此措辞）。
                 stored_error = entry.get("error") or "No error recorded"
-                if (
-                    isinstance(stored_error, str)
-                    and stored_error.startswith(TASK_GAP_ERROR_PREFIX)
-                ):
-                    gap_summary = stored_error[len(TASK_GAP_ERROR_PREFIX):].strip()
-                    blockers.append({
+                if isinstance(stored_error, str) and stored_error.startswith(TASK_GAP_ERROR_PREFIX):
+                    gap_summary = stored_error[len(TASK_GAP_ERROR_PREFIX) :].strip()
+                    blockers.append(
+                        {
+                            "spec": name,
+                            "status": status,
+                            "reason": (f"任务缺口待人工裁决：{gap_summary or '详情见 error 字段'}"),
+                            "error": stored_error,
+                            "elapsed_minutes": v_elapsed,
+                        }
+                    )
+                    continue
+                blockers.append(
+                    {
                         "spec": name,
                         "status": status,
-                        "reason": (
-                            f"任务缺口待人工裁决：{gap_summary or '详情见 error 字段'}"
-                        ),
+                        "reason": f"卡在 verified 状态 {v_elapsed} 分钟（应为瞬态，需要推进到 done）",
                         "error": stored_error,
                         "elapsed_minutes": v_elapsed,
-                    })
-                    continue
-                blockers.append({
-                    "spec": name,
-                    "status": status,
-                    "reason": f"卡在 verified 状态 {v_elapsed} 分钟（应为瞬态，需要推进到 done）",
-                    "error": stored_error,
-                    "elapsed_minutes": v_elapsed,
-                })
+                    }
+                )
                 continue
 
             # Check if stuck in an active state
@@ -2239,16 +2174,17 @@ class PMEngine:
                     updated_str = entry.get("updated", "")
                     if updated_str:
                         updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
-                        elapsed = self._stuck_elapsed_minutes(
-                            name, now, updated)
+                        elapsed = self._stuck_elapsed_minutes(name, now, updated)
                         if elapsed > stuck_threshold_minutes:
-                            blockers.append({
-                                "spec": name,
-                                "status": status,
-                                "reason": f"Stuck in '{status}' for {int(elapsed)} minutes (threshold: {stuck_threshold_minutes}m)",
-                                "error": entry.get("error") or "No error recorded",
-                                "elapsed_minutes": int(elapsed),
-                            })
+                            blockers.append(
+                                {
+                                    "spec": name,
+                                    "status": status,
+                                    "reason": f"Stuck in '{status}' for {int(elapsed)} minutes (threshold: {stuck_threshold_minutes}m)",
+                                    "error": entry.get("error") or "No error recorded",
+                                    "elapsed_minutes": int(elapsed),
+                                }
+                            )
                 except (ValueError, TypeError):
                     pass
 
@@ -2260,11 +2196,13 @@ class PMEngine:
                 except (TypeError, ValueError):
                     retries = 0
                 if retries > 0:
-                    warnings.append({
-                        "spec": name,
-                        "status": status,
-                        "reason": f"Failed {retries} retry attempts, last error: {error[:100]}",
-                    })
+                    warnings.append(
+                        {
+                            "spec": name,
+                            "status": status,
+                            "reason": f"Failed {retries} retry attempts, last error: {error[:100]}",
+                        }
+                    )
 
             # Check for ready-but-starving (never been picked up)
             if status == "ready":
@@ -2274,12 +2212,14 @@ class PMEngine:
                         updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
                         elapsed = (now - updated).total_seconds() / 60
                         if elapsed > stuck_threshold_minutes * 2:
-                            warnings.append({
-                                "spec": name,
-                                "status": status,
-                                "reason": f"Waiting in ready queue for {int(elapsed)} minutes — possible queue starvation",
-                                "elapsed_minutes": int(elapsed),
-                            })
+                            warnings.append(
+                                {
+                                    "spec": name,
+                                    "status": status,
+                                    "reason": f"Waiting in ready queue for {int(elapsed)} minutes — possible queue starvation",
+                                    "elapsed_minutes": int(elapsed),
+                                }
+                            )
                         # 假就绪巡检（improve-run-lifecycle-governance D6）：ready 滞留
                         # 超过 ready_stall_threshold_minutes 且期间无派发活动 → 阻塞项。
                         # 退避期内的 spec（_dispatch_backoff_until 未到期）有意等待，不算滞留。
@@ -2294,22 +2234,25 @@ class PMEngine:
                         # 误报为 dispatch_stalled 循环呼叫 Administrator（2026-09-06
                         # add-verify-multi-kind-runner 事故）。
                         stall_threshold = self._ready_stall_threshold_minutes()
-                        if (elapsed > stall_threshold
-                                and not self._dispatch_backoffed(entry)
-                                and not start_after_pending(entry)
-                                and not self._spec_has_recent_run_activity(
-                                    name, stall_threshold)
-                                and not self._attempt_still_alive(name)):
-                            blockers.append({
-                                "spec": name,
-                                "status": status,
-                                "reason": (
-                                    f"假就绪滞留：ready 超过 {int(elapsed)} 分钟且期间无"
-                                    f"派发活动（阈值 {stall_threshold:.0f}m）"
-                                ),
-                                "error": entry.get("error") or "No error recorded",
-                                "elapsed_minutes": int(elapsed),
-                            })
+                        if (
+                            elapsed > stall_threshold
+                            and not self._dispatch_backoffed(entry)
+                            and not start_after_pending(entry)
+                            and not self._spec_has_recent_run_activity(name, stall_threshold)
+                            and not self._attempt_still_alive(name)
+                        ):
+                            blockers.append(
+                                {
+                                    "spec": name,
+                                    "status": status,
+                                    "reason": (
+                                        f"假就绪滞留：ready 超过 {int(elapsed)} 分钟且期间无"
+                                        f"派发活动（阈值 {stall_threshold:.0f}m）"
+                                    ),
+                                    "error": entry.get("error") or "No error recorded",
+                                    "elapsed_minutes": int(elapsed),
+                                }
+                            )
                 except (ValueError, TypeError):
                     pass
 
@@ -2349,16 +2292,16 @@ class PMEngine:
                     # defer 也登记观察项：子进程意外长寿/僵死时由闭环复查接管，
                     # 不进入「每轮 defer」死循环。
                     self.register_recovery_watch(
-                        spec_name, "auto-recovery deferred (live child present)")
+                        spec_name, "auto-recovery deferred (live child present)"
+                    )
                     continue
                 # fix-verified-gate-evidence-race D3：task-gap 前缀的 blocker 是
                 # 门禁结论（任务缺口待人工裁决），recovery 不得触发 auto-recover
                 # 状态突变——缺口不因恢复而消失，恢复只会造成状态机扰动。持续列
                 # 入 blocker 清单即告警通道；人工补勾后由 event_bus re-trigger
                 # 门禁放行（确定性重评，幂等）。
-                if (
-                    isinstance(b.get("error"), str)
-                    and b.get("error").startswith(TASK_GAP_ERROR_PREFIX)
+                if isinstance(b.get("error"), str) and b.get("error").startswith(
+                    TASK_GAP_ERROR_PREFIX
                 ):
                     self.logger.info(
                         "pm_engine",
@@ -2383,8 +2326,7 @@ class PMEngine:
                         spec_name,
                         f"auto-recovery: stuck implementing "
                         f"{b['elapsed_minutes']}m, no live child (no run-result)",
-                        run_reason=f"auto-recovery: stuck implementing "
-                                   f"{b['elapsed_minutes']}m",
+                        run_reason=f"auto-recovery: stuck implementing " f"{b['elapsed_minutes']}m",
                     )
                     self.logger.info(
                         "pm_engine",
@@ -2392,15 +2334,19 @@ class PMEngine:
                         f"auto-recovery stuck implementing, "
                         f"elapsed_minutes={b['elapsed_minutes']}",
                     )
-                    self.state_machine.update_spec(spec_name, {
-                        "status": "ready",
-                        "implementer_run": None,
-                        "tester_run": None,
-                        "branch": None,
-                        "error": f"Auto-recovered from stuck implementing ({b['elapsed_minutes']} min)",
-                    })
+                    self.state_machine.update_spec(
+                        spec_name,
+                        {
+                            "status": "ready",
+                            "implementer_run": None,
+                            "tester_run": None,
+                            "branch": None,
+                            "error": f"Auto-recovered from stuck implementing ({b['elapsed_minutes']} min)",
+                        },
+                    )
                     # add-fast-track-mode（task 3.1）：实现态恢复按 mode 派发对应 agent
                     from core.spec_mode import read_spec_mode
+
                     _at = (
                         "fast-track"
                         if read_spec_mode(self.project_root, spec_name) == "fast-track"
@@ -2408,17 +2354,22 @@ class PMEngine:
                     )
                     self._enqueue(spec_name, _at)
                     self.register_recovery_watch(
-                        spec_name, f"auto-recovered from stuck {stuck_status}")
+                        spec_name, f"auto-recovered from stuck {stuck_status}"
+                    )
                 elif stuck_status == "testing":
                     # 验证卡住：实现已完成，回 implemented 重新派发 verifier
-                    self.state_machine.update_spec(spec_name, {
-                        "status": "implemented",
-                        "tester_run": None,
-                        "error": f"Auto-recovered from stuck testing ({b['elapsed_minutes']} min)",
-                    })
+                    self.state_machine.update_spec(
+                        spec_name,
+                        {
+                            "status": "implemented",
+                            "tester_run": None,
+                            "error": f"Auto-recovered from stuck testing ({b['elapsed_minutes']} min)",
+                        },
+                    )
                     self._enqueue(spec_name, "verifier")
                     self.register_recovery_watch(
-                        spec_name, f"auto-recovered from stuck {stuck_status}")
+                        spec_name, f"auto-recovered from stuck {stuck_status}"
+                    )
                 # verified：full_scan 已周期性重触发 spec_verified 走放行门禁
                 # 幂等重试；此处不得回滚到 implemented —— 否则每轮全量重跑
                 # verifier，形成验证烧钱循环。仅上报，等门禁条件满足。
@@ -2447,7 +2398,9 @@ class PMEngine:
             lines.append("")
             for b in blockers:
                 lines.append(f"- 🔴 **{b['spec']}**: {b['reason']}")
-                lines.append(f"  - Status: `{b['status']}`, Elapsed: {b['elapsed_minutes']} minutes")
+                lines.append(
+                    f"  - Status: `{b['status']}`, Elapsed: {b['elapsed_minutes']} minutes"
+                )
                 lines.append(f"  - Last error: {b['error'][:120]}")
                 lines.append("")
 
@@ -2462,7 +2415,9 @@ class PMEngine:
             lines.append("✅ No blockers detected. All SPECs progressing normally.")
             lines.append("")
 
-        lines.append(f"*Next check: ~{self._get_config('schedule.poll_interval_minutes', 30)} minutes*")
+        lines.append(
+            f"*Next check: ~{self._get_config('schedule.poll_interval_minutes', 30)} minutes*"
+        )
         lines.append("")
 
         # Append to project log
@@ -2480,9 +2435,12 @@ class PMEngine:
 
         total = len(all_specs)
         done = sum(1 for e in all_specs.values() if e.get("status") in ("done", "pushed"))
-        active = sum(1 for e in all_specs.values() if e.get("status") in ("implementing", "testing"))
-        blocked = sum(1 for e in all_specs.values()
-                      if e.get("status") == "ready" and e.get("error"))
+        active = sum(
+            1 for e in all_specs.values() if e.get("status") in ("implementing", "testing")
+        )
+        blocked = sum(
+            1 for e in all_specs.values() if e.get("status") == "ready" and e.get("error")
+        )
 
         parts = [f"📦 {total} 个 SPEC"]
         if done:
@@ -2531,7 +2489,6 @@ class PMEngine:
             inst = SpecIntegrityGate(self)
             self.__dict__["_spec_integrity_instance"] = inst
         return inst
-
 
     # ── 组合组件委托（阶段 4：family/budget 已迁组件，门面保持调用路径）──
 
@@ -2584,10 +2541,10 @@ class PMEngine:
     def _signal_family_explosion(self, parent_name: str, child_name: str, detail: str):
         return self._family._signal_family_explosion(parent_name, child_name, detail)
 
-    def _do_spec_bug_found(self, spec_name: str, failure_class: str = "product",
-                           run_id: str = ""):
+    def _do_spec_bug_found(self, spec_name: str, failure_class: str = "product", run_id: str = ""):
         return self._family._do_spec_bug_found(
-            spec_name, failure_class=failure_class, run_id=run_id)
+            spec_name, failure_class=failure_class, run_id=run_id
+        )
 
     def _do_legacy_fix_spec_bug_found(self, spec_name: str):
         return self._family._do_legacy_fix_spec_bug_found(spec_name)
@@ -2596,15 +2553,26 @@ class PMEngine:
         return self._family._inject_verify_fix_task(spec_name, fail_rounds)
 
     def _send_human_escalation_alert(
-        self, spec_name: str, signal_type: str, severity: str,
-        description: str, evidence: str, recommended_action: str,
+        self,
+        spec_name: str,
+        signal_type: str,
+        severity: str,
+        description: str,
+        evidence: str,
+        recommended_action: str,
         trigger: Optional[dict] = None,
     ):
-        return self._family._send_human_escalation_alert(spec_name, signal_type, severity, description, evidence, recommended_action, trigger)
+        return self._family._send_human_escalation_alert(
+            spec_name, signal_type, severity, description, evidence, recommended_action, trigger
+        )
 
     # ── infra 熔断告警（evo-run-failure-classification-circuitbreaker D3）──────────
     def _emit_infra_breaker_event(
-        self, event: str, spec_name: str, reason: str, state: dict,
+        self,
+        event: str,
+        spec_name: str,
+        reason: str,
+        state: dict,
         remaining: int = 0,
     ):
         """落 run_infra_failure 告警记录（evo-run-failure-classification-circuitbreaker D3）。
@@ -2625,13 +2593,11 @@ class PMEngine:
         count = int(state.get("count", 0)) if state else 0
         until = state.get("until") or 0.0
         # 冷却总时长（秒→分钟，取整）
-        cooldown_minutes = int(self._get_config(
-            "admin.run_infra_breaker.cooldown_minutes", 30))
+        cooldown_minutes = int(self._get_config("admin.run_infra_breaker.cooldown_minutes", 30))
         now_epoch = time.time()
         window_str = f"{count} 次连续 infra 失败；冷却 {cooldown_minutes} 分钟"
         evidence = (
-            f"link=spec-review; count={count}; cooldown={cooldown_minutes}min; "
-            f"{window_str}"
+            f"link=spec-review; count={count}; cooldown={cooldown_minutes}min; " f"{window_str}"
         )
         if event == "triggered":
             entry = {
@@ -2686,12 +2652,12 @@ class PMEngine:
     def _budget_exempt_alert_threshold(self) -> int:
         return self._budget._budget_exempt_alert_threshold()
 
-    def _exempt_dead_run_budget(self, spec_name: str, reason: str,
-                                   run_reason: str | None = None) -> None:
+    def _exempt_dead_run_budget(
+        self, spec_name: str, reason: str, run_reason: str | None = None
+    ) -> None:
         return self._budget._exempt_dead_run_budget(spec_name, reason, run_reason)
 
-    def _exempt_infra_run_budget(self, spec_name: str, reason: str,
-                                 refund_key: str = "") -> bool:
+    def _exempt_infra_run_budget(self, spec_name: str, reason: str, refund_key: str = "") -> bool:
         """infra 失败预算事后补偿（evo-infra-failure-budget-exempt R2）。
 
         与 _exempt_dead_run_budget 同范式：回退本次实现 run 增量（下限 0）+
@@ -2699,12 +2665,11 @@ class PMEngine:
         refund_key 去重，同一实现 run 只退款一次）。预算退款纳入
         _budget_reconcile_has_exemption，防 reconcile 回写冲掉退款。
         """
-        return self._budget._exempt_infra_run_budget(
-            spec_name, reason, refund_key=refund_key)
+        return self._budget._exempt_infra_run_budget(spec_name, reason, refund_key=refund_key)
 
-    def reclassify_infra_rounds(self, spec_name: str, n: int,
-                                audit_reason: str,
-                                actor: str = "admin") -> dict:
+    def reclassify_infra_rounds(
+        self, spec_name: str, n: int, audit_reason: str, actor: str = "admin"
+    ) -> dict:
         """admin 回拨 infra 误计入轮次（evo-infra-failure-budget-exempt R3）。
 
         核心实现见 verification.reclassify_infra_rounds（原子改写
@@ -2712,9 +2677,15 @@ class PMEngine:
         dashboard/CLI/admin_monitor 入口统一委托本方法。
         """
         from core.pm_engine.verification import reclassify_infra_rounds as _recl
+
         return _recl(
-            self.project_root, self.state_machine, self.logger,
-            spec_name, n, audit_reason, actor=actor,
+            self.project_root,
+            self.state_machine,
+            self.logger,
+            spec_name,
+            n,
+            audit_reason,
+            actor=actor,
         )
 
     def _alert_budget_exempt_loop(self, spec_name: str, exempt: int) -> None:
@@ -2753,7 +2724,6 @@ class PMEngine:
             self.__dict__["_verification_instance"] = inst
         return inst
 
-
     # ── 组合组件委托（阶段 5：验证域已迁组件，门面保持调用路径）──────────
 
     def _read_verify_report(self, spec_name: str) -> dict:
@@ -2777,10 +2747,12 @@ class PMEngine:
     def _run_scenario_static_check(self, spec_name: str) -> None:
         return self._verification._run_scenario_static_check(spec_name)
 
-    def _scenario_defect_reroute_gate(self, spec_name: str, _repair_depth: int,
-                                      judge_result) -> bool:
+    def _scenario_defect_reroute_gate(
+        self, spec_name: str, _repair_depth: int, judge_result
+    ) -> bool:
         return self._verification._scenario_defect_reroute_gate(
-            spec_name, _repair_depth, judge_result)
+            spec_name, _repair_depth, judge_result
+        )
 
     def _apply_interaction_contract(self, spec_name: str) -> dict:
         return self._verification._apply_interaction_contract(spec_name)
@@ -2794,16 +2766,17 @@ class PMEngine:
     def _verifier_error_is_infra(self, error_text: str) -> bool:
         return self._verification._verifier_error_is_infra(error_text)
 
-    def enrich_failure_class(self, spec_name: str, error_text: str = "",
-                             result=None,
-                             result_path: Path | None = None) -> str:
+    def enrich_failure_class(
+        self, spec_name: str, error_text: str = "", result=None, result_path: Path | None = None
+    ) -> str:
         """统一失败归因接口（evo-infra-failure-budget-exempt R1）。
 
         返回 infra | product | unknown；保持 ``_verifier_error_is_infra``
         bool 签名不变（三态另立本新函数）。
         """
         return self._verification.enrich_failure_class(
-            spec_name, error_text, result=result, result_path=result_path)
+            spec_name, error_text, result=result, result_path=result_path
+        )
 
     def _verifier_result_is_stale(self, result, result_path: Path, spec_name: str) -> bool:
         return self._verification._verifier_result_is_stale(result, result_path, spec_name)
@@ -2826,11 +2799,13 @@ class PMEngine:
     def _disputed_deliverables(self, impl_result, missing) -> list:
         return self._verification._disputed_deliverables(impl_result, missing)
 
-    def _adjudicate_deliverable_missing(self, spec_name: str, result,
-                                        impl_result, missing: list) -> dict:
+    def _adjudicate_deliverable_missing(
+        self, spec_name: str, result, impl_result, missing: list
+    ) -> dict:
         """缺件 LLM 终审 + 裁决机械执行（add-deliverable-declaration-triage D3/D4）。"""
         return self._dispatcher._adjudicate_deliverable_missing(
-            spec_name, result, impl_result, missing)
+            spec_name, result, impl_result, missing
+        )
 
     @staticmethod
     def _normalize_fail_signature(text: str) -> str:
@@ -2852,16 +2827,14 @@ class PMEngine:
     def _env_whitewash_gate(self, spec_name: str) -> bool:
         return self._verification._env_whitewash_gate(spec_name)
 
-    def _escalate_env_blocked(self, spec_name: str, violations: list,
-                              title: str = "验证环境阻塞") -> None:
-        return self._verification._escalate_env_blocked(
-            spec_name, violations, title=title)
+    def _escalate_env_blocked(
+        self, spec_name: str, violations: list, title: str = "验证环境阻塞"
+    ) -> None:
+        return self._verification._escalate_env_blocked(spec_name, violations, title=title)
 
-    def _record_infra_failure(self, spec_name: str, reason: str,
-                              run_id: str = "") -> None:
+    def _record_infra_failure(self, spec_name: str, reason: str, run_id: str = "") -> None:
         """infra 失败统一记账（evo-infra-failure-budget-exempt R2/R3）。"""
-        return self._verification._record_infra_failure(
-            spec_name, reason, run_id=run_id)
+        return self._verification._record_infra_failure(spec_name, reason, run_id=run_id)
 
     def _update_warning_streaks(self, spec_name: str) -> list:
         return self._verification._update_warning_streaks(spec_name)
@@ -2909,13 +2882,17 @@ class PMEngine:
     def _read_fail_history(self, spec_name: str) -> list:
         return self._verification._read_fail_history(spec_name)
 
-    def _append_fail_history(self, spec_name: str, cause_type: str,
-                             failed_scenarios: list,
-                             failure_class: str = "",
-                             run_id: str = "") -> None:
+    def _append_fail_history(
+        self,
+        spec_name: str,
+        cause_type: str,
+        failed_scenarios: list,
+        failure_class: str = "",
+        run_id: str = "",
+    ) -> None:
         return self._verification._append_fail_history(
-            spec_name, cause_type, failed_scenarios,
-            failure_class=failure_class, run_id=run_id)
+            spec_name, cause_type, failed_scenarios, failure_class=failure_class, run_id=run_id
+        )
 
     def _clear_fail_history(self, spec_name: str) -> None:
         return self._verification._clear_fail_history(spec_name)
@@ -2984,7 +2961,6 @@ class PMEngine:
             inst = ReportBuilder(self)
             self.__dict__["_reporting_instance"] = inst
         return inst
-
 
     # ── 组合组件委托（阶段 6：dispatch/recovery/reporting 已迁组件）──────
 
@@ -3066,6 +3042,7 @@ class PMEngine:
             except Exception:
                 pass
         from core.config import ConfigLoader
+
         return ConfigLoader.effective_run_timeout_seconds(self.config, agent_type)
 
     def _instant_fail_cooldown_until(self, spec_name: str) -> float:
@@ -3083,26 +3060,32 @@ class PMEngine:
     def _rollback_failed_dispatch(self, spec_name: str, agent_type: str, exc: Exception):
         return self._dispatcher._rollback_failed_dispatch(spec_name, agent_type, exc)
 
-    def _report_stash_pop_conflict(self, spec_name: str, conflict_files: list,
-                                   merge_info=None) -> None:
+    def _report_stash_pop_conflict(
+        self, spec_name: str, conflict_files: list, merge_info=None
+    ) -> None:
         return self._dispatcher._report_stash_pop_conflict(
-            spec_name, conflict_files, merge_info=merge_info)
+            spec_name, conflict_files, merge_info=merge_info
+        )
 
     def _run_fast_track_worker(self, spec_name: str) -> None:
         """fast-track 单 run 全包 worker（add-fast-track-mode D1/D4/D5/D6）。"""
         return self._dispatcher._run_fast_track_worker(spec_name)
 
-    def _should_enter_repair(self, spec_name: str, merge_info, streak: int,
-                             breaker_threshold: int) -> bool:
+    def _should_enter_repair(
+        self, spec_name: str, merge_info, streak: int, breaker_threshold: int
+    ) -> bool:
         """merge-back 语义冲突失败是否进入 repair 通道（add-merge-back-repair-lane）。"""
         return self._dispatcher._should_enter_repair(
-            spec_name, merge_info, streak, breaker_threshold)
+            spec_name, merge_info, streak, breaker_threshold
+        )
 
-    def _dispatch_repair_lane(self, spec_name: str, merge_info, branch: str,
-                              fp: str | None = None, streak: int = 0) -> None:
+    def _dispatch_repair_lane(
+        self, spec_name: str, merge_info, branch: str, fp: str | None = None, streak: int = 0
+    ) -> None:
         """进入 repair 通道（载体三态解析 + 认领现场 + 派发 repair worker）。"""
         return self._dispatcher._dispatch_repair_lane(
-            spec_name, merge_info, branch, fp=fp, streak=streak)
+            spec_name, merge_info, branch, fp=fp, streak=streak
+        )
 
     def _claim_repair_site(self, spec_name: str, wt_path, branch: str) -> None:
         """认领 repair 现场（_legacy take 摘出 + _spec_locks 注册）。"""
@@ -3124,11 +3107,13 @@ class PMEngine:
         """repair 后 re-merge-back 失败处理（熔断连续累计 + 下一轮 repair/fallback）。"""
         return self._dispatcher._handle_remerge_failure(spec_name, remerge_info, branch)
 
-    def _fallback_after_repair(self, spec_name: str, branch: str | None,
-                               repair_error: str, merge_error: str = "") -> None:
+    def _fallback_after_repair(
+        self, spec_name: str, branch: str | None, repair_error: str, merge_error: str = ""
+    ) -> None:
         """repair 链失败回退：全新重派 implementer（prompt 注入 merge 失败上下文）。"""
         return self._dispatcher._fallback_after_repair(
-            spec_name, branch, repair_error, merge_error=merge_error)
+            spec_name, branch, repair_error, merge_error=merge_error
+        )
 
     def _recovery_watch_path(self) -> Path:
         return self._recovery._recovery_watch_path()
@@ -3159,8 +3144,9 @@ class PMEngine:
     def _spec_fingerprint(entry: dict) -> str:
         return RecoveryWatch._spec_fingerprint(entry)
 
-    def _signal_dispatch_stalled(self, spec_name: str, evidence: str,
-                                 fingerprint: str | None = None) -> None:
+    def _signal_dispatch_stalled(
+        self, spec_name: str, evidence: str, fingerprint: str | None = None
+    ) -> None:
         return self._recovery._signal_dispatch_stalled(spec_name, evidence, fingerprint)
 
     def _clear_dispatch_conflict(self, spec_name: str) -> dict:
@@ -3278,4 +3264,3 @@ class PMEngine:
     @_signal_fingerprints.deleter
     def _signal_fingerprints(self):
         del self._recovery._signal_fingerprints
-

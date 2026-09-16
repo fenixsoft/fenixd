@@ -32,10 +32,7 @@ def archive_change(project_root: Path, name: str) -> dict:
     if not change_dir.is_dir():
         raise ValueError(f"Change '{name}' not found at {change_dir}")
 
-    target = (
-        project_root / "spec" / "archive"
-        / f"{date.today().isoformat()}-{name}"
-    )
+    target = project_root / "spec" / "archive" / f"{date.today().isoformat()}-{name}"
     if target.exists():
         raise ValueError(
             f"Archive target already exists: {target} — 请改名或改日再归档，原目录不会被覆盖"
@@ -55,15 +52,15 @@ def archive_change(project_root: Path, name: str) -> dict:
         sys.path.insert(0, str(FRAMEWORK_ROOT))
     try:
         from core.agent_runner.run_files import archive_spec_runs
-        result["runs_archived"] = archive_spec_runs(
-            project_root / ".fenix" / "runs", name
-        )
+
+        result["runs_archived"] = archive_spec_runs(project_root / ".fenix" / "runs", name)
     except (OSError, ImportError) as e:
         result["runs_archive_warning"] = str(e)
 
     # 归档自动提交：移动成功立即入库（fail-open，见 core/archive_commit.py）
     try:
         from core.archive_commit import commit_archive_move
+
         cr = commit_archive_move(project_root, name, moved)
         result["committed"] = cr["committed"]
         if cr.get("warning"):
@@ -89,8 +86,7 @@ def main():
     try:
         result = archive_change(project_root, args.name)
         payload = {"ok": True, "from": result["from"], "to": result["to"], "error": None}
-        for key in ("runs_archived", "runs_archive_warning",
-                    "committed", "commit_warning"):
+        for key in ("runs_archived", "runs_archive_warning", "committed", "commit_warning"):
             if key in result:
                 payload[key] = result[key]
     except ValueError as e:

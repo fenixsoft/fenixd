@@ -35,6 +35,7 @@ def is_claude_process(pid_str: str) -> bool:
 def find_free_port() -> int:
     """向系统申请一个临时空闲端口（探测即释放，向后兼容现有调用方）。"""
     from socket import socket as _socket
+
     with _socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -43,6 +44,7 @@ def find_free_port() -> int:
 def _bind_retry(host: str = "127.0.0.1", retries: int = 3) -> "socket":
     """尝试 bind 0 端口（OS 分配），绑定失败时重试（消除 TOCTOU）。"""
     from socket import socket as _socket
+
     last_err = None
     for _ in range(max(1, retries)):
         try:
@@ -56,6 +58,7 @@ def _bind_retry(host: str = "127.0.0.1", retries: int = 3) -> "socket":
 
 
 from contextlib import contextmanager
+
 
 @contextmanager
 def find_bound_socket(host: str = "127.0.0.1", retries: int = 3):

@@ -59,10 +59,10 @@ class CliRunner(VerifyRunner):
 
     kind = "cli"
 
-    def __init__(self, spec_name, project_root=None, logger=None,
-                 config: dict = None, scenario_root=None):
-        super().__init__(spec_name, project_root, logger, config,
-                         scenario_root=scenario_root)
+    def __init__(
+        self, spec_name, project_root=None, logger=None, config: dict = None, scenario_root=None
+    ):
+        super().__init__(spec_name, project_root, logger, config, scenario_root=scenario_root)
         # 契约统一供给的实例 base_url（引擎注入；FENIX_VERIFY_BASE_URL/PORT
         # 注入依据）。无实例形态（纯 cli 轮次）为空字符串（注入空操作）。
         self.base_url = ""
@@ -117,11 +117,9 @@ class CliRunner(VerifyRunner):
         assertion_results: list[dict] = []
         if not steps_failed:
             assertion_defs = [a.to_dict() for a in scenario.assertions]
-            assertion_results = await self.asserter.run(
-                named_results, assertion_defs)
+            assertion_results = await self.asserter.run(named_results, assertion_defs)
 
-        status = determine_scenario_status(
-            step_results, assertion_results, [])
+        status = determine_scenario_status(step_results, assertion_results, [])
 
         return {
             "scenario_id": scenario.id,
@@ -139,14 +137,16 @@ class CliRunner(VerifyRunner):
         cmd = step_dict.get("command")
         if not cmd:
             return {
-                "success": False, "action": "run",
+                "success": False,
+                "action": "run",
                 "error": "run 步骤缺少 command",
             }
         use_shell = not isinstance(cmd, list)
         cwd = self._resolve_cwd(step_dict.get("cwd", ""))
         if cwd is None:
             return {
-                "success": False, "action": "run",
+                "success": False,
+                "action": "run",
                 "error": f"cwd 目录不存在: {step_dict.get('cwd')}",
             }
         env = self._build_env(step_dict.get("env") or {})
@@ -158,7 +158,8 @@ class CliRunner(VerifyRunner):
             if use_shell:
                 proc = await asyncio.create_subprocess_shell(
                     str(cmd),
-                    cwd=str(cwd), env=env,
+                    cwd=str(cwd),
+                    env=env,
                     stdin=asyncio.subprocess.PIPE if stdin else asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
@@ -167,7 +168,8 @@ class CliRunner(VerifyRunner):
             else:
                 proc = await asyncio.create_subprocess_exec(
                     *[str(c) for c in cmd],
-                    cwd=str(cwd), env=env,
+                    cwd=str(cwd),
+                    env=env,
                     stdin=asyncio.subprocess.PIPE if stdin else asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
@@ -175,7 +177,8 @@ class CliRunner(VerifyRunner):
                 )
         except FileNotFoundError as e:
             return {
-                "success": False, "action": "run",
+                "success": False,
+                "action": "run",
                 "error_level": "error",
                 "error": f"命令二进制不存在（argv 形态）: {e}",
             }
@@ -193,7 +196,8 @@ class CliRunner(VerifyRunner):
             except Exception:
                 pass
             return {
-                "success": False, "action": "run",
+                "success": False,
+                "action": "run",
                 "error_type": "timeout",
                 "error": f"命令超时（>{timeout}s），已强杀进程组: {cmd}",
             }
@@ -203,7 +207,8 @@ class CliRunner(VerifyRunner):
             # 被信号终止（如 SIGSEGV）→ error，不进 product-bug 管道
             sig = -exit_code
             return {
-                "success": False, "action": "run",
+                "success": False,
+                "action": "run",
                 "error_level": "error",
                 "error_type": "signal",
                 "signal": sig,
@@ -222,12 +227,14 @@ class CliRunner(VerifyRunner):
 
         # 非零退出码不判步骤失败：照常记录，由 exit_code 断言仲裁
         return {
-            "success": True, "action": "run",
-            "command": cmd, "exit_code": exit_code,
+            "success": True,
+            "action": "run",
+            "command": cmd,
+            "exit_code": exit_code,
             "as": name or None,
             "detail": f"退出码 {exit_code}"
-                      + ("（stdout 已截断 64KB）" if stdout_truncated else "")
-                      + ("（stderr 已截断 64KB）" if stderr_truncated else ""),
+            + ("（stdout 已截断 64KB）" if stdout_truncated else "")
+            + ("（stderr 已截断 64KB）" if stderr_truncated else ""),
         }
 
     # ── 辅助 ───────────────────────────────────────────────────

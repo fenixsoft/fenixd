@@ -58,10 +58,12 @@ def scan_server_routes(root: Path) -> list:
         route = m.group(1)
         method = "GET"
         # 粗略归属：_handle_api_post 段内 → POST；DELETE 段 → DELETE
-        if "_handle_api_post" in lines[max(0, i - 60):i] \
-                and "_handle_api_delete" not in lines[max(0, i - 60):i]:
+        if (
+            "_handle_api_post" in lines[max(0, i - 60) : i]
+            and "_handle_api_delete" not in lines[max(0, i - 60) : i]
+        ):
             method = "POST"
-        elif "_handle_api_delete" in lines[max(0, i - 60):i]:
+        elif "_handle_api_delete" in lines[max(0, i - 60) : i]:
             method = "DELETE"
         entries.append((route, _rel_line(server, root, i), method))
     return entries
@@ -131,27 +133,40 @@ def self_check(root: Path, parsed_count: int, warning_buf: list) -> None:
     subprocess_mod = __import__("subprocess")
     try:
         res = subprocess_mod.run(
-            ["grep", "-oEh", r'"/api/[^"]+"',
-             str(root / "core" / "dashboard" / "server.py")],
-            capture_output=True, text=True, timeout=30,
+            ["grep", "-oEh", r'"/api/[^"]+"', str(root / "core" / "dashboard" / "server.py")],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         heuristic += len({ln.strip() for ln in res.stdout.splitlines() if ln.strip()})
     except Exception:
         pass
     try:
         res = subprocess_mod.run(
-            ["grep", "-roEh", r'data-testid="[^"]+"',
-             str(root / "core" / "dashboard" / "static" / "src")],
-            capture_output=True, text=True, timeout=30,
+            [
+                "grep",
+                "-roEh",
+                r'data-testid="[^"]+"',
+                str(root / "core" / "dashboard" / "static" / "src"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         heuristic += len({ln.strip() for ln in res.stdout.splitlines() if ln.strip()})
     except Exception:
         pass
     try:
         res = subprocess_mod.run(
-            ["grep", "-oEh", r"path: *'/[^']*'",
-             str(root / "core" / "dashboard" / "static" / "src" / "app.tsx")],
-            capture_output=True, text=True, timeout=30,
+            [
+                "grep",
+                "-oEh",
+                r"path: *'/[^']*'",
+                str(root / "core" / "dashboard" / "static" / "src" / "app.tsx"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         heuristic += len({ln.strip() for ln in res.stdout.splitlines() if ln.strip()})
     except Exception:

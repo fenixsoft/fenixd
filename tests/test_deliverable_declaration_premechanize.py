@@ -586,7 +586,7 @@ class TestGuardPreclassify(_GuardPreclassifyFixture):
         missing = ["core/dashboard/static/dist/index.html"]
         # _deliverable_gate_missing 依赖 worktree 产物；直接调用预分类内部逻辑
         # 用 mock 的 _deliverable_gate_missing 模拟守卫重跑
-        self.engine._deliverable_gate_missing = mock.MagicMock(return_value=[])
+        self.engine._verification._deliverable_gate_missing = mock.MagicMock(return_value=[])
         outcome = self.dispatcher._preclassify_missing("s1", result, missing)
         self.assertEqual(outcome["action"], "proceed")
         self._assert_no_judge_dispatched()
@@ -599,7 +599,7 @@ class TestGuardPreclassify(_GuardPreclassifyFixture):
         missing = ["core/dashboard/static/dist/index.html", "core/real.py"]
         result = self.make_result()
         # 模拟守卫重跑：软化 dist 后只余 real
-        self.engine._deliverable_gate_missing = mock.MagicMock(
+        self.engine._verification._deliverable_gate_missing = mock.MagicMock(
             return_value=["core/real.py"])
         outcome = self.dispatcher._preclassify_missing("s1", result, missing)
         self.assertEqual(outcome["action"], "continue")
@@ -623,7 +623,7 @@ class TestGuardPreclassify(_GuardPreclassifyFixture):
             "- path: core/dashboard/static/dist/index.html\n  kind: modify\n")
         missing = ["core/dashboard/static/dist/index.html"]
         result = self.make_result()
-        self.engine._deliverable_gate_missing = mock.MagicMock(return_value=[])
+        self.engine._verification._deliverable_gate_missing = mock.MagicMock(return_value=[])
         outcome = self.dispatcher._adjudicate_deliverable_missing(
             "s1", result, None, missing)
         self.assertEqual(outcome["action"], "proceed")

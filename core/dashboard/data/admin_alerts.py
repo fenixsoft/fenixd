@@ -6,15 +6,18 @@ refactor-dashboard-data-module D3 分组：本模块承载 admin 告警职责域
 
 # ── Administrator 告警（.fenix/admin_alerts.json） ─────────────────
 
+
 def get_alerts(project_root) -> list:
     """读取项目全部 Administrator 告警/处置记录（最新在前）。缺失/损坏返回 []。"""
     from core.admin_store import AdminStore
+
     return AdminStore(project_root).read_all()
 
 
 def get_unhandled_alerts(project_root) -> list:
     """读取项目未处理的升级告警（最新在前）。"""
     from core.admin_store import AdminStore
+
     return AdminStore(project_root).unhandled()
 
 
@@ -26,8 +29,10 @@ def get_resolved_alerts(project_root, limit: int = 50) -> list:
     读取路径（不绕锁、不改存储格式）。
     """
     from core.admin_store import AdminStore, ESCALATION
+
     resolved = [
-        r for r in AdminStore(project_root).read_all()
+        r
+        for r in AdminStore(project_root).read_all()
         if r.get("kind") == ESCALATION and r.get("handled")
     ]
     return resolved[:limit]
@@ -36,12 +41,14 @@ def get_resolved_alerts(project_root, limit: int = 50) -> list:
 def mark_alert_handled(project_root, alert_id: str) -> bool:
     """标记某条升级告警为已处理。返回是否找到并更新。"""
     from core.admin_store import AdminStore
+
     return AdminStore(project_root).mark_handled(alert_id)
 
 
 def mark_all_alerts_handled(project_root) -> int:
     """将项目所有未处理升级告警标记为已处理。返回处理数量。"""
     from core.admin_store import AdminStore
+
     return AdminStore(project_root).mark_all_handled()
 
 
@@ -76,13 +83,13 @@ def get_admin_activities(project_root, spec=None) -> list:
     过滤生效，保证未处理升级置顶后仍被正确过滤）。
     """
     from core.admin_store import AdminStore, DISPOSITION, ESCALATION
+
     records = AdminStore(project_root).read_all()
 
     # 未处理升级 → 关联 disposition（按 admin_run_id 匹配）
     unhandled_by_run: dict = {}
     for rec in records:
-        if (rec.get("kind") == ESCALATION and not rec.get("handled")
-                and rec.get("admin_run_id")):
+        if rec.get("kind") == ESCALATION and not rec.get("handled") and rec.get("admin_run_id"):
             unhandled_by_run.setdefault(rec["admin_run_id"], rec.get("id"))
 
     activities = []
@@ -117,8 +124,7 @@ def get_admin_activities(project_root, spec=None) -> list:
         activities.append(item)
 
     # 未处理升级关联置顶，组内按时间倒序
-    activities.sort(
-        key=lambda a: (a["_pin"], a.get("created") or ""), reverse=True)
+    activities.sort(key=lambda a: (a["_pin"], a.get("created") or ""), reverse=True)
     for a in activities:
         a.pop("_pin", None)
 

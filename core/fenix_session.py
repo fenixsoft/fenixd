@@ -179,8 +179,10 @@ def _daemon_procs_under(root: Path) -> bool:
     tmux session 判定会漏报；以 /proc 的 cwd+argv 匹配项目根的
     fenixd.py / fenixd_supervisor.py 进程为准，覆盖 tmux 与直启两种模式。
     """
+
     def _match(cwd: Path, argv) -> bool:
         return _is_daemon_proc(cwd, argv, root) or _is_supervisor_proc(cwd, argv, root)
+
     return bool(_procs_matching(_match))
 
 
@@ -263,6 +265,7 @@ def _fenix_pids_under(root: Path) -> list:
     _is_supervisor_proc：**正在执行**该脚本，而非命令行里提到该路径）。
     仅返回按此口径定位的 pid，禁止按 cmdline 裸匹配杀进程。
     """
+
     def _match(cwd: Path, argv) -> bool:
         return _is_daemon_proc(cwd, argv, root) or _is_supervisor_proc(cwd, argv, root)
 
@@ -341,9 +344,19 @@ def start_daemon(root: str | None = None) -> dict:
     proot = resolve_root(root)
     session = session_name(proot)
     if not (proot / ".fenix").exists():
-        return {"ok": False, "error": f"项目根缺少 .fenix 框架软链接: {proot}", "session": session, "already": False}
+        return {
+            "ok": False,
+            "error": f"项目根缺少 .fenix 框架软链接: {proot}",
+            "session": session,
+            "already": False,
+        }
     if not (proot / ".fenix" / "STATE.md").is_file():
-        return {"ok": False, "error": f"项目根缺少 STATE.md: {proot}", "session": session, "already": False}
+        return {
+            "ok": False,
+            "error": f"项目根缺少 STATE.md: {proot}",
+            "session": session,
+            "already": False,
+        }
     if is_running(proot):
         return {"ok": True, "error": None, "session": session, "already": True}
 
@@ -358,12 +371,25 @@ def start_daemon(root: str | None = None) -> dict:
 
     try:
         subprocess.run(
-            ["tmux", "new-session", "-d", "-s", session,
-             f"cd {proot} && python3 .fenix/bin/fenixd_supervisor.py --project-root {proot} >> .fenix/logs/supervisor.log 2>&1"],
-            capture_output=True, text=True, timeout=15,
+            [
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                session,
+                f"cd {proot} && python3 .fenix/bin/fenixd_supervisor.py --project-root {proot} >> .fenix/logs/supervisor.log 2>&1",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
     except Exception as e:
-        return {"ok": False, "error": f"无法启动 daemon（tmux 不可用？）: {e}", "session": session, "already": False}
+        return {
+            "ok": False,
+            "error": f"无法启动 daemon（tmux 不可用？）: {e}",
+            "session": session,
+            "already": False,
+        }
 
     # 轮询等待进程真正起来（is_running 主判定为 /proc 进程检测）
     for _ in range(START_DAEMON_PROBE_ATTEMPTS):
@@ -415,7 +441,12 @@ def stop_daemon(root: str | None = None) -> dict:
         stop_flag.parent.mkdir(parents=True, exist_ok=True)
         stop_flag.touch()
     except OSError as e:
-        return {"ok": False, "error": f"写 .fenix/stop 失败: {e}", "session": session, "was_running": True}
+        return {
+            "ok": False,
+            "error": f"写 .fenix/stop 失败: {e}",
+            "session": session,
+            "was_running": True,
+        }
 
     try:
         # ② SIGTERM 该项目 daemon 进程（仅快照中的 cwd/--project-root 锚定且为
@@ -447,7 +478,9 @@ def stop_daemon(root: str | None = None) -> dict:
             try:
                 subprocess.run(
                     ["tmux", "kill-session", "-t", session],
-                    capture_output=True, text=True, timeout=5,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
             except Exception:
                 pass
@@ -468,7 +501,12 @@ def stop_daemon(root: str | None = None) -> dict:
             stop_flag.unlink()
         except OSError:
             pass
-        return {"ok": False, "error": f"停止 daemon 失败: {e}", "session": session, "was_running": True}
+        return {
+            "ok": False,
+            "error": f"停止 daemon 失败: {e}",
+            "session": session,
+            "was_running": True,
+        }
 
 
 def _alive_pids(pids) -> list:

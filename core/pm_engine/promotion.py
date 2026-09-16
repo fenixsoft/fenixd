@@ -41,6 +41,7 @@ def promote_drafted(
     #    软化编排异常降级 warning（fail-safe，不阻塞晋升流程）
     try:
         from core.deliverables import soften_unsatisfiable_declarations
+
         spec_dir = project_root / "spec" / "changes" / spec_name
         # 快照声明段（before）：供审计 diff
         before_text = ""
@@ -67,25 +68,26 @@ def promote_drafted(
                     after_text = ""
             try:
                 from core.admin_store import DisputeAuditStore
-                DisputeAuditStore(project_root, logger).append({
-                    "spec": spec_name,
-                    "trigger_run_id": "",
-                    "judge_run_id": "",
-                    "verdicts": [
-                        {
-                            "element": s["element"],
-                            "verdict": "reference",
-                            "reasoning": (
-                                f"promotion-soften: {s['reason']}"
-                            ),
-                        }
-                        for s in softened
-                    ],
-                    "diff": {
-                        "before": before_text,
-                        "after": after_text,
-                    },
-                })
+
+                DisputeAuditStore(project_root, logger).append(
+                    {
+                        "spec": spec_name,
+                        "trigger_run_id": "",
+                        "judge_run_id": "",
+                        "verdicts": [
+                            {
+                                "element": s["element"],
+                                "verdict": "reference",
+                                "reasoning": (f"promotion-soften: {s['reason']}"),
+                            }
+                            for s in softened
+                        ],
+                        "diff": {
+                            "before": before_text,
+                            "after": after_text,
+                        },
+                    }
+                )
             except Exception as e:
                 logger.warning(
                     "pm_engine",
@@ -110,7 +112,8 @@ def promote_drafted(
             msgs.append("tasks.md 可解析性 lint 未通过：" + "；".join(tasks_violations))
         err = "；".join(msgs)
         logger.error(
-            "pm_engine", f"Promotion lint failed '{spec_name}': {err}",
+            "pm_engine",
+            f"Promotion lint failed '{spec_name}': {err}",
         )
         state_machine.update_spec(spec_name, {"error": err})
         return {"ok": False, "violations": violations + tasks_violations}
@@ -125,9 +128,7 @@ def promote_drafted(
     return {"ok": True, "violations": [], "next_status": next_status}
 
 
-def _lint_deliverable_declarations(
-    project_root: Path, spec_name: str, logger
-) -> list:
+def _lint_deliverable_declarations(project_root: Path, spec_name: str, logger) -> list:
     """Deliverables 声明形态 lint（晋升前拦截，fail-open）。"""
     from core.deliverables import lint_declared
 
@@ -144,9 +145,7 @@ def _lint_deliverable_declarations(
         return []
 
 
-def _lint_tasks_parseable(
-    project_root: Path, spec_name: str, logger
-) -> list:
+def _lint_tasks_parseable(project_root: Path, spec_name: str, logger) -> list:
     """tasks.md 可解析性 lint（晋升前拦截，fail-open，task-track D2）。"""
     from core.deliverables import lint_tasks_parseable
 
@@ -174,6 +173,7 @@ def should_skip_review(project_root: Path, spec_name: str, config: dict, logger)
     字段缺失时保守取「不跳过」。gates.spec_review_mode: never 时恒返回跳过。
     """
     from core.config import ConfigLoader
+
     # gates.spec_review_mode: never 时直接跳过
     mode = ConfigLoader.get_spec_review_mode(config)
     if mode == "never":
@@ -189,6 +189,7 @@ def should_skip_review(project_root: Path, spec_name: str, config: dict, logger)
         return False
     try:
         import yaml
+
         with spec_yaml.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
     except Exception:
@@ -216,6 +217,7 @@ def should_skip_review(project_root: Path, spec_name: str, config: dict, logger)
         return False
     # 简单解析 Deliverables 段：寻找 ```yaml 代码块
     import re
+
     m = re.search(r"```yaml\n(.*?)\n```", content, re.DOTALL)
     if not m:
         return False

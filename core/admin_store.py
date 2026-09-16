@@ -238,13 +238,11 @@ class AdminStore:
 
     def unhandled(self) -> list:
         """未处理的升级告警（kind=escalation 且未 handled），最新的在前。"""
-        return [
-            e for e in self.read_all()
-            if e.get("kind") == ESCALATION and not e.get("handled")
-        ]
+        return [e for e in self.read_all() if e.get("kind") == ESCALATION and not e.get("handled")]
 
     def mark_handled(self, alert_id: str) -> bool:
         """将某条升级告警标记为已处理。返回是否找到并更新。"""
+
         def mutate(records):
             changed = False
             for rec in records:
@@ -254,6 +252,7 @@ class AdminStore:
                         rec["handled_at"] = _utcnow_iso()
                         changed = True
             return changed
+
         return self._mutate(mutate)
 
     def mark_escalated(self, alert_id: str) -> bool:
@@ -263,6 +262,7 @@ class AdminStore:
         AdminMonitor 摄取唤起）去重使用：同记录只唤起一次。
         返回是否找到并更新。
         """
+
         def mutate(records):
             changed = False
             for rec in records:
@@ -271,10 +271,12 @@ class AdminStore:
                         rec["escalated"] = True
                         changed = True
             return changed
+
         return self._mutate(mutate)
 
     def mark_all_handled(self) -> int:
         """将所有未处理升级告警标记为已处理。返回处理数量。"""
+
         def mutate(records):
             changed = 0
             for rec in records:
@@ -283,6 +285,7 @@ class AdminStore:
                     rec["handled_at"] = _utcnow_iso()
                     changed += 1
             return changed
+
         return self._mutate(mutate)
 
     def auto_resolve(self, resolutions: list) -> int:
@@ -297,8 +300,7 @@ class AdminStore:
         读-改-写（复用既有原子写与 .lock）；无可闭环条目时零写回（mtime 不变）。
         返回实际闭环数量。
         """
-        notes = {r.get("id"): r.get("resolve_note") or ""
-                 for r in resolutions or [] if r.get("id")}
+        notes = {r.get("id"): r.get("resolve_note") or "" for r in resolutions or [] if r.get("id")}
         if not notes:
             return 0
 
@@ -318,6 +320,7 @@ class AdminStore:
                 rec["resolve_note"] = notes[rec.get("id")]
                 changed += 1
             return changed
+
         return self._mutate(mutate, skip_unchanged=True)
 
     def close_escalations_for_run(self, admin_run_id: str, resolve_note: str) -> int:
@@ -336,18 +339,23 @@ class AdminStore:
         def mutate(records):
             changed = 0
             for rec in records:
-                if (rec.get("kind") == ESCALATION and not rec.get("handled")
-                        and rec.get("admin_run_id") == admin_run_id):
+                if (
+                    rec.get("kind") == ESCALATION
+                    and not rec.get("handled")
+                    and rec.get("admin_run_id") == admin_run_id
+                ):
                     rec["handled"] = True
                     rec["handled_by"] = AUTO_RESOLVE_BY
                     rec["handled_at"] = closed_at
                     rec["resolve_note"] = resolve_note
                     changed += 1
             return changed
+
         return self._mutate(mutate, skip_unchanged=True)
 
-    def latest_signal(self, spec: Optional[str], signal_type: str,
-                      within_minutes: float) -> Optional[dict]:
+    def latest_signal(
+        self, spec: Optional[str], signal_type: str, within_minutes: float
+    ) -> Optional[dict]:
         """返回最近一条匹配（spec, signal_type）的记录，供节流判断。
 
         within_minutes 内存在 → 返回该记录；否则返回 None。
@@ -378,18 +386,14 @@ class AdminStore:
             if spec is None and rec_spec is not None:
                 continue
             try:
-                created = datetime.fromisoformat(
-                    (rec.get("created") or "").replace("Z", "+00:00")
-                )
+                created = datetime.fromisoformat((rec.get("created") or "").replace("Z", "+00:00"))
             except (ValueError, TypeError):
                 continue
             anchor = created
             last_seen_str = rec.get("last_seen")
             if last_seen_str:
                 try:
-                    last_seen = datetime.fromisoformat(
-                        str(last_seen_str).replace("Z", "+00:00")
-                    )
+                    last_seen = datetime.fromisoformat(str(last_seen_str).replace("Z", "+00:00"))
                     anchor = max(created, last_seen)  # 防御：异常数据下取更大者
                 except (ValueError, TypeError):
                     pass  # last_seen 不可解析时回退 created
@@ -402,8 +406,11 @@ class AdminStore:
             best.pop("_anchor", None)
         return best
 
-    def latest_resolved_disposition(self, spec: str, signal_type: str,
-                                    ) -> Optional[dict]:
+    def latest_resolved_disposition(
+        self,
+        spec: str,
+        signal_type: str,
+    ) -> Optional[dict]:
         """返回（spec, signal_type）最近一条「成功处置」记录或 None。
 
         stuck-signal-hygiene D3：仅匹配 kind=DISPOSITION 且 result∈
@@ -487,6 +494,7 @@ class AdminStore:
                 rec["resolve_note"] = resolve_note
                 changed += 1
             return changed
+
         return self._mutate(mutate, skip_unchanged=True)
 
     def bump_dispatch_retry(self, alert_id: str, max_retries: int = 1) -> bool:
@@ -497,6 +505,7 @@ class AdminStore:
         不再选中该记录。返回是否找到并更新（id 不匹配或非 escalation 时
         返回 False）。
         """
+
         def mutate(records):
             changed = False
             for rec in records:
@@ -512,6 +521,7 @@ class AdminStore:
                 rec["retry_count"] = min(cur + 1, max_retries)
                 changed = True
             return changed
+
         return self._mutate(mutate)
 
 

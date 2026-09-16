@@ -84,9 +84,7 @@ def has_only_non_driving_visual_indicators(scenario: dict) -> bool:
         if v.get("status") in ("diff_detected", "warning"):
             return False  # 存在驱动视觉结论，非「仅非驱动」
     return any(
-        isinstance(v, dict)
-        and v.get("status") in NON_DRIVING_VISUAL_STATUSES
-        for v in visual
+        isinstance(v, dict) and v.get("status") in NON_DRIVING_VISUAL_STATUSES for v in visual
     )
 
 
@@ -112,9 +110,7 @@ def _evidence_present(evidence: Any) -> bool:
             return True
     # 截图路径
     shots = evidence.get("screenshots")
-    if isinstance(shots, list) and any(
-        isinstance(s, str) and s.strip() for s in shots
-    ):
+    if isinstance(shots, list) and any(isinstance(s, str) and s.strip() for s in shots):
         return True
     # 首个失败步骤（字符串）
     ffs = evidence.get("first_failed_step")
@@ -176,10 +172,7 @@ def triage_violation(scenario: dict) -> Optional[str]:
     failed_count = 0
     ars = scenario.get("assertion_results")
     if isinstance(ars, list):
-        failed_count = sum(
-            1 for a in ars
-            if isinstance(a, dict) and not a.get("pass", True)
-        )
+        failed_count = sum(1 for a in ars if isinstance(a, dict) and not a.get("pass", True))
     if failed_count and len(triage) < failed_count:
         return (
             f"assertion_triage 仅 {len(triage)} 条，少于失败断言数 {failed_count}"
@@ -190,9 +183,7 @@ def triage_violation(scenario: dict) -> Optional[str]:
 
 def has_product_bug_assertion(scenario: dict) -> bool:
     """场景的失败断言中是否存在归类 product-bug 的条目（D3：阻止场景级豁免）。"""
-    return any(
-        t.get("classification") == "product-bug" for t in triage_entries(scenario)
-    )
+    return any(t.get("classification") == "product-bug" for t in triage_entries(scenario))
 
 
 def is_scenario_exemptible(scenario: dict) -> bool:
@@ -239,8 +230,7 @@ def whitewash_violations(scenarios: list, verdict: str) -> List[str]:
         violations.append(f"0/{total} 场景通过（全部失败）不得判 verified")
     if env_failed:
         violations.append(
-            "env 失败场景不得判 verified（须升级 admin 处置）: "
-            + "、".join(env_failed[:8])
+            "env 失败场景不得判 verified（须升级 admin 处置）: " + "、".join(env_failed[:8])
         )
     return violations
 
@@ -257,10 +247,13 @@ def validate_report(report: dict) -> dict:
          "classified": [scenario_id...]}  # 合规的非 PASS 场景 id 列表
     """
     if not isinstance(report, dict):
-        return {"ok": False, "violations": [
-            {"scenario_id": None, "status": None,
-             "reason": "report.json 非对象"},
-        ], "classified": []}
+        return {
+            "ok": False,
+            "violations": [
+                {"scenario_id": None, "status": None, "reason": "report.json 非对象"},
+            ],
+            "classified": [],
+        }
 
     scenarios = report.get("scenarios")
     if not isinstance(scenarios, list):
@@ -280,33 +273,38 @@ def validate_report(report: dict) -> dict:
         evidence = sc.get("evidence")
 
         if classification not in VERDICT_CLASSES:
-            violations.append({
-                "scenario_id": sid,
-                "status": status,
-                "reason": "classification 缺失或取值非法",
-            })
+            violations.append(
+                {
+                    "scenario_id": sid,
+                    "status": status,
+                    "reason": "classification 缺失或取值非法",
+                }
+            )
             continue
         if not _evidence_present(evidence):
-            violations.append({
-                "scenario_id": sid,
-                "status": status,
-                "reason": "evidence 为空",
-            })
+            violations.append(
+                {
+                    "scenario_id": sid,
+                    "status": status,
+                    "reason": "evidence 为空",
+                }
+            )
             continue
         # 逐断言归因（add-interaction-contract-and-per-assert-triage D3）：
         # 每个 scenario 至多一条 violation（保持「一场景一违规」语义，便于重试定位）
         triage_reason = triage_violation(sc)
         if triage_reason:
-            violations.append({
-                "scenario_id": sid,
-                "status": status,
-                "reason": triage_reason,
-            })
+            violations.append(
+                {
+                    "scenario_id": sid,
+                    "status": status,
+                    "reason": triage_reason,
+                }
+            )
             continue
         classified.append(sid)
 
-    return {"ok": len(violations) == 0, "violations": violations,
-            "classified": classified}
+    return {"ok": len(violations) == 0, "violations": violations, "classified": classified}
 
 
 def enforce_status_mapping(report: dict) -> dict:
@@ -352,23 +350,27 @@ def enforce_status_mapping(report: dict) -> dict:
             sc["status"] = "failed"
             sc["status_corrected"] = True
             sc["exempt_blocked_by_assertion"] = True  # 豁免被单断言阻断的留痕
-            corrected.append({
-                "scenario_id": sc.get("scenario_id") or sc.get("id") or "?",
-                "from_status": from_status,
-                "to_status": "failed",
-                "classification": offending,
-            })
+            corrected.append(
+                {
+                    "scenario_id": sc.get("scenario_id") or sc.get("id") or "?",
+                    "from_status": from_status,
+                    "to_status": "failed",
+                    "classification": offending,
+                }
+            )
             continue
         if classification in FORCE_FAILED_CLASSES and status != "failed":
             from_status = status
             sc["status"] = "failed"
             sc["status_corrected"] = True  # 报告标注「已修正」
-            corrected.append({
-                "scenario_id": sc.get("scenario_id") or sc.get("id") or "?",
-                "from_status": from_status,
-                "to_status": "failed",
-                "classification": classification,
-            })
+            corrected.append(
+                {
+                    "scenario_id": sc.get("scenario_id") or sc.get("id") or "?",
+                    "from_status": from_status,
+                    "to_status": "failed",
+                    "classification": classification,
+                }
+            )
     return {"report": report, "corrected": corrected}
 
 
@@ -401,13 +403,15 @@ def exempted_assertions(report: dict) -> List[dict]:
             evidence = t.get("evidence")
             if isinstance(evidence, (dict, list)):
                 evidence = json.dumps(evidence, ensure_ascii=False)
-            rows.append({
-                "scenario_id": sid,
-                "assertion": str(t.get("assertion") or "-"),
-                "classification": cls,
-                "evidence": str(evidence or "-"),
-                "reason": str(t.get("reason") or EXEMPTION_REASON.get(cls, "-")),
-            })
+            rows.append(
+                {
+                    "scenario_id": sid,
+                    "assertion": str(t.get("assertion") or "-"),
+                    "classification": cls,
+                    "evidence": str(evidence or "-"),
+                    "reason": str(t.get("reason") or EXEMPTION_REASON.get(cls, "-")),
+                }
+            )
     return rows
 
 
@@ -425,9 +429,21 @@ ATTRIBUTION_LEVELS = (
 
 # 视觉类断言关键词（用于 pending-visual 判定）
 _VISUAL_ASSERTION_KEYWORDS = (
-    "render", "style", "layout", "visual", "screenshot", "css",
-    "screenshot_mismatch", "pixel", "image", "visible",
-    "display", "color", "font", "border", "background",
+    "render",
+    "style",
+    "layout",
+    "visual",
+    "screenshot",
+    "css",
+    "screenshot_mismatch",
+    "pixel",
+    "image",
+    "visible",
+    "display",
+    "color",
+    "font",
+    "border",
+    "background",
 )
 
 
@@ -439,9 +455,7 @@ def _scenario_has_substantive_evidence(scenario: dict) -> bool:
     """
     evidence = scenario.get("evidence") or {}
     screenshots = evidence.get("screenshots") or scenario.get("screenshots") or []
-    if isinstance(screenshots, list) and any(
-        isinstance(s, str) and s.strip() for s in screenshots
-    ):
+    if isinstance(screenshots, list) and any(isinstance(s, str) and s.strip() for s in screenshots):
         return True
     labels = scenario.get("screenshot_labels") or {}
     if labels:
@@ -536,8 +550,10 @@ def compute_attribution_level(scenario: dict) -> str:
     evidence = scenario.get("evidence") or {}
     ev_screenshots = evidence.get("screenshots") or []
     has_real_screenshots = (
-        (isinstance(screenshots, list) and any(isinstance(s, str) and s.strip() for s in screenshots))
-        or (isinstance(ev_screenshots, list) and any(isinstance(s, str) and s.strip() for s in ev_screenshots))
+        isinstance(screenshots, list) and any(isinstance(s, str) and s.strip() for s in screenshots)
+    ) or (
+        isinstance(ev_screenshots, list)
+        and any(isinstance(s, str) and s.strip() for s in ev_screenshots)
     )
 
     # 有算法标签 + 有失败断言归因 → evidence-backed
@@ -691,7 +707,9 @@ def _first_failed_step_desc(ffs_text) -> str:
         return ""
     return re.sub(
         r"^\s*(?:步骤|step)\s*\d+\s*[:：]?\s*",
-        "", ffs_text, flags=re.IGNORECASE,
+        "",
+        ffs_text,
+        flags=re.IGNORECASE,
     ).strip()
 
 
@@ -803,8 +821,7 @@ def _cascade_root_exemption(signatures: List[dict]) -> bool:
     descs = [s["ffs_desc"] for s in signatures]
     for i in range(len(descs)):
         for j in range(i + 1, len(descs)):
-            if _prefix_similarity(descs[i], descs[j]) \
-                    < _CASCADE_ROOT_PREFIX_SIMILARITY:
+            if _prefix_similarity(descs[i], descs[j]) < _CASCADE_ROOT_PREFIX_SIMILARITY:
                 return False
     steps = {s["ffs_step"] for s in signatures}
     triage_sets = {",".join(s["triage_labels"]) for s in signatures}
@@ -830,8 +847,9 @@ def _normalize_attribution(sc: dict) -> str:
         if isinstance(ffs, str) and ffs.strip():
             step = _extract_step_number(ffs)
             desc = _first_failed_step_desc(ffs)
-            desc_digest = hashlib.sha256(
-                _normalize_whitespace(desc).encode("utf-8")).hexdigest()[:32]
+            desc_digest = hashlib.sha256(_normalize_whitespace(desc).encode("utf-8")).hexdigest()[
+                :32
+            ]
             parts.append(f"step={step}:desc={desc_digest}")
     triage = sc.get("assertion_triage") or []
     if isinstance(triage, list):
@@ -925,15 +943,17 @@ def _batch_attribution_dedup_common(report: dict, scenario_level: bool) -> dict:
             # 级联豁免：真共享根因但场景局部证据各异 → 合法，不计违规
             accept_ids.extend(sids)
             continue
-        violations.append({
-            "scenario_ids": sids,
-            "reason": (
-                f"{len(sids)} 个场景归因文本完全相同"
-                f"（归一化后逐字相同），疑似批量套用硬编码归因："
-                f"涉及场景 {', '.join(sids)}；"
-                f"重复文本=[{norm_text[:200]}]"
-            ),
-        })
+        violations.append(
+            {
+                "scenario_ids": sids,
+                "reason": (
+                    f"{len(sids)} 个场景归因文本完全相同"
+                    f"（归一化后逐字相同），疑似批量套用硬编码归因："
+                    f"涉及场景 {', '.join(sids)}；"
+                    f"重复文本=[{norm_text[:200]}]"
+                ),
+            }
+        )
         if scenario_level:
             requeue_ids.extend(sids)
 
@@ -1001,13 +1021,10 @@ def tag_cached_attributions(report: dict, cache: dict, spec_name: str = "") -> l
         labels = sc.get("screenshot_labels") or {}
         evidence = sc.get("evidence") or {}
         ev_screenshots = evidence.get("screenshots") or []
-        has_real_screenshots = (
-            isinstance(ev_screenshots, list)
-            and any(isinstance(s, str) and s.strip() for s in ev_screenshots)
+        has_real_screenshots = isinstance(ev_screenshots, list) and any(
+            isinstance(s, str) and s.strip() for s in ev_screenshots
         )
-        has_relevant_labels = (
-            labels.get("blank_screenshot") or labels.get("low_contrast")
-        )
+        has_relevant_labels = labels.get("blank_screenshot") or labels.get("low_contrast")
         if not (has_real_screenshots or has_relevant_labels):
             # 纯缓存归因 → 降级 speculative（无论原级别：设计 D3
             # 规定纯缓存归因按 speculative 口径参与 2.2 门禁，
@@ -1113,13 +1130,11 @@ def validate_fast_track_result(result: dict, designed_ids: Optional[list] = None
         if isinstance(sc, dict) and sc.get("scenario_id")
     }
     if designed_ids:
-        missing = [
-            str(d) for d in designed_ids
-            if str(d) and str(d) not in executed_ids
-        ]
+        missing = [str(d) for d in designed_ids if str(d) and str(d) not in executed_ids]
         if missing:
             violations.append(
-                "场景静默遗漏：" + "、".join(missing)
+                "场景静默遗漏："
+                + "、".join(missing)
                 + "（设计集存在但执行集缺失，框架校验不通过）。"
                 "修复处方（二选一，禁止只改一边）："
                 "① 在 .fenix-run-result.json 的 verification.scenarios 中补齐上述"
@@ -1134,10 +1149,7 @@ def validate_fast_track_result(result: dict, designed_ids: Optional[list] = None
 
 def load_report(project_root, spec_name) -> Optional[dict]:
     """读取 .fenix/verify-progress/<spec>/report.json；不可用返回 None。"""
-    path = (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / "report.json"
-    )
+    path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
     if not path.exists():
         return None
     try:
@@ -1152,18 +1164,16 @@ def load_report(project_root, spec_name) -> Optional[dict]:
 def save_report(project_root, spec_name, report: dict) -> None:
     """原子写回增强后的 report.json（temp + rename，与既有产物写回同约定）。"""
     import tempfile
-    path = (
-        Path(project_root) / ".fenix" / "verify-progress"
-        / spec_name / "report.json"
-    )
+
+    path = Path(project_root) / ".fenix" / "verify-progress" / spec_name / "report.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), prefix=".report.", suffix=".json.tmp")
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=".report.", suffix=".json.tmp")
     try:
         with open(fd, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
             f.flush()
         import os
+
         os.replace(tmp_path, path)
     except OSError:
         try:
@@ -1183,8 +1193,7 @@ VERDICT_CACHE_FILENAME = "verdict_cache.json"
 
 
 def _verdict_cache_path(project_root, spec_name) -> Path:
-    return (Path(project_root) / ".fenix" / "verify-progress"
-            / spec_name / VERDICT_CACHE_FILENAME)
+    return Path(project_root) / ".fenix" / "verify-progress" / spec_name / VERDICT_CACHE_FILENAME
 
 
 def scenario_fingerprint(scenario: dict) -> str:
@@ -1197,18 +1206,25 @@ def scenario_fingerprint(scenario: dict) -> str:
     异常/缺字段返回空串（调用方按未命中处理，fail-open）。
     """
     import hashlib as _hashlib
+
     try:
         failed = [
-            {k: a.get(k) for k in ("type", "layer", "expected", "actual",
-                                   "selector") if a.get(k) is not None}
+            {
+                k: a.get(k)
+                for k in ("type", "layer", "expected", "actual", "selector")
+                if a.get(k) is not None
+            }
             for a in (scenario.get("assertion_results") or [])
             if isinstance(a, dict) and not a.get("pass", True)
         ]
         payload = json.dumps(
-            {"sid": scenario.get("scenario_id"),
-             "status": scenario.get("status"),
-             "failed": failed},
-            ensure_ascii=False, sort_keys=True,
+            {
+                "sid": scenario.get("scenario_id"),
+                "status": scenario.get("status"),
+                "failed": failed,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
         )
         return _hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
     except (TypeError, ValueError, AttributeError):
@@ -1236,8 +1252,7 @@ def save_verdict_cache(project_root, spec_name, cache: dict) -> None:
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_name(p.name + ".tmp")
-        tmp.write_text(
-            json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(p)
     except OSError:
         pass

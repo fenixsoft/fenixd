@@ -103,15 +103,25 @@ class AgentArtifactGateError(Exception):
 class AgentRunResult:
     """Result of a single Agent run."""
 
-    def __init__(self, run_id: str, spec_name: str, agent_type: str,
-                 success: bool, duration_seconds: float,
-                 turns_used: int = 0, error: str = None, output: str = "",
-                 branch: str | None = None,
-                 provider_used: str | None = None, model_used: str | None = None,
-                 chain_exhausted: bool = False,
-                 worktree_dirty: list | None = None,
-                 worktree_path=None, worktree_kept: bool = False,
-                 cancelled: bool = False):
+    def __init__(
+        self,
+        run_id: str,
+        spec_name: str,
+        agent_type: str,
+        success: bool,
+        duration_seconds: float,
+        turns_used: int = 0,
+        error: str = None,
+        output: str = "",
+        branch: str | None = None,
+        provider_used: str | None = None,
+        model_used: str | None = None,
+        chain_exhausted: bool = False,
+        worktree_dirty: list | None = None,
+        worktree_path=None,
+        worktree_kept: bool = False,
+        cancelled: bool = False,
+    ):
         self.run_id = run_id
         self.spec_name = spec_name
         self.agent_type = agent_type
@@ -162,11 +172,21 @@ class AgentRunResult:
 class AdminDisposition:
     """Administrator Agent 一次处置的结果（run_administrator 返回）。"""
 
-    def __init__(self, run_id: str, spec: str | None = None, success: bool = True,
-                 problem: str = "", actions_taken: str = "", result: str = "",
-                 escalate: bool = False, recommended_action: str = "",
-                 summary: str = "", error: str = "", output: str = "",
-                 family_waiver: bool = False):
+    def __init__(
+        self,
+        run_id: str,
+        spec: str | None = None,
+        success: bool = True,
+        problem: str = "",
+        actions_taken: str = "",
+        result: str = "",
+        escalate: bool = False,
+        recommended_action: str = "",
+        summary: str = "",
+        error: str = "",
+        output: str = "",
+        family_waiver: bool = False,
+    ):
         self.run_id = run_id
         self.spec = spec
         self.success = success
@@ -206,11 +226,19 @@ class SelfReviewResult:
     条目；success=False 时 error 携带失败原因。
     """
 
-    def __init__(self, run_id: str, date: str = "", success: bool = True,
-                 waste: list | None = None, mistakes: list | None = None,
-                 improvements: list | None = None, summary: str = "",
-                 resolved: list | None = None,
-                 error: str = "", output: str = ""):
+    def __init__(
+        self,
+        run_id: str,
+        date: str = "",
+        success: bool = True,
+        waste: list | None = None,
+        mistakes: list | None = None,
+        improvements: list | None = None,
+        summary: str = "",
+        resolved: list | None = None,
+        error: str = "",
+        output: str = "",
+    ):
         self.run_id = run_id
         self.date = date
         self.success = success
@@ -234,10 +262,17 @@ class EvolutionResult:
     - error: success=False 时的失败原因
     """
 
-    def __init__(self, run_id: str = "", success: bool = True,
-                 items_ingested: int = 0, drafts: int = 0,
-                 accepted: int = 0, degraded: str | None = None,
-                 error: str = "", output: str = ""):
+    def __init__(
+        self,
+        run_id: str = "",
+        success: bool = True,
+        items_ingested: int = 0,
+        drafts: int = 0,
+        accepted: int = 0,
+        degraded: str | None = None,
+        error: str = "",
+        output: str = "",
+    ):
         self.run_id = run_id
         self.success = success
         self.items_ingested = items_ingested
@@ -255,9 +290,9 @@ class EvolutionResult:
 # `runner.<方法名>`（D2b 规则 2），保证实例属性打桩/运行期替换仍然生效。
 
 
-def _check_artifact_json_file(path: Path, agent_type: str,
-                              run_started_at: float | None,
-                              is_resumed_worktree: bool = False) -> tuple:
+def _check_artifact_json_file(
+    path: Path, agent_type: str, run_started_at: float | None, is_resumed_worktree: bool = False
+) -> tuple:
     """单产物文件基础校验（存在/非空/mtime 新鲜/可解析 JSON）。
 
     多个产物文件共用同一套基础校验（add-planready-artifact-gate：planner-plan
@@ -302,11 +337,14 @@ def _check_artifact_json_file(path: Path, agent_type: str,
     return (None, data)
 
 
-def _check_agent_result_artifact(runner, spec_name: str,
-                                 agent_type: str,
-                                 run_started_at: float | None = None,
-                                 wt_path: Path | None = None,
-                                 is_resumed_worktree: bool = False) -> str | None:
+def _check_agent_result_artifact(
+    runner,
+    spec_name: str,
+    agent_type: str,
+    run_started_at: float | None = None,
+    wt_path: Path | None = None,
+    is_resumed_worktree: bool = False,
+) -> str | None:
     """planner/implementer 产物存在性硬门（fail-closed）。
 
     fixtures: 从富集注释迁移时保持与拆分前完全一致的判定语义与失败归因文案。
@@ -318,18 +356,15 @@ def _check_agent_result_artifact(runner, spec_name: str,
     """
     if agent_type in ("implementer", "fast-track"):
         return runner._check_impl_result_artifact(
-            spec_name, run_started_at, wt_path,
-            is_resumed_worktree=is_resumed_worktree)
+            spec_name, run_started_at, wt_path, is_resumed_worktree=is_resumed_worktree
+        )
     if agent_type == "spec-review":
         path = spec_review_result_path(runner.project_root, spec_name)
-        err, data = runner._check_artifact_json_file(
-            path, agent_type, run_started_at)
+        err, data = runner._check_artifact_json_file(path, agent_type, run_started_at)
         if err is not None:
             return err
         if not isinstance(data, dict):
-            return (
-                f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {path}"
-            )
+            return f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {path}"
         status = data.get("status", "")
         if status not in spec_review_result_status_whitelist:
             return (
@@ -342,22 +377,16 @@ def _check_agent_result_artifact(runner, spec_name: str,
     if agent_type == "planner-plan":
         # 双产物叠加校验：test_scenarios.json（既有，保持不变）+
         # .fenix-run-result.json（add-planready-artifact-gate，新增）。
-        scenarios_path = planner_result_path(
-            runner.project_root, spec_name, "planner-plan")
-        result_path = planner_result_path(
-            runner.project_root, spec_name, "planner-judge")
-        err, _data = runner._check_artifact_json_file(
-            scenarios_path, agent_type, run_started_at)
+        scenarios_path = planner_result_path(runner.project_root, spec_name, "planner-plan")
+        result_path = planner_result_path(runner.project_root, spec_name, "planner-judge")
+        err, _data = runner._check_artifact_json_file(scenarios_path, agent_type, run_started_at)
         if err is not None:
             return err
-        err, data = runner._check_artifact_json_file(
-            result_path, agent_type, run_started_at)
+        err, data = runner._check_artifact_json_file(result_path, agent_type, run_started_at)
         if err is not None:
             return err
         if not isinstance(data, dict):
-            return (
-                f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {result_path}"
-            )
+            return f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {result_path}"
         status = data.get("status", "")
         if status not in _PLANREADY_STATUSES:
             return (
@@ -366,30 +395,29 @@ def _check_agent_result_artifact(runner, spec_name: str,
             )
         return None
     path = planner_result_path(runner.project_root, spec_name, agent_type)
-    err, data = runner._check_artifact_json_file(
-        path, agent_type, run_started_at)
+    err, data = runner._check_artifact_json_file(path, agent_type, run_started_at)
     if err is not None:
         return err
     # fix-verdict-read-failclosed D3：judge 裁决文件（.fenix-run-result.json）
     # 顶层 status 须在白名单内（语义错位取值如 implementer 共享残留的
     # success 不得流入读侧被「unknown status 视为 verified」）。
     if not isinstance(data, dict):
-        return (
-            f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {path}"
-        )
+        return f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {path}"
     status = data.get("status", "")
     if status not in planner_result_status_whitelist:
         return (
-            f"exit 0 但结果文件 status='{status}' 不在白名单"
-            f"（{agent_type} 产物硬门）: {path}"
+            f"exit 0 但结果文件 status='{status}' 不在白名单" f"（{agent_type} 产物硬门）: {path}"
         )
     return None
 
 
-def _check_impl_result_artifact(runner, spec_name: str,
-                                run_started_at: float | None,
-                                wt_path: Path | None,
-                                is_resumed_worktree: bool = False) -> str | None:
+def _check_impl_result_artifact(
+    runner,
+    spec_name: str,
+    run_started_at: float | None,
+    wt_path: Path | None,
+    is_resumed_worktree: bool = False,
+) -> str | None:
     """implementer / fast-track 结果产物硬门（fix-impl-tasks-completion-gate P0）。
 
     `runner` 为 AgentRunner 实例：`_IMPL_RESULT_STATUSES`（类属性）与兄弟门
@@ -408,14 +436,12 @@ def _check_impl_result_artifact(runner, spec_name: str,
         )
     result_path = wt_path / ".fenix-run-result.json"
     err, data = runner._check_artifact_json_file(
-        result_path, agent_type, run_started_at,
-        is_resumed_worktree=is_resumed_worktree)
+        result_path, agent_type, run_started_at, is_resumed_worktree=is_resumed_worktree
+    )
     if err is not None:
         return err
     if not isinstance(data, dict):
-        return (
-            f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {result_path}"
-        )
+        return f"exit 0 但结果文件顶层非对象（{agent_type} 产物硬门）: {result_path}"
     status = data.get("status", "")
     if status not in runner._IMPL_RESULT_STATUSES:
         return (
@@ -453,15 +479,18 @@ def _check_impl_result_artifact(runner, spec_name: str,
         # 使「未勾选硬缺口」不含它们，同时 completed_tasks 仍须 == 已勾选集合。
         effective_all = [t for t in all_ids if t not in unattainable_ids]
         gate_err = runner._check_success_completion(
-            spec_name, result_path, data, effective_all, checked_ids)
+            spec_name, result_path, data, effective_all, checked_ids
+        )
     else:
         gate_err = runner._check_partial_consistency(
-            spec_name, result_path, data, all_ids, checked_ids)
+            spec_name, result_path, data, all_ids, checked_ids
+        )
     if gate_err is None:
         # ── 能力探测（D4）：TaskCreate 可用才强制交叉核对，否则 fail-open + 审计。
         # 已申报 unattainable 的任务不产生 TaskUpdate 覆盖义务（诚实退出，改进②）。
         gate_err = runner._check_taskupdate_crosscheck(
-            spec_name, checked_ids - unattainable_ids)
+            spec_name, checked_ids - unattainable_ids
+        )
 
     if gate_err is not None and gate_err.startswith(TASK_GATE_ERROR_PREFIX):
         # ── 改进①「只卡第一次」（2026-09-16）：任务完成度类失败跨轮计数，达阈值
@@ -500,6 +529,7 @@ def _invalid_completed_ids(items) -> list:
     如实上报被硬门拒绝（2026-09-15 事故，见 run_task_track 模块 docstring）。
     """
     from core.run_task_track import is_task_id
+
     bad = []
     for it in items:
         if not is_task_id(it):
@@ -507,9 +537,9 @@ def _invalid_completed_ids(items) -> list:
     return bad
 
 
-def _check_success_completion(runner, spec_name: str, result_path: Path,
-                              data: dict, all_ids: list,
-                              checked_ids: set) -> str | None:
+def _check_success_completion(
+    runner, spec_name: str, result_path: Path, data: dict, all_ids: list, checked_ids: set
+) -> str | None:
     """status == "success" 的任务书完成度判据（spec「success 的完成度判据」）。
 
     1. 勾选清零：tasks.md 无未勾数字任务（D2 与 _task_completion_blocker 同源；
@@ -565,9 +595,9 @@ def _check_success_completion(runner, spec_name: str, result_path: Path,
     return None
 
 
-def _check_partial_consistency(runner, spec_name: str, result_path: Path,
-                               data: dict, all_ids: list,
-                               checked_ids: set) -> str | None:
+def _check_partial_consistency(
+    runner, spec_name: str, result_path: Path, data: dict, all_ids: list, checked_ids: set
+) -> str | None:
     """status == "partial" 的申报一致性判据（spec「partial 的申报一致性判据」）。
 
     completed_tasks 集合 == 已勾选集合；unfinished 集合 == 未勾选集合；两集合
@@ -612,8 +642,7 @@ def _check_partial_consistency(runner, spec_name: str, result_path: Path,
     return None
 
 
-def _check_taskupdate_crosscheck(runner, spec_name: str,
-                                 checked_ids: set) -> str | None:
+def _check_taskupdate_crosscheck(runner, spec_name: str, checked_ids: set) -> str | None:
     """能力探测（D4）：init.tools 含 TaskCreate 才强制 TaskUpdate 交叉核对。
 
     读本轮 run 产物（find_impl_run_file 按 mtime 取最新 impl run）中
@@ -646,6 +675,7 @@ def _check_taskupdate_crosscheck(runner, spec_name: str,
     if not checked_ids:
         return None  # 无已勾选任务 → 无覆盖义务
     from core.run_task_track import parse_run_task_done_cumulative
+
     rd = parse_run_task_done_cumulative(runner.project_root, spec_name)
     done_ids = set(rd.get("done_ids") or ())
     tracked_ids = set(rd.get("tracked_ids") or ())
@@ -673,11 +703,11 @@ def _read_init_tools(run_file) -> list | None:
         tools 非数组 → None（按「工具不可用」处理，fail-open）。
     """
     from core.run_task_track import read_init_tools as _read_tools
+
     return _read_tools(run_file)
 
 
-def _append_crosscheck_skipped(runner, spec_name: str, run_file,
-                               reason: str) -> None:
+def _append_crosscheck_skipped(runner, spec_name: str, run_file, reason: str) -> None:
     """向 run 产物追加 impl-task-crosscheck-skipped 审计事件（D4 fail-open 留痕）。
 
     写失败仅记 warning（审计是附加物，不阻塞主流程）。
@@ -685,13 +715,16 @@ def _append_crosscheck_skipped(runner, spec_name: str, run_file,
     if run_file is None:
         return
     try:
-        append_run_line(run_file, {
-            "type": "impl-task-crosscheck-skipped",
-            "spec": spec_name,
-            "run_id": Path(run_file).stem,
-            "reason": reason,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        })
+        append_run_line(
+            run_file,
+            {
+                "type": "impl-task-crosscheck-skipped",
+                "spec": spec_name,
+                "run_id": Path(run_file).stem,
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
     except OSError as e:
         runner.logger.warning(
             "agent_runner",

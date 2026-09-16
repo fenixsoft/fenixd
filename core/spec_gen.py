@@ -27,6 +27,7 @@ _KEBAB_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
 # ── Schema 加载 ────────────────────────────────────────────────────
 
+
 def load_schema(schema_name: str = DEFAULT_SCHEMA) -> Dict[str, Any]:
     """读取 vendored `schema.yaml` 并返回解析后的 dict。"""
     schema_path = SCHEMA_DIR / "schema.yaml"
@@ -48,6 +49,7 @@ def _load_template(schema_name: str, template_path: str) -> str:
 
 
 # ── 名称校验 ───────────────────────────────────────────────────────
+
 
 def _validate_name(name: str) -> Optional[str]:
     """kebab-case 名称校验；合法返回 None，否则返回具体错误信息。"""
@@ -76,6 +78,7 @@ def _validate_name(name: str) -> Optional[str]:
 
 # ── change 脚手架 ──────────────────────────────────────────────────
 
+
 def new_change(project_root: Path, name: str) -> Path:
     """创建 change 脚手架：建立目录并写入 `.spec.yaml`。
 
@@ -98,6 +101,7 @@ def new_change(project_root: Path, name: str) -> Path:
 
 # ── artifact 状态计算 ──────────────────────────────────────────────
 
+
 def _is_glob_pattern(pattern: str) -> bool:
     return any(ch in pattern for ch in ("*", "?", "["))
 
@@ -109,10 +113,7 @@ def _artifact_output_exists(change_dir: Path, generates: str) -> bool:
     """
     if not _is_glob_pattern(generates):
         return (change_dir / generates).is_file()
-    return any(
-        Path(p).is_file()
-        for p in glob.glob(str(change_dir / generates), recursive=True)
-    )
+    return any(Path(p).is_file() for p in glob.glob(str(change_dir / generates), recursive=True))
 
 
 def _detect_completed(change_dir: Path, schema: Dict[str, Any]) -> Set[str]:
@@ -187,24 +188,30 @@ def status(project_root: Path, name: str) -> Dict[str, Any]:
     artifacts = []
     for artifact in schema["artifacts"]:
         if artifact["id"] in completed:
-            artifacts.append({
-                "id": artifact["id"],
-                "outputPath": artifact["generates"],
-                "status": "done",
-            })
+            artifacts.append(
+                {
+                    "id": artifact["id"],
+                    "outputPath": artifact["generates"],
+                    "status": "done",
+                }
+            )
         elif artifact["id"] in ready:
-            artifacts.append({
-                "id": artifact["id"],
-                "outputPath": artifact["generates"],
-                "status": "ready",
-            })
+            artifacts.append(
+                {
+                    "id": artifact["id"],
+                    "outputPath": artifact["generates"],
+                    "status": "ready",
+                }
+            )
         else:
-            artifacts.append({
-                "id": artifact["id"],
-                "outputPath": artifact["generates"],
-                "status": "blocked",
-                "missingDeps": blocked.get(artifact["id"], []),
-            })
+            artifacts.append(
+                {
+                    "id": artifact["id"],
+                    "outputPath": artifact["generates"],
+                    "status": "blocked",
+                    "missingDeps": blocked.get(artifact["id"], []),
+                }
+            )
 
     build_order = _get_build_order(schema)
     order_map = {aid: idx for idx, aid in enumerate(build_order)}
@@ -223,6 +230,7 @@ def status(project_root: Path, name: str) -> Dict[str, Any]:
 
 
 # ── instructions 解析 ──────────────────────────────────────────────
+
 
 def _artifact_by_id(schema: Dict[str, Any], artifact_id: str) -> Optional[Dict[str, Any]]:
     return next((a for a in schema["artifacts"] if a["id"] == artifact_id), None)
@@ -250,16 +258,16 @@ def instructions(project_root: Path, artifact_id: str, name: str) -> Dict[str, A
     dependencies = []
     for req in artifact.get("requires", []):
         dep = _artifact_by_id(schema, req)
-        dependencies.append({
-            "id": req,
-            "done": req in completed,
-            "path": dep["generates"] if dep else req,
-            "description": dep.get("description", "") if dep else "",
-        })
+        dependencies.append(
+            {
+                "id": req,
+                "done": req in completed,
+                "path": dep["generates"] if dep else req,
+                "description": dep.get("description", "") if dep else "",
+            }
+        )
 
-    unlocks = sorted(
-        a["id"] for a in schema["artifacts"] if artifact_id in a.get("requires", [])
-    )
+    unlocks = sorted(a["id"] for a in schema["artifacts"] if artifact_id in a.get("requires", []))
 
     return {
         "changeName": name,

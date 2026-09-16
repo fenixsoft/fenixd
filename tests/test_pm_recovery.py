@@ -98,9 +98,9 @@ class TestPMEngineInfraFailureRecovery(unittest.TestCase):
         self.sm.transition("s1", "implementing")
         self.sm.transition("s1", "implemented")
         self.sm.transition("s1", "testing")
-        self.engine._run_three_stage_verification = MagicMock(
+        self.engine._verification._run_three_stage_verification = MagicMock(
             side_effect=RuntimeError("Daily agent run limit (50) reached"))
-        self.engine._run_legacy_verification = MagicMock(
+        self.engine._verification._run_legacy_verification = MagicMock(
             side_effect=RuntimeError("Daily agent run limit (50) reached"))
         self.engine._run_verification_pipeline("s1")
         entry = self.sm.read_one("s1")
@@ -306,10 +306,10 @@ class TestPMEngineReplanLimit(unittest.TestCase):
             )
 
         self.engine.agent_runner.run_planner = MagicMock(side_effect=_fake_planner)
-        self.engine._read_planner_result = MagicMock(
+        self.engine._verification._read_planner_result = MagicMock(
             return_value=VerdictReadResult.success("plan-ready"))
-        self.engine._apply_scenario_freeze = MagicMock(return_value={})
-        self.engine._apply_interaction_contract = MagicMock(return_value=None)
+        self.engine._verification._apply_scenario_freeze = MagicMock(return_value={})
+        self.engine._verification._apply_interaction_contract = MagicMock(return_value=None)
         self.engine._enqueue = MagicMock()
 
         self.sm.add_spec("s1", {"priority": 5})
@@ -419,15 +419,15 @@ class TestPMEngineReplanLimit(unittest.TestCase):
                     "scenarios": [],
                 }
 
-        self.engine._ensure_app_reachable = MagicMock(return_value=(True, False, ""))
-        self.engine._verify_verdict_evidence = MagicMock(return_value={
+        self.engine._verification._ensure_app_reachable = MagicMock(return_value=(True, False, ""))
+        self.engine._verification._verify_verdict_evidence = MagicMock(return_value={
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })
-        self.engine._update_warning_streaks = MagicMock(return_value=[])
-        self.engine._check_verification_gate = MagicMock(return_value=None)
-        self.engine._ensure_verification_report = MagicMock(return_value=None)
-        self.engine._env_whitewash_gate = MagicMock(return_value=True)
-        self.engine._render_scenario_change_section_to_report = MagicMock()
+        self.engine._verification._update_warning_streaks = MagicMock(return_value=[])
+        self.engine._verification._check_verification_gate = MagicMock(return_value=None)
+        self.engine._verification._ensure_verification_report = MagicMock(return_value=None)
+        self.engine._verification._env_whitewash_gate = MagicMock(return_value=True)
+        self.engine._verification._render_scenario_change_section_to_report = MagicMock()
         self.engine._on_spec_verified = MagicMock()
 
         with patch("importlib.reload", lambda m: m), \
@@ -482,15 +482,15 @@ class TestPMEngineReplanLimit(unittest.TestCase):
                     "scenarios": [],
                 }
 
-        self.engine._ensure_app_reachable = MagicMock(return_value=(True, False, ""))
-        self.engine._verify_verdict_evidence = MagicMock(return_value={
+        self.engine._verification._ensure_app_reachable = MagicMock(return_value=(True, False, ""))
+        self.engine._verification._verify_verdict_evidence = MagicMock(return_value={
             "ok": True, "cause": "pass", "violations": [], "dispatch_error": "",
         })
-        self.engine._update_warning_streaks = MagicMock(return_value=[])
-        self.engine._check_verification_gate = MagicMock(return_value=None)
-        self.engine._ensure_verification_report = MagicMock(return_value=None)
-        self.engine._env_whitewash_gate = MagicMock(return_value=True)
-        self.engine._render_scenario_change_section_to_report = MagicMock()
+        self.engine._verification._update_warning_streaks = MagicMock(return_value=[])
+        self.engine._verification._check_verification_gate = MagicMock(return_value=None)
+        self.engine._verification._ensure_verification_report = MagicMock(return_value=None)
+        self.engine._verification._env_whitewash_gate = MagicMock(return_value=True)
+        self.engine._verification._render_scenario_change_section_to_report = MagicMock()
         self.engine._on_spec_verified = MagicMock()
 
         with patch("importlib.reload", lambda m: m), \

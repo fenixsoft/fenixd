@@ -24,33 +24,33 @@ def normalize_module_path(file_path: str) -> str:
     """Convert file path to Python module path."""
     # Remove .py extension
     path = Path(file_path)
-    if path.suffix == '.py':
-        path = path.with_suffix('')
-    
+    if path.suffix == ".py":
+        path = path.with_suffix("")
+
     # Convert to module path (replace / with .)
     parts = list(path.parts)
-    
+
     # Remove common prefixes
-    if 'core' in parts:
-        idx = parts.index('core')
+    if "core" in parts:
+        idx = parts.index("core")
         parts = parts[idx:]
-    elif 'tests' in parts:
-        idx = parts.index('tests')
+    elif "tests" in parts:
+        idx = parts.index("tests")
         parts = parts[idx:]
-    
-    return '.'.join(parts)
+
+    return ".".join(parts)
 
 
 def extract_imports_from_file(file_path: str) -> Set[str]:
     """Extract all imports from a Python file using AST."""
     imports = set()
-    
+
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
-        
+
         tree = ast.parse(content, filename=file_path)
-        
+
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -60,27 +60,28 @@ def extract_imports_from_file(file_path: str) -> Set[str]:
                     imports.add(node.module)
     except (SyntaxError, UnicodeDecodeError) as e:
         print(f"Warning: Could not parse {file_path}: {e}", file=sys.stderr)
-    
+
     return imports
 
 
 def build_import_graph(tests_dir: str) -> Dict[str, Set[str]]:
     """Build import graph for all test files."""
     graph = {}
-    
-    for py_file in Path(tests_dir).glob('*.py'):
-        if py_file.name.startswith('_'):
+
+    for py_file in Path(tests_dir).glob("*.py"):
+        if py_file.name.startswith("_"):
             continue
-        
+
         imports = extract_imports_from_file(str(py_file))
         module_path = f"tests.{py_file.stem}"
         graph[module_path] = imports
-    
+
     return graph
 
 
-def find_affected_tests(target_module: str, import_graph: Dict[str, Set[str]],
-                       max_depth: int = 3) -> Set[str]:
+def find_affected_tests(
+    target_module: str, import_graph: Dict[str, Set[str]], max_depth: int = 3
+) -> Set[str]:
     """Find tests affected by changes to target module.
 
     Uses BFS to traverse import chain up to max_depth levels.
@@ -102,7 +103,7 @@ def find_affected_tests(target_module: str, import_graph: Dict[str, Set[str]],
         for test_module, imports in import_graph.items():
             # Check for exact match or partial match (parent module)
             for imp in imports:
-                if module == imp or module.startswith(imp + '.') or imp.startswith(module + '.'):
+                if module == imp or module.startswith(imp + ".") or imp.startswith(module + "."):
                     affected.add(test_module)
                     # Also check transitive imports
                     if depth < max_depth:
@@ -115,18 +116,18 @@ def find_affected_tests(target_module: str, import_graph: Dict[str, Set[str]],
 def load_test_map(tests_dir: str) -> Dict[str, str]:
     """Load explicit test mappings from test_map.yaml."""
     map_file = Path(tests_dir) / "test_map.yaml"
-    
+
     if not map_file.exists():
         return {}
-    
+
     try:
-        with open(map_file, 'r', encoding='utf-8') as f:
+        with open(map_file, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-        
-        if not data or 'explicit' not in data:
+
+        if not data or "explicit" not in data:
             return {}
-        
-        return data['explicit']
+
+        return data["explicit"]
     except Exception as e:
         print(f"Warning: Could not load test_map.yaml: {e}", file=sys.stderr)
         return {}
@@ -154,17 +155,17 @@ def run_tests(test_files: List[str], dry_run: bool = False) -> bool:
     if not test_files:
         print("No tests affected. Consider running full test suite.")
         return True
-    
+
     if dry_run:
         print("Tests that would be run:")
         for test_file in sorted(test_files):
             print(f"  {test_file}")
         return True
-    
+
     # Run pytest with selected test files
     cmd = [sys.executable, "-m", "pytest", "-v"] + test_files
     print(f"Running: {' '.join(cmd)}")
-    
+
     result = subprocess.run(cmd, cwd=Path(__file__).resolve().parent.parent)
     return result.returncode == 0
 
@@ -174,49 +175,49 @@ def main():
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)
-    
+
     # Parse arguments
     dry_run = False
     run_all = False
     target_files = []
-    
+
     for arg in sys.argv[1:]:
-        if arg == '--dry-run':
+        if arg == "--dry-run":
             dry_run = True
-        elif arg == '--all':
+        elif arg == "--all":
             run_all = True
         else:
             target_files.append(arg)
-    
+
     # Get project root
     project_root = Path(__file__).resolve().parent.parent
     tests_dir = project_root / "tests"
-    
+
     if run_all:
         print("Running all tests...")
         cmd = [sys.executable, "-m", "pytest", "-v", str(tests_dir)]
         result = subprocess.run(cmd, cwd=project_root)
         sys.exit(result.returncode)
-    
+
     if not target_files:
         print("Error: No files specified. Use --all to run all tests.")
         sys.exit(1)
-    
+
     # Build import graph
     print("Analyzing import chains...")
     import_graph = build_import_graph(str(tests_dir))
-    
+
     # Find affected tests
     affected_tests = set()
-    
+
     for target_file in target_files:
         # Convert to module path
         target_module = normalize_module_path(target_file)
-        
+
         # Find tests through import analysis
         tests = find_affected_tests(target_module, import_graph)
         affected_tests.update(tests)
-    
+
     # Apply explicit mappings
     explicit_map = load_test_map(str(tests_dir))
     explicit_tests = apply_explicit_mappings(target_files, explicit_map)
@@ -232,15 +233,15 @@ def main():
     # Convert module paths to file paths
     test_files = []
     for test_module in affected_tests:
-        if test_module.startswith('tests.'):
+        if test_module.startswith("tests."):
             test_file = tests_dir / f"{test_module[6:]}.py"
             if test_file.exists():
                 test_files.append(str(test_file))
-    
+
     # Run tests
     success = run_tests(test_files, dry_run)
     sys.exit(0 if success else 1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

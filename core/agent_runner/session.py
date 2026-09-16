@@ -1,6 +1,4 @@
-"""session.py — SessionTracker：resumable session id 提取与 usage 解析（claude CLI 流事件）（refactor-core-packages 阶段 3）。
-
-"""
+"""session.py — SessionTracker：resumable session id 提取与 usage 解析（claude CLI 流事件）（refactor-core-packages 阶段 3）。"""
 
 from pathlib import Path
 import json
@@ -32,7 +30,6 @@ class SessionTracker:
             return None
         return session_id
 
-
     @staticmethod
     def _extract_session_id(run_file: Path) -> str | None:
         """从 run 产物提取 session_id（供 --resume 续跑）。
@@ -62,11 +59,9 @@ class SessionTracker:
                     continue
                 if e.get("type") == "result" and e.get("session_id"):
                     return e["session_id"]
-                if (e.get("type") == "system" and e.get("subtype") == "init"
-                        and e.get("session_id")):
+                if e.get("type") == "system" and e.get("subtype") == "init" and e.get("session_id"):
                     return e["session_id"]
         return None
-
 
     @staticmethod
     def _extract_usage_info(result_event: dict | None) -> dict:
@@ -116,13 +111,11 @@ class SessionTracker:
         except (TypeError, ValueError):
             out["output_tokens"] = 0
         try:
-            out["cache_creation_input_tokens"] = int(
-                usage.get("cache_creation_input_tokens") or 0)
+            out["cache_creation_input_tokens"] = int(usage.get("cache_creation_input_tokens") or 0)
         except (TypeError, ValueError):
             out["cache_creation_input_tokens"] = 0
         try:
-            out["cache_read_input_tokens"] = int(
-                usage.get("cache_read_input_tokens") or 0)
+            out["cache_read_input_tokens"] = int(usage.get("cache_read_input_tokens") or 0)
         except (TypeError, ValueError):
             out["cache_read_input_tokens"] = 0
         # 成本字段：仅网关真实回传时非空（design D5 / spec「金额展示不伪造」）

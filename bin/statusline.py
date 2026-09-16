@@ -9,6 +9,7 @@ import re
 import subprocess
 from pathlib import Path
 
+
 def _find_project_root() -> Path:
     """从当前目录向上查找含 STATE.md 或 .fenix 的项目根。
 
@@ -28,13 +29,15 @@ CHANGES_DIR = PROJECT_ROOT / "spec" / "changes"
 
 # ── Daemon check ──────────────────────────────────────────────────
 
+
 def check_fenixd() -> str:
     """检测本项目 daemon 是否运行（唯一 session 名，见 bin/fenix_session.py）。"""
     try:
         helper = Path(__file__).resolve().parent / "fenix_session.py"
         r = subprocess.run(
             ["python3", str(helper), "running", str(PROJECT_ROOT)],
-            capture_output=True, timeout=2,
+            capture_output=True,
+            timeout=2,
         )
         return "🟢" if r.stdout.strip() == "YES" else "🔴"
     except Exception:
@@ -42,6 +45,7 @@ def check_fenixd() -> str:
 
 
 # ── STATE.md parser ───────────────────────────────────────────────
+
 
 def parse_state() -> dict:
     """Parse STATE.md, return {spec_name: {status, priority, error, ...}}."""
@@ -66,8 +70,10 @@ def parse_state() -> dict:
                 key = m.group(1)
                 val = m.group(2).strip()
                 if key == "priority":
-                    try: val = int(val)
-                    except: val = 999
+                    try:
+                        val = int(val)
+                    except:
+                        val = 999
                 elif val.lower() in ("null", "none", ""):
                     val = None
                 current_entry[key] = val
@@ -83,6 +89,7 @@ def parse_state() -> dict:
 # ── worktree helpers ──────────────────────────────────────────────
 
 WORKTREES_DIR = PROJECT_ROOT / ".claude" / "worktrees"
+
 
 def find_implementer_worktree(spec_name: str) -> Path | None:
     """Find the newest implementer worktree for a SPEC, or None."""
@@ -103,6 +110,7 @@ def find_implementer_worktree(spec_name: str) -> Path | None:
 
 
 # ── tasks.md parser ───────────────────────────────────────────────
+
 
 def parse_tasks(spec_name: str, status: str = "") -> dict:
     """Parse tasks.md for a SPEC, return {total, done, current_task}.
@@ -163,10 +171,11 @@ def count_scenarios(spec_name: str) -> int:
 
 # ── Alert detection ───────────────────────────────────────────────
 
+
 def detect_alerts(specs: dict) -> list:
     """Detect blockers, errors, and human-intervention-needed conditions."""
-    critical = []   # 🔴 must-show
-    warnings = []   # 🟡 nice-to-show
+    critical = []  # 🔴 must-show
+    warnings = []  # 🟡 nice-to-show
 
     for name, entry in specs.items():
         status = entry.get("status", "")
@@ -201,6 +210,7 @@ def detect_alerts(specs: dict) -> list:
 
 
 # ── Main ──────────────────────────────────────────────────────────
+
 
 def main():
     daemon = check_fenixd()
@@ -265,6 +275,7 @@ def main():
         for pf in progress_dir.glob("*.json"):
             try:
                 import json as jmod
+
                 data = jmod.loads(pf.read_text())
                 verify_total += data.get("total", 0)
                 verify_done += data.get("done", 0)
@@ -324,8 +335,9 @@ def main():
         parts.append(f"📤 {pushed}")
 
     # Error/blocker count summary
-    error_count = sum(1 for e in specs.values()
-                      if e.get("error") and e.get("status") not in ("done", "pushed"))
+    error_count = sum(
+        1 for e in specs.values() if e.get("error") and e.get("status") not in ("done", "pushed")
+    )
     if error_count > 0:
         parts.append(f"🚨 {error_count}")
 
