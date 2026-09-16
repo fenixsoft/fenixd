@@ -121,12 +121,20 @@ class TestSummaryIndex:
         assert myspec["task_done"] == 2
         assert myspec["task_total"] == 3
 
-    def test_state_change_full_rebuild(self, tmp_path):
+    def test_state_change_add_spec_recomputes_only_new(self, tmp_path):
+        """STATE.md 新增一个 spec 条目 → 仅新 spec 被重算，其余命中缓存（增量失效）。"""
         proot = make_project(tmp_path)
         idx = SummaryIndex()
         idx.get(proot)
 
-        # STATE.md 新增一个 spec 条目 → 全量重建
+        calls = []
+        orig = dash_data.spec_summary
+
+        def tracking(proot_, spec_name_, entry_):
+            calls.append(spec_name_)
+            return orig(proot_, spec_name_, entry_)
+
+        # STATE.md 新增一个 spec 条目
         state_path = proot / ".fenix" / "STATE.md"
         state_path.write_text(
             state_path.read_text(encoding="utf-8").replace(
@@ -137,14 +145,28 @@ class TestSummaryIndex:
             ),
             encoding="utf-8",
         )
-        items = idx.get(proot)
+        dash_data.spec_summary = tracking
+        try:
+            items = idx.get(proot)
+        finally:
+            dash_data.spec_summary = orig
         names = {s["name"] for s in items}
         assert names == {"myspec", "otherspec", "newspec"}
+        assert calls == ["newspec"], "新增 spec 只应重算它自己，其余 N-1 个命中缓存"
 
     def test_spec_deleted_removed_from_index(self, tmp_path):
+        """STATE.md 删除一个 spec 条目 → 索引剔除该 spec，其余 spec 命中缓存（不重算）。"""
         proot = make_project(tmp_path)
         idx = SummaryIndex()
         idx.get(proot)
+
+        calls = []
+        orig = dash_data.spec_summary
+
+        def tracking(proot_, spec_name_, entry_):
+            calls.append(spec_name_)
+            return orig(proot_, spec_name_, entry_)
+
         state_path = proot / ".fenix" / "STATE.md"
         state_path.write_text(
             state_path.read_text(encoding="utf-8").replace(
@@ -154,9 +176,14 @@ class TestSummaryIndex:
             ),
             encoding="utf-8",
         )
-        items = idx.get(proot)
+        dash_data.spec_summary = tracking
+        try:
+            items = idx.get(proot)
+        finally:
+            dash_data.spec_summary = orig
         names = {s["name"] for s in items}
         assert names == {"myspec"}
+        assert calls == [], "删除仅触发索引剔除与快照更新，不重算任何 spec"
 
     def test_run_file_change_recomputes_that_spec(self, tmp_path):
         proot = make_project(tmp_path)
