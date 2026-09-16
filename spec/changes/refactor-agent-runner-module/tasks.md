@@ -86,5 +86,5 @@
 
 ## 6. 阶段 5：收尾验证
 
-- [ ] 6.1 全量 `bin/run_full_suite.py`（**必须全量回归，不得只跑子集**）+ 全部 import 路径验证 + 疑点清单最终汇报（向用户汇报，代码不动）
-- [ ] 6.2 经用户确认时机后 `touch .fenix/restart_request` 重启 daemon 并冒烟验证（重构收尾前不得重启）
+- [x] 6.1 全量 `bin/run_full_suite.py`（**必须全量回归，不得只跑子集**）+ 全部 import 路径验证 + 疑点清单最终汇报（向用户汇报，代码不动）
+- [x] 6.2 经用户确认时机后 `touch .fenix/restart_request` 重启 daemon 并冒烟验证（重构收尾前不得重启）
